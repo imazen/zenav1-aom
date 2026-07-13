@@ -294,6 +294,8 @@ extern "C" {
     fn shim_is_cfl_allowed(bsize: i32, seg_id: i32, lossless: i32, ssx: i32, ssy: i32) -> i32;
     fn shim_write_intra_y_and_angle(mode: i32, bsize: i32, y_cdf: *mut u16, angle_delta_y: i32, y_angle_cdf: *mut u16, out: *mut u8, o_ycdf: *mut u16, o_acdf: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
+    fn shim_write_intra_uv_and_angle(monochrome: i32, is_chroma_ref: i32, uv_mode: i32, cfl_allowed: i32, bsize: i32, cfl_idx: i32, cfl_joint_sign: i32, angle_delta_uv: i32, uv_mode_cdf: *mut u16, cfl_sign_cdf: *mut u16, cfl_alpha_cdf: *mut u16, uv_angle_cdf: *mut u16, out: *mut u8, o_uvcdf: *mut u16, o_signcdf: *mut u16, o_alphacdf: *mut u16, o_uvacdf: *mut u16) -> u32;
+    #[allow(clippy::too_many_arguments)]
     fn shim_get_comp_index_context(enable: i32, bits_minus_1: i32, cur_order_hint: i32, fwd_order_hint: i32, bck_order_hint: i32, ha: i32, a_has2: i32, a_cidx: i32, a_rf0: i32, hl: i32, l_has2: i32, l_cidx: i32, l_rf0: i32) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_ref_frames(cdfs: *mut u16, seg_ref: i32, seg_skipgmv: i32, rmode_select: i32, comp_allowed: i32, is_compound: i32, comp_ref_type: i32, ref0: i32, ref1: i32, out: *mut u8, out_cdfs: *mut u16) -> u32;
@@ -591,6 +593,30 @@ pub fn ref_write_intra_y_and_angle(
     };
     out.truncate(n as usize);
     (out, oyc, oac)
+}
+
+/// Reference write_intra_prediction_modes piece 2 (UV mode + cfl + gated UV angle, over
+/// pristine C od_ec). Returns (bytes, uv_mode_cdf[15], cfl_sign_cdf[9],
+/// cfl_alpha_cdf[102], uv_angle_cdf[8]).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn ref_write_intra_uv_and_angle(
+    monochrome: bool, is_chroma_ref: bool, uv_mode: i32, cfl_allowed: bool, bsize: i32,
+    cfl_idx: i32, cfl_joint_sign: i32, angle_delta_uv: i32,
+    uv_mode_cdf: &[u16; 15], cfl_sign_cdf: &[u16; 9], cfl_alpha_cdf: &[u16; 102], uv_angle_cdf: &[u16; 8],
+) -> (Vec<u8>, [u16; 15], [u16; 9], [u16; 102], [u16; 8]) {
+    let (mut uc, mut sc, mut ac, mut uac) = (*uv_mode_cdf, *cfl_sign_cdf, *cfl_alpha_cdf, *uv_angle_cdf);
+    let mut out = vec![0u8; 32];
+    let (mut ouc, mut osc, mut oac, mut ouac) = ([0u16; 15], [0u16; 9], [0u16; 102], [0u16; 8]);
+    let n = unsafe {
+        shim_write_intra_uv_and_angle(
+            monochrome as i32, is_chroma_ref as i32, uv_mode, cfl_allowed as i32, bsize, cfl_idx,
+            cfl_joint_sign, angle_delta_uv, uc.as_mut_ptr(), sc.as_mut_ptr(), ac.as_mut_ptr(),
+            uac.as_mut_ptr(), out.as_mut_ptr(), ouc.as_mut_ptr(), osc.as_mut_ptr(), oac.as_mut_ptr(),
+            ouac.as_mut_ptr(),
+        )
+    };
+    out.truncate(n as usize);
+    (out, ouc, osc, oac, ouac)
 }
 
 /// Reference `get_comp_index_context` (body transcribed; ref-buffer order hints passed

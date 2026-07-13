@@ -1826,3 +1826,39 @@ pub fn write_intra_y_and_angle_delta(
         write_angle_delta(enc, y_angle_cdf, angle_delta_y);
     }
 }
+
+const UV_CFL_PRED: i32 = 13;
+
+/// `write_intra_prediction_modes` piece 2 (`av1/encoder/bitstream.c`): the chroma
+/// prediction signalling. For a chroma-reference block on a non-monochrome frame, the
+/// intra UV mode (on the caller-selected `uv_mode_cdf`, `UV_INTRA_MODES` symbols when
+/// CFL is allowed, one fewer otherwise), then — for `UV_CFL_PRED` — the CFL alphas, then
+/// the UV angle delta when the mapped intra mode (`get_uv_mode`) is directional on a
+/// `>= BLOCK_8X8` block. Second composition of the mode-info driver.
+#[allow(clippy::too_many_arguments)]
+pub fn write_intra_uv_and_angle_delta(
+    enc: &mut OdEcEnc,
+    monochrome: bool,
+    is_chroma_ref: bool,
+    uv_mode: i32,
+    cfl_allowed: bool,
+    bsize: usize,
+    cfl_alpha_idx: i32,
+    cfl_joint_sign: i32,
+    angle_delta_uv: i32,
+    uv_mode_cdf: &mut [u16],
+    cfl_sign_cdf: &mut [u16],
+    cfl_alpha_cdf: &mut [[u16; 17]; 6],
+    uv_angle_cdf: &mut [u16],
+) {
+    if !monochrome && is_chroma_ref {
+        write_intra_uv_mode(enc, uv_mode_cdf, uv_mode, cfl_allowed);
+        if uv_mode == UV_CFL_PRED {
+            write_cfl_alphas(enc, cfl_sign_cdf, cfl_alpha_cdf, cfl_alpha_idx, cfl_joint_sign);
+        }
+        let intra_mode = get_uv_mode(uv_mode as usize);
+        if use_angle_delta(bsize) && is_directional_mode(intra_mode) {
+            write_angle_delta(enc, uv_angle_cdf, angle_delta_uv);
+        }
+    }
+}

@@ -1294,7 +1294,7 @@ fn palette_contexts_and_flags_match_c() {
             let mut c = [0u16; 8];
             let mut prev = 32768i32;
             for e in c.iter_mut().take(7) {
-                let span = (prev - (7 - 0)).max(1);
+                let span = (prev - 7).max(1);
                 let v = prev - 1 - (rng.next() % span.max(1) as u64) as i32;
                 *e = v.max(1) as u16;
                 prev = v.max(1);
@@ -1750,5 +1750,63 @@ fn write_intra_y_and_angle_delta_matches_c() {
         assert_eq!(got, want, "bytes mode={mode} bsize={bsize} ad={angle_delta_y}");
         assert_eq!(ryc, oyc, "y_cdf");
         assert_eq!(rac, oac, "y_angle_cdf");
+    }
+}
+
+#[test]
+fn write_intra_uv_and_angle_delta_matches_c() {
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::write_intra_uv_and_angle_delta;
+    let mut rng = Rng(0x1a_c0de_0000_000c);
+    fn mk(rng: &mut Rng, nsyms: usize) -> Vec<u16> {
+        let mut c = vec![0u16; nsyms + 1];
+        let mut prev = 32768i32;
+        for e in c.iter_mut().take(nsyms - 1) {
+            let v = (prev - 1 - (rng.next() % 300) as i32).max(1);
+            *e = v as u16;
+            prev = v;
+        }
+        c
+    }
+    for _ in 0..300_000 {
+        let monochrome = rng.next().is_multiple_of(5); // mostly false (1 in 5)
+        let is_chroma_ref = !rng.next().is_multiple_of(5); // mostly true
+        let cfl_allowed = rng.next().is_multiple_of(2);
+        let n = if cfl_allowed { 14 } else { 13 };
+        let uv_mode = (rng.next() % n as u64) as i32;
+        let bsize = (rng.next() % 22) as usize;
+        let cfl_idx = (rng.next() % 256) as i32;
+        let cfl_joint_sign = (rng.next() % 8) as i32;
+        let angle_delta_uv = (rng.next() % 7) as i32 - 3;
+        let uc: [u16; 15] = mk(&mut rng, 14).try_into().unwrap();
+        let sc: [u16; 9] = mk(&mut rng, 8).try_into().unwrap();
+        let mut alpha_nested = [[0u16; 17]; 6];
+        let mut alpha_flat = [0u16; 102];
+        for ctx in 0..6 {
+            let row = mk(&mut rng, 16);
+            for j in 0..17 {
+                alpha_nested[ctx][j] = row[j];
+                alpha_flat[ctx * 17 + j] = row[j];
+            }
+        }
+        let uac: [u16; 8] = mk(&mut rng, 7).try_into().unwrap();
+
+        let mut enc = OdEcEnc::new();
+        let (mut ruc, mut rsc, mut rac, mut ruac) = (uc, sc, alpha_nested, uac);
+        write_intra_uv_and_angle_delta(
+            &mut enc, monochrome, is_chroma_ref, uv_mode, cfl_allowed, bsize, cfl_idx,
+            cfl_joint_sign, angle_delta_uv, &mut ruc, &mut rsc, &mut rac, &mut ruac,
+        );
+        let got = enc.done().to_vec();
+        let (want, ouc, osc, oac, ouac) = c::ref_write_intra_uv_and_angle(
+            monochrome, is_chroma_ref, uv_mode, cfl_allowed, bsize as i32, cfl_idx, cfl_joint_sign,
+            angle_delta_uv, &uc, &sc, &alpha_flat, &uac,
+        );
+        assert_eq!(got, want, "bytes mono={monochrome} cr={is_chroma_ref} uv={uv_mode} cfl={cfl_allowed} bsize={bsize}");
+        assert_eq!(ruc, ouc, "uv_mode_cdf");
+        assert_eq!(rsc, osc, "cfl_sign_cdf");
+        let rac_flat: [u16; 102] = core::array::from_fn(|i| rac[i / 17][i % 17]);
+        assert_eq!(rac_flat, oac, "cfl_alpha_cdf");
+        assert_eq!(ruac, ouac, "uv_angle_cdf");
     }
 }

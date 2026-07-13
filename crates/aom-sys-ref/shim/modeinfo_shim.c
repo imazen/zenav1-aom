@@ -1269,3 +1269,49 @@ uint32_t shim_write_intra_y_and_angle(int mode, int bsize, uint16_t *y_cdf,
   od_ec_enc_clear(&ec);
   return nb;
 }
+
+/* --- write_intra_prediction_modes composition, piece 2: UV mode + cfl + UV angle --- */
+/* The chroma steps of write_intra_prediction_modes, transcribed over od_ec. Gated on
+ * !monochrome && is_chroma_ref; cfl_allowed (is_cfl_allowed upstream) sets the UV-mode
+ * symbol count; the cfl alphas follow UV_CFL_PRED(13); the UV angle delta is gated on
+ * the REAL av1_use_angle_delta + av1_is_directional_mode(get_uv_mode(uv_mode)). */
+uint32_t shim_write_intra_uv_and_angle(int monochrome, int is_chroma_ref, int uv_mode,
+    int cfl_allowed, int bsize, int cfl_idx, int cfl_joint_sign, int angle_delta_uv,
+    uint16_t *uv_mode_cdf, uint16_t *cfl_sign_cdf, uint16_t *cfl_alpha_cdf, uint16_t *uv_angle_cdf,
+    uint8_t *out, uint16_t *o_uvcdf, uint16_t *o_signcdf, uint16_t *o_alphacdf, uint16_t *o_uvacdf) {
+  od_ec_enc ec; od_ec_enc_init(&ec, 256);
+  if (!monochrome && is_chroma_ref) {
+    const int n = UV_INTRA_MODES - !cfl_allowed;
+    od_ec_encode_cdf_q15(&ec, uv_mode, uv_mode_cdf, n);
+    update_cdf(uv_mode_cdf, uv_mode, n);
+    if (uv_mode == UV_CFL_PRED) {
+      od_ec_encode_cdf_q15(&ec, cfl_joint_sign, cfl_sign_cdf, CFL_JOINT_SIGNS);
+      update_cdf(cfl_sign_cdf, cfl_joint_sign, CFL_JOINT_SIGNS);
+      if (CFL_SIGN_U(cfl_joint_sign) != CFL_SIGN_ZERO) {
+        uint16_t *cdf_u = cfl_alpha_cdf + CFL_CONTEXT_U(cfl_joint_sign) * 17;
+        od_ec_encode_cdf_q15(&ec, CFL_IDX_U(cfl_idx), cdf_u, CFL_ALPHABET_SIZE);
+        update_cdf(cdf_u, CFL_IDX_U(cfl_idx), CFL_ALPHABET_SIZE);
+      }
+      if (CFL_SIGN_V(cfl_joint_sign) != CFL_SIGN_ZERO) {
+        uint16_t *cdf_v = cfl_alpha_cdf + CFL_CONTEXT_V(cfl_joint_sign) * 17;
+        od_ec_encode_cdf_q15(&ec, CFL_IDX_V(cfl_idx), cdf_v, CFL_ALPHABET_SIZE);
+        update_cdf(cdf_v, CFL_IDX_V(cfl_idx), CFL_ALPHABET_SIZE);
+      }
+    }
+    const int intra_mode = get_uv_mode((UV_PREDICTION_MODE)uv_mode);
+    if (av1_use_angle_delta((BLOCK_SIZE)bsize) && av1_is_directional_mode((PREDICTION_MODE)intra_mode)) {
+      const int sym = angle_delta_uv + MAX_ANGLE_DELTA;
+      const int an = 2 * MAX_ANGLE_DELTA + 1;
+      od_ec_encode_cdf_q15(&ec, sym, uv_angle_cdf, an);
+      update_cdf(uv_angle_cdf, sym, an);
+    }
+  }
+  uint32_t nb = 0; const unsigned char *buf = od_ec_enc_done(&ec, &nb);
+  for (uint32_t i = 0; i < nb; i++) out[i] = buf[i];
+  for (int i = 0; i < 15; i++) o_uvcdf[i] = uv_mode_cdf[i];
+  for (int i = 0; i < 9; i++) o_signcdf[i] = cfl_sign_cdf[i];
+  for (int i = 0; i < 6 * 17; i++) o_alphacdf[i] = cfl_alpha_cdf[i];
+  for (int i = 0; i < 8; i++) o_uvacdf[i] = uv_angle_cdf[i];
+  od_ec_enc_clear(&ec);
+  return nb;
+}
