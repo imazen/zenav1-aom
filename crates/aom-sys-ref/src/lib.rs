@@ -941,3 +941,19 @@ pub fn ref_filter_intra_edge(buf: &mut [u8], off: usize, sz: usize, strength: i3
 pub fn ref_upsample_intra_edge(buf: &mut [u8], off: usize, sz: usize) {
     unsafe { shim_upsample_intra_edge(buf.as_mut_ptr().add(off), sz as i32) }
 }
+
+// Highbd intra edge DSP (exported reconintra.c symbols).
+extern "C" {
+    fn av1_highbd_filter_intra_edge_c(p: *mut u16, sz: i32, strength: i32);
+    fn av1_highbd_upsample_intra_edge_c(p: *mut u16, sz: i32, bd: i32);
+}
+
+/// Reference `av1_highbd_filter_intra_edge_c` (filters `buf[off..off+sz]`).
+pub fn ref_highbd_filter_intra_edge(buf: &mut [u16], off: usize, sz: usize, strength: i32) {
+    unsafe { av1_highbd_filter_intra_edge_c(buf.as_mut_ptr().add(off), sz as i32, strength) }
+}
+
+/// Reference `av1_highbd_upsample_intra_edge_c`.
+pub fn ref_highbd_upsample_intra_edge(buf: &mut [u16], off: usize, sz: usize, bd: u8) {
+    unsafe { av1_highbd_upsample_intra_edge_c(buf.as_mut_ptr().add(off), sz as i32, bd as i32) }
+}

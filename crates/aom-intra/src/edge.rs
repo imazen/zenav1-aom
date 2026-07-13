@@ -125,3 +125,45 @@ pub fn upsample_intra_edge(buf: &mut [u8], off: usize, sz: usize) {
         buf[off + 2 * i] = inp[i + 2] as u8;
     }
 }
+
+/// `av1_highbd_filter_intra_edge_c`: highbd (u16) 5-tap edge low-pass. Same as
+/// the lowbd filter but 16-bit (no clip needed — outputs stay in range).
+pub fn highbd_filter_intra_edge(p: &mut [u16], sz: usize, strength: i32) {
+    if strength == 0 {
+        return;
+    }
+    const KERNEL: [[i32; 5]; 3] = [[0, 4, 8, 4, 0], [0, 5, 6, 5, 0], [2, 4, 4, 4, 2]];
+    let filt = (strength - 1) as usize;
+    let mut edge = [0i32; 129];
+    edge[..sz].iter_mut().zip(p.iter().take(sz)).for_each(|(d, &s)| *d = s as i32);
+    #[allow(clippy::needless_range_loop)]
+    for i in 1..sz {
+        let mut s = 0i32;
+        for j in 0..5 {
+            let k = (i as i32 - 2 + j as i32).clamp(0, sz as i32 - 1) as usize;
+            s += edge[k] * KERNEL[filt][j];
+        }
+        p[i] = ((s + 8) >> 4) as u16;
+    }
+}
+
+/// `av1_highbd_upsample_intra_edge_c`: highbd edge doubling, clipping half-sample
+/// outputs to `[0, (1<<bd)-1]`. Layout as `upsample_intra_edge` (`off >= 2`).
+pub fn highbd_upsample_intra_edge(buf: &mut [u16], off: usize, sz: usize, bd: u8) {
+    let max_v = (1i32 << bd) - 1;
+    let mut inp = [0i32; 19];
+    inp[0] = buf[off - 1] as i32;
+    inp[1] = buf[off - 1] as i32;
+    for i in 0..sz {
+        inp[i + 2] = buf[off + i] as i32;
+    }
+    inp[sz + 2] = buf[off + sz - 1] as i32;
+    buf[off - 2] = inp[0] as u16;
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..sz {
+        let s = (-inp[i] + 9 * inp[i + 1] + 9 * inp[i + 2] - inp[i + 3] + 8) >> 4;
+        let s = s.clamp(0, max_v) as u16;
+        buf[(off as i32 + 2 * i as i32 - 1) as usize] = s;
+        buf[off + 2 * i] = inp[i + 2] as u16;
+    }
+}

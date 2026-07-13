@@ -64,3 +64,43 @@ fn upsample_intra_edge_byte_identical() {
         }
     }
 }
+
+#[test]
+fn highbd_filter_intra_edge_byte_identical() {
+    let mut rng = Rng(0x_86bd_ed6e_0000_3333);
+    for &bd in &[8u8, 10, 12] {
+        let max = (1u32 << bd) - 1;
+        for sz in 2..=65usize {
+            for strength in 0..=3 {
+                for _ in 0..120 {
+                    let base: Vec<u16> = (0..sz).map(|_| (rng.next() as u32 & max) as u16).collect();
+                    let mut a = base.clone();
+                    let mut b = base.clone();
+                    aom_intra::edge::highbd_filter_intra_edge(&mut a, sz, strength);
+                    c::ref_highbd_filter_intra_edge(&mut b, 0, sz, strength);
+                    assert_eq!(a, b, "hbd filter bd={bd} sz={sz} s={strength}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn highbd_upsample_intra_edge_byte_identical() {
+    let mut rng = Rng(0x_86bd_c057_0000_4444);
+    const OFF: usize = 4;
+    for &bd in &[8u8, 10, 12] {
+        let max = (1u32 << bd) - 1;
+        for sz in 1..=16usize {
+            for _ in 0..200 {
+                let n = OFF + 2 * sz + 4;
+                let base: Vec<u16> = (0..n).map(|_| (rng.next() as u32 & max) as u16).collect();
+                let mut a = base.clone();
+                let mut b = base.clone();
+                aom_intra::edge::highbd_upsample_intra_edge(&mut a, OFF, sz, bd);
+                c::ref_highbd_upsample_intra_edge(&mut b, OFF, sz, bd);
+                assert_eq!(a, b, "hbd upsample bd={bd} sz={sz}");
+            }
+        }
+    }
+}
