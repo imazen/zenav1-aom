@@ -749,3 +749,41 @@ pub fn ref_inv_txfm2d_add(
     ref_init();
     unsafe { f(input.as_ptr(), dest.as_mut_ptr(), stride as i32, tx_type as i32, bd) }
 }
+
+// txb_shim.c — transform-block coefficient-coding kernels + scan/ctx data.
+extern "C" {
+    fn shim_txb_init_levels(coeff: *const i32, width: i32, height: i32, levels: *mut u8);
+    fn shim_get_nz_map_contexts(levels: *const u8, scan: *const i16, eob: i32, tx_size: i32, tx_class: i32, out: *mut i8);
+    fn shim_eob_pos_token(eob: i32, extra: *mut i32) -> i32;
+    fn shim_nz_ctx_offset(tx_size: i32) -> *const i8;
+    fn shim_scan(tx_size: i32, tx_type: i32) -> *const i16;
+}
+
+/// Reference `av1_txb_init_levels_c` (writes into `levels`).
+pub fn ref_txb_init_levels(coeff: &[i32], width: usize, height: usize, levels: &mut [u8]) {
+    unsafe { shim_txb_init_levels(coeff.as_ptr(), width as i32, height as i32, levels.as_mut_ptr()) }
+}
+
+/// Reference `av1_get_nz_map_contexts_c` (writes `out[scan[i]]` for `i < eob`).
+pub fn ref_get_nz_map_contexts(levels: &[u8], scan: &[i16], eob: usize, tx_size: usize, tx_class: i32, out: &mut [i8]) {
+    unsafe {
+        shim_get_nz_map_contexts(levels.as_ptr(), scan.as_ptr(), eob as i32, tx_size as i32, tx_class, out.as_mut_ptr())
+    }
+}
+
+/// Reference `av1_get_eob_pos_token`; returns (token, extra).
+pub fn ref_eob_pos_token(eob: i32) -> (i32, i32) {
+    let mut extra = 0i32;
+    let t = unsafe { shim_eob_pos_token(eob, &mut extra) };
+    (t, extra)
+}
+
+/// Copy of the C `av1_nz_map_ctx_offset[tx_size]` table's first `len` entries.
+pub fn ref_nz_ctx_offset(tx_size: usize, len: usize) -> Vec<i8> {
+    unsafe { core::slice::from_raw_parts(shim_nz_ctx_offset(tx_size as i32), len).to_vec() }
+}
+
+/// Copy of the C `av1_scan_orders[tx_size][tx_type].scan` (first `len` entries).
+pub fn ref_scan_order(tx_size: usize, tx_type: usize, len: usize) -> Vec<i16> {
+    unsafe { core::slice::from_raw_parts(shim_scan(tx_size as i32, tx_type as i32), len).to_vec() }
+}

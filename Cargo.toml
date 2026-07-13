@@ -9,6 +9,7 @@ members = [
     "crates/aom-dist",
     "crates/aom-cdef",
     "crates/aom-convolve",
+    "crates/aom-txb",
     "crates/aom-sys-ref",
 ]
 
