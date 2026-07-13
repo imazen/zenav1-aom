@@ -1515,3 +1515,77 @@ pub fn read_tile_group_header(rb: &mut ReadBitBuffer, tiles_log2: i32) -> (i32, 
         (0, 0, false)
     }
 }
+
+/// `read_tx_mode` — inverse of [`write_tx_mode`]: the tx-mode-select flag (TX_MODE_SELECT
+/// vs TX_MODE_LARGEST); forced off (ONLY_4X4) under coded-lossless with nothing coded.
+pub fn read_tx_mode(rb: &mut ReadBitBuffer, coded_lossless: bool) -> bool {
+    if coded_lossless {
+        false
+    } else {
+        rb.read_bit() != 0
+    }
+}
+
+/// `read_delta_q_params` — inverse of [`write_delta_q_params`]: the delta-q / delta-lf
+/// signalling (present flags + power-of-two resolutions + lf-multi), gated on
+/// `base_qindex > 0` and `allow_intrabc` exactly as the writer.
+pub fn read_delta_q_params(rb: &mut ReadBitBuffer, base_qindex: i32, allow_intrabc: bool) -> DeltaQParams {
+    let mut d = DeltaQParams {
+        base_qindex,
+        delta_q_present: false,
+        delta_q_res: 1,
+        allow_intrabc,
+        delta_lf_present: false,
+        delta_lf_res: 1,
+        delta_lf_multi: false,
+    };
+    if base_qindex > 0 {
+        d.delta_q_present = rb.read_bit() != 0;
+        if d.delta_q_present {
+            d.delta_q_res = 1 << rb.read_literal(2);
+            if !allow_intrabc {
+                d.delta_lf_present = rb.read_bit() != 0;
+            }
+            if d.delta_lf_present {
+                d.delta_lf_res = 1 << rb.read_literal(2);
+                d.delta_lf_multi = rb.read_bit() != 0;
+            }
+        }
+    }
+    d
+}
+
+/// `read_frame_interp_filter` — inverse of [`write_frame_interp_filter`]: SWITCHABLE
+/// flag, else the fixed interpolation filter.
+pub fn read_frame_interp_filter(rb: &mut ReadBitBuffer) -> i32 {
+    if rb.read_bit() != 0 {
+        SWITCHABLE
+    } else {
+        rb.read_literal(LOG_SWITCHABLE_FILTERS)
+    }
+}
+
+/// `read_superres_scale` — inverse of [`write_superres_scale`]: the super-resolution
+/// denominator (unscaled `SCALE_NUMERATOR` when superres is disabled or the flag is 0).
+pub fn read_superres_scale(rb: &mut ReadBitBuffer, enable_superres: bool) -> i32 {
+    if !enable_superres {
+        return SCALE_NUMERATOR;
+    }
+    if rb.read_bit() != 0 {
+        rb.read_literal(SUPERRES_SCALE_BITS) + SUPERRES_SCALE_DENOMINATOR_MIN
+    } else {
+        SCALE_NUMERATOR
+    }
+}
+
+/// `read_render_size` — inverse of [`write_render_size`]: the render dimensions when
+/// they differ from the (upscaled) frame size. Returns
+/// `(render_and_frame_size_different, render_width, render_height)`.
+pub fn read_render_size(rb: &mut ReadBitBuffer) -> (bool, i32, i32) {
+    let scaling_active = rb.read_bit() != 0;
+    if scaling_active {
+        (true, rb.read_literal(16) + 1, rb.read_literal(16) + 1)
+    } else {
+        (false, 0, 0)
+    }
+}

@@ -99,3 +99,96 @@ fn read_tile_group_header_inverts_write() {
         }
     }
 }
+
+#[test]
+fn read_header_components_invert_write() {
+    use aom_entropy::header::{
+        read_delta_q_params, read_frame_interp_filter, read_render_size, read_superres_scale,
+        read_tx_mode, write_delta_q_params, write_frame_interp_filter, write_render_size,
+        write_superres_scale, write_tx_mode, DeltaQParams,
+    };
+    let mut rng = Rng(0x1e_4ead_c0de_0110);
+    for _ in 0..100_000 {
+        // tx_mode
+        {
+            let lossless = rng.next() & 1 == 1;
+            let sel = rng.next() & 1 == 1;
+            let mut wb = WriteBitBuffer::new();
+            write_tx_mode(&mut wb, lossless, sel);
+            let b = wb.bytes().to_vec();
+            let mut rb = ReadBitBuffer::new(&b);
+            let got = read_tx_mode(&mut rb, lossless);
+            assert_eq!(got, if lossless { false } else { sel }, "tx_mode");
+        }
+        // delta_q_params
+        {
+            let base = if rng.next() & 1 == 1 { 1 + (rng.next() % 255) as i32 } else { 0 };
+            let intrabc = rng.next() & 1 == 1;
+            let dq_present = base > 0 && rng.next() & 1 == 1;
+            let dq_res = if dq_present { 1 << (rng.next() % 4) } else { 1 };
+            let dlf_present = dq_present && !intrabc && rng.next() & 1 == 1;
+            let dlf_res = if dlf_present { 1 << (rng.next() % 4) } else { 1 };
+            let dlf_multi = dlf_present && rng.next() & 1 == 1;
+            let d = DeltaQParams {
+                base_qindex: base,
+                delta_q_present: dq_present,
+                delta_q_res: dq_res,
+                allow_intrabc: intrabc,
+                delta_lf_present: dlf_present,
+                delta_lf_res: dlf_res,
+                delta_lf_multi: dlf_multi,
+            };
+            let mut wb = WriteBitBuffer::new();
+            write_delta_q_params(&mut wb, &d);
+            let b = wb.bytes().to_vec();
+            let mut rb = ReadBitBuffer::new(&b);
+            let g = read_delta_q_params(&mut rb, base, intrabc);
+            assert_eq!(
+                (g.delta_q_present, g.delta_q_res, g.delta_lf_present, g.delta_lf_res, g.delta_lf_multi),
+                (dq_present, dq_res, dlf_present, dlf_res, dlf_multi),
+                "delta_q base={base} intrabc={intrabc}"
+            );
+        }
+        // frame_interp_filter
+        {
+            let filter = (rng.next() % 5) as i32; // 0..3 fixed, 4=SWITCHABLE
+            let mut wb = WriteBitBuffer::new();
+            write_frame_interp_filter(&mut wb, filter);
+            let b = wb.bytes().to_vec();
+            let mut rb = ReadBitBuffer::new(&b);
+            assert_eq!(read_frame_interp_filter(&mut rb), filter, "interp_filter");
+        }
+        // superres_scale
+        {
+            let enable = rng.next() & 1 == 1;
+            // enable + coin => scaled [9,16]; else SCALE_NUMERATOR (8). `&&` short-circuits
+            // so the coin draw is skipped when disabled, as the nested form would.
+            let denom = if enable && rng.next() & 1 == 1 {
+                9 + (rng.next() % 8) as i32
+            } else {
+                8
+            };
+            let mut wb = WriteBitBuffer::new();
+            write_superres_scale(&mut wb, enable, denom);
+            let b = wb.bytes().to_vec();
+            let mut rb = ReadBitBuffer::new(&b);
+            let got = read_superres_scale(&mut rb, enable);
+            assert_eq!(got, if enable { denom } else { 8 }, "superres enable={enable}");
+        }
+        // render_size
+        {
+            let active = rng.next() & 1 == 1;
+            let w = 1 + (rng.next() % 65536) as i32;
+            let h = 1 + (rng.next() % 65536) as i32;
+            let mut wb = WriteBitBuffer::new();
+            write_render_size(&mut wb, active, w, h);
+            let b = wb.bytes().to_vec();
+            let mut rb = ReadBitBuffer::new(&b);
+            let (ga, gw, gh) = read_render_size(&mut rb);
+            assert_eq!(ga, active, "render active");
+            if active {
+                assert_eq!((gw, gh), (w, h), "render size");
+            }
+        }
+    }
+}
