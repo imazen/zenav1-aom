@@ -4002,3 +4002,113 @@ pub fn read_kf_tail(
         filter_intra_mode: fi_mode,
     }
 }
+
+/// `read_delta_q_params_sb` — inverse of [`write_delta_q_params_sb`] (the per-SB delta-q /
+/// delta-lf driver). At an SB-upper-left non-skip block it reads the reduced delta-qindex
+/// (reconstructing `current_qindex = base + reduced * delta_q_res`, updating the base
+/// carry) and, when delta-lf is present, the per-plane multi deltas or the single
+/// from-base delta (each updating its carry). Returns the (possibly unchanged)
+/// `current_qindex`.
+#[allow(clippy::too_many_arguments)]
+pub fn read_delta_q_params_sb(
+    dec: &mut OdEcDec,
+    delta_q_present: bool,
+    delta_lf_present: bool,
+    delta_lf_multi: bool,
+    num_planes: i32,
+    bsize: usize,
+    sb_size: usize,
+    skip: i32,
+    super_block_upper_left: bool,
+    current_base_qindex: &mut i32,
+    delta_q_res: i32,
+    xd_delta_lf: &mut [i32; FRAME_LF_COUNT],
+    xd_delta_lf_from_base: &mut i32,
+    delta_lf_res: i32,
+    delta_q_cdf: &mut [u16],
+    delta_lf_multi_cdf: &mut [[u16; 5]; FRAME_LF_COUNT],
+    delta_lf_cdf: &mut [u16],
+) -> i32 {
+    if !delta_q_present {
+        return *current_base_qindex;
+    }
+    if (bsize != sb_size || skip == 0) && super_block_upper_left {
+        let reduced = read_delta_qindex(dec, delta_q_cdf);
+        let current_qindex = *current_base_qindex + reduced * delta_q_res;
+        *current_base_qindex = current_qindex;
+        if delta_lf_present {
+            if delta_lf_multi {
+                let frame_lf_count = if num_planes > 1 { FRAME_LF_COUNT } else { FRAME_LF_COUNT - 2 };
+                for lf_id in 0..frame_lf_count {
+                    let r = read_delta_lflevel(dec, &mut delta_lf_multi_cdf[lf_id]);
+                    xd_delta_lf[lf_id] += r * delta_lf_res;
+                }
+            } else {
+                let r = read_delta_lflevel(dec, delta_lf_cdf);
+                *xd_delta_lf_from_base += r * delta_lf_res;
+            }
+        }
+        return current_qindex;
+    }
+    *current_base_qindex
+}
+
+/// `read_mb_modes_kf_prefix` — inverse of [`write_mb_modes_kf_prefix`]: the KEY-frame
+/// block prefix — segment id (pre- or post-skip), the skip flag, CDEF strength, and the
+/// per-SB delta-q/lf. Returns `(skip, segment_id, cdef_strength, current_qindex)`;
+/// `cdef_transmitted` + the delta carries are updated in place.
+#[allow(clippy::too_many_arguments)]
+pub fn read_mb_modes_kf_prefix(
+    dec: &mut OdEcDec,
+    segid_preskip: bool,
+    seg_enabled: bool,
+    update_map: bool,
+    seg_pred: i32,
+    last_active_segid: i32,
+    seg_cdf: &mut [u16],
+    seg_skip_active: bool,
+    skip_cdf: &mut [u16],
+    coded_lossless: bool,
+    allow_intrabc: bool,
+    mi_row: i32,
+    mi_col: i32,
+    mib_size: i32,
+    sb_size: usize,
+    cdef_transmitted: &mut [bool; 4],
+    cdef_bits: u32,
+    dq_present: bool,
+    dlf_present: bool,
+    dlf_multi: bool,
+    num_planes: i32,
+    bsize: usize,
+    current_base_qindex: &mut i32,
+    dq_res: i32,
+    xd_delta_lf: &mut [i32; FRAME_LF_COUNT],
+    xd_delta_lf_from_base: &mut i32,
+    dlf_res: i32,
+    delta_q_cdf: &mut [u16],
+    delta_lf_multi_cdf: &mut [[u16; 5]; FRAME_LF_COUNT],
+    delta_lf_cdf: &mut [u16],
+) -> (i32, i32, i32, i32) {
+    let seg_coded = seg_enabled && update_map;
+    let mut segment_id = 0;
+    if segid_preskip && seg_coded {
+        segment_id = read_segment_id(dec, seg_cdf, seg_pred, last_active_segid);
+    }
+    let skip = read_skip(dec, skip_cdf, seg_skip_active);
+    // post-skip segment id is gated on skip==0 (write_segment_id's skip_txfm=skip).
+    if !segid_preskip && seg_coded && skip == 0 {
+        segment_id = read_segment_id(dec, seg_cdf, seg_pred, last_active_segid);
+    }
+    let cdef_strength = read_cdef(
+        dec, coded_lossless, allow_intrabc, mi_row, mi_col, mib_size, sb_size, skip,
+        cdef_transmitted, cdef_bits,
+    );
+    let super_block_upper_left = (mi_row & (mib_size - 1)) == 0 && (mi_col & (mib_size - 1)) == 0;
+    let current_qindex = read_delta_q_params_sb(
+        dec, dq_present, dlf_present, dlf_multi, num_planes, bsize, sb_size, skip,
+        super_block_upper_left, current_base_qindex, dq_res, xd_delta_lf, xd_delta_lf_from_base,
+        dlf_res, delta_q_cdf, delta_lf_multi_cdf, delta_lf_cdf,
+    );
+    (skip, segment_id, cdef_strength, current_qindex)
+}

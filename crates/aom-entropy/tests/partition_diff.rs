@@ -4304,3 +4304,95 @@ fn read_kf_tail_roundtrips_write() {
         assert_eq!((yce, uce, fiue), (ycd, ucd, fiud), "cdf adapt");
     }
 }
+
+#[test]
+fn read_mb_modes_kf_prefix_roundtrips_write() {
+    use aom_entropy::dec::OdEcDec;
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{read_mb_modes_kf_prefix, write_mb_modes_kf_prefix};
+    let mut rng = Rng(0x1e_c0de_9e14_00b0u64);
+    for _ in 0..200_000 {
+        let segid_preskip = rng.next() & 1 == 1;
+        let seg_enabled = rng.next() & 1 == 1;
+        let update_map = seg_enabled && rng.next() & 1 == 1; // update_map => seg_enabled
+        let last = (rng.next() % 8) as i32;
+        let segment_id = (rng.next() % (last as u64 + 1)) as i32;
+        let seg_pred = (rng.next() % (last as u64 + 1)) as i32;
+        let seg_skip_active = rng.next() & 1 == 1;
+        let skip_txfm = (rng.next() & 1) as i32;
+        let coded_lossless = rng.next() & 1 == 1;
+        let allow_intrabc = rng.next() & 1 == 1;
+        let sb128 = rng.next() & 1 == 1;
+        let (sb_size, mib) = if sb128 { (15usize, 32i32) } else { (12usize, 16i32) };
+        let upper_left = rng.next() & 1 == 1;
+        let (mi_row, mi_col) = if upper_left { (0, 0) } else { (mib, mib) };
+        let bsize = [3usize, 12, 15][(rng.next() % 3) as usize];
+        let cdef_bits = (rng.next() % 4) as u32;
+        let cdef_strength = if cdef_bits > 0 { (rng.next() % (1u64 << cdef_bits)) as i32 } else { 0 };
+        let dq_present = rng.next() & 1 == 1;
+        let dlf_present = dq_present && rng.next() & 1 == 1;
+        let dlf_multi = rng.next() & 1 == 1;
+        let num_planes = if rng.next() & 1 == 1 { 3 } else { 1 };
+        let dq_res = 1 << (rng.next() % 4);
+        let dlf_res = 1 << (rng.next() % 4);
+        let base0 = 100i32;
+        let cur_qindex = base0 + ((rng.next() % 101) as i32 - 50) * dq_res;
+        let mut xd_lf0 = [0i32; 4];
+        for x in xd_lf0.iter_mut() { *x = (rng.next() % 21) as i32 - 10; }
+        let xd_lfb0 = (rng.next() % 21) as i32 - 10;
+        let mut mbmi_lf = [0i32; 4];
+        for i in 0..4 { mbmi_lf[i] = xd_lf0[i] + ((rng.next() % 21) as i32 - 10) * dlf_res; }
+        let mbmi_lfb = xd_lfb0 + ((rng.next() % 21) as i32 - 10) * dlf_res;
+
+        let mut sc = [0u16; 9];
+        let mut kc = [0u16; 3];
+        let mut dqc = [0u16; 5];
+        let mut dlmc = [[0u16; 5]; 4];
+        let mut dlc = [0u16; 5];
+        mk_ns_cdf(&mut rng, 8, &mut sc);
+        mk_ns_cdf(&mut rng, 2, &mut kc);
+        mk_ns_cdf(&mut rng, 4, &mut dqc);
+        for c in dlmc.iter_mut() { mk_ns_cdf(&mut rng, 4, c); }
+        mk_ns_cdf(&mut rng, 4, &mut dlc);
+
+        // encode
+        let mut enc = OdEcEnc::new();
+        let (mut sce, mut kce, mut dqce, mut dlmce, mut dlce) = (sc, kc, dqc, dlmc, dlc);
+        let mut cdef_te = [false; 4];
+        let mut base_e = base0;
+        let mut xd_lf_e = xd_lf0;
+        let mut xd_lfb_e = xd_lfb0;
+        let skip_e = write_mb_modes_kf_prefix(
+            &mut enc, segid_preskip, seg_enabled, update_map, segment_id, seg_pred, last, &mut sce,
+            seg_skip_active, skip_txfm, &mut kce, coded_lossless, allow_intrabc, mi_row, mi_col, mib,
+            sb_size, &mut cdef_te, cdef_bits, cdef_strength, dq_present, dlf_present, dlf_multi,
+            num_planes, bsize, cur_qindex, &mut base_e, dq_res, &mbmi_lf, &mut xd_lf_e, mbmi_lfb,
+            &mut xd_lfb_e, dlf_res, &mut dqce, &mut dlmce, &mut dlce,
+        );
+        let b = enc.done().to_vec();
+        // decode
+        let mut dec = OdEcDec::new(&b);
+        let (mut scd, mut kcd, mut dqcd, mut dlmcd, mut dlcd) = (sc, kc, dqc, dlmc, dlc);
+        let mut cdef_td = [false; 4];
+        let mut base_d = base0;
+        let mut xd_lf_d = xd_lf0;
+        let mut xd_lfb_d = xd_lfb0;
+        let (skip_d, seg_d, cdef_d, cq_d) = read_mb_modes_kf_prefix(
+            &mut dec, segid_preskip, seg_enabled, update_map, seg_pred, last, &mut scd,
+            seg_skip_active, &mut kcd, coded_lossless, allow_intrabc, mi_row, mi_col, mib, sb_size,
+            &mut cdef_td, cdef_bits, dq_present, dlf_present, dlf_multi, num_planes, bsize, &mut base_d,
+            dq_res, &mut xd_lf_d, &mut xd_lfb_d, dlf_res, &mut dqcd, &mut dlmcd, &mut dlcd,
+        );
+        assert_eq!(skip_d, skip_e, "skip");
+        let seg_coded = seg_enabled && update_map && (segid_preskip || skip_e == 0);
+        if seg_coded {
+            assert_eq!(seg_d, segment_id, "segment_id");
+        }
+        let cdef_coded = !coded_lossless && !allow_intrabc && skip_e == 0;
+        assert_eq!(cdef_d, if cdef_coded { cdef_strength } else { -1 }, "cdef strength");
+        assert_eq!(cdef_td, cdef_te, "cdef transmitted");
+        assert_eq!((base_d, xd_lf_d, xd_lfb_d), (base_e, xd_lf_e, xd_lfb_e), "delta carries");
+        assert_eq!(cq_d, base_e, "current_qindex == updated base");
+        assert_eq!((scd, kcd, dqcd, dlmcd, dlcd), (sce, kce, dqce, dlmce, dlce), "cdf adapt");
+    }
+}
