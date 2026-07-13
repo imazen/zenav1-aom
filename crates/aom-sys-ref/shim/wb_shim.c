@@ -773,3 +773,44 @@ uint32_t shim_write_frame_header_prefix(const long long *t, const long long *op_
   }
   return aom_wb_bytes_written(&wb);
 }
+
+/* write_frame_size_with_refs, transcribed control flow over the real aom_wb
+ * (composing the superres-scale + frame-size writers). 7 refs (LAST..ALTREF). */
+uint32_t shim_write_frame_size_with_refs(int up_w, int up_h, int rw, int rh,
+                                         const int *valid, const int *ycw, const int *ych,
+                                         const int *rrw, const int *rrh, int enable_superres,
+                                         int denom, int fs_num_bits_w, int fs_num_bits_h,
+                                         int fs_up_w, int fs_up_h, int fs_scaling_active,
+                                         int fs_rw, int fs_rh, uint8_t *out) {
+  struct aom_write_bit_buffer wb = { out, 0 };
+  int found = 0;
+  for (int r = 0; r < 7; r++) {
+    if (valid[r]) {
+      found = (up_w == ycw[r] && up_h == ych[r]);
+      found &= (rw == rrw[r] && rh == rrh[r]);
+    }
+    aom_wb_write_bit(&wb, found);
+    if (found) {
+      if (enable_superres) {
+        if (denom == SCALE_NUMERATOR) aom_wb_write_bit(&wb, 0);
+        else { aom_wb_write_bit(&wb, 1); aom_wb_write_literal(&wb, denom - SUPERRES_SCALE_DENOMINATOR_MIN, SUPERRES_SCALE_BITS); }
+      }
+      break;
+    }
+  }
+  if (!found) {
+    /* write_frame_size with frame_size_override = 1 */
+    aom_wb_write_literal(&wb, fs_up_w - 1, fs_num_bits_w);
+    aom_wb_write_literal(&wb, fs_up_h - 1, fs_num_bits_h);
+    if (enable_superres) {
+      if (denom == SCALE_NUMERATOR) aom_wb_write_bit(&wb, 0);
+      else { aom_wb_write_bit(&wb, 1); aom_wb_write_literal(&wb, denom - SUPERRES_SCALE_DENOMINATOR_MIN, SUPERRES_SCALE_BITS); }
+    }
+    aom_wb_write_bit(&wb, fs_scaling_active);
+    if (fs_scaling_active) {
+      aom_wb_write_literal(&wb, fs_rw - 1, 16);
+      aom_wb_write_literal(&wb, fs_rh - 1, 16);
+    }
+  }
+  return aom_wb_bytes_written(&wb);
+}

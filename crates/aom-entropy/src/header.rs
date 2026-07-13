@@ -1194,3 +1194,50 @@ pub fn write_frame_header_prefix(wb: &mut WriteBitBuffer, p: &FrameHeaderPrefix)
     }
     (frame_size_override_flag, false)
 }
+
+// ---- frame size with refs -------------------------------------------------
+
+/// The `write_frame_size_with_refs` state — the current frame's dimensions plus,
+/// per reference (LAST..ALTREF), whether the ref buffer is present and its crop /
+/// render dimensions, and the superres + fallback `write_frame_size` inputs.
+#[derive(Clone, Copy, Debug)]
+pub struct FrameSizeWithRefs {
+    pub superres_upscaled_width: i32,
+    pub superres_upscaled_height: i32,
+    pub render_width: i32,
+    pub render_height: i32,
+    pub ref_cfg_valid: [bool; 7],
+    pub ref_y_crop_width: [i32; 7],
+    pub ref_y_crop_height: [i32; 7],
+    pub ref_render_width: [i32; 7],
+    pub ref_render_height: [i32; 7],
+    pub enable_superres: bool,
+    pub scale_denominator: i32,
+    /// Fallback `write_frame_size` (with `frame_size_override` forced true).
+    pub frame_size: FrameSizeHeader,
+}
+
+/// `write_frame_size_with_refs` (`av1/encoder/bitstream.c`): for each reference in
+/// turn, a `found` bit (the ref buffer's crop + render dims equal the current
+/// frame's) — on the first match, the superres scale, then stop; if no ref matches,
+/// the full frame size (override = 1). `found` is only reassigned when the ref
+/// buffer is present, matching the C carry-over across absent refs.
+pub fn write_frame_size_with_refs(wb: &mut WriteBitBuffer, w: &FrameSizeWithRefs) {
+    let mut found = 0i32;
+    for r in 0..7 {
+        if w.ref_cfg_valid[r] {
+            found = (w.superres_upscaled_width == w.ref_y_crop_width[r]
+                && w.superres_upscaled_height == w.ref_y_crop_height[r]) as i32;
+            found &= (w.render_width == w.ref_render_width[r]
+                && w.render_height == w.ref_render_height[r]) as i32;
+        }
+        wb.write_bit(found as u32);
+        if found != 0 {
+            write_superres_scale(wb, w.enable_superres, w.scale_denominator);
+            break;
+        }
+    }
+    if found == 0 {
+        write_frame_size(wb, &w.frame_size);
+    }
+}

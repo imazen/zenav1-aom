@@ -961,3 +961,74 @@ fn write_frame_header_prefix_matches_c() {
         assert_eq!(got, want, "frame_header_prefix ft={frame_type} reduced={reduced} show_ex={show_existing}");
     }
 }
+
+#[test]
+fn write_frame_size_with_refs_matches_c() {
+    use aom_entropy::header::{write_frame_size_with_refs, FrameSizeHeader, FrameSizeWithRefs};
+    let mut rng = Rng(0xf526_c0de_a11a_0009);
+    for _ in 0..300_000 {
+        let num_bits_w = rng.range(4, 17) as u32;
+        let num_bits_h = rng.range(4, 17) as u32;
+        let up_w = rng.range(1, 1 << num_bits_w.min(20));
+        let up_h = rng.range(1, 1 << num_bits_h.min(20));
+        let rw = rng.range(1, 65536);
+        let rh = rng.range(1, 65536);
+        let enable_superres = rng.next().is_multiple_of(2);
+        let denom = if rng.next().is_multiple_of(2) { 8 } else { rng.range(9, 17) };
+        let scaling_active = rng.next().is_multiple_of(2);
+
+        let mut valid = [false; 7];
+        let mut ycw = [0i32; 7];
+        let mut ych = [0i32; 7];
+        let mut rrw = [0i32; 7];
+        let mut rrh = [0i32; 7];
+        for r in 0..7 {
+            valid[r] = rng.next().is_multiple_of(2);
+            // sometimes make this ref match the current frame (exercises found+break)
+            if rng.next().is_multiple_of(3) {
+                ycw[r] = up_w;
+                ych[r] = up_h;
+                rrw[r] = rw;
+                rrh[r] = rh;
+            } else {
+                ycw[r] = rng.range(1, 8192);
+                ych[r] = rng.range(1, 8192);
+                rrw[r] = rng.range(1, 65536);
+                rrh[r] = rng.range(1, 65536);
+            }
+        }
+
+        let frame_size = FrameSizeHeader {
+            frame_size_override: true,
+            num_bits_width: num_bits_w,
+            num_bits_height: num_bits_h,
+            superres_upscaled_width: up_w,
+            superres_upscaled_height: up_h,
+            enable_superres,
+            scale_denominator: denom,
+            scaling_active,
+            render_width: rw,
+            render_height: rh,
+        };
+        let w = FrameSizeWithRefs {
+            superres_upscaled_width: up_w,
+            superres_upscaled_height: up_h,
+            render_width: rw,
+            render_height: rh,
+            ref_cfg_valid: valid,
+            ref_y_crop_width: ycw,
+            ref_y_crop_height: ych,
+            ref_render_width: rrw,
+            ref_render_height: rrh,
+            enable_superres,
+            scale_denominator: denom,
+            frame_size,
+        };
+        let mut wb = WriteBitBuffer::new();
+        write_frame_size_with_refs(&mut wb, &w);
+        let got = wb.bytes().to_vec();
+        let vi: [i32; 7] = std::array::from_fn(|i| valid[i] as i32);
+        let want = c::ref_write_frame_size_with_refs(up_w, up_h, rw, rh, &vi, &ycw, &ych, &rrw, &rrh, enable_superres, denom, num_bits_w, num_bits_h, up_w, up_h, scaling_active, rw, rh);
+        assert_eq!(got, want, "frame_size_with_refs");
+    }
+}

@@ -223,6 +223,19 @@ extern "C" {
     #[allow(clippy::too_many_arguments)]
     fn shim_write_sequence_header_obu(top: *const i64, sh: *const i64, cc: *const i64, idc: *const i64, level: *const i64, tier: *const i64, dmpp: *const i64, dispp: *const i64, decdelay: *const i64, encdelay: *const i64, lowdelay: *const i64, initdelay: *const i64, out: *mut u8) -> u32;
     fn shim_write_frame_header_prefix(t: *const i64, op_dmpp: *const i64, op_idc: *const i64, brt: *const i64, ref_oh: *const i64, out: *mut u8) -> u32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_write_frame_size_with_refs(up_w: i32, up_h: i32, rw: i32, rh: i32, valid: *const i32, ycw: *const i32, ych: *const i32, rrw: *const i32, rrh: *const i32, enable_superres: i32, denom: i32, fs_num_bits_w: i32, fs_num_bits_h: i32, fs_up_w: i32, fs_up_h: i32, fs_scaling_active: i32, fs_rw: i32, fs_rh: i32, out: *mut u8) -> u32;
+}
+
+/// Reference `write_frame_size_with_refs` (transcribed over the real aom_wb).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_write_frame_size_with_refs(up_w: i32, up_h: i32, rw: i32, rh: i32, valid: &[i32; 7], ycw: &[i32; 7], ych: &[i32; 7], rrw: &[i32; 7], rrh: &[i32; 7], enable_superres: bool, denom: i32, fs_num_bits_w: u32, fs_num_bits_h: u32, fs_up_w: i32, fs_up_h: i32, fs_scaling_active: bool, fs_rw: i32, fs_rh: i32) -> Vec<u8> {
+    let mut out = vec![0u8; 64];
+    let n = unsafe {
+        shim_write_frame_size_with_refs(up_w, up_h, rw, rh, valid.as_ptr(), ycw.as_ptr(), ych.as_ptr(), rrw.as_ptr(), rrh.as_ptr(), enable_superres as i32, denom, fs_num_bits_w as i32, fs_num_bits_h as i32, fs_up_w, fs_up_h, fs_scaling_active as i32, fs_rw, fs_rh, out.as_mut_ptr())
+    };
+    out.truncate(n as usize);
+    out
 }
 
 /// Reference `write_uncompressed_header_obu` prefix (transcribed over the real aom_wb).
