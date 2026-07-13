@@ -431,3 +431,98 @@ pub fn aom_highbd_quantize_b_qm(
     }
     (eob + 1) as u16
 }
+
+/// Bit-exact port of the QM branch of `quantize_fp_helper_c`
+/// (`av1/encoder/av1_quantize.c`) — the lowbd VarDCT-FP quantizer with a quant
+/// matrix. `wt = qm[rc]` / `iwt = iqm[rc]` per raster position. The rounded
+/// coefficient is clamped to the i16 range (unlike the highbd FP variant).
+#[allow(clippy::too_many_arguments)]
+pub fn av1_quantize_fp_qm(
+    round: &[i16; 2],
+    quant: &[i16; 2],
+    dequant: &[i16; 2],
+    log_scale: i32,
+    qm: &[u8],
+    iqm: &[u8],
+    scan: &[i16],
+    coeff: &[i32],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    let n = coeff.len();
+    qcoeff[..n].fill(0);
+    dqcoeff[..n].fill(0);
+    let rounding = [
+        round_power_of_two(round[0] as i32, log_scale) as i64,
+        round_power_of_two(round[1] as i32, log_scale) as i64,
+    ];
+    let mut eob: i32 = -1;
+    for (i, &sc) in scan[..n].iter().enumerate() {
+        let rc = sc as usize;
+        let rc01 = (rc != 0) as usize;
+        let coeff_v = coeff[rc];
+        let wt = qm[rc] as i64;
+        let iwt = iqm[rc] as i32;
+        let dequant_v = (dequant[rc01] as i32 * iwt + (1 << (AOM_QM_BITS - 1))) >> AOM_QM_BITS;
+        let sign = aomsign(coeff_v);
+        let mut abs_coeff = ((coeff_v ^ sign).wrapping_sub(sign)) as i64;
+        let mut tmp32 = 0i32;
+        if abs_coeff * wt >= ((dequant[rc01] as i64) << (AOM_QM_BITS - (1 + log_scale))) {
+            abs_coeff += rounding[rc01];
+            abs_coeff = abs_coeff.clamp(i16::MIN as i64, i16::MAX as i64);
+            tmp32 = ((abs_coeff * wt * quant[rc01] as i64) >> (16 - log_scale + AOM_QM_BITS)) as i32;
+            qcoeff[rc] = (tmp32 ^ sign).wrapping_sub(sign);
+            let abs_dqcoeff = tmp32.wrapping_mul(dequant_v) >> log_scale;
+            dqcoeff[rc] = (abs_dqcoeff ^ sign).wrapping_sub(sign);
+        }
+        if tmp32 != 0 {
+            eob = i as i32;
+        }
+    }
+    (eob + 1) as u16
+}
+
+/// Bit-exact port of the QM branch of `highbd_quantize_fp_helper_c`
+/// (`av1/encoder/av1_quantize.c`) — the highbd (10/12-bit) VarDCT-FP quantizer
+/// with a quant matrix. No i16 clamp on the rounded coefficient; the quant chain
+/// is 64-bit throughout.
+#[allow(clippy::too_many_arguments)]
+pub fn av1_highbd_quantize_fp_qm(
+    round: &[i16; 2],
+    quant: &[i16; 2],
+    dequant: &[i16; 2],
+    log_scale: i32,
+    qm: &[u8],
+    iqm: &[u8],
+    scan: &[i16],
+    coeff: &[i32],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    let n = coeff.len();
+    qcoeff[..n].fill(0);
+    dqcoeff[..n].fill(0);
+    let shift = 16 - log_scale;
+    let mut eob: i32 = -1;
+    for (i, &sc) in scan[..n].iter().enumerate() {
+        let rc = sc as usize;
+        let rc01 = (rc != 0) as usize;
+        let coeff_v = coeff[rc];
+        let wt = qm[rc] as i64;
+        let iwt = iqm[rc] as i32;
+        let dequant_v = (dequant[rc01] as i32 * iwt + (1 << (AOM_QM_BITS - 1))) >> AOM_QM_BITS;
+        let sign = aomsign(coeff_v);
+        let abs_coeff = ((coeff_v ^ sign).wrapping_sub(sign)) as i64;
+        if abs_coeff * wt >= ((dequant[rc01] as i64) << (AOM_QM_BITS - (1 + log_scale))) {
+            let tmp = abs_coeff + round_power_of_two(round[rc01] as i32, log_scale) as i64;
+            let abs_qcoeff = ((tmp * quant[rc01] as i64 * wt) >> (shift + AOM_QM_BITS)) as i32;
+            qcoeff[rc] = (abs_qcoeff ^ sign).wrapping_sub(sign);
+            let abs_dqcoeff = abs_qcoeff.wrapping_mul(dequant_v) >> log_scale;
+            dqcoeff[rc] = (abs_dqcoeff ^ sign).wrapping_sub(sign);
+            if abs_qcoeff != 0 {
+                eob = i as i32;
+            }
+        }
+    }
+    (eob + 1) as u16
+}

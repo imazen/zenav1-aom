@@ -4,7 +4,9 @@
 //! spanning the full `qm_val_t` range (1..=255), so the 32-bit `coeff*wt` /
 //! `dequant*iwt` products and the wrapping `tmp32*dequant` step are exercised.
 
-use aom_quant::{aom_highbd_quantize_b_qm, aom_quantize_b_qm};
+use aom_quant::{
+    aom_highbd_quantize_b_qm, aom_quantize_b_qm, av1_highbd_quantize_fp_qm, av1_quantize_fp_qm,
+};
 use aom_sys_ref as c;
 
 struct Rng(u64);
@@ -100,6 +102,66 @@ fn highbd_quantize_b_qm_differential() {
                 assert_eq!(eob, ew, "hbd b-qm eob n={n} ls={log_scale}");
                 assert_eq!(q, qw, "hbd b-qm qcoeff n={n} ls={log_scale}");
                 assert_eq!(dq, dqw, "hbd b-qm dqcoeff n={n} ls={log_scale}");
+            }
+        }
+    }
+}
+
+#[test]
+fn quantize_fp_qm_differential() {
+    let mut rng = Rng(0x_f9_c0de_5a1e_9e37);
+    for &n in &[16usize, 64, 256, 1024] {
+        for log_scale in 0..=2 {
+            for _ in 0..2000 {
+                let scan = perm(&mut rng, n);
+                let iscan = vec![0i16; n]; // (void)-cast inside the helper
+                let coeff: Vec<i32> = (0..n).map(|_| (rng.next() % (1 << 19)) as i32 - (1 << 18)).collect();
+                let qm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
+                let iqm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
+                let round = [rng.i16r(1, 2000), rng.i16r(1, 2000)];
+                let quant = [rng.i16r(1, 32767), rng.i16r(1, 32767)];
+                let dequant = [rng.i16r(1, 8000), rng.i16r(1, 8000)];
+                let mut q = vec![0i32; n];
+                let mut dq = vec![0i32; n];
+                let eob = av1_quantize_fp_qm(
+                    &round, &quant, &dequant, log_scale, &qm, &iqm, &scan, &coeff, &mut q, &mut dq,
+                );
+                let (qw, dqw, ew) = c::ref_quantize_fp_qm(
+                    log_scale, &coeff, &round, &quant, &dequant, &qm, &iqm, &scan, &iscan,
+                );
+                assert_eq!(eob, ew, "fp-qm eob n={n} ls={log_scale}");
+                assert_eq!(q, qw, "fp-qm qcoeff n={n} ls={log_scale}");
+                assert_eq!(dq, dqw, "fp-qm dqcoeff n={n} ls={log_scale}");
+            }
+        }
+    }
+}
+
+#[test]
+fn highbd_quantize_fp_qm_differential() {
+    let mut rng = Rng(0x_f9_c0de_c057_0b11);
+    for &n in &[16usize, 64, 256, 1024] {
+        for log_scale in 0..=2 {
+            for _ in 0..2000 {
+                let scan = perm(&mut rng, n);
+                let iscan = vec![0i16; n];
+                let coeff: Vec<i32> = (0..n).map(|_| (rng.next() % (1 << 23)) as i32 - (1 << 22)).collect();
+                let qm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
+                let iqm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
+                let round = [rng.i16r(1, 2000), rng.i16r(1, 2000)];
+                let quant = [rng.i16r(1, 32767), rng.i16r(1, 32767)];
+                let dequant = [rng.i16r(1, 8000), rng.i16r(1, 8000)];
+                let mut q = vec![0i32; n];
+                let mut dq = vec![0i32; n];
+                let eob = av1_highbd_quantize_fp_qm(
+                    &round, &quant, &dequant, log_scale, &qm, &iqm, &scan, &coeff, &mut q, &mut dq,
+                );
+                let (qw, dqw, ew) = c::ref_highbd_quantize_fp_qm(
+                    log_scale, &coeff, &round, &quant, &dequant, &qm, &iqm, &scan, &iscan,
+                );
+                assert_eq!(eob, ew, "hbd fp-qm eob n={n} ls={log_scale}");
+                assert_eq!(q, qw, "hbd fp-qm qcoeff n={n} ls={log_scale}");
+                assert_eq!(dq, dqw, "hbd fp-qm dqcoeff n={n} ls={log_scale}");
             }
         }
     }

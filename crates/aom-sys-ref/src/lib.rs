@@ -1044,3 +1044,32 @@ pub fn ref_highbd_quantize_b(log_scale: i32, coeff: &[i32], zbin: &[i16; 2], rou
     unsafe { aom_highbd_quantize_b_helper_c(coeff.as_ptr(), n as isize, zbin.as_ptr(), round.as_ptr(), quant.as_ptr(), quant_shift.as_ptr(), q.as_mut_ptr(), dq.as_mut_ptr(), dequant.as_ptr(), &mut eob, scan.as_ptr(), dummy.as_ptr(), core::ptr::null(), core::ptr::null(), log_scale); }
     (q, dq, eob)
 }
+
+// FP quant-matrix path: the static helpers reached via the real facades (see
+// shim/quant_fp_shim.c). round/quant/dequant are the [2]-entry QTX tables.
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_quantize_fp_qm(coeff: *const i32, n: i32, round: *const i16, quant: *const i16, dequant: *const i16, scan: *const i16, iscan: *const i16, qm: *const u8, iqm: *const u8, log_scale: i32, qcoeff: *mut i32, dqcoeff: *mut i32) -> u16;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_highbd_quantize_fp_qm(coeff: *const i32, n: i32, round: *const i16, quant: *const i16, dequant: *const i16, scan: *const i16, iscan: *const i16, qm: *const u8, iqm: *const u8, log_scale: i32, qcoeff: *mut i32, dqcoeff: *mut i32) -> u16;
+}
+
+/// Reference lowbd `av1_quantize_fp_facade` QM path (`quantize_fp_helper_c` with
+/// non-NULL qm/iqm). Returns (qcoeff, dqcoeff, eob).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_quantize_fp_qm(log_scale: i32, coeff: &[i32], round: &[i16; 2], quant: &[i16; 2], dequant: &[i16; 2], qm: &[u8], iqm: &[u8], scan: &[i16], iscan: &[i16]) -> (Vec<i32>, Vec<i32>, u16) {
+    let n = coeff.len();
+    let (mut q, mut dq) = (vec![0i32; n], vec![0i32; n]);
+    let eob = unsafe { shim_quantize_fp_qm(coeff.as_ptr(), n as i32, round.as_ptr(), quant.as_ptr(), dequant.as_ptr(), scan.as_ptr(), iscan.as_ptr(), qm.as_ptr(), iqm.as_ptr(), log_scale, q.as_mut_ptr(), dq.as_mut_ptr()) };
+    (q, dq, eob)
+}
+
+/// Reference highbd `av1_highbd_quantize_fp_facade` QM path
+/// (`highbd_quantize_fp_helper_c` with non-NULL qm/iqm). Returns (qcoeff, dqcoeff, eob).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_quantize_fp_qm(log_scale: i32, coeff: &[i32], round: &[i16; 2], quant: &[i16; 2], dequant: &[i16; 2], qm: &[u8], iqm: &[u8], scan: &[i16], iscan: &[i16]) -> (Vec<i32>, Vec<i32>, u16) {
+    let n = coeff.len();
+    let (mut q, mut dq) = (vec![0i32; n], vec![0i32; n]);
+    let eob = unsafe { shim_highbd_quantize_fp_qm(coeff.as_ptr(), n as i32, round.as_ptr(), quant.as_ptr(), dequant.as_ptr(), scan.as_ptr(), iscan.as_ptr(), qm.as_ptr(), iqm.as_ptr(), log_scale, q.as_mut_ptr(), dq.as_mut_ptr()) };
+    (q, dq, eob)
+}
