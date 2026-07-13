@@ -249,6 +249,11 @@ extern "C" {
     #[allow(clippy::too_many_arguments)]
     fn shim_get_reference_mode_context(ha: i32, a_r0: i32, a_r1: i32, a_ibc: i32, hl: i32, l_r0: i32, l_r1: i32, l_ibc: i32) -> i32;
     fn shim_single_ref_p1_context(ref_counts: *const u8) -> i32;
+    fn shim_single_ref_p2_context(rc: *const u8) -> i32;
+    fn shim_single_ref_p3_context(rc: *const u8) -> i32;
+    fn shim_single_ref_p4_context(rc: *const u8) -> i32;
+    fn shim_single_ref_p5_context(rc: *const u8) -> i32;
+    fn shim_single_ref_p6_context(rc: *const u8) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn shim_get_comp_reference_type_context(ha: i32, a_r0: i32, a_r1: i32, a_ibc: i32, hl: i32, l_r0: i32, l_r1: i32, l_ibc: i32) -> i32;
     fn shim_write_motion_mode(obmc_cdf: *mut u16, mm_cdf: *mut u16, last_allowed: i32, mm: i32, out: *mut u8, out_obmc: *mut u16, out_mm: *mut u16) -> u32;
@@ -303,6 +308,21 @@ pub fn ref_write_mb_interp_filter(cdf0: &[u16; 4], cdf1: &[u16; 4], interp_neede
     let n = unsafe { shim_write_mb_interp_filter(c0.as_mut_ptr(), c1.as_mut_ptr(), interp_needed as i32, is_switchable as i32, enable_dual as i32, f0, f1, out.as_mut_ptr(), o0.as_mut_ptr(), o1.as_mut_ptr()) };
     out.truncate(n as usize); (out, o0, o1)
 }
+
+/// Reference `av1_get_pred_context_single_ref_p2` (brfarf2_or_arf).
+pub fn ref_single_ref_p2_context(rc: &[u8; 8]) -> i32 { unsafe { shim_single_ref_p2_context(rc.as_ptr()) } }
+
+/// Reference `av1_get_pred_context_single_ref_p3` (ll2_or_l3gld).
+pub fn ref_single_ref_p3_context(rc: &[u8; 8]) -> i32 { unsafe { shim_single_ref_p3_context(rc.as_ptr()) } }
+
+/// Reference `av1_get_pred_context_single_ref_p4` (last_or_last2).
+pub fn ref_single_ref_p4_context(rc: &[u8; 8]) -> i32 { unsafe { shim_single_ref_p4_context(rc.as_ptr()) } }
+
+/// Reference `av1_get_pred_context_single_ref_p5` (last3_or_gld).
+pub fn ref_single_ref_p5_context(rc: &[u8; 8]) -> i32 { unsafe { shim_single_ref_p5_context(rc.as_ptr()) } }
+
+/// Reference `av1_get_pred_context_single_ref_p6` (brf_or_arf2).
+pub fn ref_single_ref_p6_context(rc: &[u8; 8]) -> i32 { unsafe { shim_single_ref_p6_context(rc.as_ptr()) } }
 
 /// Reference `av1_get_pred_context_single_ref_p1` (facade over the real exported fn).
 pub fn ref_single_ref_p1_context(ref_counts: &[u8; 8]) -> i32 {

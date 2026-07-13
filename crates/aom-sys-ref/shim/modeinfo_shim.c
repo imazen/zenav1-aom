@@ -555,3 +555,16 @@ int shim_single_ref_p1_context(const uint8_t *ref_counts) {
   for (int i = 0; i < 8; i++) xd.neighbors_ref_counts[i] = ref_counts[i];
   return av1_get_pred_context_single_ref_p1(&xd);
 }
+
+#define SINGLE_REF_SHIM(N) \
+  int shim_single_ref_p##N##_context(const uint8_t *rc) { \
+    MACROBLOCKD xd; \
+    for (int i = 0; i < 8; i++) xd.neighbors_ref_counts[i] = rc[i]; \
+    return av1_get_pred_context_single_ref_p##N(&xd); \
+  }
+SINGLE_REF_SHIM(2)
+SINGLE_REF_SHIM(3)
+SINGLE_REF_SHIM(4)
+SINGLE_REF_SHIM(5)
+SINGLE_REF_SHIM(6)
+#undef SINGLE_REF_SHIM

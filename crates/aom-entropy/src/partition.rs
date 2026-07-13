@@ -791,3 +791,36 @@ pub fn single_ref_p1_context(ref_counts: &[u8; 8]) -> i32 {
         2
     }
 }
+
+#[inline]
+fn ref_count_ctx(a: i32, b: i32) -> i32 {
+    if a == b {
+        1
+    } else if a < b {
+        0
+    } else {
+        2
+    }
+}
+
+/// `get_pred_context_brfarf2_or_arf` (`pred_common.c`): (BWDREF+ALTREF2) vs ALTREF counts.
+/// = single_ref P2 / comp_bwdref P0.
+pub fn pred_ctx_brfarf2_or_arf(rc: &[u8; 8]) -> i32 {
+    ref_count_ctx(rc[5] as i32 + rc[6] as i32, rc[7] as i32)
+}
+/// `get_pred_context_ll2_or_l3gld`: (LAST+LAST2) vs (LAST3+GOLDEN). = single_ref P3 / comp_ref P0.
+pub fn pred_ctx_ll2_or_l3gld(rc: &[u8; 8]) -> i32 {
+    ref_count_ctx(rc[1] as i32 + rc[2] as i32, rc[3] as i32 + rc[4] as i32)
+}
+/// `get_pred_context_last_or_last2`: LAST vs LAST2. = single_ref P4 / comp_ref P1.
+pub fn pred_ctx_last_or_last2(rc: &[u8; 8]) -> i32 {
+    ref_count_ctx(rc[1] as i32, rc[2] as i32)
+}
+/// `get_pred_context_last3_or_gld`: LAST3 vs GOLDEN. = single_ref P5 / comp_ref P2.
+pub fn pred_ctx_last3_or_gld(rc: &[u8; 8]) -> i32 {
+    ref_count_ctx(rc[3] as i32, rc[4] as i32)
+}
+/// `get_pred_context_brf_or_arf2`: BWDREF vs ALTREF2. = single_ref P6 / comp_bwdref P1.
+pub fn pred_ctx_brf_or_arf2(rc: &[u8; 8]) -> i32 {
+    ref_count_ctx(rc[5] as i32, rc[6] as i32)
+}
