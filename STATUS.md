@@ -202,22 +202,35 @@ both tracks, fully bit-exact.**
   finite / quniform / subexpfin / refsubexpfin / write_signed_primitive_refsubexpfin),
   validated on its own vs the real aom_wb (`wb_diff.rs`, 900k cases over the GM ranges).
 
-- **Uncompressed-header content components (aom-entropy `header` module)** — 14 of the
-  sequence/frame-header content pieces from `write_uncompressed_header_obu`, each
-  byte-identical to C libaom and diffed at 200k+ random cases in `header_diff.rs`:
-  `encode_quantization`, `encode_loopfilter`, `encode_cdef`, `encode_segmentation`
-  (real exported av1_seg_feature_data_max/signed), `write_frame_interp_filter`,
-  `write_superres_scale`/`write_render_size`/`write_frame_size`, `write_tile_info`
-  (+ `wb_write_uniform`), `encode_restoration_mode`, `write_delta_q_params` +
-  `write_tx_mode`, `write_film_grain_params`, `write_global_motion` (subexp-coded model
-  params, all 7 refs), `write_sequence_header` (+ write_sb_size), and
-  `write_ext_tile_info` (+ byte_align_zeros). Oracles are transcribed control flow over
-  the **real aom_wb primitives** (debug-only asserts + xd side effects omitted — no byte
-  effect); quant has an independent spec-layout anchor too. Remaining framing: the
-  **top-level assembly** — `write_uncompressed_header_obu` / `write_sequence_header_obu`
-  ordering + the frame-type / ref-frame / show-frame state machine (needs full
-  AV1_COMMON state), plus the color-config/timing/decoder-model seq-header framing and
-  the per-superblock tile-data delta-q/delta-lf signaling (aom_writer path, not aom_wb).
+- **Sequence-header OBU — COMPLETE and validated against the REAL exported C.**
+  `write_sequence_header_obu` (= `av1_write_sequence_header_obu`) assembles the whole
+  OBU payload byte-for-byte: profile, still/reduced flags, timing + decoder-model info,
+  the operating-points loop (idc / level / tier / per-op decoder+display model params),
+  then the sequence-header body, color config, film-grain flag, and trailing bits. The
+  oracle is the **direct exported function** — the shim populates a real `SequenceHeader`
+  (by field name) and calls the actual `av1_write_sequence_header_obu`, so a misreading
+  of the C shows as a byte mismatch (not a shared transcription bug). `header_diff.rs`
+  100k spec-valid random headers, byte-identical, no assert trips. This is the first
+  complete OBU in the encoder track.
+
+- **Uncompressed-header content components (aom-entropy `header` module)** — 19 of the
+  sequence/frame-header content pieces, each byte-identical to C libaom and diffed at
+  200k+ random cases in `header_diff.rs`: `encode_quantization`, `encode_loopfilter`,
+  `encode_cdef`, `encode_segmentation` (real exported av1_seg_feature_data_max/signed),
+  `write_frame_interp_filter`, `write_superres_scale`/`write_render_size`/
+  `write_frame_size`, `write_tile_info` (+ `wb_write_uniform`), `encode_restoration_mode`,
+  `write_delta_q_params` + `write_tx_mode`, `write_film_grain_params`,
+  `write_global_motion` (subexp-coded model params, all 7 refs), `write_sequence_header`
+  (+ write_sb_size), `write_ext_tile_info` (+ byte_align_zeros), `write_color_config`
+  (+ write_bitdepth), and `write_timing_info_header` / `write_decoder_model_info` /
+  `write_dec_model_op_parameters`. The `WriteBitBuffer` also carries `write_uvlc` and the
+  subexpfin family, each independently validated vs the real aom_wb. Component oracles are
+  transcribed control flow over the **real aom_wb primitives** (debug-only asserts + xd
+  side effects omitted — no byte effect); quant has an independent spec-layout anchor.
+  Remaining framing: the **frame-header OBU** — `write_uncompressed_header_obu` /
+  `write_frame_header_obu` ordering + the frame-type / ref-frame / show-frame state
+  machine (needs full AV1_COMMON state), plus the per-superblock tile-data
+  delta-q/delta-lf + mode-info signaling (aom_writer path, not aom_wb).
 
 - **RD-search primitives (aom-encode `rd` module + aom-dist)** — the estimator set the
   mode search composes, all bit-exact: `model_rd_from_var_lapndz` (the fixed-point
