@@ -77,6 +77,15 @@
         "od_ec_decode_bool_q15": {"status": "green", "test": "entropy_diff::entropy_decode_matches_and_roundtrips"},
         "od_ec_decode_cdf_q15":  {"status": "green", "test": "entropy_diff::entropy_decode_matches_and_roundtrips"}
       }
+    },
+    "entropy.cdf_adapt": {
+      "status": "green",
+      "note": "CDF adaptation + adaptive symbol coding (both tracks). Completes the symbol-coding stack.",
+      "items": {
+        "update_cdf":       {"status": "green", "test": "cdf_diff::update_cdf_matches_c"},
+        "aom_write_symbol": {"status": "green", "test": "cdf_diff::adaptive_symbol_coding_matches_c"},
+        "aom_read_symbol":  {"status": "green", "test": "cdf_diff::adaptive_symbol_coding_matches_c"}
+      }
     }
   }
 }

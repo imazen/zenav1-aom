@@ -53,6 +53,12 @@ both tracks, fully bit-exact.**
   `od_ec_enc_bits` (raw literals) + the `aom_writer`/`aom_reader` CDF-adaptation
   layer on top.
 
+- **CDF adaptation + symbol coding** (`update_cdf`, `aom_write_symbol`,
+  `aom_read_symbol`): completes the symbol-coding stack on top of `od_ec`.
+  Harness: `aom-entropy/tests/cdf_diff.rs` — `update_cdf` bit-exact over 1M
+  updates; adaptive encode byte-identical + adaptive decode symbol-identical to
+  C over 10k sequences.
+
 ## Infrastructure standing
 
 - Rust workspace + `aom-sys-ref` FFI oracle crate linking the reference `libaom.a`.

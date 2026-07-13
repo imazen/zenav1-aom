@@ -27,6 +27,45 @@ extern "C" {
     fn shim_dec_bool(d: *mut core::ffi::c_void, f: u32) -> i32;
     fn shim_dec_cdf(d: *mut core::ffi::c_void, icdf: *const u16, nsyms: i32) -> i32;
     fn shim_dec_free(d: *mut core::ffi::c_void);
+    fn shim_update_cdf(cdf: *mut u16, val: i32, nsymbs: i32);
+    fn shim_adapt_encode(
+        syms: *const i32, n: i32, cdf_init: *const u16, nsymbs: i32, out: *mut u8, out_cap: u32,
+    ) -> u32;
+    fn shim_adapt_decode(
+        buf: *const u8, sz: u32, n: i32, cdf_init: *const u16, nsymbs: i32, out_syms: *mut i32,
+    );
+}
+
+/// Reference `update_cdf`: returns the updated cdf array (length nsymbs+1).
+pub fn ref_update_cdf(cdf: &[u16], val: i32, nsymbs: usize) -> Vec<u16> {
+    let mut out = cdf.to_vec();
+    unsafe { shim_update_cdf(out.as_mut_ptr(), val, nsymbs as i32) }
+    out
+}
+
+/// Reference adaptive symbol encode (single shared adapting context).
+pub fn ref_adapt_encode(syms: &[i32], cdf_init: &[u16], nsymbs: usize) -> Vec<u8> {
+    let mut out = vec![0u8; syms.len() * 4 + 64];
+    let n = unsafe {
+        shim_adapt_encode(
+            syms.as_ptr(), syms.len() as i32, cdf_init.as_ptr(), nsymbs as i32,
+            out.as_mut_ptr(), out.len() as u32,
+        )
+    };
+    out.truncate(n as usize);
+    out
+}
+
+/// Reference adaptive symbol decode.
+pub fn ref_adapt_decode(buf: &[u8], n: usize, cdf_init: &[u16], nsymbs: usize) -> Vec<i32> {
+    let mut out = vec![0i32; n];
+    unsafe {
+        shim_adapt_decode(
+            buf.as_ptr(), buf.len() as u32, n as i32, cdf_init.as_ptr(), nsymbs as i32,
+            out.as_mut_ptr(),
+        )
+    }
+    out
 }
 
 /// One entropy-coder op for the reference encoder/decoder.

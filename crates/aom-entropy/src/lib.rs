@@ -3,8 +3,10 @@
 //! Encoder (`od_ec_enc`) produces byte-identical output to C; decoder
 //! (`od_ec_dec`) recovers identical symbols. Foundational to both tracks.
 
+pub mod cdf;
 pub mod dec;
 pub mod enc;
 
+pub use cdf::{read_symbol, update_cdf, write_symbol};
 pub use dec::OdEcDec;
 pub use enc::OdEcEnc;
