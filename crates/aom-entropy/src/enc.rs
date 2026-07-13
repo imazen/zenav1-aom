@@ -103,14 +103,14 @@ impl OdEcEnc {
         let mut r = self.rng as u32;
         let n = nsyms - 1;
         if fl < CDF_PROB_TOP {
-            let u = ((r >> 8) * (fl >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT))
+            let u = (((r >> 8) * (fl >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
                 + EC_MIN_PROB * (n - (s - 1)) as u32;
-            let v = ((r >> 8) * (fh >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT))
+            let v = (((r >> 8) * (fh >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
                 + EC_MIN_PROB * (n - s) as u32;
             l += (r - u) as u64;
             r = u - v;
         } else {
-            r -= ((r >> 8) * (fh >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT))
+            r -= (((r >> 8) * (fh >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
                 + EC_MIN_PROB * (n - s) as u32;
         }
         self.normalize(l, r);
@@ -120,7 +120,7 @@ impl OdEcEnc {
     pub fn encode_bool_q15(&mut self, val: i32, f: u32) {
         let mut l = self.low;
         let r = self.rng as u32;
-        let mut v = (r >> 8) * (f >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT);
+        let mut v = ((r >> 8) * (f >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT);
         v += EC_MIN_PROB;
         if val != 0 {
             l += (r - v) as u64;

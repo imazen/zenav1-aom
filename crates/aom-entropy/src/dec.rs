@@ -76,7 +76,7 @@ impl<'a> OdEcDec<'a> {
     pub fn decode_bool_q15(&mut self, f: u32) -> i32 {
         let mut dif = self.dif;
         let r = self.rng as u32;
-        let mut v = (r >> 8) * (f >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT);
+        let mut v = ((r >> 8) * (f >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT);
         v += EC_MIN_PROB;
         let vw = v << (OD_EC_WINDOW_SIZE - 16);
         let mut ret = 1;
@@ -101,7 +101,7 @@ impl<'a> OdEcDec<'a> {
         loop {
             u = v;
             ret += 1;
-            v = ((r >> 8) * (icdf[ret as usize] as u32 >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT))
+            v = (((r >> 8) * (icdf[ret as usize] as u32 >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
                 + EC_MIN_PROB * (n - ret) as u32;
             if c >= v {
                 break;
