@@ -15,6 +15,7 @@
 
 pub mod rd;
 
+use aom_entropy::dec::OdEcDec;
 use aom_entropy::enc::OdEcEnc;
 use aom_quant::{
     aom_highbd_quantize_b_no_qmatrix, aom_highbd_quantize_b_qm, aom_quantize_b_no_qmatrix,
@@ -449,4 +450,55 @@ pub fn pixel_distortion(
     let mut recon = pred[..w * h].to_vec();
     aom_transform::inv_txfm2d::av1_inv_txfm2d_add(dqcoeff, &mut recon, w, tx_type, tx_size, bd);
     aom_dist::highbd_sse(&recon, w, source, w, w, h)
+}
+
+/// `read_coding_block_plane` — decode inverse of [`encode_coding_block_plane`]: iterate a
+/// plane's transform blocks in raster order, reading each txb's coefficients via
+/// `read_coeffs_txb_full` with the `get_txb_ctx`-derived contexts, threading the above/left
+/// entropy context (`txb_entropy_context` cul level) exactly as the encoder does. Returns
+/// the per-txb decoded coefficients (raster order) + the final [`BlockContexts`].
+/// `tx_type_chroma` is the luma-derived tx_type used for chroma planes (ignored for luma,
+/// which reads its own).
+#[allow(clippy::too_many_arguments)]
+pub fn read_coding_block_plane(
+    dec: &mut OdEcDec,
+    cdfs: &mut [u16],
+    ext_tx_cdf: &mut [u16],
+    plane_bsize: usize,
+    tx_size: usize,
+    tx_type_chroma: usize,
+    plane: usize,
+    allow_update_cdf: bool,
+    ttx: &TxTypeContext,
+) -> (Vec<Vec<i32>>, BlockContexts) {
+    let uw = BLK_W[plane_bsize] >> 2;
+    let uh = BLK_H[plane_bsize] >> 2;
+    let txw = TXU_W[tx_size];
+    let txh = TXU_H[tx_size];
+    assert!(uw.is_multiple_of(txw) && uh.is_multiple_of(txh), "tx_size must tile plane_bsize evenly");
+    let area = aom_txb::txb_wide(tx_size) * aom_txb::txb_high(tx_size);
+    let mut above = vec![0i8; uw];
+    let mut left = vec![0i8; uh];
+    let mut coeffs = Vec::new();
+    let mut blk_row = 0;
+    while blk_row < uh {
+        let mut blk_col = 0;
+        while blk_col < uw {
+            let (txb_skip_ctx, dc_sign_ctx) =
+                aom_txb::get_txb_ctx(plane_bsize, tx_size, plane, &above[blk_col..], &left[blk_row..]);
+            let mut tcoeff = vec![0i32; area];
+            let (eob, tx_type) = aom_txb::read_coeffs_txb_full(
+                dec, cdfs, ext_tx_cdf, &mut tcoeff, tx_size, plane, txb_skip_ctx as usize,
+                dc_sign_ctx as usize, allow_update_cdf, ttx.is_inter, ttx.reduced, ttx.signal_gate,
+                tx_type_chroma,
+            );
+            let cul = aom_txb::txb_entropy_context(&tcoeff, tx_size, tx_type, eob) as i8;
+            above[blk_col..blk_col + txw].fill(cul);
+            left[blk_row..blk_row + txh].fill(cul);
+            coeffs.push(tcoeff);
+            blk_col += txw;
+        }
+        blk_row += txh;
+    }
+    (coeffs, BlockContexts { above, left })
 }
