@@ -766,9 +766,8 @@ pub fn get_comp_reference_type_context(
         }
     } else if ha || hl {
         let (r0, r1, ibc) = if ha { (a_r0, a_r1, a_ibc) } else { (l_r0, l_r1, l_ibc) };
-        if !nbr_is_inter(ibc, r0) {
-            2
-        } else if !has_second_ref(r1) {
+        // intra edge, or inter single-pred -> 2 (merged; the C writes them separately)
+        if !nbr_is_inter(ibc, r0) || !has_second_ref(r1) {
             2
         } else {
             4 * has_uni_comp_refs_h(r0, r1) as i32
