@@ -7,7 +7,8 @@
 //! libaom's tables and verified exhaustively vs C. The symbol emission reuses
 //! the bit-exact `aom_write_symbol` (aom-entropy).
 
-use aom_entropy::cdf::write_symbol;
+use aom_entropy::cdf::{read_symbol, write_symbol};
+use aom_entropy::dec::OdEcDec;
 use aom_entropy::enc::OdEcEnc;
 
 /// `TxSetType` (0..5). `av1_num_ext_tx_set = {1,2,5,7,12,16}`.
@@ -135,5 +136,40 @@ pub fn write_tx_type(
     let d = ext_tx_derive(tx_size, is_inter, reduced, tx_type, use_filter_intra, fi_mode, mode);
     if d.num > 1 && signal_gate {
         write_symbol(enc, d.symb, &mut cdf[..d.num as usize + 1], d.num as usize);
+    }
+}
+
+/// Invert `EXT_TX_IND[st]`: the transmitted symbol back to its `TX_TYPE`. Within a
+/// set the used tx_types map bijectively onto `[0, num)`, so the unique used
+/// tx_type with `EXT_TX_IND[st][t] == symb` is the answer.
+fn ext_tx_inv(st: usize, symb: i32) -> usize {
+    for t in 0..16 {
+        if EXT_TX_USED[st][t] == 1 && EXT_TX_IND[st][t] == symb {
+            return t;
+        }
+    }
+    0 // DCT_DCT — unreachable for a valid symbol
+}
+
+/// `av1_read_tx_type` core — inverse of [`write_tx_type`]. When the block's ext-tx
+/// set carries more than one type and `signal_gate` passes, read the symbol on the
+/// pre-selected CDF slot and map it back to the `TX_TYPE`; otherwise the type is
+/// the inferred `DCT_DCT` (0). `cdf` is the same caller-selected slot the writer
+/// used (`intra_ext_tx_cdf[eset][square][intra_dir]` or `inter_ext_tx_cdf[eset][square]`).
+pub fn read_tx_type(
+    dec: &mut OdEcDec,
+    cdf: &mut [u16],
+    tx_size: usize,
+    is_inter: bool,
+    reduced: bool,
+    signal_gate: bool,
+) -> usize {
+    let st = ext_tx_set_type(tx_size, is_inter, reduced);
+    let num = NUM_EXT_TX_SET[st];
+    if num > 1 && signal_gate {
+        let symb = read_symbol(dec, &mut cdf[..num as usize + 1], num as usize);
+        ext_tx_inv(st, symb)
+    } else {
+        0 // DCT_DCT
     }
 }
