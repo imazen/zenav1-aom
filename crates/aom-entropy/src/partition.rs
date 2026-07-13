@@ -98,3 +98,36 @@ pub fn partition_gather_horz_alike(cdf_in: &[u16], bsize: usize) -> [u16; 2] {
     }
     [(CDF_PROB_TOP - o) as u16, 0]
 }
+
+use crate::cdf::write_symbol;
+use crate::enc::OdEcEnc;
+
+/// `write_partition` (`av1/encoder/bitstream.c`): code the partition symbol `p` for a
+/// block. When the block has both rows and columns in-frame, the full partition CDF is
+/// used (with adaptation, `aom_write_symbol`); at a frame edge the CDF is gathered to a
+/// 2-way split-vs-not distribution and coded without adaptation (`aom_write_cdf`); when
+/// neither rows nor columns remain the partition is forced `PARTITION_SPLIT` and nothing
+/// is coded. `partition_cdf` is the (context-selected) CDF, adapted in place.
+pub fn write_partition(
+    enc: &mut OdEcEnc,
+    partition_cdf: &mut [u16],
+    cdf_len: usize,
+    p: i32,
+    has_rows: bool,
+    has_cols: bool,
+    bsize: usize,
+) {
+    if bsize < BLOCK_8X8 {
+        return; // not a partition point
+    }
+    if has_rows && has_cols {
+        write_symbol(enc, p, partition_cdf, cdf_len);
+    } else if !has_rows && has_cols {
+        let cdf = partition_gather_vert_alike(partition_cdf, bsize);
+        enc.encode_cdf_q15((p == PARTITION_SPLIT as i32) as i32, &cdf, 2);
+    } else if has_rows && !has_cols {
+        let cdf = partition_gather_horz_alike(partition_cdf, bsize);
+        enc.encode_cdf_q15((p == PARTITION_SPLIT as i32) as i32, &cdf, 2);
+    }
+    // !has_rows && !has_cols => PARTITION_SPLIT, nothing coded.
+}

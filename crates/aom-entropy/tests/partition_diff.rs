@@ -95,3 +95,55 @@ fn partition_plane_context_matches_c() {
         assert_eq!(got, want, "partition_plane_context bsize={bsize} r={mi_row} c={mi_col}");
     }
 }
+
+#[test]
+fn write_partition_matches_c() {
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{partition_cdf_length, write_partition};
+    let mut rng = Rng(0x9a17_c0de_a11a_0009);
+    let squares = [3i32, 6, 9, 12, 15]; // 8x8, 16x16, 32x32, 64x64, 128x128
+    for _ in 0..200_000 {
+        let bsize = squares[(rng.next() % 5) as usize];
+        let ns = partition_cdf_length(bsize as usize);
+        // Build a valid ns-symbol inverse-cumulative CDF: cdf[0..ns-2] strictly
+        // descending in (0, 32768), cdf[ns-1]=0, cdf[ns]=count=0.
+        let mut vals = [0i32; 9];
+        for v in vals.iter_mut().take(ns - 1) {
+            *v = 1 + (rng.next() % 32766) as i32;
+        }
+        vals[..ns - 1].sort_unstable();
+        vals[..ns - 1].reverse();
+        let mut cdf = [0u16; 11];
+        let mut prev = 32768i32;
+        for i in 0..ns - 1 {
+            let v = vals[i].min(prev - 1).max((ns - 1 - i) as i32);
+            cdf[i] = v as u16;
+            prev = v;
+        }
+        cdf[ns - 1] = 0;
+        cdf[ns] = 0; // count
+
+        let cdf_len = ns;
+        let p = (rng.next() % cdf_len as u64) as i32;
+        // 8x8 never reaches a frame-edge partition (asserted bsize > 8x8); keep valid.
+        let (has_rows, has_cols) = if bsize == 3 {
+            (true, true)
+        } else {
+            (rng.next().is_multiple_of(2), rng.next().is_multiple_of(2))
+        };
+
+        let mut my_cdf = cdf;
+        let mut enc = OdEcEnc::new();
+        write_partition(&mut enc, &mut my_cdf, cdf_len, p, has_rows, has_cols, bsize as usize);
+        let got_bytes = enc.done().to_vec();
+
+        let (want_bytes, want_cdf) = c::ref_write_partition(&cdf, cdf_len as i32, p, has_rows, has_cols, bsize);
+        assert_eq!(got_bytes, want_bytes, "write_partition bytes bsize={bsize} p={p} r={has_rows} c={has_cols}");
+        // compare the adapted CDF (only the has_rows&&has_cols path adapts)
+        assert_eq!(
+            &my_cdf[..cdf_len + 1],
+            &want_cdf[..cdf_len + 1],
+            "write_partition cdf bsize={bsize} p={p} r={has_rows} c={has_cols}"
+        );
+    }
+}
