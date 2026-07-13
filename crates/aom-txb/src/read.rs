@@ -181,6 +181,66 @@ fn read_txb_body(
     eob
 }
 
+/// `tx_size_2d` (enums.h): full pel count per transform size — drives
+/// `av1_get_tx_scale`. Note this is the FULL area (64x64 → 4096), not the clamped
+/// 32×32 coded region, so `tx_scale(TX_64X64) == 2`.
+const TX_SIZE_2D: [i32; 19] = [
+    16, 64, 256, 1024, 4096, 32, 32, 128, 128, 512, 512, 2048, 2048, 64, 64, 256, 256, 1024, 1024,
+];
+
+/// `av1_get_tx_scale(tx_size)` = `(pels > 256) + (pels > 1024)`: the extra
+/// right-shift applied to dequantized coefficients for large transforms.
+#[inline]
+pub fn tx_scale(tx_size: usize) -> i32 {
+    let pels = TX_SIZE_2D[tx_size];
+    (pels > 256) as i32 + (pels > 1024) as i32
+}
+
+/// Decoder dequant — the `qcoeff → dqcoeff` step fused into `av1_read_coeffs_txb`
+/// (decodetxb.c). Given the signed decoded `qcoeff` (raster layout, as produced
+/// by [`read_coeffs_txb`]/[`read_coeffs_txb_full`]), fill `dqcoeff` (raster) with
+/// the reconstructed transform-domain residuals ready for the inverse transform.
+///
+/// Per coefficient: mask the magnitude to 20 bits, multiply by the per-position
+/// dequant step (`get_dqv`, folding an inverse quant matrix when present), mask
+/// the product to 24 bits, right-shift by [`tx_scale`], reapply the sign, then
+/// clamp to the bitdepth range `[-(1<<(7+bd)), (1<<(7+bd))-1]`. `iqmatrix` is
+/// indexed by raster position; `None` selects the flat (no-QM) dequant.
+///
+/// This is the structural inverse of the encoder's dqcoeff computation in
+/// [`aom_quantize_b`](../../aom_quant/fn.aom_quantize_b_no_qmatrix.html): for a
+/// conformant stream the two agree (the masks/clamp are no-ops on in-range
+/// coefficients); the masks/clamp additionally bound malformed input.
+pub fn dequant_txb(
+    qcoeff: &[i32],
+    dqcoeff: &mut [i32],
+    tx_size: usize,
+    dequant: [i16; 2],
+    iqmatrix: Option<&[u8]>,
+    bd: i32,
+) {
+    let area = txb_wide(tx_size) * txb_high(tx_size);
+    let shift = tx_scale(tx_size);
+    let max_value = (1i32 << (7 + bd)) - 1;
+    let min_value = -(1i32 << (7 + bd));
+    dqcoeff[..area].fill(0);
+    for pos in 0..area {
+        let q = qcoeff[pos];
+        if q == 0 {
+            continue;
+        }
+        let sign = q < 0;
+        let level = (q.unsigned_abs() as i64) & 0xfffff;
+        let dqv = crate::optimize::get_dqv(dequant, pos, iqmatrix) as i64;
+        let mut dq = ((level * dqv) & 0xffffff) as i32;
+        dq >>= shift;
+        if sign {
+            dq = -dq;
+        }
+        dqcoeff[pos] = dq.clamp(min_value, max_value);
+    }
+}
+
 /// `read_coeffs_txb_full` — inverse of [`crate::write::write_coeffs_txb_full`]: the
 /// txb_skip flag, then (luma, `plane_type == 0`) the `tx_type` via `read_tx_type` on the
 /// caller-selected `ext_tx_cdf` slot, then the coefficient body. Chroma inherits

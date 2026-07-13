@@ -2660,11 +2660,24 @@ extern "C" {
     fn shim_cost_coeffs_txb(qcoeff: *const i32, eob: i32, tx_size: i32, tx_type: i32, txb_skip_ctx: i32, dc_sign_ctx: i32, txb_skip_cost: *const i32, base_eob_cost: *const i32, base_cost: *const i32, eob_extra_cost: *const i32, dc_sign_cost: *const i32, lps_cost: *const i32, eob_cost: *const i32) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_coeffs_txb(tcoeff: *const i32, eob: i32, tx_size: i32, tx_type: i32, plane_type: i32, txb_skip_ctx: i32, dc_sign_ctx: i32, allow_update_cdf: i32, cdfs: *mut u16, ext_tx_cdf: *mut u16, is_inter: i32, reduced: i32, use_fi: i32, fi_mode: i32, mode: i32, signal_gate: i32, out: *mut u8, out_cap: i32) -> i32;
+    fn shim_dequant_txb(qcoeff: *const i32, dqcoeff: *mut i32, area: i32, tx_size: i32, dequant: *const i16, iqmatrix: *const u8, bd: i32);
 }
 
 /// Reference `av1_txb_init_levels_c` (writes into `levels`).
 pub fn ref_txb_init_levels(coeff: &[i32], width: usize, height: usize, levels: &mut [u8]) {
     unsafe { shim_txb_init_levels(coeff.as_ptr(), width as i32, height as i32, levels.as_mut_ptr()) }
+}
+
+/// Reference decoder dequant (`av1_read_coeffs_txb` math, decodetxb.c): signed
+/// `qcoeff` (raster, len `area`) → `dqcoeff` (raster). `iqmatrix` per raster
+/// position, `None` for no quant matrix. Applies the `0xfffff`/`0xffffff` masks,
+/// `av1_get_tx_scale` shift, and `±(1<<(7+bd))` clamp exactly as the C decoder.
+pub fn ref_dequant_txb(qcoeff: &[i32], tx_size: usize, dequant: [i16; 2], iqmatrix: Option<&[u8]>, bd: i32) -> Vec<i32> {
+    let area = qcoeff.len();
+    let mut dq = vec![0i32; area];
+    let iqp = iqmatrix.map_or(core::ptr::null(), |s| s.as_ptr());
+    unsafe { shim_dequant_txb(qcoeff.as_ptr(), dq.as_mut_ptr(), area as i32, tx_size as i32, dequant.as_ptr(), iqp, bd) }
+    dq
 }
 
 /// Reference `av1_get_nz_map_contexts_c` (writes `out[scan[i]]` for `i < eob`).

@@ -689,3 +689,42 @@ int64_t shim_get_coeff_dist(int32_t tcoeff, int32_t dqcoeff, int shift,
                             const qm_val_t *qm, int coeff_idx) {
   return get_coeff_dist(tcoeff, dqcoeff, shift, qm, coeff_idx);
 }
+
+/* ---- decoder dequant (av1_read_coeffs_txb dequant math) --------------------
+ * Verbatim transcription of the per-coefficient dequant in read_coeffs_txb
+ * (av1/decoder/decodetxb.c, lines ~279-312): masks, av1_get_tx_scale shift, and
+ * the bitdepth clamp. Driven by a caller-supplied SIGNED qcoeff (raster layout)
+ * so it needs no DecoderCodingBlock state. `iqmatrix` NULL == no quant matrix. */
+void shim_dequant_txb(const int32_t *qcoeff, int32_t *dqcoeff, int area,
+                      int tx_size, const int16_t *dequant,
+                      const uint8_t *iqmatrix, int bd) {
+  /* tx_size_2d (enums.h) — full pel count; av1_get_tx_scale uses this, NOT the
+   * clamped coded region, so 64x64 -> 4096 -> shift 2. */
+  static const int tx_size_2d_local[19] = {
+    16, 64, 256, 1024, 4096, 32, 32, 128, 128, 512, 512, 2048, 2048,
+    64, 64, 256, 256, 1024, 1024,
+  };
+  const int32_t max_value = (1 << (7 + bd)) - 1;
+  const int32_t min_value = -(1 << (7 + bd));
+  const int pels = tx_size_2d_local[tx_size];
+  const int shift = (pels > 256) + (pels > 1024); /* av1_get_tx_scale */
+  for (int pos = 0; pos < area; ++pos) {
+    int32_t q = qcoeff[pos];
+    if (q == 0) {
+      dqcoeff[pos] = 0;
+      continue;
+    }
+    int sign = q < 0;
+    int32_t level = sign ? -q : q; /* magnitude */
+    level &= 0xfffff;              /* clamp level to valid range */
+    int d = dequant[pos != 0 ? 1 : 0];
+    /* get_dqv: folds iqmatrix weight (AOM_QM_BITS==5 -> +16, >>5) when present */
+    int dqv = iqmatrix ? ((iqmatrix[pos] * d + 16) >> 5) : d;
+    int32_t dq_coeff = (int32_t)((int64_t)level * dqv & 0xffffff);
+    dq_coeff = dq_coeff >> shift;
+    if (sign) dq_coeff = -dq_coeff;
+    dqcoeff[pos] = dq_coeff < min_value
+                       ? min_value
+                       : (dq_coeff > max_value ? max_value : dq_coeff);
+  }
+}
