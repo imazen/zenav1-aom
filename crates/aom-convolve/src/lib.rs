@@ -52,6 +52,53 @@ pub fn convolve_x_sr(
     }
 }
 
+/// `av1_convolve_2d_sr_c` (EIGHTTAP_REGULAR, lowbd, SR: round_0=3, round_1=11,
+/// bits=0). `src` needs a border of >=3 (top/left) and >=4 (bottom/right).
+#[allow(clippy::too_many_arguments)]
+pub fn convolve_2d_sr(
+    src: &[u8], src_off: usize, src_stride: usize, dst: &mut [u8], dst_stride: usize,
+    w: usize, h: usize, subpel_x: usize, subpel_y: usize,
+) {
+    const BD: i32 = 8;
+    const ROUND_1: i32 = 2 * FILTER_BITS - ROUND0_BITS; // 11
+    let taps = 8usize;
+    let fo = taps / 2 - 1; // 3
+    let im_h = h + taps - 1;
+    let im_stride = w;
+    let xf = &SUB_PEL_FILTERS_8[subpel_x & 15];
+    let yf = &SUB_PEL_FILTERS_8[subpel_y & 15];
+
+    // Horizontal pass into int16 intermediate.
+    let mut im = vec![0i16; im_h * im_stride];
+    let src_horiz = src_off as isize - fo as isize * src_stride as isize;
+    for y in 0..im_h {
+        for x in 0..w {
+            let base = src_horiz + (y * src_stride) as isize + x as isize - fo as isize;
+            let mut sum = 1i32 << (BD + FILTER_BITS - 1);
+            for k in 0..taps {
+                sum += xf[k] as i32 * src[(base + k as isize) as usize] as i32;
+            }
+            im[y * im_stride + x] = rpo2(sum, ROUND0_BITS) as i16;
+        }
+    }
+
+    // Vertical pass.
+    let offset_bits = BD + 2 * FILTER_BITS - ROUND0_BITS; // 19
+    let round_offset = (1i32 << (offset_bits - ROUND_1)) + (1i32 << (offset_bits - ROUND_1 - 1));
+    let bits = FILTER_BITS * 2 - ROUND0_BITS - ROUND_1; // 0
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum = 1i32 << offset_bits;
+            for k in 0..taps {
+                // src_vert[(y - fo + k)] with src_vert = im + fo rows -> im[(y+k)]
+                sum += yf[k] as i32 * im[(y + k) * im_stride + x] as i32;
+            }
+            let res = (rpo2(sum, ROUND_1) - round_offset) as i16;
+            dst[y * dst_stride + x] = clip_pixel(rpo2(res as i32, bits));
+        }
+    }
+}
+
 /// `av1_convolve_y_sr_c` (EIGHTTAP_REGULAR). `src` must have >=3 rows before and
 /// >=4 after the interior origin in the y direction.
 #[allow(clippy::too_many_arguments)]

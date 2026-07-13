@@ -40,6 +40,14 @@ extern "C" {
 extern "C" {
     fn shim_convolve_x_sr(src: *const u8, ss: i32, dst: *mut u8, ds: i32, w: i32, h: i32, subpel: i32);
     fn shim_convolve_y_sr(src: *const u8, ss: i32, dst: *mut u8, ds: i32, w: i32, h: i32, subpel: i32);
+    fn shim_convolve_2d_sr(src: *const u8, ss: i32, dst: *mut u8, ds: i32, w: i32, h: i32, spx: i32, spy: i32);
+}
+
+/// Reference `av1_convolve_2d_sr_c`.
+pub fn ref_convolve_2d_sr(src: &[u8], src_off: usize, ss: usize, w: usize, h: usize, spx: usize, spy: usize) -> Vec<u8> {
+    let mut dst = vec![0u8; w * h];
+    unsafe { shim_convolve_2d_sr(src.as_ptr().add(src_off), ss as i32, dst.as_mut_ptr(), w as i32, w as i32, h as i32, spx as i32, spy as i32) }
+    dst
 }
 
 /// Reference `av1_convolve_x_sr_c`. `src` points at the interior origin.

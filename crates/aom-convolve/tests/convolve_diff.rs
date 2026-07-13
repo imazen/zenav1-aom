@@ -43,6 +43,12 @@ fn convolve_x_y_sr_byte_identical() {
             convolve_y_sr(&src, src_off, stride, &mut gy, w, w, h, subpel);
             let wy = c::ref_convolve_y_sr(&src, src_off, stride, w, h, subpel);
             assert_eq!(gy, wy, "convolve_y_sr {w}x{h} subpel={subpel}");
+
+            let subpel_y = (rng.next() % 16) as usize;
+            let mut g2 = vec![0u8; w * h];
+            aom_convolve::convolve_2d_sr(&src, src_off, stride, &mut g2, w, w, h, subpel, subpel_y);
+            let w2 = c::ref_convolve_2d_sr(&src, src_off, stride, w, h, subpel, subpel_y);
+            assert_eq!(g2, w2, "convolve_2d_sr {w}x{h} spx={subpel} spy={subpel_y}");
         }
     }
 }
