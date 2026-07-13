@@ -211,6 +211,10 @@ both tracks, fully bit-exact.**
   `highbd_subtract_block` (aom_[highbd_]subtract_block_c): the residual generator
   `diff=src-pred`, natively strided — completing the front end (pred -> subtract ->
   xform_quant). Both diffed vs exported C (highbd subtract via a CONVERT_TO_BYTEPTR shim).
+  `sum_squares_i16` / `sum_squares_2d_i16` (residual energy), `vector_var`
+  (motion/RD vector variance; `mean_abs^2` in unsigned 32-bit), and the **SATD family
+  completed both bit depths**: `hadamard_32x32` (lowbd) + `highbd_hadamard_8x8/16x16/32x32`
+  (distinct i16-first / i32-second passes, no column swap) — all diffed vs exported C.
 
 - **Transform-block loop — one coding-block plane (aom-encode)** — encode_coding_block_plane
   iterates a plane's txbs in raster order (av1_foreach_transformed_block_in_plane),
