@@ -104,3 +104,22 @@ fn txb_kernels_byte_identical() {
         }
     }
 }
+
+#[test]
+fn scan_orders_match_c() {
+    for t in 0..19usize {
+        let area = txb_wide(t) * txb_high(t);
+        for ty in 0..16usize {
+            assert_eq!(
+                &aom_txb::scan(t, ty)[..area],
+                &c::ref_scan_order(t, ty, area)[..],
+                "scan tx_size={t} tx_type={ty}"
+            );
+            assert_eq!(
+                &aom_txb::iscan(t, ty)[..area],
+                &c::ref_iscan_order(t, ty, area)[..],
+                "iscan tx_size={t} tx_type={ty}"
+            );
+        }
+    }
+}

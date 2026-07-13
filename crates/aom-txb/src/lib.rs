@@ -16,6 +16,8 @@
 
 mod tables;
 pub use tables::nz_map_ctx_offset;
+mod scan;
+pub use scan::{iscan, scan, SCAN_ORDERS};
 
 /// `TX_PAD_HOR` (enums.h): horizontal padding of the levels buffer.
 pub const TX_PAD_HOR: usize = 4;

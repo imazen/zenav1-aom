@@ -42,3 +42,7 @@ const int8_t *shim_nz_ctx_offset(int tx_size) {
 const int16_t *shim_scan(int tx_size, int tx_type) {
   return av1_scan_orders[tx_size][tx_type].scan;
 }
+
+const int16_t *shim_iscan(int tx_size, int tx_type) {
+  return av1_scan_orders[tx_size][tx_type].iscan;
+}

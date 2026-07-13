@@ -758,6 +758,7 @@ extern "C" {
     fn shim_eob_pos_token(eob: i32, extra: *mut i32) -> i32;
     fn shim_nz_ctx_offset(tx_size: i32) -> *const i8;
     fn shim_scan(tx_size: i32, tx_type: i32) -> *const i16;
+    fn shim_iscan(tx_size: i32, tx_type: i32) -> *const i16;
 }
 
 /// Reference `av1_txb_init_levels_c` (writes into `levels`).
@@ -787,4 +788,9 @@ pub fn ref_nz_ctx_offset(tx_size: usize, len: usize) -> Vec<i8> {
 /// Copy of the C `av1_scan_orders[tx_size][tx_type].scan` (first `len` entries).
 pub fn ref_scan_order(tx_size: usize, tx_type: usize, len: usize) -> Vec<i16> {
     unsafe { core::slice::from_raw_parts(shim_scan(tx_size as i32, tx_type as i32), len).to_vec() }
+}
+
+/// Copy of the C `av1_scan_orders[tx_size][tx_type].iscan` (first `len` entries).
+pub fn ref_iscan_order(tx_size: usize, tx_type: usize, len: usize) -> Vec<i16> {
+    unsafe { core::slice::from_raw_parts(shim_iscan(tx_size as i32, tx_type as i32), len).to_vec() }
 }
