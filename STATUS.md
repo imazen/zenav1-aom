@@ -74,7 +74,7 @@ both tracks, fully bit-exact.**
 - **Intra edge filter / upsample DSP** (`av1/common/reconintra.c`), both tracks:
   intra_edge_filter_strength + av1_use_intra_edge_upsample (verified EXHAUSTIVELY)
   + av1_filter_intra_edge_c (5-tap, sz 2..65) + av1_upsample_intra_edge_c
-  (sz 1..16), byte-identical to C. Completes the directional intra pre-conditioning.
+  (sz 1..16), byte-identical to C. Highbd (10/12-bit) filter+upsample too. Directional intra pre-conditioning complete (both bit depths).
 
 - **Deblocking loop filter (lowbd)** (`aom_dsp/loopfilter.c`), both tracks:
   horizontal + vertical, widths 4/6/8/14 (filter4/6/8/14, hev/flat/flat2 masks,
