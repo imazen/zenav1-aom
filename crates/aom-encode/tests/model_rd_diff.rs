@@ -27,7 +27,7 @@ fn model_rd_from_var_lapndz_matches_c() {
     for n_log2 in 4u32..=12 {
         for _ in 0..80_000 {
             // var 0 exercises the early-out; otherwise a wide spread.
-            let var: i64 = if rng.next() % 50 == 0 {
+            let var: i64 = if rng.next().is_multiple_of(50) {
                 0
             } else {
                 rng.range(1, 1 << 32) as i64
