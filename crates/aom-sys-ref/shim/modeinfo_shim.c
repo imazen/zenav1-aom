@@ -57,3 +57,35 @@ uint32_t shim_write_partition(uint16_t *partition_cdf, int cdf_len, int p, int h
   od_ec_enc_clear(&ec);
   return n;
 }
+
+#include "av1/common/pred_common.h" /* av1_get_skip_txfm_context */
+/* Facade for av1_get_skip_txfm_context: two stack MB_MODE_INFO neighbours (present
+ * flags gate the NULL case) with their skip_txfm set, called through the real fn. */
+int shim_skip_txfm_context(int above_present, int above_skip, int left_present,
+                           int left_skip) {
+  MB_MODE_INFO above_mi, left_mi;
+  MACROBLOCKD xd;
+  above_mi.skip_txfm = above_skip;
+  left_mi.skip_txfm = left_skip;
+  xd.above_mbmi = above_present ? &above_mi : (MB_MODE_INFO *)0;
+  xd.left_mbmi = left_present ? &left_mi : (MB_MODE_INFO *)0;
+  return av1_get_skip_txfm_context(&xd);
+}
+
+/* Transcribed write_skip symbol over the pristine C od_ec + update_cdf. seg_skip
+ * active returns 1 with nothing coded. */
+uint32_t shim_write_skip(uint16_t *skip_cdf, int seg_skip_active, int skip_txfm,
+                         uint8_t *out, uint16_t *out_cdf) {
+  od_ec_enc ec;
+  od_ec_enc_init(&ec, 256);
+  if (!seg_skip_active) {
+    od_ec_encode_cdf_q15(&ec, skip_txfm, skip_cdf, 2);
+    update_cdf(skip_cdf, skip_txfm, 2);
+  }
+  uint32_t n = 0;
+  const unsigned char *buf = od_ec_enc_done(&ec, &n);
+  for (uint32_t i = 0; i < n; i++) out[i] = buf[i];
+  for (int i = 0; i < 3; i++) out_cdf[i] = skip_cdf[i];
+  od_ec_enc_clear(&ec);
+  return n;
+}

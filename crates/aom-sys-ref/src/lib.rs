@@ -233,6 +233,8 @@ extern "C" {
     fn shim_partition_gather_horz(out: *mut u16, cdf_in: *const u16, bsize: i32);
     fn shim_partition_plane_context(above: *const i8, left: *const i8, mi_row: i32, mi_col: i32, bsize: i32) -> i32;
     fn shim_write_partition(partition_cdf: *mut u16, cdf_len: i32, p: i32, has_rows: i32, has_cols: i32, bsize: i32, out: *mut u8, out_cdf: *mut u16) -> u32;
+    fn shim_skip_txfm_context(above_present: i32, above_skip: i32, left_present: i32, left_skip: i32) -> i32;
+    fn shim_write_skip(skip_cdf: *mut u16, seg_skip_active: i32, skip_txfm: i32, out: *mut u8, out_cdf: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_frame_header_trailing_flags(intra_only: i32, ref_mode_select: i32, skip_allowed: i32, skip_flag: i32, might_warp: i32, allow_warp: i32, reduced_tx_set: i32, out: *mut u8) -> u32;
 }
@@ -240,6 +242,21 @@ extern "C" {
 /// Reference `partition_cdf_length`.
 pub fn ref_partition_cdf_length(bsize: i32) -> i32 {
     unsafe { shim_partition_cdf_length(bsize) }
+}
+
+/// Reference `av1_get_skip_txfm_context` (facade over the real static inline).
+pub fn ref_skip_txfm_context(above_present: bool, above_skip: i32, left_present: bool, left_skip: i32) -> i32 {
+    unsafe { shim_skip_txfm_context(above_present as i32, above_skip, left_present as i32, left_skip) }
+}
+
+/// Reference `write_skip` (transcribed symbol over the pristine C od_ec + update_cdf).
+pub fn ref_write_skip(skip_cdf: &[u16; 3], seg_skip_active: bool, skip_txfm: i32) -> (Vec<u8>, [u16; 3]) {
+    let mut cdf = *skip_cdf;
+    let mut out = vec![0u8; 16];
+    let mut out_cdf = [0u16; 3];
+    let n = unsafe { shim_write_skip(cdf.as_mut_ptr(), seg_skip_active as i32, skip_txfm, out.as_mut_ptr(), out_cdf.as_mut_ptr()) };
+    out.truncate(n as usize);
+    (out, out_cdf)
 }
 
 /// Reference `write_partition` (transcribed body over the pristine C od_ec + update_cdf).

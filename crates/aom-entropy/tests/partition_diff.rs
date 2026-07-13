@@ -147,3 +147,48 @@ fn write_partition_matches_c() {
         );
     }
 }
+
+#[test]
+fn skip_txfm_context_matches_c() {
+    use aom_entropy::partition::skip_txfm_context;
+    let mut rng = Rng(0x54e6_c0de_a11a_0009);
+    for _ in 0..50_000 {
+        let ap = rng.next().is_multiple_of(2);
+        let lp = rng.next().is_multiple_of(2);
+        let as_ = rng.next().is_multiple_of(2) as i32;
+        let ls = rng.next().is_multiple_of(2) as i32;
+        // the real fn resolves absent neighbours to 0
+        let above = if ap { as_ } else { 0 };
+        let left = if lp { ls } else { 0 };
+        assert_eq!(
+            skip_txfm_context(above, left),
+            c::ref_skip_txfm_context(ap, as_, lp, ls),
+            "skip_txfm_context ap={ap} lp={lp}"
+        );
+    }
+}
+
+#[test]
+fn write_skip_matches_c() {
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::write_skip;
+    let mut rng = Rng(0x54ab_c0de_a11a_0009);
+    for _ in 0..200_000 {
+        // valid 2-symbol CDF: cdf[0] in (0,32768), cdf[1]=0, cdf[2]=count=0
+        let c0 = 1 + (rng.next() % 32766) as u16;
+        let cdf = [c0, 0u16, 0u16];
+        let seg_skip = rng.next().is_multiple_of(3);
+        let skip_txfm = (rng.next() % 2) as i32;
+
+        let mut my_cdf = cdf;
+        let mut enc = OdEcEnc::new();
+        let r = write_skip(&mut enc, &mut my_cdf, seg_skip, skip_txfm);
+        let got = enc.done().to_vec();
+
+        let (want, want_cdf) = c::ref_write_skip(&cdf, seg_skip, skip_txfm);
+        assert_eq!(got, want, "write_skip bytes seg={seg_skip} s={skip_txfm}");
+        assert_eq!(my_cdf, want_cdf, "write_skip cdf seg={seg_skip} s={skip_txfm}");
+        let want_ret = if seg_skip { 1 } else { skip_txfm };
+        assert_eq!(r, want_ret, "write_skip return seg={seg_skip} s={skip_txfm}");
+    }
+}

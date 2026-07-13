@@ -131,3 +131,22 @@ pub fn write_partition(
     }
     // !has_rows && !has_cols => PARTITION_SPLIT, nothing coded.
 }
+
+/// `av1_get_skip_txfm_context` (`av1/common/*.h`): the transform-skip CDF context —
+/// the sum of the above and left neighbours' `skip_txfm` flags (each 0 when the
+/// neighbour is off-frame), giving a context in `{0, 1, 2}`.
+pub fn skip_txfm_context(above_skip_txfm: i32, left_skip_txfm: i32) -> i32 {
+    above_skip_txfm + left_skip_txfm
+}
+
+/// `write_skip` (`av1/encoder/bitstream.c`): the per-block transform-skip flag. When
+/// segment-level skip is active the flag is implied (returns 1, nothing coded);
+/// otherwise the `skip_txfm` bit is coded on the (context-selected) 2-symbol skip CDF
+/// with adaptation. Returns the coded skip value.
+pub fn write_skip(enc: &mut OdEcEnc, skip_cdf: &mut [u16], seg_skip_active: bool, skip_txfm: i32) -> i32 {
+    if seg_skip_active {
+        return 1;
+    }
+    write_symbol(enc, skip_txfm, skip_cdf, 2);
+    skip_txfm
+}
