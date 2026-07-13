@@ -2601,3 +2601,103 @@ pub fn read_frame_header_prefix(
     }
     (p, frame_size_override_flag, false)
 }
+
+/// `read_sequence_header_obu` — inverse of [`write_sequence_header_obu`]: profile +
+/// still/reduced flags, then (reduced) a single level, else the timing/decoder-model/
+/// display-model flags + the operating-points loop, followed by the sequence header,
+/// color config, and film-grain-present flag. Consumes the trailing byte alignment.
+pub fn read_sequence_header_obu(rb: &mut ReadBitBuffer) -> SequenceHeaderObu {
+    let profile = rb.read_literal(3);
+    let still_picture = rb.read_bit() != 0;
+    let reduced = rb.read_bit() != 0;
+
+    let mut timing_info_present = false;
+    let mut timing_info = TimingInfoHeader {
+        num_units_in_display_tick: 0,
+        time_scale: 0,
+        equal_picture_interval: false,
+        num_ticks_per_picture: 1,
+    };
+    let mut dmi_present = false;
+    let mut dmi = DecoderModelInfo {
+        encoder_decoder_buffer_delay_length: 1,
+        num_units_in_decoding_tick: 0,
+        buffer_removal_time_length: 1,
+        frame_presentation_time_length: 1,
+    };
+    let mut display_model_present = false;
+    let mut opcnt = 0i32;
+    let mut op_idc = [0i32; MAX_NUM_OPERATING_POINTS];
+    let mut seq_level_idx = [0i32; MAX_NUM_OPERATING_POINTS];
+    let mut tier = [0i32; MAX_NUM_OPERATING_POINTS];
+    let mut op_dmpp = [false; MAX_NUM_OPERATING_POINTS];
+    let mut op_dispp = [false; MAX_NUM_OPERATING_POINTS];
+    let mut op_dbd = [0u32; MAX_NUM_OPERATING_POINTS];
+    let mut op_ebd = [0u32; MAX_NUM_OPERATING_POINTS];
+    let mut op_ldmf = [false; MAX_NUM_OPERATING_POINTS];
+    let mut op_idd = [0i32; MAX_NUM_OPERATING_POINTS];
+
+    if reduced {
+        seq_level_idx[0] = rb.read_literal(5);
+    } else {
+        timing_info_present = rb.read_bit() != 0;
+        if timing_info_present {
+            timing_info = read_timing_info_header(rb);
+            dmi_present = rb.read_bit() != 0;
+            if dmi_present {
+                dmi = read_decoder_model_info(rb);
+            }
+        }
+        display_model_present = rb.read_bit() != 0;
+        opcnt = rb.read_literal(5);
+        for i in 0..=opcnt as usize {
+            op_idc[i] = rb.read_literal(12);
+            seq_level_idx[i] = rb.read_literal(5);
+            if seq_level_idx[i] >= 8 {
+                tier[i] = rb.read_bit() as i32;
+            }
+            if dmi_present {
+                op_dmpp[i] = rb.read_bit() != 0;
+                if op_dmpp[i] {
+                    let bdl = dmi.encoder_decoder_buffer_delay_length as u32;
+                    op_dbd[i] = rb.read_unsigned_literal(bdl);
+                    op_ebd[i] = rb.read_unsigned_literal(bdl);
+                    op_ldmf[i] = rb.read_bit() != 0;
+                }
+            }
+            if display_model_present {
+                op_dispp[i] = rb.read_bit() != 0;
+                if op_dispp[i] {
+                    op_idd[i] = rb.read_literal(4) + 1;
+                }
+            }
+        }
+    }
+    let seq_header = read_sequence_header(rb, reduced);
+    let color_config = read_color_config(rb, profile);
+    let film_grain_params_present = rb.read_bit() != 0;
+    rb.byte_align();
+    SequenceHeaderObu {
+        profile,
+        still_picture,
+        reduced_still_picture_hdr: reduced,
+        timing_info_present,
+        timing_info,
+        decoder_model_info_present_flag: dmi_present,
+        decoder_model_info: dmi,
+        display_model_info_present_flag: display_model_present,
+        operating_points_cnt_minus_1: opcnt,
+        operating_point_idc: op_idc,
+        seq_level_idx,
+        tier,
+        op_decoder_model_param_present: op_dmpp,
+        op_display_model_param_present: op_dispp,
+        op_decoder_buffer_delay: op_dbd,
+        op_encoder_buffer_delay: op_ebd,
+        op_low_delay_mode_flag: op_ldmf,
+        op_initial_display_delay: op_idd,
+        seq_header,
+        color_config,
+        film_grain_params_present,
+    }
+}

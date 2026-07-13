@@ -1290,3 +1290,137 @@ fn read_frame_header_prefix_inverts_write() {
         assert_eq!((g.refresh_frame_flags, g.ref_frame_map_order_hint), (refresh, rfmoh), "refresh/order hints");
     }
 }
+
+#[test]
+fn read_sequence_header_obu_inverts_write() {
+    use aom_entropy::header::{
+        read_sequence_header_obu, write_sequence_header_obu, ColorConfigParams, DecoderModelInfo,
+        SequenceHeaderObu, SequenceHeaderParams, TimingInfoHeader,
+    };
+    let mut rng = Rng(0x1e_5e0b_c0de_0210);
+    for _ in 0..100_000 {
+        let profile = (rng.next() % 3) as i32;
+        let bit_depth = if profile == 2 { [8, 10, 12][(rng.next() % 3) as usize] } else { [8, 10][(rng.next() % 2) as usize] };
+        // color config (valid per profile, following read_color_config inference)
+        let mono = profile != 1 && rng.next() & 1 == 1;
+        let want_srgb = !mono && profile == 1 && rng.next() & 1 == 1;
+        let (ssx, ssy) = if mono { (1, 1) } else if want_srgb { (0, 0) } else if profile == 0 { (1, 1) }
+            else if profile == 1 { (0, 0) } else if bit_depth == 12 {
+                let x = (rng.next() & 1) as i32; (x, if x == 1 { (rng.next() & 1) as i32 } else { 0 })
+            } else { (1, 0) };
+        let (cp, tc, mc) = if want_srgb {
+            (1, 13, 0)
+        } else if rng.next() & 1 == 1 {
+            let mut cp = (rng.next() % 256) as i32;
+            let tc = (rng.next() % 256) as i32;
+            let mc = (rng.next() % 256) as i32;
+            if cp == 2 && tc == 2 && mc == 2 {
+                cp = 3;
+            }
+            if cp == 1 && tc == 13 && mc == 0 {
+                cp = 5;
+            }
+            (cp, tc, mc)
+        } else {
+            (2, 2, 2)
+        };
+        let chroma_pos = if !mono && !want_srgb && ssx == 1 && ssy == 1 { (rng.next() % 4) as i32 } else { 0 };
+        let sep_uv = !mono && rng.next() & 1 == 1;
+        let color_config = ColorConfigParams {
+            bit_depth, profile, monochrome: mono, color_primaries: cp, transfer_characteristics: tc,
+            matrix_coefficients: mc, color_range: want_srgb || rng.next() & 1 == 1, subsampling_x: ssx,
+            subsampling_y: ssy, chroma_sample_position: chroma_pos, separate_uv_delta_q: sep_uv,
+        };
+
+        let reduced = rng.next().is_multiple_of(4);
+        let still_picture = reduced || rng.next() & 1 == 1;
+        // sequence header (reduced consistent)
+        let nbw = 1 + (rng.next() % 16) as u32;
+        let nbh = 1 + (rng.next() % 16) as u32;
+        let eoh = !reduced && rng.next() & 1 == 1;
+        let seq_header = SequenceHeaderParams {
+            num_bits_width: nbw, num_bits_height: nbh,
+            max_frame_width: 1 + (rng.next() % (1u64 << nbw)) as i32,
+            max_frame_height: 1 + (rng.next() % (1u64 << nbh)) as i32,
+            reduced_still_picture_hdr: reduced, frame_id_numbers_present_flag: false,
+            delta_frame_id_length: 0, frame_id_length: 0, sb_size_128: rng.next() & 1 == 1,
+            enable_filter_intra: rng.next() & 1 == 1, enable_intra_edge_filter: rng.next() & 1 == 1,
+            enable_interintra_compound: !reduced && rng.next() & 1 == 1,
+            enable_masked_compound: !reduced && rng.next() & 1 == 1,
+            enable_warped_motion: !reduced && rng.next() & 1 == 1,
+            enable_dual_filter: !reduced && rng.next() & 1 == 1, enable_order_hint: eoh,
+            enable_dist_wtd_comp: eoh && rng.next() & 1 == 1, enable_ref_frame_mvs: eoh && rng.next() & 1 == 1,
+            force_screen_content_tools: if reduced { 2 } else { (rng.next() % 3) as i32 },
+            force_integer_mv: 2, order_hint_bits_minus_1: if eoh { (rng.next() % 8) as i32 } else { -1 },
+            enable_superres: rng.next() & 1 == 1, enable_cdef: rng.next() & 1 == 1, enable_restoration: rng.next() & 1 == 1,
+        };
+        let sh = SequenceHeaderParams { force_integer_mv: if seq_header.force_screen_content_tools > 0 { (rng.next() % 3) as i32 } else { 2 }, ..seq_header };
+
+        // operating points
+        let opcnt = if reduced { 0 } else { (rng.next() % 4) as i32 };
+        let ti_present = !reduced && rng.next() & 1 == 1;
+        let dmi_present = ti_present && rng.next() & 1 == 1;
+        let disp_present = !reduced && rng.next() & 1 == 1;
+        let ti = TimingInfoHeader {
+            num_units_in_display_tick: rng.next() as u32, time_scale: rng.next() as u32,
+            equal_picture_interval: rng.next() & 1 == 1, num_ticks_per_picture: 1 + (rng.next() % (1 << 20)) as u32,
+        };
+        let ti = if ti.equal_picture_interval { ti } else { TimingInfoHeader { num_ticks_per_picture: 1, ..ti } };
+        let bdl = 1 + (rng.next() % 16) as i32;
+        let dmi = DecoderModelInfo {
+            encoder_decoder_buffer_delay_length: bdl, num_units_in_decoding_tick: rng.next() as u32,
+            buffer_removal_time_length: 1 + (rng.next() % 16) as i32, frame_presentation_time_length: 1 + (rng.next() % 16) as i32,
+        };
+        let mut op_idc = [0i32; 32]; let mut sli = [0i32; 32]; let mut tier = [0i32; 32];
+        let mut op_dmpp = [false; 32]; let mut op_dispp = [false; 32];
+        let mut op_dbd = [0u32; 32]; let mut op_ebd = [0u32; 32]; let mut op_ldmf = [false; 32]; let mut op_idd = [0i32; 32];
+        if reduced {
+            sli[0] = (rng.next() % 32) as i32;
+        } else {
+            for i in 0..=opcnt as usize {
+                op_idc[i] = (rng.next() % 4096) as i32;
+                sli[i] = (rng.next() % 32) as i32;
+                if sli[i] >= 8 { tier[i] = (rng.next() & 1) as i32; }
+                if dmi_present {
+                    op_dmpp[i] = rng.next() & 1 == 1;
+                    if op_dmpp[i] {
+                        op_dbd[i] = (rng.next() % (1u64 << bdl)) as u32;
+                        op_ebd[i] = (rng.next() % (1u64 << bdl)) as u32;
+                        op_ldmf[i] = rng.next() & 1 == 1;
+                    }
+                }
+                if disp_present {
+                    op_dispp[i] = rng.next() & 1 == 1;
+                    if op_dispp[i] { op_idd[i] = 1 + (rng.next() % 10) as i32; }
+                }
+            }
+        }
+
+        let obu = SequenceHeaderObu {
+            profile, still_picture, reduced_still_picture_hdr: reduced, timing_info_present: ti_present,
+            timing_info: ti, decoder_model_info_present_flag: dmi_present, decoder_model_info: dmi,
+            display_model_info_present_flag: disp_present, operating_points_cnt_minus_1: opcnt,
+            operating_point_idc: op_idc, seq_level_idx: sli, tier, op_decoder_model_param_present: op_dmpp,
+            op_display_model_param_present: op_dispp, op_decoder_buffer_delay: op_dbd,
+            op_encoder_buffer_delay: op_ebd, op_low_delay_mode_flag: op_ldmf, op_initial_display_delay: op_idd,
+            seq_header: sh, color_config, film_grain_params_present: rng.next() & 1 == 1,
+        };
+        let mut wb = WriteBitBuffer::new();
+        write_sequence_header_obu(&mut wb, &obu);
+        let b = wb.bytes().to_vec();
+        let mut rb = ReadBitBuffer::new(&b);
+        let g = read_sequence_header_obu(&mut rb);
+        assert_eq!(
+            (g.profile, g.still_picture, g.reduced_still_picture_hdr, g.timing_info_present,
+             g.decoder_model_info_present_flag, g.display_model_info_present_flag,
+             g.operating_points_cnt_minus_1, g.film_grain_params_present),
+            (profile, still_picture, reduced, ti_present, dmi_present, disp_present, opcnt, obu.film_grain_params_present),
+            "obu top red={reduced}"
+        );
+        assert_eq!((g.operating_point_idc, g.seq_level_idx, g.tier), (op_idc, sli, tier), "obu op arrays");
+        assert_eq!((g.op_decoder_model_param_present, g.op_decoder_buffer_delay, g.op_encoder_buffer_delay), (op_dmpp, op_dbd, op_ebd), "obu op dmi");
+        assert_eq!((g.op_display_model_param_present, g.op_initial_display_delay), (op_dispp, op_idd), "obu op disp");
+        assert_eq!((g.seq_header.num_bits_width, g.seq_header.enable_order_hint, g.seq_header.enable_superres), (nbw, eoh, sh.enable_superres), "obu seq_header");
+        assert_eq!((g.color_config.bit_depth, g.color_config.subsampling_x, g.color_config.subsampling_y), (bit_depth, ssx, ssy), "obu color_config");
+    }
+}
