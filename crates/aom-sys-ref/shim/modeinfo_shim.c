@@ -225,28 +225,62 @@ uint32_t shim_write_intra_uv_mode(uint16_t *uv_mode_cdf, int uv_mode, int cfl_al
 
 /* write_inter_mode: 3-symbol cascade over pristine C od_ec. CDFs flat:
  * newmv[6][3], zeromv[2][3], refmv[6][3]. */
+/* write_inter_mode body writing into an existing od_ec (reused by the inter mode+drl). */
+static void inter_mode_into(od_ec_enc *ec, uint16_t *newmv_cdf, uint16_t *zeromv_cdf,
+                            uint16_t *refmv_cdf, int mode, int mode_ctx) {
+  int newmv_ctx = mode_ctx & 7;
+  uint16_t *nc = newmv_cdf + newmv_ctx * 3;
+  od_ec_encode_cdf_q15(ec, mode != NEWMV, nc, 2);
+  update_cdf(nc, mode != NEWMV, 2);
+  if (mode != NEWMV) {
+    int zeromv_ctx = (mode_ctx >> 3) & 1;
+    uint16_t *zc = zeromv_cdf + zeromv_ctx * 3;
+    od_ec_encode_cdf_q15(ec, mode != GLOBALMV, zc, 2);
+    update_cdf(zc, mode != GLOBALMV, 2);
+    if (mode != GLOBALMV) {
+      int refmv_ctx = (mode_ctx >> 4) & 15;
+      uint16_t *rc = refmv_cdf + refmv_ctx * 3;
+      od_ec_encode_cdf_q15(ec, mode != NEARESTMV, rc, 2);
+      update_cdf(rc, mode != NEARESTMV, 2);
+    }
+  }
+}
+/* write_drl_idx body writing into an existing od_ec. */
+static void drl_into(od_ec_enc *ec, uint16_t *drl_cdf, int mode, int ref_mv_idx, int ref_mv_count,
+                     const uint16_t *weight) {
+  int new_mv = (mode == NEWMV || mode == NEW_NEWMV);
+  if (new_mv) {
+    for (int idx = 0; idx < 2; ++idx) {
+      if (ref_mv_count > idx + 1) {
+        uint8_t ctx = av1_drl_ctx(weight, idx);
+        uint16_t *c = drl_cdf + ctx * 3;
+        od_ec_encode_cdf_q15(ec, ref_mv_idx != idx, c, 2);
+        update_cdf(c, ref_mv_idx != idx, 2);
+        if (ref_mv_idx == idx) return;
+      }
+    }
+    return;
+  }
+  if (have_nearmv_in_inter_mode(mode)) {
+    for (int idx = 1; idx < 3; ++idx) {
+      if (ref_mv_count > idx + 1) {
+        uint8_t ctx = av1_drl_ctx(weight, idx);
+        uint16_t *c = drl_cdf + ctx * 3;
+        od_ec_encode_cdf_q15(ec, ref_mv_idx != (idx - 1), c, 2);
+        update_cdf(c, ref_mv_idx != (idx - 1), 2);
+        if (ref_mv_idx == (idx - 1)) return;
+      }
+    }
+  }
+}
+
 uint32_t shim_write_inter_mode(uint16_t *newmv_cdf, uint16_t *zeromv_cdf,
                                uint16_t *refmv_cdf, int mode, int mode_ctx, uint8_t *out,
                                uint16_t *out_newmv, uint16_t *out_zeromv,
                                uint16_t *out_refmv) {
   od_ec_enc ec;
   od_ec_enc_init(&ec, 256);
-  int newmv_ctx = mode_ctx & 7;
-  uint16_t *nc = newmv_cdf + newmv_ctx * 3;
-  od_ec_encode_cdf_q15(&ec, mode != NEWMV, nc, 2);
-  update_cdf(nc, mode != NEWMV, 2);
-  if (mode != NEWMV) {
-    int zeromv_ctx = (mode_ctx >> 3) & 1;
-    uint16_t *zc = zeromv_cdf + zeromv_ctx * 3;
-    od_ec_encode_cdf_q15(&ec, mode != GLOBALMV, zc, 2);
-    update_cdf(zc, mode != GLOBALMV, 2);
-    if (mode != GLOBALMV) {
-      int refmv_ctx = (mode_ctx >> 4) & 15;
-      uint16_t *rc = refmv_cdf + refmv_ctx * 3;
-      od_ec_encode_cdf_q15(&ec, mode != NEARESTMV, rc, 2);
-      update_cdf(rc, mode != NEARESTMV, 2);
-    }
-  }
+  inter_mode_into(&ec, newmv_cdf, zeromv_cdf, refmv_cdf, mode, mode_ctx);
   uint32_t n = 0;
   const unsigned char *buf = od_ec_enc_done(&ec, &n);
   for (uint32_t i = 0; i < n; i++) out[i] = buf[i];
@@ -264,31 +298,7 @@ uint32_t shim_write_drl_idx(uint16_t *drl_cdf, int mode, int ref_mv_idx, int ref
                             const uint16_t *weight, uint8_t *out, uint16_t *out_cdf) {
   od_ec_enc ec;
   od_ec_enc_init(&ec, 256);
-  int new_mv = (mode == NEWMV || mode == NEW_NEWMV);
-  if (new_mv) {
-    for (int idx = 0; idx < 2; ++idx) {
-      if (ref_mv_count > idx + 1) {
-        uint8_t ctx = av1_drl_ctx(weight, idx);
-        uint16_t *c = drl_cdf + ctx * 3;
-        od_ec_encode_cdf_q15(&ec, ref_mv_idx != idx, c, 2);
-        update_cdf(c, ref_mv_idx != idx, 2);
-        if (ref_mv_idx == idx) goto done;
-      }
-    }
-    goto done;
-  }
-  if (have_nearmv_in_inter_mode(mode)) {
-    for (int idx = 1; idx < 3; ++idx) {
-      if (ref_mv_count > idx + 1) {
-        uint8_t ctx = av1_drl_ctx(weight, idx);
-        uint16_t *c = drl_cdf + ctx * 3;
-        od_ec_encode_cdf_q15(&ec, ref_mv_idx != (idx - 1), c, 2);
-        update_cdf(c, ref_mv_idx != (idx - 1), 2);
-        if (ref_mv_idx == (idx - 1)) goto done;
-      }
-    }
-  }
-done:;
+  drl_into(&ec, drl_cdf, mode, ref_mv_idx, ref_mv_count, weight);
   uint32_t n = 0;
   const unsigned char *buf = od_ec_enc_done(&ec, &n);
   for (uint32_t i = 0; i < n; i++) out[i] = buf[i];
@@ -1889,6 +1899,37 @@ uint32_t shim_write_inter_block_mvs(int mode, int is_compound, int diff_row0, in
   for (uint32_t i = 0; i < nb; i++) out[i] = buf[i];
   for (int i = 0; i < 5; i++) o_joints[i] = joints[i];
   for (int i = 0; i < 69; i++) { o_c0[i] = comp0[i]; o_c1[i] = comp1[i]; }
+  od_ec_enc_clear(&ec);
+  return nb;
+}
+
+/* --- inter mode + drl (pack_inter_mode_mvs, bitstream.c) --- */
+/* if !seg_skip: compound-mode symbol OR the single-ref inter-mode cascade, then the drl
+ * index (for NEWMV/NEW_NEWMV/near modes). inter_compound_mode_cdf is pre-selected
+ * [mode_ctx] (8-sym); newmv/zeromv/refmv are full tables indexed by mode_ctx. */
+uint32_t shim_write_inter_mode_drl(int seg_skip, int mode, int mode_ctx,
+    uint16_t *inter_compound_mode_cdf, uint16_t *newmv_cdf, uint16_t *zeromv_cdf,
+    uint16_t *refmv_cdf, uint16_t *drl_cdf, int ref_mv_idx, int ref_mv_count,
+    const uint16_t *weight, uint8_t *out, uint16_t *o_icm, uint16_t *o_newmv, uint16_t *o_zeromv,
+    uint16_t *o_refmv, uint16_t *o_drl) {
+  od_ec_enc ec; od_ec_enc_init(&ec, 256);
+  if (!seg_skip) {
+    if (is_inter_compound_mode((PREDICTION_MODE)mode)) {
+      od_ec_encode_cdf_q15(&ec, mode - NEAREST_NEARESTMV, inter_compound_mode_cdf, INTER_COMPOUND_MODES);
+      update_cdf(inter_compound_mode_cdf, mode - NEAREST_NEARESTMV, INTER_COMPOUND_MODES);
+    } else if (is_inter_singleref_mode((PREDICTION_MODE)mode)) {
+      inter_mode_into(&ec, newmv_cdf, zeromv_cdf, refmv_cdf, mode, mode_ctx);
+    }
+    if (mode == NEWMV || mode == NEW_NEWMV || have_nearmv_in_inter_mode((PREDICTION_MODE)mode)) {
+      drl_into(&ec, drl_cdf, mode, ref_mv_idx, ref_mv_count, weight);
+    }
+  }
+  uint32_t nb = 0; const unsigned char *buf = od_ec_enc_done(&ec, &nb);
+  for (uint32_t i = 0; i < nb; i++) out[i] = buf[i];
+  for (int i = 0; i < 9; i++) o_icm[i] = inter_compound_mode_cdf[i];
+  for (int i = 0; i < 6 * 3; i++) { o_newmv[i] = newmv_cdf[i]; o_refmv[i] = refmv_cdf[i]; }
+  for (int i = 0; i < 2 * 3; i++) o_zeromv[i] = zeromv_cdf[i];
+  for (int i = 0; i < 3 * 3; i++) o_drl[i] = drl_cdf[i];
   od_ec_enc_clear(&ec);
   return nb;
 }

@@ -2571,3 +2571,67 @@ fn write_inter_block_mvs_matches_c() {
         assert_eq!(rjo, ojo, "joints"); assert_eq!(rc0, oc0, "comp0"); assert_eq!(rc1, oc1, "comp1");
     }
 }
+
+#[test]
+fn write_inter_mode_drl_matches_c() {
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::write_inter_mode_drl;
+    let mut rng = Rng(0x1e_0dd1_c0de_0016u64);
+    fn mk(rng: &mut Rng, nsyms: usize) -> Vec<u16> {
+        let mut c = vec![0u16; nsyms + 1];
+        let mut prev = 32768i32;
+        for e in c.iter_mut().take(nsyms - 1) {
+            let v = (prev - 1 - (rng.next() % 400) as i32).max(1);
+            *e = v as u16;
+            prev = v;
+        }
+        c
+    }
+    // 2-symbol nested CDF table [n][3].
+    let mk2n = |rng: &mut Rng, n: usize, flat: &mut [u16], nested: &mut [[u16; 3]]| {
+        for i in 0..n {
+            let row = mk(rng, 2);
+            for j in 0..3 { flat[i * 3 + j] = row[j]; nested[i][j] = row[j]; }
+        }
+    };
+    let modes = [16i32, 24, 19, 21, 20, 22, 13, 14, 15, 17, 18, 23];
+    for _ in 0..200_000 {
+        let seg_skip = rng.next().is_multiple_of(4);
+        let mode = modes[(rng.next() % modes.len() as u64) as usize];
+        // Valid mode_ctx: newmv_ctx (&7) and refmv_ctx (>>4 &15) index 6-entry tables, so
+        // keep both < 6 (NEWMV/REFMV_MODE_CONTEXTS); zeromv is bit 3 (2-entry, always ok).
+        let newmv_ctx = (rng.next() % 6) as i32;
+        let zeromv_bit = (rng.next() % 2) as i32;
+        let refmv_ctx = (rng.next() % 6) as i32;
+        let mode_ctx = newmv_ctx | (zeromv_bit << 3) | (refmv_ctx << 4);
+        let ref_mv_count = (rng.next() % 8) as i32;
+        let ref_mv_idx = (rng.next() % 3) as i32;
+        let mut weight = [0u16; 8];
+        for w in weight.iter_mut() { *w = (rng.next() % 1281) as u16; } // spans REF_CAT_LEVEL=640
+        let icm: [u16; 9] = mk(&mut rng, 8).try_into().unwrap();
+        let mut nm_f = [0u16; 18]; let mut nm_n = [[0u16; 3]; 6];
+        mk2n(&mut rng, 6, &mut nm_f, &mut nm_n);
+        let mut zm_f = [0u16; 6]; let mut zm_n = [[0u16; 3]; 2];
+        mk2n(&mut rng, 2, &mut zm_f, &mut zm_n);
+        let mut rm_f = [0u16; 18]; let mut rm_n = [[0u16; 3]; 6];
+        mk2n(&mut rng, 6, &mut rm_f, &mut rm_n);
+        let mut drl_f = [0u16; 9]; let mut drl_n = [[0u16; 3]; 3];
+        mk2n(&mut rng, 3, &mut drl_f, &mut drl_n);
+
+        let mut enc = OdEcEnc::new();
+        let (mut ricm, mut rnm, mut rzm, mut rrm, mut rdrl) = (icm, nm_n, zm_n, rm_n, drl_n);
+        write_inter_mode_drl(&mut enc, seg_skip, mode, mode_ctx, &mut ricm, &mut rnm, &mut rzm, &mut rrm, &mut rdrl, ref_mv_idx, ref_mv_count, &weight);
+        let got = enc.done().to_vec();
+        let (want, oicm, onm, ozm, orm, odrl) = c::ref_write_inter_mode_drl(seg_skip, mode, mode_ctx, &icm, &nm_f, &zm_f, &rm_f, &drl_f, ref_mv_idx, ref_mv_count, &weight);
+        assert_eq!(got, want, "bytes ss={seg_skip} mode={mode} ctx={mode_ctx} idx={ref_mv_idx} cnt={ref_mv_count}");
+        assert_eq!(ricm, oicm, "icm");
+        let rnm_f: [u16; 18] = core::array::from_fn(|i| rnm[i / 3][i % 3]);
+        assert_eq!(rnm_f, onm, "newmv");
+        let rzm_f: [u16; 6] = core::array::from_fn(|i| rzm[i / 3][i % 3]);
+        assert_eq!(rzm_f, ozm, "zeromv");
+        let rrm_f: [u16; 18] = core::array::from_fn(|i| rrm[i / 3][i % 3]);
+        assert_eq!(rrm_f, orm, "refmv");
+        let rdrl_f: [u16; 9] = core::array::from_fn(|i| rdrl[i / 3][i % 3]);
+        assert_eq!(rdrl_f, odrl, "drl");
+    }
+}

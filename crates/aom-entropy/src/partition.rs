@@ -2366,3 +2366,37 @@ pub fn write_inter_block_mvs(
         encode_mv(enc, joints_cdf, comp0, comp1, diff_row[0], diff_col[0], usehp);
     }
 }
+
+/// The inter mode + drl coding of `pack_inter_mode_mvs` (`av1/encoder/bitstream.c`):
+/// unless segment-skip forces the mode, code the compound-mode symbol (for a compound
+/// mode) or the single-ref inter-mode cascade (for a single-ref mode), then — for NEWMV /
+/// NEW_NEWMV / a NEAR mode — the dynamic-ref-list index. `inter_compound_mode_cdf` is the
+/// caller's `[mode_ctx]`-selected slice; the single-ref CDFs are the full tables indexed
+/// by `mode_ctx` internally.
+#[allow(clippy::too_many_arguments)]
+pub fn write_inter_mode_drl(
+    enc: &mut OdEcEnc,
+    seg_skip: bool,
+    mode: i32,
+    mode_ctx: i32,
+    inter_compound_mode_cdf: &mut [u16],
+    newmv_cdf: &mut [[u16; 3]; 6],
+    zeromv_cdf: &mut [[u16; 3]; 2],
+    refmv_cdf: &mut [[u16; 3]; 6],
+    drl_cdf: &mut [[u16; 3]; 3],
+    ref_mv_idx: i32,
+    ref_mv_count: i32,
+    weight: &[u16],
+) {
+    if seg_skip {
+        return;
+    }
+    if is_inter_compound_mode(mode) {
+        write_inter_compound_mode(enc, inter_compound_mode_cdf, mode);
+    } else if is_inter_singleref_mode(mode) {
+        write_inter_mode(enc, newmv_cdf, zeromv_cdf, refmv_cdf, mode, mode_ctx);
+    }
+    if mode == NEWMV || mode == NEW_NEWMV || have_nearmv_in_inter_mode(mode) {
+        write_drl_idx(enc, drl_cdf, mode, ref_mv_idx, ref_mv_count, weight);
+    }
+}
