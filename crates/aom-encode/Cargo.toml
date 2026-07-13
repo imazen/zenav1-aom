@@ -10,6 +10,7 @@ publish = false
 aom-transform = { path = "../aom-transform" }
 aom-quant = { path = "../aom-quant" }
 aom-txb = { path = "../aom-txb" }
+aom-entropy = { path = "../aom-entropy" }
 
 [dev-dependencies]
 aom-sys-ref = { path = "../aom-sys-ref" }

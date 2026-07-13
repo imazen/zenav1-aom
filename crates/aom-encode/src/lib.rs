@@ -13,13 +13,14 @@
 //! forward transform lands.
 #![forbid(unsafe_code)]
 
+use aom_entropy::enc::OdEcEnc;
 use aom_quant::{
     aom_quantize_b_no_qmatrix, aom_quantize_b_qm, av1_quantize_fp_no_qmatrix, av1_quantize_fp_qm,
 };
 use aom_transform::txfm2d::av1_fwd_txfm2d;
 use aom_txb::{
     get_txb_ctx, optimize_txb, optimize_txb_qm, scan, txb_entropy_context, txb_high, txb_wide,
-    CoeffCostTables,
+    write_coeffs_txb, CoeffCostTables,
 };
 
 /// Full (un-adjusted) transform width per `TX_SIZE` — the residual/coeff buffer
@@ -156,6 +157,9 @@ pub struct XformQuantOptResult {
     pub txb_entropy_ctx: u8,
     /// Total coefficient rate (the trellis result, or the skip-txb cost at eob 0).
     pub rate: i32,
+    /// The `get_txb_ctx` result — the contexts the coefficient writer also needs.
+    pub txb_skip_ctx: usize,
+    pub dc_sign_ctx: usize,
 }
 
 /// The full speed-0 block coefficient pipeline: `av1_xform_quant` (with
@@ -185,7 +189,15 @@ pub fn xform_quant_optimize(
     // av1_optimize_b: eob 0 -> skip-txb cost; else run the trellis.
     if eob == 0 {
         let rate = opt.cost.txb_skip[txb_skip_ctx * 2 + 1];
-        return XformQuantOptResult { qcoeff, dqcoeff, eob: 0, txb_entropy_ctx: 0, rate };
+        return XformQuantOptResult {
+            qcoeff,
+            dqcoeff,
+            eob: 0,
+            txb_entropy_ctx: 0,
+            rate,
+            txb_skip_ctx,
+            dc_sign_ctx,
+        };
     }
 
     let dequant = [qp.dequant[0], qp.dequant[1]];
@@ -210,5 +222,44 @@ pub fn xform_quant_optimize(
         eob: res.eob as u16,
         txb_entropy_ctx,
         rate: res.rate,
+        txb_skip_ctx,
+        dc_sign_ctx,
     }
+}
+
+/// Encode a residual block all the way to entropy-coded coefficient bytes: the
+/// full speed-0 path ([`xform_quant_optimize`]) followed by `av1_write_coeffs_txb`
+/// on the range coder. `enc` accumulates the bitstream (call `enc.done()` for the
+/// bytes); `cdfs` is the coefficient-CDF arena (`CDF_ARENA_LEN` u16), adapted in
+/// place when `allow_update_cdf`. Returns the optimized block (its qcoeff is what
+/// was written). `av1_write_tx_type` (plane-0 tx_type) is out of scope, matching
+/// the writer. `plane_type` is `0` for luma (`plane == 0`), else `1`.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_block_coeffs(
+    residual: &[i16],
+    tx_size: usize,
+    tx_type: usize,
+    kind: QuantKind,
+    qp: &QuantParams,
+    bctx: &BlockContext,
+    opt: &OptimizeInputs,
+    allow_update_cdf: bool,
+    enc: &mut OdEcEnc,
+    cdfs: &mut [u16],
+) -> XformQuantOptResult {
+    let r = xform_quant_optimize(residual, tx_size, tx_type, kind, qp, bctx, opt);
+    let plane_type = (bctx.plane > 0) as usize;
+    write_coeffs_txb(
+        enc,
+        cdfs,
+        &r.qcoeff,
+        r.eob as usize,
+        tx_size,
+        tx_type,
+        plane_type,
+        r.txb_skip_ctx,
+        r.dc_sign_ctx,
+        allow_update_cdf,
+    );
+    r
 }
