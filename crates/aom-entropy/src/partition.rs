@@ -3076,3 +3076,43 @@ pub fn read_ref_frames(
         (false, -1, ref0, -1)
     }
 }
+
+/// `read_selected_tx_size` — inverse of [`write_selected_tx_size`]
+/// (`av1/decoder/decodemv.c` `read_selected_tx_size`): the intra tx-depth. Coded only
+/// when the block signals a tx size (`bsize > BLOCK_4X4`) on the `(max_depths+1)`-symbol
+/// CDF; otherwise depth 0.
+pub fn read_selected_tx_size(
+    dec: &mut OdEcDec,
+    tx_size_cdf: &mut [u16],
+    bsize: usize,
+    max_depths: usize,
+) -> i32 {
+    if bsize > 0 {
+        read_symbol(dec, tx_size_cdf, max_depths + 1)
+    } else {
+        0
+    }
+}
+
+/// `read_filter_intra_mode_info` — inverse of [`write_filter_intra_mode_info`]
+/// (`av1/decoder/decodemv.c`): the use-filter-intra flag (when allowed), then the
+/// filter-intra mode if used. Returns `(use_filter_intra, mode)`; `(0, 0)` when not
+/// allowed or not used.
+pub fn read_filter_intra_mode_info(
+    dec: &mut OdEcDec,
+    use_cdf: &mut [u16],
+    mode_cdf: &mut [u16],
+    allowed: bool,
+) -> (i32, i32) {
+    if allowed {
+        let use_filter_intra = read_symbol(dec, use_cdf, 2);
+        let mode = if use_filter_intra != 0 {
+            read_symbol(dec, mode_cdf, FILTER_INTRA_MODES)
+        } else {
+            0
+        };
+        (use_filter_intra, mode)
+    } else {
+        (0, 0)
+    }
+}

@@ -3420,3 +3420,78 @@ fn read_ref_frames_roundtrips_write_ref_frames() {
         assert_eq!(ce, cd, "ref cdfs comp={is_compound} r=({ref0},{ref1})");
     }
 }
+
+#[test]
+fn read_selected_tx_size_roundtrips() {
+    use aom_entropy::dec::OdEcDec;
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{read_selected_tx_size, write_selected_tx_size};
+    let mut rng = Rng(0x1e_7451_c0de_0050u64);
+    let mk = |rng: &mut Rng, ns: usize, out: &mut [u16]| {
+        let mut vals = [0i32; 4];
+        for v in vals.iter_mut().take(ns - 1) { *v = 1 + (rng.next() % 32766) as i32; }
+        vals[..ns - 1].sort_unstable();
+        vals[..ns - 1].reverse();
+        let mut prev = 32768i32;
+        for i in 0..ns - 1 { let v = vals[i].min(prev - 1).max((ns - 1 - i) as i32); out[i] = v as u16; prev = v; }
+        out[ns - 1] = 0; out[ns] = 0;
+    };
+    for _ in 0..200_000 {
+        let max_depths = (rng.next() % 2 + 1) as usize; // MAX_TX_DEPTH 1..=2
+        let ns = max_depths + 1;
+        let bsize = (rng.next() % 4) as usize; // 0 => no signal
+        let depth = if bsize > 0 { (rng.next() % ns as u64) as i32 } else { 0 };
+        let mut cdf = vec![0u16; ns + 1];
+        mk(&mut rng, ns, &mut cdf);
+        let mut enc = OdEcEnc::new();
+        let mut ce = cdf.clone();
+        write_selected_tx_size(&mut enc, &mut ce, bsize, depth, max_depths);
+        let bytes = enc.done().to_vec();
+        let mut dec = OdEcDec::new(&bytes);
+        let mut cd = cdf.clone();
+        let got = read_selected_tx_size(&mut dec, &mut cd, bsize, max_depths);
+        assert_eq!(got, depth, "tx depth bsize={bsize} md={max_depths}");
+        assert_eq!(ce, cd, "tx cdf");
+    }
+}
+
+#[test]
+fn read_filter_intra_mode_info_roundtrips() {
+    use aom_entropy::dec::OdEcDec;
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{read_filter_intra_mode_info, write_filter_intra_mode_info};
+    let mut rng = Rng(0x1e_f1a5_c0de_0051u64);
+    let mk = |rng: &mut Rng, ns: usize, out: &mut [u16]| {
+        let mut vals = [0i32; 8];
+        for v in vals.iter_mut().take(ns - 1) { *v = 1 + (rng.next() % 32766) as i32; }
+        vals[..ns - 1].sort_unstable();
+        vals[..ns - 1].reverse();
+        let mut prev = 32768i32;
+        for i in 0..ns - 1 { let v = vals[i].min(prev - 1).max((ns - 1 - i) as i32); out[i] = v as u16; prev = v; }
+        out[ns - 1] = 0; out[ns] = 0;
+    };
+    for _ in 0..200_000 {
+        let allowed = rng.next() & 1 == 1;
+        let use_fi = (rng.next() & 1) as i32;
+        let mode = if use_fi != 0 { (rng.next() % 5) as i32 } else { 0 };
+        let mut ucdf = [0u16; 3];
+        let mut mcdf = [0u16; 6];
+        mk(&mut rng, 2, &mut ucdf);
+        mk(&mut rng, 5, &mut mcdf);
+        let mut enc = OdEcEnc::new();
+        let (mut ue, mut me) = (ucdf, mcdf);
+        write_filter_intra_mode_info(&mut enc, &mut ue, &mut me, allowed, use_fi, mode);
+        let bytes = enc.done().to_vec();
+        let mut dec = OdEcDec::new(&bytes);
+        let (mut ud, mut md) = (ucdf, mcdf);
+        let (gu, gm) = read_filter_intra_mode_info(&mut dec, &mut ud, &mut md, allowed);
+        if allowed {
+            assert_eq!(gu, use_fi, "use_fi");
+            if use_fi != 0 { assert_eq!(gm, mode, "fi mode"); }
+        } else {
+            assert_eq!((gu, gm), (0, 0), "not allowed");
+        }
+        assert_eq!(ue, ud, "use cdf");
+        assert_eq!(me, md, "mode cdf");
+    }
+}
