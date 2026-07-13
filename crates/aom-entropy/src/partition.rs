@@ -3900,3 +3900,105 @@ pub fn read_intra_prediction_modes(
     let (use_fi, fi_mode) = read_filter_intra_mode_info(dec, fi_use_cdf, fi_mode_cdf, filter_allowed);
     (mode, angle_y, uv_mode, cfl_idx, cfl_sign, angle_uv, palette_size, palette_colors, use_fi, fi_mode)
 }
+
+/// Decoded KEY-frame block tail (`read_kf_tail` output): either an intrabc block (with
+/// its block vector) or the intra prediction mode-info.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KfTailResult {
+    pub use_intrabc: i32,
+    pub diff_row: i32,
+    pub diff_col: i32,
+    pub mode: i32,
+    pub angle_delta_y: i32,
+    pub uv_mode: i32,
+    pub cfl_alpha_idx: i32,
+    pub cfl_joint_sign: i32,
+    pub angle_delta_uv: i32,
+    pub palette_size: [i32; 2],
+    pub palette_colors: Vec<u16>,
+    pub use_filter_intra: i32,
+    pub filter_intra_mode: i32,
+}
+
+/// `read_kf_tail` — inverse of [`write_kf_tail`]: the intrabc flag + block vector (an
+/// intrabc block returns immediately), otherwise the full intra prediction mode-info.
+/// Composes [`read_intrabc_info`] + [`read_intra_prediction_modes`].
+#[allow(clippy::too_many_arguments)]
+pub fn read_kf_tail(
+    dec: &mut OdEcDec,
+    allow_intrabc: bool,
+    intrabc_cdf: &mut [u16],
+    ndvc_joints: &mut [u16],
+    ndvc_comp0: &mut [u16; 69],
+    ndvc_comp1: &mut [u16; 69],
+    bsize: usize,
+    y_cdf: &mut [u16],
+    y_angle_cdf: &mut [u16],
+    monochrome: bool,
+    is_chroma_ref: bool,
+    cfl_allowed: bool,
+    uv_mode_cdf: &mut [u16],
+    cfl_sign_cdf: &mut [u16],
+    cfl_alpha_cdf: &mut [[u16; 17]; 6],
+    uv_angle_cdf: &mut [u16],
+    allow_palette: bool,
+    bit_depth: i32,
+    pal_y_mode_cdf: &mut [u16],
+    pal_y_size_cdf: &mut [u16],
+    pal_uv_mode_cdf: &mut [u16],
+    pal_uv_size_cdf: &mut [u16],
+    mb_to_top_edge: i32,
+    has_above: bool,
+    above_colors: &[u16],
+    above_size: [i32; 2],
+    has_left: bool,
+    left_colors: &[u16],
+    left_size: [i32; 2],
+    filter_allowed: bool,
+    fi_use_cdf: &mut [u16],
+    fi_mode_cdf: &mut [u16],
+) -> KfTailResult {
+    if allow_intrabc {
+        let (use_intrabc, dr, dc) =
+            read_intrabc_info(dec, intrabc_cdf, ndvc_joints, ndvc_comp0, ndvc_comp1);
+        if use_intrabc != 0 {
+            return KfTailResult {
+                use_intrabc,
+                diff_row: dr,
+                diff_col: dc,
+                mode: 0,
+                angle_delta_y: 0,
+                uv_mode: 0,
+                cfl_alpha_idx: 0,
+                cfl_joint_sign: 0,
+                angle_delta_uv: 0,
+                palette_size: [0, 0],
+                palette_colors: vec![0u16; 3 * PALETTE_MAX_SIZE],
+                use_filter_intra: 0,
+                filter_intra_mode: 0,
+            };
+        }
+    }
+    let (mode, angle_y, uv_mode, cfl_idx, cfl_sign, angle_uv, palette_size, palette_colors, use_fi, fi_mode) =
+        read_intra_prediction_modes(
+            dec, bsize, y_cdf, y_angle_cdf, monochrome, is_chroma_ref, cfl_allowed, uv_mode_cdf,
+            cfl_sign_cdf, cfl_alpha_cdf, uv_angle_cdf, allow_palette, bit_depth, pal_y_mode_cdf,
+            pal_y_size_cdf, pal_uv_mode_cdf, pal_uv_size_cdf, mb_to_top_edge, has_above, above_colors,
+            above_size, has_left, left_colors, left_size, filter_allowed, fi_use_cdf, fi_mode_cdf,
+        );
+    KfTailResult {
+        use_intrabc: 0,
+        diff_row: 0,
+        diff_col: 0,
+        mode,
+        angle_delta_y: angle_y,
+        uv_mode,
+        cfl_alpha_idx: cfl_idx,
+        cfl_joint_sign: cfl_sign,
+        angle_delta_uv: angle_uv,
+        palette_size,
+        palette_colors,
+        use_filter_intra: use_fi,
+        filter_intra_mode: fi_mode,
+    }
+}

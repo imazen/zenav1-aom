@@ -4203,3 +4203,104 @@ fn read_intra_prediction_modes_roundtrips_nopalette() {
         assert_eq!((yce, yace, uce, sce, ace, uace, fiue, fime), (ycd, yacd, ucd, scd, acd, uacd, fiud, fimd), "cdfs");
     }
 }
+
+#[test]
+fn read_kf_tail_roundtrips_write() {
+    use aom_entropy::dec::OdEcDec;
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{
+        get_uv_mode, is_directional_mode, read_kf_tail, use_angle_delta, write_kf_tail,
+    };
+    let mut rng = Rng(0x1e_c0de_de1f_00a0u64);
+    let mk_comp = |rng: &mut Rng| -> [u16; 69] {
+        let mut c = [0u16; 69];
+        mk_ns_cdf(rng, 2, &mut c[0..3]);
+        mk_ns_cdf(rng, 11, &mut c[3..15]);
+        mk_ns_cdf(rng, 2, &mut c[15..18]);
+        for i in 0..10 { let o = 18 + i * 3; mk_ns_cdf(rng, 2, &mut c[o..o + 3]); }
+        for i in 0..2 { let o = 48 + i * 5; mk_ns_cdf(rng, 4, &mut c[o..o + 5]); }
+        mk_ns_cdf(rng, 4, &mut c[58..63]);
+        mk_ns_cdf(rng, 2, &mut c[63..66]);
+        mk_ns_cdf(rng, 2, &mut c[66..69]);
+        c
+    };
+    let bsizes = [3usize, 6, 9, 12, 15];
+    for _ in 0..200_000 {
+        let bsize = bsizes[(rng.next() % bsizes.len() as u64) as usize];
+        let allow_intrabc = rng.next() & 1 == 1;
+        let use_intrabc = if allow_intrabc { (rng.next() & 1) as i32 } else { 0 };
+        let (dr, dc) = if use_intrabc != 0 {
+            (((rng.next() % 201) as i32 - 100) * 8, ((rng.next() % 201) as i32 - 100) * 8)
+        } else {
+            (0, 0)
+        };
+        // intra fields (used only when not an intrabc block)
+        let mode = (rng.next() % 13) as i32;
+        let y_ang = if use_angle_delta(bsize) && is_directional_mode(mode) { (rng.next() % 7) as i32 - 3 } else { 0 };
+        let mono = rng.next() & 1 == 1;
+        let chroma_ref = rng.next() & 1 == 1;
+        let cfl_allowed = rng.next() & 1 == 1;
+        let uv_n = if cfl_allowed { 14 } else { 13 };
+        let uv_mode = if !mono && chroma_ref { (rng.next() % uv_n as u64) as i32 } else { 0 };
+        let js = if uv_mode == 13 { (rng.next() % 8) as i32 } else { 0 };
+        let (su, sv) = ((js + 1) / 3, (js + 1) % 3);
+        let u = if uv_mode == 13 && su != 0 { (rng.next() % 16) as i32 } else { 0 };
+        let v = if uv_mode == 13 && sv != 0 { (rng.next() % 16) as i32 } else { 0 };
+        let cfl_idx = (u << 4) | v;
+        let uv_intra = get_uv_mode(uv_mode as usize);
+        let uv_ang_c = !mono && chroma_ref && use_angle_delta(bsize) && is_directional_mode(uv_intra);
+        let uv_ang = if uv_ang_c { (rng.next() % 7) as i32 - 3 } else { 0 };
+        let fi_allowed = rng.next() & 1 == 1;
+        let use_fi = if fi_allowed { (rng.next() & 1) as i32 } else { 0 };
+        let fi_mode = if use_fi != 0 { (rng.next() % 5) as i32 } else { 0 };
+
+        let mut ic = [0u16; 3]; let mut jc = [0u16; 5];
+        let c0 = mk_comp(&mut rng); let c1 = mk_comp(&mut rng);
+        let mut yc = [0u16; 14]; let mut yac = [0u16; 8]; let mut uc = [0u16; 15];
+        let mut sc = [0u16; 9]; let mut ac = [[0u16; 17]; 6]; let mut uac = [0u16; 8];
+        let mut fiu = [0u16; 3]; let mut fim = [0u16; 6];
+        let (mut p0, mut p1, mut p2, mut p3) = ([0u16; 3], [0u16; 8], [0u16; 3], [0u16; 8]);
+        mk_ns_cdf(&mut rng, 2, &mut ic); mk_ns_cdf(&mut rng, 4, &mut jc);
+        mk_ns_cdf(&mut rng, 13, &mut yc); mk_ns_cdf(&mut rng, 7, &mut yac);
+        mk_ns_cdf(&mut rng, uv_n, &mut uc); mk_ns_cdf(&mut rng, 8, &mut sc);
+        for c in ac.iter_mut() { mk_ns_cdf(&mut rng, 16, c); }
+        mk_ns_cdf(&mut rng, 7, &mut uac); mk_ns_cdf(&mut rng, 2, &mut fiu); mk_ns_cdf(&mut rng, 5, &mut fim);
+        mk_ns_cdf(&mut rng, 2, &mut p0); mk_ns_cdf(&mut rng, 7, &mut p1);
+        mk_ns_cdf(&mut rng, 2, &mut p2); mk_ns_cdf(&mut rng, 7, &mut p3);
+
+        let mut enc = OdEcEnc::new();
+        let (mut ice, mut jce, mut c0e, mut c1e, mut yce, mut yace, mut uce, mut sce, mut ace, mut uace, mut fiue, mut fime) =
+            (ic, jc, c0, c1, yc, yac, uc, sc, ac, uac, fiu, fim);
+        let (mut p0e, mut p1e, mut p2e, mut p3e) = (p0, p1, p2, p3);
+        write_kf_tail(
+            &mut enc, allow_intrabc, &mut ice, &mut jce, &mut c0e, &mut c1e, use_intrabc, dr, dc,
+            mode, bsize, &mut yce, y_ang, &mut yace, mono, chroma_ref, uv_mode, cfl_allowed, cfl_idx,
+            js, uv_ang, &mut uce, &mut sce, &mut ace, &mut uace, false, 8, [0, 0], &[], 0, false, &[],
+            [0, 0], false, &[], [0, 0], &mut p0e, &mut p1e, &mut p2e, &mut p3e, fi_allowed, use_fi,
+            fi_mode, &mut fiue, &mut fime,
+        );
+        let b = enc.done().to_vec();
+        let mut dec = OdEcDec::new(&b);
+        let (mut icd, mut jcd, mut c0d, mut c1d, mut ycd, mut yacd, mut ucd, mut scd, mut acd, mut uacd, mut fiud, mut fimd) =
+            (ic, jc, c0, c1, yc, yac, uc, sc, ac, uac, fiu, fim);
+        let (mut p0d, mut p1d, mut p2d, mut p3d) = (p0, p1, p2, p3);
+        let g = read_kf_tail(
+            &mut dec, allow_intrabc, &mut icd, &mut jcd, &mut c0d, &mut c1d, bsize, &mut ycd, &mut yacd,
+            mono, chroma_ref, cfl_allowed, &mut ucd, &mut scd, &mut acd, &mut uacd, false, 8, &mut p0d,
+            &mut p1d, &mut p2d, &mut p3d, 0, false, &[], [0, 0], false, &[], [0, 0], fi_allowed,
+            &mut fiud, &mut fimd,
+        );
+        assert_eq!(g.use_intrabc, use_intrabc, "use_intrabc");
+        if use_intrabc != 0 {
+            assert_eq!((g.diff_row, g.diff_col), (dr, dc), "dv");
+        } else {
+            assert_eq!(g.mode, mode, "y mode");
+            if !mono && chroma_ref {
+                assert_eq!(g.uv_mode, uv_mode, "uv mode");
+                if uv_mode == 13 { assert_eq!((g.cfl_alpha_idx, g.cfl_joint_sign), (cfl_idx, js), "cfl"); }
+            }
+            if fi_allowed { assert_eq!(g.use_filter_intra, use_fi, "use_fi"); }
+        }
+        assert_eq!((yce, uce, fiue), (ycd, ucd, fiud), "cdf adapt");
+    }
+}
