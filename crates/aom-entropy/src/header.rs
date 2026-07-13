@@ -123,3 +123,32 @@ pub fn encode_loopfilter(wb: &mut WriteBitBuffer, lf: &LoopfilterHeader, num_pla
         }
     }
 }
+
+/// The CDEF frame-header state (`cm->cdef_info`).
+#[derive(Clone, Copy, Debug)]
+pub struct CdefHeader {
+    pub enable_cdef: bool,
+    pub allow_intrabc: bool,
+    pub cdef_damping: i32,
+    pub cdef_bits: i32,
+    pub nb_cdef_strengths: usize,
+    pub cdef_strengths: [i32; 8],
+    pub cdef_uv_strengths: [i32; 8],
+}
+
+/// `encode_cdef` (`av1/encoder/bitstream.c`): CDEF params — damping (`-3`, 2 bits),
+/// `cdef_bits` (2 bits), then `nb_cdef_strengths` y (and, for `num_planes > 1`, uv)
+/// strengths at `CDEF_STRENGTH_BITS`=6. Writes nothing when CDEF is disabled or intrabc.
+pub fn encode_cdef(wb: &mut WriteBitBuffer, cdef: &CdefHeader, num_planes: usize) {
+    if !cdef.enable_cdef || cdef.allow_intrabc {
+        return;
+    }
+    wb.write_literal(cdef.cdef_damping - 3, 2);
+    wb.write_literal(cdef.cdef_bits, 2);
+    for i in 0..cdef.nb_cdef_strengths {
+        wb.write_literal(cdef.cdef_strengths[i], 6);
+        if num_planes > 1 {
+            wb.write_literal(cdef.cdef_uv_strengths[i], 6);
+        }
+    }
+}

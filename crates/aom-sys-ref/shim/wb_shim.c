@@ -111,3 +111,18 @@ uint32_t shim_encode_loopfilter(int allow_intrabc, int fl0, int fl1, int flu,
   }
   return aom_wb_bytes_written(&wb);
 }
+
+/* Transcribed control flow of encode_cdef over the real aom_wb. */
+uint32_t shim_encode_cdef(int enable_cdef, int allow_intrabc, int damping,
+                          int cdef_bits, int nb, const int *y, const int *uv,
+                          int num_planes, uint8_t *out) {
+  struct aom_write_bit_buffer wb = { out, 0 };
+  if (!enable_cdef || allow_intrabc) return aom_wb_bytes_written(&wb);
+  aom_wb_write_literal(&wb, damping - 3, 2);
+  aom_wb_write_literal(&wb, cdef_bits, 2);
+  for (int i = 0; i < nb; i++) {
+    aom_wb_write_literal(&wb, y[i], 6);
+    if (num_planes > 1) aom_wb_write_literal(&wb, uv[i], 6);
+  }
+  return aom_wb_bytes_written(&wb);
+}

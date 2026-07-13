@@ -122,3 +122,34 @@ fn encode_loopfilter_matches_c() {
         assert_eq!(got, want, "encode_loopfilter {lf:?} np={num_planes}");
     }
 }
+
+#[test]
+fn encode_cdef_matches_c() {
+    use aom_entropy::header::{encode_cdef, CdefHeader};
+    let mut rng = Rng(0xcde1_c0de_a11a_0009);
+    for _ in 0..200_000 {
+        let cdef_bits = rng.range(0, 4); // nb_cdef_strengths = 1<<cdef_bits (1..8)
+        let nb = 1usize << cdef_bits;
+        let mut y = [0i32; 8];
+        let mut uv = [0i32; 8];
+        for k in 0..8 {
+            y[k] = rng.range(0, 64);
+            uv[k] = rng.range(0, 64);
+        }
+        let cdef = CdefHeader {
+            enable_cdef: rng.next().is_multiple_of(5),
+            allow_intrabc: rng.next().is_multiple_of(7),
+            cdef_damping: rng.range(3, 7), // damping-3 fits 2 bits => damping 3..6
+            cdef_bits,
+            nb_cdef_strengths: nb,
+            cdef_strengths: y,
+            cdef_uv_strengths: uv,
+        };
+        let num_planes = if rng.next().is_multiple_of(4) { 1 } else { 3 };
+        let mut wb = WriteBitBuffer::new();
+        encode_cdef(&mut wb, &cdef, num_planes);
+        let got = wb.bytes().to_vec();
+        let want = c::ref_encode_cdef(cdef.enable_cdef, cdef.allow_intrabc, cdef.cdef_damping, cdef.cdef_bits, nb, &y, &uv, num_planes);
+        assert_eq!(got, want, "encode_cdef {cdef:?} np={num_planes}");
+    }
+}
