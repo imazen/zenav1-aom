@@ -347,7 +347,7 @@
     },
     "convolve.sr": {
       "status": "green",
-      "note": "Inter-pred separable convolution (encoder critical path / motion comp), EIGHTTAP_REGULAR: av1_convolve_x_sr + av1_convolve_y_sr, lowbd. dist_wtd, other filter types (smooth/sharp/4tap), highbd: TODO.",
+      "note": "Inter-pred separable convolution (encoder critical path / motion comp): av1_convolve_x/y/2d_sr for EIGHTTAP_REGULAR/SMOOTH/SHARP, lowbd. dist_wtd, 4-tap, highbd: TODO.",
       "items": {
         "av1_convolve_x_sr": {
           "status": "green",

@@ -33,21 +33,22 @@ fn convolve_x_y_sr_byte_identical() {
         for _ in 0..4000 {
             let src: Vec<u8> = (0..stride * rows).map(|_| rng.u8()).collect();
             let subpel = (rng.next() % 16) as usize;
+            let ftype = (rng.next() % 3) as usize;
 
             let mut gx = vec![0u8; w * h];
-            convolve_x_sr(&src, src_off, stride, &mut gx, w, w, h, subpel);
-            let wx = c::ref_convolve_x_sr(&src, src_off, stride, w, h, subpel);
+            convolve_x_sr(&src, src_off, stride, &mut gx, w, w, h, subpel, ftype);
+            let wx = c::ref_convolve_x_sr(&src, src_off, stride, w, h, subpel, ftype);
             assert_eq!(gx, wx, "convolve_x_sr {w}x{h} subpel={subpel}");
 
             let mut gy = vec![0u8; w * h];
-            convolve_y_sr(&src, src_off, stride, &mut gy, w, w, h, subpel);
-            let wy = c::ref_convolve_y_sr(&src, src_off, stride, w, h, subpel);
+            convolve_y_sr(&src, src_off, stride, &mut gy, w, w, h, subpel, ftype);
+            let wy = c::ref_convolve_y_sr(&src, src_off, stride, w, h, subpel, ftype);
             assert_eq!(gy, wy, "convolve_y_sr {w}x{h} subpel={subpel}");
 
             let subpel_y = (rng.next() % 16) as usize;
             let mut g2 = vec![0u8; w * h];
-            aom_convolve::convolve_2d_sr(&src, src_off, stride, &mut g2, w, w, h, subpel, subpel_y);
-            let w2 = c::ref_convolve_2d_sr(&src, src_off, stride, w, h, subpel, subpel_y);
+            aom_convolve::convolve_2d_sr(&src, src_off, stride, &mut g2, w, w, h, subpel, subpel_y, ftype);
+            let w2 = c::ref_convolve_2d_sr(&src, src_off, stride, w, h, subpel, subpel_y, ftype);
             assert_eq!(g2, w2, "convolve_2d_sr {w}x{h} spx={subpel} spy={subpel_y}");
         }
     }

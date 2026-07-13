@@ -19,6 +19,44 @@ pub static SUB_PEL_FILTERS_8: [[i16; 8]; 16] = [
     [0, 0, -4, 18, 122, -10, 2, 0],  [0, 0, -2, 8, 126, -6, 2, 0],
 ];
 
+/// `av1_sub_pel_filters_8smooth` (EIGHTTAP_SMOOTH).
+#[rustfmt::skip]
+pub static SUB_PEL_FILTERS_8SMOOTH: [[i16; 8]; 16] = [
+    [0, 0, 0, 128, 0, 0, 0, 0],    [0, 2, 28, 62, 34, 2, 0, 0],
+    [0, 0, 26, 62, 36, 4, 0, 0],   [0, 0, 22, 62, 40, 4, 0, 0],
+    [0, 0, 20, 60, 42, 6, 0, 0],   [0, 0, 18, 58, 44, 8, 0, 0],
+    [0, 0, 16, 56, 46, 10, 0, 0],  [0, -2, 16, 54, 48, 12, 0, 0],
+    [0, -2, 14, 52, 52, 14, -2, 0],[0, 0, 12, 48, 54, 16, -2, 0],
+    [0, 0, 10, 46, 56, 16, 0, 0],  [0, 0, 8, 44, 58, 18, 0, 0],
+    [0, 0, 6, 42, 60, 20, 0, 0],   [0, 0, 4, 40, 62, 22, 0, 0],
+    [0, 0, 4, 36, 62, 26, 0, 0],   [0, 0, 2, 34, 62, 28, 2, 0],
+];
+
+/// `av1_sub_pel_filters_8sharp` (EIGHTTAP_SHARP / MULTITAP_SHARP).
+#[rustfmt::skip]
+pub static SUB_PEL_FILTERS_8SHARP: [[i16; 8]; 16] = [
+    [0, 0, 0, 128, 0, 0, 0, 0],          [-2, 2, -6, 126, 8, -2, 2, 0],
+    [-2, 6, -12, 124, 16, -6, 4, -2],    [-2, 8, -18, 120, 26, -10, 6, -2],
+    [-4, 10, -22, 116, 38, -14, 6, -2],  [-4, 10, -22, 108, 48, -18, 8, -2],
+    [-4, 10, -24, 100, 60, -20, 8, -2],  [-4, 10, -24, 90, 70, -22, 10, -2],
+    [-4, 12, -24, 80, 80, -24, 12, -4],  [-2, 10, -22, 70, 90, -24, 10, -4],
+    [-2, 8, -20, 60, 100, -24, 10, -4],  [-2, 8, -18, 48, 108, -22, 10, -4],
+    [-2, 6, -14, 38, 116, -22, 10, -4],  [-2, 6, -10, 26, 120, -18, 8, -2],
+    [-2, 4, -6, 16, 124, -12, 6, -2],    [0, 2, -2, 8, 126, -6, 2, -2],
+];
+
+/// Select the subpel kernel row for filter `ftype` (0=regular,1=smooth,2=sharp).
+#[inline]
+fn kernel(ftype: usize, subpel: usize) -> &'static [i16; 8] {
+    let table: &[[i16; 8]; 16] = match ftype {
+        0 => &SUB_PEL_FILTERS_8,
+        1 => &SUB_PEL_FILTERS_8SMOOTH,
+        2 => &SUB_PEL_FILTERS_8SHARP,
+        _ => panic!("bad filter type"),
+    };
+    &table[subpel & 15]
+}
+
 #[inline]
 fn rpo2(v: i32, n: i32) -> i32 {
     (v + ((1 << n) >> 1)) >> n
@@ -34,11 +72,11 @@ fn clip_pixel(v: i32) -> u8 {
 #[allow(clippy::too_many_arguments)]
 pub fn convolve_x_sr(
     src: &[u8], src_off: usize, src_stride: usize, dst: &mut [u8], dst_stride: usize,
-    w: usize, h: usize, subpel_x: usize,
+    w: usize, h: usize, subpel_x: usize, ftype: usize,
 ) {
     let fo = 8 / 2 - 1; // 3
     let bits = FILTER_BITS - ROUND0_BITS;
-    let filt = &SUB_PEL_FILTERS_8[subpel_x & 15];
+    let filt = kernel(ftype, subpel_x);
     for y in 0..h {
         for x in 0..w {
             let base = src_off as isize + (y * src_stride) as isize + x as isize - fo;
@@ -57,7 +95,7 @@ pub fn convolve_x_sr(
 #[allow(clippy::too_many_arguments)]
 pub fn convolve_2d_sr(
     src: &[u8], src_off: usize, src_stride: usize, dst: &mut [u8], dst_stride: usize,
-    w: usize, h: usize, subpel_x: usize, subpel_y: usize,
+    w: usize, h: usize, subpel_x: usize, subpel_y: usize, ftype: usize,
 ) {
     const BD: i32 = 8;
     const ROUND_1: i32 = 2 * FILTER_BITS - ROUND0_BITS; // 11
@@ -65,8 +103,8 @@ pub fn convolve_2d_sr(
     let fo = taps / 2 - 1; // 3
     let im_h = h + taps - 1;
     let im_stride = w;
-    let xf = &SUB_PEL_FILTERS_8[subpel_x & 15];
-    let yf = &SUB_PEL_FILTERS_8[subpel_y & 15];
+    let xf = kernel(ftype, subpel_x);
+    let yf = kernel(ftype, subpel_y);
 
     // Horizontal pass into int16 intermediate.
     let mut im = vec![0i16; im_h * im_stride];
@@ -104,10 +142,10 @@ pub fn convolve_2d_sr(
 #[allow(clippy::too_many_arguments)]
 pub fn convolve_y_sr(
     src: &[u8], src_off: usize, src_stride: usize, dst: &mut [u8], dst_stride: usize,
-    w: usize, h: usize, subpel_y: usize,
+    w: usize, h: usize, subpel_y: usize, ftype: usize,
 ) {
     let fo = 8 / 2 - 1; // 3
-    let filt = &SUB_PEL_FILTERS_8[subpel_y & 15];
+    let filt = kernel(ftype, subpel_y);
     for y in 0..h {
         for x in 0..w {
             let base = src_off as isize + ((y as isize - fo) * src_stride as isize) + x as isize;
