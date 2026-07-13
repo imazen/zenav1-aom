@@ -36,6 +36,43 @@ extern "C" {
     );
 }
 
+// av1/common/reconintra.c — directional predictors (edges passed at +pad).
+extern "C" {
+    pub fn av1_dr_prediction_z1_c(
+        dst: *mut u8, stride: isize, bw: i32, bh: i32, above: *const u8, left: *const u8,
+        upsample_above: i32, dx: i32, dy: i32,
+    );
+    pub fn av1_dr_prediction_z2_c(
+        dst: *mut u8, stride: isize, bw: i32, bh: i32, above: *const u8, left: *const u8,
+        upsample_above: i32, upsample_left: i32, dx: i32, dy: i32,
+    );
+    pub fn av1_dr_prediction_z3_c(
+        dst: *mut u8, stride: isize, bw: i32, bh: i32, above: *const u8, left: *const u8,
+        upsample_left: i32, dx: i32, dy: i32,
+    );
+}
+
+/// Reference directional predictor. `above`/`left` are padded buffers; the C
+/// pointer is taken at offset `pad`. Returns the `bw*bh` block (stride = bw).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_dr_pred(
+    kind: u8, bw: usize, bh: usize, above: &[u8], left: &[u8], pad: usize,
+    up_above: i32, up_left: i32, dx: i32, dy: i32,
+) -> Vec<u8> {
+    let mut dst = vec![0u8; bw * bh];
+    let ap = unsafe { above.as_ptr().add(pad) };
+    let lp = unsafe { left.as_ptr().add(pad) };
+    unsafe {
+        match kind {
+            1 => av1_dr_prediction_z1_c(dst.as_mut_ptr(), bw as isize, bw as i32, bh as i32, ap, lp, up_above, dx, dy),
+            2 => av1_dr_prediction_z2_c(dst.as_mut_ptr(), bw as isize, bw as i32, bh as i32, ap, lp, up_above, up_left, dx, dy),
+            3 => av1_dr_prediction_z3_c(dst.as_mut_ptr(), bw as isize, bw as i32, bh as i32, ap, lp, up_left, dx, dy),
+            _ => unreachable!(),
+        }
+    }
+    dst
+}
+
 // intra_shim.c — dispatch to aom_<mode>_predictor_<W>x<H>_c.
 extern "C" {
     fn shim_intra_pred(

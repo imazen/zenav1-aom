@@ -65,6 +65,12 @@ both tracks, fully bit-exact.**
   10 modes x 19 sizes x 2000 = 380k comparisons, byte-identical to C.
   (Directional z1/z2/z3 predictors + highbd: TODO.)
 
+- **Intra prediction (directional)** (`av1/common/reconintra.c`), both tracks:
+  `av1_dr_prediction_z1/z2/z3` over valid angle-derived (dx,dy) + `dr_intra_derivative`
+  table. Harness: `aom-intra/tests/dir_diff.rs` — ~4k angle x size x upsample
+  combos, byte-identical to C. Core intra prediction family now complete.
+  (Highbd + edge filter/upsample: TODO.)
+
 ## Infrastructure standing
 
 - Rust workspace + `aom-sys-ref` FFI oracle crate linking the reference `libaom.a`.

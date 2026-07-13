@@ -246,6 +246,24 @@
           "test": "intra_diff::intra_predictors_byte_identical"
         }
       }
+    },
+    "intra.directional": {
+      "status": "green",
+      "note": "Directional intra predictors z1/z2/z3 (both tracks) over valid angle-derived dx/dy and upsample settings. Completes the core intra prediction family. Highbd + edge filter/upsample: TODO.",
+      "items": {
+        "av1_dr_prediction_z1": {
+          "status": "green",
+          "test": "dir_diff::dr_predictors_byte_identical"
+        },
+        "av1_dr_prediction_z2": {
+          "status": "green",
+          "test": "dir_diff::dr_predictors_byte_identical"
+        },
+        "av1_dr_prediction_z3": {
+          "status": "green",
+          "test": "dir_diff::dr_predictors_byte_identical"
+        }
+      }
     }
   }
 }
