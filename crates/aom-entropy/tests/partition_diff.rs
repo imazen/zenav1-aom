@@ -1684,3 +1684,39 @@ fn get_comp_index_context_matches_c() {
         assert_eq!(got, want, "enable={enable} bm1={bm1} cur={cur} fwd={fwd} bck={bck}");
     }
 }
+
+#[test]
+fn intra_prediction_mode_gates_match_c() {
+    use aom_entropy::partition::{
+        allow_palette, get_uv_mode, is_cfl_allowed, is_directional_mode, use_angle_delta,
+    };
+    // Pure bsize/mode gates — exhaustive.
+    for bsize in 0..22usize {
+        assert_eq!(use_angle_delta(bsize), c::ref_use_angle_delta(bsize as i32), "use_angle_delta {bsize}");
+        for allow_sct in [false, true] {
+            assert_eq!(allow_palette(allow_sct, bsize), c::ref_allow_palette(allow_sct, bsize as i32), "allow_palette {allow_sct} {bsize}");
+        }
+    }
+    for mode in 0..13i32 {
+        assert_eq!(is_directional_mode(mode), c::ref_is_directional_mode(mode), "is_directional_mode {mode}");
+    }
+    for uv_mode in 0..14usize {
+        assert_eq!(get_uv_mode(uv_mode), c::ref_get_uv_mode(uv_mode as i32), "get_uv_mode {uv_mode}");
+    }
+    // is_cfl_allowed: bsize x lossless x subsampling x seg_id.
+    for bsize in 0..22usize {
+        for lossless in [false, true] {
+            for ssx in 0..2usize {
+                for ssy in 0..2usize {
+                    for seg_id in [0i32, 3, 7] {
+                        assert_eq!(
+                            is_cfl_allowed(bsize, lossless, ssx, ssy),
+                            c::ref_is_cfl_allowed(bsize as i32, seg_id, lossless, ssx as i32, ssy as i32),
+                            "is_cfl_allowed bsize={bsize} lossless={lossless} ssx={ssx} ssy={ssy}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

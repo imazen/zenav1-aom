@@ -1221,3 +1221,26 @@ int shim_get_comp_index_context(int enable, int bits_minus_1, int cur_order_hint
   }
   return above_ctx + left_ctx + 3 * offset;
 }
+
+/* --- intra-prediction-mode driver gates (av1/common/*.h) --- */
+#include "av1/common/reconintra.h" /* av1_use_angle_delta / av1_is_directional_mode */
+#include "av1/common/cfl.h"        /* is_cfl_allowed */
+
+int shim_use_angle_delta(int bsize) { return av1_use_angle_delta((BLOCK_SIZE)bsize); }
+int shim_is_directional_mode(int mode) { return av1_is_directional_mode((PREDICTION_MODE)mode); }
+int shim_get_uv_mode(int uv_mode) { return get_uv_mode((UV_PREDICTION_MODE)uv_mode); }
+int shim_allow_palette(int allow_sct, int bsize) {
+  return av1_allow_palette(allow_sct, (BLOCK_SIZE)bsize);
+}
+int shim_is_cfl_allowed(int bsize, int seg_id, int lossless, int ssx, int ssy) {
+  MB_MODE_INFO mbmi;
+  MB_MODE_INFO *miptr = &mbmi;
+  MACROBLOCKD xd;
+  mbmi.bsize = (BLOCK_SIZE)bsize;
+  mbmi.segment_id = (int8_t)seg_id;
+  xd.mi = &miptr;
+  xd.lossless[seg_id] = lossless;
+  xd.plane[AOM_PLANE_U].subsampling_x = ssx;
+  xd.plane[AOM_PLANE_U].subsampling_y = ssy;
+  return (int)is_cfl_allowed(&xd);
+}

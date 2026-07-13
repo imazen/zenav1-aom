@@ -1746,3 +1746,63 @@ pub fn get_comp_index_context(
     }
     above_ctx + left_ctx + 3 * offset
 }
+
+// --- intra-prediction-mode driver gates (av1/common/*.h) ---
+
+const V_PRED: i32 = 1;
+const D67_PRED: i32 = 8;
+/// `uv2y` (`get_uv_mode`, blockd.h): UV prediction mode -> the Y mode it maps to
+/// (UV_CFL_PRED -> DC_PRED).
+const UV2Y: [i32; 14] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0];
+/// `av1_ss_size_lookup[BLOCK_SIZES_ALL][2][2]` (`common_data.c`), flattened as
+/// `[bsize][ssx*2 + ssy]`; `BLOCK_INVALID` (255) where subsampling is illegal.
+const SS_SIZE_LOOKUP: [[u8; 4]; 22] = [
+    [0, 0, 0, 0], [1, 0, 255, 0], [2, 255, 0, 0], [3, 2, 1, 0], [4, 3, 255, 1],
+    [5, 255, 3, 2], [6, 5, 4, 3], [7, 6, 255, 4], [8, 255, 6, 5], [9, 8, 7, 6],
+    [10, 9, 255, 7], [11, 255, 9, 8], [12, 11, 10, 9], [13, 12, 255, 10],
+    [14, 255, 12, 11], [15, 14, 13, 12], [16, 1, 255, 1], [17, 255, 2, 2],
+    [18, 4, 255, 16], [19, 255, 5, 17], [20, 7, 255, 18], [21, 255, 8, 19],
+];
+
+/// `av1_use_angle_delta` (`reconintra.h`): angle deltas apply at `BLOCK_8X8` and larger.
+pub fn use_angle_delta(bsize: usize) -> bool {
+    bsize >= BLOCK_8X8
+}
+
+/// `av1_is_directional_mode` (`reconintra.h`): the mode is one of the directional
+/// predictors (`V_PRED..=D67_PRED`).
+pub fn is_directional_mode(mode: i32) -> bool {
+    (V_PRED..=D67_PRED).contains(&mode)
+}
+
+/// `get_uv_mode` (`blockd.h`): the Y prediction mode a UV mode maps to.
+pub fn get_uv_mode(uv_mode: usize) -> i32 {
+    UV2Y[uv_mode]
+}
+
+/// `av1_allow_palette` (`blockd.h`): palette is available for screen-content-enabled
+/// frames on blocks in `[BLOCK_8X8, 64x64]`.
+pub fn allow_palette(allow_screen_content_tools: bool, bsize: usize) -> bool {
+    allow_screen_content_tools
+        && BLOCK_SIZE_WIDE[bsize] <= 64
+        && BLOCK_SIZE_HIGH[bsize] <= 64
+        && bsize >= BLOCK_8X8
+}
+
+/// `get_plane_block_size` (`blockd.h`): the block size of a chroma plane with the given
+/// subsampling, via `av1_ss_size_lookup` (`BLOCK_INVALID` when illegal).
+pub fn get_plane_block_size(bsize: usize, ssx: usize, ssy: usize) -> usize {
+    SS_SIZE_LOOKUP[bsize][ssx * 2 + ssy] as usize
+}
+
+/// `is_cfl_allowed` (`cfl.h`): whether chroma-from-luma is available. In lossless the
+/// chroma plane block size must be `BLOCK_4X4`; otherwise the luma block must be
+/// `<= 32x32`.
+pub fn is_cfl_allowed(bsize: usize, lossless: bool, ssx: usize, ssy: usize) -> bool {
+    const BLOCK_4X4: usize = 0;
+    if lossless {
+        get_plane_block_size(bsize, ssx, ssy) == BLOCK_4X4
+    } else {
+        BLOCK_SIZE_WIDE[bsize] <= 32 && BLOCK_SIZE_HIGH[bsize] <= 32
+    }
+}

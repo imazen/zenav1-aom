@@ -287,6 +287,11 @@ extern "C" {
     #[allow(clippy::too_many_arguments)]
     fn shim_write_compound_type_info(masked_used: i32, comp_group_idx: i32, cgi_cdf: *mut u16, dist_wtd: i32, compound_idx: i32, cidx_cdf: *mut u16, wedge_used: i32, comp_type: i32, ctype_cdf: *mut u16, wedge_index: i32, wedge_idx_cdf: *mut u16, wedge_sign: i32, mask_type: i32, out: *mut u8, o_cgi: *mut u16, o_cidx: *mut u16, o_ctype: *mut u16, o_wix: *mut u16) -> u32;
     fn shim_get_relative_dist(enable: i32, bits_minus_1: i32, a: i32, b: i32) -> i32;
+    fn shim_use_angle_delta(bsize: i32) -> i32;
+    fn shim_is_directional_mode(mode: i32) -> i32;
+    fn shim_get_uv_mode(uv_mode: i32) -> i32;
+    fn shim_allow_palette(allow_sct: i32, bsize: i32) -> i32;
+    fn shim_is_cfl_allowed(bsize: i32, seg_id: i32, lossless: i32, ssx: i32, ssy: i32) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn shim_get_comp_index_context(enable: i32, bits_minus_1: i32, cur_order_hint: i32, fwd_order_hint: i32, bck_order_hint: i32, ha: i32, a_has2: i32, a_cidx: i32, a_rf0: i32, hl: i32, l_has2: i32, l_cidx: i32, l_rf0: i32) -> i32;
     #[allow(clippy::too_many_arguments)]
@@ -557,6 +562,18 @@ pub fn ref_get_comp_group_idx_context(
 /// Reference `get_relative_dist` (static inline, mvref_common.h).
 pub fn ref_get_relative_dist(enable: bool, bits_minus_1: i32, a: i32, b: i32) -> i32 {
     unsafe { shim_get_relative_dist(enable as i32, bits_minus_1, a, b) }
+}
+
+/// Reference `av1_use_angle_delta` / `av1_is_directional_mode` / `get_uv_mode` /
+/// `av1_allow_palette` / `is_cfl_allowed` — the intra-prediction-mode driver gates.
+pub fn ref_use_angle_delta(bsize: i32) -> bool { unsafe { shim_use_angle_delta(bsize) != 0 } }
+pub fn ref_is_directional_mode(mode: i32) -> bool { unsafe { shim_is_directional_mode(mode) != 0 } }
+pub fn ref_get_uv_mode(uv_mode: i32) -> i32 { unsafe { shim_get_uv_mode(uv_mode) } }
+pub fn ref_allow_palette(allow_sct: bool, bsize: i32) -> bool {
+    unsafe { shim_allow_palette(allow_sct as i32, bsize) != 0 }
+}
+pub fn ref_is_cfl_allowed(bsize: i32, seg_id: i32, lossless: bool, ssx: i32, ssy: i32) -> bool {
+    unsafe { shim_is_cfl_allowed(bsize, seg_id, lossless as i32, ssx, ssy) != 0 }
 }
 
 /// Reference `get_comp_index_context` (body transcribed; ref-buffer order hints passed
