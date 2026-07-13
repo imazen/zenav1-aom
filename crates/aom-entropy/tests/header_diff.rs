@@ -1116,8 +1116,12 @@ fn frame_header_connective_flags_match_c() {
 //   (coded_lossless: loop-filter/CDEF/TX-mode skipped; restoration off)
 //   trailing: intra -> no ref-mode; reduced_tx_set=0                  (1 bit : 0)
 // => 22 bits = 0x10 0x90 0x00
-#[test]
-fn write_frame_header_obu_key_minimal_spec_anchor() {
+//
+// The INTER variant (frame_type=1) reuses this base and additionally exercises the
+// INTER dispatch — ref-signaling (7 ref-map indices), primary-ref, refresh flags,
+// the reference-mode bit, and global motion — all traced to
+// [0x30 0x3F 0xC0 0x00 0x00 0x02 0x40 0x00 0x00].
+fn minimal_frame_header_obu() -> aom_entropy::header::FrameHeaderObu {
     use aom_entropy::header::*;
     let prefix = FrameHeaderPrefix {
         reduced_still_picture_hdr: false,
@@ -1190,7 +1194,7 @@ fn write_frame_header_obu_key_minimal_spec_anchor() {
         max_width_sb: 1,
         max_height_sb: 1,
     };
-    let p = FrameHeaderObu {
+    FrameHeaderObu {
         prefix,
         allow_screen_content_tools: false,
         superres_scaled: false,
@@ -1340,8 +1344,40 @@ fn write_frame_header_obu_key_minimal_spec_anchor() {
             clip_to_restricted_range: false,
         },
         large_scale: false,
-    };
+    }
+}
+
+#[test]
+fn write_frame_header_obu_key_minimal_spec_anchor() {
+    use aom_entropy::header::write_frame_header_obu;
+    let p = minimal_frame_header_obu();
     let mut wb = WriteBitBuffer::new();
     write_frame_header_obu(&mut wb, &p);
     assert_eq!(wb.bytes(), &[0x10, 0x90, 0x00], "minimal KEY frame-header OBU byte layout");
+}
+
+#[test]
+fn write_frame_header_obu_inter_minimal_spec_anchor() {
+    use aom_entropy::header::write_frame_header_obu;
+    // INTER frame (frame_type=1): the base minimal config produces the intra tail
+    // plus the INTER-only elements. Traced from write_uncompressed_header_obu:
+    //   prefix : show_ex=0 | ft=01 | show=1 | error_resilient=0 | disable_cdf=0 |
+    //            override=0 | primary_ref=000 | refresh_frame_flags=11111111  (18 bits)
+    //   body   : inter_ref 7x map_idx=000 (21) | frame_size render=0 (1) |
+    //            allow_hp=0 (1) | interp EIGHTTAP=0 + literal 00 (3) | motion_mode=0 (1)
+    //   refresh_frame_context=0 (1) | tile uniform=1 (1) | quant 0010000000 (10) |
+    //   seg=0 (1) | delta_q_present=0 (1) | reference_mode=0 (1) | reduced_tx_set=0 (1) |
+    //   global_motion 7x identity=0 (7)  => 68 bits.
+    let mut p = minimal_frame_header_obu();
+    p.prefix.frame_type = 1; // INTER_FRAME
+    assert_eq!(p.interp_filter, 0);
+    assert_eq!(p.prefix.primary_ref_frame, 0);
+    assert_eq!(p.prefix.refresh_frame_flags, 0xff);
+    let mut wb = WriteBitBuffer::new();
+    write_frame_header_obu(&mut wb, &p);
+    assert_eq!(
+        wb.bytes(),
+        &[0x30, 0x3F, 0xC0, 0x00, 0x00, 0x02, 0x40, 0x00, 0x00],
+        "minimal INTER frame-header OBU byte layout"
+    );
 }
