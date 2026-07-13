@@ -25,6 +25,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aom-encode"
+version = "0.0.1"
+dependencies = [
+ "aom-quant",
+ "aom-sys-ref",
+ "aom-transform",
+ "aom-txb",
+]
+
+[[package]]
 name = "aom-entropy"
 version = "0.0.1"
 dependencies = [

@@ -1,0 +1,15 @@
+[package]
+name = "aom-encode"
+version = "0.0.1"
+edition = "2024"
+license = "BSD-2-Clause"
+description = "Encoder composition layer for aom-rs: av1_xform_quant (forward transform + quantize + entropy context), bit-exact vs libaom."
+publish = false
+
+[dependencies]
+aom-transform = { path = "../aom-transform" }
+aom-quant = { path = "../aom-quant" }
+aom-txb = { path = "../aom-txb" }
+
+[dev-dependencies]
+aom-sys-ref = { path = "../aom-sys-ref" }
