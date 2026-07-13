@@ -2281,3 +2281,129 @@ pub fn read_inter_ref_signaling(
     }
     (frame_refs_short_signaling, lst_ref, gld_ref, remapped_ref_idx, delta_frame_id_minus_1)
 }
+
+/// `read_refresh_frame_context` — inverse of [`write_refresh_frame_context`]: the
+/// refresh-frame-context-disabled flag, coded only when backward adaptation might apply
+/// (not reduced-still-picture and CDF update enabled); inferred disabled otherwise.
+pub fn read_refresh_frame_context(
+    rb: &mut ReadBitBuffer,
+    reduced_still_picture_hdr: bool,
+    disable_cdf_update: bool,
+) -> bool {
+    let might_bwd_adapt = !reduced_still_picture_hdr && !disable_cdf_update;
+    if might_bwd_adapt {
+        rb.read_bit() != 0
+    } else {
+        true
+    }
+}
+
+/// `read_film_grain_params` (`av1/decoder/obu.c` read_film_grain_params) — inverse of
+/// [`write_film_grain_params`]: apply-grain flag, seed, the (inter) update flag or ref
+/// index, the luma/chroma scaling points, AR coefficients (lag-derived counts, offset by
+/// 128), the shifts, and the chroma multipliers/offsets. `is_inter_frame` / `monochrome`
+/// / subsampling come from the frame + color config.
+pub fn read_film_grain_params(
+    rb: &mut ReadBitBuffer,
+    is_inter_frame: bool,
+    monochrome: bool,
+    subsampling_x: i32,
+    subsampling_y: i32,
+) -> FilmGrainParams {
+    let mut p = FilmGrainParams {
+        apply_grain: false,
+        random_seed: 0,
+        is_inter_frame,
+        update_parameters: false,
+        ref_idx: 0,
+        num_y_points: 0,
+        scaling_points_y: [[0; 2]; 14],
+        monochrome,
+        chroma_scaling_from_luma: false,
+        subsampling_x,
+        subsampling_y,
+        num_cb_points: 0,
+        scaling_points_cb: [[0; 2]; 10],
+        num_cr_points: 0,
+        scaling_points_cr: [[0; 2]; 10],
+        scaling_shift: 8,
+        ar_coeff_lag: 0,
+        ar_coeffs_y: [0; 24],
+        ar_coeffs_cb: [0; 25],
+        ar_coeffs_cr: [0; 25],
+        ar_coeff_shift: 6,
+        grain_scale_shift: 0,
+        cb_mult: 0,
+        cb_luma_mult: 0,
+        cb_offset: 0,
+        cr_mult: 0,
+        cr_luma_mult: 0,
+        cr_offset: 0,
+        overlap_flag: false,
+        clip_to_restricted_range: false,
+    };
+    p.apply_grain = rb.read_bit() != 0;
+    if !p.apply_grain {
+        return p;
+    }
+    p.random_seed = rb.read_literal(16);
+    p.update_parameters = if is_inter_frame { rb.read_bit() != 0 } else { true };
+    if !p.update_parameters {
+        p.ref_idx = rb.read_literal(3);
+        return p;
+    }
+    p.num_y_points = rb.read_literal(4);
+    for i in 0..p.num_y_points as usize {
+        p.scaling_points_y[i] = [rb.read_literal(8), rb.read_literal(8)];
+    }
+    if !monochrome {
+        p.chroma_scaling_from_luma = rb.read_bit() != 0;
+    }
+    let chroma_absent = monochrome
+        || p.chroma_scaling_from_luma
+        || (subsampling_x == 1 && subsampling_y == 1 && p.num_y_points == 0);
+    if !chroma_absent {
+        p.num_cb_points = rb.read_literal(4);
+        for i in 0..p.num_cb_points as usize {
+            p.scaling_points_cb[i] = [rb.read_literal(8), rb.read_literal(8)];
+        }
+        p.num_cr_points = rb.read_literal(4);
+        for i in 0..p.num_cr_points as usize {
+            p.scaling_points_cr[i] = [rb.read_literal(8), rb.read_literal(8)];
+        }
+    }
+    p.scaling_shift = rb.read_literal(2) + 8;
+    p.ar_coeff_lag = rb.read_literal(2);
+    let num_pos_luma = 2 * p.ar_coeff_lag * (p.ar_coeff_lag + 1);
+    let num_pos_chroma = num_pos_luma + i32::from(p.num_y_points > 0);
+    if p.num_y_points != 0 {
+        for i in 0..num_pos_luma as usize {
+            p.ar_coeffs_y[i] = rb.read_literal(8) - 128;
+        }
+    }
+    if p.num_cb_points != 0 || p.chroma_scaling_from_luma {
+        for i in 0..num_pos_chroma as usize {
+            p.ar_coeffs_cb[i] = rb.read_literal(8) - 128;
+        }
+    }
+    if p.num_cr_points != 0 || p.chroma_scaling_from_luma {
+        for i in 0..num_pos_chroma as usize {
+            p.ar_coeffs_cr[i] = rb.read_literal(8) - 128;
+        }
+    }
+    p.ar_coeff_shift = rb.read_literal(2) + 6;
+    p.grain_scale_shift = rb.read_literal(2);
+    if p.num_cb_points != 0 {
+        p.cb_mult = rb.read_literal(8);
+        p.cb_luma_mult = rb.read_literal(8);
+        p.cb_offset = rb.read_literal(9);
+    }
+    if p.num_cr_points != 0 {
+        p.cr_mult = rb.read_literal(8);
+        p.cr_luma_mult = rb.read_literal(8);
+        p.cr_offset = rb.read_literal(9);
+    }
+    p.overlap_flag = rb.read_bit() != 0;
+    p.clip_to_restricted_range = rb.read_bit() != 0;
+    p
+}

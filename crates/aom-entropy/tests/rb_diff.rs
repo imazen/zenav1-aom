@@ -994,3 +994,97 @@ fn read_inter_ref_signaling_inverts_write() {
         }
     }
 }
+
+#[test]
+fn read_refresh_and_film_grain_invert_write() {
+    use aom_entropy::header::{
+        read_film_grain_params, read_refresh_frame_context, write_film_grain_params,
+        write_refresh_frame_context, FilmGrainParams,
+    };
+    let mut rng = Rng(0x1e_f11a_c0de_01e0);
+    for _ in 0..100_000 {
+        // refresh_frame_context
+        {
+            let reduced = rng.next() & 1 == 1;
+            let disable = rng.next() & 1 == 1;
+            let might = !reduced && !disable;
+            let disabled = if might { rng.next() & 1 == 1 } else { true };
+            let mut wb = WriteBitBuffer::new();
+            write_refresh_frame_context(&mut wb, reduced, disable, disabled);
+            let b = wb.bytes().to_vec();
+            let mut rb = ReadBitBuffer::new(&b);
+            assert_eq!(read_refresh_frame_context(&mut rb, reduced, disable), disabled, "refresh ctx");
+        }
+        // film grain
+        {
+            let is_inter = rng.next() & 1 == 1;
+            let mono = rng.next() & 1 == 1;
+            let (ssx, ssy) = ((rng.next() % 2) as i32, (rng.next() % 2) as i32);
+            let l8 = |rng: &mut Rng| -> i32 { (rng.next() % 256) as i32 };
+            let mut fg = FilmGrainParams {
+                apply_grain: false, random_seed: 0, is_inter_frame: is_inter, update_parameters: false,
+                ref_idx: 0, num_y_points: 0, scaling_points_y: [[0; 2]; 14], monochrome: mono,
+                chroma_scaling_from_luma: false, subsampling_x: ssx, subsampling_y: ssy,
+                num_cb_points: 0, scaling_points_cb: [[0; 2]; 10], num_cr_points: 0,
+                scaling_points_cr: [[0; 2]; 10], scaling_shift: 8, ar_coeff_lag: 0, ar_coeffs_y: [0; 24],
+                ar_coeffs_cb: [0; 25], ar_coeffs_cr: [0; 25], ar_coeff_shift: 6, grain_scale_shift: 0,
+                cb_mult: 0, cb_luma_mult: 0, cb_offset: 0, cr_mult: 0, cr_luma_mult: 0, cr_offset: 0,
+                overlap_flag: false, clip_to_restricted_range: false,
+            };
+            fg.apply_grain = rng.next() & 1 == 1;
+            if fg.apply_grain {
+                fg.random_seed = (rng.next() % 65536) as i32;
+                fg.update_parameters = if is_inter { rng.next() & 1 == 1 } else { true };
+                if !fg.update_parameters {
+                    fg.ref_idx = (rng.next() % 8) as i32;
+                } else {
+                    fg.num_y_points = (rng.next() % 15) as i32;
+                    for i in 0..fg.num_y_points as usize { fg.scaling_points_y[i] = [l8(&mut rng), l8(&mut rng)]; }
+                    if !mono { fg.chroma_scaling_from_luma = rng.next() & 1 == 1; }
+                    let chroma_absent = mono || fg.chroma_scaling_from_luma || (ssx == 1 && ssy == 1 && fg.num_y_points == 0);
+                    if !chroma_absent {
+                        fg.num_cb_points = (rng.next() % 11) as i32;
+                        for i in 0..fg.num_cb_points as usize { fg.scaling_points_cb[i] = [l8(&mut rng), l8(&mut rng)]; }
+                        fg.num_cr_points = (rng.next() % 11) as i32;
+                        for i in 0..fg.num_cr_points as usize { fg.scaling_points_cr[i] = [l8(&mut rng), l8(&mut rng)]; }
+                    }
+                    fg.scaling_shift = 8 + (rng.next() % 4) as i32;
+                    fg.ar_coeff_lag = (rng.next() % 4) as i32;
+                    let npl = 2 * fg.ar_coeff_lag * (fg.ar_coeff_lag + 1);
+                    let npc = npl + i32::from(fg.num_y_points > 0);
+                    if fg.num_y_points != 0 { for i in 0..npl as usize { fg.ar_coeffs_y[i] = l8(&mut rng) - 128; } }
+                    if fg.num_cb_points != 0 || fg.chroma_scaling_from_luma { for i in 0..npc as usize { fg.ar_coeffs_cb[i] = l8(&mut rng) - 128; } }
+                    if fg.num_cr_points != 0 || fg.chroma_scaling_from_luma { for i in 0..npc as usize { fg.ar_coeffs_cr[i] = l8(&mut rng) - 128; } }
+                    fg.ar_coeff_shift = 6 + (rng.next() % 4) as i32;
+                    fg.grain_scale_shift = (rng.next() % 4) as i32;
+                    if fg.num_cb_points != 0 { fg.cb_mult = l8(&mut rng); fg.cb_luma_mult = l8(&mut rng); fg.cb_offset = (rng.next() % 512) as i32; }
+                    if fg.num_cr_points != 0 { fg.cr_mult = l8(&mut rng); fg.cr_luma_mult = l8(&mut rng); fg.cr_offset = (rng.next() % 512) as i32; }
+                    fg.overlap_flag = rng.next() & 1 == 1;
+                    fg.clip_to_restricted_range = rng.next() & 1 == 1;
+                }
+            }
+            let mut wb = WriteBitBuffer::new();
+            write_film_grain_params(&mut wb, &fg);
+            let b = wb.bytes().to_vec();
+            let mut rb = ReadBitBuffer::new(&b);
+            let g = read_film_grain_params(&mut rb, is_inter, mono, ssx, ssy);
+            assert_eq!(
+                (g.apply_grain, g.random_seed, g.update_parameters, g.ref_idx, g.num_y_points,
+                 g.chroma_scaling_from_luma, g.num_cb_points, g.num_cr_points),
+                (fg.apply_grain, fg.random_seed, fg.update_parameters, fg.ref_idx, fg.num_y_points,
+                 fg.chroma_scaling_from_luma, fg.num_cb_points, fg.num_cr_points),
+                "film grain scalars A"
+            );
+            assert_eq!(
+                (g.scaling_shift, g.ar_coeff_lag, g.ar_coeff_shift, g.grain_scale_shift, g.overlap_flag, g.clip_to_restricted_range),
+                (fg.scaling_shift, fg.ar_coeff_lag, fg.ar_coeff_shift, fg.grain_scale_shift, fg.overlap_flag, fg.clip_to_restricted_range),
+                "film grain scalars B"
+            );
+            assert_eq!(g.scaling_points_y, fg.scaling_points_y, "fg pts y");
+            assert_eq!((g.scaling_points_cb, g.scaling_points_cr), (fg.scaling_points_cb, fg.scaling_points_cr), "fg pts uv");
+            assert_eq!((g.ar_coeffs_y, g.ar_coeffs_cb, g.ar_coeffs_cr), (fg.ar_coeffs_y, fg.ar_coeffs_cb, fg.ar_coeffs_cr), "fg ar coeffs");
+            assert_eq!((g.cb_mult, g.cb_luma_mult, g.cb_offset, g.cr_mult, g.cr_luma_mult, g.cr_offset),
+                       (fg.cb_mult, fg.cb_luma_mult, fg.cb_offset, fg.cr_mult, fg.cr_luma_mult, fg.cr_offset), "fg mults");
+        }
+    }
+}
