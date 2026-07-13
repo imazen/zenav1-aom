@@ -8,6 +8,7 @@
 pub mod cdf;
 pub mod dec;
 pub mod enc;
+pub mod header;
 pub mod leb128;
 pub mod obu;
 pub mod wb;

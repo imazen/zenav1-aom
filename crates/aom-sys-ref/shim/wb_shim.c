@@ -40,3 +40,36 @@ uint32_t shim_write_obu_header(int obu_type, int has_nonzero_op,
   }
   return size;
 }
+
+/* Transcribed control flow of encode_quantization (av1/encoder/bitstream.c),
+ * driven through the real aom_wb primitives (validated separately). */
+static void wb_write_delta_q(struct aom_write_bit_buffer *wb, int delta_q) {
+  if (delta_q != 0) {
+    aom_wb_write_bit(wb, 1);
+    aom_wb_write_inv_signed_literal(wb, delta_q, 6);
+  } else {
+    aom_wb_write_bit(wb, 0);
+  }
+}
+uint32_t shim_encode_quantization(int base_qindex, int y_dc, int u_dc, int u_ac,
+                                  int v_dc, int v_ac, int using_qm, int qm_y,
+                                  int qm_u, int qm_v, int num_planes,
+                                  int separate_uv, uint8_t *out) {
+  struct aom_write_bit_buffer wb = { out, 0 };
+  aom_wb_write_literal(&wb, base_qindex, 8);
+  wb_write_delta_q(&wb, y_dc);
+  if (num_planes > 1) {
+    int diff_uv = (u_dc != v_dc) || (u_ac != v_ac);
+    if (separate_uv) aom_wb_write_bit(&wb, diff_uv);
+    wb_write_delta_q(&wb, u_dc);
+    wb_write_delta_q(&wb, u_ac);
+    if (diff_uv) { wb_write_delta_q(&wb, v_dc); wb_write_delta_q(&wb, v_ac); }
+  }
+  aom_wb_write_bit(&wb, using_qm);
+  if (using_qm) {
+    aom_wb_write_literal(&wb, qm_y, 4);
+    aom_wb_write_literal(&wb, qm_u, 4);
+    if (separate_uv) aom_wb_write_literal(&wb, qm_v, 4);
+  }
+  return aom_wb_bytes_written(&wb);
+}
