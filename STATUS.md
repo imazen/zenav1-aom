@@ -125,6 +125,12 @@ both tracks, fully bit-exact.**
   walk). Integer-identical to C. Harness: `cost_coeffs_diff.rs` — 19 sizes x 7
   tx_types x 120 random (cost-table, block) pairs.
 
+- **av1_cost_tokens_from_cdf (aom-txb)** — the CDF -> per-symbol cost-table
+  derivation feeding cost_coeffs_txb: av1_prob_cost[128] + av1_cost_symbol
+  (verified across ALL 32767 Q15 probs) + AOM_ICDF differencing / EC_MIN_PROB
+  floor / inv_map. `prob_cost_diff.rs`, ~36k derivations. Coefficient-coding RD
+  loop (CDF -> costs -> cost_coeffs_txb) is now end-to-end bit-exact.
+
 ## Coverage gate (auto-derived, honest)
 
 `xtask/coverage.py` enumerates the live libaom feature surface (aomenc/aomdec
