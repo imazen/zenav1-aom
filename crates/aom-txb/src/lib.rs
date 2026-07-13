@@ -32,6 +32,8 @@ mod trellis_cost;
 pub use trellis_cost::{br_cost_with_diff, coeff_cost_eob, coeff_cost_general, two_coeff_cost_simple};
 mod optimize;
 pub use optimize::{optimize_txb, OptimizeResult};
+mod entropy_ctx;
+pub use entropy_ctx::{get_txb_ctx, txb_entropy_context};
 
 /// `TX_PAD_HOR` (enums.h): horizontal padding of the levels buffer.
 pub const TX_PAD_HOR: usize = 4;

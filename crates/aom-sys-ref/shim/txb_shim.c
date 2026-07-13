@@ -646,3 +646,22 @@ int shim_optimize_txb(int tx_size, int tx_type, int32_t *qcoeff,
   *out_rate = accu_rate;
   return eob;
 }
+
+/* ---- per-block entropy context: get_txb_ctx + av1_get_txb_entropy_context -- */
+#include "av1/encoder/encodetxb.h"
+
+/* a/l are ENTROPY_CONTEXT (int8_t) arrays >= tx unit size. out[0]=txb_skip_ctx
+ * out[1]=dc_sign_ctx. Calls the real (size-dispatched) get_txb_ctx. */
+void shim_get_txb_ctx(int plane_bsize, int tx_size, int plane,
+                      const int8_t *a, const int8_t *l, int *out) {
+  TXB_CTX ctx;
+  get_txb_ctx((BLOCK_SIZE)plane_bsize, (TX_SIZE)tx_size, plane, a, l, &ctx);
+  out[0] = ctx.txb_skip_ctx;
+  out[1] = ctx.dc_sign_ctx;
+}
+
+int shim_txb_entropy_context(const int32_t *qcoeff, int tx_size, int tx_type,
+                             int eob) {
+  const SCAN_ORDER *so = &av1_scan_orders[tx_size][tx_type];
+  return av1_get_txb_entropy_context(qcoeff, so, eob);
+}
