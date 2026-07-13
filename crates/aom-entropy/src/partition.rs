@@ -629,3 +629,28 @@ pub fn write_mb_interp_filter(
         write_symbol(enc, filter1, cdf1, SWITCHABLE_FILTERS);
     }
 }
+
+/// `av1_get_intra_inter_context` (`av1/common/pred_common.c`): the intra/inter CDF
+/// context from the above/left neighbours' inter-ness (`is_inter_block`) and edge
+/// availability. Returns 0..3.
+pub fn get_intra_inter_context(
+    has_above: bool,
+    above_inter: bool,
+    has_left: bool,
+    left_inter: bool,
+) -> i32 {
+    if has_above && has_left {
+        let ai = !above_inter;
+        let li = !left_inter;
+        if li && ai {
+            3
+        } else {
+            (li || ai) as i32
+        }
+    } else if has_above || has_left {
+        let nbr_inter = if has_above { above_inter } else { left_inter };
+        2 * (!nbr_inter) as i32
+    } else {
+        0
+    }
+}

@@ -507,3 +507,20 @@ uint32_t shim_write_mb_interp_filter(uint16_t *cdf0, uint16_t *cdf1, int interp_
   od_ec_enc_clear(&ec);
   return nb;
 }
+
+/* Facade for av1_get_intra_inter_context: two stack MB_MODE_INFO neighbours whose
+ * ref_frame[0] (+ use_intrabc=0) drives is_inter_block, called through the real fn. */
+#include "av1/common/pred_common.h"
+int shim_get_intra_inter_context(int has_above, int above_inter, int has_left, int left_inter) {
+  MB_MODE_INFO ami, lmi;
+  MACROBLOCKD xd;
+  ami.use_intrabc = 0;
+  lmi.use_intrabc = 0;
+  ami.ref_frame[0] = above_inter ? LAST_FRAME : INTRA_FRAME;
+  lmi.ref_frame[0] = left_inter ? LAST_FRAME : INTRA_FRAME;
+  xd.above_mbmi = &ami;
+  xd.left_mbmi = &lmi;
+  xd.up_available = has_above;
+  xd.left_available = has_left;
+  return av1_get_intra_inter_context(&xd);
+}

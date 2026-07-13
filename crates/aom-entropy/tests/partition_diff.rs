@@ -873,3 +873,21 @@ fn write_mb_interp_filter_matches_c() {
         assert_eq!(m1, o1, "interp cdf1");
     }
 }
+
+#[test]
+fn get_intra_inter_context_matches_c() {
+    use aom_entropy::partition::get_intra_inter_context;
+    for ha in [false, true] {
+        for ai in [false, true] {
+            for hl in [false, true] {
+                for li in [false, true] {
+                    assert_eq!(
+                        get_intra_inter_context(ha, ai, hl, li),
+                        c::ref_get_intra_inter_context(ha, ai, hl, li),
+                        "intra_inter_ctx ha={ha} ai={ai} hl={hl} li={li}"
+                    );
+                }
+            }
+        }
+    }
+}
