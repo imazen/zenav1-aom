@@ -59,7 +59,7 @@ fn eob_pos_token_matches_c() {
 
 #[test]
 fn txb_kernels_byte_identical() {
-    let mut rng = Rng(0x_7b_1234_5678_9abc_u64);
+    let mut rng = Rng(0x_007b_1234_5678_9abc_u64);
     // TX_TYPE sample covering all three TX_CLASSes and several 2D scans:
     // DCT_DCT(0), ADST_ADST(3), IDTX(9) — 2D; V_DCT(10), V_FLIPADST(14) — VERT;
     // H_DCT(11), H_FLIPADST(15) — HORIZ.

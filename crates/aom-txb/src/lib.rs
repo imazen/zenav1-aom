@@ -247,8 +247,8 @@ pub fn get_nz_map_contexts(
 ) {
     let bhl = txb_bhl(tx_size);
     let width = txb_wide(tx_size);
-    for i in 0..eob {
-        let pos = scan[i] as usize;
+    for (i, &sc) in scan[..eob].iter().enumerate() {
+        let pos = sc as usize;
         coeff_contexts[pos] =
             get_nz_map_ctx(levels, pos, bhl, width, i, i == eob - 1, tx_size, tx_class) as i8;
     }
