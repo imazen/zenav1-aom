@@ -891,3 +891,25 @@ fn get_intra_inter_context_matches_c() {
         }
     }
 }
+
+#[test]
+fn get_reference_mode_context_matches_c() {
+    use aom_entropy::partition::get_reference_mode_context;
+    let mut rng = Rng(0x2ef0_c0de_a11a_0009);
+    for _ in 0..300_000 {
+        let ha = rng.next().is_multiple_of(2);
+        let hl = rng.next().is_multiple_of(2);
+        // ref_frame[0] in 0..8, ref_frame[1] in -1..8 (NONE=-1 or a ref)
+        let a_r0 = (rng.next() % 8) as i32;
+        let a_r1 = (rng.next() % 9) as i32 - 1;
+        let l_r0 = (rng.next() % 8) as i32;
+        let l_r1 = (rng.next() % 9) as i32 - 1;
+        let a_ibc = rng.next().is_multiple_of(3);
+        let l_ibc = rng.next().is_multiple_of(3);
+        assert_eq!(
+            get_reference_mode_context(ha, a_r0, a_r1, a_ibc, hl, l_r0, l_r1, l_ibc),
+            c::ref_get_reference_mode_context(ha, a_r0, a_r1, a_ibc, hl, l_r0, l_r1, l_ibc),
+            "ref_mode_ctx ha={ha} a=({a_r0},{a_r1},{a_ibc}) hl={hl} l=({l_r0},{l_r1},{l_ibc})"
+        );
+    }
+}

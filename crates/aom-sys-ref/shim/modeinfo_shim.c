@@ -524,3 +524,16 @@ int shim_get_intra_inter_context(int has_above, int above_inter, int has_left, i
   xd.left_available = has_left;
   return av1_get_intra_inter_context(&xd);
 }
+
+/* Facade for av1_get_reference_mode_context: two stack MB_MODE_INFO with ref_frame[0/1]
+ * + use_intrabc, called through the real exported fn. */
+int shim_get_reference_mode_context(int ha, int a_r0, int a_r1, int a_ibc, int hl,
+                                    int l_r0, int l_r1, int l_ibc) {
+  MB_MODE_INFO ami, lmi;
+  MACROBLOCKD xd;
+  ami.ref_frame[0] = a_r0; ami.ref_frame[1] = a_r1; ami.use_intrabc = a_ibc;
+  lmi.ref_frame[0] = l_r0; lmi.ref_frame[1] = l_r1; lmi.use_intrabc = l_ibc;
+  xd.above_mbmi = &ami; xd.left_mbmi = &lmi;
+  xd.up_available = ha; xd.left_available = hl;
+  return av1_get_reference_mode_context(&xd);
+}

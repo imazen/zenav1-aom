@@ -246,6 +246,8 @@ extern "C" {
     #[allow(clippy::too_many_arguments)]
     fn shim_write_mb_interp_filter(cdf0: *mut u16, cdf1: *mut u16, interp_needed: i32, is_switchable: i32, enable_dual: i32, f0: i32, f1: i32, out: *mut u8, out0: *mut u16, out1: *mut u16) -> u32;
     fn shim_get_intra_inter_context(has_above: i32, above_inter: i32, has_left: i32, left_inter: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_get_reference_mode_context(ha: i32, a_r0: i32, a_r1: i32, a_ibc: i32, hl: i32, l_r0: i32, l_r1: i32, l_ibc: i32) -> i32;
     fn shim_write_motion_mode(obmc_cdf: *mut u16, mm_cdf: *mut u16, last_allowed: i32, mm: i32, out: *mut u8, out_obmc: *mut u16, out_mm: *mut u16) -> u32;
     fn shim_write_inter_compound_mode(cdf: *mut u16, mode: i32, out: *mut u8, out_cdf: *mut u16) -> u32;
     fn shim_write_is_inter(cdf: *mut u16, seg_ref: i32, seg_gmv: i32, is_inter: i32, out: *mut u8, out_cdf: *mut u16) -> u32;
@@ -297,6 +299,12 @@ pub fn ref_write_mb_interp_filter(cdf0: &[u16; 4], cdf1: &[u16; 4], interp_neede
     let mut c0 = *cdf0; let mut c1 = *cdf1; let mut out = vec![0u8; 16]; let mut o0 = [0u16; 4]; let mut o1 = [0u16; 4];
     let n = unsafe { shim_write_mb_interp_filter(c0.as_mut_ptr(), c1.as_mut_ptr(), interp_needed as i32, is_switchable as i32, enable_dual as i32, f0, f1, out.as_mut_ptr(), o0.as_mut_ptr(), o1.as_mut_ptr()) };
     out.truncate(n as usize); (out, o0, o1)
+}
+
+/// Reference `av1_get_reference_mode_context` (facade over the real exported fn).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_get_reference_mode_context(ha: bool, a_r0: i32, a_r1: i32, a_ibc: bool, hl: bool, l_r0: i32, l_r1: i32, l_ibc: bool) -> i32 {
+    unsafe { shim_get_reference_mode_context(ha as i32, a_r0, a_r1, a_ibc as i32, hl as i32, l_r0, l_r1, l_ibc as i32) }
 }
 
 /// Reference `av1_get_intra_inter_context` (facade over the real exported fn).

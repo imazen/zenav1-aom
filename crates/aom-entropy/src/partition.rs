@@ -654,3 +654,52 @@ pub fn get_intra_inter_context(
         0
     }
 }
+
+#[inline]
+fn is_backward_ref(ref_frame: i32) -> bool {
+    ref_frame >= 5 // BWDREF_FRAME
+}
+#[inline]
+fn has_second_ref(ref1: i32) -> bool {
+    ref1 > 0 // > INTRA_FRAME
+}
+#[inline]
+fn nbr_is_inter(use_intrabc: bool, ref0: i32) -> bool {
+    use_intrabc || ref0 > 0
+}
+
+/// `av1_get_reference_mode_context` (`av1/common/pred_common.c`): the single-vs-compound
+/// reference-mode CDF context from the above/left neighbours' comp-pred use, backward-ref
+/// direction, and inter-ness. Returns 0..4.
+#[allow(clippy::too_many_arguments)]
+pub fn get_reference_mode_context(
+    has_above: bool,
+    a_r0: i32,
+    a_r1: i32,
+    a_ibc: bool,
+    has_left: bool,
+    l_r0: i32,
+    l_r1: i32,
+    l_ibc: bool,
+) -> i32 {
+    if has_above && has_left {
+        if !has_second_ref(a_r1) && !has_second_ref(l_r1) {
+            (is_backward_ref(a_r0) ^ is_backward_ref(l_r0)) as i32
+        } else if !has_second_ref(a_r1) {
+            2 + (is_backward_ref(a_r0) || !nbr_is_inter(a_ibc, a_r0)) as i32
+        } else if !has_second_ref(l_r1) {
+            2 + (is_backward_ref(l_r0) || !nbr_is_inter(l_ibc, l_r0)) as i32
+        } else {
+            4
+        }
+    } else if has_above || has_left {
+        let (r0, r1) = if has_above { (a_r0, a_r1) } else { (l_r0, l_r1) };
+        if !has_second_ref(r1) {
+            is_backward_ref(r0) as i32
+        } else {
+            3
+        }
+    } else {
+        1
+    }
+}
