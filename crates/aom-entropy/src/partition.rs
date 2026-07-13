@@ -2035,3 +2035,67 @@ pub fn write_cdef(
         cdef_transmitted[index] = true;
     }
 }
+
+/// `write_mb_modes_kf` prefix (`av1/encoder/bitstream.c:1267`): the KEY-frame per-block
+/// driver up to (not including) the intrabc + intra-prediction-modes tail. Codes the
+/// segment id before the skip flag when `segid_preskip` (with `skip_txfm=0`), the skip
+/// flag, the segment id after skip otherwise (with `skip_txfm=skip`), then the CDEF
+/// strength and the per-SB delta-Q params — the last two receiving `write_skip`'s return.
+/// Returns the coded `skip`. State (segment/skip/cdef/delta CDFs, cdef_transmitted,
+/// delta running values, base qindex) is updated in place.
+#[allow(clippy::too_many_arguments)]
+pub fn write_mb_modes_kf_prefix(
+    enc: &mut OdEcEnc,
+    segid_preskip: bool,
+    seg_enabled: bool,
+    update_map: bool,
+    segment_id: i32,
+    seg_pred: i32,
+    last_active_segid: i32,
+    seg_cdf: &mut [u16],
+    seg_skip_active: bool,
+    skip_txfm: i32,
+    skip_cdf: &mut [u16],
+    coded_lossless: bool,
+    allow_intrabc: bool,
+    mi_row: i32,
+    mi_col: i32,
+    mib_size: i32,
+    sb_size: usize,
+    cdef_transmitted: &mut [bool; 4],
+    cdef_bits: u32,
+    cdef_strength: i32,
+    dq_present: bool,
+    dlf_present: bool,
+    dlf_multi: bool,
+    num_planes: i32,
+    bsize: usize,
+    cur_qindex: i32,
+    current_base_qindex: &mut i32,
+    dq_res: i32,
+    mbmi_delta_lf: &[i32; FRAME_LF_COUNT],
+    xd_delta_lf: &mut [i32; FRAME_LF_COUNT],
+    mbmi_delta_lf_from_base: i32,
+    xd_delta_lf_from_base: &mut i32,
+    dlf_res: i32,
+    delta_q_cdf: &mut [u16],
+    delta_lf_multi_cdf: &mut [[u16; 5]; FRAME_LF_COUNT],
+    delta_lf_cdf: &mut [u16],
+) -> i32 {
+    if segid_preskip && update_map {
+        write_segment_id(enc, seg_cdf, seg_enabled, update_map, false, segment_id, seg_pred, last_active_segid);
+    }
+    let skip = write_skip(enc, skip_cdf, seg_skip_active, skip_txfm);
+    if !segid_preskip && update_map {
+        write_segment_id(enc, seg_cdf, seg_enabled, update_map, skip != 0, segment_id, seg_pred, last_active_segid);
+    }
+    write_cdef(enc, coded_lossless, allow_intrabc, mi_row, mi_col, mib_size, sb_size, skip, cdef_transmitted, cdef_bits, cdef_strength);
+    let super_block_upper_left = (mi_row & (mib_size - 1)) == 0 && (mi_col & (mib_size - 1)) == 0;
+    write_delta_q_params_sb(
+        enc, dq_present, dlf_present, dlf_multi, num_planes, bsize, sb_size, skip,
+        super_block_upper_left, cur_qindex, current_base_qindex, dq_res, mbmi_delta_lf,
+        xd_delta_lf, mbmi_delta_lf_from_base, xd_delta_lf_from_base, dlf_res, delta_q_cdf,
+        delta_lf_multi_cdf, delta_lf_cdf,
+    );
+    skip
+}

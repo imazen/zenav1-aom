@@ -296,6 +296,8 @@ extern "C" {
     fn shim_is_cfl_allowed(bsize: i32, seg_id: i32, lossless: i32, ssx: i32, ssy: i32) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_cdef(coded_lossless: i32, allow_intrabc: i32, mi_row: i32, mi_col: i32, mib_size: i32, sb_size: i32, skip: i32, transmitted_in: *const i32, cdef_bits: i32, cdef_strength: i32, out: *mut u8, transmitted_out: *mut i32) -> u32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_write_mb_modes_kf_prefix(segid_preskip: i32, seg_enabled: i32, update_map: i32, segment_id: i32, seg_pred: i32, last_active_segid: i32, seg_cdf: *mut u16, seg_skip_active: i32, skip_txfm: i32, skip_cdf: *mut u16, coded_lossless: i32, allow_intrabc: i32, mi_row: i32, mi_col: i32, mib_size: i32, sb_size: i32, cdef_trans_in: *const i32, cdef_bits: i32, cdef_strength: i32, dq_present: i32, dlf_present: i32, dlf_multi: i32, num_planes: i32, bsize: i32, cur_qindex: i32, cur_base_qindex: i32, dq_res: i32, mbmi_dlf: *const i32, xd_dlf_in: *const i32, mbmi_dlf_base: i32, xd_dlf_base_in: i32, dlf_res: i32, dq_cdf: *mut u16, dlf_multi_cdf: *mut u16, dlf_cdf: *mut u16, out: *mut u8, out_skip: *mut i32, o_segcdf: *mut u16, o_skipcdf: *mut u16, o_cdef_trans: *mut i32, o_dqcdf: *mut u16, o_dlfmcdf: *mut u16, o_dlfcdf: *mut u16, o_base: *mut i32, o_xd_dlf: *mut i32, o_xd_dlf_base: *mut i32) -> u32;
     fn shim_write_intra_y_and_angle(mode: i32, bsize: i32, y_cdf: *mut u16, angle_delta_y: i32, y_angle_cdf: *mut u16, out: *mut u8, o_ycdf: *mut u16, o_acdf: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_intra_uv_and_angle(monochrome: i32, is_chroma_ref: i32, uv_mode: i32, cfl_allowed: i32, bsize: i32, cfl_idx: i32, cfl_joint_sign: i32, angle_delta_uv: i32, uv_mode_cdf: *mut u16, cfl_sign_cdf: *mut u16, cfl_alpha_cdf: *mut u16, uv_angle_cdf: *mut u16, out: *mut u8, o_uvcdf: *mut u16, o_signcdf: *mut u16, o_alphacdf: *mut u16, o_uvacdf: *mut u16) -> u32;
@@ -618,6 +620,97 @@ pub fn ref_write_cdef(
     };
     out.truncate(n as usize);
     (out, tout)
+}
+
+/// Inputs for the `write_mb_modes_kf` prefix oracle (segment_id -> skip -> segment_id
+/// -> cdef -> delta_q_params).
+pub struct KfPrefixRef<'a> {
+    pub segid_preskip: bool,
+    pub seg_enabled: bool,
+    pub update_map: bool,
+    pub segment_id: i32,
+    pub seg_pred: i32,
+    pub last_active_segid: i32,
+    pub seg_cdf: &'a [u16; 9],
+    pub seg_skip_active: bool,
+    pub skip_txfm: i32,
+    pub skip_cdf: &'a [u16; 3],
+    pub coded_lossless: bool,
+    pub allow_intrabc: bool,
+    pub mi_row: i32,
+    pub mi_col: i32,
+    pub mib_size: i32,
+    pub sb_size: i32,
+    pub cdef_trans: &'a [i32; 4],
+    pub cdef_bits: i32,
+    pub cdef_strength: i32,
+    pub dq_present: bool,
+    pub dlf_present: bool,
+    pub dlf_multi: bool,
+    pub num_planes: i32,
+    pub bsize: i32,
+    pub cur_qindex: i32,
+    pub cur_base_qindex: i32,
+    pub dq_res: i32,
+    pub mbmi_dlf: &'a [i32; 4],
+    pub xd_dlf: &'a [i32; 4],
+    pub mbmi_dlf_base: i32,
+    pub xd_dlf_base: i32,
+    pub dlf_res: i32,
+    pub dq_cdf: &'a [u16; 5],
+    pub dlf_multi_cdf: &'a [u16; 20],
+    pub dlf_cdf: &'a [u16; 5],
+}
+
+/// Outputs of the `write_mb_modes_kf` prefix oracle: coded bytes, the write_skip return,
+/// every adapted CDF, and the updated cdef/delta-lf state.
+pub struct KfPrefixOut {
+    pub bytes: Vec<u8>,
+    pub skip: i32,
+    pub seg_cdf: [u16; 9],
+    pub skip_cdf: [u16; 3],
+    pub cdef_trans: [i32; 4],
+    pub dq_cdf: [u16; 5],
+    pub dlf_multi_cdf: [u16; 20],
+    pub dlf_cdf: [u16; 5],
+    pub base_qindex: i32,
+    pub xd_dlf: [i32; 4],
+    pub xd_dlf_base: i32,
+}
+
+/// Reference `write_mb_modes_kf` prefix (segment_id -> skip -> segment_id -> cdef ->
+/// delta_q_params) over one od_ec, threading write_skip's return into cdef/delta_q.
+pub fn ref_write_mb_modes_kf_prefix(inp: &KfPrefixRef) -> KfPrefixOut {
+    let mut seg = *inp.seg_cdf;
+    let mut skc = *inp.skip_cdf;
+    let mut dqc = *inp.dq_cdf;
+    let mut dlmc = *inp.dlf_multi_cdf;
+    let mut dlc = *inp.dlf_cdf;
+    let mut out = vec![0u8; 64];
+    let mut skip = 0i32;
+    let (mut oseg, mut oskc, mut octr) = ([0u16; 9], [0u16; 3], [0i32; 4]);
+    let (mut odqc, mut odlmc, mut odlc) = ([0u16; 5], [0u16; 20], [0u16; 5]);
+    let (mut obase, mut oxd, mut oxdb) = (0i32, [0i32; 4], 0i32);
+    let n = unsafe {
+        shim_write_mb_modes_kf_prefix(
+            inp.segid_preskip as i32, inp.seg_enabled as i32, inp.update_map as i32, inp.segment_id,
+            inp.seg_pred, inp.last_active_segid, seg.as_mut_ptr(), inp.seg_skip_active as i32,
+            inp.skip_txfm, skc.as_mut_ptr(), inp.coded_lossless as i32, inp.allow_intrabc as i32,
+            inp.mi_row, inp.mi_col, inp.mib_size, inp.sb_size, inp.cdef_trans.as_ptr(),
+            inp.cdef_bits, inp.cdef_strength, inp.dq_present as i32, inp.dlf_present as i32,
+            inp.dlf_multi as i32, inp.num_planes, inp.bsize, inp.cur_qindex, inp.cur_base_qindex,
+            inp.dq_res, inp.mbmi_dlf.as_ptr(), inp.xd_dlf.as_ptr(), inp.mbmi_dlf_base,
+            inp.xd_dlf_base, inp.dlf_res, dqc.as_mut_ptr(), dlmc.as_mut_ptr(), dlc.as_mut_ptr(),
+            out.as_mut_ptr(), &mut skip, oseg.as_mut_ptr(), oskc.as_mut_ptr(), octr.as_mut_ptr(),
+            odqc.as_mut_ptr(), odlmc.as_mut_ptr(), odlc.as_mut_ptr(), &mut obase, oxd.as_mut_ptr(),
+            &mut oxdb,
+        )
+    };
+    out.truncate(n as usize);
+    KfPrefixOut {
+        bytes: out, skip, seg_cdf: oseg, skip_cdf: oskc, cdef_trans: octr, dq_cdf: odqc,
+        dlf_multi_cdf: odlmc, dlf_cdf: odlc, base_qindex: obase, xd_dlf: oxd, xd_dlf_base: oxdb,
+    }
 }
 
 /// Reference `av1_use_angle_delta` / `av1_is_directional_mode` / `get_uv_mode` /

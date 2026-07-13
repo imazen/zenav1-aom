@@ -1535,3 +1535,100 @@ uint32_t shim_write_cdef(int coded_lossless, int allow_intrabc, int mi_row, int 
   od_ec_enc_clear(&ec);
   return nb;
 }
+
+/* --- write_mb_modes_kf prefix (av1/encoder/bitstream.c:1267) --- */
+/* Sequences segment_id(preskip) -> skip -> segment_id(postskip) -> cdef -> delta_q_params
+ * over ONE od_ec, threading write_skip's return into cdef/delta_q. The intrabc + intra
+ * tail is validated separately. Reuses dq_body/dlf_body; seg/skip/cdef inlined. */
+static int seg_body(od_ec_enc *ec, uint16_t *cdf, int seg_enabled, int update_map,
+                    int skip_txfm, int segment_id, int pred, int last_active_segid) {
+  if (seg_enabled && update_map && !skip_txfm) {
+    int coded_id = av1_neg_interleave(segment_id, pred, last_active_segid + 1);
+    od_ec_encode_cdf_q15(ec, coded_id, cdf, MAX_SEGMENTS);
+    update_cdf(cdf, coded_id, MAX_SEGMENTS);
+  }
+  return 0;
+}
+static int skip_body(od_ec_enc *ec, uint16_t *cdf, int seg_skip_active, int skip_txfm) {
+  if (seg_skip_active) return 1;
+  od_ec_encode_cdf_q15(ec, skip_txfm, cdf, 2);
+  update_cdf(cdf, skip_txfm, 2);
+  return skip_txfm;
+}
+static void cdef_body(od_ec_enc *ec, int coded_lossless, int allow_intrabc, int mi_row,
+                      int mi_col, int mib_size, int sb_size, int skip, int *transmitted,
+                      int cdef_bits, int cdef_strength) {
+  if (coded_lossless || allow_intrabc) return;
+  int sb_mask = mib_size - 1;
+  if ((mi_row & sb_mask) == 0 && (mi_col & sb_mask) == 0)
+    transmitted[0] = transmitted[1] = transmitted[2] = transmitted[3] = 0;
+  int cdef_size = 1 << (6 - MI_SIZE_LOG2), index_mask = cdef_size;
+  int r = ((mi_row & index_mask) != 0), c = ((mi_col & index_mask) != 0);
+  int index = (sb_size == BLOCK_128X128) ? c + 2 * r : 0;
+  if (!transmitted[index] && !skip) {
+    mi_literal(ec, cdef_strength, cdef_bits);
+    transmitted[index] = 1;
+  }
+}
+static void dqparams_body(od_ec_enc *ec, int dq_present, int dlf_present, int dlf_multi,
+    int num_planes, int bsize, int sb_size, int skip, int sbul, int cur_qindex, int *base,
+    int dq_res, const int *mbmi_dlf, int *xd_dlf, int mbmi_dlf_base, int *xd_dlf_base, int dlf_res,
+    uint16_t *dq_cdf, uint16_t *dlf_multi_cdf, uint16_t *dlf_cdf) {
+  if (!dq_present) return;
+  if ((bsize != sb_size || skip == 0) && sbul) {
+    dq_body(ec, dq_cdf, (cur_qindex - *base) / dq_res);
+    *base = cur_qindex;
+    if (dlf_present) {
+      if (dlf_multi) {
+        int flc = num_planes > 1 ? FRAME_LF_COUNT : FRAME_LF_COUNT - 2;
+        for (int lf = 0; lf < flc; ++lf) {
+          dlf_body(ec, dlf_multi_cdf + lf * (DELTA_LF_PROBS + 2), (mbmi_dlf[lf] - xd_dlf[lf]) / dlf_res);
+          xd_dlf[lf] = mbmi_dlf[lf];
+        }
+      } else {
+        dlf_body(ec, dlf_cdf, (mbmi_dlf_base - *xd_dlf_base) / dlf_res);
+        *xd_dlf_base = mbmi_dlf_base;
+      }
+    }
+  }
+}
+
+uint32_t shim_write_mb_modes_kf_prefix(
+    int segid_preskip, int seg_enabled, int update_map, int segment_id, int seg_pred,
+    int last_active_segid, uint16_t *seg_cdf, int seg_skip_active, int skip_txfm, uint16_t *skip_cdf,
+    int coded_lossless, int allow_intrabc, int mi_row, int mi_col, int mib_size, int sb_size,
+    const int *cdef_trans_in, int cdef_bits, int cdef_strength, int dq_present, int dlf_present,
+    int dlf_multi, int num_planes, int bsize, int cur_qindex, int cur_base_qindex, int dq_res,
+    const int *mbmi_dlf, const int *xd_dlf_in, int mbmi_dlf_base, int xd_dlf_base_in, int dlf_res,
+    uint16_t *dq_cdf, uint16_t *dlf_multi_cdf, uint16_t *dlf_cdf, uint8_t *out, int *out_skip,
+    uint16_t *o_segcdf, uint16_t *o_skipcdf, int *o_cdef_trans, uint16_t *o_dqcdf, uint16_t *o_dlfmcdf,
+    uint16_t *o_dlfcdf, int *o_base, int *o_xd_dlf, int *o_xd_dlf_base) {
+  int cdef_trans[4], xd_dlf[FRAME_LF_COUNT];
+  for (int i = 0; i < 4; i++) cdef_trans[i] = cdef_trans_in[i];
+  for (int i = 0; i < FRAME_LF_COUNT; i++) xd_dlf[i] = xd_dlf_in[i];
+  int base = cur_base_qindex, xd_dlf_base = xd_dlf_base_in;
+  const int sbul = ((mi_row & (mib_size - 1)) == 0) && ((mi_col & (mib_size - 1)) == 0);
+  od_ec_enc ec; od_ec_enc_init(&ec, 256);
+  if (segid_preskip && update_map)
+    seg_body(&ec, seg_cdf, seg_enabled, update_map, 0, segment_id, seg_pred, last_active_segid);
+  int skip = skip_body(&ec, skip_cdf, seg_skip_active, skip_txfm);
+  if (!segid_preskip && update_map)
+    seg_body(&ec, seg_cdf, seg_enabled, update_map, skip, segment_id, seg_pred, last_active_segid);
+  cdef_body(&ec, coded_lossless, allow_intrabc, mi_row, mi_col, mib_size, sb_size, skip, cdef_trans,
+            cdef_bits, cdef_strength);
+  dqparams_body(&ec, dq_present, dlf_present, dlf_multi, num_planes, bsize, sb_size, skip, sbul,
+                cur_qindex, &base, dq_res, mbmi_dlf, xd_dlf, mbmi_dlf_base, &xd_dlf_base, dlf_res,
+                dq_cdf, dlf_multi_cdf, dlf_cdf);
+  uint32_t nb = 0; const unsigned char *buf = od_ec_enc_done(&ec, &nb);
+  for (uint32_t i = 0; i < nb; i++) out[i] = buf[i];
+  *out_skip = skip; *o_base = base; *o_xd_dlf_base = xd_dlf_base;
+  for (int i = 0; i < 9; i++) o_segcdf[i] = seg_cdf[i];
+  for (int i = 0; i < 3; i++) o_skipcdf[i] = skip_cdf[i];
+  for (int i = 0; i < 4; i++) o_cdef_trans[i] = cdef_trans[i];
+  for (int i = 0; i < DELTA_Q_PROBS + 2; i++) o_dqcdf[i] = dq_cdf[i];
+  for (int i = 0; i < FRAME_LF_COUNT * (DELTA_LF_PROBS + 2); i++) o_dlfmcdf[i] = dlf_multi_cdf[i];
+  for (int i = 0; i < DELTA_LF_PROBS + 2; i++) o_dlfcdf[i] = dlf_cdf[i];
+  for (int i = 0; i < FRAME_LF_COUNT; i++) o_xd_dlf[i] = xd_dlf[i];
+  od_ec_enc_clear(&ec);
+  return nb;
+}
