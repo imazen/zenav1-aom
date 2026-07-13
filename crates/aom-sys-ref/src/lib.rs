@@ -164,6 +164,18 @@ extern "C" {
     fn shim_highbd_subtract_block(rows: i32, cols: i32, diff: *mut i16, diff_stride: i32, src: *const u16, src_stride: i32, pred: *const u16, pred_stride: i32);
     fn shim_block_error_qm(coeff: *const i32, dqcoeff: *const i32, block_size: isize, qmatrix: *const u8, scan: *const i16, ssz: *mut i64, bd: i32) -> i64;
     fn av1_model_rd_from_var_lapndz(var: i64, n_log2: u32, qstep: u32, rate: *mut i32, dist: *mut i64);
+    fn aom_sum_squares_i16_c(src: *const i16, n: u32) -> u64;
+    fn aom_sum_squares_2d_i16_c(src: *const i16, src_stride: i32, width: i32, height: i32) -> u64;
+}
+
+/// Reference `aom_sum_squares_i16_c` (sum of squared i16 values).
+pub fn ref_sum_squares_i16(src: &[i16]) -> u64 {
+    unsafe { aom_sum_squares_i16_c(src.as_ptr(), src.len() as u32) }
+}
+
+/// Reference `aom_sum_squares_2d_i16_c` (2-D strided residual energy).
+pub fn ref_sum_squares_2d_i16(src: &[i16], src_stride: usize, width: usize, height: usize) -> u64 {
+    unsafe { aom_sum_squares_2d_i16_c(src.as_ptr(), src_stride as i32, width as i32, height as i32) }
 }
 
 /// Reference `av1_model_rd_from_var_lapndz` (Laplacian RD model). Returns (rate, dist).

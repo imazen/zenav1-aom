@@ -382,3 +382,29 @@ pub fn block_error_qm(coeff: &[i32], dqcoeff: &[i32], qmatrix: &[u8], scan: &[i1
     sqcoeff = (sqcoeff + rounding) >> shift;
     (error, sqcoeff)
 }
+
+/// `aom_sum_squares_i16_c` (`aom_dsp/sum_squares.c`): sum of squared i16 values
+/// (residual energy). The per-element `v*v` is 32-bit (matching C's `int`) and
+/// accumulates into u64.
+pub fn sum_squares_i16(src: &[i16]) -> u64 {
+    let mut ss = 0u64;
+    for &v in src {
+        let v = v as i32;
+        ss += (v * v) as u64;
+    }
+    ss
+}
+
+/// `aom_sum_squares_2d_i16_c`: the 2-D strided residual energy over a
+/// `width x height` block with row stride `src_stride`.
+pub fn sum_squares_2d_i16(src: &[i16], src_stride: usize, width: usize, height: usize) -> u64 {
+    let mut ss = 0u64;
+    for r in 0..height {
+        let base = r * src_stride;
+        for c in 0..width {
+            let v = src[base + c] as i32;
+            ss += (v * v) as u64;
+        }
+    }
+    ss
+}
