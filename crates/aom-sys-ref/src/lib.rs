@@ -207,6 +207,26 @@ extern "C" {
     fn shim_write_tile_info(mi_cols: i32, mi_rows: i32, mib_size_log2: i32, uniform_spacing: i32, log2_cols: i32, min_log2_cols: i32, max_log2_cols: i32, log2_rows: i32, min_log2_rows: i32, max_log2_rows: i32, cols: i32, rows: i32, col_start_sb: *const i32, row_start_sb: *const i32, max_width_sb: i32, max_height_sb: i32, out: *mut u8) -> u32;
     #[allow(clippy::too_many_arguments)]
     fn shim_encode_restoration_mode(enable_restoration: i32, allow_intrabc: i32, frame_restoration_type: *const i32, sb_size_128: i32, restoration_unit_size: *const i32, ssx: i32, ssy: i32, num_planes: i32, out: *mut u8) -> u32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_write_delta_q_params(base_qindex: i32, delta_q_present: i32, delta_q_res: i32, allow_intrabc: i32, delta_lf_present: i32, delta_lf_res: i32, delta_lf_multi: i32, out: *mut u8) -> u32;
+    fn shim_write_tx_mode(coded_lossless: i32, tx_mode_select: i32, out: *mut u8) -> u32;
+}
+
+/// Reference `write_delta_q_params` (transcribed control flow over the real aom_wb).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_write_delta_q_params(base_qindex: i32, delta_q_present: bool, delta_q_res: i32, allow_intrabc: bool, delta_lf_present: bool, delta_lf_res: i32, delta_lf_multi: bool) -> Vec<u8> {
+    let mut out = vec![0u8; 8];
+    let n = unsafe { shim_write_delta_q_params(base_qindex, delta_q_present as i32, delta_q_res, allow_intrabc as i32, delta_lf_present as i32, delta_lf_res, delta_lf_multi as i32, out.as_mut_ptr()) };
+    out.truncate(n as usize);
+    out
+}
+
+/// Reference `write_tx_mode`.
+pub fn ref_write_tx_mode(coded_lossless: bool, tx_mode_select: bool) -> Vec<u8> {
+    let mut out = vec![0u8; 4];
+    let n = unsafe { shim_write_tx_mode(coded_lossless as i32, tx_mode_select as i32, out.as_mut_ptr()) };
+    out.truncate(n as usize);
+    out
 }
 
 /// Reference `encode_restoration_mode` (transcribed control flow over the real aom_wb).

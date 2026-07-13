@@ -337,3 +337,36 @@ fn encode_restoration_mode_matches_c() {
         assert_eq!(got, want, "encode_restoration_mode {r:?} np={num_planes}");
     }
 }
+
+#[test]
+fn write_delta_q_params_and_tx_mode_match_c() {
+    use aom_entropy::header::{write_delta_q_params, write_tx_mode, DeltaQParams};
+    let mut rng = Rng(0xd17a_c0de_a11a_0009);
+    let pow2 = |rng: &mut Rng| -> i32 { 1 << rng.range(0, 4) }; // 1,2,4,8 -> get_msb 0..3
+    for _ in 0..200_000 {
+        let allow_intrabc = rng.next().is_multiple_of(3);
+        // spec-valid: delta_lf_present is only written (and meaningful) when !intrabc.
+        let delta_lf_present = !allow_intrabc && rng.next().is_multiple_of(2);
+        let d = DeltaQParams {
+            base_qindex: rng.range(0, 256),
+            delta_q_present: rng.next().is_multiple_of(2),
+            delta_q_res: pow2(&mut rng),
+            allow_intrabc,
+            delta_lf_present,
+            delta_lf_res: pow2(&mut rng),
+            delta_lf_multi: rng.next().is_multiple_of(2),
+        };
+        let mut wb = WriteBitBuffer::new();
+        write_delta_q_params(&mut wb, &d);
+        let got = wb.bytes().to_vec();
+        let want = c::ref_write_delta_q_params(d.base_qindex, d.delta_q_present, d.delta_q_res, d.allow_intrabc, d.delta_lf_present, d.delta_lf_res, d.delta_lf_multi);
+        assert_eq!(got, want, "write_delta_q_params {d:?}");
+
+        // tx mode
+        let coded_lossless = rng.next().is_multiple_of(4);
+        let tx_mode_select = rng.next().is_multiple_of(2);
+        let mut wb = WriteBitBuffer::new();
+        write_tx_mode(&mut wb, coded_lossless, tx_mode_select);
+        assert_eq!(wb.bytes(), &c::ref_write_tx_mode(coded_lossless, tx_mode_select)[..], "tx_mode cl={coded_lossless} sel={tx_mode_select}");
+    }
+}

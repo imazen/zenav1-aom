@@ -304,3 +304,30 @@ uint32_t shim_encode_restoration_mode(int enable_restoration, int allow_intrabc,
   }
   return aom_wb_bytes_written(&wb);
 }
+
+/* Transcribed control flow of the frame-header delta-q/delta-lf block +
+ * write_tx_mode over the real aom_wb (debug-only asserts + xd side effects
+ * omitted — no byte effect). */
+uint32_t shim_write_delta_q_params(int base_qindex, int delta_q_present, int delta_q_res,
+                                   int allow_intrabc, int delta_lf_present, int delta_lf_res,
+                                   int delta_lf_multi, uint8_t *out) {
+  struct aom_write_bit_buffer wb = { out, 0 };
+  if (base_qindex > 0) {
+    aom_wb_write_bit(&wb, delta_q_present);
+    if (delta_q_present) {
+      aom_wb_write_literal(&wb, get_msb(delta_q_res), 2);
+      if (!allow_intrabc) aom_wb_write_bit(&wb, delta_lf_present);
+      if (delta_lf_present) {
+        aom_wb_write_literal(&wb, get_msb(delta_lf_res), 2);
+        aom_wb_write_bit(&wb, delta_lf_multi);
+      }
+    }
+  }
+  return aom_wb_bytes_written(&wb);
+}
+
+uint32_t shim_write_tx_mode(int coded_lossless, int tx_mode_select, uint8_t *out) {
+  struct aom_write_bit_buffer wb = { out, 0 };
+  if (!coded_lossless) aom_wb_write_bit(&wb, tx_mode_select);
+  return aom_wb_bytes_written(&wb);
+}

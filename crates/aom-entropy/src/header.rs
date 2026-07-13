@@ -455,3 +455,52 @@ pub fn encode_restoration_mode(wb: &mut WriteBitBuffer, r: &RestorationHeader, n
         }
     }
 }
+
+// ---- frame-level delta-q / delta-lf + tx mode -----------------------------
+
+/// `get_msb` (`aom_ports/bitops.h`): the index of the most-significant set bit
+/// (`floor(log2(n))`), for `n > 0`.
+fn get_msb(n: u32) -> u32 {
+    31 - n.leading_zeros()
+}
+
+/// The frame-level delta-q / delta-lf params (`cm->delta_q_info`).
+#[derive(Clone, Copy, Debug)]
+pub struct DeltaQParams {
+    pub base_qindex: i32,
+    pub delta_q_present: bool,
+    pub delta_q_res: i32, // a power of two
+    pub allow_intrabc: bool,
+    pub delta_lf_present: bool,
+    pub delta_lf_res: i32, // a power of two
+    pub delta_lf_multi: bool,
+}
+
+/// `write_delta_q_params` (the frame-header block in `write_uncompressed_header_obu`):
+/// only when `base_qindex > 0` — the delta-q present flag, its log2 resolution
+/// (2 bits), and (when not intrabc) the delta-lf present flag with its log2
+/// resolution + multi flag.
+pub fn write_delta_q_params(wb: &mut WriteBitBuffer, d: &DeltaQParams) {
+    if d.base_qindex > 0 {
+        wb.write_bit(d.delta_q_present as u32);
+        if d.delta_q_present {
+            wb.write_literal(get_msb(d.delta_q_res as u32) as i32, 2);
+            if !d.allow_intrabc {
+                wb.write_bit(d.delta_lf_present as u32);
+            }
+            if d.delta_lf_present {
+                wb.write_literal(get_msb(d.delta_lf_res as u32) as i32, 2);
+                wb.write_bit(d.delta_lf_multi as u32);
+            }
+        }
+    }
+}
+
+/// `write_tx_mode` (inline in the uncompressed header): a single bit
+/// `tx_mode == TX_MODE_SELECT`, suppressed when the frame is coded-lossless
+/// (then `tx_mode` is forced to `ONLY_4X4`).
+pub fn write_tx_mode(wb: &mut WriteBitBuffer, coded_lossless: bool, tx_mode_select: bool) {
+    if !coded_lossless {
+        wb.write_bit(tx_mode_select as u32);
+    }
+}
