@@ -157,6 +157,25 @@ pub fn ref_hbd_sse(a: &[u16], as_: usize, b: &[u16], bs: usize, w: usize, h: usi
     unsafe { shim_hbd_sse(a.as_ptr(), as_ as i32, b.as_ptr(), bs as i32, w as i32, h as i32) }
 }
 
+extern "C" {
+    fn av1_block_error_c(coeff: *const i32, dqcoeff: *const i32, block_size: isize, ssz: *mut i64) -> i64;
+    fn av1_highbd_block_error_c(coeff: *const i32, dqcoeff: *const i32, block_size: isize, ssz: *mut i64, bd: i32) -> i64;
+}
+
+/// Reference `av1_block_error_c` (transform-domain distortion). Returns (error, ssz).
+pub fn ref_block_error(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
+    let mut ssz = 0i64;
+    let err = unsafe { av1_block_error_c(coeff.as_ptr(), dqcoeff.as_ptr(), coeff.len() as isize, &mut ssz) };
+    (err, ssz)
+}
+
+/// Reference `av1_highbd_block_error_c` (highbd transform-domain distortion).
+pub fn ref_highbd_block_error(coeff: &[i32], dqcoeff: &[i32], bd: u8) -> (i64, i64) {
+    let mut ssz = 0i64;
+    let err = unsafe { av1_highbd_block_error_c(coeff.as_ptr(), dqcoeff.as_ptr(), coeff.len() as isize, &mut ssz, bd as i32) };
+    (err, ssz)
+}
+
 /// Reference `aom_obmc_sad<W>x<H>_c` (overlapped block motion-comp SAD).
 pub fn ref_obmc_sad(idx: usize, r: &[u8], rs: usize, ws: &[i32], m: &[i32]) -> u32 {
     unsafe { shim_obmc_sad(idx as i32, r.as_ptr(), rs as i32, ws.as_ptr(), m.as_ptr()) }

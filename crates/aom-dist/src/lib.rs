@@ -289,3 +289,39 @@ pub fn sub_pixel_variance(
     }
     variance(&temp2, w, b, b_stride, w, h)
 }
+
+/// `av1_block_error_c` (`av1/encoder/rdopt.c`): transform-domain distortion.
+/// Returns `(error, ssz)` where `error = sum((coeff-dqcoeff)^2)` and
+/// `ssz = sum(coeff^2)`. Lowbd (8-bit): the per-element products are 32-bit
+/// (matching C's `int` arithmetic — wraps like C on overflow) and accumulate
+/// into 64-bit. Used by the encoder's RD search.
+pub fn block_error(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
+    let n = coeff.len();
+    let mut error = 0i64;
+    let mut sqcoeff = 0i64;
+    for i in 0..n {
+        let diff = coeff[i].wrapping_sub(dqcoeff[i]);
+        error += diff.wrapping_mul(diff) as i64;
+        sqcoeff += coeff[i].wrapping_mul(coeff[i]) as i64;
+    }
+    (error, sqcoeff)
+}
+
+/// `av1_highbd_block_error_c` (`av1/encoder/rdopt.c`): highbd transform-domain
+/// distortion. Like [`block_error`] but the products are 64-bit (no wrap) and
+/// both sums are rounded-shifted by `2*(bd-8)`. Returns `(error, ssz)`.
+pub fn highbd_block_error(coeff: &[i32], dqcoeff: &[i32], bd: u8) -> (i64, i64) {
+    let n = coeff.len();
+    let mut error = 0i64;
+    let mut sqcoeff = 0i64;
+    for i in 0..n {
+        let diff = coeff[i] as i64 - dqcoeff[i] as i64;
+        error += diff * diff;
+        sqcoeff += coeff[i] as i64 * coeff[i] as i64;
+    }
+    let shift = 2 * (bd as i32 - 8);
+    let rounding = (1i64 << shift) >> 1;
+    error = (error + rounding) >> shift;
+    sqcoeff = (sqcoeff + rounding) >> shift;
+    (error, sqcoeff)
+}
