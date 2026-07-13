@@ -185,3 +185,108 @@ pub fn av1_quantize_fp_64x64(
 ) -> u16 {
     av1_quantize_fp_no_qmatrix(quant, dequant, round, 2, scan, coeff, qcoeff, dqcoeff)
 }
+
+/// Bit-exact port of `highbd_quantize_fp_helper_c` (`av1/encoder/av1_quantize.c`)
+/// for the no-quant-matrix path. Highbd (10/12-bit) FP quantizer: like the lowbd
+/// path but with 64-bit arithmetic throughout (no int16 clamp on the rounded
+/// coefficient). Returns eob.
+#[allow(clippy::too_many_arguments)]
+pub fn av1_highbd_quantize_fp_no_qmatrix(
+    quant: &[i16; 2],
+    dequant: &[i16; 2],
+    round: &[i16; 2],
+    log_scale: i32,
+    scan: &[i16],
+    coeff: &[i32],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    let n = coeff.len();
+    qcoeff[..n].fill(0);
+    dqcoeff[..n].fill(0);
+    let shift = 16 - log_scale;
+    let lsr = [
+        round_power_of_two(round[0] as i32, log_scale),
+        round_power_of_two(round[1] as i32, log_scale),
+    ];
+    let mut eob: i32 = -1;
+    for (i, &sc) in scan[..n].iter().enumerate() {
+        let rc = sc as usize;
+        let rc01 = (rc != 0) as usize;
+        let coeff_v = coeff[rc];
+        let sign = aomsign(coeff_v);
+        let abs_coeff = (coeff_v ^ sign).wrapping_sub(sign);
+        if ((abs_coeff as i64) << (1 + log_scale)) >= dequant[rc01] as i64 {
+            let tmp = abs_coeff as i64 + lsr[rc01] as i64;
+            let abs_qcoeff = ((tmp * quant[rc01] as i64) >> shift) as i32;
+            qcoeff[rc] = (abs_qcoeff ^ sign).wrapping_sub(sign);
+            let abs_dqcoeff = abs_qcoeff.wrapping_mul(dequant[rc01] as i32) >> log_scale;
+            dqcoeff[rc] = (abs_dqcoeff ^ sign).wrapping_sub(sign);
+            if abs_qcoeff != 0 {
+                eob = i as i32;
+            }
+        }
+    }
+    (eob + 1) as u16
+}
+
+/// Bit-exact port of `aom_highbd_quantize_b_helper_c` (`aom_dsp/quantize.c`) for
+/// the no-quant-matrix case (`wt = iwt = 1<<AOM_QM_BITS`). Highbd "b" quantizer:
+/// dead-zone (`zbin`) pre-scan + two-step `quant`/`quant_shift`, 64-bit.
+#[allow(clippy::too_many_arguments)]
+pub fn aom_highbd_quantize_b_no_qmatrix(
+    zbin: &[i16; 2],
+    round: &[i16; 2],
+    quant: &[i16; 2],
+    quant_shift: &[i16; 2],
+    dequant: &[i16; 2],
+    log_scale: i32,
+    scan: &[i16],
+    coeff: &[i32],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    let n = coeff.len();
+    qcoeff[..n].fill(0);
+    dqcoeff[..n].fill(0);
+    let zbins = [
+        round_power_of_two(zbin[0] as i32, log_scale),
+        round_power_of_two(zbin[1] as i32, log_scale),
+    ];
+    let nzbins = [-zbins[0], -zbins[1]];
+    let wt = 1i64 << AOM_QM_BITS;
+
+    // Pre-scan pass (wt = 32): keep coeffs outside the ZBIN dead-zone.
+    let mut idx_arr = Vec::with_capacity(n);
+    for (i, &sc) in scan[..n].iter().enumerate() {
+        let rc = sc as usize;
+        let coeff_w = coeff[rc] as i64 * wt;
+        if coeff_w >= zbins[(rc != 0) as usize] as i64 * wt
+            || coeff_w <= nzbins[(rc != 0) as usize] as i64 * wt
+        {
+            idx_arr.push(i);
+        }
+    }
+
+    let mut eob: i32 = -1;
+    for &ii in &idx_arr {
+        let rc = scan[ii] as usize;
+        let rc01 = (rc != 0) as usize;
+        let coeff_v = coeff[rc];
+        let sign = aomsign(coeff_v);
+        let abs_coeff = ((coeff_v ^ sign).wrapping_sub(sign)) as i64;
+        let tmp1 = abs_coeff + round_power_of_two(round[rc01] as i32, log_scale) as i64;
+        let tmpw = tmp1 * wt;
+        let tmp2 = ((tmpw * quant[rc01] as i64) >> 16) + tmpw;
+        let abs_qcoeff = ((tmp2 * quant_shift[rc01] as i64) >> (16 - log_scale + AOM_QM_BITS)) as i32;
+        qcoeff[rc] = (abs_qcoeff ^ sign).wrapping_sub(sign);
+        // iwt = 32: dequant = (dequant*32 + 16) >> 5 == dequant.
+        let dq = ((dequant[rc01] as i32 * (1 << AOM_QM_BITS)) + (1 << (AOM_QM_BITS - 1))) >> AOM_QM_BITS;
+        let abs_dqcoeff = abs_qcoeff.wrapping_mul(dq) >> log_scale;
+        dqcoeff[rc] = (abs_dqcoeff ^ sign).wrapping_sub(sign);
+        if abs_qcoeff != 0 {
+            eob = ii as i32;
+        }
+    }
+    (eob + 1) as u16
+}

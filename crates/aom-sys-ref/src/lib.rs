@@ -957,3 +957,30 @@ pub fn ref_highbd_filter_intra_edge(buf: &mut [u16], off: usize, sz: usize, stre
 pub fn ref_highbd_upsample_intra_edge(buf: &mut [u16], off: usize, sz: usize, bd: u8) {
     unsafe { av1_highbd_upsample_intra_edge_c(buf.as_mut_ptr().add(off), sz as i32, bd as i32) }
 }
+
+// Highbd quantizers (exported av1_quantize.c / quantize.c symbols).
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    pub fn av1_highbd_quantize_fp_c(coeff: *const i32, n: isize, zbin: *const i16, round: *const i16, quant: *const i16, quant_shift: *const i16, qcoeff: *mut i32, dqcoeff: *mut i32, dequant: *const i16, eob: *mut u16, scan: *const i16, iscan: *const i16, log_scale: i32);
+    #[allow(clippy::too_many_arguments)]
+    pub fn aom_highbd_quantize_b_helper_c(coeff: *const i32, n: isize, zbin: *const i16, round: *const i16, quant: *const i16, quant_shift: *const i16, qcoeff: *mut i32, dqcoeff: *mut i32, dequant: *const i16, eob: *mut u16, scan: *const i16, iscan: *const i16, qm: *const u8, iqm: *const u8, log_scale: i32);
+}
+
+/// Reference `av1_highbd_quantize_fp` (no qmatrix). Returns (qcoeff, dqcoeff, eob).
+pub fn ref_highbd_quantize_fp(log_scale: i32, coeff: &[i32], round: &[i16; 2], quant: &[i16; 2], dequant: &[i16; 2], scan: &[i16]) -> (Vec<i32>, Vec<i32>, u16) {
+    let n = coeff.len();
+    let (mut q, mut dq, mut eob) = (vec![0i32; n], vec![0i32; n], 0u16);
+    let dummy = vec![0i16; n.max(2)];
+    unsafe { av1_highbd_quantize_fp_c(coeff.as_ptr(), n as isize, dummy.as_ptr(), round.as_ptr(), quant.as_ptr(), dummy.as_ptr(), q.as_mut_ptr(), dq.as_mut_ptr(), dequant.as_ptr(), &mut eob, scan.as_ptr(), dummy.as_ptr(), log_scale); }
+    (q, dq, eob)
+}
+
+/// Reference `aom_highbd_quantize_b_helper_c` (no qmatrix). Returns (qcoeff, dqcoeff, eob).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_quantize_b(log_scale: i32, coeff: &[i32], zbin: &[i16; 2], round: &[i16; 2], quant: &[i16; 2], quant_shift: &[i16; 2], dequant: &[i16; 2], scan: &[i16]) -> (Vec<i32>, Vec<i32>, u16) {
+    let n = coeff.len();
+    let (mut q, mut dq, mut eob) = (vec![0i32; n], vec![0i32; n], 0u16);
+    let dummy = vec![0i16; n.max(2)];
+    unsafe { aom_highbd_quantize_b_helper_c(coeff.as_ptr(), n as isize, zbin.as_ptr(), round.as_ptr(), quant.as_ptr(), quant_shift.as_ptr(), q.as_mut_ptr(), dq.as_mut_ptr(), dequant.as_ptr(), &mut eob, scan.as_ptr(), dummy.as_ptr(), core::ptr::null(), core::ptr::null(), log_scale); }
+    (q, dq, eob)
+}
