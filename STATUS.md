@@ -69,7 +69,12 @@ both tracks, fully bit-exact.**
   `av1_dr_prediction_z1/z2/z3` over valid angle-derived (dx,dy) + `dr_intra_derivative`
   table. Harness: `aom-intra/tests/dir_diff.rs` — ~4k angle x size x upsample
   combos, byte-identical to C. Core intra prediction family now complete.
-  (Highbd + edge filter/upsample: TODO.)
+  (Highbd: TODO.)
+
+- **Intra edge filter / upsample DSP** (`av1/common/reconintra.c`), both tracks:
+  intra_edge_filter_strength + av1_use_intra_edge_upsample (verified EXHAUSTIVELY)
+  + av1_filter_intra_edge_c (5-tap, sz 2..65) + av1_upsample_intra_edge_c
+  (sz 1..16), byte-identical to C. Completes the directional intra pre-conditioning.
 
 - **Deblocking loop filter (lowbd)** (`aom_dsp/loopfilter.c`), both tracks:
   horizontal + vertical, widths 4/6/8/14 (filter4/6/8/14, hev/flat/flat2 masks,
