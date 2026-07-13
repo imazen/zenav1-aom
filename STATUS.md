@@ -198,7 +198,26 @@ both tracks, fully bit-exact.**
   size_in_bytes — OBU sizes, UINT32_MAX-capped), and `write_obu_header`
   (av1_write_obu_header byte output). All diffed vs C (leb128/wb via exported C or a
   driver shim; the OBU header via a verbatim transcription + an independent spec anchor).
-  Remaining framing: the sequence/frame/tile-group header *content* (large, config-dependent).
+  The `WriteBitBuffer` also carries the **subexpfin primitive family** (recenter_nonneg/
+  finite / quniform / subexpfin / refsubexpfin / write_signed_primitive_refsubexpfin),
+  validated on its own vs the real aom_wb (`wb_diff.rs`, 900k cases over the GM ranges).
+
+- **Uncompressed-header content components (aom-entropy `header` module)** — 14 of the
+  sequence/frame-header content pieces from `write_uncompressed_header_obu`, each
+  byte-identical to C libaom and diffed at 200k+ random cases in `header_diff.rs`:
+  `encode_quantization`, `encode_loopfilter`, `encode_cdef`, `encode_segmentation`
+  (real exported av1_seg_feature_data_max/signed), `write_frame_interp_filter`,
+  `write_superres_scale`/`write_render_size`/`write_frame_size`, `write_tile_info`
+  (+ `wb_write_uniform`), `encode_restoration_mode`, `write_delta_q_params` +
+  `write_tx_mode`, `write_film_grain_params`, `write_global_motion` (subexp-coded model
+  params, all 7 refs), `write_sequence_header` (+ write_sb_size), and
+  `write_ext_tile_info` (+ byte_align_zeros). Oracles are transcribed control flow over
+  the **real aom_wb primitives** (debug-only asserts + xd side effects omitted — no byte
+  effect); quant has an independent spec-layout anchor too. Remaining framing: the
+  **top-level assembly** — `write_uncompressed_header_obu` / `write_sequence_header_obu`
+  ordering + the frame-type / ref-frame / show-frame state machine (needs full
+  AV1_COMMON state), plus the color-config/timing/decoder-model seq-header framing and
+  the per-superblock tile-data delta-q/delta-lf signaling (aom_writer path, not aom_wb).
 
 - **RD-search primitives (aom-encode `rd` module + aom-dist)** — the estimator set the
   mode search composes, all bit-exact: `model_rd_from_var_lapndz` (the fixed-point
@@ -315,18 +334,22 @@ libaom; FFI is inherently unsafe and is isolated there).
 
 ## Next candidates
 
-1. **Reconstruction / distortion for RD**: inverse-transform dqcoeff (aom-transform inv
-   is validated) + pixel SSE (aom-dist) to get the block distortion; with the trellis
-   rate this is the RD cost the mode search compares. First clean non-bitstream RD piece.
-2. **Coding-block lifts**: frame-edge context clipping (av1_set_entropy_contexts edge
-   case), chroma subsampling (plane_bsize derivation), non-uniform block->tx partition.
-3. **Mode & partition search (RDO)** — the hardest bit-identity target; the layer that
-   drives encode_coding_block_plane per candidate.
-2. **Intra prediction** (`av1/common/reconintra`, `aom_dsp` intra predictors) —
+1. **Top-level uncompressed-header assembly** — `write_uncompressed_header_obu` /
+   `write_sequence_header_obu` now that all 14 content components are bit-exact: the
+   ordering + the frame-type / show-frame / ref-frame-signaling state machine
+   (order_hint, primary_ref_frame, ref_frame_idx, delta_frame_id, refresh flags),
+   plus the seq-header framing (profile/timing/decoder-model/color-config) and the
+   inline trailing flags (reference_mode/skip_mode/warped/reduced_tx_set). Needs an
+   AV1_COMMON-shaped state struct; produces a full header byte-for-byte.
+2. **Per-superblock tile-data signaling** — the aom_writer (arithmetic-coder) side of
+   delta-q/delta-lf + the mode-info symbols, distinct from the aom_wb header path.
+3. **Mode & partition search (RDO)** — the hardest bit-identity target; drives
+   encode_coding_block_plane per candidate (RD-cost inputs are all bit-exact now).
+4. **Intra prediction** (`av1/common/reconintra`, `aom_dsp` intra predictors) —
    per-mode bit-exact, differential per predictor.
-3. **Loop filters**: deblock, CDEF, loop-restoration (decoder + encoder search).
-4. AVX2/NEON SIMD specializations (perf gate), each diffed lane-level vs scalar.
-5. Encoder RDO + rate control (hardest bit-identity target).
+5. AVX2/NEON SIMD specializations (perf gate), each diffed lane-level vs scalar.
+6. **Decoder conformance corpus run** (gate 1) — wire the AV1 conformance vectors +
+   libaom decode tests through the ported decoder path.
 
 ## Perf gate honest number
 
