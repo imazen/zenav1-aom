@@ -4,7 +4,7 @@
 //! These are the highbd counterparts of the speed-0 encoder motion-search /
 //! RDO workhorses (`aom_highbd_sad*`, `aom_highbd_*_variance*`).
 
-use aom_dist::{highbd_sad, highbd_variance};
+use aom_dist::{highbd_sad, highbd_sub_pixel_variance, highbd_variance};
 use aom_sys_ref as c;
 
 const SIZES: [(usize, usize); 22] = [
@@ -53,6 +53,13 @@ fn hbd_sad_variance_byte_identical() {
                 let (gv, gs) = highbd_variance(&a, a_stride, &b, b_stride, w, h, bd);
                 let (wv, ws) = c::ref_hbd_variance(idx, bd, &a, a_stride, &b, b_stride);
                 assert_eq!((gv, gs), (wv, ws), "hbd_variance {w}x{h} bd={bd}");
+
+                // highbd sub-pixel variance over all 8x8 subpel offsets
+                let xo = (rng.next() % 8) as usize;
+                let yo = (rng.next() % 8) as usize;
+                let (gv2, gs2) = highbd_sub_pixel_variance(&a, a_stride, xo, yo, &b, b_stride, w, h, bd);
+                let (wv2, ws2) = c::ref_hbd_subpel_var(idx, bd, &a, a_stride, xo, yo, &b, b_stride);
+                assert_eq!((gv2, gs2), (wv2, ws2), "hbd_subpel_var {w}x{h} bd={bd} xo={xo} yo={yo}");
             }
         }
     }

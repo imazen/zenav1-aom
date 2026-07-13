@@ -75,6 +75,37 @@ pub fn highbd_variance(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w
     (var, sse)
 }
 
+/// `aom_highbd_<bd>_sub_pixel_variance<W>x<H>_c`: highbd bilinear (2-tap)
+/// interpolate `a` at (xoffset, yoffset) into a 16-bit intermediate, then highbd
+/// variance against `b`. Returns (variance, sse).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_sub_pixel_variance(
+    a: &[u16], a_stride: usize, xoffset: usize, yoffset: usize,
+    b: &[u16], b_stride: usize, w: usize, h: usize, bd: u8,
+) -> (u32, u32) {
+    // First pass (horizontal), pixel_step = 1, u16 -> u16.
+    let fx = BILINEAR_FILTERS_2T[xoffset];
+    let mut fdata3 = vec![0u16; (h + 1) * w];
+    for i in 0..(h + 1) {
+        for j in 0..w {
+            let a0 = a[i * a_stride + j] as i32;
+            let a1 = a[i * a_stride + j + 1] as i32;
+            fdata3[i * w + j] = rpo2(a0 * fx[0] as i32 + a1 * fx[1] as i32, FILTER_BITS);
+        }
+    }
+    // Second pass (vertical), pixel_step = w, u16 -> u16 (highbd keeps 16-bit).
+    let fy = BILINEAR_FILTERS_2T[yoffset];
+    let mut temp2 = vec![0u16; h * w];
+    for i in 0..h {
+        for j in 0..w {
+            let v0 = fdata3[i * w + j] as i32;
+            let v1 = fdata3[(i + 1) * w + j] as i32;
+            temp2[i * w + j] = rpo2(v0 * fy[0] as i32 + v1 * fy[1] as i32, FILTER_BITS);
+        }
+    }
+    highbd_variance(&temp2, w, b, b_stride, w, h, bd)
+}
+
 /// libaom `variance()`: returns (sse, sum).
 fn variance_raw(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: usize) -> (u32, i32) {
     let mut tsum: i32 = 0;

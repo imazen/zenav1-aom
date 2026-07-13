@@ -176,6 +176,7 @@ pub fn ref_subpel_var(idx: usize, a: &[u8], as_: usize, xo: usize, yo: usize, b:
 extern "C" {
     fn shim_hbd_sad(i: i32, s: *const u16, ss: i32, r: *const u16, rs: i32) -> u32;
     fn shim_hbd_var(i: i32, bd: i32, a: *const u16, as_: i32, b: *const u16, bs: i32, sse: *mut u32) -> u32;
+    fn shim_hbd_subpel_var(i: i32, bd: i32, a: *const u16, as_: i32, xo: i32, yo: i32, b: *const u16, bs: i32, sse: *mut u32) -> u32;
 }
 
 /// Reference `aom_highbd_sad<W>x<H>_c` for size index `idx`.
@@ -188,6 +189,16 @@ pub fn ref_hbd_variance(idx: usize, bd: u8, a: &[u16], as_: usize, b: &[u16], bs
     let mut sse = 0u32;
     let v = unsafe {
         shim_hbd_var(idx as i32, bd as i32, a.as_ptr(), as_ as i32, b.as_ptr(), bs as i32, &mut sse)
+    };
+    (v, sse)
+}
+
+/// Reference `aom_highbd_<bd>_sub_pixel_variance<W>x<H>_c`; returns (variance, sse).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_hbd_subpel_var(idx: usize, bd: u8, a: &[u16], as_: usize, xo: usize, yo: usize, b: &[u16], bs: usize) -> (u32, u32) {
+    let mut sse = 0u32;
+    let v = unsafe {
+        shim_hbd_subpel_var(idx as i32, bd as i32, a.as_ptr(), as_ as i32, xo as i32, yo as i32, b.as_ptr(), bs as i32, &mut sse)
     };
     (v, sse)
 }
