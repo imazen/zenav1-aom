@@ -41,7 +41,12 @@ both tracks, fully bit-exact.**
   `aom_quantize_b` (dead-zone + quant/quant_shift). Harnesses:
   `aom-quant/tests/quantize_{fp,b}_diff.rs`, ~480k differential comparisons
   (qcoeff + dqcoeff + eob) + edge cases, byte-identical to C.
-  (Quant-matrix path + adaptive/highbd variants: TODO.)
+  (Quant-matrix path + adaptive variants: TODO.)
+
+- **Highbd (10/12-bit) quantizers** (`av1_quantize.c`, `aom_dsp/quantize.c`):
+  av1_highbd_quantize_fp + aom_highbd_quantize_b (no qmatrix), 64-bit paths,
+  byte-identical to C over log_scale{0,1,2} x 12-bit magnitudes.
+  Harness: `aom-quant/tests/highbd_quant_diff.rs`.
 
 - **Entropy coder** (`aom_dsp/entenc.c`, `entdec.c`), both tracks: the Daala
   `od_ec` range coder. Encoder (`od_ec_enc`) produces byte-identical output to C
