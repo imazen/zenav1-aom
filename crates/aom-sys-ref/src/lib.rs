@@ -36,6 +36,42 @@ extern "C" {
     );
 }
 
+// aom_dsp/loopfilter.c — deblocking edge filters.
+pub type LpfFn = unsafe extern "C" fn(*mut u8, i32, *const u8, *const u8, *const u8);
+extern "C" {
+    pub fn aom_lpf_horizontal_4_c(s: *mut u8, p: i32, b: *const u8, l: *const u8, t: *const u8);
+    pub fn aom_lpf_horizontal_6_c(s: *mut u8, p: i32, b: *const u8, l: *const u8, t: *const u8);
+    pub fn aom_lpf_horizontal_8_c(s: *mut u8, p: i32, b: *const u8, l: *const u8, t: *const u8);
+    pub fn aom_lpf_horizontal_14_c(s: *mut u8, p: i32, b: *const u8, l: *const u8, t: *const u8);
+    pub fn aom_lpf_vertical_4_c(s: *mut u8, p: i32, b: *const u8, l: *const u8, t: *const u8);
+    pub fn aom_lpf_vertical_6_c(s: *mut u8, p: i32, b: *const u8, l: *const u8, t: *const u8);
+    pub fn aom_lpf_vertical_8_c(s: *mut u8, p: i32, b: *const u8, l: *const u8, t: *const u8);
+    pub fn aom_lpf_vertical_14_c(s: *mut u8, p: i32, b: *const u8, l: *const u8, t: *const u8);
+}
+
+/// Apply a reference loop filter in place. `dir`: 'h'/'v'. `center` is the
+/// index of `s[0]` in `buf`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_lpf(dir: u8, width: u32, buf: &mut [u8], center: usize, pitch: usize, blimit: u8, limit: u8, thresh: u8) {
+    let b = [blimit];
+    let l = [limit];
+    let t = [thresh];
+    let f: LpfFn = match (dir, width) {
+        (b'h', 4) => aom_lpf_horizontal_4_c,
+        (b'h', 6) => aom_lpf_horizontal_6_c,
+        (b'h', 8) => aom_lpf_horizontal_8_c,
+        (b'h', 14) => aom_lpf_horizontal_14_c,
+        (b'v', 4) => aom_lpf_vertical_4_c,
+        (b'v', 6) => aom_lpf_vertical_6_c,
+        (b'v', 8) => aom_lpf_vertical_8_c,
+        (b'v', 14) => aom_lpf_vertical_14_c,
+        _ => unreachable!(),
+    };
+    unsafe {
+        f(buf.as_mut_ptr().add(center), pitch as i32, b.as_ptr(), l.as_ptr(), t.as_ptr());
+    }
+}
+
 // av1/common/reconintra.c — directional predictors (edges passed at +pad).
 extern "C" {
     pub fn av1_dr_prediction_z1_c(

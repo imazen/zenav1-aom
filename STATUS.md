@@ -71,6 +71,12 @@ both tracks, fully bit-exact.**
   combos, byte-identical to C. Core intra prediction family now complete.
   (Highbd + edge filter/upsample: TODO.)
 
+- **Deblocking loop filter (lowbd)** (`aom_dsp/loopfilter.c`), both tracks:
+  horizontal + vertical, widths 4/6/8/14 (filter4/6/8/14, hev/flat/flat2 masks,
+  signed-char-clamp domain). Harness: `aom-loopfilter/tests/lpf_diff.rs` —
+  240k comparisons over branch-exercising pixel/threshold strategies,
+  byte-identical to C. (Highbd variants: TODO.)
+
 ## Infrastructure standing
 
 - Rust workspace + `aom-sys-ref` FFI oracle crate linking the reference `libaom.a`.

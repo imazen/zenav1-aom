@@ -264,6 +264,44 @@
           "test": "dir_diff::dr_predictors_byte_identical"
         }
       }
+    },
+    "loopfilter.deblock": {
+      "status": "green",
+      "note": "Deblocking loop filter lowbd (both tracks): horizontal+vertical widths 4/6/8/14 incl. filter4/6/8/14, hev/flat/flat2 masks. Highbd variants: TODO.",
+      "items": {
+        "aom_lpf_horizontal_4": {
+          "status": "green",
+          "test": "lpf_diff::loopfilter_byte_identical"
+        },
+        "aom_lpf_horizontal_6": {
+          "status": "green",
+          "test": "lpf_diff::loopfilter_byte_identical"
+        },
+        "aom_lpf_horizontal_8": {
+          "status": "green",
+          "test": "lpf_diff::loopfilter_byte_identical"
+        },
+        "aom_lpf_horizontal_14": {
+          "status": "green",
+          "test": "lpf_diff::loopfilter_byte_identical"
+        },
+        "aom_lpf_vertical_4": {
+          "status": "green",
+          "test": "lpf_diff::loopfilter_byte_identical"
+        },
+        "aom_lpf_vertical_6": {
+          "status": "green",
+          "test": "lpf_diff::loopfilter_byte_identical"
+        },
+        "aom_lpf_vertical_8": {
+          "status": "green",
+          "test": "lpf_diff::loopfilter_byte_identical"
+        },
+        "aom_lpf_vertical_14": {
+          "status": "green",
+          "test": "lpf_diff::loopfilter_byte_identical"
+        }
+      }
     }
   }
 }
