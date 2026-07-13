@@ -607,6 +607,7 @@ const SWITCHABLE_FILTERS: usize = 3;
 /// SWITCHABLE; otherwise the horizontal filter on the ctx-selected
 /// `switchable_interp_cdf` and, when dual-filter is enabled, the vertical filter on its
 /// own ctx-selected CDF (`SWITCHABLE_FILTERS`=3 each). Contexts + gates are the caller's.
+#[allow(clippy::too_many_arguments)]
 pub fn write_mb_interp_filter(
     enc: &mut OdEcEnc,
     cdf0: &mut [u16],
