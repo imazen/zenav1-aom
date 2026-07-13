@@ -3116,3 +3116,69 @@ pub fn read_filter_intra_mode_info(
         (0, 0)
     }
 }
+
+/// `read_tx_size_vartx` — inverse of [`write_tx_size_vartx`] (`av1/decoder/decodemv.c`
+/// `read_tx_size_vartx`): the recursive inter var-tx tree. Reads one txfm-partition bit
+/// per interior node (0 = leaf, 1 = split) on the `txfm_partition_context`-selected CDF,
+/// recursing into `SUB_TX_SIZE_MAP` children on a split. At every leaf (a coded `0`, a
+/// `TX_4X4` sub-split, or the forced `MAX_VARTX_DEPTH` leaf) it records the leaf tx size
+/// at the block's `get_txb_size_index` slot and updates the above/left txfm context — the
+/// same slot the encoder reads, so the reconstructed `inter_tx_size` re-encodes identically.
+#[allow(clippy::too_many_arguments)]
+pub fn read_tx_size_vartx(
+    dec: &mut OdEcDec,
+    txfm_partition_cdf: &mut [[u16; 3]],
+    bsize: usize,
+    inter_tx_size: &mut [usize; 16],
+    mb_to_right_edge: i32,
+    mb_to_bottom_edge: i32,
+    above_ctx: &mut [u8],
+    left_ctx: &mut [u8],
+    tx_size: usize,
+    depth: i32,
+    blk_row: i32,
+    blk_col: i32,
+) {
+    let max_blocks_high = max_block_high(bsize, mb_to_bottom_edge);
+    let max_blocks_wide = max_block_wide(bsize, mb_to_right_edge);
+    if blk_row >= max_blocks_high || blk_col >= max_blocks_wide {
+        return;
+    }
+
+    let (bc, br) = (blk_col as usize, blk_row as usize);
+    if depth == MAX_VARTX_DEPTH {
+        inter_tx_size[get_txb_size_index(bsize, blk_row, blk_col)] = tx_size;
+        txfm_partition_update(&mut above_ctx[bc..], &mut left_ctx[br..], tx_size, tx_size);
+        return;
+    }
+
+    let ctx = txfm_partition_context(above_ctx[bc], left_ctx[br], bsize, tx_size);
+    let is_split = read_symbol(dec, &mut txfm_partition_cdf[ctx], 2);
+    if is_split == 0 {
+        inter_tx_size[get_txb_size_index(bsize, blk_row, blk_col)] = tx_size;
+        txfm_partition_update(&mut above_ctx[bc..], &mut left_ctx[br..], tx_size, tx_size);
+    } else {
+        let sub_txs = SUB_TX_SIZE_MAP[tx_size];
+        let bsw = TX_SIZE_WIDE_UNIT[sub_txs];
+        let bsh = TX_SIZE_HIGH_UNIT[sub_txs];
+        if sub_txs == TX_4X4 {
+            inter_tx_size[get_txb_size_index(bsize, blk_row, blk_col)] = sub_txs;
+            txfm_partition_update(&mut above_ctx[bc..], &mut left_ctx[br..], sub_txs, tx_size);
+            return;
+        }
+        let mut row = 0;
+        while row < TX_SIZE_HIGH_UNIT[tx_size] {
+            let offsetr = blk_row + row;
+            let mut col = 0;
+            while col < TX_SIZE_WIDE_UNIT[tx_size] {
+                let offsetc = blk_col + col;
+                read_tx_size_vartx(
+                    dec, txfm_partition_cdf, bsize, inter_tx_size, mb_to_right_edge,
+                    mb_to_bottom_edge, above_ctx, left_ctx, sub_txs, depth + 1, offsetr, offsetc,
+                );
+                col += bsw;
+            }
+            row += bsh;
+        }
+    }
+}

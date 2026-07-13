@@ -3495,3 +3495,55 @@ fn read_filter_intra_mode_info_roundtrips() {
         assert_eq!(me, md, "mode cdf");
     }
 }
+
+#[test]
+fn read_tx_size_vartx_roundtrips_write() {
+    use aom_entropy::dec::OdEcDec;
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{read_tx_size_vartx, write_tx_size_vartx};
+    // max_txsize_rect_lookup[BLOCK_SIZES_ALL] — the block's top var-tx size.
+    const MAX_TX_RECT: [usize; 22] =
+        [0, 5, 6, 1, 7, 8, 2, 9, 10, 3, 11, 12, 4, 4, 4, 4, 13, 14, 15, 16, 17, 18];
+    let bsizes: [usize; 13] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 18, 19];
+    let nbr: [u8; 6] = [0, 4, 8, 16, 32, 64];
+    let mut rng = Rng(0x7a12_b0de_5a1e_0060);
+    for &bsize in &bsizes {
+        let top = MAX_TX_RECT[bsize];
+        for _ in 0..6000 {
+            let its_usize: [usize; 16] = core::array::from_fn(|_| (rng.next() % 19) as usize);
+            let mut above = [0u8; 32];
+            let mut left = [0u8; 32];
+            for i in 0..32 {
+                above[i] = nbr[(rng.next() % 6) as usize];
+                left[i] = nbr[(rng.next() % 6) as usize];
+            }
+            let re = -((rng.next() % 4) as i32) * 32;
+            let be = -((rng.next() % 4) as i32) * 32;
+            let mut cdf = [[0u16; 3]; 21];
+            for c in cdf.iter_mut() {
+                *c = [1 + (rng.next() % 32766) as u16, 0, 0];
+            }
+            // encode from arbitrary its
+            let mut enc = OdEcEnc::new();
+            let (mut a1, mut l1, mut c1) = (above, left, cdf);
+            write_tx_size_vartx(&mut enc, &mut c1, bsize, &its_usize, re, be, &mut a1, &mut l1, top, 0, 0, 0);
+            let bits1 = enc.done().to_vec();
+            // decode: reconstruct its_dec + ctx + adapted cdf
+            let mut dec = OdEcDec::new(&bits1);
+            let (mut ad, mut ld, mut cd) = (above, left, cdf);
+            let mut its_dec = [0usize; 16];
+            read_tx_size_vartx(&mut dec, &mut cd, bsize, &mut its_dec, re, be, &mut ad, &mut ld, top, 0, 0, 0);
+            // same tree walk => identical ctx + identical CDF adaptation
+            assert_eq!(ad, a1, "above bsize={bsize} its={its_usize:?}");
+            assert_eq!(ld, l1, "left bsize={bsize} its={its_usize:?}");
+            assert_eq!(cd, c1, "cdf bsize={bsize} its={its_usize:?}");
+            // reconstructed its re-encodes to the identical bitstream + ctx
+            let mut enc2 = OdEcEnc::new();
+            let (mut a2, mut l2, mut c2) = (above, left, cdf);
+            write_tx_size_vartx(&mut enc2, &mut c2, bsize, &its_dec, re, be, &mut a2, &mut l2, top, 0, 0, 0);
+            let bits2 = enc2.done().to_vec();
+            assert_eq!(bits2, bits1, "re-encode bits bsize={bsize} its_dec={its_dec:?}");
+            assert_eq!((a2, l2, c2), (a1, l1, c1), "re-encode ctx/cdf bsize={bsize}");
+        }
+    }
+}
