@@ -1424,3 +1424,145 @@ fn read_sequence_header_obu_inverts_write() {
         assert_eq!((g.color_config.bit_depth, g.color_config.subsampling_x, g.color_config.subsampling_y), (bit_depth, ssx, ssy), "obu color_config");
     }
 }
+
+#[test]
+fn read_uncompressed_header_key_frame_roundtrips() {
+    use aom_entropy::header::{
+        read_uncompressed_header, write_frame_header_obu, CdefHeader, ColorConfigParams,
+        DeltaQParams, FilmGrainParams, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader,
+        FrameSizeWithRefs, InterRefSignaling, LoopfilterHeader, QuantParamsHeader,
+        RestorationHeader, SegmentationHeader, TileInfoHeader, TimingInfoHeader, WarpedMotionParams,
+    };
+    let _ = (TimingInfoHeader { num_units_in_display_tick: 0, time_scale: 0, equal_picture_interval: false, num_ticks_per_picture: 1 }, ColorConfigParams { bit_depth: 8, profile: 0, monochrome: false, color_primaries: 2, transfer_characteristics: 2, matrix_coefficients: 2, color_range: false, subsampling_x: 1, subsampling_y: 1, chroma_sample_position: 0, separate_uv_delta_q: false });
+    let ident = WarpedMotionParams { wmtype: 0, wmmat: [0, 0, 1 << 16, 0, 0, 1 << 16] };
+    let empty_prefix = |ft: i32, show: bool, allow_sct: bool| FrameHeaderPrefix {
+        reduced_still_picture_hdr: false, show_existing_frame: false, existing_fb_idx_to_show: 0,
+        decoder_model_info_present_flag: false, equal_picture_interval: false, frame_presentation_time: 0,
+        frame_presentation_time_length: 1, frame_id_numbers_present_flag: false, frame_id_length: 0,
+        display_frame_id: 0, frame_type: ft, show_frame: show, showable_frame: false,
+        error_resilient_mode: false, disable_cdf_update: false, force_screen_content_tools: 2,
+        allow_screen_content_tools: allow_sct, force_integer_mv: 2, cur_frame_force_integer_mv: false,
+        superres_upscaled_width: 256, superres_upscaled_height: 256, max_frame_width: 256,
+        max_frame_height: 256, current_frame_id: 0, enable_order_hint: false, order_hint: 0,
+        order_hint_bits_minus_1: -1, primary_ref_frame: 7, buffer_removal_time_present: false,
+        operating_points_cnt_minus_1: 0, op_decoder_model_param_present: [false; 32],
+        operating_point_idc: [0; 32], temporal_layer_id: 0, spatial_layer_id: 0,
+        buffer_removal_times: [0; 32], buffer_removal_time_length: 1, refresh_frame_flags: 0xff,
+        ref_frame_map_order_hint: [0; 8],
+    };
+    let mut rng = Rng(0x1e_f5e0_c0de_0220);
+    for _ in 0..20_000 {
+        let allow_sct = rng.next() & 1 == 1;
+        let superres_scaled = rng.next() & 1 == 1;
+        let base_q = 1 + (rng.next() % 255) as i32; // nonzero => not coded-lossless
+        let intrabc_possible = allow_sct && !superres_scaled;
+        let allow_intrabc = intrabc_possible && rng.next() & 1 == 1;
+        let fg_present = rng.next() & 1 == 1;
+
+        let fh = FrameHeaderObu {
+            prefix: empty_prefix(0, true, allow_sct),
+            allow_screen_content_tools: allow_sct, superres_scaled, allow_intrabc,
+            frame_size: FrameSizeHeader {
+                frame_size_override: false, num_bits_width: 16, num_bits_height: 16,
+                superres_upscaled_width: 256, superres_upscaled_height: 256, enable_superres: false,
+                scale_denominator: 8, scaling_active: false, render_width: 0, render_height: 0,
+            },
+            inter_ref: InterRefSignaling {
+                enable_order_hint: false, frame_refs_short_signaling: false, ref_map_idx: [0; 7],
+                set_ref_frame_config: false, rtc_reference: [0; 7], rtc_ref_idx: [0; 7],
+                number_spatial_layers: 1, frame_id_numbers_present_flag: false, frame_id_length: 0,
+                current_frame_id: 0, ref_frame_id: [0; 8], delta_frame_id_length: 0,
+            },
+            frame_size_with_refs: FrameSizeWithRefs {
+                superres_upscaled_width: 256, superres_upscaled_height: 256, render_width: 256,
+                render_height: 256, ref_cfg_valid: [false; 7], ref_y_crop_width: [0; 7],
+                ref_y_crop_height: [0; 7], ref_render_width: [0; 7], ref_render_height: [0; 7],
+                enable_superres: false, scale_denominator: 8,
+                frame_size: FrameSizeHeader {
+                    frame_size_override: true, num_bits_width: 16, num_bits_height: 16,
+                    superres_upscaled_width: 1, superres_upscaled_height: 1, enable_superres: false,
+                    scale_denominator: 8, scaling_active: false, render_width: 0, render_height: 0,
+                },
+            },
+            cur_frame_force_integer_mv: false, allow_high_precision_mv: false, interp_filter: 0,
+            switchable_motion_mode: false, might_allow_ref_frame_mvs: false, allow_ref_frame_mvs: false,
+            refresh_frame_context_disabled: rng.next() & 1 == 1,
+            tile_info: TileInfoHeader {
+                mi_cols: 64, mi_rows: 64, mib_size_log2: 4, uniform_spacing: true, log2_cols: 0,
+                min_log2_cols: 0, max_log2_cols: 0, log2_rows: 0, min_log2_rows: 0, max_log2_rows: 0,
+                cols: 1, rows: 1, col_start_sb: [0; 65], row_start_sb: [0; 65], max_width_sb: 64,
+                max_height_sb: 64,
+            },
+            quant: QuantParamsHeader {
+                base_qindex: base_q, y_dc_delta_q: 0, u_dc_delta_q: 0, u_ac_delta_q: 0, v_dc_delta_q: 0,
+                v_ac_delta_q: 0, using_qmatrix: false, qmatrix_level_y: 0, qmatrix_level_u: 0, qmatrix_level_v: 0,
+            },
+            num_planes: 3, separate_uv_delta_q: false,
+            segmentation: SegmentationHeader {
+                enabled: false, has_primary_ref: false, update_map: false, temporal_update: false,
+                update_data: false, feature_mask: [0; 8], feature_data: [[0; 8]; 8],
+            },
+            delta_q: DeltaQParams {
+                base_qindex: base_q, delta_q_present: rng.next() & 1 == 1, delta_q_res: 1,
+                allow_intrabc, delta_lf_present: false, delta_lf_res: 1, delta_lf_multi: false,
+            },
+            all_lossless: false, coded_lossless: false,
+            loopfilter: LoopfilterHeader {
+                // enabled=1 with no delta update: the encoder's unconditional `meaningful`
+                // bit then coincides with the decoder's gated update bit (libaom only ever
+                // emits enabled=1; enabled=0 desyncs — see read_loopfilter).
+                allow_intrabc, filter_level: [(rng.next() % 64) as i32, (rng.next() % 64) as i32],
+                filter_level_u: 0, filter_level_v: 0, sharpness_level: 0, mode_ref_delta_enabled: true,
+                mode_ref_delta_update: false, ref_deltas: [1, 0, 0, 0, -1, 0, -1, -1], mode_deltas: [0, 0],
+                last_ref_deltas: [1, 0, 0, 0, -1, 0, -1, -1], last_mode_deltas: [0, 0],
+            },
+            cdef: CdefHeader {
+                enable_cdef: true, allow_intrabc, cdef_damping: 3 + (rng.next() % 4) as i32,
+                cdef_bits: 0, nb_cdef_strengths: 1, cdef_strengths: [(rng.next() % 64) as i32, 0, 0, 0, 0, 0, 0, 0],
+                cdef_uv_strengths: [(rng.next() % 64) as i32, 0, 0, 0, 0, 0, 0, 0],
+            },
+            restoration: RestorationHeader {
+                enable_restoration: true, allow_intrabc, frame_restoration_type: [0; 3],
+                sb_size_128: false, restoration_unit_size: [256; 3], subsampling_x: 1, subsampling_y: 1,
+            },
+            tx_mode_select: rng.next() & 1 == 1, reference_mode_select: false, skip_mode_allowed: false,
+            skip_mode_flag: false, might_allow_warped_motion: false, allow_warped_motion: false,
+            reduced_tx_set_used: rng.next() & 1 == 1, global_motion: [ident; 7], ref_global_motion: [ident; 7],
+            film_grain_params_present: fg_present,
+            film_grain: FilmGrainParams {
+                apply_grain: fg_present && rng.next() & 1 == 1, random_seed: (rng.next() % 65536) as i32,
+                is_inter_frame: false, update_parameters: true, ref_idx: 0, num_y_points: 0,
+                scaling_points_y: [[0; 2]; 14], monochrome: false, chroma_scaling_from_luma: false,
+                subsampling_x: 1, subsampling_y: 1, num_cb_points: 0, scaling_points_cb: [[0; 2]; 10],
+                num_cr_points: 0, scaling_points_cr: [[0; 2]; 10], scaling_shift: 8, ar_coeff_lag: 0,
+                ar_coeffs_y: [0; 24], ar_coeffs_cb: [0; 25], ar_coeffs_cr: [0; 25], ar_coeff_shift: 6,
+                grain_scale_shift: 0, cb_mult: 0, cb_luma_mult: 0, cb_offset: 0, cr_mult: 0,
+                cr_luma_mult: 0, cr_offset: 0, overlap_flag: false, clip_to_restricted_range: false,
+            },
+            large_scale: false,
+        };
+        let mut wb = WriteBitBuffer::new();
+        write_frame_header_obu(&mut wb, &fh);
+        let b = wb.bytes().to_vec();
+        let mut rb = ReadBitBuffer::new(&b);
+        let g = read_uncompressed_header(&mut rb, &fh);
+        assert_eq!(g.allow_intrabc, allow_intrabc, "allow_intrabc");
+        assert_eq!(g.refresh_frame_context_disabled, fh.refresh_frame_context_disabled, "refresh ctx");
+        assert_eq!(g.quant.base_qindex, base_q, "quant base");
+        assert_eq!(g.delta_q.delta_q_present, fh.delta_q.delta_q_present, "delta_q present");
+        // loopfilter/cdef are coded only when intrabc is off (they early-return otherwise).
+        if !allow_intrabc {
+            assert_eq!(g.loopfilter.filter_level, fh.loopfilter.filter_level, "loopfilter level");
+            assert_eq!(g.cdef.cdef_damping, fh.cdef.cdef_damping, "cdef damping");
+            assert_eq!(g.cdef.cdef_strengths, fh.cdef.cdef_strengths, "cdef strengths");
+        }
+        assert_eq!(g.tx_mode_select, fh.tx_mode_select, "tx_mode");
+        assert_eq!(g.reduced_tx_set_used, fh.reduced_tx_set_used, "reduced_tx");
+        // film grain is parsed only when present+shown; otherwise the field is untouched.
+        if fg_present {
+            assert_eq!(g.film_grain.apply_grain, fh.film_grain.apply_grain, "film grain apply");
+            assert_eq!(g.film_grain.random_seed, if fh.film_grain.apply_grain { fh.film_grain.random_seed } else { 0 }, "film grain seed");
+        }
+        assert!(!rb.error, "no over-read (desync)");
+    }
+}

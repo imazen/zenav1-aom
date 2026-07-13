@@ -2701,3 +2701,130 @@ pub fn read_sequence_header_obu(rb: &mut ReadBitBuffer) -> SequenceHeaderObu {
         film_grain_params_present,
     }
 }
+
+/// `read_ext_tile_info` — inverse of [`write_ext_tile_info`] (large-scale tile mode):
+/// consume the byte alignment, then (multi-tile) the context-update-tile-id +
+/// tile-size-bytes fields. Returns `(context_update_tile_id, tile_size_bytes_minus_1)`.
+pub fn read_ext_tile_info(rb: &mut ReadBitBuffer, rows: usize, cols: usize) -> (i32, i32) {
+    rb.byte_align();
+    if rows * cols > 1 {
+        (rb.read_literal(2), rb.read_literal(2))
+    } else {
+        (0, 0)
+    }
+}
+
+/// `read_uncompressed_header` — inverse of [`write_frame_header_obu`], composing the
+/// frame-header prefix + every content reader in libaom's exact order with the frame-
+/// type / lossless / ref gating. `cfg` supplies the sequence/derived inputs the writer
+/// also takes (num_planes, separate_uv_delta_q, coded_lossless/all_lossless,
+/// allow_screen_content_tools, superres_scaled, the tile limits, the loop-filter delta
+/// carry, the reference global-motion, etc.); its parsed fields are overwritten. Returns
+/// the fully parsed [`FrameHeaderObu`] (bailing early on show-existing-frame).
+pub fn read_uncompressed_header(rb: &mut ReadBitBuffer, cfg: &FrameHeaderObu) -> FrameHeaderObu {
+    let mut p = cfg.clone();
+    let (prefix, override_flag, early) = read_frame_header_prefix(rb, &cfg.prefix);
+    p.prefix = prefix;
+    if early {
+        return p;
+    }
+    let ft = p.prefix.frame_type;
+    let intra_only = ft == 0 || ft == 2;
+    let sframe = ft == 3;
+    let fs_in = &cfg.frame_size;
+
+    if intra_only {
+        p.frame_size = read_frame_size(
+            rb, override_flag != 0, fs_in.num_bits_width, fs_in.num_bits_height,
+            fs_in.enable_superres, fs_in.superres_upscaled_width, fs_in.superres_upscaled_height,
+        );
+        p.allow_intrabc = p.prefix.allow_screen_content_tools
+            && !cfg.superres_scaled
+            && rb.read_bit() != 0;
+    } else {
+        let (short, lst, gld, remap, delta) = read_inter_ref_signaling(
+            rb, p.prefix.enable_order_hint, cfg.inter_ref.frame_id_numbers_present_flag,
+            cfg.inter_ref.delta_frame_id_length,
+        );
+        p.inter_ref.frame_refs_short_signaling = short;
+        p.inter_ref.ref_map_idx = remap;
+        if short {
+            p.inter_ref.ref_map_idx[0] = lst;
+            p.inter_ref.ref_map_idx[3] = gld;
+        }
+        p.inter_ref.ref_frame_id[..7].copy_from_slice(&delta[..7]);
+        if !p.prefix.error_resilient_mode && override_flag != 0 {
+            let w = &cfg.frame_size_with_refs;
+            let (fw, fh, rw, rh, denom, _found) = read_frame_size_with_refs(
+                rb, &w.ref_y_crop_width, &w.ref_y_crop_height, &w.ref_render_width,
+                &w.ref_render_height, fs_in.enable_superres, fs_in.num_bits_width, fs_in.num_bits_height,
+            );
+            p.frame_size.superres_upscaled_width = fw;
+            p.frame_size.superres_upscaled_height = fh;
+            p.frame_size.render_width = rw;
+            p.frame_size.render_height = rh;
+            p.frame_size.scale_denominator = denom;
+        } else {
+            p.frame_size = read_frame_size(
+                rb, override_flag != 0, fs_in.num_bits_width, fs_in.num_bits_height,
+                fs_in.enable_superres, fs_in.superres_upscaled_width, fs_in.superres_upscaled_height,
+            );
+        }
+        if !cfg.cur_frame_force_integer_mv {
+            p.allow_high_precision_mv = rb.read_bit() != 0;
+        }
+        p.interp_filter = read_frame_interp_filter(rb);
+        p.switchable_motion_mode = rb.read_bit() != 0;
+        if cfg.might_allow_ref_frame_mvs {
+            p.allow_ref_frame_mvs = rb.read_bit() != 0;
+        }
+    }
+
+    p.refresh_frame_context_disabled = read_refresh_frame_context(
+        rb, p.prefix.reduced_still_picture_hdr, p.prefix.disable_cdf_update,
+    );
+    let ti = &cfg.tile_info;
+    let (tile_info, _ctx, _tsb) = read_tile_info(
+        rb, ti.mi_cols, ti.mi_rows, ti.mib_size_log2, ti.min_log2_cols, ti.max_log2_cols,
+        ti.min_log2_rows, ti.max_log2_rows, ti.max_width_sb, ti.max_height_sb,
+    );
+    p.tile_info = tile_info;
+    p.quant = read_quantization(rb, cfg.num_planes, cfg.separate_uv_delta_q);
+    let has_primary_ref = p.prefix.primary_ref_frame != 7;
+    p.segmentation = read_segmentation(rb, has_primary_ref);
+    p.delta_q = read_delta_q_params(rb, p.quant.base_qindex, p.allow_intrabc);
+    if !cfg.all_lossless {
+        if !cfg.coded_lossless {
+            p.loopfilter = read_loopfilter(
+                rb, p.allow_intrabc, cfg.num_planes, cfg.loopfilter.last_ref_deltas,
+                cfg.loopfilter.last_mode_deltas,
+            );
+            p.cdef = read_cdef_header(rb, cfg.cdef.enable_cdef, p.allow_intrabc, cfg.num_planes);
+        }
+        p.restoration = read_restoration_mode(
+            rb, cfg.restoration.enable_restoration, p.allow_intrabc, cfg.restoration.sb_size_128,
+            cfg.restoration.subsampling_x, cfg.restoration.subsampling_y, cfg.num_planes,
+        );
+    }
+    p.tx_mode_select = read_tx_mode(rb, cfg.coded_lossless);
+    let (rms, smf, awm, rts) = read_frame_header_trailing_flags(
+        rb, intra_only, cfg.skip_mode_allowed, cfg.might_allow_warped_motion,
+    );
+    p.reference_mode_select = rms;
+    p.skip_mode_flag = smf;
+    p.allow_warped_motion = awm;
+    p.reduced_tx_set_used = rts;
+    if !intra_only {
+        p.global_motion = read_global_motion(rb, &cfg.ref_global_motion, p.allow_high_precision_mv);
+    }
+    if cfg.film_grain_params_present && (p.prefix.show_frame || p.prefix.showable_frame) {
+        p.film_grain = read_film_grain_params(
+            rb, ft == 1 || sframe, cfg.film_grain.monochrome, cfg.film_grain.subsampling_x,
+            cfg.film_grain.subsampling_y,
+        );
+    }
+    if cfg.large_scale {
+        read_ext_tile_info(rb, p.tile_info.rows, p.tile_info.cols);
+    }
+    p
+}
