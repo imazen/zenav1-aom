@@ -190,6 +190,14 @@ extern "C" {
     fn aom_uleb_size_in_bytes(value: u64) -> usize;
     fn aom_uleb_encode(value: u64, available: usize, coded_value: *mut u8, coded_size: *mut usize) -> i32;
     fn aom_uleb_decode(buffer: *const u8, available: usize, value: *mut u64, length: *mut usize) -> i32;
+    fn shim_write_obu_header(obu_type: i32, has_nonzero_op: i32, is_layer_specific: i32, obu_extension: i32, dst: *mut u8) -> u32;
+}
+
+/// Reference `av1_write_obu_header` byte output (transcribed shim). Returns the header bytes.
+pub fn ref_write_obu_header(obu_type: u32, has_nonzero_op: bool, is_layer_specific: bool, obu_extension: u8) -> Vec<u8> {
+    let mut dst = [0u8; 2];
+    let n = unsafe { shim_write_obu_header(obu_type as i32, has_nonzero_op as i32, is_layer_specific as i32, obu_extension as i32, dst.as_mut_ptr()) };
+    dst[..n as usize].to_vec()
 }
 
 /// Reference `aom_uleb_size_in_bytes`.

@@ -9,6 +9,7 @@ pub mod cdf;
 pub mod dec;
 pub mod enc;
 pub mod leb128;
+pub mod obu;
 pub mod wb;
 
 pub use cdf::{read_symbol, update_cdf, write_symbol};

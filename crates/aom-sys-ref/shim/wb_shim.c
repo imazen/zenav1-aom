@@ -17,3 +17,22 @@ uint32_t shim_wb_apply(const uint32_t *data, const int *bits, const int *kind,
   }
   return aom_wb_bytes_written(&wb);
 }
+
+/* Transcribed verbatim from av1_write_obu_header (av1/encoder/bitstream.c) byte
+ * output — the function is not cleanly exported and pulls in AV1LevelParams; the
+ * byte layout it writes is copied here. Level-stats side effect omitted (no byte
+ * effect). obu_type in bits 6..3, ext flag bit 2, has_size_field bit 1. */
+uint32_t shim_write_obu_header(int obu_type, int has_nonzero_op,
+                               int is_layer_specific, int obu_extension,
+                               uint8_t *dst) {
+  const int obu_extension_flag = has_nonzero_op && is_layer_specific;
+  const int obu_has_size_field = 1;
+  uint32_t size = 0;
+  dst[0] = (obu_type << 3) | (obu_extension_flag << 2) | (obu_has_size_field << 1);
+  size++;
+  if (obu_extension_flag) {
+    dst[1] = obu_extension & 0xFF;
+    size++;
+  }
+  return size;
+}
