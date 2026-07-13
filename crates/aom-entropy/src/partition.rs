@@ -1010,3 +1010,92 @@ pub fn write_skip_mode(
     }
     write_symbol(enc, skip_mode, skip_mode_cdf, 2);
 }
+
+// --- variable-transform-size (var-tx) neighbour context (av1_common_int.h) ---
+
+// TX_SIZE indices (aom_dsp/txfm_common.h): square sizes 0..4, then rects 5..18.
+const TX_4X4: usize = 0;
+const TX_8X8: usize = 1;
+const TX_SIZES: usize = 5; // number of square tx sizes
+/// `TXFM_PARTITION_CONTEXTS` = `(TX_SIZES - TX_8X8) * 6 - 3` = 21 (`enums.h`).
+const TXFM_PARTITION_CONTEXTS: usize = (TX_SIZES - TX_8X8) * 6 - 3;
+
+/// `tx_size_wide[TX_SIZES_ALL]` (`common_data.h`): transform width in pixels.
+const TX_SIZE_WIDE: [i32; 19] =
+    [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
+/// `tx_size_high[TX_SIZES_ALL]` (`common_data.h`): transform height in pixels.
+const TX_SIZE_HIGH: [i32; 19] =
+    [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+/// `block_size_wide[BLOCK_SIZES_ALL]` (`common_data.h`): block width in pixels.
+const BLOCK_SIZE_WIDE: [i32; 22] =
+    [4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64];
+/// `block_size_high[BLOCK_SIZES_ALL]` (`common_data.h`): block height in pixels.
+const BLOCK_SIZE_HIGH: [i32; 22] =
+    [4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16];
+/// `mi_size_wide[BLOCK_SIZES_ALL]` (`common_data.h`): block width in 4x4 units.
+const MI_SIZE_WIDE: [i32; 22] =
+    [1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16];
+/// `mi_size_high[BLOCK_SIZES_ALL]` (`common_data.h`): block height in 4x4 units.
+const MI_SIZE_HIGH: [i32; 22] =
+    [1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4];
+/// `txsize_sqr_up_map[TX_SIZES_ALL]` (`common_data.h`): map each tx size to the
+/// smallest square tx size that contains it.
+const TXSIZE_SQR_UP_MAP: [usize; 19] =
+    [0, 1, 2, 3, 4, 1, 1, 2, 2, 3, 3, 4, 4, 2, 2, 3, 3, 4, 4];
+/// `txsize_to_bsize[TX_SIZES_ALL]` (`common_data.h`): the block size equal to a
+/// transform block's dimensions.
+const TXSIZE_TO_BSIZE: [usize; 19] =
+    [0, 3, 6, 9, 12, 1, 2, 4, 5, 7, 8, 10, 11, 16, 17, 18, 19, 20, 21];
+
+/// `get_sqr_tx_size` (`av1_common_int.h`): largest square tx size fitting `tx_dim`.
+fn get_sqr_tx_size(tx_dim: i32) -> usize {
+    match tx_dim {
+        128 | 64 => 4, // TX_64X64
+        32 => 3,       // TX_32X32
+        16 => 2,       // TX_16X16
+        8 => 1,        // TX_8X8
+        _ => 0,        // TX_4X4
+    }
+}
+
+/// `txfm_partition_context` (`av1_common_int.h`): the CDF context (0..20) for the
+/// var-tx split flag, from the above/left neighbour txfm-context values (the single
+/// element each pointer addresses) plus this block's `bsize` and current `tx_size`.
+pub fn txfm_partition_context(above_ctx: u8, left_ctx: u8, bsize: usize, tx_size: usize) -> usize {
+    let txw = TX_SIZE_WIDE[tx_size];
+    let txh = TX_SIZE_HIGH[tx_size];
+    let above = (i32::from(above_ctx) < txw) as usize;
+    let left = (i32::from(left_ctx) < txh) as usize;
+
+    // dummy return, not used by others. C writes `tx_size <= TX_4X4`; TX_4X4 is the
+    // minimum TX_SIZE so on an unsigned index that is exactly `== TX_4X4`.
+    if tx_size == TX_4X4 {
+        return 0;
+    }
+
+    let max_tx_size = get_sqr_tx_size(BLOCK_SIZE_WIDE[bsize].max(BLOCK_SIZE_HIGH[bsize]));
+    let mut category = TXFM_PARTITION_CONTEXTS;
+    if max_tx_size >= TX_8X8 {
+        category = usize::from(TXSIZE_SQR_UP_MAP[tx_size] != max_tx_size && max_tx_size > TX_8X8)
+            + (TX_SIZES - 1 - max_tx_size) * 2;
+    }
+    debug_assert_ne!(category, TXFM_PARTITION_CONTEXTS);
+    category * 3 + above + left
+}
+
+/// `txfm_partition_update` (`av1_common_int.h`): after coding a var-tx split flag,
+/// stamp the neighbour txfm-context arrays — `above[0..bw] = txw`, `left[0..bh] = txh`,
+/// where `bw`/`bh` come from `txb_size`'s block dimensions in mi units.
+pub fn txfm_partition_update(above_ctx: &mut [u8], left_ctx: &mut [u8], tx_size: usize, txb_size: usize) {
+    let bsize = TXSIZE_TO_BSIZE[txb_size];
+    let bh = MI_SIZE_HIGH[bsize] as usize;
+    let bw = MI_SIZE_WIDE[bsize] as usize;
+    let txw = TX_SIZE_WIDE[tx_size] as u8;
+    let txh = TX_SIZE_HIGH[tx_size] as u8;
+    for l in left_ctx.iter_mut().take(bh) {
+        *l = txh;
+    }
+    for a in above_ctx.iter_mut().take(bw) {
+        *a = txw;
+    }
+}

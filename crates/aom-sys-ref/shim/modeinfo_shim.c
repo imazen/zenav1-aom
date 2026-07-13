@@ -701,3 +701,18 @@ uint32_t shim_write_skip_mode(uint16_t *cdf, int frame_flag, int seg_skip, int c
   od_ec_enc_clear(&ec);
   return nb;
 }
+
+/* --- var-tx neighbour context helpers (av1_common_int.h) --- */
+
+/* txfm_partition_context reads only *above_ctx / *left_ctx (single value each). */
+int shim_txfm_partition_context(uint8_t above, uint8_t left, int bsize, int tx_size) {
+  TXFM_CONTEXT a = (TXFM_CONTEXT)above, l = (TXFM_CONTEXT)left;
+  return txfm_partition_context(&a, &l, (BLOCK_SIZE)bsize, (TX_SIZE)tx_size);
+}
+
+/* txfm_partition_update fills above_ctx[0..bw]=txw and left_ctx[0..bh]=txh. */
+void shim_txfm_partition_update(uint8_t *above_ctx, uint8_t *left_ctx, int tx_size,
+                                int txb_size) {
+  txfm_partition_update((TXFM_CONTEXT *)above_ctx, (TXFM_CONTEXT *)left_ctx,
+                        (TX_SIZE)tx_size, (TX_SIZE)txb_size);
+}

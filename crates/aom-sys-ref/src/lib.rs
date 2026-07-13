@@ -265,6 +265,8 @@ extern "C" {
     fn shim_write_intrabc_info(intrabc_cdf: *mut u16, joints: *mut u16, comp0: *mut u16, comp1: *mut u16, use_intrabc: i32, diff_row: i32, diff_col: i32, out: *mut u8, out_ibc: *mut u16, out_joints: *mut u16, out_c0: *mut u16, out_c1: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_segment_id(cdf: *mut u16, seg_enabled: i32, update_map: i32, skip_txfm: i32, segment_id: i32, pred: i32, last_active_segid: i32, out: *mut u8, out_cdf: *mut u16) -> u32;
+    fn shim_txfm_partition_context(above: u8, left: u8, bsize: i32, tx_size: i32) -> i32;
+    fn shim_txfm_partition_update(above_ctx: *mut u8, left_ctx: *mut u8, tx_size: i32, txb_size: i32);
     #[allow(clippy::too_many_arguments)]
     fn shim_write_ref_frames(cdfs: *mut u16, seg_ref: i32, seg_skipgmv: i32, rmode_select: i32, comp_allowed: i32, is_compound: i32, comp_ref_type: i32, ref0: i32, ref1: i32, out: *mut u8, out_cdfs: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
@@ -398,6 +400,16 @@ pub fn ref_write_skip_mode(cdf: &[u16; 3], frame_flag: bool, seg_skip: bool, com
     let mut c = *cdf; let mut out = vec![0u8; 16]; let mut oc = [0u16; 3];
     let n = unsafe { shim_write_skip_mode(c.as_mut_ptr(), frame_flag as i32, seg_skip as i32, comp_allowed as i32, seg_ref_gmv as i32, skip_mode, out.as_mut_ptr(), oc.as_mut_ptr()) };
     out.truncate(n as usize); (out, oc)
+}
+
+/// Reference `txfm_partition_context` (static inline, av1_common_int.h).
+pub fn ref_txfm_partition_context(above: u8, left: u8, bsize: i32, tx_size: i32) -> i32 {
+    unsafe { shim_txfm_partition_context(above, left, bsize, tx_size) }
+}
+
+/// Reference `txfm_partition_update` — fills above[0..bw]=txw, left[0..bh]=txh in place.
+pub fn ref_txfm_partition_update(above: &mut [u8], left: &mut [u8], tx_size: i32, txb_size: i32) {
+    unsafe { shim_txfm_partition_update(above.as_mut_ptr(), left.as_mut_ptr(), tx_size, txb_size) };
 }
 
 /// Reference `av1_get_intra_inter_context` (facade over the real exported fn).

@@ -1157,3 +1157,45 @@ fn write_skip_mode_and_context_match_c() {
         assert_eq!(mc, oc, "skip_mode cdf");
     }
 }
+
+#[test]
+fn txfm_partition_context_matches_c() {
+    use aom_entropy::partition::txfm_partition_context;
+    // Neighbour txfm-context values are stored tx widths/heights (pixels) or 0.
+    let nbr_vals: [u8; 7] = [0, 4, 8, 16, 32, 64, 128];
+    for tx_size in 0..19usize {
+        for bsize in 0..22usize {
+            // C asserts max_tx_size >= TX_8X8 when tx_size > TX_4X4; only BLOCK_4X4
+            // (index 0, max dim 4) violates that. Skip that single illegal combo.
+            if tx_size > 0 && bsize == 0 {
+                continue;
+            }
+            for &above in &nbr_vals {
+                for &left in &nbr_vals {
+                    let got = txfm_partition_context(above, left, bsize, tx_size) as i32;
+                    let want = c::ref_txfm_partition_context(above, left, bsize as i32, tx_size as i32);
+                    assert_eq!(got, want, "ctx above={above} left={left} bsize={bsize} tx={tx_size}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn txfm_partition_update_matches_c() {
+    use aom_entropy::partition::txfm_partition_update;
+    // MAX_MIB_SIZE (128/4) = 32 context slots per direction.
+    for tx_size in 0..19usize {
+        for txb_size in 0..19usize {
+            // Distinct sentinel fills so an over/under-write is caught.
+            let mut a_rs = [0xAAu8; 32];
+            let mut l_rs = [0x55u8; 32];
+            let mut a_c = [0xAAu8; 32];
+            let mut l_c = [0x55u8; 32];
+            txfm_partition_update(&mut a_rs, &mut l_rs, tx_size, txb_size);
+            c::ref_txfm_partition_update(&mut a_c, &mut l_c, tx_size as i32, txb_size as i32);
+            assert_eq!(a_rs, a_c, "above tx={tx_size} txb={txb_size}");
+            assert_eq!(l_rs, l_c, "left tx={tx_size} txb={txb_size}");
+        }
+    }
+}
