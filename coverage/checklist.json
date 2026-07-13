@@ -452,6 +452,44 @@
           "test": "highbd_diff::highbd_intra_byte_identical"
         }
       }
+    },
+    "loopfilter.deblock_highbd": {
+      "status": "green",
+      "note": "Highbd (10/12-bit) deblocking loop filter: h+v widths 4/6/8/14, signed_char_clamp_high + (bd-8)-scaled thresholds. Deblock now complete lowbd+highbd.",
+      "items": {
+        "aom_highbd_lpf_horizontal_4": {
+          "status": "green",
+          "test": "hbd_lpf_diff::hbd_loopfilter_byte_identical"
+        },
+        "aom_highbd_lpf_horizontal_6": {
+          "status": "green",
+          "test": "hbd_lpf_diff::hbd_loopfilter_byte_identical"
+        },
+        "aom_highbd_lpf_horizontal_8": {
+          "status": "green",
+          "test": "hbd_lpf_diff::hbd_loopfilter_byte_identical"
+        },
+        "aom_highbd_lpf_horizontal_14": {
+          "status": "green",
+          "test": "hbd_lpf_diff::hbd_loopfilter_byte_identical"
+        },
+        "aom_highbd_lpf_vertical_4": {
+          "status": "green",
+          "test": "hbd_lpf_diff::hbd_loopfilter_byte_identical"
+        },
+        "aom_highbd_lpf_vertical_6": {
+          "status": "green",
+          "test": "hbd_lpf_diff::hbd_loopfilter_byte_identical"
+        },
+        "aom_highbd_lpf_vertical_8": {
+          "status": "green",
+          "test": "hbd_lpf_diff::hbd_loopfilter_byte_identical"
+        },
+        "aom_highbd_lpf_vertical_14": {
+          "status": "green",
+          "test": "hbd_lpf_diff::hbd_loopfilter_byte_identical"
+        }
+      }
     }
   }
 }

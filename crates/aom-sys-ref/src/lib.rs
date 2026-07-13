@@ -172,6 +172,21 @@ pub fn ref_subpel_var(idx: usize, a: &[u8], as_: usize, xo: usize, yo: usize, b:
     (v, sse)
 }
 
+// hbd_lpf_shim.c — highbd deblocking edge filters.
+extern "C" {
+    fn shim_hbd_lpf(dir: i32, width: i32, s: *mut u16, p: i32, bl: *const u8, li: *const u8, th: *const u8, bd: i32);
+}
+
+/// Apply a reference highbd loop filter in place. `dir`: 'h'/'v'.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_hbd_lpf(dir: u8, width: u32, buf: &mut [u16], center: usize, pitch: usize, bl: u8, li: u8, th: u8, bd: i32) {
+    let (b, l, t) = ([bl], [li], [th]);
+    let d = if dir == b'h' { 0 } else { 1 };
+    unsafe {
+        shim_hbd_lpf(d, width as i32, buf.as_mut_ptr().add(center), pitch as i32, b.as_ptr(), l.as_ptr(), t.as_ptr(), bd);
+    }
+}
+
 // aom_dsp/loopfilter.c — deblocking edge filters.
 pub type LpfFn = unsafe extern "C" fn(*mut u8, i32, *const u8, *const u8, *const u8);
 extern "C" {

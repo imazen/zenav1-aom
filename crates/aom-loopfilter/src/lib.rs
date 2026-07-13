@@ -6,6 +6,8 @@
 //! and 1 for vertical filters; the per-position step is the opposite.
 //! Validated byte-for-byte against C for random pixel windows + thresholds.
 
+pub mod highbd;
+
 #[inline]
 fn scc(t: i32) -> i8 {
     t.clamp(-128, 127) as i8
