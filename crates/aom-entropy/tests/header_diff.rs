@@ -464,3 +464,42 @@ fn write_film_grain_params_matches_c() {
         assert_eq!(got, want, "write_film_grain_params {p:?}");
     }
 }
+
+#[test]
+fn write_global_motion_matches_c() {
+    use aom_entropy::header::{write_global_motion, WarpedMotionParams};
+    let mut rng = Rng(0x610b_c0de_a11a_0009);
+    // Build wmmat[i] realizing a coded arg in [-4096,4096]: idx 0/1 use shift 10,
+    // idx 2/3/4/5 shift 1; idx 2/5 subtract 1<<15. Recovered arg stays in i16 range.
+    let shift = |idx: usize| -> u32 { if idx < 2 { 10 } else { 1 } };
+    let subtract = |idx: usize| -> i32 { if idx == 2 || idx == 5 { 1 << 15 } else { 0 } };
+    for _ in 0..300_000 {
+        let allow_hp = rng.next().is_multiple_of(2);
+        let mut wmtype = [0i32; 7];
+        let mut wmmat = [0i32; 42];
+        let mut refmat = [0i32; 42];
+        for f in 0..7 {
+            // encoder-reachable types: IDENTITY=0, ROTZOOM=2, AFFINE=3
+            wmtype[f] = [0i32, 2, 3][rng.range(0, 3) as usize];
+            for i in 0..6 {
+                let a = rng.range(-4096, 4097);
+                let ra = if rng.next().is_multiple_of(3) { a } else { rng.range(-4096, 4097) };
+                wmmat[f * 6 + i] = (a + subtract(i)) << shift(i);
+                refmat[f * 6 + i] = (ra + subtract(i)) << shift(i);
+            }
+        }
+        let gm: [WarpedMotionParams; 7] = std::array::from_fn(|f| WarpedMotionParams {
+            wmtype: wmtype[f] as u8,
+            wmmat: std::array::from_fn(|i| wmmat[f * 6 + i]),
+        });
+        let refgm: [WarpedMotionParams; 7] = std::array::from_fn(|f| WarpedMotionParams {
+            wmtype: 0,
+            wmmat: std::array::from_fn(|i| refmat[f * 6 + i]),
+        });
+        let mut wb = WriteBitBuffer::new();
+        write_global_motion(&mut wb, &gm, &refgm, allow_hp);
+        let got = wb.bytes().to_vec();
+        let want = c::ref_write_global_motion(&wmtype, &wmmat, &refmat, allow_hp);
+        assert_eq!(got, want, "write_global_motion hp={allow_hp} types={wmtype:?}");
+    }
+}

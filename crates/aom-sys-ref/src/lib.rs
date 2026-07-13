@@ -211,6 +211,24 @@ extern "C" {
     fn shim_write_delta_q_params(base_qindex: i32, delta_q_present: i32, delta_q_res: i32, allow_intrabc: i32, delta_lf_present: i32, delta_lf_res: i32, delta_lf_multi: i32, out: *mut u8) -> u32;
     fn shim_write_tx_mode(coded_lossless: i32, tx_mode_select: i32, out: *mut u8) -> u32;
     fn shim_write_film_grain_params(s: *const i32, spy: *const i32, spcb: *const i32, spcr: *const i32, ary: *const i32, arcb: *const i32, arcr: *const i32, out: *mut u8) -> u32;
+    fn shim_wb_signed_subexpfin(n: i32, k: i32, ref_: i32, v: i32, out: *mut u8) -> u32;
+    fn shim_write_global_motion(wmtype: *const i32, wmmat: *const i32, refmat: *const i32, allow_hp: i32, out: *mut u8) -> u32;
+}
+
+/// Reference `write_global_motion` (transcribed control flow over the real aom_wb).
+pub fn ref_write_global_motion(wmtype: &[i32; 7], wmmat: &[i32; 42], refmat: &[i32; 42], allow_hp: bool) -> Vec<u8> {
+    let mut out = vec![0u8; 512];
+    let n = unsafe { shim_write_global_motion(wmtype.as_ptr(), wmmat.as_ptr(), refmat.as_ptr(), allow_hp as i32, out.as_mut_ptr()) };
+    out.truncate(n as usize);
+    out
+}
+
+/// Reference `aom_wb_write_signed_primitive_refsubexpfin`.
+pub fn ref_wb_signed_subexpfin(n: i32, k: i32, ref_: i32, v: i32) -> Vec<u8> {
+    let mut out = vec![0u8; 16];
+    let nn = unsafe { shim_wb_signed_subexpfin(n, k, ref_, v, out.as_mut_ptr()) };
+    out.truncate(nn as usize);
+    out
 }
 
 /// Reference `write_film_grain_params` (transcribed control flow over the real aom_wb).

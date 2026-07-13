@@ -53,3 +53,21 @@ fn wb_write_sequence_identical() {
         assert_eq!(wb.bytes_written(), want.len(), "bytes_written nops={nops}");
     }
 }
+
+#[test]
+fn signed_subexpfin_matches_c() {
+    let mut rng = Rng(0x5f00_c0de_a11a_0009);
+    // Exercise the GM parameter ranges: n = GM_ALPHA_MAX+1 (4097) and the
+    // translation n = (1<<trans_bits)+1 for trans_bits in {9,12}; k = SUBEXPFIN_K = 3.
+    for &n in &[4097i32, (1 << 12) + 1, (1 << 9) + 1] {
+        for _ in 0..300_000 {
+            let r = rng.range(0, (2 * n - 1) as u32) as i32 - (n - 1);
+            let v = rng.range(0, (2 * n - 1) as u32) as i32 - (n - 1);
+            let mut wb = WriteBitBuffer::new();
+            wb.write_signed_primitive_refsubexpfin(n as u16, 3, r as i16, v as i16);
+            let got = wb.bytes().to_vec();
+            let want = c::ref_wb_signed_subexpfin(n, 3, r, v);
+            assert_eq!(got, want, "signed_subexpfin n={n} k=3 ref={r} v={v}");
+        }
+    }
+}

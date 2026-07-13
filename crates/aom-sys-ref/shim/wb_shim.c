@@ -403,3 +403,64 @@ uint32_t shim_write_film_grain_params(const int *s, const int *spy, const int *s
   aom_wb_write_bit(&wb, clip_to_restricted_range);
   return aom_wb_bytes_written(&wb);
 }
+
+/* Directly exercises the real aom_wb_write_signed_primitive_refsubexpfin so the
+ * Rust port of the subexpfin primitive chain is validated on its own. */
+uint32_t shim_wb_signed_subexpfin(int n, int k, int ref, int v, uint8_t *out) {
+  struct aom_write_bit_buffer wb = { out, 0 };
+  aom_wb_write_signed_primitive_refsubexpfin(&wb, (uint16_t)n, (uint16_t)k,
+                                             (int16_t)ref, (int16_t)v);
+  return aom_wb_bytes_written(&wb);
+}
+
+/* write_global_motion (+ _params), transcribed control flow over the real aom_wb
+ * (the assert(type!=TRANSLATION) spec-bug workaround is omitted). Loops the 7
+ * inter refs; wmmat/refmat are flat [7*6], wmtype is [7]. */
+#include "av1/common/mv.h" /* GM_* / SUBEXPFIN_K / prec constants */
+uint32_t shim_write_global_motion(const int *wmtype, const int *wmmat,
+                                  const int *refmat, int allow_hp, uint8_t *out) {
+  struct aom_write_bit_buffer wb = { out, 0 };
+  for (int f = 0; f < 7; f++) {
+    const int type = wmtype[f];
+    const int *m = wmmat + f * 6;
+    const int *r = refmat + f * 6;
+    aom_wb_write_bit(&wb, type != IDENTITY);
+    if (type != IDENTITY) {
+      aom_wb_write_bit(&wb, type == ROTZOOM);
+      if (type != ROTZOOM) aom_wb_write_bit(&wb, type == TRANSLATION);
+    }
+    if (type >= ROTZOOM) {
+      aom_wb_write_signed_primitive_refsubexpfin(
+          &wb, GM_ALPHA_MAX + 1, SUBEXPFIN_K,
+          (r[2] >> GM_ALPHA_PREC_DIFF) - (1 << GM_ALPHA_PREC_BITS),
+          (m[2] >> GM_ALPHA_PREC_DIFF) - (1 << GM_ALPHA_PREC_BITS));
+      aom_wb_write_signed_primitive_refsubexpfin(
+          &wb, GM_ALPHA_MAX + 1, SUBEXPFIN_K, (r[3] >> GM_ALPHA_PREC_DIFF),
+          (m[3] >> GM_ALPHA_PREC_DIFF));
+    }
+    if (type >= AFFINE) {
+      aom_wb_write_signed_primitive_refsubexpfin(
+          &wb, GM_ALPHA_MAX + 1, SUBEXPFIN_K, (r[4] >> GM_ALPHA_PREC_DIFF),
+          (m[4] >> GM_ALPHA_PREC_DIFF));
+      aom_wb_write_signed_primitive_refsubexpfin(
+          &wb, GM_ALPHA_MAX + 1, SUBEXPFIN_K,
+          (r[5] >> GM_ALPHA_PREC_DIFF) - (1 << GM_ALPHA_PREC_BITS),
+          (m[5] >> GM_ALPHA_PREC_DIFF) - (1 << GM_ALPHA_PREC_BITS));
+    }
+    if (type >= TRANSLATION) {
+      const int trans_bits = (type == TRANSLATION)
+                                 ? GM_ABS_TRANS_ONLY_BITS - !allow_hp
+                                 : GM_ABS_TRANS_BITS;
+      const int trans_prec_diff = (type == TRANSLATION)
+                                      ? GM_TRANS_ONLY_PREC_DIFF + !allow_hp
+                                      : GM_TRANS_PREC_DIFF;
+      aom_wb_write_signed_primitive_refsubexpfin(
+          &wb, (1 << trans_bits) + 1, SUBEXPFIN_K, (r[0] >> trans_prec_diff),
+          (m[0] >> trans_prec_diff));
+      aom_wb_write_signed_primitive_refsubexpfin(
+          &wb, (1 << trans_bits) + 1, SUBEXPFIN_K, (r[1] >> trans_prec_diff),
+          (m[1] >> trans_prec_diff));
+    }
+  }
+  return aom_wb_bytes_written(&wb);
+}

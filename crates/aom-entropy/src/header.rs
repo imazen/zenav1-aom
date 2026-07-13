@@ -617,3 +617,114 @@ pub fn write_film_grain_params(wb: &mut WriteBitBuffer, p: &FilmGrainParams) {
     wb.write_bit(p.overlap_flag as u32);
     wb.write_bit(p.clip_to_restricted_range as u32);
 }
+
+// ---- global motion --------------------------------------------------------
+
+const IDENTITY: u8 = 0;
+const TRANSLATION: u8 = 1;
+const ROTZOOM: u8 = 2;
+const AFFINE: u8 = 3;
+
+const GM_ALPHA_MAX: i32 = 1 << 12; // 1 << GM_ABS_ALPHA_BITS
+const SUBEXPFIN_K: u16 = 3;
+const GM_ALPHA_PREC_DIFF: u32 = 1; // WARPEDMODEL_PREC_BITS - GM_ALPHA_PREC_BITS = 16-15
+const GM_ALPHA_PREC_BITS: i32 = 15;
+const GM_ABS_TRANS_BITS: u32 = 12;
+const GM_ABS_TRANS_ONLY_BITS: u32 = 9; // GM_ABS_TRANS_BITS - GM_TRANS_PREC_BITS + 3
+const GM_TRANS_PREC_DIFF: u32 = 10; // WARPEDMODEL_PREC_BITS - GM_TRANS_PREC_BITS = 16-6
+const GM_TRANS_ONLY_PREC_DIFF: u32 = 13; // WARPEDMODEL_PREC_BITS - 3
+
+/// A single reference frame's global-motion model (`WarpedMotionParams`).
+#[derive(Clone, Copy, Debug)]
+pub struct WarpedMotionParams {
+    pub wmtype: u8,
+    pub wmmat: [i32; 6],
+}
+
+/// `write_global_motion_params` (`av1/encoder/bitstream.c`): the transform-type flags
+/// (IDENTITY/ROTZOOM/TRANSLATION), then the rot-zoom / affine / translation model
+/// parameters, each subexp-coded (`write_signed_primitive_refsubexpfin`) relative to
+/// the reference frame's parameter at the matching precision.
+pub fn write_global_motion_params(
+    wb: &mut WriteBitBuffer,
+    params: &WarpedMotionParams,
+    ref_params: &WarpedMotionParams,
+    allow_hp: bool,
+) {
+    let ty = params.wmtype;
+    wb.write_bit((ty != IDENTITY) as u32);
+    if ty != IDENTITY {
+        wb.write_bit((ty == ROTZOOM) as u32);
+        if ty != ROTZOOM {
+            wb.write_bit((ty == TRANSLATION) as u32);
+        }
+    }
+    let alpha_n = (GM_ALPHA_MAX + 1) as u16;
+    if ty >= ROTZOOM {
+        wb.write_signed_primitive_refsubexpfin(
+            alpha_n,
+            SUBEXPFIN_K,
+            ((ref_params.wmmat[2] >> GM_ALPHA_PREC_DIFF) - (1 << GM_ALPHA_PREC_BITS)) as i16,
+            ((params.wmmat[2] >> GM_ALPHA_PREC_DIFF) - (1 << GM_ALPHA_PREC_BITS)) as i16,
+        );
+        wb.write_signed_primitive_refsubexpfin(
+            alpha_n,
+            SUBEXPFIN_K,
+            (ref_params.wmmat[3] >> GM_ALPHA_PREC_DIFF) as i16,
+            (params.wmmat[3] >> GM_ALPHA_PREC_DIFF) as i16,
+        );
+    }
+    if ty >= AFFINE {
+        wb.write_signed_primitive_refsubexpfin(
+            alpha_n,
+            SUBEXPFIN_K,
+            (ref_params.wmmat[4] >> GM_ALPHA_PREC_DIFF) as i16,
+            (params.wmmat[4] >> GM_ALPHA_PREC_DIFF) as i16,
+        );
+        wb.write_signed_primitive_refsubexpfin(
+            alpha_n,
+            SUBEXPFIN_K,
+            ((ref_params.wmmat[5] >> GM_ALPHA_PREC_DIFF) - (1 << GM_ALPHA_PREC_BITS)) as i16,
+            ((params.wmmat[5] >> GM_ALPHA_PREC_DIFF) - (1 << GM_ALPHA_PREC_BITS)) as i16,
+        );
+    }
+    if ty >= TRANSLATION {
+        let trans_bits = if ty == TRANSLATION {
+            GM_ABS_TRANS_ONLY_BITS - !allow_hp as u32
+        } else {
+            GM_ABS_TRANS_BITS
+        };
+        let trans_prec_diff = if ty == TRANSLATION {
+            GM_TRANS_ONLY_PREC_DIFF + !allow_hp as u32
+        } else {
+            GM_TRANS_PREC_DIFF
+        };
+        let trans_n = ((1i32 << trans_bits) + 1) as u16;
+        wb.write_signed_primitive_refsubexpfin(
+            trans_n,
+            SUBEXPFIN_K,
+            (ref_params.wmmat[0] >> trans_prec_diff) as i16,
+            (params.wmmat[0] >> trans_prec_diff) as i16,
+        );
+        wb.write_signed_primitive_refsubexpfin(
+            trans_n,
+            SUBEXPFIN_K,
+            (ref_params.wmmat[1] >> trans_prec_diff) as i16,
+            (params.wmmat[1] >> trans_prec_diff) as i16,
+        );
+    }
+}
+
+/// `write_global_motion` (`av1/encoder/bitstream.c`): the per-inter-frame loop over
+/// the 7 reference frames (`LAST_FRAME..=ALTREF_FRAME`), each written against the
+/// previous frame's model (or the identity default when there is no previous frame).
+pub fn write_global_motion(
+    wb: &mut WriteBitBuffer,
+    global_motion: &[WarpedMotionParams; 7],
+    ref_global_motion: &[WarpedMotionParams; 7],
+    allow_hp: bool,
+) {
+    for (gm, refgm) in global_motion.iter().zip(ref_global_motion.iter()) {
+        write_global_motion_params(wb, gm, refgm, allow_hp);
+    }
+}

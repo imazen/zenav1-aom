@@ -77,4 +77,87 @@ impl WriteBitBuffer {
     pub fn bytes(&self) -> &[u8] {
         &self.buf[..self.bytes_written()]
     }
+
+    /// `wb_write_primitive_quniform` (`bitwriter_buffer.c`): a truncated-uniform
+    /// value `v in [0, n)`.
+    fn write_primitive_quniform(&mut self, n: u16, v: u16) {
+        if n <= 1 {
+            return;
+        }
+        let l = msb32(n as u32) + 1;
+        let m = (1u32 << l) - n as u32;
+        let v = v as u32;
+        if v < m {
+            self.write_literal(v as i32, l - 1);
+        } else {
+            self.write_literal((m + ((v - m) >> 1)) as i32, l - 1);
+            self.write_bit((v - m) & 1);
+        }
+    }
+
+    /// `wb_write_primitive_subexpfin`: the finite subexponential code.
+    fn write_primitive_subexpfin(&mut self, n: u16, k: u16, v: u16) {
+        let (n, k, v) = (n as i32, k as i32, v as i32);
+        let mut i = 0i32;
+        let mut mk = 0i32;
+        loop {
+            let b = if i != 0 { k + i - 1 } else { k };
+            let a = 1i32 << b;
+            if n <= mk + 3 * a {
+                self.write_primitive_quniform((n - mk) as u16, (v - mk) as u16);
+                break;
+            }
+            let t = v >= mk + a;
+            self.write_bit(t as u32);
+            if t {
+                i += 1;
+                mk += a;
+            } else {
+                self.write_literal(v - mk, b as u32);
+                break;
+            }
+        }
+    }
+
+    /// `wb_write_primitive_refsubexpfin`: `v` subexp-coded relative to `ref` after
+    /// recentering into `[0, n)`.
+    fn write_primitive_refsubexpfin(&mut self, n: u16, k: u16, ref_: u16, v: u16) {
+        self.write_primitive_subexpfin(n, k, recenter_finite_nonneg(n, ref_, v));
+    }
+
+    /// `aom_wb_write_signed_primitive_refsubexpfin`: subexp-with-final coding of a
+    /// signed `v` in `[-(n-1), n-1]` relative to a reference `ref` in the same range
+    /// (used for the global-motion model parameters).
+    pub fn write_signed_primitive_refsubexpfin(&mut self, n: u16, k: u16, ref_: i16, v: i16) {
+        let ref_u = (ref_ as i32 + n as i32 - 1) as u16;
+        let v_u = (v as i32 + n as i32 - 1) as u16;
+        let scaled_n = (n << 1) - 1;
+        self.write_primitive_refsubexpfin(scaled_n, k, ref_u, v_u);
+    }
+}
+
+/// `get_msb` on a 32-bit value: `floor(log2(n))` for `n > 0`.
+fn msb32(n: u32) -> u32 {
+    31 - n.leading_zeros()
+}
+
+/// `recenter_nonneg` (`aom_dsp/recenter.h`).
+fn recenter_nonneg(r: u16, v: u16) -> u16 {
+    if v > (r << 1) {
+        v
+    } else if v >= r {
+        (v - r) << 1
+    } else {
+        ((r - v) << 1) - 1
+    }
+}
+
+/// `recenter_finite_nonneg` (`aom_dsp/recenter.h`): recenter `v in [0, n-1]` around
+/// a reference `r` in the same range.
+fn recenter_finite_nonneg(n: u16, r: u16, v: u16) -> u16 {
+    if (r << 1) <= n {
+        recenter_nonneg(r, v)
+    } else {
+        recenter_nonneg(n - 1 - r, n - 1 - v)
+    }
 }
