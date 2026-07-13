@@ -1,8 +1,8 @@
-//! (1) Lane-level differential: AVX2 SAD == scalar SAD == C, for every
+//! (1) Lane-level differential: SIMD SAD (archmage autoversion) == scalar SAD == C,
 //! multiple-of-16 width. (2) A coarse perf ratio vs C's own (AVX2-dispatched)
 //! aom_sad — the performance-gate methodology in miniature.
 
-use aom_dist::avx2::sad_simd;
+use aom_dist::simd::sad_simd;
 use aom_dist::sad;
 use aom_sys_ref as c;
 
@@ -64,15 +64,6 @@ fn avx2_sad_perf_ratio() {
     }
     let rust = t0.elapsed().as_secs_f64();
 
-    // Direct AVX2 kernel (no per-call feature detection) — isolates kernel cost.
-    let mut accd = 0u64;
-    let t0d = Instant::now();
-    for _ in 0..iters {
-        accd += unsafe { aom_dist::avx2::sad_avx2(&a, stride, &b, stride, w, h) } as u64;
-    }
-    let rust_direct = t0d.elapsed().as_secs_f64();
-    assert_eq!(acc, accd);
-
     // Like-for-like: C's PRODUCTION dispatch (AVX2), the real perf-gate baseline.
     let t1 = Instant::now();
     let mut acc2 = 0u64;
@@ -92,8 +83,7 @@ fn avx2_sad_perf_ratio() {
     assert_eq!(acc, acc2);
     assert_eq!(acc, acc3);
     eprintln!(
-        "SAD {w}x{h}: rust-dispatch {rust:.3}s ({:.2}x) | rust-avx2-direct {rust_direct:.3}s ({:.2}x) | C-avx2(prod) {cc:.3}s (1.00x, gate<=1.20x) | C-scalar {cscalar:.3}s",
-        rust / cc,
-        rust_direct / cc
+        "SAD {w}x{h}: rust-dispatch {rust:.3}s ({:.2}x) | C-avx2(prod) {cc:.3}s (1.00x, gate<=1.20x) | C-scalar {cscalar:.3}s",
+        rust / cc
     );
 }

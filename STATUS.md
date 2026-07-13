@@ -110,6 +110,15 @@ state. Kernel-level differential coverage is tracked separately in
   Harness: `aom-cdef/tests/cdef_filter_diff.rs` — 320k comparisons,
   byte-identical to C. CDEF (direction search + filter) now complete lowbd.
 
+## Safety: #![forbid(unsafe_code)]
+
+All 8 shipping crates (aom-transform/quant/entropy/intra/loopfilter/cdef/
+convolve/dist) enforce `#![forbid(unsafe_code)]` — zero `unsafe`. SIMD uses
+**archmage** `#[autoversion]` (path dep `/root/work/archmage`), not raw
+`core::arch` intrinsics. The only `unsafe` in the repo is the test-only C-FFI
+differential oracle `aom-sys-ref` (a dev-dependency that links reference
+libaom; FFI is inherently unsafe and is isolated there).
+
 ## Infrastructure standing
 
 - Rust workspace + `aom-sys-ref` FFI oracle crate linking the reference `libaom.a`.
