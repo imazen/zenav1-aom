@@ -83,6 +83,15 @@ both tracks, fully bit-exact.**
   ~198k comparisons (SAD + variance + subpel var/sse), byte-identical to C.
   (avg/masked/obmc SAD + highbd: TODO.)
 
+## Coverage gate (auto-derived, honest)
+
+`xtask/coverage.py` enumerates the live libaom feature surface (aomenc/aomdec
+`--help` + `aomcx.h` control enums) = **349 features**; a feature is green only
+if `coverage/feature_map.json` maps it to a passing test. Current: **0/349**
+(no kernel maps to a *complete* CLI feature yet). This is the truthful coverage
+state. Kernel-level differential coverage is tracked separately in
+`checklist.json` (transform/quant/entropy/intra/loopfilter/dist all green).
+
 ## Infrastructure standing
 
 - Rust workspace + `aom-sys-ref` FFI oracle crate linking the reference `libaom.a`.

@@ -1,0 +1,1757 @@
+{
+  "note": "AUTO-DERIVED by xtask/coverage.py from live aomenc/aomdec --help + aomcx.h control enums. Green requires a mapping in feature_map.json to a passing test. Low-level kernel coverage is tracked separately in checklist.json.",
+  "reference": "libaom v3.14.1",
+  "summary": {
+    "total": 349,
+    "green": 0,
+    "red": 349,
+    "percent": 0.0
+  },
+  "features": {
+    "cli.enc--allintra": {
+      "kind": "cli-enc",
+      "name": "--allintra",
+      "status": "red"
+    },
+    "cli.enc--annexb": {
+      "kind": "cli-enc",
+      "name": "--annexb",
+      "status": "red"
+    },
+    "cli.enc--aq-mode": {
+      "kind": "cli-enc",
+      "name": "--aq-mode",
+      "status": "red"
+    },
+    "cli.enc--arnr-maxframes": {
+      "kind": "cli-enc",
+      "name": "--arnr-maxframes",
+      "status": "red"
+    },
+    "cli.enc--arnr-strength": {
+      "kind": "cli-enc",
+      "name": "--arnr-strength",
+      "status": "red"
+    },
+    "cli.enc--auto-alt-ref": {
+      "kind": "cli-enc",
+      "name": "--auto-alt-ref",
+      "status": "red"
+    },
+    "cli.enc--auto-intra-tools-off": {
+      "kind": "cli-enc",
+      "name": "--auto-intra-tools-off",
+      "status": "red"
+    },
+    "cli.enc--auto-tiles": {
+      "kind": "cli-enc",
+      "name": "--auto-tiles",
+      "status": "red"
+    },
+    "cli.enc--bias-pct": {
+      "kind": "cli-enc",
+      "name": "--bias-pct",
+      "status": "red"
+    },
+    "cli.enc--buf-initial-sz": {
+      "kind": "cli-enc",
+      "name": "--buf-initial-sz",
+      "status": "red"
+    },
+    "cli.enc--buf-optimal-sz": {
+      "kind": "cli-enc",
+      "name": "--buf-optimal-sz",
+      "status": "red"
+    },
+    "cli.enc--buf-sz": {
+      "kind": "cli-enc",
+      "name": "--buf-sz",
+      "status": "red"
+    },
+    "cli.enc--cdf-update-mode": {
+      "kind": "cli-enc",
+      "name": "--cdf-update-mode",
+      "status": "red"
+    },
+    "cli.enc--chroma-sample-position": {
+      "kind": "cli-enc",
+      "name": "--chroma-sample-position",
+      "status": "red"
+    },
+    "cli.enc--codec": {
+      "kind": "cli-enc",
+      "name": "--codec",
+      "status": "red"
+    },
+    "cli.enc--coeff-cost-upd-freq": {
+      "kind": "cli-enc",
+      "name": "--coeff-cost-upd-freq",
+      "status": "red"
+    },
+    "cli.enc--color-primaries": {
+      "kind": "cli-enc",
+      "name": "--color-primaries",
+      "status": "red"
+    },
+    "cli.enc--cpu-used": {
+      "kind": "cli-enc",
+      "name": "--cpu-used",
+      "status": "red"
+    },
+    "cli.enc--cq-level": {
+      "kind": "cli-enc",
+      "name": "--cq-level",
+      "status": "red"
+    },
+    "cli.enc--delta-lf-mode": {
+      "kind": "cli-enc",
+      "name": "--delta-lf-mode",
+      "status": "red"
+    },
+    "cli.enc--deltaq-mode": {
+      "kind": "cli-enc",
+      "name": "--deltaq-mode",
+      "status": "red"
+    },
+    "cli.enc--deltaq-strength": {
+      "kind": "cli-enc",
+      "name": "--deltaq-strength",
+      "status": "red"
+    },
+    "cli.enc--denoise-block-size": {
+      "kind": "cli-enc",
+      "name": "--denoise-block-size",
+      "status": "red"
+    },
+    "cli.enc--denoise-noise-level": {
+      "kind": "cli-enc",
+      "name": "--denoise-noise-level",
+      "status": "red"
+    },
+    "cli.enc--disable-kf": {
+      "kind": "cli-enc",
+      "name": "--disable-kf",
+      "status": "red"
+    },
+    "cli.enc--disable-trellis-quant": {
+      "kind": "cli-enc",
+      "name": "--disable-trellis-quant",
+      "status": "red"
+    },
+    "cli.enc--disable-warnings": {
+      "kind": "cli-enc",
+      "name": "--disable-warnings",
+      "status": "red"
+    },
+    "cli.enc--dist-metric": {
+      "kind": "cli-enc",
+      "name": "--dist-metric",
+      "status": "red"
+    },
+    "cli.enc--drop-frame": {
+      "kind": "cli-enc",
+      "name": "--drop-frame",
+      "status": "red"
+    },
+    "cli.enc--dv-cost-upd-freq": {
+      "kind": "cli-enc",
+      "name": "--dv-cost-upd-freq",
+      "status": "red"
+    },
+    "cli.enc--enable-1to4-partitions": {
+      "kind": "cli-enc",
+      "name": "--enable-1to4-partitions",
+      "status": "red"
+    },
+    "cli.enc--enable-ab-partitions": {
+      "kind": "cli-enc",
+      "name": "--enable-ab-partitions",
+      "status": "red"
+    },
+    "cli.enc--enable-adaptive-sharpness": {
+      "kind": "cli-enc",
+      "name": "--enable-adaptive-sharpness",
+      "status": "red"
+    },
+    "cli.enc--enable-angle-delta": {
+      "kind": "cli-enc",
+      "name": "--enable-angle-delta",
+      "status": "red"
+    },
+    "cli.enc--enable-cdef": {
+      "kind": "cli-enc",
+      "name": "--enable-cdef",
+      "status": "red"
+    },
+    "cli.enc--enable-cfl-intra": {
+      "kind": "cli-enc",
+      "name": "--enable-cfl-intra",
+      "status": "red"
+    },
+    "cli.enc--enable-chroma-deltaq": {
+      "kind": "cli-enc",
+      "name": "--enable-chroma-deltaq",
+      "status": "red"
+    },
+    "cli.enc--enable-diagonal-intra": {
+      "kind": "cli-enc",
+      "name": "--enable-diagonal-intra",
+      "status": "red"
+    },
+    "cli.enc--enable-diff-wtd-comp": {
+      "kind": "cli-enc",
+      "name": "--enable-diff-wtd-comp",
+      "status": "red"
+    },
+    "cli.enc--enable-directional-intra": {
+      "kind": "cli-enc",
+      "name": "--enable-directional-intra",
+      "status": "red"
+    },
+    "cli.enc--enable-dist-wtd-comp": {
+      "kind": "cli-enc",
+      "name": "--enable-dist-wtd-comp",
+      "status": "red"
+    },
+    "cli.enc--enable-dnl-denoising": {
+      "kind": "cli-enc",
+      "name": "--enable-dnl-denoising",
+      "status": "red"
+    },
+    "cli.enc--enable-dual-filter": {
+      "kind": "cli-enc",
+      "name": "--enable-dual-filter",
+      "status": "red"
+    },
+    "cli.enc--enable-filter-intra": {
+      "kind": "cli-enc",
+      "name": "--enable-filter-intra",
+      "status": "red"
+    },
+    "cli.enc--enable-flip-idtx": {
+      "kind": "cli-enc",
+      "name": "--enable-flip-idtx",
+      "status": "red"
+    },
+    "cli.enc--enable-fwd-kf": {
+      "kind": "cli-enc",
+      "name": "--enable-fwd-kf",
+      "status": "red"
+    },
+    "cli.enc--enable-global-motion": {
+      "kind": "cli-enc",
+      "name": "--enable-global-motion",
+      "status": "red"
+    },
+    "cli.enc--enable-interinter-wedge": {
+      "kind": "cli-enc",
+      "name": "--enable-interinter-wedge",
+      "status": "red"
+    },
+    "cli.enc--enable-interintra-comp": {
+      "kind": "cli-enc",
+      "name": "--enable-interintra-comp",
+      "status": "red"
+    },
+    "cli.enc--enable-interintra-wedge": {
+      "kind": "cli-enc",
+      "name": "--enable-interintra-wedge",
+      "status": "red"
+    },
+    "cli.enc--enable-intra-edge-filter": {
+      "kind": "cli-enc",
+      "name": "--enable-intra-edge-filter",
+      "status": "red"
+    },
+    "cli.enc--enable-intrabc": {
+      "kind": "cli-enc",
+      "name": "--enable-intrabc",
+      "status": "red"
+    },
+    "cli.enc--enable-keyframe-filtering": {
+      "kind": "cli-enc",
+      "name": "--enable-keyframe-filtering",
+      "status": "red"
+    },
+    "cli.enc--enable-low-complexity-decode": {
+      "kind": "cli-enc",
+      "name": "--enable-low-complexity-decode",
+      "status": "red"
+    },
+    "cli.enc--enable-masked-comp": {
+      "kind": "cli-enc",
+      "name": "--enable-masked-comp",
+      "status": "red"
+    },
+    "cli.enc--enable-obmc": {
+      "kind": "cli-enc",
+      "name": "--enable-obmc",
+      "status": "red"
+    },
+    "cli.enc--enable-onesided-comp": {
+      "kind": "cli-enc",
+      "name": "--enable-onesided-comp",
+      "status": "red"
+    },
+    "cli.enc--enable-order-hint": {
+      "kind": "cli-enc",
+      "name": "--enable-order-hint",
+      "status": "red"
+    },
+    "cli.enc--enable-overlay": {
+      "kind": "cli-enc",
+      "name": "--enable-overlay",
+      "status": "red"
+    },
+    "cli.enc--enable-paeth-intra": {
+      "kind": "cli-enc",
+      "name": "--enable-paeth-intra",
+      "status": "red"
+    },
+    "cli.enc--enable-palette": {
+      "kind": "cli-enc",
+      "name": "--enable-palette",
+      "status": "red"
+    },
+    "cli.enc--enable-qm": {
+      "kind": "cli-enc",
+      "name": "--enable-qm",
+      "status": "red"
+    },
+    "cli.enc--enable-rate-guide-deltaq": {
+      "kind": "cli-enc",
+      "name": "--enable-rate-guide-deltaq",
+      "status": "red"
+    },
+    "cli.enc--enable-rect-partitions": {
+      "kind": "cli-enc",
+      "name": "--enable-rect-partitions",
+      "status": "red"
+    },
+    "cli.enc--enable-rect-tx": {
+      "kind": "cli-enc",
+      "name": "--enable-rect-tx",
+      "status": "red"
+    },
+    "cli.enc--enable-ref-frame-mvs": {
+      "kind": "cli-enc",
+      "name": "--enable-ref-frame-mvs",
+      "status": "red"
+    },
+    "cli.enc--enable-restoration": {
+      "kind": "cli-enc",
+      "name": "--enable-restoration",
+      "status": "red"
+    },
+    "cli.enc--enable-smooth-interintra": {
+      "kind": "cli-enc",
+      "name": "--enable-smooth-interintra",
+      "status": "red"
+    },
+    "cli.enc--enable-smooth-intra": {
+      "kind": "cli-enc",
+      "name": "--enable-smooth-intra",
+      "status": "red"
+    },
+    "cli.enc--enable-tpl-model": {
+      "kind": "cli-enc",
+      "name": "--enable-tpl-model",
+      "status": "red"
+    },
+    "cli.enc--enable-tx-size-search": {
+      "kind": "cli-enc",
+      "name": "--enable-tx-size-search",
+      "status": "red"
+    },
+    "cli.enc--enable-tx64": {
+      "kind": "cli-enc",
+      "name": "--enable-tx64",
+      "status": "red"
+    },
+    "cli.enc--enable-warped-motion": {
+      "kind": "cli-enc",
+      "name": "--enable-warped-motion",
+      "status": "red"
+    },
+    "cli.enc--end-usage": {
+      "kind": "cli-enc",
+      "name": "--end-usage",
+      "status": "red"
+    },
+    "cli.enc--error-resilient": {
+      "kind": "cli-enc",
+      "name": "--error-resilient",
+      "status": "red"
+    },
+    "cli.enc--film-grain-table": {
+      "kind": "cli-enc",
+      "name": "--film-grain-table",
+      "status": "red"
+    },
+    "cli.enc--film-grain-test": {
+      "kind": "cli-enc",
+      "name": "--film-grain-test",
+      "status": "red"
+    },
+    "cli.enc--force-video-mode": {
+      "kind": "cli-enc",
+      "name": "--force-video-mode",
+      "status": "red"
+    },
+    "cli.enc--forced": {
+      "kind": "cli-enc",
+      "name": "--forced",
+      "status": "red"
+    },
+    "cli.enc--fp-mt": {
+      "kind": "cli-enc",
+      "name": "--fp-mt",
+      "status": "red"
+    },
+    "cli.enc--fpf": {
+      "kind": "cli-enc",
+      "name": "--fpf",
+      "status": "red"
+    },
+    "cli.enc--fps": {
+      "kind": "cli-enc",
+      "name": "--fps",
+      "status": "red"
+    },
+    "cli.enc--frame-boost": {
+      "kind": "cli-enc",
+      "name": "--frame-boost",
+      "status": "red"
+    },
+    "cli.enc--frame-parallel": {
+      "kind": "cli-enc",
+      "name": "--frame-parallel",
+      "status": "red"
+    },
+    "cli.enc--full-still-picture-hdr": {
+      "kind": "cli-enc",
+      "name": "--full-still-picture-hdr",
+      "status": "red"
+    },
+    "cli.enc--fwd-kf-dist": {
+      "kind": "cli-enc",
+      "name": "--fwd-kf-dist",
+      "status": "red"
+    },
+    "cli.enc--gf-cbr-boost": {
+      "kind": "cli-enc",
+      "name": "--gf-cbr-boost",
+      "status": "red"
+    },
+    "cli.enc--gf-max-pyr-height": {
+      "kind": "cli-enc",
+      "name": "--gf-max-pyr-height",
+      "status": "red"
+    },
+    "cli.enc--gf-min-pyr-height": {
+      "kind": "cli-enc",
+      "name": "--gf-min-pyr-height",
+      "status": "red"
+    },
+    "cli.enc--global-error-resilient": {
+      "kind": "cli-enc",
+      "name": "--global-error-resilient",
+      "status": "red"
+    },
+    "cli.enc--good": {
+      "kind": "cli-enc",
+      "name": "--good",
+      "status": "red"
+    },
+    "cli.enc--help": {
+      "kind": "cli-enc",
+      "name": "--help",
+      "status": "red"
+    },
+    "cli.enc--i420": {
+      "kind": "cli-enc",
+      "name": "--i420",
+      "status": "red"
+    },
+    "cli.enc--i422": {
+      "kind": "cli-enc",
+      "name": "--i422",
+      "status": "red"
+    },
+    "cli.enc--i444": {
+      "kind": "cli-enc",
+      "name": "--i444",
+      "status": "red"
+    },
+    "cli.enc--input-bit-depth": {
+      "kind": "cli-enc",
+      "name": "--input-bit-depth",
+      "status": "red"
+    },
+    "cli.enc--input-chroma-subsampling-x": {
+      "kind": "cli-enc",
+      "name": "--input-chroma-subsampling-x",
+      "status": "red"
+    },
+    "cli.enc--input-chroma-subsampling-y": {
+      "kind": "cli-enc",
+      "name": "--input-chroma-subsampling-y",
+      "status": "red"
+    },
+    "cli.enc--ivf": {
+      "kind": "cli-enc",
+      "name": "--ivf",
+      "status": "red"
+    },
+    "cli.enc--kf-max-dist": {
+      "kind": "cli-enc",
+      "name": "--kf-max-dist",
+      "status": "red"
+    },
+    "cli.enc--kf-max-pyr-height": {
+      "kind": "cli-enc",
+      "name": "--kf-max-pyr-height",
+      "status": "red"
+    },
+    "cli.enc--kf-min-dist": {
+      "kind": "cli-enc",
+      "name": "--kf-min-dist",
+      "status": "red"
+    },
+    "cli.enc--lag-in-frames": {
+      "kind": "cli-enc",
+      "name": "--lag-in-frames",
+      "status": "red"
+    },
+    "cli.enc--large-scale-tile": {
+      "kind": "cli-enc",
+      "name": "--large-scale-tile",
+      "status": "red"
+    },
+    "cli.enc--limit": {
+      "kind": "cli-enc",
+      "name": "--limit",
+      "status": "red"
+    },
+    "cli.enc--loopfilter-control": {
+      "kind": "cli-enc",
+      "name": "--loopfilter-control",
+      "status": "red"
+    },
+    "cli.enc--lossless": {
+      "kind": "cli-enc",
+      "name": "--lossless",
+      "status": "red"
+    },
+    "cli.enc--matrix-coefficients": {
+      "kind": "cli-enc",
+      "name": "--matrix-coefficients",
+      "status": "red"
+    },
+    "cli.enc--max-gf-interval": {
+      "kind": "cli-enc",
+      "name": "--max-gf-interval",
+      "status": "red"
+    },
+    "cli.enc--max-inter-rate": {
+      "kind": "cli-enc",
+      "name": "--max-inter-rate",
+      "status": "red"
+    },
+    "cli.enc--max-intra-rate": {
+      "kind": "cli-enc",
+      "name": "--max-intra-rate",
+      "status": "red"
+    },
+    "cli.enc--max-partition-size": {
+      "kind": "cli-enc",
+      "name": "--max-partition-size",
+      "status": "red"
+    },
+    "cli.enc--max-q": {
+      "kind": "cli-enc",
+      "name": "--max-q",
+      "status": "red"
+    },
+    "cli.enc--max-reference-frames": {
+      "kind": "cli-enc",
+      "name": "--max-reference-frames",
+      "status": "red"
+    },
+    "cli.enc--maxsection-pct": {
+      "kind": "cli-enc",
+      "name": "--maxsection-pct",
+      "status": "red"
+    },
+    "cli.enc--min-cr": {
+      "kind": "cli-enc",
+      "name": "--min-cr",
+      "status": "red"
+    },
+    "cli.enc--min-gf-interval": {
+      "kind": "cli-enc",
+      "name": "--min-gf-interval",
+      "status": "red"
+    },
+    "cli.enc--min-partition-size": {
+      "kind": "cli-enc",
+      "name": "--min-partition-size",
+      "status": "red"
+    },
+    "cli.enc--min-q": {
+      "kind": "cli-enc",
+      "name": "--min-q",
+      "status": "red"
+    },
+    "cli.enc--minsection-pct": {
+      "kind": "cli-enc",
+      "name": "--minsection-pct",
+      "status": "red"
+    },
+    "cli.enc--mode-cost-upd-freq": {
+      "kind": "cli-enc",
+      "name": "--mode-cost-upd-freq",
+      "status": "red"
+    },
+    "cli.enc--monochrome": {
+      "kind": "cli-enc",
+      "name": "--monochrome",
+      "status": "red"
+    },
+    "cli.enc--mtu-size": {
+      "kind": "cli-enc",
+      "name": "--mtu-size",
+      "status": "red"
+    },
+    "cli.enc--mv-cost-upd-freq": {
+      "kind": "cli-enc",
+      "name": "--mv-cost-upd-freq",
+      "status": "red"
+    },
+    "cli.enc--noise-sensitivity": {
+      "kind": "cli-enc",
+      "name": "--noise-sensitivity",
+      "status": "red"
+    },
+    "cli.enc--num-tile-groups": {
+      "kind": "cli-enc",
+      "name": "--num-tile-groups",
+      "status": "red"
+    },
+    "cli.enc--nv12": {
+      "kind": "cli-enc",
+      "name": "--nv12",
+      "status": "red"
+    },
+    "cli.enc--obu": {
+      "kind": "cli-enc",
+      "name": "--obu",
+      "status": "red"
+    },
+    "cli.enc--overshoot-pct": {
+      "kind": "cli-enc",
+      "name": "--overshoot-pct",
+      "status": "red"
+    },
+    "cli.enc--partition-info-path": {
+      "kind": "cli-enc",
+      "name": "--partition-info-path",
+      "status": "red"
+    },
+    "cli.enc--pass": {
+      "kind": "cli-enc",
+      "name": "--pass",
+      "status": "red"
+    },
+    "cli.enc--profile": {
+      "kind": "cli-enc",
+      "name": "--profile",
+      "status": "red"
+    },
+    "cli.enc--psnr": {
+      "kind": "cli-enc",
+      "name": "--psnr",
+      "status": "red"
+    },
+    "cli.enc--q-hist": {
+      "kind": "cli-enc",
+      "name": "--q-hist",
+      "status": "red"
+    },
+    "cli.enc--qm-max": {
+      "kind": "cli-enc",
+      "name": "--qm-max",
+      "status": "red"
+    },
+    "cli.enc--qm-min": {
+      "kind": "cli-enc",
+      "name": "--qm-min",
+      "status": "red"
+    },
+    "cli.enc--quant-b-adapt": {
+      "kind": "cli-enc",
+      "name": "--quant-b-adapt",
+      "status": "red"
+    },
+    "cli.enc--rate-distribution-info": {
+      "kind": "cli-enc",
+      "name": "--rate-distribution-info",
+      "status": "red"
+    },
+    "cli.enc--rate-hist": {
+      "kind": "cli-enc",
+      "name": "--rate-hist",
+      "status": "red"
+    },
+    "cli.enc--reduced-reference-set": {
+      "kind": "cli-enc",
+      "name": "--reduced-reference-set",
+      "status": "red"
+    },
+    "cli.enc--reduced-tx-type-set": {
+      "kind": "cli-enc",
+      "name": "--reduced-tx-type-set",
+      "status": "red"
+    },
+    "cli.enc--resize-denominator": {
+      "kind": "cli-enc",
+      "name": "--resize-denominator",
+      "status": "red"
+    },
+    "cli.enc--resize-kf-denominator": {
+      "kind": "cli-enc",
+      "name": "--resize-kf-denominator",
+      "status": "red"
+    },
+    "cli.enc--resize-mode": {
+      "kind": "cli-enc",
+      "name": "--resize-mode",
+      "status": "red"
+    },
+    "cli.enc--row-mt": {
+      "kind": "cli-enc",
+      "name": "--row-mt",
+      "status": "red"
+    },
+    "cli.enc--rt": {
+      "kind": "cli-enc",
+      "name": "--rt",
+      "status": "red"
+    },
+    "cli.enc--sb-qp-sweep": {
+      "kind": "cli-enc",
+      "name": "--sb-qp-sweep",
+      "status": "red"
+    },
+    "cli.enc--sb-size": {
+      "kind": "cli-enc",
+      "name": "--sb-size",
+      "status": "red"
+    },
+    "cli.enc--screen-detection-mode": {
+      "kind": "cli-enc",
+      "name": "--screen-detection-mode",
+      "status": "red"
+    },
+    "cli.enc--set-tier-mask": {
+      "kind": "cli-enc",
+      "name": "--set-tier-mask",
+      "status": "red"
+    },
+    "cli.enc--sframe-dist": {
+      "kind": "cli-enc",
+      "name": "--sframe-dist",
+      "status": "red"
+    },
+    "cli.enc--sframe-mode": {
+      "kind": "cli-enc",
+      "name": "--sframe-mode",
+      "status": "red"
+    },
+    "cli.enc--sharpness": {
+      "kind": "cli-enc",
+      "name": "--sharpness",
+      "status": "red"
+    },
+    "cli.enc--skip": {
+      "kind": "cli-enc",
+      "name": "--skip",
+      "status": "red"
+    },
+    "cli.enc--static-thresh": {
+      "kind": "cli-enc",
+      "name": "--static-thresh",
+      "status": "red"
+    },
+    "cli.enc--stereo-mode": {
+      "kind": "cli-enc",
+      "name": "--stereo-mode",
+      "status": "red"
+    },
+    "cli.enc--strict-level-conformance": {
+      "kind": "cli-enc",
+      "name": "--strict-level-conformance",
+      "status": "red"
+    },
+    "cli.enc--superres-denominator": {
+      "kind": "cli-enc",
+      "name": "--superres-denominator",
+      "status": "red"
+    },
+    "cli.enc--superres-kf-denominator": {
+      "kind": "cli-enc",
+      "name": "--superres-kf-denominator",
+      "status": "red"
+    },
+    "cli.enc--superres-kf-qthresh": {
+      "kind": "cli-enc",
+      "name": "--superres-kf-qthresh",
+      "status": "red"
+    },
+    "cli.enc--superres-mode": {
+      "kind": "cli-enc",
+      "name": "--superres-mode",
+      "status": "red"
+    },
+    "cli.enc--superres-qthresh": {
+      "kind": "cli-enc",
+      "name": "--superres-qthresh",
+      "status": "red"
+    },
+    "cli.enc--target-bitrate": {
+      "kind": "cli-enc",
+      "name": "--target-bitrate",
+      "status": "red"
+    },
+    "cli.enc--target-seq-level-idx": {
+      "kind": "cli-enc",
+      "name": "--target-seq-level-idx",
+      "status": "red"
+    },
+    "cli.enc--test-decode": {
+      "kind": "cli-enc",
+      "name": "--test-decode",
+      "status": "red"
+    },
+    "cli.enc--tile-columns": {
+      "kind": "cli-enc",
+      "name": "--tile-columns",
+      "status": "red"
+    },
+    "cli.enc--tile-rows": {
+      "kind": "cli-enc",
+      "name": "--tile-rows",
+      "status": "red"
+    },
+    "cli.enc--timebase": {
+      "kind": "cli-enc",
+      "name": "--timebase",
+      "status": "red"
+    },
+    "cli.enc--timing-info": {
+      "kind": "cli-enc",
+      "name": "--timing-info",
+      "status": "red"
+    },
+    "cli.enc--transfer-characteristics": {
+      "kind": "cli-enc",
+      "name": "--transfer-characteristics",
+      "status": "red"
+    },
+    "cli.enc--tune": {
+      "kind": "cli-enc",
+      "name": "--tune",
+      "status": "red"
+    },
+    "cli.enc--tune-content": {
+      "kind": "cli-enc",
+      "name": "--tune-content",
+      "status": "red"
+    },
+    "cli.enc--two-pass-output": {
+      "kind": "cli-enc",
+      "name": "--two-pass-output",
+      "status": "red"
+    },
+    "cli.enc--undershoot-pct": {
+      "kind": "cli-enc",
+      "name": "--undershoot-pct",
+      "status": "red"
+    },
+    "cli.enc--use-16bit-internal": {
+      "kind": "cli-enc",
+      "name": "--use-16bit-internal",
+      "status": "red"
+    },
+    "cli.enc--use-inter-dct-only": {
+      "kind": "cli-enc",
+      "name": "--use-inter-dct-only",
+      "status": "red"
+    },
+    "cli.enc--use-intra-dct-only": {
+      "kind": "cli-enc",
+      "name": "--use-intra-dct-only",
+      "status": "red"
+    },
+    "cli.enc--use-intra-default-tx-only": {
+      "kind": "cli-enc",
+      "name": "--use-intra-default-tx-only",
+      "status": "red"
+    },
+    "cli.enc--validate-hbd-input": {
+      "kind": "cli-enc",
+      "name": "--validate-hbd-input",
+      "status": "red"
+    },
+    "cli.enc--vbr-corpus-complexity-lap": {
+      "kind": "cli-enc",
+      "name": "--vbr-corpus-complexity-lap",
+      "status": "red"
+    },
+    "cli.enc--webm": {
+      "kind": "cli-enc",
+      "name": "--webm",
+      "status": "red"
+    },
+    "cli.enc--yv12": {
+      "kind": "cli-enc",
+      "name": "--yv12",
+      "status": "red"
+    },
+    "cli.dec--all-layers": {
+      "kind": "cli-dec",
+      "name": "--all-layers",
+      "status": "red"
+    },
+    "cli.dec--annexb": {
+      "kind": "cli-dec",
+      "name": "--annexb",
+      "status": "red"
+    },
+    "cli.dec--codec": {
+      "kind": "cli-dec",
+      "name": "--codec",
+      "status": "red"
+    },
+    "cli.dec--flipuv": {
+      "kind": "cli-dec",
+      "name": "--flipuv",
+      "status": "red"
+    },
+    "cli.dec--frame-buffers": {
+      "kind": "cli-dec",
+      "name": "--frame-buffers",
+      "status": "red"
+    },
+    "cli.dec--framestats": {
+      "kind": "cli-dec",
+      "name": "--framestats",
+      "status": "red"
+    },
+    "cli.dec--help": {
+      "kind": "cli-dec",
+      "name": "--help",
+      "status": "red"
+    },
+    "cli.dec--i420": {
+      "kind": "cli-dec",
+      "name": "--i420",
+      "status": "red"
+    },
+    "cli.dec--limit": {
+      "kind": "cli-dec",
+      "name": "--limit",
+      "status": "red"
+    },
+    "cli.dec--md5": {
+      "kind": "cli-dec",
+      "name": "--md5",
+      "status": "red"
+    },
+    "cli.dec--noblit": {
+      "kind": "cli-dec",
+      "name": "--noblit",
+      "status": "red"
+    },
+    "cli.dec--oppoint": {
+      "kind": "cli-dec",
+      "name": "--oppoint",
+      "status": "red"
+    },
+    "cli.dec--output-bit-depth": {
+      "kind": "cli-dec",
+      "name": "--output-bit-depth",
+      "status": "red"
+    },
+    "cli.dec--progress": {
+      "kind": "cli-dec",
+      "name": "--progress",
+      "status": "red"
+    },
+    "cli.dec--rawvideo": {
+      "kind": "cli-dec",
+      "name": "--rawvideo",
+      "status": "red"
+    },
+    "cli.dec--row-mt": {
+      "kind": "cli-dec",
+      "name": "--row-mt",
+      "status": "red"
+    },
+    "cli.dec--skip": {
+      "kind": "cli-dec",
+      "name": "--skip",
+      "status": "red"
+    },
+    "cli.dec--skip-film-grain": {
+      "kind": "cli-dec",
+      "name": "--skip-film-grain",
+      "status": "red"
+    },
+    "cli.dec--summary": {
+      "kind": "cli-dec",
+      "name": "--summary",
+      "status": "red"
+    },
+    "cli.dec--yv12": {
+      "kind": "cli-dec",
+      "name": "--yv12",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_ACTIVEMAP": {
+      "kind": "control",
+      "name": "AOME_SET_ACTIVEMAP",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_ARNR_MAXFRAMES": {
+      "kind": "control",
+      "name": "AOME_SET_ARNR_MAXFRAMES",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_ARNR_STRENGTH": {
+      "kind": "control",
+      "name": "AOME_SET_ARNR_STRENGTH",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_CPUUSED": {
+      "kind": "control",
+      "name": "AOME_SET_CPUUSED",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_CQ_LEVEL": {
+      "kind": "control",
+      "name": "AOME_SET_CQ_LEVEL",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_ENABLEAUTOALTREF": {
+      "kind": "control",
+      "name": "AOME_SET_ENABLEAUTOALTREF",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_ENABLEAUTOBWDREF": {
+      "kind": "control",
+      "name": "AOME_SET_ENABLEAUTOBWDREF",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_MAX_INTER_BITRATE_PCT": {
+      "kind": "control",
+      "name": "AOME_SET_MAX_INTER_BITRATE_PCT",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_MAX_INTRA_BITRATE_PCT": {
+      "kind": "control",
+      "name": "AOME_SET_MAX_INTRA_BITRATE_PCT",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_NUMBER_SPATIAL_LAYERS": {
+      "kind": "control",
+      "name": "AOME_SET_NUMBER_SPATIAL_LAYERS",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_ROI_MAP": {
+      "kind": "control",
+      "name": "AOME_SET_ROI_MAP",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_SCALEMODE": {
+      "kind": "control",
+      "name": "AOME_SET_SCALEMODE",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_SHARPNESS": {
+      "kind": "control",
+      "name": "AOME_SET_SHARPNESS",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_SPATIAL_LAYER_ID": {
+      "kind": "control",
+      "name": "AOME_SET_SPATIAL_LAYER_ID",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_STATIC_THRESHOLD": {
+      "kind": "control",
+      "name": "AOME_SET_STATIC_THRESHOLD",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_TUNING": {
+      "kind": "control",
+      "name": "AOME_SET_TUNING",
+      "status": "red"
+    },
+    "ctrl.AOME_SET_VALIDATE_HBD_INPUT": {
+      "kind": "control",
+      "name": "AOME_SET_VALIDATE_HBD_INPUT",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ALLOW_REF_FRAME_MVS": {
+      "kind": "control",
+      "name": "AV1E_SET_ALLOW_REF_FRAME_MVS",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ALLOW_WARPED_MOTION": {
+      "kind": "control",
+      "name": "AV1E_SET_ALLOW_WARPED_MOTION",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_AQ_MODE": {
+      "kind": "control",
+      "name": "AV1E_SET_AQ_MODE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_AUTO_INTRA_TOOLS_OFF": {
+      "kind": "control",
+      "name": "AV1E_SET_AUTO_INTRA_TOOLS_OFF",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_AUTO_TILES": {
+      "kind": "control",
+      "name": "AV1E_SET_AUTO_TILES",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_BITRATE_ONE_PASS_CBR": {
+      "kind": "control",
+      "name": "AV1E_SET_BITRATE_ONE_PASS_CBR",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_CDF_UPDATE_MODE": {
+      "kind": "control",
+      "name": "AV1E_SET_CDF_UPDATE_MODE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_CHROMA_SAMPLE_POSITION": {
+      "kind": "control",
+      "name": "AV1E_SET_CHROMA_SAMPLE_POSITION",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_CHROMA_SUBSAMPLING_X": {
+      "kind": "control",
+      "name": "AV1E_SET_CHROMA_SUBSAMPLING_X",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_CHROMA_SUBSAMPLING_Y": {
+      "kind": "control",
+      "name": "AV1E_SET_CHROMA_SUBSAMPLING_Y",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_COEFF_COST_UPD_FREQ": {
+      "kind": "control",
+      "name": "AV1E_SET_COEFF_COST_UPD_FREQ",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_COLOR_PRIMARIES": {
+      "kind": "control",
+      "name": "AV1E_SET_COLOR_PRIMARIES",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_COLOR_RANGE": {
+      "kind": "control",
+      "name": "AV1E_SET_COLOR_RANGE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_DELTALF_MODE": {
+      "kind": "control",
+      "name": "AV1E_SET_DELTALF_MODE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_DELTAQ_MODE": {
+      "kind": "control",
+      "name": "AV1E_SET_DELTAQ_MODE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_DELTAQ_STRENGTH": {
+      "kind": "control",
+      "name": "AV1E_SET_DELTAQ_STRENGTH",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_DENOISE_BLOCK_SIZE": {
+      "kind": "control",
+      "name": "AV1E_SET_DENOISE_BLOCK_SIZE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_DENOISE_NOISE_LEVEL": {
+      "kind": "control",
+      "name": "AV1E_SET_DENOISE_NOISE_LEVEL",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_DISABLE_TRELLIS_QUANT": {
+      "kind": "control",
+      "name": "AV1E_SET_DISABLE_TRELLIS_QUANT",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_DV_COST_UPD_FREQ": {
+      "kind": "control",
+      "name": "AV1E_SET_DV_COST_UPD_FREQ",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_1TO4_PARTITIONS": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_1TO4_PARTITIONS",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_AB_PARTITIONS": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_AB_PARTITIONS",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_ADAPTIVE_SHARPNESS": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_ADAPTIVE_SHARPNESS",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_ANGLE_DELTA": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_ANGLE_DELTA",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_CDEF": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_CDEF",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_CFL_INTRA": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_CFL_INTRA",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_CHROMA_DELTAQ": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_CHROMA_DELTAQ",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_DIAGONAL_INTRA": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_DIAGONAL_INTRA",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_DIFF_WTD_COMP": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_DIFF_WTD_COMP",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_DIRECTIONAL_INTRA": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_DIRECTIONAL_INTRA",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_DIST_8X8": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_DIST_8X8",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_DIST_WTD_COMP": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_DIST_WTD_COMP",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_DNL_DENOISING": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_DNL_DENOISING",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_DUAL_FILTER": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_DUAL_FILTER",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_FILTER_INTRA": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_FILTER_INTRA",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_FLIP_IDTX": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_FLIP_IDTX",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_GLOBAL_MOTION": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_GLOBAL_MOTION",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_INTERINTER_WEDGE": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_INTERINTER_WEDGE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_INTERINTRA_COMP": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_INTERINTRA_COMP",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_INTERINTRA_WEDGE": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_INTERINTRA_WEDGE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_INTRABC": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_INTRABC",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_INTRA_EDGE_FILTER": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_INTRA_EDGE_FILTER",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_KEYFRAME_FILTERING": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_KEYFRAME_FILTERING",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_LOW_COMPLEXITY_DECODE": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_LOW_COMPLEXITY_DECODE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_MASKED_COMP": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_MASKED_COMP",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_OBMC": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_OBMC",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_ONESIDED_COMP": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_ONESIDED_COMP",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_ORDER_HINT": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_ORDER_HINT",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_OVERLAY": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_OVERLAY",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_PAETH_INTRA": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_PAETH_INTRA",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_PALETTE": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_PALETTE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_QM": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_QM",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_RECT_PARTITIONS": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_RECT_PARTITIONS",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_RECT_TX": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_RECT_TX",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_REF_FRAME_MVS": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_REF_FRAME_MVS",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_RESTORATION": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_RESTORATION",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_SMOOTH_INTERINTRA": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_SMOOTH_INTERINTRA",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_SMOOTH_INTRA": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_SMOOTH_INTRA",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_SUPERRES": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_SUPERRES",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_TPL_MODEL": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_TPL_MODEL",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_TX64": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_TX64",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_TX_SIZE_SEARCH": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_TX_SIZE_SEARCH",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ENABLE_WARPED_MOTION": {
+      "kind": "control",
+      "name": "AV1E_SET_ENABLE_WARPED_MOTION",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ERROR_RESILIENT_MODE": {
+      "kind": "control",
+      "name": "AV1E_SET_ERROR_RESILIENT_MODE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_EXTERNAL_PARTITION": {
+      "kind": "control",
+      "name": "AV1E_SET_EXTERNAL_PARTITION",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_EXTERNAL_RATE_CONTROL": {
+      "kind": "control",
+      "name": "AV1E_SET_EXTERNAL_RATE_CONTROL",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_FILM_GRAIN_TABLE": {
+      "kind": "control",
+      "name": "AV1E_SET_FILM_GRAIN_TABLE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_FILM_GRAIN_TEST_VECTOR": {
+      "kind": "control",
+      "name": "AV1E_SET_FILM_GRAIN_TEST_VECTOR",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_FORCE_VIDEO_MODE": {
+      "kind": "control",
+      "name": "AV1E_SET_FORCE_VIDEO_MODE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_FP_MT": {
+      "kind": "control",
+      "name": "AV1E_SET_FP_MT",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_FP_MT_UNIT_TEST": {
+      "kind": "control",
+      "name": "AV1E_SET_FP_MT_UNIT_TEST",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_FRAME_PARALLEL_DECODING": {
+      "kind": "control",
+      "name": "AV1E_SET_FRAME_PARALLEL_DECODING",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_FRAME_PERIODIC_BOOST": {
+      "kind": "control",
+      "name": "AV1E_SET_FRAME_PERIODIC_BOOST",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_GF_CBR_BOOST_PCT": {
+      "kind": "control",
+      "name": "AV1E_SET_GF_CBR_BOOST_PCT",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_GF_MAX_PYRAMID_HEIGHT": {
+      "kind": "control",
+      "name": "AV1E_SET_GF_MAX_PYRAMID_HEIGHT",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_GF_MIN_PYRAMID_HEIGHT": {
+      "kind": "control",
+      "name": "AV1E_SET_GF_MIN_PYRAMID_HEIGHT",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_INTER_DCT_ONLY": {
+      "kind": "control",
+      "name": "AV1E_SET_INTER_DCT_ONLY",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_INTRA_DCT_ONLY": {
+      "kind": "control",
+      "name": "AV1E_SET_INTRA_DCT_ONLY",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_INTRA_DEFAULT_TX_ONLY": {
+      "kind": "control",
+      "name": "AV1E_SET_INTRA_DEFAULT_TX_ONLY",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_LOOPFILTER_CONTROL": {
+      "kind": "control",
+      "name": "AV1E_SET_LOOPFILTER_CONTROL",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_LOSSLESS": {
+      "kind": "control",
+      "name": "AV1E_SET_LOSSLESS",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_MATRIX_COEFFICIENTS": {
+      "kind": "control",
+      "name": "AV1E_SET_MATRIX_COEFFICIENTS",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_MAX_CONSEC_FRAME_DROP_CBR": {
+      "kind": "control",
+      "name": "AV1E_SET_MAX_CONSEC_FRAME_DROP_CBR",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_MAX_CONSEC_FRAME_DROP_MS_CBR": {
+      "kind": "control",
+      "name": "AV1E_SET_MAX_CONSEC_FRAME_DROP_MS_CBR",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_MAX_GF_INTERVAL": {
+      "kind": "control",
+      "name": "AV1E_SET_MAX_GF_INTERVAL",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_MAX_INTER_BITRATE_PCT": {
+      "kind": "control",
+      "name": "AV1E_SET_MAX_INTER_BITRATE_PCT",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_MAX_PARTITION_SIZE": {
+      "kind": "control",
+      "name": "AV1E_SET_MAX_PARTITION_SIZE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_MAX_REFERENCE_FRAMES": {
+      "kind": "control",
+      "name": "AV1E_SET_MAX_REFERENCE_FRAMES",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_MIN_CR": {
+      "kind": "control",
+      "name": "AV1E_SET_MIN_CR",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_MIN_GF_INTERVAL": {
+      "kind": "control",
+      "name": "AV1E_SET_MIN_GF_INTERVAL",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_MIN_PARTITION_SIZE": {
+      "kind": "control",
+      "name": "AV1E_SET_MIN_PARTITION_SIZE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_MODE_COST_UPD_FREQ": {
+      "kind": "control",
+      "name": "AV1E_SET_MODE_COST_UPD_FREQ",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_MTU": {
+      "kind": "control",
+      "name": "AV1E_SET_MTU",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_MV_COST_UPD_FREQ": {
+      "kind": "control",
+      "name": "AV1E_SET_MV_COST_UPD_FREQ",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_NOISE_SENSITIVITY": {
+      "kind": "control",
+      "name": "AV1E_SET_NOISE_SENSITIVITY",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_NUM_TG": {
+      "kind": "control",
+      "name": "AV1E_SET_NUM_TG",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_PARTITION_INFO_PATH": {
+      "kind": "control",
+      "name": "AV1E_SET_PARTITION_INFO_PATH",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_POSTENCODE_DROP_RTC": {
+      "kind": "control",
+      "name": "AV1E_SET_POSTENCODE_DROP_RTC",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_QM_MAX": {
+      "kind": "control",
+      "name": "AV1E_SET_QM_MAX",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_QM_MIN": {
+      "kind": "control",
+      "name": "AV1E_SET_QM_MIN",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_QM_U": {
+      "kind": "control",
+      "name": "AV1E_SET_QM_U",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_QM_V": {
+      "kind": "control",
+      "name": "AV1E_SET_QM_V",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_QM_Y": {
+      "kind": "control",
+      "name": "AV1E_SET_QM_Y",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_QUANTIZER_ONE_PASS": {
+      "kind": "control",
+      "name": "AV1E_SET_QUANTIZER_ONE_PASS",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_QUANT_B_ADAPT": {
+      "kind": "control",
+      "name": "AV1E_SET_QUANT_B_ADAPT",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_RATE_DISTRIBUTION_INFO": {
+      "kind": "control",
+      "name": "AV1E_SET_RATE_DISTRIBUTION_INFO",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_REDUCED_REFERENCE_SET": {
+      "kind": "control",
+      "name": "AV1E_SET_REDUCED_REFERENCE_SET",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_REDUCED_TX_TYPE_SET": {
+      "kind": "control",
+      "name": "AV1E_SET_REDUCED_TX_TYPE_SET",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_RENDER_SIZE": {
+      "kind": "control",
+      "name": "AV1E_SET_RENDER_SIZE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_ROW_MT": {
+      "kind": "control",
+      "name": "AV1E_SET_ROW_MT",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_RTC_EXTERNAL_RC": {
+      "kind": "control",
+      "name": "AV1E_SET_RTC_EXTERNAL_RC",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_SCREEN_CONTENT_DETECTION_MODE": {
+      "kind": "control",
+      "name": "AV1E_SET_SCREEN_CONTENT_DETECTION_MODE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_SINGLE_TILE_DECODING": {
+      "kind": "control",
+      "name": "AV1E_SET_SINGLE_TILE_DECODING",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_SKIP_POSTPROC_FILTERING": {
+      "kind": "control",
+      "name": "AV1E_SET_SKIP_POSTPROC_FILTERING",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_SUPERBLOCK_SIZE": {
+      "kind": "control",
+      "name": "AV1E_SET_SUPERBLOCK_SIZE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_SVC_FRAME_DROP_MODE": {
+      "kind": "control",
+      "name": "AV1E_SET_SVC_FRAME_DROP_MODE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_SVC_LAYER_ID": {
+      "kind": "control",
+      "name": "AV1E_SET_SVC_LAYER_ID",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_SVC_PARAMS": {
+      "kind": "control",
+      "name": "AV1E_SET_SVC_PARAMS",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_SVC_REF_FRAME_COMP_PRED": {
+      "kind": "control",
+      "name": "AV1E_SET_SVC_REF_FRAME_COMP_PRED",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_SVC_REF_FRAME_CONFIG": {
+      "kind": "control",
+      "name": "AV1E_SET_SVC_REF_FRAME_CONFIG",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_S_FRAME_MODE": {
+      "kind": "control",
+      "name": "AV1E_SET_S_FRAME_MODE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_TARGET_SEQ_LEVEL_IDX": {
+      "kind": "control",
+      "name": "AV1E_SET_TARGET_SEQ_LEVEL_IDX",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_TIER_MASK": {
+      "kind": "control",
+      "name": "AV1E_SET_TIER_MASK",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_TILE_COLUMNS": {
+      "kind": "control",
+      "name": "AV1E_SET_TILE_COLUMNS",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_TILE_ROWS": {
+      "kind": "control",
+      "name": "AV1E_SET_TILE_ROWS",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_TIMING_INFO_TYPE": {
+      "kind": "control",
+      "name": "AV1E_SET_TIMING_INFO_TYPE",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_TRANSFER_CHARACTERISTICS": {
+      "kind": "control",
+      "name": "AV1E_SET_TRANSFER_CHARACTERISTICS",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_TUNE_CONTENT": {
+      "kind": "control",
+      "name": "AV1E_SET_TUNE_CONTENT",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_VBR_CORPUS_COMPLEXITY_LAP": {
+      "kind": "control",
+      "name": "AV1E_SET_VBR_CORPUS_COMPLEXITY_LAP",
+      "status": "red"
+    },
+    "ctrl.AV1E_SET_VMAF_MODEL_PATH": {
+      "kind": "control",
+      "name": "AV1E_SET_VMAF_MODEL_PATH",
+      "status": "red"
+    }
+  }
+}
