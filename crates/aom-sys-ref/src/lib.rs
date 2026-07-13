@@ -759,6 +759,8 @@ extern "C" {
     fn shim_nz_ctx_offset(tx_size: i32) -> *const i8;
     fn shim_scan(tx_size: i32, tx_type: i32) -> *const i16;
     fn shim_iscan(tx_size: i32, tx_type: i32) -> *const i16;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_write_coeffs_txb(tcoeff: *const i32, eob: i32, tx_size: i32, tx_type: i32, plane_type: i32, txb_skip_ctx: i32, dc_sign_ctx: i32, allow_update_cdf: i32, cdfs: *mut u16, out: *mut u8, out_cap: i32) -> i32;
 }
 
 /// Reference `av1_txb_init_levels_c` (writes into `levels`).
@@ -793,4 +795,16 @@ pub fn ref_scan_order(tx_size: usize, tx_type: usize, len: usize) -> Vec<i16> {
 /// Copy of the C `av1_scan_orders[tx_size][tx_type].iscan` (first `len` entries).
 pub fn ref_iscan_order(tx_size: usize, tx_type: usize, len: usize) -> Vec<i16> {
     unsafe { core::slice::from_raw_parts(shim_iscan(tx_size as i32, tx_type as i32), len).to_vec() }
+}
+
+/// Reference `av1_write_coeffs_txb` (transcribed harness). Mutates `cdfs` when
+/// `allow_update_cdf`; returns the produced bitstream bytes.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_write_coeffs_txb(tcoeff: &[i32], eob: usize, tx_size: usize, tx_type: usize, plane_type: usize, txb_skip_ctx: usize, dc_sign_ctx: usize, allow_update_cdf: bool, cdfs: &mut [u16]) -> Vec<u8> {
+    let mut out = vec![0u8; 1 << 16];
+    let n = unsafe {
+        shim_write_coeffs_txb(tcoeff.as_ptr(), eob as i32, tx_size as i32, tx_type as i32, plane_type as i32, txb_skip_ctx as i32, dc_sign_ctx as i32, allow_update_cdf as i32, cdfs.as_mut_ptr(), out.as_mut_ptr(), out.len() as i32)
+    };
+    out.truncate(n as usize);
+    out
 }

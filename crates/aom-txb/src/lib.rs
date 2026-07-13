@@ -18,6 +18,8 @@ mod tables;
 pub use tables::nz_map_ctx_offset;
 mod scan;
 pub use scan::{iscan, scan, SCAN_ORDERS};
+mod write;
+pub use write::{txsize_entropy_ctx, write_coeffs_txb, CDF_ARENA_LEN};
 
 /// `TX_PAD_HOR` (enums.h): horizontal padding of the levels buffer.
 pub const TX_PAD_HOR: usize = 4;
@@ -162,6 +164,49 @@ fn get_nz_mag(levels: &[u8], base: usize, bhl: u32, tx_class: TxClass) -> i32 {
         }
     }
     mag
+}
+
+/// `get_br_ctx` (txb_common.h): coefficient base-range context, transposed
+/// layout. `c` is the transposed raster index; reads the padded levels buffer.
+pub fn get_br_ctx(levels: &[u8], c: usize, bhl: u32, tx_class: TxClass) -> i32 {
+    let col = c >> bhl;
+    let row = c - (col << bhl);
+    let stride = (1usize << bhl) + TX_PAD_HOR;
+    let pos = col * stride + row;
+    let mut mag = levels[pos + 1] as i32 + levels[pos + stride] as i32;
+    match tx_class {
+        TxClass::TwoD => {
+            mag += levels[pos + stride + 1] as i32;
+            mag = ((mag + 1) >> 1).min(6);
+            if c == 0 {
+                return mag;
+            }
+            if row < 2 && col < 2 {
+                return mag + 7;
+            }
+        }
+        TxClass::Horiz => {
+            mag += levels[pos + (stride << 1)] as i32;
+            mag = ((mag + 1) >> 1).min(6);
+            if c == 0 {
+                return mag;
+            }
+            if col == 0 {
+                return mag + 7;
+            }
+        }
+        TxClass::Vert => {
+            mag += levels[pos + 2] as i32;
+            mag = ((mag + 1) >> 1).min(6);
+            if c == 0 {
+                return mag;
+            }
+            if row == 0 {
+                return mag + 7;
+            }
+        }
+    }
+    mag + 14
 }
 
 /// `nz_map_ctx_offset_1d` (txb_common.h): SIG_COEF_CONTEXTS_2D=26 based.
