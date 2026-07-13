@@ -1121,3 +1121,39 @@ fn write_intrabc_info_matches_c() {
         assert_eq!(m1, o1, "intrabc comp1");
     }
 }
+
+#[test]
+fn write_skip_mode_and_context_match_c() {
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{skip_mode_context, write_skip_mode};
+    let mut rng = Rng(0x5309_c0de_a11a_0009);
+    // context
+    for ha in [false, true] {
+        for a in 0..2 {
+            for hl in [false, true] {
+                for l in 0..2 {
+                    let above = if ha { a } else { 0 };
+                    let left = if hl { l } else { 0 };
+                    assert_eq!(skip_mode_context(above, left), c::ref_get_skip_mode_context(ha, a, hl, l), "skip_mode_ctx");
+                }
+            }
+        }
+    }
+    // write
+    for _ in 0..200_000 {
+        let c0 = 1 + (rng.next() % 32766) as u16;
+        let cdf = [c0, 0u16, 0u16];
+        let frame_flag = rng.next().is_multiple_of(2);
+        let seg_skip = rng.next().is_multiple_of(3);
+        let comp_allowed = rng.next().is_multiple_of(2);
+        let seg_ref_gmv = rng.next().is_multiple_of(3);
+        let sm = (rng.next() % 2) as i32;
+        let mut mc = cdf;
+        let mut enc = OdEcEnc::new();
+        write_skip_mode(&mut enc, &mut mc, frame_flag, seg_skip, comp_allowed, seg_ref_gmv, sm);
+        let got = enc.done().to_vec();
+        let (want, oc) = c::ref_write_skip_mode(&cdf, frame_flag, seg_skip, comp_allowed, seg_ref_gmv, sm);
+        assert_eq!(got, want, "skip_mode bytes ff={frame_flag} ss={seg_skip} ca={comp_allowed} srg={seg_ref_gmv} sm={sm}");
+        assert_eq!(mc, oc, "skip_mode cdf");
+    }
+}

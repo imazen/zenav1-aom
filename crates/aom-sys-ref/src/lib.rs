@@ -246,6 +246,9 @@ extern "C" {
     #[allow(clippy::too_many_arguments)]
     fn shim_write_mb_interp_filter(cdf0: *mut u16, cdf1: *mut u16, interp_needed: i32, is_switchable: i32, enable_dual: i32, f0: i32, f1: i32, out: *mut u8, out0: *mut u16, out1: *mut u16) -> u32;
     fn shim_get_intra_inter_context(has_above: i32, above_inter: i32, has_left: i32, left_inter: i32) -> i32;
+    fn shim_get_skip_mode_context(ha: i32, a_sm: i32, hl: i32, l_sm: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_write_skip_mode(cdf: *mut u16, frame_flag: i32, seg_skip: i32, comp_allowed: i32, seg_ref_gmv: i32, skip_mode: i32, out: *mut u8, out_cdf: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
     fn shim_get_reference_mode_context(ha: i32, a_r0: i32, a_r1: i32, a_ibc: i32, hl: i32, l_r0: i32, l_r1: i32, l_ibc: i32) -> i32;
     fn shim_single_ref_p1_context(ref_counts: *const u8) -> i32;
@@ -382,6 +385,19 @@ pub fn ref_get_comp_reference_type_context(ha: bool, a_r0: i32, a_r1: i32, a_ibc
 #[allow(clippy::too_many_arguments)]
 pub fn ref_get_reference_mode_context(ha: bool, a_r0: i32, a_r1: i32, a_ibc: bool, hl: bool, l_r0: i32, l_r1: i32, l_ibc: bool) -> i32 {
     unsafe { shim_get_reference_mode_context(ha as i32, a_r0, a_r1, a_ibc as i32, hl as i32, l_r0, l_r1, l_ibc as i32) }
+}
+
+/// Reference `av1_get_skip_mode_context` (facade over the real fn).
+pub fn ref_get_skip_mode_context(ha: bool, a_sm: i32, hl: bool, l_sm: i32) -> i32 {
+    unsafe { shim_get_skip_mode_context(ha as i32, a_sm, hl as i32, l_sm) }
+}
+
+/// Reference `write_skip_mode` (over the pristine C od_ec + update_cdf).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_write_skip_mode(cdf: &[u16; 3], frame_flag: bool, seg_skip: bool, comp_allowed: bool, seg_ref_gmv: bool, skip_mode: i32) -> (Vec<u8>, [u16; 3]) {
+    let mut c = *cdf; let mut out = vec![0u8; 16]; let mut oc = [0u16; 3];
+    let n = unsafe { shim_write_skip_mode(c.as_mut_ptr(), frame_flag as i32, seg_skip as i32, comp_allowed as i32, seg_ref_gmv as i32, skip_mode, out.as_mut_ptr(), oc.as_mut_ptr()) };
+    out.truncate(n as usize); (out, oc)
 }
 
 /// Reference `av1_get_intra_inter_context` (facade over the real exported fn).

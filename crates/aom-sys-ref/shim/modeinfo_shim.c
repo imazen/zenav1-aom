@@ -678,3 +678,26 @@ uint32_t shim_write_intrabc_info(uint16_t *intrabc_cdf, uint16_t *joints, uint16
   od_ec_enc_clear(&ec);
   return nb;
 }
+
+int shim_get_skip_mode_context(int ha, int a_sm, int hl, int l_sm) {
+  MB_MODE_INFO ami, lmi;
+  MACROBLOCKD xd;
+  ami.skip_mode = a_sm; lmi.skip_mode = l_sm;
+  xd.above_mbmi = ha ? &ami : (MB_MODE_INFO *)0;
+  xd.left_mbmi = hl ? &lmi : (MB_MODE_INFO *)0;
+  return av1_get_skip_mode_context(&xd);
+}
+
+uint32_t shim_write_skip_mode(uint16_t *cdf, int frame_flag, int seg_skip, int comp_allowed,
+                              int seg_ref_gmv, int skip_mode, uint8_t *out, uint16_t *out_cdf) {
+  od_ec_enc ec; od_ec_enc_init(&ec, 256);
+  if (frame_flag && !seg_skip && comp_allowed && !seg_ref_gmv) {
+    od_ec_encode_cdf_q15(&ec, skip_mode, cdf, 2);
+    update_cdf(cdf, skip_mode, 2);
+  }
+  uint32_t nb = 0; const unsigned char *buf = od_ec_enc_done(&ec, &nb);
+  for (uint32_t i = 0; i < nb; i++) out[i] = buf[i];
+  for (int i = 0; i < 3; i++) out_cdf[i] = cdf[i];
+  od_ec_enc_clear(&ec);
+  return nb;
+}

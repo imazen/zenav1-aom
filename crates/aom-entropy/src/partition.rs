@@ -985,3 +985,28 @@ pub fn write_intrabc_info(
         encode_mv(enc, ndvc_joints, ndvc_comp0, ndvc_comp1, diff_row, diff_col, MV_SUBPEL_NONE);
     }
 }
+
+/// `av1_get_skip_mode_context` (`pred_common.h`): above+left neighbours' `skip_mode`
+/// flags (0 when absent), context in {0,1,2}.
+pub fn skip_mode_context(above_skip_mode: i32, left_skip_mode: i32) -> i32 {
+    above_skip_mode + left_skip_mode
+}
+
+/// `write_skip_mode` (`av1/encoder/bitstream.c`): the skip-mode flag on the
+/// context-selected `skip_mode_cdfs` (2 symbols). Nothing is coded unless the frame
+/// enables skip mode, compound refs are allowed for the block, and no segment feature
+/// (SKIP / REF_FRAME / GLOBALMV) forces the mode. All those gates are the caller's.
+pub fn write_skip_mode(
+    enc: &mut OdEcEnc,
+    skip_mode_cdf: &mut [u16],
+    frame_skip_mode_flag: bool,
+    seg_skip_active: bool,
+    is_comp_ref_allowed: bool,
+    seg_ref_or_gmv_active: bool,
+    skip_mode: i32,
+) {
+    if !frame_skip_mode_flag || seg_skip_active || !is_comp_ref_allowed || seg_ref_or_gmv_active {
+        return;
+    }
+    write_symbol(enc, skip_mode, skip_mode_cdf, 2);
+}
