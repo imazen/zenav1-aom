@@ -889,7 +889,7 @@ pub fn write_ref_frames(
             write_symbol(enc, (ref1 == 6) as i32, &mut cdfs[9], 2); // ALTREF2
         }
     } else {
-        let bit0 = (ref0 <= 7 && ref0 >= 5) as i32; // BWDREF..ALTREF
+        let bit0 = (5..=7).contains(&ref0) as i32; // BWDREF..ALTREF
         write_symbol(enc, bit0, &mut cdfs[10], 2); // single_ref_p1
         if bit0 != 0 {
             let bit1 = (ref0 == 7) as i32; // ALTREF
