@@ -148,6 +148,122 @@ pub fn hadamard_32x32(src: &[i16], src_stride: usize) -> [i32; 1024] {
     coeff
 }
 
+// highbd Hadamard 8-point column butterfly, first pass (i16, truncating like C's
+// int16_t). Output permutation matches aom_dsp/avg.c.
+fn highbd_col8_first_pass(src: &[i16], stride: usize, out: &mut [i16]) {
+    let s = |i: usize| src[i * stride];
+    let b0 = s(0).wrapping_add(s(1));
+    let b1 = s(0).wrapping_sub(s(1));
+    let b2 = s(2).wrapping_add(s(3));
+    let b3 = s(2).wrapping_sub(s(3));
+    let b4 = s(4).wrapping_add(s(5));
+    let b5 = s(4).wrapping_sub(s(5));
+    let b6 = s(6).wrapping_add(s(7));
+    let b7 = s(6).wrapping_sub(s(7));
+    let c0 = b0.wrapping_add(b2);
+    let c1 = b1.wrapping_add(b3);
+    let c2 = b0.wrapping_sub(b2);
+    let c3 = b1.wrapping_sub(b3);
+    let c4 = b4.wrapping_add(b6);
+    let c5 = b5.wrapping_add(b7);
+    let c6 = b4.wrapping_sub(b6);
+    let c7 = b5.wrapping_sub(b7);
+    out[0] = c0.wrapping_add(c4);
+    out[7] = c1.wrapping_add(c5);
+    out[3] = c2.wrapping_add(c6);
+    out[4] = c3.wrapping_add(c7);
+    out[2] = c0.wrapping_sub(c4);
+    out[6] = c1.wrapping_sub(c5);
+    out[1] = c2.wrapping_sub(c6);
+    out[5] = c3.wrapping_sub(c7);
+}
+
+// Second pass (i32, no truncation).
+fn highbd_col8_second_pass(src: &[i16], stride: usize, out: &mut [i32]) {
+    let s = |i: usize| src[i * stride] as i32;
+    let b0 = s(0) + s(1);
+    let b1 = s(0) - s(1);
+    let b2 = s(2) + s(3);
+    let b3 = s(2) - s(3);
+    let b4 = s(4) + s(5);
+    let b5 = s(4) - s(5);
+    let b6 = s(6) + s(7);
+    let b7 = s(6) - s(7);
+    let c0 = b0 + b2;
+    let c1 = b1 + b3;
+    let c2 = b0 - b2;
+    let c3 = b1 - b3;
+    let c4 = b4 + b6;
+    let c5 = b5 + b7;
+    let c6 = b4 - b6;
+    let c7 = b5 - b7;
+    out[0] = c0 + c4;
+    out[7] = c1 + c5;
+    out[3] = c2 + c6;
+    out[4] = c3 + c7;
+    out[2] = c0 - c4;
+    out[6] = c1 - c5;
+    out[1] = c2 - c6;
+    out[5] = c3 - c7;
+}
+
+/// `aom_highbd_hadamard_8x8_c`: 8-point column pass (i16) then row pass (i32).
+pub fn highbd_hadamard_8x8(src: &[i16], src_stride: usize) -> [i32; 64] {
+    let mut buffer = [0i16; 64];
+    for idx in 0..8 {
+        highbd_col8_first_pass(&src[idx..], src_stride, &mut buffer[idx * 8..idx * 8 + 8]);
+    }
+    let mut buffer2 = [0i32; 64];
+    for idx in 0..8 {
+        highbd_col8_second_pass(&buffer[idx..], 8, &mut buffer2[idx * 8..idx * 8 + 8]);
+    }
+    buffer2
+}
+
+/// `aom_highbd_hadamard_16x16_c`: four highbd 8x8 + a 4-point `>>1` combine.
+pub fn highbd_hadamard_16x16(src: &[i16], src_stride: usize) -> [i32; 256] {
+    let mut coeff = [0i32; 256];
+    for idx in 0..4 {
+        let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
+        let sub = highbd_hadamard_8x8(&src[off..], src_stride);
+        coeff[idx * 64..idx * 64 + 64].copy_from_slice(&sub);
+    }
+    for idx in 0..64 {
+        let (a0, a1, a2, a3) = (coeff[idx], coeff[idx + 64], coeff[idx + 128], coeff[idx + 192]);
+        let b0 = (a0 + a1) >> 1;
+        let b1 = (a0 - a1) >> 1;
+        let b2 = (a2 + a3) >> 1;
+        let b3 = (a2 - a3) >> 1;
+        coeff[idx] = b0 + b2;
+        coeff[idx + 64] = b1 + b3;
+        coeff[idx + 128] = b0 - b2;
+        coeff[idx + 192] = b1 - b3;
+    }
+    coeff
+}
+
+/// `aom_highbd_hadamard_32x32_c`: four highbd 16x16 + a 4-point `>>2` combine.
+pub fn highbd_hadamard_32x32(src: &[i16], src_stride: usize) -> [i32; 1024] {
+    let mut coeff = [0i32; 1024];
+    for idx in 0..4 {
+        let off = (idx >> 1) * 16 * src_stride + (idx & 1) * 16;
+        let sub = highbd_hadamard_16x16(&src[off..], src_stride);
+        coeff[idx * 256..idx * 256 + 256].copy_from_slice(&sub);
+    }
+    for idx in 0..256 {
+        let (a0, a1, a2, a3) = (coeff[idx], coeff[idx + 256], coeff[idx + 512], coeff[idx + 768]);
+        let b0 = (a0 + a1) >> 2;
+        let b1 = (a0 - a1) >> 2;
+        let b2 = (a2 + a3) >> 2;
+        let b3 = (a2 - a3) >> 2;
+        coeff[idx] = b0 + b2;
+        coeff[idx + 256] = b1 + b3;
+        coeff[idx + 512] = b0 - b2;
+        coeff[idx + 768] = b1 - b3;
+    }
+    coeff
+}
+
 /// `aom_satd_c`: sum of absolute coefficients.
 pub fn satd(coeff: &[i32]) -> i32 {
     let mut s: i32 = 0;
