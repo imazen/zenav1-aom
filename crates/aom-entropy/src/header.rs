@@ -1480,3 +1480,18 @@ pub fn write_frame_header_obu(wb: &mut WriteBitBuffer, p: &FrameHeaderObu) {
         write_ext_tile_info(wb, p.tile_info.rows, p.tile_info.cols);
     }
 }
+
+/// `write_tile_group_header` (`av1/encoder/bitstream.c`): the tile-group OBU header —
+/// when there is more than one tile (`tiles_log2 > 0`), a `tile_start_and_end_present`
+/// flag and, when set, the `tiles_log2`-bit start/end tile indices. Nothing for a single
+/// tile.
+pub fn write_tile_group_header(wb: &mut WriteBitBuffer, start_tile: i32, end_tile: i32, tiles_log2: i32, present_flag: bool) {
+    if tiles_log2 == 0 {
+        return;
+    }
+    wb.write_bit(present_flag as u32);
+    if present_flag {
+        wb.write_literal(start_tile, tiles_log2 as u32);
+        wb.write_literal(end_tile, tiles_log2 as u32);
+    }
+}

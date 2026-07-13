@@ -873,3 +873,16 @@ uint32_t shim_write_frame_header_trailing_flags(int intra_only, int ref_mode_sel
   aom_wb_write_bit(&wb, reduced_tx_set);
   return aom_wb_bytes_written(&wb);
 }
+
+/* write_tile_group_header (av1/encoder/bitstream.c) transcribed over the real aom_wb. */
+uint32_t shim_write_tile_group_header(int start_tile, int end_tile, int tiles_log2,
+                                      int present_flag, uint8_t *out) {
+  struct aom_write_bit_buffer wb = { out, 0 };
+  if (!tiles_log2) return 0;
+  aom_wb_write_bit(&wb, present_flag);
+  if (present_flag) {
+    aom_wb_write_literal(&wb, start_tile, tiles_log2);
+    aom_wb_write_literal(&wb, end_tile, tiles_log2);
+  }
+  return (uint32_t)aom_wb_bytes_written(&wb);
+}

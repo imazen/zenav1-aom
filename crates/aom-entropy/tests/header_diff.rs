@@ -1381,3 +1381,25 @@ fn write_frame_header_obu_inter_minimal_spec_anchor() {
         "minimal INTER frame-header OBU byte layout"
     );
 }
+
+#[test]
+fn write_tile_group_header_matches_c() {
+    use aom_entropy::header::write_tile_group_header;
+    use aom_entropy::wb::WriteBitBuffer;
+    // tiles_log2 0..6, present flag, valid start/end < (1<<tiles_log2).
+    for tiles_log2 in 0..7i32 {
+        let n = 1i32 << tiles_log2;
+        for present in [false, true] {
+            let hi = if present && tiles_log2 > 0 { n } else { 1 };
+            for start in 0..hi {
+                for end in 0..hi {
+                    let mut wb = WriteBitBuffer::new();
+                    write_tile_group_header(&mut wb, start, end, tiles_log2, present);
+                    let got = wb.bytes().to_vec();
+                    let want = c::ref_write_tile_group_header(start, end, tiles_log2, present);
+                    assert_eq!(got, want, "tiles_log2={tiles_log2} present={present} start={start} end={end}");
+                }
+            }
+        }
+    }
+}
