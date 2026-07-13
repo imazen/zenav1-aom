@@ -81,7 +81,11 @@ both tracks, fully bit-exact.**
   `variance.c`): `aom_sad`, `aom_variance`, `aom_sub_pixel_variance` (bilinear
   2-tap) over all 22 block sizes. Harness: `aom-dist/tests/dist_diff.rs` —
   ~198k comparisons (SAD + variance + subpel var/sse), byte-identical to C.
-  (masked/obmc SAD: TODO.)
+  (obmc SAD: TODO.)
+
+- **Masked SAD (wedge / diff-weighted compound)** (`aom_dsp/sad_av1.c`),
+  both tracks: `aom_masked_sad*_c` + `aom_highbd_masked_sad*_c`, all 22 sizes,
+  A64-mask blend + invert_mask, byte-identical to C.
 
 - **Avg-SAD (compound prediction)** (`aom_dsp/sad.c`), both tracks:
   `aom_sad*_avg_c` + `aom_highbd_sad*_avg_c` (SAD vs round(ref+second_pred)/2)
