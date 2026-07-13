@@ -4,6 +4,7 @@
 //! driven through the real `aom_wb` primitives (validated by `wb_diff`), plus
 //! independent spec-layout anchors in the tests.
 
+use crate::rb::ReadBitBuffer;
 use crate::wb::WriteBitBuffer;
 
 /// `write_delta_q`: a present-flag + 7-bit inverse-signed value (0 => just the flag).
@@ -1493,5 +1494,24 @@ pub fn write_tile_group_header(wb: &mut WriteBitBuffer, start_tile: i32, end_til
     if present_flag {
         wb.write_literal(start_tile, tiles_log2 as u32);
         wb.write_literal(end_tile, tiles_log2 as u32);
+    }
+}
+
+/// `read_tile_group_header` — inverse of [`write_tile_group_header`]: parse the
+/// tile-group start/end. Single-tile frames (`tiles_log2 == 0`) code nothing (0, 0);
+/// otherwise a present flag gates the explicit `tiles_log2`-bit start/end. Returns
+/// `(start_tile, end_tile, tile_start_and_end_present)`; when not present the caller
+/// infers the full tile range.
+pub fn read_tile_group_header(rb: &mut ReadBitBuffer, tiles_log2: i32) -> (i32, i32, bool) {
+    if tiles_log2 == 0 {
+        return (0, 0, false);
+    }
+    let present = rb.read_bit() != 0;
+    if present {
+        let start = rb.read_literal(tiles_log2 as u32);
+        let end = rb.read_literal(tiles_log2 as u32);
+        (start, end, true)
+    } else {
+        (0, 0, false)
     }
 }
