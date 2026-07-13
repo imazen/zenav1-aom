@@ -138,6 +138,13 @@ both tracks, fully bit-exact.**
   coefficient-coding cost pipeline (frame CDFs -> fill -> LvMapCoeffCost ->
   cost_coeffs_txb) is end-to-end bit-exact.
 
+- **ext-tx derivation + av1_write_tx_type (aom-txb)** — the plane-0 tx_type
+  selection + signaling the coeff functions left out; closes the full-txb write
+  path. TxSetType selection / eset / symbol-index / arity / intra-dir tables,
+  emitted via bit-exact aom_write_symbol. `ext_tx_diff.rs` — derivation
+  EXHAUSTIVE over the full (tx_size x is_inter x reduced x tx_type x
+  filter-intra) space; composed write byte-identical.
+
 ## Coverage gate (auto-derived, honest)
 
 `xtask/coverage.py` enumerates the live libaom feature surface (aomenc/aomdec
