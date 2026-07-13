@@ -824,3 +824,10 @@ pub fn pred_ctx_last3_or_gld(rc: &[u8; 8]) -> i32 {
 pub fn pred_ctx_brf_or_arf2(rc: &[u8; 8]) -> i32 {
     ref_count_ctx(rc[5] as i32, rc[6] as i32)
 }
+
+/// `av1_get_pred_context_uni_comp_ref_p1`: LAST2 vs (LAST3+GOLDEN) counts. The other two
+/// uni-comp-ref contexts reuse [`single_ref_p1_context`] (fwd vs bwd) and
+/// [`pred_ctx_last3_or_gld`] (LAST3 vs GOLDEN) — same count groupings.
+pub fn pred_ctx_last2_or_l3gld(rc: &[u8; 8]) -> i32 {
+    ref_count_ctx(rc[2] as i32, rc[3] as i32 + rc[4] as i32)
+}

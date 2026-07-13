@@ -964,3 +964,19 @@ fn single_ref_count_contexts_match_c() {
         assert_eq!(pred_ctx_brf_or_arf2(&rc), c::ref_single_ref_p6_context(&rc), "p6 {rc:?}");
     }
 }
+
+#[test]
+fn uni_comp_ref_contexts_match_c() {
+    use aom_entropy::partition::{pred_ctx_last2_or_l3gld, pred_ctx_last3_or_gld, single_ref_p1_context};
+    let mut rng = Rng(0x0c17_c0de_a11a_0009);
+    for _ in 0..200_000 {
+        let mut rc = [0u8; 8];
+        for c in &mut rc {
+            *c = (rng.next() % 3) as u8;
+        }
+        // identities: uni_comp_ref_p == single_ref_p1 (fwd/bwd); uni_comp_ref_p2 == last3_or_gld
+        assert_eq!(single_ref_p1_context(&rc), c::ref_uni_comp_ref_p_context(&rc), "ucr_p {rc:?}");
+        assert_eq!(pred_ctx_last2_or_l3gld(&rc), c::ref_uni_comp_ref_p1_context(&rc), "ucr_p1 {rc:?}");
+        assert_eq!(pred_ctx_last3_or_gld(&rc), c::ref_uni_comp_ref_p2_context(&rc), "ucr_p2 {rc:?}");
+    }
+}

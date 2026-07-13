@@ -254,6 +254,9 @@ extern "C" {
     fn shim_single_ref_p4_context(rc: *const u8) -> i32;
     fn shim_single_ref_p5_context(rc: *const u8) -> i32;
     fn shim_single_ref_p6_context(rc: *const u8) -> i32;
+    fn shim_uni_comp_ref_p_context(rc: *const u8) -> i32;
+    fn shim_uni_comp_ref_p1_context(rc: *const u8) -> i32;
+    fn shim_uni_comp_ref_p2_context(rc: *const u8) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn shim_get_comp_reference_type_context(ha: i32, a_r0: i32, a_r1: i32, a_ibc: i32, hl: i32, l_r0: i32, l_r1: i32, l_ibc: i32) -> i32;
     fn shim_write_motion_mode(obmc_cdf: *mut u16, mm_cdf: *mut u16, last_allowed: i32, mm: i32, out: *mut u8, out_obmc: *mut u16, out_mm: *mut u16) -> u32;
@@ -323,6 +326,11 @@ pub fn ref_single_ref_p5_context(rc: &[u8; 8]) -> i32 { unsafe { shim_single_ref
 
 /// Reference `av1_get_pred_context_single_ref_p6` (brf_or_arf2).
 pub fn ref_single_ref_p6_context(rc: &[u8; 8]) -> i32 { unsafe { shim_single_ref_p6_context(rc.as_ptr()) } }
+
+/// Reference the 3 uni-comp-ref contexts (facades over the real exported fns).
+pub fn ref_uni_comp_ref_p_context(rc: &[u8; 8]) -> i32 { unsafe { shim_uni_comp_ref_p_context(rc.as_ptr()) } }
+pub fn ref_uni_comp_ref_p1_context(rc: &[u8; 8]) -> i32 { unsafe { shim_uni_comp_ref_p1_context(rc.as_ptr()) } }
+pub fn ref_uni_comp_ref_p2_context(rc: &[u8; 8]) -> i32 { unsafe { shim_uni_comp_ref_p2_context(rc.as_ptr()) } }
 
 /// Reference `av1_get_pred_context_single_ref_p1` (facade over the real exported fn).
 pub fn ref_single_ref_p1_context(ref_counts: &[u8; 8]) -> i32 {

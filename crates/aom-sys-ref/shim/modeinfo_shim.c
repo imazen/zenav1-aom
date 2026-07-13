@@ -568,3 +568,14 @@ SINGLE_REF_SHIM(4)
 SINGLE_REF_SHIM(5)
 SINGLE_REF_SHIM(6)
 #undef SINGLE_REF_SHIM
+
+#define UNI_REF_SHIM(N, FN) \
+  int shim_##FN(const uint8_t *rc) { \
+    MACROBLOCKD xd; \
+    for (int i = 0; i < 8; i++) xd.neighbors_ref_counts[i] = rc[i]; \
+    return av1_get_pred_context_uni_comp_ref_##N(&xd); \
+  }
+UNI_REF_SHIM(p, uni_comp_ref_p_context)
+UNI_REF_SHIM(p1, uni_comp_ref_p1_context)
+UNI_REF_SHIM(p2, uni_comp_ref_p2_context)
+#undef UNI_REF_SHIM
