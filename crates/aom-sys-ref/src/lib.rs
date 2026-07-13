@@ -294,6 +294,7 @@ extern "C" {
     fn shim_mode_context_analyzer(rf0: i32, rf1: i32, mc_val: i32) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn shim_collect_neighbors_ref_counts(ha: i32, a_intrabc: i32, a_rf0: i32, a_rf1: i32, hl: i32, l_intrabc: i32, l_rf0: i32, l_rf1: i32, out_counts: *mut u8);
+    fn shim_get_partition_subsize(bsize: i32, partition: i32) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_inter_block_mvs(mode: i32, is_compound: i32, diff_row0: i32, diff_col0: i32, diff_row1: i32, diff_col1: i32, usehp: i32, joints: *mut u16, comp0: *mut u16, comp1: *mut u16, out: *mut u8, o_joints: *mut u16, o_c0: *mut u16, o_c1: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
@@ -621,6 +622,11 @@ pub fn ref_collect_neighbors_ref_counts(
             l_intrabc as i32, l_rf0, l_rf1, counts.as_mut_ptr())
     };
     counts
+}
+
+/// Reference `get_partition_subsize` (static inline, common_data.h).
+pub fn ref_get_partition_subsize(bsize: i32, partition: i32) -> i32 {
+    unsafe { shim_get_partition_subsize(bsize, partition) }
 }
 
 /// Reference inter-block MV coding (the mode-dependent av1_encode_mv calls, over pristine

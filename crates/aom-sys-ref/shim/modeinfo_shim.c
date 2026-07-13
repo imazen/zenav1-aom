@@ -2022,3 +2022,8 @@ void shim_collect_neighbors_ref_counts(int ha, int a_intrabc, int a_rf0, int a_r
   av1_collect_neighbors_ref_counts(&xd);
   for (int i = 0; i < REF_FRAMES; i++) out_counts[i] = xd.neighbors_ref_counts[i];
 }
+
+/* --- get_partition_subsize (av1/common/common_data.h) --- */
+int shim_get_partition_subsize(int bsize, int partition) {
+  return get_partition_subsize((BLOCK_SIZE)bsize, (PARTITION_TYPE)partition);
+}

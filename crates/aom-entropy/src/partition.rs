@@ -2496,3 +2496,47 @@ pub fn collect_neighbors_ref_counts(
     }
     counts
 }
+
+/// `subsize_lookup[EXT_PARTITION_TYPES][SQR_BLOCK_SIZES]` (`common_data.h`): the sub-block
+/// size for a (partition, square-block-size-index) pair (`BLOCK_INVALID` = 255 where the
+/// partition is illegal for that size).
+const SUBSIZE_LOOKUP: [[u8; 6]; 10] = [
+    [0, 3, 6, 9, 12, 15],        // PARTITION_NONE
+    [255, 2, 5, 8, 11, 14],      // PARTITION_HORZ
+    [255, 1, 4, 7, 10, 13],      // PARTITION_VERT
+    [255, 0, 3, 6, 9, 12],       // PARTITION_SPLIT
+    [255, 255, 5, 8, 11, 14],    // PARTITION_HORZ_A
+    [255, 255, 5, 8, 11, 14],    // PARTITION_HORZ_B
+    [255, 255, 4, 7, 10, 13],    // PARTITION_VERT_A
+    [255, 255, 4, 7, 10, 13],    // PARTITION_VERT_B
+    [255, 255, 17, 19, 21, 255], // PARTITION_HORZ_4
+    [255, 255, 16, 18, 20, 255], // PARTITION_VERT_4
+];
+
+/// `get_sqr_bsize_idx` (`enums.h`/`blockd.h`): the 0..5 index of a square block size, or
+/// `SQR_BLOCK_SIZES` (6) for a non-square block.
+fn get_sqr_bsize_idx(bsize: usize) -> usize {
+    match bsize {
+        0 => 0,   // BLOCK_4X4
+        3 => 1,   // BLOCK_8X8
+        6 => 2,   // BLOCK_16X16
+        9 => 3,   // BLOCK_32X32
+        12 => 4,  // BLOCK_64X64
+        15 => 5,  // BLOCK_128X128
+        _ => 6,   // SQR_BLOCK_SIZES
+    }
+}
+
+/// `get_partition_subsize` (`common_data.h`): the block size of a partition's sub-blocks
+/// (`BLOCK_INVALID` = 255 for `PARTITION_INVALID` or an illegal partition/size). Used by
+/// the partition-tree recursion (`write_modes_sb`).
+pub fn get_partition_subsize(bsize: usize, partition: i32) -> i32 {
+    if partition == 255 {
+        return 255; // PARTITION_INVALID -> BLOCK_INVALID
+    }
+    let idx = get_sqr_bsize_idx(bsize);
+    if idx >= 6 {
+        return 255; // BLOCK_INVALID
+    }
+    SUBSIZE_LOOKUP[partition as usize][idx] as i32
+}

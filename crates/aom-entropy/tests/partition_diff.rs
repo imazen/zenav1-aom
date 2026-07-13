@@ -2743,3 +2743,15 @@ fn collect_neighbors_ref_counts_matches_c() {
         }
     }
 }
+
+#[test]
+fn get_partition_subsize_matches_c() {
+    use aom_entropy::partition::get_partition_subsize;
+    for bsize in 0..22usize {
+        for partition in 0..10i32 {
+            assert_eq!(get_partition_subsize(bsize, partition), c::ref_get_partition_subsize(bsize as i32, partition), "bsize={bsize} part={partition}");
+        }
+        // PARTITION_INVALID
+        assert_eq!(get_partition_subsize(bsize, 255), c::ref_get_partition_subsize(bsize as i32, 255), "bsize={bsize} part=INVALID");
+    }
+}
