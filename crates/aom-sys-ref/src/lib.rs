@@ -187,6 +187,35 @@ extern "C" {
     fn aom_sum_squares_2d_i16_c(src: *const i16, src_stride: i32, width: i32, height: i32) -> u64;
     fn aom_vector_var_c(reff: *const i16, src: *const i16, bwl: i32) -> i32;
     fn shim_wb_apply(data: *const u32, bits: *const i32, kind: *const i32, n: i32, out: *mut u8) -> u32;
+    fn aom_uleb_size_in_bytes(value: u64) -> usize;
+    fn aom_uleb_encode(value: u64, available: usize, coded_value: *mut u8, coded_size: *mut usize) -> i32;
+    fn aom_uleb_decode(buffer: *const u8, available: usize, value: *mut u64, length: *mut usize) -> i32;
+}
+
+/// Reference `aom_uleb_size_in_bytes`.
+pub fn ref_uleb_size_in_bytes(value: u64) -> usize {
+    unsafe { aom_uleb_size_in_bytes(value) }
+}
+
+/// Reference `aom_uleb_encode`. Returns `Some(bytes)` on success (rc 0), `None` on failure.
+pub fn ref_uleb_encode(value: u64, available: usize) -> Option<Vec<u8>> {
+    let mut coded = vec![0u8; 16];
+    let mut coded_size = 0usize;
+    let rc = unsafe { aom_uleb_encode(value, available, coded.as_mut_ptr(), &mut coded_size) };
+    if rc == 0 {
+        coded.truncate(coded_size);
+        Some(coded)
+    } else {
+        None
+    }
+}
+
+/// Reference `aom_uleb_decode`. Returns `Some((value, length))` or `None`.
+pub fn ref_uleb_decode(buffer: &[u8]) -> Option<(u64, usize)> {
+    let mut value = 0u64;
+    let mut length = 0usize;
+    let rc = unsafe { aom_uleb_decode(buffer.as_ptr(), buffer.len(), &mut value, &mut length) };
+    if rc == 0 { Some((value, length)) } else { None }
 }
 
 /// Reference `aom_write_bit_buffer`: apply a sequence of literal ops (kind 0 =
