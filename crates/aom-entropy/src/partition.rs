@@ -2842,3 +2842,40 @@ pub fn read_partition(
         }
     }
 }
+
+// --- decoder-side mode-info symbol readers (av1/decoder/decodemv.c), inverses of the
+// corresponding write_* symbols; validated by encode->decode roundtrip. ---
+
+/// `read_skip` — inverse of [`write_skip`]. Segment-level skip implies 1 (nothing read);
+/// otherwise read the transform-skip bit from the 2-symbol skip CDF.
+pub fn read_skip(dec: &mut OdEcDec, skip_cdf: &mut [u16], seg_skip_active: bool) -> i32 {
+    if seg_skip_active {
+        return 1;
+    }
+    read_symbol(dec, skip_cdf, 2)
+}
+
+/// `read_intra_y_mode` — inverse of [`write_intra_y_mode_kf`] / [`write_intra_y_mode_nonkf`]:
+/// the luma prediction mode on the caller-selected CDF (`INTRA_MODES` symbols).
+pub fn read_intra_y_mode(dec: &mut OdEcDec, y_cdf: &mut [u16]) -> i32 {
+    read_symbol(dec, y_cdf, INTRA_MODES)
+}
+
+/// `read_intra_uv_mode` — inverse of [`write_intra_uv_mode`]: the chroma mode
+/// (`UV_INTRA_MODES` symbols with CFL, one fewer without).
+pub fn read_intra_uv_mode(dec: &mut OdEcDec, uv_mode_cdf: &mut [u16], cfl_allowed: bool) -> i32 {
+    let n = UV_INTRA_MODES - usize::from(!cfl_allowed);
+    read_symbol(dec, uv_mode_cdf, n)
+}
+
+/// `read_inter_compound_mode` — inverse of [`write_inter_compound_mode`]: the compound
+/// inter mode (`INTER_COMPOUND_MODES` symbols, offset by `NEAREST_NEARESTMV`).
+pub fn read_inter_compound_mode(dec: &mut OdEcDec, cdf: &mut [u16]) -> i32 {
+    read_symbol(dec, cdf, INTER_COMPOUND_MODES) + NEAREST_NEARESTMV
+}
+
+/// `read_angle_delta` — inverse of [`write_angle_delta`]: the directional-mode angle delta
+/// (`2*MAX_ANGLE_DELTA+1` symbols, offset by `-MAX_ANGLE_DELTA`).
+pub fn read_angle_delta(dec: &mut OdEcDec, cdf: &mut [u16]) -> i32 {
+    read_symbol(dec, cdf, (2 * MAX_ANGLE_DELTA + 1) as usize) - MAX_ANGLE_DELTA
+}

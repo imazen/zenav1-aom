@@ -3119,3 +3119,105 @@ fn read_partition_roundtrips_write_partition() {
         assert_eq!(cdf_e, cdf_d, "adapted CDF roundtrip bsize={bsize} scen={scenario}");
     }
 }
+
+#[test]
+fn decode_mode_info_symbols_roundtrip() {
+    use aom_entropy::dec::OdEcDec;
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{
+        read_angle_delta, read_inter_compound_mode, read_intra_uv_mode, read_intra_y_mode,
+        read_skip, write_angle_delta, write_inter_compound_mode, write_intra_uv_mode,
+        write_intra_y_mode_kf, write_skip,
+    };
+    let mut rng = Rng(0x1e_de5c_c0de_001fu64);
+    let mk = |rng: &mut Rng, n: usize, out: &mut [u16]| {
+        let mut prev = 32768i32;
+        for e in out.iter_mut().take(n - 1) {
+            let v = (prev - 1 - (rng.next() % 400) as i32).max(n as i32);
+            *e = v as u16;
+            prev = v;
+        }
+        out[n - 1] = 0;
+        out[n] = 0;
+    };
+    for _ in 0..100_000 {
+        // skip
+        {
+            let ssa = rng.next().is_multiple_of(3);
+            let skip = (rng.next() % 2) as i32;
+            let mut c = [0u16; 3];
+            mk(&mut rng, 2, &mut c);
+            let mut enc = OdEcEnc::new();
+            let mut ce = c;
+            let r = write_skip(&mut enc, &mut ce, ssa, skip);
+            let bytes = enc.done().to_vec();
+            let mut dec = OdEcDec::new(&bytes);
+            let mut cd = c;
+            let d = read_skip(&mut dec, &mut cd, ssa);
+            assert_eq!(d, r, "skip roundtrip ssa={ssa} skip={skip}");
+            assert_eq!(ce, cd, "skip cdf");
+        }
+        // intra Y mode (13 symbols)
+        {
+            let mode = (rng.next() % 13) as i32;
+            let mut c = [0u16; 14];
+            mk(&mut rng, 13, &mut c);
+            let mut enc = OdEcEnc::new();
+            let mut ce = c;
+            write_intra_y_mode_kf(&mut enc, &mut ce, mode);
+            let bytes = enc.done().to_vec();
+            let mut dec = OdEcDec::new(&bytes);
+            let mut cd = c;
+            let d = read_intra_y_mode(&mut dec, &mut cd);
+            assert_eq!(d, mode, "y_mode roundtrip");
+            assert_eq!(ce, cd, "y_mode cdf");
+        }
+        // intra UV mode (13/14 symbols)
+        {
+            let cfl = rng.next().is_multiple_of(2);
+            let n = if cfl { 14 } else { 13 };
+            let uv = (rng.next() % n as u64) as i32;
+            let mut c = [0u16; 15];
+            mk(&mut rng, n, &mut c);
+            let mut enc = OdEcEnc::new();
+            let mut ce = c;
+            write_intra_uv_mode(&mut enc, &mut ce, uv, cfl);
+            let bytes = enc.done().to_vec();
+            let mut dec = OdEcDec::new(&bytes);
+            let mut cd = c;
+            let d = read_intra_uv_mode(&mut dec, &mut cd, cfl);
+            assert_eq!(d, uv, "uv_mode roundtrip cfl={cfl}");
+            assert_eq!(ce, cd, "uv_mode cdf");
+        }
+        // inter compound mode (8 symbols, offset NEAREST_NEARESTMV=17)
+        {
+            let mode = 17 + (rng.next() % 8) as i32;
+            let mut c = [0u16; 9];
+            mk(&mut rng, 8, &mut c);
+            let mut enc = OdEcEnc::new();
+            let mut ce = c;
+            write_inter_compound_mode(&mut enc, &mut ce, mode);
+            let bytes = enc.done().to_vec();
+            let mut dec = OdEcDec::new(&bytes);
+            let mut cd = c;
+            let d = read_inter_compound_mode(&mut dec, &mut cd);
+            assert_eq!(d, mode, "compound_mode roundtrip");
+            assert_eq!(ce, cd, "compound_mode cdf");
+        }
+        // angle delta (7 symbols, offset -3)
+        {
+            let ad = (rng.next() % 7) as i32 - 3;
+            let mut c = [0u16; 8];
+            mk(&mut rng, 7, &mut c);
+            let mut enc = OdEcEnc::new();
+            let mut ce = c;
+            write_angle_delta(&mut enc, &mut ce, ad);
+            let bytes = enc.done().to_vec();
+            let mut dec = OdEcDec::new(&bytes);
+            let mut cd = c;
+            let d = read_angle_delta(&mut dec, &mut cd);
+            assert_eq!(d, ad, "angle_delta roundtrip");
+            assert_eq!(ce, cd, "angle_delta cdf");
+        }
+    }
+}
