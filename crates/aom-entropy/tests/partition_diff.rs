@@ -3306,3 +3306,117 @@ fn read_mv_roundtrips_encode_mv() {
         assert_eq!(c1e, c1d, "comp1 cdf");
     }
 }
+
+#[test]
+fn read_drl_idx_roundtrips_write_drl_idx() {
+    use aom_entropy::dec::OdEcDec;
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{read_drl_idx, write_drl_idx};
+    let mut rng = Rng(0x1ed1_2c0d_e003_3000u64);
+    // reachable ref_mv_idx given (mode, count): NEWMV/NEW_NEWMV walk idx 0..2,
+    // have-nearmv modes walk idx 1..3; all values 0..=max are reachable.
+    let max_reach = |mode: i32, count: i32| -> i32 {
+        let new_mv = mode == 16 || mode == 24;
+        let nearmv = mode == 14 || mode == 18 || mode == 21 || mode == 22;
+        if new_mv {
+            if count <= 1 { 0 } else if count == 2 { 1 } else { 2 }
+        } else if nearmv {
+            if count <= 2 { 0 } else if count == 3 { 1 } else { 2 }
+        } else {
+            0
+        }
+    };
+    let modes = [16i32, 24, 14, 18, 21, 22, 15, 13, 17]; // new/near + GLOBALMV/NEARESTMV/NEAREST_NEARESTMV (no-drl)
+    let mk_ibc = |rng: &mut Rng, out: &mut [u16; 3]| {
+        // 2-symbol cdf: cdf[0] in [1,32767], cdf[1]=0, cdf[2]=count(0)
+        out[0] = 1 + (rng.next() % 32766) as u16;
+        out[1] = 0;
+        out[2] = 0;
+    };
+    for _ in 0..300_000 {
+        let mode = modes[(rng.next() % modes.len() as u64) as usize];
+        let count = 1 + (rng.next() % 4) as i32; // 1..=4
+        let max = max_reach(mode, count);
+        let ref_mv_idx = (rng.next() % (max as u64 + 1)) as i32;
+        // weight[0..4] spanning REF_CAT_LEVEL=640 so ctx varies across {0,1,2}
+        let weight: [u16; 4] = [
+            (rng.next() % 1280) as u16,
+            (rng.next() % 1280) as u16,
+            (rng.next() % 1280) as u16,
+            (rng.next() % 1280) as u16,
+        ];
+        let mut cdf = [[0u16; 3]; 3];
+        for c in cdf.iter_mut() {
+            mk_ibc(&mut rng, c);
+        }
+        let mut enc = OdEcEnc::new();
+        let mut ce = cdf;
+        write_drl_idx(&mut enc, &mut ce, mode, ref_mv_idx, count, &weight);
+        let bytes = enc.done().to_vec();
+        let mut dec = OdEcDec::new(&bytes);
+        let mut cd = cdf;
+        let got = read_drl_idx(&mut dec, &mut cd, mode, count, &weight);
+        assert_eq!(got, ref_mv_idx, "mode={mode} count={count} idx={ref_mv_idx}");
+        assert_eq!(ce, cd, "drl cdf mode={mode} count={count} idx={ref_mv_idx}");
+    }
+}
+
+#[test]
+fn read_ref_frames_roundtrips_write_ref_frames() {
+    use aom_entropy::dec::OdEcDec;
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{read_ref_frames, write_ref_frames};
+    let mut rng = Rng(0x1ea5_5c0d_e004_1000u64);
+    let mk_ibc2 = |rng: &mut Rng, c: &mut [u16; 3]| {
+        c[0] = 1 + (rng.next() % 32766) as u16;
+        c[1] = 0;
+        c[2] = 0;
+    };
+    // seg-active: encoder codes nothing; decoder returns the no-op sentinel, cdfs untouched.
+    {
+        let mut cdf = [[0u16; 3]; 16];
+        for c in cdf.iter_mut() { mk_ibc2(&mut rng, c); }
+        let mut enc = OdEcEnc::new();
+        let mut ce = cdf;
+        write_ref_frames(&mut enc, &mut ce, true, false, true, true, false, -1, 3, -1);
+        let bytes = enc.done().to_vec();
+        let mut dec = OdEcDec::new(&bytes);
+        let mut cd = cdf;
+        let got = read_ref_frames(&mut dec, &mut cd, true, false, true, true);
+        assert_eq!(got, (false, -1, -1, -1), "seg-active no-op");
+        assert_eq!(ce, cd, "seg-active cdfs untouched");
+    }
+    for _ in 0..300_000 {
+        let select = rng.next() & 1 == 1;
+        let comp_allowed = rng.next() & 1 == 1;
+        let can_compound = select && comp_allowed;
+        let is_compound = can_compound && (rng.next() & 1 == 1);
+        let (comp_ref_type, ref0, ref1) = if !is_compound {
+            (-1, 1 + (rng.next() % 7) as i32, -1) // single: LAST..ALTREF
+        } else if rng.next() & 1 == 0 {
+            let uni = [(5i32, 7i32), (1, 2), (1, 3), (1, 4)];
+            let (r0, r1) = uni[(rng.next() % 4) as usize];
+            (0, r0, r1) // UNIDIR reachable pairs
+        } else {
+            let r0 = [1i32, 2, 3, 4][(rng.next() % 4) as usize];
+            let r1 = [5i32, 6, 7][(rng.next() % 3) as usize];
+            (1, r0, r1) // BIDIR: fwd x bwd
+        };
+        let mut cdf = [[0u16; 3]; 16];
+        for c in cdf.iter_mut() { mk_ibc2(&mut rng, c); }
+        let mut enc = OdEcEnc::new();
+        let mut ce = cdf;
+        write_ref_frames(&mut enc, &mut ce, false, false, select, comp_allowed, is_compound, comp_ref_type, ref0, ref1);
+        let bytes = enc.done().to_vec();
+        let mut dec = OdEcDec::new(&bytes);
+        let mut cd = cdf;
+        let (gc, gcrt, gr0, gr1) = read_ref_frames(&mut dec, &mut cd, false, false, select, comp_allowed);
+        assert_eq!(gc, is_compound, "is_compound sel={select} allow={comp_allowed}");
+        if is_compound {
+            assert_eq!((gcrt, gr0, gr1), (comp_ref_type, ref0, ref1), "compound refs crt={comp_ref_type} r=({ref0},{ref1})");
+        } else {
+            assert_eq!(gr0, ref0, "single ref0={ref0}");
+        }
+        assert_eq!(ce, cd, "ref cdfs comp={is_compound} r=({ref0},{ref1})");
+    }
+}

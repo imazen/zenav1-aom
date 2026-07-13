@@ -2966,3 +2966,113 @@ pub fn read_mv(
     let col = if j & 1 != 0 { read_mv_component(dec, comp1, precision) } else { 0 };
     (row, col)
 }
+
+/// `read_drl_idx` — inverse of [`write_drl_idx`] (`av1/decoder/decodemv.c`): reconstructs
+/// `ref_mv_idx` from the DRL bit cascade. NEWMV/NEW_NEWMV walk idx 0..2 with
+/// `ref_mv_idx = idx + drl`; the have-nearmv modes walk idx 1..3 with
+/// `ref_mv_idx = idx + drl - 1`; each bit uses the `av1_drl_ctx(weight, idx)` CDF and the
+/// walk stops at the first `drl == 0`. Modes with no DRL signaling return 0.
+pub fn read_drl_idx(
+    dec: &mut OdEcDec,
+    drl_cdf: &mut [[u16; 3]; 3],
+    mode: i32,
+    ref_mv_count: i32,
+    weight: &[u16],
+) -> i32 {
+    let mut ref_mv_idx = 0;
+    let new_mv = mode == NEWMV || mode == NEW_NEWMV;
+    if new_mv {
+        for idx in 0..2 {
+            if ref_mv_count > idx + 1 {
+                let ctx = av1_drl_ctx(weight, idx as usize);
+                let drl = read_symbol(dec, &mut drl_cdf[ctx], 2);
+                ref_mv_idx = idx + drl;
+                if drl == 0 {
+                    break;
+                }
+            }
+        }
+        return ref_mv_idx;
+    }
+    if have_nearmv_in_inter_mode(mode) {
+        for idx in 1..3 {
+            if ref_mv_count > idx + 1 {
+                let ctx = av1_drl_ctx(weight, idx as usize);
+                let drl = read_symbol(dec, &mut drl_cdf[ctx], 2);
+                ref_mv_idx = idx + drl - 1;
+                if drl == 0 {
+                    break;
+                }
+            }
+        }
+    }
+    ref_mv_idx
+}
+
+/// `read_ref_frames` — inverse of [`write_ref_frames`] (`av1/decoder/decodemv.c`).
+/// Derives `(is_compound, comp_ref_type, ref0, ref1)` from the reference cascade:
+/// the compound flag (only when reference-mode-select and compound is allowed), then per
+/// mode the single-ref tree (cdfs[10..16]) or the unidir/bidir compound trees
+/// (cdfs[1..10]). Reference-frame ids follow the enum (LAST=1..ALTREF=7); `ref1 = -1`
+/// (NONE) for single. Returns `(false, -1, -1, -1)` when segment features suppress coding.
+#[allow(clippy::type_complexity)]
+pub fn read_ref_frames(
+    dec: &mut OdEcDec,
+    cdfs: &mut [[u16; 3]; 16],
+    seg_ref_active: bool,
+    seg_skipgmv_active: bool,
+    reference_mode_is_select: bool,
+    is_comp_ref_allowed: bool,
+) -> (bool, i32, i32, i32) {
+    if seg_ref_active || seg_skipgmv_active {
+        return (false, -1, -1, -1);
+    }
+    let is_compound = if reference_mode_is_select && is_comp_ref_allowed {
+        read_symbol(dec, &mut cdfs[0], 2) != 0
+    } else {
+        false
+    };
+    if is_compound {
+        let comp_ref_type = read_symbol(dec, &mut cdfs[1], 2);
+        if comp_ref_type == 0 {
+            // UNIDIR_COMP_REFERENCE
+            if read_symbol(dec, &mut cdfs[2], 2) != 0 {
+                return (true, 0, 5, 7); // {BWDREF, ALTREF}
+            }
+            if read_symbol(dec, &mut cdfs[3], 2) != 0 {
+                let bit2 = read_symbol(dec, &mut cdfs[4], 2);
+                return (true, 0, 1, if bit2 != 0 { 4 } else { 3 }); // {LAST, GOLDEN|LAST3}
+            }
+            return (true, 0, 1, 2); // {LAST, LAST2}
+        }
+        // BIDIR_COMP_REFERENCE
+        let ref0 = if read_symbol(dec, &mut cdfs[5], 2) == 0 {
+            if read_symbol(dec, &mut cdfs[6], 2) != 0 { 2 } else { 1 }
+        } else if read_symbol(dec, &mut cdfs[7], 2) != 0 {
+            4
+        } else {
+            3
+        };
+        let ref1 = if read_symbol(dec, &mut cdfs[8], 2) == 0 {
+            if read_symbol(dec, &mut cdfs[9], 2) != 0 { 6 } else { 5 }
+        } else {
+            7
+        };
+        (true, 1, ref0, ref1)
+    } else {
+        let ref0 = if read_symbol(dec, &mut cdfs[10], 2) != 0 {
+            if read_symbol(dec, &mut cdfs[11], 2) == 0 {
+                if read_symbol(dec, &mut cdfs[15], 2) != 0 { 6 } else { 5 }
+            } else {
+                7
+            }
+        } else if read_symbol(dec, &mut cdfs[12], 2) != 0 {
+            if read_symbol(dec, &mut cdfs[14], 2) != 0 { 4 } else { 3 }
+        } else if read_symbol(dec, &mut cdfs[13], 2) != 0 {
+            2
+        } else {
+            1
+        };
+        (false, -1, ref0, -1)
+    }
+}
