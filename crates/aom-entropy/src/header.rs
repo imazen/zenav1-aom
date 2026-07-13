@@ -1969,3 +1969,70 @@ pub fn read_restoration_mode(
     }
     r
 }
+
+/// `read_global_motion_params` (`av1/decoder/decodeframe.c` read_global_motion_params) —
+/// inverse of [`write_global_motion_params`]: the warp type (IDENTITY/TRANSLATION/
+/// ROTZOOM/AFFINE), then the model coefficients, each a subexp value relative to
+/// `ref_params` at the coded precision (reversing the per-coefficient precision shift +
+/// offset). ROTZOOM derives wmmat[4]=-wmmat[3], wmmat[5]=wmmat[2].
+pub fn read_global_motion_params(
+    rb: &mut ReadBitBuffer,
+    ref_params: &WarpedMotionParams,
+    allow_hp: bool,
+) -> WarpedMotionParams {
+    let ty = if rb.read_bit() == 0 {
+        IDENTITY
+    } else if rb.read_bit() != 0 {
+        ROTZOOM
+    } else if rb.read_bit() != 0 {
+        TRANSLATION
+    } else {
+        AFFINE
+    };
+    // identity default (wmmat[2]=wmmat[5]=1<<WARPEDMODEL_PREC_BITS=1<<16).
+    let mut wm = WarpedMotionParams { wmtype: ty, wmmat: [0, 0, 1 << 16, 0, 0, 1 << 16] };
+    if ty == IDENTITY {
+        return wm;
+    }
+    let alpha_n = (GM_ALPHA_MAX + 1) as u16;
+    let k = SUBEXPFIN_K;
+    let one_alpha = 1 << GM_ALPHA_PREC_BITS;
+    if ty >= ROTZOOM {
+        let r2 = (ref_params.wmmat[2] >> GM_ALPHA_PREC_DIFF) - one_alpha;
+        wm.wmmat[2] = (rb.read_signed_primitive_refsubexpfin(alpha_n, k, r2 as i16) as i32 + one_alpha) << GM_ALPHA_PREC_DIFF;
+        let r3 = ref_params.wmmat[3] >> GM_ALPHA_PREC_DIFF;
+        wm.wmmat[3] = (rb.read_signed_primitive_refsubexpfin(alpha_n, k, r3 as i16) as i32) << GM_ALPHA_PREC_DIFF;
+    }
+    if ty >= AFFINE {
+        let r4 = ref_params.wmmat[4] >> GM_ALPHA_PREC_DIFF;
+        wm.wmmat[4] = (rb.read_signed_primitive_refsubexpfin(alpha_n, k, r4 as i16) as i32) << GM_ALPHA_PREC_DIFF;
+        let r5 = (ref_params.wmmat[5] >> GM_ALPHA_PREC_DIFF) - one_alpha;
+        wm.wmmat[5] = (rb.read_signed_primitive_refsubexpfin(alpha_n, k, r5 as i16) as i32 + one_alpha) << GM_ALPHA_PREC_DIFF;
+    } else if ty == ROTZOOM {
+        wm.wmmat[4] = -wm.wmmat[3];
+        wm.wmmat[5] = wm.wmmat[2];
+    }
+    if ty >= TRANSLATION {
+        let (trans_bits, trans_prec_diff) = if ty == TRANSLATION {
+            (GM_ABS_TRANS_ONLY_BITS - !allow_hp as u32, GM_TRANS_ONLY_PREC_DIFF + !allow_hp as u32)
+        } else {
+            (GM_ABS_TRANS_BITS, GM_TRANS_PREC_DIFF)
+        };
+        let trans_n = ((1i32 << trans_bits) + 1) as u16;
+        let r0 = ref_params.wmmat[0] >> trans_prec_diff;
+        wm.wmmat[0] = (rb.read_signed_primitive_refsubexpfin(trans_n, k, r0 as i16) as i32) << trans_prec_diff;
+        let r1 = ref_params.wmmat[1] >> trans_prec_diff;
+        wm.wmmat[1] = (rb.read_signed_primitive_refsubexpfin(trans_n, k, r1 as i16) as i32) << trans_prec_diff;
+    }
+    wm
+}
+
+/// `read_global_motion` — inverse of [`write_global_motion`]: the seven per-reference
+/// warp models.
+pub fn read_global_motion(
+    rb: &mut ReadBitBuffer,
+    ref_global_motion: &[WarpedMotionParams; 7],
+    allow_hp: bool,
+) -> [WarpedMotionParams; 7] {
+    core::array::from_fn(|i| read_global_motion_params(rb, &ref_global_motion[i], allow_hp))
+}

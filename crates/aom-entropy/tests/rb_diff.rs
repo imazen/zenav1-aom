@@ -665,3 +665,48 @@ fn read_signed_primitive_refsubexpfin_inverts_write() {
         }
     }
 }
+
+#[test]
+fn read_global_motion_inverts_write() {
+    use aom_entropy::header::{
+        read_global_motion_params, write_global_motion_params, WarpedMotionParams,
+    };
+    let ident = WarpedMotionParams { wmtype: 0, wmmat: [0, 0, 1 << 16, 0, 0, 1 << 16] };
+    let mut rng = Rng(0x1e_92c0_c0de_0190);
+    for _ in 0..300_000 {
+        let allow_hp = rng.next() & 1 == 1;
+        let ty = (rng.next() % 4) as u8; // IDENTITY/TRANSLATION/ROTZOOM/AFFINE
+        let alpha = |rng: &mut Rng| -> i32 { (rng.next() % 8193) as i32 - 4096 }; // [-GM_ALPHA_MAX, GM_ALPHA_MAX]
+        let mut wm = [0i32, 0, 1 << 16, 0, 0, 1 << 16];
+        if ty >= 2 {
+            wm[2] = (alpha(&mut rng) + (1 << 15)) << 1;
+            wm[3] = alpha(&mut rng) << 1;
+        }
+        if ty >= 3 {
+            wm[4] = alpha(&mut rng) << 1;
+            wm[5] = (alpha(&mut rng) + (1 << 15)) << 1;
+        } else if ty == 2 {
+            wm[4] = -wm[3];
+            wm[5] = wm[2];
+        }
+        if ty >= 1 {
+            let (tb, tpd) = if ty == 1 {
+                (9 - !allow_hp as u32, 13 + !allow_hp as u32)
+            } else {
+                (12u32, 10u32)
+            };
+            let bound = 1i64 << tb;
+            let tc = |rng: &mut Rng| -> i32 { (rng.next() % (2 * bound as u64 + 1)) as i32 - bound as i32 };
+            wm[0] = tc(&mut rng) << tpd;
+            wm[1] = tc(&mut rng) << tpd;
+        }
+        let params = WarpedMotionParams { wmtype: ty, wmmat: wm };
+        let mut wb = WriteBitBuffer::new();
+        write_global_motion_params(&mut wb, &params, &ident, allow_hp);
+        let bytes = wb.bytes().to_vec();
+        let mut rb = ReadBitBuffer::new(&bytes);
+        let g = read_global_motion_params(&mut rb, &ident, allow_hp);
+        assert_eq!(g.wmtype, ty, "gm type hp={allow_hp}");
+        assert_eq!(g.wmmat, wm, "gm wmmat ty={ty} hp={allow_hp}");
+    }
+}
