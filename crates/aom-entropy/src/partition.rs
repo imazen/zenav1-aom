@@ -528,3 +528,26 @@ pub fn write_selected_tx_size(
         write_symbol(enc, depth, tx_size_cdf, max_depths + 1);
     }
 }
+
+const FILTER_INTRA_MODES: usize = 5;
+
+/// `write_filter_intra_mode_info` (`av1/encoder/bitstream.c`): when filter-intra is
+/// allowed for the block, the use-filter-intra flag on `filter_intra_cdfs[bsize]`
+/// (2 symbols), then, if used, the filter-intra mode on `filter_intra_mode_cdf`
+/// (`FILTER_INTRA_MODES`=5). The `allowed` gate (`av1_filter_intra_allowed`) and the
+/// bsize CDF selection are the caller's.
+pub fn write_filter_intra_mode_info(
+    enc: &mut OdEcEnc,
+    use_cdf: &mut [u16],
+    mode_cdf: &mut [u16],
+    allowed: bool,
+    use_filter_intra: i32,
+    mode: i32,
+) {
+    if allowed {
+        write_symbol(enc, use_filter_intra, use_cdf, 2);
+        if use_filter_intra != 0 {
+            write_symbol(enc, mode, mode_cdf, FILTER_INTRA_MODES);
+        }
+    }
+}

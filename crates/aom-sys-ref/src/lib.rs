@@ -243,6 +243,7 @@ extern "C" {
     fn shim_size_group_lookup(bsize: i32) -> i32;
     fn shim_write_intra_uv_mode(uv_mode_cdf: *mut u16, uv_mode: i32, cfl_allowed: i32, out: *mut u8, out_cdf: *mut u16) -> u32;
     fn shim_write_angle_delta(cdf: *mut u16, angle_delta: i32, out: *mut u8, out_cdf: *mut u16) -> u32;
+    fn shim_write_filter_intra(use_cdf: *mut u16, mode_cdf: *mut u16, allowed: i32, use_fi: i32, mode: i32, out: *mut u8, out_use: *mut u16, out_mode: *mut u16) -> u32;
     fn shim_bsize_to_max_depth(bsize: i32) -> i32;
     fn shim_bsize_to_tx_size_cat(bsize: i32) -> i32;
     fn shim_write_selected_tx_size(cdf: *mut u16, bsize: i32, depth: i32, max_depths: i32, out: *mut u8, out_cdf: *mut u16) -> u32;
@@ -282,6 +283,16 @@ pub fn ref_encode_mv_component(cdf: &[u16; 69], comp: i32, precision: i32) -> (V
     let n = unsafe { shim_encode_mv_component(c.as_mut_ptr(), comp, precision, out.as_mut_ptr(), out_cdf.as_mut_ptr()) };
     out.truncate(n as usize);
     (out, out_cdf)
+}
+
+/// Reference `write_filter_intra_mode_info` (over the pristine C od_ec + update_cdf).
+pub fn ref_write_filter_intra(use_cdf: &[u16; 3], mode_cdf: &[u16; 6], allowed: bool, use_fi: i32, mode: i32) -> (Vec<u8>, [u16; 3], [u16; 6]) {
+    let mut u = *use_cdf; let mut m = *mode_cdf;
+    let mut out = vec![0u8; 16];
+    let mut ou = [0u16; 3]; let mut om = [0u16; 6];
+    let n = unsafe { shim_write_filter_intra(u.as_mut_ptr(), m.as_mut_ptr(), allowed as i32, use_fi, mode, out.as_mut_ptr(), ou.as_mut_ptr(), om.as_mut_ptr()) };
+    out.truncate(n as usize);
+    (out, ou, om)
 }
 
 /// Reference `bsize_to_max_depth` / `bsize_to_tx_size_cat`.

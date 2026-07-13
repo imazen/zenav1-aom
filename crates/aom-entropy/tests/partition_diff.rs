@@ -703,3 +703,45 @@ fn write_selected_tx_size_matches_c() {
         assert_eq!(&my_cdf[..ns + 1], &want_cdf[..ns + 1], "tx_size cdf bsize={bsize} depth={depth}");
     }
 }
+
+#[test]
+fn write_filter_intra_matches_c() {
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::write_filter_intra_mode_info;
+    let mut rng = Rng(0xf114_c0de_a11a_0009);
+    let mk = |rng: &mut Rng, ns: usize, out: &mut [u16]| {
+        let mut vals = [0i32; 5];
+        for v in vals.iter_mut().take(ns - 1) {
+            *v = 1 + (rng.next() % 32766) as i32;
+        }
+        vals[..ns - 1].sort_unstable();
+        vals[..ns - 1].reverse();
+        let mut prev = 32768i32;
+        for i in 0..ns - 1 {
+            let v = vals[i].min(prev - 1).max((ns - 1 - i) as i32);
+            out[i] = v as u16;
+            prev = v;
+        }
+        out[ns - 1] = 0;
+        out[ns] = 0;
+    };
+    for _ in 0..200_000 {
+        let mut use_cdf = [0u16; 3];
+        mk(&mut rng, 2, &mut use_cdf);
+        let mut mode_cdf = [0u16; 6];
+        mk(&mut rng, 5, &mut mode_cdf);
+        let allowed = rng.next().is_multiple_of(2);
+        let use_fi = (rng.next() % 2) as i32;
+        let mode = (rng.next() % 5) as i32;
+
+        let mut mu = use_cdf;
+        let mut mm = mode_cdf;
+        let mut enc = OdEcEnc::new();
+        write_filter_intra_mode_info(&mut enc, &mut mu, &mut mm, allowed, use_fi, mode);
+        let got = enc.done().to_vec();
+        let (want, ou, om) = c::ref_write_filter_intra(&use_cdf, &mode_cdf, allowed, use_fi, mode);
+        assert_eq!(got, want, "filter_intra bytes allowed={allowed} use={use_fi} mode={mode}");
+        assert_eq!(mu, ou, "filter_intra use cdf");
+        assert_eq!(mm, om, "filter_intra mode cdf");
+    }
+}

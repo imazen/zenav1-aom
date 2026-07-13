@@ -421,3 +421,26 @@ uint32_t shim_write_selected_tx_size(uint16_t *cdf, int bsize, int depth, int ma
   od_ec_enc_clear(&ec);
   return nb;
 }
+
+/* write_filter_intra_mode_info over pristine C od_ec. use_cdf(3) + mode_cdf(6). */
+uint32_t shim_write_filter_intra(uint16_t *use_cdf, uint16_t *mode_cdf, int allowed,
+                                 int use_fi, int mode, uint8_t *out, uint16_t *out_use,
+                                 uint16_t *out_mode) {
+  od_ec_enc ec;
+  od_ec_enc_init(&ec, 256);
+  if (allowed) {
+    od_ec_encode_cdf_q15(&ec, use_fi, use_cdf, 2);
+    update_cdf(use_cdf, use_fi, 2);
+    if (use_fi) {
+      od_ec_encode_cdf_q15(&ec, mode, mode_cdf, FILTER_INTRA_MODES);
+      update_cdf(mode_cdf, mode, FILTER_INTRA_MODES);
+    }
+  }
+  uint32_t nb = 0;
+  const unsigned char *buf = od_ec_enc_done(&ec, &nb);
+  for (uint32_t i = 0; i < nb; i++) out[i] = buf[i];
+  for (int i = 0; i < 3; i++) out_use[i] = use_cdf[i];
+  for (int i = 0; i < 6; i++) out_mode[i] = mode_cdf[i];
+  od_ec_enc_clear(&ec);
+  return nb;
+}
