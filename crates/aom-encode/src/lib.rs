@@ -22,7 +22,7 @@ use aom_quant::{
 use aom_transform::txfm2d::av1_fwd_txfm2d;
 use aom_txb::{
     get_txb_ctx, optimize_txb, optimize_txb_qm, scan, txb_entropy_context, txb_high, txb_wide,
-    write_coeffs_txb, CoeffCostTables,
+    write_coeffs_txb, write_coeffs_txb_full, CoeffCostTables,
 };
 
 /// Full (un-adjusted) transform width per `TX_SIZE` — the residual/coeff buffer
@@ -292,6 +292,62 @@ pub fn encode_block_coeffs(
         r.txb_skip_ctx,
         r.dc_sign_ctx,
         allow_update_cdf,
+    );
+    r
+}
+
+/// Luma `tx_type` signaling context — what the encoder's mbmi/frame state supplies
+/// to `av1_write_tx_type` (mode, filter-intra, inter/reduced flags, and the
+/// qindex/skip/segment gate that permits transmission).
+#[derive(Clone, Copy, Debug)]
+pub struct TxTypeContext {
+    pub is_inter: bool,
+    pub reduced: bool,
+    pub use_filter_intra: bool,
+    pub fi_mode: usize,
+    pub mode: usize,
+    pub signal_gate: bool,
+}
+
+/// Like [`encode_block_coeffs`] but emits the *complete* txb bitstream: the luma
+/// `tx_type` (via `write_coeffs_txb_full`) is written between the txb_skip flag and
+/// the coefficients, matching `av1_write_coeffs_txb`. `ext_tx_cdf` is the
+/// caller-selected ext-tx CDF slot (adapted in place, only touched for luma).
+#[allow(clippy::too_many_arguments)]
+pub fn encode_block_coeffs_full(
+    residual: &[i16],
+    tx_size: usize,
+    tx_type: usize,
+    kind: QuantKind,
+    qp: &QuantParams,
+    bctx: &BlockContext,
+    opt: &OptimizeInputs,
+    ttx: &TxTypeContext,
+    allow_update_cdf: bool,
+    enc: &mut OdEcEnc,
+    cdfs: &mut [u16],
+    ext_tx_cdf: &mut [u16],
+) -> XformQuantOptResult {
+    let r = xform_quant_optimize(residual, tx_size, tx_type, kind, qp, bctx, opt);
+    let plane_type = (bctx.plane > 0) as usize;
+    write_coeffs_txb_full(
+        enc,
+        cdfs,
+        ext_tx_cdf,
+        &r.qcoeff,
+        r.eob as usize,
+        tx_size,
+        tx_type,
+        plane_type,
+        r.txb_skip_ctx,
+        r.dc_sign_ctx,
+        allow_update_cdf,
+        ttx.is_inter,
+        ttx.reduced,
+        ttx.use_filter_intra,
+        ttx.fi_mode,
+        ttx.mode,
+        ttx.signal_gate,
     );
     r
 }
