@@ -1844,3 +1844,18 @@ uint32_t shim_write_inter_prefix(
   od_ec_enc_clear(&ec);
   return nb;
 }
+
+/* --- inter-mode-body gates + mode_context_analyzer (mvref_common.h) --- */
+int shim_is_inter_compound_mode(int mode) { return is_inter_compound_mode((PREDICTION_MODE)mode); }
+int shim_is_inter_singleref_mode(int mode) { return is_inter_singleref_mode((PREDICTION_MODE)mode); }
+int shim_have_nearmv_in_inter_mode(int mode) { return have_nearmv_in_inter_mode((PREDICTION_MODE)mode); }
+
+/* av1_mode_context_analyzer facade: rf=[rf0,rf1]; mode_context[av1_ref_frame_type(rf)]=mc_val. */
+int shim_mode_context_analyzer(int rf0, int rf1, int mc_val) {
+  MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0, (MV_REFERENCE_FRAME)rf1 };
+  int16_t mode_context[MODE_CTX_REF_FRAMES];
+  for (int i = 0; i < MODE_CTX_REF_FRAMES; i++) mode_context[i] = 0;
+  const int8_t idx = av1_ref_frame_type(rf);
+  mode_context[idx] = (int16_t)mc_val;
+  return av1_mode_context_analyzer(mode_context, rf);
+}

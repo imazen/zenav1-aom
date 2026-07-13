@@ -288,6 +288,10 @@ extern "C" {
     fn shim_write_compound_type_info(masked_used: i32, comp_group_idx: i32, cgi_cdf: *mut u16, dist_wtd: i32, compound_idx: i32, cidx_cdf: *mut u16, wedge_used: i32, comp_type: i32, ctype_cdf: *mut u16, wedge_index: i32, wedge_idx_cdf: *mut u16, wedge_sign: i32, mask_type: i32, out: *mut u8, o_cgi: *mut u16, o_cidx: *mut u16, o_ctype: *mut u16, o_wix: *mut u16) -> u32;
     fn shim_get_relative_dist(enable: i32, bits_minus_1: i32, a: i32, b: i32) -> i32;
     fn shim_get_pred_context_seg_id(ha: i32, a_sip: i32, hl: i32, l_sip: i32) -> i32;
+    fn shim_is_inter_compound_mode(mode: i32) -> i32;
+    fn shim_is_inter_singleref_mode(mode: i32) -> i32;
+    fn shim_have_nearmv_in_inter_mode(mode: i32) -> i32;
+    fn shim_mode_context_analyzer(rf0: i32, rf1: i32, mc_val: i32) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_inter_segment_id(update_map: i32, preskip: i32, segid_preskip: i32, skip: i32, temporal_update: i32, seg_id_predicted: i32, pred_cdf: *mut u16, seg_cdf: *mut u16, seg_enabled: i32, segment_id: i32, seg_pred: i32, last_active_segid: i32, out: *mut u8, o_predcdf: *mut u16, o_segcdf: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
@@ -585,6 +589,15 @@ pub fn ref_get_relative_dist(enable: bool, bits_minus_1: i32, a: i32, b: i32) ->
 /// Reference `av1_get_pred_context_seg_id` (facade): above+left seg_id_predicted -> {0,1,2}.
 pub fn ref_get_pred_context_seg_id(ha: bool, a_sip: i32, hl: bool, l_sip: i32) -> i32 {
     unsafe { shim_get_pred_context_seg_id(ha as i32, a_sip, hl as i32, l_sip) }
+}
+
+/// Reference `is_inter_compound_mode` / `is_inter_singleref_mode` /
+/// `have_nearmv_in_inter_mode` / `av1_mode_context_analyzer` (facade over the real fn).
+pub fn ref_is_inter_compound_mode(mode: i32) -> bool { unsafe { shim_is_inter_compound_mode(mode) != 0 } }
+pub fn ref_is_inter_singleref_mode(mode: i32) -> bool { unsafe { shim_is_inter_singleref_mode(mode) != 0 } }
+pub fn ref_have_nearmv_in_inter_mode(mode: i32) -> bool { unsafe { shim_have_nearmv_in_inter_mode(mode) != 0 } }
+pub fn ref_mode_context_analyzer(rf0: i32, rf1: i32, mc_val: i32) -> i32 {
+    unsafe { shim_mode_context_analyzer(rf0, rf1, mc_val) }
 }
 
 /// Inputs for the `pack_inter_mode_mvs` prefix oracle (inter_segment_id -> skip_mode ->

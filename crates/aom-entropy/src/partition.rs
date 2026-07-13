@@ -339,7 +339,8 @@ fn av1_drl_ctx(weight: &[u16], ref_idx: usize) -> usize {
     }
 }
 
-fn have_nearmv_in_inter_mode(mode: i32) -> bool {
+/// `have_nearmv_in_inter_mode` (`blockd.h`): the mode uses a NEAR mv component.
+pub fn have_nearmv_in_inter_mode(mode: i32) -> bool {
     // NEARMV=14, NEAR_NEARMV=18, NEAR_NEWMV=21, NEW_NEARMV=22
     mode == 14 || mode == 18 || mode == 21 || mode == 22
 }
@@ -2297,4 +2298,33 @@ pub fn write_inter_prefix(
         write_is_inter(enc, intra_inter_cdf, seg_ref_frame_active, seg_globalmv_active, is_inter);
     }
     (skip, skip_mode)
+}
+
+// --- inter-mode-body gates + mode-context analysis (mvref_common.h) ---
+
+const MB_MODE_COUNT: i32 = 25;
+/// `compound_mode_ctx_map[3][COMP_NEWMV_CTXS]` (`mvref_common.h`).
+const COMPOUND_MODE_CTX_MAP: [[i32; 5]; 3] = [[0, 1, 1, 1, 1], [1, 2, 3, 4, 4], [4, 4, 5, 6, 7]];
+
+/// `is_inter_compound_mode` (`blockd.h`): a compound inter mode (`NEAREST_NEARESTMV`..).
+pub fn is_inter_compound_mode(mode: i32) -> bool {
+    (NEAREST_NEARESTMV..MB_MODE_COUNT).contains(&mode)
+}
+
+/// `is_inter_singleref_mode` (`blockd.h`): a single-ref inter mode (`NEARESTMV`..`NEWMV`).
+pub fn is_inter_singleref_mode(mode: i32) -> bool {
+    (NEARESTMV..NEAREST_NEARESTMV).contains(&mode)
+}
+
+/// `av1_mode_context_analyzer` (`mvref_common.h`): the inter-mode CDF context. For a
+/// single-ref block it is the raw `mode_context` value; for a compound block it combines
+/// the new-mv and ref-mv sub-contexts via `compound_mode_ctx_map`. `mode_context_val` is
+/// `mode_context[av1_ref_frame_type(rf)]`; `is_compound` is `rf[1] > INTRA_FRAME`.
+pub fn mode_context_analyzer(mode_context_val: i32, is_compound: bool) -> i32 {
+    if !is_compound {
+        return mode_context_val;
+    }
+    let newmv_ctx = mode_context_val & 7; // NEWMV_CTX_MASK
+    let refmv_ctx = (mode_context_val >> 4) & 15; // REFMV_OFFSET=4, REFMV_CTX_MASK=15
+    COMPOUND_MODE_CTX_MAP[(refmv_ctx >> 1) as usize][newmv_ctx.min(4) as usize]
 }

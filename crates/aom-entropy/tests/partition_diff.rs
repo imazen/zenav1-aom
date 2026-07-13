@@ -2488,3 +2488,32 @@ fn write_inter_prefix_matches_c() {
         assert_eq!(r_xdb, o.xd_dlf_base, "xd_dlf_base"); assert_eq!(riic, o.intra_inter_cdf, "intra_inter_cdf");
     }
 }
+
+#[test]
+fn inter_mode_gates_and_ctx_match_c() {
+    use aom_entropy::partition::{
+        have_nearmv_in_inter_mode, is_inter_compound_mode, is_inter_singleref_mode,
+        mode_context_analyzer,
+    };
+    for mode in 0..25i32 {
+        assert_eq!(is_inter_compound_mode(mode), c::ref_is_inter_compound_mode(mode), "compound {mode}");
+        assert_eq!(is_inter_singleref_mode(mode), c::ref_is_inter_singleref_mode(mode), "singleref {mode}");
+        assert_eq!(have_nearmv_in_inter_mode(mode), c::ref_have_nearmv_in_inter_mode(mode), "nearmv {mode}");
+    }
+    // mode_context_analyzer: single-ref (rf1<=0) + compound (rf1 in 1..7).
+    // Compound path indexes compound_mode_ctx_map[refmv>>1][..], so keep refmv nibble < 6.
+    let mut rng = Rng(0x1de_c72a_c0de_0014);
+    for _ in 0..300_000 {
+        let rf0 = 1 + (rng.next() % 7) as i32; // LAST..ALTREF
+        let compound = rng.next().is_multiple_of(2);
+        let rf1 = if compound { 1 + (rng.next() % 7) as i32 } else { -((rng.next() % 2) as i32) }; // -1/0 single
+        // mode_context: low 3 bits (newmv), bits 4..8 (refmv, keep <6 for the compound path).
+        let newmv = (rng.next() % 8) as i32; // bits 0..2
+        let refmv = (rng.next() % 6) as i32; // bits 4..7 (kept < 6 so refmv>>1 < 3)
+        let dc = (rng.next() % 2) as i32; // bit 3 (GLOBALMV region, don't-care)
+        let mc_val = newmv | (dc << 3) | (refmv << 4);
+        let got = mode_context_analyzer(mc_val, rf1 > 0);
+        let want = c::ref_mode_context_analyzer(rf0, rf1, mc_val);
+        assert_eq!(got, want, "rf0={rf0} rf1={rf1} mc_val={mc_val}");
+    }
+}
