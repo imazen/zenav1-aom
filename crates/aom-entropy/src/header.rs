@@ -1589,3 +1589,90 @@ pub fn read_render_size(rb: &mut ReadBitBuffer) -> (bool, i32, i32) {
         (false, 0, 0)
     }
 }
+
+/// Inverse of `write_delta_q`: a present bit then a signed 6-bit value, else 0.
+fn read_delta_q(rb: &mut ReadBitBuffer) -> i32 {
+    if rb.read_bit() != 0 {
+        rb.read_inv_signed_literal(6)
+    } else {
+        0
+    }
+}
+
+/// `read_quantization` — inverse of [`encode_quantization`]: base qindex + per-plane
+/// DC/AC delta-q + optional quant-matrix levels. Without `separate_uv_delta_q` (or when
+/// the diff bit is 0) the V plane mirrors U; the caller supplies `num_planes` and
+/// `separate_uv_delta_q` from the sequence/color config.
+pub fn read_quantization(
+    rb: &mut ReadBitBuffer,
+    num_planes: usize,
+    separate_uv_delta_q: bool,
+) -> QuantParamsHeader {
+    let base_qindex = rb.read_literal(8);
+    let y_dc_delta_q = read_delta_q(rb);
+    let (mut u_dc, mut u_ac, mut v_dc, mut v_ac) = (0, 0, 0, 0);
+    if num_planes > 1 {
+        let diff_uv_delta = separate_uv_delta_q && rb.read_bit() != 0;
+        u_dc = read_delta_q(rb);
+        u_ac = read_delta_q(rb);
+        if diff_uv_delta {
+            v_dc = read_delta_q(rb);
+            v_ac = read_delta_q(rb);
+        } else {
+            v_dc = u_dc;
+            v_ac = u_ac;
+        }
+    }
+    let using_qmatrix = rb.read_bit() != 0;
+    let (mut qy, mut qu, mut qv) = (0, 0, 0);
+    if using_qmatrix {
+        qy = rb.read_literal(4);
+        qu = rb.read_literal(4);
+        qv = if separate_uv_delta_q { rb.read_literal(4) } else { qu };
+    }
+    QuantParamsHeader {
+        base_qindex,
+        y_dc_delta_q,
+        u_dc_delta_q: u_dc,
+        u_ac_delta_q: u_ac,
+        v_dc_delta_q: v_dc,
+        v_ac_delta_q: v_ac,
+        using_qmatrix,
+        qmatrix_level_y: qy,
+        qmatrix_level_u: qu,
+        qmatrix_level_v: qv,
+    }
+}
+
+/// `read_cdef` — inverse of [`encode_cdef`]: the CDEF damping/bits + per-strength Y (and
+/// UV when `num_planes > 1`) values. Nothing is coded when CDEF is off or intrabc is
+/// allowed; `enable_cdef` / `allow_intrabc` come from the sequence/frame parse.
+pub fn read_cdef_header(
+    rb: &mut ReadBitBuffer,
+    enable_cdef: bool,
+    allow_intrabc: bool,
+    num_planes: usize,
+) -> CdefHeader {
+    let mut c = CdefHeader {
+        enable_cdef,
+        allow_intrabc,
+        cdef_damping: 3,
+        cdef_bits: 0,
+        nb_cdef_strengths: 1,
+        cdef_strengths: [0; 8],
+        cdef_uv_strengths: [0; 8],
+    };
+    if !enable_cdef || allow_intrabc {
+        return c;
+    }
+    c.cdef_damping = rb.read_literal(2) + 3;
+    c.cdef_bits = rb.read_literal(2);
+    c.nb_cdef_strengths = 1 << c.cdef_bits;
+    for i in 0..c.nb_cdef_strengths {
+        c.cdef_strengths[i] = rb.read_literal(6);
+        if num_planes > 1 {
+            c.cdef_uv_strengths[i] = rb.read_literal(6);
+        }
+    }
+    c
+}

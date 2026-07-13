@@ -192,3 +192,102 @@ fn read_header_components_invert_write() {
         }
     }
 }
+
+#[test]
+fn read_quant_cdef_headers_invert_write() {
+    use aom_entropy::header::{
+        encode_cdef, encode_quantization, read_cdef_header, read_quantization, CdefHeader,
+        QuantParamsHeader,
+    };
+    let mut rng = Rng(0x1e_4a2d_c0de_0120);
+    let dgen = |rng: &mut Rng| -> i32 { (rng.next() % 127) as i32 - 63 };
+    for _ in 0..100_000 {
+        // quantization
+        {
+            let num_planes = if rng.next() & 1 == 1 { 3 } else { 1 };
+            let separate = rng.next() & 1 == 1;
+            let base = (rng.next() % 256) as i32;
+            let ydc = dgen(&mut rng);
+            let (udc, uac, vdc, vac) = if num_planes > 1 {
+                let udc = dgen(&mut rng);
+                let uac = dgen(&mut rng);
+                let (vdc, vac) = if separate { (dgen(&mut rng), dgen(&mut rng)) } else { (udc, uac) };
+                (udc, uac, vdc, vac)
+            } else {
+                (0, 0, 0, 0)
+            };
+            let using_qm = rng.next() & 1 == 1;
+            let (qy, qu, qv) = if using_qm {
+                let qy = (rng.next() % 16) as i32;
+                let qu = (rng.next() % 16) as i32;
+                let qv = if separate { (rng.next() % 16) as i32 } else { qu };
+                (qy, qu, qv)
+            } else {
+                (0, 0, 0)
+            };
+            let qp = QuantParamsHeader {
+                base_qindex: base,
+                y_dc_delta_q: ydc,
+                u_dc_delta_q: udc,
+                u_ac_delta_q: uac,
+                v_dc_delta_q: vdc,
+                v_ac_delta_q: vac,
+                using_qmatrix: using_qm,
+                qmatrix_level_y: qy,
+                qmatrix_level_u: qu,
+                qmatrix_level_v: qv,
+            };
+            let mut wb = WriteBitBuffer::new();
+            encode_quantization(&mut wb, &qp, num_planes, separate);
+            let b = wb.bytes().to_vec();
+            let mut rb = ReadBitBuffer::new(&b);
+            let g = read_quantization(&mut rb, num_planes, separate);
+            assert_eq!(
+                (g.base_qindex, g.y_dc_delta_q, g.u_dc_delta_q, g.u_ac_delta_q, g.v_dc_delta_q, g.v_ac_delta_q),
+                (base, ydc, udc, uac, vdc, vac),
+                "quant deltas np={num_planes} sep={separate}"
+            );
+            assert_eq!(
+                (g.using_qmatrix, g.qmatrix_level_y, g.qmatrix_level_u, g.qmatrix_level_v),
+                (using_qm, qy, qu, qv),
+                "quant qm np={num_planes} sep={separate}"
+            );
+        }
+        // cdef (coded path: enabled, no intrabc)
+        {
+            let num_planes = if rng.next() & 1 == 1 { 3 } else { 1 };
+            let damping = 3 + (rng.next() % 4) as i32;
+            let bits = (rng.next() % 4) as i32;
+            let nb = 1usize << bits;
+            let mut s = [0i32; 8];
+            let mut uv = [0i32; 8];
+            for i in 0..nb {
+                s[i] = (rng.next() % 64) as i32;
+                uv[i] = if num_planes > 1 { (rng.next() % 64) as i32 } else { 0 };
+            }
+            let c = CdefHeader {
+                enable_cdef: true,
+                allow_intrabc: false,
+                cdef_damping: damping,
+                cdef_bits: bits,
+                nb_cdef_strengths: nb,
+                cdef_strengths: s,
+                cdef_uv_strengths: uv,
+            };
+            let mut wb = WriteBitBuffer::new();
+            encode_cdef(&mut wb, &c, num_planes);
+            let b = wb.bytes().to_vec();
+            let mut rb = ReadBitBuffer::new(&b);
+            let g = read_cdef_header(&mut rb, true, false, num_planes);
+            assert_eq!(
+                (g.cdef_damping, g.cdef_bits, g.nb_cdef_strengths),
+                (damping, bits, nb),
+                "cdef hdr np={num_planes}"
+            );
+            assert_eq!(g.cdef_strengths, s, "cdef strengths");
+            if num_planes > 1 {
+                assert_eq!(g.cdef_uv_strengths, uv, "cdef uv strengths");
+            }
+        }
+    }
+}
