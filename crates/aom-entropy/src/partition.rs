@@ -2099,3 +2099,72 @@ pub fn write_mb_modes_kf_prefix(
     );
     skip
 }
+
+/// `write_mb_modes_kf` tail (`av1/encoder/bitstream.c`): the intrabc + intra half. When
+/// intrabc is allowed, code the intrabc flag (and DV via the MV coder); if the block is
+/// an intrabc block, nothing further is coded (early return). Otherwise the full intra
+/// prediction modes follow. Composes write_intrabc_info + write_intra_prediction_modes.
+#[allow(clippy::too_many_arguments)]
+pub fn write_kf_tail(
+    enc: &mut OdEcEnc,
+    allow_intrabc: bool,
+    intrabc_cdf: &mut [u16],
+    ndvc_joints: &mut [u16],
+    ndvc_comp0: &mut [u16; 69],
+    ndvc_comp1: &mut [u16; 69],
+    use_intrabc: i32,
+    diff_row: i32,
+    diff_col: i32,
+    // write_intra_prediction_modes state
+    mode: i32,
+    bsize: usize,
+    y_cdf: &mut [u16],
+    angle_delta_y: i32,
+    y_angle_cdf: &mut [u16],
+    monochrome: bool,
+    is_chroma_ref: bool,
+    uv_mode: i32,
+    cfl_allowed: bool,
+    cfl_alpha_idx: i32,
+    cfl_joint_sign: i32,
+    angle_delta_uv: i32,
+    uv_mode_cdf: &mut [u16],
+    cfl_sign_cdf: &mut [u16],
+    cfl_alpha_cdf: &mut [[u16; 17]; 6],
+    uv_angle_cdf: &mut [u16],
+    allow_palette: bool,
+    bit_depth: i32,
+    palette_size: [i32; 2],
+    palette_colors: &[u16],
+    mb_to_top_edge: i32,
+    has_above: bool,
+    above_colors: &[u16],
+    above_size: [i32; 2],
+    has_left: bool,
+    left_colors: &[u16],
+    left_size: [i32; 2],
+    pal_y_mode_cdf: &mut [u16],
+    pal_y_size_cdf: &mut [u16],
+    pal_uv_mode_cdf: &mut [u16],
+    pal_uv_size_cdf: &mut [u16],
+    filter_allowed: bool,
+    use_filter_intra: i32,
+    filter_intra_mode: i32,
+    fi_use_cdf: &mut [u16],
+    fi_mode_cdf: &mut [u16],
+) {
+    if allow_intrabc {
+        write_intrabc_info(enc, intrabc_cdf, ndvc_joints, ndvc_comp0, ndvc_comp1, use_intrabc, diff_row, diff_col);
+        if use_intrabc != 0 {
+            return; // is_intrabc_block
+        }
+    }
+    write_intra_prediction_modes(
+        enc, mode, bsize, y_cdf, angle_delta_y, y_angle_cdf, monochrome, is_chroma_ref, uv_mode,
+        cfl_allowed, cfl_alpha_idx, cfl_joint_sign, angle_delta_uv, uv_mode_cdf, cfl_sign_cdf,
+        cfl_alpha_cdf, uv_angle_cdf, allow_palette, bit_depth, palette_size, palette_colors,
+        mb_to_top_edge, has_above, above_colors, above_size, has_left, left_colors, left_size,
+        pal_y_mode_cdf, pal_y_size_cdf, pal_uv_mode_cdf, pal_uv_size_cdf, filter_allowed,
+        use_filter_intra, filter_intra_mode, fi_use_cdf, fi_mode_cdf,
+    );
+}

@@ -298,6 +298,8 @@ extern "C" {
     fn shim_write_cdef(coded_lossless: i32, allow_intrabc: i32, mi_row: i32, mi_col: i32, mib_size: i32, sb_size: i32, skip: i32, transmitted_in: *const i32, cdef_bits: i32, cdef_strength: i32, out: *mut u8, transmitted_out: *mut i32) -> u32;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_mb_modes_kf_prefix(segid_preskip: i32, seg_enabled: i32, update_map: i32, segment_id: i32, seg_pred: i32, last_active_segid: i32, seg_cdf: *mut u16, seg_skip_active: i32, skip_txfm: i32, skip_cdf: *mut u16, coded_lossless: i32, allow_intrabc: i32, mi_row: i32, mi_col: i32, mib_size: i32, sb_size: i32, cdef_trans_in: *const i32, cdef_bits: i32, cdef_strength: i32, dq_present: i32, dlf_present: i32, dlf_multi: i32, num_planes: i32, bsize: i32, cur_qindex: i32, cur_base_qindex: i32, dq_res: i32, mbmi_dlf: *const i32, xd_dlf_in: *const i32, mbmi_dlf_base: i32, xd_dlf_base_in: i32, dlf_res: i32, dq_cdf: *mut u16, dlf_multi_cdf: *mut u16, dlf_cdf: *mut u16, out: *mut u8, out_skip: *mut i32, o_segcdf: *mut u16, o_skipcdf: *mut u16, o_cdef_trans: *mut i32, o_dqcdf: *mut u16, o_dlfmcdf: *mut u16, o_dlfcdf: *mut u16, o_base: *mut i32, o_xd_dlf: *mut i32, o_xd_dlf_base: *mut i32) -> u32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_kf_tail(allow_intrabc: i32, intrabc_cdf: *mut u16, joints: *mut u16, comp0: *mut u16, comp1: *mut u16, use_intrabc: i32, diff_row: i32, diff_col: i32, mode: i32, bsize: i32, y_cdf: *mut u16, angle_delta_y: i32, y_angle_cdf: *mut u16, monochrome: i32, is_chroma_ref: i32, uv_mode: i32, cfl_allowed: i32, cfl_idx: i32, cfl_joint_sign: i32, angle_delta_uv: i32, uv_mode_cdf: *mut u16, cfl_sign_cdf: *mut u16, cfl_alpha_cdf: *mut u16, uv_angle_cdf: *mut u16, allow_palette: i32, bit_depth: i32, palette_size: *const u8, palette_colors: *const u16, mb_to_top_edge: i32, ha: i32, a_colors: *const u16, a_s0: i32, a_s1: i32, hl: i32, l_colors: *const u16, l_s0: i32, l_s1: i32, pal_y_mode_cdf: *mut u16, pal_y_size_cdf: *mut u16, pal_uv_mode_cdf: *mut u16, pal_uv_size_cdf: *mut u16, filter_allowed: i32, use_filter_intra: i32, filter_intra_mode: i32, fi_use_cdf: *mut u16, fi_mode_cdf: *mut u16, out: *mut u8, o_intrabc: *mut u16, o_joints: *mut u16, o_c0: *mut u16, o_c1: *mut u16, o_all: *mut u16) -> u32;
     fn shim_write_intra_y_and_angle(mode: i32, bsize: i32, y_cdf: *mut u16, angle_delta_y: i32, y_angle_cdf: *mut u16, out: *mut u8, o_ycdf: *mut u16, o_acdf: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_intra_uv_and_angle(monochrome: i32, is_chroma_ref: i32, uv_mode: i32, cfl_allowed: i32, bsize: i32, cfl_idx: i32, cfl_joint_sign: i32, angle_delta_uv: i32, uv_mode_cdf: *mut u16, cfl_sign_cdf: *mut u16, cfl_alpha_cdf: *mut u16, uv_angle_cdf: *mut u16, out: *mut u8, o_uvcdf: *mut u16, o_signcdf: *mut u16, o_alphacdf: *mut u16, o_uvacdf: *mut u16) -> u32;
@@ -840,6 +842,51 @@ pub fn ref_write_intra_pred_modes(inp: &IntraPredModesRef) -> (Vec<u8>, [u16; 18
     };
     out.truncate(n as usize);
     (out, o_all)
+}
+
+/// Reference `write_mb_modes_kf` tail (intrabc + is_intrabc_block early-return + intra)
+/// over one od_ec. `intra` supplies the write_intra_prediction_modes state. Returns
+/// (bytes, intrabc_cdf[3], joints[5], mv_comp0[69], mv_comp1[69], intra CDFs o_all[187]).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn ref_write_kf_tail(
+    allow_intrabc: bool, intrabc_cdf: &[u16; 3], joints: &[u16; 5], comp0: &[u16; 69],
+    comp1: &[u16; 69], use_intrabc: bool, diff_row: i32, diff_col: i32, intra: &IntraPredModesRef,
+) -> (Vec<u8>, [u16; 3], [u16; 5], [u16; 69], [u16; 69], [u16; 187]) {
+    let (mut ib, mut jo, mut c0, mut c1) = (*intrabc_cdf, *joints, *comp0, *comp1);
+    let mut yc = *intra.y_cdf;
+    let mut yac = *intra.y_angle_cdf;
+    let mut uc = *intra.uv_mode_cdf;
+    let mut sc = *intra.cfl_sign_cdf;
+    let mut ac = *intra.cfl_alpha_cdf;
+    let mut uac = *intra.uv_angle_cdf;
+    let mut pym = *intra.pal_y_mode_cdf;
+    let mut pys = *intra.pal_y_size_cdf;
+    let mut pum = *intra.pal_uv_mode_cdf;
+    let mut pus = *intra.pal_uv_size_cdf;
+    let mut fiu = *intra.fi_use_cdf;
+    let mut fim = *intra.fi_mode_cdf;
+    let mut out = vec![0u8; 128];
+    let (mut oib, mut ojo, mut oc0, mut oc1) = ([0u16; 3], [0u16; 5], [0u16; 69], [0u16; 69]);
+    let mut o_all = [0u16; 187];
+    let n = unsafe {
+        shim_kf_tail(
+            allow_intrabc as i32, ib.as_mut_ptr(), jo.as_mut_ptr(), c0.as_mut_ptr(), c1.as_mut_ptr(),
+            use_intrabc as i32, diff_row, diff_col, intra.mode, intra.bsize, yc.as_mut_ptr(),
+            intra.angle_delta_y, yac.as_mut_ptr(), intra.monochrome as i32, intra.is_chroma_ref as i32,
+            intra.uv_mode, intra.cfl_allowed as i32, intra.cfl_idx, intra.cfl_joint_sign,
+            intra.angle_delta_uv, uc.as_mut_ptr(), sc.as_mut_ptr(), ac.as_mut_ptr(), uac.as_mut_ptr(),
+            intra.allow_palette as i32, intra.bit_depth, intra.palette_size.as_ptr(),
+            intra.palette_colors.as_ptr(), intra.mb_to_top_edge, intra.ha as i32,
+            intra.a_colors.as_ptr(), intra.a_size[0], intra.a_size[1], intra.hl as i32,
+            intra.l_colors.as_ptr(), intra.l_size[0], intra.l_size[1], pym.as_mut_ptr(),
+            pys.as_mut_ptr(), pum.as_mut_ptr(), pus.as_mut_ptr(), intra.filter_allowed as i32,
+            intra.use_filter_intra, intra.filter_intra_mode, fiu.as_mut_ptr(), fim.as_mut_ptr(),
+            out.as_mut_ptr(), oib.as_mut_ptr(), ojo.as_mut_ptr(), oc0.as_mut_ptr(), oc1.as_mut_ptr(),
+            o_all.as_mut_ptr(),
+        )
+    };
+    out.truncate(n as usize);
+    (out, oib, ojo, oc0, oc1, o_all)
 }
 
 /// Reference `get_comp_index_context` (body transcribed; ref-buffer order hints passed
