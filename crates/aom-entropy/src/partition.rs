@@ -483,3 +483,12 @@ pub fn encode_mv(
         encode_mv_component(enc, comp1, diff_col, usehp);
     }
 }
+
+const MAX_ANGLE_DELTA: i32 = 3;
+
+/// `write_angle_delta` (`av1/encoder/bitstream.c`): the intra directional-mode angle
+/// delta — `aom_write_symbol(angle_delta + MAX_ANGLE_DELTA, cdf, 2*MAX_ANGLE_DELTA+1)`
+/// (7 symbols, adapted) on the caller-selected per-mode angle CDF.
+pub fn write_angle_delta(enc: &mut OdEcEnc, cdf: &mut [u16], angle_delta: i32) {
+    write_symbol(enc, angle_delta + MAX_ANGLE_DELTA, cdf, (2 * MAX_ANGLE_DELTA + 1) as usize);
+}

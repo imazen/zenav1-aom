@@ -622,3 +622,36 @@ fn encode_mv_matches_c() {
         assert_eq!(my_c1, o1, "encode_mv comp1 cdf");
     }
 }
+
+#[test]
+fn write_angle_delta_matches_c() {
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::write_angle_delta;
+    let mut rng = Rng(0xa06e_c0de_a11a_0009);
+    for _ in 0..200_000 {
+        // valid 7-symbol CDF in an 8-entry buffer
+        let mut vals = [0i32; 7];
+        for v in vals.iter_mut().take(6) {
+            *v = 1 + (rng.next() % 32766) as i32;
+        }
+        vals[..6].sort_unstable();
+        vals[..6].reverse();
+        let mut cdf = [0u16; 8];
+        let mut prev = 32768i32;
+        for i in 0..6 {
+            let v = vals[i].min(prev - 1).max((6 - i) as i32);
+            cdf[i] = v as u16;
+            prev = v;
+        }
+        cdf[6] = 0;
+        cdf[7] = 0;
+        let angle_delta = (rng.next() % 7) as i32 - 3; // [-3, 3]
+        let mut my_cdf = cdf;
+        let mut enc = OdEcEnc::new();
+        write_angle_delta(&mut enc, &mut my_cdf, angle_delta);
+        let got = enc.done().to_vec();
+        let (want, want_cdf) = c::ref_write_angle_delta(&cdf, angle_delta);
+        assert_eq!(got, want, "angle_delta bytes ad={angle_delta}");
+        assert_eq!(my_cdf, want_cdf, "angle_delta cdf ad={angle_delta}");
+    }
+}

@@ -242,6 +242,7 @@ extern "C" {
     fn shim_write_intra_y_mode_kf(kf_y_cdf: *mut u16, mode: i32, out: *mut u8, out_cdf: *mut u16) -> u32;
     fn shim_size_group_lookup(bsize: i32) -> i32;
     fn shim_write_intra_uv_mode(uv_mode_cdf: *mut u16, uv_mode: i32, cfl_allowed: i32, out: *mut u8, out_cdf: *mut u16) -> u32;
+    fn shim_write_angle_delta(cdf: *mut u16, angle_delta: i32, out: *mut u8, out_cdf: *mut u16) -> u32;
     fn shim_get_mv_joint(row: i32, col: i32) -> i32;
     fn shim_get_mv_class(z: i32) -> i32;
     fn shim_encode_mv_component(cdf: *mut u16, comp: i32, precision: i32, out: *mut u8, out_cdf: *mut u16) -> u32;
@@ -276,6 +277,16 @@ pub fn ref_encode_mv_component(cdf: &[u16; 69], comp: i32, precision: i32) -> (V
     let mut out = vec![0u8; 32];
     let mut out_cdf = [0u16; 69];
     let n = unsafe { shim_encode_mv_component(c.as_mut_ptr(), comp, precision, out.as_mut_ptr(), out_cdf.as_mut_ptr()) };
+    out.truncate(n as usize);
+    (out, out_cdf)
+}
+
+/// Reference `write_angle_delta` (over the pristine C od_ec + update_cdf).
+pub fn ref_write_angle_delta(cdf: &[u16; 8], angle_delta: i32) -> (Vec<u8>, [u16; 8]) {
+    let mut c = *cdf;
+    let mut out = vec![0u8; 16];
+    let mut out_cdf = [0u16; 8];
+    let n = unsafe { shim_write_angle_delta(c.as_mut_ptr(), angle_delta, out.as_mut_ptr(), out_cdf.as_mut_ptr()) };
     out.truncate(n as usize);
     (out, out_cdf)
 }

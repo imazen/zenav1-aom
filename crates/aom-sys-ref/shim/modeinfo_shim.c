@@ -385,3 +385,19 @@ uint32_t shim_encode_mv(uint16_t *joints_cdf, uint16_t *comp0, uint16_t *comp1,
   od_ec_enc_clear(&ec);
   return nb;
 }
+
+/* write_angle_delta symbol (2*MAX_ANGLE_DELTA+1=7) over pristine C od_ec. */
+uint32_t shim_write_angle_delta(uint16_t *cdf, int angle_delta, uint8_t *out,
+                                uint16_t *out_cdf) {
+  od_ec_enc ec;
+  od_ec_enc_init(&ec, 256);
+  int n = 2 * MAX_ANGLE_DELTA + 1;
+  od_ec_encode_cdf_q15(&ec, angle_delta + MAX_ANGLE_DELTA, cdf, n);
+  update_cdf(cdf, angle_delta + MAX_ANGLE_DELTA, n);
+  uint32_t nb = 0;
+  const unsigned char *buf = od_ec_enc_done(&ec, &nb);
+  for (uint32_t i = 0; i < nb; i++) out[i] = buf[i];
+  for (int i = 0; i < 8; i++) out_cdf[i] = cdf[i];
+  od_ec_enc_clear(&ec);
+  return nb;
+}
