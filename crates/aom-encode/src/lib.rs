@@ -351,3 +351,78 @@ pub fn encode_block_coeffs_full(
     );
     r
 }
+
+// block_size_wide / block_size_high (pixels) for BLOCK_SIZES_ALL.
+const BLK_W: [usize; 22] = [4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64];
+const BLK_H: [usize; 22] = [4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16];
+// tx_size_wide_unit / high_unit (units of 4-pel MI).
+const TXU_W: [usize; 19] = [1, 2, 4, 8, 16, 1, 2, 2, 4, 4, 8, 8, 16, 1, 4, 2, 8, 4, 16];
+const TXU_H: [usize; 19] = [1, 2, 4, 8, 16, 2, 1, 4, 2, 8, 4, 16, 8, 4, 1, 8, 2, 16, 4];
+
+/// The per-plane above/left `ENTROPY_CONTEXT` arrays after a coding block, for
+/// verification / propagation to the next block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockContexts {
+    pub above: Vec<i8>,
+    pub left: Vec<i8>,
+}
+
+/// Encode one plane of a coding block: iterate its transform blocks in raster
+/// order (`av1_foreach_transformed_block_in_plane`), threading the above/left
+/// `ENTROPY_CONTEXT` arrays — each txb reads its neighbour context via
+/// `get_txb_ctx`, then fills its footprint with its own `txb_entropy_context`
+/// byte (`av1_set_entropy_contexts`, interior case). `txb_residuals` supplies one
+/// contiguous residual per txb in raster order. Uniform `tx_size` tiling only
+/// (the tx must divide `plane_bsize` evenly); frame-edge clipping is not modelled.
+/// The coefficient bytes accumulate in `enc`; returns the final contexts.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_coding_block_plane(
+    txb_residuals: &[&[i16]],
+    plane_bsize: usize,
+    tx_size: usize,
+    tx_type: usize,
+    kind: QuantKind,
+    qp: &QuantParams,
+    opt: &OptimizeInputs,
+    ttx: &TxTypeContext,
+    plane: usize,
+    allow_update_cdf: bool,
+    enc: &mut OdEcEnc,
+    cdfs: &mut [u16],
+    ext_tx_cdf: &mut [u16],
+) -> BlockContexts {
+    let uw = BLK_W[plane_bsize] >> 2;
+    let uh = BLK_H[plane_bsize] >> 2;
+    let txw = TXU_W[tx_size];
+    let txh = TXU_H[tx_size];
+    assert!(uw.is_multiple_of(txw) && uh.is_multiple_of(txh), "tx_size must tile plane_bsize evenly");
+    let mut above = vec![0i8; uw];
+    let mut left = vec![0i8; uh];
+
+    let mut idx = 0;
+    let mut blk_row = 0;
+    while blk_row < uh {
+        let mut blk_col = 0;
+        while blk_col < uw {
+            let cul = {
+                let bctx = BlockContext {
+                    above: &above[blk_col..],
+                    left: &left[blk_row..],
+                    plane,
+                    plane_bsize,
+                };
+                let r = encode_block_coeffs_full(
+                    txb_residuals[idx], tx_size, tx_type, kind, qp, &bctx, opt, ttx, allow_update_cdf,
+                    enc, cdfs, ext_tx_cdf,
+                );
+                r.txb_entropy_ctx as i8
+            };
+            above[blk_col..blk_col + txw].fill(cul);
+            left[blk_row..blk_row + txh].fill(cul);
+            idx += 1;
+            blk_col += txw;
+        }
+        blk_row += txh;
+    }
+    BlockContexts { above, left }
+}
