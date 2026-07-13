@@ -1126,3 +1126,62 @@ uint32_t shim_write_interintra_info(int interintra, uint16_t *ii_cdf, int ii_mod
   od_ec_enc_clear(&ec);
   return nb;
 }
+
+/* --- compound-type group (av1/encoder/bitstream.c, in write_mbmi_b) --- */
+/* get_comp_group_idx_context facade: above/left neighbours' comp_group_idx (or 3 when
+ * a single-ref neighbour points at ALTREF), summed and capped at 5. */
+int shim_get_comp_group_idx_context(int ha, int a_rf0, int a_rf1, int a_cgi, int hl,
+                                    int l_rf0, int l_rf1, int l_cgi) {
+  MB_MODE_INFO ami, lmi;
+  MACROBLOCKD xd;
+  ami.ref_frame[0] = (MV_REFERENCE_FRAME)a_rf0;
+  ami.ref_frame[1] = (MV_REFERENCE_FRAME)a_rf1;
+  ami.comp_group_idx = (uint8_t)a_cgi;
+  lmi.ref_frame[0] = (MV_REFERENCE_FRAME)l_rf0;
+  lmi.ref_frame[1] = (MV_REFERENCE_FRAME)l_rf1;
+  lmi.comp_group_idx = (uint8_t)l_cgi;
+  xd.above_mbmi = ha ? &ami : (MB_MODE_INFO *)0;
+  xd.left_mbmi = hl ? &lmi : (MB_MODE_INFO *)0;
+  return get_comp_group_idx_context(&xd);
+}
+
+/* The compound-type coding portion of write_mbmi_b, transcribed verbatim over od_ec.
+ * The has_second_ref outer gate + is_interinter_compound_used(WEDGE) + the two CDF
+ * contexts are the caller's; CDFs are pre-selected. MASKED_COMPOUND_TYPES=2,
+ * MAX_WEDGE_TYPES=16, MAX_DIFFWTD_MASK_BITS=1. comp_type is COMPOUND_WEDGE(2)/DIFFWTD(3). */
+uint32_t shim_write_compound_type_info(int masked_used, int comp_group_idx, uint16_t *cgi_cdf,
+                                       int dist_wtd, int compound_idx, uint16_t *cidx_cdf,
+                                       int wedge_used, int comp_type, uint16_t *ctype_cdf,
+                                       int wedge_index, uint16_t *wedge_idx_cdf, int wedge_sign,
+                                       int mask_type, uint8_t *out, uint16_t *o_cgi,
+                                       uint16_t *o_cidx, uint16_t *o_ctype, uint16_t *o_wix) {
+  od_ec_enc ec; od_ec_enc_init(&ec, 256);
+  if (masked_used) {
+    od_ec_encode_cdf_q15(&ec, comp_group_idx, cgi_cdf, 2);
+    update_cdf(cgi_cdf, comp_group_idx, 2);
+  }
+  if (comp_group_idx == 0) {
+    if (dist_wtd) {
+      od_ec_encode_cdf_q15(&ec, compound_idx, cidx_cdf, 2);
+      update_cdf(cidx_cdf, compound_idx, 2);
+    }
+  } else {
+    if (wedge_used) {
+      od_ec_encode_cdf_q15(&ec, comp_type - COMPOUND_WEDGE, ctype_cdf, MASKED_COMPOUND_TYPES);
+      update_cdf(ctype_cdf, comp_type - COMPOUND_WEDGE, MASKED_COMPOUND_TYPES);
+    }
+    if (comp_type == COMPOUND_WEDGE) {
+      od_ec_encode_cdf_q15(&ec, wedge_index, wedge_idx_cdf, MAX_WEDGE_TYPES);
+      update_cdf(wedge_idx_cdf, wedge_index, MAX_WEDGE_TYPES);
+      mi_bit(&ec, wedge_sign);
+    } else {
+      mi_literal(&ec, mask_type, MAX_DIFFWTD_MASK_BITS);
+    }
+  }
+  uint32_t nb = 0; const unsigned char *buf = od_ec_enc_done(&ec, &nb);
+  for (uint32_t i = 0; i < nb; i++) out[i] = buf[i];
+  for (int i = 0; i < 3; i++) { o_cgi[i] = cgi_cdf[i]; o_cidx[i] = cidx_cdf[i]; o_ctype[i] = ctype_cdf[i]; }
+  for (int i = 0; i < 17; i++) o_wix[i] = wedge_idx_cdf[i];
+  od_ec_enc_clear(&ec);
+  return nb;
+}

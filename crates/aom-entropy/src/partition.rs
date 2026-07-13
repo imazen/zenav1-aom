@@ -1615,3 +1615,78 @@ pub fn write_interintra_info(
         }
     }
 }
+
+const ALTREF_FRAME: i32 = 7;
+const COMPOUND_WEDGE: i32 = 2;
+const MASKED_COMPOUND_TYPES: usize = 2;
+const MAX_DIFFWTD_MASK_BITS: u32 = 1;
+
+/// One neighbour's contribution to `get_comp_group_idx_context`: its `comp_group_idx`
+/// when it is a compound block, else 3 when it is a single-ref block pointing at ALTREF,
+/// else 0.
+fn comp_group_idx_nbr(ref_frame0: i32, ref_frame1: i32, comp_group_idx: i32) -> i32 {
+    if ref_frame1 > 0 {
+        // has_second_ref (INTRA_FRAME == 0)
+        comp_group_idx
+    } else if ref_frame0 == ALTREF_FRAME {
+        3
+    } else {
+        0
+    }
+}
+
+/// `get_comp_group_idx_context` (`pred_common.h`): the compound-group-index CDF context,
+/// the sum of the above and left neighbours' contributions capped at 5.
+#[allow(clippy::too_many_arguments)]
+pub fn get_comp_group_idx_context(
+    has_above: bool, a_rf0: i32, a_rf1: i32, a_cgi: i32,
+    has_left: bool, l_rf0: i32, l_rf1: i32, l_cgi: i32,
+) -> i32 {
+    let above = if has_above { comp_group_idx_nbr(a_rf0, a_rf1, a_cgi) } else { 0 };
+    let left = if has_left { comp_group_idx_nbr(l_rf0, l_rf1, l_cgi) } else { 0 };
+    (above + left).min(5)
+}
+
+/// The compound-type coding of `write_mbmi_b` (`av1/encoder/bitstream.c`) for a
+/// two-reference block. When masked compound is available, code `comp_group_idx`. Group
+/// 0 (average / distance-weighted): code `compound_idx` when distance-weighted compound
+/// is enabled. Group 1 (masked): code the `compound_type` (wedge vs diffwtd) when wedge
+/// is usable, then either the wedge index + sign, or the diffwtd `mask_type` literal.
+/// The outer `has_second_ref` gate, the two CDF contexts, and the wedge/dist-wtd/masked
+/// gates are the caller's; CDFs are pre-selected.
+#[allow(clippy::too_many_arguments)]
+pub fn write_compound_type_info(
+    enc: &mut OdEcEnc,
+    masked_compound_used: bool,
+    comp_group_idx: i32,
+    comp_group_idx_cdf: &mut [u16],
+    enable_dist_wtd_comp: bool,
+    compound_idx: i32,
+    compound_index_cdf: &mut [u16],
+    wedge_used: bool,
+    comp_type: i32,
+    compound_type_cdf: &mut [u16],
+    wedge_index: i32,
+    wedge_idx_cdf: &mut [u16],
+    wedge_sign: i32,
+    mask_type: i32,
+) {
+    if masked_compound_used {
+        write_symbol(enc, comp_group_idx, comp_group_idx_cdf, 2);
+    }
+    if comp_group_idx == 0 {
+        if enable_dist_wtd_comp {
+            write_symbol(enc, compound_idx, compound_index_cdf, 2);
+        }
+    } else {
+        if wedge_used {
+            write_symbol(enc, comp_type - COMPOUND_WEDGE, compound_type_cdf, MASKED_COMPOUND_TYPES);
+        }
+        if comp_type == COMPOUND_WEDGE {
+            write_symbol(enc, wedge_index, wedge_idx_cdf, MAX_WEDGE_TYPES);
+            write_bit(enc, wedge_sign);
+        } else {
+            write_literal(enc, mask_type, MAX_DIFFWTD_MASK_BITS);
+        }
+    }
+}

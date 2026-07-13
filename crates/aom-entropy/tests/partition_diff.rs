@@ -1560,3 +1560,79 @@ fn write_interintra_info_matches_c() {
         assert_eq!(rwix, owix, "wedge_idx_cdf");
     }
 }
+
+#[test]
+fn get_comp_group_idx_context_matches_c() {
+    use aom_entropy::partition::get_comp_group_idx_context;
+    // ref_frame[1] <= 0 => single ref (NONE=-1 / INTRA=0); >0 => compound.
+    let rf1s = [-1i32, 0, 1, 4, 7];
+    let rf0s = [1i32, 4, 6, 7]; // incl ALTREF=7
+    for ha in [false, true] {
+        for &a_rf0 in &rf0s {
+            for &a_rf1 in &rf1s {
+                for a_cgi in 0..2 {
+                    for hl in [false, true] {
+                        for &l_rf0 in &rf0s {
+                            for &l_rf1 in &rf1s {
+                                for l_cgi in 0..2 {
+                                    let got = get_comp_group_idx_context(ha, a_rf0, a_rf1, a_cgi, hl, l_rf0, l_rf1, l_cgi);
+                                    let want = c::ref_get_comp_group_idx_context(ha, a_rf0, a_rf1, a_cgi, hl, l_rf0, l_rf1, l_cgi);
+                                    assert_eq!(got, want, "ha={ha} a=({a_rf0},{a_rf1},{a_cgi}) hl={hl} l=({l_rf0},{l_rf1},{l_cgi})");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn write_compound_type_info_matches_c() {
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::write_compound_type_info;
+    let mut rng = Rng(0xc02b_0000_c0de_0009);
+    fn mk(rng: &mut Rng, nsyms: usize) -> Vec<u16> {
+        let mut c = vec![0u16; nsyms + 1];
+        let mut prev = 32768i32;
+        for e in c.iter_mut().take(nsyms - 1) {
+            let v = (prev - 1 - (rng.next() % 300) as i32).max(1);
+            *e = v as u16;
+            prev = v;
+        }
+        c
+    }
+    for _ in 0..400_000 {
+        let masked = rng.next().is_multiple_of(2);
+        let cgi = (rng.next() % 2) as i32;
+        let dist_wtd = rng.next().is_multiple_of(2);
+        let compound_idx = (rng.next() % 2) as i32;
+        let wedge_used = rng.next().is_multiple_of(2);
+        let comp_type = 2 + (rng.next() % 2) as i32; // COMPOUND_WEDGE=2 / DIFFWTD=3
+        let wedge_index = (rng.next() % 16) as i32;
+        let wedge_sign = (rng.next() % 2) as i32;
+        let mask_type = (rng.next() % 2) as i32;
+        let cgi_cdf: [u16; 3] = mk(&mut rng, 2).try_into().unwrap();
+        let cidx_cdf: [u16; 3] = mk(&mut rng, 2).try_into().unwrap();
+        let ct_cdf: [u16; 3] = mk(&mut rng, 2).try_into().unwrap();
+        let wix_cdf: [u16; 17] = mk(&mut rng, 16).try_into().unwrap();
+
+        let mut enc = OdEcEnc::new();
+        let (mut rcgi, mut rcidx, mut rct, mut rwix) = (cgi_cdf, cidx_cdf, ct_cdf, wix_cdf);
+        write_compound_type_info(
+            &mut enc, masked, cgi, &mut rcgi, dist_wtd, compound_idx, &mut rcidx, wedge_used,
+            comp_type, &mut rct, wedge_index, &mut rwix, wedge_sign, mask_type,
+        );
+        let got = enc.done().to_vec();
+        let (want, ocgi, ocidx, oct, owix) = c::ref_write_compound_type_info(
+            masked, cgi, &cgi_cdf, dist_wtd, compound_idx, &cidx_cdf, wedge_used, comp_type,
+            &ct_cdf, wedge_index, &wix_cdf, wedge_sign, mask_type,
+        );
+        assert_eq!(got, want, "bytes masked={masked} cgi={cgi} dw={dist_wtd} ci={compound_idx} wu={wedge_used} ct={comp_type}");
+        assert_eq!(rcgi, ocgi, "cgi_cdf");
+        assert_eq!(rcidx, ocidx, "cidx_cdf");
+        assert_eq!(rct, oct, "ctype_cdf");
+        assert_eq!(rwix, owix, "wedge_idx_cdf");
+    }
+}

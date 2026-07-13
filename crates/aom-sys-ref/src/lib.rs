@@ -283,6 +283,10 @@ extern "C" {
     #[allow(clippy::too_many_arguments)]
     fn shim_write_interintra_info(interintra: i32, ii_cdf: *mut u16, ii_mode: i32, ii_mode_cdf: *mut u16, wedge_used: i32, use_wedge: i32, wedge_ii_cdf: *mut u16, wedge_index: i32, wedge_idx_cdf: *mut u16, out: *mut u8, o_ii: *mut u16, o_iim: *mut u16, o_wii: *mut u16, o_wix: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
+    fn shim_get_comp_group_idx_context(ha: i32, a_rf0: i32, a_rf1: i32, a_cgi: i32, hl: i32, l_rf0: i32, l_rf1: i32, l_cgi: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_write_compound_type_info(masked_used: i32, comp_group_idx: i32, cgi_cdf: *mut u16, dist_wtd: i32, compound_idx: i32, cidx_cdf: *mut u16, wedge_used: i32, comp_type: i32, ctype_cdf: *mut u16, wedge_index: i32, wedge_idx_cdf: *mut u16, wedge_sign: i32, mask_type: i32, out: *mut u8, o_cgi: *mut u16, o_cidx: *mut u16, o_ctype: *mut u16, o_wix: *mut u16) -> u32;
+    #[allow(clippy::too_many_arguments)]
     fn shim_write_ref_frames(cdfs: *mut u16, seg_ref: i32, seg_skipgmv: i32, rmode_select: i32, comp_allowed: i32, is_compound: i32, comp_ref_type: i32, ref0: i32, ref1: i32, out: *mut u8, out_cdfs: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
     fn shim_get_comp_reference_type_context(ha: i32, a_r0: i32, a_r1: i32, a_ibc: i32, hl: i32, l_r0: i32, l_r1: i32, l_ibc: i32) -> i32;
@@ -536,6 +540,39 @@ pub fn ref_write_interintra_info(
     };
     out.truncate(n as usize);
     (out, oii, oiim, owii, owix)
+}
+
+/// Reference `get_comp_group_idx_context` (facade over the real static inline).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_get_comp_group_idx_context(
+    ha: bool, a_rf0: i32, a_rf1: i32, a_cgi: i32,
+    hl: bool, l_rf0: i32, l_rf1: i32, l_cgi: i32,
+) -> i32 {
+    unsafe { shim_get_comp_group_idx_context(ha as i32, a_rf0, a_rf1, a_cgi, hl as i32, l_rf0, l_rf1, l_cgi) }
+}
+
+/// Reference compound-type coding (write_mbmi_b portion, over pristine C od_ec). CDFs
+/// pre-selected. Returns (bytes, cgi_cdf[3], cidx_cdf[3], ctype_cdf[3], wedge_idx[17]).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn ref_write_compound_type_info(
+    masked_used: bool, comp_group_idx: i32, cgi_cdf: &[u16; 3],
+    dist_wtd: bool, compound_idx: i32, cidx_cdf: &[u16; 3],
+    wedge_used: bool, comp_type: i32, ctype_cdf: &[u16; 3],
+    wedge_index: i32, wedge_idx_cdf: &[u16; 17], wedge_sign: i32, mask_type: i32,
+) -> (Vec<u8>, [u16; 3], [u16; 3], [u16; 3], [u16; 17]) {
+    let (mut cgi, mut cidx, mut ct, mut wix) = (*cgi_cdf, *cidx_cdf, *ctype_cdf, *wedge_idx_cdf);
+    let mut out = vec![0u8; 32];
+    let (mut ocgi, mut ocidx, mut oct, mut owix) = ([0u16; 3], [0u16; 3], [0u16; 3], [0u16; 17]);
+    let n = unsafe {
+        shim_write_compound_type_info(
+            masked_used as i32, comp_group_idx, cgi.as_mut_ptr(), dist_wtd as i32, compound_idx,
+            cidx.as_mut_ptr(), wedge_used as i32, comp_type, ct.as_mut_ptr(), wedge_index,
+            wix.as_mut_ptr(), wedge_sign, mask_type, out.as_mut_ptr(),
+            ocgi.as_mut_ptr(), ocidx.as_mut_ptr(), oct.as_mut_ptr(), owix.as_mut_ptr(),
+        )
+    };
+    out.truncate(n as usize);
+    (out, ocgi, ocidx, oct, owix)
 }
 
 /// Reference `av1_get_palette_cache` (facade). Neighbour `palette_colors` are the full
