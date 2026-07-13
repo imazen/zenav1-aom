@@ -1032,3 +1032,47 @@ fn write_frame_size_with_refs_matches_c() {
         assert_eq!(got, want, "frame_size_with_refs");
     }
 }
+
+#[test]
+fn write_inter_ref_signaling_matches_c() {
+    use aom_entropy::header::{write_inter_ref_signaling, InterRefSignaling};
+    let mut rng = Rng(0x14e6_c0de_a11a_0009);
+    for _ in 0..300_000 {
+        let frame_id_length = rng.range(2, 17) as u32;
+        let delta_frame_id_length = rng.range(2, 16) as u32;
+        let m = 1i32 << frame_id_length;
+        let mut ref_map_idx = [0i32; 7];
+        for x in &mut ref_map_idx {
+            *x = rng.range(0, 8);
+        }
+        let mut rtc_reference = [0i32; 7];
+        let mut rtc_ref_idx = [0i32; 7];
+        for i in 0..7 {
+            rtc_reference[i] = rng.range(0, 2);
+            rtc_ref_idx[i] = rng.range(0, 8);
+        }
+        let mut ref_frame_id = [0i32; 8];
+        for x in &mut ref_frame_id {
+            *x = rng.range(0, m);
+        }
+        let s = InterRefSignaling {
+            enable_order_hint: rng.next().is_multiple_of(2),
+            frame_refs_short_signaling: rng.next().is_multiple_of(3),
+            ref_map_idx,
+            set_ref_frame_config: rng.next().is_multiple_of(2),
+            rtc_reference,
+            rtc_ref_idx,
+            number_spatial_layers: rng.range(1, 3),
+            frame_id_numbers_present_flag: rng.next().is_multiple_of(2),
+            frame_id_length,
+            current_frame_id: rng.range(0, m),
+            ref_frame_id,
+            delta_frame_id_length,
+        };
+        let mut wb = WriteBitBuffer::new();
+        write_inter_ref_signaling(&mut wb, &s);
+        let got = wb.bytes().to_vec();
+        let want = c::ref_write_inter_ref_signaling(s.enable_order_hint, s.frame_refs_short_signaling, &ref_map_idx, s.set_ref_frame_config, &rtc_reference, &rtc_ref_idx, s.number_spatial_layers, s.frame_id_numbers_present_flag, frame_id_length, s.current_frame_id, &ref_frame_id, delta_frame_id_length);
+        assert_eq!(got, want, "inter_ref_signaling");
+    }
+}

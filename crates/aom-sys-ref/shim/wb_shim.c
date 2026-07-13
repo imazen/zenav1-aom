@@ -814,3 +814,42 @@ uint32_t shim_write_frame_size_with_refs(int up_w, int up_h, int rw, int rh,
   }
   return aom_wb_bytes_written(&wb);
 }
+
+/* INTER/S-frame ref signaling from write_uncompressed_header_obu, transcribed over
+ * the real aom_wb (internal_error on invalid delta omitted — no byte effect). */
+uint32_t shim_write_inter_ref_signaling(int enable_order_hint, int short_sig,
+                                        const int *ref_map_idx, int set_rfc,
+                                        const int *rtc_reference, const int *rtc_ref_idx,
+                                        int num_spatial_layers, int frame_id_present,
+                                        int frame_id_len, int current_frame_id,
+                                        const int *ref_frame_id, int diff_len, uint8_t *out) {
+  struct aom_write_bit_buffer wb = { out, 0 };
+  if (enable_order_hint) aom_wb_write_bit(&wb, short_sig);
+  if (short_sig) {
+    aom_wb_write_literal(&wb, ref_map_idx[0], 3);
+    aom_wb_write_literal(&wb, ref_map_idx[3], 3);
+  }
+  int first_ref_map_idx = -1;
+  if (set_rfc) {
+    for (int r = 0; r < 7; r++) {
+      if (rtc_reference[r] == 1) { first_ref_map_idx = rtc_ref_idx[r]; break; }
+    }
+  }
+  for (int r = 0; r < 7; r++) {
+    if (!short_sig) {
+      if (set_rfc && first_ref_map_idx != -1 && num_spatial_layers == 1 && !enable_order_hint) {
+        int map_idx = rtc_reference[r] ? ref_map_idx[r] : first_ref_map_idx;
+        aom_wb_write_literal(&wb, map_idx, 3);
+      } else {
+        aom_wb_write_literal(&wb, ref_map_idx[r], 3);
+      }
+    }
+    if (frame_id_present) {
+      int i = ref_map_idx[r];
+      int m = 1 << frame_id_len;
+      int delta = ((current_frame_id - ref_frame_id[i] + m) % m) - 1;
+      aom_wb_write_literal(&wb, delta, diff_len);
+    }
+  }
+  return aom_wb_bytes_written(&wb);
+}

@@ -1241,3 +1241,67 @@ pub fn write_frame_size_with_refs(wb: &mut WriteBitBuffer, w: &FrameSizeWithRefs
         write_frame_size(wb, &w.frame_size);
     }
 }
+
+// ---- frame-header OBU: inter-frame ref signaling --------------------------
+
+/// The INTER/S-frame reference-signaling state (`write_uncompressed_header_obu`).
+#[derive(Clone, Debug)]
+pub struct InterRefSignaling {
+    pub enable_order_hint: bool,
+    pub frame_refs_short_signaling: bool,
+    /// `get_ref_frame_map_idx(LAST..ALTREF)` (index 0 = LAST, 3 = GOLDEN).
+    pub ref_map_idx: [i32; 7],
+    pub set_ref_frame_config: bool,
+    pub rtc_reference: [i32; 7],
+    pub rtc_ref_idx: [i32; 7],
+    pub number_spatial_layers: i32,
+    pub frame_id_numbers_present_flag: bool,
+    pub frame_id_length: u32,
+    pub current_frame_id: i32,
+    pub ref_frame_id: [i32; 8], // indexed by map_idx
+    pub delta_frame_id_length: u32,
+}
+
+/// The INTER/S-frame reference-signaling loop from `write_uncompressed_header_obu`:
+/// the (order-hint-gated) short-signaling flag with its LAST/GOLDEN map indices, then
+/// per reference the 3-bit ref-map index (with the real-time set-ref-frame-config
+/// special case) and, when frame ids are present, the modular delta-frame-id. The
+/// `internal_error` on an invalid delta has no byte effect and is omitted.
+pub fn write_inter_ref_signaling(wb: &mut WriteBitBuffer, s: &InterRefSignaling) {
+    if s.enable_order_hint {
+        wb.write_bit(s.frame_refs_short_signaling as u32);
+    }
+    if s.frame_refs_short_signaling {
+        wb.write_literal(s.ref_map_idx[0], 3); // LAST (REF_FRAMES_LOG2)
+        wb.write_literal(s.ref_map_idx[3], 3); // GOLDEN
+    }
+    let mut first_ref_map_idx = -1i32; // INVALID_IDX
+    if s.set_ref_frame_config {
+        for r in 0..7 {
+            if s.rtc_reference[r] == 1 {
+                first_ref_map_idx = s.rtc_ref_idx[r];
+                break;
+            }
+        }
+    }
+    for r in 0..7 {
+        if !s.frame_refs_short_signaling {
+            if s.set_ref_frame_config
+                && first_ref_map_idx != -1
+                && s.number_spatial_layers == 1
+                && !s.enable_order_hint
+            {
+                let map_idx = if s.rtc_reference[r] != 0 { s.ref_map_idx[r] } else { first_ref_map_idx };
+                wb.write_literal(map_idx, 3);
+            } else {
+                wb.write_literal(s.ref_map_idx[r], 3);
+            }
+        }
+        if s.frame_id_numbers_present_flag {
+            let i = s.ref_map_idx[r] as usize;
+            let m = 1i32 << s.frame_id_length;
+            let delta = ((s.current_frame_id - s.ref_frame_id[i] + m) % m) - 1;
+            wb.write_literal(delta, s.delta_frame_id_length);
+        }
+    }
+}

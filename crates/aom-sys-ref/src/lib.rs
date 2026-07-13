@@ -225,6 +225,19 @@ extern "C" {
     fn shim_write_frame_header_prefix(t: *const i64, op_dmpp: *const i64, op_idc: *const i64, brt: *const i64, ref_oh: *const i64, out: *mut u8) -> u32;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_frame_size_with_refs(up_w: i32, up_h: i32, rw: i32, rh: i32, valid: *const i32, ycw: *const i32, ych: *const i32, rrw: *const i32, rrh: *const i32, enable_superres: i32, denom: i32, fs_num_bits_w: i32, fs_num_bits_h: i32, fs_up_w: i32, fs_up_h: i32, fs_scaling_active: i32, fs_rw: i32, fs_rh: i32, out: *mut u8) -> u32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_write_inter_ref_signaling(enable_order_hint: i32, short_sig: i32, ref_map_idx: *const i32, set_rfc: i32, rtc_reference: *const i32, rtc_ref_idx: *const i32, num_spatial_layers: i32, frame_id_present: i32, frame_id_len: i32, current_frame_id: i32, ref_frame_id: *const i32, diff_len: i32, out: *mut u8) -> u32;
+}
+
+/// Reference INTER/S-frame ref signaling (transcribed over the real aom_wb).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_write_inter_ref_signaling(enable_order_hint: bool, short_sig: bool, ref_map_idx: &[i32; 7], set_rfc: bool, rtc_reference: &[i32; 7], rtc_ref_idx: &[i32; 7], num_spatial_layers: i32, frame_id_present: bool, frame_id_len: u32, current_frame_id: i32, ref_frame_id: &[i32; 8], diff_len: u32) -> Vec<u8> {
+    let mut out = vec![0u8; 64];
+    let n = unsafe {
+        shim_write_inter_ref_signaling(enable_order_hint as i32, short_sig as i32, ref_map_idx.as_ptr(), set_rfc as i32, rtc_reference.as_ptr(), rtc_ref_idx.as_ptr(), num_spatial_layers, frame_id_present as i32, frame_id_len as i32, current_frame_id, ref_frame_id.as_ptr(), diff_len as i32, out.as_mut_ptr())
+    };
+    out.truncate(n as usize);
+    out
 }
 
 /// Reference `write_frame_size_with_refs` (transcribed over the real aom_wb).
