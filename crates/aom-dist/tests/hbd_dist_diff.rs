@@ -1,0 +1,59 @@
+//! Differential harness for highbd (10/12-bit) SAD and variance vs C libaom
+//! v3.14.1 across all 22 block sizes and bit depths 8/10/12.
+//!
+//! These are the highbd counterparts of the speed-0 encoder motion-search /
+//! RDO workhorses (`aom_highbd_sad*`, `aom_highbd_*_variance*`).
+
+use aom_dist::{highbd_sad, highbd_variance};
+use aom_sys_ref as c;
+
+const SIZES: [(usize, usize); 22] = [
+    (4, 4), (4, 8), (4, 16), (8, 4), (8, 8), (8, 16), (8, 32), (16, 4), (16, 8), (16, 16), (16, 32),
+    (16, 64), (32, 8), (32, 16), (32, 32), (32, 64), (64, 16), (64, 32), (64, 64), (64, 128),
+    (128, 64), (128, 128),
+];
+
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+    fn px(&mut self, mask: u16) -> u16 {
+        (self.next() as u16) & mask
+    }
+}
+
+fn plane(rng: &mut Rng, stride: usize, rows: usize, mask: u16) -> Vec<u16> {
+    (0..stride * rows).map(|_| rng.px(mask)).collect()
+}
+
+#[test]
+fn hbd_sad_variance_byte_identical() {
+    let mut rng = Rng(0x_5add_1234_5678_9abc);
+    for &bd in &[8u8, 10, 12] {
+        let mask = ((1u32 << bd) - 1) as u16;
+        for (idx, &(w, h)) in SIZES.iter().enumerate() {
+            let a_stride = w + 8;
+            let b_stride = w + 8;
+            for _ in 0..1500 {
+                let a = plane(&mut rng, a_stride, h + 2, mask);
+                let b = plane(&mut rng, b_stride, h + 2, mask);
+
+                // highbd SAD (bit-depth independent, but exercised per range)
+                let got = highbd_sad(&a, a_stride, &b, b_stride, w, h);
+                let want = c::ref_hbd_sad(idx, &a, a_stride, &b, b_stride);
+                assert_eq!(got, want, "hbd_sad {w}x{h} bd={bd}");
+
+                // highbd variance (bd-normalised)
+                let (gv, gs) = highbd_variance(&a, a_stride, &b, b_stride, w, h, bd);
+                let (wv, ws) = c::ref_hbd_variance(idx, bd, &a, a_stride, &b, b_stride);
+                assert_eq!((gv, gs), (wv, ws), "hbd_variance {w}x{h} bd={bd}");
+            }
+        }
+    }
+}

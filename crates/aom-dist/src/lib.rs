@@ -27,6 +27,54 @@ pub fn sad(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: us
     s
 }
 
+/// `aom_highbd_sad<W>x<H>_c`: SAD over 16-bit (10/12-bit) samples.
+pub fn highbd_sad(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize) -> u32 {
+    let mut s: u32 = 0;
+    for y in 0..h {
+        for x in 0..w {
+            s += (a[y * a_stride + x] as i32 - b[y * b_stride + x] as i32).unsigned_abs();
+        }
+    }
+    s
+}
+
+/// libaom `highbd_variance64`: returns (sse: u64, sum: i64). Note `tsse`
+/// accumulates the 32-bit-truncated square (`(uint32_t)(diff*diff)`) into u64.
+fn highbd_variance64(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize) -> (u64, i64) {
+    let mut tsum: i64 = 0;
+    let mut tsse: u64 = 0;
+    for y in 0..h {
+        let mut lsum: i32 = 0;
+        for x in 0..w {
+            let diff = a[y * a_stride + x] as i32 - b[y * b_stride + x] as i32;
+            lsum += diff;
+            tsse += ((diff * diff) as u32) as u64;
+        }
+        tsum += lsum as i64;
+    }
+    (tsse, tsum)
+}
+
+/// `aom_highbd_<bd>_variance<W>x<H>_c`: returns (variance, sse). `bd` ∈ {8,10,12}.
+pub fn highbd_variance(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize, bd: u8) -> (u32, u32) {
+    let (sse_long, sum_long) = highbd_variance64(a, a_stride, b, b_stride, w, h);
+    // bd-dependent normalisation (ROUND_POWER_OF_TWO), matching libaom
+    // highbd_8/10/12_variance.
+    let (sse, sum): (u32, i32) = match bd {
+        8 => (sse_long as u32, sum_long as i32),
+        10 => (
+            ((sse_long + (1 << 3)) >> 4) as u32,
+            ((sum_long + (1 << 1)) >> 2) as i32,
+        ),
+        _ => (
+            ((sse_long + (1 << 7)) >> 8) as u32,
+            ((sum_long + (1 << 3)) >> 4) as i32,
+        ),
+    };
+    let var = sse.wrapping_sub(((sum as i64 * sum as i64) / (w * h) as i64) as u32);
+    (var, sse)
+}
+
 /// libaom `variance()`: returns (sse, sum).
 fn variance_raw(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: usize) -> (u32, i32) {
     let mut tsum: i32 = 0;

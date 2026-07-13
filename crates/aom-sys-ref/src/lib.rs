@@ -172,6 +172,26 @@ pub fn ref_subpel_var(idx: usize, a: &[u8], as_: usize, xo: usize, yo: usize, b:
     (v, sse)
 }
 
+// hbd_sadvar_shim.c — highbd SAD / variance (CONVERT_TO_BYTEPTR internally).
+extern "C" {
+    fn shim_hbd_sad(i: i32, s: *const u16, ss: i32, r: *const u16, rs: i32) -> u32;
+    fn shim_hbd_var(i: i32, bd: i32, a: *const u16, as_: i32, b: *const u16, bs: i32, sse: *mut u32) -> u32;
+}
+
+/// Reference `aom_highbd_sad<W>x<H>_c` for size index `idx`.
+pub fn ref_hbd_sad(idx: usize, s: &[u16], ss: usize, r: &[u16], rs: usize) -> u32 {
+    unsafe { shim_hbd_sad(idx as i32, s.as_ptr(), ss as i32, r.as_ptr(), rs as i32) }
+}
+
+/// Reference `aom_highbd_<bd>_variance<W>x<H>_c`; returns (variance, sse).
+pub fn ref_hbd_variance(idx: usize, bd: u8, a: &[u16], as_: usize, b: &[u16], bs: usize) -> (u32, u32) {
+    let mut sse = 0u32;
+    let v = unsafe {
+        shim_hbd_var(idx as i32, bd as i32, a.as_ptr(), as_ as i32, b.as_ptr(), bs as i32, &mut sse)
+    };
+    (v, sse)
+}
+
 // hbd_lpf_shim.c — highbd deblocking edge filters.
 extern "C" {
     fn shim_hbd_lpf(dir: i32, width: i32, s: *mut u16, p: i32, bl: *const u8, li: *const u8, th: *const u8, bd: i32);
