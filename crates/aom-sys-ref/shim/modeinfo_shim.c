@@ -1092,3 +1092,37 @@ uint32_t shim_write_palette_mode_info(int mode_dc, int uv_dc, int bit_depth, int
   od_ec_enc_clear(&ec);
   return nb;
 }
+
+/* --- interintra sub-symbols (av1/encoder/bitstream.c, in write_mbmi_b) --- */
+#include "av1/common/reconinter.h" /* MAX_WEDGE_TYPES */
+/* Transcribed verbatim over od_ec. INTERINTRA_MODES=4, MAX_WEDGE_TYPES=16. The outer
+ * gate (reference_mode / enable_interintra_compound / is_interintra_allowed) and
+ * av1_is_wedge_used(bsize) are the caller's; CDFs are pre-selected by bsize_group/bsize. */
+uint32_t shim_write_interintra_info(int interintra, uint16_t *ii_cdf, int ii_mode,
+                                    uint16_t *ii_mode_cdf, int wedge_used, int use_wedge,
+                                    uint16_t *wedge_ii_cdf, int wedge_index,
+                                    uint16_t *wedge_idx_cdf, uint8_t *out, uint16_t *o_ii,
+                                    uint16_t *o_iim, uint16_t *o_wii, uint16_t *o_wix) {
+  od_ec_enc ec; od_ec_enc_init(&ec, 256);
+  od_ec_encode_cdf_q15(&ec, interintra, ii_cdf, 2);
+  update_cdf(ii_cdf, interintra, 2);
+  if (interintra) {
+    od_ec_encode_cdf_q15(&ec, ii_mode, ii_mode_cdf, INTERINTRA_MODES);
+    update_cdf(ii_mode_cdf, ii_mode, INTERINTRA_MODES);
+    if (wedge_used) {
+      od_ec_encode_cdf_q15(&ec, use_wedge, wedge_ii_cdf, 2);
+      update_cdf(wedge_ii_cdf, use_wedge, 2);
+      if (use_wedge) {
+        od_ec_encode_cdf_q15(&ec, wedge_index, wedge_idx_cdf, MAX_WEDGE_TYPES);
+        update_cdf(wedge_idx_cdf, wedge_index, MAX_WEDGE_TYPES);
+      }
+    }
+  }
+  uint32_t nb = 0; const unsigned char *buf = od_ec_enc_done(&ec, &nb);
+  for (uint32_t i = 0; i < nb; i++) out[i] = buf[i];
+  for (int i = 0; i < 3; i++) { o_ii[i] = ii_cdf[i]; o_wii[i] = wedge_ii_cdf[i]; }
+  for (int i = 0; i < 5; i++) o_iim[i] = ii_mode_cdf[i];   /* INTERINTRA_MODES+1 */
+  for (int i = 0; i < 17; i++) o_wix[i] = wedge_idx_cdf[i]; /* MAX_WEDGE_TYPES+1 */
+  od_ec_enc_clear(&ec);
+  return nb;
+}

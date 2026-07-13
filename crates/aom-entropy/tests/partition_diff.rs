@@ -1515,3 +1515,48 @@ fn write_palette_mode_info_matches_c() {
         assert_eq!(rus, ous, "uv_size_cdf");
     }
 }
+
+#[test]
+fn write_interintra_info_matches_c() {
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::write_interintra_info;
+    let mut rng = Rng(0x11a_c0de_0000_0008);
+    // Monotone-decreasing CDF of nsyms (nsyms cumulative incl. trailing 0, +count).
+    fn mk(rng: &mut Rng, nsyms: usize) -> Vec<u16> {
+        let mut c = vec![0u16; nsyms + 1];
+        let mut prev = 32768i32;
+        for e in c.iter_mut().take(nsyms - 1) {
+            let v = (prev - 1 - (rng.next() % 300) as i32).max(1);
+            *e = v as u16;
+            prev = v;
+        }
+        c // c[nsyms-1] = 0 (top), c[nsyms] = 0 (count)
+    }
+    for _ in 0..300_000 {
+        let interintra = (rng.next() % 2) as i32;
+        let interintra_mode = (rng.next() % 4) as i32;
+        let wedge_used = rng.next().is_multiple_of(2);
+        let use_wedge = (rng.next() % 2) as i32;
+        let wedge_index = (rng.next() % 16) as i32;
+        let ii: [u16; 3] = mk(&mut rng, 2).try_into().unwrap();
+        let iim: [u16; 5] = mk(&mut rng, 4).try_into().unwrap();
+        let wii: [u16; 3] = mk(&mut rng, 2).try_into().unwrap();
+        let wix: [u16; 17] = mk(&mut rng, 16).try_into().unwrap();
+
+        let mut enc = OdEcEnc::new();
+        let (mut rii, mut riim, mut rwii, mut rwix) = (ii, iim, wii, wix);
+        write_interintra_info(
+            &mut enc, true, interintra, &mut rii, interintra_mode, &mut riim, wedge_used,
+            use_wedge, &mut rwii, wedge_index, &mut rwix,
+        );
+        let got = enc.done().to_vec();
+        let (want, oii, oiim, owii, owix) = c::ref_write_interintra_info(
+            interintra, &ii, interintra_mode, &iim, wedge_used, use_wedge, &wii, wedge_index, &wix,
+        );
+        assert_eq!(got, want, "bytes ii={interintra} mode={interintra_mode} wu={wedge_used} uw={use_wedge} wi={wedge_index}");
+        assert_eq!(rii, oii, "ii_cdf");
+        assert_eq!(riim, oiim, "ii_mode_cdf");
+        assert_eq!(rwii, owii, "wedge_ii_cdf");
+        assert_eq!(rwix, owix, "wedge_idx_cdf");
+    }
+}

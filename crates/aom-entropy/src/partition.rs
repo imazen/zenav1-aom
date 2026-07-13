@@ -1576,3 +1576,42 @@ pub fn write_palette_mode_info(
         }
     }
 }
+
+const INTERINTRA_MODES: usize = 4;
+const MAX_WEDGE_TYPES: usize = 16;
+
+/// The interintra sub-symbols of `write_mbmi_b` (`av1/encoder/bitstream.c`): when
+/// interintra compound is allowed for the block, code the interintra on/off flag; if
+/// on, the `interintra_mode` (`INTERINTRA_MODES` symbols on the size-group CDF) and,
+/// when wedges are usable for `bsize`, the `use_wedge_interintra` flag and (if set) the
+/// `wedge_idx` (`MAX_WEDGE_TYPES` symbols). The outer allow-gate (reference mode,
+/// sequence flag, `is_interintra_allowed`) and `wedge_used` (`av1_is_wedge_used`) are
+/// the caller's; the four CDFs are the caller's size-group/`bsize`-selected slices.
+#[allow(clippy::too_many_arguments)]
+pub fn write_interintra_info(
+    enc: &mut OdEcEnc,
+    allowed: bool,
+    interintra: i32,
+    interintra_cdf: &mut [u16],
+    interintra_mode: i32,
+    interintra_mode_cdf: &mut [u16],
+    wedge_used: bool,
+    use_wedge_interintra: i32,
+    wedge_interintra_cdf: &mut [u16],
+    interintra_wedge_index: i32,
+    wedge_idx_cdf: &mut [u16],
+) {
+    if !allowed {
+        return;
+    }
+    write_symbol(enc, interintra, interintra_cdf, 2);
+    if interintra != 0 {
+        write_symbol(enc, interintra_mode, interintra_mode_cdf, INTERINTRA_MODES);
+        if wedge_used {
+            write_symbol(enc, use_wedge_interintra, wedge_interintra_cdf, 2);
+            if use_wedge_interintra != 0 {
+                write_symbol(enc, interintra_wedge_index, wedge_idx_cdf, MAX_WEDGE_TYPES);
+            }
+        }
+    }
+}

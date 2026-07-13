@@ -281,6 +281,8 @@ extern "C" {
     #[allow(clippy::too_many_arguments)]
     fn shim_write_palette_mode_info(mode_dc: i32, uv_dc: i32, bit_depth: i32, bsize_ctx: i32, y_mode_ctx: i32, uv_mode_ctx: i32, palette_size: *const u8, palette_colors: *const u16, mb_to_top_edge: i32, ha: i32, a_colors: *const u16, a_s0: i32, a_s1: i32, hl: i32, l_colors: *const u16, l_s0: i32, l_s1: i32, y_mode_cdf: *mut u16, y_size_cdf: *mut u16, uv_mode_cdf: *mut u16, uv_size_cdf: *mut u16, out: *mut u8, o_ym: *mut u16, o_ys: *mut u16, o_um: *mut u16, o_us: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
+    fn shim_write_interintra_info(interintra: i32, ii_cdf: *mut u16, ii_mode: i32, ii_mode_cdf: *mut u16, wedge_used: i32, use_wedge: i32, wedge_ii_cdf: *mut u16, wedge_index: i32, wedge_idx_cdf: *mut u16, out: *mut u8, o_ii: *mut u16, o_iim: *mut u16, o_wii: *mut u16, o_wix: *mut u16) -> u32;
+    #[allow(clippy::too_many_arguments)]
     fn shim_write_ref_frames(cdfs: *mut u16, seg_ref: i32, seg_skipgmv: i32, rmode_select: i32, comp_allowed: i32, is_compound: i32, comp_ref_type: i32, ref0: i32, ref1: i32, out: *mut u8, out_cdfs: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
     fn shim_get_comp_reference_type_context(ha: i32, a_r0: i32, a_r1: i32, a_ibc: i32, hl: i32, l_r0: i32, l_r1: i32, l_ibc: i32) -> i32;
@@ -511,6 +513,29 @@ pub fn ref_write_palette_colors_v(colors_v: &[u16], bit_depth: i32) -> Vec<u8> {
     };
     out.truncate(n as usize);
     out
+}
+
+/// Reference interintra sub-symbols (write_mbmi_b portion, over pristine C od_ec). CDFs
+/// are pre-selected. Returns (bytes, ii_cdf[3], ii_mode_cdf[5], wedge_ii_cdf[3],
+/// wedge_idx_cdf[17]).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn ref_write_interintra_info(
+    interintra: i32, ii_cdf: &[u16; 3], ii_mode: i32, ii_mode_cdf: &[u16; 5],
+    wedge_used: bool, use_wedge: i32, wedge_ii_cdf: &[u16; 3], wedge_index: i32,
+    wedge_idx_cdf: &[u16; 17],
+) -> (Vec<u8>, [u16; 3], [u16; 5], [u16; 3], [u16; 17]) {
+    let (mut ii, mut iim, mut wii, mut wix) = (*ii_cdf, *ii_mode_cdf, *wedge_ii_cdf, *wedge_idx_cdf);
+    let mut out = vec![0u8; 32];
+    let (mut oii, mut oiim, mut owii, mut owix) = ([0u16; 3], [0u16; 5], [0u16; 3], [0u16; 17]);
+    let n = unsafe {
+        shim_write_interintra_info(
+            interintra, ii.as_mut_ptr(), ii_mode, iim.as_mut_ptr(), wedge_used as i32, use_wedge,
+            wii.as_mut_ptr(), wedge_index, wix.as_mut_ptr(), out.as_mut_ptr(),
+            oii.as_mut_ptr(), oiim.as_mut_ptr(), owii.as_mut_ptr(), owix.as_mut_ptr(),
+        )
+    };
+    out.truncate(n as usize);
+    (out, oii, oiim, owii, owix)
 }
 
 /// Reference `av1_get_palette_cache` (facade). Neighbour `palette_colors` are the full
