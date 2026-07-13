@@ -213,6 +213,16 @@ extern "C" {
     fn shim_write_film_grain_params(s: *const i32, spy: *const i32, spcb: *const i32, spcr: *const i32, ary: *const i32, arcb: *const i32, arcr: *const i32, out: *mut u8) -> u32;
     fn shim_wb_signed_subexpfin(n: i32, k: i32, ref_: i32, v: i32, out: *mut u8) -> u32;
     fn shim_write_global_motion(wmtype: *const i32, wmmat: *const i32, refmat: *const i32, allow_hp: i32, out: *mut u8) -> u32;
+    fn shim_write_sequence_header(s: *const i32, out: *mut u8) -> u32;
+}
+
+/// Reference `write_sequence_header` (transcribed control flow over the real aom_wb).
+/// `s` packs the 24 scalars in the order the shim reads them.
+pub fn ref_write_sequence_header(s: &[i32; 24]) -> Vec<u8> {
+    let mut out = vec![0u8; 32];
+    let n = unsafe { shim_write_sequence_header(s.as_ptr(), out.as_mut_ptr()) };
+    out.truncate(n as usize);
+    out
 }
 
 /// Reference `write_global_motion` (transcribed control flow over the real aom_wb).

@@ -464,3 +464,63 @@ uint32_t shim_write_global_motion(const int *wmtype, const int *wmmat,
   }
   return aom_wb_bytes_written(&wb);
 }
+
+/* write_sequence_header (+ write_sb_size), transcribed control flow over the real
+ * aom_wb. Scalars packed in s[] (see the Rust binding order). */
+uint32_t shim_write_sequence_header(const int *s, uint8_t *out) {
+  struct aom_write_bit_buffer wb = { out, 0 };
+  const int num_bits_width = s[0], num_bits_height = s[1];
+  const int max_frame_width = s[2], max_frame_height = s[3];
+  const int reduced = s[4], frame_id_present = s[5];
+  const int delta_frame_id_length = s[6], frame_id_length = s[7], sb_size_128 = s[8];
+  const int en_filter_intra = s[9], en_intra_edge = s[10], en_interintra = s[11];
+  const int en_masked = s[12], en_warped = s[13], en_dual = s[14], en_order_hint = s[15];
+  const int en_dist_wtd = s[16], en_ref_mvs = s[17], force_sct = s[18];
+  const int force_int_mv = s[19], order_hint_bits_m1 = s[20];
+  const int en_superres = s[21], en_cdef = s[22], en_restoration = s[23];
+
+  aom_wb_write_literal(&wb, num_bits_width - 1, 4);
+  aom_wb_write_literal(&wb, num_bits_height - 1, 4);
+  aom_wb_write_literal(&wb, max_frame_width - 1, num_bits_width);
+  aom_wb_write_literal(&wb, max_frame_height - 1, num_bits_height);
+  if (!reduced) {
+    aom_wb_write_bit(&wb, frame_id_present);
+    if (frame_id_present) {
+      aom_wb_write_literal(&wb, delta_frame_id_length - 2, 4);
+      aom_wb_write_literal(&wb, frame_id_length - delta_frame_id_length - 1, 3);
+    }
+  }
+  aom_wb_write_bit(&wb, sb_size_128);
+  aom_wb_write_bit(&wb, en_filter_intra);
+  aom_wb_write_bit(&wb, en_intra_edge);
+  if (!reduced) {
+    aom_wb_write_bit(&wb, en_interintra);
+    aom_wb_write_bit(&wb, en_masked);
+    aom_wb_write_bit(&wb, en_warped);
+    aom_wb_write_bit(&wb, en_dual);
+    aom_wb_write_bit(&wb, en_order_hint);
+    if (en_order_hint) {
+      aom_wb_write_bit(&wb, en_dist_wtd);
+      aom_wb_write_bit(&wb, en_ref_mvs);
+    }
+    if (force_sct == 2) {
+      aom_wb_write_bit(&wb, 1);
+    } else {
+      aom_wb_write_bit(&wb, 0);
+      aom_wb_write_bit(&wb, force_sct);
+    }
+    if (force_sct > 0) {
+      if (force_int_mv == 2) {
+        aom_wb_write_bit(&wb, 1);
+      } else {
+        aom_wb_write_bit(&wb, 0);
+        aom_wb_write_bit(&wb, force_int_mv);
+      }
+    }
+    if (en_order_hint) aom_wb_write_literal(&wb, order_hint_bits_m1, 3);
+  }
+  aom_wb_write_bit(&wb, en_superres);
+  aom_wb_write_bit(&wb, en_cdef);
+  aom_wb_write_bit(&wb, en_restoration);
+  return aom_wb_bytes_written(&wb);
+}

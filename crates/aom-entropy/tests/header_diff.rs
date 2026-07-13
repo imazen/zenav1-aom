@@ -503,3 +503,60 @@ fn write_global_motion_matches_c() {
         assert_eq!(got, want, "write_global_motion hp={allow_hp} types={wmtype:?}");
     }
 }
+
+#[test]
+fn write_sequence_header_matches_c() {
+    use aom_entropy::header::{write_sequence_header, SequenceHeaderParams};
+    let mut rng = Rng(0x5e90_c0de_a11a_0009);
+    for _ in 0..200_000 {
+        let num_bits_width = rng.range(4, 17) as u32; // enough to hold max_frame_width-1
+        let num_bits_height = rng.range(4, 17) as u32;
+        // frame_id lengths: delta in [2, frame_id-1], frame_id such that fields fit.
+        let delta_frame_id_length = rng.range(2, 18); // -2 fits 4 bits
+        let frame_id_length = delta_frame_id_length + 1 + rng.range(0, 8); // -delta-1 fits 3 bits
+        let force_sct = rng.range(0, 3); // 0,1,2
+        // when force_sct == 0, force_integer_mv must be 2 (SELECT); else 0/1/2
+        let force_integer_mv = if force_sct == 0 { 2 } else { rng.range(0, 3) };
+        let s = SequenceHeaderParams {
+            num_bits_width,
+            num_bits_height,
+            max_frame_width: rng.range(1, 1 << num_bits_width.min(20)),
+            max_frame_height: rng.range(1, 1 << num_bits_height.min(20)),
+            reduced_still_picture_hdr: rng.next().is_multiple_of(3),
+            frame_id_numbers_present_flag: rng.next().is_multiple_of(2),
+            delta_frame_id_length,
+            frame_id_length,
+            sb_size_128: rng.next().is_multiple_of(2),
+            enable_filter_intra: rng.next().is_multiple_of(2),
+            enable_intra_edge_filter: rng.next().is_multiple_of(2),
+            enable_interintra_compound: rng.next().is_multiple_of(2),
+            enable_masked_compound: rng.next().is_multiple_of(2),
+            enable_warped_motion: rng.next().is_multiple_of(2),
+            enable_dual_filter: rng.next().is_multiple_of(2),
+            enable_order_hint: rng.next().is_multiple_of(2),
+            enable_dist_wtd_comp: rng.next().is_multiple_of(2),
+            enable_ref_frame_mvs: rng.next().is_multiple_of(2),
+            force_screen_content_tools: force_sct,
+            force_integer_mv,
+            order_hint_bits_minus_1: rng.range(0, 8),
+            enable_superres: rng.next().is_multiple_of(2),
+            enable_cdef: rng.next().is_multiple_of(2),
+            enable_restoration: rng.next().is_multiple_of(2),
+        };
+        let mut wb = WriteBitBuffer::new();
+        write_sequence_header(&mut wb, &s);
+        let got = wb.bytes().to_vec();
+        let packed = [
+            s.num_bits_width as i32, s.num_bits_height as i32, s.max_frame_width, s.max_frame_height,
+            s.reduced_still_picture_hdr as i32, s.frame_id_numbers_present_flag as i32,
+            s.delta_frame_id_length, s.frame_id_length, s.sb_size_128 as i32,
+            s.enable_filter_intra as i32, s.enable_intra_edge_filter as i32, s.enable_interintra_compound as i32,
+            s.enable_masked_compound as i32, s.enable_warped_motion as i32, s.enable_dual_filter as i32,
+            s.enable_order_hint as i32, s.enable_dist_wtd_comp as i32, s.enable_ref_frame_mvs as i32,
+            s.force_screen_content_tools, s.force_integer_mv, s.order_hint_bits_minus_1,
+            s.enable_superres as i32, s.enable_cdef as i32, s.enable_restoration as i32,
+        ];
+        let want = c::ref_write_sequence_header(&packed);
+        assert_eq!(got, want, "write_sequence_header {s:?}");
+    }
+}

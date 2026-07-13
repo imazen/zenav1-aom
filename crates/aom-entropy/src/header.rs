@@ -728,3 +728,93 @@ pub fn write_global_motion(
         write_global_motion_params(wb, gm, refgm, allow_hp);
     }
 }
+
+// ---- sequence header ------------------------------------------------------
+
+/// The `SequenceHeader` fields written by `write_sequence_header` (the middle chunk
+/// of the sequence-header OBU — not the profile/timing/color-config framing).
+#[derive(Clone, Copy, Debug)]
+pub struct SequenceHeaderParams {
+    pub num_bits_width: u32,
+    pub num_bits_height: u32,
+    pub max_frame_width: i32,
+    pub max_frame_height: i32,
+    pub reduced_still_picture_hdr: bool,
+    pub frame_id_numbers_present_flag: bool,
+    pub delta_frame_id_length: i32,
+    pub frame_id_length: i32,
+    pub sb_size_128: bool,
+    pub enable_filter_intra: bool,
+    pub enable_intra_edge_filter: bool,
+    pub enable_interintra_compound: bool,
+    pub enable_masked_compound: bool,
+    pub enable_warped_motion: bool,
+    pub enable_dual_filter: bool,
+    pub enable_order_hint: bool,
+    pub enable_dist_wtd_comp: bool,
+    pub enable_ref_frame_mvs: bool,
+    pub force_screen_content_tools: i32, // 0, 1, or 2 (SELECT)
+    pub force_integer_mv: i32,           // 0, 1, or 2 (SELECT)
+    pub order_hint_bits_minus_1: i32,
+    pub enable_superres: bool,
+    pub enable_cdef: bool,
+    pub enable_restoration: bool,
+}
+
+/// `write_sequence_header` (`av1/encoder/bitstream.c`): frame-size bit-widths + max
+/// dimensions, the frame-id lengths (unless reduced still-picture), the superblock
+/// size, the intra/inter tool-enable flags, order-hint config, the
+/// screen-content-tools / integer-mv SELECT coding, and the post-filter enables.
+pub fn write_sequence_header(wb: &mut WriteBitBuffer, s: &SequenceHeaderParams) {
+    wb.write_literal(s.num_bits_width as i32 - 1, 4);
+    wb.write_literal(s.num_bits_height as i32 - 1, 4);
+    wb.write_literal(s.max_frame_width - 1, s.num_bits_width);
+    wb.write_literal(s.max_frame_height - 1, s.num_bits_height);
+
+    if !s.reduced_still_picture_hdr {
+        wb.write_bit(s.frame_id_numbers_present_flag as u32);
+        if s.frame_id_numbers_present_flag {
+            wb.write_literal(s.delta_frame_id_length - 2, 4);
+            wb.write_literal(s.frame_id_length - s.delta_frame_id_length - 1, 3);
+        }
+    }
+
+    // write_sb_size
+    wb.write_bit(s.sb_size_128 as u32);
+
+    wb.write_bit(s.enable_filter_intra as u32);
+    wb.write_bit(s.enable_intra_edge_filter as u32);
+
+    if !s.reduced_still_picture_hdr {
+        wb.write_bit(s.enable_interintra_compound as u32);
+        wb.write_bit(s.enable_masked_compound as u32);
+        wb.write_bit(s.enable_warped_motion as u32);
+        wb.write_bit(s.enable_dual_filter as u32);
+        wb.write_bit(s.enable_order_hint as u32);
+        if s.enable_order_hint {
+            wb.write_bit(s.enable_dist_wtd_comp as u32);
+            wb.write_bit(s.enable_ref_frame_mvs as u32);
+        }
+        if s.force_screen_content_tools == 2 {
+            wb.write_bit(1);
+        } else {
+            wb.write_bit(0);
+            wb.write_bit(s.force_screen_content_tools as u32);
+        }
+        if s.force_screen_content_tools > 0 {
+            if s.force_integer_mv == 2 {
+                wb.write_bit(1);
+            } else {
+                wb.write_bit(0);
+                wb.write_bit(s.force_integer_mv as u32);
+            }
+        }
+        if s.enable_order_hint {
+            wb.write_literal(s.order_hint_bits_minus_1, 3);
+        }
+    }
+
+    wb.write_bit(s.enable_superres as u32);
+    wb.write_bit(s.enable_cdef as u32);
+    wb.write_bit(s.enable_restoration as u32);
+}
