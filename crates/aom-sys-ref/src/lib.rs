@@ -257,6 +257,9 @@ extern "C" {
     fn shim_uni_comp_ref_p_context(rc: *const u8) -> i32;
     fn shim_uni_comp_ref_p1_context(rc: *const u8) -> i32;
     fn shim_uni_comp_ref_p2_context(rc: *const u8) -> i32;
+    fn shim_neg_interleave(x: i32, ref_: i32, max: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_write_segment_id(cdf: *mut u16, seg_enabled: i32, update_map: i32, skip_txfm: i32, segment_id: i32, pred: i32, last_active_segid: i32, out: *mut u8, out_cdf: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_ref_frames(cdfs: *mut u16, seg_ref: i32, seg_skipgmv: i32, rmode_select: i32, comp_allowed: i32, is_compound: i32, comp_ref_type: i32, ref0: i32, ref1: i32, out: *mut u8, out_cdfs: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
@@ -334,6 +337,17 @@ pub fn ref_single_ref_p6_context(rc: &[u8; 8]) -> i32 { unsafe { shim_single_ref
 pub fn ref_write_ref_frames(cdfs: &[u16; 48], seg_ref: bool, seg_skipgmv: bool, rmode_select: bool, comp_allowed: bool, is_compound: bool, comp_ref_type: i32, ref0: i32, ref1: i32) -> (Vec<u8>, [u16; 48]) {
     let mut c = *cdfs; let mut out = vec![0u8; 32]; let mut oc = [0u16; 48];
     let n = unsafe { shim_write_ref_frames(c.as_mut_ptr(), seg_ref as i32, seg_skipgmv as i32, rmode_select as i32, comp_allowed as i32, is_compound as i32, comp_ref_type, ref0, ref1, out.as_mut_ptr(), oc.as_mut_ptr()) };
+    out.truncate(n as usize); (out, oc)
+}
+
+/// Reference `av1_neg_interleave` (real exported fn).
+pub fn ref_neg_interleave(x: i32, ref_: i32, max: i32) -> i32 { unsafe { shim_neg_interleave(x, ref_, max) } }
+
+/// Reference `write_segment_id` (over the pristine C od_ec + update_cdf).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_write_segment_id(cdf: &[u16; 9], seg_enabled: bool, update_map: bool, skip_txfm: bool, segment_id: i32, pred: i32, last_active_segid: i32) -> (Vec<u8>, [u16; 9]) {
+    let mut c = *cdf; let mut out = vec![0u8; 16]; let mut oc = [0u16; 9];
+    let n = unsafe { shim_write_segment_id(c.as_mut_ptr(), seg_enabled as i32, update_map as i32, skip_txfm as i32, segment_id, pred, last_active_segid, out.as_mut_ptr(), oc.as_mut_ptr()) };
     out.truncate(n as usize); (out, oc)
 }
 

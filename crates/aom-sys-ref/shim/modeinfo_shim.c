@@ -634,3 +634,22 @@ done:;
   od_ec_enc_clear(&ec);
   return nb;
 }
+
+int av1_neg_interleave(int x, int ref, int max);
+int shim_neg_interleave(int x, int ref, int max) { return av1_neg_interleave(x, ref, max); }
+
+uint32_t shim_write_segment_id(uint16_t *cdf, int seg_enabled, int update_map,
+                               int skip_txfm, int segment_id, int pred,
+                               int last_active_segid, uint8_t *out, uint16_t *out_cdf) {
+  od_ec_enc ec; od_ec_enc_init(&ec, 256);
+  if (seg_enabled && update_map && !skip_txfm) {
+    int coded_id = av1_neg_interleave(segment_id, pred, last_active_segid + 1);
+    od_ec_encode_cdf_q15(&ec, coded_id, cdf, MAX_SEGMENTS);
+    update_cdf(cdf, coded_id, MAX_SEGMENTS);
+  }
+  uint32_t nb = 0; const unsigned char *buf = od_ec_enc_done(&ec, &nb);
+  for (uint32_t i = 0; i < nb; i++) out[i] = buf[i];
+  for (int i = 0; i < 9; i++) out_cdf[i] = cdf[i];
+  od_ec_enc_clear(&ec);
+  return nb;
+}

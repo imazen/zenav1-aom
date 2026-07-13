@@ -1015,3 +1015,53 @@ fn write_ref_frames_matches_c() {
         assert_eq!(my_flat, oc, "ref_frames cdfs comp={is_compound} r=({ref0},{ref1})");
     }
 }
+
+#[test]
+fn neg_interleave_and_segment_id_match_c() {
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{neg_interleave, write_segment_id};
+    let mut rng = Rng(0x5e61_c0de_a11a_0009);
+    // neg_interleave: x < max, over the segment range
+    for _ in 0..300_000 {
+        let max = 1 + (rng.next() % 8) as i32; // [1,8]
+        let x = (rng.next() % max as u64) as i32;
+        let r = (rng.next() % max as u64) as i32;
+        assert_eq!(neg_interleave(x, r, max), c::ref_neg_interleave(x, r, max), "neg_interleave x={x} r={r} max={max}");
+    }
+    // write_segment_id: 8-symbol CDF
+    let mk = |rng: &mut Rng, out: &mut [u16; 9]| {
+        let mut vals = [0i32; 8];
+        for v in vals.iter_mut().take(7) {
+            *v = 1 + (rng.next() % 32766) as i32;
+        }
+        vals[..7].sort_unstable();
+        vals[..7].reverse();
+        let mut prev = 32768i32;
+        for i in 0..7 {
+            let v = vals[i].min(prev - 1).max((7 - i) as i32);
+            out[i] = v as u16;
+            prev = v;
+        }
+        out[7] = 0;
+        out[8] = 0;
+    };
+    for _ in 0..200_000 {
+        let mut cdf = [0u16; 9];
+        mk(&mut rng, &mut cdf);
+        let seg_enabled = rng.next().is_multiple_of(2);
+        let update_map = rng.next().is_multiple_of(2);
+        let skip_txfm = rng.next().is_multiple_of(3);
+        // last_active_segid+1 = max in [1,8]; segment_id/pred < max
+        let last = (rng.next() % 8) as i32; // 0..7 -> max 1..8
+        let max = last + 1;
+        let segment_id = (rng.next() % max as u64) as i32;
+        let pred = (rng.next() % max as u64) as i32;
+        let mut mc = cdf;
+        let mut enc = OdEcEnc::new();
+        write_segment_id(&mut enc, &mut mc, seg_enabled, update_map, skip_txfm, segment_id, pred, last);
+        let got = enc.done().to_vec();
+        let (want, oc) = c::ref_write_segment_id(&cdf, seg_enabled, update_map, skip_txfm, segment_id, pred, last);
+        assert_eq!(got, want, "seg_id bytes en={seg_enabled} um={update_map} skip={skip_txfm} s={segment_id} p={pred} last={last}");
+        assert_eq!(mc, oc, "seg_id cdf");
+    }
+}

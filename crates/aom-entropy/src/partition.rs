@@ -908,3 +908,58 @@ pub fn write_ref_frames(
         }
     }
 }
+
+const MAX_SEGMENTS_MI: usize = 8;
+
+/// `av1_neg_interleave` (`av1/encoder/bitstream.c`): the segment-id coding transform that
+/// recenters `x` around the prediction `ref` into `[0, max)` for entropy coding.
+pub fn neg_interleave(x: i32, ref_: i32, max: i32) -> i32 {
+    let diff = x - ref_;
+    if ref_ == 0 {
+        return x;
+    }
+    if ref_ >= max - 1 {
+        return -x + max - 1;
+    }
+    if 2 * ref_ < max {
+        if diff.abs() <= ref_ {
+            if diff > 0 {
+                (diff << 1) - 1
+            } else {
+                (-diff) << 1
+            }
+        } else {
+            x
+        }
+    } else if diff.abs() < max - ref_ {
+        if diff > 0 {
+            (diff << 1) - 1
+        } else {
+            (-diff) << 1
+        }
+    } else {
+        (max - x) - 1
+    }
+}
+
+/// `write_segment_id` (`av1/encoder/bitstream.c`): the per-block segment id. Nothing is
+/// coded when segmentation is off or the map isn't updated, or when `skip_txfm` (the id
+/// is then set to the spatial prediction). Otherwise the neg-interleaved id is coded on
+/// the (cdf_num-selected) `spatial_pred_seg_cdf` (`MAX_SEGMENTS`=8). The spatial
+/// prediction `pred` + `cdf_num` (av1_get_spatial_seg_pred) are the caller's.
+pub fn write_segment_id(
+    enc: &mut OdEcEnc,
+    pred_cdf: &mut [u16],
+    seg_enabled: bool,
+    update_map: bool,
+    skip_txfm: bool,
+    segment_id: i32,
+    pred: i32,
+    last_active_segid: i32,
+) {
+    if !seg_enabled || !update_map || skip_txfm {
+        return;
+    }
+    let coded_id = neg_interleave(segment_id, pred, last_active_segid + 1);
+    write_symbol(enc, coded_id, pred_cdf, MAX_SEGMENTS_MI);
+}
