@@ -2044,3 +2044,53 @@ void shim_update_ext_partition_context(int mi_row, int mi_col, int subsize, int 
   for (int i = 0; i < 64; i++) above_out[i] = above[i];
   for (int i = 0; i < 32; i++) left_out[i] = xd.left_partition_context[i];
 }
+
+/* --- write_modes_sb per-node partition step (av1/encoder/bitstream.c) --- */
+/* One partition node over ONE od_ec: ctx = partition_plane_context(threaded above/left)
+ * -> write_partition on partition_cdf_arena[ctx] (full CDF adapts; edge gathers don't)
+ * -> update_ext_partition_context. Reuses the real partition_plane_context / gather /
+ * update fns + partition_cdf_length. arena is [PARTITION_CONTEXTS=20][11]. */
+uint32_t shim_write_partition_node(const signed char *above_in, const signed char *left_in,
+    int mi_row, int mi_col, int bsize, int partition, int mi_rows, int mi_cols,
+    uint16_t *arena, uint8_t *out, signed char *above_out, signed char *left_out,
+    uint16_t *arena_out) {
+  MACROBLOCKD xd;
+  static signed char above[64];
+  for (int i = 0; i < 64; i++) above[i] = above_in[i];
+  for (int i = 0; i < 32; i++) xd.left_partition_context[i] = left_in[i];
+  xd.above_partition_context = (PARTITION_CONTEXT *)above;
+
+  od_ec_enc ec; od_ec_enc_init(&ec, 256);
+  const int hbs = mi_size_wide[bsize] / 2;
+  const int subsize = get_partition_subsize((BLOCK_SIZE)bsize, (PARTITION_TYPE)partition);
+  if (bsize >= BLOCK_8X8) {
+    const int has_rows = (mi_row + hbs) < mi_rows;
+    const int has_cols = (mi_col + hbs) < mi_cols;
+    const int ctx = partition_plane_context(&xd, mi_row, mi_col, (BLOCK_SIZE)bsize);
+    uint16_t *cdf = arena + ctx * 11;
+    if (!has_rows && !has_cols) {
+      /* forced SPLIT, nothing coded */
+    } else if (has_rows && has_cols) {
+      int n = partition_cdf_length((BLOCK_SIZE)bsize);
+      od_ec_encode_cdf_q15(&ec, partition, cdf, n);
+      update_cdf(cdf, partition, n);
+    } else if (!has_rows && has_cols) {
+      aom_cdf_prob g[2];
+      partition_gather_vert_alike(g, cdf, (BLOCK_SIZE)bsize);
+      od_ec_encode_cdf_q15(&ec, partition == PARTITION_SPLIT, g, 2);
+    } else {
+      aom_cdf_prob g[2];
+      partition_gather_horz_alike(g, cdf, (BLOCK_SIZE)bsize);
+      od_ec_encode_cdf_q15(&ec, partition == PARTITION_SPLIT, g, 2);
+    }
+  }
+  update_ext_partition_context(&xd, mi_row, mi_col, (BLOCK_SIZE)subsize, (BLOCK_SIZE)bsize,
+                               (PARTITION_TYPE)partition);
+  uint32_t nb = 0; const unsigned char *buf = od_ec_enc_done(&ec, &nb);
+  for (uint32_t i = 0; i < nb; i++) out[i] = buf[i];
+  for (int i = 0; i < 64; i++) above_out[i] = above[i];
+  for (int i = 0; i < 32; i++) left_out[i] = xd.left_partition_context[i];
+  for (int i = 0; i < PARTITION_CONTEXTS * 11; i++) arena_out[i] = arena[i];
+  od_ec_enc_clear(&ec);
+  return nb;
+}

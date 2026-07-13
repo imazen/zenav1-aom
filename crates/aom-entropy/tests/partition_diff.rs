@@ -2790,3 +2790,65 @@ fn update_ext_partition_context_matches_c() {
         assert_eq!(l_rs, l_c, "left bsize={bsize} part={partition} r={mi_row} c={mi_col}");
     }
 }
+
+#[test]
+fn write_partition_node_matches_c() {
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::write_partition_node;
+    let mut rng = Rng(0x1e_9d05_c0de_0019u64);
+    // partition CDF length per square bsize.
+    let cdf_len = |bsize: usize| -> i32 {
+        if bsize == 3 { 4 } else if bsize == 15 { 8 } else { 10 }
+    };
+    let mk = |rng: &mut Rng, n: usize, out: &mut [u16]| {
+        let mut prev = 32768i32;
+        for e in out.iter_mut().take(n - 1) {
+            let v = (prev - 1 - (rng.next() % 400) as i32).max((n) as i32);
+            *e = v as u16;
+            prev = v;
+        }
+        out[n - 1] = 0;
+        out[n] = 0;
+    };
+    let sizes = [3usize, 6, 9, 12, 15];
+    for _ in 0..200_000 {
+        let bsize = sizes[(rng.next() % 5) as usize];
+        // hbs in mi units; mi_row=mi_col=0 keeps every stamp within above[64]/left[32].
+        let hbs = [1i32, 2, 4, 8, 16][sizes.iter().position(|&s| s == bsize).unwrap()];
+        // scenario: 0 full, 1 no-rows, 2 no-cols, 3 none (edges need bsize>8X8).
+        let scenario = if bsize == 3 { 0 } else { (rng.next() % 4) as i32 };
+        let (mi_rows, mi_cols, partition) = match scenario {
+            1 => (hbs, hbs + 1, if rng.next().is_multiple_of(2) { 1 } else { 3 }), // !hr,hc: HORZ/SPLIT
+            2 => (hbs + 1, hbs, if rng.next().is_multiple_of(2) { 2 } else { 3 }), // hr,!hc: VERT/SPLIT
+            3 => (hbs, hbs, 3),                                                    // !hr,!hc: SPLIT
+            _ => (hbs + 1, hbs + 1, (rng.next() % cdf_len(bsize) as u64) as i32),  // full
+        };
+        let mut above_in = [0i8; 64];
+        let mut left_in = [0i8; 32];
+        for a in above_in.iter_mut() { *a = (rng.next() % 32) as i8; }
+        for l in left_in.iter_mut() { *l = (rng.next() % 32) as i8; }
+        let mut arena_n = [[0u16; 11]; 20];
+        let mut arena_f = [0u16; 220];
+        for c in 0..20 {
+            // ctx encodes bsl = c/4: bsl 0 (8X8) -> 4 symbols, bsl 4 (128X128) -> 8, else 10.
+            // The CDF at each ctx must be sized to the cdf_len it is used with, or
+            // update_cdf reads a cumulative as its count.
+            let bsl = c / 4;
+            let ns = if bsl == 0 { 4 } else if bsl == 4 { 8 } else { 10 };
+            let mut row = [0u16; 11];
+            mk(&mut rng, ns, &mut row);
+            arena_n[c] = row;
+            for j in 0..11 { arena_f[c * 11 + j] = row[j]; }
+        }
+        let mut enc = OdEcEnc::new();
+        let (mut a_rs, mut l_rs, mut ar_rs) = (above_in, left_in, arena_n);
+        write_partition_node(&mut enc, &mut a_rs, &mut l_rs, 0, 0, bsize, partition, mi_rows, mi_cols, &mut ar_rs);
+        let got = enc.done().to_vec();
+        let (want, a_c, l_c, ar_c) = c::ref_write_partition_node(&above_in, &left_in, 0, 0, bsize as i32, partition, mi_rows, mi_cols, &arena_f);
+        assert_eq!(got, want, "bytes bsize={bsize} scen={scenario} part={partition} rows={mi_rows} cols={mi_cols}");
+        assert_eq!(a_rs, a_c, "above bsize={bsize} scen={scenario}");
+        assert_eq!(l_rs, l_c, "left bsize={bsize} scen={scenario}");
+        let ar_rs_f: [u16; 220] = core::array::from_fn(|i| ar_rs[i / 11][i % 11]);
+        assert_eq!(ar_rs_f, ar_c, "arena bsize={bsize} scen={scenario}");
+    }
+}

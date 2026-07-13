@@ -2608,3 +2608,32 @@ pub fn update_ext_partition_context(above: &mut [i8], left: &mut [i8], mi_row: i
         _ => {}
     }
 }
+
+/// `write_modes_sb` per-node partition step (`av1/encoder/bitstream.c`): select the
+/// partition CDF by the (threaded) above/left partition context, code the partition (full
+/// CDF when the block is in-frame; the 2-way gather at a partial edge; nothing when the
+/// block is fully off both edges), then update the neighbour partition context for the
+/// sub-blocks. This is the per-node operation the partition-tree recursion repeats.
+#[allow(clippy::too_many_arguments)]
+pub fn write_partition_node(
+    enc: &mut OdEcEnc,
+    above: &mut [i8],
+    left: &mut [i8],
+    mi_row: i32,
+    mi_col: i32,
+    bsize: usize,
+    partition: i32,
+    mi_rows: i32,
+    mi_cols: i32,
+    partition_cdf_arena: &mut [[u16; 11]; 20],
+) {
+    if bsize >= BLOCK_8X8 {
+        let hbs = MI_SIZE_WIDE[bsize] / 2;
+        let has_rows = (mi_row + hbs) < mi_rows;
+        let has_cols = (mi_col + hbs) < mi_cols;
+        let ctx = partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
+        write_partition(enc, &mut partition_cdf_arena[ctx], partition_cdf_length(bsize), partition, has_rows, has_cols, bsize);
+    }
+    let subsize = get_partition_subsize(bsize, partition) as usize;
+    update_ext_partition_context(above, left, mi_row, mi_col, subsize, bsize, partition);
+}

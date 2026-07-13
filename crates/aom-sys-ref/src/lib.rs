@@ -298,6 +298,8 @@ extern "C" {
     #[allow(clippy::too_many_arguments)]
     fn shim_update_ext_partition_context(mi_row: i32, mi_col: i32, subsize: i32, bsize: i32, partition: i32, above_in: *const i8, left_in: *const i8, above_out: *mut i8, left_out: *mut i8);
     #[allow(clippy::too_many_arguments)]
+    fn shim_write_partition_node(above_in: *const i8, left_in: *const i8, mi_row: i32, mi_col: i32, bsize: i32, partition: i32, mi_rows: i32, mi_cols: i32, arena: *mut u16, out: *mut u8, above_out: *mut i8, left_out: *mut i8, arena_out: *mut u16) -> u32;
+    #[allow(clippy::too_many_arguments)]
     fn shim_write_inter_block_mvs(mode: i32, is_compound: i32, diff_row0: i32, diff_col0: i32, diff_row1: i32, diff_col1: i32, usehp: i32, joints: *mut u16, comp0: *mut u16, comp1: *mut u16, out: *mut u8, o_joints: *mut u16, o_c0: *mut u16, o_c1: *mut u16) -> u32;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_inter_mode_drl(seg_skip: i32, mode: i32, mode_ctx: i32, inter_compound_mode_cdf: *mut u16, newmv_cdf: *mut u16, zeromv_cdf: *mut u16, refmv_cdf: *mut u16, drl_cdf: *mut u16, ref_mv_idx: i32, ref_mv_count: i32, weight: *const u16, out: *mut u8, o_icm: *mut u16, o_newmv: *mut u16, o_zeromv: *mut u16, o_refmv: *mut u16, o_drl: *mut u16) -> u32;
@@ -629,6 +631,26 @@ pub fn ref_collect_neighbors_ref_counts(
 /// Reference `get_partition_subsize` (static inline, common_data.h).
 pub fn ref_get_partition_subsize(bsize: i32, partition: i32) -> i32 {
     unsafe { shim_get_partition_subsize(bsize, partition) }
+}
+
+/// Reference `write_modes_sb` per-node partition step (context-select -> write_partition
+/// -> context-update, over one od_ec). arena is [PARTITION_CONTEXTS=20][11] = 220 flat.
+/// Returns (bytes, above[64], left[32], arena[220]).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_write_partition_node(
+    above_in: &[i8; 64], left_in: &[i8; 32], mi_row: i32, mi_col: i32, bsize: i32, partition: i32,
+    mi_rows: i32, mi_cols: i32, arena: &[u16; 220],
+) -> (Vec<u8>, [i8; 64], [i8; 32], [u16; 220]) {
+    let mut ar = *arena;
+    let mut out = vec![0u8; 16];
+    let (mut ao, mut lo, mut aro) = ([0i8; 64], [0i8; 32], [0u16; 220]);
+    let n = unsafe {
+        shim_write_partition_node(above_in.as_ptr(), left_in.as_ptr(), mi_row, mi_col, bsize,
+            partition, mi_rows, mi_cols, ar.as_mut_ptr(), out.as_mut_ptr(), ao.as_mut_ptr(),
+            lo.as_mut_ptr(), aro.as_mut_ptr())
+    };
+    out.truncate(n as usize);
+    (out, ao, lo, aro)
 }
 
 /// Reference `update_ext_partition_context` (facade). above is a 64-slot buffer, left a
