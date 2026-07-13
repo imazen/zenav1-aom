@@ -913,3 +913,24 @@ fn get_reference_mode_context_matches_c() {
         );
     }
 }
+
+#[test]
+fn get_comp_reference_type_context_matches_c() {
+    use aom_entropy::partition::get_comp_reference_type_context;
+    let mut rng = Rng(0xc0e0_c0de_a11a_0009);
+    for _ in 0..400_000 {
+        let ha = rng.next().is_multiple_of(2);
+        let hl = rng.next().is_multiple_of(2);
+        let a_r0 = (rng.next() % 8) as i32;
+        let a_r1 = (rng.next() % 9) as i32 - 1;
+        let l_r0 = (rng.next() % 8) as i32;
+        let l_r1 = (rng.next() % 9) as i32 - 1;
+        let a_ibc = rng.next().is_multiple_of(4);
+        let l_ibc = rng.next().is_multiple_of(4);
+        assert_eq!(
+            get_comp_reference_type_context(ha, a_r0, a_r1, a_ibc, hl, l_r0, l_r1, l_ibc),
+            c::ref_get_comp_reference_type_context(ha, a_r0, a_r1, a_ibc, hl, l_r0, l_r1, l_ibc),
+            "comp_ref_type ha={ha} a=({a_r0},{a_r1},{a_ibc}) hl={hl} l=({l_r0},{l_r1},{l_ibc})"
+        );
+    }
+}

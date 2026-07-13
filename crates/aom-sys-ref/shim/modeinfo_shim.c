@@ -537,3 +537,14 @@ int shim_get_reference_mode_context(int ha, int a_r0, int a_r1, int a_ibc, int h
   xd.up_available = ha; xd.left_available = hl;
   return av1_get_reference_mode_context(&xd);
 }
+
+int shim_get_comp_reference_type_context(int ha, int a_r0, int a_r1, int a_ibc, int hl,
+                                         int l_r0, int l_r1, int l_ibc) {
+  MB_MODE_INFO ami, lmi;
+  MACROBLOCKD xd;
+  ami.ref_frame[0] = a_r0; ami.ref_frame[1] = a_r1; ami.use_intrabc = a_ibc;
+  lmi.ref_frame[0] = l_r0; lmi.ref_frame[1] = l_r1; lmi.use_intrabc = l_ibc;
+  xd.above_mbmi = &ami; xd.left_mbmi = &lmi;
+  xd.up_available = ha; xd.left_available = hl;
+  return av1_get_comp_reference_type_context(&xd);
+}

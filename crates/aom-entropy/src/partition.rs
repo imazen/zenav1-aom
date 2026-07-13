@@ -703,3 +703,77 @@ pub fn get_reference_mode_context(
         1
     }
 }
+
+#[inline]
+fn has_uni_comp_refs_h(r0: i32, r1: i32) -> bool {
+    has_second_ref(r1) && (is_backward_ref(r0) == is_backward_ref(r1))
+}
+
+/// `av1_get_comp_reference_type_context` (`av1/common/pred_common.c`): the
+/// unidirectional-vs-bidirectional compound-reference CDF context from the above/left
+/// neighbours' compound-ref structure. Returns 0..4.
+#[allow(clippy::too_many_arguments)]
+pub fn get_comp_reference_type_context(
+    ha: bool,
+    a_r0: i32,
+    a_r1: i32,
+    a_ibc: bool,
+    hl: bool,
+    l_r0: i32,
+    l_r1: i32,
+    l_ibc: bool,
+) -> i32 {
+    if ha && hl {
+        let above_intra = !nbr_is_inter(a_ibc, a_r0);
+        let left_intra = !nbr_is_inter(l_ibc, l_r0);
+        if above_intra && left_intra {
+            2
+        } else if above_intra || left_intra {
+            let (r0, r1) = if above_intra { (l_r0, l_r1) } else { (a_r0, a_r1) };
+            if !has_second_ref(r1) {
+                2
+            } else {
+                1 + 2 * has_uni_comp_refs_h(r0, r1) as i32
+            }
+        } else {
+            let a_sg = !has_second_ref(a_r1);
+            let l_sg = !has_second_ref(l_r1);
+            if a_sg && l_sg {
+                1 + 2 * (!(is_backward_ref(a_r0) ^ is_backward_ref(l_r0))) as i32
+            } else if l_sg || a_sg {
+                let uni_rfc = if a_sg {
+                    has_uni_comp_refs_h(l_r0, l_r1)
+                } else {
+                    has_uni_comp_refs_h(a_r0, a_r1)
+                };
+                if !uni_rfc {
+                    1
+                } else {
+                    3 + (!(is_backward_ref(a_r0) ^ is_backward_ref(l_r0))) as i32
+                }
+            } else {
+                let a_uni = has_uni_comp_refs_h(a_r0, a_r1);
+                let l_uni = has_uni_comp_refs_h(l_r0, l_r1);
+                if !a_uni && !l_uni {
+                    0
+                } else if !a_uni || !l_uni {
+                    2
+                } else {
+                    // exact == BWDREF_FRAME here (not >=)
+                    3 + (!((a_r0 == 5) ^ (l_r0 == 5))) as i32
+                }
+            }
+        }
+    } else if ha || hl {
+        let (r0, r1, ibc) = if ha { (a_r0, a_r1, a_ibc) } else { (l_r0, l_r1, l_ibc) };
+        if !nbr_is_inter(ibc, r0) {
+            2
+        } else if !has_second_ref(r1) {
+            2
+        } else {
+            4 * has_uni_comp_refs_h(r0, r1) as i32
+        }
+    } else {
+        2
+    }
+}
