@@ -4110,3 +4110,96 @@ fn read_intra_pred_mode_pieces_roundtrip() {
         }
     }
 }
+
+#[test]
+fn read_intra_prediction_modes_roundtrips_nopalette() {
+    use aom_entropy::dec::OdEcDec;
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{
+        get_uv_mode, is_directional_mode, read_intra_prediction_modes, use_angle_delta,
+        write_intra_prediction_modes,
+    };
+    let mut rng = Rng(0x1e_147a_dec0_de11u64);
+    let bsizes = [0usize, 3, 6, 9, 12, 15];
+    for _ in 0..200_000 {
+        let bsize = bsizes[(rng.next() % bsizes.len() as u64) as usize];
+        let mode = (rng.next() % 13) as i32;
+        let y_ang_coded = use_angle_delta(bsize) && is_directional_mode(mode);
+        let angle_y = if y_ang_coded { (rng.next() % 7) as i32 - 3 } else { 0 };
+        let mono = rng.next() & 1 == 1;
+        let chroma_ref = rng.next() & 1 == 1;
+        let cfl_allowed = rng.next() & 1 == 1;
+        let uv_n = if cfl_allowed { 14 } else { 13 };
+        let uv_mode = if !mono && chroma_ref { (rng.next() % uv_n as u64) as i32 } else { 0 };
+        let js = if uv_mode == 13 { (rng.next() % 8) as i32 } else { 0 };
+        let (su, sv) = ((js + 1) / 3, (js + 1) % 3);
+        let u = if uv_mode == 13 && su != 0 { (rng.next() % 16) as i32 } else { 0 };
+        let v = if uv_mode == 13 && sv != 0 { (rng.next() % 16) as i32 } else { 0 };
+        let cfl_idx = (u << 4) | v;
+        let uv_intra = get_uv_mode(uv_mode as usize);
+        let uv_ang_coded = !mono && chroma_ref && use_angle_delta(bsize) && is_directional_mode(uv_intra);
+        let angle_uv = if uv_ang_coded { (rng.next() % 7) as i32 - 3 } else { 0 };
+        let filter_allowed = rng.next() & 1 == 1;
+        let use_fi = if filter_allowed { (rng.next() & 1) as i32 } else { 0 };
+        let fi_mode = if use_fi != 0 { (rng.next() % 5) as i32 } else { 0 };
+
+        let mut yc = [0u16; 14];
+        let mut yac = [0u16; 8];
+        let mut uc = [0u16; 15];
+        let mut sc = [0u16; 9];
+        let mut ac = [[0u16; 17]; 6];
+        let mut uac = [0u16; 8];
+        let mut fiu = [0u16; 3];
+        let mut fim = [0u16; 6];
+        let mut p0 = [0u16; 3];
+        let mut p1 = [0u16; 8];
+        let mut p2 = [0u16; 3];
+        let mut p3 = [0u16; 8];
+        mk_ns_cdf(&mut rng, 13, &mut yc);
+        mk_ns_cdf(&mut rng, 7, &mut yac);
+        mk_ns_cdf(&mut rng, uv_n, &mut uc);
+        mk_ns_cdf(&mut rng, 8, &mut sc);
+        for c in ac.iter_mut() { mk_ns_cdf(&mut rng, 16, c); }
+        mk_ns_cdf(&mut rng, 7, &mut uac);
+        mk_ns_cdf(&mut rng, 2, &mut fiu);
+        mk_ns_cdf(&mut rng, 5, &mut fim);
+        mk_ns_cdf(&mut rng, 2, &mut p0);
+        mk_ns_cdf(&mut rng, 7, &mut p1);
+        mk_ns_cdf(&mut rng, 2, &mut p2);
+        mk_ns_cdf(&mut rng, 7, &mut p3);
+
+        let mut enc = OdEcEnc::new();
+        let (mut yce, mut yace, mut uce, mut sce, mut ace, mut uace, mut fiue, mut fime) =
+            (yc, yac, uc, sc, ac, uac, fiu, fim);
+        let (mut p0e, mut p1e, mut p2e, mut p3e) = (p0, p1, p2, p3);
+        write_intra_prediction_modes(
+            &mut enc, mode, bsize, &mut yce, angle_y, &mut yace, mono, chroma_ref, uv_mode,
+            cfl_allowed, cfl_idx, js, angle_uv, &mut uce, &mut sce, &mut ace, &mut uace,
+            false, 8, [0, 0], &[], 0, false, &[], [0, 0], false, &[], [0, 0],
+            &mut p0e, &mut p1e, &mut p2e, &mut p3e, filter_allowed, use_fi, fi_mode,
+            &mut fiue, &mut fime,
+        );
+        let b = enc.done().to_vec();
+        let mut dec = OdEcDec::new(&b);
+        let (mut ycd, mut yacd, mut ucd, mut scd, mut acd, mut uacd, mut fiud, mut fimd) =
+            (yc, yac, uc, sc, ac, uac, fiu, fim);
+        let (mut p0d, mut p1d, mut p2d, mut p3d) = (p0, p1, p2, p3);
+        let (gm, ga, guv, gidx, gjs, gauv, _gps, _gpc, guf, gfm) = read_intra_prediction_modes(
+            &mut dec, bsize, &mut ycd, &mut yacd, mono, chroma_ref, cfl_allowed, &mut ucd,
+            &mut scd, &mut acd, &mut uacd, false, 8, &mut p0d, &mut p1d, &mut p2d,
+            &mut p3d, 0, false, &[], [0, 0], false, &[], [0, 0], filter_allowed, &mut fiud, &mut fimd,
+        );
+        assert_eq!(gm, mode, "y mode");
+        if y_ang_coded { assert_eq!(ga, angle_y, "y angle"); }
+        if !mono && chroma_ref {
+            assert_eq!(guv, uv_mode, "uv mode");
+            if uv_mode == 13 { assert_eq!((gidx, gjs), (cfl_idx, js), "cfl"); }
+            if uv_ang_coded { assert_eq!(gauv, angle_uv, "uv angle"); }
+        }
+        if filter_allowed {
+            assert_eq!(guf, use_fi, "use_fi");
+            if use_fi != 0 { assert_eq!(gfm, fi_mode, "fi mode"); }
+        }
+        assert_eq!((yce, yace, uce, sce, ace, uace, fiue, fime), (ycd, yacd, ucd, scd, acd, uacd, fiud, fimd), "cdfs");
+    }
+}

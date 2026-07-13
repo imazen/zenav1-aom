@@ -3755,3 +3755,148 @@ pub fn read_intra_uv_and_angle_delta(
         (0, 0, 0, 0)
     }
 }
+
+/// `read_palette_colors_plane` — inverse of [`write_palette_colors_plane`]: rebuild the
+/// neighbour colour cache, read the per-cache-entry use bits (the cached palette colours),
+/// delta-decode the remaining non-cached colours, and merge both sorted subsets back into
+/// the ascending palette. `min_val` is 1 for luma, 0 for chroma-U.
+#[allow(clippy::too_many_arguments)]
+pub fn read_palette_colors_plane(
+    dec: &mut OdEcDec,
+    n: usize,
+    plane: usize,
+    bit_depth: i32,
+    min_val: i32,
+    mb_to_top_edge: i32,
+    has_above: bool,
+    above_colors: &[u16],
+    above_n_plane: i32,
+    has_left: bool,
+    left_colors: &[u16],
+    left_n_plane: i32,
+) -> Vec<u16> {
+    let mut cache = [0u16; 16];
+    let n_cache = get_palette_cache(
+        &mut cache, plane, mb_to_top_edge, has_above, above_colors, above_n_plane, has_left,
+        left_colors, left_n_plane,
+    );
+    let mut merged: Vec<u16> = Vec::with_capacity(n);
+    for &cv in cache.iter().take(n_cache) {
+        if merged.len() >= n {
+            break;
+        }
+        if read_bit(dec) != 0 {
+            merged.push(cv);
+        }
+    }
+    let n_delta = n - merged.len();
+    for &d in read_delta_palette_colors(dec, n_delta, bit_depth, min_val).iter() {
+        merged.push(d as u16);
+    }
+    merged.sort_unstable();
+    merged
+}
+
+/// `read_palette_mode_info` — inverse of [`write_palette_mode_info`]: the Y (DC-pred) and
+/// UV (chroma-ref DC-pred) palette on/off flags + sizes + colours (Y/U cache-merged, V
+/// raw/delta). Returns `(palette_size, palette_colors)` with `palette_colors` laid out
+/// `[Y..PALETTE_MAX_SIZE, U.., V..]`.
+#[allow(clippy::too_many_arguments)]
+pub fn read_palette_mode_info(
+    dec: &mut OdEcDec,
+    mode_is_dc_pred: bool,
+    uv_dc_pred: bool,
+    bit_depth: i32,
+    y_mode_cdf: &mut [u16],
+    y_size_cdf: &mut [u16],
+    uv_mode_cdf: &mut [u16],
+    uv_size_cdf: &mut [u16],
+    mb_to_top_edge: i32,
+    has_above: bool,
+    above_colors: &[u16],
+    above_size: [i32; 2],
+    has_left: bool,
+    left_colors: &[u16],
+    left_size: [i32; 2],
+) -> ([i32; 2], Vec<u16>) {
+    let mut palette_size = [0i32; 2];
+    let mut colors = vec![0u16; 3 * PALETTE_MAX_SIZE];
+    if mode_is_dc_pred && read_symbol(dec, y_mode_cdf, 2) != 0 {
+        let n = read_symbol(dec, y_size_cdf, PALETTE_SIZES) + PALETTE_MIN_SIZE;
+        palette_size[0] = n;
+        let yc = read_palette_colors_plane(
+            dec, n as usize, 0, bit_depth, 1, mb_to_top_edge, has_above, above_colors,
+            above_size[0], has_left, left_colors, left_size[0],
+        );
+        colors[..n as usize].copy_from_slice(&yc);
+    }
+    if uv_dc_pred && read_symbol(dec, uv_mode_cdf, 2) != 0 {
+        let n = read_symbol(dec, uv_size_cdf, PALETTE_SIZES) + PALETTE_MIN_SIZE;
+        palette_size[1] = n;
+        let uc = read_palette_colors_plane(
+            dec, n as usize, 1, bit_depth, 0, mb_to_top_edge, has_above, above_colors,
+            above_size[1], has_left, left_colors, left_size[1],
+        );
+        colors[PALETTE_MAX_SIZE..PALETTE_MAX_SIZE + n as usize].copy_from_slice(&uc);
+        let vc = read_palette_colors_v(dec, n as usize, bit_depth);
+        let vbase = 2 * PALETTE_MAX_SIZE;
+        colors[vbase..vbase + n as usize].copy_from_slice(&vc);
+    }
+    (palette_size, colors)
+}
+
+/// `read_intra_prediction_modes` — inverse of [`write_intra_prediction_modes`]: the full
+/// per-block intra mode-info fragment. Composes read_intra_y_and_angle_delta +
+/// read_intra_uv_and_angle_delta + read_palette_mode_info (when palette is allowed) +
+/// read_filter_intra_mode_info. Returns
+/// `(y_mode, angle_y, uv_mode, cfl_idx, cfl_sign, angle_uv, palette_size, palette_colors,
+/// use_filter_intra, filter_intra_mode)`.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn read_intra_prediction_modes(
+    dec: &mut OdEcDec,
+    bsize: usize,
+    y_cdf: &mut [u16],
+    y_angle_cdf: &mut [u16],
+    monochrome: bool,
+    is_chroma_ref: bool,
+    cfl_allowed: bool,
+    uv_mode_cdf: &mut [u16],
+    cfl_sign_cdf: &mut [u16],
+    cfl_alpha_cdf: &mut [[u16; 17]; 6],
+    uv_angle_cdf: &mut [u16],
+    allow_palette: bool,
+    bit_depth: i32,
+    pal_y_mode_cdf: &mut [u16],
+    pal_y_size_cdf: &mut [u16],
+    pal_uv_mode_cdf: &mut [u16],
+    pal_uv_size_cdf: &mut [u16],
+    mb_to_top_edge: i32,
+    has_above: bool,
+    above_colors: &[u16],
+    above_size: [i32; 2],
+    has_left: bool,
+    left_colors: &[u16],
+    left_size: [i32; 2],
+    filter_allowed: bool,
+    fi_use_cdf: &mut [u16],
+    fi_mode_cdf: &mut [u16],
+) -> (i32, i32, i32, i32, i32, i32, [i32; 2], Vec<u16>, i32, i32) {
+    let (mode, angle_y) = read_intra_y_and_angle_delta(dec, y_cdf, bsize, y_angle_cdf);
+    let (uv_mode, cfl_idx, cfl_sign, angle_uv) = read_intra_uv_and_angle_delta(
+        dec, monochrome, is_chroma_ref, cfl_allowed, bsize, uv_mode_cdf, cfl_sign_cdf,
+        cfl_alpha_cdf, uv_angle_cdf,
+    );
+    let (palette_size, palette_colors) = if allow_palette {
+        let mode_is_dc_pred = mode == DC_PRED;
+        let uv_dc_pred = !monochrome && uv_mode == UV_DC_PRED && is_chroma_ref;
+        read_palette_mode_info(
+            dec, mode_is_dc_pred, uv_dc_pred, bit_depth, pal_y_mode_cdf, pal_y_size_cdf,
+            pal_uv_mode_cdf, pal_uv_size_cdf, mb_to_top_edge, has_above, above_colors, above_size,
+            has_left, left_colors, left_size,
+        )
+    } else {
+        ([0, 0], vec![0u16; 3 * PALETTE_MAX_SIZE])
+    };
+    let (use_fi, fi_mode) = read_filter_intra_mode_info(dec, fi_use_cdf, fi_mode_cdf, filter_allowed);
+    (mode, angle_y, uv_mode, cfl_idx, cfl_sign, angle_uv, palette_size, palette_colors, use_fi, fi_mode)
+}
