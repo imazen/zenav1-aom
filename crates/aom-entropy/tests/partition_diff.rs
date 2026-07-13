@@ -3979,3 +3979,59 @@ fn read_inter_leaf_symbols_roundtrip() {
         }
     }
 }
+
+#[test]
+fn read_modes_tile_roundtrips_write() {
+    use aom_entropy::dec::OdEcDec;
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{get_partition_subsize, read_modes_tile, write_modes_tile};
+    let mut rng = Rng(0x1e_7115_dec0_de1bu64);
+    fn gen(rng: &mut Rng, bsize: usize, out: &mut Vec<i8>) {
+        let cdf_len = if bsize == 3 { 4 } else if bsize == 15 { 8 } else { 10 };
+        let p = (rng.next() % cdf_len as u64) as i32;
+        out.push(p as i8);
+        if p == 3 && bsize > 3 {
+            let sub = get_partition_subsize(bsize, 3) as usize;
+            for _ in 0..4 {
+                gen(rng, sub, out);
+            }
+        }
+    }
+    let mk = |rng: &mut Rng, n: usize, out: &mut [u16]| {
+        let mut prev = 32768i32;
+        for e in out.iter_mut().take(n - 1) {
+            let v = (prev - 1 - (rng.next() % 400) as i32).max(n as i32);
+            *e = v as u16;
+            prev = v;
+        }
+        out[n - 1] = 0;
+        out[n] = 0;
+    };
+    for _ in 0..30_000 {
+        let n_sb_rows = 1 + (rng.next() % 3) as i32;
+        let n_sb_cols = 1 + (rng.next() % 3) as i32;
+        let mut tree = Vec::new();
+        for _ in 0..(n_sb_rows * n_sb_cols) {
+            gen(&mut rng, 12, &mut tree); // BLOCK_64X64 SBs
+        }
+        let mut arena0 = [[0u16; 11]; 20];
+        for (c, slot) in arena0.iter_mut().enumerate() {
+            let bsl = c / 4;
+            let ns = if bsl == 0 { 4 } else if bsl == 4 { 8 } else { 10 };
+            mk(&mut rng, ns, slot);
+        }
+        let mut enc = OdEcEnc::new();
+        let mut above_e = [0i8; 128];
+        let mut arena_e = arena0;
+        let consumed = write_modes_tile(&mut enc, &mut above_e, &mut arena_e, &tree, n_sb_rows, n_sb_cols, 16, 12);
+        let bytes = enc.done().to_vec();
+        let mut dec = OdEcDec::new(&bytes);
+        let mut above_d = [0i8; 128];
+        let mut arena_d = arena0;
+        let out = read_modes_tile(&mut dec, &mut above_d, &mut arena_d, n_sb_rows, n_sb_cols, 16, 12);
+        assert_eq!(out, tree, "tree {n_sb_rows}x{n_sb_cols} len={}", tree.len());
+        assert_eq!(out.len(), consumed, "consumed count");
+        assert_eq!(above_e, above_d, "above context");
+        assert_eq!(arena_e, arena_d, "adapted arena");
+    }
+}

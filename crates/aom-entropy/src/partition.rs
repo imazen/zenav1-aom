@@ -3600,3 +3600,105 @@ pub fn read_palette_mode_info_flags(
     };
     (n_y, n_uv)
 }
+
+/// `read_partition_node` — inverse of [`write_partition_node`] (the per-node partition
+/// decode with frame-edge gating): when the block signals a partition (`bsize >=
+/// BLOCK_8X8`) read it on the `partition_plane_context`-selected CDF (with the has-rows/
+/// has-cols edge form), then update the neighbour partition context for the sub-blocks.
+/// Returns the decoded partition (`PARTITION_NONE` for a non-signalling block).
+#[allow(clippy::too_many_arguments)]
+pub fn read_partition_node(
+    dec: &mut OdEcDec,
+    above: &mut [i8],
+    left: &mut [i8],
+    mi_row: i32,
+    mi_col: i32,
+    bsize: usize,
+    mi_rows: i32,
+    mi_cols: i32,
+    partition_cdf_arena: &mut [[u16; 11]; 20],
+) -> i32 {
+    let mut partition = 0; // PARTITION_NONE
+    if bsize >= BLOCK_8X8 {
+        let hbs = MI_SIZE_WIDE[bsize] / 2;
+        let has_rows = (mi_row + hbs) < mi_rows;
+        let has_cols = (mi_col + hbs) < mi_cols;
+        let ctx = partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
+        partition = read_partition(
+            dec, &mut partition_cdf_arena[ctx], partition_cdf_length(bsize), has_rows, has_cols, bsize,
+        );
+    }
+    let subsize = get_partition_subsize(bsize, partition) as usize;
+    update_ext_partition_context(above, left, mi_row, mi_col, subsize, bsize, partition);
+    partition
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_modes_sb_recurse(
+    dec: &mut OdEcDec,
+    above: &mut [i8],
+    left: &mut [i8],
+    arena: &mut [[u16; 11]; 20],
+    out: &mut Vec<i8>,
+    mi_row: i32,
+    mi_col: i32,
+    bsize: usize,
+) {
+    if bsize < BLOCK_8X8 {
+        return;
+    }
+    let hbs = MI_SIZE_WIDE[bsize] / 2;
+    let ctx = partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
+    let p = read_partition(dec, &mut arena[ctx], partition_cdf_length(bsize), true, true, bsize);
+    out.push(p as i8);
+    let subsize = get_partition_subsize(bsize, p) as usize;
+    if p == PARTITION_SPLIT_MODE && bsize > BLOCK_8X8 {
+        read_modes_sb_recurse(dec, above, left, arena, out, mi_row, mi_col, subsize);
+        read_modes_sb_recurse(dec, above, left, arena, out, mi_row, mi_col + hbs, subsize);
+        read_modes_sb_recurse(dec, above, left, arena, out, mi_row + hbs, mi_col, subsize);
+        read_modes_sb_recurse(dec, above, left, arena, out, mi_row + hbs, mi_col + hbs, subsize);
+    }
+    update_ext_partition_context(above, left, mi_row, mi_col, subsize, bsize, p);
+}
+
+/// `read_modes_sb` — inverse of [`write_modes_sb`]: decode one superblock's partition
+/// tree (pre-order), returning the reconstructed partition sequence.
+pub fn read_modes_sb(
+    dec: &mut OdEcDec,
+    above: &mut [i8],
+    left: &mut [i8],
+    arena: &mut [[u16; 11]; 20],
+    mi_row: i32,
+    mi_col: i32,
+    bsize: usize,
+) -> Vec<i8> {
+    let mut out = Vec::new();
+    read_modes_sb_recurse(dec, above, left, arena, &mut out, mi_row, mi_col, bsize);
+    out
+}
+
+/// `read_modes_tile` — inverse of [`write_modes_tile`]: the tile superblock loop. Zeroes
+/// the above partition context once (threads vertically across SB rows), zeroes the left
+/// context at each SB row, and decodes each superblock's partition tree in row-major
+/// order. Returns the concatenated pre-order partition sequence for the whole tile.
+pub fn read_modes_tile(
+    dec: &mut OdEcDec,
+    above: &mut [i8],
+    arena: &mut [[u16; 11]; 20],
+    n_sb_rows: i32,
+    n_sb_cols: i32,
+    sb_mi: i32,
+    sb_size: usize,
+) -> Vec<i8> {
+    for a in above.iter_mut() {
+        *a = 0; // av1_zero_above_context
+    }
+    let mut out = Vec::new();
+    for r in 0..n_sb_rows {
+        let mut left = [0i8; 32]; // av1_zero_left_context per SB row
+        for c in 0..n_sb_cols {
+            read_modes_sb_recurse(dec, above, &mut left, arena, &mut out, r * sb_mi, c * sb_mi, sb_size);
+        }
+    }
+    out
+}
