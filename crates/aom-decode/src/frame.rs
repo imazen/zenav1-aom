@@ -64,12 +64,20 @@
 //!   symbols over the current-frame segment map), `SEG_LVL_ALT_Q` per-block
 //!   dequant shifts (composing with delta-q), `SEG_LVL_SKIP` forced skips,
 //!   and `SEG_LVL_ALT_LF_*` loop-filter level deltas (threaded into the
-//!   deblock stage's per-segment level derivation). LOSSLESS SEGMENTS
-//!   (`xd->lossless[i]` — effective qindex 0 with all plane deltas zero,
-//!   which flips the block transform path to forced TX_4X4 + WHT) are
-//!   rejected; the C encoder never emits them (av1_vaq_frame_setup clamps
-//!   `base + delta` to >= 1).
-//! - no quantization matrices, not (coded-)lossless.
+//!   deblock stage's per-segment level derivation). A MIXED lossless frame —
+//!   segmentation on with some but not all segments lossless — stays OUT (see
+//!   the coded-lossless bullet).
+//! - CODED-LOSSLESS IS in the envelope (`--lossless=1`: `base_qindex == 0` with
+//!   zero plane deltas, or every segment lossless). `xd->lossless[i]` flips the
+//!   block transform path to forced `TX_4X4` + the 4x4 Walsh–Hadamard (WHT,
+//!   [`aom_transform::inv_txfm2d::av1_highbd_iwht4x4_add`]) with the qindex-0
+//!   dequant, and `is_cfl_allowed` narrows to `BLOCK_4X4`. The header parse
+//!   gates loop-filter / CDEF / restoration / tx-mode off (a two-phase parse:
+//!   probe -> compute `coded_lossless` -> re-parse). Only a genuinely MIXED
+//!   frame (some-but-not-all segments lossless — never emitted by the real
+//!   encoder, not differentially testable) is rejected. Gated by
+//!   `lossless_streams_decode_byte_identical_to_c`.
+//! - no quantization matrices.
 //! - `disable_cdf_update` off (the driver always adapts).
 //! - delta-q / delta-lf ARE in the envelope (per-block dequant recompute).
 //!
@@ -332,6 +340,30 @@ struct ParsedFrame {
 /// order so an early out-of-envelope field can never be masked by a later
 /// mis-parse (`allow_screen_content_tools` precedes the frame size in the
 /// bitstream, so it is checked first).
+/// C's `is_coded_lossless` (`decodeframe.c`): the frame is coded-lossless iff
+/// EVERY segment is lossless — effective qindex 0 with all plane dc/ac deltas
+/// zero (`xd->lossless[i]`). Segmentation off reduces to `base_qindex == 0`.
+/// Drives the forced-`TX_4X4` + WHT block transform path and gates the header's
+/// loop-filter / CDEF / restoration / tx-mode reads off.
+fn frame_coded_lossless(fh: &FrameHeaderObu) -> bool {
+    let q = &fh.quant;
+    let plane_deltas_zero = q.y_dc_delta_q == 0
+        && q.u_dc_delta_q == 0
+        && q.u_ac_delta_q == 0
+        && q.v_dc_delta_q == 0
+        && q.v_ac_delta_q == 0;
+    if !plane_deltas_zero {
+        return false;
+    }
+    if fh.segmentation.enabled {
+        let seg = bridge_segmentation(&fh.segmentation);
+        // is_coded_lossless loops ALL MAX_SEGMENTS, not just the reachable ids.
+        (0..aom_quant::MAX_SEGMENTS).all(|i| av1_get_qindex(&seg, i, q.base_qindex) == 0)
+    } else {
+        q.base_qindex == 0
+    }
+}
+
 fn parse_frame_header(
     seq: &SequenceHeaderObu,
     payload: &[u8],
@@ -404,8 +436,37 @@ fn parse_frame_header(
         ..Default::default()
     };
 
+    // Two-phase header parse for coded-lossless. `read_uncompressed_header` gates
+    // its loop-filter / CDEF / restoration / tx-mode reads on
+    // `cfg.coded_lossless` / `cfg.all_lossless` — a writer-mirror INPUT (the
+    // minimal-header anchor tests rely on that), whereas the decoder only learns
+    // the lossless status by computing it from the parsed quant + segmentation
+    // (exactly what `decodeframe.c` does mid-header). Those are parsed BEFORE the
+    // gated sections, so a first pass with `coded_lossless = false` yields exact
+    // quant/segmentation regardless of the (then-misread) tail; recompute
+    // `coded_lossless` from them and, when the stream IS coded-lossless (what
+    // `--lossless=1` produces), re-parse with the correct gating so the tail is
+    // read right. Only a shown KEY frame reaches the lossless path (everything
+    // else is rejected just below), so guard the recompute + re-parse on that.
     let mut rb = ReadBitBuffer::new(payload);
-    let p = read_uncompressed_header(&mut rb, &cfg);
+    let probe = read_uncompressed_header(&mut rb, &cfg);
+    let key_shown = !probe.prefix.show_existing_frame
+        && probe.prefix.frame_type == 0
+        && probe.prefix.show_frame;
+    let coded_lossless = key_shown && frame_coded_lossless(&probe);
+    let (p, mut rb) = if coded_lossless {
+        let mut cfg_ll = cfg.clone();
+        cfg_ll.coded_lossless = true;
+        // all_lossless = coded_lossless && !superres_scaled (decodeframe.c). In
+        // this envelope superres is never scaled (rejected below), but derive it
+        // from the parsed frame size so the restoration gate is exact regardless.
+        cfg_ll.all_lossless = probe.frame_size.scale_denominator == 8;
+        let mut rb2 = ReadBitBuffer::new(payload);
+        let p2 = read_uncompressed_header(&mut rb2, &cfg_ll);
+        (p2, rb2)
+    } else {
+        (probe, rb)
+    };
 
     // --- envelope gates, in bitstream order ---
     if p.prefix.show_existing_frame {
@@ -444,16 +505,17 @@ fn parse_frame_header(
         return Err("quantization matrices".into());
     }
     let q = &p.quant;
-    if q.base_qindex == 0
-        && q.y_dc_delta_q == 0
-        && q.u_dc_delta_q == 0
-        && q.u_ac_delta_q == 0
-        && q.v_dc_delta_q == 0
-        && q.v_ac_delta_q == 0
-    {
-        // Also invalidates this parse (cfg.coded_lossless was false).
-        return Err("(coded-)lossless stream".into());
-    }
+    // Coded-lossless (`--lossless=1`: base_qindex 0 + zero deltas, or every
+    // segment lossless) IS in the envelope: `coded_lossless` above drove the
+    // re-parse's LF/CDEF/restoration/tx-mode gating, the tile driver forces
+    // TX_4X4 + WHT per block (`st.coded_lossless`), and the frame-level
+    // deblock/CDEF/LR gates below see everything off. What stays OUT is a MIXED
+    // frame — segmentation enabled with SOME but not ALL segments lossless (C's
+    // coded_lossless is false, yet a block in a lossless segment still forces the
+    // WHT): the real encoder never emits it (av1_vaq clamps base+delta >= 1 on
+    // non-lossless frames; --lossless disables segmentation), it isn't
+    // differentially testable, and its per-segment `cfl_allowed` would diverge
+    // from the value the driver precomputes once. Reject it cleanly.
     if p.segmentation.enabled {
         // KEY frame, no primary ref: the parse forces map+data updates on and
         // temporal prediction off (setup_segmentation's PRIMARY_REF_NONE arm).
@@ -462,22 +524,20 @@ fn parse_frame_header(
                 && p.segmentation.update_data
                 && !p.segmentation.temporal_update
         );
-        // xd->lossless[i] (decodeframe.c:5166): a lossless SEGMENT switches
-        // the block transform path (forced TX_4X4 + WHT) — out of envelope.
-        // Only ids 0..=last_active_segid are decodable (read_segment_id
-        // bounds the alphabet), so only those rows gate.
         let seg = bridge_segmentation(&p.segmentation);
         let (_, last_active) = crate::calculate_segdata(&seg);
-        for i in 0..=last_active as usize {
-            if av1_get_qindex(&seg, i, q.base_qindex) == 0
-                && q.y_dc_delta_q == 0
-                && q.u_dc_delta_q == 0
-                && q.u_ac_delta_q == 0
-                && q.v_dc_delta_q == 0
-                && q.v_ac_delta_q == 0
-            {
-                return Err(format!("lossless segment {i} (forced-WHT path)"));
-            }
+        let plane_deltas_zero = q.y_dc_delta_q == 0
+            && q.u_dc_delta_q == 0
+            && q.u_ac_delta_q == 0
+            && q.v_dc_delta_q == 0
+            && q.v_ac_delta_q == 0;
+        // A reachable (decodable) segment is lossless but the frame is not
+        // coded-lossless -> a genuine mix. `coded_lossless` already checked ALL
+        // MAX_SEGMENTS, so this fires only for the true mixed case.
+        let any_reachable_lossless = plane_deltas_zero
+            && (0..=last_active as usize).any(|i| av1_get_qindex(&seg, i, q.base_qindex) == 0);
+        if any_reachable_lossless && !coded_lossless {
+            return Err("mixed lossless/non-lossless segments (out of envelope)".into());
         }
     }
     let lf = &p.loopfilter;

@@ -1719,3 +1719,147 @@ fn intrabc_colour_streams_decode_byte_identical_to_c() {
          path is untested; add a config whose DVs land at odd luma offsets"
     );
 }
+
+// ---- CODED-LOSSLESS gate: --lossless=1 streams ----
+//
+// Coded-lossless is in the decode envelope. AV1E_SET_LOSSLESS=1 forces
+// base_qindex 0 (coded_lossless), which flips every block's transform to forced
+// TX_4X4 + the 4x4 Walsh-Hadamard (WHT) with the qindex-0 dequant, narrows
+// is_cfl_allowed to BLOCK_4X4, and gates the header's loop-filter / CDEF /
+// restoration / tx-mode reads off (frame.rs does a two-phase parse: probe ->
+// compute coded_lossless -> re-parse). The decoder reconstructs via
+// aom_transform::av1_highbd_iwht4x4_add instead of the DCT/ADST inverse.
+//
+// Photographic content (gradients + noise) guarantees real residual, so the WHT
+// runs on plenty of non-skip 4x4 txbs. TWO independent correctness checks per
+// arm: (1) byte-identity vs the REAL C decoder (aom_codec_av1_dx), and (2)
+// because the stream is truly lossless, the decoded planes must equal the
+// ORIGINAL source pixels exactly.
+
+#[test]
+fn lossless_streams_decode_byte_identical_to_c() {
+    struct LlCfg {
+        w: usize,
+        h: usize,
+        bd: i32,
+        usage: u32,
+        ss_x: i32,
+        ss_y: i32,
+        mono: bool,
+    }
+    let cfgs = [
+        // 8-bit 4:2:0, SB-multiple, ALL_INTRA
+        LlCfg { w: 64, h: 64, bd: 8, usage: 2, ss_x: 1, ss_y: 1, mono: false },
+        // 8-bit 4:2:0, non-SB-multiple crop, GOOD
+        LlCfg { w: 96, h: 80, bd: 8, usage: 0, ss_x: 1, ss_y: 1, mono: false },
+        // 8-bit 4:4:4, ALL_INTRA
+        LlCfg { w: 64, h: 64, bd: 8, usage: 2, ss_x: 0, ss_y: 0, mono: false },
+        // 8-bit 4:4:4, non-8-multiple crop (100x76 cropped from the 8px mi grid), GOOD
+        LlCfg { w: 100, h: 76, bd: 8, usage: 0, ss_x: 0, ss_y: 0, mono: false },
+        // 8-bit monochrome, GOOD
+        LlCfg { w: 128, h: 96, bd: 8, usage: 0, ss_x: 1, ss_y: 1, mono: true },
+        // 10-bit 4:2:0, ALL_INTRA
+        LlCfg { w: 64, h: 64, bd: 10, usage: 2, ss_x: 1, ss_y: 1, mono: false },
+        // 10-bit 4:4:4, non-SB-multiple crop, GOOD
+        LlCfg { w: 96, h: 80, bd: 10, usage: 0, ss_x: 0, ss_y: 0, mono: false },
+        // 10-bit monochrome, ALL_INTRA
+        LlCfg { w: 96, h: 96, bd: 10, usage: 2, ss_x: 1, ss_y: 1, mono: true },
+    ];
+
+    let mut total_arms = 0usize;
+    let mut wht_luma_txbs_total = 0usize;
+    let mut wht_uv_txbs_total = 0usize;
+    for c in &cfgs {
+        total_arms += 1;
+        let seed = ((c.w as u64) << 32)
+            ^ ((c.h as u64) << 24)
+            ^ ((c.bd as u64) << 12)
+            ^ ((c.usage as u64) << 6)
+            ^ ((c.ss_x as u64) << 2)
+            ^ ((c.ss_y as u64) << 1)
+            ^ c.mono as u64;
+        let y = gen_plane(c.w, c.h, c.bd, seed ^ 0x1111, false);
+        let (cw, ch) = if c.mono {
+            (0, 0)
+        } else {
+            (c.w >> c.ss_x, c.h >> c.ss_y)
+        };
+        let u = if c.mono {
+            Vec::new()
+        } else {
+            gen_plane(cw, ch, c.bd, seed ^ 0x2222, true)
+        };
+        let v = if c.mono {
+            Vec::new()
+        } else {
+            gen_plane(cw, ch, c.bd, seed ^ 0x3333, true)
+        };
+
+        let bytes = c::ref_encode_av1_kf_lossless(
+            &y, &u, &v, c.w, c.h, c.bd, c.mono, c.ss_x, c.ss_y, /* cpu_used */ 0,
+            c.usage, /* two_pass */ false,
+        );
+
+        let ctx = format!(
+            "lossless {}x{} bd{} ss=({},{}) mono={} usage={}",
+            c.w, c.h, c.bd, c.ss_x, c.ss_y, c.mono, c.usage
+        );
+
+        // (1) byte-identity vs the REAL C decoder.
+        let rust = decode_frame_obus(&bytes)
+            .unwrap_or_else(|e| panic!("decode_frame_obus rejected {ctx}: {e}"));
+        let cref = c::ref_decode_av1_kf(&bytes, c.w, c.h);
+        assert_eq!(rust.y, cref.y, "LUMA mismatch vs C {ctx}");
+        if !c.mono {
+            assert_eq!(rust.u, cref.u, "U mismatch vs C {ctx}");
+            assert_eq!(rust.v, cref.v, "V mismatch vs C {ctx}");
+        }
+
+        // (2) truly lossless: decoded == original source pixels.
+        assert_eq!(rust.y, y, "LUMA not lossless vs source {ctx}");
+        if !c.mono {
+            assert_eq!(rust.u, u, "U not lossless vs source {ctx}");
+            assert_eq!(rust.v, v, "V not lossless vs source {ctx}");
+        }
+
+        // Anti-vacuous coverage: every block is forced TX_4X4, and the WHT must
+        // actually run (non-skip 4x4 txbs with eob>0) — not a trivial all-skip
+        // frame that would pass without exercising the WHT.
+        let (t, _tcfg, _header) = decode_frame_obus_prefilter(&bytes).unwrap();
+        assert!(
+            t.blocks.iter().all(|b| b.tx_size == 0),
+            "{ctx}: a block escaped the lossless TX_4X4 preempt (tx_size != TX_4X4)"
+        );
+        let wht_luma: usize = t
+            .blocks
+            .iter()
+            .map(|b| b.txbs.iter().filter(|(eob, _)| *eob > 0).count())
+            .sum();
+        let wht_uv: usize = t
+            .blocks
+            .iter()
+            .map(|b| b.txbs_uv.iter().filter(|(eob, _)| *eob > 0).count())
+            .sum();
+        wht_luma_txbs_total += wht_luma;
+        wht_uv_txbs_total += wht_uv;
+        println!(
+            "{ctx}: {} bytes, {} blocks, {} luma WHT txbs, {} chroma WHT txbs",
+            bytes.len(),
+            t.blocks.len(),
+            wht_luma,
+            wht_uv
+        );
+    }
+    println!(
+        "lossless gate summary: {total_arms} arms, {wht_luma_txbs_total} luma WHT txbs, \
+         {wht_uv_txbs_total} chroma WHT txbs"
+    );
+    assert!(
+        wht_luma_txbs_total > 0,
+        "NO luma WHT txb exercised — the lossless generator or WHT wiring is broken"
+    );
+    assert!(
+        wht_uv_txbs_total > 0,
+        "NO chroma WHT txb exercised — the colour lossless arms did not run the WHT"
+    );
+}

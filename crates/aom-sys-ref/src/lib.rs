@@ -10644,6 +10644,71 @@ pub fn ref_encode_av1_kf_screen_content(
     out
 }
 
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_encode_av1_kf_lossless(
+        y: *const u16,
+        u: *const u16,
+        v: *const u16,
+        w: i32,
+        h: i32,
+        bd: i32,
+        mono: i32,
+        ss_x: i32,
+        ss_y: i32,
+        cpu_used: i32,
+        usage: i32,
+        two_pass: i32,
+        out: *mut u8,
+        out_cap: usize,
+    ) -> i64;
+}
+
+/// Encode one CODED-LOSSLESS KEY frame through the REAL `aom_codec_av1_cx`
+/// encoder with `--lossless=1` (base_qindex 0, coded_lossless, ONLY_4X4 + the
+/// 4x4 WHT transform). `--sb-size=64`, single tile, no palette / intrabc / cdef
+/// / restoration. `usage` selects `AOM_USAGE_GOOD_QUALITY` (0) or
+/// `AOM_USAGE_ALL_INTRA` (2). Panics on a negative shim return.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_encode_av1_kf_lossless(
+    y: &[u16],
+    u: &[u16],
+    v: &[u16],
+    w: usize,
+    h: usize,
+    bd: i32,
+    mono: bool,
+    ss_x: i32,
+    ss_y: i32,
+    cpu_used: i32,
+    usage: u32,
+    two_pass: bool,
+) -> Vec<u8> {
+    // Lossless streams are larger than lossy — size the buffer generously.
+    let mut out = vec![0u8; (w * h * 8 + 65536).max(1 << 20)];
+    let n = unsafe {
+        shim_encode_av1_kf_lossless(
+            y.as_ptr(),
+            u.as_ptr(),
+            v.as_ptr(),
+            w as i32,
+            h as i32,
+            bd,
+            mono as i32,
+            ss_x,
+            ss_y,
+            cpu_used,
+            usage as i32,
+            two_pass as i32,
+            out.as_mut_ptr(),
+            out.len(),
+        )
+    };
+    assert!(n > 0, "shim_encode_av1_kf_lossless failed ({n})");
+    out.truncate(n as usize);
+    out
+}
+
 // dec_shim.c section "intrabc DV prediction facades" (append-only addition):
 // shim_find_dv_ref_mvs drives the REAL EXPORTED av1_find_mv_refs +
 // av1_find_best_ref_mvs (ref_frame=INTRA_FRAME) over a synthetic MI grid;

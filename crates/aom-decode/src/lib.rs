@@ -142,6 +142,27 @@ pub mod frame;
 
 use aom_encode::reconstruct_txb;
 use aom_entropy::cdf::read_symbol;
+
+/// Lossless residual reconstruction: dequantize the 4x4 coefficient block (flat,
+/// qindex-0 dequant) and add the inverse 4x4 Walsh–Hadamard transform onto the
+/// prediction already in `dst` — the `xd->lossless` arm of
+/// `av1_inverse_transform_block` (forced `TX_4X4` + WHT). Mirrors
+/// [`reconstruct_txb`] but swaps `av1_inv_txfm2d_add` for the WHT; the caller
+/// gates on `eob > 0` (skip blocks reconstruct to the prediction alone).
+fn reconstruct_txb_wht(
+    dst: &mut [u16],
+    stride: usize,
+    qcoeff: &[i32],
+    dequant: [i16; 2],
+    eob: usize,
+    bd: i32,
+) {
+    // TX_4X4: area 16, tx_scale 0, no quant matrix. dequant_txb reproduces the C
+    // decoder's dqcoeff exactly (same 20/24-bit masks + bitdepth clamp).
+    let mut dqcoeff = [0i32; 16];
+    aom_txb::dequant_txb(qcoeff, &mut dqcoeff, TX_4X4_IDX, dequant, None, bd);
+    aom_transform::inv_txfm2d::av1_highbd_iwht4x4_add(&dqcoeff, dst, stride, eob, bd);
+}
 use aom_entropy::dec::OdEcDec;
 use aom_entropy::dv_ref::{DvGrid, DvNbr, DvTileBounds, assign_and_validate_dv, find_dv_ref_mvs};
 use aom_entropy::partition::{
@@ -1145,21 +1166,32 @@ impl<'c> TileKf<'c> {
         let (segid_preskip, last_active_segid) = calculate_segdata(&cfg.seg);
         let seg_skip_feature: [bool; MAX_SEGMENTS] =
             std::array::from_fn(|i| cfg.seg.feature_mask[i] & (1 << SEG_LVL_SKIP) != 0);
+        // coded_lossless (C's is_coded_lossless, decodeframe.c): every segment
+        // lossless (effective qindex 0 with all plane dc/ac deltas zero —
+        // `xd->lossless[i]`), or `base_qindex == 0` with segmentation off. It
+        // forces the per-block transform to TX_4X4 + the 4x4 WHT and narrows
+        // is_cfl_allowed to BLOCK_4X4. A MIXED frame (some-but-not-all segments
+        // lossless) is rejected in parse_frame_header, so within a tile the
+        // lossless status is uniform and this single flag drives every block.
+        let plane_deltas_zero = cfg.y_dc_delta_q == 0
+            && cfg.u_dc_delta_q == 0
+            && cfg.u_ac_delta_q == 0
+            && cfg.v_dc_delta_q == 0
+            && cfg.v_ac_delta_q == 0;
+        let coded_lossless = plane_deltas_zero
+            && if cfg.seg.enabled {
+                (0..MAX_SEGMENTS).all(|i| av1_get_qindex(&cfg.seg, i, cfg.base_qindex) == 0)
+            } else {
+                cfg.base_qindex == 0
+            };
         if cfg.seg.enabled {
-            // xd->lossless[i] (decodeframe.c:5166): a lossless SEGMENT flips
-            // the per-block transform path (read_tx_size -> TX_4X4 + WHT),
-            // out of scope. Only ids 0..=last_active_segid are decodable.
-            for i in 0..=last_active_segid as usize {
-                assert!(
-                    av1_get_qindex(&cfg.seg, i, cfg.base_qindex) != 0
-                        || cfg.y_dc_delta_q != 0
-                        || cfg.u_dc_delta_q != 0
-                        || cfg.u_ac_delta_q != 0
-                        || cfg.v_dc_delta_q != 0
-                        || cfg.v_ac_delta_q != 0,
-                    "segment {i} is lossless (effective qindex 0) — out of scope"
-                );
-            }
+            debug_assert!(
+                coded_lossless
+                    || !(0..=last_active_segid as usize).any(|i| {
+                        plane_deltas_zero && av1_get_qindex(&cfg.seg, i, cfg.base_qindex) == 0
+                    }),
+                "mixed lossless segments reached TileKf::new (rejected upstream)"
+            );
         }
         // `seq_params->sb_size`: mib_size = mi_size_high[sb_size] (16 or 32
         // mi/side), sb_size_block = the partition-tree root BLOCK_SIZE.
@@ -1195,7 +1227,7 @@ impl<'c> TileKf<'c> {
             mib_size,
             sb_size: sb_size_block,
             bsize: sb_size_block,
-            coded_lossless: false,
+            coded_lossless,
             allow_intrabc: cfg.allow_intrabc,
             cdef_bits: cfg.cdef_bits,
             dq_present: cfg.delta_q_present,
@@ -1542,7 +1574,10 @@ impl<'c> TileKf<'c> {
                 "invalid chroma block size (non-conformant partition for this subsampling)"
             );
         }
-        let cfl_allowed = !cfg.monochrome && is_cfl_allowed(bsize, false, ss_x, ss_y);
+        // is_cfl_allowed narrows to BLOCK_4X4 when the block is lossless (uniform
+        // across the frame in this envelope — mixed is rejected upstream).
+        let cfl_allowed =
+            !cfg.monochrome && is_cfl_allowed(bsize, self.st.coded_lossless, ss_x, ss_y);
         let (above, left) = self.neighbours(mi_row, mi_col);
         let (above_palette, left_palette) = self.palette_neighbours(mi_row, mi_col);
 
@@ -1743,7 +1778,23 @@ impl<'c> TileKf<'c> {
         let bh4 = MI_SIZE_HIGH[bsize] as usize;
         let mut vartx_leaf_grid: Vec<u8> = Vec::new();
         let mut vartx_non_uniform = false;
-        let tx_size = if info.use_intrabc != 0 {
+        let tx_size = if self.st.coded_lossless {
+            // read_tx_size (decodeframe.c): xd->lossless[segment_id] preempts to
+            // TX_4X4 before any tx-size symbol / block_signals_txsize test. The
+            // else-arm of read_block_tx_size then stamps set_txfm_ctxs(TX_4X4, ...,
+            // skip && is_inter_block); is_inter_block on a KEY frame is
+            // use_intrabc. The var-tx quadtree is gated on !lossless in C, so it
+            // never runs here.
+            set_txfm_ctxs(
+                &mut self.above_t[a_off..],
+                &mut self.left_t[l_off..],
+                TX_4X4_IDX,
+                bw,
+                bh,
+                info.skip != 0 && info.use_intrabc != 0,
+            );
+            TX_4X4_IDX
+        } else if info.use_intrabc != 0 {
             // Intrabc is `is_inter_block`, so `inter_block_tx` is set and the tx
             // size follows the INTER path (decodeframe.c:1179-1198):
             //  - TX_MODE_SELECT && block_signals_txsize && !skip  → the var-tx
@@ -2285,16 +2336,28 @@ impl<'c> TileKf<'c> {
                 // (3) dequant + inverse transform + add (only when residual
                 // exists) — the block-effective luma dequant row.
                 if info.skip == 0 && eob > 0 {
-                    reconstruct_txb(
-                        &mut self.recon[off..],
-                        self.stride,
-                        tx_size,
-                        tx_type,
-                        &tcoeff,
-                        self.dequants[0],
-                        None,
-                        cfg.bd,
-                    );
+                    if self.st.coded_lossless {
+                        // lossless: TX_4X4 + WHT with the qindex-0 dequant.
+                        reconstruct_txb_wht(
+                            &mut self.recon[off..],
+                            self.stride,
+                            &tcoeff,
+                            self.dequants[0],
+                            eob,
+                            cfg.bd,
+                        );
+                    } else {
+                        reconstruct_txb(
+                            &mut self.recon[off..],
+                            self.stride,
+                            tx_size,
+                            tx_type,
+                            &tcoeff,
+                            self.dequants[0],
+                            None,
+                            cfg.bd,
+                        );
+                    }
                 }
                 // (4) CfL luma store (predict_and_reconstruct_intra_block tail,
                 // store_cfl_required): non-chroma-reference blocks always store
@@ -2331,7 +2394,13 @@ impl<'c> TileKf<'c> {
         if !cfg.monochrome && chroma_ref {
             let plane_bsize = get_plane_block_size(bsize, ss_x, ss_y);
             assert_ne!(plane_bsize, 255, "invalid chroma block size");
-            let uv_tx = max_uv_txsize(bsize, ss_x, ss_y);
+            // av1_get_tx_size(plane > 0): lossless forces TX_4X4 (the chroma txb
+            // loop tiles + reads coeffs at 4x4), else the max rect uv tx size.
+            let uv_tx = if self.st.coded_lossless {
+                TX_4X4_IDX
+            } else {
+                max_uv_txsize(bsize, ss_x, ss_y)
+            };
             let (uv_txw, uv_txh) = (TX_SIZE_WIDE_UNIT[uv_tx], TX_SIZE_HIGH_UNIT[uv_tx]);
             let (uv_txwpx, uv_txhpx) = (TX_SIZE_WIDE[uv_tx], TX_SIZE_HIGH[uv_tx]);
             // unit_width/height: the luma extent, ceil-scaled to chroma units.
@@ -2583,16 +2652,28 @@ impl<'c> TileKf<'c> {
                             // (3) dequant + inverse transform + add — the
                             // block-effective dequant row of this plane.
                             if info.skip == 0 && eob > 0 {
-                                reconstruct_txb(
-                                    &mut plane_recon[off_uv..],
-                                    self.stride_uv,
-                                    uv_tx,
-                                    tt_uv_eff,
-                                    &tcoeff_uv,
-                                    self.dequants[plane],
-                                    None,
-                                    cfg.bd,
-                                );
+                                if self.st.coded_lossless {
+                                    // lossless: TX_4X4 + WHT, this plane's qindex-0 dequant.
+                                    reconstruct_txb_wht(
+                                        &mut plane_recon[off_uv..],
+                                        self.stride_uv,
+                                        &tcoeff_uv,
+                                        self.dequants[plane],
+                                        eob,
+                                        cfg.bd,
+                                    );
+                                } else {
+                                    reconstruct_txb(
+                                        &mut plane_recon[off_uv..],
+                                        self.stride_uv,
+                                        uv_tx,
+                                        tt_uv_eff,
+                                        &tcoeff_uv,
+                                        self.dequants[plane],
+                                        None,
+                                        cfg.bd,
+                                    );
+                                }
                             }
                         }
                         txbs_uv.push(if eob > 0 { (eob, tt_uv_eff) } else { (0, 0) });

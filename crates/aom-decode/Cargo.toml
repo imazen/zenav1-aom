@@ -13,6 +13,7 @@ aom-intra = { path = "../aom-intra" }
 aom-loopfilter = { path = "../aom-loopfilter" }
 aom-quant = { path = "../aom-quant" }
 aom-restore = { path = "../aom-restore" }
+aom-transform = { path = "../aom-transform" }
 aom-txb = { path = "../aom-txb" }
 aom-encode = { path = "../aom-encode" }
 

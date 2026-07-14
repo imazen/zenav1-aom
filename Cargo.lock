@@ -28,6 +28,7 @@ dependencies = [
  "aom-quant",
  "aom-restore",
  "aom-sys-ref",
+ "aom-transform",
  "aom-txb",
 ]
 
