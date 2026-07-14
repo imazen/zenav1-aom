@@ -498,13 +498,10 @@ fn parse_frame_header(
     if p.frame_size.scale_denominator != 8 {
         return Err("superres scaled".into());
     }
-    // Intra block copy (monochrome and colour): luma is an integer block copy
-    // from the already-decoded region; chroma reuses the luma DV scaled by
-    // subsampling, an integer copy or a 2-tap intrabc bilinear at half-pel, with
-    // the chroma tx-type taken from the co-located luma tx_type_map.
-    if p.quant.using_qmatrix {
-        return Err("quantization matrices".into());
-    }
+    // Quantization matrices (`using_qmatrix`): each 2-D-transform coefficient is
+    // dequantized with a per-position inverse-QM weight
+    // (`av1_get_iqmatrix`/[`crate::qm`]) instead of the flat step. Decoded via
+    // the per-block `block_qm_level` + `qm::iqmatrix` threading below; no reject.
     let q = &p.quant;
     // Coded-lossless (`--lossless=1`: base_qindex 0 + zero deltas, or every
     // segment lossless) IS in the envelope: `coded_lossless` above drove the
@@ -790,6 +787,10 @@ fn decode_tile_payload(
         sb_size_128: s.sb_size_128,
         allow_screen_content_tools: p.prefix.allow_screen_content_tools,
         allow_intrabc: p.allow_intrabc,
+        using_qmatrix: p.quant.using_qmatrix,
+        qm_y: p.quant.qmatrix_level_y as usize,
+        qm_u: p.quant.qmatrix_level_u as usize,
+        qm_v: p.quant.qmatrix_level_v as usize,
     };
     let tiles = split_tiles(tile_data, &p.tile_info, p.tile_size_bytes)?;
     let t = decode_frame_tiles_kf(&tiles, &cfg, 0);

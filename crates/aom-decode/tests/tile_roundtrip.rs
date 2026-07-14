@@ -1744,6 +1744,12 @@ fn run_roundtrip(case: &SweepCase, seed: u64, cov: &mut Coverage) {
         // search) — palette coverage is real_bitstream.rs's REAL-encoder gate.
         allow_screen_content_tools: false,
         allow_intrabc: false,
+        // QM off for this mirror encoder — QM coverage is real_bitstream.rs's
+        // REAL-encoder gate (qm_streams_decode_byte_identical_to_c).
+        using_qmatrix: false,
+        qm_y: 0,
+        qm_u: 0,
+        qm_v: 0,
     };
     let aligned_cols = (cfg.mi_cols as usize).div_ceil(16) * 16;
     let aligned_rows = (cfg.mi_rows as usize).div_ceil(16) * 16;

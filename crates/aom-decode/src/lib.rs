@@ -140,6 +140,9 @@
 
 pub mod frame;
 
+mod qm;
+mod qm_tables;
+
 use aom_encode::reconstruct_txb;
 use aom_entropy::cdf::read_symbol;
 
@@ -462,6 +465,17 @@ pub struct KfTileConfig {
     /// in `frame.rs` pending chroma reconstruction. Drives
     /// [`KfBlockState::allow_intrabc`].
     pub allow_intrabc: bool,
+    /// `quant_params.using_qmatrix` (`read_quantization`): the frame codes
+    /// per-position inverse-QM weights into each 2-D-transform block's dequant
+    /// (`av1_get_iqmatrix` / [`crate::qm`]). When false every block takes the
+    /// flat dequant (the pre-QM behaviour), so a non-QM frame is unaffected.
+    pub using_qmatrix: bool,
+    /// `quant_params.qmatrix_level_y` / `_u` / `_v` (`QM_LEVEL_BITS` = 4 each,
+    /// `0..=15`): the per-plane QM level selecting the `iwt_matrix_ref` set.
+    /// Only meaningful when `using_qmatrix`; level 15 is the flat matrix.
+    pub qm_y: usize,
+    pub qm_u: usize,
+    pub qm_v: usize,
 }
 
 /// `av1_calculate_segdata` (av1/common/seg_common.c) — the derived
@@ -509,6 +523,33 @@ pub fn plane_dequants(cfg: &KfTileConfig, qindex: i32) -> [[i16; 2]; 3] {
             av1_ac_quant_qtx(qindex, cfg.v_ac_delta_q, bd),
         ],
     ]
+}
+
+/// The per-plane QM levels for a segment — `setup_segmentation_dequant`'s
+/// `qmlevel_{y,u,v}` (`decodeframe.c`). `av1_use_qmatrix` is
+/// `using_qmatrix && !xd->lossless[segment_id]`; when it holds each plane uses
+/// its frame-level `qmatrix_level_*`, otherwise the flat top level
+/// (`NUM_QM_LEVELS - 1`). `xd->lossless[i]` is the segment's FRAME-level
+/// effective qindex (`av1_get_qindex` on `base_qindex`, not the delta-q carry)
+/// being 0 with all plane dc/ac deltas zero — the same condition
+/// `is_coded_lossless` sums over. Feeds [`crate::qm::iqmatrix`] per block.
+fn frame_qm_levels(cfg: &KfTileConfig, segment_id: usize) -> [usize; 3] {
+    let flat = qm::NUM_QM_LEVELS - 1;
+    if !cfg.using_qmatrix {
+        return [flat; 3];
+    }
+    let seg_qindex = av1_get_qindex(&cfg.seg, segment_id, cfg.base_qindex);
+    let seg_lossless = seg_qindex == 0
+        && cfg.y_dc_delta_q == 0
+        && cfg.u_dc_delta_q == 0
+        && cfg.u_ac_delta_q == 0
+        && cfg.v_dc_delta_q == 0
+        && cfg.v_ac_delta_q == 0;
+    if seg_lossless {
+        [flat; 3]
+    } else {
+        [cfg.qm_y, cfg.qm_u, cfg.qm_v]
+    }
 }
 
 // The tile's CDF state is libaom's FRAME_CONTEXT itself —
@@ -1121,6 +1162,13 @@ struct TileKf<'c> {
     /// recomputed per coded block from the running `current_base_qindex`
     /// carry when `delta_q_present` (`parse_decode_block`, decodeframe.c).
     dequants: [[i16; 2]; 3],
+    /// The current block's per-plane QM level (`av1_use_qmatrix` resolved:
+    /// `qmatrix_level_{y,u,v}` when the frame uses QM and this block's segment
+    /// is not lossless, else the flat `NUM_QM_LEVELS - 1`). Recomputed per
+    /// coded block alongside `dequants`; consumed by [`crate::qm::iqmatrix`] at
+    /// each `reconstruct_txb`. `[15; 3]` (flat) when the frame doesn't use QM,
+    /// so a non-QM frame is byte-identical to the pre-QM path.
+    block_qm_level: [usize; 3],
     st: KfBlockState,
     tree: Vec<i8>,
     blocks: Vec<DecodedBlockKf>,
@@ -1297,6 +1345,9 @@ impl<'c> TileKf<'c> {
             // setup_segmentation_dequant: the frame-level dequant rows from
             // base_qindex (the live values until a per-block recompute).
             dequants: plane_dequants(cfg, cfg.base_qindex),
+            // Frame-level QM levels (segment 0; recomputed per block below).
+            // Flat when QM is off, so the flat dequant matches the pre-QM path.
+            block_qm_level: frame_qm_levels(cfg, 0),
             st,
             tree: Vec::new(),
             blocks: Vec::new(),
@@ -1951,6 +2002,13 @@ impl<'c> TileKf<'c> {
             );
             self.dequants = plane_dequants(cfg, eff_qindex);
         }
+        // QM level per plane for this block: only the segment's lossless status
+        // varies it (qmatrix_level_* is frame-constant), so recompute only when
+        // the frame uses QM. Non-QM frames keep the flat init and the pre-QM
+        // (flat-dequant) path byte-for-byte.
+        if cfg.using_qmatrix {
+            self.block_qm_level = frame_qm_levels(cfg, info.segment_id as usize);
+        }
 
         // The chroma-side geometry (used by the skip reset, the chroma txb
         // loop, and CfL): the plane origin is the shared-chroma group's — a
@@ -2136,6 +2194,7 @@ impl<'c> TileKf<'c> {
                         .copy_from_slice(&nu_scratch[r * ltxwpx..(r + 1) * ltxwpx]);
                 }
                 if info.skip == 0 && eob > 0 {
+                    let iqm = qm::iqmatrix(self.block_qm_level[0], 0, cur_tx, tx_type);
                     reconstruct_txb(
                         &mut self.recon[off..],
                         self.stride,
@@ -2143,7 +2202,7 @@ impl<'c> TileKf<'c> {
                         tx_type,
                         &nu_tcoeff[..larea],
                         self.dequants[0],
-                        None,
+                        iqm,
                         cfg.bd,
                     );
                 }
@@ -2347,6 +2406,7 @@ impl<'c> TileKf<'c> {
                             cfg.bd,
                         );
                     } else {
+                        let iqm = qm::iqmatrix(self.block_qm_level[0], 0, tx_size, tx_type);
                         reconstruct_txb(
                             &mut self.recon[off..],
                             self.stride,
@@ -2354,7 +2414,7 @@ impl<'c> TileKf<'c> {
                             tx_type,
                             &tcoeff,
                             self.dequants[0],
-                            None,
+                            iqm,
                             cfg.bd,
                         );
                     }
@@ -2663,6 +2723,12 @@ impl<'c> TileKf<'c> {
                                         cfg.bd,
                                     );
                                 } else {
+                                    let iqm = qm::iqmatrix(
+                                        self.block_qm_level[plane],
+                                        plane,
+                                        uv_tx,
+                                        tt_uv_eff,
+                                    );
                                     reconstruct_txb(
                                         &mut plane_recon[off_uv..],
                                         self.stride_uv,
@@ -2670,7 +2736,7 @@ impl<'c> TileKf<'c> {
                                         tt_uv_eff,
                                         &tcoeff_uv,
                                         self.dequants[plane],
-                                        None,
+                                        iqm,
                                         cfg.bd,
                                     );
                                 }
