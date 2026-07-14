@@ -54,7 +54,13 @@ jobs:
           sudo mkdir -p /root/work
           sudo git clone https://github.com/imazen/archmage.git /root/work/archmage
           sudo git -C /root/work/archmage checkout 49023ced349cd47d736be593b8593779bf72a769
-          sudo chown -R "$(id -u):$(id -g)" /root/work/archmage
+          # A path dep needs only source; drop .git so cargo (as runner) never
+          # git-inspects a root-owned repo ("dubious ownership").
+          sudo rm -rf /root/work/archmage/.git
+          # /root is 0700; the non-root runner user must be able to traverse it
+          # and read archmage's manifest/sources (cargo runs as runner).
+          sudo chmod o+x /root /root/work
+          sudo chmod -R a+rX /root/work/archmage
 
       - name: Test workspace (differential vs C oracle)
         run: cargo test --workspace --no-fail-fast
