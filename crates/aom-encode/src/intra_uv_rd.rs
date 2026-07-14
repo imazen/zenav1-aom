@@ -986,3 +986,423 @@ pub fn cfl_rd_pick_alpha(
         _ => None,
     }
 }
+
+// ---------------------------------------------------------------------------
+// The UV mode loop (intra_mode_search.c 864-1029): rd_pick_intra_angle_sbuv
+// (the chroma angle-delta sweep) + av1_rd_pick_intra_sbuv_mode (the
+// 14-candidate search over uv_rd_search_mode_order).
+// ---------------------------------------------------------------------------
+
+use crate::mode_costs::{intra_mode_info_cost_uv, CflCosts, IntraModeCosts};
+use aom_entropy::partition::{is_directional_mode, use_angle_delta};
+
+/// `uv_rd_search_mode_order[UV_INTRA_MODES]` (intra_mode_search.c:44).
+pub const UV_RD_SEARCH_MODE_ORDER: [usize; 14] =
+    [0, 13, 2, 1, 9, 12, 10, 11, 4, 7, 6, 8, 5, 3];
+
+/// `av1_derived_chroma_intra_mode_used_flag[INTRA_MODES]`
+/// (intra_mode_search.c:87) — the `prune_chroma_modes_using_luma_winner`
+/// mask (sf OFF at speed 0; kept for the gated arm).
+pub const AV1_DERIVED_CHROMA_INTRA_MODE_USED_FLAG: [u16; 13] = [
+    0x2201, 0x2203, 0x2205, 0x2209, 0x2211, 0x2221, 0x2241, 0x2281, 0x2301, 0x2201, 0x2601,
+    0x2a01, 0x3201,
+];
+
+/// `av1_is_diagonal_mode` (reconintra.h): D45..D67.
+#[inline]
+pub fn is_diagonal_mode(mode: i32) -> bool {
+    (3..=8).contains(&mode)
+}
+
+/// The mode-loop gates `av1_rd_pick_intra_sbuv_mode` reads, with speed-0
+/// all-intra defaults (each named with provenance):
+/// - `intra_uv_mode_mask` = `UV_INTRA_ALL` (init_intra_sf default; the
+///   caller resolves `[txsize_sqr_up_map[max_tx_size]]`),
+/// - `prune_chroma_modes_using_luma_winner = 0` (default; speed >= 4),
+/// - `chroma_intra_pruning_with_hog = 0` (default; speed >= 3) — the chroma
+///   HOG mask is a caller input (`None` disables, matching sf 0),
+/// - `prune_smooth_intra_mode_for_chroma = 0` (default; speed >= 6),
+/// - `cfl_search_range = 3` (init_intra_sf default; speed >= 6 sets 1),
+/// - tool config `enable_*` all ON (aomenc defaults), `try_palette` OFF
+///   (`allow_screen_content_tools = 0`).
+#[derive(Clone, Debug)]
+pub struct UvLoopPolicy {
+    pub enable_diagonal_intra: bool,
+    pub enable_directional_intra: bool,
+    pub enable_smooth_intra: bool,
+    pub enable_paeth_intra: bool,
+    pub enable_cfl_intra: bool,
+    pub enable_angle_delta: bool,
+    /// `intra_uv_mode_mask[txsize_sqr_up_map[max_tx_size]]`, resolved.
+    pub intra_uv_mode_mask: u16,
+    pub prune_chroma_modes_using_luma_winner: bool,
+    /// `intra_search_state.directional_mode_skip_mask` when the chroma HOG
+    /// prune ran (`chroma_intra_pruning_with_hog > 0`); `None` = sf off.
+    pub chroma_hog_skip_mask: Option<[bool; 13]>,
+    pub prune_smooth_for_chroma: bool,
+    pub cfl_search_range: usize,
+    pub try_palette: bool,
+}
+
+impl UvLoopPolicy {
+    /// Speed-0 all-intra defaults (provenance per field above).
+    pub fn speed0_allintra() -> Self {
+        UvLoopPolicy {
+            enable_diagonal_intra: true,
+            enable_directional_intra: true,
+            enable_smooth_intra: true,
+            enable_paeth_intra: true,
+            enable_cfl_intra: true,
+            enable_angle_delta: true,
+            intra_uv_mode_mask: 0x3FFF, // UV_INTRA_ALL
+            prune_chroma_modes_using_luma_winner: false,
+            chroma_hog_skip_mask: None,
+            prune_smooth_for_chroma: false,
+            cfl_search_range: 3,
+            try_palette: false,
+        }
+    }
+}
+
+/// One evaluated-candidate record (introspection for the differential: the
+/// exact per-mode gating + rd sequence).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UvModeVisit {
+    pub uv_mode: usize,
+    /// `None` = the candidate was gated/invalid before producing an rd.
+    pub this_rd: Option<i64>,
+}
+
+/// The winner of [`rd_pick_intra_sbuv_mode`] — the `best_mbmi` chroma fields
+/// + the returned rate/distortion outputs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UvModeResult {
+    pub uv_mode: usize,
+    pub angle_delta_uv: i32,
+    pub cfl_alpha_idx: u8,
+    pub cfl_alpha_signs: i8,
+    pub rate: i32,
+    pub rate_tokenonly: i32,
+    pub dist: i64,
+    pub skippable: bool,
+    pub best_rd: i64,
+}
+
+/// `pick_intra_angle_routine_sbuv` (intra_mode_search.c:496).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn pick_intra_angle_routine_sbuv(
+    env: &UvRdEnv,
+    recon_u: &mut [u16],
+    recon_v: &mut [u16],
+    uv_mode: usize,
+    angle_delta_uv: i32,
+    rate_overhead: i32,
+    best_rd_in: i64,
+    costs: &IntraModeCosts,
+    pol: &TxTypeSearchPolicy,
+    lp: &UvLoopPolicy,
+    best_angle_delta: &mut i32,
+    best_rd: &mut i64,
+    best_stats: &mut Option<(i32, i64, bool)>,
+) -> i64 {
+    let Some((tokenonly, _wu, _wv)) =
+        txfm_uvrd(env, recon_u, recon_v, uv_mode, angle_delta_uv, best_rd_in, pol)
+    else {
+        return i64::MAX;
+    };
+    let this_rate = tokenonly.rate
+        + intra_mode_info_cost_uv(
+            costs,
+            rate_overhead,
+            uv_mode,
+            env.bsize,
+            angle_delta_uv,
+            lp.try_palette,
+            false,
+        );
+    let this_rd = rdcost(env.rdmult, this_rate, tokenonly.dist);
+    if this_rd < *best_rd {
+        *best_rd = this_rd;
+        *best_angle_delta = angle_delta_uv;
+        *best_stats = Some((tokenonly.rate, tokenonly.dist, tokenonly.skip_txfm));
+    }
+    this_rd
+}
+
+/// `rd_pick_intra_angle_sbuv` (intra_mode_search.c:531): the chroma
+/// angle-delta search — even deltas first (angle 0 evaluated once and
+/// short-circuiting the whole search when invalid), then odd deltas gated by
+/// the two even neighbours vs `best_rd + (best_rd >> 5)`. Threads (and
+/// improves) the caller's `best_rd`. Returns
+/// `Some((best_angle, rate_tokenonly, dist, skip, best_rd))` when a new best
+/// was found (`rd_stats->rate != INT_MAX`), `None` otherwise.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn rd_pick_intra_angle_sbuv(
+    env: &UvRdEnv,
+    recon_u: &mut [u16],
+    recon_v: &mut [u16],
+    uv_mode: usize,
+    rate_overhead: i32,
+    mut best_rd: i64,
+    costs: &IntraModeCosts,
+    pol: &TxTypeSearchPolicy,
+    lp: &UvLoopPolicy,
+) -> Option<(i32, i32, i64, bool, i64)> {
+    let mut best_angle_delta = 0i32;
+    let mut best_stats: Option<(i32, i64, bool)> = None;
+    let mut rd_cost = [i64::MAX; 2 * (3 + 2)];
+
+    let mut angle_delta = 0i32;
+    while angle_delta <= 3 {
+        for i in 0..2i32 {
+            let best_rd_in = if best_rd == i64::MAX {
+                i64::MAX
+            } else {
+                best_rd + (best_rd >> if angle_delta == 0 { 3 } else { 5 })
+            };
+            let this_rd = pick_intra_angle_routine_sbuv(
+                env,
+                recon_u,
+                recon_v,
+                uv_mode,
+                (1 - 2 * i) * angle_delta,
+                rate_overhead,
+                best_rd_in,
+                costs,
+                pol,
+                lp,
+                &mut best_angle_delta,
+                &mut best_rd,
+                &mut best_stats,
+            );
+            rd_cost[(2 * angle_delta + i) as usize] = this_rd;
+            if angle_delta == 0 {
+                if this_rd == i64::MAX {
+                    return None;
+                }
+                rd_cost[1] = this_rd;
+                break;
+            }
+        }
+        angle_delta += 2;
+    }
+
+    debug_assert!(best_rd != i64::MAX);
+    let mut angle_delta = 1i32;
+    while angle_delta <= 3 {
+        for i in 0..2i32 {
+            let rd_thresh = best_rd + (best_rd >> 5);
+            let skip_search = rd_cost[(2 * (angle_delta + 1) + i) as usize] > rd_thresh
+                && rd_cost[(2 * (angle_delta - 1) + i) as usize] > rd_thresh;
+            if !skip_search {
+                pick_intra_angle_routine_sbuv(
+                    env,
+                    recon_u,
+                    recon_v,
+                    uv_mode,
+                    (1 - 2 * i) * angle_delta,
+                    rate_overhead,
+                    best_rd,
+                    costs,
+                    pol,
+                    lp,
+                    &mut best_angle_delta,
+                    &mut best_rd,
+                    &mut best_stats,
+                );
+            }
+        }
+        angle_delta += 2;
+    }
+
+    // mbmi->angle_delta[UV] = best_angle_delta; return rate != INT_MAX.
+    best_stats.map(|(rate, dist, skip)| (best_angle_delta, rate, dist, skip, best_rd))
+}
+
+/// `av1_rd_pick_intra_sbuv_mode` (intra_mode_search.c:864) for a
+/// chroma-reference intra block (the `!xd->is_chroma_ref` early return and
+/// the `store_cfl_required_rdo` luma re-encode are the CALLER's: `cfl_ctx`
+/// arrives pre-loaded with the winner-luma reconstruction — the
+/// `av1_encode_intra_block_plane(AOM_PLANE_Y, DRY_RUN_NORMAL)` product).
+/// Non-palette modes only (`try_palette` gates the out-of-scope UV palette
+/// search; OFF without screen-content tools).
+///
+/// `mode_costs` supplies `intra_uv_mode_cost[cfl_allowed][luma_mode][uv]` +
+/// the angle/palette-flag bits; `cfl_allowed` is `is_cfl_allowed(xd)`.
+/// Returns the winner + the per-candidate visit log (gating/rd sequence).
+#[allow(clippy::too_many_arguments)]
+pub fn rd_pick_intra_sbuv_mode(
+    env: &UvRdEnv,
+    recon_u: &mut [u16],
+    recon_v: &mut [u16],
+    cfl_ctx: &mut CflCtx,
+    max_tx_size: usize,
+    cfl_allowed: bool,
+    uv_mode_costs: &[[i32; 14]; 13],
+    costs: &IntraModeCosts,
+    cfl_costs: &CflCosts,
+    pol: &TxTypeSearchPolicy,
+    lp: &UvLoopPolicy,
+) -> (UvModeResult, Vec<UvModeVisit>) {
+    // init_sbuv_mode: uv_mode = UV_DC_PRED, palette_size[1] = 0.
+    let mut best = UvModeResult {
+        uv_mode: 0,
+        angle_delta_uv: 0,
+        cfl_alpha_idx: 0,
+        cfl_alpha_signs: 0,
+        rate: 0,
+        rate_tokenonly: 0,
+        dist: 0,
+        skippable: false,
+        best_rd: i64::MAX,
+    };
+    let mut visits: Vec<UvModeVisit> = Vec::new();
+    let sqr_up = crate::tx_search::TXSIZE_SQR_UP_MAP[max_tx_size];
+    let _ = sqr_up; // the caller resolved intra_uv_mode_mask by this class
+
+    for &uv_mode in UV_RD_SEARCH_MODE_ORDER.iter() {
+        let mut visit = UvModeVisit { uv_mode, this_rd: None };
+        // Mode-signaling-rate early skip (strict >).
+        let mode_rate = uv_mode_costs[env.luma_mode][uv_mode];
+        if rdcost(env.rdmult, mode_rate, 0) > best.best_rd {
+            visits.push(visit);
+            continue;
+        }
+        let intra_mode = get_uv_mode(uv_mode);
+        let is_diagonal = is_diagonal_mode(intra_mode);
+        let is_directional = is_directional_mode(intra_mode);
+        if is_diagonal && !lp.enable_diagonal_intra {
+            visits.push(visit);
+            continue;
+        }
+        if is_directional && !lp.enable_directional_intra {
+            visits.push(visit);
+            continue;
+        }
+        if lp.intra_uv_mode_mask & (1 << uv_mode) == 0 {
+            visits.push(visit);
+            continue;
+        }
+        if !lp.enable_smooth_intra && (9..=11).contains(&uv_mode) {
+            visits.push(visit);
+            continue;
+        }
+        if !lp.enable_paeth_intra && uv_mode == 12 {
+            visits.push(visit);
+            continue;
+        }
+        debug_assert!(env.luma_mode < 13);
+        if lp.prune_chroma_modes_using_luma_winner
+            && AV1_DERIVED_CHROMA_INTRA_MODE_USED_FLAG[env.luma_mode] & (1 << uv_mode) == 0
+        {
+            visits.push(visit);
+            continue;
+        }
+
+        // mbmi->uv_mode = uv_mode; angle_delta[UV] = 0.
+        let mut angle_delta_uv = 0i32;
+        let tokenonly: (i32, i64, bool);
+        let mut cfl_fields: (u8, i8) = (0, 0);
+
+        if uv_mode == UV_CFL_PRED {
+            if !cfl_allowed || !lp.enable_cfl_intra {
+                visits.push(visit);
+                continue;
+            }
+            debug_assert!(!is_directional);
+            let uv_tx_size =
+                av1_get_tx_size_uv(env.bsize, env.lossless, env.ss_x, env.ss_y);
+            let Some(r) = cfl_rd_pick_alpha(
+                env,
+                recon_u,
+                recon_v,
+                cfl_ctx,
+                uv_tx_size,
+                best.best_rd,
+                lp.cfl_search_range,
+                cfl_costs,
+                uv_mode_costs[env.luma_mode][UV_CFL_PRED],
+                pol,
+            ) else {
+                visits.push(visit);
+                continue;
+            };
+            tokenonly = (r.stats.rate, r.stats.dist, r.stats.skip_txfm);
+            cfl_fields = (r.alpha_idx, r.joint_sign);
+        } else if is_directional && use_angle_delta(env.bsize) && lp.enable_angle_delta {
+            // Chroma HOG prune (sf 0 at speed 0 => mask None).
+            if let Some(mask) = &lp.chroma_hog_skip_mask
+                && mask[uv_mode]
+            {
+                visits.push(visit);
+                continue;
+            }
+            let rate_overhead = uv_mode_costs[env.luma_mode][uv_mode];
+            let Some((best_angle, rate, dist, skip, new_best)) = rd_pick_intra_angle_sbuv(
+                env,
+                recon_u,
+                recon_v,
+                uv_mode,
+                rate_overhead,
+                best.best_rd,
+                costs,
+                pol,
+                lp,
+            ) else {
+                visits.push(visit);
+                continue;
+            };
+            let _ = new_best; // best_rd re-derives from this_rd below
+            angle_delta_uv = best_angle;
+            tokenonly = (rate, dist, skip);
+        } else {
+            if uv_mode == 9 && lp.prune_smooth_for_chroma {
+                // should_prune_chroma_smooth_pred_based_on_source_variance:
+                // sf OFF at speed 0; the variance body is the gated caller's.
+                visits.push(visit);
+                continue;
+            }
+            let Some((stats, _wu, _wv)) =
+                txfm_uvrd(env, recon_u, recon_v, uv_mode, 0, best.best_rd, pol)
+            else {
+                visits.push(visit);
+                continue;
+            };
+            tokenonly = (stats.rate, stats.dist, stats.skip_txfm);
+        }
+
+        let mode_cost = uv_mode_costs[env.luma_mode][uv_mode];
+        let this_rate = tokenonly.0
+            + intra_mode_info_cost_uv(
+                costs,
+                mode_cost,
+                uv_mode,
+                env.bsize,
+                angle_delta_uv,
+                lp.try_palette,
+                false,
+            );
+        let this_rd = rdcost(env.rdmult, this_rate, tokenonly.1);
+        visit.this_rd = Some(this_rd);
+        visits.push(visit);
+
+        if this_rd < best.best_rd {
+            best = UvModeResult {
+                uv_mode,
+                angle_delta_uv,
+                cfl_alpha_idx: cfl_fields.0,
+                cfl_alpha_signs: cfl_fields.1,
+                rate: this_rate,
+                rate_tokenonly: tokenonly.0,
+                dist: tokenonly.1,
+                skippable: tokenonly.2,
+                best_rd: this_rd,
+            };
+        }
+    }
+
+    // try_palette: av1_rd_pick_palette_intra_sbuv — out of scope (screen
+    // content off). *mbmi = best_mbmi; assert a mode was chosen.
+    assert!(best.best_rd < i64::MAX, "sbuv search must choose a mode");
+    (best, visits)
+}

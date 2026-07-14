@@ -1183,3 +1183,231 @@ pub fn c_cfl_rd_pick_alpha(
         _ => None,
     }
 }
+
+// ---------------------------------------------------------------------------
+// The UV mode loop C-side chain (intra_mode_search.c 496-1029 transcription
+// over c_txfm_uvrd / c_cfl_rd_pick_alpha / the REAL-gate
+// ref_intra_mode_info_cost_uv).
+// ---------------------------------------------------------------------------
+
+pub const UV_RD_SEARCH_MODE_ORDER_C: [usize; 14] =
+    [0, 13, 2, 1, 9, 12, 10, 11, 4, 7, 6, 8, 5, 3];
+
+/// C-side `rd_pick_intra_angle_sbuv` + `pick_intra_angle_routine_sbuv`.
+/// Returns `Some((best_angle, rate_tokenonly, dist, skip, best_rd))`.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn c_rd_pick_intra_angle_sbuv(
+    env: &CUvEnv,
+    recon_u: &mut [u16],
+    recon_v: &mut [u16],
+    uv_mode: usize,
+    rate_overhead: i32,
+    mut best_rd: i64,
+    angle_flat: &[i32],
+    pal_flat: &[i32],
+    try_palette: bool,
+) -> Option<(i32, i32, i64, bool, i64)> {
+    let mut best_angle_delta = 0i32;
+    let mut best_stats: Option<(i32, i64, bool)> = None;
+    let mut rd_cost = [i64::MAX; 10];
+
+    let routine = |ad: i32,
+                       best_rd_in: i64,
+                       best_rd: &mut i64,
+                       best_angle_delta: &mut i32,
+                       best_stats: &mut Option<(i32, i64, bool)>,
+                       recon_u: &mut [u16],
+                       recon_v: &mut [u16]|
+     -> i64 {
+        let Some((rate, dist, _sse, wu, wv)) =
+            c_txfm_uvrd(env, recon_u, recon_v, uv_mode, ad, best_rd_in)
+        else {
+            return i64::MAX;
+        };
+        let _ = (wu, wv);
+        let this_rate = rate
+            + c::ref_intra_mode_info_cost_uv(
+                angle_flat,
+                pal_flat,
+                rate_overhead,
+                uv_mode,
+                env.bsize,
+                ad,
+                try_palette,
+                false,
+            );
+        let this_rd = c::ref_rdcost(env.rdmult, this_rate, dist);
+        if this_rd < *best_rd {
+            *best_rd = this_rd;
+            *best_angle_delta = ad;
+            *best_stats = Some((rate, dist, false));
+        }
+        this_rd
+    };
+
+    let mut angle_delta = 0i32;
+    while angle_delta <= 3 {
+        for i in 0..2i32 {
+            let best_rd_in = if best_rd == i64::MAX {
+                i64::MAX
+            } else {
+                best_rd + (best_rd >> if angle_delta == 0 { 3 } else { 5 })
+            };
+            let this_rd = routine(
+                (1 - 2 * i) * angle_delta,
+                best_rd_in,
+                &mut best_rd,
+                &mut best_angle_delta,
+                &mut best_stats,
+                recon_u,
+                recon_v,
+            );
+            rd_cost[(2 * angle_delta + i) as usize] = this_rd;
+            if angle_delta == 0 {
+                if this_rd == i64::MAX {
+                    return None;
+                }
+                rd_cost[1] = this_rd;
+                break;
+            }
+        }
+        angle_delta += 2;
+    }
+    let mut angle_delta = 1i32;
+    while angle_delta <= 3 {
+        for i in 0..2i32 {
+            let rd_thresh = best_rd + (best_rd >> 5);
+            let skip_search = rd_cost[(2 * (angle_delta + 1) + i) as usize] > rd_thresh
+                && rd_cost[(2 * (angle_delta - 1) + i) as usize] > rd_thresh;
+            if !skip_search {
+                routine(
+                    (1 - 2 * i) * angle_delta,
+                    best_rd,
+                    &mut best_rd,
+                    &mut best_angle_delta,
+                    &mut best_stats,
+                    recon_u,
+                    recon_v,
+                );
+            }
+        }
+        angle_delta += 2;
+    }
+    best_stats.map(|(rate, dist, skip)| (best_angle_delta, rate, dist, skip, best_rd))
+}
+
+/// C-side `av1_rd_pick_intra_sbuv_mode` (non-palette). Returns the winner
+/// `(uv_mode, angle, cfl_idx, cfl_signs, rate, rate_tokenonly, dist, skip,
+/// best_rd)` + the per-candidate `Option<this_rd>` visit log.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn c_rd_pick_intra_sbuv_mode(
+    env: &CUvEnv,
+    recon_u: &mut [u16],
+    recon_v: &mut [u16],
+    st: &mut c::RefCflState,
+    cfl_allowed: bool,
+    cfl_search_range: usize,
+    uv_mode_costs: &[[i32; 14]; 13],
+    angle_flat: &[i32],
+    pal_flat: &[i32],
+    cfl_costs_c: &[i32],
+    try_palette: bool,
+) -> ((usize, i32, u8, i8, i32, i32, i64, bool, i64), Vec<(usize, Option<i64>)>) {
+    let mut best = (0usize, 0i32, 0u8, 0i8, 0i32, 0i32, 0i64, false, i64::MAX);
+    let mut visits: Vec<(usize, Option<i64>)> = Vec::new();
+    for &uv_mode in UV_RD_SEARCH_MODE_ORDER_C.iter() {
+        let mode_rate = uv_mode_costs[env.luma_mode][uv_mode];
+        if c::ref_rdcost(env.rdmult, mode_rate, 0) > best.8 {
+            visits.push((uv_mode, None));
+            continue;
+        }
+        let intra_mode = aom_entropy::partition::get_uv_mode(uv_mode);
+        let is_directional = (1..=8).contains(&intra_mode);
+        // enable flags all ON at aomenc defaults; uv mask ALL; prunes off.
+        let mut angle_delta_uv = 0i32;
+        let tokenonly: (i32, i64, bool);
+        let mut cfl_fields = (0u8, 0i8);
+        if uv_mode == 13 {
+            if !cfl_allowed {
+                visits.push((uv_mode, None));
+                continue;
+            }
+            let uv_tx = aom_encode::intra_uv_rd::av1_get_tx_size_uv(
+                env.bsize, env.lossless, env.ss_x, env.ss_y,
+            );
+            let Some((idx, js, stats)) = c_cfl_rd_pick_alpha(
+                env,
+                recon_u,
+                recon_v,
+                st,
+                uv_tx,
+                best.8,
+                cfl_search_range,
+                cfl_costs_c,
+                uv_mode_costs[env.luma_mode][13],
+            ) else {
+                visits.push((uv_mode, None));
+                continue;
+            };
+            tokenonly = (stats.rate, stats.dist, stats.skip);
+            cfl_fields = (idx, js);
+        } else if is_directional
+            && aom_entropy::partition::use_angle_delta(env.bsize)
+        {
+            let rate_overhead = uv_mode_costs[env.luma_mode][uv_mode];
+            let Some((ba, rate, dist, skip, _nb)) = c_rd_pick_intra_angle_sbuv(
+                env,
+                recon_u,
+                recon_v,
+                uv_mode,
+                rate_overhead,
+                best.8,
+                angle_flat,
+                pal_flat,
+                try_palette,
+            ) else {
+                visits.push((uv_mode, None));
+                continue;
+            };
+            angle_delta_uv = ba;
+            tokenonly = (rate, dist, skip);
+        } else {
+            let Some((rate, dist, _sse, _wu, _wv)) =
+                c_txfm_uvrd(env, recon_u, recon_v, uv_mode, 0, best.8)
+            else {
+                visits.push((uv_mode, None));
+                continue;
+            };
+            tokenonly = (rate, dist, false);
+        }
+        let mode_cost = uv_mode_costs[env.luma_mode][uv_mode];
+        let this_rate = tokenonly.0
+            + c::ref_intra_mode_info_cost_uv(
+                angle_flat,
+                pal_flat,
+                mode_cost,
+                uv_mode,
+                env.bsize,
+                angle_delta_uv,
+                try_palette,
+                false,
+            );
+        let this_rd = c::ref_rdcost(env.rdmult, this_rate, tokenonly.1);
+        visits.push((uv_mode, Some(this_rd)));
+        if this_rd < best.8 {
+            best = (
+                uv_mode,
+                angle_delta_uv,
+                cfl_fields.0,
+                cfl_fields.1,
+                this_rate,
+                tokenonly.0,
+                tokenonly.1,
+                tokenonly.2,
+                this_rd,
+            );
+        }
+    }
+    assert!(best.8 < i64::MAX);
+    (best, visits)
+}
