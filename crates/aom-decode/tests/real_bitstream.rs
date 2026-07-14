@@ -1602,10 +1602,10 @@ fn intrabc_colour_streams_decode_byte_identical_to_c() {
             ss_y: 1,
         },
         IbcCfg {
-            w: 128,
+            w: 256,
             h: 128,
             bd: 10,
-            cq: 20,
+            cq: 24,
             usage: 2,
             ss_x: 1,
             ss_y: 1,
