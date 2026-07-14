@@ -100,6 +100,10 @@ struct Cfg {
     aq: u32,
     /// `--passes=2` (firstpass stats + last pass).
     two_pass: bool,
+    /// `--sb-size=128` (`AOM_SUPERBLOCK_SIZE_128X128`) via
+    /// `ref_encode_av1_kf_sb128` instead of `--sb-size=64` via
+    /// `ref_encode_av1_kf`.
+    sb128: bool,
 }
 
 /// Facts the sweep asserts floors over.
@@ -140,25 +144,48 @@ fn run_config(cfg: &Cfg) -> RunFacts {
     let u = gen_plane(cw, ch, cfg.bd, seed ^ 0x2222, true);
     let v = gen_plane(cw, ch, cfg.bd, seed ^ 0x3333, true);
 
-    // REAL encoder bytes (cpu-used=0).
-    let bytes = c::ref_encode_av1_kf(
-        &y,
-        &u,
-        &v,
-        cfg.w,
-        cfg.h,
-        cfg.bd,
-        cfg.mono,
-        cfg.ss.0,
-        cfg.ss.1,
-        cfg.cq,
-        0,
-        cfg.cdef,
-        cfg.restoration,
-        cfg.usage,
-        cfg.aq,
-        cfg.two_pass,
-    );
+    // REAL encoder bytes (cpu-used=0). sb128 routes through the SB128
+    // oracle entry point (--sb-size=128); otherwise --sb-size=64 as before.
+    let bytes = if cfg.sb128 {
+        c::ref_encode_av1_kf_sb128(
+            &y,
+            &u,
+            &v,
+            cfg.w,
+            cfg.h,
+            cfg.bd,
+            cfg.mono,
+            cfg.ss.0,
+            cfg.ss.1,
+            cfg.cq,
+            0,
+            cfg.cdef,
+            cfg.restoration,
+            cfg.usage,
+            cfg.aq,
+            cfg.two_pass,
+            true,
+        )
+    } else {
+        c::ref_encode_av1_kf(
+            &y,
+            &u,
+            &v,
+            cfg.w,
+            cfg.h,
+            cfg.bd,
+            cfg.mono,
+            cfg.ss.0,
+            cfg.ss.1,
+            cfg.cq,
+            0,
+            cfg.cdef,
+            cfg.restoration,
+            cfg.usage,
+            cfg.aq,
+            cfg.two_pass,
+        )
+    };
 
     // Rust decode (hard-errors outside the envelope — that FAILS the test).
     let rust = decode_frame_obus(&bytes).unwrap_or_else(|e| {
@@ -331,6 +358,7 @@ fn real_bitstreams_decode_byte_identical_to_c() {
             usage,
             aq,
             two_pass,
+            sb128: false,
         });
         assert!(f.len > 50, "suspiciously small stream ({} bytes)", f.len);
         select_seen += f.tx_select as u32;
@@ -574,6 +602,152 @@ fn real_bitstreams_decode_byte_identical_to_c() {
 }
 
 #[test]
+fn sb128_streams_decode_byte_identical_to_c() {
+    // SB128 (`--sb-size=128`, `AOM_SUPERBLOCK_SIZE_128X128`) gate: real
+    // libaom-encoded streams with 128x128 superblocks decode byte-identical
+    // to the C decoder. Exercises the genuinely-SB128-specific code paths
+    // (everything else in the driver is size-generic, verified against the
+    // C reference by direct source comparison): the partition tree rooting
+    // at BLOCK_128X128 (has_top_right/has_bottom_left's >64x64-block special
+    // case, partition_cdf_length's HORZ_4/VERT_4 exclusion at 128x128), the
+    // per-64x64-unit CDEF `cdef_transmitted[4]` 4-way index
+    // (`cdef_unit_col + 2*cdef_unit_row`, only live when sb_size==128 — a
+    // 64 SB always indexes 0), and loop-restoration's corners-in-sb SB
+    // extent at `mib_size=32` (hardcoded 16,16 before this chunk). ALLINTRA
+    // (usage=2) is the primary arm per the zenavif/avifenc still-image
+    // product path; GOOD (usage=0) is retained as a smaller cross-check.
+    //
+    // Sizes: 128x128 (one exactly-fitting SB — clean root recursion),
+    // 192x160 and 256x224 (SB grids >1x1 on at least one axis, the latter
+    // 2x2 with a partial bottom row — exercises the tile SB row/col walk
+    // stepping by mib_size=32 across multiple superblocks), 100x76 (smaller
+    // than one SB — the whole frame is a single clipped root node forcing
+    // early SPLITs; reuses the main gate's non-multiple-of-8 size).
+    let sizes = [(128usize, 128usize), (192, 160), (256, 224), (100, 76)];
+    let combos = [
+        (8i32, (1i32, 1i32), false),
+        (8, (0, 0), false),
+        (10, (1, 1), false),
+        (10, (0, 0), false),
+        (8, (1, 1), true), // monochrome
+    ];
+    let mut n = 0u32;
+    let mut allintra_arms = 0u32;
+    let mut good_arms = 0u32;
+    let mut select_seen = 0u32;
+    let mut bands = [0u32; 4];
+    let mut nonzero_lf = 0u32;
+    let mut cdef_gated = 0u32;
+    let mut cdef_applied = 0u32;
+    let mut lr_gated = 0u32;
+    let mut lr_applied = 0u32;
+    let mut multi_sb_arms = 0u32; // sizes spanning >1 SB on either axis
+    #[allow(clippy::too_many_arguments)]
+    let mut run = |w: usize,
+                   h: usize,
+                   bd: i32,
+                   ss: (i32, i32),
+                   mono: bool,
+                   cq: i32,
+                   cdef: bool,
+                   restoration: bool,
+                   usage: u32| {
+        let f = run_config(&Cfg {
+            w,
+            h,
+            bd,
+            mono,
+            ss,
+            cq,
+            cdef,
+            restoration,
+            usage,
+            aq: 0,
+            two_pass: false,
+            sb128: true,
+        });
+        assert!(
+            f.len > 50,
+            "suspiciously small SB128 stream ({} bytes)",
+            f.len
+        );
+        n += 1;
+        allintra_arms += (usage == 2) as u32;
+        good_arms += (usage == 0) as u32;
+        select_seen += f.tx_select as u32;
+        let q = f.base_qindex;
+        bands[if q <= 20 {
+            0
+        } else if q <= 60 {
+            1
+        } else if q <= 120 {
+            2
+        } else {
+            3
+        }] += 1;
+        nonzero_lf += (f.filter_level != [0; 4]) as u32;
+        cdef_gated += f.cdef_gated as u32;
+        cdef_applied += f.cdef_applied as u32;
+        lr_gated += f.lr_gated as u32;
+        lr_applied += f.lr_applied as u32;
+        if w > 128 || h > 128 {
+            multi_sb_arms += 1;
+        }
+    };
+    for &(w, h) in &sizes {
+        for &(bd, ss, mono) in &combos {
+            // ALLINTRA baseline: cq {2,6,36} PROBED 2026-07-14 on this
+            // content/sizes to land in qindex bands 0 (cq2), 1 (cq6), 3
+            // (cq36); cq 20 targets band 2 (61-120) — an initial {6,36}-only
+            // grid landed 20/120 arms in band 1 and 100/120 in band 3, zero
+            // in bands 0/2, so this widens the low end + adds a mid point.
+            for &cq in &[2i32, 6, 20, 36] {
+                run(w, h, bd, ss, mono, cq, false, false, 2);
+            }
+            // ALLINTRA + CDEF: exercises cdef_transmitted[4]'s 4-way index.
+            run(w, h, bd, ss, mono, 36, true, false, 2);
+            // ALLINTRA + restoration: exercises lr_corners_in_sb at mib=32.
+            run(w, h, bd, ss, mono, 36, false, true, 2);
+            // ALLINTRA + both, chained (matches the main gate's LR+CDEF arms).
+            run(w, h, bd, ss, mono, 36, true, true, 2);
+            // GOOD, retained as a smaller cross-check.
+            run(w, h, bd, ss, mono, 36, false, false, 0);
+        }
+    }
+    assert_eq!(n, 4 * 5 * 8, "SB128 arm count");
+    println!(
+        "SB128 coverage: n={n} allintra={allintra_arms} good={good_arms} \
+         multi_sb={multi_sb_arms} bands={bands:?} select_seen={select_seen} \
+         nonzero_lf={nonzero_lf} cdef_gated={cdef_gated} cdef_applied={cdef_applied} \
+         lr_gated={lr_gated} lr_applied={lr_applied}"
+    );
+    assert_eq!(allintra_arms, 4 * 5 * 7, "ALLINTRA SB128 arm count");
+    assert_eq!(good_arms, 4 * 5, "GOOD SB128 arm count");
+    assert_eq!(multi_sb_arms, 2 * 5 * 8, "multi-SB (>1 128 SB) arm count");
+    assert!(select_seen > 0, "no TX_MODE_SELECT SB128 stream decoded");
+    assert!(
+        bands.iter().all(|&b| b > 0),
+        "SB128 band coverage {bands:?}"
+    );
+    assert!(
+        cdef_gated >= 1,
+        "SB128 CDEF-gated population empty ({cdef_gated})"
+    );
+    assert!(
+        cdef_applied >= 1,
+        "SB128 CDEF-applied population empty ({cdef_applied})"
+    );
+    assert!(
+        lr_gated >= 1,
+        "SB128 LR-gated population empty ({lr_gated})"
+    );
+    assert!(
+        lr_applied >= 1,
+        "SB128 LR-applied population empty ({lr_applied})"
+    );
+}
+
+#[test]
 fn high_q_deblocked_stream_decodes_byte_identical() {
     // The old envelope boundary, now INSIDE the envelope: this config
     // (100x76 4:2:0 cq 52 on the deterministic run_config content) picks
@@ -593,6 +767,7 @@ fn high_q_deblocked_stream_decodes_byte_identical() {
         usage: 0,
         aq: 0,
         two_pass: false,
+        sb128: false,
     });
     println!(
         "deblocked companion: {} bytes, filter_level = {:?}",
@@ -661,6 +836,7 @@ fn cdef_stream_decodes_byte_identical_and_filters() {
         usage: 0,
         aq: 0,
         two_pass: false,
+        sb128: false,
     });
     println!(
         "cdef companion: {} bytes, gated={} applied={}",

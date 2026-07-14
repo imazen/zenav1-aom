@@ -679,8 +679,10 @@ impl<'c> TileKf<'c> {
         } else {
             BLOCK_64X64
         };
-        let aligned_mi_cols = (cfg.mi_cols as usize).div_ceil(mib_size as usize) * mib_size as usize;
-        let aligned_mi_rows = (cfg.mi_rows as usize).div_ceil(mib_size as usize) * mib_size as usize;
+        let aligned_mi_cols =
+            (cfg.mi_cols as usize).div_ceil(mib_size as usize) * mib_size as usize;
+        let aligned_mi_rows =
+            (cfg.mi_rows as usize).div_ceil(mib_size as usize) * mib_size as usize;
         let stride = aligned_mi_cols * 4;
         let stride_uv = if cfg.monochrome { 0 } else { stride >> ss_x };
         let uv_len = if cfg.monochrome {
