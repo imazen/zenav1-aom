@@ -19,6 +19,7 @@ pub mod hog;
 pub mod intra_rd;
 pub mod intra_uv_rd;
 pub mod mode_costs;
+pub mod pack;
 pub mod partition;
 pub mod partition_pick;
 pub mod rd;
