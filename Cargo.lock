@@ -24,6 +24,7 @@ dependencies = [
  "aom-entropy",
  "aom-intra",
  "aom-quant",
+ "aom-sys-ref",
  "aom-txb",
 ]
 

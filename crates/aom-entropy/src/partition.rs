@@ -23,8 +23,9 @@ const BLOCK_128X128: usize = 15;
 
 /// `mi_size_wide_log2[BLOCK_SIZES_ALL]` (`common_data.h`): log2 of a block's width in
 /// mode-info (4x4) units.
-const MI_SIZE_WIDE_LOG2: [u8; 22] =
-    [0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 0, 2, 1, 3, 2, 4];
+const MI_SIZE_WIDE_LOG2: [u8; 22] = [
+    0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 0, 2, 1, 3, 2, 4,
+];
 /// `MAX_MIB_MASK` = `MAX_MIB_SIZE - 1` = 31 (128-wide superblock in mi units).
 const MAX_MIB_MASK: usize = 31;
 /// `PARTITION_PLOFFSET`: probability models per block size.
@@ -63,7 +64,11 @@ pub fn partition_cdf_length(bsize: usize) -> usize {
 /// in an inverse-cumulative CDF — `(element>0 ? cdf[element-1] : CDF_PROB_TOP) -
 /// cdf[element]`.
 fn cdf_element_prob(cdf: &[u16], element: usize) -> i32 {
-    let hi = if element > 0 { cdf[element - 1] as i32 } else { CDF_PROB_TOP };
+    let hi = if element > 0 {
+        cdf[element - 1] as i32
+    } else {
+        CDF_PROB_TOP
+    };
     hi - cdf[element] as i32
 }
 
@@ -143,7 +148,12 @@ pub fn skip_txfm_context(above_skip_txfm: i32, left_skip_txfm: i32) -> i32 {
 /// segment-level skip is active the flag is implied (returns 1, nothing coded);
 /// otherwise the `skip_txfm` bit is coded on the (context-selected) 2-symbol skip CDF
 /// with adaptation. Returns the coded skip value.
-pub fn write_skip(enc: &mut OdEcEnc, skip_cdf: &mut [u16], seg_skip_active: bool, skip_txfm: i32) -> i32 {
+pub fn write_skip(
+    enc: &mut OdEcEnc,
+    skip_cdf: &mut [u16],
+    seg_skip_active: bool,
+    skip_txfm: i32,
+) -> i32 {
     if seg_skip_active {
         return 1;
     }
@@ -192,7 +202,12 @@ pub fn write_delta_lflevel(enc: &mut OdEcEnc, delta_lf_cdf: &mut [u16], delta_lf
     let sign = delta_lflevel < 0;
     let abs = delta_lflevel.abs();
     let smallval = abs < DELTA_LF_SMALL;
-    write_symbol(enc, abs.min(DELTA_LF_SMALL), delta_lf_cdf, DELTA_LF_PROBS + 1);
+    write_symbol(
+        enc,
+        abs.min(DELTA_LF_SMALL),
+        delta_lf_cdf,
+        DELTA_LF_PROBS + 1,
+    );
     if !smallval {
         let rem_bits = get_msb((abs - 1) as u32) as i32;
         let thr = (1 << rem_bits) + 1;
@@ -268,8 +283,9 @@ pub fn write_intra_y_mode_kf(enc: &mut OdEcEnc, kf_y_cdf: &mut [u16], mode: i32)
 const UV_INTRA_MODES: usize = 14;
 /// `size_group_lookup[BLOCK_SIZES_ALL]` (`common_data.h`): the non-keyframe Y-mode CDF
 /// context (one of 4 size groups) for a block size.
-const SIZE_GROUP_LOOKUP: [usize; 22] =
-    [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 0, 0, 1, 1, 2, 2];
+const SIZE_GROUP_LOOKUP: [usize; 22] = [
+    0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 0, 0, 1, 1, 2, 2,
+];
 
 /// `size_group_lookup[bsize]` — selects `y_mode_cdf[size_group]` for non-keyframe intra.
 pub fn y_mode_size_group(bsize: usize) -> usize {
@@ -286,7 +302,12 @@ pub fn write_intra_y_mode_nonkf(enc: &mut OdEcEnc, y_mode_cdf: &mut [u16], mode:
 /// `write_intra_uv_mode` (`av1/encoder/bitstream.c`): the intra chroma mode on the
 /// (cfl-allowed, y-mode)-selected CDF — `UV_INTRA_MODES` symbols when CFL is allowed,
 /// one fewer (no CFL_PRED) when not.
-pub fn write_intra_uv_mode(enc: &mut OdEcEnc, uv_mode_cdf: &mut [u16], uv_mode: i32, cfl_allowed: bool) {
+pub fn write_intra_uv_mode(
+    enc: &mut OdEcEnc,
+    uv_mode_cdf: &mut [u16],
+    uv_mode: i32,
+    cfl_allowed: bool,
+) {
     let n = UV_INTRA_MODES - (!cfl_allowed) as usize;
     write_symbol(enc, uv_mode, uv_mode_cdf, n);
 }
@@ -313,10 +334,20 @@ pub fn write_inter_mode(
     write_symbol(enc, (mode != NEWMV) as i32, &mut newmv_cdf[newmv_ctx], 2);
     if mode != NEWMV {
         let zeromv_ctx = ((mode_ctx >> 3) & 1) as usize;
-        write_symbol(enc, (mode != GLOBALMV) as i32, &mut zeromv_cdf[zeromv_ctx], 2);
+        write_symbol(
+            enc,
+            (mode != GLOBALMV) as i32,
+            &mut zeromv_cdf[zeromv_ctx],
+            2,
+        );
         if mode != GLOBALMV {
             let refmv_ctx = ((mode_ctx >> 4) & 15) as usize;
-            write_symbol(enc, (mode != NEARESTMV) as i32, &mut refmv_cdf[refmv_ctx], 2);
+            write_symbol(
+                enc,
+                (mode != NEARESTMV) as i32,
+                &mut refmv_cdf[refmv_ctx],
+                2,
+            );
         }
     }
 }
@@ -394,7 +425,11 @@ pub fn get_mv_joint(row: i32, col: i32) -> i32 {
 
 /// `av1_mv_class_base` (`encodemv.h`): `c ? CLASS0_SIZE << (c+2) : 0`.
 fn mv_class_base(c: i32) -> i32 {
-    if c != 0 { CLASS0_SIZE_MV << (c + 2) } else { 0 }
+    if c != 0 {
+        CLASS0_SIZE_MV << (c + 2)
+    } else {
+        0
+    }
 }
 
 /// `av1_get_mv_class` (`encodemv.h`): the magnitude class of `z` (= |mv_diff|-1) and its
@@ -402,7 +437,11 @@ fn mv_class_base(c: i32) -> i32 {
 /// `offset = z - av1_mv_class_base(class)`.
 pub fn get_mv_class(z: i32) -> (i32, i32) {
     let zz = (z >> 3) as u32;
-    let c = if zz == 0 { 0 } else { 31 - zz.leading_zeros() as i32 };
+    let c = if zz == 0 {
+        0
+    } else {
+        31 - zz.leading_zeros() as i32
+    };
     (c, z - mv_class_base(c))
 }
 
@@ -492,15 +531,22 @@ const MAX_ANGLE_DELTA: i32 = 3;
 /// delta — `aom_write_symbol(angle_delta + MAX_ANGLE_DELTA, cdf, 2*MAX_ANGLE_DELTA+1)`
 /// (7 symbols, adapted) on the caller-selected per-mode angle CDF.
 pub fn write_angle_delta(enc: &mut OdEcEnc, cdf: &mut [u16], angle_delta: i32) {
-    write_symbol(enc, angle_delta + MAX_ANGLE_DELTA, cdf, (2 * MAX_ANGLE_DELTA + 1) as usize);
+    write_symbol(
+        enc,
+        angle_delta + MAX_ANGLE_DELTA,
+        cdf,
+        (2 * MAX_ANGLE_DELTA + 1) as usize,
+    );
 }
 
 /// `bsize_to_max_depth` (`blockd.h`): the max TX-split depth signalled for a block size.
-const BSIZE_TO_MAX_DEPTH: [usize; 22] =
-    [0, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2];
+const BSIZE_TO_MAX_DEPTH: [usize; 22] = [
+    0, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+];
 /// `bsize_to_tx_size_cat` table (`blockd.h`) before the `-1`.
-const BSIZE_TO_TX_SIZE_DEPTH: [i32; 22] =
-    [0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 4, 4, 4, 2, 2, 3, 3, 4, 4];
+const BSIZE_TO_TX_SIZE_DEPTH: [i32; 22] = [
+    0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 4, 4, 4, 2, 2, 3, 3, 4, 4,
+];
 
 /// `bsize_to_max_depth`.
 pub fn bsize_to_max_depth(bsize: usize) -> usize {
@@ -556,8 +602,9 @@ pub enum TxMode {
 
 /// `max_txsize_lookup[BLOCK_SIZES_ALL]` (`common_data.h`): the largest **square**
 /// transform fitting the block.
-const MAX_TXSIZE_LOOKUP: [usize; 22] =
-    [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 4, 0, 0, 1, 1, 2, 2];
+const MAX_TXSIZE_LOOKUP: [usize; 22] = [
+    0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 4, 0, 0, 1, 1, 2, 2,
+];
 /// `txsize_sqr_map[TX_SIZES_ALL]` (`common_data.h`): the largest square transform
 /// **contained in** the transform.
 const TXSIZE_SQR_MAP: [usize; 19] = [0, 1, 2, 3, 4, 0, 0, 1, 1, 2, 2, 3, 3, 0, 0, 1, 1, 2, 2];
@@ -858,7 +905,11 @@ pub fn get_reference_mode_context(
             4
         }
     } else if has_above || has_left {
-        let (r0, r1) = if has_above { (a_r0, a_r1) } else { (l_r0, l_r1) };
+        let (r0, r1) = if has_above {
+            (a_r0, a_r1)
+        } else {
+            (l_r0, l_r1)
+        };
         if !has_second_ref(r1) {
             is_backward_ref(r0) as i32
         } else {
@@ -894,7 +945,11 @@ pub fn get_comp_reference_type_context(
         if above_intra && left_intra {
             2
         } else if above_intra || left_intra {
-            let (r0, r1) = if above_intra { (l_r0, l_r1) } else { (a_r0, a_r1) };
+            let (r0, r1) = if above_intra {
+                (l_r0, l_r1)
+            } else {
+                (a_r0, a_r1)
+            };
             if !has_second_ref(r1) {
                 2
             } else {
@@ -930,7 +985,11 @@ pub fn get_comp_reference_type_context(
             }
         }
     } else if ha || hl {
-        let (r0, r1, ibc) = if ha { (a_r0, a_r1, a_ibc) } else { (l_r0, l_r1, l_ibc) };
+        let (r0, r1, ibc) = if ha {
+            (a_r0, a_r1, a_ibc)
+        } else {
+            (l_r0, l_r1, l_ibc)
+        };
         // intra edge, or inter single-pred -> 2 (merged; the C writes them separately)
         if !nbr_is_inter(ibc, r0) || !has_second_ref(r1) {
             2
@@ -946,7 +1005,8 @@ pub fn get_comp_reference_type_context(
 /// from the neighbours' forward vs backward reference counts — 1 if equal, 0 if forward
 /// < backward, else 2. `ref_counts` is `neighbors_ref_counts[REF_FRAMES]`.
 pub fn single_ref_p1_context(ref_counts: &[u8; 8]) -> i32 {
-    let fwd = ref_counts[1] as i32 + ref_counts[2] as i32 + ref_counts[3] as i32 + ref_counts[4] as i32;
+    let fwd =
+        ref_counts[1] as i32 + ref_counts[2] as i32 + ref_counts[3] as i32 + ref_counts[4] as i32;
     let bwd = ref_counts[5] as i32 + ref_counts[6] as i32 + ref_counts[7] as i32;
     if fwd == bwd {
         1
@@ -1147,7 +1207,15 @@ pub fn write_intrabc_info(
 ) {
     write_symbol(enc, use_intrabc, intrabc_cdf, 2);
     if use_intrabc != 0 {
-        encode_mv(enc, ndvc_joints, ndvc_comp0, ndvc_comp1, diff_row, diff_col, MV_SUBPEL_NONE);
+        encode_mv(
+            enc,
+            ndvc_joints,
+            ndvc_comp0,
+            ndvc_comp1,
+            diff_row,
+            diff_col,
+            MV_SUBPEL_NONE,
+        );
     }
 }
 
@@ -1186,31 +1254,37 @@ const TX_SIZES: usize = 5; // number of square tx sizes
 const TXFM_PARTITION_CONTEXTS: usize = (TX_SIZES - TX_8X8) * 6 - 3;
 
 /// `tx_size_wide[TX_SIZES_ALL]` (`common_data.h`): transform width in pixels.
-const TX_SIZE_WIDE: [i32; 19] =
-    [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
+const TX_SIZE_WIDE: [i32; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
 /// `tx_size_high[TX_SIZES_ALL]` (`common_data.h`): transform height in pixels.
-const TX_SIZE_HIGH: [i32; 19] =
-    [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+const TX_SIZE_HIGH: [i32; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 /// `block_size_wide[BLOCK_SIZES_ALL]` (`common_data.h`): block width in pixels.
-const BLOCK_SIZE_WIDE: [i32; 22] =
-    [4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64];
+const BLOCK_SIZE_WIDE: [i32; 22] = [
+    4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
+];
 /// `block_size_high[BLOCK_SIZES_ALL]` (`common_data.h`): block height in pixels.
-const BLOCK_SIZE_HIGH: [i32; 22] =
-    [4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16];
+const BLOCK_SIZE_HIGH: [i32; 22] = [
+    4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16,
+];
 /// `mi_size_wide[BLOCK_SIZES_ALL]` (`common_data.h`): block width in 4x4 units.
-const MI_SIZE_WIDE: [i32; 22] =
-    [1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16];
+const MI_SIZE_WIDE: [i32; 22] = [
+    1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16,
+];
 /// `mi_size_high[BLOCK_SIZES_ALL]` (`common_data.h`): block height in 4x4 units.
-const MI_SIZE_HIGH: [i32; 22] =
-    [1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4];
+const MI_SIZE_HIGH: [i32; 22] = [
+    1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4,
+];
 /// `txsize_sqr_up_map[TX_SIZES_ALL]` (`common_data.h`): map each tx size to the
 /// smallest square tx size that contains it.
-const TXSIZE_SQR_UP_MAP: [usize; 19] =
-    [0, 1, 2, 3, 4, 1, 1, 2, 2, 3, 3, 4, 4, 2, 2, 3, 3, 4, 4];
+const TXSIZE_SQR_UP_MAP: [usize; 19] = [0, 1, 2, 3, 4, 1, 1, 2, 2, 3, 3, 4, 4, 2, 2, 3, 3, 4, 4];
 /// `txsize_to_bsize[TX_SIZES_ALL]` (`common_data.h`): the block size equal to a
 /// transform block's dimensions.
-const TXSIZE_TO_BSIZE: [usize; 19] =
-    [0, 3, 6, 9, 12, 1, 2, 4, 5, 7, 8, 10, 11, 16, 17, 18, 19, 20, 21];
+const TXSIZE_TO_BSIZE: [usize; 19] = [
+    0, 3, 6, 9, 12, 1, 2, 4, 5, 7, 8, 10, 11, 16, 17, 18, 19, 20, 21,
+];
 
 /// `get_sqr_tx_size` (`av1_common_int.h`): largest square tx size fitting `tx_dim`.
 fn get_sqr_tx_size(tx_dim: i32) -> usize {
@@ -1251,7 +1325,12 @@ pub fn txfm_partition_context(above_ctx: u8, left_ctx: u8, bsize: usize, tx_size
 /// `txfm_partition_update` (`av1_common_int.h`): after coding a var-tx split flag,
 /// stamp the neighbour txfm-context arrays — `above[0..bw] = txw`, `left[0..bh] = txh`,
 /// where `bw`/`bh` come from `txb_size`'s block dimensions in mi units.
-pub fn txfm_partition_update(above_ctx: &mut [u8], left_ctx: &mut [u8], tx_size: usize, txb_size: usize) {
+pub fn txfm_partition_update(
+    above_ctx: &mut [u8],
+    left_ctx: &mut [u8],
+    tx_size: usize,
+    txb_size: usize,
+) {
     let bsize = TXSIZE_TO_BSIZE[txb_size];
     let bh = MI_SIZE_HIGH[bsize] as usize;
     let bw = MI_SIZE_WIDE[bsize] as usize;
@@ -1296,10 +1375,17 @@ fn max_block_high(bsize: usize, mb_to_bottom_edge: i32) -> i32 {
 /// `av1_get_txb_size_index` (`blockd.h`): index into `inter_tx_size[]` for the txb at
 /// (blk_row, blk_col) within a block of size `bsize`.
 fn get_txb_size_index(bsize: usize, blk_row: i32, blk_col: i32) -> usize {
-    const TW_W_LOG2: [i32; 22] = [0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 0, 1, 1, 2, 2, 3];
-    const TW_H_LOG2: [i32; 22] = [0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 1, 0, 2, 1, 3, 2];
-    const STRIDE_LOG2: [i32; 22] = [0, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 2, 2, 0, 1, 0, 1, 0, 1];
-    let index = ((blk_row >> TW_H_LOG2[bsize]) << STRIDE_LOG2[bsize]) + (blk_col >> TW_W_LOG2[bsize]);
+    const TW_W_LOG2: [i32; 22] = [
+        0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 0, 1, 1, 2, 2, 3,
+    ];
+    const TW_H_LOG2: [i32; 22] = [
+        0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 1, 0, 2, 1, 3, 2,
+    ];
+    const STRIDE_LOG2: [i32; 22] = [
+        0, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 2, 2, 0, 1, 0, 1, 0, 1,
+    ];
+    let index =
+        ((blk_row >> TW_H_LOG2[bsize]) << STRIDE_LOG2[bsize]) + (blk_col >> TW_W_LOG2[bsize]);
     index as usize
 }
 
@@ -1360,8 +1446,18 @@ pub fn write_tx_size_vartx(
             while col < TX_SIZE_WIDE_UNIT[tx_size] {
                 let offsetc = blk_col + col;
                 write_tx_size_vartx(
-                    enc, txfm_partition_cdf, bsize, inter_tx_size, mb_to_right_edge,
-                    mb_to_bottom_edge, above_ctx, left_ctx, sub_txs, depth + 1, offsetr, offsetc,
+                    enc,
+                    txfm_partition_cdf,
+                    bsize,
+                    inter_tx_size,
+                    mb_to_right_edge,
+                    mb_to_bottom_edge,
+                    above_ctx,
+                    left_ctx,
+                    sub_txs,
+                    depth + 1,
+                    offsetr,
+                    offsetc,
                 );
                 col += bsw;
             }
@@ -1376,8 +1472,9 @@ const PALETTE_MIN_SIZE: i32 = 2;
 const PALETTE_SIZES: usize = 7;
 /// `num_pels_log2_lookup[BLOCK_SIZES_ALL]` (`common_data.h`): log2 of a block's pixel
 /// count (`log2(w*h)`).
-const NUM_PELS_LOG2_LOOKUP: [i32; 22] =
-    [4, 5, 5, 6, 7, 7, 8, 9, 9, 10, 11, 11, 12, 13, 13, 14, 6, 6, 8, 8, 10, 10];
+const NUM_PELS_LOG2_LOOKUP: [i32; 22] = [
+    4, 5, 5, 6, 7, 7, 8, 9, 9, 10, 11, 11, 12, 13, 13, 14, 6, 6, 8, 8, 10, 10,
+];
 
 /// `av1_get_palette_bsize_ctx` (`pred_common.h`): the palette size-CDF context —
 /// `num_pels_log2_lookup[bsize] - num_pels_log2_lookup[BLOCK_8X8]` (BLOCK_8X8 = 6).
@@ -1388,7 +1485,12 @@ pub fn palette_bsize_ctx(bsize: usize) -> i32 {
 /// `av1_get_palette_mode_ctx` (`pred_common.h`): the palette-Y mode-CDF context — the
 /// count of present neighbours (above, left) that themselves use a Y palette, in
 /// `{0, 1, 2}`.
-pub fn palette_mode_ctx(has_above: bool, above_palette_size0: i32, has_left: bool, left_palette_size0: i32) -> i32 {
+pub fn palette_mode_ctx(
+    has_above: bool,
+    above_palette_size0: i32,
+    has_left: bool,
+    left_palette_size0: i32,
+) -> i32 {
     let mut ctx = 0;
     if has_above {
         ctx += i32::from(above_palette_size0 > 0);
@@ -1420,13 +1522,23 @@ pub fn write_palette_mode_info_flags(
     if mode_is_dc_pred {
         write_symbol(enc, i32::from(n_y > 0), palette_y_mode_cdf, 2);
         if n_y > 0 {
-            write_symbol(enc, n_y - PALETTE_MIN_SIZE, palette_y_size_cdf, PALETTE_SIZES);
+            write_symbol(
+                enc,
+                n_y - PALETTE_MIN_SIZE,
+                palette_y_size_cdf,
+                PALETTE_SIZES,
+            );
         }
     }
     if uv_dc_pred {
         write_symbol(enc, i32::from(n_uv > 0), palette_uv_mode_cdf, 2);
         if n_uv > 0 {
-            write_symbol(enc, n_uv - PALETTE_MIN_SIZE, palette_uv_size_cdf, PALETTE_SIZES);
+            write_symbol(
+                enc,
+                n_uv - PALETTE_MIN_SIZE,
+                palette_uv_size_cdf,
+                PALETTE_SIZES,
+            );
         }
     }
 }
@@ -1449,7 +1561,12 @@ fn aom_ceil_log2(n: i32) -> i32 {
 /// bit-width that starts at `max(ceil_log2(max_delta + 1 - min_val), bit_depth - 3)`
 /// (the excess over `bit_depth - 3` sent in 2 bits) and shrinks as the remaining
 /// `range` narrows. `min_val` is 1 for luma, 0 for chroma-U.
-pub fn delta_encode_palette_colors(enc: &mut OdEcEnc, colors: &[i32], bit_depth: i32, min_val: i32) {
+pub fn delta_encode_palette_colors(
+    enc: &mut OdEcEnc,
+    colors: &[i32],
+    bit_depth: i32,
+    min_val: i32,
+) {
     let num = colors.len();
     if num == 0 {
         return;
@@ -1674,8 +1791,15 @@ fn write_palette_colors_plane(
 ) {
     let mut cache = [0u16; 16];
     let n_cache = get_palette_cache(
-        &mut cache, plane, mb_to_top_edge, has_above, above_colors, above_n_plane, has_left,
-        left_colors, left_n_plane,
+        &mut cache,
+        plane,
+        mb_to_top_edge,
+        has_above,
+        above_colors,
+        above_n_plane,
+        has_left,
+        left_colors,
+        left_n_plane,
     );
     let (found, out_colors, _n_out) = index_color_cache(&cache[..n_cache], &colors[..n]);
     let mut n_in_cache = 0;
@@ -1720,8 +1844,19 @@ pub fn write_palette_mode_info(
         if n > 0 {
             write_symbol(enc, n - PALETTE_MIN_SIZE, y_size_cdf, PALETTE_SIZES);
             write_palette_colors_plane(
-                enc, palette_colors, n as usize, 0, bit_depth, 1, mb_to_top_edge, has_above,
-                above_colors, above_size[0], has_left, left_colors, left_size[0],
+                enc,
+                palette_colors,
+                n as usize,
+                0,
+                bit_depth,
+                1,
+                mb_to_top_edge,
+                has_above,
+                above_colors,
+                above_size[0],
+                has_left,
+                left_colors,
+                left_size[0],
             );
         }
     }
@@ -1734,8 +1869,19 @@ pub fn write_palette_mode_info(
             let vbase = 2 * PALETTE_MAX_SIZE;
             let colors_v = &palette_colors[vbase..vbase + n as usize];
             write_palette_colors_plane(
-                enc, colors_u, n as usize, 1, bit_depth, 0, mb_to_top_edge, has_above,
-                above_colors, above_size[1], has_left, left_colors, left_size[1],
+                enc,
+                colors_u,
+                n as usize,
+                1,
+                bit_depth,
+                0,
+                mb_to_top_edge,
+                has_above,
+                above_colors,
+                above_size[1],
+                has_left,
+                left_colors,
+                left_size[1],
             );
             write_palette_colors_v(enc, colors_v, bit_depth);
         }
@@ -1804,11 +1950,25 @@ fn comp_group_idx_nbr(ref_frame0: i32, ref_frame1: i32, comp_group_idx: i32) -> 
 /// the sum of the above and left neighbours' contributions capped at 5.
 #[allow(clippy::too_many_arguments)]
 pub fn get_comp_group_idx_context(
-    has_above: bool, a_rf0: i32, a_rf1: i32, a_cgi: i32,
-    has_left: bool, l_rf0: i32, l_rf1: i32, l_cgi: i32,
+    has_above: bool,
+    a_rf0: i32,
+    a_rf1: i32,
+    a_cgi: i32,
+    has_left: bool,
+    l_rf0: i32,
+    l_rf1: i32,
+    l_cgi: i32,
 ) -> i32 {
-    let above = if has_above { comp_group_idx_nbr(a_rf0, a_rf1, a_cgi) } else { 0 };
-    let left = if has_left { comp_group_idx_nbr(l_rf0, l_rf1, l_cgi) } else { 0 };
+    let above = if has_above {
+        comp_group_idx_nbr(a_rf0, a_rf1, a_cgi)
+    } else {
+        0
+    };
+    let left = if has_left {
+        comp_group_idx_nbr(l_rf0, l_rf1, l_cgi)
+    } else {
+        0
+    };
     (above + left).min(5)
 }
 
@@ -1845,7 +2005,12 @@ pub fn write_compound_type_info(
         }
     } else {
         if wedge_used {
-            write_symbol(enc, comp_type - COMPOUND_WEDGE, compound_type_cdf, MASKED_COMPOUND_TYPES);
+            write_symbol(
+                enc,
+                comp_type - COMPOUND_WEDGE,
+                compound_type_cdf,
+                MASKED_COMPOUND_TYPES,
+            );
         }
         if comp_type == COMPOUND_WEDGE {
             write_symbol(enc, wedge_index, wedge_idx_cdf, MAX_WEDGE_TYPES);
@@ -1859,7 +2024,12 @@ pub fn write_compound_type_info(
 /// `get_relative_dist` (`mvref_common.h`): the signed order-hint distance `a - b`
 /// wrapped into `[-2^(bits-1), 2^(bits-1))`, where `bits = order_hint_bits_minus_1 + 1`.
 /// Zero when order hints are disabled.
-pub fn get_relative_dist(enable_order_hint: bool, order_hint_bits_minus_1: i32, a: i32, b: i32) -> i32 {
+pub fn get_relative_dist(
+    enable_order_hint: bool,
+    order_hint_bits_minus_1: i32,
+    a: i32,
+    b: i32,
+) -> i32 {
     if !enable_order_hint {
         return 0;
     }
@@ -1890,8 +2060,20 @@ pub fn get_comp_index_context(
     l_compound_idx: i32,
     l_ref_frame0: i32,
 ) -> i32 {
-    let fwd = get_relative_dist(enable_order_hint, order_hint_bits_minus_1, fwd_order_hint, cur_order_hint).abs();
-    let bck = get_relative_dist(enable_order_hint, order_hint_bits_minus_1, cur_order_hint, bck_order_hint).abs();
+    let fwd = get_relative_dist(
+        enable_order_hint,
+        order_hint_bits_minus_1,
+        fwd_order_hint,
+        cur_order_hint,
+    )
+    .abs();
+    let bck = get_relative_dist(
+        enable_order_hint,
+        order_hint_bits_minus_1,
+        cur_order_hint,
+        bck_order_hint,
+    )
+    .abs();
     let offset = i32::from(fwd == bck);
     let mut above_ctx = 0;
     let mut left_ctx = 0;
@@ -1922,11 +2104,28 @@ const UV2Y: [i32; 14] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0];
 /// `av1_ss_size_lookup[BLOCK_SIZES_ALL][2][2]` (`common_data.c`), flattened as
 /// `[bsize][ssx*2 + ssy]`; `BLOCK_INVALID` (255) where subsampling is illegal.
 const SS_SIZE_LOOKUP: [[u8; 4]; 22] = [
-    [0, 0, 0, 0], [1, 0, 255, 0], [2, 255, 0, 0], [3, 2, 1, 0], [4, 3, 255, 1],
-    [5, 255, 3, 2], [6, 5, 4, 3], [7, 6, 255, 4], [8, 255, 6, 5], [9, 8, 7, 6],
-    [10, 9, 255, 7], [11, 255, 9, 8], [12, 11, 10, 9], [13, 12, 255, 10],
-    [14, 255, 12, 11], [15, 14, 13, 12], [16, 1, 255, 1], [17, 255, 2, 2],
-    [18, 4, 255, 16], [19, 255, 5, 17], [20, 7, 255, 18], [21, 255, 8, 19],
+    [0, 0, 0, 0],
+    [1, 0, 255, 0],
+    [2, 255, 0, 0],
+    [3, 2, 1, 0],
+    [4, 3, 255, 1],
+    [5, 255, 3, 2],
+    [6, 5, 4, 3],
+    [7, 6, 255, 4],
+    [8, 255, 6, 5],
+    [9, 8, 7, 6],
+    [10, 9, 255, 7],
+    [11, 255, 9, 8],
+    [12, 11, 10, 9],
+    [13, 12, 255, 10],
+    [14, 255, 12, 11],
+    [15, 14, 13, 12],
+    [16, 1, 255, 1],
+    [17, 255, 2, 2],
+    [18, 4, 255, 16],
+    [19, 255, 5, 17],
+    [20, 7, 255, 18],
+    [21, 255, 8, 19],
 ];
 
 /// `av1_use_angle_delta` (`reconintra.h`): angle deltas apply at `BLOCK_8X8` and larger.
@@ -2019,7 +2218,13 @@ pub fn write_intra_uv_and_angle_delta(
     if !monochrome && is_chroma_ref {
         write_intra_uv_mode(enc, uv_mode_cdf, uv_mode, cfl_allowed);
         if uv_mode == UV_CFL_PRED {
-            write_cfl_alphas(enc, cfl_sign_cdf, cfl_alpha_cdf, cfl_alpha_idx, cfl_joint_sign);
+            write_cfl_alphas(
+                enc,
+                cfl_sign_cdf,
+                cfl_alpha_cdf,
+                cfl_alpha_idx,
+                cfl_joint_sign,
+            );
         }
         let intra_mode = get_uv_mode(uv_mode as usize);
         if use_angle_delta(bsize) && is_directional_mode(intra_mode) {
@@ -2084,19 +2289,51 @@ pub fn write_intra_prediction_modes(
 ) {
     write_intra_y_and_angle_delta(enc, y_cdf, mode, bsize, angle_delta_y, y_angle_cdf);
     write_intra_uv_and_angle_delta(
-        enc, monochrome, is_chroma_ref, uv_mode, cfl_allowed, bsize, cfl_alpha_idx,
-        cfl_joint_sign, angle_delta_uv, uv_mode_cdf, cfl_sign_cdf, cfl_alpha_cdf, uv_angle_cdf,
+        enc,
+        monochrome,
+        is_chroma_ref,
+        uv_mode,
+        cfl_allowed,
+        bsize,
+        cfl_alpha_idx,
+        cfl_joint_sign,
+        angle_delta_uv,
+        uv_mode_cdf,
+        cfl_sign_cdf,
+        cfl_alpha_cdf,
+        uv_angle_cdf,
     );
     if allow_palette {
         let mode_is_dc_pred = mode == DC_PRED;
         let uv_dc_pred = !monochrome && uv_mode == UV_DC_PRED && is_chroma_ref;
         write_palette_mode_info(
-            enc, mode_is_dc_pred, uv_dc_pred, bit_depth, palette_size, palette_colors,
-            pal_y_mode_cdf, pal_y_size_cdf, pal_uv_mode_cdf, pal_uv_size_cdf, mb_to_top_edge,
-            has_above, above_colors, above_size, has_left, left_colors, left_size,
+            enc,
+            mode_is_dc_pred,
+            uv_dc_pred,
+            bit_depth,
+            palette_size,
+            palette_colors,
+            pal_y_mode_cdf,
+            pal_y_size_cdf,
+            pal_uv_mode_cdf,
+            pal_uv_size_cdf,
+            mb_to_top_edge,
+            has_above,
+            above_colors,
+            above_size,
+            has_left,
+            left_colors,
+            left_size,
         );
     }
-    write_filter_intra_mode_info(enc, fi_use_cdf, fi_mode_cdf, filter_allowed, use_filter_intra, filter_intra_mode);
+    write_filter_intra_mode_info(
+        enc,
+        fi_use_cdf,
+        fi_mode_cdf,
+        filter_allowed,
+        use_filter_intra,
+        filter_intra_mode,
+    );
 }
 
 const FRAME_LF_COUNT: usize = 4;
@@ -2141,8 +2378,11 @@ pub fn write_delta_q_params_sb(
         *current_base_qindex = current_qindex;
         if delta_lf_present {
             if delta_lf_multi {
-                let frame_lf_count =
-                    if num_planes > 1 { FRAME_LF_COUNT } else { FRAME_LF_COUNT - 2 };
+                let frame_lf_count = if num_planes > 1 {
+                    FRAME_LF_COUNT
+                } else {
+                    FRAME_LF_COUNT - 2
+                };
                 for lf_id in 0..frame_lf_count {
                     let reduced = (mbmi_delta_lf[lf_id] - xd_delta_lf[lf_id]) / delta_lf_res;
                     write_delta_lflevel(enc, &mut delta_lf_multi_cdf[lf_id], reduced);
@@ -2248,19 +2488,65 @@ pub fn write_mb_modes_kf_prefix(
     delta_lf_cdf: &mut [u16],
 ) -> i32 {
     if segid_preskip && update_map {
-        write_segment_id(enc, seg_cdf, seg_enabled, update_map, false, segment_id, seg_pred, last_active_segid);
+        write_segment_id(
+            enc,
+            seg_cdf,
+            seg_enabled,
+            update_map,
+            false,
+            segment_id,
+            seg_pred,
+            last_active_segid,
+        );
     }
     let skip = write_skip(enc, skip_cdf, seg_skip_active, skip_txfm);
     if !segid_preskip && update_map {
-        write_segment_id(enc, seg_cdf, seg_enabled, update_map, skip != 0, segment_id, seg_pred, last_active_segid);
+        write_segment_id(
+            enc,
+            seg_cdf,
+            seg_enabled,
+            update_map,
+            skip != 0,
+            segment_id,
+            seg_pred,
+            last_active_segid,
+        );
     }
-    write_cdef(enc, coded_lossless, allow_intrabc, mi_row, mi_col, mib_size, sb_size, skip, cdef_transmitted, cdef_bits, cdef_strength);
+    write_cdef(
+        enc,
+        coded_lossless,
+        allow_intrabc,
+        mi_row,
+        mi_col,
+        mib_size,
+        sb_size,
+        skip,
+        cdef_transmitted,
+        cdef_bits,
+        cdef_strength,
+    );
     let super_block_upper_left = (mi_row & (mib_size - 1)) == 0 && (mi_col & (mib_size - 1)) == 0;
     write_delta_q_params_sb(
-        enc, dq_present, dlf_present, dlf_multi, num_planes, bsize, sb_size, skip,
-        super_block_upper_left, cur_qindex, current_base_qindex, dq_res, mbmi_delta_lf,
-        xd_delta_lf, mbmi_delta_lf_from_base, xd_delta_lf_from_base, dlf_res, delta_q_cdf,
-        delta_lf_multi_cdf, delta_lf_cdf,
+        enc,
+        dq_present,
+        dlf_present,
+        dlf_multi,
+        num_planes,
+        bsize,
+        sb_size,
+        skip,
+        super_block_upper_left,
+        cur_qindex,
+        current_base_qindex,
+        dq_res,
+        mbmi_delta_lf,
+        xd_delta_lf,
+        mbmi_delta_lf_from_base,
+        xd_delta_lf_from_base,
+        dlf_res,
+        delta_q_cdf,
+        delta_lf_multi_cdf,
+        delta_lf_cdf,
     );
     skip
 }
@@ -2319,24 +2605,69 @@ pub fn write_kf_tail(
     fi_mode_cdf: &mut [u16],
 ) {
     if allow_intrabc {
-        write_intrabc_info(enc, intrabc_cdf, ndvc_joints, ndvc_comp0, ndvc_comp1, use_intrabc, diff_row, diff_col);
+        write_intrabc_info(
+            enc,
+            intrabc_cdf,
+            ndvc_joints,
+            ndvc_comp0,
+            ndvc_comp1,
+            use_intrabc,
+            diff_row,
+            diff_col,
+        );
         if use_intrabc != 0 {
             return; // is_intrabc_block
         }
     }
     write_intra_prediction_modes(
-        enc, mode, bsize, y_cdf, angle_delta_y, y_angle_cdf, monochrome, is_chroma_ref, uv_mode,
-        cfl_allowed, cfl_alpha_idx, cfl_joint_sign, angle_delta_uv, uv_mode_cdf, cfl_sign_cdf,
-        cfl_alpha_cdf, uv_angle_cdf, allow_palette, bit_depth, palette_size, palette_colors,
-        mb_to_top_edge, has_above, above_colors, above_size, has_left, left_colors, left_size,
-        pal_y_mode_cdf, pal_y_size_cdf, pal_uv_mode_cdf, pal_uv_size_cdf, filter_allowed,
-        use_filter_intra, filter_intra_mode, fi_use_cdf, fi_mode_cdf,
+        enc,
+        mode,
+        bsize,
+        y_cdf,
+        angle_delta_y,
+        y_angle_cdf,
+        monochrome,
+        is_chroma_ref,
+        uv_mode,
+        cfl_allowed,
+        cfl_alpha_idx,
+        cfl_joint_sign,
+        angle_delta_uv,
+        uv_mode_cdf,
+        cfl_sign_cdf,
+        cfl_alpha_cdf,
+        uv_angle_cdf,
+        allow_palette,
+        bit_depth,
+        palette_size,
+        palette_colors,
+        mb_to_top_edge,
+        has_above,
+        above_colors,
+        above_size,
+        has_left,
+        left_colors,
+        left_size,
+        pal_y_mode_cdf,
+        pal_y_size_cdf,
+        pal_uv_mode_cdf,
+        pal_uv_size_cdf,
+        filter_allowed,
+        use_filter_intra,
+        filter_intra_mode,
+        fi_use_cdf,
+        fi_mode_cdf,
     );
 }
 
 /// `av1_get_pred_context_seg_id` (`pred_common.h`): the segment-id-predicted CDF context
 /// — the sum of the above and left neighbours' `seg_id_predicted` flags (0 when absent).
-pub fn get_pred_context_seg_id(has_above: bool, above_sip: i32, has_left: bool, left_sip: i32) -> i32 {
+pub fn get_pred_context_seg_id(
+    has_above: bool,
+    above_sip: i32,
+    has_left: bool,
+    left_sip: i32,
+) -> i32 {
     let a = if has_above { above_sip } else { 0 };
     let l = if has_left { left_sip } else { 0 };
     a + l
@@ -2375,7 +2706,16 @@ pub fn write_inter_segment_id(
     } else if !segid_preskip {
         if skip {
             // write_segment_id(skip_txfm=true): sets the seg id, codes nothing.
-            write_segment_id(enc, seg_cdf, seg_enabled, update_map, true, segment_id, seg_pred, last_active_segid);
+            write_segment_id(
+                enc,
+                seg_cdf,
+                seg_enabled,
+                update_map,
+                true,
+                segment_id,
+                seg_pred,
+                last_active_segid,
+            );
         } else {
             do_seg_block = true;
         }
@@ -2384,10 +2724,28 @@ pub fn write_inter_segment_id(
         if temporal_update {
             write_symbol(enc, seg_id_predicted, pred_cdf, 2);
             if seg_id_predicted == 0 {
-                write_segment_id(enc, seg_cdf, seg_enabled, update_map, false, segment_id, seg_pred, last_active_segid);
+                write_segment_id(
+                    enc,
+                    seg_cdf,
+                    seg_enabled,
+                    update_map,
+                    false,
+                    segment_id,
+                    seg_pred,
+                    last_active_segid,
+                );
             }
         } else {
-            write_segment_id(enc, seg_cdf, seg_enabled, update_map, false, segment_id, seg_pred, last_active_segid);
+            write_segment_id(
+                enc,
+                seg_cdf,
+                seg_enabled,
+                update_map,
+                false,
+                segment_id,
+                seg_pred,
+                last_active_segid,
+            );
         }
     }
 }
@@ -2451,15 +2809,94 @@ pub fn write_inter_prefix(
     seg_globalmv_active: bool,
     is_inter: i32,
 ) -> (i32, i32) {
-    write_inter_segment_id(enc, update_map, true, segid_preskip, false, temporal_update, seg_id_predicted, pred_cdf, seg_cdf, seg_enabled, segment_id, seg_pred, last_active_segid);
-    write_skip_mode(enc, skip_mode_cdf, frame_skip_mode_flag, sm_seg_skip, sm_comp_allowed, sm_seg_ref_gmv, skip_mode);
-    let skip = if skip_mode != 0 { 1 } else { write_skip(enc, skip_cdf, skip_seg_active, skip_txfm) };
-    write_inter_segment_id(enc, update_map, false, segid_preskip, skip != 0, temporal_update, seg_id_predicted, pred_cdf, seg_cdf, seg_enabled, segment_id, seg_pred, last_active_segid);
-    write_cdef(enc, coded_lossless, allow_intrabc, mi_row, mi_col, mib_size, sb_size, skip, cdef_transmitted, cdef_bits, cdef_strength);
+    write_inter_segment_id(
+        enc,
+        update_map,
+        true,
+        segid_preskip,
+        false,
+        temporal_update,
+        seg_id_predicted,
+        pred_cdf,
+        seg_cdf,
+        seg_enabled,
+        segment_id,
+        seg_pred,
+        last_active_segid,
+    );
+    write_skip_mode(
+        enc,
+        skip_mode_cdf,
+        frame_skip_mode_flag,
+        sm_seg_skip,
+        sm_comp_allowed,
+        sm_seg_ref_gmv,
+        skip_mode,
+    );
+    let skip = if skip_mode != 0 {
+        1
+    } else {
+        write_skip(enc, skip_cdf, skip_seg_active, skip_txfm)
+    };
+    write_inter_segment_id(
+        enc,
+        update_map,
+        false,
+        segid_preskip,
+        skip != 0,
+        temporal_update,
+        seg_id_predicted,
+        pred_cdf,
+        seg_cdf,
+        seg_enabled,
+        segment_id,
+        seg_pred,
+        last_active_segid,
+    );
+    write_cdef(
+        enc,
+        coded_lossless,
+        allow_intrabc,
+        mi_row,
+        mi_col,
+        mib_size,
+        sb_size,
+        skip,
+        cdef_transmitted,
+        cdef_bits,
+        cdef_strength,
+    );
     let super_block_upper_left = (mi_row & (mib_size - 1)) == 0 && (mi_col & (mib_size - 1)) == 0;
-    write_delta_q_params_sb(enc, dq_present, dlf_present, dlf_multi, num_planes, bsize, sb_size, skip, super_block_upper_left, cur_qindex, current_base_qindex, dq_res, mbmi_delta_lf, xd_delta_lf, mbmi_delta_lf_from_base, xd_delta_lf_from_base, dlf_res, delta_q_cdf, delta_lf_multi_cdf, delta_lf_cdf);
+    write_delta_q_params_sb(
+        enc,
+        dq_present,
+        dlf_present,
+        dlf_multi,
+        num_planes,
+        bsize,
+        sb_size,
+        skip,
+        super_block_upper_left,
+        cur_qindex,
+        current_base_qindex,
+        dq_res,
+        mbmi_delta_lf,
+        xd_delta_lf,
+        mbmi_delta_lf_from_base,
+        xd_delta_lf_from_base,
+        dlf_res,
+        delta_q_cdf,
+        delta_lf_multi_cdf,
+        delta_lf_cdf,
+    );
     if skip_mode == 0 {
-        write_is_inter(enc, intra_inter_cdf, seg_ref_frame_active, seg_globalmv_active, is_inter);
+        write_is_inter(
+            enc,
+            intra_inter_cdf,
+            seg_ref_frame_active,
+            seg_globalmv_active,
+            is_inter,
+        );
     }
     (skip, skip_mode)
 }
@@ -2522,12 +2959,36 @@ pub fn write_inter_block_mvs(
     if mode == NEWMV || mode == NEW_NEWMV {
         let refs = 1 + is_compound as usize;
         for r in 0..refs {
-            encode_mv(enc, joints_cdf, comp0, comp1, diff_row[r], diff_col[r], usehp);
+            encode_mv(
+                enc,
+                joints_cdf,
+                comp0,
+                comp1,
+                diff_row[r],
+                diff_col[r],
+                usehp,
+            );
         }
     } else if mode == NEAREST_NEWMV || mode == NEAR_NEWMV {
-        encode_mv(enc, joints_cdf, comp0, comp1, diff_row[1], diff_col[1], usehp);
+        encode_mv(
+            enc,
+            joints_cdf,
+            comp0,
+            comp1,
+            diff_row[1],
+            diff_col[1],
+            usehp,
+        );
     } else if mode == NEW_NEARESTMV || mode == NEW_NEARMV {
-        encode_mv(enc, joints_cdf, comp0, comp1, diff_row[0], diff_col[0], usehp);
+        encode_mv(
+            enc,
+            joints_cdf,
+            comp0,
+            comp1,
+            diff_row[0],
+            diff_col[0],
+            usehp,
+        );
     }
 }
 
@@ -2614,19 +3075,49 @@ pub fn write_inter_mode_tail(
     interp_cdf1: &mut [u16],
 ) {
     write_interintra_info(
-        enc, interintra_allowed, interintra, ii_cdf, ii_mode, ii_mode_cdf, wedge_used_ii,
-        use_wedge_ii, wedge_ii_cdf, ii_wedge_index, wedge_idx_cdf,
+        enc,
+        interintra_allowed,
+        interintra,
+        ii_cdf,
+        ii_mode,
+        ii_mode_cdf,
+        wedge_used_ii,
+        use_wedge_ii,
+        wedge_ii_cdf,
+        ii_wedge_index,
+        wedge_idx_cdf,
     );
     if motion_mode_present {
         write_motion_mode(enc, obmc_cdf, mm_cdf, last_motion_mode_allowed, motion_mode);
     }
     if has_second_ref {
         write_compound_type_info(
-            enc, masked_used, comp_group_idx, cgi_cdf, dist_wtd, compound_idx, cidx_cdf,
-            wedge_used_ct, comp_type, ctype_cdf, ct_wedge_index, wedge_idx_cdf, wedge_sign, mask_type,
+            enc,
+            masked_used,
+            comp_group_idx,
+            cgi_cdf,
+            dist_wtd,
+            compound_idx,
+            cidx_cdf,
+            wedge_used_ct,
+            comp_type,
+            ctype_cdf,
+            ct_wedge_index,
+            wedge_idx_cdf,
+            wedge_sign,
+            mask_type,
         );
     }
-    write_mb_interp_filter(enc, interp_cdf0, interp_cdf1, interp_needed, is_switchable, enable_dual, f0, f1);
+    write_mb_interp_filter(
+        enc,
+        interp_cdf0,
+        interp_cdf1,
+        interp_needed,
+        is_switchable,
+        enable_dual,
+        f0,
+        f1,
+    );
 }
 
 /// `av1_collect_neighbors_ref_counts` (`mvref_common.h`): tally the above and left
@@ -2681,13 +3172,13 @@ const SUBSIZE_LOOKUP: [[u8; 6]; 10] = [
 /// `SQR_BLOCK_SIZES` (6) for a non-square block.
 fn get_sqr_bsize_idx(bsize: usize) -> usize {
     match bsize {
-        0 => 0,   // BLOCK_4X4
-        3 => 1,   // BLOCK_8X8
-        6 => 2,   // BLOCK_16X16
-        9 => 3,   // BLOCK_32X32
-        12 => 4,  // BLOCK_64X64
-        15 => 5,  // BLOCK_128X128
-        _ => 6,   // SQR_BLOCK_SIZES
+        0 => 0,  // BLOCK_4X4
+        3 => 1,  // BLOCK_8X8
+        6 => 2,  // BLOCK_16X16
+        9 => 3,  // BLOCK_32X32
+        12 => 4, // BLOCK_64X64
+        15 => 5, // BLOCK_128X128
+        _ => 6,  // SQR_BLOCK_SIZES
     }
 }
 
@@ -2708,14 +3199,40 @@ pub fn get_partition_subsize(bsize: usize, partition: i32) -> i32 {
 /// `partition_context_lookup[BLOCK_SIZES_ALL]` (`common_data.h`): the (above, left)
 /// partition-context bytes a block of each size stamps into the neighbour context.
 const PARTITION_CONTEXT_LOOKUP: [(i8, i8); 22] = [
-    (31, 31), (31, 30), (30, 31), (30, 30), (30, 28), (28, 30), (28, 28), (28, 24),
-    (24, 28), (24, 24), (24, 16), (16, 24), (16, 16), (16, 0), (0, 16), (0, 0),
-    (31, 28), (28, 31), (30, 24), (24, 30), (28, 16), (16, 28),
+    (31, 31),
+    (31, 30),
+    (30, 31),
+    (30, 30),
+    (30, 28),
+    (28, 30),
+    (28, 28),
+    (28, 24),
+    (24, 28),
+    (24, 24),
+    (24, 16),
+    (16, 24),
+    (16, 16),
+    (16, 0),
+    (0, 16),
+    (0, 0),
+    (31, 28),
+    (28, 31),
+    (30, 24),
+    (24, 30),
+    (28, 16),
+    (16, 28),
 ];
 
 /// `update_partition_context` (`av1_common_int.h`): stamp `subsize`'s context bytes over
 /// `above[mi_col..+bw]` and `left[(mi_row & MAX_MIB_MASK)..+bh]` (bw/bh from `bsize`).
-fn update_partition_context(above: &mut [i8], left: &mut [i8], mi_row: i32, mi_col: i32, subsize: usize, bsize: usize) {
+fn update_partition_context(
+    above: &mut [i8],
+    left: &mut [i8],
+    mi_row: i32,
+    mi_col: i32,
+    subsize: usize,
+    bsize: usize,
+) {
     let (a, l) = PARTITION_CONTEXT_LOOKUP[subsize];
     let bw = MI_SIZE_WIDE[bsize] as usize;
     let bh = MI_SIZE_HIGH[bsize] as usize;
@@ -2732,7 +3249,15 @@ fn update_partition_context(above: &mut [i8], left: &mut [i8], mi_row: i32, mi_c
 /// `update_ext_partition_context` (`av1_common_int.h`): after coding a partition, update
 /// the neighbour partition context for the sub-blocks it created — one stamp for the
 /// simple splits, two for the extended (HORZ_A/B, VERT_A/B) types.
-pub fn update_ext_partition_context(above: &mut [i8], left: &mut [i8], mi_row: i32, mi_col: i32, subsize: usize, bsize: usize, partition: i32) {
+pub fn update_ext_partition_context(
+    above: &mut [i8],
+    left: &mut [i8],
+    mi_row: i32,
+    mi_col: i32,
+    subsize: usize,
+    bsize: usize,
+    partition: i32,
+) {
     if bsize < BLOCK_8X8 {
         return;
     }
@@ -2795,8 +3320,17 @@ pub fn write_partition_node(
         let hbs = MI_SIZE_WIDE[bsize] / 2;
         let has_rows = (mi_row + hbs) < mi_rows;
         let has_cols = (mi_col + hbs) < mi_cols;
-        let ctx = partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
-        write_partition(enc, &mut partition_cdf_arena[ctx], partition_cdf_length(bsize), partition, has_rows, has_cols, bsize);
+        let ctx =
+            partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
+        write_partition(
+            enc,
+            &mut partition_cdf_arena[ctx],
+            partition_cdf_length(bsize),
+            partition,
+            has_rows,
+            has_cols,
+            bsize,
+        );
     }
     let subsize = get_partition_subsize(bsize, partition) as usize;
     update_ext_partition_context(above, left, mi_row, mi_col, subsize, bsize, partition);
@@ -2823,13 +3357,52 @@ fn write_modes_sb_recurse(
     *idx += 1;
     let subsize = get_partition_subsize(bsize, p) as usize;
     let hbs = MI_SIZE_WIDE[bsize] / 2;
-    let ctx = partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
-    write_partition(enc, &mut arena[ctx], partition_cdf_length(bsize), p, true, true, bsize);
+    let ctx =
+        partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
+    write_partition(
+        enc,
+        &mut arena[ctx],
+        partition_cdf_length(bsize),
+        p,
+        true,
+        true,
+        bsize,
+    );
     if p == PARTITION_SPLIT_MODE && bsize > BLOCK_8X8 {
         write_modes_sb_recurse(enc, above, left, arena, tree, idx, mi_row, mi_col, subsize);
-        write_modes_sb_recurse(enc, above, left, arena, tree, idx, mi_row, mi_col + hbs, subsize);
-        write_modes_sb_recurse(enc, above, left, arena, tree, idx, mi_row + hbs, mi_col, subsize);
-        write_modes_sb_recurse(enc, above, left, arena, tree, idx, mi_row + hbs, mi_col + hbs, subsize);
+        write_modes_sb_recurse(
+            enc,
+            above,
+            left,
+            arena,
+            tree,
+            idx,
+            mi_row,
+            mi_col + hbs,
+            subsize,
+        );
+        write_modes_sb_recurse(
+            enc,
+            above,
+            left,
+            arena,
+            tree,
+            idx,
+            mi_row + hbs,
+            mi_col,
+            subsize,
+        );
+        write_modes_sb_recurse(
+            enc,
+            above,
+            left,
+            arena,
+            tree,
+            idx,
+            mi_row + hbs,
+            mi_col + hbs,
+            subsize,
+        );
     }
     update_ext_partition_context(above, left, mi_row, mi_col, subsize, bsize, p);
 }
@@ -2854,7 +3427,9 @@ pub fn write_modes_sb(
     bsize: usize,
 ) -> usize {
     let mut idx = 0usize;
-    write_modes_sb_recurse(enc, above, left, arena, tree, &mut idx, mi_row, mi_col, bsize);
+    write_modes_sb_recurse(
+        enc, above, left, arena, tree, &mut idx, mi_row, mi_col, bsize,
+    );
     idx
 }
 
@@ -2882,7 +3457,17 @@ pub fn write_modes_tile(
     for r in 0..n_sb_rows {
         let mut left = [0i8; 32]; // av1_zero_left_context per SB row
         for c in 0..n_sb_cols {
-            write_modes_sb_recurse(enc, above, &mut left, arena, tree, &mut idx, r * sb_mi, c * sb_mi, sb_size);
+            write_modes_sb_recurse(
+                enc,
+                above,
+                &mut left,
+                arena,
+                tree,
+                &mut idx,
+                r * sb_mi,
+                c * sb_mi,
+                sb_size,
+            );
         }
     }
     idx
@@ -2890,8 +3475,9 @@ pub fn write_modes_tile(
 
 /// `max_txsize_rect_lookup[BLOCK_SIZES_ALL]` (`common_data.h`): the block's max
 /// (rectangular) transform size — the starting size for the inter var-tx loop.
-const MAX_TXSIZE_RECT_LOOKUP: [usize; 22] =
-    [0, 5, 6, 1, 7, 8, 2, 9, 10, 3, 11, 12, 4, 4, 4, 4, 13, 14, 15, 16, 17, 18];
+const MAX_TXSIZE_RECT_LOOKUP: [usize; 22] = [
+    0, 5, 6, 1, 7, 8, 2, 9, 10, 3, 11, 12, 4, 4, 4, 4, 13, 14, 15, 16, 17, 18,
+];
 
 /// `get_vartx_max_txsize` (`blockd.h`) for luma, non-lossless: `max_txsize_rect_lookup
 /// [bsize]` (lossless would be `TX_4X4`, but the var-tx tx-size coding is gated off in
@@ -2926,8 +3512,18 @@ pub fn write_inter_txfm_size(
         let mut idx = 0;
         while idx < width {
             write_tx_size_vartx(
-                enc, txfm_partition_cdf, bsize, inter_tx_size, mb_to_right_edge, mb_to_bottom_edge,
-                above_ctx, left_ctx, max_tx, 0, idy, idx,
+                enc,
+                txfm_partition_cdf,
+                bsize,
+                inter_tx_size,
+                mb_to_right_edge,
+                mb_to_bottom_edge,
+                above_ctx,
+                left_ctx,
+                max_tx,
+                0,
+                idy,
+                idx,
             );
             idx += txbw;
         }
@@ -2937,7 +3533,11 @@ pub fn write_inter_txfm_size(
 
 /// `get_unsigned_bits` (`common.h`): bits to represent `n` values (`get_msb(n) + 1`, 0 for 0).
 fn get_unsigned_bits(n: u32) -> u32 {
-    if n > 0 { get_msb(n) + 1 } else { 0 }
+    if n > 0 {
+        get_msb(n) + 1
+    } else {
+        0
+    }
 }
 
 /// `write_uniform` (`av1/encoder/bitstream.c`) on the arithmetic coder: a near-uniform
@@ -2961,7 +3561,13 @@ fn write_uniform_arith(enc: &mut OdEcEnc, n: i32, v: i32) {
 /// `map_pb_cdf[palette_size_idx][color_ctx]` CDF (`n` symbols). `tokens[i]` is the colour
 /// index and `color_ctxs[i]` its neighbour context (`color_ctxs[0]` unused). `map_cdf` is
 /// the `[PALETTE_COLOR_INDEX_CONTEXTS]` slice already selected for this palette size.
-pub fn pack_map_tokens(enc: &mut OdEcEnc, n: i32, tokens: &[i32], color_ctxs: &[usize], map_cdf: &mut [[u16; 9]; 5]) {
+pub fn pack_map_tokens(
+    enc: &mut OdEcEnc,
+    n: i32,
+    tokens: &[i32],
+    color_ctxs: &[usize],
+    map_cdf: &mut [[u16; 9]; 5],
+) {
     write_uniform_arith(enc, n, tokens[0]);
     for i in 1..tokens.len() {
         write_symbol(enc, tokens[i], &mut map_cdf[color_ctxs[i]], n as usize);
@@ -3125,8 +3731,16 @@ pub fn read_mv(
     precision: i32,
 ) -> (i32, i32) {
     let j = read_symbol(dec, joints_cdf, 4); // MV_JOINTS
-    let row = if j & 2 != 0 { read_mv_component(dec, comp0, precision) } else { 0 };
-    let col = if j & 1 != 0 { read_mv_component(dec, comp1, precision) } else { 0 };
+    let row = if j & 2 != 0 {
+        read_mv_component(dec, comp0, precision)
+    } else {
+        0
+    };
+    let col = if j & 1 != 0 {
+        read_mv_component(dec, comp1, precision)
+    } else {
+        0
+    };
     (row, col)
 }
 
@@ -3210,14 +3824,22 @@ pub fn read_ref_frames(
         }
         // BIDIR_COMP_REFERENCE
         let ref0 = if read_symbol(dec, &mut cdfs[5], 2) == 0 {
-            if read_symbol(dec, &mut cdfs[6], 2) != 0 { 2 } else { 1 }
+            if read_symbol(dec, &mut cdfs[6], 2) != 0 {
+                2
+            } else {
+                1
+            }
         } else if read_symbol(dec, &mut cdfs[7], 2) != 0 {
             4
         } else {
             3
         };
         let ref1 = if read_symbol(dec, &mut cdfs[8], 2) == 0 {
-            if read_symbol(dec, &mut cdfs[9], 2) != 0 { 6 } else { 5 }
+            if read_symbol(dec, &mut cdfs[9], 2) != 0 {
+                6
+            } else {
+                5
+            }
         } else {
             7
         };
@@ -3225,12 +3847,20 @@ pub fn read_ref_frames(
     } else {
         let ref0 = if read_symbol(dec, &mut cdfs[10], 2) != 0 {
             if read_symbol(dec, &mut cdfs[11], 2) == 0 {
-                if read_symbol(dec, &mut cdfs[15], 2) != 0 { 6 } else { 5 }
+                if read_symbol(dec, &mut cdfs[15], 2) != 0 {
+                    6
+                } else {
+                    5
+                }
             } else {
                 7
             }
         } else if read_symbol(dec, &mut cdfs[12], 2) != 0 {
-            if read_symbol(dec, &mut cdfs[14], 2) != 0 { 4 } else { 3 }
+            if read_symbol(dec, &mut cdfs[14], 2) != 0 {
+                4
+            } else {
+                3
+            }
         } else if read_symbol(dec, &mut cdfs[13], 2) != 0 {
             2
         } else {
@@ -3336,8 +3966,18 @@ pub fn read_tx_size_vartx(
             while col < TX_SIZE_WIDE_UNIT[tx_size] {
                 let offsetc = blk_col + col;
                 read_tx_size_vartx(
-                    dec, txfm_partition_cdf, bsize, inter_tx_size, mb_to_right_edge,
-                    mb_to_bottom_edge, above_ctx, left_ctx, sub_txs, depth + 1, offsetr, offsetc,
+                    dec,
+                    txfm_partition_cdf,
+                    bsize,
+                    inter_tx_size,
+                    mb_to_right_edge,
+                    mb_to_bottom_edge,
+                    above_ctx,
+                    left_ctx,
+                    sub_txs,
+                    depth + 1,
+                    offsetr,
+                    offsetc,
                 );
                 col += bsw;
             }
@@ -3390,7 +4030,12 @@ pub fn read_map_tokens(
 /// raw `bit_depth`-bit literal; the excess bit-width over `bit_depth - 3` is read in 2
 /// bits; each subsequent colour is `prev + (delta_raw + min_val)` with the same
 /// range-driven bit-width shrink as the encoder. `min_val` is 1 for luma, 0 for chroma-U.
-pub fn read_delta_palette_colors(dec: &mut OdEcDec, num: usize, bit_depth: i32, min_val: i32) -> Vec<i32> {
+pub fn read_delta_palette_colors(
+    dec: &mut OdEcDec,
+    num: usize,
+    bit_depth: i32,
+    min_val: i32,
+) -> Vec<i32> {
     let mut colors = vec![0i32; num];
     if num == 0 {
         return colors;
@@ -3562,7 +4207,12 @@ pub fn neg_deinterleave(diff: i32, ref_: i32, max: i32) -> i32 {
 /// `read_segment_id` — inverse of [`write_segment_id`]: the spatial-pred segment id
 /// (neg-deinterleaved around `pred`). The caller applies the coding gate (segmentation
 /// enabled + map update + not skip-inferred).
-pub fn read_segment_id(dec: &mut OdEcDec, pred_cdf: &mut [u16], pred: i32, last_active_segid: i32) -> i32 {
+pub fn read_segment_id(
+    dec: &mut OdEcDec,
+    pred_cdf: &mut [u16],
+    pred: i32,
+    last_active_segid: i32,
+) -> i32 {
     let coded_id = read_symbol(dec, pred_cdf, MAX_SEGMENTS_MI);
     neg_deinterleave(coded_id, pred, last_active_segid + 1)
 }
@@ -3735,7 +4385,14 @@ pub fn read_compound_type_info(
             mask_type = read_literal(dec, MAX_DIFFWTD_MASK_BITS);
         }
     }
-    (comp_group_idx, compound_idx, comp_type, wedge_index, wedge_sign, mask_type)
+    (
+        comp_group_idx,
+        compound_idx,
+        comp_type,
+        wedge_index,
+        wedge_sign,
+        mask_type,
+    )
 }
 
 /// `read_palette_mode_info_flags` — inverse of [`write_palette_mode_info_flags`]: the
@@ -3786,9 +4443,15 @@ pub fn read_partition_node(
         let hbs = MI_SIZE_WIDE[bsize] / 2;
         let has_rows = (mi_row + hbs) < mi_rows;
         let has_cols = (mi_col + hbs) < mi_cols;
-        let ctx = partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
+        let ctx =
+            partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
         partition = read_partition(
-            dec, &mut partition_cdf_arena[ctx], partition_cdf_length(bsize), has_rows, has_cols, bsize,
+            dec,
+            &mut partition_cdf_arena[ctx],
+            partition_cdf_length(bsize),
+            has_rows,
+            has_cols,
+            bsize,
         );
     }
     let subsize = get_partition_subsize(bsize, partition) as usize;
@@ -3811,15 +4474,32 @@ fn read_modes_sb_recurse(
         return;
     }
     let hbs = MI_SIZE_WIDE[bsize] / 2;
-    let ctx = partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
-    let p = read_partition(dec, &mut arena[ctx], partition_cdf_length(bsize), true, true, bsize);
+    let ctx =
+        partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
+    let p = read_partition(
+        dec,
+        &mut arena[ctx],
+        partition_cdf_length(bsize),
+        true,
+        true,
+        bsize,
+    );
     out.push(p as i8);
     let subsize = get_partition_subsize(bsize, p) as usize;
     if p == PARTITION_SPLIT_MODE && bsize > BLOCK_8X8 {
         read_modes_sb_recurse(dec, above, left, arena, out, mi_row, mi_col, subsize);
         read_modes_sb_recurse(dec, above, left, arena, out, mi_row, mi_col + hbs, subsize);
         read_modes_sb_recurse(dec, above, left, arena, out, mi_row + hbs, mi_col, subsize);
-        read_modes_sb_recurse(dec, above, left, arena, out, mi_row + hbs, mi_col + hbs, subsize);
+        read_modes_sb_recurse(
+            dec,
+            above,
+            left,
+            arena,
+            out,
+            mi_row + hbs,
+            mi_col + hbs,
+            subsize,
+        );
     }
     update_ext_partition_context(above, left, mi_row, mi_col, subsize, bsize, p);
 }
@@ -3860,7 +4540,16 @@ pub fn read_modes_tile(
     for r in 0..n_sb_rows {
         let mut left = [0i8; 32]; // av1_zero_left_context per SB row
         for c in 0..n_sb_cols {
-            read_modes_sb_recurse(dec, above, &mut left, arena, &mut out, r * sb_mi, c * sb_mi, sb_size);
+            read_modes_sb_recurse(
+                dec,
+                above,
+                &mut left,
+                arena,
+                &mut out,
+                r * sb_mi,
+                c * sb_mi,
+                sb_size,
+            );
         }
     }
     out
@@ -3940,8 +4629,15 @@ pub fn read_palette_colors_plane(
 ) -> Vec<u16> {
     let mut cache = [0u16; 16];
     let n_cache = get_palette_cache(
-        &mut cache, plane, mb_to_top_edge, has_above, above_colors, above_n_plane, has_left,
-        left_colors, left_n_plane,
+        &mut cache,
+        plane,
+        mb_to_top_edge,
+        has_above,
+        above_colors,
+        above_n_plane,
+        has_left,
+        left_colors,
+        left_n_plane,
     );
     let mut merged: Vec<u16> = Vec::with_capacity(n);
     for &cv in cache.iter().take(n_cache) {
@@ -3988,8 +4684,18 @@ pub fn read_palette_mode_info(
         let n = read_symbol(dec, y_size_cdf, PALETTE_SIZES) + PALETTE_MIN_SIZE;
         palette_size[0] = n;
         let yc = read_palette_colors_plane(
-            dec, n as usize, 0, bit_depth, 1, mb_to_top_edge, has_above, above_colors,
-            above_size[0], has_left, left_colors, left_size[0],
+            dec,
+            n as usize,
+            0,
+            bit_depth,
+            1,
+            mb_to_top_edge,
+            has_above,
+            above_colors,
+            above_size[0],
+            has_left,
+            left_colors,
+            left_size[0],
         );
         colors[..n as usize].copy_from_slice(&yc);
     }
@@ -3997,8 +4703,18 @@ pub fn read_palette_mode_info(
         let n = read_symbol(dec, uv_size_cdf, PALETTE_SIZES) + PALETTE_MIN_SIZE;
         palette_size[1] = n;
         let uc = read_palette_colors_plane(
-            dec, n as usize, 1, bit_depth, 0, mb_to_top_edge, has_above, above_colors,
-            above_size[1], has_left, left_colors, left_size[1],
+            dec,
+            n as usize,
+            1,
+            bit_depth,
+            0,
+            mb_to_top_edge,
+            has_above,
+            above_colors,
+            above_size[1],
+            has_left,
+            left_colors,
+            left_size[1],
         );
         colors[PALETTE_MAX_SIZE..PALETTE_MAX_SIZE + n as usize].copy_from_slice(&uc);
         let vc = read_palette_colors_v(dec, n as usize, bit_depth);
@@ -4046,22 +4762,53 @@ pub fn read_intra_prediction_modes(
 ) -> (i32, i32, i32, i32, i32, i32, [i32; 2], Vec<u16>, i32, i32) {
     let (mode, angle_y) = read_intra_y_and_angle_delta(dec, y_cdf, bsize, y_angle_cdf);
     let (uv_mode, cfl_idx, cfl_sign, angle_uv) = read_intra_uv_and_angle_delta(
-        dec, monochrome, is_chroma_ref, cfl_allowed, bsize, uv_mode_cdf, cfl_sign_cdf,
-        cfl_alpha_cdf, uv_angle_cdf,
+        dec,
+        monochrome,
+        is_chroma_ref,
+        cfl_allowed,
+        bsize,
+        uv_mode_cdf,
+        cfl_sign_cdf,
+        cfl_alpha_cdf,
+        uv_angle_cdf,
     );
     let (palette_size, palette_colors) = if allow_palette {
         let mode_is_dc_pred = mode == DC_PRED;
         let uv_dc_pred = !monochrome && uv_mode == UV_DC_PRED && is_chroma_ref;
         read_palette_mode_info(
-            dec, mode_is_dc_pred, uv_dc_pred, bit_depth, pal_y_mode_cdf, pal_y_size_cdf,
-            pal_uv_mode_cdf, pal_uv_size_cdf, mb_to_top_edge, has_above, above_colors, above_size,
-            has_left, left_colors, left_size,
+            dec,
+            mode_is_dc_pred,
+            uv_dc_pred,
+            bit_depth,
+            pal_y_mode_cdf,
+            pal_y_size_cdf,
+            pal_uv_mode_cdf,
+            pal_uv_size_cdf,
+            mb_to_top_edge,
+            has_above,
+            above_colors,
+            above_size,
+            has_left,
+            left_colors,
+            left_size,
         )
     } else {
         ([0, 0], vec![0u16; 3 * PALETTE_MAX_SIZE])
     };
-    let (use_fi, fi_mode) = read_filter_intra_mode_info(dec, fi_use_cdf, fi_mode_cdf, filter_allowed);
-    (mode, angle_y, uv_mode, cfl_idx, cfl_sign, angle_uv, palette_size, palette_colors, use_fi, fi_mode)
+    let (use_fi, fi_mode) =
+        read_filter_intra_mode_info(dec, fi_use_cdf, fi_mode_cdf, filter_allowed);
+    (
+        mode,
+        angle_y,
+        uv_mode,
+        cfl_idx,
+        cfl_sign,
+        angle_uv,
+        palette_size,
+        palette_colors,
+        use_fi,
+        fi_mode,
+    )
 }
 
 /// Decoded KEY-frame block tail (`read_kf_tail` output): either an intrabc block (with
@@ -4142,13 +4889,46 @@ pub fn read_kf_tail(
             };
         }
     }
-    let (mode, angle_y, uv_mode, cfl_idx, cfl_sign, angle_uv, palette_size, palette_colors, use_fi, fi_mode) =
-        read_intra_prediction_modes(
-            dec, bsize, y_cdf, y_angle_cdf, monochrome, is_chroma_ref, cfl_allowed, uv_mode_cdf,
-            cfl_sign_cdf, cfl_alpha_cdf, uv_angle_cdf, allow_palette, bit_depth, pal_y_mode_cdf,
-            pal_y_size_cdf, pal_uv_mode_cdf, pal_uv_size_cdf, mb_to_top_edge, has_above, above_colors,
-            above_size, has_left, left_colors, left_size, filter_allowed, fi_use_cdf, fi_mode_cdf,
-        );
+    let (
+        mode,
+        angle_y,
+        uv_mode,
+        cfl_idx,
+        cfl_sign,
+        angle_uv,
+        palette_size,
+        palette_colors,
+        use_fi,
+        fi_mode,
+    ) = read_intra_prediction_modes(
+        dec,
+        bsize,
+        y_cdf,
+        y_angle_cdf,
+        monochrome,
+        is_chroma_ref,
+        cfl_allowed,
+        uv_mode_cdf,
+        cfl_sign_cdf,
+        cfl_alpha_cdf,
+        uv_angle_cdf,
+        allow_palette,
+        bit_depth,
+        pal_y_mode_cdf,
+        pal_y_size_cdf,
+        pal_uv_mode_cdf,
+        pal_uv_size_cdf,
+        mb_to_top_edge,
+        has_above,
+        above_colors,
+        above_size,
+        has_left,
+        left_colors,
+        left_size,
+        filter_allowed,
+        fi_use_cdf,
+        fi_mode_cdf,
+    );
     KfTailResult {
         use_intrabc: 0,
         diff_row: 0,
@@ -4215,7 +4995,11 @@ pub fn read_delta_q_params_sb(
         *current_base_qindex = current_qindex;
         if delta_lf_present {
             if delta_lf_multi {
-                let frame_lf_count = if num_planes > 1 { FRAME_LF_COUNT } else { FRAME_LF_COUNT - 2 };
+                let frame_lf_count = if num_planes > 1 {
+                    FRAME_LF_COUNT
+                } else {
+                    FRAME_LF_COUNT - 2
+                };
                 for lf_id in 0..frame_lf_count {
                     let r = read_delta_lflevel(dec, &mut delta_lf_multi_cdf[lf_id]);
                     xd_delta_lf[lf_id] = (xd_delta_lf[lf_id] + r * delta_lf_res)
@@ -4280,14 +5064,36 @@ pub fn read_mb_modes_kf_prefix(
         segment_id = read_segment_id(dec, seg_cdf, seg_pred, last_active_segid);
     }
     let cdef_strength = read_cdef(
-        dec, coded_lossless, allow_intrabc, mi_row, mi_col, mib_size, sb_size, skip,
-        cdef_transmitted, cdef_bits,
+        dec,
+        coded_lossless,
+        allow_intrabc,
+        mi_row,
+        mi_col,
+        mib_size,
+        sb_size,
+        skip,
+        cdef_transmitted,
+        cdef_bits,
     );
     let super_block_upper_left = (mi_row & (mib_size - 1)) == 0 && (mi_col & (mib_size - 1)) == 0;
     let current_qindex = read_delta_q_params_sb(
-        dec, dq_present, dlf_present, dlf_multi, num_planes, bsize, sb_size, skip,
-        super_block_upper_left, current_base_qindex, dq_res, xd_delta_lf, xd_delta_lf_from_base,
-        dlf_res, delta_q_cdf, delta_lf_multi_cdf, delta_lf_cdf,
+        dec,
+        dq_present,
+        dlf_present,
+        dlf_multi,
+        num_planes,
+        bsize,
+        sb_size,
+        skip,
+        super_block_upper_left,
+        current_base_qindex,
+        dq_res,
+        xd_delta_lf,
+        xd_delta_lf_from_base,
+        dlf_res,
+        delta_q_cdf,
+        delta_lf_multi_cdf,
+        delta_lf_cdf,
     );
     (skip, segment_id, cdef_strength, current_qindex)
 }
@@ -4398,19 +5204,70 @@ pub struct KfBlockState {
 /// Mutates the CDFs + the state carries in place; returns the decoded [`MbModeInfoKf`].
 pub fn read_mb_modes_kf(dec: &mut OdEcDec, c: &mut KfCdfs, s: &mut KfBlockState) -> MbModeInfoKf {
     let (skip, segment_id, cdef_strength, current_qindex) = read_mb_modes_kf_prefix(
-        dec, s.segid_preskip, s.seg_enabled, s.update_map, s.seg_pred, s.last_active_segid, &mut c.seg, s.seg_skip_active, &mut c.skip, s.coded_lossless, s.allow_intrabc, s.mi_row,
-        s.mi_col, s.mib_size, s.sb_size, &mut s.cdef_transmitted, s.cdef_bits, s.dq_present,
-        s.dlf_present, s.dlf_multi, s.num_planes, s.bsize, &mut s.current_base_qindex, s.dq_res,
-        &mut s.xd_delta_lf, &mut s.xd_delta_lf_from_base, s.dlf_res, &mut c.delta_q,
-        &mut c.delta_lf_multi, &mut c.delta_lf,
+        dec,
+        s.segid_preskip,
+        s.seg_enabled,
+        s.update_map,
+        s.seg_pred,
+        s.last_active_segid,
+        &mut c.seg,
+        s.seg_skip_active,
+        &mut c.skip,
+        s.coded_lossless,
+        s.allow_intrabc,
+        s.mi_row,
+        s.mi_col,
+        s.mib_size,
+        s.sb_size,
+        &mut s.cdef_transmitted,
+        s.cdef_bits,
+        s.dq_present,
+        s.dlf_present,
+        s.dlf_multi,
+        s.num_planes,
+        s.bsize,
+        &mut s.current_base_qindex,
+        s.dq_res,
+        &mut s.xd_delta_lf,
+        &mut s.xd_delta_lf_from_base,
+        s.dlf_res,
+        &mut c.delta_q,
+        &mut c.delta_lf_multi,
+        &mut c.delta_lf,
     );
     let tail = read_kf_tail(
-        dec, s.allow_intrabc, &mut c.intrabc, &mut c.ndvc_joints, &mut c.ndvc_comp0,
-        &mut c.ndvc_comp1, s.bsize, &mut c.y_mode, &mut c.y_angle, s.monochrome, s.is_chroma_ref,
-        s.cfl_allowed, &mut c.uv_mode, &mut c.cfl_sign, &mut c.cfl_alpha, &mut c.uv_angle,
-        s.allow_palette, s.bit_depth, &mut c.pal_y_mode, &mut c.pal_y_size, &mut c.pal_uv_mode,
-        &mut c.pal_uv_size, s.mb_to_top_edge, s.has_above, &[], [0, 0], s.has_left, &[], [0, 0],
-        s.filter_allowed, &mut c.fi_use, &mut c.fi_mode,
+        dec,
+        s.allow_intrabc,
+        &mut c.intrabc,
+        &mut c.ndvc_joints,
+        &mut c.ndvc_comp0,
+        &mut c.ndvc_comp1,
+        s.bsize,
+        &mut c.y_mode,
+        &mut c.y_angle,
+        s.monochrome,
+        s.is_chroma_ref,
+        s.cfl_allowed,
+        &mut c.uv_mode,
+        &mut c.cfl_sign,
+        &mut c.cfl_alpha,
+        &mut c.uv_angle,
+        s.allow_palette,
+        s.bit_depth,
+        &mut c.pal_y_mode,
+        &mut c.pal_y_size,
+        &mut c.pal_uv_mode,
+        &mut c.pal_uv_size,
+        s.mb_to_top_edge,
+        s.has_above,
+        &[],
+        [0, 0],
+        s.has_left,
+        &[],
+        [0, 0],
+        s.filter_allowed,
+        &mut c.fi_use,
+        &mut c.fi_mode,
     );
     MbModeInfoKf {
         segment_id,
@@ -4437,25 +5294,96 @@ pub fn read_mb_modes_kf(dec: &mut OdEcDec, c: &mut KfCdfs, s: &mut KfBlockState)
 /// `write_mb_modes_kf` — the encode-side counterpart to [`read_mb_modes_kf`]: encode a
 /// KEY-frame block's [`MbModeInfoKf`] via the [`KfCdfs`] + [`KfBlockState`] structs.
 /// `seg_skip_active`'s skip and the delta targets come from `info` / `state`.
-pub fn write_mb_modes_kf(enc: &mut OdEcEnc, info: &MbModeInfoKf, c: &mut KfCdfs, s: &mut KfBlockState) {
+pub fn write_mb_modes_kf(
+    enc: &mut OdEcEnc,
+    info: &MbModeInfoKf,
+    c: &mut KfCdfs,
+    s: &mut KfBlockState,
+) {
     write_mb_modes_kf_prefix(
-        enc, s.segid_preskip, s.seg_enabled, s.update_map, info.segment_id, s.seg_pred,
-        s.last_active_segid, &mut c.seg, s.seg_skip_active, info.skip, &mut c.skip, s.coded_lossless,
-        s.allow_intrabc, s.mi_row, s.mi_col, s.mib_size, s.sb_size, &mut s.cdef_transmitted,
-        s.cdef_bits, info.cdef_strength, s.dq_present, s.dlf_present, s.dlf_multi, s.num_planes,
-        s.bsize, info.current_qindex, &mut s.current_base_qindex, s.dq_res, &info.delta_lf,
-        &mut s.xd_delta_lf, info.delta_lf_from_base, &mut s.xd_delta_lf_from_base, s.dlf_res,
-        &mut c.delta_q, &mut c.delta_lf_multi, &mut c.delta_lf,
+        enc,
+        s.segid_preskip,
+        s.seg_enabled,
+        s.update_map,
+        info.segment_id,
+        s.seg_pred,
+        s.last_active_segid,
+        &mut c.seg,
+        s.seg_skip_active,
+        info.skip,
+        &mut c.skip,
+        s.coded_lossless,
+        s.allow_intrabc,
+        s.mi_row,
+        s.mi_col,
+        s.mib_size,
+        s.sb_size,
+        &mut s.cdef_transmitted,
+        s.cdef_bits,
+        info.cdef_strength,
+        s.dq_present,
+        s.dlf_present,
+        s.dlf_multi,
+        s.num_planes,
+        s.bsize,
+        info.current_qindex,
+        &mut s.current_base_qindex,
+        s.dq_res,
+        &info.delta_lf,
+        &mut s.xd_delta_lf,
+        info.delta_lf_from_base,
+        &mut s.xd_delta_lf_from_base,
+        s.dlf_res,
+        &mut c.delta_q,
+        &mut c.delta_lf_multi,
+        &mut c.delta_lf,
     );
     write_kf_tail(
-        enc, s.allow_intrabc, &mut c.intrabc, &mut c.ndvc_joints, &mut c.ndvc_comp0,
-        &mut c.ndvc_comp1, info.use_intrabc, info.dv_row, info.dv_col, info.y_mode, s.bsize,
-        &mut c.y_mode, info.angle_delta_y, &mut c.y_angle, s.monochrome, s.is_chroma_ref,
-        info.uv_mode, s.cfl_allowed, info.cfl_alpha_idx, info.cfl_joint_sign, info.angle_delta_uv,
-        &mut c.uv_mode, &mut c.cfl_sign, &mut c.cfl_alpha, &mut c.uv_angle, s.allow_palette,
-        s.bit_depth, info.palette_size, &[], s.mb_to_top_edge, s.has_above, &[], [0, 0], s.has_left,
-        &[], [0, 0], &mut c.pal_y_mode, &mut c.pal_y_size, &mut c.pal_uv_mode, &mut c.pal_uv_size,
-        s.filter_allowed, info.use_filter_intra, info.filter_intra_mode, &mut c.fi_use, &mut c.fi_mode,
+        enc,
+        s.allow_intrabc,
+        &mut c.intrabc,
+        &mut c.ndvc_joints,
+        &mut c.ndvc_comp0,
+        &mut c.ndvc_comp1,
+        info.use_intrabc,
+        info.dv_row,
+        info.dv_col,
+        info.y_mode,
+        s.bsize,
+        &mut c.y_mode,
+        info.angle_delta_y,
+        &mut c.y_angle,
+        s.monochrome,
+        s.is_chroma_ref,
+        info.uv_mode,
+        s.cfl_allowed,
+        info.cfl_alpha_idx,
+        info.cfl_joint_sign,
+        info.angle_delta_uv,
+        &mut c.uv_mode,
+        &mut c.cfl_sign,
+        &mut c.cfl_alpha,
+        &mut c.uv_angle,
+        s.allow_palette,
+        s.bit_depth,
+        info.palette_size,
+        &[],
+        s.mb_to_top_edge,
+        s.has_above,
+        &[],
+        [0, 0],
+        s.has_left,
+        &[],
+        [0, 0],
+        &mut c.pal_y_mode,
+        &mut c.pal_y_size,
+        &mut c.pal_uv_mode,
+        &mut c.pal_uv_size,
+        s.filter_allowed,
+        info.use_filter_intra,
+        info.filter_intra_mode,
+        &mut c.fi_use,
+        &mut c.fi_mode,
     );
 }
 
@@ -4617,6 +5545,57 @@ impl KfFrameContext {
             coeff: vec![0; coeff_len],
         }
     }
+
+    /// The KF slice of `av1_setup_past_independence`'s default FRAME_CONTEXT
+    /// for a frame `base_qindex`: `av1_init_mode_probs` + `av1_init_mv_probs`
+    /// fill the mode/nmv fields (qindex-independent) and
+    /// `av1_default_coef_probs` selects the coefficient band by
+    /// [`coeff_cdf_q_ctx`]. Byte-identical to the compiled C defaults
+    /// (tests/default_cdfs_diff.rs).
+    pub fn default_for_qindex(base_qindex: i32) -> Self {
+        use crate::default_cdfs as d;
+        KfFrameContext {
+            kf_y: d::DEFAULT_KF_Y,
+            uv_mode: d::DEFAULT_UV_MODE,
+            angle_delta: d::DEFAULT_ANGLE_DELTA,
+            skip: d::DEFAULT_SKIP,
+            seg_spatial: d::DEFAULT_SEG_SPATIAL,
+            partition: d::DEFAULT_PARTITION,
+            palette_y_mode: d::DEFAULT_PALETTE_Y_MODE,
+            palette_uv_mode: d::DEFAULT_PALETTE_UV_MODE,
+            palette_y_size: d::DEFAULT_PALETTE_Y_SIZE,
+            palette_uv_size: d::DEFAULT_PALETTE_UV_SIZE,
+            filter_intra: d::DEFAULT_FILTER_INTRA,
+            filter_intra_mode: d::DEFAULT_FILTER_INTRA_MODE,
+            cfl_sign: d::DEFAULT_CFL_SIGN,
+            cfl_alpha: d::DEFAULT_CFL_ALPHA,
+            delta_q: d::DEFAULT_DELTA_Q,
+            delta_lf_multi: d::DEFAULT_DELTA_LF_MULTI,
+            delta_lf: d::DEFAULT_DELTA_LF,
+            intrabc: d::DEFAULT_INTRABC,
+            ndvc_joints: d::DEFAULT_NMV_JOINTS,
+            ndvc_comp0: d::DEFAULT_NMV_COMPS[0],
+            ndvc_comp1: d::DEFAULT_NMV_COMPS[1],
+            tx_size: d::DEFAULT_TX_SIZE,
+            ext_tx_1ddct: d::DEFAULT_EXT_TX_1DDCT,
+            ext_tx_dtt4: d::DEFAULT_EXT_TX_DTT4,
+            coeff: d::DEFAULT_COEFF_ARENA[coeff_cdf_q_ctx(base_qindex)].to_vec(),
+        }
+    }
+}
+
+/// `get_q_ctx` (av1/common/entropy.c): the `TOKEN_CDF_Q_CTXS` coefficient-CDF
+/// band `av1_default_coef_probs` selects from the frame `base_qindex`.
+pub fn coeff_cdf_q_ctx(base_qindex: i32) -> usize {
+    if base_qindex <= 20 {
+        0
+    } else if base_qindex <= 60 {
+        1
+    } else if base_qindex <= 120 {
+        2
+    } else {
+        3
+    }
 }
 
 /// `av1_filter_intra_allowed` (av1/common/blockd.h), in full: DC mode, no Y palette,
@@ -4684,12 +5663,36 @@ pub fn read_mb_modes_kf_fc(
         left.map_or(0, |m| m.skip_txfm),
     ) as usize;
     let (skip, segment_id, cdef_strength, current_qindex) = read_mb_modes_kf_prefix(
-        dec, s.segid_preskip, s.seg_enabled, s.update_map, s.seg_pred, s.last_active_segid,
-        &mut f.seg_spatial[0], s.seg_skip_active, &mut f.skip[skip_ctx], s.coded_lossless,
-        s.allow_intrabc, s.mi_row, s.mi_col, s.mib_size, s.sb_size, &mut s.cdef_transmitted,
-        s.cdef_bits, s.dq_present, s.dlf_present, s.dlf_multi, s.num_planes, s.bsize,
-        &mut s.current_base_qindex, s.dq_res, &mut s.xd_delta_lf, &mut s.xd_delta_lf_from_base,
-        s.dlf_res, &mut f.delta_q, &mut f.delta_lf_multi, &mut f.delta_lf,
+        dec,
+        s.segid_preskip,
+        s.seg_enabled,
+        s.update_map,
+        s.seg_pred,
+        s.last_active_segid,
+        &mut f.seg_spatial[0],
+        s.seg_skip_active,
+        &mut f.skip[skip_ctx],
+        s.coded_lossless,
+        s.allow_intrabc,
+        s.mi_row,
+        s.mi_col,
+        s.mib_size,
+        s.sb_size,
+        &mut s.cdef_transmitted,
+        s.cdef_bits,
+        s.dq_present,
+        s.dlf_present,
+        s.dlf_multi,
+        s.num_planes,
+        s.bsize,
+        &mut s.current_base_qindex,
+        s.dq_res,
+        &mut s.xd_delta_lf,
+        &mut s.xd_delta_lf_from_base,
+        s.dlf_res,
+        &mut f.delta_q,
+        &mut f.delta_lf_multi,
+        &mut f.delta_lf,
     );
     let mut info = MbModeInfoKf {
         segment_id,
@@ -4713,7 +5716,11 @@ pub fn read_mb_modes_kf_fc(
     };
     if s.allow_intrabc {
         let (use_intrabc, dr, dc) = read_intrabc_info(
-            dec, &mut f.intrabc, &mut f.ndvc_joints, &mut f.ndvc_comp0, &mut f.ndvc_comp1,
+            dec,
+            &mut f.intrabc,
+            &mut f.ndvc_joints,
+            &mut f.ndvc_comp0,
+            &mut f.ndvc_comp1,
         );
         if use_intrabc != 0 {
             info.use_intrabc = use_intrabc;
@@ -4747,10 +5754,12 @@ pub fn read_mb_modes_kf_fc(
         }
     }
     // (Palette would be coded here; `allow_palette` is asserted off above.)
-    let fi_allowed =
-        filter_intra_allowed(enable_filter_intra, s.bsize, mode, info.palette_size[0]);
+    let fi_allowed = filter_intra_allowed(enable_filter_intra, s.bsize, mode, info.palette_size[0]);
     let (use_fi, fi_mode) = read_filter_intra_mode_info(
-        dec, &mut f.filter_intra[s.bsize], &mut f.filter_intra_mode, fi_allowed,
+        dec,
+        &mut f.filter_intra[s.bsize],
+        &mut f.filter_intra_mode,
+        fi_allowed,
     );
     info.use_filter_intra = use_fi;
     info.filter_intra_mode = fi_mode;
@@ -4776,19 +5785,53 @@ pub fn write_mb_modes_kf_fc(
         left.map_or(0, |m| m.skip_txfm),
     ) as usize;
     write_mb_modes_kf_prefix(
-        enc, s.segid_preskip, s.seg_enabled, s.update_map, info.segment_id, s.seg_pred,
-        s.last_active_segid, &mut f.seg_spatial[0], s.seg_skip_active, info.skip,
-        &mut f.skip[skip_ctx], s.coded_lossless, s.allow_intrabc, s.mi_row, s.mi_col, s.mib_size,
-        s.sb_size, &mut s.cdef_transmitted, s.cdef_bits, info.cdef_strength, s.dq_present,
-        s.dlf_present, s.dlf_multi, s.num_planes, s.bsize, info.current_qindex,
-        &mut s.current_base_qindex, s.dq_res, &info.delta_lf, &mut s.xd_delta_lf,
-        info.delta_lf_from_base, &mut s.xd_delta_lf_from_base, s.dlf_res, &mut f.delta_q,
-        &mut f.delta_lf_multi, &mut f.delta_lf,
+        enc,
+        s.segid_preskip,
+        s.seg_enabled,
+        s.update_map,
+        info.segment_id,
+        s.seg_pred,
+        s.last_active_segid,
+        &mut f.seg_spatial[0],
+        s.seg_skip_active,
+        info.skip,
+        &mut f.skip[skip_ctx],
+        s.coded_lossless,
+        s.allow_intrabc,
+        s.mi_row,
+        s.mi_col,
+        s.mib_size,
+        s.sb_size,
+        &mut s.cdef_transmitted,
+        s.cdef_bits,
+        info.cdef_strength,
+        s.dq_present,
+        s.dlf_present,
+        s.dlf_multi,
+        s.num_planes,
+        s.bsize,
+        info.current_qindex,
+        &mut s.current_base_qindex,
+        s.dq_res,
+        &info.delta_lf,
+        &mut s.xd_delta_lf,
+        info.delta_lf_from_base,
+        &mut s.xd_delta_lf_from_base,
+        s.dlf_res,
+        &mut f.delta_q,
+        &mut f.delta_lf_multi,
+        &mut f.delta_lf,
     );
     if s.allow_intrabc {
         write_intrabc_info(
-            enc, &mut f.intrabc, &mut f.ndvc_joints, &mut f.ndvc_comp0, &mut f.ndvc_comp1,
-            info.use_intrabc, info.dv_row, info.dv_col,
+            enc,
+            &mut f.intrabc,
+            &mut f.ndvc_joints,
+            &mut f.ndvc_comp0,
+            &mut f.ndvc_comp1,
+            info.use_intrabc,
+            info.dv_row,
+            info.dv_col,
         );
         if info.use_intrabc != 0 {
             return;
@@ -4812,7 +5855,11 @@ pub fn write_mb_modes_kf_fc(
         );
         if info.uv_mode == UV_CFL_PRED {
             write_cfl_alphas(
-                enc, &mut f.cfl_sign, &mut f.cfl_alpha, info.cfl_alpha_idx, info.cfl_joint_sign,
+                enc,
+                &mut f.cfl_sign,
+                &mut f.cfl_alpha,
+                info.cfl_alpha_idx,
+                info.cfl_joint_sign,
             );
         }
         let intra_mode = get_uv_mode(info.uv_mode as usize);
@@ -4825,8 +5872,12 @@ pub fn write_mb_modes_kf_fc(
         }
     }
     // (Palette would be coded here; `allow_palette` is asserted off above.)
-    let fi_allowed =
-        filter_intra_allowed(enable_filter_intra, s.bsize, info.y_mode, info.palette_size[0]);
+    let fi_allowed = filter_intra_allowed(
+        enable_filter_intra,
+        s.bsize,
+        info.y_mode,
+        info.palette_size[0],
+    );
     write_filter_intra_mode_info(
         enc,
         &mut f.filter_intra[s.bsize],
@@ -4867,13 +5918,67 @@ fn write_modes_b_recurse(
     *t_idx += 1;
     let subsize = get_partition_subsize(bsize, p) as usize;
     let hbs = MI_SIZE_WIDE[bsize] / 2;
-    let ctx = partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
-    write_partition(enc, &mut arena[ctx], partition_cdf_length(bsize), p, true, true, bsize);
+    let ctx =
+        partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
+    write_partition(
+        enc,
+        &mut arena[ctx],
+        partition_cdf_length(bsize),
+        p,
+        true,
+        true,
+        bsize,
+    );
     if p == PARTITION_SPLIT_MODE && bsize > BLOCK_8X8 {
-        write_modes_b_recurse(enc, above, left, arena, cdfs, state, tree, t_idx, infos, i_idx, mi_row, mi_col, subsize);
-        write_modes_b_recurse(enc, above, left, arena, cdfs, state, tree, t_idx, infos, i_idx, mi_row, mi_col + hbs, subsize);
-        write_modes_b_recurse(enc, above, left, arena, cdfs, state, tree, t_idx, infos, i_idx, mi_row + hbs, mi_col, subsize);
-        write_modes_b_recurse(enc, above, left, arena, cdfs, state, tree, t_idx, infos, i_idx, mi_row + hbs, mi_col + hbs, subsize);
+        write_modes_b_recurse(
+            enc, above, left, arena, cdfs, state, tree, t_idx, infos, i_idx, mi_row, mi_col,
+            subsize,
+        );
+        write_modes_b_recurse(
+            enc,
+            above,
+            left,
+            arena,
+            cdfs,
+            state,
+            tree,
+            t_idx,
+            infos,
+            i_idx,
+            mi_row,
+            mi_col + hbs,
+            subsize,
+        );
+        write_modes_b_recurse(
+            enc,
+            above,
+            left,
+            arena,
+            cdfs,
+            state,
+            tree,
+            t_idx,
+            infos,
+            i_idx,
+            mi_row + hbs,
+            mi_col,
+            subsize,
+        );
+        write_modes_b_recurse(
+            enc,
+            above,
+            left,
+            arena,
+            cdfs,
+            state,
+            tree,
+            t_idx,
+            infos,
+            i_idx,
+            mi_row + hbs,
+            mi_col + hbs,
+            subsize,
+        );
     } else {
         // PARTITION_NONE leaf: one block of `subsize`.
         state.mi_row = mi_row;
@@ -4904,7 +6009,10 @@ pub fn write_modes_b(
 ) -> usize {
     let mut t_idx = 0;
     let mut i_idx = 0;
-    write_modes_b_recurse(enc, above, left, arena, cdfs, state, tree, &mut t_idx, infos, &mut i_idx, mi_row, mi_col, bsize);
+    write_modes_b_recurse(
+        enc, above, left, arena, cdfs, state, tree, &mut t_idx, infos, &mut i_idx, mi_row, mi_col,
+        bsize,
+    );
     i_idx
 }
 
@@ -4926,15 +6034,61 @@ fn read_modes_b_recurse(
         return;
     }
     let hbs = MI_SIZE_WIDE[bsize] / 2;
-    let ctx = partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
-    let p = read_partition(dec, &mut arena[ctx], partition_cdf_length(bsize), true, true, bsize);
+    let ctx =
+        partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
+    let p = read_partition(
+        dec,
+        &mut arena[ctx],
+        partition_cdf_length(bsize),
+        true,
+        true,
+        bsize,
+    );
     tree.push(p as i8);
     let subsize = get_partition_subsize(bsize, p) as usize;
     if p == PARTITION_SPLIT_MODE && bsize > BLOCK_8X8 {
-        read_modes_b_recurse(dec, above, left, arena, cdfs, state, tree, infos, mi_row, mi_col, subsize);
-        read_modes_b_recurse(dec, above, left, arena, cdfs, state, tree, infos, mi_row, mi_col + hbs, subsize);
-        read_modes_b_recurse(dec, above, left, arena, cdfs, state, tree, infos, mi_row + hbs, mi_col, subsize);
-        read_modes_b_recurse(dec, above, left, arena, cdfs, state, tree, infos, mi_row + hbs, mi_col + hbs, subsize);
+        read_modes_b_recurse(
+            dec, above, left, arena, cdfs, state, tree, infos, mi_row, mi_col, subsize,
+        );
+        read_modes_b_recurse(
+            dec,
+            above,
+            left,
+            arena,
+            cdfs,
+            state,
+            tree,
+            infos,
+            mi_row,
+            mi_col + hbs,
+            subsize,
+        );
+        read_modes_b_recurse(
+            dec,
+            above,
+            left,
+            arena,
+            cdfs,
+            state,
+            tree,
+            infos,
+            mi_row + hbs,
+            mi_col,
+            subsize,
+        );
+        read_modes_b_recurse(
+            dec,
+            above,
+            left,
+            arena,
+            cdfs,
+            state,
+            tree,
+            infos,
+            mi_row + hbs,
+            mi_col + hbs,
+            subsize,
+        );
     } else {
         state.mi_row = mi_row;
         state.mi_col = mi_col;
@@ -4961,7 +6115,9 @@ pub fn read_modes_b(
 ) -> (Vec<i8>, Vec<MbModeInfoKf>) {
     let mut tree = Vec::new();
     let mut infos = Vec::new();
-    read_modes_b_recurse(dec, above, left, arena, cdfs, state, &mut tree, &mut infos, mi_row, mi_col, bsize);
+    read_modes_b_recurse(
+        dec, above, left, arena, cdfs, state, &mut tree, &mut infos, mi_row, mi_col, bsize,
+    );
     (tree, infos)
 }
 
@@ -4971,8 +6127,9 @@ pub fn read_modes_b(
 
 /// `mi_size_high_log2[BLOCK_SIZES_ALL]` (`common_data.h`): log2 of a block's
 /// height in mode-info (4x4) units.
-const MI_SIZE_HIGH_LOG2: [u8; 22] =
-    [0, 1, 0, 1, 2, 1, 2, 3, 2, 3, 4, 3, 4, 5, 4, 5, 2, 0, 3, 1, 4, 2];
+const MI_SIZE_HIGH_LOG2: [u8; 22] = [
+    0, 1, 0, 1, 2, 1, 2, 3, 2, 3, 4, 3, 4, 5, 4, 5, 2, 0, 3, 1, 4, 2,
+];
 /// `MAX_MIB_SIZE_LOG2` = `MAX_SB_SIZE_LOG2 - MI_SIZE_LOG2` = 7 - 2 = 5.
 const MAX_MIB_SIZE_LOG2: i32 = 5;
 /// `BLOCK_64X64` block-size index.
@@ -5043,10 +6200,28 @@ const HAS_TR_16X64: [u8; 2] = [255, 127];
 const HAS_TR_64X16: [u8; 2] = [3, 1];
 
 const HAS_TR_TABLES: [&[u8]; 22] = [
-    &HAS_TR_4X4, &HAS_TR_4X8, &HAS_TR_8X4, &HAS_TR_8X8, &HAS_TR_8X16, &HAS_TR_16X8,
-    &HAS_TR_16X16, &HAS_TR_16X32, &HAS_TR_32X16, &HAS_TR_32X32, &HAS_TR_32X64,
-    &HAS_TR_64X32, &HAS_TR_64X64, &HAS_TR_64X128, &HAS_TR_128X64, &HAS_TR_128X128,
-    &HAS_TR_4X16, &HAS_TR_16X4, &HAS_TR_8X32, &HAS_TR_32X8, &HAS_TR_16X64, &HAS_TR_64X16,
+    &HAS_TR_4X4,
+    &HAS_TR_4X8,
+    &HAS_TR_8X4,
+    &HAS_TR_8X8,
+    &HAS_TR_8X16,
+    &HAS_TR_16X8,
+    &HAS_TR_16X16,
+    &HAS_TR_16X32,
+    &HAS_TR_32X16,
+    &HAS_TR_32X32,
+    &HAS_TR_32X64,
+    &HAS_TR_64X32,
+    &HAS_TR_64X64,
+    &HAS_TR_64X128,
+    &HAS_TR_128X64,
+    &HAS_TR_128X128,
+    &HAS_TR_4X16,
+    &HAS_TR_16X4,
+    &HAS_TR_8X32,
+    &HAS_TR_32X8,
+    &HAS_TR_16X64,
+    &HAS_TR_64X16,
 ];
 #[rustfmt::skip]
 const HAS_TR_VERT_8X8: [u8; 32] = [
@@ -5057,9 +6232,21 @@ const HAS_TR_VERT_16X16: [u8; 8] = [255, 0, 119, 0, 127, 0, 119, 0];
 const HAS_TR_VERT_32X32: [u8; 2] = [15, 7];
 const HAS_TR_VERT_64X64: [u8; 1] = [3];
 const HAS_TR_VERT_TABLES: [Option<&[u8]>; 16] = [
-    None, Some(&HAS_TR_4X8), None, Some(&HAS_TR_VERT_8X8), Some(&HAS_TR_8X16), None,
-    Some(&HAS_TR_VERT_16X16), Some(&HAS_TR_16X32), None, Some(&HAS_TR_VERT_32X32),
-    Some(&HAS_TR_32X64), None, Some(&HAS_TR_VERT_64X64), Some(&HAS_TR_64X128), None,
+    None,
+    Some(&HAS_TR_4X8),
+    None,
+    Some(&HAS_TR_VERT_8X8),
+    Some(&HAS_TR_8X16),
+    None,
+    Some(&HAS_TR_VERT_16X16),
+    Some(&HAS_TR_16X32),
+    None,
+    Some(&HAS_TR_VERT_32X32),
+    Some(&HAS_TR_32X64),
+    None,
+    Some(&HAS_TR_VERT_64X64),
+    Some(&HAS_TR_64X128),
+    None,
     Some(&HAS_TR_128X128),
 ];
 
@@ -5078,9 +6265,18 @@ fn get_has_tr_table(partition: usize, bsize: usize) -> &'static [u8] {
 /// subsampling. Returns 0 or 1.
 #[allow(clippy::too_many_arguments)]
 pub fn has_top_right(
-    sb_size: usize, bsize: usize, mi_row: i32, mi_col: i32, top_available: bool,
-    right_available: bool, partition: usize, txsz: usize, row_off: i32, col_off: i32,
-    ss_x: i32, ss_y: i32,
+    sb_size: usize,
+    bsize: usize,
+    mi_row: i32,
+    mi_col: i32,
+    top_available: bool,
+    right_available: bool,
+    partition: usize,
+    txsz: usize,
+    row_off: i32,
+    col_off: i32,
+    ss_x: i32,
+    ss_y: i32,
 ) -> i32 {
     if !top_available || !right_available {
         return 0;
@@ -5181,10 +6377,28 @@ const HAS_BL_32X8: [u8; 8] = [238, 78, 238, 14, 238, 78, 238, 14];
 const HAS_BL_16X64: [u8; 2] = [0, 0];
 const HAS_BL_64X16: [u8; 2] = [42, 42];
 const HAS_BL_TABLES: [&[u8]; 22] = [
-    &HAS_BL_4X4, &HAS_BL_4X8, &HAS_BL_8X4, &HAS_BL_8X8, &HAS_BL_8X16, &HAS_BL_16X8,
-    &HAS_BL_16X16, &HAS_BL_16X32, &HAS_BL_32X16, &HAS_BL_32X32, &HAS_BL_32X64,
-    &HAS_BL_64X32, &HAS_BL_64X64, &HAS_BL_64X128, &HAS_BL_128X64, &HAS_BL_128X128,
-    &HAS_BL_4X16, &HAS_BL_16X4, &HAS_BL_8X32, &HAS_BL_32X8, &HAS_BL_16X64, &HAS_BL_64X16,
+    &HAS_BL_4X4,
+    &HAS_BL_4X8,
+    &HAS_BL_8X4,
+    &HAS_BL_8X8,
+    &HAS_BL_8X16,
+    &HAS_BL_16X8,
+    &HAS_BL_16X16,
+    &HAS_BL_16X32,
+    &HAS_BL_32X16,
+    &HAS_BL_32X32,
+    &HAS_BL_32X64,
+    &HAS_BL_64X32,
+    &HAS_BL_64X64,
+    &HAS_BL_64X128,
+    &HAS_BL_128X64,
+    &HAS_BL_128X128,
+    &HAS_BL_4X16,
+    &HAS_BL_16X4,
+    &HAS_BL_8X32,
+    &HAS_BL_32X8,
+    &HAS_BL_16X64,
+    &HAS_BL_64X16,
 ];
 #[rustfmt::skip]
 const HAS_BL_VERT_8X8: [u8; 32] = [
@@ -5195,9 +6409,21 @@ const HAS_BL_VERT_16X16: [u8; 8] = [254, 16, 254, 0, 254, 16, 254, 0];
 const HAS_BL_VERT_32X32: [u8; 2] = [14, 14];
 const HAS_BL_VERT_64X64: [u8; 1] = [2];
 const HAS_BL_VERT_TABLES: [Option<&[u8]>; 16] = [
-    None, Some(&HAS_BL_4X8), None, Some(&HAS_BL_VERT_8X8), Some(&HAS_BL_8X16), None,
-    Some(&HAS_BL_VERT_16X16), Some(&HAS_BL_16X32), None, Some(&HAS_BL_VERT_32X32),
-    Some(&HAS_BL_32X64), None, Some(&HAS_BL_VERT_64X64), Some(&HAS_BL_64X128), None,
+    None,
+    Some(&HAS_BL_4X8),
+    None,
+    Some(&HAS_BL_VERT_8X8),
+    Some(&HAS_BL_8X16),
+    None,
+    Some(&HAS_BL_VERT_16X16),
+    Some(&HAS_BL_16X32),
+    None,
+    Some(&HAS_BL_VERT_32X32),
+    Some(&HAS_BL_32X64),
+    None,
+    Some(&HAS_BL_VERT_64X64),
+    Some(&HAS_BL_64X128),
+    None,
     Some(&HAS_BL_128X128),
 ];
 fn get_has_bl_table(partition: usize, bsize: usize) -> &'static [u8] {
@@ -5212,9 +6438,18 @@ fn get_has_bl_table(partition: usize, bsize: usize) -> &'static [u8] {
 /// available (coded before this block)? Args mirror [`has_top_right`]. Returns 0/1.
 #[allow(clippy::too_many_arguments)]
 pub fn has_bottom_left(
-    sb_size: usize, bsize: usize, mi_row: i32, mi_col: i32, bottom_available: bool,
-    left_available: bool, partition: usize, txsz: usize, row_off: i32, col_off: i32,
-    ss_x: i32, ss_y: i32,
+    sb_size: usize,
+    bsize: usize,
+    mi_row: i32,
+    mi_col: i32,
+    bottom_available: bool,
+    left_available: bool,
+    partition: usize,
+    txsz: usize,
+    row_off: i32,
+    col_off: i32,
+    ss_x: i32,
+    ss_y: i32,
 ) -> i32 {
     if !bottom_available || !left_available {
         return 0;
@@ -5276,10 +6511,26 @@ pub fn has_bottom_left(
 /// `angle_delta` is pre-scaled by `ANGLE_STEP`.
 #[allow(clippy::too_many_arguments)]
 pub fn intra_avail(
-    sb_size: usize, bsize: usize, mi_row: i32, mi_col: i32, up_available: bool,
-    left_available: bool, tile_col_end: i32, tile_row_end: i32, partition: usize,
-    tx_size: usize, ss_x: i32, ss_y: i32, row_off: i32, col_off: i32, wpx: i32,
-    hpx: i32, mi_cols: i32, mi_rows: i32, mode: usize, angle_delta: i32,
+    sb_size: usize,
+    bsize: usize,
+    mi_row: i32,
+    mi_col: i32,
+    up_available: bool,
+    left_available: bool,
+    tile_col_end: i32,
+    tile_row_end: i32,
+    partition: usize,
+    tx_size: usize,
+    ss_x: i32,
+    ss_y: i32,
+    row_off: i32,
+    col_off: i32,
+    wpx: i32,
+    hpx: i32,
+    mi_cols: i32,
+    mi_rows: i32,
+    mode: usize,
+    angle_delta: i32,
     use_filter_intra: bool,
 ) -> (i32, i32, i32, i32) {
     const M2A: [i32; 13] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0];
@@ -5308,16 +6559,36 @@ pub fn intra_avail(
     let need_bl = !use_filter_intra && is_dr && p_angle > 180;
     let have_tr = if need_tr {
         has_top_right(
-            sb_size, bsize, mi_row, mi_col, have_top, right_available, partition, tx_size, row_off,
-            col_off, ss_x, ss_y,
+            sb_size,
+            bsize,
+            mi_row,
+            mi_col,
+            have_top,
+            right_available,
+            partition,
+            tx_size,
+            row_off,
+            col_off,
+            ss_x,
+            ss_y,
         )
     } else {
         -1
     };
     let have_bl = if need_bl {
         has_bottom_left(
-            sb_size, bsize, mi_row, mi_col, bottom_available, have_left, partition, tx_size, row_off,
-            col_off, ss_x, ss_y,
+            sb_size,
+            bsize,
+            mi_row,
+            mi_col,
+            bottom_available,
+            have_left,
+            partition,
+            tx_size,
+            row_off,
+            col_off,
+            ss_x,
+            ss_y,
         )
     } else {
         -1
