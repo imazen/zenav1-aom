@@ -106,7 +106,16 @@
 //!   SB (`read_cdef`'s `cdef_transmitted[4]`), and the loop-restoration
 //!   corners-in-sb reader sees the 32-mi SB extent. (RU size and CDEF's own
 //!   64x64 filter-block granularity are independent of this flag.)
-//! - **Off / fixed in this cut**: palette, intra block copy,
+//! - **PALETTE** (`KfTileConfig::allow_screen_content_tools`): per-block
+//!   `av1_allow_palette`-gated flags/size/colours ([`read_mb_modes_kf_fc`]) +
+//!   the colour-index map tokens (a separate step after mode-info, mirroring
+//!   `av1_visit_palette` — [`get_block_dimensions`] +
+//!   [`decode_color_map_tokens`]) + reconstruction (a palette tx block's
+//!   pixels come from the map indexing the palette, bypassing ordinary intra
+//!   prediction only — the residual add is unaffected). A palette-neighbour
+//!   grid ([`PaletteNbrKf`], mirrors [`MiNbrKf`]) feeds the colour cache;
+//!   only allocated on screen-content frames.
+//! - **Off / fixed in this cut**: intra block copy,
 //!   quantization matrices (flat dequant), CDF update always on
 //!   (`disable_cdf_update` unsupported — the mode-symbol readers adapt
 //!   unconditionally), and no in-tile loop filters (this driver returns the
@@ -134,11 +143,13 @@ pub mod frame;
 use aom_encode::reconstruct_txb;
 use aom_entropy::dec::OdEcDec;
 use aom_entropy::partition::{
-    KfBlockState, KfFrameContext, MbModeInfoKf, MiNbrKf, TXFM_CTX_INIT, TxMode, bsize_to_max_depth,
-    bsize_to_tx_size_cat, depth_to_tx_size, get_partition_subsize, get_plane_block_size,
-    get_tx_size_context, get_uv_mode, intra_avail, is_cfl_allowed, partition_cdf_length,
-    partition_plane_context, read_mb_modes_kf_fc, read_partition, read_selected_tx_size,
-    set_txfm_ctxs, spatial_seg_pred, tx_size_from_tx_mode, update_ext_partition_context,
+    KfBlockState, KfFrameContext, MbModeInfoKf, MiNbrKf, PaletteNbrKf, TXFM_CTX_INIT, TxMode,
+    allow_palette as av1_allow_palette, bsize_to_max_depth, bsize_to_tx_size_cat,
+    decode_color_map_tokens, depth_to_tx_size, get_block_dimensions, get_partition_subsize,
+    get_plane_block_size, get_tx_size_context, get_uv_mode, intra_avail, is_cfl_allowed,
+    partition_cdf_length, partition_plane_context, read_mb_modes_kf_fc, read_partition,
+    read_selected_tx_size, set_txfm_ctxs, spatial_seg_pred, tx_size_from_tx_mode,
+    update_ext_partition_context,
 };
 use aom_intra::cfl::{CflCtx, cfl_predict_block, cfl_store_tx};
 use aom_intra::predict_intra_high;
@@ -418,6 +429,13 @@ pub struct KfTileConfig {
     /// RU (unit) size are independent of this flag (spec-fixed / a separate
     /// config axis, respectively).
     pub sb_size_128: bool,
+    /// `features.allow_screen_content_tools` (frame header): gates PALETTE mode
+    /// per-block (`av1_allow_palette`, [`allow_palette`] — also needs the
+    /// block's own bsize <= 64x64). Intra block copy (`allow_intrabc`) is the
+    /// OTHER screen-content tool this flag enables in C; it stays out of scope
+    /// here (rejected upstream in `frame.rs`, so `KfBlockState::allow_intrabc`
+    /// is always false regardless of this flag).
+    pub allow_screen_content_tools: bool,
 }
 
 /// `av1_calculate_segdata` (av1/common/seg_common.c) — the derived
@@ -644,6 +662,13 @@ struct TileKf<'c> {
     /// (the C `read_intra_frame_mode_info` else-branch), but the chroma
     /// neighbour pointers only ever land on chroma-reference cells.
     mi_uv: Vec<i8>,
+    /// Per-mi palette-neighbour grid ([`PaletteNbrKf`], same frame-cropped stamping as
+    /// `mi` above): what `xd->above_mbmi->palette_mode_info` /
+    /// `xd->left_mbmi->palette_mode_info` project for `get_palette_cache`'s
+    /// neighbour-colour merge. Only allocated (`mi_rows x mi_cols`) when
+    /// `cfg.allow_screen_content_tools` — empty (never indexed, since `st.allow_palette`
+    /// is then always false) otherwise, so non-screen-content frames pay nothing.
+    mi_palette: Vec<PaletteNbrKf>,
     /// The CURRENT frame's segment-id map (`cm->cur_frame->seg_map`,
     /// mi_rows x mi_cols): each block stamps its resolved segment id over its
     /// frame-cropped footprint (`set_segment_id`, decodemv.c), and the next
@@ -807,6 +832,11 @@ impl<'c> TileKf<'c> {
                 (cfg.mi_rows * cfg.mi_cols) as usize
             ],
             mi_uv: vec![0; (cfg.mi_rows * cfg.mi_cols) as usize],
+            mi_palette: if cfg.allow_screen_content_tools {
+                vec![PaletteNbrKf::default(); (cfg.mi_rows * cfg.mi_cols) as usize]
+            } else {
+                Vec::new()
+            },
             seg_map: vec![0; (cfg.mi_rows * cfg.mi_cols) as usize],
             cfl: CflCtx::new(ss_x as i32, ss_y as i32),
             // setup_segmentation_dequant: the frame-level dequant rows from
@@ -970,6 +1000,37 @@ impl<'c> TileKf<'c> {
         }
     }
 
+    /// [`Self::neighbours`]'s palette-info twin — `None` when `mi_palette` is empty
+    /// (non-screen-content frames, where it's never allocated).
+    fn palette_neighbours(
+        &self,
+        mi_row: i32,
+        mi_col: i32,
+    ) -> (Option<PaletteNbrKf>, Option<PaletteNbrKf>) {
+        if self.mi_palette.is_empty() {
+            return (None, None);
+        }
+        let cols = self.cfg.mi_cols;
+        let above = (mi_row > self.tile.mi_row_start)
+            .then(|| self.mi_palette[((mi_row - 1) * cols + mi_col) as usize]);
+        let left = (mi_col > self.tile.mi_col_start)
+            .then(|| self.mi_palette[(mi_row * cols + mi_col - 1) as usize]);
+        (above, left)
+    }
+
+    /// [`Self::stamp_mi`]'s palette-info twin — a no-op when `mi_palette` is empty.
+    fn stamp_palette(&mut self, mi_row: i32, mi_col: i32, bsize: usize, cell: PaletteNbrKf) {
+        if self.mi_palette.is_empty() {
+            return;
+        }
+        let x_mis = MI_SIZE_WIDE[bsize].min(self.cfg.mi_cols - mi_col);
+        let y_mis = MI_SIZE_HIGH[bsize].min(self.cfg.mi_rows - mi_row);
+        for r in 0..y_mis {
+            let base = ((mi_row + r) * self.cfg.mi_cols + mi_col) as usize;
+            self.mi_palette[base..base + x_mis as usize].fill(cell);
+        }
+    }
+
     /// `av1_set_entropy_contexts` (av1/common/blockd.c): fill the txb's
     /// above/left context footprint (of `plane`, from the plane's context base
     /// indices) with its cul level, zeroing the beyond-frame part when a
@@ -1045,6 +1106,7 @@ impl<'c> TileKf<'c> {
         }
         let cfl_allowed = !cfg.monochrome && is_cfl_allowed(bsize, false, ss_x, ss_y);
         let (above, left) = self.neighbours(mi_row, mi_col);
+        let (above_palette, left_palette) = self.palette_neighbours(mi_row, mi_col);
 
         // --- decode_mbmi_block: the KEY-frame mode info, every symbol's CDF
         // selected from the frame context by neighbour/block state ---
@@ -1056,6 +1118,9 @@ impl<'c> TileKf<'c> {
         self.st.mb_to_top_edge = -(mi_row * 32);
         self.st.has_above = up_available;
         self.st.has_left = left_available;
+        // av1_allow_palette (blockd.h): allow_screen_content_tools AND the block's
+        // OWN bsize <= MAX_PALETTE_BLOCK_WIDTH/HEIGHT (64x64) AND >= BLOCK_8X8.
+        self.st.allow_palette = av1_allow_palette(cfg.allow_screen_content_tools, bsize);
         // read_intra_segment_id's spatial prediction (av1_get_spatial_seg_pred,
         // step 1): the up-left/up/left cells of the CURRENT frame's segment-id
         // map — always positions already decoded and stamped by this walk.
@@ -1077,6 +1142,20 @@ impl<'c> TileKf<'c> {
             cfg.enable_filter_intra,
             above,
             left,
+            above_palette,
+            left_palette,
+        );
+        // Stamp this block's palette facts over its footprint — matches stamp_mi's
+        // placement, right after the mode-info read (subsequent blocks' above/left
+        // palette-cache lookups must see it).
+        self.stamp_palette(
+            mi_row,
+            mi_col,
+            bsize,
+            PaletteNbrKf {
+                size: info.palette_size,
+                colors: info.palette_colors,
+            },
         );
         // set_segment_id (read_intra_segment_id, decodemv.c): stamp the
         // block's resolved id over its frame-cropped mi footprint. The C
@@ -1089,6 +1168,63 @@ impl<'c> TileKf<'c> {
                 let base = ((mi_row + r) * cfg.mi_cols + mi_col) as usize;
                 self.seg_map[base..base + x_mis as usize].fill(info.segment_id as u8);
             }
+        }
+
+        // av1_visit_palette(..., av1_decode_palette_tokens) (decodeframe.c): the
+        // colour-index MAP tokens — a SEPARATE step from the mode-info flags/size/
+        // colours just read above (needs av1_get_block_dimensions' block-geometry
+        // inputs, which the mode-info driver doesn't carry). Y decodes iff
+        // palette_size[0]>0; chroma (ONE shared map, indexed by BOTH U and V during
+        // reconstruction) iff palette_size[1]>0 — gated on `plane==0 || is_chroma_ref`
+        // like av1_visit_palette itself (a non-chroma-reference block can never reach
+        // here with palette_size[1]>0, since read_mb_modes_kf_fc's uv_dc_pred gate
+        // already requires is_chroma_ref).
+        let pal_mb_to_right_edge = (cfg.mi_cols - MI_SIZE_WIDE[bsize] - mi_col) * 32;
+        let pal_mb_to_bottom_edge = (cfg.mi_rows - MI_SIZE_HIGH[bsize] - mi_row) * 32;
+        let mut color_map_y: Vec<u8> = Vec::new();
+        let mut color_map_uv: Vec<u8> = Vec::new();
+        let mut uv_map_wpx = 0usize;
+        if info.palette_size[0] > 0 {
+            let (wpx, hpx, rows, cols) = get_block_dimensions(
+                bsize,
+                0,
+                ss_x,
+                ss_y,
+                pal_mb_to_right_edge,
+                pal_mb_to_bottom_edge,
+            );
+            // palette_{y,uv}_color_index_cdf[n - PALETTE_MIN_SIZE] (PALETTE_MIN_SIZE=2).
+            let n = info.palette_size[0];
+            color_map_y = decode_color_map_tokens(
+                dec,
+                n,
+                wpx,
+                hpx,
+                rows,
+                cols,
+                &mut cdfs.palette_y_color_index[(n - 2) as usize],
+            );
+        }
+        if info.palette_size[1] > 0 {
+            let (wpx, hpx, rows, cols) = get_block_dimensions(
+                bsize,
+                1,
+                ss_x,
+                ss_y,
+                pal_mb_to_right_edge,
+                pal_mb_to_bottom_edge,
+            );
+            let n = info.palette_size[1];
+            color_map_uv = decode_color_map_tokens(
+                dec,
+                n,
+                wpx,
+                hpx,
+                rows,
+                cols,
+                &mut cdfs.palette_uv_color_index[(n - 2) as usize],
+            );
+            uv_map_wpx = wpx;
         }
 
         // --- parse_decode_block: the block's transform size (read_tx_size) +
@@ -1315,25 +1451,43 @@ impl<'c> TileKf<'c> {
                 let off = ((mi_row * 4) as usize + blk_row * 4) * self.stride
                     + (mi_col * 4) as usize
                     + blk_col * 4;
-                predict_intra_high(
-                    &self.recon,
-                    off,
-                    self.stride,
-                    &mut scratch,
-                    txwpx,
-                    info.y_mode as usize,
-                    info.angle_delta_y * ANGLE_STEP,
-                    info.use_filter_intra != 0,
-                    info.filter_intra_mode as usize,
-                    cfg.disable_edge_filter,
-                    filt_type,
-                    tx_size,
-                    usize::try_from(n_top).expect("n_top_px must be non-negative"),
-                    n_tr,
-                    usize::try_from(n_left).expect("n_left_px must be non-negative"),
-                    n_bl,
-                    cfg.bd,
-                );
+                if info.palette_size[0] > 0 {
+                    // av1_predict_intra_block's palette branch (reconintra.c): pixels
+                    // come directly from the colour-index map + palette LUT — no
+                    // directional/DC prediction math (the surrounding residual
+                    // add below is unaffected: palette replaces PREDICTION only).
+                    // The map covers the whole coding block (BLOCK_SIZE_WIDE[bsize]
+                    // stride); this tx block reads its (blk_col*4, blk_row*4)
+                    // pixel sub-rectangle.
+                    let map_w = BLOCK_SIZE_WIDE[bsize] as usize;
+                    let (x0, y0) = (blk_col * 4, blk_row * 4);
+                    for r in 0..txhpx {
+                        for c in 0..txwpx {
+                            let idx = color_map_y[(y0 + r) * map_w + x0 + c] as usize;
+                            scratch[r * txwpx + c] = info.palette_colors[idx];
+                        }
+                    }
+                } else {
+                    predict_intra_high(
+                        &self.recon,
+                        off,
+                        self.stride,
+                        &mut scratch,
+                        txwpx,
+                        info.y_mode as usize,
+                        info.angle_delta_y * ANGLE_STEP,
+                        info.use_filter_intra != 0,
+                        info.filter_intra_mode as usize,
+                        cfg.disable_edge_filter,
+                        filt_type,
+                        tx_size,
+                        usize::try_from(n_top).expect("n_top_px must be non-negative"),
+                        n_tr,
+                        usize::try_from(n_left).expect("n_left_px must be non-negative"),
+                        n_bl,
+                        cfg.bd,
+                    );
+                }
                 for r in 0..txhpx {
                     let d = off + r * self.stride;
                     self.recon[d..d + txwpx].copy_from_slice(&scratch[r * txwpx..(r + 1) * txwpx]);
@@ -1516,7 +1670,23 @@ impl<'c> TileKf<'c> {
                             false,
                         );
                         let off_uv = uv_org + (blk_row * 4) * self.stride_uv + blk_col * 4;
-                        {
+                        if info.palette_size[1] > 0 {
+                            // av1_predict_intra_block's palette branch, chroma: ONE
+                            // shared colour-index map for U and V (uv_map_wpx-strided,
+                            // from av1_get_block_dimensions(bsize, plane=1, ...)),
+                            // looked up against palette_colors[plane * PALETTE_MAX_SIZE]
+                            // (plane 1 = U, plane 2 = V — the palette_colors offset
+                            // matches this loop's own `plane` var directly).
+                            let (x0, y0) = (blk_col * 4, blk_row * 4);
+                            let pal_base = plane * 8;
+                            for r in 0..uv_txhpx {
+                                for c in 0..uv_txwpx {
+                                    let idx = color_map_uv[(y0 + r) * uv_map_wpx + x0 + c] as usize;
+                                    scratch_uv[r * uv_txwpx + c] =
+                                        info.palette_colors[pal_base + idx];
+                                }
+                            }
+                        } else {
                             let plane_recon = if plane == 1 {
                                 &self.recon_u
                             } else {

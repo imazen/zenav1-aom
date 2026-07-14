@@ -1100,3 +1100,325 @@ fn garbage_input_errors_cleanly() {
     assert!(decode_frame_obus(&[0u8; 4]).is_err());
     assert!(decode_frame_obus(&[]).is_err());
 }
+
+// ---- PALETTE gate: --enable-palette=1 --enable-intrabc=0 streams ----
+//
+// gen_plane above is explicitly photographic (smooth gradients + noise) to
+// keep the encoder's screen-content heuristics from EVER picking palette in
+// the other arms — this section is the deliberate opposite: synthetic
+// few-colour, sharp-edged content (the kind palette actually targets:
+// rendered UI, icons, text) so `--enable-palette=1` genuinely exercises the
+// palette coding path instead of silently coding everything through ordinary
+// intra prediction. `--enable-intrabc` stays 0 throughout (out of scope —
+// frame.rs still hard-rejects `p.allow_intrabc`).
+
+/// Screen-content-like synthetic content: `TILE`-pixel super-tiles, each a
+/// simple stripe pattern over a small (2..=5) local colour set. The local set
+/// is MOSTLY drawn from one shared per-plane global set (3..=6 colours) so
+/// neighbouring tiles often share exact colour values — this is what
+/// exercises the palette neighbour CACHE (get_palette_cache's true-positive
+/// path), not just palette selection in isolation.
+fn gen_plane_screen_content(w: usize, h: usize, bd: i32, seed: u64) -> Vec<u16> {
+    let mut rng = Rng(seed | 1);
+    let maxv = (1i64 << bd) - 1;
+    let mut p = vec![0u16; w * h];
+    const TILE: usize = 24;
+    let global_n = 3 + (rng.next() % 4) as usize; // 3..=6
+    let global_colors: Vec<i64> = (0..global_n)
+        .map(|_| (rng.next() % (maxv as u64 + 1)) as i64)
+        .collect();
+    let mut ty = 0usize;
+    while ty < h {
+        let mut tx = 0usize;
+        while tx < w {
+            let n_local = 2 + (rng.next() % 4) as usize; // 2..=5
+            let local: Vec<i64> = (0..n_local)
+                .map(|_| {
+                    if !rng.next().is_multiple_of(4) {
+                        global_colors[(rng.next() as usize) % global_colors.len()]
+                    } else {
+                        (rng.next() % (maxv as u64 + 1)) as i64
+                    }
+                })
+                .collect();
+            let period = 3 + (rng.next() % 4) as usize;
+            for y in ty..(ty + TILE).min(h) {
+                for x in tx..(tx + TILE).min(w) {
+                    let stripe = ((x + y) / period) % local.len();
+                    p[y * w + x] = local[stripe] as u16;
+                }
+            }
+            tx += TILE;
+        }
+        ty += TILE;
+    }
+    p
+}
+
+struct PalCfg {
+    w: usize,
+    h: usize,
+    bd: i32,
+    mono: bool,
+    ss: (i32, i32),
+    cq: i32,
+    usage: u32,
+}
+
+#[test]
+fn palette_streams_decode_byte_identical_to_c() {
+    let cfgs = [
+        // usage=2 (ALLINTRA) is the PRIMARY product path (zenavif stills) —
+        // swept across the cq range including low-q (screen-content AVIF at
+        // aggressive settings is exactly where palette earns its keep).
+        PalCfg {
+            w: 128,
+            h: 128,
+            bd: 8,
+            mono: false,
+            ss: (1, 1),
+            cq: 12,
+            usage: 2,
+        },
+        PalCfg {
+            w: 128,
+            h: 128,
+            bd: 8,
+            mono: false,
+            ss: (1, 1),
+            cq: 28,
+            usage: 2,
+        },
+        PalCfg {
+            w: 128,
+            h: 128,
+            bd: 8,
+            mono: false,
+            ss: (1, 1),
+            cq: 44,
+            usage: 2,
+        },
+        PalCfg {
+            w: 128,
+            h: 128,
+            bd: 8,
+            mono: false,
+            ss: (1, 1),
+            cq: 60,
+            usage: 2,
+        },
+        PalCfg {
+            w: 128,
+            h: 128,
+            bd: 8,
+            mono: false,
+            ss: (1, 1),
+            cq: 63,
+            usage: 2,
+        },
+        PalCfg {
+            w: 128,
+            h: 128,
+            bd: 10,
+            mono: false,
+            ss: (1, 1),
+            cq: 30,
+            usage: 2,
+        },
+        PalCfg {
+            w: 128,
+            h: 128,
+            bd: 12,
+            mono: false,
+            ss: (1, 1),
+            cq: 30,
+            usage: 2,
+        },
+        PalCfg {
+            w: 96,
+            h: 96,
+            bd: 8,
+            mono: false,
+            ss: (0, 0),
+            cq: 36,
+            usage: 2,
+        }, // 4:4:4
+        // NOTE: 4:2:2 is deliberately excluded here — nonzero-CHROMA-deblock
+        // 4:2:2 streams are ALREADY a documented, unrelated envelope
+        // rejection (deblocked_422_chroma_is_rejected_not_misdecoded above;
+        // libaom's 4:2:2 chroma path itself reads out of bounds). Palette's
+        // 4:4:4 coverage is the arm just above; 4:2:0 dominates the rest.
+        PalCfg {
+            w: 96,
+            h: 96,
+            bd: 8,
+            mono: false,
+            ss: (1, 1),
+            cq: 24,
+            usage: 2,
+        },
+        PalCfg {
+            w: 128,
+            h: 128,
+            bd: 8,
+            mono: true,
+            ss: (1, 1),
+            cq: 36,
+            usage: 2,
+        },
+        // non-multiple-of-SB / non-multiple-of-8: exercises the palette
+        // colour-map's frame-edge tail-copy (rows/cols < plane_width/height).
+        PalCfg {
+            w: 100,
+            h: 84,
+            bd: 8,
+            mono: false,
+            ss: (1, 1),
+            cq: 30,
+            usage: 2,
+        },
+        PalCfg {
+            w: 100,
+            h: 84,
+            bd: 8,
+            mono: false,
+            ss: (1, 1),
+            cq: 60,
+            usage: 2,
+        },
+        // usage=0 (GOOD) retained per the sweep discipline.
+        PalCfg {
+            w: 128,
+            h: 128,
+            bd: 8,
+            mono: false,
+            ss: (1, 1),
+            cq: 20,
+            usage: 0,
+        },
+        PalCfg {
+            w: 128,
+            h: 128,
+            bd: 8,
+            mono: false,
+            ss: (1, 1),
+            cq: 50,
+            usage: 0,
+        },
+        PalCfg {
+            w: 128,
+            h: 128,
+            bd: 8,
+            mono: false,
+            ss: (1, 1),
+            cq: 63,
+            usage: 0,
+        },
+    ];
+    let mut total_arms = 0usize;
+    let mut palette_arms = 0usize;
+    let mut allintra_arms = 0usize;
+    let mut allintra_palette_arms = 0usize;
+    for c in &cfgs {
+        total_arms += 1;
+        if c.usage == 2 {
+            allintra_arms += 1;
+        }
+        let (cw, ch) = if c.mono {
+            (0, 0)
+        } else {
+            (
+                (c.w + c.ss.0 as usize) >> c.ss.0,
+                (c.h + c.ss.1 as usize) >> c.ss.1,
+            )
+        };
+        let seed = ((c.w as u64) << 32)
+            ^ ((c.h as u64) << 24)
+            ^ ((c.cq as u64) << 12)
+            ^ ((c.bd as u64) << 4)
+            ^ c.usage as u64;
+        let y = gen_plane_screen_content(c.w, c.h, c.bd, seed ^ 0x1111);
+        let (u, v) = if c.mono {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                gen_plane_screen_content(cw, ch, c.bd, seed ^ 0x2222),
+                gen_plane_screen_content(cw, ch, c.bd, seed ^ 0x3333),
+            )
+        };
+        let bytes = c::ref_encode_av1_kf_screen_content(
+            &y, &u, &v, c.w, c.h, c.bd, c.mono, c.ss.0, c.ss.1, c.cq, /* cpu_used */ 0,
+            /* enable_cdef */ true, /* enable_restoration */ true, c.usage,
+            /* aq_mode */ 0, /* two_pass */ false, /* enable_palette */ true,
+            /* enable_intrabc */ false,
+        );
+
+        // Byte-identity: our decode vs the REAL C decoder, same bytes.
+        let rust = decode_frame_obus(&bytes).unwrap_or_else(|e| {
+            panic!(
+                "decode_frame_obus rejected palette stream {}x{} bd{} mono={} ss={:?} cq={} usage={}: {e}",
+                c.w, c.h, c.bd, c.mono, c.ss, c.cq, c.usage
+            )
+        });
+        let cref = c::ref_decode_av1_kf(&bytes, c.w, c.h);
+        assert_eq!(
+            rust.y, cref.y,
+            "LUMA mismatch palette {}x{} bd{} cq={} usage={}",
+            c.w, c.h, c.bd, c.cq, c.usage
+        );
+        if !c.mono {
+            assert_eq!(
+                rust.u, cref.u,
+                "U mismatch palette {}x{} bd{} cq={} usage={}",
+                c.w, c.h, c.bd, c.cq, c.usage
+            );
+            assert_eq!(
+                rust.v, cref.v,
+                "V mismatch palette {}x{} bd{} cq={} usage={}",
+                c.w, c.h, c.bd, c.cq, c.usage
+            );
+        }
+
+        // Palette-usage introspection: a second decode via the prefilter entry
+        // point, which exposes per-block DecodedBlockKf.info.palette_size (not
+        // part of FrameDecode's public surface).
+        let (t, _tcfg, _header) = decode_frame_obus_prefilter(&bytes).unwrap();
+        let pal_blocks = t
+            .blocks
+            .iter()
+            .filter(|b| b.info.palette_size[0] > 0 || b.info.palette_size[1] > 0)
+            .count();
+        println!(
+            "palette arm {}x{} bd{} mono={} ss={:?} cq={} usage={}: {} bytes, {} blocks, {} palette blocks",
+            c.w,
+            c.h,
+            c.bd,
+            c.mono,
+            c.ss,
+            c.cq,
+            c.usage,
+            bytes.len(),
+            t.blocks.len(),
+            pal_blocks
+        );
+        if pal_blocks > 0 {
+            palette_arms += 1;
+            if c.usage == 2 {
+                allintra_palette_arms += 1;
+            }
+        }
+    }
+    println!(
+        "palette gate summary: {total_arms} total arms ({allintra_arms} ALL_INTRA), \
+         {palette_arms} carrying >=1 palette block ({allintra_palette_arms} of those ALL_INTRA)"
+    );
+    assert!(
+        palette_arms > 0,
+        "NO arm actually exercised palette — screen-content generator or \
+         --enable-palette=1 wiring is broken"
+    );
+    assert!(
+        allintra_palette_arms > 0,
+        "NO ALL_INTRA arm exercised palette (usage=2 is the primary zenavif path)"
+    );
+}

@@ -363,7 +363,8 @@ static long encode_kf_pass(aom_codec_iface_t *iface, aom_codec_enc_cfg_t *cfg,
                            int bd, int cq_level, int cpu_used, int enable_cdef,
                            int enable_restoration, int aq_mode,
                            int sb_size_128, int tile_columns_log2,
-                           int tile_rows_log2, aom_image_t *img,
+                           int tile_rows_log2, int enable_palette,
+                           int enable_intrabc, aom_image_t *img,
                            int collect_stats, uint8_t *out, size_t out_cap) {
   aom_codec_ctx_t ctx;
   aom_codec_flags_t flags = bd > 8 ? AOM_CODEC_USE_HIGHBITDEPTH : 0;
@@ -396,8 +397,8 @@ static long encode_kf_pass(aom_codec_iface_t *iface, aom_codec_enc_cfg_t *cfg,
    * encode_without_recode (speed_features.c "No recode for 1 pass") and
    * never runs the aq setup, so segmented KEY streams REQUIRE two_pass. */
   TRYCTRL(AV1E_SET_AQ_MODE, aq_mode);
-  TRYCTRL(AV1E_SET_ENABLE_PALETTE, 0);
-  TRYCTRL(AV1E_SET_ENABLE_INTRABC, 0);
+  TRYCTRL(AV1E_SET_ENABLE_PALETTE, enable_palette);
+  TRYCTRL(AV1E_SET_ENABLE_INTRABC, enable_intrabc);
 #undef TRYCTRL
 
   long total = 0;
@@ -435,16 +436,17 @@ static long encode_kf_pass(aom_codec_iface_t *iface, aom_codec_enc_cfg_t *cfg,
 }
 
 /* Shared implementation of shim_encode_av1_kf / shim_encode_av1_kf_sb128 /
- * shim_encode_av1_kf_tiles (see their doc comments below) — the REAL
- * aom_codec_av1_cx public API, the same encoder+path the aomenc CLI drives,
- * with the CLI-flag-equivalent controls: --cpu-used --end-usage=q --cq-level
- * --enable-cdef --enable-restoration --sb-size={64,128} --tile-columns=<log2>
- * --tile-rows=<log2> --deltaq-mode=0 --aq-mode=<aq_mode> --enable-palette=0
- * --enable-intrabc=0 --passes=<1|2>. two_pass runs the full first-pass-stats
- * + last-pass sequence (rc_twopass_stats_in) — required for aq_mode 1/2 to
- * actually segment (see encode_kf_pass). Planes are u16 at every depth (bd=8
- * downshifts into the 8-bit image). Returns the bitstream length, or a
- * negative error code. */
+ * shim_encode_av1_kf_tiles / shim_encode_av1_kf_screen_content (see their doc
+ * comments below) — the REAL aom_codec_av1_cx public API, the same
+ * encoder+path the aomenc CLI drives, with the CLI-flag-equivalent controls:
+ * --cpu-used --end-usage=q --cq-level --enable-cdef --enable-restoration
+ * --sb-size={64,128} --tile-columns=<log2> --tile-rows=<log2>
+ * --deltaq-mode=0 --aq-mode=<aq_mode> --enable-palette=<enable_palette>
+ * --enable-intrabc=<enable_intrabc> --passes=<1|2>. two_pass runs the full
+ * first-pass-stats + last-pass sequence (rc_twopass_stats_in) — required for
+ * aq_mode 1/2 to actually segment (see encode_kf_pass). Planes are u16 at
+ * every depth (bd=8 downshifts into the 8-bit image). Returns the bitstream
+ * length, or a negative error code. */
 static long encode_av1_kf_impl(const uint16_t *y, const uint16_t *u,
                                const uint16_t *v, int w, int h, int bd,
                                int mono, int ss_x, int ss_y, int cq_level,
@@ -452,6 +454,7 @@ static long encode_av1_kf_impl(const uint16_t *y, const uint16_t *u,
                                int enable_restoration, int usage, int aq_mode,
                                int two_pass, int sb_size_128,
                                int tile_columns_log2, int tile_rows_log2,
+                               int enable_palette, int enable_intrabc,
                                uint8_t *out, size_t out_cap) {
   aom_codec_iface_t *iface = aom_codec_av1_cx();
   aom_codec_enc_cfg_t cfg;
@@ -528,7 +531,8 @@ static long encode_av1_kf_impl(const uint16_t *y, const uint16_t *u,
     long stats_len = encode_kf_pass(iface, &cfg, bd, cq_level, cpu_used,
                                     enable_cdef, enable_restoration, aq_mode,
                                     sb_size_128, tile_columns_log2,
-                                    tile_rows_log2, img, 1, stats, STATS_CAP);
+                                    tile_rows_log2, enable_palette,
+                                    enable_intrabc, img, 1, stats, STATS_CAP);
     if (stats_len <= 0) {
       free(stats);
       aom_img_free(img);
@@ -539,14 +543,14 @@ static long encode_av1_kf_impl(const uint16_t *y, const uint16_t *u,
     cfg.rc_twopass_stats_in.sz = (size_t)stats_len;
     total = encode_kf_pass(iface, &cfg, bd, cq_level, cpu_used, enable_cdef,
                            enable_restoration, aq_mode, sb_size_128,
-                           tile_columns_log2, tile_rows_log2, img, 0, out,
-                           out_cap);
+                           tile_columns_log2, tile_rows_log2, enable_palette,
+                           enable_intrabc, img, 0, out, out_cap);
     free(stats);
   } else {
     total = encode_kf_pass(iface, &cfg, bd, cq_level, cpu_used, enable_cdef,
                            enable_restoration, aq_mode, sb_size_128,
-                           tile_columns_log2, tile_rows_log2, img, 0, out,
-                           out_cap);
+                           tile_columns_log2, tile_rows_log2, enable_palette,
+                           enable_intrabc, img, 0, out, out_cap);
   }
   aom_img_free(img);
   return total;
@@ -566,7 +570,8 @@ long shim_encode_av1_kf(const uint16_t *y, const uint16_t *u,
                             cpu_used, enable_cdef, enable_restoration, usage,
                             aq_mode, two_pass, /*sb_size_128=*/0,
                             /*tile_columns_log2=*/0, /*tile_rows_log2=*/0,
-                            out, out_cap);
+                            /*enable_palette=*/0, /*enable_intrabc=*/0, out,
+                            out_cap);
 }
 
 /* SB128 variant of shim_encode_av1_kf: same controls plus explicit
@@ -585,7 +590,8 @@ long shim_encode_av1_kf_sb128(const uint16_t *y, const uint16_t *u,
                             cpu_used, enable_cdef, enable_restoration, usage,
                             aq_mode, two_pass, sb_size_128,
                             /*tile_columns_log2=*/0, /*tile_rows_log2=*/0,
-                            out, out_cap);
+                            /*enable_palette=*/0, /*enable_intrabc=*/0, out,
+                            out_cap);
 }
 
 /* Multi-tile variant of shim_encode_av1_kf: same controls plus explicit
@@ -606,7 +612,31 @@ long shim_encode_av1_kf_tiles(const uint16_t *y, const uint16_t *u,
   return encode_av1_kf_impl(y, u, v, w, h, bd, mono, ss_x, ss_y, cq_level,
                             cpu_used, enable_cdef, enable_restoration, usage,
                             aq_mode, two_pass, sb_size_128, tile_columns_log2,
-                            tile_rows_log2, out, out_cap);
+                            tile_rows_log2, /*enable_palette=*/0,
+                            /*enable_intrabc=*/0, out, out_cap);
+}
+
+/* Screen-content variant of shim_encode_av1_kf: same controls as
+ * shim_encode_av1_kf (--sb-size=64, single tile) plus explicit
+ * enable_palette/enable_intrabc (AV1E_SET_ENABLE_PALETTE /
+ * AV1E_SET_ENABLE_INTRABC — 0/1). Decoder-track palette-gate addition,
+ * append-only (shim_encode_av1_kf / _sb128 / _tiles above untouched, still
+ * hardcoding both off). See encode_av1_kf_impl's doc comment for the full
+ * control list. */
+long shim_encode_av1_kf_screen_content(const uint16_t *y, const uint16_t *u,
+                                       const uint16_t *v, int w, int h,
+                                       int bd, int mono, int ss_x, int ss_y,
+                                       int cq_level, int cpu_used,
+                                       int enable_cdef,
+                                       int enable_restoration, int usage,
+                                       int aq_mode, int two_pass,
+                                       int enable_palette, int enable_intrabc,
+                                       uint8_t *out, size_t out_cap) {
+  return encode_av1_kf_impl(y, u, v, w, h, bd, mono, ss_x, ss_y, cq_level,
+                            cpu_used, enable_cdef, enable_restoration, usage,
+                            aq_mode, two_pass, /*sb_size_128=*/0,
+                            /*tile_columns_log2=*/0, /*tile_rows_log2=*/0,
+                            enable_palette, enable_intrabc, out, out_cap);
 }
 
 /* Decode AV1 bytes through the REAL aom_codec_av1_dx public API and copy the

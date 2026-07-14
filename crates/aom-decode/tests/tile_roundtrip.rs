@@ -738,6 +738,7 @@ impl<'a> Mirror<'a> {
             cfl_joint_sign: js,
             angle_delta_uv: angle_uv,
             palette_size: [0, 0],
+            palette_colors: [0u16; 24],
             use_filter_intra: use_fi,
             filter_intra_mode: fi_mode,
         };
@@ -773,6 +774,8 @@ impl<'a> Mirror<'a> {
             cfg.enable_filter_intra,
             above,
             left,
+            None,
+            None,
         );
         // parse_decode_block counterpart: with delta-q present, refresh the
         // live per-plane dequant rows from the (possibly just advanced)
@@ -1737,6 +1740,9 @@ fn run_roundtrip(case: &SweepCase, seed: u64, cov: &mut Coverage) {
         // hardcoded to BLOCK_64X64/mib_size=16 — see the module doc. SB128
         // coverage for the REAL encoder path lives in real_bitstream.rs.
         sb_size_128: false,
+        // This mirror encoder doesn't choose palette colours/maps (no RDO
+        // search) — palette coverage is real_bitstream.rs's REAL-encoder gate.
+        allow_screen_content_tools: false,
     };
     let aligned_cols = (cfg.mi_cols as usize).div_ceil(16) * 16;
     let aligned_rows = (cfg.mi_rows as usize).div_ceil(16) * 16;

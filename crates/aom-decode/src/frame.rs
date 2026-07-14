@@ -24,8 +24,20 @@
 //!   Large-scale tile mode (`enable_large_scale_tile`) is not modelled —
 //!   structurally unreachable here since nothing in this parse path signals
 //!   or sets `large_scale`.
-//! - screen-content tools OFF (`allow_screen_content_tools` would put
-//!   palette/intrabc flags in the block layer).
+//! - PALETTE mode IS in the envelope (`allow_screen_content_tools` ON):
+//!   per-block palette flags/sizes (`av1_allow_palette` — DC_PRED luma /
+//!   UV_DC_PRED chroma, bsize 8x8..64x64), the neighbour colour-cache-aware
+//!   colour coding (Y/U cache-bits + ascending delta, V raw/delta;
+//!   [`aom_entropy::partition::read_palette_colors_plane`] /
+//!   [`aom_entropy::partition::get_palette_cache`]), and the colour-index MAP
+//!   (wavefront-order tokens on [`aom_entropy::partition::get_palette_color_index_context`],
+//!   [`aom_entropy::partition::decode_color_map_tokens`]) — reconstruction
+//!   bypasses ordinary intra prediction for a palette plane's tx blocks (the
+//!   map indexes the palette directly; residual add is unaffected). Intra
+//!   BLOCK COPY — the other screen-content tool `allow_screen_content_tools`
+//!   gates — stays OUT of the envelope: `p.allow_intrabc` (only ever true
+//!   when screen-content-tools is also on) is still a hard reject, so this is
+//!   a clean palette-only envelope.
 //! - film grain disabled at the sequence level; superres not scaled; no
 //!   frame-size override (frame == sequence max dims).
 //! - loop restoration IS applied ([`aom_restore::frame`], C-diffed against
@@ -406,9 +418,14 @@ fn parse_frame_header(
     if p.prefix.disable_cdf_update {
         return Err("disable_cdf_update (driver always adapts)".into());
     }
-    if p.prefix.allow_screen_content_tools {
-        return Err("allow_screen_content_tools (palette/intrabc signaling)".into());
-    }
+    // `allow_screen_content_tools` (PALETTE mode) is in the envelope; intra block
+    // copy — the OTHER screen-content tool it gates — stays rejected below via
+    // `p.allow_intrabc` (the per-frame syntax flag; the spec only ever reads it
+    // when `allow_screen_content_tools` holds — see `read_uncompressed_header`,
+    // `p.allow_intrabc = p.prefix.allow_screen_content_tools && !cfg.superres_scaled
+    // && rb.read_bit() != 0`). That single check is a clean palette-only envelope:
+    // it can never be true unless screen-content-tools is also on, so accepting
+    // palette streams here does not admit any intrabc stream.
     if p.frame_size.superres_upscaled_width != s.max_frame_width
         || p.frame_size.superres_upscaled_height != s.max_frame_height
     {
@@ -707,6 +724,7 @@ fn decode_tile_payload(
         },
         seg: bridge_segmentation(&p.segmentation),
         sb_size_128: s.sb_size_128,
+        allow_screen_content_tools: p.prefix.allow_screen_content_tools,
     };
     let tiles = split_tiles(tile_data, &p.tile_info, p.tile_size_bytes)?;
     let t = decode_frame_tiles_kf(&tiles, &cfg, 0);
