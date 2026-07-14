@@ -61,9 +61,9 @@ fn codec_api_encode_decode_roundtrip_smoke() {
 #[test]
 fn dec_facades_answer_on_domain() {
     // Spot vectors; the exhaustive diffs live in aom-entropy / aom-decode.
-    assert_eq!(ref_is_chroma_reference(0, 0, 0 /*4x4*/, 1, 1), false);
-    assert_eq!(ref_is_chroma_reference(1, 1, 0 /*4x4*/, 1, 1), true);
-    assert_eq!(ref_is_chroma_reference(0, 0, 3 /*8x8*/, 1, 1), true);
+    assert!(!ref_is_chroma_reference(0, 0, 0 /*4x4*/, 1, 1));
+    assert!(ref_is_chroma_reference(1, 1, 0 /*4x4*/, 1, 1));
+    assert!(ref_is_chroma_reference(0, 0, 3 /*8x8*/, 1, 1));
     assert_eq!(ref_scale_chroma_bsize(0 /*4x4*/, 1, 1), 3 /*8x8*/);
     assert_eq!(ref_get_max_uv_txsize(3 /*8x8*/, 1, 1), 0 /*TX_4X4*/);
     // DC everywhere -> DCT_DCT; H_PRED (uv_mode 2) -> V/H flip rule.
