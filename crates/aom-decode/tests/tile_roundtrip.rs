@@ -61,7 +61,6 @@ use aom_decode::{
     uv_tx_type,
 };
 use aom_encode::{QuantKind, QuantParams, xform_quant};
-use aom_quant::{SEG_LVL_ALT_Q, SEG_LVL_SKIP, Segmentation, av1_get_qindex};
 use aom_entropy::dec::OdEcDec;
 use aom_entropy::enc::OdEcEnc;
 use aom_entropy::partition::{
@@ -74,6 +73,7 @@ use aom_entropy::partition::{
 };
 use aom_intra::cfl::{CflCtx, cfl_predict_block, cfl_store_tx};
 use aom_intra::predict_intra_high;
+use aom_quant::{SEG_LVL_ALT_Q, SEG_LVL_SKIP, Segmentation, av1_get_qindex};
 use aom_txb::{CDF_ARENA_LEN, ext_tx_set_type, get_txb_ctx, write_coeffs_txb_full};
 
 // ---- deterministic rng + CDF fixtures (repo pattern) -----------------------------
