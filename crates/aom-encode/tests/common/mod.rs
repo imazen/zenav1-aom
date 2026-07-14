@@ -10,13 +10,21 @@ use aom_encode::tx_search::TX_SIZE_2D_TBL;
 use aom_sys_ref as c;
 use aom_txb::{scan, txb_high, txb_wide};
 
-pub const TX_W: [usize; 19] = [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
-pub const TX_H: [usize; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
-pub const BLK_W: [usize; 22] =
-    [4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64];
-pub const BLK_H: [usize; 22] =
-    [4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16];
-pub const VAR_IDX: [usize; 19] = [0, 4, 9, 14, 18, 1, 3, 5, 8, 10, 13, 15, 17, 2, 7, 6, 12, 11, 16];
+pub const TX_W: [usize; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
+pub const TX_H: [usize; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
+pub const BLK_W: [usize; 22] = [
+    4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
+];
+pub const BLK_H: [usize; 22] = [
+    4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16,
+];
+pub const VAR_IDX: [usize; 19] = [
+    0, 4, 9, 14, 18, 1, 3, 5, 8, 10, 13, 15, 17, 2, 7, 6, 12, 11, 16,
+];
 pub struct Rng(pub u64);
 impl Rng {
     pub fn next(&mut self) -> u64 {
@@ -93,15 +101,38 @@ pub fn c_search_tx_type(
     // plane 0: the chroma trellis-table select is irrelevant (luma is 17 in
     // both tables).
     c_search_tx_type_p(
-        0, 0, residual, pred, src, src_off, src_stride, tx_size, mode, use_fi, fi_mode,
-        lossless, reduced, bd, plane_rows_c, dequant, t_above, t_left, bsize, rdmult,
-        ref_best_rd, coeff_tbls, ttc_tables, true,
+        0,
+        0,
+        residual,
+        pred,
+        src,
+        src_off,
+        src_stride,
+        tx_size,
+        mode,
+        use_fi,
+        fi_mode,
+        lossless,
+        reduced,
+        bd,
+        plane_rows_c,
+        dequant,
+        t_above,
+        t_left,
+        bsize,
+        rdmult,
+        ref_best_rd,
+        coeff_tbls,
+        ttc_tables,
+        true,
     )
 }
 
 /// BLOCK_SIZE with the same dims as a TX_SIZE.
 pub fn tx_to_bsize(tx_size: usize) -> usize {
-    const T: [usize; 19] = [0, 3, 6, 9, 12, 1, 2, 4, 5, 7, 8, 10, 11, 16, 17, 18, 19, 20, 21];
+    const T: [usize; 19] = [
+        0, 3, 6, 9, 12, 1, 2, 4, 5, 7, 8, 10, 11, 16, 17, 18, 19, 20, 21,
+    ];
     T[tx_size]
 }
 /// C-side `uniform_txfm_yrd` for one size: the full walk + intra assembly.
@@ -110,7 +141,7 @@ pub fn tx_to_bsize(tx_size: usize) -> usize {
 pub fn c_uniform_txfm_yrd(
     bsize: usize,
     tx_size: usize,
-    geometry: (i32, i32, usize, usize, usize),  // mi_row, mi_col, ref_off, src_off, stride
+    geometry: (i32, i32, usize, usize, usize), // mi_row, mi_col, ref_off, src_off, stride
     recon_c: &mut [u16],
     src: &[u16],
     mode: usize,
@@ -136,8 +167,13 @@ pub fn c_uniform_txfm_yrd(
     let (mi_row, mi_col, ref_off, src_off, stride) = geometry;
     let (bw, bh) = (BLK_W[bsize], BLK_H[bsize]);
     // tx_mode_is_select = !lossless (select_tx_mode: lossless => ONLY_4X4).
-    let tx_size_rate =
-        c::ref_tx_size_cost(ts_flat, !lossless, bsize as i32, tx_size as i32, tx_size_ctx as i32);
+    let tx_size_rate = c::ref_tx_size_cost(
+        ts_flat,
+        !lossless,
+        bsize as i32,
+        tx_size as i32,
+        tx_size_ctx as i32,
+    );
     let no_skip_rate = skip_costs[skip_ctx][0];
     let no_this_rd = c::ref_rdcost(rdmult, no_skip_rate + tx_size_rate, 0);
     if no_this_rd > ref_best_rd {
@@ -159,14 +195,47 @@ pub fn c_uniform_txfm_yrd(
                 break 'walk;
             }
             let (n_top, n_tr, n_left, n_bl) = c::ref_intra_avail(
-                12, bsize, mi_row, mi_col, true, true, 1 << 16, 1 << 16, 0, tx_size, 0, 0,
-                blk_row as i32, blk_col as i32, bw as i32, bh as i32, 512, 512, mode,
-                angle_delta * 3, use_fi,
+                12,
+                bsize,
+                mi_row,
+                mi_col,
+                true,
+                true,
+                1 << 16,
+                1 << 16,
+                0,
+                tx_size,
+                0,
+                0,
+                blk_row as i32,
+                blk_col as i32,
+                bw as i32,
+                bh as i32,
+                512,
+                512,
+                mode,
+                angle_delta * 3,
+                use_fi,
             );
             let txb_off = ref_off + (blk_row * stride + blk_col) * 4;
             let pred = c::ref_hbd_predict_intra(
-                recon_c, txb_off, stride, mode, angle_delta * 3, use_fi, fi_mode, false, 0,
-                tx_size, txw, txh, n_top, n_tr, n_left, n_bl, bd as i32,
+                recon_c,
+                txb_off,
+                stride,
+                mode,
+                angle_delta * 3,
+                use_fi,
+                fi_mode,
+                false,
+                0,
+                tx_size,
+                txw,
+                txh,
+                n_top,
+                n_tr,
+                n_left,
+                n_bl,
+                bd as i32,
             );
             for r in 0..txh {
                 recon_c[txb_off + r * stride..txb_off + r * stride + txw]
@@ -175,12 +244,36 @@ pub fn c_uniform_txfm_yrd(
             let src_txb_off = src_off + (blk_row * stride + blk_col) * 4;
             let mut residual = vec![0i16; txw * txh];
             c::ref_highbd_subtract_block(
-                txh, txw, &mut residual, txw, &src[src_txb_off..], stride, &pred, txw,
+                txh,
+                txw,
+                &mut residual,
+                txw,
+                &src[src_txb_off..],
+                stride,
+                &pred,
+                txw,
             );
             let (wtype, weob, wrate, wdist, wsse, wctx, wdqc, _wrd) = c_search_tx_type(
-                &residual, &pred, src, src_txb_off, stride, tx_size, mode, use_fi, fi_mode,
-                lossless, reduced, bd, plane_rows_c, dequant, &t_above[blk_col..],
-                &t_left[blk_row..], bsize, rdmult, ref_best_rd - current_rd, coeff_tbls,
+                &residual,
+                &pred,
+                src,
+                src_txb_off,
+                stride,
+                tx_size,
+                mode,
+                use_fi,
+                fi_mode,
+                lossless,
+                reduced,
+                bd,
+                plane_rows_c,
+                dequant,
+                &t_above[blk_col..],
+                &t_left[blk_row..],
+                bsize,
+                rdmult,
+                ref_best_rd - current_rd,
+                coeff_tbls,
                 ttc_tables,
             );
             if weob > 0 {
@@ -212,7 +305,10 @@ pub fn c_uniform_txfm_yrd(
     }
     let rate_total = rate_sum.min(i64::from(i32::MAX)) as i32;
     let rd = c::ref_rdcost(rdmult, rate_total + no_skip_rate + tx_size_rate, dist_sum);
-    (rd, Some((rate_total + tx_size_rate, dist_sum, sse_sum, winners)))
+    (
+        rd,
+        Some((rate_total + tx_size_rate, dist_sum, sse_sum, winners)),
+    )
 }
 /// `max_txsize_lookup[BLOCK_SIZES_ALL]` (common_data.h).
 pub const MAX_TXSIZE_LOOKUP: [usize; 22] = [
@@ -344,20 +440,43 @@ pub fn c_pick_uniform_tx_size_type_yrd(
     tx_size_ctx: usize,
     source_variance: u32,
 ) -> Option<(usize, i64, i32, i64, i64, Vec<(usize, u16, u8)>)> {
-    const MI_W: [usize; 22] =
-        [1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16];
-    const MI_H: [usize; 22] =
-        [1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4];
-    const MAX_TXSIZE_RECT_LOOKUP: [usize; 22] =
-        [0, 5, 6, 1, 7, 8, 2, 9, 10, 3, 11, 12, 4, 4, 4, 4, 13, 14, 15, 16, 17, 18];
-    const SUB_TX_SIZE_MAP: [usize; 19] =
-        [0, 0, 1, 2, 3, 0, 0, 1, 1, 2, 2, 3, 3, 5, 6, 7, 8, 9, 10];
+    const MI_W: [usize; 22] = [
+        1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16,
+    ];
+    const MI_H: [usize; 22] = [
+        1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4,
+    ];
+    const MAX_TXSIZE_RECT_LOOKUP: [usize; 22] = [
+        0, 5, 6, 1, 7, 8, 2, 9, 10, 3, 11, 12, 4, 4, 4, 4, 13, 14, 15, 16, 17, 18,
+    ];
+    const SUB_TX_SIZE_MAP: [usize; 19] = [0, 0, 1, 2, 3, 0, 0, 1, 1, 2, 2, 3, 3, 5, 6, 7, 8, 9, 10];
 
     if lossless {
         let (rd, res) = c_uniform_txfm_yrd(
-            bsize, 0, geometry, recon_c, src, mode, angle_delta, use_fi, fi_mode, lossless,
-            reduced, bd, plane_rows_c, dequant, above_ctx, left_ctx, rdmult, ref_best_rd,
-            coeff_tbls, ttc_tables, skip_costs, skip_ctx, ts_flat, tx_size_ctx,
+            bsize,
+            0,
+            geometry,
+            recon_c,
+            src,
+            mode,
+            angle_delta,
+            use_fi,
+            fi_mode,
+            lossless,
+            reduced,
+            bd,
+            plane_rows_c,
+            dequant,
+            above_ctx,
+            left_ctx,
+            rdmult,
+            ref_best_rd,
+            coeff_tbls,
+            ttc_tables,
+            skip_costs,
+            skip_ctx,
+            ts_flat,
+            tx_size_ctx,
         );
         return res.map(|(rate, dist, sse, w)| (0, rd, rate, dist, sse, w));
     }
@@ -371,9 +490,30 @@ pub fn c_pick_uniform_tx_size_type_yrd(
     let mut depth = init_depth;
     while depth <= 2 {
         let (rd, res) = c_uniform_txfm_yrd(
-            bsize, tx, geometry, recon_c, src, mode, angle_delta, use_fi, fi_mode, false,
-            reduced, bd, plane_rows_c, dequant, above_ctx, left_ctx, rdmult, ref_best_rd,
-            coeff_tbls, ttc_tables, skip_costs, skip_ctx, ts_flat, tx_size_ctx,
+            bsize,
+            tx,
+            geometry,
+            recon_c,
+            src,
+            mode,
+            angle_delta,
+            use_fi,
+            fi_mode,
+            false,
+            reduced,
+            bd,
+            plane_rows_c,
+            dequant,
+            above_ctx,
+            left_ctx,
+            rdmult,
+            ref_best_rd,
+            coeff_tbls,
+            ttc_tables,
+            skip_costs,
+            skip_ctx,
+            ts_flat,
+            tx_size_ctx,
         );
         rd_arr[depth as usize] = rd;
         if rd < best_rd_c {
@@ -406,10 +546,12 @@ pub fn c_pick_uniform_tx_size_type_yrd(
 
 use aom_encode::tx_search::trellis_rdmult_intra;
 
-pub const MI_W: [usize; 22] =
-    [1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16];
-pub const MI_H: [usize; 22] =
-    [1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4];
+pub const MI_W: [usize; 22] = [
+    1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16,
+];
+pub const MI_H: [usize; 22] = [
+    1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4,
+];
 
 /// The C-side encoder CfL DC-prediction cache (cfl_store_dc_pred /
 /// cfl_load_dc_pred transcription: first row stored, row-replicated on load).
@@ -421,7 +563,11 @@ pub struct CDcCache {
 
 impl CDcCache {
     pub fn cleared() -> Self {
-        CDcCache { use_cache: false, cached: [false; 2], row: [[0; 32]; 2] }
+        CDcCache {
+            use_cache: false,
+            cached: [false; 2],
+            row: [[0; 32]; 2],
+        }
     }
 }
 
@@ -481,7 +627,15 @@ pub fn c_search_tx_type_p(
     };
     let tx_bsize_twin = tx_to_bsize(tx_size);
     let (bsse_raw, mut mse_c) = c::ref_pixel_diff_dist(
-        residual, tx_bsize_twin as i32, tx_bsize_twin as i32, 0, 0, 0, 0, 0, 0,
+        residual,
+        tx_bsize_twin as i32,
+        tx_bsize_twin as i32,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
     );
     let mut bsse_c = bsse_raw;
     if bd > 8 {
@@ -626,7 +780,15 @@ pub fn c_search_tx_type_p(
         let rd = c::ref_rdcost(rdmult, rate_c, dist_c);
         if rd < best_rd_c {
             best_rd_c = rd;
-            best = Some((tx_type, eob as u16, rate_c, dist_c, sse_c, ctx_c, dqc.clone()));
+            best = Some((
+                tx_type,
+                eob as u16,
+                rate_c,
+                dist_c,
+                sse_c,
+                ctx_c,
+                dqc.clone(),
+            ));
         }
         if (best_rd_c - (best_rd_c >> 1)) > ref_best_rd {
             break;
@@ -663,7 +825,15 @@ pub struct CUvEnv<'a> {
     pub above_ctx: [&'a [i8]; 2],
     pub left_ctx: [&'a [i8]; 2],
     pub rdmult: i32,
-    pub coeff_tbls: (&'a [i32], &'a [i32], &'a [i32], &'a [i32], &'a [i32], &'a [i32], &'a [i32]),
+    pub coeff_tbls: (
+        &'a [i32],
+        &'a [i32],
+        &'a [i32],
+        &'a [i32],
+        &'a [i32],
+        &'a [i32],
+        &'a [i32],
+    ),
     pub ttc_tables: (&'a [i32], &'a [i32]),
     /// sf `tx_sf.use_chroma_trellis_rd_mult` — ALLINTRA/RT 1 (chroma trellis
     /// mult 13), usage GOOD 0 (mult 20). Both arms swept by the diffs.
@@ -702,8 +872,11 @@ pub fn c_txfm_rd_in_plane_uv(
     let wpx = ((MI_W[env.bsize] * 4) >> env.ss_x).max(4) as i32;
     let hpx = ((MI_H[env.bsize] * 4) >> env.ss_y).max(4) as i32;
     let src: &[u16] = if plane == 1 { env.src_u } else { env.src_v };
-    let (rows_c, dequant) =
-        if plane == 1 { (env.rows_u_c, env.dequant_u) } else { (env.rows_v_c, env.dequant_v) };
+    let (rows_c, dequant) = if plane == 1 {
+        (env.rows_u_c, env.dequant_u)
+    } else {
+        (env.rows_v_c, env.dequant_v)
+    };
 
     let mut t_above = env.above_ctx[pi][..max_w].to_vec();
     let mut t_left = env.left_ctx[pi][..max_h].to_vec();
@@ -724,13 +897,46 @@ pub fn c_txfm_rd_in_plane_uv(
                 let pred_plane = plane - 1;
                 if !(cache.use_cache && cache.cached[pred_plane]) {
                     let (n_top, n_tr, n_left, n_bl) = c::ref_intra_avail(
-                        12, env.bsize, env.mi_row, env.mi_col, true, true, 1 << 16, 1 << 16,
-                        0, tx_size, env.ss_x as i32, env.ss_y as i32, blk_row as i32,
-                        blk_col as i32, wpx, hpx, 512, 512, mode, 0, false,
+                        12,
+                        env.bsize,
+                        env.mi_row,
+                        env.mi_col,
+                        true,
+                        true,
+                        1 << 16,
+                        1 << 16,
+                        0,
+                        tx_size,
+                        env.ss_x as i32,
+                        env.ss_y as i32,
+                        blk_row as i32,
+                        blk_col as i32,
+                        wpx,
+                        hpx,
+                        512,
+                        512,
+                        mode,
+                        0,
+                        false,
                     );
                     let pred = c::ref_hbd_predict_intra(
-                        recon, txb_off, env.stride, mode, 0, false, 0, false, 0, tx_size,
-                        txw, txh, n_top, n_tr, n_left, n_bl, env.bd as i32,
+                        recon,
+                        txb_off,
+                        env.stride,
+                        mode,
+                        0,
+                        false,
+                        0,
+                        false,
+                        0,
+                        tx_size,
+                        txw,
+                        txh,
+                        n_top,
+                        n_tr,
+                        n_left,
+                        n_bl,
+                        env.bd as i32,
                     );
                     for r in 0..txh {
                         recon[txb_off + r * env.stride..txb_off + r * env.stride + txw]
@@ -748,18 +954,62 @@ pub fn c_txfm_rd_in_plane_uv(
                     }
                 }
                 c::ref_cfl_predict_block(
-                    st, recon, txb_off, env.stride, tx_size, plane, *alpha_idx, *joint_sign,
-                    env.bsize, env.lossless, env.ss_x as i32, env.ss_y as i32, env.bd,
+                    st,
+                    recon,
+                    txb_off,
+                    env.stride,
+                    tx_size,
+                    plane,
+                    *alpha_idx,
+                    *joint_sign,
+                    env.bsize,
+                    env.lossless,
+                    env.ss_x as i32,
+                    env.ss_y as i32,
+                    env.bd,
                 );
             } else {
                 let (n_top, n_tr, n_left, n_bl) = c::ref_intra_avail(
-                    12, env.bsize, env.mi_row, env.mi_col, true, true, 1 << 16, 1 << 16, 0,
-                    tx_size, env.ss_x as i32, env.ss_y as i32, blk_row as i32, blk_col as i32,
-                    wpx, hpx, 512, 512, mode, angle_delta_uv * 3, false,
+                    12,
+                    env.bsize,
+                    env.mi_row,
+                    env.mi_col,
+                    true,
+                    true,
+                    1 << 16,
+                    1 << 16,
+                    0,
+                    tx_size,
+                    env.ss_x as i32,
+                    env.ss_y as i32,
+                    blk_row as i32,
+                    blk_col as i32,
+                    wpx,
+                    hpx,
+                    512,
+                    512,
+                    mode,
+                    angle_delta_uv * 3,
+                    false,
                 );
                 let pred = c::ref_hbd_predict_intra(
-                    recon, txb_off, env.stride, mode, angle_delta_uv * 3, false, 0, false, 0,
-                    tx_size, txw, txh, n_top, n_tr, n_left, n_bl, env.bd as i32,
+                    recon,
+                    txb_off,
+                    env.stride,
+                    mode,
+                    angle_delta_uv * 3,
+                    false,
+                    0,
+                    false,
+                    0,
+                    tx_size,
+                    txw,
+                    txh,
+                    n_top,
+                    n_tr,
+                    n_left,
+                    n_bl,
+                    env.bd as i32,
                 );
                 for r in 0..txh {
                     recon[txb_off + r * env.stride..txb_off + r * env.stride + txw]
@@ -776,13 +1026,39 @@ pub fn c_txfm_rd_in_plane_uv(
             let src_txb_off = env.src_off[pi] + (blk_row * env.stride + blk_col) * 4;
             let mut residual = vec![0i16; txw * txh];
             c::ref_highbd_subtract_block(
-                txh, txw, &mut residual, txw, &src[src_txb_off..], env.stride, &pred, txw,
+                txh,
+                txw,
+                &mut residual,
+                txw,
+                &src[src_txb_off..],
+                env.stride,
+                &pred,
+                txw,
             );
             let (wtype, weob, wrate, wdist, wsse, wctx, wdqc, _wrd) = c_search_tx_type_p(
-                plane, uv_mode, &residual, &pred, src, src_txb_off, env.stride, tx_size,
-                env.luma_mode, env.luma_use_fi, env.luma_fi_mode, env.lossless, env.reduced,
-                env.bd, rows_c, dequant, &t_above[blk_col..], &t_left[blk_row..], plane_bsize,
-                env.rdmult, ref_best_rd - current_rd, env.coeff_tbls, env.ttc_tables,
+                plane,
+                uv_mode,
+                &residual,
+                &pred,
+                src,
+                src_txb_off,
+                env.stride,
+                tx_size,
+                env.luma_mode,
+                env.luma_use_fi,
+                env.luma_fi_mode,
+                env.lossless,
+                env.reduced,
+                env.bd,
+                rows_c,
+                dequant,
+                &t_above[blk_col..],
+                &t_left[blk_row..],
+                plane_bsize,
+                env.rdmult,
+                ref_best_rd - current_rd,
+                env.coeff_tbls,
+                env.ttc_tables,
                 env.use_chroma_trellis_rd_mult,
             );
             if weob > 0 {
@@ -833,9 +1109,8 @@ pub fn c_txfm_uvrd(
     if ref_best_rd < 0 {
         return None;
     }
-    let uv_tx_size = aom_encode::intra_uv_rd::av1_get_tx_size_uv(
-        env.bsize, env.lossless, env.ss_x, env.ss_y,
-    );
+    let uv_tx_size =
+        aom_encode::intra_uv_rd::av1_get_tx_size_uv(env.bsize, env.lossless, env.ss_x, env.ss_y);
     let mut rate: i64 = 0;
     let mut dist: i64 = 0;
     let mut sse: i64 = 0;
@@ -844,7 +1119,15 @@ pub fn c_txfm_uvrd(
     for plane in 1..=2usize {
         let recon: &mut [u16] = if plane == 1 { recon_u } else { recon_v };
         let r = c_txfm_rd_in_plane_uv(
-            env, recon, plane, uv_mode, angle_delta_uv, None, uv_tx_size, ref_best_rd, 0,
+            env,
+            recon,
+            plane,
+            uv_mode,
+            angle_delta_uv,
+            None,
+            uv_tx_size,
+            ref_best_rd,
+            0,
         )?;
         let (prate, pdist, psse, winners) = r;
         if prate == i32::MAX {
@@ -951,12 +1234,46 @@ fn c_predict_cfl_txb(
     let pred_plane = plane - 1;
     if !(cache.use_cache && cache.cached[pred_plane]) {
         let (n_top, n_tr, n_left, n_bl) = c::ref_intra_avail(
-            12, env.bsize, env.mi_row, env.mi_col, true, true, 1 << 16, 1 << 16, 0, tx_size,
-            env.ss_x as i32, env.ss_y as i32, 0, 0, wpx, hpx, 512, 512, 0, 0, false,
+            12,
+            env.bsize,
+            env.mi_row,
+            env.mi_col,
+            true,
+            true,
+            1 << 16,
+            1 << 16,
+            0,
+            tx_size,
+            env.ss_x as i32,
+            env.ss_y as i32,
+            0,
+            0,
+            wpx,
+            hpx,
+            512,
+            512,
+            0,
+            0,
+            false,
         );
         let pred = c::ref_hbd_predict_intra(
-            recon, txb_off, env.stride, 0, 0, false, 0, false, 0, tx_size, txw, txh, n_top,
-            n_tr, n_left, n_bl, env.bd as i32,
+            recon,
+            txb_off,
+            env.stride,
+            0,
+            0,
+            false,
+            0,
+            false,
+            0,
+            tx_size,
+            txw,
+            txh,
+            n_top,
+            n_tr,
+            n_left,
+            n_bl,
+            env.bd as i32,
         );
         for r in 0..txh {
             recon[txb_off + r * env.stride..txb_off + r * env.stride + txw]
@@ -973,8 +1290,19 @@ fn c_predict_cfl_txb(
         }
     }
     c::ref_cfl_predict_block(
-        st, recon, txb_off, env.stride, tx_size, plane, alpha_idx, joint_sign, env.bsize,
-        env.lossless, env.ss_x as i32, env.ss_y as i32, env.bd,
+        st,
+        recon,
+        txb_off,
+        env.stride,
+        tx_size,
+        plane,
+        alpha_idx,
+        joint_sign,
+        env.bsize,
+        env.lossless,
+        env.ss_x as i32,
+        env.ss_y as i32,
+        env.bd,
     );
 }
 
@@ -1001,7 +1329,9 @@ pub fn c_intra_model_rd_uv(
     for blk_row in (0..MI_H[plane_bsize]).step_by(txhu) {
         for blk_col in (0..MI_W[plane_bsize]).step_by(txwu) {
             let txb_off = env.ref_off[pi] + (blk_row * env.stride + blk_col) * 4;
-            c_predict_cfl_txb(env, recon, plane, st, cache, alpha_idx, joint_sign, tx_size, txb_off);
+            c_predict_cfl_txb(
+                env, recon, plane, st, cache, alpha_idx, joint_sign, tx_size, txb_off,
+            );
             let mut pred = vec![0u16; n];
             for r in 0..txh {
                 pred[r * txw..r * txw + txw].copy_from_slice(
@@ -1011,7 +1341,14 @@ pub fn c_intra_model_rd_uv(
             let src_txb_off = env.src_off[pi] + (blk_row * env.stride + blk_col) * 4;
             let mut residual = vec![0i16; n];
             c::ref_highbd_subtract_block(
-                txh, txw, &mut residual, txw, &src[src_txb_off..], env.stride, &pred, txw,
+                txh,
+                txw,
+                &mut residual,
+                txw,
+                &src[src_txb_off..],
+                env.stride,
+                &pred,
+                txw,
             );
             let coeff = c::ref_fwd_txfm2d(tx_size, &residual, txw, 0);
             satd_cost += i64::from(c::ref_satd(&coeff[..n]));
@@ -1059,7 +1396,14 @@ pub fn c_cfl_compute_rd(
             0,
         )
         .expect("budget-free C walk is valid");
-        let mut s = CRdStats { rate, dist, sse, skip: false, zero_rate: 0, rdcost: 0 };
+        let mut s = CRdStats {
+            rate,
+            dist,
+            sse,
+            skip: false,
+            zero_rate: 0,
+            rdcost: 0,
+        };
         // Walk merges intra txbs as non-skip; init skip=1 AND per-txb 0 -> 0.
         s.rd_cost_update(env.rdmult);
         (s.rdcost, Some(s))
@@ -1200,8 +1544,7 @@ pub fn c_cfl_rd_pick_alpha(
 // ref_intra_mode_info_cost_uv).
 // ---------------------------------------------------------------------------
 
-pub const UV_RD_SEARCH_MODE_ORDER_C: [usize; 14] =
-    [0, 13, 2, 1, 9, 12, 10, 11, 4, 7, 6, 8, 5, 3];
+pub const UV_RD_SEARCH_MODE_ORDER_C: [usize; 14] = [0, 13, 2, 1, 9, 12, 10, 11, 4, 7, 6, 8, 5, 3];
 
 /// C-side `rd_pick_intra_angle_sbuv` + `pick_intra_angle_routine_sbuv`.
 /// Returns `Some((best_angle, rate_tokenonly, dist, skip, best_rd))`.
@@ -1222,12 +1565,12 @@ pub fn c_rd_pick_intra_angle_sbuv(
     let mut rd_cost = [i64::MAX; 10];
 
     let routine = |ad: i32,
-                       best_rd_in: i64,
-                       best_rd: &mut i64,
-                       best_angle_delta: &mut i32,
-                       best_stats: &mut Option<(i32, i64, bool)>,
-                       recon_u: &mut [u16],
-                       recon_v: &mut [u16]|
+                   best_rd_in: i64,
+                   best_rd: &mut i64,
+                   best_angle_delta: &mut i32,
+                   best_stats: &mut Option<(i32, i64, bool)>,
+                   recon_u: &mut [u16],
+                   recon_v: &mut [u16]|
      -> i64 {
         let Some((rate, dist, _sse, wu, wv)) =
             c_txfm_uvrd(env, recon_u, recon_v, uv_mode, ad, best_rd_in)
@@ -1322,7 +1665,10 @@ pub fn c_rd_pick_intra_sbuv_mode(
     pal_flat: &[i32],
     cfl_costs_c: &[i32],
     try_palette: bool,
-) -> ((usize, i32, u8, i8, i32, i32, i64, bool, i64), Vec<(usize, Option<i64>)>) {
+) -> (
+    (usize, i32, u8, i8, i32, i32, i64, bool, i64),
+    Vec<(usize, Option<i64>)>,
+) {
     let mut best = (0usize, 0i32, 0u8, 0i8, 0i32, 0i32, 0i64, false, i64::MAX);
     let mut visits: Vec<(usize, Option<i64>)> = Vec::new();
     for &uv_mode in UV_RD_SEARCH_MODE_ORDER_C.iter() {
@@ -1343,7 +1689,10 @@ pub fn c_rd_pick_intra_sbuv_mode(
                 continue;
             }
             let uv_tx = aom_encode::intra_uv_rd::av1_get_tx_size_uv(
-                env.bsize, env.lossless, env.ss_x, env.ss_y,
+                env.bsize,
+                env.lossless,
+                env.ss_x,
+                env.ss_y,
             );
             let Some((idx, js, stats)) = c_cfl_rd_pick_alpha(
                 env,
@@ -1361,9 +1710,7 @@ pub fn c_rd_pick_intra_sbuv_mode(
             };
             tokenonly = (stats.rate, stats.dist, stats.skip);
             cfl_fields = (idx, js);
-        } else if is_directional
-            && aom_entropy::partition::use_angle_delta(env.bsize)
-        {
+        } else if is_directional && aom_entropy::partition::use_angle_delta(env.bsize) {
             let rate_overhead = uv_mode_costs[env.luma_mode][uv_mode];
             let Some((ba, rate, dist, skip, _nb)) = c_rd_pick_intra_angle_sbuv(
                 env,
@@ -1426,9 +1773,9 @@ pub fn c_rd_pick_intra_sbuv_mode(
 // ---- rd_pick_intra_mode_sb composition diff) --------------------------------
 use aom_encode::intra_rd::{INTRA_MODES, MAX_ANGLE_DELTA, TOP_INTRA_MODEL_COUNT};
 use aom_encode::mode_costs::{
-    fill_intra_mode_costs, IntraModeCosts, BLOCK_SIZES_ALL, BLOCK_SIZE_GROUPS,
-    DIRECTIONAL_MODES, FILTER_INTRA_MODES, KF_MODE_CONTEXTS, PALETTE_BSIZE_CTXS,
-    PALETTE_Y_MODE_CONTEXTS, UV_INTRA_MODES,
+    BLOCK_SIZE_GROUPS, BLOCK_SIZES_ALL, DIRECTIONAL_MODES, FILTER_INTRA_MODES, IntraModeCosts,
+    KF_MODE_CONTEXTS, PALETTE_BSIZE_CTXS, PALETTE_Y_MODE_CONTEXTS, UV_INTRA_MODES,
+    fill_intra_mode_costs,
 };
 
 /// The C loop's static gate chain (intra_mode_search.c:1555-1594) at the
@@ -1436,7 +1783,12 @@ use aom_encode::mode_costs::{
 /// gates live in IntraSbyGates::visits). Speed-0: every intra_mode_cfg flag
 /// on, disable_smooth_intra off, intra_y_mode_mask all-ones,
 /// use_mb_mode_cache off.
-pub fn c_gate_visits(mode: usize, luma_delta_angle: i32, bsize: usize, skip_mask: &[bool; 13]) -> bool {
+pub fn c_gate_visits(
+    mode: usize,
+    luma_delta_angle: i32,
+    bsize: usize,
+    skip_mask: &[bool; 13],
+) -> bool {
     let is_directional = (1..=8).contains(&mode);
     // enable_diagonal_intra / enable_directional_intra / smooth flags /
     // enable_paeth_intra: all true (CLI defaults) — their `continue`s never
@@ -1455,7 +1807,18 @@ pub fn c_gate_visits(mode: usize, luma_delta_angle: i32, bsize: usize, skip_mask
 pub struct CLoopOut {
     /// (mode, delta, tx_size, winners, rate, rate_tokenonly, dist, rd,
     ///  use_filter_intra, filter_intra_mode)
-    pub best: Option<(usize, i32, usize, Vec<(usize, u16, u8)>, i32, i32, i64, i64, bool, usize)>,
+    pub best: Option<(
+        usize,
+        i32,
+        usize,
+        Vec<(usize, u16, u8)>,
+        i32,
+        i32,
+        i64,
+        i64,
+        bool,
+        usize,
+    )>,
     pub rd_table: [[i64; 9]; 13],
     /// Candidates whose ALLINTRA factor was != 1.0 (coverage signal).
     pub factor_fired: usize,
@@ -1477,9 +1840,19 @@ pub struct CdfSet {
 
 pub fn gen_all_cdfs(rng: &mut Rng) -> CdfSet {
     let mut uv = gen_cdfs(rng, INTRA_MODES, UV_INTRA_MODES - 1, UV_INTRA_MODES + 1);
-    uv.extend_from_slice(&gen_cdfs(rng, INTRA_MODES, UV_INTRA_MODES, UV_INTRA_MODES + 1));
+    uv.extend_from_slice(&gen_cdfs(
+        rng,
+        INTRA_MODES,
+        UV_INTRA_MODES,
+        UV_INTRA_MODES + 1,
+    ));
     CdfSet {
-        kf_y: gen_cdfs(rng, KF_MODE_CONTEXTS * KF_MODE_CONTEXTS, INTRA_MODES, INTRA_MODES + 1),
+        kf_y: gen_cdfs(
+            rng,
+            KF_MODE_CONTEXTS * KF_MODE_CONTEXTS,
+            INTRA_MODES,
+            INTRA_MODES + 1,
+        ),
         y_mode: gen_cdfs(rng, BLOCK_SIZE_GROUPS, INTRA_MODES, INTRA_MODES + 1),
         uv,
         fi_mode: gen_cdfs(rng, 1, FILTER_INTRA_MODES, FILTER_INTRA_MODES + 1),
@@ -1492,13 +1865,28 @@ pub fn gen_all_cdfs(rng: &mut Rng) -> CdfSet {
 
 pub fn fill_both(cdfs: &CdfSet, enable_fi: bool) -> (Box<IntraModeCosts>, c::RefIntraModeCosts) {
     let want = c::ref_fill_intra_mode_costs(
-        &cdfs.kf_y, &cdfs.y_mode, &cdfs.uv, &cdfs.fi_mode, &cdfs.fi, &cdfs.pal_y_mode,
-        &cdfs.angle, &cdfs.intrabc, enable_fi,
+        &cdfs.kf_y,
+        &cdfs.y_mode,
+        &cdfs.uv,
+        &cdfs.fi_mode,
+        &cdfs.fi,
+        &cdfs.pal_y_mode,
+        &cdfs.angle,
+        &cdfs.intrabc,
+        enable_fi,
     );
     let mut costs = IntraModeCosts::zeroed();
     fill_intra_mode_costs(
-        &mut costs, &cdfs.kf_y, &cdfs.y_mode, &cdfs.uv, &cdfs.fi_mode, &cdfs.fi,
-        &cdfs.pal_y_mode, &cdfs.angle, &cdfs.intrabc, enable_fi,
+        &mut costs,
+        &cdfs.kf_y,
+        &cdfs.y_mode,
+        &cdfs.uv,
+        &cdfs.fi_mode,
+        &cdfs.fi,
+        &cdfs.pal_y_mode,
+        &cdfs.angle,
+        &cdfs.intrabc,
+        enable_fi,
     );
     (costs, want)
 }
@@ -1548,8 +1936,18 @@ pub fn c_mode_loop(
 
     let mut best_rd = best_rd_in;
     #[allow(clippy::type_complexity)]
-    let mut best: Option<(usize, i32, usize, Vec<(usize, u16, u8)>, i32, i32, i64, i64, bool, usize)> =
-        None;
+    let mut best: Option<(
+        usize,
+        i32,
+        usize,
+        Vec<(usize, u16, u8)>,
+        i32,
+        i32,
+        i64,
+        i64,
+        bool,
+        usize,
+    )> = None;
     let mut best_model_rd = i64::MAX;
     let mut top_model = [i64::MAX; TOP_INTRA_MODEL_COUNT];
     let mut rd_table = [[i64::MAX; 9]; 13];
@@ -1634,8 +2032,13 @@ pub fn c_mode_loop(
         // bsize > BLOCK_4X4).
         let mut rate_tokenonly = rate_tok_raw;
         if bsize > 0 {
-            rate_tokenonly -=
-                c::ref_tx_size_cost(ts_flat, true, bsize as i32, tx_size as i32, tx_size_ctx as i32);
+            rate_tokenonly -= c::ref_tx_size_cost(
+                ts_flat,
+                true,
+                bsize as i32,
+                tx_size as i32,
+                tx_size_ctx as i32,
+            );
         }
         // intra_mode_info_cost_y over the REAL shim (no palette / fi off /
         // no intrabc; enable_filter_intra on -> fi flag bit costed on
@@ -1659,8 +2062,22 @@ pub fn c_mode_loop(
         let mut this_rd = c::ref_rdcost(rdmult, this_rate, dist);
         if allintra && this_rd != i64::MAX {
             let factor = c::ref_intra_rd_variance_factor(
-                0, src, src_off, stride, recon_c, ref_off, stride, bsize, sb_size, mi_row,
-                mi_col, 1 << 12, 1 << 12, bd, cvar, clog,
+                0,
+                src,
+                src_off,
+                stride,
+                recon_c,
+                ref_off,
+                stride,
+                bsize,
+                sb_size,
+                mi_row,
+                mi_col,
+                1 << 12,
+                1 << 12,
+                bd,
+                cvar,
+                clog,
             );
             if factor != 1.0 {
                 factor_fired += 1;
@@ -1672,8 +2089,16 @@ pub fn c_mode_loop(
         if this_rd < best_rd {
             best_rd = this_rd;
             best = Some((
-                mode, delta, tx_size, winners, this_rate, rate_tokenonly, dist, this_rd,
-                false, 0,
+                mode,
+                delta,
+                tx_size,
+                winners,
+                this_rate,
+                rate_tokenonly,
+                dist,
+                this_rd,
+                false,
+                0,
             ));
         }
     }
@@ -1703,9 +2128,7 @@ pub fn c_mode_loop(
                 fim,
                 bd,
             );
-            if best_model_rd != i64::MAX
-                && this_model_rd > best_model_rd + (best_model_rd >> 2)
-            {
+            if best_model_rd != i64::MAX && this_model_rd > best_model_rd + (best_model_rd >> 2) {
                 continue;
             } else if this_model_rd < best_model_rd {
                 best_model_rd = this_model_rd;
@@ -1761,8 +2184,22 @@ pub fn c_mode_loop(
             let mut this_rd = c::ref_rdcost(rdmult, this_rate, dist);
             if allintra && this_rd != i64::MAX {
                 let factor = c::ref_intra_rd_variance_factor(
-                    0, src, src_off, stride, recon_c, ref_off, stride, bsize, sb_size,
-                    mi_row, mi_col, 1 << 12, 1 << 12, bd, cvar, clog,
+                    0,
+                    src,
+                    src_off,
+                    stride,
+                    recon_c,
+                    ref_off,
+                    stride,
+                    bsize,
+                    sb_size,
+                    mi_row,
+                    mi_col,
+                    1 << 12,
+                    1 << 12,
+                    bd,
+                    cvar,
+                    clog,
                 );
                 if factor != 1.0 {
                     factor_fired += 1;
@@ -1772,13 +2209,25 @@ pub fn c_mode_loop(
             if this_rd < best_rd {
                 best_rd = this_rd;
                 best = Some((
-                    0, stale_delta, tx_size, winners, this_rate, rate_tok_raw, dist,
-                    this_rd, true, fim,
+                    0,
+                    stale_delta,
+                    tx_size,
+                    winners,
+                    this_rate,
+                    rate_tok_raw,
+                    dist,
+                    this_rd,
+                    true,
+                    fim,
                 ));
             }
         }
     }
-    CLoopOut { best, rd_table, factor_fired }
+    CLoopOut {
+        best,
+        rd_table,
+        factor_fired,
+    }
 }
 
 // ---- the C-side av1_encode_intra_block_plane (luma) walk over REAL pieces
@@ -1789,7 +2238,15 @@ pub type CTxb = (usize, u16, u8, Vec<i32>, Vec<i32>);
 
 /// The seven coefficient cost tables (txb_skip, base_eob, base, eob_extra,
 /// dc_sign, lps, eob).
-pub type CCoeffTbls<'a> = (&'a [i32], &'a [i32], &'a [i32], &'a [i32], &'a [i32], &'a [i32], &'a [i32]);
+pub type CCoeffTbls<'a> = (
+    &'a [i32],
+    &'a [i32],
+    &'a [i32],
+    &'a [i32],
+    &'a [i32],
+    &'a [i32],
+    &'a [i32],
+);
 
 /// The C-side `av1_encode_intra_block_plane(AOM_PLANE_Y)` walk arguments.
 pub struct CEncPlaneArgs<'a> {
@@ -1841,10 +2298,12 @@ pub fn c_encode_intra_block_plane_y(
     cfl_c: &mut c::RefCflState,
 ) -> (Vec<CTxb>, Vec<i8>, Vec<i8>) {
     use aom_encode::tx_search::trellis_rdmult_intra;
-    const MI_W_B: [usize; 22] =
-        [1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16];
-    const MI_H_B: [usize; 22] =
-        [1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4];
+    const MI_W_B: [usize; 22] = [
+        1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16,
+    ];
+    const MI_H_B: [usize; 22] = [
+        1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4,
+    ];
     let (mi_row, mi_col, ref_off, src_off, stride) = a.geometry;
     let (bw, bh) = (BLK_W[a.bsize], BLK_H[a.bsize]);
     let (txw, txh) = (TX_W[a.tx_size], TX_H[a.tx_size]);
@@ -1863,14 +2322,47 @@ pub fn c_encode_intra_block_plane_y(
     for blk_row in (0..mbh).step_by(txhu) {
         for blk_col in (0..mbw).step_by(txwu) {
             let (n_top, n_tr, n_left, n_bl) = c::ref_intra_avail(
-                a.sb_size, a.bsize, mi_row, mi_col, true, true, 1 << 16, 1 << 16, a.partition,
-                a.tx_size, 0, 0, blk_row as i32, blk_col as i32, bw as i32, bh as i32, 512,
-                512, a.mode, a.angle_delta * 3, a.use_fi,
+                a.sb_size,
+                a.bsize,
+                mi_row,
+                mi_col,
+                true,
+                true,
+                1 << 16,
+                1 << 16,
+                a.partition,
+                a.tx_size,
+                0,
+                0,
+                blk_row as i32,
+                blk_col as i32,
+                bw as i32,
+                bh as i32,
+                512,
+                512,
+                a.mode,
+                a.angle_delta * 3,
+                a.use_fi,
             );
             let txb_off = ref_off + (blk_row * stride + blk_col) * 4;
             let pred = c::ref_hbd_predict_intra(
-                recon_c, txb_off, stride, a.mode, a.angle_delta * 3, a.use_fi, a.fi_mode,
-                false, 0, a.tx_size, txw, txh, n_top, n_tr, n_left, n_bl, a.bd as i32,
+                recon_c,
+                txb_off,
+                stride,
+                a.mode,
+                a.angle_delta * 3,
+                a.use_fi,
+                a.fi_mode,
+                false,
+                0,
+                a.tx_size,
+                txw,
+                txh,
+                n_top,
+                n_tr,
+                n_left,
+                n_bl,
+                a.bd as i32,
             );
             for r in 0..txh {
                 recon_c[txb_off + r * stride..txb_off + r * stride + txw]
@@ -1887,7 +2379,14 @@ pub fn c_encode_intra_block_plane_y(
                 let src_txb_off = src_off + (blk_row * stride + blk_col) * 4;
                 let mut residual = vec![0i16; txw * txh];
                 c::ref_highbd_subtract_block(
-                    txh, txw, &mut residual, txw, &a.src[src_txb_off..], stride, &pred, txw,
+                    txh,
+                    txw,
+                    &mut residual,
+                    txw,
+                    &a.src[src_txb_off..],
+                    stride,
+                    &pred,
+                    txw,
                 );
                 tx_type_c = c::ref_get_tx_type_y(
                     false, a.tx_size, a.reduced, map_c, map_stride, blk_row, blk_col,
@@ -1911,7 +2410,11 @@ pub fn c_encode_intra_block_plane_y(
                 ) as usize;
                 if a.use_trellis {
                     let (txb_skip_ctx_c, dc_sign_ctx_c) = c::ref_get_txb_ctx(
-                        a.bsize, a.tx_size, 0, &ta_c[blk_col..], &tl_c[blk_row..],
+                        a.bsize,
+                        a.tx_size,
+                        0,
+                        &ta_c[blk_col..],
+                        &tl_c[blk_row..],
                     );
                     if eob0 == 0 {
                         eob_c = 0;
@@ -1961,8 +2464,19 @@ pub fn c_encode_intra_block_plane_y(
             }
             if a.store {
                 c::ref_cfl_store_tx(
-                    cfl_c, recon_c, ref_off, stride, blk_row as i32, blk_col as i32,
-                    a.tx_size, a.bsize, mi_row, mi_col, a.ss.0, a.ss.1, a.bd,
+                    cfl_c,
+                    recon_c,
+                    ref_off,
+                    stride,
+                    blk_row as i32,
+                    blk_col as i32,
+                    a.tx_size,
+                    a.bsize,
+                    mi_row,
+                    mi_col,
+                    a.ss.0,
+                    a.ss.1,
+                    a.bd,
                 );
             }
             for x in ta_c[blk_col..blk_col + txwu].iter_mut() {
@@ -2012,8 +2526,11 @@ pub fn c_encode_intra_block_plane_uv(
     let wpx = ((MI_W[env.bsize] * 4) >> env.ss_x).max(4) as i32;
     let hpx = ((MI_H[env.bsize] * 4) >> env.ss_y).max(4) as i32;
     let src: &[u16] = if plane == 1 { env.src_u } else { env.src_v };
-    let (rows_c, dequant) =
-        if plane == 1 { (env.rows_u_c, env.dequant_u) } else { (env.rows_v_c, env.dequant_v) };
+    let (rows_c, dequant) = if plane == 1 {
+        (env.rows_u_c, env.dequant_u)
+    } else {
+        (env.rows_v_c, env.dequant_v)
+    };
     let (txb_skip, base_eob, base, eob_extra, dc_sign, lps, eob_tbl) = env.coeff_tbls;
 
     let mut ta_c = vec![0i8; max_w];
@@ -2034,31 +2551,108 @@ pub fn c_encode_intra_block_plane_uv(
                 assert_eq!((blk_row, blk_col), (0, 0), "CfL block == tx block");
                 // Fresh DC prediction (no dc-pred cache in the encode pass).
                 let (n_top, n_tr, n_left, n_bl) = c::ref_intra_avail(
-                    12, env.bsize, env.mi_row, env.mi_col, true, true, 1 << 16, 1 << 16,
-                    env.partition, tx_size, env.ss_x as i32, env.ss_y as i32, blk_row as i32,
-                    blk_col as i32, wpx, hpx, 512, 512, mode, 0, false,
+                    12,
+                    env.bsize,
+                    env.mi_row,
+                    env.mi_col,
+                    true,
+                    true,
+                    1 << 16,
+                    1 << 16,
+                    env.partition,
+                    tx_size,
+                    env.ss_x as i32,
+                    env.ss_y as i32,
+                    blk_row as i32,
+                    blk_col as i32,
+                    wpx,
+                    hpx,
+                    512,
+                    512,
+                    mode,
+                    0,
+                    false,
                 );
                 let pred = c::ref_hbd_predict_intra(
-                    recon, txb_off, env.stride, mode, 0, false, 0, false, 0, tx_size, txw, txh,
-                    n_top, n_tr, n_left, n_bl, env.bd as i32,
+                    recon,
+                    txb_off,
+                    env.stride,
+                    mode,
+                    0,
+                    false,
+                    0,
+                    false,
+                    0,
+                    tx_size,
+                    txw,
+                    txh,
+                    n_top,
+                    n_tr,
+                    n_left,
+                    n_bl,
+                    env.bd as i32,
                 );
                 for r in 0..txh {
                     recon[txb_off + r * env.stride..txb_off + r * env.stride + txw]
                         .copy_from_slice(&pred[r * txw..r * txw + txw]);
                 }
                 c::ref_cfl_predict_block(
-                    st, recon, txb_off, env.stride, tx_size, plane, *alpha_idx, *joint_sign,
-                    env.bsize, env.lossless, env.ss_x as i32, env.ss_y as i32, env.bd,
+                    st,
+                    recon,
+                    txb_off,
+                    env.stride,
+                    tx_size,
+                    plane,
+                    *alpha_idx,
+                    *joint_sign,
+                    env.bsize,
+                    env.lossless,
+                    env.ss_x as i32,
+                    env.ss_y as i32,
+                    env.bd,
                 );
             } else {
                 let (n_top, n_tr, n_left, n_bl) = c::ref_intra_avail(
-                    12, env.bsize, env.mi_row, env.mi_col, true, true, 1 << 16, 1 << 16,
-                    env.partition, tx_size, env.ss_x as i32, env.ss_y as i32, blk_row as i32,
-                    blk_col as i32, wpx, hpx, 512, 512, mode, angle_delta_uv * 3, false,
+                    12,
+                    env.bsize,
+                    env.mi_row,
+                    env.mi_col,
+                    true,
+                    true,
+                    1 << 16,
+                    1 << 16,
+                    env.partition,
+                    tx_size,
+                    env.ss_x as i32,
+                    env.ss_y as i32,
+                    blk_row as i32,
+                    blk_col as i32,
+                    wpx,
+                    hpx,
+                    512,
+                    512,
+                    mode,
+                    angle_delta_uv * 3,
+                    false,
                 );
                 let pred = c::ref_hbd_predict_intra(
-                    recon, txb_off, env.stride, mode, angle_delta_uv * 3, false, 0, false, 0,
-                    tx_size, txw, txh, n_top, n_tr, n_left, n_bl, env.bd as i32,
+                    recon,
+                    txb_off,
+                    env.stride,
+                    mode,
+                    angle_delta_uv * 3,
+                    false,
+                    0,
+                    false,
+                    0,
+                    tx_size,
+                    txw,
+                    txh,
+                    n_top,
+                    n_tr,
+                    n_left,
+                    n_bl,
+                    env.bd as i32,
                 );
                 for r in 0..txh {
                     recon[txb_off + r * env.stride..txb_off + r * env.stride + txw]
@@ -2083,7 +2677,14 @@ pub fn c_encode_intra_block_plane_uv(
                 let src_txb_off = env.src_off[pi] + (blk_row * env.stride + blk_col) * 4;
                 let mut residual = vec![0i16; txw * txh];
                 c::ref_highbd_subtract_block(
-                    txh, txw, &mut residual, txw, &src[src_txb_off..], env.stride, &pred, txw,
+                    txh,
+                    txw,
+                    &mut residual,
+                    txw,
+                    &src[src_txb_off..],
+                    env.stride,
+                    &pred,
+                    txw,
                 );
                 tx_type_c =
                     c::ref_get_tx_type_uv_intra(uv_mode, env.lossless, tx_size, env.reduced);
@@ -2106,7 +2707,11 @@ pub fn c_encode_intra_block_plane_uv(
                 ) as usize;
                 if use_trellis {
                     let (txb_skip_ctx_c, dc_sign_ctx_c) = c::ref_get_txb_ctx(
-                        plane_bsize, tx_size, plane, &ta_c[blk_col..], &tl_c[blk_row..],
+                        plane_bsize,
+                        tx_size,
+                        plane,
+                        &ta_c[blk_col..],
+                        &tl_c[blk_row..],
                     );
                     if eob0 == 0 {
                         eob_c = 0;
@@ -2229,7 +2834,16 @@ pub struct COracle<'a> {
     pub left_t: [u8; 32],
 }
 
-pub type CLeafOut = (i32, i32, usize, bool, bool, Vec<CTxb>, Option<Vec<CTxb>>, Option<Vec<CTxb>>);
+pub type CLeafOut = (
+    i32,
+    i32,
+    usize,
+    bool,
+    bool,
+    Vec<CTxb>,
+    Option<Vec<CTxb>>,
+    Option<Vec<CTxb>>,
+);
 
 impl COracle<'_> {
     #[allow(clippy::too_many_arguments)]
@@ -2248,7 +2862,8 @@ impl COracle<'_> {
         let bsize = w.bsize;
         let (ss_x, ss_y) = self.ss;
         let (mbw, mbh) = (MI_W[bsize], MI_H[bsize]);
-        let chroma_ref = c::ref_is_chroma_reference(mi_row, mi_col, bsize, ss_x as i32, ss_y as i32);
+        let chroma_ref =
+            c::ref_is_chroma_reference(mi_row, mi_col, bsize, ss_x as i32, ss_y as i32);
         let store_y = c::ref_store_cfl_required(self.monochrome, chroma_ref, w.uv_mode);
         let ref_off_y = self.base_y + (mi_row as usize * 4) * self.stride + mi_col as usize * 4;
         let a0 = mi_col as usize;
@@ -2292,8 +2907,7 @@ impl COracle<'_> {
         let mut u_txbs = None;
         let mut v_txbs = None;
         if !self.monochrome && chroma_ref {
-            let ref_off_uv =
-                uv_off(self.base_uv, self.stride, mi_row, mi_col, bsize, ss_x, ss_y);
+            let ref_off_uv = uv_off(self.base_uv, self.stride, mi_row, mi_col, bsize, ss_x, ss_y);
             let plane_bsize = aom_entropy::partition::get_plane_block_size(bsize, ss_x, ss_y);
             let (pmw, pmh) = (MI_W[plane_bsize], MI_H[plane_bsize]);
             let au = (mi_col >> ss_x) as usize;
@@ -2333,13 +2947,21 @@ impl COracle<'_> {
             };
             let use_cfl = w.uv_mode == 13;
             for plane in [1usize, 2usize] {
-                let recon = if plane == 1 { &mut *recon_u } else { &mut *recon_v };
+                let recon = if plane == 1 {
+                    &mut *recon_u
+                } else {
+                    &mut *recon_v
+                };
                 let (txbs, _ta, _tl) = c_encode_intra_block_plane_uv(
                     &cenv,
                     plane,
                     w.uv_mode,
                     w.angle_delta_uv,
-                    if use_cfl { Some((cfl, w.cfl_alpha_idx, w.cfl_alpha_signs)) } else { None },
+                    if use_cfl {
+                        Some((cfl, w.cfl_alpha_idx, w.cfl_alpha_signs))
+                    } else {
+                        None
+                    },
                     uv_tx,
                     w.skip_txfm,
                     self.use_trellis,
@@ -2363,7 +2985,13 @@ impl COracle<'_> {
             for blk_row in (0..mbh).step_by(txhu) {
                 for blk_col in (0..mbw).step_by(txwu) {
                     let tt = c::ref_get_tx_type_y(
-                        false, w.tx_size, self.reduced, &w.tx_type_map, mbw, blk_row, blk_col,
+                        false,
+                        w.tx_size,
+                        self.reduced,
+                        &w.tx_type_map,
+                        mbw,
+                        blk_row,
+                        blk_col,
                     );
                     let (_, eob, _, qc, _) = &y_txbs[k];
                     let cul = if *eob == 0 {
@@ -2385,8 +3013,7 @@ impl COracle<'_> {
                 }
             }
             if !self.monochrome && chroma_ref {
-                let plane_bsize =
-                    aom_entropy::partition::get_plane_block_size(bsize, ss_x, ss_y);
+                let plane_bsize = aom_entropy::partition::get_plane_block_size(bsize, ss_x, ss_y);
                 let (pmw, pmh) = (MI_W[plane_bsize], MI_H[plane_bsize]);
                 let (ptxwu, ptxhu) = (TX_W[uv_tx] >> 2, TX_H[uv_tx] >> 2);
                 let au = (mi_col >> ss_x) as usize;
@@ -2430,7 +3057,9 @@ impl COracle<'_> {
             &mut self.left_t[l0..],
         );
 
-        out.push((mi_row, mi_col, bsize, chroma_ref, store_y, y_txbs, u_txbs, v_txbs));
+        out.push((
+            mi_row, mi_col, bsize, chroma_ref, store_y, y_txbs, u_txbs, v_txbs,
+        ));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2473,7 +3102,17 @@ impl COracle<'_> {
                 let [s0, s1] = &mut **subs;
                 self.encode_b(recon_y, recon_u, recon_v, cfl, s0, mi_row, mi_col, 1, out);
                 if mi_row + hbs < self.mi_rows {
-                    self.encode_b(recon_y, recon_u, recon_v, cfl, s1, mi_row + hbs, mi_col, 1, out);
+                    self.encode_b(
+                        recon_y,
+                        recon_u,
+                        recon_v,
+                        cfl,
+                        s1,
+                        mi_row + hbs,
+                        mi_col,
+                        1,
+                        out,
+                    );
                 }
             }
             SbTree::Vert(subs) => {
@@ -2481,7 +3120,17 @@ impl COracle<'_> {
                 let [s0, s1] = &mut **subs;
                 self.encode_b(recon_y, recon_u, recon_v, cfl, s0, mi_row, mi_col, 2, out);
                 if mi_col + hbs < self.mi_cols {
-                    self.encode_b(recon_y, recon_u, recon_v, cfl, s1, mi_row, mi_col + hbs, 2, out);
+                    self.encode_b(
+                        recon_y,
+                        recon_u,
+                        recon_v,
+                        cfl,
+                        s1,
+                        mi_row,
+                        mi_col + hbs,
+                        2,
+                        out,
+                    );
                 }
             }
         }
@@ -2501,4 +3150,3 @@ impl COracle<'_> {
         self.left_p = lo;
     }
 }
-
