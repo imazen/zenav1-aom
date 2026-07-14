@@ -28,6 +28,7 @@ const MI_H: [usize; 22] = [1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 
 
 /// Fill a `bw x bh` window with one content class: flat / noisy / gradient /
 /// mixed (flat rows + noisy rows — drives per-4x4 var asymmetry).
+#[allow(clippy::too_many_arguments)]
 fn fill_class(
     rng: &mut Rng,
     plane: &mut [u16],
