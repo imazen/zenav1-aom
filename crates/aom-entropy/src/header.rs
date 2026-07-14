@@ -1837,12 +1837,19 @@ pub fn read_segmentation(rb: &mut ReadBitBuffer, has_primary_ref: bool) -> Segme
             for j in 0..SEG_LVL_MAX {
                 if rb.read_bit() != 0 {
                     seg.feature_mask[i] |= 1 << j;
-                    let ubits = get_unsigned_bits(SEG_FEATURE_DATA_MAX[j] as u32);
-                    seg.feature_data[i][j] = if SEG_FEATURE_SIGNED[j] {
+                    let data_max = SEG_FEATURE_DATA_MAX[j];
+                    let ubits = get_unsigned_bits(data_max as u32);
+                    let data = if SEG_FEATURE_SIGNED[j] {
                         rb.read_inv_signed_literal(ubits)
                     } else {
                         rb.read_literal(ubits)
                     };
+                    // NORMATIVE decoder clamp (setup_segmentation,
+                    // decodeframe.c): clamp(data, -data_max, data_max). Live
+                    // only for signed features at exactly -(2^ubits) — e.g.
+                    // ALT_Q -256 -> -255, ALT_LF_* -64 -> -63 — which the C
+                    // encoder (clamping before writing) never emits.
+                    seg.feature_data[i][j] = data.clamp(-data_max, data_max);
                 }
             }
         }

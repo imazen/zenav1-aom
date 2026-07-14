@@ -500,6 +500,49 @@ fn read_segmentation_inverts_write() {
     }
 }
 
+/// The NORMATIVE feature-data clamp of `setup_segmentation` (decodeframe.c):
+/// `data = clamp(data, -data_max, data_max)` after the read. Signed features
+/// read `inv_signed_literal(ubits)` in `[-(2^ubits), 2^ubits - 1]`, so exactly
+/// `-(2^ubits)` (= `-(data_max+1)`) clamps — a value the C ENCODER (which
+/// clamps before writing) can never emit, hand-vectored here per the
+/// hand-vector-the-unreachable-normative-clamp methodology.
+#[test]
+fn read_segmentation_normative_data_clamp() {
+    use aom_entropy::header::read_segmentation;
+    // enabled=1; no primary ref (update flags forced, none coded); then the
+    // 8x8 (segment, feature) active-bit grid:
+    //   seg0 feature0 (ALT_Q, signed, max 255, ubits 8): active,
+    //     inv_signed_literal(8) = 9-bit two's complement (sign-extend read),
+    //     raw 0b1_0000_0000 = 256 -> -256;
+    //   seg1 feature1 (ALT_LF_Y_V, signed, max 63, ubits 6): active,
+    //     7-bit two's complement raw 0b100_0000 = 64 -> -64;
+    //   every other active bit 0.
+    let mut w = WriteBitBuffer::new();
+    w.write_bit(1); // enabled
+    w.write_bit(1); // seg0 feature0 active
+    w.write_literal(256, 9); // -256 (two's-complement raw)
+    for _ in 1..8 {
+        w.write_bit(0); // seg0 features 1..7
+    }
+    w.write_bit(0); // seg1 feature0
+    w.write_bit(1); // seg1 feature1 active
+    w.write_literal(64, 7); // -64 (two's-complement raw)
+    for _ in 2..8 {
+        w.write_bit(0); // seg1 features 2..7
+    }
+    for _ in 2 * 8..8 * 8 {
+        w.write_bit(0); // segments 2..7, all features
+    }
+    let bytes = w.bytes().to_vec();
+    let mut rb = ReadBitBuffer::new(&bytes);
+    let g = read_segmentation(&mut rb, false);
+    assert!(g.enabled && g.update_map && g.update_data);
+    assert_eq!(g.feature_mask[0], 1, "seg0 ALT_Q active");
+    assert_eq!(g.feature_data[0][0], -255, "ALT_Q -256 clamps to -255");
+    assert_eq!(g.feature_mask[1], 1 << 1, "seg1 ALT_LF_Y_V active");
+    assert_eq!(g.feature_data[1][1], -63, "ALT_LF -64 clamps to -63");
+}
+
 #[test]
 fn read_frame_size_inverts_write() {
     use aom_entropy::header::{read_frame_size, write_frame_size, FrameSizeHeader};
