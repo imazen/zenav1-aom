@@ -3231,7 +3231,7 @@ extern "C" {
     fn shim_scale_chroma_bsize(bsize: i32, ss_x: i32, ss_y: i32) -> i32;
     fn shim_dump_default_kf_fc(base_qindex: i32, out: *mut u16) -> i32;
     #[allow(clippy::too_many_arguments)]
-    fn shim_encode_av1_kf(y: *const u16, u: *const u16, v: *const u16, w: i32, h: i32, bd: i32, mono: i32, ss_x: i32, ss_y: i32, cq_level: i32, cpu_used: i32, out: *mut u8, out_cap: usize) -> i64;
+    fn shim_encode_av1_kf(y: *const u16, u: *const u16, v: *const u16, w: i32, h: i32, bd: i32, mono: i32, ss_x: i32, ss_y: i32, cq_level: i32, cpu_used: i32, enable_cdef: i32, out: *mut u8, out_cap: usize) -> i64;
     #[allow(clippy::too_many_arguments)]
     fn shim_decode_av1_kf(data: *const u8, len: usize, expect_w: i32, expect_h: i32, y: *mut u16, u: *mut u16, v: *mut u16, info_out: *mut i32) -> i32;
 }
@@ -3307,13 +3307,13 @@ pub fn ref_dump_default_kf_fc(base_qindex: i32) -> Vec<u16> {
 /// --deltaq-mode=0 --aq-mode=0 --enable-palette=0 --enable-intrabc=0`.
 /// Planes are u16 at every bit depth; chroma dims are `(w+ss)>>ss`.
 #[allow(clippy::too_many_arguments)]
-pub fn ref_encode_av1_kf(y: &[u16], u: &[u16], v: &[u16], w: usize, h: usize, bd: i32, mono: bool, ss_x: i32, ss_y: i32, cq_level: i32, cpu_used: i32) -> Vec<u8> {
+pub fn ref_encode_av1_kf(y: &[u16], u: &[u16], v: &[u16], w: usize, h: usize, bd: i32, mono: bool, ss_x: i32, ss_y: i32, cq_level: i32, cpu_used: i32, enable_cdef: bool) -> Vec<u8> {
     let (cw, ch) = if mono { (0, 0) } else { ((w + ss_x as usize) >> ss_x, (h + ss_y as usize) >> ss_y) };
     assert_eq!(y.len(), w * h);
     assert!(mono || (u.len() == cw * ch && v.len() == cw * ch));
     let mut out = vec![0u8; w * h * 8 + 65536];
     let n = unsafe {
-        shim_encode_av1_kf(y.as_ptr(), u.as_ptr(), v.as_ptr(), w as i32, h as i32, bd, mono as i32, ss_x, ss_y, cq_level, cpu_used, out.as_mut_ptr(), out.len())
+        shim_encode_av1_kf(y.as_ptr(), u.as_ptr(), v.as_ptr(), w as i32, h as i32, bd, mono as i32, ss_x, ss_y, cq_level, cpu_used, enable_cdef as i32, out.as_mut_ptr(), out.len())
     };
     assert!(n > 0, "shim_encode_av1_kf failed ({n})");
     out.truncate(n as usize);

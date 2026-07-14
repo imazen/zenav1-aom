@@ -103,10 +103,18 @@ fn intra_mode_to_tx_type_matches_c() {
             // Rust table is INTRA_MODE_TO_TX_TYPE (private) — validate through
             // uv_tx_type's full-set case (all types available at TX_4X4,
             // reduced=false, where no demotion happens).
-            assert_eq!(cuv, uv_tx_type(uv_mode as i32, 0, false), "uv arm uv_mode={uv_mode}");
+            assert_eq!(
+                cuv,
+                uv_tx_type(uv_mode as i32, 0, false),
+                "uv arm uv_mode={uv_mode}"
+            );
             // And the Y arm equals the UV arm when uv_mode == mode (mode < 13
             // never hits the CFL mapping).
-            assert_eq!(cy, c::ref_intra_mode_to_tx_type(0, mode, 1), "y arm mode={mode}");
+            assert_eq!(
+                cy,
+                c::ref_intra_mode_to_tx_type(0, mode, 1),
+                "y arm mode={mode}"
+            );
         }
     }
 }

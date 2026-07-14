@@ -109,6 +109,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod frame;
+
 use aom_encode::reconstruct_txb;
 use aom_entropy::dec::OdEcDec;
 use aom_entropy::partition::{

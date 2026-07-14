@@ -18,7 +18,7 @@ fn write_delta_q(wb: &mut WriteBitBuffer, delta_q: i32) {
 }
 
 /// The `CommonQuantParams` fields the frame-header quantization block reads.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct QuantParamsHeader {
     pub base_qindex: i32,
     pub y_dc_delta_q: i32,
@@ -70,7 +70,7 @@ pub fn encode_quantization(
 /// The loop-filter frame-header state (`cm->lf` + the resolved primary-ref-frame
 /// "last" deltas — the caller picks `av1_set_default_*_deltas` when there is no
 /// primary ref buffer).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct LoopfilterHeader {
     pub allow_intrabc: bool,
     pub filter_level: [i32; 2],
@@ -134,7 +134,7 @@ pub fn encode_loopfilter(wb: &mut WriteBitBuffer, lf: &LoopfilterHeader, num_pla
 }
 
 /// The CDEF frame-header state (`cm->cdef_info`).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct CdefHeader {
     pub enable_cdef: bool,
     pub allow_intrabc: bool,
@@ -182,7 +182,7 @@ fn get_unsigned_bits(num_values: u32) -> u32 {
 }
 
 /// The segmentation frame-header state (`cm->seg` + `primary_ref_frame`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SegmentationHeader {
     pub enabled: bool,
     /// `primary_ref_frame != PRIMARY_REF_NONE` — gates the update flags.
@@ -286,7 +286,7 @@ pub fn write_render_size(
 }
 
 /// The frame-size frame-header state (`write_frame_size` inputs).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct FrameSizeHeader {
     pub frame_size_override: bool,
     pub num_bits_width: u32,
@@ -361,6 +361,29 @@ pub struct TileInfoHeader {
     pub max_height_sb: i32,
 }
 
+impl Default for TileInfoHeader {
+    fn default() -> Self {
+        TileInfoHeader {
+            mi_cols: 0,
+            mi_rows: 0,
+            mib_size_log2: 0,
+            uniform_spacing: false,
+            log2_cols: 0,
+            min_log2_cols: 0,
+            max_log2_cols: 0,
+            log2_rows: 0,
+            min_log2_rows: 0,
+            max_log2_rows: 0,
+            cols: 0,
+            rows: 0,
+            col_start_sb: [0; MAX_TILE_COLS + 1],
+            row_start_sb: [0; MAX_TILE_ROWS + 1],
+            max_width_sb: 0,
+            max_height_sb: 0,
+        }
+    }
+}
+
 /// `write_tile_info_max_tile`: uniform-spacing flag, then either the unary
 /// log2-cols/rows increments (uniform) or the per-tile `wb_write_uniform` sizes
 /// (explicit).
@@ -413,7 +436,7 @@ const RESTORE_SGRPROJ: u8 = 2;
 const RESTORE_SWITCHABLE: u8 = 3;
 
 /// The loop-restoration frame-header state (`cm->rst_info` + seq/features flags).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct RestorationHeader {
     pub enable_restoration: bool,
     pub allow_intrabc: bool,
@@ -489,7 +512,7 @@ fn get_msb(n: u32) -> u32 {
 }
 
 /// The frame-level delta-q / delta-lf params (`cm->delta_q_info`).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct DeltaQParams {
     pub base_qindex: i32,
     pub delta_q_present: bool,
@@ -533,7 +556,7 @@ pub fn write_tx_mode(wb: &mut WriteBitBuffer, coded_lossless: bool, tx_mode_sele
 
 /// The film-grain params written into the frame header (`aom_film_grain_t`), plus
 /// the seq/frame context the writer reads (monochrome, subsampling, inter frame).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct FilmGrainParams {
     pub apply_grain: bool,
     pub random_seed: i32,
@@ -659,7 +682,7 @@ const GM_TRANS_PREC_DIFF: u32 = 10; // WARPEDMODEL_PREC_BITS - GM_TRANS_PREC_BIT
 const GM_TRANS_ONLY_PREC_DIFF: u32 = 13; // WARPEDMODEL_PREC_BITS - 3
 
 /// A single reference frame's global-motion model (`WarpedMotionParams`).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct WarpedMotionParams {
     pub wmtype: u8,
     pub wmmat: [i32; 6],
@@ -1074,7 +1097,7 @@ pub fn write_sequence_header_obu(wb: &mut WriteBitBuffer, s: &SequenceHeaderObu)
 
 /// The bounded prefix state of `write_uncompressed_header_obu` (through the ref
 /// order hints — before the per-frame-type frame-size / ref-map signaling).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct FrameHeaderPrefix {
     pub reduced_still_picture_hdr: bool,
     pub show_existing_frame: bool, // encode_show_existing_frame(cm)
@@ -1225,7 +1248,7 @@ pub fn write_frame_header_prefix(wb: &mut WriteBitBuffer, p: &FrameHeaderPrefix)
 /// The `write_frame_size_with_refs` state — the current frame's dimensions plus,
 /// per reference (LAST..ALTREF), whether the ref buffer is present and its crop /
 /// render dimensions, and the superres + fallback `write_frame_size` inputs.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct FrameSizeWithRefs {
     pub superres_upscaled_width: i32,
     pub superres_upscaled_height: i32,
@@ -1270,7 +1293,7 @@ pub fn write_frame_size_with_refs(wb: &mut WriteBitBuffer, w: &FrameSizeWithRefs
 // ---- frame-header OBU: inter-frame ref signaling --------------------------
 
 /// The INTER/S-frame reference-signaling state (`write_uncompressed_header_obu`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct InterRefSignaling {
     pub enable_order_hint: bool,
     pub frame_refs_short_signaling: bool,
@@ -1384,7 +1407,7 @@ pub fn write_frame_header_trailing_flags(
 
 /// The full uncompressed frame-header state (`write_uncompressed_header_obu`),
 /// composing the prefix, per-frame-type body, and the component tail.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct FrameHeaderObu {
     pub prefix: FrameHeaderPrefix,
     // per-frame-type body

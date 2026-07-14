@@ -23,7 +23,11 @@ fn dump_default_kf_fc_layout_and_band_boundaries() {
     let dumps: Vec<Vec<u16>> = bands.iter().map(|&q| ref_dump_default_kf_fc(q)).collect();
     let mode_len = DUMP_KF_FC_LEN - 4045;
     for w in dumps.windows(2) {
-        assert_eq!(w[0][..mode_len], w[1][..mode_len], "mode defaults must not depend on qindex");
+        assert_eq!(
+            w[0][..mode_len],
+            w[1][..mode_len],
+            "mode defaults must not depend on qindex"
+        );
     }
     // Same band -> identical coeff region; adjacent bands -> different.
     assert_eq!(dumps[0][mode_len..], dumps[1][mode_len..]); // 0 vs 20
@@ -45,8 +49,12 @@ fn codec_api_encode_decode_roundtrip_smoke() {
     }
     let u = vec![100u16; (w / 2) * (h / 2)];
     let v = vec![160u16; (w / 2) * (h / 2)];
-    let bytes = ref_encode_av1_kf(&y, &u, &v, w, h, 8, false, 1, 1, 30, 3);
-    assert!(bytes.len() > 20, "suspiciously small bitstream: {}", bytes.len());
+    let bytes = ref_encode_av1_kf(&y, &u, &v, w, h, 8, false, 1, 1, 30, 3, false);
+    assert!(
+        bytes.len() > 20,
+        "suspiciously small bitstream: {}",
+        bytes.len()
+    );
     let dec = ref_decode_av1_kf(&bytes, w, h);
     assert_eq!(dec.info[0], 8);
     assert_eq!(dec.info[1], 0);
@@ -54,7 +62,12 @@ fn codec_api_encode_decode_roundtrip_smoke() {
     assert_eq!(dec.y.len(), w * h);
     assert_eq!(dec.u.len(), (w / 2) * (h / 2));
     // Lossy but sane: mean abs error under 32 at cq 30.
-    let mae: u64 = y.iter().zip(&dec.y).map(|(&a, &b)| (a as i64 - b as i64).unsigned_abs()).sum::<u64>() / (w * h) as u64;
+    let mae: u64 = y
+        .iter()
+        .zip(&dec.y)
+        .map(|(&a, &b)| (a as i64 - b as i64).unsigned_abs())
+        .sum::<u64>()
+        / (w * h) as u64;
     assert!(mae < 32, "decoded luma wildly off (mae {mae})");
 }
 
@@ -72,7 +85,10 @@ fn dec_facades_answer_on_domain() {
     assert_eq!(ref_tx_size_from_tx_mode(12, 1), 4);
     assert_eq!(ref_depth_to_tx_size(0, 12), 4);
     // get_tx_size_context: no neighbours -> 0.
-    assert_eq!(ref_get_tx_size_context(12, 64, 64, false, false, 0, false, 0, false), 0);
+    assert_eq!(
+        ref_get_tx_size_context(12, 64, 64, false, false, 0, false, 0, false),
+        0
+    );
     // set_txfm_ctxs stamps tx dims (not skip): TX_8X8 over a 16x16 block.
     let (mut a, mut l) = ([0u8; 4], [0u8; 4]);
     ref_set_txfm_ctxs(1 /*TX_8X8*/, 4, 4, false, &mut a, &mut l);
