@@ -2164,6 +2164,21 @@ extern "C" {
     );
 }
 
+/// Reference highbd filter-intra predictor (`highbd_filter_intra_predictor`).
+/// `above` is a `[-1..]` view (index 0 the corner), `left` is `left[0..bh]`;
+/// `mode` is the `FILTER_INTRA_MODE`. Returns the `bw*bh` block (row stride `bw`).
+pub fn ref_hbd_filter_intra(
+    tx_size: usize, bw: usize, bh: usize, above: &[u16], left: &[u16], mode: usize, bd: i32,
+) -> Vec<u16> {
+    let mut dst = vec![0u16; bw * bh];
+    unsafe {
+        shim_hbd_filter_intra_predict(
+            dst.as_mut_ptr(), bw as isize, tx_size as i32, above.as_ptr(), left.as_ptr(), mode as i32, bd,
+        )
+    }
+    dst
+}
+
 /// Reference highbd directional intra builder (`highbd_build_directional_and_
 /// filter_intra_predictors`, directional path): edge assembly (with above-right /
 /// below-left) + corner-filter + edge filter/upsample + angle dispatch.
@@ -2263,6 +2278,9 @@ extern "C" {
     );
     fn shim_hbd_build_dir_intra(
         r: *const u16, ref_stride: i32, p_angle: i32, disable_edge_filter: i32, filt_type: i32, tx_size: i32, n_top_px: i32, n_topright_px: i32, n_left_px: i32, n_bottomleft_px: i32, bd: i32, dst: *mut u16, dst_stride: i32,
+    );
+    fn shim_hbd_filter_intra_predict(
+        dst: *mut u16, stride: isize, tx_size: i32, above: *const u16, left: *const u16, mode: i32, bd: i32,
     );
 }
 

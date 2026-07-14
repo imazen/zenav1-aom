@@ -616,3 +616,40 @@ void shim_hbd_build_dir_intra(const uint16_t *ref, int ref_stride, int p_angle,
   shim_hbd_dr_predict(dst, dst_stride, tx_size, above_row, left_col, upsample_above,
                       upsample_left, p_angle, bd);
 }
+
+/* ---- highbd filter-intra predictor (highbd_filter_intra_predictor) ----------
+ * Verbatim transcription driven by the public av1_filter_intra_taps table.
+ * `above`/`left` are [-1..] views: above[0] is the top-left corner, above[1+i]
+ * the above samples; left[i] the left column. mode is the FILTER_INTRA_MODE. */
+extern const signed char av1_filter_intra_taps[5][8][8];
+
+void shim_hbd_filter_intra_predict(uint16_t *dst, ptrdiff_t stride, int tx_size,
+                                   const uint16_t *above, const uint16_t *left,
+                                   int mode, int bd) {
+  static const int txw[19] = { 4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64 };
+  static const int txh[19] = { 4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16 };
+  const int bw = txw[tx_size], bh = txh[tx_size];
+  const int max_v = (1 << bd) - 1;
+  uint16_t buffer[33][33];
+  for (int r = 0; r < bh; ++r) buffer[r + 1][0] = left[r];
+  for (int c = 0; c < bw + 1; ++c) buffer[0][c] = above[c]; /* corner + above row */
+
+  for (int r = 1; r < bh + 1; r += 2)
+    for (int c = 1; c < bw + 1; c += 4) {
+      const int p0 = buffer[r - 1][c - 1], p1 = buffer[r - 1][c], p2 = buffer[r - 1][c + 1],
+                p3 = buffer[r - 1][c + 2], p4 = buffer[r - 1][c + 3], p5 = buffer[r][c - 1],
+                p6 = buffer[r + 1][c - 1];
+      for (int k = 0; k < 8; ++k) {
+        int pr = av1_filter_intra_taps[mode][k][0] * p0 + av1_filter_intra_taps[mode][k][1] * p1 +
+                 av1_filter_intra_taps[mode][k][2] * p2 + av1_filter_intra_taps[mode][k][3] * p3 +
+                 av1_filter_intra_taps[mode][k][4] * p4 + av1_filter_intra_taps[mode][k][5] * p5 +
+                 av1_filter_intra_taps[mode][k][6] * p6;
+        int v = (pr + 8) >> 4;
+        v = v < 0 ? 0 : (v > max_v ? max_v : v);
+        buffer[r + (k >> 2)][c + (k & 3)] = (uint16_t)v;
+      }
+    }
+
+  for (int r = 0; r < bh; ++r)
+    for (int c = 0; c < bw; ++c) dst[r * stride + c] = buffer[r + 1][c + 1];
+}

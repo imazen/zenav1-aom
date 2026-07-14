@@ -496,6 +496,100 @@ pub fn dr_predict_high(
     }
 }
 
+/// `av1_filter_intra_taps[FILTER_INTRA_MODES][8][8]` (reconintra.c): the recursive
+/// filter-intra prediction taps (only columns 0..7 are used; column 7 is 0).
+#[rustfmt::skip]
+const FILTER_INTRA_TAPS: [[[i8; 8]; 8]; 5] = [
+    [
+        [-6, 10, 0, 0, 0, 12, 0, 0], [-5, 2, 10, 0, 0, 9, 0, 0],
+        [-3, 1, 1, 10, 0, 7, 0, 0], [-3, 1, 1, 2, 10, 5, 0, 0],
+        [-4, 6, 0, 0, 0, 2, 12, 0], [-3, 2, 6, 0, 0, 2, 9, 0],
+        [-3, 2, 2, 6, 0, 2, 7, 0], [-3, 1, 2, 2, 6, 3, 5, 0],
+    ],
+    [
+        [-10, 16, 0, 0, 0, 10, 0, 0], [-6, 0, 16, 0, 0, 6, 0, 0],
+        [-4, 0, 0, 16, 0, 4, 0, 0], [-2, 0, 0, 0, 16, 2, 0, 0],
+        [-10, 16, 0, 0, 0, 0, 10, 0], [-6, 0, 16, 0, 0, 0, 6, 0],
+        [-4, 0, 0, 16, 0, 0, 4, 0], [-2, 0, 0, 0, 16, 0, 2, 0],
+    ],
+    [
+        [-8, 8, 0, 0, 0, 16, 0, 0], [-8, 0, 8, 0, 0, 16, 0, 0],
+        [-8, 0, 0, 8, 0, 16, 0, 0], [-8, 0, 0, 0, 8, 16, 0, 0],
+        [-4, 4, 0, 0, 0, 0, 16, 0], [-4, 0, 4, 0, 0, 0, 16, 0],
+        [-4, 0, 0, 4, 0, 0, 16, 0], [-4, 0, 0, 0, 4, 0, 16, 0],
+    ],
+    [
+        [-2, 8, 0, 0, 0, 10, 0, 0], [-1, 3, 8, 0, 0, 6, 0, 0],
+        [-1, 2, 3, 8, 0, 4, 0, 0], [0, 1, 2, 3, 8, 2, 0, 0],
+        [-1, 4, 0, 0, 0, 3, 10, 0], [-1, 3, 4, 0, 0, 4, 6, 0],
+        [-1, 2, 3, 4, 0, 4, 4, 0], [-1, 2, 2, 3, 4, 3, 3, 0],
+    ],
+    [
+        [-12, 14, 0, 0, 0, 14, 0, 0], [-10, 0, 14, 0, 0, 12, 0, 0],
+        [-9, 0, 0, 14, 0, 11, 0, 0], [-8, 0, 0, 0, 14, 10, 0, 0],
+        [-10, 12, 0, 0, 0, 0, 14, 0], [-9, 1, 12, 0, 0, 0, 12, 0],
+        [-8, 0, 0, 12, 0, 1, 11, 0], [-7, 0, 0, 1, 12, 1, 9, 0],
+    ],
+];
+
+/// `highbd_filter_intra_predictor` (reconintra.c): the recursive filter-intra
+/// predictor. Predicts in 4-wide × 2-tall sub-blocks, each pixel a tap-weighted
+/// blend of the seven already-predicted top/left neighbours, scanned raster so
+/// later sub-blocks see earlier outputs. `above` is a `[-1..]` view (index 0 the
+/// top-left corner, `1+i` the above samples); `left` is `left[0..bh]`. `mode` is
+/// the `FILTER_INTRA_MODE` (0..5). Filter-intra is luma-only and `bw, bh ≤ 32`.
+pub fn filter_intra_predict_high(
+    dst: &mut [u16],
+    dst_stride: usize,
+    tx_size: usize,
+    above: &[u16],
+    left: &[u16],
+    mode: usize,
+    bd: i32,
+) {
+    let (bw, bh) = (TX_W[tx_size], TX_H[tx_size]);
+    debug_assert!(bw <= 32 && bh <= 32);
+    let max_v = (1i32 << bd) - 1;
+    // buffer[row][col]: row 0 is above (with corner at col 0), col 0 is left.
+    let mut buf = [[0u16; 33]; 33];
+    for r in 0..bh {
+        buf[r + 1][0] = left[r];
+    }
+    // buf[0][0..bw+1] = above[-1..bw] = corner then the above row.
+    buf[0][..bw + 1].copy_from_slice(&above[..bw + 1]);
+
+    let mut r = 1;
+    while r < bh + 1 {
+        let mut c = 1;
+        while c < bw + 1 {
+            let p = [
+                buf[r - 1][c - 1] as i32, // p0 corner
+                buf[r - 1][c] as i32,     // p1..p4 above
+                buf[r - 1][c + 1] as i32,
+                buf[r - 1][c + 2] as i32,
+                buf[r - 1][c + 3] as i32,
+                buf[r][c - 1] as i32,     // p5 left of row r
+                buf[r + 1][c - 1] as i32, // p6 left of row r+1
+            ];
+            for k in 0..8 {
+                let taps = &FILTER_INTRA_TAPS[mode][k];
+                let mut pr = 0i32;
+                for j in 0..7 {
+                    pr += taps[j] as i32 * p[j];
+                }
+                let v = ((pr + 8) >> 4).clamp(0, max_v) as u16;
+                buf[r + (k >> 2)][c + (k & 3)] = v;
+            }
+            c += 4;
+        }
+        r += 2;
+    }
+
+    for r in 0..bh {
+        dst[r * dst_stride..r * dst_stride + bw].copy_from_slice(&buf[r + 1][1..bw + 1]);
+    }
+}
+
 /// `NUM_INTRA_NEIGHBOUR_PIXELS` (`MAX_TX_SIZE*2 + 32`): the reference-edge buffer
 /// size, with the edge origin at [`DIR_PAD`].
 const NUM_INTRA_NEIGHBOUR_PIXELS: usize = 160;
