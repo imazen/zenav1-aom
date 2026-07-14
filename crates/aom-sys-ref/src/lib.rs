@@ -3508,3 +3508,151 @@ pub fn ref_get_tx_type_cost(
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// set_q_index / av1_init_plane_quantizers helpers (rd_shim.c)
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn shim_set_q_index(
+        bit_depth: i32,
+        y_dc_delta_q: i32,
+        u_dc_delta_q: i32,
+        u_ac_delta_q: i32,
+        v_dc_delta_q: i32,
+        v_ac_delta_q: i32,
+        sharpness: i32,
+        qindex: i32,
+        out: *mut i16,
+    ) -> i32;
+    fn shim_get_qindex(
+        enabled: i32,
+        feature_mask: *const u32,
+        altq_data: *const i16,
+        segment_id: i32,
+        base_qindex: i32,
+    ) -> i32;
+    fn shim_error_per_bit(rdmult: i32) -> i32;
+    fn shim_sad_per_bit(qindex: i32, bit_depth: i32) -> i32;
+}
+
+/// Reference `set_q_index` (av1/encoder/av1_quantize.c, static — transcribed
+/// row selection over the REAL exported `av1_build_quantizer`): the seven
+/// 8-lane rows each plane's `MACROBLOCK_PLANE` receives for `qindex`.
+/// Layout: `[plane 0..3][7][8]`, row order `quant / quant_fp / round_fp /
+/// quant_shift / zbin / round / dequant` (the C assignment order).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_set_q_index(
+    bit_depth: i32,
+    y_dc_delta_q: i32,
+    u_dc_delta_q: i32,
+    u_ac_delta_q: i32,
+    v_dc_delta_q: i32,
+    v_ac_delta_q: i32,
+    sharpness: i32,
+    qindex: i32,
+) -> Vec<i16> {
+    let mut out = vec![0i16; 3 * 7 * 8];
+    let rc = unsafe {
+        shim_set_q_index(
+            bit_depth,
+            y_dc_delta_q,
+            u_dc_delta_q,
+            u_ac_delta_q,
+            v_dc_delta_q,
+            v_ac_delta_q,
+            sharpness,
+            qindex,
+            out.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, 0, "shim_set_q_index allocation failed");
+    out
+}
+
+/// Reference `av1_get_qindex` (av1/common/quant_common.c, REAL exported fn)
+/// over a marshalled `struct segmentation` (`enabled` + per-segment
+/// `feature_mask` and `SEG_LVL_ALT_Q` data).
+pub fn ref_get_qindex(
+    enabled: bool,
+    feature_mask: &[u32; 8],
+    altq_data: &[i16; 8],
+    segment_id: i32,
+    base_qindex: i32,
+) -> i32 {
+    unsafe {
+        shim_get_qindex(
+            enabled as i32,
+            feature_mask.as_ptr(),
+            altq_data.as_ptr(),
+            segment_id,
+            base_qindex,
+        )
+    }
+}
+
+/// Reference `av1_set_error_per_bit` (rd.h static inline, pristine C
+/// recompiled in the shim TU).
+pub fn ref_error_per_bit(rdmult: i32) -> i32 {
+    unsafe { shim_error_per_bit(rdmult) }
+}
+
+/// Reference sad-per-bit (rd.c `init_me_luts_bd` entry formula over the REAL
+/// exported `av1_convert_qindex_to_q`; `av1_set_sad_per_bit` is a lut lookup
+/// of exactly this value).
+pub fn ref_sad_per_bit(qindex: i32, bit_depth: i32) -> i32 {
+    unsafe { shim_sad_per_bit(qindex, bit_depth) }
+}
+
+unsafe extern "C" {
+    fn shim_quant_plane_rows(
+        kind: i32,
+        is_hbd: i32,
+        coeff: *const i32,
+        n: i32,
+        rows: *const i16,
+        scan: *const i16,
+        iscan: *const i16,
+        log_scale: i32,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+    ) -> u16;
+}
+
+/// Quantize through the REAL exported quantize facades with a full
+/// `MACROBLOCK_PLANE` (all seven QTX rows installed as `set_q_index` installs
+/// them), so the facade — not the caller — picks the rows for `kind`
+/// (0 = FP, 1 = B, 2 = DC). `rows` is one plane's `[7][8]` blob in
+/// [`ref_set_q_index`] order. Flat path (no qmatrix). Call [`ref_init`] first
+/// (the FP/B facades dispatch RTCD kernels).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_quant_plane_rows(
+    kind: i32,
+    is_hbd: bool,
+    coeff: &[i32],
+    rows: &[i16],
+    scan: &[i16],
+    iscan: &[i16],
+    log_scale: i32,
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    assert_eq!(rows.len(), 7 * 8);
+    assert_eq!(coeff.len(), qcoeff.len());
+    assert_eq!(coeff.len(), dqcoeff.len());
+    assert!(scan.len() >= coeff.len() && iscan.len() >= coeff.len());
+    unsafe {
+        shim_quant_plane_rows(
+            kind,
+            is_hbd as i32,
+            coeff.as_ptr(),
+            coeff.len() as i32,
+            rows.as_ptr(),
+            scan.as_ptr(),
+            iscan.as_ptr(),
+            log_scale,
+            qcoeff.as_mut_ptr(),
+            dqcoeff.as_mut_ptr(),
+        )
+    }
+}

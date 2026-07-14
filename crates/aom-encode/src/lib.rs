@@ -78,6 +78,42 @@ pub struct QuantParams<'a> {
     pub bd: u8,
 }
 
+impl<'a> QuantParams<'a> {
+    /// Build the quantizer parameters for one plane from the per-qindex rows
+    /// [`aom_quant::set_q_index`] selects — the bridge from `(qindex, deltas)`
+    /// to [`xform_quant`].
+    ///
+    /// Mirrors how libaom's quantize facades read `MACROBLOCK_PLANE`:
+    /// - [`QuantKind::Fp`] (`av1_quantize_fp_facade`): `quant_fp_QTX` +
+    ///   `round_fp_QTX`.
+    /// - [`QuantKind::B`] (`av1_quantize_b_facade`): `quant_QTX` + `round_QTX`
+    ///   (+ `zbin_QTX`/`quant_shift_QTX`, threaded below for every kind).
+    /// - [`QuantKind::Dc`] (`av1_quantize_dc_facade`): `quant_fp_QTX[0]` +
+    ///   `round_QTX` (the facade passes the B round with the FP multiplier).
+    ///
+    /// `qm`/`iqm` start as `None` (flat); set them for the quant-matrix path.
+    pub fn from_plane_rows(rows: &aom_quant::PlaneQuantRows<'a>, kind: QuantKind, bd: u8) -> Self {
+        let pair = |row: &'a [i16; 8]| -> &'a [i16; 2] {
+            row[..2].try_into().expect("row has 8 lanes")
+        };
+        let (quant, round) = match kind {
+            QuantKind::Fp => (rows.quant_fp, rows.round_fp),
+            QuantKind::B => (rows.quant, rows.round),
+            QuantKind::Dc => (rows.quant_fp, rows.round),
+        };
+        QuantParams {
+            zbin: pair(rows.zbin),
+            round: pair(round),
+            quant: pair(quant),
+            quant_shift: pair(rows.quant_shift),
+            dequant: pair(rows.dequant),
+            qm: None,
+            iqm: None,
+            bd,
+        }
+    }
+}
+
 /// Output of [`xform_quant`]: the quantized block plus the propagated context.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct XformQuantResult {

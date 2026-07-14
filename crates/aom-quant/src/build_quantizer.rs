@@ -229,3 +229,67 @@ pub fn av1_build_quantizer(
         }
     }
 }
+
+/// One plane's quantizer rows for a given qindex — the seven `*_QTX` pointers
+/// `set_q_index` (av1/encoder/av1_quantize.c) installs into that plane's
+/// `MACROBLOCK_PLANE`. Each row is the 8-lane `[dc, ac, ac, ...]` layout.
+#[derive(Clone, Copy, Debug)]
+pub struct PlaneQuantRows<'a> {
+    /// `quant_QTX` — the B-quantizer multiplier row.
+    pub quant: &'a [i16; 8],
+    /// `quant_fp_QTX` — the FP-quantizer multiplier row.
+    pub quant_fp: &'a [i16; 8],
+    /// `round_fp_QTX` — the FP rounding row.
+    pub round_fp: &'a [i16; 8],
+    /// `quant_shift_QTX` — the B-quantizer shift row.
+    pub quant_shift: &'a [i16; 8],
+    /// `zbin_QTX` — the B-quantizer zero-bin row.
+    pub zbin: &'a [i16; 8],
+    /// `round_QTX` — the B rounding row.
+    pub round: &'a [i16; 8],
+    /// `dequant_QTX` — the dequantization step row.
+    pub dequant: &'a [i16; 8],
+}
+
+/// `set_q_index` (av1/encoder/av1_quantize.c, static): select the per-`qindex`
+/// quantizer rows for `plane` (0 = Y, 1 = U, 2 = V) out of the
+/// [`av1_build_quantizer`]-filled tables — exactly the rows the C function
+/// assigns to `x->plane[plane]`. Bit-exact vs C (differential-tested).
+pub fn set_q_index<'a>(
+    quants: &'a Quants,
+    dequants: &'a Dequants,
+    qindex: usize,
+    plane: usize,
+) -> PlaneQuantRows<'a> {
+    assert!(qindex < QINDEX_RANGE);
+    match plane {
+        0 => PlaneQuantRows {
+            quant: &quants.y_quant[qindex],
+            quant_fp: &quants.y_quant_fp[qindex],
+            round_fp: &quants.y_round_fp[qindex],
+            quant_shift: &quants.y_quant_shift[qindex],
+            zbin: &quants.y_zbin[qindex],
+            round: &quants.y_round[qindex],
+            dequant: &dequants.y_dequant_qtx[qindex],
+        },
+        1 => PlaneQuantRows {
+            quant: &quants.u_quant[qindex],
+            quant_fp: &quants.u_quant_fp[qindex],
+            round_fp: &quants.u_round_fp[qindex],
+            quant_shift: &quants.u_quant_shift[qindex],
+            zbin: &quants.u_zbin[qindex],
+            round: &quants.u_round[qindex],
+            dequant: &dequants.u_dequant_qtx[qindex],
+        },
+        2 => PlaneQuantRows {
+            quant: &quants.v_quant[qindex],
+            quant_fp: &quants.v_quant_fp[qindex],
+            round_fp: &quants.v_round_fp[qindex],
+            quant_shift: &quants.v_quant_shift[qindex],
+            zbin: &quants.v_zbin[qindex],
+            round: &quants.v_round[qindex],
+            dequant: &dequants.v_dequant_qtx[qindex],
+        },
+        _ => panic!("plane must be 0..3"),
+    }
+}

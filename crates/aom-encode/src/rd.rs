@@ -258,3 +258,115 @@ pub fn av1_compute_rd_mult(
         1
     }
 }
+
+// ---------------------------------------------------------------------------
+// Per-bit search multipliers + plane-quantizer setup
+// (av1/encoder/rd.{c,h} + av1/encoder/av1_quantize.c av1_init_plane_quantizers)
+// ---------------------------------------------------------------------------
+
+/// `RD_EPB_SHIFT` (av1/encoder/rd.h).
+const RD_EPB_SHIFT: i32 = 6;
+
+/// `av1_set_error_per_bit` (rd.h): the mv-cost → l2-error multiplier,
+/// `max(rdmult >> RD_EPB_SHIFT, 1)`.
+#[inline]
+pub fn av1_set_error_per_bit(rdmult: i32) -> i32 {
+    (rdmult >> RD_EPB_SHIFT).max(1)
+}
+
+/// `av1_convert_qindex_to_q` (av1/encoder/ratectrl.c): the AC quantizer step
+/// scaled down to the classic Q range (`/4`, `/16`, `/64` per bit depth).
+#[inline]
+pub fn av1_convert_qindex_to_q(qindex: i32, bit_depth: u8) -> f64 {
+    match bit_depth {
+        8 => f64::from(aom_quant::av1_ac_quant_qtx(qindex, 0, 8)) / 4.0,
+        10 => f64::from(aom_quant::av1_ac_quant_qtx(qindex, 0, 10)) / 16.0,
+        12 => f64::from(aom_quant::av1_ac_quant_qtx(qindex, 0, 12)) / 64.0,
+        _ => -1.0,
+    }
+}
+
+/// `av1_set_sad_per_bit` (rd.c): the SAD-per-bit multiplier for motion search.
+/// The C keeps per-bit-depth luts (`init_me_luts_bd`); each entry is
+/// `(int)(0.0418 * q + 2.4107)` of [`av1_convert_qindex_to_q`], computed here
+/// directly (bit-exact — pure f64 multiply/add, no FMA in the reference build).
+#[inline]
+pub fn av1_set_sad_per_bit(qindex: i32, bit_depth: u8) -> i32 {
+    let q = av1_convert_qindex_to_q(qindex, bit_depth);
+    (0.0418 * q + 2.4107) as i32
+}
+
+/// Output of [`init_plane_quantizers`]: the per-superblock quantizer state
+/// `av1_init_plane_quantizers` derives (the scalar fields of `MACROBLOCK`;
+/// the per-plane rows come from [`aom_quant::set_q_index`] at the same
+/// `qindex`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaneQuantSetup {
+    /// `x->qindex` — the effective qindex (base + delta-q, segment-adjusted).
+    pub qindex: i32,
+    /// The block RD multiplier from `av1_compute_rd_mult(qindex + y_dc_delta_q, ...)`.
+    pub rdmult: i32,
+    /// `x->errorperbit`.
+    pub errorperbit: i32,
+    /// `x->sadperbit`.
+    pub sadperbit: i32,
+    /// `x->seg_skip_block` — the segment's `SEG_LVL_SKIP` feature.
+    pub seg_skip_block: bool,
+}
+
+/// The qindex-derivation slice of `av1_init_plane_quantizers`
+/// (av1/encoder/av1_quantize.c): `clamp(base_qindex [+ delta_qindex], 0, 255)`
+/// then [`aom_quant::av1_get_qindex`] for the segment, then the RD multiplier,
+/// error-per-bit and sad-per-bit from that qindex.
+///
+/// Scope (labelled): `sb_qp_sweep` is modelled OFF (`qindex_rd == qindex`, the
+/// default outside the debug sweep), and `set_qmatrix` (the global `gqmatrix`
+/// table install, QM-only) is not modelled — the QM path takes caller-supplied
+/// matrices via [`crate::QuantParams`].
+#[allow(clippy::too_many_arguments)]
+pub fn init_plane_quantizers(
+    seg: &aom_quant::Segmentation,
+    segment_id: usize,
+    base_qindex: i32,
+    delta_qindex: i32,
+    delta_q_present: bool,
+    y_dc_delta_q: i32,
+    bit_depth: u8,
+    update_type: FrameUpdateType,
+    layer_depth: i32,
+    boost_index: i32,
+    frame_type: FrameType,
+    use_fixed_qp_offsets: bool,
+    is_stat_consumption_stage: bool,
+    tuning: TuneMetric,
+    mode: EncMode,
+) -> PlaneQuantSetup {
+    let current_qindex = if delta_q_present {
+        base_qindex + delta_qindex
+    } else {
+        base_qindex
+    }
+    .clamp(0, 255);
+    let qindex = aom_quant::av1_get_qindex(seg, segment_id, current_qindex);
+    // sb_qp_sweep off => qindex_rd == qindex.
+    let qindex_rdmult = qindex + y_dc_delta_q;
+    let rdmult = av1_compute_rd_mult(
+        qindex_rdmult,
+        bit_depth,
+        update_type,
+        layer_depth,
+        boost_index,
+        frame_type,
+        use_fixed_qp_offsets,
+        is_stat_consumption_stage,
+        tuning,
+        mode,
+    );
+    PlaneQuantSetup {
+        qindex,
+        rdmult,
+        errorperbit: av1_set_error_per_bit(rdmult),
+        sadperbit: av1_set_sad_per_bit(qindex, bit_depth),
+        seg_skip_block: seg.feature_active(segment_id, aom_quant::SEG_LVL_SKIP),
+    }
+}

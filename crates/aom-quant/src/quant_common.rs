@@ -190,3 +190,54 @@ pub fn av1_ac_quant_qtx(qindex: i32, delta: i32, bit_depth: u8) -> i16 {
         _ => -1,
     }
 }
+
+/// `MAX_SEGMENTS` (`av1/common/seg_common.h`).
+pub const MAX_SEGMENTS: usize = 8;
+/// `SEG_LVL_MAX` (`av1/common/seg_common.h`) — number of segment features.
+pub const SEG_LVL_MAX: usize = 8;
+/// `SEG_LVL_ALT_Q` (`av1/common/seg_common.h`) — the alternate-quantizer
+/// segment feature index.
+pub const SEG_LVL_ALT_Q: usize = 0;
+/// `SEG_LVL_SKIP` (`av1/common/seg_common.h`) — the (0,0)+skip segment feature.
+pub const SEG_LVL_SKIP: usize = 6;
+
+/// `struct segmentation` (`av1/common/seg_common.h`), the fields the quantizer
+/// path reads: the master enable plus the per-segment feature mask/data.
+#[derive(Clone, Debug, Default)]
+pub struct Segmentation {
+    /// `seg->enabled`.
+    pub enabled: bool,
+    /// `seg->feature_mask[segment_id]` — bit `1 << feature` marks the feature
+    /// active for that segment.
+    pub feature_mask: [u32; MAX_SEGMENTS],
+    /// `seg->feature_data[segment_id][feature]`.
+    pub feature_data: [[i16; SEG_LVL_MAX]; MAX_SEGMENTS],
+}
+
+impl Segmentation {
+    /// `segfeature_active(seg, segment_id, feature_id)` (`seg_common.h`).
+    #[inline]
+    pub fn feature_active(&self, segment_id: usize, feature_id: usize) -> bool {
+        self.enabled && (self.feature_mask[segment_id] & (1 << feature_id)) != 0
+    }
+
+    /// `get_segdata(seg, segment_id, feature_id)` (`seg_common.h`).
+    #[inline]
+    pub fn segdata(&self, segment_id: usize, feature_id: usize) -> i32 {
+        i32::from(self.feature_data[segment_id][feature_id])
+    }
+}
+
+/// `av1_get_qindex` (`av1/common/quant_common.c`) — the effective qindex for a
+/// segment: `base_qindex` shifted by the segment's `SEG_LVL_ALT_Q` data (when
+/// that feature is active), clamped to `[0, MAXQ]`.
+#[inline]
+pub fn av1_get_qindex(seg: &Segmentation, segment_id: usize, base_qindex: i32) -> i32 {
+    if seg.feature_active(segment_id, SEG_LVL_ALT_Q) {
+        let data = seg.segdata(segment_id, SEG_LVL_ALT_Q);
+        let seg_qindex = base_qindex + data;
+        seg_qindex.clamp(0, MAXQ)
+    } else {
+        base_qindex
+    }
+}

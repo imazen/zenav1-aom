@@ -18,11 +18,13 @@
                                       av1_is_directional_mode, av1_use_angle_delta */
 #include "av1/common/common_data.h" /* txsize_sqr_map */
 #include "av1/common/entropymode.h" /* av1_ext_tx_inv */
-#include "av1/common/quant_common.h"
+#include "av1/common/quant_common.h" /* av1_get_qindex */
+#include "av1/common/seg_common.h" /* struct segmentation, SEG_LVL_ALT_Q */
 #include "av1/common/idct.h" /* MAX_TX_SCALE, av1_get_tx_scale */
 #include "av1/encoder/av1_quantize.h" /* QUANTS, Dequants, av1_build_quantizer */
 #include "av1/encoder/cost.h" /* av1_cost_tokens_from_cdf */
-#include "av1/encoder/rd.h"
+#include "av1/encoder/ratectrl.h" /* av1_convert_qindex_to_q */
+#include "av1/encoder/rd.h" /* av1_set_error_per_bit */
 #include "aom_ports/mem.h" /* RIGHT_SIGNED_SHIFT */
 
 /* Exported (RTCD `_c`) transform-domain distortion primitives; hand-declared
@@ -356,4 +358,169 @@ int shim_get_tx_type_cost(const int *intra_costs, const int *inter_costs,
     }
   }
   return 0;
+}
+
+/* ---- set_q_index / av1_init_plane_quantizers -------------------------------
+ * (1) shim_set_q_index: transcribes the static set_q_index
+ *     (av1/encoder/av1_quantize.c) — the per-qindex row selection out of
+ *     QUANTS/Dequants into the MACROBLOCK plane fields — over tables filled by
+ *     the REAL exported av1_build_quantizer. Out layout: [plane 0..3][7][8],
+ *     row order = the C assignment order per plane:
+ *       [0] quant_QTX  [1] quant_fp_QTX [2] round_fp_QTX [3] quant_shift_QTX
+ *       [4] zbin_QTX   [5] round_QTX    [6] dequant_QTX
+ * (2) shim_get_qindex: the REAL exported av1_get_qindex over a stack
+ *     struct segmentation (enabled + feature_mask/feature_data marshalled).
+ * (3) shim_error_per_bit: the REAL av1_set_error_per_bit (rd.h static inline =
+ *     pristine C recompiled in this TU).
+ * (4) shim_sad_per_bit: transcribes the sad_per_bit_lut_* entry formula
+ *     (init_me_luts_bd, av1/encoder/rd.c — file-static tables) over the REAL
+ *     exported av1_convert_qindex_to_q. */
+int shim_set_q_index(int bit_depth, int y_dc_delta_q, int u_dc_delta_q,
+                     int u_ac_delta_q, int v_dc_delta_q, int v_ac_delta_q,
+                     int sharpness, int qindex, int16_t *out) {
+  QUANTS *quants = (QUANTS *)malloc(sizeof(QUANTS));
+  Dequants *deq = (Dequants *)malloc(sizeof(Dequants));
+  if (!quants || !deq) {
+    free(quants);
+    free(deq);
+    return -1;
+  }
+  av1_build_quantizer((aom_bit_depth_t)bit_depth, y_dc_delta_q, u_dc_delta_q,
+                      u_ac_delta_q, v_dc_delta_q, v_ac_delta_q, quants, deq,
+                      sharpness);
+  {
+    /* set_q_index body (av1_quantize.c), Y/U/V blocks verbatim: the seven
+     * row pointers each plane's MACROBLOCK_PLANE receives for `qindex`. */
+    const int16_t *rows[3][7] = {
+      { quants->y_quant[qindex], quants->y_quant_fp[qindex],
+        quants->y_round_fp[qindex], quants->y_quant_shift[qindex],
+        quants->y_zbin[qindex], quants->y_round[qindex],
+        deq->y_dequant_QTX[qindex] },
+      { quants->u_quant[qindex], quants->u_quant_fp[qindex],
+        quants->u_round_fp[qindex], quants->u_quant_shift[qindex],
+        quants->u_zbin[qindex], quants->u_round[qindex],
+        deq->u_dequant_QTX[qindex] },
+      { quants->v_quant[qindex], quants->v_quant_fp[qindex],
+        quants->v_round_fp[qindex], quants->v_quant_shift[qindex],
+        quants->v_zbin[qindex], quants->v_round[qindex],
+        deq->v_dequant_QTX[qindex] },
+    };
+    for (int p = 0; p < 3; ++p) {
+      for (int r = 0; r < 7; ++r) {
+        memcpy(out + ((size_t)p * 7 + r) * 8, rows[p][r], 8 * sizeof(int16_t));
+      }
+    }
+  }
+  free(quants);
+  free(deq);
+  return 0;
+}
+
+int shim_get_qindex(int enabled, const uint32_t *feature_mask,
+                    const int16_t *altq_data, int segment_id,
+                    int base_qindex) {
+  struct segmentation seg;
+  memset(&seg, 0, sizeof(seg));
+  seg.enabled = (uint8_t)enabled;
+  for (int i = 0; i < MAX_SEGMENTS; ++i) {
+    seg.feature_mask[i] = feature_mask[i];
+    seg.feature_data[i][SEG_LVL_ALT_Q] = altq_data[i];
+  }
+  return av1_get_qindex(&seg, segment_id, base_qindex);
+}
+
+int shim_error_per_bit(int rdmult) {
+  int errorperbit = 0;
+  av1_set_error_per_bit(&errorperbit, rdmult);
+  return errorperbit;
+}
+
+int shim_sad_per_bit(int qindex, int bit_depth) {
+  /* init_me_luts_bd entry (rd.c): (int)(0.0418 * q + 2.4107) over the REAL
+   * av1_convert_qindex_to_q; av1_set_sad_per_bit is a plain lut lookup. */
+  const double q = av1_convert_qindex_to_q(qindex, (aom_bit_depth_t)bit_depth);
+  return (int)(0.0418 * q + 2.4107);
+}
+
+/* shim_quant_plane_rows: quantize through the REAL exported quantize facades
+ * (av1_[highbd_]quantize_{fp,b,dc}_facade) with a MACROBLOCK_PLANE whose seven
+ * QTX rows are installed exactly as set_q_index installs them — so the FACADE
+ * (not the caller) picks which rows each quantizer kind reads. This is the
+ * oracle for the Rust QuantParams::from_plane_rows row-choice bridge.
+ * `rows` = the [7][8] one-plane blob in shim_set_q_index order; `kind` matches
+ * quant_func_list: 0 = AV1_XFORM_QUANT_FP, 1 = _B, 2 = _DC. Flat (no qmatrix).
+ * The FP/B facades dispatch RTCD kernels — call ref_init() first. */
+uint16_t shim_quant_plane_rows(int kind, int is_hbd, const int32_t *coeff,
+                               int n, const int16_t *rows, const int16_t *scan,
+                               const int16_t *iscan, int log_scale,
+                               int32_t *qcoeff, int32_t *dqcoeff) {
+  /* The AVX2 quantizers RTCD dispatches to use ALIGNED 32-byte loads/stores
+   * (DECLARE_ALIGNED buffers in libaom); bounce through 32-byte-aligned
+   * copies so the caller's buffers can have any alignment. */
+  const size_t bytes = ((size_t)n * sizeof(int32_t) + 31) & ~(size_t)31;
+  int32_t *acoeff = (int32_t *)aligned_alloc(32, bytes);
+  int32_t *aq = (int32_t *)aligned_alloc(32, bytes);
+  int32_t *adq = (int32_t *)aligned_alloc(32, bytes);
+  if (!acoeff || !aq || !adq) {
+    free(acoeff);
+    free(aq);
+    free(adq);
+    return 0xffff;
+  }
+  memcpy(acoeff, coeff, (size_t)n * sizeof(int32_t));
+  memset(aq, 0, bytes);
+  memset(adq, 0, bytes);
+  MACROBLOCK_PLANE p;
+  memset(&p, 0, sizeof(p));
+  p.quant_QTX = rows + 0 * 8;
+  p.quant_fp_QTX = rows + 1 * 8;
+  p.round_fp_QTX = rows + 2 * 8;
+  p.quant_shift_QTX = rows + 3 * 8;
+  p.zbin_QTX = rows + 4 * 8;
+  p.round_QTX = rows + 5 * 8;
+  p.dequant_QTX = rows + 6 * 8;
+  SCAN_ORDER sc = { scan, iscan };
+  QUANT_PARAM qparam;
+  memset(&qparam, 0, sizeof(qparam));
+  qparam.log_scale = log_scale;
+  qparam.qmatrix = NULL;
+  qparam.iqmatrix = NULL;
+  uint16_t eob = 0;
+  if (is_hbd) {
+    switch (kind) {
+      case 0:
+        av1_highbd_quantize_fp_facade(acoeff, (intptr_t)n, &p, aq, adq,
+                                      &eob, &sc, &qparam);
+        break;
+      case 1:
+        av1_highbd_quantize_b_facade(acoeff, (intptr_t)n, &p, aq, adq,
+                                     &eob, &sc, &qparam);
+        break;
+      default:
+        av1_highbd_quantize_dc_facade(acoeff, (intptr_t)n, &p, aq, adq,
+                                      &eob, &sc, &qparam);
+        break;
+    }
+  } else {
+    switch (kind) {
+      case 0:
+        av1_quantize_fp_facade(acoeff, (intptr_t)n, &p, aq, adq, &eob,
+                               &sc, &qparam);
+        break;
+      case 1:
+        av1_quantize_b_facade(acoeff, (intptr_t)n, &p, aq, adq, &eob,
+                              &sc, &qparam);
+        break;
+      default:
+        av1_quantize_dc_facade(acoeff, (intptr_t)n, &p, aq, adq, &eob,
+                               &sc, &qparam);
+        break;
+    }
+  }
+  memcpy(qcoeff, aq, (size_t)n * sizeof(int32_t));
+  memcpy(dqcoeff, adq, (size_t)n * sizeof(int32_t));
+  free(acoeff);
+  free(aq);
+  free(adq);
+  return eob;
 }
