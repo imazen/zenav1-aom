@@ -32,6 +32,8 @@ CONSTS = {
     "MAX_SEGMENTS": 8, "PARTITION_CONTEXTS": 20, "EXT_PARTITION_TYPES": 10,
     "PALATTE_BSIZE_CTXS": 7, "PALETTE_Y_MODE_CONTEXTS": 3,
     "PALETTE_UV_MODE_CONTEXTS": 2, "PALETTE_SIZES": 7, "BLOCK_SIZES_ALL": 22,
+    "PALETTE_COLOR_INDEX_CONTEXTS": 5, "PALETTE_COLORS": 8,
+    "RESTORE_SWITCHABLE_TYPES": 3,
     "FILTER_INTRA_MODES": 5, "CFL_JOINT_SIGNS": 8, "CFL_ALPHA_CONTEXTS": 6,
     "CFL_ALPHABET_SIZE": 16, "DELTA_Q_PROBS": 3, "FRAME_LF_COUNT": 4,
     "DELTA_LF_PROBS": 3, "MAX_TX_CATS": 4, "TX_SIZE_CONTEXTS": 3,
@@ -222,6 +224,14 @@ def main():
     d, f = extract(mode_c, "default_palette_uv_size_cdf")
     assert d == [7, 8], d
     emit("DEFAULT_PALETTE_UV_SIZE", d, f, "`default_palette_uv_size_cdf[PALATTE_BSIZE_CTXS]`.")
+    d, f = extract(mode_c, "default_palette_y_color_index_cdf")
+    assert d == [7, 5, 9], d
+    emit("DEFAULT_PALETTE_Y_COLOR_INDEX", d, f,
+         "`default_palette_y_color_index_cdf[PALETTE_SIZES][PALETTE_COLOR_INDEX_CONTEXTS]`.")
+    d, f = extract(mode_c, "default_palette_uv_color_index_cdf")
+    assert d == [7, 5, 9], d
+    emit("DEFAULT_PALETTE_UV_COLOR_INDEX", d, f,
+         "`default_palette_uv_color_index_cdf[PALETTE_SIZES][PALETTE_COLOR_INDEX_CONTEXTS]`.")
     d, f = extract(mode_c, "default_filter_intra_cdfs")
     assert d == [22, 3], d
     emit("DEFAULT_FILTER_INTRA", d, f, "`default_filter_intra_cdfs[BLOCK_SIZES_ALL]`.")
@@ -268,6 +278,17 @@ def main():
          "`default_intra_ext_tx_cdf[1]` (EXT_TX_SET_DTT4_IDTX_1DDCT, 7-symbol) sliced to 8 slots.")
     emit("DEFAULT_EXT_TX_DTT4", [4, 13, 6], slice_set(2, 6),
          "`default_intra_ext_tx_cdf[2]` (EXT_TX_SET_DTT4_IDTX, 5-symbol) sliced to 6 slots.")
+
+    # --- loop-restoration mode CDFs (single instances) ---
+    d, f = extract(mode_c, "default_switchable_restore_cdf")
+    assert d == [4], d
+    emit("DEFAULT_SWITCHABLE_RESTORE", d, f, "`default_switchable_restore_cdf`.")
+    d, f = extract(mode_c, "default_wiener_restore_cdf")
+    assert d == [3], d
+    emit("DEFAULT_WIENER_RESTORE", d, f, "`default_wiener_restore_cdf`.")
+    d, f = extract(mode_c, "default_sgrproj_restore_cdf")
+    assert d == [3], d
+    emit("DEFAULT_SGRPROJ_RESTORE", d, f, "`default_sgrproj_restore_cdf`.")
 
     # --- nmv (entropymv.c): struct initializer -> joints + 2 packed comps ---
     m = re.search(r"default_nmv_context\s*=\s*", mv_c)

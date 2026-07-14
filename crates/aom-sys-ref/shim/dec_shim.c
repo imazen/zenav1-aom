@@ -18,7 +18,7 @@
  *     *default_frame_context; large_scale=0 skips the buffer-pool arm)), then
  *     memcpy the KF-path FRAME_CONTEXT fields to a flat u16 layout mirroring
  *     aom-entropy's KfFrameContext field order (coeff arena LAST, in aom-txb's
- *     CdfArena region layout). Total DUMP_KF_FC_LEN = 6431 u16.
+ *     CdfArena region layout). Total DUMP_KF_FC_LEN = 7061 u16.
  *
  *  3. shim_encode_av1_kf / shim_encode_av1_kf_sb128 / shim_encode_av1_kf_tiles
  *     / shim_decode_av1_kf — the REAL public codec API (aom_codec_av1_cx /
@@ -232,7 +232,7 @@ int shim_scale_chroma_bsize(int bsize, int ss_x, int ss_y) {
 /* Flat u16 layout — MUST mirror aom-entropy KfFrameContext field order.
  * Mode fields first (exact-sized: ext-tx instances sliced to nsym+1 leading
  * slots), then the aom-txb coefficient arena (4045). */
-#define DUMP_KF_FC_LEN 6431
+#define DUMP_KF_FC_LEN 7061
 
 static uint16_t *dump_nmv_comp(const nmv_component *c, uint16_t *p) {
   /* aom-entropy 69-u16 nmv_component packing:
@@ -287,6 +287,8 @@ int shim_dump_default_kf_fc(int base_qindex, uint16_t *out) {
   CP(fc->palette_uv_mode_cdf);   /* [2][3]        6 */
   CP(fc->palette_y_size_cdf);    /* [7][8]       56 */
   CP(fc->palette_uv_size_cdf);   /* [7][8]       56 */
+  CP(fc->palette_y_color_index_cdf);  /* [7][5][9]  315 */
+  CP(fc->palette_uv_color_index_cdf); /* [7][5][9]  315 */
   CP(fc->filter_intra_cdfs);     /* [22][3]      66 */
   CP(fc->filter_intra_mode_cdf); /* [6]           6 */
   CP(fc->cfl_sign_cdf);          /* [9]           9 */

@@ -8241,7 +8241,7 @@ pub fn ref_scale_chroma_bsize(bsize: usize, ss_x: i32, ss_y: i32) -> usize {
 
 /// Flat u16 length of the default-KF-FRAME_CONTEXT dump (see dec_shim.c for
 /// the field order; the coefficient arena is the trailing 4045).
-pub const DUMP_KF_FC_LEN: usize = 6431;
+pub const DUMP_KF_FC_LEN: usize = 7061;
 
 /// Dump the REAL `av1_setup_past_independence` default KF FRAME_CONTEXT for a
 /// `base_qindex` as a flat u16 buffer mirroring `KfFrameContext`'s field order.

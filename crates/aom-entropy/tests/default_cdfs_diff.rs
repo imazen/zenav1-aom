@@ -47,6 +47,16 @@ fn flatten(fc: &KfFrameContext) -> Vec<u16> {
     for a in &fc.palette_uv_size {
         v.extend_from_slice(a);
     }
+    for a in &fc.palette_y_color_index {
+        for b in a {
+            v.extend_from_slice(b);
+        }
+    }
+    for a in &fc.palette_uv_color_index {
+        for b in a {
+            v.extend_from_slice(b);
+        }
+    }
     for a in &fc.filter_intra {
         v.extend_from_slice(a);
     }
@@ -87,7 +97,7 @@ fn flatten(fc: &KfFrameContext) -> Vec<u16> {
 }
 
 /// Field names by dump offset, for failure localization.
-const FIELDS: [(&str, usize); 28] = [
+const FIELDS: [(&str, usize); 30] = [
     ("kf_y", 350),
     ("uv_mode", 390),
     ("angle_delta", 64),
@@ -98,6 +108,8 @@ const FIELDS: [(&str, usize); 28] = [
     ("palette_uv_mode", 6),
     ("palette_y_size", 56),
     ("palette_uv_size", 56),
+    ("palette_y_color_index", 315),
+    ("palette_uv_color_index", 315),
     ("filter_intra", 66),
     ("filter_intra_mode", 6),
     ("cfl_sign", 9),

@@ -1470,6 +1470,9 @@ pub fn write_tx_size_vartx(
 
 const PALETTE_MIN_SIZE: i32 = 2;
 const PALETTE_SIZES: usize = 7;
+/// `PALETTE_COLOR_INDEX_CONTEXTS` (`entropymode.h`): the colour-index map token's
+/// context alphabet (see [`PALETTE_COLOR_INDEX_CONTEXT_LOOKUP`]).
+const PALETTE_COLOR_INDEX_CONTEXTS: usize = 5;
 /// `num_pels_log2_lookup[BLOCK_SIZES_ALL]` (`common_data.h`): log2 of a block's pixel
 /// count (`log2(w*h)`).
 const NUM_PELS_LOG2_LOOKUP: [i32; 22] = [
@@ -5772,13 +5775,18 @@ pub struct KfFrameContext {
     pub partition: [[u16; 11]; 20],
     /// `palette_y_mode_cdf[PALATTE_BSIZE_CTXS][PALETTE_Y_MODE_CONTEXTS]`,
     /// `palette_uv_mode_cdf[PALETTE_UV_MODE_CONTEXTS]`,
-    /// `palette_{y,uv}_size_cdf[PALATTE_BSIZE_CTXS]` (7 symbols). Held at C dims;
-    /// the `_fc` entry points require palette off (the colour coder needs the
-    /// neighbour palette colour caches, which are not modelled).
+    /// `palette_{y,uv}_size_cdf[PALATTE_BSIZE_CTXS]` (7 symbols). Held at C dims.
     pub palette_y_mode: [[[u16; 3]; PALETTE_Y_MODE_CONTEXTS]; PALATTE_BSIZE_CTXS],
     pub palette_uv_mode: [[u16; 3]; PALETTE_UV_MODE_CONTEXTS],
     pub palette_y_size: [[u16; 8]; PALATTE_BSIZE_CTXS],
     pub palette_uv_size: [[u16; 8]; PALATTE_BSIZE_CTXS],
+    /// `palette_{y,uv}_color_index_cdf[PALETTE_SIZES][PALETTE_COLOR_INDEX_CONTEXTS]`
+    /// (`CDF_SIZE(PALETTE_COLORS)` = 9 symbols slots): the colour-index map token CDFs
+    /// — selected by `[n - PALETTE_MIN_SIZE]` then
+    /// [`get_palette_color_index_context`]'s context, consumed by
+    /// [`decode_color_map_tokens`] / [`encode_color_map_tokens`].
+    pub palette_y_color_index: [[[u16; 9]; PALETTE_COLOR_INDEX_CONTEXTS]; PALETTE_SIZES],
+    pub palette_uv_color_index: [[[u16; 9]; PALETTE_COLOR_INDEX_CONTEXTS]; PALETTE_SIZES],
     /// `filter_intra_cdfs[BLOCK_SIZES_ALL]` — selected by bsize.
     pub filter_intra: [[u16; 3]; BLOCK_SIZES_ALL],
     /// `filter_intra_mode_cdf` (5 symbols; single instance).
@@ -5840,6 +5848,8 @@ impl KfFrameContext {
             palette_uv_mode: [[0; 3]; PALETTE_UV_MODE_CONTEXTS],
             palette_y_size: [[0; 8]; PALATTE_BSIZE_CTXS],
             palette_uv_size: [[0; 8]; PALATTE_BSIZE_CTXS],
+            palette_y_color_index: [[[0; 9]; PALETTE_COLOR_INDEX_CONTEXTS]; PALETTE_SIZES],
+            palette_uv_color_index: [[[0; 9]; PALETTE_COLOR_INDEX_CONTEXTS]; PALETTE_SIZES],
             filter_intra: [[0; 3]; BLOCK_SIZES_ALL],
             filter_intra_mode: [0; 6],
             cfl_sign: [0; 9],
@@ -5880,6 +5890,8 @@ impl KfFrameContext {
             palette_uv_mode: d::DEFAULT_PALETTE_UV_MODE,
             palette_y_size: d::DEFAULT_PALETTE_Y_SIZE,
             palette_uv_size: d::DEFAULT_PALETTE_UV_SIZE,
+            palette_y_color_index: d::DEFAULT_PALETTE_Y_COLOR_INDEX,
+            palette_uv_color_index: d::DEFAULT_PALETTE_UV_COLOR_INDEX,
             filter_intra: d::DEFAULT_FILTER_INTRA,
             filter_intra_mode: d::DEFAULT_FILTER_INTRA_MODE,
             cfl_sign: d::DEFAULT_CFL_SIGN,
