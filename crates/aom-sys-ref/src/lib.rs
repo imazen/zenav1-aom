@@ -3166,6 +3166,195 @@ pub fn ref_intra_avail(sb_size: usize, bsize: usize, mi_row: i32, mi_col: i32, u
     (out[0], out[1], out[2], out[3])
 }
 
+// av1/common/cfl.c — the exported per-size CfL `_c` kernels, reached through the
+// exported `_c` getter tables (one getter per subsample family + subtract-average +
+// hbd predict). Plain externs into libaom.a; the kernels are pure loops (no RTCD).
+// TX_SIZE parameters are `uint8_t` in C (UENUM1BYTE) — declared `u8` here.
+type CflSubsampleHbdFn = unsafe extern "C" fn(input: *const u16, input_stride: i32, output_q3: *mut u16);
+type CflSubtractAverageFn = unsafe extern "C" fn(src: *const u16, dst: *mut i16);
+type CflPredictHbdFn = unsafe extern "C" fn(src: *const i16, dst: *mut u16, dst_stride: i32, alpha_q3: i32, bd: i32);
+extern "C" {
+    fn cfl_get_luma_subsampling_420_hbd_c(tx_size: u8) -> Option<CflSubsampleHbdFn>;
+    fn cfl_get_luma_subsampling_422_hbd_c(tx_size: u8) -> Option<CflSubsampleHbdFn>;
+    fn cfl_get_luma_subsampling_444_hbd_c(tx_size: u8) -> Option<CflSubsampleHbdFn>;
+    fn cfl_get_subtract_average_fn_c(tx_size: u8) -> Option<CflSubtractAverageFn>;
+    fn cfl_get_predict_hbd_fn_c(tx_size: u8) -> Option<CflPredictHbdFn>;
+}
+
+/// Reference `cfl_luma_subsampling_{420,422,444}_hbd_c` for the LUMA `tx_size`
+/// (dims ≤ 32×32): subsample `input` (strided luma, u16) into the Q3
+/// `CFL_BUF_LINE`(32)-strided `out` buffer. `ss = (ss_x, ss_y)` selects the
+/// family: (1,1)=420, (1,0)=422, (0,0)=444.
+pub fn ref_cfl_subsample_hbd(ss: (i32, i32), tx_size: usize, input: &[u16], input_stride: usize, out: &mut [u16; 1024]) {
+    let f = unsafe {
+        match ss {
+            (1, 1) => cfl_get_luma_subsampling_420_hbd_c(tx_size as u8),
+            (1, 0) => cfl_get_luma_subsampling_422_hbd_c(tx_size as u8),
+            (0, 0) => cfl_get_luma_subsampling_444_hbd_c(tx_size as u8),
+            _ => panic!("invalid subsampling {ss:?}"),
+        }
+    }
+    .expect("no C cfl subsample kernel for this tx_size");
+    unsafe { f(input.as_ptr(), input_stride as i32, out.as_mut_ptr()) }
+}
+
+/// Reference `cfl_subtract_average_WxH_c` for the CHROMA `tx_size`: zero-mean
+/// the Q3 surface (`src`) into `dst`; both `CFL_BUF_LINE`-strided.
+pub fn ref_cfl_subtract_average(tx_size: usize, src: &[u16; 1024], dst: &mut [i16; 1024]) {
+    let f = unsafe { cfl_get_subtract_average_fn_c(tx_size as u8) }
+        .expect("no C cfl subtract-average kernel for this tx_size");
+    unsafe { f(src.as_ptr(), dst.as_mut_ptr()) }
+}
+
+/// Reference `cfl_predict_hbd_WxH_c` for the CHROMA `tx_size`: `dst` holds the
+/// DC prediction on entry and receives `clip(dst + scaled_luma(alpha_q3, ac))`.
+pub fn ref_cfl_predict_hbd(tx_size: usize, ac: &[i16; 1024], dst: &mut [u16], dst_stride: usize, alpha_q3: i32, bd: i32) {
+    let f = unsafe { cfl_get_predict_hbd_fn_c(tx_size as u8) }
+        .expect("no C cfl predict kernel for this tx_size");
+    unsafe { f(ac.as_ptr(), dst.as_mut_ptr(), dst_stride as i32, alpha_q3, bd) }
+}
+
+// dec_shim.c — decoder-track MACROBLOCKD facades over real static inlines
+// (pred_common.h / av1_common_int.h / blockd.h; scale_chroma_bsize is the one
+// verbatim transcription), the default KF FRAME_CONTEXT dump via the REAL
+// av1_setup_past_independence, and the REAL public codec API (av1_cx/av1_dx).
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_get_tx_size_context(bsize: i32, above_txfm: u8, left_txfm: u8, up_available: i32, left_available: i32, above_bsize: i32, above_inter: i32, left_bsize: i32, left_inter: i32) -> i32;
+    fn shim_set_txfm_ctxs(tx_size: i32, n4_w: i32, n4_h: i32, skip: i32, above: *mut u8, left: *mut u8);
+    fn shim_is_chroma_reference(mi_row: i32, mi_col: i32, bsize: i32, ss_x: i32, ss_y: i32) -> i32;
+    fn shim_get_max_uv_txsize(bsize: i32, ss_x: i32, ss_y: i32) -> i32;
+    fn shim_intra_mode_to_tx_type(y_mode: i32, uv_mode: i32, plane_type: i32) -> i32;
+    fn shim_av1_get_tx_type_uv_intra(y_mode: i32, uv_mode: i32, uv_tx_size: i32, reduced_tx_set: i32, lossless: i32) -> i32;
+    fn shim_tx_size_from_tx_mode(bsize: i32, tx_mode: i32) -> i32;
+    fn shim_depth_to_tx_size(depth: i32, bsize: i32) -> i32;
+    fn shim_scale_chroma_bsize(bsize: i32, ss_x: i32, ss_y: i32) -> i32;
+    fn shim_dump_default_kf_fc(base_qindex: i32, out: *mut u16) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_encode_av1_kf(y: *const u16, u: *const u16, v: *const u16, w: i32, h: i32, bd: i32, mono: i32, ss_x: i32, ss_y: i32, cq_level: i32, cpu_used: i32, out: *mut u8, out_cap: usize) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_decode_av1_kf(data: *const u8, len: usize, expect_w: i32, expect_h: i32, y: *mut u16, u: *mut u16, v: *mut u16, info_out: *mut i32) -> i32;
+}
+
+/// Reference `get_tx_size_context` (pred_common.h) over a constructed
+/// MACROBLOCKD (neighbour txfm-context bytes + availability + neighbour
+/// bsize/inter-ness).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_get_tx_size_context(bsize: usize, above_txfm: u8, left_txfm: u8, up_available: bool, left_available: bool, above_bsize: usize, above_inter: bool, left_bsize: usize, left_inter: bool) -> i32 {
+    unsafe { shim_get_tx_size_context(bsize as i32, above_txfm, left_txfm, up_available as i32, left_available as i32, above_bsize as i32, above_inter as i32, left_bsize as i32, left_inter as i32) }
+}
+
+/// Reference `set_txfm_ctxs` (av1_common_int.h): stamps `above[..n4_w]` /
+/// `left[..n4_h]`.
+pub fn ref_set_txfm_ctxs(tx_size: usize, n4_w: usize, n4_h: usize, skip: bool, above: &mut [u8], left: &mut [u8]) {
+    assert!(above.len() >= n4_w && left.len() >= n4_h);
+    unsafe { shim_set_txfm_ctxs(tx_size as i32, n4_w as i32, n4_h as i32, skip as i32, above.as_mut_ptr(), left.as_mut_ptr()) }
+}
+
+/// Reference `is_chroma_reference` (av1_common_int.h).
+pub fn ref_is_chroma_reference(mi_row: i32, mi_col: i32, bsize: usize, ss_x: i32, ss_y: i32) -> bool {
+    unsafe { shim_is_chroma_reference(mi_row, mi_col, bsize as i32, ss_x, ss_y) != 0 }
+}
+
+/// Reference `av1_get_max_uv_txsize` (blockd.h). Only valid `(bsize, ss)`
+/// combinations (the C asserts the plane bsize is real).
+pub fn ref_get_max_uv_txsize(bsize: usize, ss_x: i32, ss_y: i32) -> usize {
+    unsafe { shim_get_max_uv_txsize(bsize as i32, ss_x, ss_y) as usize }
+}
+
+/// Reference `intra_mode_to_tx_type` (blockd.h).
+pub fn ref_intra_mode_to_tx_type(y_mode: usize, uv_mode: usize, plane_type: usize) -> usize {
+    unsafe { shim_intra_mode_to_tx_type(y_mode as i32, uv_mode as i32, plane_type as i32) as usize }
+}
+
+/// Reference `av1_get_tx_type` (blockd.h), intra UV arm.
+pub fn ref_av1_get_tx_type_uv_intra(y_mode: usize, uv_mode: usize, uv_tx_size: usize, reduced_tx_set: bool, lossless: bool) -> usize {
+    unsafe { shim_av1_get_tx_type_uv_intra(y_mode as i32, uv_mode as i32, uv_tx_size as i32, reduced_tx_set as i32, lossless as i32) as usize }
+}
+
+/// Reference `tx_size_from_tx_mode` (blockd.h).
+pub fn ref_tx_size_from_tx_mode(bsize: usize, tx_mode: i32) -> usize {
+    unsafe { shim_tx_size_from_tx_mode(bsize as i32, tx_mode) as usize }
+}
+
+/// Reference `depth_to_tx_size` (blockd.h).
+pub fn ref_depth_to_tx_size(depth: i32, bsize: usize) -> usize {
+    unsafe { shim_depth_to_tx_size(depth, bsize as i32) as usize }
+}
+
+/// Reference `scale_chroma_bsize` (reconintra.c; verbatim transcription in
+/// dec_shim.c — the fn is static in a .c file).
+pub fn ref_scale_chroma_bsize(bsize: usize, ss_x: i32, ss_y: i32) -> usize {
+    unsafe { shim_scale_chroma_bsize(bsize as i32, ss_x, ss_y) as usize }
+}
+
+/// Flat u16 length of the default-KF-FRAME_CONTEXT dump (see dec_shim.c for
+/// the field order; the coefficient arena is the trailing 4045).
+pub const DUMP_KF_FC_LEN: usize = 6421;
+
+/// Dump the REAL `av1_setup_past_independence` default KF FRAME_CONTEXT for a
+/// `base_qindex` as a flat u16 buffer mirroring `KfFrameContext`'s field order.
+pub fn ref_dump_default_kf_fc(base_qindex: i32) -> Vec<u16> {
+    let mut out = vec![0u16; DUMP_KF_FC_LEN];
+    let rc = unsafe { shim_dump_default_kf_fc(base_qindex, out.as_mut_ptr()) };
+    assert_eq!(rc, 0, "shim_dump_default_kf_fc failed ({rc})");
+    out
+}
+
+/// Encode one KEY frame through the REAL `aom_codec_av1_cx` public API (the
+/// path the aomenc CLI drives) with `--cpu-used=<cpu_used> --end-usage=q
+/// --cq-level=<cq_level> --enable-cdef=0 --enable-restoration=0 --sb-size=64
+/// --deltaq-mode=0 --aq-mode=0 --enable-palette=0 --enable-intrabc=0`.
+/// Planes are u16 at every bit depth; chroma dims are `(w+ss)>>ss`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_encode_av1_kf(y: &[u16], u: &[u16], v: &[u16], w: usize, h: usize, bd: i32, mono: bool, ss_x: i32, ss_y: i32, cq_level: i32, cpu_used: i32) -> Vec<u8> {
+    let (cw, ch) = if mono { (0, 0) } else { ((w + ss_x as usize) >> ss_x, (h + ss_y as usize) >> ss_y) };
+    assert_eq!(y.len(), w * h);
+    assert!(mono || (u.len() == cw * ch && v.len() == cw * ch));
+    let mut out = vec![0u8; w * h * 8 + 65536];
+    let n = unsafe {
+        shim_encode_av1_kf(y.as_ptr(), u.as_ptr(), v.as_ptr(), w as i32, h as i32, bd, mono as i32, ss_x, ss_y, cq_level, cpu_used, out.as_mut_ptr(), out.len())
+    };
+    assert!(n > 0, "shim_encode_av1_kf failed ({n})");
+    out.truncate(n as usize);
+    out
+}
+
+/// Decoded planes + stream info from the REAL C decoder (`aom_codec_av1_dx`).
+pub struct RefDecodedFrame {
+    /// Cropped planes, tight row-major u16 (empty u/v when monochrome).
+    pub y: Vec<u16>,
+    pub u: Vec<u16>,
+    pub v: Vec<u16>,
+    /// `[bit_depth, monochrome, ss_x, ss_y, width, height]`.
+    pub info: [i32; 6],
+}
+
+/// Decode AV1 bytes through the REAL `aom_codec_av1_dx` public API — the gold
+/// pixel oracle. Errors (non-zero shim rc) panic; `expect_w/h` pin the output
+/// dims so the caller's buffers are sized before the decode.
+pub fn ref_decode_av1_kf(data: &[u8], expect_w: usize, expect_h: usize) -> RefDecodedFrame {
+    let mut y = vec![0u16; expect_w * expect_h];
+    let mut u = vec![0u16; expect_w * expect_h];
+    let mut v = vec![0u16; expect_w * expect_h];
+    let mut info = [0i32; 6];
+    let rc = unsafe {
+        shim_decode_av1_kf(data.as_ptr(), data.len(), expect_w as i32, expect_h as i32, y.as_mut_ptr(), u.as_mut_ptr(), v.as_mut_ptr(), info.as_mut_ptr())
+    };
+    assert_eq!(rc, 0, "shim_decode_av1_kf failed ({rc})");
+    let (mono, ss_x, ss_y) = (info[1] != 0, info[2] as usize, info[3] as usize);
+    if mono {
+        u.clear();
+        v.clear();
+    } else {
+        let cw = (expect_w + ss_x) >> ss_x;
+        let ch = (expect_h + ss_y) >> ss_y;
+        u.truncate(cw * ch);
+        v.truncate(cw * ch);
+    }
+    RefDecodedFrame { y, u, v, info }
+}
+
 // av1/encoder/rd.c + rd.h (RD multiplier / RDCOST) and av1/common/quant_common.c
 // (dc/ac quant lookups) — rd_shim.c. All exported symbols / real macros; no RTCD.
 extern "C" {
