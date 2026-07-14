@@ -140,6 +140,61 @@ fn noise_content(r: usize, c: usize) -> u8 {
     (64 + (x % 129)) as u8
 }
 
+/// The 2-frequency checkerboard AB-probe content family (shared by
+/// [`encoder_gate_e2e_ab_attempt`] and
+/// [`encoder_gate_lf_level_bit_exact_vs_real`]). Real aomenc auto-detects
+/// screen content on these patterns and picks GENUINELY NONZERO loop-filter
+/// levels ([8,8] / [8,3] / [7,16] / [8,8] as coded at cq32), which is exactly
+/// the nonzero LF-search path the flat/textured e2e cases never reach.
+fn ab_top_split_bottom_flat(r: usize, c: usize) -> u8 {
+    if r < 32 {
+        let period = if c < 32 { 4 } else { 6 };
+        if (r / period + c / period) % 2 == 0 {
+            80
+        } else {
+            176
+        }
+    } else {
+        128
+    }
+}
+fn ab_top_flat_bottom_split(r: usize, c: usize) -> u8 {
+    if r >= 32 {
+        let period = if c < 32 { 4 } else { 6 };
+        if (r / period + c / period) % 2 == 0 {
+            80
+        } else {
+            176
+        }
+    } else {
+        128
+    }
+}
+fn ab_left_split_right_flat(r: usize, c: usize) -> u8 {
+    if c < 32 {
+        let period = if r < 32 { 4 } else { 6 };
+        if (r / period + c / period) % 2 == 0 {
+            80
+        } else {
+            176
+        }
+    } else {
+        128
+    }
+}
+fn ab_left_flat_right_split(r: usize, c: usize) -> u8 {
+    if c >= 32 {
+        let period = if r < 32 { 4 } else { 6 };
+        if (r / period + c / period) % 2 == 0 {
+            80
+        } else {
+            176
+        }
+    } else {
+        128
+    }
+}
+
 /// Attempt the full derivation for one (w, h, mono, ss_x, ss_y, usage,
 /// cq_level) case with FLAT constant-128 source content. Returns `true` iff
 /// the assembled bytes matched the real stream byte-for-byte end to end.
@@ -668,7 +723,7 @@ fn encoder_gate_e2e_attempt() {
 /// ported, all 7 cases (including noise) now byte-match end-to-end and
 /// `decode_diff_noise_case.rs` independently confirms the decoded partition
 /// trees AND every leaf's mode/tx fields are identical, not just the raw
-/// bytes. AB (`HORZ_A`/`HORZ_B`/`VERT_A`/`VERT_B`) is still unported --
+/// bytes. AB (`HORZ_A`/`HORZ_B`/`VERT_A`/`VERT_B`) is now ported --
 /// [`encoder_gate_e2e_ab_attempt`] is the honest, unasserted probe for
 /// content that needs it.
 #[test]
@@ -722,43 +777,38 @@ fn encoder_gate_e2e_textured_attempt() {
     );
 }
 
-/// AB-partition probe (`PARTITION_HORZ_A`/`HORZ_B`/`VERT_A`/`VERT_B`, still
-/// unported -- see STATUS.md's MISSING list). Content is deliberately
-/// engineered to make an AB split RD-attractive: one half of a block is
-/// uniform (an AB type's "whole" side wants zero/near-zero residual, which
-/// only a genuinely flat region gives), the other half has TWO distinct
-/// sharp-edged sub-regions (the AB type's "split" side wants separate
-/// handling for each). E.g. `top_split_bottom_flat`: rows 0..32 hold a
-/// checkerboard on the left 32 cols and a different-frequency checkerboard
-/// on the right 32 cols (asymmetric detail -- rewards splitting the TOP
-/// into two quarters, i.e. HORZ_A's shape); rows 32..64 are flat.
+/// AB-partition probe (`PARTITION_HORZ_A`/`HORZ_B`/`VERT_A`/`VERT_B`, now
+/// PORTED). Content is deliberately engineered to make an AB split
+/// RD-attractive: one half of a block is uniform (an AB type's "whole" side
+/// wants zero/near-zero residual, which only a genuinely flat region gives),
+/// the other half has TWO distinct sharp-edged sub-regions (the AB type's
+/// "split" side wants separate handling for each). E.g.
+/// [`ab_top_split_bottom_flat`]: rows 0..32 hold a checkerboard on the left
+/// 32 cols and a different-frequency checkerboard on the right 32 cols
+/// (asymmetric detail -- rewards splitting the TOP into two quarters, i.e.
+/// HORZ_A's shape); rows 32..64 are flat.
 ///
-/// Honestly NOT asserted (mission requirement: do not assert-pass a case
-/// that isn't proven byte-identical). Each case prints match / first-
-/// divergent-byte; the final line states the honest fraction. If a case
-/// diverges, that is EXPECTED (not a bug) until AB is ported -- this test
-/// exists to give forward visibility into whether real aomenc's own RDO
-/// actually picks an AB type on this content (via the SAME kind of
-/// decode-diff `decode_diff_noise_case.rs` used to find the VERT_4 gap),
-/// not to claim AB support that doesn't exist.
+/// These patterns turn real aomenc's screen-content auto-detection ON and
+/// drive its independent loop-filter search to GENUINELY NONZERO levels
+/// (`[8,8]` / `[8,3]` / `[7,16]` / `[8,8]` as coded at cq32) -- so this is the
+/// only e2e family that exercises the nonzero LF-level path end to end. The
+/// loop-filter level is this port's OWN derivation here
+/// ([`aom_encode::lf_search::pick_filter_level`]), NOT bootstrapped.
 ///
-/// **CONFOUNDED, honestly reported: this specific content family does NOT
-/// currently isolate the AB question.** All 4 cases mismatch at byte 0 --
-/// inside the bootstrapped frame HEADER, before any partition/mode/
-/// coefficient data -- because this content's edge sharpness (even softened
-/// to the checkerboard-16px contrast that keeps the OTHER textured cases at
-/// `lf_level=[0,0]`) still pushes real aomenc's independent loop-filter
-/// search to a NONZERO level (`[7,8]..[8,16]` observed). This port's e2e
-/// pipeline bootstraps `lf_level` verbatim from the real parsed header (no
-/// LF-level search is ported -- see this file's module docs and STATUS.md's
-/// MISSING list: "every e2e case observed lf_level=[0,0] ... A nonzero-LF
-/// case is untested end-to-end"), so a header-assembly path that has NEVER
-/// been exercised end-to-end with nonzero lf_level is now confirmed broken
-/// somewhere in that untested path -- separate from, and prior to, whatever
-/// AB partitions would or wouldn't explain. Root-causing the nonzero-LF
-/// header path is out of THIS mission's scope (partition types); flagged
-/// here as a genuine, newly-confirmed gap for whichever session picks up
-/// loop-filter-level search next, not fixed or worked around.
+/// **State (2026-07-14): 3 of 4 byte-match end to end.** The 3 matching cases
+/// prove both the nonzero-LF header-assembly path AND the LF-level search are
+/// correct on byte-identical reconstruction. The one remaining mismatch,
+/// "top flat / bottom split", is NOT an LF-level bug: its coded tile diverges
+/// from real's (`TILE-BYTES-IDENTICAL=false`) at a single partition-RD node --
+/// `(mi_row=8, mi_col=12, BLOCK_16X16)`, where real picks `PARTITION_HORZ` and
+/// this port's search picks `PARTITION_SPLIT` -- so the LF search legitimately
+/// operates on different pixels and picks a different level (`[8,6]` vs
+/// `[8,3]`). That the LF DERIVATION itself is bit-exact (it reproduces real's
+/// `[8,3]` when handed real's OWN decoded reconstruction) is proven
+/// separately and asserted by [`encoder_gate_lf_level_bit_exact_vs_real`].
+/// The residual partition-RD gap is a separate, tracked investigation
+/// (STATUS.md), not an AB-coverage or LF-level defect. Not asserted here
+/// (mission requirement: do not assert-pass a case that isn't byte-identical).
 #[test]
 fn encoder_gate_e2e_ab_attempt() {
     #[allow(clippy::type_complexity)]
@@ -766,60 +816,28 @@ fn encoder_gate_e2e_ab_attempt() {
         // Detail split across the TOP two quadrants (different checkerboard
         // periods left/right), uniform BOTTOM -- HORZ_A's shape (top-left +
         // top-right split, bottom whole).
-        ("top split (2 freqs) / bottom flat", |r, c| {
-            if r < 32 {
-                let period = if c < 32 { 4 } else { 6 };
-                if (r / period + c / period) % 2 == 0 {
-                    80
-                } else {
-                    176
-                }
-            } else {
-                128
-            }
-        }),
+        (
+            "top split (2 freqs) / bottom flat",
+            ab_top_split_bottom_flat,
+        ),
         // Mirror: uniform TOP, detail split across the BOTTOM two quadrants
         // -- HORZ_B's shape.
-        ("top flat / bottom split (2 freqs)", |r, c| {
-            if r >= 32 {
-                let period = if c < 32 { 4 } else { 6 };
-                if (r / period + c / period) % 2 == 0 {
-                    80
-                } else {
-                    176
-                }
-            } else {
-                128
-            }
-        }),
+        (
+            "top flat / bottom split (2 freqs)",
+            ab_top_flat_bottom_split,
+        ),
         // Detail split across the LEFT two quadrants, uniform RIGHT --
         // VERT_A's shape.
-        ("left split (2 freqs) / right flat", |r, c| {
-            if c < 32 {
-                let period = if r < 32 { 4 } else { 6 };
-                if (r / period + c / period) % 2 == 0 {
-                    80
-                } else {
-                    176
-                }
-            } else {
-                128
-            }
-        }),
+        (
+            "left split (2 freqs) / right flat",
+            ab_left_split_right_flat,
+        ),
         // Mirror: uniform LEFT, detail split across the RIGHT two quadrants
         // -- VERT_B's shape.
-        ("left flat / right split (2 freqs)", |r, c| {
-            if c >= 32 {
-                let period = if r < 32 { 4 } else { 6 };
-                if (r / period + c / period) % 2 == 0 {
-                    80
-                } else {
-                    176
-                }
-            } else {
-                128
-            }
-        }),
+        (
+            "left flat / right split (2 freqs)",
+            ab_left_flat_right_split,
+        ),
     ];
     let mut matched = 0usize;
     for &(name, content) in cases {
@@ -830,8 +848,189 @@ fn encoder_gate_e2e_ab_attempt() {
     }
     eprintln!(
         "encoder_gate_e2e_ab_attempt: {matched}/{} AB-probe cases byte-identical end-to-end \
-         (exploratory -- AB partitions unported, see module docs; not asserted)",
+         (exploratory -- AB IS ported; the one remaining mismatch is a separate partition-RD \
+         gap at (mi_row=8,mi_col=12,BLOCK_16X16) real=HORZ/ours=SPLIT, NOT an LF-level or \
+         AB-coverage bug -- see STATUS.md; not asserted)",
         cases.len()
+    );
+}
+
+/// Run this port's loop-filter-LEVEL search
+/// ([`aom_encode::lf_search::pick_filter_level`], the `av1_pick_filter_level`
+/// port) on real aomenc's OWN reconstruction and return
+/// `(derived, real-coded)` `([v,h], u, v)` levels.
+///
+/// Method: encode with the real encoder; decode its OWN bytes to recover
+/// real's EXACT pre-loop-filter reconstruction + mi grid
+/// (`aom_decode::frame::{decode_frame_obus_prefilter, build_lf_inputs}`, both
+/// already bit-exact vs C -- decoder track); run pick_filter_level on THAT.
+/// Feeding real's own reconstruction removes the encoder-side reconstruction
+/// (partition/mode/coeff RD, which for one AB case still diverges on a
+/// separate gap) as a variable, so the returned pair isolates the LF-level
+/// derivation itself. This is the same isolation the end-to-end AB-probe's 3
+/// byte-identical cases demonstrate implicitly; here it is made explicit and
+/// assert-grade for the nonzero levels.
+#[allow(clippy::too_many_arguments)]
+fn lf_derived_vs_real_on_real_recon(
+    w: usize,
+    h: usize,
+    mono: bool,
+    ss_x: usize,
+    ss_y: usize,
+    usage: u32,
+    cq_level: i32,
+    content: impl Fn(usize, usize) -> u8,
+) -> (([i32; 2], i32, i32), ([i32; 2], i32, i32)) {
+    c::ref_init();
+    let mut y = vec![128u16; w * h];
+    for r in 0..h {
+        for col in 0..w {
+            y[r * w + col] = u16::from(content(r, col));
+        }
+    }
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + ss_x) >> ss_x, (h + ss_y) >> ss_y)
+    };
+    let u = vec![128u16; cw * ch];
+    let v = vec![128u16; cw * ch];
+    let bytes = c::ref_encode_av1_kf(
+        &y,
+        &u,
+        &v,
+        w,
+        h,
+        8,
+        mono,
+        ss_x as i32,
+        ss_y as i32,
+        cq_level,
+        0,
+        false,
+        false,
+        usage,
+        0,
+        false,
+    );
+    assert!(
+        !bytes.is_empty(),
+        "shim_encode_av1_kf must produce a stream"
+    );
+
+    let allintra = usage == 2;
+    let (t_real, cfg_real, hdr_real) = aom_decode::frame::decode_frame_obus_prefilter(&bytes)
+        .expect("decode of real aomenc bytes must succeed");
+    let (mi_real, _prm) = aom_decode::frame::build_lf_inputs(&t_real, &cfg_real, &hdr_real);
+
+    const STRIDE: usize = 320;
+    let mut src_y = vec![0u16; STRIDE * (h + 4)];
+    for r in 0..h {
+        src_y[r * STRIDE..r * STRIDE + w].copy_from_slice(&y[r * w..r * w + w]);
+    }
+    let mut src_u = vec![0u16; STRIDE * (ch + 4).max(1)];
+    let mut src_v = vec![0u16; STRIDE * (ch + 4).max(1)];
+    if !mono {
+        for r in 0..ch {
+            src_u[r * STRIDE..r * STRIDE + cw].copy_from_slice(&u[r * cw..r * cw + cw]);
+            src_v[r * STRIDE..r * STRIDE + cw].copy_from_slice(&v[r * cw..r * cw + cw]);
+        }
+    }
+    // Real's pre-filter reconstruction, re-strided to share STRIDE with src.
+    let mut ry = vec![0u16; STRIDE * (t_real.height + 4)];
+    for r in 0..t_real.height {
+        ry[r * STRIDE..r * STRIDE + t_real.width]
+            .copy_from_slice(&t_real.recon[r * t_real.stride..r * t_real.stride + t_real.width]);
+    }
+    let mut ru = vec![0u16; STRIDE * (t_real.height_uv + 4).max(1)];
+    let mut rv = vec![0u16; STRIDE * (t_real.height_uv + 4).max(1)];
+    if !mono {
+        for r in 0..t_real.height_uv {
+            ru[r * STRIDE..r * STRIDE + t_real.width_uv].copy_from_slice(
+                &t_real.recon_u[r * t_real.stride_uv..r * t_real.stride_uv + t_real.width_uv],
+            );
+            rv[r * STRIDE..r * STRIDE + t_real.width_uv].copy_from_slice(
+                &t_real.recon_v[r * t_real.stride_uv..r * t_real.stride_uv + t_real.width_uv],
+            );
+        }
+    }
+    let lf = LfSearchFrame {
+        recon_y: &ry,
+        recon_u: &ru,
+        recon_v: &rv,
+        src_y: &src_y,
+        src_u: &src_u,
+        src_v: &src_v,
+        stride: STRIDE,
+        crop_width: w as u32,
+        crop_height: h as u32,
+        ss_x,
+        ss_y,
+        bd: 8,
+        monochrome: mono,
+        mi: &mi_real,
+        mi_rows: cfg_real.mi_rows,
+        mi_cols: cfg_real.mi_cols,
+    };
+    let d = pick_filter_level(&lf, allintra, 0);
+    (
+        (d.filter_level, d.filter_level_u, d.filter_level_v),
+        (
+            hdr_real.loopfilter.filter_level,
+            hdr_real.loopfilter.filter_level_u,
+            hdr_real.loopfilter.filter_level_v,
+        ),
+    )
+}
+
+/// ASSERTED loop-filter-LEVEL bit-exactness gate. The AB-probe checkerboard
+/// content drives real aomenc to GENUINELY NONZERO loop-filter levels
+/// (`[8,8]` / `[8,3]` / `[7,16]` / `[8,8]` at cq32) -- the nonzero search path
+/// the flat/textured e2e gates (all `[0,0]`) never reach. For each case, fed
+/// real aomenc's OWN decoded reconstruction + mi grid, this port's
+/// `pick_filter_level` MUST reproduce real's coded level EXACTLY.
+///
+/// This is the honest promotion of the previously-failing nonzero-LF case to
+/// an asserted gate: it proves the loop-filter-LEVEL DERIVATION is bit-exact
+/// vs the real encoder on real's own pixels -- including "top flat / bottom
+/// split", whose end-to-end byte match is blocked ONLY by a separate
+/// partition-RD reconstruction gap (`(8,12,BLOCK_16X16)` real=HORZ/ours=SPLIT,
+/// see [`encoder_gate_e2e_ab_attempt`] + STATUS.md), NOT by the LF search.
+#[test]
+fn encoder_gate_lf_level_bit_exact_vs_real() {
+    #[allow(clippy::type_complexity)]
+    let cases: &[(&str, fn(usize, usize) -> u8)] = &[
+        ("top split / bottom flat", ab_top_split_bottom_flat),
+        ("top flat / bottom split", ab_top_flat_bottom_split),
+        ("left split / right flat", ab_left_split_right_flat),
+        ("left flat / right split", ab_left_flat_right_split),
+    ];
+    let mut saw_nonzero = false;
+    for &(name, content) in cases {
+        let (derived, real) = lf_derived_vs_real_on_real_recon(64, 64, true, 1, 1, 2, 32, content);
+        eprintln!(
+            "lf-level gate [{name}]: derived (fl={:?} u={} v={}) -- real coded (fl={:?} u={} v={})",
+            derived.0, derived.1, derived.2, real.0, real.1, real.2
+        );
+        saw_nonzero |= real.0 != [0, 0] || real.1 != 0 || real.2 != 0;
+        assert_eq!(
+            derived.0, real.0,
+            "{name}: derived luma LF level must equal real aomenc's coded level on real's own \
+             pre-filter reconstruction (av1_pick_filter_level bit-exactness)"
+        );
+        assert_eq!(
+            derived.1, real.1,
+            "{name}: derived U LF level must equal real aomenc's coded level"
+        );
+        assert_eq!(
+            derived.2, real.2,
+            "{name}: derived V LF level must equal real aomenc's coded level"
+        );
+    }
+    assert!(
+        saw_nonzero,
+        "this gate must exercise at least one genuinely NONZERO real LF level, else it proves \
+         nothing about the nonzero search path"
     );
 }
 
