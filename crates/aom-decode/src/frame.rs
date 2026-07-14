@@ -430,9 +430,10 @@ fn parse_frame_header(
         },
         film_grain_params_present: seq.film_grain_params_present,
         // coded_lossless / all_lossless are inputs to this writer-mirror
-        // reader but are stream facts on the decode side: parse as
-        // non-lossless and hard-error afterwards if the quant params imply
-        // lossless (the parse of a lossless stream is invalid).
+        // reader but are stream facts on the decode side: the probe pass below
+        // parses as non-lossless (correct for the quant + segmentation, which
+        // precede the lossless-gated tail), then recomputes them and re-parses
+        // when the stream is coded-lossless.
         ..Default::default()
     };
 
