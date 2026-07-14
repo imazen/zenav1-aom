@@ -178,18 +178,18 @@
 //! here); and the OUTPUT pack-stage state at the SB root.
 
 use crate::encode_sb::{
-    encode_sb_dry, LeafEncodeOut, LeafWinner, SbEncodeEnv, SbTree, TileCtxState,
+    LeafEncodeOut, LeafWinner, SbEncodeEnv, SbTree, TileCtxState, encode_sb_dry,
 };
 use crate::hog::prune_intra_mode_with_hog_y;
 use crate::intra_rd::{Block4x4VarInfo, IntraSbyGates, IntraSbySearchCfg};
 use crate::intra_uv_rd::{
-    chroma_plane_offset, is_chroma_reference, UvLoopPolicy, UvRdEnv, UV_CFL_PRED,
+    UV_CFL_PRED, UvLoopPolicy, UvRdEnv, chroma_plane_offset, is_chroma_reference,
 };
-use crate::mode_costs::{CflCosts, IntraModeCosts};
-use crate::partition::{rd_cost_update, rd_stats_subtraction, split_subsize, PartRdStats};
-use crate::rd_pick::{rd_pick_intra_mode_sb, RdPickUvArgs, RdPickUvOutcome, ReencodeParams};
 use crate::mode_costs::TxSizeCosts;
-use crate::tx_search::{TxTypeSearchPolicy, TxfmYrdEnv, MI_SIZE_HIGH_B, MI_SIZE_WIDE_B};
+use crate::mode_costs::{CflCosts, IntraModeCosts};
+use crate::partition::{PartRdStats, rd_cost_update, rd_stats_subtraction, split_subsize};
+use crate::rd_pick::{RdPickUvArgs, RdPickUvOutcome, ReencodeParams, rd_pick_intra_mode_sb};
+use crate::tx_search::{MI_SIZE_HIGH_B, MI_SIZE_WIDE_B, TxTypeSearchPolicy, TxfmYrdEnv};
 use aom_dist::highbd_variance;
 use aom_entropy::partition::{
     get_partition_subsize, get_plane_block_size, get_tx_size_context, partition_plane_context,
@@ -198,8 +198,9 @@ use aom_intra::cfl::CflCtx;
 use aom_txb::TxTypeCosts;
 
 /// `num_pels_log2_lookup[BLOCK_SIZES_ALL]` (common_data.h).
-const NUM_PELS_LOG2: [u32; 22] =
-    [4, 5, 5, 6, 7, 7, 8, 9, 9, 10, 11, 11, 12, 13, 13, 14, 6, 6, 8, 8, 10, 10];
+const NUM_PELS_LOG2: [u32; 22] = [
+    4, 5, 5, 6, 7, 7, 8, 9, 9, 10, 11, 11, 12, 13, 13, 14, 6, 6, 8, 8, 10, 10,
+];
 
 /// `av1_get_perpixel_variance(_facade)` for plane 0 (encodeframe.c:190):
 /// block variance against the flat `AV1_[HIGH_]VAR_OFFS` buffer (128 <<
@@ -208,10 +209,12 @@ const NUM_PELS_LOG2: [u32; 22] =
 /// family; the bd-8 variant is numerically the lowbd kernel `aomenc` uses
 /// for 8-bit sources).
 pub fn perpixel_variance_y(src: &[u16], off: usize, stride: usize, bsize: usize, bd: u8) -> u32 {
-    const BLK_W: [usize; 22] =
-        [4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64];
-    const BLK_H: [usize; 22] =
-        [4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16];
+    const BLK_W: [usize; 22] = [
+        4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
+    ];
+    const BLK_H: [usize; 22] = [
+        4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16,
+    ];
     let (w, h) = (BLK_W[bsize], BLK_H[bsize]);
     let offs = vec![128u16 << (bd - 8); w];
     let (var, _sse) = highbd_variance(&src[off..], stride, &offs, 0, w, h, bd);
@@ -236,10 +239,16 @@ pub fn log_sub_block_var(
     mb_to_bottom_edge: i32,
     bd: u8,
 ) -> (f64, f64) {
-    let right_overflow =
-        if mb_to_right_edge < 0 { ((-mb_to_right_edge) >> 3) as usize } else { 0 };
-    let bottom_overflow =
-        if mb_to_bottom_edge < 0 { ((-mb_to_bottom_edge) >> 3) as usize } else { 0 };
+    let right_overflow = if mb_to_right_edge < 0 {
+        ((-mb_to_right_edge) >> 3) as usize
+    } else {
+        0
+    };
+    let bottom_overflow = if mb_to_bottom_edge < 0 {
+        ((-mb_to_bottom_edge) >> 3) as usize
+    } else {
+        0
+    };
     let bw = 4 * MI_SIZE_WIDE_B[bsize] - right_overflow;
     let bh = 4 * MI_SIZE_HIGH_B[bsize] - bottom_overflow;
     let mut min_var_4x4 = f64::from(i32::MAX);
@@ -263,6 +272,42 @@ pub fn log_sub_block_var(
     ((min_var_4x4 / 16.0).ln_1p(), (max_var_4x4 / 16.0).ln_1p())
 }
 
+/// `x->intra_sb_rdmult_modifier` (partition_search.c:5710-5722): the ALLINTRA
+/// SB-root rdmult scale, derived once per superblock from
+/// [`log_sub_block_var`]'s `(var_min, var_max)` taken over the WHOLE SB
+/// (`bsize == cm->seq_params->sb_size`, not a sub-node). `128` (identity
+/// under the `>>7` fold in [`fold_intra_sb_rdmult`]) unless the SB spans both
+/// very-flat (`var_min < 2.0`) and very-detailed (`var_max > 4.0`) 4x4
+/// sub-blocks, in which case the multiplier is reduced (floor `128-48=80`,
+/// i.e. `>>7` ~= 0.625x) — a flatter effective rdmult for SBs whose content
+/// mixes smooth and busy regions, so RD decisions don't over-favor the busy
+/// region's higher bit cost.
+pub fn intra_sb_rdmult_modifier(var_min: f64, var_max: f64) -> i32 {
+    let mut modifier = 128i32;
+    if var_min < 2.0 && var_max > 4.0 {
+        if (var_max - var_min) > 8.0 {
+            modifier -= 48;
+        } else {
+            modifier -= ((var_max - var_min) * 6.0) as i32;
+        }
+    }
+    modifier
+}
+
+/// `setup_block_rdmult`'s ALLINTRA tail (partition_search.c:652-655): fold
+/// [`intra_sb_rdmult_modifier`] into `rdmult` (`(rdmult * modifier) >> 7` in
+/// 64-bit to avoid the 32-bit product overflowing before the shift, matching
+/// the C's explicit `(int64_t)` cast), floored at 1 (`rdmult > 0 ? rdmult :
+/// 1` — the modifier can drive it to 0 or negative for extreme `var`
+/// spreads). The caller applies this ONCE per SB and holds it constant for
+/// every node/leaf below the SB root (the C sets `x->intra_sb_rdmult_modifier`
+/// once at the root and every deeper `setup_block_rdmult` call re-reads the
+/// SAME stale field value).
+pub fn fold_intra_sb_rdmult(rdmult: i32, modifier: i32) -> i32 {
+    let folded = ((i64::from(rdmult) * i64::from(modifier)) >> 7) as i32;
+    if folded > 0 { folded } else { 1 }
+}
+
 /// The per-mi-cell winner Y mode state (`av1_update_state`'s mi-grid fill;
 /// module docs). `stride` = frame `mi_cols`.
 pub struct ModeGrid {
@@ -273,9 +318,20 @@ pub struct ModeGrid {
 impl ModeGrid {
     /// All-DC grid (harness seeds real neighbour history where relevant).
     pub fn dc(mi_rows: usize, mi_cols: usize) -> Self {
-        ModeGrid { modes: vec![0; mi_rows * mi_cols], stride: mi_cols }
+        ModeGrid {
+            modes: vec![0; mi_rows * mi_cols],
+            stride: mi_cols,
+        }
     }
-    fn stamp(&mut self, mi_row: i32, mi_col: i32, bsize: usize, mode: u8, mi_rows: i32, mi_cols: i32) {
+    fn stamp(
+        &mut self,
+        mi_row: i32,
+        mi_col: i32,
+        bsize: usize,
+        mode: u8,
+        mi_rows: i32,
+        mi_cols: i32,
+    ) {
         let rows = (MI_SIZE_HIGH_B[bsize] as i32).min(mi_rows - mi_row) as usize;
         let cols = (MI_SIZE_WIDE_B[bsize] as i32).min(mi_cols - mi_col) as usize;
         for r in 0..rows {
@@ -390,14 +446,29 @@ fn leaf_pick_sb_modes(
         let mb_right = (env.mi_cols - mi_w as i32 - mi_col) * 4 * 8;
         let mb_bottom = (env.mi_rows - mi_h as i32 - mi_row) * 4 * 8;
         prune_intra_mode_with_hog_y(
-            env.src_y, ref_off_y, env.stride, bsize, mb_right, mb_bottom, -1.2, &mut skip_mask,
+            env.src_y,
+            ref_off_y,
+            env.stride,
+            bsize,
+            mb_right,
+            mb_bottom,
+            -1.2,
+            &mut skip_mask,
         );
     }
     let gates = IntraSbyGates::speed0(skip_mask);
 
     // Neighbour winner modes (module docs: the mi-grid reads).
-    let above_mode = if up_available { Some(i32::from(grid.at(mi_row - 1, mi_col))) } else { None };
-    let left_mode = if left_available { Some(i32::from(grid.at(mi_row, mi_col - 1))) } else { None };
+    let above_mode = if up_available {
+        Some(i32::from(grid.at(mi_row - 1, mi_col)))
+    } else {
+        None
+    };
+    let left_mode = if left_available {
+        Some(i32::from(grid.at(mi_row, mi_col - 1)))
+    } else {
+        None
+    };
 
     // skip ctx: every KEY intra neighbour has skip_txfm == 0 => ctx 0.
     let skip_ctx = 0usize;
@@ -476,8 +547,15 @@ fn leaf_pick_sb_modes(
     let mut var_cache = Block4x4VarInfo::sb_cache(env.sb_size);
 
     // Chroma args (num_planes > 1).
-    let ref_off_uv =
-        chroma_plane_offset(env.base_uv, env.stride, mi_row, mi_col, bsize, env.ss_x, env.ss_y);
+    let ref_off_uv = chroma_plane_offset(
+        env.base_uv,
+        env.stride,
+        mi_row,
+        mi_col,
+        bsize,
+        env.ss_x,
+        env.ss_y,
+    );
     let mut chroma_up_available = up_available;
     let mut chroma_left_available = left_available;
     if env.ss_x != 0 && mi_w < 2 {
@@ -494,10 +572,12 @@ fn leaf_pick_sb_modes(
     let left_u: Vec<i8> = tile.left_ectx[1][lu..lu + pmh].to_vec();
     let above_v: Vec<i8> = tile.above_ectx[2][au..au + pmw].to_vec();
     let left_v: Vec<i8> = tile.left_ectx[2][lu..lu + pmh].to_vec();
-    const BLK_W: [usize; 22] =
-        [4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64];
-    const BLK_H: [usize; 22] =
-        [4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16];
+    const BLK_W: [usize; 22] = [
+        4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
+    ];
+    const BLK_H: [usize; 22] = [
+        4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16,
+    ];
     let cfl_allowed = !env.lossless && BLK_W[bsize] <= 32 && BLK_H[bsize] <= 32;
     let mut uv_env = UvRdEnv {
         sb_size: env.sb_size,
@@ -576,7 +656,11 @@ fn leaf_pick_sb_modes(
             (PartRdStats::invalid(), None)
         }
         Some(best) => {
-            let stats = PartRdStats { rate: best.rate, dist: best.dist, rdcost: best.rdcost };
+            let stats = PartRdStats {
+                rate: best.rate,
+                dist: best.dist,
+                rdcost: best.rdcost,
+            };
             let (uv_mode, angle_delta_uv, cfl_alpha_idx, cfl_alpha_signs) = match &best.uv {
                 RdPickUvOutcome::Searched(w, _) => (
                     w.uv_mode,
@@ -637,7 +721,14 @@ struct SavedCtx {
     left_t: Vec<u8>,
 }
 
-fn save_context(tile: &TileCtxState, mi_row: i32, mi_col: i32, bsize: usize, ss_x: usize, ss_y: usize) -> SavedCtx {
+fn save_context(
+    tile: &TileCtxState,
+    mi_row: i32,
+    mi_col: i32,
+    bsize: usize,
+    ss_x: usize,
+    ss_y: usize,
+) -> SavedCtx {
     let w = MI_SIZE_WIDE_B[bsize];
     let h = MI_SIZE_HIGH_B[bsize];
     let a0 = mi_col as usize;
@@ -710,8 +801,19 @@ fn rd_pick_rect_partition(
 ) -> (i64, Option<LeafWinner>) {
     let best_remain = rd_stats_subtraction(env.rdmult, best_rdc, sum_rdc);
     let (this_rdc, winner) = leaf_pick_sb_modes(
-        env, cfg, tile, grid, recon_y, recon_u, recon_v, cfl, mi_row, mi_col, subsize,
-        partition_type, &best_remain,
+        env,
+        cfg,
+        tile,
+        grid,
+        recon_y,
+        recon_u,
+        recon_v,
+        cfl,
+        mi_row,
+        mi_col,
+        subsize,
+        partition_type,
+        &best_remain,
     );
     visits.push(LeafVisit {
         mi_row,
@@ -790,8 +892,9 @@ pub fn rd_pick_partition_real(
     let prune_rect_part = [false; 2];
     let terminate_partition_search = false;
     // av1_prune_partitions_by_max_min_bsize (partition_strategy.c:1837).
-    const BLK_1D: [usize; 22] =
-        [4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64];
+    const BLK_1D: [usize; 22] = [
+        4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
+    ];
     if BLK_1D[bsize] > BLK_1D[cfg.max_partition_size] {
         // av1_set_square_split_only (encodeframe_utils.h:266).
         partition_none_allowed = false;
@@ -837,8 +940,9 @@ pub fn rd_pick_partition_real(
         let ref_off_y = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
         let mb_right = (env.mi_cols - mi_w as i32 - mi_col) * 4 * 8;
         let mb_bottom = (env.mi_rows - MI_SIZE_HIGH_B[bsize] as i32 - mi_row) * 4 * 8;
-        let (var_min, var_max) =
-            log_sub_block_var(env.src_y, ref_off_y, env.stride, bsize, mb_right, mb_bottom, env.bd);
+        let (var_min, var_max) = log_sub_block_var(
+            env.src_y, ref_off_y, env.stride, bsize, mb_right, mb_bottom, env.bd,
+        );
         if var_min < 0.272 && (var_max - var_min) > 3.0 {
             partition_none_allowed = false;
             // terminate_partition_search = 0 (:5817): already false — no
@@ -856,7 +960,11 @@ pub fn rd_pick_partition_real(
     if partition_none_allowed {
         let mut pt_cost = 0i32;
         if bsize_at_least_8x8 {
-            pt_cost = if partition_cost[0] < i32::MAX { partition_cost[0] } else { 0 };
+            pt_cost = if partition_cost[0] < i32::MAX {
+                partition_cost[0]
+            } else {
+                0
+            };
         }
         let mut partition_rdcost = PartRdStats::init();
         partition_rdcost.rate = pt_cost;
@@ -864,7 +972,18 @@ pub fn rd_pick_partition_real(
         let best_remain = rd_stats_subtraction(env.rdmult, &best_rdc, &partition_rdcost);
 
         let (mut this_rdc, winner) = leaf_pick_sb_modes(
-            env, cfg, tile, grid, recon_y, recon_u, recon_v, cfl, mi_row, mi_col, bsize, 0,
+            env,
+            cfg,
+            tile,
+            grid,
+            recon_y,
+            recon_u,
+            recon_v,
+            cfl,
+            mi_row,
+            mi_col,
+            bsize,
+            0,
             &best_remain,
         );
         visits.push(LeafVisit {
@@ -921,8 +1040,21 @@ pub fn rd_pick_partition_real(
             }
             let best_remain = rd_stats_subtraction(env.rdmult, &best_rdc, &sum_rdc);
             let (child_tree, child_rdc, child_found) = rd_pick_partition_real(
-                env, cfg, tile, grid, recon_y, recon_u, recon_v, cfl, y, x, subsize,
-                best_remain, idx, Some(&mut split_rd[idx]), visits,
+                env,
+                cfg,
+                tile,
+                grid,
+                recon_y,
+                recon_u,
+                recon_v,
+                cfl,
+                y,
+                x,
+                subsize,
+                best_remain,
+                idx,
+                Some(&mut split_rd[idx]),
+                visits,
             );
             if !child_found {
                 sum_rdc = PartRdStats::invalid();
@@ -983,8 +1115,11 @@ pub fn rd_pick_partition_real(
         // is_rect_part_allowed (:3506) with av1_active_h/v_edge at the
         // one-pass shape (encodeframe_utils.c:787/817): active iff the
         // node's mi range straddles 0 or the frame mi end.
-        let (mi_pos, dim_end) =
-            if i == 0 { (mi_row, env.mi_rows) } else { (mi_col, env.mi_cols) };
+        let (mi_pos, dim_end) = if i == 0 {
+            (mi_row, env.mi_rows)
+        } else {
+            (mi_col, env.mi_cols)
+        };
         let active_edge = (0 >= mi_pos && 0 < mi_pos + mi_step)
             || (dim_end >= mi_pos && dim_end < mi_pos + mi_step);
         if terminate_partition_search
@@ -1002,8 +1137,21 @@ pub fn rd_pick_partition_real(
 
         // Sub-block 0 at the origin (:3596).
         let (rd0, mut w0) = rd_pick_rect_partition(
-            env, cfg, tile, grid, recon_y, recon_u, recon_v, cfl, mi_row, mi_col, subsize,
-            partition_type, &best_rdc, &mut sum_rdc, visits,
+            env,
+            cfg,
+            tile,
+            grid,
+            recon_y,
+            recon_u,
+            recon_v,
+            cfl,
+            mi_row,
+            mi_col,
+            subsize,
+            partition_type,
+            &best_rdc,
+            &mut sum_rdc,
+            visits,
         );
         rect_part_rd[i][0] = rd0;
 
@@ -1025,16 +1173,48 @@ pub fn rd_pick_partition_real(
             // stamp, no rdmult save; ctx->mic already carries the pick's
             // partition — module docs #4).
             let _ = crate::encode_sb::encode_b_intra_dry(
-                env, tile, recon_y, recon_u, recon_v, cfl, w0, mi_row, mi_col, partition_type,
+                env,
+                tile,
+                recon_y,
+                recon_u,
+                recon_v,
+                cfl,
+                w0,
+                mi_row,
+                mi_col,
+                partition_type,
             );
-            grid.stamp(mi_row, mi_col, subsize, w0.mode as u8, env.mi_rows, env.mi_cols);
+            grid.stamp(
+                mi_row,
+                mi_col,
+                subsize,
+                w0.mode as u8,
+                env.mi_rows,
+                env.mi_cols,
+            );
             // Sub-block 1 at the edge position (mi_row_edge/mi_col_edge =
             // origin + mi_step, :3323-3324).
-            let (r1, c1) =
-                if i == 0 { (mi_row + mi_step, mi_col) } else { (mi_row, mi_col + mi_step) };
+            let (r1, c1) = if i == 0 {
+                (mi_row + mi_step, mi_col)
+            } else {
+                (mi_row, mi_col + mi_step)
+            };
             let (rd1, got) = rd_pick_rect_partition(
-                env, cfg, tile, grid, recon_y, recon_u, recon_v, cfl, r1, c1, subsize,
-                partition_type, &best_rdc, &mut sum_rdc, visits,
+                env,
+                cfg,
+                tile,
+                grid,
+                recon_y,
+                recon_u,
+                recon_v,
+                cfl,
+                r1,
+                c1,
+                subsize,
+                partition_type,
+                &best_rdc,
+                &mut sum_rdc,
+                visits,
             );
             rect_part_rd[i][1] = rd1;
             w1 = got;
@@ -1049,7 +1229,11 @@ pub fn rd_pick_partition_real(
                     w0.take().expect("rect winner sub 0"),
                     w1.take().expect("interior rect winner sub 1"),
                 ]);
-                best_tree = Some(if i == 0 { SbTree::Horz(pair) } else { SbTree::Vert(pair) });
+                best_tree = Some(if i == 0 {
+                    SbTree::Horz(pair)
+                } else {
+                    SbTree::Vert(pair)
+                });
             }
         }
         // else: rect_part_win_info->rect_part_win[i] = false (:3634-3636) —
@@ -1074,7 +1258,16 @@ pub fn rd_pick_partition_real(
         if do_encode {
             let mut leaves: Vec<LeafEncodeOut> = Vec::new();
             encode_sb_dry(
-                env, tile, recon_y, recon_u, recon_v, cfl, tree, mi_row, mi_col, bsize,
+                env,
+                tile,
+                recon_y,
+                recon_u,
+                recon_v,
+                cfl,
+                tree,
+                mi_row,
+                mi_col,
+                bsize,
                 &mut leaves,
             );
             // av1_update_state's mi-grid fill: leaf footprints are disjoint,
@@ -1126,7 +1319,14 @@ fn stamp_grid_from_tree(
             let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
             grid.stamp(mi_row, mi_col, sub, subs[0].mode as u8, mi_rows, mi_cols);
             if mi_row + hbs < mi_rows {
-                grid.stamp(mi_row + hbs, mi_col, sub, subs[1].mode as u8, mi_rows, mi_cols);
+                grid.stamp(
+                    mi_row + hbs,
+                    mi_col,
+                    sub,
+                    subs[1].mode as u8,
+                    mi_rows,
+                    mi_cols,
+                );
             }
         }
         SbTree::Vert(subs) => {
@@ -1134,7 +1334,14 @@ fn stamp_grid_from_tree(
             let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
             grid.stamp(mi_row, mi_col, sub, subs[0].mode as u8, mi_rows, mi_cols);
             if mi_col + hbs < mi_cols {
-                grid.stamp(mi_row, mi_col + hbs, sub, subs[1].mode as u8, mi_rows, mi_cols);
+                grid.stamp(
+                    mi_row,
+                    mi_col + hbs,
+                    sub,
+                    subs[1].mode as u8,
+                    mi_rows,
+                    mi_cols,
+                );
             }
         }
     }

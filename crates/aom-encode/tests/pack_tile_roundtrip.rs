@@ -885,3 +885,39 @@ fn pack_tile_roundtrips_through_the_read_side() {
         assert_eq!(kf_write.tx_size, kf_read.tx_size, "tx_size CDFs must match");
     }
 }
+
+/// Hand-traced arithmetic check for `intra_sb_rdmult_modifier` +
+/// `fold_intra_sb_rdmult` (partition_search.c:652/5710-5722) -- the ALLINTRA
+/// SB-root rdmult modifier `pack_tile` now folds in before each SB's search
+/// (previously the one documented "not ported" ALLINTRA rdmult input). Values
+/// hand-computed from the C: `modifier = 128; if var_min<2.0 && var_max>4.0 {
+/// modifier -= (var_max-var_min)>8.0 ? 48 : (int)((var_max-var_min)*6) }`,
+/// `rdmult = max(1, (rdmult*modifier)>>7)`.
+#[test]
+fn intra_sb_rdmult_modifier_matches_hand_traced_c() {
+    use aom_encode::partition_pick::{fold_intra_sb_rdmult, intra_sb_rdmult_modifier};
+
+    // var_min >= 2.0: gate never opens, regardless of var_max.
+    assert_eq!(intra_sb_rdmult_modifier(3.0, 3.0), 128);
+    assert_eq!(intra_sb_rdmult_modifier(2.0, 100.0), 128); // boundary: NOT < 2.0
+    // var_min < 2.0 but var_max <= 4.0: gate needs BOTH conditions.
+    assert_eq!(intra_sb_rdmult_modifier(1.0, 3.0), 128);
+    assert_eq!(intra_sb_rdmult_modifier(0.0, 4.0), 128); // boundary: NOT > 4.0
+    // Both trigger, diff <= 8.0: linear reduction (diff * 6, truncated).
+    assert_eq!(intra_sb_rdmult_modifier(1.0, 5.0), 128 - 24); // diff=4.0 -> 104
+    assert_eq!(intra_sb_rdmult_modifier(0.0, 4.5), 128 - 27); // diff=4.5 -> 101
+    assert_eq!(intra_sb_rdmult_modifier(0.0, 8.0), 128 - 48); // diff=8.0 (NOT >8.0) -> 80
+    // Both trigger, diff > 8.0: flat -48 floor.
+    assert_eq!(intra_sb_rdmult_modifier(0.0, 8.01), 128 - 48); // diff=8.01 -> 80
+    assert_eq!(intra_sb_rdmult_modifier(0.0, 15.0), 128 - 48); // diff=15.0 -> 80 (not -90)
+
+    // Fold: identity at modifier=128 (>>7 of *128 is exact).
+    assert_eq!(fold_intra_sb_rdmult(1000, 128), 1000);
+    assert_eq!(fold_intra_sb_rdmult(47829, 128), 47829);
+    // Fold: 80/128 = 0.625 scale.
+    assert_eq!(fold_intra_sb_rdmult(1000, 80), 625);
+    // Fold: floors at 1, never 0 or negative.
+    assert_eq!(fold_intra_sb_rdmult(1000, 0), 1);
+    assert_eq!(fold_intra_sb_rdmult(1, 1), 1); // (1*1)>>7 == 0 -> floored to 1
+    assert_eq!(fold_intra_sb_rdmult(100, 80), 62); // (8000)>>7 == 62 (not rounded)
+}

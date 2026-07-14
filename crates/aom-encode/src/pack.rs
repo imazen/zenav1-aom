@@ -609,10 +609,41 @@ pub fn pack_tile(
             let mi_row = mi_row0 + r * sb_mi;
             let mi_col = mi_col0 + c * sb_mi;
 
+            // ALLINTRA SB-root rdmult modifier (setup_block_rdmult,
+            // partition_search.c:652/5710-5722): computed ONCE per SB from
+            // the whole-SB source variance, then held constant for every
+            // node/leaf below it (both the search and the pack walk use the
+            // SAME folded env for this SB).
+            let sb_rdmult = if pick_cfg.allintra {
+                let mi_w = MI_SIZE_WIDE_B[sb_size] as i32;
+                let mi_h = MI_SIZE_HIGH_B[sb_size] as i32;
+                let ref_off_y =
+                    env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+                let mb_to_right_edge = (env.mi_cols - mi_w - mi_col) * 4 * 8;
+                let mb_to_bottom_edge = (env.mi_rows - mi_h - mi_row) * 4 * 8;
+                let (var_min, var_max) = crate::partition_pick::log_sub_block_var(
+                    env.src_y,
+                    ref_off_y,
+                    env.stride,
+                    sb_size,
+                    mb_to_right_edge,
+                    mb_to_bottom_edge,
+                    env.bd,
+                );
+                let modifier = crate::partition_pick::intra_sb_rdmult_modifier(var_min, var_max);
+                crate::partition_pick::fold_intra_sb_rdmult(env.rdmult, modifier)
+            } else {
+                env.rdmult
+            };
+            let sb_env = SbEncodeEnv {
+                rdmult: sb_rdmult,
+                ..*env
+            };
+
             let mut cfl_search = CflCtx::new(env.ss_x as i32, env.ss_y as i32);
             let mut visits = Vec::new();
             let (tree, _stats, found) = rd_pick_partition_real(
-                env,
+                &sb_env,
                 pick_cfg,
                 &mut search_tile,
                 &mut grid,
@@ -637,7 +668,7 @@ pub fn pack_tile(
             let mut cfl_pack = CflCtx::new(env.ss_x as i32, env.ss_y as i32);
             pack_sb(
                 enc,
-                env,
+                &sb_env,
                 pack_cfg,
                 kf,
                 &mut kfs,
