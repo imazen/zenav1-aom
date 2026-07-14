@@ -524,3 +524,70 @@ uint16_t shim_quant_plane_rows(int kind, int is_hbd, const int32_t *coeff,
   free(adq);
   return eob;
 }
+
+/* ---- av1_rd_pick_intra_sby_mode candidate loop head -------------------------
+ * (1) shim_set_y_mode_and_delta_angle: the REAL EXPORTED
+ *     set_y_mode_and_delta_angle (av1/encoder/intra_mode_search.c) over a
+ *     stack MB_MODE_INFO; returns mode and writes the delta.
+ * (2) shim_intra_sby_visits: transcribes the candidate loop's static skip
+ *     chain (intra_mode_search.c 1555-1594) over the REAL header statics
+ *     av1_is_diagonal_mode / av1_is_directional_mode / av1_use_angle_delta
+ *     (reconintra.h) and max_txsize_lookup (common_data.h). The dynamic
+ *     model-RD prune is separate; use_mb_mode_cache is modelled off.
+ * (3) shim_prune_odd_delta: transcribes
+ *     prune_luma_odd_delta_angles_using_rd_cost over a passed rd-cost array
+ *     (the fn is static and pure). */
+void set_y_mode_and_delta_angle(const int mode_idx, MB_MODE_INFO *const mbmi,
+                                int reorder_delta_angle_eval);
+
+int shim_set_y_mode_and_delta_angle(int mode_idx, int reorder,
+                                    int *out_delta) {
+  MB_MODE_INFO mbmi;
+  memset(&mbmi, 0, sizeof(mbmi));
+  set_y_mode_and_delta_angle(mode_idx, &mbmi, reorder);
+  *out_delta = mbmi.angle_delta[PLANE_TYPE_Y];
+  return mbmi.mode;
+}
+
+int shim_intra_sby_visits(int mode, int luma_delta_angle, int bsize,
+                          int enable_diagonal_intra,
+                          int enable_directional_intra, int enable_smooth_intra,
+                          int enable_paeth_intra, int enable_angle_delta,
+                          int disable_smooth_intra, int prune_filter_intra_level,
+                          const uint16_t *intra_y_mode_mask /*[5]*/,
+                          const uint8_t *directional_mode_skip_mask /*[13]*/) {
+  const PREDICTION_MODE m = (PREDICTION_MODE)mode;
+  const int is_diagonal_mode = av1_is_diagonal_mode(m);
+  if (is_diagonal_mode && !enable_diagonal_intra) return 0;
+  if (av1_is_directional_mode(m) && !enable_directional_intra) return 0;
+  if ((!enable_smooth_intra || disable_smooth_intra) &&
+      (m == SMOOTH_H_PRED || m == SMOOTH_V_PRED))
+    return 0;
+  if (!enable_smooth_intra && m == SMOOTH_PRED) return 0;
+  if (disable_smooth_intra && prune_filter_intra_level == 0 &&
+      m == SMOOTH_PRED)
+    return 0;
+  if (!enable_paeth_intra && m == PAETH_PRED) return 0;
+  const int is_directional_mode = av1_is_directional_mode(m);
+  if (is_directional_mode && directional_mode_skip_mask[m]) return 0;
+  if (is_directional_mode &&
+      !(av1_use_angle_delta((BLOCK_SIZE)bsize) && enable_angle_delta) &&
+      luma_delta_angle != 0)
+    return 0;
+  if (!(intra_y_mode_mask[max_txsize_lookup[bsize]] & (1 << m))) return 0;
+  return 1;
+}
+
+int shim_prune_odd_delta(int mode, int luma_delta_angle,
+                         const int64_t *intra_modes_rd_cost /*[9]*/,
+                         int64_t best_rd,
+                         int prune_luma_odd_delta_angles_in_intra) {
+  if (!prune_luma_odd_delta_angles_in_intra ||
+      !av1_is_directional_mode((PREDICTION_MODE)mode) ||
+      !(abs(luma_delta_angle) & 1) || best_rd == INT64_MAX)
+    return 0;
+  const int64_t rd_thresh = best_rd + (best_rd >> 3);
+  return intra_modes_rd_cost[luma_delta_angle + MAX_ANGLE_DELTA] > rd_thresh &&
+         intra_modes_rd_cost[luma_delta_angle + MAX_ANGLE_DELTA + 2] >
+             rd_thresh;
+}

@@ -3656,3 +3656,96 @@ pub fn ref_quant_plane_rows(
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// av1_rd_pick_intra_sby_mode candidate-loop head (rd_shim.c)
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn shim_set_y_mode_and_delta_angle(mode_idx: i32, reorder: i32, out_delta: *mut i32) -> i32;
+    fn shim_intra_sby_visits(
+        mode: i32,
+        luma_delta_angle: i32,
+        bsize: i32,
+        enable_diagonal_intra: i32,
+        enable_directional_intra: i32,
+        enable_smooth_intra: i32,
+        enable_paeth_intra: i32,
+        enable_angle_delta: i32,
+        disable_smooth_intra: i32,
+        prune_filter_intra_level: i32,
+        intra_y_mode_mask: *const u16,
+        directional_mode_skip_mask: *const u8,
+    ) -> i32;
+    fn shim_prune_odd_delta(
+        mode: i32,
+        luma_delta_angle: i32,
+        intra_modes_rd_cost: *const i64,
+        best_rd: i64,
+        prune: i32,
+    ) -> i32;
+}
+
+/// The REAL exported `set_y_mode_and_delta_angle` (intra_mode_search.c):
+/// returns `(mode, angle_delta_y)` for a candidate loop index.
+pub fn ref_set_y_mode_and_delta_angle(mode_idx: i32, reorder: bool) -> (i32, i32) {
+    let mut delta = 0i32;
+    let mode = unsafe { shim_set_y_mode_and_delta_angle(mode_idx, reorder as i32, &mut delta) };
+    (mode, delta)
+}
+
+/// Reference for the candidate loop's static skip chain (transcription over
+/// the REAL `av1_is_diagonal_mode` / `av1_is_directional_mode` /
+/// `av1_use_angle_delta` / `max_txsize_lookup`). Returns `true` = evaluated.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_intra_sby_visits(
+    mode: i32,
+    luma_delta_angle: i32,
+    bsize: i32,
+    enable_diagonal_intra: bool,
+    enable_directional_intra: bool,
+    enable_smooth_intra: bool,
+    enable_paeth_intra: bool,
+    enable_angle_delta: bool,
+    disable_smooth_intra: bool,
+    prune_filter_intra_level: i32,
+    intra_y_mode_mask: &[u16; 5],
+    directional_mode_skip_mask: &[u8; 13],
+) -> bool {
+    unsafe {
+        shim_intra_sby_visits(
+            mode,
+            luma_delta_angle,
+            bsize,
+            enable_diagonal_intra as i32,
+            enable_directional_intra as i32,
+            enable_smooth_intra as i32,
+            enable_paeth_intra as i32,
+            enable_angle_delta as i32,
+            disable_smooth_intra as i32,
+            prune_filter_intra_level,
+            intra_y_mode_mask.as_ptr(),
+            directional_mode_skip_mask.as_ptr(),
+        ) != 0
+    }
+}
+
+/// Reference `prune_luma_odd_delta_angles_using_rd_cost` (transcription; the
+/// C fn is static and pure).
+pub fn ref_prune_odd_delta(
+    mode: i32,
+    luma_delta_angle: i32,
+    intra_modes_rd_cost: &[i64; 9],
+    best_rd: i64,
+    prune: bool,
+) -> bool {
+    unsafe {
+        shim_prune_odd_delta(
+            mode,
+            luma_delta_angle,
+            intra_modes_rd_cost.as_ptr(),
+            best_rd,
+            prune as i32,
+        ) != 0
+    }
+}
