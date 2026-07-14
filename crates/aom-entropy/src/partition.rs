@@ -4702,3 +4702,70 @@ pub fn has_bottom_left(
         ((table[idx1] >> idx2) & 1) as i32
     }
 }
+
+/// Intra neighbour-availability composition — the reference-pixel counts
+/// `av1_predict_intra_block` (reconintra.c) computes before predicting: how many
+/// above / above-right / left / below-left samples are available given the
+/// block's grid position, the frame/tile bounds, and the mode. Composes
+/// [`has_top_right`] / [`has_bottom_left`] with the have_top/have_left/xr/yd
+/// geometry. Returns `(n_top_px, n_topright_px, n_left_px, n_bottomleft_px)` — the
+/// exact inputs `aom_intra::predict_intra_high` needs. Shared by the decode
+/// reconstruction driver and the encoder's intra RD search.
+///
+/// `up_available`/`left_available` are the plane's neighbour flags
+/// (`mi_row > tile_row_start` / `mi_col > tile_col_start` for luma; caller supplies
+/// the chroma-adjusted values). `wpx`/`hpx` are the plane block dimensions;
+/// `row_off`/`col_off` the transform-unit offset (mi units) within the block;
+/// `angle_delta` is pre-scaled by `ANGLE_STEP`.
+#[allow(clippy::too_many_arguments)]
+pub fn intra_avail(
+    sb_size: usize, bsize: usize, mi_row: i32, mi_col: i32, up_available: bool,
+    left_available: bool, tile_col_end: i32, tile_row_end: i32, partition: usize,
+    tx_size: usize, ss_x: i32, ss_y: i32, row_off: i32, col_off: i32, wpx: i32,
+    hpx: i32, mi_cols: i32, mi_rows: i32, mode: usize, angle_delta: i32,
+    use_filter_intra: bool,
+) -> (i32, i32, i32, i32) {
+    const M2A: [i32; 13] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0];
+    let txwpx = TX_SIZE_WIDE[tx_size];
+    let txhpx = TX_SIZE_HIGH[tx_size];
+    let txw = TX_SIZE_WIDE_UNIT[tx_size];
+    let txh = TX_SIZE_HIGH_UNIT[tx_size];
+    let bw_mi = MI_SIZE_WIDE[bsize];
+    let bh_mi = MI_SIZE_HIGH[bsize];
+    // mb_to_*_edge = GET_MV_SUBPEL((mi_dim - blk_mi - mi_pos) * MI_SIZE) = *4*8.
+    let mb_to_right_edge = (mi_cols - bw_mi - mi_col) * 4 * 8;
+    let mb_to_bottom_edge = (mi_rows - bh_mi - mi_row) * 4 * 8;
+    let x = col_off << 2; // MI_SIZE_LOG2
+    let y = row_off << 2;
+    let have_top = row_off != 0 || up_available;
+    let have_left = col_off != 0 || left_available;
+    let xr = (mb_to_right_edge >> (3 + ss_x)) + wpx - x - txwpx;
+    let yd = (mb_to_bottom_edge >> (3 + ss_y)) + hpx - y - txhpx;
+    let n_top_px = if have_top { txwpx.min(xr + txwpx) } else { 0 };
+    let n_left_px = if have_left { txhpx.min(yd + txhpx) } else { 0 };
+    let right_available = mi_col + ((col_off + txw) << ss_x) < tile_col_end;
+    let bottom_available = yd > 0 && mi_row + ((row_off + txh) << ss_y) < tile_row_end;
+    let is_dr = (1..=8).contains(&mode);
+    let p_angle = if is_dr { M2A[mode] + angle_delta } else { 0 };
+    let need_tr = !use_filter_intra && is_dr && p_angle < 90;
+    let need_bl = !use_filter_intra && is_dr && p_angle > 180;
+    let have_tr = if need_tr {
+        has_top_right(
+            sb_size, bsize, mi_row, mi_col, have_top, right_available, partition, tx_size, row_off,
+            col_off, ss_x, ss_y,
+        )
+    } else {
+        -1
+    };
+    let have_bl = if need_bl {
+        has_bottom_left(
+            sb_size, bsize, mi_row, mi_col, bottom_available, have_left, partition, tx_size, row_off,
+            col_off, ss_x, ss_y,
+        )
+    } else {
+        -1
+    };
+    let n_topright_px = if have_tr > 0 { txwpx.min(xr) } else { have_tr };
+    let n_bottomleft_px = if have_bl > 0 { txhpx.min(yd) } else { have_bl };
+    (n_top_px, n_topright_px, n_left_px, n_bottomleft_px)
+}

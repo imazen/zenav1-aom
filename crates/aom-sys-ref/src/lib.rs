@@ -3136,6 +3136,8 @@ extern "C" {
     fn shim_has_top_right(sb_size: i32, bsize: i32, mi_row: i32, mi_col: i32, top_available: i32, right_available: i32, partition: i32, txsz: i32, row_off: i32, col_off: i32, ss_x: i32, ss_y: i32) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn shim_has_bottom_left(sb_size: i32, bsize: i32, mi_row: i32, mi_col: i32, bottom_available: i32, left_available: i32, partition: i32, txsz: i32, row_off: i32, col_off: i32, ss_x: i32, ss_y: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_intra_avail(sb_size: i32, bsize: i32, mi_row: i32, mi_col: i32, up_available: i32, left_available: i32, tile_col_end: i32, tile_row_end: i32, partition: i32, tx_size: i32, ss_x: i32, ss_y: i32, row_off: i32, col_off: i32, wpx: i32, hpx: i32, mi_cols: i32, mi_rows: i32, mode: i32, angle_delta: i32, use_filter_intra: i32, out: *mut i32);
 }
 
 /// Reference `has_top_right` (reconintra.c): is the block's top-right reference
@@ -3150,4 +3152,16 @@ pub fn ref_has_top_right(sb_size: usize, bsize: usize, mi_row: i32, mi_col: i32,
 #[allow(clippy::too_many_arguments)]
 pub fn ref_has_bottom_left(sb_size: usize, bsize: usize, mi_row: i32, mi_col: i32, bottom_available: bool, left_available: bool, partition: usize, txsz: usize, row_off: i32, col_off: i32, ss_x: i32, ss_y: i32) -> i32 {
     unsafe { shim_has_bottom_left(sb_size as i32, bsize as i32, mi_row, mi_col, bottom_available as i32, left_available as i32, partition as i32, txsz as i32, row_off, col_off, ss_x, ss_y) }
+}
+
+/// Reference intra neighbour-availability composition (the counts computed inside
+/// `av1_predict_intra_block`). Returns `(n_top_px, n_topright_px, n_left_px,
+/// n_bottomleft_px)`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_intra_avail(sb_size: usize, bsize: usize, mi_row: i32, mi_col: i32, up_available: bool, left_available: bool, tile_col_end: i32, tile_row_end: i32, partition: usize, tx_size: usize, ss_x: i32, ss_y: i32, row_off: i32, col_off: i32, wpx: i32, hpx: i32, mi_cols: i32, mi_rows: i32, mode: usize, angle_delta: i32, use_filter_intra: bool) -> (i32, i32, i32, i32) {
+    let mut out = [0i32; 4];
+    unsafe {
+        shim_intra_avail(sb_size as i32, bsize as i32, mi_row, mi_col, up_available as i32, left_available as i32, tile_col_end, tile_row_end, partition as i32, tx_size as i32, ss_x, ss_y, row_off, col_off, wpx, hpx, mi_cols, mi_rows, mode as i32, angle_delta, use_filter_intra as i32, out.as_mut_ptr());
+    }
+    (out[0], out[1], out[2], out[3])
 }

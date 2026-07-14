@@ -263,3 +263,49 @@ int shim_has_bottom_left(int sb_size, int bsize, int mi_row, int mi_col,
     return (has_bl_table[idx1] >> idx2) & 1;
   }
 }
+
+/* shim_intra_avail: verbatim transcription of the neighbour-availability
+ * computation in av1_predict_intra_block (reconintra.c ~1729-1820), driven by
+ * explicit params (no MACROBLOCKD). Calls shim_has_top_right/bottom_left above.
+ * out[4] = { n_top_px, n_topright_px, n_left_px, n_bottomleft_px }. */
+void shim_intra_avail(int sb_size, int bsize, int mi_row, int mi_col,
+                      int up_available, int left_available, int tile_col_end,
+                      int tile_row_end, int partition, int tx_size, int ss_x,
+                      int ss_y, int row_off, int col_off, int wpx, int hpx,
+                      int mi_cols, int mi_rows, int mode, int angle_delta,
+                      int use_filter_intra, int *out) {
+  static const int m2a[13] = { 0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0 };
+  const int txwpx = tx_size_wide[tx_size], txhpx = tx_size_high[tx_size];
+  const int txw = tx_size_wide_unit[tx_size], txh = tx_size_high_unit[tx_size];
+  const int bw_mi = mi_size_wide[bsize], bh_mi = mi_size_high[bsize];
+  const int mb_to_right_edge = (mi_cols - bw_mi - mi_col) * MI_SIZE * 8;
+  const int mb_to_bottom_edge = (mi_rows - bh_mi - mi_row) * MI_SIZE * 8;
+  const int x = col_off << MI_SIZE_LOG2, y = row_off << MI_SIZE_LOG2;
+  const int have_top = row_off || up_available;
+  const int have_left = col_off || left_available;
+  const int xr = (mb_to_right_edge >> (3 + ss_x)) + wpx - x - txwpx;
+  const int yd = (mb_to_bottom_edge >> (3 + ss_y)) + hpx - y - txhpx;
+  const int n_top_px = have_top ? AOMMIN(txwpx, xr + txwpx) : 0;
+  const int n_left_px = have_left ? AOMMIN(txhpx, yd + txhpx) : 0;
+  const int right_available = mi_col + ((col_off + txw) << ss_x) < tile_col_end;
+  const int bottom_available =
+      (yd > 0) && (mi_row + ((row_off + txh) << ss_y) < tile_row_end);
+  const int is_dr = (mode >= 1 && mode <= 8);
+  const int p_angle = is_dr ? m2a[mode] + angle_delta : 0;
+  const int need_tr = use_filter_intra ? 0 : (is_dr ? (p_angle < 90) : 0);
+  const int need_bl = use_filter_intra ? 0 : (is_dr ? (p_angle > 180) : 0);
+  const int have_tr =
+      need_tr ? shim_has_top_right(sb_size, bsize, mi_row, mi_col, have_top,
+                                   right_available, partition, tx_size, row_off,
+                                   col_off, ss_x, ss_y)
+              : -1;
+  const int have_bl =
+      need_bl ? shim_has_bottom_left(sb_size, bsize, mi_row, mi_col,
+                                     bottom_available, have_left, partition,
+                                     tx_size, row_off, col_off, ss_x, ss_y)
+              : -1;
+  out[0] = n_top_px;
+  out[1] = have_tr > 0 ? AOMMIN(txwpx, xr) : have_tr;
+  out[2] = n_left_px;
+  out[3] = have_bl > 0 ? AOMMIN(txhpx, yd) : have_bl;
+}

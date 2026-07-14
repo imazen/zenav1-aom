@@ -48,6 +48,7 @@ name = "aom-intra"
 version = "0.0.1"
 dependencies = [
  "aom-sys-ref",
+ "archmage",
 ]
 
 [[package]]
