@@ -6,8 +6,18 @@
 //! ENVELOPE (every constraint, honestly):
 //! - one shown KEY frame per stream (`g_limit=1`, forced KF) — all-intra.
 //! - encoder flags: `--cpu-used=0 --end-usage=q --cq-level=<q>
-//!   --enable-cdef={0,1} --enable-restoration=0 --sb-size=64 --deltaq-mode=0
-//!   --aq-mode=0 --enable-palette=0 --enable-intrabc=0` (usage GOOD).
+//!   --enable-cdef={0,1} --enable-restoration={0,1} --sb-size=64
+//!   --deltaq-mode=0 --aq-mode={0,1,2} --enable-palette=0 --enable-intrabc=0`
+//!   over usage GOOD + ALL_INTRA, one-pass and two-pass.
+//! - SEGMENTATION IS IN THE ENVELOPE: the `--aq-mode={1,2} --passes=2` arms
+//!   carry 8-segment `SEG_LVL_ALT_Q` segmentation (variance/complexity AQ;
+//!   the two-pass recode loop is REQUIRED — one-pass never runs the aq
+//!   setup) — per-block segment-id symbols, spatial-pred contexts over the
+//!   decoded segment map, and per-segment dequants, all byte-identical.
+//!   SEG_LVL_SKIP / SEG_LVL_ALT_LF / segid_preskip streams are NOT
+//!   producible by this encoder path (ROI maps are realtime-speed>=7-only
+//!   in v3.14.1); those paths are covered by the symbol-level C-diffed
+//!   roundtrips in aom-entropy instead.
 //! - DEBLOCKING IS IN THE ENVELOPE: whatever loop-filter levels /
 //!   sharpness / mode-ref deltas the encoder picks are applied
 //!   (aom-loopfilter::frame, C-diffed in lf_apply_diff.rs). The low-cq arms
@@ -22,7 +32,7 @@
 //!   CDEF stage and counts streams whose pixels genuinely changed —
 //!   `cdef_applied` floors keep that population from silently vanishing.
 //! - single tile, no superres / film grain / screen-content tools / qm /
-//!   segmentation / lossless / 128x128 SBs (decode_frame_obus hard-errors).
+//!   lossless / 128x128 SBs (decode_frame_obus hard-errors).
 //! - sizes include non-multiple-of-SB (96x80) and non-multiple-of-8 (100x76,
 //!   the decoder's 8px-aligned mi grid cropped back).
 //! - 4:2:0 + 4:4:4 + monochrome, bit depths 8 and 10. (4:2:2 with nonzero
@@ -83,6 +93,13 @@ struct Cfg {
     restoration: bool,
     /// `--usage`: 0 = GOOD, 2 = ALL_INTRA (the zenavif/avifenc still mode).
     usage: u32,
+    /// `--aq-mode`: 1 = VARIANCE_AQ / 2 = COMPLEXITY_AQ — 8-segment
+    /// `SEG_LVL_ALT_Q` SEGMENTATION on intra frames, but only through the
+    /// two-pass recode loop (one-pass takes `encode_without_recode`, which
+    /// never runs the aq segmentation setup).
+    aq: u32,
+    /// `--passes=2` (firstpass stats + last pass).
+    two_pass: bool,
 }
 
 /// Facts the sweep asserts floors over.
@@ -102,6 +119,10 @@ struct RunFacts {
     lr_units: (usize, usize),
     /// Restoration genuinely changed at least one pixel.
     lr_applied: bool,
+    /// The stream carries SEGMENTATION (seg.enabled in the frame header).
+    seg_enabled: bool,
+    /// `av1_calculate_segdata`'s last_active_segid (7 = all 8 segments).
+    seg_last_active: i32,
 }
 
 fn run_config(cfg: &Cfg) -> RunFacts {
@@ -135,6 +156,8 @@ fn run_config(cfg: &Cfg) -> RunFacts {
         cfg.cdef,
         cfg.restoration,
         cfg.usage,
+        cfg.aq,
+        cfg.two_pass,
     );
 
     // Rust decode (hard-errors outside the envelope — that FAILS the test).
@@ -212,6 +235,10 @@ fn run_config(cfg: &Cfg) -> RunFacts {
         cfg.restoration || !lr_gated,
         "--enable-restoration=0 stream carries restoration syntax"
     );
+    assert!(
+        cfg.aq > 0 || !rust.seg_enabled,
+        "--aq-mode=0 stream carries segmentation"
+    );
     let lr_applied = if lr_gated {
         let (mut t, tcfg, header) = decode_frame_obus_prefilter(&bytes).unwrap();
         if header.loopfilter.filter_level != [0, 0] {
@@ -237,6 +264,8 @@ fn run_config(cfg: &Cfg) -> RunFacts {
         lr_gated,
         lr_units: (rust.lr_unit_counts.0, rust.lr_unit_counts.1),
         lr_applied,
+        seg_enabled: rust.seg_enabled,
+        seg_last_active: rust.seg_last_active_segid,
     }
 }
 
@@ -272,6 +301,12 @@ fn real_bitstreams_decode_byte_identical_to_c() {
     let mut lr_sgrproj_units = 0usize;
     let mut allintra_arms = 0u32;
     #[allow(clippy::too_many_arguments)]
+    let mut seg_gated = 0u32;
+    let mut seg_full_alphabet = 0u32;
+    let mut seg_deblocked = 0u32;
+    let mut seg_cdef = 0u32;
+    let mut seg_allintra = 0u32;
+    #[allow(clippy::too_many_arguments)]
     let mut run_full = |w: usize,
                         h: usize,
                         bd: i32,
@@ -280,7 +315,9 @@ fn real_bitstreams_decode_byte_identical_to_c() {
                         cq: i32,
                         cdef: bool,
                         restoration: bool,
-                        usage: u32|
+                        usage: u32,
+                        aq: u32,
+                        two_pass: bool|
      -> RunFacts {
         let f = run_config(&Cfg {
             w,
@@ -292,6 +329,8 @@ fn real_bitstreams_decode_byte_identical_to_c() {
             cdef,
             restoration,
             usage,
+            aq,
+            two_pass,
         });
         assert!(f.len > 50, "suspiciously small stream ({} bytes)", f.len);
         select_seen += f.tx_select as u32;
@@ -321,27 +360,33 @@ fn real_bitstreams_decode_byte_identical_to_c() {
         lr_wiener_units += f.lr_units.0;
         lr_sgrproj_units += f.lr_units.1;
         allintra_arms += (usage == 2) as u32;
+        seg_gated += f.seg_enabled as u32;
+        seg_full_alphabet += (f.seg_enabled && f.seg_last_active == 7) as u32;
+        seg_deblocked +=
+            (f.seg_enabled && (f.filter_level[0] != 0 || f.filter_level[1] != 0)) as u32;
+        seg_cdef += (f.seg_enabled && f.cdef_gated) as u32;
+        seg_allintra += (f.seg_enabled && usage == 2) as u32;
         n += 1;
         f
     };
     for &(w, h) in &sizes {
         for &(bd, ss, mono) in &combos {
             for &cq in &[2i32, 6] {
-                run_full(w, h, bd, ss, mono, cq, false, false, 0);
+                run_full(w, h, bd, ss, mono, cq, false, false, 0, 0, false);
             }
             if bd == 8 {
                 for &cq in &[16i32, 28] {
-                    run_full(w, h, bd, ss, mono, cq, false, false, 0);
+                    run_full(w, h, bd, ss, mono, cq, false, false, 0, 0, false);
                 }
                 // Deblocked arms: aggressive q picks nonzero filter levels.
                 for &cq in &[44i32, 52] {
-                    run_full(w, h, bd, ss, mono, cq, false, false, 0);
+                    run_full(w, h, bd, ss, mono, cq, false, false, 0, 0, false);
                 }
             } else {
                 // bd10 picks nonzero levels from cq>=8 — previously excluded,
                 // now the deblocked bd10 arm.
                 for &cq in &[16i32, 36] {
-                    run_full(w, h, bd, ss, mono, cq, false, false, 0);
+                    run_full(w, h, bd, ss, mono, cq, false, false, 0, 0, false);
                 }
             }
             // CDEF arms (--enable-cdef=1): the speed-0 CDEF search picks the
@@ -350,10 +395,10 @@ fn real_bitstreams_decode_byte_identical_to_c() {
             // ten cq-6 high-quality arms pick all-zero and code none — and
             // every gated arm changes pixels; cq 52 bd8 chains deblock+CDEF).
             for &cq in &[6i32, 36] {
-                run_full(w, h, bd, ss, mono, cq, true, false, 0);
+                run_full(w, h, bd, ss, mono, cq, true, false, 0, 0, false);
             }
             if bd == 8 {
-                run_full(w, h, bd, ss, mono, 52, true, false, 0);
+                run_full(w, h, bd, ss, mono, 52, true, false, 0, 0, false);
             }
         }
     }
@@ -370,7 +415,7 @@ fn real_bitstreams_decode_byte_identical_to_c() {
         (100, 76, (0, 0), false),
         (100, 76, (1, 1), true),
     ] {
-        run_full(w, h, 8, ss, mono, 36, false, false, 0);
+        run_full(w, h, 8, ss, mono, 36, false, false, 0, 0, false);
     }
     // LOOP-RESTORATION arms. Three pipeline shapes, all vs the C decoder:
     //  (a) --enable-restoration=1 --enable-cdef=0: the OPTIMIZED LR path
@@ -383,27 +428,56 @@ fn real_bitstreams_decode_byte_identical_to_c() {
     for &(w, h) in &sizes {
         for &(bd, ss, mono) in &combos {
             for &cq in &[6i32, 36] {
-                run_full(w, h, bd, ss, mono, cq, false, true, 0); // (a)
+                run_full(w, h, bd, ss, mono, cq, false, true, 0, 0, false); // (a)
             }
-            run_full(w, h, bd, ss, mono, 36, true, true, 0); // (b)
+            run_full(w, h, bd, ss, mono, 36, true, true, 0, 0, false); // (b)
             for &cq in &[6i32, 36] {
-                run_full(w, h, bd, ss, mono, cq, true, true, 2); // (c) lr+cdef
+                run_full(w, h, bd, ss, mono, cq, true, true, 2, 0, false); // (c) lr+cdef
             }
-            run_full(w, h, bd, ss, mono, 36, false, true, 2); // (c) optimized
+            run_full(w, h, bd, ss, mono, 36, false, true, 2, 0, false); // (c) optimized
             if bd == 8 {
                 // deblock + CDEF + restoration chained, GOOD and ALLINTRA.
-                run_full(w, h, bd, ss, mono, 52, true, true, 0);
-                run_full(w, h, bd, ss, mono, 52, true, true, 2);
+                run_full(w, h, bd, ss, mono, 52, true, true, 0, 0, false);
+                run_full(w, h, bd, ss, mono, 52, true, true, 2, 0, false);
+            }
+        }
+    }
+    // SEGMENTATION arms (--aq-mode>0 --passes=2). VARIANCE_AQ (1) /
+    // COMPLEXITY_AQ (2) enable 8-segment SEG_LVL_ALT_Q segmentation on intra
+    // frames — ONLY through the two-pass recode loop (one-pass encodes take
+    // encode_without_recode, which never runs the aq setup; PROBED 2026-07-14:
+    // 108/108 two-pass aq arms carry seg with last_active_segid=7, one-pass
+    // arms never do). Every arm decodes per-block segment-id symbols
+    // (spatial-pred coded + spatial prediction on skipped blocks) and
+    // per-segment ALT_Q dequants byte-identically vs the C decoder.
+    //  - the aq1 grid sweeps GOOD + ALLINTRA at cq {6,36};
+    //  - the aq2 slice pins COMPLEXITY_AQ;
+    //  - cdef=true arms chain segmentation + CDEF;
+    //  - the bd10 cq52 arms chain segmentation + REAL deblocking (bd10 picks
+    //    nonzero LF levels there; bd8 seg streams stay level 0).
+    for &(w, h) in &sizes {
+        for &(bd, ss, mono) in &combos {
+            for &cq in &[6i32, 36] {
+                run_full(w, h, bd, ss, mono, cq, false, false, 0, 1, true);
+                run_full(w, h, bd, ss, mono, cq, false, false, 2, 1, true);
+            }
+            run_full(w, h, bd, ss, mono, 36, false, false, 0, 2, true);
+            run_full(w, h, bd, ss, mono, 36, true, false, 2, 1, true);
+            if bd == 10 {
+                run_full(w, h, bd, ss, mono, 52, false, false, 0, 1, true);
+                run_full(w, h, bd, ss, mono, 52, false, false, 2, 1, true);
             }
         }
     }
     assert_eq!(
         n,
-        30 + 18 + 18 + 12 + 9 + 30 + 9 + 90 + 18,
+        30 + 18 + 18 + 12 + 9 + 30 + 9 + 90 + 18 + 102,
         "15 combos x cq{{2,6}} + 9 bd8 x cq{{16,28}} + 9 bd8 x cq{{44,52}} + 6 bd10 x cq{{16,36}} \
          + 9 band-3 + CDEF arms (15 combos x cq{{6,36}} + 9 bd8 cq52) \
          + LR arms (15 combos x [2 opt-GOOD + 1 swap-GOOD + 2 allintra-cdef + 1 allintra-opt] \
-         + 9 bd8 x cq52 x {{GOOD,ALLINTRA}})"
+         + 9 bd8 x cq52 x {{GOOD,ALLINTRA}}) \
+         + SEG arms (15 combos x [aq1 cq{{6,36}} x {{GOOD,ALLINTRA}} + aq2 + cdef-allintra] \
+         + 6 bd10 x cq52 x {{GOOD,ALLINTRA}})"
     );
     // Speed-0 allintra codes TX_MODE_SELECT — the multi-txb path must be live.
     assert!(select_seen > 0, "no TX_MODE_SELECT stream decoded");
@@ -460,7 +534,43 @@ fn real_bitstreams_decode_byte_identical_to_c() {
         lr_wiener_units >= 30 && lr_sgrproj_units >= 60,
         "RU kernel populations too small (wiener={lr_wiener_units} sgrproj={lr_sgrproj_units})"
     );
-    assert_eq!(allintra_arms, 54, "ALL_INTRA arm count");
+    // SEGMENTATION floors (PROBED 2026-07-14 on this content: every two-pass
+    // aq arm carries segmentation with the full 8-segment alphabet; the bd10
+    // cq52 seg arms pick nonzero deblock levels; the cdef seg arms carry CDEF
+    // syntax at cq36). Byte-identity of every segmented stream is asserted
+    // inside run_config like all other arms.
+    println!(
+        "seg coverage: gated={seg_gated} full_alphabet={seg_full_alphabet} \
+         deblocked={seg_deblocked} cdef={seg_cdef} allintra={seg_allintra} of {n}"
+    );
+    assert!(
+        seg_gated >= 95,
+        "segmented population too small ({seg_gated})"
+    );
+    // VARIANCE_AQ arms carry the full 8-segment alphabet (last_active 7);
+    // the 15 COMPLEXITY_AQ arms use a SHORTER alphabet (av1_setup_in_frame_q_adj
+    // enables fewer segments) — both alphabet shapes must stay present.
+    assert!(
+        seg_full_alphabet >= 80,
+        "full-alphabet (8-segment) population too small ({seg_full_alphabet})"
+    );
+    assert!(
+        seg_gated > seg_full_alphabet,
+        "short-alphabet (COMPLEXITY_AQ) population vanished"
+    );
+    assert!(
+        seg_deblocked >= 8,
+        "segmentation+deblock population too small ({seg_deblocked})"
+    );
+    assert!(
+        seg_cdef >= 8,
+        "segmentation+CDEF population too small ({seg_cdef})"
+    );
+    assert!(
+        seg_allintra >= 40,
+        "ALL_INTRA segmented population too small ({seg_allintra})"
+    );
+    assert_eq!(allintra_arms, 54 + 51, "ALL_INTRA arm count");
 }
 
 #[test]
@@ -481,6 +591,8 @@ fn high_q_deblocked_stream_decodes_byte_identical() {
         cdef: false,
         restoration: false,
         usage: 0,
+        aq: 0,
+        two_pass: false,
     });
     println!(
         "deblocked companion: {} bytes, filter_level = {:?}",
@@ -504,7 +616,8 @@ fn deblocked_422_chroma_is_rejected_not_misdecoded() {
     let y = gen_plane(w, h, bd, seed ^ 0x1111, false);
     let u = gen_plane(w / 2, h, bd, seed ^ 0x2222, true);
     let v = gen_plane(w / 2, h, bd, seed ^ 0x3333, true);
-    let bytes = c::ref_encode_av1_kf(&y, &u, &v, w, h, bd, false, 1, 0, cq, 0, false, false, 0);
+    let bytes =
+        c::ref_encode_av1_kf(&y, &u, &v, w, h, bd, false, 1, 0, cq, 0, false, false, 0, 0, false);
     match decode_frame_obus(&bytes) {
         Err(e) => {
             println!("422 arm: REJECTED ({e})");
@@ -546,6 +659,8 @@ fn cdef_stream_decodes_byte_identical_and_filters() {
         cdef: true,
         restoration: false,
         usage: 0,
+        aq: 0,
+        two_pass: false,
     });
     println!(
         "cdef companion: {} bytes, gated={} applied={}",

@@ -7757,6 +7757,8 @@ extern "C" {
         enable_cdef: i32,
         enable_restoration: i32,
         usage: i32,
+        aq_mode: i32,
+        two_pass: i32,
         out: *mut u8,
         out_cap: usize,
     ) -> i64;
@@ -8198,8 +8200,13 @@ pub fn ref_dump_default_kf_fc(base_qindex: i32) -> Vec<u16> {
 /// path the aomenc CLI drives) with `--usage=<usage> --cpu-used=<cpu_used>
 /// --end-usage=q --cq-level=<cq_level> --enable-cdef=<enable_cdef>
 /// --enable-restoration=<enable_restoration> --sb-size=64 --deltaq-mode=0
-/// --aq-mode=0 --enable-palette=0 --enable-intrabc=0`. `usage` 0 = GOOD,
-/// 2 = ALL_INTRA (the zenavif/avifenc still-image mode).
+/// --aq-mode=<aq_mode> --enable-palette=0 --enable-intrabc=0`. `usage` 0 =
+/// GOOD, 2 = ALL_INTRA (the zenavif/avifenc still-image mode). `aq_mode` 1
+/// (variance) / 2 (complexity) enable SEGMENTATION on intra frames — 8
+/// `SEG_LVL_ALT_Q` segments (av1_vaq_frame_setup / av1_setup_in_frame_q_adj)
+/// — but ONLY with `two_pass` (the full firstpass-stats + last-pass
+/// sequence): a one-pass encode takes `encode_without_recode` and never
+/// runs the aq segmentation setup.
 /// Planes are u16 at every bit depth; chroma dims are `(w+ss)>>ss`.
 #[allow(clippy::too_many_arguments)]
 pub fn ref_encode_av1_kf(
@@ -8217,6 +8224,8 @@ pub fn ref_encode_av1_kf(
     enable_cdef: bool,
     enable_restoration: bool,
     usage: u32,
+    aq_mode: u32,
+    two_pass: bool,
 ) -> Vec<u8> {
     let (cw, ch) = if mono {
         (0, 0)
@@ -8242,6 +8251,8 @@ pub fn ref_encode_av1_kf(
             enable_cdef as i32,
             enable_restoration as i32,
             usage as i32,
+            aq_mode as i32,
+            two_pass as i32,
             out.as_mut_ptr(),
             out.len(),
         )

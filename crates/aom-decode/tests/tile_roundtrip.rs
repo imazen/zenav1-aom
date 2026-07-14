@@ -61,6 +61,7 @@ use aom_decode::{
     uv_tx_type,
 };
 use aom_encode::{QuantKind, QuantParams, xform_quant};
+use aom_quant::{SEG_LVL_ALT_Q, SEG_LVL_SKIP, Segmentation, av1_get_qindex};
 use aom_entropy::dec::OdEcDec;
 use aom_entropy::enc::OdEcEnc;
 use aom_entropy::partition::{
@@ -441,6 +442,9 @@ struct Mirror<'a> {
     mi: Vec<MiNbrKf>,
     /// Per-mi uv-mode grid (chroma edge-filter-type neighbours).
     mi_uv: Vec<i8>,
+    /// The mirror's own current-frame segment-id map (the encoder-side
+    /// `cm->cur_frame->seg_map` the spatial prediction reads).
+    seg_map: Vec<u8>,
     /// The mirror's own CfL store, fed from ITS reconstruction feedback.
     cfl: CflCtx,
     st: KfBlockState,
@@ -483,14 +487,19 @@ impl<'a> Mirror<'a> {
         } else {
             stride_uv * ((aligned_rows * 4) >> cfg.subsampling_y)
         };
+        // Same derivation as the decode driver (av1_calculate_segdata + the
+        // per-segment SEG_LVL_SKIP mask; KEY frames force update_map).
+        let (segid_preskip, last_active_segid) = aom_decode::calculate_segdata(&cfg.seg);
+        let seg_skip_feature: [bool; 8] =
+            std::array::from_fn(|i| cfg.seg.feature_mask[i] & (1 << SEG_LVL_SKIP) != 0);
         let st = KfBlockState {
-            segid_preskip: false,
-            seg_enabled: false,
-            update_map: false,
+            segid_preskip,
+            seg_enabled: cfg.seg.enabled,
+            update_map: cfg.seg.enabled,
             seg_pred: 0,
             seg_cdf_num: 0,
-            last_active_segid: 0,
-            seg_skip_feature: [false; 8],
+            last_active_segid,
+            seg_skip_feature,
             mi_row: 0,
             mi_col: 0,
             mib_size: 16,
@@ -547,6 +556,7 @@ impl<'a> Mirror<'a> {
                 (cfg.mi_rows * cfg.mi_cols) as usize
             ],
             mi_uv: vec![0; (cfg.mi_rows * cfg.mi_cols) as usize],
+            seg_map: vec![0; (cfg.mi_rows * cfg.mi_cols) as usize],
             cfl: CflCtx::new(cfg.subsampling_x as i32, cfg.subsampling_y as i32),
             st,
             dequants: plane_dequants(cfg, cfg.base_qindex),
@@ -1635,6 +1645,13 @@ struct SweepCase {
     /// (no loop filters) — validates the coded symbols + carried values.
     dlf: Option<(bool, i32)>,
     tx_mode: TxMode,
+    /// Segmentation: 0 = off; 1 = per-seed `SEG_LVL_ALT_Q` segments (no
+    /// preskip features — segment ids code POST-skip, skipped blocks take
+    /// the spatial prediction); 2 = ALT_Q + one `SEG_LVL_SKIP` segment
+    /// (segid_preskip: ids code BEFORE the skip flag, and blocks in the SKIP
+    /// segment are FORCED skip with no skip symbol) — the arm the C encoder
+    /// cannot produce (ROI maps are realtime-only in v3.14.1).
+    seg: u8,
 }
 
 fn run_roundtrip(case: &SweepCase, seed: u64, cov: &mut Coverage) {
@@ -1661,6 +1678,36 @@ fn run_roundtrip(case: &SweepCase, seed: u64, cov: &mut Coverage) {
     } else {
         [0; 5]
     };
+    // Per-seed segmentation (KEY-frame form: update_map/update_data forced):
+    // mode 1 = 2..=8 ALT_Q segments with per-seed deltas kept inside
+    // [1, 255] effective qindex (no lossless segments — the driver asserts);
+    // mode 2 = 4 ALT_Q segments where segment 2 ALSO carries SEG_LVL_SKIP
+    // (segid_preskip + forced-skip blocks).
+    let seg = if case.seg == 0 {
+        Segmentation::default()
+    } else {
+        assert!(case.base_qindex_gt0, "seg cases need base_qindex > 0");
+        let mut s = Segmentation {
+            enabled: true,
+            ..Default::default()
+        };
+        let nseg = if case.seg == 2 {
+            4
+        } else {
+            2 + (rng.next() % 7) as usize // 2..=8
+        };
+        for i in 0..nseg {
+            s.feature_mask[i] = 1 << SEG_LVL_ALT_Q;
+            let lo = -(base_qindex - 1).min(60);
+            let hi = (255 - base_qindex).min(60);
+            s.feature_data[i][SEG_LVL_ALT_Q] =
+                (lo + (rng.next() % (hi - lo + 1) as u64) as i32) as i16;
+        }
+        if case.seg == 2 {
+            s.feature_mask[2] |= 1 << SEG_LVL_SKIP;
+        }
+        s
+    };
     let cfg = KfTileConfig {
         mi_rows: case.mi_rows,
         mi_cols: case.mi_cols,
@@ -1685,7 +1732,7 @@ fn run_roundtrip(case: &SweepCase, seed: u64, cov: &mut Coverage) {
         delta_lf_multi: case.dlf.is_some_and(|(m, _)| m),
         delta_lf_res: case.dlf.map_or(1, |(_, r)| r),
         lr: Default::default(),
-        seg: Default::default(),
+        seg,
     };
     let aligned_cols = (cfg.mi_cols as usize).div_ceil(16) * 16;
     let aligned_rows = (cfg.mi_rows as usize).div_ceil(16) * 16;
@@ -1940,6 +1987,7 @@ fn kf_luma_tile_roundtrips() {
             plane_deltas: false,
             dq_res: 0,
             dlf: None,
+            seg: 0,
             tx_mode: TxMode::Largest,
         },
         SweepCase {
@@ -1957,6 +2005,7 @@ fn kf_luma_tile_roundtrips() {
             plane_deltas: true,
             dq_res: 0,
             dlf: None,
+            seg: 0,
             tx_mode: TxMode::Largest,
         },
         SweepCase {
@@ -1974,6 +2023,7 @@ fn kf_luma_tile_roundtrips() {
             plane_deltas: false,
             dq_res: 0,
             dlf: None,
+            seg: 0,
             tx_mode: TxMode::Largest,
         },
         SweepCase {
@@ -1991,6 +2041,7 @@ fn kf_luma_tile_roundtrips() {
             plane_deltas: false,
             dq_res: 0,
             dlf: None,
+            seg: 0,
             tx_mode: TxMode::Largest,
         },
         SweepCase {
@@ -2008,6 +2059,7 @@ fn kf_luma_tile_roundtrips() {
             plane_deltas: true,
             dq_res: 0,
             dlf: None,
+            seg: 0,
             tx_mode: TxMode::Largest,
         },
         SweepCase {
@@ -2025,6 +2077,7 @@ fn kf_luma_tile_roundtrips() {
             plane_deltas: true,
             dq_res: 0,
             dlf: None,
+            seg: 0,
             tx_mode: TxMode::Largest,
         },
         // 4:2:0 — shared sub-8x8 chroma rules + 420 CfL subsampling.
@@ -2043,6 +2096,7 @@ fn kf_luma_tile_roundtrips() {
             plane_deltas: true,
             dq_res: 0,
             dlf: None,
+            seg: 0,
             tx_mode: TxMode::Largest,
         },
         // 4:2:0 high bit depth + reduced tx set (chroma tx-type demotion).
@@ -2061,6 +2115,7 @@ fn kf_luma_tile_roundtrips() {
             plane_deltas: true,
             dq_res: 0,
             dlf: None,
+            seg: 0,
             tx_mode: TxMode::Largest,
         },
         // 4:2:2 — horizontal-only subsampling (tall shapes are non-conformant
@@ -2080,6 +2135,7 @@ fn kf_luma_tile_roundtrips() {
             plane_deltas: true,
             dq_res: 0,
             dlf: None,
+            seg: 0,
             tx_mode: TxMode::Largest,
         },
         // ---- delta-q present: per-SB qindex deltas drive per-block dequant
@@ -2100,6 +2156,7 @@ fn kf_luma_tile_roundtrips() {
             plane_deltas: true,
             dq_res: 1,
             dlf: None,
+            seg: 0,
             tx_mode: TxMode::Largest,
         },
         // res 4 + multi delta-lf (all 4 lf ids), 4:2:0 bd10: chroma dequant
@@ -2119,6 +2176,7 @@ fn kf_luma_tile_roundtrips() {
             plane_deltas: true,
             dq_res: 4,
             dlf: Some((true, 2)),
+            seg: 0,
             tx_mode: TxMode::Largest,
         },
         // res 8 + single from-base delta-lf, 4:4:4 bd12 reduced set.
@@ -2137,6 +2195,7 @@ fn kf_luma_tile_roundtrips() {
             plane_deltas: true,
             dq_res: 8,
             dlf: Some((false, 4)),
+            seg: 0,
             tx_mode: TxMode::Largest,
         },
         // res 2 + multi delta-lf on monochrome (the FRAME_LF_COUNT - 2 arm).
@@ -2155,6 +2214,7 @@ fn kf_luma_tile_roundtrips() {
             plane_deltas: true,
             dq_res: 2,
             dlf: Some((true, 8)),
+            seg: 0,
             tx_mode: TxMode::Largest,
         },
     ];

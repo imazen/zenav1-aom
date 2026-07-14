@@ -347,18 +347,94 @@ int shim_dump_default_kf_fc(int base_qindex, uint16_t *out) {
 #include "aom/aomcx.h"
 #include "aom/aomdx.h"
 
+/* One encoder run over the single prepared image: init a fresh context on
+ * cfg (whose g_pass the caller set), apply the CLI-equivalent controls,
+ * encode img + flush, and collect either the FRAME packets (into out) or the
+ * STATS packets (into out — the pass-1 firstpass stats blob a LAST_PASS run
+ * consumes via rc_twopass_stats_in, exactly the aomenc 2-pass dance).
+ * Returns bytes collected or a negative error code. */
+static long encode_kf_pass(aom_codec_iface_t *iface, aom_codec_enc_cfg_t *cfg,
+                           int bd, int cq_level, int cpu_used, int enable_cdef,
+                           int enable_restoration, int aq_mode,
+                           aom_image_t *img, int collect_stats, uint8_t *out,
+                           size_t out_cap) {
+  aom_codec_ctx_t ctx;
+  aom_codec_flags_t flags = bd > 8 ? AOM_CODEC_USE_HIGHBITDEPTH : 0;
+  if (aom_codec_enc_init(&ctx, iface, cfg, flags)) return -2;
+
+#define TRYCTRL(id, val)                          \
+  do {                                            \
+    if (aom_codec_control(&ctx, (id), (val))) {   \
+      aom_codec_destroy(&ctx);                    \
+      return -3;                                  \
+    }                                             \
+  } while (0)
+  TRYCTRL(AOME_SET_CPUUSED, cpu_used);
+  TRYCTRL(AOME_SET_CQ_LEVEL, cq_level);
+  TRYCTRL(AV1E_SET_ENABLE_CDEF, enable_cdef);
+  TRYCTRL(AV1E_SET_ENABLE_RESTORATION, enable_restoration);
+  TRYCTRL(AV1E_SET_SUPERBLOCK_SIZE, AOM_SUPERBLOCK_SIZE_64X64);
+  TRYCTRL(AV1E_SET_DELTAQ_MODE, 0);
+  /* aq_mode: 0 = off, 1 = VARIANCE_AQ, 2 = COMPLEXITY_VARIANCE_AQ, 3 =
+   * CYCLIC_REFRESH_AQ. 1/2 enable SEGMENTATION on intra frames — 8 segments
+   * of SEG_LVL_ALT_Q via av1_vaq_frame_setup / av1_setup_in_frame_q_adj —
+   * but ONLY inside encode_with_recode_loop: a ONE-pass encode takes
+   * encode_without_recode (speed_features.c "No recode for 1 pass") and
+   * never runs the aq setup, so segmented KEY streams REQUIRE two_pass. */
+  TRYCTRL(AV1E_SET_AQ_MODE, aq_mode);
+  TRYCTRL(AV1E_SET_ENABLE_PALETTE, 0);
+  TRYCTRL(AV1E_SET_ENABLE_INTRABC, 0);
+#undef TRYCTRL
+
+  long total = 0;
+  int rc = 0;
+  for (int pass = 0; pass < 2 && rc == 0; pass++) {
+    if (aom_codec_encode(&ctx, pass == 0 ? img : NULL, 0, 1,
+                         pass == 0 ? AOM_EFLAG_FORCE_KF : 0)) {
+      rc = -5;
+      break;
+    }
+    aom_codec_iter_t iter = NULL;
+    const aom_codec_cx_pkt_t *pkt;
+    while ((pkt = aom_codec_get_cx_data(&ctx, &iter)) != NULL) {
+      const void *buf;
+      size_t sz;
+      if (collect_stats && pkt->kind == AOM_CODEC_STATS_PKT) {
+        buf = pkt->data.twopass_stats.buf;
+        sz = pkt->data.twopass_stats.sz;
+      } else if (!collect_stats && pkt->kind == AOM_CODEC_CX_FRAME_PKT) {
+        buf = pkt->data.frame.buf;
+        sz = pkt->data.frame.sz;
+      } else {
+        continue;
+      }
+      if ((size_t)total + sz > out_cap) {
+        rc = -6;
+        break;
+      }
+      memcpy(out + total, buf, sz);
+      total += (long)sz;
+    }
+  }
+  aom_codec_destroy(&ctx);
+  return rc ? rc : total;
+}
+
 /* Encode one KEY frame through the REAL aom_codec_av1_cx public API — the
  * same encoder+path the aomenc CLI drives, with the CLI-flag-equivalent
- * controls: --cpu-used --end-usage=q --cq-level --enable-cdef=0
- * --enable-restoration=0 --sb-size=64 --deltaq-mode=0 --aq-mode=0
- * --enable-palette=0 --enable-intrabc=0.
+ * controls: --cpu-used --end-usage=q --cq-level --enable-cdef
+ * --enable-restoration --sb-size=64 --deltaq-mode=0 --aq-mode=<aq_mode>
+ * --enable-palette=0 --enable-intrabc=0 --passes=<1|2>. two_pass runs the
+ * full first-pass-stats + last-pass sequence (rc_twopass_stats_in) —
+ * required for aq_mode 1/2 to actually segment (see encode_kf_pass).
  * Planes are u16 at every depth (bd=8 downshifts into the 8-bit image).
  * Returns the bitstream length, or a negative error code. */
 long shim_encode_av1_kf(const uint16_t *y, const uint16_t *u,
                         const uint16_t *v, int w, int h, int bd, int mono,
                         int ss_x, int ss_y, int cq_level, int cpu_used,
                         int enable_cdef, int enable_restoration, int usage,
-                        uint8_t *out, size_t out_cap) {
+                        int aq_mode, int two_pass, uint8_t *out,
+                        size_t out_cap) {
   aom_codec_iface_t *iface = aom_codec_av1_cx();
   aom_codec_enc_cfg_t cfg;
   /* usage: AOM_USAGE_GOOD_QUALITY (0) or AOM_USAGE_ALL_INTRA (2 — the
@@ -387,28 +463,6 @@ long shim_encode_av1_kf(const uint16_t *y, const uint16_t *u,
   }
   if (!mono && ss_x == 1 && ss_y == 0) cfg.g_profile = 2; /* 4:2:2 */
 
-  aom_codec_ctx_t ctx;
-  aom_codec_flags_t flags = bd > 8 ? AOM_CODEC_USE_HIGHBITDEPTH : 0;
-  if (aom_codec_enc_init(&ctx, iface, &cfg, flags)) return -2;
-
-#define TRYCTRL(id, val)                          \
-  do {                                            \
-    if (aom_codec_control(&ctx, (id), (val))) {   \
-      aom_codec_destroy(&ctx);                    \
-      return -3;                                  \
-    }                                             \
-  } while (0)
-  TRYCTRL(AOME_SET_CPUUSED, cpu_used);
-  TRYCTRL(AOME_SET_CQ_LEVEL, cq_level);
-  TRYCTRL(AV1E_SET_ENABLE_CDEF, enable_cdef);
-  TRYCTRL(AV1E_SET_ENABLE_RESTORATION, enable_restoration);
-  TRYCTRL(AV1E_SET_SUPERBLOCK_SIZE, AOM_SUPERBLOCK_SIZE_64X64);
-  TRYCTRL(AV1E_SET_DELTAQ_MODE, 0);
-  TRYCTRL(AV1E_SET_AQ_MODE, 0);
-  TRYCTRL(AV1E_SET_ENABLE_PALETTE, 0);
-  TRYCTRL(AV1E_SET_ENABLE_INTRABC, 0);
-#undef TRYCTRL
-
   aom_img_fmt_t fmt;
   if (mono || (ss_x == 1 && ss_y == 1))
     fmt = AOM_IMG_FMT_I420;
@@ -418,10 +472,7 @@ long shim_encode_av1_kf(const uint16_t *y, const uint16_t *u,
     fmt = AOM_IMG_FMT_I444;
   if (bd > 8) fmt |= AOM_IMG_FMT_HIGHBITDEPTH;
   aom_image_t *img = aom_img_alloc(NULL, fmt, w, h, 32);
-  if (!img) {
-    aom_codec_destroy(&ctx);
-    return -4;
-  }
+  if (!img) return -4;
   img->monochrome = mono;
   img->bit_depth = bd;
   const int cw = mono ? 0 : (w + ss_x) >> ss_x;
@@ -444,29 +495,38 @@ long shim_encode_av1_kf(const uint16_t *y, const uint16_t *u,
   /* Chroma planes of a monochrome image are left as aom_img_alloc gave them
    * (the encoder ignores them when cfg.monochrome). */
 
-  long total = 0;
-  int rc = 0;
-  for (int pass = 0; pass < 2 && rc == 0; pass++) {
-    if (aom_codec_encode(&ctx, pass == 0 ? img : NULL, 0, 1,
-                         pass == 0 ? AOM_EFLAG_FORCE_KF : 0)) {
-      rc = -5;
-      break;
+  long total;
+  if (two_pass) {
+    /* Pass 1: firstpass stats (per-frame packets + the flush-time totals
+     * packet, concatenated — the aomenc --passes=2 sequence). One frame's
+     * stats are a few hundred bytes; 64 KiB is generous. */
+    static const size_t STATS_CAP = 65536;
+    uint8_t *stats = (uint8_t *)malloc(STATS_CAP);
+    if (!stats) {
+      aom_img_free(img);
+      return -4;
     }
-    aom_codec_iter_t iter = NULL;
-    const aom_codec_cx_pkt_t *pkt;
-    while ((pkt = aom_codec_get_cx_data(&ctx, &iter)) != NULL) {
-      if (pkt->kind != AOM_CODEC_CX_FRAME_PKT) continue;
-      if ((size_t)total + pkt->data.frame.sz > out_cap) {
-        rc = -6;
-        break;
-      }
-      memcpy(out + total, pkt->data.frame.buf, pkt->data.frame.sz);
-      total += (long)pkt->data.frame.sz;
+    cfg.g_pass = AOM_RC_FIRST_PASS;
+    long stats_len =
+        encode_kf_pass(iface, &cfg, bd, cq_level, cpu_used, enable_cdef,
+                       enable_restoration, aq_mode, img, 1, stats, STATS_CAP);
+    if (stats_len <= 0) {
+      free(stats);
+      aom_img_free(img);
+      return stats_len == 0 ? -7 : stats_len;
     }
+    cfg.g_pass = AOM_RC_LAST_PASS;
+    cfg.rc_twopass_stats_in.buf = stats;
+    cfg.rc_twopass_stats_in.sz = (size_t)stats_len;
+    total = encode_kf_pass(iface, &cfg, bd, cq_level, cpu_used, enable_cdef,
+                           enable_restoration, aq_mode, img, 0, out, out_cap);
+    free(stats);
+  } else {
+    total = encode_kf_pass(iface, &cfg, bd, cq_level, cpu_used, enable_cdef,
+                           enable_restoration, aq_mode, img, 0, out, out_cap);
   }
   aom_img_free(img);
-  aom_codec_destroy(&ctx);
-  return rc ? rc : total;
+  return total;
 }
 
 /* Decode AV1 bytes through the REAL aom_codec_av1_dx public API and copy the
