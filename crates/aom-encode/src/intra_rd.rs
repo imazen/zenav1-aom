@@ -728,3 +728,288 @@ pub fn intra_rd_variance_factor(
 pub fn apply_variance_factor(rd: i64, factor: f64) -> i64 {
     (rd as f64 * factor) as i64
 }
+
+// ---------------------------------------------------------------------------
+// av1_rd_pick_intra_sby_mode (intra_mode_search.c:1468) — the luma intra
+// mode-loop assembly: candidate enumeration + gates + model-RD prune + full
+// tx search + rate assembly + ALLINTRA variance scale + best tracking.
+// ---------------------------------------------------------------------------
+
+use crate::mode_costs::{block_signals_txsize, tx_size_cost};
+use crate::tx_search::{
+    intra_model_rd_y, pick_uniform_tx_size_type_yrd_intra, TxTypeSearchPolicy, TxbWinner,
+    TxfmYrdEnv,
+};
+
+/// The configuration/state inputs of [`rd_pick_intra_sby_mode_y`] beyond the
+/// per-block [`TxfmYrdEnv`]. Speed-0 all-intra values documented per field.
+pub struct IntraSbySearchCfg<'a> {
+    /// The candidate-loop gate set ([`IntraSbyGates::speed0`] at speed 0,
+    /// with the HOG `directional_mode_skip_mask` output).
+    pub gates: &'a IntraSbyGates,
+    /// sf `intra_sf.top_intra_model_count_allowed`
+    /// (= [`TOP_INTRA_MODEL_COUNT`] = 4 at speed 0).
+    pub top_intra_model_count_allowed: i32,
+    /// sf `intra_sf.adapt_top_model_rd_count_using_neighbors` (0 at speed 0).
+    pub adapt_top_model_rd_count_using_neighbors: bool,
+    /// Above / left neighbour Y modes (`None` = unavailable): select the
+    /// KEY-frame `y_mode_costs[ctx][ctx]` row (`bmode_costs`) AND feed the
+    /// adaptive model-prune index.
+    pub above_mode: Option<i32>,
+    pub left_mode: Option<i32>,
+    /// `x->qindex` (the adaptive model-prune index input).
+    pub qindex: i32,
+    /// The mode-info signaling cost tables + `intra_mode_info_cost_y` gates.
+    pub mode_costs: &'a IntraModeCosts,
+    pub try_palette: bool,
+    pub palette_bsize_ctx: usize,
+    pub palette_mode_ctx: usize,
+    /// `oxcf.intra_mode_cfg.enable_filter_intra` (CLI default on) — the
+    /// filter-intra flag bit is costed on eligible bsizes.
+    pub enable_filter_intra: bool,
+    /// `avail_intrabc` for the mode-info cost (KEY frame with intrabc allowed).
+    pub allow_intrabc: bool,
+    /// The tx-search policy ([`TxTypeSearchPolicy::speed0_allintra`]).
+    pub pol: &'a TxTypeSearchPolicy,
+    /// `x->source_variance` (the depth-sweep regression prune input).
+    pub source_variance: u32,
+    /// `oxcf.txfm_cfg.enable_tx64` / `enable_rect_tx` (CLI defaults on).
+    pub enable_tx64: bool,
+    pub enable_rect_tx: bool,
+    /// `cpi->oxcf.mode == ALLINTRA`: apply [`intra_rd_variance_factor`] to
+    /// each candidate's rd (the `aomenc` all-intra target sets this).
+    pub allintra: bool,
+    /// `cpi->oxcf.speed` (the variance-factor threshold input).
+    pub speed: i32,
+    /// MACROBLOCKD `mb_to_right_edge` / `mb_to_bottom_edge` (1/8-pel; the
+    /// variance factor's frame-edge clip inputs — non-negative for interior
+    /// blocks, this port's txb-walk scope).
+    pub mb_to_right_edge: i32,
+    pub mb_to_bottom_edge: i32,
+}
+
+/// The winning candidate of one [`rd_pick_intra_sby_mode_y`] search — the
+/// C loop's `best_mbmi` + output-pointer bundle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntraSbyBest {
+    pub mode: usize,
+    pub angle_delta: i32,
+    /// `best_mbmi.tx_size` (the uniform winner size).
+    pub tx_size: usize,
+    /// The winner's per-txb (tx_type, eob, entropy ctx) — the
+    /// `ctx->tx_type_map` snapshot (`av1_copy_array` on best update).
+    pub winners: Vec<TxbWinner>,
+    /// `*rate`: tokenonly + tx-size-adjusted + mode-info signaling.
+    pub rate: i32,
+    /// `*rate_tokenonly`: the tx-search rate MINUS the tx-size cost on
+    /// signaling blocks (intra_mode_search.c:1624-1630 — tx_size is counted
+    /// in the full rate, not the tokenonly rate, for intra blocks).
+    pub rate_tokenonly: i32,
+    /// `*distortion`.
+    pub dist: i64,
+    /// `*skippable` (always false for intra: block_rd_txfm hard-zeroes
+    /// `skip_txfm` per txb, tx_search.c:3129).
+    pub skippable: bool,
+    /// The winning (post-variance-factor) rd — the C return value.
+    pub best_rd: i64,
+}
+
+/// The search outcome: the winner (`None` = no candidate beat `best_rd_in`,
+/// the C's `!beat_best_rd => return INT64_MAX`) plus the per-(mode, delta)
+/// rd bookkeeping table (loop-local in C; exposed for differential
+/// visibility and the odd-delta prune's future higher-speed use).
+pub struct IntraSbyOutcome {
+    pub best: Option<IntraSbyBest>,
+    pub intra_modes_rd_cost: [[i64; SIZE_OF_ANGLE_DELTA_RD_COST_ARRAY]; INTRA_MODES],
+}
+
+/// `av1_rd_pick_intra_sby_mode` (intra_mode_search.c:1468) — the 61-candidate
+/// luma mode loop at speed-0 all-intra scope. Per visit index:
+/// [`set_y_mode_and_delta_angle`] -> the static gate chain
+/// ([`IntraSbyGates::visits`]; `use_mb_mode_cache` modelled off) ->
+/// [`prune_luma_odd_delta_angles_using_rd_cost`] (sf off at speed 0) ->
+/// [`intra_model_rd_y`] at `min(TX_32X32, max_txsize_lookup[bsize])` (its
+/// prediction writes into `recon` are C-faithful shared state) ->
+/// [`prune_intra_y_mode`] -> [`pick_uniform_tx_size_type_yrd_intra`] with the
+/// RUNNING `best_rd` as its early-exit threshold -> the tx-size-cost
+/// subtraction into `rate_tokenonly` (signaling blocks; the C comment: intra
+/// blocks always code tx_size in the full rate, not the tokenonly rate) ->
+/// `this_rate = stats.rate + intra_mode_info_cost_y` -> `RDCOST` ->
+/// [ALLINTRA: `this_rd = (int64_t)(this_rd * intra_rd_variance_factor(..))`,
+/// reading the recon state the depth sweep left behind] ->
+/// `intra_modes_rd_cost` bookkeeping -> strict `this_rd < best_rd` best
+/// tracking (ties keep the FIRST winner).
+///
+/// `store_winner_mode_stats` is a hard no-op at speed 0
+/// (`multi_winner_mode_type == MULTI_WINNER_MODE_OFF` returns immediately,
+/// rdopt_utils.h:688). The post-loop palette search (`try_palette`) and
+/// filter-intra search (`rd_pick_filter_intra_sby`) are NOT composed here yet
+/// — both are live at speed 0 and remain missing pieces of the full C
+/// function; the winner-mode tail IS a verified no-op at speed 0 for intra
+/// (`is_winner_mode_processing_enabled` = 0: `fast_intra_tx_type_search`,
+/// `enable_winner_mode_for_coeff_opt` and `enable_winner_mode_for_tx_size_srch`
+/// are all 0 — rdopt_utils.h:444-476).
+///
+/// `env`'s candidate fields (`mode`, `angle_delta`) are overwritten per visit;
+/// `use_filter_intra` is forced off (the C clears
+/// `mbmi->filter_intra_mode_info.use_filter_intra` before the loop).
+/// `var_cache` is the per-superblock [`Block4x4VarInfo`] array (shared across
+/// candidates and across the SB's blocks).
+pub fn rd_pick_intra_sby_mode_y(
+    env: &mut TxfmYrdEnv,
+    recon: &mut [u16],
+    cfg: &IntraSbySearchCfg,
+    var_cache: &mut [Block4x4VarInfo],
+    best_rd_in: i64,
+) -> IntraSbyOutcome {
+    let bsize = env.bsize;
+    env.use_filter_intra = false;
+    env.filter_intra_mode = 0;
+
+    let (above_ctx, left_ctx) = get_y_mode_ctx(cfg.above_mode, cfg.left_mode);
+    let bmode_costs = &cfg.mode_costs.y_mode_costs[above_ctx][left_ctx];
+
+    let mut best_rd = best_rd_in;
+    let mut best: Option<IntraSbyBest> = None;
+    let mut best_model_rd = i64::MAX;
+    let mut top_intra_model_rd = [i64::MAX; TOP_INTRA_MODEL_COUNT];
+    let mut intra_modes_rd_cost =
+        [[i64::MAX; SIZE_OF_ANGLE_DELTA_RD_COST_ARRAY]; INTRA_MODES];
+
+    // The model tx size: AOMMIN(TX_32X32, max_txsize_lookup[bsize]).
+    let model_tx_size = MAX_TXSIZE_LOOKUP[bsize].min(3);
+
+    for mode_idx in 0..LUMA_MODE_COUNT {
+        let (mode, luma_delta_angle) = set_y_mode_and_delta_angle(
+            mode_idx,
+            cfg.gates.prune_luma_odd_delta_angles_in_intra,
+        );
+        if !cfg.gates.visits(mode, luma_delta_angle, bsize) {
+            continue;
+        }
+        if prune_luma_odd_delta_angles_using_rd_cost(
+            mode,
+            luma_delta_angle,
+            &intra_modes_rd_cost[mode],
+            best_rd,
+            cfg.gates.prune_luma_odd_delta_angles_in_intra,
+        ) {
+            continue;
+        }
+
+        env.mode = mode;
+        env.angle_delta = luma_delta_angle;
+
+        // Model estimate + prune (the prediction walk mutates recon).
+        let this_model_rd = intra_model_rd_y(env, recon, model_tx_size);
+        let model_rd_index_for_pruning = get_model_rd_index_for_pruning(
+            mode,
+            cfg.qindex,
+            cfg.top_intra_model_count_allowed,
+            cfg.adapt_top_model_rd_count_using_neighbors,
+            cfg.left_mode.map(|m| m as usize),
+            cfg.above_mode.map(|m| m as usize),
+        );
+        if prune_intra_y_mode(
+            this_model_rd,
+            &mut best_model_rd,
+            &mut top_intra_model_rd,
+            cfg.top_intra_model_count_allowed as usize,
+            model_rd_index_for_pruning as usize,
+        ) {
+            continue;
+        }
+
+        // The real prediction + tx search (the model prediction above was
+        // only an estimate; av1_pick_uniform_tx_size_type_yrd redoes it
+        // through the full txfm pipeline).
+        let Some(choice) = pick_uniform_tx_size_type_yrd_intra(
+            env,
+            recon,
+            best_rd,
+            cfg.pol,
+            cfg.source_variance,
+            cfg.enable_tx64,
+            cfg.enable_rect_tx,
+        ) else {
+            continue; // this_rate_tokenonly == INT_MAX
+        };
+
+        let mut this_rate_tokenonly = choice.stats.rate;
+        if !env.lossless && block_signals_txsize(bsize) {
+            // The tx-search rate includes the tx_size cost; for intra blocks
+            // tx_size is accounted in the full rate, not the tokenonly rate.
+            this_rate_tokenonly -= tx_size_cost(
+                env.tx_size_costs,
+                env.tx_mode_is_select,
+                bsize,
+                choice.best_tx_size,
+                env.tx_size_ctx,
+            );
+        }
+        let this_rate = choice.stats.rate
+            + intra_mode_info_cost_y(
+                cfg.mode_costs,
+                bmode_costs[mode],
+                mode,
+                bsize,
+                luma_delta_angle,
+                false,
+                0,
+                false, // use_intrabc
+                cfg.try_palette,
+                cfg.palette_bsize_ctx,
+                cfg.palette_mode_ctx,
+                cfg.enable_filter_intra,
+                cfg.allow_intrabc,
+            );
+        let this_distortion = choice.stats.dist;
+        let mut this_rd = rd::rdcost(env.rdmult, this_rate, this_distortion);
+
+        // Visual quality adjustment based on recon vs source variance.
+        if cfg.allintra && this_rd != i64::MAX {
+            let factor = intra_rd_variance_factor(
+                cfg.speed,
+                &VarFactorInputs {
+                    src: env.src,
+                    src_off: env.src_off,
+                    src_stride: env.src_stride,
+                    recon,
+                    ref_off: env.ref_off,
+                    ref_stride: env.ref_stride,
+                    bsize,
+                    sb_size: env.sb_size,
+                    mi_row: env.mi_row,
+                    mi_col: env.mi_col,
+                    mb_to_right_edge: cfg.mb_to_right_edge,
+                    mb_to_bottom_edge: cfg.mb_to_bottom_edge,
+                    bd: env.bd,
+                },
+                var_cache,
+            );
+            this_rd = apply_variance_factor(this_rd, factor);
+        }
+
+        intra_modes_rd_cost[mode][(luma_delta_angle + MAX_ANGLE_DELTA + 1) as usize] =
+            this_rd;
+
+        // store_winner_mode_stats: hard no-op at speed 0 (MULTI_WINNER_MODE_OFF).
+
+        if this_rd < best_rd {
+            best_rd = this_rd;
+            best = Some(IntraSbyBest {
+                mode,
+                angle_delta: luma_delta_angle,
+                tx_size: choice.best_tx_size,
+                winners: choice.winners,
+                rate: this_rate,
+                rate_tokenonly: this_rate_tokenonly,
+                dist: this_distortion,
+                skippable: choice.stats.skip_txfm,
+                best_rd: this_rd,
+            });
+        }
+    }
+
+    IntraSbyOutcome { best, intra_modes_rd_cost }
+}
