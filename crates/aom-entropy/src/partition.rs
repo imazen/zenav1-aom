@@ -531,6 +531,169 @@ pub fn write_selected_tx_size(
     }
 }
 
+// ---- tx-size selection: context + txfm-context maintenance ------------------------
+//
+// The `get_tx_size_context` facade and the `above_txfm_context` /
+// `left_txfm_context` array maintenance (`av1/common/av1_common_int.h` +
+// `av1/common/pred_common.h`). NOTE: a direct differential test of these against
+// a C shim is DEFERRED — `aom-sys-ref` had live encoder-track WIP when this
+// landed, so the port is validated by (a) unit tests against hand-traced C
+// semantics (`tests/tx_size_ctx.rs`) and (b) the encode/decode tile roundtrip in
+// `aom-decode`, whose write side uses this same facade (lockstep catches any
+// decode/encode asymmetry; a *shared* misreading of the C would not be caught —
+// hence the deferred C diff is tracked for the coordinator).
+
+/// `TX_MODE` (`enums.h`): the frame transform mode.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TxMode {
+    /// `ONLY_4X4`: use only the 4x4 transform.
+    Only4x4 = 0,
+    /// `TX_MODE_LARGEST`: the largest transform for the block size, no bits coded.
+    Largest = 1,
+    /// `TX_MODE_SELECT`: the transform size is coded per block.
+    Select = 2,
+}
+
+/// `max_txsize_lookup[BLOCK_SIZES_ALL]` (`common_data.h`): the largest **square**
+/// transform fitting the block.
+const MAX_TXSIZE_LOOKUP: [usize; 22] =
+    [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 4, 0, 0, 1, 1, 2, 2];
+/// `txsize_sqr_map[TX_SIZES_ALL]` (`common_data.h`): the largest square transform
+/// **contained in** the transform.
+const TXSIZE_SQR_MAP: [usize; 19] = [0, 1, 2, 3, 4, 0, 0, 1, 1, 2, 2, 3, 3, 0, 0, 1, 1, 2, 2];
+/// `tx_mode_to_biggest_tx_size[TX_MODES]` (`common_data.h`): TX_4X4 / TX_64X64 /
+/// TX_64X64.
+const TX_MODE_TO_BIGGEST_TX_SIZE: [usize; 3] = [0, 4, 4];
+
+/// `tx_size_from_tx_mode` (`blockd.h`): the block's transform size when the frame
+/// tx mode does not code per-block sizes (also the non-SELECT fallback inside
+/// `read_tx_size`). For `TX_MODE_LARGEST` this is `max_txsize_rect_lookup[bsize]`
+/// for every block size. For `ONLY_4X4` the C function returns the rect max for
+/// the 2:1/4:1 4-row/4-col blocks (their `txsize_sqr_map` is `TX_4X4`, passing
+/// the `<=` gate) and `TX_4X4` otherwise — but `ONLY_4X4` occurs only with
+/// `coded_lossless`, where `read_tx_size`'s lossless branch preempts with
+/// `TX_4X4` before this function is reached (its `assert(IMPLIES(ONLY_4X4,
+/// bsize == BLOCK_4X4))` documents that); ported verbatim regardless.
+pub fn tx_size_from_tx_mode(bsize: usize, tx_mode: TxMode) -> usize {
+    let largest_tx_size = TX_MODE_TO_BIGGEST_TX_SIZE[tx_mode as usize];
+    let max_rect_tx_size = MAX_TXSIZE_RECT_LOOKUP[bsize];
+    if bsize == 0 {
+        // BLOCK_4X4: AOMMIN on the TX_SIZE enum values
+        return MAX_TXSIZE_LOOKUP[bsize].min(largest_tx_size);
+    }
+    if TXSIZE_SQR_MAP[max_rect_tx_size] <= largest_tx_size {
+        max_rect_tx_size
+    } else {
+        largest_tx_size
+    }
+}
+
+/// `depth_to_tx_size` (`blockd.h`): walk `depth` `sub_tx_size_map` steps down from
+/// the block's `max_txsize_rect_lookup` size — the inverse of the coded tx-size
+/// depth symbol.
+pub fn depth_to_tx_size(depth: i32, bsize: usize) -> usize {
+    let mut tx_size = MAX_TXSIZE_RECT_LOOKUP[bsize];
+    for _ in 0..depth {
+        tx_size = SUB_TX_SIZE_MAP[tx_size];
+    }
+    tx_size
+}
+
+/// `tx_size_to_depth` (`av1/encoder/block.h`): the number of `sub_tx_size_map`
+/// steps from `max_txsize_rect_lookup[bsize]` down to `tx_size` — the coded
+/// depth symbol on the write side.
+pub fn tx_size_to_depth(tx_size: usize, bsize: usize) -> i32 {
+    let mut ctx_size = MAX_TXSIZE_RECT_LOOKUP[bsize];
+    let mut depth = 0;
+    while tx_size != ctx_size {
+        depth += 1;
+        ctx_size = SUB_TX_SIZE_MAP[ctx_size];
+        debug_assert!(depth <= MAX_VARTX_DEPTH); // MAX_TX_DEPTH == 2
+    }
+    depth
+}
+
+/// The txfm-context array reset value (`av1_zero_above_context` /
+/// `av1_zero_left_context` in `av1_common_int.h`): both memset their array to
+/// `tx_size_wide[TX_SIZES_LARGEST]` == `tx_size_high[TX_SIZES_LARGEST]` == 64
+/// (`TX_SIZES_LARGEST` is `TX_64X64`, `aom_dsp/txfm_common.h`). The above array
+/// is reset once per tile over the superblock-aligned tile width; the left array
+/// (`MAX_MIB_SIZE` = 32 entries) once per superblock row.
+pub const TXFM_CTX_INIT: u8 = 64;
+
+/// `get_tx_size_context` (`av1/common/pred_common.h`): the tx-size symbol context
+/// (0..=2) from the above/left txfm-context bytes (the entries at the block's
+/// `mi_col` / `mi_row & 31` — pixel width/height of the neighbouring transform,
+/// maintained by [`set_txfm_ctxs`]) compared against this block's max rect
+/// transform dims. An **inter** neighbour substitutes its block dims for its
+/// txfm-context byte; `above_inter_bsize` / `left_inter_bsize` carry that
+/// neighbour's `bsize` when it exists **and** `is_inter_block(..)` (pass `None`
+/// for an intra neighbour or when unavailable — always `None` on a KEY frame
+/// without intrabc). The context is the sum/copy of the available directions.
+pub fn get_tx_size_context(
+    bsize: usize,
+    above_txfm_ctx: u8,
+    left_txfm_ctx: u8,
+    has_above: bool,
+    has_left: bool,
+    above_inter_bsize: Option<usize>,
+    left_inter_bsize: Option<usize>,
+) -> usize {
+    let max_tx_size = MAX_TXSIZE_RECT_LOOKUP[bsize];
+    let max_tx_wide = TX_SIZE_WIDE[max_tx_size];
+    let max_tx_high = TX_SIZE_HIGH[max_tx_size];
+
+    let mut above = (i32::from(above_txfm_ctx) >= max_tx_wide) as usize;
+    let mut left = (i32::from(left_txfm_ctx) >= max_tx_high) as usize;
+
+    if has_above {
+        if let Some(ab) = above_inter_bsize {
+            above = (BLOCK_SIZE_WIDE[ab] >= max_tx_wide) as usize;
+        }
+    }
+    if has_left {
+        if let Some(lb) = left_inter_bsize {
+            left = (BLOCK_SIZE_HIGH[lb] >= max_tx_high) as usize;
+        }
+    }
+
+    if has_above && has_left {
+        above + left
+    } else if has_above {
+        above
+    } else if has_left {
+        left
+    } else {
+        0
+    }
+}
+
+/// `set_txfm_ctxs` (`av1_common_int.h`): after the block's `tx_size` is
+/// read/written, stamp the above/left txfm-context arrays over the block's
+/// **full** (not frame-clipped) mi footprint — `above[0..n4_w]` with the tx
+/// width in pixels and `left[0..n4_h]` with the tx height; a **skipped inter**
+/// block (`skip` = `skip_txfm && is_inter_block`, always false for intra)
+/// stamps the block's pixel dims instead. `above` starts at the block's
+/// `mi_col` entry of the tile array; `left` at `mi_row & 31`.
+pub fn set_txfm_ctxs(
+    above: &mut [u8],
+    left: &mut [u8],
+    tx_size: usize,
+    n4_w: usize,
+    n4_h: usize,
+    skip: bool,
+) {
+    let mut bw = TX_SIZE_WIDE[tx_size] as u8;
+    let mut bh = TX_SIZE_HIGH[tx_size] as u8;
+    if skip {
+        bw = (n4_w * 4) as u8; // n4_w * MI_SIZE
+        bh = (n4_h * 4) as u8;
+    }
+    // set_txfm_ctx(above_txfm_context, bw, n4_w) / (left_txfm_context, bh, n4_h)
+    above[..n4_w].fill(bw);
+    left[..n4_h].fill(bh);
+}
+
 const FILTER_INTRA_MODES: usize = 5;
 
 /// `write_filter_intra_mode_info` (`av1/encoder/bitstream.c`): when filter-intra is
