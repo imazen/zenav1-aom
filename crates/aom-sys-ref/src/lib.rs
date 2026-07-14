@@ -3165,3 +3165,47 @@ pub fn ref_intra_avail(sb_size: usize, bsize: usize, mi_row: i32, mi_col: i32, u
     }
     (out[0], out[1], out[2], out[3])
 }
+
+// av1/encoder/rd.c + rd.h (RD multiplier / RDCOST) and av1/common/quant_common.c
+// (dc/ac quant lookups) — rd_shim.c. All exported symbols / real macros; no RTCD.
+extern "C" {
+    fn shim_compute_rd_mult_based_on_qindex(bit_depth: i32, update_type: i32, qindex: i32, tuning: i32, mode: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_compute_rd_mult(qindex: i32, bit_depth: i32, update_type: i32, layer_depth: i32, boost_index: i32, frame_type: i32, use_fixed_qp_offsets: i32, is_stat_consumption_stage: i32, tuning: i32, mode: i32) -> i32;
+    fn shim_dc_quant_qtx(qindex: i32, delta: i32, bit_depth: i32) -> i32;
+    fn shim_ac_quant_qtx(qindex: i32, delta: i32, bit_depth: i32) -> i32;
+    fn shim_rdcost(rm: i32, rate: i32, dist: i64) -> i64;
+    fn shim_rdcost_neg_r(rm: i32, rate: i32, dist: i64) -> i64;
+}
+
+/// Reference `av1_compute_rd_mult_based_on_qindex` (rd.c). Enum args are passed
+/// as their integer C values.
+pub fn ref_compute_rd_mult_based_on_qindex(bit_depth: i32, update_type: i32, qindex: i32, tuning: i32, mode: i32) -> i32 {
+    unsafe { shim_compute_rd_mult_based_on_qindex(bit_depth, update_type, qindex, tuning, mode) }
+}
+
+/// Reference `av1_compute_rd_mult` (rd.c).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_compute_rd_mult(qindex: i32, bit_depth: i32, update_type: i32, layer_depth: i32, boost_index: i32, frame_type: i32, use_fixed_qp_offsets: i32, is_stat_consumption_stage: i32, tuning: i32, mode: i32) -> i32 {
+    unsafe { shim_compute_rd_mult(qindex, bit_depth, update_type, layer_depth, boost_index, frame_type, use_fixed_qp_offsets, is_stat_consumption_stage, tuning, mode) }
+}
+
+/// Reference `av1_dc_quant_QTX` (quant_common.c).
+pub fn ref_dc_quant_qtx(qindex: i32, delta: i32, bit_depth: i32) -> i32 {
+    unsafe { shim_dc_quant_qtx(qindex, delta, bit_depth) }
+}
+
+/// Reference `av1_ac_quant_QTX` (quant_common.c).
+pub fn ref_ac_quant_qtx(qindex: i32, delta: i32, bit_depth: i32) -> i32 {
+    unsafe { shim_ac_quant_qtx(qindex, delta, bit_depth) }
+}
+
+/// Reference `RDCOST(rm, rate, dist)` macro (rd.h).
+pub fn ref_rdcost(rm: i32, rate: i32, dist: i64) -> i64 {
+    unsafe { shim_rdcost(rm, rate, dist) }
+}
+
+/// Reference `RDCOST_NEG_R(rm, rate, dist)` macro (rd.h).
+pub fn ref_rdcost_neg_r(rm: i32, rate: i32, dist: i64) -> i64 {
+    unsafe { shim_rdcost_neg_r(rm, rate, dist) }
+}

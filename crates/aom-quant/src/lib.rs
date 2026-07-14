@@ -7,6 +7,10 @@
 
 
 #![forbid(unsafe_code)]
+
+mod quant_common;
+pub use quant_common::{av1_ac_quant_qtx, av1_dc_quant_qtx};
+
 /// `ROUND_POWER_OF_TWO(value, n)` from `aom_ports/mem.h` — bit-exact.
 /// Note `(1<<n)>>1` yields 0 at n=0, so this is well-defined for `log_scale==0`.
 #[inline]
