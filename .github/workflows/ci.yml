@@ -43,6 +43,19 @@ jobs:
       - name: Build C libaom reference oracle
         run: bash reference/build.sh
 
+      # The workspace still references archmage (SIMD dispatch) by an absolute
+      # path dep in crates/aom-{intra,dist}. Provide it at that exact path so
+      # cargo can load the manifest. Pinned to the commit the local build uses.
+      # TODO: migrate both crates to `archmage = "0.9.27"` (it is published on
+      # crates.io) so the repo is self-contained — deferred until aom-intra is
+      # free of in-flight decoder work, since that edits an agent-owned manifest.
+      - name: Provide archmage path dependency
+        run: |
+          sudo mkdir -p /root/work
+          sudo git clone https://github.com/imazen/archmage.git /root/work/archmage
+          sudo git -C /root/work/archmage checkout 49023ced349cd47d736be593b8593779bf72a769
+          sudo chown -R "$(id -u):$(id -g)" /root/work/archmage
+
       - name: Test workspace (differential vs C oracle)
         run: cargo test --workspace --no-fail-fast
 
