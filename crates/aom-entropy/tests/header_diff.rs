@@ -1765,6 +1765,61 @@ fn write_frame_header_obu_key_minimal_spec_anchor() {
 }
 
 #[test]
+fn screen_content_key_header_roundtrips_with_intrabc() {
+    // Regression for the outer/prefix allow_screen_content_tools sync in
+    // read_uncompressed_header. write_frame_header_obu gates the allow_intrabc
+    // bit on the OUTER FrameHeaderObu.allow_screen_content_tools (~line 1483),
+    // while the parser reads the flag into prefix.allow_screen_content_tools
+    // (~line 2758). Without syncing outer <- prefix right after
+    // read_frame_header_prefix, a re-serialized screen-content KEY header drops
+    // the allow_intrabc bit and desyncs every field after it. Write such a
+    // header, read it back through a cfg whose OUTER field starts stale (false,
+    // the clone-default situation), and assert (a) the bit parses, (b) outer ==
+    // prefix after parse, (c) re-serialization is byte-identical.
+    use aom_entropy::header::{read_uncompressed_header, write_frame_header_obu};
+    use aom_entropy::rb::ReadBitBuffer;
+
+    let mut h = minimal_frame_header_obu();
+    // SELECT screen-content tools (a real bit in the stream), enabled + intrabc on.
+    h.prefix.force_screen_content_tools = 2;
+    h.prefix.allow_screen_content_tools = true;
+    h.allow_screen_content_tools = true;
+    h.allow_intrabc = true;
+
+    let mut wb = WriteBitBuffer::new();
+    write_frame_header_obu(&mut wb, &h);
+    let bytes1 = wb.bytes().to_vec();
+
+    // Parse with an OUTER allow_screen_content_tools that starts stale (false) —
+    // exactly what read_uncompressed_header's `cfg.clone()` yields in decode.
+    let mut cfg = h.clone();
+    cfg.allow_screen_content_tools = false;
+    let mut rb = ReadBitBuffer::new(&bytes1);
+    let parsed = read_uncompressed_header(&mut rb, &cfg);
+
+    assert!(
+        parsed.prefix.allow_screen_content_tools,
+        "prefix screen-content-tools bit must parse as true"
+    );
+    assert_eq!(
+        parsed.allow_screen_content_tools, parsed.prefix.allow_screen_content_tools,
+        "outer allow_screen_content_tools must be synced from the prefix (the fix)"
+    );
+    assert!(
+        parsed.allow_intrabc,
+        "allow_intrabc bit must round-trip through parse"
+    );
+
+    let mut wb2 = WriteBitBuffer::new();
+    write_frame_header_obu(&mut wb2, &parsed);
+    assert_eq!(
+        bytes1,
+        wb2.bytes(),
+        "screen-content KEY header must re-serialize byte-identically"
+    );
+}
+
+#[test]
 fn write_frame_header_obu_inter_minimal_spec_anchor() {
     use aom_entropy::header::write_frame_header_obu;
     // INTER frame (frame_type=1): the base minimal config produces the intra tail

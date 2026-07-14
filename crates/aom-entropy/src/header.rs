@@ -2941,6 +2941,12 @@ pub fn read_uncompressed_header(rb: &mut ReadBitBuffer, cfg: &FrameHeaderObu) ->
     let mut p = cfg.clone();
     let (prefix, override_flag, early) = read_frame_header_prefix(rb, &cfg.prefix);
     p.prefix = prefix;
+    // Sync the OUTER allow_screen_content_tools from the just-parsed prefix. The
+    // read path below reads `p.prefix.allow_screen_content_tools` directly, but
+    // the writer (`write_frame_header_obu`) gates the `allow_intrabc` bit on this
+    // OUTER field; without this, a re-serialized screen-content KEY header drops
+    // that bit and desyncs everything after it.
+    p.allow_screen_content_tools = p.prefix.allow_screen_content_tools;
     if early {
         return p;
     }
