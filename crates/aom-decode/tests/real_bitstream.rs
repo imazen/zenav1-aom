@@ -104,6 +104,13 @@ struct Cfg {
     /// `ref_encode_av1_kf_sb128` instead of `--sb-size=64` via
     /// `ref_encode_av1_kf`.
     sb128: bool,
+    /// `--tile-columns=<log2>` / `--tile-rows=<log2>` via
+    /// `ref_encode_av1_kf_tiles` instead of `ref_encode_av1_kf[_sb128]` — 0,0
+    /// (the default for every existing arm) is single-tile, byte-identical
+    /// to the non-tiles encode paths (`AV1E_SET_TILE_COLUMNS`/`_ROWS` default
+    /// to 0 either way).
+    tile_columns_log2: i32,
+    tile_rows_log2: i32,
 }
 
 /// Facts the sweep asserts floors over.
@@ -127,6 +134,9 @@ struct RunFacts {
     seg_enabled: bool,
     /// `av1_calculate_segdata`'s last_active_segid (7 = all 8 segments).
     seg_last_active: i32,
+    /// `TileInfoHeader::{cols,rows}` as coded.
+    tile_cols: usize,
+    tile_rows: usize,
 }
 
 fn run_config(cfg: &Cfg) -> RunFacts {
@@ -144,9 +154,33 @@ fn run_config(cfg: &Cfg) -> RunFacts {
     let u = gen_plane(cw, ch, cfg.bd, seed ^ 0x2222, true);
     let v = gen_plane(cw, ch, cfg.bd, seed ^ 0x3333, true);
 
-    // REAL encoder bytes (cpu-used=0). sb128 routes through the SB128
-    // oracle entry point (--sb-size=128); otherwise --sb-size=64 as before.
-    let bytes = if cfg.sb128 {
+    // REAL encoder bytes (cpu-used=0). tile_columns_log2/tile_rows_log2 != 0
+    // routes through the multi-tile oracle entry point (--tile-columns/-rows,
+    // sb128 controllable too); else sb128 routes through the SB128 oracle
+    // entry point (--sb-size=128); otherwise --sb-size=64 as before.
+    let bytes = if cfg.tile_columns_log2 != 0 || cfg.tile_rows_log2 != 0 {
+        c::ref_encode_av1_kf_tiles(
+            &y,
+            &u,
+            &v,
+            cfg.w,
+            cfg.h,
+            cfg.bd,
+            cfg.mono,
+            cfg.ss.0,
+            cfg.ss.1,
+            cfg.cq,
+            0,
+            cfg.cdef,
+            cfg.restoration,
+            cfg.usage,
+            cfg.aq,
+            cfg.two_pass,
+            cfg.sb128,
+            cfg.tile_columns_log2,
+            cfg.tile_rows_log2,
+        )
+    } else if cfg.sb128 {
         c::ref_encode_av1_kf_sb128(
             &y,
             &u,
@@ -293,6 +327,8 @@ fn run_config(cfg: &Cfg) -> RunFacts {
         lr_applied,
         seg_enabled: rust.seg_enabled,
         seg_last_active: rust.seg_last_active_segid,
+        tile_cols: rust.tile_cols,
+        tile_rows: rust.tile_rows,
     }
 }
 
@@ -359,6 +395,8 @@ fn real_bitstreams_decode_byte_identical_to_c() {
             aq,
             two_pass,
             sb128: false,
+            tile_columns_log2: 0,
+            tile_rows_log2: 0,
         });
         assert!(f.len > 50, "suspiciously small stream ({} bytes)", f.len);
         select_seen += f.tx_select as u32;
@@ -665,6 +703,8 @@ fn sb128_streams_decode_byte_identical_to_c() {
             aq: 0,
             two_pass: false,
             sb128: true,
+            tile_columns_log2: 0,
+            tile_rows_log2: 0,
         });
         assert!(
             f.len > 50,
@@ -748,6 +788,210 @@ fn sb128_streams_decode_byte_identical_to_c() {
 }
 
 #[test]
+fn multi_tile_streams_decode_byte_identical_to_c() {
+    // MULTI-TILE (`--tile-columns=<log2> --tile-rows=<log2>`) gate: real
+    // libaom-encoded streams with more than one tile decode byte-identical
+    // to the C decoder. Drops the single-tile restriction in `frame.rs` and
+    // exercises the multi-tile-specific code paths: per-tile context resets
+    // (`TileKf::start_tile` — above/left/CfL/LR-refs/delta-lf-carry/
+    // current_base_qindex all restart at each tile, not just once per
+    // frame), TILE-relative `up_available`/`left_available` (a block at a
+    // tile's own top/left edge has no available neighbour even when the
+    // tile sits interior to the frame — `TileKf::neighbours` /
+    // `decode_block`'s up_uv/left_uv / `intra_avail`'s tile_col_end/
+    // tile_row_end all had to switch from frame-relative `> 0` to
+    // tile-relative `> tile.mi_row/col_start`), the `tile_size_bytes`-
+    // prefixed per-tile length parsing (`split_tiles`, mirroring
+    // `get_tile_buffers`/`get_tile_buffer`), and each tile's FRESH
+    // `KfFrameContext` (CDF adaptation does not carry across tiles). Sizes:
+    // 256x256 (SB-exact 4x4 grid @ 64px — every tile a full superblock) and
+    // 200x152 (non-SB-aligned — the last tile row/col in each axis is a
+    // genuinely partial superblock, `AOMMIN`-clamped to the frame edge).
+    // ALLINTRA (usage=2) is the primary arm per the zenavif/avifenc
+    // still-image product path; GOOD (usage=0) is retained as a smaller
+    // cross-check. Column-only and row-only tiling (one axis > 1, the other
+    // exactly 1) are swept alongside full 2D tiling (both axes > 1
+    // together). A dedicated 4-tile-column stress (256x64, SB-exact) and an
+    // SB128 + multi-tile cross-check (384x384, mib_size=32) close out the
+    // sweep — the tile-bounds derivation reads `mib_size_log2` off the
+    // parsed header, not a hardcoded 64x64 assumption.
+    let sizes = [(256usize, 256usize), (200, 152)];
+    let combos = [
+        (8i32, (1i32, 1i32), false),
+        (8, (0, 0), false),
+        (10, (1, 1), false),
+        (10, (0, 0), false),
+        (8, (1, 1), true), // monochrome
+    ];
+    let mut n = 0u32;
+    let mut allintra_arms = 0u32;
+    let mut good_arms = 0u32;
+    let mut select_seen = 0u32;
+    let mut bands = [0u32; 4];
+    let mut nonzero_lf = 0u32;
+    let mut cdef_gated = 0u32;
+    let mut cdef_applied = 0u32;
+    let mut lr_gated = 0u32;
+    let mut lr_applied = 0u32;
+    let mut seg_gated = 0u32;
+    let mut multi_row_arms = 0u32; // tile_rows > 1
+    let mut multi_col_arms = 0u32; // tile_cols > 1
+    let mut both_axes_arms = 0u32; // tile_rows > 1 AND tile_cols > 1
+    let mut sb128_tiles_arms = 0u32;
+    #[allow(clippy::too_many_arguments)]
+    let mut run = |w: usize,
+                   h: usize,
+                   bd: i32,
+                   ss: (i32, i32),
+                   mono: bool,
+                   cq: i32,
+                   cdef: bool,
+                   restoration: bool,
+                   usage: u32,
+                   aq: u32,
+                   two_pass: bool,
+                   sb128: bool,
+                   tcl: i32,
+                   trl: i32| {
+        let f = run_config(&Cfg {
+            w,
+            h,
+            bd,
+            mono,
+            ss,
+            cq,
+            cdef,
+            restoration,
+            usage,
+            aq,
+            two_pass,
+            sb128,
+            tile_columns_log2: tcl,
+            tile_rows_log2: trl,
+        });
+        assert!(
+            f.len > 50,
+            "suspiciously small multi-tile stream ({} bytes)",
+            f.len
+        );
+        assert!(
+            f.tile_cols > 1 || f.tile_rows > 1,
+            "tile_columns_log2={tcl} tile_rows_log2={trl} at {w}x{h} produced only \
+             1x1 tiles (size too small for this tile grid -- widen the fixture)"
+        );
+        n += 1;
+        allintra_arms += (usage == 2) as u32;
+        good_arms += (usage == 0) as u32;
+        select_seen += f.tx_select as u32;
+        let q = f.base_qindex;
+        bands[if q <= 20 {
+            0
+        } else if q <= 60 {
+            1
+        } else if q <= 120 {
+            2
+        } else {
+            3
+        }] += 1;
+        nonzero_lf += (f.filter_level != [0; 4]) as u32;
+        cdef_gated += f.cdef_gated as u32;
+        cdef_applied += f.cdef_applied as u32;
+        lr_gated += f.lr_gated as u32;
+        lr_applied += f.lr_applied as u32;
+        seg_gated += f.seg_enabled as u32;
+        multi_row_arms += (f.tile_rows > 1) as u32;
+        multi_col_arms += (f.tile_cols > 1) as u32;
+        both_axes_arms += (f.tile_rows > 1 && f.tile_cols > 1) as u32;
+        sb128_tiles_arms += sb128 as u32;
+    };
+    for &(w, h) in &sizes {
+        for &(bd, ss, mono) in &combos {
+            // ALLINTRA baseline: full 2D tiling (both axes > 1).
+            for &cq in &[2i32, 6, 20, 36] {
+                run(
+                    w, h, bd, ss, mono, cq, false, false, 2, 0, false, false, 1, 1,
+                );
+            }
+            // ALLINTRA + CDEF / restoration / both, chained with 2D tiling.
+            run(
+                w, h, bd, ss, mono, 36, true, false, 2, 0, false, false, 1, 1,
+            );
+            run(
+                w, h, bd, ss, mono, 36, false, true, 2, 0, false, false, 1, 1,
+            );
+            run(w, h, bd, ss, mono, 36, true, true, 2, 0, false, false, 1, 1);
+            // Column-only and row-only tiling (each axis independently).
+            run(
+                w, h, bd, ss, mono, 36, false, false, 2, 0, false, false, 1, 0,
+            );
+            run(
+                w, h, bd, ss, mono, 36, false, false, 2, 0, false, false, 0, 1,
+            );
+            // GOOD usage, retained as a smaller cross-check.
+            run(
+                w, h, bd, ss, mono, 36, false, false, 0, 0, false, false, 1, 1,
+            );
+            // SEGMENTATION (--aq-mode>0 --passes=2), chained with tiling.
+            run(
+                w, h, bd, ss, mono, 36, false, false, 2, 1, true, false, 1, 1,
+            );
+        }
+    }
+    // 4-way tile-column stress (SB-exact fit avoids a partial last tile):
+    // 256px wide / 64px SB = 4 SB columns, tile_columns_log2=2 -> 4 tiles.
+    for &(bd, ss, mono) in &combos {
+        run(
+            256, 64, bd, ss, mono, 6, false, false, 2, 0, false, false, 2, 0,
+        );
+    }
+    // SB128 + multi-tile cross-check: the tile-bounds derivation must read
+    // mib_size_log2 (32 mi/SB at sb128) off the parsed header, not assume
+    // 64x64. 384x384 = 3x3 SBs @ 128px.
+    for &(bd, ss, mono) in &combos {
+        run(
+            384, 384, bd, ss, mono, 6, false, false, 2, 0, false, true, 1, 1,
+        );
+    }
+    assert_eq!(n, 2 * 5 * 11 + 5 + 5, "multi-tile arm count");
+    println!(
+        "multi-tile coverage: n={n} allintra={allintra_arms} good={good_arms} \
+         multi_row={multi_row_arms} multi_col={multi_col_arms} both_axes={both_axes_arms} \
+         sb128_tiles={sb128_tiles_arms} bands={bands:?} select_seen={select_seen} \
+         nonzero_lf={nonzero_lf} cdef_gated={cdef_gated} cdef_applied={cdef_applied} \
+         lr_gated={lr_gated} lr_applied={lr_applied} seg_gated={seg_gated}"
+    );
+    assert!(
+        select_seen > 0,
+        "no TX_MODE_SELECT multi-tile stream decoded"
+    );
+    assert!(
+        bands.iter().all(|&b| b > 0),
+        "multi-tile band coverage {bands:?}"
+    );
+    assert!(multi_row_arms >= 1, "no tile_rows>1 stream decoded");
+    assert!(multi_col_arms >= 1, "no tile_cols>1 stream decoded");
+    assert!(
+        both_axes_arms >= 1,
+        "no BOTH-axes (2D tiling) stream decoded"
+    );
+    assert!(sb128_tiles_arms >= 1, "no SB128+multi-tile stream decoded");
+    assert!(cdef_gated >= 1, "multi-tile CDEF-gated population empty");
+    assert!(
+        cdef_applied >= 1,
+        "multi-tile CDEF-applied population empty"
+    );
+    assert!(lr_gated >= 1, "multi-tile LR-gated population empty");
+    assert!(lr_applied >= 1, "multi-tile LR-applied population empty");
+    assert!(seg_gated >= 1, "multi-tile segmentation population empty");
+    assert_eq!(
+        allintra_arms,
+        2 * 5 * 10 + 5 + 5,
+        "ALLINTRA multi-tile arm count"
+    );
+    assert_eq!(good_arms, 2 * 5, "GOOD multi-tile arm count");
+}
+
+#[test]
 fn high_q_deblocked_stream_decodes_byte_identical() {
     // The old envelope boundary, now INSIDE the envelope: this config
     // (100x76 4:2:0 cq 52 on the deterministic run_config content) picks
@@ -768,6 +1012,8 @@ fn high_q_deblocked_stream_decodes_byte_identical() {
         aq: 0,
         two_pass: false,
         sb128: false,
+        tile_columns_log2: 0,
+        tile_rows_log2: 0,
     });
     println!(
         "deblocked companion: {} bytes, filter_level = {:?}",
@@ -791,8 +1037,9 @@ fn deblocked_422_chroma_is_rejected_not_misdecoded() {
     let y = gen_plane(w, h, bd, seed ^ 0x1111, false);
     let u = gen_plane(w / 2, h, bd, seed ^ 0x2222, true);
     let v = gen_plane(w / 2, h, bd, seed ^ 0x3333, true);
-    let bytes =
-        c::ref_encode_av1_kf(&y, &u, &v, w, h, bd, false, 1, 0, cq, 0, false, false, 0, 0, false);
+    let bytes = c::ref_encode_av1_kf(
+        &y, &u, &v, w, h, bd, false, 1, 0, cq, 0, false, false, 0, 0, false,
+    );
     match decode_frame_obus(&bytes) {
         Err(e) => {
             println!("422 arm: REJECTED ({e})");
@@ -837,6 +1084,8 @@ fn cdef_stream_decodes_byte_identical_and_filters() {
         aq: 0,
         two_pass: false,
         sb128: false,
+        tile_columns_log2: 0,
+        tile_rows_log2: 0,
     });
     println!(
         "cdef companion: {} bytes, gated={} applied={}",
