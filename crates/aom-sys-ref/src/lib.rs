@@ -3129,3 +3129,25 @@ pub fn ref_highbd_quantize_fp_qm(log_scale: i32, coeff: &[i32], round: &[i16; 2]
     let eob = unsafe { shim_highbd_quantize_fp_qm(coeff.as_ptr(), n as i32, round.as_ptr(), quant.as_ptr(), dequant.as_ptr(), scan.as_ptr(), iscan.as_ptr(), qm.as_ptr(), iqm.as_ptr(), log_scale, q.as_mut_ptr(), dq.as_mut_ptr()) };
     (q, dq, eob)
 }
+
+// av1/common/reconintra.c — intra neighbour availability (verbatim-paste shim).
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_has_top_right(sb_size: i32, bsize: i32, mi_row: i32, mi_col: i32, top_available: i32, right_available: i32, partition: i32, txsz: i32, row_off: i32, col_off: i32, ss_x: i32, ss_y: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_has_bottom_left(sb_size: i32, bsize: i32, mi_row: i32, mi_col: i32, bottom_available: i32, left_available: i32, partition: i32, txsz: i32, row_off: i32, col_off: i32, ss_x: i32, ss_y: i32) -> i32;
+}
+
+/// Reference `has_top_right` (reconintra.c): is the block's top-right reference
+/// available and coded? Returns 0/1.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_has_top_right(sb_size: usize, bsize: usize, mi_row: i32, mi_col: i32, top_available: bool, right_available: bool, partition: usize, txsz: usize, row_off: i32, col_off: i32, ss_x: i32, ss_y: i32) -> i32 {
+    unsafe { shim_has_top_right(sb_size as i32, bsize as i32, mi_row, mi_col, top_available as i32, right_available as i32, partition as i32, txsz as i32, row_off, col_off, ss_x, ss_y) }
+}
+
+/// Reference `has_bottom_left` (reconintra.c): is the block's bottom-left
+/// reference available and coded? Returns 0/1.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_has_bottom_left(sb_size: usize, bsize: usize, mi_row: i32, mi_col: i32, bottom_available: bool, left_available: bool, partition: usize, txsz: usize, row_off: i32, col_off: i32, ss_x: i32, ss_y: i32) -> i32 {
+    unsafe { shim_has_bottom_left(sb_size as i32, bsize as i32, mi_row, mi_col, bottom_available as i32, left_available as i32, partition as i32, txsz as i32, row_off, col_off, ss_x, ss_y) }
+}

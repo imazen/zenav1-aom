@@ -4407,3 +4407,298 @@ pub fn read_modes_b(
     read_modes_b_recurse(dec, above, left, arena, cdfs, state, &mut tree, &mut infos, mi_row, mi_col, bsize);
     (tree, infos)
 }
+
+// ---- intra neighbour availability (has_top_right / has_bottom_left) ----------
+// Port of av1/common/reconintra.c: are the top-right / bottom-left reference
+// pixels available (coded before this block)? Table-driven by coding order.
+
+/// `mi_size_high_log2[BLOCK_SIZES_ALL]` (`common_data.h`): log2 of a block's
+/// height in mode-info (4x4) units.
+const MI_SIZE_HIGH_LOG2: [u8; 22] =
+    [0, 1, 0, 1, 2, 1, 2, 3, 2, 3, 4, 3, 4, 5, 4, 5, 2, 0, 3, 1, 4, 2];
+/// `MAX_MIB_SIZE_LOG2` = `MAX_SB_SIZE_LOG2 - MI_SIZE_LOG2` = 7 - 2 = 5.
+const MAX_MIB_SIZE_LOG2: i32 = 5;
+/// `BLOCK_64X64` block-size index.
+const BLOCK_64X64: usize = 12;
+
+#[rustfmt::skip]
+const HAS_TR_4X4: [u8; 128] = [
+    255, 255, 255, 255, 85, 85, 85, 85, 119, 119, 119, 119, 85, 85, 85, 85,
+    127, 127, 127, 127, 85, 85, 85, 85, 119, 119, 119, 119, 85, 85, 85, 85,
+    255, 127, 255, 127, 85, 85, 85, 85, 119, 119, 119, 119, 85, 85, 85, 85,
+    127, 127, 127, 127, 85, 85, 85, 85, 119, 119, 119, 119, 85, 85, 85, 85,
+    255, 255, 255, 127, 85, 85, 85, 85, 119, 119, 119, 119, 85, 85, 85, 85,
+    127, 127, 127, 127, 85, 85, 85, 85, 119, 119, 119, 119, 85, 85, 85, 85,
+    255, 127, 255, 127, 85, 85, 85, 85, 119, 119, 119, 119, 85, 85, 85, 85,
+    127, 127, 127, 127, 85, 85, 85, 85, 119, 119, 119, 119, 85, 85, 85, 85,
+];
+#[rustfmt::skip]
+const HAS_TR_4X8: [u8; 64] = [
+    255, 255, 255, 255, 119, 119, 119, 119, 127, 127, 127, 127, 119,
+    119, 119, 119, 255, 127, 255, 127, 119, 119, 119, 119, 127, 127,
+    127, 127, 119, 119, 119, 119, 255, 255, 255, 127, 119, 119, 119,
+    119, 127, 127, 127, 127, 119, 119, 119, 119, 255, 127, 255, 127,
+    119, 119, 119, 119, 127, 127, 127, 127, 119, 119, 119, 119,
+];
+#[rustfmt::skip]
+const HAS_TR_8X4: [u8; 64] = [
+    255, 255, 0, 0, 85, 85, 0, 0, 119, 119, 0, 0, 85, 85, 0, 0,
+    127, 127, 0, 0, 85, 85, 0, 0, 119, 119, 0, 0, 85, 85, 0, 0,
+    255, 127, 0, 0, 85, 85, 0, 0, 119, 119, 0, 0, 85, 85, 0, 0,
+    127, 127, 0, 0, 85, 85, 0, 0, 119, 119, 0, 0, 85, 85, 0, 0,
+];
+#[rustfmt::skip]
+const HAS_TR_8X8: [u8; 32] = [
+    255, 255, 85, 85, 119, 119, 85, 85, 127, 127, 85, 85, 119, 119, 85, 85,
+    255, 127, 85, 85, 119, 119, 85, 85, 127, 127, 85, 85, 119, 119, 85, 85,
+];
+#[rustfmt::skip]
+const HAS_TR_8X16: [u8; 16] = [
+    255, 255, 119, 119, 127, 127, 119, 119, 255, 127, 119, 119, 127, 127, 119, 119,
+];
+#[rustfmt::skip]
+const HAS_TR_16X8: [u8; 16] = [255, 0, 85, 0, 119, 0, 85, 0, 127, 0, 85, 0, 119, 0, 85, 0];
+#[rustfmt::skip]
+const HAS_TR_16X16: [u8; 8] = [255, 85, 119, 85, 127, 85, 119, 85];
+const HAS_TR_16X32: [u8; 4] = [255, 119, 127, 119];
+const HAS_TR_32X16: [u8; 4] = [15, 5, 7, 5];
+const HAS_TR_32X32: [u8; 2] = [95, 87];
+const HAS_TR_32X64: [u8; 1] = [127];
+const HAS_TR_64X32: [u8; 1] = [19];
+const HAS_TR_64X64: [u8; 1] = [7];
+const HAS_TR_64X128: [u8; 1] = [3];
+const HAS_TR_128X64: [u8; 1] = [1];
+const HAS_TR_128X128: [u8; 1] = [1];
+#[rustfmt::skip]
+const HAS_TR_4X16: [u8; 32] = [
+    255, 255, 255, 255, 127, 127, 127, 127, 255, 127, 255,
+    127, 127, 127, 127, 127, 255, 255, 255, 127, 127, 127,
+    127, 127, 255, 127, 255, 127, 127, 127, 127, 127,
+];
+#[rustfmt::skip]
+const HAS_TR_16X4: [u8; 32] = [
+    255, 0, 0, 0, 85, 0, 0, 0, 119, 0, 0, 0, 85, 0, 0, 0,
+    127, 0, 0, 0, 85, 0, 0, 0, 119, 0, 0, 0, 85, 0, 0, 0,
+];
+const HAS_TR_8X32: [u8; 8] = [255, 255, 127, 127, 255, 127, 127, 127];
+const HAS_TR_32X8: [u8; 8] = [15, 0, 5, 0, 7, 0, 5, 0];
+const HAS_TR_16X64: [u8; 2] = [255, 127];
+const HAS_TR_64X16: [u8; 2] = [3, 1];
+
+const HAS_TR_TABLES: [&[u8]; 22] = [
+    &HAS_TR_4X4, &HAS_TR_4X8, &HAS_TR_8X4, &HAS_TR_8X8, &HAS_TR_8X16, &HAS_TR_16X8,
+    &HAS_TR_16X16, &HAS_TR_16X32, &HAS_TR_32X16, &HAS_TR_32X32, &HAS_TR_32X64,
+    &HAS_TR_64X32, &HAS_TR_64X64, &HAS_TR_64X128, &HAS_TR_128X64, &HAS_TR_128X128,
+    &HAS_TR_4X16, &HAS_TR_16X4, &HAS_TR_8X32, &HAS_TR_32X8, &HAS_TR_16X64, &HAS_TR_64X16,
+];
+#[rustfmt::skip]
+const HAS_TR_VERT_8X8: [u8; 32] = [
+    255, 255, 0, 0, 119, 119, 0, 0, 127, 127, 0, 0, 119, 119, 0, 0,
+    255, 127, 0, 0, 119, 119, 0, 0, 127, 127, 0, 0, 119, 119, 0, 0,
+];
+const HAS_TR_VERT_16X16: [u8; 8] = [255, 0, 119, 0, 127, 0, 119, 0];
+const HAS_TR_VERT_32X32: [u8; 2] = [15, 7];
+const HAS_TR_VERT_64X64: [u8; 1] = [3];
+const HAS_TR_VERT_TABLES: [Option<&[u8]>; 16] = [
+    None, Some(&HAS_TR_4X8), None, Some(&HAS_TR_VERT_8X8), Some(&HAS_TR_8X16), None,
+    Some(&HAS_TR_VERT_16X16), Some(&HAS_TR_16X32), None, Some(&HAS_TR_VERT_32X32),
+    Some(&HAS_TR_32X64), None, Some(&HAS_TR_VERT_64X64), Some(&HAS_TR_64X128), None,
+    Some(&HAS_TR_128X128),
+];
+
+fn get_has_tr_table(partition: usize, bsize: usize) -> &'static [u8] {
+    if partition == PARTITION_VERT_A || partition == PARTITION_VERT_B {
+        HAS_TR_VERT_TABLES[bsize].expect("has_tr vert table is non-null for a VERT partition")
+    } else {
+        HAS_TR_TABLES[bsize]
+    }
+}
+
+/// `has_top_right` (reconintra.c): are the block's top-right reference pixels
+/// available (coded before this block)? `mi_row`/`mi_col` are the block's
+/// mode-info position, `row_off`/`col_off` the transform-unit offset within the
+/// block (in mi units), `txsz` the transform size, `ss_x`/`ss_y` the plane
+/// subsampling. Returns 0 or 1.
+#[allow(clippy::too_many_arguments)]
+pub fn has_top_right(
+    sb_size: usize, bsize: usize, mi_row: i32, mi_col: i32, top_available: bool,
+    right_available: bool, partition: usize, txsz: usize, row_off: i32, col_off: i32,
+    ss_x: i32, ss_y: i32,
+) -> i32 {
+    if !top_available || !right_available {
+        return 0;
+    }
+    let bw_unit = MI_SIZE_WIDE[bsize];
+    let plane_bw_unit = (bw_unit >> ss_x).max(1);
+    let top_right_count_unit = TX_SIZE_WIDE_UNIT[txsz];
+    if row_off > 0 {
+        if BLOCK_SIZE_WIDE[bsize] > BLOCK_SIZE_WIDE[BLOCK_64X64] {
+            if row_off == MI_SIZE_HIGH[BLOCK_64X64] >> ss_y
+                && col_off + top_right_count_unit == MI_SIZE_WIDE[BLOCK_64X64] >> ss_x
+            {
+                return 1;
+            }
+            let plane_bw_unit_64 = MI_SIZE_WIDE[BLOCK_64X64] >> ss_x;
+            let col_off_64 = col_off % plane_bw_unit_64;
+            return (col_off_64 + top_right_count_unit < plane_bw_unit_64) as i32;
+        }
+        (col_off + top_right_count_unit < plane_bw_unit) as i32
+    } else {
+        if col_off + top_right_count_unit < plane_bw_unit {
+            return 1;
+        }
+        let bw_in_mi_log2 = MI_SIZE_WIDE_LOG2[bsize] as i32;
+        let bh_in_mi_log2 = MI_SIZE_HIGH_LOG2[bsize] as i32;
+        let sb_mi_size = MI_SIZE_HIGH[sb_size];
+        let blk_row_in_sb = (mi_row & (sb_mi_size - 1)) >> bh_in_mi_log2;
+        let blk_col_in_sb = (mi_col & (sb_mi_size - 1)) >> bw_in_mi_log2;
+        if blk_row_in_sb == 0 {
+            return 1;
+        }
+        if ((blk_col_in_sb + 1) << bw_in_mi_log2) >= sb_mi_size {
+            return 0;
+        }
+        let this_blk_index = (blk_row_in_sb << (MAX_MIB_SIZE_LOG2 - bw_in_mi_log2)) + blk_col_in_sb;
+        let idx1 = (this_blk_index / 8) as usize;
+        let idx2 = this_blk_index % 8;
+        let table = get_has_tr_table(partition, bsize);
+        ((table[idx1] >> idx2) & 1) as i32
+    }
+}
+
+#[rustfmt::skip]
+const HAS_BL_4X4: [u8; 128] = [
+    84, 85, 85, 85, 16, 17, 17, 17, 84, 85, 85, 85, 0, 1, 1, 1, 84, 85, 85,
+    85, 16, 17, 17, 17, 84, 85, 85, 85, 0, 0, 1, 0, 84, 85, 85, 85, 16, 17,
+    17, 17, 84, 85, 85, 85, 0, 1, 1, 1, 84, 85, 85, 85, 16, 17, 17, 17, 84,
+    85, 85, 85, 0, 0, 0, 0, 84, 85, 85, 85, 16, 17, 17, 17, 84, 85, 85, 85,
+    0, 1, 1, 1, 84, 85, 85, 85, 16, 17, 17, 17, 84, 85, 85, 85, 0, 0, 1,
+    0, 84, 85, 85, 85, 16, 17, 17, 17, 84, 85, 85, 85, 0, 1, 1, 1, 84, 85,
+    85, 85, 16, 17, 17, 17, 84, 85, 85, 85, 0, 0, 0, 0,
+];
+#[rustfmt::skip]
+const HAS_BL_4X8: [u8; 64] = [
+    16, 17, 17, 17, 0, 1, 1, 1, 16, 17, 17, 17, 0, 0, 1, 0,
+    16, 17, 17, 17, 0, 1, 1, 1, 16, 17, 17, 17, 0, 0, 0, 0,
+    16, 17, 17, 17, 0, 1, 1, 1, 16, 17, 17, 17, 0, 0, 1, 0,
+    16, 17, 17, 17, 0, 1, 1, 1, 16, 17, 17, 17, 0, 0, 0, 0,
+];
+#[rustfmt::skip]
+const HAS_BL_8X4: [u8; 64] = [
+    254, 255, 84, 85, 254, 255, 16, 17, 254, 255, 84, 85, 254, 255, 0, 1,
+    254, 255, 84, 85, 254, 255, 16, 17, 254, 255, 84, 85, 254, 255, 0, 0,
+    254, 255, 84, 85, 254, 255, 16, 17, 254, 255, 84, 85, 254, 255, 0, 1,
+    254, 255, 84, 85, 254, 255, 16, 17, 254, 255, 84, 85, 254, 255, 0, 0,
+];
+#[rustfmt::skip]
+const HAS_BL_8X8: [u8; 32] = [
+    84, 85, 16, 17, 84, 85, 0, 1, 84, 85, 16, 17, 84, 85, 0, 0,
+    84, 85, 16, 17, 84, 85, 0, 1, 84, 85, 16, 17, 84, 85, 0, 0,
+];
+#[rustfmt::skip]
+const HAS_BL_8X16: [u8; 16] = [16, 17, 0, 1, 16, 17, 0, 0, 16, 17, 0, 1, 16, 17, 0, 0];
+#[rustfmt::skip]
+const HAS_BL_16X8: [u8; 16] = [254, 84, 254, 16, 254, 84, 254, 0, 254, 84, 254, 16, 254, 84, 254, 0];
+const HAS_BL_16X16: [u8; 8] = [84, 16, 84, 0, 84, 16, 84, 0];
+const HAS_BL_16X32: [u8; 4] = [16, 0, 16, 0];
+const HAS_BL_32X16: [u8; 4] = [78, 14, 78, 14];
+const HAS_BL_32X32: [u8; 2] = [4, 4];
+const HAS_BL_32X64: [u8; 1] = [0];
+const HAS_BL_64X32: [u8; 1] = [34];
+const HAS_BL_64X64: [u8; 1] = [0];
+const HAS_BL_64X128: [u8; 1] = [0];
+const HAS_BL_128X64: [u8; 1] = [0];
+const HAS_BL_128X128: [u8; 1] = [0];
+#[rustfmt::skip]
+const HAS_BL_4X16: [u8; 32] = [
+    0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0,
+    0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0,
+];
+#[rustfmt::skip]
+const HAS_BL_16X4: [u8; 32] = [
+    254, 254, 254, 84, 254, 254, 254, 16, 254, 254, 254, 84, 254, 254, 254, 0,
+    254, 254, 254, 84, 254, 254, 254, 16, 254, 254, 254, 84, 254, 254, 254, 0,
+];
+const HAS_BL_8X32: [u8; 8] = [0, 1, 0, 0, 0, 1, 0, 0];
+const HAS_BL_32X8: [u8; 8] = [238, 78, 238, 14, 238, 78, 238, 14];
+const HAS_BL_16X64: [u8; 2] = [0, 0];
+const HAS_BL_64X16: [u8; 2] = [42, 42];
+const HAS_BL_TABLES: [&[u8]; 22] = [
+    &HAS_BL_4X4, &HAS_BL_4X8, &HAS_BL_8X4, &HAS_BL_8X8, &HAS_BL_8X16, &HAS_BL_16X8,
+    &HAS_BL_16X16, &HAS_BL_16X32, &HAS_BL_32X16, &HAS_BL_32X32, &HAS_BL_32X64,
+    &HAS_BL_64X32, &HAS_BL_64X64, &HAS_BL_64X128, &HAS_BL_128X64, &HAS_BL_128X128,
+    &HAS_BL_4X16, &HAS_BL_16X4, &HAS_BL_8X32, &HAS_BL_32X8, &HAS_BL_16X64, &HAS_BL_64X16,
+];
+#[rustfmt::skip]
+const HAS_BL_VERT_8X8: [u8; 32] = [
+    254, 255, 16, 17, 254, 255, 0, 1, 254, 255, 16, 17, 254, 255, 0, 0,
+    254, 255, 16, 17, 254, 255, 0, 1, 254, 255, 16, 17, 254, 255, 0, 0,
+];
+const HAS_BL_VERT_16X16: [u8; 8] = [254, 16, 254, 0, 254, 16, 254, 0];
+const HAS_BL_VERT_32X32: [u8; 2] = [14, 14];
+const HAS_BL_VERT_64X64: [u8; 1] = [2];
+const HAS_BL_VERT_TABLES: [Option<&[u8]>; 16] = [
+    None, Some(&HAS_BL_4X8), None, Some(&HAS_BL_VERT_8X8), Some(&HAS_BL_8X16), None,
+    Some(&HAS_BL_VERT_16X16), Some(&HAS_BL_16X32), None, Some(&HAS_BL_VERT_32X32),
+    Some(&HAS_BL_32X64), None, Some(&HAS_BL_VERT_64X64), Some(&HAS_BL_64X128), None,
+    Some(&HAS_BL_128X128),
+];
+fn get_has_bl_table(partition: usize, bsize: usize) -> &'static [u8] {
+    if partition == PARTITION_VERT_A || partition == PARTITION_VERT_B {
+        HAS_BL_VERT_TABLES[bsize].expect("has_bl vert table is non-null for a VERT partition")
+    } else {
+        HAS_BL_TABLES[bsize]
+    }
+}
+
+/// `has_bottom_left` (reconintra.c): are the block's bottom-left reference pixels
+/// available (coded before this block)? Args mirror [`has_top_right`]. Returns 0/1.
+#[allow(clippy::too_many_arguments)]
+pub fn has_bottom_left(
+    sb_size: usize, bsize: usize, mi_row: i32, mi_col: i32, bottom_available: bool,
+    left_available: bool, partition: usize, txsz: usize, row_off: i32, col_off: i32,
+    ss_x: i32, ss_y: i32,
+) -> i32 {
+    if !bottom_available || !left_available {
+        return 0;
+    }
+    if BLOCK_SIZE_WIDE[bsize] > BLOCK_SIZE_WIDE[BLOCK_64X64] && col_off > 0 {
+        let plane_bw_unit_64 = MI_SIZE_WIDE[BLOCK_64X64] >> ss_x;
+        let col_off_64 = col_off % plane_bw_unit_64;
+        if col_off_64 == 0 {
+            let plane_bh_unit_64 = MI_SIZE_HIGH[BLOCK_64X64] >> ss_y;
+            let row_off_64 = row_off % plane_bh_unit_64;
+            let plane_bh_unit = (MI_SIZE_HIGH[bsize] >> ss_y).min(plane_bh_unit_64);
+            return (row_off_64 + TX_SIZE_HIGH_UNIT[txsz] < plane_bh_unit) as i32;
+        }
+    }
+    if col_off > 0 {
+        0
+    } else {
+        let bh_unit = MI_SIZE_HIGH[bsize];
+        let plane_bh_unit = (bh_unit >> ss_y).max(1);
+        let bottom_left_count_unit = TX_SIZE_HIGH_UNIT[txsz];
+        if row_off + bottom_left_count_unit < plane_bh_unit {
+            return 1;
+        }
+        let bw_in_mi_log2 = MI_SIZE_WIDE_LOG2[bsize] as i32;
+        let bh_in_mi_log2 = MI_SIZE_HIGH_LOG2[bsize] as i32;
+        let sb_mi_size = MI_SIZE_HIGH[sb_size];
+        let blk_row_in_sb = (mi_row & (sb_mi_size - 1)) >> bh_in_mi_log2;
+        let blk_col_in_sb = (mi_col & (sb_mi_size - 1)) >> bw_in_mi_log2;
+        if blk_col_in_sb == 0 {
+            let blk_start_row_off = (blk_row_in_sb << bh_in_mi_log2) >> ss_y;
+            let row_off_in_sb = blk_start_row_off + row_off;
+            let sb_height_unit = sb_mi_size >> ss_y;
+            return (row_off_in_sb + bottom_left_count_unit < sb_height_unit) as i32;
+        }
+        if ((blk_row_in_sb + 1) << bh_in_mi_log2) >= sb_mi_size {
+            return 0;
+        }
+        let this_blk_index = (blk_row_in_sb << (MAX_MIB_SIZE_LOG2 - bw_in_mi_log2)) + blk_col_in_sb;
+        let idx1 = (this_blk_index / 8) as usize;
+        let idx2 = this_blk_index % 8;
+        let table = get_has_bl_table(partition, bsize);
+        ((table[idx1] >> idx2) & 1) as i32
+    }
+}
