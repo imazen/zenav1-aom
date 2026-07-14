@@ -1,5 +1,12 @@
 //! Full-tile encode→decode roundtrip for the KEY-frame luma decode driver.
 //!
+//! DEBLOCKING IS DELIBERATELY NOT MODELED HERE: the mirror mini-encoder has
+//! no loop filter, so this roundtrip pins the PRE-FILTER reconstruction
+//! (exactly what C's tile decode produces before `av1_loop_filter_frame`).
+//! The deblock application is validated separately — synthetically against
+//! the real C walk in `aom-loopfilter/tests/lf_apply_diff.rs`, and
+//! end-to-end on real deblocked streams in `tests/real_bitstream.rs`.
+//!
 //! A mirror mini-encoder performs the identical tile walk with the write-side
 //! counterparts (`write_partition` / `write_mb_modes_kf_fc` /
 //! `write_coeffs_txb_full`) and its own reconstruction feedback loop: per txb

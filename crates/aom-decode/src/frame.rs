@@ -13,8 +13,14 @@
 //!   palette/intrabc flags in the block layer).
 //! - CDEF / loop restoration / film grain disabled at the sequence level;
 //!   superres not scaled; no frame-size override (frame == sequence max dims).
-//! - loop-filter levels all zero (the deblocker is not applied by this
-//!   driver; the C decoder skips it when the frame luma levels are zero).
+//! - deblocking IS applied ([`aom_loopfilter::frame::loop_filter_frame`],
+//!   C-diffed against the real `av1_filter_block_plane_vert/horz` walk) —
+//!   any filter levels, sharpness, mode/ref deltas, and per-block delta-lf
+//!   are in the envelope. ONE exception: 4:2:2 streams with nonzero CHROMA
+//!   levels are rejected — libaom's chroma path reads
+//!   `max_txsize_rect_lookup[BLOCK_INVALID]` out of bounds for tall blocks
+//!   at `ss = (1,0)` (av1_ss_size_lookup, common_data.c:17), which is not
+//!   portable behavior. 4:2:2 luma-only deblocking is in the envelope.
 //! - no segmentation, no quantization matrices, not (coded-)lossless.
 //! - `disable_cdf_update` off (the driver always adapts).
 //! - delta-q / delta-lf ARE in the envelope (per-block dequant recompute).
@@ -23,7 +29,7 @@
 //! byte-identically against the REAL C decoder (`aom_codec_av1_dx`) on
 //! bitstreams produced by the REAL encoder at `--cpu-used=0 --end-usage=q`.
 
-use crate::{decode_tile_kf, KfTileConfig};
+use crate::{decode_tile_kf, KfTileConfig, KfTileDecode, MI_SIZE_WIDE, MI_SIZE_HIGH};
 use aom_entropy::dec::OdEcDec;
 use aom_entropy::header::{
     read_sequence_header_obu, read_tile_group_header, read_uncompressed_header, CdefHeader,
@@ -57,7 +63,8 @@ pub struct FrameDecode {
     pub subsampling_y: usize,
     /// Frame quantizer facts (for harness assertions).
     pub base_qindex: i32,
-    /// `[y0, y1, u, v]` loop-filter levels — all zero inside the envelope.
+    /// `[y0, y1, u, v]` loop-filter levels as coded — deblocking was applied
+    /// with them (a gated no-op when both luma levels are 0, like C).
     pub filter_level: [i32; 4],
     /// `features.tx_mode` was TX_MODE_SELECT (vs LARGEST).
     pub tx_mode_select: bool,
@@ -253,10 +260,16 @@ fn parse_frame_header(
         return Err("segmentation".into());
     }
     let lf = &p.loopfilter;
-    if lf.filter_level != [0, 0] || lf.filter_level_u != 0 || lf.filter_level_v != 0 {
+    if c.subsampling_x == 1
+        && c.subsampling_y == 0
+        && (lf.filter_level_u != 0 || lf.filter_level_v != 0)
+    {
+        // libaom's 4:2:2 chroma deblock path indexes
+        // max_txsize_rect_lookup[BLOCK_INVALID] out of bounds for tall
+        // blocks; not portable — see aom-loopfilter/tests/lf_apply_diff.rs.
         return Err(format!(
-            "loop-filter levels [{},{},{},{}] != 0 (deblocking not applied)",
-            lf.filter_level[0], lf.filter_level[1], lf.filter_level_u, lf.filter_level_v
+            "4:2:2 chroma deblocking (levels u={} v={}) out of envelope",
+            lf.filter_level_u, lf.filter_level_v
         ));
     }
 
@@ -281,10 +294,27 @@ fn parse_frame_header(
 /// aomenc / `aom_codec_av1_cx`: temporal delimiter + sequence header + frame)
 /// to cropped planes. Hard-errors on anything outside the documented envelope.
 pub fn decode_frame_obus(data: &[u8]) -> Result<FrameDecode, String> {
+    let (mut t, cfg, header) = decode_frame_obus_prefilter(data)?;
+    if header.loopfilter.filter_level != [0, 0] {
+        apply_deblock(&mut t, &cfg, &header);
+    }
+    Ok(finish_frame(t, &cfg, &header))
+}
+
+/// Everything [`decode_frame_obus`] does up to (but not including) the loop
+/// filter: OBU walk, header parse + envelope gates, tile decode. Returns the
+/// mi-aligned pre-filter reconstruction + the tile config + the parsed frame
+/// header. Hidden: harness entry so differential tests can drive the C
+/// reference filter over the exact same pre-filter state.
+#[doc(hidden)]
+#[allow(clippy::type_complexity)]
+pub fn decode_frame_obus_prefilter(
+    data: &[u8],
+) -> Result<(KfTileDecode, KfTileConfig, FrameHeaderObu), String> {
     let mut pos = 0usize;
     let mut seq: Option<SequenceHeaderObu> = None;
     let mut pending_header: Option<FrameHeaderObu> = None;
-    let mut decoded: Option<FrameDecode> = None;
+    let mut decoded: Option<(KfTileDecode, KfTileConfig, FrameHeaderObu)> = None;
 
     while pos < data.len() {
         let h = read_obu_header(&data[pos..]).ok_or("bad OBU header")?;
@@ -366,16 +396,16 @@ pub fn decode_frame_obus(data: &[u8]) -> Result<FrameDecode, String> {
     decoded.ok_or_else(|| "no frame in stream".into())
 }
 
-/// Run the tile decoder over the (single) tile payload and crop the planes.
+/// Run the tile decoder over the (single) tile payload — the pre-filter
+/// stage: builds the tile config and decodes; no loop filter, no crop.
+#[allow(clippy::type_complexity)]
 fn decode_tile_payload(
     seq: &SequenceHeaderObu,
     p: &FrameHeaderObu,
     tile_data: &[u8],
-) -> Result<FrameDecode, String> {
+) -> Result<(KfTileDecode, KfTileConfig, FrameHeaderObu), String> {
     let s = &seq.seq_header;
     let c = &seq.color_config;
-    let width = s.max_frame_width as usize;
-    let height = s.max_frame_height as usize;
     let (ss_x, ss_y) = if c.monochrome {
         (1usize, 1usize)
     } else {
@@ -413,13 +443,23 @@ fn decode_tile_payload(
     let mut cdfs = KfFrameContext::default_for_qindex(cfg.base_qindex);
     let mut dec = OdEcDec::new(tile_data);
     let t = decode_tile_kf(&mut dec, &cfg, &mut cdfs, 0);
+    Ok((t, cfg, p.clone()))
+}
 
-    // Crop the mi-aligned recon to the frame dims.
+/// Crop the (post-filter) mi-aligned recon to the frame dims and assemble the
+/// output facts. The deblocking gate ran in [`decode_frame_obus`].
+fn finish_frame(t: KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) -> FrameDecode {
+    // The coded frame (crop) dims — superres is unscaled and frame-size
+    // override rejected in this envelope, so the upscaled size IS the size.
+    let width = p.frame_size.superres_upscaled_width as usize;
+    let height = p.frame_size.superres_upscaled_height as usize;
+    let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
+
     let mut y = vec![0u16; width * height];
     for r in 0..height {
         y[r * width..(r + 1) * width].copy_from_slice(&t.recon[r * t.stride..r * t.stride + width]);
     }
-    let (width_uv, height_uv) = if c.monochrome {
+    let (width_uv, height_uv) = if cfg.monochrome {
         (0, 0)
     } else {
         ((width + ss_x) >> ss_x, (height + ss_y) >> ss_y)
@@ -433,7 +473,7 @@ fn decode_tile_payload(
             .copy_from_slice(&t.recon_v[r * t.stride_uv..r * t.stride_uv + width_uv]);
     }
 
-    Ok(FrameDecode {
+    FrameDecode {
         y,
         u,
         v,
@@ -441,8 +481,8 @@ fn decode_tile_payload(
         height,
         width_uv,
         height_uv,
-        bit_depth: c.bit_depth,
-        monochrome: c.monochrome,
+        bit_depth: cfg.bd,
+        monochrome: cfg.monochrome,
         subsampling_x: ss_x,
         subsampling_y: ss_y,
         base_qindex: p.quant.base_qindex,
@@ -455,5 +495,100 @@ fn decode_tile_payload(
         tx_mode_select: p.tx_mode_select,
         reduced_tx_set: p.reduced_tx_set_used,
         delta_q_present: p.delta_q.delta_q_present,
-    })
+    }
+}
+
+/// Build the loop-filter mi grid + params from the decoded leaf blocks and
+/// frame header — the inputs [`apply_deblock`] filters with. Exposed (hidden)
+/// so harnesses can drive the C reference walk over the exact same inputs.
+///
+/// KEY all-intra flattening: every cell of a block carries the block's
+/// `tx_size` (intra tx is uniform — the `LfMi::tx_size` contract), `ref0 =
+/// INTRA_FRAME`, `mode_lf = MODE_LF_LUT[y_mode]` (0 for every intra mode),
+/// `is_inter = use_intrabc` (rejected upstream, so false), and the block's
+/// post-update delta-lf carries.
+#[doc(hidden)]
+pub fn build_lf_inputs(
+    t: &KfTileDecode,
+    cfg: &KfTileConfig,
+    p: &FrameHeaderObu,
+) -> (Vec<aom_loopfilter::frame::LfMi>, aom_loopfilter::frame::LfParams) {
+    use aom_loopfilter::frame::{LfMi, LfParams, MODE_LF_LUT};
+
+    let mi_rows = cfg.mi_rows as usize;
+    let mi_cols = cfg.mi_cols as usize;
+    let mut mi = vec![LfMi::default(); mi_rows * mi_cols];
+    for b in &t.blocks {
+        let cell = LfMi {
+            bsize: b.bsize as u8,
+            tx_size: b.tx_size as u8,
+            segment_id: b.info.segment_id as u8,
+            ref0: 0, // INTRA_FRAME
+            mode_lf: MODE_LF_LUT[b.info.y_mode as usize],
+            is_inter: b.info.use_intrabc != 0,
+            skip_txfm: b.info.skip != 0,
+            delta_lf_from_base: b.info.delta_lf_from_base as i8,
+            delta_lf: [
+                b.info.delta_lf[0] as i8,
+                b.info.delta_lf[1] as i8,
+                b.info.delta_lf[2] as i8,
+                b.info.delta_lf[3] as i8,
+            ],
+        };
+        let h = (MI_SIZE_HIGH[b.bsize] as usize).min(mi_rows - b.mi_row as usize);
+        let w = (MI_SIZE_WIDE[b.bsize] as usize).min(mi_cols - b.mi_col as usize);
+        for r in 0..h {
+            let row0 = (b.mi_row as usize + r) * mi_cols + b.mi_col as usize;
+            mi[row0..row0 + w].fill(cell);
+        }
+    }
+
+    let lfh = &p.loopfilter;
+    let params = LfParams {
+        filter_level: lfh.filter_level,
+        filter_level_u: lfh.filter_level_u,
+        filter_level_v: lfh.filter_level_v,
+        sharpness: lfh.sharpness_level,
+        mode_ref_delta_enabled: lfh.mode_ref_delta_enabled,
+        ref_deltas: lfh.ref_deltas,
+        mode_deltas: lfh.mode_deltas,
+        delta_lf_present: p.delta_q.delta_lf_present,
+        delta_lf_multi: p.delta_q.delta_lf_multi,
+        // Lossless streams are rejected upstream (and there is no
+        // segmentation), so no segment is lossless.
+        lossless: [false; 8],
+        seg: Default::default(),
+    };
+    (mi, params)
+}
+
+/// Run [`aom_loopfilter::frame::loop_filter_frame`] over the (mi-aligned)
+/// recon planes, exactly as the C decoder does after tile decode.
+fn apply_deblock(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) {
+    use aom_loopfilter::frame::{loop_filter_frame, LfFrameBuf, LfMiGrid};
+
+    let (mi, params) = build_lf_inputs(t, cfg, p);
+    let grid = LfMiGrid {
+        mi: &mi,
+        stride: cfg.mi_cols as usize,
+        mi_rows: cfg.mi_rows,
+        mi_cols: cfg.mi_cols,
+    };
+    let num_planes = if cfg.monochrome { 1 } else { 3 };
+    let mut buf = LfFrameBuf {
+        y: &mut t.recon,
+        y_stride: t.stride,
+        u: &mut t.recon_u,
+        v: &mut t.recon_v,
+        uv_stride: t.stride_uv,
+        // CROP dims (dst.width/height in C — set_lpf_parameters skips edges
+        // at/past them). KfTileDecode.width is the mi-ALIGNED width; the
+        // coded frame size lives in the header (superres unscaled here).
+        crop_width: p.frame_size.superres_upscaled_width as u32,
+        crop_height: p.frame_size.superres_upscaled_height as u32,
+        ss_x: cfg.subsampling_x,
+        ss_y: cfg.subsampling_y,
+        bd: cfg.bd,
+    };
+    loop_filter_frame(&mut buf, &grid, &params, 0, num_planes);
 }

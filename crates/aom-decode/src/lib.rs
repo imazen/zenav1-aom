@@ -83,17 +83,18 @@
 //!   signalling gate stays frame-level (`av1_read_tx_type` reads
 //!   `xd->qindex[segment_id]`, not the delta-modified carry). Delta-LF
 //!   ([`KfTileConfig::delta_lf_present`], single or multi) is decoded and its
-//!   clamped carries are threaded through every block's mode info, but has
-//!   no reconstruction effect here — loop filters are not applied (the same
-//!   holds in C until the filter stage reads `delta_lf_from_base`/
-//!   `delta_lf[]` from the mi grid).
+//!   clamped carries are threaded through every block's mode info; the
+//!   TILE decoder itself does not filter (like C), but `frame.rs`'s
+//!   deblock stage reads `delta_lf_from_base`/`delta_lf[]` from the block
+//!   records when it filters the frame.
 //! - **Off / fixed in this cut**: segmentation, palette, intra block copy,
 //!   quantization matrices (flat dequant), superblock size 64x64 (no
 //!   128x128), CDF update always on (`disable_cdf_update` unsupported — the
-//!   mode-symbol readers adapt unconditionally), and no loop filters
-//!   (deblock/CDEF/restoration are not applied to the reconstruction; CDEF
-//!   *strengths* are entropy-decoded, and delta-LF levels are carried as
-//!   documented above).
+//!   mode-symbol readers adapt unconditionally), and no in-tile loop
+//!   filters (this driver returns the PRE-FILTER reconstruction, like C's
+//!   tile decode; `frame.rs` applies deblocking frame-wide afterwards —
+//!   CDEF/restoration stay unapplied; CDEF *strengths* are entropy-decoded,
+//!   and delta-LF levels are carried as documented above).
 //! - Frame dimensions are whole mode-info (4px) units; non-multiple-of-SB sizes
 //!   are supported (partition edge gathers + `max_block_wide/high` txb clipping
 //!   + `av1_set_entropy_contexts` edge zeroing).

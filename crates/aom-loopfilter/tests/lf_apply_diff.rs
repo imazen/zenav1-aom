@@ -427,6 +427,93 @@ fn run_one(
     y != y0 || u != u0 || v != v0
 }
 
+/// The stronger level-0 no-op claim: when the WALK RUNS (nonzero frame
+/// levels, so `check_planes_to_loop_filter` passes) but every block's
+/// delta-lf drives the DERIVED level to 0, no edge is filtered — the planes
+/// come out untouched, in both implementations.
+#[test]
+fn zero_derived_level_walk_is_noop() {
+    c::ref_init();
+    let mut rng = Rng(0x0DE1_7A1F_0000_1111);
+    for &(w, h) in &[(96usize, 80usize), (100, 76)] {
+        let mi_cols = ((w + 7) & !7) >> 2;
+        let mi_rows = ((h + 7) & !7) >> 2;
+        let mut f = Frame::generate(&mut rng, mi_rows, mi_cols, 16);
+        let base = 1 + rng.range_i(0, 62);
+        // Every cell: delta_lf = -base in all four ids -> clamp(delta + base)
+        // = 0 for every plane/dir; mode-ref deltas OFF so nothing re-raises.
+        for i in 0..f.mi.len() {
+            f.mi[i].delta_lf_from_base = -(base as i8);
+            f.mi[i].delta_lf = [-(base as i8); FRAME_LF_COUNT];
+            f.dlf_base[i] = -(base as i8);
+            for k in 0..FRAME_LF_COUNT {
+                f.dlf[i * FRAME_LF_COUNT + k] = -(base as i8);
+            }
+        }
+        let p = LfParams {
+            filter_level: [base, base],
+            filter_level_u: base,
+            filter_level_v: base,
+            sharpness: 0,
+            mode_ref_delta_enabled: false,
+            delta_lf_present: true,
+            delta_lf_multi: rng.chance(1, 2),
+            ..Default::default()
+        };
+        let y_stride = mi_cols * 4;
+        let y_rows = mi_rows * 4;
+        let mut y = gen_plane(&mut rng, mi_cols * 4, y_rows, y_stride, 8);
+        let mut u = gen_plane(&mut rng, (mi_cols * 4) >> 1, y_rows >> 1, y_stride >> 1, 8);
+        let mut v = gen_plane(&mut rng, (mi_cols * 4) >> 1, y_rows >> 1, y_stride >> 1, 8);
+        let (y0, u0, v0) = (y.clone(), u.clone(), v.clone());
+
+        let (mut cy, mut cu, mut cv) = (y0.clone(), u0.clone(), v0.clone());
+        let grid = c::RefLfGrid {
+            mi_rows: mi_rows as i32,
+            mi_cols: mi_cols as i32,
+            grid_stride: mi_cols as i32,
+            bsize: &f.bsize,
+            txsize: &f.txsize,
+            seg: &f.seg,
+            ref0: &f.ref0,
+            mode: &f.mode,
+            skip: &f.skip,
+            intrabc: &f.intrabc,
+            dlf_base: &f.dlf_base,
+            dlf: &f.dlf,
+        };
+        c::ref_lf_filter_frame(
+            &mut cy, y_stride, &mut cu, &mut cv, y_stride >> 1,
+            w as i32, h as i32, 1, 1, 8,
+            &grid, &ref_params(&p), 0, 3,
+        );
+        let mi_grid = LfMiGrid {
+            mi: &f.mi,
+            stride: mi_cols,
+            mi_rows: mi_rows as i32,
+            mi_cols: mi_cols as i32,
+        };
+        let mut buf = LfFrameBuf {
+            y: &mut y,
+            y_stride,
+            u: &mut u,
+            v: &mut v,
+            uv_stride: y_stride >> 1,
+            crop_width: w as u32,
+            crop_height: h as u32,
+            ss_x: 1,
+            ss_y: 1,
+            bd: 8,
+        };
+        loop_filter_frame(&mut buf, &mi_grid, &p, 0, 3);
+        // Both walked; neither filtered anything.
+        assert_eq!(cy, y0, "C touched luma at derived level 0");
+        assert_eq!(y, y0, "Rust touched luma at derived level 0");
+        assert_eq!((cu == u0, cv == v0), (true, true));
+        assert_eq!((u == u0, v == v0), (true, true));
+    }
+}
+
 #[test]
 fn filter_frame_matches_c() {
     c::ref_init();
