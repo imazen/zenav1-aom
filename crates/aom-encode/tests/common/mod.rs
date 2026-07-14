@@ -2169,3 +2169,307 @@ pub fn c_encode_intra_block_plane_uv(
     }
     (txbs, ta_c, tl_c)
 }
+
+use aom_encode::encode_sb::{LeafWinner, SbTree};
+use aom_encode::intra_uv_rd::{av1_get_tx_size_uv as uv_txsz, chroma_plane_offset as uv_off};
+
+/// The C-side walk: transcribed control flow over REAL leaf chains + REAL
+/// context-stamp facades. Mirrors `encode_sb_dry` shape-for-shape; every
+/// pixel/context mutation goes through validated `ref_` entry points.
+fn c_split_subsize(bsize: usize) -> usize {
+    match bsize {
+        3 => 0,
+        6 => 3,
+        9 => 6,
+        12 => 9,
+        _ => unreachable!(),
+    }
+}
+
+pub struct COracle<'a> {
+    pub ss: (usize, usize),
+    pub monochrome: bool,
+    pub bd: u8,
+    pub reduced: bool,
+    pub sharpness: i32,
+    pub use_trellis: bool,
+    pub load_ctx: bool,
+    pub use_chroma_tbl: bool,
+    pub mi_rows: i32,
+    pub mi_cols: i32,
+    pub base_y: usize,
+    pub stride: usize,
+    pub base_uv: usize,
+    pub rdmult: i32,
+    pub src_y: &'a [u16],
+    pub src_u: &'a [u16],
+    pub src_v: &'a [u16],
+    pub plane_rows_y: &'a [i16],
+    pub rows_u_c: &'a [i16],
+    pub rows_v_c: &'a [i16],
+    pub dequant_y: [i16; 2],
+    pub dequant_u: [i16; 2],
+    pub dequant_v: [i16; 2],
+    pub coeff_tbls_y: CCoeffTbls<'a>,
+    pub coeff_tbls_uv: CCoeffTbls<'a>,
+    pub ttc: (&'a [i32], &'a [i32]),
+    // Tile context arrays (the C-side TileCtxState mirror).
+    pub above_e: [Vec<i8>; 3],
+    pub left_e: [[i8; 32]; 3],
+    pub above_p: [i8; 64],
+    pub left_p: [i8; 32],
+    pub above_t: Vec<u8>,
+    pub left_t: [u8; 32],
+}
+
+pub type CLeafOut = (i32, i32, usize, bool, bool, Vec<CTxb>, Option<Vec<CTxb>>, Option<Vec<CTxb>>);
+
+impl COracle<'_> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_b(
+        &mut self,
+        recon_y: &mut [u16],
+        recon_u: &mut [u16],
+        recon_v: &mut [u16],
+        cfl: &mut c::RefCflState,
+        w: &mut LeafWinner,
+        mi_row: i32,
+        mi_col: i32,
+        out: &mut Vec<CLeafOut>,
+    ) {
+        let bsize = w.bsize;
+        let (ss_x, ss_y) = self.ss;
+        let (mbw, mbh) = (MI_W[bsize], MI_H[bsize]);
+        let chroma_ref = c::ref_is_chroma_reference(mi_row, mi_col, bsize, ss_x as i32, ss_y as i32);
+        let store_y = c::ref_store_cfl_required(self.monochrome, chroma_ref, w.uv_mode);
+        let ref_off_y = self.base_y + (mi_row as usize * 4) * self.stride + mi_col as usize * 4;
+        let a0 = mi_col as usize;
+        let l0 = (mi_row & 31) as usize;
+
+        // Plane 0 re-encode (REAL chain; ta/tl loaded from the tile arrays).
+        let above_y: Vec<i8> = self.above_e[0][a0..a0 + mbw].to_vec();
+        let left_y: Vec<i8> = self.left_e[0][l0..l0 + mbh].to_vec();
+        let ca = CEncPlaneArgs {
+            bsize,
+            tx_size: w.tx_size,
+            geometry: (mi_row, mi_col, ref_off_y, ref_off_y, self.stride),
+            sb_size: 12,
+            src: self.src_y,
+            mode: w.mode,
+            angle_delta: w.angle_delta_y,
+            use_fi: w.use_filter_intra,
+            fi_mode: w.filter_intra_mode,
+            skip_txfm: w.skip_txfm,
+            use_trellis: self.use_trellis,
+            load_ctx: self.load_ctx,
+            sharpness: self.sharpness,
+            reduced: self.reduced,
+            bd: self.bd,
+            plane_rows_c: self.plane_rows_y,
+            dequant: self.dequant_y,
+            above_ctx: &above_y,
+            left_ctx: &left_y,
+            rdmult: self.rdmult,
+            coeff_tbls: self.coeff_tbls_y,
+            store: store_y,
+            ss: (ss_x as i32, ss_y as i32),
+        };
+        let mut map_c = std::mem::take(&mut w.tx_type_map);
+        let (y_txbs, _ta, _tl) = c_encode_intra_block_plane_y(&ca, recon_y, &mut map_c, cfl);
+        w.tx_type_map = map_c;
+
+        // Planes 1/2.
+        let uv_tx = uv_txsz(bsize, false, ss_x, ss_y);
+        let mut u_txbs = None;
+        let mut v_txbs = None;
+        if !self.monochrome && chroma_ref {
+            let ref_off_uv =
+                uv_off(self.base_uv, self.stride, mi_row, mi_col, bsize, ss_x, ss_y);
+            let plane_bsize = aom_entropy::partition::get_plane_block_size(bsize, ss_x, ss_y);
+            let (pmw, pmh) = (MI_W[plane_bsize], MI_H[plane_bsize]);
+            let au = (mi_col >> ss_x) as usize;
+            let lu = ((mi_row & 31) >> ss_y) as usize;
+            let above_u: Vec<i8> = self.above_e[1][au..au + pmw].to_vec();
+            let left_u: Vec<i8> = self.left_e[1][lu..lu + pmh].to_vec();
+            let above_v: Vec<i8> = self.above_e[2][au..au + pmw].to_vec();
+            let left_v: Vec<i8> = self.left_e[2][lu..lu + pmh].to_vec();
+            let cenv = CUvEnv {
+                bsize,
+                mi_row,
+                mi_col,
+                ss_x,
+                ss_y,
+                ref_off: [ref_off_uv, ref_off_uv],
+                src_off: [ref_off_uv, ref_off_uv],
+                stride: self.stride,
+                src_u: self.src_u,
+                src_v: self.src_v,
+                luma_mode: w.mode,
+                luma_use_fi: w.use_filter_intra,
+                luma_fi_mode: w.filter_intra_mode,
+                lossless: false,
+                reduced: self.reduced,
+                bd: self.bd,
+                rows_u_c: self.rows_u_c,
+                rows_v_c: self.rows_v_c,
+                dequant_u: self.dequant_u,
+                dequant_v: self.dequant_v,
+                above_ctx: [&above_u, &above_v],
+                left_ctx: [&left_u, &left_v],
+                rdmult: self.rdmult,
+                coeff_tbls: self.coeff_tbls_uv,
+                ttc_tables: self.ttc,
+                use_chroma_trellis_rd_mult: self.use_chroma_tbl,
+            };
+            let use_cfl = w.uv_mode == 13;
+            for plane in [1usize, 2usize] {
+                let recon = if plane == 1 { &mut *recon_u } else { &mut *recon_v };
+                let (txbs, _ta, _tl) = c_encode_intra_block_plane_uv(
+                    &cenv,
+                    plane,
+                    w.uv_mode,
+                    w.angle_delta_uv,
+                    if use_cfl { Some((cfl, w.cfl_alpha_idx, w.cfl_alpha_signs)) } else { None },
+                    uv_tx,
+                    w.skip_txfm,
+                    self.use_trellis,
+                    self.load_ctx,
+                    self.sharpness,
+                    recon,
+                );
+                if plane == 1 {
+                    u_txbs = Some(txbs);
+                } else {
+                    v_txbs = Some(txbs);
+                }
+            }
+        }
+
+        // av1_update_intra_mb_txb_context at DRY_RUN: REAL tx_type re-read +
+        // REAL av1_get_txb_entropy_context + REAL av1_set_entropy_contexts.
+        {
+            let (txwu, txhu) = (TX_W[w.tx_size] >> 2, TX_H[w.tx_size] >> 2);
+            let mut k = 0usize;
+            for blk_row in (0..mbh).step_by(txhu) {
+                for blk_col in (0..mbw).step_by(txwu) {
+                    let tt = c::ref_get_tx_type_y(
+                        false, w.tx_size, self.reduced, &w.tx_type_map, mbw, blk_row, blk_col,
+                    );
+                    let (_, eob, _, qc, _) = &y_txbs[k];
+                    let cul = if *eob == 0 {
+                        0u8
+                    } else {
+                        c::ref_txb_entropy_context(qc, w.tx_size, tt, *eob as usize)
+                    };
+                    c::ref_set_entropy_contexts(
+                        &mut self.above_e[0][a0..],
+                        &mut self.left_e[0][l0..],
+                        0,
+                        bsize,
+                        w.tx_size,
+                        i32::from(cul),
+                        blk_col,
+                        blk_row,
+                    );
+                    k += 1;
+                }
+            }
+            if !self.monochrome && chroma_ref {
+                let plane_bsize =
+                    aom_entropy::partition::get_plane_block_size(bsize, ss_x, ss_y);
+                let (pmw, pmh) = (MI_W[plane_bsize], MI_H[plane_bsize]);
+                let (ptxwu, ptxhu) = (TX_W[uv_tx] >> 2, TX_H[uv_tx] >> 2);
+                let au = (mi_col >> ss_x) as usize;
+                let lu = ((mi_row & 31) >> ss_y) as usize;
+                let uv_tt = c::ref_get_tx_type_uv_intra(w.uv_mode, false, uv_tx, self.reduced);
+                for (plane, txbs) in [(1usize, u_txbs.as_ref()), (2usize, v_txbs.as_ref())] {
+                    let txbs = txbs.unwrap();
+                    let mut k = 0usize;
+                    for blk_row in (0..pmh).step_by(ptxhu) {
+                        for blk_col in (0..pmw).step_by(ptxwu) {
+                            let (_, eob, _, qc, _) = &txbs[k];
+                            let cul = if *eob == 0 {
+                                0u8
+                            } else {
+                                c::ref_txb_entropy_context(qc, uv_tx, uv_tt, *eob as usize)
+                            };
+                            c::ref_set_entropy_contexts(
+                                &mut self.above_e[plane][au..],
+                                &mut self.left_e[plane][lu..],
+                                plane,
+                                plane_bsize,
+                                uv_tx,
+                                i32::from(cul),
+                                blk_col,
+                                blk_row,
+                            );
+                            k += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // set_txfm_ctxs (REAL) at the block origin.
+        c::ref_set_txfm_ctxs(
+            w.tx_size,
+            mbw,
+            mbh,
+            false,
+            &mut self.above_t[a0..],
+            &mut self.left_t[l0..],
+        );
+
+        out.push((mi_row, mi_col, bsize, chroma_ref, store_y, y_txbs, u_txbs, v_txbs));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_sb(
+        &mut self,
+        recon_y: &mut [u16],
+        recon_u: &mut [u16],
+        recon_v: &mut [u16],
+        cfl: &mut c::RefCflState,
+        tree: &mut SbTree,
+        mi_row: i32,
+        mi_col: i32,
+        bsize: usize,
+        out: &mut Vec<CLeafOut>,
+    ) {
+        if mi_row >= self.mi_rows || mi_col >= self.mi_cols {
+            return;
+        }
+        let hbs = (MI_W[bsize] / 2) as i32;
+        let (partition, subsize) = match tree {
+            SbTree::Leaf(_) => (0i32, bsize),
+            SbTree::Split(_) => (3i32, c_split_subsize(bsize)),
+        };
+        match tree {
+            SbTree::Leaf(w) => {
+                self.encode_b(recon_y, recon_u, recon_v, cfl, w, mi_row, mi_col, out);
+            }
+            SbTree::Split(kids) => {
+                for (idx, child) in kids.iter_mut().enumerate() {
+                    let y = mi_row + ((idx as i32) >> 1) * hbs;
+                    let x = mi_col + ((idx as i32) & 1) * hbs;
+                    self.encode_sb(recon_y, recon_u, recon_v, cfl, child, y, x, subsize, out);
+                }
+            }
+        }
+        // The REAL update_ext_partition_context (64-entry above window).
+        let mut above64 = [0i8; 64];
+        above64.copy_from_slice(&self.above_p);
+        let (ao, lo) = c::ref_update_ext_partition_context(
+            mi_row,
+            mi_col,
+            subsize as i32,
+            bsize as i32,
+            partition,
+            &above64,
+            &self.left_p,
+        );
+        self.above_p = ao;
+        self.left_p = lo;
+    }
+}
+

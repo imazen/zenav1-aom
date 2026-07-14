@@ -121,8 +121,12 @@ impl TileCtxState {
             left_ectx: [[0; 32]; 3],
             above_pctx: vec![0; mi_cols],
             left_pctx: [0; 32],
-            above_tctx: vec![0; mi_cols],
-            left_tctx: [0; 32],
+            // The C tile init memsets the txfm-context arrays to
+            // tx_size_wide[TX_SIZES_LARGEST] == 64, NOT 0
+            // (av1_zero_above_context / av1_zero_left_context;
+            // aom_entropy::partition::TXFM_CTX_INIT).
+            above_tctx: vec![aom_entropy::partition::TXFM_CTX_INIT; mi_cols],
+            left_tctx: [aom_entropy::partition::TXFM_CTX_INIT; 32],
         }
     }
 }
