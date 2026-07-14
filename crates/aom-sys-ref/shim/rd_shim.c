@@ -19,6 +19,7 @@
 #include "av1/common/common_data.h" /* txsize_sqr_map */
 #include "av1/common/entropymode.h" /* av1_ext_tx_inv */
 #include "av1/common/cfl.h" /* cfl_store_tx, av1_cfl_predict_block */
+#include "av1/common/av1_common_int.h" /* update_ext_partition_context, set_txfm_ctxs */
 #include "av1/common/quant_common.h" /* av1_get_qindex */
 #include "av1/common/seg_common.h" /* struct segmentation, SEG_LVL_ALT_Q */
 #include "av1/common/idct.h" /* MAX_TX_SCALE, av1_get_tx_scale */
@@ -1235,3 +1236,61 @@ void shim_rd_stats_subtraction(int mult, int32_t l_rate, int64_t l_dist,
   *o_dist = out.dist;
   *o_rdcost = out.rdcost;
 }
+
+/* ---- encode_sb (winner dry-run walk) context facades ----------------------
+ * The REAL fns/static-inlines the DRY_RUN encode_b/encode_sb walk stamps
+ * contexts through (partition_search.c:1419/1581 + encodetxb.c:871):
+ * (1) store_cfl_required (cfl.h:38): the NON-rdo store_y gate encode_superblock
+ *     sets before the plane loop (partition_search.c:420).
+ * (2) av1_set_entropy_contexts (blockd.c:29): the EDGE-CLIPPED tile-level
+ *     entropy-context stamp of av1_update_and_record_txb_context /
+ *     av1_record_txb_context (identical at DRY_RUN — the OUTPUT_ENABLED
+ *     branch is the only difference). Interior blocks marshal
+ *     mb_to_right/bottom_edge = 0 (the unclipped memset arms).
+ * (The partition-ctx stamp update_ext_partition_context and set_txfm_ctxs
+ * already have facades: modeinfo_shim.c:2034 + dec_shim.c:76 — reused.) */
+int shim_store_cfl_required(int monochrome, int is_chroma_ref, int uv_mode) {
+  AV1_COMMON *cm = (AV1_COMMON *)calloc(1, sizeof(AV1_COMMON));
+  SequenceHeader *seq = (SequenceHeader *)calloc(1, sizeof(SequenceHeader));
+  MACROBLOCKD *xd = (MACROBLOCKD *)calloc(1, sizeof(MACROBLOCKD));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(MB_MODE_INFO));
+  if (!cm || !seq || !xd || !mbmi) {
+    free(cm);
+    free(seq);
+    free(xd);
+    free(mbmi);
+    return -1;
+  }
+  cm->seq_params = seq;
+  seq->monochrome = (uint8_t)monochrome;
+  xd->is_chroma_ref = is_chroma_ref;
+  MB_MODE_INFO *mi_ptr = mbmi;
+  xd->mi = &mi_ptr;
+  mbmi->uv_mode = (UV_PREDICTION_MODE)uv_mode;
+  mbmi->ref_frame[0] = INTRA_FRAME; /* is_inter_block == 0 */
+  mbmi->ref_frame[1] = NONE_FRAME;
+  const int r = (int)store_cfl_required(cm, xd);
+  free(cm);
+  free(seq);
+  free(xd);
+  free(mbmi);
+  return r;
+}
+
+int shim_set_entropy_contexts(int8_t *above, int8_t *left, int plane,
+                              int plane_bsize, int tx_size, int has_eob,
+                              int aoff, int loff) {
+  MACROBLOCKD *xd = (MACROBLOCKD *)calloc(1, sizeof(MACROBLOCKD));
+  if (!xd) return -1;
+  /* Interior block: mb_to_right/bottom_edge >= 0 -> unclipped memsets. */
+  xd->mb_to_right_edge = 0;
+  xd->mb_to_bottom_edge = 0;
+  struct macroblockd_plane *pd = &xd->plane[plane];
+  pd->above_entropy_context = (ENTROPY_CONTEXT *)above;
+  pd->left_entropy_context = (ENTROPY_CONTEXT *)left;
+  av1_set_entropy_contexts(xd, pd, plane, (BLOCK_SIZE)plane_bsize,
+                           (TX_SIZE)tx_size, has_eob, aoff, loff);
+  free(xd);
+  return 0;
+}
+

@@ -9749,3 +9749,61 @@ pub fn ref_rd_stats_subtraction(
     };
     (r, d, c)
 }
+
+// ---- encode_sb (winner dry-run walk) context facades (rd_shim.c) ----------
+
+unsafe extern "C" {
+    fn shim_store_cfl_required(monochrome: i32, is_chroma_ref: i32, uv_mode: i32) -> i32;
+    fn shim_set_entropy_contexts(
+        above: *mut i8,
+        left: *mut i8,
+        plane: i32,
+        plane_bsize: i32,
+        tx_size: i32,
+        has_eob: i32,
+        aoff: i32,
+        loff: i32,
+    ) -> i32;
+}
+
+/// The REAL `store_cfl_required` (cfl.h:38) — the NON-rdo `store_y` gate of
+/// `encode_superblock` (intra arm: `is_inter_block == 0` marshalled).
+pub fn ref_store_cfl_required(monochrome: bool, is_chroma_ref: bool, uv_mode: usize) -> bool {
+    let r = unsafe {
+        shim_store_cfl_required(monochrome as i32, is_chroma_ref as i32, uv_mode as i32)
+    };
+    assert!(r >= 0, "shim_store_cfl_required alloc failed");
+    r != 0
+}
+
+/// The REAL `av1_set_entropy_contexts` (blockd.c:29) for an INTERIOR block
+/// (`mb_to_right/bottom_edge = 0` — the unclipped memset arms). `above`/
+/// `left` are the tile-level plane entropy contexts AT THE BLOCK ORIGIN
+/// (the `pd->above/left_entropy_context` pointers after `set_offsets`);
+/// `aoff`/`loff` are the txb's block-relative 4x4 offsets.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_set_entropy_contexts(
+    above: &mut [i8],
+    left: &mut [i8],
+    plane: usize,
+    plane_bsize: usize,
+    tx_size: usize,
+    has_eob: i32,
+    aoff: usize,
+    loff: usize,
+) {
+    let r = unsafe {
+        shim_set_entropy_contexts(
+            above.as_mut_ptr(),
+            left.as_mut_ptr(),
+            plane as i32,
+            plane_bsize as i32,
+            tx_size as i32,
+            has_eob,
+            aoff as i32,
+            loff as i32,
+        )
+    };
+    assert!(r >= 0, "shim_set_entropy_contexts alloc failed");
+}
+
