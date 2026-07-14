@@ -3963,3 +3963,74 @@ pub fn ref_prune_intra_y_mode(
         ) != 0
     }
 }
+
+// intra_rd_variance_factor (intra_mode_search.c statics) — verbatim
+// transcription in rd_shim.c over the REAL 4x4 variance kernels + libm log1p.
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_intra_rd_variance_factor(
+        speed: i32,
+        src: *const u16,
+        src_off: i32,
+        src_stride: i32,
+        recon: *const u16,
+        ref_off: i32,
+        ref_stride: i32,
+        bsize: i32,
+        sb_size: i32,
+        mi_row: i32,
+        mi_col: i32,
+        mb_to_right_edge: i32,
+        mb_to_bottom_edge: i32,
+        bd: i32,
+        cache_var: *mut i32,
+        cache_log_var: *mut f64,
+    ) -> f64;
+}
+
+/// Reference `intra_rd_variance_factor` (+ `compute_avg_log_variance` +
+/// `av1_calc_normalized_variance`), transcription over the REAL
+/// `aom_variance4x4_c` / `aom_highbd_{8,10,12}_variance4x4_c` + libm `log1p`.
+/// The per-4x4 source-var cache halves (`var` init -1, `log_var` init -1.0,
+/// one entry per mi position in the superblock) are mutated as the C does.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_intra_rd_variance_factor(
+    speed: i32,
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    recon: &[u16],
+    ref_off: usize,
+    ref_stride: usize,
+    bsize: usize,
+    sb_size: usize,
+    mi_row: i32,
+    mi_col: i32,
+    mb_to_right_edge: i32,
+    mb_to_bottom_edge: i32,
+    bd: u8,
+    cache_var: &mut [i32],
+    cache_log_var: &mut [f64],
+) -> f64 {
+    assert_eq!(cache_var.len(), cache_log_var.len());
+    unsafe {
+        shim_intra_rd_variance_factor(
+            speed,
+            src.as_ptr(),
+            src_off as i32,
+            src_stride as i32,
+            recon.as_ptr(),
+            ref_off as i32,
+            ref_stride as i32,
+            bsize as i32,
+            sb_size as i32,
+            mi_row,
+            mi_col,
+            mb_to_right_edge,
+            mb_to_bottom_edge,
+            bd as i32,
+            cache_var.as_mut_ptr(),
+            cache_log_var.as_mut_ptr(),
+        )
+    }
+}

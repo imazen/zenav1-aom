@@ -534,3 +534,197 @@ pub fn prune_intra_y_mode(
     }
     false
 }
+
+// ---------------------------------------------------------------------------
+// intra_rd_variance_factor (intra_mode_search.c) — the ALLINTRA visual-quality
+// RD scale applied to each candidate's this_rd in the mode loop.
+// ---------------------------------------------------------------------------
+
+/// `MI_SIZE` / `MI_SIZE_LOG2` (enums.h).
+pub const MI_SIZE: usize = 4;
+
+/// `mi_size_wide` / `mi_size_high` `[BLOCK_SIZES_ALL]` (common_data.h).
+const MI_W_ALL: [usize; 22] = [1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16];
+const MI_H_ALL: [usize; 22] = [1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4];
+
+/// `Block4x4VarInfo` (block.h): the per-4x4 source-variance cache — one entry
+/// per mi position in the superblock, initialized `var = -1` /
+/// `log_var = -1.0` per SB (`init_src_var_info_of_4x4_sub_blocks`, which runs
+/// exactly when the variance factor is active: ALLINTRA +
+/// `INTRA_RD_VAR_THRESH(speed) > 0`). The cache persists across every
+/// candidate and coding block of the SB.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Block4x4VarInfo {
+    pub var: i32,
+    pub log_var: f64,
+}
+
+impl Block4x4VarInfo {
+    /// One initialized (invalid) entry.
+    pub fn init() -> Self {
+        Block4x4VarInfo { var: -1, log_var: -1.0 }
+    }
+    /// A fresh per-superblock cache for `sb_size`.
+    pub fn sb_cache(sb_size: usize) -> Vec<Block4x4VarInfo> {
+        vec![Block4x4VarInfo::init(); MI_W_ALL[sb_size] * MI_H_ALL[sb_size]]
+    }
+}
+
+/// `av1_calc_normalized_variance` for one 4x4 sub-block: the
+/// `fn_ptr[BLOCK_4X4].vf` variance against an all-zero reference (= 16x the
+/// raw per-pixel variance, "normalized" by the /16.0 in the log1p below).
+/// fn_ptr resolution by stream depth: `aom_variance4x4` over the u8 planes
+/// for 8-bit streams; `aom_highbd_<bd>_variance4x4` over the u16 planes for
+/// bd > 8 (both individually C-validated in aom-dist).
+fn calc_normalized_variance_4x4(buf: &[u16], off: usize, stride: usize, bd: u8) -> i32 {
+    if bd > 8 {
+        const ZEROS16: [u16; 4] = [0; 4];
+        aom_dist::highbd_variance(&buf[off..], stride, &ZEROS16, 0, 4, 4, bd).0 as i32
+    } else {
+        // The production 8-bit encoder reads u8 planes; the strided window
+        // holds the same 16 values, so a tight copy is kernel-identical.
+        let mut w8 = [0u8; 16];
+        for r in 0..4 {
+            for c in 0..4 {
+                debug_assert!(buf[off + r * stride + c] <= 255);
+                w8[r * 4 + c] = buf[off + r * stride + c] as u8;
+            }
+        }
+        const ZEROS8: [u8; 4] = [0; 4];
+        aom_dist::variance(&w8, 4, &ZEROS8, 0, 4, 4).0 as i32
+    }
+}
+
+/// The pixel-plane / geometry inputs of [`intra_rd_variance_factor`].
+/// `mb_to_right_edge` / `mb_to_bottom_edge` are the MACROBLOCKD 1/8-pel edge
+/// fields (negative = the block overhangs the frame; the overhang is clipped
+/// out of the variance walk).
+pub struct VarFactorInputs<'a> {
+    pub src: &'a [u16],
+    pub src_off: usize,
+    pub src_stride: usize,
+    pub recon: &'a [u16],
+    pub ref_off: usize,
+    pub ref_stride: usize,
+    pub bsize: usize,
+    pub sb_size: usize,
+    pub mi_row: i32,
+    pub mi_col: i32,
+    pub mb_to_right_edge: i32,
+    pub mb_to_bottom_edge: i32,
+    pub bd: u8,
+}
+
+/// `intra_rd_variance_factor` (+ `compute_avg_log_variance`),
+/// intra_mode_search.c: the ALLINTRA-mode visual-quality RD scale in
+/// `[1.0, 3.0]` from how the block's reconstructed variance tracks its source
+/// variance. `INTRA_RD_VAR_THRESH(speed) = 1.0 - 0.25 * speed` — active
+/// (positive) only for speeds 0..=3; at speed 0 the threshold is 1.0.
+///
+/// Per 4x4 sub-block: `log1p(var/16.0)` of source (cached in `cache`, the
+/// per-SB [`Block4x4VarInfo`] array) and of the CURRENT recon plane content —
+/// which, in the mode loop, is whatever `av1_pick_uniform_tx_size_type_yrd`
+/// left there: the reconstruction of the LAST tx size the depth sweep
+/// evaluated (the C never re-runs the winner; loop-order-sensitive state).
+/// Averages accumulate in the C's exact row-major order; all arithmetic is
+/// f64 with no FMA (matching the reference build), and `f64::ln_1p` resolves
+/// to the same libm `log1p` the oracle calls.
+pub fn intra_rd_variance_factor(
+    speed: i32,
+    p: &VarFactorInputs,
+    cache: &mut [Block4x4VarInfo],
+) -> f64 {
+    let threshold = 1.0 - (0.25 * f64::from(speed)); // INTRA_RD_VAR_THRESH
+    if threshold <= 0.0 {
+        return 1.0;
+    }
+
+    let mut variance_rd_factor = 1.0f64;
+    let mut avg_log_src_variance = 0.0f64;
+    let mut avg_log_recon_variance = 0.0f64;
+
+    // compute_avg_log_variance.
+    let mi_row_in_sb = (p.mi_row as usize) & (MI_H_ALL[p.sb_size] - 1);
+    let mi_col_in_sb = (p.mi_col as usize) & (MI_W_ALL[p.sb_size] - 1);
+    let right_overflow =
+        if p.mb_to_right_edge < 0 { ((-p.mb_to_right_edge) >> 3) as usize } else { 0 };
+    let bottom_overflow =
+        if p.mb_to_bottom_edge < 0 { ((-p.mb_to_bottom_edge) >> 3) as usize } else { 0 };
+    let bw = MI_SIZE * MI_W_ALL[p.bsize] - right_overflow;
+    let bh = MI_SIZE * MI_H_ALL[p.bsize] - bottom_overflow;
+
+    let mut i = 0usize;
+    while i < bh {
+        let r = mi_row_in_sb + (i >> 2); // MI_SIZE_LOG2
+        let mut j = 0usize;
+        while j < bw {
+            let c = mi_col_in_sb + (j >> 2);
+            let mi_offset = r * MI_W_ALL[p.sb_size] + c;
+            let info = &mut cache[mi_offset];
+            let log_src_var;
+            if info.var < 0 {
+                let src_var = calc_normalized_variance_4x4(
+                    p.src,
+                    p.src_off + i * p.src_stride + j,
+                    p.src_stride,
+                    p.bd,
+                );
+                info.var = src_var;
+                log_src_var = (f64::from(src_var) / 16.0).ln_1p();
+                info.log_var = log_src_var;
+            } else if info.log_var < 0.0 {
+                log_src_var = (f64::from(info.var) / 16.0).ln_1p();
+                info.log_var = log_src_var;
+            } else {
+                log_src_var = info.log_var;
+            }
+            avg_log_src_variance += log_src_var;
+
+            let recon_var = calc_normalized_variance_4x4(
+                p.recon,
+                p.ref_off + i * p.ref_stride + j,
+                p.ref_stride,
+                p.bd,
+            );
+            avg_log_recon_variance += (f64::from(recon_var) / 16.0).ln_1p();
+            j += MI_SIZE;
+        }
+        i += MI_SIZE;
+    }
+
+    let blocks = ((bw * bh) / 16) as f64;
+    avg_log_src_variance /= blocks;
+    avg_log_recon_variance /= blocks;
+
+    // intra_rd_variance_factor tail.
+    avg_log_src_variance += 0.000001;
+    avg_log_recon_variance += 0.000001;
+
+    if avg_log_src_variance >= avg_log_recon_variance {
+        let var_diff = avg_log_src_variance - avg_log_recon_variance;
+        if var_diff > 0.5 && avg_log_recon_variance < threshold {
+            variance_rd_factor = 1.0 + ((var_diff * 2.0) / avg_log_src_variance);
+        }
+    } else {
+        let var_diff = avg_log_recon_variance - avg_log_src_variance;
+        if var_diff > 0.5 && avg_log_src_variance < threshold {
+            variance_rd_factor = 1.0 + (var_diff / (2.0 * avg_log_src_variance));
+        }
+    }
+
+    // AOMMIN(3.0, v).
+    if 3.0 < variance_rd_factor {
+        3.0
+    } else {
+        variance_rd_factor
+    }
+}
+
+/// The mode loop's ALLINTRA application:
+/// `this_rd = (int64_t)(this_rd * factor)` — i64 -> f64 conversion, one f64
+/// multiply, truncation toward zero (every reachable rd is far inside the
+/// exact/in-range regime).
+#[inline]
+pub fn apply_variance_factor(rd: i64, factor: f64) -> i64 {
+    (rd as f64 * factor) as i64
+}

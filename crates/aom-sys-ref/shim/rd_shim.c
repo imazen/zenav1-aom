@@ -772,3 +772,139 @@ int shim_prune_intra_y_mode(int64_t this_model_rd, int64_t *best_model_rd,
   if (this_model_rd < *best_model_rd) *best_model_rd = this_model_rd;
   return 0;
 }
+
+/* ---- intra_rd_variance_factor (intra_mode_search.c statics) -----------------
+ * intra_rd_variance_factor + compute_avg_log_variance + the
+ * av1_calc_normalized_variance per-4x4 kernel are transcribed VERBATIM over
+ * the REAL aom_variance4x4_c / aom_highbd_{8,10,12}_variance4x4_c kernels and
+ * libm log1p, so every double op comes from the C compiler. fn_ptr resolution:
+ * the production encoder's fn_ptr[BLOCK_4X4].vf is aom_variance4x4 for 8-bit
+ * streams (lowbd u8 planes) and aom_highbd_<bd>_variance4x4 for bd > 8
+ * (CONVERT_TO_BYTEPTR'd u16 planes) — mirrored here by bd. The 8-bit path
+ * copies the u16 block windows into u8 planes at the same stride (the
+ * production layout). The 4x4 source-var cache (var / log_var per mi in the
+ * superblock, init -1 / -1.0) is caller state, in/out. */
+#include <math.h>
+
+uint32_t aom_variance4x4_c(const uint8_t *, int, const uint8_t *, int,
+                           uint32_t *);
+uint32_t aom_highbd_8_variance4x4_c(const uint8_t *, int, const uint8_t *, int,
+                                    uint32_t *);
+uint32_t aom_highbd_10_variance4x4_c(const uint8_t *, int, const uint8_t *,
+                                     int, uint32_t *);
+uint32_t aom_highbd_12_variance4x4_c(const uint8_t *, int, const uint8_t *,
+                                     int, uint32_t *);
+
+static const uint8_t shim_var_all_zeros[128] = { 0 };
+static const uint16_t shim_var_hbd_all_zeros[128] = { 0 };
+
+static int shim_calc_normalized_variance_u8(const uint8_t *buf, int stride) {
+  unsigned int sse;
+  return aom_variance4x4_c(buf, stride, shim_var_all_zeros, 0, &sse);
+}
+
+static int shim_calc_normalized_variance_hbd(const uint16_t *buf, int stride,
+                                             int bd) {
+  unsigned int sse;
+  const uint8_t *p = CONVERT_TO_BYTEPTR(buf);
+  const uint8_t *z = CONVERT_TO_BYTEPTR(shim_var_hbd_all_zeros);
+  if (bd == 12) return aom_highbd_12_variance4x4_c(p, stride, z, 0, &sse);
+  if (bd == 10) return aom_highbd_10_variance4x4_c(p, stride, z, 0, &sse);
+  return aom_highbd_8_variance4x4_c(p, stride, z, 0, &sse);
+}
+
+double shim_intra_rd_variance_factor(
+    int speed, const uint16_t *src, int src_off, int src_stride,
+    const uint16_t *recon, int ref_off, int ref_stride, int bsize, int sb_size,
+    int mi_row, int mi_col, int mb_to_right_edge, int mb_to_bottom_edge,
+    int bd, int *cache_var, double *cache_log_var) {
+  double threshold = 1.0 - (0.25 * speed); /* INTRA_RD_VAR_THRESH */
+  if (threshold <= 0) return 1.0;
+
+  double variance_rd_factor = 1.0;
+  double avg_log_src_variance = 0.0;
+  double avg_log_recon_variance = 0.0;
+  double var_diff = 0.0;
+
+  /* compute_avg_log_variance */
+  const int mi_row_in_sb = mi_row & (mi_size_high[sb_size] - 1);
+  const int mi_col_in_sb = mi_col & (mi_size_wide[sb_size] - 1);
+  const int right_overflow =
+      (mb_to_right_edge < 0) ? ((-mb_to_right_edge) >> 3) : 0;
+  const int bottom_overflow =
+      (mb_to_bottom_edge < 0) ? ((-mb_to_bottom_edge) >> 3) : 0;
+  const int bw = (MI_SIZE * mi_size_wide[bsize] - right_overflow);
+  const int bh = (MI_SIZE * mi_size_high[bsize] - bottom_overflow);
+  const int is_hbd = bd > 8;
+
+  uint8_t *src8 = NULL, *rec8 = NULL;
+  if (!is_hbd) {
+    src8 = (uint8_t *)calloc((size_t)bh * src_stride, 1);
+    rec8 = (uint8_t *)calloc((size_t)bh * ref_stride, 1);
+    for (int i = 0; i < bh; i++) {
+      for (int j = 0; j < bw; j++) {
+        src8[i * src_stride + j] = (uint8_t)src[src_off + i * src_stride + j];
+        rec8[i * ref_stride + j] = (uint8_t)recon[ref_off + i * ref_stride + j];
+      }
+    }
+  }
+
+  for (int i = 0; i < bh; i += MI_SIZE) {
+    const int r = mi_row_in_sb + (i >> MI_SIZE_LOG2);
+    for (int j = 0; j < bw; j += MI_SIZE) {
+      const int c = mi_col_in_sb + (j >> MI_SIZE_LOG2);
+      const int mi_offset = r * mi_size_wide[sb_size] + c;
+      int src_var = cache_var[mi_offset];
+      double log_src_var = cache_log_var[mi_offset];
+      if (src_var < 0) {
+        src_var = is_hbd ? shim_calc_normalized_variance_hbd(
+                               src + src_off + i * src_stride + j, src_stride,
+                               bd)
+                         : shim_calc_normalized_variance_u8(
+                               src8 + i * src_stride + j, src_stride);
+        cache_var[mi_offset] = src_var;
+        log_src_var = log1p(src_var / 16.0);
+        cache_log_var[mi_offset] = log_src_var;
+      } else {
+        if (log_src_var < 0) {
+          log_src_var = log1p(src_var / 16.0);
+          cache_log_var[mi_offset] = log_src_var;
+        }
+      }
+      avg_log_src_variance += log_src_var;
+
+      const int recon_var =
+          is_hbd ? shim_calc_normalized_variance_hbd(
+                       recon + ref_off + i * ref_stride + j, ref_stride, bd)
+                 : shim_calc_normalized_variance_u8(rec8 + i * ref_stride + j,
+                                                    ref_stride);
+      avg_log_recon_variance += log1p(recon_var / 16.0);
+    }
+  }
+
+  const int blocks = (bw * bh) / 16;
+  avg_log_src_variance /= (double)blocks;
+  avg_log_recon_variance /= (double)blocks;
+  free(src8);
+  free(rec8);
+
+  /* intra_rd_variance_factor tail */
+  avg_log_src_variance += 0.000001;
+  avg_log_recon_variance += 0.000001;
+
+  if (avg_log_src_variance >= avg_log_recon_variance) {
+    var_diff = (avg_log_src_variance - avg_log_recon_variance);
+    if ((var_diff > 0.5) && (avg_log_recon_variance < threshold)) {
+      variance_rd_factor = 1.0 + ((var_diff * 2) / avg_log_src_variance);
+    }
+  } else {
+    var_diff = (avg_log_recon_variance - avg_log_src_variance);
+    if ((var_diff > 0.5) && (avg_log_src_variance < threshold)) {
+      variance_rd_factor = 1.0 + (var_diff / (2 * avg_log_src_variance));
+    }
+  }
+
+  variance_rd_factor = AOMMIN(3.0, variance_rd_factor);
+
+  return variance_rd_factor;
+}
