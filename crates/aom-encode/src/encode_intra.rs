@@ -88,7 +88,7 @@ use aom_entropy::partition::{get_plane_block_size, intra_avail};
 use aom_intra::cfl::{CflCtx, cfl_store_tx};
 use aom_intra::predict_intra_high;
 use aom_transform::inv_txfm2d::av1_inv_txfm2d_add;
-use aom_txb::CoeffCostTables;
+use aom_txb::{get_txb_ctx, CoeffCostTables};
 
 /// `TRELLIS_OPT_TYPE` (encodemb.h:43-48). C-valued discriminants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -240,6 +240,14 @@ pub struct TxbEncode {
     /// leaves the shared scratch buffers untouched there).
     pub qcoeff: Vec<i32>,
     pub dqcoeff: Vec<i32>,
+    /// `get_txb_ctx`'s `(txb_skip_ctx, dc_sign_ctx)` derived for this txb from
+    /// the *pre*-write neighbour contexts (the same pair the trellis used to
+    /// select its rate tables, exposed here for the pack-stage coefficient
+    /// writer — `av1_write_coeffs_txb`/[`write_coeffs_txb_full`](aom_txb::write_coeffs_txb_full)
+    /// need the identical values the RD search already computed). `0` on the
+    /// `skip_txfm` arm (dead in the KEY intra envelope).
+    pub txb_skip_ctx: usize,
+    pub dc_sign_ctx: usize,
 }
 
 /// The walk's outputs: per-txb results in raster order plus the final local
@@ -346,13 +354,17 @@ pub fn encode_intra_block_plane_y(
             }
 
             let mut tx_type = 0usize; // DCT_DCT
-            let (qcoeff, dqcoeff, eob, ent_ctx);
+            let (qcoeff, dqcoeff, eob, ent_ctx, txb_skip_ctx, dc_sign_ctx);
             if env.skip_txfm {
                 // *eob = 0; p->txb_entropy_ctx[block] = 0 (encodemb.c:722-724).
                 qcoeff = Vec::new();
                 dqcoeff = Vec::new();
                 eob = 0u16;
                 ent_ctx = 0u8;
+                // Dead arm in the KEY intra envelope (skip_txfm asserted 0 by
+                // the caller); no txb_skip symbol is ever coded for it.
+                txb_skip_ctx = 0;
+                dc_sign_ctx = 0;
             } else {
                 // av1_subtract_txb.
                 let src_txb_off = env.src_off + (blk_row * env.src_stride + blk_col) * 4;
@@ -404,12 +416,20 @@ pub fn encode_intra_block_plane_y(
                     dqcoeff = r.dqcoeff;
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
+                    txb_skip_ctx = r.txb_skip_ctx;
+                    dc_sign_ctx = r.dc_sign_ctx;
                 } else {
                     let r = xform_quant(&residual, tx_size, tx_type, kind, &qp, false);
                     qcoeff = r.qcoeff;
                     dqcoeff = r.dqcoeff;
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
+                    // get_txb_ctx: xform_quant (non-optimize_b) doesn't derive
+                    // this internally (only the trellis needs it for its rate
+                    // estimate) — the pack-stage writer needs it regardless.
+                    let (sc, dc) = get_txb_ctx(bsize, tx_size, 0, &ta[blk_col..], &tl[blk_row..]);
+                    txb_skip_ctx = sc as usize;
+                    dc_sign_ctx = dc as usize;
                 }
             }
 
@@ -465,6 +485,8 @@ pub fn encode_intra_block_plane_y(
                 txb_entropy_ctx: ent_ctx,
                 qcoeff,
                 dqcoeff,
+                txb_skip_ctx,
+                dc_sign_ctx,
             });
             blk_col += txw_unit;
         }
@@ -587,13 +609,16 @@ pub fn encode_intra_block_plane_uv(
             );
 
             let mut tx_type = 0usize; // DCT_DCT
-            let (qcoeff, dqcoeff, eob, ent_ctx);
+            let (qcoeff, dqcoeff, eob, ent_ctx, txb_skip_ctx, dc_sign_ctx);
             if prm.skip_txfm {
                 // *eob = 0; p->txb_entropy_ctx[block] = 0 (encodemb.c:722-724).
                 qcoeff = Vec::new();
                 dqcoeff = Vec::new();
                 eob = 0u16;
                 ent_ctx = 0u8;
+                // Dead arm in the KEY intra envelope (skip_txfm asserted 0).
+                txb_skip_ctx = 0;
+                dc_sign_ctx = 0;
             } else {
                 // av1_subtract_txb: prediction snapshot (tight) as base.
                 let mut pred = vec![0u16; txw * txh];
@@ -656,12 +681,18 @@ pub fn encode_intra_block_plane_uv(
                     dqcoeff = r.dqcoeff;
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
+                    txb_skip_ctx = r.txb_skip_ctx;
+                    dc_sign_ctx = r.dc_sign_ctx;
                 } else {
                     let r = xform_quant(&residual, tx_size, tx_type, kind, &qp, false);
                     qcoeff = r.qcoeff;
                     dqcoeff = r.dqcoeff;
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
+                    let (sc, dc) =
+                        get_txb_ctx(plane_bsize, tx_size, plane, &ta[blk_col..], &tl[blk_row..]);
+                    txb_skip_ctx = sc as usize;
+                    dc_sign_ctx = dc as usize;
                 }
             }
 
@@ -703,6 +734,8 @@ pub fn encode_intra_block_plane_uv(
                 txb_entropy_ctx: ent_ctx,
                 qcoeff,
                 dqcoeff,
+                txb_skip_ctx,
+                dc_sign_ctx,
             });
             blk_col += txw_unit;
         }
