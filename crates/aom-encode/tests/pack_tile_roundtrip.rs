@@ -938,6 +938,281 @@ fn pack_tile_roundtrips_true_corner() {
     }
 }
 
+/// Task-2 slice: `rd_pick_partition_real`/the leaf search driven by REAL
+/// `av1_fill_mode_rates`-derived cost tables (`real_costs::derive_real_costs`)
+/// instead of the synthetic-but-valid random tables `run_pack_roundtrip_case`
+/// uses -- proves the wiring end to end (search -> pack -> read-back) rather
+/// than just unit-testing the fill functions in isolation. Deliberately
+/// SEPARATE from `run_pack_roundtrip_case` (not a parameter on it) so this
+/// exploratory wiring can never perturb the already-verified synthetic-cost
+/// tests above.
+///
+/// Covered by `derive_real_costs` (real, from `KfFrameContext::
+/// default_for_qindex`'s CDFs -- the actual libaom default tables, matching
+/// what `av1_fill_mode_rates(cm, &x->mode_costs, cm->fc)` computes from a
+/// freshly-inited frame context): mode costs (Y/UV/filter-intra/angle-delta/
+/// intrabc/palette-Y-flag), partition costs, skip costs, tx-size costs, CfL
+/// costs, and the intra tx-type costs (`ext_tx_1ddct`/`ext_tx_dtt4`
+/// repacked). NOT yet real: `coeff_costs_y`/`coeff_costs_uv` -- real AV1
+/// has 5 (`txs_ctx`) x 2 (`plane`) distinct `LV_MAP_COEFF_COST` tables, but
+/// `SbEncodeEnv::coeff_costs_y`/`coeff_costs_uv` (and every downstream
+/// `TxTypeSearchInputs`/`TxfmYrdEnv`/`UvRdEnv` field threading them) is a
+/// SINGLE `&CoeffCostTables` used for every tx size -- so this uses
+/// `fill_lv_map_coeff_cost_from_arena` at ONE representative `txs_ctx` (2,
+/// mid-size) for all luma tx sizes and one for chroma, which is REAL
+/// CDF-derived data but not per-size-correct. Making it per-size needs
+/// `coeff_costs_y`/`coeff_costs_uv` to become `&[CoeffCostTables; 5]` (or
+/// equivalent) threaded through ~6 struct fields -- the next chunk (see
+/// STATUS.md).
+#[test]
+fn pack_tile_roundtrips_with_real_costs() {
+    use aom_encode::real_costs::derive_real_costs;
+
+    for &(ss_x, ss_y, allintra, qindex) in &[
+        (1usize, 1usize, true, 96usize),
+        (0, 0, false, 160),
+        (1, 1, false, 40),
+    ] {
+        let mut rng = Rng(0xD00D_1E55_u64.wrapping_add(qindex as u64));
+        let bd: u8 = 8;
+        let n_sb = 2i32;
+        // True (0,0) corner too -- a bonus re-verification of the
+        // wrapping_sub fix under a REAL (not hand-picked-extreme) cost
+        // landscape, at no extra cost.
+        let pad = 0i32;
+        let mi_rows = pad + n_sb * SB_MI;
+        let mi_cols = pad + n_sb * SB_MI;
+        let h = (mi_rows * 4) as usize;
+        let w = (mi_cols * 4) as usize;
+
+        let mut src_y = vec![0u16; STRIDE * (h + 4)];
+        for r in 0..h {
+            for c in 0..w {
+                let (br, bc) = (r / 32 % 2, c / 32 % 2);
+                let v: i32 = match (br, bc) {
+                    (0, 0) => 120 + (r as i32 / 4),
+                    (0, 1) => 40 + (c as i32 % 40),
+                    (1, 0) => 210 - (r as i32 % 60),
+                    _ => rng.range(0, 255),
+                };
+                src_y[r * STRIDE + c] = v.clamp(0, 255) as u16;
+            }
+        }
+        let (cw, ch) = (w >> ss_x, h >> ss_y);
+        let mut src_u = vec![0u16; STRIDE * (h + 4)];
+        let mut src_v = vec![0u16; STRIDE * (h + 4)];
+        for r in 0..ch {
+            for c in 0..cw {
+                let ly = (r << ss_y) * STRIDE + (c << ss_x);
+                src_u[r * STRIDE + c] = ((i32::from(src_y[ly]) * 3 / 5 + 60).clamp(0, 255)) as u16;
+                src_v[r * STRIDE + c] = ((200 - i32::from(src_y[ly]) / 3).clamp(0, 255)) as u16;
+            }
+        }
+
+        let mut quants = Quants::zeroed();
+        let mut deq = Dequants::zeroed();
+        av1_build_quantizer(bd, 0, 0, 0, 0, 0, &mut quants, &mut deq, 0);
+        let rows_y = set_q_index(&quants, &deq, qindex, 0);
+        let rows_u = set_q_index(&quants, &deq, qindex, 1);
+        let rows_v = set_q_index(&quants, &deq, qindex, 2);
+
+        // The live KfFrameContext this frame's entropy coder AND cost
+        // derivation both read -- `derive_real_costs` snapshots it BEFORE
+        // the mutable borrow below, matching av1_fill_mode_rates being
+        // called once from the frame's freshly-inited context.
+        let mut kf_write = KfFrameContext::default_for_qindex(qindex as i32);
+        let real = derive_real_costs(&kf_write, true);
+        const REPRESENTATIVE_TXS_CTX: usize = 2; // labelled simplification, see doc comment
+        let y_coeff = aom_txb::fill_lv_map_coeff_cost_from_arena(
+            &kf_write.coeff,
+            REPRESENTATIVE_TXS_CTX,
+            0,
+        );
+        let uv_coeff = aom_txb::fill_lv_map_coeff_cost_from_arena(
+            &kf_write.coeff,
+            REPRESENTATIVE_TXS_CTX,
+            1,
+        );
+        // `eob_multi*_cost` (`t.eob[eob_multi_ctx*11 + eob_pt-1]`, 2x11) is a
+        // SEPARATE table `av1_fill_coeff_costs` also derives that
+        // `fill_lv_map_coeff_cost`/`_from_arena` does not cover (only the
+        // `LV_MAP_COEFF_COST` fields: txb_skip/base_eob/base/eob_extra/
+        // dc_sign/lps) -- zeroed here, an ADDITIONAL known gap on top of the
+        // single-txs_ctx simplification documented above.
+        let y_eob = vec![0i32; 2 * 11];
+        let uv_eob = vec![0i32; 2 * 11];
+        let coeff_costs_y = y_coeff.tables(&y_eob);
+        let coeff_costs_uv = uv_coeff.tables(&uv_eob);
+
+        let pol = if allintra {
+            TxTypeSearchPolicy::speed0_allintra()
+        } else {
+            TxTypeSearchPolicy::speed0_good()
+        };
+        let uv_lp = UvLoopPolicy::speed0_allintra();
+        let rdmult = 4000 + rng.range(0, 1 << 16);
+
+        let env = SbEncodeEnv {
+            sb_size: SB,
+            mi_rows,
+            mi_cols,
+            tile_row_start: 0,
+            tile_col_start: 0,
+            tile_row_end: 1 << 16,
+            tile_col_end: 1 << 16,
+            monochrome: false,
+            ss_x,
+            ss_y,
+            bd,
+            lossless: false,
+            reduced_tx_set_used: false,
+            disable_edge_filter: false,
+            filter_type: 0,
+            stride: STRIDE,
+            src_y: &src_y,
+            src_u: &src_u,
+            src_v: &src_v,
+            base_y: 0,
+            base_uv: 0,
+            rows_y: &rows_y,
+            rows_u: &rows_u,
+            rows_v: &rows_v,
+            rdmult,
+            sharpness: 0,
+            enable_optimize_b: TrellisOptType::FullTrellisOpt,
+            use_chroma_trellis_rd_mult: allintra,
+            coeff_costs_y: &coeff_costs_y,
+            coeff_costs_uv: &coeff_costs_uv,
+            tx_type_costs: &real.tx_type_costs_y,
+        };
+        let pick_cfg = PickFrameCfg {
+            mode_costs: &real.mode_costs,
+            tx_size_costs: &real.tx_size_costs,
+            skip_costs: &real.skip_costs,
+            tx_type_costs_y: &real.tx_type_costs_y,
+            pol: &pol,
+            uv_lp: &uv_lp,
+            intra_uv_mode_cost: &real.mode_costs.intra_uv_mode_cost,
+            cfl_costs: &real.cfl_costs,
+            partition_costs: &real.partition_costs,
+            allintra,
+            speed: 0,
+            qindex: qindex as i32,
+            enable_filter_intra: true,
+            enable_tx64: true,
+            enable_rect_tx: true,
+            intra_pruning_with_hog: true,
+            enable_rect_partitions: true,
+            less_rectangular_check_level: if allintra { 1 } else { 0 },
+            max_partition_size: 15,
+            min_partition_size: 3,
+        };
+        let pack_cfg = PackCfg {
+            enable_filter_intra: true,
+            tx_mode_is_select: true,
+            signal_gate: qindex > 0,
+            allow_update_cdf: true,
+            base_qindex: qindex as i32,
+        };
+
+        // ---- pack ----
+        let mut recon_y = src_y.clone();
+        let mut recon_u = src_u.clone();
+        let mut recon_v = src_v.clone();
+        let mut enc = OdEcEnc::new();
+        let trees = pack_tile(
+            &mut enc,
+            &env,
+            &pick_cfg,
+            &pack_cfg,
+            &mut kf_write,
+            &mut recon_y,
+            &mut recon_u,
+            &mut recon_v,
+            pad,
+            pad,
+            n_sb,
+            n_sb,
+            SB_MI,
+            SB,
+        );
+        assert_eq!(trees.len(), (n_sb * n_sb) as usize);
+        let bytes = enc.done().to_vec();
+        assert!(
+            !bytes.is_empty(),
+            "real-cost pack_tile must emit bytes for a non-trivial frame"
+        );
+
+        // ---- read back (structural + CDF-arena agreement only; the
+        //      exhaustive per-block cross-check lives in
+        //      run_pack_roundtrip_case) ----
+        let mut kf_read = KfFrameContext::default_for_qindex(qindex as i32);
+        let mut dec = OdEcDec::new(&bytes);
+        let mut kfs = aom_encode::pack::kf_block_state(&pack_cfg, &env, SB_MI);
+        let mut above_pctx = vec![0i8; mi_cols as usize];
+        let mut above_tctx = vec![aom_entropy::partition::TXFM_CTX_INIT; mi_cols as usize];
+        let mut above_ectx: [Vec<i8>; 3] = [
+            vec![0i8; mi_cols as usize],
+            vec![0i8; mi_cols as usize],
+            vec![0i8; mi_cols as usize],
+        ];
+        let mut nbr = NbrGrid::zeroed(mi_cols as usize);
+        let mut stats = DecodedStats::default();
+
+        for r in 0..n_sb {
+            let mut left_pctx = [0i8; 32];
+            let mut left_tctx = [aom_entropy::partition::TXFM_CTX_INIT; 32];
+            let mut left_ectx = [[0i8; 32]; 3];
+            nbr.zero_left();
+            for c in 0..n_sb {
+                read_sb(
+                    &mut dec,
+                    &env,
+                    &pack_cfg,
+                    &mut kf_read,
+                    &mut kfs,
+                    &mut above_pctx,
+                    &mut left_pctx,
+                    &mut above_tctx,
+                    &mut left_tctx,
+                    &mut above_ectx,
+                    &mut left_ectx,
+                    &mut nbr,
+                    pad + r * SB_MI,
+                    pad + c * SB_MI,
+                    SB,
+                    &mut stats,
+                );
+            }
+        }
+
+        eprintln!(
+            "real-costs ss=({ss_x},{ss_y}) allintra={allintra} qindex={qindex}: {} SBs, \
+             none={} split={} horz={} vert={} leaves={}",
+            trees.len(),
+            stats.none,
+            stats.split,
+            stats.horz,
+            stats.vert,
+            stats.leaves
+        );
+        assert_eq!(
+            kf_write.coeff, kf_read.coeff,
+            "real-costs ss=({ss_x},{ss_y}) allintra={allintra} qindex={qindex}: coefficient CDF \
+             arena must adapt identically on both sides"
+        );
+        assert_eq!(
+            kf_write.partition, kf_read.partition,
+            "real-costs: partition CDFs must match"
+        );
+        assert_eq!(kf_write.kf_y, kf_read.kf_y, "real-costs: kf_y CDFs must match");
+        assert_eq!(
+            kf_write.tx_size, kf_read.tx_size,
+            "real-costs: tx_size CDFs must match"
+        );
+    }
+}
+
 /// Hand-traced arithmetic check for `intra_sb_rdmult_modifier` +
 /// `fold_intra_sb_rdmult` (partition_search.c:652/5710-5722) -- the ALLINTRA
 /// SB-root rdmult modifier `pack_tile` now folds in before each SB's search

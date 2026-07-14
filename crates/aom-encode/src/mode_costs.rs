@@ -410,6 +410,47 @@ pub fn fill_tx_size_costs(out: &mut TxSizeCosts, tx_size_cdf: &[u16]) {
     }
 }
 
+/// `PARTITION_CONTEXTS` (enums.h): `bsize_log2(4..128) x (left*2+above)` folds
+/// to 20 rows (4 block-size levels x 5 `bsl` steps... in practice indexed
+/// directly by [`aom_entropy::partition::partition_plane_context`]).
+pub const PARTITION_CONTEXTS: usize = 20;
+/// `EXT_PARTITION_TYPES` (enums.h): the widest partition CDF alphabet (10-way
+/// at 8x8..64x64; 4-way at 128x128 has no VERT_4/HORZ_4, `cost_tokens_from_cdf`
+/// stops early per its own `cdf`-terminated-N convention).
+pub const EXT_PARTITION_TYPES: usize = 10;
+/// `SKIP_CONTEXTS` (enums.h).
+pub const SKIP_CONTEXTS: usize = 3;
+
+/// The partition slice of `av1_fill_mode_rates` (rd.c:86-88):
+/// `av1_cost_tokens_from_cdf(partition_cost[i], partition_cdf[i])` for every
+/// [`PARTITION_CONTEXTS`] context. `partition_cdf` is flat
+/// `[PARTITION_CONTEXTS][EXT_PARTITION_TYPES + 1]` (11-wide row padding,
+/// matching `KfFrameContext::partition`); each row's actual symbol count
+/// (4/8/10) is read off the CDF's own terminator by
+/// [`aom_txb::cost_tokens_from_cdf`], so `out` must be zeroed first (a
+/// narrower context leaves its higher-index cost entries at 0, which the
+/// caller never reads since `partition_cdf_length` gates the symbol range
+/// the same way on both the read and cost side).
+pub fn fill_partition_costs(out: &mut [[i32; EXT_PARTITION_TYPES]; PARTITION_CONTEXTS], partition_cdf: &[u16]) {
+    assert_eq!(partition_cdf.len(), PARTITION_CONTEXTS * (EXT_PARTITION_TYPES + 1));
+    for (ctx, row) in out.iter_mut().enumerate() {
+        *row = [0; EXT_PARTITION_TYPES];
+        let cdf_row = &partition_cdf[ctx * (EXT_PARTITION_TYPES + 1)..(ctx + 1) * (EXT_PARTITION_TYPES + 1)];
+        aom_txb::cost_tokens_from_cdf(row, cdf_row, None);
+    }
+}
+
+/// The skip-txfm slice of `av1_fill_mode_rates` (rd.c:99-102):
+/// `av1_cost_tokens_from_cdf(skip_txfm_cost[i], skip_txfm_cdfs[i])` for every
+/// [`SKIP_CONTEXTS`] context (2-symbol; `skip_txfm_cdf` flat `[3][3]`,
+/// matching `KfFrameContext::skip`).
+pub fn fill_skip_costs(out: &mut [[i32; 2]; SKIP_CONTEXTS], skip_txfm_cdf: &[u16]) {
+    assert_eq!(skip_txfm_cdf.len(), SKIP_CONTEXTS * 3);
+    for (ctx, row) in out.iter_mut().enumerate() {
+        aom_txb::cost_tokens_from_cdf(row, &skip_txfm_cdf[ctx * 3..ctx * 3 + 3], None);
+    }
+}
+
 /// `block_signals_txsize` (blockd.h): every block above 4x4 codes its tx size.
 #[inline]
 pub fn block_signals_txsize(bsize: usize) -> bool {

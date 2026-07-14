@@ -27,7 +27,7 @@ pub use cost::{cost_coeffs_txb, CoeffCostTables};
 mod prob_cost;
 pub use prob_cost::{cost_symbol, cost_tokens_from_cdf};
 mod fill;
-pub use fill::{fill_lv_map_coeff_cost, LvMapCoeffCost};
+pub use fill::{fill_lv_map_coeff_cost, fill_lv_map_coeff_cost_from_arena, LvMapCoeffCost};
 mod ext_tx;
 pub use ext_tx::{
     ext_tx_derive, ext_tx_set, ext_tx_set_type, fill_tx_type_costs, get_tx_type_cost,

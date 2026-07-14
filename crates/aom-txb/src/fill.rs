@@ -109,3 +109,26 @@ pub fn fill_lv_map_coeff_cost(
     }
     LvMapCoeffCost { txb_skip, base_eob, base, eob_extra, dc_sign, lps }
 }
+
+/// [`fill_lv_map_coeff_cost`] sourced directly from a live coefficient-CDF
+/// arena (the same flat `[u16; CDF_ARENA_LEN]` layout
+/// [`crate::write_coeffs_txb`] reads/adapts, e.g. `KfFrameContext::coeff`) —
+/// the region offsets/strides mirror `write.rs`'s `A_TXB_SKIP` / `A_BASE_EOB`
+/// / `A_BASE` / `A_EOB_EXTRA` / `A_DC_SIGN` / `A_BR` exactly, so this slices
+/// the SAME bytes the entropy coder is adapting, real per-(`txs_ctx`,
+/// `plane_type`) cost tables (the encoder-gate wiring `av1_fill_coeff_costs`
+/// needs, vs. the synthetic-but-valid random tables used for pack-glue-only
+/// verification). `txs_ctx` is [`crate::txsize_entropy_ctx`]`(tx_size)`
+/// (0..=4); `plane_type` is 0 (luma) or 1 (chroma).
+pub fn fill_lv_map_coeff_cost_from_arena(arena: &[u16], txs_ctx: usize, plane_type: usize) -> LvMapCoeffCost {
+    use crate::write::{A_BASE, A_BASE_EOB, A_BR, A_DC_SIGN, A_EOB_EXTRA, A_TXB_SKIP};
+    debug_assert!(txs_ctx < 5 && plane_type < 2);
+    let pt = txs_ctx * 2 + plane_type;
+    let txb_skip_cdf = &arena[A_TXB_SKIP + txs_ctx * 13 * 3..A_TXB_SKIP + txs_ctx * 13 * 3 + 13 * 3];
+    let base_eob_cdf = &arena[A_BASE_EOB + pt * 4 * 4..A_BASE_EOB + pt * 4 * 4 + 4 * 4];
+    let base_cdf = &arena[A_BASE + pt * 42 * 5..A_BASE + pt * 42 * 5 + 42 * 5];
+    let eob_extra_cdf = &arena[A_EOB_EXTRA + pt * 9 * 3..A_EOB_EXTRA + pt * 9 * 3 + 9 * 3];
+    let dc_sign_cdf = &arena[A_DC_SIGN + plane_type * 3 * 3..A_DC_SIGN + plane_type * 3 * 3 + 3 * 3];
+    let br_cdf = &arena[A_BR + pt * 21 * 5..A_BR + pt * 21 * 5 + 21 * 5];
+    fill_lv_map_coeff_cost(txb_skip_cdf, base_eob_cdf, base_cdf, eob_extra_cdf, dc_sign_cdf, br_cdf)
+}

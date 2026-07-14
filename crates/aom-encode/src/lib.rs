@@ -24,6 +24,7 @@ pub mod partition;
 pub mod partition_pick;
 pub mod rd;
 pub mod rd_pick;
+pub mod real_costs;
 pub mod tx_search;
 
 use aom_entropy::dec::OdEcDec;

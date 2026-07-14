@@ -634,6 +634,80 @@ sweep). Commit: (this session).
   symptom of the same root cause as the partition-population bug above.
   Repro: `run_pack_roundtrip_case(1, 1, false, 0, 0)`.
 
+## Real (CDF-derived) cost tables wired into the search — PARTIAL (2026-07-14, encoder track)
+
+**Fraction: 6 of 7 real-AV1 cost-table families wired; the 7th (coefficient
+costs) is wired at reduced fidelity (1 representative `txs_ctx` instead of
+the real 5).** Task: "feed the search the SAME cost tables aomenc uses"
+(`av1_fill_mode_rates` + `av1_fill_coeff_costs`, rd.c) so `rd_pick_partition_
+real`/the leaf search's decisions are cost-driven the way real aomenc's are,
+not the synthetic-but-valid random tables `pack_tile_roundtrip.rs` uses to
+verify pack glue only.
+
+**Present** (`crates/aom-encode/src/real_costs.rs`, new module,
+`derive_real_costs(kf: &KfFrameContext, enable_filter_intra: bool) ->
+RealCosts`): mode costs (Y/UV/filter-intra flag+mode/angle-delta/intrabc/
+palette-Y-flag, via the ALREADY-PORTED `fill_intra_mode_costs` +
+`fill_palette_uv_mode_costs`), CfL costs (`fill_cfl_costs`), tx-size costs
+(`fill_tx_size_costs`), intra tx-type costs (`aom_txb::fill_tx_type_costs`,
+fed by a new `repack_intra_ext_tx_cdf` that widens `KfFrameContext::
+ext_tx_1ddct`/`ext_tx_dtt4`'s narrow per-eset storage into the uniform
+17-wide stride `fill_tx_type_costs` expects), and two NEW small fills this
+chunk added to close real gaps in `av1_fill_mode_rates`'s coverage:
+`fill_partition_costs` + `fill_skip_costs` (`crates/aom-encode/src/mode_costs.rs`).
+All derive from `KfFrameContext::default_for_qindex`'s CDFs -- the REAL
+libaom default probability tables (already C-verified; `pack_tile_
+roundtrip.rs`'s own doc comment already relied on this for the entropy
+coder), matching what `av1_fill_mode_rates(cm, &x->mode_costs, cm->fc)`
+computes from a frame's freshly-inited context (real aomenc's ACTUAL
+starting cost snapshot -- RD costs are derived once per frame, not
+re-derived per adapted symbol, so this is not a simplification vs. the C).
+
+**Reduced-fidelity** (documented in `real_costs.rs`'s module doc + the new
+test's doc comment): coefficient-coding costs. Real AV1 has 5 (`txs_ctx`,
+tx-size category) x 2 (plane) = 10 distinct `LV_MAP_COEFF_COST` tables
+(`av1_fill_coeff_costs`, ALSO already ported: `aom_txb::fill_lv_map_coeff_
+cost`, plus a NEW `fill_lv_map_coeff_cost_from_arena` this chunk added that
+slices them directly from a live CDF arena using `write.rs`'s own `A_*`
+region offsets) -- but `SbEncodeEnv::coeff_costs_y`/`coeff_costs_uv` (and
+every downstream `TxTypeSearchInputs`/`TxfmYrdEnv`/`UvRdEnv::coeff_costs`
+field, ~6 struct fields across `tx_search.rs`/`intra_uv_rd.rs`) is a SINGLE
+`&CoeffCostTables` reference used for EVERY tx size -- an architectural
+mismatch with real AV1's per-size costs that predates this chunk (not
+introduced by it). This chunk's test (`pack_tile_roundtrips_with_real_costs`)
+uses ONE representative `txs_ctx` (2, mid-size) for all luma tx sizes and
+one for chroma -- REAL CDF-derived data, genuinely closer to aomenc than
+random, but not size-correct. ALSO not yet derived: `eob_multi*_cost`
+(`CoeffCostTables::eob`, the EOB-position cost `av1_fill_coeff_costs` ALSO
+fills) -- zeroed in the new test, a second, smaller gap on the same table.
+
+**Verified working end-to-end**: `pack_tile_roundtrips_with_real_costs`
+(`crates/aom-encode/tests/pack_tile_roundtrip.rs`) drives the FULL search+
+pack+read-back pipeline (not just unit-testing the fill functions) with
+`derive_real_costs`'s tables at 3 (ss, allintra, qindex) combinations,
+INCLUDING at the true (0,0) corner (a bonus re-verification of the
+`wrapping_sub` fix above under a real, not hand-picked-extreme, cost
+landscape) -- partition-type population + all 4 CDF arenas (coeff/
+partition/kf_y/tx_size) agree between write and read, proving the wiring
+doesn't desync the bitstream. Deliberately a NEW, separate test (not a
+parameter on `run_pack_roundtrip_case`) so this exploratory wiring can never
+perturb the already-verified synthetic-cost tests.
+
+**NEXT chunk (the real remaining work)**: thread `txs_ctx` through the
+coeff-cost path so `rd_pick_partition_real` sees the TRUE per-tx-size
+`LV_MAP_COEFF_COST`, not one representative table. Concretely: change
+`SbEncodeEnv::coeff_costs_y`/`coeff_costs_uv` from `&CoeffCostTables` to
+`&[CoeffCostTables; 5]` (or a small lookup wrapper), update `encode_sb.rs`
+(2 call sites), `partition_pick.rs` (3), `tx_search.rs`'s `TxfmYrdEnv`/
+`TxTypeSearchInputs` (2 struct fields + their construction sites) and
+`intra_uv_rd.rs`'s `UvRdEnv`/`TxTypeSearchInputs` use (1 field), selecting
+by `aom_txb::txsize_entropy_ctx(tx_size)` at each txb. Also derive
+`eob_multi*_cost` (needs tracing `av1_fill_coeff_costs`'s EOB-cost slice,
+not yet examined this chunk). Then re-run
+`pack_tile_roundtrips_with_real_costs` (rename once real) plus every
+existing differential test in `aom-encode`/`aom-txb` to confirm the
+signature change is behavior-preserving where inputs are unchanged.
+
 ## Gate posture (honest)
 
 Real, verified, ratcheting progress across BOTH tracks — but still a fraction of
