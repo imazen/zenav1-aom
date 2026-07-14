@@ -1317,3 +1317,151 @@ int shim_apply_sgr(const uint16_t *src, uint16_t *dst, int buf_w, int buf_h,
   free(tmpbuf);
   return rc;
 }
+
+/* The REAL whole-frame loop-restoration application over real bordered YV12
+ * buffers + a real AV1_COMMON: av1_alloc_restoration_struct (unit grids) +
+ * av1_alloc_restoration_buffers (stripe boundaries + rlbs + tmpbuf) +
+ * av1_loop_restoration_save_boundary_lines in the DECODER's ordering
+ * (after_cdef=0 on the deblocked frame, after_cdef=1 on the current frame;
+ * skipped entirely on the optimized no-cdef path, decodeframe.c:5437-5482) +
+ * av1_loop_restoration_filter_frame. bd==8 runs the production lowbd u8
+ * frame; bd>8 highbd. units are 10 i32 each:
+ * [rtype, v0,v1,v2, h0,h1,h2, ep, xqd0, xqd1]. NEEDS ref_init() (the walk's
+ * wiener/sgr kernels are RTCD fn pointers). Returns 0 on success. */
+#define LRF_WORDS 10
+static void lrf_fill_unit(RestorationUnitInfo *rui, const int32_t *u) {
+  memset(rui, 0, sizeof(*rui));
+  rui->restoration_type = (RestorationType)u[0];
+  for (int d = 0; d < 2; d++) {
+    int16_t *f = d == 0 ? rui->wiener_info.vfilter : rui->wiener_info.hfilter;
+    const int32_t *t = u + 1 + 3 * d;
+    f[0] = (int16_t)t[0];
+    f[1] = (int16_t)t[1];
+    f[2] = (int16_t)t[2];
+    f[3] = (int16_t)(-2 * (t[0] + t[1] + t[2]));
+    f[4] = (int16_t)t[2];
+    f[5] = (int16_t)t[1];
+    f[6] = (int16_t)t[0];
+  }
+  rui->sgrproj_info.ep = u[7];
+  rui->sgrproj_info.xqd[0] = u[8];
+  rui->sgrproj_info.xqd[1] = u[9];
+}
+
+static void lrf_load_plane(YV12_BUFFER_CONFIG *f, int plane, const uint16_t *s,
+                           int stride, int highbd) {
+  const int is_uv = plane > 0;
+  const int pw = f->crop_widths[is_uv];
+  const int ph = f->crop_heights[is_uv];
+  for (int r = 0; r < ph; r++) {
+    if (highbd) {
+      uint16_t *row = CONVERT_TO_SHORTPTR(f->buffers[plane]) +
+                      (ptrdiff_t)r * f->strides[is_uv];
+      memcpy(row, s + (ptrdiff_t)r * stride, pw * sizeof(uint16_t));
+    } else {
+      uint8_t *row = f->buffers[plane] + (ptrdiff_t)r * f->strides[is_uv];
+      for (int c = 0; c < pw; c++) row[c] = (uint8_t)s[(ptrdiff_t)r * stride + c];
+    }
+  }
+}
+
+static void lrf_store_plane(const YV12_BUFFER_CONFIG *f, int plane,
+                            uint16_t *d, int stride, int highbd) {
+  const int is_uv = plane > 0;
+  const int pw = f->crop_widths[is_uv];
+  const int ph = f->crop_heights[is_uv];
+  for (int r = 0; r < ph; r++) {
+    if (highbd) {
+      const uint16_t *row = CONVERT_TO_SHORTPTR(f->buffers[plane]) +
+                            (ptrdiff_t)r * f->strides[is_uv];
+      memcpy(d + (ptrdiff_t)r * stride, row, pw * sizeof(uint16_t));
+    } else {
+      const uint8_t *row = f->buffers[plane] + (ptrdiff_t)r * f->strides[is_uv];
+      for (int c = 0; c < pw; c++) d[(ptrdiff_t)r * stride + c] = row[c];
+    }
+  }
+}
+
+int shim_lr_filter_frame(uint16_t *y, uint16_t *u, uint16_t *v,
+                         const uint16_t *dy, const uint16_t *du,
+                         const uint16_t *dv, int w, int h, int y_stride,
+                         int uv_stride, int num_planes, int ss_x, int ss_y,
+                         int bd, int optimized,
+                         const int32_t *frame_rtype /*[3]*/,
+                         const int32_t *unit_size /*[3]*/,
+                         const int32_t *units0, const int32_t *units1,
+                         const int32_t *units2) {
+  const int highbd = bd > 8;
+  AV1_COMMON *cm = (AV1_COMMON *)calloc(1, sizeof(*cm));
+  SequenceHeader *seq = (SequenceHeader *)calloc(1, sizeof(*seq));
+  struct aom_internal_error_info *err =
+      (struct aom_internal_error_info *)calloc(1, sizeof(*err));
+  if (!cm || !seq || !err) return -1;
+  seq->monochrome = num_planes == 1;
+  seq->subsampling_x = ss_x;
+  seq->subsampling_y = ss_y;
+  seq->bit_depth = (aom_bit_depth_t)bd;
+  seq->use_highbitdepth = highbd;
+  seq->sb_size = BLOCK_64X64;
+  cm->seq_params = seq;
+  cm->error = err;
+  cm->width = w;
+  cm->height = h;
+  cm->superres_upscaled_width = w;
+  cm->superres_upscaled_height = h;
+  cm->superres_scale_denominator = SCALE_NUMERATOR;
+  cm->mi_params.mi_rows = ((h + 7) & ~7) >> 2;
+  cm->mi_params.mi_cols = ((w + 7) & ~7) >> 2;
+
+  int is_sgr = 0;
+  const int32_t *unit_arrs[3] = { units0, units1, units2 };
+  for (int p = 0; p < 3; p++) {
+    RestorationInfo *rsi = &cm->rst_info[p];
+    rsi->frame_restoration_type = (RestorationType)frame_rtype[p];
+    rsi->restoration_unit_size = unit_size[p];
+    av1_alloc_restoration_struct(cm, rsi, p > 0);
+    if (frame_rtype[p] != RESTORE_NONE) {
+      for (int i = 0; i < rsi->num_rest_units; i++)
+        lrf_fill_unit(&rsi->unit_info[i], unit_arrs[p] + (long)i * LRF_WORDS);
+      is_sgr = 1; /* allocate the sgr tmpbuf whenever anything restores */
+    }
+  }
+  av1_alloc_restoration_buffers(cm, is_sgr || 1);
+
+  YV12_BUFFER_CONFIG frame;
+  memset(&frame, 0, sizeof(frame));
+  if (aom_alloc_frame_buffer(&frame, w, h, ss_x, ss_y, highbd, 32, 0, false,
+                             0))
+    return -2;
+
+  const uint16_t *cur[3] = { y, u, v };
+  const uint16_t *deb[3] = { dy, du, dv };
+  const int strides[3] = { y_stride, uv_stride, uv_stride };
+  if (!optimized) {
+    for (int p = 0; p < num_planes; p++)
+      lrf_load_plane(&frame, p, deb[p], strides[p], highbd);
+    av1_loop_restoration_save_boundary_lines(&frame, cm, 0);
+    for (int p = 0; p < num_planes; p++)
+      lrf_load_plane(&frame, p, cur[p], strides[p], highbd);
+    av1_loop_restoration_save_boundary_lines(&frame, cm, 1);
+  } else {
+    for (int p = 0; p < num_planes; p++)
+      lrf_load_plane(&frame, p, cur[p], strides[p], highbd);
+  }
+
+  AV1LrStruct lr_ctxt;
+  memset(&lr_ctxt, 0, sizeof(lr_ctxt));
+  av1_loop_restoration_filter_frame(&frame, cm, optimized, &lr_ctxt);
+
+  uint16_t *outp[3] = { y, u, v };
+  for (int p = 0; p < num_planes; p++)
+    lrf_store_plane(&frame, p, outp[p], strides[p], highbd);
+
+  aom_free_frame_buffer(&frame);
+  aom_free_frame_buffer(&cm->rst_frame);
+  av1_free_restoration_buffers(cm);
+  free(err);
+  free(seq);
+  free(cm);
+  return 0;
+}

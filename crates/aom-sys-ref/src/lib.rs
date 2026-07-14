@@ -7812,6 +7812,91 @@ extern "C" {
         xqd1: i32,
         bd: i32,
     ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_lr_filter_frame(
+        y: *mut u16,
+        u: *mut u16,
+        v: *mut u16,
+        dy: *const u16,
+        du: *const u16,
+        dv: *const u16,
+        w: i32,
+        h: i32,
+        y_stride: i32,
+        uv_stride: i32,
+        num_planes: i32,
+        ss_x: i32,
+        ss_y: i32,
+        bd: i32,
+        optimized: i32,
+        frame_rtype: *const i32,
+        unit_size: *const i32,
+        units0: *const i32,
+        units1: *const i32,
+        units2: *const i32,
+    ) -> i32;
+}
+
+/// Words per unit in [`ref_lr_filter_frame`] packing:
+/// `[rtype, v0, v1, v2, h0, h1, h2, ep, xqd0, xqd1]`.
+pub const LRF_WORDS: usize = 10;
+
+/// The REAL whole-frame loop restoration (real `av1_loop_restoration_save_
+/// boundary_lines` both passes in the decoder's ordering + real
+/// `av1_loop_restoration_filter_frame` over bordered YV12 buffers; real
+/// `av1_alloc_restoration_struct/_buffers` geometry). Filters `y/u/v` in
+/// place; `dy/du/dv` are the deblocked (pre-CDEF) planes (unused when
+/// `optimized`). bd 8 runs the production lowbd u8 frame. Call
+/// [`ref_init`] first (RTCD kernels).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_lr_filter_frame(
+    y: &mut [u16],
+    u: &mut [u16],
+    v: &mut [u16],
+    dy: &[u16],
+    du: &[u16],
+    dv: &[u16],
+    w: usize,
+    h: usize,
+    y_stride: usize,
+    uv_stride: usize,
+    num_planes: usize,
+    ss_x: usize,
+    ss_y: usize,
+    bd: i32,
+    optimized: bool,
+    frame_rtype: [i32; 3],
+    unit_size: [i32; 3],
+    units: [&[i32]; 3],
+) {
+    for (p, us) in units.iter().enumerate() {
+        assert!(us.len().is_multiple_of(LRF_WORDS) || frame_rtype[p] == 0);
+    }
+    let rc = unsafe {
+        shim_lr_filter_frame(
+            y.as_mut_ptr(),
+            u.as_mut_ptr(),
+            v.as_mut_ptr(),
+            dy.as_ptr(),
+            du.as_ptr(),
+            dv.as_ptr(),
+            w as i32,
+            h as i32,
+            y_stride as i32,
+            uv_stride as i32,
+            num_planes as i32,
+            ss_x as i32,
+            ss_y as i32,
+            bd,
+            optimized as i32,
+            frame_rtype.as_ptr(),
+            unit_size.as_ptr(),
+            units[0].as_ptr(),
+            units[1].as_ptr(),
+            units[2].as_ptr(),
+        )
+    };
+    assert_eq!(rc, 0, "shim_lr_filter_frame failed ({rc})");
 }
 
 /// REAL `av1_wiener_convolve_add_src_c` (bd 8, lowbd u8 path) /
