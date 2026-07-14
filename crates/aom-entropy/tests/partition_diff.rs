@@ -6559,6 +6559,7 @@ fn read_mb_modes_kf_struct_driver_roundtrips() {
             cfl_joint_sign: js,
             angle_delta_uv: uv_ang,
             palette_size: [0, 0],
+            palette_colors: [0u16; 24],
             use_filter_intra: use_fi,
             filter_intra_mode: fi_mode,
         };
@@ -6742,6 +6743,7 @@ fn read_modes_b_tile_content_roundtrips() {
                 cfl_joint_sign: js,
                 angle_delta_uv: uv_ang,
                 palette_size: [0, 0],
+                palette_colors: [0u16; 24],
                 use_filter_intra: use_fi,
                 filter_intra_mode: if use_fi != 0 {
                     (rng.next() % 5) as i32
@@ -7182,6 +7184,7 @@ fn mb_modes_kf_fc_matches_preselected_writer() {
             cfl_joint_sign: js,
             angle_delta_uv: uv_ang,
             palette_size: [0, 0],
+            palette_colors: [0u16; 24],
             use_filter_intra: use_fi,
             filter_intra_mode: fi_mode,
         };
@@ -7191,7 +7194,9 @@ fn mb_modes_kf_fc_matches_preselected_writer() {
         let mut f1 = f0.clone();
         let mut s1 = st.clone();
         let mut e1 = OdEcEnc::new();
-        write_mb_modes_kf_fc(&mut e1, &info, &mut f1, &mut s1, enable_fi, above, left);
+        write_mb_modes_kf_fc(
+            &mut e1, &info, &mut f1, &mut s1, enable_fi, above, left, None, None,
+        );
         let b1 = e1.done().to_vec();
 
         // the _fc reader roundtrips it (every case, including shared-angle ones)
@@ -7199,7 +7204,9 @@ fn mb_modes_kf_fc_matches_preselected_writer() {
             let mut fr = f0.clone();
             let mut sr = st.clone();
             let mut dec = OdEcDec::new(&b1);
-            let got = read_mb_modes_kf_fc(&mut dec, &mut fr, &mut sr, enable_fi, above, left);
+            let got = read_mb_modes_kf_fc(
+                &mut dec, &mut fr, &mut sr, enable_fi, above, left, None, None,
+            );
             // read_cdef reports -1 when no strength is read (intrabc frame / skip block)
             let mut expected = info.clone();
             if allow_intrabc || skip != 0 {
@@ -7467,6 +7474,7 @@ fn mb_modes_kf_fc_multi_block_roundtrips_with_ctx_diversity() {
                 cfl_joint_sign: js,
                 angle_delta_uv: uv_ang,
                 palette_size: [0, 0],
+                palette_colors: [0u16; 24],
                 use_filter_intra: use_fi,
                 filter_intra_mode: fi_mode,
             };
@@ -7480,7 +7488,9 @@ fn mb_modes_kf_fc_multi_block_roundtrips_with_ctx_diversity() {
             se.bsize = *bsize;
             se.is_chroma_ref = *chroma_ref;
             se.cfl_allowed = *cfl_allowed;
-            write_mb_modes_kf_fc(&mut enc, info, &mut fe, &mut se, enable_fi, *above, *left);
+            write_mb_modes_kf_fc(
+                &mut enc, info, &mut fe, &mut se, enable_fi, *above, *left, None, None,
+            );
         }
         let b = enc.done().to_vec();
         // decode it back
@@ -7491,7 +7501,9 @@ fn mb_modes_kf_fc_multi_block_roundtrips_with_ctx_diversity() {
             sd.bsize = *bsize;
             sd.is_chroma_ref = *chroma_ref;
             sd.cfl_allowed = *cfl_allowed;
-            let got = read_mb_modes_kf_fc(&mut dec, &mut fd, &mut sd, enable_fi, *above, *left);
+            let got = read_mb_modes_kf_fc(
+                &mut dec, &mut fd, &mut sd, enable_fi, *above, *left, None, None,
+            );
             // every block sits at the SB upper-left (0,0): cdef_transmitted resets
             // per block, so non-skip blocks read the strength, skip blocks report -1
             let mut expected = info.clone();
@@ -7795,4 +7807,308 @@ fn decode_color_map_tokens_matches_c() {
             }
         }
     }
+}
+
+// ---- mode-info driver: allow_palette=true path (flags/size/colours) ----
+//
+// `mb_modes_kf_fc_matches_preselected_writer` / `_multi_block_roundtrips_with_ctx_
+// diversity` above only ever exercise `allow_palette=false` — this is the FIRST test
+// to drive `read_mb_modes_kf_fc`/`write_mb_modes_kf_fc`'s palette block (added
+// alongside the colour-index-map decode wiring). The ctx sequencing is
+// order-sensitive on the read side (`palette_uv_mode_ctx` depends on the SAME call's
+// just-decoded `palette_size[0]`, matching real `read_palette_mode_info`,
+// decodemv.c:590) — a round-trip mismatch here would mean read and write disagree on
+// that ordering.
+
+/// A random ascending (Y/U-style, `min_val`-respecting) or unordered (V-style) colour
+/// array of length `n` within `[0, 2^bit_depth)`.
+fn gen_palette_colors(
+    rng: &mut Rng,
+    n: usize,
+    bit_depth: i32,
+    ascending: bool,
+    min_val: i32,
+) -> Vec<u16> {
+    let maxv = 1i32 << bit_depth;
+    if n == 0 {
+        return Vec::new();
+    }
+    if ascending {
+        // Strictly ascending (a valid subset of "ascending" even when min_val==0,
+        // which only requires non-decreasing) — always fits since n <= 8 << maxv.
+        let step_min = min_val.max(1);
+        let max_start = (maxv - 1 - (n as i32 - 1) * step_min).max(0);
+        let mut cur = (rng.next() % (max_start as u64 + 1)) as i32;
+        let mut v = Vec::with_capacity(n);
+        for i in 0..n {
+            v.push(cur as u16);
+            if i + 1 < n {
+                let remaining = (n - i - 1) as i32;
+                let room = maxv - 1 - cur - (remaining - 1) * step_min;
+                let extra = if room > step_min {
+                    (rng.next() % (room - step_min + 1) as u64) as i32
+                } else {
+                    0
+                };
+                cur += step_min + extra;
+            }
+        }
+        v
+    } else {
+        (0..n).map(|_| (rng.next() % maxv as u64) as u16).collect()
+    }
+}
+
+/// Build a full `[u16; 24]` palette_colors array (`[Y..8, U..8, V..8]`) from
+/// independently-generated per-plane colours, zero-padding beyond each plane's count
+/// (matching what [`read_mb_modes_kf_fc`] always produces, so whole-array `assert_eq!`
+/// is valid without slicing per plane).
+fn pack_palette_colors(y: &[u16], u: &[u16], v: &[u16]) -> [u16; 24] {
+    let mut out = [0u16; 24];
+    out[..y.len()].copy_from_slice(y);
+    out[8..8 + u.len()].copy_from_slice(u);
+    out[16..16 + v.len()].copy_from_slice(v);
+    out
+}
+
+fn gen_palette_nbr(rng: &mut Rng, bit_depth: i32) -> aom_entropy::partition::PaletteNbrKf {
+    use aom_entropy::partition::PaletteNbrKf;
+    let n_y = if rng.next() & 1 == 1 {
+        0
+    } else {
+        2 + (rng.next() % 7) as i32
+    };
+    let n_uv = if rng.next() & 1 == 1 {
+        0
+    } else {
+        2 + (rng.next() % 7) as i32
+    };
+    let y = gen_palette_colors(rng, n_y as usize, bit_depth, true, 1);
+    let u = gen_palette_colors(rng, n_uv as usize, bit_depth, true, 0);
+    let v = gen_palette_colors(rng, n_uv as usize, bit_depth, false, 0);
+    PaletteNbrKf {
+        size: [n_y, n_uv],
+        colors: pack_palette_colors(&y, &u, &v),
+    }
+}
+
+#[test]
+fn mb_modes_kf_fc_palette_roundtrips() {
+    use aom_entropy::dec::OdEcDec;
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{
+        read_mb_modes_kf_fc, write_mb_modes_kf_fc, KfBlockState, MbModeInfoKf, MiNbrKf,
+    };
+    let mut rng = Rng(0x9a1e_77e5_c0de_0002u64);
+    let mut y_on = 0usize;
+    let mut uv_on = 0usize;
+    let mut cache_hits = 0usize;
+    for _ in 0..40_000 {
+        let bsize = [3usize, 6, 9, 12][(rng.next() % 4) as usize]; // 8x8/16x16/32x32/64x64
+        let bit_depth = [8i32, 10, 12][(rng.next() % 3) as usize];
+        let mono = false; // allow_palette needs num_planes > 1 to exercise UV
+        let chroma_ref = true;
+        let enable_fi = rng.next() & 1 == 1;
+        let mb_to_top_edge = if rng.next() & 1 == 1 {
+            0 // SB-row boundary: get_palette_cache drops the above cache
+        } else {
+            -((1 + (rng.next() % 8) as i32) * 32)
+        };
+        let st = KfBlockState {
+            segid_preskip: false,
+            seg_enabled: false,
+            update_map: false,
+            seg_pred: 0,
+            seg_cdf_num: 0,
+            last_active_segid: 0,
+            seg_skip_feature: [false; 8],
+            mi_row: 0,
+            mi_col: 0,
+            mib_size: 16,
+            sb_size: 12,
+            bsize,
+            coded_lossless: false,
+            allow_intrabc: false,
+            cdef_bits: 0,
+            dq_present: false,
+            dlf_present: false,
+            dlf_multi: false,
+            num_planes: 3,
+            dq_res: 1,
+            dlf_res: 1,
+            monochrome: mono,
+            is_chroma_ref: chroma_ref,
+            cfl_allowed: false,
+            allow_palette: true,
+            bit_depth,
+            filter_allowed: false,
+            mb_to_top_edge,
+            has_above: false,
+            has_left: false,
+            cdef_transmitted: [false; 4],
+            current_base_qindex: 100,
+            xd_delta_lf: [0; 4],
+            xd_delta_lf_from_base: 0,
+        };
+        let above = (rng.next() & 1 == 1).then(|| MiNbrKf {
+            y_mode: 0,
+            skip_txfm: (rng.next() & 1) as i32,
+        });
+        let left = (rng.next() & 1 == 1).then(|| MiNbrKf {
+            y_mode: 0,
+            skip_txfm: (rng.next() & 1) as i32,
+        });
+        let above_palette = above.map(|_| gen_palette_nbr(&mut rng, bit_depth));
+        let left_palette = left.map(|_| gen_palette_nbr(&mut rng, bit_depth));
+
+        // The Y mode drives mode_is_dc_pred (only DC_PRED blocks may carry Y
+        // palette); UV mode drives uv_dc_pred. Skew toward DC_PRED/UV_DC_PRED so
+        // the palette branches actually fire most iterations.
+        let y_mode = if !rng.next().is_multiple_of(4) {
+            0 // DC_PRED
+        } else {
+            (1 + rng.next() % 12) as i32
+        };
+        let uv_mode = if !rng.next().is_multiple_of(4) {
+            0 // UV_DC_PRED
+        } else {
+            (1 + rng.next() % 12) as i32 // never UV_CFL_PRED(13): cfl_allowed=false
+        };
+
+        // Choose n_y/n_uv; only meaningful when the respective DC gate holds
+        // (write_mb_modes_kf_fc simply won't code them otherwise — feed 0 then so
+        // the round-trip's expected value matches what actually gets coded).
+        let mode_is_dc = y_mode == 0;
+        let uv_dc = uv_mode == 0;
+        let mut n_y = if mode_is_dc && !rng.next().is_multiple_of(3) {
+            2 + (rng.next() % 7) as i32
+        } else {
+            0
+        };
+        if !mode_is_dc {
+            n_y = 0;
+        }
+        let mut n_uv = if uv_dc && !rng.next().is_multiple_of(3) {
+            2 + (rng.next() % 7) as i32
+        } else {
+            0
+        };
+        if !uv_dc {
+            n_uv = 0;
+        }
+
+        // Sometimes force an exact overlap with the above/left cache to exercise
+        // index_color_cache's true-positive path.
+        let mut y_colors = gen_palette_colors(&mut rng, n_y as usize, bit_depth, true, 1);
+        if n_y > 0 && rng.next().is_multiple_of(2) {
+            if let Some(nb) = above_palette.filter(|p| p.size[0] > 0) {
+                y_colors[0] = nb.colors[0];
+                y_colors.sort_unstable();
+                y_colors.dedup();
+                while (y_colors.len() as i32) < n_y {
+                    let last = *y_colors.last().unwrap();
+                    if last as i32 + 1 >= (1 << bit_depth) {
+                        break;
+                    }
+                    y_colors.push(last + 1);
+                }
+                n_y = y_colors.len() as i32;
+            }
+        }
+        let u_colors = gen_palette_colors(&mut rng, n_uv as usize, bit_depth, true, 0);
+        let v_colors = gen_palette_colors(&mut rng, n_uv as usize, bit_depth, false, 0);
+        if n_y > 0 && above_palette.is_some_and(|p| p.size[0] > 0 && p.colors[0] == y_colors[0]) {
+            cache_hits += 1;
+        }
+
+        let info = MbModeInfoKf {
+            segment_id: 0,
+            skip: 0,
+            cdef_strength: -1,
+            current_qindex: 100,
+            delta_lf: [0; 4],
+            delta_lf_from_base: 0,
+            use_intrabc: 0,
+            dv_row: 0,
+            dv_col: 0,
+            y_mode,
+            angle_delta_y: 0,
+            uv_mode,
+            cfl_alpha_idx: 0,
+            cfl_joint_sign: 0,
+            angle_delta_uv: 0,
+            palette_size: [n_y, n_uv],
+            palette_colors: pack_palette_colors(&y_colors, &u_colors, &v_colors),
+            use_filter_intra: 0,
+            filter_intra_mode: 0,
+        };
+        if n_y > 0 {
+            y_on += 1;
+        }
+        if n_uv > 0 {
+            uv_on += 1;
+        }
+
+        let f0 = mk_frame_ctx(&mut rng);
+        let mut fw = f0.clone();
+        let mut sw = st.clone();
+        let mut enc = OdEcEnc::new();
+        write_mb_modes_kf_fc(
+            &mut enc,
+            &info,
+            &mut fw,
+            &mut sw,
+            enable_fi,
+            above,
+            left,
+            above_palette,
+            left_palette,
+        );
+        let bytes = enc.done().to_vec();
+
+        // fr starts from the SAME pre-write CDF state fw had (not fw's post-write,
+        // now-adapted state) — matching a real encoder/decoder pair.
+        let mut fr = f0;
+        let mut sr = st.clone();
+        let mut dec = OdEcDec::new(&bytes);
+        let got = read_mb_modes_kf_fc(
+            &mut dec,
+            &mut fr,
+            &mut sr,
+            enable_fi,
+            above,
+            left,
+            above_palette,
+            left_palette,
+        );
+        assert_eq!(got.palette_size, info.palette_size, "palette_size mismatch");
+        assert_eq!(
+            got.palette_colors, info.palette_colors,
+            "palette_colors mismatch (n_y={n_y} n_uv={n_uv})"
+        );
+        assert_eq!(got.y_mode, info.y_mode, "y_mode mismatch");
+        assert_eq!(got.uv_mode, info.uv_mode, "uv_mode mismatch");
+        assert_eq!(
+            fw.palette_y_mode, fr.palette_y_mode,
+            "palette_y_mode cdf desync"
+        );
+        assert_eq!(
+            fw.palette_uv_mode, fr.palette_uv_mode,
+            "palette_uv_mode cdf desync"
+        );
+        assert_eq!(
+            fw.palette_y_size, fr.palette_y_size,
+            "palette_y_size cdf desync"
+        );
+        assert_eq!(
+            fw.palette_uv_size, fr.palette_uv_size,
+            "palette_uv_size cdf desync"
+        );
+    }
+    assert!(y_on > 1000, "Y palette branch under-exercised: {y_on}");
+    assert!(uv_on > 1000, "UV palette branch under-exercised: {uv_on}");
+    assert!(
+        cache_hits > 100,
+        "cache-hit path under-exercised: {cache_hits}"
+    );
 }
