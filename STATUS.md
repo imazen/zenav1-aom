@@ -569,6 +569,71 @@ Like-for-like vs C's production AVX2 (`aom_sad64x64_avx2`): Rust AVX2 SAD is
 NOT met. The gap is the kernel (libaom hand-tuned asm ~2x faster), not dispatch
 (~0.15x). The earlier 1.42x figure was vs C *scalar* and was replaced.
 
+## (0,0)-corner tx_search overflow — FIXED (2026-07-14, encoder track)
+
+**The panic blocking a true-(0,0)-corner single-SB frame is fixed.**
+`crates/aom-encode/src/tx_search.rs`'s `txfm_rd_in_plane_intra` (and the
+identical chroma walk in `crates/aom-encode/src/intra_uv_rd.rs`'s
+`txfm_rd_in_plane_uv`) computed `ref_best_rd - current_rd` as a checked `i64`
+subtraction feeding `search_tx_type_intra`'s early-termination budget. At the
+frame's TRUE (0,0) SB (no up/left neighbour, so the top-level intra mode
+search's first candidate has no reference RD yet: `ref_best_rd ==
+i64::MAX`), `current_rd` can go deeply negative from a genuine, independently-
+verified C behaviour: `aom_dist::block_error`'s lowbd path wraps its
+per-coefficient product at 32 bits (bit-exact to C's `int` arithmetic), and
+a no-neighbour corner prediction can produce a residual whose forward-DCT
+coefficient pushes that wrap into `dist`/`current_rd`. **Traced the real C**
+(`block_rd_txfm`, `av1/encoder/tx_search.c:3104`): it computes
+`args->best_rd - args->current_rd` as a RAW, UNGUARDED `int64_t` subtraction
+— no `ref_best_rd == INT64_MAX` special case at this call site (contrast
+`av1_txfm_search`'s `rd_thresh` derivation two hundred lines away, which
+DOES special-case it: `ref_best_rd == INT64_MAX ? INT64_MAX : ref_best_rd -
+mode_rd`). Real compiled aomenc (no UBSan/`-ftrapv` in the production build)
+performs this as a plain two's-complement wraparound. **Fix**: both sites now
+use `ref_best_rd.wrapping_sub(current_rd)` — NOT `saturating_sub` (which
+would compute a value C never produces). The wrapped value is not dead: at
+speed-0 allintra `adaptive_txb_search_level == 1`
+(`TxTypeSearchPolicy::speed0_allintra`), so `search_tx_type_intra`'s
+`(best_rd - (best_rd >> level)) > ref_best_rd` early-break reads it.
+
+**Empirically confirmed, not just theoretical.** A ~150-combination sweep
+(`allintra x chroma-ss(0,0)/(1,1) x qindex 0..256 step 7`, true (0,0) corner,
+`crates/aom-encode/tests/pack_tile_roundtrip.rs`'s `run_pack_roundtrip_case`)
+found the exact pre-fix panic at `allintra=true, ss=(1,1), qindex=98`:
+`thread ... panicked at crates/aom-encode/src/tx_search.rs:1118:49: attempt
+to subtract with overflow`. Reverting the fix reproduces it; restoring it
+passes. That combination is now a permanent 4th case in
+`pack_tile_roundtrips_true_corner`. A companion test,
+`pack_tile_roundtrips_through_the_read_side`, still covers the padded/interior
+scope unchanged (same 3 cases, `pad = SB_MI`, refactored into the shared
+`run_pack_roundtrip_case(ss_x, ss_y, allintra, qindex, pad)` helper so both
+share setup). `partition_pick_diff.rs` and `uniform_txfm_yrd_diff.rs` still
+green (unaffected — neither's `ref_best_rd` ever wraps in the cases they
+sweep). Commit: (this session).
+
+### Known Bugs (tracked, NOT fixed this session — out of scope for the overflow fix)
+
+- **qindex=0 partition-population mismatch** (`crates/aom-encode/tests/
+  pack_tile_roundtrip.rs:852`, found by the same true-corner sweep above,
+  `pad=0`): at `qindex=0` (both `allintra=true,ss=(0,0)` and
+  `allintra=false,ss=(0,0)`), the DECODED partition-type population
+  disagrees with the SEARCH's own winning trees (`assert_eq!` failure,
+  e.g. `left: (34,22,8,5,1) right: (42,2,6,10,10)` for
+  `(leaves,none,split,horz,vert)`). Not an overflow — a genuine read/write
+  divergence specific to the finest quantizer. Root cause NOT investigated
+  (out of scope here); repro: `run_pack_roundtrip_case(0, 0, true, 0, 0)`.
+- **qindex=0 "skip always 0" assumption violated** (`pack_tile_roundtrip.rs:
+  287`, same sweep, `allintra=false, ss=(1,1), qindex=0`): the read-side
+  harness asserts `info.skip == 0` (documented KEY-intra-envelope
+  assumption — matches `block_rd_txfm`'s C comment "Signal non-skip_txfm for
+  Intra blocks", i.e. the currently-ported scope always signals the TXB
+  loop as non-skip) but decodes `info.skip == 1` at this qindex. Unconfirmed
+  whether this is a genuine block-level skip/no-skip decision
+  (`av1_txfm_search`'s `choose_skip_txfm`, tx_search.c:3862-3869) reachable
+  at qindex=0 that the current port doesn't yet wire, or a decode-side
+  symptom of the same root cause as the partition-population bug above.
+  Repro: `run_pack_roundtrip_case(1, 1, false, 0, 0)`.
+
 ## Gate posture (honest)
 
 Real, verified, ratcheting progress across BOTH tracks — but still a fraction of

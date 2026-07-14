@@ -1080,7 +1080,32 @@ pub fn txfm_rd_in_plane_intra(
                 coeff_costs: env.coeff_costs,
                 tx_type_costs: env.tx_type_costs,
             };
-            let win = search_tx_type_intra(&inp, pol, ref_best_rd - current_rd)
+            // `block_rd_txfm` (tx_search.c:3104) computes
+            // `args->best_rd - args->current_rd` as a RAW int64_t subtraction
+            // with NO `ref_best_rd == INT64_MAX` special case (unlike e.g.
+            // `av1_txfm_search`'s `rd_thresh` derivation, tx_search.c:3816-3817,
+            // which explicitly guards it). At the true (0,0) frame corner
+            // `ref_best_rd` is genuinely `INT64_MAX` (no reference RD yet) and
+            // `current_rd` can go deeply negative -- a real, already-verified
+            // C behaviour: `block_error`'s lowbd path wraps its per-coefficient
+            // product at 32 bits (matching C's `int`, see aom-dist::block_error),
+            // and a no-neighbour corner prediction (DC fallback, no top/left)
+            // can produce a spatially-uniform residual whose DC coefficient is
+            // far larger than the locally-predicted interior case ever sees,
+            // pushing that wrap into `dist`/`current_rd`. C's compiled binary
+            // (no UBSan/ftrapv in the production build) performs this same
+            // subtraction as a plain two's-complement wraparound, and the
+            // wrapped value is NOT dead: `adaptive_txb_search_level` is 1 at
+            // speed-0 allintra (`TxTypeSearchPolicy::speed0_allintra`), so
+            // `search_tx_type_intra`'s early-termination compare
+            // (`(best_rd - (best_rd >> level)) > ref_best_rd`) reads it. So we
+            // replicate C's exact wraparound with `wrapping_sub` -- NOT a
+            // `saturating_sub`, which would compute a different (non-C) value.
+            // Empirically confirmed reachable (not just theoretical): the pre-fix
+            // `-` panicked "attempt to subtract with overflow" at this exact site
+            // for allintra/4:2:0/qindex=98 at the true (0,0) corner -- see
+            // `pack_tile_roundtrips_true_corner`'s `allintra=true` case.
+            let win = search_tx_type_intra(&inp, pol, ref_best_rd.wrapping_sub(current_rd))
                 .expect("search_tx_type always yields a winner");
 
             // recon_intra: reconstruct the winner on top of the prediction so

@@ -502,22 +502,22 @@ fn read_plane_coeffs_uv(
     }
 }
 
-#[test]
-fn pack_tile_roundtrips_through_the_read_side() {
-    for &(ss_x, ss_y, allintra, qindex) in &[
-        (1usize, 1usize, true, 96usize),
-        (0, 0, false, 160),
-        (1, 1, false, 40),
-    ] {
+/// The shared roundtrip body, parametrized on `pad` (in mi units): the
+/// number of SB rows/cols of synthetic "previously coded" border content
+/// placed before the `n_sb x n_sb` region that is actually searched+packed.
+/// `pad = SB_MI` (one SB) mirrors `partition_pick_diff.rs`'s own (16, 16)
+/// offset -- every tested SB then has up/left neighbours available. `pad =
+/// 0` starts the searched region at the frame's TRUE (0, 0) corner: the
+/// (0,0) SB has neither neighbour, the (0,1)/(1,0) SBs have exactly one, and
+/// (1,1) has both -- covering the full up/left-availability matrix in one
+/// pass. See [`pack_tile_roundtrips_true_corner`] for the corner regression
+/// (the (0,0)-corner tx_search overflow this exercises without the panic
+/// workaround).
+fn run_pack_roundtrip_case(ss_x: usize, ss_y: usize, allintra: bool, qindex: usize, pad: i32) {
+    {
         let mut rng = Rng(0xC0FF_EE00_u64.wrapping_add(qindex as u64));
         let bd: u8 = 8;
         let n_sb = 2i32;
-        // rd_pick_partition_real's stated scope is "interior SBs" -- pad the
-        // tile with one SB of synthetic "previously coded" border content so
-        // every tested SB has up/left neighbours available (mirrors
-        // partition_pick_diff.rs's own (mi_row0, mi_col0) = (16, 16) offset
-        // pattern rather than starting at the frame's true (0, 0) corner).
-        let pad = SB_MI;
         let mi_rows = pad + n_sb * SB_MI;
         let mi_cols = pad + n_sb * SB_MI;
         let h = (mi_rows * 4) as usize;
@@ -883,6 +883,58 @@ fn pack_tile_roundtrips_through_the_read_side() {
         );
         assert_eq!(kf_write.kf_y, kf_read.kf_y, "kf_y CDFs must match");
         assert_eq!(kf_write.tx_size, kf_read.tx_size, "tx_size CDFs must match");
+    }
+}
+
+#[test]
+fn pack_tile_roundtrips_through_the_read_side() {
+    for &(ss_x, ss_y, allintra, qindex) in &[
+        (1usize, 1usize, true, 96usize),
+        (0, 0, false, 160),
+        (1, 1, false, 40),
+    ] {
+        run_pack_roundtrip_case(ss_x, ss_y, allintra, qindex, SB_MI);
+    }
+}
+
+/// The (0,0)-corner regression for the `tx_search.rs` / `intra_uv_rd.rs`
+/// `ref_best_rd.wrapping_sub(current_rd)` fix: searches+packs a 2x2 SB grid
+/// starting at the frame's TRUE (0, 0) mi origin (`pad = 0`, no synthetic
+/// "previously coded" border) -- the (0,0) SB genuinely has neither an
+/// up nor a left neighbour, which is exactly the `ref_best_rd == i64::MAX`
+/// (no reference RD yet) + no-neighbour-fallback-prediction combination that
+/// used to panic with "attempt to subtract with overflow" at
+/// `tx_search.rs:1083` (and identically at `intra_uv_rd.rs:503` for chroma)
+/// before that fix. The (0,1)/(1,0) SBs additionally cover the
+/// exactly-one-neighbour-available cases the 2x2 grid produces for free.
+///
+/// `(ss=(1,1), allintra=true, qindex=98)` is not an arbitrary addition: a
+/// ~150-combination sweep (`allintra x ss(0,0)/(1,1) x qindex 0..256 step 7`,
+/// `pad=0`) over `run_pack_roundtrip_case` found this EXACT combination hits
+/// the overflow pre-fix (confirmed by reverting `wrapping_sub` back to `-`
+/// and rerunning: panics "attempt to subtract with overflow" at
+/// `tx_search.rs:1118`; restoring the fix makes it pass). The other 3
+/// combinations exercise the corner's up/left-availability matrix broadly
+/// but do not themselves hit the overflow (the search's cost tables are
+/// still synthetic, so which content pushes a coefficient far enough to
+/// wrap `block_error`'s lowbd 32-bit product is not analytically obvious --
+/// this sweep found it empirically rather than by hand-deriving it).
+///
+/// The SAME sweep also surfaced two unrelated, pre-existing `qindex=0`
+/// failures (a partition-population mismatch at `pack_tile_roundtrip.rs`'s
+/// own assertion, and a "skip always 0" assumption violated at qindex=0) --
+/// both are OUT OF SCOPE for this fix (no overflow, no `ref_best_rd`
+/// involvement) and are tracked in STATUS.md's Known Bugs rather than fixed
+/// here.
+#[test]
+fn pack_tile_roundtrips_true_corner() {
+    for &(ss_x, ss_y, allintra, qindex) in &[
+        (1usize, 1usize, true, 96usize),
+        (0, 0, false, 160),
+        (1, 1, false, 40),
+        (1, 1, true, 98), // the confirmed pre-fix overflow trigger
+    ] {
+        run_pack_roundtrip_case(ss_x, ss_y, allintra, qindex, 0);
     }
 }
 

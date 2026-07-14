@@ -500,7 +500,12 @@ pub fn txfm_rd_in_plane_uv(
                 coeff_costs: env.coeff_costs,
                 tx_type_costs: env.tx_type_costs,
             };
-            let win = search_tx_type_intra(&inp, pol, ref_best_rd - current_rd)
+            // Same unguarded C subtraction as `txfm_rd_in_plane_intra`'s luma
+            // walk (tx_search.c `block_rd_txfm` is plane-generic) -- replicate
+            // C's raw int64_t wraparound with `wrapping_sub`, not
+            // `saturating_sub`. See the detailed comment at
+            // `tx_search::txfm_rd_in_plane_intra`'s analogous call site.
+            let win = search_tx_type_intra(&inp, pol, ref_best_rd.wrapping_sub(current_rd))
                 .expect("search_tx_type always yields a winner");
 
             // recon_intra: reconstruct the winner over the prediction.
