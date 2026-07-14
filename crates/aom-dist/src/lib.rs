@@ -199,7 +199,17 @@ pub fn highbd_variance(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w
             ((sum_long + (1 << 3)) >> 4) as i32,
         ),
     };
-    let var = sse.wrapping_sub(((sum as i64 * sum as i64) / (w * h) as i64) as u32);
+    // variance.c HIGHBD_VAR: the 8-bit variant computes
+    // `*sse - (uint32_t)(((int64_t)sum * sum) / (W * H))` (WRAPS when the
+    // rounded terms drive it negative), while the 10/12-bit variants compute
+    // an i64 var and CLAMP `(var >= 0) ? var : 0` — the bd normalisation can
+    // round sse below sum^2/n for near-flat differences.
+    let var = if bd == 8 {
+        sse.wrapping_sub(((i64::from(sum) * i64::from(sum)) / (w * h) as i64) as u32)
+    } else {
+        let v = i64::from(sse) - (i64::from(sum) * i64::from(sum)) / (w * h) as i64;
+        if v >= 0 { v as u32 } else { 0 }
+    };
     (var, sse)
 }
 

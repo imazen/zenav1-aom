@@ -92,3 +92,44 @@ fn hbd_sad_variance_byte_identical() {
         }
     }
 }
+
+/// The 10/12-bit variance variants CLAMP a rounding-negative variance to 0
+/// (variance.c HIGHBD_VAR `(var >= 0) ? var : 0`) while the 8-bit variant
+/// wraps — reachable only for near-flat `a - b` differences, where the
+/// bd normalisation rounds sse below sum^2/n. Fully-random planes never hit
+/// it (the original harness's coverage hole; caught 2026-07-14 by the
+/// intra_rd_variance_factor differential, which feeds near-flat recon blocks
+/// through the 4x4 variance kernel).
+#[test]
+fn hbd_variance_near_flat_clamp() {
+    let mut rng = Rng(0x_f1a7_c1a5_5e0f_f5e7);
+    let mut clamped_hits = 0usize;
+    for &bd in &[8u8, 10, 12] {
+        let mask = ((1u32 << bd) - 1) as u16;
+        for (idx, &(w, h)) in SIZES.iter().enumerate() {
+            let a_stride = w + 8;
+            let b_stride = w + 8;
+            for it in 0..400 {
+                // b = a + small constant + tiny noise: variance ~ 0, sum large.
+                let a = plane(&mut rng, a_stride, h + 2, mask);
+                let base = (rng.next() % 48) as u16;
+                let mut b = vec![0u16; b_stride * (h + 2)];
+                for (dst, &sa) in b.iter_mut().zip(a.iter()) {
+                    let noise = (rng.next() % 3) as u16;
+                    *dst = (sa + base + noise).min(mask);
+                }
+                let (gv, gs) = highbd_variance(&a, a_stride, &b, b_stride, w, h, bd);
+                let (wv, ws) = c::ref_hbd_variance(idx, bd, &a, a_stride, &b, b_stride);
+                assert_eq!(
+                    (gv, gs),
+                    (wv, ws),
+                    "hbd_variance near-flat {w}x{h} bd={bd} it={it} base={base}",
+                );
+                if bd > 8 && gv == 0 && gs != 0 {
+                    clamped_hits += 1;
+                }
+            }
+        }
+    }
+    assert!(clamped_hits > 200, "clamp branch unexercised: {clamped_hits}");
+}
