@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# During rapid multi-agent pushes, only keep the newest run per ref alive.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned libaom oracle commit (see reference/BUILD_CONFIG.md). Bump the cache
+  # key salt (-vN) when the pin or build config changes.
+  LIBAOM_SHA: 03087864cf4bea6abb0d28f95cf7843511413d8f
+
+jobs:
+  test-linux:
+    name: linux differential (x86-64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install C-oracle build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm cmake ninja-build
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Every crate links the C libaom oracle via aom-sys-ref, so the whole
+      # workspace needs it built. Cache it keyed on the pinned commit — after
+      # the first run reference/build.sh no-ops and this restores in seconds.
+      - name: Cache libaom reference oracle
+        uses: actions/cache@v6
+        with:
+          path: reference/libaom
+          key: libaom-${{ runner.os }}-${{ env.LIBAOM_SHA }}-v1
+
+      - name: Build C libaom reference oracle
+        run: bash reference/build.sh
+
+      - name: Test workspace (differential vs C oracle)
+        run: cargo test --workspace --no-fail-fast
+
+# TODO (next CI chunk): the mandated platform matrix — windows-11-arm,
+# macos-15-intel, and i686-unknown-linux-gnu (via cross). Each is gated on
+# building the libaom oracle for that target (32-bit nasm/cmake for i686,
+# MSVC + AV1 assembly for windows-arm), which is a dedicated sub-project since
+# all 13 crates depend on aom-sys-ref. This linux job is the first slice.
