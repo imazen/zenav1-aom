@@ -25,15 +25,15 @@
 //! - plane 0 (luma), KEY-frame Y mode rate (`y_mode_costs` via the above/left
 //!   `intra_mode_context` pair), `palette_size[0] == 0`.
 
-use crate::mode_costs::{intra_mode_info_cost_y, IntraModeCosts};
+use crate::mode_costs::{IntraModeCosts, intra_mode_info_cost_y};
 use crate::{
-    dist_block_tx_domain, rd, xform_quant_optimize, BlockContext, OptimizeInputs, QuantKind,
-    QuantParams,
+    BlockContext, OptimizeInputs, QuantKind, QuantParams, dist_block_tx_domain, rd,
+    xform_quant_optimize,
 };
 use aom_dist::highbd_subtract_block;
 use aom_entropy::partition::get_y_mode_ctx;
 use aom_intra::predict_intra_high;
-use aom_txb::{cost_coeffs_txb, get_tx_type_cost, CoeffCostTables, TxTypeCosts};
+use aom_txb::{CoeffCostTables, TxTypeCosts, cost_coeffs_txb, get_tx_type_cost};
 
 /// `ANGLE_STEP` (enums.h): degrees per signaled angle-delta step.
 pub const ANGLE_STEP: i32 = 3;
@@ -126,8 +126,16 @@ pub fn intra_mode_rd_eval(
 ) -> IntraModeRd {
     let w = crate::TX_W[env.tx_size];
     let h = crate::TX_H[env.tx_size];
-    assert_eq!(crate::BLK_W[env.bsize], w, "bsize/tx_size width mismatch (single-txb scope)");
-    assert_eq!(crate::BLK_H[env.bsize], h, "bsize/tx_size height mismatch (single-txb scope)");
+    assert_eq!(
+        crate::BLK_W[env.bsize],
+        w,
+        "bsize/tx_size width mismatch (single-txb scope)"
+    );
+    assert_eq!(
+        crate::BLK_H[env.bsize],
+        h,
+        "bsize/tx_size height mismatch (single-txb scope)"
+    );
 
     // Predict into a tight w-stride buffer (av1_predict_intra_block).
     let mut pred = vec![0u16; w * h];
@@ -220,7 +228,12 @@ pub fn intra_mode_rd_eval(
     let (dist, _sse) = dist_block_tx_domain(&r.coeff, &r.dqcoeff, env.tx_size, env.bd);
     let rd = rd::rdcost(rates.rdmult, rate, dist);
 
-    IntraModeRd { rate, dist, rd, eob: r.eob }
+    IntraModeRd {
+        rate,
+        dist,
+        rd,
+        eob: r.eob,
+    }
 }
 
 /// Evaluate every candidate and return `(argmin_index, per-candidate evals)`.
@@ -308,8 +321,9 @@ pub fn is_diagonal_mode(mode: usize) -> bool {
 /// `max_txsize_lookup[BLOCK_SIZES_ALL]` (common_data.h): largest SQUARE
 /// tx size for a block size (TX_4X4=0 .. TX_64X64=4) — the
 /// `intra_y_mode_mask` index.
-pub const MAX_TXSIZE_LOOKUP: [usize; 22] =
-    [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 4, 0, 0, 1, 1, 2, 2];
+pub const MAX_TXSIZE_LOOKUP: [usize; 22] = [
+    0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 4, 0, 0, 1, 1, 2, 2,
+];
 
 /// The gating inputs of the `av1_rd_pick_intra_sby_mode` candidate loop —
 /// `IntraModeCfg` tool flags (all default `true` on the aomenc CLI), the
@@ -525,8 +539,7 @@ pub fn prune_intra_y_mode(
     {
         return true;
     }
-    if this_model_rd != i64::MAX && (this_model_rd as f64) > THRESH_BEST * (*best_model_rd as f64)
-    {
+    if this_model_rd != i64::MAX && (this_model_rd as f64) > THRESH_BEST * (*best_model_rd as f64) {
         return true;
     }
     if this_model_rd < *best_model_rd {
@@ -544,8 +557,12 @@ pub fn prune_intra_y_mode(
 pub const MI_SIZE: usize = 4;
 
 /// `mi_size_wide` / `mi_size_high` `[BLOCK_SIZES_ALL]` (common_data.h).
-const MI_W_ALL: [usize; 22] = [1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16];
-const MI_H_ALL: [usize; 22] = [1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4];
+const MI_W_ALL: [usize; 22] = [
+    1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16,
+];
+const MI_H_ALL: [usize; 22] = [
+    1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4,
+];
 
 /// `Block4x4VarInfo` (block.h): the per-4x4 source-variance cache — one entry
 /// per mi position in the superblock, initialized `var = -1` /
@@ -562,7 +579,10 @@ pub struct Block4x4VarInfo {
 impl Block4x4VarInfo {
     /// One initialized (invalid) entry.
     pub fn init() -> Self {
-        Block4x4VarInfo { var: -1, log_var: -1.0 }
+        Block4x4VarInfo {
+            var: -1,
+            log_var: -1.0,
+        }
     }
     /// A fresh per-superblock cache for `sb_size`.
     pub fn sb_cache(sb_size: usize) -> Vec<Block4x4VarInfo> {
@@ -646,10 +666,16 @@ pub fn intra_rd_variance_factor(
     // compute_avg_log_variance.
     let mi_row_in_sb = (p.mi_row as usize) & (MI_H_ALL[p.sb_size] - 1);
     let mi_col_in_sb = (p.mi_col as usize) & (MI_W_ALL[p.sb_size] - 1);
-    let right_overflow =
-        if p.mb_to_right_edge < 0 { ((-p.mb_to_right_edge) >> 3) as usize } else { 0 };
-    let bottom_overflow =
-        if p.mb_to_bottom_edge < 0 { ((-p.mb_to_bottom_edge) >> 3) as usize } else { 0 };
+    let right_overflow = if p.mb_to_right_edge < 0 {
+        ((-p.mb_to_right_edge) >> 3) as usize
+    } else {
+        0
+    };
+    let bottom_overflow = if p.mb_to_bottom_edge < 0 {
+        ((-p.mb_to_bottom_edge) >> 3) as usize
+    } else {
+        0
+    };
     let bw = MI_SIZE * MI_W_ALL[p.bsize] - right_overflow;
     let bh = MI_SIZE * MI_H_ALL[p.bsize] - bottom_overflow;
 
@@ -737,8 +763,8 @@ pub fn apply_variance_factor(rd: i64, factor: f64) -> i64 {
 
 use crate::mode_costs::{block_signals_txsize, tx_size_cost};
 use crate::tx_search::{
-    intra_model_rd_y, pick_uniform_tx_size_type_yrd_intra, TxTypeSearchPolicy, TxbWinner,
-    TxfmYrdEnv,
+    TxTypeSearchPolicy, TxbWinner, TxfmYrdEnv, intra_model_rd_y,
+    pick_uniform_tx_size_type_yrd_intra,
 };
 
 /// The configuration/state inputs of [`rd_pick_intra_sby_mode_y`] beyond the
@@ -877,17 +903,14 @@ pub fn rd_pick_intra_sby_mode_y(
     let mut best: Option<IntraSbyBest> = None;
     let mut best_model_rd = i64::MAX;
     let mut top_intra_model_rd = [i64::MAX; TOP_INTRA_MODEL_COUNT];
-    let mut intra_modes_rd_cost =
-        [[i64::MAX; SIZE_OF_ANGLE_DELTA_RD_COST_ARRAY]; INTRA_MODES];
+    let mut intra_modes_rd_cost = [[i64::MAX; SIZE_OF_ANGLE_DELTA_RD_COST_ARRAY]; INTRA_MODES];
 
     // The model tx size: AOMMIN(TX_32X32, max_txsize_lookup[bsize]).
     let model_tx_size = MAX_TXSIZE_LOOKUP[bsize].min(3);
 
     for mode_idx in 0..LUMA_MODE_COUNT {
-        let (mode, luma_delta_angle) = set_y_mode_and_delta_angle(
-            mode_idx,
-            cfg.gates.prune_luma_odd_delta_angles_in_intra,
-        );
+        let (mode, luma_delta_angle) =
+            set_y_mode_and_delta_angle(mode_idx, cfg.gates.prune_luma_odd_delta_angles_in_intra);
         // The C mutates mbmi BEFORE the gate chain (set_y_mode_and_delta_angle
         // writes mode/angle, then the gates `continue`) — so the post-loop
         // stale mbmi carries index 60's (D67, +3) values into the
@@ -997,8 +1020,7 @@ pub fn rd_pick_intra_sby_mode_y(
             this_rd = apply_variance_factor(this_rd, factor);
         }
 
-        intra_modes_rd_cost[mode][(luma_delta_angle + MAX_ANGLE_DELTA + 1) as usize] =
-            this_rd;
+        intra_modes_rd_cost[mode][(luma_delta_angle + MAX_ANGLE_DELTA + 1) as usize] = this_rd;
 
         // store_winner_mode_stats: hard no-op at speed 0 (MULTI_WINNER_MODE_OFF).
 
@@ -1043,7 +1065,10 @@ pub fn rd_pick_intra_sby_mode_y(
         }
     }
 
-    IntraSbyOutcome { best, intra_modes_rd_cost }
+    IntraSbyOutcome {
+        best,
+        intra_modes_rd_cost,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,16 +1083,19 @@ pub const FILTER_INTRA_MODES: usize = 5;
 /// `av1_derived_filter_intra_mode_used_flag[INTRA_MODES]`
 /// (intra_mode_search.c): the `prune_filter_intra_level == 1` per-mode gate —
 /// FILTER_DC always + the filter mode matching the best-so-far Y mode.
-pub const AV1_DERIVED_FILTER_INTRA_MODE_USED_FLAG: [u8; INTRA_MODES] =
-    [0x01, 0x03, 0x05, 0x01, 0x01, 0x01, 0x09, 0x01, 0x01, 0x01, 0x01, 0x01, 0x11];
+pub const AV1_DERIVED_FILTER_INTRA_MODE_USED_FLAG: [u8; INTRA_MODES] = [
+    0x01, 0x03, 0x05, 0x01, 0x01, 0x01, 0x09, 0x01, 0x01, 0x01, 0x01, 0x01, 0x11,
+];
 
 /// `av1_filter_intra_allowed_bsize` (reconintra.h): the sequence-level
 /// enable flag AND both block dims <= 32.
 pub fn filter_intra_allowed_bsize(enable_filter_intra_seq: bool, bsize: usize) -> bool {
-    const BLK_W: [usize; 22] =
-        [4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64];
-    const BLK_H: [usize; 22] =
-        [4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16];
+    const BLK_W: [usize; 22] = [
+        4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
+    ];
+    const BLK_H: [usize; 22] = [
+        4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16,
+    ];
     enable_filter_intra_seq && BLK_W[bsize] <= 32 && BLK_H[bsize] <= 32
 }
 
@@ -1151,8 +1179,7 @@ pub fn rd_pick_filter_intra_sby_y(
 
         let (above_ctx, left_ctx) = get_y_mode_ctx(cfg.above_mode, cfg.left_mode);
         debug_assert_eq!(
-            mode_cost_dc,
-            cfg.mode_costs.y_mode_costs[above_ctx][left_ctx][0],
+            mode_cost_dc, cfg.mode_costs.y_mode_costs[above_ctx][left_ctx][0],
             "mode_cost is bmode_costs[DC_PRED]",
         );
         let this_rate = choice.stats.rate

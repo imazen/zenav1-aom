@@ -33,7 +33,7 @@
 //! tiles) is NOT implemented -- the natural next lift once the envelope
 //! needs more than one tile.
 
-use aom_entropy::header::{write_frame_header_obu, write_tile_group_header, FrameHeaderObu};
+use aom_entropy::header::{FrameHeaderObu, write_frame_header_obu, write_tile_group_header};
 use aom_entropy::leb128::uleb_encode;
 use aom_entropy::obu::write_obu_header;
 use aom_entropy::wb::WriteBitBuffer;
@@ -85,7 +85,12 @@ pub fn assemble_obu_frame_single_tile(
     obu_extension: u8,
 ) -> Vec<u8> {
     let payload = assemble_frame_obu_payload_single_tile(frame_header, tiles_log2, tile_bytes);
-    let mut out = write_obu_header(OBU_FRAME, has_nonzero_operating_point_idc, true, obu_extension);
+    let mut out = write_obu_header(
+        OBU_FRAME,
+        has_nonzero_operating_point_idc,
+        true,
+        obu_extension,
+    );
     let size_bytes =
         uleb_encode(payload.len() as u64, 8).expect("OBU_FRAME payload size fits a leb128 varint");
     out.extend_from_slice(&size_bytes);

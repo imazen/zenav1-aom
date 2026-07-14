@@ -125,11 +125,19 @@ pub struct PartRdStats {
 impl PartRdStats {
     /// `av1_init_rd_stats` (rate/dist/rdcost slice).
     pub fn init() -> Self {
-        PartRdStats { rate: 0, dist: 0, rdcost: 0 }
+        PartRdStats {
+            rate: 0,
+            dist: 0,
+            rdcost: 0,
+        }
     }
     /// `av1_invalid_rd_stats`.
     pub fn invalid() -> Self {
-        PartRdStats { rate: i32::MAX, dist: i64::MAX, rdcost: i64::MAX }
+        PartRdStats {
+            rate: i32::MAX,
+            dist: i64::MAX,
+            rdcost: i64::MAX,
+        }
     }
     pub fn is_invalid(&self) -> bool {
         self.rate == i32::MAX
@@ -168,13 +176,18 @@ pub fn rd_stats_subtraction(mult: i32, left: &PartRdStats, right: &PartRdStats) 
     } else {
         let rate = left.rate - right.rate;
         let dist = left.dist - right.dist;
-        PartRdStats { rate, dist, rdcost: calculate_rd_cost(mult, rate, dist) }
+        PartRdStats {
+            rate,
+            dist,
+            rdcost: calculate_rd_cost(mult, rate, dist),
+        }
     }
 }
 
 /// `mi_size_wide[BLOCK_SIZES_ALL]` for the square sizes used here.
-const MI_SIZE_WIDE_SQ: [usize; 22] =
-    [1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16];
+const MI_SIZE_WIDE_SQ: [usize; 22] = [
+    1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16,
+];
 
 /// `get_partition_subsize(bsize, PARTITION_SPLIT)` for square bsizes
 /// (BLOCK_8X8=3 -> 4X4=0, 16X16=6 -> 8X8=3, 32X32=9 -> 6, 64X64=12 -> 9,
@@ -281,7 +294,11 @@ pub fn rd_pick_partition_none_split(
     if partition_none_allowed {
         let mut pt_cost = 0i32;
         if bsize_at_least_8x8 {
-            pt_cost = if partition_cost[0] < i32::MAX { partition_cost[0] } else { 0 };
+            pt_cost = if partition_cost[0] < i32::MAX {
+                partition_cost[0]
+            } else {
+                0
+            };
         }
         // best_remain = best_rdc - {rate: pt_cost} (set_none_partition_params).
         let mut partition_rdcost = PartRdStats::init();

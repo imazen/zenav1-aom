@@ -128,13 +128,25 @@ pub fn fill_intra_mode_costs(
     intrabc_cdf: &[u16],
     enable_filter_intra: bool,
 ) {
-    assert_eq!(kf_y_cdf.len(), KF_MODE_CONTEXTS * KF_MODE_CONTEXTS * (INTRA_MODES + 1));
+    assert_eq!(
+        kf_y_cdf.len(),
+        KF_MODE_CONTEXTS * KF_MODE_CONTEXTS * (INTRA_MODES + 1)
+    );
     assert_eq!(y_mode_cdf.len(), BLOCK_SIZE_GROUPS * (INTRA_MODES + 1));
-    assert_eq!(uv_mode_cdf.len(), CFL_ALLOWED_TYPES * INTRA_MODES * (UV_INTRA_MODES + 1));
+    assert_eq!(
+        uv_mode_cdf.len(),
+        CFL_ALLOWED_TYPES * INTRA_MODES * (UV_INTRA_MODES + 1)
+    );
     assert_eq!(filter_intra_mode_cdf.len(), FILTER_INTRA_MODES + 1);
     assert_eq!(filter_intra_cdfs.len(), BLOCK_SIZES_ALL * 3);
-    assert_eq!(palette_y_mode_cdf.len(), PALETTE_BSIZE_CTXS * PALETTE_Y_MODE_CONTEXTS * 3);
-    assert_eq!(angle_delta_cdf.len(), DIRECTIONAL_MODES * (2 * MAX_ANGLE_DELTA + 2));
+    assert_eq!(
+        palette_y_mode_cdf.len(),
+        PALETTE_BSIZE_CTXS * PALETTE_Y_MODE_CONTEXTS * 3
+    );
+    assert_eq!(
+        angle_delta_cdf.len(),
+        DIRECTIONAL_MODES * (2 * MAX_ANGLE_DELTA + 2)
+    );
     assert_eq!(intrabc_cdf.len(), 3);
 
     for i in 0..KF_MODE_CONTEXTS {
@@ -167,7 +179,11 @@ pub fn fill_intra_mode_costs(
         }
     }
 
-    cost_tokens_from_cdf(&mut costs.filter_intra_mode_cost, filter_intra_mode_cdf, None);
+    cost_tokens_from_cdf(
+        &mut costs.filter_intra_mode_cost,
+        filter_intra_mode_cdf,
+        None,
+    );
     for i in 0..BLOCK_SIZES_ALL {
         if filter_intra_allowed_bsize(enable_filter_intra, i) {
             cost_tokens_from_cdf(
@@ -312,7 +328,10 @@ impl CflCosts {
 /// `[CFL_ALPHA_CONTEXTS][CFL_ALPHABET_SIZE + 1]`.
 pub fn fill_cfl_costs(out: &mut CflCosts, cfl_sign_cdf: &[u16], cfl_alpha_cdf: &[u16]) {
     assert_eq!(cfl_sign_cdf.len(), CFL_JOINT_SIGNS + 1);
-    assert_eq!(cfl_alpha_cdf.len(), CFL_ALPHA_CONTEXTS * (CFL_ALPHABET_SIZE + 1));
+    assert_eq!(
+        cfl_alpha_cdf.len(),
+        CFL_ALPHA_CONTEXTS * (CFL_ALPHABET_SIZE + 1)
+    );
     let mut sign_cost = [0i32; CFL_JOINT_SIGNS];
     cost_tokens_from_cdf(&mut sign_cost, cfl_sign_cdf, None);
     #[allow(clippy::needless_range_loop)] // js drives the CFL_* context macros
@@ -368,8 +387,7 @@ pub fn intra_mode_info_cost_uv(
     let use_palette = 0usize; // scope: palette_size[1] == 0
     assert!(usize::from(uv_mode != UV_DC_PRED) + use_palette <= 1);
     if try_palette && uv_mode == UV_DC_PRED {
-        total_rate +=
-            costs.palette_uv_mode_cost[usize::from(y_palette_active)][use_palette];
+        total_rate += costs.palette_uv_mode_cost[usize::from(y_palette_active)][use_palette];
     }
     let intra_mode = aom_entropy::partition::get_uv_mode(uv_mode);
     if is_directional_mode(intra_mode) && use_angle_delta(bsize) {
@@ -431,11 +449,18 @@ pub const SKIP_CONTEXTS: usize = 3;
 /// narrower context leaves its higher-index cost entries at 0, which the
 /// caller never reads since `partition_cdf_length` gates the symbol range
 /// the same way on both the read and cost side).
-pub fn fill_partition_costs(out: &mut [[i32; EXT_PARTITION_TYPES]; PARTITION_CONTEXTS], partition_cdf: &[u16]) {
-    assert_eq!(partition_cdf.len(), PARTITION_CONTEXTS * (EXT_PARTITION_TYPES + 1));
+pub fn fill_partition_costs(
+    out: &mut [[i32; EXT_PARTITION_TYPES]; PARTITION_CONTEXTS],
+    partition_cdf: &[u16],
+) {
+    assert_eq!(
+        partition_cdf.len(),
+        PARTITION_CONTEXTS * (EXT_PARTITION_TYPES + 1)
+    );
     for (ctx, row) in out.iter_mut().enumerate() {
         *row = [0; EXT_PARTITION_TYPES];
-        let cdf_row = &partition_cdf[ctx * (EXT_PARTITION_TYPES + 1)..(ctx + 1) * (EXT_PARTITION_TYPES + 1)];
+        let cdf_row =
+            &partition_cdf[ctx * (EXT_PARTITION_TYPES + 1)..(ctx + 1) * (EXT_PARTITION_TYPES + 1)];
         aom_txb::cost_tokens_from_cdf(row, cdf_row, None);
     }
 }

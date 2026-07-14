@@ -264,14 +264,24 @@ pub fn prune_intra_mode_with_hog_y(
     th: f32,
     directional_mode_skip_mask: &mut [bool; 13],
 ) {
-    const BLK_W: [usize; 22] =
-        [4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64];
-    const BLK_H: [usize; 22] =
-        [4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16];
+    const BLK_W: [usize; 22] = [
+        4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
+    ];
+    const BLK_H: [usize; 22] = [
+        4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16,
+    ];
     let bh = BLK_H[bsize] as i32;
     let bw = BLK_W[bsize] as i32;
-    let rows = if mb_to_bottom_edge >= 0 { bh } else { (mb_to_bottom_edge >> 3) + bh } as usize;
-    let cols = if mb_to_right_edge >= 0 { bw } else { (mb_to_right_edge >> 3) + bw } as usize;
+    let rows = if mb_to_bottom_edge >= 0 {
+        bh
+    } else {
+        (mb_to_bottom_edge >> 3) + bh
+    } as usize;
+    let cols = if mb_to_right_edge >= 0 {
+        bw
+    } else {
+        (mb_to_right_edge >> 3) + bw
+    } as usize;
 
     let mut hog = generate_hog(src, src_off, src_stride, rows, cols);
     // collect_hog_data: hog[b] *= (1 + ss_x) * (1 + ss_y) — luma ss 0/0.

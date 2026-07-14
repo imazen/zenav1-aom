@@ -75,10 +75,10 @@
 //! are ever read on the KEY-frame path (`av1_get_tx_type` Y reads the origin;
 //! intra UV never reads the luma map); non-origin cells are dead state.
 
-use crate::intra_uv_rd::{predict_uv_txb, CflDcCache, CflPredict, UvRdEnv, UV_CFL_PRED};
+use crate::intra_uv_rd::{CflDcCache, CflPredict, UV_CFL_PRED, UvRdEnv, predict_uv_txb};
 use crate::tx_search::{
-    trellis_rdmult_intra, trellis_rdmult_intra_y, uv_intra_tx_type, BLK_H_B, BLK_W_B,
-    MI_SIZE_HIGH_B, MI_SIZE_WIDE_B, TXSIZE_SQR_UP_MAP, TXS_H, TXS_W,
+    BLK_H_B, BLK_W_B, MI_SIZE_HIGH_B, MI_SIZE_WIDE_B, TXS_H, TXS_W, TXSIZE_SQR_UP_MAP,
+    trellis_rdmult_intra, trellis_rdmult_intra_y, uv_intra_tx_type,
 };
 use crate::{
     BlockContext, OptimizeInputs, QuantKind, QuantParams, xform_quant, xform_quant_optimize,
@@ -88,7 +88,7 @@ use aom_entropy::partition::{get_plane_block_size, intra_avail};
 use aom_intra::cfl::{CflCtx, cfl_store_tx};
 use aom_intra::predict_intra_high;
 use aom_transform::inv_txfm2d::av1_inv_txfm2d_add;
-use aom_txb::{get_txb_ctx, CoeffCostTables};
+use aom_txb::{CoeffCostTables, get_txb_ctx};
 
 /// `TRELLIS_OPT_TYPE` (encodemb.h:43-48). C-valued discriminants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
