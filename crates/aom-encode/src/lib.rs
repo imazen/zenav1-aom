@@ -13,6 +13,7 @@
 //! forward transform lands.
 #![forbid(unsafe_code)]
 
+pub mod mode_costs;
 pub mod rd;
 
 use aom_entropy::dec::OdEcDec;

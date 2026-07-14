@@ -3319,6 +3319,161 @@ pub fn ref_fill_tx_type_costs(intra_cdf: &[u16], inter_cdf: &[u16]) -> (Vec<i32>
     (out_intra, out_inter)
 }
 
+// ---- intra mode-info signaling cost oracles (rd_shim.c) ----------------------
+
+extern "C" {
+    fn shim_fill_intra_mode_costs(
+        kf_y_cdf: *const u16,
+        y_mode_cdf: *const u16,
+        uv_mode_cdf: *const u16,
+        filter_intra_mode_cdf: *const u16,
+        filter_intra_cdfs: *const u16,
+        palette_y_mode_cdf: *const u16,
+        angle_delta_cdf: *const u16,
+        intrabc_cdf: *const u16,
+        enable_filter_intra: i32,
+        out_y_mode: *mut i32,
+        out_mbmode: *mut i32,
+        out_uv: *mut i32,
+        out_fi_mode: *mut i32,
+        out_fi: *mut i32,
+        out_pal_y_mode: *mut i32,
+        out_angle: *mut i32,
+        out_intrabc: *mut i32,
+    );
+    fn shim_intra_mode_info_cost_y(
+        filter_intra_cost: *const i32,
+        filter_intra_mode_cost: *const i32,
+        angle_delta_cost: *const i32,
+        intrabc_cost: *const i32,
+        palette_y_mode_cost: *const i32,
+        mode_cost: i32,
+        mode: i32,
+        bsize: i32,
+        angle_delta_y: i32,
+        use_filter_intra: i32,
+        filter_intra_mode: i32,
+        use_intrabc: i32,
+        try_palette: i32,
+        palette_bsize_ctx: i32,
+        palette_mode_ctx: i32,
+        enable_filter_intra: i32,
+        allow_intrabc: i32,
+    ) -> i32;
+}
+
+/// The 8 intra mode-cost tables from [`ref_fill_intra_mode_costs`], flat, in
+/// the layouts documented in rd_shim.c.
+pub struct RefIntraModeCosts {
+    pub y_mode: Vec<i32>,     // [5][5][13]
+    pub mbmode: Vec<i32>,     // [4][13]
+    pub uv: Vec<i32>,         // [2][13][14]
+    pub fi_mode: Vec<i32>,    // [5]
+    pub fi: Vec<i32>,         // [22][2]
+    pub pal_y_mode: Vec<i32>, // [7][3][2]
+    pub angle: Vec<i32>,      // [8][7]
+    pub intrabc: Vec<i32>,    // [2]
+}
+
+/// Reference intra-mode slices of `av1_fill_mode_rates` (rd.c). CDF inputs are
+/// flat with `nsymbs+1`-padded rows (see rd_shim.c). Outputs zero-initialized
+/// (rows gated off — e.g. filter-intra-ineligible block sizes — stay 0).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_fill_intra_mode_costs(
+    kf_y_cdf: &[u16],
+    y_mode_cdf: &[u16],
+    uv_mode_cdf: &[u16],
+    filter_intra_mode_cdf: &[u16],
+    filter_intra_cdfs: &[u16],
+    palette_y_mode_cdf: &[u16],
+    angle_delta_cdf: &[u16],
+    intrabc_cdf: &[u16],
+    enable_filter_intra: bool,
+) -> RefIntraModeCosts {
+    assert_eq!(kf_y_cdf.len(), 5 * 5 * 14);
+    assert_eq!(y_mode_cdf.len(), 4 * 14);
+    assert_eq!(uv_mode_cdf.len(), 2 * 13 * 15);
+    assert_eq!(filter_intra_mode_cdf.len(), 6);
+    assert_eq!(filter_intra_cdfs.len(), 22 * 3);
+    assert_eq!(palette_y_mode_cdf.len(), 7 * 3 * 3);
+    assert_eq!(angle_delta_cdf.len(), 8 * 8);
+    assert_eq!(intrabc_cdf.len(), 3);
+    let mut r = RefIntraModeCosts {
+        y_mode: vec![0; 5 * 5 * 13],
+        mbmode: vec![0; 4 * 13],
+        uv: vec![0; 2 * 13 * 14],
+        fi_mode: vec![0; 5],
+        fi: vec![0; 22 * 2],
+        pal_y_mode: vec![0; 7 * 3 * 2],
+        angle: vec![0; 8 * 7],
+        intrabc: vec![0; 2],
+    };
+    unsafe {
+        shim_fill_intra_mode_costs(
+            kf_y_cdf.as_ptr(),
+            y_mode_cdf.as_ptr(),
+            uv_mode_cdf.as_ptr(),
+            filter_intra_mode_cdf.as_ptr(),
+            filter_intra_cdfs.as_ptr(),
+            palette_y_mode_cdf.as_ptr(),
+            angle_delta_cdf.as_ptr(),
+            intrabc_cdf.as_ptr(),
+            enable_filter_intra as i32,
+            r.y_mode.as_mut_ptr(),
+            r.mbmode.as_mut_ptr(),
+            r.uv.as_mut_ptr(),
+            r.fi_mode.as_mut_ptr(),
+            r.fi.as_mut_ptr(),
+            r.pal_y_mode.as_mut_ptr(),
+            r.angle.as_mut_ptr(),
+            r.intrabc.as_mut_ptr(),
+        );
+    }
+    r
+}
+
+/// Reference `intra_mode_info_cost_y` (intra_mode_search_utils.h), for the
+/// `palette_size[0] == 0` path. The C assert (exclusive mode flags) is LIVE:
+/// callers must pass `use_intrabc`/`use_filter_intra` only with `DC_PRED`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_intra_mode_info_cost_y(
+    costs: &RefIntraModeCosts,
+    mode_cost: i32,
+    mode: i32,
+    bsize: i32,
+    angle_delta_y: i32,
+    use_filter_intra: bool,
+    filter_intra_mode: i32,
+    use_intrabc: bool,
+    try_palette: bool,
+    palette_bsize_ctx: i32,
+    palette_mode_ctx: i32,
+    enable_filter_intra: bool,
+    allow_intrabc: bool,
+) -> i32 {
+    unsafe {
+        shim_intra_mode_info_cost_y(
+            costs.fi.as_ptr(),
+            costs.fi_mode.as_ptr(),
+            costs.angle.as_ptr(),
+            costs.intrabc.as_ptr(),
+            costs.pal_y_mode.as_ptr(),
+            mode_cost,
+            mode,
+            bsize,
+            angle_delta_y,
+            use_filter_intra as i32,
+            filter_intra_mode,
+            use_intrabc as i32,
+            try_palette as i32,
+            palette_bsize_ctx,
+            palette_mode_ctx,
+            enable_filter_intra as i32,
+            allow_intrabc as i32,
+        )
+    }
+}
+
 /// Reference `get_tx_type_cost` (txb_rdopt.c): the plane-0 tx_type signaling
 /// rate, looked up in the flat tables from [`ref_fill_tx_type_costs`].
 #[allow(clippy::too_many_arguments)]

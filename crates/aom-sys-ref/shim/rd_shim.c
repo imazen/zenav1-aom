@@ -8,11 +8,14 @@
  * (FRAME_UPDATE_TYPE / MODE are UENUM1BYTE = uint8_t) and expose the real macros
  * from the real header, so any misreading shows up as a value mismatch in the
  * differential harness. Pure integer/table/float math — no RTCD needed. */
+#include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "av1/common/blockd.h" /* av1_get_ext_tx_set_type, ext_tx_set_index,
                                   av1_num_ext_tx_set, fimode_to_intradir */
+#include "av1/common/reconintra.h" /* av1_filter_intra_allowed_bsize,
+                                      av1_is_directional_mode, av1_use_angle_delta */
 #include "av1/common/common_data.h" /* txsize_sqr_map */
 #include "av1/common/entropymode.h" /* av1_ext_tx_inv */
 #include "av1/common/quant_common.h"
@@ -203,6 +206,120 @@ void shim_fill_tx_type_costs(const uint16_t *intra_cdf,
       }
     }
   }
+}
+
+/* ---- intra mode-info signaling costs ---------------------------------------
+ * (1) shim_fill_intra_mode_costs: transcribes the intra-mode slices of
+ *     av1_fill_mode_rates (rd.c) over the REAL exported av1_cost_tokens_from_cdf
+ *     and the REAL av1_filter_intra_allowed_bsize (reconintra.h, driven by a
+ *     minimal heap AV1_COMMON+SequenceHeader carrying enable_filter_intra).
+ * (2) shim_intra_mode_info_cost_y: transcribes intra_mode_info_cost_y
+ *     (av1/encoder/intra_mode_search_utils.h, static inline) for the
+ *     palette_size[0]==0 path, over the REAL av1_is_directional_mode /
+ *     av1_use_angle_delta / av1_filter_intra_allowed_bsize gates; the
+ *     try_palette / palette ctx / allow_intrabc cm+xd derefs are scalars.
+ *     The live assert mirrors the C's exclusive-mode-flag assert. */
+static int sh_filter_intra_allowed_bsize(int enable_filter_intra, int bsize) {
+  AV1_COMMON *cm = (AV1_COMMON *)calloc(1, sizeof(AV1_COMMON));
+  SequenceHeader *seq = (SequenceHeader *)calloc(1, sizeof(SequenceHeader));
+  assert(cm && seq);
+  seq->enable_filter_intra = (uint8_t)enable_filter_intra;
+  cm->seq_params = seq;
+  const int r = av1_filter_intra_allowed_bsize(cm, (BLOCK_SIZE)bsize);
+  free(seq);
+  free(cm);
+  return r;
+}
+
+/* CDF inputs flat (rows are nsymbs-terminated inverse-CDFs, padded):
+ *   kf_y_cdf [5][5][14], y_mode_cdf [4][14], uv_mode_cdf [2][13][15],
+ *   filter_intra_mode_cdf [6], filter_intra_cdfs [22][3],
+ *   palette_y_mode_cdf [7][3][3], angle_delta_cdf [8][8], intrabc_cdf [3].
+ * Cost outputs flat, caller-zeroed:
+ *   y_mode_costs [5][5][13], mbmode [4][13], uv [2][13][14], fi_mode [5],
+ *   fi [22][2], pal_y_mode [7][3][2], angle [8][7], intrabc [2]. */
+void shim_fill_intra_mode_costs(
+    const uint16_t *kf_y_cdf, const uint16_t *y_mode_cdf,
+    const uint16_t *uv_mode_cdf, const uint16_t *filter_intra_mode_cdf,
+    const uint16_t *filter_intra_cdfs, const uint16_t *palette_y_mode_cdf,
+    const uint16_t *angle_delta_cdf, const uint16_t *intrabc_cdf,
+    int enable_filter_intra, int *out_y_mode, int *out_mbmode, int *out_uv,
+    int *out_fi_mode, int *out_fi, int *out_pal_y_mode, int *out_angle,
+    int *out_intrabc) {
+  int i, j;
+  for (i = 0; i < KF_MODE_CONTEXTS; ++i)
+    for (j = 0; j < KF_MODE_CONTEXTS; ++j)
+      av1_cost_tokens_from_cdf(
+          out_y_mode + (i * KF_MODE_CONTEXTS + j) * INTRA_MODES,
+          kf_y_cdf + (i * KF_MODE_CONTEXTS + j) * (INTRA_MODES + 1), NULL);
+
+  for (i = 0; i < BLOCK_SIZE_GROUPS; ++i)
+    av1_cost_tokens_from_cdf(out_mbmode + i * INTRA_MODES,
+                             y_mode_cdf + i * (INTRA_MODES + 1), NULL);
+  for (i = 0; i < CFL_ALLOWED_TYPES; ++i)
+    for (j = 0; j < INTRA_MODES; ++j)
+      av1_cost_tokens_from_cdf(
+          out_uv + (i * INTRA_MODES + j) * UV_INTRA_MODES,
+          uv_mode_cdf + (i * INTRA_MODES + j) * (UV_INTRA_MODES + 1), NULL);
+
+  av1_cost_tokens_from_cdf(out_fi_mode, filter_intra_mode_cdf, NULL);
+  for (i = 0; i < BLOCK_SIZES_ALL; ++i) {
+    if (sh_filter_intra_allowed_bsize(enable_filter_intra, i))
+      av1_cost_tokens_from_cdf(out_fi + i * 2, filter_intra_cdfs + i * 3,
+                               NULL);
+  }
+
+  for (i = 0; i < PALATTE_BSIZE_CTXS; ++i) {
+    for (j = 0; j < PALETTE_Y_MODE_CONTEXTS; ++j) {
+      av1_cost_tokens_from_cdf(
+          out_pal_y_mode + (i * PALETTE_Y_MODE_CONTEXTS + j) * 2,
+          palette_y_mode_cdf + (i * PALETTE_Y_MODE_CONTEXTS + j) * 3, NULL);
+    }
+  }
+
+  for (i = 0; i < DIRECTIONAL_MODES; ++i)
+    av1_cost_tokens_from_cdf(out_angle + i * (2 * MAX_ANGLE_DELTA + 1),
+                             angle_delta_cdf + i * (2 * MAX_ANGLE_DELTA + 2),
+                             NULL);
+  av1_cost_tokens_from_cdf(out_intrabc, intrabc_cdf, NULL);
+}
+
+int shim_intra_mode_info_cost_y(
+    const int *filter_intra_cost, const int *filter_intra_mode_cost,
+    const int *angle_delta_cost, const int *intrabc_cost,
+    const int *palette_y_mode_cost, int mode_cost, int mode, int bsize,
+    int angle_delta_y, int use_filter_intra, int filter_intra_mode,
+    int use_intrabc, int try_palette, int palette_bsize_ctx,
+    int palette_mode_ctx, int enable_filter_intra, int allow_intrabc) {
+  int total_rate = mode_cost;
+  const int use_palette = 0; /* scope: palette_size[0] == 0 */
+  /* Can only activate one mode. */
+  assert(((mode != DC_PRED) + use_palette + use_intrabc + use_filter_intra) <=
+         1);
+  if (try_palette && mode == DC_PRED) {
+    total_rate +=
+        palette_y_mode_cost[(palette_bsize_ctx * PALETTE_Y_MODE_CONTEXTS +
+                             palette_mode_ctx) *
+                                2 +
+                            use_palette];
+  }
+  /* av1_filter_intra_allowed(cm, mbmi) with palette_size[0]==0 */
+  if (mode == DC_PRED &&
+      sh_filter_intra_allowed_bsize(enable_filter_intra, bsize)) {
+    total_rate += filter_intra_cost[bsize * 2 + use_filter_intra];
+    if (use_filter_intra) {
+      total_rate += filter_intra_mode_cost[filter_intra_mode];
+    }
+  }
+  if (av1_is_directional_mode((PREDICTION_MODE)mode)) {
+    if (av1_use_angle_delta((BLOCK_SIZE)bsize)) {
+      total_rate += angle_delta_cost[(mode - V_PRED) *
+                                         (2 * MAX_ANGLE_DELTA + 1) +
+                                     MAX_ANGLE_DELTA + angle_delta_y];
+    }
+  }
+  if (allow_intrabc) total_rate += intrabc_cost[use_intrabc];
+  return total_rate;
 }
 
 int shim_get_tx_type_cost(const int *intra_costs, const int *inter_costs,
