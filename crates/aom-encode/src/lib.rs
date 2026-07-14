@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 pub mod encode_intra;
+pub mod encode_sb;
 pub mod hog;
 pub mod intra_rd;
 pub mod intra_uv_rd;
