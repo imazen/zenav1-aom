@@ -514,6 +514,54 @@ Envelope after this chunk: film grain, segmentation, palette/screen-content,
 SB128, multi-tile, superres, qm, lossless, intrabc, 4:2:2-chroma-deblock
 still rejected; restoration has NO residual constraint.
 
+## 128x128 superblocks applied — SB128 rejection DROPPED (2026-07-14, decoder track)
+
+**`use_128x128_superblock` is in the envelope** (d87168f driver, 122d68a
+oracle, 798ec25 gate). The gap was ISOLATED to the decode driver: the entropy
+layer (`aom-entropy` partition / `has_top_right` / `has_bottom_left` /
+`read_cdef` / `lr_corners_in_sb`) was ALREADY fully generic over `sb_size`
+(the `BLOCK_128X128` branches, `MAX_MIB_MASK=31`, `cdef_transmitted[4]`, the
+`col+2*row` 4-way index — all pre-existing and byte-identical to
+`reference/libaom`, cross-checked against the C source this chunk). Only
+`aom-decode` hardcoded the 64x64 constants (`SB_MI=16`, `BLOCK_64X64` root,
+`mib_size_log2=4`, the `16,16` corners-in-sb args, the OBU-level SB128
+rejection).
+
+- **Driver** (`aom-decode`): new `KfTileConfig::sb_size_128`. `TileKf::new`
+  derives the per-tile `mib_size` (16/32) + root bsize
+  (`BLOCK_64X64`/`BLOCK_128X128`) and threads them into
+  `KfBlockState.{mib_size,sb_size,bsize}`, the aligned recon dims,
+  `decode_tile_kf`'s SB row/col step + partition-tree root, the SB-root
+  LR-corners gate (`bsize == self.st.sb_size`), `lr_corners_in_sb`'s
+  `mi_size_wide/high` args, and both `intra_avail` sb_size args. `frame.rs`
+  reads `mib_size_log2 = 5` from the sequence header when set (was hardcoded
+  4) and populates `sb_size_128`; the OBU-level "128x128 superblocks"
+  rejection is dropped. The `left_e/left_p/left_t [T;32]` context arrays
+  needed no resize — already sized for the 128 case; the whole-array reset
+  per SB row makes the existing `& 31` indexing correct at either mib_size.
+- **Oracle** (`aom-sys-ref`, APPEND-ONLY on the shared file):
+  `shim_encode_av1_kf_sb128` + `ref_encode_av1_kf_sb128` — the real
+  `aom_codec_av1_cx` at `AV1E_SET_SUPERBLOCK_SIZE=AOM_SUPERBLOCK_SIZE_128X128`.
+  `shim_encode_av1_kf` refactored to a thin wrapper over a shared impl,
+  byte-identical behavior; the decode oracle is unchanged (SB size is a
+  stream fact the real decoder reads itself).
+
+**GATE: 160 real cpu-used=0 `--sb-size=128` KEY streams byte-identical vs the
+C decoder** (`sb128_streams_decode_byte_identical_to_c`), a SEPARATE gate
+alongside the 336-stream 64x64 main gate (which stays green — 64x64 streams
+parse unchanged, the tile_roundtrip synthetic 624-tile roundtrip too). 4 sizes
+(128x128 exact-SB, 192x160 + 256x224 multi-SB grids — 80 arms span >1 SB on an
+axis — 100x76 sub-SB clipped root) x 5 (bd,ss,mono) combos x 8 arms. **140 are
+`usage=2` (AOM_USAGE_ALL_INTRA)** — the zenavif/avifenc still-image primary
+path — + 20 GOOD. cq {2,6,20,36} lands all four qindex bands [20,20,20,100];
+141 code TX_MODE_SELECT. The SB128-specific geometry genuinely fires:
+CDEF 40/40 gated+applied (the `cdef_transmitted[4]` 4-way per-64-unit index)
+and LR 37/37 gated+applied (corners-in-sb at the 32-mi SB extent), every
+gated stream verified to change pixels vs the no-filter recompose. Envelope
+after this chunk: film grain, palette/screen-content, multi-tile, superres,
+qm, lossless, intrabc, 4:2:2-chroma-deblock still rejected; SB size (64/128)
+has NO residual constraint.
+
 ## Perf gate honest number
 
 Like-for-like vs C's production AVX2 (`aom_sad64x64_avx2`): Rust AVX2 SAD is

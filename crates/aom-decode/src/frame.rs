@@ -7,7 +7,11 @@
 //! ENVELOPE — the feature set [`decode_tile_kf`] models. Anything outside it
 //! is a hard [`Err`], never a mis-decode:
 //! - KEY frame, shown, not show-existing; `error_resilient` accepted.
-//! - 64x64 superblocks only (no `use_128x128_superblock`).
+//! - 64x64 AND 128x128 superblocks (`use_128x128_superblock`): the
+//!   sequence-header flag drives `mib_size_log2` (4 or 5), the partition-tree
+//!   root bsize (`BLOCK_64X64` / `BLOCK_128X128`), the CDEF
+//!   per-64x64-unit strength indexing, and the loop-restoration
+//!   corners-in-sb SB extent. Gated by `sb128_streams_decode_byte_identical_to_c`.
 //! - single tile (1x1), single tile group.
 //! - screen-content tools OFF (`allow_screen_content_tools` would put
 //!   palette/intrabc flags in the block layer).

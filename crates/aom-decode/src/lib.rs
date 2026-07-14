@@ -98,14 +98,22 @@
 //!   signalling gate reads the per-segment frame-level qindex. `SEG_LVL_SKIP`
 //!   forces the skip flag. Lossless SEGMENTS (`xd->lossless[i]`, forced
 //!   TX_4X4 + WHT) are out of scope and asserted away.
+//! - **Superblock size ([`KfTileConfig::sb_size_128`])**: BOTH 64x64 and
+//!   128x128 (`seq_params->use_128x128_superblock`). The flag sets the
+//!   per-tile `mib_size` (16 or 32 mi/side) and the partition-tree root
+//!   ([`BLOCK_64X64`] / [`BLOCK_128X128`]); the tile SB row/col walk steps
+//!   by it, the CDEF per-64x64-unit strength index goes 4-way within a 128
+//!   SB (`read_cdef`'s `cdef_transmitted[4]`), and the loop-restoration
+//!   corners-in-sb reader sees the 32-mi SB extent. (RU size and CDEF's own
+//!   64x64 filter-block granularity are independent of this flag.)
 //! - **Off / fixed in this cut**: palette, intra block copy,
-//!   quantization matrices (flat dequant), superblock size 64x64 (no
-//!   128x128), CDF update always on (`disable_cdf_update` unsupported — the
-//!   mode-symbol readers adapt unconditionally), and no in-tile loop
-//!   filters (this driver returns the PRE-FILTER reconstruction, like C's
-//!   tile decode; `frame.rs` applies deblocking frame-wide afterwards —
-//!   CDEF/restoration stay unapplied; CDEF *strengths* are entropy-decoded,
-//!   and delta-LF levels are carried as documented above).
+//!   quantization matrices (flat dequant), CDF update always on
+//!   (`disable_cdf_update` unsupported — the mode-symbol readers adapt
+//!   unconditionally), and no in-tile loop filters (this driver returns the
+//!   PRE-FILTER reconstruction, like C's tile decode; `frame.rs` applies
+//!   deblocking frame-wide afterwards — CDEF/restoration stay unapplied;
+//!   CDEF *strengths* are entropy-decoded, and delta-LF levels are carried
+//!   as documented above).
 //! - Frame dimensions are whole mode-info (4px) units; non-multiple-of-SB sizes
 //!   are supported (partition edge gathers + `max_block_wide/high` txb clipping
 //!   + `av1_set_entropy_contexts` edge zeroing).
