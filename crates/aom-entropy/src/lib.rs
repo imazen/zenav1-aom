@@ -7,6 +7,7 @@
 pub mod cdf;
 pub mod dec;
 pub mod default_cdfs;
+pub mod dv_ref;
 pub mod enc;
 pub mod header;
 pub mod leb128;

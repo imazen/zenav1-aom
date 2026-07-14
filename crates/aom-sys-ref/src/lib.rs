@@ -10618,3 +10618,212 @@ pub fn ref_encode_av1_kf_screen_content(
     out.truncate(n as usize);
     out
 }
+
+// dec_shim.c section "intrabc DV prediction facades" (append-only addition):
+// shim_find_dv_ref_mvs drives the REAL EXPORTED av1_find_mv_refs +
+// av1_find_best_ref_mvs (ref_frame=INTRA_FRAME) over a synthetic MI grid;
+// shim_find_ref_dv / shim_is_dv_valid facade the real `static inline`
+// av1_find_ref_dv / av1_is_dv_valid (mvref_common.h) — see
+// aom_entropy::dv_ref, which these are the oracles for.
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_find_dv_ref_mvs(
+        mi_row: i32,
+        mi_col: i32,
+        bsize: i32,
+        own_partition: i32,
+        up_available: i32,
+        left_available: i32,
+        tile_mi_row_start: i32,
+        tile_mi_row_end: i32,
+        tile_mi_col_start: i32,
+        tile_mi_col_end: i32,
+        frame_mi_rows: i32,
+        frame_mi_cols: i32,
+        mib_size: i32,
+        g_bsize: *const u8,
+        g_ref_frame0: *const i8,
+        g_ref_frame1: *const i8,
+        g_use_intrabc: *const u8,
+        g_mode: *const u8,
+        g_mv0_row: *const i16,
+        g_mv0_col: *const i16,
+        g_mv1_row: *const i16,
+        g_mv1_col: *const i16,
+        out_nearest_row: *mut i32,
+        out_nearest_col: *mut i32,
+        out_near_row: *mut i32,
+        out_near_col: *mut i32,
+    );
+    fn shim_find_ref_dv(
+        mi_row: i32,
+        mib_size: i32,
+        tile_mi_row_start: i32,
+        out_row: *mut i32,
+        out_col: *mut i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_is_dv_valid(
+        dv_row: i32,
+        dv_col: i32,
+        mi_row: i32,
+        mi_col: i32,
+        bsize: i32,
+        tile_mi_row_start: i32,
+        tile_mi_row_end: i32,
+        tile_mi_col_start: i32,
+        tile_mi_col_end: i32,
+        mib_size_log2: i32,
+        is_chroma_ref: i32,
+        num_planes: i32,
+        ss_x: i32,
+        ss_y: i32,
+    ) -> i32;
+}
+
+/// Window size for [`ref_find_dv_ref_mvs`]'s synthetic MI grid — MUST match
+/// `DV_GRID_DIM` in `dec_shim.c`. `mi_row`/`mi_col` and `bsize` must place the
+/// current block entirely within `[0, REF_DV_GRID_DIM)` on both axes with
+/// margin for the scan's reach (see `dv_ref_diff.rs`).
+pub const REF_DV_GRID_DIM: usize = 128;
+
+/// One synthetic neighbour cell for [`ref_find_dv_ref_mvs`]'s flat grid input.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RefDvNbr {
+    pub bsize: u8,
+    pub ref_frame0: i8,
+    pub ref_frame1: i8,
+    pub use_intrabc: bool,
+    pub mode: u8,
+    pub mv0_row: i16,
+    pub mv0_col: i16,
+    pub mv1_row: i16,
+    pub mv1_col: i16,
+}
+
+/// The REAL exported `av1_find_mv_refs(ref_frame=INTRA_FRAME)` +
+/// `av1_find_best_ref_mvs`, driven over a synthetic
+/// `REF_DV_GRID_DIM x REF_DV_GRID_DIM` MI grid (row-major, `grid[row *
+/// REF_DV_GRID_DIM + col]`) — see `aom_entropy::dv_ref::find_dv_ref_mvs`,
+/// which this is the oracle for. Returns `(nearest_row, nearest_col,
+/// near_row, near_col)` in 1/8-pel units.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_find_dv_ref_mvs(
+    mi_row: i32,
+    mi_col: i32,
+    bsize: usize,
+    own_partition: usize,
+    up_available: bool,
+    left_available: bool,
+    tile_mi_row_start: i32,
+    tile_mi_row_end: i32,
+    tile_mi_col_start: i32,
+    tile_mi_col_end: i32,
+    frame_mi_rows: i32,
+    frame_mi_cols: i32,
+    mib_size: i32,
+    grid: &[RefDvNbr],
+) -> (i32, i32, i32, i32) {
+    assert_eq!(grid.len(), REF_DV_GRID_DIM * REF_DV_GRID_DIM);
+    let n = grid.len();
+    let mut g_bsize = Vec::with_capacity(n);
+    let mut g_ref_frame0 = Vec::with_capacity(n);
+    let mut g_ref_frame1 = Vec::with_capacity(n);
+    let mut g_use_intrabc = Vec::with_capacity(n);
+    let mut g_mode = Vec::with_capacity(n);
+    let mut g_mv0_row = Vec::with_capacity(n);
+    let mut g_mv0_col = Vec::with_capacity(n);
+    let mut g_mv1_row = Vec::with_capacity(n);
+    let mut g_mv1_col = Vec::with_capacity(n);
+    for c in grid {
+        g_bsize.push(c.bsize);
+        g_ref_frame0.push(c.ref_frame0);
+        g_ref_frame1.push(c.ref_frame1);
+        g_use_intrabc.push(c.use_intrabc as u8);
+        g_mode.push(c.mode);
+        g_mv0_row.push(c.mv0_row);
+        g_mv0_col.push(c.mv0_col);
+        g_mv1_row.push(c.mv1_row);
+        g_mv1_col.push(c.mv1_col);
+    }
+    let (mut nr, mut nc, mut rr, mut rc) = (0i32, 0i32, 0i32, 0i32);
+    unsafe {
+        shim_find_dv_ref_mvs(
+            mi_row,
+            mi_col,
+            bsize as i32,
+            own_partition as i32,
+            up_available as i32,
+            left_available as i32,
+            tile_mi_row_start,
+            tile_mi_row_end,
+            tile_mi_col_start,
+            tile_mi_col_end,
+            frame_mi_rows,
+            frame_mi_cols,
+            mib_size,
+            g_bsize.as_ptr(),
+            g_ref_frame0.as_ptr(),
+            g_ref_frame1.as_ptr(),
+            g_use_intrabc.as_ptr(),
+            g_mode.as_ptr(),
+            g_mv0_row.as_ptr(),
+            g_mv0_col.as_ptr(),
+            g_mv1_row.as_ptr(),
+            g_mv1_col.as_ptr(),
+            &mut nr,
+            &mut nc,
+            &mut rr,
+            &mut rc,
+        );
+    }
+    (nr, nc, rr, rc)
+}
+
+/// The REAL `static inline` `av1_find_ref_dv` (`mvref_common.h`) — see
+/// `aom_entropy::dv_ref::find_ref_dv`, which this is the oracle for.
+pub fn ref_find_ref_dv(mi_row: i32, mib_size: i32, tile_mi_row_start: i32) -> (i32, i32) {
+    let (mut row, mut col) = (0i32, 0i32);
+    unsafe { shim_find_ref_dv(mi_row, mib_size, tile_mi_row_start, &mut row, &mut col) };
+    (row, col)
+}
+
+/// The REAL `static inline` `av1_is_dv_valid` (`mvref_common.h`) — see
+/// `aom_entropy::dv_ref::is_dv_valid`, which this is the oracle for.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_is_dv_valid(
+    dv_row: i32,
+    dv_col: i32,
+    mi_row: i32,
+    mi_col: i32,
+    bsize: usize,
+    tile_mi_row_start: i32,
+    tile_mi_row_end: i32,
+    tile_mi_col_start: i32,
+    tile_mi_col_end: i32,
+    mib_size_log2: i32,
+    is_chroma_ref: bool,
+    num_planes: i32,
+    ss_x: i32,
+    ss_y: i32,
+) -> bool {
+    let rc = unsafe {
+        shim_is_dv_valid(
+            dv_row,
+            dv_col,
+            mi_row,
+            mi_col,
+            bsize as i32,
+            tile_mi_row_start,
+            tile_mi_row_end,
+            tile_mi_col_start,
+            tile_mi_col_end,
+            mib_size_log2,
+            is_chroma_ref as i32,
+            num_planes,
+            ss_x,
+            ss_y,
+        )
+    };
+    rc != 0
+}

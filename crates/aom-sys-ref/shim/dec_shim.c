@@ -1759,3 +1759,173 @@ int shim_decode_palette_tokens(const uint8_t *data, size_t len, int plane, int b
   free(map_buf);
   return 0;
 }
+
+/* ===================== intrabc DV prediction facades ===========================
+ * Facades for av1_find_mv_refs + av1_find_best_ref_mvs (av1/common/mvref_common.c,
+ * BOTH real exported/non-static functions -- driven DIRECTLY, not transcribed) at
+ * ref_frame == INTRA_FRAME (the read_intrabc_info DV-predictor path,
+ * av1/decoder/decodemv.c), plus the real `static inline` av1_find_ref_dv /
+ * av1_is_dv_valid (av1/common/mvref_common.h). Rust's dv_ref.rs module is diffed
+ * against these three entry points. */
+#include "av1/common/mvref_common.h"
+
+/* Window size for the synthetic MI grid: mi rows/cols [0, DV_GRID_DIM). The Rust
+ * harness places the current block at a fixed (mi_row, mi_col) with enough margin
+ * on every side for the scan's maximum reach (~8 mi units up/left; up to
+ * BLOCK_128X128 = 32 mi units of the block's own footprint down/right) -- see
+ * dv_ref_diff.rs. */
+#define DV_GRID_DIM 128
+
+/* Facade for av1_find_mv_refs(ref_frame=INTRA_FRAME) + av1_find_best_ref_mvs:
+ * builds a real MB_MODE_INFO pool + MB_MODE_INFO* grid from flat per-cell arrays
+ * (row-major, DV_GRID_DIM-strided) and calls the REAL exported functions. Only
+ * the fields setup_ref_mv_list's INTRA_FRAME path reads are populated. */
+void shim_find_dv_ref_mvs(
+    int mi_row, int mi_col, int bsize, int own_partition, int up_available,
+    int left_available, int tile_mi_row_start, int tile_mi_row_end,
+    int tile_mi_col_start, int tile_mi_col_end, int frame_mi_rows, int frame_mi_cols,
+    int mib_size, const uint8_t *g_bsize, const int8_t *g_ref_frame0,
+    const int8_t *g_ref_frame1, const uint8_t *g_use_intrabc, const uint8_t *g_mode,
+    const int16_t *g_mv0_row, const int16_t *g_mv0_col, const int16_t *g_mv1_row,
+    const int16_t *g_mv1_col, int *out_nearest_row, int *out_nearest_col,
+    int *out_near_row, int *out_near_col) {
+  const size_t n = (size_t)DV_GRID_DIM * (size_t)DV_GRID_DIM;
+  MB_MODE_INFO *pool = (MB_MODE_INFO *)calloc(n, sizeof(MB_MODE_INFO));
+  MB_MODE_INFO **grid = (MB_MODE_INFO **)calloc(n, sizeof(MB_MODE_INFO *));
+  for (size_t i = 0; i < n; ++i) {
+    pool[i].bsize = (BLOCK_SIZE)g_bsize[i];
+    pool[i].ref_frame[0] = (MV_REFERENCE_FRAME)g_ref_frame0[i];
+    pool[i].ref_frame[1] = (MV_REFERENCE_FRAME)g_ref_frame1[i];
+    pool[i].use_intrabc = g_use_intrabc[i] ? 1 : 0;
+    pool[i].mode = (PREDICTION_MODE)g_mode[i];
+    pool[i].mv[0].as_mv.row = g_mv0_row[i];
+    pool[i].mv[0].as_mv.col = g_mv0_col[i];
+    pool[i].mv[1].as_mv.row = g_mv1_row[i];
+    pool[i].mv[1].as_mv.col = g_mv1_col[i];
+    grid[i] = &pool[i];
+  }
+  /* The current block's own cell (xd->mi[0]) carries its own bsize/partition,
+   * overriding whatever the flat neighbour arrays supplied there. */
+  size_t self_idx = (size_t)mi_row * DV_GRID_DIM + (size_t)mi_col;
+  pool[self_idx].bsize = (BLOCK_SIZE)bsize;
+  pool[self_idx].partition = (PARTITION_TYPE)own_partition;
+
+  AV1_COMMON cm;
+  MACROBLOCKD xd;
+  SequenceHeader sp;
+  memset(&cm, 0, sizeof(cm));
+  memset(&xd, 0, sizeof(xd));
+  memset(&sp, 0, sizeof(sp));
+  sp.sb_size = (mib_size >= 32) ? BLOCK_128X128 : BLOCK_64X64;
+  cm.seq_params = &sp;
+  cm.mi_params.mi_rows = frame_mi_rows;
+  cm.mi_params.mi_cols = frame_mi_cols;
+  cm.features.allow_ref_frame_mvs = 0;
+
+  xd.mi_row = mi_row;
+  xd.mi_col = mi_col;
+  xd.mi_stride = DV_GRID_DIM;
+  xd.mi = &grid[self_idx];
+  xd.width = mi_size_wide[bsize];
+  xd.height = mi_size_high[bsize];
+  xd.up_available = up_available;
+  xd.left_available = left_available;
+  xd.tile.mi_row_start = tile_mi_row_start;
+  xd.tile.mi_row_end = tile_mi_row_end;
+  xd.tile.mi_col_start = tile_mi_col_start;
+  xd.tile.mi_col_end = tile_mi_col_end;
+  /* set_mi_row_col (av1_common_int.h): the frame-edge distances clamp_mv_ref
+   * clamps ref_mv_stack candidates against. MI_SIZE=4 px/mi,
+   * GET_MV_SUBPEL(x)=x*8 (1/8-pel units). Missing this population previously
+   * left these at 0 (memset), which silently clamped every candidate to a
+   * tiny +-(bw_px*8+128)-ish window centered on zero instead of the real
+   * frame-relative window -- a facade bug, not a Rust port bug. */
+  xd.mb_to_top_edge = -(mi_row * 4 * 8);
+  xd.mb_to_bottom_edge = (frame_mi_rows - mi_size_high[bsize] - mi_row) * 4 * 8;
+  xd.mb_to_left_edge = -(mi_col * 4 * 8);
+  xd.mb_to_right_edge = (frame_mi_cols - mi_size_wide[bsize] - mi_col) * 4 * 8;
+  /* set_mi_row_col (av1_common_int.h): has_top_right (mvref_common.c) reads
+   * these two flags directly (not re-derived from width/height itself), so
+   * leaving them at their memset-0 default silently forces has_top_right's
+   * `if (!xd->is_last_vertical_rect) has_tr = 1;` / `... has_tr = 0;` arms to
+   * fire incorrectly whenever the real (derived) value would be true --
+   * another facade-population gap, not a Rust port bug. */
+  xd.is_last_vertical_rect = 0;
+  if (xd.width < xd.height) {
+    if (!((mi_col + xd.width) & (xd.height - 1))) xd.is_last_vertical_rect = 1;
+  }
+  xd.is_first_horizontal_rect = 0;
+  if (xd.width > xd.height) {
+    if (!(mi_row & (xd.width - 1))) xd.is_first_horizontal_rect = 1;
+  }
+
+  uint8_t ref_mv_count[MODE_CTX_REF_FRAMES];
+  CANDIDATE_MV ref_mv_stack[MODE_CTX_REF_FRAMES][MAX_REF_MV_STACK_SIZE];
+  uint16_t ref_mv_weight[MODE_CTX_REF_FRAMES][MAX_REF_MV_STACK_SIZE];
+  int_mv mv_ref_list[MODE_CTX_REF_FRAMES][MAX_MV_REF_CANDIDATES];
+  int_mv global_mvs[MODE_CTX_REF_FRAMES];
+  int16_t mode_context[MODE_CTX_REF_FRAMES];
+  memset(ref_mv_count, 0, sizeof(ref_mv_count));
+  memset(ref_mv_stack, 0, sizeof(ref_mv_stack));
+  memset(ref_mv_weight, 0, sizeof(ref_mv_weight));
+  memset(mv_ref_list, 0, sizeof(mv_ref_list));
+  memset(global_mvs, 0, sizeof(global_mvs));
+  memset(mode_context, 0, sizeof(mode_context));
+
+  av1_find_mv_refs(&cm, &xd, &pool[self_idx], INTRA_FRAME, ref_mv_count, ref_mv_stack,
+                   ref_mv_weight, mv_ref_list, global_mvs, mode_context);
+
+  int_mv nearest_mv, near_mv;
+  av1_find_best_ref_mvs(0, mv_ref_list[INTRA_FRAME], &nearest_mv, &near_mv, 0);
+
+  *out_nearest_row = nearest_mv.as_mv.row;
+  *out_nearest_col = nearest_mv.as_mv.col;
+  *out_near_row = near_mv.as_mv.row;
+  *out_near_col = near_mv.as_mv.col;
+
+  free(pool);
+  free(grid);
+}
+
+/* Facade for the real `static inline` av1_find_ref_dv (mvref_common.h): only
+ * `tile->mi_row_start` is read. */
+void shim_find_ref_dv(int mi_row, int mib_size, int tile_mi_row_start, int *out_row,
+                      int *out_col) {
+  TileInfo tile;
+  memset(&tile, 0, sizeof(tile));
+  tile.mi_row_start = tile_mi_row_start;
+  int_mv ref_dv;
+  memset(&ref_dv, 0, sizeof(ref_dv));
+  av1_find_ref_dv(&ref_dv, &tile, mib_size, mi_row);
+  *out_row = ref_dv.as_mv.row;
+  *out_col = ref_dv.as_mv.col;
+}
+
+/* Facade for the real `static inline` av1_is_dv_valid (mvref_common.h): a minimal
+ * AV1_COMMON/MACROBLOCKD carrying only the fields it reads (xd->tile,
+ * xd->is_chroma_ref, xd->plane[1].subsampling_{x,y}, cm->seq_params->monochrome via
+ * av1_num_planes). Returns 1/0. */
+int shim_is_dv_valid(int dv_row, int dv_col, int mi_row, int mi_col, int bsize,
+                     int tile_mi_row_start, int tile_mi_row_end, int tile_mi_col_start,
+                     int tile_mi_col_end, int mib_size_log2, int is_chroma_ref,
+                     int num_planes, int ss_x, int ss_y) {
+  AV1_COMMON cm;
+  MACROBLOCKD xd;
+  SequenceHeader sp;
+  memset(&cm, 0, sizeof(cm));
+  memset(&xd, 0, sizeof(xd));
+  memset(&sp, 0, sizeof(sp));
+  sp.monochrome = (num_planes <= 1);
+  cm.seq_params = &sp;
+  xd.tile.mi_row_start = tile_mi_row_start;
+  xd.tile.mi_row_end = tile_mi_row_end;
+  xd.tile.mi_col_start = tile_mi_col_start;
+  xd.tile.mi_col_end = tile_mi_col_end;
+  xd.is_chroma_ref = is_chroma_ref ? true : false;
+  xd.plane[1].subsampling_x = ss_x;
+  xd.plane[1].subsampling_y = ss_y;
+  MV dv;
+  dv.row = (int16_t)dv_row;
+  dv.col = (int16_t)dv_col;
+  return av1_is_dv_valid(dv, &cm, &xd, mi_row, mi_col, (BLOCK_SIZE)bsize, mib_size_log2);
+}
