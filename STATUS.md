@@ -339,9 +339,11 @@ state. Kernel-level differential coverage is tracked separately in
 
 - **CDEF filter block** (`av1/common/cdef_block.c`), both tracks: all 4
   `cdef_filter_8_{0,1,2,3}` variants (primary/secondary enable combos),
-  `constrain` + directional primary/secondary taps + CDEF_VERY_LARGE clipping.
-  Harness: `aom-cdef/tests/cdef_filter_diff.rs` — 320k comparisons,
-  byte-identical to C. CDEF (direction search + filter) now complete lowbd.
+  `constrain` + directional primary/secondary taps + CDEF_VERY_LARGE clipping,
+  plus the u16-store `cdef_filter_16_*` twins (highbd + the u16-plane bd-8
+  store). Harness: `aom-cdef/tests/cdef_filter_diff.rs` — 320k + 240k
+  comparisons, byte-identical to C. CDEF kernels complete lowbd + highbd;
+  the frame application walk is green too (see the CDEF milestone below).
 
 ## Safety: #![forbid(unsafe_code)]
 
@@ -426,6 +428,40 @@ real gate caught (synthetic diff could not): aligned-vs-crop dims passed as the
 NDEBUG production build; not portable). 4:2:2 luma-only IS in envelope. Next
 envelope tools: CDEF (kernels partial), segmentation, palette, SB128, multi-tile,
 loop restoration, superres, intrabc.
+
+## CDEF applied — enable_cdef envelope constraint DROPPED (2026-07-14, decoder track)
+
+**The second post-filter is in** (000e413 walk, edb4a55 wiring): `aom_cdef::frame`
+ports the `av1_cdef_frame` application walk — the single-threaded decoder path:
+per-64x64 fb, strength index from the mi grid's unit-top-left `cdef_strength`
+(the literal read at the fb's first non-skip block; `-1` skips), Y/UV
+`level = s/4` / `sec = s%4` (+1 when 3), `is_8x8_block_skip` all-skip
+aggregation into the dlist (any of the 2x2 mi non-skip ⇒ filtered),
+`cdef_prepare_fb` border priming (16-bit src at CDEF_BSTRIDE: colbuf saves the
+fb's UNFILTERED right columns for the next fb's left border, ping-pong top +
+bottom linebufs hold pre-filter rows across fb-row boundaries, `cstart=-8`
+reads the frame directly when the left fb was unfiltered, frame edges fill
+CDEF_VERY_LARGE), and `av1_cdef_filter_fb` per-8x8 dispatch (luma primary
+variance-adjusted via `cdef_find_dir`, chroma damping-1, `dir=0` when the
+plane primary is 0, conv422/conv440 remap applied once on plane 1). u16
+planes at every depth (bd-8 u16 store proven value-identical to C's u8 path).
+Oracle is the REAL EXPORTED `av1_cdef_frame` + `av1_cdef_init_fb_row`
+(`shim_cdef_frame`, dec_shim.c §5 — synthetic AV1_COMMON + per-cell mi grid,
+work buffers per the `av1_alloc_cdef_buffers` single-worker formulas).
+`cdef_frame_diff.rs`: 420 whole-frame cases (8 shapes incl. non-mult-64 +
+8-aligned crops + 24x16, 4:2:0/4:2:2/4:4:4/mono, bd 8/10/12, damping 3..6,
+strength grids incl. zero-Y/zero-UV/all-zero slots, the -1 arm, skip kinds
+none/mixed/heavy/all) — byte-identical, plus a padding-invariance proof (the
+two sides get DIFFERENT out-of-frame padding; identical output pins that the
+aligned-row linebuf reads never influence pixels). `real_bitstream.rs` now:
+**126 real cpu-used=0 KEY streams byte-identical** — the 87-stream envelope
+stays green and 39 `--enable-cdef=1` arms join: 29 carry CDEF syntax (ten
+cq-6 arms search to all-zero strengths and code none) and **all 29 genuinely
+change pixels** (verified by recomposing the pipeline without the CDEF stage),
+cq-52 bd8 arms chain deblock+CDEF. Envelope after this chunk: loop
+restoration, film grain, segmentation, palette/screen-content, SB128,
+multi-tile, superres, qm, lossless, intrabc, 4:2:2-chroma-deblock still
+rejected; CDEF has no residual constraint.
 
 ## Perf gate honest number
 
