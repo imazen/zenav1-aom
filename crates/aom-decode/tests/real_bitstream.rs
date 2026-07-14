@@ -1101,6 +1101,155 @@ fn garbage_input_errors_cleanly() {
     assert!(decode_frame_obus(&[]).is_err());
 }
 
+// ---- QM gate: --enable-qm=1 streams with forced non-flat matrices ----
+//
+// REAL `aom_codec_av1_cx` streams encoded with AV1E_SET_ENABLE_QM=1 and
+// AV1E_SET_QM_MIN==AV1E_SET_QM_MAX==L (which forces qmatrix_level_{y,u,v}==L for
+// every plane — the level formulas clamp into [min,max]). With L in 0..=14 the
+// matrix is genuinely non-flat, so each 2-D-transform coefficient is
+// dequantized with a per-position inverse-QM weight (`av1_get_iqmatrix` /
+// `aom_decode::qm`, folded into `dequant_txb`). Decoding these byte-identically
+// vs the REAL C decoder proves the QM dequant path is bit-exact — and would
+// FAIL if the decoder ignored QM, since C applies the non-flat weights.
+#[test]
+fn qm_streams_decode_byte_identical_to_c() {
+    // (bd, ss, mono): 4:2:0 + 4:4:4 + monochrome at 8 and 10 bit. (4:2:2 is
+    // avoided — its chroma deblock is a separate out-of-envelope axis.)
+    let combos = [
+        (8i32, (1i32, 1i32), false), // 4:2:0
+        (8, (0, 0), false),          // 4:4:4
+        (10, (1, 1), false),         // 4:2:0, 10-bit
+        (10, (0, 0), false),         // 4:4:4, 10-bit
+        (8, (1, 1), true),           // monochrome
+    ];
+    // Sizes incl. a non-8-multiple crop (100x76) to exercise frame-edge txbs.
+    let sizes = [(64usize, 64usize), (96, 80), (100, 76)];
+    // Forced QM levels: steep (0), mid (5, 8), and near-flat-but-not-flat (12).
+    // All < NUM_QM_LEVELS-1 (15) so the matrix genuinely weights coefficients.
+    let qm_levels = [0i32, 5, 8, 12];
+
+    let mut n = 0u32;
+    let mut steep_levels = 0u32; // count of L <= 5 arms (strong QM effect)
+    let mut min_level_seen = 15i32;
+    let mut max_level_seen = 0i32;
+
+    for (si, &(w, h)) in sizes.iter().enumerate() {
+        for &(bd, ss, mono) in &combos {
+            // Rotate the forced level across the grid so every level is hit at
+            // several sizes / formats.
+            let lvl = qm_levels[(si + n as usize) % qm_levels.len()];
+            // ALL_INTRA usage on some arms (the zenavif/avifenc still mode; a
+            // different QM-level formula, still clamped to the forced level).
+            let usage = if (n & 1) == 0 { 0u32 } else { 2 };
+            let cq = 32; // moderate: non-lossless, real AC coefficients present.
+
+            let (cw, ch) = if mono {
+                (0, 0)
+            } else {
+                ((w + ss.0 as usize) >> ss.0, (h + ss.1 as usize) >> ss.1)
+            };
+            let seed = ((w as u64) << 40)
+                ^ ((h as u64) << 24)
+                ^ ((bd as u64) << 12)
+                ^ ((lvl as u64) << 4)
+                ^ usage as u64;
+            let y = gen_plane(w, h, bd, seed ^ 0x1111, false);
+            let u = gen_plane(cw, ch, bd, seed ^ 0x2222, true);
+            let v = gen_plane(cw, ch, bd, seed ^ 0x3333, true);
+
+            // REAL encoder bytes with QM forced to level `lvl` (cpu-used=0).
+            let bytes = c::ref_encode_av1_kf_qm(
+                &y, &u, &v, w, h, bd, mono, ss.0, ss.1, cq, 0, /*cdef=*/ false,
+                /*restoration=*/ false, usage, /*aq=*/ 0, /*two_pass=*/ false, lvl,
+                lvl,
+            );
+
+            // Rust decode (hard-errors outside the envelope — that FAILS here).
+            let rust = decode_frame_obus(&bytes).unwrap_or_else(|e| {
+                panic!(
+                    "decode_frame_obus rejected QM stream {w}x{h} bd{bd} mono={mono} ss={ss:?} L={lvl}: {e}"
+                )
+            });
+
+            // Anti-vacuous facts from OUR OWN parse: the stream really uses QM
+            // and the level is non-flat (else this test proves nothing — a flat
+            // matrix is the pre-QM path).
+            let (_t, _tcfg, header) = decode_frame_obus_prefilter(&bytes).unwrap();
+            assert!(
+                header.quant.using_qmatrix,
+                "QM stream {w}x{h} L={lvl}: using_qmatrix flag not set"
+            );
+            let ql = [
+                header.quant.qmatrix_level_y,
+                header.quant.qmatrix_level_u,
+                header.quant.qmatrix_level_v,
+            ];
+            for &q in &ql {
+                assert!(
+                    (0..=14).contains(&q),
+                    "QM stream {w}x{h} L={lvl}: qm level {q} is flat/out of range (vacuous)"
+                );
+            }
+            assert!(rust.base_qindex > 0, "QM gate must be non-lossless");
+
+            // Gold oracle: the REAL C decoder on the same bytes.
+            let cref = c::ref_decode_av1_kf(&bytes, w, h);
+            assert_eq!(cref.info[0], bd);
+            assert_eq!(cref.info[1] != 0, mono);
+            assert_eq!(
+                rust.y, cref.y,
+                "LUMA mismatch QM {w}x{h} bd{bd} mono={mono} ss={ss:?} L={lvl}"
+            );
+            if mono {
+                assert!(rust.u.is_empty() && rust.v.is_empty());
+            } else {
+                assert_eq!(
+                    rust.u, cref.u,
+                    "U mismatch QM {w}x{h} bd{bd} ss={ss:?} L={lvl}"
+                );
+                assert_eq!(
+                    rust.v, cref.v,
+                    "V mismatch QM {w}x{h} bd{bd} ss={ss:?} L={lvl}"
+                );
+            }
+
+            // Coefficients present: the reconstruction is not a constant plane
+            // (a DC-only / all-skip frame would give QM nothing to weight).
+            assert!(
+                rust.y.iter().any(|&p| p != rust.y[0]),
+                "QM stream {w}x{h} L={lvl}: luma is constant (no AC coefficients?)"
+            );
+
+            if ql[0] <= 5 {
+                steep_levels += 1;
+            }
+            min_level_seen = min_level_seen.min(ql[0]);
+            max_level_seen = max_level_seen.max(ql[0]);
+            n += 1;
+        }
+    }
+
+    // Coverage floors: the grid actually ran and exercised steep
+    // (strong-effect) levels across a spread. (The rigorous "the matrix is
+    // genuinely non-flat and effectful" proof is the qm module's own unit test,
+    // `aom_decode::qm::tests`; here the byte-identity vs C on non-flat-level
+    // streams is itself anti-vacuous — a decoder that ignored QM would mismatch
+    // C at every AC coefficient sitting on a non-flat weight.)
+    assert!(n >= 15, "QM gate ran too few streams ({n})");
+    assert!(
+        steep_levels >= 3,
+        "QM gate never exercised a steep (L<=5) matrix ({steep_levels})"
+    );
+    assert!(
+        min_level_seen <= 5 && max_level_seen >= 8,
+        "QM level spread too narrow"
+    );
+    eprintln!(
+        "qm gate: {n} streams byte-identical, qm levels {min_level_seen}..={max_level_seen}, \
+         steep arms {steep_levels}"
+    );
+}
+
 // ---- PALETTE gate: --enable-palette=1 --enable-intrabc=0 streams ----
 //
 // gen_plane above is explicitly photographic (smooth gradients + noise) to
@@ -1749,21 +1898,85 @@ fn lossless_streams_decode_byte_identical_to_c() {
     }
     let cfgs = [
         // 8-bit 4:2:0, SB-multiple, ALL_INTRA
-        LlCfg { w: 64, h: 64, bd: 8, usage: 2, ss_x: 1, ss_y: 1, mono: false },
+        LlCfg {
+            w: 64,
+            h: 64,
+            bd: 8,
+            usage: 2,
+            ss_x: 1,
+            ss_y: 1,
+            mono: false,
+        },
         // 8-bit 4:2:0, non-SB-multiple crop, GOOD
-        LlCfg { w: 96, h: 80, bd: 8, usage: 0, ss_x: 1, ss_y: 1, mono: false },
+        LlCfg {
+            w: 96,
+            h: 80,
+            bd: 8,
+            usage: 0,
+            ss_x: 1,
+            ss_y: 1,
+            mono: false,
+        },
         // 8-bit 4:4:4, ALL_INTRA
-        LlCfg { w: 64, h: 64, bd: 8, usage: 2, ss_x: 0, ss_y: 0, mono: false },
+        LlCfg {
+            w: 64,
+            h: 64,
+            bd: 8,
+            usage: 2,
+            ss_x: 0,
+            ss_y: 0,
+            mono: false,
+        },
         // 8-bit 4:4:4, non-8-multiple crop (100x76 cropped from the 8px mi grid), GOOD
-        LlCfg { w: 100, h: 76, bd: 8, usage: 0, ss_x: 0, ss_y: 0, mono: false },
+        LlCfg {
+            w: 100,
+            h: 76,
+            bd: 8,
+            usage: 0,
+            ss_x: 0,
+            ss_y: 0,
+            mono: false,
+        },
         // 8-bit monochrome, GOOD
-        LlCfg { w: 128, h: 96, bd: 8, usage: 0, ss_x: 1, ss_y: 1, mono: true },
+        LlCfg {
+            w: 128,
+            h: 96,
+            bd: 8,
+            usage: 0,
+            ss_x: 1,
+            ss_y: 1,
+            mono: true,
+        },
         // 10-bit 4:2:0, ALL_INTRA
-        LlCfg { w: 64, h: 64, bd: 10, usage: 2, ss_x: 1, ss_y: 1, mono: false },
+        LlCfg {
+            w: 64,
+            h: 64,
+            bd: 10,
+            usage: 2,
+            ss_x: 1,
+            ss_y: 1,
+            mono: false,
+        },
         // 10-bit 4:4:4, non-SB-multiple crop, GOOD
-        LlCfg { w: 96, h: 80, bd: 10, usage: 0, ss_x: 0, ss_y: 0, mono: false },
+        LlCfg {
+            w: 96,
+            h: 80,
+            bd: 10,
+            usage: 0,
+            ss_x: 0,
+            ss_y: 0,
+            mono: false,
+        },
         // 10-bit monochrome, ALL_INTRA
-        LlCfg { w: 96, h: 96, bd: 10, usage: 2, ss_x: 1, ss_y: 1, mono: true },
+        LlCfg {
+            w: 96,
+            h: 96,
+            bd: 10,
+            usage: 2,
+            ss_x: 1,
+            ss_y: 1,
+            mono: true,
+        },
     ];
 
     let mut total_arms = 0usize;
@@ -1796,8 +2009,8 @@ fn lossless_streams_decode_byte_identical_to_c() {
         };
 
         let bytes = c::ref_encode_av1_kf_lossless(
-            &y, &u, &v, c.w, c.h, c.bd, c.mono, c.ss_x, c.ss_y, /* cpu_used */ 0,
-            c.usage, /* two_pass */ false,
+            &y, &u, &v, c.w, c.h, c.bd, c.mono, c.ss_x, c.ss_y, /* cpu_used */ 0, c.usage,
+            /* two_pass */ false,
         );
 
         let ctx = format!(

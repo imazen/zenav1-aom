@@ -364,7 +364,8 @@ static long encode_kf_pass(aom_codec_iface_t *iface, aom_codec_enc_cfg_t *cfg,
                            int enable_restoration, int aq_mode,
                            int sb_size_128, int tile_columns_log2,
                            int tile_rows_log2, int enable_palette,
-                           int enable_intrabc, int lossless, aom_image_t *img,
+                           int enable_intrabc, int lossless, int enable_qm,
+                           int qm_min, int qm_max, aom_image_t *img,
                            int collect_stats, uint8_t *out, size_t out_cap) {
   aom_codec_ctx_t ctx;
   aom_codec_flags_t flags = bd > 8 ? AOM_CODEC_USE_HIGHBITDEPTH : 0;
@@ -402,6 +403,17 @@ static long encode_kf_pass(aom_codec_iface_t *iface, aom_codec_enc_cfg_t *cfg,
   /* --lossless: forces base_qindex 0 + coded_lossless + ONLY_4X4 + WHT. 0 for
    * all pre-existing callers (a no-op — AV1E_SET_LOSSLESS defaults to 0). */
   TRYCTRL(AV1E_SET_LOSSLESS, lossless);
+  /* --enable-qm / --qm-min / --qm-max: quantization matrices. Gated on
+   * enable_qm so every PRE-EXISTING caller (enable_qm == 0) issues NONE of
+   * these controls and its bytes are unchanged. qm_min == qm_max == L forces
+   * qmatrix_level_{y,u,v} = clamp(formula, L, L) = L for every plane (see
+   * aom_get_qmlevel* in quant_common.h), so a non-flat L (< NUM_QM_LEVELS-1)
+   * guarantees a genuine QM effect. Decoder-track QM-gate addition. */
+  if (enable_qm) {
+    TRYCTRL(AV1E_SET_ENABLE_QM, 1);
+    TRYCTRL(AV1E_SET_QM_MIN, qm_min);
+    TRYCTRL(AV1E_SET_QM_MAX, qm_max);
+  }
 #undef TRYCTRL
 
   long total = 0;
@@ -458,7 +470,8 @@ static long encode_av1_kf_impl(const uint16_t *y, const uint16_t *u,
                                int two_pass, int sb_size_128,
                                int tile_columns_log2, int tile_rows_log2,
                                int enable_palette, int enable_intrabc,
-                               int lossless, uint8_t *out, size_t out_cap) {
+                               int lossless, int enable_qm, int qm_min,
+                               int qm_max, uint8_t *out, size_t out_cap) {
   aom_codec_iface_t *iface = aom_codec_av1_cx();
   aom_codec_enc_cfg_t cfg;
   /* usage: AOM_USAGE_GOOD_QUALITY (0) or AOM_USAGE_ALL_INTRA (2 — the
@@ -535,8 +548,8 @@ static long encode_av1_kf_impl(const uint16_t *y, const uint16_t *u,
                                     enable_cdef, enable_restoration, aq_mode,
                                     sb_size_128, tile_columns_log2,
                                     tile_rows_log2, enable_palette,
-                                    enable_intrabc, lossless, img, 1, stats,
-                                    STATS_CAP);
+                                    enable_intrabc, lossless, enable_qm, qm_min,
+                                    qm_max, img, 1, stats, STATS_CAP);
     if (stats_len <= 0) {
       free(stats);
       aom_img_free(img);
@@ -548,13 +561,15 @@ static long encode_av1_kf_impl(const uint16_t *y, const uint16_t *u,
     total = encode_kf_pass(iface, &cfg, bd, cq_level, cpu_used, enable_cdef,
                            enable_restoration, aq_mode, sb_size_128,
                            tile_columns_log2, tile_rows_log2, enable_palette,
-                           enable_intrabc, lossless, img, 0, out, out_cap);
+                           enable_intrabc, lossless, enable_qm, qm_min, qm_max,
+                           img, 0, out, out_cap);
     free(stats);
   } else {
     total = encode_kf_pass(iface, &cfg, bd, cq_level, cpu_used, enable_cdef,
                            enable_restoration, aq_mode, sb_size_128,
                            tile_columns_log2, tile_rows_log2, enable_palette,
-                           enable_intrabc, lossless, img, 0, out, out_cap);
+                           enable_intrabc, lossless, enable_qm, qm_min, qm_max,
+                           img, 0, out, out_cap);
   }
   aom_img_free(img);
   return total;
@@ -575,7 +590,8 @@ long shim_encode_av1_kf(const uint16_t *y, const uint16_t *u,
                             aq_mode, two_pass, /*sb_size_128=*/0,
                             /*tile_columns_log2=*/0, /*tile_rows_log2=*/0,
                             /*enable_palette=*/0, /*enable_intrabc=*/0,
-                            /*lossless=*/0, out, out_cap);
+                            /*lossless=*/0, /*enable_qm=*/0, /*qm_min=*/0,
+                            /*qm_max=*/0, out, out_cap);
 }
 
 /* SB128 variant of shim_encode_av1_kf: same controls plus explicit
@@ -595,7 +611,8 @@ long shim_encode_av1_kf_sb128(const uint16_t *y, const uint16_t *u,
                             aq_mode, two_pass, sb_size_128,
                             /*tile_columns_log2=*/0, /*tile_rows_log2=*/0,
                             /*enable_palette=*/0, /*enable_intrabc=*/0,
-                            /*lossless=*/0, out, out_cap);
+                            /*lossless=*/0, /*enable_qm=*/0, /*qm_min=*/0,
+                            /*qm_max=*/0, out, out_cap);
 }
 
 /* Multi-tile variant of shim_encode_av1_kf: same controls plus explicit
@@ -617,7 +634,9 @@ long shim_encode_av1_kf_tiles(const uint16_t *y, const uint16_t *u,
                             cpu_used, enable_cdef, enable_restoration, usage,
                             aq_mode, two_pass, sb_size_128, tile_columns_log2,
                             tile_rows_log2, /*enable_palette=*/0,
-                            /*enable_intrabc=*/0, /*lossless=*/0, out, out_cap);
+                            /*enable_intrabc=*/0, /*lossless=*/0,
+                            /*enable_qm=*/0, /*qm_min=*/0, /*qm_max=*/0, out,
+                            out_cap);
 }
 
 /* Screen-content variant of shim_encode_av1_kf: same controls as
@@ -640,7 +659,8 @@ long shim_encode_av1_kf_screen_content(const uint16_t *y, const uint16_t *u,
                             cpu_used, enable_cdef, enable_restoration, usage,
                             aq_mode, two_pass, /*sb_size_128=*/0,
                             /*tile_columns_log2=*/0, /*tile_rows_log2=*/0,
-                            enable_palette, enable_intrabc, /*lossless=*/0, out,
+                            enable_palette, enable_intrabc, /*lossless=*/0,
+                            /*enable_qm=*/0, /*qm_min=*/0, /*qm_max=*/0, out,
                             out_cap);
 }
 
@@ -661,7 +681,32 @@ long shim_encode_av1_kf_lossless(const uint16_t *y, const uint16_t *u,
                             two_pass, /*sb_size_128=*/0,
                             /*tile_columns_log2=*/0, /*tile_rows_log2=*/0,
                             /*enable_palette=*/0, /*enable_intrabc=*/0,
-                            /*lossless=*/1, out, out_cap);
+                            /*lossless=*/1, /*enable_qm=*/0, /*qm_min=*/0,
+                            /*qm_max=*/0, out, out_cap);
+}
+
+/* Quantization-matrix variant of shim_encode_av1_kf: same controls as
+ * shim_encode_av1_kf (--sb-size=64, single tile, no palette/intrabc,
+ * non-lossless) plus AV1E_SET_ENABLE_QM=1 and explicit AV1E_SET_QM_MIN /
+ * AV1E_SET_QM_MAX (--enable-qm --qm-min --qm-max). Setting qm_min == qm_max
+ * forces qmatrix_level_{y,u,v} to that single level for every plane (the level
+ * formulas clamp into [min,max]); pass a non-flat level (< NUM_QM_LEVELS - 1)
+ * so the stream exercises a genuine QM. Decoder-track QM-gate addition,
+ * append-only (all shims above untouched). See encode_av1_kf_impl's doc
+ * comment for the full control list. */
+long shim_encode_av1_kf_qm(const uint16_t *y, const uint16_t *u,
+                           const uint16_t *v, int w, int h, int bd, int mono,
+                           int ss_x, int ss_y, int cq_level, int cpu_used,
+                           int enable_cdef, int enable_restoration, int usage,
+                           int aq_mode, int two_pass, int qm_min, int qm_max,
+                           uint8_t *out, size_t out_cap) {
+  return encode_av1_kf_impl(y, u, v, w, h, bd, mono, ss_x, ss_y, cq_level,
+                            cpu_used, enable_cdef, enable_restoration, usage,
+                            aq_mode, two_pass, /*sb_size_128=*/0,
+                            /*tile_columns_log2=*/0, /*tile_rows_log2=*/0,
+                            /*enable_palette=*/0, /*enable_intrabc=*/0,
+                            /*lossless=*/0, /*enable_qm=*/1, qm_min, qm_max, out,
+                            out_cap);
 }
 
 /* Decode AV1 bytes through the REAL aom_codec_av1_dx public API and copy the

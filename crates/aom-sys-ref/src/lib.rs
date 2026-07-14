@@ -10709,6 +10709,98 @@ pub fn ref_encode_av1_kf_lossless(
     out
 }
 
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_encode_av1_kf_qm(
+        y: *const u16,
+        u: *const u16,
+        v: *const u16,
+        w: i32,
+        h: i32,
+        bd: i32,
+        mono: i32,
+        ss_x: i32,
+        ss_y: i32,
+        cq_level: i32,
+        cpu_used: i32,
+        enable_cdef: i32,
+        enable_restoration: i32,
+        usage: i32,
+        aq_mode: i32,
+        two_pass: i32,
+        qm_min: i32,
+        qm_max: i32,
+        out: *mut u8,
+        out_cap: usize,
+    ) -> i64;
+}
+
+/// Quantization-matrix variant of [`ref_encode_av1_kf`] (decoder-track QM-gate
+/// work, append-only addition — every shim above is untouched): same params
+/// plus `qm_min`/`qm_max` (`AV1E_SET_QM_MIN`/`AV1E_SET_QM_MAX`) with
+/// `AV1E_SET_ENABLE_QM=1`. `--sb-size=64`, single tile, no palette / intrabc,
+/// non-lossless. Setting `qm_min == qm_max == L` forces
+/// `qmatrix_level_{y,u,v} = L` for every plane; pass a non-flat `L`
+/// (`< NUM_QM_LEVELS - 1 = 15`) so the stream exercises a genuine QM. Panics on
+/// a negative shim return.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_encode_av1_kf_qm(
+    y: &[u16],
+    u: &[u16],
+    v: &[u16],
+    w: usize,
+    h: usize,
+    bd: i32,
+    mono: bool,
+    ss_x: i32,
+    ss_y: i32,
+    cq_level: i32,
+    cpu_used: i32,
+    enable_cdef: bool,
+    enable_restoration: bool,
+    usage: u32,
+    aq_mode: u32,
+    two_pass: bool,
+    qm_min: i32,
+    qm_max: i32,
+) -> Vec<u8> {
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + ss_x as usize) >> ss_x, (h + ss_y as usize) >> ss_y)
+    };
+    assert_eq!(y.len(), w * h);
+    assert!(mono || (u.len() == cw * ch && v.len() == cw * ch));
+    let mut out = vec![0u8; w * h * 8 + 65536];
+    let n = unsafe {
+        shim_encode_av1_kf_qm(
+            y.as_ptr(),
+            u.as_ptr(),
+            v.as_ptr(),
+            w as i32,
+            h as i32,
+            bd,
+            mono as i32,
+            ss_x,
+            ss_y,
+            cq_level,
+            cpu_used,
+            enable_cdef as i32,
+            enable_restoration as i32,
+            usage as i32,
+            aq_mode as i32,
+            two_pass as i32,
+            qm_min,
+            qm_max,
+            out.as_mut_ptr(),
+            out.len(),
+        )
+    };
+    assert!(n > 0, "shim_encode_av1_kf_qm failed ({n})");
+    out.truncate(n as usize);
+    out
+}
+
 // dec_shim.c section "intrabc DV prediction facades" (append-only addition):
 // shim_find_dv_ref_mvs drives the REAL EXPORTED av1_find_mv_refs +
 // av1_find_best_ref_mvs (ref_frame=INTRA_FRAME) over a synthetic MI grid;
