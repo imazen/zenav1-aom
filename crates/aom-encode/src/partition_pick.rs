@@ -68,11 +68,68 @@
 //! # Scope
 //!
 //! NONE + SPLIT (2 of 10 partition types), KEY intra, interior SBs,
-//! sb_size <= 64, no segmentation. MISSING: rect/AB/4-way stages (+ their
-//! ml_prune NN gating — live at speed 0), the edge-block partition-cost
-//! override, the SB-level must-find retry, `log_sub_block_var` (the
-//! ALLINTRA SB-root rdmult modifier input — the folded rdmult is an input
-//! here), and the OUTPUT pack-stage state at the SB root.
+//! sb_size <= 64, no segmentation. MISSING: rect/AB/4-way stages, the
+//! edge-block partition-cost override, the SB-level must-find retry,
+//! `log_sub_block_var` (the ALLINTRA SB-root rdmult modifier input — the
+//! folded rdmult is an input here), and the OUTPUT pack-stage state at the
+//! SB root.
+//!
+//! # RECT stage survey (next chunk; all verified in source)
+//!
+//! **THE KEY-FRAME RECT STAGE IS NN-FREE.** Every NN prune around HORZ/VERT
+//! is `!frame_is_intra_only(cm)`-gated and therefore DEAD in the one-KEY-
+//! frame envelope, for BOTH usages:
+//! - `av1_ml_prune_rect_partition` (the 9-feature rect NN,
+//!   partition_strategy.c:1124): gate at partition_search.c:4336 requires
+//!   `!frame_is_intra_only` (also `!ml_early_term_after_part_split_level`,
+//!   which is 1 sub-720p — either kills it);
+//! - `av1_ml_early_term_after_split` (partition_strategy.c:1017): gate at
+//!   partition_search.c:4323 requires `!frame_is_intra_only`;
+//! - `simple_motion_search_prune_rect` (sf = 1 both usages):
+//!   partition_strategy.c:692 requires `!frame_is_intra_only`;
+//! - `prune_rect_part_using_none_pred_mode`: sf = 0 at speed 0 both usages.
+//!
+//! The one LIVE usage-differing knob: `less_rectangular_check_level`
+//! (ALLINTRA 1 / GOOD 0) — pure integer logic in the SPLIT stage's ELSE arm
+//! (partition_search.c:4630-4640): when SPLIT did NOT beat best and
+//! (`level == 2 || idx <= 2`), `do_rectangular_split &= !(none_rd > 0 &&
+//! none_rd < sum_rdc.rdcost)` — requires tracking `none_rd` (the NONE
+//! leaf's rdcost before pt_cost? none_partition_search:4474 stores
+//! `this_rdc.rdcost` AFTER pt_cost — re-verify the exact stored value when
+//! porting) and the split stage's final `sum_rdc`.
+//!
+//! `rectangular_partition_search` (partition_search.c:3520-3648), per type
+//! i in {HORZ, VERT} (`start/end_type` full range at speed 0):
+//! 1. `is_rect_part_allowed` (:3506): `!terminate &&
+//!    partition_rect_allowed[i] && !prune_rect_part[i] &&
+//!    (do_rectangular_split || active_edge)` — with
+//!    `partition_rect_allowed` from init: `has_cols/has_rows` + rect
+//!    enabled + subsize valid for chroma (`get_plane_block_size(subsize)
+//!    != BLOCK_INVALID` — the 4:2:2 tall-block guard).
+//! 2. `sum_rdc = {rate: partition_cost[type], rdcost: RDCOST(rate, 0)}`.
+//! 3. sub-block 0 at (mi_row, mi_col): `rd_pick_rect_partition` (:3471) =
+//!    `best_remain = best - sum` -> `pick_sb_modes(partition_type)` ->
+//!    `av1_rd_cost_update` -> accumulate (INT_MAX -> rdcost MAX); records
+//!    `rect_part_rd[i][0]` (an AB-stage input).
+//! 4. If `sum < best && is_not_edge` (has_rows for HORZ / has_cols VERT):
+//!    `av1_update_state + encode_superblock(DRY_RUN_NORMAL)` of sub 0 —
+//!    the MID-STAGE propagation (sub 1 reads sub 0's pixels+contexts;
+//!    note: encode_superblock DIRECTLY, no encode_b — no partition-ctx
+//!    stamp, no rdmult save) + `is_rect_ctx_is_ready[i]` bookkeeping
+//!    (palette/CfL-free sub-0 winners feed the AB stage's
+//!    `reuse_prev_rd_results_for_part_ab = 1`). Then sub-block 1 at the
+//!    edge position (mi_row_edge/mi_col_edge = +hbs).
+//! 5. Best update: `sum < best` -> rdcost recompute -> strict-< ->
+//!    `partitioning = HORZ/VERT`.
+//! 6. `av1_restore_context` at EACH type's loop tail (:3644) — HORZ's
+//!    sub-0 encode debris is restored before VERT evaluates.
+//!
+//! Port plan: extend [`SbTree`] with `Horz([LeafWinner; 2])`/`Vert(..)` +
+//! the encode_sb HORZ/VERT walk arms (partition_search.c:1640-1660), add
+//! the stage between NONE and SPLIT result handling in
+//! [`rd_pick_partition_real`] (C order: NONE -> SPLIT -> rect), track
+//! `none_rd`/`split_rd[4]` per node for the less_rect arm, and sweep BOTH
+//! usages in the diff (less_rect ON under ALLINTRA).
 
 use crate::encode_sb::{
     encode_sb_dry, LeafEncodeOut, LeafWinner, SbEncodeEnv, SbTree, TileCtxState,
