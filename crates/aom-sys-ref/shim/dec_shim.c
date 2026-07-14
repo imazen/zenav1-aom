@@ -1238,3 +1238,82 @@ int shim_lr_corners_in_sb(int w, int h, int ss_x, int ss_y,
   free(cm);
   return hit;
 }
+
+/* REAL av1_wiener_convolve_add_src_c (bd==8, on u8 copies — the production
+ * lowbd path) / av1_highbd_wiener_convolve_add_src_c (bd>8) over a
+ * caller-padded buffer of buf_w x buf_h u16 samples: filters the w x h block
+ * whose top-left is (off_x, off_y), writing the same region of dst (whole
+ * dst buffer copied back). Filters are copied into a 16-byte-aligned
+ * WienerInfo (the C subpel machinery requires InterpKernel alignment). */
+#include "av1/common/convolve.h"
+int shim_wiener_convolve(const uint16_t *src, uint16_t *dst, int buf_w,
+                         int buf_h, int off_x, int off_y, int w, int h,
+                         const int16_t *hf, const int16_t *vf, int bd) {
+  WienerInfo wi;
+  memset(&wi, 0, sizeof(wi));
+  memcpy(wi.hfilter, hf, 8 * sizeof(int16_t));
+  memcpy(wi.vfilter, vf, 8 * sizeof(int16_t));
+  const WienerConvolveParams conv_params = get_conv_params_wiener(bd);
+  const long n = (long)buf_w * buf_h;
+  const long off = (long)off_y * buf_w + off_x;
+  if (bd == 8) {
+    uint8_t *s8 = (uint8_t *)malloc(n);
+    uint8_t *d8 = (uint8_t *)malloc(n);
+    if (!s8 || !d8) return -1;
+    for (long i = 0; i < n; i++) {
+      s8[i] = (uint8_t)src[i];
+      d8[i] = (uint8_t)dst[i];
+    }
+    av1_wiener_convolve_add_src_c(s8 + off, buf_w, d8 + off, buf_w, wi.hfilter,
+                                  16, wi.vfilter, 16, w, h, &conv_params);
+    for (long i = 0; i < n; i++) dst[i] = d8[i];
+    free(s8);
+    free(d8);
+  } else {
+    uint16_t *s16 = (uint16_t *)malloc(n * sizeof(uint16_t));
+    if (!s16) return -1;
+    memcpy(s16, src, n * sizeof(uint16_t));
+    av1_highbd_wiener_convolve_add_src_c(
+        CONVERT_TO_BYTEPTR(s16) + off, buf_w, CONVERT_TO_BYTEPTR(dst) + off,
+        buf_w, wi.hfilter, 16, wi.vfilter, 16, w, h, &conv_params, bd);
+    free(s16);
+  }
+  return 0;
+}
+
+/* REAL av1_apply_selfguided_restoration_c over the same buffer convention. */
+int shim_apply_sgr(const uint16_t *src, uint16_t *dst, int buf_w, int buf_h,
+                   int off_x, int off_y, int w, int h, int ep, int xqd0,
+                   int xqd1, int bd) {
+  int32_t *tmpbuf = (int32_t *)malloc(RESTORATION_TMPBUF_SIZE);
+  if (!tmpbuf) return -1;
+  int xqd[2] = { xqd0, xqd1 };
+  const long n = (long)buf_w * buf_h;
+  const long off = (long)off_y * buf_w + off_x;
+  int rc;
+  if (bd == 8) {
+    uint8_t *s8 = (uint8_t *)malloc(n);
+    uint8_t *d8 = (uint8_t *)malloc(n);
+    if (!s8 || !d8) return -1;
+    for (long i = 0; i < n; i++) {
+      s8[i] = (uint8_t)src[i];
+      d8[i] = (uint8_t)dst[i];
+    }
+    rc = av1_apply_selfguided_restoration_c(s8 + off, w, h, buf_w, ep, xqd,
+                                            d8 + off, buf_w, tmpbuf, bd, 0);
+    for (long i = 0; i < n; i++) dst[i] = d8[i];
+    free(s8);
+    free(d8);
+  } else {
+    uint16_t *s16 = (uint16_t *)malloc(n * sizeof(uint16_t));
+    if (!s16) return -1;
+    memcpy(s16, src, n * sizeof(uint16_t));
+    rc = av1_apply_selfguided_restoration_c(CONVERT_TO_BYTEPTR(s16) + off, w,
+                                            h, buf_w, ep, xqd,
+                                            CONVERT_TO_BYTEPTR(dst) + off,
+                                            buf_w, tmpbuf, bd, 1);
+    free(s16);
+  }
+  free(tmpbuf);
+  return rc;
+}

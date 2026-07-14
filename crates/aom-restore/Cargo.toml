@@ -1,0 +1,11 @@
+[package]
+name = "aom-restore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aom-entropy = { path = "../aom-entropy" }
+
+[dev-dependencies]
+aom-sys-ref = { path = "../aom-sys-ref" }

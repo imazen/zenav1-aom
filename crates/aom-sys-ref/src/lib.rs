@@ -7783,6 +7783,109 @@ extern "C" {
         bsize: i32,
         out: *mut i32,
     ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_wiener_convolve(
+        src: *const u16,
+        dst: *mut u16,
+        buf_w: i32,
+        buf_h: i32,
+        off_x: i32,
+        off_y: i32,
+        w: i32,
+        h: i32,
+        hf: *const i16,
+        vf: *const i16,
+        bd: i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_apply_sgr(
+        src: *const u16,
+        dst: *mut u16,
+        buf_w: i32,
+        buf_h: i32,
+        off_x: i32,
+        off_y: i32,
+        w: i32,
+        h: i32,
+        ep: i32,
+        xqd0: i32,
+        xqd1: i32,
+        bd: i32,
+    ) -> i32;
+}
+
+/// REAL `av1_wiener_convolve_add_src_c` (bd 8, lowbd u8 path) /
+/// `av1_highbd_wiener_convolve_add_src_c` (bd > 8) over a padded
+/// `buf_w x buf_h` u16 buffer: filters the `w x h` block at `(off_x, off_y)`
+/// in place on `dst`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_wiener_convolve(
+    src: &[u16],
+    dst: &mut [u16],
+    buf_w: usize,
+    buf_h: usize,
+    off_x: usize,
+    off_y: usize,
+    w: usize,
+    h: usize,
+    hfilter: &[i16; 8],
+    vfilter: &[i16; 8],
+    bd: i32,
+) {
+    assert_eq!(src.len(), buf_w * buf_h);
+    assert_eq!(dst.len(), buf_w * buf_h);
+    let rc = unsafe {
+        shim_wiener_convolve(
+            src.as_ptr(),
+            dst.as_mut_ptr(),
+            buf_w as i32,
+            buf_h as i32,
+            off_x as i32,
+            off_y as i32,
+            w as i32,
+            h as i32,
+            hfilter.as_ptr(),
+            vfilter.as_ptr(),
+            bd,
+        )
+    };
+    assert_eq!(rc, 0, "shim_wiener_convolve failed");
+}
+
+/// REAL `av1_apply_selfguided_restoration_c` over the same buffer convention.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_apply_sgr(
+    src: &[u16],
+    dst: &mut [u16],
+    buf_w: usize,
+    buf_h: usize,
+    off_x: usize,
+    off_y: usize,
+    w: usize,
+    h: usize,
+    ep: usize,
+    xqd: [i32; 2],
+    bd: i32,
+) {
+    assert_eq!(src.len(), buf_w * buf_h);
+    assert_eq!(dst.len(), buf_w * buf_h);
+    let rc = unsafe {
+        shim_apply_sgr(
+            src.as_ptr(),
+            dst.as_mut_ptr(),
+            buf_w as i32,
+            buf_h as i32,
+            off_x as i32,
+            off_y as i32,
+            w as i32,
+            h as i32,
+            ep as i32,
+            xqd[0],
+            xqd[1],
+            bd,
+        )
+    };
+    assert_eq!(rc, 0, "shim_apply_sgr failed ({rc})");
 }
 
 /// REAL `av1_alloc_restoration_struct` geometry + REAL
