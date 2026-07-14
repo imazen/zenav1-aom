@@ -4280,6 +4280,384 @@ pub fn write_mb_modes_kf(enc: &mut OdEcEnc, info: &MbModeInfoKf, c: &mut KfCdfs,
     );
 }
 
+// ===================== FRAME_CONTEXT context selection (KEY-frame intra scope) ==========
+// The struct driver above takes CONTEXT-PRE-SELECTED CDFs (one shared instance per
+// symbol — the KfCdfs simplification). libaom's real model keeps full per-context CDF
+// arrays in FRAME_CONTEXT (av1/common/entropymode.h) and selects each symbol's instance
+// from neighbour/block state at the moment the symbol is coded. KfFrameContext + the
+// `_fc` entry points implement that model for every symbol the KEY-frame intra path
+// codes, with the selection rules of read_intra_frame_mode_info (av1/decoder/decodemv.c)
+// / write_intra_prediction_modes (av1/encoder/bitstream.c).
+
+/// `KF_MODE_CONTEXTS` (entropymode.h).
+const KF_MODE_CONTEXTS: usize = 5;
+/// `DIRECTIONAL_MODES` (enums.h).
+const DIRECTIONAL_MODES: usize = 8;
+/// `SKIP_CONTEXTS` (enums.h).
+const SKIP_CONTEXTS: usize = 3;
+/// `SPATIAL_PREDICTION_PROBS` (seg_common.h).
+const SPATIAL_PREDICTION_PROBS: usize = 3;
+/// `PALATTE_BSIZE_CTXS` (entropymode.h — libaom's spelling).
+const PALATTE_BSIZE_CTXS: usize = 7;
+/// `PALETTE_Y_MODE_CONTEXTS` / `PALETTE_UV_MODE_CONTEXTS` (entropymode.h).
+const PALETTE_Y_MODE_CONTEXTS: usize = 3;
+const PALETTE_UV_MODE_CONTEXTS: usize = 2;
+/// `MAX_TX_CATS` (blockd.h) / `TX_SIZE_CONTEXTS` (enums.h).
+const MAX_TX_CATS: usize = 4;
+const TX_SIZE_CONTEXTS: usize = 3;
+/// `EXT_TX_SIZES` (enums.h): square tx-size classes indexing the ext-tx CDFs.
+const EXT_TX_SIZES: usize = 4;
+/// `BLOCK_SIZES_ALL` (enums.h).
+const BLOCK_SIZES_ALL: usize = 22;
+
+/// The neighbour mode-info projection the KEY-frame context selection reads from
+/// `xd->above_mbmi` / `xd->left_mbmi`: the neighbour block's Y prediction mode
+/// (`kf_y_cdf` context + the smooth-mode edge-filter check) and its transform-skip
+/// flag (`av1_get_skip_txfm_context`). `None` = neighbour unavailable (off tile).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MiNbrKf {
+    pub y_mode: i32,
+    pub skip_txfm: i32,
+}
+
+/// The KEY-frame-intra slice of libaom's `FRAME_CONTEXT` (av1/common/entropymode.h):
+/// every CDF array that path codes with, at C's per-context dimensions. Each leaf CDF
+/// is sized exactly `nsymbols + 1` (adaptation-count slot last). C pads several arrays
+/// to `CDF_SIZE(TX_TYPES)`-style maxima; only the leading `nsymbols + 1` slots ever
+/// participate, so exact sizing is behaviour-identical.
+///
+/// NOT modelled (not coded by the KEY-frame intra path): the inter-prediction CDFs
+/// (newmv/zeromv/refmv/drl, compound/wedge/interintra/motion-mode/obmc, ref-frame
+/// trees, `nmvc`, skip_mode, intra_inter, `inter_ext_tx_cdf`, switchable_interp,
+/// txfm_partition), the non-keyframe `y_mode_cdf[BLOCK_SIZE_GROUPS]`, the
+/// loop-restoration CDFs, the segmentation `tree_cdf`/`pred_cdf` (temporal prediction
+/// is inter-only; the intra path codes on `spatial_pred_seg_cdf`), and the palette
+/// colour-index CDFs (`palette_*_color_index_cdf` — colour-map tokens are coded in the
+/// token path, which the KEY driver does not model).
+#[derive(Clone, Debug)]
+pub struct KfFrameContext {
+    /// `kf_y_cdf[KF_MODE_CONTEXTS][KF_MODE_CONTEXTS]` (13 symbols) — selected by
+    /// `(intra_mode_context[above_mode], intra_mode_context[left_mode])`
+    /// ([`get_y_mode_ctx`]; an absent neighbour resolves to `DC_PRED`).
+    pub kf_y: [[[u16; 14]; KF_MODE_CONTEXTS]; KF_MODE_CONTEXTS],
+    /// `uv_mode_cdf[CFL_ALLOWED_TYPES][INTRA_MODES]` — selected by
+    /// `(cfl_allowed, y_mode)`; the `[1][..]` plane codes 14 symbols, `[0][..]`
+    /// codes 13 (an instance never mixes alphabets, so its count slot is fixed).
+    pub uv_mode: [[[u16; 15]; INTRA_MODES]; 2],
+    /// `angle_delta_cdf[DIRECTIONAL_MODES]` (7 symbols) — selected by
+    /// `mode - V_PRED`; ONE array shared by the Y and UV angle deltas.
+    pub angle_delta: [[u16; 8]; DIRECTIONAL_MODES],
+    /// `skip_txfm_cdfs[SKIP_CONTEXTS]` — selected by [`skip_txfm_context`]
+    /// (above_skip + left_skip).
+    pub skip: [[u16; 3]; SKIP_CONTEXTS],
+    /// `seg.spatial_pred_seg_cdf[SPATIAL_PREDICTION_PROBS]` (8 symbols). Held at C
+    /// dims; the `cdf_num` selection (`av1_get_spatial_seg_pred`) reads the
+    /// segment-id map, which the KEY driver does not model — the `_fc` entry
+    /// points require segmentation coding off.
+    pub seg_spatial: [[u16; 9]; SPATIAL_PREDICTION_PROBS],
+    /// `partition_cdf[PARTITION_CONTEXTS]` — ns-symbol per block-size level
+    /// (4/8/10); selected by [`partition_plane_context`].
+    pub partition: [[u16; 11]; 20],
+    /// `palette_y_mode_cdf[PALATTE_BSIZE_CTXS][PALETTE_Y_MODE_CONTEXTS]`,
+    /// `palette_uv_mode_cdf[PALETTE_UV_MODE_CONTEXTS]`,
+    /// `palette_{y,uv}_size_cdf[PALATTE_BSIZE_CTXS]` (7 symbols). Held at C dims;
+    /// the `_fc` entry points require palette off (the colour coder needs the
+    /// neighbour palette colour caches, which are not modelled).
+    pub palette_y_mode: [[[u16; 3]; PALETTE_Y_MODE_CONTEXTS]; PALATTE_BSIZE_CTXS],
+    pub palette_uv_mode: [[u16; 3]; PALETTE_UV_MODE_CONTEXTS],
+    pub palette_y_size: [[u16; 8]; PALATTE_BSIZE_CTXS],
+    pub palette_uv_size: [[u16; 8]; PALATTE_BSIZE_CTXS],
+    /// `filter_intra_cdfs[BLOCK_SIZES_ALL]` — selected by bsize.
+    pub filter_intra: [[u16; 3]; BLOCK_SIZES_ALL],
+    /// `filter_intra_mode_cdf` (5 symbols; single instance).
+    pub filter_intra_mode: [u16; 6],
+    /// `cfl_sign_cdf` (8 symbols) + `cfl_alpha_cdf[CFL_ALPHA_CONTEXTS]` (16 symbols;
+    /// the per-plane context derives from the joint sign inside
+    /// [`read_cfl_alphas`] / [`write_cfl_alphas`]).
+    pub cfl_sign: [u16; 9],
+    pub cfl_alpha: [[u16; 17]; 6],
+    /// `delta_q_cdf` / `delta_lf_multi_cdf[FRAME_LF_COUNT]` / `delta_lf_cdf`
+    /// (single instances, as in C).
+    pub delta_q: [u16; 5],
+    pub delta_lf_multi: [[u16; 5]; FRAME_LF_COUNT],
+    pub delta_lf: [u16; 5],
+    /// `intrabc_cdf` + `ndvc` (single instances).
+    pub intrabc: [u16; 3],
+    pub ndvc_joints: [u16; 5],
+    pub ndvc_comp0: [u16; 69],
+    pub ndvc_comp1: [u16; 69],
+    /// `tx_size_cdf[MAX_TX_CATS][TX_SIZE_CONTEXTS]` (3 symbols). Held at C dims;
+    /// `TX_MODE_LARGEST` codes no tx-size symbols, so the `get_tx_size_context`
+    /// neighbour selection lands with the TX_MODE_SELECT layer.
+    pub tx_size: [[[u16; 4]; TX_SIZE_CONTEXTS]; MAX_TX_CATS],
+    /// `intra_ext_tx_cdf[eset][EXT_TX_SIZES][INTRA_MODES]`: eset 1 =
+    /// `EXT_TX_SET_DTT4_IDTX_1DDCT` (7 symbols), eset 2 = `EXT_TX_SET_DTT4_IDTX`
+    /// (5 symbols); eset 0 is DCT-only and codes nothing. Selected by
+    /// `(square tx size, intra direction)` in the coefficient loop
+    /// (`av1_read_tx_type`); the intra direction is `fimode_to_intradir[..]` for a
+    /// filter-intra block, else the Y mode.
+    pub ext_tx_1ddct: [[[u16; 8]; INTRA_MODES]; EXT_TX_SIZES],
+    pub ext_tx_dtt4: [[[u16; 6]; INTRA_MODES]; EXT_TX_SIZES],
+    /// The coefficient-CDF region (`txb_skip`/`eob*`/`dc_sign`/`coeff_base*`/
+    /// `coeff_br`) as aom-txb's flat arena; its per-symbol context selection
+    /// happens inside the coefficient reader/writer.
+    pub coeff: Vec<u16>,
+}
+
+impl KfFrameContext {
+    /// An all-zero instance with a `coeff_len`-slot coefficient arena (aom-txb's
+    /// `CDF_ARENA_LEN`). Zero CDFs are not valid to code with — fill every region
+    /// before use (harnesses fill random-valid CDFs; libaom-default-table init is
+    /// a separate layer, not yet ported).
+    pub fn zeroed(coeff_len: usize) -> Self {
+        KfFrameContext {
+            kf_y: [[[0; 14]; KF_MODE_CONTEXTS]; KF_MODE_CONTEXTS],
+            uv_mode: [[[0; 15]; INTRA_MODES]; 2],
+            angle_delta: [[0; 8]; DIRECTIONAL_MODES],
+            skip: [[0; 3]; SKIP_CONTEXTS],
+            seg_spatial: [[0; 9]; SPATIAL_PREDICTION_PROBS],
+            partition: [[0; 11]; 20],
+            palette_y_mode: [[[0; 3]; PALETTE_Y_MODE_CONTEXTS]; PALATTE_BSIZE_CTXS],
+            palette_uv_mode: [[0; 3]; PALETTE_UV_MODE_CONTEXTS],
+            palette_y_size: [[0; 8]; PALATTE_BSIZE_CTXS],
+            palette_uv_size: [[0; 8]; PALATTE_BSIZE_CTXS],
+            filter_intra: [[0; 3]; BLOCK_SIZES_ALL],
+            filter_intra_mode: [0; 6],
+            cfl_sign: [0; 9],
+            cfl_alpha: [[0; 17]; 6],
+            delta_q: [0; 5],
+            delta_lf_multi: [[0; 5]; FRAME_LF_COUNT],
+            delta_lf: [0; 5],
+            intrabc: [0; 3],
+            ndvc_joints: [0; 5],
+            ndvc_comp0: [0; 69],
+            ndvc_comp1: [0; 69],
+            tx_size: [[[0; 4]; TX_SIZE_CONTEXTS]; MAX_TX_CATS],
+            ext_tx_1ddct: [[[0; 8]; INTRA_MODES]; EXT_TX_SIZES],
+            ext_tx_dtt4: [[[0; 6]; INTRA_MODES]; EXT_TX_SIZES],
+            coeff: vec![0; coeff_len],
+        }
+    }
+}
+
+/// `av1_filter_intra_allowed` (av1/common/blockd.h), in full: DC mode, no Y palette,
+/// and `av1_filter_intra_allowed_bsize` (the sequence `enable_filter_intra` flag +
+/// block within 32x32).
+pub fn filter_intra_allowed(
+    enable_filter_intra: bool,
+    bsize: usize,
+    y_mode: i32,
+    palette_size_y: i32,
+) -> bool {
+    enable_filter_intra
+        && y_mode == DC_PRED
+        && palette_size_y == 0
+        && BLOCK_SIZE_WIDE[bsize] <= 32
+        && BLOCK_SIZE_HIGH[bsize] <= 32
+}
+
+/// Shared `_fc` gate checks: the contexts this cut cannot select yet must be off.
+fn assert_fc_scope(s: &KfBlockState) {
+    assert!(
+        !(s.seg_enabled && s.update_map),
+        "segment-id spatial context selection (av1_get_spatial_seg_pred) needs the segment-id map — not modelled"
+    );
+    assert!(
+        !s.allow_palette,
+        "palette coding needs the neighbour palette colour caches — not modelled"
+    );
+    assert!(
+        !s.filter_allowed,
+        "the filter-intra gate is internal to the _fc driver — pass enable_filter_intra instead"
+    );
+}
+
+/// [`read_mb_modes_kf`] with libaom's FRAME_CONTEXT context selection: every symbol's
+/// CDF instance is picked from the [`KfFrameContext`] arrays at the moment it is read,
+/// exactly as `read_intra_frame_mode_info` (av1/decoder/decodemv.c) selects from
+/// `xd->tile_ctx`:
+///
+/// - skip on `skip[above_skip + left_skip]`;
+/// - Y mode on `kf_y[intra_mode_context[above_mode]][intra_mode_context[left_mode]]`;
+/// - Y angle delta on `angle_delta[y_mode - V_PRED]`;
+/// - UV mode on `uv_mode[cfl_allowed][y_mode]`, UV angle delta on
+///   `angle_delta[get_uv_mode(uv_mode) - V_PRED]` (the same array as Y);
+/// - the filter-intra flag on `filter_intra[bsize]`, gated by the full
+///   [`filter_intra_allowed`] (the mode-dependent gate needs no follow-up call —
+///   pass the sequence flag as `enable_filter_intra`; `s.filter_allowed` must be
+///   `false`);
+/// - the single-instance CDFs (delta-q/lf, intrabc + ndvc, cfl sign/alpha,
+///   filter-intra mode) as in C.
+///
+/// Segmentation coding and palette must be off (their selection needs the
+/// segment-id map / neighbour palette colours — see [`KfFrameContext`]).
+pub fn read_mb_modes_kf_fc(
+    dec: &mut OdEcDec,
+    f: &mut KfFrameContext,
+    s: &mut KfBlockState,
+    enable_filter_intra: bool,
+    above: Option<MiNbrKf>,
+    left: Option<MiNbrKf>,
+) -> MbModeInfoKf {
+    assert_fc_scope(s);
+    let skip_ctx = skip_txfm_context(
+        above.map_or(0, |m| m.skip_txfm),
+        left.map_or(0, |m| m.skip_txfm),
+    ) as usize;
+    let (skip, segment_id, cdef_strength, current_qindex) = read_mb_modes_kf_prefix(
+        dec, s.segid_preskip, s.seg_enabled, s.update_map, s.seg_pred, s.last_active_segid,
+        &mut f.seg_spatial[0], s.seg_skip_active, &mut f.skip[skip_ctx], s.coded_lossless,
+        s.allow_intrabc, s.mi_row, s.mi_col, s.mib_size, s.sb_size, &mut s.cdef_transmitted,
+        s.cdef_bits, s.dq_present, s.dlf_present, s.dlf_multi, s.num_planes, s.bsize,
+        &mut s.current_base_qindex, s.dq_res, &mut s.xd_delta_lf, &mut s.xd_delta_lf_from_base,
+        s.dlf_res, &mut f.delta_q, &mut f.delta_lf_multi, &mut f.delta_lf,
+    );
+    let mut info = MbModeInfoKf {
+        segment_id,
+        skip,
+        cdef_strength,
+        current_qindex,
+        delta_lf: s.xd_delta_lf,
+        delta_lf_from_base: s.xd_delta_lf_from_base,
+        use_intrabc: 0,
+        dv_row: 0,
+        dv_col: 0,
+        y_mode: 0,
+        angle_delta_y: 0,
+        uv_mode: 0,
+        cfl_alpha_idx: 0,
+        cfl_joint_sign: 0,
+        angle_delta_uv: 0,
+        palette_size: [0, 0],
+        use_filter_intra: 0,
+        filter_intra_mode: 0,
+    };
+    if s.allow_intrabc {
+        let (use_intrabc, dr, dc) = read_intrabc_info(
+            dec, &mut f.intrabc, &mut f.ndvc_joints, &mut f.ndvc_comp0, &mut f.ndvc_comp1,
+        );
+        if use_intrabc != 0 {
+            info.use_intrabc = use_intrabc;
+            info.dv_row = dr;
+            info.dv_col = dc;
+            return info;
+        }
+    }
+    let (ac, lc) = get_y_mode_ctx(above.map(|m| m.y_mode), left.map(|m| m.y_mode));
+    let mode = read_intra_y_mode(dec, &mut f.kf_y[ac][lc]);
+    info.y_mode = mode;
+    if use_angle_delta(s.bsize) && is_directional_mode(mode) {
+        info.angle_delta_y = read_angle_delta(dec, &mut f.angle_delta[(mode - V_PRED) as usize]);
+    }
+    if !s.monochrome && s.is_chroma_ref {
+        let uv = read_intra_uv_mode(
+            dec,
+            &mut f.uv_mode[s.cfl_allowed as usize][mode as usize],
+            s.cfl_allowed,
+        );
+        info.uv_mode = uv;
+        if uv == UV_CFL_PRED {
+            let (joint_sign, idx) = read_cfl_alphas(dec, &mut f.cfl_sign, &mut f.cfl_alpha);
+            info.cfl_alpha_idx = idx;
+            info.cfl_joint_sign = joint_sign;
+        }
+        let intra_mode = get_uv_mode(uv as usize);
+        if use_angle_delta(s.bsize) && is_directional_mode(intra_mode) {
+            info.angle_delta_uv =
+                read_angle_delta(dec, &mut f.angle_delta[(intra_mode - V_PRED) as usize]);
+        }
+    }
+    // (Palette would be coded here; `allow_palette` is asserted off above.)
+    let fi_allowed =
+        filter_intra_allowed(enable_filter_intra, s.bsize, mode, info.palette_size[0]);
+    let (use_fi, fi_mode) = read_filter_intra_mode_info(
+        dec, &mut f.filter_intra[s.bsize], &mut f.filter_intra_mode, fi_allowed,
+    );
+    info.use_filter_intra = use_fi;
+    info.filter_intra_mode = fi_mode;
+    info
+}
+
+/// The encode-side counterpart to [`read_mb_modes_kf_fc`]: [`write_mb_modes_kf`] with
+/// the same per-symbol FRAME_CONTEXT selection (`write_intra_prediction_modes`,
+/// av1/encoder/bitstream.c, selects identically to the decoder). Same scope gates:
+/// segmentation coding, palette, and `s.filter_allowed` must be off.
+pub fn write_mb_modes_kf_fc(
+    enc: &mut OdEcEnc,
+    info: &MbModeInfoKf,
+    f: &mut KfFrameContext,
+    s: &mut KfBlockState,
+    enable_filter_intra: bool,
+    above: Option<MiNbrKf>,
+    left: Option<MiNbrKf>,
+) {
+    assert_fc_scope(s);
+    let skip_ctx = skip_txfm_context(
+        above.map_or(0, |m| m.skip_txfm),
+        left.map_or(0, |m| m.skip_txfm),
+    ) as usize;
+    write_mb_modes_kf_prefix(
+        enc, s.segid_preskip, s.seg_enabled, s.update_map, info.segment_id, s.seg_pred,
+        s.last_active_segid, &mut f.seg_spatial[0], s.seg_skip_active, info.skip,
+        &mut f.skip[skip_ctx], s.coded_lossless, s.allow_intrabc, s.mi_row, s.mi_col, s.mib_size,
+        s.sb_size, &mut s.cdef_transmitted, s.cdef_bits, info.cdef_strength, s.dq_present,
+        s.dlf_present, s.dlf_multi, s.num_planes, s.bsize, info.current_qindex,
+        &mut s.current_base_qindex, s.dq_res, &info.delta_lf, &mut s.xd_delta_lf,
+        info.delta_lf_from_base, &mut s.xd_delta_lf_from_base, s.dlf_res, &mut f.delta_q,
+        &mut f.delta_lf_multi, &mut f.delta_lf,
+    );
+    if s.allow_intrabc {
+        write_intrabc_info(
+            enc, &mut f.intrabc, &mut f.ndvc_joints, &mut f.ndvc_comp0, &mut f.ndvc_comp1,
+            info.use_intrabc, info.dv_row, info.dv_col,
+        );
+        if info.use_intrabc != 0 {
+            return;
+        }
+    }
+    let (ac, lc) = get_y_mode_ctx(above.map(|m| m.y_mode), left.map(|m| m.y_mode));
+    write_intra_y_mode_kf(enc, &mut f.kf_y[ac][lc], info.y_mode);
+    if use_angle_delta(s.bsize) && is_directional_mode(info.y_mode) {
+        write_angle_delta(
+            enc,
+            &mut f.angle_delta[(info.y_mode - V_PRED) as usize],
+            info.angle_delta_y,
+        );
+    }
+    if !s.monochrome && s.is_chroma_ref {
+        write_intra_uv_mode(
+            enc,
+            &mut f.uv_mode[s.cfl_allowed as usize][info.y_mode as usize],
+            info.uv_mode,
+            s.cfl_allowed,
+        );
+        if info.uv_mode == UV_CFL_PRED {
+            write_cfl_alphas(
+                enc, &mut f.cfl_sign, &mut f.cfl_alpha, info.cfl_alpha_idx, info.cfl_joint_sign,
+            );
+        }
+        let intra_mode = get_uv_mode(info.uv_mode as usize);
+        if use_angle_delta(s.bsize) && is_directional_mode(intra_mode) {
+            write_angle_delta(
+                enc,
+                &mut f.angle_delta[(intra_mode - V_PRED) as usize],
+                info.angle_delta_uv,
+            );
+        }
+    }
+    // (Palette would be coded here; `allow_palette` is asserted off above.)
+    let fi_allowed =
+        filter_intra_allowed(enable_filter_intra, s.bsize, info.y_mode, info.palette_size[0]);
+    write_filter_intra_mode_info(
+        enc,
+        &mut f.filter_intra[s.bsize],
+        &mut f.filter_intra_mode,
+        fi_allowed,
+        info.use_filter_intra,
+        info.filter_intra_mode,
+    );
+}
+
 // ===================== tile-content dispatch (partition walk + block driver) =====================
 // Walks a superblock's square (NONE/SPLIT) partition tree and dispatches the KEY-frame
 // block driver at each PARTITION_NONE leaf. This is the first end-to-end tile-content

@@ -4636,3 +4636,446 @@ fn read_modes_b_tile_content_roundtrips() {
         assert_eq!(above_e, above_d, "above ctx");
     }
 }
+
+// ===================== FRAME_CONTEXT context-selection layer =====================
+
+/// Random-valid fill for every CDF region of a KfFrameContext (coeff arena unused
+/// by the mode-info path — length 0).
+#[allow(clippy::items_after_test_module)]
+fn mk_frame_ctx(rng: &mut Rng) -> aom_entropy::partition::KfFrameContext {
+    use aom_entropy::partition::KfFrameContext;
+    let mk_comp = |rng: &mut Rng| -> [u16; 69] {
+        let mut c = [0u16; 69];
+        mk_ns_cdf(rng, 2, &mut c[0..3]);
+        mk_ns_cdf(rng, 11, &mut c[3..15]);
+        mk_ns_cdf(rng, 2, &mut c[15..18]);
+        for i in 0..10 { let o = 18 + i * 3; mk_ns_cdf(rng, 2, &mut c[o..o + 3]); }
+        for i in 0..2 { let o = 48 + i * 5; mk_ns_cdf(rng, 4, &mut c[o..o + 5]); }
+        mk_ns_cdf(rng, 4, &mut c[58..63]);
+        mk_ns_cdf(rng, 2, &mut c[63..66]);
+        mk_ns_cdf(rng, 2, &mut c[66..69]);
+        c
+    };
+    let mut f = KfFrameContext::zeroed(0);
+    for row in f.kf_y.iter_mut() {
+        for cell in row.iter_mut() { mk_ns_cdf(rng, 13, cell); }
+    }
+    for (cfl, plane) in f.uv_mode.iter_mut().enumerate() {
+        // ns = 14 with CfL / 13 without; slice covers ns+1 slots (count last).
+        for cell in plane.iter_mut() { mk_ns_cdf(rng, 13 + cfl, &mut cell[..14 + cfl]); }
+    }
+    for a in f.angle_delta.iter_mut() { mk_ns_cdf(rng, 7, a); }
+    for s in f.skip.iter_mut() { mk_ns_cdf(rng, 2, s); }
+    for s in f.seg_spatial.iter_mut() { mk_ns_cdf(rng, 8, s); }
+    for (c, slot) in f.partition.iter_mut().enumerate() {
+        let bsl = c / 4;
+        let ns = if bsl == 0 { 4 } else if bsl == 4 { 8 } else { 10 };
+        mk_ns_cdf(rng, ns, slot);
+    }
+    for b in f.palette_y_mode.iter_mut() {
+        for c in b.iter_mut() { mk_ns_cdf(rng, 2, c); }
+    }
+    for c in f.palette_uv_mode.iter_mut() { mk_ns_cdf(rng, 2, c); }
+    for c in f.palette_y_size.iter_mut() { mk_ns_cdf(rng, 7, c); }
+    for c in f.palette_uv_size.iter_mut() { mk_ns_cdf(rng, 7, c); }
+    for c in f.filter_intra.iter_mut() { mk_ns_cdf(rng, 2, c); }
+    mk_ns_cdf(rng, 5, &mut f.filter_intra_mode);
+    mk_ns_cdf(rng, 8, &mut f.cfl_sign);
+    for a in f.cfl_alpha.iter_mut() { mk_ns_cdf(rng, 16, a); }
+    mk_ns_cdf(rng, 4, &mut f.delta_q);
+    for m in f.delta_lf_multi.iter_mut() { mk_ns_cdf(rng, 4, m); }
+    mk_ns_cdf(rng, 4, &mut f.delta_lf);
+    mk_ns_cdf(rng, 2, &mut f.intrabc);
+    mk_ns_cdf(rng, 4, &mut f.ndvc_joints);
+    f.ndvc_comp0 = mk_comp(rng);
+    f.ndvc_comp1 = mk_comp(rng);
+    for cat in f.tx_size.iter_mut() {
+        for c in cat.iter_mut() { mk_ns_cdf(rng, 3, c); }
+    }
+    for sq in f.ext_tx_1ddct.iter_mut() {
+        for c in sq.iter_mut() { mk_ns_cdf(rng, 7, c); }
+    }
+    for sq in f.ext_tx_dtt4.iter_mut() {
+        for c in sq.iter_mut() { mk_ns_cdf(rng, 5, c); }
+    }
+    f
+}
+
+/// Field-by-field KfFrameContext equality (named-field failure messages).
+fn assert_fc_eq(
+    a: &aom_entropy::partition::KfFrameContext,
+    b: &aom_entropy::partition::KfFrameContext,
+    what: &str,
+) {
+    assert_eq!(a.kf_y, b.kf_y, "{what}: kf_y cdf");
+    assert_eq!(a.uv_mode, b.uv_mode, "{what}: uv_mode cdf");
+    assert_eq!(a.angle_delta, b.angle_delta, "{what}: angle_delta cdf");
+    assert_eq!(a.skip, b.skip, "{what}: skip cdf");
+    assert_eq!(a.seg_spatial, b.seg_spatial, "{what}: seg_spatial cdf");
+    assert_eq!(a.partition, b.partition, "{what}: partition arena");
+    assert_eq!(a.palette_y_mode, b.palette_y_mode, "{what}: palette_y_mode cdf");
+    assert_eq!(a.palette_uv_mode, b.palette_uv_mode, "{what}: palette_uv_mode cdf");
+    assert_eq!(a.palette_y_size, b.palette_y_size, "{what}: palette_y_size cdf");
+    assert_eq!(a.palette_uv_size, b.palette_uv_size, "{what}: palette_uv_size cdf");
+    assert_eq!(a.filter_intra, b.filter_intra, "{what}: filter_intra cdf");
+    assert_eq!(a.filter_intra_mode, b.filter_intra_mode, "{what}: filter_intra_mode cdf");
+    assert_eq!(a.cfl_sign, b.cfl_sign, "{what}: cfl_sign cdf");
+    assert_eq!(a.cfl_alpha, b.cfl_alpha, "{what}: cfl_alpha cdf");
+    assert_eq!(a.delta_q, b.delta_q, "{what}: delta_q cdf");
+    assert_eq!(a.delta_lf_multi, b.delta_lf_multi, "{what}: delta_lf_multi cdf");
+    assert_eq!(a.delta_lf, b.delta_lf, "{what}: delta_lf cdf");
+    assert_eq!(a.intrabc, b.intrabc, "{what}: intrabc cdf");
+    assert_eq!(a.ndvc_joints, b.ndvc_joints, "{what}: ndvc_joints cdf");
+    assert_eq!(a.ndvc_comp0, b.ndvc_comp0, "{what}: ndvc_comp0 cdf");
+    assert_eq!(a.ndvc_comp1, b.ndvc_comp1, "{what}: ndvc_comp1 cdf");
+    assert_eq!(a.tx_size, b.tx_size, "{what}: tx_size cdf");
+    assert_eq!(a.ext_tx_1ddct, b.ext_tx_1ddct, "{what}: ext_tx_1ddct cdf");
+    assert_eq!(a.ext_tx_dtt4, b.ext_tx_dtt4, "{what}: ext_tx_dtt4 cdf");
+    assert_eq!(a.coeff, b.coeff, "{what}: coeff arena");
+}
+
+/// The `_fc` writer must be byte- and state-identical to the C-validated
+/// `write_mb_modes_kf` when the latter is handed the SAME instances the selection
+/// rules pick (selection functions each validated against C on their own). Cases
+/// where the Y and UV angle deltas land on the same `angle_delta` instance are the
+/// one shape the pre-selected API cannot express (one shared instance adapting
+/// twice); those are counted and covered by the `_fc` roundtrip test below.
+#[test]
+fn mb_modes_kf_fc_matches_preselected_writer() {
+    use aom_entropy::dec::OdEcDec;
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{
+        filter_intra_allowed, get_uv_mode, get_y_mode_ctx, is_directional_mode,
+        read_mb_modes_kf_fc, skip_txfm_context, use_angle_delta, write_mb_modes_kf,
+        write_mb_modes_kf_fc, KfBlockState, KfCdfs, MbModeInfoKf, MiNbrKf,
+    };
+    let mut rng = Rng(0xfc_c0de_57c7_0001u64);
+    let mut same_angle_cases = 0usize;
+    let mut compared_cases = 0usize;
+    for _ in 0..60_000 {
+        let bsize = [0usize, 3, 6, 9, 12][(rng.next() % 5) as usize];
+        let mono = rng.next() & 1 == 1;
+        let chroma_ref = rng.next() & 1 == 1;
+        let cfl_allowed = !mono && rng.next() & 1 == 1;
+        let allow_intrabc = rng.next().is_multiple_of(8);
+        let enable_fi = rng.next() & 1 == 1;
+        let dq_res = 1 << (rng.next() % 4);
+        let dlf_res = 1 << (rng.next() % 4);
+        let st = KfBlockState {
+            segid_preskip: false, seg_enabled: false, update_map: false, seg_pred: 0,
+            last_active_segid: 0, seg_skip_active: false, mi_row: 0, mi_col: 0, mib_size: 16,
+            sb_size: 12, bsize, coded_lossless: false, allow_intrabc,
+            cdef_bits: (rng.next() % 4) as u32, dq_present: rng.next() & 1 == 1,
+            dlf_present: rng.next() & 1 == 1, dlf_multi: rng.next() & 1 == 1,
+            num_planes: if mono { 1 } else { 3 }, dq_res, dlf_res, monochrome: mono,
+            is_chroma_ref: chroma_ref, cfl_allowed, allow_palette: false, bit_depth: 8,
+            filter_allowed: false, mb_to_top_edge: 0, has_above: false, has_left: false,
+            cdef_transmitted: [false; 4], current_base_qindex: 100,
+            xd_delta_lf: [0; 4], xd_delta_lf_from_base: 0,
+        };
+        let mut st = st;
+        st.dlf_present = st.dq_present && st.dlf_present;
+        let above = (rng.next() & 1 == 1)
+            .then(|| MiNbrKf { y_mode: (rng.next() % 13) as i32, skip_txfm: (rng.next() & 1) as i32 });
+        let left = (rng.next() & 1 == 1)
+            .then(|| MiNbrKf { y_mode: (rng.next() % 13) as i32, skip_txfm: (rng.next() & 1) as i32 });
+
+        // random valid block info
+        let skip = (rng.next() & 1) as i32;
+        let use_intrabc = if allow_intrabc { (rng.next() & 1) as i32 } else { 0 };
+        let (dr, dc) = if use_intrabc != 0 {
+            (((rng.next() % 51) as i32 - 25) * 8, ((rng.next() % 51) as i32 - 25) * 8)
+        } else {
+            (0, 0)
+        };
+        // an intrabc block's mode is DC_PRED (read_intrabc_info sets it; not coded)
+        let y_mode = if use_intrabc != 0 { 0 } else { (rng.next() % 13) as i32 };
+        let y_ang_coded = use_intrabc == 0 && use_angle_delta(bsize) && is_directional_mode(y_mode);
+        let y_ang = if y_ang_coded { (rng.next() % 7) as i32 - 3 } else { 0 };
+        let uv_coded = use_intrabc == 0 && !mono && chroma_ref;
+        let uv_n = if cfl_allowed { 14 } else { 13 };
+        let uv_mode = if uv_coded { (rng.next() % uv_n as u64) as i32 } else { 0 };
+        let js = if uv_coded && uv_mode == 13 { (rng.next() % 8) as i32 } else { 0 };
+        let (su, sv) = ((js + 1) / 3, (js + 1) % 3);
+        let u = if uv_coded && uv_mode == 13 && su != 0 { (rng.next() % 16) as i32 } else { 0 };
+        let v = if uv_coded && uv_mode == 13 && sv != 0 { (rng.next() % 16) as i32 } else { 0 };
+        let uv_intra = get_uv_mode(uv_mode as usize);
+        let uv_ang_coded = uv_coded && use_angle_delta(bsize) && is_directional_mode(uv_intra);
+        let uv_ang = if uv_ang_coded { (rng.next() % 7) as i32 - 3 } else { 0 };
+        let fi_allowed = use_intrabc == 0 && filter_intra_allowed(enable_fi, bsize, y_mode, 0);
+        let use_fi = if fi_allowed && rng.next() & 1 == 1 { 1 } else { 0 };
+        let fi_mode = if use_fi != 0 { (rng.next() % 5) as i32 } else { 0 };
+        // encoder invariant: current_qindex deviates from the carry only when the
+        // delta-q gate ((bsize != sb_size || !skip) at the SB upper-left) codes it
+        let dq_coded = st.dq_present && (bsize != st.sb_size || skip == 0);
+        let cur_q = if dq_coded { 100 + ((rng.next() % 41) as i32 - 20) * dq_res } else { 100 };
+        let info = MbModeInfoKf {
+            segment_id: 0, skip,
+            cdef_strength: if st.cdef_bits > 0 { (rng.next() % (1u64 << st.cdef_bits)) as i32 } else { 0 },
+            current_qindex: cur_q, delta_lf: [0; 4], delta_lf_from_base: 0, use_intrabc,
+            dv_row: dr, dv_col: dc, y_mode, angle_delta_y: y_ang, uv_mode,
+            cfl_alpha_idx: (u << 4) | v, cfl_joint_sign: js, angle_delta_uv: uv_ang,
+            palette_size: [0, 0], use_filter_intra: use_fi, filter_intra_mode: fi_mode,
+        };
+        let f0 = mk_frame_ctx(&mut rng);
+
+        // path 1: the _fc writer (inline selection)
+        let mut f1 = f0.clone();
+        let mut s1 = st.clone();
+        let mut e1 = OdEcEnc::new();
+        write_mb_modes_kf_fc(&mut e1, &info, &mut f1, &mut s1, enable_fi, above, left);
+        let b1 = e1.done().to_vec();
+
+        // the _fc reader roundtrips it (every case, including shared-angle ones)
+        {
+            let mut fr = f0.clone();
+            let mut sr = st.clone();
+            let mut dec = OdEcDec::new(&b1);
+            let got = read_mb_modes_kf_fc(&mut dec, &mut fr, &mut sr, enable_fi, above, left);
+            // read_cdef reports -1 when no strength is read (intrabc frame / skip block)
+            let mut expected = info.clone();
+            if allow_intrabc || skip != 0 {
+                expected.cdef_strength = -1;
+            }
+            assert_eq!(got, expected, "fc roundtrip info");
+            assert_fc_eq(&f1, &fr, "fc roundtrip");
+            assert_eq!(
+                (s1.current_base_qindex, s1.xd_delta_lf, s1.xd_delta_lf_from_base, s1.cdef_transmitted),
+                (sr.current_base_qindex, sr.xd_delta_lf, sr.xd_delta_lf_from_base, sr.cdef_transmitted),
+                "fc roundtrip carries"
+            );
+        }
+
+        // path 2: the C-validated pre-selected writer on hand-picked instances
+        let y_idx = if y_ang_coded { (y_mode - 1) as usize } else { 0 };
+        let uv_idx = if uv_ang_coded { (uv_intra - 1) as usize } else { 0 };
+        if y_ang_coded && uv_ang_coded && y_idx == uv_idx {
+            // one shared instance adapting twice — inexpressible with pre-selected
+            // per-symbol instances; covered by the roundtrip above.
+            same_angle_cases += 1;
+            continue;
+        }
+        compared_cases += 1;
+        let skip_ctx = skip_txfm_context(
+            above.map_or(0, |m| m.skip_txfm),
+            left.map_or(0, |m| m.skip_txfm),
+        ) as usize;
+        let (ac, lc) = get_y_mode_ctx(above.map(|m| m.y_mode), left.map(|m| m.y_mode));
+        let mut f2 = f0.clone();
+        let mut c = KfCdfs {
+            seg: f2.seg_spatial[0],
+            skip: f2.skip[skip_ctx],
+            delta_q: f2.delta_q,
+            delta_lf_multi: f2.delta_lf_multi,
+            delta_lf: f2.delta_lf,
+            intrabc: f2.intrabc,
+            ndvc_joints: f2.ndvc_joints,
+            ndvc_comp0: f2.ndvc_comp0,
+            ndvc_comp1: f2.ndvc_comp1,
+            y_mode: f2.kf_y[ac][lc],
+            y_angle: f2.angle_delta[y_idx],
+            uv_mode: f2.uv_mode[cfl_allowed as usize][y_mode as usize],
+            cfl_sign: f2.cfl_sign,
+            cfl_alpha: f2.cfl_alpha,
+            uv_angle: f2.angle_delta[uv_idx],
+            pal_y_mode: [0; 3],
+            pal_y_size: [0; 8],
+            pal_uv_mode: [0; 3],
+            pal_uv_size: [0; 8],
+            fi_use: f2.filter_intra[bsize],
+            fi_mode: f2.filter_intra_mode,
+        };
+        let mut s2 = st.clone();
+        s2.filter_allowed = filter_intra_allowed(enable_fi, bsize, y_mode, 0);
+        let mut e2 = OdEcEnc::new();
+        write_mb_modes_kf(&mut e2, &info, &mut c, &mut s2);
+        let b2 = e2.done().to_vec();
+        assert_eq!(b1, b2, "fc writer vs pre-selected writer bytes");
+        // fold the adapted instances back into the array model and compare whole
+        f2.seg_spatial[0] = c.seg;
+        f2.skip[skip_ctx] = c.skip;
+        f2.delta_q = c.delta_q;
+        f2.delta_lf_multi = c.delta_lf_multi;
+        f2.delta_lf = c.delta_lf;
+        f2.intrabc = c.intrabc;
+        f2.ndvc_joints = c.ndvc_joints;
+        f2.ndvc_comp0 = c.ndvc_comp0;
+        f2.ndvc_comp1 = c.ndvc_comp1;
+        f2.kf_y[ac][lc] = c.y_mode;
+        if y_ang_coded {
+            f2.angle_delta[y_idx] = c.y_angle;
+        }
+        if uv_coded {
+            f2.uv_mode[cfl_allowed as usize][y_mode as usize] = c.uv_mode;
+        }
+        if uv_ang_coded {
+            f2.angle_delta[uv_idx] = c.uv_angle;
+        }
+        f2.cfl_sign = c.cfl_sign;
+        f2.cfl_alpha = c.cfl_alpha;
+        f2.filter_intra[bsize] = c.fi_use;
+        f2.filter_intra_mode = c.fi_mode;
+        assert_fc_eq(&f1, &f2, "fc writer vs pre-selected writer CDFs");
+        assert_eq!(
+            (s1.current_base_qindex, s1.xd_delta_lf, s1.xd_delta_lf_from_base, s1.cdef_transmitted),
+            (s2.current_base_qindex, s2.xd_delta_lf, s2.xd_delta_lf_from_base, s2.cdef_transmitted),
+            "fc writer vs pre-selected writer carries"
+        );
+    }
+    assert!(compared_cases > 40_000, "pre-selected comparison starved: {compared_cases}");
+    assert!(same_angle_cases > 100, "shared-angle-instance cases never generated: {same_angle_cases}");
+}
+
+/// Multi-block `_fc` roundtrip: sequences of blocks adapt the shared per-context
+/// arrays through one coder; decoded info + every CDF array + the state carries stay
+/// in lockstep, and the selection is asserted NON-VACUOUS — many distinct context
+/// instances must actually adapt across the sweep.
+#[test]
+fn mb_modes_kf_fc_multi_block_roundtrips_with_ctx_diversity() {
+    use aom_entropy::dec::OdEcDec;
+    use aom_entropy::enc::OdEcEnc;
+    use aom_entropy::partition::{
+        filter_intra_allowed, get_uv_mode, is_directional_mode, read_mb_modes_kf_fc,
+        use_angle_delta, write_mb_modes_kf_fc, KfBlockState, MbModeInfoKf, MiNbrKf,
+    };
+    let mut rng = Rng(0xfc_c0de_57c7_0002u64);
+    let mut kf_y_cells = [[false; 5]; 5];
+    let mut skip_ctxs = [false; 3];
+    let mut angle_insts = [false; 8];
+    let mut uv_insts = [[false; 13]; 2];
+    let mut fi_bsizes = [false; 22];
+    for _ in 0..8_000 {
+        let mono = rng.next() & 1 == 1;
+        let enable_fi = rng.next() & 1 == 1;
+        let f0 = mk_frame_ctx(&mut rng);
+        let base = KfBlockState {
+            segid_preskip: false, seg_enabled: false, update_map: false, seg_pred: 0,
+            last_active_segid: 0, seg_skip_active: false, mi_row: 0, mi_col: 0, mib_size: 16,
+            sb_size: 12, bsize: 12, coded_lossless: false, allow_intrabc: false,
+            cdef_bits: (rng.next() % 4) as u32, dq_present: false, dlf_present: false,
+            dlf_multi: false, num_planes: if mono { 1 } else { 3 }, dq_res: 1, dlf_res: 1,
+            monochrome: mono, is_chroma_ref: false, cfl_allowed: false, allow_palette: false,
+            bit_depth: 8, filter_allowed: false, mb_to_top_edge: 0, has_above: false,
+            has_left: false, cdef_transmitted: [false; 4], current_base_qindex: 100,
+            xd_delta_lf: [0; 4], xd_delta_lf_from_base: 0,
+        };
+        // choose a per-sequence block list with fresh neighbours per block
+        let nblocks = 4 + (rng.next() % 5) as usize;
+        let mut plan = Vec::new();
+        for _ in 0..nblocks {
+            let bsize = [3usize, 6, 9, 12][(rng.next() % 4) as usize];
+            let chroma_ref = !mono && rng.next() & 1 == 1;
+            let cfl_allowed = chroma_ref && rng.next() & 1 == 1;
+            let above = (rng.next() & 1 == 1).then(|| MiNbrKf {
+                y_mode: (rng.next() % 13) as i32,
+                skip_txfm: (rng.next() & 1) as i32,
+            });
+            let left = (rng.next() & 1 == 1).then(|| MiNbrKf {
+                y_mode: (rng.next() % 13) as i32,
+                skip_txfm: (rng.next() & 1) as i32,
+            });
+            let y_mode = (rng.next() % 13) as i32;
+            let y_ang = if use_angle_delta(bsize) && is_directional_mode(y_mode) {
+                (rng.next() % 7) as i32 - 3
+            } else {
+                0
+            };
+            let uv_n = if cfl_allowed { 14 } else { 13 };
+            let uv_mode = if chroma_ref { (rng.next() % uv_n as u64) as i32 } else { 0 };
+            let js = if chroma_ref && uv_mode == 13 { (rng.next() % 8) as i32 } else { 0 };
+            let (su, sv) = ((js + 1) / 3, (js + 1) % 3);
+            let u = if chroma_ref && uv_mode == 13 && su != 0 { (rng.next() % 16) as i32 } else { 0 };
+            let v = if chroma_ref && uv_mode == 13 && sv != 0 { (rng.next() % 16) as i32 } else { 0 };
+            let uv_intra = get_uv_mode(uv_mode as usize);
+            let uv_ang = if chroma_ref && use_angle_delta(bsize) && is_directional_mode(uv_intra) {
+                (rng.next() % 7) as i32 - 3
+            } else {
+                0
+            };
+            let fi_allowed = filter_intra_allowed(enable_fi, bsize, y_mode, 0);
+            let use_fi = if fi_allowed && rng.next() & 1 == 1 { 1 } else { 0 };
+            let fi_mode = if use_fi != 0 { (rng.next() % 5) as i32 } else { 0 };
+            let info = MbModeInfoKf {
+                segment_id: 0, skip: (rng.next() & 1) as i32,
+                cdef_strength: if base.cdef_bits > 0 { (rng.next() % (1u64 << base.cdef_bits)) as i32 } else { 0 },
+                current_qindex: 100, delta_lf: [0; 4], delta_lf_from_base: 0, use_intrabc: 0,
+                dv_row: 0, dv_col: 0, y_mode, angle_delta_y: y_ang, uv_mode,
+                cfl_alpha_idx: (u << 4) | v, cfl_joint_sign: js, angle_delta_uv: uv_ang,
+                palette_size: [0, 0], use_filter_intra: use_fi, filter_intra_mode: fi_mode,
+            };
+            plan.push((bsize, chroma_ref, cfl_allowed, above, left, info));
+        }
+        // encode the sequence over one coder
+        let mut fe = f0.clone();
+        let mut se = base.clone();
+        let mut enc = OdEcEnc::new();
+        for (bsize, chroma_ref, cfl_allowed, above, left, info) in &plan {
+            se.bsize = *bsize;
+            se.is_chroma_ref = *chroma_ref;
+            se.cfl_allowed = *cfl_allowed;
+            write_mb_modes_kf_fc(&mut enc, info, &mut fe, &mut se, enable_fi, *above, *left);
+        }
+        let b = enc.done().to_vec();
+        // decode it back
+        let mut fd = f0.clone();
+        let mut sd = base.clone();
+        let mut dec = OdEcDec::new(&b);
+        for (i, (bsize, chroma_ref, cfl_allowed, above, left, info)) in plan.iter().enumerate() {
+            sd.bsize = *bsize;
+            sd.is_chroma_ref = *chroma_ref;
+            sd.cfl_allowed = *cfl_allowed;
+            let got = read_mb_modes_kf_fc(&mut dec, &mut fd, &mut sd, enable_fi, *above, *left);
+            // every block sits at the SB upper-left (0,0): cdef_transmitted resets
+            // per block, so non-skip blocks read the strength, skip blocks report -1
+            let mut expected = info.clone();
+            if info.skip != 0 {
+                expected.cdef_strength = -1;
+            }
+            assert_eq!(&got, &expected, "block {i} info");
+        }
+        assert_fc_eq(&fe, &fd, "multi-block fc");
+        assert_eq!(
+            (se.cdef_transmitted, se.current_base_qindex),
+            (sd.cdef_transmitted, sd.current_base_qindex),
+            "multi-block carries"
+        );
+        // tally which context instances adapted (differ from the initial fill)
+        for ((flag, new), old) in kf_y_cells
+            .iter_mut()
+            .flatten()
+            .zip(fd.kf_y.iter().flatten())
+            .zip(f0.kf_y.iter().flatten())
+        {
+            *flag |= new != old;
+        }
+        for ((flag, new), old) in skip_ctxs.iter_mut().zip(&fd.skip).zip(&f0.skip) {
+            *flag |= new != old;
+        }
+        for ((flag, new), old) in angle_insts.iter_mut().zip(&fd.angle_delta).zip(&f0.angle_delta) {
+            *flag |= new != old;
+        }
+        for ((flag, new), old) in uv_insts
+            .iter_mut()
+            .flatten()
+            .zip(fd.uv_mode.iter().flatten())
+            .zip(f0.uv_mode.iter().flatten())
+        {
+            *flag |= new != old;
+        }
+        for ((flag, new), old) in fi_bsizes.iter_mut().zip(&fd.filter_intra).zip(&f0.filter_intra) {
+            *flag |= new != old;
+        }
+    }
+    // the selection must be exercised across many distinct instances — a
+    // single-shared-CDF regression would collapse these counts.
+    let kf_y_n: usize = kf_y_cells.iter().flatten().filter(|&&x| x).count();
+    let skip_n = skip_ctxs.iter().filter(|&&x| x).count();
+    let angle_n = angle_insts.iter().filter(|&&x| x).count();
+    let uv_n: usize = uv_insts.iter().flatten().filter(|&&x| x).count();
+    let fi_n = fi_bsizes.iter().filter(|&&x| x).count();
+    assert!(kf_y_n >= 20, "kf_y context diversity too low: {kf_y_n}/25");
+    assert!(skip_n == 3, "skip context diversity too low: {skip_n}/3");
+    assert!(angle_n == 8, "angle_delta instance diversity too low: {angle_n}/8");
+    assert!(uv_n >= 20, "uv_mode instance diversity too low: {uv_n}/26");
+    assert!(fi_n >= 3, "filter_intra bsize diversity too low: {fi_n}/22");
+}
