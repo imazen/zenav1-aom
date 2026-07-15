@@ -97,3 +97,76 @@ pub fn assemble_obu_frame_single_tile(
     out.extend_from_slice(&payload);
     out
 }
+
+/// Assemble the `OBU_FRAME` PAYLOAD for a MULTI-tile frame (`num_tiles > 1`) in
+/// the default `num_tg == 1` form real aomenc produces, from a PRE-SERIALIZED,
+/// byte-aligned frame header plus the per-tile raw entropy payloads.
+///
+/// Real aomenc codes a multi-tile keyframe as a SINGLE `OBU_FRAME` with all
+/// tiles in one tile group and `tile_start_and_end_present_flag == 0` --
+/// verified against `av1/encoder/bitstream.c`: `obu_type = (num_tg == 1) ?
+/// OBU_FRAME : OBU_TILE_GROUP` (`:3815`) and the present flag passed to
+/// `write_tile_group_header` is `cpi->num_tg > 1` (`:3830`), both false for the
+/// default `num_tg == 1`. Layout, per the AV1 spec's `frame_obu(sz)`:
+///
+/// ```text
+/// frame_header_obu(); byte_alignment()   // == `frame_header_bytes` (caller-supplied, byte-aligned)
+/// tile_group_obu(sz) {
+///     tile_start_and_end_present_flag    // one 0 bit (num_tg == 1)
+///     byte_alignment()                   // -> the single trailing byte is 0x00
+///     for each tile in raster (tile-row-major) order:
+///         if not last: tile_size_minus_1 // tile_size_bytes-byte LE
+///         tile_data                      // raw entropy bytes
+/// }
+/// ```
+///
+/// Because the tile group starts byte-aligned (the frame header already ended on
+/// a byte boundary), `tile_start_and_end_present_flag == 0` followed by
+/// `byte_alignment()` is exactly one `0x00` byte -- appended here directly.
+///
+/// `frame_header_bytes` is the complete, byte-aligned `frame_header_obu()`
+/// output. It is taken as raw bytes (not a `FrameHeaderObu`) DELIBERATELY: the
+/// aom-entropy `write_tile_info` multi-tile branch currently hardcodes
+/// `context_update_tile_id`/`tile_size_bytes_minus_1`
+/// (`crates/aom-entropy/src/header.rs`), so re-serializing a multi-tile
+/// `FrameHeaderObu` does not yet round-trip -- the caller supplies the header
+/// bytes (e.g. bootstrapped from the parsed real header) until that writer takes
+/// the real values.
+///
+/// Every tile EXCEPT the last is prefixed by a `tile_size_bytes`-byte
+/// little-endian `tile_size_minus_1` (= payload len - 1; the encoder's
+/// `AV1_MIN_TILE_SIZE_BYTES == 1` offset); the last tile is the remainder with
+/// no prefix. Inverse of the decoder's `split_tiles`
+/// (`av1/decoder/decodeframe.c` `get_tile_buffer`). `tile_size_bytes` is the
+/// header's decoded field (1..=4). `tiles` holds each tile's raw entropy bytes
+/// (from a per-tile `pack_tile` + `OdEcEnc::done()`), raster order.
+pub fn assemble_multitile_frame_obu_payload(
+    frame_header_bytes: &[u8],
+    tile_size_bytes: i32,
+    tiles: &[Vec<u8>],
+) -> Vec<u8> {
+    assert!(tiles.len() > 1, "multi-tile assembler requires > 1 tile");
+    assert!(
+        (1..=4).contains(&tile_size_bytes),
+        "tile_size_bytes must be 1..=4 (got {tile_size_bytes})"
+    );
+    let mut payload = frame_header_bytes.to_vec();
+    // tile_group_obu() header for num_tg == 1: tile_start_and_end_present_flag
+    // (one 0 bit) + byte_alignment() -> one 0x00 byte (header already aligned).
+    payload.push(0);
+    let n = tiles.len();
+    let tsb = tile_size_bytes as usize;
+    for (i, tb) in tiles.iter().enumerate() {
+        if i + 1 < n {
+            // Non-last tile: tile_size_bytes-byte little-endian (payload_len - 1).
+            let v = (tb.len() as u64)
+                .checked_sub(1)
+                .expect("a coded tile payload is never empty");
+            for b in 0..tsb {
+                payload.push(((v >> (8 * b)) & 0xff) as u8);
+            }
+        }
+        payload.extend_from_slice(tb);
+    }
+    payload
+}
