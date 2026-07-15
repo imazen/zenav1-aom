@@ -2459,3 +2459,51 @@ bit-identical floats. **Port scope:** `av1_nn_predict`+prec_reduce (small) →
 floats, extract from `partition_cnn_weights.h`) → feature assembly + thresholds +
 decision → integrate into `rd_pick_partition_real` (per-64×64 CNN cache + the
 gating `frame_is_intra && level && sb_size>=64 && bsize<=64 && whole_blk_in_frame`).
+
+### CNN PORTED + WIRED — but the vgrad-256-cq32 divergence is NOT the CNN (CORRECTION, 2026-07-15)
+
+The intra CNN partition prune is now **fully ported and bit-exact**, landed on origin/main:
+- `b625539` isolation oracle, `e3315d4` DNN (`av1_nn_predict`+prec_reduce), `5fae56a` CNN
+  5-layer conv engine + weights, `9071bf8` full decision (log_q + feature assembly + thresholds
+  + 4 flags), `a600394` wire-in to `rd_pick_partition_real` (quad_tree_idx threading +
+  `extract_intra_cnn_window` + the exact gating/order). Flags are bit-exact vs the real libaom
+  AVX2 inference (`cnn_partition_decision_diff`, `cnn_partition_cnn_diff`, `cnn_partition_nn_diff`).
+
+**The "ISOLATION PROVEN — culprit is #1 (CNN)" verdict above is SUPERSEDED.** That verdict was
+based on the CNN *would-prune* on a synthetic window — not on a differential test of whether the
+CNN causes a port-vs-C *divergence*. With the CNN now actually wired in, the definitive result:
+
+- The CNN fires on vgrad-256-cq32 and (on the real encode's source window) sets
+  `square_split_disabled` at every 64×64 SB root — but these flags **match C bit-exactly**, so
+  port and C get the SAME CNN constraints. Wiring the CNN in left byte-5 (157 vs 8) **unchanged**.
+  The CNN therefore CANNOT be the source of this divergence. **#1 is eliminated.**
+- **#11 `prune_2d_txfm_mode` PRUNE_2 is also eliminated:** the intra path that consumes it
+  (`prune_txk_type`) is gated on `prune_tx_type_est_rd`, which is speed≥4; `prune_tx_2D` is
+  `is_inter`-only. So PRUNE_1 vs PRUNE_2 does not affect an intra KEY frame at speed 1.
+- Also eliminated (all `!frame_is_intra_only`, or nonrd/speed≥4): `model_based_prune_tx`,
+  `av1_ml_predict_breakout`, `av1_ml_early_term_after_split`, `av1_ml_prune_rect_partition`,
+  `simple_motion_search_*`, `ml_predict_var_partitioning`.
+
+**Actual root (localized, KB-3):** a partition-search **RD near-tie** (KB-2 class). Dumping the
+port's SB(0,0) tree: the port picks **PARTITION_HORZ** (two 64×32 DC / TX_64X32 blocks); C picks
+a different partition. Diverges at byte 5 and **never re-converges** (`last_common_idx=4` = last
+header byte) — an early partition cascade, not a missing prune. A speed-1 RD-cost delta tips the
+NONE/HORZ/VERT comparison for this content+qindex.
+
+**Two LATENT speed-1 bugs found while isolating** (neither is this cell's cause — forcing each to
+its speed-1 value leaves the 8 cells byte-identical, so no current test distinguishes them; both
+recorded in KB-3 for a future threaded fix + new RECT-partition speed-1 validation cells):
+`part4_prune.rs` hardcodes the 4-way DNN `LEVEL_INDEX=0` (C: `min(speed,3)`); `tx_search.rs`
+`get_search_init_depth_intra_speed0` hardcodes rect init-depth 0 (C: `intra_tx_size_search
+_init_depth_rect=1` at speed≥1).
+
+**Next step** (blocked on tooling ownership): dump the port's per-candidate RD (NONE/HORZ/VERT) at
+the SB(0,0) 64×64 node vs the C reference. Needs an encode-side RD-dump shim, but `shim_encode
+_av1_kf` lives in the decoder-owned `dec_shim.c` and drives the opaque `aom_codec` API (no
+`cpi->sf` hook) — a coordinated new shim entry point is required to bisect the remaining speed-1
+RD deltas (`perform_coeff_opt=2`, `tx_domain_dist_level/thres_level=1`, `adaptive_txb_search
+_level=2`, `top_intra_model_count_allowed=3`).
+
+**cpu-used=1 all-intra coverage: 13 of 14 content cells byte-identical** (all 6 flat + 7 of 8
+gentle-slope textured); the 1 holdout (vgrad-256-cq32) is the RD near-tie above (KB-3), now fully
+isolated as NOT a learned-model prune. Full `cargo test -p aom-encode`: 89 passed, 0 failed.
