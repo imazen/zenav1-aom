@@ -355,38 +355,38 @@ fn add_noise_to_block(
         cr_offset = 0;
     }
 
-    let min_luma;
-    let max_luma;
-    let min_chroma;
-    let max_chroma;
-    if p.clip_to_restricted_range {
-        min_luma = MIN_LUMA_LEGAL_RANGE << (bit_depth - 8);
-        max_luma = MAX_LUMA_LEGAL_RANGE << (bit_depth - 8);
-        if mc_identity {
-            min_chroma = MIN_LUMA_LEGAL_RANGE << (bit_depth - 8);
-            max_chroma = MAX_LUMA_LEGAL_RANGE << (bit_depth - 8);
+    let (min_luma, max_luma, min_chroma, max_chroma) = if p.clip_to_restricted_range {
+        let (min_chroma, max_chroma) = if mc_identity {
+            (
+                MIN_LUMA_LEGAL_RANGE << (bit_depth - 8),
+                MAX_LUMA_LEGAL_RANGE << (bit_depth - 8),
+            )
         } else {
-            min_chroma = MIN_CHROMA_LEGAL_RANGE << (bit_depth - 8);
-            max_chroma = MAX_CHROMA_LEGAL_RANGE << (bit_depth - 8);
-        }
+            (
+                MIN_CHROMA_LEGAL_RANGE << (bit_depth - 8),
+                MAX_CHROMA_LEGAL_RANGE << (bit_depth - 8),
+            )
+        };
+        (
+            MIN_LUMA_LEGAL_RANGE << (bit_depth - 8),
+            MAX_LUMA_LEGAL_RANGE << (bit_depth - 8),
+            min_chroma,
+            max_chroma,
+        )
     } else {
-        min_luma = 0;
-        min_chroma = 0;
-        max_luma = (256 << (bit_depth - 8)) - 1;
-        max_chroma = (256 << (bit_depth - 8)) - 1;
-    }
+        let full = (256 << (bit_depth - 8)) - 1;
+        (0, full, 0, full)
+    };
     let index_max = (256 << (bit_depth - 8)) - 1;
 
     for i in 0..(half_luma_height << (1 - ss_y)) {
         for j in 0..(half_luma_width << (1 - ss_x)) {
-            let average_luma;
-            if ss_x != 0 {
+            let average_luma = if ss_x != 0 {
                 let base = luma_base + ((i << ss_y) as usize) * luma_stride + ((j << ss_x) as usize);
-                average_luma = (luma[base] as i32 + luma[base + 1] as i32 + 1) >> 1;
+                (luma[base] as i32 + luma[base + 1] as i32 + 1) >> 1
             } else {
-                average_luma =
-                    luma[luma_base + ((i << ss_y) as usize) * luma_stride + j as usize] as i32;
-            }
+                luma[luma_base + ((i << ss_y) as usize) * luma_stride + j as usize] as i32
+            };
 
             if apply_cb {
                 let cpix_idx = cb_base + (i as usize) * chroma_stride + j as usize;
@@ -462,7 +462,7 @@ fn copy_area(
 
 /// `extend_even` — replicate the last odd column/row of the luma plane.
 fn extend_even(dst: &mut [u16], dst_stride: usize, width: usize, height: usize) {
-    if width % 2 == 0 && height % 2 == 0 {
+    if width.is_multiple_of(2) && height.is_multiple_of(2) {
         return;
     }
     if width & 1 == 1 {
@@ -1088,8 +1088,8 @@ pub fn add_film_grain(
     // For a monochrome image the C treats it as I420 (ss 1,1) for the (unused)
     // chroma template sizing; the luma output is independent of that choice.
     let (css_x, css_y) = if mono { (1, 1) } else { (ss_x, ss_y) };
-    let cw = (width >> css_x as usize).max(0);
-    let ch = (height >> css_y as usize).max(0);
+    let cw = width >> css_x as usize;
+    let ch = height >> css_y as usize;
     let chroma_stride = cw;
 
     // Source (cropped) chroma dims = decoder's stored chroma dims.
