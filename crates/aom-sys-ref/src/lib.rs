@@ -8927,6 +8927,20 @@ extern "C" {
     fn shim_ac_quant_qtx(qindex: i32, delta: i32, bit_depth: i32) -> i32;
     fn shim_rdcost(rm: i32, rate: i32, dist: i64) -> i64;
     fn shim_rdcost_neg_r(rm: i32, rate: i32, dist: i64) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_fill_coeff_costs(
+        qindex: i32,
+        txs_ctx: i32,
+        plane: i32,
+        eob_multi_size: i32,
+        out_txb_skip: *mut i32,
+        out_base_eob: *mut i32,
+        out_base: *mut i32,
+        out_eob_extra: *mut i32,
+        out_dc_sign: *mut i32,
+        out_lps: *mut i32,
+        out_eob_cost: *mut i32,
+    );
     fn shim_dist_block_tx_domain(
         coeff: *const i32,
         dqcoeff: *const i32,
@@ -8982,6 +8996,50 @@ pub fn ref_compute_rd_mult(
 /// Reference `av1_dc_quant_QTX` (quant_common.c).
 pub fn ref_dc_quant_qtx(qindex: i32, delta: i32, bit_depth: i32) -> i32 {
     unsafe { shim_dc_quant_qtx(qindex, delta, bit_depth) }
+}
+
+/// Reference `av1_fill_coeff_costs` (rd.c) for one `(txs_ctx, plane)` coeff
+/// table + one `(eob_multi_size, plane)` eob table, over the KF-default coeff
+/// CDFs at `qindex`. Returns
+/// `(txb_skip[26], base_eob[12], base[336], eob_extra[18], dc_sign[6], lps[546], eob_cost[22])`.
+#[allow(clippy::type_complexity)]
+pub fn ref_fill_coeff_costs(
+    qindex: i32,
+    txs_ctx: usize,
+    plane: usize,
+    eob_multi_size: usize,
+) -> (
+    Vec<i32>,
+    Vec<i32>,
+    Vec<i32>,
+    Vec<i32>,
+    Vec<i32>,
+    Vec<i32>,
+    Vec<i32>,
+) {
+    let mut txb_skip = vec![0i32; 13 * 2];
+    let mut base_eob = vec![0i32; 4 * 3];
+    let mut base = vec![0i32; 42 * 8];
+    let mut eob_extra = vec![0i32; 9 * 2];
+    let mut dc_sign = vec![0i32; 3 * 2];
+    let mut lps = vec![0i32; 21 * 26];
+    let mut eob_cost = vec![0i32; 2 * 11];
+    unsafe {
+        shim_fill_coeff_costs(
+            qindex,
+            txs_ctx as i32,
+            plane as i32,
+            eob_multi_size as i32,
+            txb_skip.as_mut_ptr(),
+            base_eob.as_mut_ptr(),
+            base.as_mut_ptr(),
+            eob_extra.as_mut_ptr(),
+            dc_sign.as_mut_ptr(),
+            lps.as_mut_ptr(),
+            eob_cost.as_mut_ptr(),
+        );
+    }
+    (txb_skip, base_eob, base, eob_extra, dc_sign, lps, eob_cost)
 }
 
 /// Reference `av1_ac_quant_QTX` (quant_common.c).

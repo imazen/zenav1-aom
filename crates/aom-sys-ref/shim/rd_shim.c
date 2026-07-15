@@ -24,6 +24,8 @@
 #include "av1/common/seg_common.h" /* struct segmentation, SEG_LVL_ALT_Q */
 #include "av1/common/idct.h" /* MAX_TX_SCALE, av1_get_tx_scale */
 #include "av1/encoder/av1_quantize.h" /* QUANTS, Dequants, av1_build_quantizer */
+#include "av1/common/entropy.h" /* av1_default_coef_probs */
+#include "av1/encoder/block.h" /* CoeffCosts, LV_MAP_COEFF_COST */
 #include "av1/encoder/cost.h" /* av1_cost_tokens_from_cdf */
 #include "av1/encoder/ratectrl.h" /* av1_convert_qindex_to_q */
 #include "av1/encoder/rd.h" /* av1_set_error_per_bit */
@@ -1371,4 +1373,38 @@ int shim_log_sub_block_var(const uint16_t *src, int off, int stride, int bsize,
  * rect-partition 64x32/32x64 leaves). */
 int shim_filter_intra_allowed_bsize_x(int enable_filter_intra, int bsize) {
   return sh_filter_intra_allowed_bsize(enable_filter_intra, bsize);
+}
+
+/* Ground-truth `av1_fill_coeff_costs` (rd.c): set up a FRAME_CONTEXT with the
+ * KF-default coefficient CDFs at `qindex` (av1_default_coef_probs, selecting
+ * the q_ctx = get_q_ctx(qindex) default-CDF set), run the REAL av1_fill_coeff_costs,
+ * and copy out one (txs_ctx, plane) LV_MAP_COEFF_COST + one (eob_multi_size,
+ * plane) LV_MAP_EOB_COST. Lets the port's derive_real_costs / CoeffCostSet be
+ * diffed entry-for-entry against real libaom (the CDF->cost table derivation the
+ * trellis + av1_cost_coeffs_txb consume). Buffers sized per block.h struct dims:
+ * txb_skip[13*2] base_eob[4*3] base[42*8] eob_extra[9*2] dc_sign[3*2]
+ * lps[21*26] eob_cost[2*11]. */
+void shim_fill_coeff_costs(int qindex, int txs_ctx, int plane,
+                           int eob_multi_size, int *out_txb_skip,
+                           int *out_base_eob, int *out_base, int *out_eob_extra,
+                           int *out_dc_sign, int *out_lps, int *out_eob_cost) {
+  AV1_COMMON *cm = calloc(1, sizeof(*cm));
+  FRAME_CONTEXT *fc = calloc(1, sizeof(*fc));
+  CoeffCosts *costs = calloc(1, sizeof(*costs));
+  cm->fc = fc;
+  cm->quant_params.base_qindex = qindex;
+  av1_default_coef_probs(cm);
+  av1_fill_coeff_costs(costs, fc, PLANE_TYPES);
+  const LV_MAP_COEFF_COST *c = &costs->coeff_costs[txs_ctx][plane];
+  memcpy(out_txb_skip, c->txb_skip_cost, sizeof(c->txb_skip_cost));
+  memcpy(out_base_eob, c->base_eob_cost, sizeof(c->base_eob_cost));
+  memcpy(out_base, c->base_cost, sizeof(c->base_cost));
+  memcpy(out_eob_extra, c->eob_extra_cost, sizeof(c->eob_extra_cost));
+  memcpy(out_dc_sign, c->dc_sign_cost, sizeof(c->dc_sign_cost));
+  memcpy(out_lps, c->lps_cost, sizeof(c->lps_cost));
+  memcpy(out_eob_cost, costs->eob_costs[eob_multi_size][plane].eob_cost,
+         sizeof(int) * 2 * 11);
+  free(costs);
+  free(fc);
+  free(cm);
 }

@@ -857,9 +857,38 @@ pub fn pack_tile(
             } else {
                 env.rdmult
             };
+            // Coefficient AND mode cost update, `INTERNAL_COST_UPD_SB` (speed 0's
+            // default; `av1_set_cost_upd_freq` -> `av1_fill_coeff_costs(&x->coeff_costs,
+            // xd->tile_ctx, ...)` AND `av1_fill_mode_rates(cm, &x->mode_costs,
+            // xd->tile_ctx)`, encodeframe_utils.c:1643/1658). Real libaom re-derives BOTH
+            // the LV_MAP_COEFF_COST / eob tables AND every `av1_fill_mode_rates` table
+            // (y_mode / tx_size / angle_delta / partition / skip / cfl / intra tx-type)
+            // from the CURRENT (adapting) tile entropy context at the start of every
+            // superblock; the search + encode of this SB then use those costs, so as the
+            // CDFs adapt over the frame the RD rate tracks them. `kf` adapted through
+            // every prior SB's `pack_sb` (the search doesn't touch it), so a full
+            // `derive_real_costs(kf, ..)` here reproduces both updates in one shot. Static
+            // frame-init costs diverge on steep content, which codes enough symbols to
+            // move the CDFs and flip near-tie mode decisions (e.g. DC vs a directional
+            // mode on a steep diagonal ramp); SB 0 / single-SB frames read the frame-init
+            // defaults unchanged, since nothing adapted yet.
+            let sb_real = crate::real_costs::derive_real_costs(kf, pick_cfg.enable_filter_intra);
             let sb_env = SbEncodeEnv {
                 rdmult: sb_rdmult,
+                coeff_costs_y: &sb_real.coeff_costs_y,
+                coeff_costs_uv: &sb_real.coeff_costs_uv,
+                tx_type_costs: &sb_real.tx_type_costs_y,
                 ..*env
+            };
+            let sb_pick_cfg = PickFrameCfg {
+                mode_costs: &sb_real.mode_costs,
+                tx_size_costs: &sb_real.tx_size_costs,
+                skip_costs: &sb_real.skip_costs,
+                tx_type_costs_y: &sb_real.tx_type_costs_y,
+                intra_uv_mode_cost: &sb_real.mode_costs.intra_uv_mode_cost,
+                cfl_costs: &sb_real.cfl_costs,
+                partition_costs: &sb_real.partition_costs,
+                ..*pick_cfg
             };
 
             let mut cfl_search = CflCtx::new(env.ss_x as i32, env.ss_y as i32);
@@ -874,7 +903,7 @@ pub fn pack_tile(
             let mut last_source_variance = 0u32;
             let (tree, _stats, found) = rd_pick_partition_real(
                 &sb_env,
-                pick_cfg,
+                &sb_pick_cfg,
                 &mut search_tile,
                 &mut grid,
                 recon_y,

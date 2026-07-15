@@ -159,7 +159,13 @@ pub fn fill_lv_map_coeff_cost_from_arena(
     let eob_extra_cdf = &arena[A_EOB_EXTRA + pt * 9 * 3..A_EOB_EXTRA + pt * 9 * 3 + 9 * 3];
     let dc_sign_cdf =
         &arena[A_DC_SIGN + plane_type * 3 * 3..A_DC_SIGN + plane_type * 3 * 3 + 3 * 3];
-    let br_cdf = &arena[A_BR + pt * 21 * 5..A_BR + pt * 21 * 5 + 21 * 5];
+    // `av1_fill_coeff_costs` reads `coeff_br_cdf[AOMMIN(tx_size, TX_32X32)]`
+    // (rd.c) — the coeff_br CDF is shared by TX_32X32 and TX_64X64, and the
+    // arena's txs_ctx==4 br slot is never adapted (write/read use
+    // `txs_ctx.min(3)` too). Cap here or TX_64X64 reads an unadapted uniform
+    // CDF, mis-costing every level-range (Golomb) term at txs_ctx 4.
+    let br_pt = txs_ctx.min(3) * 2 + plane_type;
+    let br_cdf = &arena[A_BR + br_pt * 21 * 5..A_BR + br_pt * 21 * 5 + 21 * 5];
     fill_lv_map_coeff_cost(
         txb_skip_cdf,
         base_eob_cdf,
