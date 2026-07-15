@@ -915,6 +915,7 @@ pub fn pack_tile(
                 sb_size,
                 PartRdStats::invalid(),
                 0,
+                0, // quad_tree_idx: 0 at the SB (64×64) root
                 None,
                 &mut visits,
                 &mut last_source_variance,

@@ -1316,6 +1316,30 @@ fn rd_pick_ab_part(
 /// winner subtree has been re-encoded (recons + contexts + mode grid
 /// stamped) exactly as the C leaves it for siblings.
 #[allow(clippy::too_many_arguments)]
+/// Extract the 65×65 luma window (stride 65) the intra CNN partition prune runs
+/// on: the containing 64×64's `frame(-1,-1)` origin with the frame border
+/// edge-replicated (`av1_copy_and_extend_frame`). In this envelope `sb_size ==
+/// BLOCK_64X64`, so the containing 64×64 is the SB; its mi origin is `(mi_row,
+/// mi_col)` rounded down to the 16-mi (64px) grid. Reads the bd8 source (u16,
+/// 0..=255) as u8, clamping to the frame crop (`mi_{rows,cols}*4`, exact for the
+/// multiple-of-64 e2e frames — non-multiple crops would need the true width).
+fn extract_intra_cnn_window(env: &SbEncodeEnv, mi_row: i32, mi_col: i32) -> Vec<u8> {
+    const SB64_MIB: i32 = 16; // BLOCK_64X64 in mi units
+    let sb_py = (mi_row / SB64_MIB) * SB64_MIB * 4;
+    let sb_px = (mi_col / SB64_MIB) * SB64_MIB * 4;
+    let crop_h = env.mi_rows * 4;
+    let crop_w = env.mi_cols * 4;
+    let mut win = vec![0u8; 65 * 65];
+    for i in 0..65i32 {
+        let r = (sb_py + i - 1).clamp(0, crop_h - 1) as usize;
+        for j in 0..65i32 {
+            let c = (sb_px + j - 1).clamp(0, crop_w - 1) as usize;
+            win[(i * 65 + j) as usize] = env.src_y[env.base_y + r * env.stride + c] as u8;
+        }
+    }
+    win
+}
+
 pub fn rd_pick_partition_real(
     env: &SbEncodeEnv,
     cfg: &PickFrameCfg,
@@ -1330,6 +1354,11 @@ pub fn rd_pick_partition_real(
     bsize: usize,
     mut best_rdc: PartRdStats,
     pc_index: usize,
+    // `x->part_search_info.quad_tree_idx` — the block's position in the SB's
+    // quad-tree (0 at the 64×64 SB root; a SPLIT into child `idx` recurses with
+    // `4*quad_tree_idx + idx + 1`, partition_search.c:4574). Feeds the intra
+    // CNN partition prune's per-sub-block feature selection.
+    quad_tree_idx: i32,
     mut none_rd_out: Option<&mut i64>,
     visits: &mut Vec<LeafVisit>,
     // `x->source_variance` (gotcha #1, module docs on `leaf_pick_sb_modes`):
@@ -1374,6 +1403,72 @@ pub fn rd_pick_partition_real(
     // writer in the speed-0 KEY envelope (module docs).
     let prune_rect_part = [false; 2];
     let terminate_partition_search = false;
+
+    // ---- intra CNN partition prune (av1_prune_partitions_before_search ->
+    //      intra_mode_cnn_partition, partition_strategy.c:1779-1791). Runs
+    //      BEFORE av1_prune_partitions_by_max_min_bsize (the C order at
+    //      partition_search.c:5761 then :5765). Gated on the speed-1 sf level
+    //      (0 at speed 0 => this whole block is a no-op, speed-0 frozen),
+    //      frame-intra (KEY, always here), sb_size >= BLOCK_64X64, bsize in
+    //      8×8..=64×64, and the whole block inside the frame. The CNN's only
+    //      effect is the four search-space flags. ----
+    //
+    // `part_sf.intra_cnn_based_part_prune_level` = `SpeedFeatures::set_allintra`
+    // (0 at speed 0; `allow_screen_content_tools ? 0 : 2` at speed >= 1, allintra
+    // path). Derived from the existing cfg fields so speed-0 (and GOOD) stay
+    // frozen — the level is 0 there, making this whole block a no-op.
+    let intra_cnn_based_part_prune_level =
+        if cfg.allintra && cfg.speed >= 1 && !cfg.allow_screen_content_tools {
+            2
+        } else {
+            0
+        };
+    if intra_cnn_based_part_prune_level != 0
+        && env.sb_size >= 12 // BLOCK_64X64
+        && bsize <= 12 // BLOCK_64X64
+        && bsize_at_least_8x8
+        && mi_row + MI_SIZE_HIGH_B[bsize] as i32 <= env.mi_rows
+        && mi_col + MI_SIZE_WIDE_B[bsize] as i32 <= env.mi_cols
+    {
+        // convert_bsize_to_idx: 64X64->1, 32X32->2, 16X16->3, 8X8->4.
+        let bsize_idx = match bsize {
+            12 => 1,
+            9 => 2,
+            6 => 3,
+            3 => 4,
+            _ => 0,
+        };
+        if bsize_idx != 0 {
+            let win = extract_intra_cnn_window(env, mi_row, mi_col);
+            let (_logits, dec) = crate::cnn_partition::decision::predict_decision(
+                &win,
+                cfg.qindex,
+                i32::from(env.bd),
+                env.mi_cols * 4,
+                env.mi_rows * 4,
+                bsize_idx,
+                quad_tree_idx,
+                intra_cnn_based_part_prune_level,
+            );
+            // logits[0] > split_thresh: disallow NONE (level != 1) +
+            // do_square_split + av1_disable_rect_partitions.
+            if dec.none_disallowed {
+                partition_none_allowed = false;
+            }
+            if dec.do_square_split {
+                do_square_split = true;
+            }
+            if dec.rect_disabled {
+                do_rectangular_split = false;
+                partition_rect_allowed = [false, false];
+            }
+            // logits[0] < no_split_thresh: av1_disable_square_split_partition.
+            if dec.square_split_disabled {
+                do_square_split = false;
+            }
+        }
+    }
+
     // av1_prune_partitions_by_max_min_bsize (partition_strategy.c:1837).
     const BLK_1D: [usize; 22] = [
         4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
@@ -1557,6 +1652,8 @@ pub fn rd_pick_partition_real(
                 subsize,
                 best_remain,
                 idx,
+                // child quad_tree_idx = 4*parent + idx + 1 (partition_search.c:4574).
+                4 * quad_tree_idx + idx as i32 + 1,
                 Some(&mut split_rd[idx]),
                 visits,
                 last_source_variance,

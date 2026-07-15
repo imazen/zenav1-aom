@@ -1403,6 +1403,7 @@ fn rd_pick_partition_real_matches_c_recursion() {
             sb,
             PartRdStats::invalid(),
             0,
+            0, // quad_tree_idx: 0 at the SB root
             None,
             &mut visits,
             &mut last_source_variance,

@@ -1560,21 +1560,19 @@ fn encoder_gate_speed1_textured_allintra() {
         (256, 256, "two-tone", 48),
         (256, 256, "vgrad", 48),
         (256, 256, "diag", 48),
+        // NOTE: (256, 256, "vgrad", 32) remains EXCLUDED. The intra CNN
+        // partition prune (intra_cnn_based_part_prune_level 0->2) is now fully
+        // ported + wired into rd_pick_partition_real and its four flags are
+        // bit-exact vs C (cnn_partition_decision_diff). For this cell the CNN
+        // fires and computes square_split_disabled=true at every 64×64 SB root
+        // (logit0 ~ -5..-9.5 < no_split_thresh) — IDENTICALLY to C (flags
+        // match bit-exactly), so the CNN does NOT create a divergence between
+        // port and C here. Wiring it in leaves this cell's byte-5 divergence
+        // (our_payload[5]=157 vs 8) UNCHANGED, proving the residual gap is a
+        // DIFFERENT unported speed-1 delta (candidate: prune_2d_txfm_mode
+        // PRUNE_1->PRUNE_2), not the CNN. Kept excluded until that delta is
+        // isolated + ported. See isolate_vgrad256_cq32_cnn_partition_prune.
     ];
-    // NEXT LOCALIZATION TARGET (excluded, NOT yet byte-matching at speed 1):
-    //   (256, 256, "vgrad", 32) -- steep vertical gradient, 16 SB64, low
-    //   quality. Byte-matches at SPEED 0 (an asserted winner in
-    //   encoder_gate_e2e_multi_sb_scale) but diverges at speed 1, at the FIRST
-    //   tile-data byte (byte 5; the 5-byte frame header matches) -- i.e. an
-    //   early SB(0,0) symbol. RULED OUT: the tx-policy deltas (all 7 winners
-    //   match), top_intra_model_count_allowed 4->3, and
-    //   intra_tx_size_search_init_depth_rect 0->1 (both tried; the divergence
-    //   byte + values are identical either way). The culprit is one of the
-    //   remaining LEARNED-MODEL deltas -- intra_cnn_based_part_prune_level 0->2
-    //   (CNN split-vs-nonsplit partition prune, av1/encoder/partition_strategy.c
-    //   intra_mode_cnn_partition) or prune_2d_txfm_mode PRUNE_1->PRUNE_2 (the 2D
-    //   tx-type NN prune, structurally off in the port -- tx_search.rs:150).
-    //   See STATUS.md Gate 2 for the localization detail + next-slice plan.
     let mut matched = 0usize;
     for &(w, h, name, cq) in winners {
         let content = content_for(w, h, name);
