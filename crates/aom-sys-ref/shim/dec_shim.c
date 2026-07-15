@@ -2279,3 +2279,131 @@ long shim_encode_av1_kf_film_grain(const uint16_t *y, const uint16_t *u,
   aom_img_free(img);
   return rc ? rc : total;
 }
+
+/* Encode one KEY frame WITH fixed-denominator superres: the REAL
+ * aom_codec_av1_cx public API with AV1E_SET_SUPERRES_MODE = AOM_SUPERRES_FIXED
+ * and AV1E_SET_SUPERRES_DENOMINATOR = superres_denom (9..16). The encoder codes
+ * the frame at the reduced (downscaled) width FrameWidth =
+ * (w * SCALE_NUMERATOR(8) + superres_denom/2) / superres_denom, and the DECODER
+ * upscales it back to the full UpscaledWidth = w (horizontal only). w/h are the
+ * FULL (upscaled/display) dims; the image is fed at that size and the encoder
+ * downscales internally. Controls: --cpu-used --end-usage=q --cq-level
+ * --enable-cdef --enable-restoration --sb-size=64, single tile, deltaq/aq off,
+ * one-pass, no palette/intrabc/qm/lossless. usage picks GOOD (0) / ALL_INTRA
+ * (2). Planes are u16 row-major tight. Self-contained (mirrors
+ * encode_av1_kf_impl's single-pass setup + encode loop); every existing encode
+ * entry point is UNCHANGED. Returns the bitstream length or a negative error
+ * code. Append-only decoder-track addition. */
+long shim_encode_av1_kf_superres(const uint16_t *y, const uint16_t *u,
+                                 const uint16_t *v, int w, int h, int bd,
+                                 int mono, int ss_x, int ss_y, int cq_level,
+                                 int cpu_used, int enable_cdef,
+                                 int enable_restoration, int usage,
+                                 int superres_denom, uint8_t *out,
+                                 size_t out_cap) {
+  aom_codec_iface_t *iface = aom_codec_av1_cx();
+  aom_codec_enc_cfg_t cfg;
+  if (aom_codec_enc_config_default(iface, &cfg, (unsigned int)usage)) return -1;
+  cfg.g_w = w;
+  cfg.g_h = h;
+  cfg.g_limit = 1;
+  cfg.g_lag_in_frames = 0;
+  cfg.g_threads = 1;
+  cfg.g_pass = AOM_RC_ONE_PASS;
+  cfg.rc_end_usage = AOM_Q;
+  cfg.monochrome = mono;
+  cfg.g_input_bit_depth = bd;
+  if (bd == 8) {
+    cfg.g_bit_depth = AOM_BITS_8;
+    cfg.g_profile = (ss_x == 0 && ss_y == 0) ? 1 : 0;
+  } else if (bd == 10) {
+    cfg.g_bit_depth = AOM_BITS_10;
+    cfg.g_profile = (ss_x == 0 && ss_y == 0) ? 1 : 0;
+  } else {
+    cfg.g_bit_depth = AOM_BITS_12;
+    cfg.g_profile = 2;
+  }
+  if (!mono && ss_x == 1 && ss_y == 0) cfg.g_profile = 2; /* 4:2:2 */
+
+  /* Fixed-denominator superres via the enc-config fields (this libaom version
+   * has no AV1E_SET_SUPERRES_* controls — the mode/denominator live in
+   * aom_codec_enc_cfg_t). A forced KEY frame uses rc_superres_kf_denominator;
+   * set the inter denominator too for good measure. */
+  cfg.rc_superres_mode = AOM_SUPERRES_FIXED;
+  cfg.rc_superres_denominator = (unsigned int)superres_denom;
+  cfg.rc_superres_kf_denominator = (unsigned int)superres_denom;
+
+  aom_img_fmt_t fmt;
+  if (mono || (ss_x == 1 && ss_y == 1))
+    fmt = AOM_IMG_FMT_I420;
+  else if (ss_x == 1)
+    fmt = AOM_IMG_FMT_I422;
+  else
+    fmt = AOM_IMG_FMT_I444;
+  if (bd > 8) fmt |= AOM_IMG_FMT_HIGHBITDEPTH;
+  aom_image_t *img = aom_img_alloc(NULL, fmt, w, h, 32);
+  if (!img) return -4;
+  img->monochrome = mono;
+  img->bit_depth = bd;
+  const int cw = mono ? 0 : (w + ss_x) >> ss_x;
+  const int ch = mono ? 0 : (h + ss_y) >> ss_y;
+  for (int plane = 0; plane < (mono ? 1 : 3); plane++) {
+    const uint16_t *src = plane == 0 ? y : (plane == 1 ? u : v);
+    const int pw = plane == 0 ? w : cw;
+    const int ph = plane == 0 ? h : ch;
+    for (int r = 0; r < ph; r++) {
+      if (bd > 8) {
+        uint16_t *row =
+            (uint16_t *)(img->planes[plane] + (size_t)r * img->stride[plane]);
+        for (int c = 0; c < pw; c++) row[c] = src[(size_t)r * pw + c];
+      } else {
+        uint8_t *row = img->planes[plane] + (size_t)r * img->stride[plane];
+        for (int c = 0; c < pw; c++) row[c] = (uint8_t)src[(size_t)r * pw + c];
+      }
+    }
+  }
+
+  aom_codec_ctx_t ctx;
+  aom_codec_flags_t flags = bd > 8 ? AOM_CODEC_USE_HIGHBITDEPTH : 0;
+  if (aom_codec_enc_init(&ctx, iface, &cfg, flags)) {
+    aom_img_free(img);
+    return -2;
+  }
+  if (aom_codec_control(&ctx, AOME_SET_CPUUSED, cpu_used) ||
+      aom_codec_control(&ctx, AOME_SET_CQ_LEVEL, cq_level) ||
+      aom_codec_control(&ctx, AV1E_SET_ENABLE_CDEF, enable_cdef) ||
+      aom_codec_control(&ctx, AV1E_SET_ENABLE_RESTORATION, enable_restoration) ||
+      aom_codec_control(&ctx, AV1E_SET_SUPERBLOCK_SIZE,
+                        AOM_SUPERBLOCK_SIZE_64X64) ||
+      aom_codec_control(&ctx, AV1E_SET_DELTAQ_MODE, 0) ||
+      aom_codec_control(&ctx, AV1E_SET_AQ_MODE, 0) ||
+      aom_codec_control(&ctx, AV1E_SET_ENABLE_SUPERRES, 1)) {
+    aom_codec_destroy(&ctx);
+    aom_img_free(img);
+    return -3;
+  }
+
+  long total = 0;
+  int rc = 0;
+  for (int pass = 0; pass < 2 && rc == 0; pass++) {
+    if (aom_codec_encode(&ctx, pass == 0 ? img : NULL, 0, 1,
+                         pass == 0 ? AOM_EFLAG_FORCE_KF : 0)) {
+      rc = -5;
+      break;
+    }
+    aom_codec_iter_t iter = NULL;
+    const aom_codec_cx_pkt_t *pkt;
+    while ((pkt = aom_codec_get_cx_data(&ctx, &iter)) != NULL) {
+      if (pkt->kind != AOM_CODEC_CX_FRAME_PKT) continue;
+      if ((size_t)total + pkt->data.frame.sz > out_cap) {
+        rc = -6;
+        break;
+      }
+      memcpy(out + total, pkt->data.frame.buf, pkt->data.frame.sz);
+      total += (long)pkt->data.frame.sz;
+    }
+  }
+  aom_codec_destroy(&ctx);
+  aom_img_free(img);
+  return rc ? rc : total;
+}

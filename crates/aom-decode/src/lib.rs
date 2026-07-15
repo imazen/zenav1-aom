@@ -142,6 +142,7 @@ pub mod frame;
 
 /// Byte-exact AV1 film-grain synthesis (post-reconstruction output stage).
 pub mod film_grain;
+pub mod superres;
 
 mod qm;
 mod qm_tables;

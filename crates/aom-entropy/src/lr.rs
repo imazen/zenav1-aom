@@ -363,10 +363,15 @@ pub struct LrFrameConfig {
     /// Per-plane restoration unit size (64/128/256; luma-scale values —
     /// chroma planes use the coded chroma size directly).
     pub unit_size: [i32; 3],
-    /// Frame crop dims (superres-upscaled width; the envelope rejects scaled
-    /// superres so this is the coded frame width/height).
+    /// Frame crop dims — the superres-UPSCALED (display) width/height. The RU
+    /// grid is always upscaled-domain (`av1_get_upsampled_plane_size`).
     pub crop_width: i32,
     pub crop_height: i32,
+    /// Superres `SuperresDenom` (`cm->superres_scale_denominator`): `SCALE_NUMERATOR`
+    /// (8) or `0` means unscaled; `[9,16]` means the frame was coded downscaled,
+    /// so `lr_corners_in_sb` scales the downscaled mi position into the upscaled
+    /// RU grid. `Default` (0) is unscaled.
+    pub superres_denom: i32,
 }
 
 impl LrFrameConfig {
@@ -421,10 +426,20 @@ pub fn lr_corners_in_sb(
     let size = lr.unit_size[plane];
     let (horz_units, vert_units) = lr.plane_units(plane, ss_x, ss_y);
 
-    // MI_SIZE = 4; superres unscaled: mi_to_num = mi_size, denom = size.
+    // MI_SIZE = 4. `av1_loop_restoration_corners_in_sb`: the mi position is in
+    // the DOWNSCALED grid but the RU grid is upscaled, so for scaled superres
+    // the X mapping is `u = D * MI_SIZE * m / N` — mi_to_num_x = mi_size_x * D,
+    // denom_x = size * SCALE_NUMERATOR(N). Y is never scaled (superres is
+    // horizontal only).
     let mi_size_x = 4 >> sx;
     let mi_size_y = 4 >> sy;
-    let (mi_to_num_x, denom_x) = (mi_size_x, size);
+    const SCALE_NUMERATOR: i32 = 8;
+    let superres_scaled = lr.superres_denom > SCALE_NUMERATOR;
+    let (mi_to_num_x, denom_x) = if superres_scaled {
+        (mi_size_x * lr.superres_denom, size * SCALE_NUMERATOR)
+    } else {
+        (mi_size_x, size)
+    };
     let (mi_to_num_y, denom_y) = (mi_size_y, size);
     let (rnd_x, rnd_y) = (denom_x - 1, denom_y - 1);
 

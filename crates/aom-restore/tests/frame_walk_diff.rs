@@ -165,6 +165,7 @@ fn lr_filter_frame_matches_c() {
                         unit_size,
                         crop_width: w as i32,
                         crop_height: h as i32,
+                        superres_denom: 0, // unscaled
                     };
 
                     // Units per plane.

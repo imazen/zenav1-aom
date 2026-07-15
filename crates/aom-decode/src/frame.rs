@@ -85,6 +85,7 @@
 //! byte-identically against the REAL C decoder (`aom_codec_av1_dx`) on
 //! bitstreams produced by the REAL encoder at `--cpu-used=0 --end-usage=q`.
 
+use crate::superres;
 use crate::{
     KfTileConfig, KfTileDecode, MI_SIZE_HIGH, MI_SIZE_WIDE, TileBoundsKf, TileBytesKf,
     decode_frame_tiles_kf,
@@ -463,15 +464,31 @@ fn parse_frame_header(
         && probe.prefix.frame_type == 0
         && probe.prefix.show_frame;
     let coded_lossless = key_shown && frame_coded_lossless(&probe);
-    let (p, mut rb) = if coded_lossless {
-        let mut cfg_ll = cfg.clone();
-        cfg_ll.coded_lossless = true;
-        // all_lossless = coded_lossless && !superres_scaled (decodeframe.c). In
-        // this envelope superres is never scaled (rejected below), but derive it
-        // from the parsed frame size so the restoration gate is exact regardless.
-        cfg_ll.all_lossless = probe.frame_size.scale_denominator == 8;
+    // Superres codes the tile info (and everything after the frame size) over the
+    // DOWNSCALED mi grid — `compute_image_size` derives MiCols from the reduced
+    // FrameWidth. The frame size (including the superres denom) is read correctly
+    // on the first pass: it precedes the tile info and doesn't depend on the mi
+    // grid. So when superres is active, re-parse with a `tile_info` built on the
+    // downscaled mi grid (composed with the coded-lossless re-parse).
+    let superres_denom = probe.frame_size.scale_denominator;
+    let superres = crate::superres::superres_scaled(superres_denom);
+    let (p, mut rb) = if coded_lossless || superres {
+        let mut cfg2 = cfg.clone();
+        if coded_lossless {
+            cfg2.coded_lossless = true;
+        }
+        // all_lossless = coded_lossless && !superres_scaled (decodeframe.c).
+        cfg2.all_lossless = coded_lossless && !superres;
+        if superres {
+            cfg2.superres_scaled = true;
+            let coded_w = crate::superres::coded_frame_width(
+                probe.frame_size.superres_upscaled_width,
+                superres_denom,
+            );
+            cfg2.tile_info = tile_limits(mi_dim(coded_w), mi_rows, mib_size_log2);
+        }
         let mut rb2 = ReadBitBuffer::new(payload);
-        let p2 = read_uncompressed_header(&mut rb2, &cfg_ll);
+        let p2 = read_uncompressed_header(&mut rb2, &cfg2);
         (p2, rb2)
     } else {
         (probe, rb)
@@ -503,8 +520,15 @@ fn parse_frame_header(
     {
         return Err("frame_size_override (frame != sequence max dims)".into());
     }
-    if p.frame_size.scale_denominator != 8 {
-        return Err("superres scaled".into());
+    // Superres (SuperresDenom in [9,16]) IS in the envelope: the frame is coded
+    // at a reduced width and upscaled back to the full UpscaledWidth
+    // horizontally, as a normative post-CDEF stage ([`crate::superres`], spliced
+    // between CDEF and loop-restoration in `decode_frame_obus`). Only the
+    // single-tile-column upscale is implemented — the AVIF-still / KEY superres
+    // path is single-tile; multi-tile superres would need the per-tile-column
+    // convolve loop (`av1_upscale_normative_rows`'s tile walk).
+    if superres::superres_scaled(p.frame_size.scale_denominator) && p.tile_info.cols > 1 {
+        return Err("multi-tile superres (out of envelope)".into());
     }
     // Quantization matrices (`using_qmatrix`): each 2-D-transform coefficient is
     // dequantized with a per-position inverse-QM weight
@@ -588,17 +612,33 @@ pub fn decode_frame_obus(data: &[u8]) -> Result<FrameDecode, String> {
     let cd = &header.cdef;
     let do_cdef = cd.cdef_bits != 0 || cd.cdef_strengths[0] != 0 || cd.cdef_uv_strengths[0] != 0;
     let do_lr = cfg.lr.any_enabled();
-    // decodeframe.c:5423: optimized_loop_restoration = !do_cdef &&
-    // !do_superres (superres is rejected upstream, so always unscaled). The
-    // non-optimized arm saves the DEBLOCKED rows (pre-CDEF) as internal
+    let do_superres = superres::superres_scaled(header.frame_size.scale_denominator);
+    // decodeframe.c:5422: optimized_loop_restoration = !do_cdef && !do_superres.
+    // The non-optimized arm saves the DEBLOCKED rows (pre-CDEF) as internal
     // stripe boundary context before CDEF runs, and the CDEF output rows as
-    // frame-edge context after; the optimized arm saves nothing (the frame's
-    // own rows are the context).
-    let optimized_lr = !do_cdef;
-    let pre_cdef =
+    // frame-edge context after; the optimized arm saves nothing (the frame's own
+    // rows are the context). Superres ALWAYS takes the non-optimized arm (even
+    // with CDEF off) because the boundary rows must be upscaled.
+    let optimized_lr = !do_cdef && !do_superres;
+    let mut pre_cdef =
         (do_lr && !optimized_lr).then(|| (t.recon.clone(), t.recon_u.clone(), t.recon_v.clone()));
     if do_cdef {
         apply_cdef(&mut t, &cfg, &header);
+    }
+    // Superres upscale (decodeframe.c:5451 `superres_post_decode`): AFTER CDEF,
+    // BEFORE loop restoration. Horizontal-only; widens the coded (downscaled)
+    // recon back to UpscaledWidth. The pre-CDEF deblocked snapshot that feeds
+    // LR's internal stripe boundaries is upscaled the same way — matching C's
+    // `save_deblock_boundary_lines`, which runs `av1_upscale_normative_rows` on
+    // those boundary rows — so LR runs entirely in the upscaled domain.
+    if do_superres {
+        let (ds_stride, ds_stride_uv) = (t.stride, t.stride_uv);
+        apply_superres(&mut t, &cfg, &header);
+        if let Some((dy, du, dv)) = pre_cdef.take() {
+            let (uy, _, uu, uv, _) =
+                superres_upscale_planes(&dy, &du, &dv, ds_stride, ds_stride_uv, &cfg, &header);
+            pre_cdef = Some((uy, uu, uv));
+        }
     }
     if do_lr {
         apply_restoration(&mut t, &cfg, pre_cdef.as_ref(), optimized_lr);
@@ -676,6 +716,83 @@ pub fn apply_restoration(
         cfg.bd,
         optimized_lr,
     );
+}
+
+/// Upscale a downscaled `(y, u, v)` plane triplet horizontally to the full
+/// UpscaledWidth (`av1_upscale_normative_rows`, single tile column), returning
+/// `(y, stride, u, v, stride_uv)` at the upscaled width (tight strides). Height
+/// and row count are unchanged — superres is horizontal only. Shared by
+/// [`apply_superres`] (the post-CDEF recon) and the deblocked-snapshot upscale
+/// that feeds LR's internal stripe boundaries. `src_stride`/`src_stride_uv` are
+/// the DOWNSCALED strides; `cfg.mi_cols` is the downscaled mi grid.
+#[doc(hidden)]
+#[allow(clippy::type_complexity)]
+pub fn superres_upscale_planes(
+    y: &[u16],
+    u: &[u16],
+    v: &[u16],
+    src_stride: usize,
+    src_stride_uv: usize,
+    cfg: &KfTileConfig,
+    p: &FrameHeaderObu,
+) -> (Vec<u16>, usize, Vec<u16>, Vec<u16>, usize) {
+    let denom = p.frame_size.scale_denominator;
+    let upscaled_w = p.frame_size.superres_upscaled_width;
+    let coded_w = superres::coded_frame_width(upscaled_w, denom);
+    let (ss_x, ss_y) = (cfg.subsampling_x as i32, cfg.subsampling_y as i32);
+    let bd = cfg.bd;
+    // mi-aligned downscaled luma width — the border-extension clamp bound
+    // (libaom's `mi_col_end << MI_SIZE_LOG2` for a single tile spanning mi_cols).
+    // The recon stride is SB-aligned (>= this); pixels past it are the decoded
+    // SB overhang that libaom's normative upscale does NOT read.
+    let mi_w_luma = cfg.mi_cols * 4;
+
+    // Luma.
+    let rows = y.len() / src_stride;
+    let dst_stride = upscaled_w as usize;
+    let mut y_up = vec![0u16; dst_stride * rows];
+    superres::upscale_plane(
+        y, src_stride, &mut y_up, dst_stride, coded_w, upscaled_w, mi_w_luma, rows, bd,
+    );
+
+    // Chroma (absent for monochrome).
+    let (u_up, v_up, dst_stride_uv) = if cfg.monochrome || u.is_empty() {
+        (Vec::new(), Vec::new(), 0usize)
+    } else {
+        let rows_uv = u.len() / src_stride_uv;
+        let coded_w_uv = (coded_w + ss_x) >> ss_x;
+        let upscaled_w_uv = (upscaled_w + ss_x) >> ss_x;
+        let mi_w_uv = mi_w_luma >> ss_x;
+        let dst_stride_uv = upscaled_w_uv as usize;
+        let _ = ss_y; // superres does not touch the vertical axis
+        let mut u2 = vec![0u16; dst_stride_uv * rows_uv];
+        let mut v2 = vec![0u16; dst_stride_uv * rows_uv];
+        superres::upscale_plane(
+            u, src_stride_uv, &mut u2, dst_stride_uv, coded_w_uv, upscaled_w_uv, mi_w_uv, rows_uv,
+            bd,
+        );
+        superres::upscale_plane(
+            v, src_stride_uv, &mut v2, dst_stride_uv, coded_w_uv, upscaled_w_uv, mi_w_uv, rows_uv,
+            bd,
+        );
+        (u2, v2, dst_stride_uv)
+    };
+    (y_up, dst_stride, u_up, v_up, dst_stride_uv)
+}
+
+/// Apply normative superres upscale in place on `t` (the post-CDEF recon):
+/// widen every plane back to UpscaledWidth and update the strides. Loop
+/// restoration (upscaled domain) and `finish_frame` (crop to UpscaledWidth) then
+/// run on the result. Hidden: harness entry so tests can drive the stage.
+#[doc(hidden)]
+pub fn apply_superres(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) {
+    let (y, s, u, v, s_uv) =
+        superres_upscale_planes(&t.recon, &t.recon_u, &t.recon_v, t.stride, t.stride_uv, cfg, p);
+    t.recon = y;
+    t.stride = s;
+    t.recon_u = u;
+    t.recon_v = v;
+    t.stride_uv = s_uv;
 }
 
 /// Everything [`decode_frame_obus`] does up to (but not including) the loop
@@ -786,9 +903,18 @@ fn decode_tile_payload(
         (c.subsampling_x as usize, c.subsampling_y as usize)
     };
 
+    // The tile decode / deblock / CDEF all run in the CODED (downscaled) domain.
+    // With superres the coded FrameWidth is the reduced width; the mi grid,
+    // strides, and per-block reconstruction are sized to it. Height is never
+    // scaled (superres is horizontal only). For unscaled frames
+    // `coded_frame_width` returns the width unchanged, so this is a no-op.
+    let coded_width = crate::superres::coded_frame_width(
+        p.frame_size.superres_upscaled_width,
+        p.frame_size.scale_denominator,
+    );
     let cfg = KfTileConfig {
         mi_rows: mi_dim(s.max_frame_height),
-        mi_cols: mi_dim(s.max_frame_width),
+        mi_cols: mi_dim(coded_width),
         bd: c.bit_depth,
         monochrome: c.monochrome,
         subsampling_x: ss_x,
@@ -817,8 +943,12 @@ fn decode_tile_payload(
         lr: aom_entropy::lr::LrFrameConfig {
             frame_restoration_type: p.restoration.frame_restoration_type,
             unit_size: p.restoration.restoration_unit_size,
+            // The RU grid is always in the UPSCALED domain
+            // (`av1_get_upsampled_plane_size`); `superres_denom` lets
+            // `lr_corners_in_sb` map the downscaled mi position into it.
             crop_width: p.frame_size.superres_upscaled_width,
             crop_height: p.frame_size.superres_upscaled_height,
+            superres_denom: p.frame_size.scale_denominator,
         },
         seg: bridge_segmentation(&p.segmentation),
         sb_size_128: s.sb_size_128,
@@ -1019,9 +1149,16 @@ pub fn apply_deblock(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderOb
         v: &mut t.recon_v,
         uv_stride: t.stride_uv,
         // CROP dims (dst.width/height in C — set_lpf_parameters skips edges
-        // at/past them). KfTileDecode.width is the mi-ALIGNED width; the
-        // coded frame size lives in the header (superres unscaled here).
-        crop_width: p.frame_size.superres_upscaled_width as u32,
+        // at/past them). Deblock runs in the CODED (downscaled) domain, BEFORE
+        // superres upscaling, so the crop is the coded FrameWidth — NOT the
+        // upscaled width (using the upscaled width would filter the mi-overhang
+        // columns past the coded edge as if they were real content, corrupting
+        // the right-edge pixels the upscale then samples). Height is never
+        // scaled. `coded_frame_width` is a no-op for unscaled frames.
+        crop_width: superres::coded_frame_width(
+            p.frame_size.superres_upscaled_width,
+            p.frame_size.scale_denominator,
+        ) as u32,
         crop_height: p.frame_size.superres_upscaled_height as u32,
         ss_x: cfg.subsampling_x,
         ss_y: cfg.subsampling_y,

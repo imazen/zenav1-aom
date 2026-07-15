@@ -10801,6 +10801,88 @@ pub fn ref_encode_av1_kf_qm(
     out
 }
 
+unsafe extern "C" {
+    fn shim_encode_av1_kf_superres(
+        y: *const u16,
+        u: *const u16,
+        v: *const u16,
+        w: i32,
+        h: i32,
+        bd: i32,
+        mono: i32,
+        ss_x: i32,
+        ss_y: i32,
+        cq_level: i32,
+        cpu_used: i32,
+        enable_cdef: i32,
+        enable_restoration: i32,
+        usage: i32,
+        superres_denom: i32,
+        out: *mut u8,
+        out_cap: usize,
+    ) -> i64;
+}
+
+/// Fixed-denominator superres variant of [`ref_encode_av1_kf`] (decoder-track
+/// superres-gate work, append-only addition — every shim above is untouched):
+/// `AV1E_SET_SUPERRES_MODE = AOM_SUPERRES_FIXED` +
+/// `AV1E_SET_SUPERRES_DENOMINATOR = superres_denom` (9..=16). `w`/`h` are the
+/// FULL (upscaled/display) dims fed to the encoder; it codes the frame at the
+/// reduced width `(w*8 + denom/2)/denom` and the decoder upscales back to `w`
+/// (horizontal only). `--sb-size=64`, single tile, deltaq/aq off, one-pass, no
+/// palette / intrabc / qm / lossless. Panics on a negative shim return.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_encode_av1_kf_superres(
+    y: &[u16],
+    u: &[u16],
+    v: &[u16],
+    w: usize,
+    h: usize,
+    bd: i32,
+    mono: bool,
+    ss_x: i32,
+    ss_y: i32,
+    cq_level: i32,
+    cpu_used: i32,
+    enable_cdef: bool,
+    enable_restoration: bool,
+    usage: u32,
+    superres_denom: i32,
+) -> Vec<u8> {
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + ss_x as usize) >> ss_x, (h + ss_y as usize) >> ss_y)
+    };
+    assert_eq!(y.len(), w * h);
+    assert!(mono || (u.len() == cw * ch && v.len() == cw * ch));
+    let mut out = vec![0u8; w * h * 8 + 65536];
+    let n = unsafe {
+        shim_encode_av1_kf_superres(
+            y.as_ptr(),
+            u.as_ptr(),
+            v.as_ptr(),
+            w as i32,
+            h as i32,
+            bd,
+            mono as i32,
+            ss_x,
+            ss_y,
+            cq_level,
+            cpu_used,
+            enable_cdef as i32,
+            enable_restoration as i32,
+            usage as i32,
+            superres_denom,
+            out.as_mut_ptr(),
+            out.len(),
+        )
+    };
+    assert!(n > 0, "shim_encode_av1_kf_superres failed ({n})");
+    out.truncate(n as usize);
+    out
+}
+
 // dec_shim.c section "intrabc DV prediction facades" (append-only addition):
 // shim_find_dv_ref_mvs drives the REAL EXPORTED av1_find_mv_refs +
 // av1_find_best_ref_mvs (ref_frame=INTRA_FRAME) over a synthetic MI grid;

@@ -231,6 +231,7 @@ fn lr_corners_and_unit_grid_match_c() {
                         unit_size,
                         crop_width: w,
                         crop_height: h,
+                        superres_denom: 0, // unscaled
                     };
                     let mi_rows = ((h + 7) & !7) >> 2;
                     let mi_cols = ((w + 7) & !7) >> 2;
