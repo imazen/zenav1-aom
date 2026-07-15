@@ -43,17 +43,26 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
 - **Fix #1 (VERIFIED, awaiting workspace-compile to land):** the reorder is implemented in
   `aom-decode/src/lib.rs` and proven — b10-q63 now byte-matches C and the port's 328 KEY-frame
   txb reads are byte-identical (up from the record-311 desync). The reorder is correct.
-- **Bug #2 (exposed by fix #1, STILL OPEN — a second, independent >64 hole):** with txb reads now
-  correct, b8-q62 / b8-q63 / b10-q62 still fail edge-local ±1 (b10-q63 clean). Traced (sibling C
-  decoder) to the **2nd 64×64 sub-unit of the 128-wide block mi64,0**: C ground truth DC_PRED /
-  TX_64X64 / eob=1 (DC-only → flat recon), **n_top=64 but n_left=32** (block bottom-cropped to
-  32px). The port's flat DC comes out uniformly ±1 off; deblock across the x=64 chunk boundary
-  spreads it into the scattered ±1 map. So bug #2 is a **cropped-reference intra-prediction bug
-  for sub-units of >64 blocks** — independent of the txb reorder (prediction is order-agnostic),
-  just newly reachable once fix #1 corrected the reads. Candidates being pinned: left-column
-  extension (32 real → 64 replicated) vs DC count/divisor, port predict path vs C
-  `build_intra_predictors`. Land fix #1 + fix #2 together; #21 closes only when b8/b10 × q62/q63
-  all byte-match AND the full 147-frame conformance still passes.
+- **Bug #2 = CDEF per-unit strength stamping for >64 blocks (ROOT CAUSE CORRECTED — NOT intra-pred).**
+  Exposed by fix #1; b8-q62 / b8-q63 / b10-q62 failed edge-local ±1 (b10-q63 clean). Intra-pred was
+  DISPROVEN: the port's predict params for the failing 2nd 64×64 unit match C exactly (DC_PRED,
+  n_top=64, n_left=32) and the DC math + left-column extension match C's `build_intra_predictors`
+  line-for-line — pred+residual reconstruct the unit correctly. The scattered ±1 across a whole
+  64×64 unit is CDEF's signature. C reads the CDEF strength once per 64×64 unit and stores it on the
+  block's SHARED MB_MODE_INFO (`decodemv.c` read_cdef, stamped at the unit top-left mi); the frame
+  walk reads it back per 64×64 unit top-left mi (`cdef.c:304`). A >64 block shares ONE mbmi across
+  all its mi cells, so every covered 64×64 unit reads the same strength. The port
+  (`aom-decode/src/frame.rs:1212`) stamped only the block's TOP-LEFT unit → other covered units
+  stayed at −1 (CDEF skipped); for the 128-wide mi64,0 the 2nd unit (mi64,16) kept −1 so CDEF ran
+  in C but not the port → the ±1. **Fix #2:** stamp `b.info.cdef_strength` on ALL 64×64 units the
+  block covers (in-frame h×w extent); sub-64 blocks cover one unit, unchanged. Both bugs are
+  >64-only, which is why exactly q62/q63 fail (only very high qindex picks >64 partitions).
+- **Fix #1 + #2 VERIFIED GREEN (landing in one commit):** full conformance gate 269 in-scope frames,
+  0 failures, WITH q60–q63 present; all four targets (b8/b10 × quantizer-62/63) byte-exact + golden
+  MD5, plus 60/61 and everything else (allintra/size/intrabc/cdfupdate...), no ≤64 regression. The
+  landing commit reverts the ci.yml q62/q63 rm, adds an explicit q62/q63 × bd8/bd10 regression test,
+  and deletes the throwaway scratch. #21 closes only after: on origin, CI green WITH q62/63 restored,
+  `merge-base --is-ancestor` confirmed.
 - **Encoder cross-check (low priority):** the encoder pack must write txbs in the SAME
   64×64-chunk plane-interleaved order for >64 blocks. The encoder already byte-matches
   `diag+vbars16 256×256 cq63` (strong-LF gate 5/5), which is empirical evidence its order is
