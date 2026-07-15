@@ -193,7 +193,8 @@ use crate::rd_pick::{RdPickUvArgs, RdPickUvOutcome, ReencodeParams, rd_pick_intr
 use crate::tx_search::{MI_SIZE_HIGH_B, MI_SIZE_WIDE_B, TxTypeSearchPolicy, TxfmYrdEnv};
 use aom_dist::highbd_variance;
 use aom_entropy::partition::{
-    get_partition_subsize, get_plane_block_size, get_tx_size_context, partition_plane_context,
+    allow_palette, get_partition_subsize, get_plane_block_size, get_tx_size_context,
+    palette_bsize_ctx, palette_mode_ctx, partition_plane_context,
 };
 use aom_intra::cfl::CflCtx;
 use aom_txb::TxTypeCosts;
@@ -403,6 +404,15 @@ pub struct PickFrameCfg<'a> {
     /// (module docs on the "4-way partitions ported" milestone in
     /// STATUS.md).
     pub enable_ab_partitions: bool,
+    /// `cm->features.allow_screen_content_tools`. Gates the palette-Y
+    /// mode flag cost in every DC_PRED leaf's `intra_mode_info_cost_y`
+    /// (`av1_allow_palette(allow_screen_content_tools, bsize)`): even when
+    /// this port never *picks* palette (the palette search is out of scope),
+    /// a screen-content frame still SIGNALS the no-palette flag for each
+    /// DC_PRED block at `bsize >= BLOCK_8X8`, and that flag's rate is part of
+    /// the leaf RD comparison. Omitting it under-costs DC_PRED and can flip a
+    /// near-tie against the directional modes the real encoder picks.
+    pub allow_screen_content_tools: bool,
 }
 
 /// One leaf evaluation's differential-visibility record.
@@ -567,9 +577,18 @@ fn leaf_pick_sb_modes(
         left_mode,
         qindex: cfg.qindex,
         mode_costs: cfg.mode_costs,
-        try_palette: false,
-        palette_bsize_ctx: 0,
-        palette_mode_ctx: 0,
+        // av1_allow_palette(cm->features.allow_screen_content_tools, bsize):
+        // adds the palette-Y no-palette flag cost to DC_PRED leaves in
+        // screen-content frames (the palette SEARCH stays out of scope --
+        // try_palette only feeds intra_mode_info_cost_y's flag-cost term, it
+        // does not enable a palette candidate). palette_mode_ctx counts
+        // neighbours that use a Y palette; this port never picks palette, so
+        // every neighbour's palette_size[0] is 0 and the context is always 0
+        // (computed via the real helper with the known-zero neighbour sizes so
+        // the invariant is explicit, not silently assumed).
+        try_palette: allow_palette(cfg.allow_screen_content_tools, bsize),
+        palette_bsize_ctx: palette_bsize_ctx(bsize) as usize,
+        palette_mode_ctx: palette_mode_ctx(up_available, 0, left_available, 0) as usize,
         enable_filter_intra: cfg.enable_filter_intra,
         allow_intrabc: false,
         pol: cfg.pol,

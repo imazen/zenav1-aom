@@ -534,6 +534,7 @@ fn run_one(name: &str, content: impl Fn(usize, usize) -> u8) {
         min_partition_size: 0,
         enable_1to4_partitions: true,
         enable_ab_partitions: true,
+        allow_screen_content_tools: p.allow_screen_content_tools,
     };
     eprintln!(
         "{name}: allow_screen_content_tools={}",

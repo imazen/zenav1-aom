@@ -1379,6 +1379,7 @@ fn rd_pick_partition_real_matches_c_recursion() {
             enable_1to4_partitions: false,
             // Same reasoning: AB shapes are not yet cross-checked here either.
             enable_ab_partitions: false,
+            allow_screen_content_tools: false,
         };
 
         // ---- Rust recursion ----

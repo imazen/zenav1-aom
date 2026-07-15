@@ -542,6 +542,7 @@ fn attempt_case_content_uv(
         min_partition_size: 0,  // BLOCK_4X4: the true aomenc default (unset --min-partition-size)
         enable_1to4_partitions: true, // the true aomenc default (unset --enable-1to4-partitions)
         enable_ab_partitions: true, // the true aomenc default (unset --disable-ab-partition-type)
+        allow_screen_content_tools: p.allow_screen_content_tools,
     };
     let pack_cfg = aom_encode::pack::PackCfg {
         enable_filter_intra: s.enable_filter_intra,
@@ -795,20 +796,24 @@ fn encoder_gate_e2e_textured_attempt() {
 /// loop-filter level is this port's OWN derivation here
 /// ([`aom_encode::lf_search::pick_filter_level`]), NOT bootstrapped.
 ///
-/// **State (2026-07-14): 3 of 4 byte-match end to end.** The 3 matching cases
-/// prove both the nonzero-LF header-assembly path AND the LF-level search are
-/// correct on byte-identical reconstruction. The one remaining mismatch,
-/// "top flat / bottom split", is NOT an LF-level bug: its coded tile diverges
-/// from real's (`TILE-BYTES-IDENTICAL=false`) at a single partition-RD node --
-/// `(mi_row=8, mi_col=12, BLOCK_16X16)`, where real picks `PARTITION_HORZ` and
-/// this port's search picks `PARTITION_SPLIT` -- so the LF search legitimately
-/// operates on different pixels and picks a different level (`[8,6]` vs
-/// `[8,3]`). That the LF DERIVATION itself is bit-exact (it reproduces real's
-/// `[8,3]` when handed real's OWN decoded reconstruction) is proven
-/// separately and asserted by [`encoder_gate_lf_level_bit_exact_vs_real`].
-/// The residual partition-RD gap is a separate, tracked investigation
-/// (STATUS.md), not an AB-coverage or LF-level defect. Not asserted here
-/// (mission requirement: do not assert-pass a case that isn't byte-identical).
+/// **State (2026-07-15): ALL 4 byte-match end to end -- ASSERTED.** Every case
+/// proves the nonzero-LF header-assembly path AND the LF-level search are
+/// correct on byte-identical reconstruction. The last mismatch,
+/// "top flat / bottom split", was closed by a partition-RD fix: its coded tile
+/// used to diverge from real's at a single node -- `(mi_row=8, mi_col=12,
+/// BLOCK_16X16)`, where real picked `PARTITION_HORZ` and this port picked
+/// `PARTITION_SPLIT`. Root cause (C-oracle traced, term-by-term): the 8x8
+/// `PARTITION_NONE` leaf at `(8,12)` under that node's SPLIT was under-costing
+/// `DC_PRED` by exactly 26 bits, flipping a near-tie against `V_PRED` (which
+/// real picks). The 26 bits are the screen-content palette-Y "no-palette" flag
+/// (`av1_allow_palette(allow_screen_content_tools, bsize)` +
+/// `palette_y_mode_cost[bsize_ctx][mode_ctx][0]`), which real signals on every
+/// `DC_PRED` block at `bsize >= BLOCK_8X8` in a screen-content frame -- this
+/// port had hardcoded `try_palette: false` and omitted it. With DC correctly
+/// costed, `V_PRED` wins the leaf (matching real), the SPLIT children match,
+/// the node picks `PARTITION_HORZ`, and the whole tile is byte-identical. Fix:
+/// `partition_pick.rs` (`PickFrameCfg::allow_screen_content_tools` threaded to
+/// the leaf's `intra_mode_info_cost_y`).
 #[test]
 fn encoder_gate_e2e_ab_attempt() {
     #[allow(clippy::type_complexity)]
@@ -842,15 +847,28 @@ fn encoder_gate_e2e_ab_attempt() {
     let mut matched = 0usize;
     for &(name, content) in cases {
         eprintln!("--- AB-probe case: {name} ---");
-        if attempt_case_content(64, 64, true, 1, 1, 2, 32, content) {
-            matched += 1;
-        }
+        let ok = attempt_case_content(64, 64, true, 1, 1, 2, 32, content);
+        assert!(
+            ok,
+            "AB-probe case {name:?} must byte-match real aomenc end-to-end \
+             (64x64 mono cq32 all-intra). All four cases -- including \
+             'top flat / bottom split', whose (mi_row=8,mi_col=12,BLOCK_16X16) \
+             node was closed by the palette-Y no-palette flag-cost fix in \
+             partition_pick.rs -- are now byte-identical."
+        );
+        matched += 1;
     }
+    assert_eq!(
+        matched,
+        cases.len(),
+        "all {} AB-probe cases must byte-match",
+        cases.len()
+    );
     eprintln!(
         "encoder_gate_e2e_ab_attempt: {matched}/{} AB-probe cases byte-identical end-to-end \
-         (exploratory -- AB IS ported; the one remaining mismatch is a separate partition-RD \
-         gap at (mi_row=8,mi_col=12,BLOCK_16X16) real=HORZ/ours=SPLIT, NOT an LF-level or \
-         AB-coverage bug -- see STATUS.md; not asserted)",
+         (AB ported; the (mi_row=8,mi_col=12,BLOCK_16X16) real=HORZ/ours=SPLIT partition-RD \
+         gap is CLOSED -- it was a missing screen-content palette-Y flag cost in the DC_PRED \
+         leaf RD; see STATUS.md)",
         cases.len()
     );
 }

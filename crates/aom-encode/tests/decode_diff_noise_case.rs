@@ -473,6 +473,7 @@ fn decode_diff_pseudo_random_noise_case() {
         // them; keep off so this hard-asserted regression gate's tree shape
         // stays exactly what it already verified (module docs).
         enable_ab_partitions: false,
+        allow_screen_content_tools: p.allow_screen_content_tools,
     };
     let pack_cfg = aom_encode::pack::PackCfg {
         enable_filter_intra: s.enable_filter_intra,

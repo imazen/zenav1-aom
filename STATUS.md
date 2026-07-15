@@ -1898,6 +1898,57 @@ sub-block-RD difference (the recon plane / `source_variance` feeding those leave
 is the first suspect, as with `recon_intra`). Full `cargo test -p aom-encode
 --all-targets`: **74 tests, 0 failed**.
 
+## RESOLVED: the (8,12,BLOCK_16X16) real=HORZ/ours=SPLIT gap was a MISSING screen-content palette flag cost — FIXED (2026-07-15, encoder track)
+
+**`encoder_gate_e2e_ab_attempt` is now 4/4 byte-identical and ASSERTED.** The last
+AB-probe mismatch ("top flat / bottom split", 64x64 mono cq32 all-intra) is closed.
+Root cause traced term-by-term against a from-source C oracle (throwaway `fprintf`
+in a debug-rebuilt `libaom.a`, driven through the existing `shim_encode_av1_kf`
+path, reverted after — NOT committed).
+
+**The chain, measured on both sides at the exact node:**
+- At `(mi_row=8, mi_col=12, BLOCK_16X16)` real picks `PARTITION_HORZ` (cost
+  17,175,728), port picked `PARTITION_SPLIT` (16,908,071). The port's SPLIT was
+  ~428k CHEAPER, so it beat HORZ; and that tighter `best_rdc` starved HORZ's
+  second 16x8 sub-block of budget → its leaf returned `INT_MAX` → HORZ rejected.
+- The SPLIT children diverged. Child 0 `(8,12,BLOCK_8X8)` matched C on its four
+  4x4 SPLIT leaves but NOT on its `PARTITION_NONE` 8x8 leaf; children 1/2/3 (which
+  read child 0's committed reconstruction as neighbours) then all diverged.
+- Drilling the 8x8 `PARTITION_NONE` leaf at `(8,12)`: real picks `V_PRED`
+  (mode 1, rdcost 5,930,130), port picked `DC_PRED` (mode 0, 5,929,731). The
+  per-mode dump showed **identical** tokenonly rate (61623), dist (3792 for DC,
+  1933 for V), and variance factor (1.0) — and V_PRED matched real EXACTLY. The
+  ONLY divergence was DC's mode-info cost: **C = 1626, port = 1600, off by exactly
+  26 bits**, which flipped a near-tie (DC 5,927,493 < V 5,927,892 in the port vs
+  DC 5,929,731 > V 5,927,892 in C).
+
+**Root cause (not a partition-signaling / variance-factor / recon issue — a leaf
+RATE term):** `intra_mode_info_cost_y` adds the palette-Y "no-palette" flag cost
+to every `DC_PRED` block when `av1_allow_palette(allow_screen_content_tools, bsize)`
+holds — i.e. on `bsize >= BLOCK_8X8` in a screen-content frame (these checkerboard
+AB-probes trigger real's screen-content auto-detection). The port had hardcoded
+`try_palette: false` in `leaf_pick_sb_modes` (partition_pick.rs), omitting that
+26-bit flag from EVERY DC candidate. The palette SEARCH stays out of scope; only
+the FLAG cost was missing.
+
+**Fix (partition_pick.rs):** added `PickFrameCfg::allow_screen_content_tools`
+threaded into the leaf; the leaf now sets `try_palette =
+allow_palette(cfg.allow_screen_content_tools, bsize)`, `palette_bsize_ctx =
+palette_bsize_ctx(bsize)`, `palette_mode_ctx = palette_mode_ctx(up, 0, left, 0)`
+(always 0 — this port never picks palette, so every neighbour's palette_size is
+0; the real helper is called with the known-zero sizes so the invariant is
+explicit). `intra_mode_info_cost_y` + the filled `palette_y_mode_cost` table were
+already present. With DC correctly costed, V_PRED wins the leaf, the SPLIT children
+match C, the node picks HORZ, and the tile is byte-identical. Verified: the port's
+8x8 leaf now reports mode=1/rate=66018/dist=1933/rdcost=5,930,130 — byte-for-byte
+C's values.
+
+**Guardrail check:** no partition-RD term was changed on a guess — the 26-bit
+palette flag was the single measured C-vs-port divergence at the node. The
+`recon_intra` last-txb fix (f5ffa70) that closed the sibling real=NONE/SPLIT vs
+ours=HORZ cases is untouched and independent (that was a variance-factor recon
+term; this is a mode-info rate term). The other e2e gates stay green.
+
 ## Gate posture (honest)
 
 Real, verified, ratcheting progress across BOTH tracks — but still a fraction of

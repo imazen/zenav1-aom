@@ -740,6 +740,7 @@ fn run_pack_roundtrip_case(ss_x: usize, ss_y: usize, allintra: bool, qindex: usi
             enable_1to4_partitions: false,
             // Same reasoning: AB shapes are not yet cross-checked here either.
             enable_ab_partitions: false,
+            allow_screen_content_tools: false,
         };
         let pack_cfg = PackCfg {
             enable_filter_intra: true,
@@ -1197,6 +1198,7 @@ fn pack_tile_roundtrips_with_real_costs() {
             enable_1to4_partitions: false,
             // Same reasoning: AB shapes are not yet cross-checked here either.
             enable_ab_partitions: false,
+            allow_screen_content_tools: false,
         };
         let pack_cfg = PackCfg {
             enable_filter_intra: true,
