@@ -1674,7 +1674,7 @@ fn isolate_vgrad256_cq32_cnn_partition_prune() {
         let mut logit_max = f32::NEG_INFINITY;
         for qt in qt_range.clone() {
             let (logits, flags) =
-                c::ref_intra_cnn_partition_decision(&win, qindex, 8, w as i32, w as i32, *bsize_idx, qt, 2);
+                c::ref_intra_cnn_partition_decision(&win, qindex, 8, w as i32, w as i32, *bsize_idx, qt, 2, false);
             logit_min = logit_min.min(logits[0]);
             logit_max = logit_max.max(logits[0]);
             counts[bi] += 1;

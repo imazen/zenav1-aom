@@ -44,6 +44,19 @@
  * the _c path reproduces whatever variant the encoder dispatched. */
 void av1_nn_predict_c(const float *input_nodes, const NN_CONFIG *const nn_config,
                       int reduce_prec, float *const output);
+/* RTCD-dispatched inner convolve of the CNN (av1_rtcd.h) + its scalar variant.
+ * av1_cnn_predict is a plain #define to av1_cnn_predict_c, so this pointer is
+ * the ONLY SIMD in the CNN path. Overriding it lets a shim expose the pure
+ * C-scalar CNN result as the bit-exact transcription oracle for the Rust port,
+ * distinct from the dispatched (AVX2) path the encoder actually runs. */
+extern void (*av1_cnn_convolve_no_maxpool_padding_valid)(
+    const float **input, int in_width, int in_height, int in_stride,
+    const CNN_LAYER_CONFIG *layer_config, float **output, int out_stride,
+    int start_idx, int cstep, int channel_step);
+void av1_cnn_convolve_no_maxpool_padding_valid_c(
+    const float **input, int in_width, int in_height, int in_stride,
+    const CNN_LAYER_CONFIG *layer_config, float **output, int out_stride,
+    int start_idx, int cstep, int channel_step);
 
 /* Exported (RTCD `_c`) transform-domain distortion primitives; hand-declared
  * (they live in the generated av1_rtcd.h, not a plain header the shim pulls). */
@@ -1445,8 +1458,8 @@ void shim_fill_coeff_costs(int qindex, int txs_ctx, int plane,
 void shim_intra_cnn_partition_decision(const uint8_t *win, int qindex,
                                        int bit_depth, int frame_w, int frame_h,
                                        int bsize_idx, int quad_tree_idx,
-                                       int level, float *out_logits,
-                                       int *out_flags) {
+                                       int level, int force_cscalar,
+                                       float *out_logits, int *out_flags) {
   out_flags[0] = out_flags[1] = out_flags[2] = out_flags[3] = 0;
   for (int i = 0; i < 4; i++) out_logits[i] = 0.0f;
   /* BLOCK_128X128 (bsize_idx 0) returns before any decision. */
@@ -1479,8 +1492,19 @@ void shim_intra_cnn_partition_decision(const uint8_t *win, int qindex,
     .output_buffer = output_buffer,
   };
   uint8_t *image[1] = { (uint8_t *)win };
-  av1_cnn_predict_img_multi_out(image, 65, 65, 65, cnn_config, &thread_data,
-                                &output);
+  if (force_cscalar) {
+    void (*saved)(const float **, int, int, int, const CNN_LAYER_CONFIG *,
+                  float **, int, int, int, int) =
+        av1_cnn_convolve_no_maxpool_padding_valid;
+    av1_cnn_convolve_no_maxpool_padding_valid =
+        av1_cnn_convolve_no_maxpool_padding_valid_c;
+    av1_cnn_predict_img_multi_out(image, 65, 65, 65, cnn_config, &thread_data,
+                                  &output);
+    av1_cnn_convolve_no_maxpool_padding_valid = saved;
+  } else {
+    av1_cnn_predict_img_multi_out(image, 65, 65, 65, cnn_config, &thread_data,
+                                  &output);
+  }
 
   /* ---- log_q normalisation (verbatim) ---- */
   const int dc_q =
@@ -1608,20 +1632,6 @@ void shim_nn_predict(const float *features, int num_inputs, int num_outputs,
   cfg.bias[num_hidden_layers] = bp;
   av1_nn_predict_c(features, &cfg, reduce_prec, output);
 }
-
-/* RTCD-dispatched inner convolve of the CNN (av1_rtcd.h) + its scalar variant.
- * av1_cnn_predict is a plain #define to av1_cnn_predict_c, so this pointer is
- * the ONLY SIMD in the CNN path. Overriding it lets the shim expose the pure
- * C-scalar CNN result as the bit-exact transcription oracle for the Rust port,
- * distinct from the dispatched (AVX2) path the encoder actually runs. */
-extern void (*av1_cnn_convolve_no_maxpool_padding_valid)(
-    const float **input, int in_width, int in_height, int in_stride,
-    const CNN_LAYER_CONFIG *layer_config, float **output, int out_stride,
-    int start_idx, int cstep, int channel_step);
-void av1_cnn_convolve_no_maxpool_padding_valid_c(
-    const float **input, int in_width, int in_height, int in_stride,
-    const CNN_LAYER_CONFIG *layer_config, float **output, int out_stride,
-    int start_idx, int cstep, int channel_step);
 
 /* Runs av1_cnn_predict_img_multi_out on the 65x65 luma window `win` (stride 65)
  * with the intra-CNN config, and copies the raw multi-out buffer (CNN_OUT_BUF_

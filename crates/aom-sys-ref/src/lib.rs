@@ -8959,6 +8959,7 @@ extern "C" {
         bsize_idx: i32,
         quad_tree_idx: i32,
         level: i32,
+        force_cscalar: i32,
         out_logits: *mut f32,
         out_flags: *mut i32,
     );
@@ -9037,6 +9038,9 @@ pub fn ref_nn_predict(
 /// `level` is `intra_cnn_based_part_prune_level` (1 or 2). Returns
 /// `(logits[4], flags[4])` where flags are
 /// `[none_disallowed, do_square_split, rect_disabled, square_split_disabled]`.
+/// `force_cscalar` forces the inner CNN convolve to the scalar `_c` variant
+/// (bit-exact transcription target); `false` uses the dispatched (AVX2) path
+/// the encoder actually runs (the flag-parity target).
 #[allow(clippy::too_many_arguments)]
 pub fn ref_intra_cnn_partition_decision(
     win: &[u8],
@@ -9047,6 +9051,7 @@ pub fn ref_intra_cnn_partition_decision(
     bsize_idx: i32,
     quad_tree_idx: i32,
     level: i32,
+    force_cscalar: bool,
 ) -> ([f32; 4], [i32; 4]) {
     assert!(win.len() >= 65 * 65, "CNN window must be at least 65x65");
     let mut logits = [0.0f32; 4];
@@ -9061,6 +9066,7 @@ pub fn ref_intra_cnn_partition_decision(
             bsize_idx,
             quad_tree_idx,
             level,
+            i32::from(force_cscalar),
             logits.as_mut_ptr(),
             flags.as_mut_ptr(),
         );

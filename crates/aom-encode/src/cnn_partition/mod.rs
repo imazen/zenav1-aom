@@ -18,5 +18,6 @@
 //!   `rd_pick_partition_real`.
 
 pub mod cnn;
+pub mod decision;
 pub mod nn;
 pub mod weights;
