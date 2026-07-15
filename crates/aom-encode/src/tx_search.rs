@@ -801,10 +801,29 @@ pub fn search_tx_type_intra(
     best.map(|mut b| {
         b.skip_txfm = b.best_eob == 0;
         b.evaluated_mask = evaluated_mask;
-        debug_assert!(
-            !calc_pixel_domain_distortion_final,
-            "calc_pixel_domain_distortion_final is structurally off at speed 0",
-        );
+        // `calc_pixel_domain_distortion_final` (tx_search.c:2378-2381): when
+        // transform-domain distortion ranked the candidates (speed >= 1,
+        // high-MSE multi-tx-type non-64 blocks), recompute the WINNER's
+        // distortion in the pixel domain and reset `sse` to `block_sse`. The
+        // tx_type selection is unchanged (already decided by transform-domain
+        // RD); only the returned dist/sse/rd that feed the mode/partition RDO
+        // are corrected. `dist_block_px_domain_interior` is the same pure
+        // pixel-domain reconstruct+SSE the C `dist_block_px_domain` computes
+        // (already used as the pixel-domain component of the speed-0 hybrid).
+        if calc_pixel_domain_distortion_final && b.best_eob != 0 {
+            b.dist = dist_block_px_domain_interior(
+                &b.dqcoeff,
+                tx_size,
+                b.best_tx_type,
+                inp.pred,
+                inp.src,
+                inp.src_off,
+                inp.src_stride,
+                inp.bd,
+            );
+            b.sse = block_sse;
+            b.rd = rdcost(inp.rdmult, b.rate, b.dist);
+        }
         b
     })
 }

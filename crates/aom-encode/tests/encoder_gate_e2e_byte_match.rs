@@ -41,6 +41,7 @@ use aom_encode::pack::pack_tile;
 use aom_encode::partition_pick::PickFrameCfg;
 use aom_encode::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
 use aom_encode::real_costs::derive_real_costs;
+use aom_encode::speed_features::SpeedFeatures;
 use aom_encode::tx_search::TxTypeSearchPolicy;
 use aom_entropy::enc::OdEcEnc;
 use aom_entropy::header::{
@@ -301,6 +302,8 @@ fn attempt_case_content(
         ss_y,
         usage,
         cq_level,
+        0,
+        0,
         content,
         |_r, _c| 128,
     )
@@ -320,6 +323,8 @@ fn attempt_case_content_uv(
     ss_y: usize,
     usage: u32,
     cq_level: i32,
+    cpu_used: i32,
+    speed: i32,
     content: impl Fn(usize, usize) -> u8,
     uv_content: impl Fn(usize, usize) -> u8,
 ) -> bool {
@@ -358,7 +363,7 @@ fn attempt_case_content_uv(
         ss_x as i32,
         ss_y as i32,
         cq_level,
-        0,
+        cpu_used,
         false,
         false,
         usage,
@@ -547,6 +552,11 @@ fn attempt_case_content_uv(
         }
     }
 
+    // Speed features for this cpu-used level (all-intra path). At speed 0 this
+    // reproduces the frozen hardcoded values EXACTLY; at speed >= 1 it applies
+    // the transcribed `set_allintra_*` deltas. GOOD usage keeps the frozen
+    // speed-0 policy (the GOOD setter is out of the all-intra slice).
+    let sf = SpeedFeatures::set_allintra(speed, p.allow_screen_content_tools, false);
     let env = SbEncodeEnv {
         sb_size: SB,
         mi_rows,
@@ -590,8 +600,9 @@ fn attempt_case_content_uv(
         skip_costs: &real.skip_costs,
         tx_type_costs_y: &real.tx_type_costs_y,
         pol: &if allintra {
-            TxTypeSearchPolicy::speed0_allintra()
+            sf.tx_type_search_policy(false, 0)
         } else {
+            assert_eq!(speed, 0, "speed>0 e2e harness is all-intra only");
             TxTypeSearchPolicy::speed0_good()
         },
         uv_lp: &UvLoopPolicy::speed0_allintra(),
@@ -599,14 +610,22 @@ fn attempt_case_content_uv(
         cfl_costs: &real.cfl_costs,
         partition_costs: &real.partition_costs,
         allintra,
-        speed: 0,
+        speed,
         qindex,
         enable_filter_intra: s.enable_filter_intra,
         enable_tx64: true,
         enable_rect_tx: true,
-        intra_pruning_with_hog: true,
+        intra_pruning_with_hog: if allintra {
+            sf.intra_pruning_with_hog != 0
+        } else {
+            true
+        },
         enable_rect_partitions: true,
-        less_rectangular_check_level: i32::from(allintra),
+        less_rectangular_check_level: if allintra {
+            sf.less_rectangular_check_level
+        } else {
+            i32::from(allintra)
+        },
         max_partition_size: 15, // BLOCK_64X64 == sb_size for this envelope
         min_partition_size: 0,  // BLOCK_4X4: the true aomenc default (unset --min-partition-size)
         enable_1to4_partitions: true, // the true aomenc default (unset --enable-1to4-partitions)
@@ -1364,7 +1383,7 @@ fn encoder_gate_e2e_nonzero_lf_chroma_sweep() {
     let mut winners = Vec::new();
     for &(name, cq, uv_content) in cases {
         eprintln!("--- chroma nonzero-LF sweep case: {name} (cq={cq}) ---");
-        if attempt_case_content_uv(64, 64, false, 1, 1, 2, cq, |_r, _c| 128, uv_content) {
+        if attempt_case_content_uv(64, 64, false, 1, 1, 2, cq, 0, 0, |_r, _c| 128, uv_content) {
             winners.push(name);
         }
     }
@@ -1476,5 +1495,106 @@ fn encoder_gate_e2e_multi_sb_scale() {
          regression (the steep-content cq32/cq48 cells that once diverged are fixed by the per-SB \
          `INTERNAL_COST_UPD_SB` coeff+mode cost update in `pack_tile`; see this fn's module doc + \
          STATUS.md)"
+    );
+}
+
+/// Gate 2 (`aomenc --cpu-used=1`) — the all-intra KEY speed-1 path. Reuses the
+/// full e2e derivation but with `ref_encode_av1_kf(cpu_used=1)` and port config
+/// from `SpeedFeatures::set_allintra(1, ..)`.
+///
+/// FLAT content is asserted: on EOB=0 blocks the speed-1 sf deltas (partition
+/// CNN prune, top-N intra model, 2D tx-type prune, coeff-opt level, tx-domain
+/// distortion, ...) are all no-ops, so a byte match here proves the oracle
+/// (cpu-used=1) + the `SpeedFeatures` wiring are correct end-to-end.
+#[test]
+fn encoder_gate_speed1_flat_allintra() {
+    let sizes = [(64usize, 64usize), (128, 128), (256, 256)];
+    let mut matched = 0usize;
+    let mut total = 0usize;
+    for &(w, h) in &sizes {
+        for &cq in &[32i32, 48] {
+            total += 1;
+            let ok =
+                attempt_case_content_uv(w, h, true, 1, 1, 2, cq, 1, 1, |_r, _c| 128, |_r, _c| 128);
+            eprintln!("speed1 FLAT {w}x{h} cq{cq}: {}", if ok { "MATCH" } else { "DIFF" });
+            if ok {
+                matched += 1;
+            }
+        }
+    }
+    assert_eq!(
+        matched, total,
+        "every flat cpu-used=1 all-intra case must byte-match real aomenc"
+    );
+}
+
+/// Gate 2 (`aomenc --cpu-used=1`) — gentle-slope textured all-intra content
+/// (the families that byte-match at speed 0 in `encoder_gate_e2e_multi_sb_scale`),
+/// re-run with `ref_encode_av1_kf(cpu_used=1)` + `SpeedFeatures::set_allintra(1)`.
+/// These carry REAL coefficients, so they exercise the speed-1 tx path:
+/// `adaptive_txb_search_level` 1→2, `skip_tx_search` 0→1, `perform_coeff_opt`
+/// 1→2 (coeff-opt dist threshold 3200→1728), and `tx_domain_dist_level` 0→1
+/// (transform-domain distortion during the tx-type search + the
+/// `calc_pixel_domain_distortion_final` pixel-domain recompute of the winner).
+///
+/// The `winners` below byte-match end-to-end; the excluded steep cell is the
+/// next localization target (documented under the list), exactly as the speed-0
+/// `encoder_gate_e2e_multi_sb_scale` gate once excluded its steep cq32 cells
+/// before the per-SB cost update fixed them.
+#[test]
+fn encoder_gate_speed1_textured_allintra() {
+    fn content_for(w: usize, h: usize, name: &str) -> Box<dyn Fn(usize, usize) -> u8> {
+        match name {
+            "two-tone" => Box::new(move |_r, c| if c < w / 2 { 72 } else { 168 }),
+            "vgrad" => Box::new(move |_r, c| (32 + c * 190 / w) as u8),
+            "diag" => Box::new(move |r, c| (32 + (r + c) * 190 / (w + h)) as u8),
+            other => panic!("unknown {other:?}"),
+        }
+    }
+    // Byte-identical to real aomenc --cpu-used=1 end to end.
+    let winners: &[(usize, usize, &str, i32)] = &[
+        (128, 128, "two-tone", 48),
+        (128, 128, "vgrad", 48),
+        (128, 128, "diag", 48),
+        (128, 128, "vgrad", 32),
+        (256, 256, "two-tone", 48),
+        (256, 256, "vgrad", 48),
+        (256, 256, "diag", 48),
+    ];
+    // NEXT LOCALIZATION TARGET (excluded, NOT yet byte-matching at speed 1):
+    //   (256, 256, "vgrad", 32) -- steep vertical gradient, 16 SB64, low
+    //   quality. Byte-matches at SPEED 0 (it is an asserted winner in
+    //   encoder_gate_e2e_multi_sb_scale) but diverges at speed 1. The divergence
+    //   is NOT in the tx-policy deltas (those are wired + validated by the 7
+    //   winners above); it is one of the still-unwired speed-1 sf deltas
+    //   (intra_cnn_based_part_prune_level 0->2, top_intra_model_count 4->3,
+    //   prune_2d_txfm_mode PRUNE_1->PRUNE_2, or intra_tx_size_search_init_depth
+    //   0->1) biting on this steep low-q cell. See STATUS.md Gate 2.
+    let mut matched = 0usize;
+    for &(w, h, name, cq) in winners {
+        let content = content_for(w, h, name);
+        let ok = attempt_case_content_uv(
+            w,
+            h,
+            true,
+            1,
+            1,
+            2,
+            cq,
+            1,
+            1,
+            |r, c| content(r, c),
+            |_r, _c| 128,
+        );
+        eprintln!("speed1 {name} {w}x{h} cq{cq}: {}", if ok { "MATCH" } else { "DIFF" });
+        if ok {
+            matched += 1;
+        }
+    }
+    assert_eq!(
+        matched,
+        winners.len(),
+        "every gentle-slope textured cpu-used=1 all-intra winner must byte-match real aomenc \
+         (the tx-policy speed-1 deltas + calc_pixel_domain_distortion_final recompute)"
     );
 }

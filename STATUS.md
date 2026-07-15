@@ -2391,12 +2391,18 @@ at speed>=4 → NOT needed for speed 1. `intra_pruning_with_hog` (stays 1 at s1,
 →2 at s2), `less_rectangular_check_level` (stays 1 at s1, →2 at s3), and every
 `UvLoopPolicy` field are UNCHANGED at speed 1.
 
-### Coverage (honest fraction)
-- sf-delta fields modeled in `SpeedFeatures`: 15 of 15 intra-still-relevant (values transcribed + unit-asserted vs source; `speed1_allintra_deltas_match_source`).
-- sf-deltas WIRED into the search + BYTE-MATCHED at cpu-used=1: **0 of 15** (harness + wiring is the next slice).
-- content cases byte-identical at cpu-used=1: **0** (not yet run).
+### Coverage (honest fraction) — updated after slice 1
 
-Next slice: a speed-1 harness (`ref_encode_av1_kf(cpu_used=1)` + port config from
-`SpeedFeatures::set_allintra(1)`), flat content first (deltas 1-15 are mostly
-no-ops on EOB=0 blocks → expected trivial match = first coverage point), then
-gradient content to localize which delta first diverges.
+- sf-delta fields modeled in `SpeedFeatures`: 15 of 15 intra-still-relevant (values transcribed + unit-asserted vs source; `speed1_allintra_deltas_match_source`).
+- **e2e harness wired to source from `SpeedFeatures::set_allintra(speed)`** — `encoder_gate_e2e_byte_match.rs` `attempt_case_content_uv` now takes `(cpu_used, speed)`; speed-0 callers pass `(0,0)` → byte-identical (all speed-0 gates green). The all-intra path sources `pol` / `speed` / `intra_pruning_with_hog` / `less_rectangular_check_level` from the scaffold.
+- sf-deltas WIRED + BYTE-MATCHED at cpu-used=1: **5 of 15** — the tx-policy group #7 `adaptive_txb_search_level` 1→2, #12 `skip_tx_search` 0→1, #13 `perform_coeff_opt` 1→2, #14 `tx_domain_dist_level` 0→1, #15 `tx_domain_dist_thres_level` 0→1. #14 additionally required implementing `calc_pixel_domain_distortion_final` (tx_search.rs:2378-2381 recompute of the winner's pixel-domain distortion) — was a speed-0 `debug_assert` stub, now ported; guarded so speed-0 is byte-identical.
+- content cases byte-identical at cpu-used=1: **13 of 14** — all 6 flat (64/128/256², cq32/cq48) + 7 of 8 gentle-slope textured (two-tone/vgrad/diag @128²+256² cq48, vgrad@128² cq32). Asserted in `encoder_gate_speed1_flat_allintra` + `encoder_gate_speed1_textured_allintra`.
+
+NEXT LOCALIZATION TARGET (1 diverging cell): **vgrad 256×256 cq32** at speed 1
+(byte-matches at speed 0 — an asserted `encoder_gate_e2e_multi_sb_scale` winner —
+so a genuine speed-1 delta bites). NOT a tx-policy delta (those match across the 7
+winners incl. vgrad 256² cq48 and vgrad 128² cq32); it is one of the still-unwired
+deltas #1 `intra_cnn_based_part_prune_level` 0→2, #4 `top_intra_model_count_allowed`
+4→3, #11 `prune_2d_txfm_mode` PRUNE_1→PRUNE_2, or #8 `intra_tx_size_search_init_depth_rect`
+0→1, biting on this steep low-q 16-SB frame. Localize by first-diverging-block
+mode/partition/tx-size decode, then wire the responsible delta.
