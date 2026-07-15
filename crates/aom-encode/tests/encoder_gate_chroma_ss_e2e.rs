@@ -138,7 +138,8 @@ fn run_case(
     cq_level: i32,
     bd: u8,
     content: impl Fn(usize, usize) -> u16,
-    uv_content: impl Fn(usize, usize) -> u16,
+    u_content: impl Fn(usize, usize) -> u16,
+    v_content: impl Fn(usize, usize) -> u16,
 ) -> CaseResult {
     c::ref_init();
     let maxv = (1u16 << bd) - 1;
@@ -158,9 +159,8 @@ fn run_case(
     if !mono {
         for r in 0..ch {
             for col in 0..cw {
-                let val = uv_content(r, col).min(maxv);
-                u[r * cw + col] = val;
-                v[r * cw + col] = val;
+                u[r * cw + col] = u_content(r, col).min(maxv);
+                v[r * cw + col] = v_content(r, col).min(maxv);
             }
         }
     }
@@ -588,7 +588,7 @@ fn encoder_gate_444_bd8_e2e() {
     let mut results: Vec<(String, bool)> = Vec::new();
     for &sz in &[64usize, 128, 192] {
         for &cq in &[12i32, 32, 63] {
-            let res = run_case(sz, sz, false, 0, 0, 2, cq, 8, &luma, &chroma);
+            let res = run_case(sz, sz, false, 0, 0, 2, cq, 8, &luma, &chroma, &chroma);
             results.push((format!("444 {sz}x{sz} cq{cq:>2}"), res.matched));
         }
     }
@@ -607,7 +607,7 @@ fn encoder_gate_422_bd8_e2e() {
     let mut results: Vec<(String, bool)> = Vec::new();
     for &sz in &[64usize, 128, 192] {
         for &cq in &[12i32, 32, 63] {
-            let res = run_case(sz, sz, false, 1, 0, 2, cq, 8, &luma, &chroma);
+            let res = run_case(sz, sz, false, 1, 0, 2, cq, 8, &luma, &chroma, &chroma);
             results.push((format!("422 {sz}x{sz} cq{cq:>2}"), res.matched));
         }
     }
@@ -633,9 +633,155 @@ fn encoder_gate_444_bd8_chroma_edge_filter_witness() {
     let mut results: Vec<(String, bool)> = Vec::new();
     for &sz in &[64usize, 128] {
         for &cq in &[12i32, 32] {
-            let res = run_case(sz, sz, false, 0, 0, 2, cq, 8, &luma, &chroma);
+            let res = run_case(sz, sz, false, 0, 0, 2, cq, 8, &luma, &chroma, &chroma);
             results.push((format!("444-edgefilter {sz}x{sz} cq{cq:>2}"), res.matched));
         }
     }
     report_and_assert("4:4:4 chroma edge filter witness", &results);
+}
+
+// ---- Real-image encoder gate ------------------------------------------------
+// The synthetic generators above are hand-tuned to stress specific code paths;
+// this gate feeds GENUINE image content — a small KEY frame decoded from the AV1
+// conformance corpus (the same real vectors the decoder track is anchored on) —
+// through the port's full encode pipeline vs real aomenc, byte-for-byte. It
+// guards every landed encoder fix against real photographic/screen statistics
+// that synthetic patterns may not cover. Corpus provisioning mirrors the decoder
+// conformance gate (`AOM_CONFORMANCE_DIR` or `conformance/data`, CI-fetched at
+// `--scope intra`); a missing vector FAILS LOUD with the fetch command — never a
+// silent skip.
+
+fn corpus_dir() -> std::path::PathBuf {
+    if let Ok(d) = std::env::var("AOM_CONFORMANCE_DIR") {
+        return std::path::PathBuf::from(d);
+    }
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("conformance")
+        .join("data")
+}
+
+fn ivf_hdr_dims(data: &[u8]) -> (usize, usize) {
+    (
+        u16::from_le_bytes([data[12], data[13]]) as usize,
+        u16::from_le_bytes([data[14], data[15]]) as usize,
+    )
+}
+
+fn ivf_temporal_units(data: &[u8]) -> Vec<Vec<u8>> {
+    assert!(data.len() >= 32 && &data[0..4] == b"DKIF", "not an IVF file");
+    let hdr_len = u16::from_le_bytes([data[6], data[7]]) as usize;
+    let mut off = hdr_len;
+    let mut tus = Vec::new();
+    while off + 12 <= data.len() {
+        let sz =
+            u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]) as usize;
+        off += 12; // 4-byte size + 8-byte timestamp
+        assert!(off + sz <= data.len(), "IVF frame runs past end of file");
+        tus.push(data[off..off + sz].to_vec());
+        off += sz;
+    }
+    tus
+}
+
+/// **KB-6 repro (OPEN) — real-content encoder RD divergence at bd8 4:2:0.**
+/// Decodes the first KEY frame of small real conformance vectors (`01-size`
+/// family, intra scope) to genuine YUV via the C decode oracle, then runs the
+/// port's full encode (`pack_tile` + assemble + LF) vs real aomenc byte-for-byte
+/// on those real pixels at the vector's native subsampling/bit depth.
+///
+/// FINDING (2026-07-15): every synthetic e2e gate is byte-exact, but GENUINE
+/// image content diverges across the whole quality range — the multi-SB 196x196
+/// frame diverges at every cq (5..63) and the 1-SB 64x64 diverges except at two
+/// coincidental cq points. The port codes FEWER symbols than aomenc (the KB-2
+/// near-tie signature): real content triggers partition/mode/tx RD decisions the
+/// hand-tuned synthetic patterns never did. Tracked as KB-6 (see CLAUDE.md).
+///
+/// This is a committed REPRODUCTION, not a weakened byte-match gate. It (1)
+/// asserts a byte-exact CONTROL (64x64 cq20 — proves the harness + the fixed
+/// paths are correct on real pixels and guards that point against regression),
+/// and (2) asserts the KB-6 divergence is still PRESENT so the bug is gated: when
+/// a fix makes real content byte-exact, this test FAILS and must be promoted to a
+/// full `report_and_assert` byte-match gate. The correct end state is full
+/// byte-identity on real content.
+#[test]
+fn encoder_gate_real_image_e2e_kb6_repro() {
+    let dir = corpus_dir();
+    // Small real KEY frames (dims in the name); `01-size` is in CI's intra fetch
+    // scope. 64x64 = 1 SB (fast); 196x196 = 4x4 SB (multi-SB pack on real pixels).
+    let vectors = ["av1-1-b8-01-size-64x64", "av1-1-b8-01-size-196x196"];
+    let mut results: Vec<(String, bool)> = Vec::new();
+    for name in vectors {
+        let path = dir.join(format!("{name}.ivf"));
+        let ivf = std::fs::read(&path).unwrap_or_else(|e| {
+            panic!(
+                "{name}: conformance vector missing at {path:?} ({e}); fetch via \
+                 `python3 xtask/conformance.py --fetch --scope intra`"
+            )
+        });
+        let (w, h) = ivf_hdr_dims(&ivf);
+        let tus = ivf_temporal_units(&ivf);
+        let frame = c::ref_decode_av1_kf(&tus[0], w, h);
+        let bd = frame.info[0] as u8;
+        let mono = frame.info[1] != 0;
+        let ss_x = frame.info[2] as usize;
+        let ss_y = frame.info[3] as usize;
+        let cw = (w + ss_x) >> ss_x; // cropped chroma stride (tight row-major)
+        let (y, u, v) = (frame.y, frame.u, frame.v);
+        let y_c = |r: usize, c: usize| y[r * w + c];
+        let u_c = |r: usize, c: usize| u[r * cw + c];
+        let v_c = |r: usize, c: usize| v[r * cw + c];
+        let fmt = match (mono, ss_x, ss_y) {
+            (true, _, _) => "mono",
+            (false, 1, 1) => "420",
+            (false, 1, 0) => "422",
+            (false, 0, 0) => "444",
+            _ => "chroma",
+        };
+        for &cq in &[5i32, 12, 20, 32, 48, 63] {
+            let res = run_case(w, h, mono, ss_x, ss_y, 2, cq, bd, &y_c, &u_c, &v_c);
+            results.push((format!("{name} {fmt} cq{cq}"), res.matched));
+        }
+    }
+
+    eprintln!("\n=== KB-6 real-image e2e map (MATCH = byte-exact vs real aomenc) ===");
+    for (label, ok) in &results {
+        eprintln!("  {label}: {}", if *ok { "MATCH" } else { "MISMATCH (KB-6)" });
+    }
+    let matched: Vec<&String> = results.iter().filter(|(_, ok)| *ok).map(|(n, _)| n).collect();
+    let diverged: Vec<&String> = results.iter().filter(|(_, ok)| !*ok).map(|(n, _)| n).collect();
+    eprintln!(
+        "KB-6: {}/{} real-content cells byte-exact; {} diverge {:?}",
+        matched.len(),
+        results.len(),
+        diverged.len(),
+        diverged
+    );
+
+    // (1) CONTROL — the 64x64 cq20 cell is byte-exact on real pixels: proves the
+    // harness is faithful and the fixed encoder paths are correct on real content.
+    // If THIS regresses it is NOT KB-6 (which is the OTHER cells' known divergence)
+    // — it means the harness broke or a byte-exact real cell regressed.
+    let control = results
+        .iter()
+        .find(|(n, _)| n == "av1-1-b8-01-size-64x64 420 cq20")
+        .map(|(_, ok)| *ok)
+        .expect("control cell present");
+    assert!(
+        control,
+        "real-image harness/regression CONTROL failed: 64x64 cq20 must byte-match \
+         real aomenc (harness broke, or a previously byte-exact real cell regressed)"
+    );
+
+    // (2) KB-6 GATE — the divergence must still be present. When the port becomes
+    // byte-exact on real content this assertion fails: that is the signal to
+    // promote this repro to a full `report_and_assert` byte-match gate (see
+    // CLAUDE.md KB-6). This is characterization of an OPEN bug, not a weakened test.
+    assert!(
+        !diverged.is_empty(),
+        "KB-6 appears FIXED: real bd8 4:2:0 content is now byte-exact vs real aomenc. \
+         Promote encoder_gate_real_image_e2e_kb6_repro to an asserting byte-match gate \
+         (report_and_assert over all cells) and close KB-6 in CLAUDE.md."
+    );
 }

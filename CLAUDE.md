@@ -268,6 +268,41 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
 - **Root cause (LOCALIZED + VERIFIED — chroma-ss read-only + coordinator grep — TWO bugs):** (1) HARNESS-SETUP (task #32, immediate/blocking): `run_case` does a single `read_uncompressed_header` with `cfg.coded_lossless=false`, skipping the two-pass lossless probe the parser contract requires (`aom-entropy/src/header.rs:2952` clones cfg + gates loopfilter/cdef/tx_mode reads on `cfg.coded_lossless`, a writer-mirror input by design). The real decoder does the two-pass (`aom-decode/src/frame.rs:455-487`: parse → `frame_coded_lossless(probe)` [:355 = base_qindex==0 && all 5 plane q-deltas 0] → re-parse with `cfg.coded_lossless/all_lossless=true`). Skipping it → `p.coded_lossless=false` → (a) header emits a phantom loopfilter block the real lossless header omits (byte-2 first-diff), (b) `env.lossless=false` → port runs its NON-lossless encoder at qindex0 (full DCT) → 5426B tile. The lossless SEARCH branch is correct + present (partition_pick.rs:577, tx_search.rs:1448 TX_4X4-only, pack.rs:296) — just never reached. (2) LATENT ENCODER PORT BUG (task #33, surfaces after the harness fix): NO forward Walsh-Hadamard transform in the encode path — `xform_quant` (aom-encode/src/lib.rs:172) unconditionally calls `av1_fwd_txfm2d`; libaom applies `av1_fwht4x4`/`av1_highbd_fwht4x4` for coded-lossless TX_4X4. VERIFIED: grep fwht/fwalsh across aom-encode+aom-transform = ZERO hits; the decoder HAS the inverse (`aom-transform/src/inv_txfm2d.rs:256 av1_highbd_iwht4x4_add`). So even with env.lossless=true, coeffs diverge.
 - **Fix (TWO parts, BOTH required for green):** (1) HARNESS (#32, chroma-ss): mirror the decoder's two-pass in run_case — probe, compute is_lossless from probe.quant, re-parse with cfg.coded_lossless/all_lossless=true. Necessary but NOT sufficient. (2) ENCODER (#33): add forward WHT to aom-transform + route xform_quant (lib.rs:172) and the UV path (intra_uv_rd.rs:800) to it for coded-lossless TX_4X4. Witness: `encoder_gate_lossless_e2e` (currently panics at :615). Close ONLY by a landed fix — never by weakening.
 
+### KB-6 — Encoder: REAL-content RD divergence at bd8 4:2:0 (PRIMARY config) — REAL, tracked, NOT localized
+- **DISCOVERED 2026-07-15 via the new real-image e2e gate** (`encoder_gate_real_image_e2e_kb6_repro`
+  in `encoder_gate_chroma_ss_e2e.rs`): decode the first KEY frame of a small conformance vector
+  (`av1-1-b8-01-size-64x64`, `av1-1-b8-01-size-196x196`; `01-size` is in CI's intra fetch scope) to
+  genuine YUV via the C decode oracle, then run the port's full encode vs real aomenc byte-for-byte on
+  those REAL pixels. **Every synthetic e2e gate is byte-exact, but genuine image content diverges
+  across the whole quality range.** Map (bd8 4:2:0, cq5..63): the multi-SB **196×196 frame diverges at
+  EVERY cq** (e.g. cq20 port tile 1457B vs real 1556B — port codes ~100 FEWER bytes); the 1-SB
+  **64×64 diverges at cq5/12/32/48** and byte-matches only at the coincidental cq20/cq63. 2/12 cells
+  byte-exact, 10 diverge.
+- **Signature = KB-2 class:** the port codes FEWER symbols than aomenc ⇒ it makes different (cheaper)
+  partition/mode/tx RD decisions — a near-tie flip, exactly like KB-2 (`get_intra_edge_filter_type`)
+  and KB-3 (speed-1 rect-kill), but now on the **PRIMARY bd8 4:2:0 speed-0 KEY** path and on REAL
+  content. The hand-tuned synthetic patterns (diag/vbars/vgrad/tex_*) never exercised the diverging
+  decision; real photographic/screen statistics do. **This means the "byte-exact regime: bd8 all
+  content" note under KB-4 is TRUE ONLY for the synthetic gates — it is FALSE for real content.**
+- **Root cause: NOT YET LOCALIZED.** Almost certainly one or more additional KB-2-class RD near-ties
+  (a missing/mis-parameterized speed-0 RD input, an edge-filter/neighbour derivation gap, or a
+  subtle RD-cost rounding diff) that only real content tips. Likely MULTIPLE instances (the divergence
+  is broad, not a single cell).
+- **Repro (COMMITTED, CI-green characterization):** `encoder_gate_real_image_e2e_kb6_repro` prints the
+  full per-cell MATCH/MISMATCH map, asserts a byte-exact CONTROL (64×64 cq20 — harness-faithfulness +
+  regression guard), and asserts the KB-6 divergence is still PRESENT (gates: when the port becomes
+  byte-exact on real content the test FAILS → promote it to a full `report_and_assert` byte-match
+  gate). Not a weakened test — the correct end state is full byte-identity on real content.
+- **Next step (localization):** pick one robustly-divergent real cell (e.g. 196×196 cq20), dump the
+  port's per-SB partition/mode/tx vs the C reference (the KB-2 per-SB dump + the kb4 decode-both-
+  streams technique both apply: the port DECODER is bit-exact, so decoding the real aomenc stream vs
+  the port's own re-wrapped stream localizes the first divergent block), find the flipped decision,
+  fix it (KB-2/KB-3-style). Close ONLY by a landed fix that makes real content byte-match — never by
+  weakening or by narrowing the corpus.
+- **Priority note:** KB-6 hits the single most common real-world case (bd8 4:2:0 photographic content
+  at web qindex), so it is arguably higher-impact than the bd10/bd12 (KB-4) and lossless (KB-5)
+  corners. Sequencing is the coordinator's call.
+
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 
 Primary config = ALLINTRA (usage=2), speed-0 KEY frame. libaom's own allintra tuning
