@@ -2322,3 +2322,81 @@ txs_ctx / plane / eob_multi_size (new append-only `shim_fill_coeff_costs`).
 `decode_diff_multisb.rs` (the structural localizer that pinned the last two cells
 to the intra-mode divergence) is kept as the regression localizer and now reports
 identical reconstruction on the cases it once flagged.
+
+## Gate 2 — cpu-used sweep opened: speed-1 scaffold + all-intra sf-delta work-plan (2026-07-15, encoder track)
+
+**Gate 2 requires the encoder bitstream bit-identical for EVERY `aomenc
+--cpu-used` 0..=9.** Speed-0 is the frozen baseline (every section above).
+This opens speed-1 for the all-intra KEY path.
+
+### Scaffold — `SpeedFeatures` (`crates/aom-encode/src/speed_features.rs`, 11fb764)
+
+Before this, the pipeline hardcoded speed-0 sf values at every call site
+(`TxTypeSearchPolicy::speed0_allintra()`, `PickFrameCfg { speed: 0,
+intra_pruning_with_hog: true, less_rectangular_check_level: 1, .. }`).
+`SpeedFeatures::set_allintra(speed, allow_screen_content_tools, use_hbd)`
+centralizes the speed→value mapping, transcribed from
+`set_allintra_speed_features_framesize_independent` (+ `_dependent`) and the
+`init_*_sf` defaults it overrides. `set_allintra(0,..)` reproduces today's
+hardcoded values EXACTLY — locked field-by-field by
+`speed0_allintra_matches_hardcoded`. Speed-0 is a byte-exact no-op (full
+aom-encode suite green, 82 passed). Producer
+`SpeedFeatures::tx_type_search_policy(skip_trellis, sharpness)` resolves the
+level→threshold tables through the `DEFAULT_EVAL` column (winner-mode two-pass
+`enable_winner_mode_for_*` first fires at speed>=4, speed_features.c:502-505,
+so speed 0..=3 read DEFAULT_EVAL).
+
+### Speed-0 → speed-1 sf deltas for a KEY / all-intra frame (the work plan)
+
+`set_allintra_speed_features_framesize_independent` `if (speed >= 1)` block =
+speed_features.c:386-422; `set_allintra_speed_feature_framesize_dependent`
+speed-1 = :209-234. RELEVANT to an intra-still KEY frame (harness encodes
+CDEF + restoration OFF):
+
+| # | sf field | s0 → s1 | line | port consumes at s0? |
+|---|----------|---------|------|----------------------|
+| 1 | part_sf.intra_cnn_based_part_prune_level | 0 → 2 (screen 0) | 387 | NO — CNN intra partition prune not ported |
+| 2 | part_sf.reuse_best_prediction_for_part_ab | 0 → 1 | 397 | partial — AB mode cache seeding |
+| 3 | part_sf.ml_4_partition_search_level_index (dep) | 0 → 1 | 210 | ? 4-way ML prune thresh index |
+| 4 | intra_sf.top_intra_model_count_allowed | 4 → 3 | 404 | NO — top-N model→full-RD gate |
+| 5 | intra_sf.prune_palette_search_level | 0 → 1 | 402 | N/A (palette search out of scope) |
+| 6 | intra_sf.prune_luma_palette_size_search_level | 1 → 2 | 403 | N/A |
+| 7 | tx_sf.adaptive_txb_search_level | 1 → 2 | 406 | YES (tx_search.rs early-term) |
+| 8 | tx_sf.intra_tx_size_search_init_depth_rect | 0 → 1 | 409 | ? intra tx-size search start depth |
+| 9 | tx_sf.model_based_prune_tx_search_level | 1 → 0 | 410 | ? (1→0 turns a prune OFF) |
+| 10 | tx_type_search.ml_tx_split_thresh | 8500 → 4000 | 411 | ? tx-split ML thresh |
+| 11 | tx_type_search.prune_2d_txfm_mode | PRUNE_1 → PRUNE_2 | 412 | NO — 2D tx-type ML prune off at s0 (tx_search.rs:150) |
+| 12 | tx_type_search.skip_tx_search | 0 → 1 | 413 | YES (tx_search.rs:795 all-zero break) |
+| 13 | rd_sf.perform_coeff_opt | 1 → 2 (thresh 3200→1728) | 415 | YES (via policy) |
+| 14 | rd_sf.tx_domain_dist_level | 0 → 1 (dist-type 0→1) | 416 | partial — tx-domain distortion |
+| 15 | rd_sf.tx_domain_dist_thres_level | 0 → 1 (MAX→22026) | 417 | partial |
+
+lpf (CDEF/restoration search): `cdef_pick_method` FULL→FAST_LVL1,
+`dual_sgr_penalty_level` 0→1, `enable_sgr_ep_pruning` 0→1 — modeled but do NOT
+affect bytes while the harness encodes CDEF + restoration OFF.
+
+IRRELEVANT to intra-still KEY (inter/motion/intraBC-screen; each verified
+consumer-gated `!frame_is_intra_only` in partition_search.c /
+partition_strategy.c): `simple_motion_search_*`, `ml_predict_breakout_level`,
+`ml_partition_search_breakout_*`, `ml_early_term_after_part_split_level`,
+`inter_tx_size_search_init_depth_*`, `mv_sf.*`.
+
+CAVEAT — qindex-dependent setter (`av1_set_speed_features_qindex_dependent`,
+speed_features.c:2904-2937): its `if (speed == 0)` block turns ON many tx/RD
+speed-1 features at LOW qindex, and does NOT run at speed 1. Match the existing
+gates' (higher) qindex regime so the observed speed0↔speed1 delta is clean.
+
+Winner-mode two-pass (`enable_winner_mode_for_coeff_opt` etc.) first activates
+at speed>=4 → NOT needed for speed 1. `intra_pruning_with_hog` (stays 1 at s1,
+→2 at s2), `less_rectangular_check_level` (stays 1 at s1, →2 at s3), and every
+`UvLoopPolicy` field are UNCHANGED at speed 1.
+
+### Coverage (honest fraction)
+- sf-delta fields modeled in `SpeedFeatures`: 15 of 15 intra-still-relevant (values transcribed + unit-asserted vs source; `speed1_allintra_deltas_match_source`).
+- sf-deltas WIRED into the search + BYTE-MATCHED at cpu-used=1: **0 of 15** (harness + wiring is the next slice).
+- content cases byte-identical at cpu-used=1: **0** (not yet run).
+
+Next slice: a speed-1 harness (`ref_encode_av1_kf(cpu_used=1)` + port config from
+`SpeedFeatures::set_allintra(1)`), flat content first (deltas 1-15 are mostly
+no-ops on EOB=0 blocks → expected trivial match = first coverage point), then
+gradient content to localize which delta first diverges.
