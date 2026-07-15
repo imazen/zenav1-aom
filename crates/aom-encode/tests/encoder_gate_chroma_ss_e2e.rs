@@ -708,11 +708,29 @@ fn ivf_temporal_units(data: &[u8]) -> Vec<Vec<u8>> {
 #[test]
 fn encoder_gate_real_image_e2e_kb6_repro() {
     let dir = corpus_dir();
-    // Small real KEY frames (dims in the name); `01-size` is in CI's intra fetch
-    // scope. 64x64 = 1 SB (fast); 196x196 = 4x4 SB (multi-SB pack on real pixels).
-    let vectors = ["av1-1-b8-01-size-64x64", "av1-1-b8-01-size-196x196"];
+    // Cell = (vector, crop_w, crop_h, off_x, off_y). crop_w == 0 means the FULL
+    // frame; otherwise an SB-aligned (mult-of-64) crop at (off_x, off_y). Two
+    // deliberate axes of coverage on the PRIMARY bd8 4:2:0 speed-0 KEY path:
+    //   * CONTENT DIVERSITY: `01-size` is a frame-size test pattern; `00-quantizer`
+    //     and `23-film` are real photographic / film-grain statistics — different
+    //     content tips DIFFERENT speed-0 RD near-ties (exactly what surfaced KB-6).
+    //     All three are FAMILY_SCOPE "intra" in xtask/conformance.py, so CI fetches
+    //     them (`--scope intra`).
+    //   * LOW PIXEL COUNT + CLEAN vs PARTIAL-SB: 64x64 (1 SB) and 128x128 (4 SB)
+    //     crops are SB-aligned, so they exercise multi-SB RD near-ties WITHOUT the
+    //     separate frame-edge partial-SB gap (the port's partition search does not
+    //     yet model edge blocks; see KB-6 notes). The full 196x196 stays as the
+    //     partial-SB characterization. Offsets are even (4:2:0 chroma alignment)
+    //     and land in the textured interior, away from flat borders.
+    let cells: &[(&str, usize, usize, usize, usize)] = &[
+        ("av1-1-b8-01-size-64x64", 0, 0, 0, 0), // 1 SB, aligned — primary clean signal
+        ("av1-1-b8-01-size-196x196", 0, 0, 0, 0), // partial-SB (documents the edge gap)
+        ("av1-1-b8-00-quantizer-00", 64, 64, 96, 64), // photo, 1-SB aligned crop
+        ("av1-1-b8-00-quantizer-00", 128, 128, 64, 64), // photo, 4-SB aligned crop
+        ("av1-1-b8-23-film_grain-50", 64, 64, 96, 64), // film grain, 1-SB aligned crop
+    ];
     let mut results: Vec<(String, bool)> = Vec::new();
-    for name in vectors {
+    for &(name, crop_w, crop_h, off_x, off_y) in cells {
         let path = dir.join(format!("{name}.ivf"));
         let ivf = std::fs::read(&path).unwrap_or_else(|e| {
             panic!(
@@ -720,18 +738,28 @@ fn encoder_gate_real_image_e2e_kb6_repro() {
                  `python3 xtask/conformance.py --fetch --scope intra`"
             )
         });
-        let (w, h) = ivf_hdr_dims(&ivf);
+        let (fw, fh) = ivf_hdr_dims(&ivf);
         let tus = ivf_temporal_units(&ivf);
-        let frame = c::ref_decode_av1_kf(&tus[0], w, h);
+        let frame = c::ref_decode_av1_kf(&tus[0], fw, fh);
         let bd = frame.info[0] as u8;
         let mono = frame.info[1] != 0;
         let ss_x = frame.info[2] as usize;
         let ss_y = frame.info[3] as usize;
-        let cw = (w + ss_x) >> ss_x; // cropped chroma stride (tight row-major)
+        let fcw = (fw + ss_x) >> ss_x; // full-frame chroma stride (tight row-major)
         let (y, u, v) = (frame.y, frame.u, frame.v);
-        let y_c = |r: usize, c: usize| y[r * w + c];
-        let u_c = |r: usize, c: usize| u[r * cw + c];
-        let v_c = |r: usize, c: usize| v[r * cw + c];
+        let (w, h) = if crop_w == 0 { (fw, fh) } else { (crop_w, crop_h) };
+        assert!(
+            off_x + w <= fw && off_y + h <= fh,
+            "{name}: crop {w}x{h}@{off_x},{off_y} exceeds frame {fw}x{fh}"
+        );
+        assert!(
+            off_x % 2 == 0 && off_y % 2 == 0,
+            "{name}: crop offset must be chroma-aligned (even)"
+        );
+        let (cox, coy) = (off_x >> ss_x, off_y >> ss_y);
+        let y_c = |r: usize, c: usize| y[(r + off_y) * fw + (c + off_x)];
+        let u_c = |r: usize, c: usize| u[(r + coy) * fcw + (c + cox)];
+        let v_c = |r: usize, c: usize| v[(r + coy) * fcw + (c + cox)];
         let fmt = match (mono, ss_x, ss_y) {
             (true, _, _) => "mono",
             (false, 1, 1) => "420",
@@ -739,9 +767,14 @@ fn encoder_gate_real_image_e2e_kb6_repro() {
             (false, 0, 0) => "444",
             _ => "chroma",
         };
+        let tag = if crop_w == 0 {
+            format!("{name} {fmt}")
+        } else {
+            format!("{name} {fmt} {w}x{h}@{off_x},{off_y}")
+        };
         for &cq in &[5i32, 12, 20, 32, 48, 63] {
             let res = run_case(w, h, mono, ss_x, ss_y, 2, cq, bd, &y_c, &u_c, &v_c);
-            results.push((format!("{name} {fmt} cq{cq}"), res.matched));
+            results.push((format!("{tag} cq{cq}"), res.matched));
         }
     }
 
@@ -759,20 +792,26 @@ fn encoder_gate_real_image_e2e_kb6_repro() {
         diverged
     );
 
-    // (1) CONTROL — the 64x64 cq20 cell is byte-exact on real pixels: proves the
-    // harness is faithful and the fixed encoder paths are correct on real content.
-    // If THIS regresses it is NOT KB-6 (which is the OTHER cells' known divergence)
-    // — it means the harness broke or a byte-exact real cell regressed.
-    let control = results
-        .iter()
-        .find(|(n, _)| n == "av1-1-b8-01-size-64x64 420 cq20")
-        .map(|(_, ok)| *ok)
-        .expect("control cell present");
-    assert!(
-        control,
-        "real-image harness/regression CONTROL failed: 64x64 cq20 must byte-match \
-         real aomenc (harness broke, or a previously byte-exact real cell regressed)"
-    );
+    // (1) PROMOTED byte-match gates — after the KB-6 luma re-encode edge-filter
+    // fix (per-block get_intra_edge_filter_type, mirroring #26 for chroma) the
+    // real size-64x64 cells byte-match real aomenc at cq5/12/20/48/63. Assert
+    // every one: a regression here is NOT the open KB-6 divergence (the OTHER
+    // cells) — it means a previously byte-exact real cell broke, or the harness
+    // broke. These are the promotion the coordinator asked for as cells go green;
+    // cq32 stays a known SECOND near-tie (still under the divergence gate below).
+    for cq in [5, 12, 20, 48, 63] {
+        let label = format!("av1-1-b8-01-size-64x64 420 cq{cq}");
+        let ok = results
+            .iter()
+            .find(|(n, _)| *n == label)
+            .map(|(_, ok)| *ok)
+            .expect("promoted cell present");
+        assert!(
+            ok,
+            "regression: real cell `{label}` must byte-match real aomenc \
+             (KB-6 luma re-encode fix landed cq5/12/20/48/63 on size-64x64)"
+        );
+    }
 
     // (2) KB-6 GATE — the divergence must still be present. When the port becomes
     // byte-exact on real content this assertion fails: that is the signal to
