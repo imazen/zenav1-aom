@@ -58,20 +58,7 @@ jobs:
           path: conformance/data
           key: conformance-intra-${{ runner.os }}-${{ hashFiles('reference/libaom/test/test-data.sha1') }}-v1
       - name: Provision conformance corpus (intra scope)
-        run: |
-          python3 xtask/conformance.py --fetch --scope intra
-          # KNOWN DECODER BUG (tracked, honest-stopped): at base_qindex >= 249
-          # (the quantizer-62 / quantizer-63 vectors) the port's RECON diverges
-          # from the C oracle. Diagnosed to the entropy coefficient-decode path —
-          # every recon KERNEL (inverse transform, dequant, intra prediction,
-          # deblock) AND all scan orders are proven byte-exact vs C; the
-          # divergence is bit-depth- and plane-independent and manifests as
-          # edge-local +/-1 prediction-cascade errors. Excluded HERE at the
-          # workflow level (caller-controlled skip — allowed; the gate itself is
-          # untouched and still asserts byte-exactness on every vector present).
-          # Remove this exclusion once the coefficient-decode bug is fixed.
-          rm -f conformance/data/av1-1-b*-00-quantizer-6[23].ivf \
-                conformance/data/av1-1-b*-00-quantizer-6[23].ivf.md5
+        run: python3 xtask/conformance.py --fetch --scope intra
 
       # The workspace still references archmage (SIMD dispatch) by an absolute
       # path dep in crates/aom-{intra,dist}. Provide it at that exact path so

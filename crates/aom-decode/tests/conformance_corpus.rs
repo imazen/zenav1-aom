@@ -146,10 +146,7 @@ mod md5 {
                     32..=47 => (b ^ c ^ d, (3 * i + 5) % 16),
                     _ => (c ^ (b | !d), (7 * i) % 16),
                 };
-                let f = f
-                    .wrapping_add(a)
-                    .wrapping_add(K[i])
-                    .wrapping_add(m[g]);
+                let f = f.wrapping_add(a).wrapping_add(K[i]).wrapping_add(m[g]);
                 a = d;
                 d = c;
                 c = b;
@@ -213,13 +210,16 @@ fn image_md5(
 
 /// Split an IVF container into per-frame temporal-unit payloads (raw OBU bytes).
 fn ivf_temporal_units(data: &[u8]) -> Vec<Vec<u8>> {
-    assert!(data.len() >= 32 && &data[0..4] == b"DKIF", "not an IVF file");
+    assert!(
+        data.len() >= 32 && &data[0..4] == b"DKIF",
+        "not an IVF file"
+    );
     let hdr_len = u16::from_le_bytes([data[6], data[7]]) as usize;
     let mut off = hdr_len;
     let mut tus = Vec::new();
     while off + 12 <= data.len() {
-        let sz = u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
-            as usize;
+        let sz =
+            u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]) as usize;
         off += 12; // 4-byte size + 8-byte timestamp
         assert!(off + sz <= data.len(), "IVF frame runs past end of file");
         tus.push(data[off..off + sz].to_vec());
@@ -268,9 +268,13 @@ fn scope_for(name: &str) -> Option<Scope> {
     } else if name.contains("-01-size-") {
         Some(Scope::FirstKey(1)) // KEY,INTER — frame 0 only
     } else if name.contains("-05-mv") || name.contains("-06-mfmv") || name.contains("-22-svc") {
-        Some(Scope::OutOfEnvelope("inter: motion compensation / multi-ref"))
+        Some(Scope::OutOfEnvelope(
+            "inter: motion compensation / multi-ref",
+        ))
     } else if name.contains("-04-cdfupdate") {
-        Some(Scope::OutOfEnvelope("cross-frame CDF carry (stateless single-frame decode)"))
+        Some(Scope::OutOfEnvelope(
+            "cross-frame CDF carry (stateless single-frame decode)",
+        ))
     } else {
         None
     }
@@ -308,9 +312,56 @@ fn md5_self_test() {
     );
     // Cross a 64-byte block boundary (56..64 padding edge) and a multi-block msg.
     assert_eq!(
-        md5::hex(b"12345678901234567890123456789012345678901234567890123456789012345678901234567890"),
+        md5::hex(
+            b"12345678901234567890123456789012345678901234567890123456789012345678901234567890"
+        ),
         "57edf4a22be3c955ac49da2e2107b67a"
     );
+}
+
+/// Explicit regression for the two decode bugs that only surface on coding
+/// blocks LARGER than 64x64: (1) the txb 64x64-chunk plane-interleave order in
+/// `TileKf` reconstruction (`decode_token_recon_block`, decodeframe.c:929-962),
+/// and (2) per-64x64-unit CDEF strength stamping in `apply_cdef` (a >64 block
+/// shares one MB_MODE_INFO across all its 64x64 units, so every covered unit
+/// gets the strength — cdef.c:304). Blocks >64x64 are chosen only at the
+/// aggressive high end of the quantizer range, so `quantizer-62`/`quantizer-63`
+/// are the vectors that exercise them; both are covered at bd8 AND bd10 because
+/// the bugs are bit-depth-independent. The main corpus gate above already
+/// asserts these, but naming the exact failure envelope pins the regression so
+/// it cannot silently vanish if the corpus enumeration changes.
+#[test]
+fn high_qindex_gt64_partition_byte_identical_to_c() {
+    let dir = corpus_dir();
+    let vectors = [
+        "av1-1-b8-00-quantizer-62",
+        "av1-1-b8-00-quantizer-63",
+        "av1-1-b10-00-quantizer-62",
+        "av1-1-b10-00-quantizer-63",
+    ];
+    for name in vectors {
+        let path = dir.join(format!("{name}.ivf"));
+        // Fail LOUD if the vector is absent: CI provisions the intra scope
+        // (which includes 00-quantizer) deterministically, so a missing file is
+        // a provisioning bug, never a reason to skip the assertion silently.
+        let ivf = std::fs::read(&path).unwrap_or_else(|e| {
+            panic!(
+                "{name}: conformance vector missing at {path:?} ({e}); fetch via \
+                 `python3 xtask/conformance.py --fetch --scope intra`"
+            )
+        });
+        let (w, h) = ivf_hdr_dims(&ivf);
+        let tus = ivf_temporal_units(&ivf);
+        // `00-quantizer` streams are KEY,INTER; only the first (KEY) frame is in
+        // the current intra decoder envelope.
+        let tu = &tus[0];
+        let cref = c::ref_decode_av1_kf(tu, w, h);
+        let rust = decode_frame_obus(tu)
+            .unwrap_or_else(|e| panic!("{name}: port rejected the KEY frame: {e}"));
+        assert_eq!(rust.y, cref.y, "{name} ({w}x{h}): luma differs from C oracle");
+        assert_eq!(rust.u, cref.u, "{name} ({w}x{h}): U differs from C oracle");
+        assert_eq!(rust.v, cref.v, "{name} ({w}x{h}): V differs from C oracle");
+    }
 }
 
 /// Enumerate the `av1-1-*.ivf` conformance vectors present in `dir`, sorted.
@@ -424,7 +475,12 @@ fn conformance_single_frame_intra_byte_identical_to_c_and_golden() {
             };
             let mut frame_ok = true;
             if rust.y != cref.y {
-                let n = rust.y.iter().zip(&cref.y).take_while(|(a, b)| a == b).count();
+                let n = rust
+                    .y
+                    .iter()
+                    .zip(&cref.y)
+                    .take_while(|(a, b)| a == b)
+                    .count();
                 let (x, yy) = (n % w, n / w);
                 failures.push(format!(
                     "{where_} ({w}x{h} bd{bd}): LUMA differs at pixel {n} (x={x}, y={yy}) port={} c={}",
@@ -434,13 +490,27 @@ fn conformance_single_frame_intra_byte_identical_to_c_and_golden() {
                 frame_ok = false;
             }
             if !mono && rust.u != cref.u {
-                let n = rust.u.iter().zip(&cref.u).take_while(|(a, b)| a == b).count();
-                failures.push(format!("{where_} ({w}x{h} bd{bd}): U differs at chroma sample {n}"));
+                let n = rust
+                    .u
+                    .iter()
+                    .zip(&cref.u)
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                failures.push(format!(
+                    "{where_} ({w}x{h} bd{bd}): U differs at chroma sample {n}"
+                ));
                 frame_ok = false;
             }
             if !mono && rust.v != cref.v {
-                let n = rust.v.iter().zip(&cref.v).take_while(|(a, b)| a == b).count();
-                failures.push(format!("{where_} ({w}x{h} bd{bd}): V differs at chroma sample {n}"));
+                let n = rust
+                    .v
+                    .iter()
+                    .zip(&cref.v)
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                failures.push(format!(
+                    "{where_} ({w}x{h} bd{bd}): V differs at chroma sample {n}"
+                ));
                 frame_ok = false;
             }
             if !frame_ok {
@@ -448,9 +518,22 @@ fn conformance_single_frame_intra_byte_identical_to_c_and_golden() {
             }
 
             // (3) Port planes reproduce the golden MD5 independently.
-            let md5_r = image_md5(&rust.y, &rust.u, &rust.v, w, h, bd, ss_x, ss_y, rust.monochrome);
+            let md5_r = image_md5(
+                &rust.y,
+                &rust.u,
+                &rust.v,
+                w,
+                h,
+                bd,
+                ss_x,
+                ss_y,
+                rust.monochrome,
+            );
             if md5_r != golden[i] {
-                failures.push(format!("{where_}: port MD5 {md5_r} != golden {}", golden[i]));
+                failures.push(format!(
+                    "{where_}: port MD5 {md5_r} != golden {}",
+                    golden[i]
+                ));
                 continue;
             }
 
@@ -493,14 +576,23 @@ fn conformance_single_frame_intra_byte_identical_to_c_and_golden() {
     assert!(frames_checked > 0, "no in-scope frames were checked");
     let has = |sub: &str| names.iter().any(|n| n.contains(sub));
     if has("-b10-") {
-        assert!(saw_bd10, "10-bit vectors present but no bd>=10 frame verified");
+        assert!(
+            saw_bd10,
+            "10-bit vectors present but no bd>=10 frame verified"
+        );
     }
     if has("intrabc") {
         assert!(saw_intrabc, "intrabc vector present but not verified");
     }
     if has("-02-allintra") || has("-00-quantizer") {
-        assert!(saw_cdef, "CDEF-carrying vectors present but no CDEF frame verified");
-        assert!(saw_lr, "LR-carrying vectors present but no LR frame verified");
+        assert!(
+            saw_cdef,
+            "CDEF-carrying vectors present but no CDEF frame verified"
+        );
+        assert!(
+            saw_lr,
+            "LR-carrying vectors present but no LR frame verified"
+        );
     }
     if has("-01-size-") {
         assert!(

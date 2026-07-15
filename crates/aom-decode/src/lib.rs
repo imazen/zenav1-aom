@@ -2231,474 +2231,197 @@ impl<'c> TileKf<'c> {
             }
         }
 
-        let mut blk_row = 0usize;
-        while do_uniform && blk_row < max_blocks_high {
-            let mut blk_col = 0usize;
-            while blk_col < max_blocks_wide {
-                // (1) coefficients — read_coeffs_tx_intra_block (skipped blocks
-                // code nothing; their contexts stay at the reset zeros).
-                let (eob, tx_type) = if info.skip == 0 {
-                    let a0 = mi_col as usize + blk_col;
-                    let l0 = (mi_row & 31) as usize + blk_row;
-                    let (tsc, dsc) = get_txb_ctx(
-                        bsize,
-                        tx_size,
-                        0,
-                        &self.above_e[0][a0..],
-                        &self.left_e[0][l0..],
-                    );
-                    // Intrabc is is_inter_block, so av1_read_tx_type selects the
-                    // tx-type CDF from inter_ext_tx_cdf (and maps the symbol with
-                    // the inter set type); a normal intra block uses the intra
-                    // ext-tx sets keyed on (square tx size, intra direction).
-                    let ext = if info.use_intrabc != 0 {
-                        inter_ext_tx_cdf(&mut cdfs.inter_ext_tx, tx_size, cfg.reduced_tx_set)
-                    } else {
-                        intra_ext_tx_cdf(
-                            &mut cdfs.ext_tx_1ddct,
-                            &mut cdfs.ext_tx_dtt4,
-                            tx_size,
-                            cfg.reduced_tx_set,
-                            info.use_filter_intra != 0,
-                            info.filter_intra_mode as usize,
-                            info.y_mode as usize,
-                        )
-                    };
-                    let (eob, tt) = read_coeffs_txb_full(
-                        dec,
-                        &mut cdfs.coeff,
-                        ext,
-                        &mut tcoeff,
-                        tx_size,
-                        0,
-                        tsc as usize,
-                        dsc as usize,
-                        true,
-                        info.use_intrabc != 0,
-                        cfg.reduced_tx_set,
-                        signal_gate,
-                        0,
-                    );
-                    let cul = txb_entropy_context(&tcoeff, tx_size, tt, eob) as i8;
-                    self.set_entropy_ctx(
-                        0,
-                        cul,
-                        mi_col as usize,
-                        (mi_row & 31) as usize,
-                        blk_row,
-                        blk_col,
-                        txw,
-                        txh,
-                        max_blocks_wide,
-                        max_blocks_high,
-                        mb_to_right_edge,
-                        mb_to_bottom_edge,
-                    );
-                    (eob, tt)
-                } else {
-                    (0, 0)
-                };
-
-                // Record the luma tx-type in `cm->tx_type_map` (mi granularity)
-                // exactly as C's `update_txk_array`: the txb's TOP-LEFT mi cell
-                // only; a 64-level transform (a 64px side => 16 mi units)
-                // additionally stamps every 16x16 (4-mi) unit of its footprint.
-                // Cells left unwritten stay DCT_DCT (the zeroed map). Colour
-                // intrabc chroma reads the co-located luma tx-type from here;
-                // empty (skipped) on monochrome / non-intrabc frames. Skip blocks
-                // stamp DCT_DCT (0), matching C.
-                if !self.luma_tt.is_empty() {
-                    let cols = cfg.mi_cols as usize;
-                    let r0 = mi_row as usize + blk_row;
-                    let c0 = mi_col as usize + blk_col;
-                    self.luma_tt[r0 * cols + c0] = tx_type as u8;
-                    if txw == 16 || txh == 16 {
-                        let rmax = txh.min(max_blocks_high - blk_row);
-                        let cmax = txw.min(max_blocks_wide - blk_col);
-                        let mut idy = 0;
-                        while idy < rmax {
-                            let mut idx = 0;
-                            while idx < cmax {
-                                self.luma_tt[(r0 + idy) * cols + c0 + idx] = tx_type as u8;
-                                idx += 4;
-                            }
-                            idy += 4;
-                        }
-                    }
-                }
-
-                // (2) intra prediction into the reconstruction plane.
-                let (n_top, n_tr, n_left, n_bl) = intra_avail(
-                    self.st.sb_size,
-                    bsize,
-                    mi_row,
-                    mi_col,
-                    up_available,
-                    left_available,
-                    self.tile.mi_col_end,
-                    self.tile.mi_row_end,
-                    partition,
-                    tx_size,
-                    0,
-                    0,
-                    blk_row as i32,
-                    blk_col as i32,
-                    BLOCK_SIZE_WIDE[bsize],
-                    BLOCK_SIZE_HIGH[bsize],
-                    cfg.mi_cols,
-                    cfg.mi_rows,
-                    info.y_mode as usize,
-                    info.angle_delta_y * ANGLE_STEP,
-                    info.use_filter_intra != 0,
-                );
-                let off = ((mi_row * 4) as usize + blk_row * 4) * self.stride
-                    + (mi_col * 4) as usize
-                    + blk_col * 4;
-                if info.use_intrabc != 0 {
-                    // Intra block copy, luma: an integer block copy from the
-                    // DV-referenced region of the SAME reconstruction plane. The
-                    // DV is read at MV_SUBPEL_NONE (full-pel) and validated by
-                    // av1_is_dv_valid to reference only already-decoded pixels, so
-                    // the source (off shifted by dv/8) is always reconstructed and
-                    // never overlaps this block's pending tx units. Luma needs no
-                    // interpolation (av1_dc_128... the intrabc convolve collapses
-                    // to a copy at integer positions).
-                    let src = (off as i32
-                        + (info.dv_row >> 3) * self.stride as i32
-                        + (info.dv_col >> 3)) as usize;
-                    for r in 0..txhpx {
-                        let s = src + r * self.stride;
-                        scratch[r * txwpx..(r + 1) * txwpx]
-                            .copy_from_slice(&self.recon[s..s + txwpx]);
-                    }
-                } else if info.palette_size[0] > 0 {
-                    // av1_predict_intra_block's palette branch (reconintra.c): pixels
-                    // come directly from the colour-index map + palette LUT — no
-                    // directional/DC prediction math (the surrounding residual
-                    // add below is unaffected: palette replaces PREDICTION only).
-                    // The map covers the whole coding block (BLOCK_SIZE_WIDE[bsize]
-                    // stride); this tx block reads its (blk_col*4, blk_row*4)
-                    // pixel sub-rectangle.
-                    let map_w = BLOCK_SIZE_WIDE[bsize] as usize;
-                    let (x0, y0) = (blk_col * 4, blk_row * 4);
-                    for r in 0..txhpx {
-                        for c in 0..txwpx {
-                            let idx = color_map_y[(y0 + r) * map_w + x0 + c] as usize;
-                            scratch[r * txwpx + c] = info.palette_colors[idx];
-                        }
-                    }
-                } else {
-                    predict_intra_high(
-                        &self.recon,
-                        off,
-                        self.stride,
-                        &mut scratch,
-                        txwpx,
-                        info.y_mode as usize,
-                        info.angle_delta_y * ANGLE_STEP,
-                        info.use_filter_intra != 0,
-                        info.filter_intra_mode as usize,
-                        cfg.disable_edge_filter,
-                        filt_type,
-                        tx_size,
-                        usize::try_from(n_top).expect("n_top_px must be non-negative"),
-                        n_tr,
-                        usize::try_from(n_left).expect("n_left_px must be non-negative"),
-                        n_bl,
-                        cfg.bd,
-                    );
-                }
-                for r in 0..txhpx {
-                    let d = off + r * self.stride;
-                    self.recon[d..d + txwpx].copy_from_slice(&scratch[r * txwpx..(r + 1) * txwpx]);
-                }
-
-                // (3) dequant + inverse transform + add (only when residual
-                // exists) — the block-effective luma dequant row.
-                if info.skip == 0 && eob > 0 {
-                    if self.st.coded_lossless {
-                        // lossless: TX_4X4 + WHT with the qindex-0 dequant.
-                        reconstruct_txb_wht(
-                            &mut self.recon[off..],
-                            self.stride,
-                            &tcoeff,
-                            self.dequants[0],
-                            eob,
-                            cfg.bd,
-                        );
-                    } else {
-                        let iqm = qm::iqmatrix(self.block_qm_level[0], 0, tx_size, tx_type);
-                        reconstruct_txb(
-                            &mut self.recon[off..],
-                            self.stride,
-                            tx_size,
-                            tx_type,
-                            &tcoeff,
-                            self.dequants[0],
-                            iqm,
-                            cfg.bd,
-                        );
-                    }
-                }
-                // (4) CfL luma store (predict_and_reconstruct_intra_block tail,
-                // store_cfl_required): non-chroma-reference blocks always store
-                // (a later group member may pick CfL); the chroma-reference
-                // block stores only when it actually uses CfL. Runs for skip
-                // blocks too (their reconstruction is the prediction).
-                if !cfg.monochrome && (!chroma_ref || info.uv_mode == UV_CFL_PRED) {
-                    let block_off = (mi_row * 4) as usize * self.stride + (mi_col * 4) as usize;
-                    cfl_store_tx(
-                        &mut self.cfl,
-                        &self.recon,
-                        block_off,
-                        self.stride,
-                        blk_row as i32,
-                        blk_col as i32,
-                        tx_size,
-                        bsize,
-                        mi_row,
-                        mi_col,
-                    );
-                }
-                txbs.push((eob, tx_type));
-                blk_col += txw;
-            }
-            blk_row += txh;
-        }
-
-        // --- decode_token_recon_block, planes 1..2: the chroma txb loop of the
-        // (single, <=64x64) 64x64 chunk — runs after ALL of plane 0, so the
-        // block's own luma is already in the CfL store. Only the
-        // chroma-reference block of a shared group decodes chroma, covering
-        // the merged area from the adjusted plane origin. ---
+        // decode_token_recon_block (decodeframe.c:929-962): iterate the block in
+        // 64x64 chunks (max_unit_bsize = BLOCK_64X64) and, within each chunk, do
+        // plane 0's txbs then plane 1/2's txbs. For blocks larger than 64x64 this
+        // interleaves luma/chroma per 64-unit (a 128-wide block decodes L,U,V of
+        // its first 64x64, THEN L,U,V of the next), which the arithmetic decoder
+        // requires; for <=64x64 blocks there is exactly one chunk, so the order
+        // is identical to the previous plane-major-over-the-whole-block walk.
         let mut txbs_uv = Vec::new();
-        if !cfg.monochrome && chroma_ref {
-            let plane_bsize = get_plane_block_size(bsize, ss_x, ss_y);
-            assert_ne!(plane_bsize, 255, "invalid chroma block size");
-            // av1_get_tx_size(plane > 0): lossless forces TX_4X4 (the chroma txb
-            // loop tiles + reads coeffs at 4x4), else the max rect uv tx size.
-            let uv_tx = if self.st.coded_lossless {
-                TX_4X4_IDX
-            } else {
-                max_uv_txsize(bsize, ss_x, ss_y)
-            };
-            let (uv_txw, uv_txh) = (TX_SIZE_WIDE_UNIT[uv_tx], TX_SIZE_HIGH_UNIT[uv_tx]);
-            let (uv_txwpx, uv_txhpx) = (TX_SIZE_WIDE[uv_tx], TX_SIZE_HIGH[uv_tx]);
-            // unit_width/height: the luma extent, ceil-scaled to chroma units.
-            let unit_width = round_power_of_two(max_blocks_wide as i32, ss_x) as usize;
-            let unit_height = round_power_of_two(max_blocks_high as i32, ss_y) as usize;
-            // av1_set_entropy_contexts' frame-edge clip uses the CHROMA plane
-            // block's in-frame extent.
-            let blocks_wide_uv =
-                max_block_units_ss(BLOCK_SIZE_WIDE[plane_bsize], mb_to_right_edge, ss_x);
-            let blocks_high_uv =
-                max_block_units_ss(BLOCK_SIZE_HIGH[plane_bsize], mb_to_bottom_edge, ss_y);
-            // Prediction geometry: pd->width/height (chroma px, min 4), the
-            // scaled block size the has_top_right/bottom_left walk sees, and
-            // the chroma availability (equal to group-origin availability).
-            let wpx = ((MI_SIZE_WIDE[bsize] * 4) >> ss_x).max(4);
-            let hpx = ((MI_SIZE_HIGH[bsize] * 4) >> ss_y).max(4);
-            let bsize_uv = scale_chroma_bsize(bsize, ss_x, ss_y);
-            // set_mi_row_col's chroma_up_available/chroma_left_available:
-            // equal to the luma up_available/left_available EXCEPT the
-            // sub-8x8-odd-position group case, where it's `(mi_row/col - 1) >
-            // tile->mi_row/col_start` — exactly `adj_row/col >
-            // tile.mi_row/col_start` in both cases (adj_row/adj_col already
-            // encode the "-1 when sub-8x8 odd position" shift above).
-            let up_uv = adj_row > self.tile.mi_row_start;
-            let left_uv = adj_col > self.tile.mi_col_start;
-            // get_filt_type(xd, plane > 0): smoothness of the chroma
-            // above/left neighbours — the bottom-right-most mi of the
-            // neighbouring chroma region (set_mi_row_col's chroma_above_mbmi /
-            // chroma_left_mbmi), read from the uv-mode grid.
-            let cols = cfg.mi_cols;
-            let base_row = mi_row - (mi_row & ss_y as i32);
-            let base_col = mi_col - (mi_col & ss_x as i32);
-            let uv_smooth = |m: i8| (9..=11).contains(&m);
-            let ab_sm = up_uv
-                && uv_smooth(self.mi_uv[((base_row - 1) * cols + base_col + ss_x as i32) as usize]);
-            let le_sm = left_uv
-                && uv_smooth(self.mi_uv[((base_row + ss_y as i32) * cols + base_col - 1) as usize]);
-            let filt_type_uv = (ab_sm || le_sm) as i32;
-            // The block origin in the chroma planes.
-            let uv_org = ((adj_row * 4) >> ss_y) as usize * self.stride_uv
-                + ((adj_col * 4) >> ss_x) as usize;
-            // Chroma transform types are not coded: the UV intra mode implies
-            // the type, demoted to DCT_DCT outside the block's ext-tx set
-            // (av1_get_tx_type, PLANE_TYPE_UV intra).
-            let tt_uv = uv_tx_type(info.uv_mode, uv_tx, cfg.reduced_tx_set);
-            let mode_uv = get_uv_mode(info.uv_mode as usize) as usize;
-            let uv_area = txb_wide(uv_tx) * txb_high(uv_tx);
-            let mut tcoeff_uv = vec![0i32; uv_area];
-            let mut scratch_uv = vec![0u16; uv_txwpx * uv_txhpx];
-            let mut no_ext: [u16; 0] = [];
-
-            for plane in 1..=2usize {
-                let mut blk_row = 0usize;
-                while blk_row < unit_height {
-                    let mut blk_col = 0usize;
-                    while blk_col < unit_width {
-                        // Chroma tx-type: for intrabc (is_inter) it is the
-                        // CO-LOCATED luma tx-type (av1_get_tx_type inter branch),
-                        // read from the luma tx_type_map at (mi_row+(blk_row<<ss_y),
-                        // mi_col+(blk_col<<ss_x)) — the block's OWN mi origin, not
-                        // the shared-group base — then re-validated against the
-                        // inter ext-tx set for uv_tx and demoted to DCT_DCT if
-                        // unused. Ordinary intra chroma uses the block-level
-                        // uv_tx_type computed above.
-                        let tt_uv_eff = if info.use_intrabc != 0 {
-                            let lr = mi_row as usize + (blk_row << ss_y);
-                            let lc = mi_col as usize + (blk_col << ss_x);
-                            let luma_tt = self.luma_tt[lr * cfg.mi_cols as usize + lc] as usize;
-                            if ext_tx_derive(uv_tx, true, cfg.reduced_tx_set, luma_tt, false, 0, 0)
-                                .used
-                                == 1
-                            {
-                                luma_tt
-                            } else {
-                                0
-                            }
-                        } else {
-                            tt_uv
-                        };
-                        // (1) chroma coefficients (read_coeffs_tx_intra_block).
-                        let eob = if info.skip == 0 {
+        let mu_w = max_blocks_wide.min(MI_SIZE_WIDE[BLOCK_64X64] as usize);
+        let mu_h = max_blocks_high.min(MI_SIZE_HIGH[BLOCK_64X64] as usize);
+        let mut chunk_row = 0usize;
+        while do_uniform && chunk_row < max_blocks_high {
+            let mut chunk_col = 0usize;
+            while chunk_col < max_blocks_wide {
+                let luma_row_end = (chunk_row + mu_h).min(max_blocks_high);
+                let luma_col_end = (chunk_col + mu_w).min(max_blocks_wide);
+                let mut blk_row = chunk_row;
+                while blk_row < luma_row_end {
+                    let mut blk_col = chunk_col;
+                    while blk_col < luma_col_end {
+                        // (1) coefficients — read_coeffs_tx_intra_block (skipped blocks
+                        // code nothing; their contexts stay at the reset zeros).
+                        let (eob, tx_type) = if info.skip == 0 {
+                            let a0 = mi_col as usize + blk_col;
+                            let l0 = (mi_row & 31) as usize + blk_row;
                             let (tsc, dsc) = get_txb_ctx(
-                                plane_bsize,
-                                uv_tx,
-                                plane,
-                                &self.above_e[plane][uv_a_base + blk_col..],
-                                &self.left_e[plane][uv_l_base + blk_row..],
+                                bsize,
+                                tx_size,
+                                0,
+                                &self.above_e[0][a0..],
+                                &self.left_e[0][l0..],
                             );
-                            let (eob, _tt) = read_coeffs_txb_full(
+                            // Intrabc is is_inter_block, so av1_read_tx_type selects the
+                            // tx-type CDF from inter_ext_tx_cdf (and maps the symbol with
+                            // the inter set type); a normal intra block uses the intra
+                            // ext-tx sets keyed on (square tx size, intra direction).
+                            let ext = if info.use_intrabc != 0 {
+                                inter_ext_tx_cdf(
+                                    &mut cdfs.inter_ext_tx,
+                                    tx_size,
+                                    cfg.reduced_tx_set,
+                                )
+                            } else {
+                                intra_ext_tx_cdf(
+                                    &mut cdfs.ext_tx_1ddct,
+                                    &mut cdfs.ext_tx_dtt4,
+                                    tx_size,
+                                    cfg.reduced_tx_set,
+                                    info.use_filter_intra != 0,
+                                    info.filter_intra_mode as usize,
+                                    info.y_mode as usize,
+                                )
+                            };
+                            let (eob, tt) = read_coeffs_txb_full(
                                 dec,
                                 &mut cdfs.coeff,
-                                &mut no_ext, // plane_type 1: no tx_type symbol
-                                &mut tcoeff_uv,
-                                uv_tx,
-                                1,
+                                ext,
+                                &mut tcoeff,
+                                tx_size,
+                                0,
                                 tsc as usize,
                                 dsc as usize,
                                 true,
-                                false,
+                                info.use_intrabc != 0,
                                 cfg.reduced_tx_set,
-                                false,
-                                tt_uv_eff,
+                                signal_gate,
+                                0,
                             );
-                            let cul = txb_entropy_context(&tcoeff_uv, uv_tx, tt_uv_eff, eob) as i8;
+                            let cul = txb_entropy_context(&tcoeff, tx_size, tt, eob) as i8;
                             self.set_entropy_ctx(
-                                plane,
+                                0,
                                 cul,
-                                uv_a_base,
-                                uv_l_base,
+                                mi_col as usize,
+                                (mi_row & 31) as usize,
                                 blk_row,
                                 blk_col,
-                                uv_txw,
-                                uv_txh,
-                                blocks_wide_uv,
-                                blocks_high_uv,
+                                txw,
+                                txh,
+                                max_blocks_wide,
+                                max_blocks_high,
                                 mb_to_right_edge,
                                 mb_to_bottom_edge,
                             );
-                            eob
+                            (eob, tt)
                         } else {
-                            0
+                            (0, 0)
                         };
 
-                        // (2) chroma intra prediction (av1_predict_intra_block_facade):
-                        // ordinary intra with mode = get_uv_mode(uv_mode) — DC for
-                        // CfL — then the CfL AC contribution on top.
+                        // Record the luma tx-type in `cm->tx_type_map` (mi granularity)
+                        // exactly as C's `update_txk_array`: the txb's TOP-LEFT mi cell
+                        // only; a 64-level transform (a 64px side => 16 mi units)
+                        // additionally stamps every 16x16 (4-mi) unit of its footprint.
+                        // Cells left unwritten stay DCT_DCT (the zeroed map). Colour
+                        // intrabc chroma reads the co-located luma tx-type from here;
+                        // empty (skipped) on monochrome / non-intrabc frames. Skip blocks
+                        // stamp DCT_DCT (0), matching C.
+                        if !self.luma_tt.is_empty() {
+                            let cols = cfg.mi_cols as usize;
+                            let r0 = mi_row as usize + blk_row;
+                            let c0 = mi_col as usize + blk_col;
+                            self.luma_tt[r0 * cols + c0] = tx_type as u8;
+                            if txw == 16 || txh == 16 {
+                                let rmax = txh.min(max_blocks_high - blk_row);
+                                let cmax = txw.min(max_blocks_wide - blk_col);
+                                let mut idy = 0;
+                                while idy < rmax {
+                                    let mut idx = 0;
+                                    while idx < cmax {
+                                        self.luma_tt[(r0 + idy) * cols + c0 + idx] = tx_type as u8;
+                                        idx += 4;
+                                    }
+                                    idy += 4;
+                                }
+                            }
+                        }
+
+                        // (2) intra prediction into the reconstruction plane.
                         let (n_top, n_tr, n_left, n_bl) = intra_avail(
                             self.st.sb_size,
-                            bsize_uv,
-                            adj_row,
-                            adj_col,
-                            up_uv,
-                            left_uv,
+                            bsize,
+                            mi_row,
+                            mi_col,
+                            up_available,
+                            left_available,
                             self.tile.mi_col_end,
                             self.tile.mi_row_end,
                             partition,
-                            uv_tx,
-                            ss_x as i32,
-                            ss_y as i32,
+                            tx_size,
+                            0,
+                            0,
                             blk_row as i32,
                             blk_col as i32,
-                            wpx,
-                            hpx,
+                            BLOCK_SIZE_WIDE[bsize],
+                            BLOCK_SIZE_HIGH[bsize],
                             cfg.mi_cols,
                             cfg.mi_rows,
-                            mode_uv,
-                            info.angle_delta_uv * ANGLE_STEP,
-                            false,
+                            info.y_mode as usize,
+                            info.angle_delta_y * ANGLE_STEP,
+                            info.use_filter_intra != 0,
                         );
-                        let off_uv = uv_org + (blk_row * 4) * self.stride_uv + blk_col * 4;
+                        let off = ((mi_row * 4) as usize + blk_row * 4) * self.stride
+                            + (mi_col * 4) as usize
+                            + blk_col * 4;
                         if info.use_intrabc != 0 {
-                            // Intra block copy, chroma: reuse the luma DV, scaled
-                            // by subsampling. mv_q4 = dv << (1-ss) is in 1/16
-                            // chroma-pel; the integer chroma-pixel offset is
-                            // mv_q4>>4 and the 2-tap intrabc bilinear fires when
-                            // mv_q4&15 == 8 (only when the integer-luma-pel DV is
-                            // odd on a subsampled axis — 4:4:4 is always a copy).
-                            // Source is this block's own chroma recon plane, which
-                            // DV validity keeps already-decoded.
-                            let mvq4_row = info.dv_row << (1 - ss_y as i32);
-                            let mvq4_col = info.dv_col << (1 - ss_x as i32);
-                            let src = (off_uv as isize
-                                + (mvq4_row >> 4) as isize * self.stride_uv as isize
-                                + (mvq4_col >> 4) as isize)
+                            // Intra block copy, luma: an integer block copy from the
+                            // DV-referenced region of the SAME reconstruction plane. The
+                            // DV is read at MV_SUBPEL_NONE (full-pel) and validated by
+                            // av1_is_dv_valid to reference only already-decoded pixels, so
+                            // the source (off shifted by dv/8) is always reconstructed and
+                            // never overlaps this block's pending tx units. Luma needs no
+                            // interpolation (av1_dc_128... the intrabc convolve collapses
+                            // to a copy at integer positions).
+                            let src = (off as i32
+                                + (info.dv_row >> 3) * self.stride as i32
+                                + (info.dv_col >> 3))
                                 as usize;
-                            let plane_recon = if plane == 1 {
-                                &self.recon_u
-                            } else {
-                                &self.recon_v
-                            };
-                            intrabc_chroma_predict(
-                                plane_recon,
-                                src,
-                                self.stride_uv,
-                                &mut scratch_uv,
-                                uv_txwpx,
-                                uv_txwpx,
-                                uv_txhpx,
-                                mvq4_col & 15,
-                                mvq4_row & 15,
-                                cfg.bd,
-                            );
-                        } else if info.palette_size[1] > 0 {
-                            // av1_predict_intra_block's palette branch, chroma: ONE
-                            // shared colour-index map for U and V (uv_map_wpx-strided,
-                            // from av1_get_block_dimensions(bsize, plane=1, ...)),
-                            // looked up against palette_colors[plane * PALETTE_MAX_SIZE]
-                            // (plane 1 = U, plane 2 = V — the palette_colors offset
-                            // matches this loop's own `plane` var directly).
+                            for r in 0..txhpx {
+                                let s = src + r * self.stride;
+                                scratch[r * txwpx..(r + 1) * txwpx]
+                                    .copy_from_slice(&self.recon[s..s + txwpx]);
+                            }
+                        } else if info.palette_size[0] > 0 {
+                            // av1_predict_intra_block's palette branch (reconintra.c): pixels
+                            // come directly from the colour-index map + palette LUT — no
+                            // directional/DC prediction math (the surrounding residual
+                            // add below is unaffected: palette replaces PREDICTION only).
+                            // The map covers the whole coding block (BLOCK_SIZE_WIDE[bsize]
+                            // stride); this tx block reads its (blk_col*4, blk_row*4)
+                            // pixel sub-rectangle.
+                            let map_w = BLOCK_SIZE_WIDE[bsize] as usize;
                             let (x0, y0) = (blk_col * 4, blk_row * 4);
-                            let pal_base = plane * 8;
-                            for r in 0..uv_txhpx {
-                                for c in 0..uv_txwpx {
-                                    let idx = color_map_uv[(y0 + r) * uv_map_wpx + x0 + c] as usize;
-                                    scratch_uv[r * uv_txwpx + c] =
-                                        info.palette_colors[pal_base + idx];
+                            for r in 0..txhpx {
+                                for c in 0..txwpx {
+                                    let idx = color_map_y[(y0 + r) * map_w + x0 + c] as usize;
+                                    scratch[r * txwpx + c] = info.palette_colors[idx];
                                 }
                             }
                         } else {
-                            let plane_recon = if plane == 1 {
-                                &self.recon_u
-                            } else {
-                                &self.recon_v
-                            };
                             predict_intra_high(
-                                plane_recon,
-                                off_uv,
-                                self.stride_uv,
-                                &mut scratch_uv,
-                                uv_txwpx,
-                                mode_uv,
-                                info.angle_delta_uv * ANGLE_STEP,
-                                false,
-                                0,
+                                &self.recon,
+                                off,
+                                self.stride,
+                                &mut scratch,
+                                txwpx,
+                                info.y_mode as usize,
+                                info.angle_delta_y * ANGLE_STEP,
+                                info.use_filter_intra != 0,
+                                info.filter_intra_mode as usize,
                                 cfg.disable_edge_filter,
-                                filt_type_uv,
-                                uv_tx,
+                                filt_type,
+                                tx_size,
                                 usize::try_from(n_top).expect("n_top_px must be non-negative"),
                                 n_tr,
                                 usize::try_from(n_left).expect("n_left_px must be non-negative"),
@@ -2706,69 +2429,395 @@ impl<'c> TileKf<'c> {
                                 cfg.bd,
                             );
                         }
-                        if info.uv_mode == UV_CFL_PRED && info.use_intrabc == 0 {
-                            cfl_predict_block(
+                        for r in 0..txhpx {
+                            let d = off + r * self.stride;
+                            self.recon[d..d + txwpx]
+                                .copy_from_slice(&scratch[r * txwpx..(r + 1) * txwpx]);
+                        }
+
+                        // (3) dequant + inverse transform + add (only when residual
+                        // exists) — the block-effective luma dequant row.
+                        if info.skip == 0 && eob > 0 {
+                            if self.st.coded_lossless {
+                                // lossless: TX_4X4 + WHT with the qindex-0 dequant.
+                                reconstruct_txb_wht(
+                                    &mut self.recon[off..],
+                                    self.stride,
+                                    &tcoeff,
+                                    self.dequants[0],
+                                    eob,
+                                    cfg.bd,
+                                );
+                            } else {
+                                let iqm = qm::iqmatrix(self.block_qm_level[0], 0, tx_size, tx_type);
+                                reconstruct_txb(
+                                    &mut self.recon[off..],
+                                    self.stride,
+                                    tx_size,
+                                    tx_type,
+                                    &tcoeff,
+                                    self.dequants[0],
+                                    iqm,
+                                    cfg.bd,
+                                );
+                            }
+                        }
+                        // (4) CfL luma store (predict_and_reconstruct_intra_block tail,
+                        // store_cfl_required): non-chroma-reference blocks always store
+                        // (a later group member may pick CfL); the chroma-reference
+                        // block stores only when it actually uses CfL. Runs for skip
+                        // blocks too (their reconstruction is the prediction).
+                        if !cfg.monochrome && (!chroma_ref || info.uv_mode == UV_CFL_PRED) {
+                            let block_off =
+                                (mi_row * 4) as usize * self.stride + (mi_col * 4) as usize;
+                            cfl_store_tx(
                                 &mut self.cfl,
-                                &mut scratch_uv,
-                                0,
-                                uv_txwpx,
-                                uv_tx,
-                                plane,
-                                info.cfl_alpha_idx,
-                                info.cfl_joint_sign,
-                                cfg.bd,
+                                &self.recon,
+                                block_off,
+                                self.stride,
+                                blk_row as i32,
+                                blk_col as i32,
+                                tx_size,
+                                bsize,
+                                mi_row,
+                                mi_col,
                             );
                         }
-                        {
-                            let plane_recon = if plane == 1 {
-                                &mut self.recon_u
-                            } else {
-                                &mut self.recon_v
-                            };
-                            for r in 0..uv_txhpx {
-                                let d = off_uv + r * self.stride_uv;
-                                plane_recon[d..d + uv_txwpx]
-                                    .copy_from_slice(&scratch_uv[r * uv_txwpx..(r + 1) * uv_txwpx]);
-                            }
-                            // (3) dequant + inverse transform + add — the
-                            // block-effective dequant row of this plane.
-                            if info.skip == 0 && eob > 0 {
-                                if self.st.coded_lossless {
-                                    // lossless: TX_4X4 + WHT, this plane's qindex-0 dequant.
-                                    reconstruct_txb_wht(
-                                        &mut plane_recon[off_uv..],
+                        txbs.push((eob, tx_type));
+                        blk_col += txw;
+                    }
+                    blk_row += txh;
+                }
+
+                // --- decode_token_recon_block, planes 1..2: the chroma txb loop of the
+                // (single, <=64x64) 64x64 chunk — runs after ALL of plane 0, so the
+                // block's own luma is already in the CfL store. Only the
+                // chroma-reference block of a shared group decodes chroma, covering
+                // the merged area from the adjusted plane origin. ---
+                if !cfg.monochrome && chroma_ref {
+                    let plane_bsize = get_plane_block_size(bsize, ss_x, ss_y);
+                    assert_ne!(plane_bsize, 255, "invalid chroma block size");
+                    // av1_get_tx_size(plane > 0): lossless forces TX_4X4 (the chroma txb
+                    // loop tiles + reads coeffs at 4x4), else the max rect uv tx size.
+                    let uv_tx = if self.st.coded_lossless {
+                        TX_4X4_IDX
+                    } else {
+                        max_uv_txsize(bsize, ss_x, ss_y)
+                    };
+                    let (uv_txw, uv_txh) = (TX_SIZE_WIDE_UNIT[uv_tx], TX_SIZE_HIGH_UNIT[uv_tx]);
+                    let (uv_txwpx, uv_txhpx) = (TX_SIZE_WIDE[uv_tx], TX_SIZE_HIGH[uv_tx]);
+                    // unit_width/height: THIS 64x64 chunk's luma extent (clamped to the
+                    // block), ceil-scaled to chroma units (decodeframe.c:944-947).
+                    let unit_width =
+                        round_power_of_two((chunk_col + mu_w).min(max_blocks_wide) as i32, ss_x)
+                            as usize;
+                    let unit_height =
+                        round_power_of_two((chunk_row + mu_h).min(max_blocks_high) as i32, ss_y)
+                            as usize;
+                    // av1_set_entropy_contexts' frame-edge clip uses the CHROMA plane
+                    // block's in-frame extent.
+                    let blocks_wide_uv =
+                        max_block_units_ss(BLOCK_SIZE_WIDE[plane_bsize], mb_to_right_edge, ss_x);
+                    let blocks_high_uv =
+                        max_block_units_ss(BLOCK_SIZE_HIGH[plane_bsize], mb_to_bottom_edge, ss_y);
+                    // Prediction geometry: pd->width/height (chroma px, min 4), the
+                    // scaled block size the has_top_right/bottom_left walk sees, and
+                    // the chroma availability (equal to group-origin availability).
+                    let wpx = ((MI_SIZE_WIDE[bsize] * 4) >> ss_x).max(4);
+                    let hpx = ((MI_SIZE_HIGH[bsize] * 4) >> ss_y).max(4);
+                    let bsize_uv = scale_chroma_bsize(bsize, ss_x, ss_y);
+                    // set_mi_row_col's chroma_up_available/chroma_left_available:
+                    // equal to the luma up_available/left_available EXCEPT the
+                    // sub-8x8-odd-position group case, where it's `(mi_row/col - 1) >
+                    // tile->mi_row/col_start` — exactly `adj_row/col >
+                    // tile.mi_row/col_start` in both cases (adj_row/adj_col already
+                    // encode the "-1 when sub-8x8 odd position" shift above).
+                    let up_uv = adj_row > self.tile.mi_row_start;
+                    let left_uv = adj_col > self.tile.mi_col_start;
+                    // get_filt_type(xd, plane > 0): smoothness of the chroma
+                    // above/left neighbours — the bottom-right-most mi of the
+                    // neighbouring chroma region (set_mi_row_col's chroma_above_mbmi /
+                    // chroma_left_mbmi), read from the uv-mode grid.
+                    let cols = cfg.mi_cols;
+                    let base_row = mi_row - (mi_row & ss_y as i32);
+                    let base_col = mi_col - (mi_col & ss_x as i32);
+                    let uv_smooth = |m: i8| (9..=11).contains(&m);
+                    let ab_sm = up_uv
+                        && uv_smooth(
+                            self.mi_uv[((base_row - 1) * cols + base_col + ss_x as i32) as usize],
+                        );
+                    let le_sm = left_uv
+                        && uv_smooth(
+                            self.mi_uv[((base_row + ss_y as i32) * cols + base_col - 1) as usize],
+                        );
+                    let filt_type_uv = (ab_sm || le_sm) as i32;
+                    // The block origin in the chroma planes.
+                    let uv_org = ((adj_row * 4) >> ss_y) as usize * self.stride_uv
+                        + ((adj_col * 4) >> ss_x) as usize;
+                    // Chroma transform types are not coded: the UV intra mode implies
+                    // the type, demoted to DCT_DCT outside the block's ext-tx set
+                    // (av1_get_tx_type, PLANE_TYPE_UV intra).
+                    let tt_uv = uv_tx_type(info.uv_mode, uv_tx, cfg.reduced_tx_set);
+                    let mode_uv = get_uv_mode(info.uv_mode as usize) as usize;
+                    let uv_area = txb_wide(uv_tx) * txb_high(uv_tx);
+                    let mut tcoeff_uv = vec![0i32; uv_area];
+                    let mut scratch_uv = vec![0u16; uv_txwpx * uv_txhpx];
+                    let mut no_ext: [u16; 0] = [];
+
+                    for plane in 1..=2usize {
+                        let mut blk_row = chunk_row >> ss_y;
+                        while blk_row < unit_height {
+                            let mut blk_col = chunk_col >> ss_x;
+                            while blk_col < unit_width {
+                                // Chroma tx-type: for intrabc (is_inter) it is the
+                                // CO-LOCATED luma tx-type (av1_get_tx_type inter branch),
+                                // read from the luma tx_type_map at (mi_row+(blk_row<<ss_y),
+                                // mi_col+(blk_col<<ss_x)) — the block's OWN mi origin, not
+                                // the shared-group base — then re-validated against the
+                                // inter ext-tx set for uv_tx and demoted to DCT_DCT if
+                                // unused. Ordinary intra chroma uses the block-level
+                                // uv_tx_type computed above.
+                                let tt_uv_eff = if info.use_intrabc != 0 {
+                                    let lr = mi_row as usize + (blk_row << ss_y);
+                                    let lc = mi_col as usize + (blk_col << ss_x);
+                                    let luma_tt =
+                                        self.luma_tt[lr * cfg.mi_cols as usize + lc] as usize;
+                                    if ext_tx_derive(
+                                        uv_tx,
+                                        true,
+                                        cfg.reduced_tx_set,
+                                        luma_tt,
+                                        false,
+                                        0,
+                                        0,
+                                    )
+                                    .used
+                                        == 1
+                                    {
+                                        luma_tt
+                                    } else {
+                                        0
+                                    }
+                                } else {
+                                    tt_uv
+                                };
+                                // (1) chroma coefficients (read_coeffs_tx_intra_block).
+                                let eob = if info.skip == 0 {
+                                    let (tsc, dsc) = get_txb_ctx(
+                                        plane_bsize,
+                                        uv_tx,
+                                        plane,
+                                        &self.above_e[plane][uv_a_base + blk_col..],
+                                        &self.left_e[plane][uv_l_base + blk_row..],
+                                    );
+                                    let (eob, _tt) = read_coeffs_txb_full(
+                                        dec,
+                                        &mut cdfs.coeff,
+                                        &mut no_ext, // plane_type 1: no tx_type symbol
+                                        &mut tcoeff_uv,
+                                        uv_tx,
+                                        1,
+                                        tsc as usize,
+                                        dsc as usize,
+                                        true,
+                                        false,
+                                        cfg.reduced_tx_set,
+                                        false,
+                                        tt_uv_eff,
+                                    );
+                                    let cul = txb_entropy_context(&tcoeff_uv, uv_tx, tt_uv_eff, eob)
+                                        as i8;
+                                    self.set_entropy_ctx(
+                                        plane,
+                                        cul,
+                                        uv_a_base,
+                                        uv_l_base,
+                                        blk_row,
+                                        blk_col,
+                                        uv_txw,
+                                        uv_txh,
+                                        blocks_wide_uv,
+                                        blocks_high_uv,
+                                        mb_to_right_edge,
+                                        mb_to_bottom_edge,
+                                    );
+                                    eob
+                                } else {
+                                    0
+                                };
+
+                                // (2) chroma intra prediction (av1_predict_intra_block_facade):
+                                // ordinary intra with mode = get_uv_mode(uv_mode) — DC for
+                                // CfL — then the CfL AC contribution on top.
+                                let (n_top, n_tr, n_left, n_bl) = intra_avail(
+                                    self.st.sb_size,
+                                    bsize_uv,
+                                    adj_row,
+                                    adj_col,
+                                    up_uv,
+                                    left_uv,
+                                    self.tile.mi_col_end,
+                                    self.tile.mi_row_end,
+                                    partition,
+                                    uv_tx,
+                                    ss_x as i32,
+                                    ss_y as i32,
+                                    blk_row as i32,
+                                    blk_col as i32,
+                                    wpx,
+                                    hpx,
+                                    cfg.mi_cols,
+                                    cfg.mi_rows,
+                                    mode_uv,
+                                    info.angle_delta_uv * ANGLE_STEP,
+                                    false,
+                                );
+                                let off_uv = uv_org + (blk_row * 4) * self.stride_uv + blk_col * 4;
+                                if info.use_intrabc != 0 {
+                                    // Intra block copy, chroma: reuse the luma DV, scaled
+                                    // by subsampling. mv_q4 = dv << (1-ss) is in 1/16
+                                    // chroma-pel; the integer chroma-pixel offset is
+                                    // mv_q4>>4 and the 2-tap intrabc bilinear fires when
+                                    // mv_q4&15 == 8 (only when the integer-luma-pel DV is
+                                    // odd on a subsampled axis — 4:4:4 is always a copy).
+                                    // Source is this block's own chroma recon plane, which
+                                    // DV validity keeps already-decoded.
+                                    let mvq4_row = info.dv_row << (1 - ss_y as i32);
+                                    let mvq4_col = info.dv_col << (1 - ss_x as i32);
+                                    let src = (off_uv as isize
+                                        + (mvq4_row >> 4) as isize * self.stride_uv as isize
+                                        + (mvq4_col >> 4) as isize)
+                                        as usize;
+                                    let plane_recon = if plane == 1 {
+                                        &self.recon_u
+                                    } else {
+                                        &self.recon_v
+                                    };
+                                    intrabc_chroma_predict(
+                                        plane_recon,
+                                        src,
                                         self.stride_uv,
-                                        &tcoeff_uv,
-                                        self.dequants[plane],
-                                        eob,
+                                        &mut scratch_uv,
+                                        uv_txwpx,
+                                        uv_txwpx,
+                                        uv_txhpx,
+                                        mvq4_col & 15,
+                                        mvq4_row & 15,
                                         cfg.bd,
                                     );
+                                } else if info.palette_size[1] > 0 {
+                                    // av1_predict_intra_block's palette branch, chroma: ONE
+                                    // shared colour-index map for U and V (uv_map_wpx-strided,
+                                    // from av1_get_block_dimensions(bsize, plane=1, ...)),
+                                    // looked up against palette_colors[plane * PALETTE_MAX_SIZE]
+                                    // (plane 1 = U, plane 2 = V — the palette_colors offset
+                                    // matches this loop's own `plane` var directly).
+                                    let (x0, y0) = (blk_col * 4, blk_row * 4);
+                                    let pal_base = plane * 8;
+                                    for r in 0..uv_txhpx {
+                                        for c in 0..uv_txwpx {
+                                            let idx = color_map_uv[(y0 + r) * uv_map_wpx + x0 + c]
+                                                as usize;
+                                            scratch_uv[r * uv_txwpx + c] =
+                                                info.palette_colors[pal_base + idx];
+                                        }
+                                    }
                                 } else {
-                                    let iqm = qm::iqmatrix(
-                                        self.block_qm_level[plane],
-                                        plane,
-                                        uv_tx,
-                                        tt_uv_eff,
-                                    );
-                                    reconstruct_txb(
-                                        &mut plane_recon[off_uv..],
+                                    let plane_recon = if plane == 1 {
+                                        &self.recon_u
+                                    } else {
+                                        &self.recon_v
+                                    };
+                                    predict_intra_high(
+                                        plane_recon,
+                                        off_uv,
                                         self.stride_uv,
+                                        &mut scratch_uv,
+                                        uv_txwpx,
+                                        mode_uv,
+                                        info.angle_delta_uv * ANGLE_STEP,
+                                        false,
+                                        0,
+                                        cfg.disable_edge_filter,
+                                        filt_type_uv,
                                         uv_tx,
-                                        tt_uv_eff,
-                                        &tcoeff_uv,
-                                        self.dequants[plane],
-                                        iqm,
+                                        usize::try_from(n_top)
+                                            .expect("n_top_px must be non-negative"),
+                                        n_tr,
+                                        usize::try_from(n_left)
+                                            .expect("n_left_px must be non-negative"),
+                                        n_bl,
                                         cfg.bd,
                                     );
                                 }
+                                if info.uv_mode == UV_CFL_PRED && info.use_intrabc == 0 {
+                                    cfl_predict_block(
+                                        &mut self.cfl,
+                                        &mut scratch_uv,
+                                        0,
+                                        uv_txwpx,
+                                        uv_tx,
+                                        plane,
+                                        info.cfl_alpha_idx,
+                                        info.cfl_joint_sign,
+                                        cfg.bd,
+                                    );
+                                }
+                                {
+                                    let plane_recon = if plane == 1 {
+                                        &mut self.recon_u
+                                    } else {
+                                        &mut self.recon_v
+                                    };
+                                    for r in 0..uv_txhpx {
+                                        let d = off_uv + r * self.stride_uv;
+                                        plane_recon[d..d + uv_txwpx].copy_from_slice(
+                                            &scratch_uv[r * uv_txwpx..(r + 1) * uv_txwpx],
+                                        );
+                                    }
+                                    // (3) dequant + inverse transform + add — the
+                                    // block-effective dequant row of this plane.
+                                    if info.skip == 0 && eob > 0 {
+                                        if self.st.coded_lossless {
+                                            // lossless: TX_4X4 + WHT, this plane's qindex-0 dequant.
+                                            reconstruct_txb_wht(
+                                                &mut plane_recon[off_uv..],
+                                                self.stride_uv,
+                                                &tcoeff_uv,
+                                                self.dequants[plane],
+                                                eob,
+                                                cfg.bd,
+                                            );
+                                        } else {
+                                            let iqm = qm::iqmatrix(
+                                                self.block_qm_level[plane],
+                                                plane,
+                                                uv_tx,
+                                                tt_uv_eff,
+                                            );
+                                            reconstruct_txb(
+                                                &mut plane_recon[off_uv..],
+                                                self.stride_uv,
+                                                uv_tx,
+                                                tt_uv_eff,
+                                                &tcoeff_uv,
+                                                self.dequants[plane],
+                                                iqm,
+                                                cfg.bd,
+                                            );
+                                        }
+                                    }
+                                }
+                                txbs_uv.push(if eob > 0 { (eob, tt_uv_eff) } else { (0, 0) });
+                                blk_col += uv_txw;
                             }
+                            blk_row += uv_txh;
                         }
-                        txbs_uv.push(if eob > 0 { (eob, tt_uv_eff) } else { (0, 0) });
-                        blk_col += uv_txw;
                     }
-                    blk_row += uv_txh;
                 }
+                chunk_col += mu_w;
             }
+            chunk_row += mu_h;
         }
 
         self.stamp_mi(

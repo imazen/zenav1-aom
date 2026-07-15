@@ -778,11 +778,25 @@ pub fn superres_upscale_planes(
         let mut u2 = vec![0u16; dst_stride_uv * rows_uv];
         let mut v2 = vec![0u16; dst_stride_uv * rows_uv];
         superres::upscale_plane(
-            u, src_stride_uv, &mut u2, dst_stride_uv, coded_w_uv, upscaled_w_uv, mi_w_uv, rows_uv,
+            u,
+            src_stride_uv,
+            &mut u2,
+            dst_stride_uv,
+            coded_w_uv,
+            upscaled_w_uv,
+            mi_w_uv,
+            rows_uv,
             bd,
         );
         superres::upscale_plane(
-            v, src_stride_uv, &mut v2, dst_stride_uv, coded_w_uv, upscaled_w_uv, mi_w_uv, rows_uv,
+            v,
+            src_stride_uv,
+            &mut v2,
+            dst_stride_uv,
+            coded_w_uv,
+            upscaled_w_uv,
+            mi_w_uv,
+            rows_uv,
             bd,
         );
         (u2, v2, dst_stride_uv)
@@ -796,8 +810,15 @@ pub fn superres_upscale_planes(
 /// run on the result. Hidden: harness entry so tests can drive the stage.
 #[doc(hidden)]
 pub fn apply_superres(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) {
-    let (y, s, u, v, s_uv) =
-        superres_upscale_planes(&t.recon, &t.recon_u, &t.recon_v, t.stride, t.stride_uv, cfg, p);
+    let (y, s, u, v, s_uv) = superres_upscale_planes(
+        &t.recon,
+        &t.recon_u,
+        &t.recon_v,
+        t.stride,
+        t.stride_uv,
+        cfg,
+        p,
+    );
     t.recon = y;
     t.stride = s;
     t.recon_u = u;
@@ -1210,8 +1231,21 @@ pub fn apply_cdef(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) 
             skip[row0..row0 + w].fill(sk);
         }
         if b.info.cdef_strength >= 0 {
-            unit_strength[(b.mi_row as usize / 16) * nhfb + b.mi_col as usize / 16] =
-                b.info.cdef_strength;
+            // C reads the CDEF strength once per 64x64 unit and stores it on the
+            // block's shared MB_MODE_INFO (decodemv.c read_cdef); the frame walk
+            // reads it back from each 64x64 unit's top-left mi (cdef.c:304). A
+            // block LARGER than 64x64 (128x128 / 128x64 / 64x128, only chosen at
+            // very high qindex) covers several 64x64 units, all sharing that one
+            // mbmi, so EVERY covered unit gets the strength — not just the
+            // top-left one. Stamp all covered units (in-frame extent h x w).
+            let (ur0, uc0) = (b.mi_row as usize / 16, b.mi_col as usize / 16);
+            let ur1 = (b.mi_row as usize + h - 1) / 16;
+            let uc1 = (b.mi_col as usize + w - 1) / 16;
+            for ur in ur0..=ur1 {
+                for uc in uc0..=uc1 {
+                    unit_strength[ur * nhfb + uc] = b.info.cdef_strength;
+                }
+            }
         }
     }
     let params = CdefFrameParams {
