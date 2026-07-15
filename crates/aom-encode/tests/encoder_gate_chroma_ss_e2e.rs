@@ -32,7 +32,9 @@ use aom_encode::encode_intra::TrellisOptType;
 use aom_encode::encode_sb::SbEncodeEnv;
 use aom_encode::intra_uv_rd::UvLoopPolicy;
 use aom_encode::lf_search::{LfSearchFrame, build_lf_mi_grid, pick_filter_level};
-use aom_encode::obu_assemble::assemble_frame_obu_payload_single_tile;
+use aom_encode::obu_assemble::{
+    assemble_frame_obu_payload_single_tile, assemble_multitile_frame_obu_payload_derived,
+};
 use aom_encode::pack::pack_tile;
 use aom_encode::partition_pick::PickFrameCfg;
 use aom_encode::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
@@ -140,6 +142,14 @@ fn run_case(
     content: impl Fn(usize, usize) -> u16,
     u_content: impl Fn(usize, usize) -> u16,
     v_content: impl Fn(usize, usize) -> u16,
+    // Tile grid: (tile_columns_log2, tile_rows_log2). (0, 0) => a single tile
+    // (the whole frame) via `ref_encode_av1_kf` — the original behaviour, byte
+    // for byte. Anything non-zero drives the real MULTI-TILE encoder
+    // (`ref_encode_av1_kf_tiles`) and this port's per-tile search+pack loop
+    // (fresh entropy coder + reset CDF context per tile, tile-boundary neighbour
+    // availability via env.tile_*), then the derived multi-tile OBU assembler.
+    tile_cols_log2: i32,
+    tile_rows_log2: i32,
 ) -> CaseResult {
     c::ref_init();
     let maxv = (1u16 << bd) - 1;
@@ -165,24 +175,48 @@ fn run_case(
         }
     }
 
-    let bytes = c::ref_encode_av1_kf(
-        &y,
-        &u,
-        &v,
-        w,
-        h,
-        i32::from(bd),
-        mono,
-        ss_x as i32,
-        ss_y as i32,
-        cq_level,
-        0,
-        false,
-        false,
-        usage,
-        0,
-        false,
-    );
+    let bytes = if tile_cols_log2 == 0 && tile_rows_log2 == 0 {
+        c::ref_encode_av1_kf(
+            &y,
+            &u,
+            &v,
+            w,
+            h,
+            i32::from(bd),
+            mono,
+            ss_x as i32,
+            ss_y as i32,
+            cq_level,
+            0,
+            false,
+            false,
+            usage,
+            0,
+            false,
+        )
+    } else {
+        c::ref_encode_av1_kf_tiles(
+            &y,
+            &u,
+            &v,
+            w,
+            h,
+            i32::from(bd),
+            mono,
+            ss_x as i32,
+            ss_y as i32,
+            cq_level,
+            0,
+            false,
+            false,
+            usage,
+            0,
+            false,
+            false, // sb_size_128
+            tile_cols_log2,
+            tile_rows_log2,
+        )
+    };
     assert!(
         !bytes.is_empty(),
         "ref_encode_av1_kf (bd{bd}) must produce a real stream"
@@ -274,7 +308,17 @@ fn run_case(
     assert!(!p.prefix.show_existing_frame);
     assert_eq!(p.prefix.frame_type, 0, "frame_type must be KEY");
     let tiles_log2 = p.tile_info.log2_cols + p.tile_info.log2_rows;
-    assert_eq!(tiles_log2, 0, "single-tile envelope only");
+    if tile_cols_log2 == 0 && tile_rows_log2 == 0 {
+        assert_eq!(tiles_log2, 0, "single-tile envelope: expected exactly 1 tile");
+    } else {
+        // Multi-tile: the real encoder must have produced the REQUESTED grid, or
+        // the per-tile SB boundaries the port packs against won't line up.
+        assert_eq!(
+            (p.tile_info.log2_cols, p.tile_info.log2_rows),
+            (tile_cols_log2, tile_rows_log2),
+            "real encoder tile grid must match requested (cols_log2, rows_log2)"
+        );
+    }
     let allintra = usage == 2;
     let fmt = if mono {
         "mono".to_string()
@@ -342,7 +386,7 @@ fn run_case(
 
     let speed = 0i32;
     let sf = SpeedFeatures::set_allintra(speed, p.allow_screen_content_tools, false);
-    let env = SbEncodeEnv {
+    let mut env = SbEncodeEnv {
         sb_size: SB,
         mi_rows,
         mi_cols,
@@ -424,58 +468,118 @@ fn run_case(
     let mut recon_y = src_y_strided.clone();
     let mut recon_u = src_u_strided.clone();
     let mut recon_v = src_v_strided.clone();
-    let mut enc = OdEcEnc::new();
-    let n_sb = (mi_cols / SB_MI).max(1);
-    let trees = pack_tile(
-        &mut enc,
-        &env,
-        &pick_cfg,
-        &pack_cfg,
-        &mut kf_write,
-        &mut recon_y,
-        &mut recon_u,
-        &mut recon_v,
-        0,
-        0,
-        n_sb,
-        n_sb,
-        SB_MI,
-        SB,
-    );
-    assert_eq!(
-        trees.len(),
-        (n_sb * n_sb) as usize,
-        "{ctx}: pack_tile must walk every SB"
-    );
-    let our_tile_bytes = enc.done().to_vec();
-
-    // Port-derived loop-filter level (same as the bd10 / bd8 harness).
-    let mi_grid = build_lf_mi_grid(&trees, mi_rows, mi_cols, n_sb, SB_MI, SB);
-    let lf_frame = LfSearchFrame {
-        recon_y: &recon_y,
-        recon_u: &recon_u,
-        recon_v: &recon_v,
-        src_y: &src_y_strided,
-        src_u: &src_u_strided,
-        src_v: &src_v_strided,
-        stride,
-        crop_width: w as u32,
-        crop_height: h as u32,
-        ss_x,
-        ss_y,
-        bd: i32::from(bd),
-        monochrome: mono,
-        mi: &mi_grid,
-        mi_rows,
-        mi_cols,
-    };
-    let derived_lf = pick_filter_level(&lf_frame, allintra, 0);
     let mut p = p;
-    p.loopfilter.filter_level = derived_lf.filter_level;
-    p.loopfilter.filter_level_u = derived_lf.filter_level_u;
-    p.loopfilter.filter_level_v = derived_lf.filter_level_v;
+    let (our_payload, our_len) = if tile_cols_log2 == 0 && tile_rows_log2 == 0 {
+        // ---- SINGLE TILE (original path): port derives the loop-filter level ----
+        let mut enc = OdEcEnc::new();
+        let n_sb = (mi_cols / SB_MI).max(1);
+        let trees = pack_tile(
+            &mut enc,
+            &env,
+            &pick_cfg,
+            &pack_cfg,
+            &mut kf_write,
+            &mut recon_y,
+            &mut recon_u,
+            &mut recon_v,
+            0,
+            0,
+            n_sb,
+            n_sb,
+            SB_MI,
+            SB,
+        );
+        assert_eq!(
+            trees.len(),
+            (n_sb * n_sb) as usize,
+            "{ctx}: pack_tile must walk every SB"
+        );
+        let our_tile_bytes = enc.done().to_vec();
 
-    let our_payload = assemble_frame_obu_payload_single_tile(&p, tiles_log2, &our_tile_bytes);
+        // Port-derived loop-filter level (same as the bd10 / bd8 harness).
+        let mi_grid = build_lf_mi_grid(&trees, mi_rows, mi_cols, n_sb, SB_MI, SB);
+        let lf_frame = LfSearchFrame {
+            recon_y: &recon_y,
+            recon_u: &recon_u,
+            recon_v: &recon_v,
+            src_y: &src_y_strided,
+            src_u: &src_u_strided,
+            src_v: &src_v_strided,
+            stride,
+            crop_width: w as u32,
+            crop_height: h as u32,
+            ss_x,
+            ss_y,
+            bd: i32::from(bd),
+            monochrome: mono,
+            mi: &mi_grid,
+            mi_rows,
+            mi_cols,
+        };
+        let derived_lf = pick_filter_level(&lf_frame, allintra, 0);
+        p.loopfilter.filter_level = derived_lf.filter_level;
+        p.loopfilter.filter_level_u = derived_lf.filter_level_u;
+        p.loopfilter.filter_level_v = derived_lf.filter_level_v;
+
+        let len = our_tile_bytes.len();
+        (
+            assemble_frame_obu_payload_single_tile(&p, tiles_log2, &our_tile_bytes),
+            len,
+        )
+    } else {
+        // ---- MULTI-TILE: the port encodes EACH tile itself (fresh entropy coder
+        // + reset CDF context per tile, tile-boundary neighbour availability via
+        // env.tile_*), then the derived multi-tile OBU assembler. The tile grid
+        // (col_start_sb / row_start_sb, uniform spacing) comes from the real
+        // parsed header. Loop-filter is left at the real parsed value: LF is a
+        // post-filter that does NOT change the entropy-coded tile bytes, so this
+        // isolates the per-tile search+pack+assembly (multi-tile LF derivation is
+        // a follow-up). A tile-encode bug shows as differing tile bytes -> differing
+        // tile-size prefixes -> a byte mismatch in the assembled frame.
+        let ti = p.tile_info.clone();
+        let mut tile_bytes: Vec<Vec<u8>> = Vec::with_capacity(ti.rows * ti.cols);
+        for tr in 0..ti.rows {
+            for tc in 0..ti.cols {
+                let mi_col0 = ti.col_start_sb[tc] << ti.mib_size_log2;
+                let mi_row0 = ti.row_start_sb[tr] << ti.mib_size_log2;
+                let n_sb_cols = ti.col_start_sb[tc + 1] - ti.col_start_sb[tc];
+                let n_sb_rows = ti.row_start_sb[tr + 1] - ti.row_start_sb[tr];
+                env.tile_col_start = mi_col0;
+                env.tile_row_start = mi_row0;
+                env.tile_col_end = (ti.col_start_sb[tc + 1] << ti.mib_size_log2).min(mi_cols);
+                env.tile_row_end = (ti.row_start_sb[tr + 1] << ti.mib_size_log2).min(mi_rows);
+                let mut enc = OdEcEnc::new();
+                let mut kf = KfFrameContext::default_for_qindex(qindex);
+                let trees = pack_tile(
+                    &mut enc,
+                    &env,
+                    &pick_cfg,
+                    &pack_cfg,
+                    &mut kf,
+                    &mut recon_y,
+                    &mut recon_u,
+                    &mut recon_v,
+                    mi_row0,
+                    mi_col0,
+                    n_sb_rows,
+                    n_sb_cols,
+                    SB_MI,
+                    SB,
+                );
+                assert_eq!(
+                    trees.len(),
+                    (n_sb_rows * n_sb_cols) as usize,
+                    "{ctx}: tile ({tr},{tc}) pack must walk every SB"
+                );
+                tile_bytes.push(enc.done().to_vec());
+            }
+        }
+        let len: usize = tile_bytes.iter().map(|t| t.len()).sum();
+        (
+            assemble_multitile_frame_obu_payload_derived(&p, &tile_bytes),
+            len,
+        )
+    };
     let matched = our_payload == frame_payload;
     if matched {
         eprintln!("{ctx}: TRUE END-TO-END BYTE MATCH");
@@ -492,7 +596,7 @@ fn run_case(
             our_payload.get(first_diff),
             frame_payload.get(first_diff),
             tile_data_start,
-            our_tile_bytes.len(),
+            our_len,
             frame_payload.len(),
         );
     }
@@ -588,11 +692,37 @@ fn encoder_gate_444_bd8_e2e() {
     let mut results: Vec<(String, bool)> = Vec::new();
     for &sz in &[64usize, 128, 192] {
         for &cq in &[12i32, 32, 63] {
-            let res = run_case(sz, sz, false, 0, 0, 2, cq, 8, &luma, &chroma, &chroma);
+            let res = run_case(sz, sz, false, 0, 0, 2, cq, 8, &luma, &chroma, &chroma, 0, 0);
             results.push((format!("444 {sz}x{sz} cq{cq:>2}"), res.matched));
         }
     }
     report_and_assert("4:4:4 bd8", &results);
+}
+
+/// **MULTI-TILE** bd8 ALLINTRA KEY — exercises the single- AND multi-tile encode
+/// paths. The single-tile gates above prove the port's own search+pack byte-matches
+/// real aomenc for a 1-tile frame; this proves the SAME pipeline byte-matches when
+/// the frame is a real MULTI-TILE grid: the port encodes EACH tile itself (fresh
+/// entropy coder + reset CDF context per tile, tile-boundary neighbour availability
+/// via env.tile_*), then the derived multi-tile OBU assembler stitches the tiles.
+/// Content is the proven-byte-exact 4:4:4 `tex` pattern at 128x128 (= 2x2 SBs), so a
+/// divergence here isolates a TILE-path bug, not a content near-tie.
+/// (`obu_assemble_multitile_diff` proves the ASSEMBLER on C's own tile bytes; this
+/// proves the port's per-tile ENCODE feeding that assembler.) Grid shapes
+/// (tile_columns_log2, tile_rows_log2): (1,0) two 64x128 column tiles, (0,1) two
+/// 128x64 row tiles, (1,1) four 64x64 tiles.
+#[test]
+fn encoder_gate_multitile_e2e() {
+    let luma = tex_luma(0xff);
+    let chroma = tex_chroma(0xff);
+    let mut results: Vec<(String, bool)> = Vec::new();
+    for &(tcl, trl, shape) in &[(1i32, 0i32, "2x1"), (0, 1, "1x2"), (1, 1, "2x2")] {
+        for &cq in &[12i32, 32, 63] {
+            let res = run_case(128, 128, false, 0, 0, 2, cq, 8, &luma, &chroma, &chroma, tcl, trl);
+            results.push((format!("444 128x128 tiles={shape} cq{cq:>2}"), res.matched));
+        }
+    }
+    report_and_assert("multi-tile 4:4:4 bd8", &results);
 }
 
 /// **4:2:2** (ss 1,0) bd8 ALLINTRA KEY: horizontally-subsampled chroma, distinct
@@ -607,7 +737,7 @@ fn encoder_gate_422_bd8_e2e() {
     let mut results: Vec<(String, bool)> = Vec::new();
     for &sz in &[64usize, 128, 192] {
         for &cq in &[12i32, 32, 63] {
-            let res = run_case(sz, sz, false, 1, 0, 2, cq, 8, &luma, &chroma, &chroma);
+            let res = run_case(sz, sz, false, 1, 0, 2, cq, 8, &luma, &chroma, &chroma, 0, 0);
             results.push((format!("422 {sz}x{sz} cq{cq:>2}"), res.matched));
         }
     }
@@ -633,7 +763,7 @@ fn encoder_gate_444_bd8_chroma_edge_filter_witness() {
     let mut results: Vec<(String, bool)> = Vec::new();
     for &sz in &[64usize, 128] {
         for &cq in &[12i32, 32] {
-            let res = run_case(sz, sz, false, 0, 0, 2, cq, 8, &luma, &chroma, &chroma);
+            let res = run_case(sz, sz, false, 0, 0, 2, cq, 8, &luma, &chroma, &chroma, 0, 0);
             results.push((format!("444-edgefilter {sz}x{sz} cq{cq:>2}"), res.matched));
         }
     }
@@ -773,7 +903,7 @@ fn encoder_gate_real_image_e2e_kb6_repro() {
             format!("{name} {fmt} {w}x{h}@{off_x},{off_y}")
         };
         for &cq in &[5i32, 12, 20, 32, 48, 63] {
-            let res = run_case(w, h, mono, ss_x, ss_y, 2, cq, bd, &y_c, &u_c, &v_c);
+            let res = run_case(w, h, mono, ss_x, ss_y, 2, cq, bd, &y_c, &u_c, &v_c, 0, 0);
             results.push((format!("{tag} cq{cq}"), res.matched));
         }
     }
@@ -869,7 +999,7 @@ fn encoder_gate_bd10_non420_e2e_kb4_repro() {
     let mut results: Vec<(String, bool)> = Vec::new();
     for &(ss_x, ss_y, fmt) in &[(0usize, 0usize, "444"), (1usize, 0usize, "422")] {
         for &sz in &[64usize, 128] {
-            let res = run_case(sz, sz, false, ss_x, ss_y, 2, 32, 10, &luma, &chroma, &chroma);
+            let res = run_case(sz, sz, false, ss_x, ss_y, 2, 32, 10, &luma, &chroma, &chroma, 0, 0);
             results.push((format!("bd10-{fmt} {sz}x{sz} cq32"), res.matched));
         }
     }
@@ -891,7 +1021,7 @@ fn encoder_gate_lossless_cq0_e2e_kb5_repro() {
     let mut results: Vec<(String, bool)> = Vec::new();
     for &(mono, ss_x, ss_y, fmt) in &[(true, 1, 1, "mono"), (false, 1, 1, "420")] {
         // cq_level 0 → base_qindex 0 → coded_lossless.
-        let res = run_case(64, 64, mono, ss_x, ss_y, 2, 0, 8, &luma, &chroma, &chroma);
+        let res = run_case(64, 64, mono, ss_x, ss_y, 2, 0, 8, &luma, &chroma, &chroma, 0, 0);
         results.push((format!("lossless-{fmt} 64x64 cq0"), res.matched));
     }
     assert_open_divergence("KB-5", &results);
