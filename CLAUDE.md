@@ -282,6 +282,15 @@ port-derived.
 - **#10 cpu-used 0..9 speed-feature sweep** (Gate 2) — the large remaining item.
   (#8 qindex-from-cq and #21 decoder q62/q63 are DONE + CI-green — no longer remaining.)
 
+**Confirmed NON-divergences (ruled out — do not re-chase):**
+- **#27 `model_based_prune_tx_search_level`.** `av1_set_speed_features_qindex_dependent` sets it
+  to 0 for `{<720p, base_qindex ≤ thresh}` while the port keeps 1, but the field is **inter-only**:
+  the C consumer gate lives in `av1_pick_recursive_tx_size_type_yrd` behind `is_inter_block`, so it
+  is inert on the all-intra KEY path and the port never reads it. `prune_tx_size_level` is inter-only
+  the same way. Coordinator independently confirmed both. Empirical guard: the new asserted
+  `encoder_gate_e2e_low_qindex_speed0` (cq8–30 → qindex 32–120, 12 cells) byte-matches end-to-end
+  with the field left at 1 — the previously-untested aggressive-web low-q regime is now covered.
+
 **NOT blocking single-frame-primary (non-default single-frame knobs — these ARE single-frame work
 to be done before "the rest"=inter-frame, but lower priority than the primary default config):**
 - **#23 QM-on encode** — reclassified here 2026-07-15 (QM is OFF by default, per the corrected

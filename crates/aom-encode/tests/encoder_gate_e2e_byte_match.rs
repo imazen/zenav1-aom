@@ -1241,6 +1241,58 @@ fn encoder_gate_e2e_rich_content_strong_lf() {
 /// into an asserted regression gate. NOT part of the AB-probe family
 /// (deliberately avoids short-period repeating patterns, which the AB-probe
 /// findings show trip screen-content-tools).
+/// **ASSERTED low-qindex speed-0 end-to-end byte match — closes the low-q
+/// coverage gap.** Every other `encoder_gate_e2e_*` speed-0 gate runs at high
+/// qindex (cq58–63 → qindex 232–255); this one sweeps the AGGRESSIVE-WEB range
+/// (cq8–30 → qindex 32–120 via the `q*4` map; cq17→68 is under the boosted-KEY
+/// `qindex_thresh=70`, cq35→140 the non-boosted thresh) that CLAUDE.md weights
+/// most, across 3 partition-diverse textured generators, <720p, monochrome,
+/// speed 0.
+///
+/// Motivated by task #27: `av1_set_speed_features_qindex_dependent` sets
+/// `model_based_prune_tx_search_level = 0` for `{<720p, base_qindex ≤ thresh}`
+/// while the port keeps 1 — but that field is INERT on the all-intra KEY path
+/// (the C gate is inside `av1_pick_recursive_tx_size_type_yrd`, `is_inter_block`
+/// only; the port never reads it), so it cannot cause a divergence. This gate
+/// proves the point empirically AND, more usefully, gives the previously-absent
+/// low-q regime a real regression guard. Anti-vacuous: the generators drive
+/// genuine partition/tx/coeff decisions (they are the same content family the
+/// strong-LF gate uses), so a low-q reconstruction/search regression fails here.
+/// (Tiny-size and 4:2:0 low-q are follow-ups; 4:2:0 waits on the #26 chroma
+/// `filter_type` item.)
+#[test]
+fn encoder_gate_e2e_low_qindex_speed0() {
+    // 4 cq points spanning the range (qindex 32/64/96/120 — cq8/16 under the
+    // boosted-KEY thresh 70, all under the non-boosted 140) x 3 partition-diverse
+    // generators = 12 cells. A proven subset of the 24-cell probe (all matched);
+    // trimmed from 6x4 to keep per-platform CI runtime reasonable.
+    #[allow(clippy::type_complexity)]
+    let content: &[(&str, fn(usize, usize) -> u8)] = &[
+        ("diag+vbars16+ripple", lf_diag_vbars16_ripple),
+        ("hstripes6+vstripes16+grad", lf_hstripes6_vstripes16_grad),
+        ("radial+diagbars+noise", lf_radial_diagbars_noise),
+    ];
+    let mut matched = 0usize;
+    let mut total = 0usize;
+    for &cq in &[8, 16, 24, 30] {
+        for &(name, gen_fn) in content {
+            total += 1;
+            eprintln!("--- low-q speed-0 e2e 256x256 [{name}] cq{cq} ---");
+            if attempt_case_content(256, 256, true, 1, 1, 2, cq, gen_fn) {
+                matched += 1;
+            }
+        }
+    }
+    eprintln!("encoder_gate_e2e_low_qindex_speed0: {matched}/{total} low-q cases byte-identical");
+    assert_eq!(
+        matched, total,
+        "every low-qindex (cq8-30 / qindex 32-120) speed-0 all-intra case must byte-match real \
+         aomenc end-to-end -- this is the aggressive-web low-q regime that was previously untested \
+         (all other speed-0 gates are qindex>=232); a mismatch here is a genuine low-q \
+         search/reconstruction divergence"
+    );
+}
+
 #[test]
 fn encoder_gate_e2e_nonzero_lf_sweep() {
     #[allow(clippy::type_complexity)]
