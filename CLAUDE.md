@@ -40,6 +40,20 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
   partitions >64×64 (flat high-q blocks) → exact q61→q62 threshold. **Fix:** wrap luma+chroma
   reconstruction in the outer 64×64-chunk loop, plane-interleaved, matching C.
   (Earlier "entropy coefficient-decode path" localization was one layer too low.)
+- **Fix #1 (VERIFIED, awaiting workspace-compile to land):** the reorder is implemented in
+  `aom-decode/src/lib.rs` and proven — b10-q63 now byte-matches C and the port's 328 KEY-frame
+  txb reads are byte-identical (up from the record-311 desync). The reorder is correct.
+- **Bug #2 (exposed by fix #1, STILL OPEN — a second, independent >64 hole):** with txb reads now
+  correct, b8-q62 / b8-q63 / b10-q62 still fail edge-local ±1 (b10-q63 clean). Traced (sibling C
+  decoder) to the **2nd 64×64 sub-unit of the 128-wide block mi64,0**: C ground truth DC_PRED /
+  TX_64X64 / eob=1 (DC-only → flat recon), **n_top=64 but n_left=32** (block bottom-cropped to
+  32px). The port's flat DC comes out uniformly ±1 off; deblock across the x=64 chunk boundary
+  spreads it into the scattered ±1 map. So bug #2 is a **cropped-reference intra-prediction bug
+  for sub-units of >64 blocks** — independent of the txb reorder (prediction is order-agnostic),
+  just newly reachable once fix #1 corrected the reads. Candidates being pinned: left-column
+  extension (32 real → 64 replicated) vs DC count/divisor, port predict path vs C
+  `build_intra_predictors`. Land fix #1 + fix #2 together; #21 closes only when b8/b10 × q62/q63
+  all byte-match AND the full 147-frame conformance still passes.
 - **Encoder cross-check (low priority):** the encoder pack must write txbs in the SAME
   64×64-chunk plane-interleaved order for >64 blocks. The encoder already byte-matches
   `diag+vbars16 256×256 cq63` (strong-LF gate 5/5), which is empirical evidence its order is
