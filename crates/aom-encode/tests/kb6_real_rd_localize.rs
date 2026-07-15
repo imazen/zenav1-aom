@@ -206,7 +206,17 @@ fn replay_tree(
 /// the per-block decisions. bd8 4:2:0 (the vector's native format). Returns
 /// `true` if decisions + recon are identical (byte-exact); prints the first
 /// divergence otherwise.
-fn localize_real(name: &str, cq_level: i32) -> bool {
+/// Localize one cell. `crop_w == 0` => the full decoded frame; otherwise an
+/// SB-aligned (mult-of-64) crop at (`off_x`, `off_y`) — same crop convention as
+/// the e2e gate, so a crop cell here matches a crop cell there byte-for-byte.
+fn localize_real(
+    name: &str,
+    cq_level: i32,
+    crop_w: usize,
+    crop_h: usize,
+    off_x: usize,
+    off_y: usize,
+) -> bool {
     c::ref_init();
     let dir = corpus_dir();
     let path = dir.join(format!("{name}.ivf"));
@@ -223,25 +233,31 @@ fn localize_real(name: &str, cq_level: i32) -> bool {
     let mono = frame.info[1] != 0;
     let ss_x = frame.info[2] as usize;
     let ss_y = frame.info[3] as usize;
-    let (w, h) = (dw, dh);
+    let (w, h) = if crop_w == 0 { (dw, dh) } else { (crop_w, crop_h) };
+    assert!(
+        off_x + w <= dw && off_y + h <= dh && off_x % 2 == 0 && off_y % 2 == 0,
+        "{name}: crop {w}x{h}@{off_x},{off_y} out of bounds / not chroma-aligned"
+    );
+    let dcw = (dw + ss_x) >> ss_x; // full-frame chroma stride
     let cw = (w + ss_x) >> ss_x;
     let ch = (h + ss_y) >> ss_y;
+    let (cox, coy) = (off_x >> ss_x, off_y >> ss_y);
     let usage = 2u32;
     let maxv = (1u16 << bd) - 1;
 
-    // Tight planes for the aomenc encode.
+    // Tight planes for the aomenc encode (cropped from the decoded frame).
     let mut y = vec![0u16; w * h];
     for r in 0..h {
         for col in 0..w {
-            y[r * w + col] = frame.y[r * w + col].min(maxv);
+            y[r * w + col] = frame.y[(r + off_y) * dw + (col + off_x)].min(maxv);
         }
     }
     let (mut u, mut v) = (vec![0u16; cw * ch], vec![0u16; cw * ch]);
     if !mono {
         for r in 0..ch {
             for col in 0..cw {
-                u[r * cw + col] = frame.u[r * cw + col].min(maxv);
-                v[r * cw + col] = frame.v[r * cw + col].min(maxv);
+                u[r * cw + col] = frame.u[(r + coy) * dcw + (col + cox)].min(maxv);
+                v[r * cw + col] = frame.v[(r + coy) * dcw + (col + cox)].min(maxv);
             }
         }
     }
@@ -614,9 +630,37 @@ fn localize_real(name: &str, cq_level: i32) -> bool {
 /// clean RD-near-tie is isolated here on the 1-SB cell.
 #[test]
 fn kb6_localize_real_64_cq12() {
-    let matched = localize_real("av1-1-b8-01-size-64x64", 12);
+    let matched = localize_real("av1-1-b8-01-size-64x64", 12, 0, 0, 0, 0);
     eprintln!(
         "\n=== KB-6 localize 64x64 cq12: {} ===",
+        if matched { "MATCH" } else { "DIVERGE (see first divergence above)" }
+    );
+}
+
+/// Localize the **cq5 (qindex 20, aggressive low-q) near-tie** on real
+/// photographic content — the highest-value KB-6 target after the luma re-encode
+/// fix. It diverges across ALL THREE crop contents (quantizer-64²/128², film-64²)
+/// so it is content-independent. This uses the SAME 00-quantizer 64x64@96,64 crop
+/// the e2e gate flags MISMATCH at cq5, isolated to a single SB. Report-only
+/// diagnostic (the gate is `encoder_gate_real_image_e2e_kb6_repro`).
+#[test]
+fn kb6_localize_quantizer_64_cq5() {
+    let matched = localize_real("av1-1-b8-00-quantizer-00", 5, 64, 64, 96, 64);
+    eprintln!(
+        "\n=== KB-6 localize quantizer 64x64@96,64 cq5: {} ===",
+        if matched { "MATCH" } else { "DIVERGE (see first divergence above)" }
+    );
+}
+
+/// Second cq5 content (film grain) to confirm the low-q near-tie is
+/// CONTENT-INDEPENDENT: if the FIRST divergent decision here is the same CLASS as
+/// the quantizer crop (a 4-way HORZ_4/VERT_4 vs SPLIT partition flip), the root is
+/// one shared speed-0 RD decision, not per-content noise. Report-only diagnostic.
+#[test]
+fn kb6_localize_film_64_cq5() {
+    let matched = localize_real("av1-1-b8-23-film_grain-50", 5, 64, 64, 96, 64);
+    eprintln!(
+        "\n=== KB-6 localize film 64x64@96,64 cq5: {} ===",
         if matched { "MATCH" } else { "DIVERGE (see first divergence above)" }
     );
 }
