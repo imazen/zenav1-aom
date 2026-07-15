@@ -45,7 +45,10 @@ const QM_OFFSET: [usize; 19] = [
 /// adjusted tx size)`, laid out in raster order over the adjusted transform
 /// block — exactly what [`aom_txb::dequant_txb`] indexes by coefficient
 /// position.
-pub(crate) fn iqmatrix(
+// `pub` (via the doc-hidden `pub mod qm`) so the encoder's forward-QM quantizer
+// can select the inverse-QM weights from the same `iwt_matrix_ref` bases,
+// avoiding a duplicate table. See the module declaration in `lib.rs`.
+pub fn iqmatrix(
     qm_level: usize,
     plane: usize,
     tx_size: usize,

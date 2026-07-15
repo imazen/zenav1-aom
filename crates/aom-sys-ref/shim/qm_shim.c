@@ -26,6 +26,19 @@ int shim_qm_gqmatrix(int q, int c, int t, uint8_t *out, int out_cap) {
   return len;
 }
 
+// Inverse variant: read av1_qm_init's giqmatrix (into the static iwt_matrix_ref).
+// Oracle for the decode-side iqmatrix selector the encoder now reuses.
+int shim_qm_giqmatrix(int q, int c, int t, uint8_t *out, int out_cap) {
+  static CommonQuantParams qp;
+  av1_qm_init(&qp, 3);
+  const qm_val_t *m = qp.giqmatrix[q][c][t];
+  if (m == NULL) return -1;
+  int len = tx_size_2d[av1_get_adjusted_tx_size((TX_SIZE)t)];
+  if (len > out_cap) return -2;
+  for (int i = 0; i < len; ++i) out[i] = (uint8_t)m[i];
+  return len;
+}
+
 // The qindex -> QM-level mappings the encoder uses to set qmatrix_level_{y,u,v}
 // (av1_set_quantizer). Both are `static inline` in quant_common.h; the wrappers
 // call them so the differential exercises the genuine C formulas.

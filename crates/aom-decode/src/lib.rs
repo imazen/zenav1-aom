@@ -147,7 +147,13 @@ pub mod frame;
 pub mod film_grain;
 pub mod superres;
 
-mod qm;
+// `pub` (doc-hidden) so the encoder's forward-QM path can REUSE the inverse-QM
+// selector + `iwt_matrix_ref` bases instead of committing a duplicate ~459KB
+// table. Interim internal-crate coupling: at release both QM tables (fwd
+// `wt_matrix_ref` in aom-quant + inv `iwt_matrix_ref` here) consolidate into one
+// shared crate. Only `iqmatrix` is exposed; the rest of the module stays private.
+#[doc(hidden)]
+pub mod qm;
 mod qm_tables;
 
 use aom_encode::reconstruct_txb;

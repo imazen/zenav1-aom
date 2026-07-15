@@ -7333,6 +7333,7 @@ extern "C" {
 // shim/qm_shim.c).
 extern "C" {
     fn shim_qm_gqmatrix(q: i32, c: i32, t: i32, out: *mut u8, out_cap: i32) -> i32;
+    fn shim_qm_giqmatrix(q: i32, c: i32, t: i32, out: *mut u8, out_cap: i32) -> i32;
     fn shim_get_qmlevel(qindex: i32, first: i32, last: i32) -> i32;
     fn shim_get_qmlevel_allintra(qindex: i32, first: i32, last: i32) -> i32;
 }
@@ -7359,6 +7360,22 @@ pub fn ref_qm_gqmatrix(q: usize, c: usize, t: usize) -> Option<Vec<u8>> {
         shim_qm_gqmatrix(q as i32, c as i32, t as i32, out.as_mut_ptr(), out.len() as i32)
     };
     assert!(len != -2, "shim_qm_gqmatrix: out_cap overflow for (q={q}, c={c}, t={t})");
+    if len < 0 {
+        return None;
+    }
+    out.truncate(len as usize);
+    Some(out)
+}
+
+/// Real libaom INVERSE QM matrix `giqmatrix[q][c][t]` (from `iwt_matrix_ref`),
+/// same conventions as [`ref_qm_gqmatrix`]. The priority-1 oracle for the
+/// decode-side `iqmatrix` selector the encoder reuses via `aom_decode::qm`.
+pub fn ref_iqm_giqmatrix(q: usize, c: usize, t: usize) -> Option<Vec<u8>> {
+    let mut out = vec![0u8; 1024];
+    let len = unsafe {
+        shim_qm_giqmatrix(q as i32, c as i32, t as i32, out.as_mut_ptr(), out.len() as i32)
+    };
+    assert!(len != -2, "shim_qm_giqmatrix: out_cap overflow for (q={q}, c={c}, t={t})");
     if len < 0 {
         return None;
     }
