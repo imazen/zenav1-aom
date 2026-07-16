@@ -408,6 +408,36 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
 - **Gate PINS the exact residual set** — FAILS the moment one starts matching (→ promote) or a new
   cell regresses. `diag 64x64 cq63` (a coordinator-flagged inherited near-tie) was checked and
   **byte-matches at speed 4 on this grid** — NOT pinned.
+- **PROGRESS (chunked port of the two-pass):**
+  - **CHUNK 1 LANDED (commit `16d4d85`, verified on origin/main):** the SATD trellis-skip body
+    (`tx_search.rs::skip_trellis_opt_based_on_satd`) replacing the `unimplemented!`. NO-OP below
+    speed 4 (caller short-circuits on `coeff_opt_satd_threshold == UINT_MAX`). Unit-tested vs REAL C
+    (`aom_sys_ref::ref_satd` = exported `aom_satd_c`): decision matches across 11 tx sizes × 4
+    magnitudes × 3 qsteps × thresholds straddling the boundary. Added helpers `SQRT_TX_PIXELS_2D`,
+    `av1_get_tx_scale` (idct.c:24), `av1_get_max_eob` (blockd.h:1601, 64-pt cap 1024/512).
+  - **EXACT speed-4 two-pass params (derived from set_allintra + the C tables, for CHUNK 2):**
+    at speed>=4 (speed_features.c:471-506) C sets `perform_coeff_opt=5`, `tx_domain_dist_thres_level=3`,
+    `fast_intra_tx_type_search=2`, `winner_mode_tx_type_pruning=2`, `prune_2d_txfm_mode=TX_TYPE_PRUNE_3`,
+    `enable_winner_mode_for_coeff_opt=1`, `enable_winner_mode_for_use_tx_domain_dist=1`,
+    `enable_winner_mode_for_tx_size_srch=1`, `multi_winner_mode_type=MULTI_WINNER_MODE_DEFAULT`
+    (winner_mode_count_allowed=3), `top_intra_model_count_allowed=2`; `tx_size_search_level` stays 0.
+    Per-stage resolution (via get_rd_opt_coeff_thresh / set_tx_domain_dist_params / set_tx_size_search_method):
+    * coeff_opt (`coeff_opt_thresholds[5]` = `{{864,97},{142,16},{MAX,MAX}}` [dist,satd]):
+      MODE_EVAL pass → `{dist=142, satd=16}` (finite satd ⇒ SATD-skip active); WINNER pass →
+      `{dist=MAX, satd=MAX}` (SATD-skip early-returns ⇒ trellis ALWAYS run, most accurate).
+    * tx_domain_dist (`level 3`: thresholds `{0,0,0}`, types `{2,2,2}`): both stages type=2 thr=0.
+    * tx_size method (`tx_size_search_methods[0]` = `{FULL_RD, LARGESTALL, FULL_RD}`, gated by
+      enable_for_tx_size_srch=1): MODE_EVAL → **USE_LARGESTALL** (largest tx only); WINNER → **USE_FULL_RD**.
+    * tx-type set: MODE_EVAL `use_default_intra_tx_type=1` (fast_intra_tx_type_search==2 ⇒ default
+      tx type only); WINNER `=0` (full tx-type search). tx-type prune (winner_mode_tx_type_pruning=2,
+      prune_mode row idx 1): MODE_EVAL → TX_TYPE_PRUNE_4, WINNER → TX_TYPE_PRUNE_0.
+  - **CHUNK 2 decomposition (each keeps speed 0-3 byte-identical + speed-4 gate ≥51/64 until integration):**
+    2a stage-aware `TxTypeSearchPolicy` derivation (coeff/tx-domain columns per MODE_EVAL/WINNER) +
+    winner-mode SF fields, unit-tested vs C tables, UNWIRED. 2b USE_LARGESTALL tx-size method. 2c
+    `use_default_intra_tx_type` DCT/default-only flag on the tx-type search. 2d integration: flip
+    `set_allintra(4)` to the real values + restructure `rd_pick_intra_sby_mode_y` into the two-pass
+    (MODE_EVAL loop → store_winner_mode_stats top-3 → WINNER_MODE_EVAL re-eval via intra_block_yrd),
+    gated speed>=4, promote cells. The 3 pure-chroma cq12 cells may remain a genuine near-tie.
 
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 

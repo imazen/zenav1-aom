@@ -50,6 +50,19 @@ use crate::tx_search::TxTypeSearchPolicy;
 /// `DEFAULT_EVAL` column (rd.h:95, `get_rd_opt_coeff_thresh` `!enable_winner`
 /// branch, rd.h:317-321).
 const DEFAULT_EVAL: usize = 0;
+/// The `MODE_EVAL` column (rdopt_utils.h `MODE_EVAL_TYPE`): the first pass of
+/// the winner-mode two-pass, evaluating ALL candidate modes with the cheaper
+/// per-stage thresholds. (Only the DEFAULT_EVAL stage is threaded into the
+/// production single-pass search today; `MODE_EVAL`/`WINNER_MODE_EVAL` are
+/// consumed by the two-pass restructure in KB-8 chunk 2d — allowed dead until
+/// then so the stage-aware derivation + its tests can land first.)
+#[allow(dead_code)]
+const MODE_EVAL: usize = 1;
+/// The `WINNER_MODE_EVAL` column: the second pass, re-evaluating the stored
+/// top-N winners with the most accurate per-stage thresholds. (Wired in KB-8
+/// chunk 2d — see `MODE_EVAL`.)
+#[allow(dead_code)]
+const WINNER_MODE_EVAL: usize = 2;
 
 /// `tx_domain_dist_thresholds[4][MODE_EVAL_TYPES]` (speed_features.c:54-59) —
 /// verbatim. Indexed by `rd_sf.tx_domain_dist_thres_level`.
@@ -197,6 +210,50 @@ pub struct SpeedFeatures {
     /// `tx_sf.tx_type_search.use_reduced_intra_txset` — allintra base 1
     /// (speed_features.c:369). Unchanged through speed 1.
     pub use_reduced_intra_txset: bool,
+    /// `tx_sf.tx_type_search.fast_intra_tx_type_search` — default 0
+    /// (init_tx_sf:2461); allintra speed>=4 -> 2 (speed_features.c:489). At 2,
+    /// `set_mode_eval_params(MODE_EVAL)` sets `use_default_intra_tx_type=1`
+    /// (the first pass evaluates only the intra mode's default tx type);
+    /// `is_winner_mode_processing_enabled` also returns 1 whenever this is nonzero
+    /// (unless `use_intra_dct_only`/`use_intra_default_tx_only`), enabling the
+    /// WINNER_MODE_EVAL re-eval. Not yet SET in `set_allintra` (KB-8 chunk 2d).
+    pub fast_intra_tx_type_search: i32,
+    /// `tx_sf.tx_type_search.winner_mode_tx_type_pruning` — default 0
+    /// (init_tx_sf:2466); allintra speed>=4 -> 2 (speed_features.c:488). Selects
+    /// the per-stage `prune_2d_txfm_mode` row (`set_tx_type_prune`, rdopt_utils.h:
+    /// 498): row `winner_mode_tx_type_pruning-1`, col `is_winner_mode`. Not yet
+    /// SET in `set_allintra` (KB-8 chunk 2d).
+    pub winner_mode_tx_type_pruning: i32,
+
+    // ---- winner_mode_sf --------------------------------------------------
+    /// `winner_mode_sf.enable_winner_mode_for_coeff_opt` — default 0
+    /// (init:2511); allintra speed>=4 -> 1 (speed_features.c:502). When 1, the
+    /// coeff-opt threshold is stage-selected: MODE_EVAL uses the MODE_EVAL
+    /// column, WINNER_MODE_EVAL the WINNER column (rd.h:317-339). Not yet SET
+    /// in `set_allintra` (KB-8 chunk 2d).
+    pub enable_winner_mode_for_coeff_opt: bool,
+    /// `winner_mode_sf.enable_winner_mode_for_use_tx_domain_dist` — default 0
+    /// (init:2513); allintra speed>=4 -> 1 (speed_features.c:503). Stage-selects
+    /// the tx-domain distortion type/threshold columns (rdopt_utils.h:516-544).
+    /// Not yet SET in `set_allintra` (KB-8 chunk 2d).
+    pub enable_winner_mode_for_use_tx_domain_dist: bool,
+    /// `winner_mode_sf.enable_winner_mode_for_tx_size_srch` — default 0
+    /// (init:2512); allintra speed>=4 -> 1 (speed_features.c:505). Stage-selects
+    /// the tx-size search method (rdopt_utils.h:478-493): MODE_EVAL uses the
+    /// MODE_EVAL column of `tx_size_search_methods[tx_size_search_level]`,
+    /// WINNER the WINNER column. Not yet SET in `set_allintra` (KB-8 chunk 2d).
+    pub enable_winner_mode_for_tx_size_srch: bool,
+    /// `winner_mode_sf.multi_winner_mode_type` — default 0 = MULTI_WINNER_MODE_OFF
+    /// (init:2514); allintra speed>=4 -> MULTI_WINNER_MODE_DEFAULT (=1,
+    /// speed_features.c:504), speed>=5 -> MULTI_WINNER_MODE_FAST (=2). Indexes
+    /// `winner_mode_count_allowed[]` (= {1,1,3} for OFF/FAST/DEFAULT... see the
+    /// C table): the number of top modes stored by `store_winner_mode_stats` and
+    /// re-evaluated. Not yet SET in `set_allintra` (KB-8 chunk 2d).
+    pub multi_winner_mode_type: i32,
+    /// `winner_mode_sf.tx_size_search_level` — default 0 (init:2510). Indexes
+    /// the row of `tx_size_search_methods[4][MODE_EVAL_TYPES]`. Stays 0 on the
+    /// all-intra path through speed 8 (the allintra cascade never bumps it).
+    pub tx_size_search_level: i32,
 
     // ---- rd_sf -----------------------------------------------------------
     /// `rd_sf.perform_coeff_opt` — allintra base 1 (speed_features.c:383);
@@ -264,6 +321,14 @@ impl SpeedFeatures {
             prune_2d_txfm_mode: TX_TYPE_PRUNE_1, // init_tx_sf:2457
             skip_tx_search: false, // init_tx_sf:2463
             use_reduced_intra_txset: true, // allintra base (:369)
+            fast_intra_tx_type_search: 0, // init_tx_sf:2461
+            winner_mode_tx_type_pruning: 0, // init_tx_sf:2466
+            // winner_mode_sf (all off until speed>=4 — KB-8 chunk 2d wires these)
+            enable_winner_mode_for_coeff_opt: false, // init:2511
+            enable_winner_mode_for_use_tx_domain_dist: false, // init:2513
+            enable_winner_mode_for_tx_size_srch: false, // init:2512
+            multi_winner_mode_type: 0, // init:2514 (MULTI_WINNER_MODE_OFF)
+            tx_size_search_level: 0, // init:2510
             // rd_sf
             perform_coeff_opt: 1, // allintra base (:383)
             tx_domain_dist_level: 0, // init_rd_sf:2501
@@ -457,15 +522,56 @@ impl SpeedFeatures {
     /// selects `DEFAULT_EVAL` while `enable_winner_mode_for_coeff_opt == 0`,
     /// which holds for speed 0..=3).
     pub fn tx_type_search_policy(&self, skip_trellis: bool, sharpness: i32) -> TxTypeSearchPolicy {
-        let coeff_row = &COEFF_OPT_THRESHOLDS[self.perform_coeff_opt as usize][DEFAULT_EVAL];
+        // The single-pass path is the DEFAULT_EVAL stage (its column resolution
+        // is column 0 regardless of the winner-mode enables — see
+        // `resolve_eval_col`), so speed 0..=3 (and the current, pre-two-pass
+        // speed-4 luma/chroma search) are byte-identical to the prior hard-coded
+        // derivation.
+        self.tx_type_search_policy_for_stage(DEFAULT_EVAL, skip_trellis, sharpness)
+    }
+
+    /// Resolve the `MODE_EVAL_TYPES` column a threshold table is read at for the
+    /// given eval `stage`, honouring the winner-mode enable gate. Mirrors the
+    /// `!enable ? DEFAULT_EVAL : (is_winner ? WINNER_MODE_EVAL : MODE_EVAL)`
+    /// selection shared by `get_rd_opt_coeff_thresh` (rd.h:317-339) and
+    /// `set_tx_domain_dist_params` (rdopt_utils.h:516-544). At `DEFAULT_EVAL`
+    /// (the single-pass caller) the column is always 0, so the winner-mode
+    /// machinery is a strict no-op there.
+    fn resolve_eval_col(stage: usize, enable: bool) -> usize {
+        if stage == DEFAULT_EVAL || !enable {
+            DEFAULT_EVAL
+        } else {
+            stage
+        }
+    }
+
+    /// Build the [`TxTypeSearchPolicy`] for one winner-mode evaluation `stage`
+    /// (`DEFAULT_EVAL` / `MODE_EVAL` / `WINNER_MODE_EVAL`), the data half of
+    /// `set_mode_eval_params` (rdopt_utils.h:546). Only the coeff-opt and
+    /// tx-domain-distortion columns are stage-selected here (via
+    /// [`Self::resolve_eval_col`] and the `enable_winner_mode_for_coeff_opt` /
+    /// `enable_winner_mode_for_use_tx_domain_dist` gates); the tx-size search
+    /// method, tx-type set (`use_default_intra_tx_type`) and tx-type prune are
+    /// carried by their own structs and threaded separately (KB-8 chunks 2b/2c).
+    /// The `use_qm_dist_metric` branch (forces tx-domain dist on) is out of scope
+    /// — QM is OFF on the allintra envelope (CLAUDE.md primary-envelope note).
+    pub fn tx_type_search_policy_for_stage(
+        &self,
+        stage: usize,
+        skip_trellis: bool,
+        sharpness: i32,
+    ) -> TxTypeSearchPolicy {
+        let coeff_col = Self::resolve_eval_col(stage, self.enable_winner_mode_for_coeff_opt);
+        let txd_col = Self::resolve_eval_col(stage, self.enable_winner_mode_for_use_tx_domain_dist);
+        let coeff_row = &COEFF_OPT_THRESHOLDS[self.perform_coeff_opt as usize][coeff_col];
         TxTypeSearchPolicy {
             skip_trellis,
             coeff_opt_dist_threshold: coeff_row[0],
             coeff_opt_satd_threshold: coeff_row[1],
             use_transform_domain_distortion: TX_DOMAIN_DIST_TYPES[self.tx_domain_dist_level as usize]
-                [DEFAULT_EVAL] as u8,
+                [txd_col] as u8,
             tx_domain_dist_threshold: TX_DOMAIN_DIST_THRESHOLDS
-                [self.tx_domain_dist_thres_level as usize][DEFAULT_EVAL],
+                [self.tx_domain_dist_thres_level as usize][txd_col],
             adaptive_txb_search_level: self.adaptive_txb_search_level,
             skip_tx_search: self.skip_tx_search,
             sharpness,
@@ -608,6 +714,80 @@ mod tests {
         let pol = sf.tx_type_search_policy(false, 0);
         assert_eq!(pol.coeff_opt_dist_threshold, 864);
         assert_eq!(pol.coeff_opt_satd_threshold, u32::MAX);
+        // The winner-mode SF fields are NOT yet set at speed 4 (KB-8 chunk 2d
+        // flips them together with the two-pass restructure): assert they hold
+        // their off/default values so the stage-aware derivation collapses to
+        // DEFAULT_EVAL and the single-pass search stays byte-identical.
+        assert!(!sf.enable_winner_mode_for_coeff_opt);
+        assert!(!sf.enable_winner_mode_for_use_tx_domain_dist);
+        assert!(!sf.enable_winner_mode_for_tx_size_srch);
+        assert_eq!(sf.multi_winner_mode_type, 0);
+        assert_eq!(sf.fast_intra_tx_type_search, 0);
+        assert_eq!(sf.winner_mode_tx_type_pruning, 0);
+    }
+
+    /// KB-8 chunk 2a: the stage-aware [`SpeedFeatures::tx_type_search_policy_for_stage`]
+    /// derivation reproduces the per-`MODE_EVAL_TYPE` columns of the C threshold
+    /// tables (`get_rd_opt_coeff_thresh` rd.h:313 + `set_tx_domain_dist_params`
+    /// rdopt_utils.h:516), driven off the winner-mode enable gates. Validated on
+    /// the REAL speed-4 parameter set (`perform_coeff_opt=5`,
+    /// `tx_domain_dist_level=1`, `tx_domain_dist_thres_level=3`, both enables ON)
+    /// applied to a hand-built sf — the set_allintra(4) flip is deferred to
+    /// chunk 2d, so this validates the machinery independently.
+    #[test]
+    fn winner_mode_stage_policies_match_c_tables() {
+        let mut sf = SpeedFeatures::set_allintra(4, false, false);
+        sf.perform_coeff_opt = 5; // speed_features.c:493
+        sf.tx_domain_dist_level = 1; // carried from speed 1 (:416); types row {1,2,0}
+        sf.tx_domain_dist_thres_level = 3; // :494; thresholds row {0,0,0}
+        sf.enable_winner_mode_for_coeff_opt = true; // :502
+        sf.enable_winner_mode_for_use_tx_domain_dist = true; // :503
+
+        // coeff_opt_thresholds[5] = { {864,97}, {142,16}, {MAX,MAX} } [dist,satd].
+        let def = sf.tx_type_search_policy_for_stage(DEFAULT_EVAL, false, 0);
+        assert_eq!((def.coeff_opt_dist_threshold, def.coeff_opt_satd_threshold), (864, 97));
+        let me = sf.tx_type_search_policy_for_stage(MODE_EVAL, false, 0);
+        assert_eq!((me.coeff_opt_dist_threshold, me.coeff_opt_satd_threshold), (142, 16));
+        let win = sf.tx_type_search_policy_for_stage(WINNER_MODE_EVAL, false, 0);
+        assert_eq!(
+            (win.coeff_opt_dist_threshold, win.coeff_opt_satd_threshold),
+            (u32::MAX, u32::MAX),
+            "winner pass: SATD threshold UINT_MAX ⇒ trellis always run"
+        );
+
+        // tx_domain_dist: types[level=1] = {1,2,0}, thresholds[thres_level=3] = {0,0,0}.
+        assert_eq!((def.use_transform_domain_distortion, def.tx_domain_dist_threshold), (1, 0));
+        assert_eq!((me.use_transform_domain_distortion, me.tx_domain_dist_threshold), (2, 0));
+        assert_eq!((win.use_transform_domain_distortion, win.tx_domain_dist_threshold), (0, 0));
+
+        // The legacy single-pass entry point IS the DEFAULT_EVAL stage.
+        let legacy = sf.tx_type_search_policy(false, 0);
+        assert_eq!(legacy.coeff_opt_dist_threshold, def.coeff_opt_dist_threshold);
+        assert_eq!(legacy.coeff_opt_satd_threshold, def.coeff_opt_satd_threshold);
+        assert_eq!(legacy.use_transform_domain_distortion, def.use_transform_domain_distortion);
+        assert_eq!(legacy.tx_domain_dist_threshold, def.tx_domain_dist_threshold);
+    }
+
+    /// The no-op guarantee the two-pass rests on: with the winner-mode enables
+    /// OFF (every speed 0..=3, and the current pre-chunk-2d speed 4), ALL three
+    /// eval stages resolve to the DEFAULT_EVAL column — so threading a stage
+    /// through the search cannot change any byte until the enables are flipped.
+    #[test]
+    fn stage_policies_collapse_when_winner_mode_disabled() {
+        // Even with a finite (speed>=4) coeff row, disabled enables collapse
+        // every stage to DEFAULT_EVAL.
+        let mut sf = SpeedFeatures::set_allintra(3, false, false);
+        sf.perform_coeff_opt = 5;
+        sf.tx_domain_dist_level = 1;
+        sf.tx_domain_dist_thres_level = 3;
+        // enables remain false (speed 3 defaults).
+        for stage in [DEFAULT_EVAL, MODE_EVAL, WINNER_MODE_EVAL] {
+            let p = sf.tx_type_search_policy_for_stage(stage, false, 0);
+            assert_eq!(p.coeff_opt_dist_threshold, 864, "stage {stage} coeff dist");
+            assert_eq!(p.coeff_opt_satd_threshold, 97, "stage {stage} coeff satd");
+            assert_eq!(p.use_transform_domain_distortion, 1, "stage {stage} txd type");
+            assert_eq!(p.tx_domain_dist_threshold, 0, "stage {stage} txd thresh");
+        }
     }
 
     /// The speed-1 all-intra deltas, asserted against the source values (items
