@@ -950,6 +950,7 @@ pub fn pack_tile(
                 0,
                 0, // quad_tree_idx: 0 at the SB (64×64) root
                 None,
+                None, // rect_part_win_info: NULL at the SB root (encodeframe.c:826)
                 &mut visits,
                 &mut last_source_variance,
             );

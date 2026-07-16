@@ -2573,13 +2573,22 @@ pinned exactly in the gate (fails if a KB-6 fix makes one match → promote, or 
 new cell). See KB-7. New gate `encoder_gate_speed3_textured_allintra`; full `cargo test -p
 aom-encode` green.
 
-## Gate 2 — `--cpu-used=4` (speed-4) all-intra KEY byte-match (PARTIAL)
+## Gate 2 — `--cpu-used=4` (speed-4) all-intra KEY byte-match (59/64; LUMA BYTE-EXACT)
 
-Ported the two speed≥4 `set_allintra_speed_features_*` deltas that are LIVE + tractable on the bd8
-4:2:0 all-intra KEY path, on top of the speed-3 baseline (e18772c). **51 of 64 cells byte-identical**
-vs real aomenc `--cpu-used=4` ({64,128}² × cq{12,32,48,63} × {flat,two-tone,vgrad,diag} × {mono,420}),
-up from a 35/64 baseline (`set_allintra(4)` == the speed-3 sf — exactly the cells where aomenc emits
-identical bytes at cpu-used 3 and 4). New gate `encoder_gate_speed4_textured_allintra`.
+**Every documented speed-4 `set_allintra` delta is now ported + live** (the KB-8 chunk series —
+see CLAUDE.md KB-8 for the commit-by-commit list): the SATD trellis-skip, the stage-aware
+MODE_EVAL/WINNER_MODE_EVAL policies, the LUMA winner-mode two-pass (MODE_EVAL loop at
+USE_LARGESTALL + default-tx-type → top-3 `store_winner_mode_stats` → WINNER_MODE_EVAL re-eval at
+USE_FULL_RD), the est-rd tx-type prune (`av1_cost_coeffs_txb_laplacian`, REAL-C differential) +
+txk_map reorder, `use_rd_based_breakout_for_intra_tx_search` (also speed≥3; gate re-verified
+61/64), and both `prune_ext_part_using_split_info` prunes (AB evaluate at level 2, 4-way rect-win
+at level 1, via `split_part_rect_win` threading). **59 of 64 cells byte-identical** vs real aomenc
+`--cpu-used=4` ({64,128}² × cq{12,32,48,63} × {flat,two-tone,vgrad,diag} × {mono,420}) — **all 32
+mono cells match: the speed-4 luma path is byte-exact.** The 5 pinned residuals are 4:2:0
+KB-7-class chroma low-q near-ties (same content cells as KB-7's speed-3 pins) — tracked under
+KB-7, not a speed-4 gap. Gate `encoder_gate_speed4_textured_allintra` pins them exactly.
+
+Earlier partial landing (51/64) below for history:
 
 - **`prune_chroma_modes_using_luma_winner = 1`** (speed_features.c:480) — prunes any chroma `uv_mode`
   not in `av1_derived_chroma_intra_mode_used_flag[luma_winner_mode]` (intra_mode_search.c:939-941).

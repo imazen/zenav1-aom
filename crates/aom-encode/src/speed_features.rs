@@ -455,6 +455,13 @@ impl SpeedFeatures {
             // intra_sf (:456) — palette-search prune (inert: palette off on
             // non-screen cells); carried for source faithfulness.
             sf.prune_palette_search_level = 2;
+            // tx_sf (:460) — the intra tx-size depth-loop early-exit tightening
+            // (AOMMIN(ref_best_rd, best_rd)) + the winner-mode re-eval's
+            // running-best ref (intra_mode_search.c:1201). Empirically a byte
+            // no-op on the speed-3 gate grid (verified while this was false
+            // through the KB-8 chunks); now set to the C value — the speed-3
+            // gate re-verifies per landing.
+            sf.use_rd_based_breakout_for_intra_tx_search = true;
         }
 
         // ---- if (speed >= 4) { ... } (speed_features.c:471-506 independent,
@@ -471,8 +478,10 @@ impl SpeedFeatures {
         //       `non_dual` flag on `lf_search::pick_filter_level` (the harness
         //       passes `speed >= 4`). Byte-affecting on nonzero-LF cells.
         //
-        //   (B) LIVE but NOT YET PORTED (tracked as KB-8; the residual speed-4
-        //       divergences on this grid are exactly these):
+        //   (B) PORTED by the KB-8 chunk series (SATD trellis-skip 16d4d85, stage
+        //       policies 7bd30fb, USE_LARGESTALL 42bdffc, default-tx-type 96eeb71 +
+        //       threading, two-pass skeleton 0ee9f97, est-rd prune 264bba4, and the
+        //       flip in THIS commit). Original inventory (now live):
         //     - The WINNER-MODE two-pass subsystem for the LUMA intra search
         //       (`multi_winner_mode_type = MULTI_WINNER_MODE_DEFAULT` :504,
         //       `enable_winner_mode_for_coeff_opt` :502, `_for_use_tx_domain_dist`
@@ -491,9 +500,9 @@ impl SpeedFeatures {
         //       default tx type only), `prune_2d_txfm_mode = TX_TYPE_PRUNE_3` (:490),
         //       `prune_tx_type_est_rd = 1` (:491), `winner_mode_tx_type_pruning = 2`
         //       (:488) — the tx-type search changes, coupled to the two-pass.
-        //     - `top_intra_model_count_allowed = 2` (:150 note; was 3) — luma
-        //       model-prune count; only meaningful inside the (unported) two-pass
-        //       luma search, so deferred with it.
+        //     - `top_intra_model_count_allowed` stays **3** at speed 4 — the `= 2`
+        //       drop is the speed>=5 block (:533), NOT speed 4 (an earlier KB-8
+        //       note mis-attributed it; verified against the source).
         //     - `prune_ext_part_using_split_info = 2` (:476): turns on the AB
         //       `evaluate_ab_partition_based_on_split` prune (partition_strategy.c:
         //       2009-2028) that the port omits as dead at <=speed3 (partition_pick
@@ -522,6 +531,20 @@ impl SpeedFeatures {
         if speed >= 4 {
             // intra_sf (:480) — LIVE, consumer wired (see (A) above).
             sf.prune_chroma_modes_using_luma_winner = true;
+            // ---- KB-8 winner-mode two-pass deltas (chunk 2d-iv flip) ----
+            // tx_sf.tx_type_search
+            sf.winner_mode_tx_type_pruning = 2; // :488
+            sf.fast_intra_tx_type_search = 2; // :489 (MODE_EVAL default-tx-type only)
+            sf.prune_2d_txfm_mode = 3; // TX_TYPE_PRUNE_3 (:490); stage-overridden per set_tx_type_prune
+            sf.prune_tx_type_est_rd = true; // :491 (est-rd prune LIVE in the WINNER pass)
+            // rd_sf
+            sf.perform_coeff_opt = 5; // :493 (finite SATD threshold ⇒ trellis SATD-skip live)
+            sf.tx_domain_dist_thres_level = 3; // :494 (thresholds {0,0,0})
+            // winner_mode_sf (:502-505)
+            sf.enable_winner_mode_for_coeff_opt = true;
+            sf.enable_winner_mode_for_use_tx_domain_dist = true;
+            sf.multi_winner_mode_type = 2; // MULTI_WINNER_MODE_DEFAULT (:504) → top-3 re-eval
+            sf.enable_winner_mode_for_tx_size_srch = true; // :505 (MODE_EVAL → USE_LARGESTALL)
         }
 
         sf
@@ -750,6 +773,9 @@ mod tests {
         assert_eq!(sf.adaptive_txb_search_level, 2); // speed>=1 :406 (== speed>=3 :458)
         assert_eq!(sf.top_intra_model_count_allowed, 3); // speed>=1 :404
         assert!(sf.skip_tx_search); // speed>=1 :413
+        // tx_sf (:460) — set at speed>=3 (C value; empirically byte-no-op on the
+        // speed-3 gate grid, re-verified per landing).
+        assert!(sf.use_rd_based_breakout_for_intra_tx_search);
         // Derived tx policy at speed 3: perform_coeff_opt=3 -> dist threshold 864
         // (winner-mode DEFAULT_EVAL column holds through speed 3).
         let pol = sf.tx_type_search_policy(false, 0);
@@ -773,27 +799,46 @@ mod tests {
         assert_eq!(sf.less_rectangular_check_level, 2); // :444
         assert!(sf.disable_smooth_intra); // speed>=2 :429
         assert_eq!(sf.prune_filter_intra_level, 1); // speed>=2 :431 (bumps to 2 only at speed>=5)
-        // The pol-affecting speed-4 deltas (perform_coeff_opt=5,
-        // tx_domain_dist_thres_level=3) are UNPORTED (KB-8): the winner-mode
-        // two-pass that governs them on the luma path is not modeled, so the sf
-        // deliberately leaves these at their speed-3 DEFAULT_EVAL values. Asserting
-        // that here guards against a naive bump that would silently mis-apply the
-        // speed-4 DEFAULT_EVAL pol to the (unported-two-pass) luma search.
-        assert_eq!(sf.perform_coeff_opt, 3); // speed-3 value retained (KB-8)
-        assert_eq!(sf.tx_domain_dist_thres_level, 1); // speed-3 value retained (KB-8)
+        // The KB-8 winner-mode two-pass deltas (chunk 2d-iv flip) — the REAL
+        // speed-4 values per speed_features.c:471-506.
+        assert_eq!(sf.perform_coeff_opt, 5); // :493
+        assert_eq!(sf.tx_domain_dist_thres_level, 3); // :494
+        assert_eq!(sf.winner_mode_tx_type_pruning, 2); // :488
+        assert_eq!(sf.fast_intra_tx_type_search, 2); // :489
+        assert_eq!(sf.prune_2d_txfm_mode, 3); // TX_TYPE_PRUNE_3 :490
+        assert!(sf.prune_tx_type_est_rd); // :491
+        assert!(sf.enable_winner_mode_for_coeff_opt); // :502
+        assert!(sf.enable_winner_mode_for_use_tx_domain_dist); // :503
+        assert_eq!(sf.multi_winner_mode_type, 2); // MULTI_WINNER_MODE_DEFAULT :504
+        assert!(sf.enable_winner_mode_for_tx_size_srch); // :505
+        assert_eq!(sf.winner_mode_count_allowed(), 3);
+        assert!(sf.use_rd_based_breakout_for_intra_tx_search); // :460 (speed>=3)
+        // top_intra_model_count_allowed stays 3 (the =2 drop is speed>=5, :533).
+        assert_eq!(sf.top_intra_model_count_allowed, 3);
+        // DEFAULT_EVAL (chroma + single-pass) policy: coeff row [5][0] = {864, 97}
+        // — the finite SATD threshold turns the trellis SATD-skip ON; tx-domain
+        // threshold 0 (type stays 1 = hybrid, tx_domain_dist_level unchanged).
         let pol = sf.tx_type_search_policy(false, 0);
         assert_eq!(pol.coeff_opt_dist_threshold, 864);
-        assert_eq!(pol.coeff_opt_satd_threshold, u32::MAX);
-        // The winner-mode SF fields are NOT yet set at speed 4 (KB-8 chunk 2d
-        // flips them together with the two-pass restructure): assert they hold
-        // their off/default values so the stage-aware derivation collapses to
-        // DEFAULT_EVAL and the single-pass search stays byte-identical.
-        assert!(!sf.enable_winner_mode_for_coeff_opt);
-        assert!(!sf.enable_winner_mode_for_use_tx_domain_dist);
-        assert!(!sf.enable_winner_mode_for_tx_size_srch);
-        assert_eq!(sf.multi_winner_mode_type, 0);
-        assert_eq!(sf.fast_intra_tx_type_search, 0);
-        assert_eq!(sf.winner_mode_tx_type_pruning, 0);
+        assert_eq!(pol.coeff_opt_satd_threshold, 97);
+        assert_eq!(pol.use_transform_domain_distortion, 1);
+        assert_eq!(pol.tx_domain_dist_threshold, 0);
+        // MODE_EVAL / WINNER policies (the two-pass stages).
+        let me = sf.tx_type_search_policy_for_stage(MODE_EVAL, false, 0);
+        assert_eq!((me.coeff_opt_dist_threshold, me.coeff_opt_satd_threshold), (142, 16));
+        assert!(me.use_default_intra_tx_type);
+        assert_eq!(me.prune_2d_txfm_mode, 4); // prune_mode[1][0] = TX_TYPE_PRUNE_4
+        let win = sf.tx_type_search_policy_for_stage(WINNER_MODE_EVAL, false, 0);
+        assert_eq!(
+            (win.coeff_opt_dist_threshold, win.coeff_opt_satd_threshold),
+            (u32::MAX, u32::MAX)
+        );
+        assert!(!win.use_default_intra_tx_type);
+        assert_eq!(win.prune_2d_txfm_mode, 0); // prune_mode[1][1] = TX_TYPE_PRUNE_0
+        assert!(win.prune_tx_type_est_rd);
+        // Tx-size methods: MODE_EVAL LARGESTALL, WINNER FULL_RD.
+        assert_eq!(sf.tx_size_search_method_for_stage(MODE_EVAL), 2);
+        assert_eq!(sf.tx_size_search_method_for_stage(WINNER_MODE_EVAL), 0);
     }
 
     /// KB-8 chunk 2a: the stage-aware [`SpeedFeatures::tx_type_search_policy_for_stage`]

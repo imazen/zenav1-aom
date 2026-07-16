@@ -181,7 +181,8 @@ use crate::encode_sb::{
     LeafEncodeOut, LeafWinner, SbEncodeEnv, SbTree, TileCtxState, encode_sb_dry,
 };
 use crate::hog::{prune_intra_mode_with_hog_uv, prune_intra_mode_with_hog_y};
-use crate::intra_rd::{Block4x4VarInfo, IntraSbyGates, IntraSbySearchCfg};
+use crate::intra_rd::{Block4x4VarInfo, IntraSbyGates, IntraSbySearchCfg, WinnerModeCfg};
+use crate::speed_features::{MODE_EVAL, SpeedFeatures, WINNER_MODE_EVAL};
 use crate::intra_uv_rd::{
     UV_CFL_PRED, UvLoopPolicy, UvRdEnv, av1_get_tx_size_uv, chroma_plane_offset,
     is_chroma_reference,
@@ -631,16 +632,46 @@ fn leaf_pick_sb_modes(
         above_ctx: &above_y,
         left_ctx: &left_y,
     };
+    // KB-8 (chunk 2d-iv): the speed>=4 all-intra winner-mode two-pass bundle
+    // (av1_rd_pick_intra_sby_mode's MODE_EVAL loop → top-3 store_winner_mode_
+    // stats → WINNER_MODE_EVAL re-eval). The per-stage policies/methods are
+    // derived from the speed features (set_mode_eval_params, rdopt_utils.h:546),
+    // threading the caller pol's CLI-driven skip_trellis/sharpness. None below
+    // speed 4 (multi_winner_mode_type == MULTI_WINNER_MODE_OFF → single-pass).
+    let wm_parts = (cfg.allintra && cfg.speed >= 4).then(|| {
+        let sf =
+            SpeedFeatures::set_allintra(cfg.speed, cfg.allow_screen_content_tools, env.bd > 8);
+        debug_assert_ne!(sf.multi_winner_mode_type, 0);
+        (
+            sf.tx_type_search_policy_for_stage(MODE_EVAL, cfg.pol.skip_trellis, cfg.pol.sharpness),
+            sf.tx_type_search_policy_for_stage(
+                WINNER_MODE_EVAL,
+                cfg.pol.skip_trellis,
+                cfg.pol.sharpness,
+            ),
+            sf.tx_size_search_method_for_stage(MODE_EVAL),
+            sf.tx_size_search_method_for_stage(WINNER_MODE_EVAL),
+            sf.winner_mode_count_allowed(),
+        )
+    });
+    let wm_cfg = wm_parts.as_ref().map(|(me, win, me_m, win_m, count)| WinnerModeCfg {
+        mode_eval_pol: me,
+        winner_pol: win,
+        mode_eval_tx_size_method: *me_m,
+        winner_tx_size_method: *win_m,
+        max_winner_count: *count,
+    });
     let sby_cfg = IntraSbySearchCfg {
         gates: &gates,
         // `intra_sf.top_intra_model_count_allowed` (speed_features.c:2443 default
-        // TOP_INTRA_MODEL_COUNT=4; :404 -> 3 at allintra speed>=1; :533 -> 2 at
-        // speed>=4, unmodeled). Drives the `top_intra_model_rd[]` slot
-        // `prune_intra_y_mode` compares against (index = count-1). At speed 0/1
-        // the byte-match gates were inert to 4-vs-3 (the mode set kept fewer than
-        // 4 competitive models); the speed-2 `disable_smooth_intra` prune shrinks
-        // the mode set enough that the 4-vs-3 slot difference tips the winner, so
-        // this must be the correct 3 at speed>=1 to byte-match.
+        // TOP_INTRA_MODEL_COUNT=4; :404 -> 3 at allintra speed>=1; the -> 2 drop
+        // is the speed>=5 block, :533 — NOT speed 4). Drives the
+        // `top_intra_model_rd[]` slot `prune_intra_y_mode` compares against
+        // (index = count-1). At speed 0/1 the byte-match gates were inert to
+        // 4-vs-3 (the mode set kept fewer than 4 competitive models); the
+        // speed-2 `disable_smooth_intra` prune shrinks the mode set enough that
+        // the 4-vs-3 slot difference tips the winner, so this must be the
+        // correct 3 at speed>=1 to byte-match.
         top_intra_model_count_allowed: if cfg.allintra && cfg.speed >= 1 { 3 } else { 4 },
         adapt_top_model_rd_count_using_neighbors: false,
         above_mode,
@@ -669,7 +700,7 @@ fn leaf_pick_sb_modes(
         speed: cfg.speed,
         mb_to_right_edge: (env.mi_cols - mi_w as i32 - mi_col) * 4 * 8,
         mb_to_bottom_edge: (env.mi_rows - mi_h as i32 - mi_row) * 4 * 8,
-        winner_mode: None, // KB-8 two-pass: wired at the speed-4 flip (chunk 2d-iv)
+        winner_mode: wm_cfg.as_ref(),
     };
     let mut var_cache = Block4x4VarInfo::sb_cache(env.sb_size);
 
@@ -1202,6 +1233,37 @@ fn allow_ab_partition_search(
     do_rectangular_split && BLK_1D[bsize] > BLK_1D[3] && has_rows && has_cols
 }
 
+/// `evaluate_ab_partition_based_on_split` (partition_strategy.c:1870): keep an
+/// AB candidate only when at least `num_win_thresh` of {this block's own
+/// HORZ/VERT rect win, split child `idx1` picked NONE, split child `idx2`
+/// picked NONE} hold. `num_win_thresh = AOMMIN(3 * (2*(MAXQ-qindex)/MAXQ), 3)`
+/// — the integer division makes it **3 for qindex <= 127 and 0 for
+/// qindex >= 128** (the "conservative pruning for high quantizers" comment:
+/// the prune is inert at high q). `rect_win = None` models C's NULL
+/// `rect_part_win_info` (the SB-root call): the fallback is
+/// `pc_tree->partitioning == rect_part`. `child_nonone[i]` is true only when
+/// that split child completed with a non-NONE partitioning (C counts a NULL
+/// child, an aborted child — alloc-init partitioning stays NONE — and a
+/// completed NONE child all as wins).
+fn evaluate_ab_partition_based_on_split(
+    rect_win: Option<bool>,
+    pc_tree_partitioning: i32,
+    rect_part: i32,
+    qindex: i32,
+    child_nonone: [bool; 2],
+) -> bool {
+    const MAXQ: i32 = 255;
+    let num_win_thresh = (3 * (2 * (MAXQ - qindex) / MAXQ)).min(3);
+    let sub_part_win = match rect_win {
+        None => pc_tree_partitioning == rect_part,
+        Some(w) => w,
+    };
+    let mut num_win = i32::from(sub_part_win);
+    num_win += i32::from(!child_nonone[0]);
+    num_win += i32::from(!child_nonone[1]);
+    num_win >= num_win_thresh
+}
+
 /// `av1_prune_ab_partitions` (partition_strategy.c:1901-2029): the AB gating
 /// pipeline — base gate, RD-ratio structural pruning
 /// (`prune_ext_partition_types_search_level == 1`, LIVE at speed 0 both
@@ -1209,11 +1271,12 @@ fn allow_ab_partition_search(
 /// the SAME sf at `== 2` which is dead), then `ml_prune_ab_partition` (LIVE,
 /// same `ml_prune_partition` sf 4-way already established live, gated on
 /// BOTH rect types being allowed — matches the C's own extra gate).
-/// `evaluate_ab_partition_based_on_split` (:2009-2028) is DEAD
-/// (`prune_ext_part_using_split_info >= 2`, established 0 at speed 0 in the
-/// 4-way chunk) — omitted. `x_source_variance` is the STALE
-/// `x->source_variance` (gotcha #1) fed ONLY to the NN, never the
-/// structural pruning (which correctly uses `pb_source_variance`).
+/// [`evaluate_ab_partition_based_on_split`] (:2009-2028,
+/// `prune_ext_part_using_split_info >= 2` = allintra speed>=4) is applied by
+/// the CALLER (it needs the node's rect-win flags + split-children state).
+/// `x_source_variance` is the STALE `x->source_variance` (gotcha #1) fed ONLY
+/// to the NN, never the structural pruning (which correctly uses
+/// `pb_source_variance`).
 #[allow(clippy::too_many_arguments)]
 fn prune_ab_partitions(
     ext_partition_allowed: bool,
@@ -1578,6 +1641,13 @@ pub fn rd_pick_partition_real(
     // CNN partition prune's per-sub-block feature selection.
     quad_tree_idx: i32,
     mut none_rd_out: Option<&mut i64>,
+    // `rect_part_win_info` (av1_rd_pick_partition's 13th param): the OUT flags
+    // this block's rect stage clears when HORZ/VERT loses (:3634-3636). C
+    // passes `&split_part_rect_win[idx]` in the SPLIT recursion (:4586) and
+    // NULL everywhere else (the SB-root calls, encodeframe.c:826+). Consumed
+    // by the parent's split-info prunes AND this block's own AB evaluate
+    // (`evaluate_ab_partition_based_on_split` reads the CURRENT node's flags).
+    mut rect_part_win_out: Option<&mut [bool; 2]>,
     visits: &mut Vec<LeafVisit>,
     // `x->source_variance` (gotcha #1, module docs on `leaf_pick_sb_modes`):
     // a MACROBLOCK-level (i.e. truly frame-global, not node-scoped) mutable
@@ -1876,6 +1946,18 @@ pub fn rd_pick_partition_real(
     // comparison).
     let mut is_split_ctx_is_ready = [false; 2];
     let mut split_child_leaf_for_reuse: [Option<LeafWinner>; 2] = [None, None];
+    // `split_part_rect_win[4]` (encodeframe_utils.h:181, init TRUE at :3358-59):
+    // per-split-child HORZ/VERT win flags, cleared by the child's own rect
+    // stage on a loss. Consumed by `prune_4_partition_using_split_info`
+    // (level>=1, allintra speed>=3) — like split_rd, survives the SPLIT block
+    // whether or not SPLIT wins.
+    let mut split_part_rect_win = [[true; 2]; 4];
+    // `pc_tree->split[idx]->partitioning != PARTITION_NONE` for the AB
+    // evaluate (partition_strategy.c:1883-1893): false covers ALL of C's
+    // +1-win cases — child never allocated (loop broke early / off-frame),
+    // search aborted (C's alloc-init partitioning stays PARTITION_NONE), or
+    // completed with NONE.
+    let mut split_child_nonone = [false; 4];
     // ---- PARTITION_SPLIT stage ----
     if do_square_split {
         let subsize = split_subsize(bsize);
@@ -1911,9 +1993,12 @@ pub fn rd_pick_partition_real(
                 // child quad_tree_idx = 4*parent + idx + 1 (partition_search.c:4574).
                 4 * quad_tree_idx + idx as i32 + 1,
                 Some(&mut split_rd[idx]),
+                Some(&mut split_part_rect_win[idx]),
                 visits,
                 last_source_variance,
             );
+            split_child_nonone[idx] =
+                matches!(&child_tree, Some(t) if !matches!(t, SbTree::Leaf(_)));
             if !child_found {
                 sum_rdc = PartRdStats::invalid();
                 children.push(child_tree);
@@ -2115,6 +2200,13 @@ pub fn rd_pick_partition_real(
             w1 = got;
         }
         // Best update (:3626-3632).
+        if sum_rdc.rdcost >= best_rdc.rdcost {
+            // Update HORZ / VERT win flag (:3634-3636): the rect type was
+            // evaluated and did NOT beat the running best.
+            if let Some(win) = rect_part_win_out.as_deref_mut() {
+                win[i] = false;
+            }
+        }
         if sum_rdc.rdcost < best_rdc.rdcost {
             sum_rdc.rdcost = crate::rd::rdcost(env.rdmult, sum_rdc.rate, sum_rdc.dist);
             if sum_rdc.rdcost < best_rdc.rdcost {
@@ -2188,7 +2280,7 @@ pub fn rd_pick_partition_real(
             best_rdc.rdcost,
         );
 
-        let ab_partitions_allowed = prune_ab_partitions(
+        let mut ab_partitions_allowed = prune_ab_partitions(
             ext_partition_allowed,
             cfg.enable_ab_partitions,
             partition_rect_allowed,
@@ -2200,6 +2292,34 @@ pub fn rd_pick_partition_real(
             split_rd,
             bsize,
         );
+        // Split-info AB prune (partition_strategy.c:2009-2028):
+        // `prune_ext_part_using_split_info >= 2` = allintra speed>=4
+        // (level 1 at speed>=3 per :446, 2 at speed>=4 per :476 — the level-1
+        // consumers are the 4-way prune below, not this). Reads this node's
+        // OWN rect-win flags (C's `rect_part_win_info` param — the SB-root
+        // gets NULL → the pc_tree_partitioning fallback) + the split
+        // children's NONE-ness. Sub-block index pairs per type: HORZ_A (0,1),
+        // HORZ_B (2,3), VERT_A (0,2), VERT_B (1,3).
+        if cfg.allintra && cfg.speed >= 4 {
+            let rect_win = rect_part_win_out.as_deref();
+            const AB_ARGS: [(usize, i32, usize, usize); 4] = [
+                (0, 1, 0, 1), // HORZ_A: rect HORZ, split 0,1
+                (0, 1, 2, 3), // HORZ_B: rect HORZ, split 2,3
+                (1, 2, 0, 2), // VERT_A: rect VERT, split 0,2
+                (1, 2, 1, 3), // VERT_B: rect VERT, split 1,3
+            ];
+            for (ab_type, &(dir, rect_part, i1, i2)) in AB_ARGS.iter().enumerate() {
+                if ab_partitions_allowed[ab_type] {
+                    ab_partitions_allowed[ab_type] &= evaluate_ab_partition_based_on_split(
+                        rect_win.map(|w| w[dir]),
+                        pc_tree_partitioning,
+                        rect_part,
+                        cfg.qindex,
+                        [split_child_nonone[i1], split_child_nonone[i2]],
+                    );
+                }
+            }
+        }
 
         #[allow(clippy::needless_range_loop)]
         // ab_type selects HORZ_A/HORZ_B/VERT_A/VERT_B throughout (partition
@@ -2417,6 +2537,32 @@ pub fn rd_pick_partition_real(
             );
             part4_allowed[0] = h4;
             part4_allowed[1] = v4;
+        }
+
+        // prune_4_partition_using_split_info (partition_search.c:4023):
+        // `prune_ext_part_using_split_info != 0` = allintra speed>=3 (:446).
+        // Prune HORZ4/VERT4 when fewer than `AOMMIN(3*(MAXQ-qindex)/MAXQ + 1,
+        // 3)` of the 4 split children kept their HORZ/VERT rect-win flag
+        // (init TRUE; the child's rect stage clears it on a loss — children
+        // whose rect types were never evaluated keep the win). Runs AFTER the
+        // ML prune (C order); its per-type gate skips already-disallowed
+        // types. Empirically a byte no-op on the speed-3 gate grid (verified
+        // while unported); live from this landing — the speed-3 gate
+        // re-verifies per run.
+        if cfg.allintra && cfg.speed >= 3 {
+            const MAXQ: i32 = 255;
+            let num_win_thresh = (3 * (MAXQ - cfg.qindex) / MAXQ + 1).min(3);
+            #[allow(clippy::needless_range_loop)] // i = HORZ/VERT axis of both arrays
+            for i in 0..2usize {
+                if !part4_allowed[i] {
+                    continue;
+                }
+                let num_child_rect_win: i32 =
+                    (0..4).map(|idx| i32::from(split_part_rect_win[idx][i])).sum();
+                if num_child_rect_win < num_win_thresh {
+                    part4_allowed[i] = false;
+                }
+            }
         }
     }
 

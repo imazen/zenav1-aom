@@ -2089,19 +2089,26 @@ fn encoder_gate_speed3_textured_allintra() {
 /// Reverting either delta re-diverges its cells, so this gate's byte-match
 /// assertion on them is the witness.
 ///
-/// The 13 pinned residuals are the UNPORTED speed-4 deltas (KB-8), split:
-///   - **10 cells need the LUMA winner-mode two-pass** (`multi_winner_mode_type`
-///     / `enable_winner_mode_for_*`, speed_features.c:502-505 + `perform_coeff_opt
-///     =5`): every cell whose MONO sibling also diverges (the luma coding itself
-///     changes, tile bytes differ) — `flat 64x64 cq12`, `two-tone 64x64 cq12`,
-///     `two-tone 64x64 cq32`, `flat 128x128 cq12`, `two-tone 128x128 cq48`, each
-///     mono + 420.
-///   - **3 pure-chroma cq12 cells** (`vgrad 64x64`, `vgrad 128x128`, `diag
-///     128x128`, all 420 cq12 = qindex 48): mono byte-matches, so the divergence
-///     is chroma-only, driven by the unported chroma DEFAULT_EVAL speed-4 params
-///     (`perform_coeff_opt = 5`, needing the SATD trellis-skip body, tx_search
-///     .rs:664) — same aggressive-web low-q regime as the KB-6/KB-7 near-ties.
-/// Pinned EXACTLY: if a KB-8 fix makes one match this FAILS -> promote it; if a
+/// The KB-8 chunk series then ported the FULL remaining speed-4 delta set (all
+/// live at speed 4 in this gate's path): the SATD trellis-skip
+/// (`skip_trellis_opt_based_on_satd`), the stage-aware MODE_EVAL /
+/// WINNER_MODE_EVAL policies (`perform_coeff_opt=5`,
+/// `tx_domain_dist_thres_level=3`), the LUMA winner-mode two-pass
+/// (`multi_winner_mode_type=MULTI_WINNER_MODE_DEFAULT`: MODE_EVAL loop at
+/// USE_LARGESTALL + default-tx-type → top-3 `store_winner_mode_stats` →
+/// WINNER_MODE_EVAL re-eval at USE_FULL_RD), the est-rd tx-type prune +
+/// txk_map reorder (`prune_tx_type_est_rd`), `use_rd_based_breakout_for_
+/// intra_tx_search`, and both split-info prunes (`prune_ext_part_using_
+/// split_info` — the AB evaluate at level 2 and the 4-way rect-win prune at
+/// level 1). That took the gate 51/64 → 59/64: ALL 32 mono cells byte-match,
+/// i.e. the speed-4 LUMA path is byte-exact.
+///
+/// The 5 pinned residuals are 4:2:0 chroma-tied KB-7-class near-ties (KB-7's
+/// speed-3 pins are the SAME content cells at cq12): `diag 128x128 cq12`,
+/// `two-tone 64x64 cq12`, `two-tone 64x64 cq32`, `vgrad 128x128 cq12`,
+/// `vgrad 64x64 cq12` — the latent chroma-RD low-q near-tie tracked under
+/// KB-7, not a missing speed-4 delta.
+/// Pinned EXACTLY: if a fix makes one match this FAILS -> promote it; if a
 /// NEW cell diverges a speed-4 regression was introduced -> investigate.
 #[test]
 fn encoder_gate_speed4_textured_allintra() {
@@ -2150,36 +2157,34 @@ fn encoder_gate_speed4_textured_allintra() {
         .map(|(n, _)| n.clone())
         .collect();
     residual.sort();
-    // The exact UNPORTED-speed-4 (KB-8) residual set — see the gate doc.
+    // The exact residual set with EVERY documented speed-4 delta ported + live
+    // (the KB-8 chunk series: SATD trellis-skip, stage-aware policies, the
+    // luma winner-mode two-pass MODE_EVAL → top-3 → WINNER_MODE_EVAL, the
+    // est-rd tx-type prune + txk_map reorder, use_rd_based_breakout, and both
+    // split-info prunes). All 32 MONO cells byte-match — the speed-4 LUMA
+    // path is byte-exact. The 5 residuals are 4:2:0 chroma-tied near-ties of
+    // the KB-7 class (KB-7's own speed-3 pins are the SAME content cells at
+    // cq12): a latent chroma-RD near-tie tipping the partition at low q,
+    // present at speed 3 AND 4 — tracked under KB-7, not a missing speed-4
+    // delta. When the KB-7 chroma root lands, re-check + promote these.
     let expected_residual = [
-        // 3 pure-chroma cq12 (unported chroma DEFAULT_EVAL / low-q near-tie):
         "diag 128x128 420 cq12".to_string(),
-        // 10 luma winner-mode two-pass (mono sibling also diverges):
-        "flat 128x128 420 cq12".to_string(),
-        "flat 128x128 mono cq12".to_string(),
-        "flat 64x64 420 cq12".to_string(),
-        "flat 64x64 mono cq12".to_string(),
-        "two-tone 128x128 420 cq48".to_string(),
-        "two-tone 128x128 mono cq48".to_string(),
         "two-tone 64x64 420 cq12".to_string(),
         "two-tone 64x64 420 cq32".to_string(),
-        "two-tone 64x64 mono cq12".to_string(),
-        "two-tone 64x64 mono cq32".to_string(),
         "vgrad 128x128 420 cq12".to_string(),
         "vgrad 64x64 420 cq12".to_string(),
     ];
     let matched = results.iter().filter(|(_, ok)| *ok).count();
     eprintln!(
         "encoder_gate_speed4_textured_allintra: {matched}/{} cells byte-identical vs aomenc \
-         --cpu-used=4 (13 UNPORTED-speed-4 KB-8 residuals pinned: 10 luma winner-mode + 3 \
-         pure-chroma cq12)",
+         --cpu-used=4 (5 KB-7-class chroma cq12/cq32 near-tie residuals pinned; all 32 mono \
+         cells byte-match — the speed-4 luma winner-mode two-pass is byte-exact)",
         results.len()
     );
     assert_eq!(
         residual, expected_residual,
-        "cpu-used=4 divergence set changed: got {residual:?}. If a cell now MATCHES, a KB-8 \
-         speed-4 delta (luma winner-mode two-pass, or the chroma DEFAULT_EVAL coeff-opt) was \
-         ported -> promote it into the byte-match claim; if a NEW cell diverges, a speed-4 \
-         regression was introduced -> investigate."
+        "cpu-used=4 divergence set changed: got {residual:?}. If a cell now MATCHES (e.g. the \
+         KB-7 chroma near-tie root landed), promote it into the byte-match claim; if a NEW cell \
+         diverges, a speed-4 regression was introduced -> investigate."
     );
 }

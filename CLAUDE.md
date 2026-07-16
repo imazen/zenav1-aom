@@ -445,85 +445,48 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   the gate PINS the exact residual set, so it FAILS the moment one starts matching (prompting
   promotion) or a new cell regresses.
 
-### KB-8 — Encoder: `--cpu-used=4` UNPORTED speed-4 deltas (luma winner-mode two-pass + chroma coeff-opt-5) — REAL, PARTIAL PORT, pinned
-- **Status:** `--cpu-used=4` is a **PARTIAL port — 51/64 cells byte-identical** vs real aomenc
-  (`encoder_gate_speed4_textured_allintra`, {64,128}² × cq{12,32,48,63} × {flat,two-tone,vgrad,diag}
-  × {mono,420}), up from a 35/64 baseline (`set_allintra(4)` == the speed-3 sf). Two speed-4 deltas
-  were ported (LIVE + wired); the residual 13 cells are pinned pending the rest.
-- **PORTED at speed 4 (both anti-vacuous-witnessed by the gate):**
-  1. **`prune_chroma_modes_using_luma_winner = 1`** (speed_features.c:480) — prunes any chroma
-     `uv_mode` not flagged in `av1_derived_chroma_intra_mode_used_flag[luma_winner_mode]`
-     (intra_mode_search.c:939-941). The consumer already existed (intra_uv_rd.rs:1497); wired
-     per-block via `cfg.speed >= 4` in `partition_pick.rs` (mirroring the inline `chroma_hog_level`).
-     Fixes **10 cells** (incl. resolving the KB-7 `two-tone 128x128 420 cq12` residual).
-  2. **`lpf_pick = LPF_PICK_FROM_FULL_IMAGE_NON_DUAL`** (speed_features.c:496) — the Y loop-filter
-     level search drops the two single-direction (`dir=0`/`dir=1`) refine passes and leaves both luma
-     levels at the combined `dir=2` winner (picklpf.c:376). Wired via a `non_dual` flag on
-     `lf_search::pick_filter_level` (harness passes `speed >= 4`). Fixes **6 cells** whose divergence
-     was a header-only LF-level byte (tile data was already byte-identical — e.g. `vgrad 128x128
-     cq32/48`, `diag 128x128 cq63`, each mono AND 420).
-- **UNPORTED (the 13 pinned residuals; close ONLY by a landed fix that promotes them):**
-  - **10 cells need the LUMA WINNER-MODE two-pass** — every cell whose MONO sibling also diverges
-    (`flat 64x64 cq12`, `two-tone 64x64 cq12`, `two-tone 64x64 cq32`, `flat 128x128 cq12`,
-    `two-tone 128x128 cq48`, each mono + 420). At speed 4 `av1_rd_pick_intra_sby_mode`
-    (intra_mode_search.c:1468) runs the luma mode loop with **MODE_EVAL** params
-    (`set_mode_eval_params(MODE_EVAL)` :1515 — `use_default_intra_tx_type=1` from
-    `fast_intra_tx_type_search=2`, cheaper coeff-opt/tx-size thresholds), collects the top-3 via
-    `store_winner_mode_stats` (`multi_winner_mode_type=MULTI_WINNER_MODE_DEFAULT`,
-    `winner_mode_count_allowed[2]=3`), then RE-evaluates those 3 with **WINNER_MODE_EVAL** params
-    (`intra_block_yrd` :1713, full tx-type search) and picks the final. The port's luma search
-    (`intra_rd.rs:888 rd_pick_intra_sby_mode_y`) is single-pass. Prerequisites: (a) the **SATD
-    trellis-skip body** (`tx_search.rs:664` `unimplemented!`) — `perform_coeff_opt=5` (:493) has
-    `coeff_opt_satd_threshold < UINT_MAX` in the MODE_EVAL/DEFAULT_EVAL columns; (b) a
-    `use_default_intra_tx_type` (DCT-only) flag on the tx search; (c) the top-3 winner-stats list; (d)
-    the two-pass restructure + MODE_EVAL/WINNER_MODE_EVAL pol threading. Also couples in
-    `tx_domain_dist_thres_level=3` (:494), `prune_2d_txfm_mode=TX_TYPE_PRUNE_3` (:490),
-    `prune_tx_type_est_rd=1` (:491), `winner_mode_tx_type_pruning=2` (:488),
-    `top_intra_model_count_allowed=2`.
-  - **3 pure-chroma cq12 cells** (`vgrad 64x64`, `vgrad 128x128`, `diag 128x128`, all 420 cq12 =
-    qindex 48): mono byte-matches, so chroma-only. The chroma search runs DEFAULT_EVAL with the
-    speed-4 `perform_coeff_opt=5` params — same SATD-trellis-skip prerequisite. Aggressive-web low-q
-    regime (KB-6/KB-7 class); may be a genuine near-tie once the chroma coeff-opt lands, or fixed by
-    it — cannot distinguish until (a) above is ported.
-  - **INERT (verified byte-no-op), documented in `set_allintra`'s `if speed >= 4`:**
-    `early_term_after_none_split` (both-INT64_MAX-only), `ml_predict_breakout_level=3` (already 3 at
-    bd8), all motion/MV/TPL/intrabc, `cdef_pick_method` (CDEF off), the framesize-dependent
-    `prune_tx_type_using_stats=2` (needs ≥480p). `prune_ext_part_using_split_info=2` (:476) turns on
-    the AB `evaluate_ab_partition_based_on_split` prune the port omits (partition_pick.rs:1203) — LIVE
-    but not observed to change any cell on this grid; folded into the winner-mode chunk.
-- **Gate PINS the exact residual set** — FAILS the moment one starts matching (→ promote) or a new
-  cell regresses. `diag 64x64 cq63` (a coordinator-flagged inherited near-tie) was checked and
-  **byte-matches at speed 4 on this grid** — NOT pinned.
-- **PROGRESS (chunked port of the two-pass):**
-  - **CHUNK 1 LANDED (commit `16d4d85`, verified on origin/main):** the SATD trellis-skip body
-    (`tx_search.rs::skip_trellis_opt_based_on_satd`) replacing the `unimplemented!`. NO-OP below
-    speed 4 (caller short-circuits on `coeff_opt_satd_threshold == UINT_MAX`). Unit-tested vs REAL C
-    (`aom_sys_ref::ref_satd` = exported `aom_satd_c`): decision matches across 11 tx sizes × 4
-    magnitudes × 3 qsteps × thresholds straddling the boundary. Added helpers `SQRT_TX_PIXELS_2D`,
-    `av1_get_tx_scale` (idct.c:24), `av1_get_max_eob` (blockd.h:1601, 64-pt cap 1024/512).
-  - **EXACT speed-4 two-pass params (derived from set_allintra + the C tables, for CHUNK 2):**
-    at speed>=4 (speed_features.c:471-506) C sets `perform_coeff_opt=5`, `tx_domain_dist_thres_level=3`,
-    `fast_intra_tx_type_search=2`, `winner_mode_tx_type_pruning=2`, `prune_2d_txfm_mode=TX_TYPE_PRUNE_3`,
-    `enable_winner_mode_for_coeff_opt=1`, `enable_winner_mode_for_use_tx_domain_dist=1`,
-    `enable_winner_mode_for_tx_size_srch=1`, `multi_winner_mode_type=MULTI_WINNER_MODE_DEFAULT`
-    (winner_mode_count_allowed=3), `top_intra_model_count_allowed=2`; `tx_size_search_level` stays 0.
-    Per-stage resolution (via get_rd_opt_coeff_thresh / set_tx_domain_dist_params / set_tx_size_search_method):
-    * coeff_opt (`coeff_opt_thresholds[5]` = `{{864,97},{142,16},{MAX,MAX}}` [dist,satd]):
-      MODE_EVAL pass → `{dist=142, satd=16}` (finite satd ⇒ SATD-skip active); WINNER pass →
-      `{dist=MAX, satd=MAX}` (SATD-skip early-returns ⇒ trellis ALWAYS run, most accurate).
-    * tx_domain_dist (`level 3`: thresholds `{0,0,0}`, types `{2,2,2}`): both stages type=2 thr=0.
-    * tx_size method (`tx_size_search_methods[0]` = `{FULL_RD, LARGESTALL, FULL_RD}`, gated by
-      enable_for_tx_size_srch=1): MODE_EVAL → **USE_LARGESTALL** (largest tx only); WINNER → **USE_FULL_RD**.
-    * tx-type set: MODE_EVAL `use_default_intra_tx_type=1` (fast_intra_tx_type_search==2 ⇒ default
-      tx type only); WINNER `=0` (full tx-type search). tx-type prune (winner_mode_tx_type_pruning=2,
-      prune_mode row idx 1): MODE_EVAL → TX_TYPE_PRUNE_4, WINNER → TX_TYPE_PRUNE_0.
-  - **CHUNK 2 decomposition (each keeps speed 0-3 byte-identical + speed-4 gate ≥51/64 until integration):**
-    2a stage-aware `TxTypeSearchPolicy` derivation (coeff/tx-domain columns per MODE_EVAL/WINNER) +
-    winner-mode SF fields, unit-tested vs C tables, UNWIRED. 2b USE_LARGESTALL tx-size method. 2c
-    `use_default_intra_tx_type` DCT/default-only flag on the tx-type search. 2d integration: flip
-    `set_allintra(4)` to the real values + restructure `rd_pick_intra_sby_mode_y` into the two-pass
-    (MODE_EVAL loop → store_winner_mode_stats top-3 → WINNER_MODE_EVAL re-eval via intra_block_yrd),
-    gated speed>=4, promote cells. The 3 pure-chroma cq12 cells may remain a genuine near-tie.
+### KB-8 — Encoder: `--cpu-used=4` speed-4 deltas — PORTED ✅ (59/64; luma byte-exact; 5 KB-7-class chroma near-ties pinned)
+- **Status (2026-07-16): every documented speed-4 delta is PORTED + LIVE — 59/64 cells byte-identical**
+  vs real aomenc (`encoder_gate_speed4_textured_allintra`, {64,128}² × cq{12,32,48,63} ×
+  {flat,two-tone,vgrad,diag} × {mono,420}), up from 35/64 baseline → 51/64 (chunk 1 series) →
+  59/64 (the winner-mode flip). **ALL 32 mono cells byte-match — the speed-4 LUMA path is
+  byte-exact.** The 5 pinned residuals are 4:2:0 chroma near-ties of the **KB-7 class** (KB-7's
+  speed-3 pins are the SAME content cells at cq12): `diag 128² cq12`, `two-tone 64² cq12`,
+  `two-tone 64² cq32`, `vgrad 128² cq12`, `vgrad 64² cq12` — the latent chroma-RD low-q near-tie
+  tracked under KB-7, NOT a missing speed-4 delta. When KB-7's chroma root lands, re-check +
+  promote these 5.
+- **The full landed chunk series (each verified on origin/main):**
+  1. `prune_chroma_modes_using_luma_winner` + NON_DUAL LF search (e8c662f, 51/64).
+  2. SATD trellis-skip body `skip_trellis_opt_based_on_satd` (16d4d85) — unit-tested vs REAL C
+     (`ref_satd` = exported `aom_satd_c`).
+  3. Stage-aware `TxTypeSearchPolicy` derivation (7bd30fb) — MODE_EVAL/WINNER_MODE_EVAL coeff-opt
+     + tx-domain columns per `set_mode_eval_params`, validated vs the C tables.
+  4. `USE_LARGESTALL` tx-size arm (42bdffc) — `choose_largest_tx_size` demotion tables verified vs C.
+  5. `use_default_intra_tx_type` in `get_tx_mask_intra` (96eeb71) + threading (9c6ed2a) —
+     differential vs the C shim across use_default × screen sweeps.
+  6. Winner-mode two-pass skeleton in `rd_pick_intra_sby_mode_y` (0ee9f97) — `store_winner_mode_
+     stats` C-semantics unit-tested; `use_rd_based_breakout` rd_thresh (AOMMIN) in the depth loop.
+  7. Est-rd tx-type prune (264bba4) — `av1_cost_coeffs_txb_laplacian` (REAL-C differential across
+     15,960 cases) + `prune_txk_type` + txk_map reorder; LIVE on intra in the WINNER pass.
+  8. THE FLIP (this landing): `set_allintra(4)` real values (`perform_coeff_opt=5`,
+     `tx_domain_dist_thres_level=3`, `fast_intra_tx_type_search=2`, `winner_mode_tx_type_pruning=2`,
+     `prune_2d_txfm_mode=PRUNE_3`, `prune_tx_type_est_rd=1`, `enable_winner_mode_for_{coeff_opt,
+     use_tx_domain_dist,tx_size_srch}=1`, `multi_winner_mode_type=MULTI_WINNER_MODE_DEFAULT(=2)`);
+     `use_rd_based_breakout_for_intra_tx_search=1` at speed>=3 (:460 — speed-3 gate re-verified
+     61/64, empirical no-op confirmed); the two-pass wiring in `partition_pick.rs` (per-leaf
+     `WinnerModeCfg` derivation); BOTH split-info prunes (`prune_ext_part_using_split_info`:
+     the AB `evaluate_ab_partition_based_on_split` at level 2 = speed>=4 — inert at qindex>=128
+     by its threshold formula — and the 4-way `prune_4_partition_using_split_info` at level 1 =
+     speed>=3, via `split_part_rect_win` rect-win threading through the SPLIT recursion).
+- **Key facts for future speeds (verified against source):** `top_intra_model_count_allowed` stays
+  **3** at speed 4 (the `=2` drop is speed>=5, :533); `MULTI_WINNER_MODE_DEFAULT=2` / `FAST=1`
+  (speed_features.h:226/230), `winner_mode_count_allowed={1,2,3}`; the AB split-info threshold
+  `min(3*(2*(MAXQ-q)/MAXQ),3)` is 3 for q<=127 / 0 for q>=128; C's chroma search runs DEFAULT_EVAL
+  (rdopt.c:3659 resets right after the luma two-pass); the winner re-eval (`intra_block_yrd`) gets
+  NO ALLINTRA variance factor yet compares vs the factored first-pass best_rd (C asymmetry,
+  preserved); C's LARGESTALL arm bypasses `uniform_txfm_yrd`'s rate assembly — equivalent to it
+  with `tx_mode_is_select=false` (tx_size_rate=0), which is how the port models it.
+- **Gate PINS the 5-cell residual set exactly** — FAILS on any promotion (→ promote) or regression.
 
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 
