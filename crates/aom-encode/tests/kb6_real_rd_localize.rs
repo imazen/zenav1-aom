@@ -697,3 +697,65 @@ fn kb6_localize_film_64_cq5() {
         if matched { "MATCH" } else { "DIVERGE (see first divergence above)" }
     );
 }
+
+/// Localize the **cq32 (qindex 128, mid-q) near-tie** on the SAME 00-quantizer
+/// 64x64@96,64 photographic crop. NOTE (2026-07-15 finding): this crop's RD
+/// decisions + recon are IDENTICAL to aomenc at cq32 (this localizer reports
+/// MATCH); the e2e byte divergence, if any, is header-layer (derived LF level),
+/// not RD — the localizer compares PREFILTER recon + modes and leaves LF at the
+/// real parsed value, so it cannot see an LF-level header mismatch. Report-only.
+#[test]
+fn kb6_localize_quantizer_64_cq32() {
+    let matched = localize_real("av1-1-b8-00-quantizer-00", 32, 64, 64, 96, 64);
+    eprintln!(
+        "\n=== KB-6 localize quantizer 64x64@96,64 cq32: {} ===",
+        if matched { "MATCH" } else { "DIVERGE (see first divergence above)" }
+    );
+}
+
+/// Localize the **size-64x64 cq32 (qindex 128) near-tie** — the documented KB-6
+/// "SECOND near-tie" (CLAUDE.md). The e2e gate flags this cell MISMATCH at tile
+/// byte ~390 (a TILE-PAYLOAD divergence, header-region=7), so the coded symbols
+/// differ — an RD decision the localizer CAN pin (partition/leaf/recon compare).
+/// Report-only diagnostic; the gate is `encoder_gate_real_image_e2e_kb6_repro`.
+#[test]
+fn kb6_localize_size_64_cq32() {
+    let matched = localize_real("av1-1-b8-01-size-64x64", 32, 0, 0, 0, 0);
+    eprintln!(
+        "\n=== KB-6 localize size-64x64 cq32: {} ===",
+        if matched { "MATCH" } else { "DIVERGE (see first divergence above)" }
+    );
+}
+
+/// Characterize the **196x196 partial-SB gap** (distinct from the RD-near-tie
+/// class). 196px is not a multiple of 64 → mi_cols = mi_dim(196) = 50, so the
+/// frame has a partial edge superblock at mi_col/mi_row 48 (a 2-mi-wide, 8px strip).
+/// The port's `TileCtxState::zeroed(mi_cols)` (encode_sb.rs:127) sizes the above
+/// context arrays to bare `mi_cols=50`, NOT `aligned_mi_cols =
+/// ALIGN_POWER_OF_TWO(mi_cols, MAX_MIB_SIZE_LOG2) = 64` (alloccommon.c:414); the
+/// full-frame SB walk (`n_sb = ceil(mi_cols/16) = 4`) reaches the edge SB at
+/// mi_col=48 and the partition search reads `above_ectx[0][48..64]` (a full
+/// BLOCK_64X64 candidate) which overruns the length-50 array → panic. This test
+/// catches the unwind and reports it as characterization: the port CANNOT encode a
+/// partial-SB frame today. (The e2e gate sidesteps the panic by FLOORING n_sb to 3
+/// = encoding only 192x192, which then diverges by construction — a strip of real
+/// pixels is missing.) Report-only; asserts nothing so it stays green while the gap
+/// is open, per KB-6.
+#[test]
+fn kb6_characterize_196_partial_sb() {
+    let res = std::panic::catch_unwind(|| {
+        localize_real("av1-1-b8-01-size-196x196", 32, 0, 0, 0, 0)
+    });
+    match res {
+        Ok(matched) => eprintln!(
+            "\n=== KB-6 196x196 partial-SB cq32: NO PANIC, matched={matched} \
+             (partial-SB support may have landed — re-check the gap) ==="
+        ),
+        Err(_) => eprintln!(
+            "\n=== KB-6 196x196 partial-SB cq32: PANIC (expected) — the port's \
+             edge-SB partition search overruns the mi_cols-sized context arrays; \
+             partial-SB (frame-edge) encode is unported. See the panic backtrace \
+             above for the exact index/site. ==="
+        ),
+    }
+}
