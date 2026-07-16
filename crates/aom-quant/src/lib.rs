@@ -13,6 +13,7 @@ mod qm;
 mod qm_fwd_tables;
 mod qm_inv_tables;
 mod quant_common;
+pub mod simd;
 pub use build_quantizer::{
     av1_build_quantizer, set_q_index, Dequants, PlaneQuantRows, Quants, QINDEX_RANGE,
 };

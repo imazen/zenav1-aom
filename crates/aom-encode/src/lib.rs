@@ -47,7 +47,7 @@ use aom_quant::{
 use aom_transform::inv_txfm2d::{av1_fwht4x4, av1_inv_txfm2d_add};
 use aom_transform::txfm2d::av1_fwd_txfm2d;
 use aom_txb::{
-    CoeffCostTables, dequant_txb, get_txb_ctx, optimize_txb, optimize_txb_qm, scan,
+    CoeffCostTables, dequant_txb, get_txb_ctx, iscan, optimize_txb, optimize_txb_qm, scan,
     txb_entropy_context, txb_high, txb_wide, write_coeffs_txb, write_coeffs_txb_full,
 };
 
@@ -281,12 +281,16 @@ pub fn xform_quant(
             &mut qcoeff,
             &mut dqcoeff,
         ),
-        (QuantKind::Fp, _, _, false) => av1_quantize_fp_no_qmatrix(
+        // The hottest quantizer (speed-0 search path): SIMD-dispatched, bit-
+        // identical to the scalar port at every tier (quantize_fp_simd_diff);
+        // AOM_FORCE_SCALAR pins it back to the transcription.
+        (QuantKind::Fp, _, _, false) => aom_quant::simd::av1_quantize_fp_no_qmatrix_dispatch(
             qp.quant,
             qp.dequant,
             qp.round,
             log_scale,
             sc,
+            iscan(tx_size, tx_type),
             src,
             &mut qcoeff,
             &mut dqcoeff,
