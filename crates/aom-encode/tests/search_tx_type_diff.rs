@@ -233,6 +233,7 @@ fn search_tx_type_intra_matches_c_chain() {
                 // Interior differential: visible == full tx dims.
                 visible_cols: w,
                 visible_rows: h,
+                qm_level: None,
             };
             let got = search_tx_type_intra(&inp, &pol, ref_best_rd);
 

@@ -404,6 +404,7 @@ fn rd_pick_intra_mode_sb_matches_c_composition() {
                 tx_mode_is_select: true,
                 above_ctx: &above_ctx_y,
                 left_ctx: &left_ctx_y,
+                qm_levels: None,
             };
             let sby_cfg = IntraSbySearchCfg {
                 gates: &gates,
@@ -463,6 +464,7 @@ fn rd_pick_intra_mode_sb_matches_c_composition() {
                 tx_type_costs: &uv_tx_type_costs,
                 above_ctx: [&above_u, &above_v],
                 left_ctx: [&left_u, &left_v],
+                qm_levels: None,
             };
             let lp = UvLoopPolicy::speed0_allintra();
             let mut recon_y = recon_y0.clone();

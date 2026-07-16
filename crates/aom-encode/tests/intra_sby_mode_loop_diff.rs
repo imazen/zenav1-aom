@@ -274,6 +274,7 @@ fn rd_pick_intra_sby_mode_matches_c_loop() {
                 tx_mode_is_select: true,
                 above_ctx: &above_ctx,
                 left_ctx: &left_ctx,
+                qm_levels: None,
             };
             let cfg = IntraSbySearchCfg {
                 gates: &gates,

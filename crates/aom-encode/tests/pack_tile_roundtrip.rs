@@ -724,6 +724,7 @@ fn run_pack_roundtrip_case(ss_x: usize, ss_y: usize, allintra: bool, qindex: usi
             coeff_costs_y: &coeff_costs_y,
             coeff_costs_uv: &coeff_costs_uv,
             tx_type_costs: &ttc_dummy,
+            qm_levels: None,
         };
         let pick_cfg = PickFrameCfg {
             mode_costs: &mode_costs,
@@ -754,6 +755,7 @@ fn run_pack_roundtrip_case(ss_x: usize, ss_y: usize, allintra: bool, qindex: usi
             // Same reasoning: AB shapes are not yet cross-checked here either.
             enable_ab_partitions: false,
             allow_screen_content_tools: false,
+            qm_levels: None,
         };
         let pack_cfg = PackCfg {
             enable_filter_intra: true,
@@ -1186,6 +1188,7 @@ fn pack_tile_roundtrips_with_real_costs() {
             coeff_costs_y: &real.coeff_costs_y,
             coeff_costs_uv: &real.coeff_costs_uv,
             tx_type_costs: &real.tx_type_costs_y,
+            qm_levels: None,
         };
         let pick_cfg = PickFrameCfg {
             mode_costs: &real.mode_costs,
@@ -1216,6 +1219,7 @@ fn pack_tile_roundtrips_with_real_costs() {
             // Same reasoning: AB shapes are not yet cross-checked here either.
             enable_ab_partitions: false,
             allow_screen_content_tools: false,
+            qm_levels: None,
         };
         let pack_cfg = PackCfg {
             enable_filter_intra: true,

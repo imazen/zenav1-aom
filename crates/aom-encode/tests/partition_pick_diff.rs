@@ -308,6 +308,7 @@ impl CPick<'_> {
             tx_mode_is_select: true,
             above_ctx: &above_y,
             left_ctx: &left_y,
+            qm_levels: None,
         };
         let sby_cfg = IntraSbySearchCfg {
             gates: &gates,
@@ -421,6 +422,7 @@ impl CPick<'_> {
             tx_type_costs: self.ttc_dummy,
             above_ctx: [&above_u, &above_v],
             left_ctx: [&left_u, &left_v],
+            qm_levels: None,
         };
         let re = ReencodeParams {
             sharpness: self.o.sharpness,
@@ -1430,6 +1432,7 @@ fn rd_pick_partition_real_matches_c_recursion() {
             coeff_costs_y: &coeff_costs_y,
             coeff_costs_uv: &coeff_costs_uv,
             tx_type_costs: &ttc_dummy,
+            qm_levels: None,
         };
         let cfg = PickFrameCfg {
             mode_costs: &mode_costs,
@@ -1461,6 +1464,7 @@ fn rd_pick_partition_real_matches_c_recursion() {
             // Same reasoning: AB shapes are not yet cross-checked here either.
             enable_ab_partitions: false,
             allow_screen_content_tools: false,
+            qm_levels: None,
         };
 
         // ---- Rust recursion ----

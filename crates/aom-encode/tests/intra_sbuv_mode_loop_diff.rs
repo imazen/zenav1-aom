@@ -334,6 +334,7 @@ fn rd_pick_intra_sbuv_mode_matches_c() {
                 tx_type_costs: &tx_type_costs,
                 above_ctx: [&above_u, &above_v],
                 left_ctx: [&left_u, &left_v],
+                qm_levels: None,
             };
             let lp = UvLoopPolicy::speed0_allintra();
 

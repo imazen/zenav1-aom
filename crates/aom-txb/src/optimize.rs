@@ -117,8 +117,16 @@ pub fn optimize_txb(
 }
 
 /// `av1_optimize_txb` *with* a quant matrix: `iqmatrix` folds into the
-/// per-position dequant (`get_dqv`), `qmatrix` into the distortion
-/// (`get_coeff_dist`). Both are indexed by raster position (length = block area).
+/// per-position dequant (`get_dqv`); `qmatrix` (when `Some`) into the
+/// distortion (`get_coeff_dist`). Both are indexed by raster position
+/// (length = block area).
+///
+/// `qmatrix` mirrors C's nullable `qmatrix` in `av1_optimize_txb`
+/// (txb_rdopt.c): the forward matrix weights the trellis distortion ONLY
+/// under `dist_metric == AOM_DIST_METRIC_QM_PSNR` (tune=IQ / SSIMULACRA2);
+/// with the default PSNR metric the encoder passes NULL there even when QM
+/// quantization is on — the dequant still folds `iqmatrix`, but the trellis
+/// distortion stays unweighted.
 #[allow(clippy::too_many_arguments)]
 pub fn optimize_txb_qm(
     tx_size: usize,
@@ -135,7 +143,7 @@ pub fn optimize_txb_qm(
     scan: &[i16],
     t: &CoeffCostTables,
     iqmatrix: &[u8],
-    qmatrix: &[u8],
+    qmatrix: Option<&[u8]>,
 ) -> OptimizeResult {
     optimize_txb_core(
         tx_size,
@@ -152,7 +160,7 @@ pub fn optimize_txb_qm(
         scan,
         t,
         Some(iqmatrix),
-        Some(qmatrix),
+        qmatrix,
     )
 }
 

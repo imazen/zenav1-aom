@@ -252,6 +252,7 @@ fn cfl_rd_pick_alpha_matches_c() {
                 tx_type_costs: &tx_type_costs,
                 above_ctx: [&above_u, &above_v],
                 left_ctx: [&left_u, &left_v],
+                qm_levels: None,
             };
             let uv_tx = aom_encode::intra_uv_rd::av1_get_tx_size_uv(bsize, false, ss_x, ss_y);
 

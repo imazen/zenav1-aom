@@ -626,9 +626,15 @@ port-derived.
 
 **NOT blocking single-frame-primary (non-default single-frame knobs — these ARE single-frame work
 to be done before "the rest"=inter-frame, but lower priority than the primary default config):**
-- **#23 QM-on encode** — reclassified here 2026-07-15 (QM is OFF by default, per the corrected
-  line above). Only reached by `--enable-qm` / `tune=IQ`/`SSIMULACRA2`. Forward-quant +
-  `wt_matrix` table; decoder QM decode already ported. Gate-4 knob coverage, not a primary hole.
+- **#23 QM-on encode — DONE ✅ (2026-07-16)**: `--enable-qm=1` allintra KEY byte-matches real
+  aomenc — `encoder_gate_qm_on_e2e` (40 cells, bd8+bd10, qm ranges (5,9)+(4,10), mono+420) +
+  anti-vacuous witness. QM selection runs inside the RD search (`resolve_qm` per tx in
+  `xform_quant`), levels via `aom_get_qmlevel_allintra`. KEY subtlety (root-caused via
+  sibling-libaom dump): C's trellis weights its DISTORTION by the forward matrix ONLY under
+  `dist_metric == QM_PSNR` (tune=IQ) — with default PSNR the trellis runs `qmatrix = NULL`
+  while dequant still folds `iqmatrix` (`optimize_txb_qm` now takes `Option` for the dist qm).
+  tune=IQ / tune=SSIMULACRA2 (QM_PSNR dist, 444-chroma level formula, chroma deltaq,
+  sharpness=7) remain out of envelope. See STATUS.md 2026-07-16.
 - **#7 CDEF-strength RD search** — off by default in allintra; only for explicit `--enable-cdef`.
   Building blocks exist as shims (`cdef_find_dir`, `cdef_filter_8/16`, `shim_encode_cdef`).
 - **Loop-restoration (Wiener/SGR) search** — off by default in allintra; only for explicit

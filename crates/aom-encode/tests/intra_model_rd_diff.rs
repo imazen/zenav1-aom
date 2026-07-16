@@ -138,6 +138,7 @@ fn intra_model_rd_matches_c_chain() {
                 tx_mode_is_select: true,
                 above_ctx: &above_ctx,
                 left_ctx: &left_ctx,
+                qm_levels: None,
             };
 
             let mut recon_rust = recon0.clone();

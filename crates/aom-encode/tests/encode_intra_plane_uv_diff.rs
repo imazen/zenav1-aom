@@ -302,6 +302,7 @@ fn encode_intra_block_plane_uv_matches_c_walk() {
                 tx_type_costs: &tx_type_costs,
                 above_ctx: [&above_u, &above_v],
                 left_ctx: [&left_u, &left_v],
+                qm_levels: None,
             };
             let winner = UvWinner {
                 uv_mode,

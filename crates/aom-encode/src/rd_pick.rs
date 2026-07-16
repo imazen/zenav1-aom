@@ -339,6 +339,7 @@ pub fn rd_pick_intra_mode_sb(
                         dry_run_output_enabled: false,
                         above_ctx: y_env.above_ctx,
                         left_ctx: y_env.left_ctx,
+                        qm_level: y_env.qm_levels.map(|l| l[0]),
                     };
                     reencode = Some(encode_intra_block_plane_y(
                         &enc_env,

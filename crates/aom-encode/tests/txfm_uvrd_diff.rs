@@ -287,6 +287,7 @@ fn txfm_uvrd_matches_c_walk() {
                 tx_type_costs: &t.tx_type_costs,
                 above_ctx: [&sc.above_u, &sc.above_v],
                 left_ctx: [&sc.left_u, &sc.left_v],
+                qm_levels: None,
             };
             let mut recon_u = sc.recon_u0.clone();
             let mut recon_v = sc.recon_v0.clone();
@@ -531,6 +532,7 @@ fn txfm_rd_in_plane_uv_cfl_matches_c_walk() {
                 tx_type_costs: &t.tx_type_costs,
                 above_ctx: [&sc.above_u, &sc.above_v],
                 left_ctx: [&sc.left_u, &sc.left_v],
+                qm_levels: None,
             };
             let cenv = CUvEnv {
                 partition: 0,

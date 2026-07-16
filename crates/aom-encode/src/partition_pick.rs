@@ -434,6 +434,11 @@ pub struct PickFrameCfg<'a> {
     /// the leaf RD comparison. Omitting it under-costs DC_PRED and can flip a
     /// near-tie against the directional modes the real encoder picks.
     pub allow_screen_content_tools: bool,
+    /// Frame QM levels (`qmatrix_level_{y,u,v}` from `av1_set_quantizer`),
+    /// `None` = QM off (`--enable-qm` default). Threaded into every leaf's
+    /// luma + chroma RD search so QM shapes the mode/tx/partition winners
+    /// exactly as C (av1_setup_qmatrix runs inside the search's xform_quant).
+    pub qm_levels: Option<[usize; 3]>,
 }
 
 /// One leaf evaluation's differential-visibility record.
@@ -631,6 +636,7 @@ fn leaf_pick_sb_modes(
         tx_mode_is_select: !env.lossless,
         above_ctx: &above_y,
         left_ctx: &left_y,
+        qm_levels: cfg.qm_levels,
     };
     // KB-8 (chunk 2d-iv): the speed>=4 all-intra winner-mode two-pass bundle
     // (av1_rd_pick_intra_sby_mode's MODE_EVAL loop → top-3 store_winner_mode_
@@ -810,6 +816,7 @@ fn leaf_pick_sb_modes(
         tx_type_costs: env.tx_type_costs,
         above_ctx: [&above_u, &above_v],
         left_ctx: [&left_u, &left_v],
+        qm_levels: cfg.qm_levels,
     };
 
     let re = ReencodeParams {

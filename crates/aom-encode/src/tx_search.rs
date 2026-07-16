@@ -848,6 +848,12 @@ pub struct TxTypeSearchInputs<'a> {
     /// prior interior-only path.
     pub visible_cols: usize,
     pub visible_rows: usize,
+    /// Frame QM level for THIS plane (`qmatrix_level_{y,u,v}`), `None` = QM
+    /// off. With `Some`, every `xform_quant`/`xform_quant_optimize` in the
+    /// search resolves the per-(tx_size, tx_type) matrices internally
+    /// (`av1_setup_qmatrix`) — so QM shapes the tx-type/tx-size RD exactly as
+    /// C, not just the final coefficients.
+    pub qm_level: Option<usize>,
 }
 
 /// One evaluated tx type's outcome (the winner's is returned).
@@ -996,7 +1002,10 @@ pub fn search_tx_type_intra(
     } else {
         QuantKind::Fp
     };
-    let qp = QuantParams::from_plane_rows(inp.rows, kind, inp.bd, inp.lossless);
+    let mut qp = QuantParams::from_plane_rows(inp.rows, kind, inp.bd, inp.lossless);
+    if let Some(level) = inp.qm_level {
+        qp = qp.with_qm(level, inp.plane);
+    }
     let trellis_rdmult = trellis_rdmult_intra(
         inp.rdmult,
         pol.sharpness,
@@ -1391,6 +1400,9 @@ pub struct TxfmYrdEnv<'a> {
     /// copies these into the walk's working arrays).
     pub above_ctx: &'a [i8],
     pub left_ctx: &'a [i8],
+    /// Frame QM levels (`qmatrix_level_{y,u,v}`), `None` = QM off. The luma
+    /// walk reads `[0]`; the CfL winner re-encode inherits it.
+    pub qm_levels: Option<[usize; 3]>,
 }
 
 /// One txb's winner within a walk (the `tx_type_map` / eob state the depth
@@ -1576,6 +1588,7 @@ pub fn txfm_rd_in_plane_intra(
                 tx_type_costs: env.tx_type_costs,
                 visible_cols: vis_cols,
                 visible_rows: vis_rows,
+                qm_level: env.qm_levels.map(|l| l[0]),
             };
             // `block_rd_txfm` (tx_search.c:3104) computes
             // `args->best_rd - args->current_rd` as a RAW int64_t subtraction

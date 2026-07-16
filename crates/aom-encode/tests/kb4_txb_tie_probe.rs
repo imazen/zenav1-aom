@@ -119,6 +119,7 @@ fn kb4_txb_tie_probe_bd10_cq12() {
             // Interior TX_4X4 txb: the visible area is the full 4x4.
             visible_cols: 4,
             visible_rows: 4,
+            qm_level: None,
         };
         let win = search_tx_type_intra(&inp, &pol, i64::MAX).expect("winner");
         eprintln!(

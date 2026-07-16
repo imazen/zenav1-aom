@@ -297,6 +297,9 @@ pub struct SbEncodeEnv<'a> {
     /// the encode arm (chroma codes no tx-type bits); zeroed tables are
     /// fine.
     pub tx_type_costs: &'a aom_txb::TxTypeCosts,
+    /// Frame QM levels (`qmatrix_level_{y,u,v}`), `None` = QM off — threaded
+    /// into every leaf re-encode (search context-prop AND pack output).
+    pub qm_levels: Option<[usize; 3]>,
 }
 
 /// One leaf's re-encode outputs (differential visibility).
@@ -504,6 +507,7 @@ pub fn encode_b_intra_dry(
         dry_run_output_enabled: false,
         above_ctx: &above_y,
         left_ctx: &left_y,
+        qm_level: env.qm_levels.map(|l| l[0]),
     };
     let mut y_out = if output_enabled {
         // OUTPUT_ENABLED: the eob-0 -> DCT_DCT resets land in the frame-map
@@ -594,6 +598,7 @@ pub fn encode_b_intra_dry(
             tx_type_costs: env.tx_type_costs,
             above_ctx: [&above_u, &above_v],
             left_ctx: [&left_u, &left_v],
+            qm_levels: env.qm_levels,
         };
         let uv_winner = UvWinner {
             uv_mode: winner.uv_mode,

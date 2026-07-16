@@ -185,6 +185,7 @@ fn uniform_txfm_yrd_intra_matches_c_walk() {
                 tx_mode_is_select: true,
                 above_ctx: &above_ctx,
                 left_ctx: &left_ctx,
+                qm_levels: None,
             };
             let mut recon_rust = recon0.clone();
             let (rd_rust, stats_rust) =
@@ -556,6 +557,7 @@ fn pick_uniform_tx_size_type_yrd_matches_c_depth_loop() {
                 tx_mode_is_select: !lossless,
                 above_ctx: &above_ctx,
                 left_ctx: &left_ctx,
+                qm_levels: None,
             };
             let mut recon_rust = recon0.clone();
             let got = pick_uniform_tx_size_type_yrd_intra(

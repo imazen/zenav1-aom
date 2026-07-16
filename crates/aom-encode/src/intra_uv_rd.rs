@@ -310,6 +310,9 @@ pub struct UvRdEnv<'a> {
     // Per-plane neighbour entropy contexts (plane 4x4 units).
     pub above_ctx: [&'a [i8]; 2],
     pub left_ctx: [&'a [i8]; 2],
+    /// Frame QM levels (`qmatrix_level_{y,u,v}`), `None` = QM off. The UV RD
+    /// walk and the chroma re-encode read `[plane]` (1 = U, 2 = V).
+    pub qm_levels: Option<[usize; 3]>,
 }
 
 impl UvRdEnv<'_> {
@@ -622,6 +625,7 @@ pub fn txfm_rd_in_plane_uv(
                 tx_type_costs: env.tx_type_costs,
                 visible_cols: vis_c,
                 visible_rows: vis_r,
+                qm_level: env.qm_levels.map(|l| l[plane]),
             };
             // Same unguarded C subtraction as `txfm_rd_in_plane_intra`'s luma
             // walk (tx_search.c `block_rd_txfm` is plane-generic) -- replicate

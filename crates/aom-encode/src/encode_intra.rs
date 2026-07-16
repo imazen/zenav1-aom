@@ -226,6 +226,10 @@ pub struct EncodeIntraYEnv<'a> {
     /// `enable_optimize_b != NO_TRELLIS_OPT`, encodemb.c:817-819).
     pub above_ctx: &'a [i8],
     pub left_ctx: &'a [i8],
+    /// Frame QM level for LUMA (`qmatrix_level_y`), `None` = QM off. The
+    /// re-encode's `xform_quant_optimize`/`xform_quant` resolve the
+    /// per-(tx_size, tx_type) matrices internally (`av1_setup_qmatrix`).
+    pub qm_level: Option<usize>,
 }
 
 /// One re-encoded txb's outputs (the `p->qcoeff/dqcoeff/eobs/txb_entropy_ctx`
@@ -413,7 +417,10 @@ pub fn encode_intra_block_plane_y(
                 } else {
                     QuantKind::B
                 };
-                let qp = QuantParams::from_plane_rows(env.rows, kind, env.bd, env.lossless);
+                let mut qp = QuantParams::from_plane_rows(env.rows, kind, env.bd, env.lossless);
+                if let Some(level) = env.qm_level {
+                    qp = qp.with_qm(level, 0);
+                }
                 if use_trellis {
                     let bctx = BlockContext {
                         above: &ta[blk_col..],
@@ -693,7 +700,10 @@ pub fn encode_intra_block_plane_uv(
                     QuantKind::B
                 };
                 let rows = if plane == 1 { env.rows_u } else { env.rows_v };
-                let qp = QuantParams::from_plane_rows(rows, kind, env.bd, env.lossless);
+                let mut qp = QuantParams::from_plane_rows(rows, kind, env.bd, env.lossless);
+                if let Some(level) = env.qm_levels {
+                    qp = qp.with_qm(level[plane], plane);
+                }
                 if use_trellis {
                     let bctx = BlockContext {
                         above: &ta[blk_col..],

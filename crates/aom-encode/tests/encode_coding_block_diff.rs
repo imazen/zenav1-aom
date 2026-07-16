@@ -223,6 +223,7 @@ fn encode_coding_block_plane_identical() {
                     iqm,
                     bd,
                     lossless: false,
+                    qm_ctx: None,
                 };
                 let opt = OptimizeInputs {
                     cost: &cost,

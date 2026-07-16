@@ -508,6 +508,7 @@ fn run_one(name: &str, content: impl Fn(usize, usize) -> u8) {
         coeff_costs_y: &real.coeff_costs_y,
         coeff_costs_uv: &real.coeff_costs_uv,
         tx_type_costs: &real.tx_type_costs_y,
+        qm_levels: None,
     };
     let pick_cfg = PickFrameCfg {
         mode_costs: &real.mode_costs,
@@ -538,6 +539,7 @@ fn run_one(name: &str, content: impl Fn(usize, usize) -> u8) {
         enable_1to4_partitions: true,
         enable_ab_partitions: true,
         allow_screen_content_tools: p.allow_screen_content_tools,
+        qm_levels: None,
     };
     eprintln!(
         "{name}: allow_screen_content_tools={}",

@@ -82,6 +82,21 @@ pub enum QuantKind {
     Dc,
 }
 
+/// Frame-level quantization-matrix context for one plane — `av1_setup_qmatrix`'s
+/// inputs (`av1_quantize.c:370`). When present on [`QuantParams`], the effective
+/// per-transform `qmatrix`/`iqmatrix` slices are selected INSIDE
+/// [`xform_quant`] / [`xform_quant_optimize`] per `(tx_size, tx_type)` —
+/// mirroring C, where the selection happens per transform block, not per plane
+/// (1-D / identity transforms and the flat top level 15 select no matrix).
+#[derive(Clone, Copy, Debug)]
+pub struct QmCtx {
+    /// The frame `qmatrix_level_{y,u,v}` for this plane (`av1_set_quantizer`);
+    /// `NUM_QM_LEVELS - 1` (15) is the flat level (selectors return `None`).
+    pub qm_level: usize,
+    /// Plane index (0=Y, 1=U, 2=V) — the selectors group `plane >= 1` as chroma.
+    pub plane: usize,
+}
+
 /// The `[dc, ac]` quantizer parameter tables (the `*_QTX` fields libaom's
 /// `MACROBLOCK_PLANE` feeds the quantizer). `zbin`/`quant_shift` are only read by
 /// [`QuantKind::B`]; `round` is the fp round for FP and the b round for B.
@@ -94,8 +109,15 @@ pub struct QuantParams<'a> {
     pub dequant: &'a [i16; 2],
     /// Per-position quant matrix (`qm`) and its inverse (`iqm`), both indexed by
     /// raster position (length = block area). `None` = flat (no quant matrix).
+    /// These are the PRE-SELECTED slices (kept for the kernel diff tests, which
+    /// drive one explicit matrix); production QM encoding sets [`Self::qm_ctx`]
+    /// instead and lets the funnel select per transform.
     pub qm: Option<&'a [u8]>,
     pub iqm: Option<&'a [u8]>,
+    /// Frame QM context: `Some` = QM-on (select per `(tx_size, tx_type)` inside
+    /// the funnel), `None` = use the explicit `qm`/`iqm` slices (flat when both
+    /// `None` — the default, byte-identical to the pre-QM path).
+    pub qm_ctx: Option<QmCtx>,
     /// Bit depth (8/10/12). `> 8` selects the highbd (64-bit) quantizer variants;
     /// the forward transform, trellis, entropy context, and writer are all
     /// bd-independent (verified: forward output is identical for bd 8/10/12).
@@ -146,11 +168,41 @@ impl<'a> QuantParams<'a> {
             dequant: pair(rows.dequant),
             qm: None,
             iqm: None,
+            qm_ctx: None,
             bd,
             lossless,
         }
     }
+
+    /// Attach the frame QM context (`av1_setup_qmatrix` inputs) for this plane —
+    /// the QM-on path. `qm_level == NUM_QM_LEVELS - 1` (15, the flat level) and
+    /// 1-D / identity transforms still resolve to the flat quantizer per
+    /// transform, exactly as C.
+    pub fn with_qm(mut self, qm_level: usize, plane: usize) -> Self {
+        self.qm_ctx = Some(QmCtx { qm_level, plane });
+        self
+    }
 }
+
+/// Resolve the effective per-transform QM slices — `av1_setup_qmatrix`
+/// (`av1_quantize.c:370`): with a frame QM context, select forward+inverse for
+/// `(level, plane, tx_size, tx_type)` (both `None` for 1-D/identity transforms
+/// and the flat level); without one, pass through the explicit pre-selected
+/// slices (the kernel-diff path / flat default).
+fn resolve_qm<'a>(
+    qp: &QuantParams<'a>,
+    tx_size: usize,
+    tx_type: usize,
+) -> (Option<&'a [u8]>, Option<&'a [u8]>) {
+    match qp.qm_ctx {
+        Some(cx) => (
+            aom_quant::qmatrix(cx.qm_level, cx.plane, tx_size, tx_type),
+            aom_quant::iqmatrix(cx.qm_level, cx.plane, tx_size, tx_type),
+        ),
+        None => (qp.qm, qp.iqm),
+    }
+}
+
 
 /// Output of [`xform_quant`]: the quantized block plus the propagated context.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,7 +252,10 @@ pub fn xform_quant(
     let mut dqcoeff = vec![0i32; n_coeffs];
     let src = &coeff[..n_coeffs];
     let hbd = qp.bd > 8;
-    let eob = match (kind, qp.qm, qp.iqm, hbd) {
+    // av1_setup_qmatrix: per-(tx_size, tx_type) QM selection (QM-off / explicit
+    // slices pass through unchanged — byte-identical to the pre-QM path).
+    let (qm_sel, iqm_sel) = resolve_qm(qp, tx_size, tx_type);
+    let eob = match (kind, qm_sel, iqm_sel, hbd) {
         (QuantKind::Fp, Some(qm), Some(iqm), false) => av1_quantize_fp_qm(
             qp.round,
             qp.quant,
@@ -298,24 +353,24 @@ pub fn xform_quant(
             &mut dqcoeff,
         ),
         // DC-only: the DC scalars (quant[0]/dequant[0]); qm/iqm handled internally.
-        (QuantKind::Dc, _, _, false) => av1_quantize_dc(
+        (QuantKind::Dc, qm, iqm, false) => av1_quantize_dc(
             qp.round,
             qp.quant[0],
             qp.dequant[0],
             log_scale,
-            qp.qm,
-            qp.iqm,
+            qm,
+            iqm,
             src,
             &mut qcoeff,
             &mut dqcoeff,
         ),
-        (QuantKind::Dc, _, _, true) => av1_highbd_quantize_dc(
+        (QuantKind::Dc, qm, iqm, true) => av1_highbd_quantize_dc(
             qp.round,
             qp.quant[0],
             qp.dequant[0],
             log_scale,
-            qp.qm,
-            qp.iqm,
+            qm,
+            iqm,
             src,
             &mut qcoeff,
             &mut dqcoeff,
@@ -422,8 +477,21 @@ pub fn xform_quant_optimize(
     let dequant = [qp.dequant[0], qp.dequant[1]];
     let sc = scan(tx_size, tx_type);
     let tcoeff = &coeff[..qcoeff.len()];
-    let res = match (qp.qm, qp.iqm) {
-        (Some(qm), Some(iqm)) => optimize_txb_qm(
+    // Same av1_setup_qmatrix selection the quantize above used — the trellis
+    // (optimize_txb_qm's get_dqv) must fold the SAME per-position inverse.
+    //
+    // The trellis DISTORTION qm, however, mirrors C's `av1_optimize_txb`
+    // (txb_rdopt.c): the forward matrix is selected there ONLY under
+    // `dist_metric == AOM_DIST_METRIC_QM_PSNR` (tune=IQ / SSIMULACRA2 — out
+    // of this envelope). On the production QM path (`qm_ctx`, default PSNR
+    // metric) the trellis distortion is UNWEIGHTED (`qmatrix = NULL` in C),
+    // while the dequant still folds the inverse matrix. The explicit-slice
+    // path (`qp.qm`/`qp.iqm`, kernel-diff tests) keeps weighting the
+    // distortion — it models the QM_PSNR arm the C shim oracle validates.
+    let (qm_sel, iqm_sel) = resolve_qm(qp, tx_size, tx_type);
+    let trellis_dist_qm = if qp.qm_ctx.is_some() { None } else { qm_sel };
+    let res = match (trellis_dist_qm, iqm_sel) {
+        (qm, Some(iqm)) => optimize_txb_qm(
             tx_size,
             tx_type,
             &mut qcoeff,

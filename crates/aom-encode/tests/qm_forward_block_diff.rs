@@ -156,6 +156,7 @@ fn forward_qm_block_realistic_matches_c() {
                         iqm,
                         bd: 8,
                         lossless: false,
+                        qm_ctx: None,
                     };
                     let got = xform_quant(&residual, tx_size, tx_type, QuantKind::Fp, &qp, false);
 

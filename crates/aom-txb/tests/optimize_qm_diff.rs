@@ -141,7 +141,8 @@ fn optimize_txb_qm_round_trip_identical() {
                 };
                 let r = optimize_txb_qm(
                     tx_size, tx_type, &mut qc_r, &mut dqc_r, &tcoeff, eob, dequant, rdmult,
-                    dc_sign_ctx, txb_skip_ctx, sharpness, sc, &t, &iqm, &qm,
+                    dc_sign_ctx, txb_skip_ctx, sharpness, sc, &t, &iqm,
+                    Some(&qm),
                 );
 
                 let ctx = format!("ts={tx_size} tt={tx_type} eob={eob} sharp={sharpness}");

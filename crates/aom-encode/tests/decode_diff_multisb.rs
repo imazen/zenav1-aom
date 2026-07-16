@@ -364,6 +364,7 @@ fn localize(w: usize, h: usize, cq_level: i32, content: impl Fn(usize, usize) ->
         coeff_costs_y: &real.coeff_costs_y,
         coeff_costs_uv: &real.coeff_costs_uv,
         tx_type_costs: &real.tx_type_costs_y,
+        qm_levels: None,
     };
     let pick_cfg = PickFrameCfg {
         mode_costs: &real.mode_costs,
@@ -394,6 +395,7 @@ fn localize(w: usize, h: usize, cq_level: i32, content: impl Fn(usize, usize) ->
         enable_1to4_partitions: true,
         enable_ab_partitions: true,
         allow_screen_content_tools: p.allow_screen_content_tools,
+        qm_levels: None,
     };
     let pack_cfg = aom_encode::pack::PackCfg {
         enable_filter_intra: s.enable_filter_intra,

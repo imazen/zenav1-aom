@@ -48,7 +48,7 @@ use aom_entropy::header::{
 use aom_entropy::obu::read_obu_header;
 use aom_entropy::partition::KfFrameContext;
 use aom_entropy::rb::ReadBitBuffer;
-use aom_quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
+use aom_quant::{Dequants, Quants, aom_get_qmlevel_allintra, av1_build_quantizer, set_q_index};
 use aom_sys_ref as c;
 
 const OBU_SEQUENCE_HEADER: u32 = 1;
@@ -120,6 +120,7 @@ struct CaseResult {
     matched: bool,
 }
 
+
 /// Encode one case at bit depth `bd` with `content(row,col) -> u16` luma and
 /// `uv_content(row,col) -> u16` chroma (values in `[0, (1<<bd)-1]`; chroma ignored
 /// when `mono`), bootstrap the header from real aomenc, run this port's
@@ -142,6 +143,46 @@ fn run_case(
     content: impl Fn(usize, usize) -> u16,
     u_content: impl Fn(usize, usize) -> u16,
     v_content: impl Fn(usize, usize) -> u16,
+    tile_cols_log2: i32,
+    tile_rows_log2: i32,
+) -> CaseResult {
+    run_case_ext(
+        w,
+        h,
+        mono,
+        ss_x,
+        ss_y,
+        usage,
+        cq_level,
+        bd,
+        content,
+        u_content,
+        v_content,
+        tile_cols_log2,
+        tile_rows_log2,
+        None,
+    )
+}
+
+/// [`run_case`] + quant-matrix control: `qm = Some((qm_min, qm_max))` drives
+/// the REAL encoder with `--enable-qm=1` (`AV1E_SET_QM_MIN/MAX`) via
+/// [`aom_sys_ref::ref_encode_av1_kf_qm`] and the port with the same frame QM
+/// state (`qmatrix_level_{y,u,v}` derived per `av1_set_quantizer`'s allintra
+/// arm, cross-checked against the real header's signalled levels). Single-tile
+/// only (no QM arm on the multi-tile shim).
+#[allow(clippy::too_many_arguments)]
+fn run_case_ext(
+    w: usize,
+    h: usize,
+    mono: bool,
+    ss_x: usize,
+    ss_y: usize,
+    usage: u32,
+    cq_level: i32,
+    bd: u8,
+    content: impl Fn(usize, usize) -> u16,
+    u_content: impl Fn(usize, usize) -> u16,
+    v_content: impl Fn(usize, usize) -> u16,
     // Tile grid: (tile_columns_log2, tile_rows_log2). (0, 0) => a single tile
     // (the whole frame) via `ref_encode_av1_kf` — the original behaviour, byte
     // for byte. Anything non-zero drives the real MULTI-TILE encoder
@@ -150,6 +191,8 @@ fn run_case(
     // availability via env.tile_*), then the derived multi-tile OBU assembler.
     tile_cols_log2: i32,
     tile_rows_log2: i32,
+    // `Some((qm_min, qm_max))` = QM-on (`--enable-qm=1` + AV1E_SET_QM_MIN/MAX).
+    qm: Option<(i32, i32)>,
 ) -> CaseResult {
     c::ref_init();
     let maxv = (1u16 << bd) - 1;
@@ -175,7 +218,33 @@ fn run_case(
         }
     }
 
-    let bytes = if tile_cols_log2 == 0 && tile_rows_log2 == 0 {
+    let bytes = if let Some((qm_min, qm_max)) = qm {
+        assert_eq!(
+            (tile_cols_log2, tile_rows_log2),
+            (0, 0),
+            "QM arm is single-tile only (no QM multi-tile shim)"
+        );
+        c::ref_encode_av1_kf_qm(
+            &y,
+            &u,
+            &v,
+            w,
+            h,
+            i32::from(bd),
+            mono,
+            ss_x as i32,
+            ss_y as i32,
+            cq_level,
+            0,
+            false,
+            false,
+            usage,
+            0,
+            false,
+            qm_min,
+            qm_max,
+        )
+    } else if tile_cols_log2 == 0 && tile_rows_log2 == 0 {
         c::ref_encode_av1_kf(
             &y,
             &u,
@@ -371,6 +440,41 @@ fn run_case(
 
     // ---- port pipeline, header bootstrapped, coeffs/modes/partitions derived --
     let qindex = p.quant.base_qindex;
+    // Frame QM levels (`av1_set_quantizer`, av1_quantize.c: the `is_allintra`
+    // arm selects `aom_get_qmlevel_allintra` for BOTH planes; the 444-chroma
+    // variant is tune=IQ/SSIMULACRA2-only and out of this envelope). Levels are
+    // derived from the requested (qm_min, qm_max) and CROSS-CHECKED against the
+    // levels the real encoder signalled in the frame header — a wiring witness
+    // that fails loudly before any byte comparison can.
+    let qm_levels = if let Some((qm_min, qm_max)) = qm {
+        assert!(
+            p.quant.using_qmatrix,
+            "harness asked for QM but the real stream did not signal using_qmatrix"
+        );
+        let ly = aom_get_qmlevel_allintra(qindex, qm_min, qm_max);
+        let lu = aom_get_qmlevel_allintra(qindex + p.quant.u_ac_delta_q, qm_min, qm_max);
+        let lv = if cc.separate_uv_delta_q {
+            aom_get_qmlevel_allintra(qindex + p.quant.v_ac_delta_q, qm_min, qm_max)
+        } else {
+            lu
+        };
+        assert_eq!(
+            [ly, lu, lv],
+            [
+                p.quant.qmatrix_level_y,
+                p.quant.qmatrix_level_u,
+                p.quant.qmatrix_level_v
+            ],
+            "derived qmatrix_level_{{y,u,v}} must match the real header's signalled levels"
+        );
+        Some([ly as usize, lu as usize, lv as usize])
+    } else {
+        assert!(
+            !p.quant.using_qmatrix,
+            "real stream signals using_qmatrix but the harness did not request QM"
+        );
+        None
+    };
     let mut quants = Quants::zeroed();
     let mut deq = Dequants::zeroed();
     av1_build_quantizer(
@@ -483,6 +587,7 @@ fn run_case(
         coeff_costs_y: &real.coeff_costs_y,
         coeff_costs_uv: &real.coeff_costs_uv,
         tx_type_costs: &real.tx_type_costs_y,
+        qm_levels,
     };
     let pick_cfg = PickFrameCfg {
         mode_costs: &real.mode_costs,
@@ -517,6 +622,7 @@ fn run_case(
         enable_1to4_partitions: true,
         enable_ab_partitions: true,
         allow_screen_content_tools: p.allow_screen_content_tools,
+        qm_levels,
     };
     let pack_cfg = aom_encode::pack::PackCfg {
         enable_filter_intra: s.enable_filter_intra,
@@ -1170,4 +1276,94 @@ fn encoder_gate_lossless_cq0_e2e_kb5_repro() {
         "KB-5 (4:2:0 residual)",
         &[("lossless-420 64x64 cq0".to_string(), c420.matched)],
     );
+}
+
+/// **#23 QM-on forward quant — byte-match gate.** ALLINTRA KEY with quantization
+/// matrices enabled (`--enable-qm=1` + explicit `--qm-min/--qm-max`), the port's
+/// own full search+pack vs real aomenc, byte-for-byte. Covers BOTH the base
+/// default QM range (5,9) and the allintra-override range (4,10) — the latter
+/// derives per-qindex levels across 4..=10, exercising multiple `wt_matrix_ref`
+/// levels end-to-end (level 8 was the near-tie that root-caused the trellis
+/// dist-qm gating; see `optimize_txb_qm`'s nullable `qmatrix` doc). QM shapes
+/// the RD search itself (matrix selection runs inside every search-side
+/// `xform_quant`), so this validates selection + kernels + trellis + RD wiring
+/// together. `run_case_ext` additionally cross-checks the derived
+/// `qmatrix_level_{y,u,v}` against the levels the real encoder signalled in the
+/// frame header. tune=IQ / tune=SSIMULACRA2 (QM_PSNR trellis dist weighting,
+/// chroma deltaq, sharpness=7) are OUT of this envelope.
+#[test]
+fn encoder_gate_qm_on_e2e() {
+    let luma8 = tex_luma(0xff);
+    let chroma8 = tex_chroma(0xff);
+    let mut results: Vec<(String, bool)> = Vec::new();
+    for &(qm_min, qm_max) in &[(5i32, 9i32), (4, 10)] {
+        for &(mono, ss_x, ss_y, fmt) in &[(true, 1usize, 1usize, "mono"), (false, 1, 1, "420")] {
+            for &sz in &[64usize, 128] {
+                for &cq in &[12i32, 32, 48, 63] {
+                    let res = run_case_ext(
+                        sz, sz, mono, ss_x, ss_y, 2, cq, 8, &luma8, &chroma8, &chroma8, 0, 0,
+                        Some((qm_min, qm_max)),
+                    );
+                    results.push((
+                        format!("qm({qm_min},{qm_max}) bd8-{fmt} {sz}x{sz} cq{cq:>2}"),
+                        res.matched,
+                    ));
+                }
+            }
+        }
+    }
+    // bd10 arm (staged-design part C: bd8 AND bd10): allintra range, both
+    // chroma arms, the qindex extremes plus the mid near-tie region.
+    let luma10 = tex_luma(0x3ff);
+    let chroma10 = tex_chroma(0x3ff);
+    for &(mono, ss_x, ss_y, fmt) in &[(true, 1usize, 1usize, "mono"), (false, 1, 1, "420")] {
+        for &sz in &[64usize, 128] {
+            for &cq in &[32i32, 63] {
+                let res = run_case_ext(
+                    sz, sz, mono, ss_x, ss_y, 2, cq, 10, &luma10, &chroma10, &chroma10, 0, 0,
+                    Some((4, 10)),
+                );
+                results.push((
+                    format!("qm(4,10) bd10-{fmt} {sz}x{sz} cq{cq:>2}"),
+                    res.matched,
+                ));
+            }
+        }
+    }
+    report_and_assert("#23 QM-on e2e", &results);
+}
+
+/// Anti-vacuous witness for [`encoder_gate_qm_on_e2e`]: on this gate's exact
+/// content/config, the REAL encoder's QM-on bitstream differs from its QM-off
+/// bitstream. Because the QM-off gates prove port == C(QM-off) and the QM gate
+/// proves port == C(QM-on), C(on) != C(off) means the port's QM path provably
+/// changes the port's own bytes too — the gate cannot pass with QM silently
+/// doing nothing. (The C-reference-only version of this argument for generic
+/// content lives in `qm_encode_witness.rs`.)
+#[test]
+fn encoder_gate_qm_on_anti_vacuous_witness() {
+    c::ref_init();
+    let luma = tex_luma(0xff);
+    let (w, h) = (64usize, 64);
+    let maxv = 0xffu16;
+    let y: Vec<u16> = (0..w * h)
+        .map(|i| luma(i / w, i % w).min(maxv))
+        .collect();
+    let empty: Vec<u16> = Vec::new();
+    for &(qm_min, qm_max) in &[(5i32, 9i32), (4, 10)] {
+        for &cq in &[12i32, 32, 48, 63] {
+            let off = c::ref_encode_av1_kf(
+                &y, &empty, &empty, w, h, 8, true, 1, 1, cq, 0, false, false, 2, 0, false,
+            );
+            let on = c::ref_encode_av1_kf_qm(
+                &y, &empty, &empty, w, h, 8, true, 1, 1, cq, 0, false, false, 2, 0, false, qm_min,
+                qm_max,
+            );
+            assert!(!off.is_empty() && !on.is_empty());
+            assert_ne!(
+                off, on,
+                "QM-on must change the C bitstream (qm=({qm_min},{qm_max}), cq={cq})"
+            );
+        }
+    }
 }

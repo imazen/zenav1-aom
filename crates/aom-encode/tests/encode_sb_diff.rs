@@ -412,6 +412,7 @@ fn encode_sb_dry_run_matches_c_walk() {
             coeff_costs_y: &coeff_costs_y,
             coeff_costs_uv: &coeff_costs_uv,
             tx_type_costs: &ttc,
+            qm_levels: None,
         };
 
         // Pre-walk snapshot (both sides start identical).
