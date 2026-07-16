@@ -588,6 +588,15 @@ pub struct TxTypeSearchInputs<'a> {
     pub rdmult: i32,
     pub coeff_costs: &'a CoeffCostTables<'a>,
     pub tx_type_costs: &'a TxTypeCosts,
+    /// Frame-edge visible txb extent (`get_txb_visible_dimensions`,
+    /// rdopt_utils.h): the distortion (`av1_pixel_diff_dist` residual SSE +
+    /// `dist_block_px_domain` recon SSE) is measured over ONLY these
+    /// top-left visible pixels; the off-frame overhang is excluded, matching
+    /// C's `pixel_dist` / `pixel_diff_dist`. For interior txbs these equal
+    /// the full `TX_W x TX_H` and the computation is byte-identical to the
+    /// prior interior-only path.
+    pub visible_cols: usize,
+    pub visible_rows: usize,
 }
 
 /// One evaluated tx type's outcome (the winner's is returned).
@@ -628,15 +637,19 @@ pub fn search_tx_type_intra(
     ref_best_rd: i64,
 ) -> Option<TxTypeSearchResult> {
     let tx_size = inp.tx_size;
-    let (w, h) = (TXS_W[tx_size], TXS_H[tx_size]);
+    // Only the txb WIDTH is needed here now (residual stride + block_sse math);
+    // the distortion measures `inp.visible_{cols,rows}`, not the full tx height.
+    let w = TXS_W[tx_size];
     let hbd = inp.bd > 8;
 
     // qstep from the AC dequant lane (dequant_QTX[1] >> dequant_shift).
     let dequant_shift = if hbd { inp.bd as i32 - 5 } else { 3 };
     let qstep = (i32::from(inp.rows.dequant[1]) >> dequant_shift) as u32;
 
-    // Residual SSE + MSE (interior => visible == full).
-    let (mut block_sse_u, mut block_mse_q8) = av1_pixel_diff_dist(inp.residual, w, 0, 0, w, h);
+    // Residual SSE + MSE over the VISIBLE txb area (== full for interior txbs;
+    // clipped to the frame edge for partial-SB txbs, matching C `pixel_diff_dist`).
+    let (mut block_sse_u, mut block_mse_q8) =
+        av1_pixel_diff_dist(inp.residual, w, 0, 0, inp.visible_cols, inp.visible_rows);
     let mut block_sse = block_sse_u as i64;
     if hbd {
         let s = 2 * (inp.bd as i32 - 8);
@@ -835,7 +848,7 @@ pub fn search_tx_type_intra(
             }
             if !is_tx64 || !is_high_energy || sse_diff * 2 < s_tx {
                 let tx_domain_dist = d;
-                d = dist_block_px_domain_interior(
+                d = dist_block_px_domain(
                     &res.dqcoeff,
                     tx_size,
                     tx_type,
@@ -844,6 +857,8 @@ pub fn search_tx_type_intra(
                     inp.src_off,
                     inp.src_stride,
                     inp.bd,
+                    inp.visible_cols,
+                    inp.visible_rows,
                 );
                 if is_high_energy && d < tx_domain_dist {
                     d = tx_domain_dist;
@@ -897,7 +912,7 @@ pub fn search_tx_type_intra(
         // pixel-domain reconstruct+SSE the C `dist_block_px_domain` computes
         // (already used as the pixel-domain component of the speed-0 hybrid).
         if calc_pixel_domain_distortion_final && b.best_eob != 0 {
-            b.dist = dist_block_px_domain_interior(
+            b.dist = dist_block_px_domain(
                 &b.dqcoeff,
                 tx_size,
                 b.best_tx_type,
@@ -906,6 +921,8 @@ pub fn search_tx_type_intra(
                 inp.src_off,
                 inp.src_stride,
                 inp.bd,
+                inp.visible_cols,
+                inp.visible_rows,
             );
             b.sse = block_sse;
             b.rd = rdcost(inp.rdmult, b.rate, b.dist);
@@ -914,11 +931,16 @@ pub fn search_tx_type_intra(
     })
 }
 
-/// `dist_block_px_domain` (tx_search.c) for an INTERIOR txb: reconstruct
-/// `pred + inv_txfm(dqcoeff)` and return `16 *` the variance-kernel SSE
-/// (u32; bd-normalized like `aom_highbd_{10,12}_variance`) vs the source.
+/// `dist_block_px_domain` (tx_search.c): reconstruct `pred + inv_txfm(dqcoeff)`
+/// over the FULL txb, then return `16 *` the SSE vs the source measured over the
+/// `visible_cols x visible_rows` top-left sub-rect only (C `pixel_dist` ->
+/// `pixel_dist_visible_only`). For an interior txb `visible == (TX_W, TX_H)` and
+/// this is exactly the `aom_highbd_<bd>_variance` sse the interior path returned;
+/// for a partial-SB edge txb it matches `aom_highbd_sse_odd_size` +
+/// `ROUND_POWER_OF_TWO(sse, (bd-8)*2)` (both go through `highbd_variance64`, so
+/// the per-term u32 truncation + bd normalisation are identical either way).
 #[allow(clippy::too_many_arguments)]
-pub fn dist_block_px_domain_interior(
+pub fn dist_block_px_domain(
     dqcoeff: &[i32],
     tx_size: usize,
     tx_type: usize,
@@ -927,6 +949,8 @@ pub fn dist_block_px_domain_interior(
     src_off: usize,
     src_stride: usize,
     bd: u8,
+    visible_cols: usize,
+    visible_rows: usize,
 ) -> i64 {
     let (w, h) = (TXS_W[tx_size], TXS_H[tx_size]);
     let mut recon = pred[..w * h].to_vec();
@@ -938,7 +962,15 @@ pub fn dist_block_px_domain_interior(
         tx_size,
         i32::from(bd),
     );
-    let (_var, sse) = aom_dist::highbd_variance(&src[src_off..], src_stride, &recon, w, w, h, bd);
+    let (_var, sse) = aom_dist::highbd_variance(
+        &src[src_off..],
+        src_stride,
+        &recon,
+        w,
+        visible_cols,
+        visible_rows,
+        bd,
+    );
     16 * i64::from(sse)
 }
 
@@ -1203,6 +1235,25 @@ pub fn txfm_rd_in_plane_intra(
             // caller's tx-size search tries; the lookup must happen here,
             // per candidate, not once at env construction).
             let coeff_tables = env.coeff_costs.tables(tx_size);
+            // Frame-edge visible extent of THIS txb (get_txb_visible_dimensions):
+            // the block's mb_to_*_edge (set_mi_row_col, av1_common_int.h) clipped
+            // per-txb. Luma plane (ss = 0); interior => full (txw, txh).
+            let bw_mi = MI_SIZE_WIDE_B[bsize] as i32;
+            let bh_mi = MI_SIZE_HIGH_B[bsize] as i32;
+            let mb_to_right_edge = (env.mi_cols - bw_mi - env.mi_col) * 32; // MI_SIZE*8
+            let mb_to_bottom_edge = (env.mi_rows - bh_mi - env.mi_row) * 32;
+            let (vis_cols, vis_rows) = get_txb_visible_dimensions(
+                bw_mi as usize * 4,
+                bh_mi as usize * 4,
+                txw,
+                txh,
+                blk_row,
+                blk_col,
+                mb_to_right_edge,
+                mb_to_bottom_edge,
+                0,
+                0,
+            );
             let inp = TxTypeSearchInputs {
                 residual: &residual,
                 src: env.src,
@@ -1223,6 +1274,8 @@ pub fn txfm_rd_in_plane_intra(
                 rdmult: env.rdmult,
                 coeff_costs: &coeff_tables,
                 tx_type_costs: env.tx_type_costs,
+                visible_cols: vis_cols,
+                visible_rows: vis_rows,
             };
             // `block_rd_txfm` (tx_search.c:3104) computes
             // `args->best_rd - args->current_rd` as a RAW int64_t subtraction

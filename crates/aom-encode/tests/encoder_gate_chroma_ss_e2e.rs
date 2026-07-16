@@ -370,18 +370,47 @@ fn run_case(
         },
     );
 
-    let stride = 320.max(w + 4);
-    let mut src_y_strided = vec![0u16; stride * (h + 4)];
+    // Frame-edge (partial-SB) support: the SB walk covers CEIL(mi/16) SBs, so
+    // a non-64-aligned frame (e.g. 196 -> mi_cols=50, 4 SBs) has partial right/
+    // bottom edge SBs. C reads the FULL block/tx from the border-EXTENDED source
+    // (av1_get_perpixel_variance / av1_subtract_txb read the whole extent incl.
+    // the off-frame overhang, which aom_extend_frame_borders replicate-fills from
+    // the crop edge). So size the planes to the SB-aligned extent and replicate the
+    // crop edge into the overhang, matching what aomenc encodes. SB-aligned frames
+    // keep the usual 320 / h+4 envelope (sb_px_* == w/h rounded to the same SBs),
+    // so interior cells stay byte-identical; the overhang region is never read there.
+    let n_sb_x = ((mi_cols + SB_MI - 1) / SB_MI).max(1);
+    let n_sb_y = ((mi_rows + SB_MI - 1) / SB_MI).max(1);
+    let sb_px_w = n_sb_x as usize * 64;
+    let sb_px_h = n_sb_y as usize * 64;
+    let stride = 320.max(sb_px_w + 4);
+    let buf_h = (sb_px_h + 4).max(h + 4);
+    // Replicate col (pw-1) into cols pw..stride, then row (ph-1) into rows ph..buf_h.
+    let extend_plane = |dst: &mut [u16], pw: usize, ph: usize| {
+        for r in 0..ph {
+            let edge = dst[r * stride + pw - 1];
+            for c in pw..stride {
+                dst[r * stride + c] = edge;
+            }
+        }
+        for r in ph..buf_h {
+            dst.copy_within((ph - 1) * stride..ph * stride, r * stride);
+        }
+    };
+    let mut src_y_strided = vec![0u16; stride * buf_h];
     for r in 0..h {
         src_y_strided[r * stride..r * stride + w].copy_from_slice(&y[r * w..r * w + w]);
     }
-    let mut src_u_strided = vec![0u16; stride * (h + 4)];
-    let mut src_v_strided = vec![0u16; stride * (h + 4)];
+    extend_plane(&mut src_y_strided, w, h);
+    let mut src_u_strided = vec![0u16; stride * buf_h];
+    let mut src_v_strided = vec![0u16; stride * buf_h];
     if !mono {
         for r in 0..ch {
             src_u_strided[r * stride..r * stride + cw].copy_from_slice(&u[r * cw..r * cw + cw]);
             src_v_strided[r * stride..r * stride + cw].copy_from_slice(&v[r * cw..r * cw + cw]);
         }
+        extend_plane(&mut src_u_strided, cw, ch);
+        extend_plane(&mut src_v_strided, cw, ch);
     }
 
     let speed = 0i32;
@@ -472,7 +501,8 @@ fn run_case(
     let (our_payload, our_len) = if tile_cols_log2 == 0 && tile_rows_log2 == 0 {
         // ---- SINGLE TILE (original path): port derives the loop-filter level ----
         let mut enc = OdEcEnc::new();
-        let n_sb = (mi_cols / SB_MI).max(1);
+        // CEIL to cover partial edge SBs (n_sb_x/n_sb_y computed above from the
+        // planes; == mi/16 exactly when the frame is 64-aligned).
         let trees = pack_tile(
             &mut enc,
             &env,
@@ -484,20 +514,20 @@ fn run_case(
             &mut recon_v,
             0,
             0,
-            n_sb,
-            n_sb,
+            n_sb_y,
+            n_sb_x,
             SB_MI,
             SB,
         );
         assert_eq!(
             trees.len(),
-            (n_sb * n_sb) as usize,
+            (n_sb_x * n_sb_y) as usize,
             "{ctx}: pack_tile must walk every SB"
         );
         let our_tile_bytes = enc.done().to_vec();
 
         // Port-derived loop-filter level (same as the bd10 / bd8 harness).
-        let mi_grid = build_lf_mi_grid(&trees, mi_rows, mi_cols, n_sb, SB_MI, SB);
+        let mi_grid = build_lf_mi_grid(&trees, mi_rows, mi_cols, n_sb_x, SB_MI, SB);
         let lf_frame = LfSearchFrame {
             recon_y: &recon_y,
             recon_u: &recon_u,

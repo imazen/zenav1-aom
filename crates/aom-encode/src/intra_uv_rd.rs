@@ -591,6 +591,10 @@ pub fn txfm_rd_in_plane_uv(
                 rdmult: env.rdmult,
                 coeff_costs: env.coeff_costs,
                 tx_type_costs: env.tx_type_costs,
+                // Chroma frame-edge visible clip is CHUNK 2 (KB-6); full tx dims
+                // here keeps interior chroma byte-identical for now.
+                visible_cols: txw,
+                visible_rows: txh,
             };
             // Same unguarded C subtraction as `txfm_rd_in_plane_intra`'s luma
             // walk (tx_search.c `block_rd_txfm` is plane-generic) -- replicate

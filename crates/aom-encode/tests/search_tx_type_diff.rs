@@ -222,6 +222,9 @@ fn search_tx_type_intra_matches_c_chain() {
                 rdmult,
                 coeff_costs: &coeff_costs,
                 tx_type_costs: &tx_type_costs,
+                // Interior differential: visible == full tx dims.
+                visible_cols: w,
+                visible_rows: h,
             };
             let got = search_tx_type_intra(&inp, &pol, ref_best_rd);
 

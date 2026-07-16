@@ -389,18 +389,41 @@ fn localize_real(
         },
     );
 
-    let stride = 320.max(w + 4);
-    let mut src_y_strided = vec![0u16; stride * (h + 4)];
+    // Partial-SB (frame-edge) source setup: size the planes to the SB-aligned
+    // extent (CEIL(mi/16) SBs) and replicate the crop edge into the off-frame
+    // overhang, matching aom_extend_frame_borders (C reads the FULL block/tx from
+    // the bordered source). SB-aligned crops keep the usual 320 / h+4 envelope.
+    let n_sb_x = ((mi_cols + SB_MI - 1) / SB_MI).max(1);
+    let n_sb_y = ((mi_rows + SB_MI - 1) / SB_MI).max(1);
+    let sb_px_w = n_sb_x as usize * 64;
+    let sb_px_h = n_sb_y as usize * 64;
+    let stride = 320.max(sb_px_w + 4);
+    let buf_h = (sb_px_h + 4).max(h + 4);
+    let extend_plane = |dst: &mut [u16], pw: usize, ph: usize| {
+        for r in 0..ph {
+            let edge = dst[r * stride + pw - 1];
+            for c in pw..stride {
+                dst[r * stride + c] = edge;
+            }
+        }
+        for r in ph..buf_h {
+            dst.copy_within((ph - 1) * stride..ph * stride, r * stride);
+        }
+    };
+    let mut src_y_strided = vec![0u16; stride * buf_h];
     for r in 0..h {
         src_y_strided[r * stride..r * stride + w].copy_from_slice(&y[r * w..r * w + w]);
     }
-    let mut src_u_strided = vec![0u16; stride * (h + 4)];
-    let mut src_v_strided = vec![0u16; stride * (h + 4)];
+    extend_plane(&mut src_y_strided, w, h);
+    let mut src_u_strided = vec![0u16; stride * buf_h];
+    let mut src_v_strided = vec![0u16; stride * buf_h];
     if !mono {
         for r in 0..ch {
             src_u_strided[r * stride..r * stride + cw].copy_from_slice(&u[r * cw..r * cw + cw]);
             src_v_strided[r * stride..r * stride + cw].copy_from_slice(&v[r * cw..r * cw + cw]);
         }
+        extend_plane(&mut src_u_strided, cw, ch);
+        extend_plane(&mut src_v_strided, cw, ch);
     }
 
     let speed = 0i32;
@@ -488,11 +511,10 @@ fn localize_real(
     let mut recon_u = src_u_strided.clone();
     let mut recon_v = src_v_strided.clone();
     let mut enc = OdEcEnc::new();
-    let n_sb_x = ((mi_cols + SB_MI - 1) / SB_MI).max(1);
-    let n_sb_y = ((mi_rows + SB_MI - 1) / SB_MI).max(1);
+    // n_sb_x/n_sb_y computed above (from the plane sizing); pass (rows, cols).
     let _trees = pack_tile(
         &mut enc, &env, &pick_cfg, &pack_cfg, &mut kf_write, &mut recon_y, &mut recon_u,
-        &mut recon_v, 0, 0, n_sb_x, n_sb_y, SB_MI, SB,
+        &mut recon_v, 0, 0, n_sb_y, n_sb_x, SB_MI, SB,
     );
     let our_tile_bytes = enc.done().to_vec();
 
