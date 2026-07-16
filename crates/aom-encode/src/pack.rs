@@ -328,8 +328,13 @@ pub fn pack_leaf(
     // ---- 3. residual/coefficient recompute (reuses the validated dry-run
     //     leaf encode -- see module docs for why this reproduces the true
     //     OUTPUT_ENABLED result in this envelope). ----
+    // OUTPUT_ENABLED (C bitstream write == the same walk as the SB-root
+    // winner encode): the winner tx_type_map must arrive here exactly as the
+    // SEARCH left it — both this walk and the search's SB-root walk model
+    // C's single OUTPUT_ENABLED pass, whose eob-0 resets go to the frame map,
+    // never back into ctx (see encode_b_intra_dry's doc).
     let out = encode_b_intra_dry(
-        env, tile, recon_y, recon_u, recon_v, cfl, winner, mi_row, mi_col, partition,
+        env, tile, recon_y, recon_u, recon_v, cfl, winner, mi_row, mi_col, partition, true,
     );
 
     // ---- 4. write_tokens_b: coefficient bytes, gated on !skip_txfm (always

@@ -423,6 +423,10 @@ fn encode_sb_dry_run_matches_c_walk() {
         let mut rv = recon_v0.clone();
         let mut cfl_rust = CflCtx::new(ss_x as i32, ss_y as i32);
         let mut leaves = Vec::new();
+        // DRY_RUN semantics (output_enabled=false): the C oracle below aliases
+        // each winner's tx_type_map (xd->tx_type_map = ctx map at dry_run,
+        // encodeframe_utils.c:217) so its eob-0 resets persist — the port walk
+        // must persist them identically for the post-walk map compare.
         encode_sb_dry(
             &env,
             &mut state,
@@ -435,6 +439,7 @@ fn encode_sb_dry_run_matches_c_walk() {
             mi_col0,
             sb_bsize,
             &mut leaves,
+            false,
         );
 
         // ---- C walk (REAL pieces), seeded from the same snapshot ----
@@ -509,6 +514,7 @@ fn encode_sb_dry_run_matches_c_walk() {
             mi_col0,
             sb_bsize,
             &mut c_leaves,
+            false, // DRY_RUN semantics on both sides (see the port call above)
         );
 
         // ---- compare ----

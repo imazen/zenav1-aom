@@ -2971,6 +2971,7 @@ impl COracle<'_> {
         mi_col: i32,
         partition: usize,
         out: &mut Vec<CLeafOut>,
+        output_enabled: bool,
     ) {
         let bsize = w.bsize;
         let (ss_x, ss_y) = self.ss;
@@ -3012,9 +3013,22 @@ impl COracle<'_> {
             store: store_y,
             ss: (ss_x as i32, ss_y as i32),
         };
-        let mut map_c = std::mem::take(&mut w.tx_type_map);
-        let (y_txbs, _ta, _tl) = c_encode_intra_block_plane_y(&ca, recon_y, &mut map_c, cfl);
-        w.tx_type_map = map_c;
+        // C av1_update_state tx_type_map plumbing (encodeframe_utils.c:217-231):
+        // DRY runs ALIAS ctx->tx_type_map, so the eob-0 -> DCT_DCT resets
+        // (encodemb.c:770-779) persist into the stored winner map;
+        // OUTPUT_ENABLED copies the ctx map into the frame-level map and the
+        // resets land THERE — the winner (ctx) map is left untouched. Mirror
+        // both arms so this oracle stays faithful to C on either walk kind
+        // (the port's encode_b_intra_dry has the identical split).
+        let (y_txbs, _ta, _tl) = if output_enabled {
+            let mut frame_map = w.tx_type_map.clone();
+            c_encode_intra_block_plane_y(&ca, recon_y, &mut frame_map, cfl)
+        } else {
+            let mut map_c = std::mem::take(&mut w.tx_type_map);
+            let r = c_encode_intra_block_plane_y(&ca, recon_y, &mut map_c, cfl);
+            w.tx_type_map = map_c;
+            r
+        };
 
         // Planes 1/2.
         let uv_tx = uv_txsz(bsize, false, ss_x, ss_y);
@@ -3188,6 +3202,7 @@ impl COracle<'_> {
         mi_col: i32,
         bsize: usize,
         out: &mut Vec<CLeafOut>,
+        output_enabled: bool,
     ) {
         if mi_row >= self.mi_rows || mi_col >= self.mi_cols {
             return;
@@ -3213,19 +3228,52 @@ impl COracle<'_> {
         };
         match tree {
             SbTree::Leaf(w) => {
-                self.encode_b(recon_y, recon_u, recon_v, cfl, w, mi_row, mi_col, 0, out);
+                self.encode_b(
+                    recon_y,
+                    recon_u,
+                    recon_v,
+                    cfl,
+                    w,
+                    mi_row,
+                    mi_col,
+                    0,
+                    out,
+                    output_enabled,
+                );
             }
             SbTree::Split(kids) => {
                 for (idx, child) in kids.iter_mut().enumerate() {
                     let y = mi_row + ((idx as i32) >> 1) * hbs;
                     let x = mi_col + ((idx as i32) & 1) * hbs;
-                    self.encode_sb(recon_y, recon_u, recon_v, cfl, child, y, x, subsize, out);
+                    self.encode_sb(
+                        recon_y,
+                        recon_u,
+                        recon_v,
+                        cfl,
+                        child,
+                        y,
+                        x,
+                        subsize,
+                        out,
+                        output_enabled,
+                    );
                 }
             }
             SbTree::Horz(subs) => {
                 // encode_sb PARTITION_HORZ (partition_search.c:1637-1644).
                 let [s0, s1] = &mut **subs;
-                self.encode_b(recon_y, recon_u, recon_v, cfl, s0, mi_row, mi_col, 1, out);
+                self.encode_b(
+                    recon_y,
+                    recon_u,
+                    recon_v,
+                    cfl,
+                    s0,
+                    mi_row,
+                    mi_col,
+                    1,
+                    out,
+                    output_enabled,
+                );
                 if mi_row + hbs < self.mi_rows {
                     self.encode_b(
                         recon_y,
@@ -3237,13 +3285,25 @@ impl COracle<'_> {
                         mi_col,
                         1,
                         out,
+                        output_enabled,
                     );
                 }
             }
             SbTree::Vert(subs) => {
                 // encode_sb PARTITION_VERT (partition_search.c:1629-1636).
                 let [s0, s1] = &mut **subs;
-                self.encode_b(recon_y, recon_u, recon_v, cfl, s0, mi_row, mi_col, 2, out);
+                self.encode_b(
+                    recon_y,
+                    recon_u,
+                    recon_v,
+                    cfl,
+                    s0,
+                    mi_row,
+                    mi_col,
+                    2,
+                    out,
+                    output_enabled,
+                );
                 if mi_col + hbs < self.mi_cols {
                     self.encode_b(
                         recon_y,
@@ -3255,6 +3315,7 @@ impl COracle<'_> {
                         mi_col + hbs,
                         2,
                         out,
+                        output_enabled,
                     );
                 }
             }

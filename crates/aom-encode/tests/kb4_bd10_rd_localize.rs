@@ -604,13 +604,21 @@ fn ramp_luma(bd: u8) -> impl Fn(usize, usize) -> u16 {
     }
 }
 
-/// bd10/bd12 MONO KB-4 localizer: sweep full-dynamic-range aggressive-HF
-/// content across sizes/qindex, print the per-cell MATCH/MISMATCH grid, and
-/// localize the FIRST divergent block on any MISMATCH. Diagnostic (prints the
-/// grid + first divergence); the assertion documents whether the KB-4
-/// divergence reproduces.
+/// bd10/bd12 MONO KB-4 byte-match GATE (promoted from the localizer that
+/// root-caused the KB-4 mono divergence): sweep full-dynamic-range
+/// aggressive-HF content across qindex, print the per-cell MATCH/MISMATCH
+/// grid, and localize the FIRST divergent block on any MISMATCH.
+///
+/// The formerly-diverging cells (bd10 cq12 hf, bd12 cq8 hf, bd12 cq20 hf)
+/// were fixed by the OUTPUT_ENABLED tx_type_map copy semantics in
+/// `encode_b_intra_dry` (encode_sb.rs): the SB-root winner walk + the pack
+/// re-walk model C's single OUTPUT_ENABLED pass, whose eob-0 -> DCT_DCT
+/// resets go to the frame map and never back into the stored winner maps
+/// (encodeframe_utils.c:217-231). A regression here means the reset leak is
+/// back: a skip-winning txb (non-DCT winner, eob 0) re-quantizes as DCT_DCT
+/// with eob > 0 in the pack.
 #[test]
-fn kb4_localize_bd10_bd12_mono_hf() {
+fn kb4_gate_bd10_bd12_mono_hf_byte_match() {
     let mut any_mismatch = false;
     for &bd in &[10u8, 12] {
         for &(w, h) in &[(64usize, 64usize)] {
@@ -621,11 +629,12 @@ fn kb4_localize_bd10_bd12_mono_hf() {
             }
         }
     }
-    // Report-only: this diagnostic surfaces the divergence for the encoder
-    // track to root-cause; it does not gate. If NOTHING diverges the KB-4
-    // repro recipe needs a different content/qindex point.
-    eprintln!(
-        "\n=== KB-4 mono sweep complete: any_mismatch={any_mismatch} ===\n(if false, the full-range aggressive-HF mono recipe did not reproduce; try 444)"
+    assert!(
+        !any_mismatch,
+        "KB-4 bd10/bd12 mono full-range aggressive-HF sweep must byte-match \
+         real aomenc (the localizer output above pins the first divergent \
+         block). Fixed by encode_b_intra_dry's OUTPUT_ENABLED tx_type_map \
+         copy semantics — a mismatch means the eob-0 reset leak regressed."
     );
 }
 

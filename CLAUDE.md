@@ -257,11 +257,40 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   divergent 4-way-prune / rect-tx decision), so exercising cells must be discovered (a speed-1
   e2e harness exists: `encoder_gate_speed1_textured_allintra`).
 
-### KB-4 — Encoder: bd10/bd12 RD-decision divergence at high bit depth with large coefficients — REAL, tracked (task #31)
-- **Symptom:** at bit depth 10/12 the port's encoded bitstream diverges from real aomenc when coefficients are large. Triggered by (a) 4:2:2/4:4:4 chroma at *moderate* content — all 4 bd10 non-420 cells in `encoder_gate_chroma_ss_e2e` diverge (444 64² byte2 len 1805 vs 1803; 444 128² byte394; 422 64² byte2; 422 128² byte3, all cq32), and (b) mono/4:2:0 with *aggressive* full-range high-frequency content at low qindex (cq12/32, e.g. mono 128² cq12: 7340 vs 7380). Tile data with DIFFERENT byte COUNTS ⇒ different mode/tx/partition RD winners, not a coding-of-fixed-decision bug.
-- **Byte-exact regime (NOT affected):** bd8 all content (incl. 4:2:2/4:4:4, 18/18 in #30); bd10/12 mono+4:2:0 moderate content (`encoder_gate_bd10_diff`, CI green 20f1e70); representable-magnitude (≤255) content at bd8 AND bd10 (probe: identical ≤255 content → both match). Realistic photographic 10/12-bit content is smoother → smaller coeffs → likely byte-exact.
-- **Root cause (localized BY ELIMINATION — two independent triangulations, #30 non-420-chroma + bd10-agent aggressive-HF):** NOT the block kernels — quantize (`xform_quant_diff`), coeff-coding (`encode_block_coeffs_diff`), trellis (`xform_quant_optimize_highbd_diff`, ad31529) ALL byte-exact at ±4095 bd12. NOT bd-plumbing (≤255 content matches at bd10). NOT int64 overflow (no frame-path panic; the >22-bit-coeff overflow at `optimize.rs:61` is only reachable by unrealistic random ±4095, which C also treats as UB). ⇒ the divergence is in the **RD-DECISION layer** (tx_search / intra_rd / partition_pick): large-coefficient RD-cost / distortion accumulation or compare differs from C at high bit depth (suspect a rounding / shift / bit-depth-scaling difference in an RD-cost computation).
-- **Fix:** in the encoder's RD-decision files — align the high-bit-depth RD-cost/distortion scaling with C. Owned by the encoder after #25 lands (frees those files). Witness (COMMITTED 2026-07-15): `encoder_gate_bd10_non420_e2e_kb4_repro` in `encoder_gate_chroma_ss_e2e.rs` — the 4 bd10 non-420 cells (444/422 × 64²/128², cq32), a CI-green characterization asserting the divergence is still present; the bd10 aggressive-HF mono/420 corner stays in `kb4_bd10_rd_localize.rs`. Close ONLY by a landed fix that makes those cells byte-match (promote the repro to a `report_and_assert` byte-match gate) — never by weakening.
+### KB-4 — Encoder: bd10/bd12 coded-eob divergence (was "RD-decision divergence at high bit depth") — FIXED ✅ (BOTH roots; task #31)
+- **FIXED 2026-07-16 (this landing) — OUTPUT_ENABLED tx_type_map copy semantics in `encode_b_intra_dry`.**
+  The mono/4:2:0 aggressive-HF divergence (bd10 cq12, bd12 cq8, bd12 cq20 in
+  `kb4_bd10_rd_localize.rs`) was NOT a high-bit-depth RD-scaling bug: the port ran C's single
+  OUTPUT_ENABLED walk TWICE (the SB-root winner context/recon walk + the pack re-walk) with DRY
+  (alias) tx_type_map semantics, so the first walk's `eob==0 → DCT_DCT` resets
+  (encodemb.c:770-779, `update_txk_array`) leaked into the pack's re-quant input. A skip-winning
+  txb (non-DCT search winner quantizing to eob 0 — exactly what aomenc codes) re-quantized as
+  DCT_DCT with eob>0 in the coded bytes (e.g. the bd10 cq12 mi(14,12) BLOCK_16X8/D45 txb5:
+  search=ADST_DCT/eob0, coded=DCT/eob1). C's semantics (`av1_update_state`,
+  encodeframe_utils.c:217-231): DRY walks **ALIAS** `ctx->tx_type_map` — resets PERSIST into the
+  stored winner map (real C behaviour; do NOT "fix" by cloning); OUTPUT_ENABLED **copies** ctx
+  into the frame-level map and the resets land THERE, ctx untouched. **Fix:**
+  `encode_b_intra_dry`/`encode_sb_dry` take `output_enabled`; the SB-root winner walk
+  (partition_pick.rs, C partition_search.c:6010) and the pack walk (pack.rs — the same C walk,
+  re-run) use a transient frame-map clone; the mid-candidate propagation (C :3613-3616) and
+  non-SB winner walks (C :6023, `should_do_dry_run_encode_for_current_block` :5556 — last SPLIT
+  children skipped) keep the alias. The `COracle`/`CPick` differential references mirror the
+  split (they had shared the port's mis-model). bd10/12-amplified (larger RD magnitudes make
+  non-DCT-eob0 near-tie txbs common) but NOT bd-specific in mechanism: the same leak closed
+  KB-6's bd8 `quantizer-00 128×128 cq63` cell.
+- **Prior "RD-DECISION layer bd scaling" localization REFUTED (2026-07-16):** per-tx_type
+  rate+dist are byte-exact vs the REAL-C leaf chain (`kb4_txb2_probe.rs`); tx-type search order
+  matches C (txk_map stays natural `{0..15}` at speed-0 — `prune_tx_2D` reorders only under
+  `prune_tx_type_est_rd`, speed≥4); `ref_best_rd` threading and the `adaptive_txb_search` break
+  match C, and the break never changed the winner on any divergent txb (with-break == full-eval
+  on every one). The kernels were indeed byte-exact — the divergence was PASS-STRUCTURE, not
+  arithmetic. (An earlier blanket per-pass-clone attempt regressed 3→5 cells because it also
+  cloned C's DRY alias walks and the rd_pick CfL store-luma reencode — both must keep mutating.)
+- **Gates:** mono/420 promoted to `kb4_gate_bd10_bd12_mono_hf_byte_match`
+  (kb4_bd10_rd_localize.rs) — the full bd10/bd12 × cq8/12/20 × hf/ramp sweep byte-matches real
+  aomenc (12/12). Non-420: the other KB-4 witness was FIXED separately by **1ecfafb** (AB HORZ_A
+  nested sub-block reuse) — all 4 bd10 non-420 cells (444/422 × 64²/128² cq32) byte-match,
+  asserted by `encoder_gate_bd10_non420_e2e_kb4_repro`.
 
 ### KB-5 — Encoder: lossless (cq0 / qindex 0) KEY encode divergence — REAL, tracked (task #32)
 - **Symptom:** lossless allintra KEY (cq0 → qindex 0, `coded_lossless`) diverges badly — mono 64² cq0: first-diff at byte 2 (within the 9-byte header region), port tile 5426B vs the ENTIRE real frame 4966B (port ~10% larger). A port tile larger than the whole real frame ⇒ the port is very likely NOT taking the lossless coding path.
@@ -284,12 +313,16 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   `kb6_real_rd_localize.rs` (decode-both-streams): first divergent SB was leaf mi(12,12) bsize=BLOCK_4X16
   angled (y_mode=6, angle_delta_y=1), real eob=0 vs port eob=2, ±1 recon at (48,48). Verified: full
   aom-encode suite green; `partition_pick_diff` green with randomized SMOOTH neighbours.
-- **REMAINING (continuing localization).** Map now **15/30 byte-exact** (expanded gate, commit 3d124a7):
-  real size-64×64 byte-matches at cq5/12/20/48/63 (promoted to asserted gates); a SECOND near-tie
-  remains at **size-64×64 cq32**. Photographic/film crops added (00-quantizer, 23-film — content
-  diversity at low pixel count): quantizer-64² 4/6, film-64² 5/6 match; the multi-SB quantizer-128²
-  crop mostly diverges. **Divergences cluster at cq5 (qindex 20, aggressive low-q) across ALL THREE
-  crop contents — a strong content-independent low-q near-tie, the next localization target.**
+- **REMAINING (one axis).** Map (combined tree, MEASURED 2026-07-16 after the KB-4
+  OUTPUT_ENABLED fix + the partial-SB chunk series): **26/30 byte-exact — the ONLY divergences
+  left are 196×196 cq12/20/32/48** (the bottom-edge over-split near-tie, pinned below). Every
+  interior-crop cell now matches: size-64×64 all 6 cq (cq5/12/20/48/63 with FIX #1; cq32 with
+  1ecfafb — AB HORZ_A nested sub-block reuse); quantizer-64² 6/6, film-64² 6/6, quantizer-128²
+  6/6 — the former cq5 low-q cluster and the quantizer-128² cq12/20/32 near-ties cleared with
+  the partial-SB chunk series' distortion-clip landings, and **quantizer-128² cq63 + 196×196
+  cq63 closed 2026-07-16 by the KB-4 OUTPUT_ENABLED tx_type_map fix** (the port coded DCT-eob1
+  where real codes an eob0 skip — the reset-leak signature, present in interior AND edge SB
+  rows).
 - **DISTINCT SUB-GAP — partial-SB (frame dims not a multiple of 64px) — MOSTLY FIXED 2026-07-16,
   ONE RESIDUAL NEAR-TIE.** Landed chunk series (`3167800` CHUNK 0+1, `7c468ee` CHUNK 2, `4b8b1f1`
   CHUNK 3): (0) the KB-6 harness now encodes the TRUE 196×196 frame — `run_case`/`localize_real`
@@ -305,14 +338,15 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   (`partition_pick.rs`, new `PickFrameCfg::partition_cdfs` raw-CDF plumbing, SB-adapted in
   pack.rs; witness `edge_cost_matches_gathered_composition` locks the gather composition).
   **Result: 196×196 cq5 is a TRUE END-TO-END BYTE MATCH — the first full partial-SB frame match —
-  promoted to an asserted gate in `encoder_gate_real_image_e2e_kb6_repro` (map now 24/30).**
-  **RESIDUAL (pinned, assert-diverge in `kb6_characterize_196_partial_sb`):** 196 cq12/20/32/48/63
-  still diverge on the BOTTOM-edge SB row — first leaf mismatch at mi(48,0): real picks 16×8, the
-  port over-splits to 8×4 on the 8px-visible strip (cq32: port tile 999B vs real 1006B; cq12
-  matches through byte 2224 of 2230). NOT the edge partition cost (CHUNK 3 correct, no effect) and
-  NOT the edge-rect search structure (the port's `is_not_edge_block` sub-0-only rect handling
-  already matches C) — a distortion-side HORZ-vs-SPLIT near-tie; next step is the sibling-C
-  per-candidate RD dump (KB-2/KB-3 methodology) at the mi(48,0) 16×16 node.
+  promoted to an asserted gate in `encoder_gate_real_image_e2e_kb6_repro`.**
+  **RESIDUAL (pinned, assert-diverge in `kb6_characterize_196_partial_sb`):** 196 cq12/20/32/48
+  still diverge on the BOTTOM-edge SB row (cq63 closed by the KB-4 OUTPUT_ENABLED fix) — first
+  leaf mismatch at mi(48,0): real picks 16×8, the port over-splits to 8×4 on the 8px-visible
+  strip (cq32: port tile 999B vs real 1006B; cq12 matches through byte 2224 of 2230). NOT the
+  edge partition cost (CHUNK 3 correct, no effect) and NOT the edge-rect search structure (the
+  port's `is_not_edge_block` sub-0-only rect handling already matches C) — a distortion-side
+  HORZ-vs-SPLIT near-tie; next step is the sibling-C per-candidate RD dump (KB-2/KB-3
+  methodology) at the mi(48,0) 16×16 node.
 - **MULTI-TILE encode is byte-exact** (commit f6e6319, `encoder_gate_multitile_e2e`): the port's own
   per-tile search+pack byte-matches real aomenc across 2×1/1×2/2×2 grids (4:4:4 128² × cq{12,32,63}).
 - **DISCOVERED 2026-07-15 via the new real-image e2e gate** (`encoder_gate_real_image_e2e_kb6_repro`
@@ -331,22 +365,24 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   content. The hand-tuned synthetic patterns (diag/vbars/vgrad/tex_*) never exercised the diverging
   decision; real photographic/screen statistics do. **This means the "byte-exact regime: bd8 all
   content" note under KB-4 is TRUE ONLY for the synthetic gates — it is FALSE for real content.**
-- **Root cause: FIRST ROOT (luma re-encode edge filter) LOCALIZED + FIXED — see FIX #1 above.** As
-  predicted it was MULTIPLE KB-2-class near-ties: fixing the luma re-encode took real 64×64 from 2/6 to
-  5/6. ≥1 more remains — the cq5 (low-q) near-tie and 64×64 cq32 — same class (a speed-0 RD near-tie an
-  edge/neighbour/rounding difference tips), to be localized next.
+- **Root cause: MULTIPLE KB-2-class near-ties, several roots landed.** FIX #1 (luma re-encode
+  edge filter) took real 64×64 from 2/6 to 5/6; 1ecfafb (AB HORZ_A nested reuse) closed 64×64 cq32
+  + the 4 bd10 non-420 KB-4 cells; the partial-SB chunk series (distortion visible-clips + edge
+  partition cost) cleared the cq5 low-q cluster + the quantizer-128² cq12/20/32 near-ties + 196²
+  cq5; the KB-4 OUTPUT_ENABLED tx_type_map fix (2026-07-16) closed quantizer-128² cq63 + 196²
+  cq63. Only the 196² bottom-edge over-split (cq12/20/32/48) remains — same class (a speed-0 RD
+  near-tie tipped by an edge/neighbour/rounding/pass-structure difference).
 - **Repro (COMMITTED, CI-green characterization):** `encoder_gate_real_image_e2e_kb6_repro` prints the
   full per-cell MATCH/MISMATCH map, asserts a byte-exact CONTROL (64×64 cq20 — harness-faithfulness +
   regression guard), and asserts the KB-6 divergence is still PRESENT (gates: when the port becomes
   byte-exact on real content the test FAILS → promote it to a full `report_and_assert` byte-match
   gate). Not a weakened test — the correct end state is full byte-identity on real content.
-- **Next step (localization):** the **cq5 (qindex 20) low-q near-tie** is the highest-value target — it
-  diverges across all three crop contents (quantizer-64²/128², film-64²), so it is content-independent
-  and hits the aggressive-web low-q regime. Use `kb6_real_rd_localize.rs` (decode-both-streams: the port
-  DECODER is bit-exact, so decode the real aomenc stream vs the port's own re-wrapped stream, diff
-  per-SB partition/mode/tx to pin the first divergent block), find the flipped decision, fix it
-  KB-2/KB-3-style. Then 64×64 cq32. Close ONLY by a landed fix that makes real content byte-match —
-  never by weakening or by narrowing the corpus.
+- **Next step (localization):** the ONLY remaining KB-6 target is the **196×196 bottom-edge
+  over-split** (cq12/20/32/48; pinned in `kb6_characterize_196_partial_sb`): the mi(48,0)
+  HORZ-vs-SPLIT distortion-side near-tie on the 8px-visible strip — run the sibling-C
+  per-candidate RD dump (KB-2/KB-3 methodology) at that 16×16 node, find the tipping term, fix
+  it KB-2/KB-3-style. Close ONLY by a landed fix that makes real content byte-match — never by
+  weakening or by narrowing the corpus.
 - **Priority note:** KB-6 hits the single most common real-world case (bd8 4:2:0 photographic content
   at web qindex), so it is arguably higher-impact than the bd10/bd12 (KB-4) and lossless (KB-5)
   corners. Sequencing is the coordinator's call.

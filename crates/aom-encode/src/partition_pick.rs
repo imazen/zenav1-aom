@@ -1159,6 +1159,7 @@ fn rd_pick_4partition(
                 r,
                 c,
                 partition_type,
+                false,
             );
             grid.stamp(r, c, subsize, wi.mode as u8, wi.uv_mode as u8, env.mi_rows, env.mi_cols);
         }
@@ -1443,6 +1444,7 @@ fn rd_pick_ab_part(
                 r,
                 c,
                 partition_type,
+                false,
             );
             grid.stamp(r, c, sz, wi.mode as u8, wi.uv_mode as u8, env.mi_rows, env.mi_cols);
         }
@@ -2072,6 +2074,7 @@ pub fn rd_pick_partition_real(
                 mi_row,
                 mi_col,
                 partition_type,
+                false,
             );
             grid.stamp(
                 mi_row,
@@ -2471,12 +2474,24 @@ pub fn rd_pick_partition_real(
     // ---- the winner encode (:5998-6026) ----
     if found {
         let tree = best_tree.as_mut().expect("found implies a tree");
-        let do_encode = if bsize == env.sb_size {
-            // The C emits OUTPUT_ENABLED at the SB root (pack-stage adds;
-            // contexts/pixels identical) — modelled as the same DRY_RUN walk.
-            true
+        // C runs OUTPUT_ENABLED at the SB root (:6010) and DRY_RUN_NORMAL on
+        // non-SB winner subtrees (:6023, gated by
+        // should_do_dry_run_encode_for_current_block). The pack-stage adds
+        // (CDF counts, tokens) live in pack.rs; the contexts/pixels of this
+        // walk are identical — but the tx_type_map semantics are NOT: the
+        // DRY walk aliases the winner (ctx) maps so eob-0 -> DCT_DCT resets
+        // persist, while OUTPUT_ENABLED copies to the frame map and leaves
+        // the winner maps untouched (encodeframe_utils.c:217-231). The pack
+        // re-walks this same tree, so the SB-root walk here must NOT leak
+        // its resets into the maps the pack re-quantizes from — see
+        // encode_b_intra_dry's doc (the KB-4 coded-eob divergence).
+        let (do_encode, output_enabled) = if bsize == env.sb_size {
+            (true, true)
         } else {
-            should_do_dry_run_encode(env.sb_size, cfg.max_partition_size, pc_index, bsize)
+            (
+                should_do_dry_run_encode(env.sb_size, cfg.max_partition_size, pc_index, bsize),
+                false,
+            )
         };
         if do_encode {
             let mut leaves: Vec<LeafEncodeOut> = Vec::new();
@@ -2492,6 +2507,7 @@ pub fn rd_pick_partition_real(
                 mi_col,
                 bsize,
                 &mut leaves,
+                output_enabled,
             );
             // av1_update_state's mi-grid fill: leaf footprints are disjoint,
             // so stamping from the walk's leaf list is order-equivalent.

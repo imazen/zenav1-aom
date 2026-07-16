@@ -860,6 +860,7 @@ impl CPick<'_> {
                     mi_col,
                     partition_type,
                     &mut outs,
+                    false, // DRY_RUN_NORMAL: tx_type_map resets persist (C ctx alias)
                 );
                 for rr in 0..MI_HB[subsize] {
                     let base = (mi_row as usize + rr) * self.grid_stride + mi_col as usize;
@@ -950,8 +951,21 @@ impl CPick<'_> {
             };
             if do_encode {
                 let mut outs: Vec<CLeafOut> = Vec::new();
+                // OUTPUT_ENABLED at the SB root (:6010): tx_type_map resets go
+                // to the frame-map copy, winner maps stay pristine; DRY at
+                // non-SB nodes (:6023): resets persist (C ctx alias) — the
+                // exact split the port's winner encode applies.
                 self.o.encode_sb(
-                    recon_y, recon_u, recon_v, cfl_enc, tree, mi_row, mi_col, bsize, &mut outs,
+                    recon_y,
+                    recon_u,
+                    recon_v,
+                    cfl_enc,
+                    tree,
+                    mi_row,
+                    mi_col,
+                    bsize,
+                    &mut outs,
+                    bsize == self.sb_size,
                 );
                 stamp_grid(
                     &mut self.grid,

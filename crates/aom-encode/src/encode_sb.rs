@@ -396,12 +396,30 @@ fn split_subsize(bsize: usize) -> usize {
     }
 }
 
-/// `encode_b` at DRY_RUN for one KEY intra leaf — see the module docs for
-/// the exact C sequence. Mutates the recon planes, the winner's
-/// `tx_type_map` (eob-0 resets), the CfL context (per-txb stores when
+/// `encode_b` for one KEY intra leaf — see the module docs for the exact C
+/// sequence. Mutates the recon planes, the CfL context (per-txb stores when
 /// `store_y`), and stamps `state`'s entropy + txfm contexts. The partition
 /// context stamp is [`encode_sb`]'s (`update_ext_partition_context` runs at
 /// the node, not the leaf).
+///
+/// `output_enabled` mirrors C's `RUN_TYPE` through `av1_update_state`'s
+/// tx_type_map plumbing (encodeframe_utils.c:217-231):
+/// - `false` (C `DRY_RUN_NORMAL` — the search's context-propagation walks):
+///   `xd->tx_type_map` ALIASES `ctx->tx_type_map`, so the per-txb
+///   eob-0 -> DCT_DCT resets (encodemb.c:770-779) PERSIST into the stored
+///   winner map — a later dry walk of the same leaf re-quantizes those txbs
+///   as DCT_DCT, exactly as C does. Do not "fix" this by cloning: the
+///   persistence is C behaviour.
+/// - `true` (C `OUTPUT_ENABLED` — the SB-root winner walk, and the pack's
+///   re-walk of the same tree): `av1_update_state` COPIES the ctx map into
+///   the frame-level `mi_params.tx_type_map` and points `xd` at THAT, so the
+///   resets land in the frame map and the winner's (ctx) map is left
+///   untouched. Modelled with a transient clone. The port runs C's single
+///   OUTPUT_ENABLED walk TWICE (the SB-root context/recon walk + the pack
+///   re-walk); without the copy semantics the first walk's resets leaked
+///   into the second walk's re-quant input, and a skip-winning txb (non-DCT
+///   winner, eob 0) re-quantized as DCT_DCT with eob > 0 — the KB-4
+///   bd10/bd12 mono coded-eob divergence.
 #[allow(clippy::too_many_arguments)]
 pub fn encode_b_intra_dry(
     env: &SbEncodeEnv,
@@ -414,6 +432,7 @@ pub fn encode_b_intra_dry(
     mi_row: i32,
     mi_col: i32,
     partition: usize,
+    output_enabled: bool,
 ) -> LeafEncodeOut {
     let bsize = winner.bsize;
     let mi_w = MI_SIZE_WIDE_B[bsize];
@@ -486,12 +505,27 @@ pub fn encode_b_intra_dry(
         above_ctx: &above_y,
         left_ctx: &left_y,
     };
-    let y_out = encode_intra_block_plane_y(
-        &y_env,
-        recon_y,
-        &mut winner.tx_type_map,
-        if store_y { Some(cfl) } else { None },
-    );
+    let y_out = if output_enabled {
+        // OUTPUT_ENABLED: the eob-0 -> DCT_DCT resets land in the frame-map
+        // copy (transient here — the pack writes tx_type syntax only for
+        // eob > 0 txbs, whose entries the reset never touches), and the
+        // winner's map keeps the state the search left it in. See the fn doc.
+        let mut frame_tx_type_map = winner.tx_type_map.clone();
+        encode_intra_block_plane_y(
+            &y_env,
+            recon_y,
+            &mut frame_tx_type_map,
+            if store_y { Some(cfl) } else { None },
+        )
+    } else {
+        // DRY_RUN_NORMAL: alias — the resets persist into the winner map.
+        encode_intra_block_plane_y(
+            &y_env,
+            recon_y,
+            &mut winner.tx_type_map,
+            if store_y { Some(cfl) } else { None },
+        )
+    };
 
     // Step 2, planes 1/2 (early return inside the C when !is_chroma_ref).
     let mut u_out = None;
@@ -720,8 +754,13 @@ pub fn encode_b_intra_dry(
     }
 }
 
-/// `encode_sb` at DRY_RUN over a NONE/SPLIT tree — see the module docs.
-/// Appends each leaf's outputs to `leaves` in walk order.
+/// `encode_sb` over a NONE/SPLIT tree — see the module docs. Appends each
+/// leaf's outputs to `leaves` in walk order. `output_enabled` selects C's
+/// `RUN_TYPE` tx_type_map semantics per leaf — see [`encode_b_intra_dry`]:
+/// `false` for the search's DRY_RUN context-propagation walks (winner-map
+/// resets persist, C's ctx alias), `true` for the SB-root winner walk and
+/// the pack re-walk (C's OUTPUT_ENABLED frame-map copy; winner maps stay
+/// as the search left them).
 #[allow(clippy::too_many_arguments)]
 pub fn encode_sb_dry(
     env: &SbEncodeEnv,
@@ -735,6 +774,7 @@ pub fn encode_sb_dry(
     mi_col: i32,
     bsize: usize,
     leaves: &mut Vec<LeafEncodeOut>,
+    output_enabled: bool,
 ) {
     if mi_row >= env.mi_rows || mi_col >= env.mi_cols {
         return;
@@ -795,6 +835,7 @@ pub fn encode_sb_dry(
                 mi_row,
                 mi_col,
                 PARTITION_NONE as usize,
+                output_enabled,
             );
             leaves.push(out);
         }
@@ -803,7 +844,18 @@ pub fn encode_sb_dry(
                 let y = mi_row + ((idx as i32) >> 1) * hbs;
                 let x = mi_col + ((idx as i32) & 1) * hbs;
                 encode_sb_dry(
-                    env, state, recon_y, recon_u, recon_v, cfl, child, y, x, subsize, leaves,
+                    env,
+                    state,
+                    recon_y,
+                    recon_u,
+                    recon_v,
+                    cfl,
+                    child,
+                    y,
+                    x,
+                    subsize,
+                    leaves,
+                    output_enabled,
                 );
             }
         }
@@ -823,6 +875,7 @@ pub fn encode_sb_dry(
                 mi_row,
                 mi_col,
                 PARTITION_HORZ as usize,
+                output_enabled,
             );
             leaves.push(out);
             if mi_row + hbs < env.mi_rows {
@@ -838,6 +891,7 @@ pub fn encode_sb_dry(
                     mi_row + hbs,
                     mi_col,
                     PARTITION_HORZ as usize,
+                    output_enabled,
                 );
                 leaves.push(out);
             }
@@ -858,6 +912,7 @@ pub fn encode_sb_dry(
                 mi_row,
                 mi_col,
                 PARTITION_VERT as usize,
+                output_enabled,
             );
             leaves.push(out);
             if mi_col + hbs < env.mi_cols {
@@ -873,6 +928,7 @@ pub fn encode_sb_dry(
                     mi_row,
                     mi_col + hbs,
                     PARTITION_VERT as usize,
+                    output_enabled,
                 );
                 leaves.push(out);
             }
@@ -898,6 +954,7 @@ pub fn encode_sb_dry(
                     this_mi_row,
                     mi_col,
                     PARTITION_HORZ_4 as usize,
+                    output_enabled,
                 );
                 leaves.push(out);
             }
@@ -923,6 +980,7 @@ pub fn encode_sb_dry(
                     mi_row,
                     this_mi_col,
                     PARTITION_VERT_4 as usize,
+                    output_enabled,
                 );
                 leaves.push(out);
             }
@@ -945,6 +1003,7 @@ pub fn encode_sb_dry(
                 mi_row,
                 mi_col,
                 PARTITION_HORZ_A as usize,
+                output_enabled,
             );
             leaves.push(out);
             debug_assert_eq!(s1.bsize, bsize2);
@@ -959,6 +1018,7 @@ pub fn encode_sb_dry(
                 mi_row,
                 mi_col + hbs,
                 PARTITION_HORZ_A as usize,
+                output_enabled,
             );
             leaves.push(out);
             debug_assert_eq!(s2.bsize, subsize);
@@ -973,6 +1033,7 @@ pub fn encode_sb_dry(
                 mi_row + hbs,
                 mi_col,
                 PARTITION_HORZ_A as usize,
+                output_enabled,
             );
             leaves.push(out);
         }
@@ -991,6 +1052,7 @@ pub fn encode_sb_dry(
                 mi_row,
                 mi_col,
                 PARTITION_HORZ_B as usize,
+                output_enabled,
             );
             debug_assert_eq!(s0.bsize, subsize);
             leaves.push(out);
@@ -1005,6 +1067,7 @@ pub fn encode_sb_dry(
                 mi_row + hbs,
                 mi_col,
                 PARTITION_HORZ_B as usize,
+                output_enabled,
             );
             debug_assert_eq!(s1.bsize, bsize2);
             leaves.push(out);
@@ -1019,6 +1082,7 @@ pub fn encode_sb_dry(
                 mi_row + hbs,
                 mi_col + hbs,
                 PARTITION_HORZ_B as usize,
+                output_enabled,
             );
             debug_assert_eq!(s2.bsize, bsize2);
             leaves.push(out);
@@ -1039,6 +1103,7 @@ pub fn encode_sb_dry(
                 mi_row,
                 mi_col,
                 PARTITION_VERT_A as usize,
+                output_enabled,
             );
             debug_assert_eq!(s0.bsize, bsize2);
             leaves.push(out);
@@ -1053,6 +1118,7 @@ pub fn encode_sb_dry(
                 mi_row + hbs,
                 mi_col,
                 PARTITION_VERT_A as usize,
+                output_enabled,
             );
             debug_assert_eq!(s1.bsize, bsize2);
             leaves.push(out);
@@ -1067,6 +1133,7 @@ pub fn encode_sb_dry(
                 mi_row,
                 mi_col + hbs,
                 PARTITION_VERT_A as usize,
+                output_enabled,
             );
             debug_assert_eq!(s2.bsize, subsize);
             leaves.push(out);
@@ -1087,6 +1154,7 @@ pub fn encode_sb_dry(
                 mi_row,
                 mi_col,
                 PARTITION_VERT_B as usize,
+                output_enabled,
             );
             debug_assert_eq!(s0.bsize, subsize);
             leaves.push(out);
@@ -1101,6 +1169,7 @@ pub fn encode_sb_dry(
                 mi_row,
                 mi_col + hbs,
                 PARTITION_VERT_B as usize,
+                output_enabled,
             );
             debug_assert_eq!(s1.bsize, bsize2);
             leaves.push(out);
@@ -1115,6 +1184,7 @@ pub fn encode_sb_dry(
                 mi_row + hbs,
                 mi_col + hbs,
                 PARTITION_VERT_B as usize,
+                output_enabled,
             );
             debug_assert_eq!(s2.bsize, bsize2);
             leaves.push(out);
