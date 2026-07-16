@@ -69,7 +69,10 @@ dependencies = [
 name = "aom-cdef"
 version = "0.0.1"
 dependencies = [
+ "aom-dispatch",
  "aom-sys-ref",
+ "archmage",
+ "magetypes",
 ]
 
 [[package]]
@@ -96,11 +99,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aom-dispatch"
+version = "0.0.1"
+dependencies = [
+ "archmage",
+]
+
+[[package]]
 name = "aom-dist"
 version = "0.0.1"
 dependencies = [
  "aom-sys-ref",
- "archmage 0.9.27",
+ "archmage",
 ]
 
 [[package]]
@@ -130,7 +140,7 @@ name = "aom-intra"
 version = "0.0.1"
 dependencies = [
  "aom-sys-ref",
- "archmage 0.9.27",
+ "archmage",
 ]
 
 [[package]]
@@ -144,7 +154,10 @@ dependencies = [
 name = "aom-quant"
 version = "0.0.1"
 dependencies = [
+ "aom-dispatch",
  "aom-sys-ref",
+ "archmage",
+ "magetypes",
 ]
 
 [[package]]
@@ -177,30 +190,12 @@ dependencies = [
 [[package]]
 name = "archmage"
 version = "0.9.27"
-dependencies = [
- "archmage-macros 0.9.27",
- "safe_unaligned_simd",
- "winarm-cpufeatures",
-]
-
-[[package]]
-name = "archmage"
-version = "0.9.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddf7537a9d3cb715fedef7cacfef7735d7005704301dd3d4cade35fb06fc37bc"
 dependencies = [
- "archmage-macros 0.9.27 (registry+https://github.com/rust-lang/crates.io-index)",
+ "archmage-macros",
  "safe_unaligned_simd",
  "winarm-cpufeatures",
-]
-
-[[package]]
-name = "archmage-macros"
-version = "0.9.27"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -371,7 +366,7 @@ version = "0.6.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe0e61c33d85bc56dcaf27cdf48ca32b8e34af7236584eb1d8a47316c49e0be1"
 dependencies = [
- "archmage 0.9.27 (registry+https://github.com/rust-lang/crates.io-index)",
+ "archmage",
  "bytemuck",
  "magetypes",
  "num-traits",
@@ -389,7 +384,7 @@ version = "0.9.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "485f61f9642a1445f4fc561a1462c003574b6cdcbfef62c3ebc6b24be568b103"
 dependencies = [
- "archmage 0.9.27 (registry+https://github.com/rust-lang/crates.io-index)",
+ "archmage",
  "rustversion",
 ]
 
@@ -805,7 +800,7 @@ version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f46ead96f329b3f706ce66c8f36bf5b5bc1bb1fc5135c467079728379560b93c"
 dependencies = [
- "archmage 0.9.27 (registry+https://github.com/rust-lang/crates.io-index)",
+ "archmage",
  "bytemuck",
  "imgref",
  "linear-srgb",

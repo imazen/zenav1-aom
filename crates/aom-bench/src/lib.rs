@@ -603,7 +603,6 @@ impl EncodeCell {
             coeff_costs_y: &real.coeff_costs_y,
             coeff_costs_uv: &real.coeff_costs_uv,
             tx_type_costs: &real.tx_type_costs_y,
-            qm_levels: None, // QM off — the allintra default this harness measures
         };
         let pick_cfg = PickFrameCfg {
             mode_costs: &real.mode_costs,
