@@ -336,6 +336,29 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   at web qindex), so it is arguably higher-impact than the bd10/bd12 (KB-4) and lossless (KB-5)
   corners. Sequencing is the coordinator's call.
 
+### KB-7 — Encoder: `--cpu-used=3` cq12 4:2:0 partition near-tie exposed by the (correct) chroma HOG — REAL, KB-6 class, pinned
+- **Symptom:** in `encoder_gate_speed3_textured_allintra` (Gate-2 cpu-used=3), 3 of 64 cells diverge
+  from real aomenc — `two-tone 64x64`, `two-tone 128x128`, `vgrad 128x128`, all **cq12 (qindex 48)
+  4:2:0**. All 32 mono cells + all cq32/48/63 4:2:0 cells byte-match (61/64). Localized
+  (decode-both, port decoder is bit-exact): a SB-root **partition flip** — real picks BLOCK_64X64
+  NONE, the port splits — driven by the chroma RD, only at low q.
+- **Root cause: NOT the speed-3 chroma HOG port (that is bit-exact).** The speed-3 delta
+  `chroma_intra_pruning_with_hog = 2` (speed_features.c:454) is correctly ported: the chroma HOG mask
+  (`prune_intra_mode_with_hog_uv`, hog.rs) is proven **byte-identical to C** across 900 cases (all
+  bd/subsampling/edge-clip combos — `prune_intra_mode_with_hog_uv_matches_c`), and its inputs are the
+  same offset/dims the (correct) chroma encode uses. Turning it ON fixed **13 of the 16** cq12+cq32
+  4:2:0 cells that diverged before it. The residual 3 are a **pre-existing latent chroma-RD near-tie**
+  (KB-6 class — the aggressive-web low-q regime KB-6 flags): the correct HOG shrinks the chroma mode
+  set enough that a chroma-RD near-tie tips the NONE-vs-split partition. Same mechanism as KB-2/KB-6
+  (a mode-set-shrinking delta exposes a latent RD tie), on the chroma partition path.
+- **Next chunk (localization):** decode-both per-SB at `two-tone 64x64 420 cq12` (1-SB, simplest);
+  the port's split vs real's NONE at mi(0,0) is the flip. Dump the port's NONE-candidate chroma RD vs
+  the sibling C's for the 64×64 (and its 32×32 SPLIT children) to find the chroma-RD term that
+  differs at qindex 48. Fix KB-2/KB-6-style, then promote the 3 pinned cells in
+  `encoder_gate_speed3_textured_allintra` into the byte-match claim. Close ONLY by a landed fix —
+  the gate PINS the exact residual set, so it FAILS the moment one starts matching (prompting
+  promotion) or a new cell regresses.
+
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 
 Primary config = ALLINTRA (usage=2), speed-0 KEY frame. libaom's own allintra tuning

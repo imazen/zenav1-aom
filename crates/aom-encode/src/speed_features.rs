@@ -23,15 +23,17 @@
 //! # Coverage of the field set (honest fraction)
 //!
 //! This models the sf fields that (a) the port already consumes at speed 0 and
-//! (b) differ speed-0 → speed-1 on an intra-still KEY frame with CDEF +
+//! (b) differ speed-0 → speed-N on an intra-still KEY frame with CDEF +
 //! loop-restoration search disabled (the current e2e harness envelope). The
-//! speed cascade is transcribed faithfully for **speed 0 and speed 1 only**;
-//! speeds >= 2 introduce further fields (`disable_smooth_intra` at 2,
-//! `chroma_intra_pruning_with_hog` at 3, the winner-mode two-pass subsystem at
-//! 4, ...) that are **not yet modeled** — do not treat a `set_allintra(n>=2)`
-//! result as complete. The `lpf_sf` fields are carried for provenance but do
-//! not yet affect bytes (the harness encodes the reference with CDEF +
-//! restoration off).
+//! speed cascade is transcribed faithfully for **speeds 0..=3** (the intra-still
+//! deltas at each level; inert inter/motion/CDEF/loop-restoration fields are
+//! documented per-block below, not carried as struct fields). Speed >= 4
+//! introduces the winner-mode two-pass subsystem (`enable_winner_mode_for_*`,
+//! speed_features.c:502-506) plus `prune_filter_intra_level = 2`,
+//! `prune_chroma_modes_using_luma_winner`, tx-type PRUNE_3, etc. that are **not
+//! yet modeled** — do not treat a `set_allintra(n>=4)` result as complete. The
+//! `lpf_sf` fields are carried for provenance but do not yet affect bytes (the
+//! harness encodes the reference with CDEF + restoration off).
 //!
 //! Source line citations are against libaom v3.14.1 (git 03087864).
 
@@ -120,6 +122,13 @@ pub struct SpeedFeatures {
     /// 1->2 bump at speed 2 does not move the HOG prune output; the threshold
     /// only changes at speed>=3 (level 3 -> -0.6).
     pub intra_pruning_with_hog: i32,
+    /// `intra_sf.chroma_intra_pruning_with_hog` — default 0 (init_intra_sf, off);
+    /// allintra speed>=3 -> 2 (speed_features.c:454). Turns ON the CHROMA
+    /// directional-mode HOG prune (intra_mode_search.c:959-972): for an intra
+    /// frame the threshold table is `thresh[1] = {-1.2, -1.2, -0.6, 0.4}`
+    /// (indexed by `level-1`), so level 2 -> -1.2. Prunes UV_V_PRED..UV_D67_PRED
+    /// from the chroma-mode search when the U-plane HOG score <= threshold.
+    pub chroma_intra_pruning_with_hog: i32,
     /// `intra_sf.disable_smooth_intra` — default 0 (init_intra_sf:2438); allintra
     /// speed>=2 -> 1 (speed_features.c:429). Prunes SMOOTH_H_PRED / SMOOTH_V_PRED
     /// from the luma intra-mode search (intra_mode_search.c:1564-1567); SMOOTH_PRED
@@ -223,6 +232,7 @@ impl SpeedFeatures {
             ml_4_partition_search_level_index: 0, // init_part_sf:2305
             // intra_sf
             intra_pruning_with_hog: 1, // allintra base (speed_features.c:360)
+            chroma_intra_pruning_with_hog: 0, // init_intra_sf default (off)
             disable_smooth_intra: false, // init_intra_sf:2438
             prune_filter_intra_level: 0, // init_intra_sf:2440
             prune_palette_search_level: 0, // init_intra_sf:2431
@@ -307,6 +317,49 @@ impl SpeedFeatures {
             sf.prune_filter_intra_level = 1;
             // rd_sf (:433)
             sf.perform_coeff_opt = 3;
+        }
+
+        // ---- if (speed >= 3) { ... }
+        //   framesize-DEPENDENT block (speed_features.c:269-290): the intra-still
+        //   relevant delta is `ml_4_partition_search_level_index = 3` (:271) — but
+        //   at level 3 C switches to a DIFFERENT NN model with no threshold table
+        //   (partition_strategy.c:1359), which the port's `part4_prune` treats by
+        //   leaving the HORZ_4/VERT_4 allowed flags untouched (part4_prune.rs:238);
+        //   the 4-way ML prune only bites on the HORZ_4/VERT_4 search at <=32x32
+        //   blocks and is a byte no-op on this grid (empirically verified). Inert
+        //   here: `ml_early_term_after_part_split_level = 0` (:270, both consumers
+        //   `!frame_is_intra_only` — partition_search.c:4322/4335), `max_intra_bsize
+        //   = BLOCK_32X32` (:285, only `init_mode_skip_mask`'s INTER ref-frame mask,
+        //   rdopt.c:4217), `partition_search_breakout_{dist,rate}_thr` (:286-287,
+        //   INTER), `prune_tx_size_level = 3` (:289, gated on `use_hbd`, false here).
+        //   framesize-INDEPENDENT block (speed_features.c:439-469): the intra-still
+        //   relevant deltas are `less_rectangular_check_level = 2` (:444),
+        //   `chroma_intra_pruning_with_hog = 2` (:454) and `intra_pruning_with_hog
+        //   = 3` (:455). Inert here: `high_precision_mv_usage`/`search_method`/
+        //   `full_pixel_search_level`/`simple_motion_search_prune_agg` (motion/INTER),
+        //   `recode_loop`/`screen_detection_mode2_fast_detection` (high-level; the
+        //   harness bootstraps the parsed header and the fixed-q allintra path does
+        //   not recode), the four `lpf_sf` wiener/sgr fields (loop-restoration search
+        //   OFF), `prune_palette_search_level = 2` (:456, `av1_allow_palette` needs
+        //   `allow_screen_content_tools` — palette search never runs on non-screen
+        //   cells), `prune_ext_part_using_split_info = 1` (:446, 4-way split-info
+        //   prune — HORZ_4/VERT_4 only, byte no-op on this grid), `adaptive_txb
+        //   _search_level = 2` (:458, already 2 since speed 1), `use_skip_flag
+        //   _prediction = 2` (:459, vestigial — indexes `predict_skip_levels` into
+        //   `winner_mode_params->skip_txfm_level`, a table the port's non-winner-mode
+        //   intra tx path does not consume) and `use_rd_based_breakout_for_intra_tx
+        //   _search` (:460, intra tx-size-search early-exit — byte no-op on this grid).
+        if speed >= 3 {
+            // part_sf (framesize-independent, :444)
+            sf.less_rectangular_check_level = 2;
+            // part_sf (framesize-dependent, :271) — see the level-3 note above.
+            sf.ml_4_partition_search_level_index = 3;
+            // intra_sf (:454-455)
+            sf.chroma_intra_pruning_with_hog = 2;
+            sf.intra_pruning_with_hog = 3;
+            // intra_sf (:456) — palette-search prune (inert: palette off on
+            // non-screen cells); carried for source faithfulness.
+            sf.prune_palette_search_level = 2;
         }
 
         sf
@@ -415,6 +468,32 @@ mod tests {
         assert!(sf.skip_tx_search);
         assert_eq!(sf.less_rectangular_check_level, 1); // still 1 (bumps to 2 at speed>=3)
         // Derived tx policy at speed 2: perform_coeff_opt=3 -> dist threshold 864.
+        let pol = sf.tx_type_search_policy(false, 0);
+        assert_eq!(pol.coeff_opt_dist_threshold, 864); // coeff_opt_thresholds[3][0][0]
+        assert_eq!(pol.coeff_opt_satd_threshold, u32::MAX);
+    }
+
+    /// The speed-3 all-intra deltas, asserted against the source values
+    /// (`set_allintra_*` speed>=3 blocks). At speed 3 the speed>=1/2 deltas remain
+    /// in force and these additional fields flip.
+    #[test]
+    fn speed3_allintra_deltas_match_source() {
+        let sf = SpeedFeatures::set_allintra(3, false, false);
+        // NEW at speed 3 (framesize-independent :444/454/455/456 + dependent :271).
+        assert_eq!(sf.less_rectangular_check_level, 2); // :444 (base 1 -> 2)
+        assert_eq!(sf.chroma_intra_pruning_with_hog, 2); // :454 (0 -> 2, chroma HOG on)
+        assert_eq!(sf.intra_pruning_with_hog, 3); // :455 (2 -> 3, luma HOG thresh -0.6)
+        assert_eq!(sf.prune_palette_search_level, 2); // :456 (1 -> 2)
+        assert_eq!(sf.ml_4_partition_search_level_index, 3); // :271 (2 -> 3)
+        // Carried from speed 1/2 (unchanged at speed 3).
+        assert!(sf.disable_smooth_intra); // speed>=2 :429
+        assert_eq!(sf.prune_filter_intra_level, 1); // speed>=2 :431
+        assert_eq!(sf.perform_coeff_opt, 3); // speed>=2 :433
+        assert_eq!(sf.adaptive_txb_search_level, 2); // speed>=1 :406 (== speed>=3 :458)
+        assert_eq!(sf.top_intra_model_count_allowed, 3); // speed>=1 :404
+        assert!(sf.skip_tx_search); // speed>=1 :413
+        // Derived tx policy at speed 3: perform_coeff_opt=3 -> dist threshold 864
+        // (winner-mode DEFAULT_EVAL column holds through speed 3).
         let pol = sf.tx_type_search_policy(false, 0);
         assert_eq!(pol.coeff_opt_dist_threshold, 864); // coeff_opt_thresholds[3][0][0]
         assert_eq!(pol.coeff_opt_satd_threshold, u32::MAX);

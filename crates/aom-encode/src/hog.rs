@@ -298,5 +298,64 @@ pub fn prune_intra_mode_with_hog_y(
     }
 }
 
+/// `prune_intra_mode_with_hog` (chroma: `is_chroma = 1`, plane U): the chroma
+/// analogue of [`prune_intra_mode_with_hog_y`]. `collect_hog_data`
+/// (intra_mode_search_utils.h:406-435) computes the HOG on the **U-plane**
+/// pixels using the block's rows/cols derived from the LUMA `bsize` clipped to
+/// the frame edge (`mb_to_*_edge`, 1/8 luma-pel) then right-shifted by the
+/// chroma subsampling, and finally scales every bin by `(1 + ss_x) * (1 + ss_y)`
+/// (so luma and chroma HOG land on the same scale). The NN scores then set the
+/// `UV_V_PRED..UV_D67_PRED` (modes 1..=8) skip-mask entries whose score `<= th`.
+/// For an intra frame at chroma-prune level 2 the C threshold is
+/// `thresh[1][1] = -1.2` (intra_mode_search.c:961-970).
+#[allow(clippy::too_many_arguments)]
+pub fn prune_intra_mode_with_hog_uv(
+    src_u: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    bsize: usize,
+    ss_x: usize,
+    ss_y: usize,
+    mb_to_right_edge: i32,
+    mb_to_bottom_edge: i32,
+    th: f32,
+    directional_mode_skip_mask: &mut [bool; 13],
+) {
+    const BLK_W: [usize; 22] = [
+        4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
+    ];
+    const BLK_H: [usize; 22] = [
+        4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16,
+    ];
+    // `collect_hog_data`: bh/bw are LUMA dims; the frame-edge clip uses the LUMA
+    // `mb_to_*_edge` (1/8 luma-pel); the `>> ss` converts to chroma dims.
+    let bh = BLK_H[bsize] as i32;
+    let bw = BLK_W[bsize] as i32;
+    let rows = (if mb_to_bottom_edge >= 0 {
+        bh
+    } else {
+        (mb_to_bottom_edge >> 3) + bh
+    } >> ss_y) as usize;
+    let cols = (if mb_to_right_edge >= 0 {
+        bw
+    } else {
+        (mb_to_right_edge >> 3) + bw
+    } >> ss_x) as usize;
+
+    let mut hog = generate_hog(src_u, src_off, src_stride, rows, cols);
+    // collect_hog_data: hog[b] *= (1 + ss_x) * (1 + ss_y).
+    let scale = ((1 + ss_x) * (1 + ss_y)) as f32;
+    for b in hog.iter_mut() {
+        *b *= scale;
+    }
+
+    let scores = hog_nn_predict(&hog, true);
+    for mode in 1..=8usize {
+        if scores[mode - 1] <= th {
+            directional_mode_skip_mask[mode] = true;
+        }
+    }
+}
+
 mod intra_hog_model_weights;
 pub use intra_hog_model_weights::INTRA_HOG_MODEL_WEIGHTS;

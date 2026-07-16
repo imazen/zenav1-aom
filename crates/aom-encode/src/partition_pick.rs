@@ -180,7 +180,7 @@
 use crate::encode_sb::{
     LeafEncodeOut, LeafWinner, SbEncodeEnv, SbTree, TileCtxState, encode_sb_dry,
 };
-use crate::hog::prune_intra_mode_with_hog_y;
+use crate::hog::{prune_intra_mode_with_hog_uv, prune_intra_mode_with_hog_y};
 use crate::intra_rd::{Block4x4VarInfo, IntraSbyGates, IntraSbySearchCfg};
 use crate::intra_uv_rd::{
     UV_CFL_PRED, UvLoopPolicy, UvRdEnv, av1_get_tx_size_uv, chroma_plane_offset,
@@ -492,6 +492,26 @@ fn leaf_pick_sb_modes(
         // Interior blocks: mb_to_*_edge large positive.
         let mb_right = (env.mi_cols - mi_w as i32 - mi_col) * 4 * 8;
         let mb_bottom = (env.mi_rows - mi_h as i32 - mi_row) * 4 * 8;
+        // `intra_sf.intra_pruning_with_hog` level (allintra: base 1, speed>=2 ->
+        // 2, speed>=3 -> 3; SpeedFeatures::set_allintra, speed_features.c:360/
+        // 430/455). The C threshold table `{-1.2,-1.2,-0.6,0.4}` (intra_mode_
+        // search.c:1505, indexed by `level-1`) maps levels 1,2 -> -1.2 and
+        // level 3 -> -0.6, so the prune only sharpens at speed>=3. GOOD
+        // (non-allintra) runs at speed 0 in this envelope -> level 1 -> -1.2.
+        // (Derived inline from cfg.speed, mirroring `disable_smooth_intra` /
+        // `top_intra_model_count_allowed` below.)
+        let luma_hog_level = if cfg.allintra {
+            if cfg.speed >= 3 {
+                3
+            } else if cfg.speed >= 2 {
+                2
+            } else {
+                1
+            }
+        } else {
+            1
+        };
+        let th = [-1.2f32, -1.2, -0.6, 0.4][luma_hog_level - 1];
         prune_intra_mode_with_hog_y(
             env.src_y,
             ref_off_y,
@@ -499,7 +519,7 @@ fn leaf_pick_sb_modes(
             bsize,
             mb_right,
             mb_bottom,
-            -1.2,
+            th,
             &mut skip_mask,
         );
     }
@@ -757,6 +777,47 @@ fn leaf_pick_sb_modes(
         sharpness: env.sharpness,
         enable_optimize_b: env.enable_optimize_b,
     };
+
+    // Per-block CHROMA directional-mode HOG prune (`intra_sf.chroma_intra_pruning
+    // _with_hog`, speed_features.c:454). Off (level 0) at speed 0/1/2; allintra
+    // speed>=3 -> level 2 (SpeedFeatures::set_allintra). C computes the skip mask
+    // lazily on the first directional uv candidate (intra_mode_search.c:959-972)
+    // with the intra-frame threshold `thresh[1][level-1]` (= -1.2 at level 2);
+    // precomputing it here is byte-equivalent (the mask is deterministic and is
+    // only ever read in that same `is_directional && use_angle_delta` branch,
+    // intra_uv_rd.rs:1457-1464). Only computed on chroma-ref blocks of a
+    // non-monochrome frame — where the uv mode search actually evaluates modes.
+    // (Level derived inline from cfg.speed, mirroring the luma HOG level above.)
+    let chroma_hog_level = if cfg.allintra && cfg.speed >= 3 { 2 } else { 0 };
+    let chroma_hog_lp;
+    let uv_lp: &UvLoopPolicy = if chroma_hog_level > 0 && !env.monochrome && is_chroma_ref {
+        let mut mask = [false; 13];
+        // C's collect_hog_data uses the LUMA `mb_to_*_edge` (1/8 luma-pel), then
+        // `>> ss` inside prune_intra_mode_with_hog_uv.
+        let mb_right = (env.mi_cols - mi_w as i32 - mi_col) * 4 * 8;
+        let mb_bottom = (env.mi_rows - mi_h as i32 - mi_row) * 4 * 8;
+        let th = [-1.2f32, -1.2, -0.6, 0.4][chroma_hog_level - 1];
+        prune_intra_mode_with_hog_uv(
+            env.src_u,
+            ref_off_uv,
+            env.stride,
+            bsize,
+            env.ss_x,
+            env.ss_y,
+            mb_right,
+            mb_bottom,
+            th,
+            &mut mask,
+        );
+        chroma_hog_lp = UvLoopPolicy {
+            chroma_hog_skip_mask: Some(mask),
+            ..cfg.uv_lp.clone()
+        };
+        &chroma_hog_lp
+    } else {
+        cfg.uv_lp
+    };
+
     let outcome = {
         let uv_args = if env.monochrome {
             None
@@ -771,7 +832,7 @@ fn leaf_pick_sb_modes(
                 intra_uv_mode_cost: cfg.intra_uv_mode_cost,
                 costs: cfg.mode_costs,
                 cfl_costs: cfg.cfl_costs,
-                lp: cfg.uv_lp,
+                lp: uv_lp,
             })
         };
         rd_pick_intra_mode_sb(

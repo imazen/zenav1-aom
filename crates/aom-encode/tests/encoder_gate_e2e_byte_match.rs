@@ -1923,3 +1923,137 @@ fn encoder_gate_speed2_textured_allintra() {
         failed
     );
 }
+
+/// Gate 2 (`aomenc --cpu-used=3`) — the all-intra KEY **speed-3** path. Reuses the
+/// full e2e derivation with `ref_encode_av1_kf(cpu_used=3)` +
+/// `SpeedFeatures::set_allintra(3)`. Byte-identical to real aomenc `--cpu-used=3`
+/// end to end across the same size × quality × content × subsampling grid as the
+/// speed-2 gate: 64/128 (1×1 / 2×2 SB) × cq{12,32,48,63} × {flat, two-tone, vgrad,
+/// diag} × {mono, 4:2:0} — **61/64 cells byte-identical** (the 3 excluded cells are
+/// a pinned KB-6-class chroma-RD residual, see the assertion at the bottom).
+///
+/// Anti-vacuous witness (the chroma HOG delta is load-bearing): BEFORE this fix
+/// (i.e. `set_allintra(3)` returning the speed-2 sf values, chroma HOG OFF) **16**
+/// of these cells diverged from aomenc `--cpu-used=3` — every 4:2:0 cell at cq12
+/// AND cq32 (env-gated bisect during development; all 16 byte-MATCH aomenc
+/// `--cpu-used=2`, proving they are speed-3-specific). Turning ON the speed-3
+/// `chroma_intra_pruning_with_hog = 2` chroma HOG prune fixes **13** of them —
+/// e.g. `flat/diag 64x64 420 cq12`, `flat/vgrad/diag 128x128 420 cq32` byte-match
+/// ONLY with the chroma HOG applied. So the gate's assertion on those 13 cells is
+/// the witness: it fails if the chroma HOG is reverted.
+///
+/// The speed-3 deltas over speed 2 that are LIVE on the bd8 4:2:0 all-intra KEY
+/// path (`set_allintra_speed_features_*`, speed_features.c speed>=3 blocks):
+///   - `intra_pruning_with_hog = 3` (:455) — luma HOG prune threshold 1->2 was a
+///     no-op (`thresh[]={-1.2,-1.2,-0.6,0.4}` maps levels 1,2 to -1.2), but level
+///     3 -> `thresh[2] = -0.6`, a strictly more aggressive directional-mode prune.
+///     LIVE: wired via `PickFrameCfg::intra_hog_thresh`.
+///   - `chroma_intra_pruning_with_hog = 2` (:454) — default 0 (chroma HOG prune
+///     OFF at speed 0/1/2); speed>=3 turns it ON with intraframe `thresh[1][1] =
+///     -1.2`. LIVE on 4:2:0 cells: wired via `UvLoopPolicy::chroma_hog_thresh`.
+///   - `less_rectangular_check_level = 2` (:444) — base 1; at level 2 the SPLIT
+///     stage's rect-kill runs for every `idx` (not only `idx <= 2`). LIVE: already
+///     consumed at `rd_pick_partition`'s post-split arm; threaded via the sf value.
+///
+/// All other speed-3 deltas are inert on this path (verified against source):
+///   - framesize-DEPENDENT (:269-290): `ml_early_term_after_part_split_level = 0`
+///     (both consumers `!frame_is_intra_only`, partition_search.c:4322/4335),
+///     `max_intra_bsize = BLOCK_32X32` (only `init_mode_skip_mask`'s INTER
+///     ref-frame mask, rdopt.c:4217), `partition_search_breakout_{dist,rate}_thr`
+///     (INTER), `prune_tx_size_level` (gated on `use_hbd`, false at bd8);
+///   - framesize-INDEPENDENT (:439-469): `high_precision_mv_usage`, `search_method`,
+///     `full_pixel_search_level`, `simple_motion_search_prune_agg` (all
+///     motion/INTER), `recode_loop`/`screen_detection_mode2_fast_detection`
+///     (high-level; the harness bootstraps the parsed header + fixed-q allintra
+///     path does not recode), the four `lpf_sf` wiener/sgr fields
+///     (loop-restoration search OFF in the allintra envelope), `prune_palette_
+///     search_level = 2` (`av1_allow_palette` requires `allow_screen_content_tools`
+///     -> palette search never runs on these non-screen cells),
+///     `use_skip_flag_prediction = 2` (vestigial: indexes `predict_skip_levels`
+///     into `winner_mode_params->skip_txfm_level`, whose DEFAULT_EVAL column the
+///     port's non-winner-mode intra tx path does not consume), `adaptive_txb_search
+///     _level = 2` (already 2 since speed 1), `prune_ext_part_using_split_info = 1`
+///     / `ml_4_partition_search_level_index = 3` (4-way HORZ_4/VERT_4 prune only;
+///     empirically no-op on this grid — the ML 4-way prune isn't the deciding
+///     factor on any diverging cell), `use_rd_based_breakout_for_intra_tx_search`
+///     (intra tx-size-search early-exit; empirically no-op on this grid).
+///
+/// The luma HOG level-3 threshold (-0.6) and `less_rectangular_check_level = 2`
+/// are BYTE-NO-OPS on this grid (every mono cell byte-matches, and mono exercises
+/// the luma HOG + luma partition rect-kill without any chroma) — they are ported
+/// for source faithfulness and verified inert here.
+#[test]
+fn encoder_gate_speed3_textured_allintra() {
+    fn content_for(w: usize, h: usize, name: &str) -> Box<dyn Fn(usize, usize) -> u8> {
+        match name {
+            "two-tone" => Box::new(move |_r, c| if c < w / 2 { 72 } else { 168 }),
+            "vgrad" => Box::new(move |_r, c| (32 + c * 190 / w) as u8),
+            "diag" => Box::new(move |r, c| (32 + (r + c) * 190 / (w + h)) as u8),
+            "flat" => Box::new(move |_r, _c| 128u8),
+            other => panic!("unknown {other:?}"),
+        }
+    }
+    let mut results: Vec<(String, bool)> = Vec::new();
+    for &(w, h) in &[(64usize, 64usize), (128usize, 128usize)] {
+        for &name in &["flat", "two-tone", "vgrad", "diag"] {
+            for &cq in &[12i32, 32, 48, 63] {
+                for &mono in &[true, false] {
+                    let content = content_for(w, h, name);
+                    let ok = attempt_case_content_uv(
+                        w,
+                        h,
+                        mono,
+                        1,
+                        1,
+                        2,
+                        cq,
+                        3,
+                        3,
+                        |r, c| content(r, c),
+                        |r, c| (60 + (r * 7 + c * 3) % 80) as u8,
+                    );
+                    let fmt = if mono { "mono" } else { "420" };
+                    eprintln!(
+                        "speed3 {name} {w}x{h} {fmt} cq{cq}: {}",
+                        if ok { "MATCH" } else { "DIFF" }
+                    );
+                    results.push((format!("{name} {w}x{h} {fmt} cq{cq}"), ok));
+                }
+            }
+        }
+    }
+
+    // Three cq12 4:2:0 cells are a KB-6-class LATENT chroma-RD partition near-tie
+    // EXPOSED (not caused) by the correctly-ported chroma HOG: at cq12 (qindex 48,
+    // the aggressive-web low-q regime KB-6 flags) the chroma HOG (bit-exact vs C —
+    // `prune_intra_mode_with_hog_uv_matches_c`, 900 cases) shrinks the chroma mode
+    // set enough that a pre-existing chroma-RD near-tie tips a SB-root partition
+    // (localized: real=BLOCK_64X64 NONE vs the port's split). It is NOT a speed-3
+    // porting defect (the delta is bit-exact) — same class as KB-6's cq5 low-q
+    // near-ties, tracked there. Pinned EXACTLY: if a KB-6 chroma-RD fix later makes
+    // one match, this FAILS -> promote it to the byte-match set; if a regression
+    // breaks a new cell, this FAILS -> investigate.
+    let mut residual: Vec<String> = results
+        .iter()
+        .filter(|(_, ok)| !*ok)
+        .map(|(n, _)| n.clone())
+        .collect();
+    residual.sort();
+    let expected_residual = [
+        "two-tone 128x128 420 cq12".to_string(),
+        "two-tone 64x64 420 cq12".to_string(),
+        "vgrad 128x128 420 cq12".to_string(),
+    ];
+    let matched = results.iter().filter(|(_, ok)| *ok).count();
+    eprintln!(
+        "encoder_gate_speed3_textured_allintra: {matched}/{} cells byte-identical vs aomenc \
+         --cpu-used=3 (3 KB-6-class cq12 4:2:0 residuals pinned)",
+        results.len()
+    );
+    assert_eq!(
+        residual, expected_residual,
+        "cpu-used=3 divergence set changed: got {residual:?}. If a cell now MATCHES, the \
+         KB-6 chroma-RD near-tie was fixed -> promote it into the byte-match claim; if a NEW \
+         cell diverges, a speed-3 regression was introduced -> investigate."
+    );
+}

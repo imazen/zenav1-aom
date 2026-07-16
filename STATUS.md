@@ -2537,3 +2537,38 @@ byte-identical, so no current cell distinguishes them; queued as #25.
 
 **cpu-used=1 all-intra coverage: 14 of 14 content cells byte-identical** (all 6 flat + all 8
 gentle-slope textured). Full `cargo test -p aom-encode`: 89 passed, 0 failed.
+
+---
+
+## Gate 2 — `--cpu-used=3` (speed-3) all-intra KEY byte-match
+
+Ported the speed≥3 `set_allintra_speed_features_*` deltas that are LIVE on the bd8 4:2:0 all-intra
+KEY path, on top of the speed-2 baseline (a8a3992). New `if speed >= 3` block in
+`speed_features.rs` (asserted by `speed3_allintra_deltas_match_source`):
+
+- **`chroma_intra_pruning_with_hog = 2`** (speed_features.c:454) — **the dominant LIVE delta.** Turns
+  ON the CHROMA directional-mode HOG prune (OFF at speed 0/1/2). New `prune_intra_mode_with_hog_uv`
+  (hog.rs): U-plane HOG on the LUMA-bsize `>> ss` dims, `× (1+ss_x)(1+ss_y)` scale, intra-frame
+  threshold `thresh[1][1] = -1.2`; proven **byte-identical to C** across 900 cases
+  (`prune_intra_mode_with_hog_uv_matches_c`). Wired per-block in `leaf_pick_sb_modes`
+  (`partition_pick.rs`) via a local `UvLoopPolicy` whose `chroma_hog_skip_mask` the existing consumer
+  (intra_uv_rd.rs:1457) already reads. Fixes **13 of the 16** 4:2:0 cq12/cq32 cells that diverged at
+  speed 3 without it (anti-vacuous witness — all 16 byte-match aomenc `--cpu-used=2`).
+- **`intra_pruning_with_hog = 3`** (speed_features.c:455) — luma HOG threshold `-1.2 → -0.6`
+  (level-3 row). `partition_pick.rs` now derives the threshold from the level (was hardcoded -1.2).
+  Byte no-op on this grid (every mono cell byte-matches).
+- **`less_rectangular_check_level = 2`** (speed_features.c:444) — already-wired consumer
+  (partition_pick.rs:1844, `level == 2 || idx <= 2`); just threaded the sf value. Byte no-op here.
+- **`ml_4_partition_search_level_index = 3`** (speed_features.c:271) — the port's `part4_prune`
+  already returns unchanged at level ≥ 3 (C's different-model branch, #10). `prune_palette_search
+  _level = 2` carried for faithfulness. All other speed-3 deltas verified INERT on this path
+  (inter/motion, loop-restoration OFF, `max_intra_bsize`/breakout INTER-only, `use_skip_flag
+  _prediction` vestigial, palette needs screen-content) — documented in `set_allintra`.
+
+**cpu-used=3 all-intra coverage: 61 of 64 cells byte-identical** ({64,128}² × cq{12,32,48,63} ×
+{flat,two-tone,vgrad,diag} × {mono,420}). The 3 residuals (two-tone 64²/128², vgrad 128², all
+**cq12 4:2:0**) are a **KB-6-class latent chroma-RD partition near-tie** exposed (not caused) by the
+correct chroma HOG — localized to a SB-root partition flip (real BLOCK_64X64 NONE vs port split),
+pinned exactly in the gate (fails if a KB-6 fix makes one match → promote, or a regression breaks a
+new cell). See KB-7. New gate `encoder_gate_speed3_textured_allintra`; full `cargo test -p
+aom-encode` green.
