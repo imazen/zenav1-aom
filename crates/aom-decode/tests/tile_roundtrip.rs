@@ -909,6 +909,7 @@ impl<'a> Mirror<'a> {
             dequant: &dequant,
             qm: None,
             iqm: None,
+            qm_ctx: None,
             bd: cfg.bd as u8,
             lossless: false,
         };
@@ -1159,6 +1160,7 @@ impl<'a> Mirror<'a> {
                     dequant: &dequant_p,
                     qm: None,
                     iqm: None,
+                    qm_ctx: None,
                     bd: cfg.bd as u8,
                     lossless: false,
                 };
