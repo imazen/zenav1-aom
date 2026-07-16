@@ -2632,3 +2632,42 @@ diverge on a bottom-edge-SB-row RD near-tie (real 16×8 vs port 8×4 at mi(48,0)
 through byte 2224/2230) — pinned assert-diverge in `kb6_characterize_196_partial_sb`; next step is
 the sibling-C per-candidate RD dump at that node. Full `cargo test -p aom-encode` green (61 result
 lines, 0 failed).
+
+## KB-6 — frame-edge entropy-stamp tail-zero + frame-init edge partition CDF: 196² cq12/20/32 byte-match (map 29/30)
+
+Pinned via a full C-vs-port symbol-level bit trace (throwaway instrumented sibling C encoder at
+`/root/kb6-edge-instr`: `partition_search.c` + `bitstream.c` + `encodetxb.c` override objects,
+oracle-flag compile, byte-gate `FRAME_PAYLOAD == 1006` verified vs real aomenc before every dump).
+The prior "mi(48,0) 16×8-vs-8×4 over-split near-tie" hypothesis was WRONG in an instructive way:
+the port's SEARCH picks C's exact partition tree at every bottom-edge node and every leaf RD
+matches C to the unit (SPLIT 4155584 vs HORZ 2954657 at the 16×16 — not even close); the PACK also
+writes the identical symbols (p/ctx/cdf-row/eob traces equal). The "over-split" was the port's own
+conformance-proven decoder reading the port's DESYNCED bytes.
+
+Two measured write-side defects (port X vs C Y):
+
+- **Entropy-stamp footprint at frame-edge txbs.** C `av1_set_entropy_contexts` (blockd.c:29,
+  cul passed via encodetxb.c:730/867): visible part of the txb's above/left footprint = cul,
+  **beyond-visible tail = memset 0** (both the mb_to_right/above and mb_to_bottom/left arms).
+  The port's persistent tile stamp (encode_sb.rs luma + UV) wrote the cul across the FULL
+  footprint. Measured phantom: `above_ectx[mi cols 50,51] = 15`, `above_ectx[1][chroma col 25]
+  = 19` (all out-of-frame; C keeps them 0). SB(32,48)'s 32×64 leaf reads its skip ctx over the
+  full 8-unit width → port txb_skip_ctx 3 vs C 1 (luma), 9 vs 8 (U) → identical all-skip symbols
+  coded on different-probability rows → port leaf 10 bits vs C 7 (tells 7792→7802 vs 7792→7799)
+  → first divergent tile byte 975 → bottom-row decode desync. Fix: tail-zero in both encode_sb.rs
+  stamps (`vis_w/vis_h` clamp; interior txbs unchanged — vis == full width). The C encode-path
+  per-txb stamp `av1_set_txb_context` (encodemb.h) is full-footprint and the port's local ta/tl
+  stamps already mirror it correctly (no change).
+- **Edge partition-cost CDF source.** C `set_partition_cost_for_edge_blk`
+  (partition_search.c:3415) gathers from `cm->fc->partition_cdf` — the FRAME-INIT table
+  (measured: C's gather rows == `default_partition_cdf` at every bottom-edge node) — while the
+  port's CHUNK 3 wiring fed the per-SB-adapted snapshot (pack.rs `sb_pick_cfg`). Corrects my own
+  CHUNK 3 (`4b8b1f1`): the search-side edge costs were 380/669 vs C's 248/927 at the 16×16 —
+  didn't flip this cell's tree but is a genuine divergence that can flip true near-ties. Fix:
+  drop the override; the `..*pick_cfg` spread supplies the frame-init table.
+
+Measured result: 196×196 cq12, cq20, cq32 all TRUE END-TO-END BYTE MATCH; **KB-6 map 26/30 →
+29/30**. Promotions: 196² cq5/12/20/32/63 asserted in `encoder_gate_real_image_e2e_kb6_repro`;
+`kb6_characterize_196_partial_sb` re-pinned at the one remaining cell — 196² cq48, which diverges
+at tile-byte 253/616 (MID-stream, SB rows 1-2; a distinct near-tie, not the bottom-row class).
+Full `cargo test -p aom-encode` green before landing.

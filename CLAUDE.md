@@ -323,30 +323,34 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   cq63 closed 2026-07-16 by the KB-4 OUTPUT_ENABLED tx_type_map fix** (the port coded DCT-eob1
   where real codes an eob0 skip — the reset-leak signature, present in interior AND edge SB
   rows).
-- **DISTINCT SUB-GAP — partial-SB (frame dims not a multiple of 64px) — MOSTLY FIXED 2026-07-16,
-  ONE RESIDUAL NEAR-TIE.** Landed chunk series (`3167800` CHUNK 0+1, `7c468ee` CHUNK 2, `4b8b1f1`
-  CHUNK 3): (0) the KB-6 harness now encodes the TRUE 196×196 frame — `run_case`/`localize_real`
-  ceil `n_sb` and size + replicate-border-extend the source planes to the SB-aligned extent
-  (matching `aom_extend_frame_borders`; the earlier floor-to-192 silent wrong-size skip is gone;
-  `TileCtxState` above-contexts were already `aligned_mi_cols`-sized); (1) luma pixel-domain
-  distortion (`dist_block_px_domain`, tx_search.rs) clips to `get_txb_visible_dimensions` at edge
-  txbs; (2) the chroma paths clip identically WITH chroma subsampling via the new
-  `max_block_units` = `max_block_wide/high` helper (intra_uv_rd.rs UV RD, encode_intra.rs UV
-  encode, encode_sb.rs UV entropy stamp) — this took the whole top 3 SB rows INCLUDING the
-  right-edge partial SBs byte-exact at cq32 (previously a chroma angle_delta flip at mi(32,48));
-  (3) `set_partition_cost_for_edge_blk` (partition_search.c:3411) is ported + wired
-  (`partition_pick.rs`, new `PickFrameCfg::partition_cdfs` raw-CDF plumbing, SB-adapted in
-  pack.rs; witness `edge_cost_matches_gathered_composition` locks the gather composition).
-  **Result: 196×196 cq5 is a TRUE END-TO-END BYTE MATCH — the first full partial-SB frame match —
-  promoted to an asserted gate in `encoder_gate_real_image_e2e_kb6_repro`.**
-  **RESIDUAL (pinned, assert-diverge in `kb6_characterize_196_partial_sb`):** 196 cq12/20/32/48
-  still diverge on the BOTTOM-edge SB row (cq63 closed by the KB-4 OUTPUT_ENABLED fix) — first
-  leaf mismatch at mi(48,0): real picks 16×8, the port over-splits to 8×4 on the 8px-visible
-  strip (cq32: port tile 999B vs real 1006B; cq12 matches through byte 2224 of 2230). NOT the
-  edge partition cost (CHUNK 3 correct, no effect) and NOT the edge-rect search structure (the
-  port's `is_not_edge_block` sub-0-only rect handling already matches C) — a distortion-side
-  HORZ-vs-SPLIT near-tie; next step is the sibling-C per-candidate RD dump (KB-2/KB-3
-  methodology) at the mi(48,0) 16×16 node.
+- **DISTINCT SUB-GAP — partial-SB (frame dims not a multiple of 64px) — FIXED except ONE cell
+  (196² cq48).** Landed: the CHUNK series (`3167800` CHUNK 0+1 true-frame harness + luma visible
+  dist clip, `7c468ee` CHUNK 2 chroma visible clips via `max_block_units`, `4b8b1f1` CHUNK 3
+  `set_partition_cost_for_edge_blk`), the KB-4 OUTPUT_ENABLED tx_type_map reset-leak fix
+  (`a2dd28e`, closed 196² cq63), and the **frame-edge entropy-stamp tail-zero + frame-init edge
+  partition CDF fix** (closed cq12/20/32; map 26/30 → **29/30**). That last root was pinned by a
+  full C-vs-port symbol-level bit trace (throwaway instrumented sibling C at `/root/kb6-edge-instr`,
+  byte-gate-verified vs real aomenc): the apparent "mi(48,0) 16×8-vs-8×4 over-split" was NOT a
+  search decision — the port's search picks C's EXACT tree and every leaf RD matches C to the unit;
+  the port's PACK also writes the same symbols. The divergence was a WRITE-side probability defect:
+  (a) **`av1_set_entropy_contexts` (blockd.c:29) zeroes the beyond-visible TAIL of an edge txb's
+  above/left entropy-context footprint** (`memset(a + above_contexts, 0, txs_wide - above_contexts)`)
+  while the port's tile stamp (encode_sb.rs) wrote the cul across the FULL footprint — phantom
+  nonzero culs at out-of-frame mi cols (50-51 luma / 25 chroma) fed later edge blocks'
+  full-footprint `get_txb_ctx` reads, flipping SB(32,48)'s txb_skip_ctx (1→3 luma, 8→9 U) → same
+  symbols on different-probability cdf rows → +3 bits → stream desync at tile-byte 975 → the
+  decoded "over-split" artifact; (b) the CHUNK 3 edge partition-cost gather read the SB-adapted
+  partition CDF, but C's `set_partition_cost_for_edge_blk` (partition_search.c:3415) reads
+  **`cm->fc` — the frame-init table** (measured: C's gather rows == `default_partition_cdf`),
+  a shipped-libaom mixed-source quirk (interior costs track the adapting tile state; edge gather
+  does not). Note the C encode-path per-txb stamp `av1_set_txb_context` (encodemb.h) is
+  full-footprint UNclipped — only the tokenize/persistent stamp clips; the port's local ta/tl
+  stamps correctly mirror the former and needed no change.
+  **196² cq5/12/20/32/63 are asserted byte-match gates** in `encoder_gate_real_image_e2e_kb6_repro`.
+  **RESIDUAL (pinned, assert-diverge in `kb6_characterize_196_partial_sb`, now targeting cq48):**
+  196² cq48 (qindex 192) diverges at tile-byte 253 of ~609/616 — MID-stream (SB rows 1-2), NOT the
+  bottom-row-boundary signature the fixed cells had — a distinct near-tie, next localization
+  target (decode-both on the current tree).
 - **MULTI-TILE encode is byte-exact** (commit f6e6319, `encoder_gate_multitile_e2e`): the port's own
   per-tile search+pack byte-matches real aomenc across 2×1/1×2/2×2 grids (4:4:4 128² × cq{12,32,63}).
 - **DISCOVERED 2026-07-15 via the new real-image e2e gate** (`encoder_gate_real_image_e2e_kb6_repro`

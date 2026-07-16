@@ -652,12 +652,30 @@ pub fn encode_b_intra_dry(
                 // gives 0 under any scan, and eob>0 txbs kept their map type
                 // (only eob-0 origins reset to DCT).
                 debug_assert_eq!(cul, txb.txb_entropy_ctx, "tokenize cul == encode ctx");
-                // av1_set_entropy_contexts (interior: full-footprint memset).
-                for x in state.above_ectx[0][a0 + blk_col..a0 + blk_col + txw_u].iter_mut() {
-                    *x = cul as i8;
+                // av1_set_entropy_contexts (blockd.c:29): interior txbs memset
+                // the FULL tx footprint with the cul; at a frame edge the
+                // beyond-visible TAIL of the footprint is memset to ZERO
+                // (`memset(a + above_contexts, 0, txs_wide - above_contexts)`,
+                // both the mb_to_right_edge/above and mb_to_bottom_edge/left
+                // arms — with cul==0 the else arm zeroes the full width, same
+                // result). Stamping the cul across the tail instead poisons
+                // out-of-frame columns/rows that a LATER edge block's
+                // full-footprint `get_txb_ctx` read ORs in, flipping its
+                // txb_skip_ctx (KB-6 196x196: phantom cul at mi cols 50-51
+                // shifted SB(32,48)'s skip ctx 1->3, +3 bits, stream desync).
+                let vis_w = txw_u.min(bwv - blk_col);
+                let vis_h = txh_u.min(bhv - blk_row);
+                for (i, x) in state.above_ectx[0][a0 + blk_col..a0 + blk_col + txw_u]
+                    .iter_mut()
+                    .enumerate()
+                {
+                    *x = if i < vis_w { cul as i8 } else { 0 };
                 }
-                for x in state.left_ectx[0][l0 + blk_row..l0 + blk_row + txh_u].iter_mut() {
-                    *x = cul as i8;
+                for (i, x) in state.left_ectx[0][l0 + blk_row..l0 + blk_row + txh_u]
+                    .iter_mut()
+                    .enumerate()
+                {
+                    *x = if i < vis_h { cul as i8 } else { 0 };
                 }
                 k += 1;
                 blk_col += txw_u;
@@ -705,15 +723,22 @@ pub fn encode_b_intra_dry(
                         let txb = &out.txbs[k];
                         let cul = txb_entropy_context(&txb.qcoeff, uv_tx, uv_tt, txb.eob as usize);
                         debug_assert_eq!(cul, txb.txb_entropy_ctx, "uv tokenize cul == encode ctx");
-                        for x in
-                            state.above_ectx[plane][au + blk_col..au + blk_col + ptxw_u].iter_mut()
+                        // av1_set_entropy_contexts edge arms (see the luma
+                        // stamp above): the beyond-visible tail of the tx
+                        // footprint is ZERO, not the cul.
+                        let vis_w = ptxw_u.min(pmw - blk_col);
+                        let vis_h = ptxh_u.min(pmh - blk_row);
+                        for (i, x) in state.above_ectx[plane][au + blk_col..au + blk_col + ptxw_u]
+                            .iter_mut()
+                            .enumerate()
                         {
-                            *x = cul as i8;
+                            *x = if i < vis_w { cul as i8 } else { 0 };
                         }
-                        for x in
-                            state.left_ectx[plane][lu + blk_row..lu + blk_row + ptxh_u].iter_mut()
+                        for (i, x) in state.left_ectx[plane][lu + blk_row..lu + blk_row + ptxh_u]
+                            .iter_mut()
+                            .enumerate()
                         {
-                            *x = cul as i8;
+                            *x = if i < vis_h { cul as i8 } else { 0 };
                         }
                         k += 1;
                         blk_col += ptxw_u;

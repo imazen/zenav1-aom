@@ -750,38 +750,45 @@ fn kb6_localize_size_64_cq32() {
     );
 }
 
-/// Localize the **196x196 partial-SB divergence** (distinct from the RD-near-tie
-/// class). 196px is not a multiple of 64 → mi_cols = mi_dim(196) = 50: the frame
-/// has partial edge superblocks along the right column and bottom row (mi 48, a
-/// 2-mi/8px visible strip; SB extent runs to the border-extended 256px).
+/// Localize the last open **196x196 partial-SB divergence** (cq48). 196px is
+/// not a multiple of 64 → mi_cols = mi_dim(196) = 50: partial edge superblocks
+/// along the right column and bottom row (mi 48, a 2-mi/8px visible strip).
 ///
-/// The port now ENCODES the true 196x196 frame (no panic, no size floor):
-/// `TileCtxState` above-contexts are `aligned_mi_cols`-sized, the harness ceils
-/// `n_sb` + border-extends the source (CHUNK 0), the luma + chroma distortion
-/// paths clip to `get_txb_visible_dimensions`/`max_block_*` (CHUNKs 1-2, which
-/// took the whole top 3 SB rows INCLUDING the right-edge partial SBs byte-exact
-/// at cq32), and the edge-block partition-cost override
-/// (`set_partition_cost_for_edge_blk`, CHUNK 3) charges the gathered 2-way edge
-/// cost. REMAINING divergence (pinned here): the BOTTOM-edge SB row — first
-/// leaf mismatch at mi(48,0), real picks bsize=5 (16x8) where the port picks
-/// bsize=2 (8x4), an over-split on the 8px-visible strip (real tile 1006B vs
-/// port 999B at cq32). A distortion-side HORZ-vs-SPLIT near-tie; needs the
-/// sibling-C per-candidate RD dump (KB-2/KB-3 methodology) to pin the term.
+/// FIXED history (each previously pinned here or in the map): the harness
+/// true-frame + border-extend (CHUNK 0), luma + chroma visible-distortion
+/// clips (CHUNKs 1-2), the edge partition-cost override (CHUNK 3), the KB-4
+/// OUTPUT_ENABLED tx_type_map reset-leak (a2dd28e — closed cq63), and the
+/// **frame-edge entropy-context stamp tail-zero** (`av1_set_entropy_contexts`,
+/// blockd.c:29 — the port stamped the txb's cul across the FULL tx footprint
+/// at edge txbs where C zeroes the beyond-visible tail; the phantom nonzero
+/// culs at out-of-frame columns fed later edge blocks' full-footprint
+/// `get_txb_ctx` reads → wrong txb_skip_ctx → same symbols on
+/// different-probability cdf rows → stream desync at the bottom SB row; the
+/// apparent mi(48,0) "16x8-vs-8x4 over-split" was that desync's decode
+/// artifact, not a search decision) + the edge partition-cost gather reading
+/// the frame-init `cm->fc` table (not the adapted one) — which together
+/// closed cq12/20/32. cq32/cq12/cq20/cq5/cq63 are asserted byte-match gates
+/// in `encoder_gate_real_image_e2e_kb6_repro`.
+///
+/// REMAINING (pinned here): **cq48** (qindex 192) — first tile-byte
+/// divergence at byte 253 of ~609/616, i.e. MID-STREAM around SB row 1-2,
+/// NOT the bottom-row-boundary signature the fixed cells had — a distinct
+/// near-tie, next localization target.
 ///
 /// Pinned as assert-diverge per KB-6: FAILS (a) if the encode panics/regresses,
 /// or (b) the moment the cell byte-matches — the signal to flip the assert and
-/// promote the 196 cells in `encoder_gate_real_image_e2e_kb6_repro`.
+/// promote 196 cq48 in `encoder_gate_real_image_e2e_kb6_repro`.
 #[test]
 fn kb6_characterize_196_partial_sb() {
-    let matched = localize_real("av1-1-b8-01-size-196x196", 32, 0, 0, 0, 0);
+    let matched = localize_real("av1-1-b8-01-size-196x196", 48, 0, 0, 0, 0);
     eprintln!(
-        "\n=== KB-6 196x196 partial-SB cq32: encode OK, matched={matched} \
-         (open divergence: bottom-edge SB row over-split, see above) ==="
+        "\n=== KB-6 196x196 partial-SB cq48: encode OK, matched={matched} \
+         (open divergence: mid-stream near-tie, see above) ==="
     );
     assert!(
         !matched,
-        "KB-6 196x196 cq32 now BYTE-MATCHES real aomenc: the partial-SB bottom-edge \
-         divergence is fixed. Flip this assert and promote the 196x196 cells in \
-         encoder_gate_real_image_e2e_kb6_repro to asserted byte-match gates."
+        "KB-6 196x196 cq48 now BYTE-MATCHES real aomenc: the last partial-SB \
+         divergence is fixed. Flip this assert and promote 196x196 cq48 in \
+         encoder_gate_real_image_e2e_kb6_repro to an asserted byte-match gate."
     );
 }

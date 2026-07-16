@@ -912,11 +912,15 @@ pub fn pack_tile(
                 intra_uv_mode_cost: &sb_real.mode_costs.intra_uv_mode_cost,
                 cfl_costs: &sb_real.cfl_costs,
                 partition_costs: &sb_real.partition_costs,
-                // SB-adapted partition CDF (matches `partition_costs` above) so
-                // the edge-block override reads the CDF that has adapted through
-                // the prior SBs, not the frame-init one the `..*pick_cfg` spread
-                // would supply.
-                partition_cdfs: &sb_real.partition_cdf,
+                // partition_cdfs stays the FRAME-INIT table (the `..*pick_cfg`
+                // spread): C's `set_partition_cost_for_edge_blk`
+                // (partition_search.c:3415) gathers from `cm->fc->partition_cdf`
+                // — the frame-level context, which does NOT adapt during the
+                // frame — NOT from the per-SB-updated tile context that feeds
+                // `partition_costs` above (a shipped-libaom mixed-source quirk,
+                // measured: C's edge gather rows == default_partition_cdf at
+                // every bottom-edge node of the 196x196 encode while its
+                // interior costs track the adapting tile state).
                 ..*pick_cfg
             };
 

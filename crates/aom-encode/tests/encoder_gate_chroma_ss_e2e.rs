@@ -1001,28 +1001,35 @@ fn encoder_gate_real_image_e2e_kb6_repro() {
         );
     }
 
-    // (1c) NEWLY-PROMOTED byte-match gate — the first PARTIAL-SB (frame-edge)
-    // full-frame byte match, landed 2026-07-16 with the KB-6 frame-edge chunk
-    // series: true-196x196 harness (ceil n_sb + border-extend), luma + chroma
-    // pixel-domain distortion clipped to the visible frame area
-    // (get_txb_visible_dimensions / max_block_* with chroma subsampling), and
-    // the edge-block partition-cost override (set_partition_cost_for_edge_blk).
-    // 196 = 3*64+4, so the right column + bottom row are partial superblocks —
-    // this cell proves the edge encode path end-to-end. The remaining 196 cells
-    // (cq12/20/32/48/63) still diverge on a bottom-edge-SB-row RD near-tie
-    // (see kb6_characterize_196_partial_sb) and stay pinned via (2).
-    {
-        let label = "av1-1-b8-01-size-196x196 420 cq5";
+    // (1c) PROMOTED byte-match gates — PARTIAL-SB (frame-edge) full-frame
+    // matches. 196 = 3*64+4, so the right column + bottom row are partial
+    // superblocks; these cells prove the edge encode path end-to-end. Landed
+    // in sequence: cq5 with the KB-6 frame-edge chunk series (true-196x196
+    // harness, luma + chroma visible-area distortion clips, edge
+    // partition-cost override); cq63 with the KB-4 OUTPUT_ENABLED tx_type_map
+    // reset-leak fix (a2dd28e); **cq12/20/32 with the frame-edge
+    // entropy-context stamp fix** — `av1_set_entropy_contexts` (blockd.c:29)
+    // zeroes the beyond-visible TAIL of an edge txb's above/left footprint,
+    // but the port's tile stamp (encode_sb.rs) wrote the cul across the full
+    // footprint, poisoning out-of-frame columns that later edge blocks'
+    // full-footprint `get_txb_ctx` reads OR in (wrong txb_skip_ctx → same
+    // symbols on different-probability cdf rows → bottom-row stream desync) —
+    // plus the edge partition-cost gather reading the frame-init `cm->fc`
+    // table (partition_search.c:3415), not the per-SB-adapted one. The one
+    // remaining 196 cell (cq48, a DIFFERENT mid-stream near-tie) stays pinned
+    // via (2) + kb6_characterize_196_partial_sb.
+    for cq in [5, 12, 20, 32, 63] {
+        let label = format!("av1-1-b8-01-size-196x196 420 cq{cq}");
         let ok = results
             .iter()
-            .find(|(n, _)| n.as_str() == label)
+            .find(|(n, _)| *n == label)
             .map(|(_, ok)| *ok)
             .expect("promoted cell present");
         assert!(
             ok,
             "regression: real cell `{label}` must byte-match real aomenc \
              (KB-6 partial-SB frame-edge fixes: visible-area distortion clips + \
-             edge partition-cost override)"
+             edge partition cost + entropy-stamp tail-zero + tx_type_map reset leak)"
         );
     }
 
