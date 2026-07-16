@@ -569,7 +569,9 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   `prune_luma_odd_delta_angles_in_intra=1` (:535), `multi_winner_mode_type=OFF` (:561),
   `prune_winner_mode_eval_level=1` (:562), `dc_blk_pred_level=1` (:563), `winner_mode_tx_type_
   pruning=3` + `prune_tx_type_est_rd=0` (:551-552), `prune_intra_tx_depths_using_nn` (:553),
-  `perform_coeff_opt=6` + `tx_domain_dist_level=3` (:555-556), `lpf_pick=LPF_PICK_FROM_Q` (:559),
+  `perform_coeff_opt=6` + `tx_domain_dist_level=3` (:555-556), `lpf_pick=LPF_PICK_FROM_Q` (:559 —
+  **building block LANDED**: `pick_filter_level_from_q` in lf_search.rs, oracle-validated vs real
+  cpu-6 header levels by `speed6_prep_lf_from_q_matches_real_aomenc`; needs only the harness flip),
   partition prunes :537-546 (`prune_rectangular_split_based_on_qidx=2`, `prune_rect_part_using_
   4x4_var_deviation/none_pred_mode`, `prune_sub_8x8_partition_level=1`, `prune_part4_search=3`,
   `default_max_partition_size=BLOCK_32X32`!), framesize-dep :304-316 (`use_square_partition_only_

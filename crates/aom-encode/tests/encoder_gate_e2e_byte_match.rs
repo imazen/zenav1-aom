@@ -35,7 +35,7 @@
 use aom_encode::encode_intra::TrellisOptType;
 use aom_encode::encode_sb::SbEncodeEnv;
 use aom_encode::intra_uv_rd::UvLoopPolicy;
-use aom_encode::lf_search::{LfSearchFrame, build_lf_mi_grid, pick_filter_level};
+use aom_encode::lf_search::{LfSearchFrame, build_lf_mi_grid, pick_filter_level, pick_filter_level_from_q};
 use aom_encode::obu_assemble::assemble_frame_obu_payload_single_tile;
 use aom_encode::pack::pack_tile;
 use aom_encode::partition_pick::PickFrameCfg;
@@ -2305,6 +2305,153 @@ fn encoder_gate_speed5_vs_speed4_sf_witness() {
             "two-tone 64x64 {fmt} cq{cq}: the speed-5 witness cell must byte-match with the \
              speed-5 features (it does in the full gate)"
         );
+    }
+}
+
+/// **Speed-6 prep (chunk 1 building block):** `pick_filter_level_from_q`
+/// (lf_search.rs) — the `LPF_PICK_FROM_Q` closed-form KEY-frame LF-level
+/// derivation (picklpf.c:266-330, `lpf_pick` at allintra speed >= 6 per
+/// speed_features.c:559) — validated against REAL `aomenc --cpu-used=6`:
+/// the LF levels aomenc codes in its cpu-6 frame header ARE the C formula's
+/// output, so parsing them from a real cpu-6 stream is a true-oracle check
+/// of the formula, its fixed-point constants, AND the `av1_ac_quant_QTX`
+/// input, across the quality range and both mono/4:2:0. Content-independence
+/// (a FROM_Q property — no reconstruction search) is asserted by comparing
+/// two different contents at the same cq. No speed 0..=5 behavior is touched
+/// (the function has no caller below speed 6 yet — the speed-6 flip wires it
+/// into the harness LF derivation like the `non_dual` flag was for 4/5).
+#[test]
+fn speed6_prep_lf_from_q_matches_real_aomenc() {
+    c::ref_init();
+    for &cq in &[5i32, 12, 32, 48, 63] {
+        for &mono in &[true, false] {
+            let mut parsed: Vec<(i32, [i32; 2], i32, i32)> = Vec::new();
+            for content_id in 0..2 {
+                let (w, h) = (64usize, 64usize);
+                let content = |r: usize, cc: usize| -> u8 {
+                    if content_id == 0 {
+                        if cc < 32 { 72 } else { 168 } // two-tone
+                    } else {
+                        (32 + (r + cc) * 190 / (w + h)) as u8 // diag
+                    }
+                };
+                let mut y = vec![128u16; w * h];
+                for r in 0..h {
+                    for cc in 0..w {
+                        y[r * w + cc] = u16::from(content(r, cc));
+                    }
+                }
+                let (cw, ch) = if mono { (0, 0) } else { (32usize, 32usize) };
+                let mut u = vec![128u16; cw * ch];
+                let mut v = vec![128u16; cw * ch];
+                for r in 0..ch {
+                    for cc in 0..cw {
+                        let val = (60 + (r * 7 + cc * 3) % 80) as u16;
+                        u[r * cw + cc] = val;
+                        v[r * cw + cc] = val;
+                    }
+                }
+                let bytes = c::ref_encode_av1_kf(
+                    &y, &u, &v, w, h, 8, mono, 1, 1, cq, /*cpu_used=*/ 6, false, false,
+                    /*usage=*/ 2, 0, false,
+                );
+                assert!(!bytes.is_empty(), "cpu6 encode must produce a stream");
+                let obus = walk_obus(&bytes);
+                let seq_payload = obus
+                    .iter()
+                    .find(|(t, _)| *t == OBU_SEQUENCE_HEADER)
+                    .map(|(_, pl)| *pl)
+                    .expect("no sequence header");
+                let mut seq_rb = ReadBitBuffer::new(seq_payload);
+                let seq = read_sequence_header_obu(&mut seq_rb);
+                let (_, frame_payload) = obus
+                    .iter()
+                    .find(|(t, _)| *t == OBU_FRAME_HEADER || *t == OBU_FRAME)
+                    .map(|(t, pl)| (*t, *pl))
+                    .expect("no frame OBU");
+                let st = &seq.seq_header;
+                let cc2 = &seq.color_config;
+                let mib_size_log2 = if st.sb_size_128 { 5u32 } else { 4u32 };
+                let mi_cols = mi_dim(st.max_frame_width);
+                let mi_rows = mi_dim(st.max_frame_height);
+                let cfg = FrameHeaderObu {
+                    prefix: FrameHeaderPrefix {
+                        reduced_still_picture_hdr: seq.reduced_still_picture_hdr,
+                        decoder_model_info_present_flag: seq.decoder_model_info_present_flag,
+                        equal_picture_interval: seq.timing_info.equal_picture_interval,
+                        frame_presentation_time_length: seq
+                            .decoder_model_info
+                            .frame_presentation_time_length
+                            as u32,
+                        frame_id_numbers_present_flag: st.frame_id_numbers_present_flag,
+                        frame_id_length: st.frame_id_length as u32,
+                        force_screen_content_tools: st.force_screen_content_tools,
+                        force_integer_mv: st.force_integer_mv,
+                        max_frame_width: st.max_frame_width,
+                        max_frame_height: st.max_frame_height,
+                        enable_order_hint: st.enable_order_hint,
+                        order_hint_bits_minus_1: st.order_hint_bits_minus_1,
+                        operating_points_cnt_minus_1: seq.operating_points_cnt_minus_1,
+                        operating_point_idc: seq.operating_point_idc,
+                        op_decoder_model_param_present: seq.op_decoder_model_param_present,
+                        buffer_removal_time_length: seq.decoder_model_info.buffer_removal_time_length
+                            as u32,
+                        temporal_layer_id: 0,
+                        spatial_layer_id: 0,
+                        ..Default::default()
+                    },
+                    frame_size: FrameSizeHeader {
+                        num_bits_width: st.num_bits_width,
+                        num_bits_height: st.num_bits_height,
+                        superres_upscaled_width: st.max_frame_width,
+                        superres_upscaled_height: st.max_frame_height,
+                        enable_superres: st.enable_superres,
+                        ..Default::default()
+                    },
+                    tile_info: tile_limits(mi_cols, mi_rows, mib_size_log2),
+                    num_planes: if cc2.monochrome { 1 } else { 3 },
+                    separate_uv_delta_q: cc2.separate_uv_delta_q,
+                    loopfilter: LoopfilterHeader {
+                        last_ref_deltas: KF_REF_DELTAS,
+                        last_mode_deltas: KF_MODE_DELTAS,
+                        ..Default::default()
+                    },
+                    cdef: CdefHeader { enable_cdef: st.enable_cdef, ..Default::default() },
+                    restoration: RestorationHeader {
+                        enable_restoration: st.enable_restoration,
+                        sb_size_128: st.sb_size_128,
+                        subsampling_x: cc2.subsampling_x,
+                        subsampling_y: cc2.subsampling_y,
+                        ..Default::default()
+                    },
+                    film_grain_params_present: seq.film_grain_params_present,
+                    ..Default::default()
+                };
+                let mut rb = ReadBitBuffer::new(frame_payload);
+                let p = read_uncompressed_header(&mut rb, &cfg);
+                parsed.push((
+                    p.quant.base_qindex,
+                    p.loopfilter.filter_level,
+                    p.loopfilter.filter_level_u,
+                    p.loopfilter.filter_level_v,
+                ));
+            }
+            // Content-independence: identical qindex ⇒ identical levels.
+            assert_eq!(parsed[0], parsed[1], "FROM_Q must be content-independent (cq{cq})");
+            let (qindex, lf_y, lf_u, lf_v) = parsed[0];
+            let ours = pick_filter_level_from_q(qindex, 8, true, 0);
+            let fmt = if mono { "mono" } else { "420" };
+            eprintln!(
+                "speed6-prep lf_from_q cq{cq} {fmt}: qindex={qindex} real Y={lf_y:?} U={lf_u} \
+                 V={lf_v} ours Y={:?} U={} V={}",
+                ours.filter_level, ours.filter_level_u, ours.filter_level_v
+            );
+            assert_eq!(ours.filter_level, lf_y, "cq{cq} {fmt}: Y levels");
+            if !mono {
+                assert_eq!(ours.filter_level_u, lf_u, "cq{cq} {fmt}: U level");
+                assert_eq!(ours.filter_level_v, lf_v, "cq{cq} {fmt}: V level");
+            }
+        }
     }
 }
 

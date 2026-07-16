@@ -2817,6 +2817,12 @@ features the same cells byte-match. Full-grid cross-check measured 60/64 at spee
 `prune_luma_odd_delta_angles_in_intra`, `adapt_top_model_rd_count_using_neighbors`,
 `multi_winner_mode_type=OFF`, partition prunes :537-546 incl. `default_max_partition_size=
 BLOCK_32X32`, `use_square_partition_only_threshold=BLOCK_16X16`) — prep facts in CLAUDE.md KB-9.
+Speed-6 chunk 1 building block LANDED with this landing: `pick_filter_level_from_q`
+(lf_search.rs) — the LPF_PICK_FROM_Q closed-form KEY-frame LF derivation (picklpf.c:266-330),
+true-oracle-validated against REAL `aomenc --cpu-used=6` header LF levels across cq{5,12,32,48,63}
+× {mono,420} incl. both clamp extremes (`speed6_prep_lf_from_q_matches_real_aomenc`); no caller
+below speed 6 (byte-inert for speeds 0-5), the speed-6 flip wires it like `non_dual` was for 4/5.
+
 ## #23 QM-on forward-quant encode — byte-match gate (2026-07-16, encoder track)
 
 **`--enable-qm=1` ALLINTRA KEY encodes byte-match real aomenc end-to-end** — the

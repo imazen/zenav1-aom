@@ -411,6 +411,63 @@ pub fn pick_filter_level(
     }
 }
 
+/// `av1_pick_filter_level`'s `method >= LPF_PICK_FROM_Q` arm (picklpf.c:
+/// 266-330) for this port's envelope — a one-pass shown KEY frame (no SVC
+/// temporal layers, no rt screen / cyclic-refresh paths, no
+/// `use_fast_fixed_part`). The level is a CLOSED-FORM function of the AC
+/// quantizer — no reconstruction search at all:
+///
+/// - `q = av1_ac_quant_QTX(base_qindex, 0, bit_depth)` (:269)
+/// - bd8 KEY: `filt_guess = ROUND_POWER_OF_TWO(q * 17563 - 421574, 18)`
+///   (:303-305; the `q * 0.06699 - 1.60817` linear fit)
+/// - bd10:    `filt_guess = ROUND_POWER_OF_TWO(q * 20723 + 4060632, 20)` (:309)
+/// - bd12:    `filt_guess = ROUND_POWER_OF_TWO(q * 20723 + 16242526, 22)` (:311)
+/// - bd10/bd12 KEY frames then subtract 4 (:320-322)
+/// - clamp to `[0, MAX_LOOP_FILTER]`; **all four** levels (both Y
+///   directions, U, V) get the SAME clamped value (:324-327 — C's
+///   "retrain the model for Y, U, V" TODO)
+///
+/// The `inter_frame_multiplier` arm (:274-296) is non-KEY-only; the
+/// LOOPFILTER_SELECTIVELY tail (:328) is `!frame_is_intra_only`-gated. The
+/// sharpness derivation is method-independent (picklpf.c:225-230): allintra
+/// keeps the CLI sharpness, other modes force 0 — same as
+/// [`pick_filter_level`] (`enable_adaptive_sharpness` is default-off and out
+/// of this envelope). `ROUND_POWER_OF_TWO` on the (possibly negative at tiny
+/// q) bd8 KEY numerator uses C's arithmetic right shift — matched by Rust's
+/// signed `>>`.
+///
+/// Consumer: `lpf_pick = LPF_PICK_FROM_Q` is allintra **speed >= 6**
+/// (speed_features.c:559). No speed 0..=5 caller exists, so landing this
+/// building block moves no existing byte gate; the speed-6 flip will route
+/// the e2e harness LF derivation here (mirroring the `non_dual` flag's
+/// wiring for speeds 4/5). Validated against REAL `aomenc --cpu-used=6`
+/// header LF levels by `speed6_prep_lf_from_q_matches_real_aomenc`
+/// (encoder_gate_e2e_byte_match.rs).
+pub fn pick_filter_level_from_q(
+    base_qindex: i32,
+    bit_depth: u8,
+    allintra: bool,
+    sharpness_cfg: i32,
+) -> LoopFilterLevels {
+    let q = i32::from(aom_quant::av1_ac_quant_qtx(base_qindex, 0, bit_depth));
+    // ROUND_POWER_OF_TWO(value, n) = ((value) + ((1 << (n)) >> 1)) >> (n),
+    // arithmetic shift (aom_dsp/aom_dsp_common.h) — i32 `>>` matches.
+    let rpot = |value: i32, n: i32| (value + ((1 << n) >> 1)) >> n;
+    let filt_guess = match bit_depth {
+        8 => rpot(q * 17563 - 421574, 18), // KEY-frame fit (:303-305)
+        10 => rpot(q * 20723 + 4060632, 20) - 4, // :309 + the KEY -4 (:320-322)
+        12 => rpot(q * 20723 + 16242526, 22) - 4, // :311 + the KEY -4
+        _ => unreachable!("bit_depth is 8/10/12"),
+    };
+    let level = filt_guess.clamp(0, MAX_LOOP_FILTER);
+    LoopFilterLevels {
+        filter_level: [level, level],
+        filter_level_u: level,
+        filter_level_v: level,
+        sharpness: if allintra { sharpness_cfg } else { 0 },
+    }
+}
+
 // ---- mi-grid construction from this port's OWN picked+packed trees -------
 
 /// Build the [`LfMi`] grid the loop filter reads, from this port's OWN
