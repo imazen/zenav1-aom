@@ -7,7 +7,9 @@
 //! `get_tx_type_cost` (plane-0 tx_type) is out of scope on both sides.
 
 use aom_sys_ref as c;
-use aom_txb::{cost_coeffs_txb, scan, txb_high, txb_wide, CoeffCostTables};
+use aom_txb::{
+    cost_coeffs_txb, cost_coeffs_txb_laplacian, scan, txb_high, txb_wide, CoeffCostTables,
+};
 
 struct Rng(u64);
 impl Rng {
@@ -101,6 +103,76 @@ fn cost_coeffs_txb_identical() {
                     got, want,
                     "cost tx_size={tx_size} tx_type={tx_type} eob={eob} \
                      skip_ctx={txb_skip_ctx} dc_ctx={dc_sign_ctx}"
+                );
+            }
+        }
+    }
+}
+
+/// KB-8 chunk 2d-iii: `av1_cost_coeffs_txb_laplacian` (adjust_eob=0 — the
+/// `prune_txk_type` est-rd call) matches the C reference, which uses the REAL
+/// txb_rdopt_utils.h statics (costLUT / const_term / loge_par) + the pristine
+/// `get_eob_cost`. Sweeps all 19 tx sizes x 7 tx-type classes x random eobs /
+/// magnitudes (incl. the eob==0 skip-cost path), random shared tables.
+#[test]
+fn cost_coeffs_txb_laplacian_identical() {
+    let mut rng = Rng(0x_1a91_ac1a_0000_0001);
+    const TX_TYPES: [usize; 7] = [0, 3, 9, 10, 14, 11, 15];
+
+    for tx_size in 0..19usize {
+        let area = txb_wide(tx_size) * txb_high(tx_size);
+        for &tx_type in &TX_TYPES {
+            for iter in 0..120 {
+                let txb_skip = tbl(&mut rng, 13 * 2);
+                let eob_extra = tbl(&mut rng, 9 * 2);
+                let eob_c = tbl(&mut rng, 2 * 11);
+                // Unused by the laplacian on both sides, but required by the
+                // shared Rust table struct.
+                let base_eob = tbl(&mut rng, 4 * 3);
+                let base = tbl(&mut rng, 42 * 8);
+                let dc_sign = tbl(&mut rng, 3 * 2);
+                let lps = tbl(&mut rng, 21 * 26);
+
+                let sc = scan(tx_size, tx_type);
+                let (coeff, mut eob) = gen_coeffs(&mut rng, sc, area);
+                if iter % 13 == 0 {
+                    eob = 0; // the txb-skip cost path
+                }
+                let txb_skip_ctx = rng.range(0, 13) as usize;
+
+                let want = c::ref_cost_coeffs_txb_laplacian(
+                    &coeff,
+                    eob,
+                    tx_size,
+                    tx_type,
+                    txb_skip_ctx,
+                    &txb_skip,
+                    &eob_extra,
+                    &eob_c,
+                );
+
+                let tables = CoeffCostTables {
+                    txb_skip: &txb_skip,
+                    base_eob: &base_eob,
+                    base: &base,
+                    eob_extra: &eob_extra,
+                    dc_sign: &dc_sign,
+                    lps: &lps,
+                    eob: &eob_c,
+                };
+                let got = cost_coeffs_txb_laplacian(
+                    &coeff,
+                    eob,
+                    tx_size,
+                    tx_type,
+                    txb_skip_ctx,
+                    &tables,
+                );
+
+                assert_eq!(
+                    got, want,
+                    "laplacian tx_size={tx_size} tx_type={tx_type} eob={eob} \
+                     skip_ctx={txb_skip_ctx}"
                 );
             }
         }

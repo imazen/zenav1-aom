@@ -23,7 +23,7 @@ pub use write::{txsize_entropy_ctx, write_coeffs_txb, write_coeffs_txb_full, CDF
 mod read;
 pub use read::{dequant_txb, read_coeffs_txb, read_coeffs_txb_full, tx_scale};
 mod cost;
-pub use cost::{cost_coeffs_txb, CoeffCostTables};
+pub use cost::{CoeffCostTables, cost_coeffs_txb, cost_coeffs_txb_laplacian};
 mod prob_cost;
 pub use prob_cost::{cost_symbol, cost_tokens_from_cdf};
 mod fill;

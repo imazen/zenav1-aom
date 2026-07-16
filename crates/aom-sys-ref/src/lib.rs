@@ -6542,6 +6542,16 @@ extern "C" {
         lps_cost: *const i32,
         eob_cost: *const i32,
     ) -> i32;
+    fn shim_cost_coeffs_txb_laplacian(
+        qcoeff: *const i32,
+        eob: i32,
+        tx_size: i32,
+        tx_type: i32,
+        txb_skip_ctx: i32,
+        txb_skip_cost: *const i32,
+        eob_extra_cost: *const i32,
+        eob_cost: *const i32,
+    ) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_coeffs_txb(
         tcoeff: *const i32,
@@ -6783,6 +6793,35 @@ pub fn ref_cost_coeffs_txb(
             eob_extra_cost.as_ptr(),
             dc_sign_cost.as_ptr(),
             lps_cost.as_ptr(),
+            eob_cost.as_ptr(),
+        )
+    }
+}
+
+/// Reference `av1_cost_coeffs_txb_laplacian` (adjust_eob=0, tx_type cost out of
+/// scope — matching [`ref_cost_coeffs_txb`]'s split): the est-rd prune's fast
+/// Laplacian rate. Uses the REAL txb_rdopt_utils.h statics
+/// (costLUT/const_term/loge_par) + the pristine get_eob_cost.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_cost_coeffs_txb_laplacian(
+    qcoeff: &[i32],
+    eob: usize,
+    tx_size: usize,
+    tx_type: usize,
+    txb_skip_ctx: usize,
+    txb_skip_cost: &[i32],
+    eob_extra_cost: &[i32],
+    eob_cost: &[i32],
+) -> i32 {
+    unsafe {
+        shim_cost_coeffs_txb_laplacian(
+            qcoeff.as_ptr(),
+            eob as i32,
+            tx_size as i32,
+            tx_type as i32,
+            txb_skip_ctx as i32,
+            txb_skip_cost.as_ptr(),
+            eob_extra_cost.as_ptr(),
             eob_cost.as_ptr(),
         )
     }

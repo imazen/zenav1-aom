@@ -349,6 +349,51 @@ int shim_cost_coeffs_txb(const int32_t *qcoeff, int eob, int tx_size,
   return cost;
 }
 
+/* ---- av1_cost_coeffs_txb_laplacian (adjust_eob=0) est-rd rate harness ------
+ * Transcribes warehouse_efficients_txb_laplacian + av1_cost_coeffs_txb_estimate
+ * (txb_rdopt.c:660/624) using the REAL pristine statics from
+ * txb_rdopt_utils.h (costLUT / const_term / loge_par) + the pristine
+ * get_eob_cost — the get_tx_type_cost term is dropped, matching
+ * shim_cost_coeffs_txb's established split (the Rust caller adds it). */
+int shim_cost_coeffs_txb_laplacian(const int32_t *qcoeff, int eob, int tx_size,
+                                   int tx_type, int txb_skip_ctx,
+                                   const int *txb_skip_cost,
+                                   const int *eob_extra_cost,
+                                   const int *eob_cost_tbl) {
+  LV_MAP_COEFF_COST cc;
+  memset(&cc, 0, sizeof(cc));
+  memcpy(cc.txb_skip_cost, txb_skip_cost, sizeof(cc.txb_skip_cost));
+  memcpy(cc.eob_extra_cost, eob_extra_cost, sizeof(cc.eob_extra_cost));
+  LV_MAP_EOB_COST ec;
+  memcpy(ec.eob_cost, eob_cost_tbl, sizeof(ec.eob_cost));
+
+  if (eob == 0) return cc.txb_skip_cost[txb_skip_ctx][1];
+
+  const TX_CLASS tx_class = tx_type_to_class[tx_type];
+  int cost = cc.txb_skip_cost[txb_skip_ctx][0];
+  /* get_tx_type_cost intentionally omitted */
+  cost += get_eob_cost(eob, &ec, &cc, tx_class);
+
+  /* av1_cost_coeffs_txb_estimate (real costLUT/const_term/loge_par) */
+  const int16_t *const scan = av1_scan_orders[tx_size][tx_type].scan;
+  int c = eob - 1;
+  {
+    const int pos = scan[c];
+    const int32_t q = qcoeff[pos];
+    const int32_t v = (q < 0 ? -q : q) - 1;
+    cost += (v << (AV1_PROB_COST_SHIFT + 2));
+  }
+  for (c = eob - 2; c >= 0; c--) {
+    const int pos = scan[c];
+    const int32_t q = qcoeff[pos];
+    const int32_t v = q < 0 ? -q : q;
+    const int idx = AOMMIN(v, 14);
+    cost += costLUT[idx];
+  }
+  cost += (const_term + loge_par) * (eob - 1);
+  return cost;
+}
+
 /* ---- av1_cost_tokens_from_cdf (CDF -> per-symbol cost table) --------------- */
 void av1_cost_tokens_from_cdf(int *costs, const uint16_t *cdf,
                               const int *inv_map);

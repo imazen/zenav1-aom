@@ -427,7 +427,10 @@ use crate::{
     BlockContext, OptimizeInputs, QuantKind, QuantParams, XformQuantOptResult,
     dist_block_tx_domain, xform_quant, xform_quant_optimize,
 };
-use aom_txb::{CoeffCostSet, CoeffCostTables, TxTypeCosts, cost_coeffs_txb, get_tx_type_cost};
+use aom_txb::{
+    CoeffCostSet, CoeffCostTables, TxTypeCosts, cost_coeffs_txb, cost_coeffs_txb_laplacian,
+    get_tx_type_cost,
+};
 
 /// `tx_size_2d[TX_SIZES_ALL]` (av1/common/common_data.h): pel count per tx.
 pub const TX_SIZE_2D_TBL: [i64; 19] = [
@@ -509,6 +512,128 @@ fn skip_trellis_opt_based_on_satd(
 #[inline]
 fn round_power_of_two_i64(value: i64, n: i32) -> i64 {
     (value + ((1i64 << n) >> 1)) >> n
+}
+
+/// `prune_factors[5]` (tx_search.c:1071) — est-rd prune aggressiveness per
+/// `prune_2d_txfm_mode` (TX_TYPE_PRUNE_0..4), scale 1000. (PRUNE_5 never
+/// coexists with `prune_tx_type_est_rd` on a multi-type intra mask: at
+/// speed>=6 it is the MODE_EVAL value, whose mask is single-type.)
+const PRUNE_FACTORS: [i64; 5] = [200, 200, 120, 80, 40];
+
+/// `sort_rd` (tx_search.c:1076): C's exact stable insertion sort of the
+/// (est-rd, tx-type) pairs, ascending by rd.
+fn sort_rd(rds: &mut [i64], txk: &mut [usize], len: usize) {
+    for i in 1..len {
+        for j in 0..i {
+            if rds[j] > rds[i] {
+                let temprd = rds[i];
+                let tempi = txk[i];
+                let mut k = i;
+                while k > j {
+                    rds[k] = rds[k - 1];
+                    txk[k] = txk[k - 1];
+                    k -= 1;
+                }
+                rds[j] = temprd;
+                txk[j] = tempi;
+                break;
+            }
+        }
+    }
+}
+
+/// `prune_txk_type` (tx_search.c:1320) — the est-rd tx-type prune the
+/// WINNER_MODE_EVAL pass runs at speed>=4 (`prune_tx_type_est_rd`, gated in
+/// `get_tx_mask`'s multi-type arm on `num_allowed > 2`; no inter gate). For
+/// each allowed tx type: forward transform + **B-quant** (av1_setup_quant with
+/// AV1_XFORM_QUANT_B, quant_b_adapt=0 — regardless of the trellis setting),
+/// FAST rate via [`cost_coeffs_txb_laplacian`] (+ tx-type cost — C folds it
+/// inside `av1_cost_coeffs_txb_laplacian`), tx-domain distortion
+/// (`dist_block_tx_domain`), `RDCOST` (0 fixed up to 1). Sorts `txk_map`
+/// ascending by est-rd ([`sort_rd`] — non-allowed types fill the tail in
+/// REVERSE tx-type order, matching C's `txk_map[last--]` walk) and returns the
+/// PRUNE mask: everything except the best, minus the candidates whose relative
+/// est-rd excess `1000*(rd-rd0)/rd0` stays under `prune_factor` (the loop
+/// BREAKS at the first exceeder — later candidates stay pruned even if closer).
+#[allow(clippy::too_many_arguments)]
+fn prune_txk_type_intra(
+    inp: &TxTypeSearchInputs,
+    tx_size: usize,
+    allowed_tx_mask: u16,
+    prune_factor: i64,
+    txk_map: &mut [usize; TX_TYPES],
+) -> u16 {
+    let qp_b = QuantParams::from_plane_rows(inp.rows, QuantKind::B, inp.bd);
+    let (txb_skip_ctx, dc_sign_ctx) = aom_txb::get_txb_ctx(
+        inp.bctx.plane_bsize,
+        tx_size,
+        inp.bctx.plane,
+        inp.bctx.above,
+        inp.bctx.left,
+    );
+    let _ = dc_sign_ctx; // the laplacian estimate has no dc-sign term
+    let mut rds = [0i64; TX_TYPES];
+    let mut num_cand = 0usize;
+    let mut last = TX_TYPES - 1;
+
+    for tx_type in 0..TX_TYPES {
+        if allowed_tx_mask & (1 << tx_type) == 0 {
+            txk_map[last] = tx_type;
+            last = last.wrapping_sub(1);
+            continue;
+        }
+        // do txfm and quantization (av1_xform_quant, AV1_XFORM_QUANT_B).
+        let xq = xform_quant(inp.residual, tx_size, tx_type, QuantKind::B, &qp_b, false);
+        // estimate rate cost (av1_cost_coeffs_txb_laplacian, adjust_eob=0);
+        // C includes get_tx_type_cost inside — the port's split adds it here.
+        let mut rate_cost = cost_coeffs_txb_laplacian(
+            &xq.qcoeff,
+            xq.eob as usize,
+            tx_size,
+            tx_type,
+            txb_skip_ctx as usize,
+            inp.coeff_costs,
+        );
+        rate_cost += get_tx_type_cost(
+            inp.tx_type_costs,
+            inp.plane,
+            tx_size,
+            tx_type,
+            false,
+            inp.reduced_tx_set_used,
+            inp.lossless,
+            inp.use_filter_intra,
+            inp.filter_intra_mode,
+            inp.mode,
+        );
+        // tx-domain dist (dist_block_tx_domain — QM off on this envelope).
+        let (dist, _sse) = crate::dist_block_tx_domain(&xq.coeff, &xq.dqcoeff, tx_size, inp.bd);
+
+        txk_map[num_cand] = tx_type;
+        rds[num_cand] = rdcost(inp.rdmult, rate_cost, dist);
+        if rds[num_cand] == 0 {
+            rds[num_cand] = 1;
+        }
+        num_cand += 1;
+    }
+
+    if num_cand == 0 {
+        return 0xFFFF;
+    }
+
+    sort_rd(&mut rds, txk_map, num_cand);
+    let mut prune: u16 = !(1u16 << txk_map[0]);
+
+    // 0 < prune_factor <= 1000 controls aggressiveness.
+    for idx in 1..num_cand {
+        let factor = 1000 * (rds[idx] - rds[0]) / rds[0];
+        if factor < prune_factor {
+            prune &= !(1u16 << txk_map[idx]);
+        } else {
+            break;
+        }
+    }
+    prune
 }
 
 /// The trellis RD multiplier `av1_optimize_txb` derives from the block
@@ -620,6 +745,21 @@ pub struct TxTypeSearchPolicy {
     /// port's speed 0..=3 derivation (empirically a byte no-op on the speed-3
     /// gate grid, but kept false until the KB-8 speed-4 flip re-verifies it).
     pub use_rd_based_breakout_for_intra_tx_search: bool,
+    /// sf `tx_sf.tx_type_search.prune_tx_type_est_rd` — default 0
+    /// (init_tx_sf:2465); allintra speed>=4 -> 1 (speed_features.c:491). Gates
+    /// the [`prune_txk_type_intra`] est-rd prune in `get_tx_mask`'s multi-type
+    /// arm (`num_allowed > 2`, tx_search.c:1911 — NO inter gate, so it runs on
+    /// intra in the WINNER_MODE_EVAL pass). Also REORDERS the tx-type search
+    /// order (`txk_map` sorted by est-rd). False for speed 0..=3.
+    pub prune_tx_type_est_rd: bool,
+    /// `txfm_params->prune_2d_txfm_mode` — the STAGE-resolved tx-type prune
+    /// level (`set_tx_type_prune`, rdopt_utils.h:498): the raw sf value when
+    /// `winner_mode_tx_type_pruning == 0`, else
+    /// `prune_mode[winner_mode_tx_type_pruning-1][is_winner_mode]`. Its only
+    /// INTRA consumer is [`PRUNE_FACTORS`] indexing inside the est-rd prune
+    /// (the 2D-NN prune `prune_tx_2D` is inter-only, tx_search.c:1935). Inert
+    /// while `prune_tx_type_est_rd` is false.
+    pub prune_2d_txfm_mode: i32,
 }
 
 impl TxTypeSearchPolicy {
@@ -640,6 +780,8 @@ impl TxTypeSearchPolicy {
             use_default_intra_tx_type: false,
             use_screen_content_tools: false,
             use_rd_based_breakout_for_intra_tx_search: false,
+            prune_tx_type_est_rd: false,
+            prune_2d_txfm_mode: 1, // TX_TYPE_PRUNE_1 (init_tx_sf:2457); inert while est_rd off
         }
     }
 
@@ -805,6 +947,31 @@ pub fn search_tx_type_intra(
         );
         (m, Some(t))
     };
+    let mut allowed_tx_mask = allowed_tx_mask;
+
+    // Est-rd tx-type prune + search-order reorder (get_tx_mask's multi-type
+    // arm, tx_search.c:1911): `num_allowed > 2 && prune_tx_type_est_rd` — no
+    // inter gate, so this RUNS on intra (the speed>=4 WINNER_MODE_EVAL pass;
+    // the MODE_EVAL pass's default-tx-type mask is single-type and never
+    // reaches it). txk_map stays the natural 0..16 order when the prune is
+    // off (the speed 0..=3 loop order — byte-identical).
+    let mut txk_map: [usize; TX_TYPES] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    if txk_allowed.is_none()
+        && pol.prune_tx_type_est_rd
+        && allowed_tx_mask.count_ones() > 2
+        && inp.plane == 0
+    {
+        // Intra ext-tx sets cap at 7 types, so the `num_allowed <= 7`
+        // prune_txk_type arm is always taken (prune_txk_type_separ is
+        // inter-only territory, EXT_TX_SET_ALL16).
+        debug_assert!(allowed_tx_mask.count_ones() <= 7);
+        let pf = PRUNE_FACTORS[pol.prune_2d_txfm_mode as usize];
+        let prune = prune_txk_type_intra(inp, tx_size, allowed_tx_mask, pf, &mut txk_map);
+        allowed_tx_mask &= !prune;
+        // "Need to have at least one transform type allowed" (tx_search.c:1944):
+        // prune_txk_type always keeps txk_map[0], so the mask stays non-empty.
+        debug_assert_ne!(allowed_tx_mask, 0);
+    }
 
     // Trellis gating: block-MSE / qstep^2 threshold.
     let mut skip_trellis = pol.skip_trellis;
@@ -847,7 +1014,12 @@ pub fn search_tx_type_intra(
     let mut best_rd = i64::MAX;
     let mut evaluated_mask = 0u16;
 
-    for tx_type in 0..TX_TYPES {
+    // Iterate in txk_map order (tx_search.c:2199: `tx_type = txk_map[idx]`) —
+    // the natural 0..16 order unless the est-rd prune reordered it. The order
+    // is byte-load-bearing: ties keep the FIRST winner, and the adaptive-txb /
+    // skip-tx-search early breaks are cumulative-order-dependent.
+    for idx in 0..TX_TYPES {
+        let tx_type = txk_map[idx];
         if allowed_tx_mask & (1 << tx_type) == 0 {
             continue;
         }
@@ -2023,6 +2195,59 @@ mod satd_skip_tests {
         let mut small = vec![0i16; full];
         small[0] = 1;
         assert!(!skip_trellis_opt_based_on_satd(&small, 2, 0, 8, 20, u32::MAX - 1));
+    }
+}
+
+#[cfg(test)]
+mod est_rd_prune_tests {
+    use super::*;
+
+    /// KB-8 chunk 2d-iii: [`sort_rd`] reproduces C's insertion sort
+    /// (tx_search.c:1076) — ascending by rd, ties keep the earlier candidate
+    /// FIRST (the `rds[j] > rds[i]` strict compare skips equal slots).
+    #[test]
+    fn sort_rd_matches_c_semantics() {
+        let mut rds = [50i64, 10, 30, 10, 20];
+        let mut txk = [0usize, 1, 2, 3, 4];
+        sort_rd(&mut rds, &mut txk, 5);
+        assert_eq!(rds, [10, 10, 20, 30, 50]);
+        // Ties (types 1 and 3, both rd 10): insertion order preserved.
+        assert_eq!(txk, [1, 3, 4, 2, 0]);
+        // Already sorted stays put.
+        let mut r2 = [1i64, 2, 3];
+        let mut t2 = [7usize, 8, 9];
+        sort_rd(&mut r2, &mut t2, 3);
+        assert_eq!((r2, t2), ([1, 2, 3], [7usize, 8, 9]));
+        // len <= 1: no-op.
+        let mut r1 = [5i64];
+        let mut t1 = [2usize];
+        sort_rd(&mut r1, &mut t1, 1);
+        assert_eq!((r1[0], t1[0]), (5, 2));
+    }
+
+    /// The `PRUNE_FACTORS` table matches tx_search.c:1071, and the prune-factor
+    /// survival rule (`1000*(rd-rd0)/rd0 < pf`, break at first exceeder) is
+    /// what [`prune_txk_type_intra`]'s tail implements — pinned here on the
+    /// arithmetic directly (the full function is exercised end-to-end by the
+    /// speed-4 gate once the two-pass flips).
+    #[test]
+    fn prune_factor_table_and_rule() {
+        assert_eq!(PRUNE_FACTORS, [200, 200, 120, 80, 40]);
+        // WINNER pass at speed 4: prune_2d = TX_TYPE_PRUNE_0 -> pf = 200:
+        // survivors are candidates within +20.0% of the best est-rd, up to the
+        // first exceeder.
+        let rds = [1000i64, 1150, 1199, 1201, 1190];
+        let pf = PRUNE_FACTORS[0];
+        let mut kept = vec![0usize];
+        for idx in 1..rds.len() {
+            let factor = 1000 * (rds[idx] - rds[0]) / rds[0];
+            if factor < pf {
+                kept.push(idx);
+            } else {
+                break; // 1201 exceeds; 1190 after it stays pruned
+            }
+        }
+        assert_eq!(kept, [0, 1, 2]); // 1150 (+15.0%), 1199 (+19.9%) survive
     }
 }
 

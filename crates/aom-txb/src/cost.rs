@@ -205,3 +205,52 @@ pub fn cost_coeffs_txb(
     }
     cost
 }
+
+/// `costLUT[15]` (txb_rdopt_utils.h:31): per-coefficient Laplacian-model cost
+/// by quantization level (index `min(level, 14)`).
+const LAPLACIAN_COST_LUT: [i32; 15] = [
+    -1143, 53, 545, 825, 1031, 1209, 1393, 1577, 1763, 1947, 2132, 2317, 2501, 2686, 2871,
+];
+/// `const_term` (txb_rdopt_utils.h:35) = `1 << AV1_PROB_COST_SHIFT`.
+const LAPLACIAN_CONST_TERM: i32 = 1 << 9;
+/// `loge_par` (txb_rdopt_utils.h:37) = `((14427 << 9) + 5000) / 10000` = 739.
+const LAPLACIAN_LOGE_PAR: i32 = ((14427 << 9) + 5000) / 10000;
+
+/// `av1_cost_coeffs_txb_laplacian` (txb_rdopt.c:718) with `adjust_eob = 0`
+/// (the `prune_txk_type` est-rd call site, tx_search.c:1356) — the FAST
+/// estimated rate: txb-skip flag + eob cost + the per-coefficient Laplacian
+/// entropy estimate (`av1_cost_coeffs_txb_estimate`, txb_rdopt.c:624). Unlike
+/// the exact [`cost_coeffs_txb`], no nz-map contexts, no per-context base/br
+/// costs, and no dc-sign cost. The C includes `get_tx_type_cost` inside
+/// (`warehouse_efficients_txb_laplacian`); this port keeps the crate's
+/// established split — the CALLER adds the tx-type cost.
+pub fn cost_coeffs_txb_laplacian(
+    qcoeff: &[i32],
+    eob: usize,
+    tx_size: usize,
+    tx_type: usize,
+    txb_skip_ctx: usize,
+    t: &CoeffCostTables,
+) -> i32 {
+    if eob == 0 {
+        return t.txb_skip[txb_skip_ctx * 2 + 1];
+    }
+    let tx_class = TX_TYPE_TO_CLASS[tx_type];
+    let mut cost = t.txb_skip[txb_skip_ctx * 2];
+    cost += eob_cost(eob, t, tx_class);
+
+    // av1_cost_coeffs_txb_estimate: the eob coefficient contributes
+    // `(|qc| - 1) << (AV1_PROB_COST_SHIFT + 2)`; every earlier coefficient
+    // contributes `costLUT[min(|qc|, 14)]`; plus `(const_term + loge_par)`
+    // per non-DC/non-eob slot (`(eob - 1)` — the C comment: const_term has no
+    // DC, log(e) has no eob, both scale by eob-1).
+    let sc = scan(tx_size, tx_type);
+    let v = qcoeff[sc[eob - 1] as usize].unsigned_abs() as i32 - 1;
+    cost += v << (9 + 2);
+    for c in (0..eob - 1).rev() {
+        let level = qcoeff[sc[c] as usize].unsigned_abs() as i32;
+        cost += LAPLACIAN_COST_LUT[level.min(14) as usize];
+    }
+    cost += (LAPLACIAN_CONST_TERM + LAPLACIAN_LOGE_PAR) * (eob as i32 - 1);
+    cost
+}
