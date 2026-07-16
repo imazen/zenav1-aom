@@ -921,6 +921,23 @@ pub fn c_txfm_rd_in_plane_uv(
     let mode = aom_entropy::partition::get_uv_mode(uv_mode) as usize;
     let wpx = ((MI_W[env.bsize] * 4) >> env.ss_x).max(4) as i32;
     let hpx = ((MI_H[env.bsize] * 4) >> env.ss_y).max(4) as i32;
+    // Chroma availability geometry (scale_chroma_bsize + chroma-reference mi),
+    // faithful to REAL C `av1_predict_intra_block` (reconintra.c:1637/1783) and the
+    // bit-exact decoder (aom-decode/src/lib.rs:2534 + 2044-2055). `shim_intra_avail`
+    // is a verbatim transcription that does NOT apply scale_chroma_bsize, so the
+    // caller must (as real C does) — raw luma (bsize,mi_row,mi_col) here was a
+    // shared bug with the pre-fix port. Full note: c_encode_intra_block_plane_uv.
+    let avail_bsize = c::ref_scale_chroma_bsize(env.bsize, env.ss_x as i32, env.ss_y as i32);
+    let avail_row = if env.ss_y != 0 && (env.mi_row & 1) != 0 && MI_H[env.bsize] == 1 {
+        env.mi_row - 1
+    } else {
+        env.mi_row
+    };
+    let avail_col = if env.ss_x != 0 && (env.mi_col & 1) != 0 && MI_W[env.bsize] == 1 {
+        env.mi_col - 1
+    } else {
+        env.mi_col
+    };
     let src: &[u16] = if plane == 1 { env.src_u } else { env.src_v };
     let (rows_c, dequant) = if plane == 1 {
         (env.rows_u_c, env.dequant_u)
@@ -948,9 +965,9 @@ pub fn c_txfm_rd_in_plane_uv(
                 if !(cache.use_cache && cache.cached[pred_plane]) {
                     let (n_top, n_tr, n_left, n_bl) = c::ref_intra_avail(
                         12,
-                        env.bsize,
-                        env.mi_row,
-                        env.mi_col,
+                        avail_bsize,
+                        avail_row,
+                        avail_col,
                         true,
                         true,
                         1 << 16,
@@ -1021,9 +1038,9 @@ pub fn c_txfm_rd_in_plane_uv(
             } else {
                 let (n_top, n_tr, n_left, n_bl) = c::ref_intra_avail(
                     12,
-                    env.bsize,
-                    env.mi_row,
-                    env.mi_col,
+                    avail_bsize,
+                    avail_row,
+                    avail_col,
                     true,
                     true,
                     1 << 16,
@@ -1281,13 +1298,29 @@ fn c_predict_cfl_txb(
     let (txw, txh) = (TX_W[tx_size], TX_H[tx_size]);
     let wpx = ((MI_W[env.bsize] * 4) >> env.ss_x).max(4) as i32;
     let hpx = ((MI_H[env.bsize] * 4) >> env.ss_y).max(4) as i32;
+    // Chroma availability geometry (scale_chroma_bsize + chroma-reference mi),
+    // faithful to REAL C `av1_predict_intra_block` (reconintra.c:1637/1783) and the
+    // bit-exact decoder. `shim_intra_avail` does NOT apply scale_chroma_bsize, so the
+    // caller must — raw luma (bsize,mi_row,mi_col) was a shared bug with the pre-fix
+    // port. Full note: c_encode_intra_block_plane_uv.
+    let avail_bsize = c::ref_scale_chroma_bsize(env.bsize, env.ss_x as i32, env.ss_y as i32);
+    let avail_row = if env.ss_y != 0 && (env.mi_row & 1) != 0 && MI_H[env.bsize] == 1 {
+        env.mi_row - 1
+    } else {
+        env.mi_row
+    };
+    let avail_col = if env.ss_x != 0 && (env.mi_col & 1) != 0 && MI_W[env.bsize] == 1 {
+        env.mi_col - 1
+    } else {
+        env.mi_col
+    };
     let pred_plane = plane - 1;
     if !(cache.use_cache && cache.cached[pred_plane]) {
         let (n_top, n_tr, n_left, n_bl) = c::ref_intra_avail(
             12,
-            env.bsize,
-            env.mi_row,
-            env.mi_col,
+            avail_bsize,
+            avail_row,
+            avail_col,
             true,
             true,
             1 << 16,
@@ -2583,6 +2616,26 @@ pub fn c_encode_intra_block_plane_uv(
     let mode = aom_entropy::partition::get_uv_mode(uv_mode) as usize;
     let wpx = ((MI_W[env.bsize] * 4) >> env.ss_x).max(4) as i32;
     let hpx = ((MI_H[env.bsize] * 4) >> env.ss_y).max(4) as i32;
+    // Chroma availability geometry for has_top_right/has_bottom_left, faithful to
+    // REAL C `av1_predict_intra_block` (reconintra.c:1637/1783): scale the block
+    // size (`scale_chroma_bsize`) and use the chroma-reference (sub-8x8-rounded)
+    // mi anchor. Mirrors the bit-exact decoder (aom-decode/src/lib.rs:2534
+    // `bsize_uv` + 2044-2055 adj mi). `shim_intra_avail` (avail_shim.c) is a
+    // verbatim transcription driven by explicit params — it does NOT apply
+    // scale_chroma_bsize, so the CALLER must (as real C's caller does); the prior
+    // raw luma (bsize, mi_row, mi_col) here was a shared bug with the pre-fix
+    // port. scale_chroma_bsize computed via the REAL C shim.
+    let avail_bsize = c::ref_scale_chroma_bsize(env.bsize, env.ss_x as i32, env.ss_y as i32);
+    let avail_row = if env.ss_y != 0 && (env.mi_row & 1) != 0 && MI_H[env.bsize] == 1 {
+        env.mi_row - 1
+    } else {
+        env.mi_row
+    };
+    let avail_col = if env.ss_x != 0 && (env.mi_col & 1) != 0 && MI_W[env.bsize] == 1 {
+        env.mi_col - 1
+    } else {
+        env.mi_col
+    };
     let src: &[u16] = if plane == 1 { env.src_u } else { env.src_v };
     let (rows_c, dequant) = if plane == 1 {
         (env.rows_u_c, env.dequant_u)
@@ -2610,9 +2663,9 @@ pub fn c_encode_intra_block_plane_uv(
                 // Fresh DC prediction (no dc-pred cache in the encode pass).
                 let (n_top, n_tr, n_left, n_bl) = c::ref_intra_avail(
                     12,
-                    env.bsize,
-                    env.mi_row,
-                    env.mi_col,
+                    avail_bsize,
+                    avail_row,
+                    avail_col,
                     true,
                     true,
                     1 << 16,
@@ -2672,9 +2725,9 @@ pub fn c_encode_intra_block_plane_uv(
             } else {
                 let (n_top, n_tr, n_left, n_bl) = c::ref_intra_avail(
                     12,
-                    env.bsize,
-                    env.mi_row,
-                    env.mi_col,
+                    avail_bsize,
+                    avail_row,
+                    avail_col,
                     true,
                     true,
                     1 << 16,

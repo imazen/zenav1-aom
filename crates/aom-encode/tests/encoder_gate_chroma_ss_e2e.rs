@@ -947,6 +947,29 @@ fn encoder_gate_real_image_e2e_kb6_repro() {
         );
     }
 
+    // (1b) NEWLY-PROMOTED byte-match gates — the KB-6 chroma has_top_right fix
+    // (sub-8x8 chroma-reference DIRECTIONAL prediction fed the availability walk
+    // the raw luma bsize/mi instead of scale_chroma_bsize + the chroma-ref adj mi;
+    // reconintra.c:1637/1783, matching the bit-exact decoder aom-decode:2534/2044).
+    // That took these three real cells byte-exact. A regression here is a real
+    // cell breaking, NOT the open KB-6 divergence (the remaining cells below).
+    for label in [
+        "av1-1-b8-23-film_grain-50 420 64x64@96,64 cq5",
+        "av1-1-b8-00-quantizer-00 420 64x64@96,64 cq20",
+        "av1-1-b8-00-quantizer-00 420 128x128@64,64 cq20",
+    ] {
+        let ok = results
+            .iter()
+            .find(|(n, _)| n.as_str() == label)
+            .map(|(_, ok)| *ok)
+            .expect("promoted cell present");
+        assert!(
+            ok,
+            "regression: real cell `{label}` must byte-match real aomenc \
+             (KB-6 chroma has_top_right / scale_chroma_bsize fix)"
+        );
+    }
+
     // (2) KB-6 GATE — the divergence must still be present. When the port becomes
     // byte-exact on real content this assertion fails: that is the signal to
     // promote this repro to a full `report_and_assert` byte-match gate (see

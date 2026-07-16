@@ -148,6 +148,75 @@ pub fn plane_px_dims(bsize: usize, ss_x: usize, ss_y: usize) -> (i32, i32) {
     (w, h)
 }
 
+/// `scale_chroma_bsize` (reconintra.c): the block size the chroma availability
+/// walk (`has_top_right`/`has_bottom_left`) sees. Sub-8x8 dimensions on a
+/// subsampled axis are promoted to the shared-chroma group's size. Mirrors the
+/// bit-exact decoder's `aom_decode::scale_chroma_bsize`.
+fn uv_scale_chroma_bsize(bsize: usize, ss_x: usize, ss_y: usize) -> usize {
+    const BLOCK_4X4: usize = 0;
+    const BLOCK_4X8: usize = 1;
+    const BLOCK_8X4: usize = 2;
+    const BLOCK_8X8: usize = 3;
+    const BLOCK_8X16: usize = 4;
+    const BLOCK_16X8: usize = 5;
+    const BLOCK_4X16: usize = 16;
+    const BLOCK_16X4: usize = 17;
+    match bsize {
+        BLOCK_4X4 => match (ss_x, ss_y) {
+            (1, 1) => BLOCK_8X8,
+            (1, 0) => BLOCK_8X4,
+            (0, 1) => BLOCK_4X8,
+            _ => bsize,
+        },
+        BLOCK_4X8 => match (ss_x, ss_y) {
+            (1, _) => BLOCK_8X8,
+            _ => bsize,
+        },
+        BLOCK_8X4 => match (ss_x, ss_y) {
+            (_, 1) => BLOCK_8X8,
+            _ => bsize,
+        },
+        BLOCK_4X16 => match (ss_x, ss_y) {
+            (1, _) => BLOCK_8X16,
+            _ => bsize,
+        },
+        BLOCK_16X4 => match (ss_x, ss_y) {
+            (_, 1) => BLOCK_16X8,
+            _ => bsize,
+        },
+        _ => bsize,
+    }
+}
+
+/// The `(bsize, mi_row, mi_col)` triple `av1_predict_intra_block` feeds to the
+/// chroma availability walk (`has_top_right`/`has_bottom_left`): the
+/// `scale_chroma_bsize`-promoted block size and the chroma-reference
+/// (sub-8x8-rounded, `chroma_plane_offset`-style) mi anchor. The luma leaf's raw
+/// `(bsize, mi_row, mi_col)` gives the walk the wrong sub-8x8 extent. The
+/// edge-pixel counts (`n_top`/`n_left`) are invariant under this promotion — the
+/// +1 mi-dimension and the -1 mi-position cancel in `mb_to_*_edge` — so ONLY the
+/// directional top-right / bottom-left availability changes, matching the
+/// bit-exact decoder (`aom-decode/src/lib.rs`: `bsize_uv` + `adj_row`/`adj_col`).
+fn uv_avail_geom(
+    bsize: usize,
+    mi_row: i32,
+    mi_col: i32,
+    ss_x: usize,
+    ss_y: usize,
+) -> (usize, i32, i32) {
+    let adj_row = if ss_y != 0 && (mi_row & 1) != 0 && MI_H[bsize] == 1 {
+        mi_row - 1
+    } else {
+        mi_row
+    };
+    let adj_col = if ss_x != 0 && (mi_col & 1) != 0 && MI_W[bsize] == 1 {
+        mi_col - 1
+    } else {
+        mi_col
+    };
+    (uv_scale_chroma_bsize(bsize, ss_x, ss_y), adj_row, adj_col)
+}
+
 /// The encoder's CfL DC-prediction cache (`xd->cfl.use_dc_pred_cache` +
 /// `dc_pred_is_cached` + `dc_pred_cache`, blockd.h / cfl.c): during
 /// `cfl_rd_pick_alpha` the DC prediction is computed once per plane, its
@@ -274,6 +343,13 @@ pub(crate) fn predict_uv_txb(
     let (txw, txh) = (TXS_W[tx_size], TXS_H[tx_size]);
     let mode = get_uv_mode(uv_mode) as usize;
     let (wpx, hpx) = plane_px_dims(env.bsize, env.ss_x, env.ss_y);
+    // Chroma availability geometry for has_top_right/has_bottom_left: the
+    // scale_chroma_bsize-promoted block size + chroma-reference mi anchor
+    // (`av1_predict_intra_block`, reconintra.c:1783). The luma leaf's raw
+    // (bsize, mi_row, mi_col) mis-sizes the directional top-right/bottom-left
+    // walk for a sub-8x8 chroma-reference block; matches the bit-exact decoder.
+    let (avail_bsize, avail_row, avail_col) =
+        uv_avail_geom(env.bsize, env.mi_row, env.mi_col, env.ss_x, env.ss_y);
 
     if let Some(cfl) = cfl {
         debug_assert_eq!(uv_mode, UV_CFL_PRED);
@@ -283,9 +359,9 @@ pub(crate) fn predict_uv_txb(
             // Fresh DC prediction into the recon plane (mode == DC_PRED).
             let (n_top, n_topright, n_left, n_bottomleft) = intra_avail(
                 env.sb_size,
-                env.bsize,
-                env.mi_row,
-                env.mi_col,
+                avail_bsize,
+                avail_row,
+                avail_col,
                 env.chroma_up_available,
                 env.chroma_left_available,
                 env.tile_col_end,
@@ -354,9 +430,9 @@ pub(crate) fn predict_uv_txb(
     } else {
         let (n_top, n_topright, n_left, n_bottomleft) = intra_avail(
             env.sb_size,
-            env.bsize,
-            env.mi_row,
-            env.mi_col,
+            avail_bsize,
+            avail_row,
+            avail_col,
             env.chroma_up_available,
             env.chroma_left_available,
             env.tile_col_end,
