@@ -60,26 +60,47 @@ jobs:
       - name: Provision conformance corpus (intra scope)
         run: python3 xtask/conformance.py --fetch --scope intra
 
-      # The workspace still references archmage (SIMD dispatch) by an absolute
-      # path dep in crates/aom-{intra,dist}. Provide it at that exact path so
-      # cargo can load the manifest. Pinned to the commit the local build uses.
-      # TODO: migrate both crates to `archmage = "0.9.27"` (it is published on
-      # crates.io) so the repo is self-contained — deferred until aom-intra is
-      # free of in-flight decoder work, since that edits an agent-owned manifest.
-      - name: Provide archmage path dependency
-        run: |
-          sudo mkdir -p /root/work
-          sudo git clone https://github.com/imazen/archmage.git /root/work/archmage
-          sudo git -C /root/work/archmage checkout 49023ced349cd47d736be593b8593779bf72a769
-          # A path dep needs only source; drop .git so cargo (as runner) never
-          # git-inspects a root-owned repo ("dubious ownership").
-          sudo rm -rf /root/work/archmage/.git
-          # /root is 0700; the non-root runner user must be able to traverse it
-          # and read archmage's manifest/sources (cargo runs as runner).
-          sudo chmod o+x /root /root/work
-          sudo chmod -R a+rX /root/work/archmage
+      # archmage/magetypes (SIMD dispatch) come from crates.io ("0.9.27") —
+      # the former absolute-path dep + CI clone workaround was migrated per
+      # its TODO (Gate-3 SIMD work needs ONE archmage instance workspace-wide
+      # so the AOM_FORCE_SCALAR token pin reaches every kernel crate).
 
       - name: Test workspace (differential vs C oracle)
+        run: cargo test --workspace --no-fail-fast
+
+  # SCALAR-PIN mode (Gate-3 parity rule 3): AOM_FORCE_SCALAR disables every
+  # archmage SIMD token process-wide (crates/aom-dispatch), so every kernel
+  # dispatch falls through to `_scalar` = the transcribed C port, verbatim.
+  # The FULL suite passing here proves SIMD work left the scalar path
+  # untouched. Locally: `just test-scalar`.
+  test-linux-scalar-pinned:
+    name: linux differential (forced-scalar pin)
+    runs-on: ubuntu-latest
+    env:
+      AOM_FORCE_SCALAR: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install C-oracle build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm cmake ninja-build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache libaom reference oracle
+        uses: actions/cache@v6
+        with:
+          path: reference/libaom
+          key: libaom-${{ runner.os }}-${{ env.LIBAOM_SHA }}-v1
+      - name: Build C libaom reference oracle
+        run: bash reference/build.sh
+      - name: Cache conformance corpus
+        uses: actions/cache@v6
+        with:
+          path: conformance/data
+          key: conformance-intra-${{ runner.os }}-${{ hashFiles('reference/libaom/test/test-data.sha1') }}-v1
+      - name: Provision conformance corpus (intra scope)
+        run: python3 xtask/conformance.py --fetch --scope intra
+      - name: Test workspace under the scalar pin
         run: cargo test --workspace --no-fail-fast
 
 # TODO (next CI chunk): the mandated platform matrix — windows-11-arm,

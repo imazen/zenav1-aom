@@ -1,0 +1,16 @@
+[package]
+name = "aom-dispatch"
+version = "0.0.1"
+edition = "2024"
+license = "BSD-2-Clause"
+description = "SIMD dispatch policy for aom-rs: the AOM_FORCE_SCALAR process-wide scalar pin (archmage token disablement) shared by every kernel crate's dispatch entry points."
+publish = false
+
+[dependencies]
+# ONE archmage universe for the whole workspace (registry, exact version).
+# The scalar pin disables tokens process-wide via archmage's atomics; that
+# only reaches every kernel crate if they all link the SAME archmage
+# instance — never mix a path dep with the registry dep.
+# `avx512` enables the AVX-512 tokens (X64V4Token/X64V4xToken/...) so the
+# pin covers them and kernel crates can dispatch v4 tiers.
+archmage = { version = "0.9.27", features = ["avx512"] }

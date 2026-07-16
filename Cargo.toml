@@ -15,6 +15,7 @@ members = [
     "crates/aom-decode",
     "crates/aom-sys-ref",
     "crates/aom-bench",
+    "crates/aom-dispatch",
 ]
 
 [workspace.package]

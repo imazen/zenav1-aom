@@ -1,0 +1,14 @@
+git commit: 057bde2 (bench harness landing; profile run on that build)
+host: EPYC-Genoa VM (Zen 4, avx512), 16 cores, dedicated aom-rs box
+date: 2026-07-16
+tool: valgrind-3.26.0 callgrind (Ir), profiling profile (release + debuginfo), NO -Ctarget-cpu
+commands:
+  ./target/profiling/gate3_profile enc port enc_s0_128_cq32 6   # 155,210,572,291 Ir
+  ./target/profiling/gate3_profile dec port dec_352x288_q32 30  #   3,656,695,999 Ir
+  callgrind_annotate --threshold=90 <out>
+raw callgrind outputs: NOT committed (>800 KB); regenerate via `just profile`.
+context: all-scalar port (no SIMD dispatch existed yet). Provisional noisy-box
+smoke wall ratios at the same commit (DIRECTIONAL ONLY, resource-gate flagged
+every round): encode port/C ~3.4-4.2x (s0 cq12/32), ~6.9-7.4x (cq63), ~9.2x
+(s4 128 cq32); decode ~1.5x (q00) / ~3.4x (q32) / ~8.2x (q63) / ~3.0x (64x64)
+/ ~4.9x (196x196). Honest quiet-box zenbench baseline pending.
