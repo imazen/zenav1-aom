@@ -73,10 +73,24 @@ pub struct TxMaskParams {
     pub use_reduced_intra_txset: u8,
     /// `txfm_params.use_derived_intra_tx_type_set`.
     pub use_derived_intra_tx_type_set: bool,
+    /// `txfm_params.use_default_intra_tx_type` — default 0 (speed 0..=3).
+    /// `set_mode_eval_params(MODE_EVAL)` sets this to 1 when
+    /// `fast_intra_tx_type_search == 2` (allintra speed>=4) or
+    /// `use_intra_default_tx_only`. When 1, `get_tx_mask` (tx_search.c:1807)
+    /// overrides `txk_allowed` to [`get_default_tx_type_y`] BEFORE the ext-tx
+    /// masking — the LUMA search then evaluates only the mode's default tx type
+    /// (or DCT_DCT for tx>=32x32 / screen / lossless). Set true only in the
+    /// winner-mode MODE_EVAL first pass (KB-8 chunk 2d).
+    pub use_default_intra_tx_type: bool,
     /// `oxcf.txfm_cfg.enable_flip_idtx` (CLI default on).
     pub enable_flip_idtx: bool,
     /// `oxcf.txfm_cfg.use_intra_dct_only` (CLI default off).
     pub use_intra_dct_only: bool,
+    /// `cpi->use_screen_content_tools` — an input to [`get_default_tx_type_y`]
+    /// (screen content forces DCT_DCT). Only read when
+    /// `use_default_intra_tx_type` is set; false on the non-screen textured
+    /// envelope.
+    pub use_screen_content_tools: bool,
 }
 
 impl TxMaskParams {
@@ -85,9 +99,33 @@ impl TxMaskParams {
         TxMaskParams {
             use_reduced_intra_txset: 1,
             use_derived_intra_tx_type_set: false,
+            use_default_intra_tx_type: false,
             enable_flip_idtx: true,
             use_intra_dct_only: false,
+            use_screen_content_tools: false,
         }
+    }
+}
+
+/// `get_default_tx_type(PLANE_TYPE_Y, xd, tx_size, use_screen_content_tools)`
+/// (blockd.h:1175): the single luma tx type used when
+/// `use_default_intra_tx_type` is set. Returns `DCT_DCT` (== `DEFAULT_INTER_TX
+/// _TYPE`, blockd.h:42) for lossless, `tx_size >= TX_32X32` (enum value >= 3, so
+/// 32x32/64x64 AND every rectangular size), or screen content; otherwise the
+/// intra mode's default tx type `intra_mode_to_tx_type` = [`INTRA_MODE_TO_TX_
+/// TYPE`]`[mode]`. (For a filter-intra block the caller passes `mode = DC_PRED`,
+/// matching C's `mbmi->mode`.)
+pub fn get_default_tx_type_y(
+    mode: usize,
+    tx_size: usize,
+    lossless: bool,
+    use_screen_content_tools: bool,
+) -> usize {
+    // TX_32X32 == 3 in the TX_SIZE enum; `tx_size >= TX_32X32` per blockd.h:1181.
+    if lossless || tx_size >= 3 || use_screen_content_tools {
+        0 // DCT_DCT
+    } else {
+        INTRA_MODE_TO_TX_TYPE[mode]
     }
 }
 
@@ -112,6 +150,15 @@ pub fn get_tx_mask_intra(
     p: &TxMaskParams,
 ) -> (u16, Option<usize>) {
     let mut txk_allowed = TX_TYPES; // "all"
+    // use_default_intra_tx_type override (tx_search.c:1807): pin the LUMA search
+    // to the mode's single default tx type BEFORE the ext-tx masking below. C
+    // uses mbmi->mode here (NOT the filter-intra-mapped intra_dir), so pass the
+    // raw `mode` — for a filter-intra block the caller passes mode = DC_PRED.
+    // The later lossless / sqr_up>32 / dct_only force-to-DCT check still applies
+    // on top (matching the C ordering).
+    if p.use_default_intra_tx_type {
+        txk_allowed = get_default_tx_type_y(mode, tx_size, lossless, p.use_screen_content_tools);
+    }
     let tx_set_type = ext_tx_set_type(tx_size, false, reduced_tx_set_used);
 
     let intra_dir = if use_filter_intra {
@@ -1972,5 +2019,26 @@ mod largest_tx_tests {
         for combo in [(true, true), (false, true), (true, false), (false, false)] {
             assert_eq!(choose_largest_tx_size_intra(9, combo.0, combo.1), 3);
         }
+    }
+
+    /// KB-8 chunk 2c: `get_default_tx_type_y` (blockd.h:1175) boundary contract.
+    /// The full override is exercised against real C by tx_mask_diff.rs's
+    /// `tx_mask_intra_matches_c` (use_default x screen sweep); this pins the
+    /// helper directly.
+    #[test]
+    fn default_tx_type_boundary() {
+        // Small square sizes (TX_4X4/8X8/16X16 = 0/1/2) return the mode's default.
+        for (mode, want) in INTRA_MODE_TO_TX_TYPE.iter().enumerate() {
+            assert_eq!(get_default_tx_type_y(mode, 2, false, false), *want); // TX_16X16
+        }
+        // tx_size >= TX_32X32 (3) -> DCT_DCT for every mode.
+        assert_eq!(get_default_tx_type_y(4, 3, false, false), 0); // TX_32X32, D135->ADST_ADST demoted
+        assert_eq!(get_default_tx_type_y(4, 4, false, false), 0); // TX_64X64
+        assert_eq!(get_default_tx_type_y(4, 5, false, false), 0); // TX_4X8 (rect, enum>=3)
+        // lossless or screen content -> DCT_DCT even at a small size.
+        assert_eq!(get_default_tx_type_y(4, 0, true, false), 0); // lossless
+        assert_eq!(get_default_tx_type_y(4, 0, false, true), 0); // screen content
+        // Non-degenerate: V_PRED (mode 1) at TX_8X8 is ADST_DCT (1), NOT DCT.
+        assert_eq!(get_default_tx_type_y(1, 1, false, false), 1);
     }
 }

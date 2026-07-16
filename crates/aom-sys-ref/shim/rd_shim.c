@@ -643,8 +643,24 @@ int shim_get_tx_mask_intra(int tx_size, int mode, int use_filter_intra,
                            int use_reduced_intra_txset,
                            int use_derived_intra_tx_type_set,
                            int enable_flip_idtx, int use_intra_dct_only,
+                           int use_default_intra_tx_type,
+                           int use_screen_content_tools,
                            int *out_txk_allowed) {
   TX_TYPE txk_allowed = TX_TYPES;
+  /* use_default_intra_tx_type override (get_tx_mask, tx_search.c:1807), applied
+   * BEFORE the ext-tx masking. Transcribes get_default_tx_type(PLANE_TYPE_Y,
+   * ...) (blockd.h:1175) but calls the REAL intra_mode_to_tx_type (blockd.h:1007,
+   * its real _intra_mode_to_tx_type table) for the small-size branch. */
+  if (use_default_intra_tx_type) {
+    if (lossless || tx_size >= TX_32X32 || use_screen_content_tools) {
+      txk_allowed = DEFAULT_INTER_TX_TYPE; /* DCT_DCT */
+    } else {
+      MB_MODE_INFO mbmi_tmp;
+      memset(&mbmi_tmp, 0, sizeof(mbmi_tmp));
+      mbmi_tmp.mode = (PREDICTION_MODE)mode;
+      txk_allowed = intra_mode_to_tx_type(&mbmi_tmp, PLANE_TYPE_Y);
+    }
+  }
   const TxSetType tx_set_type = av1_get_ext_tx_set_type(
       (TX_SIZE)tx_size, /*is_inter=*/0, reduced_tx_set_used);
 

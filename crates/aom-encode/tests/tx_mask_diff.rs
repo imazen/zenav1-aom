@@ -42,39 +42,52 @@ fn tx_mask_intra_matches_c() {
                     let use_reduced_txset = (cfg >> 2) % 3; // 0/1/2
                     let derived = (cfg >> 4) & 1 != 0;
                     let flip_idtx = cfg & 32 == 0; // mostly on
-                    let p = TxMaskParams {
-                        use_reduced_intra_txset: use_reduced_txset as u8,
-                        use_derived_intra_tx_type_set: derived,
-                        enable_flip_idtx: flip_idtx,
-                        use_intra_dct_only: false,
-                    };
-                    let (mask, txk) =
-                        get_tx_mask_intra(tx_size, mode, use_fi, fi_mode, lossless, reduced, &p);
-                    let (mask_c, txk_c) = c::ref_get_tx_mask_intra(
-                        tx_size as i32,
-                        mode as i32,
-                        use_fi,
-                        fi_mode as i32,
-                        lossless,
-                        reduced,
-                        use_reduced_txset as i32,
-                        derived,
-                        flip_idtx,
-                        false,
-                    );
-                    let txk_rust = txk.unwrap_or(TX_TYPES) as i32;
-                    assert_eq!(
-                        (mask, txk_rust),
-                        (mask_c, txk_c),
-                        "ts={tx_size} mode={mode} fi={use_fi}/{fi_mode} cfg={cfg}",
-                    );
-                    if txk.is_none() {
-                        multi += 1;
-                    } else {
-                        single += 1;
-                    }
-                    if use_reduced_txset > 0 && mask != 0 {
-                        reduced_hits += 1;
+                    // Sweep the winner-mode MODE_EVAL first-pass tx-type override
+                    // (use_default_intra_tx_type) x screen-content, both feeding
+                    // get_default_tx_type (KB-8 chunk 2c).
+                    for use_default in [false, true] {
+                        for use_screen in [false, true] {
+                            let p = TxMaskParams {
+                                use_reduced_intra_txset: use_reduced_txset as u8,
+                                use_derived_intra_tx_type_set: derived,
+                                use_default_intra_tx_type: use_default,
+                                enable_flip_idtx: flip_idtx,
+                                use_intra_dct_only: false,
+                                use_screen_content_tools: use_screen,
+                            };
+                            let (mask, txk) = get_tx_mask_intra(
+                                tx_size, mode, use_fi, fi_mode, lossless, reduced, &p,
+                            );
+                            let (mask_c, txk_c) = c::ref_get_tx_mask_intra(
+                                tx_size as i32,
+                                mode as i32,
+                                use_fi,
+                                fi_mode as i32,
+                                lossless,
+                                reduced,
+                                use_reduced_txset as i32,
+                                derived,
+                                flip_idtx,
+                                false,
+                                use_default,
+                                use_screen,
+                            );
+                            let txk_rust = txk.unwrap_or(TX_TYPES) as i32;
+                            assert_eq!(
+                                (mask, txk_rust),
+                                (mask_c, txk_c),
+                                "ts={tx_size} mode={mode} fi={use_fi}/{fi_mode} cfg={cfg} \
+                                 use_default={use_default} screen={use_screen}",
+                            );
+                            if txk.is_none() {
+                                multi += 1;
+                            } else {
+                                single += 1;
+                            }
+                            if use_reduced_txset > 0 && mask != 0 {
+                                reduced_hits += 1;
+                            }
+                        }
                     }
                 }
             }
@@ -87,7 +100,7 @@ fn tx_mask_intra_matches_c() {
     };
     let (mask, txk) = get_tx_mask_intra(2, 4, false, 0, false, false, &p);
     let (mask_c, txk_c) =
-        c::ref_get_tx_mask_intra(2, 4, false, 0, false, false, 1, false, true, true);
+        c::ref_get_tx_mask_intra(2, 4, false, 0, false, false, 1, false, true, true, false, false);
     assert_eq!((mask, txk.unwrap_or(TX_TYPES) as i32), (mask_c, txk_c));
     assert_eq!(mask, 1);
     // Non-vacuity: both single-type and multi-type outcomes heavily exercised.

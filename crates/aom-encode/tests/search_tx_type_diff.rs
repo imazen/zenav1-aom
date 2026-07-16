@@ -240,6 +240,8 @@ fn search_tx_type_intra_matches_c_chain() {
                 false, // use_derived_intra_tx_type_set
                 true,  // enable_flip_idtx
                 false, // use_intra_dct_only
+                false, // use_default_intra_tx_type
+                false, // use_screen_content_tools
             );
             let _ = txk_c;
             let (bsse_raw, mut mse_c) =

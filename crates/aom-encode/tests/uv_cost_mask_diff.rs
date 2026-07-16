@@ -99,8 +99,10 @@ fn tx_mask_uv_intra_matches_c() {
                         let p = TxMaskParams {
                             use_reduced_intra_txset: use_reduced_txset as u8,
                             use_derived_intra_tx_type_set: false,
+                            use_default_intra_tx_type: false,
                             enable_flip_idtx: flip_idtx,
                             use_intra_dct_only: false,
+                            use_screen_content_tools: false,
                         };
                         let (mask, txk) = get_tx_mask_uv_intra(
                             tx_size, uv_mode, luma_mode, use_fi, fi_mode, lossless, reduced, &p,

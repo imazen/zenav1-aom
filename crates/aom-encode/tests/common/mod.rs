@@ -668,6 +668,8 @@ pub fn c_search_tx_type_p(
             false,
             true,
             false,
+            false, // use_default_intra_tx_type
+            false, // use_screen_content_tools
         )
     } else {
         let (m, t) = c::ref_get_tx_mask_uv_intra(

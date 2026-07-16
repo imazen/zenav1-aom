@@ -9804,6 +9804,8 @@ unsafe extern "C" {
         use_derived_intra_tx_type_set: i32,
         enable_flip_idtx: i32,
         use_intra_dct_only: i32,
+        use_default_intra_tx_type: i32,
+        use_screen_content_tools: i32,
         out_txk_allowed: *mut i32,
     ) -> i32;
     fn shim_pixel_diff_dist(
@@ -9825,6 +9827,7 @@ unsafe extern "C" {
 /// `av1_get_ext_tx_set_type` + REAL blockd.h used-flag tables). Returns
 /// `(allowed_tx_mask, txk_allowed)` with `txk_allowed == 16` meaning "all".
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn ref_get_tx_mask_intra(
     tx_size: i32,
     mode: i32,
@@ -9836,6 +9839,8 @@ pub fn ref_get_tx_mask_intra(
     use_derived_intra_tx_type_set: bool,
     enable_flip_idtx: bool,
     use_intra_dct_only: bool,
+    use_default_intra_tx_type: bool,
+    use_screen_content_tools: bool,
 ) -> (u16, i32) {
     let mut txk = 0i32;
     let mask = unsafe {
@@ -9850,6 +9855,8 @@ pub fn ref_get_tx_mask_intra(
             use_derived_intra_tx_type_set as i32,
             enable_flip_idtx as i32,
             use_intra_dct_only as i32,
+            use_default_intra_tx_type as i32,
+            use_screen_content_tools as i32,
             &mut txk,
         )
     };
