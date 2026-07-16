@@ -1476,6 +1476,49 @@ pub fn uniform_txfm_yrd_intra(
 pub const MAX_TXSIZE_RECT_LOOKUP: [usize; 22] = [
     0, 5, 6, 1, 7, 8, 2, 9, 10, 3, 11, 12, 4, 4, 4, 4, 13, 14, 15, 16, 17, 18,
 ];
+
+/// `TX_SIZE_SEARCH_METHOD` (enc_enums.h:262): the tx-size search strategy for a
+/// uniform intra block. `USE_FULL_RD` runs the depth sweep; `USE_LARGESTALL`
+/// evaluates only the single largest uniform tx (the winner-mode MODE_EVAL first
+/// pass, `tx_size_search_methods[..][MODE_EVAL]`). `USE_FAST_RD` (the RT path) is
+/// not reached on the all-intra winner-mode grid.
+pub const USE_FULL_RD: usize = 0;
+pub const USE_FAST_RD: usize = 1;
+pub const USE_LARGESTALL: usize = 2;
+
+/// `tx_size_from_tx_mode(bsize, TX_MODE_LARGEST)` + the `choose_largest_tx_size`
+/// enable-adjustment (tx_search.c:2715). Returns the single tx size the
+/// `USE_LARGESTALL` arm evaluates: `max_txsize_rect_lookup[bsize]`, then demoted
+/// when `enable_tx64`/`enable_rect_tx` are off. On the all-intra envelope BOTH
+/// are ON (CLI defaults), so this is exactly `max_txsize_rect_lookup[bsize]`; the
+/// demotion tables are carried verbatim so the arm stays correct if a caller
+/// disables tx64/rect.
+fn choose_largest_tx_size_intra(bsize: usize, enable_tx64: bool, enable_rect_tx: bool) -> usize {
+    // tx_size_from_tx_mode(bs, TX_MODE_LARGEST) == max_txsize_rect_lookup[bs]
+    // (BLOCK_4X4 -> TX_4X4 is already encoded in the table).
+    let tx = MAX_TXSIZE_RECT_LOOKUP[bsize];
+    match (enable_tx64, enable_rect_tx) {
+        (true, true) => tx,
+        // tx_size_max_32[TX_SIZES_ALL] — cap the 64-wide/high sizes at 32.
+        (false, true) => {
+            const TX_SIZE_MAX_32: [usize; 19] =
+                [0, 1, 2, 3, 3, 5, 6, 7, 8, 9, 10, 3, 3, 13, 14, 15, 16, 9, 10];
+            TX_SIZE_MAX_32[tx]
+        }
+        // tx_size_max_square[TX_SIZES_ALL] — collapse rect to the inscribed square.
+        (true, false) => {
+            const TX_SIZE_MAX_SQUARE: [usize; 19] =
+                [0, 1, 2, 3, 4, 0, 0, 1, 1, 2, 2, 3, 3, 0, 0, 1, 1, 2, 2];
+            TX_SIZE_MAX_SQUARE[tx]
+        }
+        // tx_size_max_32_square[TX_SIZES_ALL] — square AND 32-capped.
+        (false, false) => {
+            const TX_SIZE_MAX_32_SQUARE: [usize; 19] =
+                [0, 1, 2, 3, 3, 0, 0, 1, 1, 2, 2, 3, 3, 0, 0, 1, 1, 2, 2];
+            TX_SIZE_MAX_32_SQUARE[tx]
+        }
+    }
+}
 /// `sub_tx_size_map[TX_SIZES_ALL]` (common_data.h): rect sizes halve the LONG
 /// side.
 pub const SUB_TX_SIZE_MAP: [usize; 19] = [0, 0, 1, 2, 3, 0, 0, 1, 1, 2, 2, 3, 3, 5, 6, 7, 8, 9, 10];
@@ -1597,12 +1640,14 @@ pub fn choose_tx_size_type_from_rd_intra(
     best
 }
 
-/// `av1_pick_uniform_tx_size_type_yrd` (tx_search.c) — the luma intra slice:
-/// residue hashing and skip-prediction are inter-only; lossless picks the
-/// smallest (4x4) transform (`choose_smallest_tx_size` = one
-/// [`uniform_txfm_yrd_intra`] at TX_4X4); `USE_FULL_RD` runs the depth sweep.
-/// (`USE_LARGESTALL` / winner-mode arms are out of scope at speed-0
-/// MODE_EVAL.) Returns the chosen size + stats, or `None` (rate `INT_MAX`).
+/// `av1_pick_uniform_tx_size_type_yrd` (tx_search.c:3628) — the luma intra
+/// slice: residue hashing and skip-prediction are inter-only. Dispatch mirrors
+/// the C (:3683): lossless picks the smallest (4x4) transform
+/// (`choose_smallest_tx_size` = one [`uniform_txfm_yrd_intra`] at TX_4X4);
+/// `USE_LARGESTALL` evaluates the single largest uniform tx
+/// ([`choose_largest_tx_size_intra`] — the winner-mode MODE_EVAL first pass);
+/// otherwise (`USE_FULL_RD`) the depth sweep runs. Returns the chosen size +
+/// stats, or `None` (rate `INT_MAX`).
 #[allow(clippy::too_many_arguments)]
 pub fn pick_uniform_tx_size_type_yrd_intra(
     env: &TxfmYrdEnv,
@@ -1612,6 +1657,7 @@ pub fn pick_uniform_tx_size_type_yrd_intra(
     source_variance: u32,
     enable_tx64: bool,
     enable_rect_tx: bool,
+    tx_size_search_method: usize,
 ) -> Option<TxSizeChoice> {
     // select_tx_mode (rdopt_utils.h) couples the two at frame level:
     // coded_lossless => ONLY_4X4, i.e. never TX_MODE_SELECT.
@@ -1624,6 +1670,18 @@ pub fn pick_uniform_tx_size_type_yrd_intra(
         let (rd, res) = uniform_txfm_yrd_intra(env, recon, 0, ref_best_rd, pol);
         return res.map(|(stats, winners)| TxSizeChoice {
             best_tx_size: 0,
+            best_rd: rd,
+            stats,
+            winners,
+        });
+    }
+    if tx_size_search_method == USE_LARGESTALL {
+        // choose_largest_tx_size: one uniform_txfm_yrd at the single largest tx
+        // size (no depth sweep, no size-RD comparison, no low-contrast prune).
+        let tx_size = choose_largest_tx_size_intra(env.bsize, enable_tx64, enable_rect_tx);
+        let (rd, res) = uniform_txfm_yrd_intra(env, recon, tx_size, ref_best_rd, pol);
+        return res.map(|(stats, winners)| TxSizeChoice {
+            best_tx_size: tx_size,
             best_rd: rd,
             stats,
             winners,
@@ -1878,5 +1936,41 @@ mod satd_skip_tests {
         let mut small = vec![0i16; full];
         small[0] = 1;
         assert!(!skip_trellis_opt_based_on_satd(&small, 2, 0, 8, 20, u32::MAX - 1));
+    }
+}
+
+#[cfg(test)]
+mod largest_tx_tests {
+    use super::*;
+
+    /// KB-8 chunk 2b: `choose_largest_tx_size_intra` (the `USE_LARGESTALL` arm)
+    /// reproduces C's `choose_largest_tx_size` (tx_search.c:2715) — the single
+    /// largest uniform tx size the winner-mode MODE_EVAL first pass evaluates.
+    #[test]
+    fn largest_tx_size_matches_c() {
+        // enable_tx64 && enable_rect_tx (the all-intra CLI-default envelope):
+        // exactly max_txsize_rect_lookup[bsize] for every block size.
+        for (bsize, &rect) in MAX_TXSIZE_RECT_LOOKUP.iter().enumerate() {
+            assert_eq!(
+                choose_largest_tx_size_intra(bsize, true, true),
+                rect,
+                "bsize {bsize} (tx64+rect on) must be max_txsize_rect_lookup"
+            );
+        }
+        // BLOCK_64X64 (idx 12, rect = TX_64X64 = 4): the four enable combos hit
+        // the four distinct demotion tables (verified vs C tx_size_max_* tables).
+        assert_eq!(choose_largest_tx_size_intra(12, true, true), 4); // TX_64X64
+        assert_eq!(choose_largest_tx_size_intra(12, false, true), 3); // -> TX_32X32
+        assert_eq!(choose_largest_tx_size_intra(12, true, false), 4); // square already
+        assert_eq!(choose_largest_tx_size_intra(12, false, false), 3); // TX_32X32
+        // BLOCK_16X64 (idx 20, rect = TX_16X64 = 17): rect demotions differ.
+        assert_eq!(choose_largest_tx_size_intra(20, true, true), 17); // TX_16X64
+        assert_eq!(choose_largest_tx_size_intra(20, false, true), 9); // -> TX_16X32
+        assert_eq!(choose_largest_tx_size_intra(20, true, false), 2); // -> TX_16X16
+        assert_eq!(choose_largest_tx_size_intra(20, false, false), 2); // TX_16X16
+        // BLOCK_32X32 (idx 9): already square+<=32, invariant across combos.
+        for combo in [(true, true), (false, true), (true, false), (false, false)] {
+            assert_eq!(choose_largest_tx_size_intra(9, combo.0, combo.1), 3);
+        }
     }
 }

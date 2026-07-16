@@ -961,6 +961,7 @@ pub fn rd_pick_intra_sby_mode_y(
             cfg.source_variance,
             cfg.enable_tx64,
             cfg.enable_rect_tx,
+            crate::tx_search::USE_FULL_RD, // single-pass DEFAULT_EVAL (speed 0..=3); KB-8 chunk 2d threads the stage method
         ) else {
             continue; // this_rate_tokenonly == INT_MAX
         };
@@ -1173,6 +1174,7 @@ pub fn rd_pick_filter_intra_sby_y(
             cfg.source_variance,
             cfg.enable_tx64,
             cfg.enable_rect_tx,
+            crate::tx_search::USE_FULL_RD, // filter-intra search; KB-8 chunk 2d threads the stage method
         ) else {
             continue; // rate == INT_MAX
         };
