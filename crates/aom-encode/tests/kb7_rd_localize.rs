@@ -473,6 +473,7 @@ fn localize_cell(w: usize, h: usize, cq_level: i32, speed: i32, name: &str) -> b
         enable_ab_partitions: true,
         allow_screen_content_tools: p.allow_screen_content_tools,
         qm_levels: None,
+        palette_costs: None,
     };
     let pack_cfg = aom_encode::pack::PackCfg {
         enable_filter_intra: s.enable_filter_intra,

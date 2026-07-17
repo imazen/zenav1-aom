@@ -284,10 +284,20 @@ impl EncodeCell {
             None => (fw, fh, 0, 0),
             Some((cw, ch, ox, oy)) => (cw, ch, ox, oy),
         };
-        assert!(off_x + w <= fw && off_y + h <= fh, "{label}: crop exceeds frame");
-        assert!(off_x % 2 == 0 && off_y % 2 == 0, "{label}: crop offset must be even");
+        assert!(
+            off_x + w <= fw && off_y + h <= fh,
+            "{label}: crop exceeds frame"
+        );
+        assert!(
+            off_x % 2 == 0 && off_y % 2 == 0,
+            "{label}: crop offset must be even"
+        );
         let (cox, coy) = (off_x >> ss_x, off_y >> ss_y);
-        let (cw, ch) = if mono { (0, 0) } else { ((w + ss_x) >> ss_x, (h + ss_y) >> ss_y) };
+        let (cw, ch) = if mono {
+            (0, 0)
+        } else {
+            ((w + ss_x) >> ss_x, (h + ss_y) >> ss_y)
+        };
         let mut y = vec![0u16; w * h];
         for r in 0..h {
             for col in 0..w {
@@ -383,6 +393,33 @@ impl EncodeCell {
         )
     }
 
+    /// The C oracle's KEY encode with explicit screen-content tool knobs
+    /// (`--enable-palette` / `--enable-intrabc`, the
+    /// `shim_encode_av1_kf_screen_content` path — otherwise identical to
+    /// [`Self::c_encode`]).
+    pub fn c_encode_screen(&self, enable_palette: bool, enable_intrabc: bool) -> Vec<u8> {
+        c::ref_encode_av1_kf_screen_content(
+            &self.y,
+            &self.u,
+            &self.v,
+            self.w,
+            self.h,
+            i32::from(self.bd),
+            self.mono,
+            self.ss_x as i32,
+            self.ss_y as i32,
+            self.cq_level,
+            self.speed,
+            false,
+            false,
+            self.usage,
+            0,
+            false,
+            enable_palette,
+            enable_intrabc,
+        )
+    }
+
     /// Extract the frame OBU payload from a reference stream (the byte-match
     /// target for [`Self::port_encode`]).
     pub fn frame_obu_payload(stream: &[u8]) -> Vec<u8> {
@@ -405,7 +442,16 @@ impl EncodeCell {
     /// threading); cells at cq >= 1 only (the lossless two-pass probe is out
     /// of scope here).
     pub fn port_encode(&self, bootstrap: &[u8]) -> Vec<u8> {
-        let (w, h, mono, ss_x, ss_y, bd) = (self.w, self.h, self.mono, self.ss_x, self.ss_y, self.bd);
+        self.port_encode_with(bootstrap, false)
+    }
+
+    /// [`Self::port_encode`] + feature knobs for the bulk-port RD-close gates:
+    /// `enable_palette` turns the palette RD search on (the port analogue of
+    /// the C side's `--enable-palette=1`; the search still requires the
+    /// frame's `allow_screen_content_tools`, exactly as C).
+    pub fn port_encode_with(&self, bootstrap: &[u8], enable_palette: bool) -> Vec<u8> {
+        let (w, h, mono, ss_x, ss_y, bd) =
+            (self.w, self.h, self.mono, self.ss_x, self.ss_y, self.bd);
         let obus = walk_obus(bootstrap);
         let seq_payload = obus
             .iter()
@@ -435,7 +481,8 @@ impl EncodeCell {
                 equal_picture_interval: seq.timing_info.equal_picture_interval,
                 frame_presentation_time_length: seq
                     .decoder_model_info
-                    .frame_presentation_time_length as u32,
+                    .frame_presentation_time_length
+                    as u32,
                 frame_id_numbers_present_flag: s.frame_id_numbers_present_flag,
                 frame_id_length: s.frame_id_length as u32,
                 force_screen_content_tools: s.force_screen_content_tools,
@@ -521,12 +568,20 @@ impl EncodeCell {
             FrameUpdateType::Kf,
             qindex,
             TuneMetric::Psnr,
-            if allintra { EncMode::Allintra } else { EncMode::Good },
+            if allintra {
+                EncMode::Allintra
+            } else {
+                EncMode::Good
+            },
         );
 
         // Partial-SB support: CEIL the SB walk and replicate-extend the
         // source into the SB-aligned overhang (the chroma_ss_e2e recipe).
-        let (cw, ch) = if mono { (0, 0) } else { ((w + ss_x) >> ss_x, (h + ss_y) >> ss_y) };
+        let (cw, ch) = if mono {
+            (0, 0)
+        } else {
+            ((w + ss_x) >> ss_x, (h + ss_y) >> ss_y)
+        };
         let n_sb_x = ((mi_cols + SB_MI - 1) / SB_MI).max(1);
         let n_sb_y = ((mi_rows + SB_MI - 1) / SB_MI).max(1);
         let sb_px_w = n_sb_x as usize * 64;
@@ -638,6 +693,7 @@ impl EncodeCell {
             enable_ab_partitions: true,
             allow_screen_content_tools: p.allow_screen_content_tools,
             qm_levels: None,
+            palette_costs: enable_palette.then_some(&real.palette_costs),
         };
         let pack_cfg = aom_encode::pack::PackCfg {
             enable_filter_intra: s.enable_filter_intra,
@@ -749,6 +805,12 @@ pub fn encode_cells() -> Vec<EncodeCell> {
             ));
         }
     }
-    cells.push(EncodeCell::synthetic_diag("enc_s4_128_cq32", 128, 128, 32, 4));
+    cells.push(EncodeCell::synthetic_diag(
+        "enc_s4_128_cq32",
+        128,
+        128,
+        32,
+        4,
+    ));
     cells
 }

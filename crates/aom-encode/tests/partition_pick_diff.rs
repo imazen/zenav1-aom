@@ -361,8 +361,7 @@ impl CPick<'_> {
         // (plane_bsize == BLOCK_4X4). The reference used to transcribe the
         // same `!lossless && w<=32 && h<=32` simplification as the port (a
         // shared bug this differential therefore couldn't catch — KB-5).
-        let cfl_allowed =
-            aom_entropy::partition::is_cfl_allowed(bsize, self.lossless, ss_x, ss_y);
+        let cfl_allowed = aom_entropy::partition::is_cfl_allowed(bsize, self.lossless, ss_x, ss_y);
         // Chroma has no tx-size depth search -- pre-select the ONE real
         // per-txs_ctx table THIS leaf's uv_tx_size uses (mirrors
         // partition_pick.rs::leaf_pick_sb_modes's fix).
@@ -414,6 +413,7 @@ impl CPick<'_> {
             luma_mode: 0,
             luma_use_fi: false,
             luma_fi_mode: 0,
+            luma_palette_active: false,
             lossless: self.lossless,
             reduced_tx_set_used: self.o.reduced,
             bd: self.o.bd,
@@ -452,6 +452,7 @@ impl CPick<'_> {
                     costs: self.mode_costs,
                     cfl_costs: self.cfl_costs,
                     lp: self.uv_lp,
+                    palette: None,
                 })
             },
         );
@@ -488,6 +489,8 @@ impl CPick<'_> {
                     tx_type_map: best.tx_type_map,
                     skip_txfm: false,
                     raw_rdstats: stats,
+                    palette_y: None,
+                    palette_uv: None,
                 };
                 (stats, Some(winner))
             }
@@ -1467,6 +1470,7 @@ fn rd_pick_partition_real_matches_c_recursion() {
             enable_ab_partitions: false,
             allow_screen_content_tools: false,
             qm_levels: None,
+            palette_costs: None,
         };
 
         // ---- Rust recursion ----

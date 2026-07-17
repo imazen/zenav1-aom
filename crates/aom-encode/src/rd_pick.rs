@@ -113,6 +113,12 @@ pub struct RdPickUvArgs<'a, 'b> {
     pub costs: &'b IntraModeCosts,
     pub cfl_costs: &'b crate::mode_costs::CflCosts,
     pub lp: &'b UvLoopPolicy,
+    /// The UV palette-search slice (`av1_rd_pick_palette_intra_sbuv` runs iff
+    /// `enable_palette && av1_allow_palette(..)`): `None` under
+    /// `--enable-palette=0`. `dc_mode_cost`/`y_palette_active` are
+    /// placeholders overwritten from the luma winner below (the C reads the
+    /// winner-restored mbmi).
+    pub palette: Option<crate::palette_search::UvPaletteArgs<'b>>,
 }
 
 /// The luma winner re-encode inputs beyond what [`TxfmYrdEnv`] carries.
@@ -340,6 +346,12 @@ pub fn rd_pick_intra_mode_sb(
                         above_ctx: y_env.above_ctx,
                         left_ctx: y_env.left_ctx,
                         qm_level: y_env.qm_levels.map(|l| l[0]),
+                        palette: y.palette_y.as_ref().map(|p| crate::tx_search::PaletteYrd {
+                            colors: &p.colors,
+                            size: p.size,
+                            map: &p.color_map,
+                            map_stride: MI_SIZE_WIDE_B[y_env.bsize] * 4,
+                        }),
                     };
                     reencode = Some(encode_intra_block_plane_y(
                         &enc_env,
@@ -356,7 +368,15 @@ pub fn rd_pick_intra_mode_sb(
                 args.env.luma_mode = y.mode;
                 args.env.luma_use_fi = y.use_filter_intra;
                 args.env.luma_fi_mode = y.filter_intra_mode;
+                args.env.luma_palette_active = y.palette_y.is_some();
                 let uv_mode_costs = &args.intra_uv_mode_cost[args.cfl_allowed as usize];
+                // The UV palette args read the LUMA WINNER's state (the C
+                // reads the winner-restored mbmi): the UV-DC mode cost row +
+                // whether Y palette is active (the UV flag's cdf-row ctx).
+                if let Some(pal) = args.palette.as_mut() {
+                    pal.dc_mode_cost = uv_mode_costs[y.mode][0];
+                    pal.y_palette_active = y.palette_y.is_some();
+                }
                 let (win, visits) = rd_pick_intra_sbuv_mode(
                     args.env,
                     args.recon_u,
@@ -369,6 +389,7 @@ pub fn rd_pick_intra_mode_sb(
                     args.cfl_costs,
                     sby_cfg.pol,
                     args.lp,
+                    args.palette.as_ref(),
                 );
                 RdPickUvOutcome::Searched(win, visits)
             }

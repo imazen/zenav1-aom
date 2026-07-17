@@ -81,7 +81,10 @@ fn ivf_hdr_dims(data: &[u8]) -> (usize, usize) {
 }
 
 fn ivf_temporal_units(data: &[u8]) -> Vec<Vec<u8>> {
-    assert!(data.len() >= 32 && &data[0..4] == b"DKIF", "not an IVF file");
+    assert!(
+        data.len() >= 32 && &data[0..4] == b"DKIF",
+        "not an IVF file"
+    );
     let hdr_len = u16::from_le_bytes([data[6], data[7]]) as usize;
     let mut off = hdr_len;
     let mut tus = Vec::new();
@@ -189,8 +192,26 @@ fn replay_tree(
         let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
         let subsize = get_partition_subsize(bsize, p as i32) as usize;
         replay_tree(tree, cursor, mi_row, mi_col, subsize, mi_rows, mi_cols, out);
-        replay_tree(tree, cursor, mi_row, mi_col + hbs, subsize, mi_rows, mi_cols, out);
-        replay_tree(tree, cursor, mi_row + hbs, mi_col, subsize, mi_rows, mi_cols, out);
+        replay_tree(
+            tree,
+            cursor,
+            mi_row,
+            mi_col + hbs,
+            subsize,
+            mi_rows,
+            mi_cols,
+            out,
+        );
+        replay_tree(
+            tree,
+            cursor,
+            mi_row + hbs,
+            mi_col,
+            subsize,
+            mi_rows,
+            mi_cols,
+            out,
+        );
         replay_tree(
             tree,
             cursor,
@@ -236,7 +257,11 @@ fn localize_real(
     let mono = frame.info[1] != 0;
     let ss_x = frame.info[2] as usize;
     let ss_y = frame.info[3] as usize;
-    let (w, h) = if crop_w == 0 { (dw, dh) } else { (crop_w, crop_h) };
+    let (w, h) = if crop_w == 0 {
+        (dw, dh)
+    } else {
+        (crop_w, crop_h)
+    };
     assert!(
         off_x + w <= dw && off_y + h <= dh && off_x % 2 == 0 && off_y % 2 == 0,
         "{name}: crop {w}x{h}@{off_x},{off_y} out of bounds / not chroma-aligned"
@@ -266,8 +291,22 @@ fn localize_real(
     }
 
     let bytes = c::ref_encode_av1_kf(
-        &y, &u, &v, w, h, i32::from(bd), mono, ss_x as i32, ss_y as i32, cq_level, 0, false, false,
-        usage, 0, false,
+        &y,
+        &u,
+        &v,
+        w,
+        h,
+        i32::from(bd),
+        mono,
+        ss_x as i32,
+        ss_y as i32,
+        cq_level,
+        0,
+        false,
+        false,
+        usage,
+        0,
+        false,
     );
     assert!(!bytes.is_empty());
 
@@ -500,6 +539,7 @@ fn localize_real(
         enable_ab_partitions: true,
         allow_screen_content_tools: p.allow_screen_content_tools,
         qm_levels: None,
+        palette_costs: None,
     };
     let pack_cfg = aom_encode::pack::PackCfg {
         enable_filter_intra: s.enable_filter_intra,
@@ -516,8 +556,20 @@ fn localize_real(
     let mut enc = OdEcEnc::new();
     // n_sb_x/n_sb_y computed above (from the plane sizing); pass (rows, cols).
     let _trees = pack_tile(
-        &mut enc, &env, &pick_cfg, &pack_cfg, &mut kf_write, &mut recon_y, &mut recon_u,
-        &mut recon_v, 0, 0, n_sb_y, n_sb_x, SB_MI, SB,
+        &mut enc,
+        &env,
+        &pick_cfg,
+        &pack_cfg,
+        &mut kf_write,
+        &mut recon_y,
+        &mut recon_u,
+        &mut recon_v,
+        0,
+        0,
+        n_sb_y,
+        n_sb_x,
+        SB_MI,
+        SB,
     );
     let our_tile_bytes = enc.done().to_vec();
 
@@ -535,8 +587,26 @@ fn localize_real(
 
     let mut real_seq = Vec::new();
     let mut ours_seq = Vec::new();
-    replay_tree(&t_real.tree, &mut 0, 0, 0, SB, mi_rows, mi_cols, &mut real_seq);
-    replay_tree(&t_ours.tree, &mut 0, 0, 0, SB, mi_rows, mi_cols, &mut ours_seq);
+    replay_tree(
+        &t_real.tree,
+        &mut 0,
+        0,
+        0,
+        SB,
+        mi_rows,
+        mi_cols,
+        &mut real_seq,
+    );
+    replay_tree(
+        &t_ours.tree,
+        &mut 0,
+        0,
+        0,
+        SB,
+        mi_rows,
+        mi_cols,
+        &mut ours_seq,
+    );
 
     let mut partition_div: Option<(i32, i32, usize, i8, i8)> = None;
     for (r, o) in real_seq.iter().zip(ours_seq.iter()) {
@@ -570,12 +640,28 @@ fn localize_real(
                     "(mi_row={}, mi_col={}) [modes_differ={modes_differ} txbs_differ={txbs_differ}]\n\
                      \x20    real bsize={} part={} y_mode={} adly={} use_fi={} tx_size={} uv_mode={} aduv={} txbs(eob,tt)={:?} txbs_uv={:?}\n\
                      \x20    ours bsize={} part={} y_mode={} adly={} use_fi={} tx_size={} uv_mode={} aduv={} txbs(eob,tt)={:?} txbs_uv={:?}",
-                    rbk.mi_row, rbk.mi_col, rbk.bsize, rbk.partition, rbk.info.y_mode,
-                    rbk.info.angle_delta_y, rbk.info.use_filter_intra, rbk.tx_size, rbk.info.uv_mode,
-                    rbk.info.angle_delta_uv, rbk.txbs, rbk.txbs_uv,
-                    ob.bsize, ob.partition, ob.info.y_mode, ob.info.angle_delta_y,
-                    ob.info.use_filter_intra, ob.tx_size, ob.info.uv_mode, ob.info.angle_delta_uv,
-                    ob.txbs, ob.txbs_uv
+                    rbk.mi_row,
+                    rbk.mi_col,
+                    rbk.bsize,
+                    rbk.partition,
+                    rbk.info.y_mode,
+                    rbk.info.angle_delta_y,
+                    rbk.info.use_filter_intra,
+                    rbk.tx_size,
+                    rbk.info.uv_mode,
+                    rbk.info.angle_delta_uv,
+                    rbk.txbs,
+                    rbk.txbs_uv,
+                    ob.bsize,
+                    ob.partition,
+                    ob.info.y_mode,
+                    ob.info.angle_delta_y,
+                    ob.info.use_filter_intra,
+                    ob.tx_size,
+                    ob.info.uv_mode,
+                    ob.info.angle_delta_uv,
+                    ob.txbs,
+                    ob.txbs_uv
                 ));
                 break;
             }
@@ -691,7 +777,11 @@ fn kb6_localize_real_64_cq12() {
     let matched = localize_real("av1-1-b8-01-size-64x64", 12, 0, 0, 0, 0);
     eprintln!(
         "\n=== KB-6 localize 64x64 cq12: {} ===",
-        if matched { "MATCH" } else { "DIVERGE (see first divergence above)" }
+        if matched {
+            "MATCH"
+        } else {
+            "DIVERGE (see first divergence above)"
+        }
     );
 }
 
@@ -706,7 +796,11 @@ fn kb6_localize_quantizer_64_cq5() {
     let matched = localize_real("av1-1-b8-00-quantizer-00", 5, 64, 64, 96, 64);
     eprintln!(
         "\n=== KB-6 localize quantizer 64x64@96,64 cq5: {} ===",
-        if matched { "MATCH" } else { "DIVERGE (see first divergence above)" }
+        if matched {
+            "MATCH"
+        } else {
+            "DIVERGE (see first divergence above)"
+        }
     );
 }
 
@@ -719,7 +813,11 @@ fn kb6_localize_film_64_cq5() {
     let matched = localize_real("av1-1-b8-23-film_grain-50", 5, 64, 64, 96, 64);
     eprintln!(
         "\n=== KB-6 localize film 64x64@96,64 cq5: {} ===",
-        if matched { "MATCH" } else { "DIVERGE (see first divergence above)" }
+        if matched {
+            "MATCH"
+        } else {
+            "DIVERGE (see first divergence above)"
+        }
     );
 }
 
@@ -734,7 +832,11 @@ fn kb6_localize_quantizer_64_cq32() {
     let matched = localize_real("av1-1-b8-00-quantizer-00", 32, 64, 64, 96, 64);
     eprintln!(
         "\n=== KB-6 localize quantizer 64x64@96,64 cq32: {} ===",
-        if matched { "MATCH" } else { "DIVERGE (see first divergence above)" }
+        if matched {
+            "MATCH"
+        } else {
+            "DIVERGE (see first divergence above)"
+        }
     );
 }
 
@@ -748,7 +850,11 @@ fn kb6_localize_size_64_cq32() {
     let matched = localize_real("av1-1-b8-01-size-64x64", 32, 0, 0, 0, 0);
     eprintln!(
         "\n=== KB-6 localize size-64x64 cq32: {} ===",
-        if matched { "MATCH" } else { "DIVERGE (see first divergence above)" }
+        if matched {
+            "MATCH"
+        } else {
+            "DIVERGE (see first divergence above)"
+        }
     );
 }
 

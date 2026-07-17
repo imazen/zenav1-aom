@@ -256,8 +256,8 @@ pub fn intra_mode_info_cost_y(
             <= 1
     );
     if try_palette && mode == DC_PRED {
-        total_rate +=
-            costs.palette_y_mode_cost[palette_bsize_ctx][palette_mode_ctx][usize::from(use_palette)];
+        total_rate += costs.palette_y_mode_cost[palette_bsize_ctx][palette_mode_ctx]
+            [usize::from(use_palette)];
         if use_palette {
             // palette_y_size_cost + write_uniform_cost(first index) +
             // av1_palette_color_cost_y + av1_cost_color_map — computed by the
@@ -339,7 +339,11 @@ pub fn fill_palette_costs(
          PALETTE_SIZES],
 ) {
     for i in 0..PALETTE_BSIZE_CTXS {
-        cost_tokens_from_cdf(&mut out.palette_y_size_cost[i], &palette_y_size_cdf[i], None);
+        cost_tokens_from_cdf(
+            &mut out.palette_y_size_cost[i],
+            &palette_y_size_cdf[i],
+            None,
+        );
         cost_tokens_from_cdf(
             &mut out.palette_uv_size_cost[i],
             &palette_uv_size_cdf[i],

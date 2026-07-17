@@ -79,7 +79,7 @@ Bulk agents append rows here as features land (rule 2). Empty at pivot start.
 
 | Component | Knobs | Cells | size_delta | zensim_drop | Harness ref (test) | Date | Notes |
 |---|---|---|---|---|---|---|---|
-| _(none — the first bulk family, CDEF search, measured 14/14 BIT-IDENTICAL on its first complete run and landed directly in section A per rule 2; its rd_close table: every cell 0.00% / 0.000 / EXACT)_ | | | | | | | |
+| Palette RD search (Y `av1_rd_pick_palette_intra_sby` + UV `_sbuv`: dim-1/2 k-means, top-colours, colour/map costs, header-rd gating + chroma early-term, palette recon + pack syntax/map tokens, neighbour cache/ctx grids) | `PickFrameCfg::palette_costs = Some` (= `--enable-palette=1`; OFF everywhere else) | 6 screen (text/UI, mono+420, 64²/128², cq12..63) + 1 real-content control | **5/7 EXACT (byte-identical)**; worst +2.55% | worst +0.190 (one cell −1.041 = port better) | `rd_close_palette::palette_y_rd_close_gate` (aom-bench) | 2026-07-17 | speed-0 sf levels (search 0 / size-search 1 / chroma early-term 1); speeds 1–5 levels wired untested-by-gate. Fixed latent UV no-palette-flag under-cost on screen frames (per-leaf `try_palette`). (CDEF search, the first bulk family, went straight to section A — 14/14 EXACT.) |
 
 ## Section C — ABSENT (to port), by family
 
@@ -123,9 +123,10 @@ points are libaom v3.14.1 (`reference/libaom`). Defaults verified in
   C: `av1/encoder/palette.c` `av1_rd_pick_palette_intra_sby/_sbuv` (k-means),
   `intra_mode_search.c` `av1_search_palette_mode_luma`;
   `intra_sf.{prune_palette_search_level, prune_luma_palette_size_search_level,
-  early_term_chroma_palette_size_search}`. Port has: the no-palette flag cost (empirically
-  byte-exact on photographic content) + palette decode. Missing: the search + palette
-  token pack. (M–L)
+  early_term_chroma_palette_size_search}`. **MOVED to section B (2026-07-17)** — the Y+UV
+  searches + palette recon + pack syntax/map tokens landed RD-close (5/7 cells byte-exact).
+  Remaining inside the family: `av1_search_palette_mode[_luma]` (inter-frame callers, out of
+  stills scope).
 - IntraBC: `--enable-intrabc` (default ON, screen-gated). C: `av1/encoder/rdopt.c`
   `rd_pick_intrabc_mode_sb`, DV hash `av1/encoder/hash_motion.c`,
   `mv_sf.intrabc_search_level`. Port has: header intrabc-present bit + intrabc costs +

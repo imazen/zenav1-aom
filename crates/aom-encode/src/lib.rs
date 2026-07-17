@@ -28,10 +28,10 @@ pub mod obu_assemble;
 pub mod pack;
 pub mod palette_search;
 pub mod part4_nn_weights;
-pub mod pickcdef;
 pub mod part4_prune;
 pub mod partition;
 pub mod partition_pick;
+pub mod pickcdef;
 pub mod rc;
 pub mod rd;
 pub mod rd_pick;
@@ -206,7 +206,6 @@ fn resolve_qm<'a>(
         None => (qp.qm, qp.iqm),
     }
 }
-
 
 /// Output of [`xform_quant`]: the quantized block plus the propagated context.
 #[derive(Clone, Debug, PartialEq, Eq)]

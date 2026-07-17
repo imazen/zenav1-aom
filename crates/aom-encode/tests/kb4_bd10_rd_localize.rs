@@ -158,8 +158,26 @@ fn replay_tree(
         let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
         let subsize = get_partition_subsize(bsize, p as i32) as usize;
         replay_tree(tree, cursor, mi_row, mi_col, subsize, mi_rows, mi_cols, out);
-        replay_tree(tree, cursor, mi_row, mi_col + hbs, subsize, mi_rows, mi_cols, out);
-        replay_tree(tree, cursor, mi_row + hbs, mi_col, subsize, mi_rows, mi_cols, out);
+        replay_tree(
+            tree,
+            cursor,
+            mi_row,
+            mi_col + hbs,
+            subsize,
+            mi_rows,
+            mi_cols,
+            out,
+        );
+        replay_tree(
+            tree,
+            cursor,
+            mi_row + hbs,
+            mi_col,
+            subsize,
+            mi_rows,
+            mi_cols,
+            out,
+        );
         replay_tree(
             tree,
             cursor,
@@ -177,7 +195,13 @@ fn replay_tree(
 /// with the given u16 luma content (clamped to `[0, (1<<bd)-1]`), run the
 /// port's own `pack_tile`, and return `(bytes_match, first_divergence_report)`.
 /// Localizes the first divergent block when the streams diverge.
-fn localize_mono(w: usize, h: usize, bd: u8, cq_level: i32, content: impl Fn(usize, usize) -> u16) -> bool {
+fn localize_mono(
+    w: usize,
+    h: usize,
+    bd: u8,
+    cq_level: i32,
+    content: impl Fn(usize, usize) -> u16,
+) -> bool {
     c::ref_init();
     let (mono, ss_x, ss_y, usage) = (true, 1usize, 1usize, 2u32);
     let maxv = (1u16 << bd) - 1;
@@ -415,6 +439,7 @@ fn localize_mono(w: usize, h: usize, bd: u8, cq_level: i32, content: impl Fn(usi
         enable_ab_partitions: true,
         allow_screen_content_tools: p.allow_screen_content_tools,
         qm_levels: None,
+        palette_costs: None,
     };
     let pack_cfg = aom_encode::pack::PackCfg {
         enable_filter_intra: s.enable_filter_intra,
@@ -431,8 +456,20 @@ fn localize_mono(w: usize, h: usize, bd: u8, cq_level: i32, content: impl Fn(usi
     let mut enc = OdEcEnc::new();
     let n_sb = (mi_cols / SB_MI).max(1);
     let _trees = pack_tile(
-        &mut enc, &env, &pick_cfg, &pack_cfg, &mut kf_write, &mut recon_y, &mut recon_u,
-        &mut recon_v, 0, 0, n_sb, n_sb, SB_MI, SB,
+        &mut enc,
+        &env,
+        &pick_cfg,
+        &pack_cfg,
+        &mut kf_write,
+        &mut recon_y,
+        &mut recon_u,
+        &mut recon_v,
+        0,
+        0,
+        n_sb,
+        n_sb,
+        SB_MI,
+        SB,
     );
     let our_tile_bytes = enc.done().to_vec();
 
@@ -450,13 +487,32 @@ fn localize_mono(w: usize, h: usize, bd: u8, cq_level: i32, content: impl Fn(usi
 
     let (t_real, _cfg_real, _hdr_real) = aom_decode::frame::decode_frame_obus_prefilter(&bytes)
         .unwrap_or_else(|e| panic!("decode of REAL aomenc bytes failed: {e}"));
-    let (t_ours, _cfg_ours, _hdr_ours) = aom_decode::frame::decode_frame_obus_prefilter(&our_stream)
-        .unwrap_or_else(|e| panic!("decode of OUR OWN rewrapped bytes failed: {e}"));
+    let (t_ours, _cfg_ours, _hdr_ours) =
+        aom_decode::frame::decode_frame_obus_prefilter(&our_stream)
+            .unwrap_or_else(|e| panic!("decode of OUR OWN rewrapped bytes failed: {e}"));
 
     let mut real_seq = Vec::new();
     let mut ours_seq = Vec::new();
-    replay_tree(&t_real.tree, &mut 0, 0, 0, SB, mi_rows, mi_cols, &mut real_seq);
-    replay_tree(&t_ours.tree, &mut 0, 0, 0, SB, mi_rows, mi_cols, &mut ours_seq);
+    replay_tree(
+        &t_real.tree,
+        &mut 0,
+        0,
+        0,
+        SB,
+        mi_rows,
+        mi_cols,
+        &mut real_seq,
+    );
+    replay_tree(
+        &t_ours.tree,
+        &mut 0,
+        0,
+        0,
+        SB,
+        mi_rows,
+        mi_cols,
+        &mut ours_seq,
+    );
 
     let mut partition_div: Option<(i32, i32, usize, i8, i8)> = None;
     for (r, o) in real_seq.iter().zip(ours_seq.iter()) {
@@ -489,11 +545,24 @@ fn localize_mono(w: usize, h: usize, bd: u8, cq_level: i32, content: impl Fn(usi
             if modes_differ || txbs_differ {
                 leaf_div = Some(format!(
                     "(mi_row={}, mi_col={}) [modes_differ={modes_differ} txbs_differ={txbs_differ}]\n     real bsize={} part={} y_mode={} adly={} use_fi={} tx_size={} uv_mode={} txbs(eob,tt)={:?}\n     ours bsize={} part={} y_mode={} adly={} use_fi={} tx_size={} uv_mode={} txbs(eob,tt)={:?}",
-                    rbk.mi_row, rbk.mi_col, rbk.bsize, rbk.partition, rbk.info.y_mode,
-                    rbk.info.angle_delta_y, rbk.info.use_filter_intra, rbk.tx_size, rbk.info.uv_mode,
+                    rbk.mi_row,
+                    rbk.mi_col,
+                    rbk.bsize,
+                    rbk.partition,
+                    rbk.info.y_mode,
+                    rbk.info.angle_delta_y,
+                    rbk.info.use_filter_intra,
+                    rbk.tx_size,
+                    rbk.info.uv_mode,
                     rbk.txbs,
-                    ob.bsize, ob.partition, ob.info.y_mode, ob.info.angle_delta_y,
-                    ob.info.use_filter_intra, ob.tx_size, ob.info.uv_mode, ob.txbs
+                    ob.bsize,
+                    ob.partition,
+                    ob.info.y_mode,
+                    ob.info.angle_delta_y,
+                    ob.info.use_filter_intra,
+                    ob.tx_size,
+                    ob.info.uv_mode,
+                    ob.txbs
                 ));
                 break;
             }
@@ -514,8 +583,7 @@ fn localize_mono(w: usize, h: usize, bd: u8, cq_level: i32, content: impl Fn(usi
         }
     }
 
-    let decisions_match =
-        partition_div.is_none() && leaf_div.is_none() && recon_div.is_none();
+    let decisions_match = partition_div.is_none() && leaf_div.is_none() && recon_div.is_none();
     eprintln!(
         "\n=== bd{bd} {w}x{h} mono cq{cq_level} (qindex={qindex}) === {}",
         if decisions_match {

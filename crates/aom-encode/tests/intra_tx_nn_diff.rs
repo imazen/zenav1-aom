@@ -132,8 +132,7 @@ fn intra_tx_depth_nn_matches_real_c_inference() {
         // Oracle: verbatim features -> REAL av1_nn_predict_c (reduce_prec=1)
         // -> the av1_intra_tx_prune_nn_thresh_8x8 decision.
         let features = c_features(&diff, source_variance, qindex);
-        let score =
-            c::ref_nn_predict(&features, 14, 1, &[16], &weights_flat, &bias_flat, true)[0];
+        let score = c::ref_nn_predict(&features, 14, 1, &[16], &weights_flat, &bias_flat, true)[0];
         let want = if score <= w::PRUNE_THRESH[0] {
             TxPruneType::Split
         } else if score > w::PRUNE_THRESH[1] {

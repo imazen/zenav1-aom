@@ -120,7 +120,6 @@ struct CaseResult {
     matched: bool,
 }
 
-
 /// Encode one case at bit depth `bd` with `content(row,col) -> u16` luma and
 /// `uv_content(row,col) -> u16` chroma (values in `[0, (1<<bd)-1]`; chroma ignored
 /// when `mono`), bootstrap the header from real aomenc, run this port's
@@ -410,7 +409,10 @@ fn run_case_ext(
     assert_eq!(p.prefix.frame_type, 0, "frame_type must be KEY");
     let tiles_log2 = p.tile_info.log2_cols + p.tile_info.log2_rows;
     if tile_cols_log2 == 0 && tile_rows_log2 == 0 {
-        assert_eq!(tiles_log2, 0, "single-tile envelope: expected exactly 1 tile");
+        assert_eq!(
+            tiles_log2, 0,
+            "single-tile envelope: expected exactly 1 tile"
+        );
     } else {
         // Multi-tile: the real encoder must have produced the REQUESTED grid, or
         // the per-tile SB boundaries the port packs against won't line up.
@@ -623,6 +625,7 @@ fn run_case_ext(
         enable_ab_partitions: true,
         allow_screen_content_tools: p.allow_screen_content_tools,
         qm_levels,
+        palette_costs: None,
     };
     let pack_cfg = aom_encode::pack::PackCfg {
         enable_filter_intra: s.enable_filter_intra,
@@ -887,7 +890,9 @@ fn encoder_gate_multitile_e2e() {
     let mut results: Vec<(String, bool)> = Vec::new();
     for &(tcl, trl, shape) in &[(1i32, 0i32, "2x1"), (0, 1, "1x2"), (1, 1, "2x2")] {
         for &cq in &[12i32, 32, 63] {
-            let res = run_case(128, 128, false, 0, 0, 2, cq, 8, &luma, &chroma, &chroma, tcl, trl);
+            let res = run_case(
+                128, 128, false, 0, 0, 2, cq, 8, &luma, &chroma, &chroma, tcl, trl,
+            );
             results.push((format!("444 128x128 tiles={shape} cq{cq:>2}"), res.matched));
         }
     }
@@ -969,7 +974,10 @@ fn ivf_hdr_dims(data: &[u8]) -> (usize, usize) {
 }
 
 fn ivf_temporal_units(data: &[u8]) -> Vec<Vec<u8>> {
-    assert!(data.len() >= 32 && &data[0..4] == b"DKIF", "not an IVF file");
+    assert!(
+        data.len() >= 32 && &data[0..4] == b"DKIF",
+        "not an IVF file"
+    );
     let hdr_len = u16::from_le_bytes([data[6], data[7]]) as usize;
     let mut off = hdr_len;
     let mut tus = Vec::new();
@@ -1047,7 +1055,11 @@ fn encoder_gate_real_image_e2e_kb6_repro() {
         let ss_y = frame.info[3] as usize;
         let fcw = (fw + ss_x) >> ss_x; // full-frame chroma stride (tight row-major)
         let (y, u, v) = (frame.y, frame.u, frame.v);
-        let (w, h) = if crop_w == 0 { (fw, fh) } else { (crop_w, crop_h) };
+        let (w, h) = if crop_w == 0 {
+            (fw, fh)
+        } else {
+            (crop_w, crop_h)
+        };
         assert!(
             off_x + w <= fw && off_y + h <= fh,
             "{name}: crop {w}x{h}@{off_x},{off_y} exceeds frame {fw}x{fh}"
@@ -1080,10 +1092,21 @@ fn encoder_gate_real_image_e2e_kb6_repro() {
 
     eprintln!("\n=== KB-6 real-image e2e map (MATCH = byte-exact vs real aomenc) ===");
     for (label, ok) in &results {
-        eprintln!("  {label}: {}", if *ok { "MATCH" } else { "MISMATCH (KB-6)" });
+        eprintln!(
+            "  {label}: {}",
+            if *ok { "MATCH" } else { "MISMATCH (KB-6)" }
+        );
     }
-    let matched: Vec<&String> = results.iter().filter(|(_, ok)| *ok).map(|(n, _)| n).collect();
-    let diverged: Vec<&String> = results.iter().filter(|(_, ok)| !*ok).map(|(n, _)| n).collect();
+    let matched: Vec<&String> = results
+        .iter()
+        .filter(|(_, ok)| *ok)
+        .map(|(n, _)| n)
+        .collect();
+    let diverged: Vec<&String> = results
+        .iter()
+        .filter(|(_, ok)| !*ok)
+        .map(|(n, _)| n)
+        .collect();
     eprintln!(
         "KB-6: {}/{} real-content cells byte-exact; {} diverge {:?}",
         matched.len(),
@@ -1233,7 +1256,9 @@ fn encoder_gate_bd10_non420_e2e_kb4_repro() {
     let mut results: Vec<(String, bool)> = Vec::new();
     for &(ss_x, ss_y, fmt) in &[(0usize, 0usize, "444"), (1usize, 0usize, "422")] {
         for &sz in &[64usize, 128] {
-            let res = run_case(sz, sz, false, ss_x, ss_y, 2, 32, 10, &luma, &chroma, &chroma, 0, 0);
+            let res = run_case(
+                sz, sz, false, ss_x, ss_y, 2, 32, 10, &luma, &chroma, &chroma, 0, 0,
+            );
             results.push((format!("bd10-{fmt} {sz}x{sz} cq32"), res.matched));
         }
     }
@@ -1305,7 +1330,19 @@ fn encoder_gate_qm_on_e2e() {
             for &sz in &[64usize, 128] {
                 for &cq in &[12i32, 32, 48, 63] {
                     let res = run_case_ext(
-                        sz, sz, mono, ss_x, ss_y, 2, cq, 8, &luma8, &chroma8, &chroma8, 0, 0,
+                        sz,
+                        sz,
+                        mono,
+                        ss_x,
+                        ss_y,
+                        2,
+                        cq,
+                        8,
+                        &luma8,
+                        &chroma8,
+                        &chroma8,
+                        0,
+                        0,
                         Some((qm_min, qm_max)),
                     );
                     results.push((
@@ -1324,7 +1361,19 @@ fn encoder_gate_qm_on_e2e() {
         for &sz in &[64usize, 128] {
             for &cq in &[32i32, 63] {
                 let res = run_case_ext(
-                    sz, sz, mono, ss_x, ss_y, 2, cq, 10, &luma10, &chroma10, &chroma10, 0, 0,
+                    sz,
+                    sz,
+                    mono,
+                    ss_x,
+                    ss_y,
+                    2,
+                    cq,
+                    10,
+                    &luma10,
+                    &chroma10,
+                    &chroma10,
+                    0,
+                    0,
                     Some((4, 10)),
                 );
                 results.push((
@@ -1350,9 +1399,7 @@ fn encoder_gate_qm_on_anti_vacuous_witness() {
     let luma = tex_luma(0xff);
     let (w, h) = (64usize, 64);
     let maxv = 0xffu16;
-    let y: Vec<u16> = (0..w * h)
-        .map(|i| luma(i / w, i % w).min(maxv))
-        .collect();
+    let y: Vec<u16> = (0..w * h).map(|i| luma(i / w, i % w).min(maxv)).collect();
     let empty: Vec<u16> = Vec::new();
     for &(qm_min, qm_max) in &[(5i32, 9i32), (4, 10)] {
         for &cq in &[12i32, 32, 48, 63] {

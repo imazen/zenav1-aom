@@ -164,8 +164,26 @@ fn replay_tree(
         let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
         let subsize = get_partition_subsize(bsize, p as i32) as usize;
         replay_tree(tree, cursor, mi_row, mi_col, subsize, mi_rows, mi_cols, out);
-        replay_tree(tree, cursor, mi_row, mi_col + hbs, subsize, mi_rows, mi_cols, out);
-        replay_tree(tree, cursor, mi_row + hbs, mi_col, subsize, mi_rows, mi_cols, out);
+        replay_tree(
+            tree,
+            cursor,
+            mi_row,
+            mi_col + hbs,
+            subsize,
+            mi_rows,
+            mi_cols,
+            out,
+        );
+        replay_tree(
+            tree,
+            cursor,
+            mi_row + hbs,
+            mi_col,
+            subsize,
+            mi_rows,
+            mi_cols,
+            out,
+        );
         replay_tree(
             tree,
             cursor,
@@ -195,7 +213,21 @@ fn localize(w: usize, h: usize, cq_level: i32, content: impl Fn(usize, usize) ->
     let v: Vec<u16> = Vec::new();
 
     let bytes = c::ref_encode_av1_kf(
-        &y, &u, &v, w, h, 8, mono, ss_x as i32, ss_y as i32, cq_level, 0, false, false, usage, 0,
+        &y,
+        &u,
+        &v,
+        w,
+        h,
+        8,
+        mono,
+        ss_x as i32,
+        ss_y as i32,
+        cq_level,
+        0,
+        false,
+        false,
+        usage,
+        0,
         false,
     );
     assert!(!bytes.is_empty());
@@ -396,6 +428,7 @@ fn localize(w: usize, h: usize, cq_level: i32, content: impl Fn(usize, usize) ->
         enable_ab_partitions: true,
         allow_screen_content_tools: p.allow_screen_content_tools,
         qm_levels: None,
+        palette_costs: None,
     };
     let pack_cfg = aom_encode::pack::PackCfg {
         enable_filter_intra: s.enable_filter_intra,
@@ -412,8 +445,20 @@ fn localize(w: usize, h: usize, cq_level: i32, content: impl Fn(usize, usize) ->
     let mut enc = OdEcEnc::new();
     let n_sb = (mi_cols / SB_MI).max(1);
     let _trees = pack_tile(
-        &mut enc, &env, &pick_cfg, &pack_cfg, &mut kf_write, &mut recon_y, &mut recon_u,
-        &mut recon_v, 0, 0, n_sb, n_sb, SB_MI, SB,
+        &mut enc,
+        &env,
+        &pick_cfg,
+        &pack_cfg,
+        &mut kf_write,
+        &mut recon_y,
+        &mut recon_u,
+        &mut recon_v,
+        0,
+        0,
+        n_sb,
+        n_sb,
+        SB_MI,
+        SB,
     );
     let our_tile_bytes = enc.done().to_vec();
 
@@ -427,8 +472,9 @@ fn localize(w: usize, h: usize, cq_level: i32, content: impl Fn(usize, usize) ->
     // ---- decode BOTH with the (bit-exact vs C) decoder ----
     let (t_real, _cfg_real, _hdr_real) = aom_decode::frame::decode_frame_obus_prefilter(&bytes)
         .unwrap_or_else(|e| panic!("decode of REAL aomenc bytes failed: {e}"));
-    let (t_ours, _cfg_ours, _hdr_ours) = aom_decode::frame::decode_frame_obus_prefilter(&our_stream)
-        .unwrap_or_else(|e| panic!("decode of OUR OWN rewrapped bytes failed: {e}"));
+    let (t_ours, _cfg_ours, _hdr_ours) =
+        aom_decode::frame::decode_frame_obus_prefilter(&our_stream)
+            .unwrap_or_else(|e| panic!("decode of OUR OWN rewrapped bytes failed: {e}"));
 
     eprintln!(
         "[{w}x{h} cq{cq_level} qindex={qindex}] real tile bytes={} ours={} | real tree len={} blocks={} | ours tree len={} blocks={}",
@@ -458,8 +504,26 @@ fn localize(w: usize, h: usize, cq_level: i32, content: impl Fn(usize, usize) ->
 
     let mut real_seq = Vec::new();
     let mut ours_seq = Vec::new();
-    replay_tree(&t_real.tree, &mut 0, 0, 0, SB, mi_rows, mi_cols, &mut real_seq);
-    replay_tree(&t_ours.tree, &mut 0, 0, 0, SB, mi_rows, mi_cols, &mut ours_seq);
+    replay_tree(
+        &t_real.tree,
+        &mut 0,
+        0,
+        0,
+        SB,
+        mi_rows,
+        mi_cols,
+        &mut real_seq,
+    );
+    replay_tree(
+        &t_ours.tree,
+        &mut 0,
+        0,
+        0,
+        SB,
+        mi_rows,
+        mi_cols,
+        &mut ours_seq,
+    );
 
     let mut first_div: Option<(i32, i32, usize, i8, i8)> = None;
     for (r, o) in real_seq.iter().zip(ours_seq.iter()) {
@@ -513,11 +577,26 @@ fn localize(w: usize, h: usize, cq_level: i32, content: impl Fn(usize, usize) ->
                             ">>> FIRST LEAF MISMATCH at (mi_row={}, mi_col={}) [modes_differ={modes_differ} txbs_differ={txbs_differ}]: \
                              real bsize={} part={} y_mode={} adly={} use_fi={} tx_size={} uv_mode={} txbs(eob,tt)={:?} txbs_uv={:?} | \
                              ours bsize={} part={} y_mode={} adly={} use_fi={} tx_size={} uv_mode={} txbs(eob,tt)={:?} txbs_uv={:?}",
-                            rb.mi_row, rb.mi_col, rb.bsize, rb.partition, rb.info.y_mode,
-                            rb.info.angle_delta_y, rb.info.use_filter_intra, rb.tx_size, rb.info.uv_mode,
-                            rb.txbs, rb.txbs_uv,
-                            ob.bsize, ob.partition, ob.info.y_mode, ob.info.angle_delta_y,
-                            ob.info.use_filter_intra, ob.tx_size, ob.info.uv_mode, ob.txbs, ob.txbs_uv
+                            rb.mi_row,
+                            rb.mi_col,
+                            rb.bsize,
+                            rb.partition,
+                            rb.info.y_mode,
+                            rb.info.angle_delta_y,
+                            rb.info.use_filter_intra,
+                            rb.tx_size,
+                            rb.info.uv_mode,
+                            rb.txbs,
+                            rb.txbs_uv,
+                            ob.bsize,
+                            ob.partition,
+                            ob.info.y_mode,
+                            ob.info.angle_delta_y,
+                            ob.info.use_filter_intra,
+                            ob.tx_size,
+                            ob.info.uv_mode,
+                            ob.txbs,
+                            ob.txbs_uv
                         );
                         found = true;
                         break;
@@ -574,4 +653,3 @@ fn decode_diff_multisb_cq32() {
     eprintln!("=== vertical gradient 256x256 cq32 ===");
     localize(256, 256, 32, |_r, c| (32 + c * 190 / 256) as u8);
 }
-

@@ -115,7 +115,14 @@ pub fn calc_indices(
 /// `calc_centroids` (k_means_template.h): per-cluster mean
 /// (`DIVIDE_AND_ROUND`); an empty cluster re-seeds from a `lcg_rand16`-chosen
 /// data point (state seeded with `(unsigned int)data[0]`).
-fn calc_centroids(data: &[i16], centroids: &mut [i16], indices: &[u8], n: usize, k: usize, dim: usize) {
+fn calc_centroids(
+    data: &[i16],
+    centroids: &mut [i16],
+    indices: &[u8],
+    n: usize,
+    k: usize,
+    dim: usize,
+) {
     let mut count = [0i32; PALETTE_MAX_SIZE];
     let mut sums = [0i32; 2 * PALETTE_MAX_SIZE];
     // (unsigned int)data[0]: int16 -> int (sign extend) -> u32.
@@ -214,7 +221,14 @@ pub fn k_means(
 
 /// `av1_count_colors` (intra_mode_search.c:320) over this port's u16 planes
 /// (bd 8): 256-bin histogram + distinct count.
-pub fn count_colors(src: &[u16], off: usize, stride: usize, rows: usize, cols: usize, val_count: &mut [i32]) -> i32 {
+pub fn count_colors(
+    src: &[u16],
+    off: usize,
+    stride: usize,
+    rows: usize,
+    cols: usize,
+    val_count: &mut [i32],
+) -> i32 {
     for v in val_count[..256].iter_mut() {
         *v = 0;
     }
@@ -451,14 +465,9 @@ fn delta_encode_cost(colors: &[i32], num: usize, bit_depth: i32, min_val: i32) -
 
 /// `av1_palette_color_cost_y` (palette.c:138): the cache-signal bits + the
 /// delta-coded out-of-cache colours, as an `av1_cost_literal` rate.
-pub fn palette_color_cost_y(
-    colors: &[u16],
-    color_cache: &[u16],
-    bit_depth: i32,
-) -> i32 {
+pub fn palette_color_cost_y(colors: &[u16], color_cache: &[u16], bit_depth: i32) -> i32 {
     let (_found, out_cache, n_out) = index_color_cache(color_cache, colors);
-    let total_bits =
-        color_cache.len() as i32 + delta_encode_cost(&out_cache, n_out, bit_depth, 1);
+    let total_bits = color_cache.len() as i32 + delta_encode_cost(&out_cache, n_out, bit_depth, 1);
     cost_literal(total_bits)
 }
 
@@ -1024,7 +1033,14 @@ pub fn rd_pick_palette_intra_sby(
             &mut colors_threshold,
         )
     } else {
-        let c = count_colors(env.src, env.src_off, env.src_stride, rows, cols, &mut count_buf);
+        let c = count_colors(
+            env.src,
+            env.src_off,
+            env.src_stride,
+            rows,
+            cols,
+            &mut count_buf,
+        );
         colors_threshold = c;
         c
     };
@@ -1249,4 +1265,367 @@ pub fn rd_pick_palette_intra_sby(
         *best = st.best;
     }
     won
+}
+
+// ---------------------------------------------------------------------------
+// the chroma (UV) palette RD search
+// ---------------------------------------------------------------------------
+
+/// `av1_get_block_dimensions(bsize, plane=1)` (blockd.h): the chroma plane
+/// block dims + visible crop, INCLUDING the chroma sub-8x8 correction
+/// (`is_chroma_sub8_*` adds 2 — the merged chroma-ref block of a 4-wide/high
+/// luma block, reachable for palette via BLOCK_4X16/16X4). Returns
+/// `(plane_block_width, plane_block_height, rows, cols)`.
+pub fn chroma_block_dims(
+    bsize: usize,
+    mi_row: i32,
+    mi_col: i32,
+    mi_rows: i32,
+    mi_cols: i32,
+    ss_x: usize,
+    ss_y: usize,
+) -> (usize, usize, usize, usize) {
+    let (bw_px, bh_px) = (BLK_W_B[bsize] as i32, BLK_H_B[bsize] as i32);
+    let mb_to_right_edge = (mi_cols - MI_SIZE_WIDE_B[bsize] as i32 - mi_col) * 4 * 8;
+    let mb_to_bottom_edge = (mi_rows - MI_SIZE_HIGH_B[bsize] as i32 - mi_row) * 4 * 8;
+    let block_cols_px = if mb_to_right_edge >= 0 {
+        bw_px
+    } else {
+        (mb_to_right_edge >> 3) + bw_px
+    };
+    let block_rows_px = if mb_to_bottom_edge >= 0 {
+        bh_px
+    } else {
+        (mb_to_bottom_edge >> 3) + bh_px
+    };
+    let pw = (bw_px >> ss_x) as usize;
+    let ph = (bh_px >> ss_y) as usize;
+    let sub8_x = usize::from(pw < 4) * 2;
+    let sub8_y = usize::from(ph < 4) * 2;
+    (
+        pw + sub8_x,
+        ph + sub8_y,
+        (block_rows_px >> ss_y) as usize + sub8_y,
+        (block_cols_px >> ss_x) as usize + sub8_x,
+    )
+}
+
+/// The palette-UV winner state (the `mbmi->palette_mode_info` UV half +
+/// `xd->plane[1].color_index_map`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaletteUvInfo {
+    /// `palette_size[1]` (2..=8).
+    pub size: usize,
+    /// U / V channel colours (`palette_colors[8..8+n]` / `[16..16+n]`),
+    /// U-ascending pair order.
+    pub colors_u: [u16; PALETTE_MAX_SIZE],
+    pub colors_v: [u16; PALETTE_MAX_SIZE],
+    /// The winning colour-index map over the CHROMA plane dims
+    /// (`plane_block_width x plane_block_height`).
+    pub color_map: Vec<u8>,
+}
+
+/// Everything `av1_rd_pick_palette_intra_sbuv` needs beyond the [`UvRdEnv`].
+pub struct UvPaletteArgs<'a> {
+    /// `intra_uv_mode_cost[cfl_allowed][y_mode][UV_DC_PRED]`.
+    pub dc_mode_cost: i32,
+    /// The palette size/colour-index cost tables.
+    pub costs: &'a PaletteCosts,
+    /// Above/left neighbour palette state (`av1_get_palette_cache`, plane 1).
+    pub above: Option<PaletteNbrKf>,
+    pub left: Option<PaletteNbrKf>,
+    /// `av1_get_palette_bsize_ctx(bsize)`.
+    pub bsize_ctx: usize,
+    /// `try_palette` (the flag-cost gate — always true when this struct
+    /// exists) + whether the LUMA winner uses palette (the UV flag's ctx).
+    pub y_palette_active: bool,
+    /// sf `intra_sf.early_term_chroma_palette_size_search` (allintra: 1 at
+    /// every speed, :364).
+    pub early_term: bool,
+    /// The tx search policy the uv loop ran under.
+    pub pol: &'a crate::tx_search::TxTypeSearchPolicy,
+}
+
+/// `av1_rd_pick_palette_intra_sbuv` (palette.c:763): the chroma palette
+/// search — ascending palette-size loop over dim-2 k-means (U,V) pairs.
+/// Updates `best` (with `palette_uv` set) and its `best_rd` on a win.
+#[allow(clippy::too_many_arguments)]
+pub fn rd_pick_palette_intra_sbuv(
+    env: &crate::intra_uv_rd::UvRdEnv,
+    recon_u: &mut [u16],
+    recon_v: &mut [u16],
+    args: &UvPaletteArgs,
+    uv_mode_costs: &crate::mode_costs::IntraModeCosts,
+    best: &mut crate::intra_uv_rd::UvModeResult,
+) {
+    let bsize = env.bsize;
+    let bit_depth = i32::from(env.bd);
+    let is_hbd = env.bd > 8;
+
+    // av1_get_block_dimensions(bsize, 1): plane dims + the visible crop
+    // (incl. the chroma sub-8x8 +2 correction for 4x16/16x4 luma blocks).
+    let (plane_block_width, plane_block_height, rows, cols) = chroma_block_dims(
+        bsize,
+        env.mi_row,
+        env.mi_col,
+        env.mi_rows,
+        env.mi_cols,
+        env.ss_x,
+        env.ss_y,
+    );
+
+    let src_stride = env.src_stride;
+    let (off_u, off_v) = (env.src_off[0], env.src_off[1]);
+
+    // Colour counts per channel (the 8-bit-domain threshold for hbd).
+    let mut count_buf = vec![0i32; 1 << 12];
+    let (mut thr_u, mut thr_v) = (0i32, 0i32);
+    let colors_u = if is_hbd {
+        count_colors_highbd(
+            env.src_u,
+            off_u,
+            src_stride,
+            rows,
+            cols,
+            bit_depth,
+            &mut count_buf,
+            &mut thr_u,
+        )
+    } else {
+        let c = count_colors(env.src_u, off_u, src_stride, rows, cols, &mut count_buf);
+        thr_u = c;
+        c
+    };
+    let colors_v = if is_hbd {
+        count_colors_highbd(
+            env.src_v,
+            off_v,
+            src_stride,
+            rows,
+            cols,
+            bit_depth,
+            &mut count_buf,
+            &mut thr_v,
+        )
+    } else {
+        let c = count_colors(env.src_v, off_v, src_stride, rows, cols, &mut count_buf);
+        thr_v = c;
+        c
+    };
+
+    // uint16_t color_cache[2 * PALETTE_MAX_SIZE]; av1_get_palette_cache(xd, 1).
+    let mut cache_buf = [0u16; 2 * PALETTE_MAX_SIZE];
+    let zero_nbr = PaletteNbrKf::default();
+    let above = args.above.as_ref().unwrap_or(&zero_nbr);
+    let left = args.left.as_ref().unwrap_or(&zero_nbr);
+    let mb_to_top_edge = -((env.mi_row * 4) * 8);
+    let n_cache = get_palette_cache(
+        &mut cache_buf,
+        1,
+        mb_to_top_edge,
+        args.above.is_some(),
+        &above.colors,
+        above.size[1],
+        args.left.is_some(),
+        &left.colors,
+        left.size[1],
+    );
+    let color_cache = &cache_buf[..n_cache];
+
+    let colors_threshold = thr_u.max(thr_v);
+    if !(colors_threshold > 1 && colors_threshold <= 64) {
+        return;
+    }
+
+    let max_itr = 50usize;
+    // Interleaved (u, v) data + per-channel bounds.
+    let mut data = vec![0i16; rows * cols * 2];
+    let (mut lb_u, mut ub_u) = (i32::from(env.src_u[off_u]), i32::from(env.src_u[off_u]));
+    let (mut lb_v, mut ub_v) = (i32::from(env.src_v[off_v]), i32::from(env.src_v[off_v]));
+    for r in 0..rows {
+        for c in 0..cols {
+            let val_u = i32::from(env.src_u[off_u + r * src_stride + c]);
+            let val_v = i32::from(env.src_v[off_v + r * src_stride + c]);
+            data[(r * cols + c) * 2] = val_u as i16;
+            data[(r * cols + c) * 2 + 1] = val_v as i16;
+            if val_u < lb_u {
+                lb_u = val_u;
+            } else if val_u > ub_u {
+                ub_u = val_u;
+            }
+            if val_v < lb_v {
+                lb_v = val_v;
+            } else if val_v > ub_v {
+                ub_v = val_v;
+            }
+        }
+    }
+
+    let colors = colors_u.max(colors_v);
+    let max_colors = colors.min(PALETTE_MAX_SIZE as i32);
+    let max_pix = (1i32 << bit_depth) - 1;
+    let mut centroids = [0i16; 2 * PALETTE_MAX_SIZE];
+    let mut color_map = vec![0u8; (plane_block_width * plane_block_height).max(rows * cols)];
+
+    for n in (PALETTE_MIN_SIZE as i32)..=max_colors {
+        let n = n as usize;
+        for i in 0..n {
+            centroids[i * 2] = (lb_u + (2 * i as i32 + 1) * (ub_u - lb_u) / n as i32 / 2) as i16;
+            centroids[i * 2 + 1] =
+                (lb_v + (2 * i as i32 + 1) * (ub_v - lb_v) / n as i32 / 2) as i16;
+        }
+        k_means(
+            &data,
+            &mut centroids,
+            &mut color_map,
+            rows * cols,
+            n,
+            2,
+            max_itr,
+        );
+        optimize_palette_colors(color_cache, n_cache, n, 2, &mut centroids, bit_depth);
+        // Sort the U channel colours ascending (selection sort keeping pairs).
+        for i in (0..2 * (n - 1)).step_by(2) {
+            let mut min_idx = i;
+            let mut min_val = centroids[i];
+            let mut j = i + 2;
+            while j < 2 * n {
+                if centroids[j] < min_val {
+                    min_val = centroids[j];
+                    min_idx = j;
+                }
+                j += 2;
+            }
+            if min_idx != i {
+                centroids.swap(i, min_idx);
+                centroids.swap(i + 1, min_idx + 1);
+            }
+        }
+        calc_indices(
+            &data,
+            &centroids[..2 * n],
+            &mut color_map,
+            rows * cols,
+            n,
+            2,
+        );
+        extend_palette_color_map(
+            &mut color_map,
+            cols,
+            rows,
+            plane_block_width,
+            plane_block_height,
+        );
+
+        let mut colors_u_arr = [0u16; PALETTE_MAX_SIZE];
+        let mut colors_v_arr = [0u16; PALETTE_MAX_SIZE];
+        for j in 0..n {
+            colors_u_arr[j] = i32::from(centroids[j * 2]).clamp(0, max_pix) as u16;
+            colors_v_arr[j] = i32::from(centroids[j * 2 + 1]).clamp(0, max_pix) as u16;
+        }
+
+        // intra_mode_info_cost_uv, use_palette arm.
+        let palette_extra = args.costs.palette_uv_size_cost[args.bsize_ctx][n - PALETTE_MIN_SIZE]
+            + write_uniform_cost(n as i32, i32::from(color_map[0]))
+            + palette_color_cost_uv(
+                &colors_u_arr[..n],
+                &colors_v_arr[..n],
+                color_cache,
+                bit_depth,
+            )
+            + cost_color_map(
+                &color_map,
+                plane_block_width,
+                rows,
+                cols,
+                n,
+                &args.costs.palette_uv_color_cost[n - PALETTE_MIN_SIZE],
+            );
+        let palette_mode_rate = crate::mode_costs::intra_mode_info_cost_uv(
+            uv_mode_costs,
+            args.dc_mode_cost,
+            0, // UV_DC_PRED
+            bsize,
+            0,
+            true, // try_palette (this search only runs under it)
+            args.y_palette_active,
+            true, // use_palette
+            palette_extra,
+        );
+
+        let pal_pred = crate::intra_uv_rd::PaletteUvPred {
+            colors_u: &colors_u_arr,
+            colors_v: &colors_v_arr,
+            size: n,
+            map: &color_map,
+            map_stride: plane_block_width,
+        };
+        let (tokenonly_rate, tokenonly_dist, tokenonly_skip);
+        if args.early_term {
+            let header_rd = rd::rdcost(env.rdmult, palette_mode_rate, 0);
+            // Terminate further palette_size search (palette.c:906): >= best.
+            if header_rd >= best.best_rd {
+                break;
+            }
+            let Some((stats, _wu, _wv)) = crate::intra_uv_rd::txfm_uvrd_p(
+                env,
+                recon_u,
+                recon_v,
+                0, // UV_DC_PRED
+                0,
+                best.best_rd,
+                args.pol,
+                Some(&pal_pred),
+            ) else {
+                continue;
+            };
+            if stats.rate == i32::MAX {
+                continue;
+            }
+            tokenonly_rate = stats.rate;
+            tokenonly_dist = stats.dist;
+            tokenonly_skip = stats.skip_txfm;
+        } else {
+            let Some((stats, _wu, _wv)) = crate::intra_uv_rd::txfm_uvrd_p(
+                env,
+                recon_u,
+                recon_v,
+                0,
+                0,
+                best.best_rd,
+                args.pol,
+                Some(&pal_pred),
+            ) else {
+                continue;
+            };
+            if stats.rate == i32::MAX {
+                continue;
+            }
+            tokenonly_rate = stats.rate;
+            tokenonly_dist = stats.dist;
+            tokenonly_skip = stats.skip_txfm;
+        }
+
+        let this_rate = tokenonly_rate + palette_mode_rate;
+        let this_rd = rd::rdcost(env.rdmult, this_rate, tokenonly_dist);
+        if this_rd < best.best_rd {
+            *best = crate::intra_uv_rd::UvModeResult {
+                uv_mode: 0, // UV_DC_PRED
+                angle_delta_uv: 0,
+                cfl_alpha_idx: 0,
+                cfl_alpha_signs: 0,
+                rate: this_rate,
+                rate_tokenonly: tokenonly_rate,
+                dist: tokenonly_dist,
+                skippable: tokenonly_skip,
+                best_rd: this_rd,
+                palette_uv: Some(PaletteUvInfo {
+                    size: n,
+                    colors_u: colors_u_arr,
+                    colors_v: colors_v_arr,
+                    color_map: color_map[..plane_block_width * plane_block_height].to_vec(),
+                }),
+            };
+        }
+    }
 }

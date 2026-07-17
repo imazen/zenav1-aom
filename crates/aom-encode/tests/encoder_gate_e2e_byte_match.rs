@@ -35,7 +35,9 @@
 use aom_encode::encode_intra::TrellisOptType;
 use aom_encode::encode_sb::SbEncodeEnv;
 use aom_encode::intra_uv_rd::UvLoopPolicy;
-use aom_encode::lf_search::{LfSearchFrame, build_lf_mi_grid, pick_filter_level, pick_filter_level_from_q};
+use aom_encode::lf_search::{
+    LfSearchFrame, build_lf_mi_grid, pick_filter_level, pick_filter_level_from_q,
+};
 use aom_encode::obu_assemble::assemble_frame_obu_payload_single_tile;
 use aom_encode::pack::pack_tile;
 use aom_encode::partition_pick::PickFrameCfg;
@@ -647,6 +649,7 @@ fn attempt_case_content_uv(
         enable_ab_partitions: true, // the true aomenc default (unset --disable-ab-partition-type)
         allow_screen_content_tools: p.allow_screen_content_tools,
         qm_levels: None,
+        palette_costs: None,
     };
     let pack_cfg = aom_encode::pack::PackCfg {
         enable_filter_intra: s.enable_filter_intra,
@@ -1143,16 +1146,70 @@ fn encoder_gate_lf_level_bit_exact_vs_real() {
     #[allow(clippy::type_complexity)]
     let cases: &[(&str, usize, usize, i32, fn(usize, usize) -> u8)] = &[
         // --- WEAK regime (AB-probe checkerboards) ---
-        ("top split / bottom flat", 64, 64, 32, ab_top_split_bottom_flat),
-        ("top flat / bottom split", 64, 64, 32, ab_top_flat_bottom_split),
-        ("left split / right flat", 64, 64, 32, ab_left_split_right_flat),
-        ("left flat / right split", 64, 64, 32, ab_left_flat_right_split),
+        (
+            "top split / bottom flat",
+            64,
+            64,
+            32,
+            ab_top_split_bottom_flat,
+        ),
+        (
+            "top flat / bottom split",
+            64,
+            64,
+            32,
+            ab_top_flat_bottom_split,
+        ),
+        (
+            "left split / right flat",
+            64,
+            64,
+            32,
+            ab_left_split_right_flat,
+        ),
+        (
+            "left flat / right split",
+            64,
+            64,
+            32,
+            ab_left_flat_right_split,
+        ),
         // --- STRONG regime (combined high-texture) ---
-        ("hstripes4+vstripes12 (vert~15)", 128, 128, 58, lf_hstripes4_vstripes12),
-        ("hstripes6+vstripes16+grad (both axes)", 128, 128, 58, lf_hstripes6_vstripes16_grad),
-        ("plaid v4/h12+grad (horz~15)", 128, 128, 60, lf_plaid_v4_h12_grad),
-        ("diag+vbars16+ripple (horz~25)", 256, 256, 63, lf_diag_vbars16_ripple),
-        ("radial+diagbars+noise (vert~26)", 256, 256, 63, lf_radial_diagbars_noise),
+        (
+            "hstripes4+vstripes12 (vert~15)",
+            128,
+            128,
+            58,
+            lf_hstripes4_vstripes12,
+        ),
+        (
+            "hstripes6+vstripes16+grad (both axes)",
+            128,
+            128,
+            58,
+            lf_hstripes6_vstripes16_grad,
+        ),
+        (
+            "plaid v4/h12+grad (horz~15)",
+            128,
+            128,
+            60,
+            lf_plaid_v4_h12_grad,
+        ),
+        (
+            "diag+vbars16+ripple (horz~25)",
+            256,
+            256,
+            63,
+            lf_diag_vbars16_ripple,
+        ),
+        (
+            "radial+diagbars+noise (vert~26)",
+            256,
+            256,
+            63,
+            lf_radial_diagbars_noise,
+        ),
     ];
     let mut saw_nonzero = false;
     let mut saw_strong = false;
@@ -1218,9 +1275,27 @@ fn encoder_gate_e2e_rich_content_strong_lf() {
     // strong on each axis, at 128 and 256).
     #[allow(clippy::type_complexity)]
     let cases: &[(&str, usize, usize, i32, fn(usize, usize) -> u8)] = &[
-        ("hstripes4+vstripes12 (vert~15)", 128, 128, 58, lf_hstripes4_vstripes12),
-        ("hstripes6+vstripes16+grad (both axes)", 128, 128, 58, lf_hstripes6_vstripes16_grad),
-        ("plaid v4/h12+grad (horz~15)", 128, 128, 60, lf_plaid_v4_h12_grad),
+        (
+            "hstripes4+vstripes12 (vert~15)",
+            128,
+            128,
+            58,
+            lf_hstripes4_vstripes12,
+        ),
+        (
+            "hstripes6+vstripes16+grad (both axes)",
+            128,
+            128,
+            58,
+            lf_hstripes6_vstripes16_grad,
+        ),
+        (
+            "plaid v4/h12+grad (horz~15)",
+            128,
+            128,
+            60,
+            lf_plaid_v4_h12_grad,
+        ),
         // KB-2: same generator as the cq63 case below, at cq62 (qindex 249,
         // screen_content auto-detected, real LF [1,17]). This cell exposed the
         // frozen-`filter_type` bug — the port never re-derived the intra edge
@@ -1229,9 +1304,27 @@ fn encoder_gate_e2e_rich_content_strong_lf() {
         // edge-filter strength; the resulting model-RD over-pruned V_PRED
         // angle_delta=-1 and flipped the SB(32,32) partition. Fixed in
         // partition_pick.rs (per-block filter_type recompute).
-        ("diag+vbars16+ripple cq62 (KB-2)", 256, 256, 62, lf_diag_vbars16_ripple),
-        ("diag+vbars16+ripple (horz~25)", 256, 256, 63, lf_diag_vbars16_ripple),
-        ("radial+diagbars+noise (vert~26)", 256, 256, 63, lf_radial_diagbars_noise),
+        (
+            "diag+vbars16+ripple cq62 (KB-2)",
+            256,
+            256,
+            62,
+            lf_diag_vbars16_ripple,
+        ),
+        (
+            "diag+vbars16+ripple (horz~25)",
+            256,
+            256,
+            63,
+            lf_diag_vbars16_ripple,
+        ),
+        (
+            "radial+diagbars+noise (vert~26)",
+            256,
+            256,
+            63,
+            lf_radial_diagbars_noise,
+        ),
     ];
     let mut matched = 0usize;
     for &(name, w, h, cq, content) in cases {
@@ -1602,7 +1695,10 @@ fn encoder_gate_speed1_flat_allintra() {
             total += 1;
             let ok =
                 attempt_case_content_uv(w, h, true, 1, 1, 2, cq, 1, 1, |_r, _c| 128, |_r, _c| 128);
-            eprintln!("speed1 FLAT {w}x{h} cq{cq}: {}", if ok { "MATCH" } else { "DIFF" });
+            eprintln!(
+                "speed1 FLAT {w}x{h} cq{cq}: {}",
+                if ok { "MATCH" } else { "DIFF" }
+            );
             if ok {
                 matched += 1;
             }
@@ -1679,7 +1775,10 @@ fn encoder_gate_speed1_textured_allintra() {
             |r, c| content(r, c),
             |_r, _c| 128,
         );
-        eprintln!("speed1 {name} {w}x{h} cq{cq}: {}", if ok { "MATCH" } else { "DIFF" });
+        eprintln!(
+            "speed1 {name} {w}x{h} cq{cq}: {}",
+            if ok { "MATCH" } else { "DIFF" }
+        );
         if ok {
             matched += 1;
         }
@@ -1724,12 +1823,19 @@ fn encoder_gate_speed1_rect_and_4way_25() {
     let cells: &[(&str, fn(usize, usize) -> u8, i32)] = &[
         ("hstripes6+vstripes16+grad", lf_hstripes6_vstripes16_grad, 8), // needs F1 AND F2
         ("diag+vbars16+ripple", lf_diag_vbars16_ripple, 32),            // needs F2
-        ("hstripes6+vstripes16+grad", lf_hstripes6_vstripes16_grad, 56), // needs F2
+        (
+            "hstripes6+vstripes16+grad",
+            lf_hstripes6_vstripes16_grad,
+            56,
+        ), // needs F2
     ];
     let mut matched = 0usize;
     for &(name, g, cq) in cells {
         let ok = attempt_case_content_uv(256, 256, true, 1, 1, 2, cq, 1, 1, g, |_r, _c| 128);
-        eprintln!("speed1 #25 [{name}] cq{cq}: {}", if ok { "MATCH" } else { "DIFF" });
+        eprintln!(
+            "speed1 #25 [{name}] cq{cq}: {}",
+            if ok { "MATCH" } else { "DIFF" }
+        );
         if ok {
             matched += 1;
         }
@@ -1826,8 +1932,9 @@ fn isolate_vgrad256_cq32_cnn_partition_prune() {
         let mut logit_min = f32::INFINITY;
         let mut logit_max = f32::NEG_INFINITY;
         for qt in qt_range.clone() {
-            let (logits, flags) =
-                c::ref_intra_cnn_partition_decision(&win, qindex, 8, w as i32, w as i32, *bsize_idx, qt, 2, false);
+            let (logits, flags) = c::ref_intra_cnn_partition_decision(
+                &win, qindex, 8, w as i32, w as i32, *bsize_idx, qt, 2, false,
+            );
             logit_min = logit_min.min(logits[0]);
             logit_max = logit_max.max(logits[0]);
             counts[bi] += 1;
@@ -1853,10 +1960,22 @@ fn isolate_vgrad256_cq32_cnn_partition_prune() {
     // (flags) are asserted -- not the exact logits, which vary by SIMD tier --
     // because the prec-reduced margins here are large and the flags are what
     // constrain the bitstream-affecting partition search.
-    assert_eq!(sqsplit_disabled[1], 0, "the 64x64 root must be CNN-neutral at qindex=128");
-    assert_eq!(sqsplit_disabled[2], 4, "all four 32x32 sub-blocks must be CNN square-split-disabled");
-    assert_eq!(sqsplit_disabled[3], 16, "all sixteen 16x16 sub-blocks must be CNN square-split-disabled");
-    assert_eq!(sqsplit_disabled[4], 64, "all sixty-four 8x8 sub-blocks must be CNN square-split-disabled");
+    assert_eq!(
+        sqsplit_disabled[1], 0,
+        "the 64x64 root must be CNN-neutral at qindex=128"
+    );
+    assert_eq!(
+        sqsplit_disabled[2], 4,
+        "all four 32x32 sub-blocks must be CNN square-split-disabled"
+    );
+    assert_eq!(
+        sqsplit_disabled[3], 16,
+        "all sixteen 16x16 sub-blocks must be CNN square-split-disabled"
+    );
+    assert_eq!(
+        sqsplit_disabled[4], 64,
+        "all sixty-four 8x8 sub-blocks must be CNN square-split-disabled"
+    );
 }
 
 /// Gate 2 (`aomenc --cpu-used=2`) — the all-intra KEY **speed-2** path. Reuses the
@@ -2799,7 +2918,9 @@ fn speed6_prep_lf_from_q_matches_real_aomenc() {
                         operating_points_cnt_minus_1: seq.operating_points_cnt_minus_1,
                         operating_point_idc: seq.operating_point_idc,
                         op_decoder_model_param_present: seq.op_decoder_model_param_present,
-                        buffer_removal_time_length: seq.decoder_model_info.buffer_removal_time_length
+                        buffer_removal_time_length: seq
+                            .decoder_model_info
+                            .buffer_removal_time_length
                             as u32,
                         temporal_layer_id: 0,
                         spatial_layer_id: 0,
@@ -2821,7 +2942,10 @@ fn speed6_prep_lf_from_q_matches_real_aomenc() {
                         last_mode_deltas: KF_MODE_DELTAS,
                         ..Default::default()
                     },
-                    cdef: CdefHeader { enable_cdef: st.enable_cdef, ..Default::default() },
+                    cdef: CdefHeader {
+                        enable_cdef: st.enable_cdef,
+                        ..Default::default()
+                    },
                     restoration: RestorationHeader {
                         enable_restoration: st.enable_restoration,
                         sb_size_128: st.sb_size_128,
@@ -2842,7 +2966,10 @@ fn speed6_prep_lf_from_q_matches_real_aomenc() {
                 ));
             }
             // Content-independence: identical qindex ⇒ identical levels.
-            assert_eq!(parsed[0], parsed[1], "FROM_Q must be content-independent (cq{cq})");
+            assert_eq!(
+                parsed[0], parsed[1],
+                "FROM_Q must be content-independent (cq{cq})"
+            );
             let (qindex, lf_y, lf_u, lf_v) = parsed[0];
             let ours = pick_filter_level_from_q(qindex, 8, true, 0);
             let fmt = if mono { "mono" } else { "420" };
@@ -2859,4 +2986,3 @@ fn speed6_prep_lf_from_q_matches_real_aomenc() {
         }
     }
 }
-

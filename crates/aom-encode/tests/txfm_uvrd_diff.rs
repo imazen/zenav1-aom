@@ -277,6 +277,7 @@ fn txfm_uvrd_matches_c_walk() {
                 luma_mode: sc.luma_mode,
                 luma_use_fi: sc.luma_use_fi,
                 luma_fi_mode: sc.luma_fi_mode,
+                luma_palette_active: false,
                 lossless: false,
                 reduced_tx_set_used: sc.reduced,
                 bd: sc.bd,
@@ -513,6 +514,7 @@ fn txfm_uvrd_matches_c_walk_lossless_q0() {
                 above_ctx: [&sc.above_u, &sc.above_v],
                 left_ctx: [&sc.left_u, &sc.left_v],
                 qm_levels: None,
+                luma_palette_active: false,
             };
             let cenv = CUvEnv {
                 partition: 0,
@@ -616,7 +618,15 @@ fn txfm_uvrd_matches_c_walk_lossless_q0() {
                 }
                 let mut pru = sc.recon_u0.clone();
                 let mut prv = sc.recon_v0.clone();
-                let pr = txfm_uvrd(&env, &mut pru, &mut prv, uv_mode, angle_delta_uv, probe, &pol);
+                let pr = txfm_uvrd(
+                    &env,
+                    &mut pru,
+                    &mut prv,
+                    uv_mode,
+                    angle_delta_uv,
+                    probe,
+                    &pol,
+                );
                 let mut pcu = sc.recon_u0.clone();
                 let mut pcv = sc.recon_v0.clone();
                 let pc = c_txfm_uvrd(&cenv, &mut pcu, &mut pcv, uv_mode, angle_delta_uv, probe);
@@ -787,6 +797,7 @@ fn txfm_rd_in_plane_uv_cfl_matches_c_walk() {
                 luma_mode: sc.luma_mode,
                 luma_use_fi: sc.luma_use_fi,
                 luma_fi_mode: sc.luma_fi_mode,
+                luma_palette_active: false,
                 lossless: false,
                 reduced_tx_set_used: sc.reduced,
                 bd: sc.bd,

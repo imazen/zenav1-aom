@@ -477,6 +477,7 @@ fn decode_diff_pseudo_random_noise_case() {
         enable_ab_partitions: false,
         allow_screen_content_tools: p.allow_screen_content_tools,
         qm_levels: None,
+        palette_costs: None,
     };
     let pack_cfg = aom_encode::pack::PackCfg {
         enable_filter_intra: s.enable_filter_intra,

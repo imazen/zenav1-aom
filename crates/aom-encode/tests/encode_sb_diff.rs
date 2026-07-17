@@ -168,6 +168,8 @@ fn gen_winner(rng: &mut Rng, bsize: usize, reduced: bool) -> LeafWinner {
         // leaf_pick_sb_modes's real AB-reuse-relevant path -- a placeholder
         // is fine, nothing in this test's scope reads it.
         raw_rdstats: aom_encode::partition::PartRdStats::invalid(),
+        palette_y: None,
+        palette_uv: None,
     }
 }
 

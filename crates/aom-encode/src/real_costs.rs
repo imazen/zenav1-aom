@@ -32,9 +32,9 @@
 //! in this intra-only pipeline.
 
 use crate::mode_costs::{
-    CflCosts, EXT_PARTITION_TYPES, IntraModeCosts, PARTITION_CONTEXTS, SKIP_CONTEXTS, TxSizeCosts,
-    fill_cfl_costs, fill_intra_mode_costs, fill_partition_costs, fill_skip_costs,
-    fill_tx_size_costs,
+    CflCosts, EXT_PARTITION_TYPES, IntraModeCosts, PARTITION_CONTEXTS, PaletteCosts, SKIP_CONTEXTS,
+    TxSizeCosts, fill_cfl_costs, fill_intra_mode_costs, fill_palette_costs, fill_partition_costs,
+    fill_skip_costs, fill_tx_size_costs,
 };
 use aom_entropy::partition::KfFrameContext;
 use aom_txb::{CoeffCostSet, TxTypeCosts, fill_coeff_cost_set_from_arena, fill_tx_type_costs};
@@ -71,6 +71,9 @@ pub struct RealCosts {
     /// cost tables (`av1_fill_coeff_costs`'s `plane == PLANE_TYPE_UV` slice;
     /// shared by both U and V, matching real AV1's single UV plane-type).
     pub coeff_costs_uv: CoeffCostSet,
+    /// The palette size + colour-index signaling costs (rd.c:136-152) — read
+    /// only by the palette search (`--enable-palette` frames).
+    pub palette_costs: PaletteCosts,
 }
 
 /// A degenerate but VALID single-symbol CDF row: `cdf[0] == 0` terminates
@@ -173,6 +176,17 @@ pub fn derive_real_costs(kf: &KfFrameContext, enable_filter_intra: bool) -> Real
     let coeff_costs_y = fill_coeff_cost_set_from_arena(&kf.coeff, 0);
     let coeff_costs_uv = fill_coeff_cost_set_from_arena(&kf.coeff, 1);
 
+    // The palette slices (rd.c:136-152), from the same live CDFs the palette
+    // syntax writer adapts.
+    let mut palette_costs = PaletteCosts::zeroed();
+    fill_palette_costs(
+        &mut palette_costs,
+        &kf.palette_y_size,
+        &kf.palette_uv_size,
+        &kf.palette_y_color_index,
+        &kf.palette_uv_color_index,
+    );
+
     RealCosts {
         mode_costs,
         tx_size_costs,
@@ -183,5 +197,6 @@ pub fn derive_real_costs(kf: &KfFrameContext, enable_filter_intra: bool) -> Real
         skip_costs,
         coeff_costs_y,
         coeff_costs_uv,
+        palette_costs,
     }
 }

@@ -60,10 +60,11 @@ use crate::partition_pick::{ModeGrid, PickFrameCfg, rd_pick_partition_real};
 use crate::tx_search::{MI_SIZE_HIGH_B, MI_SIZE_WIDE_B};
 use aom_entropy::enc::OdEcEnc;
 use aom_entropy::partition::{
-    KfBlockState, KfFrameContext, MbModeInfoKf, MiNbrKf, allow_palette, bsize_to_max_depth,
-    bsize_to_tx_size_cat, get_partition_subsize, get_tx_size_context, is_cfl_allowed,
-    partition_cdf_length, partition_plane_context, tx_size_to_depth, update_ext_partition_context,
-    write_mb_modes_kf_fc, write_partition, write_selected_tx_size,
+    KfBlockState, KfFrameContext, MbModeInfoKf, MiNbrKf, PaletteNbrKf, allow_palette,
+    bsize_to_max_depth, bsize_to_tx_size_cat, encode_color_map_tokens, get_partition_subsize,
+    get_tx_size_context, is_cfl_allowed, partition_cdf_length, partition_plane_context,
+    tx_size_to_depth, update_ext_partition_context, write_mb_modes_kf_fc, write_partition,
+    write_selected_tx_size,
 };
 use aom_intra::cfl::CflCtx;
 use aom_txb::{ext_tx_derive, write_coeffs_txb_full};
@@ -145,6 +146,13 @@ pub struct MiNbrGrid {
     left: [Option<MiNbrKf>; 32],
     /// CDEF signalling inputs for [`pack_leaf`]'s `write_cdef` path.
     pub cdef: Option<CdefPackState>,
+    /// The palette twin (`xd->above_mbmi->palette_mode_info` projection),
+    /// stamped alongside `above`/`left` per PACKED leaf — the write-side
+    /// colour-cache (`av1_get_palette_cache` inside `write_palette_mode_info`)
+    /// and UV-flag context inputs. `None` = neighbour absent OR palette-free
+    /// (both read as size 0 / no colours).
+    pal_above: Vec<Option<PaletteNbrKf>>,
+    pal_left: [Option<PaletteNbrKf>; 32],
 }
 
 impl MiNbrGrid {
@@ -155,13 +163,17 @@ impl MiNbrGrid {
             above: vec![None; mi_cols],
             left: [None; 32],
             cdef: None,
+            pal_above: vec![None; mi_cols],
+            pal_left: [None; 32],
         }
     }
     /// `av1_zero_left_context`'s mode-info analogue: called at each SB row
     /// start.
     pub fn zero_left(&mut self) {
         self.left = [None; 32];
+        self.pal_left = [None; 32];
     }
+    #[allow(clippy::too_many_arguments)]
     fn stamp(
         &mut self,
         mi_row: i32,
@@ -171,6 +183,7 @@ impl MiNbrGrid {
         mi_cols: i32,
         mi_rows: i32,
         nbr: MiNbrKf,
+        pal: Option<PaletteNbrKf>,
     ) {
         let a0 = mi_col as usize;
         // C clips the mode-info write to x_mis/y_mis (av1_update_state,
@@ -181,9 +194,15 @@ impl MiNbrGrid {
         for x in self.above[a0..a0 + x_mis].iter_mut() {
             *x = Some(nbr);
         }
+        for x in self.pal_above[a0..a0 + x_mis].iter_mut() {
+            *x = pal;
+        }
         let l0 = (mi_row & 31) as usize;
         for x in self.left[l0..l0 + y_mis].iter_mut() {
             *x = Some(nbr);
+        }
+        for x in self.pal_left[l0..l0 + y_mis].iter_mut() {
+            *x = pal;
         }
     }
 }
@@ -276,6 +295,19 @@ pub fn pack_leaf(
     let cdef_strength = nbr.cdef.as_ref().map_or(0, |c| {
         c.unit_strength[((mi_row >> 4) * c.nhfb + (mi_col >> 4)) as usize]
     });
+    // The winner's palette projection (Y + UV halves) — feeds the mode-info
+    // syntax AND the neighbour stamp.
+    let mut palette_size = [0i32; 2];
+    let mut palette_colors = [0u16; 24];
+    if let Some(p) = &winner.palette_y {
+        palette_size[0] = p.size as i32;
+        palette_colors[..p.size].copy_from_slice(&p.colors[..p.size]);
+    }
+    if let Some(p) = &winner.palette_uv {
+        palette_size[1] = p.size as i32;
+        palette_colors[8..8 + p.size].copy_from_slice(&p.colors_u[..p.size]);
+        palette_colors[16..16 + p.size].copy_from_slice(&p.colors_v[..p.size]);
+    }
     let info = MbModeInfoKf {
         segment_id: 0,
         skip: i32::from(winner.skip_txfm),
@@ -292,11 +324,8 @@ pub fn pack_leaf(
         cfl_alpha_idx: winner.cfl_alpha_idx,
         cfl_joint_sign: winner.cfl_alpha_signs,
         angle_delta_uv: winner.angle_delta_uv,
-        palette_size: [0, 0],
-        // No palette in this envelope (module docs: "no palette") -- all-zero
-        // colors, matching palette_size == [0, 0] (3 * PALETTE_MAX_SIZE == 24,
-        // PALETTE_MAX_SIZE == 8 is aom-entropy-private).
-        palette_colors: [0u16; 24],
+        palette_size,
+        palette_colors,
         use_filter_intra: i32::from(winner.use_filter_intra),
         filter_intra_mode: winner.filter_intra_mode as i32,
     };
@@ -316,6 +345,21 @@ pub fn pack_leaf(
     // `no-palette` symbol, but the flag MUST still be written or the decoder
     // (which reads it unconditionally) desyncs from here to the tile end.
     kfs.allow_palette = allow_palette(cfg.allow_screen_content_tools, bsize);
+    // xd->mb_to_top_edge: the palette colour-cache's SB-row gate
+    // (av1_get_palette_cache reads `row = -mb_to_top_edge >> 3`).
+    kfs.mb_to_top_edge = -((mi_row * 4) * 8);
+    // The above/left neighbour palette projections (xd->above_mbmi/left_mbmi),
+    // tracked leaf-by-leaf like the y_mode/skip neighbours.
+    let above_pal = if has_above {
+        nbr.pal_above[mi_col as usize]
+    } else {
+        None
+    };
+    let left_pal = if has_left {
+        nbr.pal_left[(mi_row & 31) as usize]
+    } else {
+        None
+    };
     write_mb_modes_kf_fc(
         enc,
         &info,
@@ -324,10 +368,50 @@ pub fn pack_leaf(
         cfg.enable_filter_intra,
         above_nbr,
         left_nbr,
-        // No palette in this envelope -- no palette neighbour context either.
-        None,
-        None,
+        above_pal,
+        left_pal,
     );
+
+    // ---- 1b. palette colour-map tokens (write_modes_b's palette loop,
+    //      bitstream.c:1520-1533: after the mode info, before tx_size) —
+    //      the wavefront token walk over the VISIBLE rows x cols of the
+    //      (block-width-stride) winning map. ----
+    if let Some(p) = &winner.palette_y {
+        let block_width = 4 * mi_w;
+        let bwv = mi_w.min((env.mi_cols - mi_col).max(0) as usize);
+        let bhv = mi_h.min((env.mi_rows - mi_row).max(0) as usize);
+        encode_color_map_tokens(
+            enc,
+            p.size as i32,
+            block_width,
+            &p.color_map,
+            bhv * 4,
+            bwv * 4,
+            &mut kf.palette_y_color_index[p.size - 2],
+        );
+    }
+    if let Some(p) = &winner.palette_uv {
+        // Chroma plane dims (av1_get_block_dimensions(bsize, 1)), incl. the
+        // sub-8x8 correction.
+        let (pw, _ph, rows, cols) = crate::palette_search::chroma_block_dims(
+            bsize,
+            mi_row,
+            mi_col,
+            env.mi_rows,
+            env.mi_cols,
+            env.ss_x,
+            env.ss_y,
+        );
+        encode_color_map_tokens(
+            enc,
+            p.size as i32,
+            pw,
+            &p.color_map,
+            rows,
+            cols,
+            &mut kf.palette_uv_color_index[p.size - 2],
+        );
+    }
 
     // ---- 2. tx_size symbol (write_selected_tx_size), gated exactly as
     //     write_modes_b's TX_MODE_SELECT branch (bitstream.c:1538-1548); for
@@ -386,7 +470,21 @@ pub fn pack_leaf(
         y_mode: winner.mode as i32,
         skip_txfm: i32::from(winner.skip_txfm),
     };
-    nbr.stamp(mi_row, mi_col, mi_w, mi_h, env.mi_cols, env.mi_rows, nbr_kf);
+    let nbr_pal =
+        (winner.palette_y.is_some() || winner.palette_uv.is_some()).then_some(PaletteNbrKf {
+            size: palette_size,
+            colors: palette_colors,
+        });
+    nbr.stamp(
+        mi_row,
+        mi_col,
+        mi_w,
+        mi_h,
+        env.mi_cols,
+        env.mi_rows,
+        nbr_kf,
+        nbr_pal,
+    );
 }
 
 /// Pack-stage per-plane coefficient loop: walk `out.txbs` (already in raster
@@ -868,7 +966,11 @@ pub fn pack_tile(
     let mi_cols = env.mi_cols as usize;
     let mut search_tile = TileCtxState::zeroed(mi_cols);
     let mut pack_tile_ctx = TileCtxState::zeroed(mi_cols);
-    let mut grid = ModeGrid::dc(env.mi_rows as usize, mi_cols);
+    let mut grid = if pick_cfg.palette_costs.is_some() {
+        ModeGrid::dc_with_palette(env.mi_rows as usize, mi_cols)
+    } else {
+        ModeGrid::dc(env.mi_rows as usize, mi_cols)
+    };
     let mut nbr = MiNbrGrid::zeroed(mi_cols);
     let mut kfs = kf_block_state(pack_cfg, env, sb_mi);
     let mut trees = Vec::new();

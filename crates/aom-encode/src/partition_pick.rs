@@ -182,7 +182,6 @@ use crate::encode_sb::{
 };
 use crate::hog::{prune_intra_mode_with_hog_uv, prune_intra_mode_with_hog_y};
 use crate::intra_rd::{Block4x4VarInfo, IntraSbyGates, IntraSbySearchCfg, WinnerModeCfg};
-use crate::speed_features::{MODE_EVAL, SpeedFeatures, WINNER_MODE_EVAL};
 use crate::intra_uv_rd::{
     UV_CFL_PRED, UvLoopPolicy, UvRdEnv, av1_get_tx_size_uv, chroma_plane_offset,
     is_chroma_reference,
@@ -191,6 +190,7 @@ use crate::mode_costs::TxSizeCosts;
 use crate::mode_costs::{CflCosts, IntraModeCosts};
 use crate::partition::{PartRdStats, rd_cost_update, rd_stats_subtraction, split_subsize};
 use crate::rd_pick::{RdPickUvArgs, RdPickUvOutcome, ReencodeParams, rd_pick_intra_mode_sb};
+use crate::speed_features::{MODE_EVAL, SpeedFeatures, WINNER_MODE_EVAL};
 use crate::tx_search::{MI_SIZE_HIGH_B, MI_SIZE_WIDE_B, TxTypeSearchPolicy, TxfmYrdEnv};
 use aom_dist::highbd_variance;
 use aom_entropy::partition::{
@@ -330,6 +330,14 @@ pub struct ModeGrid {
     /// (partition_strategy.c:1760-1773) — both `xd->left_mbmi->bsize` /
     /// `xd->above_mbmi->bsize` reads off the live mi grid.
     pub bsizes: Vec<u8>,
+    /// Per-mi winner palette state (`mbmi->palette_mode_info` projection:
+    /// `[size_y, size_uv]` + the 3×8 colour array), stamped alongside
+    /// `modes`. Read by `av1_get_palette_cache` (above/left neighbour colour
+    /// merge) and `av1_get_palette_mode_ctx` (neighbour palette-active
+    /// flags) in the leaf search. Empty (never indexed) unless the frame
+    /// enables the palette search — non-palette frames pay nothing.
+    pub pal_sizes: Vec<[u8; 2]>,
+    pub pal_colors: Vec<[u16; 24]>,
     pub stride: usize,
 }
 
@@ -340,9 +348,24 @@ impl ModeGrid {
             modes: vec![0; mi_rows * mi_cols],
             uv_modes: vec![0; mi_rows * mi_cols],
             bsizes: vec![0; mi_rows * mi_cols],
+            pal_sizes: Vec::new(),
+            pal_colors: Vec::new(),
             stride: mi_cols,
         }
     }
+    /// [`Self::dc`] + allocated palette-neighbour state (palette-search
+    /// frames only).
+    pub fn dc_with_palette(mi_rows: usize, mi_cols: usize) -> Self {
+        ModeGrid {
+            modes: vec![0; mi_rows * mi_cols],
+            uv_modes: vec![0; mi_rows * mi_cols],
+            bsizes: vec![0; mi_rows * mi_cols],
+            pal_sizes: vec![[0; 2]; mi_rows * mi_cols],
+            pal_colors: vec![[0; 24]; mi_rows * mi_cols],
+            stride: mi_cols,
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
     fn stamp(
         &mut self,
         mi_row: i32,
@@ -350,17 +373,55 @@ impl ModeGrid {
         bsize: usize,
         mode: u8,
         uv_mode: u8,
+        pal: Option<&crate::palette_search::PaletteYInfo>,
+        pal_uv: Option<&crate::palette_search::PaletteUvInfo>,
         mi_rows: i32,
         mi_cols: i32,
     ) {
         let rows = (MI_SIZE_HIGH_B[bsize] as i32).min(mi_rows - mi_row) as usize;
         let cols = (MI_SIZE_WIDE_B[bsize] as i32).min(mi_cols - mi_col) as usize;
+        // The block's palette projection (Y + UV halves), stamped on EVERY
+        // covered mi cell like C's shared mbmi — a no-op (empty vecs) on
+        // non-palette frames.
+        let mut psz = [0u8; 2];
+        let mut pcol = [0u16; 24];
+        if let Some(p) = pal {
+            psz[0] = p.size as u8;
+            pcol[..p.size].copy_from_slice(&p.colors[..p.size]);
+        }
+        if let Some(p) = pal_uv {
+            psz[1] = p.size as u8;
+            pcol[8..8 + p.size].copy_from_slice(&p.colors_u[..p.size]);
+            pcol[16..16 + p.size].copy_from_slice(&p.colors_v[..p.size]);
+        }
         for r in 0..rows {
             let base = (mi_row as usize + r) * self.stride + mi_col as usize;
             self.modes[base..base + cols].fill(mode);
             self.uv_modes[base..base + cols].fill(uv_mode);
             self.bsizes[base..base + cols].fill(bsize as u8);
+            if !self.pal_sizes.is_empty() {
+                self.pal_sizes[base..base + cols].fill(psz);
+                self.pal_colors[base..base + cols].fill(pcol);
+            }
         }
+    }
+    /// The above/left neighbour palette projection for `av1_get_palette_cache`
+    /// / `av1_get_palette_mode_ctx` — `None` when the grid carries no palette
+    /// state or the neighbour cell is out of frame.
+    fn palette_nbr_at(
+        &self,
+        mi_row: i32,
+        mi_col: i32,
+    ) -> Option<aom_entropy::partition::PaletteNbrKf> {
+        if self.pal_sizes.is_empty() || mi_row < 0 || mi_col < 0 {
+            return None;
+        }
+        let idx = mi_row as usize * self.stride + mi_col as usize;
+        let sz = self.pal_sizes[idx];
+        Some(aom_entropy::partition::PaletteNbrKf {
+            size: [i32::from(sz[0]), i32::from(sz[1])],
+            colors: self.pal_colors[idx],
+        })
     }
     fn at(&self, mi_row: i32, mi_col: i32) -> u8 {
         self.modes[mi_row as usize * self.stride + mi_col as usize]
@@ -486,6 +547,13 @@ pub struct PickFrameCfg<'a> {
     /// luma + chroma RD search so QM shapes the mode/tx/partition winners
     /// exactly as C (av1_setup_qmatrix runs inside the search's xform_quant).
     pub qm_levels: Option<[usize; 3]>,
+    /// The palette size/colour-index cost tables — `Some` models
+    /// `oxcf.tool_cfg.enable_palette` (the C default is ON; every
+    /// pre-existing byte gate runs the standard shim's `--enable-palette=0`
+    /// and passes `None`, keeping those envelopes byte-identical by
+    /// construction). The palette SEARCH itself additionally requires
+    /// `av1_allow_palette(allow_screen_content_tools, bsize)` per leaf.
+    pub palette_costs: Option<&'a crate::mode_costs::PaletteCosts>,
 }
 
 /// One leaf evaluation's differential-visibility record.
@@ -705,8 +773,7 @@ fn leaf_pick_sb_modes(
     // threading the caller pol's CLI-driven skip_trellis/sharpness. None below
     // speed 4 (multi_winner_mode_type == MULTI_WINNER_MODE_OFF → single-pass).
     let wm_parts = (cfg.allintra && cfg.speed >= 4).then(|| {
-        let sf =
-            SpeedFeatures::set_allintra(cfg.speed, cfg.allow_screen_content_tools, env.bd > 8);
+        let sf = SpeedFeatures::set_allintra(cfg.speed, cfg.allow_screen_content_tools, env.bd > 8);
         // multi_winner_mode_type: DEFAULT(2)/FAST(1) at speed 4/5 → the
         // winner-stats loop; OFF(0) at speed >= 6 → count 1 = the
         // single-best re-eval arm with no stats stored (intra_rd.rs).
@@ -733,6 +800,41 @@ fn leaf_pick_sb_modes(
             max_winner_count: *count,
             prune_winner_mode_eval_level: *prune_lvl,
         });
+    // Above/left neighbour palette projections (xd->above_mbmi/left_mbmi):
+    // read from the committed mode grid like the Y/UV neighbour modes above.
+    let palette_above = if up_available {
+        grid.palette_nbr_at(mi_row - 1, mi_col)
+    } else {
+        None
+    };
+    let palette_left = if left_available {
+        grid.palette_nbr_at(mi_row, mi_col - 1)
+    } else {
+        None
+    };
+    // The palette-search cfg (enable_palette && the sf levels). The sf
+    // levels: allintra per SpeedFeatures::set_allintra (speed 0: search
+    // level 0 + size-search level 1); GOOD runs speed 0 in this envelope
+    // where both are the init_intra_sf defaults (0, 0).
+    let palette_cfg = cfg.palette_costs.map(|costs| {
+        let (prune_search, prune_size_search) = if cfg.allintra {
+            let sf =
+                SpeedFeatures::set_allintra(cfg.speed, cfg.allow_screen_content_tools, env.bd > 8);
+            (
+                sf.prune_palette_search_level,
+                sf.prune_luma_palette_size_search_level,
+            )
+        } else {
+            (0, 0)
+        };
+        crate::intra_rd::PaletteModeCfg {
+            costs,
+            above: palette_above,
+            left: palette_left,
+            prune_palette_search_level: prune_search,
+            prune_luma_palette_size_search_level: prune_size_search,
+        }
+    });
     let sby_cfg = IntraSbySearchCfg {
         gates: &gates,
         // `intra_sf.top_intra_model_count_allowed` (speed_features.c:2443 default
@@ -770,7 +872,20 @@ fn leaf_pick_sb_modes(
         // the invariant is explicit, not silently assumed).
         try_palette: allow_palette(cfg.allow_screen_content_tools, bsize),
         palette_bsize_ctx: palette_bsize_ctx(bsize) as usize,
-        palette_mode_ctx: palette_mode_ctx(up_available, 0, left_available, 0) as usize,
+        // av1_get_palette_mode_ctx: neighbours that use a Y palette. On
+        // non-palette frames (palette_costs None / no screen content) the
+        // grid carries no palette state and both flags are structurally 0 —
+        // the pre-existing always-0 invariant, now explicit.
+        palette_mode_ctx: palette_mode_ctx(
+            up_available,
+            palette_above
+                .as_ref()
+                .map_or(0, |p| i32::from(p.size[0] > 0)),
+            left_available,
+            palette_left
+                .as_ref()
+                .map_or(0, |p| i32::from(p.size[0] > 0)),
+        ) as usize,
         enable_filter_intra: cfg.enable_filter_intra,
         allow_intrabc: false,
         pol: cfg.pol,
@@ -782,7 +897,7 @@ fn leaf_pick_sb_modes(
         mb_to_right_edge: (env.mi_cols - mi_w as i32 - mi_col) * 4 * 8,
         mb_to_bottom_edge: (env.mi_rows - mi_h as i32 - mi_row) * 4 * 8,
         winner_mode: wm_cfg.as_ref(),
-        palette: None,
+        palette: palette_cfg,
     };
     let mut var_cache = Block4x4VarInfo::sb_cache(env.sb_size);
 
@@ -852,8 +967,7 @@ fn leaf_pick_sb_modes(
         }
     };
     let chroma_edge_filter_type = i32::from(
-        (chroma_up_available
-            && is_smooth_uv(uv_mode_at(base_row - 1, base_col + env.ss_x as i32)))
+        (chroma_up_available && is_smooth_uv(uv_mode_at(base_row - 1, base_col + env.ss_x as i32)))
             || (chroma_left_available
                 && is_smooth_uv(uv_mode_at(base_row + env.ss_y as i32, base_col - 1))),
     );
@@ -883,6 +997,7 @@ fn leaf_pick_sb_modes(
         luma_mode: 0,
         luma_use_fi: false,
         luma_fi_mode: 0,
+        luma_palette_active: false,
         lossless: env.lossless,
         reduced_tx_set_used: env.reduced_tx_set_used,
         bd: env.bd,
@@ -968,16 +1083,8 @@ fn leaf_pick_sb_modes(
             let mb_bottom = (env.mi_rows - mi_h as i32 - mi_row) * 4 * 8;
             let th = [-1.2f32, -1.2, -0.6, 0.4][chroma_hog_level - 1];
             prune_intra_mode_with_hog_uv(
-                env.src_u,
-                ref_off_uv,
-                env.stride,
-                bsize,
-                env.ss_x,
-                env.ss_y,
-                mb_right,
-                mb_bottom,
-                th,
-                &mut mask,
+                env.src_u, ref_off_uv, env.stride, bsize, env.ss_x, env.ss_y, mb_right, mb_bottom,
+                th, &mut mask,
             );
             mask
         });
@@ -986,6 +1093,20 @@ fn leaf_pick_sb_modes(
             prune_chroma_modes_using_luma_winner: prune_chroma_luma_winner,
             prune_smooth_for_chroma,
             cfl_search_range,
+            // intra_mode_info_cost_uv's try_palette (intra_mode_search_utils.h)
+            // = av1_allow_palette(allow_screen_content_tools, mbmi->bsize) —
+            // PER LEAF, and (like the Y flag) NOT gated on enable_palette: a
+            // screen-content frame costs the UV no-palette flag on every
+            // chroma-ref UV_DC candidate regardless of --enable-palette.
+            try_palette: allow_palette(cfg.allow_screen_content_tools, bsize),
+            ..cfg.uv_lp.clone()
+        };
+        &chroma_hog_lp
+    } else if allow_palette(cfg.allow_screen_content_tools, bsize) != cfg.uv_lp.try_palette {
+        // Same per-leaf try_palette recompute on the no-HOG path (the
+        // frame-level cfg.uv_lp can't carry a bsize-dependent value).
+        chroma_hog_lp = UvLoopPolicy {
+            try_palette: allow_palette(cfg.allow_screen_content_tools, bsize),
             ..cfg.uv_lp.clone()
         };
         &chroma_hog_lp
@@ -1008,6 +1129,26 @@ fn leaf_pick_sb_modes(
                 costs: cfg.mode_costs,
                 cfl_costs: cfg.cfl_costs,
                 lp: uv_lp,
+                // The UV palette-search slice (same enable gate + neighbour
+                // state as the luma slice; dc_mode_cost / y_palette_active
+                // are overwritten from the luma winner in rd_pick).
+                palette: cfg.palette_costs.map(|costs| {
+                    crate::palette_search::UvPaletteArgs {
+                        dc_mode_cost: 0,
+                        costs,
+                        above: palette_above,
+                        left: palette_left,
+                        bsize_ctx: palette_bsize_ctx(bsize) as usize,
+                        y_palette_active: false,
+                        early_term: {
+                            // sf intra_sf.early_term_chroma_palette_size_search
+                            // (allintra base :364 = 1 at EVERY allintra speed;
+                            // GOOD speed-0 = init default 0).
+                            cfg.allintra
+                        },
+                        pol: cfg.pol,
+                    }
+                }),
             })
         };
         rd_pick_intra_mode_sb(
@@ -1036,18 +1177,20 @@ fn leaf_pick_sb_modes(
                 dist: best.dist,
                 rdcost: best.rdcost,
             };
-            let (uv_mode, angle_delta_uv, cfl_alpha_idx, cfl_alpha_signs) = match &best.uv {
-                RdPickUvOutcome::Searched(w, _) => (
-                    w.uv_mode,
-                    w.angle_delta_uv,
-                    i32::from(w.cfl_alpha_idx),
-                    i32::from(w.cfl_alpha_signs),
-                ),
-                // !chroma_ref / monochrome: the uv mbmi fields are dead
-                // state (nothing reads them — store_cfl_required only reads
-                // uv_mode on chroma-ref blocks; packing is chroma-ref-gated).
-                _ => (0, 0, 0, 0),
-            };
+            let (uv_mode, angle_delta_uv, cfl_alpha_idx, cfl_alpha_signs, palette_uv) =
+                match &best.uv {
+                    RdPickUvOutcome::Searched(w, _) => (
+                        w.uv_mode,
+                        w.angle_delta_uv,
+                        i32::from(w.cfl_alpha_idx),
+                        i32::from(w.cfl_alpha_signs),
+                        w.palette_uv.clone(),
+                    ),
+                    // !chroma_ref / monochrome: the uv mbmi fields are dead
+                    // state (nothing reads them — store_cfl_required only reads
+                    // uv_mode on chroma-ref blocks; packing is chroma-ref-gated).
+                    _ => (0, 0, 0, 0, None),
+                };
             let winner = LeafWinner {
                 bsize,
                 mode: best.y.mode,
@@ -1062,6 +1205,8 @@ fn leaf_pick_sb_modes(
                 cfl_alpha_signs,
                 uv_edge_filter_type: chroma_edge_filter_type,
                 tx_type_map: best.tx_type_map,
+                palette_y: best.y.palette_y.clone(),
+                palette_uv,
                 skip_txfm: false,
                 raw_rdstats: stats,
             };
@@ -1321,7 +1466,17 @@ fn rd_pick_4partition(
                 partition_type,
                 false,
             );
-            grid.stamp(r, c, subsize, wi.mode as u8, wi.uv_mode as u8, env.mi_rows, env.mi_cols);
+            grid.stamp(
+                r,
+                c,
+                subsize,
+                wi.mode as u8,
+                wi.uv_mode as u8,
+                wi.palette_y.as_ref(),
+                wi.palette_uv.as_ref(),
+                env.mi_rows,
+                env.mi_cols,
+            );
         }
     }
     // Calculate the total cost and update the best partition (:3962-3967).
@@ -1685,7 +1840,17 @@ fn rd_pick_ab_part(
                 partition_type,
                 false,
             );
-            grid.stamp(r, c, sz, wi.mode as u8, wi.uv_mode as u8, env.mi_rows, env.mi_cols);
+            grid.stamp(
+                r,
+                c,
+                sz,
+                wi.mode as u8,
+                wi.uv_mode as u8,
+                wi.palette_y.as_ref(),
+                wi.palette_uv.as_ref(),
+                env.mi_rows,
+                env.mi_cols,
+            );
         }
     }
     // Calculate the total cost and update the best partition (:3211-3218;
@@ -1935,8 +2100,7 @@ pub fn rd_pick_partition_real(
             let left_avail = mi_col > env.tile_col_start;
             let prune_sub_8x8 = left_avail
                 && up_avail
-                && (grid.bsize_at(mi_row, mi_col - 1) > 3
-                    || grid.bsize_at(mi_row - 1, mi_col) > 3);
+                && (grid.bsize_at(mi_row, mi_col - 1) > 3 || grid.bsize_at(mi_row - 1, mi_col) > 3);
             if prune_sub_8x8 {
                 // av1_disable_all_splits (encodeframe_utils.h:261): square +
                 // rect off; partition_none_allowed untouched.
@@ -2307,8 +2471,10 @@ pub fn rd_pick_partition_real(
                 // become `SbTree::Absent` placeholders — every tree walker
                 // guards the same frame bound at entry, so an `Absent` slot is
                 // never inspected. (An interior SB has all 4 children `Some`.)
-                let kids: Vec<SbTree> =
-                    children.into_iter().map(|t| t.unwrap_or(SbTree::Absent)).collect();
+                let kids: Vec<SbTree> = children
+                    .into_iter()
+                    .map(|t| t.unwrap_or(SbTree::Absent))
+                    .collect();
                 best_tree = Some(SbTree::Split(Box::new(
                     <[SbTree; 4]>::try_from(kids).ok().unwrap(),
                 )));
@@ -2429,6 +2595,8 @@ pub fn rd_pick_partition_real(
                 subsize,
                 w0.mode as u8,
                 w0.uv_mode as u8,
+                w0.palette_y.as_ref(),
+                w0.palette_uv.as_ref(),
                 env.mi_rows,
                 env.mi_cols,
             );
@@ -2482,10 +2650,7 @@ pub fn rd_pick_partition_real(
                 let sub1 = match w1.take() {
                     Some(w) => w,
                     None => {
-                        debug_assert!(
-                            !is_not_edge_block,
-                            "rect sub-1 absent only at a frame edge"
-                        );
+                        debug_assert!(!is_not_edge_block, "rect sub-1 absent only at a frame edge");
                         crate::encode_sb::LeafWinner::off_frame_placeholder(subsize)
                     }
                 };
@@ -2851,8 +3016,9 @@ pub fn rd_pick_partition_real(
                 if !part4_allowed[i] {
                     continue;
                 }
-                let num_child_rect_win: i32 =
-                    (0..4).map(|idx| i32::from(split_part_rect_win[idx][i])).sum();
+                let num_child_rect_win: i32 = (0..4)
+                    .map(|idx| i32::from(split_part_rect_win[idx][i]))
+                    .sum();
                 if num_child_rect_win < num_win_thresh {
                     part4_allowed[i] = false;
                 }
@@ -2977,7 +3143,17 @@ fn stamp_grid_from_tree(
     }
     match tree {
         SbTree::Leaf(w) => {
-            grid.stamp(mi_row, mi_col, bsize, w.mode as u8, w.uv_mode as u8, mi_rows, mi_cols);
+            grid.stamp(
+                mi_row,
+                mi_col,
+                bsize,
+                w.mode as u8,
+                w.uv_mode as u8,
+                w.palette_y.as_ref(),
+                w.palette_uv.as_ref(),
+                mi_rows,
+                mi_cols,
+            );
         }
         SbTree::Split(kids) => {
             let sub = split_subsize(bsize);
@@ -2997,7 +3173,17 @@ fn stamp_grid_from_tree(
         SbTree::Horz(subs) => {
             let sub = get_partition_subsize(bsize, 1) as usize;
             let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
-            grid.stamp(mi_row, mi_col, sub, subs[0].mode as u8, subs[0].uv_mode as u8, mi_rows, mi_cols);
+            grid.stamp(
+                mi_row,
+                mi_col,
+                sub,
+                subs[0].mode as u8,
+                subs[0].uv_mode as u8,
+                subs[0].palette_y.as_ref(),
+                subs[0].palette_uv.as_ref(),
+                mi_rows,
+                mi_cols,
+            );
             if mi_row + hbs < mi_rows {
                 grid.stamp(
                     mi_row + hbs,
@@ -3005,6 +3191,8 @@ fn stamp_grid_from_tree(
                     sub,
                     subs[1].mode as u8,
                     subs[1].uv_mode as u8,
+                    subs[1].palette_y.as_ref(),
+                    subs[1].palette_uv.as_ref(),
                     mi_rows,
                     mi_cols,
                 );
@@ -3013,7 +3201,17 @@ fn stamp_grid_from_tree(
         SbTree::Vert(subs) => {
             let sub = get_partition_subsize(bsize, 2) as usize;
             let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
-            grid.stamp(mi_row, mi_col, sub, subs[0].mode as u8, subs[0].uv_mode as u8, mi_rows, mi_cols);
+            grid.stamp(
+                mi_row,
+                mi_col,
+                sub,
+                subs[0].mode as u8,
+                subs[0].uv_mode as u8,
+                subs[0].palette_y.as_ref(),
+                subs[0].palette_uv.as_ref(),
+                mi_rows,
+                mi_cols,
+            );
             if mi_col + hbs < mi_cols {
                 grid.stamp(
                     mi_row,
@@ -3021,6 +3219,8 @@ fn stamp_grid_from_tree(
                     sub,
                     subs[1].mode as u8,
                     subs[1].uv_mode as u8,
+                    subs[1].palette_y.as_ref(),
+                    subs[1].palette_uv.as_ref(),
                     mi_rows,
                     mi_cols,
                 );
@@ -3037,7 +3237,17 @@ fn stamp_grid_from_tree(
                 if i > 0 && this_mi_row >= mi_rows {
                     break;
                 }
-                grid.stamp(this_mi_row, mi_col, sub, w.mode as u8, w.uv_mode as u8, mi_rows, mi_cols);
+                grid.stamp(
+                    this_mi_row,
+                    mi_col,
+                    sub,
+                    w.mode as u8,
+                    w.uv_mode as u8,
+                    w.palette_y.as_ref(),
+                    w.palette_uv.as_ref(),
+                    mi_rows,
+                    mi_cols,
+                );
             }
         }
         SbTree::Vert4(subs) => {
@@ -3050,7 +3260,17 @@ fn stamp_grid_from_tree(
                 if i > 0 && this_mi_col >= mi_cols {
                     break;
                 }
-                grid.stamp(mi_row, this_mi_col, sub, w.mode as u8, w.uv_mode as u8, mi_rows, mi_cols);
+                grid.stamp(
+                    mi_row,
+                    this_mi_col,
+                    sub,
+                    w.mode as u8,
+                    w.uv_mode as u8,
+                    w.palette_y.as_ref(),
+                    w.palette_uv.as_ref(),
+                    mi_rows,
+                    mi_cols,
+                );
             }
         }
         SbTree::HorzA(subs) => {
@@ -3060,13 +3280,25 @@ fn stamp_grid_from_tree(
             let bsize2 = split_subsize(bsize);
             let sub = get_partition_subsize(bsize, 4) as usize; // PARTITION_HORZ_A
             let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
-            grid.stamp(mi_row, mi_col, bsize2, subs[0].mode as u8, subs[0].uv_mode as u8, mi_rows, mi_cols);
+            grid.stamp(
+                mi_row,
+                mi_col,
+                bsize2,
+                subs[0].mode as u8,
+                subs[0].uv_mode as u8,
+                subs[0].palette_y.as_ref(),
+                subs[0].palette_uv.as_ref(),
+                mi_rows,
+                mi_cols,
+            );
             grid.stamp(
                 mi_row,
                 mi_col + hbs,
                 bsize2,
                 subs[1].mode as u8,
                 subs[1].uv_mode as u8,
+                subs[1].palette_y.as_ref(),
+                subs[1].palette_uv.as_ref(),
                 mi_rows,
                 mi_cols,
             );
@@ -3076,6 +3308,8 @@ fn stamp_grid_from_tree(
                 sub,
                 subs[2].mode as u8,
                 subs[2].uv_mode as u8,
+                subs[2].palette_y.as_ref(),
+                subs[2].palette_uv.as_ref(),
                 mi_rows,
                 mi_cols,
             );
@@ -3084,13 +3318,25 @@ fn stamp_grid_from_tree(
             let bsize2 = split_subsize(bsize);
             let sub = get_partition_subsize(bsize, 5) as usize; // PARTITION_HORZ_B
             let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
-            grid.stamp(mi_row, mi_col, sub, subs[0].mode as u8, subs[0].uv_mode as u8, mi_rows, mi_cols);
+            grid.stamp(
+                mi_row,
+                mi_col,
+                sub,
+                subs[0].mode as u8,
+                subs[0].uv_mode as u8,
+                subs[0].palette_y.as_ref(),
+                subs[0].palette_uv.as_ref(),
+                mi_rows,
+                mi_cols,
+            );
             grid.stamp(
                 mi_row + hbs,
                 mi_col,
                 bsize2,
                 subs[1].mode as u8,
                 subs[1].uv_mode as u8,
+                subs[1].palette_y.as_ref(),
+                subs[1].palette_uv.as_ref(),
                 mi_rows,
                 mi_cols,
             );
@@ -3100,6 +3346,8 @@ fn stamp_grid_from_tree(
                 bsize2,
                 subs[2].mode as u8,
                 subs[2].uv_mode as u8,
+                subs[2].palette_y.as_ref(),
+                subs[2].palette_uv.as_ref(),
                 mi_rows,
                 mi_cols,
             );
@@ -3108,13 +3356,25 @@ fn stamp_grid_from_tree(
             let bsize2 = split_subsize(bsize);
             let sub = get_partition_subsize(bsize, 6) as usize; // PARTITION_VERT_A
             let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
-            grid.stamp(mi_row, mi_col, bsize2, subs[0].mode as u8, subs[0].uv_mode as u8, mi_rows, mi_cols);
+            grid.stamp(
+                mi_row,
+                mi_col,
+                bsize2,
+                subs[0].mode as u8,
+                subs[0].uv_mode as u8,
+                subs[0].palette_y.as_ref(),
+                subs[0].palette_uv.as_ref(),
+                mi_rows,
+                mi_cols,
+            );
             grid.stamp(
                 mi_row + hbs,
                 mi_col,
                 bsize2,
                 subs[1].mode as u8,
                 subs[1].uv_mode as u8,
+                subs[1].palette_y.as_ref(),
+                subs[1].palette_uv.as_ref(),
                 mi_rows,
                 mi_cols,
             );
@@ -3124,6 +3384,8 @@ fn stamp_grid_from_tree(
                 sub,
                 subs[2].mode as u8,
                 subs[2].uv_mode as u8,
+                subs[2].palette_y.as_ref(),
+                subs[2].palette_uv.as_ref(),
                 mi_rows,
                 mi_cols,
             );
@@ -3132,13 +3394,25 @@ fn stamp_grid_from_tree(
             let bsize2 = split_subsize(bsize);
             let sub = get_partition_subsize(bsize, 7) as usize; // PARTITION_VERT_B
             let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
-            grid.stamp(mi_row, mi_col, sub, subs[0].mode as u8, subs[0].uv_mode as u8, mi_rows, mi_cols);
+            grid.stamp(
+                mi_row,
+                mi_col,
+                sub,
+                subs[0].mode as u8,
+                subs[0].uv_mode as u8,
+                subs[0].palette_y.as_ref(),
+                subs[0].palette_uv.as_ref(),
+                mi_rows,
+                mi_cols,
+            );
             grid.stamp(
                 mi_row,
                 mi_col + hbs,
                 bsize2,
                 subs[1].mode as u8,
                 subs[1].uv_mode as u8,
+                subs[1].palette_y.as_ref(),
+                subs[1].palette_uv.as_ref(),
                 mi_rows,
                 mi_cols,
             );
@@ -3148,6 +3422,8 @@ fn stamp_grid_from_tree(
                 bsize2,
                 subs[2].mode as u8,
                 subs[2].uv_mode as u8,
+                subs[2].palette_y.as_ref(),
+                subs[2].palette_uv.as_ref(),
                 mi_rows,
                 mi_cols,
             );
@@ -3523,19 +3799,46 @@ mod ext_partition_eval_thresh_tests {
         }
         // Speed 5, sub-480p: BLOCK_128X128 unconditionally (:2952) — AB +
         // 4-way disabled (bsize > BLOCK_128X128 never holds).
-        assert_eq!(ext_partition_eval_thresh_allintra_key(true, 5, 64, 64, false), 15);
-        assert_eq!(ext_partition_eval_thresh_allintra_key(true, 5, 128, 128, true), 15);
-        assert_eq!(ext_partition_eval_thresh_allintra_key(true, 5, 640, 360, false), 15);
+        assert_eq!(
+            ext_partition_eval_thresh_allintra_key(true, 5, 64, 64, false),
+            15
+        );
+        assert_eq!(
+            ext_partition_eval_thresh_allintra_key(true, 5, 128, 128, true),
+            15
+        );
+        assert_eq!(
+            ext_partition_eval_thresh_allintra_key(true, 5, 640, 360, false),
+            15
+        );
         // Speed 5, >=480p: the framesize-independent :510-511 value survives
         // (screen ? BLOCK_8X8 : BLOCK_16X16).
-        assert_eq!(ext_partition_eval_thresh_allintra_key(true, 5, 640, 480, false), 6);
-        assert_eq!(ext_partition_eval_thresh_allintra_key(true, 5, 1280, 720, false), 6);
-        assert_eq!(ext_partition_eval_thresh_allintra_key(true, 5, 640, 480, true), 3);
+        assert_eq!(
+            ext_partition_eval_thresh_allintra_key(true, 5, 640, 480, false),
+            6
+        );
+        assert_eq!(
+            ext_partition_eval_thresh_allintra_key(true, 5, 1280, 720, false),
+            6
+        );
+        assert_eq!(
+            ext_partition_eval_thresh_allintra_key(true, 5, 640, 480, true),
+            3
+        );
         // Speed >= 6: BLOCK_128X128 for every size (:2963 else arm).
-        assert_eq!(ext_partition_eval_thresh_allintra_key(true, 6, 1280, 720, false), 15);
-        assert_eq!(ext_partition_eval_thresh_allintra_key(true, 9, 64, 64, true), 15);
+        assert_eq!(
+            ext_partition_eval_thresh_allintra_key(true, 6, 1280, 720, false),
+            15
+        );
+        assert_eq!(
+            ext_partition_eval_thresh_allintra_key(true, 9, 64, 64, true),
+            15
+        );
         // Non-allintra (GOOD speed-0 envelope): default.
-        assert_eq!(ext_partition_eval_thresh_allintra_key(false, 5, 64, 64, false), 3);
+        assert_eq!(
+            ext_partition_eval_thresh_allintra_key(false, 5, 64, 64, false),
+            3
+        );
     }
 }
 
@@ -3556,14 +3859,19 @@ mod edge_partition_cost_tests {
         // An asymmetric but valid 10-symbol partition inverse CDF (BLOCK_64X64,
         // so every partition type participates — the 128x128 VERT_4/HORZ_4 skip
         // does not apply). Probabilities sum to CDF_PROB_TOP (32768).
-        let probs = [8000i32, 2000, 6000, 5000, 3000, 1000, 2000, 1768, 2000, 2000];
+        let probs = [
+            8000i32, 2000, 6000, 5000, 3000, 1000, 2000, 1768, 2000, 2000,
+        ];
         let mut cdf = [0u16; 11];
         let mut cum = 0i32;
         for (k, &p) in probs.iter().enumerate() {
             cum += p;
             cdf[k] = (32768 - cum) as u16; // AOM_ICDF
         }
-        assert_eq!(cdf[9], 0, "a valid inverse CDF terminates at 0 on its last symbol");
+        assert_eq!(
+            cdf[9], 0,
+            "a valid inverse CDF terminates at 0 on its last symbol"
+        );
         let bsize = 12; // BLOCK_64X64
         let max = cost_symbol(0);
 
@@ -3572,7 +3880,10 @@ mod edge_partition_cost_tests {
         let mut expect_bot = [max; 10];
         let g = partition_gather_vert_alike(&cdf, bsize);
         cost_tokens_from_cdf(&mut expect_bot, &g, Some(&[1, 3]));
-        assert_eq!(bot, expect_bot, "bottom edge = vert_alike over [HORZ, SPLIT]");
+        assert_eq!(
+            bot, expect_bot,
+            "bottom edge = vert_alike over [HORZ, SPLIT]"
+        );
         for (i, &c) in bot.iter().enumerate() {
             if i != 1 && i != 3 {
                 assert_eq!(c, max, "bottom edge: uncoded type {i} stays max_cost");
@@ -3584,7 +3895,10 @@ mod edge_partition_cost_tests {
         let mut expect_rhs = [max; 10];
         let g2 = partition_gather_horz_alike(&cdf, bsize);
         cost_tokens_from_cdf(&mut expect_rhs, &g2, Some(&[2, 3]));
-        assert_eq!(rhs, expect_rhs, "right edge = horz_alike over [VERT, SPLIT]");
+        assert_eq!(
+            rhs, expect_rhs,
+            "right edge = horz_alike over [VERT, SPLIT]"
+        );
         for (i, &c) in rhs.iter().enumerate() {
             if i != 2 && i != 3 {
                 assert_eq!(c, max, "right edge: uncoded type {i} stays max_cost");

@@ -291,6 +291,12 @@ pub struct UvRdEnv<'a> {
     pub luma_mode: usize,
     pub luma_use_fi: bool,
     pub luma_fi_mode: usize,
+    /// `mbmi->palette_mode_info.palette_size[0] > 0` — the LUMA winner has an
+    /// active Y palette. Feeds `intra_mode_info_cost_uv`'s
+    /// `palette_uv_mode_cost[y_palette_active][..]` context (the UV
+    /// no-palette flag's cdf row differs when Y uses palette). Overwritten
+    /// with the luma winner before the uv search, like `luma_mode`.
+    pub luma_palette_active: bool,
     pub lossless: bool,
     pub reduced_tx_set_used: bool,
     pub bd: u8,
@@ -498,11 +504,41 @@ pub fn txfm_rd_in_plane_uv(
     plane: usize,
     uv_mode: usize,
     angle_delta_uv: i32,
+    cfl: Option<&mut CflPredict>,
+    tx_size: usize,
+    ref_best_rd: i64,
+    current_rd_in: i64,
+    pol: &TxTypeSearchPolicy,
+) -> Option<(RdStats, Vec<TxbWinner>)> {
+    txfm_rd_in_plane_uv_p(
+        env,
+        recon,
+        plane,
+        uv_mode,
+        angle_delta_uv,
+        cfl,
+        tx_size,
+        ref_best_rd,
+        current_rd_in,
+        pol,
+        None,
+    )
+}
+
+/// [`txfm_rd_in_plane_uv`] + an optional palette-UV candidate.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn txfm_rd_in_plane_uv_p(
+    env: &UvRdEnv,
+    recon: &mut [u16],
+    plane: usize,
+    uv_mode: usize,
+    angle_delta_uv: i32,
     mut cfl: Option<&mut CflPredict>,
     tx_size: usize,
     ref_best_rd: i64,
     current_rd_in: i64,
     pol: &TxTypeSearchPolicy,
+    palette: Option<&PaletteUvPred>,
 ) -> Option<(RdStats, Vec<TxbWinner>)> {
     if current_rd_in > ref_best_rd {
         return None;
@@ -561,18 +597,35 @@ pub fn txfm_rd_in_plane_uv(
                 return None; // intra: exit_early alone invalidates
             }
             let txb_off = env.ref_off[pi] + (blk_row * env.ref_stride + blk_col) * 4;
-            predict_uv_txb(
-                env,
-                recon,
-                plane,
-                uv_mode,
-                angle_delta_uv,
-                cfl.as_deref_mut(),
-                tx_size,
-                blk_row,
-                blk_col,
-                txb_off,
-            );
+            if let Some(pal) = palette {
+                // av1_predict_intra_block's use_palette arm (plane 1/2): the
+                // colour-index map fill — no spatial prediction.
+                let colors = if plane == 1 {
+                    pal.colors_u
+                } else {
+                    pal.colors_v
+                };
+                let (x, y) = (blk_col * 4, blk_row * 4);
+                for r in 0..txh {
+                    for c in 0..txw {
+                        recon[txb_off + r * env.ref_stride + c] =
+                            colors[pal.map[(r + y) * pal.map_stride + c + x] as usize];
+                    }
+                }
+            } else {
+                predict_uv_txb(
+                    env,
+                    recon,
+                    plane,
+                    uv_mode,
+                    angle_delta_uv,
+                    cfl.as_deref_mut(),
+                    tx_size,
+                    blk_row,
+                    blk_col,
+                    txb_off,
+                );
+            }
             // Snapshot the prediction (tight) for the search + recon base.
             let mut pred = vec![0u16; txw * txh];
             for r in 0..txh {
@@ -706,6 +759,20 @@ pub fn txfm_rd_in_plane_uv(
     Some((stats, winners))
 }
 
+/// A palette-UV candidate for the chroma RD walk
+/// (`av1_predict_intra_block`'s `use_palette` arm on planes 1/2): per-txb
+/// prediction is the colour-map fill from the plane's colour section. The
+/// map covers the full `plane_block_width x plane_block_height` extent.
+#[derive(Clone, Copy, Debug)]
+pub struct PaletteUvPred<'a> {
+    pub colors_u: &'a [u16; 8],
+    pub colors_v: &'a [u16; 8],
+    pub size: usize,
+    pub map: &'a [u8],
+    /// Map row stride (= chroma plane block width).
+    pub map_stride: usize,
+}
+
 /// `av1_txfm_uvrd` (tx_search.c:3696), intra arm: evaluate both chroma
 /// planes of a non-CfL UV candidate at the (uniform) UV tx size
 /// (`av1_get_tx_size(AOM_PLANE_U)`), merging their RD stats with the
@@ -723,6 +790,32 @@ pub fn txfm_uvrd(
     ref_best_rd: i64,
     pol: &TxTypeSearchPolicy,
 ) -> Option<(RdStats, Vec<TxbWinner>, Vec<TxbWinner>)> {
+    txfm_uvrd_p(
+        env,
+        recon_u,
+        recon_v,
+        uv_mode,
+        angle_delta_uv,
+        ref_best_rd,
+        pol,
+        None,
+    )
+}
+
+/// [`txfm_uvrd`] + an optional palette-UV candidate (the
+/// `av1_rd_pick_palette_intra_sbuv` tx path — prediction becomes the
+/// colour-map fill on both planes).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn txfm_uvrd_p(
+    env: &UvRdEnv,
+    recon_u: &mut [u16],
+    recon_v: &mut [u16],
+    uv_mode: usize,
+    angle_delta_uv: i32,
+    ref_best_rd: i64,
+    pol: &TxTypeSearchPolicy,
+    palette: Option<&PaletteUvPred>,
+) -> Option<(RdStats, Vec<TxbWinner>, Vec<TxbWinner>)> {
     debug_assert_ne!(
         uv_mode, UV_CFL_PRED,
         "CfL evaluates through cfl_rd_pick_alpha"
@@ -738,7 +831,7 @@ pub fn txfm_uvrd(
     for plane in 1..=2usize {
         // Intra: chroma_ref_best_rd stays ref_best_rd (inter-only gating sf).
         let recon: &mut [u16] = if plane == 1 { recon_u } else { recon_v };
-        let (this_stats, winners) = txfm_rd_in_plane_uv(
+        let (this_stats, winners) = txfm_rd_in_plane_uv_p(
             env,
             recon,
             plane,
@@ -749,6 +842,7 @@ pub fn txfm_uvrd(
             ref_best_rd,
             0,
             pol,
+            palette,
         )?;
         if this_stats.rate == i32::MAX {
             return None; // "if (this_rd_stats.rate == INT_MAX)" break
@@ -1340,6 +1434,10 @@ pub struct UvModeResult {
     pub dist: i64,
     pub skippable: bool,
     pub best_rd: i64,
+    /// `best_mbmi.palette_mode_info` (UV half) + the winning chroma
+    /// colour-index map — set when the post-loop UV palette search
+    /// (`av1_rd_pick_palette_intra_sbuv`) wins (`uv_mode` is UV_DC_PRED then).
+    pub palette_uv: Option<crate::palette_search::PaletteUvInfo>,
 }
 
 /// `pick_intra_angle_routine_sbuv` (intra_mode_search.c:496).
@@ -1378,7 +1476,7 @@ fn pick_intra_angle_routine_sbuv(
             env.bsize,
             angle_delta_uv,
             lp.try_palette,
-            false,
+            env.luma_palette_active,
             false,
             0,
         );
@@ -1505,6 +1603,7 @@ pub fn rd_pick_intra_sbuv_mode(
     cfl_costs: &CflCosts,
     pol: &TxTypeSearchPolicy,
     lp: &UvLoopPolicy,
+    palette: Option<&crate::palette_search::UvPaletteArgs>,
 ) -> (UvModeResult, Vec<UvModeVisit>) {
     // init_sbuv_mode: uv_mode = UV_DC_PRED, palette_size[1] = 0.
     let mut best = UvModeResult {
@@ -1517,6 +1616,7 @@ pub fn rd_pick_intra_sbuv_mode(
         dist: 0,
         skippable: false,
         best_rd: i64::MAX,
+        palette_uv: None,
     };
     let mut visits: Vec<UvModeVisit> = Vec::new();
     let sqr_up = crate::tx_search::TXSIZE_SQR_UP_MAP[max_tx_size];
@@ -1644,7 +1744,7 @@ pub fn rd_pick_intra_sbuv_mode(
                 env.bsize,
                 angle_delta_uv,
                 lp.try_palette,
-                false,
+                env.luma_palette_active,
                 false,
                 0,
             );
@@ -1663,12 +1763,21 @@ pub fn rd_pick_intra_sbuv_mode(
                 dist: tokenonly.1,
                 skippable: tokenonly.2,
                 best_rd: this_rd,
+                palette_uv: None,
             };
         }
     }
 
-    // try_palette: av1_rd_pick_palette_intra_sbuv — out of scope (screen
-    // content off). *mbmi = best_mbmi; assert a mode was chosen.
+    // try_palette = enable_palette && av1_allow_palette(..)
+    // (intra_mode_search.c:1012): the UV palette search.
+    if let Some(pal_args) = palette {
+        if lp.try_palette {
+            crate::palette_search::rd_pick_palette_intra_sbuv(
+                env, recon_u, recon_v, pal_args, costs, &mut best,
+            );
+        }
+    }
+    // *mbmi = best_mbmi; assert a mode was chosen.
     assert!(best.best_rd < i64::MAX, "sbuv search must choose a mode");
     (best, visits)
 }

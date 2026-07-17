@@ -292,6 +292,7 @@ fn encode_intra_block_plane_uv_matches_c_walk() {
                 luma_mode,
                 luma_use_fi: false,
                 luma_fi_mode: 0,
+                luma_palette_active: false,
                 lossless: false,
                 reduced_tx_set_used: reduced,
                 bd,
@@ -309,6 +310,7 @@ fn encode_intra_block_plane_uv_matches_c_walk() {
                 angle_delta_uv,
                 cfl_alpha_idx: alpha_idx,
                 cfl_alpha_signs: joint_sign,
+                palette: None,
             };
             let prm = UvEncodeParams {
                 tx_size,

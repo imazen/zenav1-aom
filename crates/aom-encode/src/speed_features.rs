@@ -76,13 +76,16 @@ const TX_DOMAIN_DIST_THRESHOLDS: [[u32; 3]; 4] = [
 
 /// `tx_domain_dist_types[TX_DOMAIN_DIST_LEVELS=4][MODE_EVAL_TYPES]`
 /// (speed_features.c:71-74) — verbatim. Indexed by `rd_sf.tx_domain_dist_level`.
-const TX_DOMAIN_DIST_TYPES: [[u32; 3]; 4] =
-    [[0, 2, 0], [1, 2, 0], [2, 2, 0], [2, 2, 2]];
+const TX_DOMAIN_DIST_TYPES: [[u32; 3]; 4] = [[0, 2, 0], [1, 2, 0], [2, 2, 0], [2, 2, 2]];
 
 /// `coeff_opt_thresholds[9][MODE_EVAL_TYPES][2]` (speed_features.c:88-98) —
 /// verbatim. Indexed by `rd_sf.perform_coeff_opt`; inner `[2]` is `[dist, satd]`.
 const COEFF_OPT_THRESHOLDS: [[[u32; 2]; 3]; 9] = [
-    [[u32::MAX, u32::MAX], [u32::MAX, u32::MAX], [u32::MAX, u32::MAX]],
+    [
+        [u32::MAX, u32::MAX],
+        [u32::MAX, u32::MAX],
+        [u32::MAX, u32::MAX],
+    ],
     [[3200, u32::MAX], [250, u32::MAX], [u32::MAX, u32::MAX]],
     [[1728, u32::MAX], [142, u32::MAX], [u32::MAX, u32::MAX]],
     [[864, u32::MAX], [142, u32::MAX], [u32::MAX, u32::MAX]],
@@ -473,7 +476,7 @@ impl SpeedFeatures {
             adapt_top_model_rd_count_using_neighbors: false, // init_intra_sf:2444
             prune_luma_odd_delta_angles_in_intra: false, // init_intra_sf:2447
             prune_smooth_intra_mode_for_chroma: false, // init_intra_sf:2439
-            cfl_search_range: 3, // init_intra_sf:2442
+            cfl_search_range: 3,       // init_intra_sf:2442
             // tx_sf
             adaptive_txb_search_level: 1, // allintra base (:366)
             intra_tx_size_search_init_depth_rect: 0, // init_tx_sf:2453
@@ -482,25 +485,25 @@ impl SpeedFeatures {
             use_chroma_trellis_rd_mult: true, // allintra base (:370)
             use_rd_based_breakout_for_intra_tx_search: false, // init_tx_sf:2472 (see field doc — speed>=3 flip deferred to KB-8 2d-iv)
             // tx_sf.tx_type_search
-            tx_ml_tx_split_thresh: 8500, // init_tx_sf:2458
-            prune_2d_txfm_mode: TX_TYPE_PRUNE_1, // init_tx_sf:2457
-            skip_tx_search: false, // init_tx_sf:2463
-            use_reduced_intra_txset: true, // allintra base (:369)
-            fast_intra_tx_type_search: 0, // init_tx_sf:2461
-            winner_mode_tx_type_pruning: 0, // init_tx_sf:2466
-            prune_tx_type_est_rd: false, // init_tx_sf:2465
+            tx_ml_tx_split_thresh: 8500,           // init_tx_sf:2458
+            prune_2d_txfm_mode: TX_TYPE_PRUNE_1,   // init_tx_sf:2457
+            skip_tx_search: false,                 // init_tx_sf:2463
+            use_reduced_intra_txset: true,         // allintra base (:369)
+            fast_intra_tx_type_search: 0,          // init_tx_sf:2461
+            winner_mode_tx_type_pruning: 0,        // init_tx_sf:2466
+            prune_tx_type_est_rd: false,           // init_tx_sf:2465
             prune_intra_tx_depths_using_nn: false, // init_tx_sf default (off)
             // winner_mode_sf (all off until speed>=4 — KB-8 chunk 2d wires these)
             enable_winner_mode_for_coeff_opt: false, // init:2511
             enable_winner_mode_for_use_tx_domain_dist: false, // init:2513
             enable_winner_mode_for_tx_size_srch: false, // init:2512
-            multi_winner_mode_type: 0, // init:2514 (MULTI_WINNER_MODE_OFF)
-            tx_size_search_level: 0, // init:2510
-            prune_winner_mode_eval_level: 0, // init:2517
-            dc_blk_pred_level: 0, // init:2515
+            multi_winner_mode_type: 0,               // init:2514 (MULTI_WINNER_MODE_OFF)
+            tx_size_search_level: 0,                 // init:2510
+            prune_winner_mode_eval_level: 0,         // init:2517
+            dc_blk_pred_level: 0,                    // init:2515
             // rd_sf
-            perform_coeff_opt: 1, // allintra base (:383)
-            tx_domain_dist_level: 0, // init_rd_sf:2501
+            perform_coeff_opt: 1,          // allintra base (:383)
+            tx_domain_dist_level: 0,       // init_rd_sf:2501
             tx_domain_dist_thres_level: 0, // init_rd_sf:2502
             // lpf_sf
             cdef_pick_method: CDEF_FULL_SEARCH, // init_lpf_sf:2533
@@ -961,8 +964,9 @@ impl SpeedFeatures {
             skip_trellis,
             coeff_opt_dist_threshold: coeff_row[0],
             coeff_opt_satd_threshold: coeff_row[1],
-            use_transform_domain_distortion: TX_DOMAIN_DIST_TYPES[self.tx_domain_dist_level as usize]
-                [txd_col] as u8,
+            use_transform_domain_distortion: TX_DOMAIN_DIST_TYPES
+                [self.tx_domain_dist_level as usize][txd_col]
+                as u8,
             tx_domain_dist_threshold: TX_DOMAIN_DIST_THRESHOLDS
                 [self.tx_domain_dist_thres_level as usize][txd_col],
             adaptive_txb_search_level: self.adaptive_txb_search_level,
@@ -1056,7 +1060,10 @@ mod tests {
             want.use_transform_domain_distortion
         );
         assert_eq!(got.tx_domain_dist_threshold, want.tx_domain_dist_threshold);
-        assert_eq!(got.adaptive_txb_search_level, want.adaptive_txb_search_level);
+        assert_eq!(
+            got.adaptive_txb_search_level,
+            want.adaptive_txb_search_level
+        );
         assert_eq!(got.skip_tx_search, want.skip_tx_search);
         assert_eq!(got.sharpness, want.sharpness);
         assert_eq!(
@@ -1188,7 +1195,10 @@ mod tests {
         assert_eq!(pol.tx_domain_dist_threshold, 0);
         // MODE_EVAL / WINNER policies (the two-pass stages).
         let me = sf.tx_type_search_policy_for_stage(MODE_EVAL, false, 0);
-        assert_eq!((me.coeff_opt_dist_threshold, me.coeff_opt_satd_threshold), (142, 16));
+        assert_eq!(
+            (me.coeff_opt_dist_threshold, me.coeff_opt_satd_threshold),
+            (142, 16)
+        );
         assert!(me.use_default_intra_tx_type);
         assert_eq!(me.prune_2d_txfm_mode, 4); // prune_mode[1][0] = TX_TYPE_PRUNE_4
         let win = sf.tx_type_search_policy_for_stage(WINNER_MODE_EVAL, false, 0);
@@ -1259,7 +1269,10 @@ mod tests {
             assert_eq!(p5.tx_domain_dist_threshold, p4.tx_domain_dist_threshold);
             assert_eq!(p5.prune_2d_txfm_mode, p4.prune_2d_txfm_mode);
             assert_eq!(p5.use_default_intra_tx_type, p4.use_default_intra_tx_type);
-            assert_eq!(sf.tx_size_search_method_for_stage(stage), sf4.tx_size_search_method_for_stage(stage));
+            assert_eq!(
+                sf.tx_size_search_method_for_stage(stage),
+                sf4.tx_size_search_method_for_stage(stage)
+            );
         }
         assert_eq!(sf4.winner_mode_count_allowed(), 3);
     }
@@ -1322,7 +1335,10 @@ mod tests {
             (432, 97)
         );
         assert_eq!(
-            (def.use_transform_domain_distortion, def.tx_domain_dist_threshold),
+            (
+                def.use_transform_domain_distortion,
+                def.tx_domain_dist_threshold
+            ),
             (2, 0)
         );
         assert_eq!(def.predict_dc_level, 1);
@@ -1333,7 +1349,10 @@ mod tests {
             (86, 16)
         );
         assert_eq!(
-            (me.use_transform_domain_distortion, me.tx_domain_dist_threshold),
+            (
+                me.use_transform_domain_distortion,
+                me.tx_domain_dist_threshold
+            ),
             (2, 0)
         );
         assert_eq!(me.predict_dc_level, 1);
@@ -1347,7 +1366,10 @@ mod tests {
         // The WINNER pass now ALSO runs tx-domain distortion (types[3][2]=2) —
         // the big speed-6 rd_sf change vs speed 4/5's pixel-domain winner pass.
         assert_eq!(
-            (win.use_transform_domain_distortion, win.tx_domain_dist_threshold),
+            (
+                win.use_transform_domain_distortion,
+                win.tx_domain_dist_threshold
+            ),
             (2, 0)
         );
         assert_eq!(win.predict_dc_level, 0); // predict_dc_levels[1][WINNER] = 0
@@ -1371,7 +1393,8 @@ mod tests {
         assert_eq!(sf5.prune_winner_mode_eval_level, 0);
         assert_eq!(sf5.dc_blk_pred_level, 0);
         assert_eq!(
-            sf5.tx_type_search_policy_for_stage(DEFAULT_EVAL, false, 0).predict_dc_level,
+            sf5.tx_type_search_policy_for_stage(DEFAULT_EVAL, false, 0)
+                .predict_dc_level,
             0
         );
     }
@@ -1445,9 +1468,15 @@ mod tests {
 
         // coeff_opt_thresholds[5] = { {864,97}, {142,16}, {MAX,MAX} } [dist,satd].
         let def = sf.tx_type_search_policy_for_stage(DEFAULT_EVAL, false, 0);
-        assert_eq!((def.coeff_opt_dist_threshold, def.coeff_opt_satd_threshold), (864, 97));
+        assert_eq!(
+            (def.coeff_opt_dist_threshold, def.coeff_opt_satd_threshold),
+            (864, 97)
+        );
         let me = sf.tx_type_search_policy_for_stage(MODE_EVAL, false, 0);
-        assert_eq!((me.coeff_opt_dist_threshold, me.coeff_opt_satd_threshold), (142, 16));
+        assert_eq!(
+            (me.coeff_opt_dist_threshold, me.coeff_opt_satd_threshold),
+            (142, 16)
+        );
         let win = sf.tx_type_search_policy_for_stage(WINNER_MODE_EVAL, false, 0);
         assert_eq!(
             (win.coeff_opt_dist_threshold, win.coeff_opt_satd_threshold),
@@ -1456,9 +1485,27 @@ mod tests {
         );
 
         // tx_domain_dist: types[level=1] = {1,2,0}, thresholds[thres_level=3] = {0,0,0}.
-        assert_eq!((def.use_transform_domain_distortion, def.tx_domain_dist_threshold), (1, 0));
-        assert_eq!((me.use_transform_domain_distortion, me.tx_domain_dist_threshold), (2, 0));
-        assert_eq!((win.use_transform_domain_distortion, win.tx_domain_dist_threshold), (0, 0));
+        assert_eq!(
+            (
+                def.use_transform_domain_distortion,
+                def.tx_domain_dist_threshold
+            ),
+            (1, 0)
+        );
+        assert_eq!(
+            (
+                me.use_transform_domain_distortion,
+                me.tx_domain_dist_threshold
+            ),
+            (2, 0)
+        );
+        assert_eq!(
+            (
+                win.use_transform_domain_distortion,
+                win.tx_domain_dist_threshold
+            ),
+            (0, 0)
+        );
 
         // Tx-type prune resolution (set_tx_type_prune, winner_mode_tx_type_
         // pruning=2 -> prune_mode row 1 = {PRUNE_4, PRUNE_0}); DEFAULT_EVAL
@@ -1471,7 +1518,10 @@ mod tests {
         sf.fast_intra_tx_type_search = 2; // :489
         let me2 = sf.tx_type_search_policy_for_stage(MODE_EVAL, false, 0);
         assert!(me2.use_default_intra_tx_type);
-        assert!(!sf.tx_type_search_policy_for_stage(DEFAULT_EVAL, false, 0).use_default_intra_tx_type);
+        assert!(
+            !sf.tx_type_search_policy_for_stage(DEFAULT_EVAL, false, 0)
+                .use_default_intra_tx_type
+        );
         assert!(
             !sf.tx_type_search_policy_for_stage(WINNER_MODE_EVAL, false, 0)
                 .use_default_intra_tx_type
@@ -1496,10 +1546,22 @@ mod tests {
 
         // The legacy single-pass entry point IS the DEFAULT_EVAL stage.
         let legacy = sf.tx_type_search_policy(false, 0);
-        assert_eq!(legacy.coeff_opt_dist_threshold, def.coeff_opt_dist_threshold);
-        assert_eq!(legacy.coeff_opt_satd_threshold, def.coeff_opt_satd_threshold);
-        assert_eq!(legacy.use_transform_domain_distortion, def.use_transform_domain_distortion);
-        assert_eq!(legacy.tx_domain_dist_threshold, def.tx_domain_dist_threshold);
+        assert_eq!(
+            legacy.coeff_opt_dist_threshold,
+            def.coeff_opt_dist_threshold
+        );
+        assert_eq!(
+            legacy.coeff_opt_satd_threshold,
+            def.coeff_opt_satd_threshold
+        );
+        assert_eq!(
+            legacy.use_transform_domain_distortion,
+            def.use_transform_domain_distortion
+        );
+        assert_eq!(
+            legacy.tx_domain_dist_threshold,
+            def.tx_domain_dist_threshold
+        );
     }
 
     /// The no-op guarantee the two-pass rests on: with the winner-mode enables
@@ -1519,7 +1581,10 @@ mod tests {
             let p = sf.tx_type_search_policy_for_stage(stage, false, 0);
             assert_eq!(p.coeff_opt_dist_threshold, 864, "stage {stage} coeff dist");
             assert_eq!(p.coeff_opt_satd_threshold, 97, "stage {stage} coeff satd");
-            assert_eq!(p.use_transform_domain_distortion, 1, "stage {stage} txd type");
+            assert_eq!(
+                p.use_transform_domain_distortion, 1,
+                "stage {stage} txd type"
+            );
             assert_eq!(p.tx_domain_dist_threshold, 0, "stage {stage} txd thresh");
         }
     }

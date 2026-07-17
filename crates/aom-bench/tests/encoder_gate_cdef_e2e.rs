@@ -36,9 +36,7 @@
 //! search, no-subsampling chroma, and 16-bit MSE paths.
 
 use aom_bench::EncodeCell;
-use aom_bench::rd_close::{
-    RdBands, RdCellResult, assert_rd_close, compare_cell, splice_frame_obu,
-};
+use aom_bench::rd_close::{RdBands, RdCellResult, assert_rd_close, compare_cell, splice_frame_obu};
 use aom_encode::encode_intra::TrellisOptType;
 use aom_encode::encode_sb::SbEncodeEnv;
 use aom_encode::intra_uv_rd::UvLoopPolicy;
@@ -154,9 +152,11 @@ fn c_encode_cdef(cell: &EncodeCell) -> Vec<u8> {
 /// stream exactly like the byte-exact gates (the documented caveat); the
 /// CDEF params + per-unit strengths + LF levels are PORT-derived.
 fn port_encode_cdef(cell: &EncodeCell, bootstrap: &[u8]) -> Vec<u8> {
-    let (w, h, mono, ss_x, ss_y, bd) =
-        (cell.w, cell.h, cell.mono, cell.ss_x, cell.ss_y, cell.bd);
-    assert_eq!(cell.speed, 0, "CDEF gate cells run at speed 0 (FULL search)");
+    let (w, h, mono, ss_x, ss_y, bd) = (cell.w, cell.h, cell.mono, cell.ss_x, cell.ss_y, cell.bd);
+    assert_eq!(
+        cell.speed, 0,
+        "CDEF gate cells run at speed 0 (FULL search)"
+    );
     let obus = walk_obus(bootstrap);
     let seq_payload = obus
         .iter()
@@ -379,6 +379,7 @@ fn port_encode_cdef(cell: &EncodeCell, bootstrap: &[u8]) -> Vec<u8> {
         enable_ab_partitions: true,
         allow_screen_content_tools: p.allow_screen_content_tools,
         qm_levels: None,
+        palette_costs: None,
     };
     let pack_cfg = PackCfg {
         enable_filter_intra: s.enable_filter_intra,
@@ -580,8 +581,16 @@ fn run_cdef_cell(cell: &EncodeCell) -> RdCellResult {
         cell.label
     );
     if !cell.mono {
-        assert_eq!(ours_port.u, ours_c.u, "{}: U recon disagreement", cell.label);
-        assert_eq!(ours_port.v, ours_c.v, "{}: V recon disagreement", cell.label);
+        assert_eq!(
+            ours_port.u, ours_c.u,
+            "{}: U recon disagreement",
+            cell.label
+        );
+        assert_eq!(
+            ours_port.v, ours_c.v,
+            "{}: V recon disagreement",
+            cell.label
+        );
     }
 
     compare_cell(&cell.label, cell, &port_tu, &c_tu)
@@ -590,7 +599,15 @@ fn run_cdef_cell(cell: &EncodeCell) -> RdCellResult {
 /// Synthetic textured cell over the mono/4:4:4/bd10 axes (the same generator
 /// family as the byte-exact chroma-ss gates; chroma deliberately NOT an
 /// affine function of luma so CfL doesn't trivialize it).
-fn synth_cell(label: &str, sz: usize, mono: bool, ss_x: usize, ss_y: usize, cq: i32, bd: u8) -> EncodeCell {
+fn synth_cell(
+    label: &str,
+    sz: usize,
+    mono: bool,
+    ss_x: usize,
+    ss_y: usize,
+    cq: i32,
+    bd: u8,
+) -> EncodeCell {
     let maxv = (1u16 << bd) - 1;
     let mask = u32::from(maxv);
     let (w, h) = (sz, sz);
@@ -616,7 +633,11 @@ fn synth_cell(label: &str, sz: usize, mono: bool, ss_x: usize, ss_y: usize, cq: 
                 let hf = if (r + col) % 3 == 0 { mask / 20 } else { 0 };
                 u[r * cw + col] = ((base ^ hf) as u16).min(maxv);
                 let base2 = (((r + 7) * 19 + (col + 3) * 29) as u32) & mask;
-                let hf2 = if (r + col + 10) % 3 == 0 { mask / 20 } else { 0 };
+                let hf2 = if (r + col + 10) % 3 == 0 {
+                    mask / 20
+                } else {
+                    0
+                };
                 v[r * cw + col] = ((base2 ^ hf2) as u16).min(maxv);
             }
         }

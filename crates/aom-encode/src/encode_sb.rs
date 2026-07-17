@@ -204,6 +204,15 @@ pub struct LeafWinner {
     /// mutated in place by the luma re-encode's eob-0 resets (the state
     /// `ctx->tx_type_map` holds after the walk).
     pub tx_type_map: Vec<u8>,
+    /// `mbmi->palette_mode_info` (Y half) + the winning colour-index map —
+    /// `Some` when the leaf's luma winner is palette mode (`mode` is DC_PRED
+    /// then). Drives the re-encode's map-fill prediction AND the pack's
+    /// palette syntax + colour-map tokens.
+    pub palette_y: Option<crate::palette_search::PaletteYInfo>,
+    /// The UV half (`palette_size[1]` + U/V colours + the chroma-plane map)
+    /// — `Some` when the chroma winner is UV palette (`uv_mode` is
+    /// UV_DC_PRED then).
+    pub palette_uv: Option<crate::palette_search::PaletteUvInfo>,
     /// `mbmi->skip_txfm` (0 throughout the KEY intra path).
     pub skip_txfm: bool,
     /// `ctx->rd_stats` (the PICK_MODE_CONTEXT's own raw mode-search RD,
@@ -242,6 +251,8 @@ impl LeafWinner {
             cfl_alpha_signs: 0,
             uv_edge_filter_type: 0,
             tx_type_map: Vec::new(),
+            palette_y: None,
+            palette_uv: None,
             skip_txfm: false,
             raw_rdstats: PartRdStats::invalid(),
         }
@@ -508,6 +519,15 @@ pub fn encode_b_intra_dry(
         above_ctx: &above_y,
         left_ctx: &left_y,
         qm_level: env.qm_levels.map(|l| l[0]),
+        palette: winner
+            .palette_y
+            .as_ref()
+            .map(|p| crate::tx_search::PaletteYrd {
+                colors: &p.colors,
+                size: p.size,
+                map: &p.color_map,
+                map_stride: crate::tx_search::BLK_W_B[bsize],
+            }),
     };
     let mut y_out = if output_enabled {
         // OUTPUT_ENABLED: the eob-0 -> DCT_DCT resets land in the frame-map
@@ -588,6 +608,7 @@ pub fn encode_b_intra_dry(
             luma_mode: winner.mode,
             luma_use_fi: winner.use_filter_intra,
             luma_fi_mode: winner.filter_intra_mode,
+            luma_palette_active: winner.palette_y.is_some(),
             lossless: env.lossless,
             reduced_tx_set_used: env.reduced_tx_set_used,
             bd: env.bd,
@@ -605,6 +626,24 @@ pub fn encode_b_intra_dry(
             angle_delta_uv: winner.angle_delta_uv,
             cfl_alpha_idx: winner.cfl_alpha_idx,
             cfl_alpha_signs: winner.cfl_alpha_signs,
+            palette: winner.palette_uv.as_ref().map(|p| {
+                let (pw, _, _, _) = crate::palette_search::chroma_block_dims(
+                    bsize,
+                    mi_row,
+                    mi_col,
+                    env.mi_rows,
+                    env.mi_cols,
+                    env.ss_x,
+                    env.ss_y,
+                );
+                crate::intra_uv_rd::PaletteUvPred {
+                    colors_u: &p.colors_u,
+                    colors_v: &p.colors_v,
+                    size: p.size,
+                    map: &p.color_map,
+                    map_stride: pw,
+                }
+            }),
         };
         let prm = UvEncodeParams {
             tx_size: uv_tx,

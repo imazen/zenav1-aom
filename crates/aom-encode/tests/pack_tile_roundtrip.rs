@@ -756,6 +756,7 @@ fn run_pack_roundtrip_case(ss_x: usize, ss_y: usize, allintra: bool, qindex: usi
             enable_ab_partitions: false,
             allow_screen_content_tools: false,
             qm_levels: None,
+            palette_costs: None,
         };
         let pack_cfg = PackCfg {
             enable_filter_intra: true,
@@ -1220,6 +1221,7 @@ fn pack_tile_roundtrips_with_real_costs() {
             enable_ab_partitions: false,
             allow_screen_content_tools: false,
             qm_levels: None,
+            palette_costs: None,
         };
         let pack_cfg = PackCfg {
             enable_filter_intra: true,

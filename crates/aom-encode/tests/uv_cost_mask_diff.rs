@@ -235,7 +235,7 @@ fn intra_mode_info_cost_uv_matches_c() {
             bsize,
             angle_delta_uv,
             try_palette,
-            y_palette_active
+            y_palette_active,
         );
         assert_eq!(
             r, r_c,

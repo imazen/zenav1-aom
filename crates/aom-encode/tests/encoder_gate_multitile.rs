@@ -432,6 +432,7 @@ fn attempt_multitile_case(
                 enable_ab_partitions: true,
                 allow_screen_content_tools: p.allow_screen_content_tools,
                 qm_levels: None,
+                palette_costs: None,
             };
 
             // Fresh entropy state per tile (tiles are entropy-independent).
@@ -524,7 +525,15 @@ fn encoder_gate_multitile_byte_match() {
     }
 
     #[allow(clippy::type_complexity)]
-    let cases: Vec<(usize, usize, i32, i32, i32, &str, Box<dyn Fn(usize, usize) -> u8>)> = vec![
+    let cases: Vec<(
+        usize,
+        usize,
+        i32,
+        i32,
+        i32,
+        &str,
+        Box<dyn Fn(usize, usize) -> u8>,
+    )> = vec![
         // (w, h, tile_cols_log2, tile_rows_log2, cq, name, content)
         (128, 128, 1, 0, 48, "flat 2x1", Box::new(flat)),
         (256, 256, 1, 0, 48, "flat 2x1", Box::new(flat)),

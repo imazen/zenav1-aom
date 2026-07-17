@@ -456,6 +456,7 @@ fn rd_pick_intra_mode_sb_matches_c_composition() {
                 luma_mode: 0,
                 luma_use_fi: false,
                 luma_fi_mode: 0,
+                luma_palette_active: false,
                 lossless: false,
                 reduced_tx_set_used: reduced,
                 bd,
@@ -493,6 +494,7 @@ fn rd_pick_intra_mode_sb_matches_c_composition() {
                         costs: &mode_costs,
                         cfl_costs: &cfl_costs,
                         lp: &lp,
+                        palette: None,
                     })
                 };
                 rd_pick_intra_mode_sb(

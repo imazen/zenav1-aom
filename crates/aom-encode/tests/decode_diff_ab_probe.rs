@@ -540,6 +540,7 @@ fn run_one(name: &str, content: impl Fn(usize, usize) -> u8) {
         enable_ab_partitions: true,
         allow_screen_content_tools: p.allow_screen_content_tools,
         qm_levels: None,
+        palette_costs: None,
     };
     eprintln!(
         "{name}: allow_screen_content_tools={}",

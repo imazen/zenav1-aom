@@ -3222,3 +3222,74 @@ rule no wall ratios are claimed beyond the provisional noisy smoke in
   into `port_encode_cdef` (the speed gates' harness shape); SB128 CDEF-on
   (>64 mbmi arms are in place, pack envelope is SB64); CDEF_ADAPTIVE /
   tune=IQ out of envelope (documented in pickcdef.rs docs).
+## #29 Palette RD search (Y + UV) — RD-CLOSE landing, 5/7 cells byte-exact (2026-07-17, screen-content track)
+
+**The first stills-parity bulk-port landing (PARITY.md section B row 1): the full
+palette mode decision is now REAL in the port** — search + recon + pack — behind
+`PickFrameCfg::palette_costs: Option<&PaletteCosts>` (`Some` = `--enable-palette=1`;
+`None` everywhere else, keeping every pre-existing byte gate's envelope untouched
+by construction).
+
+**Ported (all against reference/libaom v3.14.1 source):**
+- `crates/aom-encode/src/palette_search.rs` (new): the dim-1/dim-2 k-means kernels
+  (`k_means_template.h` — `calc_indices`/`calc_centroids`/ping-pong `av1_k_means`,
+  `lcg_rand16` reseeding), `av1_count_colors[_highbd]` (8-bit-domain threshold +
+  full-depth counts), `find_top_colors` (priority-queue top-N), `fill_data_and_get_bounds`,
+  `remove_duplicates`, `optimize_palette_colors` (cache snap, stride 1/2),
+  `extend_palette_color_map`, `delta_encode_cost` + `av1_palette_color_cost_y/_uv`
+  (cache-signal + delta bits, V wrap-delta vs raw), `av1_cost_color_map` (wavefront
+  colour-index token rate over `get_palette_color_index_context`), `write_uniform_cost`,
+  `palette_rd_y` (header-rd gating levels 0/1/2 + the `header_rd >> shift` breakout),
+  `perform_top_color_palette_search` + `perform_k_means_palette_search` (ascending +
+  descending sweeps, level-1 coarse two-stage via `set_stage2_params`, level-2
+  no-improvement return), `av1_rd_pick_palette_intra_sby`,
+  `av1_rd_pick_palette_intra_sbuv` (dim-2 (U,V) pairs, U-ascending pair sort, chroma
+  `early_term_chroma_palette_size_search` break), and `chroma_block_dims`
+  (`av1_get_block_dimensions` plane-1 incl. the chroma sub-8x8 +2 correction —
+  palette IS reachable on 4x16/16x4 luma whose 4:2:0 chroma is sub-4).
+- Cost tables: `PaletteCosts` (`palette_{y,uv}_size_cost` + `palette_{y,uv}_color_cost`)
+  filled from the live CDFs in `derive_real_costs` (rd.c:136-152 slices);
+  `intra_mode_info_cost_y/_uv` gained the `use_palette` branch (+ the
+  `av1_filter_intra_allowed` palette_size[0]==0 gate the flag-only port hardcoded).
+- Search integration: the `av1_rd_pick_palette_intra_sby` hook after the sby mode loop
+  (before filter-intra, C order; palette candidates skip the ALLINTRA variance factor —
+  C asymmetry preserved), winner-mode multi-winner entries carry the palette + colour
+  map (speed>=4 second-pass restore), the UV hook after the sbuv loop; prediction =
+  colour-map fill (`av1_predict_intra_block`'s use_palette arm) threaded through
+  `pick_uniform_tx_size_type_yrd_intra`/`txfm_rd_in_plane_intra` (Y) and
+  `txfm_uvrd_p`/`txfm_rd_in_plane_uv_p` (UV) as `Option<&PaletteYrd/PaletteUvPred>`.
+- Neighbour state (cache + ctx): `ModeGrid` carries per-mi palette sizes+colours
+  (search side, stamped at all 22 stamp sites; snapshot-free — same commit discipline
+  as the uv_modes grid), `MiNbrGrid` the pack-side twin; `av1_get_palette_cache` +
+  `av1_get_palette_mode_ctx` now read REAL neighbour palette state on both walks.
+- Recon/pack: `encode_b_intra_dry` + `encode_intra_block_plane_y/_uv` palette map-fill
+  prediction; `pack_leaf` writes the palette syntax (sizes/colours via the existing
+  bit-exact `write_mb_modes_kf_fc` — its above/left palette-nbr params now live) + the
+  colour-map tokens (`encode_color_map_tokens`, write_modes_b order: mbmi -> maps ->
+  tx_size -> coeffs) + `kfs.mb_to_top_edge` (the cache's SB-row gate).
+- Speed features: sf levels threaded per leaf (allintra speed 0: prune_palette_search=0,
+  prune_luma_palette_size_search=1 (header-rd gating shift 1), chroma early-term=1;
+  speed>=1: 1/2; speed>=3: 2/2 — from the already-landed SpeedFeatures fields).
+- **Latent bug fixed while wiring:** the UV no-palette FLAG cost was hardcoded off
+  (`UvLoopPolicy::speed0_allintra().try_palette = false`) — C costs it per leaf via
+  `av1_allow_palette(sct, bsize)` regardless of `--enable-palette` (the Y-side analogue
+  was KB-2-adjacent, already fixed). Now recomputed per leaf. Screen-content frames
+  only; the full suite stays green (near-ties didn't flip on the existing gates).
+
+**GATE: `rd_close_palette::palette_y_rd_close_gate`** (aom-bench, the PARITY.md rule-3
+harness): 6 synthetic screen cells (few-colour text/UI, mono+4:2:0, 64²/128²,
+cq12/32/63/20) + 1 real-content control, both sides `--enable-palette=1
+--enable-intrabc=0` via `ref_encode_av1_kf_screen_content` /
+`EncodeCell::port_encode_with(enable_palette)`. **5/7 cells BYTE-IDENTICAL to real
+aomenc** (all 64² cells incl. mono + both EXACT-fastpath, and the control); the two
+128² multi-SB cells are CLOSE: `ui_420_128_cq32` +2.55% size / −1.04 zensim (port
+BETTER), `text_420_128_cq20` same size, +0.19 zensim. Anti-vacuous witnesses: screen
+detection asserted fired per cell; C(palette-on) != C(palette-off); PORT(palette-on)
+!= PORT(palette-off) — the port's search provably picks palette.
+
+**Honest gaps:** the two 128² CLOSE cells are within band but not byte-exact
+(multi-SB neighbour-cache near-ties — first localization candidates if byte-exactness
+is scheduled); speeds 1-5 palette sf levels are wired but only speed 0 is gate-covered;
+`av1_search_palette_mode[_luma]` (inter-frame callers) out of stills scope; UV palette
++ 4:2:2 not gate-covered (machinery is subsampling-generic); palette winner-mode
+interaction at speed>=4 wired per C but not gate-covered.

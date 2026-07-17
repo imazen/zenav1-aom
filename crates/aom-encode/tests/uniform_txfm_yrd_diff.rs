@@ -189,8 +189,15 @@ fn uniform_txfm_yrd_intra_matches_c_walk() {
                 qm_levels: None,
             };
             let mut recon_rust = recon0.clone();
-            let (rd_rust, stats_rust) =
-                uniform_txfm_yrd_intra(&env, &mut recon_rust, tx_size, ref_best_rd, &pol, None);
+            let (rd_rust, stats_rust) = uniform_txfm_yrd_intra(
+                &env,
+                &mut recon_rust,
+                tx_size,
+                ref_best_rd,
+                &pol,
+                None,
+                None,
+            );
 
             // ---- C-side walk ----
             let tx_size_rate = c::ref_tx_size_cost(

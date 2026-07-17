@@ -230,6 +230,12 @@ pub struct EncodeIntraYEnv<'a> {
     /// re-encode's `xform_quant_optimize`/`xform_quant` resolve the
     /// per-(tx_size, tx_type) matrices internally (`av1_setup_qmatrix`).
     pub qm_level: Option<usize>,
+    /// Palette-Y state (`mbmi->palette_mode_info` Y half + colour-index map):
+    /// when `Some`, per-txb prediction is the map fill
+    /// (`av1_predict_intra_block`'s `use_palette` arm) instead of spatial
+    /// intra prediction — everything downstream (subtract/tx/quant/recon) is
+    /// unchanged.
+    pub palette: Option<crate::tx_search::PaletteYrd<'a>>,
 }
 
 /// One re-encoded txb's outputs (the `p->qcoeff/dqcoeff/eobs/txb_entropy_ctx`
@@ -326,50 +332,62 @@ pub fn encode_intra_block_plane_y(
         while blk_col < blocks_wide_visible {
             // --- encode_block_intra ---
             // av1_predict_intra_block_facade: predict INTO the recon plane.
-            let (n_top, n_topright, n_left, n_bottomleft) = intra_avail(
-                env.sb_size,
-                bsize,
-                env.mi_row,
-                env.mi_col,
-                env.up_available,
-                env.left_available,
-                env.tile_col_end,
-                env.tile_row_end,
-                env.partition,
-                tx_size,
-                0,
-                0,
-                blk_row as i32,
-                blk_col as i32,
-                bw as i32,
-                bh as i32,
-                env.mi_cols,
-                env.mi_rows,
-                env.mode,
-                env.angle_delta * 3, // ANGLE_STEP
-                env.use_filter_intra,
-            );
             let txb_off = env.ref_off + (blk_row * env.ref_stride + blk_col) * 4;
             let mut pred = vec![0u16; txw * txh];
-            predict_intra_high(
-                recon,
-                txb_off,
-                env.ref_stride,
-                &mut pred,
-                txw,
-                env.mode,
-                env.angle_delta * 3,
-                env.use_filter_intra,
-                env.filter_intra_mode,
-                env.disable_edge_filter,
-                env.filter_type,
-                tx_size,
-                n_top as usize,
-                n_topright,
-                n_left as usize,
-                n_bottomleft,
-                env.bd as i32,
-            );
+            if let Some(pal) = &env.palette {
+                // av1_predict_intra_block's use_palette arm: the colour-index
+                // map fill at this txb's pixel offset — no spatial prediction.
+                let (x, y) = (blk_col * 4, blk_row * 4);
+                for r in 0..txh {
+                    for c in 0..txw {
+                        pred[r * txw + c] =
+                            pal.colors[pal.map[(r + y) * pal.map_stride + c + x] as usize];
+                    }
+                }
+            } else {
+                let (n_top, n_topright, n_left, n_bottomleft) = intra_avail(
+                    env.sb_size,
+                    bsize,
+                    env.mi_row,
+                    env.mi_col,
+                    env.up_available,
+                    env.left_available,
+                    env.tile_col_end,
+                    env.tile_row_end,
+                    env.partition,
+                    tx_size,
+                    0,
+                    0,
+                    blk_row as i32,
+                    blk_col as i32,
+                    bw as i32,
+                    bh as i32,
+                    env.mi_cols,
+                    env.mi_rows,
+                    env.mode,
+                    env.angle_delta * 3, // ANGLE_STEP
+                    env.use_filter_intra,
+                );
+                predict_intra_high(
+                    recon,
+                    txb_off,
+                    env.ref_stride,
+                    &mut pred,
+                    txw,
+                    env.mode,
+                    env.angle_delta * 3,
+                    env.use_filter_intra,
+                    env.filter_intra_mode,
+                    env.disable_edge_filter,
+                    env.filter_type,
+                    tx_size,
+                    n_top as usize,
+                    n_topright,
+                    n_left as usize,
+                    n_bottomleft,
+                    env.bd as i32,
+                );
+            }
             for r in 0..txh {
                 recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw]
                     .copy_from_slice(&pred[r * txw..r * txw + txw]);
@@ -526,7 +544,7 @@ pub fn encode_intra_block_plane_y(
 /// The winner CHROMA mode-info fields the UV re-encode reads from `mbmi`
 /// (the RD pick's outputs).
 #[derive(Clone, Copy, Debug)]
-pub struct UvWinner {
+pub struct UvWinner<'a> {
     /// `mbmi->uv_mode` (UV_PREDICTION_MODE; `UV_CFL_PRED == 13`).
     pub uv_mode: usize,
     /// `mbmi->angle_delta[PLANE_TYPE_UV]`, unscaled.
@@ -535,6 +553,9 @@ pub struct UvWinner {
     pub cfl_alpha_idx: i32,
     /// `mbmi->cfl_alpha_signs` (the joint sign).
     pub cfl_alpha_signs: i32,
+    /// Palette-UV state: when `Some`, per-txb prediction is the chroma
+    /// colour-map fill (`av1_predict_intra_block`'s `use_palette` arm).
+    pub palette: Option<crate::intra_uv_rd::PaletteUvPred<'a>>,
 }
 
 /// The per-call knobs of the UV re-encode arm (the `encode_b_args` slice the
@@ -627,30 +648,46 @@ pub fn encode_intra_block_plane_uv(
             // av1_predict_intra_block_facade: predict INTO the recon plane
             // (CfL arm applies the WINNER's signalled alphas).
             let txb_off = env.ref_off[pi] + (blk_row * env.ref_stride + blk_col) * 4;
-            let mut cfl_predict;
-            let cfl_arg = if winner.uv_mode == UV_CFL_PRED {
-                cfl_predict = CflPredict {
-                    ctx: cfl,
-                    cache: &mut dc_cache,
-                    alpha_idx: winner.cfl_alpha_idx,
-                    joint_sign: winner.cfl_alpha_signs,
+            if let Some(pal) = &winner.palette {
+                // av1_predict_intra_block's use_palette arm (plane 1/2).
+                let colors = if plane == 1 {
+                    pal.colors_u
+                } else {
+                    pal.colors_v
                 };
-                Some(&mut cfl_predict)
+                let (x, y) = (blk_col * 4, blk_row * 4);
+                for r in 0..txh {
+                    for c in 0..txw {
+                        recon[txb_off + r * env.ref_stride + c] =
+                            colors[pal.map[(r + y) * pal.map_stride + c + x] as usize];
+                    }
+                }
             } else {
-                None
-            };
-            predict_uv_txb(
-                env,
-                recon,
-                plane,
-                winner.uv_mode,
-                winner.angle_delta_uv,
-                cfl_arg,
-                tx_size,
-                blk_row,
-                blk_col,
-                txb_off,
-            );
+                let mut cfl_predict;
+                let cfl_arg = if winner.uv_mode == UV_CFL_PRED {
+                    cfl_predict = CflPredict {
+                        ctx: cfl,
+                        cache: &mut dc_cache,
+                        alpha_idx: winner.cfl_alpha_idx,
+                        joint_sign: winner.cfl_alpha_signs,
+                    };
+                    Some(&mut cfl_predict)
+                } else {
+                    None
+                };
+                predict_uv_txb(
+                    env,
+                    recon,
+                    plane,
+                    winner.uv_mode,
+                    winner.angle_delta_uv,
+                    cfl_arg,
+                    tx_size,
+                    blk_row,
+                    blk_col,
+                    txb_off,
+                );
+            }
 
             let mut tx_type = 0usize; // DCT_DCT
             let (qcoeff, dqcoeff, eob, ent_ctx, txb_skip_ctx, dc_sign_ctx);

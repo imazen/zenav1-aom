@@ -1338,12 +1338,15 @@ pub fn rd_pick_intra_sby_mode_y(
                 };
                 // Palette entry: restore the colour map + palette prediction
                 // (the winner-stats color_index_map copy, :1701-1707).
-                let pal_yrd = entry.palette_y.as_ref().map(|p| crate::tx_search::PaletteYrd {
-                    colors: &p.colors,
-                    size: p.size,
-                    map: &p.color_map,
-                    map_stride: crate::tx_search::BLK_W_B[bsize],
-                });
+                let pal_yrd = entry
+                    .palette_y
+                    .as_ref()
+                    .map(|p| crate::tx_search::PaletteYrd {
+                        colors: &p.colors,
+                        size: p.size,
+                        map: &p.color_map,
+                        map_stride: crate::tx_search::BLK_W_B[bsize],
+                    });
                 let Some(choice) = pick_uniform_tx_size_type_yrd_intra(
                     env,
                     recon,

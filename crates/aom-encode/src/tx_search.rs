@@ -421,8 +421,8 @@ pub fn av1_pixel_diff_dist(
 /// DCT_DCT forward-transform normalization per tx size — sqrt(2) for 1:2/2:1,
 /// 2 for 1:4/4:1, an extra 2 for <=8x8; 64-point sizes unsupported (0).
 const DC_COEFF_SCALE: [u16; 19] = [
-    1024, 2048, 4096, 4096, 0, 1448, 1448, 2896, 2896, 2896, 2896, 0, 0, 2048, 2048, 4096, 4096,
-    0, 0,
+    1024, 2048, 4096, 4096, 0, 1448, 1448, 2896, 2896, 2896, 2896, 0, 0, 2048, 2048, 4096, 4096, 0,
+    0,
 ];
 
 /// `pixel_diff_stats` (tx_search.c:151): the residual block's SSE, mean and
@@ -550,9 +550,14 @@ fn skip_trellis_opt_based_on_satd(
     // shift is 1/0/−1 (a negative shift is a LEFT shift). Widened to i64 so the
     // 64-point left-shift can't overflow C's `int` domain on this path.
     let shift = 1i32 - av1_get_tx_scale(tx_size);
-    satd = if shift < 0 { satd << (-shift) } else { satd >> shift };
+    satd = if shift < 0 {
+        satd << (-shift)
+    } else {
+        satd >> shift
+    };
     satd >>= i64::from(bd) - 8; // bd == 8 ⇒ no-op
-    (satd as u64) > u64::from(satd_threshold) * u64::from(qstep) * (SQRT_TX_PIXELS_2D[tx_size] as u64)
+    (satd as u64)
+        > u64::from(satd_threshold) * u64::from(qstep) * (SQRT_TX_PIXELS_2D[tx_size] as u64)
 }
 
 /// `ROUND_POWER_OF_TWO` for i64.
@@ -846,7 +851,7 @@ impl TxTypeSearchPolicy {
             use_rd_based_breakout_for_intra_tx_search: false,
             prune_tx_type_est_rd: false,
             prune_2d_txfm_mode: 1, // TX_TYPE_PRUNE_1 (init_tx_sf:2457); inert while est_rd off
-            predict_dc_level: 0, // predict_dc_levels[0][*] (dc_blk_pred_level 0 through speed 5)
+            predict_dc_level: 0,   // predict_dc_levels[0][*] (dc_blk_pred_level 0 through speed 5)
             prune_intra_tx_depths_using_nn: false, // default off (speed>=6 only)
         }
     }
@@ -996,10 +1001,17 @@ pub fn search_tx_type_intra(
     // feeds the trellis/tx-domain gates below).
     let (mut block_sse_u, mut block_mse_q8);
     if predict_dc_block {
-        debug_assert!(pol.predict_dc_level <= 1, "dc_only (level>1) is speed-7+ machinery");
+        debug_assert!(
+            pol.predict_dc_level <= 1,
+            "dc_only (level>1) is speed-7+ machinery"
+        );
         let (sse, mse, per_px_mean, raw_var) =
             pixel_diff_stats(inp.residual, w, inp.visible_cols, inp.visible_rows);
-        debug_assert_ne!(mse, u32::MAX, "predict path needs a visible txb (C :2028 assert)");
+        debug_assert_ne!(
+            mse,
+            u32::MAX,
+            "predict path needs a visible txb (C :2028 assert)"
+        );
         block_sse_u = sse;
         block_mse_q8 = mse;
         // predict_dc_only_block (tx_search.c:2011-2076), the level-1 skip arm:
@@ -1017,8 +1029,7 @@ pub fn search_tx_type_intra(
             // NOTE the dc qstep uses a FIXED >>3 (C :2024), not the
             // bd-dependent dequant_shift the AC lane above uses.
             let dc_qstep = i32::from(inp.rows.dequant[0]) >> 3;
-            if per_px_mean.abs() * i64::from(DC_COEFF_SCALE[tx_size])
-                < (i64::from(dc_qstep) << 12)
+            if per_px_mean.abs() * i64::from(DC_COEFF_SCALE[tx_size]) < (i64::from(dc_qstep) << 12)
             {
                 // The skip fast path (:2039-2070): eob 0, DCT_DCT,
                 // entropy ctx 0, dist = sse<<4 (sse bd-rounded FIRST),
@@ -1570,6 +1581,7 @@ pub struct TxbWinner {
 /// map covers the FULL `block_width x block_height` pixel extent of the
 /// block (extended from the visible crop), stride = `map_stride`
 /// (= block width in pixels).
+#[derive(Clone, Copy, Debug)]
 pub struct PaletteYrd<'a> {
     /// `palette_colors[0..size]` (the Y section).
     pub colors: &'a [u16; 8],
@@ -1947,9 +1959,16 @@ pub fn uniform_txfm_yrd_intra(
     // Intra: skip_txfm_rd = INT64_MAX; current_rd = no_this_rd.
     let no_this_rd = rdcost(env.rdmult, no_skip_txfm_rate + tx_size_rate, 0);
 
-    let Some((mut stats, winners)) =
-        txfm_rd_in_plane_intra(env, recon, tx_size, ref_best_rd, no_this_rd, pol, nn_prune, palette)
-    else {
+    let Some((mut stats, winners)) = txfm_rd_in_plane_intra(
+        env,
+        recon,
+        tx_size,
+        ref_best_rd,
+        no_this_rd,
+        pol,
+        nn_prune,
+        palette,
+    ) else {
         return (i64::MAX, None);
     };
     if stats.rate == i32::MAX {
@@ -2012,7 +2031,13 @@ fn get_dev(mean: f32, x2_sum: f64, num: i32) -> f32 {
 /// `[1]` block dev, `[2..10]` per-sub (mean, dev) in raster order, `[10]`
 /// deviation of sub-means, `[11]` mean of sub-devs. Returns the next
 /// feature index (12).
-fn get_mean_dev_features(data: &[i16], stride: usize, bw: usize, bh: usize, features: &mut [f32]) -> usize {
+fn get_mean_dev_features(
+    data: &[i16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    features: &mut [f32],
+) -> usize {
     let subh = if bh >= bw { bh >> 1 } else { bh };
     let subw = if bw >= bh { bw >> 1 } else { bw };
     let num = (bw * bh) as i32;
@@ -2144,8 +2169,9 @@ fn choose_largest_tx_size_intra(bsize: usize, enable_tx64: bool, enable_rect_tx:
         (true, true) => tx,
         // tx_size_max_32[TX_SIZES_ALL] — cap the 64-wide/high sizes at 32.
         (false, true) => {
-            const TX_SIZE_MAX_32: [usize; 19] =
-                [0, 1, 2, 3, 3, 5, 6, 7, 8, 9, 10, 3, 3, 13, 14, 15, 16, 9, 10];
+            const TX_SIZE_MAX_32: [usize; 19] = [
+                0, 1, 2, 3, 3, 5, 6, 7, 8, 9, 10, 3, 3, 13, 14, 15, 16, 9, 10,
+            ];
             TX_SIZE_MAX_32[tx]
         }
         // tx_size_max_square[TX_SIZES_ALL] — collapse rect to the inscribed square.
@@ -2265,9 +2291,11 @@ pub fn choose_tx_size_type_from_rd_intra(
         }
         // `enable_nn_prune_intra_tx_depths = sf && tx_size == start_tx`
         // (:3022): the NN only ever evaluates on the largest-depth walk.
-        let nn_ctx = (pol.prune_intra_tx_depths_using_nn && tx_size == start_tx).then(|| {
-            NnDepthPruneCtx { outcome: &mut nn_outcome, source_variance }
-        });
+        let nn_ctx =
+            (pol.prune_intra_tx_depths_using_nn && tx_size == start_tx).then(|| NnDepthPruneCtx {
+                outcome: &mut nn_outcome,
+                source_variance,
+            });
         // rd_thresh (tx_search.c:3030): with use_rd_based_breakout_for_intra_
         // tx_search ON, tighten the per-depth early-exit to the running
         // across-depth best; else the caller's ref_best_rd.
@@ -2345,7 +2373,8 @@ pub fn pick_uniform_tx_size_type_yrd_intra(
         // choose_largest_tx_size: one uniform_txfm_yrd at the single largest tx
         // size (no depth sweep, no size-RD comparison, no low-contrast prune).
         let tx_size = choose_largest_tx_size_intra(env.bsize, enable_tx64, enable_rect_tx);
-        let (rd, res) = uniform_txfm_yrd_intra(env, recon, tx_size, ref_best_rd, pol, None, palette);
+        let (rd, res) =
+            uniform_txfm_yrd_intra(env, recon, tx_size, ref_best_rd, pol, None, palette);
         return res.map(|(stats, winners)| TxSizeChoice {
             best_tx_size: tx_size,
             best_rd: rd,
@@ -2570,7 +2599,11 @@ mod satd_skip_tests {
                 );
                 let satd_c = i64::from(c::ref_satd(&coeff[..n]));
                 let shift = 1i32 - av1_get_tx_scale(ts);
-                let scaled = if shift < 0 { satd_c << (-shift) } else { satd_c >> shift };
+                let scaled = if shift < 0 {
+                    satd_c << (-shift)
+                } else {
+                    satd_c >> shift
+                };
                 let scaled = (scaled >> (i64::from(bd) - 8)) as u64;
                 let sqrt_px = SQRT_TX_PIXELS_2D[ts] as u64;
                 for qstep in [4u32, 20, 100] {
@@ -2579,8 +2612,7 @@ mod satd_skip_tests {
                     for dt in [-1i64, 0, 1, 2] {
                         let thr = (base as i64 + dt).max(0) as u32;
                         let want = scaled > u64::from(thr) * u64::from(qstep) * sqrt_px;
-                        let got =
-                            skip_trellis_opt_based_on_satd(&residual, ts, 0, bd, qstep, thr);
+                        let got = skip_trellis_opt_based_on_satd(&residual, ts, 0, bd, qstep, thr);
                         assert_eq!(got, want, "ts={ts} mag={mag} qstep={qstep} thr={thr}");
                     }
                 }
@@ -2602,7 +2634,14 @@ mod satd_skip_tests {
         // Small residual, huge threshold => never skip.
         let mut small = vec![0i16; full];
         small[0] = 1;
-        assert!(!skip_trellis_opt_based_on_satd(&small, 2, 0, 8, 20, u32::MAX - 1));
+        assert!(!skip_trellis_opt_based_on_satd(
+            &small,
+            2,
+            0,
+            8,
+            20,
+            u32::MAX - 1
+        ));
     }
 }
 

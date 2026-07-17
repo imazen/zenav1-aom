@@ -160,9 +160,36 @@ fn replay_tree(
         let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
         let subsize = get_partition_subsize(bsize, p as i32) as usize;
         replay_tree(tree, cursor, mi_row, mi_col, subsize, mi_rows, mi_cols, out);
-        replay_tree(tree, cursor, mi_row, mi_col + hbs, subsize, mi_rows, mi_cols, out);
-        replay_tree(tree, cursor, mi_row + hbs, mi_col, subsize, mi_rows, mi_cols, out);
-        replay_tree(tree, cursor, mi_row + hbs, mi_col + hbs, subsize, mi_rows, mi_cols, out);
+        replay_tree(
+            tree,
+            cursor,
+            mi_row,
+            mi_col + hbs,
+            subsize,
+            mi_rows,
+            mi_cols,
+            out,
+        );
+        replay_tree(
+            tree,
+            cursor,
+            mi_row + hbs,
+            mi_col,
+            subsize,
+            mi_rows,
+            mi_cols,
+            out,
+        );
+        replay_tree(
+            tree,
+            cursor,
+            mi_row + hbs,
+            mi_col + hbs,
+            subsize,
+            mi_rows,
+            mi_cols,
+            out,
+        );
     }
 }
 
@@ -180,7 +207,11 @@ fn localize_lossless(w: usize, h: usize, mono: bool) -> bool {
         }
     }
     // 4:2:0 chroma (ss_x = ss_y = 1).
-    let (cw, ch) = if mono { (0, 0) } else { ((w + 1) >> 1, (h + 1) >> 1) };
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + 1) >> 1, (h + 1) >> 1)
+    };
     let mut u = vec![0u16; cw * ch];
     let mut v = vec![0u16; cw * ch];
     if !mono {
@@ -195,16 +226,38 @@ fn localize_lossless(w: usize, h: usize, mono: bool) -> bool {
     }
 
     let bytes = c::ref_encode_av1_kf(
-        &y, &u, &v, w, h, i32::from(bd), mono, 1, 1, 0, 0, false, false, 2, 0, false,
+        &y,
+        &u,
+        &v,
+        w,
+        h,
+        i32::from(bd),
+        mono,
+        1,
+        1,
+        0,
+        0,
+        false,
+        false,
+        2,
+        0,
+        false,
     );
     assert!(!bytes.is_empty());
 
     let obus = walk_obus(&bytes);
-    let seq_payload = obus.iter().find(|(t, _)| *t == OBU_SEQUENCE_HEADER).map(|(_, p)| *p).unwrap();
+    let seq_payload = obus
+        .iter()
+        .find(|(t, _)| *t == OBU_SEQUENCE_HEADER)
+        .map(|(_, p)| *p)
+        .unwrap();
     let mut seq_rb = ReadBitBuffer::new(seq_payload);
     let seq = read_sequence_header_obu(&mut seq_rb);
-    let (frame_obu_type, frame_payload) =
-        obus.iter().find(|(t, _)| *t == OBU_FRAME || *t == 3).map(|(t, p)| (*t, *p)).unwrap();
+    let (frame_obu_type, frame_payload) = obus
+        .iter()
+        .find(|(t, _)| *t == OBU_FRAME || *t == 3)
+        .map(|(t, p)| (*t, *p))
+        .unwrap();
     assert_eq!(frame_obu_type, OBU_FRAME);
 
     let s = &seq.seq_header;
@@ -253,7 +306,10 @@ fn localize_lossless(w: usize, h: usize, mono: bool) -> bool {
             last_mode_deltas: KF_MODE_DELTAS,
             ..Default::default()
         },
-        cdef: CdefHeader { enable_cdef: s.enable_cdef, ..Default::default() },
+        cdef: CdefHeader {
+            enable_cdef: s.enable_cdef,
+            ..Default::default()
+        },
         restoration: RestorationHeader {
             enable_restoration: s.enable_restoration,
             sb_size_128: s.sb_size_128,
@@ -296,8 +352,15 @@ fn localize_lossless(w: usize, h: usize, mono: bool) -> bool {
     let mut quants = Quants::zeroed();
     let mut deq = Dequants::zeroed();
     av1_build_quantizer(
-        bd, p.quant.y_dc_delta_q, p.quant.u_dc_delta_q, p.quant.u_ac_delta_q, p.quant.v_dc_delta_q,
-        p.quant.v_ac_delta_q, &mut quants, &mut deq, 0,
+        bd,
+        p.quant.y_dc_delta_q,
+        p.quant.u_dc_delta_q,
+        p.quant.u_ac_delta_q,
+        p.quant.v_dc_delta_q,
+        p.quant.v_ac_delta_q,
+        &mut quants,
+        &mut deq,
+        0,
     );
     let rows_y = set_q_index(&quants, &deq, qindex as usize, 0);
     let rows_u = set_q_index(&quants, &deq, qindex as usize, 1);
@@ -306,7 +369,11 @@ fn localize_lossless(w: usize, h: usize, mono: bool) -> bool {
     let mut kf_write = KfFrameContext::default_for_qindex(qindex);
     let real = derive_real_costs(&kf_write, s.enable_filter_intra);
     let rdmult = av1_compute_rd_mult_based_on_qindex(
-        bd, FrameUpdateType::Kf, qindex, TuneMetric::Psnr, EncMode::Allintra,
+        bd,
+        FrameUpdateType::Kf,
+        qindex,
+        TuneMetric::Psnr,
+        EncMode::Allintra,
     );
 
     let stride = 320.max(w + 4);
@@ -389,6 +456,7 @@ fn localize_lossless(w: usize, h: usize, mono: bool) -> bool {
         enable_ab_partitions: true,
         allow_screen_content_tools: p.allow_screen_content_tools,
         qm_levels: None,
+        palette_costs: None,
     };
     let pack_cfg = aom_encode::pack::PackCfg {
         enable_filter_intra: s.enable_filter_intra,
@@ -405,8 +473,20 @@ fn localize_lossless(w: usize, h: usize, mono: bool) -> bool {
     let mut enc = OdEcEnc::new();
     let n_sb = (mi_cols / SB_MI).max(1);
     let _trees = pack_tile(
-        &mut enc, &env, &pick_cfg, &pack_cfg, &mut kf_write, &mut recon_y, &mut recon_u,
-        &mut recon_v, 0, 0, n_sb, n_sb, SB_MI, SB,
+        &mut enc,
+        &env,
+        &pick_cfg,
+        &pack_cfg,
+        &mut kf_write,
+        &mut recon_y,
+        &mut recon_u,
+        &mut recon_v,
+        0,
+        0,
+        n_sb,
+        n_sb,
+        SB_MI,
+        SB,
     );
     let our_tile_bytes = enc.done().to_vec();
 
@@ -433,8 +513,26 @@ fn localize_lossless(w: usize, h: usize, mono: bool) -> bool {
 
     let mut real_seq = Vec::new();
     let mut ours_seq = Vec::new();
-    replay_tree(&t_real.tree, &mut 0, 0, 0, SB, mi_rows, mi_cols, &mut real_seq);
-    replay_tree(&t_ours.tree, &mut 0, 0, 0, SB, mi_rows, mi_cols, &mut ours_seq);
+    replay_tree(
+        &t_real.tree,
+        &mut 0,
+        0,
+        0,
+        SB,
+        mi_rows,
+        mi_cols,
+        &mut real_seq,
+    );
+    replay_tree(
+        &t_ours.tree,
+        &mut 0,
+        0,
+        0,
+        SB,
+        mi_rows,
+        mi_cols,
+        &mut ours_seq,
+    );
 
     let mut partition_div: Option<(i32, i32, usize, i8, i8)> = None;
     for (r, o) in real_seq.iter().zip(ours_seq.iter()) {
@@ -449,8 +547,10 @@ fn localize_lossless(w: usize, h: usize, mono: bool) -> bool {
 
     let mut leaf_div: Option<String> = None;
     for rbk in &t_real.blocks {
-        if let Some(ob) =
-            t_ours.blocks.iter().find(|b| b.mi_row == rbk.mi_row && b.mi_col == rbk.mi_col)
+        if let Some(ob) = t_ours
+            .blocks
+            .iter()
+            .find(|b| b.mi_row == rbk.mi_row && b.mi_col == rbk.mi_col)
         {
             let modes_differ = ob.bsize != rbk.bsize
                 || ob.partition != rbk.partition
@@ -464,10 +564,22 @@ fn localize_lossless(w: usize, h: usize, mono: bool) -> bool {
                     "(mi_row={}, mi_col={}) [modes_differ={modes_differ} txbs_differ={txbs_differ}]\n\
                      \x20    real bsize={} part={} y_mode={} adly={} use_fi={} tx_size={} txbs(eob,tt)={:?}\n\
                      \x20    ours bsize={} part={} y_mode={} adly={} use_fi={} tx_size={} txbs(eob,tt)={:?}",
-                    rbk.mi_row, rbk.mi_col, rbk.bsize, rbk.partition, rbk.info.y_mode,
-                    rbk.info.angle_delta_y, rbk.info.use_filter_intra, rbk.tx_size, rbk.txbs,
-                    ob.bsize, ob.partition, ob.info.y_mode, ob.info.angle_delta_y,
-                    ob.info.use_filter_intra, ob.tx_size, ob.txbs,
+                    rbk.mi_row,
+                    rbk.mi_col,
+                    rbk.bsize,
+                    rbk.partition,
+                    rbk.info.y_mode,
+                    rbk.info.angle_delta_y,
+                    rbk.info.use_filter_intra,
+                    rbk.tx_size,
+                    rbk.txbs,
+                    ob.bsize,
+                    ob.partition,
+                    ob.info.y_mode,
+                    ob.info.angle_delta_y,
+                    ob.info.use_filter_intra,
+                    ob.tx_size,
+                    ob.txbs,
                 ));
                 break;
             }
@@ -486,18 +598,23 @@ fn localize_lossless(w: usize, h: usize, mono: bool) -> bool {
         }
     }
 
-    let decisions_match =
-        partition_div.is_none() && leaf_div.is_none() && recon_div.is_none();
+    let decisions_match = partition_div.is_none() && leaf_div.is_none() && recon_div.is_none();
     let fmt = if mono { "mono" } else { "420" };
     eprintln!(
         "\n=== {fmt} {w}x{h} cq0 === {}",
-        if decisions_match { "MATCH".to_string() } else { "DIVERGE".to_string() }
+        if decisions_match {
+            "MATCH".to_string()
+        } else {
+            "DIVERGE".to_string()
+        }
     );
     if let Some((mi_row, mi_col, bsize, pr, po)) = partition_div {
         eprintln!(
             "  >>> FIRST PARTITION DIVERGENCE at (mi_row={mi_row}, mi_col={mi_col}, bsize={bsize} \
              {}x{}mi): real=PARTITION_{} ({pr}) ours=PARTITION_{} ({po})",
-            MI_SIZE_WIDE_B[bsize], MI_SIZE_HIGH_B[bsize], PARTITION_NAMES[pr as usize],
+            MI_SIZE_WIDE_B[bsize],
+            MI_SIZE_HIGH_B[bsize],
+            PARTITION_NAMES[pr as usize],
             PARTITION_NAMES[po as usize]
         );
     }
@@ -505,17 +622,25 @@ fn localize_lossless(w: usize, h: usize, mono: bool) -> bool {
         eprintln!("  >>> FIRST LEAF MISMATCH at {d}");
     }
     if let Some((row, col, rv, ov)) = recon_div {
-        eprintln!("  >>> FIRST RECON PIXEL DIVERGENCE at (row={row}, col={col}): real={rv} ours={ov}");
+        eprintln!(
+            "  >>> FIRST RECON PIXEL DIVERGENCE at (row={row}, col={col}): real={rv} ours={ov}"
+        );
         // Compare: source vs PACK-internal recon (recon_y) vs decoded-port vs
         // decoded-real, to tell whether the pack's own reconstruction is wrong
         // (mispredict / lossy) or the coded bits disagree with a correct recon.
-        eprintln!("  pixel-neighbourhood dump (row {row}, cols {}..{}):", col.saturating_sub(2), col + 4);
+        eprintln!(
+            "  pixel-neighbourhood dump (row {row}, cols {}..{}):",
+            col.saturating_sub(2),
+            col + 4
+        );
         for cc in col.saturating_sub(2)..(col + 4).min(w) {
             let src = y[row * w + cc];
             let pack = recon_y[row * stride + cc];
             let dp = t_ours.recon[row * t_ours.stride + cc];
             let dr = t_real.recon[row * t_real.stride + cc];
-            eprintln!("    col {cc}: source={src} pack_recon={pack} decoded_ours={dp} decoded_real={dr}");
+            eprintln!(
+                "    col {cc}: source={src} pack_recon={pack} decoded_ours={dp} decoded_real={dr}"
+            );
         }
     }
     decisions_match
@@ -526,7 +651,11 @@ fn kb5_localize_mono_64_cq0() {
     let matched = localize_lossless(64, 64, true);
     eprintln!(
         "\n=== KB-5 localize mono 64x64 cq0: {} ===",
-        if matched { "MATCH" } else { "DIVERGE (see first divergence above)" }
+        if matched {
+            "MATCH"
+        } else {
+            "DIVERGE (see first divergence above)"
+        }
     );
 }
 
@@ -535,6 +664,10 @@ fn kb5_localize_420_64_cq0() {
     let matched = localize_lossless(64, 64, false);
     eprintln!(
         "\n=== KB-5 localize 420 64x64 cq0: {} ===",
-        if matched { "MATCH" } else { "DIVERGE (see first divergence above)" }
+        if matched {
+            "MATCH"
+        } else {
+            "DIVERGE (see first divergence above)"
+        }
     );
 }
