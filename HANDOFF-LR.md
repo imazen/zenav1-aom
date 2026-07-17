@@ -161,3 +161,44 @@ cargo test -p aom-bench --test lr_restoration_gate -- --nocapture 2>&1 | tee /tm
 - `crates/aom-bench/src/lib.rs` (c_encode_lr/port_encode_lr/parse_restoration_decision/
   lr_search_sf_allintra/lr_search_sf_good/Clone), `Cargo.toml`, `tests/lr_restoration_gate.rs`
 - `PARITY.md` (A row + C2), `STATUS.md` (milestone section)
+
+## 8. INTEGRATION STATE at shutdown (updated after the green landing suite)
+
+- **Full workspace suite ran GREEN on this branch's validated tip: 195 test binaries
+  ok, 0 failures, exit 0** (`/root/.claude/jobs/3651b35b/tmp/lr_land_suite.log`),
+  tree rebased onto 0730a68. The validated stack (through **41894f2**) is
+  suite-proven and merge-ready. The wip commit **a3bee0d** (chunk-5 arms) sits on
+  top, unvalidated, and must NOT reach main until run per §4.
+- **NOT PUSHED — deliberately.** Origin advanced to **fa1c55c** (10 commits: palette
+  Y+UV RD search → PARITY section B, intrabc chunk 3a, cpu-used=7, a `cargo fmt`
+  pass, two CONTEXT-HANDOFF docs). fa1c55c ("all 6 family dumps complete on worktree
+  branches") shows the fleet-wide shutdown pattern is WIP-on-branches for deliberate
+  integration — so this family stays on its branch too, matching every sibling.
+- **Integration recipe (for whoever lands this):**
+  ```
+  git rebase origin/main        # onto fa1c55c or later
+  # EXPECTED CONFLICTS (all mechanical):
+  #  - Cargo.lock            -> take origin, `cargo update --workspace --offline`
+  #  - PARITY.md             -> re-apply the LR section-A row + C2 rewrite + priority
+  #                             strike-through (palette added a section-B row above;
+  #                             keep both). My edits: §Section A encoder table LR row,
+  #                             §C2 full rewrite, §priority-order C2/C1 strike.
+  #  - STATUS.md             -> append my "C2 loop-restoration ENCODER search" block
+  #                             at the tail (pure append; palette/intrabc added others)
+  #  - crates/aom-encode/src/pack.rs -> pack_tile_lr is ADDITIVE (new fn + LrPackParams
+  #                             struct); palette/intrabc also edited pack.rs — my hunks
+  #                             are a separate fn, resolve by keeping both. A cargo fmt
+  #                             pass (ca475e9) reflowed this file: if the conflict is
+  #                             pure whitespace, take origin's formatting + re-insert
+  #                             my fn.
+  #  - crates/aom-bench/src/lib.rs -> ADDITIVE (c_encode_lr, port_encode_lr,
+  #                             port_encode_impl split, parse_restoration_decision,
+  #                             lr_search_sf_allintra/_good, EncodeCell Clone derive,
+  #                             LR imports). Palette added rd_close_palette + its own
+  #                             lib fns; keep both. Watch the fmt pass here too.
+  # Then: cargo test --workspace (0 failed) -> push HEAD~1:main (validated tip only,
+  # NOT the a3bee0d wip) -> verify ancestor. Then do §4 to land chunk 5.
+  ```
+- **Rebase precedent in this very session:** the same stack already rebased cleanly
+  over the CDEF + SIMD landings (3d115a6 handled the one real conflict — a duplicated
+  aom-loopfilter dep). The pattern repeats; nothing here is novel.
