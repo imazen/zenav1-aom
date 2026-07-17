@@ -4063,8 +4063,20 @@ pub fn nonrd_use_partition_real(
         // PARTITION_NONE (:3017-3030).
         0 => {
             let w = nonrd_leaf_pick_and_encode(
-                env, cfg, tile, grid, recon_y, recon_u, recon_v, cfl, mi_row, mi_col, bsize,
-                0, visits, last_source_variance,
+                env,
+                cfg,
+                tile,
+                grid,
+                recon_y,
+                recon_u,
+                recon_v,
+                cfl,
+                mi_row,
+                mi_col,
+                bsize,
+                0,
+                visits,
+                last_source_variance,
             );
             SbTree::Leaf(w)
         }
@@ -4073,8 +4085,20 @@ pub fn nonrd_use_partition_real(
         1 | 2 => {
             let is_horz = partition == 1;
             let w0 = nonrd_leaf_pick_and_encode(
-                env, cfg, tile, grid, recon_y, recon_u, recon_v, cfl, mi_row, mi_col, subsize,
-                partition as usize, visits, last_source_variance,
+                env,
+                cfg,
+                tile,
+                grid,
+                recon_y,
+                recon_u,
+                recon_v,
+                cfl,
+                mi_row,
+                mi_col,
+                subsize,
+                partition as usize,
+                visits,
+                last_source_variance,
             );
             let sub1_in_frame = if is_horz {
                 mi_row + hbs < env.mi_rows
@@ -4089,8 +4113,20 @@ pub fn nonrd_use_partition_real(
                     (mi_row, mi_col + hbs)
                 };
                 let w1 = nonrd_leaf_pick_and_encode(
-                    env, cfg, tile, grid, recon_y, recon_u, recon_v, cfl, r1, c1, subsize,
-                    partition as usize, visits, last_source_variance,
+                    env,
+                    cfg,
+                    tile,
+                    grid,
+                    recon_y,
+                    recon_u,
+                    recon_v,
+                    cfl,
+                    r1,
+                    c1,
+                    subsize,
+                    partition as usize,
+                    visits,
+                    last_source_variance,
                 );
                 if is_horz {
                     SbTree::Horz(Box::new([w0, w1]))
@@ -4108,8 +4144,12 @@ pub fn nonrd_use_partition_real(
         // PARTITION_SPLIT (:3078-3117): plain recursion (try_merge/direct
         // merging are KEY-dead, module docs).
         3 => {
-            let mut kids: [SbTree; 4] =
-                [SbTree::Absent, SbTree::Absent, SbTree::Absent, SbTree::Absent];
+            let mut kids: [SbTree; 4] = [
+                SbTree::Absent,
+                SbTree::Absent,
+                SbTree::Absent,
+                SbTree::Absent,
+            ];
             for (i, kid) in kids.iter_mut().enumerate() {
                 let y = mi_row + ((i as i32) >> 1) * hbs;
                 let x = mi_col + ((i as i32) & 1) * hbs;
@@ -4175,8 +4215,8 @@ fn nonrd_leaf_pick_and_encode(
         // (partition_search.c:769) — the EXISTING leaf machinery.
         let invalid = PartRdStats::invalid();
         let (this_rdc, winner, _sv) = leaf_pick_sb_modes(
-            env, cfg, tile, grid, recon_y, recon_u, recon_v, cfl, mi_row, mi_col, bsize,
-            partition, &invalid,
+            env, cfg, tile, grid, recon_y, recon_u, recon_v, cfl, mi_row, mi_col, bsize, partition,
+            &invalid,
         );
         visits.push(LeafVisit {
             mi_row,
@@ -4188,23 +4228,45 @@ fn nonrd_leaf_pick_and_encode(
             rdcost: this_rdc.rdcost,
         });
         let mut w = winner.expect("unbounded-budget leaf pick always finds a winner");
+        // output_enabled = true (OUTPUT_ENABLED): the C nonrd walk encodes
+        // every leaf dry_run=0 (encode_b_nonrd, partition_search.c:2100). Per
+        // KB-4 that gives the tx_type_map COPY semantics — eob-0 -> DCT_DCT
+        // resets go to a transient frame map, leaving the search winner's
+        // `w.tx_type_map` intact for the byte-producing `pack_sb` re-walk
+        // (pack.rs, also OUTPUT_ENABLED). `false` (alias) would leak resets
+        // into the winner map and re-introduce the KB-4 bug on the full-RD
+        // arm (non-DCT winner quantizing to eob 0). Matches the speed-7
+        // rd_use_partition_real SB-root walk (output_enabled = bsize==sb_size).
         let _ = crate::encode_sb::encode_b_intra_dry(
-            env, tile, recon_y, recon_u, recon_v, cfl, &mut w, mi_row, mi_col, partition,
-            // HANDOFF: output_enabled flag — in the C nonrd walk EVERY leaf
-            // encode is dry_run=0 (OUTPUT_ENABLED). Check what this bool
-            // gates in encode_b_intra_dry (cb_offsets only?) and pass the
-            // value that matches the speeds-0-7-proven root walk's leaves.
-            false,
+            env, tile, recon_y, recon_u, recon_v, cfl, &mut w, mi_row, mi_col, partition, true,
         );
-        grid.stamp(mi_row, mi_col, bsize, w.mode as u8, w.uv_mode as u8, env.mi_rows, env.mi_cols);
+        grid.stamp(
+            mi_row,
+            mi_col,
+            bsize,
+            w.mode as u8,
+            w.uv_mode as u8,
+            w.palette_y.as_ref(),
+            w.palette_uv.as_ref(),
+            env.mi_rows,
+            env.mi_cols,
+        );
         return w;
     }
 
     // Estimate arm: av1_nonrd_pick_intra_mode (nonrd_pickmode.c:1582).
     let up_available = mi_row > env.tile_row_start;
     let left_available = mi_col > env.tile_col_start;
-    let above_mode = if up_available { grid.at(mi_row - 1, mi_col) as usize } else { 0 };
-    let left_mode = if left_available { grid.at(mi_row, mi_col - 1) as usize } else { 0 };
+    let above_mode = if up_available {
+        grid.at(mi_row - 1, mi_col) as usize
+    } else {
+        0
+    };
+    let left_mode = if left_available {
+        grid.at(mi_row, mi_col - 1) as usize
+    } else {
+        0
+    };
     // KF y-mode ctx pair (intra_mode_context[A]/[L]) — same table the
     // full-RD leaf uses.
     const IMC: [usize; 13] = [0, 1, 2, 3, 4, 4, 4, 4, 3, 0, 1, 2, 0];
@@ -4293,11 +4355,28 @@ fn nonrd_leaf_pick_and_encode(
         tx_type_map: vec![0; mi_w * mi_h], // DCT_DCT
         skip_txfm: false,
         raw_rdstats: pick.rd,
+        // Palette is guarded dead on the nonrd estimate arm (init_mbmi_nonrd
+        // zeroes palette sizes; the palette search arm needs
+        // allow_screen_content_tools=1, dead on the canon grid).
+        palette_y: None,
+        palette_uv: None,
     };
+    // output_enabled = true (OUTPUT_ENABLED) — see the full-RD arm above.
+    // On the estimate arm `w.tx_type_map` is all-DCT so copy/alias are
+    // identical here, but true keeps the faithful C semantics.
     let _ = crate::encode_sb::encode_b_intra_dry(
-        env, tile, recon_y, recon_u, recon_v, cfl, &mut w, mi_row, mi_col, partition,
-        false, // HANDOFF: see the output_enabled note above.
+        env, tile, recon_y, recon_u, recon_v, cfl, &mut w, mi_row, mi_col, partition, true,
     );
-    grid.stamp(mi_row, mi_col, bsize, w.mode as u8, w.uv_mode as u8, env.mi_rows, env.mi_cols);
+    grid.stamp(
+        mi_row,
+        mi_col,
+        bsize,
+        w.mode as u8,
+        w.uv_mode as u8,
+        w.palette_y.as_ref(),
+        w.palette_uv.as_ref(),
+        env.mi_rows,
+        env.mi_cols,
+    );
     w
 }

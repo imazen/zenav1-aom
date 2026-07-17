@@ -825,6 +825,68 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   palette ON to find whether a specific leaf's palette RD/flag (or a pruning gate) tips it. The
   localizer asserts the divergence PRESENT, so any fix self-promotes the cell into
   `BYTE_EXACT_CELLS`.
+### KB-12 — Encoder: `--cpu-used=8/9` nonrd PICKMODE — PORTED ✅ (speed-9 64/64 canon + noise; speed-8 60/64 canon, 4 diag estimate-arm near-ties pinned open + noise 8/8) — GATE 2 (cpu 0-9) COMPLETE
+- **Status (2026-07-17): speed 8 AND speed 9 land, Gate-2 (cpu-used 0..9) is byte-complete
+  except 4 pinned speed-8 near-ties.** The nonrd PICKMODE (`use_nonrd_pick_mode = 1`,
+  speed_features.c:578): the SAME `av1_choose_var_based_partitioning` KEY tree the speed-7
+  gate fixes now drives **`av1_nonrd_use_partition`** (partition_pick.rs `nonrd_use_partition_
+  real`) — a SINGLE-PASS walk (NO save/restore, NO mid-strip re-encode, NO root winner walk):
+  per leaf `hybrid_intra_mode_search` then `encode_b_intra_dry(output_enabled=true)` (C's
+  `encode_b_nonrd`, dry_run=0) immediately; bits via the unchanged `pack_sb` re-walk (same
+  search==pack split proven for speeds 0-7). `try_merge`/`direct_partition_merging` are
+  `!frame_is_intra_only`-gated → KEY-dead (not modelled).
+  - **Leaf search — `hybrid_intra_mode_search`** (partition_search.c:756): `hybrid_intra_
+    pickmode = 2` at speed 8 → full-RD `av1_rd_pick_intra_mode_sb` (the EXISTING
+    `leaf_pick_sb_modes`) for `bsize < BLOCK_16X16 && source_variance >= var_thresh[1] = 101`,
+    else the ESTIMATE arm `av1_nonrd_pick_intra_mode` (nonrd_pickmode.rs, NEW +880): the
+    DC/V/H/SMOOTH `intra_mode_list` loop, per-mode `av1_estimate_block_intra` = one txb
+    `av1_block_yrd` (LP Hadamard SATD estimate: `hadamard_lp_8x8/16x16` + `quantize_lp` +
+    `satd_lp` + `block_error_lp`, all `wrapping`-i16, over the `*_lp_*_transpose` scans),
+    skip-cost fold + `bmode_costs`, tx_size = max-square, NO tx search / angle delta /
+    filter-intra. Speed 9: `hybrid_intra_pickmode = 0` → EVERY leaf is the estimate arm, plus
+    the three estimate-loop prunes (`prune_h_pred_using_best_mode_so_far`, `enable_intra_mode_
+    pruning_using_neighbors`, `prune_intra_mode_using_best_sad_so_far`) and `INTERNAL_COST_
+    UPD_OFF` (<4k → every SB reads the FRAME-INIT cost tables; `sb_real` becomes an `Option`
+    in `pack_tile`/`pack_tile_from_trees`, byte-visible on 128² multi-SB cells).
+  - **The nonrd CHROMA path — RESOLVED (the KB-11 flagged unknown):** `av1_nonrd_pick_intra_
+    mode` is PLANE_Y only and hard-sets `mi->uv_mode = UV_DC_PRED` (nonrd_pickmode.c:1735, "Keep
+    DC for UV since mode test is based on Y channel only"). Estimate leaves code chroma as DC
+    via the ordinary leaf encode (`LeafWinner{uv_mode:0}`); CfL never a candidate; full-RD leaves
+    keep the existing uv search. Confirmed byte-exact by the mono+420 gate agreement.
+  - **`output_enabled = true` (the KEY correctness item, KB-4 class):** C's nonrd walk encodes
+    every leaf dry_run=0 (OUTPUT_ENABLED) → tx_type_map COPY semantics (eob-0 → DCT_DCT resets
+    go to a transient frame map, the search winner's `w.tx_type_map` survives to `pack_sb`).
+    `false` (alias) would re-introduce the KB-4 reset-leak on the full-RD arm. Matches the
+    speed-7 SB-root walk (`output_enabled = bsize == sb_size`) + the pack walk (pack.rs:450).
+  - **The 2 salvage blockers (fixed):** (1) `pack.rs` `sb_pick_cfg` dangled on the `Option<sb_
+    real>` after the cost-upd-off refactor → `match &sb_real { Some => build; None => *pick_cfg }`
+    (frame-init fallback = INTERNAL_COST_UPD_OFF); (2) `nonrd_use_partition_real` was DISPATCHED
+    FROM NOWHERE → wired the `allintra && speed >= 8` branch into `pack_tile` (mirrors the
+    speed-7 VBP dispatch; `speed >= 9` toggles the vbp 16×16 min/max-sub-var split prune, inert
+    <720p). Plus the mechanical arity fixes the concurrent palette work introduced
+    (`ModeGrid::stamp` + `LeafWinner` gained palette params/fields).
+- **Gates (encoder_gate_e2e_byte_match.rs):** `encoder_gate_speed9_textured_allintra` **64/64**
+  + `encoder_gate_speed9_noise_flatuv_allintra` **8/8** (cq12/32/48/63) + `encoder_gate_speed9_
+  vs_speed8_sf_witness`; `encoder_gate_speed8_textured_allintra` **60/64** + `encoder_gate_
+  speed8_noise_flatuv_allintra` **8/8** + `encoder_gate_speed8_vs_speed7_sf_witness`. Speeds
+  0-7 re-verified byte-unchanged (full `cargo test -p aom-encode` green). NOTE: the KB-10/KB-11
+  noise-cq63 (mi 8,0) TX_16X16-vs-TX_32X32 near-tie does NOT reproduce at speed 8/9 — the
+  estimate arm codes tx_size = max-square directly (no winner-pass tx sweep to flip), so the
+  speed-8/9 noise cq63 cells byte-match (unlike speeds 6/7).
+- **PINNED OPEN (KB-2/KB-10/KB-11 near-tie family) — 4 speed-8 diag cells:** `diag {64² cq12,
+  128² cq32}` × {mono,420}. Localized (decode-both, the `kb11_speed7_noise_localize.rs` shape)
+  to ONE BLOCK_8X8 **estimate-arm** leaf (mi 2,2 on the 64² cells): partition trees IDENTICAL,
+  every earlier leaf byte-matches, but `av1_nonrd_pick_intra_mode` picks **V_PRED** where real
+  codes **H_PRED** — a directional near-tie at ~0.7 % rdcost (V 624968 vs H 629535; identical
+  dist 563, bmode_costs V 1596 / H 1385, src_var 24 → estimate arm both). The entire traced
+  estimate chain (the LP kernels + `quantize_lp` + `block_yrd` structure + the mode loop) matches
+  libaom line-for-line, and speed 9's mode prunes mask it (same cells 64/64 there); only speed
+  8's unpruned mixed hybrid exposes the V/H sign. **Next step:** sibling-C per-mode `this_rdc`
+  dump at that leaf (the KB-10/KB-11 method) to find which of V/H's rate the port tips —
+  everything readable already agrees, so the tip is sub-trace.
+- **HBD (bd10/12) estimate arm + lossless TX_4X4 + palette (screen) arms NOT ported** — asserted
+  dead on the 8-bit canon grid (nonrd_pickmode.rs:594/460/784); required before any high-bit-depth
+  or screen-content speed-8/9 cell.
 
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 
@@ -862,12 +924,13 @@ port-derived.
   `intra_tx_size_init_depth_rect` field — and the asserted per-feature-revert witness
   `encoder_gate_speed1_rect_and_4way_25` (in `encoder_gate_e2e_byte_match.rs`) re-diverges if either
   fix is reverted. (Earlier "need test cells to validate" note was stale.)
-- **#10 cpu-used 0..9 speed-feature sweep** (Gate 2) — speeds 0-7 DONE (KB-8/KB-9/KB-10/KB-11;
-  6 and 7 = 64/64 canon each + the shared pinned-open noise-cq63 near-tie pair). Remaining:
-  speeds 8-9 (the nonrd PICKMODE — `use_nonrd_pick_mode`, `av1_nonrd_use_partition`
-  single-pass walk, `av1_nonrd_pick_intra_mode` + `hybrid_intra_mode_search` — see the
-  KB-12 prep facts in STATUS.md's cpu-used=7 section).
-  (#8 qindex-from-cq and #21 decoder q62/q63 are DONE + CI-green — no longer remaining.)
+- **#10 cpu-used 0..9 speed-feature sweep** (Gate 2) — **DONE ✅ (all speeds 0-9)**: speeds 0-7
+  (KB-8/KB-9/KB-10/KB-11; 6/7 = 64/64 canon each), speed 9 = 64/64 canon + noise, speed 8 =
+  60/64 canon (4 diag estimate-arm V/H near-ties pinned open, KB-12) + noise — the nonrd
+  PICKMODE (`use_nonrd_pick_mode`, `av1_nonrd_use_partition` single-pass walk,
+  `av1_nonrd_pick_intra_mode` + `hybrid_intra_mode_search`). See KB-12. Remaining Gate-2
+  byte-exactness is the 4 speed-8 diag near-ties + the KB-10/KB-11 speed-6/7 noise-cq63 near-tie
+  (both a sibling-C RD dump away). (#8 qindex-from-cq and #21 decoder q62/q63 also DONE + CI-green.)
 
 **Confirmed NON-divergences (ruled out — do not re-chase):**
 - **#27 `model_based_prune_tx_search_level`.** `av1_set_speed_features_qindex_dependent` sets it

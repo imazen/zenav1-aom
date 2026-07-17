@@ -1156,26 +1156,37 @@ pub fn pack_tile_lr(
                     ..*env
                 }
             } else {
-                SbEncodeEnv { rdmult: sb_rdmult, ..*env }
+                SbEncodeEnv {
+                    rdmult: sb_rdmult,
+                    ..*env
+                }
             };
-            let sb_pick_cfg = PickFrameCfg {
-                mode_costs: &sb_real.mode_costs,
-                tx_size_costs: &sb_real.tx_size_costs,
-                skip_costs: &sb_real.skip_costs,
-                tx_type_costs_y: &sb_real.tx_type_costs_y,
-                intra_uv_mode_cost: &sb_real.mode_costs.intra_uv_mode_cost,
-                cfl_costs: &sb_real.cfl_costs,
-                partition_costs: &sb_real.partition_costs,
-                // partition_cdfs stays the FRAME-INIT table (the `..*pick_cfg`
-                // spread): C's `set_partition_cost_for_edge_blk`
-                // (partition_search.c:3415) gathers from `cm->fc->partition_cdf`
-                // — the frame-level context, which does NOT adapt during the
-                // frame — NOT from the per-SB-updated tile context that feeds
-                // `partition_costs` above (a shipped-libaom mixed-source quirk,
-                // measured: C's edge gather rows == default_partition_cdf at
-                // every bottom-edge node of the 196x196 encode while its
-                // interior costs track the adapting tile state).
-                ..*pick_cfg
+            // KB-12: at speed >= 9 (allintra, <4k) `cost_upd_off` is true and
+            // `sb_real` is None -> INTERNAL_COST_UPD_OFF: the SB reads the
+            // FRAME-INIT cost tables (`pick_cfg`). Speeds 0-8 keep `sb_real`
+            // Some -> the per-SB `derive_real_costs` refresh, byte-identical to
+            // the pre-Option behaviour.
+            let sb_pick_cfg = match &sb_real {
+                Some(sb_real) => PickFrameCfg {
+                    mode_costs: &sb_real.mode_costs,
+                    tx_size_costs: &sb_real.tx_size_costs,
+                    skip_costs: &sb_real.skip_costs,
+                    tx_type_costs_y: &sb_real.tx_type_costs_y,
+                    intra_uv_mode_cost: &sb_real.mode_costs.intra_uv_mode_cost,
+                    cfl_costs: &sb_real.cfl_costs,
+                    partition_costs: &sb_real.partition_costs,
+                    // partition_cdfs stays the FRAME-INIT table (the `..*pick_cfg`
+                    // spread): C's `set_partition_cost_for_edge_blk`
+                    // (partition_search.c:3415) gathers from `cm->fc->partition_cdf`
+                    // — the frame-level context, which does NOT adapt during the
+                    // frame — NOT from the per-SB-updated tile context that feeds
+                    // `partition_costs` above (a shipped-libaom mixed-source quirk,
+                    // measured: C's edge gather rows == default_partition_cdf at
+                    // every bottom-edge node of the 196x196 encode while its
+                    // interior costs track the adapting tile state).
+                    ..*pick_cfg
+                },
+                None => PickFrameCfg { ..*pick_cfg },
             };
 
             let mut cfl_search = CflCtx::new(env.ss_x as i32, env.ss_y as i32);
@@ -1190,10 +1201,14 @@ pub fn pack_tile_lr(
             let mut last_source_variance = 0u32;
             let mut tree = if let Some(vf) = &vbp_frame {
                 // encode_rd_sb's VAR_BASED_PARTITION arm (encodeframe.c:
-                // 876-895): av1_choose_var_based_partitioning fixes the
-                // tree, av1_rd_use_partition runs the RD mode search over
-                // it (do_recon=1 at the SB root -> the OUTPUT_ENABLED
-                // winner walk, exactly the pick path's own root behavior).
+                // 876-895): av1_choose_var_based_partitioning fixes the tree.
+                // Speed 7 replays it with the full-RD `av1_rd_use_partition`
+                // (do_recon=1 at the SB root -> OUTPUT_ENABLED winner walk);
+                // speed >= 8 runs the KB-12 single-pass `av1_nonrd_use_
+                // partition` nonrd walk. The 16x16 min/max-sub-var split prune
+                // (`vbp_prune_16x16_split_using_min_max_sub_blk_var`,
+                // speed_features.c:600) is a speed-9 sf — inert <720p but
+                // threaded faithfully.
                 crate::var_part::choose_var_based_partitioning_key(
                     &mut vbp_stamps,
                     vf,
@@ -1202,26 +1217,46 @@ pub fn pack_tile_lr(
                     env.stride,
                     mi_row,
                     mi_col,
-                    /*vbp_prune_16x16_split_using_min_max_sub_blk_var=*/ false,
+                    /*vbp_prune_16x16_split_using_min_max_sub_blk_var=*/
+                    pick_cfg.speed >= 9,
                 );
-                let (tree, _stats) = crate::partition_pick::rd_use_partition_real(
-                    &sb_env,
-                    &sb_pick_cfg,
-                    &mut search_tile,
-                    &mut grid,
-                    recon_y,
-                    recon_u,
-                    recon_v,
-                    &mut cfl_search,
-                    &vbp_stamps,
-                    mi_row,
-                    mi_col,
-                    sb_size,
-                    /*do_recon=*/ true,
-                    &mut visits,
-                    &mut last_source_variance,
-                );
-                tree
+                if pick_cfg.speed >= 8 {
+                    crate::partition_pick::nonrd_use_partition_real(
+                        &sb_env,
+                        &sb_pick_cfg,
+                        &mut search_tile,
+                        &mut grid,
+                        recon_y,
+                        recon_u,
+                        recon_v,
+                        &mut cfl_search,
+                        &vbp_stamps,
+                        mi_row,
+                        mi_col,
+                        sb_size,
+                        &mut visits,
+                        &mut last_source_variance,
+                    )
+                } else {
+                    let (tree, _stats) = crate::partition_pick::rd_use_partition_real(
+                        &sb_env,
+                        &sb_pick_cfg,
+                        &mut search_tile,
+                        &mut grid,
+                        recon_y,
+                        recon_u,
+                        recon_v,
+                        &mut cfl_search,
+                        &vbp_stamps,
+                        mi_row,
+                        mi_col,
+                        sb_size,
+                        /*do_recon=*/ true,
+                        &mut visits,
+                        &mut last_source_variance,
+                    );
+                    tree
+                }
             } else {
                 let (tree, _stats, found) = rd_pick_partition_real(
                     &sb_env,
@@ -1427,7 +1462,10 @@ pub fn pack_tile_from_trees(
                     ..*env
                 }
             } else {
-                SbEncodeEnv { rdmult: sb_rdmult, ..*env }
+                SbEncodeEnv {
+                    rdmult: sb_rdmult,
+                    ..*env
+                }
             };
 
             let mut cfl_pack = CflCtx::new(env.ss_x as i32, env.ss_y as i32);

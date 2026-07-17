@@ -2,11 +2,13 @@
 //! (nonrd_pickmode.c:1582) + its `av1_block_yrd` Hadamard estimator
 //! (nonrd_opt.c:126) + the LP kernel set they stand on.
 //!
-//! HANDOFF STATUS (2026-07-17, written under kill-order — code is traced from
-//! source but NEVER COMPILED OR TESTED; expect mechanical fixes):
-//! every function carries its exact C provenance; `// HANDOFF:` marks the
-//! spots that still need verification or wiring. See HANDOFF-SPEED89.md at
-//! the worktree root for the full state + validation recipe.
+//! STATUS (2026-07-17): LANDED — compiled + gated. Speed 9 byte-matches real
+//! `aomenc --cpu-used=9` 64/64 (canon) + noise; speed 8 60/64 (canon) + noise,
+//! with 4 `diag` estimate-arm V/H near-ties pinned open (KB-12 in CLAUDE.md).
+//! Every function carries its exact C provenance; the remaining `// HANDOFF:`
+//! marks are genuine out-of-8-bit-canon-envelope work (hbd estimate arm,
+//! lossless TX_4X4, screen-content palette). See CLAUDE.md KB-12 for the full
+//! state, gate names, and the pinned near-tie's next step.
 //!
 //! ## The chroma answer (the KB-11 flagged unknown — RESOLVED)
 //! `av1_nonrd_pick_intra_mode` is Y-only and hard-sets
@@ -114,8 +116,12 @@ use aom_intra::predict_intra_high;
 
 /// `MI_SIZE_WIDE`/`HIGH` for the square sizes used here (port-wide numbering:
 /// BLOCK_8X8=3, BLOCK_16X16=6, BLOCK_32X32=9, BLOCK_64X64=12).
-const MI_W: [usize; 22] = [1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16];
-const MI_H: [usize; 22] = [1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4];
+const MI_W: [usize; 22] = [
+    1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16,
+];
+const MI_H: [usize; 22] = [
+    1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4,
+];
 
 /// `intra_mode_context[]` (av1_common_int.h) — KF y-mode cost context per
 /// neighbour PREDICTION_MODE. HANDOFF: dedupe with the copy the full-RD leaf
@@ -312,7 +318,8 @@ pub fn quantize_lp(
         let coeff_sign = c >> 31; // AOMSIGN
         let abs_coeff = (c ^ coeff_sign) - coeff_sign;
         let lane = usize::from(rc != 0);
-        let mut tmp = (abs_coeff + i32::from(round_fp[lane])).clamp(i16::MIN as i32, i16::MAX as i32);
+        let mut tmp =
+            (abs_coeff + i32::from(round_fp[lane])).clamp(i16::MIN as i32, i16::MAX as i32);
         tmp = (tmp * i32::from(quant_fp[lane])) >> 16;
         qcoeff[rc] = ((tmp ^ coeff_sign) - coeff_sign) as i16;
         dqcoeff[rc] = qcoeff[rc].wrapping_mul(dequant[lane]);
@@ -354,17 +361,17 @@ pub const DEFAULT_SCAN_8X8_TRANSPOSE: [i16; 64] = [
 pub const DEFAULT_SCAN_LP_16X16_TRANSPOSE: [i16; 256] = [
     0, 8, 2, 4, 10, 16, 24, 18, 12, 6, 64, 14, 20, 26, 32, 40, 34, 28, 22, 72, 66, 68, 74, 80, 30,
     36, 42, 48, 56, 50, 44, 38, 88, 82, 76, 70, 128, 78, 84, 90, 96, 46, 52, 58, 1, 9, 3, 60, 54,
-    104, 98, 92, 86, 136, 130, 132, 138, 144, 94, 100, 106, 112, 62, 5, 11, 17, 25, 19, 13, 7,
-    120, 114, 108, 102, 152, 146, 140, 134, 192, 142, 148, 154, 160, 110, 116, 122, 65, 15, 21,
-    27, 33, 41, 35, 29, 23, 73, 67, 124, 118, 168, 162, 156, 150, 200, 194, 196, 202, 208, 158,
-    164, 170, 176, 126, 69, 75, 81, 31, 37, 43, 49, 57, 51, 45, 39, 89, 83, 77, 71, 184, 178, 172,
-    166, 216, 210, 204, 198, 206, 212, 218, 224, 174, 180, 186, 129, 79, 85, 91, 97, 47, 53, 59,
-    61, 55, 105, 99, 93, 87, 137, 131, 188, 182, 232, 226, 220, 214, 222, 228, 234, 240, 190, 133,
-    139, 145, 95, 101, 107, 113, 63, 121, 115, 109, 103, 153, 147, 141, 135, 248, 242, 236, 230,
-    238, 244, 250, 193, 143, 149, 155, 161, 111, 117, 123, 125, 119, 169, 163, 157, 151, 201, 195,
-    252, 246, 254, 197, 203, 209, 159, 165, 171, 177, 127, 185, 179, 173, 167, 217, 211, 205, 199,
-    207, 213, 219, 225, 175, 181, 187, 189, 183, 233, 227, 221, 215, 223, 229, 235, 241, 191, 249,
-    243, 237, 231, 239, 245, 251, 253, 247, 255,
+    104, 98, 92, 86, 136, 130, 132, 138, 144, 94, 100, 106, 112, 62, 5, 11, 17, 25, 19, 13, 7, 120,
+    114, 108, 102, 152, 146, 140, 134, 192, 142, 148, 154, 160, 110, 116, 122, 65, 15, 21, 27, 33,
+    41, 35, 29, 23, 73, 67, 124, 118, 168, 162, 156, 150, 200, 194, 196, 202, 208, 158, 164, 170,
+    176, 126, 69, 75, 81, 31, 37, 43, 49, 57, 51, 45, 39, 89, 83, 77, 71, 184, 178, 172, 166, 216,
+    210, 204, 198, 206, 212, 218, 224, 174, 180, 186, 129, 79, 85, 91, 97, 47, 53, 59, 61, 55, 105,
+    99, 93, 87, 137, 131, 188, 182, 232, 226, 220, 214, 222, 228, 234, 240, 190, 133, 139, 145, 95,
+    101, 107, 113, 63, 121, 115, 109, 103, 153, 147, 141, 135, 248, 242, 236, 230, 238, 244, 250,
+    193, 143, 149, 155, 161, 111, 117, 123, 125, 119, 169, 163, 157, 151, 201, 195, 252, 246, 254,
+    197, 203, 209, 159, 165, 171, 177, 127, 185, 179, 173, 167, 217, 211, 205, 199, 207, 213, 219,
+    225, 175, 181, 187, 189, 183, 233, 227, 221, 215, 223, 229, 235, 241, 191, 249, 243, 237, 231,
+    239, 245, 251, 253, 247, 255,
 ];
 
 // NOTE: the `av1_default_iscan_*_transpose` tables are NOT needed —
@@ -591,7 +598,10 @@ pub fn nonrd_pick_intra_mode(
     bsize: usize,
     rdmult: i32,
 ) -> NonrdIntraPick {
-    assert!(env.bd == 8, "HANDOFF: hbd estimate arm (av1_quantize_fp + fp scans) not ported");
+    assert!(
+        env.bd == 8,
+        "HANDOFF: hbd estimate arm (av1_quantize_fp + fp scans) not ported"
+    );
     let mi_w = MI_W[bsize];
     let mi_h = MI_H[bsize];
     let bw = mi_w * 4;
@@ -649,9 +659,7 @@ pub fn nonrd_pick_intra_mode(
             lctx.left_available,
         ) {
             // (:1656-1668), speed 9.
-            if (this_mode == 1 || this_mode == 2)
-                && lctx.source_variance <= 50
-                && allow_skip_nondc
+            if (this_mode == 1 || this_mode == 2) && lctx.source_variance <= 50 && allow_skip_nondc
             {
                 continue;
             }
@@ -769,7 +777,11 @@ pub fn nonrd_pick_intra_mode(
         rate += lctx.bmode_costs[this_mode];
         let rdc = crate::rd::rdcost(rdmult, rate, dist_yrd);
         if rdc < best_rdc.rdcost {
-            best_rdc = PartRdStats { rate, dist: dist_yrd, rdcost: rdc };
+            best_rdc = PartRdStats {
+                rate,
+                dist: dist_yrd,
+                rdcost: rdc,
+            };
             best_mode = this_mode;
         }
         // flat_blocks_screen / allow_skip_nondc mutation: dead at ALLINTRA
@@ -788,7 +800,11 @@ pub fn nonrd_pick_intra_mode(
     // mi->mode = best_mode; mi->uv_mode = UV_DC_PRED (:1734-1735) — the
     // chroma answer. store_coding_context_nonrd's ctx->mic snapshot maps to
     // the LeafWinner the caller builds from this pick.
-    NonrdIntraPick { mode: best_mode, tx_size: tx_size_full, rd: best_rdc }
+    NonrdIntraPick {
+        mode: best_mode,
+        tx_size: tx_size_full,
+        rd: best_rdc,
+    }
 }
 
 /// `hybrid_intra_mode_search` (partition_search.c:755): the speed-8 dispatch.

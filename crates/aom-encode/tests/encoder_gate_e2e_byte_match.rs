@@ -2987,3 +2987,311 @@ fn speed6_prep_lf_from_q_matches_real_aomenc() {
         }
     }
 }
+
+// ===========================================================================
+// KB-12 — Gate 2, cpu-used=8 (nonrd PICKMODE, allintra KEY).
+// ===========================================================================
+
+fn textured_content_for(w: usize, h: usize, name: &str) -> Box<dyn Fn(usize, usize) -> u8> {
+    match name {
+        "two-tone" => Box::new(move |_r, c| if c < w / 2 { 72 } else { 168 }),
+        "vgrad" => Box::new(move |_r, c| (32 + c * 190 / w) as u8),
+        "diag" => Box::new(move |r, c| (32 + (r + c) * 190 / (w + h)) as u8),
+        "flat" => Box::new(move |_r, _c| 128u8),
+        other => panic!("unknown {other:?}"),
+    }
+}
+
+/// Gate 2 (`aomenc --cpu-used=8`) — the all-intra KEY **speed-8** path: the
+/// nonrd PICKMODE (`use_nonrd_pick_mode = 1`, speed_features.c:578). The same
+/// `av1_choose_var_based_partitioning` KEY tree the speed-7 gate uses now
+/// drives `av1_nonrd_use_partition` (partition_pick.rs `nonrd_use_partition_
+/// real`) — a SINGLE-PASS walk: per leaf `hybrid_intra_mode_search`
+/// (`hybrid_intra_pickmode = 2` → full-RD `av1_rd_pick_intra_mode_sb` for
+/// `bsize < BLOCK_16X16 && source_variance >= 101`, else the estimate arm
+/// `av1_nonrd_pick_intra_mode`), then encode immediately. Chroma is Y-only DC
+/// on the estimate arm (nonrd_pickmode.c:1735). Same canon grid as speeds
+/// 4-7 ({64,128}² × cq{12,32,48,63} × {flat,two-tone,vgrad,diag} × {mono,420}).
+///
+/// **60/64 byte-identical vs real `aomenc --cpu-used=8`. FOUR pinned-open
+/// near-tie cells** (KB-12, the same near-tie CLASS as KB-10/KB-11):
+/// `diag {64² cq12, 128² cq32}` × {mono,420}. Localized (via a decode-both
+/// diff, the `kb11_speed7_noise_localize.rs` shape) to a single BLOCK_8X8
+/// **estimate-arm** leaf (mi 2,2 on the 64² cells): the partition trees are
+/// IDENTICAL and every earlier leaf byte-matches, but `av1_nonrd_pick_intra_
+/// mode` picks **V_PRED** where real codes **H_PRED** — a directional-mode
+/// near-tie decided by ~0.7 % rdcost (V 624968 vs H 629535; identical dist,
+/// bmode_costs V 1596 / H 1385). The whole traced estimate chain (the LP
+/// Hadamard/`quantize_lp`/`satd_lp`/`block_error_lp` kernels + the mode loop)
+/// matches libaom to the line, so the exact tip needs a sibling-C per-mode
+/// RD dump at that leaf (the KB-10/KB-11 next step). Speed 9 (all-estimate,
+/// with the speed-9 mode prunes) byte-matches the SAME cells 64/64, i.e. the
+/// prunes mask this near-tie; only speed 8's unpruned mixed hybrid exposes it.
+/// The mono cells prove it is luma-side. The test FAILS if a pinned cell
+/// starts matching (→ promote) or if any non-pinned cell diverges.
+#[test]
+fn encoder_gate_speed8_textured_allintra() {
+    // KB-12 pinned-open near-tie cells (see the fn doc).
+    let pinned: &[&str] = &[
+        "diag 64x64 mono cq12",
+        "diag 64x64 420 cq12",
+        "diag 128x128 mono cq32",
+        "diag 128x128 420 cq32",
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    let mut pinned_now_matching: Vec<String> = Vec::new();
+    let mut total = 0usize;
+    for &(w, h) in &[(64usize, 64usize), (128usize, 128usize)] {
+        for &name in &["flat", "two-tone", "vgrad", "diag"] {
+            for &cq in &[12i32, 32, 48, 63] {
+                for &mono in &[true, false] {
+                    let content = textured_content_for(w, h, name);
+                    let ok = attempt_case_content_uv(
+                        w,
+                        h,
+                        mono,
+                        1,
+                        1,
+                        2,
+                        cq,
+                        8,
+                        8,
+                        |r, c| content(r, c),
+                        |r, c| (60 + (r * 7 + c * 3) % 80) as u8,
+                    );
+                    let fmt = if mono { "mono" } else { "420" };
+                    let cell = format!("{name} {w}x{h} {fmt} cq{cq}");
+                    eprintln!("speed8 {cell}: {}", if ok { "MATCH" } else { "DIFF" });
+                    if pinned.contains(&cell.as_str()) {
+                        if ok {
+                            pinned_now_matching.push(cell);
+                        }
+                    } else if !ok {
+                        failures.push(cell);
+                    }
+                    total += 1;
+                }
+            }
+        }
+    }
+    eprintln!(
+        "encoder_gate_speed8_textured_allintra: {}/{total} cells byte-identical vs aomenc \
+         --cpu-used=8 ({} pinned-open near-tie cells)",
+        total - failures.len() - pinned.len() + pinned_now_matching.len(),
+        pinned.len()
+    );
+    assert!(
+        failures.is_empty(),
+        "every non-pinned cpu-used=8 all-intra cell must byte-match real aomenc; \
+         diverging: {failures:?}"
+    );
+    assert!(
+        pinned_now_matching.is_empty(),
+        "KB-12 pinned-open speed-8 near-tie cell(s) started BYTE-MATCHING real aomenc \
+         ({pinned_now_matching:?}) — promote them to hard byte-match asserts and close the \
+         KB-12 estimate-arm V/H near-tie"
+    );
+}
+
+/// Gate 2 (`aomenc --cpu-used=9`) — the all-intra KEY **speed-9** path: the
+/// nonrd PICKMODE with `hybrid_intra_pickmode = 0` (every leaf uses the
+/// estimate arm `av1_nonrd_pick_intra_mode`; the full-RD arm dies), the three
+/// estimate-loop prunes (`prune_h_pred_using_best_mode_so_far`,
+/// `enable_intra_mode_pruning_using_neighbors`,
+/// `prune_intra_mode_using_best_sad_so_far`), and `INTERNAL_COST_UPD_OFF`
+/// (<4k) — every SB reads the FRAME-INIT cost tables (byte-visible on the 128²
+/// multi-SB cells). The `vbp_prune_16x16_split_using_min_max_sub_blk_var`
+/// speed-9 flag is threaded but inert <720p (force_large-gated). Same canon
+/// grid, byte-identical to real `aomenc --cpu-used=9`.
+#[test]
+fn encoder_gate_speed9_textured_allintra() {
+    let mut failures: Vec<String> = Vec::new();
+    let mut total = 0usize;
+    for &(w, h) in &[(64usize, 64usize), (128usize, 128usize)] {
+        for &name in &["flat", "two-tone", "vgrad", "diag"] {
+            for &cq in &[12i32, 32, 48, 63] {
+                for &mono in &[true, false] {
+                    let content = textured_content_for(w, h, name);
+                    let ok = attempt_case_content_uv(
+                        w,
+                        h,
+                        mono,
+                        1,
+                        1,
+                        2,
+                        cq,
+                        9,
+                        9,
+                        |r, c| content(r, c),
+                        |r, c| (60 + (r * 7 + c * 3) % 80) as u8,
+                    );
+                    let fmt = if mono { "mono" } else { "420" };
+                    eprintln!(
+                        "speed9 {name} {w}x{h} {fmt} cq{cq}: {}",
+                        if ok { "MATCH" } else { "DIFF" }
+                    );
+                    if !ok {
+                        failures.push(format!("{name} {w}x{h} {fmt} cq{cq}"));
+                    }
+                    total += 1;
+                }
+            }
+        }
+    }
+    eprintln!(
+        "encoder_gate_speed9_textured_allintra: {}/{total} cells byte-identical vs aomenc \
+         --cpu-used=9",
+        total - failures.len()
+    );
+    assert!(
+        failures.is_empty(),
+        "every cpu-used=9 all-intra cell must byte-match real aomenc; diverging: {failures:?}"
+    );
+}
+
+/// Anti-vacuous witness for [`encoder_gate_speed8_textured_allintra`]: the port
+/// runs with the **speed-7** feature set (the full-RD `rd_use_partition` walk
+/// over the VBP tree) against REAL `aomenc --cpu-used=8` reference bytes and
+/// must DIVERGE — proving the speed-8 nonrd-pickmode flip (`nonrd_use_
+/// partition` + `av1_nonrd_pick_intra_mode`) is load-bearing, i.e. the gate is
+/// not vacuously matching a speed-7-equivalent search. The paired speed-8 run
+/// on the same cells re-asserts the true match. The mono cell isolates luma.
+#[test]
+fn encoder_gate_speed8_vs_speed7_sf_witness() {
+    let uv = |r: usize, c: usize| (60 + (r * 7 + c * 3) % 80) as u8;
+    let vgrad_64 = |_r: usize, c: usize| (32 + c * 190 / 64) as u8;
+    for &mono in &[true, false] {
+        let fmt = if mono { "mono" } else { "420" };
+        let cross = attempt_case_content_uv(64, 64, mono, 1, 1, 2, 32, 8, 7, vgrad_64, uv);
+        assert!(
+            !cross,
+            "vgrad 64x64 {fmt} cq32: port with SPEED-7 features unexpectedly byte-matched \
+             aomenc --cpu-used=8 — the speed-8 witness cell has gone sf-equivalent; pick a new \
+             witness cell (or a speed-7 delta leaked into the speed-8 derivation)"
+        );
+        let true_match = attempt_case_content_uv(64, 64, mono, 1, 1, 2, 32, 8, 8, vgrad_64, uv);
+        assert!(
+            true_match,
+            "vgrad 64x64 {fmt} cq32: the speed-8 witness cell must byte-match with the speed-8 \
+             features (it does in the full gate)"
+        );
+    }
+}
+
+/// Anti-vacuous witness for [`encoder_gate_speed9_textured_allintra`]: the port
+/// runs with the **speed-8** feature set against REAL `aomenc --cpu-used=9`
+/// reference bytes and must DIVERGE — proving the speed-9 deltas
+/// (`hybrid_intra_pickmode = 0` all-estimate, the three estimate-loop prunes,
+/// and `INTERNAL_COST_UPD_OFF` on multi-SB frames) are load-bearing. Uses a
+/// 128² cell so the cost-update-off delta is byte-visible (4 SBs), plus a 64²
+/// cell for the prune deltas. The paired speed-9 run re-asserts the true match.
+#[test]
+fn encoder_gate_speed9_vs_speed8_sf_witness() {
+    let uv = |r: usize, c: usize| (60 + (r * 7 + c * 3) % 80) as u8;
+    // Diverging cells discovered empirically (port@speed-8 vs aomenc cpu-9);
+    // each must match at true speed 9 (it does in the full gate).
+    let candidates: &[(usize, &str, i32, bool)] = &[
+        (128, "vgrad", 12, true),
+        (128, "vgrad", 12, false),
+        (128, "diag", 12, true),
+        (64, "diag", 12, true),
+    ];
+    let mut any_diverged = false;
+    for &(sz, name, cq, mono) in candidates {
+        let content = textured_content_for(sz, sz, name);
+        let cross =
+            attempt_case_content_uv(sz, sz, mono, 1, 1, 2, cq, 9, 8, |r, c| content(r, c), uv);
+        if !cross {
+            any_diverged = true;
+            // The same cell must byte-match with the true speed-9 features.
+            let content = textured_content_for(sz, sz, name);
+            let true_match =
+                attempt_case_content_uv(sz, sz, mono, 1, 1, 2, cq, 9, 9, |r, c| content(r, c), uv);
+            let fmt = if mono { "mono" } else { "420" };
+            assert!(
+                true_match,
+                "{name} {sz}x{sz} {fmt} cq{cq}: diverges at port@speed-8 vs cpu-9 (good) but \
+                 must byte-match at true speed 9"
+            );
+        }
+    }
+    assert!(
+        any_diverged,
+        "no speed-9 witness cell diverged with the speed-8 feature set vs aomenc --cpu-used=9 — \
+         the speed-9 deltas have gone sf-equivalent on the candidate cells; pick new witnesses"
+    );
+}
+
+/// Speed-8 coverage extension beyond the textured grid: pseudo-random noise
+/// luma + flat chroma (the speed-6/7 noise-extension content). The variance
+/// tree goes DEEP (16×16s force-split to 8×8), exercising the nonrd walk's
+/// full SPLIT recursion AND the `hybrid_intra_mode_search` full-RD arm on the
+/// high-variance 8×8 leaves. cq12/32/48/63 (mono + 4:2:0) byte-match real
+/// `aomenc --cpu-used=8` — hard-asserted (the KB-10/KB-11 speed-6/7 cq63 tx
+/// near-tie does NOT reproduce at speed 8: the estimate arm codes tx_size =
+/// max-square directly, with no winner-pass tx sweep to flip).
+#[test]
+fn encoder_gate_speed8_noise_flatuv_allintra() {
+    let noise = |r: usize, c: usize| {
+        let mut x = (r as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (c as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+        x ^= x >> 33;
+        (64 + (x % 129)) as u8
+    };
+    let flat_uv = |_r: usize, _c: usize| 128u8;
+    let mut failures: Vec<String> = Vec::new();
+    for &cq in &[12i32, 32, 48, 63] {
+        for &mono in &[true, false] {
+            let ok = attempt_case_content_uv(64, 64, mono, 1, 1, 2, cq, 8, 8, noise, flat_uv);
+            let fmt = if mono { "mono" } else { "420" };
+            eprintln!(
+                "speed8-noise-flatuv 64x64 {fmt} cq{cq}: {}",
+                if ok { "MATCH" } else { "DIFF" }
+            );
+            if !ok {
+                failures.push(format!("64x64 {fmt} cq{cq}"));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "every speed-8 noise/flat-uv cell must byte-match real aomenc; diverging: {failures:?}"
+    );
+}
+
+/// Speed-9 coverage extension (same noise content as the speed-8 extension).
+/// Every leaf is the estimate arm (`hybrid_intra_pickmode = 0`) with the
+/// speed-9 mode prunes; cq12/32/48/63 (mono + 4:2:0) byte-match real
+/// `aomenc --cpu-used=9` — hard-asserted.
+#[test]
+fn encoder_gate_speed9_noise_flatuv_allintra() {
+    let noise = |r: usize, c: usize| {
+        let mut x = (r as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (c as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+        x ^= x >> 33;
+        (64 + (x % 129)) as u8
+    };
+    let flat_uv = |_r: usize, _c: usize| 128u8;
+    let mut failures: Vec<String> = Vec::new();
+    for &cq in &[12i32, 32, 48, 63] {
+        for &mono in &[true, false] {
+            let ok = attempt_case_content_uv(64, 64, mono, 1, 1, 2, cq, 9, 9, noise, flat_uv);
+            let fmt = if mono { "mono" } else { "420" };
+            eprintln!(
+                "speed9-noise-flatuv 64x64 {fmt} cq{cq}: {}",
+                if ok { "MATCH" } else { "DIFF" }
+            );
+            if !ok {
+                failures.push(format!("64x64 {fmt} cq{cq}"));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "every speed-9 noise/flat-uv cell must byte-match real aomenc; diverging: {failures:?}"
+    );
+}
