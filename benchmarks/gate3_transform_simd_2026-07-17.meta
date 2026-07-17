@@ -1,0 +1,18 @@
+measurement: Gate-3 transform-SIMD callgrind Ir delta
+after commit: transform-SIMD stack (measured on worktree tip e28a48c; lands rebased onto origin/main)
+before commit: fa1c55c (origin/main, carries SIMD kernels #1-#5, no transform SIMD)
+all-scalar reference: 057bde2 (perf-track origin, no SIMD dispatch)
+host: AMD EPYC-Genoa (Zen 4, avx512f/dq/bw/vl/vbmi/vnni), 16 cores, dedicated aom-rs box
+tool: valgrind-3.26.0 callgrind (Ir), profiling profile (release + debuginfo), NO -Ctarget-cpu
+dispatch: transform SIMD runs its AVX2 (X64V3) path (AVX-512 tiers are a follow-up)
+commands (identical binary invocation before/after; before = built at fa1c55c):
+  ./target/profiling/gate3_profile enc port enc_s0_128_cq32 6
+  ./target/profiling/gate3_profile dec port dec_352x288_q32 30
+  callgrind_annotate --threshold=90 <out>
+results (I refs):
+  enc after  99,886,396,237   enc before 142,723,403,866   (-30.0%)
+  dec after   2,139,898,111   dec before   2,552,717,598   (-16.2%)
+raw callgrind outputs: NOT committed (>800 KB each); regenerate via `just profile`.
+note: origin/main enc/dec (142.72B / 2.553B) match the STATUS.md kernel-#5/#3
+  baselines (142.61B / 2.553B) to <0.1%, confirming the speed-0 / decode
+  workload is stable since those landings — the delta is the transform SIMD.
