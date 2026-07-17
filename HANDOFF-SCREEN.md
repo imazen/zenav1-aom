@@ -1,9 +1,24 @@
 # HANDOFF — screen-content stills track (#29): palette + intrabc
 
+> **PICKUP UPDATE (2026-07-17, Opus pickup — now on origin/main):**
+> - **Palette:** the 5/7 byte-exact cells are HARD byte-match asserts; the 2 CLOSE 128²
+>   cells are PINNED (decode-both localized to genuine palette-induced AB/4-way partition
+>   near-ties — NOT a palette-cost bug; palette machinery verified C-faithful). See KB-P29
+>   in CLAUDE.md + `rd_close_palette::decode_diff_palette_close_cells` (the regression guard).
+> - **IntraBC 3b VERIFY hazards RESOLVED:** `set_mv_search_range` MAX_FULL_PEL_VAL=**1023**
+>   (verified, dead 2047 const removed); `intrabc_predict_chroma` differential-tested
+>   byte-identical to the decoder (`intrabc_chroma_predict_matches_decoder`); dv_ref
+>   4-tuple order already C-validated by `dv_ref_diff.rs`; `DEFAULT_TXFM_PARTITION_CDF`
+>   byte-identical to the decoder's default. The skeleton is UNWIRED (rd_pick.rs step-6
+>   no-op) → **envelope-inert**.
+> - **STILL PINNED (the L piece):** the coeff arm (skip-only today) + hbd sse scaling +
+>   NSTEP diamond/mesh + the 8-step integration map below. The `// HANDOFF:` markers and
+>   the integration map remain the actionable continuation guide.
+
 Session end state (2026-07-17). Author context: the screen-content bulk-port agent.
-Everything below `LANDED` is on origin/main and verified; everything below `SKELETON`
-is committed on this worktree branch only (`wip:` commit), compiles, but is
-integration-incomplete — grep `// HANDOFF:` in the code for the precise gaps.
+Everything below `LANDED` is on origin/main and verified; the `SKELETON` section's
+VERIFY hazards are now resolved (see the PICKUP UPDATE), but the integration map is
+still unstarted — grep `// HANDOFF:` in the code for the precise gaps.
 
 ## LANDED on origin/main (verified `merge-base --is-ancestor`, full suite green)
 
