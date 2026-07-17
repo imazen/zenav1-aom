@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 pub mod frame;
 pub mod highbd;
+mod simd;
 
 #[inline]
 fn scc(t: i32) -> i8 {

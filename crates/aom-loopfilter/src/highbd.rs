@@ -225,10 +225,12 @@ fn lpf_14(buf: &mut [u16], mut c: isize, ts: isize, step: isize, bl: u8, li: u8,
     }
 }
 
-/// Highbd horizontal deblock (taps stride by pitch).
+/// Scalar highbd deblock dispatch on `width` — the untouched transcription,
+/// used as the SIMD kernels' `_scalar` tier and by the pure-scalar entries.
+/// `ts` = tap stride, `step` = position advance.
 #[allow(clippy::too_many_arguments)]
-pub fn horizontal(width: u32, buf: &mut [u16], center: usize, p: usize, bl: u8, li: u8, th: u8, bd: i32) {
-    let (c, ts, step) = (center as isize, p as isize, 1isize);
+pub(crate) fn lpf_scalar(width: u32, buf: &mut [u16], center: usize, ts: isize, step: isize, bl: u8, li: u8, th: u8, bd: i32) {
+    let c = center as isize;
     match width {
         4 => lpf_4(buf, c, ts, step, bl, li, th, bd),
         6 => lpf_6(buf, c, ts, step, bl, li, th, bd),
@@ -238,15 +240,28 @@ pub fn horizontal(width: u32, buf: &mut [u16], center: usize, p: usize, bl: u8, 
     }
 }
 
-/// Highbd vertical deblock (taps stride by 1).
+/// Highbd horizontal deblock (taps stride by pitch) — SIMD-dispatched.
+#[allow(clippy::too_many_arguments)]
+pub fn horizontal(width: u32, buf: &mut [u16], center: usize, p: usize, bl: u8, li: u8, th: u8, bd: i32) {
+    crate::simd::lpf(width, buf, center, p as isize, 1, bl, li, th, bd);
+}
+
+/// Highbd vertical deblock (taps stride by 1) — SIMD-dispatched.
 #[allow(clippy::too_many_arguments)]
 pub fn vertical(width: u32, buf: &mut [u16], center: usize, p: usize, bl: u8, li: u8, th: u8, bd: i32) {
-    let (c, ts, step) = (center as isize, 1isize, p as isize);
-    match width {
-        4 => lpf_4(buf, c, ts, step, bl, li, th, bd),
-        6 => lpf_6(buf, c, ts, step, bl, li, th, bd),
-        8 => lpf_8(buf, c, ts, step, bl, li, th, bd),
-        14 => lpf_14(buf, c, ts, step, bl, li, th, bd),
-        _ => panic!("bad width"),
-    }
+    crate::simd::lpf(width, buf, center, 1, p as isize, bl, li, th, bd);
+}
+
+/// Pure-scalar highbd horizontal deblock (never SIMD-dispatched) — the fixed
+/// reference for the SIMD-vs-scalar differential.
+#[allow(clippy::too_many_arguments)]
+pub fn horizontal_scalar(width: u32, buf: &mut [u16], center: usize, p: usize, bl: u8, li: u8, th: u8, bd: i32) {
+    lpf_scalar(width, buf, center, p as isize, 1, bl, li, th, bd);
+}
+
+/// Pure-scalar highbd vertical deblock (never SIMD-dispatched) — the fixed
+/// reference for the SIMD-vs-scalar differential.
+#[allow(clippy::too_many_arguments)]
+pub fn vertical_scalar(width: u32, buf: &mut [u16], center: usize, p: usize, bl: u8, li: u8, th: u8, bd: i32) {
+    lpf_scalar(width, buf, center, 1, p as isize, bl, li, th, bd);
 }
