@@ -7912,6 +7912,34 @@ extern "C" {
         out: *mut u8,
         out_cap: usize,
     ) -> i64;
+    /// Generic-controls variant of `shim_encode_av1_kf` (the C8-C11
+    /// toggle-sweep infrastructure, append-only): base config identical to
+    /// `shim_encode_av1_kf` (single pass, aq 0, cdef/restoration off, sb64,
+    /// single tile, palette/intrabc off), plus `n_ctrls` raw
+    /// `(aome_enc_control_id, value)` pairs applied after the base set.
+    #[allow(clippy::too_many_arguments)]
+    fn shim_encode_av1_kf_ctrls(
+        y: *const u16,
+        u: *const u16,
+        v: *const u16,
+        w: i32,
+        h: i32,
+        bd: i32,
+        mono: i32,
+        ss_x: i32,
+        ss_y: i32,
+        cq_level: i32,
+        cpu_used: i32,
+        usage: i32,
+        ctrl_ids: *const i32,
+        ctrl_vals: *const i32,
+        n_ctrls: i32,
+        out: *mut u8,
+        out_cap: usize,
+    ) -> i64;
+    /// Ctrl-id cross-check for [`cx_ctrl`] (see dec_shim.c): the REAL
+    /// `aome_enc_control_id` value for a fixed probe index.
+    fn shim_cx_ctrl_id_by_probe(probe: i32) -> i32;
     /// disable_cdf_update variant of `shim_encode_av1_kf` (decoder-track
     /// disable_cdf_update gate, append-only addition — every function above is
     /// untouched): single-pass KEY encode with `AV1E_SET_CDF_UPDATE_MODE=0`
@@ -8490,6 +8518,148 @@ pub fn ref_encode_av1_kf(
         )
     };
     assert!(n > 0, "shim_encode_av1_kf failed ({n})");
+    out.truncate(n as usize);
+    out
+}
+
+/// Encoder control IDs (`enum aome_enc_control_id`, `aom/aomcx.h`, libaom
+/// v3.14.1) for [`ref_encode_av1_kf_ctrls`] — the C8-C11 toggle-sweep knob
+/// set. The enum is a stable public ABI (entries are never renumbered);
+/// `cx_ctrl_ids_match_reference_headers` (tests) asserts every constant
+/// against the pinned reference checkout via `shim_cx_ctrl_id_by_probe`.
+pub mod cx_ctrl {
+    /// `--cdf-update-mode` (0 = no CDF update for any frame).
+    pub const AV1E_SET_CDF_UPDATE_MODE: i32 = 44;
+    /// `--enable-rect-partitions` (default 1).
+    pub const AV1E_SET_ENABLE_RECT_PARTITIONS: i32 = 73;
+    /// `--enable-ab-partitions` (default 1).
+    pub const AV1E_SET_ENABLE_AB_PARTITIONS: i32 = 74;
+    /// `--enable-1to4-partitions` (default 1).
+    pub const AV1E_SET_ENABLE_1TO4_PARTITIONS: i32 = 75;
+    /// `--min-partition-size` in PIXELS, one of {4,8,16,32,64,128} (default 4).
+    pub const AV1E_SET_MIN_PARTITION_SIZE: i32 = 76;
+    /// `--max-partition-size` in PIXELS, one of {4,8,16,32,64,128} (default 128).
+    pub const AV1E_SET_MAX_PARTITION_SIZE: i32 = 77;
+    /// `--enable-intra-edge-filter` (default 1; a SEQUENCE-header bit).
+    pub const AV1E_SET_ENABLE_INTRA_EDGE_FILTER: i32 = 78;
+    /// `--enable-tx64` (default 1).
+    pub const AV1E_SET_ENABLE_TX64: i32 = 80;
+    /// `--enable-flip-idtx` (default 1).
+    pub const AV1E_SET_ENABLE_FLIP_IDTX: i32 = 81;
+    /// `--enable-rect-tx` (default 1).
+    pub const AV1E_SET_ENABLE_RECT_TX: i32 = 82;
+    /// `--enable-filter-intra` (default 1; a SEQUENCE-header bit).
+    pub const AV1E_SET_ENABLE_FILTER_INTRA: i32 = 98;
+    /// `--enable-smooth-intra` (default 1).
+    pub const AV1E_SET_ENABLE_SMOOTH_INTRA: i32 = 99;
+    /// `--enable-paeth-intra` (default 1).
+    pub const AV1E_SET_ENABLE_PAETH_INTRA: i32 = 100;
+    /// `--enable-cfl-intra` (default 1).
+    pub const AV1E_SET_ENABLE_CFL_INTRA: i32 = 101;
+    /// `--enable-angle-delta` (default 1).
+    pub const AV1E_SET_ENABLE_ANGLE_DELTA: i32 = 106;
+    /// `--reduced-tx-type-set` (default 0; a FRAME-header bit).
+    pub const AV1E_SET_REDUCED_TX_TYPE_SET: i32 = 118;
+    /// `--use-intra-dct-only` (default 0).
+    pub const AV1E_SET_INTRA_DCT_ONLY: i32 = 119;
+    /// `--use-intra-default-tx-only` (default 0).
+    pub const AV1E_SET_INTRA_DEFAULT_TX_ONLY: i32 = 121;
+    /// `--enable-diagonal-intra` (default 1).
+    pub const AV1E_SET_ENABLE_DIAGONAL_INTRA: i32 = 141;
+    /// `--enable-directional-intra` (default 1).
+    pub const AV1E_SET_ENABLE_DIRECTIONAL_INTRA: i32 = 145;
+    /// `--enable-tx-size-search` (default 1; 0 forces the largest tx size
+    /// per block -> frame header `tx_mode = TX_MODE_LARGEST`).
+    pub const AV1E_SET_ENABLE_TX_SIZE_SEARCH: i32 = 146;
+
+    /// `(probe_index, constant)` table for the header cross-check test —
+    /// probe order matches `shim_cx_ctrl_id_by_probe` (dec_shim.c).
+    pub const PROBE_TABLE: [(i32, i32); 21] = [
+        (0, AV1E_SET_CDF_UPDATE_MODE),
+        (1, AV1E_SET_ENABLE_RECT_PARTITIONS),
+        (2, AV1E_SET_ENABLE_AB_PARTITIONS),
+        (3, AV1E_SET_ENABLE_1TO4_PARTITIONS),
+        (4, AV1E_SET_MIN_PARTITION_SIZE),
+        (5, AV1E_SET_MAX_PARTITION_SIZE),
+        (6, AV1E_SET_ENABLE_INTRA_EDGE_FILTER),
+        (7, AV1E_SET_ENABLE_TX64),
+        (8, AV1E_SET_ENABLE_FLIP_IDTX),
+        (9, AV1E_SET_ENABLE_RECT_TX),
+        (10, AV1E_SET_ENABLE_FILTER_INTRA),
+        (11, AV1E_SET_ENABLE_SMOOTH_INTRA),
+        (12, AV1E_SET_ENABLE_PAETH_INTRA),
+        (13, AV1E_SET_ENABLE_CFL_INTRA),
+        (14, AV1E_SET_ENABLE_ANGLE_DELTA),
+        (15, AV1E_SET_REDUCED_TX_TYPE_SET),
+        (16, AV1E_SET_INTRA_DCT_ONLY),
+        (17, AV1E_SET_INTRA_DEFAULT_TX_ONLY),
+        (18, AV1E_SET_ENABLE_DIAGONAL_INTRA),
+        (19, AV1E_SET_ENABLE_DIRECTIONAL_INTRA),
+        (20, AV1E_SET_ENABLE_TX_SIZE_SEARCH),
+    ];
+}
+
+/// The REAL `aome_enc_control_id` value for a probe index (the
+/// [`cx_ctrl::PROBE_TABLE`] cross-check; see `shim_cx_ctrl_id_by_probe`).
+pub fn ref_cx_ctrl_id_by_probe(probe: i32) -> i32 {
+    unsafe { shim_cx_ctrl_id_by_probe(probe) }
+}
+
+/// Generic-controls variant of [`ref_encode_av1_kf`] (the C8-C11
+/// toggle-sweep infrastructure, append-only — `ref_encode_av1_kf` above is
+/// untouched): base config identical to `ref_encode_av1_kf` with
+/// `enable_cdef=false, enable_restoration=false, aq_mode=0, two_pass=false`
+/// (the stock stills envelope), plus `ctrls` — raw
+/// `(aome_enc_control_id, value)` pairs ([`cx_ctrl`]) applied through
+/// `aom_codec_control` after the base set, in order.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_encode_av1_kf_ctrls(
+    y: &[u16],
+    u: &[u16],
+    v: &[u16],
+    w: usize,
+    h: usize,
+    bd: i32,
+    mono: bool,
+    ss_x: i32,
+    ss_y: i32,
+    cq_level: i32,
+    cpu_used: i32,
+    usage: u32,
+    ctrls: &[(i32, i32)],
+) -> Vec<u8> {
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + ss_x as usize) >> ss_x, (h + ss_y as usize) >> ss_y)
+    };
+    assert_eq!(y.len(), w * h);
+    assert!(mono || (u.len() == cw * ch && v.len() == cw * ch));
+    let ids: Vec<i32> = ctrls.iter().map(|&(id, _)| id).collect();
+    let vals: Vec<i32> = ctrls.iter().map(|&(_, v)| v).collect();
+    let mut out = vec![0u8; w * h * 8 + 65536];
+    let n = unsafe {
+        shim_encode_av1_kf_ctrls(
+            y.as_ptr(),
+            u.as_ptr(),
+            v.as_ptr(),
+            w as i32,
+            h as i32,
+            bd,
+            mono as i32,
+            ss_x,
+            ss_y,
+            cq_level,
+            cpu_used,
+            usage as i32,
+            ids.as_ptr(),
+            vals.as_ptr(),
+            ids.len() as i32,
+            out.as_mut_ptr(),
+            out.len(),
+        )
+    };
+    assert!(n > 0, "shim_encode_av1_kf_ctrls failed ({n})");
     out.truncate(n as usize);
     out
 }
