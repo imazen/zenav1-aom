@@ -3000,3 +3000,41 @@ inverse-txfm stack (shared decode+encode; i64-sum-exact formulation first,
 i32 only with a range proof), deblock filters (~5-9%), txb trio
 (txb_init_levels / get_nz_mag / get_lower_levels_ctx, encode ~12%),
 forward-txfm stack, cdef_find_dir, variance/SAD family.
+
+## C4 tune=IQ/SSIMULACRA2 family — pieces 1+2 landed (2026-07-17, C4 bulk agent)
+
+**Piece 1 (3703f1d):** `aom_get_qmlevel_luma_ssimulacra2` + `aom_get_qmlevel_444_chroma`
+(quant_common.h:111/:150) + `QM_FIRST/LAST_IQ_SSIMULACRA2` = 2/10 in aom-quant;
+`qm_level_diff` sweeps all four QM-level formulas × 6 ranges × qindex 0..=255 against the
+REAL C static inlines (new qm_shim.c wrappers).
+
+**Piece 2 (this landing): `--dist-metric=qm-psnr` — BYTE-EXACT, 27/27.**
+`encoder_gate_qm_psnr_dist_e2e` (encoder_gate_tune_iq_e2e.rs, the C4-owned gate file):
+QM-on (`--enable-qm=1 --qm-min=2 --qm-max=10`) + QM-PSNR distortion metric vs real aomenc
+across bd8 mono/4:2:0/4:4:4 × 64²/128²/192² (incl. partial-SB edge) × cq{12,32,50} — every
+cell a TRUE END-TO-END BYTE MATCH. What it took (mirrors C exactly):
+- `TuneKnobs { use_qm_dist_metric, iq_tuning }` threaded through `SbEncodeEnv` /
+  `EncodeIntraYEnv` / `UvEncodeParams` / `ReencodeParams` / `TxTypeSearchPolicy`
+  (`with_tune_knobs` also applies C's set_tx_domain_dist_params FORCE:
+  use_transform_domain_distortion=1, threshold=0 — rdopt_utils.h:516-522).
+- Search dist: `dist_block_tx_domain_qm` (lib.rs) = `aom_dist::block_error_qm` (already
+  REAL-C-diffed) under `qmatrix != NULL && use_qm_dist_metric`, per-(tx_size, tx_type)
+  matrix via the same `av1_setup_qmatrix` selection the quantizer uses; wired in
+  `search_tx_type_intra`'s tx-domain arm + the 64-pt/high-energy hybrid arm + the est-rd
+  `prune_txk_type_intra` (whose B-quant ALSO now folds QM — a latent speed>=4 QM gap fixed).
+- Trellis dist: `QmCtx::use_qm_dist_metric` (`QuantParams::with_qm_dist_metric`) selects
+  the forward matrix in `xform_quant_optimize` exactly like av1_optimize_txb
+  (txb_rdopt.c:346-351); production QM+PSNR stays `None` (the 5b512bf semantics).
+- Trellis rshift 7 (tune=IQ/SSIMULACRA2, txb_rdopt.c:378-386): `trellis_rdmult_intra{,_y}`
+  take `iq_tuning` (all callers threaded; false = byte-identical rshift 5).
+- The two-pass (speed>=4) stage policies inherit the tune knobs (partition_pick.rs).
+- C reference: `shim_encode_av1_kf_tune` / `ref_encode_av1_kf_tune` (dec_shim.c append-only)
+  — AOME_SET_TUNING FIRST then explicit per-knob overrides (aomenc CLI ordering); dist_metric
+  goes through `aom_codec_set_option("dist-metric", ...)` (no ctrl id exists). Verified by
+  `tune_shim_smoke` (aom-sys-ref): stock knobs == `ref_encode_av1_kf` byte-identical;
+  tune=IQ changes the stream; QM_PSNR-vs-PSNR changes a QM-on stream (anti-vacuous).
+- `frame_lf_sharpness` (lf_search.rs): the picklpf.c:220-247 sharpness_level derivation
+  (ALLINTRA/IQ/SSIM2 gate + `--enable-adaptive-sharpness` qindex cap) — landed for the
+  sharpness cells (next chunk).
+OFF by default everywhere: `TuneKnobs::default()` = PSNR envelope, byte-identical (full
+suite green).

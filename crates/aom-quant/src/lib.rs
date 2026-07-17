@@ -15,7 +15,8 @@ mod qm_inv_tables;
 mod quant_common;
 pub mod simd;
 pub use build_quantizer::{
-    av1_build_quantizer, set_q_index, Dequants, PlaneQuantRows, Quants, QINDEX_RANGE,
+    av1_build_quantizer, av1_set_quantizer, set_q_index, Dequants, PlaneQuantRows, Quants,
+    QuantTuning, QuantizerSettings, QINDEX_RANGE,
 };
 pub use qm::{iqmatrix, qmatrix, NUM_QM_LEVELS};
 pub use quant_common::{

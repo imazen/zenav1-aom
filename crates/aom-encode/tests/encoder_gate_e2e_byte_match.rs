@@ -594,6 +594,8 @@ fn attempt_case_content_uv(
         coeff_costs_uv: &real.coeff_costs_uv,
         tx_type_costs: &real.tx_type_costs_y,
         qm_levels: None,
+        tune: Default::default(),
+        deltaq: None,
     };
     let pick_cfg = PickFrameCfg {
         mode_costs: &real.mode_costs,
@@ -654,6 +656,8 @@ fn attempt_case_content_uv(
         signal_gate: qindex > 0,
         allow_update_cdf: !p.prefix.disable_cdf_update,
         base_qindex: qindex,
+        delta_q_present: false,
+        delta_q_res: 0,
         allow_screen_content_tools: p.allow_screen_content_tools,
     };
 

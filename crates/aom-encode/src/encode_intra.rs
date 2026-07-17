@@ -230,6 +230,9 @@ pub struct EncodeIntraYEnv<'a> {
     /// re-encode's `xform_quant_optimize`/`xform_quant` resolve the
     /// per-(tx_size, tx_type) matrices internally (`av1_setup_qmatrix`).
     pub qm_level: Option<usize>,
+    /// `oxcf.tune_cfg` knobs ([`crate::TuneKnobs`]): the QM-PSNR trellis
+    /// distortion metric + the IQ/SSIMULACRA2 trellis rshift.
+    pub tune: crate::TuneKnobs,
 }
 
 /// One re-encoded txb's outputs (the `p->qcoeff/dqcoeff/eobs/txb_entropy_ctx`
@@ -420,6 +423,9 @@ pub fn encode_intra_block_plane_y(
                 let mut qp = QuantParams::from_plane_rows(env.rows, kind, env.bd, env.lossless);
                 if let Some(level) = env.qm_level {
                     qp = qp.with_qm(level, 0);
+                    if env.tune.use_qm_dist_metric {
+                        qp = qp.with_qm_dist_metric();
+                    }
                 }
                 if use_trellis {
                     let bctx = BlockContext {
@@ -430,7 +436,12 @@ pub fn encode_intra_block_plane_y(
                     };
                     let opt = OptimizeInputs {
                         cost: env.coeff_costs,
-                        rdmult: trellis_rdmult_intra_y(env.rdmult, env.sharpness, env.bd),
+                        rdmult: trellis_rdmult_intra_y(
+                            env.rdmult,
+                            env.sharpness,
+                            env.bd,
+                            env.tune.iq_tuning,
+                        ),
                         sharpness: env.sharpness,
                     };
                     // av1_xform_quant(FP, use_optimize_b) + get_txb_ctx +
@@ -556,6 +567,9 @@ pub struct UvEncodeParams {
     /// trellis multiplier 13), usage GOOD 0 (multiplier 20). See
     /// [`trellis_rdmult_intra`].
     pub use_chroma_trellis_rd_mult: bool,
+    /// `oxcf.tune_cfg` knobs ([`crate::TuneKnobs`]): the QM-PSNR trellis
+    /// distortion metric + the IQ/SSIMULACRA2 trellis rshift.
+    pub tune: crate::TuneKnobs,
 }
 
 /// `av1_encode_intra_block_plane(cpi, x, bsize, plane /* 1|2 */, dry_run,
@@ -703,6 +717,9 @@ pub fn encode_intra_block_plane_uv(
                 let mut qp = QuantParams::from_plane_rows(rows, kind, env.bd, env.lossless);
                 if let Some(level) = env.qm_levels {
                     qp = qp.with_qm(level[plane], plane);
+                    if prm.tune.use_qm_dist_metric {
+                        qp = qp.with_qm_dist_metric();
+                    }
                 }
                 if use_trellis {
                     let bctx = BlockContext {
@@ -719,6 +736,7 @@ pub fn encode_intra_block_plane_uv(
                             env.bd,
                             plane,
                             prm.use_chroma_trellis_rd_mult,
+                            prm.tune.iq_tuning,
                         ),
                         sharpness: prm.sharpness,
                     };

@@ -59,6 +59,8 @@ Byte-identity gates landed and green on origin/main. Any regression here is a sh
 | 4:2:2 / 4:4:4 bd8 full-frame | `encoder_gate_chroma_ss_e2e` | 2ee900d, 0eb42eb (#26) |
 | Coded-lossless cq0 **mono** (4:2:0 still open — KB-5) | `encoder_gate_lossless_cq0_e2e_kb5_repro` | ba560eb |
 | QM-on forward-quant (`--enable-qm`, 40 cells bd8+bd10) | `qm_encode_witness` | 5b512bf (parts 624e91d/a066cf8/abb68d9) |
+| `--dist-metric=qm-psnr` on QM-on (C4 piece 2: QM-weighted tx-search + trellis distortion, forced tx-domain dist; 27/27 cells bd8 mono/420/444 × 64²/128²/192² × cq12/32/50) | `encoder_gate_qm_psnr_dist_e2e` (+ anti-vacuous `tune_shim_smoke`) | (C4 chunk 2) |
+| tune=IQ/SSIMULACRA2 QM-level formulas (`aom_get_qmlevel_luma_ssimulacra2`, `aom_get_qmlevel_444_chroma`, 4 formulas × 6 ranges × 256 qindex vs real C) | `qm_level_diff` | 3703f1d |
 | Multi-tile encode (2×1/1×2/2×2, 4:4:4 128²) | `encoder_gate_multitile_e2e` | f6e6319 |
 | qindex-from-cq derivation (#8) | `qindex_from_cq_diff` | (landed pre-pivot) |
 | Gate-3 perf cells byte-verified before timing | `aom-bench` `EncodeCell::assert_byte_exact` | 057bde2 |
@@ -129,20 +131,27 @@ points are libaom v3.14.1 (`reference/libaom`). Defaults verified in
   `allow_screen_content_tools` as an input — the detection itself is unported. (S–M)
 - `--tune-content` screen/film forcing (gates the above). (S)
 
-### C4 — tune=IQ / tune=SSIMULACRA2 family — PARTIAL (M total) (#23 tail)
+### C4 — tune=IQ / tune=SSIMULACRA2 family — PARTIAL (M total) (#23 tail) — bulk agent live
 The tune bundle (`handle_tuning`, av1_cx_iface.c:1938–1978): `enable_qm=1, qm_min=2,
 qm_max=10, sharpness=7, dist_metric=QM_PSNR, enable_cdef=ADAPTIVE, enable_chroma_deltaq=1,
 deltaq_mode=6 (VARIANCE_BOOST)`; IQ adds `enable_adaptive_sharpness=1`.
 - PRESENT: IQ/SSIMULACRA2 rdmult weight (`rd.rs:208`, bit-exact); QM forward-quant +
   `aom_get_qmlevel`/`aom_get_qmlevel_allintra` + wt_matrix (5b512bf, 40/40 byte gate);
-  trellis takes sharpness 0..7 (diffed); LF-init sharpness limits (decode side).
-- ABSENT: `aom_get_qmlevel_luma_ssimulacra2` + `aom_get_qmlevel_444_chroma` formulas
-  (quant_common.h:111/:150) (S); QM_PSNR dist metric in tx search/trellis
-  (`tx_search.c` `use_qm_dist_metric` :1150, `txb_rdopt.c` :347) (S–M); chroma deltaq
-  (`--enable-chroma-deltaq`) (S–M); `--sharpness` e2e threading incl. the
-  `av1_init_quantizer` rounding bias (`sharpness_adjustment`, av1_quantize.c:607) +
-  allintra edge-filter reduction (S–M); adaptive sharpness (`picklpf.c:232`) (S);
-  deltaq-mode=6 variance boost (see C5) (M).
+  trellis takes sharpness 0..7 (diffed); LF-init sharpness limits (decode side);
+  **piece 1** `aom_get_qmlevel_luma_ssimulacra2` + `aom_get_qmlevel_444_chroma` formulas
+  (3703f1d, `qm_level_diff` vs real C — section A); **piece 2** QM_PSNR dist metric
+  (`TuneKnobs::use_qm_dist_metric` → forced tx-domain dist + `block_error_qm`-weighted
+  search dist + trellis forward-matrix arm + est-rd-prune QM; byte gate
+  `encoder_gate_qm_psnr_dist_e2e` 27/27 — section A) + the IQ/SSIM2 trellis rshift-7 arm
+  (`TuneKnobs::iq_tuning`, threaded, exercised by the composite gate); C-side knob shim
+  `ref_encode_av1_kf_tune` (tuning-first + explicit overrides, aomenc CLI ordering; own
+  stock==base + anti-vacuous witnesses in `tune_shim_smoke`); `frame_lf_sharpness`
+  (picklpf.c:220-247 sharpness gate + adaptive cap, lf_search.rs — cells pending).
+- ABSENT: `--sharpness` e2e byte cells (quantizer bias + trellis + LF threading all
+  landed; cells + witness pending) (S); adaptive-sharpness cells (`picklpf.c:232`,
+  helper landed) (S); chroma deltaq (`--enable-chroma-deltaq`) (S–M);
+  deltaq-mode=6 variance boost (see C5) (M); the composite tune=IQ/SSIMULACRA2 arm
+  (cdef ADAPTIVE at cq>32 depends on C1's search; cq<=32 = zero-strength early-out) (M).
 
 ### C5 — aq-mode / deltaq-mode variants — ABSENT (M–L)
 - `--deltaq-mode=3` DELTA_Q_PERCEPTUAL_AI — the genuinely stills-specific arm:

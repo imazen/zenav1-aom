@@ -123,6 +123,9 @@ pub struct ReencodeParams {
     /// `cpi->optimize_seg_arr[mbmi->segment_id]` (FULL_TRELLIS_OPT at
     /// speed-0 non-lossless).
     pub enable_optimize_b: TrellisOptType,
+    /// `oxcf.tune_cfg` knobs ([`crate::TuneKnobs`]): QM-PSNR trellis
+    /// distortion metric + the IQ/SSIMULACRA2 trellis rshift.
+    pub tune: crate::TuneKnobs,
 }
 
 /// The chroma outcome of one [`rd_pick_intra_mode_sb`].
@@ -340,6 +343,7 @@ pub fn rd_pick_intra_mode_sb(
                         above_ctx: y_env.above_ctx,
                         left_ctx: y_env.left_ctx,
                         qm_level: y_env.qm_levels.map(|l| l[0]),
+                        tune: re.tune,
                     };
                     reencode = Some(encode_intra_block_plane_y(
                         &enc_env,

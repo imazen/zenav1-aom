@@ -710,13 +710,23 @@ fn leaf_pick_sb_modes(
         // multi_winner_mode_type: DEFAULT(2)/FAST(1) at speed 4/5 → the
         // winner-stats loop; OFF(0) at speed >= 6 → count 1 = the
         // single-best re-eval arm with no stats stored (intra_rd.rs).
+        // The stage-derived policies inherit the frame's tune knobs from
+        // cfg.pol (set_mode_eval_params re-derives use_qm_dist_metric from
+        // oxcf per stage, rdopt_utils.h:554 — carrying the caller's flags is
+        // the same resolution).
+        let tune = crate::TuneKnobs {
+            use_qm_dist_metric: cfg.pol.use_qm_dist_metric,
+            iq_tuning: cfg.pol.iq_tuning,
+        };
         (
-            sf.tx_type_search_policy_for_stage(MODE_EVAL, cfg.pol.skip_trellis, cfg.pol.sharpness),
+            sf.tx_type_search_policy_for_stage(MODE_EVAL, cfg.pol.skip_trellis, cfg.pol.sharpness)
+                .with_tune_knobs(tune),
             sf.tx_type_search_policy_for_stage(
                 WINNER_MODE_EVAL,
                 cfg.pol.skip_trellis,
                 cfg.pol.sharpness,
-            ),
+            )
+            .with_tune_knobs(tune),
             sf.tx_size_search_method_for_stage(MODE_EVAL),
             sf.tx_size_search_method_for_stage(WINNER_MODE_EVAL),
             sf.winner_mode_count_allowed(),
@@ -898,6 +908,7 @@ fn leaf_pick_sb_modes(
     let re = ReencodeParams {
         sharpness: env.sharpness,
         enable_optimize_b: env.enable_optimize_b,
+        tune: env.tune,
     };
 
     // `intra_sf.prune_chroma_modes_using_luma_winner` (speed_features.c:480) —

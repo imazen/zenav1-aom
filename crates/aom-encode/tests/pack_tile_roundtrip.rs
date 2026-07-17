@@ -725,6 +725,8 @@ fn run_pack_roundtrip_case(ss_x: usize, ss_y: usize, allintra: bool, qindex: usi
             coeff_costs_uv: &coeff_costs_uv,
             tx_type_costs: &ttc_dummy,
             qm_levels: None,
+            tune: Default::default(),
+            deltaq: None,
         };
         let pick_cfg = PickFrameCfg {
             mode_costs: &mode_costs,
@@ -763,6 +765,8 @@ fn run_pack_roundtrip_case(ss_x: usize, ss_y: usize, allintra: bool, qindex: usi
             signal_gate: qindex > 0,
             allow_update_cdf: true,
             base_qindex: qindex as i32,
+            delta_q_present: false,
+            delta_q_res: 0,
             // This harness's local read-side primitives don't model the
             // palette-usage flag; keep screen-content tools off so the
             // write/read sides stay symmetric (matches the prior hardcoded
@@ -1189,6 +1193,8 @@ fn pack_tile_roundtrips_with_real_costs() {
             coeff_costs_uv: &real.coeff_costs_uv,
             tx_type_costs: &real.tx_type_costs_y,
             qm_levels: None,
+            tune: Default::default(),
+            deltaq: None,
         };
         let pick_cfg = PickFrameCfg {
             mode_costs: &real.mode_costs,
@@ -1227,6 +1233,8 @@ fn pack_tile_roundtrips_with_real_costs() {
             signal_gate: qindex > 0,
             allow_update_cdf: true,
             base_qindex: qindex as i32,
+            delta_q_present: false,
+            delta_q_res: 0,
             // This harness's local read-side primitives don't model the
             // palette-usage flag; keep screen-content tools off so the
             // write/read sides stay symmetric (matches the prior hardcoded
