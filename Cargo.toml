@@ -30,5 +30,19 @@ repository = "local"
 inherits = "release"
 debug = true
 
+# Fast test profile: opt-level 3 so the e2e byte gates (real full encodes /
+# decodes — minutes each unoptimized) run ~10-20x faster, WITHOUT changing the
+# default `cargo test` for other tracks. debug-assertions + overflow-checks
+# stay ON (same as the default `test` profile) so the port's wrapping
+# discipline and every `debug_assert!` are still enforced and integer results
+# are identical — the byte gates stay byte-exact. line-tables give usable
+# panic backtraces at little build cost.
+# Run via `cargo test --profile test-fast ...` or `just test-fast` / `test-tx`.
+[profile.test-fast]
+inherits = "release"
+debug = "line-tables-only"
+debug-assertions = true
+overflow-checks = true
+
 # Reference target: libaom v3.14.1 (git 03087864cf4bea6abb0d28f95cf7843511413d8f)
 # Oracle build config: CONFIG_MULTITHREAD=0, Release, SIMD on. See reference/BUILD_CONFIG.md

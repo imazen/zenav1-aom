@@ -12,6 +12,29 @@ test:
 test-scalar:
     AOM_FORCE_SCALAR=1 cargo test --workspace --no-fail-fast
 
+# FAST full-suite run — identical coverage to `just test`, built at opt-level 3
+# (the `test-fast` profile) so the e2e byte gates (real full encodes/decodes,
+# minutes each unoptimized) run far quicker. debug-assertions + overflow-checks
+# stay on, integer results are identical (byte gates stay byte-exact). The
+# first run pays a one-time optimized compile; reruns are fast. Use this for
+# routine "did I break anything" checks; `just test` remains the debug default.
+test-fast:
+    cargo test --profile test-fast --workspace --no-fail-fast
+
+# FAST scalar-pin run (AOM_FORCE_SCALAR, opt-level 3). Pair with `test-fast`
+# for the both-dispatch-modes parity gate at a fraction of the debug wall time.
+test-fast-scalar:
+    AOM_FORCE_SCALAR=1 cargo test --profile test-fast --workspace --no-fail-fast
+
+# QUICK SIMD-parity subset (opt-level 3) — the Gate-3 kernel crates' per-kernel
+# SIMD==scalar differentials + the transform 2-D permutation-equality gate,
+# WITHOUT the minutes-long encoder e2e gates. For tight iteration on SIMD /
+# transform work; run `just test-fast` + `just test-fast-scalar` before landing.
+# Measured 2026-07-17: ~45s cold (optimized build-dominated), test-RUN a few
+# seconds — the transform per-kernel differential is 1.5s here vs ~10s in debug.
+test-simd:
+    cargo test --profile test-fast -p aom-transform -p aom-quant -p aom-cdef -p aom-dist -p aom-txb -p aom-convolve --no-fail-fast
+
 # Gate-3 paired benchmark, port vs C oracle (zenbench interleaved rounds).
 # QUIET BOX ONLY — the resource gate flags noisy rounds; a loaded box makes
 # the numbers worthless. Results: commit to benchmarks/ per CLAUDE.md.
