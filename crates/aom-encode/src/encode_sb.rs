@@ -334,10 +334,20 @@ pub struct DeltaQFrameCtx<'a> {
     pub deq: &'a aom_quant::Dequants,
     /// `quant_params->base_qindex`.
     pub base_qindex: i32,
-    /// `delta_q_info.delta_q_res` ([`crate::allintra_vis::variance_boost_delta_q_res`]).
+    /// `delta_q_info.delta_q_res` ([`crate::allintra_vis::variance_boost_delta_q_res`]
+    /// for mode 6; [`crate::allintra_vis::DELTA_Q_RES_PERCEPTUAL`] = 4 for mode 3).
     pub delta_q_res: i32,
-    /// `--deltaq-strength` percent (default 100).
+    /// `--deltaq-strength` percent (default 100) — Variance-Boost (mode 6) only.
     pub deltaq_strength: u32,
+    /// `Some` selects `--deltaq-mode=3` (`DELTA_Q_PERCEPTUAL_AI`): the per-SB
+    /// qindex comes from this precomputed wiener-variance map
+    /// ([`crate::allintra_vis::av1_get_sbq_perceptual_ai`]) instead of the
+    /// source-variance boost. `None` = `--deltaq-mode=6` (Variance Boost, the
+    /// [`deltaq_strength`](Self::deltaq_strength) path).
+    pub perceptual_ai: Option<&'a crate::allintra_vis::WeberVarMap>,
+    /// `mi_size_wide[sb_size]` — the SB mi extent the mode-3 per-SB wiener
+    /// window uses (unused when `perceptual_ai` is `None`).
+    pub sb_mi: i32,
 }
 
 /// One leaf's re-encode outputs (differential visibility).

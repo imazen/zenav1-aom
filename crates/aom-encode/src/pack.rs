@@ -1130,19 +1130,37 @@ pub fn pack_tile_lr(
             // variance modifier below folds on top, exactly C's
             // init_plane_quantizers -> setup_block_rdmult order).
             let (sb_current_qindex, dq_rows) = if let Some(dq) = &env.deltaq {
-                let sb_off = env.base_y
-                    + (mi_row as usize * 4) * env.stride
-                    + mi_col as usize * 4;
-                let adjusted = crate::allintra_vis::setup_delta_q_variance_boost(
-                    env.src_y,
-                    sb_off,
-                    env.stride,
-                    env.bd,
-                    dq.base_qindex,
-                    dq.deltaq_strength,
-                    dq.delta_q_res,
-                    search_base_qindex,
-                );
+                // `setup_delta_q` (encodeframe.c:341): mode 3 (PERCEPTUAL_AI)
+                // reads the SB qindex from the precomputed wiener-variance map;
+                // mode 6 (VARIANCE_BOOST) derives it from the SB source
+                // variance. Both then deadzone-quantize against the running
+                // base via `av1_adjust_q_from_delta_q_res`.
+                let adjusted = if let Some(map) = dq.perceptual_ai {
+                    crate::allintra_vis::setup_delta_q_perceptual_ai(
+                        map,
+                        dq.base_qindex,
+                        env.bd,
+                        dq.delta_q_res,
+                        dq.sb_mi,
+                        mi_row,
+                        mi_col,
+                        search_base_qindex,
+                    )
+                } else {
+                    let sb_off = env.base_y
+                        + (mi_row as usize * 4) * env.stride
+                        + mi_col as usize * 4;
+                    crate::allintra_vis::setup_delta_q_variance_boost(
+                        env.src_y,
+                        sb_off,
+                        env.stride,
+                        env.bd,
+                        dq.base_qindex,
+                        dq.deltaq_strength,
+                        dq.delta_q_res,
+                        search_base_qindex,
+                    )
+                };
                 // av1_update_state: advance the running base (see the init
                 // comment for the always-true gate on this envelope).
                 search_base_qindex = adjusted;

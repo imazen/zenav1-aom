@@ -398,6 +398,13 @@ pub struct ToggleKnobs {
     pub coeff_cost_upd_freq: u32,
     /// See `coeff_cost_upd_freq`.
     pub mode_cost_upd_freq: u32,
+    /// `--deltaq-mode=3` (`DELTA_Q_PERCEPTUAL_AI`, family C5): when set, the
+    /// port builds the wiener-variance map ([`aom_encode::allintra_vis::
+    /// av1_set_mb_wiener_variance`]) and threads the per-SB perceptual-AI
+    /// qindex into the pack. The C side must be driven with
+    /// `AV1E_SET_DELTAQ_MODE = 3` (the reference bootstrap stream). PORT-side
+    /// only — not emitted by [`ToggleKnobs::c_ctrls`].
+    pub deltaq_mode3: bool,
 }
 
 impl Default for ToggleKnobs {
@@ -428,6 +435,7 @@ impl Default for ToggleKnobs {
             disable_trellis_quant: 3,
             coeff_cost_upd_freq: 0,
             mode_cost_upd_freq: 0,
+            deltaq_mode3: false,
         }
     }
 }
@@ -1102,6 +1110,66 @@ impl EncodeCell {
             extend_plane(&mut src_v_strided, cw, ch);
         }
 
+        // --deltaq-mode=3 (DELTA_Q_PERCEPTUAL_AI, family C5): build the wiener
+        // map + derive the per-SB qindex and the delta_q header fields entirely
+        // port-side (the map is never copied from the bootstrap; the header
+        // fields are cross-checked below). bd8, dims a multiple of 8px.
+        let weber_map = knobs.deltaq_mode3.then(|| {
+            aom_encode::allintra_vis::av1_set_mb_wiener_variance(
+                &src_y_strided,
+                0,
+                stride,
+                mi_rows,
+                mi_cols,
+                qindex,
+                bd,
+                &quants,
+                &deq,
+                SB,
+                SB_MI,
+                !knobs.enable_intra_edge_filter,
+            )
+        });
+        let (dq3_present, dq3_res) = if let Some(map) = &weber_map {
+            // delta_q_present = (any SB produced a nonzero delta) && qindex > 0
+            // (bitstream.c:4287 resets it when deltaq_used == 0). Replays the
+            // per-SB derivation to compute `deltaq_used` (delta_qindex != 0).
+            let res = aom_encode::allintra_vis::DELTA_Q_RES_PERCEPTUAL;
+            let mut running = qindex;
+            let mut used = false;
+            for r in 0..n_sb_y {
+                for c in 0..n_sb_x {
+                    let adj = aom_encode::allintra_vis::setup_delta_q_perceptual_ai(
+                        map, qindex, bd, res, SB_MI, r * SB_MI, c * SB_MI, running,
+                    );
+                    used |= adj != qindex;
+                    running = adj;
+                }
+            }
+            (used && qindex > 0, res)
+        } else {
+            (false, 0)
+        };
+        if knobs.deltaq_mode3 {
+            // Cross-check the port-derived header fields against the real
+            // --deltaq-mode=3 bootstrap (leak-free: the port DERIVES; the
+            // assert only confirms agreement), then write the derived values.
+            assert_eq!(
+                p.delta_q.delta_q_present, dq3_present,
+                "{}: derived delta_q_present must match the real --deltaq-mode=3 header",
+                self.label
+            );
+            if dq3_present {
+                assert_eq!(
+                    p.delta_q.delta_q_res, dq3_res,
+                    "{}: derived delta_q_res must match the real header",
+                    self.label
+                );
+                p.delta_q.delta_q_res = dq3_res;
+            }
+            p.delta_q.delta_q_present = dq3_present;
+        }
+
         let speed = self.speed;
         let sf = SpeedFeatures::set_allintra(speed, p.allow_screen_content_tools, false);
         let env = SbEncodeEnv {
@@ -1146,7 +1214,15 @@ impl EncodeCell {
             // the qm_encode_witness gate, not this harness).
             qm_levels: None,
             tune: Default::default(),
-            deltaq: None,
+            deltaq: dq3_present.then(|| aom_encode::encode_sb::DeltaQFrameCtx {
+                quants: &quants,
+                deq: &deq,
+                base_qindex: qindex,
+                delta_q_res: dq3_res,
+                deltaq_strength: 0,
+                perceptual_ai: weber_map.as_ref(),
+                sb_mi: SB_MI,
+            }),
             use_chroma_trellis_rd_mult: allintra,
             coeff_costs_y: &real.coeff_costs_y,
             coeff_costs_uv: &real.coeff_costs_uv,
@@ -1234,8 +1310,8 @@ impl EncodeCell {
             signal_gate: qindex > 0,
             allow_update_cdf: !p.prefix.disable_cdf_update,
             base_qindex: qindex,
-            delta_q_present: false,
-            delta_q_res: 0,
+            delta_q_present: dq3_present,
+            delta_q_res: if dq3_present { dq3_res } else { 0 },
             allow_screen_content_tools: p.allow_screen_content_tools,
         };
 

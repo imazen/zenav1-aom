@@ -225,6 +225,27 @@ pub fn setup_delta_q_variance_boost(
     av1_adjust_q_from_delta_q_res(delta_q_res, current_base_qindex, boosted)
 }
 
+/// The per-SB qindex of `setup_delta_q` (encodeframe.c:341-370) under
+/// `DELTA_Q_PERCEPTUAL_AI` (mode 3): the wiener-variance-map qindex
+/// ([`WeberVarMap::av1_get_sbq_perceptual_ai`], keyed on the FRAME
+/// `base_qindex`), then the SAME deadzone-quantize against the RUNNING
+/// `current_base_qindex` mode 6 uses. `sb_mi` is `mi_size_wide[sb_size]`.
+#[allow(clippy::too_many_arguments)]
+pub fn setup_delta_q_perceptual_ai(
+    map: &WeberVarMap,
+    base_qindex: i32,
+    bit_depth: u8,
+    delta_q_res: i32,
+    sb_mi: i32,
+    mi_row: i32,
+    mi_col: i32,
+    current_base_qindex: i32,
+) -> i32 {
+    let current =
+        map.av1_get_sbq_perceptual_ai(base_qindex, bit_depth, delta_q_res, sb_mi, sb_mi, mi_row, mi_col);
+    av1_adjust_q_from_delta_q_res(delta_q_res, current_base_qindex, current)
+}
+
 // ===========================================================================
 // `--deltaq-mode=3` (DELTA_Q_PERCEPTUAL_AI, family C5): the wiener-variance
 // per-superblock qindex map. Ports (libaom v3.14.1, allintra_vis.c):
