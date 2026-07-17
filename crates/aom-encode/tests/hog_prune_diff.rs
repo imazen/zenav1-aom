@@ -354,5 +354,8 @@ fn prune_intra_mode_with_hog_uv_matches_c() {
     }
     assert!(some_pruned > 40, "chroma partial/all prunes: {some_pruned}");
     assert!(none_pruned > 20, "chroma no-prune cases: {none_pruned}");
-    assert!(clipped_cases > 20, "chroma edge-clipped cases: {clipped_cases}");
+    assert!(
+        clipped_cases > 20,
+        "chroma edge-clipped cases: {clipped_cases}"
+    );
 }

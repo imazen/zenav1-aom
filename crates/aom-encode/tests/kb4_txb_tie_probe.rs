@@ -8,9 +8,7 @@
 //! The port codes eob=1 there (localizer). This isolates which quantity flips.
 
 use aom_encode::BlockContext;
-use aom_encode::rd::{
-    EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex,
-};
+use aom_encode::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
 use aom_encode::real_costs::derive_real_costs;
 use aom_encode::speed_features::SpeedFeatures;
 use aom_encode::tx_search::{TxTypeSearchInputs, search_tx_type_intra};
@@ -83,7 +81,9 @@ fn kb4_txb_tie_probe_bd10_cq12() {
 
     // pred=mid, src=pred+residual (small residual => no clamp).
     let pred = vec![512u16; 16];
-    let src: Vec<u16> = (0..16).map(|i| (512i32 + residual[i] as i32) as u16).collect();
+    let src: Vec<u16> = (0..16)
+        .map(|i| (512i32 + residual[i] as i32) as u16)
+        .collect();
 
     let sf = SpeedFeatures::set_allintra(0, false, false);
     let pol = sf.tx_type_search_policy(false, 0);

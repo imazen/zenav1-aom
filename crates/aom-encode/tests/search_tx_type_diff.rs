@@ -246,9 +246,9 @@ fn search_tx_type_intra_matches_c_chain() {
                 fi_mode as i32,
                 lossless,
                 reduced,
-                1,     // use_reduced_intra_txset (speed-0 allintra)
-                false, // use_derived_intra_tx_type_set
-                true,  // enable_flip_idtx
+                1,           // use_reduced_intra_txset (speed-0 allintra)
+                false,       // use_derived_intra_tx_type_set
+                true,        // enable_flip_idtx
                 false,       // use_intra_dct_only
                 use_default, // use_default_intra_tx_type (KB-8 MODE_EVAL pass)
                 false,       // use_screen_content_tools

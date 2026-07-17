@@ -124,18 +124,61 @@ fn conv_valid(
 pub fn cnn_predict(win: &[u8]) -> [f32; CNN_OUT_BUF_SIZE] {
     // Layer-0 input: normalise the 65×65 window to `pixel / 255` (max_val =
     // 255.0f; av1_cnn_predict_img_multi_out, ext = 0 so no engine-side border).
-    let mut cur: Vec<f32> = win[..65 * 65].iter().map(|&p| f32::from(p) / 255.0).collect();
+    let mut cur: Vec<f32> = win[..65 * 65]
+        .iter()
+        .map(|&p| f32::from(p) / 255.0)
+        .collect();
     let mut cur_ch = 1usize;
     let mut cur_w = 65usize;
     let mut cur_h = 65usize;
     let mut cur_stride = 65usize;
 
     let layers = [
-        ConvLayer { in_ch: 1, out_ch: 20, filter: 5, stride: 4, kernel: &w::CNN_LAYER_0_KERNEL, bias: &w::CNN_LAYER_0_BIAS, output_num: -1 },
-        ConvLayer { in_ch: 20, out_ch: 20, filter: 2, stride: 2, kernel: &w::CNN_LAYER_1_KERNEL, bias: &w::CNN_LAYER_1_BIAS, output_num: 3 },
-        ConvLayer { in_ch: 20, out_ch: 20, filter: 2, stride: 2, kernel: &w::CNN_LAYER_2_KERNEL, bias: &w::CNN_LAYER_2_BIAS, output_num: 2 },
-        ConvLayer { in_ch: 20, out_ch: 4, filter: 2, stride: 2, kernel: &w::CNN_LAYER_3_KERNEL, bias: &w::CNN_LAYER_3_BIAS, output_num: 1 },
-        ConvLayer { in_ch: 4, out_ch: 20, filter: 2, stride: 2, kernel: &w::CNN_LAYER_4_KERNEL, bias: &w::CNN_LAYER_4_BIAS, output_num: 0 },
+        ConvLayer {
+            in_ch: 1,
+            out_ch: 20,
+            filter: 5,
+            stride: 4,
+            kernel: &w::CNN_LAYER_0_KERNEL,
+            bias: &w::CNN_LAYER_0_BIAS,
+            output_num: -1,
+        },
+        ConvLayer {
+            in_ch: 20,
+            out_ch: 20,
+            filter: 2,
+            stride: 2,
+            kernel: &w::CNN_LAYER_1_KERNEL,
+            bias: &w::CNN_LAYER_1_BIAS,
+            output_num: 3,
+        },
+        ConvLayer {
+            in_ch: 20,
+            out_ch: 20,
+            filter: 2,
+            stride: 2,
+            kernel: &w::CNN_LAYER_2_KERNEL,
+            bias: &w::CNN_LAYER_2_BIAS,
+            output_num: 2,
+        },
+        ConvLayer {
+            in_ch: 20,
+            out_ch: 4,
+            filter: 2,
+            stride: 2,
+            kernel: &w::CNN_LAYER_3_KERNEL,
+            bias: &w::CNN_LAYER_3_BIAS,
+            output_num: 1,
+        },
+        ConvLayer {
+            in_ch: 4,
+            out_ch: 20,
+            filter: 2,
+            stride: 2,
+            kernel: &w::CNN_LAYER_4_KERNEL,
+            bias: &w::CNN_LAYER_4_BIAS,
+            output_num: 0,
+        },
     ];
 
     let mut cnn_buffer = [0.0f32; CNN_OUT_BUF_SIZE];
@@ -145,7 +188,9 @@ pub fn cnn_predict(win: &[u8]) -> [f32; CNN_OUT_BUF_SIZE] {
         let out_w = (cur_w - layer.filter + layer.stride) / layer.stride;
         let out_h = (cur_h - layer.filter + layer.stride) / layer.stride;
         let mut out = vec![0.0f32; layer.out_ch * out_h * out_w];
-        conv_valid(&cur, cur_ch, cur_w, cur_h, cur_stride, layer, &mut out, out_w, out_h);
+        conv_valid(
+            &cur, cur_ch, cur_w, cur_h, cur_stride, layer, &mut out, out_w, out_h,
+        );
         // Non-linearity (all layers RELU), applied over every element.
         for v in out.iter_mut() {
             *v = relu(*v);

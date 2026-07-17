@@ -61,14 +61,28 @@ fn check(
     let w_refs: Vec<&[f32]> = weights.iter().map(|v| v.as_slice()).collect();
     let b_refs: Vec<&[f32]> = biases.iter().map(|v| v.as_slice()).collect();
     let mut got = vec![0.0f32; num_outputs];
-    nn_predict(&features, hidden, &w_refs, &b_refs, num_outputs, reduce_prec, &mut got);
+    nn_predict(
+        &features,
+        hidden,
+        &w_refs,
+        &b_refs,
+        num_outputs,
+        reduce_prec,
+        &mut got,
+    );
 
     // C oracle: flatten weights/biases in NN_CONFIG order.
     let w_flat: Vec<f32> = weights.iter().flatten().copied().collect();
     let b_flat: Vec<f32> = biases.iter().flatten().copied().collect();
     let hidden_i32: Vec<i32> = hidden.iter().map(|&h| h as i32).collect();
     let want = c::ref_nn_predict(
-        &features, num_inputs, num_outputs, &hidden_i32, &w_flat, &b_flat, reduce_prec,
+        &features,
+        num_inputs,
+        num_outputs,
+        &hidden_i32,
+        &w_flat,
+        &b_flat,
+        reduce_prec,
     );
 
     for (o, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {

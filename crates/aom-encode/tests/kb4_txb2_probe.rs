@@ -157,8 +157,17 @@ fn kb4_txb2_real_c_leaf_probe() {
         false, // use_default_intra_tx_type (speed-0: OFF — winner-mode/speed>=1)
         false, // use_screen_content_tools (mono synthetic HF cell: not screen)
     );
-    let (bsse_raw, mut mse_c) =
-        c::ref_pixel_diff_dist(&RESIDUAL, tx_bsize as i32, tx_bsize as i32, 0, 0, 0, 0, 0, 0);
+    let (bsse_raw, mut mse_c) = c::ref_pixel_diff_dist(
+        &RESIDUAL,
+        tx_bsize as i32,
+        tx_bsize as i32,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    );
     let mut bsse_c = bsse_raw;
     let s = 2 * (bd as i32 - 8);
     bsse_c = (bsse_c + ((1i64 << s) >> 1)) >> s;
@@ -169,7 +178,8 @@ fn kb4_txb2_real_c_leaf_probe() {
     let skip_trellis_c = !((mse_c as u64) <= 3200u64 * qstep_c * qstep_c);
     let kind_c = if skip_trellis_c { 1 } else { 0 }; // B : FP
     let trellis_rdmult = trellis_rdmult_intra_y(rdmult, 0, bd);
-    let (txb_skip_ctx_c, dc_sign_ctx_c) = c::ref_get_txb_ctx(plane_bsize, tx_size, 0, &above, &left);
+    let (txb_skip_ctx_c, dc_sign_ctx_c) =
+        c::ref_get_txb_ctx(plane_bsize, tx_size, 0, &above, &left);
     eprintln!(
         "=== C setup: mask={mask_c:#06x} block_sse={bsse_c} mse={mse_c} qstep={qstep_c} skip_trellis={skip_trellis_c} txb_skip_ctx={txb_skip_ctx_c} dc_sign_ctx={dc_sign_ctx_c}"
     );

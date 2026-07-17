@@ -90,7 +90,11 @@ pub fn nn_predict(
     }
 
     // Final (linear, no ReLU) output layer.
-    let input = if input_in_a { &a[..cur_len] } else { &b[..cur_len] };
+    let input = if input_in_a {
+        &a[..cur_len]
+    } else {
+        &b[..cur_len]
+    };
     let final_w = weights[num_hidden];
     let final_b = biases[num_hidden];
     for node in 0..num_outputs {

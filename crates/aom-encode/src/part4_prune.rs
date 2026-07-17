@@ -288,8 +288,9 @@ pub fn predict_4partition_prune(
         // `av1_zero_array(part4_allowed)` then set from the label bits
         // (bit0 → HORZ4, bit1 → VERT4) of every label reaching thresh —
         // an OVERWRITE of the incoming flags, exactly like the C.
-        let score =
-            nn_predict_1layer::<{ w::LABEL_SIZE }>(&features, t.old_w0, t.old_b0, t.hidden, t.old_w1, t.old_b1);
+        let score = nn_predict_1layer::<{ w::LABEL_SIZE }>(
+            &features, t.old_w0, t.old_b0, t.hidden, t.old_w1, t.old_b1,
+        );
         let mut int_score = [0i32; w::LABEL_SIZE];
         let mut max_score = -1000i32;
         for (s, is) in score.iter().zip(int_score.iter_mut()) {
@@ -313,7 +314,8 @@ pub fn predict_4partition_prune(
         return (horz4, vert4);
     }
 
-    let score = nn_predict_1layer::<{ w::NEW_LABEL_SIZE }>(&features, t.w0, t.b0, t.hidden, t.w1, t.b1);
+    let score =
+        nn_predict_1layer::<{ w::NEW_LABEL_SIZE }>(&features, t.w0, t.b0, t.hidden, t.w1, t.b1);
     let probs = softmax3(score);
 
     let thresh_idx = (level_index as usize * 3 + res_idx) * 5 + t.bsize_idx;

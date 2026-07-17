@@ -14,7 +14,7 @@
 //! Sweeps all four bsizes over their full quad_tree_idx ranges, the real
 //! qindex band, and all three res tiers (lowres/midres/hdres via frame size).
 
-use aom_encode::cnn_partition::decision::{predict_decision, CnnPruneDecision};
+use aom_encode::cnn_partition::decision::{CnnPruneDecision, predict_decision};
 use aom_sys_ref as c;
 
 struct XorShift(u64);

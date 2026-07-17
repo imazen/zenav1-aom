@@ -16,7 +16,8 @@ use aom_sys_ref as c;
 
 fn assert_slice(label: &str, ctx: &str, got: &[i32], want: &[i32]) {
     assert_eq!(
-        got, want,
+        got,
+        want,
         "{label} mismatch {ctx}\n  first diff: {:?}",
         got.iter()
             .zip(want.iter())
@@ -36,7 +37,10 @@ fn fill_coeff_costs_matches_real_c() {
     for &qindex in &[12i32, 40, 100, 128, 200, 255] {
         let kf = KfFrameContext::default_for_qindex(qindex);
         let real = derive_real_costs(&kf, true);
-        for (plane, set) in [(0usize, &real.coeff_costs_y), (1usize, &real.coeff_costs_uv)] {
+        for (plane, set) in [
+            (0usize, &real.coeff_costs_y),
+            (1usize, &real.coeff_costs_uv),
+        ] {
             for txs_ctx in 0..5usize {
                 let port = &set.by_txs_ctx[txs_ctx];
                 let (txb_skip, base_eob, base, eob_extra, dc_sign, lps, _eob) =

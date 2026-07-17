@@ -5,7 +5,6 @@
 #![allow(clippy::all)]
 #![allow(clippy::excessive_precision)]
 
-
 #[rustfmt::skip]
 pub static CNN_LAYER_0_KERNEL: [f32; 500] = [
     0.131894f32, -0.593536f32, -0.212935f32, -0.00220011f32, -0.396949f32, 0.287753f32, -0.91875f32, -0.0095057f32,

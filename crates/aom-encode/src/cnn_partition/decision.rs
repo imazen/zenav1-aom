@@ -30,7 +30,10 @@ pub struct CnnPruneDecision {
 impl CnnPruneDecision {
     /// True when the CNN constrains the search at all (any flag set).
     pub fn prunes(&self) -> bool {
-        self.none_disallowed || self.do_square_split || self.rect_disabled || self.square_split_disabled
+        self.none_disallowed
+            || self.do_square_split
+            || self.rect_disabled
+            || self.square_split_disabled
     }
 }
 
@@ -56,12 +59,47 @@ fn f64_to_f32_div(sq: i32) -> f32 {
 #[allow(clippy::type_complexity)]
 fn branch_dnn(
     bsize_idx: i32,
-) -> (&'static [f32], &'static [f32], &'static [f32], &'static [f32], &'static [f32], &'static [f32]) {
+) -> (
+    &'static [f32],
+    &'static [f32],
+    &'static [f32],
+    &'static [f32],
+    &'static [f32],
+    &'static [f32],
+) {
     match bsize_idx {
-        1 => (&w::BRANCH_0_DNN_LAYER_0_KERNEL, &w::BRANCH_0_DNN_LAYER_0_BIAS, &w::BRANCH_0_DNN_LAYER_1_KERNEL, &w::BRANCH_0_DNN_LAYER_1_BIAS, &w::BRANCH_0_LOGITS_KERNEL, &w::BRANCH_0_LOGITS_BIAS),
-        2 => (&w::BRANCH_1_DNN_LAYER_0_KERNEL, &w::BRANCH_1_DNN_LAYER_0_BIAS, &w::BRANCH_1_DNN_LAYER_1_KERNEL, &w::BRANCH_1_DNN_LAYER_1_BIAS, &w::BRANCH_1_LOGITS_KERNEL, &w::BRANCH_1_LOGITS_BIAS),
-        3 => (&w::BRANCH_2_DNN_LAYER_0_KERNEL, &w::BRANCH_2_DNN_LAYER_0_BIAS, &w::BRANCH_2_DNN_LAYER_1_KERNEL, &w::BRANCH_2_DNN_LAYER_1_BIAS, &w::BRANCH_2_LOGITS_KERNEL, &w::BRANCH_2_LOGITS_BIAS),
-        4 => (&w::BRANCH_3_DNN_LAYER_0_KERNEL, &w::BRANCH_3_DNN_LAYER_0_BIAS, &w::BRANCH_3_DNN_LAYER_1_KERNEL, &w::BRANCH_3_DNN_LAYER_1_BIAS, &w::BRANCH_3_LOGITS_KERNEL, &w::BRANCH_3_LOGITS_BIAS),
+        1 => (
+            &w::BRANCH_0_DNN_LAYER_0_KERNEL,
+            &w::BRANCH_0_DNN_LAYER_0_BIAS,
+            &w::BRANCH_0_DNN_LAYER_1_KERNEL,
+            &w::BRANCH_0_DNN_LAYER_1_BIAS,
+            &w::BRANCH_0_LOGITS_KERNEL,
+            &w::BRANCH_0_LOGITS_BIAS,
+        ),
+        2 => (
+            &w::BRANCH_1_DNN_LAYER_0_KERNEL,
+            &w::BRANCH_1_DNN_LAYER_0_BIAS,
+            &w::BRANCH_1_DNN_LAYER_1_KERNEL,
+            &w::BRANCH_1_DNN_LAYER_1_BIAS,
+            &w::BRANCH_1_LOGITS_KERNEL,
+            &w::BRANCH_1_LOGITS_BIAS,
+        ),
+        3 => (
+            &w::BRANCH_2_DNN_LAYER_0_KERNEL,
+            &w::BRANCH_2_DNN_LAYER_0_BIAS,
+            &w::BRANCH_2_DNN_LAYER_1_KERNEL,
+            &w::BRANCH_2_DNN_LAYER_1_BIAS,
+            &w::BRANCH_2_LOGITS_KERNEL,
+            &w::BRANCH_2_LOGITS_BIAS,
+        ),
+        4 => (
+            &w::BRANCH_3_DNN_LAYER_0_KERNEL,
+            &w::BRANCH_3_DNN_LAYER_0_BIAS,
+            &w::BRANCH_3_DNN_LAYER_1_KERNEL,
+            &w::BRANCH_3_DNN_LAYER_1_BIAS,
+            &w::BRANCH_3_LOGITS_KERNEL,
+            &w::BRANCH_3_LOGITS_BIAS,
+        ),
         _ => unreachable!("intra-CNN bsize_idx in 1..=4"),
     }
 }
@@ -175,7 +213,15 @@ pub fn predict_decision(
     let (w0, b0, w1, b1, wl, bl) = branch_dnn(bsize_idx);
     let mut logits = [0.0f32; 4];
     // num_outputs = BRANCH_*_NUM_LOGITS = 1; reduce_prec = 1 (as C calls it).
-    nn::nn_predict(&features[..nf], &[16, 24], &[w0, w1, wl], &[b0, b1, bl], 1, true, &mut logits);
+    nn::nn_predict(
+        &features[..nf],
+        &[16, 24],
+        &[w0, w1, wl],
+        &[b0, b1, bl],
+        1,
+        true,
+        &mut logits,
+    );
 
     // Res-tier thresholds (partition_strategy.c:311-329).
     let mind = frame_w.min(frame_h);

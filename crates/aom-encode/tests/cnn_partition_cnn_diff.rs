@@ -13,7 +13,7 @@
 //!      inside the DNN prec-reduce bucket so the downstream split/no-split
 //!      FLAGS agree (that flag-parity is asserted in the full-model diff).
 
-use aom_encode::cnn_partition::cnn::{cnn_predict, CNN_OUT_BUF_SIZE};
+use aom_encode::cnn_partition::cnn::{CNN_OUT_BUF_SIZE, cnn_predict};
 use aom_sys_ref as c;
 
 struct XorShift(u64);

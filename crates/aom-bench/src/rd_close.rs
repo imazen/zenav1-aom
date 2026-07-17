@@ -157,8 +157,8 @@ pub fn splice_frame_obu(reference_stream: &[u8], frame_obu_payload: &[u8]) -> Ve
         let hdr = read_obu_header(&reference_stream[pos..]).expect("valid OBU header");
         let after_header = pos + hdr.header_len;
         assert!(hdr.obu_has_size_field, "shim streams always carry sizes");
-        let (size, size_bytes) = leb128::uleb_decode(&reference_stream[after_header..])
-            .expect("valid leb128 OBU size");
+        let (size, size_bytes) =
+            leb128::uleb_decode(&reference_stream[after_header..]).expect("valid leb128 OBU size");
         let payload_end = after_header + size_bytes + size as usize;
         if hdr.obu_type == OBU_FRAME {
             assert!(!spliced, "reference stream has more than one frame OBU");
@@ -280,7 +280,10 @@ pub fn compare_cell(label: &str, src: &EncodeCell, port_tu: &[u8], c_tu: &[u8]) 
 
     let c_rgb = rgb_of_decode(&c_dec);
     let zensim_c = z
-        .compute(&src_slice, &RgbSlice::new(&c_rgb, c_dec.width, c_dec.height))
+        .compute(
+            &src_slice,
+            &RgbSlice::new(&c_rgb, c_dec.width, c_dec.height),
+        )
         .unwrap_or_else(|e| panic!("{label}: zensim on the C recon failed: {e:?}"))
         .score();
 
@@ -294,9 +297,12 @@ pub fn compare_cell(label: &str, src: &EncodeCell, port_tu: &[u8], c_tu: &[u8]) 
             "{label}: port stream geometry differs from the source cell"
         );
         let p_rgb = rgb_of_decode(&p_dec);
-        z.compute(&src_slice, &RgbSlice::new(&p_rgb, p_dec.width, p_dec.height))
-            .unwrap_or_else(|e| panic!("{label}: zensim on the port recon failed: {e:?}"))
-            .score()
+        z.compute(
+            &src_slice,
+            &RgbSlice::new(&p_rgb, p_dec.width, p_dec.height),
+        )
+        .unwrap_or_else(|e| panic!("{label}: zensim on the port recon failed: {e:?}"))
+        .score()
     };
 
     let size_port = port_tu.len();

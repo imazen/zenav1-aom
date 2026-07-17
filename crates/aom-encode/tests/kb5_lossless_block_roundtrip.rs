@@ -85,5 +85,8 @@ fn lossless_block_roundtrips_through_quant() {
     if let Some(f) = &first_fail_b {
         eprintln!("first B failure:\n    {f}");
     }
-    assert_eq!(fails_b, 0, "coded-lossless B-quant block must round-trip exactly");
+    assert_eq!(
+        fails_b, 0,
+        "coded-lossless B-quant block must round-trip exactly"
+    );
 }

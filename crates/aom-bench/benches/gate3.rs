@@ -95,8 +95,8 @@ fn bench_encode(suite: &mut Suite) {
 }
 
 fn main() {
-    let group_filter: Option<String> = std::env::args()
-        .find_map(|a| a.strip_prefix("--group=").map(String::from));
+    let group_filter: Option<String> =
+        std::env::args().find_map(|a| a.strip_prefix("--group=").map(String::from));
     // Smoke mode exists to prove the harness runs; its numbers are discarded,
     // so skip the resource gate's per-round waits. Real runs keep the default
     // gate (which flags noisy rounds — the Gate-3 baseline must be quiet-box).

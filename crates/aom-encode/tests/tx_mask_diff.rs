@@ -99,8 +99,9 @@ fn tx_mask_intra_matches_c() {
         ..TxMaskParams::speed0_allintra()
     };
     let (mask, txk) = get_tx_mask_intra(2, 4, false, 0, false, false, &p);
-    let (mask_c, txk_c) =
-        c::ref_get_tx_mask_intra(2, 4, false, 0, false, false, 1, false, true, true, false, false);
+    let (mask_c, txk_c) = c::ref_get_tx_mask_intra(
+        2, 4, false, 0, false, false, 1, false, true, true, false, false,
+    );
     assert_eq!((mask, txk.unwrap_or(TX_TYPES) as i32), (mask_c, txk_c));
     assert_eq!(mask, 1);
     // Non-vacuity: both single-type and multi-type outcomes heavily exercised.

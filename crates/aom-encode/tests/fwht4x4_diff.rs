@@ -125,7 +125,10 @@ fn fwht4x4_roundtrip_dc_only_inverse() {
             av1_highbd_iwht4x4_add(&coeff, &mut recon, 4, 1, bd);
             let want = (pred + c_val) as u16;
             for (i, &px) in recon.iter().enumerate() {
-                assert_eq!(px, want, "roundtrip dc-only mismatch bd{bd} c={c_val} i={i}");
+                assert_eq!(
+                    px, want,
+                    "roundtrip dc-only mismatch bd{bd} c={c_val} i={i}"
+                );
             }
         }
     }

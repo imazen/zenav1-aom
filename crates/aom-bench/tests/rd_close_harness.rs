@@ -79,7 +79,10 @@ fn rd_close_flags_genuine_divergence_out_of_band() {
 
     let fake_port_tu = splice_frame_obu(&c20, &EncodeCell::frame_obu_payload(&c63));
     let res = compare_cell("rdc_divergence_cq63_vs_cq20", &cell20, &fake_port_tu, &c20);
-    println!("{}", render_table(std::slice::from_ref(&res), &RdBands::default()));
+    println!(
+        "{}",
+        render_table(std::slice::from_ref(&res), &RdBands::default())
+    );
 
     assert!(!res.bit_identical, "cq63 vs cq20 cannot be bit-identical");
     assert!(
@@ -110,7 +113,10 @@ fn rd_close_flags_genuine_divergence_out_of_band() {
         assert_rd_close(&results, &RdBands::default());
     }))
     .is_err();
-    assert!(panicked, "assert_rd_close must panic on an out-of-band cell");
+    assert!(
+        panicked,
+        "assert_rd_close must panic on an out-of-band cell"
+    );
 }
 
 /// Splicing a stream's OWN frame payload back in reproduces it byte-for-byte
@@ -121,7 +127,10 @@ fn rd_close_splice_is_identity_on_own_payload() {
     aom_sys_ref::ref_init();
     let c = cell.c_encode();
     let respliced = splice_frame_obu(&c, &EncodeCell::frame_obu_payload(&c));
-    assert_eq!(respliced, c, "splice(stream, own payload) must be an identity");
+    assert_eq!(
+        respliced, c,
+        "splice(stream, own payload) must be an identity"
+    );
 }
 
 /// The shared YUV→RGB transform: mono replicates luma, 4:2:0 upsamples

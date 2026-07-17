@@ -80,9 +80,12 @@ fn real_base_qindex(
         !bytes.is_empty(),
         "C encode produced no bytes (bd={bd} usage={usage} cq={cq} mono={mono})"
     );
-    let (_dec, _cfg, hdr) = aom_decode::frame::decode_frame_obus_prefilter(&bytes).unwrap_or_else(
-        |e| panic!("decode failed (bd={bd} usage={usage} cq={cq} mono={mono} ss=({ss_x},{ss_y})): {e}"),
-    );
+    let (_dec, _cfg, hdr) =
+        aom_decode::frame::decode_frame_obus_prefilter(&bytes).unwrap_or_else(|e| {
+            panic!(
+                "decode failed (bd={bd} usage={usage} cq={cq} mono={mono} ss=({ss_x},{ss_y})): {e}"
+            )
+        });
     hdr.quant.base_qindex
 }
 
@@ -131,7 +134,11 @@ fn base_qindex_derived_from_cq_matches_c() {
 
     // Anti-vacuity: the sweep must genuinely exercise the whole table and the
     // derivation must be a real (non-identity) transform.
-    assert_eq!(checks, 64 * 2 * 3 + 2 * 4, "unexpected check count {checks}");
+    assert_eq!(
+        checks,
+        64 * 2 * 3 + 2 * 4,
+        "unexpected check count {checks}"
+    );
     assert!(
         distinct.len() >= 60,
         "cq 0..=63 should map to ~64 distinct qindices, saw {} ({distinct:?})",
