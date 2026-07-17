@@ -685,7 +685,8 @@ mod tests {
                         let mvq4_col = dv_col << (1 - ss_x as i32);
                         let ref_off = (block_off as i64
                             + (mvq4_row >> 4) as i64 * stride as i64
-                            + (mvq4_col >> 4) as i64) as usize;
+                            + (mvq4_col >> 4) as i64)
+                            as usize;
                         let (subpel_x, subpel_y) = (mvq4_col & 15, mvq4_row & 15);
                         let max = (1i32 << bd) - 1;
                         let clip = |v: i32| v.clamp(0, max) as u16;
@@ -696,13 +697,14 @@ mod tests {
                                 let a00 = recon[so + c] as i32;
                                 want[r * cw + c] = match (subpel_x != 0, subpel_y != 0) {
                                     (false, false) => a00 as u16,
-                                    (true, false) => clip((a00 + recon[so + c + 1] as i32 + 1) >> 1),
+                                    (true, false) => {
+                                        clip((a00 + recon[so + c + 1] as i32 + 1) >> 1)
+                                    }
                                     (false, true) => {
                                         clip((a00 + recon[so + c + stride] as i32 + 1) >> 1)
                                     }
                                     (true, true) => clip(
-                                        (a00
-                                            + recon[so + c + 1] as i32
+                                        (a00 + recon[so + c + 1] as i32
                                             + recon[so + c + stride] as i32
                                             + recon[so + c + stride + 1] as i32
                                             + 2)

@@ -25,8 +25,8 @@
 //! screen detection does NOT fire there, palette is never searched by either
 //! side, and the cell must stay in band (it is byte-exact today).
 
-use aom_bench::{EncodeCell, ToggleKnobs};
 use aom_bench::rd_close::{self, RdBands};
+use aom_bench::{EncodeCell, ToggleKnobs};
 use aom_entropy::header::{
     CdefHeader, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader, LoopfilterHeader,
     RestorationHeader,
@@ -386,7 +386,16 @@ fn replay_tree(
         let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
         let subsize = get_partition_subsize(bsize, p as i32) as usize;
         for (dr, dc) in [(0, 0), (0, hbs), (hbs, 0), (hbs, hbs)] {
-            replay_tree(tree, cursor, mi_row + dr, mi_col + dc, subsize, mi_rows, mi_cols, out);
+            replay_tree(
+                tree,
+                cursor,
+                mi_row + dr,
+                mi_col + dc,
+                subsize,
+                mi_rows,
+                mi_cols,
+                out,
+            );
         }
     }
 }
@@ -396,7 +405,7 @@ fn replay_tree(
 fn localize_palette_cell(cell: &EncodeCell) -> bool {
     // Palette-OFF control: is the divergence purely palette-induced?
     let c_off = cell.c_encode_screen(false, false);
-    let port_off = cell.port_encode_with(&c_off, false);
+    let port_off = cell.port_encode_with(&c_off, &ToggleKnobs::default());
     let port_off_tu = rd_close::splice_frame_obu(&c_off, &port_off);
     eprintln!(
         "--- {} palette-OFF: c_off={}B port_off={}B bit_identical={}",
@@ -407,7 +416,13 @@ fn localize_palette_cell(cell: &EncodeCell) -> bool {
     );
 
     let c_tu = cell.c_encode_screen(true, false);
-    let port_on = cell.port_encode_with(&c_tu, true);
+    let port_on = cell.port_encode_with(
+        &c_tu,
+        &ToggleKnobs {
+            enable_palette: true,
+            ..Default::default()
+        },
+    );
     let port_tu = rd_close::splice_frame_obu(&c_tu, &port_on);
     eprintln!(
         "\n=== {} ===  c_tu={}B  port_tu={}B  bit_identical={}",
@@ -437,8 +452,26 @@ fn localize_palette_cell(cell: &EncodeCell) -> bool {
     while sr < mi_rows {
         let mut sc = 0;
         while sc < mi_cols {
-            replay_tree(&t_real.tree, &mut cr, sr, sc, SB_BSIZE, mi_rows, mi_cols, &mut real_seq);
-            replay_tree(&t_ours.tree, &mut co, sr, sc, SB_BSIZE, mi_rows, mi_cols, &mut ours_seq);
+            replay_tree(
+                &t_real.tree,
+                &mut cr,
+                sr,
+                sc,
+                SB_BSIZE,
+                mi_rows,
+                mi_cols,
+                &mut real_seq,
+            );
+            replay_tree(
+                &t_ours.tree,
+                &mut co,
+                sr,
+                sc,
+                SB_BSIZE,
+                mi_rows,
+                mi_cols,
+                &mut ours_seq,
+            );
             sc += SB_MI;
         }
         sr += SB_MI;
@@ -452,7 +485,13 @@ fn localize_palette_cell(cell: &EncodeCell) -> bool {
         if r.3 != o.3 {
             eprintln!(
                 ">>> FIRST PARTITION DIVERGENCE at (mi_row={}, mi_col={}, bsize={}): real=PARTITION_{} ({}) ours=PARTITION_{} ({})",
-                r.0, r.1, r.2, PARTITION_NAMES[r.3 as usize], r.3, PARTITION_NAMES[o.3 as usize], o.3
+                r.0,
+                r.1,
+                r.2,
+                PARTITION_NAMES[r.3 as usize],
+                r.3,
+                PARTITION_NAMES[o.3 as usize],
+                o.3
             );
             return false;
         }
@@ -487,13 +526,32 @@ fn localize_palette_cell(cell: &EncodeCell) -> bool {
                     ">>> FIRST LEAF MISMATCH at (mi_row={}, mi_col={}) [modes={modes_differ} palette={palette_differs} txbs={txbs_differ}]:\n    \
                      real bsize={} part={} y={} adly={} uv={} cfl=({},{}) fi={} tx={} pal={:?} txbs={:?} txbs_uv={:?}\n    \
                      ours bsize={} part={} y={} adly={} uv={} cfl=({},{}) fi={} tx={} pal={:?} txbs={:?} txbs_uv={:?}",
-                    rb.mi_row, rb.mi_col,
-                    rb.bsize, rb.partition, rb.info.y_mode, rb.info.angle_delta_y, rb.info.uv_mode,
-                    rb.info.cfl_alpha_idx, rb.info.cfl_joint_sign, rb.info.use_filter_intra, rb.tx_size,
-                    rb.info.palette_size, rb.txbs, rb.txbs_uv,
-                    ob.bsize, ob.partition, ob.info.y_mode, ob.info.angle_delta_y, ob.info.uv_mode,
-                    ob.info.cfl_alpha_idx, ob.info.cfl_joint_sign, ob.info.use_filter_intra, ob.tx_size,
-                    ob.info.palette_size, ob.txbs, ob.txbs_uv,
+                    rb.mi_row,
+                    rb.mi_col,
+                    rb.bsize,
+                    rb.partition,
+                    rb.info.y_mode,
+                    rb.info.angle_delta_y,
+                    rb.info.uv_mode,
+                    rb.info.cfl_alpha_idx,
+                    rb.info.cfl_joint_sign,
+                    rb.info.use_filter_intra,
+                    rb.tx_size,
+                    rb.info.palette_size,
+                    rb.txbs,
+                    rb.txbs_uv,
+                    ob.bsize,
+                    ob.partition,
+                    ob.info.y_mode,
+                    ob.info.angle_delta_y,
+                    ob.info.uv_mode,
+                    ob.info.cfl_alpha_idx,
+                    ob.info.cfl_joint_sign,
+                    ob.info.use_filter_intra,
+                    ob.tx_size,
+                    ob.info.palette_size,
+                    ob.txbs,
+                    ob.txbs_uv,
                 );
                 if palette_differs {
                     eprintln!(
@@ -524,13 +582,33 @@ fn localize_palette_cell(cell: &EncodeCell) -> bool {
         ),
         (
             "U",
-            (&t_real.recon_u, t_real.stride_uv, t_real.width_uv, t_real.height_uv),
-            (&t_ours.recon_u, t_ours.stride_uv, t_ours.width_uv, t_ours.height_uv),
+            (
+                &t_real.recon_u,
+                t_real.stride_uv,
+                t_real.width_uv,
+                t_real.height_uv,
+            ),
+            (
+                &t_ours.recon_u,
+                t_ours.stride_uv,
+                t_ours.width_uv,
+                t_ours.height_uv,
+            ),
         ),
         (
             "V",
-            (&t_real.recon_v, t_real.stride_uv, t_real.width_uv, t_real.height_uv),
-            (&t_ours.recon_v, t_ours.stride_uv, t_ours.width_uv, t_ours.height_uv),
+            (
+                &t_real.recon_v,
+                t_real.stride_uv,
+                t_real.width_uv,
+                t_real.height_uv,
+            ),
+            (
+                &t_ours.recon_v,
+                t_ours.stride_uv,
+                t_ours.width_uv,
+                t_ours.height_uv,
+            ),
         ),
     ] {
         for row in 0..rh.min(oh) {
@@ -546,7 +624,9 @@ fn localize_palette_cell(cell: &EncodeCell) -> bool {
             }
         }
     }
-    eprintln!("reconstruction planes IDENTICAL — byte divergence is pure entropy coding (unexpected)");
+    eprintln!(
+        "reconstruction planes IDENTICAL — byte divergence is pure entropy coding (unexpected)"
+    );
     false
 }
 
@@ -566,8 +646,15 @@ fn localize_palette_cell(cell: &EncodeCell) -> bool {
 #[test]
 fn decode_diff_palette_close_cells() {
     c::ref_init();
-    let ui_exact =
-        localize_palette_cell(&screen_cell("ui_420_128_cq32", 128, 128, false, 32, ui_luma, ui_chroma));
+    let ui_exact = localize_palette_cell(&screen_cell(
+        "ui_420_128_cq32",
+        128,
+        128,
+        false,
+        32,
+        ui_luma,
+        ui_chroma,
+    ));
     let text_exact = localize_palette_cell(&screen_cell(
         "text_420_128_cq20",
         128,
