@@ -911,12 +911,13 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
     cpu4 cq32}. Interior partition/mode near-ties (KB-2/10/11/12 family).
   - `00-quantizer-00` 128² crop (photo, 4-SB): 3/12 — mostly DIFF (cq63 matches at cpu1/2).
   - `23-film_grain-50` 64² crop (1-SB): 4/12 — film-grain near-ties.
-- **Gate is REPORT-ONLY** (map captured on origin): asserts only an anti-vacuous speed-0
-  harness-faithfulness control (real 64² cq20 must byte-match — KB-6 30/30). Speed>=1 cells
-  graduate to byte-match asserts (the `byte_exact` list) as roots land. Harness change:
-  `attempt_case_content_uv` now delegates to `attempt_case_content_uv_sep` (separate U/V) —
+- **Gate = GRADUATE + PIN** (report-only on the first landing, then converted): asserts (1) the
+  anti-vacuous speed-0 harness control (real 64² cq20 must byte-match — KB-6 30/30); (2) the **24
+  MATCH cells** byte-match (regression guard); (3) the **36 DIFF cells** DIVERGE (self-promoting
+  pin, KB-P29/KB-12 pattern — a DIFF→MATCH flip fails the pin → promote into `byte_exact`). Harness
+  change: `attempt_case_content_uv` now delegates to `attempt_case_content_uv_sep` (separate U/V) —
   byte-identical for every existing synthetic caller (U==V), so speeds 0-9 synthetic gates + KB-6
-  speed-0 map stay byte-unchanged.
+  speed-0 map stay byte-unchanged (verified: speed1 + speed4 420 gates still 64/64).
 - **LOCALIZED (2026-07-17, decode-both via `localize_real_speed`, kb6_real_rd_localize.rs):** EVERY
   DIFF is a PARTITION near-tie at **BLOCK_16X16 (bsize=6)** or BLOCK_8X8, NOT a frame-edge/partial-SB
   issue (the 196 first-divergences are all INTERIOR nodes inside SB(0,0), mi_col 6..12, never the

@@ -3388,15 +3388,17 @@ fn ivf_temporal_units(data: &[u8]) -> Vec<Vec<u8>> {
 /// pack vs real aomenc `--cpu-used=speed` byte-for-byte, at every
 /// cpu-used ∈ {1,2,3,4} × cq ∈ {12,32,63}. Prints the MATCH/DIFF map.
 ///
-/// REPORT-ONLY (captures the map on origin). The only assertion is an
-/// anti-vacuous harness-faithfulness control: the real 64×64 cq20 cell at
-/// **speed 0** MUST byte-match (KB-6 proved 30/30 at speed 0 through the sibling
-/// `run_case`; this control proves `attempt_case_content_uv_sep` reproduces that
-/// exact speed-0 encode on real separate-U/V content). The speed≥1 cells are
-/// NOT yet asserted — each graduates to a byte-match assert as its divergence
-/// root is fixed C-faithfully. When a `DIFF` cell here becomes `MATCH`, promote
-/// it into `byte_exact` below (a match on an un-promoted cell is a signal to
-/// promote, never to relax).
+/// GRADUATE + PIN gate (was report-only on the landing commit; the map = 24/60).
+/// Three assertions: (1) an anti-vacuous harness-faithfulness control — the real
+/// 64×64 cq20 cell at **speed 0** MUST byte-match (KB-6 proved 30/30 at speed 0
+/// through the sibling `run_case`; proves `attempt_case_content_uv_sep`
+/// reproduces that speed-0 encode on real separate-U/V content); (2) the 24
+/// `byte_exact` cells MUST byte-match (regression guard); (3) every OTHER cell is
+/// a PINNED near-tie and MUST diverge (self-promoting, KB-P29/KB-12 pattern). The
+/// 36 pinned DIFFs are all interior BLOCK_16X16/8X8 partition RD near-ties
+/// (KB-13: the port over-picks AB/SPLIT where C picks simpler) — genuine, not a
+/// shared root (the AB prune is C-faithful for allintra). When a fix closes a
+/// pinned cell this test FAILS on it → move it into `byte_exact` (never relax).
 #[test]
 fn encoder_gate_real_content_speed1to4_e2e() {
     let dir = corpus_dir();
@@ -3410,9 +3412,40 @@ fn encoder_gate_real_content_speed1to4_e2e() {
         ("av1-1-b8-00-quantizer-00", 128, 128, 64, 64), // photo, 4-SB aligned crop
         ("av1-1-b8-23-film_grain-50", 64, 64, 96, 64), // film grain, 1-SB aligned crop
     ];
-    // Cells already byte-exact at speed 1..4 (graduated as roots land). Empty on
-    // the report-only landing; each entry is a hard byte-match assert below.
-    let byte_exact: &[&str] = &[];
+    // Cells byte-exact at speed 1..4 (graduated 2026-07-17 from the map run) —
+    // hard byte-match asserts (regression guard). Every OTHER (cpu,cq) below is a
+    // pinned near-tie (asserted DIVERGE, self-promoting: a DIFF->MATCH flip fails
+    // the pin => promote it here; a MATCH->DIFF flip on these is a regression).
+    let byte_exact: &[&str] = &[
+        // 01-size-64x64 (1-SB): 12/12 byte-exact at speed 1..4.
+        "av1-1-b8-01-size-64x64 420 cpu1 cq12",
+        "av1-1-b8-01-size-64x64 420 cpu1 cq32",
+        "av1-1-b8-01-size-64x64 420 cpu1 cq63",
+        "av1-1-b8-01-size-64x64 420 cpu2 cq12",
+        "av1-1-b8-01-size-64x64 420 cpu2 cq32",
+        "av1-1-b8-01-size-64x64 420 cpu2 cq63",
+        "av1-1-b8-01-size-64x64 420 cpu3 cq12",
+        "av1-1-b8-01-size-64x64 420 cpu3 cq32",
+        "av1-1-b8-01-size-64x64 420 cpu3 cq63",
+        "av1-1-b8-01-size-64x64 420 cpu4 cq12",
+        "av1-1-b8-01-size-64x64 420 cpu4 cq32",
+        "av1-1-b8-01-size-64x64 420 cpu4 cq63",
+        // quantizer-00 64x64@96,64 (photo, 1-SB): 7 byte-exact.
+        "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu1 cq32",
+        "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu1 cq63",
+        "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu2 cq63",
+        "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu3 cq12",
+        "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu3 cq63",
+        "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu4 cq12",
+        "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu4 cq63",
+        // quantizer-00 128x128@64,64 (photo, 4-SB): 2 byte-exact.
+        "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu1 cq63",
+        "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu2 cq63",
+        // 23-film_grain-50 64x64@96,64 (film, 1-SB): 3 byte-exact.
+        "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu1 cq32",
+        "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu2 cq63",
+        "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu4 cq63",
+    ];
 
     let mut results: Vec<(String, bool)> = Vec::new();
     let mut control_ok = false;
@@ -3501,16 +3534,26 @@ fn encoder_gate_real_content_speed1to4_e2e() {
          speed>=1 map below cannot be trusted"
     );
 
-    // Graduated byte-match asserts: each cell listed in `byte_exact` MUST match.
-    for cell in byte_exact {
-        let ok = results
-            .iter()
-            .find(|(n, _)| n == cell)
-            .map(|(_, ok)| *ok)
-            .unwrap_or_else(|| panic!("graduated cell `{cell}` not found in the map"));
-        assert!(
-            ok,
-            "regression: graduated real-content cell `{cell}` must byte-match real aomenc"
-        );
+    // Graduated byte-match asserts: each cell in `byte_exact` MUST match
+    // (regression guard). Every OTHER cell is a PINNED near-tie and MUST diverge
+    // (self-promoting, KB-P29/KB-12 pattern): the DIFFs are all interior
+    // BLOCK_16X16/8X8 partition RD near-ties (KB-13; the port over-picks AB/SPLIT)
+    // — genuine, not a shared root (the AB prune is C-faithful for allintra). When
+    // a fix closes one, this test FAILS on the flipped cell -> move it into
+    // `byte_exact`. A byte_exact cell that regresses to DIVERGE also FAILS here.
+    for (label, ok) in &results {
+        let graduated = byte_exact.contains(&label.as_str());
+        if graduated {
+            assert!(
+                *ok,
+                "regression: graduated real-content cell `{label}` must byte-match real aomenc"
+            );
+        } else {
+            assert!(
+                !*ok,
+                "PROMOTE: pinned real-content near-tie `{label}` now byte-matches real aomenc — \
+                 move it into `byte_exact` (a root was fixed; see KB-13)"
+            );
+        }
     }
 }
