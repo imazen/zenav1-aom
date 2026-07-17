@@ -3623,3 +3623,45 @@ Do NOT run an intrabc RD-closeness gate until the coeff arm lands.
   delta-q threading), validated, composite arm added; rebased over the toggle-sweep (C8-C11) +
   loop-restoration (C2) landings (additive conflict resolutions in `tx_search.rs` /
   `partition_pick.rs` / `aom-sys-ref/src/lib.rs`, all keep-both).
+
+## C5 `--deltaq-mode=3` DELTA_Q_PERCEPTUAL_AI — BIT-IDENTICAL (2026-07-17, C5 deltaq track)
+
+The stills-specific perceptual-AI delta-q arm. 7/7 real-content cells BYTE-IDENTICAL to real
+aomenc `--deltaq-mode=3` (`encoder_gate_deltaq_mode3_e2e` in `deltaq_mode3_e2e.rs`): 192²,
+192×128, 128×192 bd8 4:2:0 real content (crops of `av1-1-b8-01-size-196x196`), cq12..63. On these
+sizes mode-3 modulates (9/6 SBs each get a distinct wiener qindex) — the anti-vacuous
+`deltaq_mode3_knob_bites` witness pins that the reference differs from a plain encode AND the port
+without the wiener arm diverges. OFF by default (`deltaq` default 0); the proven envelope + the
+mode-6 Variance-Boost gate are re-verified byte-unchanged.
+
+Ported (`crates/aom-encode/src/allintra_vis.rs`, extending the mode-6 module):
+- `av1_get_deltaq_offset` (rd.c:466) — differentially locked 18432/18432 vs the exported C fn
+  (`deltaq_perceptual_ai_diff::get_deltaq_offset_matches_c`).
+- `WeberVarMap` + the map reductions `get_{satd,sse,max_scale,window_wiener_var,var_perceptual_ai}`
+  (allintra_vis.c:93-246; the C `(int)`-cast + i64-accumulate structure, the `frame_info.mi_cols`
+  map layout) + `av1_get_sbq_perceptual_ai` (:743, the default non-rate-guide arm).
+- `av1_set_mb_wiener_variance` (:592) — the map BUILDER: per-8x8 intra-SATD search over all 13
+  intra modes at angle_delta 0 with SOURCE pixels as the predictor neighbours (:345-347), FP-quantize
+  (`AV1_XFORM_QUANT_FP`) the DCT of the best mode's residual, reconstruct, record Weber stats; then
+  `norm_wiener_variance` = `estimate_wiener_var_norm` + 2 refinement iterations (:644-680). Reuses the
+  port's already-bit-exact kernels (`predict_intra_high`, `intra_avail`, `av1_fwd_txfm2d`,
+  `hadamard::satd`, `av1_quantize_fp`, `av1_inverse_transform_add`); all f64 `sqrt`/`ln`/`exp` resolve
+  to the same glibc libm as the C build.
+- `setup_delta_q_perceptual_ai` — the mode-3 arm of `setup_delta_q` (encodeframe.c:349-361), reusing
+  the shared `av1_adjust_q_from_delta_q_res` deadzone quantize vs the running `current_base_qindex`.
+
+Threading: `DeltaQFrameCtx` gained `perceptual_ai: Option<&WeberVarMap>` + `sb_mi` (additive; `None`
+= the mode-6 path); `pack_tile`'s per-SB derivation branches on it. `aom-bench` `ToggleKnobs.deltaq_mode3`
++ a `port_encode_impl` mode-3 arm that builds the map, derives `delta_q_present`/`delta_q_res=4`
+port-side and CROSS-CHECKS them against the bootstrap header (leak-free — the per-SB map is never
+copied from C).
+
+Commits: 2d3831f (chunk 1, `av1_get_deltaq_offset`) + c521cf7 (chunk 2, map reductions + per-SB
+qindex) + 7a484dd (chunk 3, the wiener BUILDER) + 510993d (chunk 4, pack threading + the e2e gate).
+
+Follow-ups (NOT done, documented in the C5 PARITY row): the highbd (bd10/12) FP-quantize arm; the
+partial-SB source-border extension (dims not a multiple of 8px — the KB-6 partial-SB analogue);
+`--enable-rate-guide-deltaq` (`get_rate_guided_quantizer` + `ext_rate_guided_quantization`, the
+external-rate-file arm); `--auto-intra-tools-off` (`automatic_intra_tools_off` — a separate intra-tool
+disable gate). The `--aq-mode=1/2` (variance/complexity segmentation) arm is unstarted (needs the
+two-pass path on stills). `--deltaq-mode=1` OBJECTIVE is TPL-gated → inert for a lone still.

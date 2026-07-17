@@ -76,6 +76,7 @@ Byte-identity gates landed and green on origin/main. Any regression here is a sh
 | **tune=IQ / tune=SSIMULACRA2 family** (`--tune=iq` / `--tune=ssimulacra2`, family C4): each bundle piece e2e byte-identical — QM-level formulas (`aom_get_qmlevel_luma_ssimulacra2` + `_444_chroma`), QM-PSNR dist metric (trellis + tx-search transform-domain distortion QM-weighted), `--sharpness` 0..7, `--enable-chroma-deltaq`, `--enable-adaptive-sharpness`, Variance-Boost `--deltaq-mode=6` — PLUS the **full composite bundle** (54/54 cells: mono/420/444 × 64/128/192 × cq12/32/50, CDEF overridden off = the separate C1 track, symbol-inert). All OFF by default (`TuneKnobs::default()` = PSNR). Anti-vacuous witnesses for sharpness/adaptive/variance-boost + `tune_shim_smoke` | `encoder_gate_tune_iq_e2e` (9 tests) + `qm_level_diff` + `tune_shim_smoke` | 2026-07-17 |
 | **Superres encoder-side, FIXED denom, bd8** (`--superres-mode=fixed --superres-denominator=D`, family C6): **13/13 cells BYTE-IDENTICAL** — real-content 196² 4:2:0 (denoms 9/12/14 × cq{20,32,48}) + mono (denoms 9/12 × cq{20,48}). The source is downscaled horizontally to the coded `FrameWidth` via the ported non-normative `av1_resize_plane` (`aom_encode::resize`, differentially bit-exact vs the exported C symbol — interpolate 5-band + down2_symeven/symodd + resize_multistep + `coded_superres_width`), encoded at the reduced width (existing speed-0 KEY machinery, mi grid sized to coded_w), superres denom + upscaled width signalled in the header (`write_superres_scale`); port+C decoders agree on the upscaled recon. Superres OFF by default. **Anti-vacuity**: `scale_denominator == D`, `coded_w < w`. **Follow-ups (Section C6)**: highbd (10/12-bit) downscale (`highbd_resize_plane`), the 8-bit denom-16-even-width optimized-scaler corner (`av1_resize_and_extend_frame`), and AUTO/QTHRESH/RANDOM denom selection + the recode loop. | `encoder_gate_superres_{fixed_real_content,fixed_mono}_rd_close` (aom-bench; rd_close report + full byte-identity asserts) | 2505b49f (kernel) + (this landing) |
 | **C7 film-grain table-inject** (`--film-grain-table` / `AV1E_SET_FILM_GRAIN_TABLE`): the port's OWN grain-table reader + lookup (`aom-encode/src/grain_table.rs`, port of `aom_dsp/grain_table.c` `aom_film_grain_table_read`/`_lookup`) → `FilmGrainParams` → the already-bit-exact `write_film_grain_params` header writer. Byte-identical vs real aomenc on 4:2:0 bd8 REAL content (64² cq20/32, 128² cq12) + mono/444/bd10 synthetic × built-in test vectors 1/2/6/15 (rich full-chroma / max-lag / chroma-points-absent / chroma-scaling-from-luma). Grain is decode-side synthesis → coded tiles UNCHANGED (the C shim replicates the plain `encode_kf_pass` control set so only the seq present bit + frame grain block are added). No-bootstrap-leak witness: injecting a different vector's params DIVERGES. | `film_grain_gate.rs::film_grain_table_inject_{420_real,format_axes}` + `film_grain_no_bootstrap_leak_witness` (aom-bench) | (this landing) |
+| **`--deltaq-mode=3` DELTA_Q_PERCEPTUAL_AI** (family C5, the stills-specific perceptual-AI arm): 7/7 cells BYTE-IDENTICAL to real aomenc `--deltaq-mode=3` — real content 192²/192×128/128×192 4:2:0 cq12..63 (9/6 SBs each get a distinct wiener qindex; the delta fires + the port reproduces it). Full port of `av1_set_mb_wiener_variance` (per-8x8 intra-SATD search + FP-quantize + Weber stats + the `norm_wiener_variance` `estimate`+2-iter refinement), the map reductions (`get_{satd,sse,max_scale,window_wiener_var,var_perceptual_ai}`), `av1_get_sbq_perceptual_ai` + `av1_get_deltaq_offset` (`av1_get_deltaq_offset` differentially locked 18432/18432 vs the exported C fn), and the per-SB pack threading (`setup_delta_q_perceptual_ai` → the shared `av1_adjust_q_from_delta_q_res`, reusing the mode-6 `DeltaQFrameCtx`). OFF by default; anti-vacuous knob-bites witness. Scope: bd8 4:2:0, dims a multiple of 64/8px (196²-partial-SB + highbd are follow-ups). | `encoder_gate_deltaq_mode3_e2e` (`deltaq_mode3_e2e.rs`: `deltaq_mode3_perceptual_ai_e2e` 7/7 hard byte-match + `deltaq_mode3_knob_bites`) + `deltaq_perceptual_ai_diff` (`get_deltaq_offset_matches_c`) | 2026-07-17 |
 
 ### Decoder (vs real `aom_codec_av1_dx`)
 
@@ -212,11 +213,20 @@ deltaq_mode=6 (VARIANCE_BOOST)`; IQ adds `enable_adaptive_sharpness=1`.
   deliberately does not own it; a full tune=IQ *with* CDEF-adaptive needs the C1 CDEF search wired
   under the per-SB tune qindex (deferred, cross-track).
 
-### C5 — aq-mode / deltaq-mode variants — ABSENT (M–L)
-- `--deltaq-mode=3` DELTA_Q_PERCEPTUAL_AI — the genuinely stills-specific arm:
-  `av1/encoder/allintra_vis.c` `av1_set_mb_wiener_variance`, `av1_get_deltaq_offset`,
-  + `--auto-intra-tools-off`, `--enable-rate-guide-deltaq`. (M–L)
-- `--deltaq-mode=6` DELTA_Q_VARIANCE_BOOST (tune=IQ default): `allintra_vis.c`
+### C5 — aq-mode / deltaq-mode variants — PARTIALLY DONE (mode 3 + mode 6 bit-exact → section A)
+- `--deltaq-mode=3` DELTA_Q_PERCEPTUAL_AI — **PORTED, BIT-IDENTICAL → section A** (2026-07-17):
+  `av1_set_mb_wiener_variance` (per-8x8 intra-SATD search + FP-quantize + Weber stats + the
+  2-iteration `norm_wiener_variance`) + `av1_get_sbq_perceptual_ai` + `av1_get_deltaq_offset`,
+  per-SB pack threading reusing the mode-6 `DeltaQFrameCtx`; 7/7 real-content cells byte-match
+  real aomenc `--deltaq-mode=3` (`encoder_gate_deltaq_mode3_e2e`). **Follow-ups (NOT done):**
+  the highbd (bd10/12) FP-quantize arm; the partial-SB source-border extension (frames whose
+  dims aren't a multiple of 8px — the KB-6 partial-SB analogue); `--enable-rate-guide-deltaq`
+  (the `get_rate_guided_quantizer` arm reading an external rate file — needs the file plumbing +
+  `ext_rate_guided_quantization`); `--auto-intra-tools-off` (`automatic_intra_tools_off` +
+  `model_rd_sse` accumulation, which disables smooth/paeth/cfl/diagonal intra on high-quality
+  low-q frames — a separate intra-tool gate).
+- `--deltaq-mode=6` DELTA_Q_VARIANCE_BOOST (tune=IQ default): **DONE, BIT-IDENTICAL** (landed
+  with C4, fed362b) — `allintra_vis.c`
   `av1_get_sbq_variance_boost`, `aq_variance.c` `av1_get_variance_boost_block_variance`,
   `--deltaq-strength`. (M)
 - `--deltaq-mode=1` OBJECTIVE (base default) is TPL-gated (encodeframe.c:343) — **inert
