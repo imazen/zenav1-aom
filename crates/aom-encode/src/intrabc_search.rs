@@ -1033,25 +1033,33 @@ pub fn rd_pick_intrabc_mode_sb(a: &IntrabcLeafArgs, best_rd_in: i64) -> Option<I
     }
 
     // --- dv_ref (rdopt.c:3453-3478) ---
-    let (near_r, near_c, nearest_r, nearest_c) = {
-        // HANDOFF: find_dv_ref_mvs returns (nearest, near) as 4 i32s in the
-        // decoder port — VERIFY the tuple order against dv_ref.rs (the
-        // decoder call site) before trusting this destructure.
-        let (a_r, a_c, b_r, b_c) = find_dv_ref_mvs(
-            a.mi_row,
-            a.mi_col,
-            a.bsize,
-            a.partition,
-            a.up_available,
-            a.left_available,
-            a.tile,
-            a.mi_rows,
-            a.mi_cols,
-            1 << a.mib_size_log2,
-            a.dv_grid,
-        );
-        (b_r, b_c, a_r, a_c)
-    };
+    // find_dv_ref_mvs returns (nearest_row, nearest_col, near_row, near_col)
+    // — VERIFIED against dv_ref.rs:579's doc + the dv_ref_diff.rs destructure.
+    let (mut nearest_r, mut nearest_c, mut near_r, mut near_c) = find_dv_ref_mvs(
+        a.mi_row,
+        a.mi_col,
+        a.bsize,
+        a.partition,
+        a.up_available,
+        a.left_available,
+        a.tile,
+        a.mi_rows,
+        a.mi_cols,
+        1 << a.mib_size_log2,
+        a.dv_grid,
+    );
+    // rdopt.c:3465-3471: INVALID_MV (row/col == -32768, mv.h:26) -> 0 before
+    // the selection. (The decoder-side twin `assign_and_validate_dv` has no
+    // such step — its inputs are already the raw pair; the ENCODER normalizes.)
+    const INVALID_MV_ROW_COL: i32 = -32768;
+    if nearest_r == INVALID_MV_ROW_COL && nearest_c == INVALID_MV_ROW_COL {
+        nearest_r = 0;
+        nearest_c = 0;
+    }
+    if near_r == INVALID_MV_ROW_COL && near_c == INVALID_MV_ROW_COL {
+        near_r = 0;
+        near_c = 0;
+    }
     let (mut ref_r, mut ref_c) = if nearest_r == 0 && nearest_c == 0 {
         (near_r, near_c)
     } else {
