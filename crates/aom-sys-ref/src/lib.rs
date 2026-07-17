@@ -172,6 +172,7 @@ extern "C" {
     pub fn aom_highbd_hadamard_16x16_c(src: *const i16, stride: isize, coeff: *mut i32);
     pub fn aom_highbd_hadamard_32x32_c(src: *const i16, stride: isize, coeff: *mut i32);
     pub fn aom_satd_c(coeff: *const i32, length: i32) -> i32;
+    pub fn aom_avg_4x4_c(s: *const u8, p: i32) -> u32;
 }
 
 /// Reference `aom_highbd_hadamard_<n>x<n>_c` for `n` in {8,16,32}.
@@ -206,6 +207,15 @@ pub fn ref_hadamard(n: usize, src: &[i16], stride: usize) -> Vec<i32> {
 /// Reference `aom_satd_c`.
 pub fn ref_satd(coeff: &[i32]) -> i32 {
     unsafe { aom_satd_c(coeff.as_ptr(), coeff.len() as i32) }
+}
+
+/// Reference `aom_avg_4x4_c` (lowbd): `src` must hold 4 rows of 4 samples at
+/// `stride`; returns `(sum + 8) >> 4`. The variance-based partitioner's
+/// KEY-frame 4x4 downsampling kernel (var_based_part.c
+/// `fill_variance_4x4avg`).
+pub fn ref_avg_4x4(src: &[u8], stride: usize) -> u32 {
+    assert!(src.len() >= 3 * stride + 4);
+    unsafe { aom_avg_4x4_c(src.as_ptr(), stride as i32) }
 }
 
 // av1/common/cdef_block.c — CDEF direction search + filter block.
