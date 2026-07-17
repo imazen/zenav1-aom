@@ -31,11 +31,6 @@ fn cell(w: usize, h: usize, cq: i32) -> EncodeCell {
     )
 }
 
-/// The reference `aomenc --deltaq-mode=3` frame-OBU payload for a cell.
-fn reference(cell: &EncodeCell) -> Vec<u8> {
-    EncodeCell::frame_obu_payload(&cell.c_encode_ctrls(&[(AV1E_SET_DELTAQ_MODE, 3)]))
-}
-
 /// Per-cell match check. `port_encode_with` returns the assembled frame OBU
 /// PAYLOAD (compare directly to the reference payload — the assert_byte_exact
 /// convention). Returns `Ok(len)` on byte-match, else the first differing byte.
