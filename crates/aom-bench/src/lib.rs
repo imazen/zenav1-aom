@@ -182,21 +182,31 @@ pub struct DecodeCell {
 impl DecodeCell {
     /// Load the FIRST temporal unit (KEY frame) of a conformance vector.
     pub fn from_vector(label: &str, vector: &str) -> Self {
-        let path = corpus_dir().join(format!("{vector}.ivf"));
-        let ivf = std::fs::read(&path).unwrap_or_else(|e| {
+        Self::from_vector_opt(label, vector).unwrap_or_else(|| {
+            let path = corpus_dir().join(format!("{vector}.ivf"));
             panic!(
-                "{vector}: conformance vector missing at {path:?} ({e}); fetch via \
+                "{vector}: conformance vector missing at {path:?}; fetch via \
                  `python3 xtask/conformance.py --fetch --scope intra`"
             )
-        });
+        })
+    }
+
+    /// Like [`from_vector`](Self::from_vector) but returns `None` if the `.ivf`
+    /// is absent, so optional/regenerable cells (the gitignored `mosaic-*`
+    /// photographic vectors) can be skipped gracefully instead of panicking a
+    /// bench/profiler run in an environment that only fetched the conformance
+    /// corpus.
+    pub fn from_vector_opt(label: &str, vector: &str) -> Option<Self> {
+        let path = corpus_dir().join(format!("{vector}.ivf"));
+        let ivf = std::fs::read(&path).ok()?;
         let (w, h) = ivf_hdr_dims(&ivf);
         let tus = ivf_temporal_units(&ivf);
-        DecodeCell {
+        Some(DecodeCell {
             label: label.to_string(),
             tu: tus[0].clone(),
             w,
             h,
-        }
+        })
     }
 
     /// C-oracle decode (init + decode + plane copy + destroy).
@@ -223,14 +233,34 @@ impl DecodeCell {
 
 /// The standard Gate-3 decode cell set: 3 sizes (64², 196² partial-SB,
 /// 352×288) and 3 quantizer levels at the largest size.
+///
+/// The `dec_mosaic_*` cells are the HEADLINE stills-decode workload
+/// (`benchmarks/decode_4way_2026-07-17.csv`): real photographic 2K/4K KEY
+/// frames encoded `aomenc --allintra` (⇒ CDEF off, LR off, QM off), where
+/// aom-rs is ~2.2× rav1d-safe. They are the correct profiling target for the
+/// non-post-filter decode hotspots (entropy/coeff/intra-pred/recon), unlike
+/// the small conformance vectors which code CDEF+LR. Regenerable via
+/// `mk_mosaic_y4m` + `aomenc` (see the CSV's Content provenance); the `.ivf`s
+/// live gitignored under `conformance/data/`.
 pub fn decode_cells() -> Vec<DecodeCell> {
-    vec![
+    let mut cells = vec![
         DecodeCell::from_vector("dec_64x64", "av1-1-b8-01-size-64x64"),
         DecodeCell::from_vector("dec_196x196", "av1-1-b8-01-size-196x196"),
         DecodeCell::from_vector("dec_352x288_q00", "av1-1-b8-00-quantizer-00"),
         DecodeCell::from_vector("dec_352x288_q32", "av1-1-b8-00-quantizer-32"),
         DecodeCell::from_vector("dec_352x288_q63", "av1-1-b8-00-quantizer-63"),
-    ]
+    ];
+    // Headline stills-decode cells — present only when regenerated (gitignored);
+    // skipped gracefully when the environment fetched just the conformance corpus.
+    for (label, vector) in [
+        ("dec_mosaic_2k_cq20", "mosaic-2k-cq20"),
+        ("dec_mosaic_2k_cq40", "mosaic-2k-cq40"),
+        ("dec_mosaic_4k_cq20", "mosaic-4k-cq20"),
+        ("dec_mosaic_4k_cq40", "mosaic-4k-cq40"),
+    ] {
+        cells.extend(DecodeCell::from_vector_opt(label, vector));
+    }
+    cells
 }
 
 // ---------------------------------------------------------------------------
