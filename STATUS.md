@@ -3153,6 +3153,67 @@ rule no wall ratios are claimed beyond the provisional noisy smoke in
 `just bench-gate3`, commit results to `benchmarks/gate3_baseline_<date>.csv`
 + `.meta`, and compute the Gate-3 ratios from the paired CIs.
 
+## Gate 3 — transform SIMD LANDED (2026-07-17, perf track): the full 1-D lane + 2-D pass stack, AVX2, bit-identical
+
+The transform stack designed above is **built, verified, and measured** — the
+elephant of the Gate-3 profile (transforms ~33% of encode Ir, inv-txfm ~12% of
+decode). AVX2 (`X64V3`) only; the scalar path is byte-untouched and
+`AOM_FORCE_SCALAR=1` routes every dispatch to it.
+
+**What landed** (`crates/aom-transform/src/simd/`, wired into
+`av1_inv_txfm2d_add` / `fwd_txfm2d_core`):
+- All 24 1-D lane kernels — the idct4/8/16/32/64, iadst8/16, fdct8/16/32/64,
+  fadst8/16 butterfly kernels via the transpiler's new `--lanes` mode
+  (`inv1d_v3_gen.rs` / `txfm1d_v3_gen.rs`, byte-reproducible — `just gen-txfm1d`
+  regenerates all four gen files identically); the hand-written iadst4 (i64-pair),
+  fdct4, fadst4, i/fidentity4/8/16/32 (`hand_v3.rs`).
+- The exact-i64 `half_btf` recipe (`hb`): mullo wrapped products (== scalar
+  `wrapping_mul`), `vpmovsxdq` widen, i64 sum + rounding, LOGICAL `vpsrlq` +
+  low-dword truncate — reproduces the scalar i32-product / i64-sum semantics
+  bit-for-bit at the bd12 row-clamp bound ±2^19 where an i32-sum SIMD (libaom's
+  own SSE4/AVX2 shape) would diverge. AVX2 has no `vpsraq`; the logical-shift +
+  truncate identity dodges it. `#![forbid(unsafe_code)]` holds (value intrinsics
+  inside archmage `#[rite]`/`#[arcane]` target_feature regions).
+- Four vector passes: inv col + row, fwd col + row (8 columns/rows per batch),
+  gated `col_n % 8 == 0` / `row_n % 8 == 0` (W=4/H=4 tails stay scalar). `hb` +
+  `rshiftv`/`mul_rshiftv`/`shl_clamp64v`/`clampv`/`revv`/`transpose8`/`widen16`
+  helpers carry the per-stage clamp/shift/rect/flip/clip-add lane-wise.
+
+**Parity (the zero-tolerance integer rule — SIMD MUST equal scalar):**
+- Per-kernel differential (`simd::tests::inv1d_v3_bit_identical_to_scalar_at_every_tier`):
+  all 24 kernels, SIMD == scalar at every token permutation over the driver
+  clamp domain (±2^15/17/19) + exact-bound sign patterns + full i32 + extremes,
+  × cos_bit 10..=13 × stage_range {16,17,18,20}. Green in BOTH dispatch modes.
+- **NEW 2-D permutation-equality integration test**
+  (`tests/txfm2d_simd_perm_diff.rs`): `av1_inv_txfm2d_add` / `av1_fwd_txfm2d`
+  over every valid (tx_type × tx_size × bd × input), inverse coeffs pushed to
+  **±2^20** (past the ±2^16 the vs-C harness caps at, because C's `half_btf`
+  overflows i32 (UB) at the true bd12 bound) + full-range i16 forward residuals,
+  tight + strided dest. Every token permutation must byte-match the first;
+  6 v3 + 3 scalar permutations compared, green in BOTH modes. This pins the
+  PASS PLUMBING (flips/clamps/shifts/rect/transpose/clip-add) SIMD==scalar over
+  the domain the vs-C harnesses can't reach.
+- The pre-existing C-differentials (`inv_txfm2d_diff` 3/3, `txfm2d_diff` 2/2,
+  `inv_txfm1d_diff`, `txfm1d_diff`, `fdct_diff`) now drive the SIMD passes live
+  end-to-end (~400k comparisons, 193 combos × bd) — green.
+- Added `fwd_kernel_n` debug_asserts (symmetry with the inv passes).
+
+**Measured (callgrind Ir, port side; `benchmarks/gate3_transform_simd_2026-07-17.{md,meta}`):**
+before = `fa1c55c` (SIMD #1–#5, no transforms), after = this stack:
+- **encode** `enc_s0_128_cq32` 6it: **142.72B → 99.89B (−30.0%)** — RD search
+  runs both fwd (analysis) and inv (recon) transforms per candidate.
+- **decode** `dec_352x288_q32` 30it: **2.553B → 2.140B (−16.2%)** — inv only.
+- Cumulative vs the all-scalar `057bde2` origin: encode −35.6%, decode −41.5%.
+- AVX2 tier confirmed live in the annotate (inv/fwd col+row passes,
+  run_inv1d/run_fwd1d → avx2). Baselines match the #5/#3 STATUS numbers to
+  <0.1% (stable workload), so the delta is the transform SIMD.
+
+**Follow-ups (documented, by profile):** the W=4/H=4 half-vector arms are the
+largest residual transform cost in encode (`av1_fdct4` 0.80%, `av1_fadst4`
+0.74%, `av1_iadst4` 0.60%, `av1_idct4` 0.53% — all scalar because the passes
+gate on %8); then AVX-512 (`X64V4`, 16-lane, native `vpsraq`), then NEON (falls
+to scalar — the perf gate box is x86). Design record: `HANDOFF-TXSIMD.md`.
+
 ## #7 CDEF-strength RD search — BIT-IDENTICAL, first bulk-port family lands directly in PARITY section A (2026-07-17, CDEF bulk track)
 
 - **Scope**: the full `av1_cdef_search` (av1/encoder/pickcdef.c) for the
