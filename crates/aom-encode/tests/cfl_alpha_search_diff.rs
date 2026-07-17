@@ -273,6 +273,7 @@ fn cfl_rd_pick_alpha_matches_c() {
             );
 
             let cenv = CUvEnv {
+                use_intra_dct_only: false,
                 partition: 0,
                 bsize,
                 mi_row,

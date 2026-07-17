@@ -382,6 +382,7 @@ fn localize_mono(w: usize, h: usize, bd: u8, cq_level: i32, content: impl Fn(usi
         qm_levels: None,
     };
     let pick_cfg = PickFrameCfg {
+        intra_tools: Default::default(),
         mode_costs: &real.mode_costs,
         tx_size_costs: &real.tx_size_costs,
         skip_costs: &real.skip_costs,
