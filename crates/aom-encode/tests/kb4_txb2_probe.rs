@@ -177,9 +177,14 @@ fn kb4_txb2_real_c_leaf_probe() {
     let qstep_c = (i32::from(plane_rows_c[6 * 8 + 1]) >> dequant_shift) as u64;
     let skip_trellis_c = !((mse_c as u64) <= 3200u64 * qstep_c * qstep_c);
     let kind_c = if skip_trellis_c { 1 } else { 0 }; // B : FP
+<<<<<<< ours
     let trellis_rdmult = trellis_rdmult_intra_y(rdmult, 0, bd);
     let (txb_skip_ctx_c, dc_sign_ctx_c) =
         c::ref_get_txb_ctx(plane_bsize, tx_size, 0, &above, &left);
+=======
+    let trellis_rdmult = trellis_rdmult_intra_y(rdmult, 0, bd, false);
+    let (txb_skip_ctx_c, dc_sign_ctx_c) = c::ref_get_txb_ctx(plane_bsize, tx_size, 0, &above, &left);
+>>>>>>> theirs
     eprintln!(
         "=== C setup: mask={mask_c:#06x} block_sse={bsse_c} mse={mse_c} qstep={qstep_c} skip_trellis={skip_trellis_c} txb_skip_ctx={txb_skip_ctx_c} dc_sign_ctx={dc_sign_ctx_c}"
     );
