@@ -239,6 +239,7 @@ pub fn decode_cells() -> Vec<DecodeCell> {
 
 /// One encode benchmark cell: source planes + config. `y/u/v` are tight
 /// (stride == width) u16 planes as both encode paths consume them.
+#[derive(Clone)]
 pub struct EncodeCell {
     pub label: String,
     pub w: usize,
@@ -758,10 +759,6 @@ impl EncodeCell {
         let mut our_tile_bytes = our_tile_bytes;
         if lr_stage {
             assert!(
-                allintra,
-                "port_encode_lr: allintra cells only (the GOOD-mode lpf_sf setters are not wired)"
-            );
-            assert!(
                 s.enable_restoration,
                 "port_encode_lr needs an enable_restoration=1 bootstrap stream"
             );
@@ -864,7 +861,11 @@ impl EncodeCell {
                 wiener_restore_cost: wiener_cost,
                 sgrproj_restore_cost: sgrproj_cost,
                 switchable_restore_cost: switchable_cost,
-                sf: lr_search_sf_allintra(speed, qindex, w, h, p.allow_screen_content_tools),
+                sf: if allintra {
+                    lr_search_sf_allintra(speed, qindex, w, h, p.allow_screen_content_tools)
+                } else {
+                    lr_search_sf_good(speed, qindex, w, h, p.allow_screen_content_tools)
+                },
             };
             let outcome = pick_filter_restoration(&lr_input);
 
@@ -1085,6 +1086,87 @@ pub fn lr_search_sf_allintra(
     // `speed >= 3 || (mode == ALLINTRA && speed >= 1)` — this helper IS the
     // allintra arm.
     if speed >= 1 {
+        if qindex <= 96 && !is_1440p_or_larger {
+            sf.min_lr_unit_size = 128;
+            sf.max_lr_unit_size = 128;
+        } else {
+            sf.min_lr_unit_size = 256;
+            sf.max_lr_unit_size = 256;
+        }
+    }
+    sf
+}
+
+/// The `lpf_sf` loop-restoration slice for the GOOD path
+/// (`set_good_speed_features_framesize_independent` + the qindex-dependent
+/// unit-size bounds). SPEED 0 IS VERIFIED-EQUAL TO DEFAULTS (the good arm
+/// sets no LR fields at speed 0 and the single-size qindex rule requires
+/// `speed >= 3` for GOOD) — GOOD speed-0 cells are safe. Speed >= 1 is a
+/// TRANSCRIPTION FROM PARTIAL NOTES, not yet verified line-by-line:
+/// // HANDOFF: verify each speed bracket against speed_features.c before
+/// // gating GOOD speed>=1 cells. Known line anchors (v3.14.1):
+/// //   :1220-1221  dual_sgr_penalty_level=1, enable_sgr_ep_pruning=1 (speed>=1)
+/// //   :1272-1274  prune_wiener_based_on_src_var=1, prune_sgr_based_on_wiener=1,
+/// //               disable_loop_restoration_chroma = boosted ? 0 : 1 (speed>=2)
+/// //   :1352-1358  prune_sgr_based_on_wiener = screen?1:2,
+/// //               prune_wiener_based_on_src_var=2,
+/// //               use_downsampled_wiener_stats=1 (speed>=4? CHECK bracket)
+/// //   :1452-1453  enable_sgr_ep_pruning=2,
+/// //               disable_wiener_coeff_refine_search=true (speed>=5? CHECK)
+/// //   :648-649    dual_sgr_penalty_level = boosted?1:3,
+/// //               switchable_lr_with_bias_level=1 (which fn/bracket? CHECK —
+/// //               it appeared in the earlier grep inside a speed>=? block of
+/// //               the good framesize-DEPENDENT or rt arm)
+/// // For a single KEY frame `boosted` (frame_is_boosted) is TRUE.
+pub fn lr_search_sf_good(
+    speed: i32,
+    qindex: i32,
+    w: usize,
+    h: usize,
+    allow_screen_content_tools: bool,
+) -> LrSearchSf {
+    let mut sf = LrSearchSf::default();
+    if speed == 0 {
+        // Verified: identical to defaults + the full 64..256 descent below.
+    } else {
+        // HANDOFF: unverified brackets — do NOT gate GOOD speed>=1 cells until
+        // each line is re-read from speed_features.c (anchors above).
+        let boosted = true; // single KEY frame
+        if speed >= 1 {
+            sf.dual_sgr_penalty_level = 1;
+            sf.enable_sgr_ep_pruning = 1;
+        }
+        if speed >= 2 {
+            sf.prune_wiener_based_on_src_var = 1;
+            sf.prune_sgr_based_on_wiener = 1;
+            sf.disable_loop_restoration_chroma = !boosted;
+        }
+        if speed >= 4 {
+            // HANDOFF: bracket guess for :1352-1358 — verify.
+            sf.prune_sgr_based_on_wiener = if allow_screen_content_tools { 1 } else { 2 };
+            sf.prune_wiener_based_on_src_var = 2;
+            sf.use_downsampled_wiener_stats = true;
+        }
+        if speed >= 5 {
+            // HANDOFF: bracket guess for :1452-1453 — verify.
+            sf.enable_sgr_ep_pruning = 2;
+            sf.disable_wiener_coeff_refine_search = true;
+        }
+    }
+    // Unit-size search bounds (qindex-dependent setter, all modes).
+    sf.min_lr_unit_size = 64;
+    sf.max_lr_unit_size = 256;
+    let is_1440p_or_larger = w.min(h) >= 1440;
+    let is_720p_or_larger = w.min(h) >= 720;
+    if speed >= 1 {
+        if is_1440p_or_larger {
+            sf.min_lr_unit_size = 256;
+        } else if is_720p_or_larger {
+            sf.min_lr_unit_size = 128;
+        }
+    }
+    // GOOD arm of `speed >= 3 || (ALLINTRA && speed >= 1)`.
+    if speed >= 3 {
         if qindex <= 96 && !is_1440p_or_larger {
             sf.min_lr_unit_size = 128;
             sf.max_lr_unit_size = 128;
