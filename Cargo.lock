@@ -61,7 +61,9 @@ dependencies = [
  "aom-entropy",
  "aom-loopfilter",
  "aom-quant",
+ "aom-restore",
  "aom-sys-ref",
+ "aom-txb",
  "zenbench",
  "zensim",
 ]
@@ -171,6 +173,7 @@ dependencies = [
  "aom-dispatch",
  "aom-entropy",
  "aom-sys-ref",
+ "aom-txb",
  "archmage",
  "magetypes",
 ]
