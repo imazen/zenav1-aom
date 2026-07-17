@@ -128,3 +128,149 @@ fn lr_restoration_search_rd_close_vs_real_aomenc() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// CHUNK-5 FORMAT axis — the LR search across the pixel formats the main gate
+// (real bd8 4:2:0) doesn't cover: monochrome (1-plane LR), 4:4:4 (full-res LR
+// on all three planes), and 12-bit (the highbd-12 search: compute_stats
+// divider 16, 12-bit SGR clamps). All ride the speed-0 allintra base encode
+// (byte-exact on real content, KB-6), so any divergence here is the LR
+// search's — asserted BYTE-IDENTICAL like the main gate. Measured 3/3 EXACT.
+//
+// NOT here (localized as base-encoder / structural, LR-orthogonal — recorded
+// in PARITY.md C2): the chunk-5 WIP also staged allintra speed-1..4 arms and
+// GOOD-mode cells. Splitting each into base(LR-off) vs LR-on (`lr_localize`)
+// showed the speed>=1 cells diverge in the BASE encode itself — the LR-OFF
+// stream already differs (s1 real content: first byte 3, both off and on),
+// because the port's real-content speed>=1 base encode is not yet byte-exact
+// (KB-6 proved real content only at SPEED 0; the speed gates KB-8..11 are
+// synthetic). The GOOD cells derive `set_allintra` base speed-features (the
+// harness has no `set_good`), so their base search also mismatches C's GOOD
+// encode. Both are base-side, not LR: the LR search is proven byte-exact by
+// the main gate (8/8) + these three format cells.
+// ---------------------------------------------------------------------------
+
+/// Nearest-neighbour upsample a 4:2:0 chroma plane to full resolution
+/// (for the synthetic 4:4:4 format cell built from real 4:2:0 content).
+fn upsample_nn(src: &[u16], cw: usize, ch: usize, w: usize, h: usize) -> Vec<u16> {
+    let mut out = vec![0u16; w * h];
+    for r in 0..h {
+        for c in 0..w {
+            out[r * w + c] = src[(r >> 1).min(ch - 1) * cw + (c >> 1).min(cw - 1)];
+        }
+    }
+    out
+}
+
+/// The format-axis cells: mono / 4:4:4 / bd12, all speed-0 allintra on the
+/// 352×288 real-content vector (transforms of the decoded base — the fields
+/// are pub). Both encode paths consume the SAME planes, so parity is the LR
+/// search's alone.
+fn format_axis_cells() -> Vec<EncodeCell> {
+    let mut cells = Vec::new();
+    let base = EncodeCell::real_content("lr_base", "av1-1-b8-00-quantizer-00", None, 32, 0);
+
+    // Monochrome: luma only (1-plane LrSearchInput, num_planes=1 pack/header).
+    let mut mono = base.clone();
+    mono.label = "lr_mono_quant00_cq32".into();
+    mono.mono = true;
+    mono.u = Vec::new();
+    mono.v = Vec::new();
+    cells.push(mono);
+
+    // 4:4:4: real luma + nearest-upsampled real chroma (content provenance is
+    // irrelevant to parity — both sides encode the SAME planes).
+    let (cw, ch) = ((base.w + 1) >> 1, (base.h + 1) >> 1);
+    let mut c444 = base.clone();
+    c444.label = "lr_444_quant00_cq32".into();
+    c444.ss_x = 0;
+    c444.ss_y = 0;
+    c444.u = upsample_nn(&base.u, cw, ch, base.w, base.h);
+    c444.v = upsample_nn(&base.v, cw, ch, base.w, base.h);
+    cells.push(c444);
+
+    // bd12: the real content shifted into 12-bit range (exercises the
+    // highbd-12 search path — compute_stats divider 16, SGR 12-bit clamps).
+    let mut b12 = base.clone();
+    b12.label = "lr_bd12_quant00_cq32".into();
+    b12.bd = 12;
+    b12.y = base.y.iter().map(|&v| v << 4).collect();
+    b12.u = base.u.iter().map(|&v| v << 4).collect();
+    b12.v = base.v.iter().map(|&v| v << 4).collect();
+    cells.push(b12);
+
+    cells
+}
+
+/// CHUNK-5 FORMAT-axis gate: the LR search on mono / 4:4:4 / bd12, asserted
+/// BYTE-IDENTICAL to real aomenc `--enable-restoration=1` (+ decision
+/// equality), mirroring the main gate. Measured 3/3 EXACT on landing.
+#[test]
+fn lr_restoration_format_axis() {
+    let bands = RdBands::default();
+    let mut results = Vec::new();
+    let mut exact = 0usize;
+    let mut decisions_equal = 0usize;
+    let mut real_active = 0usize;
+
+    for cell in format_axis_cells() {
+        let c_tu = cell.c_encode_lr();
+        assert!(!c_tu.is_empty(), "{}: real LR encode failed", cell.label);
+        let port_payload = cell.port_encode_lr(&c_tu);
+        let port_tu = rd_close::splice_frame_obu(&c_tu, &port_payload);
+
+        let (real_frt, real_us) = parse_restoration_decision(&c_tu);
+        let (port_frt, port_us) = parse_restoration_decision(&port_tu);
+        if real_frt.iter().any(|&t| t != 0) {
+            real_active += 1;
+        }
+        let decision_eq = real_frt == port_frt && (real_frt == [0; 3] || real_us == port_us);
+        if decision_eq {
+            decisions_equal += 1;
+        }
+        let r = rd_close::compare_cell(&cell.label, &cell, &port_tu, &c_tu);
+        if r.bit_identical {
+            exact += 1;
+        }
+        eprintln!(
+            "{}: real_frt={real_frt:?} us={real_us:?} | port_frt={port_frt:?} us={port_us:?} \
+             | decision_{} | {}",
+            cell.label,
+            if decision_eq { "EQUAL" } else { "DIFFERS" },
+            r.verdict(&bands),
+        );
+        results.push(r);
+    }
+
+    eprintln!("{}", rd_close::render_table(&results, &bands));
+    eprintln!(
+        "LR format-axis: {}/{} decisions equal, {}/{} bit-identical, {}/{} real-LR-active",
+        decisions_equal,
+        results.len(),
+        exact,
+        results.len(),
+        real_active,
+        results.len(),
+    );
+
+    // Anti-vacuous: the reference must actually restore a plane on this grid.
+    assert!(
+        real_active >= 1,
+        "no format cell made the REAL encoder restore a plane — the grid is vacuous"
+    );
+    rd_close::assert_rd_close(&results, &bands);
+    // BYTE-IDENTITY (measured 3/3 EXACT on landing): any weaker outcome is a
+    // regression, not a band question.
+    assert_eq!(
+        decisions_equal,
+        results.len(),
+        "every format cell's restoration decision must equal the C encoder's"
+    );
+    for r in &results {
+        assert!(
+            r.bit_identical,
+            "{}: LR-on format cell must be BYTE-IDENTICAL to real aomenc",
+            r.label
+        );
+    }
+}

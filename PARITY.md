@@ -126,14 +126,23 @@ points are libaom v3.14.1 (`reference/libaom`). Defaults verified in
   96534c4 (`pack_tile_lr` RU-interleaved SB-root writes + `port_encode_lr` pipeline:
   LF apply → search → repack → derived restoration header; gate). Gate hardened to full
   byte-identity + decision-equality asserts after measuring 8/8 EXACT.
-- Remaining sub-scope (honest fractions): e2e-gated = **allintra speed-0 only** (the
-  full-search path: all 16 SGR eps, 256→128→64 size descent, no prunes). The allintra
-  speed 1–4 `lpf_sf` arms (`lr_search_sf_allintra` — single-size qindex rule, ep-prune
-  ladder, src-var/sgr-from-wiener prunes, reduced 5-tap luma window) are PORTED but not
-  yet e2e-gated; GOOD-mode setters not wired (asserted against); mono/4:4:4/bd12 cells
-  absent from the gate grid; speed>=5 allintra is structurally LR-off in C (sf disable +
-  seq-bit clear) so no gate is possible there. `pack_tile_from_trees` unification (reuse
-  the CDEF two-pass pack instead of the re-search repack) queued as an optimization.
+- Chunk-5 outcome (2026-07-17): the **format axis is now byte-exact** — `mono / 4:4:4 /
+  bd12` speed-0 cells assert **3/3 BYTE-IDENTICAL** (`lr_restoration_gate.rs::
+  lr_restoration_format_axis`), extending the proven LR-search coverage to 1-plane LR,
+  full-res chroma LR, and the highbd-12 path (compute_stats divider 16, SGR 12-bit clamps).
+  The allintra speed-1..4 arms (`lr_search_sf_allintra`) and GOOD-mode cells staged in the
+  chunk-5 WIP are **LR-orthogonal near-ties, PINNED (not gated)**: a base-vs-LR split
+  (throwaway `lr_localize` harness) showed the speed>=1 cells diverge in the BASE encode
+  itself — the LR-OFF stream already differs (s1 real content, first byte 3, both off and
+  on) — because the port's real-content speed>=1 base encode is not yet byte-exact (KB-6
+  proved real content only at speed 0; the KB-8..11 speed gates are synthetic). The GOOD
+  cells derive `set_allintra` base speed-features (the harness has no `set_good`), so their
+  base search mismatches C's GOOD encode. `lr_search_sf_good` is now source-verified vs
+  speed_features.c (:1164 `reduce_wiener_window_size` is UNCONDITIONAL — unlike allintra's
+  speed>=3 gate; :1352-1358 is at speed>=3 — the WIP's `speed>=4` was an off-by-one,
+  corrected) and ready for a future GOOD gate. speed>=5 allintra is structurally LR-off in
+  C (sf disable + seq-bit clear). `pack_tile_from_trees` unification (reuse the CDEF
+  two-pass pack instead of the re-search repack) queued as an optimization.
 - Decoder-side LR (apply path) was already complete + gated pre-pivot (section A decoder
   rows).
 

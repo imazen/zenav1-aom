@@ -239,6 +239,7 @@ pub fn decode_cells() -> Vec<DecodeCell> {
 
 /// One encode benchmark cell: source planes + config. `y/u/v` are tight
 /// (stride == width) u16 planes as both encode paths consume them.
+#[derive(Clone)]
 pub struct EncodeCell {
     pub label: String,
     pub w: usize,
@@ -1222,10 +1223,6 @@ impl EncodeCell {
         let mut our_tile_bytes = our_tile_bytes;
         if lr_stage {
             assert!(
-                allintra,
-                "port_encode_lr: allintra cells only (the GOOD-mode lpf_sf setters are not wired)"
-            );
-            assert!(
                 s.enable_restoration,
                 "port_encode_lr needs an enable_restoration=1 bootstrap stream"
             );
@@ -1328,7 +1325,11 @@ impl EncodeCell {
                 wiener_restore_cost: wiener_cost,
                 sgrproj_restore_cost: sgrproj_cost,
                 switchable_restore_cost: switchable_cost,
-                sf: lr_search_sf_allintra(speed, qindex, w, h, p.allow_screen_content_tools),
+                sf: if allintra {
+                    lr_search_sf_allintra(speed, qindex, w, h, p.allow_screen_content_tools)
+                } else {
+                    lr_search_sf_good(speed, qindex, w, h, p.allow_screen_content_tools)
+                },
             };
             let outcome = pick_filter_restoration(&lr_input);
 
@@ -1549,6 +1550,95 @@ pub fn lr_search_sf_allintra(
     // `speed >= 3 || (mode == ALLINTRA && speed >= 1)` — this helper IS the
     // allintra arm.
     if speed >= 1 {
+        if qindex <= 96 && !is_1440p_or_larger {
+            sf.min_lr_unit_size = 128;
+            sf.max_lr_unit_size = 128;
+        } else {
+            sf.min_lr_unit_size = 256;
+            sf.max_lr_unit_size = 256;
+        }
+    }
+    sf
+}
+
+/// The `lpf_sf` loop-restoration slice for the GOOD path
+/// (`set_good_speed_features_framesize_independent`, :1091, + the
+/// qindex-dependent unit-size bounds). VERIFIED line-by-line vs
+/// speed_features.c (v3.14.1); bracket line numbers confirmed against the
+/// `if (speed >= N)` guards at :1166/:1227/:1283/:1361/:1420:
+/// //   :1164       reduce_wiener_window_size = 1 — UNCONDITIONAL (in the
+/// //               "speed 0 for all" prologue, before if(speed>=1)@:1166),
+/// //               UNLIKE allintra's speed>=3 gate (:467). GOOD therefore
+/// //               searches the reduced 5-tap luma Wiener window at EVERY
+/// //               speed — it is NOT default-equal at speed 0 (the prior
+/// //               "GOOD speed-0 == defaults" note was wrong on this).
+/// //   :1220-1221  dual_sgr_penalty_level=1, enable_sgr_ep_pruning=1 (speed>=1)
+/// //   :1272-1274  prune_wiener_based_on_src_var=1, prune_sgr_based_on_wiener=1,
+/// //               disable_loop_restoration_chroma = boosted ? 0 : 1 (speed>=2)
+/// //   :1352-1358  prune_sgr_based_on_wiener = screen?1:2,
+/// //               prune_wiener_based_on_src_var=2,
+/// //               use_downsampled_wiener_stats=1 (speed>=3 — inside
+/// //               if(speed>=3)@:1283, before if(speed>=4)@:1361; the
+/// //               predecessor's `speed>=4` was an off-by-one, corrected)
+/// //   :1452-1453  enable_sgr_ep_pruning=2,
+/// //               disable_wiener_coeff_refine_search=true (speed>=5)
+/// // Not on this path (verified): :648-649 (switchable_lr_with_bias_level,
+/// // dual_sgr_penalty_level = boosted?1:3) live in
+/// // `set_good_speed_features_lc_dec_framesize_dependent` (:619) — the
+/// // large-scale/lc-dec arm a normal single-frame GOOD encode does not
+/// // take. For a single KEY frame `boosted` (frame_is_boosted) is TRUE.
+/// // Only GOOD speed-0 cells are gated in this harness; GOOD speed>=1 needs
+/// // dedicated gate cells to exercise the >=1 arms (a follow-up).
+pub fn lr_search_sf_good(
+    speed: i32,
+    qindex: i32,
+    w: usize,
+    h: usize,
+    allow_screen_content_tools: bool,
+) -> LrSearchSf {
+    let mut sf = LrSearchSf::default();
+    // :1164 — set UNCONDITIONALLY in the GOOD setter (the "speed 0 for all"
+    // prologue, before if(speed>=1)@:1166); GOOD uses the reduced 5-tap
+    // Wiener window at every speed, unlike allintra (speed>=3, :467).
+    sf.reduce_wiener_window_size = true;
+    // :1220-1221 (if speed>=1).
+    if speed >= 1 {
+        sf.dual_sgr_penalty_level = 1;
+        sf.enable_sgr_ep_pruning = 1;
+    }
+    // :1272-1274 (if speed>=2). `boosted` is TRUE for a single KEY frame, so
+    // disable_loop_restoration_chroma = boosted ? 0 : 1 = 0 (false).
+    if speed >= 2 {
+        sf.prune_wiener_based_on_src_var = 1;
+        sf.prune_sgr_based_on_wiener = 1;
+        sf.disable_loop_restoration_chroma = false;
+    }
+    // :1352-1358 (if speed>=3 — inside if(speed>=3)@:1283, before
+    // if(speed>=4)@:1361; the predecessor's `speed>=4` was an off-by-one).
+    if speed >= 3 {
+        sf.prune_sgr_based_on_wiener = if allow_screen_content_tools { 1 } else { 2 };
+        sf.prune_wiener_based_on_src_var = 2;
+        sf.use_downsampled_wiener_stats = true;
+    }
+    // :1452-1453 (if speed>=5).
+    if speed >= 5 {
+        sf.enable_sgr_ep_pruning = 2;
+        sf.disable_wiener_coeff_refine_search = true;
+    }
+    // Unit-size search bounds (qindex-dependent setter, all modes).
+    sf.min_lr_unit_size = 64;
+    sf.max_lr_unit_size = 256;
+    let is_1440p_or_larger = w.min(h) >= 1440;
+    let is_720p_or_larger = w.min(h) >= 720;
+    if speed >= 1 {
+        if is_1440p_or_larger {
+            sf.min_lr_unit_size = 256;
+        } else if is_720p_or_larger {
+            sf.min_lr_unit_size = 128;
+        }
+    }
+    // GOOD arm of `speed >= 3 || (ALLINTRA && speed >= 1)`.
+    if speed >= 3 {
         if qindex <= 96 && !is_1440p_or_larger {
             sf.min_lr_unit_size = 128;
             sf.max_lr_unit_size = 128;
