@@ -130,7 +130,16 @@ points are libaom v3.14.1 (`reference/libaom`). Defaults verified in
 - IntraBC: `--enable-intrabc` (default ON, screen-gated). C: `av1/encoder/rdopt.c`
   `rd_pick_intrabc_mode_sb`, DV hash `av1/encoder/hash_motion.c`,
   `mv_sf.intrabc_search_level`. Port has: header intrabc-present bit + intrabc costs +
-  intrabc decode. Missing: hash tables + DV search + mode RD. (L)
+  intrabc decode + **chunk 3a landed 2026-07-17** (`aom-encode/src/intrabc_search.rs`:
+  CRC-32C + the full source-frame hash-table build/query + `av1_fill_dv_costs`/
+  `av1_build_nmv_cost_table` DV cost tables + the mv_cost/mv_err_cost/mvsad_err_cost
+  forms + variance/SAD metrics, unit-gated). Missing: 3b `rd_pick_intrabc_mode_sb`
+  (dv-ref via the ported `dv_ref.rs` `find_dv_ref_mvs`/`find_ref_dv` + per-direction
+  ABOVE/LEFT mv limits + the hash candidate loop with `get_mvpred_var_cost`), 3c the
+  intrabc RD/recon/pack (skip + no-skip arms, recon-copy prediction incl. the chroma
+  2-tap at odd 420 DVs — decoder-side `intrabc_chroma_predict` is the reference —
+  and is_inter var-tx/skip pack syntax), then the NSTEP diamond + intrabc mesh
+  full-pel search (hash-only covers exact repeats first). (L, decomposed)
 - Screen detection: `--screen-detection-mode` (allintra default ANTIALIASING_AWARE=2).
   C: `av1/encoder/encoder.c` `av1_set_screen_content_options`. Port takes
   `allow_screen_content_tools` as an input — the detection itself is unported. (S–M)

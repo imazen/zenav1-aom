@@ -22,6 +22,7 @@ pub mod hog;
 pub mod intra_rd;
 pub mod intra_tx_nn_weights;
 pub mod intra_uv_rd;
+pub mod intrabc_search;
 pub mod lf_search;
 pub mod mode_costs;
 pub mod obu_assemble;
