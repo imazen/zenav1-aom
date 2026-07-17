@@ -19,8 +19,10 @@ pub use build_quantizer::{
 };
 pub use qm::{iqmatrix, qmatrix, NUM_QM_LEVELS};
 pub use quant_common::{
-    aom_get_qmlevel, aom_get_qmlevel_allintra, av1_ac_quant_qtx, av1_dc_quant_qtx, av1_get_qindex,
-    Segmentation, MAX_SEGMENTS, SEG_LVL_ALT_Q, SEG_LVL_MAX, SEG_LVL_SKIP,
+    aom_get_qmlevel, aom_get_qmlevel_444_chroma, aom_get_qmlevel_allintra,
+    aom_get_qmlevel_luma_ssimulacra2, av1_ac_quant_qtx, av1_dc_quant_qtx, av1_get_qindex,
+    Segmentation, MAX_SEGMENTS, QM_FIRST_IQ_SSIMULACRA2, QM_LAST_IQ_SSIMULACRA2, SEG_LVL_ALT_Q,
+    SEG_LVL_MAX, SEG_LVL_SKIP,
 };
 
 /// `ROUND_POWER_OF_TWO(value, n)` from `aom_ports/mem.h` — bit-exact.

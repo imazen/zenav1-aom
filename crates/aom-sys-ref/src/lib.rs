@@ -7396,6 +7396,8 @@ extern "C" {
     fn shim_qm_giqmatrix(q: i32, c: i32, t: i32, out: *mut u8, out_cap: i32) -> i32;
     fn shim_get_qmlevel(qindex: i32, first: i32, last: i32) -> i32;
     fn shim_get_qmlevel_allintra(qindex: i32, first: i32, last: i32) -> i32;
+    fn shim_get_qmlevel_luma_ssimulacra2(qindex: i32, first: i32, last: i32) -> i32;
+    fn shim_get_qmlevel_444_chroma(qindex: i32, first: i32, last: i32) -> i32;
 }
 
 /// Real libaom `aom_get_qmlevel` (default-tune qindex -> QM level).
@@ -7406,6 +7408,18 @@ pub fn ref_get_qmlevel(qindex: i32, first: i32, last: i32) -> i32 {
 /// Real libaom `aom_get_qmlevel_allintra` (all-intra qindex -> QM level).
 pub fn ref_get_qmlevel_allintra(qindex: i32, first: i32, last: i32) -> i32 {
     unsafe { shim_get_qmlevel_allintra(qindex, first, last) }
+}
+
+/// Real libaom `aom_get_qmlevel_luma_ssimulacra2` (tune=SSIMULACRA2 luma
+/// qindex -> QM level).
+pub fn ref_get_qmlevel_luma_ssimulacra2(qindex: i32, first: i32, last: i32) -> i32 {
+    unsafe { shim_get_qmlevel_luma_ssimulacra2(qindex, first, last) }
+}
+
+/// Real libaom `aom_get_qmlevel_444_chroma` (tune=IQ/SSIMULACRA2 4:4:4 chroma
+/// qindex -> QM level).
+pub fn ref_get_qmlevel_444_chroma(qindex: i32, first: i32, last: i32) -> i32 {
+    unsafe { shim_get_qmlevel_444_chroma(qindex, first, last) }
 }
 
 /// Real libaom forward QM matrix for (qm level `q`, plane group `c` in
