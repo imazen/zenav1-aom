@@ -230,18 +230,15 @@ pub struct EncodeIntraYEnv<'a> {
     /// re-encode's `xform_quant_optimize`/`xform_quant` resolve the
     /// per-(tx_size, tx_type) matrices internally (`av1_setup_qmatrix`).
     pub qm_level: Option<usize>,
-<<<<<<< ours
     /// Palette-Y state (`mbmi->palette_mode_info` Y half + colour-index map):
     /// when `Some`, per-txb prediction is the map fill
     /// (`av1_predict_intra_block`'s `use_palette` arm) instead of spatial
     /// intra prediction — everything downstream (subtract/tx/quant/recon) is
     /// unchanged.
     pub palette: Option<crate::tx_search::PaletteYrd<'a>>,
-=======
     /// `oxcf.tune_cfg` knobs ([`crate::TuneKnobs`]): the QM-PSNR trellis
     /// distortion metric + the IQ/SSIMULACRA2 trellis rshift.
     pub tune: crate::TuneKnobs,
->>>>>>> theirs
 }
 
 /// One re-encoded txb's outputs (the `p->qcoeff/dqcoeff/eobs/txb_entropy_ctx`

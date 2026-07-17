@@ -17,6 +17,13 @@ uncommitted working tree) did ~90% of this. Its base was `27ca089` (pre-palette)
   `/root/.claude/jobs/3651b35b/tmp/combined_tune.patch` (EPHEMERAL — regenerate from the
   predecessor worktree with `git -C <pred> diff 27ca089 -- crates` if needed; the predecessor
   worktree is READ-ONLY, do not modify it).
+- **CANONICAL SALVAGE — predecessor worktree `agent-a6595a97d6d5ead8b` commit `5442f88`**
+  ("wip: coordinator salvage — spend-limit shutdown checkpoint") = the predecessor's FULL
+  uncommitted WIP committed on top of `3703f1d` (incl. PARITY.md/STATUS.md + the 1147-line
+  `encoder_gate_tune_iq_e2e.rs`). My adoption == `git diff 27ca089 5442f88` minus docs. Prefer
+  `5442f88` as the source of truth over the ephemeral patch. The doc (PARITY.md/STATUS.md) changes
+  I did NOT apply — mine them from `git -C <pred> show 5442f88 -- PARITY.md STATUS.md` after
+  re-verifying results.
 - 31/37 files applied cleanly; **6 conflicted** (all trivial additive overlaps — see below).
 - `crates/aom-encode/src/allintra_vis.rs` is UNTRACKED in the predecessor; copied in verbatim.
 - Committed as `wip:` (`64edeb4`) WITH conflict markers first (preservation), then resolved.
@@ -125,7 +132,13 @@ landed pieces to Section A/B rows with measured deltas; update STATUS.md.
   VERIFY the cleanly-applied hunks (setup_delta_q_variance_boost call site, `sb_base_rdmult`,
   `dq_rows` row re-select, the `sb_pick_cfg`/`sb_env` construction) landed at the RIGHT place in the
   current loop body — grep `setup_delta_q_variance_boost`, `sb_current_qindex`, `search_base_qindex`
-  and read the surrounding loop. This is the highest-risk merge area.
+  and read the surrounding loop. This is the highest-risk merge area. **PARTIALLY VERIFIED
+  2026-07-17:** the deltaq `sb_base_rdmult` (pack.rs:1101) IS correctly threaded into main's
+  VBP-gated `sb_rdmult` (pack.rs:1132 — `if allintra && !use_var_based_partition {
+  fold_intra_sb_rdmult(sb_base_rdmult, modifier) } else { sb_base_rdmult }`); the 3-way combined
+  both features coherently, and the `setup_delta_q_variance_boost`/`dq_rows` derivation (:1075-1100)
+  reads right. STILL to confirm on first compile: the `sb_pick_cfg`/`sb_env` `rows_y/u/v` deltaq
+  override (`..*env` spread) and the `pack_leaf`/`pack_sb` `sb_current_qindex` param plumbing.
 - The predecessor's PARITY.md/STATUS.md diffs were NOT applied (would conflict + carry unverified
   claims). Their prose is worth mining from the predecessor worktree
   (`git -C <pred> diff 27ca089 -- PARITY.md STATUS.md`) once results are re-verified.

@@ -319,13 +319,8 @@ pub fn pack_leaf(
     let info = MbModeInfoKf {
         segment_id: 0,
         skip: i32::from(winner.skip_txfm),
-<<<<<<< ours
         cdef_strength,
-        current_qindex: cfg.base_qindex,
-=======
-        cdef_strength: 0,
         current_qindex: sb_current_qindex,
->>>>>>> theirs
         delta_lf: [0; 4],
         delta_lf_from_base: 0,
         use_intrabc: 0,
@@ -1001,7 +996,6 @@ pub fn pack_tile(
     let mut kfs = kf_block_state(pack_cfg, env, sb_mi);
     let mut trees = Vec::new();
 
-<<<<<<< ours
     // `part_sf.partition_search_type == VAR_BASED_PARTITION` — allintra
     // speed >= 7 exactly (speed_features.c:571 is its only allintra setter;
     // `SpeedFeatures::partition_search_type` documents the field, derived
@@ -1048,7 +1042,6 @@ pub fn pack_tile(
     } else {
         None
     };
-=======
     // Variance Boost delta-q: the SEARCH-side running `xd->current_base_qindex`
     // (reset to base at the tile start, encodeframe.c:1235; advanced per SB by
     // `av1_update_state` — unconditionally on this KEY-intra envelope, where
@@ -1059,7 +1052,6 @@ pub fn pack_tile(
         .deltaq
         .map(|d| d.base_qindex)
         .unwrap_or(pack_cfg.base_qindex);
->>>>>>> theirs
 
     for r in 0..n_sb_rows {
         search_tile.left_ectx = [[0; 32]; 3];

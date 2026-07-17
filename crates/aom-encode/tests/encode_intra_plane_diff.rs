@@ -247,11 +247,8 @@ fn encode_intra_block_plane_y_matches_c_walk() {
                 above_ctx: &above_ctx,
                 left_ctx: &left_ctx,
                 qm_level: None,
-<<<<<<< ours
                 palette: None,
-=======
                 tune: Default::default(),
->>>>>>> theirs
             };
             let mut recon_rust = recon0.clone();
             let mut map_rust = map0.clone();

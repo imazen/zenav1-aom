@@ -546,7 +546,6 @@ pub fn encode_b_intra_dry(
         above_ctx: &above_y,
         left_ctx: &left_y,
         qm_level: env.qm_levels.map(|l| l[0]),
-<<<<<<< ours
         palette: winner
             .palette_y
             .as_ref()
@@ -556,9 +555,7 @@ pub fn encode_b_intra_dry(
                 map: &p.color_map,
                 map_stride: crate::tx_search::BLK_W_B[bsize],
             }),
-=======
         tune: env.tune,
->>>>>>> theirs
     };
     let mut y_out = if output_enabled {
         // OUTPUT_ENABLED: the eob-0 -> DCT_DCT resets land in the frame-map

@@ -349,16 +349,13 @@ pub fn rd_pick_intra_mode_sb(
                         above_ctx: y_env.above_ctx,
                         left_ctx: y_env.left_ctx,
                         qm_level: y_env.qm_levels.map(|l| l[0]),
-<<<<<<< ours
                         palette: y.palette_y.as_ref().map(|p| crate::tx_search::PaletteYrd {
                             colors: &p.colors,
                             size: p.size,
                             map: &p.color_map,
                             map_stride: MI_SIZE_WIDE_B[y_env.bsize] * 4,
                         }),
-=======
                         tune: re.tune,
->>>>>>> theirs
                     };
                     reencode = Some(encode_intra_block_plane_y(
                         &enc_env,
