@@ -11855,3 +11855,292 @@ pub fn ref_encode_av1_kf_film_grain(
 pub fn ref_count_primitive_refsubexpfin(n: u16, k: u16, r: u16, v: u16) -> i32 {
     unsafe { aom_count_primitive_refsubexpfin(n, k, r, v) }
 }
+
+// ---------------------------------------------------------------------------
+// Loop-restoration ENCODER-SEARCH oracles (pickrst_shim.c): thin wrappers
+// over the EXPORTED `_c` numeric core of av1/encoder/pickrst.c.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn shim_compute_stats(
+        wiener_win: i32,
+        dgd: *const u8,
+        src: *const u8,
+        h_start: i32,
+        h_end: i32,
+        v_start: i32,
+        v_end: i32,
+        dgd_stride: i32,
+        src_stride: i32,
+        m: *mut i64,
+        h: *mut i64,
+        use_downsampled_wiener_stats: i32,
+    );
+    fn shim_compute_stats_highbd(
+        wiener_win: i32,
+        dgd: *const u16,
+        src: *const u16,
+        h_start: i32,
+        h_end: i32,
+        v_start: i32,
+        v_end: i32,
+        dgd_stride: i32,
+        src_stride: i32,
+        m: *mut i64,
+        h: *mut i64,
+        bit_depth: i32,
+    );
+    fn shim_pixel_proj_error(
+        src8: *const u8,
+        src16: *const u16,
+        width: i32,
+        height: i32,
+        src_stride: i32,
+        dat8: *const u8,
+        dat16: *const u16,
+        dat_stride: i32,
+        flt0: *mut i32,
+        flt0_stride: i32,
+        flt1: *mut i32,
+        flt1_stride: i32,
+        xq: *mut i32,
+        ep: i32,
+        highbd: i32,
+    ) -> i64;
+    fn shim_calc_proj_params(
+        src8: *const u8,
+        src16: *const u16,
+        width: i32,
+        height: i32,
+        src_stride: i32,
+        dat8: *const u8,
+        dat16: *const u16,
+        dat_stride: i32,
+        flt0: *mut i32,
+        flt0_stride: i32,
+        flt1: *mut i32,
+        flt1_stride: i32,
+        h_out: *mut i64,
+        c_out: *mut i64,
+        ep: i32,
+        highbd: i32,
+    );
+    fn shim_selfguided_restoration(
+        dgd8: *const u8,
+        dgd16: *const u16,
+        width: i32,
+        height: i32,
+        dgd_stride: i32,
+        flt0: *mut i32,
+        flt1: *mut i32,
+        flt_stride: i32,
+        ep: i32,
+        bit_depth: i32,
+        highbd: i32,
+    ) -> i32;
+}
+
+/// REAL `av1_compute_stats_c` (lowbd Wiener autocorrelation): `dgd`/`src`
+/// are u8 planes; returns `(M, H)` sized `win2` / `win2*win2`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_compute_stats(
+    wiener_win: usize,
+    dgd: &[u8],
+    src: &[u8],
+    h_start: i32,
+    h_end: i32,
+    v_start: i32,
+    v_end: i32,
+    dgd_stride: i32,
+    src_stride: i32,
+    use_downsampled_wiener_stats: bool,
+) -> (Vec<i64>, Vec<i64>) {
+    let win2 = wiener_win * wiener_win;
+    let mut m = vec![0i64; win2];
+    let mut h = vec![0i64; win2 * win2];
+    unsafe {
+        shim_compute_stats(
+            wiener_win as i32,
+            dgd.as_ptr(),
+            src.as_ptr(),
+            h_start,
+            h_end,
+            v_start,
+            v_end,
+            dgd_stride,
+            src_stride,
+            m.as_mut_ptr(),
+            h.as_mut_ptr(),
+            use_downsampled_wiener_stats as i32,
+        );
+    }
+    (m, h)
+}
+
+/// REAL `av1_compute_stats_highbd_c`: u16 planes, bd 8/10/12.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_compute_stats_highbd(
+    wiener_win: usize,
+    dgd: &[u16],
+    src: &[u16],
+    h_start: i32,
+    h_end: i32,
+    v_start: i32,
+    v_end: i32,
+    dgd_stride: i32,
+    src_stride: i32,
+    bit_depth: i32,
+) -> (Vec<i64>, Vec<i64>) {
+    let win2 = wiener_win * wiener_win;
+    let mut m = vec![0i64; win2];
+    let mut h = vec![0i64; win2 * win2];
+    unsafe {
+        shim_compute_stats_highbd(
+            wiener_win as i32,
+            dgd.as_ptr(),
+            src.as_ptr(),
+            h_start,
+            h_end,
+            v_start,
+            v_end,
+            dgd_stride,
+            src_stride,
+            m.as_mut_ptr(),
+            h.as_mut_ptr(),
+            bit_depth,
+        );
+    }
+    (m, h)
+}
+
+/// REAL `av1_{lowbd,highbd}_pixel_proj_error_c`. Lowbd (`highbd=false`)
+/// reads `src8`/`dat8`; highbd reads `src16`/`dat16`. `flt0`/`flt1` are the
+/// SGR pass outputs; `xq` the decoded projection weights; `ep` the
+/// `av1_sgr_params` index.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_pixel_proj_error(
+    src8: &[u8],
+    src16: &[u16],
+    width: i32,
+    height: i32,
+    src_stride: i32,
+    dat8: &[u8],
+    dat16: &[u16],
+    dat_stride: i32,
+    flt0: &mut [i32],
+    flt0_stride: i32,
+    flt1: &mut [i32],
+    flt1_stride: i32,
+    xq: [i32; 2],
+    ep: i32,
+    highbd: bool,
+) -> i64 {
+    let mut xq_c = xq;
+    unsafe {
+        shim_pixel_proj_error(
+            src8.as_ptr(),
+            src16.as_ptr(),
+            width,
+            height,
+            src_stride,
+            dat8.as_ptr(),
+            dat16.as_ptr(),
+            dat_stride,
+            flt0.as_mut_ptr(),
+            flt0_stride,
+            flt1.as_mut_ptr(),
+            flt1_stride,
+            xq_c.as_mut_ptr(),
+            ep,
+            highbd as i32,
+        )
+    }
+}
+
+/// REAL `av1_calc_proj_params[_high_bd]_c`: the SGR least-squares
+/// accumulators. Returns `(H[2][2] row-major, C[2])`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_calc_proj_params(
+    src8: &[u8],
+    src16: &[u16],
+    width: i32,
+    height: i32,
+    src_stride: i32,
+    dat8: &[u8],
+    dat16: &[u16],
+    dat_stride: i32,
+    flt0: &mut [i32],
+    flt0_stride: i32,
+    flt1: &mut [i32],
+    flt1_stride: i32,
+    ep: i32,
+    highbd: bool,
+) -> ([i64; 4], [i64; 2]) {
+    let mut h_out = [0i64; 4];
+    let mut c_out = [0i64; 2];
+    unsafe {
+        shim_calc_proj_params(
+            src8.as_ptr(),
+            src16.as_ptr(),
+            width,
+            height,
+            src_stride,
+            dat8.as_ptr(),
+            dat16.as_ptr(),
+            dat_stride,
+            flt0.as_mut_ptr(),
+            flt0_stride,
+            flt1.as_mut_ptr(),
+            flt1_stride,
+            h_out.as_mut_ptr(),
+            c_out.as_mut_ptr(),
+            ep,
+            highbd as i32,
+        );
+    }
+    (h_out, c_out)
+}
+
+/// REAL `av1_selfguided_restoration_c` — the `flt0`/`flt1` producer the SGR
+/// search projects against. `dgd8`/`dgd16` are FULL padded buffers with the
+/// `width x height` block at element offset `off` (>= 3 rows + 3 cols of
+/// margin on every side — the C reads ±3 around the block).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_selfguided_restoration(
+    dgd8: &[u8],
+    dgd16: &[u16],
+    off: usize,
+    width: i32,
+    height: i32,
+    dgd_stride: i32,
+    flt0: &mut [i32],
+    flt1: &mut [i32],
+    flt_stride: i32,
+    ep: i32,
+    bit_depth: i32,
+    highbd: bool,
+) -> i32 {
+    unsafe {
+        shim_selfguided_restoration(
+            if highbd {
+                std::ptr::null()
+            } else {
+                dgd8.as_ptr().add(off)
+            },
+            if highbd {
+                dgd16.as_ptr().add(off)
+            } else {
+                std::ptr::null()
+            },
+            width,
+            height,
+            dgd_stride,
+            flt0.as_mut_ptr(),
+            flt1.as_mut_ptr(),
+            flt_stride,
+            ep,
+            bit_depth,
+            highbd as i32,
+        )
+    }
+}

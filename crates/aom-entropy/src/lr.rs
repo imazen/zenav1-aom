@@ -738,7 +738,7 @@ pub fn write_lr_unit(
     } else {
         WIENER_WIN
     };
-    let mut sym = |enc: &mut OdEcEnc, symb: i32, cdf: &mut [u16], nsymbs: usize| {
+    let sym = |enc: &mut OdEcEnc, symb: i32, cdf: &mut [u16], nsymbs: usize| {
         enc.encode_cdf_q15(symb, &cdf[..nsymbs], nsymbs as i32);
         if allow_update_cdf {
             update_cdf(cdf, symb, nsymbs);
