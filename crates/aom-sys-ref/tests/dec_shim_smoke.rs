@@ -125,3 +125,20 @@ fn cfl_kernels_reachable() {
     ref_cfl_predict_hbd(0, &ac, &mut dst, 4, 3, 8);
     assert!(dst.iter().all(|&x| x == 77));
 }
+
+/// The [`cx_ctrl`] constants match the PINNED reference headers exactly
+/// (`shim_cx_ctrl_id_by_probe` returns the real `aome_enc_control_id` enum
+/// values from aom/aomcx.h at shim compile time). A drifted constant would
+/// silently apply the WRONG encoder control in the toggle-sweep harness.
+#[test]
+fn cx_ctrl_ids_match_reference_headers() {
+    for &(probe, expect) in cx_ctrl::PROBE_TABLE.iter() {
+        let real = ref_cx_ctrl_id_by_probe(probe);
+        assert_eq!(
+            real, expect,
+            "cx_ctrl probe {probe}: Rust constant {expect} != real enum value {real}"
+        );
+    }
+    // Probe indices beyond the table are unmapped.
+    assert_eq!(ref_cx_ctrl_id_by_probe(cx_ctrl::PROBE_TABLE.len() as i32), -1);
+}

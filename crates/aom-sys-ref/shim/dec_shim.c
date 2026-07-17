@@ -365,8 +365,10 @@ static long encode_kf_pass(aom_codec_iface_t *iface, aom_codec_enc_cfg_t *cfg,
                            int sb_size_128, int tile_columns_log2,
                            int tile_rows_log2, int enable_palette,
                            int enable_intrabc, int lossless, int enable_qm,
-                           int qm_min, int qm_max, aom_image_t *img,
-                           int collect_stats, uint8_t *out, size_t out_cap) {
+                           int qm_min, int qm_max, const int *extra_ctrl_ids,
+                           const int *extra_ctrl_vals, int n_extra_ctrls,
+                           aom_image_t *img, int collect_stats, uint8_t *out,
+                           size_t out_cap) {
   aom_codec_ctx_t ctx;
   aom_codec_flags_t flags = bd > 8 ? AOM_CODEC_USE_HIGHBITDEPTH : 0;
   if (aom_codec_enc_init(&ctx, iface, cfg, flags)) return -2;
@@ -413,6 +415,13 @@ static long encode_kf_pass(aom_codec_iface_t *iface, aom_codec_enc_cfg_t *cfg,
     TRYCTRL(AV1E_SET_ENABLE_QM, 1);
     TRYCTRL(AV1E_SET_QM_MIN, qm_min);
     TRYCTRL(AV1E_SET_QM_MAX, qm_max);
+  }
+  /* Extra caller-supplied CLI-equivalent controls (the toggle-sweep shim):
+   * raw (aome_enc_control_id, value) pairs applied AFTER the base set, in
+   * caller order, so a toggle can override a base control if it names the
+   * same id. NULL/0 for every pre-existing caller (byte-inert). */
+  for (int ci = 0; ci < n_extra_ctrls; ci++) {
+    TRYCTRL(extra_ctrl_ids[ci], extra_ctrl_vals[ci]);
   }
 #undef TRYCTRL
 
@@ -471,7 +480,9 @@ static long encode_av1_kf_impl(const uint16_t *y, const uint16_t *u,
                                int tile_columns_log2, int tile_rows_log2,
                                int enable_palette, int enable_intrabc,
                                int lossless, int enable_qm, int qm_min,
-                               int qm_max, uint8_t *out, size_t out_cap) {
+                               int qm_max, const int *extra_ctrl_ids,
+                               const int *extra_ctrl_vals, int n_extra_ctrls,
+                               uint8_t *out, size_t out_cap) {
   aom_codec_iface_t *iface = aom_codec_av1_cx();
   aom_codec_enc_cfg_t cfg;
   /* usage: AOM_USAGE_GOOD_QUALITY (0) or AOM_USAGE_ALL_INTRA (2 — the
@@ -549,7 +560,8 @@ static long encode_av1_kf_impl(const uint16_t *y, const uint16_t *u,
                                     sb_size_128, tile_columns_log2,
                                     tile_rows_log2, enable_palette,
                                     enable_intrabc, lossless, enable_qm, qm_min,
-                                    qm_max, img, 1, stats, STATS_CAP);
+                                    qm_max, extra_ctrl_ids, extra_ctrl_vals,
+                                    n_extra_ctrls, img, 1, stats, STATS_CAP);
     if (stats_len <= 0) {
       free(stats);
       aom_img_free(img);
@@ -562,14 +574,16 @@ static long encode_av1_kf_impl(const uint16_t *y, const uint16_t *u,
                            enable_restoration, aq_mode, sb_size_128,
                            tile_columns_log2, tile_rows_log2, enable_palette,
                            enable_intrabc, lossless, enable_qm, qm_min, qm_max,
-                           img, 0, out, out_cap);
+                           extra_ctrl_ids, extra_ctrl_vals, n_extra_ctrls, img,
+                           0, out, out_cap);
     free(stats);
   } else {
     total = encode_kf_pass(iface, &cfg, bd, cq_level, cpu_used, enable_cdef,
                            enable_restoration, aq_mode, sb_size_128,
                            tile_columns_log2, tile_rows_log2, enable_palette,
                            enable_intrabc, lossless, enable_qm, qm_min, qm_max,
-                           img, 0, out, out_cap);
+                           extra_ctrl_ids, extra_ctrl_vals, n_extra_ctrls, img,
+                           0, out, out_cap);
   }
   aom_img_free(img);
   return total;
@@ -591,7 +605,9 @@ long shim_encode_av1_kf(const uint16_t *y, const uint16_t *u,
                             /*tile_columns_log2=*/0, /*tile_rows_log2=*/0,
                             /*enable_palette=*/0, /*enable_intrabc=*/0,
                             /*lossless=*/0, /*enable_qm=*/0, /*qm_min=*/0,
-                            /*qm_max=*/0, out, out_cap);
+                            /*qm_max=*/0, /*extra_ctrl_ids=*/NULL,
+                            /*extra_ctrl_vals=*/NULL, /*n_extra_ctrls=*/0, out,
+                            out_cap);
 }
 
 /* SB128 variant of shim_encode_av1_kf: same controls plus explicit
@@ -612,7 +628,9 @@ long shim_encode_av1_kf_sb128(const uint16_t *y, const uint16_t *u,
                             /*tile_columns_log2=*/0, /*tile_rows_log2=*/0,
                             /*enable_palette=*/0, /*enable_intrabc=*/0,
                             /*lossless=*/0, /*enable_qm=*/0, /*qm_min=*/0,
-                            /*qm_max=*/0, out, out_cap);
+                            /*qm_max=*/0, /*extra_ctrl_ids=*/NULL,
+                            /*extra_ctrl_vals=*/NULL, /*n_extra_ctrls=*/0, out,
+                            out_cap);
 }
 
 /* Multi-tile variant of shim_encode_av1_kf: same controls plus explicit
@@ -635,7 +653,8 @@ long shim_encode_av1_kf_tiles(const uint16_t *y, const uint16_t *u,
                             aq_mode, two_pass, sb_size_128, tile_columns_log2,
                             tile_rows_log2, /*enable_palette=*/0,
                             /*enable_intrabc=*/0, /*lossless=*/0,
-                            /*enable_qm=*/0, /*qm_min=*/0, /*qm_max=*/0, out,
+                            /*enable_qm=*/0, /*qm_min=*/0, /*qm_max=*/0, /*extra_ctrl_ids=*/NULL,
+                            /*extra_ctrl_vals=*/NULL, /*n_extra_ctrls=*/0, out,
                             out_cap);
 }
 
@@ -660,7 +679,8 @@ long shim_encode_av1_kf_screen_content(const uint16_t *y, const uint16_t *u,
                             aq_mode, two_pass, /*sb_size_128=*/0,
                             /*tile_columns_log2=*/0, /*tile_rows_log2=*/0,
                             enable_palette, enable_intrabc, /*lossless=*/0,
-                            /*enable_qm=*/0, /*qm_min=*/0, /*qm_max=*/0, out,
+                            /*enable_qm=*/0, /*qm_min=*/0, /*qm_max=*/0, /*extra_ctrl_ids=*/NULL,
+                            /*extra_ctrl_vals=*/NULL, /*n_extra_ctrls=*/0, out,
                             out_cap);
 }
 
@@ -682,7 +702,9 @@ long shim_encode_av1_kf_lossless(const uint16_t *y, const uint16_t *u,
                             /*tile_columns_log2=*/0, /*tile_rows_log2=*/0,
                             /*enable_palette=*/0, /*enable_intrabc=*/0,
                             /*lossless=*/1, /*enable_qm=*/0, /*qm_min=*/0,
-                            /*qm_max=*/0, out, out_cap);
+                            /*qm_max=*/0, /*extra_ctrl_ids=*/NULL,
+                            /*extra_ctrl_vals=*/NULL, /*n_extra_ctrls=*/0, out,
+                            out_cap);
 }
 
 /* Quantization-matrix variant of shim_encode_av1_kf: same controls as
@@ -705,8 +727,67 @@ long shim_encode_av1_kf_qm(const uint16_t *y, const uint16_t *u,
                             aq_mode, two_pass, /*sb_size_128=*/0,
                             /*tile_columns_log2=*/0, /*tile_rows_log2=*/0,
                             /*enable_palette=*/0, /*enable_intrabc=*/0,
-                            /*lossless=*/0, /*enable_qm=*/1, qm_min, qm_max, out,
+                            /*lossless=*/0, /*enable_qm=*/1, qm_min, qm_max,
+                            /*extra_ctrl_ids=*/NULL, /*extra_ctrl_vals=*/NULL,
+                            /*n_extra_ctrls=*/0, out, out_cap);
+}
+
+/* Generic-controls variant of shim_encode_av1_kf (the C8-C11 toggle-sweep
+ * infrastructure; append-only — every wrapper above is untouched): the base
+ * configuration is IDENTICAL to shim_encode_av1_kf (single pass, aq_mode 0,
+ * --enable-cdef=0 --enable-restoration=0 --sb-size=64, single tile,
+ * --enable-palette=0 --enable-intrabc=0, non-lossless, QM off), plus
+ * n_ctrls extra (aome_enc_control_id, int value) pairs applied through
+ * aom_codec_control AFTER the base controls, in caller order. Ctrl ids are
+ * the raw enum values from aom/aomcx.h (a stable public ABI); the Rust side
+ * cross-checks its constants via shim_cx_ctrl_id_by_probe below. */
+long shim_encode_av1_kf_ctrls(const uint16_t *y, const uint16_t *u,
+                              const uint16_t *v, int w, int h, int bd,
+                              int mono, int ss_x, int ss_y, int cq_level,
+                              int cpu_used, int usage, const int *ctrl_ids,
+                              const int *ctrl_vals, int n_ctrls, uint8_t *out,
+                              size_t out_cap) {
+  return encode_av1_kf_impl(y, u, v, w, h, bd, mono, ss_x, ss_y, cq_level,
+                            cpu_used, /*enable_cdef=*/0,
+                            /*enable_restoration=*/0, usage, /*aq_mode=*/0,
+                            /*two_pass=*/0, /*sb_size_128=*/0,
+                            /*tile_columns_log2=*/0, /*tile_rows_log2=*/0,
+                            /*enable_palette=*/0, /*enable_intrabc=*/0,
+                            /*lossless=*/0, /*enable_qm=*/0, /*qm_min=*/0,
+                            /*qm_max=*/0, ctrl_ids, ctrl_vals, n_ctrls, out,
                             out_cap);
+}
+
+/* Ctrl-id cross-check for the Rust constants (aom_sys_ref::cx_ctrl): returns
+ * the REAL aome_enc_control_id enum value for a probe index, so a unit test
+ * can assert the Rust-side numeric constants against the pinned v3.14.1
+ * headers (a wrong constant would silently apply the WRONG control). Probe
+ * order is fixed and append-only. Returns -1 for an unknown probe. */
+int shim_cx_ctrl_id_by_probe(int probe) {
+  switch (probe) {
+    case 0: return AV1E_SET_CDF_UPDATE_MODE;
+    case 1: return AV1E_SET_ENABLE_RECT_PARTITIONS;
+    case 2: return AV1E_SET_ENABLE_AB_PARTITIONS;
+    case 3: return AV1E_SET_ENABLE_1TO4_PARTITIONS;
+    case 4: return AV1E_SET_MIN_PARTITION_SIZE;
+    case 5: return AV1E_SET_MAX_PARTITION_SIZE;
+    case 6: return AV1E_SET_ENABLE_INTRA_EDGE_FILTER;
+    case 7: return AV1E_SET_ENABLE_TX64;
+    case 8: return AV1E_SET_ENABLE_FLIP_IDTX;
+    case 9: return AV1E_SET_ENABLE_RECT_TX;
+    case 10: return AV1E_SET_ENABLE_FILTER_INTRA;
+    case 11: return AV1E_SET_ENABLE_SMOOTH_INTRA;
+    case 12: return AV1E_SET_ENABLE_PAETH_INTRA;
+    case 13: return AV1E_SET_ENABLE_CFL_INTRA;
+    case 14: return AV1E_SET_ENABLE_ANGLE_DELTA;
+    case 15: return AV1E_SET_REDUCED_TX_TYPE_SET;
+    case 16: return AV1E_SET_INTRA_DCT_ONLY;
+    case 17: return AV1E_SET_INTRA_DEFAULT_TX_ONLY;
+    case 18: return AV1E_SET_ENABLE_DIAGONAL_INTRA;
+    case 19: return AV1E_SET_ENABLE_DIRECTIONAL_INTRA;
+    case 20: return AV1E_SET_ENABLE_TX_SIZE_SEARCH;
+    default: return -1;
+  }
 }
 
 /* Single-pass KEY encode with AV1E_SET_CDF_UPDATE_MODE=0 (decoder-track
