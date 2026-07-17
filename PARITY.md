@@ -63,6 +63,7 @@ Byte-identity gates landed and green on origin/main. Any regression here is a sh
 | qindex-from-cq derivation (#8) | `qindex_from_cq_diff` | (landed pre-pivot) |
 | Gate-3 perf cells byte-verified before timing | `aom-bench` `EncodeCell::assert_byte_exact` | 057bde2 |
 | **CDEF-strength RD search** (`--enable-cdef=1`, #7 / family C1): 14/14 cells — real content 196²/64² cq5..63 (cdef_bits=2 four-strength joint sets, per-unit literals) + mono/4:4:4/4:2:0/bd10 axes; speed-0 FULL search; two-pass encode→LF→search→pack | `encoder_gate_cdef_{real_content,synthetic_axes}_rd_close` (aom-bench; rd_close report + full byte-identity asserts) | 016d4dd + 9850da6 + c9ebf83 |
+| **Loop-restoration RD search** (`--enable-restoration=1`, family C2): 8/8 cells BYTE-IDENTICAL + 8/8 decisions equal C's — real content 64² cq{12,32,48}, 196² cq{20,48} (partial-SB edges), 352×288 cq{32,55} (multi-unit size-descent grids), b10 352×288 cq32; decision shapes covered: all-NONE, WIENER-luma, SGRPROJ-luma, WIENER-all-3-planes, mixed SGR-luma+WIENER-chroma (b10), unit-size descent picking 128; allintra speed-0 full search (all 16 SGR eps, ±{4,2,1} Wiener tap refine, 256→128→64 size loop) | `lr_restoration_gate.rs::lr_restoration_search_rd_close_vs_real_aomenc` (aom-bench; rd_close report + full byte-identity + decision-equality asserts) | e24cf09 + 96d3464 + dfd757e + 96534c4 |
 
 ### Decoder (vs real `aom_codec_av1_dx`)
 
@@ -77,7 +78,7 @@ Bulk agents append rows here as features land (rule 2). Empty at pivot start.
 
 | Component | Knobs | Cells | size_delta | zensim_drop | Harness ref (test) | Date | Notes |
 |---|---|---|---|---|---|---|---|
-| _(none — the first bulk family, CDEF search, measured 14/14 BIT-IDENTICAL on its first complete run and landed directly in section A per rule 2; its rd_close table: every cell 0.00% / 0.000 / EXACT)_ | | | | | | | |
+| _(none — the first two bulk families, CDEF search (14/14) and loop-restoration search (8/8), both measured BIT-IDENTICAL on their first complete runs and landed directly in section A per rule 2; every rd_close cell 0.00% / 0.000 / EXACT)_ | | | | | | | |
 
 ## Section C — ABSENT (to port), by family
 
@@ -99,22 +100,32 @@ points are libaom v3.14.1 (`reference/libaom`). Defaults verified in
   (documented-dead for `--enable-cdef=1`); SB128 CDEF-on blocked on the pack's SB64
   envelope (the search's >64-fb arms are already in place).
 
-### C2 — Loop-restoration search (Wiener/SGR) — ABSENT (L, decompose) — bulk agent live
+### C2 — Loop-restoration search (Wiener/SGR) — **PORTED, BIT-IDENTICAL → section A** (2026-07-17)
 - `--enable-restoration` / `AV1E_SET_ENABLE_RESTORATION`. **Allintra config default is ON
   (=1)** — verified: `default_extra_cfg.enable_restoration = 1` (av1_cx_iface.c:286),
-  threaded non-realtime at :1273, NOT touched by the allintra override block. The prior
-  "restoration OFF in allintra" envelope note describes the port's shim config, not the C
-  default: a DEFAULT allintra aomenc encode RUNS `av1_pick_filter_restoration` (often
-  resolving to RESTORE_NONE, but the seq/frame header bits differ from `=0`). This family
-  is therefore required for true default-allintra parity — highest-priority family here.
-- C: `av1/encoder/pickrst.c` `av1_pick_filter_restoration`, `search_wiener` /
-  `finer_search_wiener`, `search_sgrproj` / `search_selfguided_restoration`,
-  `search_norestore` / `search_switchable`; `lpf_sf.{disable_wiener_filter, disable_sgr_filter,
-  prune_wiener_based_on_src_var, prune_sgr_based_on_wiener, reduce_wiener_window_size,
-  dual_sgr_penalty_level, enable_sgr_ep_pruning}`.
-- Port has: decode kernels (`wiener_convolve_add_src`, sgr) + frame walk + RU syntax
-  writers/readers + RU geometry (aom-restore, aom-entropy `lr`). Missing: the whole
-  encoder search + RU-interleaved pack.
+  threaded non-realtime at :1273, NOT touched by the allintra override block. A DEFAULT
+  allintra aomenc encode RUNS `av1_pick_filter_restoration` (sometimes resolving all-NONE,
+  but the seq/frame header bits differ from `=0`) — this family was the highest-priority
+  default-parity gap, now closed at the knob level.
+- **Landed (4 chunks):** e24cf09 (write-side syntax: binary-codes writer primitives +
+  `write_lr_unit`, byte-identical to the REAL C writer + exhaustive count parity);
+  96d3464 (search numeric core: `compute_stats[_highbd]`, `pixel_proj_error`,
+  `calc_proj_params`/`get_proj_subspace`, SGR flt producer — all diffed vs EXPORTED `_c`
+  fns; Wiener solve chain transcribed, no C export exists); dfd757e (decision layer:
+  per-unit RD searches, SB-coding-order walk, unit-size descent, `pick_filter_restoration`);
+  96534c4 (`pack_tile_lr` RU-interleaved SB-root writes + `port_encode_lr` pipeline:
+  LF apply → search → repack → derived restoration header; gate). Gate hardened to full
+  byte-identity + decision-equality asserts after measuring 8/8 EXACT.
+- Remaining sub-scope (honest fractions): e2e-gated = **allintra speed-0 only** (the
+  full-search path: all 16 SGR eps, 256→128→64 size descent, no prunes). The allintra
+  speed 1–4 `lpf_sf` arms (`lr_search_sf_allintra` — single-size qindex rule, ep-prune
+  ladder, src-var/sgr-from-wiener prunes, reduced 5-tap luma window) are PORTED but not
+  yet e2e-gated; GOOD-mode setters not wired (asserted against); mono/4:4:4/bd12 cells
+  absent from the gate grid; speed>=5 allintra is structurally LR-off in C (sf disable +
+  seq-bit clear) so no gate is possible there. `pack_tile_from_trees` unification (reuse
+  the CDEF two-pass pack instead of the re-search repack) queued as an optimization.
+- Decoder-side LR (apply path) was already complete + gated pre-pivot (section A decoder
+  rows).
 
 ### C3 — Screen-content tools — ABSENT (L, decompose) — bulk agent live (#29)
 - Palette search: `--enable-palette` (default ON, gated on `allow_screen_content_tools`).
@@ -230,8 +241,9 @@ deltaq_mode=6 (VARIANCE_BOOST)`; IQ adds `enable_adaptive_sharpness=1`.
   speed≥6 and the speed-7+ realtime-leaning arms. (M per level)
 
 ### Priority order (proposed)
-1. **C2 LR search** (default-allintra parity gap — verified above) → 2. **C1 CDEF search**
-(explicit knob + tune=IQ dependency) → 3. **C3 screen content** (web stills) → 4. **C4
+~~1. **C2 LR search**~~ DONE (section A, 2026-07-17) → ~~2. **C1 CDEF search**~~ DONE
+(section A, 2026-07-17) → 3. **C3 screen content** (web stills) → 4. **C4
 tune=IQ/SSIMULACRA2 tail** (image-quality tuning, small pieces) → 5. **C5 deltaq 3/6** →
 6. C8/C9/C10 toggle threading (cheap wins, many S) → 7. C6 superres, C7 film grain →
-8. C11/C12 tails → C13 speeds 7–9.
+8. C11/C12 tails → C13 speeds 7–9. (C2/C1 leftovers — LR speed-1..4 e2e arms, CDEF FAST
+levels e2e — are follow-ups within their families, below the C3+ fronts.)
