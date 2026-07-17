@@ -38,6 +38,7 @@ fn main() {
         "rd_shim",
         "hog_shim",
         "dec_shim",
+        "pickrst_shim",
     ] {
         let shim_c = shim_dir.join(format!("{name}.c"));
         let obj = out_dir.join(format!("{name}.o"));
