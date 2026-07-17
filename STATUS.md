@@ -3296,9 +3296,10 @@ interaction at speed>=4 wired per C but not gate-covered.
 
 ## TOGGLE SWEEP — C8/C9/C10 CLI-toggle byte gates (2026-07-17, encoder track)
 
-**19 of the C8-C11 toggle-family knobs are BYTE-IDENTICAL vs real aomenc (same
-ctrl) and hard-pinned; 1 pinned-open** (`aom-bench/tests/toggles_rd_close.rs`,
-21 tests). Every knob set runs the witnessed 3-cell real-content grid (64² cq32
+**23 of the C8-C11 toggle-family knob arms are BYTE-IDENTICAL vs real aomenc
+(same ctrl) and hard-pinned; 1 pinned-open** (`--use-intra-dct-only`;
+`aom-bench/tests/toggles_rd_close.rs`, 25 tests). Every knob set runs the
+witnessed 3-cell real-content grid (64² cq32
 + cq63, 128²-crop cq12) with an ANTI-VACUITY witness: the toggle must change
 the C encoder's output on at least one cell, or the test panics (an EXACT
 verdict on a cell the knob never reaches proves nothing).
@@ -3346,10 +3347,10 @@ verdict on a cell the knob never reaches proves nothing).
   facade incl. the PAETH reduced-set empty-mask reset) ⇒ a shared port+oracle
   mis-model of the REAL UV loop under the knob. Next step: sibling-C
   instrumented dump of the mi(0,0) UV candidate rds (KB-2/KB-7 method).
-- **Remaining in the toggle families:** `--enable-tx-size-search=0` (S),
-  `--disable-trellis-quant` 1/2 (S), `--quant-b-adapt` (S–M),
-  `--cdf-update-mode=0` encoder e2e (S), cost-upd-freq non-default arms (S–M),
-  min/max-q clamps (S), SB128 encode (M, own chunk) — PARITY.md C8/C9/C11.
+- **Remaining in the toggle families:** `--quant-b-adapt` (S–M),
+  cost-upd-freq non-default arms (S–M), min/max-q clamps (S), SB128 encode
+  (M, own chunk) — PARITY.md C8/C9/C11. (`--enable-tx-size-search=0`,
+  `--disable-trellis-quant` 1/2, `--cdf-update-mode=0` all now EXACT.)
 
 ### Toggle-sweep addendum (same landing): tx-size-search + cdf-update-mode
 
@@ -3371,3 +3372,20 @@ verdict on a cell the knob never reaches proves nothing).
   tile in `pack_tile` from `PackCfg::allow_update_cdf` (C's write_modes).
   The decoder twin (`OdEcDec.allow_update_cdf`, landed 1dfbcc3) now has its
   encoder mirror.
+
+### Toggle-sweep addendum (2026-07-17 pickup): trellis arms + REAL BUG FIX
+
+- **C9 `--disable-trellis-quant=1` (NO_TRELLIS_OPT) — EXACT (3/3 cells):**
+  the search `skip_trellis` and pack `enable_optimize_b` both resolve
+  no-trellis; matched with no fix.
+- **C9 `--disable-trellis-quant=2` (FINAL_PASS_TRELLIS_OPT) — EXACT (3/3
+  cells) after a REAL BUG FIX (5a644c6):** `encode_b_intra_dry` hardcoded
+  `dry_run_output_enabled: false` for its luma + chroma final-quant envs, so
+  the OUTPUT_ENABLED pack pass did NOT apply FINAL_PASS trellis. `is_trellis_used`
+  is flag-independent for NO/FULL/NO_ESTIMATE_YRD/lossless (why every prior gate
+  matched), but FINAL_PASS trellises ONLY when `dry_run == OUTPUT_ENABLED`
+  (encodemb.h:153): the search must not, the pack must. Pre-fix the arm was OUT
+  of the RD-close band (Δzensim up to 1.855, recon divergence). Fix threads
+  `encode_b_intra_dry`'s `output_enabled` arg into both envs — byte-inert for
+  every existing gate (the flag is dead outside FINAL_PASS). Both trellis arms
+  drive both sides through the real `pack_tile`.

@@ -39,7 +39,7 @@ five to main** (`git push origin HEAD:main` after rebase; verify
 | `--use-intra-default-tx-only=1` (121) | **DONE** | pol.use_default_intra_tx_type OR-arm (MODE_EVAL, rdopt_utils.h:579) | EXACT 3/3, pinned |
 | `--reduced-tx-type-set=1` (118) | **DONE** | bootstrap frame-header bit, asserted == knob | EXACT 3/3, pinned |
 | `--enable-tx-size-search=0` (146) | **DONE** | pol.enable_tx_size_search → LARGESTALL single-pass + sf level 3 + tx_mode_is_select AND (2c39484). Assert is ONE-directional (C demotes SELECT→LARGEST post-hoc on zero-split frames) | EXACT 3/3, pinned |
-| `--disable-trellis-quant=1/2` (62) | **WIRED, NOT RUN** (6e32167) | knob→trellis_opt_of_knob→pol.skip_trellis + env.enable_optimize_b | tests exist w/ HANDOFF notes; run them; expect EXACT |
+| `--disable-trellis-quant=1/2` (62) | **DONE (EXACT 3/3 each)** | knob→trellis_opt_of_knob→pol.skip_trellis + env.enable_optimize_b; `=2` needed the FINAL_PASS pack-trellis fix (5a644c6) | EXACT, pinned (toggles_c9_trellis_quant_off/_final_pass_only) |
 | `--disable-trellis-quant=0` | inert-vs-default on intra | — | not celled (witness would refuse: estimate_yrd_for_sb is inter-only) |
 | `--quant-b-adapt` | **UNSTARTED (S–M)** | needs the `quantize_b_adaptive` kernel family in aom-quant + policy plumb | — |
 | `--enable-smooth-intra=0` (99) | **DONE** | IntraToolCfg→IntraSbyGates + UvLoopPolicy | EXACT 3/3, pinned |
