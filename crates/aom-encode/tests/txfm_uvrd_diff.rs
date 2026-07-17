@@ -538,6 +538,7 @@ fn txfm_uvrd_matches_c_walk_lossless_q0() {
                 luma_mode: sc.luma_mode,
                 luma_use_fi: sc.luma_use_fi,
                 luma_fi_mode: sc.luma_fi_mode,
+                use_intra_dct_only: false,
                 lossless: true,
                 reduced: sc.reduced,
                 bd: sc.bd,
