@@ -29,9 +29,11 @@ See CLAUDE.md KB-15 + PARITY C3.
   (forced SPLIT, ≤64 leaves), `sb128_natural_e2e` (real `quantizer-00` crops — exercises the
   128-NONE search eval), `sb128_coded_128_leaf_e2e` (a smooth diag ramp 256² cq55/cq63 that
   actually codes a 128-level leaf — the one that exercises the pack interleave + >64 re-encode),
-  each with a sb128-vs-sb64 anti-vacuity witness. Closes the KB-1 encoder cross-check (the
-  >64-block txb order had never been exercised — the SB64 gates have no >64 blocks). Deferred:
-  partial-SB-at-128 (non-128-multiple frame dims); non-default-knob × sb128.
+  and `sb128_partial_sb_e2e` (partial-SB-at-128: 192² + the KB-6 196² frame × cq{32,63} — the
+  KB-6 partial-SB machinery generalizes to 128-SBs byte-exact), each with a sb128-vs-sb64
+  anti-vacuity witness. Closes the KB-1 encoder cross-check (the >64-block txb order had never
+  been exercised — the SB64 gates have no >64 blocks). Deferred: a coded 128-LEAF at a frame edge
+  (partial-SB cells split to ≤64); non-default-knob × sb128; speed≥1 × sb128.
   See PARITY.md C8.
 - **C7 film-grain table-inject** (`--film-grain-table`, encoder side) — the port's own
   grain-table reader/lookup (`aom-encode/src/grain_table.rs`, port of `aom_dsp/grain_table.c`)

@@ -407,9 +407,13 @@ deltaq_mode=6 (VARIANCE_BOOST)`; IQ adds `enable_adaptive_sharpness=1`.
   interleave** (encodetxb.c:431-472). This closes the **KB-1 encoder cross-check** (the >64-block
   txb order had never actually been exercised — the cited "256² cq63" evidence is an SB64 frame
   with no >64 blocks). `AV1E_SET_SUPERBLOCK_SIZE`(56)/`AOM_SUPERBLOCK_SIZE_128X128`(1) added to
-  `cx_ctrl` (header-verified). Deferred: partial-SB-at-128 (frames not a multiple of 128px — the
-  interior 128-leaf case is always in-frame, so the mu-64 edge clip is inert here); non-default
-  knob × sb128 combos.
+  `cx_ctrl` (header-verified). **Partial-SB-at-128 (frames not a multiple of 128px) also
+  byte-exact** — `sb128_partial_sb_e2e` (192² + the KB-6 196² conformance frame × cq{32,63}): the
+  KB-6 partial-SB machinery (distortion visible-clips, `set_partition_cost_for_edge_blk`, the
+  frame-edge entropy-stamp tail-zero) combines cleanly with the 128-SB geometry + the mu-64
+  edge-clip. Deferred: a coded 128-LEAF at a frame edge (the partial-SB cells split to ≤64, so the
+  128-leaf mu-64 edge-clip itself is still untested); non-default knob × sb128 combos; speed≥1 ×
+  sb128.
 - External partition / `--partition-info-path` / `--sb-qp-sweep`: diagnostic, lowest
   priority. (M, defer)
 

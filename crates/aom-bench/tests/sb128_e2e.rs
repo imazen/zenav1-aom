@@ -257,3 +257,54 @@ fn sb128_natural_e2e() {
          --sb-size=128: {failures:?}"
     );
 }
+
+/// SB128 × PARTIAL-SB — frames whose dims are NOT a multiple of 128px, so the
+/// right/bottom superblocks are partial 128-SBs (the mu-64 chunk walk's
+/// visible-clip + the KB-6 partial-SB machinery — distortion visible-clips,
+/// `set_partition_cost_for_edge_blk`, the frame-edge entropy-stamp tail-zero —
+/// now combine with the 128-SB geometry). This is the "196² partial-SB
+/// frame-edge" configuration at `--sb-size=128`. Byte-identical vs real aomenc.
+///
+/// 192² (mi 48): a 2×2 grid of 128-SBs with the 2nd row/col partial (128+64).
+/// 196² (mi 49): the exact KB-6 partial-SB conformance frame, now at sb128.
+#[test]
+fn sb128_partial_sb_e2e() {
+    c::ref_init();
+    let sb128 = [(AV1E_SET_SUPERBLOCK_SIZE, AOM_SUPERBLOCK_SIZE_128X128)];
+    let mut failures = Vec::new();
+    for &(vec, crop, cq) in &[
+        ("av1-1-b8-00-quantizer-00", Some((192usize, 192usize, 0usize, 0usize)), 32i32),
+        ("av1-1-b8-00-quantizer-00", Some((192, 192, 0, 0)), 63),
+        ("av1-1-b8-01-size-196x196", None, 32),
+        ("av1-1-b8-01-size-196x196", None, 63),
+    ] {
+        let label = format!("{vec}_cq{cq}");
+        let cell = EncodeCell::real_content(&label, vec, crop, cq, 0);
+        let c_ref = cell.c_encode_ctrls(&sb128);
+        assert!(!c_ref.is_empty(), "{label}: C sb128 encode failed");
+        // Anti-vacuity: sb128 must change the stream vs sb64 (else a silent
+        // SB64 fallback would pass — and the partial-SB align differs at 128).
+        assert_ne!(
+            c_ref,
+            cell.c_encode(),
+            "{label}: --sb-size=128 did not change the C stream vs --sb-size=64"
+        );
+        let port = cell.port_encode_with(&c_ref, &ToggleKnobs::default());
+        let real = EncodeCell::frame_obu_payload(&c_ref);
+        if port != real {
+            let n = port.len().min(real.len());
+            let fd = (0..n).find(|&i| port[i] != real[i]);
+            eprintln!(
+                "  SB128-partial {label}: MISMATCH port {} B vs real {} B, first diff at {:?}",
+                port.len(),
+                real.len(),
+                fd
+            );
+            failures.push(label);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "SB128 partial-SB cells NOT byte-exact vs real aomenc --sb-size=128: {failures:?}"
+    );
+}
