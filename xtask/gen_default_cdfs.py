@@ -41,6 +41,11 @@ CONSTS = {
     "TX_TYPES": 16, "MV_JOINTS": 4, "MV_CLASSES": 11, "CLASS0_SIZE": 2,
     "MV_FP_SIZE": 4, "MV_OFFSET_BITS": 10, "MAX_ANGLE_DELTA": 3,
     "NUM_BASE_LEVELS": 2, "EOB_MAX_SYMS": 11,
+    "INTRA_INTER_CONTEXTS": 4, "REF_CONTEXTS": 3, "SINGLE_REFS": 7,
+    "NEWMV_MODE_CONTEXTS": 6, "GLOBALMV_MODE_CONTEXTS": 2,
+    "REFMV_MODE_CONTEXTS": 6, "DRL_MODE_CONTEXTS": 3,
+    "SWITCHABLE_FILTER_CONTEXTS": 16, "SWITCHABLE_FILTERS": 3,
+    "MOTION_MODES": 3, "SKIP_MODE_CONTEXTS": 3,
 }
 
 
@@ -291,6 +296,41 @@ def main():
          "`default_inter_ext_tx_cdf[EXT_TX_SETS_INTER][EXT_TX_SIZES][CDF_SIZE(TX_TYPES)]`, "
          "the full padded table (set 0 is DCT-only / all-zero; sets 1-3 fill their "
          "alphabet's leading slots). Selected by (eset, square tx size) for intrabc tx-type.")
+
+    # --- inter mode-info CDFs (single-ref translational decode + friends) ---
+    # nmvc (inter MV) reuses default_nmv_context (same table as ndvc) — emitted
+    # below as DEFAULT_NMV_JOINTS / DEFAULT_NMV_COMPS.
+    d, f = extract(mode_c, "default_intra_inter_cdf")
+    assert d == [4, 3], d
+    emit("DEFAULT_INTRA_INTER", d, f, "`default_intra_inter_cdf[INTRA_INTER_CONTEXTS]`.")
+    d, f = extract(mode_c, "default_single_ref_cdf")
+    assert d == [3, 6, 3], d
+    emit("DEFAULT_SINGLE_REF", d, f, "`default_single_ref_cdf[REF_CONTEXTS][SINGLE_REFS-1]`.")
+    d, f = extract(mode_c, "default_newmv_cdf")
+    assert d == [6, 3], d
+    emit("DEFAULT_NEWMV", d, f, "`default_newmv_cdf[NEWMV_MODE_CONTEXTS]`.")
+    d, f = extract(mode_c, "default_zeromv_cdf")
+    assert d == [2, 3], d
+    emit("DEFAULT_ZEROMV", d, f, "`default_zeromv_cdf[GLOBALMV_MODE_CONTEXTS]`.")
+    d, f = extract(mode_c, "default_refmv_cdf")
+    assert d == [6, 3], d
+    emit("DEFAULT_REFMV", d, f, "`default_refmv_cdf[REFMV_MODE_CONTEXTS]`.")
+    d, f = extract(mode_c, "default_drl_cdf")
+    assert d == [3, 3], d
+    emit("DEFAULT_DRL", d, f, "`default_drl_cdf[DRL_MODE_CONTEXTS]`.")
+    d, f = extract(mode_c, "default_switchable_interp_cdf")
+    assert d == [16, 4], d
+    emit("DEFAULT_SWITCHABLE_INTERP", d, f,
+         "`default_switchable_interp_cdf[SWITCHABLE_FILTER_CONTEXTS]` (CDF_SIZE(SWITCHABLE_FILTERS=3)).")
+    d, f = extract(mode_c, "default_motion_mode_cdf")
+    assert d == [22, 4], d
+    emit("DEFAULT_MOTION_MODE", d, f, "`default_motion_mode_cdf[BLOCK_SIZES_ALL]` (CDF_SIZE(MOTION_MODES=3)).")
+    d, f = extract(mode_c, "default_obmc_cdf")
+    assert d == [22, 3], d
+    emit("DEFAULT_OBMC", d, f, "`default_obmc_cdf[BLOCK_SIZES_ALL]`.")
+    d, f = extract(mode_c, "default_skip_mode_cdfs")
+    assert d == [3, 3], d
+    emit("DEFAULT_SKIP_MODE", d, f, "`default_skip_mode_cdfs[SKIP_MODE_CONTEXTS]`.")
 
     # --- loop-restoration mode CDFs (single instances) ---
     d, f = extract(mode_c, "default_switchable_restore_cdf")
