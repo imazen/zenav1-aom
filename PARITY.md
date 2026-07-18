@@ -236,7 +236,7 @@ deltaq_mode=6 (VARIANCE_BOOST)`; IQ adds `enable_adaptive_sharpness=1`.
   priority) `--delta-lf-mode` (S–M).
 - Encoder-side per-SB delta-q/delta-lf tile signaling (writer side). (S–M, shared)
 
-### C6 — Superres (encode side) — FIXED bd8 + bd10/12 DONE (→ Section A); remaining PARTIAL (S–M)
+### C6 — Superres (encode side) — FIXED + QTHRESH/AUTO/RANDOM + denom-16 scaler DONE; only the AUTO recode loop remains (inter follow-up)
 - `--superres-mode/-denominator/-kf-denominator/-qthresh/-kf-qthresh`. Default NONE.
 - **DONE (Section A): FIXED mode — 8-bit 13/13 + 10/12-bit 16/16, byte-identical** — source downscale
   (`av1_resize_plane`, `aom_encode::resize`, differentially bit-exact vs exported C:
@@ -252,17 +252,30 @@ deltaq_mode=6 (VARIANCE_BOOST)`; IQ adds `enable_adaptive_sharpness=1`.
      (bd10/12 × 4:2:0 denoms 9/12/14 cq{20,48} + mono denoms 9/12 cq32). Also fixed a
      byte-neutral aom-dist `highbd_variance64` SIMD edge panic (non-mult-of-8 visible-only SSE
      → scalar twin; verified 0-failed in both dispatch modes).
-  2. **8-bit denom-16-even-width corner** — that ratio (exact 1/2, 1/16-multiple) trips
-     libaom's OPTIMIZED `av1_resize_and_extend_frame` (a DIFFERENT kernel, `aom_scaled_2d`),
-     not `av1_resize_plane`; the gate asserts-out of it (`superres_uses_optimized_scaler_8bit`).
-     Port the optimized scaler to cover it. (S–M)
-  3. **AUTO / QTHRESH / RANDOM denom selection** — `calculate_next_superres_scale`
-     (superres_scale.c): QTHRESH/AUTO choose the denom from qindex via `analyze_hor_freq`
-     (16×4 H_DCT energy, needs `av1_fwd_txfm2d_16x4`) + `get_superres_denom_from_qindex_energy`
-     + `av1_rc_pick_q_and_bounds`; RANDOM = `lcg_rand16 % 9 + 8`. FIXED (denom given) is the
-     common stills mode and is done; these are the denom-*derivation* modes. (M)
-  4. `av1_superres_in_recode_allowed` is AUTO+non-SOLO+frames_to_key>1 only → never for FIXED
-     stills; the recode loop (`SUPERRES_AUTO_DUAL`) is an AUTO-mode multi-pass follow-up. (M)
+  2. **8-bit denom-16-even-width corner — DONE (2026-07-18, 6b77342)** — the exact-1/2 horizontal
+     ratio trips libaom's OPTIMIZED `av1_resize_and_extend_frame` (`aom_scaled_2d`, `EIGHTTAP_SMOOTH`
+     / phase 8), ported as `optimized_downscale_plane_8bit` (edge-extend + 16×16-block separable
+     8-tap convolve). Differentially bit-exact vs the exported `av1_resize_and_extend_frame_c`
+     (`resize_opt_scaler_diff`, 5 content × luma/chroma/other dims); wired into the gate's bd8
+     downscale (all-planes-or-none per C). bd8 denom-16 QTHRESH/AUTO cells now emit BYTE-IDENTICAL
+     streams to real aomenc.
+  3. **AUTO / QTHRESH / RANDOM denom selection — DONE (2026-07-18, 3c8a8c2)** —
+     `calculate_next_superres_scale` (superres_scale.c) ported as `aom_encode::superres_select` for
+     the single-frame KEY/AOM_Q envelope: `analyze_hor_freq` (16×4 H_DCT energy, bit-exact vs the
+     exported `av1_fwd_txfm2d_16x4` — `superres_select_diff` facade + e2e) +
+     `get_superres_denom_from_qindex_energy` + the QTHRESH gate (q vs `--superres-kf-qthresh`); AUTO =
+     allintra `Dual` (qthresh 0, same energy derivation); RANDOM = the process-global static-seed lcg
+     (34567 → 11,14,15,9). `q` is the AOM_Q cq-qindex (`rc::base_qindex_from_cq`, #8). The port
+     re-derives the denom the real encoder chose (embedded in the stream) and matches it for EVERY
+     cell (QTHRESH 21/21, AUTO 11/11 bd8/10/12; RANDOM 4 draws), then reproduces the coded bytes
+     (RANDOM 4/4 byte-identical real content; QTHRESH/AUTO bd8 engaged denoms 9/10/16 byte-identical).
+     Gates: `encoder_gate_superres_{qthresh,auto,random}_e2e`. Superres stays OFF by default.
+  4. **AUTO recode loop — remaining (inter/GOP follow-up).** `av1_superres_in_recode_allowed` is
+     AUTO && !SOLO && `frames_to_key>1`; a single-frame KEY still has `frames_to_key<=1`, so the
+     recode loop NEVER fires for it (confirmed by the AUTO e2e denom match — the non-recode denom is
+     exact). The `SUPERRES_AUTO_DUAL` multi-pass recode search is only reachable with a multi-frame
+     GOP, so it is out of the single-frame KEY scope. **Decoder note:** the port DECODER's superres
+     denom-16 (exact-2:1) upscale diverges from C (KB-14, decoder track) — the encoder is byte-exact.
 
 ### C7 — Film grain / denoise estimation — table-inject DONE (byte-exact → section A); estimation ABSENT (L)
 - **`--film-grain-table` — DONE (this landing, → section A).** Ported `aom_dsp/grain_table.c`
