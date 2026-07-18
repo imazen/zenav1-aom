@@ -32,3 +32,11 @@ aom-sys-ref = { path = "../aom-sys-ref" }
 # [dependencies] on aom-encode only applies when building aom-decode itself;
 # test binaries here are a separate compilation unit).
 aom-decode = { path = "../aom-decode" }
+# AVIF container muxer -- used ONLY by the `avif_parity` test (Gate 4,
+# zenavif integration): wraps the port's byte-exact AV1 OBU frame into an
+# AVIF still, which the harness then round-trips (parse container -> extract
+# the coded AV1 -> byte-compare) and decodes (via aom-decode). Dev-dependency
+# only; never linked into the aom-encode library. Pinned to the SAME git rev
+# the zenavif codec crate consumes (imazen/zenavif consumes it via this exact
+# rev in its [patch.crates-io]; zenavif-serialize 0.2.0 is unpublished).
+zenavif-serialize = { git = "https://github.com/imazen/zenavif-serialize", rev = "4c90d4dd02ef1684fa2230c6aaa2b5ef51e6a926" }
