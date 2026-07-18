@@ -45,8 +45,23 @@ See CLAUDE.md KB-15 + PARITY C3.
   Gate: `crates/aom-bench/tests/film_grain_gate.rs` (+ no-bootstrap-leak witness). Root fix during
   landing: the grain C shim must replicate the plain `encode_kf_pass` control set (CDEF/restoration/
   deltaq/aq off) — grain is decode-side synthesis, so the coded tiles MUST equal the plain encode
-  (the port reproduces plain tiles + injects the header grain block). Grain ESTIMATION
-  (`--denoise-noise-level`, `aom_dsp/noise_model.c`) remains ABSENT — L, float/FFT-gated (see PARITY C7).
+  (the port reproduces plain tiles + injects the header grain block).
+- **C7 film-grain ESTIMATION** (`--denoise-noise-level`, `aom_dsp/noise_model.c` + `noise_util.c`) —
+  DONE, BYTE-EXACT (the earlier "float/FFT-gated, L" note was wrong). FFT byte-exactness verdict
+  RESOLVED: the reference build's `fft.c.o` has ZERO fma instructions (gcc 15.2 `-std=c11` does not
+  contract) and the RTCD SSE2/AVX2 variants use non-fused `_mm*_{add,sub,mul}_ps`, so a strict-`f32`
+  scalar port matches the dispatched oracle bit-for-bit. Landed pieces, each with a REAL-C
+  differential: the FFT noise transform `aom_noise_tx_*` (`aom-encode/src/noise_fft.rs`,
+  `tests/noise_fft_diff.rs`; 1-D butterflies transcribed by `xtask/transcribe_noise_fft.py`); the
+  AR-coefficient model `aom_noise_model_init/update/get_grain_parameters`
+  (`aom-encode/src/noise_model.rs`, `tests/noise_model_diff.rs` — AR coeffs / ar_gain / strength
+  curves / status / quantized grain params, across lag 1/2/3 × DIAMOND/SQUARE × 8/10-bit ×
+  444/420); the grain-table WRITER (`tests/grain_table_diff.rs` — 16 built-in vectors, read∘write ==
+  `aom_film_grain_table_write`); the Wiener denoise `aom_wiener_denoise_2d`
+  (`aom-encode/src/denoise.rs`, `tests/wiener_denoise_diff.rs`); and the end-to-end orchestrator
+  `aom_denoise_and_model_run` + the one-shot entry `denoise::estimate_film_grain`
+  (`tests/denoise_and_model_diff.rs` — grain params AND denoised planes byte-identical to the real
+  orchestrator). Oracle shims appended to `aom-sys-ref/shim/dec_shim.c`.
 - **Forward 1-D transforms** (`av1_fwd_txfm1d.c`), all 12 kernels:
   `fdct{4,8,16,32,64}`, `fadst{4,8,16}`, `fidentity{4,8,16,32}`.
   Harness: `crates/aom-transform/tests/txfm1d_diff.rs`. Coverage: 4.8M
