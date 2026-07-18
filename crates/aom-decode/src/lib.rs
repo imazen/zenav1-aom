@@ -694,11 +694,15 @@ pub struct InterFrameCfg<'r> {
     pub order_hint: i32,
 }
 
-/// The inter mode-info CDFs, built inline from the `default_cdfs` tables (the
-/// `primary_ref = NONE` default-context load). For the single-inter-block
-/// walking skeleton these need no cross-block adaptation (no CDF is re-read
-/// within one block), so a fresh copy per block is byte-exact; the multi-inter-
-/// block ratchet will need them threaded like [`KfFrameContext`].
+/// The inter mode-info CDFs, loaded from the `default_cdfs` tables (the
+/// `primary_ref = NONE` default-context load) and threaded across a tile's inter
+/// blocks so they ADAPT (`update_cdf`) exactly like [`KfFrameContext`] does for
+/// intra: hosted on [`TileKf::inter_cdfs`], reset to defaults per tile in
+/// [`TileKf::start_tile`], read+adapted in place by every inter symbol read.
+/// `Copy` so [`TileKf::decode_block_inter`] can take a local snapshot, adapt it
+/// through the reads (the `single_ref` sub-tree is assembled into a scratch by
+/// [`InterCdfs::ref_frame_cdfs`] and its adaptations copied back), then persist.
+#[derive(Clone, Copy)]
 struct InterCdfs {
     intra_inter: [[u16; 3]; 4],
     single_ref: [[[u16; 3]; 6]; 3],
@@ -1327,6 +1331,10 @@ struct TileKf<'c> {
     /// mode-info + motion-compensation path ([`TileKf::decode_block_inter`])
     /// instead of the KEY intra path. `None` for a KEY frame (the default).
     inter: Option<InterFrameCfg<'c>>,
+    /// The tile's inter mode-info CDFs ([`InterCdfs`]), threaded across inter
+    /// blocks so they adapt like the intra [`KfFrameContext`]. Reset to defaults
+    /// per tile in [`start_tile`]; unused (but harmless) on KEY frames.
+    inter_cdfs: InterCdfs,
 }
 
 impl<'c> TileKf<'c> {
@@ -1508,6 +1516,7 @@ impl<'c> TileKf<'c> {
             lr_refs: aom_entropy::lr::LrRefState::default(),
             tile: TileBoundsKf::whole_frame(cfg),
             inter: None,
+            inter_cdfs: InterCdfs::defaults(),
         };
         // Run the same per-tile reset `start_tile` applies to any later tile
         // — for the first (or only) tile this re-touches already-fresh state
@@ -1559,6 +1568,9 @@ impl<'c> TileKf<'c> {
         // Per-tile fresh var-tx CDF, mirroring the per-tile `KfFrameContext`
         // reload (`tile_data->tctx = *cm->fc`); adapts within the tile only.
         self.txfm_partition = DEFAULT_TXFM_PARTITION_CDF;
+        // Same per-tile reload for the inter mode-info CDFs (primary_ref = NONE →
+        // default context); they then adapt across the tile's inter blocks.
+        self.inter_cdfs = InterCdfs::defaults();
 
         self.cfl = CflCtx::new(ss_x as i32, ss_y as i32);
         self.lr_refs = aom_entropy::lr::LrRefState::default();
@@ -1790,7 +1802,12 @@ impl<'c> TileKf<'c> {
         let left_dv = left_available.then(|| self.mi_dv[(mi_row * cols + mi_col - 1) as usize]);
         let dv_inter = |d: DvNbr| d.use_intrabc || d.ref_frame0 > 0;
 
-        let mut icdfs = InterCdfs::defaults();
+        // Snapshot the tile's persistent inter CDFs; every read below adapts this
+        // local copy (via `read_symbol`/`update_cdf` when `dec.allow_update_cdf`),
+        // and it is persisted back to `self.inter_cdfs` at the end of the block so
+        // the next inter block sees the adapted state (matching C's in-place
+        // `tile_data->tctx` adaptation).
+        let mut icdfs = self.inter_cdfs;
 
         // --- read_inter_frame_mode_info pre-mode reads ---
         // segment_id (seg off -> 0); skip_mode (allowed off -> 0): no reads.
@@ -1834,9 +1851,20 @@ impl<'c> TileKf<'c> {
             inter.reference_mode_select,
             false,
         );
+        // `ref_frame_cdfs` assembled `ref_cdfs` from disjoint `single_ref` rows
+        // (each single-ref sub-tree at its own pred context); copy the adapted
+        // rows back so the adaptation persists across blocks. Only the rows
+        // `read_ref_frames` actually read changed; copying all six is a no-op for
+        // the rest. (Compound slots 0..10 are never read under SINGLE_REFERENCE.)
+        icdfs.single_ref[ep::single_ref_p1_context(&rc) as usize][0] = ref_cdfs[10];
+        icdfs.single_ref[ep::pred_ctx_brfarf2_or_arf(&rc) as usize][1] = ref_cdfs[11];
+        icdfs.single_ref[ep::pred_ctx_ll2_or_l3gld(&rc) as usize][2] = ref_cdfs[12];
+        icdfs.single_ref[ep::pred_ctx_last_or_last2(&rc) as usize][3] = ref_cdfs[13];
+        icdfs.single_ref[ep::pred_ctx_last3_or_gld(&rc) as usize][4] = ref_cdfs[14];
+        icdfs.single_ref[ep::pred_ctx_brf_or_arf2(&rc) as usize][5] = ref_cdfs[15];
         assert!(
             !is_compound && ref0 == 1 && ref1 == -1,
-            "inter skeleton: single LAST reference"
+            "inter ratchet: single LAST reference (compound is a later chunk)"
         );
 
         // find_inter_mv_refs (identity GM, empty temporal field per the census).
@@ -1925,54 +1953,62 @@ impl<'c> TileKf<'c> {
             _ => panic!("inter skeleton: unexpected single-ref mode {mode}"),
         };
 
-        // read_mb_interp_filter: SWITCHABLE, per-direction. For a block with no
-        // available neighbours (the whole 64x64 SB), both neighbour filter types
-        // are SWITCHABLE_FILTERS so the context is `dir*INTER_FILTER_DIR_OFFSET +
-        // SWITCHABLE_FILTERS` (dir0=3, dir1=11). av1_get_pred_context_switchable_
-        // interp's neighbour-filter branch (a filter grid) is ratchet work.
-        assert!(
-            !up_available && !left_available,
-            "inter skeleton: interp-filter neighbour context not yet stored"
-        );
+        // read_mb_interp_filter. A non-switchable frame broadcasts its fixed
+        // filter with NO symbol read (av1_broadcast_interp_filter); a switchable
+        // frame reads a per-direction filter on a context selected from the
+        // neighbour filters (av1_get_pred_context_switchable_interp). That
+        // neighbour context needs a per-block filter grid (item 3) — only the
+        // no-available-neighbour context (SWITCHABLE_FILTERS) is wired here, exact
+        // for the single-block skeleton; a switchable frame WITH an available
+        // neighbour is deferred (asserted). This ratchet target is non-switchable
+        // EIGHTTAP, so the else branch runs and no symbol/context is read.
         const SWITCHABLE_FILTERS: usize = 3;
         const INTER_FILTER_DIR_OFFSET: usize = 8;
         let is_switchable = inter.interp_filter == SWITCHABLE;
-        let interp_needed = true; // NEWMV/SIMPLE/non-global: av1_is_interp_needed
-        let ctx0 = SWITCHABLE_FILTERS;
-        let ctx1 = INTER_FILTER_DIR_OFFSET + SWITCHABLE_FILTERS;
-        // read_mb_interp_filter borrows two distinct CDF rows (dir0 != dir1);
-        // the adapted state is not re-read within a single block.
-        let (f0, f1) = {
+        // av1_extract_interp_filter: dir0 = y_filter, dir1 = x_filter.
+        let (filter_y, filter_x) = if is_switchable {
+            assert!(
+                !up_available && !left_available,
+                "inter ratchet: switchable-interp neighbour context (item 3) not yet stored"
+            );
+            let ctx0 = SWITCHABLE_FILTERS;
+            let ctx1 = INTER_FILTER_DIR_OFFSET + SWITCHABLE_FILTERS;
             let mut c0 = icdfs.switchable_interp[ctx0];
             let mut c1 = icdfs.switchable_interp[ctx1];
-            ep::read_mb_interp_filter(
-                dec,
-                &mut c0,
-                &mut c1,
-                interp_needed,
-                is_switchable,
-                inter.enable_dual_filter,
-            )
+            let (f0, f1) =
+                ep::read_mb_interp_filter(dec, &mut c0, &mut c1, true, true, inter.enable_dual_filter);
+            icdfs.switchable_interp[ctx0] = c0;
+            icdfs.switchable_interp[ctx1] = c1;
+            (f0 as usize, f1 as usize)
+        } else {
+            (inter.interp_filter as usize, inter.interp_filter as usize)
         };
-        // av1_extract_interp_filter: dir0 = y_filter, dir1 = x_filter.
-        let (filter_y, filter_x) = (f0 as usize, f1 as usize);
 
-        // read_motion_mode: no overlappable neighbours -> SIMPLE_TRANSLATION,
-        // read nothing (motion_mode_allowed early-outs, blockd.h:1480).
+        // read_motion_mode (av1_is_motion_mode_switchable): a symbol is read only
+        // when the frame allows switchable motion modes AND the block is
+        // motion-variation-allowed (min(bw,bh) >= 8) AND it has overlappable
+        // neighbours. Neither envelope target reads it: the 64x64 skeleton block is
+        // at the tile top-left (no neighbours -> no overlappable candidates); the
+        // 16x16 ratchet's BLOCK_16X4 (h=4) fails the size gate. A >=8x8 switchable
+        // block WITH an available neighbour would need the OBMC/warp read (later
+        // chunk) -> guarded here.
+        let min_dim = BLOCK_SIZE_WIDE[bsize].min(BLOCK_SIZE_HIGH[bsize]);
+        assert!(
+            !inter.switchable_motion_mode
+                || min_dim < 8
+                || (!up_available && !left_available),
+            "inter ratchet: motion_mode symbol (OBMC/warp) not yet handled for a \
+             >=8x8 switchable block with neighbours"
+        );
 
-        // tx_size: TX_MODE_LARGEST -> the single per-block size, no symbol read.
+        // tx_size: TX_MODE_LARGEST -> the single per-block luma size, no symbol read.
         let tx_size = tx_size_from_tx_mode(bsize, cfg.tx_mode);
 
-        // --- motion compensation into the reconstruction (skip=1: no residual) ---
-        assert_eq!(
-            skip, 1,
-            "inter skeleton: single block is skip (no residual)"
-        );
+        // --- motion compensation (predict phase; NO entropy reads) ---
         let (cmv_row, cmv_col) = clamp_mv_to_umv_border(mv_row, mv_col, mi_row, mi_col, bsize, cfg);
-        let bw = (MI_SIZE_WIDE[bsize] * 4) as usize;
-        let bh = (MI_SIZE_HIGH[bsize] * 4) as usize;
+        let bw_px = (MI_SIZE_WIDE[bsize] * 4) as usize;
+        let bh_px = (MI_SIZE_HIGH[bsize] * 4) as usize;
         let last = inter.last;
-        // Luma.
         let blk_x = (mi_col * 4) as usize;
         let blk_y = (mi_row * 4) as usize;
         let dst_off = blk_y * self.stride + blk_x;
@@ -1986,8 +2022,8 @@ impl<'c> TileKf<'c> {
             self.stride,
             blk_x,
             blk_y,
-            bw,
-            bh,
+            bw_px,
+            bh_px,
             cmv_row,
             cmv_col,
             0,
@@ -1995,35 +2031,304 @@ impl<'c> TileKf<'c> {
             filter_x,
             filter_y,
         );
-        // Chroma (subsampled block + plane, luma-domain MV).
-        if !cfg.monochrome {
-            let bw_uv = bw >> ss_x;
-            let bh_uv = bh >> ss_y;
-            let blk_x_uv = blk_x >> ss_x;
-            let blk_y_uv = blk_y >> ss_y;
-            let dst_off_uv = blk_y_uv * self.stride_uv + blk_x_uv;
-            for (dst, src) in [(&mut self.recon_u, &last.u), (&mut self.recon_v, &last.v)] {
-                aom_inter::build_inter_predictor(
-                    src,
-                    last.stride_uv,
-                    last.width_uv,
-                    last.height_uv,
-                    dst,
-                    dst_off_uv,
-                    self.stride_uv,
-                    blk_x_uv,
-                    blk_y_uv,
-                    bw_uv,
-                    bh_uv,
-                    cmv_row,
-                    cmv_col,
-                    ss_x,
-                    ss_y,
-                    filter_x,
-                    filter_y,
-                );
+        // Chroma prediction only at the chroma-reference block (sub-8x8 members
+        // share one chroma block, coded on the group's bottom/right member). The
+        // shared-group origin is `adj` (setup_pred_plane's odd-position shift).
+        let chroma_ref =
+            !cfg.monochrome && is_chroma_reference(mi_row, mi_col, bsize, ss_x, ss_y);
+        let adj_row = if ss_y != 0 && (mi_row & 1) != 0 && MI_SIZE_HIGH[bsize] == 1 {
+            mi_row - 1
+        } else {
+            mi_row
+        };
+        let adj_col = if ss_x != 0 && (mi_col & 1) != 0 && MI_SIZE_WIDE[bsize] == 1 {
+            mi_col - 1
+        } else {
+            mi_col
+        };
+        if chroma_ref {
+            let plane_bsize = get_plane_block_size(bsize, ss_x, ss_y);
+            let uv_org_x = ((adj_col * 4) >> ss_x) as usize;
+            let uv_org_y = ((adj_row * 4) >> ss_y) as usize;
+            // is_sub8x8_inter (chroma): a luma side == 4 on a subsampled axis means
+            // the chroma covers > 1 luma block; predict per covered luma block using
+            // its OWN MV (build_inter_predictors_sub8x8). Every covered block is
+            // inter here (all-inter frame). Otherwise a single whole-block chroma MC.
+            let is_sub4_x = BLOCK_SIZE_WIDE[bsize] == 4 && ss_x != 0;
+            let is_sub4_y = BLOCK_SIZE_HIGH[bsize] == 4 && ss_y != 0;
+            if is_sub4_x || is_sub4_y {
+                let b4_w = (BLOCK_SIZE_WIDE[bsize] >> ss_x) as usize;
+                let b4_h = (BLOCK_SIZE_HIGH[bsize] >> ss_y) as usize;
+                let b8_w = BLOCK_SIZE_WIDE[plane_bsize] as usize;
+                let b8_h = BLOCK_SIZE_HIGH[plane_bsize] as usize;
+                let row_start: i32 = if is_sub4_y { -1 } else { 0 };
+                let col_start: i32 = if is_sub4_x { -1 } else { 0 };
+                let cols = cfg.mi_cols;
+                let mut y = 0usize;
+                let mut row = row_start;
+                while y < b8_h {
+                    let mut x = 0usize;
+                    let mut col = col_start;
+                    while x < b8_w {
+                        // The covered sub-block's own MV: xd->mi[row*stride+col].
+                        // The current block (row==0 && col==0) is not yet stamped
+                        // into `mi_dv` (stamp is at the end of this fn), so use the
+                        // just-decoded MV; neighbours come from the grid.
+                        let (smv_r, smv_c) = if row == 0 && col == 0 {
+                            (mv_row, mv_col)
+                        } else {
+                            let d = self.mi_dv[((mi_row + row) * cols + (mi_col + col)) as usize];
+                            (d.mv0_row, d.mv0_col)
+                        };
+                        let bxu = uv_org_x + x;
+                        let byu = uv_org_y + y;
+                        let doff = byu * self.stride_uv + bxu;
+                        for (dst, src) in
+                            [(&mut self.recon_u, &last.u), (&mut self.recon_v, &last.v)]
+                        {
+                            aom_inter::build_inter_predictor(
+                                src,
+                                last.stride_uv,
+                                last.width_uv,
+                                last.height_uv,
+                                dst,
+                                doff,
+                                self.stride_uv,
+                                bxu,
+                                byu,
+                                b4_w,
+                                b4_h,
+                                smv_r,
+                                smv_c,
+                                ss_x,
+                                ss_y,
+                                filter_x,
+                                filter_y,
+                            );
+                        }
+                        x += b4_w;
+                        col += 1;
+                    }
+                    y += b4_h;
+                    row += 1;
+                }
+            } else {
+                let bw_uv = bw_px >> ss_x;
+                let bh_uv = bh_px >> ss_y;
+                let doff = uv_org_y * self.stride_uv + uv_org_x;
+                for (dst, src) in [(&mut self.recon_u, &last.u), (&mut self.recon_v, &last.v)] {
+                    aom_inter::build_inter_predictor(
+                        src,
+                        last.stride_uv,
+                        last.width_uv,
+                        last.height_uv,
+                        dst,
+                        doff,
+                        self.stride_uv,
+                        uv_org_x,
+                        uv_org_y,
+                        bw_uv,
+                        bh_uv,
+                        cmv_row,
+                        cmv_col,
+                        ss_x,
+                        ss_y,
+                        filter_x,
+                        filter_y,
+                    );
+                }
             }
         }
+
+        // --- reconstruction: read residual coefficients + ADD onto the MC
+        // prediction (decode_token_recon_block inter path). Skip blocks read no
+        // coeffs. TX_MODE_LARGEST => one uniform luma tx tiling the block, then
+        // (at the chroma reference) one U and one V tx, in that plane order — all
+        // within the single <=64px 64x64 chunk this ratchet's blocks occupy.
+        let mb_to_right_edge = (cfg.mi_cols - MI_SIZE_WIDE[bsize] - mi_col) * 32;
+        let mb_to_bottom_edge = (cfg.mi_rows - MI_SIZE_HIGH[bsize] - mi_row) * 32;
+        let mut luma_tt0 = 0usize; // co-located luma tx-type for inter chroma
+        if skip == 0 {
+            // av1_read_tx_type gate: !skip && qindex(seg,base) > 0. Segmentation
+            // is off in this envelope (asserted above) so segment_id == 0.
+            let signal_gate = av1_get_qindex(&cfg.seg, 0, cfg.base_qindex) > 0;
+            let max_blocks_wide = max_block_units(BLOCK_SIZE_WIDE[bsize], mb_to_right_edge);
+            let max_blocks_high = max_block_units(BLOCK_SIZE_HIGH[bsize], mb_to_bottom_edge);
+            // Luma plane.
+            let txw = TX_SIZE_WIDE_UNIT[tx_size];
+            let txh = TX_SIZE_HIGH_UNIT[tx_size];
+            let larea = txb_wide(tx_size) * txb_high(tx_size);
+            let mut tcoeff = vec![0i32; larea];
+            let mut blk_row = 0usize;
+            while blk_row < max_blocks_high {
+                let mut blk_col = 0usize;
+                while blk_col < max_blocks_wide {
+                    let a0 = mi_col as usize + blk_col;
+                    let l0 = (mi_row & 31) as usize + blk_row;
+                    let (tsc, dsc) = get_txb_ctx(
+                        bsize,
+                        tx_size,
+                        0,
+                        &self.above_e[0][a0..],
+                        &self.left_e[0][l0..],
+                    );
+                    // is_inter block -> av1_read_tx_type selects the inter ext-tx CDF.
+                    let ext = inter_ext_tx_cdf(&mut cdfs.inter_ext_tx, tx_size, cfg.reduced_tx_set);
+                    let (eob, tt) = read_coeffs_txb_full(
+                        dec,
+                        &mut cdfs.coeff,
+                        ext,
+                        &mut tcoeff,
+                        tx_size,
+                        0,
+                        tsc as usize,
+                        dsc as usize,
+                        true,
+                        true,
+                        cfg.reduced_tx_set,
+                        signal_gate,
+                        0,
+                    );
+                    if blk_row == 0 && blk_col == 0 {
+                        luma_tt0 = tt;
+                    }
+                    let cul = txb_entropy_context(&tcoeff, tx_size, tt, eob) as i8;
+                    self.set_entropy_ctx(
+                        0,
+                        cul,
+                        mi_col as usize,
+                        (mi_row & 31) as usize,
+                        blk_row,
+                        blk_col,
+                        txw,
+                        txh,
+                        max_blocks_wide,
+                        max_blocks_high,
+                        mb_to_right_edge,
+                        mb_to_bottom_edge,
+                    );
+                    if eob > 0 {
+                        let off = ((mi_row * 4) as usize + blk_row * 4) * self.stride
+                            + (mi_col * 4) as usize
+                            + blk_col * 4;
+                        let iqm = qm::iqmatrix(self.block_qm_level[0], 0, tx_size, tt);
+                        reconstruct_txb(
+                            &mut self.recon[off..],
+                            self.stride,
+                            tx_size,
+                            tt,
+                            &tcoeff,
+                            self.dequants[0],
+                            iqm,
+                            cfg.bd,
+                        );
+                    }
+                    blk_col += txw;
+                }
+                blk_row += txh;
+            }
+            // Chroma planes (only at the chroma reference block).
+            if chroma_ref {
+                let plane_bsize = get_plane_block_size(bsize, ss_x, ss_y);
+                let uv_tx = max_uv_txsize(bsize, ss_x, ss_y);
+                let uv_txw = TX_SIZE_WIDE_UNIT[uv_tx];
+                let uv_txh = TX_SIZE_HIGH_UNIT[uv_tx];
+                let uv_area = txb_wide(uv_tx) * txb_high(uv_tx);
+                let uv_a_base = (adj_col >> ss_x) as usize;
+                let uv_l_base = ((adj_row & 31) >> ss_y) as usize;
+                let uv_org_x = ((adj_col * 4) >> ss_x) as usize;
+                let uv_org_y = ((adj_row * 4) >> ss_y) as usize;
+                let blocks_wide_uv =
+                    max_block_units_ss(BLOCK_SIZE_WIDE[plane_bsize], mb_to_right_edge, ss_x);
+                let blocks_high_uv =
+                    max_block_units_ss(BLOCK_SIZE_HIGH[plane_bsize], mb_to_bottom_edge, ss_y);
+                // Inter chroma tx-type = the CO-LOCATED luma tx-type
+                // (av1_get_tx_type is_inter branch), validated against the uv inter
+                // ext-tx set and demoted to DCT_DCT when unused. For this uniform
+                // single-tx block the co-location is the block's own luma tx-type.
+                let tt_uv = if ext_tx_derive(uv_tx, true, cfg.reduced_tx_set, luma_tt0, false, 0, 0)
+                    .used
+                    == 1
+                {
+                    luma_tt0
+                } else {
+                    0
+                };
+                let mut tcoeff_uv = vec![0i32; uv_area];
+                let mut no_ext: [u16; 0] = [];
+                for plane in 1..=2usize {
+                    let mut blk_row = 0usize;
+                    while blk_row < blocks_high_uv {
+                        let mut blk_col = 0usize;
+                        while blk_col < blocks_wide_uv {
+                            let (tsc, dsc) = get_txb_ctx(
+                                plane_bsize,
+                                uv_tx,
+                                plane,
+                                &self.above_e[plane][uv_a_base + blk_col..],
+                                &self.left_e[plane][uv_l_base + blk_row..],
+                            );
+                            let (eob, _tt) = read_coeffs_txb_full(
+                                dec,
+                                &mut cdfs.coeff,
+                                &mut no_ext,
+                                &mut tcoeff_uv,
+                                uv_tx,
+                                1,
+                                tsc as usize,
+                                dsc as usize,
+                                true,
+                                false,
+                                cfg.reduced_tx_set,
+                                false,
+                                tt_uv,
+                            );
+                            let cul = txb_entropy_context(&tcoeff_uv, uv_tx, tt_uv, eob) as i8;
+                            self.set_entropy_ctx(
+                                plane,
+                                cul,
+                                uv_a_base,
+                                uv_l_base,
+                                blk_row,
+                                blk_col,
+                                uv_txw,
+                                uv_txh,
+                                blocks_wide_uv,
+                                blocks_high_uv,
+                                mb_to_right_edge,
+                                mb_to_bottom_edge,
+                            );
+                            if eob > 0 {
+                                let off = (uv_org_y + blk_row * 4) * self.stride_uv
+                                    + uv_org_x
+                                    + blk_col * 4;
+                                let iqm =
+                                    qm::iqmatrix(self.block_qm_level[plane], plane, uv_tx, tt_uv);
+                                let dst = if plane == 1 {
+                                    &mut self.recon_u
+                                } else {
+                                    &mut self.recon_v
+                                };
+                                reconstruct_txb(
+                                    &mut dst[off..],
+                                    self.stride_uv,
+                                    uv_tx,
+                                    tt_uv,
+                                    &tcoeff_uv,
+                                    self.dequants[plane],
+                                    iqm,
+                                    cfg.bd,
+                                );
+                            }
+                            blk_col += uv_txw;
+                        }
+                        blk_row += uv_txh;
+                    }
+                }
+            }
+        }
+        // Persist the adapted inter mode-info CDFs for the next inter block.
+        self.inter_cdfs = icdfs;
 
         // Stamp the neighbour grids (inert for a single block; needed for the
         // ratchet's spatial scan + skip/interp contexts).

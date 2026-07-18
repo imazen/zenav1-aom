@@ -475,6 +475,14 @@ fn parse_frame_header_ext(
         // (`cur_frame_force_integer_mv` is read from the stream by the prefix,
         // so it is NOT set here.)
         cfg.might_allow_ref_frame_mvs = s.enable_ref_frame_mvs && s.enable_order_hint;
+        // `frame_might_allow_warped_motion` needs the sequence's
+        // `enable_warped_motion`; `read_uncompressed_header` combines it with the
+        // parsed `!FrameIsIntra && !error_resilient_mode` gate. Without this the
+        // reader defaulted it to `false`, SKIPPING the `allow_warped_motion` bit and
+        // shifting `reduced_tx_set` (which then read the warped bit) — the 1-bit
+        // slip is hidden by the header's trailing byte-alignment, so modes still
+        // parsed but the tx-type set was wrong.
+        cfg.might_allow_warped_motion = s.enable_warped_motion;
     }
 
     // Two-phase header parse for coded-lossless. `read_uncompressed_header` gates

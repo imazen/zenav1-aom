@@ -228,3 +228,53 @@ allowed → no read), `interp=[SHARP,SHARP]`, `mv=(-1,-7)`, `tx=TX_64X64`, `prim
   `01-size-*` target); an MV that clamps *differently* per plane needs the per-plane chroma clamp.
 - `decode_block_inter` asserts the envelope (seg/skip_mode/delta-q off, single LAST, skip=1); the
   ratchet must generalize (non-skip residual via `reconstruct_txb`, NEAREST/NEAR/GLOBAL modes).
+
+## Chunk 2 — the 16x16 ratchet — ✅ COMPLETE (frame-1 byte-exact gate MET)
+
+**`av1-1-b8-01-size-16x16` frame 1 decodes to golden md5 `f4b0078dfbc8b581fa959d4512b9940a`**
+(`.md5` line 2), frame 0 (KEY) unchanged, and the 64x64 skeleton + full KEY conformance stay green.
+Gate: `aom-decode/tests/inter_ratchet.rs::inter_ratchet_16x16_frame1_byte_identical`.
+
+STEP-0 census (public-API `AV1D_GET_MI_INFO` + an internal-decode `tx_type_map` peek, both
+throwaway): the 16x16 SB is `PARTITION_HORZ_4` -> 4× `BLOCK_16X4`: block 0 NEWMV, blocks 1-3
+NEARESTMV (each MV from the spatial scan of the block above), single LAST, EIGHTTAP non-switchable,
+SIMPLE_TRANSLATION, tx=TX_16X4, **every block skip=0 (carries residual)**; frame flags interp=0
+(non-sw) reference_mode=SINGLE tx_mode=LARGEST disable_cdf_update=0(adapts) cdef_bits=0(NO
+read_cdef) reduced_tx=0(FULL ext-tx set) allow_warped=1 error_resilient=0.
+
+### What landed
+- **4-tap interp** (`cfd39e0`, pushed): `aom-inter` selects the 4-tap kernel per direction (x by w,
+  y by h; side<=4). `facade_4tap_matches_c` locks it vs real C for the 16x4 luma / 8x2 chroma shapes;
+  the 8-tap path is byte-unchanged.
+- **Inter CDF threading (item 2):** `InterCdfs` is now a persistent `TileKf` field, reset to
+  defaults per tile in `start_tile`, snapshotted+adapted+persisted per block (the `single_ref`
+  sub-tree's adaptations copied back through `ref_frame_cdfs`). Blocks 2-4 desync without it.
+- **Spatial NEARESTMV scan (item 1):** `find_inter_mv_refs` produces the nearest MV from the
+  neighbour scan; the 3 NEARESTMV blocks read their MV from it (matches census).
+- **Non-skip residual (item 5):** per block, MC (predict) then read coeffs + `reconstruct_txb` ADD
+  onto the prediction — luma (TX_16X4, inter ext-tx symbol via `inter_ext_tx_cdf`), chroma at the
+  chroma-reference block (sub-8x8 8x4 U/V; tx-type = co-located luma tx-type). Entropy-context
+  threading (`get_txb_ctx` / `set_entropy_ctx` over `above_e`/`left_e`) mirrors the intrabc path.
+- **Sub-8x8 chroma MC (item 5):** chroma predicted only at the chroma-reference block (odd mi_row),
+  as per-4x4-subblock 8x2 strips using each covered luma block's own MV
+  (`build_inter_predictors_sub8x8`). All 4 MVs are equal here, but the strip walk is faithful.
+- **THE ROOT-CAUSE BUG:** `might_allow_warped_motion` was never set (defaulted false), so
+  `read_uncompressed_header` SKIPPED the `allow_warped_motion` bit, shifting `reduced_tx_set` (which
+  then read the warped bit =1). The 1-bit slip is hidden by the header's trailing byte-alignment, so
+  partition/mode/mv all parsed correctly, but the tx-type set was the REDUCED (DCT_IDTX) set instead
+  of the full set -> tt=IDTX where C uses V_FLIPADST -> wrong residual (luma fully wrong, chroma
+  mostly). Fix: `parse_frame_header_ext` sets `cfg.might_allow_warped_motion = enable_warped_motion`;
+  `read_uncompressed_header` combines it with the parsed `!intra && !error_resilient` gate.
+
+### Inert for THIS vector (deferred, NOT false-completed)
+- **Interp-filter neighbour context (item 3):** NOT exercised — the frame is non-switchable EIGHTTAP,
+  so `read_mb_interp_filter` early-returns with NO symbol/context read (the task's "the context read
+  still happens" premise is FALSE here — verified). The switchable no-neighbour context (used by the
+  64x64 skeleton) is kept; a switchable block WITH neighbours asserts (guarded). Porting
+  `av1_get_pred_context_switchable_interp` + the filter grid is the next SWITCHABLE target's work.
+- **Per-plane chroma MV clamp (item 6):** the luma-domain `clamp_mv_to_umv_border` is exact when it
+  doesn't fire (it doesn't for these small MVs). A per-plane clamp is later-chunk.
+
+### Next ratchet
+`01-size-64x66` (partial-edge SB), then the compound / OBMC / warp / interintra chunks (the
+`00-quantizer`/`04-cdfupdate` frames).

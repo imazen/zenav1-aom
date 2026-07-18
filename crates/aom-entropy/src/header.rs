@@ -3086,12 +3086,16 @@ pub fn read_uncompressed_header(rb: &mut ReadBitBuffer, cfg: &FrameHeaderObu) ->
         );
     }
     p.tx_mode_select = read_tx_mode(rb, cfg.coded_lossless);
-    let (rms, smf, awm, rts) = read_frame_header_trailing_flags(
-        rb,
-        intra_only,
-        cfg.skip_mode_allowed,
-        cfg.might_allow_warped_motion,
-    );
+    // `frame_might_allow_warped_motion` (av1_common_int.h): the warped-motion bit
+    // is present iff `!FrameIsIntra && !error_resilient_mode && enable_warped_motion`.
+    // The caller supplies the sequence's `enable_warped_motion` in
+    // `cfg.might_allow_warped_motion`; the frame-type / error-resilient gate is
+    // known only here (parsed above), so combine them (a no-op for the writer-mirror
+    // roundtrips, whose inter frames are non-error-resilient).
+    let might_allow_warped =
+        cfg.might_allow_warped_motion && !intra_only && !p.prefix.error_resilient_mode;
+    let (rms, smf, awm, rts) =
+        read_frame_header_trailing_flags(rb, intra_only, cfg.skip_mode_allowed, might_allow_warped);
     p.reference_mode_select = rms;
     p.skip_mode_flag = smf;
     p.allow_warped_motion = awm;
