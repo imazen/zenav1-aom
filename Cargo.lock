@@ -95,6 +95,7 @@ dependencies = [
  "aom-intra",
  "aom-loopfilter",
  "aom-quant",
+ "aom-recon",
  "aom-restore",
  "aom-sys-ref",
  "aom-transform",
@@ -129,6 +130,7 @@ dependencies = [
  "aom-intra",
  "aom-loopfilter",
  "aom-quant",
+ "aom-recon",
  "aom-sys-ref",
  "aom-transform",
  "aom-txb",
@@ -170,6 +172,14 @@ dependencies = [
  "aom-sys-ref",
  "archmage",
  "magetypes",
+]
+
+[[package]]
+name = "aom-recon"
+version = "0.0.1"
+dependencies = [
+ "aom-transform",
+ "aom-txb",
 ]
 
 [[package]]

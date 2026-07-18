@@ -10,6 +10,7 @@ members = [
     "crates/aom-cdef",
     "crates/aom-convolve",
     "crates/aom-txb",
+    "crates/aom-recon",
     "crates/aom-encode",
     "crates/aom-restore",
     "crates/aom-decode",

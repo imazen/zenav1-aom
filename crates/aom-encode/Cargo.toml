@@ -10,6 +10,7 @@ publish = false
 aom-transform = { path = "../aom-transform" }
 aom-quant = { path = "../aom-quant" }
 aom-txb = { path = "../aom-txb" }
+aom-recon = { path = "../aom-recon" }
 aom-entropy = { path = "../aom-entropy" }
 aom-dist = { path = "../aom-dist" }
 aom-intra = { path = "../aom-intra" }

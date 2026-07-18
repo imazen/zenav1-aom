@@ -12,10 +12,16 @@ aom-entropy = { path = "../aom-entropy" }
 aom-intra = { path = "../aom-intra" }
 aom-loopfilter = { path = "../aom-loopfilter" }
 aom-quant = { path = "../aom-quant" }
+aom-recon = { path = "../aom-recon" }
 aom-restore = { path = "../aom-restore" }
 aom-transform = { path = "../aom-transform" }
 aom-txb = { path = "../aom-txb" }
-aom-encode = { path = "../aom-encode" }
 
 [dev-dependencies]
 aom-sys-ref = { path = "../aom-sys-ref" }
+# Encoder side, used ONLY by the roundtrip test harness
+# (tests/tile_roundtrip.rs: xform_quant / QuantKind / QuantParams) -- an
+# encode->decode roundtrip legitimately needs the encoder. As a dev-dependency
+# the decode LIBRARY no longer depends on aom-encode: the reverse-dependency
+# edge is broken (reconstruct_txb now comes from aom-recon).
+aom-encode = { path = "../aom-encode" }

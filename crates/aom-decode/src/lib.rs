@@ -14,7 +14,7 @@
 //!   [`aom_txb::get_txb_ctx`] neighbour contexts) **then** intra prediction
 //!   ([`aom_entropy::partition::intra_avail`] +
 //!   [`aom_intra::predict_intra_high`] into the reconstruction plane) **then**
-//!   dequant + inverse transform + add ([`aom_encode::reconstruct_txb`]) — the
+//!   dequant + inverse transform + add ([`aom_recon::reconstruct_txb`]) — the
 //!   read → predict → reconstruct per-txb interleave `decode_token_recon_block`
 //!   uses (prediction of a block reads reconstructed pixels of previously
 //!   decoded blocks, so the interleave is load-bearing);
@@ -156,8 +156,8 @@ pub mod superres;
 pub mod qm;
 mod qm_tables;
 
-use aom_encode::reconstruct_txb;
 use aom_entropy::cdf::read_symbol;
+use aom_recon::reconstruct_txb;
 
 /// Lossless residual reconstruction: dequantize the 4x4 coefficient block (flat,
 /// qindex-0 dequant) and add the inverse 4x4 Walsh–Hadamard transform onto the

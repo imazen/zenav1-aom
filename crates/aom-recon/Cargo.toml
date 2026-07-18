@@ -1,0 +1,11 @@
+[package]
+name = "aom-recon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared residual-reconstruction layer for aom-rs: reconstruct_txb (dequant + inverse transform + add), depended on by both aom-decode and aom-encode."
+publish = false
+
+[dependencies]
+aom-transform = { path = "../aom-transform" }
+aom-txb = { path = "../aom-txb" }
