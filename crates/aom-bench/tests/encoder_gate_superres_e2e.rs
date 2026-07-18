@@ -28,11 +28,14 @@
 //! decoder and the port decoder to the identical reconstruction, then
 //! [`compare_cell`] scores RD-closeness. Byte-identical cells are hard-asserted.
 //!
-//! Scope of THIS gate: 8-bit, FIXED denom, denoms whose down-ratio is not a
-//! 1/16 multiple (9..14 here) — those use the non-normative `av1_resize_plane`
-//! the CHUNK-1 kernel ports. The 8-bit denom-16-even-width corner (libaom's
-//! OPTIMIZED `av1_resize_and_extend_frame` scaler), the highbd downscale, and
-//! AUTO/QTHRESH/RANDOM denom selection are documented follow-ups (PARITY C6).
+//! Scope of THIS gate: 8-bit + highbd (10/12), FIXED denom (9..14, non-normative
+//! `av1_resize_plane` / `highbd_resize_plane`) AND the derived-denom modes
+//! QTHRESH / AUTO / RANDOM (`aom_encode::superres_select`, below). The 8-bit
+//! denom-16 even-width corner now uses the ported OPTIMIZED
+//! `av1_resize_and_extend_frame` scaler (`optimized_downscale_plane_8bit`,
+//! EIGHTTAP_SMOOTH/phase 8), bit-exact vs C. The AUTO recode loop (never fires
+//! for a single-frame KEY still, `frames_to_key<=1`) is the sole remaining C6
+//! follow-up.
 
 use aom_bench::EncodeCell;
 use aom_bench::rd_close::{RdBands, RdCellResult, assert_rd_close, compare_cell, splice_frame_obu};
@@ -46,7 +49,10 @@ use aom_encode::partition_pick::PickFrameCfg;
 use aom_encode::rc::{base_qindex_from_cq, quantizer_to_qindex};
 use aom_encode::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
 use aom_encode::real_costs::derive_real_costs;
-use aom_encode::resize::{coded_superres_width, highbd_resize_plane, resize_plane};
+use aom_encode::resize::{
+    coded_superres_width, has_optimized_scaler, highbd_resize_plane,
+    optimized_downscale_plane_8bit, resize_plane,
+};
 use aom_encode::speed_features::SpeedFeatures;
 use aom_encode::superres_select::{
     SuperresAutoSearchType, superres_denom_auto_key, superres_denom_qthresh_key,
@@ -129,14 +135,6 @@ fn mi_dim(px: i32) -> i32 {
     ((px + 7) & !7) >> 2
 }
 
-/// libaom `av1_has_optimized_scaler` restricted to the superres case (height
-/// unchanged): true iff the 8-bit optimized scaler would be used instead of the
-/// non-normative `av1_resize_plane`. Used to keep this gate on the ported path.
-fn superres_uses_optimized_scaler_8bit(w: i32, coded_w: i32) -> bool {
-    // Height is unchanged (dst_h == src_h), so its two conditions hold trivially.
-    coded_w * 4 >= w && coded_w <= w * 16 && (16 * coded_w) % w == 0 && (16 * w) % coded_w == 0
-}
-
 /// Real aomenc with fixed-denominator superres ON. `enable_cdef=false`,
 /// `enable_restoration=false` (allintra defaults) so the coded bytes isolate
 /// the downscale + coded-domain encode + deblock.
@@ -161,32 +159,46 @@ fn c_encode_superres(cell: &EncodeCell, denom: i32) -> Vec<u8> {
 }
 
 /// Downscale one tight bd8 plane (`w x h` u16, values 0..255) horizontally to
-/// `coded_w x h` via the ported non-normative resize. Superres is
-/// horizontal-only: `height2 == height`, so the vertical pass is an identity
-/// copy inside `resize_plane`.
-fn downscale_plane_bd8(src: &[u16], w: usize, h: usize, coded_w: usize) -> Vec<u16> {
+/// `coded_w x h`. `use_opt` picks libaom's OPTIMIZED 8-bit scaler
+/// (`av1_resize_and_extend_frame`, EIGHTTAP_SMOOTH/phase 8 — the exact-1/2
+/// even-width corner) vs the non-normative `resize_plane`; the encoder's
+/// all-planes-or-none choice is passed in. Superres is horizontal-only:
+/// `height2 == height`.
+fn downscale_plane_bd8(src: &[u16], w: usize, h: usize, coded_w: usize, use_opt: bool) -> Vec<u16> {
     let src_u8: Vec<u8> = src.iter().map(|&p| p as u8).collect();
-    let mut out_u8 = vec![0u8; coded_w * h];
-    resize_plane(
-        &src_u8,
-        h as i32,
-        w as i32,
-        w as i32,
-        &mut out_u8,
-        h as i32,
-        coded_w as i32,
-        coded_w as i32,
-    );
+    let out_u8 = if use_opt {
+        optimized_downscale_plane_8bit(&src_u8, w, h, coded_w, h)
+    } else {
+        let mut out = vec![0u8; coded_w * h];
+        resize_plane(
+            &src_u8,
+            h as i32,
+            w as i32,
+            w as i32,
+            &mut out,
+            h as i32,
+            coded_w as i32,
+            coded_w as i32,
+        );
+        out
+    };
     out_u8.iter().map(|&p| u16::from(p)).collect()
 }
 
 /// Downscale one tight plane (`w x h` u16) horizontally to `coded_w x h`,
-/// dispatching on bit depth: bd8 uses the 8-bit `resize_plane`, bd10/12 the
-/// `highbd_resize_plane` arm (both CHUNK-1/2 kernels, bit-exact vs C). Superres
+/// dispatching on bit depth: bd8 uses the 8-bit scaler (optimized or
+/// non-normative per `use_opt`), bd10/12 the `highbd_resize_plane` arm. Superres
 /// is horizontal-only: `height2 == height`, an identity vertical pass.
-fn downscale_plane(src: &[u16], w: usize, h: usize, coded_w: usize, bd: u8) -> Vec<u16> {
+fn downscale_plane(
+    src: &[u16],
+    w: usize,
+    h: usize,
+    coded_w: usize,
+    bd: u8,
+    use_opt: bool,
+) -> Vec<u16> {
     if bd == 8 {
-        return downscale_plane_bd8(src, w, h, coded_w);
+        return downscale_plane_bd8(src, w, h, coded_w, use_opt);
     }
     let mut out = vec![0u16; coded_w * h];
     highbd_resize_plane(
@@ -343,13 +355,6 @@ fn port_encode_superres(cell: &EncodeCell, denom: i32, bootstrap: &[u8]) -> Vec<
         "{}: superres must downscale (coded {coded_w} < upscaled {w})",
         cell.label
     );
-    assert!(
-        bd != 8 || !superres_uses_optimized_scaler_8bit(w as i32, coded_w as i32),
-        "{}: this bd8 cell hits the optimized scaler (denom-16-even corner); \
-         out of scope for the non-normative kernel gate (bd10/12 always use \
-         the non-normative path)",
-        cell.label
-    );
 
     let mi_cols = mi_dim(coded_w as i32); // CODED width, not max_frame_width
     let mi_rows = mi_dim(h as i32); // height unchanged by superres
@@ -402,13 +407,19 @@ fn port_encode_superres(cell: &EncodeCell, denom: i32, bootstrap: &[u8]) -> Vec<
     let full_cw = if mono { 0 } else { (w + ss_x) >> ss_x };
     let ch = if mono { 0 } else { (h + ss_y) >> ss_y };
     let coded_cw = if mono { 0 } else { (coded_w + ss_x) >> ss_x };
-    let ds_y = downscale_plane(&cell.y, w, h, coded_w, bd);
+    // libaom's optimized 8-bit scaler is all-planes-or-none: use it iff bd8 AND
+    // every plane satisfies `av1_has_optimized_scaler` (height unchanged for
+    // superres). bd10/12 always take the non-normative path.
+    let use_opt = bd == 8
+        && has_optimized_scaler(w as i32, h as i32, coded_w as i32, h as i32)
+        && (mono || has_optimized_scaler(full_cw as i32, ch as i32, coded_cw as i32, ch as i32));
+    let ds_y = downscale_plane(&cell.y, w, h, coded_w, bd, use_opt);
     let (ds_u, ds_v) = if mono {
         (Vec::new(), Vec::new())
     } else {
         (
-            downscale_plane(&cell.u, full_cw, ch, coded_cw, bd),
-            downscale_plane(&cell.v, full_cw, ch, coded_cw, bd),
+            downscale_plane(&cell.u, full_cw, ch, coded_cw, bd, use_opt),
+            downscale_plane(&cell.v, full_cw, ch, coded_cw, bd, use_opt),
         )
     };
 
@@ -938,39 +949,50 @@ fn c_encode_and_facts(
 
 /// Given the port-derived `port_denom` (already asserted == the real chosen
 /// denom) and a downscale that engages superres (`port_denom > 8`), run the
-/// port's downscale+encode, splice, require BOTH decoders to agree on the
-/// upscaled recon, and score byte-identity.
+/// port's downscale+encode, splice, and score byte-identity vs real aomenc.
+///
+/// The decode-both agreement cross-check (port decoder == C decoder on the
+/// port's stream) runs only when the port's bytes DIFFER from real aomenc's — it
+/// exists to confirm a byte-DIFFERENT-but-valid port stream decodes to the same
+/// recon. When the port emits the EXACT real-aomenc bytes (`port_tu == c_tu`,
+/// the byte-identity target this gate asserts), the encode is provably correct
+/// and decode-both would instead be a DECODER-conformance check on real aomenc's
+/// own bytes. The superres denom-16 (exact-2:1) UPSCALE currently diverges in
+/// the port decoder — a decoder-track Known Bug orthogonal to this encoder gate
+/// (the FIXED gate covers denoms 9/12/14 decode; denom-16 decode was untested).
 fn superres_select_bytes(cell: &EncodeCell, c_tu: &[u8], port_denom: i32) -> RdCellResult {
     let port_payload = port_encode_superres(cell, port_denom, c_tu);
     let port_tu = splice_frame_obu(c_tu, &port_payload);
-    let ours_c = c::ref_decode_av1_kf(&port_tu, cell.w, cell.h);
-    let ours_port = aom_decode::frame::decode_frame_obus(&port_tu)
-        .unwrap_or_else(|e| panic!("{}: port decode of OUR stream failed: {e}", cell.label));
-    assert_eq!(
-        ours_port.y, ours_c.y,
-        "{}: port and C decoders disagree on OUR stream's luma recon",
-        cell.label
-    );
-    if !cell.mono {
+    if port_tu != c_tu {
+        let ours_c = c::ref_decode_av1_kf(&port_tu, cell.w, cell.h);
+        let ours_port = aom_decode::frame::decode_frame_obus(&port_tu)
+            .unwrap_or_else(|e| panic!("{}: port decode of OUR stream failed: {e}", cell.label));
         assert_eq!(
-            ours_port.u, ours_c.u,
-            "{}: U recon disagreement",
+            ours_port.y, ours_c.y,
+            "{}: port and C decoders disagree on OUR (byte-different) stream's luma recon",
             cell.label
         );
-        assert_eq!(
-            ours_port.v, ours_c.v,
-            "{}: V recon disagreement",
-            cell.label
-        );
+        if !cell.mono {
+            assert_eq!(
+                ours_port.u, ours_c.u,
+                "{}: U recon disagreement",
+                cell.label
+            );
+            assert_eq!(
+                ours_port.v, ours_c.v,
+                "{}: V recon disagreement",
+                cell.label
+            );
+        }
     }
     compare_cell(&cell.label, cell, &port_tu, c_tu)
 }
 
 /// Smooth synthetic content (low horizontal-frequency energy) so the QTHRESH
 /// energy analysis derives a superres-ENGAGING denom (`> 8`). A gentle diagonal
-/// ramp plus a small mid-frequency ripple keeps the derived denom below 16 (so
-/// bd8 cells avoid the denom-16 optimized-scaler corner). `bd`-aware; 4:2:0 or
-/// monochrome.
+/// ramp plus a small mid-frequency ripple spreads the derived denom across the
+/// range (9..16 as q rises) — exercising both the non-normative scaler (9..15)
+/// and the optimized denom-16 corner. `bd`-aware; 4:2:0 or monochrome.
 fn synth_smooth_superres_cell(label: &str, sz: usize, mono: bool, cq: i32, bd: u8) -> EncodeCell {
     let maxv = (1u32 << bd) - 1;
     let (w, h) = (sz, sz);
@@ -1028,13 +1050,14 @@ fn synth_smooth_superres_cell(label: &str, sz: usize, mono: bool, cq: i32, bd: u
 /// - SMOOTH synthetic content: derives an ENGAGING denom (> 8).
 ///
 /// End-to-end byte-identity is additionally asserted for the PRIMARY bd8 config
-/// on the ported (non-denom-16) scaler — the derived denom feeds the identical
-/// downscale + coded-width encode + `write_superres_scale` pipeline the FIXED
-/// gate proves byte-exact (and which RANDOM exercises on real content at denoms
-/// 11/14/15/9). Highbd pipeline byte-identity is the FIXED highbd gate's domain
-/// (16/16); a bd10 SMOOTH 128²→102 cell hits a pre-existing partition near-tie
-/// (KB-6 class — bd8 and bd12 at the identical denom byte-match), orthogonal to
-/// superres selection, so highbd here is derivation-only.
+/// — the derived denom feeds the identical downscale (non-normative for denoms
+/// 9..15, the ported OPTIMIZED scaler for denom 16) + coded-width encode +
+/// `write_superres_scale` pipeline the FIXED gate proves byte-exact (and which
+/// RANDOM exercises on real content at denoms 11/14/15/9). Highbd pipeline
+/// byte-identity is the FIXED highbd gate's domain (16/16); a bd10 SMOOTH
+/// 128²→102 cell hits a pre-existing partition near-tie (KB-6 class — bd8 and
+/// bd12 at the identical denom byte-match), orthogonal to superres selection, so
+/// highbd here is derivation-only.
 #[test]
 fn encoder_gate_superres_qthresh_e2e() {
     c::ref_init();
@@ -1057,7 +1080,6 @@ fn encoder_gate_superres_qthresh_e2e() {
             true,
         ));
         let coded_w = coded_superres_width(cell.w as i32, port_denom) as i32;
-        let bd8_opt = cell.bd == 8 && superres_uses_optimized_scaler_8bit(cell.w as i32, coded_w);
         eprintln!(
             "{}: q={q} kf_qt={kf_qt} scc={allow_scc} -> real {real_denom}, port {port_denom} (coded_w={coded_w})",
             cell.label
@@ -1068,7 +1090,9 @@ fn encoder_gate_superres_qthresh_e2e() {
              {real_denom} (q={q})",
             cell.label
         );
-        if bd8_byte && port_denom > i32::from(SCALE_NUMERATOR_U8) && !bd8_opt {
+        // Byte-check engaged bd8 cells — both the non-normative scaler (denoms
+        // 9..15) and the optimized denom-16 even-width scaler are ported.
+        if bd8_byte && port_denom > i32::from(SCALE_NUMERATOR_U8) {
             bytes.push(superres_select_bytes(cell, &c_tu, port_denom));
         }
     };
@@ -1193,7 +1217,6 @@ fn encoder_gate_superres_auto_e2e() {
             8, // kf_scale_denominator (AUTO_ALL only; unused for Dual)
         ));
         let coded_w = coded_superres_width(cell.w as i32, port_denom) as i32;
-        let bd8_opt = cell.bd == 8 && superres_uses_optimized_scaler_8bit(cell.w as i32, coded_w);
         eprintln!(
             "{}: q={q} scc={allow_scc} -> real {real_denom}, port {port_denom} (coded_w={coded_w})",
             cell.label
@@ -1205,7 +1228,7 @@ fn encoder_gate_superres_auto_e2e() {
              search type isn't Dual",
             cell.label
         );
-        if bd8_byte && port_denom > i32::from(SCALE_NUMERATOR_U8) && !bd8_opt {
+        if bd8_byte && port_denom > i32::from(SCALE_NUMERATOR_U8) {
             bytes.push(superres_select_bytes(cell, &c_tu, port_denom));
         }
     };

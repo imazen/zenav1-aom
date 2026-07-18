@@ -12874,3 +12874,47 @@ pub fn ref_highbd_resize_plane(
     assert_eq!(rc, 0, "shim_highbd_resize_plane failed ({rc})");
     out
 }
+
+extern "C" {
+    // shim/dec_shim.c: exported optimized 8-bit source scaler
+    // av1_resize_and_extend_frame_c (EIGHTTAP_SMOOTH, phase 8) over an
+    // aom_extend_frame_borders_c-extended YV12.
+    fn shim_resize_and_extend_frame_8bit(
+        input: *const u16,
+        width: i32,
+        height: i32,
+        in_stride: i32,
+        output: *mut u16,
+        width2: i32,
+        height2: i32,
+    ) -> i64;
+}
+
+/// Oracle: libaom `av1_resize_and_extend_frame_c` (the optimized 8-bit source
+/// downscale, `EIGHTTAP_SMOOTH` / phase 8) — the superres denom-16 corner.
+/// `input` is `width * height` tight u8-valued u16; returns the `width2 *
+/// height2` downscaled plane. `ref_init` first (RTCD-dispatched internals).
+pub fn ref_resize_and_extend_frame_8bit(
+    input: &[u16],
+    width: i32,
+    height: i32,
+    in_stride: i32,
+    width2: i32,
+    height2: i32,
+) -> Vec<u16> {
+    ref_init();
+    let mut out = vec![0u16; (width2 * height2) as usize];
+    let rc = unsafe {
+        shim_resize_and_extend_frame_8bit(
+            input.as_ptr(),
+            width,
+            height,
+            in_stride,
+            out.as_mut_ptr(),
+            width2,
+            height2,
+        )
+    };
+    assert_eq!(rc, 0, "shim_resize_and_extend_frame_8bit failed ({rc})");
+    out
+}

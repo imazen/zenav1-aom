@@ -3185,3 +3185,35 @@ long shim_highbd_resize_plane(const uint16_t *in, int height, int width,
   aom_free_frame_buffer(&dst);
   return 0;
 }
+
+#include "config/aom_scale_rtcd.h" /* aom_extend_frame_borders_c */
+
+/* Drives the exported optimized 8-bit source scaler
+ * `av1_resize_and_extend_frame_c` (EIGHTTAP_SMOOTH, phase 8 — the encoder
+ * superres source-downscale config) over an `aom_extend_frame_borders_c`
+ * edge-extended YV12 built from a tight 8-bit luma plane (`in`, values 0..255).
+ * The oracle for `aom_encode::resize::optimized_downscale_plane_8bit`
+ * (the superres denom-16 / exact-1/2 corner). Requires ref_init (RTCD).
+ * Returns 0 or a negative error. Append-only. */
+long shim_resize_and_extend_frame_8bit(const uint16_t *in, int width, int height,
+                                       int in_stride, uint16_t *out, int width2,
+                                       int height2) {
+  YV12_BUFFER_CONFIG src, dst;
+  memset(&src, 0, sizeof(src));
+  memset(&dst, 0, sizeof(dst));
+  if (aom_alloc_frame_buffer(&src, width, height, 1, 1, 0, AOM_BORDER_IN_PIXELS,
+                             0, false, 0))
+    return -1;
+  if (aom_alloc_frame_buffer(&dst, width2, height2, 1, 1, 0,
+                             AOM_BORDER_IN_PIXELS, 0, false, 0)) {
+    aom_free_frame_buffer(&src);
+    return -2;
+  }
+  lrf_load_plane(&src, 0, in, in_stride, 0);
+  aom_extend_frame_borders_c(&src, 1);
+  av1_resize_and_extend_frame_c(&src, &dst, EIGHTTAP_SMOOTH, 8, 1);
+  lrf_store_plane(&dst, 0, out, width2, 0);
+  aom_free_frame_buffer(&src);
+  aom_free_frame_buffer(&dst);
+  return 0;
+}

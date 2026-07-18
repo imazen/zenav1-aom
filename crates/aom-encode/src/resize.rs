@@ -1031,3 +1031,295 @@ pub(crate) static FILTER_1000: [[i16; 8]; 64] = [
     [0, 1, -2, 4, 127, -3, 1, 0],
     [0, 0, -1, 2, 128, -1, 0, 0],
 ];
+
+// ============================================================================
+// Optimized 8-bit source scaler — `av1_resize_and_extend_frame`
+// (`av1/common/resize.c`) + `aom_scaled_2d` (`aom_dsp/aom_convolve.c`).
+//
+// libaom routes the ENCODER source downscale through this optimized separable
+// 8-tap convolution scaler (instead of the non-normative `resize_plane`) when
+// the bit depth is 8 AND `av1_has_optimized_scaler` holds — for superres that is
+// the exact 1/2 horizontal (denom-16, even width) corner. Superres is
+// horizontal-only, so the encoder passes `EIGHTTAP_SMOOTH` + `phase = 8`
+// (`encoder.c:2962/2994`): the horizontal pass is a half-pel 8-tap smooth
+// decimation by 2, the vertical pass an identity copy (subpel-0 filter).
+//
+// Bit-exact vs the exported `av1_resize_and_extend_frame_c` (driven over an
+// `aom_extend_frame_borders_c`-extended YV12), `resize_and_extend_frame_diff`.
+// ============================================================================
+
+const SUBPEL_BITS: i32 = 4;
+const SUBPEL_MASK: i32 = (1 << SUBPEL_BITS) - 1; // 15
+/// Edge-replication border for the optimized scaler's source plane. The 8-tap
+/// convolution reads at most `SUBPEL_TAPS/2 (=4)` pixels past each frame edge
+/// (plus the intermediate-height tail); 16 is a comfortable margin.
+const OPT_SCALER_BORDER: usize = 16;
+
+/// `av1_sub_pel_filters_8smooth` (`av1/common/filter.h`) — the `EIGHTTAP_SMOOTH`
+/// 16-phase 8-tap sub-pel interpolation kernel.
+#[rustfmt::skip]
+const SUBPEL_FILTERS_8SMOOTH: [[i16; SUBPEL_TAPS]; 16] = [
+    [0,  0,  0, 128,  0,  0,  0, 0],
+    [0,  2, 28,  62, 34,  2,  0, 0],
+    [0,  0, 26,  62, 36,  4,  0, 0],
+    [0,  0, 22,  62, 40,  4,  0, 0],
+    [0,  0, 20,  60, 42,  6,  0, 0],
+    [0,  0, 18,  58, 44,  8,  0, 0],
+    [0,  0, 16,  56, 46, 10,  0, 0],
+    [0, -2, 16,  54, 48, 12,  0, 0],
+    [0, -2, 14,  52, 52, 14, -2, 0],
+    [0,  0, 12,  48, 54, 16, -2, 0],
+    [0,  0, 10,  46, 56, 16,  0, 0],
+    [0,  0,  8,  44, 58, 18,  0, 0],
+    [0,  0,  6,  42, 60, 20,  0, 0],
+    [0,  0,  4,  40, 62, 22,  0, 0],
+    [0,  0,  4,  36, 62, 26,  0, 0],
+    [0,  0,  2,  34, 62, 28,  2, 0],
+];
+
+/// `convolve_horiz` (`aom_dsp/aom_convolve.c`): horizontal 8-tap sub-pel filter
+/// from `src` (at `src0`, into a bordered buffer) to a tight `dst` of width
+/// `dst_stride`. Mirrors C's internal `src -= SUBPEL_TAPS/2 - 1` centering.
+#[allow(clippy::too_many_arguments)]
+fn convolve_horiz_8(
+    src: &[u8],
+    src0: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    filters: &[[i16; SUBPEL_TAPS]; 16],
+    x0_q4: i32,
+    x_step_q4: i32,
+    w: usize,
+    h: usize,
+) {
+    let base = src0 - (SUBPEL_TAPS / 2 - 1); // src -= 3
+    for y in 0..h {
+        let mut x_q4 = x0_q4;
+        let row = base + y * src_stride;
+        for x in 0..w {
+            let sx = row + (x_q4 >> SUBPEL_BITS) as usize;
+            let filt = &filters[(x_q4 & SUBPEL_MASK) as usize];
+            let mut sum = 0i32;
+            for k in 0..SUBPEL_TAPS {
+                sum += src[sx + k] as i32 * filt[k] as i32;
+            }
+            dst[y * dst_stride + x] = clip_pixel(round_power_of_two(sum, FILTER_BITS));
+            x_q4 += x_step_q4;
+        }
+    }
+}
+
+/// `convolve_vert` (`aom_dsp/aom_convolve.c`): vertical 8-tap sub-pel filter from
+/// the intermediate buffer `src` (at `src0`) to `dst` (at `dst0`).
+#[allow(clippy::too_many_arguments)]
+fn convolve_vert_8(
+    src: &[u8],
+    src0: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst0: usize,
+    dst_stride: usize,
+    filters: &[[i16; SUBPEL_TAPS]; 16],
+    y0_q4: i32,
+    y_step_q4: i32,
+    w: usize,
+    h: usize,
+) {
+    let base = src0 - src_stride * (SUBPEL_TAPS / 2 - 1); // src -= stride*3
+    for x in 0..w {
+        let mut y_q4 = y0_q4;
+        for y in 0..h {
+            let sy = base + x + (y_q4 >> SUBPEL_BITS) as usize * src_stride;
+            let filt = &filters[(y_q4 & SUBPEL_MASK) as usize];
+            let mut sum = 0i32;
+            for k in 0..SUBPEL_TAPS {
+                sum += src[sy + k * src_stride] as i32 * filt[k] as i32;
+            }
+            dst[dst0 + y * dst_stride + x] = clip_pixel(round_power_of_two(sum, FILTER_BITS));
+            y_q4 += y_step_q4;
+        }
+    }
+}
+
+/// `aom_scaled_2d_c` (`aom_dsp/aom_convolve.c`): separable 2-D sub-pel scale of a
+/// `w x h` (≤ 64) block — horizontal into a fixed 64-wide intermediate, then
+/// vertical into `dst`.
+#[allow(clippy::too_many_arguments)]
+fn aom_scaled_2d_8bit(
+    src: &[u8],
+    src_ptr: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_ptr: usize,
+    dst_stride: usize,
+    filters: &[[i16; SUBPEL_TAPS]; 16],
+    x0_q4: i32,
+    x_step_q4: i32,
+    y0_q4: i32,
+    y_step_q4: i32,
+    w: usize,
+    h: usize,
+) {
+    let mut temp = [0u8; 64 * 135];
+    let intermediate_height =
+        ((((h as i32 - 1) * y_step_q4 + y0_q4) >> SUBPEL_BITS) + SUBPEL_TAPS as i32) as usize;
+    // convolve_horiz(src - src_stride*3, ..., temp, 64, ...)
+    convolve_horiz_8(
+        src,
+        src_ptr - src_stride * (SUBPEL_TAPS / 2 - 1),
+        src_stride,
+        &mut temp,
+        64,
+        filters,
+        x0_q4,
+        x_step_q4,
+        w,
+        intermediate_height,
+    );
+    // convolve_vert(temp + 64*3, 64, dst, ...)
+    convolve_vert_8(
+        &temp,
+        64 * (SUBPEL_TAPS / 2 - 1),
+        64,
+        dst,
+        dst_ptr,
+        dst_stride,
+        filters,
+        y0_q4,
+        y_step_q4,
+        w,
+        h,
+    );
+}
+
+/// One plane of `av1_resize_and_extend_frame_c` (`av1/common/resize.c`) for the
+/// 8-bit `EIGHTTAP_SMOOTH` / `phase = 8` superres source downscale: the 16×16
+/// dst-block loop calling [`aom_scaled_2d_8bit`]. `src` is edge-extended by
+/// `border` (origin of pixel (0,0) at `border*src_stride + border`); returns the
+/// tight `dst_w x dst_h` downscaled plane. (Border extension of the OUTPUT — C's
+/// `aom_extend_frame_borders` — is the caller's job; only the coded region is
+/// returned.)
+#[allow(clippy::too_many_arguments)]
+fn resize_and_extend_plane_8bit(
+    src: &[u8],
+    src_stride: usize,
+    border: usize,
+    src_w: i32,
+    src_h: i32,
+    dst_w: i32,
+    dst_h: i32,
+    phase_scaler: i32,
+) -> Vec<u8> {
+    let filters = &SUBPEL_FILTERS_8SMOOTH;
+    let origin = border * src_stride + border;
+    let dst_stride = dst_w as usize;
+    let mut dst = vec![0u8; (dst_w * dst_h) as usize];
+    let mut y = 0i32;
+    while y < dst_h {
+        let y_q4 = if src_h == dst_h {
+            0
+        } else {
+            y * 16 * src_h / dst_h + phase_scaler
+        };
+        let mut x = 0i32;
+        while x < dst_w {
+            let x_q4 = if src_w == dst_w {
+                0
+            } else {
+                x * 16 * src_w / dst_w + phase_scaler
+            };
+            let src_ptr =
+                origin + (y * src_h / dst_h) as usize * src_stride + (x * src_w / dst_w) as usize;
+            let dst_ptr = y as usize * dst_stride + x as usize;
+            let work_w = 16.min(dst_w - x) as usize;
+            let work_h = 16.min(dst_h - y) as usize;
+            aom_scaled_2d_8bit(
+                src,
+                src_ptr,
+                src_stride,
+                &mut dst,
+                dst_ptr,
+                dst_stride,
+                filters,
+                x_q4 & 0xf,
+                16 * src_w / dst_w,
+                y_q4 & 0xf,
+                16 * src_h / dst_h,
+                work_w,
+                work_h,
+            );
+            x += 16;
+        }
+        y += 16;
+    }
+    dst
+}
+
+/// libaom `av1_has_optimized_scaler` — the ratio constraints under which the
+/// optimized 8-bit scaler is used instead of `resize_plane`.
+#[must_use]
+pub fn has_optimized_scaler(src_w: i32, src_h: i32, dst_w: i32, dst_h: i32) -> bool {
+    dst_w * 4 >= src_w
+        && dst_h * 4 >= src_h
+        && dst_w <= src_w * 16
+        && dst_h <= src_h * 16
+        && (16 * dst_w) % src_w == 0
+        && (16 * src_w) % dst_w == 0
+        && (16 * dst_h) % src_h == 0
+        && (16 * src_h) % dst_h == 0
+}
+
+/// Optimized 8-bit source downscale (`av1_resize_and_extend_frame`,
+/// `EIGHTTAP_SMOOTH`, `phase = 8`) of one tight plane. Edge-extends the source
+/// (matching `aom_extend_frame_borders`) then runs the block-tiled separable
+/// scaler. Used for the superres denom-16 (exact 1/2 horizontal, even width)
+/// corner at bit depth 8. `src` is `src_w * src_h` tightly packed (values
+/// 0..255); returns the `dst_w * dst_h` downscaled plane.
+#[must_use]
+pub fn optimized_downscale_plane_8bit(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> Vec<u8> {
+    let b = OPT_SCALER_BORDER;
+    let bstride = src_w + 2 * b;
+    let bh = src_h + 2 * b;
+    let mut bordered = vec![0u8; bstride * bh];
+    // Interior + edge replication (matches yv12 `extend_plane`).
+    for r in 0..src_h {
+        let dst_row = (b + r) * bstride;
+        let src_row = r * src_w;
+        bordered[dst_row + b..dst_row + b + src_w].copy_from_slice(&src[src_row..src_row + src_w]);
+        let left = src[src_row];
+        let right = src[src_row + src_w - 1];
+        for c in 0..b {
+            bordered[dst_row + c] = left;
+        }
+        for c in (b + src_w)..bstride {
+            bordered[dst_row + c] = right;
+        }
+    }
+    // Top/bottom rows (replicate the now-complete first/last interior rows).
+    for r in 0..b {
+        bordered.copy_within(b * bstride..(b + 1) * bstride, r * bstride);
+    }
+    for r in (b + src_h)..bh {
+        bordered.copy_within(
+            (b + src_h - 1) * bstride..(b + src_h) * bstride,
+            r * bstride,
+        );
+    }
+    resize_and_extend_plane_8bit(
+        &bordered,
+        bstride,
+        b,
+        src_w as i32,
+        src_h as i32,
+        dst_w as i32,
+        dst_h as i32,
+        8, // phase_scaler for the encoder source downscale (encoder.c:2994)
+    )
+}

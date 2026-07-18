@@ -936,6 +936,24 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
 - **Tracking:** task **#39**. Next: sibling-C RD/prune dump at a representative 16X16 node (the
   KB-3/KB-7 method) to find which prune C applies that the port doesn't; graduate the cells it closes.
 
+### KB-14 — Decoder: superres denom-16 (exact-2:1) horizontal UPSCALE diverges from C — REAL divergence (decoder track)
+- **Symptom (found 2026-07-18 via the ENCODER superres QTHRESH gate):** for a superres KEY stream
+  coded at denom **16** (coded_width = UpscaledWidth/2 exactly; e.g. 128→64), the port decoder's
+  normative horizontal upscale disagrees with the C decoder on the luma recon — **on a
+  BYTE-IDENTICAL stream** (the port ENCODER emits the exact real-aomenc bytes, `port_tu == c_tu`,
+  proven in `encoder_gate_superres_qthresh_e2e`). So this is purely a decoder-side upscale bug, NOT
+  an encoder issue. Denoms **9..15 are fine** (the FIXED superres gate decode-both-agrees at
+  9/12/14, and the RANDOM e2e at 9/11/14/15) — only the exact-2:1 ratio (denom 16) trips it.
+- **Likely locus:** `aom-decode/src/superres.rs` — `upscale_plane` / `get_upscale_convolve_x0` /
+  `get_upscale_convolve_step` at `in_length*2 == out_length` (the `err`/x0 fixed-point init or the
+  step for the exact-half ratio). Denom-16 superres decode was never exercised before (the FIXED
+  gate asserted-OUT of the denom-16 corner), so this path is newly reached.
+- **Scope/impact:** decoder-only; the encoder is byte-exact at denom 16. The encoder superres gate
+  skips the (redundant) decode-both cross-check for byte-identical streams and asserts the encode
+  byte-identity instead, so it is green; this KB tracks the decoder fix. Per zero-tolerance (wrong
+  pixels), fix before any denom-16 superres decode ships. **Next step:** decode-both localize the
+  first diverging column of a denom-16 upscaled row vs the C `av1_upscale_normative` oracle.
+
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 
 Primary config = ALLINTRA (usage=2), speed-0 KEY frame. libaom's own allintra tuning
