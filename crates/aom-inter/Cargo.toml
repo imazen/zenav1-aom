@@ -1,0 +1,11 @@
+[package]
+name = "aom-inter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aom-convolve = { path = "../aom-convolve" }
+
+[dev-dependencies]
+aom-sys-ref = { path = "../aom-sys-ref" }

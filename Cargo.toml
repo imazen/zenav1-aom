@@ -17,6 +17,7 @@ members = [
     "crates/aom-sys-ref",
     "crates/aom-bench",
     "crates/aom-dispatch",
+    "crates/aom-inter",
 ]
 
 [workspace.package]

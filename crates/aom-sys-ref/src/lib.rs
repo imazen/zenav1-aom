@@ -13411,3 +13411,100 @@ pub fn ref_resize_and_extend_frame_8bit(
     assert_eq!(rc, 0, "shim_resize_and_extend_frame_8bit failed ({rc})");
     out
 }
+
+// inter_shim.c — decoder single-ref translational inter predictor (crate
+// aom-inter, chunk 1d): the real `inter_predictor` facade + the verbatim
+// `build_mc_border` border oracle.
+extern "C" {
+    fn shim_inter_predictor(
+        src: *const u8,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        w: i32,
+        h: i32,
+        subpel_x: i32,
+        subpel_y: i32,
+        filter_x: i32,
+        filter_y: i32,
+    );
+    fn shim_build_mc_border(
+        plane: *const u8,
+        src_stride: i32,
+        w: i32,
+        h: i32,
+        x: i32,
+        y: i32,
+        b_w: i32,
+        b_h: i32,
+        dst: *mut u8,
+    );
+}
+
+/// Reference libaom `inter_predictor` (reconinter.h:255) — the unscaled lowbd
+/// single-ref SR facade over the real `av1_convolve_2d_facade`. `src`/`src_off`
+/// point at the block top-left interior of a bordered region; `subpel_x`/`subpel_y`
+/// are in `0..=15`; `filter_x`/`filter_y` select the 8-tap family (0/1/2). Returns
+/// the `w`×`h` predictor (dst stride `w`).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_inter_predictor(
+    src: &[u8],
+    src_off: usize,
+    src_stride: usize,
+    w: usize,
+    h: usize,
+    subpel_x: usize,
+    subpel_y: usize,
+    filter_x: usize,
+    filter_y: usize,
+) -> Vec<u8> {
+    ref_init();
+    let mut dst = vec![0u8; w * h];
+    unsafe {
+        shim_inter_predictor(
+            src.as_ptr().add(src_off),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            w as i32,
+            w as i32,
+            h as i32,
+            subpel_x as i32,
+            subpel_y as i32,
+            filter_x as i32,
+            filter_y as i32,
+        )
+    }
+    dst
+}
+
+/// Reference libaom `build_mc_border` (decodeframe.c:455): gather a `b_w`×`b_h`
+/// block from plane `plane` (`ref_w`×`ref_h`, stride `ref_stride`) starting at
+/// `(gx, gy)` (may be negative), edge-replicating any out-of-plane region. Returns
+/// the tightly-packed `b_w`×`b_h` scratch.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_build_mc_border(
+    plane: &[u8],
+    ref_stride: usize,
+    ref_w: usize,
+    ref_h: usize,
+    gx: i32,
+    gy: i32,
+    b_w: usize,
+    b_h: usize,
+) -> Vec<u8> {
+    let mut dst = vec![0u8; b_w * b_h];
+    unsafe {
+        shim_build_mc_border(
+            plane.as_ptr(),
+            ref_stride as i32,
+            ref_w as i32,
+            ref_h as i32,
+            gx,
+            gy,
+            b_w as i32,
+            b_h as i32,
+            dst.as_mut_ptr(),
+        )
+    }
+    dst
+}

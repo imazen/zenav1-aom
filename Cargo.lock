@@ -145,6 +145,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aom-inter"
+version = "0.0.1"
+dependencies = [
+ "aom-convolve",
+ "aom-sys-ref",
+]
+
+[[package]]
 name = "aom-intra"
 version = "0.0.1"
 dependencies = [
