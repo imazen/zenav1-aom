@@ -2860,6 +2860,131 @@ long shim_encode_av1_kf_superres(const uint16_t *y, const uint16_t *u,
   return rc ? rc : total;
 }
 
+/* Encode one KEY frame with a DERIVED-denominator superres mode
+ * (AOM_SUPERRES_RANDOM=2 / AOM_SUPERRES_QTHRESH=3 / AOM_SUPERRES_AUTO=4): the
+ * encoder itself chooses the superres denominator via
+ * `calculate_next_superres_scale` (RANDOM = seeded lcg; QTHRESH/AUTO = qindex +
+ * `analyze_hor_freq` energy). Everything else matches
+ * `shim_encode_av1_kf_superres` (--end-usage=q --cq-level --sb-size=64, single
+ * tile, deltaq/aq off, one-pass, no palette/intrabc/qm/lossless; usage picks
+ * GOOD/ALL_INTRA). `superres_qthresh`/`superres_kf_qthresh` are the 1..63 CLI
+ * knobs (converted internally to a qindex); `superres_denom`/`superres_kf_denom`
+ * are used only by the AUTO_ALL fallback. The port reads the CHOSEN denom out of
+ * the emitted stream and reproduces it — this shim is where the real encoder's
+ * denom-selection is exercised. Append-only; the FIXED shim above is untouched.
+ * Returns the bitstream length or a negative error code. */
+long shim_encode_av1_kf_superres_mode(
+    const uint16_t *y, const uint16_t *u, const uint16_t *v, int w, int h,
+    int bd, int mono, int ss_x, int ss_y, int cq_level, int cpu_used,
+    int enable_cdef, int enable_restoration, int usage, int superres_mode,
+    int superres_qthresh, int superres_kf_qthresh, int superres_denom,
+    int superres_kf_denom, uint8_t *out, size_t out_cap) {
+  aom_codec_iface_t *iface = aom_codec_av1_cx();
+  aom_codec_enc_cfg_t cfg;
+  if (aom_codec_enc_config_default(iface, &cfg, (unsigned int)usage)) return -1;
+  cfg.g_w = w;
+  cfg.g_h = h;
+  cfg.g_limit = 1;
+  cfg.g_lag_in_frames = 0;
+  cfg.g_threads = 1;
+  cfg.g_pass = AOM_RC_ONE_PASS;
+  cfg.rc_end_usage = AOM_Q;
+  cfg.monochrome = mono;
+  cfg.g_input_bit_depth = bd;
+  if (bd == 8) {
+    cfg.g_bit_depth = AOM_BITS_8;
+    cfg.g_profile = (ss_x == 0 && ss_y == 0) ? 1 : 0;
+  } else if (bd == 10) {
+    cfg.g_bit_depth = AOM_BITS_10;
+    cfg.g_profile = (ss_x == 0 && ss_y == 0) ? 1 : 0;
+  } else {
+    cfg.g_bit_depth = AOM_BITS_12;
+    cfg.g_profile = 2;
+  }
+  if (!mono && ss_x == 1 && ss_y == 0) cfg.g_profile = 2; /* 4:2:2 */
+
+  /* Derived-denominator superres via the enc-config fields. */
+  cfg.rc_superres_mode = (aom_superres_mode)superres_mode;
+  cfg.rc_superres_denominator = (unsigned int)superres_denom;
+  cfg.rc_superres_kf_denominator = (unsigned int)superres_kf_denom;
+  cfg.rc_superres_qthresh = (unsigned int)superres_qthresh;
+  cfg.rc_superres_kf_qthresh = (unsigned int)superres_kf_qthresh;
+
+  aom_img_fmt_t fmt;
+  if (mono || (ss_x == 1 && ss_y == 1))
+    fmt = AOM_IMG_FMT_I420;
+  else if (ss_x == 1)
+    fmt = AOM_IMG_FMT_I422;
+  else
+    fmt = AOM_IMG_FMT_I444;
+  if (bd > 8) fmt |= AOM_IMG_FMT_HIGHBITDEPTH;
+  aom_image_t *img = aom_img_alloc(NULL, fmt, w, h, 32);
+  if (!img) return -4;
+  img->monochrome = mono;
+  img->bit_depth = bd;
+  const int cw = mono ? 0 : (w + ss_x) >> ss_x;
+  const int ch = mono ? 0 : (h + ss_y) >> ss_y;
+  for (int plane = 0; plane < (mono ? 1 : 3); plane++) {
+    const uint16_t *src = plane == 0 ? y : (plane == 1 ? u : v);
+    const int pw = plane == 0 ? w : cw;
+    const int ph = plane == 0 ? h : ch;
+    for (int r = 0; r < ph; r++) {
+      if (bd > 8) {
+        uint16_t *row =
+            (uint16_t *)(img->planes[plane] + (size_t)r * img->stride[plane]);
+        for (int c = 0; c < pw; c++) row[c] = src[(size_t)r * pw + c];
+      } else {
+        uint8_t *row = img->planes[plane] + (size_t)r * img->stride[plane];
+        for (int c = 0; c < pw; c++) row[c] = (uint8_t)src[(size_t)r * pw + c];
+      }
+    }
+  }
+
+  aom_codec_ctx_t ctx;
+  aom_codec_flags_t flags = bd > 8 ? AOM_CODEC_USE_HIGHBITDEPTH : 0;
+  if (aom_codec_enc_init(&ctx, iface, &cfg, flags)) {
+    aom_img_free(img);
+    return -2;
+  }
+  if (aom_codec_control(&ctx, AOME_SET_CPUUSED, cpu_used) ||
+      aom_codec_control(&ctx, AOME_SET_CQ_LEVEL, cq_level) ||
+      aom_codec_control(&ctx, AV1E_SET_ENABLE_CDEF, enable_cdef) ||
+      aom_codec_control(&ctx, AV1E_SET_ENABLE_RESTORATION, enable_restoration) ||
+      aom_codec_control(&ctx, AV1E_SET_SUPERBLOCK_SIZE,
+                        AOM_SUPERBLOCK_SIZE_64X64) ||
+      aom_codec_control(&ctx, AV1E_SET_DELTAQ_MODE, 0) ||
+      aom_codec_control(&ctx, AV1E_SET_AQ_MODE, 0) ||
+      aom_codec_control(&ctx, AV1E_SET_ENABLE_SUPERRES, 1)) {
+    aom_codec_destroy(&ctx);
+    aom_img_free(img);
+    return -3;
+  }
+
+  long total = 0;
+  int rc = 0;
+  for (int pass = 0; pass < 2 && rc == 0; pass++) {
+    if (aom_codec_encode(&ctx, pass == 0 ? img : NULL, 0, 1,
+                         pass == 0 ? AOM_EFLAG_FORCE_KF : 0)) {
+      rc = -5;
+      break;
+    }
+    aom_codec_iter_t iter = NULL;
+    const aom_codec_cx_pkt_t *pkt;
+    while ((pkt = aom_codec_get_cx_data(&ctx, &iter)) != NULL) {
+      if (pkt->kind != AOM_CODEC_CX_FRAME_PKT) continue;
+      if ((size_t)total + pkt->data.frame.sz > out_cap) {
+        rc = -6;
+        break;
+      }
+      memcpy(out + total, pkt->data.frame.buf, pkt->data.frame.sz);
+      total += (long)pkt->data.frame.sz;
+    }
+  }
+  aom_codec_destroy(&ctx);
+  aom_img_free(img);
+  return rc ? rc : total;
+}
+
 /* ------------------------------------------------------------------ */
 /* 5. tune=IQ / tune=SSIMULACRA2 knob-explicit KEY encode (C4 family)  */
 /* ------------------------------------------------------------------ */

@@ -43,14 +43,19 @@ use aom_encode::lf_search::{LfSearchFrame, build_lf_mi_grid, pick_filter_level};
 use aom_encode::obu_assemble::assemble_frame_obu_payload_single_tile;
 use aom_encode::pack::{PackCfg, pack_tile, pack_tile_from_trees};
 use aom_encode::partition_pick::PickFrameCfg;
+use aom_encode::rc::{base_qindex_from_cq, quantizer_to_qindex};
 use aom_encode::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
 use aom_encode::real_costs::derive_real_costs;
 use aom_encode::resize::{coded_superres_width, highbd_resize_plane, resize_plane};
 use aom_encode::speed_features::SpeedFeatures;
+use aom_encode::superres_select::{
+    SuperresAutoSearchType, superres_denom_auto_key, superres_denom_qthresh_key,
+};
 use aom_entropy::enc::OdEcEnc;
 use aom_entropy::header::{
     CdefHeader, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader, LoopfilterHeader,
-    RestorationHeader, TileInfoHeader, read_sequence_header_obu, read_uncompressed_header,
+    RestorationHeader, SequenceHeaderObu, TileInfoHeader, read_sequence_header_obu,
+    read_uncompressed_header,
 };
 use aom_entropy::obu::read_obu_header;
 use aom_entropy::partition::KfFrameContext;
@@ -61,6 +66,8 @@ use aom_sys_ref as c;
 
 const OBU_SEQUENCE_HEADER: u32 = 1;
 const OBU_FRAME: u32 = 6;
+/// `SCALE_NUMERATOR` — denom 8 means no superres (coded width == upscaled width).
+const SCALE_NUMERATOR_U8: u8 = 8;
 const SB: usize = 12; // BLOCK_64X64
 const SB_MI: i32 = 16;
 const KF_REF_DELTAS: [i8; 8] = [1, 0, 0, 0, -1, 0, -1, -1];
@@ -196,59 +203,15 @@ fn downscale_plane(src: &[u16], w: usize, h: usize, coded_w: usize, bd: u8) -> V
     out
 }
 
-/// The port's superres encode: downscale the source to the coded width, encode
-/// the coded frame with the ordinary two-pass (encode → deblock → repack)
-/// pipeline, and assemble a frame OBU whose header signals the superres denom.
-/// Returns the frame OBU payload.
-fn port_encode_superres(cell: &EncodeCell, denom: i32, bootstrap: &[u8]) -> Vec<u8> {
-    let (w, h, mono, ss_x, ss_y, bd) = (cell.w, cell.h, cell.mono, cell.ss_x, cell.ss_y, cell.bd);
-    assert_eq!(cell.speed, 0, "superres gate runs at speed 0");
-    assert!(matches!(bd, 8 | 10 | 12), "superres gate supports bd 8/10/12");
-
-    let obus = walk_obus(bootstrap);
-    let seq_payload = obus
-        .iter()
-        .find(|(t, _)| *t == OBU_SEQUENCE_HEADER)
-        .map(|(_, p)| *p)
-        .expect("sequence header present");
-    let mut seq_rb = ReadBitBuffer::new(seq_payload);
-    let seq = read_sequence_header_obu(&mut seq_rb);
-    let (_, frame_payload) = obus
-        .iter()
-        .find(|(t, _)| *t == OBU_FRAME)
-        .map(|(t, p)| (*t, *p))
-        .expect("combined OBU_FRAME present");
-
+/// Build the [`FrameHeaderObu`] bootstrap cfg for a superres KEY frame from the
+/// parsed sequence header and the coded (downscaled) mi dimensions. Shared by
+/// [`port_encode_superres`] and [`parse_superres_facts`] so the two stay in sync.
+fn superres_frame_cfg(seq: &SequenceHeaderObu, mi_cols: i32, mi_rows: i32) -> FrameHeaderObu {
     let s = &seq.seq_header;
     let cc = &seq.color_config;
-    assert!(
-        s.enable_superres,
-        "{}: --superres-mode=fixed must set the sequence enable_superres bit",
-        cell.label
-    );
     let num_planes = if cc.monochrome { 1 } else { 3 };
     let mib_size_log2 = if s.sb_size_128 { 5u32 } else { 4u32 };
-
-    // Coded (downscaled) width: derived from the upscaled width + denom, the
-    // same value av1_calculate_scaled_superres_size gives the C encoder.
-    let coded_w = coded_superres_width(s.max_frame_width, denom) as usize;
-    assert!(
-        coded_w < w,
-        "{}: superres must downscale (coded {coded_w} < upscaled {w})",
-        cell.label
-    );
-    assert!(
-        bd != 8 || !superres_uses_optimized_scaler_8bit(w as i32, coded_w as i32),
-        "{}: this bd8 cell hits the optimized scaler (denom-16-even corner); \
-         out of scope for the non-normative kernel gate (bd10/12 always use \
-         the non-normative path)",
-        cell.label
-    );
-
-    let mi_cols = mi_dim(coded_w as i32); // CODED width, not max_frame_width
-    let mi_rows = mi_dim(h as i32); // height unchanged by superres
-
-    let cfg = FrameHeaderObu {
+    FrameHeaderObu {
         prefix: FrameHeaderPrefix {
             reduced_still_picture_hdr: seq.reduced_still_picture_hdr,
             decoder_model_info_present_flag: seq.decoder_model_info_present_flag,
@@ -303,7 +266,95 @@ fn port_encode_superres(cell: &EncodeCell, denom: i32, bootstrap: &[u8]) -> Vec<
         },
         film_grain_params_present: seq.film_grain_params_present,
         ..Default::default()
-    };
+    }
+}
+
+/// Parse the sequence + uncompressed frame header from a real superres stream and
+/// return `(allow_screen_content_tools, scale_denominator)`. Both are decoded
+/// BEFORE `tile_info` in the header, so the coded-width-dependent tile limits are
+/// irrelevant here — the facts are exact regardless of the mi dims passed to
+/// [`superres_frame_cfg`]. Used to read the denom the REAL encoder *chose* (the
+/// output of `calculate_next_superres_scale`) so the port's derivation can be
+/// asserted against it.
+fn parse_superres_facts(bootstrap: &[u8]) -> (bool, i32) {
+    let obus = walk_obus(bootstrap);
+    let seq_payload = obus
+        .iter()
+        .find(|(t, _)| *t == OBU_SEQUENCE_HEADER)
+        .map(|(_, p)| *p)
+        .expect("sequence header present");
+    let mut seq_rb = ReadBitBuffer::new(seq_payload);
+    let seq = read_sequence_header_obu(&mut seq_rb);
+    let (_, frame_payload) = obus
+        .iter()
+        .find(|(t, _)| *t == OBU_FRAME)
+        .map(|(t, p)| (*t, *p))
+        .expect("combined OBU_FRAME present");
+    // Full-width mi (denom-agnostic): scale_denominator + allow_scc are parsed
+    // before tile_info, so these limits don't affect them.
+    let mi_cols = mi_dim(seq.seq_header.max_frame_width);
+    let mi_rows = mi_dim(seq.seq_header.max_frame_height);
+    let cfg = superres_frame_cfg(&seq, mi_cols, mi_rows);
+    let mut rb = ReadBitBuffer::new(frame_payload);
+    let p = read_uncompressed_header(&mut rb, &cfg);
+    (p.allow_screen_content_tools, p.frame_size.scale_denominator)
+}
+
+/// The port's superres encode: downscale the source to the coded width, encode
+/// the coded frame with the ordinary two-pass (encode → deblock → repack)
+/// pipeline, and assemble a frame OBU whose header signals the superres denom.
+/// Returns the frame OBU payload.
+fn port_encode_superres(cell: &EncodeCell, denom: i32, bootstrap: &[u8]) -> Vec<u8> {
+    let (w, h, mono, ss_x, ss_y, bd) = (cell.w, cell.h, cell.mono, cell.ss_x, cell.ss_y, cell.bd);
+    assert_eq!(cell.speed, 0, "superres gate runs at speed 0");
+    assert!(
+        matches!(bd, 8 | 10 | 12),
+        "superres gate supports bd 8/10/12"
+    );
+
+    let obus = walk_obus(bootstrap);
+    let seq_payload = obus
+        .iter()
+        .find(|(t, _)| *t == OBU_SEQUENCE_HEADER)
+        .map(|(_, p)| *p)
+        .expect("sequence header present");
+    let mut seq_rb = ReadBitBuffer::new(seq_payload);
+    let seq = read_sequence_header_obu(&mut seq_rb);
+    let (_, frame_payload) = obus
+        .iter()
+        .find(|(t, _)| *t == OBU_FRAME)
+        .map(|(t, p)| (*t, *p))
+        .expect("combined OBU_FRAME present");
+
+    let s = &seq.seq_header;
+    let cc = &seq.color_config;
+    assert!(
+        s.enable_superres,
+        "{}: --superres-mode=fixed must set the sequence enable_superres bit",
+        cell.label
+    );
+    let num_planes = if cc.monochrome { 1 } else { 3 };
+
+    // Coded (downscaled) width: derived from the upscaled width + denom, the
+    // same value av1_calculate_scaled_superres_size gives the C encoder.
+    let coded_w = coded_superres_width(s.max_frame_width, denom) as usize;
+    assert!(
+        coded_w < w,
+        "{}: superres must downscale (coded {coded_w} < upscaled {w})",
+        cell.label
+    );
+    assert!(
+        bd != 8 || !superres_uses_optimized_scaler_8bit(w as i32, coded_w as i32),
+        "{}: this bd8 cell hits the optimized scaler (denom-16-even corner); \
+         out of scope for the non-normative kernel gate (bd10/12 always use \
+         the non-normative path)",
+        cell.label
+    );
+
+    let mi_cols = mi_dim(coded_w as i32); // CODED width, not max_frame_width
+    let mi_rows = mi_dim(h as i32); // height unchanged by superres
+
+    let cfg = superres_frame_cfg(&seq, mi_cols, mi_rows);
     let mut rb = ReadBitBuffer::new(frame_payload);
     let mut p = read_uncompressed_header(&mut rb, &cfg);
     assert!(!p.prefix.show_existing_frame);
@@ -745,7 +796,11 @@ fn synth_superres_cell(label: &str, sz: usize, mono: bool, cq: i32, bd: u8) -> E
             y[r * w + col] = ((base ^ hf) as u16).min(maxv);
         }
     }
-    let (cw, ch) = if mono { (0, 0) } else { ((w + 1) >> 1, (h + 1) >> 1) };
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + 1) >> 1, (h + 1) >> 1)
+    };
     let mut u = vec![0u16; cw * ch];
     let mut v = vec![0u16; cw * ch];
     if !mono {
@@ -755,7 +810,11 @@ fn synth_superres_cell(label: &str, sz: usize, mono: bool, cq: i32, bd: u8) -> E
                 let hf = if (r + col) % 3 == 0 { mask / 20 } else { 0 };
                 u[r * cw + col] = ((base ^ hf) as u16).min(maxv);
                 let base2 = (((r + 7) * 19 + (col + 3) * 29) as u32) & mask;
-                let hf2 = if (r + col + 10) % 3 == 0 { mask / 20 } else { 0 };
+                let hf2 = if (r + col + 10) % 3 == 0 {
+                    mask / 20
+                } else {
+                    0
+                };
                 v[r * cw + col] = ((base2 ^ hf2) as u16).min(maxv);
             }
         }
@@ -828,4 +887,363 @@ fn encoder_gate_superres_fixed_highbd_rd_close() {
         results.len()
     );
     assert_all_exact(&results);
+}
+
+// ============================================================================
+// DERIVED-denominator superres modes (PARITY C6): QTHRESH / RANDOM. The encoder
+// CHOOSES the denom via `calculate_next_superres_scale`; the port re-derives it
+// from the source + qindex (`aom_encode::superres_select`) and must match the
+// denom the real encoder embedded in the stream, then reproduce the bytes.
+// ============================================================================
+
+/// C-encode one KEY frame with a derived-denom superres `mode`
+/// (2=RANDOM, 3=QTHRESH), then parse `(allow_screen_content_tools, chosen denom)`
+/// out of the emitted stream. `cli_qthresh`/`cli_kf_qthresh` are the 1..=63 CLI
+/// knobs. CDEF/restoration OFF (allintra defaults).
+fn c_encode_and_facts(
+    cell: &EncodeCell,
+    mode: i32,
+    cli_qthresh: i32,
+    cli_kf_qthresh: i32,
+) -> (Vec<u8>, bool, i32) {
+    let c_tu = c::ref_encode_av1_kf_superres_mode(
+        &cell.y,
+        &cell.u,
+        &cell.v,
+        cell.w,
+        cell.h,
+        i32::from(cell.bd),
+        cell.mono,
+        cell.ss_x as i32,
+        cell.ss_y as i32,
+        cell.cq_level,
+        cell.speed,
+        false, // enable_cdef
+        false, // enable_restoration
+        cell.usage,
+        mode,
+        cli_qthresh,
+        cli_kf_qthresh,
+        8, // superres_denom (AUTO_ALL only; unused for RANDOM/QTHRESH)
+        8, // superres_kf_denom (AUTO_ALL only)
+    );
+    assert!(
+        !c_tu.is_empty(),
+        "{}: real superres-mode encode failed",
+        cell.label
+    );
+    let (allow_scc, real_denom) = parse_superres_facts(&c_tu);
+    (c_tu, allow_scc, real_denom)
+}
+
+/// Given the port-derived `port_denom` (already asserted == the real chosen
+/// denom) and a downscale that engages superres (`port_denom > 8`), run the
+/// port's downscale+encode, splice, require BOTH decoders to agree on the
+/// upscaled recon, and score byte-identity.
+fn superres_select_bytes(cell: &EncodeCell, c_tu: &[u8], port_denom: i32) -> RdCellResult {
+    let port_payload = port_encode_superres(cell, port_denom, c_tu);
+    let port_tu = splice_frame_obu(c_tu, &port_payload);
+    let ours_c = c::ref_decode_av1_kf(&port_tu, cell.w, cell.h);
+    let ours_port = aom_decode::frame::decode_frame_obus(&port_tu)
+        .unwrap_or_else(|e| panic!("{}: port decode of OUR stream failed: {e}", cell.label));
+    assert_eq!(
+        ours_port.y, ours_c.y,
+        "{}: port and C decoders disagree on OUR stream's luma recon",
+        cell.label
+    );
+    if !cell.mono {
+        assert_eq!(
+            ours_port.u, ours_c.u,
+            "{}: U recon disagreement",
+            cell.label
+        );
+        assert_eq!(
+            ours_port.v, ours_c.v,
+            "{}: V recon disagreement",
+            cell.label
+        );
+    }
+    compare_cell(&cell.label, cell, &port_tu, c_tu)
+}
+
+/// Smooth synthetic content (low horizontal-frequency energy) so the QTHRESH
+/// energy analysis derives a superres-ENGAGING denom (`> 8`). A gentle diagonal
+/// ramp plus a small mid-frequency ripple keeps the derived denom below 16 (so
+/// bd8 cells avoid the denom-16 optimized-scaler corner). `bd`-aware; 4:2:0 or
+/// monochrome.
+fn synth_smooth_superres_cell(label: &str, sz: usize, mono: bool, cq: i32, bd: u8) -> EncodeCell {
+    let maxv = (1u32 << bd) - 1;
+    let (w, h) = (sz, sz);
+    let span = (w as u32) * 3 + (h as u32) * 2;
+    let mut y = vec![0u16; w * h];
+    for r in 0..h {
+        for col in 0..w {
+            // Smooth diagonal ramp (dominant low frequency) + a gentle ripple.
+            let ramp = maxv * (col as u32 * 3 + r as u32 * 2) / span;
+            let ripple = ((((col as u32) / 8) & 1) * maxv) / 40;
+            y[r * w + col] = (ramp + ripple).min(maxv) as u16;
+        }
+    }
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + 1) >> 1, (h + 1) >> 1)
+    };
+    let cspan = (cw as u32) * 3 + (ch as u32) * 2 + 1;
+    let mut u = vec![0u16; cw * ch];
+    let mut v = vec![0u16; cw * ch];
+    if !mono {
+        for r in 0..ch {
+            for col in 0..cw {
+                u[r * cw + col] = (maxv * (col as u32 + r as u32 * 2) / cspan).min(maxv) as u16;
+                v[r * cw + col] = (maxv * (col as u32 * 2 + r as u32) / cspan).min(maxv) as u16;
+            }
+        }
+    }
+    EncodeCell {
+        label: label.to_string(),
+        w,
+        h,
+        mono,
+        ss_x: 1,
+        ss_y: 1,
+        usage: 2,
+        cq_level: cq,
+        speed: 0,
+        bd,
+        y,
+        u,
+        v,
+    }
+}
+
+/// QTHRESH mode — the core C6 derivation gate. The port derives the superres
+/// denom from the source's 16×4 H_DCT energy + the picked qindex vs the KEY
+/// qthresh knob (`superres_select::superres_denom_qthresh_key`), and it MUST
+/// equal the denom real `aomenc --superres-mode=qthresh` chose (embedded in the
+/// stream) — asserted for EVERY cell, across bd 8/10/12 (so the bd-dependent
+/// energy accumulation shift is validated end-to-end vs real aomenc). Content:
+/// - REAL 196² image content (detailed): declines superres (denom 8 — high HF
+///   energy), exactly as real aomenc does.
+/// - SMOOTH synthetic content: derives an ENGAGING denom (> 8).
+///
+/// End-to-end byte-identity is additionally asserted for the PRIMARY bd8 config
+/// on the ported (non-denom-16) scaler — the derived denom feeds the identical
+/// downscale + coded-width encode + `write_superres_scale` pipeline the FIXED
+/// gate proves byte-exact (and which RANDOM exercises on real content at denoms
+/// 11/14/15/9). Highbd pipeline byte-identity is the FIXED highbd gate's domain
+/// (16/16); a bd10 SMOOTH 128²→102 cell hits a pre-existing partition near-tie
+/// (KB-6 class — bd8 and bd12 at the identical denom byte-match), orthogonal to
+/// superres selection, so highbd here is derivation-only.
+#[test]
+fn encoder_gate_superres_qthresh_e2e() {
+    c::ref_init();
+    let mut matched = 0usize;
+    let mut bd8_bytes = Vec::new();
+
+    // Derive + assert the chosen denom for one cell; byte-check bd8 engaged cells.
+    let mut run = |cell: &EncodeCell, kf_qt: i32, bd8_byte: bool, bytes: &mut Vec<RdCellResult>| {
+        let (c_tu, allow_scc, real_denom) = c_encode_and_facts(cell, 3, 63, kf_qt);
+        let q = base_qindex_from_cq(cell.cq_level);
+        let port_denom = i32::from(superres_denom_qthresh_key(
+            &cell.y,
+            cell.w,
+            cell.h,
+            cell.w,
+            cell.bd,
+            q,
+            quantizer_to_qindex(kf_qt),
+            allow_scc,
+            true,
+        ));
+        let coded_w = coded_superres_width(cell.w as i32, port_denom) as i32;
+        let bd8_opt = cell.bd == 8 && superres_uses_optimized_scaler_8bit(cell.w as i32, coded_w);
+        eprintln!(
+            "{}: q={q} kf_qt={kf_qt} scc={allow_scc} -> real {real_denom}, port {port_denom} (coded_w={coded_w})",
+            cell.label
+        );
+        assert_eq!(
+            port_denom, real_denom,
+            "{}: port-derived superres denom {port_denom} != the denom real aomenc chose \
+             {real_denom} (q={q})",
+            cell.label
+        );
+        if bd8_byte && port_denom > i32::from(SCALE_NUMERATOR_U8) && !bd8_opt {
+            bytes.push(superres_select_bytes(cell, &c_tu, port_denom));
+        }
+    };
+
+    // REAL detailed content: derivation declines superres (denom 8).
+    for &cq in &[20i32, 48, 63] {
+        let cell = EncodeCell::real_content(
+            &format!("qthresh_real196_cq{cq:02}"),
+            "av1-1-b8-01-size-196x196",
+            None,
+            cq,
+            0,
+        );
+        run(&cell, 8, false, &mut bd8_bytes);
+        matched += 1;
+    }
+
+    // SMOOTH content across bd 8/10/12 (derivation incl. the bd-shift). Byte-check
+    // the PRIMARY bd8 engaged cells (a low kf-qthresh keeps q > qthresh).
+    for &bd in &[8u8, 10, 12] {
+        for &cq in &[32i32, 44, 48, 52, 56, 63] {
+            let cell = synth_smooth_superres_cell(
+                &format!("qthresh_smooth_b{bd}_128_cq{cq:02}"),
+                128,
+                false,
+                cq,
+                bd,
+            );
+            run(&cell, 8, bd == 8, &mut bd8_bytes);
+            matched += 1;
+        }
+    }
+
+    eprintln!(
+        "QTHRESH e2e: {matched} cells derivation-match real aomenc; {} bd8 engaged cells byte-identical",
+        bd8_bytes.len()
+    );
+    assert!(
+        bd8_bytes.len() >= 2,
+        "expected >= 2 engaged bd8 QTHRESH cells on the ported scaler for the byte-identity path; \
+         got {}",
+        bd8_bytes.len()
+    );
+    assert_all_exact(&bd8_bytes);
+}
+
+/// RANDOM mode — byte-identity across the seeded denom sequence. libaom's RANDOM
+/// seed is a process-global `static` (34567) advancing once per RANDOM frame, so
+/// consecutive encodes draw 11, 14, 15, 9. This is the ONLY RANDOM encoder in the
+/// binary and runs its cells sequentially, so C's static seed and the port's
+/// threaded seed stay in lockstep — the port reproduces each draw and the
+/// downscale+encode is byte-identical at all four denominators.
+#[test]
+fn encoder_gate_superres_random_e2e() {
+    c::ref_init();
+    let mut seed = aom_encode::superres_select::SUPERRES_RANDOM_SEED_INIT;
+    let mut results = Vec::new();
+    for (i, &cq) in [20i32, 32, 48, 63].iter().enumerate() {
+        let cell = EncodeCell::real_content(
+            &format!("random_real196_draw{i}_cq{cq:02}"),
+            "av1-1-b8-01-size-196x196",
+            None,
+            cq,
+            0,
+        );
+        let port_denom = i32::from(aom_encode::superres_select::superres_denom_random(
+            &mut seed,
+        ));
+        let (c_tu, allow_scc, real_denom) = c_encode_and_facts(&cell, 2, 63, 63);
+        eprintln!(
+            "{}: draw#{i} scc={allow_scc} -> real {real_denom}, port {port_denom}",
+            cell.label
+        );
+        assert_eq!(
+            port_denom, real_denom,
+            "{}: port RANDOM denom {port_denom} (draw #{i}) != real aomenc {real_denom} — \
+             the process-global static-seed sequence desynced",
+            cell.label
+        );
+        assert!(
+            port_denom > i32::from(SCALE_NUMERATOR_U8),
+            "{}: RANDOM denom {port_denom} must downscale",
+            cell.label
+        );
+        results.push(superres_select_bytes(&cell, &c_tu, port_denom));
+    }
+    eprintln!(
+        "RANDOM e2e: {} cells (denoms 11,14,15,9) match real aomenc + byte-identical",
+        results.len()
+    );
+    assert_all_exact(&results);
+}
+
+/// AUTO mode — the non-recode single-KEY path (PARITY C6). For ALLINTRA the AUTO
+/// search type is `Dual` (speed_features.c:384); a single KEY still has
+/// `frames_to_key <= 1`, so `av1_superres_in_recode_allowed` is false — no recode
+/// loop, no SOLO bump — and AUTO reduces to the q-based energy derivation with a
+/// qthresh of 0 (`superres_select::superres_denom_auto_key`). The port must match
+/// the denom real `aomenc --superres-mode=auto` chose; engaged bd8 cells are
+/// byte-identity-checked. (If recode WERE active, the real denom would be
+/// bumped/searched and this assert would catch it — proving the non-recode
+/// assumption for the single-frame envelope.)
+#[test]
+fn encoder_gate_superres_auto_e2e() {
+    c::ref_init();
+    let mut matched = 0usize;
+    let mut bd8_bytes = Vec::new();
+
+    let mut run = |cell: &EncodeCell, bd8_byte: bool, bytes: &mut Vec<RdCellResult>| {
+        let (c_tu, allow_scc, real_denom) = c_encode_and_facts(cell, 4, 63, 8);
+        let q = base_qindex_from_cq(cell.cq_level);
+        let port_denom = i32::from(superres_denom_auto_key(
+            &cell.y,
+            cell.w,
+            cell.h,
+            cell.w,
+            cell.bd,
+            q,
+            allow_scc,
+            true, // frames_to_key <= 1 (single KEY still) -> no recode
+            SuperresAutoSearchType::Dual,
+            8, // kf_scale_denominator (AUTO_ALL only; unused for Dual)
+        ));
+        let coded_w = coded_superres_width(cell.w as i32, port_denom) as i32;
+        let bd8_opt = cell.bd == 8 && superres_uses_optimized_scaler_8bit(cell.w as i32, coded_w);
+        eprintln!(
+            "{}: q={q} scc={allow_scc} -> real {real_denom}, port {port_denom} (coded_w={coded_w})",
+            cell.label
+        );
+        assert_eq!(
+            port_denom, real_denom,
+            "{}: port AUTO denom {port_denom} != real aomenc {real_denom} (q={q}) — \
+             a mismatch here would mean the recode loop fired (frames_to_key>1) or the \
+             search type isn't Dual",
+            cell.label
+        );
+        if bd8_byte && port_denom > i32::from(SCALE_NUMERATOR_U8) && !bd8_opt {
+            bytes.push(superres_select_bytes(cell, &c_tu, port_denom));
+        }
+    };
+
+    // REAL detailed content: AUTO also declines superres (denom 8).
+    for &cq in &[20i32, 48] {
+        let cell = EncodeCell::real_content(
+            &format!("auto_real196_cq{cq:02}"),
+            "av1-1-b8-01-size-196x196",
+            None,
+            cq,
+            0,
+        );
+        run(&cell, false, &mut bd8_bytes);
+        matched += 1;
+    }
+    // SMOOTH content across bd 8/10/12 (derivation incl. bd-shift); bd8 byte-checked.
+    for &bd in &[8u8, 10, 12] {
+        for &cq in &[20i32, 44, 48] {
+            let cell = synth_smooth_superres_cell(
+                &format!("auto_smooth_b{bd}_128_cq{cq:02}"),
+                128,
+                false,
+                cq,
+                bd,
+            );
+            run(&cell, bd == 8, &mut bd8_bytes);
+            matched += 1;
+        }
+    }
+
+    eprintln!(
+        "AUTO e2e: {matched} cells derivation-match real aomenc; {} bd8 engaged byte-identical",
+        bd8_bytes.len()
+    );
+    assert!(
+        !bd8_bytes.is_empty(),
+        "no engaged bd8 AUTO cell on the ported scaler — byte path untested"
+    );
+    assert_all_exact(&bd8_bytes);
 }

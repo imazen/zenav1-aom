@@ -339,7 +339,7 @@ pub fn ref_cdef_filter16(
 extern "C" {
     fn shim_sad(idx: i32, s: *const u8, ss: i32, r: *const u8, rs: i32) -> u32;
     fn shim_variance(idx: i32, a: *const u8, as_: i32, b: *const u8, bs: i32, sse: *mut u32)
-        -> u32;
+    -> u32;
     fn shim_subpel_var(
         idx: i32,
         a: *const u8,
@@ -542,6 +542,34 @@ extern "C" {
     fn shim_write_frame_interp_filter(filter: i32, out: *mut u8) -> u32;
     fn shim_write_superres_scale(enable_superres: i32, denom: i32, out: *mut u8) -> u32;
     fn shim_write_render_size(scaling_active: i32, rw: i32, rh: i32, out: *mut u8) -> u32;
+    // superres_shim.c — faithful transcription of the static superres
+    // denom-selection functions (calling the real exported leaf math).
+    fn shim_superres_analyze_hor_freq(
+        src: *const u16,
+        width: i32,
+        height: i32,
+        stride: i32,
+        bd: i32,
+        energy_out: *mut f64,
+    );
+    fn shim_superres_denom_from_qindex_energy(
+        qindex: i32,
+        energy: *const f64,
+        threshq: f64,
+        threshp: f64,
+    ) -> u8;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_superres_denom_qthresh_key(
+        src: *const u16,
+        w: i32,
+        h: i32,
+        stride: i32,
+        bd: i32,
+        q: i32,
+        kf_qthresh_qindex: i32,
+        allow_scc: i32,
+        frames_to_key_le_1: i32,
+    ) -> u8;
     #[allow(clippy::too_many_arguments)]
     fn shim_write_frame_size(
         frame_size_override: i32,
@@ -4562,6 +4590,72 @@ pub fn ref_write_superres_scale(enable_superres: bool, denom: i32) -> Vec<u8> {
     out
 }
 
+/// Reference `analyze_hor_freq` (superres_scale.c): the 16x4 H_DCT horizontal
+/// frequency-energy analysis over `src` (tight/strided luma, `stride` samples
+/// per row, values 0..(2^bd-1)). Returns the 16-entry cumulative energy vector
+/// (index 0 unused). Calls the real exported `av1_fwd_txfm2d_16x4_c`.
+pub fn ref_superres_analyze_hor_freq(
+    src: &[u16],
+    width: usize,
+    height: usize,
+    stride: usize,
+    bd: u8,
+) -> [f64; 16] {
+    let mut energy = [0f64; 16];
+    unsafe {
+        shim_superres_analyze_hor_freq(
+            src.as_ptr(),
+            width as i32,
+            height as i32,
+            stride as i32,
+            i32::from(bd),
+            energy.as_mut_ptr(),
+        );
+    }
+    energy
+}
+
+/// Reference `get_superres_denom_from_qindex_energy` (superres_scale.c). Calls
+/// the real exported `av1_convert_qindex_to_q`.
+pub fn ref_superres_denom_from_qindex_energy(
+    qindex: i32,
+    energy: &[f64; 16],
+    threshq: f64,
+    threshp: f64,
+) -> u8 {
+    unsafe { shim_superres_denom_from_qindex_energy(qindex, energy.as_ptr(), threshq, threshp) }
+}
+
+/// Reference KEY-frame QTHRESH-arm superres denom selection
+/// (`calculate_next_superres_scale` + `get_superres_denom_for_qindex`,
+/// single-KEY AOM_Q envelope). Returns the denominator (8..16; 8 = no superres).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_superres_denom_qthresh_key(
+    src: &[u16],
+    w: usize,
+    h: usize,
+    stride: usize,
+    bd: u8,
+    q: i32,
+    kf_qthresh_qindex: i32,
+    allow_scc: bool,
+    frames_to_key_le_1: bool,
+) -> u8 {
+    unsafe {
+        shim_superres_denom_qthresh_key(
+            src.as_ptr(),
+            w as i32,
+            h as i32,
+            stride as i32,
+            i32::from(bd),
+            q,
+            kf_qthresh_qindex,
+            allow_scc as i32,
+            frames_to_key_le_1 as i32,
+        )
+    }
+}
+
 /// Reference `write_render_size`.
 pub fn ref_write_render_size(scaling_active: bool, rw: i32, rh: i32) -> Vec<u8> {
     let mut out = vec![0u8; 8];
@@ -4754,11 +4848,7 @@ pub fn ref_uleb_decode(buffer: &[u8]) -> Option<(u64, usize)> {
     let mut value = 0u64;
     let mut length = 0usize;
     let rc = unsafe { aom_uleb_decode(buffer.as_ptr(), buffer.len(), &mut value, &mut length) };
-    if rc == 0 {
-        Some((value, length))
-    } else {
-        None
-    }
+    if rc == 0 { Some((value, length)) } else { None }
 }
 
 /// Reference `aom_write_bit_buffer`: apply a sequence of literal ops (kind 0 =
@@ -7441,9 +7531,18 @@ pub fn ref_get_qmlevel_444_chroma(qindex: i32, first: i32, last: i32) -> i32 {
 pub fn ref_qm_gqmatrix(q: usize, c: usize, t: usize) -> Option<Vec<u8>> {
     let mut out = vec![0u8; 1024]; // max matrix area == 32*32
     let len = unsafe {
-        shim_qm_gqmatrix(q as i32, c as i32, t as i32, out.as_mut_ptr(), out.len() as i32)
+        shim_qm_gqmatrix(
+            q as i32,
+            c as i32,
+            t as i32,
+            out.as_mut_ptr(),
+            out.len() as i32,
+        )
     };
-    assert!(len != -2, "shim_qm_gqmatrix: out_cap overflow for (q={q}, c={c}, t={t})");
+    assert!(
+        len != -2,
+        "shim_qm_gqmatrix: out_cap overflow for (q={q}, c={c}, t={t})"
+    );
     if len < 0 {
         return None;
     }
@@ -7457,9 +7556,18 @@ pub fn ref_qm_gqmatrix(q: usize, c: usize, t: usize) -> Option<Vec<u8>> {
 pub fn ref_iqm_giqmatrix(q: usize, c: usize, t: usize) -> Option<Vec<u8>> {
     let mut out = vec![0u8; 1024];
     let len = unsafe {
-        shim_qm_giqmatrix(q as i32, c as i32, t as i32, out.as_mut_ptr(), out.len() as i32)
+        shim_qm_giqmatrix(
+            q as i32,
+            c as i32,
+            t as i32,
+            out.as_mut_ptr(),
+            out.len() as i32,
+        )
     };
-    assert!(len != -2, "shim_qm_giqmatrix: out_cap overflow for (q={q}, c={c}, t={t})");
+    assert!(
+        len != -2,
+        "shim_qm_giqmatrix: out_cap overflow for (q={q}, c={c}, t={t})"
+    );
     if len < 0 {
         return None;
     }
@@ -11491,6 +11599,102 @@ pub fn ref_encode_av1_kf_superres(
     out
 }
 
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_encode_av1_kf_superres_mode(
+        y: *const u16,
+        u: *const u16,
+        v: *const u16,
+        w: i32,
+        h: i32,
+        bd: i32,
+        mono: i32,
+        ss_x: i32,
+        ss_y: i32,
+        cq_level: i32,
+        cpu_used: i32,
+        enable_cdef: i32,
+        enable_restoration: i32,
+        usage: i32,
+        superres_mode: i32,
+        superres_qthresh: i32,
+        superres_kf_qthresh: i32,
+        superres_denom: i32,
+        superres_kf_denom: i32,
+        out: *mut u8,
+        out_cap: usize,
+    ) -> i64;
+}
+
+/// Derived-denominator superres variant of [`ref_encode_av1_kf_superres`]
+/// (append-only; the FIXED wrapper above is untouched): the encoder chooses the
+/// superres denominator itself via `calculate_next_superres_scale`.
+/// `superres_mode` is the `aom_superres_mode` enum (2 = RANDOM, 3 = QTHRESH,
+/// 4 = AUTO); `superres_qthresh`/`superres_kf_qthresh` are the 1..=63 CLI knobs
+/// (`--superres-qthresh`/`--superres-kf-qthresh`); `superres_denom`/
+/// `superres_kf_denom` are used only by AUTO_ALL. Same envelope as the FIXED
+/// wrapper (--end-usage=q, --sb-size=64, single tile, one-pass). Panics on a
+/// negative shim return.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_encode_av1_kf_superres_mode(
+    y: &[u16],
+    u: &[u16],
+    v: &[u16],
+    w: usize,
+    h: usize,
+    bd: i32,
+    mono: bool,
+    ss_x: i32,
+    ss_y: i32,
+    cq_level: i32,
+    cpu_used: i32,
+    enable_cdef: bool,
+    enable_restoration: bool,
+    usage: u32,
+    superres_mode: i32,
+    superres_qthresh: i32,
+    superres_kf_qthresh: i32,
+    superres_denom: i32,
+    superres_kf_denom: i32,
+) -> Vec<u8> {
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + ss_x as usize) >> ss_x, (h + ss_y as usize) >> ss_y)
+    };
+    assert_eq!(y.len(), w * h);
+    assert!(mono || (u.len() == cw * ch && v.len() == cw * ch));
+    let mut out = vec![0u8; w * h * 8 + 65536];
+    let n = unsafe {
+        shim_encode_av1_kf_superres_mode(
+            y.as_ptr(),
+            u.as_ptr(),
+            v.as_ptr(),
+            w as i32,
+            h as i32,
+            bd,
+            mono as i32,
+            ss_x,
+            ss_y,
+            cq_level,
+            cpu_used,
+            enable_cdef as i32,
+            enable_restoration as i32,
+            usage as i32,
+            superres_mode,
+            superres_qthresh,
+            superres_kf_qthresh,
+            superres_denom,
+            superres_kf_denom,
+            out.as_mut_ptr(),
+            out.len(),
+        )
+    };
+    assert!(n > 0, "shim_encode_av1_kf_superres_mode failed ({n})");
+    out.truncate(n as usize);
+    out
+}
+
 // dec_shim.c section "intrabc DV prediction facades" (append-only addition):
 // shim_find_dv_ref_mvs drives the REAL EXPORTED av1_find_mv_refs +
 // av1_find_best_ref_mvs (ref_frame=INTRA_FRAME) over a synthetic MI grid;
@@ -11767,8 +11971,16 @@ pub fn ref_add_film_grain(
     v: &[u16],
 ) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     assert_eq!(blob.len(), FILM_GRAIN_BLOB_LEN, "grain blob length");
-    let cw = if mono { 0 } else { (d_w + ss_x as usize) >> ss_x };
-    let ch = if mono { 0 } else { (d_h + ss_y as usize) >> ss_y };
+    let cw = if mono {
+        0
+    } else {
+        (d_w + ss_x as usize) >> ss_x
+    };
+    let ch = if mono {
+        0
+    } else {
+        (d_h + ss_y as usize) >> ss_y
+    };
     let mut out_y = vec![0u16; d_w * d_h];
     let mut out_u = vec![0u16; cw * ch];
     let mut out_v = vec![0u16; cw * ch];
@@ -11912,7 +12124,10 @@ pub fn ref_write_grain_table_test_vector(idx: i32, path: &std::path::Path) {
     let cpath = std::ffi::CString::new(path.as_os_str().to_str().expect("utf8 path"))
         .expect("path has interior NUL");
     let rc = unsafe { shim_write_grain_table_test_vector(idx, cpath.as_ptr()) };
-    assert_eq!(rc, 0, "shim_write_grain_table_test_vector({idx}) failed ({rc})");
+    assert_eq!(
+        rc, 0,
+        "shim_write_grain_table_test_vector({idx}) failed ({rc})"
+    );
 }
 
 /// Encode a single KEY frame WITH a film-grain TABLE via the REAL
@@ -12045,7 +12260,11 @@ pub fn ref_noise_strength_fit_piecewise(
             &mut n,
         )
     };
-    (ok != 0).then(|| (0..n as usize).map(|i| [xy[2 * i], xy[2 * i + 1]]).collect())
+    (ok != 0).then(|| {
+        (0..n as usize)
+            .map(|i| [xy[2 * i], xy[2 * i + 1]])
+            .collect()
+    })
 }
 
 unsafe extern "C" {
