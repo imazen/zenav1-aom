@@ -3565,3 +3565,148 @@ int shim_noise_model_fit(int shape, int lag, int bit_depth, int use_highbd,
   aom_noise_model_free(&m);
   return 1;
 }
+
+/* Wiener-denoise differential oracle (C7 grain-estimator): run the REAL
+ * aom_wiener_denoise_2d over a synthetic frame (3 planes, u16 storage) with the
+ * provided flat noise PSDs and copy the denoised planes (as u16) into out_*.
+ * For !use_highbd the planes are truncated to u8 the C fn reads as 8-bit
+ * (matching the Rust port's u16-uniform storage). psd_* are block_size*
+ * block_size floats. Requires ref_init. Returns aom_wiener_denoise_2d's
+ * init_success (1 on success). Append-only. */
+int shim_wiener_denoise_2d(const uint16_t *y, const uint16_t *u,
+                           const uint16_t *v, int w, int h, int sy, int su,
+                           int sv, int csx, int csy, const float *psd_y,
+                           const float *psd_u, const float *psd_v,
+                           int block_size, int bit_depth, int use_highbd,
+                           uint16_t *out_y, uint16_t *out_u, uint16_t *out_v) {
+  const int ch = h >> csy;
+  const int plen[3] = { sy * h, su * ch, sv * ch };
+  const uint16_t *src16[3] = { y, u, v };
+  uint16_t *out16[3] = { out_y, out_u, out_v };
+  const uint8_t *data[3];
+  uint8_t *denoised[3] = { 0, 0, 0 };
+  uint8_t *in8[3] = { 0, 0, 0 };
+  int strides[3] = { sy, su, sv };
+  int csl[2] = { csx, csy };
+  float *psd[3] = { (float *)psd_y, (float *)psd_u, (float *)psd_v };
+
+  for (int c = 0; c < 3; ++c) {
+    denoised[c] = (uint8_t *)malloc((size_t)plen[c] << use_highbd);
+    if (!denoised[c]) {
+      for (int k = 0; k < 3; ++k) {
+        free(denoised[k]);
+        free(in8[k]);
+      }
+      return 0;
+    }
+    memset(denoised[c], 0, (size_t)plen[c] << use_highbd);
+    if (use_highbd) {
+      data[c] = (const uint8_t *)src16[c];
+    } else {
+      in8[c] = (uint8_t *)malloc((size_t)plen[c]);
+      if (!in8[c]) {
+        for (int k = 0; k < 3; ++k) {
+          free(denoised[k]);
+          free(in8[k]);
+        }
+        return 0;
+      }
+      for (int j = 0; j < plen[c]; ++j) in8[c][j] = (uint8_t)src16[c][j];
+      data[c] = in8[c];
+    }
+  }
+
+  int ok = aom_wiener_denoise_2d(data, denoised, w, h, strides, csl, psd,
+                                 block_size, bit_depth, use_highbd);
+  if (ok) {
+    for (int c = 0; c < 3; ++c) {
+      if (use_highbd) {
+        memcpy(out16[c], denoised[c], (size_t)plen[c] * sizeof(uint16_t));
+      } else {
+        for (int j = 0; j < plen[c]; ++j) out16[c][j] = denoised[c][j];
+      }
+    }
+  }
+  for (int c = 0; c < 3; ++c) {
+    free(denoised[c]);
+    free(in8[c]);
+  }
+  return ok;
+}
+
+/* End-to-end denoise+model differential oracle (C7 grain-estimator): build a
+ * YV12 from tight u16 planes, run the REAL aom_denoise_and_model_run
+ * (apply_denoise=1 so the denoised image lands back in the frame), serialize the
+ * resulting film-grain params to `table_path`, and copy the denoised VALID
+ * region back out TIGHTLY (out_den_*, w*h / cw*ch). Dims must be 32-aligned so
+ * y_width==crop_width (no beyond-crop gap the model would read). The model reads
+ * only the valid region, so its result is stride-invariant -> the Rust port can
+ * run on tight buffers and match. Requires ref_init. Returns 1 on a completed
+ * run (grain estimated), 0 otherwise. Append-only. */
+int shim_denoise_and_model_run(const uint16_t *y, const uint16_t *u,
+                               const uint16_t *v, int w, int h, int ss_x,
+                               int ss_y, int bit_depth, int block_size,
+                               float noise_level, int random_seed,
+                               const char *table_path, uint16_t *out_den_y,
+                               uint16_t *out_den_u, uint16_t *out_den_v,
+                               int *out_apply_grain) {
+  const int use_highbd = bit_depth > 8;
+  YV12_BUFFER_CONFIG sd;
+  memset(&sd, 0, sizeof(sd));
+  if (aom_alloc_frame_buffer(&sd, w, h, ss_x, ss_y, use_highbd,
+                             AOM_BORDER_IN_PIXELS, 0, false, 0))
+    return 0;
+  const uint16_t *src[3] = { y, u, v };
+  for (int p = 0; p < 3; ++p)
+    lrf_load_plane(&sd, p, src[p], p ? (w >> ss_x) : w, use_highbd);
+  sd.subsampling_x = ss_x;
+  sd.subsampling_y = ss_y;
+  sd.monochrome = 0;
+  if (use_highbd) sd.flags |= YV12_FLAG_HIGHBITDEPTH;
+
+  struct aom_denoise_and_model_t *ctx =
+      aom_denoise_and_model_alloc(bit_depth, block_size, noise_level);
+  if (!ctx) {
+    aom_free_frame_buffer(&sd);
+    return 0;
+  }
+  aom_film_grain_t fg;
+  memset(&fg, 0, sizeof(fg));
+  fg.random_seed = random_seed;
+  int ok = aom_denoise_and_model_run(ctx, &sd, &fg, /*apply_denoise=*/1);
+  *out_apply_grain = ok ? fg.apply_grain : 0;
+
+  if (ok && fg.apply_grain) {
+    if (table_path && table_path[0]) {
+      aom_film_grain_table_t t;
+      memset(&t, 0, sizeof(t));
+      aom_film_grain_table_append(&t, 0, INT64_MAX, &fg);
+      struct aom_internal_error_info err;
+      memset(&err, 0, sizeof(err));
+      aom_film_grain_table_write(&t, table_path, &err);
+      aom_film_grain_table_free(&t);
+    }
+    const int cw = w >> ss_x, chh = h >> ss_y;
+    uint16_t *outp[3] = { out_den_y, out_den_u, out_den_v };
+    const int pw[3] = { w, cw, cw };
+    const int ph[3] = { h, chh, chh };
+    for (int p = 0; p < 3; ++p) {
+      const int is_uv = p > 0;
+      const int stride = sd.strides[is_uv];
+      for (int r = 0; r < ph[p]; ++r) {
+        if (use_highbd) {
+          const uint16_t *row =
+              CONVERT_TO_SHORTPTR(sd.buffers[p]) + (ptrdiff_t)r * stride;
+          memcpy(outp[p] + (ptrdiff_t)r * pw[p], row, pw[p] * sizeof(uint16_t));
+        } else {
+          const uint8_t *row = sd.buffers[p] + (ptrdiff_t)r * stride;
+          for (int cc = 0; cc < pw[p]; ++cc)
+            outp[p][(ptrdiff_t)r * pw[p] + cc] = row[cc];
+        }
+      }
+    }
+  }
+  aom_denoise_and_model_free(ctx);
+  aom_free_frame_buffer(&sd);
+  return ok && fg.apply_grain;
+}

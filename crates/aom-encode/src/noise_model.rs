@@ -418,15 +418,26 @@ impl FlatBlockFinder {
     }
 
     /// `aom_flat_block_finder_extract_block`: extract a (clamped-edge) block,
-    /// fit the planar model, and return `(plane, residual_block)`.
-    fn extract_block(&self, data: &[u16], w: usize, h: usize, stride: usize, offsx: usize, offsy: usize) -> (Vec<f64>, Vec<f64>) {
+    /// fit the planar model, and return `(plane, residual_block)`. Offsets are
+    /// SIGNED and clamped to `[0, w-1] × [0, h-1]` (the Wiener denoise pads with
+    /// `offs = -block_size`; for the flat-block-finder's `offs ≥ 0` the low
+    /// clamp is inert, so behaviour there is unchanged).
+    pub(crate) fn extract_block(
+        &self,
+        data: &[u16],
+        w: usize,
+        h: usize,
+        stride: usize,
+        offsx: i32,
+        offsy: i32,
+    ) -> (Vec<f64>, Vec<f64>) {
         let bs = self.block_size;
         let n = bs * bs;
         let mut block = vec![0.0f64; n];
         for yi in 0..bs {
-            let y = (offsy + yi).min(h - 1);
+            let y = (offsy + yi as i32).clamp(0, h as i32 - 1) as usize;
             for xi in 0..bs {
-                let x = (offsx + xi).min(w - 1);
+                let x = (offsx + xi as i32).clamp(0, w as i32 - 1) as usize;
                 block[yi * bs + xi] = data[y * stride + x] as f64 / self.normalization;
             }
         }
@@ -466,7 +477,7 @@ impl FlatBlockFinder {
 
         for by in 0..nbh {
             for bx in 0..nbw {
-                let (_plane, block) = self.extract_block(data, w, h, stride, bx * bs, by * bs);
+                let (_plane, block) = self.extract_block(data, w, h, stride, (bx * bs) as i32, (by * bs) as i32);
                 let (mut gxx, mut gxy, mut gyy) = (0.0f64, 0.0f64, 0.0f64);
                 let (mut mean, mut var) = (0.0f64, 0.0f64);
                 for yi in 1..(bs - 1) {
@@ -976,6 +987,12 @@ impl NoiseModel {
     /// (`combined_state[c].strength_solver.eqns.x`).
     pub fn combined_strength_curve(&self, c: usize) -> &[f64] {
         self.combined_state[c].strength_solver.solved()
+    }
+
+    /// `combined_state[c].strength_solver.num_equations` — the have-estimate
+    /// gate in `aom_denoise_and_model_run`.
+    pub fn combined_strength_num_equations(&self, c: usize) -> i32 {
+        self.combined_state[c].strength_solver.num_equations
     }
 
     /// `aom_noise_model_save_latest` — promote the latest estimate to combined.

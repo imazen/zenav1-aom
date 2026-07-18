@@ -12774,6 +12774,170 @@ pub fn ref_noise_model_fit(
     }
 }
 
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_wiener_denoise_2d(
+        y: *const u16,
+        u: *const u16,
+        v: *const u16,
+        w: i32,
+        h: i32,
+        sy: i32,
+        su: i32,
+        sv: i32,
+        csx: i32,
+        csy: i32,
+        psd_y: *const f32,
+        psd_u: *const f32,
+        psd_v: *const f32,
+        block_size: i32,
+        bit_depth: i32,
+        use_highbd: i32,
+        out_y: *mut u16,
+        out_u: *mut u16,
+        out_v: *mut u16,
+    ) -> i32;
+}
+
+/// Run the REAL `aom_wiener_denoise_2d` over a synthetic frame (3 planes of
+/// `u16`; `!use_highbd` truncates to 8-bit) with flat noise PSDs, and return the
+/// denoised planes (`u16`). `None` if the C call reports failure.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_wiener_denoise_2d(
+    data: [&[u16]; 3],
+    w: usize,
+    h: usize,
+    strides: [usize; 3],
+    csx: i32,
+    csy: i32,
+    psd: [&[f32]; 3],
+    block_size: usize,
+    bit_depth: i32,
+    use_highbd: bool,
+    plane_lens: [usize; 3],
+) -> Option<[Vec<u16>; 3]> {
+    let mut out = [vec![0u16; plane_lens[0]], vec![0u16; plane_lens[1]], vec![0u16; plane_lens[2]]];
+    let (o0, rest) = out.split_at_mut(1);
+    let (o1, o2) = rest.split_at_mut(1);
+    let ok = unsafe {
+        shim_wiener_denoise_2d(
+            data[0].as_ptr(),
+            data[1].as_ptr(),
+            data[2].as_ptr(),
+            w as i32,
+            h as i32,
+            strides[0] as i32,
+            strides[1] as i32,
+            strides[2] as i32,
+            csx,
+            csy,
+            psd[0].as_ptr(),
+            psd[1].as_ptr(),
+            psd[2].as_ptr(),
+            block_size as i32,
+            bit_depth,
+            use_highbd as i32,
+            o0[0].as_mut_ptr(),
+            o1[0].as_mut_ptr(),
+            o2[0].as_mut_ptr(),
+        )
+    };
+    (ok != 0).then_some(out)
+}
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_denoise_and_model_run(
+        y: *const u16,
+        u: *const u16,
+        v: *const u16,
+        w: i32,
+        h: i32,
+        ss_x: i32,
+        ss_y: i32,
+        bit_depth: i32,
+        block_size: i32,
+        noise_level: f32,
+        random_seed: i32,
+        table_path: *const core::ffi::c_char,
+        out_den_y: *mut u16,
+        out_den_u: *mut u16,
+        out_den_v: *mut u16,
+        out_apply_grain: *mut i32,
+    ) -> i32;
+}
+
+/// Result of the REAL `aom_denoise_and_model_run` (via a YV12 buffer) — the
+/// serialized grain table and the tight denoised planes. See
+/// [`ref_denoise_and_model_run`].
+pub struct DenoiseAndModelResult {
+    pub apply_grain: bool,
+    pub grain_table: Option<Vec<u8>>,
+    pub denoised: [Vec<u16>; 3],
+}
+
+/// Run the REAL end-to-end `aom_denoise_and_model_run` over tight `u16` planes
+/// (32-aligned dims, 4:2:0/4:4:4) and return the estimated grain table + the
+/// denoised planes. Mirrors [`aom_encode::denoise::estimate_film_grain`].
+#[allow(clippy::too_many_arguments)]
+pub fn ref_denoise_and_model_run(
+    data: [&[u16]; 3],
+    w: usize,
+    h: usize,
+    ss_x: i32,
+    ss_y: i32,
+    bit_depth: i32,
+    block_size: usize,
+    noise_level: f32,
+    random_seed: i32,
+) -> DenoiseAndModelResult {
+    let cw = w >> ss_x;
+    let ch = h >> ss_y;
+    let mut den = [vec![0u16; w * h], vec![0u16; cw * ch], vec![0u16; cw * ch]];
+    let mut apply_grain = 0i32;
+    let path = std::env::temp_dir().join(format!(
+        "aomrs_dam_{}_{}.tbl",
+        std::process::id(),
+        random_seed
+    ));
+    let _ = std::fs::remove_file(&path);
+    let cpath = std::ffi::CString::new(path.to_str().expect("utf8 path")).expect("NUL");
+    let (d0, rest) = den.split_at_mut(1);
+    let (d1, d2) = rest.split_at_mut(1);
+    let ok = unsafe {
+        shim_denoise_and_model_run(
+            data[0].as_ptr(),
+            data[1].as_ptr(),
+            data[2].as_ptr(),
+            w as i32,
+            h as i32,
+            ss_x,
+            ss_y,
+            bit_depth,
+            block_size as i32,
+            noise_level,
+            random_seed,
+            cpath.as_ptr(),
+            d0[0].as_mut_ptr(),
+            d1[0].as_mut_ptr(),
+            d2[0].as_mut_ptr(),
+            &mut apply_grain,
+        )
+    };
+    let grain_table = if ok != 0 {
+        let b = std::fs::read(&path).ok();
+        let _ = std::fs::remove_file(&path);
+        b
+    } else {
+        None
+    };
+    DenoiseAndModelResult {
+        apply_grain: apply_grain != 0,
+        grain_table,
+        denoised: den,
+    }
+}
+
 /// The REAL exported `aom_count_primitive_refsubexpfin`
 /// (aom_dsp/binary_codes_writer.c): coded bit count of
 /// `aom_write_primitive_refsubexpfin(n, k, ref, v)`.

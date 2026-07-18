@@ -17,6 +17,7 @@ pub mod allintra_vis;
 pub mod ab_nn_prune;
 pub mod ab_nn_weights;
 pub mod cnn_partition;
+pub mod denoise;
 pub mod encode_intra;
 pub mod encode_sb;
 pub mod grain_table;
