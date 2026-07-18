@@ -12633,6 +12633,147 @@ pub fn ref_noise_tx_pipeline(
     (ok != 0).then_some((denoised, energy))
 }
 
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_noise_model_fit(
+        shape: i32,
+        lag: i32,
+        bit_depth: i32,
+        use_highbd: i32,
+        y: *const u16,
+        u: *const u16,
+        v: *const u16,
+        dy: *const u16,
+        du: *const u16,
+        dv: *const u16,
+        w: i32,
+        h: i32,
+        sy: i32,
+        su: i32,
+        sv: i32,
+        csx: i32,
+        csy: i32,
+        flat_blocks: *const u8,
+        block_size: i32,
+        out_status: *mut i32,
+        out_n: *mut i32,
+        out_ar_x: *mut f64,
+        out_ar_gain: *mut f64,
+        out_strength_x: *mut f64,
+        random_seed: i32,
+        table_path: *const core::ffi::c_char,
+    ) -> i32;
+}
+
+/// Result of the REAL `aom_noise_model_update` (+ optional
+/// `get_grain_parameters`) — see [`ref_noise_model_fit`].
+pub struct NoiseModelFit {
+    /// `aom_noise_status_t` as an int (0 = OK, 3 = DIFFERENT_NOISE_TYPE, ...).
+    pub status: i32,
+    /// `combined_state[c].eqns.n` per channel.
+    pub n: [usize; 3],
+    /// `combined_state[c].eqns.x` (the fitted AR coeffs), `3 × 32` row-major.
+    pub ar_x: Vec<f64>,
+    /// `combined_state[c].ar_gain` per channel.
+    pub ar_gain: [f64; 3],
+    /// `combined_state[c].strength_solver.eqns.x`, `3 × 20` row-major.
+    pub strength_x: Vec<f64>,
+    /// The serialized `filmgrn1` grain table from `get_grain_parameters`, if
+    /// requested and the update succeeded.
+    pub grain_table: Option<Vec<u8>>,
+}
+
+/// Run the REAL `aom_noise_model_init` + `aom_noise_model_update` over a
+/// synthetic frame (`data`/`denoised`, 3 planes of `u16`, `strides` in `u16`
+/// units; `!use_highbd` truncates to 8-bit on the C side) and return the fitted
+/// combined-state AR coefficients, ar_gain, solved strength curves, and update
+/// status. When `write_grain`, also runs `get_grain_parameters` and returns the
+/// serialized grain table for byte comparison.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_noise_model_fit(
+    shape: i32,
+    lag: i32,
+    bit_depth: i32,
+    use_highbd: bool,
+    data: [&[u16]; 3],
+    denoised: [&[u16]; 3],
+    w: usize,
+    h: usize,
+    strides: [usize; 3],
+    csx: i32,
+    csy: i32,
+    flat_blocks: &[u8],
+    block_size: usize,
+    random_seed: i32,
+    write_grain: bool,
+) -> NoiseModelFit {
+    let mut status = 0i32;
+    let mut n = [0i32; 3];
+    let mut ar_x = vec![0.0f64; 3 * 32];
+    let mut ar_gain = [0.0f64; 3];
+    let mut strength_x = vec![0.0f64; 3 * 20];
+
+    let table_path = if write_grain {
+        Some(std::env::temp_dir().join(format!(
+            "aomrs_nm_grain_{}_{}.tbl",
+            std::process::id(),
+            random_seed
+        )))
+    } else {
+        None
+    };
+    let cpath = table_path.as_ref().map(|p| {
+        std::ffi::CString::new(p.to_str().expect("utf8 path")).expect("path NUL")
+    });
+    let cpath_ptr = cpath.as_ref().map_or(core::ptr::null(), |c| c.as_ptr());
+    let _ = table_path.as_ref().map(std::fs::remove_file); // clear stale
+
+    let ok = unsafe {
+        shim_noise_model_fit(
+            shape,
+            lag,
+            bit_depth,
+            use_highbd as i32,
+            data[0].as_ptr(),
+            data[1].as_ptr(),
+            data[2].as_ptr(),
+            denoised[0].as_ptr(),
+            denoised[1].as_ptr(),
+            denoised[2].as_ptr(),
+            w as i32,
+            h as i32,
+            strides[0] as i32,
+            strides[1] as i32,
+            strides[2] as i32,
+            csx,
+            csy,
+            flat_blocks.as_ptr(),
+            block_size as i32,
+            &mut status,
+            n.as_mut_ptr(),
+            ar_x.as_mut_ptr(),
+            ar_gain.as_mut_ptr(),
+            strength_x.as_mut_ptr(),
+            random_seed,
+            cpath_ptr,
+        )
+    };
+    assert_eq!(ok, 1, "shim_noise_model_fit failed (status={status})");
+    let grain_table = table_path.as_ref().and_then(|p| {
+        let b = std::fs::read(p).ok();
+        let _ = std::fs::remove_file(p);
+        b
+    });
+    NoiseModelFit {
+        status,
+        n: [n[0] as usize, n[1] as usize, n[2] as usize],
+        ar_x,
+        ar_gain,
+        strength_x,
+        grain_table,
+    }
+}
+
 /// The REAL exported `aom_count_primitive_refsubexpfin`
 /// (aom_dsp/binary_codes_writer.c): coded bit count of
 /// `aom_write_primitive_refsubexpfin(n, k, ref, v)`.

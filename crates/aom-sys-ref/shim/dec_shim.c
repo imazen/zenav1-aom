@@ -3474,3 +3474,94 @@ int shim_noise_tx_pipeline(int block_size, const float *data, const float *psd,
   aom_noise_tx_free(tx);
   return 1;
 }
+
+/* AR-noise-model differential oracle (C7 grain-estimator): run the REAL
+ * aom_noise_model_init + aom_noise_model_update over a synthetic frame
+ * (data/denoised, 3 planes, u16 storage) and its flat-block map, then export
+ * the fitted combined-state AR coefficients (eqns.x), ar_gain, and solved
+ * strength curve (strength_solver.eqns.x) per channel, plus the update status.
+ * If `table_path` is non-empty, also run aom_noise_model_get_grain_parameters
+ * and serialize the result to that path via aom_film_grain_table_write, so the
+ * quantized grain params can be byte-compared. Planes are u16 row-major; for
+ * !use_highbd they are truncated into u8 images the model reads as 8-bit
+ * (matching the Rust port, which reads u16 uniformly). Requires ref_init.
+ * Returns 1 on success. Append-only. */
+int shim_noise_model_fit(int shape, int lag, int bit_depth, int use_highbd,
+                         const uint16_t *y, const uint16_t *u, const uint16_t *v,
+                         const uint16_t *dy, const uint16_t *du,
+                         const uint16_t *dv, int w, int h, int sy, int su,
+                         int sv, int csx, int csy, const uint8_t *flat_blocks,
+                         int block_size, int *out_status, int *out_n,
+                         double *out_ar_x, double *out_ar_gain,
+                         double *out_strength_x, int random_seed,
+                         const char *table_path) {
+  aom_noise_model_t m;
+  aom_noise_model_params_t p;
+  p.shape = (aom_noise_shape)shape;
+  p.lag = lag;
+  p.bit_depth = bit_depth;
+  p.use_highbd = use_highbd;
+  if (!aom_noise_model_init(&m, p)) {
+    *out_status = -1;
+    return 0;
+  }
+  const int ch = h >> csy;
+  const int plen[3] = { sy * h, su * ch, sv * ch };
+  const uint16_t *src16[6] = { y, u, v, dy, du, dv };
+  const uint8_t *d[3];
+  const uint8_t *dn[3];
+  uint8_t *tmp8[6] = { 0, 0, 0, 0, 0, 0 };
+  if (use_highbd) {
+    for (int i = 0; i < 3; ++i) {
+      d[i] = (const uint8_t *)src16[i];
+      dn[i] = (const uint8_t *)src16[i + 3];
+    }
+  } else {
+    for (int i = 0; i < 6; ++i) {
+      const int len = plen[i % 3];
+      tmp8[i] = (uint8_t *)malloc((size_t)len);
+      if (!tmp8[i]) {
+        for (int k = 0; k < 6; ++k) free(tmp8[k]);
+        aom_noise_model_free(&m);
+        *out_status = -2;
+        return 0;
+      }
+      for (int j = 0; j < len; ++j) tmp8[i][j] = (uint8_t)src16[i][j];
+    }
+    for (int i = 0; i < 3; ++i) {
+      d[i] = tmp8[i];
+      dn[i] = tmp8[i + 3];
+    }
+  }
+  int strides[3] = { sy, su, sv };
+  int csl[2] = { csx, csy };
+  aom_noise_status_t st = aom_noise_model_update(&m, d, dn, w, h, strides, csl,
+                                                 flat_blocks, block_size);
+  *out_status = (int)st;
+  for (int c = 0; c < 3; ++c) {
+    const int nc = m.combined_state[c].eqns.n;
+    out_n[c] = nc;
+    for (int i = 0; i < nc; ++i) out_ar_x[c * 32 + i] = m.combined_state[c].eqns.x[i];
+    out_ar_gain[c] = m.combined_state[c].ar_gain;
+    for (int i = 0; i < 20; ++i)
+      out_strength_x[c * 20 + i] = m.combined_state[c].strength_solver.eqns.x[i];
+  }
+  if (table_path && table_path[0] &&
+      (st == AOM_NOISE_STATUS_OK || st == AOM_NOISE_STATUS_DIFFERENT_NOISE_TYPE)) {
+    aom_film_grain_t fg;
+    memset(&fg, 0, sizeof(fg));
+    fg.random_seed = random_seed;
+    if (aom_noise_model_get_grain_parameters(&m, &fg)) {
+      aom_film_grain_table_t t;
+      memset(&t, 0, sizeof(t));
+      aom_film_grain_table_append(&t, 0, INT64_MAX, &fg);
+      struct aom_internal_error_info err;
+      memset(&err, 0, sizeof(err));
+      aom_film_grain_table_write(&t, table_path, &err);
+      aom_film_grain_table_free(&t);
+    }
+  }
+  for (int i = 0; i < 6; ++i) free(tmp8[i]);
+  aom_noise_model_free(&m);
+  return 1;
+}
