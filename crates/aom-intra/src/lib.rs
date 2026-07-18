@@ -9,6 +9,7 @@
 pub mod cfl;
 pub mod dir;
 pub mod edge;
+mod simd;
 mod weights;
 use archmage::autoversion;
 use weights::{SMOOTH_WEIGHTS, SMOOTH_WEIGHT_LOG2_SCALE};
@@ -26,7 +27,7 @@ pub const SMOOTH_V: usize = 8;
 pub const SMOOTH_H: usize = 9;
 
 #[inline]
-fn divide_round(value: i32, bits: i32) -> i32 {
+pub(crate) fn divide_round(value: i32, bits: i32) -> i32 {
     (value + (1 << (bits - 1))) >> bits
 }
 
@@ -203,10 +204,107 @@ impl AboveRef16<'_> {
     }
 }
 
-/// Highbd intra prediction (10/12-bit). Same math as [`predict`] on `u16`; only
-/// `DC_128` depends on `bd` (`128 << (bd-8)`).
+/// Highbd intra prediction (10/12-bit) — the per-block predictor the decode
+/// reconstruction driver invokes ([`build_non_directional_intra_high`] and the
+/// V/H cardinals of [`dr_predict_high`]). Bit-identical to
+/// [`predict_highbd_scalar`]: the compute predictors (SMOOTH / SMOOTH_V /
+/// SMOOTH_H / PAETH) dispatch to the archmage/magetypes SIMD kernels in
+/// [`crate::simd`] (bit-exact per `tests/intra_simd_diff.rs`, honouring the
+/// `AOM_FORCE_SCALAR` pin), while the pure-movement modes (DC family fill, V
+/// copy, H per-row fill) are memset/memcpy slice ops — the optimal form for a
+/// fill/copy, byte-trivially identical to the scalar loops.
 #[allow(clippy::too_many_arguments)]
 pub fn predict_highbd(
+    mode: usize,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &AboveRef16,
+    left: &[u16],
+    bd: i32,
+) {
+    // Whole-block constant fill (DC family): per-row memset.
+    let fill16 = |dst: &mut [u16], v: u16| {
+        for r in 0..bh {
+            dst[r * stride..r * stride + bw].fill(v);
+        }
+    };
+    match mode {
+        DC => {
+            let count = (bw + bh) as i32;
+            let mut sum = 0i32;
+            for i in 0..bw {
+                sum += above.at(i);
+            }
+            for &l in left.iter().take(bh) {
+                sum += l as i32;
+            }
+            fill16(dst, ((sum + (count >> 1)) / count) as u16);
+        }
+        DC_TOP => {
+            let mut sum = 0i32;
+            for i in 0..bw {
+                sum += above.at(i);
+            }
+            fill16(dst, ((sum + (bw as i32 >> 1)) / bw as i32) as u16);
+        }
+        DC_LEFT => {
+            let mut sum = 0i32;
+            for &l in left.iter().take(bh) {
+                sum += l as i32;
+            }
+            fill16(dst, ((sum + (bh as i32 >> 1)) / bh as i32) as u16);
+        }
+        DC_128 => fill16(dst, (128u32 << (bd - 8)) as u16),
+        V => {
+            // Copy the above row into every output row (memcpy).
+            let a = &above.0[1..1 + bw];
+            for r in 0..bh {
+                dst[r * stride..r * stride + bw].copy_from_slice(a);
+            }
+        }
+        H => {
+            // Per-row constant fill with left[r] (memset).
+            for r in 0..bh {
+                dst[r * stride..r * stride + bw].fill(left[r]);
+            }
+        }
+        PAETH => simd::paeth(
+            dst,
+            stride,
+            bw,
+            bh,
+            &above.0[1..1 + bw],
+            left,
+            above.top_left(),
+        ),
+        SMOOTH => {
+            let sw_w = &SMOOTH_WEIGHTS[bw - 4..];
+            let sw_h = &SMOOTH_WEIGHTS[bh - 4..];
+            simd::smooth(dst, stride, bw, bh, &above.0[1..1 + bw], left, sw_w, sw_h);
+        }
+        SMOOTH_V => {
+            let below = left[bh - 1] as i32;
+            let sw_h = &SMOOTH_WEIGHTS[bh - 4..];
+            simd::smooth_v(dst, stride, bw, bh, &above.0[1..1 + bw], below, sw_h);
+        }
+        SMOOTH_H => {
+            let right = above.at(bw - 1);
+            let sw_w = &SMOOTH_WEIGHTS[bw - 4..];
+            simd::smooth_h(dst, stride, bw, bh, left, right, sw_w);
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Highbd intra prediction (10/12-bit) — SCALAR reference. Same math as
+/// [`predict`] on `u16`; only `DC_128` depends on `bd` (`128 << (bd-8)`). This
+/// is the never-dispatched transcription: [`predict_highbd`] is the
+/// SIMD-dispatching entry the decoder calls, and `tests/intra_simd_diff.rs`
+/// proves the two byte-identical across every mode / block size / token tier.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_highbd_scalar(
     mode: usize,
     dst: &mut [u16],
     stride: usize,
@@ -323,7 +421,7 @@ pub fn predict_highbd(
 }
 
 #[inline]
-fn paeth_single_i32(left: i32, top: i32, top_left: i32) -> i32 {
+pub(crate) fn paeth_single_i32(left: i32, top: i32, top_left: i32) -> i32 {
     let base = top + left - top_left;
     let p_left = abs_diff(base, left);
     let p_top = abs_diff(base, top);
