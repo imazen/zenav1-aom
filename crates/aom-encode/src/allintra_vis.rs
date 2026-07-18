@@ -27,6 +27,35 @@ use aom_quant::{av1_ac_quant_qtx, av1_dc_quant_qtx};
 const MAXQ: i32 = 255;
 const MINQ: i32 = 0;
 
+/// C's `(int)d` cast semantics (x86 `cvttsd2si`): truncate toward zero when `d`
+/// lies in `[i32::MIN, i32::MAX]`, else `i32::MIN` — the "integer indefinite"
+/// (0x80000000) `cvttsd2si` returns for an out-of-range or NaN double. Rust's
+/// `as i32` SATURATES to `i32::MAX` instead; the wiener-variance magnitudes
+/// **overflow i32 at bd10/12** (they are ~`(1<<(bd-8))^4` larger than bd8), so
+/// `(int)`-then-`AOMMAX(1, …)` yields `1` in C but a saturated `i32::MAX` in a
+/// naive port — a real deltaq-mode-3 divergence (all SBs read the same
+/// saturated variance ⇒ `delta_q_present` derived false where C derives true).
+#[inline]
+fn c_int(d: f64) -> i32 {
+    if d.is_nan() || d >= 2_147_483_648.0 || d < -2_147_483_648.0 {
+        i32::MIN
+    } else {
+        d as i32
+    }
+}
+
+/// C's `(int64_t)d` cast semantics (x86 `cvttsd2si` r64): truncate toward zero
+/// in `[i64::MIN, i64::MAX]`, else `i64::MIN`. Matches C where Rust's `as i64`
+/// would saturate (e.g. an `exp(…)` that overflows to `+inf`).
+#[inline]
+fn c_int64(d: f64) -> i64 {
+    if d.is_nan() || d >= 9_223_372_036_854_775_808.0 || d < -9_223_372_036_854_775_808.0 {
+        i64::MIN
+    } else {
+        d as i64
+    }
+}
+
 /// `av1_get_deltaq_offset` (rd.c:466): the qindex delta whose DC quantizer
 /// step is closest to `q(base) / sqrt(beta)`. `beta > 1` lowers the qindex
 /// (finer quant), `beta < 1` raises it. Walks the DC-quant table (
@@ -714,7 +743,7 @@ impl WeberVarMap {
             row += WEBER_MI_STEP;
         }
         let sb_wiener_var =
-            (((base_num + base_reg) / (base_den + base_reg)) / mb_count as f64) as i32;
+            c_int(((base_num + base_reg) / (base_den + base_reg)) / mb_count as f64);
         sb_wiener_var.max(1)
     }
 
@@ -760,7 +789,14 @@ impl WeberVarMap {
         let min_max_scale = self
             .get_max_scale(mi_wide, mi_high, mi_row, mi_col)
             .max(1.0);
+        let beta_raw = beta; // TEMP
         beta = 1.0 / (1.0 / beta).min(min_max_scale);
+        if bit_depth == 12 {
+            eprintln!(
+                "DBG sbq bd12 mi({mi_row},{mi_col}) svar={sb_wiener_var} norm={} betaraw={beta_raw:.4} mms={min_max_scale:.2} beta={beta:.4}",
+                self.norm_wiener_variance
+            ); // TEMP
+        }
         // Cap so the delta q stays near the base q.
         beta = beta.min(4.0);
         beta = beta.max(0.25);
@@ -800,7 +836,7 @@ impl WeberVarMap {
         }
         let mut norm = 1i64;
         if sb_count > 0.0 {
-            norm = (sb_wiener_log / sb_count).exp() as i64;
+            norm = c_int64((sb_wiener_log / sb_count).exp());
         }
         norm.max(1)
     }
@@ -825,7 +861,7 @@ impl WeberVarMap {
                     col += sb_mi;
                     continue;
                 }
-                let var = (norm as f64 / beta) as i32;
+                let var = c_int(norm as f64 / beta);
                 let satd = self.get_satd(sb_mi, sb_mi, row, col);
                 let sse = self.get_sse(sb_mi, sb_mi, row, col);
                 let scaled_satd = satd as f64 / (sse as f64).sqrt();
@@ -837,7 +873,7 @@ impl WeberVarMap {
         }
         let mut out = norm;
         if sb_count > 0.0 {
-            out = (sb_wiener_log / sb_count).exp() as i64;
+            out = c_int64((sb_wiener_log / sb_count).exp());
         }
         out.max(1)
     }
