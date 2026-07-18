@@ -1,0 +1,24 @@
+measurement: Gate-3 intra-predictor SIMD callgrind Ir delta (non-directional highbd predict_highbd)
+after commit: 44b0b1c (non-directional intra SIMD: SMOOTH/SMOOTH_V/SMOOTH_H/PAETH i32x8 kernels + DC/V/H memset/memcpy)
+before commit: 79e7a6d (pre-intra-SIMD base: transform + deblock + cdef + txb + intra-edge SIMD, SCALAR predict_highbd)
+host: dev-32gb, 16 cores, dedicated aom-rs box
+tool: valgrind-3.26.0 callgrind (Ir), profiling profile (release + debuginfo), NO -Ctarget-cpu
+dispatch: intra SIMD runs its AVX2 (X64V3) path (NEON/WASM tiers exist; AVX-512 is a follow-up)
+commands (identical invocation before/after; run from each worktree root for corpus_dir):
+  ./target/profiling/gate3_profile dec port dec_mosaic_2k_cq20 3
+  ./target/profiling/gate3_profile dec port dec_mosaic_2k_cq40 2
+  ./target/profiling/gate3_profile dec port dec_mosaic_4k_cq20 2
+  callgrind_annotate --auto=no --inclusive=no <out>
+results (Ir refs, whole port decode incl. constant C-oracle setup):
+  2k_cq20 (N=3) after 2,958,546,363   before 3,023,561,607   (-2.15%)
+  2k_cq40 (N=2) after 1,543,024,372   before 1,595,867,536   (-3.31%)
+  4k_cq20 (N=2) after 11,579,739,360  before 11,779,319,418  (-1.69%)
+intra-prediction cluster (predict_highbd self+inlined -> predict_highbd + simd::__arcane_{smooth,paeth}_impl_v3):
+  2k_cq20  128,618,872 -> 68,982,680  (-46.4%)   [predict_highbd 38,128,732 + SMOOTH/PAETH 30,853,948]
+  2k_cq40  103,728,603 -> 54,540,768  (-47.4%)   [predict_highbd 21,526,707 + SMOOTH/PAETH 33,014,061]
+  4k_cq20  414,769,290 -> 235,513,812 (-43.2%)   [predict_highbd 130,541,256 + SMOOTH/PAETH 104,972,556]
+isolation: assemble_nd_edges / z1/z2/z3_high Ir byte-IDENTICAL before/after (not vectorized this landing).
+parity: SIMD == scalar at every token tier (intra_simd_diff, bd 8/10/12, all 10 modes, all sizes, tight+padded
+  stride) + SIMD == real C (highbd_diff dispatch-vs-C) in BOTH dispatch modes; decoder conformance_corpus
+  (byte-identity + golden MD5) green with SIMD live AND under AOM_FORCE_SCALAR.
+raw callgrind outputs: NOT committed (>800 KB each); regenerate via the commands above.

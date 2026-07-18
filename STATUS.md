@@ -3307,6 +3307,57 @@ libaom/rav1d, not a lane kernel; (2) a bd8 i16-lane path (2× lanes/register,
 must stay bit-identical for bd8 and keep the i32 path for bd10/12); (3) AVX-512
 (`X64V4`, 16-lane) + NEON (falls to scalar; the perf box is x86).
 
+## Gate 3 — non-directional intra-predictor SIMD LANDED (2026-07-18, perf track): SMOOTH/SMOOTH_V/SMOOTH_H/PAETH i32x8, AVX2, bit-identical
+
+`predict_highbd` — the per-block non-directional intra predictor, the **top
+remaining scalar decode hotspot** after transform + deblock (its self-Ir plus
+the inlined per-pixel index/bounds cost was ~4.2% of decode on these
+`aomenc --allintra` stills) — is now SIMD. New `aom-intra/src/simd.rs`
+(`44b0b1c`): `i32x8` magetypes kernels (`#[magetypes(define(i32x8), v3, neon,
+wasm128, -scalar)]`) for the four COMPUTE predictors — SMOOTH (4-term weighted
+blend), SMOOTH_V / SMOOTH_H (2-term), PAETH (base-distance select) — vectorized
+over columns (8 cols/vector; the above row + u8 weights pre-widened once into a
+stack `[i32;64]` since magetypes has no widening load; `bw==4` blocks take the
+scalar tail). Each has `incant!` dispatch + the `aom_dispatch::scalar_forced()`
+`AOM_FORCE_SCALAR` pin + a verbatim `_scalar` reference. The pure-movement modes
+(DC / DC_TOP / DC_LEFT / DC_128 whole-block fill, H per-row fill) → glibc
+`memset`; V (row copy) → `memcpy` — the optimal, byte-trivially-safe form (a
+store cannot perturb bytes). The verbatim scalar is preserved as the new public
+`predict_highbd_scalar` (the differential reference).
+
+**Bit-exactness:** all `i32`-lane math, same term order as the scalar core;
+SMOOTH `(p+256)>>9` / SMOOTH_V/H `(p+128)>>8` shifts on non-negative sums; PAETH
+`.abs()` never hits the `i32::MIN` corner; final values ∈ [0,4095] so the
+`as u16` narrowing store is exact.
+
+**Parity (all verified):** `intra_simd_diff` — SIMD == scalar at every token
+tier over bd 8/10/12, all 10 modes, all block sizes, tight+padded stride; the
+C-differential `highbd_diff` (dispatch vs REAL C) green (SIMD == C, not only the
+transcription); full `aom-intra` suite green in BOTH dispatch modes; the decoder
+Gate-1 `conformance_corpus` (byte-identity + golden MD5) green with SIMD live AND
+under `AOM_FORCE_SCALAR`; full workspace suite green in both modes (encoder uses
+`predict_intra_high` → unchanged).
+
+**Measured (callgrind Ir, port decode; `benchmarks/gate3_intra_simd_2026-07-18.{md,meta}`):**
+before = `79e7a6d` (transform + deblock + cdef/txb/intra-edge SIMD, SCALAR
+`predict_highbd`), after = this landing:
+- `dec_mosaic_2k_cq20` (qindex 80): **3.024 B → 2.959 B Ir (−2.15%)**.
+- `dec_mosaic_2k_cq40` (qindex 160): **1.596 B → 1.543 B (−3.31%)**.
+- `dec_mosaic_4k_cq20` (4K): **11.779 B → 11.580 B (−1.69%)**.
+- Intra-prediction cluster (`predict_highbd` self+inlined → `predict_highbd` +
+  `simd::__arcane_{smooth,paeth}_impl_v3`): **−46.4% / −47.4% / −43.2%**
+  (128.6/103.7/414.8 M → 69.0/54.5/235.5 M). SIMD confirmed live:
+  `__arcane_smooth_impl_v3` + `__arcane_paeth_impl_v3` fire (AVX2); `assemble_nd_edges`
+  and `z1/z2/z3_high` Ir byte-identical before/after (not touched this landing).
+
+**Follow-ups (documented, by profile):** (1) `bw==4` blocks take the scalar tail
+(a 2-rows-per-`i32x8` arm like the cdef w4 kernel vectorizes them; small share);
+(2) the **directional** predictors `z1/z2/z3_high` (`dir.rs`; `z2_high` ~0.9% of
+decode) + **CfL** `cfl_predict_block` (~0.6%) are the natural next intra landing;
+(3) AVX-512 (`X64V4`) + NEON tiers exist but are unexercised on the x86 perf box;
+(4) a bd8 i16-lane specialization (the decoder runs the highbd predictors at
+every bit depth; i32 lanes are bit-exact for all bd today).
+
 ## #7 CDEF-strength RD search — BIT-IDENTICAL, first bulk-port family lands directly in PARITY section A (2026-07-17, CDEF bulk track)
 
 - **Scope**: the full `av1_cdef_search` (av1/encoder/pickcdef.c) for the
