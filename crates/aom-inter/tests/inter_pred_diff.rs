@@ -114,6 +114,75 @@ fn facade_matches_c() {
     assert!(n_dual > 0, "dual-filter 2-D case never exercised");
 }
 
+/// 4-tap facade lock (chunk 2, the 16x16 ratchet): a block side `<= 4` selects
+/// libaom's 4-tap kernel per direction (`av1_get_interp_filter_params_with_block_
+/// size`; the shim `ref_inter_predictor` passes the real params). Exercises the
+/// exact shapes the `av1-1-b8-01-size-16x16` inter frame codes — luma 16x4
+/// (8-tap x + 4-tap y) and chroma 8x2 (8-tap x + 4-tap y) — plus w<=4 x-4-tap and
+/// mixed cases, vs the real C `inter_predictor`.
+#[test]
+fn facade_4tap_matches_c() {
+    let mut rng = Rng(0x1234_5678_9abc_def0);
+    let iters = 40_000;
+    // Sizes include sub-8 sides so >=1 direction takes the 4-tap table.
+    const S4: [usize; 4] = [2, 4, 8, 16];
+
+    // Anti-vacuity witnesses for the new 4-tap paths.
+    let (mut n_4x, mut n_4y, mut n_mixed, mut n_16x4, mut n_8x2) = (0u32, 0u32, 0u32, 0u32, 0u32);
+
+    for _ in 0..iters {
+        let w = S4[rng.below(4) as usize];
+        let h = S4[rng.below(4) as usize];
+        // Require >= 1 sub-8 side so the 4-tap kernel is actually selected.
+        if w > 4 && h > 4 {
+            continue;
+        }
+        let filter_x = rng.below(3) as usize;
+        let filter_y = rng.below(3) as usize;
+        let subpel_x = rng.below(16) as usize;
+        let subpel_y = rng.below(16) as usize;
+
+        let stride = w + 7;
+        let rows = h + 7;
+        let src_off = 3 * stride + 3;
+        let src: Vec<u8> = (0..stride * rows).map(|_| rng.byte()).collect();
+
+        let mut dst_port = vec![0u8; w * h];
+        inter_predictor(
+            &src, src_off, stride, &mut dst_port, w, w, h, subpel_x, subpel_y, filter_x, filter_y,
+        );
+        let dst_c = ref_inter_predictor(
+            &src, src_off, stride, w, h, subpel_x, subpel_y, filter_x, filter_y,
+        );
+        assert_eq!(
+            dst_port, dst_c,
+            "4-tap facade mismatch: w={w} h={h} spx={subpel_x} spy={subpel_y} fx={filter_x} fy={filter_y}"
+        );
+
+        if w <= 4 && subpel_x != 0 {
+            n_4x += 1;
+        }
+        if h <= 4 && subpel_y != 0 {
+            n_4y += 1;
+        }
+        if (w <= 4) != (h <= 4) && subpel_x != 0 && subpel_y != 0 {
+            n_mixed += 1;
+        }
+        if w == 16 && h == 4 && subpel_x != 0 && subpel_y != 0 {
+            n_16x4 += 1;
+        }
+        if w == 8 && h == 2 && subpel_x != 0 && subpel_y != 0 {
+            n_8x2 += 1;
+        }
+    }
+
+    assert!(n_4x > 0, "4-tap x (w<=4) never exercised");
+    assert!(n_4y > 0, "4-tap y (h<=4) never exercised");
+    assert!(n_mixed > 0, "mixed 8-tap/4-tap 2-D never exercised");
+    assert!(n_16x4 > 0, "the luma 16x4 shape never exercised");
+    assert!(n_8x2 > 0, "the chroma 8x2 shape never exercised");
+}
+
 #[test]
 fn build_mc_border_matches_c() {
     let mut rng = Rng(0xd1b5_4a32_d192_ed03);

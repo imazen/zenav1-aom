@@ -29,16 +29,14 @@
 //! - all four facade sub-cases: full-pel copy (`subpel == 0,0`), x-only, y-only,
 //!   separable 2-D — including **dual** interpolation filters (`filter_x !=
 //!   filter_y`);
-//! - the EIGHTTAP_REGULAR (0) / EIGHTTAP_SMOOTH (1) / MULTITAP_SHARP (2) 8-tap
-//!   filter families;
+//! - the EIGHTTAP_REGULAR (0) / EIGHTTAP_SMOOTH (1) / MULTITAP_SHARP (2) filter
+//!   families, 8-tap and — for a block side `<= 4` — the 4-tap kernels
+//!   (`av1_get_interp_filter_params_with_block_size`, filter.h:248; selected per
+//!   direction, x by `w` and y by `h`). The 16x16 ratchet's `BLOCK_16X4` luma and
+//!   `8x2` chroma strips exercise this;
 //! - out-of-frame reference reads via edge replication (`build_mc_border`).
 //!
 //! **NOT** handled (asserted / documented, for later chunks):
-//! - `w <= 4` (or `h <= 4`) blocks. libaom selects the 4-tap
-//!   `av1_get_interp_filter_params_with_block_size` table for `w <= 4` (filter.h:248,
-//!   unless `MULTITAP_SHARP2`); [`aom_convolve`] only carries the 8-tap kernels. This
-//!   crate `debug_assert!`s `w > 4 && h > 4` (the walking-skeleton target is a
-//!   64×64 luma / 32×32 chroma block). Porting the 4-tap tables is a follow-up;
 //! - highbd (bd 10/12), compound / masked / OBMC / warp prediction, and the scaled
 //!   reference path (`av1_convolve_2d_scale`);
 //! - IntraBC's 2-tap bilinear filter (`av1_intrabc_filter_params`).
@@ -72,26 +70,85 @@ fn clip_pixel(v: i32) -> u8 {
     v.clamp(0, 255) as u8
 }
 
-/// Select the 8-tap subpel kernel row for filter `ftype`
-/// (0 = regular, 1 = smooth, 2 = sharp) reusing [`aom_convolve`]'s byte-exact
-/// tables (`av1_sub_pel_filters_8{,smooth,sharp}`, filter.h).
+/// `av1_sub_pel_filters_4` (filter.h): the 4-tap subpel kernel for
+/// `EIGHTTAP_REGULAR` / `MULTITAP_SHARP` blocks with a side `<= 4`. Stored 8-wide
+/// (`taps == SUBPEL_TAPS`) with the four non-zero coefficients centred at indices
+/// 2..6 and zeros elsewhere, so the ordinary 8-tap convolution loop runs it
+/// unchanged.
+static SUB_PEL_FILTERS_4: [[i16; 8]; 16] = [
+    [0, 0, 0, 128, 0, 0, 0, 0],
+    [0, 0, -4, 126, 8, -2, 0, 0],
+    [0, 0, -8, 122, 18, -4, 0, 0],
+    [0, 0, -10, 116, 28, -6, 0, 0],
+    [0, 0, -12, 110, 38, -8, 0, 0],
+    [0, 0, -12, 102, 48, -10, 0, 0],
+    [0, 0, -14, 94, 58, -10, 0, 0],
+    [0, 0, -12, 84, 66, -10, 0, 0],
+    [0, 0, -12, 76, 76, -12, 0, 0],
+    [0, 0, -10, 66, 84, -12, 0, 0],
+    [0, 0, -10, 58, 94, -14, 0, 0],
+    [0, 0, -10, 48, 102, -12, 0, 0],
+    [0, 0, -8, 38, 110, -12, 0, 0],
+    [0, 0, -6, 28, 116, -10, 0, 0],
+    [0, 0, -4, 18, 122, -8, 0, 0],
+    [0, 0, -2, 8, 126, -4, 0, 0],
+];
+
+/// `av1_sub_pel_filters_4smooth` (filter.h): the 4-tap kernel for
+/// `EIGHTTAP_SMOOTH` blocks with a side `<= 4`. Same 8-wide layout as
+/// [`SUB_PEL_FILTERS_4`].
+static SUB_PEL_FILTERS_4SMOOTH: [[i16; 8]; 16] = [
+    [0, 0, 0, 128, 0, 0, 0, 0],
+    [0, 0, 30, 62, 34, 2, 0, 0],
+    [0, 0, 26, 62, 36, 4, 0, 0],
+    [0, 0, 22, 62, 40, 4, 0, 0],
+    [0, 0, 20, 60, 42, 6, 0, 0],
+    [0, 0, 18, 58, 44, 8, 0, 0],
+    [0, 0, 16, 56, 46, 10, 0, 0],
+    [0, 0, 14, 54, 48, 12, 0, 0],
+    [0, 0, 12, 52, 52, 12, 0, 0],
+    [0, 0, 12, 48, 54, 14, 0, 0],
+    [0, 0, 10, 46, 56, 16, 0, 0],
+    [0, 0, 8, 44, 58, 18, 0, 0],
+    [0, 0, 6, 42, 60, 20, 0, 0],
+    [0, 0, 4, 40, 62, 22, 0, 0],
+    [0, 0, 4, 36, 62, 26, 0, 0],
+    [0, 0, 2, 34, 62, 30, 0, 0],
+];
+
+/// Select the subpel kernel row for filter `ftype` (0 = regular, 1 = smooth,
+/// 2 = sharp) and direction phase `subpel`. When `use4` is set the block's side
+/// in this direction is `<= 4`, so libaom's
+/// `av1_get_interp_filter_params_with_block_size` selects the 4-tap table
+/// (`av1_interp_4tap`: regular/sharp -> `av1_sub_pel_filters_4`, smooth ->
+/// `av1_sub_pel_filters_4smooth`); otherwise the 8-tap table from
+/// [`aom_convolve`]. Both are 8-wide, so callers run the same convolution loop.
 #[inline]
-fn kernel(ftype: usize, subpel: usize) -> &'static [i16; 8] {
-    let table: &[[i16; 8]; 16] = match ftype {
-        0 => &aom_convolve::SUB_PEL_FILTERS_8,
-        1 => &aom_convolve::SUB_PEL_FILTERS_8SMOOTH,
-        2 => &aom_convolve::SUB_PEL_FILTERS_8SHARP,
-        _ => panic!("aom-inter: unsupported InterpFilter {ftype} (0/1/2 only)"),
+fn kernel(ftype: usize, subpel: usize, use4: bool) -> &'static [i16; 8] {
+    let table: &[[i16; 8]; 16] = if use4 {
+        match ftype {
+            0 | 2 => &SUB_PEL_FILTERS_4,
+            1 => &SUB_PEL_FILTERS_4SMOOTH,
+            _ => panic!("aom-inter: unsupported InterpFilter {ftype} (0/1/2 only)"),
+        }
+    } else {
+        match ftype {
+            0 => &aom_convolve::SUB_PEL_FILTERS_8,
+            1 => &aom_convolve::SUB_PEL_FILTERS_8SMOOTH,
+            2 => &aom_convolve::SUB_PEL_FILTERS_8SHARP,
+            _ => panic!("aom-inter: unsupported InterpFilter {ftype} (0/1/2 only)"),
+        }
     };
     &table[subpel & 15]
 }
 
 /// `av1_convolve_2d_sr_c` (lowbd, SR: round_0 = 3, round_1 = 11, bits = 0) with a
-/// **separate** horizontal and vertical filter — the dual-filter generalization of
-/// [`aom_convolve::convolve_2d_sr`] (which takes a single `ftype`). Used only when
-/// `filter_x != filter_y`; when they are equal the audited single-filter kernel in
-/// [`aom_convolve`] is used instead. `src_off` is the interior origin; `src` needs a
-/// border of >= 3 (top/left) and >= 4 (bottom/right).
+/// **separate** horizontal and vertical filter — the dual-filter/mixed-tap
+/// generalization of [`aom_convolve::convolve_2d_sr`] (which takes a single
+/// `ftype`, all 8-tap). Used whenever the filters differ OR a side is `<= 4` (so
+/// that direction uses the 4-tap kernel). `use4_x`/`use4_y` select the 4-tap table
+/// per direction (`w <= 4` / `h <= 4`). `src_off` is the interior origin; `src`
+/// needs a border of >= 3 (top/left) and >= 4 (bottom/right).
 #[allow(clippy::too_many_arguments)]
 fn convolve_2d_sr_dual(
     src: &[u8],
@@ -105,6 +162,8 @@ fn convolve_2d_sr_dual(
     subpel_y: usize,
     filter_x: usize,
     filter_y: usize,
+    use4_x: bool,
+    use4_y: bool,
 ) {
     const BD: i32 = 8;
     const ROUND_1: i32 = 2 * FILTER_BITS - ROUND0_BITS; // 11
@@ -112,8 +171,8 @@ fn convolve_2d_sr_dual(
     let fo = taps / 2 - 1; // 3
     let im_h = h + taps - 1;
     let im_stride = w;
-    let xf = kernel(filter_x, subpel_x);
-    let yf = kernel(filter_y, subpel_y);
+    let xf = kernel(filter_x, subpel_x, use4_x);
+    let yf = kernel(filter_y, subpel_y, use4_y);
 
     // Horizontal pass into an int16 intermediate.
     let mut im = vec![0i16; im_h * im_stride];
@@ -141,6 +200,71 @@ fn convolve_2d_sr_dual(
             }
             let res = (rpo2(sum, ROUND_1) - round_offset) as i16;
             dst[y * dst_stride + x] = clip_pixel(rpo2(res as i32, bits));
+        }
+    }
+}
+
+/// `av1_convolve_x_sr_c` (lowbd SR single horizontal pass) with an explicit
+/// per-direction 4-tap selection — the 4-tap-aware analogue of
+/// [`aom_convolve::convolve_x_sr`], used when `w <= 4`. Byte-identical rounding
+/// (`round_0 = 3`, then `FILTER_BITS - round_0`).
+#[allow(clippy::too_many_arguments)]
+fn convolve_x_sr_k(
+    src: &[u8],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    subpel_x: usize,
+    filter_x: usize,
+    use4_x: bool,
+) {
+    let fo = SUBPEL_TAPS / 2 - 1; // 3
+    let bits = FILTER_BITS - ROUND0_BITS;
+    let filt = kernel(filter_x, subpel_x, use4_x);
+    for y in 0..h {
+        for x in 0..w {
+            let base = src_off as isize + (y * src_stride) as isize + x as isize - fo as isize;
+            let mut res = 0i32;
+            for k in 0..SUBPEL_TAPS {
+                res += filt[k] as i32 * src[(base + k as isize) as usize] as i32;
+            }
+            res = rpo2(res, ROUND0_BITS);
+            dst[y * dst_stride + x] = clip_pixel(rpo2(res, bits));
+        }
+    }
+}
+
+/// `av1_convolve_y_sr_c` (lowbd SR single vertical pass) with an explicit 4-tap
+/// selection — the 4-tap-aware analogue of [`aom_convolve::convolve_y_sr`], used
+/// when `h <= 4`. Byte-identical rounding (`FILTER_BITS`).
+#[allow(clippy::too_many_arguments)]
+fn convolve_y_sr_k(
+    src: &[u8],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    subpel_y: usize,
+    filter_y: usize,
+    use4_y: bool,
+) {
+    let fo = SUBPEL_TAPS / 2 - 1; // 3
+    let filt = kernel(filter_y, subpel_y, use4_y);
+    for y in 0..h {
+        for x in 0..w {
+            let base =
+                src_off as isize + ((y as isize - fo as isize) * src_stride as isize) + x as isize;
+            let mut res = 0i32;
+            for k in 0..SUBPEL_TAPS {
+                res += filt[k] as i32
+                    * src[(base + (k as isize) * src_stride as isize) as usize] as i32;
+            }
+            dst[y * dst_stride + x] = clip_pixel(rpo2(res, FILTER_BITS));
         }
     }
 }
@@ -176,6 +300,11 @@ pub fn inter_predictor(
 ) {
     let need_x = subpel_x != 0;
     let need_y = subpel_y != 0;
+    // av1_get_interp_filter_params_with_block_size selects the 4-tap table for a
+    // side <= 4 (per direction: x uses `w`, y uses `h`). MULTITAP_SHARP2 (3) would
+    // stay 8-tap, but this crate only carries filters 0/1/2.
+    let use4_x = w <= 4;
+    let use4_y = h <= 4;
     if !need_x && !need_y {
         // aom_convolve_copy: plain block copy, no rounding.
         for y in 0..h {
@@ -184,20 +313,34 @@ pub fn inter_predictor(
             }
         }
     } else if need_x && !need_y {
-        aom_convolve::convolve_x_sr(
-            src, src_off, src_stride, dst, dst_stride, w, h, subpel_x, filter_x,
-        );
+        if use4_x {
+            convolve_x_sr_k(
+                src, src_off, src_stride, dst, dst_stride, w, h, subpel_x, filter_x, use4_x,
+            );
+        } else {
+            aom_convolve::convolve_x_sr(
+                src, src_off, src_stride, dst, dst_stride, w, h, subpel_x, filter_x,
+            );
+        }
     } else if !need_x && need_y {
-        aom_convolve::convolve_y_sr(
-            src, src_off, src_stride, dst, dst_stride, w, h, subpel_y, filter_y,
-        );
-    } else if filter_x == filter_y {
+        if use4_y {
+            convolve_y_sr_k(
+                src, src_off, src_stride, dst, dst_stride, w, h, subpel_y, filter_y, use4_y,
+            );
+        } else {
+            aom_convolve::convolve_y_sr(
+                src, src_off, src_stride, dst, dst_stride, w, h, subpel_y, filter_y,
+            );
+        }
+    } else if filter_x == filter_y && !use4_x && !use4_y {
         aom_convolve::convolve_2d_sr(
             src, src_off, src_stride, dst, dst_stride, w, h, subpel_x, subpel_y, filter_x,
         );
     } else {
+        // Dual filters and/or a 4-tap side: the mixed-kernel 2-D pass.
         convolve_2d_sr_dual(
-            src, src_off, src_stride, dst, dst_stride, w, h, subpel_x, subpel_y, filter_x, filter_y,
+            src, src_off, src_stride, dst, dst_stride, w, h, subpel_x, subpel_y, filter_x,
+            filter_y, use4_x, use4_y,
         );
     }
 }
@@ -319,10 +462,10 @@ pub fn build_inter_predictor(
     filter_x: usize,
     filter_y: usize,
 ) {
-    debug_assert!(
-        w > 4 && h > 4,
-        "aom-inter: w<=4/h<=4 needs the 4-tap interp tables (not handled — see crate docs)"
-    );
+    // `w <= 4` / `h <= 4` are handled: [`inter_predictor`] selects the 4-tap
+    // kernel per direction (av1_get_interp_filter_params_with_block_size). The
+    // 4-tap tables are stored 8-wide with zero outer taps, so the border margin
+    // (AOM_INTERP_EXTEND) and gather below are unchanged.
     debug_assert!(ss_x <= 1 && ss_y <= 1);
 
     // --- dec_calc_subpel_params, unscaled branch (decodeframe.c:620) ---
