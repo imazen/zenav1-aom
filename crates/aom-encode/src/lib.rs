@@ -30,6 +30,7 @@ pub mod inter_costs;
 pub mod inter_frame;
 pub mod inter_rd;
 pub mod inter_me;
+pub mod inter_pack;
 pub mod lf_search;
 pub mod mode_costs;
 pub mod noise_fft;
