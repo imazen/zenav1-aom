@@ -1027,27 +1027,36 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   - `3b9278f` — the RECURSION is byte-locked vs an independent C transcription
     (`var_tx_recursion_diff.rs`: no-split/split RD, pick-skip, txfm_partition cost, context
     threading + backtracking, adaptive_txb_search_level=1 + txb_split_cap=1, depth-2 splits).
-- **REMAINING for the witness (in var_tx.rs the prunes are gated OFF, so the recursion currently
-  OVER-searches vs C on the witness config — these must land before the e2e witness can match):**
-  1. `ml_predict_tx_split` NN (`ml_tx_split_thresh=8500`, bd8): transcribe `av1_tx_split_nnconfig
-     _map` weights (tx_prune_model_weights.h); `get_mean_dev_features` already exists in
-     tx_search.rs; wire into `select_tx_block`'s `try_split` gate. Tier-1 diff via a light shim.
-  2. `prune_tx_2D` NN (`prune_2d_txfm_mode=TX_TYPE_PRUNE_1`, fires when the inter set has >5 types):
-     two hor/ver NNs + `get_energy_distribution_finer` + `av1_get_horver_correlation_full` +
-     `av1_nn_fast_softmax_16` + `get_adaptive_thresholds` + `av1_sort_fi32_8/16`; wire into
-     `get_tx_mask_inter`'s multi-type arm (reorders `txk_map`, prunes mask).
-  3. `model_based_tx_search_prune` (`model_based_prune_tx_search_level=1`): the early-return in
+- **PROGRESS 2026-07-19 cont. — BOTH NN prunes now differential-locked + ENABLED in the recursion:**
+  - `a40d598` — `ml_predict_tx_split` NN (`ml_tx_split_thresh=8500`, bd8): weights transcribed
+    (`xtask/transcribe_tx_split_nn.py` → `tx_split_nn_weights.rs`), `av1_nn_predict` eval +
+    prec-reduce, wired into `select_tx_block`'s `try_split` gate (`VarTxEnv.ml_tx_split_thresh`).
+    Differential-locked vs real C `av1_nn_predict` (`tx_split_nn_diff.rs`).
+  - `5aa145d` + `a77a7d8` — `prune_tx_2D` NN (`TX_TYPE_PRUNE_1`): all 5 helpers
+    (`get_energy_distribution_finer` / `av1_get_horver_correlation_full` / `av1_nn_fast_softmax_16`
+    + `approx_exp` / `get_adaptive_thresholds` + table / `av1_sort_fi32_8/16`) + the driver ported
+    (`prune_tx_2d.rs`), weights transcribed (`transcribe_prune_tx_2d_nn.py`). Differential-locked
+    vs a tier-1 real-C shim (`shim_prune_tx_2D` copies the static helpers + driver verbatim,
+    calls the exported scalar `av1_nn_predict_c` etc. + real nnconfig maps; `prune_tx_2d_diff.rs`,
+    576 cases). WIRED into `search_tx_type_inter`'s multi-type arm (`VarTxEnv.prune_2d`, reorders
+    `txk_map`). NOTE: the differential uses the SCALAR `_c` reference — the real encoder's SIMD
+    `av1_nn_predict_avx2` gives ULP-different scores that flip near-tie sort ORDER (decision-inert
+    for the RD pick over the same masked set) but not the decision-relevant mask.
+- **REMAINING for the witness (the recursion + leaf + both NN prunes are done; the integration is
+  what's left):**
+  1. `model_based_tx_search_prune` (`model_based_prune_tx_search_level=1`): the early-return in
      `pick_recursive` (model_rd via `model_rd_sb_fn[MODELRD_TYPE_TX_SEARCH_PRUNE]`); only fires
-     when `ref_best_rd != INT64_MAX`.
-  4. PACK wiring: `write_tx_size_vartx` (aom-entropy partition.rs:1401, consumes the recursion's
+     when `ref_best_rd != INT64_MAX` AND `(model_rd*3)>>3 > ref_best_rd` (clearly-bad blocks →
+     likely INERT for the winning witness cells; port if the witness needs it). model_rd_sb_fn
+     mapping not yet located in the port.
+  2. PACK wiring: `write_tx_size_vartx` (aom-entropy partition.rs:1401, consumes the recursion's
      `inter_tx_size[16]`, already ref-validated) + the per-leaf inter-ext-tx coeff write
      (`write_coeffs_txb_full` is_inter=true) at pack.rs:499/531.
-  5. INTRABC integration: intrabc_search.rs:1890 (the `if !luma_skip || chroma_sse!=0 { continue }`
+  3. INTRABC integration: intrabc_search.rs:1890 (the `if !luma_skip || chroma_sse!=0 { continue }`
      coeff-arm candidate), rd_pick.rs:422-474 (carry skip_txfm=false + var-tx data), encode_sb.rs
      encode_b_intra_dry intrabc arm (produce real txbs in var-tx order), + the chroma-eob-0 skip
      check. Then close the witness (`rd_close_intrabc::intrabc_dv_search_pinned`) → resolve KB-15.
-  Working notes: `docs/inter-vartx-coeff-arm-notes.md`. C spec map: tx_search.c ACTIVE-prune
-  scoping for the witness config (speed-0 bd8 qidx192 intrabc) is in those notes.
+  Working notes: `docs/inter-vartx-coeff-arm-notes.md`.
 
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 
