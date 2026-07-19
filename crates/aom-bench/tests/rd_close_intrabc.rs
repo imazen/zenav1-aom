@@ -7,23 +7,23 @@
 //! the skip-arm RD (`predict_skip_txfm` regime), and the intrabc pack
 //! (use_intrabc flag + DV + skip).
 //!
-//! **Status: PINNED (honest).** The port codes intrabc only in the skip-arm
-//! regime (luma `predict_skip_txfm` fires AND the chroma match is exact), the
-//! subset where C forces `skip_txfm=1` and BYPASSES the inter var-tx coeff arm.
-//! Real screen content codes the MAJORITY of its intrabc blocks via the
-//! COEFF arm (a nonzero, quantized residual) and as NON-SQUARE shapes — e.g.
-//! this cell's C encode uses 49 intrabc blocks, of which ~39 are coeff-arm and
-//! ~42 are non-square (4x8 / 8x4 / 16x4). The inter var-tx coeff arm (the
-//! `av1_pick_recursive_tx_size_type_yrd` quadtree + `prune_tx_2D`/
-//! `ml_predict_tx_split` NN prunes + the var-tx pack) is NOT yet ported, so the
-//! port codes those blocks as intra and the frame diverges.
+//! **Status: PINNED (honest).** The inter var-tx COEFF arm IS now wired
+//! end-to-end — `av1_pick_recursive_tx_size_type_yrd` + both NN prunes, the
+//! chroma `av1_txfm_uvrd` inter arm, the `av1_encode_sb` var-tx re-encode, and
+//! the `write_tx_size_vartx` + inter-ext-tx pack — so the port evaluates and
+//! codes intrabc outside the `predict_skip_txfm` regime. It is NOT yet
+//! byte-exact: this cell's C encode uses 49 intrabc blocks (~39 coeff-arm, ~24
+//! non-square) and the port currently emits 1907B against C's 1891B, byte-
+//! identical for the first 646 bytes. The remaining delta is what this pin
+//! holds. The gate prints the size delta, the first differing byte, and (when
+//! the port's stream still decodes) the first block whose mode-info differs.
 //!
 //! This gate therefore (1) asserts the content is anti-vacuous — real aomenc
 //! genuinely codes intrabc blocks here (the DV search + wiring is exercised on
 //! live screen content, not a config that never fires), and (2) PINS the
-//! divergence self-promotingly: when the coeff arm lands and a cell byte-matches,
-//! the pin fails → promote it into `BYTE_EXACT_CELLS`. It reports C's
-//! skip/coeff/square split per cell for provenance.
+//! divergence self-promotingly: when a cell byte-matches, the pin fails →
+//! promote it into `BYTE_EXACT_CELLS`. It reports C's skip/coeff/square split
+//! per cell for provenance.
 
 use aom_bench::EncodeCell;
 use aom_bench::ToggleKnobs;
@@ -135,6 +135,58 @@ fn intrabc_dv_search_pinned() {
                 first_diff,
                 c_frame.len()
             );
+            // Decode BOTH streams and report the first block whose coded
+            // mode-info differs — the actionable half of the pin. Everything
+            // before it is byte-exact, so the divergence is AT this block.
+            let port_stream = aom_bench::rd_close::splice_frame_obu(&c_on, &port_on);
+            // Best-effort: the port's stream diverges mid-tile, so the decoder
+            // may desync and panic (e.g. an intrabc DV that fails validity is
+            // usually a desync artifact, not a genuinely bad DV). The pin's
+            // assertion must not depend on this diagnostic succeeding.
+            let prev_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+            let decoded = std::panic::catch_unwind(|| {
+                aom_decode::frame::decode_frame_obus_prefilter(&port_stream)
+            });
+            std::panic::set_hook(prev_hook);
+            match decoded.unwrap_or_else(|_| Err(Default::default())) {
+                Ok((tp, _, _)) => {
+                    let (tc, _, _) = aom_decode::frame::decode_frame_obus_prefilter(&c_on)
+                        .expect("C stream decodes");
+                    let (nb_p, nb_c) = (tp.blocks.len(), tc.blocks.len());
+                    eprintln!(
+                        "    decoded blocks: port {nb_p} vs c {nb_c}; port intrabc census {:?}",
+                        intrabc_census(&port_stream)
+                    );
+                    let mut reported = false;
+                    for (bp, bc) in tp.blocks.iter().zip(tc.blocks.iter()) {
+                        let key_p = (bp.mi_row, bp.mi_col, bp.bsize, bp.info.use_intrabc,
+                                     bp.info.skip, bp.tx_size);
+                        let key_c = (bc.mi_row, bc.mi_col, bc.bsize, bc.info.use_intrabc,
+                                     bc.info.skip, bc.tx_size);
+                        if key_p != key_c {
+                            eprintln!(
+                                "    FIRST DIVERGENT BLOCK\n      port (mi {},{}) bsize={} \
+                                 intrabc={} skip={} tx={}\n      c    (mi {},{}) bsize={} \
+                                 intrabc={} skip={} tx={}",
+                                key_p.0, key_p.1, key_p.2, key_p.3, key_p.4, key_p.5,
+                                key_c.0, key_c.1, key_c.2, key_c.3, key_c.4, key_c.5,
+                            );
+                            reported = true;
+                            break;
+                        }
+                    }
+                    if !reported {
+                        eprintln!(
+                            "    every common block's mode-info MATCHES — the divergence is \
+                             in coefficient bytes, not in the mode/partition decisions"
+                        );
+                    }
+                }
+                Err(_) => eprintln!(
+                    "    (port stream does not decode past the divergence —                      expected once the bitstream desyncs)"
+                ),
+            }
             // PIN: the port must still DIVERGE here. A MATCH means the coeff
             // arm is complete — fail so the cell gets promoted.
             assert!(

@@ -1074,21 +1074,62 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
     `txk_map`). NOTE: the differential uses the SCALAR `_c` reference — the real encoder's SIMD
     `av1_nn_predict_avx2` gives ULP-different scores that flip near-tie sort ORDER (decision-inert
     for the RD pick over the same masked set) but not the decision-relevant mask.
-- **REMAINING for the witness (the recursion + leaf + both NN prunes are done; the integration is
-  what's left):**
-  1. `model_based_tx_search_prune` (`model_based_prune_tx_search_level=1`): the early-return in
-     `pick_recursive` (model_rd via `model_rd_sb_fn[MODELRD_TYPE_TX_SEARCH_PRUNE]`); only fires
-     when `ref_best_rd != INT64_MAX` AND `(model_rd*3)>>3 > ref_best_rd` (clearly-bad blocks →
-     likely INERT for the winning witness cells; port if the witness needs it). model_rd_sb_fn
-     mapping not yet located in the port.
-  2. PACK wiring: `write_tx_size_vartx` (aom-entropy partition.rs:1401, consumes the recursion's
-     `inter_tx_size[16]`, already ref-validated) + the per-leaf inter-ext-tx coeff write
-     (`write_coeffs_txb_full` is_inter=true) at pack.rs:499/531.
-  3. INTRABC integration: intrabc_search.rs:1890 (the `if !luma_skip || chroma_sse!=0 { continue }`
-     coeff-arm candidate), rd_pick.rs:422-474 (carry skip_txfm=false + var-tx data), encode_sb.rs
-     encode_b_intra_dry intrabc arm (produce real txbs in var-tx order), + the chroma-eob-0 skip
-     check. Then close the witness (`rd_close_intrabc::intrabc_dv_search_pinned`) → resolve KB-15.
-  Working notes: `docs/inter-vartx-coeff-arm-notes.md`.
+- **PROGRESS 2026-07-19 cont. — the COEFF ARM IS WIRED END-TO-END; witness still PINNED (not
+  byte-exact).** Landed on origin/main: `a33929ca` (winner carry: `inter_tx_size[16]` on
+  LeafWinner/RdPickIntraBest + var-tx root tx_size and luma tx_type_map on IntrabcBest),
+  `194ae39f` (the inter tx leaf parameterized for CHROMA — `get_tx_mask_inter_uv` pins the
+  co-located luma tx type per tx_search.c:1841-1847, the tx-type-cost plane arg, and
+  `trellis_rdmult_inter_uv` = `plane_rd_mult_chroma[inter][UV]` = 10 vs luma's 16),
+  `9a5fafdc` (`txfm_uvrd_inter`: C's chroma inter arm — UNIFORM tx, EOB-based skip),
+  `351143a1` (the integration: `av1_txfm_search` assembly + the `av1_encode_sb` var-tx re-encode
+  + the `write_tx_size_vartx` / inter-ext-tx pack + `KfFrameContext::txfm_partition`).
+  - **Item 1 (`model_based_tx_search_prune`) is CLOSED BY SOURCE PROOF — no port needed.**
+    `rd_pick_intrabc_mode_sb` calls `av1_txfm_search` with `ref_best_rd = INT64_MAX`
+    **hardcoded** (rdopt.c:3611 — the incoming `best_rd` is used only for the post-hoc
+    `rd_stats_yuv.rdcost < best_rd` compare at :3615). The prune is gated on
+    `ref_best_rd != INT64_MAX` (tx_search.c:3562-3565), so it can never fire on the intrabc path.
+    The same reasoning voids every other early exit in `av1_txfm_search` (:3811, :3844) and
+    `av1_txfm_uvrd` (:3737) for intrabc.
+  - **Items 2 + 3 (PACK + INTRABC integration) are DONE and exercised**, including the chroma
+    eob-0 skip check (the old `chroma_sse == 0` gate was a strict SUBSET of it).
+  - **NOT DONE — byte-exactness.** `rd_close_intrabc::intrabc_dv_search_pinned` still PINS:
+    port **1907B vs c 1891B (delta +16), first differing tile byte 646 of 1891**. The port now
+    codes MORE bytes than C — the OPPOSITE of the classic "codes fewer symbols" RD-near-tie
+    signature — and the first ~34% of the tile is byte-identical.
+  - **A/B PROOF THE COEFF ARM IS LIVE (not inert):** re-running the witness with the coeff arm
+    gated back off (`if !luma_skip { continue; }`, the pre-landing skip-only behaviour) gives
+    **1974B, delta +83, first diff at byte 1113**; with the coeff arm on it is **1907B, delta
+    +16, first diff at byte 646**. So the arm cuts the size delta ~5x (it codes residual instead
+    of falling back to intra) but moves the first divergence EARLIER — i.e. a coeff-arm intrabc
+    block BEFORE tile byte 646 is coded differently from C, while the later blocks the skip-only
+    build got wrong are now right. That earlier first-divergence is the sharper localization
+    target. The gate now prints that
+    signature plus (when the port's stream still decodes) the first block whose mode-info differs;
+    today the port's stream does NOT decode past the divergence (bitstream desync), so the
+    block-level localization needs the C-side dump method (KB-2/KB-3/KB-7) or a
+    truncate-at-first-divergence probe.
+  - **Three real bugs found while wiring (all fixed in `351143a1`):** the pack's intrabc branch
+    returned early and skipped the neighbour-grid stamp; chroma prediction buffers were sized
+    `bw >> ss_x` while the chroma PLANE block is padded to a 4x4 minimum (sub-8x8 luma overran
+    them); and the var-tx recursion sized its entropy/txfm context arrays by the frame-edge
+    CLIPPED extent while `av1_get_entropy_contexts` fills the FULL plane block (only the txb LOOP
+    is clipped) — under-running `get_txb_ctx`'s `a[..w_unit]` read on an edge block. All
+    frame-edge extents now route through the validated `max_block_units`.
+  - **Envelope verified byte-inert:** full `cargo test -p zenav1-aom-encode` green (97 binaries,
+    0 failures) including `encoder_gate_real_image_e2e_kb6_repro` (30/30 real content); both
+    var-tx differentials (`var_tx_leaf_diff`, `var_tx_recursion_diff`) still pass, plus
+    `prune_tx_2d_diff` / `tx_split_nn_diff`. Non-screen frames construct no intrabc args at all.
+  - **NEXT CONCRETE STEP:** localize the first divergent BLOCK. The port's stream desyncs at byte
+    646 so a plain decode-both fails; use the sibling-C instrumented dump (the KB-2/KB-3/KB-7
+    method) at the SB containing tile-byte 646, comparing per-leaf `use_intrabc / skip_txfm /
+    inter_tx_size / tx_type` against the port's. Prime suspects, in order: (a) the chroma inter
+    tx-type inheritance (`uv_tx_type_inter` reads the luma map at the scaled-back position —
+    verify it is read AFTER the luma eob-0 DCT_DCT resets, as C's `av1_get_tx_type` does);
+    (b) the `+16`-byte surplus suggests the port codes coefficients where C chooses skip, i.e. the
+    joint skip decision (tx_search.c:3861-3886) or the `set_skip_txfm` intermediate rate; (c) the
+    AVX2-vs-scalar `av1_nn_predict` caveat on `prune_tx_2D` sort order.
+  Working notes: `docs/inter-vartx-coeff-arm-notes.md` (updated with the chroma inter path, the
+  encode-vs-write walk-order difference, and the `set_skip_txfm` nonzero-rate detail).
 
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 
