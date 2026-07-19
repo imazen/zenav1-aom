@@ -3434,20 +3434,40 @@ fn encoder_gate_real_content_speed1to4_e2e() {
         "av1-1-b8-01-size-64x64 420 cpu4 cq12",
         "av1-1-b8-01-size-64x64 420 cpu4 cq32",
         "av1-1-b8-01-size-64x64 420 cpu4 cq63",
-        // quantizer-00 64x64@96,64 (photo, 1-SB): 7 byte-exact.
+        // quantizer-00 64x64@96,64 (photo, 1-SB): 11 byte-exact (4 promoted
+        // 2026-07-19 by the AB mode-cache root, KB-13/task #39).
+        "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu1 cq12",
         "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu1 cq32",
         "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu1 cq63",
+        "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu2 cq12",
+        "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu2 cq32",
         "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu2 cq63",
         "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu3 cq12",
+        "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu3 cq32",
         "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu3 cq63",
         "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu4 cq12",
         "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu4 cq63",
-        // quantizer-00 128x128@64,64 (photo, 4-SB): 2 byte-exact.
+        // quantizer-00 128x128@64,64 (photo, 4-SB): 8 byte-exact (6 promoted
+        // 2026-07-19, AB mode-cache).
+        "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu1 cq12",
+        "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu1 cq32",
         "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu1 cq63",
+        "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu2 cq12",
+        "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu2 cq32",
         "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu2 cq63",
-        // 23-film_grain-50 64x64@96,64 (film, 1-SB): 3 byte-exact.
+        "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu3 cq12",
+        "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu3 cq32",
+        // 23-film_grain-50 64x64@96,64 (film, 1-SB): 10 byte-exact (7 promoted
+        // 2026-07-19, AB mode-cache).
+        "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu1 cq12",
         "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu1 cq32",
+        "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu1 cq63",
+        "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu2 cq12",
+        "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu2 cq32",
         "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu2 cq63",
+        "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu3 cq12",
+        "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu3 cq32",
+        "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu4 cq12",
         "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu4 cq63",
     ];
 

@@ -1,3 +1,22 @@
+## KB-13 ROOT FOUND: the AB mode cache (`reuse_best_prediction_for_part_ab`) — 24/60 -> 41/60 (2026-07-19, encoder track)
+
+At allintra speed >= 1, C constrains each non-reused AB sub-block's luma mode search to ONE
+cached mode (`set_mode_cache_for_partition_ab` from the split-children NONE winners + rect
+sub-winners; consumed at intra_mode_search.c:1581 + the filter-intra gates :254-273). The port
+searched AB sub-blocks unconstrained, making its AB shapes systematically cheaper — the whole
+"port over-picks AB and codes fewer bytes" KB-13 signature. OFF at speed 0, which is why KB-6's
+30/30 never saw it. Fix threads `IntraSbyGates.mb_mode_cache` through rd_pick_ab_part →
+rd_pick_rect_partition → leaf_pick_sb_modes, with `split_none_cache[4]` (a NONE-arm out-param
+on the recursion; NOT gated on the child's final partitioning, unlike the reuse readiness) +
+`rect_mode_for_cache[2][2]` as sources. Also landed: `less_rectangular_check_level`'s speed-3
+qindex arm (speed_features.c:3032). Result: 17 DIFF cells flipped byte-exact and were promoted
+(quant64 11/12, quant128 8/12, film64 10/12); 0 regressions; the 196x196 partial-SB cluster
+(0/12) + 7 interior cpu3/cpu4 near-ties remain pinned. Found by the 2026-07-19 full
+prune-ladder C-vs-port read, which also verified ~17 other prune gates faithful (ml_prune_ab,
+prune_4, split-info prunes, ext/rect thresholds boosted-gated dead for KEY, CNN prune,
+square-only threshold, split_rd/none_rd semantics, pb_source_variance, etc.). The parallel
+chroma-path read for KB-15's residual found NO structural gap (value-level; see KB-15).
+
 ## KB-15 root 6: the encoder never applied get_tx_size_context's inter-neighbour override (2026-07-19, encoder track)
 
 C substitutes an `is_inter_block` neighbour's BLOCK dims for its txfm-context byte when

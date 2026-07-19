@@ -1556,7 +1556,16 @@ impl EncodeCell {
             },
             enable_rect_partitions: knobs.enable_rect_partitions,
             less_rectangular_check_level: if allintra {
-                sf.less_rectangular_check_level
+                // av1_set_speed_features_qindex_dependent runs AFTER the
+                // allintra setters and overrides at speed 3 ONLY:
+                // `(base_qindex >= 170) ? 1 : 2` (speed_features.c:3032-3034).
+                // Its speed<=2 (:3029, ->1) and speed>=4 (:3048, ->2) arms
+                // equal the allintra values, so only the speed-3 arm is live.
+                if self.speed == 3 {
+                    if qindex >= 170 { 1 } else { 2 }
+                } else {
+                    sf.less_rectangular_check_level
+                }
             } else {
                 i32::from(allintra)
             },

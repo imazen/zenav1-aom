@@ -53,6 +53,7 @@ fn visit_gating_matches_c() {
             enable_paeth_intra: rng.next() & 1 == 1,
             enable_angle_delta: rng.next() & 1 == 1,
             disable_smooth_intra: rng.next() & 1 == 1,
+            mb_mode_cache: None,
             prune_filter_intra_level: (rng.next() % 3) as i32,
             intra_y_mode_mask: if case % 3 == 0 {
                 [0x1fff; 5]

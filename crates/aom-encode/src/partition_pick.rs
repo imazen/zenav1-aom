@@ -697,6 +697,9 @@ fn leaf_pick_sb_modes(
     mi_col: i32,
     bsize: usize,
     partition: usize,
+    // `x->mb_mode_cache` (rd_test_partition3, partition_search.c:3196-3200):
+    // the AB-stage forced-mode constraint; `None` on every non-AB path.
+    ab_mode_cache: Option<(usize, bool, usize)>,
     best_remain: &PartRdStats,
 ) -> (PartRdStats, Option<LeafWinner>, u32) {
     // av1_rd_cost_update(x->rdmult, &best_rd) on entry (pick_sb_modes:927).
@@ -755,6 +758,7 @@ fn leaf_pick_sb_modes(
         );
     }
     let mut gates = IntraSbyGates::speed0(skip_mask);
+    gates.mb_mode_cache = ab_mode_cache;
     // CLI intra-tool toggles (oxcf.intra_mode_cfg → the candidate-loop
     // enable_* gates; av1_cx_iface.c defaults all ON). Independent of the
     // sf-driven fields set below — C keeps both and the visit chain reads
@@ -1658,6 +1662,7 @@ fn rd_pick_rect_partition(
     mi_col: i32,
     subsize: usize,
     partition_type: usize,
+    ab_mode_cache: Option<(usize, bool, usize)>,
     best_rdc: &PartRdStats,
     sum_rdc: &mut PartRdStats,
     visits: &mut Vec<LeafVisit>,
@@ -1676,6 +1681,7 @@ fn rd_pick_rect_partition(
         mi_col,
         subsize,
         partition_type,
+        ab_mode_cache,
         &best_remain,
     );
     visits.push(LeafVisit {
@@ -1774,6 +1780,7 @@ fn rd_pick_4partition(
             c,
             subsize,
             partition_type,
+            None,
             best_rdc,
             &mut sum_rdc,
             visits,
@@ -2058,6 +2065,10 @@ fn rd_pick_ab_part(
     visits: &mut Vec<LeafVisit>,
     last_source_variance: &mut u32,
     reuse: [Option<&LeafWinner>; 2],
+    // `mode_cache` (ab_partitions_search -> rd_test_partition3): per-sub-block
+    // forced-mode entries; all-None when reuse_best_prediction_for_part_ab is
+    // off (speed 0).
+    mode_cache: [Option<(usize, bool, usize)>; 3],
 ) -> (PartRdStats, Option<Box<[LeafWinner; 3]>>) {
     let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
     let bsize2 = split_subsize(bsize);
@@ -2147,6 +2158,7 @@ fn rd_pick_ab_part(
                 c,
                 sz,
                 partition_type,
+                mode_cache[i],
                 best_rdc,
                 &mut sum_rdc,
                 visits,
@@ -2321,6 +2333,11 @@ pub fn rd_pick_partition_real(
     // `4*quad_tree_idx + idx + 1`, partition_search.c:4574). Feeds the intra
     // CNN partition prune's per-sub-block feature selection.
     quad_tree_idx: i32,
+    // OUT: the NONE-arm winner's `(mode, use_filter_intra, filter_intra_mode)`
+    // — C's `pc_tree->split[i]->none->mic` the parent's AB mode cache reads
+    // (set_mode_cache_for_partition_ab). `None` when the NONE arm never
+    // produced a valid winner.
+    none_mode_out_for_cache: &mut Option<(usize, bool, usize)>,
     mut none_rd_out: Option<&mut i64>,
     // `rect_part_win_info` (av1_rd_pick_partition's 13th param): the OUT flags
     // this block's rect stage clears when HORZ/VERT loses (:3634-3636). C
@@ -2635,9 +2652,15 @@ pub fn rd_pick_partition_real(
             mi_col,
             bsize,
             0,
+            None,
             &best_remain,
         );
         *last_source_variance = source_variance;
+        // `pc_tree->none` mode capture for the AB-stage mode cache
+        // (copy_partition_mode_from_pc_tree gates on rate < INT_MAX, i.e. a
+        // valid NONE winner; partition_search.c:3711-3717).
+        *none_mode_out_for_cache =
+            winner.as_ref().map(|w| (w.mode, w.use_filter_intra, w.filter_intra_mode));
         visits.push(LeafVisit {
             mi_row,
             mi_col,
@@ -2712,6 +2735,12 @@ pub fn rd_pick_partition_real(
     // comparison).
     let mut is_split_ctx_is_ready = [false; 2];
     let mut split_child_leaf_for_reuse: [Option<LeafWinner>; 2] = [None, None];
+    // The four split children's NONE-arm winner modes (`pc_tree->split[i]->
+    // none->mic`) for the AB-stage mode cache (set_mode_cache_for_partition_ab,
+    // partition_search.c:3729-3759). Unlike the REUSE capture above, the cache
+    // is NOT gated on the child's final partitioning or uv_mode — only on the
+    // NONE arm having produced a valid winner (rate < INT_MAX).
+    let mut split_none_cache: [Option<(usize, bool, usize)>; 4] = [None; 4];
     // `split_part_rect_win[4]` (encodeframe_utils.h:181, init TRUE at :3358-59):
     // per-split-child HORZ/VERT win flags, cleared by the child's own rect
     // stage on a loss. Consumed by `prune_4_partition_using_split_info`
@@ -2758,6 +2787,7 @@ pub fn rd_pick_partition_real(
                 idx,
                 // child quad_tree_idx = 4*parent + idx + 1 (partition_search.c:4574).
                 4 * quad_tree_idx + idx as i32 + 1,
+                &mut split_none_cache[idx],
                 Some(&mut split_rd[idx]),
                 Some(&mut split_part_rect_win[idx]),
                 visits,
@@ -2854,6 +2884,10 @@ pub fn rd_pick_partition_real(
     // use still gated by is_rect_ctx_is_ready[i] at the AB stage, matching
     // the C's own `is_ctx_ready[ab_part_type][0]` guard).
     let mut rect_sub0_for_reuse: [Option<LeafWinner>; 2] = [None, None];
+    // The rect sub-block winner modes (`pc_tree->horizontal[0/1]` /
+    // `vertical[0/1]` ->mic) for the AB-stage mode cache — gated only on a
+    // valid winner (rate < INT_MAX), NOT on the reuse-readiness conditions.
+    let mut rect_mode_for_cache: [[Option<(usize, bool, usize)>; 2]; 2] = [[None; 2]; 2];
     for i in 0..2usize {
         // is_rect_part_allowed (:3506) with av1_active_h/v_edge at the
         // one-pass shape (encodeframe_utils.c:787/817): active iff the
@@ -2892,12 +2926,15 @@ pub fn rd_pick_partition_real(
             mi_col,
             subsize,
             partition_type,
+            None,
             &best_rdc,
             &mut sum_rdc,
             visits,
         );
         *last_source_variance = sv0;
         rect_part_rd[i][0] = rd0;
+        rect_mode_for_cache[i][0] =
+            w0.as_ref().map(|w| (w.mode, w.use_filter_intra, w.filter_intra_mode));
 
         // is_not_edge_block[i] (:3550): has_rows for HORZ / has_cols VERT.
         let is_not_edge_block = if i == 0 { has_rows } else { has_cols };
@@ -2962,12 +2999,15 @@ pub fn rd_pick_partition_real(
                 c1,
                 subsize,
                 partition_type,
+                None,
                 &best_rdc,
                 &mut sum_rdc,
                 visits,
             );
             *last_source_variance = sv1;
             rect_part_rd[i][1] = rd1;
+            rect_mode_for_cache[i][1] =
+                got.as_ref().map(|w| (w.mode, w.use_filter_intra, w.filter_intra_mode));
             w1 = got;
         }
         // Best update (:3626-3632).
@@ -3158,6 +3198,42 @@ pub fn rd_pick_partition_real(
                 ],
                 _ => unreachable!("ab_type is 0..4"),
             };
+            // set_mode_cache_for_partition_ab (partition_search.c:3729-3759),
+            // gated on `part_sf.reuse_best_prediction_for_part_ab` — allintra
+            // speed >= 1 (speed_features.c:397 / speed_features.rs:528; the
+            // GOOD envelope runs speed 0 where the default is 0). Entries:
+            //   HORZ_A: {split[0].none, split[1].none, horizontal[1]}
+            //   HORZ_B: {horizontal[0], split[2].none, split[3].none}
+            //   VERT_A: {split[0].none, split[2].none, vertical[1]}
+            //   VERT_B: {vertical[0],   split[1].none, split[3].none}
+            let mode_cache: [Option<(usize, bool, usize)>; 3] =
+                if cfg.allintra && cfg.speed >= 1 {
+                    match ab_type {
+                        0 => [
+                            split_none_cache[0],
+                            split_none_cache[1],
+                            rect_mode_for_cache[0][1],
+                        ],
+                        1 => [
+                            rect_mode_for_cache[0][0],
+                            split_none_cache[2],
+                            split_none_cache[3],
+                        ],
+                        2 => [
+                            split_none_cache[0],
+                            split_none_cache[2],
+                            rect_mode_for_cache[1][1],
+                        ],
+                        3 => [
+                            rect_mode_for_cache[1][0],
+                            split_none_cache[1],
+                            split_none_cache[3],
+                        ],
+                        _ => unreachable!("ab_type is 0..4"),
+                    }
+                } else {
+                    [None; 3]
+                };
             let (sum_rdc, winners) = rd_pick_ab_part(
                 env,
                 cfg,
@@ -3176,6 +3252,7 @@ pub fn rd_pick_partition_real(
                 visits,
                 last_source_variance,
                 reuse,
+                mode_cache,
             );
             if let Some(w) = winners {
                 best_rdc = sum_rdc;
@@ -3914,6 +3991,7 @@ pub fn rd_use_partition_real(
         0 => {
             let (this_rdc, winner, sv) = leaf_pick_sb_modes(
                 env, cfg, tile, grid, recon_y, recon_u, recon_v, cfl, mi_row, mi_col, bsize, 0,
+                None,
                 &invalid,
             );
             *last_source_variance = sv;
@@ -3946,6 +4024,7 @@ pub fn rd_use_partition_real(
                 mi_col,
                 subsize,
                 partition as usize,
+                None,
                 &invalid,
             );
             *last_source_variance = sv;
@@ -4014,6 +4093,7 @@ pub fn rd_use_partition_real(
                     c1,
                     subsize,
                     partition as usize,
+                    None,
                     &invalid,
                 );
                 *last_source_variance = sv1;
@@ -4510,6 +4590,7 @@ fn nonrd_leaf_pick_and_encode(
         let invalid = PartRdStats::invalid();
         let (this_rdc, winner, _sv) = leaf_pick_sb_modes(
             env, cfg, tile, grid, recon_y, recon_u, recon_v, cfl, mi_row, mi_col, bsize, partition,
+            None,
             &invalid,
         );
         visits.push(LeafVisit {

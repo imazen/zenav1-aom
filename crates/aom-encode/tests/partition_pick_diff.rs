@@ -1516,6 +1516,7 @@ fn rd_pick_partition_real_matches_c_recursion() {
             PartRdStats::invalid(),
             0,
             0, // quad_tree_idx: 0 at the SB root
+            &mut None, // none-mode cache capture: discarded at the SB root
             None,
             None, // rect_part_win_info: NULL at the SB root
             &mut visits,

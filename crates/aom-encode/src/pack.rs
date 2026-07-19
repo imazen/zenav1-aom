@@ -1699,6 +1699,9 @@ pub fn pack_tile_lr(
                     tree
                 }
             } else {
+                // The SB root discards the NONE-arm mode capture (C passes no
+                // parent mode cache at the root).
+                let mut root_none_mode_cache = None;
                 let (tree, _stats, found) = rd_pick_partition_real(
                     &sb_env,
                     &sb_pick_cfg,
@@ -1714,6 +1717,7 @@ pub fn pack_tile_lr(
                     PartRdStats::invalid(),
                     0,
                     0, // quad_tree_idx: 0 at the SB (64×64) root
+                    &mut root_none_mode_cache,
                     None,
                     None, // rect_part_win_info: NULL at the SB root (encodeframe.c:826)
                     &mut visits,

@@ -929,61 +929,47 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   dead on the 8-bit canon grid (nonrd_pickmode.rs:594/460/784); required before any high-bit-depth
   or screen-content speed-8/9 cell.
 
-### KB-13 — Encoder: REAL-content byte-parity at speed >= 1 — MAPPED (24/60 byte-exact at cpu 1..4; report-only gate landed)
-- **Status (2026-07-17):** the encoder byte-matches real conformance-decoded content at speed 0
-  (KB-6, 30/30) but NOT uniformly at speed >= 1. New gate
-  `encoder_gate_real_content_speed1to4_e2e` (encoder_gate_e2e_byte_match.rs) feeds the SAME real
-  YUV KB-6 uses (5 cells: `01-size-64x64` full, `01-size-196x196` full, `00-quantizer-00` 64²+128²
-  crops, `23-film_grain-50` 64² crop) through the PROVEN speed-N encode path
-  (`attempt_case_content_uv_sep` — the exact fn every synthetic speed gate rides, generalized to
-  SEPARATE U/V closures for real content) at cpu-used {1,2,3,4} × cq {12,32,63}.
-- **MAP (24/60 byte-exact vs real aomenc):**
-  - `01-size-64x64` (1-SB, aligned): **12/12 MATCH** — the clean single-SB real cell is byte-exact
-    at every speed 1..4 × cq. The speed-0 roots (KB-6 luma edge filter, AB HORZ_A reuse,
-    OUTPUT_ENABLED tx_type_map, …) carry through to speed 1..4 unbroken here.
-  - `01-size-196x196` (PARTIAL-SB, multi-SB): **0/12** — every cell diverges. `our_tile_bytes` is
-    systematically SMALLER than real (e.g. cq12 cpu1 2200 vs 2379) — the KB-6 "port codes FEWER
-    symbols" signature ⇒ a TILE-DATA partition/mode near-tie flip, NOT a pure-LF issue (LF
-    DISAGREES because the recon differs downstream; first byte-diff is the port-derived header LF
-    byte 2-3). The partial-SB frame-edge path (KB-6's speed-0 CHUNK-series fixes) interacts with
-    speed>=1 partition features (rect-kill / part4 / AB / ext-thresh) unreconciled at edges.
-    HIGHEST-VALUE cluster (12 cells, likely few shared roots).
-  - `00-quantizer-00` 64² crop (photo, 1-SB): 7/12 — DIFF at {cpu1 cq12, cpu2 cq12/cq32, cpu3 cq32,
-    cpu4 cq32}. Interior partition/mode near-ties (KB-2/10/11/12 family).
-  - `00-quantizer-00` 128² crop (photo, 4-SB): 3/12 — mostly DIFF (cq63 matches at cpu1/2).
-  - `23-film_grain-50` 64² crop (1-SB): 4/12 — film-grain near-ties.
-- **Gate = GRADUATE + PIN** (report-only on the first landing, then converted): asserts (1) the
-  anti-vacuous speed-0 harness control (real 64² cq20 must byte-match — KB-6 30/30); (2) the **24
-  MATCH cells** byte-match (regression guard); (3) the **36 DIFF cells** DIVERGE (self-promoting
-  pin, KB-P29/KB-12 pattern — a DIFF→MATCH flip fails the pin → promote into `byte_exact`). Harness
-  change: `attempt_case_content_uv` now delegates to `attempt_case_content_uv_sep` (separate U/V) —
-  byte-identical for every existing synthetic caller (U==V), so speeds 0-9 synthetic gates + KB-6
-  speed-0 map stay byte-unchanged (verified: speed1 + speed4 420 gates still 64/64).
-- **LOCALIZED (2026-07-17, decode-both via `localize_real_speed`, kb6_real_rd_localize.rs):** EVERY
-  DIFF is a PARTITION near-tie at **BLOCK_16X16 (bsize=6)** or BLOCK_8X8, NOT a frame-edge/partial-SB
-  issue (the 196 first-divergences are all INTERIOR nodes inside SB(0,0), mi_col 6..12, never the
-  mi_col=48 edge). The port systematically picks a MORE-COMPLEX partition than C — mostly an **AB
-  partition** (HORZ_A/HORZ_B/VERT_A) or SPLIT — where C picks a simpler one:
-  - 196 cpu1 cq32 (0,12): real VERT_B / ours HORZ_B; 196 cpu1 cq12 (0,12): real SPLIT / ours HORZ_B;
-    196 cpu4 cq32 (12,8): real VERT / ours SPLIT.
-  - quant128 cpu1 cq32 (0,8): real VERT / ours VERT_A; quant128 cpu1 cq12 (4,12): real HORZ_B / ours SPLIT.
-  - quant64 cpu1 cq12 (0,12): real HORZ / ours HORZ_A; quant64 cpu2 cq32 (4,8): real SPLIT / ours HORZ_B.
-  - film64 cpu1 cq12 (4,6) 8X8: real NONE / ours VERT.
-  The port's chosen partition codes FEWER total bytes (map signature) yet C picks a different one ⇒
-  **C PRUNES the port's cheaper candidate at speed>=1** (KB-3/KB-7 pattern: a partition C's search
-  never evaluates because a speed-feature prune killed it; the port under-prunes). Consumer:
-  `prune_ab_partitions` / `predict_ab_partition_prune` (ab_nn_prune.rs) + the rect/split prunes.
-  Shared-root candidate (AB / rect / split pruning at speed 1..4), NOT scattered RD noise.
-- **NOT the KB-15 root (checked 2026-07-19, do not conflate).** KB-15's "intra RD is slightly
-  cheap" residual root-caused to a MISSING `intrabc_cost[0]` on every intra leaf
-  (`intra_mode_info_cost_y`, intra_mode_search_utils.h:563-564 — see KB-15's four-roots block).
-  That term is gated on `av1_allow_intrabc(cm)`, which is **0 for every KB-13 cell** (decoded
-  photographic content ⇒ `allow_screen_content_tools = 0`), so it is structurally inert here.
-  Empirical confirmation: all four KB-15 fixes left this gate's 36 DIFF pins asserting
-  divergence and its 24 MATCH cells byte-exact (suite 340/340 unchanged). KB-13's own
-  hypothesis below still stands.
-- **Tracking:** task **#39**. Next: sibling-C RD/prune dump at a representative 16X16 node (the
-  KB-3/KB-7 method) to find which prune C applies that the port doesn't; graduate the cells it closes.
+### KB-13 — Encoder: REAL-content byte-parity at speed >= 1 — ROOT FOUND (41/60 byte-exact; AB mode-cache landed 2026-07-19)
+
+- **ROOT FOUND + FIXED 2026-07-19 — `part_sf.reuse_best_prediction_for_part_ab` (the AB
+  MODE CACHE) was unmodelled. 24/60 → 41/60 byte-exact (17 cells promoted, 0 regressions).**
+  At allintra speed >= 1 (speed_features.c:397; OFF at speed 0 — exactly why KB-6's 30/30
+  held), C's `ab_partitions_search` populates a per-sub-block `mode_cache`
+  (`set_mode_cache_for_partition_ab`, partition_search.c:3729-3759: HORZ_A = {split[0].none,
+  split[1].none, horizontal[1]}, HORZ_B = {horizontal[0], split[2].none, split[3].none},
+  VERT_A = {split[0].none, split[2].none, vertical[1]}, VERT_B = {vertical[0], split[1].none,
+  split[3].none}; entries valid iff the source ctx has rate < INT_MAX) and `rd_test_partition3`
+  sets `x->mb_mode_cache` per sub-block: the luma mode loop then SKIPS every mode != cached
+  (intra_mode_search.c:1581 — all angle deltas of the cached mode still run) and the
+  filter-intra search runs only when the cache used filter-intra, then only the cached fi mode
+  (:254-257, :269-273). The port searched every AB sub-block UNCONSTRAINED → its AB RD was
+  systematically <= C's → AB won near-ties and coded fewer bytes (the exact map signature).
+  Port fix: `IntraSbyGates.mb_mode_cache`, threaded `rd_pick_ab_part` →
+  `rd_pick_rect_partition` → `leaf_pick_sb_modes`; sources retained as `split_none_cache[4]`
+  (a new NONE-arm out-param on `rd_pick_partition_real` — the cache is NOT gated on the
+  child's final partitioning or uv_mode, unlike the stricter REUSE readiness) +
+  `rect_mode_for_cache[2][2]`. Gated `cfg.allintra && cfg.speed >= 1`. Found by a full C-vs-port
+  prune-ladder read (2026-07-19) that also verified ~17 other gates faithful (see the agent
+  report in STATUS.md).
+- **Also landed: the speed-3 qindex arm of `less_rectangular_check_level`**
+  (av1_set_speed_features_qindex_dependent, speed_features.c:3032-3034: speed 3 → qindex >= 170
+  ? 1 : 2; the port had 2 unconditionally). Cfg-fill site (aom-bench lib.rs). Did not flip the
+  remaining cq63 cells — kept as a faithfulness fix.
+- **MAP (41/60 byte-exact vs real aomenc, gate `encoder_gate_real_content_speed1to4_e2e`):**
+  - `01-size-64x64` (1-SB, aligned): **12/12 MATCH**.
+  - `00-quantizer-00` 64² crop: **11/12** (open: cpu4 cq32).
+  - `00-quantizer-00` 128² crop: **8/12** (open: cpu3 cq63, cpu4 cq12/cq32/cq63).
+  - `23-film_grain-50` 64² crop: **10/12** (open: cpu3 cq63, cpu4 cq32).
+  - `01-size-196x196` (PARTIAL-SB, multi-SB): **0/12** — the whole cluster still diverges; a
+    SEPARATE root (partial-SB × speed>=1 interaction). Localizer fact (2026-07-19, post-fix
+    run pending re-localization): first divergence at (0,12) BLOCK_16X16, real VERT_B vs ours
+    HORZ_B at cpu1 cq32 — an AB-vs-AB flip (not AB-vs-simple), so plausibly a DIFFERENT
+    mechanism than the mode cache (e.g. the cache's inputs differing at partial-SB edges, or
+    an edge-gate divergence).
+- **Remaining 19 DIFF cells (all pinned self-promoting):** the 196² cluster (12) + 7 interior
+  near-ties concentrated at cpu3/cpu4 (5 of 7 at cq63/cq32 high-speed corners). Next: re-run
+  `task39_localize_196_partial_sb_speed` + the interior localizer on the survivors and
+  sibling-C dump the first divergent node per the KB-3/KB-7 method.
 
 ### KB-14 — Decoder: superres single-SB-column coded frame decoded flat — FIXED ✅ (header coded-lossless false-positive; NOT the upscale)
 - **FIXED 2026-07-18.** Root cause is the HEADER PARSE, **not** the normative upscale (the original
@@ -1288,6 +1274,23 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
     `cfl_store_block` / intrabc chroma recon in the winner re-encode). Next: dump the CfL
     buffer + chroma recon neighbourhood at the mi(40,28) 16×16 leaf on both sides (the same
     dual-dump method), find the first differing chroma input pixel, and trace its producer.
+    **2026-07-19 chroma-path structural sweep (read-only agent): NO structural gap found — the
+    residual is VALUE-level.** Verified-faithful (do not re-read): `is_sub8x8_inter` (intrabc
+    + intra-covering ⇒ false; chroma-ref intra block predicts chroma via intra),
+    non-chroma-ref chroma skip on both arms, `is_cfl_allowed`, `store_cfl_required`,
+    `cfl_store`/`cfl_store_tx`/`cfl_store_block`/`sub8x8_adjust_offset`, the
+    `cfl_store_block_for_inter` gate, CfL threading search+pack, the uv-search luma
+    re-encode (store_y), `chroma_plane_offset`, chroma availability, uv edge-filter
+    inter-neighbour handling, `intra_avail` vs `av1_predict_intra_block` (C has NO
+    inter-neighbour case in has_top_right/has_bottom_left — pure geometry), and the chroma
+    residual application. Measured detail: the port's divergent 4×4 chroma unit (the HORZ
+    8×4 pair at mi(40..41,26..27) with the intrabc top) reconstructs as pure row-flat H_PRED
+    from its left column while C's has textured residual rows — with byte-identical coding
+    through that region, i.e. an encoder-side value divergence. NEXT CONCRETE STEP: dump
+    `cfl.recon_buf_q3` (the SUBSAMPLED luma) right after the intrabc sibling's
+    `cfl_store_block` and at the chroma-ref sibling's CfL read, both sides; if it differs
+    while full-res recon_y matches, the bug is the CfL subsample input offset/stride for the
+    intrabc sibling; if it matches, chase the chroma-neighbour cascade one unit earlier.
   Working notes: `docs/inter-vartx-coeff-arm-notes.md` (updated with the chroma inter path, the
   encode-vs-write walk-order difference, and the `set_skip_txfm` nonzero-rate detail).
 

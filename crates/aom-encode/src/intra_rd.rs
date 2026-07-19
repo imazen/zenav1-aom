@@ -357,6 +357,14 @@ pub struct IntraSbyGates {
     pub enable_angle_delta: bool,
     /// `intra_sf.disable_smooth_intra`.
     pub disable_smooth_intra: bool,
+    /// `x->use_mb_mode_cache` / `x->mb_mode_cache` (intra_mode_search.c:1581,
+    /// :254-257, :269-273) — the AB-stage forced-mode constraint
+    /// (`part_sf.reuse_best_prediction_for_part_ab`, allintra speed >= 1):
+    /// when `Some((mode, use_filter_intra, filter_intra_mode))`, the luma
+    /// mode loop skips every mode != cached mode (all angle deltas of the
+    /// cached mode still run), and the filter-intra search runs only when
+    /// the cache used filter-intra (then only the cached fi mode).
+    pub mb_mode_cache: Option<(usize, bool, usize)>,
     /// `intra_sf.prune_filter_intra_level`.
     pub prune_filter_intra_level: i32,
     /// `intra_sf.intra_y_mode_mask[max_txsize_lookup[bsize]]` (bit per mode).
@@ -378,6 +386,7 @@ impl IntraSbyGates {
             enable_paeth_intra: true,
             enable_angle_delta: true,
             disable_smooth_intra: false,
+            mb_mode_cache: None,
             prune_filter_intra_level: 0,
             intra_y_mode_mask: [0x1fff; 5], // INTRA_ALL: all 13 mode bits
             directional_mode_skip_mask,
@@ -411,6 +420,13 @@ impl IntraSbyGates {
         }
         if !self.enable_paeth_intra && mode == 12 {
             return false;
+        }
+        // Skip the evaluation of modes that do not match with the winner
+        // mode in x->mb_mode_cache (intra_mode_search.c:1581-1582).
+        if let Some((cached_mode, _, _)) = self.mb_mode_cache {
+            if mode != cached_mode {
+                return false;
+            }
         }
         if is_directional && self.directional_mode_skip_mask[mode] {
             return false;
@@ -1542,6 +1558,15 @@ pub fn rd_pick_filter_intra_sby_y(
     env.mode = 0; // DC_PRED
     env.use_filter_intra = true;
 
+    // Skip the evaluation of filter-intra if the cached MB_MODE_INFO does
+    // not have filter-intra as winner (intra_mode_search.c:254-257; the env
+    // mutations above mirror C's mbmi writes preceding its return).
+    if let Some((_, cached_use_fi, _)) = cfg.gates.mb_mode_cache {
+        if !cached_use_fi {
+            return None;
+        }
+    }
+
     let mut selected: Option<IntraSbyBest> = None;
     for fi_mode in 0..FILTER_INTRA_MODES {
         if cfg.gates.prune_filter_intra_level == 1
@@ -1550,6 +1575,14 @@ pub fn rd_pick_filter_intra_sby_y(
             continue;
         }
         env.filter_intra_mode = fi_mode;
+
+        // Skip filter-intra modes that do not match the cached winner
+        // (intra_mode_search.c:269-273).
+        if let Some((_, _, cached_fi_mode)) = cfg.gates.mb_mode_cache {
+            if fi_mode != cached_fi_mode {
+                continue;
+            }
+        }
 
         if model_intra_yrd_and_prune(env, recon, best_model_rd) {
             continue;
