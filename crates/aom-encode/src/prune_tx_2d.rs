@@ -44,7 +44,7 @@ fn prec_reduce(x: f32) -> f32 {
 /// `+ ((127<<23) - 60801)`, reinterpret bits as f32.
 #[inline]
 fn approx_exp(y: f32) -> f32 {
-    let a = (1i32 << 23) as f32 / 0.693_147_18_f32;
+    let a = (1i32 << 23) as f32 / 0.693_147_180_56_f32;
     let bits = ((y * a) as i32).wrapping_add((127i32 << 23) - 60801);
     f32::from_bits(bits as u32)
 }

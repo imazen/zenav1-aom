@@ -40,6 +40,7 @@ fn main() {
         "dec_shim",
         "pickrst_shim",
         "superres_shim",
+        "prune_tx_shim",
         "inter_shim",
         "warp_shim",
         "obmc_shim",

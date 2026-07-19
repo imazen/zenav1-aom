@@ -9851,6 +9851,50 @@ pub fn ref_intra_cnn_run(win: &[u8], force_cscalar: bool) -> Vec<f32> {
 /// `weights_flat`/`bias_flat` are the per-layer weight/bias tables concatenated
 /// in NN_CONFIG order (`weights[l][node*num_in + i]`, `bias[l][node]`; the final
 /// entry is the linear output layer). Returns the `num_outputs` logits.
+unsafe extern "C" {
+    fn shim_prune_tx_2D(
+        diff: *const i16,
+        diff_stride: i32,
+        tx_size: i32,
+        tx_set_type: i32,
+        prune_mode: i32,
+        in_mask: u16,
+        out_mask: *mut u16,
+        out_txk_map: *mut i32,
+    );
+}
+
+/// Real-C `prune_tx_2D` (tx_search.c:1541) tier-1 oracle — the static helpers +
+/// driver copied verbatim into the shim, calling the exported
+/// `av1_nn_predict`/`av1_nn_fast_softmax_16`/`av1_get_horver_correlation_full` +
+/// the real non-V2 nnconfig maps. `diff` is the txb residual (`bw x bh`, stride
+/// `diff_stride`). Returns `(pruned_mask, txk_map[16])` (`TX_TYPE_INVALID`=255
+/// padding after the allowed types).
+pub fn ref_prune_tx_2d(
+    diff: &[i16],
+    diff_stride: usize,
+    tx_size: usize,
+    tx_set_type: usize,
+    prune_mode: usize,
+    in_mask: u16,
+) -> (u16, [i32; 16]) {
+    let mut out_mask = 0u16;
+    let mut txk = [0i32; 16];
+    unsafe {
+        shim_prune_tx_2D(
+            diff.as_ptr(),
+            diff_stride as i32,
+            tx_size as i32,
+            tx_set_type as i32,
+            prune_mode as i32,
+            in_mask,
+            &mut out_mask,
+            txk.as_mut_ptr(),
+        );
+    }
+    (out_mask, txk)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn ref_nn_predict(
     features: &[f32],
