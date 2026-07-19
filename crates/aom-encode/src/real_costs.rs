@@ -151,8 +151,17 @@ pub fn derive_real_costs(kf: &KfFrameContext, enable_filter_intra: bool) -> Real
 
     let mut tx_type_costs_y = TxTypeCosts::zeroed();
     let intra_ext_tx_cdf = repack_intra_ext_tx_cdf(kf);
-    // Inter tx-type costs have no consumer in this intra-only pipeline.
-    let inter_ext_tx_cdf = zero_cdf_row(EXT_TX_SETS_INTER * EXT_TX_SIZES * (TX_TYPES + 1));
+    // Inter tx-type costs: source from the frame-init `inter_ext_tx` CDF
+    // (`KfFrameContext.inter_ext_tx` = DEFAULT_INTER_EXT_TX, partition.rs:5849).
+    // Layout is already `[EXT_TX_SETS_INTER][EXT_TX_SIZES][CDF_SIZE(TX_TYPES)]`
+    // row-major — exactly the `(s * EXT_TX_SIZES + i) * (TX_TYPES + 1)` indexing
+    // `fill_tx_type_costs` reads — so a direct flatten is the correct repack.
+    // Consumed by the inter/intrabc var-tx coeff arm (roadmap §5 #C).
+    let inter_ext_tx_cdf: Vec<u16> = kf.inter_ext_tx.iter().flatten().flatten().copied().collect();
+    debug_assert_eq!(
+        inter_ext_tx_cdf.len(),
+        EXT_TX_SETS_INTER * EXT_TX_SIZES * (TX_TYPES + 1)
+    );
     fill_tx_type_costs(&mut tx_type_costs_y, &intra_ext_tx_cdf, &inter_ext_tx_cdf);
 
     let mut partition_costs = [[0i32; EXT_PARTITION_TYPES]; PARTITION_CONTEXTS];
