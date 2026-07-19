@@ -107,6 +107,71 @@ the existing byte-exact path → decode it to get the RefFrame → encode frame 
 `assemble_obu_frame_single_tile(derived_p_header, 0, tile_bytes)` → concat). `obu_assemble.rs`
 already has `assemble_obu_frame_single_tile`.
 
+## PRECISE 2f BUILD PLAN (zero-MV skip-only P — mirror the intrabc skip arm)
+
+The intrabc SKIP arm is the exact template; the inter zero-MV skip arm is a SIMPLER mirror (the
+predictor is a plain COPY of the co-located reference block — no DV, no interp). Verified seams:
+
+1. **`LeafWinner` (`encode_sb.rs:167`) — add inter fields** beside the intrabc DV fields (`:222`):
+   `is_inter: bool`, `ref_frame: i8` (LAST=1 for single-ref), `inter_mode: u8` (GLOBALMV/NEARESTMV),
+   `mv: (i32,i32)` (always (0,0) for the target). Default them so all existing constructors compile
+   (grep the ~dozen `LeafWinner {` sites; the intrabc fields show the pattern).
+
+2. **`encode_b_intra_dry` (`encode_sb.rs:521`) — add an inter arm** modeled on the intrabc arm
+   (`:555-627`), placed as a sibling `if winner.is_inter { … }`. Deltas from intrabc:
+   - Predictor = a COPY of the reference frame's co-located block (zero MV): read from the passed-in
+     `RefFrame` Y/U/V at `(mi_row*4, mi_col*4)` (chroma subsampled) into recon — NOT
+     `intrabc_predict_*` from the current recon. `SbEncodeEnv` needs a `ref_frame: Option<&RefFrame>`
+     added (thread it through; intra/intrabc pass None).
+   - Everything else IDENTICAL: reset coeff entropy ctx (`above_ectx/left_ectx …fill(0)`), stamp skip
+     txfm ctx (`above_tctx/left_tctx …fill(width/height*4 px)`), return empty txbs (`:598-626`).
+     This is ALL the zero-MV skip block needs (no var-tx — dodges KB-15).
+
+3. **Inter mode/ref/skip COST tables** — new fn in `real_costs.rs` (or a small `inter_costs.rs`),
+   sourced from the DEFAULT inter CDFs (primary_ref=NONE ⇒ defaults; NO FrameContext). Use
+   `aom_txb::cost_tokens_from_cdf` on: `DEFAULT_INTRA_INTER` (is_inter), `DEFAULT_SINGLE_REF`
+   (ref = LAST: single_ref_p1..p3 path), `DEFAULT_NEWMV`/`DEFAULT_ZEROMV`/`DEFAULT_REFMV`
+   (write_inter_mode cascade, `partition.rs:322` `write_inter_mode` is the exact symbol order), and
+   the skip CDF. The mode_context (from 2c) indexes newmv/zeromv/refmv ctx. All in default_cdfs.rs.
+
+4. **2c — encode-side ref-mv grid**: extend `ModeGrid`/`DvCell` (`partition_pick.rs:317`,
+   `intrabc_search.rs:1118` `to_nbr` hardcodes INTRA_FRAME/NONE) to carry `ref_frame`+`mv`+`mode`;
+   call `aom_entropy::dv_ref::find_inter_mv_refs` (`dv_ref.rs:989`) with a `DvGrid` closure over the
+   stamped cells (decoder template `aom-decode/src/lib.rs:2419`). For the all-skip zero-MV P every
+   neighbour is inter (0,0), so nearest/near/global all resolve (0,0); you only need `mode_context`.
+   25 `grid.stamp` sites carry the new fields (bulk in `stamp_grid_from_tree` `partition_pick.rs:3371`).
+
+5. **`rd_pick.rs:422` — add an inter arm** as a sibling to the intrabc step-6 arm. Compute the
+   inter-skip RD: `rate = is_inter_cost + ref_cost + inter_mode_cost(mode,mode_ctx) + skip_cost[1]`,
+   `dist = sse(source − ref_block)` (zero-MV predictor = ref block copy; use the visible-clipped sse
+   like the intrabc skip arm's `set_skip_txfm` sse). Compete vs the assembled intra `rd` (take min),
+   overwrite the winner tuple + set `is_inter`. Add inter fields to `RdPickIntraBest` (`:196-208`
+   beside the intrabc fields). Gate the arm on a new `PickFrameCfg::inter` (`partition_pick.rs:506`,
+   mirror the `intrabc:` field `:595`) + `InterLeafArgs` (mirror `IntrabcLeafArgs`; carry the
+   `RefFrame`, cost tables, mode_context).
+
+6. **`pack_leaf` (`pack.rs:377`) — add inter writes**: `write_is_inter(1)` → `write_ref_frames`
+   (single-ref LAST) → `write_inter_mode(newmv,zeromv,refmv, mode, mode_ctx)` (`partition.rs:3079`)
+   → `write_skip(1)`; SKIP the tx/coeff syntax (the intrabc skip gate at `:499` is the template).
+   All these writers exist + are byte-exact in the aom-entropy partition module. NO MV coded
+   (GLOBALMV/NEARESTMV don't code a diff).
+
+7. **2g — `port_encode_inter` on `MultiFrameEncodeCell` (`aom-bench/src/lib.rs`)**:
+   (a) frame 0 KEY via the existing `frame0_cell().port_encode(bootstrap)` (byte-exact);
+   (b) DECODE the port frame-0 stream (`aom_decode::frame::decode_frames`) → build the `RefFrame`
+       from frame 0's recon (border-extend Y/U/V);
+   (c) derive the P header via `derive_lowdelay_p_frame_header` (bootstrap interp_filter + LF/cdef
+       from the real frame-1 parse until their derivation lands);
+   (d) search+pack the P tile via the 2f path → `assemble_obu_frame_single_tile(p_header, 0, tile)`;
+   (e) concat [frame0 TU][frame1 P TU]. Gate: `decode_both(port, cell.c_encode_inter(false,false))`
+       == None at `translational(base,0,0)` cq60 64² 420 cpu0 (add to a new inter-encode test).
+   decode_both==None (pixel-match) is the mechanical gate; ALSO assert byte-identity of the frame-1
+   TU vs aomenc's (the stronger claim — the port must pick NONE partition + inter-skip like aomenc).
+
+Order: 3 (costs) → 1+2+4 (winner/grid plumbing) → 5 (rd arm) → 6 (pack) → 7 (gate). The whole set is
+untestable until (7); build it as one arc, keep the tree COMPILING at each step (add fields with
+defaults, gate the arm off until wired), commit compiling checkpoints.
+
 ## Head-start inventory (REUSE — do not rebuild)
 
 - **Full-pel ME** (`aom-encode/src/intrabc_search.rs`): `FullPelSearch` now carries separate
