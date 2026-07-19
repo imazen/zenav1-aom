@@ -125,6 +125,7 @@ name = "aom-encode"
 version = "0.0.1"
 dependencies = [
  "aom-cdef",
+ "aom-convolve",
  "aom-decode",
  "aom-dist",
  "aom-entropy",

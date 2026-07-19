@@ -14,6 +14,10 @@ aom-recon = { path = "../aom-recon" }
 aom-entropy = { path = "../aom-entropy" }
 aom-dist = { path = "../aom-dist" }
 aom-intra = { path = "../aom-intra" }
+# inter_me.rs (chunk 2d subpel motion search) reuses the byte-exact 8-tap
+# subpel filter tables (SUB_PEL_FILTERS_8*) for the aom_upsampled_pred
+# predictor -- the filter coefficients are never re-transcribed.
+aom-convolve = { path = "../aom-convolve" }
 # lf_search.rs reuses the already bit-exact deblock-filter APPLICATION
 # (aom_loopfilter::frame::loop_filter_frame) as the trial-filter primitive
 # for the loop-filter-level RD search (av1_pick_filter_level) -- never

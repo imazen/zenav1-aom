@@ -14067,6 +14067,54 @@ pub fn ref_build_mc_border(
     dst
 }
 
+// me_shim.c — inter-encoder motion search oracle (crate aom-encode, chunk 2d):
+// the real `aom_upsampled_pred_c` subpel predictor (lowbd, USE_8_TAPS).
+extern "C" {
+    fn shim_upsampled_pred(
+        r: *const u8,
+        ref_stride: i32,
+        width: i32,
+        height: i32,
+        subpel_x_q3: i32,
+        subpel_y_q3: i32,
+        dst: *mut u8,
+    );
+}
+
+/// Reference libaom `aom_upsampled_pred_c` (reconinter_enc.c:462), lowbd,
+/// unscaled, USE_8_TAPS (EIGHTTAP_REGULAR): the fixed-phase 8-tap subpel
+/// predictor the speed-0 subpel motion search builds
+/// (`av1_find_best_sub_pixel_tree` -> `upsampled_pref_error`). `refb`/`ref_off`
+/// point at the fullpel reference block origin (with >= 3 samples of border
+/// before and >= 4 after in each subpel-filtered direction);
+/// `subpel_x_q3`/`subpel_y_q3` are 1/8-pel phases in `0..=7`. Returns the
+/// `width`x`height` predictor (u8, stride `width`).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_upsampled_pred(
+    refb: &[u8],
+    ref_off: usize,
+    ref_stride: usize,
+    width: usize,
+    height: usize,
+    subpel_x_q3: usize,
+    subpel_y_q3: usize,
+) -> Vec<u8> {
+    ref_init();
+    let mut dst = vec![0u8; width * height];
+    unsafe {
+        shim_upsampled_pred(
+            refb.as_ptr().add(ref_off),
+            ref_stride as i32,
+            width as i32,
+            height as i32,
+            subpel_x_q3 as i32,
+            subpel_y_q3 as i32,
+            dst.as_mut_ptr(),
+        )
+    }
+    dst
+}
+
 // warp_shim.c — decoder local-warped-motion core (crate aom-inter, warp module,
 // chunk 5): the real `av1_warp_affine_c` kernel + `av1_find_projection` /
 // `av1_get_shear_params` model derivation.

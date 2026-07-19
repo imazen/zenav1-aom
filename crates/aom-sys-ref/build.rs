@@ -43,6 +43,7 @@ fn main() {
         "inter_shim",
         "warp_shim",
         "obmc_shim",
+        "me_shim",
     ] {
         let shim_c = shim_dir.join(format!("{name}.c"));
         let obj = out_dir.join(format!("{name}.o"));
