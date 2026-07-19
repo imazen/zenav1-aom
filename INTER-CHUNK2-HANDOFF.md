@@ -15,6 +15,7 @@ verified by decode-both.
 | **2d.4** coded-MV rate | `dc8ae93` | `aom_encode::inter_me::mv_bit_cost` — `av1_mv_bit_cost` (mcomp.c:307): the NEWMV RD rate (weight 108/120). `mv_err_cost_entropy` (the motion-search variance-metric cost) is a shared free fn. | `subpel_tree_diff.rs::mv_bit_cost_matches_real_c` (8000 cells). |
 | **2d.5** MV cost tables | `54dd141` | `aom_encode::intrabc_search::fill_nmv_costs(precision, joints, comp0, comp1)` — `av1_build_nmv_cost_table` (encodemv.c:294): the REAL per-frame inter MV cost tables (`x->mv_costs`) the motion search consumes, at LOW/HIGH precision. Generalizes the intrabc `fill_dv_costs` (which is now this at `MV_SUBPEL_NONE`) with the fp/hp cost fills. | `aom-encode/tests/nmv_cost_table_diff.rs` — default + 24 random contexts × NONE/LOW/HIGH byte-match the 4 joint costs + both full magnitude tables; anti-vacuity + `fill_dv_costs` tie. |
 | **2d.6** full-pel search | `7188476` | `aom_encode::intrabc_search::full_pixel_search_inter(...)` — `av1_full_pixel_search` (mcomp.c:1768) inter SIMPLE_TRANSLATION speed-0 NSTEP diamond, mesh off. Retargets the intrabc `FullPelSearch` (stride split into src/ref) + the real 2d.5 nmv tables + `get_fullmv_from_mv` rounding. **First real-C validation of the port's full-pel diamond.** | `aom-encode/tests/full_pixel_search_diff.rs` — `(var_cost, best_row, best_col)` byte-match real C across ~670 cells (sizes × random + converging content × integer/subpel ref MVs × step params). |
+| **2d.7** single_motion_search | `4da5829` | `aom_encode::inter_me::single_motion_search(&SingleMotionSearchParams) -> SingleMotionResult` — `av1_single_motion_search` (motion_search_facade.c:120) glue, reduced to single-ref SIMPLE_TRANSLATION speed-0. Composes the two C-locked halves: `set_mv_search_range` → `full_pixel_search_inter` (2d.6) → (unless `force_integer_mv`) `set_subpel_mv_search_range` + `find_best_sub_pixel_tree` (2d.2) → `mv_bit_cost` (2d.4, `MV_COST_WEIGHT`=108). Drops the lag-0/speed-0-inert arms (TPL gather, `skip_fullpel_search_using_startmv_refmv`, second_best_mv/cost_list). **The entire single-ref ME is now composed + callable — the RD loop (2f) calls this for NEWMV.** | `aom-encode/tests/single_motion_search_composition.rs` — (1) glue faithfulness vs a hand-composed pipeline (200+ cells × sizes/ref-MVs/step/force-int); (2) convergence to the true shift on unimodal content incl. the guaranteed zero-MV case. (Real-C `av1_single_motion_search` differential deferred: needs a full `MACROBLOCK`/`AV1_COMP` shim; both halves are already real-C-locked, so this is pure composition.) |
 
 New oracle: `aom-sys-ref/shim/me_shim.c` (`shim_upsampled_pred`, `shim_find_best_sub_pixel_tree`,
 `shim_get_mvpred_sse`, `shim_mv_bit_cost`, **`shim_build_nmv_cost_table`**, **`shim_full_pixel_search`**)
@@ -24,15 +25,41 @@ New oracle: `aom-sys-ref/shim/me_shim.c` (`shim_upsampled_pred`, `shim_find_best
 `av1_init_motion_compensation[NSTEP]` (level 0, ref stride), per-size `aom_*_c` SAD/variance fn
 ptrs, mesh forced off (`force_mesh_thresh = INT_MAX`).
 
-**So 2d — the ENTIRE single-ref motion search — is DONE and real-C-locked.** All primitives:
-full-pel (`full_pixel_search_inter`, 2d.6), subpel tree (2d.2), `upsampled_pred` (2d.1),
-`get_mvpred_sse` (2d.3), `mv_bit_cost` (2d.4), the real MV cost tables (`fill_nmv_costs`, 2d.5),
-`aom_dist::variance`/SAD (pre-locked). 2b (RC) is DONE. **The only ME piece not built is the
-composition glue `av1_single_motion_search`** (full-pel → subpel) — but both halves are C-locked,
-so it is pure glue (no new kernel). Follow-ups deferred as speed≥1 / later chunks: the inter
-exhaustive mesh (needs `mv_sf->mesh_patterns`, distinct from intrabc's), the full-pel `cost_list`
-(`calc_int_cost_list`, only used by the pruned-subpel/DRL paths — the speed-0 SUBPEL_TREE does not
-read it), and `second_best_mv`.
+**So 2d — the ENTIRE single-ref motion search — is DONE and real-C-locked, INCLUDING the
+composition glue (2d.7, `4da5829`).** All primitives: full-pel (`full_pixel_search_inter`, 2d.6),
+subpel tree (2d.2), `upsampled_pred` (2d.1), `get_mvpred_sse` (2d.3), `mv_bit_cost` (2d.4), the
+real MV cost tables (`fill_nmv_costs`, 2d.5), `aom_dist::variance`/SAD (pre-locked); the glue
+`single_motion_search` (2d.7). 2b (RC) is DONE. **The single-ref ME surface is now fully composed
+and callable — the RD loop (2f) calls `single_motion_search` for NEWMV.** Follow-ups deferred as
+speed≥1 / later chunks: the inter exhaustive mesh (needs `mv_sf->mesh_patterns`, distinct from
+intrabc's), the full-pel `cost_list` (`calc_int_cost_list`, only used by the pruned-subpel/DRL
+paths — the speed-0 SUBPEL_TREE does not read it), and `second_best_mv`.
+
+## SESSION 2026-07-19 — status + CRITICAL blocker (read before 2f/2g)
+
+**Landed this session:** 2d.7 `single_motion_search` (`4da5829`, verified on origin/main). The ME
+surface is complete. **No byte-exact P-frame is encoded yet — the SKELETON is NOT YET MET.** The
+remaining work is the 2a/2c/2e/2f/2g integration, whose center of gravity (2f) is a multi-file RD
+port. Two MEASURED findings bound what a byte-exact P can even be:
+
+1. **CRITICAL — the inter var-tx COEFF arm is NOT byte-exact yet (KB-15 blocker).** `var_tx.rs`'s
+   `pick_recursive_tx_size_type_yrd` is differential-locked as GLUE but **over-searches vs real C**
+   because the three NN prunes are gated OFF: `prune_tx_2D` (fires on inter sets >5 types),
+   `ml_predict_tx_split`, and `model_based_prune` (`var_tx.rs:205-219`, `:870-871`, `:1055-1059`).
+   ⇒ **Any inter block with a NONZERO residual will pick a different tx size/type than aomenc → NOT
+   byte-exact.** The var-tx arm is BYPASSED for a SKIP block (skip_txfm=1, no coeffs). **Therefore
+   the ONLY byte-exact-achievable P-frame today is a SKIP-ONLY P (zero residual).** Closing coeff
+   blocks needs KB-15's three prunes ported first (a shared prerequisite — it also unblocks intrabc
+   real content).
+2. **The achievable first-gate target is the ZERO-MV P** (`MultiFrameEncodeCell::translational(base,
+   0, 0)` → `frame1 == frame0`): every block codes inter GLOBALMV/NEARESTMV `(0,0)` + skip=1, zero
+   residual, no var-tx, no MV in the bitstream. The decoder handles zero-MV 4:2:0 byte-exact
+   (chunk-0 finding). It still exercises the FULL 2f brain (partition search + inter mode RD picking
+   inter-skip over intra + inter symbols + costs) + 2a (header + ref buffer) + 2g (decode-both) — it
+   just removes coeffs/MV-coding/subpel from the bitstream. A translational (nonzero-MV) P at high cq
+   where the residual quantizes to skip is a second target, but is riskier (edge blocks may carry
+   residual → var-tx blocker). **Ratchet: zero-MV skip P first, then translational-skip, then (after
+   KB-15 prunes) coeff blocks.**
 
 ## Head-start inventory (REUSE — do not rebuild)
 
@@ -98,29 +125,106 @@ Ordered as the roadmap suggests (structure → search wiring → RD → gate):
   mono / luma-inter / zero-MV 4:2:0 / cpu 2,5 4:2:0; arbitrary-content chroma-inter decode is a
   concurrent decoder-track fix).
 
-## Next work (the ME kernel surface is DONE — 2d complete; next is 2f integration)
+## Next work — the 2a–2g INTEGRATION MAP (agent-verified seams, 2026-07-19)
 
-Both pre-2f ME kernels have landed (2d.5 nmv cost tables `54dd141`, 2d.6 full-pel search `7188476`);
-**every motion-search primitive is now real-C-locked.** The remaining path to the byte-exact gate is
-the integration (2a/2c/2e/2f/2g above), whose center of gravity is **2f `handle_inter_mode` RD** —
-none of it is independently byte-testable without the RD loop (unlike the kernels). Suggested order:
+The ME surface is complete (2d.7 landed). Everything below is the RD-loop integration — none of it
+is independently byte-testable without the loop (unlike the kernels). Center of gravity: **2f**, a
+multi-file port mirroring the intrabc leaf arm (KB-15, the direct template — itself still in
+progress). **Target the ZERO-MV skip P first** (see the SESSION 2026-07-19 blocker above). Exact
+seams, verified this session by 5 parallel source surveys:
 
-1. **`av1_single_motion_search` glue** (motion_search_facade.c:120) — pure composition of the two
-   locked halves: `full_pixel_search_inter` (best full-pel) → `find_best_sub_pixel_tree` (start =
-   best full-pel MV) → `mv_bit_cost` (NEWMV rate). No new kernel; a real-C differential needs a
-   heavier shim (full `MACROBLOCK`/`AV1_COMP` state: `mv_costs`, `mbmi_ext`, `mv_search_params`,
-   `sf.mv_sf`, the inert-at-lag0 TPL gather) — or validate the composition on converging content.
-2. **2e MC wire** — add `aom-inter = {path="../aom-inter"}` to `aom-encode/Cargo.toml`; call
-   `aom_inter::build_inter_predictor` per plane. Kernel already byte-exact (decoder uses it); only
-   the 2f caller is new.
-3. **2f `handle_inter_mode` RD** (single-ref, SIMPLE motion, NEWMV/NEAREST/NEAR/GLOBALMV) — the
-   integration center of gravity (see 2f above). Plug the locked ME + `find_inter_mv_refs` +
-   `build_inter_predictor` + var-tx + the inter symbol writers into the leaf RD at
-   `partition_pick.rs:~1375`. Add the inter mode/drl/ref cost tables the RD consumes.
-4. **2a ref buffer + 2g gate** — a `RefFrame` (border-extended recon) + the 2-frame loop; the inter
-   frame-header WRITE machinery is ALREADY byte-exact (`write_frame_header_obu` INTER branch,
-   `aom-entropy/src/header.rs:1486`, anchor-validated) — 2a is value-derivation + ref mgmt, not the
-   bit-writing. Then decode-both at the §3 mono/luma config.
+### 2e — encoder inter MC (the MC crate `aom-inter` is READY)
+`aom_inter::build_inter_predictor` (`crates/aom-inter/src/lib.rs:448`) — lowbd, supports
+REGULAR/SMOOTH/SHARP per-direction filters. Signature:
+`build_inter_predictor(ref_plane, ref_stride, ref_w, ref_h, dst, dst_off, dst_stride, blk_x, blk_y,
+w, h, mv_row, mv_col, ss_x, ss_y, filter_x, filter_y)`. The DECODER's per-plane call pattern
+(`crates/aom-decode/src/lib.rs`: luma `:2758`, chroma whole-block `:2925`, MV per-plane clamp via
+`clamp_mv_to_umv_border_plane`) is the template. Add `aom-inter = { path = "../aom-inter" }` to
+`aom-encode/Cargo.toml`; write an `enc_build_inter_predictor` helper looping planes with chroma
+subsampling. **For the ZERO-MV target this is trivial** (mv=(0,0) → block copy, no interp), so 2e
+is deferrable to the translational chunk. Highbd (bd10/12) NOT supported — a later chunk.
+
+### 2c — inter ref-mv (the fn is byte-exact; wire the encode-side grid)
+`aom_entropy::dv_ref::find_inter_mv_refs(rf0, mi_row, mi_col, bsize, own_partition, up_avail,
+left_avail, tile, frame_mi_rows, frame_mi_cols, mib_size, allow_ref_frame_mvs, global_mv, gm_wmtype,
+sign_bias:[i8;8], allow_high_precision_mv, is_integer_mv, grid: impl DvGrid) -> InterMvRefs`
+(`crates/aom-entropy/src/dv_ref.rs:989`). Returns `InterMvRefs { mode_context, ref_mv_count,
+stack:[(i32,i32);8], weight:[u32;8], nearest, near, global_mv }` — `mode_context` → inter-mode cost;
+`nearest`/`near`/`global_mv`/`stack` → the NEAREST/NEAR/GLOBAL/NEW predictor MVs; `weight`+
+`ref_mv_count` → DRL cost. Consumed via the `DvGrid` trait (a closure `|ro,co| -> DvNbr` works).
+The encoder maintains a parallel `DvNbr` grid (like the decoder's `mi_dv`, `lib.rs:1320`), stamping
+each decided block's `DvNbr { bsize, ref_frame0, ref_frame1, use_intrabc, mode, mv0_row/col,
+mv1_row/col }` (`dv_ref.rs:64`) — **the `DvCell`/`DvNbr` slots already exist** (intrabc hardcodes
+INTRA_FRAME/NONE; inter fills real ref_frame+mv). For zero-MV, NEAREST/NEAR/GLOBAL all resolve to
+`(0,0)`; still needs the `mode_context` for the mode cost. Decoder call template:
+`aom-decode/src/lib.rs:2419`.
+
+### 2f — `handle_inter_mode` RD (THE integration center; mirror the intrabc arm)
+**Integration point: `rd_pick.rs:422` (step 6 of `rd_pick_intra_mode_sb`)** — exactly where
+`rd_pick_intrabc_mode_sb` already competes an intrabc winner against the assembled intra RD (take the
+min). An inter mode-RD slots in as a sibling arm. The intrabc scaffold threads a single "reference"
+(current frame) + DV=mv + skip through every seam inter needs — mirror it:
+- **`leaf_pick_sb_modes` (`partition_pick.rs:687`)**: add an `InterLeafArgs` builder (mirror the
+  intrabc block at `partition_pick.rs:1259-1336`) fed from a new `PickFrameCfg::inter`
+  (`PickFrameCfg` at `partition_pick.rs:506`, `intrabc:` field at `:595` is the sibling template).
+- **`LeafWinner` (`encode_sb.rs:167`)**: add inter fields beside the existing intrabc DV fields
+  (`use_intrabc`/`dv_row/col`/`dv_ref_row/col` at `:222-229`): `is_inter`, `ref_frame:[i8;2]`,
+  `inter_mode`, `mv:[MV;2]`, `interp_filter`, `ref_mv_idx`/`drl_idx`, and the var-tx
+  `inter_tx_size[16]` plan (replaces the uniform `tx_size` for inter). rate/dist live in
+  `raw_rdstats`.
+- **`ModeGrid` (`partition_pick.rs:317`)**: `DvCell::to_nbr` (`intrabc_search.rs:1118`) hardcodes
+  INTRA_FRAME/NONE — extend the stamped cell to carry real ref_frame+mv+mode. 25 `grid.stamp` sites
+  (agent-listed; the bulk are in `stamp_grid_from_tree` `partition_pick.rs:3371`).
+- **`encode_b_intra_dry` (`encode_sb.rs:521`)**: add an inter recon arm modeled on the intrabc arm
+  (`:555-627`) — predict from the REFERENCE frame via `enc_build_inter_predictor` (2e), then either
+  the SKIP path (reset coeff entropy ctx to skip, like intrabc `:572-573` — **this is all the
+  ZERO-MV target needs**) OR the var-tx coeff arm (blocked, see SESSION blocker).
+- **`pack_leaf` (`pack.rs:377`)**: intrabc already writes `use_intrabc` + DV diff and gates the
+  tx/coeff syntax (`:499`); pack notes at `:487-497` already contemplate the inter tx-size write.
+  Add: `write_is_inter`, `write_ref_frames`, `write_inter_mode`, `write_drl_mode`, skip, and (for
+  NEWMV) the MV coder — **all byte-exact in `aom-entropy` partition module already**.
+- **Inter mode/ref/skip COST tables**: `derive_real_costs` (`real_costs.rs`) already sources
+  `inter_ext_tx` (2d, `44bc51c`); add the inter_mode/newmv/zeromv/refmv/drl/single_ref/intra_inter/
+  comp_mode default CDFs → costs (several already in `default_cdfs.rs`). `find_inter_mv_refs.mode_
+  context` feeds these.
+- **var-tx** (nonzero-residual blocks only): `var_tx::pick_recursive_tx_size_type_yrd(env:&VarTxEnv,
+  ref_best_rd) -> VarTxResult` (`var_tx.rs:1060`). `VarTxEnv`/`VarTxResult` fully field-mapped;
+  construction template = `crates/aom-encode/tests/var_tx_recursion_diff.rs:477`. **BLOCKED on the 3
+  NN prunes** (KB-15 §REMAINING items 1-3) before coeff blocks byte-match. Intra tx-search analog
+  (mirror structure): `tx_search.rs:2555`.
+
+### 2a — encode ref management + inter frame-header VALUES (writer is byte-exact)
+The WRITER is done: `write_frame_header_obu` (`crates/aom-entropy/src/header.rs:1469`), inter arm
+`:1486-1502`; INTER anchor test `header_diff.rs:1823` (expected `[0x30,0x3F,0xC0,0x00,0x00,0x02,0x40,
+0x00,0x00]`). 2a = derive the VALUES into `FrameHeaderObu` (`header.rs:1411`) +
+`FrameHeaderPrefix` (`:1101`) + `InterRefSignaling` (`:1297`). The KEY path BOOTSTRAPS values by
+parsing a real header (`aom-bench/src/lib.rs:997`, `read_uncompressed_header` at `:1059`); the P
+path must DERIVE them. §3 low-delay P (frame 1 → frame 0) values (agent-verified vs C):
+`frame_type=1`, `order_hint=1`, `error_resilient_mode=0`, `primary_ref_frame=7 (NONE)`,
+`frame_refs_short_signaling=0`, `ref_map_idx[7]` all → frame-0's slot, `refresh_frame_flags` = a
+free slot (`get_refresh_frame_flags`, encode_strategy.c:655), `allow_high_precision_mv=1`,
+`interp_filter=SHARP`/SWITCHABLE, `switchable_motion_mode=0`, `allow_ref_frame_mvs` gated.
+C derivation: `choose_primary_ref_frame` (encode_strategy.c:168), `get_ref_frame_flags`
+(encoder.h:4331). **Also needs a `RefFrame` on the encode side** (border-extended recon Y/U/V of
+frame 0 + order_hint; decoder's `RefFrame` at `aom-decode/src/lib.rs:652` is the shape) + the
+2-frame low-delay loop. NOTE: the recon-dependent header tail (LF levels, cdef) needs 2f's recon —
+only the inter-specific fields above are derivable standalone (test them vs the parsed real frame-1
+header).
+
+### 2g — the decode-both gate
+Add `port_encode_inter` to `MultiFrameEncodeCell` (`aom-bench/src/lib.rs:1945`): frame 0 KEY via
+`frame0_cell().port_encode(bootstrap)` (existing, byte-exact), frame 1 P via the new 2f path,
+concatenate. Then `inter_localize::decode_both(port_stream, cell.c_encode_inter(false, false))`
+== 0 divergence at the ZERO-MV 4:2:0 cpu-0 config (`MultiFrameEncodeCell::translational(base,0,0)`).
+
+### Suggested order (smallest-demoable-first, toward the ZERO-MV gate)
+1. **2a ref buffer + inter frame-header VALUES** — testable standalone vs the parsed real frame-1
+   header (inter fields). Net-new, isolated.
+2. **2f inter RD arm, SKIP-only, GLOBALMV/NEARESTMV(0,0)** — the minimal 2f: no motion search, no
+   var-tx, no MV coding; just is_inter/ref/mode/skip RD + pack, competing inter-skip vs intra at
+   `rd_pick.rs:422`. This is the bulk of the work but bounded (no coeffs).
+3. **2g decode-both** at zero-MV → close the SKELETON.
+4. Then: 2e MC + NEWMV (translational-skip target), then KB-15's 3 var-tx prunes → coeff blocks.
 
 Deferred ME follow-ups (speed≥1 / not needed for the speed-0 SIMPLE gate): the inter exhaustive mesh
 (`mv_sf->mesh_patterns`), the full-pel `cost_list` (`calc_int_cost_list`), `second_best_mv`.
