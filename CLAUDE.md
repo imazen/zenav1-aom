@@ -340,7 +340,8 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   1. **Harness two-pass (#32):** `run_case` now mirrors the decoder's two-pass lossless probe —
      parse, compute coded_lossless from the probe's quant params (base_qindex==0 && all 5 plane
      q-deltas 0), re-parse with `cfg.coded_lossless/all_lossless=true`.
-  2. **Forward WHT (#33):** `av1_fwht4x4` ported into aom-transform (bit-exact vs `av1_fwht4x4_c`,
+  2. **Forward WHT (#33):** `av1_fwht4x4` ported into aom-dsp's `transform` module
+     (`crates/aom-dsp/src/transform/inv_txfm2d.rs`; bit-exact vs `av1_fwht4x4_c`,
      gated by `fwht4x4_diff`); `QuantParams` gained a `lossless` flag; `xform_quant` (lib.rs) and
      every encoder recon site (encode_intra / tx_search / intra_uv_rd) route coded-lossless TX_4X4
      through WHT/IWHT via `av1_inverse_transform_add(.., eob, lossless)`. The SATD fast model stays
@@ -1028,14 +1029,18 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   sites), `encode_b_intra_dry` intrabc arm (predict-from-recon + skip entropy reset + skip txfm ctx),
   `pack_leaf` (use_intrabc + DV diff, skip tx/coeff), harness (hash from source luma, LF forced 0,
   `ToggleKnobs::enable_intrabc`, `PackCfg::allow_intrabc`).
-- **PINNED — real-content byte-exactness blocked on the inter var-tx COEFF ARM (the L piece).**
+- **[SUPERSEDED 2026-07-19 — historical, as of 2026-07-18. Every "NOT ported" item below has
+  since LANDED; see the three PROGRESS 2026-07-19 entries and the DV-clamp fix (`434b865d`).
+  Kept for the measured census only. Do NOT read its remaining-work list as current.]**
+  **PINNED — real-content byte-exactness blocked on the inter var-tx COEFF ARM (the L piece).**
   Real screen content codes the MAJORITY of intrabc blocks via the COEFF arm (nonzero quantized
   residual) and as NON-SQUARE shapes: measured on a 196² conformance crop (`intra_only-intrabc-
   extreme-dv` @ (480,180) cq48), C uses **49 intrabc blocks = 39 coeff-arm + 42 non-square, only 10
   skip**. The port codes those blocks as intra and the frame diverges. NOT ported (the remaining
   work): `av1_pick_recursive_tx_size_type_yrd` inter var-tx quadtree (`select_tx_size_and_type` /
   `select_tx_block` / `try_tx_block_no_split`/`_split`) + `prune_tx_2D` + `ml_predict_tx_split` NN
-  prunes + the var-tx WRITE path in pack (`write_tx_size_vartx` exists in aom-entropy, unused by
+  prunes + the var-tx WRITE path in pack (`write_tx_size_vartx` exists in aom-entropy — post-reorg
+  that is `crates/aom-dsp/src/entropy/partition.rs` — unused by
   pack) + `derive_real_costs` inter tx-cost fill (currently a DUMMY zero cdf; source from
   `kf.inter_ext_tx`). The 420 skip subset ALSO needs a chroma-eob-0 check (currently `chroma_sse==0`,
   exact-only). No synthetic content found that makes aomenc use ONLY skip-square intrabc (intra wins
@@ -1257,7 +1262,7 @@ to be done before "the rest"=inter-frame, but lower priority than the primary de
 - **Loop-restoration (Wiener/SGR) search — DONE ✅ (2026-07-18), BIT-IDENTICAL + DEFAULT-WIRED**:
   loop-restoration is **ON by default** in allintra (speeds 0-4; NOT a non-default knob — the
   prior "off by default" note here was WRONG, see the corrected primary-envelope note above). The
-  byte-exact `av1_pick_filter_restoration` search (`aom-restore/src/pick.rs`; PARITY C2) is now
+  byte-exact `av1_pick_filter_restoration` search (`crates/aom-dsp/src/restore/pick.rs`; PARITY C2) is now
   wired into the port's DEFAULT path (`aom-bench::EncodeCell::port_encode` derives the LR stage
   from the frame's `enable_restoration` = C's `is_restoration_used`). Gates: `lr_restoration_gate`
   (the search, 8/8 real content + 3/3 mono/444/bd12 format axis) + **`lr_default_parity`** (the
