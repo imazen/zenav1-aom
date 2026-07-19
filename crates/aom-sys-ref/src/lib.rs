@@ -14115,6 +14115,115 @@ pub fn ref_upsampled_pred(
     dst
 }
 
+// me_shim.c (cont.) — the REAL av1_find_best_sub_pixel_tree subpel search.
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_find_best_sub_pixel_tree(
+        src: *const u8,
+        src_stride: i32,
+        ref_at_origin: *const u8,
+        ref_stride: i32,
+        w: i32,
+        h: i32,
+        start_row: i32,
+        start_col: i32,
+        ref_mv_row: i32,
+        ref_mv_col: i32,
+        mvjcost: *const i32,
+        mvcost0: *const i32,
+        mvcost1: *const i32,
+        error_per_bit: i32,
+        allow_hp: i32,
+        forced_stop: i32,
+        iters_per_step: i32,
+        row_min: i32,
+        row_max: i32,
+        col_min: i32,
+        col_max: i32,
+        out_best_row: *mut i32,
+        out_best_col: *mut i32,
+        out_distortion: *mut i32,
+        out_sse: *mut u32,
+    ) -> i32;
+}
+
+/// Result of the reference `av1_find_best_sub_pixel_tree`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RefSubpelResult {
+    pub best_mv: (i32, i32),
+    pub distortion: i32,
+    pub sse: u32,
+    pub besterr: u32,
+}
+
+/// Reference libaom `av1_find_best_sub_pixel_tree` (mcomp.c:3266), lowbd,
+/// unscaled, single-ref, USE_8_TAPS (speed-0 allintra/GOOD). `src` is the tight
+/// `w`×`h` source block; `refb`/`ref_origin` locate the reference `buf_2d`
+/// origin (MV 0) on a border-extended reference plane. `mvcost0_full`/
+/// `mvcost1_full` are the FULL per-component cost tables (length `2*MV_MAX+1`,
+/// value `v` at index `MV_MAX + v`) — the wrapper centres them. `limits` is
+/// `(row_min, row_max, col_min, col_max)` in 1/8-pel. Returns C's `bestmv`,
+/// `distortion`, `sse`, and the function's `besterr` return value.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_find_best_sub_pixel_tree(
+    src: &[u8],
+    src_stride: usize,
+    refb: &[u8],
+    ref_origin: usize,
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+    start_mv: (i32, i32),
+    ref_mv: (i32, i32),
+    mvjcost: &[i32; 4],
+    mvcost0_full: &[i32],
+    mvcost1_full: &[i32],
+    error_per_bit: i32,
+    allow_hp: bool,
+    forced_stop: i32,
+    iters_per_step: i32,
+    limits: (i32, i32, i32, i32),
+) -> RefSubpelResult {
+    ref_init();
+    const MV_MAX: usize = (1 << 14) - 1;
+    let (mut br, mut bc, mut dist, mut sse) = (0i32, 0i32, 0i32, 0u32);
+    let besterr = unsafe {
+        shim_find_best_sub_pixel_tree(
+            src.as_ptr(),
+            src_stride as i32,
+            refb.as_ptr().add(ref_origin),
+            ref_stride as i32,
+            w as i32,
+            h as i32,
+            start_mv.0,
+            start_mv.1,
+            ref_mv.0,
+            ref_mv.1,
+            mvjcost.as_ptr(),
+            mvcost0_full.as_ptr().add(MV_MAX),
+            mvcost1_full.as_ptr().add(MV_MAX),
+            error_per_bit,
+            allow_hp as i32,
+            forced_stop,
+            iters_per_step,
+            limits.0,
+            limits.1,
+            limits.2,
+            limits.3,
+            &mut br,
+            &mut bc,
+            &mut dist,
+            &mut sse,
+        )
+    };
+    RefSubpelResult {
+        best_mv: (br, bc),
+        distortion: dist,
+        sse,
+        besterr: besterr as u32,
+    }
+}
+
 // warp_shim.c — decoder local-warped-motion core (crate aom-inter, warp module,
 // chunk 5): the real `av1_warp_affine_c` kernel + `av1_find_projection` /
 // `av1_get_shear_params` model derivation.
