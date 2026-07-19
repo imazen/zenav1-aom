@@ -7,39 +7,51 @@
 //! mi(32,80)/(36,80)/(44,18)) + inter var-tx. Single `LAST` ref throughout
 //! (NO compound — verified by census, so the single-ref driver suffices).
 //!
-//! STATUS (self-promoting frame-1 probe): frame 0 (KEY) is byte-exact, and the
-//! ENTIRE inter BODY now decodes in arithmetic-sync — SIMPLE + OBMC (above/left +
-//! chroma) + WARPED_CAUSAL + inter var-tx all parse + reconstruct through the
-//! whole frame after the OBMC-chroma landing (0ca3775) + the interintra kernels
-//! (f17ee31) + the txfm-context fix (080a2bb, the mi(32,0) TX_32X64 desync). The
-//! probe now PINS on the FIRST `is_inter == 0` block (intra-in-inter), the last
-//! two remaining features:
+//! STATUS: **MILESTONE MET** — frame 0 (KEY) and frame 1 (inter) both decode
+//! BYTE-IDENTICAL to the golden MD5s. This file was a self-promoting probe that
+//! pinned on whatever feature the decode reached next; it is now a hard gate.
 //!
-//!   1. **intra-in-inter** (3 DC blocks): the `is_inter == 0` arm of
-//!      read_inter_frame_mode_info (decodemv.c:1547). Per the C spec, this is the
-//!      EXISTING byte-exact KEY intra decode (read_mb_modes_kf_fc +
-//!      decode_token_recon_block, the `else` branch at lib.rs:3409+) with exactly
-//!      TWO parse differences: (a) `y_mode_cdf[size_group_lookup[bsize]]` instead
-//!      of the neighbour-context kf_y_mode (a NEW `default_y_mode_cdf`
-//!      [BLOCK_SIZE_GROUPS][INTRA_MODES], NOT yet ported — add to
-//!      xtask/gen_default_cdfs.py + thread on InterCdfs), and (b) NO intrabc read
-//!      (frame_is_intra_only false). uv_mode/angle/filter_intra/cfl/tx_size/coeff
-//!      CDFs already live in `cdfs`; the INTRA tx-size (read_selected_tx_size, NOT
-//!      var-tx), intra tx-type (intra_ext_tx_cdf, dir = filter-intra-adjusted
-//!      y_mode via fimode_to_intradir), predict + reconstruct all reuse the KEY
-//!      path unchanged (recon routes on `is_inter_block == false`, so
-//!      ref_frame=[INTRA,NONE] fires the KEY intra recon with no special-casing).
-//!      For q63 all 3 are DC (no angle/cfl read; palette off — non-screen); one
-//!      codes filter-intra.
-//!   2. **interintra prediction WIRING** (2 blocks): the kernels are done +
-//!      differential-locked (`aom-inter/src/interintra.rs`,
-//!      `aom-inter/tests/interintra_diff.rs`); the read (`read_interintra_info`,
-//!      already in aom-entropy) + the per-plane build-intra + combine_interintra
-//!      blend must replace the `assert interintra == 0` guard in decode_block_inter.
+//! The last landing closed FOUR gaps, not the two originally scoped. The extra
+//! two only became reachable once the first was fixed — each was masking the next:
 //!
-//! When both land, this probe self-promotes to the hard golden byte-identity
-//! gate below (MILESTONE MET). All prior inter ratchet gates
-//! (16x16/18/34/66, 64x66) stay byte-exact.
+//!   1. **intra-in-inter** (3 DC blocks, at mi(32,80)/(36,80)/(44,18)): the
+//!      `is_inter == 0` arm of read_inter_frame_mode_info (decodemv.c:1550). It is
+//!      the EXISTING byte-exact KEY intra decode with exactly TWO parse
+//!      differences: (a) the Y mode reads `y_mode_cdf[size_group_lookup[bsize]]`
+//!      (:1077) instead of the neighbour-context `kf_y_cdf` (:815), and (b) no
+//!      intrabc read (`av1_allow_intrabc` is frame_is_intra_only-gated). Landed by
+//!      SHARING the KEY mode-info tail and the whole post-mode-info body rather
+//!      than transcribing a second copy — C shares them too (one
+//!      frame-type-independent intra recon visitor pair, decodeframe.c:2756/:2761).
+//!   2. **`get_tx_size_context`'s inter-neighbour override**: C replaces the
+//!      txfm-context term with the neighbour's BLOCK size whenever that neighbour
+//!      `is_inter_block` (`use_intrabc || ref_frame[0] > INTRA_FRAME`). The port
+//!      tested `use_intrabc` alone — correct on a KEY frame (nothing else is ever
+//!      inter there), wrong for an intra block inside an inter frame.
+//!   3. **the skip-block entropy-context reset on the INTER path**: C runs
+//!      `av1_reset_entropy_context` for EVERY skip block (decodeframe.c:1219); the
+//!      port did it only for intra ones. A skipped inter block therefore left stale
+//!      culs in its footprint, and the next block that read across them picked a
+//!      different `txb_skip_cdf` row — the same symbol VALUES on different
+//!      probabilities, so the decode drifted silently and desynced later. This one
+//!      was worth 41 of the frame's 79 blocks on its own.
+//!   4. **interintra prediction wiring** (2 blocks at mi(56,76)/(56,78), one
+//!      wedge): the read (`read_interintra_info`) + per-plane build-intra +
+//!      `combine_interintra` blend, replacing the `assert interintra == 0` guard.
+//!      An interintra block also reads NO motion-mode symbol — C gates that read on
+//!      `ref_frame[1] != INTRA_FRAME` (decodemv.c:1421), so interintra and
+//!      OBMC/WARPED_CAUSAL are mutually exclusive. Kernels were already
+//!      differential-locked (`aom-dsp/src/inter/interintra.rs`,
+//!      `aom-dsp/tests/interintra_diff.rs`).
+//!
+//! Gaps 2 and 3 were found by diffing the port's block walk against the REAL
+//! libaom decoder's own per-block dump and per-symbol accounting
+//! (`CONFIG_INSPECTION=1 CONFIG_ACCOUNTING=1`), which is the tool to reach for
+//! first on any future inter desync: it gives C's exact block list AND its exact
+//! symbol sequence, so a "same value, wrong CDF row" drift is visible immediately
+//! instead of being inferred. All 79 of C's frame-1 blocks now match the port's
+//! walk exactly. All prior inter ratchet gates (16x16/18/34/66, 64x66) stay
+//! byte-exact.
 
 mod common;
 
@@ -128,30 +140,21 @@ fn real_frame_q63_frame0_key_byte_identical() {
     eprintln!("real_frame q63: frame 0 (KEY) byte-identical to golden");
 }
 
-/// SELF-PROMOTING frame-1 gate: asserts the golden byte-match once the full inter
-/// toolset lands; until then, pins on a documented inter-envelope guard and
-/// reports it (so we can see how far the decode advances).
+/// HARD frame-1 gate (PROMOTED from the self-promoting pin — MILESTONE MET):
+/// frame 1 must decode to the golden MD5, byte for byte.
+///
+/// This was a pin that caught the panic and merely reported how far the decode
+/// advanced. Both remaining features have landed, so it is now an ordinary
+/// assertion: any regression — a desync, a panic, or a single wrong pixel — fails
+/// the test instead of being printed and swallowed.
 #[test]
 fn real_frame_q63_frame1_inter() {
     let tus = load_tus();
     let mut stream = tus[0].clone();
     stream.extend_from_slice(&tus[1]);
-    let res = std::panic::catch_unwind(|| decode_frames(&stream));
-    match res {
-        Ok(Ok(frames)) => {
-            assert_eq!(frames.len(), 2, "two shown frames decoded");
-            assert_eq!(image_md5(&frames[0]), GOLDEN_F0, "q63 frame 0 golden");
-            assert_eq!(image_md5(&frames[1]), GOLDEN_F1, "q63 frame 1 (inter) golden");
-            eprintln!("real_frame q63: FULL byte-match — MILESTONE MET");
-        }
-        Ok(Err(e)) => panic!("q63 decode returned an unexpected error (not a pin): {e}"),
-        Err(payload) => {
-            let msg = payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&str>().copied())
-                .unwrap_or("<non-string panic>");
-            eprintln!("real_frame q63: frame-1 PINNED on `{msg}`");
-        }
-    }
+    let frames = decode_frames(&stream).expect("q63 frame 0 + frame 1 decode");
+    assert_eq!(frames.len(), 2, "two shown frames decoded");
+    assert_eq!(image_md5(&frames[0]), GOLDEN_F0, "q63 frame 0 golden");
+    assert_eq!(image_md5(&frames[1]), GOLDEN_F1, "q63 frame 1 (inter) golden");
+    eprintln!("real_frame q63: frame 1 (inter) byte-identical to golden");
 }

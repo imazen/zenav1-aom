@@ -758,6 +758,21 @@ struct InterCdfs {
     motion_mode: [[u16; 4]; 22],
     /// `interintra_cdf[BLOCK_SIZE_GROUPS]` (CDF_SIZE(2)): the inter-intra flag.
     interintra: [[u16; 3]; 4],
+    /// `interintra_mode_cdf[BLOCK_SIZE_GROUPS]` (CDF_SIZE(INTERINTRA_MODES=4)):
+    /// the inter-intra mode, read when the flag is set (decodemv.c:1391).
+    interintra_mode: [[u16; 5]; 4],
+    /// `wedge_interintra_cdf[BLOCK_SIZES_ALL]` (CDF_SIZE(2)): wedge-vs-smooth,
+    /// read when `av1_is_wedge_used(bsize)` (decodemv.c:1398).
+    wedge_interintra: [[u16; 3]; 22],
+    /// `wedge_idx_cdf[BLOCK_SIZES_ALL]` (CDF_SIZE(MAX_WEDGE_TYPES=16)): the
+    /// wedge shape (decodemv.c:1402). Shared with inter-inter COMPOUND_WEDGE.
+    wedge_idx: [[u16; 17]; 22],
+    /// `y_mode_cdf[BLOCK_SIZE_GROUPS]` (CDF_SIZE(INTRA_MODES=13)): the Y mode of
+    /// an INTRA block inside this inter frame (`read_intra_block_mode_info`,
+    /// decodemv.c:1077) — the size-group table, NOT the KEY frame's
+    /// neighbour-context `kf_y_cdf`. Lives here rather than on [`KfFrameContext`]
+    /// because the KEY-frame path never codes it.
+    y_mode: [[u16; 14]; 4],
 }
 
 impl InterCdfs {
@@ -776,6 +791,10 @@ impl InterCdfs {
             obmc: d::DEFAULT_OBMC,
             motion_mode: d::DEFAULT_MOTION_MODE,
             interintra: d::DEFAULT_INTERINTRA,
+            interintra_mode: d::DEFAULT_INTERINTRA_MODE,
+            wedge_interintra: d::DEFAULT_WEDGE_INTERINTRA,
+            wedge_idx: d::DEFAULT_WEDGE_IDX,
+            y_mode: d::DEFAULT_Y_MODE,
         }
     }
 
@@ -2447,7 +2466,93 @@ impl<'c> TileKf<'c> {
             left_dv.is_some_and(dv_inter),
         ) as usize;
         let is_inter = ep::read_is_inter(dec, &mut icdfs.intra_inter[ii_ctx], false, false);
-        assert_eq!(is_inter, 1, "inter skeleton: the single block is inter");
+
+        // --- is_inter == 0: an INTRA-coded block inside this inter frame
+        // (`read_inter_frame_mode_info`'s else-arm, decodemv.c:1550). Everything
+        // from here on is the EXISTING byte-exact KEY-frame intra decode: the
+        // mode-info tail (shared with `read_mb_modes_kf_fc`, differing only in
+        // the Y-mode CDF) then `decode_intra_block_body` (shared verbatim — C
+        // installs one frame-type-independent intra recon visitor pair,
+        // decodeframe.c:2756/:2761). The block reads `ref_frame = [INTRA_FRAME,
+        // NONE_FRAME]`, so `is_inter_block` is false for it and every downstream
+        // gate (tx-size's `inter_block_tx`, `av1_read_tx_type`'s `inter_block`,
+        // `decode_token_recon_block`'s branch) takes its intra arm unchanged.
+        if is_inter == 0 {
+            // Persist the inter CDFs adapted so far — `read_is_inter` mutated
+            // `intra_inter[ii_ctx]`, and the intra path below never touches
+            // `icdfs` again except for the Y-mode row (written back inline).
+            let chroma_ref = !cfg.monochrome && is_chroma_reference(mi_row, mi_col, bsize, ss_x, ss_y);
+            let cfl_allowed =
+                !cfg.monochrome && is_cfl_allowed(bsize, self.st.coded_lossless, ss_x, ss_y);
+            let (above_palette, left_palette) = self.palette_neighbours(mi_row, mi_col);
+            self.st.mi_row = mi_row;
+            self.st.mi_col = mi_col;
+            self.st.bsize = bsize;
+            self.st.is_chroma_ref = chroma_ref;
+            self.st.cfl_allowed = cfl_allowed;
+            self.st.mb_to_top_edge = -(mi_row * 32);
+            self.st.has_above = up_available;
+            self.st.has_left = left_available;
+            self.st.allow_palette = av1_allow_palette(cfg.allow_screen_content_tools, bsize);
+            // The prefix `read_inter_frame_mode_info` already consumed
+            // (segmentation / delta-q / skip-mode are asserted off above, so
+            // segment_id is 0 and the delta-lf carry is the frame default).
+            let mut info = MbModeInfoKf {
+                segment_id: 0,
+                skip,
+                cdef_strength,
+                current_qindex: cfg.base_qindex,
+                delta_lf: [0; 4],
+                delta_lf_from_base: 0,
+                use_intrabc: 0,
+                dv_row: 0,
+                dv_col: 0,
+                y_mode: 0,
+                angle_delta_y: 0,
+                uv_mode: 0,
+                cfl_alpha_idx: 0,
+                cfl_joint_sign: 0,
+                angle_delta_uv: 0,
+                palette_size: [0, 0],
+                palette_colors: [0; 24],
+                use_filter_intra: 0,
+                filter_intra_mode: 0,
+            };
+            // `y_mode_cdf[size_group_lookup[bsize]]` (decodemv.c:1077). Copied
+            // out and written back so the adaptation persists across blocks,
+            // exactly as C adapts `ec_ctx->y_mode_cdf` in place.
+            let grp = ep::y_mode_size_group(bsize);
+            let mut y_cdf = icdfs.y_mode[grp];
+            ep::read_intra_block_mode_info_fc(
+                dec,
+                cdfs,
+                &mut self.st,
+                &mut y_cdf,
+                cfg.enable_filter_intra,
+                above_mi.is_some(),
+                left_mi.is_some(),
+                above_palette,
+                left_palette,
+                &mut info,
+            );
+            icdfs.y_mode[grp] = y_cdf;
+            self.inter_cdfs = icdfs;
+            self.decode_intra_block_body(
+                dec,
+                cdfs,
+                mi_row,
+                mi_col,
+                bsize,
+                partition,
+                info,
+                chroma_ref,
+                up_available,
+                left_available,
+                above_mi,
+                left_mi,
+            );
+            return;
+        }
 
         // --- read_inter_block_mode_info (single reference) ---
         let rc = ep::collect_neighbors_ref_counts(
@@ -2582,21 +2687,43 @@ impl<'c> TileKf<'c> {
             _ => panic!("inter skeleton: unexpected single-ref mode {mode}"),
         };
 
-        // interintra flag (decodemv.c:1387 — AFTER assign_mv, BEFORE findSamples /
-        // read_motion_mode). Coded for an interintra-allowed single-ref inter
-        // block when `enable_interintra_compound`. It is 0 for every block in this
-        // target (no inter-intra prediction), but the flag read is REQUIRED for
-        // entropy sync — even a 0 narrows the arithmetic range. The mode/wedge
-        // sub-reads (flag == 1) are a later chunk (guarded). The BLOCK_16X8 OBMC
-        // block is interintra-allowed (8x8..32x32); the BLOCK_4X16 strips are not.
-        if inter.enable_interintra_compound && is_interintra_allowed(bsize, mode, ref0, ref1) {
+        // Inter-intra (decodemv.c:1383-1407 — AFTER assign_mv, BEFORE findSamples /
+        // read_motion_mode): the flag, then (when set) the mode and the optional
+        // wedge flag + shape index. Coded for an interintra-allowed single-ref
+        // inter block when `enable_interintra_compound`. `av1_is_wedge_used` is
+        // true for EVERY interintra-allowed bsize (BLOCK_8X8..BLOCK_32X32 all have
+        // 16 wedge types), so the wedge flag is always read when the mode is —
+        // carried as a gate anyway, matching C.
+        let mut ref1 = ref1;
+        let (interintra, ii_mode, ii_use_wedge, ii_wedge_idx) = if inter
+            .enable_interintra_compound
+            && is_interintra_allowed(bsize, mode, ref0, ref1)
+        {
             let grp = SIZE_GROUP_LOOKUP[bsize];
-            let interintra = read_symbol(dec, &mut icdfs.interintra[grp], 2);
-            assert_eq!(
-                interintra, 0,
-                "chunk 4+: inter-intra prediction not yet handled (block {bsize} @ mi({mi_row},{mi_col}))"
+            // Four DISJOINT fields of `icdfs`, so the borrows do not conflict.
+            let r = ep::read_interintra_info(
+                dec,
+                true,
+                &mut icdfs.interintra[grp],
+                &mut icdfs.interintra_mode[grp],
+                aom_dsp::inter::interintra::is_wedge_used(bsize),
+                &mut icdfs.wedge_interintra[bsize],
+                &mut icdfs.wedge_idx[bsize],
             );
-        }
+            if r.0 != 0 {
+                // `mbmi->ref_frame[1] = INTRA_FRAME` (decodemv.c:1393). This is
+                // load-bearing beyond bookkeeping: `av1_findSamples` counts a warp
+                // sample only for a neighbour with `ref_frame[1] == NONE_FRAME`
+                // (-1), so an interintra neighbour must NOT look single-ref there.
+                // (`collect_neighbors_ref_counts` and the MV scan both gate on
+                // `> INTRA_FRAME`, so they are unaffected either way.)
+                ref1 = 0;
+            }
+            r
+        } else {
+            (0, 0, 0, 0)
+        };
+        let interintra = interintra != 0;
 
         // read_motion_mode (decodemv.c:1422 — BEFORE read_mb_interp_filter). A
         // symbol is read only when the frame allows switchable motion modes AND
@@ -2606,7 +2733,14 @@ impl<'c> TileKf<'c> {
         // motion_mode_cdf (WARP ceiling); the resolved mode may still be SIMPLE.
         // The earlier targets read nothing (64x64 skeleton: no neighbours; 16x16
         // ratchet: BLOCK_16X4 fails the size gate). WARPED_CAUSAL is chunk 5.
-        let motion_mode = if inter.switchable_motion_mode {
+        //
+        // An INTER-INTRA block reads NO motion-mode symbol: C gates the whole read
+        // on `mbmi->ref_frame[1] != INTRA_FRAME` (decodemv.c:1421) after seeding
+        // `motion_mode = SIMPLE_TRANSLATION` (:1414), so inter-intra and
+        // OBMC/WARPED_CAUSAL are mutually exclusive by construction.
+        let motion_mode = if interintra {
+            0 // SIMPLE_TRANSLATION — no symbol read
+        } else if inter.switchable_motion_mode {
             let ceiling = self.motion_mode_ceiling(mi_row, mi_col, bsize, mode, ref0, ref1, inter);
             ep::read_motion_mode(
                 dec,
@@ -2836,6 +2970,55 @@ impl<'c> TileKf<'c> {
             "chunk 4: non-uniform inter var-tx not yet handled (block {bsize} @ mi({mi_row},{mi_col}))"
         );
 
+        // --- parse_decode_block tail (decodeframe.c:1219): a SKIP block resets
+        // its entropy-context footprint to zero (`av1_reset_entropy_context`,
+        // blockd.c:58) — plane 0 always, chroma planes when this block is the
+        // chroma reference, each over its own plane_bsize footprint. This is NOT
+        // intra-specific: C runs it for every skipped block before
+        // `decode_token_recon_block`, and a skip block reads (and therefore
+        // stamps) no coefficients, so without the reset the footprint keeps the
+        // stale culs of whatever block last occupied those context cells.
+        //
+        // The port had this only on the intra path. It stayed invisible while the
+        // probe pinned before any block could read across a skipped inter
+        // neighbour's stale cells; the first real victim is mi(44,18) (the first
+        // intra-in-inter block), whose LEFT neighbour mi(44,16) is a skipped inter
+        // block: its stale non-zero culs flip mi(44,18)'s `txb_skip_ctx`, so all
+        // three of its txbs still decode all-zero (the same symbol VALUES C reads)
+        // but off a different `txb_skip_cdf` row — the arithmetic decoder drifts
+        // and the next block's `skip_txfm` reads 0 where C reads 1.
+        if skip != 0 {
+            let a0 = mi_col as usize;
+            let l0 = (mi_row & 31) as usize;
+            self.above_e[0][a0..a0 + bw4].fill(0);
+            self.left_e[0][l0..l0 + bh4].fill(0);
+            let reset_chroma =
+                !cfg.monochrome && is_chroma_reference(mi_row, mi_col, bsize, ss_x, ss_y);
+            if reset_chroma {
+                // Same chroma-reference origin shift the coefficient loop uses
+                // (setup_pred_plane's odd-position adjustment).
+                let adj_row = if ss_y != 0 && (mi_row & 1) != 0 && MI_SIZE_HIGH[bsize] == 1 {
+                    mi_row - 1
+                } else {
+                    mi_row
+                };
+                let adj_col = if ss_x != 0 && (mi_col & 1) != 0 && MI_SIZE_WIDE[bsize] == 1 {
+                    mi_col - 1
+                } else {
+                    mi_col
+                };
+                let plane_bsize = get_plane_block_size(bsize, ss_x, ss_y);
+                let uw = MI_SIZE_WIDE[plane_bsize] as usize;
+                let uh = MI_SIZE_HIGH[plane_bsize] as usize;
+                let uv_a_base = (adj_col >> ss_x) as usize;
+                let uv_l_base = ((adj_row & 31) >> ss_y) as usize;
+                for plane in 1..=2 {
+                    self.above_e[plane][uv_a_base..uv_a_base + uw].fill(0);
+                    self.left_e[plane][uv_l_base..uv_l_base + uh].fill(0);
+                }
+            }
+        }
+
         // --- motion compensation (predict phase; NO entropy reads) ---
         let (cmv_row, cmv_col) = clamp_mv_to_umv_border(mv_row, mv_col, mi_row, mi_col, bsize, cfg);
         let bw_px = (MI_SIZE_WIDE[bsize] * 4) as usize;
@@ -3057,6 +3240,191 @@ impl<'c> TileKf<'c> {
                             filter_y,
                         );
                     }
+                }
+            }
+        }
+
+        // --- INTER-INTRA (av1_build_interintra_predictor, reconinter.c:1162): for
+        // each plane, build an intra predictor over the WHOLE plane block and blend
+        // it onto that plane's freshly-built inter predictor.
+        //
+        // C runs this inside `dec_build_inter_predictors`' plane loop, immediately
+        // after each plane's inter prediction lands in `dst` (decodeframe.c:694-702).
+        // Doing all planes here instead is equivalent: the luma blend writes only
+        // inside the luma block and chroma MC reads the REFERENCE frame, never the
+        // current recon, so no plane's inputs depend on another plane's blend.
+        //
+        // Two conventions must not be crossed (they differ between the arms, see
+        // `combine_interintra`): the SMOOTH mask is prebuilt at PLANE resolution and
+        // blended 1:1, while the WEDGE mask is at LUMA resolution and box-averaged
+        // down by `subw`/`subh` inside the blend.
+        if interintra {
+            let ii_intra_mode = aom_dsp::inter::interintra::INTERINTRA_TO_INTRA_MODE[ii_mode as usize];
+            // `get_intra_edge_filter_type` (reconintra.c:974). Inert for every
+            // inter-intra block — the four modes are DC/V/H/SMOOTH and the angle
+            // delta is forced to 0 (decodemv.c:1395), so V/H predict at exactly
+            // 90/180 where the edge filter is skipped — but derived faithfully.
+            let is_smooth = |m: Option<MiNbrKf>| {
+                m.is_some_and(|n| (SMOOTH_PRED..=SMOOTH_H_PRED).contains(&n.y_mode))
+            };
+            let filt_type = (is_smooth(above_mi) || is_smooth(left_mi)) as i32;
+
+            // Luma.
+            let ii_tx = MAX_TXSIZE_RECT_LOOKUP[bsize];
+            let (n_top, n_tr, n_left, n_bl) = ep::intra_avail(
+                self.st.sb_size,
+                bsize,
+                mi_row,
+                mi_col,
+                up_available,
+                left_available,
+                self.tile.mi_col_end,
+                self.tile.mi_row_end,
+                partition,
+                ii_tx,
+                0,
+                0,
+                0,
+                0,
+                BLOCK_SIZE_WIDE[bsize],
+                BLOCK_SIZE_HIGH[bsize],
+                cfg.mi_cols,
+                cfg.mi_rows,
+                ii_intra_mode,
+                0,
+                false,
+            );
+            let mut intra_pred = vec![0u16; bw_px * bh_px];
+            predict_intra_high(
+                &self.recon,
+                dst_off,
+                self.stride,
+                &mut intra_pred,
+                bw_px,
+                ii_intra_mode,
+                0,
+                false,
+                0,
+                cfg.disable_edge_filter,
+                filt_type,
+                ii_tx,
+                usize::try_from(n_top).expect("n_top_px must be non-negative"),
+                n_tr,
+                usize::try_from(n_left).expect("n_left_px must be non-negative"),
+                n_bl,
+                cfg.bd,
+            );
+            // C blends in place (`comppred == interpred`). Every output pixel is a
+            // function of the SAME position in both sources, so lifting the inter
+            // predictor into a scratch first is numerically identical and lets the
+            // destination be borrowed mutably.
+            let mut inter_pred = vec![0u16; bw_px * bh_px];
+            for r in 0..bh_px {
+                let s = dst_off + r * self.stride;
+                inter_pred[r * bw_px..(r + 1) * bw_px].copy_from_slice(&self.recon[s..s + bw_px]);
+            }
+            aom_dsp::inter::interintra::combine_interintra(
+                ii_mode as usize,
+                ii_use_wedge != 0,
+                ii_wedge_idx as usize,
+                bsize,
+                bsize,
+                &mut self.recon[dst_off..],
+                self.stride,
+                &inter_pred,
+                bw_px,
+                &intra_pred,
+                bw_px,
+            );
+
+            // Chroma. `is_chroma_ref` is always true for an inter-intra bsize
+            // (>= BLOCK_8X8), so C's `plane && !is_chroma_ref` break never fires.
+            if chroma_ref {
+                let plane_bsize = get_plane_block_size(bsize, ss_x, ss_y);
+                let uv_tx = MAX_TXSIZE_RECT_LOOKUP[plane_bsize];
+                let uw = BLOCK_SIZE_WIDE[plane_bsize] as usize;
+                let uh = BLOCK_SIZE_HIGH[plane_bsize] as usize;
+                let wpx = ((MI_SIZE_WIDE[bsize] * 4) >> ss_x).max(4);
+                let hpx = ((MI_SIZE_HIGH[bsize] * 4) >> ss_y).max(4);
+                let bsize_uv = scale_chroma_bsize(bsize, ss_x, ss_y);
+                let up_uv = adj_row > self.tile.mi_row_start;
+                let left_uv = adj_col > self.tile.mi_col_start;
+                let uv_org_x = ((adj_col * 4) >> ss_x) as usize;
+                let uv_org_y = ((adj_row * 4) >> ss_y) as usize;
+                let uv_off = uv_org_y * self.stride_uv + uv_org_x;
+                let (n_top, n_tr, n_left, n_bl) = ep::intra_avail(
+                    self.st.sb_size,
+                    bsize_uv,
+                    adj_row,
+                    adj_col,
+                    up_uv,
+                    left_uv,
+                    self.tile.mi_col_end,
+                    self.tile.mi_row_end,
+                    partition,
+                    uv_tx,
+                    ss_x as i32,
+                    ss_y as i32,
+                    0,
+                    0,
+                    wpx,
+                    hpx,
+                    cfg.mi_cols,
+                    cfg.mi_rows,
+                    ii_intra_mode,
+                    0,
+                    false,
+                );
+                let mut intra_uv = vec![0u16; uw * uh];
+                let mut inter_uv = vec![0u16; uw * uh];
+                for plane in 1..=2 {
+                    let src_plane: &[u16] = if plane == 1 {
+                        &self.recon_u
+                    } else {
+                        &self.recon_v
+                    };
+                    predict_intra_high(
+                        src_plane,
+                        uv_off,
+                        self.stride_uv,
+                        &mut intra_uv,
+                        uw,
+                        ii_intra_mode,
+                        0,
+                        false,
+                        0,
+                        cfg.disable_edge_filter,
+                        filt_type,
+                        uv_tx,
+                        usize::try_from(n_top).expect("n_top_px must be non-negative"),
+                        n_tr,
+                        usize::try_from(n_left).expect("n_left_px must be non-negative"),
+                        n_bl,
+                        cfg.bd,
+                    );
+                    for r in 0..uh {
+                        let s = uv_off + r * self.stride_uv;
+                        inter_uv[r * uw..(r + 1) * uw]
+                            .copy_from_slice(&src_plane[s..s + uw]);
+                    }
+                    let dst_plane: &mut [u16] = if plane == 1 {
+                        &mut self.recon_u
+                    } else {
+                        &mut self.recon_v
+                    };
+                    aom_dsp::inter::interintra::combine_interintra(
+                        ii_mode as usize,
+                        ii_use_wedge != 0,
+                        ii_wedge_idx as usize,
+                        bsize,
+                        plane_bsize,
+                        &mut dst_plane[uv_off..],
+                        self.stride_uv,
+                        &inter_uv,
+                        uw,
+                        &intra_uv,
+                        uw,
+                    );
                 }
             }
         }
@@ -3473,6 +3841,65 @@ impl<'c> TileKf<'c> {
             info.dv_row = dv_row;
             info.dv_col = dv_col;
         }
+        self.decode_intra_block_body(
+            dec,
+            cdfs,
+            mi_row,
+            mi_col,
+            bsize,
+            partition,
+            info,
+            chroma_ref,
+            up_available,
+            left_available,
+            above,
+            left,
+        );
+    }
+
+    /// Everything an intra block does AFTER its mode info is read: the palette
+    /// colour-map tokens, the tx-size read + txfm-context stamp, the skip
+    /// entropy reset, the `decode_token_recon_block` per-txb read -> predict ->
+    /// reconstruct walk, and the neighbour-grid stamps.
+    ///
+    /// Shared VERBATIM by both intra paths, because C shares it too: the
+    /// decoder installs `read_coeffs_tx_intra_block` /
+    /// `predict_and_reconstruct_intra_block` once (decodeframe.c:2756/:2761) with
+    /// NO frame-type dependence, and `decode_token_recon_block` branches only on
+    /// `!is_inter_block(mbmi)` (:920). An intra block in an INTER frame has
+    /// `ref_frame[0] == INTRA_FRAME` and `use_intrabc == 0`, so it takes these
+    /// exact arms:
+    ///
+    ///  * tx size: `inter_block_tx` is 0 (decodeframe.c:1179), so the var-tx
+    ///    quadtree is skipped and `read_tx_size(.., is_inter = 0, ..)` runs — and
+    ///    `(!is_inter || allow_select_inter)` at :1150 is unconditionally true, so
+    ///    it is `read_selected_tx_size` exactly as on a KEY frame. `set_txfm_ctxs`
+    ///    gets `skip_txfm && is_inter_block(mbmi)` = 0 (:1197).
+    ///  * tx type: `av1_read_tx_type`'s `inter_block` is 0, so it reads
+    ///    `intra_ext_tx_cdf[eset][square_tx_size][intra_dir]` (decodemv.c:665),
+    ///    with `intra_dir` = `fimode_to_intradir[filter_intra_mode]` when
+    ///    filter-intra is on, else the Y mode (:660-664).
+    ///
+    /// So the intra-in-inter block needs no special-casing here at all — which is
+    /// the point of sharing this body rather than transcribing a second copy.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_intra_block_body(
+        &mut self,
+        dec: &mut OdEcDec,
+        cdfs: &mut KfFrameContext,
+        mi_row: i32,
+        mi_col: i32,
+        bsize: usize,
+        partition: usize,
+        info: MbModeInfoKf,
+        chroma_ref: bool,
+        up_available: bool,
+        left_available: bool,
+        above: Option<MiNbrKf>,
+        left: Option<MiNbrKf>,
+    ) {
+        let cfg = self.cfg;
+        let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
         // Stamp this block's palette facts over its footprint — matches stamp_mi's
         // placement, right after the mode-info read (subsequent blocks' above/left
         // palette-cache lookups must see it).
@@ -3674,16 +4101,24 @@ impl<'c> TileKf<'c> {
             // fallback. set_txfm_ctxs' skip arg is `skip && is_inter` = 0.
             let tx_size = if cfg.tx_mode == TxMode::Select {
                 let cat = bsize_to_tx_size_cat(bsize) as usize;
-                // get_tx_size_context reads is_inter_block(above/left_mbmi); on a
-                // KEY frame that is true only for an intrabc neighbour, whose
-                // block_size_wide/high then drives the context (else None).
+                // get_tx_size_context (blockd.h) overrides the txfm-context-array
+                // term with the NEIGHBOUR'S BLOCK size whenever that neighbour is
+                // `is_inter_block` — which is `use_intrabc || ref_frame[0] >
+                // INTRA_FRAME` (blockd.h:372). On a KEY frame only intrabc
+                // qualifies (every stamp carries ref_frame0 == INTRA_FRAME), so
+                // this is behaviour-identical there; inside an INTER frame an
+                // intra block's neighbours are usually genuine inter blocks, and
+                // missing them picks the wrong `tx_size_cdf` row — the same
+                // symbol on different probabilities, which drifts the arithmetic
+                // decoder and desyncs a few reads later.
+                let is_inter_nbr = |d: &DvNbr| d.use_intrabc || d.ref_frame0 > 0;
                 let above_inter_bsize = up_available
                     .then(|| self.mi_dv[((mi_row - 1) * cfg.mi_cols + mi_col) as usize])
-                    .filter(|d| d.use_intrabc)
+                    .filter(is_inter_nbr)
                     .map(|d| d.bsize);
                 let left_inter_bsize = left_available
                     .then(|| self.mi_dv[(mi_row * cfg.mi_cols + mi_col - 1) as usize])
-                    .filter(|d| d.use_intrabc)
+                    .filter(is_inter_nbr)
                     .map(|d| d.bsize);
                 let ctx = get_tx_size_context(
                     bsize,
@@ -4600,6 +5035,7 @@ impl<'c> TileKf<'c> {
             inter_lf: None,
         });
     }
+
 
     /// The per-SB restoration-unit parameter reads
     /// (`loop_restoration_read_sb_coeffs` over the
