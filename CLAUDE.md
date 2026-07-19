@@ -1014,9 +1014,40 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   byte-match fails → promote into `BYTE_EXACT_CELLS`). Envelope UNTOUCHED: non-screen frames
   (`allow_intrabc=0`) are byte-inert — palette gate + `partition_pick_diff` + `rd_pick_intra_sb_diff`
   all green.
-- **Next step:** port the inter var-tx coeff arm (the txfm agent's spec is the map: select_tx_block
-  recursion + prune_tx_2D + ml_predict_tx_split + var-tx pack + the derive_real_costs one-liner),
-  then the chroma-eob-0 skip check; graduate the cells it closes.
+- **PROGRESS 2026-07-19 (inter var-tx coeff arm — the CORE is differential-locked; witness still
+  PINNED):** landed on origin/main:
+  - `44bc51c` — `derive_real_costs` inter ext-tx costs sourced from `kf.inter_ext_tx` (§5 #C
+    one-liner; was a zero stub).
+  - `db90148` — `crates/aom-encode/src/var_tx.rs`: the inter/intrabc var-tx recursion
+    (`pick_recursive_tx_size_type_yrd` → `select_tx_size_and_type` → `select_tx_block` /
+    `try_tx_block_no_split` / `try_tx_block_split`) + the inter per-txb leaf
+    (`search_tx_type_inter` + `get_tx_mask_inter` + `trellis_rdmult_inter_y` mult-16). The inter
+    LEAF is byte-locked vs the REAL C kernels (`var_tx_leaf_diff.rs`: fwd/quant/optimize/cost/
+    dist hybrid + is_inter cost + adaptive break, all 19 tx sizes × amp/qidx/bd/reduced).
+  - `3b9278f` — the RECURSION is byte-locked vs an independent C transcription
+    (`var_tx_recursion_diff.rs`: no-split/split RD, pick-skip, txfm_partition cost, context
+    threading + backtracking, adaptive_txb_search_level=1 + txb_split_cap=1, depth-2 splits).
+- **REMAINING for the witness (in var_tx.rs the prunes are gated OFF, so the recursion currently
+  OVER-searches vs C on the witness config — these must land before the e2e witness can match):**
+  1. `ml_predict_tx_split` NN (`ml_tx_split_thresh=8500`, bd8): transcribe `av1_tx_split_nnconfig
+     _map` weights (tx_prune_model_weights.h); `get_mean_dev_features` already exists in
+     tx_search.rs; wire into `select_tx_block`'s `try_split` gate. Tier-1 diff via a light shim.
+  2. `prune_tx_2D` NN (`prune_2d_txfm_mode=TX_TYPE_PRUNE_1`, fires when the inter set has >5 types):
+     two hor/ver NNs + `get_energy_distribution_finer` + `av1_get_horver_correlation_full` +
+     `av1_nn_fast_softmax_16` + `get_adaptive_thresholds` + `av1_sort_fi32_8/16`; wire into
+     `get_tx_mask_inter`'s multi-type arm (reorders `txk_map`, prunes mask).
+  3. `model_based_tx_search_prune` (`model_based_prune_tx_search_level=1`): the early-return in
+     `pick_recursive` (model_rd via `model_rd_sb_fn[MODELRD_TYPE_TX_SEARCH_PRUNE]`); only fires
+     when `ref_best_rd != INT64_MAX`.
+  4. PACK wiring: `write_tx_size_vartx` (aom-entropy partition.rs:1401, consumes the recursion's
+     `inter_tx_size[16]`, already ref-validated) + the per-leaf inter-ext-tx coeff write
+     (`write_coeffs_txb_full` is_inter=true) at pack.rs:499/531.
+  5. INTRABC integration: intrabc_search.rs:1890 (the `if !luma_skip || chroma_sse!=0 { continue }`
+     coeff-arm candidate), rd_pick.rs:422-474 (carry skip_txfm=false + var-tx data), encode_sb.rs
+     encode_b_intra_dry intrabc arm (produce real txbs in var-tx order), + the chroma-eob-0 skip
+     check. Then close the witness (`rd_close_intrabc::intrabc_dv_search_pinned`) → resolve KB-15.
+  Working notes: `docs/inter-vartx-coeff-arm-notes.md`. C spec map: tx_search.c ACTIVE-prune
+  scoping for the witness config (speed-0 bd8 qidx192 intrabc) is in those notes.
 
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 
