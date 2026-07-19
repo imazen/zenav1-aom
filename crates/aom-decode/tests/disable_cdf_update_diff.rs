@@ -13,8 +13,8 @@
 //! symbol read leaves its CDF at the loaded/initial value for the whole tile.
 //! The port mirrors this exactly — `OdEcDec::allow_update_cdf` set to
 //! `!disable_cdf_update` in `decode_frame_tiles_kf`, gated in
-//! `aom_entropy::read_symbol`, which is the sole `update_cdf` site (both the
-//! mode-info reads and the `aom_txb` coefficient reads route through it).
+//! `aom_dsp::entropy::read_symbol`, which is the sole `update_cdf` site (both the
+//! mode-info reads and the `aom_dsp::txb` coefficient reads route through it).
 //!
 //! ANTI-VACUOUS (this gate is not a no-op):
 //! 1. Each decoded stream's parsed header is asserted to carry
@@ -35,7 +35,7 @@
 //! is rejected upstream, unrelated to this flag.)
 
 use aom_decode::frame::{decode_frame_obus, decode_frame_obus_prefilter};
-use aom_entropy::{OdEcDec, OdEcEnc, read_symbol, write_symbol};
+use aom_dsp::entropy::{OdEcDec, OdEcEnc, read_symbol, write_symbol};
 use aom_sys_ref as c;
 
 struct Rng(u64);

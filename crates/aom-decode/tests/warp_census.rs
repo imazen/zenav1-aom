@@ -22,8 +22,8 @@
 //! quadtree sub-maximally) — both orthogonal to warp and outside this chunk. When
 //! both land, add the golden-MD5 cell to `inter_ratchet.rs`.
 
-use aom_entropy::dv_ref::{DvNbr, DvTileBounds, find_samples, select_samples};
-use aom_inter::warp::{AFFINE, WarpedMotionParams, find_projection};
+use aom_dsp::entropy::dv_ref::{DvNbr, DvTileBounds, find_samples, select_samples};
+use aom_dsp::inter::warp::{AFFINE, WarpedMotionParams, find_projection};
 use aom_sys_ref::ref_find_projection;
 
 // The C-instrument census golden for mi(4,0).

@@ -4,17 +4,17 @@
 //! This crate composes the already-bit-exact building blocks into libaom's
 //! decode interleave (`av1/decoder/decodeframe.c`):
 //!
-//! - partition walk: `decode_partition` — [`aom_entropy::partition::read_partition`]
+//! - partition walk: `decode_partition` — [`aom_dsp::entropy::partition::read_partition`]
 //!   per node with the threaded above/left partition context, dispatching leaf
 //!   blocks in the exact `DEC_BLOCK` order (all 10 partition types);
 //! - per leaf (`parse_decode_block`): mode-info decode
-//!   ([`aom_entropy::partition::read_mb_modes_kf`]) followed by, per plane-0
+//!   ([`aom_dsp::entropy::partition::read_mb_modes_kf`]) followed by, per plane-0
 //!   transform block in raster order (`decode_token_recon_block`, intra path):
-//!   coefficient decode ([`aom_txb::read_coeffs_txb_full`] with
-//!   [`aom_txb::get_txb_ctx`] neighbour contexts) **then** intra prediction
-//!   ([`aom_entropy::partition::intra_avail`] +
-//!   [`aom_intra::predict_intra_high`] into the reconstruction plane) **then**
-//!   dequant + inverse transform + add ([`aom_recon::reconstruct_txb`]) — the
+//!   coefficient decode ([`aom_dsp::txb::read_coeffs_txb_full`] with
+//!   [`aom_dsp::txb::get_txb_ctx`] neighbour contexts) **then** intra prediction
+//!   ([`aom_dsp::entropy::partition::intra_avail`] +
+//!   [`aom_dsp::intra::predict_intra_high`] into the reconstruction plane) **then**
+//!   dequant + inverse transform + add ([`aom_dsp::recon::reconstruct_txb`]) — the
 //!   read → predict → reconstruct per-txb interleave `decode_token_recon_block`
 //!   uses (prediction of a block reads reconstructed pixels of previously
 //!   decoded blocks, so the interleave is load-bearing);
@@ -36,10 +36,10 @@
 //!   coefficients on the per-plane entropy-context arrays, UV intra prediction
 //!   (`get_uv_mode`, chroma availability/`scale_chroma_bsize` geometry, the
 //!   chroma-neighbour edge-filter type), and chroma-from-luma: reconstructed
-//!   luma is stored per txb ([`aom_intra::cfl::cfl_store_tx`],
+//!   luma is stored per txb ([`aom_dsp::intra::cfl::cfl_store_tx`],
 //!   `store_cfl_required` — non-reference members always store), and
 //!   `UV_CFL_PRED` blocks add the alpha-scaled zero-mean AC on the DC
-//!   prediction ([`aom_intra::cfl::cfl_predict_block`]). Chroma transform
+//!   prediction ([`aom_dsp::intra::cfl::cfl_predict_block`]). Chroma transform
 //!   types are not coded (mode-implied, ext-tx-set demoted).
 //! - **Frame tx mode ([`KfTileConfig::tx_mode`])**: `TX_MODE_LARGEST` (per-block
 //!   `tx_size = max_txsize_rect_lookup[bsize]`, no tx-size bits) **and**
@@ -58,7 +58,7 @@
 //!   the driver keeps a per-mi mode-info grid ([`MiNbrKf`]: y mode +
 //!   skip_txfm, stamped over each block's frame-cropped footprint like the C
 //!   mi grid) and hands the `xd->above_mbmi` / `xd->left_mbmi` neighbours to
-//!   [`aom_entropy::partition::read_mb_modes_kf_fc`], which picks each
+//!   [`aom_dsp::entropy::partition::read_mb_modes_kf_fc`], which picks each
 //!   symbol's CDF instance from the [`KfFrameContext`] arrays exactly as
 //!   `read_intra_frame_mode_info` does (kf_y by neighbour intra-mode
 //!   contexts, skip by neighbour skip flags, angle deltas by coded mode on
@@ -117,7 +117,7 @@
 //!   only allocated on screen-content frames.
 //! - **`disable_cdf_update` supported**: `cfg.disable_cdf_update` sets
 //!   `dec.allow_update_cdf = !disable_cdf_update`, so when the flag is set the
-//!   symbol reader ([`aom_entropy::read_symbol`]) leaves every CDF at its
+//!   symbol reader ([`aom_dsp::entropy::read_symbol`]) leaves every CDF at its
 //!   loaded/initial value for the whole tile (no post-decode adaptation); the
 //!   flag-off path adapts unconditionally and stays byte-identical.
 //! - **Off / fixed in this cut**: intra block copy,
@@ -156,8 +156,8 @@ pub mod superres;
 pub mod qm;
 mod qm_tables;
 
-use aom_entropy::cdf::read_symbol;
-use aom_recon::reconstruct_txb;
+use aom_dsp::entropy::cdf::read_symbol;
+use aom_dsp::recon::reconstruct_txb;
 
 /// Lossless residual reconstruction: dequantize the 4x4 coefficient block (flat,
 /// qindex-0 dequant) and add the inverse 4x4 Walsh–Hadamard transform onto the
@@ -176,15 +176,15 @@ fn reconstruct_txb_wht(
     // TX_4X4: area 16, tx_scale 0, no quant matrix. dequant_txb reproduces the C
     // decoder's dqcoeff exactly (same 20/24-bit masks + bitdepth clamp).
     let mut dqcoeff = [0i32; 16];
-    aom_txb::dequant_txb(qcoeff, &mut dqcoeff, TX_4X4_IDX, dequant, None, bd);
-    aom_transform::inv_txfm2d::av1_highbd_iwht4x4_add(&dqcoeff, dst, stride, eob, bd);
+    aom_dsp::txb::dequant_txb(qcoeff, &mut dqcoeff, TX_4X4_IDX, dequant, None, bd);
+    aom_dsp::transform::inv_txfm2d::av1_highbd_iwht4x4_add(&dqcoeff, dst, stride, eob, bd);
 }
-use aom_entropy::dec::OdEcDec;
-use aom_entropy::dv_ref::{
+use aom_dsp::entropy::dec::OdEcDec;
+use aom_dsp::entropy::dv_ref::{
     DvGrid, DvNbr, DvTileBounds, assign_and_validate_dv, find_dv_ref_mvs, find_inter_mv_refs,
     find_samples, select_samples,
 };
-use aom_entropy::partition::{
+use aom_dsp::entropy::partition::{
     KfBlockState, KfFrameContext, MbModeInfoKf, MiNbrKf, PaletteNbrKf, TXFM_CTX_INIT, TxMode,
     allow_palette as av1_allow_palette, bsize_to_max_depth, bsize_to_tx_size_cat,
     decode_color_map_tokens, depth_to_tx_size, get_block_dimensions, get_partition_subsize,
@@ -193,13 +193,13 @@ use aom_entropy::partition::{
     read_selected_tx_size, set_txfm_ctxs, spatial_seg_pred, tx_size_from_tx_mode,
     txfm_partition_context, txfm_partition_update, update_ext_partition_context,
 };
-use aom_intra::cfl::{CflCtx, cfl_predict_block, cfl_store_tx};
-use aom_intra::predict_intra_high;
-use aom_quant::{
+use aom_dsp::intra::cfl::{CflCtx, cfl_predict_block, cfl_store_tx};
+use aom_dsp::intra::predict_intra_high;
+use aom_dsp::quant::{
     MAX_SEGMENTS, SEG_LVL_MAX, SEG_LVL_SKIP, Segmentation, av1_ac_quant_qtx, av1_dc_quant_qtx,
     av1_get_qindex,
 };
-use aom_txb::{
+use aom_dsp::txb::{
     ext_tx_derive, get_txb_ctx, read_coeffs_txb_full, txb_entropy_context, txb_high, txb_wide,
 };
 
@@ -451,7 +451,7 @@ pub struct KfTileConfig {
     /// frame restoration type + unit size + the frame crop dims that size
     /// the unit grid. Default (all `RESTORE_NONE`) codes no RU params —
     /// the pre-restoration tile syntax is unchanged.
-    pub lr: aom_entropy::lr::LrFrameConfig,
+    pub lr: aom_dsp::entropy::lr::LrFrameConfig,
     /// `cm->seg` — the frame's segmentation state (`read_segmentation`, the
     /// KEY-frame form: when enabled, `update_map`/`update_data` are forced on
     /// and `temporal_update` off). When enabled, per-block segment ids are
@@ -467,10 +467,10 @@ pub struct KfTileConfig {
     /// per side, partition tree roots at [`BLOCK_64X64`]); `true` = 128x128
     /// (`mib_size` = 32, roots at [`BLOCK_128X128`]). Drives the tile SB
     /// walk step, the partition-tree root bsize, the per-SB left-context
-    /// reset stride, [`aom_entropy::partition::read_cdef`]'s
+    /// reset stride, [`aom_dsp::entropy::partition::read_cdef`]'s
     /// `cdef_transmitted[4]` unit indexing (already generic on `sb_size`),
     /// and the loop-restoration corners-in-sb SB extent
-    /// ([`aom_entropy::lr::lr_corners_in_sb`]'s `mi_size_wide`/`mi_size_high`
+    /// ([`aom_dsp::entropy::lr::lr_corners_in_sb`]'s `mi_size_wide`/`mi_size_high`
     /// args). CDEF's own 64x64 filter-block granularity and restoration's
     /// RU (unit) size are independent of this flag (spec-fixed / a separate
     /// config axis, respectively).
@@ -583,10 +583,10 @@ fn frame_qm_levels(cfg: &KfTileConfig, segment_id: usize) -> [usize; 3] {
 }
 
 // The tile's CDF state is libaom's FRAME_CONTEXT itself —
-// [`aom_entropy::partition::KfFrameContext`] (the KEY-frame-intra slice at C
+// [`aom_dsp::entropy::partition::KfFrameContext`] (the KEY-frame-intra slice at C
 // dims). The driver selects every symbol's instance from its per-context
 // arrays; the coefficient arena (`KfFrameContext::coeff`) must be sized
-// `aom_txb::CDF_ARENA_LEN`.
+// `aom_dsp::txb::CDF_ARENA_LEN`.
 
 // ---- decode result --------------------------------------------------------------
 
@@ -638,7 +638,7 @@ pub struct KfTileDecode {
     /// (`rst_info[plane].unit_info`), decoded interleaved with the SB walk
     /// (`loop_restoration_read_sb_coeffs`); empty when the plane's frame
     /// restoration type is `RESTORE_NONE`.
-    pub lr_units: [Vec<aom_entropy::lr::LrUnitInfo>; 3],
+    pub lr_units: [Vec<aom_dsp::entropy::lr::LrUnitInfo>; 3],
 }
 
 /// A stored reference frame for inter prediction: the FILTERED reconstruction
@@ -762,7 +762,7 @@ struct InterCdfs {
 
 impl InterCdfs {
     fn defaults() -> Self {
-        use aom_entropy::default_cdfs as d;
+        use aom_dsp::entropy::default_cdfs as d;
         InterCdfs {
             intra_inter: d::DEFAULT_INTRA_INTER,
             single_ref: d::DEFAULT_SINGLE_REF,
@@ -784,7 +784,7 @@ impl InterCdfs {
     /// contexts from the neighbour ref counts. Compound slots `[0..10]` are
     /// unused under `SINGLE_REFERENCE` (never read).
     fn ref_frame_cdfs(&self, rc: &[u8; 8]) -> [[u16; 3]; 16] {
-        use aom_entropy::partition as p;
+        use aom_dsp::entropy::partition as p;
         let mut cdfs = [[0u16; 3]; 16];
         cdfs[10] = self.single_ref[p::single_ref_p1_context(rc) as usize][0];
         cdfs[11] = self.single_ref[p::pred_ctx_brfarf2_or_arf(rc) as usize][1];
@@ -803,7 +803,7 @@ impl InterCdfs {
 /// `up_available`/`left_available` (`mi_row/col > mi_row/col_start` — NOT
 /// `> 0`: a block at a tile's own top/left edge has no available neighbour
 /// even when the tile itself sits interior to the frame) and
-/// [`aom_entropy::partition::intra_avail`]'s `tile_col_end`/`tile_row_end`
+/// [`aom_dsp::entropy::partition::intra_avail`]'s `tile_col_end`/`tile_row_end`
 /// (has_top_right/has_bottom_left must not reach across a tile boundary).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TileBoundsKf {
@@ -934,7 +934,7 @@ const TXFM_PARTITION_CONTEXTS: usize = 21;
 /// qindex-selected), then adapted per read.
 ///
 /// FORK NOTE: this CDF logically belongs inside
-/// [`aom_entropy::partition::KfFrameContext`] alongside every other frame CDF,
+/// [`aom_dsp::entropy::partition::KfFrameContext`] alongside every other frame CDF,
 /// but that struct is outside this fork's edit scope, so the decoder hosts it on
 /// [`TileKf`] as per-tile state (reset in [`TileKf::start_tile`] like the
 /// per-tile `KfFrameContext`). For a KEY frame this is byte-identical — the
@@ -1030,7 +1030,7 @@ fn vartx_leaf(
 
 /// `read_tx_size_vartx` (`av1/decoder/decodeframe.c`): the recursive
 /// variable-transform-size split READER for an inter / intrabc block, the exact
-/// inverse of the encoder's [`aom_entropy::partition::write_tx_size_vartx`]. At
+/// inverse of the encoder's [`aom_dsp::entropy::partition::write_tx_size_vartx`]. At
 /// each quadtree node it reads a split flag from `txfm_partition_cdf[ctx]` (2
 /// symbols), stamps the neighbour txfm-context arrays via
 /// [`txfm_partition_update`], and recurses into the `sub_tx_size_map` children
@@ -1380,10 +1380,10 @@ struct TileKf<'c> {
     blocks: Vec<DecodedBlockKf>,
     /// Per-plane restoration-unit params (unit-grid raster order); sized
     /// `horz_units * vert_units` for restored planes, empty otherwise.
-    lr_units: [Vec<aom_entropy::lr::LrUnitInfo>; 3],
+    lr_units: [Vec<aom_dsp::entropy::lr::LrUnitInfo>; 3],
     /// `xd->wiener_info` / `xd->sgrproj_info` — the per-plane RU-params
     /// prediction references (`av1_reset_loop_restoration` at tile start).
-    lr_refs: aom_entropy::lr::LrRefState,
+    lr_refs: aom_dsp::entropy::lr::LrRefState,
     /// This tile's mi-space extent (`xd->tile`) — see [`TileBoundsKf`]. Set
     /// by `start_tile` at the beginning of each tile's decode.
     tile: TileBoundsKf,
@@ -1567,14 +1567,14 @@ impl<'c> TileKf<'c> {
             tree: Vec::new(),
             blocks: Vec::new(),
             lr_units: std::array::from_fn(|p| {
-                if cfg.lr.frame_restoration_type[p] == aom_entropy::lr::RESTORE_NONE {
+                if cfg.lr.frame_restoration_type[p] == aom_dsp::entropy::lr::RESTORE_NONE {
                     Vec::new()
                 } else {
                     let (hu, vu) = cfg.lr.plane_units(p, ss_x, ss_y);
-                    vec![aom_entropy::lr::LrUnitInfo::default(); (hu * vu) as usize]
+                    vec![aom_dsp::entropy::lr::LrUnitInfo::default(); (hu * vu) as usize]
                 }
             }),
-            lr_refs: aom_entropy::lr::LrRefState::default(),
+            lr_refs: aom_dsp::entropy::lr::LrRefState::default(),
             tile: TileBoundsKf::whole_frame(cfg),
             inter: None,
             inter_cdfs: InterCdfs::defaults(),
@@ -1634,7 +1634,7 @@ impl<'c> TileKf<'c> {
         self.inter_cdfs = InterCdfs::defaults();
 
         self.cfl = CflCtx::new(ss_x as i32, ss_y as i32);
-        self.lr_refs = aom_entropy::lr::LrRefState::default();
+        self.lr_refs = aom_dsp::entropy::lr::LrRefState::default();
         self.st.xd_delta_lf = [0; 4];
         self.st.xd_delta_lf_from_base = 0;
         self.st.current_base_qindex = cfg.base_qindex;
@@ -2109,7 +2109,7 @@ impl<'c> TileKf<'c> {
                 0,
             );
             let mut scratch = vec![0u16; bw * bh];
-            aom_inter::build_inter_predictor(
+            aom_dsp::inter::build_inter_predictor(
                 &last.y,
                 last.stride,
                 last.width,
@@ -2132,8 +2132,8 @@ impl<'c> TileKf<'c> {
             // neighbour strip (build_obmc_inter_pred_above -> aom_blend_a64_vmask).
             let plane_col = (rel_mi_col * 4) as usize;
             let dst_off = (mi_row * 4) as usize * self.stride + (mi_col * 4) as usize + plane_col;
-            let mask = aom_inter::get_obmc_mask(overlap as usize);
-            aom_inter::blend_a64_vmask(
+            let mask = aom_dsp::inter::get_obmc_mask(overlap as usize);
+            aom_dsp::inter::blend_a64_vmask(
                 &mut self.recon,
                 dst_off,
                 self.stride,
@@ -2168,10 +2168,10 @@ impl<'c> TileKf<'c> {
                 let uv_col = ((above_mi_col * 4) >> ss_x) as usize;
                 let uv_row = ((mi_row * 4) >> ss_y) as usize;
                 let dst_off_c = uv_row * self.stride_uv + uv_col;
-                let mask_c = aom_inter::get_obmc_mask(overlap_c);
+                let mask_c = aom_dsp::inter::get_obmc_mask(overlap_c);
                 for (dst, src) in [(&mut self.recon_u, &last.u), (&mut self.recon_v, &last.v)] {
                     let mut scratch_c = vec![0u16; bw_c * bh_c];
-                    aom_inter::build_inter_predictor(
+                    aom_dsp::inter::build_inter_predictor(
                         src,
                         last.stride_uv,
                         last.width_uv,
@@ -2190,7 +2190,7 @@ impl<'c> TileKf<'c> {
                         nb_filter_x,
                         nb_filter_y,
                     );
-                    aom_inter::blend_a64_vmask(
+                    aom_dsp::inter::blend_a64_vmask(
                         dst, dst_off_c, self.stride_uv, &scratch_c, 0, bw_c, mask_c, bw_c,
                         overlap_c,
                     );
@@ -2245,7 +2245,7 @@ impl<'c> TileKf<'c> {
                 0,
             );
             let mut scratch = vec![0u16; bw * bh];
-            aom_inter::build_inter_predictor(
+            aom_dsp::inter::build_inter_predictor(
                 &last.y,
                 last.stride,
                 last.width,
@@ -2266,8 +2266,8 @@ impl<'c> TileKf<'c> {
             );
             let plane_row = (rel_mi_row * 4) as usize;
             let dst_off = ((mi_row * 4) as usize + plane_row) * self.stride + (mi_col * 4) as usize;
-            let mask = aom_inter::get_obmc_mask(overlap as usize);
-            aom_inter::blend_a64_hmask(
+            let mask = aom_dsp::inter::get_obmc_mask(overlap as usize);
+            aom_dsp::inter::blend_a64_hmask(
                 &mut self.recon,
                 dst_off,
                 self.stride,
@@ -2302,10 +2302,10 @@ impl<'c> TileKf<'c> {
                 let uv_col = ((mi_col * 4) >> ss_x) as usize;
                 let uv_row = ((left_mi_row * 4) >> ss_y) as usize;
                 let dst_off_c = uv_row * self.stride_uv + uv_col;
-                let mask_c = aom_inter::get_obmc_mask(overlap_c);
+                let mask_c = aom_dsp::inter::get_obmc_mask(overlap_c);
                 for (dst, src) in [(&mut self.recon_u, &last.u), (&mut self.recon_v, &last.v)] {
                     let mut scratch_c = vec![0u16; bw_c * bh_c];
-                    aom_inter::build_inter_predictor(
+                    aom_dsp::inter::build_inter_predictor(
                         src,
                         last.stride_uv,
                         last.width_uv,
@@ -2324,7 +2324,7 @@ impl<'c> TileKf<'c> {
                         nb_filter_x,
                         nb_filter_y,
                     );
-                    aom_inter::blend_a64_hmask(
+                    aom_dsp::inter::blend_a64_hmask(
                         dst, dst_off_c, self.stride_uv, &scratch_c, 0, bw_c, mask_c, overlap_c,
                         bh_c,
                     );
@@ -2354,7 +2354,7 @@ impl<'c> TileKf<'c> {
         partition: usize,
         inter: &InterFrameCfg,
     ) {
-        use aom_entropy::partition as ep;
+        use aom_dsp::entropy::partition as ep;
         // PREDICTION_MODE inter values (enums.h).
         const NEARESTMV: i32 = 13;
         const NEARMV: i32 = 14;
@@ -2625,7 +2625,7 @@ impl<'c> TileKf<'c> {
         // moot: find_projection reads NO entropy symbols. `warp_luma` (a usable local
         // model) drives the affine MC below; luma always passes the per-plane >= 8
         // gate (motion-variation requires min dim >= 8), chroma is re-gated at its MC.
-        let warp_params: Option<aom_inter::warp::WarpedMotionParams> = if motion_mode == 2 {
+        let warp_params: Option<aom_dsp::inter::warp::WarpedMotionParams> = if motion_mode == 2 {
             let warp_grid = MiDvGrid {
                 mi_dv: &self.mi_dv,
                 cols: cfg.mi_cols,
@@ -2657,11 +2657,11 @@ impl<'c> TileKf<'c> {
                     BLOCK_SIZE_HIGH[bsize],
                 );
             }
-            let mut wm = aom_inter::warp::WarpedMotionParams {
-                wmtype: aom_inter::warp::AFFINE,
+            let mut wm = aom_dsp::inter::warp::WarpedMotionParams {
+                wmtype: aom_dsp::inter::warp::AFFINE,
                 ..Default::default()
             };
-            let invalid = aom_inter::warp::find_projection(
+            let invalid = aom_dsp::inter::warp::find_projection(
                 ws.np,
                 &ws.pts,
                 &ws.pts_inref,
@@ -2849,7 +2849,7 @@ impl<'c> TileKf<'c> {
         // blend runs after, below). Luma block is always >= 8 -> passes
         // av1_init_warp_params' per-plane size gate.
         if let Some(wm) = warp_luma {
-            aom_inter::warp::warp_affine(
+            aom_dsp::inter::warp::warp_affine(
                 &wm.wmmat,
                 &last.y,
                 last.width,
@@ -2870,7 +2870,7 @@ impl<'c> TileKf<'c> {
                 wm.delta,
             );
         } else {
-            aom_inter::build_inter_predictor(
+            aom_dsp::inter::build_inter_predictor(
                 &last.y,
                 last.stride,
                 last.width,
@@ -2959,7 +2959,7 @@ impl<'c> TileKf<'c> {
                         for (dst, src) in
                             [(&mut self.recon_u, &last.u), (&mut self.recon_v, &last.v)]
                         {
-                            aom_inter::build_inter_predictor(
+                            aom_dsp::inter::build_inter_predictor(
                                 src,
                                 last.stride_uv,
                                 last.width_uv,
@@ -3011,7 +3011,7 @@ impl<'c> TileKf<'c> {
                 let warp_chroma = warp_luma.filter(|_| bw_uv >= 8 && bh_uv >= 8);
                 if let Some(wm) = warp_chroma {
                     for (dst, src) in [(&mut self.recon_u, &last.u), (&mut self.recon_v, &last.v)] {
-                        aom_inter::warp::warp_affine(
+                        aom_dsp::inter::warp::warp_affine(
                             &wm.wmmat,
                             src,
                             last.width_uv,
@@ -3037,7 +3037,7 @@ impl<'c> TileKf<'c> {
                     // (cmv_*_uv), not the luma-clamped cmv_* — see the
                     // clamp_mv_to_umv_border_plane call above.
                     for (dst, src) in [(&mut self.recon_u, &last.u), (&mut self.recon_v, &last.v)] {
-                        aom_inter::build_inter_predictor(
+                        aom_dsp::inter::build_inter_predictor(
                             src,
                             last.stride_uv,
                             last.width_uv,
@@ -4612,7 +4612,7 @@ impl<'c> TileKf<'c> {
         mi_row: i32,
         mi_col: i32,
     ) {
-        use aom_entropy::lr;
+        use aom_dsp::entropy::lr;
         let num_planes = if self.cfg.monochrome { 1 } else { 3 };
         let (ss_x, ss_y) = (self.cfg.subsampling_x, self.cfg.subsampling_y);
         for plane in 0..num_planes {
@@ -4857,7 +4857,7 @@ pub fn decode_frame_tiles_kf(
         // single-tile KEY frame is never `large_scale`, so the reader adapts
         // CDFs iff `!disable_cdf_update`. Gates BOTH the mode-info symbol reads
         // (partition/intra/mv/... via `read_symbol`) AND the coefficient reads
-        // (`aom_txb::read_coeffs_txb_full`, whose `rsym` delegates to
+        // (`aom_dsp::txb::read_coeffs_txb_full`, whose `rsym` delegates to
         // `read_symbol`), since `read_symbol` is the sole `update_cdf` site.
         dec.allow_update_cdf = !cfg.disable_cdf_update;
         let mut cdfs = KfFrameContext::default_for_qindex(cfg.base_qindex);
@@ -4903,7 +4903,7 @@ pub fn decode_frame_tiles_inter(
 /// pel) grid.
 ///
 /// This port keeps the MV in 1/8-pel-luma units and lets
-/// [`aom_inter::build_inter_predictor`] re-apply the `1 << (1 - ss)` plane scaling,
+/// [`aom_dsp::inter::build_inter_predictor`] re-apply the `1 << (1 - ss)` plane scaling,
 /// so this returns `mv_q4 / (1 << (1 - ss))` (division is exact: for `ss = 0` the
 /// q4 value is even — the edge/spel terms are multiples of 16 — and for `ss = 1`
 /// the scale is 1). `mb_to_*` are the CURRENT block's luma edges (mi_row/mi_col/
@@ -4947,7 +4947,7 @@ fn clamp_mv_to_umv_border_plane(
 /// a thin wrapper over [`clamp_mv_to_umv_border_plane`] with the luma plane dims
 /// (`block_size_{wide,high}[bsize]`). Returns a 1/8-pel MV. The q4 limits are
 /// always even, so the luma clamp is exact in 1/8-pel and
-/// [`aom_inter::build_inter_predictor`] rescales it per plane.
+/// [`aom_dsp::inter::build_inter_predictor`] rescales it per plane.
 fn clamp_mv_to_umv_border(
     mv_row: i32,
     mv_col: i32,
@@ -5015,7 +5015,7 @@ fn skip_u4x4_pred_in_obmc(bsize: usize, ss_x: usize, ss_y: usize, dir: i32) -> b
 /// block). `ss_x`/`ss_y` select the plane: the luma edges are scaled by
 /// `1 << (1 - ss)` and the `spel_*` bounds use the subsampled `bw`/`bh`, exactly
 /// as C's `clamp_mv_to_umv_border_sb`. Returns the (possibly clamped) MV in
-/// 1/8-pel LUMA units ([`aom_inter::build_inter_predictor`] rescales per plane).
+/// 1/8-pel LUMA units ([`aom_dsp::inter::build_inter_predictor`] rescales per plane).
 #[allow(clippy::too_many_arguments)]
 fn clamp_mv_umv_border_px(
     mv_row: i32,

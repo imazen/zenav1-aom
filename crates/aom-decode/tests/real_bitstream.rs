@@ -2263,7 +2263,7 @@ fn intrabc_colour_streams_decode_byte_identical_to_c() {
 // is_cfl_allowed to BLOCK_4X4, and gates the header's loop-filter / CDEF /
 // restoration / tx-mode reads off (frame.rs does a two-phase parse: probe ->
 // compute coded_lossless -> re-parse). The decoder reconstructs via
-// aom_transform::av1_highbd_iwht4x4_add instead of the DCT/ADST inverse.
+// aom_dsp::transform::av1_highbd_iwht4x4_add instead of the DCT/ADST inverse.
 //
 // Photographic content (gradients + noise) guarantees real residual, so the WHT
 // runs on plenty of non-skip 4x4 txbs. TWO independent correctness checks per

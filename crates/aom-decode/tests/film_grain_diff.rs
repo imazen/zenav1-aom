@@ -12,7 +12,7 @@
 //! points, in-range AR coeffs / shifts). Anti-vacuous: apply_grain=1, recon has
 //! AC content, and grain actually changes a large fraction of pixels.
 
-use aom_entropy::header::FilmGrainParams;
+use aom_dsp::entropy::header::FilmGrainParams;
 use aom_sys_ref::{FILM_GRAIN_BLOB_LEN, ref_add_film_grain};
 
 struct Rng(u64);

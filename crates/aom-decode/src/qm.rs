@@ -4,7 +4,7 @@
 //! When a frame signals `using_qmatrix`, each 2-D-transform coefficient is
 //! dequantized with a per-position inverse-QM weight instead of the flat step:
 //! `dqcoeff = (qcoeff * dequant * iqmatrix[pos] + 16) >> 5` (folded into
-//! [`aom_txb::dequant_txb`] via `get_dqv`). This module supplies the `iqmatrix`
+//! [`aom_dsp::txb::dequant_txb`] via `get_dqv`). This module supplies the `iqmatrix`
 //! slice for a given (qm level, plane, tx size, tx type).
 //!
 //! The inverse-QM bases `iwt_matrix_ref[NUM_QM_LEVELS-1][2][QM_TOTAL_SIZE]` are
@@ -43,7 +43,7 @@ const QM_OFFSET: [usize; 19] = [
 /// segment) or the transform is 1-D / identity (`!is_2d_transform`). Otherwise
 /// the `iwt_matrix_ref` slice for `(qm_level, plane>=1 ? chroma : luma,
 /// adjusted tx size)`, laid out in raster order over the adjusted transform
-/// block — exactly what [`aom_txb::dequant_txb`] indexes by coefficient
+/// block — exactly what [`aom_dsp::txb::dequant_txb`] indexes by coefficient
 /// position.
 // `pub` (via the doc-hidden `pub mod qm`) so the encoder's forward-QM quantizer
 // can select the inverse-QM weights from the same `iwt_matrix_ref` bases,
@@ -64,7 +64,7 @@ pub fn iqmatrix(
     let off = QM_OFFSET[tx_size];
     // Length == tx_size_2d[av1_get_adjusted_tx_size(tx_size)] — the coded
     // region the inverse transform reads (txb_wide/txb_high are adjusted).
-    let len = aom_txb::txb_wide(tx_size) * aom_txb::txb_high(tx_size);
+    let len = aom_dsp::txb::txb_wide(tx_size) * aom_dsp::txb::txb_high(tx_size);
     Some(&IWT_MATRIX_REF[qm_level][c][off..off + len])
 }
 
@@ -143,7 +143,7 @@ mod tests {
     /// non-flat level, dequantizing a unit AC coefficient WITH the matrix
     /// differs from the flat dequant — so a decoder that ignored QM would
     /// produce different pixels than one that applied it. Uses the exact kernel
-    /// (`aom_txb::dequant_txb`) and matrix selection the decode path uses.
+    /// (`aom_dsp::txb::dequant_txb`) and matrix selection the decode path uses.
     #[test]
     fn qm_dequant_differs_from_flat() {
         const AREA: usize = 1024; // TX_32X32
@@ -156,8 +156,8 @@ mod tests {
                 qc[pos] = 3;
                 let mut dq_flat = vec![0i32; AREA];
                 let mut dq_qm = vec![0i32; AREA];
-                aom_txb::dequant_txb(&qc, &mut dq_flat, TX_32X32, dequant, None, 8);
-                aom_txb::dequant_txb(&qc, &mut dq_qm, TX_32X32, dequant, Some(iqm), 8);
+                aom_dsp::txb::dequant_txb(&qc, &mut dq_flat, TX_32X32, dequant, None, 8);
+                aom_dsp::txb::dequant_txb(&qc, &mut dq_qm, TX_32X32, dequant, Some(iqm), 8);
                 if dq_flat[pos] != dq_qm[pos] {
                     differed = true;
                     break;

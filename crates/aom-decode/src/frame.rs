@@ -28,10 +28,10 @@
 //!   per-block palette flags/sizes (`av1_allow_palette` — DC_PRED luma /
 //!   UV_DC_PRED chroma, bsize 8x8..64x64), the neighbour colour-cache-aware
 //!   colour coding (Y/U cache-bits + ascending delta, V raw/delta;
-//!   [`aom_entropy::partition::read_palette_colors_plane`] /
-//!   [`aom_entropy::partition::get_palette_cache`]), and the colour-index MAP
-//!   (wavefront-order tokens on [`aom_entropy::partition::get_palette_color_index_context`],
-//!   [`aom_entropy::partition::decode_color_map_tokens`]) — reconstruction
+//!   [`aom_dsp::entropy::partition::read_palette_colors_plane`] /
+//!   [`aom_dsp::entropy::partition::get_palette_cache`]), and the colour-index MAP
+//!   (wavefront-order tokens on [`aom_dsp::entropy::partition::get_palette_color_index_context`],
+//!   [`aom_dsp::entropy::partition::decode_color_map_tokens`]) — reconstruction
 //!   bypasses ordinary intra prediction for a palette plane's tx blocks (the
 //!   map indexes the palette directly; residual add is unaffected). Intra
 //!   BLOCK COPY — the OTHER screen-content tool `allow_screen_content_tools`
@@ -42,17 +42,17 @@
 //!   `intrabc_{monochrome,colour}_streams_decode_byte_identical_to_c`.
 //! - film grain disabled at the sequence level; superres not scaled; no
 //!   frame-size override (frame == sequence max dims).
-//! - loop restoration IS applied ([`aom_restore::frame`], C-diffed against
+//! - loop restoration IS applied ([`aom_dsp::restore::frame`], C-diffed against
 //!   the real `av1_loop_restoration_filter_frame` + boundary-line saves in
 //!   frame_walk_diff.rs): per-RU Wiener/SGR params decoded interleaved in
 //!   the tile SB walk, deblocked-pre-CDEF stripe boundary context, both the
 //!   boundary-swapped (with CDEF) and optimized (no CDEF) decoder arms.
-//! - CDEF IS applied ([`aom_cdef::frame::cdef_frame`], C-diffed against the
+//! - CDEF IS applied ([`aom_dsp::cdef::frame::cdef_frame`], C-diffed against the
 //!   real `av1_cdef_frame` walk in cdef_frame_diff.rs): any damping /
 //!   strength grids / per-64x64 strength indices, with the same gate as the
 //!   C decoder (`cdef_bits || cdef_strengths[0] || cdef_uv_strengths[0]`,
 //!   after deblocking).
-//! - deblocking IS applied ([`aom_loopfilter::frame::loop_filter_frame`],
+//! - deblocking IS applied ([`aom_dsp::loopfilter::frame::loop_filter_frame`],
 //!   C-diffed against the real `av1_filter_block_plane_vert/horz` walk) —
 //!   any filter levels, sharpness, mode/ref deltas, and per-block delta-lf
 //!   are in the envelope, for ALL subsampling modes INCLUDING 4:2:2 chroma.
@@ -72,7 +72,7 @@
 //! - CODED-LOSSLESS IS in the envelope (`--lossless=1`: `base_qindex == 0` with
 //!   zero plane deltas, or every segment lossless). `xd->lossless[i]` flips the
 //!   block transform path to forced `TX_4X4` + the 4x4 Walsh–Hadamard (WHT,
-//!   [`aom_transform::inv_txfm2d::av1_highbd_iwht4x4_add`]) with the qindex-0
+//!   [`aom_dsp::transform::inv_txfm2d::av1_highbd_iwht4x4_add`]) with the qindex-0
 //!   dequant, and `is_cfl_allowed` narrows to `BLOCK_4X4`. The header parse
 //!   gates loop-filter / CDEF / restoration / tx-mode off (a two-phase parse:
 //!   probe -> compute `coded_lossless` -> re-parse). Only a genuinely MIXED
@@ -92,20 +92,20 @@ use crate::{
     KfTileConfig, KfTileDecode, MI_SIZE_HIGH, MI_SIZE_WIDE, TileBoundsKf, TileBytesKf,
     decode_frame_tiles_kf,
 };
-use aom_entropy::header::{
+use aom_dsp::entropy::header::{
     CdefHeader, FilmGrainParams, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader,
     LoopfilterHeader, RestorationHeader, SequenceHeaderObu, TileInfoHeader,
     read_sequence_header_obu, read_tile_group_header, read_uncompressed_header,
 };
-use aom_entropy::leb128::uleb_decode;
-use aom_entropy::obu::read_obu_header;
-use aom_entropy::partition::TxMode;
-use aom_entropy::rb::ReadBitBuffer;
-use aom_quant::av1_get_qindex;
+use aom_dsp::entropy::leb128::uleb_decode;
+use aom_dsp::entropy::obu::read_obu_header;
+use aom_dsp::entropy::partition::TxMode;
+use aom_dsp::entropy::rb::ReadBitBuffer;
+use aom_dsp::quant::av1_get_qindex;
 
 /// aom-txb's `CDF_ARENA_LEN` (the coefficient region length
 /// `KfFrameContext::default_for_qindex` fills).
-const _: () = assert!(aom_txb::CDF_ARENA_LEN == 4045);
+const _: () = assert!(aom_dsp::txb::CDF_ARENA_LEN == 4045);
 
 /// A decoded KEY frame: cropped planes + the header facts harnesses assert on.
 #[derive(Clone, Debug)]
@@ -313,16 +313,16 @@ fn split_tiles<'a>(
 }
 
 /// Bridge the parsed segmentation frame header into the quantizer-layer
-/// `cm->seg` shape ([`aom_quant::Segmentation`]) the block layer consumes.
+/// `cm->seg` shape ([`aom_dsp::quant::Segmentation`]) the block layer consumes.
 /// Feature data is post-clamp (`|data| <= 255`), so the i16 narrowing is exact.
-fn bridge_segmentation(h: &aom_entropy::header::SegmentationHeader) -> aom_quant::Segmentation {
-    let mut feature_data = [[0i16; aom_quant::SEG_LVL_MAX]; aom_quant::MAX_SEGMENTS];
+fn bridge_segmentation(h: &aom_dsp::entropy::header::SegmentationHeader) -> aom_dsp::quant::Segmentation {
+    let mut feature_data = [[0i16; aom_dsp::quant::SEG_LVL_MAX]; aom_dsp::quant::MAX_SEGMENTS];
     for (dst, src) in feature_data.iter_mut().zip(h.feature_data.iter()) {
         for (d, s) in dst.iter_mut().zip(src.iter()) {
             *d = *s as i16;
         }
     }
-    aom_quant::Segmentation {
+    aom_dsp::quant::Segmentation {
         enabled: h.enabled,
         feature_mask: h.feature_mask,
         feature_data,
@@ -365,7 +365,7 @@ fn frame_coded_lossless(fh: &FrameHeaderObu) -> bool {
     if fh.segmentation.enabled {
         let seg = bridge_segmentation(&fh.segmentation);
         // is_coded_lossless loops ALL MAX_SEGMENTS, not just the reachable ids.
-        (0..aom_quant::MAX_SEGMENTS).all(|i| av1_get_qindex(&seg, i, q.base_qindex) == 0)
+        (0..aom_dsp::quant::MAX_SEGMENTS).all(|i| av1_get_qindex(&seg, i, q.base_qindex) == 0)
     } else {
         q.base_qindex == 0
     }
@@ -853,7 +853,7 @@ fn decode_inter_tile_payload(
     Ok((t, cfg, p.clone()))
 }
 
-/// Run [`aom_restore::frame::loop_restoration_filter_frame`] over the
+/// Run [`aom_dsp::restore::frame::loop_restoration_filter_frame`] over the
 /// (mi-aligned, deblocked+CDEF'd) recon planes, exactly as the C decoder does
 /// after CDEF (decodeframe.c:5437-5482). `pre_cdef` is the deblocked
 /// pre-CDEF snapshot feeding internal stripe boundaries (`None` on the
@@ -866,7 +866,7 @@ pub fn apply_restoration(
     pre_cdef: Option<&(Vec<u16>, Vec<u16>, Vec<u16>)>,
     optimized_lr: bool,
 ) {
-    use aom_restore::frame::{LrPlaneInput, loop_restoration_filter_frame};
+    use aom_dsp::restore::frame::{LrPlaneInput, loop_restoration_filter_frame};
     let empty: (Vec<u16>, Vec<u16>, Vec<u16>) = (Vec::new(), Vec::new(), Vec::new());
     let (dy, du, dv) = pre_cdef.unwrap_or(&empty);
     let mut planes = Vec::new();
@@ -1203,7 +1203,7 @@ fn build_tile_cfg(seq: &SequenceHeaderObu, p: &FrameHeaderObu) -> KfTileConfig {
         delta_lf_present: p.delta_q.delta_lf_present,
         delta_lf_multi: p.delta_q.delta_lf_multi,
         delta_lf_res: p.delta_q.delta_lf_res,
-        lr: aom_entropy::lr::LrFrameConfig {
+        lr: aom_dsp::entropy::lr::LrFrameConfig {
             frame_restoration_type: p.restoration.frame_restoration_type,
             unit_size: p.restoration.restoration_unit_size,
             // The RU grid is always in the UPSCALED domain
@@ -1286,8 +1286,8 @@ fn finish_frame(t: KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) -> Fram
             for units in &t.lr_units {
                 for u in units {
                     match u.restoration_type {
-                        aom_entropy::lr::RESTORE_WIENER => c.0 += 1,
-                        aom_entropy::lr::RESTORE_SGRPROJ => c.1 += 1,
+                        aom_dsp::entropy::lr::RESTORE_WIENER => c.0 += 1,
+                        aom_dsp::entropy::lr::RESTORE_SGRPROJ => c.1 += 1,
                         _ => c.2 += 1,
                     }
                 }
@@ -1315,10 +1315,10 @@ pub fn build_lf_inputs(
     cfg: &KfTileConfig,
     p: &FrameHeaderObu,
 ) -> (
-    Vec<aom_loopfilter::frame::LfMi>,
-    aom_loopfilter::frame::LfParams,
+    Vec<aom_dsp::loopfilter::frame::LfMi>,
+    aom_dsp::loopfilter::frame::LfParams,
 ) {
-    use aom_loopfilter::frame::{LfMi, LfParams, MODE_LF_LUT};
+    use aom_dsp::loopfilter::frame::{LfMi, LfParams, MODE_LF_LUT};
 
     let mi_rows = cfg.mi_rows as usize;
     let mi_cols = cfg.mi_cols as usize;
@@ -1370,11 +1370,11 @@ pub fn build_lf_inputs(
     // xd->lossless[i] via the C formula (decodeframe.c:5166) — always false
     // here since whole-frame and per-segment lossless are rejected upstream.
     let seg = bridge_segmentation(&p.segmentation);
-    let mut lf_seg = aom_loopfilter::frame::LfSeg {
+    let mut lf_seg = aom_dsp::loopfilter::frame::LfSeg {
         enabled: seg.enabled,
         ..Default::default()
     };
-    for i in 0..aom_quant::MAX_SEGMENTS {
+    for i in 0..aom_dsp::quant::MAX_SEGMENTS {
         for f in 0..4 {
             lf_seg.active[i][f] = seg.feature_mask[i] & (1 << (1 + f)) != 0;
             lf_seg.data[i][f] = i32::from(seg.feature_data[i][1 + f]);
@@ -1404,12 +1404,12 @@ pub fn build_lf_inputs(
     (mi, params)
 }
 
-/// Run [`aom_loopfilter::frame::loop_filter_frame`] over the (mi-aligned)
+/// Run [`aom_dsp::loopfilter::frame::loop_filter_frame`] over the (mi-aligned)
 /// recon planes, exactly as the C decoder does after tile decode. Hidden:
 /// harnesses recompose the filter pipeline stage by stage.
 #[doc(hidden)]
 pub fn apply_deblock(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) {
-    use aom_loopfilter::frame::{LfFrameBuf, LfMiGrid, loop_filter_frame};
+    use aom_dsp::loopfilter::frame::{LfFrameBuf, LfMiGrid, loop_filter_frame};
 
     let (mi, params) = build_lf_inputs(t, cfg, p);
     let grid = LfMiGrid {
@@ -1444,7 +1444,7 @@ pub fn apply_deblock(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderOb
     loop_filter_frame(&mut buf, &grid, &params, 0, num_planes);
 }
 
-/// Run [`aom_cdef::frame::cdef_frame`] over the (mi-aligned, deblocked)
+/// Run [`aom_dsp::cdef::frame::cdef_frame`] over the (mi-aligned, deblocked)
 /// recon planes, exactly as the C decoder does after deblocking.
 ///
 /// Input flattening mirrors the C mi grid the walk reads:
@@ -1458,7 +1458,7 @@ pub fn apply_deblock(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderOb
 ///   behavior. Hidden: harness entry.
 #[doc(hidden)]
 pub fn apply_cdef(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) {
-    use aom_cdef::frame::{CdefFrameParams, cdef_frame};
+    use aom_dsp::cdef::frame::{CdefFrameParams, cdef_frame};
 
     let mi_rows = cfg.mi_rows as usize;
     let mi_cols = cfg.mi_cols as usize;

@@ -5,7 +5,7 @@
 //! only (both sides shared the Rust facade).
 
 use aom_decode::{is_chroma_reference, max_uv_txsize, scale_chroma_bsize, uv_tx_type};
-use aom_entropy::partition::get_plane_block_size;
+use aom_dsp::entropy::partition::get_plane_block_size;
 use aom_sys_ref as c;
 
 const BLOCK_SIZES_ALL: usize = 22;

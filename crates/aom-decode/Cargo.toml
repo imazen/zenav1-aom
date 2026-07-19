@@ -7,16 +7,9 @@ description = "Decoder composition layer for aom-rs: KEY-frame luma tile reconst
 publish = false
 
 [dependencies]
-aom-cdef = { path = "../aom-cdef" }
-aom-entropy = { path = "../aom-entropy" }
-aom-inter = { path = "../aom-inter" }
-aom-intra = { path = "../aom-intra" }
-aom-loopfilter = { path = "../aom-loopfilter" }
-aom-quant = { path = "../aom-quant" }
-aom-recon = { path = "../aom-recon" }
-aom-restore = { path = "../aom-restore" }
-aom-transform = { path = "../aom-transform" }
-aom-txb = { path = "../aom-txb" }
+# Consolidated DSP/entropy kernels (was: aom-cdef/entropy/inter/intra/loopfilter/
+# quant/recon/restore/transform/txb — folded into aom-dsp per GitHub #2).
+aom-dsp = { path = "../aom-dsp" }
 
 [dev-dependencies]
 aom-sys-ref = { path = "../aom-sys-ref" }

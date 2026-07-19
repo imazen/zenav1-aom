@@ -61,9 +61,9 @@ use aom_decode::{
     uv_tx_type,
 };
 use aom_encode::{QuantKind, QuantParams, xform_quant};
-use aom_entropy::dec::OdEcDec;
-use aom_entropy::enc::OdEcEnc;
-use aom_entropy::partition::{
+use aom_dsp::entropy::dec::OdEcDec;
+use aom_dsp::entropy::enc::OdEcEnc;
+use aom_dsp::entropy::partition::{
     KfBlockState, KfFrameContext, MbModeInfoKf, MiNbrKf, TXFM_CTX_INIT, TxMode, bsize_to_max_depth,
     bsize_to_tx_size_cat, depth_to_tx_size, filter_intra_allowed, get_partition_subsize,
     get_plane_block_size, get_tx_size_context, get_uv_mode, intra_avail, is_cfl_allowed,
@@ -71,10 +71,10 @@ use aom_entropy::partition::{
     tx_size_from_tx_mode, tx_size_to_depth, update_ext_partition_context, use_angle_delta,
     write_mb_modes_kf_fc, write_partition, write_selected_tx_size,
 };
-use aom_intra::cfl::{CflCtx, cfl_predict_block, cfl_store_tx};
-use aom_intra::predict_intra_high;
-use aom_quant::{SEG_LVL_ALT_Q, SEG_LVL_SKIP, Segmentation, av1_get_qindex};
-use aom_txb::{CDF_ARENA_LEN, ext_tx_set_type, get_txb_ctx, write_coeffs_txb_full};
+use aom_dsp::intra::cfl::{CflCtx, cfl_predict_block, cfl_store_tx};
+use aom_dsp::intra::predict_intra_high;
+use aom_dsp::quant::{SEG_LVL_ALT_Q, SEG_LVL_SKIP, Segmentation, av1_get_qindex};
+use aom_dsp::txb::{CDF_ARENA_LEN, ext_tx_set_type, get_txb_ctx, write_coeffs_txb_full};
 
 // ---- deterministic rng + CDF fixtures (repo pattern) -----------------------------
 
