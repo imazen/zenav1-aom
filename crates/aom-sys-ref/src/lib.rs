@@ -14926,5 +14926,38 @@ pub fn ref_ii_wedge_mask(bsize: usize, index: usize, bw: usize, bh: usize) -> Op
     ref_init();
     let mut out = vec![0u8; bw * bh];
     let ok = unsafe { shim_ii_wedge_mask(bsize as i32, index as i32, out.as_mut_ptr()) };
-    if ok != 0 { Some(out) } else { None }
+    if ok != 0 {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// dec_shim.c (append-only addition): the default frame-context tables the
+// intra-block-inside-an-inter-frame path + inter-intra prediction code with.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn shim_dump_default_intra_in_inter_cdfs(base_qindex: i32, out: *mut u16) -> i32;
+}
+
+/// Per-table lengths of [`ref_dump_default_intra_in_inter_cdfs`], in dump order:
+/// `y_mode_cdf` (4*14), `interintra_cdf` (4*3), `interintra_mode_cdf` (4*5),
+/// `wedge_interintra_cdf` (22*3), `wedge_idx_cdf` (22*17).
+pub const DUMP_INTRA_IN_INTER_LENS: [usize; 5] = [4 * 14, 4 * 3, 4 * 5, 22 * 3, 22 * 17];
+
+/// Total length of the intra-in-inter / inter-intra default-CDF dump (528 u16).
+pub const DUMP_INTRA_IN_INTER_LEN: usize = 4 * 14 + 4 * 3 + 4 * 5 + 22 * 3 + 22 * 17;
+
+/// Dump the compiled default `fc->{y_mode,interintra,interintra_mode,
+/// wedge_interintra,wedge_idx}_cdf` from the REAL `av1_setup_past_independence`
+/// default frame context, concatenated in that order. Verifies aom-dsp's
+/// `DEFAULT_Y_MODE` / `DEFAULT_INTERINTRA` / `DEFAULT_INTERINTRA_MODE` /
+/// `DEFAULT_WEDGE_INTERINTRA` / `DEFAULT_WEDGE_IDX`.
+pub fn ref_dump_default_intra_in_inter_cdfs(base_qindex: i32) -> Vec<u16> {
+    let mut out = vec![0u16; DUMP_INTRA_IN_INTER_LEN];
+    let rc = unsafe { shim_dump_default_intra_in_inter_cdfs(base_qindex, out.as_mut_ptr()) };
+    assert_eq!(rc, 0, "shim_dump_default_intra_in_inter_cdfs failed ({rc})");
+    out
 }

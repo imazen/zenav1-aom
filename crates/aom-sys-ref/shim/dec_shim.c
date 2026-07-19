@@ -4145,3 +4145,46 @@ int shim_decode_av1_stream_frame(const uint8_t *data, size_t len,
   aom_codec_destroy(&ctx);
   return 3; /* fewer shown frames than requested */
 }
+
+/* shim_dump_default_intra_in_inter_cdfs — dump the compiled default
+ * frame-context tables the INTRA-block-inside-an-INTER-frame path and the
+ * inter-intra prediction path code with, from the REAL
+ * av1_setup_past_independence default frame context. Layout (concatenated, in
+ * this order):
+ *   fc->y_mode_cdf            [BLOCK_SIZE_GROUPS=4][CDF_SIZE(INTRA_MODES=13)=14] =  56
+ *   fc->interintra_cdf        [BLOCK_SIZE_GROUPS=4][CDF_SIZE(2)=3]               =  12
+ *   fc->interintra_mode_cdf   [BLOCK_SIZE_GROUPS=4][CDF_SIZE(4)=5]               =  20
+ *   fc->wedge_interintra_cdf  [BLOCK_SIZES_ALL=22][CDF_SIZE(2)=3]                =  66
+ *   fc->wedge_idx_cdf         [BLOCK_SIZES_ALL=22][CDF_SIZE(16)=17]              = 374
+ * = 528 u16 total. All five are qindex-independent (av1_init_mode_probs);
+ * base_qindex is accepted only to mirror shim_dump_default_kf_fc. Verifies
+ * aom-dsp's DEFAULT_Y_MODE / DEFAULT_INTERINTRA / DEFAULT_INTERINTRA_MODE /
+ * DEFAULT_WEDGE_INTERINTRA / DEFAULT_WEDGE_IDX. */
+int shim_dump_default_intra_in_inter_cdfs(int base_qindex, uint16_t *out) {
+  AV1_COMMON *cm = (AV1_COMMON *)calloc(1, sizeof(AV1_COMMON));
+  FRAME_CONTEXT *fc = (FRAME_CONTEXT *)calloc(1, sizeof(FRAME_CONTEXT));
+  FRAME_CONTEXT *dfc = (FRAME_CONTEXT *)calloc(1, sizeof(FRAME_CONTEXT));
+  RefCntBuffer *rcb = (RefCntBuffer *)calloc(1, sizeof(RefCntBuffer));
+  if (!cm || !fc || !dfc || !rcb) return 1;
+  cm->fc = fc;
+  cm->default_frame_context = dfc;
+  cm->cur_frame = rcb; /* seg_map NULL -> the memset arm is skipped */
+  cm->quant_params.base_qindex = base_qindex;
+  av1_setup_past_independence(cm);
+  size_t off = 0;
+  memcpy(out + off, fc->y_mode_cdf, sizeof(fc->y_mode_cdf));
+  off += sizeof(fc->y_mode_cdf) / sizeof(uint16_t);
+  memcpy(out + off, fc->interintra_cdf, sizeof(fc->interintra_cdf));
+  off += sizeof(fc->interintra_cdf) / sizeof(uint16_t);
+  memcpy(out + off, fc->interintra_mode_cdf, sizeof(fc->interintra_mode_cdf));
+  off += sizeof(fc->interintra_mode_cdf) / sizeof(uint16_t);
+  memcpy(out + off, fc->wedge_interintra_cdf, sizeof(fc->wedge_interintra_cdf));
+  off += sizeof(fc->wedge_interintra_cdf) / sizeof(uint16_t);
+  memcpy(out + off, fc->wedge_idx_cdf, sizeof(fc->wedge_idx_cdf));
+  off += sizeof(fc->wedge_idx_cdf) / sizeof(uint16_t);
+  free(cm);
+  free(fc);
+  free(dfc);
+  free(rcb);
+  return off == 528 ? 0 : 2;
+}

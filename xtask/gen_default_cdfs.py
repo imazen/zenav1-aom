@@ -1,17 +1,29 @@
 #!/usr/bin/env python3
-"""Generate crates/aom-entropy/src/default_cdfs.rs from libaom's default-CDF
+"""Generate crates/aom-dsp/src/entropy/default_cdfs.rs from libaom's default-CDF
 initializers (av1/common/entropymode.c, entropymv.c, token_cdfs.h).
 
 Parsing model (aom_dsp/prob.h): AOM_CDFn(a0..a_{n-2}) expands to n+1 row slots
 [32768-a0, ..., 32768-a_{n-2}, AOM_ICDF(CDF_PROB_TOP)=0, count=0]; innermost
 brace groups are rows zero-padded to the declared CDF_SIZE; outer groups
 zero-pad missing children. The generated tables are diffed BYTE-IDENTICAL
-against the COMPILED defaults (shim_dump_default_kf_fc, which drives the real
-av1_setup_past_independence) in crates/aom-entropy/tests/default_cdfs_diff.rs —
-that closes the loop over this parse, the Rust struct mapping, and the aom-txb
-arena packing.
+against the COMPILED defaults (the real av1_setup_past_independence, dumped by
+shim_dump_default_kf_fc / shim_dump_default_inter_ext_tx /
+shim_dump_default_intra_in_inter_cdfs) in
+crates/aom-dsp/tests/default_cdfs_diff.rs — that closes the loop over this
+parse, the Rust struct mapping, and the txb arena packing.
 
-Usage: python3 xtask/gen_default_cdfs.py && cargo fmt -p zenav1-aom-dsp  (repo root)
+Every table this script emits MUST be covered by one of those dumps: a
+hand-added table in the generated file is silently dropped on the next
+regeneration (that is how DEFAULT_INTERINTRA was lost and restored).
+
+Usage (repo root):
+    python3 xtask/gen_default_cdfs.py
+    rustfmt --edition 2021 crates/aom-dsp/src/entropy/default_cdfs.rs
+
+Format the ONE generated file only — do NOT run a crate-wide `cargo fmt`: the
+tree is not rustfmt-clean and CI does not enforce it, so that would rewrite
+hundreds of untouched files. The emitted arrays are rustfmt-stable under both
+the 2021 and 2024 style editions.
 """
 
 import re
@@ -19,8 +31,15 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "reference/libaom/av1/common"
-OUT = ROOT / "crates/aom-entropy/src/default_cdfs.rs"
+# The pinned C oracle is the `upstream/` submodule (crates/aom-sys-ref/build.rs
+# checks it out + builds it). `reference/libaom` is the older hand-managed
+# checkout kept as a fallback for trees that still carry it.
+SRC = next(
+    (p for p in (ROOT / "upstream/av1/common", ROOT / "reference/libaom/av1/common")
+     if (p / "entropymode.c").is_file()),
+    ROOT / "upstream/av1/common",
+)
+OUT = ROOT / "crates/aom-dsp/src/entropy/default_cdfs.rs"
 
 CONSTS = {
     "TOKEN_CDF_Q_CTXS": 4, "TX_SIZES": 5, "PLANE_TYPES": 2,
@@ -46,6 +65,7 @@ CONSTS = {
     "REFMV_MODE_CONTEXTS": 6, "DRL_MODE_CONTEXTS": 3,
     "SWITCHABLE_FILTER_CONTEXTS": 16, "SWITCHABLE_FILTERS": 3,
     "MOTION_MODES": 3, "SKIP_MODE_CONTEXTS": 3,
+    "BLOCK_SIZE_GROUPS": 4, "INTERINTRA_MODES": 4, "MAX_WEDGE_TYPES": 16,
 }
 
 
@@ -331,6 +351,34 @@ def main():
     d, f = extract(mode_c, "default_skip_mode_cdfs")
     assert d == [3, 3], d
     emit("DEFAULT_SKIP_MODE", d, f, "`default_skip_mode_cdfs[SKIP_MODE_CONTEXTS]`.")
+
+    # --- non-keyframe intra Y mode + the inter-intra flag/mode/wedge reads ---
+    d, f = extract(mode_c, "default_interintra_cdf")
+    assert d == [4, 3], d
+    emit("DEFAULT_INTERINTRA", d, f,
+         "`default_interintra_cdf[BLOCK_SIZE_GROUPS]` (CDF_SIZE(2)): the inter-intra flag, "
+         "read (per `size_group_lookup[bsize]`) for an interintra-allowed inter block when "
+         "`enable_interintra_compound`.")
+    # `y_mode_cdf` is what an INTRA block inside an INTER frame codes its Y mode
+    # on (read_intra_block_mode_info, decodemv.c) — size-group selected, NOT the
+    # KEY frame's neighbour-context `kf_y_mode_cdf`.
+    d, f = extract(mode_c, "default_if_y_mode_cdf")
+    assert d == [4, 14], d
+    emit("DEFAULT_Y_MODE", d, f,
+         "`default_if_y_mode_cdf[BLOCK_SIZE_GROUPS]` (CDF_SIZE(INTRA_MODES=13)) — the "
+         "non-keyframe intra Y-mode CDF, selected by `size_group_lookup[bsize]`.")
+    d, f = extract(mode_c, "default_interintra_mode_cdf")
+    assert d == [4, 5], d
+    emit("DEFAULT_INTERINTRA_MODE", d, f,
+         "`default_interintra_mode_cdf[BLOCK_SIZE_GROUPS]` (CDF_SIZE(INTERINTRA_MODES=4)).")
+    d, f = extract(mode_c, "default_wedge_interintra_cdf")
+    assert d == [22, 3], d
+    emit("DEFAULT_WEDGE_INTERINTRA", d, f,
+         "`default_wedge_interintra_cdf[BLOCK_SIZES_ALL]` — the wedge-vs-smooth inter-intra flag.")
+    d, f = extract(mode_c, "default_wedge_idx_cdf")
+    assert d == [22, 17], d
+    emit("DEFAULT_WEDGE_IDX", d, f,
+         "`default_wedge_idx_cdf[BLOCK_SIZES_ALL]` (CDF_SIZE(16)) — the wedge-shape index.")
 
     # --- loop-restoration mode CDFs (single instances) ---
     d, f = extract(mode_c, "default_switchable_restore_cdf")

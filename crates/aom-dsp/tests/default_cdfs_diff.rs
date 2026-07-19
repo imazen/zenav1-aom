@@ -222,3 +222,71 @@ fn default_inter_ext_tx_matches_compiled_c() {
         "set 1 nonzero"
     );
 }
+
+/// The default CDFs the INTRA-block-inside-an-INTER-frame path and the
+/// inter-intra prediction path code with. None of them are part of the
+/// `shim_dump_default_kf_fc` KF dump (that stays append-only), so verify them
+/// against a dedicated dump of the real `av1_setup_past_independence` frame
+/// context. All five are qindex-independent (`av1_init_mode_probs`), so any
+/// band reproduces them — sweep a few anyway.
+///
+/// `DEFAULT_Y_MODE` is the one the KEY path never touches: an intra block in an
+/// inter frame codes its Y mode on `y_mode_cdf[size_group_lookup[bsize]]`, NOT
+/// the KEY frame's neighbour-context `kf_y_cdf` (decodemv.c:1077 vs :815).
+#[test]
+fn default_intra_in_inter_cdfs_match_compiled_c() {
+    use aom_dsp::entropy::default_cdfs as d;
+    let rust: Vec<u16> = d::DEFAULT_Y_MODE
+        .iter()
+        .flatten()
+        .chain(d::DEFAULT_INTERINTRA.iter().flatten())
+        .chain(d::DEFAULT_INTERINTRA_MODE.iter().flatten())
+        .chain(d::DEFAULT_WEDGE_INTERINTRA.iter().flatten())
+        .chain(d::DEFAULT_WEDGE_IDX.iter().flatten())
+        .copied()
+        .collect();
+    assert_eq!(rust.len(), c::DUMP_INTRA_IN_INTER_LEN, "dump length");
+    let names = [
+        "y_mode_cdf",
+        "interintra_cdf",
+        "interintra_mode_cdf",
+        "wedge_interintra_cdf",
+        "wedge_idx_cdf",
+    ];
+    for q in [0, 20, 21, 120, 121, 255] {
+        let cd = c::ref_dump_default_intra_in_inter_cdfs(q);
+        assert_eq!(rust.len(), cd.len(), "length parity");
+        if rust != cd {
+            let bad = rust.iter().zip(&cd).position(|(a, b)| a != b).unwrap();
+            let (mut which, mut base) = (0usize, 0usize);
+            for (i, len) in c::DUMP_INTRA_IN_INTER_LENS.iter().enumerate() {
+                if bad < base + len {
+                    which = i;
+                    break;
+                }
+                base += len;
+            }
+            panic!(
+                "q={q}: {} mismatch at dump offset {bad} (slot {} within table) \
+                 — rust {} vs C {}",
+                names[which],
+                bad - base,
+                rust[bad],
+                cd[bad]
+            );
+        }
+    }
+    // Non-vacuity: every table carries real (non-zero, non-uniform) content, so
+    // a silently-zeroed dump on either side cannot pass.
+    assert!(d::DEFAULT_Y_MODE.iter().flatten().any(|&x| x != 0));
+    assert_ne!(d::DEFAULT_Y_MODE[0][0], d::DEFAULT_Y_MODE[3][0]);
+    assert_ne!(
+        d::DEFAULT_INTERINTRA_MODE[0][0],
+        d::DEFAULT_INTERINTRA_MODE[1][0]
+    );
+    assert!(d::DEFAULT_WEDGE_IDX.iter().flatten().any(|&x| x != 0));
+    // The interintra bsize range (BLOCK_8X8=3 ..= BLOCK_32X32=9) must carry a
+    // trained wedge flag; the out-of-range rows stay at the 16384 init.
+    assert_ne!(d::DEFAULT_WEDGE_INTERINTRA[3][0], 16384);
+    assert_eq!(d::DEFAULT_WEDGE_INTERINTRA[0][0], 16384);
+}
