@@ -2,14 +2,10 @@
 resolver = "2"
 members = [
     "crates/aom-dsp",
-    "crates/aom-entropy",
-    "crates/aom-convolve",
-    "crates/aom-txb",
     "crates/aom-encode",
     "crates/aom-decode",
     "crates/aom-sys-ref",
     "crates/aom-bench",
-    "crates/aom-dispatch",
 ]
 
 [workspace.package]

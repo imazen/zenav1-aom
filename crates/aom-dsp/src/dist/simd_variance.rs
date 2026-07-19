@@ -5,7 +5,7 @@
 //! Same aom-rs SIMD pattern as `crate::quant::simd` / `crate::cdef::simd`: ONE
 //! magetypes generic kernel (`#[magetypes(v3, neon, wasm128, -scalar)]`),
 //! hand-written `_scalar` variant = the transcribed port verbatim,
-//! `incant!` dispatch in the caller, `aom_dispatch::scalar_forced()` pin.
+//! `incant!` dispatch in the caller, `crate::dispatch::scalar_forced()` pin.
 //!
 //! # Bit-exactness (pixel domain: `a`, `b` < `1 << bd`, `bd <= 12`)
 //!

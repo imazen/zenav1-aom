@@ -25,7 +25,7 @@
 
 use crate::restore::sgr::apply_selfguided_restoration;
 use crate::restore::wiener::wiener_convolve_add_src;
-use aom_entropy::lr::{
+use crate::entropy::lr::{
     LrFrameConfig, LrUnitInfo, RESTORATION_PROC_UNIT_SIZE, RESTORATION_UNIT_OFFSET, RESTORE_NONE,
     RESTORE_SGRPROJ, RESTORE_WIENER,
 };

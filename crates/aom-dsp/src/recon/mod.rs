@@ -2,7 +2,7 @@
 //!
 //! Houses [`reconstruct_txb`] (dequant + inverse transform + add), the residual
 //! half of per-block reconstruction. It composes the already-bit-exact
-//! [`aom_txb::dequant_txb`] and
+//! [`crate::txb::dequant_txb`] and
 //! [`crate::transform::inv_txfm2d::av1_inv_txfm2d_add`] kernels, so both the decoder
 //! (`aom-decode`) and the encoder (`aom-encode`) depend on it — the
 //! reconstruction primitive lives here rather than in the encoder crate, so the
@@ -10,11 +10,11 @@
 
 
 use crate::transform::inv_txfm2d::av1_inv_txfm2d_add;
-use aom_txb::{dequant_txb, txb_high, txb_wide};
+use crate::txb::{dequant_txb, txb_high, txb_wide};
 
 /// Reconstruct one transform block's pixels from its decoded coefficients: the
 /// residual half of per-block decode reconstruction. Dequantize `qcoeff` (raster
-/// layout, as produced by [`read_coeffs_txb`](aom_txb::read_coeffs_txb) /
+/// layout, as produced by [`read_coeffs_txb`](crate::txb::read_coeffs_txb) /
 /// `read_coding_block_plane`) and add the inverse transform onto the prediction
 /// already in `dst`.
 ///

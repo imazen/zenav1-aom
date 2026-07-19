@@ -14,10 +14,6 @@ magetypes = "0.9.27"
 # Kernel crates being folded in one family at a time (facade-first: re-exported
 # as `pub use aom_X as X` below, then physically absorbed into src/X/). Removed
 # from this list as each is absorbed.
-aom-txb = { path = "../aom-txb" }
-aom-convolve = { path = "../aom-convolve" }
-aom-dispatch = { path = "../aom-dispatch" }
-aom-entropy = { path = "../aom-entropy" }
 
 [features]
 # AVX-512 tiers (X64V4Token codegen). Default-on: runtime dispatch decides, so

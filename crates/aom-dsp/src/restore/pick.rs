@@ -10,7 +10,7 @@
 //! fits in the u8 range and the accumulator widths below are C's.
 
 use crate::restore::sgr::SGR_PARAMS;
-use aom_entropy::lr::{WIENER_HALFWIN, WIENER_WIN};
+use crate::entropy::lr::{WIENER_HALFWIN, WIENER_WIN};
 
 /// `WIENER_WIN2` / `WIENER_HALFWIN1` (restoration.h).
 pub const WIENER_WIN2: usize = WIENER_WIN * WIENER_WIN;
@@ -751,7 +751,7 @@ pub fn get_proj_subspace(
 /// `encode_xq` (pickrst.c): projection weights to the coded `xqd` domain
 /// with the per-radius clamps.
 pub fn encode_xq(xq: [i32; 2], ep: usize) -> [i32; 2] {
-    use aom_entropy::lr::{SGRPROJ_PRJ_MAX0, SGRPROJ_PRJ_MAX1, SGRPROJ_PRJ_MIN0, SGRPROJ_PRJ_MIN1};
+    use crate::entropy::lr::{SGRPROJ_PRJ_MAX0, SGRPROJ_PRJ_MAX1, SGRPROJ_PRJ_MIN0, SGRPROJ_PRJ_MIN1};
     let (rads, _) = SGR_PARAMS[ep];
     let mut xqd = [0i32; 2];
     if rads[0] == 0 {
@@ -776,7 +776,7 @@ use crate::restore::frame::{
     at, extend_frame, filter_unit, save_boundary_lines, StripeBoundaries, MARGIN_H, MARGIN_V,
 };
 use crate::restore::sgr::{decode_xq, selfguided_restoration};
-use aom_entropy::lr::{
+use crate::entropy::lr::{
     count_sgrproj_bits, count_wiener_bits, lr_corners_in_sb, LrFrameConfig,
     LrUnitInfo, SgrprojInfoLr, WienerInfoLr, RESTORATION_PROC_UNIT_SIZE, RESTORATION_UNITSIZE_MAX,
     RESTORATION_UNIT_OFFSET, RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_SWITCHABLE, RESTORE_WIENER,

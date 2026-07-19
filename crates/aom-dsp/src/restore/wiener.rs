@@ -73,7 +73,7 @@ pub fn wiener_convolve_add_src(
     h: usize,
     bd: i32,
 ) {
-    let _ = aom_dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     if w < 8 {
         return wiener_convolve_add_src_scalar(
             src, src_off, src_stride, dst, dst_off, dst_stride, hfilter, vfilter, w, h, bd,

@@ -11,7 +11,7 @@
 //! u16 values ≤ 255 (differentially verified against the real lowbd C
 //! kernels), so one u16 path serves all depths — same discipline as
 //! aom-loopfilter and aom-cdef. Parameter types (`LrUnitInfo` etc.) come from
-//! `aom_entropy::lr` (the tile-parse side).
+//! `crate::entropy::lr` (the tile-parse side).
 
 
 pub mod frame;

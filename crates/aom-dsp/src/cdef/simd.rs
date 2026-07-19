@@ -5,7 +5,7 @@
 //! Same aom-rs SIMD pattern as `crate::quant::simd`: ONE magetypes generic
 //! kernel (`#[magetypes(v3, neon, wasm128, -scalar)]`), a hand-written
 //! `_scalar` variant that IS the transcribed scalar core, `incant!` dispatch,
-//! `aom_dispatch::scalar_forced()` pin at the entry.
+//! `crate::dispatch::scalar_forced()` pin at the entry.
 //!
 //! Layout: one `i16x8` vector per block row (width-8 blocks — the luma 8x8
 //! path, the bulk of CDEF cost). Width-4 blocks take the scalar core
@@ -62,7 +62,7 @@ pub(crate) fn cdef_filter_16_w8(
     enable_primary: bool,
     enable_secondary: bool,
 ) {
-    let _ = aom_dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     incant!(
         cdef_filter_16_w8_impl(
             dst,
@@ -165,7 +165,7 @@ pub(crate) fn cdef_filter_16_w4(
     enable_primary: bool,
     enable_secondary: bool,
 ) {
-    let _ = aom_dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     incant!(
         cdef_filter_16_w4_impl(
             dst,

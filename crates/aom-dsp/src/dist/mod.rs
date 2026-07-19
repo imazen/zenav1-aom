@@ -173,7 +173,7 @@ pub fn highbd_sad_avg(
 /// `simd_variance.rs` (bit-identical on the pixel domain — see its module
 /// docs); width 4 and the `AOM_FORCE_SCALAR` pin run the scalar twin.
 fn highbd_variance64(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize) -> (u64, i64) {
-    let _ = aom_dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     // The SIMD kernel processes 8 lanes at a time and requires `w % 8 == 0`.
     // Fully-visible txb variances are always power-of-two widths, but the
     // frame-edge visible-only SSE (`dist_block_px_domain` -> C's

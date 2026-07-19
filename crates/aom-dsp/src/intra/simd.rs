@@ -2,10 +2,10 @@
 //! — bit-identical to the scalar core at every dispatch tier
 //! (`tests/intra_simd_diff.rs`).
 //!
-//! Same aom-rs SIMD pattern as `crate::cdef` / `crate::loopfilter` / `aom_txb`: ONE
+//! Same aom-rs SIMD pattern as `crate::cdef` / `crate::loopfilter` / `crate::txb`: ONE
 //! magetypes generic kernel (`#[magetypes(define(i32x8), v3, neon, wasm128,
 //! -scalar)]`), a hand-written `_scalar` variant that IS the transcribed
-//! scalar core, `incant!` dispatch, `aom_dispatch::scalar_forced()` pin at the
+//! scalar core, `incant!` dispatch, `crate::dispatch::scalar_forced()` pin at the
 //! entry.
 //!
 //! # Scope
@@ -91,7 +91,7 @@ pub(crate) fn smooth(
     sw_w: &[u8],
     sw_h: &[u8],
 ) {
-    let _ = aom_dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     incant!(
         smooth_impl(dst, stride, bw, bh, above_row, left, sw_w, sw_h),
         [v3, neon, wasm128, scalar]
@@ -214,7 +214,7 @@ pub(crate) fn smooth_v(
     below: i32,
     sw_h: &[u8],
 ) {
-    let _ = aom_dispatch::scalar_forced();
+    let _ = crate::dispatch::scalar_forced();
     incant!(
         smooth_v_impl(dst, stride, bw, bh, above_row, below, sw_h),
         [v3, neon, wasm128, scalar]
@@ -309,7 +309,7 @@ pub(crate) fn smooth_h(
     right: i32,
     sw_w: &[u8],
 ) {
-    let _ = aom_dispatch::scalar_forced();
+    let _ = crate::dispatch::scalar_forced();
     incant!(
         smooth_h_impl(dst, stride, bw, bh, left, right, sw_w),
         [v3, neon, wasm128, scalar]
@@ -406,7 +406,7 @@ pub(crate) fn paeth(
     left: &[u16],
     top_left: i32,
 ) {
-    let _ = aom_dispatch::scalar_forced();
+    let _ = crate::dispatch::scalar_forced();
     incant!(
         paeth_impl(dst, stride, bw, bh, above_row, left, top_left),
         [v3, neon, wasm128, scalar]

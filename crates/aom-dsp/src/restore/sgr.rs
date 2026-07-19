@@ -3,7 +3,7 @@
 //! A/B intermediate, the r=2 "fast" pass and the r=1 full pass, `av1_decode_xq`)
 //! from av1/common/restoration.c, on u16 planes.
 
-use aom_entropy::lr::SGRPROJ_PRJ_BITS;
+use crate::entropy::lr::SGRPROJ_PRJ_BITS;
 
 /// `SGRPROJ_*` kernel constants (restoration.h).
 const SGRPROJ_SGR_BITS: i32 = 8;

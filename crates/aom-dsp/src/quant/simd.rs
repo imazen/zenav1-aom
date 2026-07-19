@@ -64,7 +64,7 @@ pub fn av1_quantize_fp_no_qmatrix_dispatch(
     qcoeff: &mut [i32],
     dqcoeff: &mut [i32],
 ) -> u16 {
-    let _ = aom_dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     incant!(
         quantize_fp_impl(quant, dequant, round, log_scale, scan, iscan, coeff, qcoeff, dqcoeff),
         [v3, neon, wasm128, scalar]

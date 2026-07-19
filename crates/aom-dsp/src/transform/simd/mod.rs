@@ -425,7 +425,7 @@ pub(crate) fn try_inv_col_pass(
     if col_n % 8 != 0 {
         return false;
     }
-    let _ = aom_dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     let Some(t) = X64V3Token::summon() else {
         return false;
     };
@@ -472,7 +472,7 @@ pub(crate) fn try_inv_row_pass(
     if row_n % 8 != 0 {
         return false;
     }
-    let _ = aom_dispatch::scalar_forced();
+    let _ = crate::dispatch::scalar_forced();
     let Some(t) = X64V3Token::summon() else {
         return false;
     };
@@ -563,7 +563,7 @@ pub(crate) fn try_fwd_col_pass(
     if col_n % 8 != 0 {
         return false;
     }
-    let _ = aom_dispatch::scalar_forced();
+    let _ = crate::dispatch::scalar_forced();
     let Some(t) = X64V3Token::summon() else {
         return false;
     };
@@ -645,7 +645,7 @@ pub(crate) fn try_fwd_row_pass(
     if row_n % 8 != 0 {
         return false;
     }
-    let _ = aom_dispatch::scalar_forced();
+    let _ = crate::dispatch::scalar_forced();
     let Some(t) = X64V3Token::summon() else {
         return false;
     };
@@ -930,7 +930,7 @@ mod tests {
         // Fire the AOM_FORCE_SCALAR pin (if set) BEFORE the permutation
         // harness — the harness then owns token state, so the v3 arm runs
         // in its enabled permutations in BOTH dispatch modes.
-        let _ = aom_dispatch::scalar_forced();
+        let _ = crate::dispatch::scalar_forced();
         let mut v3_ran = 0usize;
         let report = for_each_token_permutation(CompileTimePolicy::Warn, |tier| {
             let Some(t) = X64V3Token::summon() else {

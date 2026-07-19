@@ -13,7 +13,7 @@
 //! ```
 //!
 //! The byte-exact separable convolution kernels live in the sibling crate
-//! [`aom_convolve`] (already differentially locked vs the real C
+//! [`crate::convolve`] (already differentially locked vs the real C
 //! `av1_convolve_{x,y,2d}_sr_c`). This crate adds the pieces around them that the
 //! decoder inter path needs: the sub-pel derivation (MV + block position +
 //! subsampling -> `subpel_x`/`subpel_y` + integer reference offset), the
@@ -124,7 +124,7 @@ static SUB_PEL_FILTERS_4SMOOTH: [[i16; 8]; 16] = [
 /// `av1_get_interp_filter_params_with_block_size` selects the 4-tap table
 /// (`av1_interp_4tap`: regular/sharp -> `av1_sub_pel_filters_4`, smooth ->
 /// `av1_sub_pel_filters_4smooth`); otherwise the 8-tap table from
-/// [`aom_convolve`]. Both are 8-wide, so callers run the same convolution loop.
+/// [`crate::convolve`]. Both are 8-wide, so callers run the same convolution loop.
 #[inline]
 fn kernel(ftype: usize, subpel: usize, use4: bool) -> &'static [i16; 8] {
     let table: &[[i16; 8]; 16] = if use4 {
@@ -135,9 +135,9 @@ fn kernel(ftype: usize, subpel: usize, use4: bool) -> &'static [i16; 8] {
         }
     } else {
         match ftype {
-            0 => &aom_convolve::SUB_PEL_FILTERS_8,
-            1 => &aom_convolve::SUB_PEL_FILTERS_8SMOOTH,
-            2 => &aom_convolve::SUB_PEL_FILTERS_8SHARP,
+            0 => &crate::convolve::SUB_PEL_FILTERS_8,
+            1 => &crate::convolve::SUB_PEL_FILTERS_8SMOOTH,
+            2 => &crate::convolve::SUB_PEL_FILTERS_8SHARP,
             _ => panic!("aom-inter: unsupported InterpFilter {ftype} (0/1/2 only)"),
         }
     };
@@ -146,7 +146,7 @@ fn kernel(ftype: usize, subpel: usize, use4: bool) -> &'static [i16; 8] {
 
 /// `av1_convolve_2d_sr_c` (lowbd, SR: round_0 = 3, round_1 = 11, bits = 0) with a
 /// **separate** horizontal and vertical filter — the dual-filter/mixed-tap
-/// generalization of [`aom_convolve::convolve_2d_sr`] (which takes a single
+/// generalization of [`crate::convolve::convolve_2d_sr`] (which takes a single
 /// `ftype`, all 8-tap). Used whenever the filters differ OR a side is `<= 4` (so
 /// that direction uses the 4-tap kernel). `use4_x`/`use4_y` select the 4-tap table
 /// per direction (`w <= 4` / `h <= 4`). `src_off` is the interior origin; `src`
@@ -208,7 +208,7 @@ fn convolve_2d_sr_dual(
 
 /// `av1_convolve_x_sr_c` (lowbd SR single horizontal pass) with an explicit
 /// per-direction 4-tap selection — the 4-tap-aware analogue of
-/// [`aom_convolve::convolve_x_sr`], used when `w <= 4`. Byte-identical rounding
+/// [`crate::convolve::convolve_x_sr`], used when `w <= 4`. Byte-identical rounding
 /// (`round_0 = 3`, then `FILTER_BITS - round_0`).
 #[allow(clippy::too_many_arguments)]
 fn convolve_x_sr_k(
@@ -240,7 +240,7 @@ fn convolve_x_sr_k(
 }
 
 /// `av1_convolve_y_sr_c` (lowbd SR single vertical pass) with an explicit 4-tap
-/// selection — the 4-tap-aware analogue of [`aom_convolve::convolve_y_sr`], used
+/// selection — the 4-tap-aware analogue of [`crate::convolve::convolve_y_sr`], used
 /// when `h <= 4`. Byte-identical rounding (`FILTER_BITS`).
 #[allow(clippy::too_many_arguments)]
 fn convolve_y_sr_k(
@@ -277,9 +277,9 @@ fn convolve_y_sr_k(
 ///
 /// Dispatches on `need_x = subpel_x != 0`, `need_y = subpel_y != 0`:
 /// - neither -> full-pel block copy (libaom `aom_convolve_copy`, no rounding);
-/// - x only  -> [`aom_convolve::convolve_x_sr`] with `filter_x`;
-/// - y only  -> [`aom_convolve::convolve_y_sr`] with `filter_y`;
-/// - both    -> [`aom_convolve::convolve_2d_sr`] (`filter_x == filter_y`) or the
+/// - x only  -> [`crate::convolve::convolve_x_sr`] with `filter_x`;
+/// - y only  -> [`crate::convolve::convolve_y_sr`] with `filter_y`;
+/// - both    -> [`crate::convolve::convolve_2d_sr`] (`filter_x == filter_y`) or the
 ///   dual-filter [`convolve_2d_sr_dual`].
 ///
 /// `src`/`src_off`/`src_stride` describe the (bordered) reference region: `src_off`
@@ -320,7 +320,7 @@ pub fn inter_predictor(
                 src, src_off, src_stride, dst, dst_stride, w, h, subpel_x, filter_x, use4_x,
             );
         } else {
-            aom_convolve::convolve_x_sr(
+            crate::convolve::convolve_x_sr(
                 src, src_off, src_stride, dst, dst_stride, w, h, subpel_x, filter_x,
             );
         }
@@ -330,12 +330,12 @@ pub fn inter_predictor(
                 src, src_off, src_stride, dst, dst_stride, w, h, subpel_y, filter_y, use4_y,
             );
         } else {
-            aom_convolve::convolve_y_sr(
+            crate::convolve::convolve_y_sr(
                 src, src_off, src_stride, dst, dst_stride, w, h, subpel_y, filter_y,
             );
         }
     } else if filter_x == filter_y && !use4_x && !use4_y {
-        aom_convolve::convolve_2d_sr(
+        crate::convolve::convolve_2d_sr(
             src, src_off, src_stride, dst, dst_stride, w, h, subpel_x, subpel_y, filter_x,
         );
     } else {

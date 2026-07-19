@@ -15,10 +15,10 @@
 #![forbid(unsafe_code)]
 
 pub mod cdef;
-pub use aom_convolve as convolve;
-pub use aom_dispatch as dispatch;
+pub mod convolve;
+pub mod dispatch;
 pub mod dist;
-pub use aom_entropy as entropy;
+pub mod entropy;
 pub mod inter;
 pub mod intra;
 pub mod loopfilter;
@@ -26,4 +26,4 @@ pub mod quant;
 pub mod recon;
 pub mod restore;
 pub mod transform;
-pub use aom_txb as txb;
+pub mod txb;

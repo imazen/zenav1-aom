@@ -65,13 +65,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aom-convolve"
-version = "0.0.1"
-dependencies = [
- "aom-sys-ref",
-]
-
-[[package]]
 name = "aom-decode"
 version = "0.0.1"
 dependencies = [
@@ -81,21 +74,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "aom-dispatch"
-version = "0.0.1"
-dependencies = [
- "archmage",
-]
-
-[[package]]
 name = "aom-dsp"
 version = "0.0.1"
 dependencies = [
- "aom-convolve",
- "aom-dispatch",
- "aom-entropy",
  "aom-sys-ref",
- "aom-txb",
  "archmage",
  "magetypes",
 ]
@@ -111,26 +93,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "aom-entropy"
-version = "0.0.1"
-dependencies = [
- "aom-sys-ref",
-]
-
-[[package]]
 name = "aom-sys-ref"
 version = "0.0.1"
-
-[[package]]
-name = "aom-txb"
-version = "0.0.1"
-dependencies = [
- "aom-dispatch",
- "aom-entropy",
- "aom-sys-ref",
- "archmage",
- "magetypes",
-]
 
 [[package]]
 name = "archmage"

@@ -1,10 +1,10 @@
 //! SIMD deblock loop-filter kernels (Gate 3) — bit-identical to the highbd
 //! scalar core, at every dispatch tier (`tests/lpf_simd_diff.rs`).
 //!
-//! Same aom-rs SIMD pattern as `crate::cdef` / `aom_txb`: ONE magetypes generic
+//! Same aom-rs SIMD pattern as `crate::cdef` / `crate::txb`: ONE magetypes generic
 //! kernel (`#[magetypes(define(i32x4), v3, neon, wasm128, -scalar)]`), a
 //! hand-written `_scalar` tier that calls the untouched highbd transcription,
-//! `incant!` dispatch, `aom_dispatch::scalar_forced()` pin at the entry.
+//! `incant!` dispatch, `crate::dispatch::scalar_forced()` pin at the entry.
 //!
 //! # Layout
 //!
@@ -74,7 +74,7 @@ pub(crate) fn lpf(
     th: u8,
     bd: i32,
 ) {
-    let _ = aom_dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     incant!(
         lpf_impl(width, buf, center, ts, step, bl, li, th, bd),
         [v3, neon, wasm128, scalar]
