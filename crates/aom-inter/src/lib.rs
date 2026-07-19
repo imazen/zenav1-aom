@@ -52,6 +52,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod interintra;
 pub mod warp;
 
 // --- constants (aom_dsp/aom_filter.h, aom_scale/yv12config.h) ---

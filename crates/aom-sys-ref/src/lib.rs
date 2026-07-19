@@ -14821,3 +14821,66 @@ pub fn ref_blend_a64_hmask(src0: &[u8], src1: &[u8], mask: &[u8], w: usize, h: u
     }
     dst
 }
+
+extern "C" {
+    fn shim_blend_a64_mask(
+        dst: *mut u8,
+        ds: u32,
+        s0: *const u8,
+        s0s: u32,
+        s1: *const u8,
+        s1s: u32,
+        mask: *const u8,
+        ms: u32,
+        w: i32,
+        h: i32,
+        subw: i32,
+        subh: i32,
+    );
+    fn shim_ii_wedge_mask(bsize: i32, index: i32, out: *mut u8) -> i32;
+}
+
+/// Reference libaom `aom_blend_a64_mask_c` (aom_dsp/blend_a64_mask.c:229): the
+/// 2-D A64 mask blend `dst = round(mask*src0 + (64-mask)*src1, 6)`, with the mask
+/// box-subsampled by `(subw, subh)`. All buffers tightly packed (stride == width).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_blend_a64_mask(
+    src0: &[u8],
+    src1: &[u8],
+    mask: &[u8],
+    mask_stride: usize,
+    w: usize,
+    h: usize,
+    subw: bool,
+    subh: bool,
+) -> Vec<u8> {
+    ref_init();
+    let mut dst = vec![0u8; w * h];
+    unsafe {
+        shim_blend_a64_mask(
+            dst.as_mut_ptr(),
+            w as u32,
+            src0.as_ptr(),
+            w as u32,
+            src1.as_ptr(),
+            w as u32,
+            mask.as_ptr(),
+            mask_stride as u32,
+            w as i32,
+            h as i32,
+            subw as i32,
+            subh as i32,
+        )
+    }
+    dst
+}
+
+/// Reference libaom baked wedge mask `av1_wedge_params_lookup[bsize].masks[0][index]`
+/// (`av1_get_contiguous_soft_mask`, sign 0), a `bw*bh` contiguous buffer. `None`
+/// when the bsize has no wedge types.
+pub fn ref_ii_wedge_mask(bsize: usize, index: usize, bw: usize, bh: usize) -> Option<Vec<u8>> {
+    ref_init();
+    let mut out = vec![0u8; bw * bh];
+    let ok = unsafe { shim_ii_wedge_mask(bsize as i32, index as i32, out.as_mut_ptr()) };
+    if ok != 0 { Some(out) } else { None }
+}
