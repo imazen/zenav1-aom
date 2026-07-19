@@ -790,7 +790,24 @@ pub fn decode_frames(data: &[u8]) -> Result<Vec<FrameDecode>, String> {
                 // the reference for later frames. Every `01-size-*` frame refreshes
                 // at least one slot; a single stored `LAST` covers this envelope.
                 if hdr.prefix.refresh_frame_flags != 0 {
-                    last_ref = Some(crate::RefFrame::from_filtered(&t, hdr.prefix.order_hint));
+                    // MC clamps reference reads to the VISIBLE (crop) dims — the
+                    // reference's `y_crop_width/height` / `uv_crop_width/height`
+                    // (the coded post-superres-upscale visible size), matching
+                    // `finish_frame`'s crop derivation. On a partial-edge frame
+                    // these are smaller than the mi-aligned recon extent.
+                    let crop_w = hdr.frame_size.superres_upscaled_width as usize;
+                    let crop_h = hdr.frame_size.superres_upscaled_height as usize;
+                    let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
+                    let crop_w_uv = (crop_w + ss_x) >> ss_x;
+                    let crop_h_uv = (crop_h + ss_y) >> ss_y;
+                    last_ref = Some(crate::RefFrame::from_filtered(
+                        &t,
+                        hdr.prefix.order_hint,
+                        crop_w,
+                        crop_h,
+                        crop_w_uv,
+                        crop_h_uv,
+                    ));
                 }
                 out.push(finish_and_grain(t, &cfg, &hdr));
             }

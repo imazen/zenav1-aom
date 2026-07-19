@@ -276,5 +276,36 @@ read_cdef) reduced_tx=0(FULL ext-tx set) allow_warped=1 error_resilient=0.
   doesn't fire (it doesn't for these small MVs). A per-plane clamp is later-chunk.
 
 ### Next ratchet
-`01-size-64x66` (partial-edge SB), then the compound / OBMC / warp / interintra chunks (the
-`00-quantizer`/`04-cdfupdate` frames).
+
+## Chunk 3 — partial-edge single-ref — ✅ COMPLETE (`01-size-64x66` frame-1 byte-exact)
+
+**`av1-1-b8-01-size-64x66` frame 1 decodes to golden md5 `86f20606b0408bd3ba6771a6a37df429`**
+(`.md5` line 2), frame 0 (KEY) unchanged + the 64x64 skeleton + 16x16 ratchet stay green.
+Gate: `aom-decode/tests/inter_ratchet.rs::inter_ratchet_64x66_partial_edge_frame1_byte_identical`.
+
+STEP-0 census (`/tmp/inspect_frame`) of the four partial-edge targets found only **64x66** stays
+in single-ref translational scope: its frame 1 is ONE `BLOCK_64X128` clipped to 64x66 (a
+`use_128x128_superblock` frame → `split_or_vert` forced partition at the right edge), NEWMV
+mv=(-1,-7), single LAST, SIMPLE, skip=1 (pure MC, no residual). The other three pull in OBMC /
+WARP / switchable-interp and are **out of Part-A scope → chunk-4+ feature targets** (see
+`INTER-FEATURES-PLAN.md`).
+
+**Root cause of the partial-edge divergence (NOT the MV clamp).** `clamp_mv_to_umv_border`
+(reconinter.h:343) was already implemented and does NOT fire for 64x66 (the MV is far inside the
+border). The real bug: the MC reference dims. C's `av1_setup_pre_planes` loads
+`src->crop_widths/crop_heights` (the VISIBLE 64x66 / UV 32x33) into `pre_buf->width/height`, and
+`build_mc_border` edge-replicates against those. The port's `RefFrame` stored the SB/mi-aligned
+recon extent (64x72 / UV 32x36), so a bottom-edge block's interp taps read the invisible
+mi-aligned recon rows past the crop boundary instead of replicating the last visible row → the
+bottom output rows diverged. **Fix:** `RefFrame::from_filtered` now stores the frame's crop
+dims (`aom-decode/src/lib.rs` + the caller in `frame.rs`); the MC kernel (`build_mc_border`,
+already C-differentially-locked in `aom-inter/tests/inter_pred_diff.rs` across all 4 OOB edges)
+is unchanged — only the dims fed to it. 64x64/16x16 were byte-exact already because for them the
+visible dims equal the mi-aligned dims (multiples of 8px); 64x66 is the first where they differ.
+
+## Chunk 4+ — feature ladder → see `INTER-FEATURES-PLAN.md`
+
+Recommended chunk 4 = **OBMC**, isolated by `01-size-16x18` frame 1 (single-ref, all SIMPLE +
+exactly one OBMC block). Then WARP (`16x34`), switchable-interp-nbr (`16x66`), then compound /
+interintra / temporal-MV + multi-ref DPB (the `00-quantizer` / `05-mv` frames — full-toolset,
+censused as NOT minimal). Full C file:line map + differentials in that doc.

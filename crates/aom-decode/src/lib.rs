@@ -645,7 +645,15 @@ pub struct RefFrame {
     pub v: Vec<u16>,
     pub stride: usize,
     pub stride_uv: usize,
-    /// Plane valid dimensions (coded pixels) for edge replication.
+    /// Plane VISIBLE (crop) dimensions for MC edge replication — the reference's
+    /// `y_crop_width/height` / `uv_crop_width/height`, i.e. the values C's
+    /// `av1_setup_pre_planes` loads into `pre_buf->width/height` (from
+    /// `src->crop_widths/crop_heights`) and `build_mc_border` clamps against.
+    /// These are the frame's coded (post-superres-upscale) VISIBLE dims, NOT the
+    /// SB/mi-aligned recon extent: on a partial-edge frame (dims not a multiple of
+    /// 8px) the mi-aligned recon is TALLER/WIDER than the crop, and a bottom/right
+    /// edge block's interp taps must edge-replicate at the CROP boundary — reading
+    /// the invisible mi-aligned recon rows past it diverges from C.
     pub width: usize,
     pub height: usize,
     pub width_uv: usize,
@@ -656,17 +664,27 @@ pub struct RefFrame {
 impl RefFrame {
     /// Capture the filtered reconstruction from a post-filtered `KfTileDecode`
     /// (call after [`crate::frame::run_post_filters`], before crop/film-grain).
-    pub fn from_filtered(t: &KfTileDecode, order_hint: i32) -> Self {
+    /// `crop_*` are the frame's VISIBLE dimensions (`y_crop_width/height` and
+    /// `uv_crop_width/height`), which drive the MC border clamp — see the field
+    /// docs on [`RefFrame`]. The recon buffers + strides stay SB/mi-aligned.
+    pub fn from_filtered(
+        t: &KfTileDecode,
+        order_hint: i32,
+        crop_w: usize,
+        crop_h: usize,
+        crop_w_uv: usize,
+        crop_h_uv: usize,
+    ) -> Self {
         RefFrame {
             y: t.recon.clone(),
             u: t.recon_u.clone(),
             v: t.recon_v.clone(),
             stride: t.stride,
             stride_uv: t.stride_uv,
-            width: t.width,
-            height: t.height,
-            width_uv: t.width_uv,
-            height_uv: t.height_uv,
+            width: crop_w,
+            height: crop_h,
+            width_uv: crop_w_uv,
+            height_uv: crop_h_uv,
             order_hint,
         }
     }

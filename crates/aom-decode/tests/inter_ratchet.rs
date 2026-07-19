@@ -1,5 +1,6 @@
-//! CHUNK-2 GATE — the 16x16 inter ratchet.
+//! CHUNK-2/3 GATE — the inter ratchet, now covering a partial-edge frame.
 //!
+//! # 16x16 (chunk 2) — multi-block, residual-carrying
 //! Frame 1 of `av1-1-b8-01-size-16x16` is a real multi-block inter frame: the
 //! 16x16 superblock is `PARTITION_HORZ_4` into four `BLOCK_16X4` strips — block 0
 //! `NEWMV`, blocks 1-3 `NEARESTMV` (each reading its MV from the spatial ref-mv
@@ -9,7 +10,28 @@
 //! across blocks, the spatial NEARESTMV scan, the 4-tap interp (16x4 luma /
 //! sub-8x8 8x2 chroma strips), and the non-skip luma + chroma residual add.
 //!
-//! The gate decodes both frames through [`aom_decode::frame::decode_frames`] and
+//! # 64x66 (chunk 3) — partial-edge single-ref, 128-SB
+//! Frame 1 of `av1-1-b8-01-size-64x66` is the simplest PARTIAL-edge inter frame
+//! (STEP-0 census `/tmp/inspect_frame`): a **single** `BLOCK_64X128` clipped to
+//! the 64x66 frame — a `use_128x128_superblock` frame whose 128-SB roots a
+//! `split_or_vert` forced partition at the right edge (`has_cols == false`),
+//! yielding one 64x128 block at mi(0,0), `NEWMV` mv=(-1,-7), single `LAST`,
+//! `SIMPLE_TRANSLATION`, `skip = 1` (pure MC, no residual). The partial-edge
+//! wrinkle is entirely in motion compensation: the block's nominal 128-tall
+//! predictor overhangs the 66px-tall frame, so its bottom interp taps must
+//! edge-replicate at the reference's VISIBLE (crop) boundary (64x66 / UV 32x33),
+//! NOT the SB/mi-aligned recon extent (64x72 / UV 32x36). The chunk-3 fix stores
+//! the reference's crop dims in `RefFrame` (C's `av1_setup_pre_planes` loads
+//! `crop_widths/crop_heights` into `pre_buf->width/height`). The `clamp_mv_to_
+//! umv_border` frame-edge MV clamp already existed and does NOT fire here (the
+//! MV is far inside the border), so 64x66 pins the crop-dim border path.
+//!
+//! (The other partial-edge `01-size-*` vectors — 16x18/16x34/16x66 — pull in
+//! OBMC / WARPED_CAUSAL / switchable-interp-with-neighbours per the census, so
+//! they are Part B chunk-4 feature targets, not gated here. See INTER-FEATURES-
+//! PLAN.md.)
+//!
+//! Each gate decodes both frames through [`aom_decode::frame::decode_frames`] and
 //! asserts BOTH reproduce the shipped golden per-frame MD5
 //! (`md5_helper.h::Add(aom_image_t*)` exact layout) — a true byte-identity gate.
 
@@ -18,10 +40,6 @@ mod common;
 use aom_decode::frame::{FrameDecode, decode_frames};
 use common::md5::Md5;
 use std::path::PathBuf;
-
-const VECTOR: &str = "av1-1-b8-01-size-16x16";
-const GOLDEN_FRAME0: &str = "6353b245c305a5f4f2845ee7ad2b128b";
-const GOLDEN_FRAME1: &str = "f4b0078dfbc8b581fa959d4512b9940a";
 
 fn corpus_dir() -> PathBuf {
     if let Ok(d) = std::env::var("AOM_CONFORMANCE_DIR") {
@@ -81,10 +99,11 @@ fn image_md5(fd: &FrameDecode) -> String {
     m.finish()
 }
 
-#[test]
-fn inter_ratchet_16x16_frame1_byte_identical() {
+/// Decode the 2-frame `vector` (KEY + INTER) and assert both frames reproduce
+/// their shipped golden per-frame MD5s (a true byte-identity gate).
+fn ratchet_two_frame(vector: &str, golden_f0: &str, golden_f1: &str) {
     let dir = corpus_dir();
-    let ivf_path = dir.join(format!("{VECTOR}.ivf"));
+    let ivf_path = dir.join(format!("{vector}.ivf"));
     let ivf = match std::fs::read(&ivf_path) {
         Ok(b) => b,
         Err(e) => panic!(
@@ -106,10 +125,32 @@ fn inter_ratchet_16x16_frame1_byte_identical() {
     let md5_f0 = image_md5(&frames[0]);
     let md5_f1 = image_md5(&frames[1]);
 
-    assert_eq!(md5_f0, GOLDEN_FRAME0, "frame 0 (KEY) does not match golden");
+    assert_eq!(md5_f0, golden_f0, "{vector}: frame 0 (KEY) does not match golden");
     assert_eq!(
-        md5_f1, GOLDEN_FRAME1,
-        "frame 1 (16x16 inter ratchet) does not match golden MD5"
+        md5_f1, golden_f1,
+        "{vector}: frame 1 (inter) does not match golden MD5"
     );
-    eprintln!("inter ratchet 16x16: frame 0 {md5_f0} + frame 1 {md5_f1} byte-identical to golden");
+    eprintln!("inter ratchet {vector}: frame 0 {md5_f0} + frame 1 {md5_f1} byte-identical to golden");
+}
+
+#[test]
+fn inter_ratchet_16x16_frame1_byte_identical() {
+    ratchet_two_frame(
+        "av1-1-b8-01-size-16x16",
+        "6353b245c305a5f4f2845ee7ad2b128b",
+        "f4b0078dfbc8b581fa959d4512b9940a",
+    );
+}
+
+/// CHUNK-3 GATE: partial-edge single-ref inter (128-SB, `BLOCK_64X128` clipped to
+/// 64x66). Pins the reference crop-dim border path — frame 1's bottom interp taps
+/// edge-replicate at the visible 64x66 / UV 32x33 boundary, not the mi-aligned
+/// 64x72 / UV 32x36 recon extent.
+#[test]
+fn inter_ratchet_64x66_partial_edge_frame1_byte_identical() {
+    ratchet_two_frame(
+        "av1-1-b8-01-size-64x66",
+        "3cdad59695184adee0254b28bf2eb412",
+        "86f20606b0408bd3ba6771a6a37df429",
+    );
 }
