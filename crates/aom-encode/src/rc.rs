@@ -106,9 +106,57 @@ pub fn base_qindex_from_cq_clamped(cq: i32, min_q: i32, max_q: i32) -> i32 {
     }
 }
 
+/// The `base_qindex` libaom assigns to a **low-delay P (inter leaf) frame** —
+/// frame 1+ of a `--lag-in-frames=0 --end-usage=q` clip (the INTER-ENCODE
+/// roadmap §3 simplest inter config) — with `--cq-level = cq`.
+///
+/// Under `AOM_Q` + `has_no_stats_stage` (`lag_in_frames == 0`), the rate
+/// controller takes `av1_rc_pick_q_and_bounds` → `rc_pick_q_and_bounds` →
+/// `rc_pick_q_and_bounds_q_mode` (`ratectrl.c:2133`) — NOT
+/// `rc_pick_q_and_bounds_no_stats_cq`, which is dead code
+/// (`#if USE_UNRESTRICTED_Q_IN_CQ_MODE`, and that macro is `0`,
+/// `ratectrl.c:42`). Frame 1 of a `--limit=2` clip is a trailing `LF_UPDATE`
+/// leaf of the trivial lag=0 GF group (`update_type[1] == LF_UPDATE`, via
+/// `define_gf_group_pass0` with `max_layer_depth_allowed == 0`), so it is
+/// neither KEY nor GF/ARF. `get_active_best_quality` (`ratectrl.c:2057`) hits
+/// its `is_leaf_frame && rc_mode == AOM_Q` arm and returns `cq_level` verbatim
+/// (`ratectrl.c:2092-2093`) — no kf_boost, no gf/arf q-offset. Then
+/// `q = clamp(active_best_quality, best_quality, worst_quality)`
+/// (`ratectrl.c:2160`) and `av1_set_quantizer` stores `base_qindex = q`
+/// (`av1_quantize.c:884`, delta-q off). So the low-delay leaf P-frame
+/// `base_qindex` is just `quantizer_to_qindex(cq)` — the SAME value as
+/// [`base_qindex_from_cq`], but reached through the inter (non-KEY)
+/// `get_active_best_quality` leaf path rather than the lone-KEY branch.
+///
+/// The KEY frame of the SAME multi-frame clip is DIFFERENT: it takes the
+/// `get_intra_q_and_bounds` kf_boost (`frames_to_key > 1`), giving a LOWER
+/// qindex (e.g. `cq 48 → KEY 80` vs `P 192`). So this is not a trivial identity
+/// with the KEY qindex — it is specifically the leaf-P value.
+///
+/// Verified byte-identical against real `aomenc`'s coded frame-1 `base_qindex`
+/// across the decodable cq sweep in
+/// `aom-bench/tests/inter_rc_qindex_diff.rs`.
+///
+/// # Panics
+/// Panics if `cq` is outside `0..=63`.
+#[must_use]
+pub fn base_qindex_lowdelay_p_from_cq(cq: i32) -> i32 {
+    quantizer_to_qindex(cq)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lowdelay_p_qindex_is_the_cq_lookup() {
+        // The low-delay leaf-P CQ path resolves to the same qindex as the direct
+        // cq lookup (no kf/gf boost on the trailing LF_UPDATE leaf). The
+        // byte-vs-aomenc proof lives in inter_rc_qindex_diff.rs.
+        for cq in 0..=63 {
+            assert_eq!(base_qindex_lowdelay_p_from_cq(cq), quantizer_to_qindex(cq));
+        }
+    }
 
     #[test]
     fn table_endpoints_and_length() {
