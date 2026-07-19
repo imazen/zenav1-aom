@@ -411,6 +411,11 @@ const MV_OFFSET_BITS: usize = 10;
 const CLASS0_BITS: usize = 1;
 const CLASS0_SIZE: usize = 1 << CLASS0_BITS;
 const MV_FP_SIZE: usize = 4;
+/// `MvSubpelPrecision` (entropymv.h:95-97): NONE=-1, LOW_PRECISION=0,
+/// HIGH_PRECISION=1. The DV case builds at NONE; inter builds at LOW/HIGH.
+pub const MV_SUBPEL_NONE: i32 = -1;
+pub const MV_SUBPEL_LOW: i32 = 0;
+pub const MV_SUBPEL_HIGH: i32 = 1;
 
 /// `IntraBCMVCosts` (block.h): the joint-type costs + the per-component
 /// magnitude cost tables, index-centred at `MV_MAX` (`dv_costs[c][MV_MAX + v]`
@@ -431,23 +436,37 @@ fn cost_tokens(out: &mut [i32], cdf: &[u16]) {
 /// the port's 69-u16 packing (aom-entropy partition.rs:452-461):
 /// sign 0..3, classes 3..15, class0 15..18, bits[10] 18..48,
 /// class0_fp[2] 48..58, fp 58..63, class0_hp 63..66, hp 66..69.
-fn build_nmv_component_cost_table_none(mvcost: &mut [i32], comp_cdf: &[u16; 69]) {
+fn build_nmv_component_cost_table(mvcost: &mut [i32], comp_cdf: &[u16; 69], precision: i32) {
     let mut sign_cost = [0i32; 2];
     let mut class_cost = [0i32; MV_CLASSES];
     let mut class0_cost = [0i32; CLASS0_SIZE];
     let mut bits_cost = [[0i32; 2]; MV_OFFSET_BITS];
-    // MV_SUBPEL_NONE: fractional/hp cost arrays stay ZERO (the C `= { 0 }`
-    // initializers; the precision gates skip their fills).
-    let class0_fp_cost = [[0i32; MV_FP_SIZE]; CLASS0_SIZE];
-    let fp_cost = [0i32; MV_FP_SIZE];
-    let class0_hp_cost = [0i32; 2];
-    let hp_cost = [0i32; 2];
+    // Fractional (fp) + high-precision (hp) cost arrays: zero at MV_SUBPEL_NONE
+    // (the C `= { 0 }` initializers), filled from the component CDFs at higher
+    // precision — matching the precision gates in
+    // `av1_build_nmv_component_cost_table` (encodemv.c:145-152).
+    let mut class0_fp_cost = [[0i32; MV_FP_SIZE]; CLASS0_SIZE];
+    let mut fp_cost = [0i32; MV_FP_SIZE];
+    let mut class0_hp_cost = [0i32; 2];
+    let mut hp_cost = [0i32; 2];
 
     cost_tokens(&mut sign_cost, &comp_cdf[0..3]);
     cost_tokens(&mut class_cost, &comp_cdf[3..15]);
     cost_tokens(&mut class0_cost, &comp_cdf[15..18]);
     for i in 0..MV_OFFSET_BITS {
         cost_tokens(&mut bits_cost[i], &comp_cdf[18 + i * 3..18 + i * 3 + 3]);
+    }
+    // precision > MV_SUBPEL_NONE (-1): the fractional-pel bit costs.
+    if precision > MV_SUBPEL_NONE {
+        for i in 0..CLASS0_SIZE {
+            cost_tokens(&mut class0_fp_cost[i], &comp_cdf[48 + i * 5..48 + i * 5 + 5]);
+        }
+        cost_tokens(&mut fp_cost, &comp_cdf[58..63]);
+    }
+    // precision > MV_SUBPEL_LOW (0): the high-precision bit costs.
+    if precision > MV_SUBPEL_LOW {
+        cost_tokens(&mut class0_hp_cost, &comp_cdf[63..66]);
+        cost_tokens(&mut hp_cost, &comp_cdf[66..69]);
     }
 
     let c = MV_MAX as usize; // centre index
@@ -542,8 +561,34 @@ pub fn fill_dv_costs(
     cost_tokens(&mut joint_mv, ndvc_joints);
     let mut c0 = vec![0i32; MV_VALS];
     let mut c1 = vec![0i32; MV_VALS];
-    build_nmv_component_cost_table_none(&mut c0, ndvc_comp0);
-    build_nmv_component_cost_table_none(&mut c1, ndvc_comp1);
+    build_nmv_component_cost_table(&mut c0, ndvc_comp0, MV_SUBPEL_NONE);
+    build_nmv_component_cost_table(&mut c1, ndvc_comp1, MV_SUBPEL_NONE);
+    DvCosts {
+        joint_mv,
+        dv_costs: [c0, c1],
+    }
+}
+
+/// `av1_build_nmv_cost_table` (encodemv.c:294): the inter MV cost tables built
+/// from the frame's live `nmv_context` at a given subpel `precision`
+/// ([`MV_SUBPEL_NONE`]/[`MV_SUBPEL_LOW`]/[`MV_SUBPEL_HIGH`]). Same shape as
+/// [`DvCosts`] (joint costs + the two centred component magnitude tables). The
+/// DV case ([`fill_dv_costs`]) is exactly this at `MV_SUBPEL_NONE`; the inter
+/// motion search (`x->mv_costs`) uses `LOW` (integer/low-precision frames) or
+/// `HIGH` (`allow_high_precision_mv`). `nmv_comp{0,1}` are the port's 69-u16
+/// component packing (partition.rs); `nmv_joints` is the 5-u16 joints CDF.
+pub fn fill_nmv_costs(
+    precision: i32,
+    nmv_joints: &[u16],
+    nmv_comp0: &[u16; 69],
+    nmv_comp1: &[u16; 69],
+) -> DvCosts {
+    let mut joint_mv = [0i32; 4];
+    cost_tokens(&mut joint_mv, nmv_joints);
+    let mut c0 = vec![0i32; MV_VALS];
+    let mut c1 = vec![0i32; MV_VALS];
+    build_nmv_component_cost_table(&mut c0, nmv_comp0, precision);
+    build_nmv_component_cost_table(&mut c1, nmv_comp1, precision);
     DvCosts {
         joint_mv,
         dv_costs: [c0, c1],

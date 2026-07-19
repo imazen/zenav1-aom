@@ -14331,6 +14331,51 @@ pub fn ref_mv_bit_cost(
     }
 }
 
+// me_shim.c (cont.) — the REAL av1_build_nmv_cost_table (encodemv.c:294).
+extern "C" {
+    fn shim_build_nmv_cost_table(
+        joints_cdf: *const u16,
+        comp0: *const u16,
+        comp1: *const u16,
+        precision: i32,
+        out_mvjoint: *mut i32,
+        out_mvcost0: *mut i32,
+        out_mvcost1: *mut i32,
+    ) -> i32;
+}
+
+/// Reference libaom `av1_build_nmv_cost_table` (encodemv.c:294): builds the
+/// inter MV cost tables from an `nmv_context` at a given `MvSubpelPrecision`
+/// (`precision`: NONE=-1, LOW=0, HIGH=1). `joints_cdf` is the 5-u16 joints CDF;
+/// `comp0`/`comp1` are the two component CDF blobs in the port's 69-u16 packing.
+/// Returns `(joint_mv[4], mvcost0_full, mvcost1_full)` where each `mvcostN_full`
+/// is the FULL (length `2*MV_MAX+1`) per-component magnitude cost table.
+pub fn ref_build_nmv_cost_table(
+    joints_cdf: &[u16; 5],
+    comp0: &[u16; 69],
+    comp1: &[u16; 69],
+    precision: i32,
+) -> ([i32; 4], Vec<i32>, Vec<i32>) {
+    ref_init();
+    const MV_VALS: usize = ((1 << 14) - 1) * 2 + 1;
+    let mut joint_mv = [0i32; 4];
+    let mut cost0 = vec![0i32; MV_VALS];
+    let mut cost1 = vec![0i32; MV_VALS];
+    let rc = unsafe {
+        shim_build_nmv_cost_table(
+            joints_cdf.as_ptr(),
+            comp0.as_ptr(),
+            comp1.as_ptr(),
+            precision,
+            joint_mv.as_mut_ptr(),
+            cost0.as_mut_ptr(),
+            cost1.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, 0, "shim_build_nmv_cost_table allocation failed");
+    (joint_mv, cost0, cost1)
+}
+
 // warp_shim.c — decoder local-warped-motion core (crate aom-inter, warp module,
 // chunk 5): the real `av1_warp_affine_c` kernel + `av1_find_projection` /
 // `av1_get_shear_params` model derivation.

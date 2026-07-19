@@ -19,8 +19,10 @@
  * USE_8_TAPS) + encoder.h (the umbrella that resolves the mcomp.h <-> speed_
  * features.h SUBPEL_FORCE_STOP circular include) BEFORE mcomp.h. */
 #include "av1/common/reconinter.h"
+#include "av1/common/entropymv.h"
 #include "av1/encoder/encoder.h"
 #include "av1/encoder/mcomp.h"
+#include "av1/encoder/encodemv.h"
 #include "av1/encoder/reconinter_enc.h"
 #include "av1/common/scale.h"
 #include "aom_dsp/variance.h"
@@ -211,4 +213,55 @@ int shim_mv_bit_cost(int mv_row, int mv_col, int ref_row, int ref_col,
   MV ref_mv = { (int16_t)ref_row, (int16_t)ref_col };
   int *mvcost[2] = { (int *)mvcost0, (int *)mvcost1 };
   return av1_mv_bit_cost(&mv, &ref_mv, mvjcost, mvcost, weight);
+}
+
+/* ---- shim_build_nmv_cost_table — the REAL av1_build_nmv_cost_table
+ * (encodemv.c:294): given a full nmv_context (the joints CDF + both component
+ * CDF blobs, in the port's 69-u16 component packing) and a MvSubpelPrecision,
+ * produce the joint costs (4) + both centred component magnitude cost tables
+ * (MV_VALS ints each, index v at [MV_MAX + v]). Reconstructs the nmv_component
+ * from the port's blob field-by-field (the C struct field ORDER differs from
+ * the port's packing), then drives the real builder over centred pointers.
+ */
+static void shim_fill_nmv_component(nmv_component *c, const uint16_t *b) {
+  /* Port packing (aom-entropy partition.rs:453-461):
+   *   sign 0..3, classes 3..15, class0 15..18, bits[10] 18..48,
+   *   class0_fp[2] 48..58, fp 58..63, class0_hp 63..66, hp 66..69. */
+  memcpy(c->sign_cdf, b + 0, 3 * sizeof(uint16_t));
+  memcpy(c->classes_cdf, b + 3, 12 * sizeof(uint16_t));
+  memcpy(c->class0_cdf, b + 15, 3 * sizeof(uint16_t));
+  for (int i = 0; i < MV_OFFSET_BITS; ++i)
+    memcpy(c->bits_cdf[i], b + 18 + i * 3, 3 * sizeof(uint16_t));
+  for (int i = 0; i < CLASS0_SIZE; ++i)
+    memcpy(c->class0_fp_cdf[i], b + 48 + i * 5, 5 * sizeof(uint16_t));
+  memcpy(c->fp_cdf, b + 58, 5 * sizeof(uint16_t));
+  memcpy(c->class0_hp_cdf, b + 63, 3 * sizeof(uint16_t));
+  memcpy(c->hp_cdf, b + 66, 3 * sizeof(uint16_t));
+}
+
+int shim_build_nmv_cost_table(const uint16_t *joints_cdf, const uint16_t *comp0,
+                              const uint16_t *comp1, int precision,
+                              int *out_mvjoint, int *out_mvcost0,
+                              int *out_mvcost1) {
+  nmv_context ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  memcpy(ctx.joints_cdf, joints_cdf, (MV_JOINTS + 1) * sizeof(uint16_t));
+  shim_fill_nmv_component(&ctx.comps[0], comp0);
+  shim_fill_nmv_component(&ctx.comps[1], comp1);
+
+  int *cost0 = (int *)calloc((size_t)MV_VALS, sizeof(int));
+  int *cost1 = (int *)calloc((size_t)MV_VALS, sizeof(int));
+  if (!cost0 || !cost1) {
+    free(cost0);
+    free(cost1);
+    return -1;
+  }
+  int *mvcost[2] = { cost0 + MV_MAX, cost1 + MV_MAX };
+  av1_build_nmv_cost_table(out_mvjoint, mvcost, &ctx,
+                           (MvSubpelPrecision)precision);
+  memcpy(out_mvcost0, cost0, (size_t)MV_VALS * sizeof(int));
+  memcpy(out_mvcost1, cost1, (size_t)MV_VALS * sizeof(int));
+  free(cost0);
+  free(cost1);
+  return 0;
 }
