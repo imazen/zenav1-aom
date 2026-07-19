@@ -16,7 +16,7 @@
 //! inter_predictor` here only checks the wiring (no panics, zero-MV == plain copy,
 //! frame-edge MVs stay in range).
 
-use aom_inter::{
+use aom_dsp::inter::{
     blend_a64_hmask, blend_a64_vmask, build_inter_predictor, build_mc_border, get_obmc_mask,
     inter_predictor,
 };

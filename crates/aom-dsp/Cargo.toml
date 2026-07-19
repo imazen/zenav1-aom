@@ -18,13 +18,10 @@ aom-transform = { path = "../aom-transform" }
 aom-quant = { path = "../aom-quant" }
 aom-txb = { path = "../aom-txb" }
 aom-cdef = { path = "../aom-cdef" }
-aom-restore = { path = "../aom-restore" }
 aom-intra = { path = "../aom-intra" }
 aom-loopfilter = { path = "../aom-loopfilter" }
 aom-dist = { path = "../aom-dist" }
-aom-inter = { path = "../aom-inter" }
 aom-convolve = { path = "../aom-convolve" }
-aom-recon = { path = "../aom-recon" }
 aom-dispatch = { path = "../aom-dispatch" }
 aom-entropy = { path = "../aom-entropy" }
 

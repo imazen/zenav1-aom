@@ -8,7 +8,6 @@
 //! reconstruction primitive lives here rather than in the encoder crate, so the
 //! decoder does not have to depend on the encoder to reach it.
 
-#![forbid(unsafe_code)]
 
 use aom_transform::inv_txfm2d::av1_inv_txfm2d_add;
 use aom_txb::{dequant_txb, txb_high, txb_wide};

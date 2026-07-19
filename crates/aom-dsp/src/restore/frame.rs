@@ -23,8 +23,8 @@
 //! /writing up to 18/15 columns past the plane's right edge — dead values,
 //! but the memory must exist).
 
-use crate::sgr::apply_selfguided_restoration;
-use crate::wiener::wiener_convolve_add_src;
+use crate::restore::sgr::apply_selfguided_restoration;
+use crate::restore::wiener::wiener_convolve_add_src;
 use aom_entropy::lr::{
     LrFrameConfig, LrUnitInfo, RESTORATION_PROC_UNIT_SIZE, RESTORATION_UNIT_OFFSET, RESTORE_NONE,
     RESTORE_SGRPROJ, RESTORE_WIENER,

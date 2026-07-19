@@ -3,7 +3,7 @@
 //! byte/value-identity locks:
 //!
 //!  1. `warp_affine_matches_c` — the bd8 non-compound affine warp filter
-//!     (`aom_inter::warp::warp_affine`) vs the real C `av1_warp_affine_c`
+//!     (`aom_dsp::inter::warp::warp_affine`) vs the real C `av1_warp_affine_c`
 //!     (`aom_sys_ref::ref_warp_affine`, with the decoder's single-ref
 //!     `ConvolveParams`), over many valid models × block shapes × subsampling ×
 //!     reference planes / positions.
@@ -18,7 +18,7 @@
 //! that lives in the decoder driver and is locked by the frame-MD5 / census-match
 //! gate there.
 
-use aom_inter::warp::{find_projection, get_shear_params, warp_affine, WarpedMotionParams, AFFINE};
+use aom_dsp::inter::warp::{find_projection, get_shear_params, warp_affine, WarpedMotionParams, AFFINE};
 use aom_sys_ref::{ref_find_projection, ref_get_shear_params, ref_warp_affine};
 
 struct Rng(u64);

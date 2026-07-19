@@ -1,6 +1,6 @@
 //! Self-consistency gates for the per-unit LR search + frame-level pick
 //! (`restoration_search` / `av1_pick_filter_restoration` port in
-//! `aom_restore::pick`). These are NOT C-decision differentials — the
+//! `aom_dsp::restore::pick`). These are NOT C-decision differentials — the
 //! decision layer's true oracle is the end-to-end encoder gate (the C
 //! search has no narrow export); what IS asserted here:
 //!
@@ -20,15 +20,15 @@
 //! Costs are derived the way the encoder wiring does (`av1_fill_lr_rates`
 //! == `cost_tokens_from_cdf` over the frame-init LR CDFs).
 
-use aom_entropy::lr::{
+use aom_dsp::entropy::lr::{
     LrFrameConfig, RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_SWITCHABLE, RESTORE_WIENER,
 };
-use aom_entropy::partition::KfFrameContext;
-use aom_restore::frame::{loop_restoration_filter_frame, LrPlaneInput};
-use aom_restore::pick::{
+use aom_dsp::entropy::partition::KfFrameContext;
+use aom_dsp::restore::frame::{loop_restoration_filter_frame, LrPlaneInput};
+use aom_dsp::restore::pick::{
     pick_filter_restoration, LrPlanePixels, LrSearchInput, LrSearchOutcome, LrSearchSf,
 };
-use aom_txb::cost_tokens_from_cdf;
+use aom_dsp::txb::cost_tokens_from_cdf;
 
 struct Rng(u64);
 impl Rng {

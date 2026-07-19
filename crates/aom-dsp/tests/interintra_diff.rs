@@ -14,7 +14,7 @@
 //! per-mode indexing, and the frame-MD5 decoder gate covers the smooth combine
 //! end-to-end.
 
-use aom_inter::interintra::{blend_a64_mask, build_smooth_interintra_mask, combine_interintra, wedge_mask};
+use aom_dsp::inter::interintra::{blend_a64_mask, build_smooth_interintra_mask, combine_interintra, wedge_mask};
 use aom_sys_ref::{ref_blend_a64_mask, ref_ii_wedge_mask};
 
 struct Rng(u64);

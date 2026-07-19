@@ -4,12 +4,12 @@
 //! fired) + random per-RU parameters, through `ref_lr_filter_frame` (real
 //! `av1_loop_restoration_save_boundary_lines` x2 + real
 //! `av1_loop_restoration_filter_frame` on bordered YV12 buffers) and
-//! `aom_restore::frame::loop_restoration_filter_frame`. All planes
+//! `aom_dsp::restore::frame::loop_restoration_filter_frame`. All planes
 //! byte-identical, both the boundary-swapped (`optimized=false`, the CDEF
 //! decoder path) and the optimized (no-CDEF) arm.
 
-use aom_entropy::lr::{LrFrameConfig, LrUnitInfo, SgrprojInfoLr, WienerInfoLr};
-use aom_restore::frame::{loop_restoration_filter_frame, LrPlaneInput};
+use aom_dsp::entropy::lr::{LrFrameConfig, LrUnitInfo, SgrprojInfoLr, WienerInfoLr};
+use aom_dsp::restore::frame::{loop_restoration_filter_frame, LrPlaneInput};
 use aom_sys_ref as c;
 
 struct Rng(u64);
@@ -80,7 +80,7 @@ fn gen_unit(rng: &mut Rng, frame_rtype: u8, chroma: bool) -> ([i32; c::LRF_WORDS
         }
         2 => {
             let ep = rng.below(16) as i32;
-            let r = aom_entropy::lr::SGR_PARAMS_R[ep as usize];
+            let r = aom_dsp::entropy::lr::SGR_PARAMS_R[ep as usize];
             let xqd = if r[0] == 0 {
                 [0, rng.range(-32, 95)]
             } else if r[1] == 0 {

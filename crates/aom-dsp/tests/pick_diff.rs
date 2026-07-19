@@ -18,8 +18,8 @@
 //! symmetry invariants on stats from real-shaped content; its true
 //! validation is the end-to-end encoder gate (later chunk).
 
-use aom_restore::pick;
-use aom_restore::sgr;
+use aom_dsp::restore::pick;
+use aom_dsp::restore::sgr;
 use aom_sys_ref as c;
 
 struct Rng(u64);

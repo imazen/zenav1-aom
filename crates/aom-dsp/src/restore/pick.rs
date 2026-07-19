@@ -9,7 +9,7 @@
 //! (bd 8) arithmetic matches C's `uint8_t` paths exactly because every value
 //! fits in the u8 range and the accumulator widths below are C's.
 
-use crate::sgr::SGR_PARAMS;
+use crate::restore::sgr::SGR_PARAMS;
 use aom_entropy::lr::{WIENER_HALFWIN, WIENER_WIN};
 
 /// `WIENER_WIN2` / `WIENER_HALFWIN1` (restoration.h).
@@ -772,10 +772,10 @@ pub fn encode_xq(xq: [i32; 2], ep: usize) -> [i32; 2] {
 // (`restoration_search` / `av1_pick_filter_restoration`, pickrst.c).
 // ---------------------------------------------------------------------------
 
-use crate::frame::{
+use crate::restore::frame::{
     at, extend_frame, filter_unit, save_boundary_lines, StripeBoundaries, MARGIN_H, MARGIN_V,
 };
-use crate::sgr::{decode_xq, selfguided_restoration};
+use crate::restore::sgr::{decode_xq, selfguided_restoration};
 use aom_entropy::lr::{
     count_sgrproj_bits, count_wiener_bits, lr_corners_in_sb, LrFrameConfig,
     LrUnitInfo, SgrprojInfoLr, WienerInfoLr, RESTORATION_PROC_UNIT_SIZE, RESTORATION_UNITSIZE_MAX,

@@ -13,7 +13,6 @@
 //! aom-loopfilter and aom-cdef. Parameter types (`LrUnitInfo` etc.) come from
 //! `aom_entropy::lr` (the tile-parse side).
 
-#![forbid(unsafe_code)]
 
 pub mod frame;
 pub mod pick;

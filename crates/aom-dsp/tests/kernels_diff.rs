@@ -5,7 +5,7 @@
 //! buffers: every filtered sample byte-identical, and the untouched dst
 //! margin byte-identical too (no over-write).
 
-use aom_restore::{sgr, wiener};
+use aom_dsp::restore::{sgr, wiener};
 use aom_sys_ref as c;
 
 struct Rng(u64);

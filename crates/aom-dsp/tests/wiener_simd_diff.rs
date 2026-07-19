@@ -9,7 +9,7 @@
 //! (valid bd 8/10/12 pixels, real Wiener tap shapes incl. the chroma
 //! tap0 == 0 form), plus width tails around the 8-lane overlap boundary.
 
-use aom_restore::wiener::{wiener_convolve_add_src, wiener_convolve_add_src_scalar};
+use aom_dsp::restore::wiener::{wiener_convolve_add_src, wiener_convolve_add_src_scalar};
 use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
 struct Rng(u64);

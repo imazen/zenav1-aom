@@ -11,14 +11,11 @@ members = [
     "crates/aom-cdef",
     "crates/aom-convolve",
     "crates/aom-txb",
-    "crates/aom-recon",
     "crates/aom-encode",
-    "crates/aom-restore",
     "crates/aom-decode",
     "crates/aom-sys-ref",
     "crates/aom-bench",
     "crates/aom-dispatch",
-    "crates/aom-inter",
 ]
 
 [workspace.package]

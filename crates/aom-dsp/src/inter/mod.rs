@@ -50,7 +50,6 @@
 //! `dec_calc_subpel_params`; it is validated end-to-end by the decoder frame-MD5
 //! gate (chunk 1f), while everything downstream of it is differentially locked here.
 
-#![forbid(unsafe_code)]
 
 pub mod interintra;
 pub mod warp;
