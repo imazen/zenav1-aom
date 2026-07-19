@@ -78,12 +78,31 @@ immediately identifies the long poles — in `aom-dsp`:
 
 Installed for this measurement: `cargo-nextest 0.9.140` (prebuilt, `get.nexte.st`).
 
-### Caveat: the pool does NOT help `aom-decode`
+### Caveat: the pool barely helps `aom-decode` — and the reason is NOT "one binary"
 
-There 80% of the time is inside ONE binary, so the floor is 364 s and a pool buys ~1.2x.
-Worse, that binary parallelises poorly internally: 15 tests, 364 s at default threading vs
-**>600 s** at `--test-threads=1` — only ~1.7x on 16 cores. The lever there is *inside*
-`real_bitstream`: identify the dominant test and split or shard it.
+MEASURED under nextest: the decode suite is **364.0 s** vs `cargo test`'s 458.5 s — only
+**1.26x**. The floor is not a binary, it is a single **test**:
+
+```
+SLOW [363.9 s]  real_bitstream::multi_tile_streams_decode_byte_identical_to_c
+SLOW [285.8 s]  real_bitstream::sb128_streams_decode_byte_identical_to_c
+SLOW [122.9 s]  real_bitstream::real_bitstreams_decode_byte_identical_to_c
+```
+
+Those three already run *concurrently* under nextest, so the suite total is just the
+longest one. **Splitting the test BINARY would achieve nothing** — under a global pool the
+test, not the binary, is the scheduling unit. (An earlier revision of this file recommended
+sharding the binary. That was wrong and is corrected here.)
+
+The real shape: each of those tests sweeps a **matrix inside one `#[test]`**, serially. For
+`multi_tile_streams_...` that is `sizes[2] x combos[5]` = 10 cells, each a real `aomenc`
+encode plus a dual decode. The lever is to split the matrix into per-cell `#[test]`s so the
+pool can schedule the cells — same assertions, same coverage, finer granularity. That is
+the only thing that moves the decode floor.
+
+Generalisation: **nextest's speedup is bounded by your longest single test.** Where work
+spreads across many tests (`aom-dsp`: 342 tests, longest 11.3 s) it is 4.7x. Where one test
+serialises a whole matrix (`aom-decode`) it is 1.26x.
 
 ## Other findings
 
@@ -110,11 +129,14 @@ No silent runtime self-skips were found either.
 
 ## Recommendation
 
-1. Adopt `cargo-nextest` for the global pool — **4.7x measured** where work spreads across
-   binaries, within 7% of the floor. Biggest win for effort. Bonus: free per-test timing
-   and `--partition` for CI sharding.
-2. Attack the long poles nextest exposes. `real_bitstream` is 80% of the decode suite and
-   threads at only ~1.7x; `dv_ref_diff::find_samples_matches_c` (11.31 s) is the entire
-   `aom-dsp` floor. A pool cannot help below its slowest single test — only splitting can.
+1. Adopt `cargo-nextest` for the global pool — **4.7x on `aom-dsp`**, within 7% of the
+   floor. Bonus: free per-test timing and `--partition` for CI sharding. Note the gain is
+   crate-dependent: **1.26x on `aom-decode`**, because one test is the entire floor there.
+2. Split the matrix-sweeping tests into per-cell `#[test]`s — this is the only thing that
+   moves the decode floor, and it is worth more than item 1 for that crate. Targets, in
+   order: `real_bitstream::multi_tile_streams_...` (363.9 s, sweeps 2 sizes x 5 combos
+   serially), `::sb128_streams_...` (285.8 s), `::real_bitstreams_...` (122.9 s). Same
+   assertions, finer granularity — NOT a coverage reduction. Then
+   `dv_ref_diff::find_samples_matches_c` (11.3 s), the `aom-dsp` floor.
 3. Keep `--profile test-fast` as the default developer path.
 4. Do NOT consolidate test binaries. Do NOT switch to lld. Both measured, both rejected.

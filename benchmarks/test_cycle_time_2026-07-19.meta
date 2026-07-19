@@ -47,3 +47,21 @@ Result: 341 tests run / 341 passed / 1 skipped, 12.07 s wall (nextest's own summ
 
 The 1 skipped test is the documented #[ignore] perf-ratio print in sad_simd.rs -- not a
 correctness gate. See the test-hygiene section of the report.
+
+--- addendum 2: decode suite under nextest (CORRECTS the first revision) ---
+
+  cargo nextest run --cargo-profile test-fast -p zenav1-aom-decode --no-fail-fast \
+    --final-status-level slow
+
+Result: 54 tests, 364.021 s total (vs cargo test's 458.5 s = only 1.26x). The floor is a
+single TEST, not a binary:
+  363.934 s  real_bitstream::multi_tile_streams_decode_byte_identical_to_c
+  285.771 s  real_bitstream::sb128_streams_decode_byte_identical_to_c
+  122.892 s  real_bitstream::real_bitstreams_decode_byte_identical_to_c
+Those three run concurrently under nextest, so the suite total == the longest.
+
+The first revision of the report recommended sharding the test BINARY. That was WRONG:
+under a global pool the test is the scheduling unit, so binary boundaries do not matter.
+Corrected in the report. The 364 s test sweeps sizes[2] x combos[5] = 10 cells serially
+inside one #[test] (verified by reading the fn) -- splitting the matrix into per-cell
+#[test]s is the actual lever.
