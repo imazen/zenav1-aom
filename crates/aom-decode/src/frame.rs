@@ -221,6 +221,17 @@ fn mi_dim(px: i32) -> i32 {
     ((px + 7) & !7) >> 2
 }
 
+/// Robustness ceiling on decoded frame pixels (`width * height`). A malformed
+/// sequence header can declare dimensions up to 65535x65535 (each `num_bits`-wide
+/// field, `num_bits` up to 16); without a bound the frame-buffer allocations
+/// (`TileKf::new`'s recon vec `stride * aligned_mi_rows * 4` + the mi/seg grids,
+/// all scaling with width*height) would demand tens of gigabytes and OOM the
+/// process on a ~30-byte input. 2^28 px (e.g. 16384x16384) is far above any real
+/// still image yet keeps the largest buffer bounded; every conformance vector +
+/// `real_bitstream` size is orders of magnitude below it. A faithful per-level
+/// `MaxPicSize` gate is the follow-up; this bounds the allocation now.
+const MAX_DECODE_PIXELS: u64 = 1 << 28;
+
 /// `read_tile_group_header`'s caller in `obu.c` (`read_one_tile_group_obu` /
 /// the `is_obu_frame` inline in [`parse_frame_header`]): parse the
 /// `tile_start_and_end_present_flag` + optional explicit `tiles_log2`-bit
@@ -400,6 +411,20 @@ fn parse_frame_header_ext(
     let mib_size_log2 = if s.sb_size_128 { 5u32 } else { 4u32 };
     let mi_cols = mi_dim(s.max_frame_width);
     let mi_rows = mi_dim(s.max_frame_height);
+
+    // Robustness (DoS guard): reject frames whose declared pixel count exceeds
+    // the ceiling BEFORE any width*height-scaled buffer is allocated (the recon /
+    // mi / seg grids in `TileKf::new`). Both the single-frame and multi-frame
+    // paths call this, so no decode path can be driven into a multi-gigabyte
+    // allocation by a malformed header.
+    if (s.max_frame_width.max(0) as u64).saturating_mul(s.max_frame_height.max(0) as u64)
+        > MAX_DECODE_PIXELS
+    {
+        return Err(format!(
+            "frame {}x{} exceeds decode pixel ceiling {MAX_DECODE_PIXELS} (DoS guard)",
+            s.max_frame_width, s.max_frame_height
+        ));
+    }
 
     let mut cfg = FrameHeaderObu {
         prefix: FrameHeaderPrefix {
