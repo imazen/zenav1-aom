@@ -4,6 +4,35 @@
 
 ### [Unreleased]
 
+### QUEUED BREAKING CHANGES
+
+- **`zenav1-aom-decode` public entry points now return `Result<_, DecodeError>`
+  instead of `Result<_, String>`.** `decode_frame_obus` / `decode_frames` (and
+  the parse helpers) carry a structured, category-bearing `DecodeError` enum
+  (implements `core::error::Error`; `pub use` of `DecodeError` + `LimitKind`).
+  Consumers matching on the old `String` error must migrate to the enum. (c43440b)
+
+### Added
+
+- **`zenav1-aom-decode` production-hardening surface** (deliberate API additions
+  for the untrusted-input / zenavif decode path):
+  - `DecodeConfig` / `DecodeLimits` threaded through `decode_frame_obus_with` /
+    `decode_frames_with` / `_prefilter_with` — bounded resource limits for
+    untrusted bitstreams. (e25c556)
+  - Cooperative cancellation via `enough::Stop`, polled per SB-row / tile /
+    frame → `DecodeError::Cancelled`. (e6c7795)
+  - Optional `whereat` feature (default OFF) adding `*_at` source-located error
+    entries. (edaf579)
+  - `AllocMode` fallible-alloc pre-flight (`try_reserve` probe → `AllocFailed`)
+    + `max_memory_bytes` enforcement — a byte-preserving allocation ceiling
+    against attacker-controlled dimensions. (70b50c6)
+  - Malformed-input hardening: frame-dimension DoS ceiling (reject >2^28 px
+    before recon alloc) + panic→`Err` conversions found by a structured-random
+    fuzz sweep + a stable-toolchain fuzz regression harness. (1b65d61, 88b4de3,
+    606813d, 5922c47, bbd7bc4)
+  Decode output is byte-identical on valid input (the error type is a rename;
+  limits / stop / whereat / alloc all default to unchanged behavior).
+
 ### Changed
 
 - **Consolidated the 13 DSP/entropy kernel crates into one `zenav1-aom-dsp`**
