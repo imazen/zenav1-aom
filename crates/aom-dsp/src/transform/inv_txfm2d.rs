@@ -398,6 +398,12 @@ pub fn av1_inverse_transform_add(
 /// applied column-then-row. Bit-exact port; `range_check_value(_, bd+1)` is a
 /// no-op in the production config (coefficient range checking off).
 fn av1_highbd_iwht4x4_16_add(input: &[i32], dest: &mut [u16], stride: usize, bd: i32) {
+    // Fixed-array boundary (Gate 3, task #37 Lever 1): one length check here lets
+    // LLVM prove every interior `input[i..i+12]` access in-bounds and drop its
+    // per-access bounds check. Bit-exact by construction — same values, no panic
+    // branches. The 4x4 WHT always receives a 16-coefficient block (the caller's
+    // `[0i32; 16]` dqcoeff).
+    let input: &[i32; 16] = input[..16].try_into().unwrap();
     let mut out = [0i32; 16];
     // Column pass: iteration i reads input[i], input[i+4], input[i+8],
     // input[i+12] and writes out[i], out[i+4], out[i+8], out[i+12].

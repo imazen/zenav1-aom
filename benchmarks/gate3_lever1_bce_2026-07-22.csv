@@ -1,0 +1,6 @@
+metric,cell,baseline_ir,lever1_ir,delta_ir,delta_pct,note
+program_total,dec_352x288_q00,506476248,504329250,-2147000,-0.42,"baseline = post-Lever2 (64-bit window); 1 C-oracle + 4 port decodes; delta all port"
+program_total,dec_352x288_q32,238445542,237647788,-797754,-0.33,"baseline = post-Lever2; WHT inert (not lossless), delta is the dequant reslice"
+fn_iwht4x4_add,dec_352x288_q00,9979732,9019772,-959960,-9.62,"av1_highbd_iwht4x4_16_add: input -> &[i32;16] fixed-array boundary"
+fn_dequant_txb,dec_352x288_q00,7694144,7063904,-630240,-8.19,"dequant_txb: qcoeff/dqcoeff resliced to [..area]"
+fn_dequant_txb,dec_352x288_q32,2964804,2219008,-745796,-25.16,"dequant_txb reslice; larger share of q32's coeff work"

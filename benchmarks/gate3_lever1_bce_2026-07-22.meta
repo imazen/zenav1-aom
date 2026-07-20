@@ -1,0 +1,9 @@
+Gate-3 decode Lever 1 (fixed-array bounds-check elimination) measurement
+git commit (baseline): 879e24bf (Lever 2, on origin/main) + inv_txfm2d.rs WHT fixed-array + read.rs dequant reslice (this landing)
+host: dev-32gb / 16 cores / 30Gi RAM
+profile: [profile.profiling] (inherits release; debug=true; overflow-checks/debug-assertions OFF)
+tool: valgrind callgrind 3.26.0, --cache-sim=no --branch-sim=no, nice -n 10
+cmd: ./target/profiling/gate3_profile dec port <cell> 3   (1 C-oracle decode + 4 port decodes)
+cells: dec_352x288_q00 (quantizer-00, lossless -> WHT), dec_352x288_q32 (quantizer-32)
+bit-exact: inv_txfm2d_diff/txfm2d_diff/dequant_txb_diff/txb_diff/read_txb_full_diff + conformance byte-identity(240)+golden MD5
+date: 2026-07-22

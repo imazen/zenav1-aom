@@ -262,7 +262,12 @@ pub fn dequant_txb(
     let shift = tx_scale(tx_size);
     let max_value = (1i32 << (7 + bd)) - 1;
     let min_value = -(1i32 << (7 + bd));
-    dqcoeff[..area].fill(0);
+    // Fixed-length reslices (Gate 3, task #37 Lever 1): one length check each lets
+    // LLVM prove every `qcoeff[pos]`/`dqcoeff[pos]` with `pos < area` in-bounds and
+    // drop the per-coefficient bounds check. Bit-exact — same values, no panics.
+    let qcoeff = &qcoeff[..area];
+    let dqcoeff = &mut dqcoeff[..area];
+    dqcoeff.fill(0);
     for pos in 0..area {
         let q = qcoeff[pos];
         if q == 0 {
