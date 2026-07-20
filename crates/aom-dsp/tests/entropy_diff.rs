@@ -87,6 +87,32 @@ fn entropy_encode_byte_identical() {
     }
 }
 
+/// Decoding PAST the end of the buffer (truncated stream) must match the REAL
+/// C decoder symbol-for-symbol. This is the regime where the port's 64-bit
+/// window (task #37) behaves most differently internally from C's 32-bit one
+/// (it prefetches up to 7 bytes ahead, so the `OD_EC_LOTS_OF_BITS` latch fires
+/// at a different symbol index) — the decoded symbols must still be identical,
+/// because both consume the same all-ones filler beyond the last byte.
+#[test]
+fn entropy_decode_truncated_matches_c() {
+    let mut rng = Rng(0x_7a5e_9b31_cc44_0003);
+    for _ in 0..8_000 {
+        let n = rng.range(2, 400) as usize;
+        let (ops, _syms) = gen_ops(&mut rng, n);
+        let cbuf = c::ref_ec_encode(&ops);
+        let keep = (rng.next() as usize) % (cbuf.len() + 1);
+        let tbuf = &cbuf[..keep];
+        let dec_r = rust_decode(tbuf, &ops);
+        let dec_c = c::ref_ec_decode(tbuf, &ops);
+        assert_eq!(
+            dec_r,
+            dec_c,
+            "rust vs C decoder divergence on truncated buffer keep={keep}/{}",
+            cbuf.len()
+        );
+    }
+}
+
 #[test]
 fn entropy_decode_matches_and_roundtrips() {
     let mut rng = Rng(0x_d00d_5678_ef01_0002);

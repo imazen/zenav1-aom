@@ -49,6 +49,19 @@ impl<'a> OdEcDec<'a> {
     }
 
     /// `od_ec_dec_refill`
+    ///
+    /// PERF (Gate 3, task #37): `#[cold]` + never-inline, the rav1d msac
+    /// `ctx_refill` structure. Refill count is bounded by the STREAM BYTES
+    /// (~len/2.5 calls per tile), not by symbol count, so it is inherently
+    /// rare next to the symbol functions. Inlined, LLVM auto-vectorized this
+    /// <=3-iteration byte loop into every symbol decoder (measured: ~30-instr
+    /// setup with xmm moves per refill, plus a 5-push prologue on EVERY
+    /// `decode_cdf_q15`/`decode_bool_q15` call from the register pressure).
+    /// Out-of-line, the symbol functions compile to the same compact shape as
+    /// C's `od_ec_decode_cdf_q15`. Byte-exact: identical arithmetic, verified
+    /// by `entropy_diff.rs` against the real C decoder.
+    #[cold]
+    #[inline(never)]
     fn refill(&mut self) {
         let mut dif = self.dif;
         let mut cnt = self.cnt;
@@ -106,12 +119,19 @@ impl<'a> OdEcDec<'a> {
         let n = nsyms - 1;
         let c = dif >> (OD_EC_WINDOW_SIZE - 16);
         let mut v = r;
-        let mut u;
-        let mut ret = -1i32;
-        loop {
+        let mut u = r;
+        let mut ret = 0i32;
+        // The same serial scan as C (entdec.c), in iterator form so the
+        // per-entry access carries no bounds check (measured +3 instr/iter as
+        // an indexed loop). Identical read/compare sequence: entry i is read
+        // with weight `n - i`, and the loop breaks when `c >= v`. A valid AV1
+        // (i)cdf ends in 0 (update_cdf never touches the trailing entry), so
+        // by `i == nsyms - 1` we have `v == 0 <= c` and the break always
+        // fires within the slice, exactly like C.
+        for (i, &e) in icdf[..nsyms as usize].iter().enumerate() {
             u = v;
-            ret += 1;
-            v = (((r >> 8) * (icdf[ret as usize] as u32 >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
+            ret = i as i32;
+            v = (((r >> 8) * (e as u32 >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
                 + EC_MIN_PROB * (n - ret) as u32;
             if c >= v {
                 break;

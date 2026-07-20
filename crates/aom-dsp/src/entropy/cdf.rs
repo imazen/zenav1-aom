@@ -12,6 +12,9 @@ const CDF_PROB_TOP: i32 = 1 << 15;
 
 /// Bit-exact port of `update_cdf`.
 pub fn update_cdf(cdf: &mut [u16], val: i32, nsymbs: usize) {
+    // One exact-length reslice up front makes every interior index provably
+    // in-bounds (Gate 3: the indexed loop was bounds-checked per entry).
+    let cdf = &mut cdf[..nsymbs + 1];
     let count = cdf[nsymbs] as i32;
     let rate = 4 + (count >> 4) + (nsymbs > 3) as i32;
     let mut i = 0usize;
