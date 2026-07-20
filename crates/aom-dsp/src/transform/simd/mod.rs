@@ -422,7 +422,7 @@ pub(crate) fn try_inv_col_pass(
     lr_flip: bool,
     bd: i32,
 ) -> bool {
-    if col_n % 8 != 0 {
+    if col_n % 8 != 0 && col_n != 4 {
         return false;
     }
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
@@ -469,7 +469,7 @@ pub(crate) fn try_inv_row_pass(
     row_clamp: i8,
     stage_range: &[i8; 12],
 ) -> bool {
-    if row_n % 8 != 0 {
+    if row_n % 8 != 0 && row_n != 4 {
         return false;
     }
     let _ = crate::dispatch::scalar_forced();
@@ -486,7 +486,16 @@ pub(crate) fn try_inv_row_pass(
     true
 }
 
-/// The lane-batched inverse row pass body (8 rows per iteration).
+/// The lane-batched inverse row pass (8 rows per iteration; a 4-tall
+/// transform runs as ONE group with 4 active lanes — upper lanes carry zeros
+/// through the kernel and are never stored, so exactness per active lane is
+/// the same module-docs argument).
+///
+/// The vector scratch is TIERED by `col_n` (8/16/64 lane vectors): a flat
+/// `[i32x8; 64]` zero-init compiles to a 2 KiB memset per array, which
+/// dominated the small transforms once they took the vector path (measured
+/// +108M Ir of memset on a 4K decode). The core is `#[rite]`, so each arm
+/// inlines it with its exactly-sized scratch.
 #[arcane]
 #[allow(clippy::too_many_arguments)]
 fn inv_row_pass(
@@ -501,13 +510,60 @@ fn inv_row_pass(
     row_clamp: i8,
     stage_range: &[i8; 12],
 ) {
-    debug_assert!(col_n <= 64 && row_n % 8 == 0);
-    let mut tin = [i32x8::zero(t); 64];
-    let mut tout = [i32x8::zero(t); 64];
+    debug_assert!(col_n <= 64 && (row_n % 8 == 0 || row_n == 4));
+    if col_n <= 8 {
+        let mut tin = [i32x8::zero(t); 8];
+        let mut tout = [i32x8::zero(t); 8];
+        inv_row_pass_core(
+            t, kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range,
+            &mut tin, &mut tout,
+        );
+    } else if col_n <= 16 {
+        let mut tin = [i32x8::zero(t); 16];
+        let mut tout = [i32x8::zero(t); 16];
+        inv_row_pass_core(
+            t, kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range,
+            &mut tin, &mut tout,
+        );
+    } else {
+        let mut tin = [i32x8::zero(t); 64];
+        let mut tout = [i32x8::zero(t); 64];
+        inv_row_pass_core(
+            t, kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range,
+            &mut tin, &mut tout,
+        );
+    }
+}
+
+/// The row-pass body over caller-sized scratch (see [`inv_row_pass`]).
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn inv_row_pass_core(
+    t: X64V3Token,
+    kernel: Inv1d,
+    mod_input: &[i32],
+    buf: &mut [i32],
+    col_n: usize,
+    row_n: usize,
+    rect1: bool,
+    shift0_bit: i32,
+    row_clamp: i8,
+    stage_range: &[i8; 12],
+    tin: &mut [i32x8],
+    tout: &mut [i32x8],
+) {
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
-    for rg in (0..row_n).step_by(8) {
+    let mut rg = 0usize;
+    while rg < row_n {
+        let active = (row_n - rg).min(8); // 8, or 4 (row_n == 4)
         for (c, ti) in tin[..col_n].iter_mut().enumerate() {
-            let mut v = i32x8::from_slice(t, &mod_input[c * row_n + rg..c * row_n + rg + 8]);
+            let mut v = if active == 8 {
+                i32x8::from_slice(t, &mod_input[c * row_n + rg..c * row_n + rg + 8])
+            } else {
+                let a: [i32; 4] =
+                    mod_input[c * row_n + rg..c * row_n + rg + 4].try_into().unwrap();
+                i32x8::from_array(t, [a[0], a[1], a[2], a[3], 0, 0, 0, 0])
+            };
             if rect1 {
                 // round_shift(x * NewInvSqrt2, NewSqrt2Bits) — the rect scaling.
                 v = mul_rshiftv(t, v, NEW_INV_SQRT2, NEW_SQRT2_BITS);
@@ -521,22 +577,24 @@ fn inv_row_pass(
                 *to = rshiftv(t, *to, shift0_bit);
             }
         }
-        // Store: buf[(rg+k)*col_n + c] = tout[c].lane(k) — transpose 8x8
-        // tiles for the col_n%8==0 groups, per-lane scatter for the W=4 tail.
+        // Store: buf[(rg+k)*col_n + c] = tout[c].lane(k), k < active —
+        // transpose 8x8 tiles for the col_n%8==0 groups (only the active
+        // rows of each tile are stored), per-lane scatter for the W=4 tail.
         let full = col_n & !7;
         for cg in (0..full).step_by(8) {
             let tr = transpose8(t, &tout[cg..cg + 8]);
-            for (k, trk) in tr.iter().enumerate() {
+            for (k, trk) in tr.iter().take(active).enumerate() {
                 let base = (rg + k) * col_n + cg;
                 trk.store((&mut buf[base..base + 8]).try_into().unwrap());
             }
         }
         for c in full..col_n {
             let a = tout[c].to_array();
-            for (k, &av) in a.iter().enumerate() {
+            for (k, &av) in a.iter().take(active).enumerate() {
                 buf[(rg + k) * col_n + c] = av;
             }
         }
+        rg += active;
     }
 }
 
@@ -728,22 +786,77 @@ fn inv_col_pass(
     lr_flip: bool,
     bd: i32,
 ) {
-    debug_assert!(row_n <= 64 && col_n % 8 == 0);
-    let mut tin = [i32x8::zero(t); 64];
-    let mut tout = [i32x8::zero(t); 64];
+    debug_assert!(row_n <= 64 && (col_n % 8 == 0 || col_n == 4));
+    if row_n <= 8 {
+        let mut tin = [i32x8::zero(t); 8];
+        let mut tout = [i32x8::zero(t); 8];
+        inv_col_pass_core(
+            t, kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
+            ud_flip, lr_flip, bd, &mut tin, &mut tout,
+        );
+    } else if row_n <= 16 {
+        let mut tin = [i32x8::zero(t); 16];
+        let mut tout = [i32x8::zero(t); 16];
+        inv_col_pass_core(
+            t, kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
+            ud_flip, lr_flip, bd, &mut tin, &mut tout,
+        );
+    } else {
+        let mut tin = [i32x8::zero(t); 64];
+        let mut tout = [i32x8::zero(t); 64];
+        inv_col_pass_core(
+            t, kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
+            ud_flip, lr_flip, bd, &mut tin, &mut tout,
+        );
+    }
+}
+
+/// The column-pass body over caller-sized scratch (see [`inv_row_pass`] for
+/// the tiering rationale).
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn inv_col_pass_core(
+    t: X64V3Token,
+    kernel: Inv1d,
+    buf: &[i32],
+    output: &mut [u16],
+    stride: usize,
+    col_n: usize,
+    row_n: usize,
+    shift1_bit: i32,
+    col_clamp: i8,
+    stage_range: &[i8; 12],
+    ud_flip: bool,
+    lr_flip: bool,
+    bd: i32,
+    tin: &mut [i32x8],
+    tout: &mut [i32x8],
+) {
     let zero = i32x8::zero(t);
     let pix_hi = i32x8::splat(t, (1i32 << bd) - 1);
-    for c in (0..col_n).step_by(8) {
-        // Gather 8 columns: under lr_flip, scalar output column `c+j` reads
-        // buf column `col_n-1-(c+j)` — i.e. the ascending 8-column load at
-        // `col_n-c-8`, lanes reversed.
+    let mut c = 0usize;
+    while c < col_n {
+        let active = (col_n - c).min(8); // 8, or 4 (col_n == 4)
+        // Gather the column group: under lr_flip, scalar output column `c+j`
+        // reads buf column `col_n-1-(c+j)` — for a full group that is the
+        // ascending 8-column load at `col_n-c-8`, lanes reversed; for the
+        // 4-active group it is the row's 4 entries reversed into lanes 0..4.
         for (r, ti) in tin[..row_n].iter_mut().enumerate() {
-            let v = if lr_flip {
-                let base = r * col_n + (col_n - c - 8);
-                revv(t, i32x8::from_slice(t, &buf[base..base + 8]))
+            let v = if active == 8 {
+                if lr_flip {
+                    let base = r * col_n + (col_n - c - 8);
+                    revv(t, i32x8::from_slice(t, &buf[base..base + 8]))
+                } else {
+                    let base = r * col_n + c;
+                    i32x8::from_slice(t, &buf[base..base + 8])
+                }
             } else {
-                let base = r * col_n + c;
-                i32x8::from_slice(t, &buf[base..base + 8])
+                let a: [i32; 4] = buf[r * col_n..r * col_n + 4].try_into().unwrap();
+                if lr_flip {
+                    i32x8::from_array(t, [a[3], a[2], a[1], a[0], 0, 0, 0, 0])
+                } else {
+                    i32x8::from_array(t, [a[0], a[1], a[2], a[3], 0, 0, 0, 0])
+                }
             };
             *ti = clampv(t, v, col_clamp); // the driver's clamp_buf
         }
@@ -758,15 +871,21 @@ fn inv_col_pass(
         for r in 0..row_n {
             let src = tout[if ud_flip { row_n - r - 1 } else { r }];
             let idx = r * stride + c;
-            let d: [u16; 8] = output[idx..idx + 8].try_into().unwrap();
-            let dv = i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32));
+            let dv = if active == 8 {
+                let d: [u16; 8] = output[idx..idx + 8].try_into().unwrap();
+                i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32))
+            } else {
+                let d: [u16; 4] = output[idx..idx + 4].try_into().unwrap();
+                i32x8::from_array(t, [d[0] as i32, d[1] as i32, d[2] as i32, d[3] as i32, 0, 0, 0, 0])
+            };
             // (dest + trans) wraps i32 like the scalar wrapping_add, then
             // clamps to the pixel range — `as u16` is exact after the clamp.
             let s = (dv + src).clamp(zero, pix_hi).to_array();
-            for (j, &sv) in s.iter().enumerate() {
+            for (j, &sv) in s.iter().take(active).enumerate() {
                 output[idx + j] = sv as u16;
             }
         }
+        c += active;
     }
 }
 

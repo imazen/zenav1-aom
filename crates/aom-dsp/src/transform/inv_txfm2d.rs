@@ -208,9 +208,10 @@ pub fn av1_inv_txfm2d_add(
 ///
 /// Both are fully rewritten on every use (the row pass writes every element of
 /// `buf` before the column pass reads it — the SIMD path stores all
-/// `row_n * col_n` positions and declines outright when `row_n % 8 != 0`;
-/// `mod_input` is zero-filled by `resize` before the expansion copies into it),
-/// so reuse is byte-for-byte identical to a fresh allocation.
+/// `row_n * col_n` positions, whether in 8-row groups or the 4-active-lane
+/// group of a 4-tall transform; `mod_input` is zero-filled by `resize` before
+/// the expansion copies into it), so reuse is byte-for-byte identical to a
+/// fresh allocation.
 #[derive(Default, Clone, Debug)]
 pub struct InvTxfmScratch {
     buf: Vec<i32>,
