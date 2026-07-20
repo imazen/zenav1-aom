@@ -1349,6 +1349,28 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
     C DECODE oracle (`decode_frame_obus_prefilter` → `tc.recon_u`/`tc.blocks`) is a cheap
     ground-truth for recon+decisions and pinned everything above; only the per-candidate *RD
     scalars* still need sibling-C encoder instrumentation (also required by KB-13).
+  - **ROOT FIXED 2026-07-20 (sibling-C dual-dump nailed it) — the intrabc SKIP-arm chroma
+    extent bug.** Built a byte-inert instrumented sibling libaom (throwaway `/root/intra2-instr`,
+    removed; symlinked in as the workspace `upstream`, C stayed 1891B) and dumped C's per-uv-mode
+    chroma RD + `recon_buf_q3`/`ac_buf_q3` + DC-pred + neighbours vs the port. Chain: at mi(41,25)
+    the CfL AC was IDENTICAL to C, but the port's CfL **dist was 9760 vs C's 17856** because the
+    port's chroma **DC-pred was 137 vs C's 140** — the above-neighbour row read `[140,140,128,128]`
+    where C read `[140,140,140,140]`. The `128`s were the unwritten default: `encode_b_intra_dry`'s
+    intrabc **SKIP arm** (`encode_sb.rs`) sized the chroma prediction as `(bw>>ss_x, bh>>ss_y)` — a
+    **2×4 strip** for the 4×8 intrabc-skip chroma-ref `mi(38,25)` — instead of the **padded
+    plane-block `BLK_W_B[plane_bsize]` (4×4)** that C (and the port's COEFF arm) use, leaving the
+    right chroma columns as the `128` "island". That corrupted the CfL DC-pred of the block below
+    and flipped its CfL/H decision. **Fix:** one line — size the skip-arm chroma extent by
+    `plane_bsize` (mirrors the coeff arm; only sub-8×8 intrabc chroma-refs change; non-screen
+    frames are `use_intrabc`-gated out). Verified: the port's recon at `(79,50-51)` is now `140`,
+    its CfL dist matches C's `17856`, and the search+pack chroma decisions at mi(41,25) (→H) and
+    mi(41,26) (→CfL) now match C to the unit. Full `aom-encode` suite green, differentials green,
+    envelope byte-inert. **Witness stays PINNED / floor stays 1120:** this fix is output-inert on
+    the witness because the byte-1120 divergence is a SEPARATE root — **mi(40,28)'s partition flip
+    (C = VERT with a 4×8 coeff-arm intrabc sub, dv=(-816,-888); port = HORZ two intra 8×4s;
+    bsize C=1 vs port=2)**, a speed-0 partition/mode near-tie in the KB-2/KB-6 family. NEXT for the
+    witness: sibling-C per-candidate PARTITION-RD dump at the mi(40,28) BLOCK_16X8/8X8 node (the
+    KB-3/KB-7 method) — the sibling-C tooling is already built and byte-inert.
   Working notes: `docs/inter-vartx-coeff-arm-notes.md` (updated with the chroma inter path, the
   encode-vs-write walk-order difference, and the `set_skip_txfm` nonzero-rate detail).
 

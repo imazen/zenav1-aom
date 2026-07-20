@@ -707,7 +707,16 @@ pub fn encode_b_intra_dry(
                 chroma_plane_offset(env.base_uv, env.stride, mi_row, mi_col, bsize, env.ss_x, env.ss_y);
             let plane_bsize = get_plane_block_size(bsize, env.ss_x, env.ss_y);
             let (pmw, pmh) = (MI_SIZE_WIDE_B[plane_bsize], MI_SIZE_HIGH_B[plane_bsize]);
-            let (cw, ch) = (bw >> env.ss_x, bh >> env.ss_y);
+            // The chroma PLANE block is padded to a 4x4 minimum, so for sub-8x8
+            // luma this is LARGER than `bw >> ss_x`: a 4x8 intrabc chroma-ref
+            // covers the full 4x4 chroma, not a 2x4 strip. Sizing by `bw >> ss_x`
+            // left the right chroma columns unwritten (the "128 default" island),
+            // corrupting the DC-pred of the CfL block below it. Mirror the COEFF
+            // arm (`encode_b_intrabc_coeff`), which already uses `plane_bsize`.
+            let (cw, ch) = (
+                crate::tx_search::BLK_W_B[plane_bsize],
+                crate::tx_search::BLK_H_B[plane_bsize],
+            );
             let au = (mi_col >> env.ss_x) as usize;
             let lu = ((mi_row & 31) >> env.ss_y) as usize;
             for (plane, recon) in [(1usize, &mut *recon_u), (2usize, &mut *recon_v)] {
