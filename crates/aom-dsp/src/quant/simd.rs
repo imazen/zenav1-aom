@@ -170,7 +170,13 @@ fn quantize_fp_impl(
         // qcoeff = (tmp ^ sign) - sign; dqcoeff = ((tmp *wrap dq) >> ls ^ sign) - sign.
         let qc = (tmp ^ sign) - sign;
         let absdq = match log_scale {
-            0 => (tmp * dqv_v).shr_arithmetic_const::<0>(),
+            // `>> 0` is the identity; emit the value directly rather than
+            // `shr_arithmetic_const::<0>()`. On x86 the const-0 shift is a legal
+            // no-op, but magetypes forwards it to NEON's `vshrq_n_s32::<N>`,
+            // whose `static_assert(1 <= N <= 32)` rejects N==0 at const-eval —
+            // breaking the aarch64/windows-11-arm build. (Mirrors the `0 => $v`
+            // guard the CDEF `shr_by!` macro already uses.) See aom-dsp #4.
+            0 => tmp * dqv_v,
             1 => (tmp * dqv_v).shr_arithmetic_const::<1>(),
             2 => (tmp * dqv_v).shr_arithmetic_const::<2>(),
             _ => unreachable!(),
