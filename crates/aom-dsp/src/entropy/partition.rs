@@ -5534,7 +5534,16 @@ pub fn read_mb_modes_kf_prefix(
     // read_skip_txfm's segfeature_active(seg, mbmi->segment_id, SEG_LVL_SKIP):
     // the pre-skip-read id when segid_preskip, else the placeholder 0 (no
     // segment carries SKIP when !segid_preskip — see the doc above).
-    let seg_skip_active = seg_enabled && seg_skip_feature[segment_id as usize];
+    // `segment_id` is neg-deinterleaved from an untrusted symbol and can land
+    // out of range on a malformed bitstream (libaom rejects such a frame with
+    // AOM_CODEC_CORRUPT_FRAME; the port validates + rejects at the decode_block
+    // caller). Index defensively so this read cannot panic before the caller
+    // sees the bad id. Byte-inert for conformant streams (segment_id in range).
+    let seg_skip_active = seg_enabled
+        && seg_skip_feature
+            .get(segment_id as usize)
+            .copied()
+            .unwrap_or(false);
     let skip = read_skip(dec, skip_cdf, seg_skip_active);
     // post-skip segment id: coded when skip==0 (write_segment_id's
     // skip_txfm=skip); a skipped block takes the spatial prediction.

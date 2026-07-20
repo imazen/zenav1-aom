@@ -3859,6 +3859,20 @@ impl<'c> TileKf<'c> {
             above_palette,
             left_palette,
         );
+        // libaom rejects a segment_id outside [0, last_active_segid] as
+        // AOM_CODEC_CORRUPT_FRAME (read_segment_id, decodemv.c): a malformed
+        // bitstream can neg-deinterleave the coded id to a negative or
+        // out-of-range value. Reject before it indexes the seg-feature / qmatrix
+        // / dequant tables below. Byte-inert on conformant streams.
+        if cfg.seg.enabled
+            && (info.segment_id < 0 || info.segment_id > self.st.last_active_segid)
+        {
+            self.mark_corrupt(format!(
+                "corrupt frame: segment_id {} out of range [0, {}]",
+                info.segment_id, self.st.last_active_segid
+            ));
+            return;
+        }
         // Intra block copy: read_mb_modes_kf_fc has already read use_intrabc and,
         // when set, the RAW block-vector difference into info.dv_row/dv_col.
         // Resolve the final DV here — the predictor scan (av1_find_mv_refs at
