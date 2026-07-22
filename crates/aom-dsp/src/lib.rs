@@ -22,6 +22,7 @@ pub mod entropy;
 pub mod inter;
 pub mod intra;
 pub mod loopfilter;
+pub mod lowbd;
 pub mod quant;
 pub mod recon;
 pub mod restore;

@@ -341,6 +341,231 @@ pub fn av1_inv_txfm2d_add_into(
     }
 }
 
+// ===========================================================================
+// LOWBD (bd8, u8 pixel) inverse transform + reconstruction
+// ===========================================================================
+//
+// The parallel bd8 "lowbd" decode pipeline (see the crate `lowbd` design notes)
+// stores reconstruction planes as `u8` rather than `Vec<u16>`. These entry
+// points are the byte-for-byte twins of the highbd ones above with the
+// destination narrowed to `u8` and `bd` fixed at 8.
+//
+// SAFE-STEP INVARIANT (why byte-identity is guaranteed, not merely tested):
+// the ROW pass is pixel-type independent — it writes the i32 `buf` and is REUSED
+// verbatim. The COLUMN pass differs ONLY in the width of the destination load
+// and store. Every i32-domain lane op is unchanged, and at bd == 8 the highbd
+// `highbd_clip_pixel_add` already clamps to `(1<<8)-1 == 255`, so a u8 store of
+// the clamped value equals the u16 store of the same value. The intermediate
+// butterfly precision is NOT narrowed (still i32 / the normative
+// `av1_gen_inv_stage_range` clamps). Consequence: this can never move a pixel
+// vs the highbd bd8 path — proven exhaustively by `inv_txfm2d_lowbd_diff`.
+
+/// bd8/u8 clip-add: `(dest + trans)` wrapped in i32, clamped to `[0, 255]`.
+#[inline]
+fn clip_pixel_add_u8(dest: u8, trans: i32) -> u8 {
+    ((dest as i32).wrapping_add(trans)).clamp(0, 255) as u8
+}
+
+/// bd8/u8 counterpart of [`av1_inv_txfm2d_add`]. `output` is a `u8` pixel buffer
+/// of at least `row_n*stride`. Byte-identical to running [`av1_inv_txfm2d_add`]
+/// with a `bd == 8` u16 buffer holding the same pixels (see the SAFE-STEP
+/// invariant above).
+pub fn av1_inv_txfm2d_add_u8(
+    input: &[i32],
+    output: &mut [u8],
+    stride: usize,
+    tx_type: usize,
+    tx_size: usize,
+) {
+    let mut scratch = InvTxfmScratch::default();
+    av1_inv_txfm2d_add_u8_into(input, output, stride, tx_type, tx_size, &mut scratch);
+}
+
+/// [`av1_inv_txfm2d_add_u8`] with caller-owned scratch (see [`InvTxfmScratch`]).
+pub fn av1_inv_txfm2d_add_u8_into(
+    input: &[i32],
+    output: &mut [u8],
+    stride: usize,
+    tx_type: usize,
+    tx_size: usize,
+    scratch: &mut InvTxfmScratch,
+) {
+    const BD: i32 = 8;
+    let InvTxfmScratch { buf, mod_input: mod_input_scratch } = scratch;
+    let cfg = get_inv_txfm_cfg(tx_type, tx_size);
+    assert!(cfg.valid, "unsupported inverse (tx_type={tx_type}, tx_size={tx_size})");
+    let col_n = TX_SIZE_WIDE[tx_size];
+    let row_n = TX_SIZE_HIGH[tx_size];
+    let shift = cfg.shift;
+    let rect_type = get_rect_tx_log_ratio(col_n as i64, row_n as i64);
+    let (opt_range_col, opt_range_row) = opt_range(BD);
+    let stage_range_row = [opt_range_row; 12];
+    let stage_range_col = [opt_range_col; 12];
+
+    let mod_input = remap_input(input, tx_size, col_n, row_n, mod_input_scratch);
+
+    buf.clear();
+    buf.resize(col_n * row_n, 0);
+    let mut buf = &mut buf[..];
+    let mut temp_in = [0i32; 64];
+    let mut temp_out = [0i32; 64];
+
+    // ROW pass — shared verbatim with the highbd path (writes the i32 `buf`).
+    #[cfg(target_arch = "x86_64")]
+    let rows_done = crate::transform::simd::try_inv_row_pass(
+        cfg.txfm_type_row,
+        &mod_input,
+        &mut buf,
+        col_n,
+        row_n,
+        rect_type.abs() == 1,
+        -(shift[0] as i32),
+        (BD + 8) as i8,
+        &stage_range_row,
+    );
+    #[cfg(not(target_arch = "x86_64"))]
+    let rows_done = false;
+    if !rows_done {
+        for r in 0..row_n {
+            let ti = &mut temp_in[0..col_n];
+            if rect_type.abs() == 1 {
+                for c in 0..col_n {
+                    ti[c] = round_shift(
+                        mod_input[c * row_n + r] as i64 * NEW_INV_SQRT2 as i64,
+                        NEW_SQRT2_BITS,
+                    );
+                }
+            } else {
+                for c in 0..col_n {
+                    ti[c] = mod_input[c * row_n + r];
+                }
+            }
+            clamp_buf(ti, (BD + 8) as i8);
+            (cfg.func_row)(ti, &mut buf[r * col_n..r * col_n + col_n], INV_COS_BIT, &stage_range_row);
+            round_shift_array(&mut buf[r * col_n..r * col_n + col_n], -(shift[0] as i32));
+        }
+    }
+
+    // COLUMN pass — u8 destination.
+    let col_clamp = (BD + 6).max(16) as i8;
+    #[cfg(target_arch = "x86_64")]
+    let cols_done = crate::transform::simd::try_inv_col_pass_u8(
+        cfg.txfm_type_col,
+        &buf,
+        output,
+        stride,
+        col_n,
+        row_n,
+        -(shift[1] as i32),
+        col_clamp,
+        &stage_range_col,
+        cfg.ud_flip,
+        cfg.lr_flip,
+    );
+    #[cfg(not(target_arch = "x86_64"))]
+    let cols_done = false;
+    if !cols_done {
+        for c in 0..col_n {
+            let ti = &mut temp_in[0..row_n];
+            for r in 0..row_n {
+                let cc = if cfg.lr_flip { col_n - c - 1 } else { c };
+                ti[r] = buf[r * col_n + cc];
+            }
+            clamp_buf(ti, col_clamp);
+            let to = &mut temp_out[0..row_n];
+            (cfg.func_col)(ti, to, INV_COS_BIT, &stage_range_col);
+            round_shift_array(to, -(shift[1] as i32));
+            for r in 0..row_n {
+                let src = if cfg.ud_flip { to[row_n - r - 1] } else { to[r] };
+                let idx = r * stride + c;
+                output[idx] = clip_pixel_add_u8(output[idx], src);
+            }
+        }
+    }
+}
+
+/// bd8/u8 counterpart of [`av1_highbd_iwht4x4_add`] (the lossless 4x4 reversible
+/// Walsh–Hadamard). eob-dispatched exactly like the highbd wrapper.
+pub fn av1_iwht4x4_add_u8(input: &[i32], output: &mut [u8], stride: usize, eob: usize) {
+    if eob > 1 {
+        iwht4x4_16_add_u8(input, output, stride);
+    } else {
+        iwht4x4_1_add_u8(input, output, stride);
+    }
+}
+
+fn iwht4x4_16_add_u8(input: &[i32], dest: &mut [u8], stride: usize) {
+    let input: &[i32; 16] = input[..16].try_into().unwrap();
+    let mut out = [0i32; 16];
+    for i in 0..4 {
+        let mut a1 = input[i] >> UNIT_QUANT_SHIFT;
+        let mut c1 = input[i + 4] >> UNIT_QUANT_SHIFT;
+        let mut d1 = input[i + 8] >> UNIT_QUANT_SHIFT;
+        let mut b1 = input[i + 12] >> UNIT_QUANT_SHIFT;
+        a1 += c1;
+        d1 -= b1;
+        let e1 = (a1 - d1) >> 1;
+        b1 = e1 - b1;
+        c1 = e1 - c1;
+        a1 -= b1;
+        d1 += c1;
+        out[i] = a1;
+        out[i + 4] = b1;
+        out[i + 8] = c1;
+        out[i + 12] = d1;
+    }
+    for i in 0..4 {
+        let mut a1 = out[4 * i];
+        let mut c1 = out[4 * i + 1];
+        let mut d1 = out[4 * i + 2];
+        let mut b1 = out[4 * i + 3];
+        a1 += c1;
+        d1 -= b1;
+        let e1 = (a1 - d1) >> 1;
+        b1 = e1 - b1;
+        c1 = e1 - c1;
+        a1 -= b1;
+        d1 += c1;
+        dest[i] = clip_pixel_add_u8(dest[i], a1);
+        dest[i + stride] = clip_pixel_add_u8(dest[i + stride], b1);
+        dest[i + 2 * stride] = clip_pixel_add_u8(dest[i + 2 * stride], c1);
+        dest[i + 3 * stride] = clip_pixel_add_u8(dest[i + 3 * stride], d1);
+    }
+}
+
+fn iwht4x4_1_add_u8(input: &[i32], dest: &mut [u8], stride: usize) {
+    let a1 = input[0] >> UNIT_QUANT_SHIFT;
+    let e1 = a1 >> 1;
+    let tmp = [a1 - e1, e1, e1, e1];
+    for i in 0..4 {
+        let e = tmp[i] >> 1;
+        let a = tmp[i] - e;
+        dest[i] = clip_pixel_add_u8(dest[i], a);
+        dest[i + stride] = clip_pixel_add_u8(dest[i + stride], e);
+        dest[i + 2 * stride] = clip_pixel_add_u8(dest[i + 2 * stride], e);
+        dest[i + 3 * stride] = clip_pixel_add_u8(dest[i + 3 * stride], e);
+    }
+}
+
+/// bd8/u8 counterpart of [`av1_inverse_transform_add`] — the recon dispatch
+/// (lossless WHT vs the regular inverse 2-D transform).
+#[allow(clippy::too_many_arguments)]
+pub fn av1_inverse_transform_add_u8(
+    input: &[i32],
+    dst: &mut [u8],
+    stride: usize,
+    tx_type: usize,
+    tx_size: usize,
+    eob: usize,
+    lossless: bool,
+) {
+    if lossless {
+        av1_iwht4x4_add_u8(input, dst, stride, eob);
+    } else {
+        av1_inv_txfm2d_add_u8(input, dst, stride, tx_type, tx_size);
+    }
+}
+
 /// `UNIT_QUANT_SHIFT` (`aom_dsp/txfm_common.h`): the extra shift the reversible
 /// 4x4 Walsh–Hadamard folds into its input, cancelling the lossless dequant's
 /// unit quantizer (dc/ac step 4 at qindex 0) so `level * 4 >> 2 == level`.

@@ -889,6 +889,164 @@ fn inv_col_pass_core(
     }
 }
 
+// ---- lowbd (bd8, u8 pixel) inverse column pass --------------------------------
+//
+// The bd8 "lowbd" decode pipeline stores reconstruction planes as `u8` instead
+// of `u16`. The inverse-transform ROW pass ([`try_inv_row_pass`]) is pixel-type
+// independent (it writes the i32 `buf`), so lowbd REUSES it verbatim; only the
+// COLUMN pass touches pixels. This is the byte-for-byte twin of
+// [`inv_col_pass_core`] with the destination loads/stores narrowed to `u8` and
+// the pixel ceiling fixed at 255 (bd == 8): every i32-domain lane op — the
+// column gather + clamp, the 1-D kernel, the round-shift, and the
+// `(dest + trans).clamp(0, 255)` reconstruction — is identical, so a lane that
+// stores value `v` here stores the SAME `v` the u16 core would (the u16 core
+// also clamps to `(1<<8)-1 == 255` at bd8). The intermediate butterfly
+// precision is UNNARROWED (still i32) — this is the "safe first step": only the
+// destination storage changes width, which cannot move a pixel.
+
+/// bd8/u8 counterpart of [`try_inv_col_pass`]. `bd` is fixed at 8, so the pixel
+/// ceiling is 255 and the column clamp is 16 (`(8+6).max(16)`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_inv_col_pass_u8(
+    txfm_type_col: i32,
+    buf: &[i32],
+    output: &mut [u8],
+    stride: usize,
+    col_n: usize,
+    row_n: usize,
+    shift1_bit: i32,
+    col_clamp: i8,
+    stage_range: &[i8; 12],
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    if col_n % 8 != 0 && col_n != 4 {
+        return false;
+    }
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    let Some(t) = X64V3Token::summon() else {
+        return false;
+    };
+    let Some(kernel) = inv_kernel(txfm_type_col) else {
+        return false;
+    };
+    debug_assert_eq!(inv_kernel_n(kernel), row_n);
+    inv_col_pass_u8(
+        t, kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range, ud_flip,
+        lr_flip,
+    );
+    true
+}
+
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn inv_col_pass_u8(
+    t: X64V3Token,
+    kernel: Inv1d,
+    buf: &[i32],
+    output: &mut [u8],
+    stride: usize,
+    col_n: usize,
+    row_n: usize,
+    shift1_bit: i32,
+    col_clamp: i8,
+    stage_range: &[i8; 12],
+    ud_flip: bool,
+    lr_flip: bool,
+) {
+    debug_assert!(row_n <= 64 && (col_n % 8 == 0 || col_n == 4));
+    if row_n <= 8 {
+        let mut tin = [i32x8::zero(t); 8];
+        let mut tout = [i32x8::zero(t); 8];
+        inv_col_pass_u8_core(
+            t, kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
+            ud_flip, lr_flip, &mut tin, &mut tout,
+        );
+    } else if row_n <= 16 {
+        let mut tin = [i32x8::zero(t); 16];
+        let mut tout = [i32x8::zero(t); 16];
+        inv_col_pass_u8_core(
+            t, kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
+            ud_flip, lr_flip, &mut tin, &mut tout,
+        );
+    } else {
+        let mut tin = [i32x8::zero(t); 64];
+        let mut tout = [i32x8::zero(t); 64];
+        inv_col_pass_u8_core(
+            t, kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
+            ud_flip, lr_flip, &mut tin, &mut tout,
+        );
+    }
+}
+
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn inv_col_pass_u8_core(
+    t: X64V3Token,
+    kernel: Inv1d,
+    buf: &[i32],
+    output: &mut [u8],
+    stride: usize,
+    col_n: usize,
+    row_n: usize,
+    shift1_bit: i32,
+    col_clamp: i8,
+    stage_range: &[i8; 12],
+    ud_flip: bool,
+    lr_flip: bool,
+    tin: &mut [i32x8],
+    tout: &mut [i32x8],
+) {
+    let zero = i32x8::zero(t);
+    let pix_hi = i32x8::splat(t, 255); // (1<<8)-1
+    let mut c = 0usize;
+    while c < col_n {
+        let active = (col_n - c).min(8);
+        for (r, ti) in tin[..row_n].iter_mut().enumerate() {
+            let v = if active == 8 {
+                if lr_flip {
+                    let base = r * col_n + (col_n - c - 8);
+                    revv(t, i32x8::from_slice(t, &buf[base..base + 8]))
+                } else {
+                    let base = r * col_n + c;
+                    i32x8::from_slice(t, &buf[base..base + 8])
+                }
+            } else {
+                let a: [i32; 4] = buf[r * col_n..r * col_n + 4].try_into().unwrap();
+                if lr_flip {
+                    i32x8::from_array(t, [a[3], a[2], a[1], a[0], 0, 0, 0, 0])
+                } else {
+                    i32x8::from_array(t, [a[0], a[1], a[2], a[3], 0, 0, 0, 0])
+                }
+            };
+            *ti = clampv(t, v, col_clamp);
+        }
+        let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
+        run_inv1d(t, kernel, &tin[..row_n], &mut tout[..row_n], cos_bit, stage_range);
+        for to in tout[..row_n].iter_mut() {
+            *to = rshiftv(t, *to, shift1_bit);
+        }
+        for r in 0..row_n {
+            let src = tout[if ud_flip { row_n - r - 1 } else { r }];
+            let idx = r * stride + c;
+            let dv = if active == 8 {
+                let d: [u8; 8] = output[idx..idx + 8].try_into().unwrap();
+                i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32))
+            } else {
+                let d: [u8; 4] = output[idx..idx + 4].try_into().unwrap();
+                i32x8::from_array(t, [d[0] as i32, d[1] as i32, d[2] as i32, d[3] as i32, 0, 0, 0, 0])
+            };
+            // (dest + trans) wraps i32 like the scalar wrapping_add, then clamps
+            // to [0, 255] — `as u8` is exact after the clamp.
+            let s = (dv + src).clamp(zero, pix_hi).to_array();
+            for (j, &sv) in s.iter().take(active).enumerate() {
+                output[idx + j] = sv as u8;
+            }
+        }
+        c += active;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! SIMD-vs-scalar differential for the lane kernels (Gate-3 parity rule:

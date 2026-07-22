@@ -9,7 +9,9 @@
 //! decoder does not have to depend on the encoder to reach it.
 
 
-use crate::transform::inv_txfm2d::{InvTxfmScratch, av1_inv_txfm2d_add_into};
+use crate::transform::inv_txfm2d::{
+    InvTxfmScratch, av1_inv_txfm2d_add_into, av1_inv_txfm2d_add_u8_into,
+};
 use crate::txb::{dequant_txb, txb_high, txb_wide};
 
 /// Reconstruct one transform block's pixels from its decoded coefficients: the
@@ -96,4 +98,37 @@ pub fn reconstruct_txb_into(
         bd,
         &mut scratch.txfm,
     );
+}
+
+/// bd8 LOWBD (u8 pixel) counterpart of [`reconstruct_txb_into`] — the recon
+/// family's lowbd dispatch entry. `dst` is a `u8` plane buffer (bit depth 8);
+/// on entry it holds the prediction, on return the reconstruction. `bd` is
+/// fixed at 8.
+///
+/// SAFE-STEP scope: the dequantized coefficient block is still `i32` (the
+/// butterfly precision is NOT narrowed — see the transform module's SAFE-STEP
+/// invariant); only the destination pixel storage narrows to `u8`. This is
+/// therefore byte-identical to running [`reconstruct_txb_into`] with a `bd == 8`
+/// u16 plane holding the same pixels. A later fan-out step may narrow the
+/// coefficient path to `i16` (the true bandwidth/SIMD-lane win); that narrowing
+/// is byte-identity-safe at bd8 because `av1_gen_inv_stage_range` clamps every
+/// inter-stage value to 16 bits (`opt_range == 16`).
+#[allow(clippy::too_many_arguments)]
+pub fn reconstruct_txb_u8_into(
+    dst: &mut [u8],
+    stride: usize,
+    tx_size: usize,
+    tx_type: usize,
+    qcoeff: &[i32],
+    dequant: [i16; 2],
+    iqmatrix: Option<&[u8]>,
+    scratch: &mut ReconScratch,
+) {
+    const BD: i32 = 8;
+    let area = txb_wide(tx_size) * txb_high(tx_size);
+    let dq = &mut scratch.dqcoeff;
+    dq.clear();
+    dq.resize(area, 0);
+    dequant_txb(qcoeff, dq, tx_size, dequant, iqmatrix, BD);
+    av1_inv_txfm2d_add_u8_into(dq, dst, stride, tx_type, tx_size, &mut scratch.txfm);
 }
