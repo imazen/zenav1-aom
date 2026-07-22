@@ -1411,17 +1411,25 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
     aom-encode+aom-bench suite **340/340** (KB-6 30/30 real content, KB-13 speed1-4, speed 0-9
     gates, palette, lossless, bd10, LR, multitile all unchanged; the SbEncodeEnv field is zeroed on
     non-intrabc paths where the var-tx never runs).
-  - **REMAINING RESIDUAL (witness still PINNED, floor stays 1120) — PACK-side, NOT the search.**
-    With the search now C-exact at mi(40,28), the witness is **port 1886B vs c 1891B (delta -5),
-    first-diff still 1120** — output-inert to root 3 (decision-inert: VERT wins either way) and
-    unchanged by re-verifying with the clean vs instrumented C. So the byte-1120 divergence is now
-    a SEPARATE PACK-side (or adjacent-intrabc-block) coding residual: the port codes the intrabc
-    block into FEWER bytes than C despite the SEARCH picking C's exact partition + DV + var-tx tree
-    (2×TX_4X4, tx_types [7,0], dist 93973 all == C). NEXT: decode-both / pack-side dump of the
-    mi(40,28) VERT-sub0 intrabc block's CODED symbols (eob, tx_type, split flags) vs the search's
-    chosen tree — a search-vs-pack consistency check on the intrabc var-tx re-encode, since the
-    RD/search is now proven C-faithful. Do NOT re-chase the DV search, the epb, the NSTEP pattern,
-    or the txfm_partition cost — all three are closed and unit-verified.
+  - **REMAINING RESIDUAL (witness still PINNED, floor stays 1120) — PACK symbol coding, NOT the
+    search and NOT the coeff re-encode.** With the search C-exact at mi(40,28), the witness is
+    **port 1886B vs c 1891B (delta -5), first-diff still 1120** (output-inert to root 3 — VERT wins
+    either way — and identical under clean vs instrumented C). RULED OUT by a port PACK re-encode
+    dump (`encode_b_intrabc_coeff` → `y_txbs`): the port's re-encoded VERT-sub0 intrabc block is
+    **txb[0] eob=12 tx_type=7 txb_skip_ctx=4, txb[1] eob=0 (skip) txb_skip_ctx=3** — identical to
+    C's coded tree (2×TX_4X4, tx_types [7,0], dist 93973), so the DV, the var-tx partition, the
+    tx-types, the coeffs, and the coeff-coding contexts are all correct. The byte-1120 divergence
+    is therefore in the block's remaining PACK **symbol coding** — one of: the DV diff
+    (`dv - dv_ref`, `write_intrabc_info`), the `use_intrabc` flag, or the `write_tx_size_vartx`
+    txfm-partition split-flag CDF/ctx at pack time (a possible KB-15-ROOT-6-class pack-side
+    txfm-context drift distinct from the RD-cost fix in root 3) — NOT the coeffs. NEXT: a symbol-
+    level compare of the port's coded bitstream vs C at the mi(40,28) coding position (the
+    `/root/aom-inspect` accounting tool, or a C-side write-path dump), focused on the DV /
+    use_intrabc / txfm-partition symbols. Do NOT re-chase the DV search, the epb, the NSTEP
+    pattern, the txfm_partition COST, or the coeff re-encode — all closed and unit-verified.
+    (Aside: the pack re-encode's leaf1 `dc_sign_ctx` reads 0 where the C *search* had 1, but that
+    is INERT here — eob 0 codes no dc-sign symbol — and the search/write contexts legitimately
+    differ per KB-6; flagged only so a future pass doesn't mistake it for the cause.)
   Working notes: `docs/inter-vartx-coeff-arm-notes.md` (updated with the chroma inter path, the
   encode-vs-write walk-order difference, and the `set_skip_txfm` nonzero-rate detail).
 
