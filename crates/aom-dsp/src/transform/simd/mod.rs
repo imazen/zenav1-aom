@@ -55,6 +55,8 @@
 
 mod hand_v3;
 mod inv1d_v3_gen;
+mod inv1d_v3_i16_gen;
+mod lowbd16;
 mod txfm1d_v3_gen;
 
 use archmage::SimdToken;
@@ -927,6 +929,19 @@ pub(crate) fn try_inv_col_pass_u8(
     let Some(t) = X64V3Token::summon() else {
         return false;
     };
+    // Phase C: the audited DCT column kernels run on i16 lanes (16 columns per
+    // vector). Preconditions are the bd8 structural constants — asserted, not
+    // assumed: every caller of the u8 entry passes exactly these.
+    if let Some(k16) = lowbd16::inv_kernel_i16(txfm_type_col) {
+        debug_assert_eq!(lowbd16::inv_kernel_i16_n(k16), row_n);
+        debug_assert!(stage_range.iter().all(|&b| b == 16));
+        if shift1_bit == 4 && col_clamp == 16 {
+            lowbd16::inv_col_pass_u8_i16(
+                t, k16, buf, output, stride, col_n, row_n, ud_flip, lr_flip,
+            );
+            return true;
+        }
+    }
     let Some(kernel) = inv_kernel(txfm_type_col) else {
         return false;
     };
