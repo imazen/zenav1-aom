@@ -1,3 +1,35 @@
+## bd8 i16-lane inverse-transform ROW pass — DCT rows h>=16 narrowed on the shared try_inv_row_pass (2026-07-23, decoder track)
+
+The Phase-C follow-up lever: the five audited DCT kernels (idct4/8/16/32/64) now run the
+ROW pass on `i16x16` lanes (16 rows per vector) for every bd8 transform with
+`row_n % 16 == 0`, on BOTH the u8 and u16-bd8 entries (shared `try_inv_row_pass`
+dispatch, gated `row_clamp == 16 && stage_range all 16` — bd10/12 pass 18/20 and stay
+i32). **Byte-identity design:** the row pass presents the SAME audited kernel contract as
+columns (input `clamp_buf(bd+8 == 16)` AFTER the rect scale, `opt_range(8) == (16,16)`,
+`cos_bit 12` — `audit_i16_safety.py` re-run, verdict identical: 5 OK / iadst+identity
+NOT); the SAME generated i16 kernels run with lanes = rows; the rect `*NewInvSqrt2>>12`
+stays in i32 lanes BEFORE the pack-clamp; `round_shift_array(-shift[0])` (1/2; 0 =
+identity, const-0 shift never instantiated) via the proven `mulhrs(v, 2^(15-bit))`
+identity on i16 terminals; the store sign-extends into the UNCHANGED i32 `buf` so every
+column pass reads byte-identical values (no interface change). **Coverage: 5 of 12 row
+kernels narrowed; NOT narrowed:** iadst4/8/16 + iidentity4/8/16/32 (audited out, same
+terminals as columns) and DCT rows of 4/8-tall transforms (one partial batch = same
+kernel op count as i32x8 + pack/widen overhead — structural loss, stays i32 by design).
+**Gates (all green BOTH default and AOM_FORCE_SCALAR=1):** new
+`inv_row_pass_i16_bit_identical_to_scalar_at_every_tier` (FULL i32 input domain × 5
+kernels × h 16/32/64 × rect × shift 0/1/2 × every token permutation, distinct-sentinel
+buffers), aom-dsp 354/354, decode conformance 62/62 (re-run after each rebase).
+**MEASURED (`benchmarks/bd8_i16_rows_2026-07-23.md`, same-environment paired vs
+01a7e9d9; C-side + untouched column pass identical to the digit):** microbench u8 entry
+-9.8% (u16-bd8 -8.0% — shared pass, deliberately not a control), row pass -22.9%,
+narrowed row subset 320.8M -> 175.1M Ir (**-45.4%**); whole-decode Ir 4K cq20 **-1.26%**
+(port/C 1.781x -> **1.759x**), 4K cq40 **-1.71%** (2.153x -> **2.116x**), q32 -0.29%
+(small-transform/entropy regime — excluded sizes by design), q00 +1 Ir (lossless WHT
+control). Wall: none claimed (box shared with the concurrent filter agent; coordinator
+owns the post-landing PEAK wall run). Noted pre-existing, untouched (loopfilter fence):
+`lpf_simd_diff.rs:112` non-vacuity assert races the AOM_FORCE_SCALAR pin
+(order-dependent flake, observed once, 354/354 on re-run).
+
 ## bd8 lowbd Phase C: i16-lane inverse-transform COLUMN pass — idct4/8/16/32/64 narrowed, iadst/identity audited-out (2026-07-22, decoder track)
 
 The "second phase" transform lever (1d29acaf): the u8 column pass runs the five DCT

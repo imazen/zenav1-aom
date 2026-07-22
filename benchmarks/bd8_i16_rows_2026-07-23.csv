@@ -1,0 +1,11 @@
+measurement,cell_or_metric,base_ir,new_ir,delta_pct,port_over_c_base,port_over_c_new,notes
+microbench_incl,av1_inv_txfm2d_add_u8_into,1433681743,1293750392,-9.76,,,lowbd_txfm_profile u8 200
+microbench_incl,av1_inv_txfm2d_add_into_u16_bd8,1683395100,1548356868,-8.02,,,lowbd_txfm_profile u16 200 (shared row pass; not a control)
+microbench_incl,row_pass_arcane_arms_u8,636762984,491037760,-22.89,,,base=__arcane_inv_row_pass; new=__arcane_inv_row_pass+__arcane_inv_row_pass_i16
+microbench_incl,row_narrowed_subset_dct_h16plus,320779232,175054008,-45.43,,,base share derived: total minus byte-identical i32 arm (see .meta)
+microbench_incl,row_i32_arm_unchanged,315983752,315983752,0.00,,,identical to the digit
+microbench_incl,col_pass_u8_phaseC_control,382238484,382238484,0.00,,,identical to the digit
+decode_cell,dec_352x288_q00,98769655,98769656,0.00,1.128,1.128,control; lossless WHT; port=decode_frame_obus incl/4
+decode_cell,dec_352x288_q32,52713296,52561128,-0.29,2.176,2.170,incl/13; C incl 24223496 identical both sides
+decode_cell,dec_mosaic_4k_cq20,2684460220,2650584293,-1.26,1.781,1.759,incl/4; C incl 1507323689 identical both sides
+decode_cell,dec_mosaic_4k_cq40,1820303391,1789267260,-1.71,2.153,2.116,incl/4; C incl 845651396 identical both sides

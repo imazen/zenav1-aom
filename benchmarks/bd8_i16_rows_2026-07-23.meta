@@ -1,0 +1,61 @@
+measurement: bd8 i16-lane inverse-transform ROW pass (idct4/8/16/32/64 on
+  i16x16 lanes, 16 rows/vector, row_n % 16 == 0, bd8 only, u8 AND u16-bd8
+  entries via the shared try_inv_row_pass; iadst/identity + short-row DCT stay
+  i32). Attribution is SAME-ENVIRONMENT paired: base 01a7e9d9 (origin/main at
+  capture) and the landing tree were BOTH built and callgrind-measured in the
+  zenav1-aom--g3rows jj workspace, same toolchain, same prebuilt C oracle
+  (upstream/build/libaom.a, submodule pin 03087864, shared via symlink from
+  /root/aom-rs). Live method-stability checks: C-side Ir identical to the
+  digit on every decode cell between base/new; the untouched column-pass
+  functions identical to the digit on both microbench entries; base cells
+  reproduce bd8_i16_transform_2026-07-22.md within +-40 Ir.
+git commit (baseline): 01a7e9d9ece0 (origin/main; transform state == Phase C 1d29acaf)
+git commit (measured): the commit this .meta lands in (workspace tree)
+date: 2026-07-23 (UTC ~00:30-01:10Z; the coordinating brief anticipated a
+  2026-07-22 filename — measurement ran past midnight UTC)
+host: dedicated aom-rs workstation (concurrent filter-module agent active on
+  the box — irrelevant to callgrind Ir, which is deterministic)
+oracle: upstream/ libaom v3.14.1 @ 03087864, Release, SIMD on, in-process
+  shim_decode_av1_kf
+
+COMMANDS (exact):
+  # both sides built in-workspace; baseline via a throwaway jj change on
+  # 01a7e9d9 (abandoned after), binaries staged to /tmp/g3rows_bins/{base,new}
+  cargo build --profile profiling -p zenav1-aom-bench --bin lowbd_txfm_profile --bin gate3_profile
+  # microbench (fixed workload, every valid (tx_type, tx_size) x4, 200 iters)
+  valgrind --tool=callgrind --collect-atstart=yes \
+    --callgrind-out-file=/tmp/g3cg/cg_txfm_<u8|u16>_<side>.out \
+    /tmp/g3rows_bins/<side>/lowbd_txfm_profile <u8|u16> 200
+  # decode cells (port Ir/decode = decode_frame_obus inclusive / (iters+1);
+  # C = shim_decode_av1_kf inclusive / 1, from the SAME port-side run — the
+  # harness's assert_byte_exact performs exactly one C decode)
+  AOM_CONFORMANCE_DIR=/root/aom-rs/conformance/data valgrind --tool=callgrind \
+    --callgrind-out-file=/tmp/g3cg/cg_<cell>_<side>.out \
+    /tmp/g3rows_bins/<side>/gate3_profile dec port <cell> <iters>
+    iters: dec_352x288_q00 = 3; dec_352x288_q32 = 12; dec_mosaic_4k_cq20 = 3;
+           dec_mosaic_4k_cq40 = 3
+  # extraction: callgrind_annotate --inclusive=yes, functions
+  # decode_frame_obus / shim_decode_av1_kf / av1_inv_txfm2d_add[_u8]_into /
+  # __arcane_inv_row_pass[_i16] / __arcane_inv_col_pass[_u8]
+
+HONEST LIMITS:
+- The "narrowed subset" base share (320,779,232) is DERIVED: base row-pass
+  arcane total (636,762,984) minus the new build's i32 arm (315,983,752).
+  Valid because the i32 arm is byte-identical code on a fixed workload (what
+  left it is exactly the narrowed subset); it is not a direct single-counter
+  measurement. Same derivation Phase C used for the DCT-column share.
+- The u16 microbench is NOT an unchanged control this time: try_inv_row_pass
+  is shared, so the u16 highbd entry at bd8 takes the i16 row pass too (by
+  design, byte-identity proven by the same differentials + conformance).
+  The to-the-digit controls are instead: C-side decode Ir, the column-pass
+  functions, and the i32 row arm.
+- Per-kernel Ir attribution below the row-pass level is NOT reported: the
+  i16 kernels (av1_idct*_v3_i16) serve BOTH the Phase-C column pass and the
+  new row pass, and callgrind_annotate's file-split attribution does not
+  separate the two call contexts cleanly. Per-kernel byte-identity is proven
+  by the differentials; per-kernel Ir is only quoted at the pass level.
+- Wall-clock: none measured, deliberately (box shared with the concurrent
+  filter agent; the coordinator owns the post-landing PEAK wall run). The
+  q00 +1 Ir and q32 -0.29% are within the structure of the lever (WHT-only /
+  small-transform-dominated), not noise: callgrind Ir is deterministic.
+- Nothing extrapolated; every number was measured on this box this session.

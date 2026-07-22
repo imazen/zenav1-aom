@@ -1,6 +1,7 @@
-//! bd8 i16-lane inverse-transform COLUMN pass (Phase C of the lowbd pipeline):
-//! 16 columns per AVX2 vector — 2x the lane throughput of the i32x8 pass —
-//! for the audited i16-safe column kernels (idct4/8/16/32/64).
+//! bd8 i16-lane inverse-transform COLUMN pass (Phase C of the lowbd pipeline)
+//! and ROW pass (the Phase-C follow-up lever): 16 columns/rows per AVX2
+//! vector — 2x the lane throughput of the i32x8 pass — for the audited
+//! i16-safe kernels (idct4/8/16/32/64).
 //!
 //! # Exactness contract (why this is byte-identical to the scalar port)
 //!
@@ -29,6 +30,8 @@ use archmage::X64V3Token;
 use archmage::prelude::*;
 use core::arch::x86_64::__m256i;
 use magetypes::simd::{i16x16, i32x8, u8x16};
+
+use crate::transform::cospi::{NEW_INV_SQRT2, NEW_SQRT2_BITS};
 
 use super::inv1d_v3_i16_gen::{
     av1_idct4_v3_i16, av1_idct8_v3_i16, av1_idct16_v3_i16, av1_idct32_v3_i16, av1_idct64_v3_i16,
@@ -353,6 +356,190 @@ fn inv_col_pass_u8_i16_core(
     }
 }
 
+// ---- i16-lane inverse ROW pass (bd8) ----------------------------------------
+//
+// The Phase-C follow-up lever: at bd8 the ROW pass has the SAME audited kernel
+// contract as the column pass — the driver clamps every (possibly rect-scaled)
+// input with `clamp_value(_, bd + 8 == 16)` BEFORE the kernel (exactly the i16
+// domain), `stage_range == [16; 12]` (`opt_range(8)` is (16, 16) for BOTH
+// directions), `cos_bit == 12` — so the SAME audited i16 DCT kernels run with
+// lanes = ROWS (16 rows per vector; the input is stored column-major, so 16
+// consecutive rows of one column are one contiguous 16-element load). Verified
+// against `xtask/audit_i16_safety.py` (its stated domain — "every stage_range
+// value == 16, driver input pre-clamped to i16" — IS the bd8 row entry
+// condition): idct4/8/16/32/64 OK-i16; iadst8/16 have unclamped
+// `wrapping_neg()` terminals over 17-bit transients, iadst4/iidentity* have
+// unclamped 17-18-bit multiply terminals — all seven stay on the i32 pass.
+//
+// The row-specific stages stay OUTSIDE the kernel, each in a domain where it
+// is exact:
+//
+// * the rect `round_shift(x * NewInvSqrt2, 12)` pre-scale runs on the RAW i32
+//   input in i32 lanes ([`super::mul_rshiftv`], exact for ANY i32) — BEFORE
+//   the clamp, exactly like the scalar driver;
+// * the driver's `clamp_buf(16)` is the saturating pack ([`pack_clamp16`]);
+// * the post-kernel `round_shift_array(-shift[0])` (shift 1 or 2 for every
+//   `row_n % 16 == 0` size; 0 is the scalar early-return identity and is
+//   never instantiated as a shift) operates on kernel TERMINAL outputs —
+//   `clamp_value(_, 16)` outputs, i16 — via the `mulhrs` identity proven at
+//   [`rshift4_16`], generalized in [`mulhrs16`];
+// * the store sign-extends i16 -> i32 into the UNCHANGED row-major i32 `buf`
+//   (a pure width extension: the scalar row output IS that i16 value in i32
+//   representation), so every column pass — the landed i16 DCT pass and the
+//   i32 iadst/identity pass — reads byte-identical values to the i32 row
+//   pass's output.
+//
+// Only `row_n % 16 == 0` (16/32/64) runs here: a 4- or 8-tall transform would
+// execute the SAME kernel instruction count as the i32x8 pass (one partial
+// batch either way) PLUS the pack/widen overhead — a structural loss, so
+// those sizes stay on the i32 pass.
+
+/// `round_shift(v, bit)` on i16 lanes via `mulhrs(v, m)` with `m = 2^(15-bit)`
+/// — EXACT for every i16 `v` and `bit` in {1, 2} (the generalization of the
+/// [`rshift4_16`] proof): mulhrs computes `((v * m) >> 14 + 1) >> 1` in full
+/// internal precision; `(v * 2^(15-b)) >> 14 == v >> (b-1)` (arithmetic,
+/// exact — the product magnitude is <= 2^29), and `((v >> (b-1)) + 1) >> 1 ==
+/// (v + 2^(b-1)) >> b` for ALL integers (write `v = 2^(b-1)*a + r` with `r in
+/// [0, 2^(b-1))`: both sides equal `floor((a + 1) / 2)` — the `r` fraction
+/// can never carry past the half). The result magnitude is <= 2^14 (no wrap),
+/// and the only mulhrs saturation case (`-2^15 * -2^15`) is unreachable
+/// (`m > 0`).
+#[rite]
+fn mulhrs16(t: X64V3Token, v: i16x16, m: i16) -> i16x16 {
+    use core::arch::x86_64::*;
+    i16x16::from_m256i(t, _mm256_mulhrs_epi16(v.raw(), _mm256_set1_epi16(m)))
+}
+
+/// Sign-extend lanes 0-7 of an i16x16 to a natural-order i32x8 (`vpmovsxwd`) —
+/// a pure width extension, bit-exact.
+#[rite]
+fn widen_lo(t: X64V3Token, v: i16x16) -> i32x8 {
+    use core::arch::x86_64::*;
+    i32x8::from_m256i(t, _mm256_cvtepi16_epi32(_mm256_castsi256_si128(v.raw())))
+}
+
+/// Sign-extend lanes 8-15 of an i16x16 to a natural-order i32x8.
+#[rite]
+fn widen_hi(t: X64V3Token, v: i16x16) -> i32x8 {
+    use core::arch::x86_64::*;
+    i32x8::from_m256i(t, _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(v.raw())))
+}
+
+/// i16-lane inverse ROW pass. Preconditions (asserted by the caller in
+/// [`super::try_inv_row_pass`]): bd8 row constants — row clamp 16, every
+/// `stage_range` entry 16, `cos_bit == 12`, `shift0_bit` in 0..=2 — an
+/// audited DCT row kernel spanning `col_n` points, and `row_n % 16 == 0`.
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn inv_row_pass_i16(
+    t: X64V3Token,
+    kernel: Inv1dI16,
+    mod_input: &[i32],
+    buf: &mut [i32],
+    col_n: usize,
+    row_n: usize,
+    rect1: bool,
+    shift0_bit: i32,
+) {
+    debug_assert!(row_n % 16 == 0 && row_n <= 64 && (0..=2).contains(&shift0_bit));
+    if col_n <= 8 {
+        let mut tin = [i16x16::zero(t); 8];
+        let mut tout = [i16x16::zero(t); 8];
+        inv_row_pass_i16_core(
+            t, kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, &mut tin, &mut tout,
+        );
+    } else if col_n <= 16 {
+        let mut tin = [i16x16::zero(t); 16];
+        let mut tout = [i16x16::zero(t); 16];
+        inv_row_pass_i16_core(
+            t, kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, &mut tin, &mut tout,
+        );
+    } else {
+        let mut tin = [i16x16::zero(t); 64];
+        let mut tout = [i16x16::zero(t); 64];
+        inv_row_pass_i16_core(
+            t, kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, &mut tin, &mut tout,
+        );
+    }
+}
+
+/// The i16 row-pass body over caller-sized scratch (see [`inv_row_pass_i16`];
+/// tiering rationale at [`super::inv_row_pass`]).
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn inv_row_pass_i16_core(
+    t: X64V3Token,
+    kernel: Inv1dI16,
+    mod_input: &[i32],
+    buf: &mut [i32],
+    col_n: usize,
+    row_n: usize,
+    rect1: bool,
+    shift0_bit: i32,
+    tin: &mut [i16x16],
+    tout: &mut [i16x16],
+) {
+    let mut rg = 0usize;
+    while rg < row_n {
+        // Gather 16 rows of each input column c — contiguous (column-major
+        // input), rect-scaled in i32 lanes (exact for any i32), then the
+        // driver's clamp_buf(16) as the saturating pack.
+        for (c, ti) in tin[..col_n].iter_mut().enumerate() {
+            let base = c * row_n + rg;
+            let mut a = i32x8::from_slice(t, &mod_input[base..base + 8]);
+            let mut b = i32x8::from_slice(t, &mod_input[base + 8..base + 16]);
+            if rect1 {
+                a = super::mul_rshiftv(t, a, NEW_INV_SQRT2, NEW_SQRT2_BITS);
+                b = super::mul_rshiftv(t, b, NEW_INV_SQRT2, NEW_SQRT2_BITS);
+            }
+            *ti = pack_clamp16(t, a, b);
+        }
+        run_inv1d_i16(t, kernel, &tin[..col_n], &mut tout[..col_n]);
+        // round_shift_array(buf_row, -shift[0]); shift[0] in {0,-1,-2}. Bit 0
+        // is the scalar early return — an identity, never instantiated as a
+        // shift (const-0 shift trap); 1/2 use the exact mulhrs identity.
+        if shift0_bit > 0 {
+            let m = if shift0_bit == 1 { 1i16 << 14 } else { 1i16 << 13 };
+            for to in tout[..col_n].iter_mut() {
+                *to = mulhrs16(t, *to, m);
+            }
+        }
+        // Store: buf[(rg+k)*col_n + c] = tout[c].lane(k) as i32 — widen each
+        // output vector to natural-order i32 halves (rows rg..rg+8 and
+        // rg+8..rg+16), 8x8 i32 transpose per half into the row-major buf;
+        // per-lane scatter for the col_n == 4 tail.
+        let full = col_n & !7;
+        let mut cg = 0usize;
+        while cg < full {
+            let mut half = [i32x8::zero(t); 8];
+            for (j, h) in half.iter_mut().enumerate() {
+                *h = widen_lo(t, tout[cg + j]);
+            }
+            let tr = super::transpose8(t, &half);
+            for (k, trk) in tr.iter().enumerate() {
+                let base = (rg + k) * col_n + cg;
+                trk.store((&mut buf[base..base + 8]).try_into().unwrap());
+            }
+            for (j, h) in half.iter_mut().enumerate() {
+                *h = widen_hi(t, tout[cg + j]);
+            }
+            let tr = super::transpose8(t, &half);
+            for (k, trk) in tr.iter().enumerate() {
+                let base = (rg + 8 + k) * col_n + cg;
+                trk.store((&mut buf[base..base + 8]).try_into().unwrap());
+            }
+            cg += 8;
+        }
+        for c in full..col_n {
+            let a = tout[c].to_array();
+            for (k, &av) in a.iter().enumerate() {
+                buf[(rg + k) * col_n + c] = av as i32;
+            }
+        }
+        rg += 16;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! i16-lane-vs-scalar differential for the Phase C column kernels: over
@@ -433,6 +620,174 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Scalar replica of the driver's bd8 ROW loop (`inv_txfm2d.rs`) — the
+    /// same ops in the same order: optional rect NewInvSqrt2 scale (raw i32,
+    /// i64 round_shift), `clamp_buf(16)`, the scalar kernel (stage_range
+    /// `[16; 12]`, cos_bit 12), `round_shift_array(-shift[0])`.
+    fn scalar_row_pass(
+        scalar: ScalarKernel,
+        mod_input: &[i32],
+        buf: &mut [i32],
+        col_n: usize,
+        row_n: usize,
+        rect1: bool,
+        shift0_bit: i32,
+    ) {
+        use crate::transform::cospi::{NEW_INV_SQRT2, NEW_SQRT2_BITS};
+        use crate::transform::fdct::{clamp_value, round_shift};
+        let stage_range = [16i8; 12];
+        let mut ti = vec![0i32; col_n];
+        for r in 0..row_n {
+            for c in 0..col_n {
+                let v = mod_input[c * row_n + r];
+                let v = if rect1 {
+                    round_shift(v as i64 * NEW_INV_SQRT2 as i64, NEW_SQRT2_BITS)
+                } else {
+                    v
+                };
+                ti[c] = clamp_value(v, 16);
+            }
+            let out = &mut buf[r * col_n..(r + 1) * col_n];
+            scalar(&ti, out, 12, &stage_range);
+            if shift0_bit > 0 {
+                for v in out.iter_mut() {
+                    *v = round_shift(*v as i64, shift0_bit);
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assert_row_pass(
+        t: X64V3Token,
+        name: &str,
+        scalar: ScalarKernel,
+        kernel: Inv1dI16,
+        mod_input: &[i32],
+        col_n: usize,
+        row_n: usize,
+        rect1: bool,
+        shift0_bit: i32,
+        label: &str,
+    ) {
+        // Distinct sentinels: a position missed by BOTH passes still mismatches.
+        let mut vbuf = vec![111_i32; col_n * row_n];
+        inv_row_pass_i16(t, kernel, mod_input, &mut vbuf, col_n, row_n, rect1, shift0_bit);
+        let mut sbuf = vec![-222_i32; col_n * row_n];
+        scalar_row_pass(scalar, mod_input, &mut sbuf, col_n, row_n, rect1, shift0_bit);
+        for r in 0..row_n {
+            for c in 0..col_n {
+                assert_eq!(
+                    vbuf[r * col_n + c],
+                    sbuf[r * col_n + c],
+                    "{name}: {label} row={r} col={c} col_n={col_n} row_n={row_n} \
+                     rect1={rect1} shift0={shift0_bit}"
+                );
+            }
+        }
+    }
+
+    /// Row-pass differential: [`inv_row_pass_i16`] vs the scalar row loop over
+    /// the pass's FULL contract domain — ANY i32 input (the rect scale + clamp
+    /// are exact on all of i32), every kernel × row_n {16,32,64} × rect on/off
+    /// × shift0 {0,1,2} — dense random + i32/i16-boundary patterns. Every
+    /// token permutation; non-vacuity asserted.
+    #[test]
+    fn inv_row_pass_i16_bit_identical_to_scalar_at_every_tier() {
+        let _ = crate::dispatch::scalar_forced(); // fire the pin before the harness
+        let mut v3_ran = 0usize;
+        let report = for_each_token_permutation(CompileTimePolicy::Warn, |tier| {
+            let Some(t) = X64V3Token::summon() else {
+                return;
+            };
+            v3_ran += 1;
+            let mut rng = Rng(0x_bd08_1616_2026_0723);
+            for (name, n, scalar, kernel) in cases() {
+                let col_n = n;
+                for &row_n in &[16usize, 32, 64] {
+                    for &rect1 in &[false, true] {
+                        for &shift0 in &[0i32, 1, 2] {
+                            // (a) dense random over the FULL i32 domain.
+                            for rep in 0..6 {
+                                let mi: Vec<i32> = (0..col_n * row_n)
+                                    .map(|_| rng.next() as i32)
+                                    .collect();
+                                assert_row_pass(
+                                    t,
+                                    name,
+                                    scalar,
+                                    kernel,
+                                    &mi,
+                                    col_n,
+                                    row_n,
+                                    rect1,
+                                    shift0,
+                                    &format!("[{tier}] rand rep{rep}"),
+                                );
+                            }
+                            // (b) boundary cycle: i32 extremes, the i16
+                            // saturation edges (the clamp boundaries), and
+                            // rect-scale magnifiers (2896 * 46341 spans the
+                            // i32/i16 boundary region after >>12).
+                            let specials = [
+                                i32::MIN,
+                                i32::MAX,
+                                -32769,
+                                -32768,
+                                -32767,
+                                32766,
+                                32767,
+                                32768,
+                                0,
+                                -1,
+                                1,
+                                46341,
+                                -46341,
+                                i32::MIN + 1,
+                                i32::MAX - 1,
+                                -2,
+                            ];
+                            let mi: Vec<i32> = (0..col_n * row_n)
+                                .map(|i| specials[i % specials.len()])
+                                .collect();
+                            assert_row_pass(
+                                t,
+                                name,
+                                scalar,
+                                kernel,
+                                &mi,
+                                col_n,
+                                row_n,
+                                rect1,
+                                shift0,
+                                &format!("[{tier}] bound cycle"),
+                            );
+                            // (c) alternating extremes (max |half_btf| sums).
+                            let mi: Vec<i32> = (0..col_n * row_n)
+                                .map(|i| if i % 2 == 0 { i32::MAX } else { i32::MIN })
+                                .collect();
+                            assert_row_pass(
+                                t,
+                                name,
+                                scalar,
+                                kernel,
+                                &mi,
+                                col_n,
+                                row_n,
+                                rect1,
+                                shift0,
+                                &format!("[{tier}] bound alt"),
+                            );
+                        }
+                    }
+                }
+            }
+        });
+        eprintln!("inv row pass i16 parity: {report}, v3 permutations run: {v3_ran}");
+        assert!(v3_ran >= 1, "the v3 arm must run at least once (AVX2 CI)");
+        assert!(report.permutations_run >= 2);
     }
 
     #[test]

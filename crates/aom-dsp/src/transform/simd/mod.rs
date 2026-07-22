@@ -453,7 +453,9 @@ pub(crate) fn try_inv_col_pass(
     true
 }
 
-/// Vector ROW pass of `av1_inv_txfm2d_add` — 8 rows per lane batch.
+/// Vector ROW pass of `av1_inv_txfm2d_add` — 8 rows per lane batch (or, for
+/// the audited DCT kernels at the bd8 row constants with `row_n % 16 == 0`,
+/// 16 rows per i16 lane batch — [`lowbd16::inv_row_pass_i16`]).
 /// Contiguous loads (`mod_input[c*row_n + r..r+8]` — the input is stored
 /// column-major), the optional NewInvSqrt2 rect scaling + row clamp, the
 /// row kernel, `round_shift_array(-shift[0])`, then the strided store into
@@ -478,6 +480,21 @@ pub(crate) fn try_inv_row_pass(
     let Some(t) = X64V3Token::summon() else {
         return false;
     };
+    // Gate-3 rows lever (the Phase-C follow-up): the audited DCT kernels on
+    // i16 lanes — 16 rows per vector. Fires only at the bd8 row constants
+    // (row clamp 16 AND every stage_range entry 16 — the exact
+    // `audit_i16_safety.py` entry conditions; bd10/12 pass 18/20 and stay
+    // i32) with full 16-lane row groups. The i16 pass sign-extend-stores into
+    // the same row-major i32 `buf`, so every column pass (i16 DCT or i32
+    // iadst/identity) reads byte-identical values.
+    if row_clamp == 16 && stage_range.iter().all(|&b| b == 16) && row_n % 16 == 0 {
+        if let Some(k16) = lowbd16::inv_kernel_i16(txfm_type_row) {
+            debug_assert_eq!(lowbd16::inv_kernel_i16_n(k16), col_n);
+            debug_assert!((0..=2).contains(&shift0_bit));
+            lowbd16::inv_row_pass_i16(t, k16, mod_input, buf, col_n, row_n, rect1, shift0_bit);
+            return true;
+        }
+    }
     let Some(kernel) = inv_kernel(txfm_type_row) else {
         return false;
     };
