@@ -89,8 +89,8 @@
 
 use crate::superres;
 use crate::{
-    DecodeConfig, DecodeError, KfTileConfig, KfTileDecode, MI_SIZE_HIGH, MI_SIZE_WIDE, TileBoundsKf,
-    TileBytesKf, decode_frame_tiles_kf,
+    DecodeConfig, DecodeError, KfTileConfig, KfTileDecode, MI_SIZE_HIGH, MI_SIZE_WIDE, ReconPlane,
+    TileBoundsKf, TileBytesKf, decode_frame_tiles_kf,
 };
 use aom_dsp::entropy::header::{
     CdefHeader, FilmGrainParams, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader,
@@ -1578,7 +1578,9 @@ pub fn build_lf_inputs(
 /// harnesses recompose the filter pipeline stage by stage.
 #[doc(hidden)]
 pub fn apply_deblock(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) {
-    use aom_dsp::loopfilter::frame::{LfFrameBuf, LfMiGrid, loop_filter_frame};
+    use aom_dsp::loopfilter::frame::{
+        LfFrameBuf, LfFrameBufU8, LfMiGrid, loop_filter_frame, loop_filter_frame_u8,
+    };
 
     let (mi, params) = build_lf_inputs(t, cfg, p);
     let grid = LfMiGrid {
@@ -1588,37 +1590,61 @@ pub fn apply_deblock(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderOb
         mi_cols: cfg.mi_cols,
     };
     let num_planes = if cfg.monochrome { 1 } else { 3 };
-    // Phase A: run the (unchanged) highbd deblock on widened working planes;
-    // bd8 (`LowBd`) narrows back bit-exactly (see `crate::plane`).
-    let mut wy = t.recon.take_wide();
-    let mut wu = t.recon_u.take_wide();
-    let mut wv = t.recon_v.take_wide();
-    let mut buf = LfFrameBuf {
-        y: &mut wy,
-        y_stride: t.stride,
-        u: &mut wu,
-        v: &mut wv,
-        uv_stride: t.stride_uv,
-        // CROP dims (dst.width/height in C — set_lpf_parameters skips edges
-        // at/past them). Deblock runs in the CODED (downscaled) domain, BEFORE
-        // superres upscaling, so the crop is the coded FrameWidth — NOT the
-        // upscaled width (using the upscaled width would filter the mi-overhang
-        // columns past the coded edge as if they were real content, corrupting
-        // the right-edge pixels the upscale then samples). Height is never
-        // scaled. `coded_frame_width` is a no-op for unscaled frames.
-        crop_width: superres::coded_frame_width(
-            p.frame_size.superres_upscaled_width,
-            p.frame_size.scale_denominator,
-        ) as u32,
-        crop_height: p.frame_size.superres_upscaled_height as u32,
-        ss_x: cfg.subsampling_x,
-        ss_y: cfg.subsampling_y,
-        bd: cfg.bd,
-    };
-    loop_filter_frame(&mut buf, &grid, &params, 0, num_planes);
-    t.recon.put_wide(wy);
-    t.recon_u.put_wide(wu);
-    t.recon_v.put_wide(wv);
+    // CROP dims (dst.width/height in C — set_lpf_parameters skips edges
+    // at/past them). Deblock runs in the CODED (downscaled) domain, BEFORE
+    // superres upscaling, so the crop is the coded FrameWidth — NOT the
+    // upscaled width (using the upscaled width would filter the mi-overhang
+    // columns past the coded edge as if they were real content, corrupting
+    // the right-edge pixels the upscale then samples). Height is never
+    // scaled. `coded_frame_width` is a no-op for unscaled frames.
+    let crop_width = superres::coded_frame_width(
+        p.frame_size.superres_upscaled_width,
+        p.frame_size.scale_denominator,
+    ) as u32;
+    let crop_height = p.frame_size.superres_upscaled_height as u32;
+    match (&mut t.recon, &mut t.recon_u, &mut t.recon_v) {
+        // bd8 lowbd: the byte-identical u8 deblock frame walk, directly on
+        // the u8 planes (Phase B).
+        (ReconPlane::LowBd(y), ReconPlane::LowBd(u), ReconPlane::LowBd(v)) => {
+            let mut buf = LfFrameBufU8 {
+                y,
+                y_stride: t.stride,
+                u,
+                v,
+                uv_stride: t.stride_uv,
+                crop_width,
+                crop_height,
+                ss_x: cfg.subsampling_x,
+                ss_y: cfg.subsampling_y,
+            };
+            loop_filter_frame_u8(&mut buf, &grid, &params, 0, num_planes);
+        }
+        // bd10/12: the u16 walk (take_wide is a zero-copy move for HighBd).
+        // A mixed-variant triple is structurally impossible (one routing flag
+        // constructs all three planes) but would still be CORRECT here via the
+        // widen/narrow delegation.
+        (y_p, u_p, v_p) => {
+            let mut wy = y_p.take_wide();
+            let mut wu = u_p.take_wide();
+            let mut wv = v_p.take_wide();
+            let mut buf = LfFrameBuf {
+                y: &mut wy,
+                y_stride: t.stride,
+                u: &mut wu,
+                v: &mut wv,
+                uv_stride: t.stride_uv,
+                crop_width,
+                crop_height,
+                ss_x: cfg.subsampling_x,
+                ss_y: cfg.subsampling_y,
+                bd: cfg.bd,
+            };
+            loop_filter_frame(&mut buf, &grid, &params, 0, num_planes);
+            y_p.put_wide(wy);
+            u_p.put_wide(wu);
+            v_p.put_wide(wv);
+        }
+    }
 }
 
 /// Run [`aom_dsp::cdef::frame::cdef_frame`] over the (mi-aligned, deblocked)
