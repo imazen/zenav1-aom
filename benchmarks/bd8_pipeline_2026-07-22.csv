@@ -1,0 +1,3 @@
+cell,port_ir_total,port_decode_count,port_ir_per_decode,c_ir_per_decode,ir_ratio,baseline_20260719_ratio,note
+dec_352x288_q00,415585130,4,103896282,87572319,1.186,1.431,lossless entropy-dominated; lowbd unwired; improvement is entropy+BCE levers 1+2 not lowbd
+dec_352x288_q32,690775286,13,53136560,24223274,2.194,2.470,filter-dominated; lowbd unwired; improvement is entropy+BCE levers 1+2 not lowbd

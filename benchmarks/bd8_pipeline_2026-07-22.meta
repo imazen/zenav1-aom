@@ -1,0 +1,48 @@
+measurement: bd8 lowbd decode pipeline — Phase-3 integration reconciliation +
+  Gate-3 ratio. Establishes that 0 of 4 ported lowbd families are wired into the
+  aom-decode tile driver, verifies whole-pipeline byte-identity (highbd path,
+  240-vector conformance), and freshly measures the current Ir ratio (unchanged
+  by lowbd, improved only by the already-landed entropy/BCE levers 1+2).
+git commit (measured): d00b07ad (origin/main at capture — "perf(dsp): CDEF lowbd
+  — direct-u8-store SIMD + measured finding (delegate CDEF)"). NO decode code
+  changed this pass; the tree is byte-identical to d00b07ad.
+git commit (landing): the commit this .meta lands in.
+date: 2026-07-22 (UTC ~08:10-08:45Z)
+host: dedicated aom-rs workstation.
+oracle: upstream/ submodule libaom v3.14.1 @ 03087864, Release, SIMD on, linked
+  in-process via aom-sys-ref shim_decode_av1_kf.
+
+COMMANDS (exact):
+  # whole-pipeline byte-identity (job #2)
+  AOM_CONFORMANCE_DIR=/root/aom-rs/conformance/data \
+    cargo test -p zenav1-aom-decode --release conformance
+  AOM_CONFORMANCE_DIR=/root/aom-rs/conformance/data AOM_FORCE_SCALAR=1 \
+    cargo test -p zenav1-aom-decode --release \
+    conformance_single_frame_intra_byte_identical_to_c_and_golden -- --nocapture
+  # transform lowbd leaf-kernel differential (foundation still green)
+  cargo test -p zenav1-aom-dsp --release --test inv_txfm2d_lowbd_diff
+  # Gate-3 Ir (job #3)
+  cargo build --profile profiling -p zenav1-aom-bench --bin gate3_profile
+  AOM_CONFORMANCE_DIR=/root/aom-rs/conformance/data valgrind --tool=callgrind \
+    --callgrind-out-file=/tmp/g3cg/cg_<cell>.out \
+    ./target/profiling/gate3_profile dec port <cell> <iters>
+    iters: dec_352x288_q00 = 3 (4 port decodes); dec_352x288_q32 = 12 (13).
+  callgrind_annotate --inclusive=yes  → decode_frame_obus (port) / shim_decode_av1_kf (C).
+
+RATIO METHOD: port = inclusive Ir of aom_decode::frame::decode_frame_obus divided
+  by port-decode-count (iters+1, because assert_byte_exact does 1 extra port
+  decode); C = inclusive Ir of shim_decode_av1_kf (1 decode). Ir deterministic,
+  load-independent. The C shim includes codec init+destroy, which inflates C and
+  therefore slightly UNDERSTATES port/C (most on the tiny q00 cell).
+
+HONEST LIMITS:
+- Gate 3 (<= 1.20x) NOT met. The lowbd pipeline closed 0% of the decode gap: 0/4
+  families are wired; the port runs the wide u16 pipeline for bd8. The Ir-ratio
+  improvement vs 2026-07-19 is the entropy/BCE levers 1+2, not lowbd.
+- No fresh 4K wall-clock: the decode path is byte-identical to the code that
+  produced the 2026-07-19 1.45x/1.39x wall-clock baseline (plus Ir-only levers
+  that that meta states did not move the gate). Re-quoting 1.45x is not
+  extrapolation; producing a NEW 4K number without running it would be.
+- The two Ir cells are 352x288 (available conformance vectors). The 4K mosaic
+  cells need generated vectors and a quiet box for wall-clock; not run this pass.
+- Nothing extrapolated across sizes; every number reported was measured.
