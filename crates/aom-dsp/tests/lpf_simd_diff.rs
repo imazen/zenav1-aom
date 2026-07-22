@@ -96,3 +96,65 @@ fn hbd_lpf_simd_bit_identical_to_scalar_at_every_tier() {
     eprintln!("hbd lpf SIMD parity: {report}");
     assert!(report.permutations_run >= 2);
 }
+
+/// Gate-3 parity for the lowbd (bd8, `u8` pixel) deblock SIMD: the dispatching
+/// `loopfilter::{horizontal, vertical}` (SIMD) must equal the never-dispatched
+/// `loopfilter::{horizontal_scalar, vertical_scalar}` at EVERY archmage token
+/// tier, not only the machine's top ISA. This is the `simd == scalar, no slip`
+/// gate for the u8 kernel added alongside `hbd_lpf_simd_...` above; it guards
+/// the per-tier lowering (e.g. the NEON const-0-shift class of bug, archmage#62).
+#[test]
+fn lowbd_lpf_simd_bit_identical_to_scalar_at_every_tier() {
+    use aom_dsp::loopfilter;
+    #[cfg(target_arch = "x86_64")]
+    {
+        use archmage::SimdToken;
+        assert!(
+            archmage::X64V3Token::summon().is_some(),
+            "x86-64 CI must have AVX2 for the SIMD differential to be non-vacuous"
+        );
+    }
+    let report = for_each_token_permutation(CompileTimePolicy::Warn, |tier| {
+        let mut rng = Rng(0x_b0dd_1e5_c0de_face);
+        for &dir in b"hv" {
+            for &width in &[4u32, 6, 8, 14] {
+                for _ in 0..3000 {
+                    // Sometimes near-flat to hit the flat/flat2 branches.
+                    let base = rng.upto(256);
+                    let amp = 1 + rng.upto(16);
+                    let strat = rng.upto(3);
+                    let buf: Vec<u8> = (0..PITCH * ROWS)
+                        .map(|_| {
+                            if strat == 0 {
+                                rng.upto(256) as u8
+                            } else {
+                                (base as i32 + rng.upto(2 * amp + 1) as i32 - amp as i32)
+                                    .clamp(0, 255) as u8
+                            }
+                        })
+                        .collect();
+                    let bl = if rng.upto(2) == 0 { rng.upto(256) as u8 } else { (16 + rng.upto(200)) as u8 };
+                    let li = if rng.upto(2) == 0 { rng.upto(256) as u8 } else { (1 + rng.upto(64)) as u8 };
+                    let th = rng.upto(256) as u8;
+
+                    let mut got = buf.clone();
+                    let mut want = buf.clone();
+                    if dir == b'h' {
+                        loopfilter::horizontal(width, &mut got, CENTER, PITCH, bl, li, th);
+                        loopfilter::horizontal_scalar(width, &mut want, CENTER, PITCH, bl, li, th);
+                    } else {
+                        loopfilter::vertical(width, &mut got, CENTER, PITCH, bl, li, th);
+                        loopfilter::vertical_scalar(width, &mut want, CENTER, PITCH, bl, li, th);
+                    }
+                    assert_eq!(
+                        got, want,
+                        "[{tier}] u8 dir={} width={width} bl={bl} li={li} th={th}",
+                        dir as char
+                    );
+                }
+            }
+        }
+    });
+    eprintln!("lowbd lpf SIMD parity: {report}");
+    assert!(report.permutations_run >= 2);
+}

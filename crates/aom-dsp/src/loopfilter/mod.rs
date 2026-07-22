@@ -237,10 +237,12 @@ fn lpf_14(buf: &mut [u8], mut center: isize, ts: isize, step: isize, blimit: u8,
     }
 }
 
-/// `p` is the pitch. `center` is the index of `s[0]` in `buf`.
-/// Horizontal filters: taps stride by pitch, positions advance by 1.
-pub fn horizontal(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8) {
-    let (c, ts, step) = (center as isize, p as isize, 1isize);
+/// Scalar lowbd deblock dispatch on `width` — the untouched u8 transcription,
+/// used as the SIMD kernel's `_scalar` tier ([`simd::lpf_u8`]) and by the
+/// pure-scalar entries. `ts` = tap stride, `step` = position advance.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lpf_scalar(width: u32, buf: &mut [u8], center: usize, ts: isize, step: isize, blimit: u8, limit: u8, thresh: u8) {
+    let c = center as isize;
     match width {
         4 => lpf_4(buf, c, ts, step, blimit, limit, thresh),
         6 => lpf_6(buf, c, ts, step, blimit, limit, thresh),
@@ -250,14 +252,27 @@ pub fn horizontal(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u
     }
 }
 
+/// `p` is the pitch. `center` is the index of `s[0]` in `buf`. Horizontal
+/// filters: taps stride by pitch, positions advance by 1. SIMD-dispatched
+/// (bit-identical to [`lpf_scalar`] at every token tier — `lpf_lowbd_simd_diff`).
+pub fn horizontal(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8) {
+    simd::lpf_u8(width, buf, center, p as isize, 1, blimit, limit, thresh);
+}
+
 /// Vertical filters: taps stride by 1, positions advance by pitch.
+/// SIMD-dispatched.
 pub fn vertical(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8) {
-    let (c, ts, step) = (center as isize, 1isize, p as isize);
-    match width {
-        4 => lpf_4(buf, c, ts, step, blimit, limit, thresh),
-        6 => lpf_6(buf, c, ts, step, blimit, limit, thresh),
-        8 => lpf_8(buf, c, ts, step, blimit, limit, thresh),
-        14 => lpf_14(buf, c, ts, step, blimit, limit, thresh),
-        _ => panic!("bad width"),
-    }
+    simd::lpf_u8(width, buf, center, 1, p as isize, blimit, limit, thresh);
+}
+
+/// Pure-scalar lowbd horizontal deblock (never SIMD-dispatched) — the fixed
+/// reference for the SIMD-vs-scalar differential.
+pub fn horizontal_scalar(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8) {
+    lpf_scalar(width, buf, center, p as isize, 1, blimit, limit, thresh);
+}
+
+/// Pure-scalar lowbd vertical deblock (never SIMD-dispatched) — the fixed
+/// reference for the SIMD-vs-scalar differential.
+pub fn vertical_scalar(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8) {
+    lpf_scalar(width, buf, center, 1, p as isize, blimit, limit, thresh);
 }

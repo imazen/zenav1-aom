@@ -61,8 +61,29 @@
 //! kernel by widening its plane region `u8 -> u16`, running the highbd kernel,
 //! and narrowing back — byte-identical (a bd8 sample round-trips exactly), at a
 //! conversion cost that vanishes the moment the family is ported. The order to
-//! port families is "hottest first" (the inverse transform is the largest single
-//! consumer and is done); intra prediction / CfL / dequant are next.
+//! port families is "hottest first".
+//!
+//! # Ported families (each with a `*_u8` lowbd entry + a `*_lowbd_diff`)
+//!
+//! * **Inverse transform** — [`crate::transform::inv_txfm2d`]
+//!   (`av1_inv_txfm2d_add_u8[_into]`, the shared i32 row pass + the u8 column
+//!   pass [`crate::transform::simd::try_inv_col_pass_u8`]); `inv_txfm2d_lowbd_diff`.
+//! * **Recon** — [`crate::recon::reconstruct_txb_u8_into`].
+//! * **Intra prediction** — the u8 intra-predictor kernel family.
+//! * **CDEF** — the u8 CDEF frame walk (`cdef_frame_u8`).
+//! * **Deblock (loop filter)** — the u8 deblock kernels
+//!   ([`crate::loopfilter::horizontal`] / [`crate::loopfilter::vertical`],
+//!   SIMD-dispatched via [`crate::loopfilter::simd::lpf_u8`], the u8 twin of the
+//!   u16 kernel with the pixel loads/stores narrowed and `bd` fixed at 8) plus
+//!   the whole-frame lowbd walk [`crate::loopfilter::frame::loop_filter_frame_u8`]
+//!   (the pixel-independent per-edge derivation — `set_lpf_parameters`,
+//!   `lf_frame_init`, the level/threshold tables, the strip/plane/dir walk order —
+//!   is reused verbatim; only the kernel dispatch narrows to `u8`).
+//!   `loopfilter_lowbd_diff` (kernel: u8 == C lowbd == u16 port) +
+//!   `lf_apply_diff` (whole-frame u8 == C == u16 port) + the per-tier
+//!   `lowbd_lpf_simd_bit_identical_to_scalar_at_every_tier`.
+//!
+//! Next (highest-remaining consumers): CfL / dequant / loop restoration.
 //!
 //! # Byte-identity: why lowbd cannot move a pixel at bd8
 //!
