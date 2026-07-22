@@ -52,7 +52,7 @@
 //! entry for non-skip inter cells. All-intra KEY decoding stamps the block
 //! `tx_size` everywhere, which is exact.
 
-use crate::loopfilter::highbd;
+use crate::loopfilter::{self, highbd};
 
 pub const MAX_LOOP_FILTER: i32 = 63;
 const MI_SIZE_LOG2: u32 = 2;
@@ -620,6 +620,160 @@ pub fn loop_filter_frame(
                     filter_block_plane(
                         dir, pb, stride, buf.bd, grid, p, &lfi, plane, ss_x, ss_y, w, h, mi_row,
                         mi_col,
+                    );
+                    mi_col += MAX_MIB_SIZE;
+                }
+            }
+        }
+        mi_row += MAX_MIB_SIZE;
+    }
+}
+
+// ---- lowbd (bd8, u8 pixel) whole-frame entry -----------------------------------
+//
+// The bd8 "lowbd" decode pipeline stores reconstruction planes as `u8`. This is
+// the additive twin of [`loop_filter_frame`] / [`filter_block_plane`] for `u8`
+// planes with `bd` fixed at 8. Every per-edge derivation — [`set_lpf_parameters`],
+// [`lf_frame_init`], the level/threshold tables, the strip/plane/dir walk order —
+// is PIXEL-TYPE INDEPENDENT and REUSED VERBATIM (those functions read only the mi
+// grid + params, never a pixel), so this path derives byte-for-byte the same
+// `(tx_size, filter_length, level)` and the same edge set as the u16 path; only
+// the kernel dispatch narrows to the u8 deblock ([`loopfilter::horizontal`] /
+// [`loopfilter::vertical`], which are SIMD-dispatched at bd8). A bd8 sample is
+// `< 256`, and the u8 and u16 kernels compute identical pixel values at bd == 8
+// (`aom_dsp/loopfilter.c` lowbd vs `bd = 8` highbd — shift = 0, so the clamps,
+// thresholds and rounding coincide; proven by `loopfilter_lowbd_diff` at both the
+// KERNEL level, vs the REAL C lowbd kernels + the u16 port, AND the whole-FRAME
+// level, `loop_filter_frame_u8` vs `loop_filter_frame` over synthetic frames).
+// The highbd path above is byte-untouched, so the bd10/bd12 conformance path
+// cannot regress.
+
+/// The frame's reconstruction planes for the lowbd (bd8) path — `u8` samples,
+/// strides in samples. The `u8` mirror of [`LfFrameBuf`] with `bd` fixed at 8.
+pub struct LfFrameBufU8<'a> {
+    pub y: &'a mut [u8],
+    pub y_stride: usize,
+    pub u: &'a mut [u8],
+    pub v: &'a mut [u8],
+    pub uv_stride: usize,
+    /// Luma CROP dims (the coded frame size; chroma dims derive by subsampling).
+    pub crop_width: u32,
+    pub crop_height: u32,
+    pub ss_x: usize,
+    pub ss_y: usize,
+}
+
+/// `av1_filter_block_plane_vert`/`_horz` for one 32x32-mi superblock region of
+/// one `u8` plane — the lowbd twin of [`filter_block_plane`], `bd` fixed at 8.
+#[allow(clippy::too_many_arguments)]
+fn filter_block_plane_u8(
+    dir: usize,
+    buf: &mut [u8],
+    stride: usize,
+    grid: &LfMiGrid,
+    p: &LfParams,
+    lfi: &LfInfo,
+    plane: usize,
+    ss_x: usize,
+    ss_y: usize,
+    plane_w: u32,
+    plane_h: u32,
+    mi_row: usize,
+    mi_col: usize,
+) {
+    let plane_mi_rows = round_pot(grid.mi_rows, ss_y);
+    let plane_mi_cols = round_pot(grid.mi_cols, ss_x);
+    let y_range = (plane_mi_rows - ((mi_row >> ss_y) as i32)).min((MAX_MIB_SIZE >> ss_y) as i32);
+    let x_range = (plane_mi_cols - ((mi_col >> ss_x) as i32)).min((MAX_MIB_SIZE >> ss_x) as i32);
+    let (y_range, x_range) = (y_range as usize, x_range as usize);
+    let x0 = (mi_col * MI_SIZE) >> ss_x;
+    let y0 = (mi_row * MI_SIZE) >> ss_y;
+    let origin = y0 * stride + x0;
+
+    if dir == 0 {
+        for y in 0..y_range {
+            let mut x = 0usize;
+            while x < x_range {
+                let curr_x = (x0 + x * MI_SIZE) as u32;
+                let curr_y = (y0 + y * MI_SIZE) as u32;
+                let (ts, len, level) = set_lpf_parameters(
+                    grid, p, lfi, VERT_EDGE, curr_x, curr_y, plane, ss_x, ss_y, plane_w, plane_h,
+                );
+                if len > 0 {
+                    let (mblim, lim, hev) = lfi.lfthr[level as usize];
+                    let center = origin + y * MI_SIZE * stride + x * MI_SIZE;
+                    loopfilter::vertical(len as u32, buf, center, stride, mblim, lim, hev);
+                }
+                x += TX_SIZE_WIDE_UNIT[ts];
+            }
+        }
+    } else {
+        for x in 0..x_range {
+            let mut y = 0usize;
+            while y < y_range {
+                let curr_x = (x0 + x * MI_SIZE) as u32;
+                let curr_y = (y0 + y * MI_SIZE) as u32;
+                let (ts, len, level) = set_lpf_parameters(
+                    grid, p, lfi, 1, curr_x, curr_y, plane, ss_x, ss_y, plane_w, plane_h,
+                );
+                if len > 0 {
+                    let (mblim, lim, hev) = lfi.lfthr[level as usize];
+                    let center = origin + y * MI_SIZE * stride + x * MI_SIZE;
+                    loopfilter::horizontal(len as u32, buf, center, stride, mblim, lim, hev);
+                }
+                y += TX_SIZE_HIGH_UNIT[ts];
+            }
+        }
+    }
+}
+
+/// Lowbd (bd8, `u8` planes) whole-frame deblock — the additive twin of
+/// [`loop_filter_frame`]. See the module-level lowbd note above: the walk +
+/// per-edge derivation are shared verbatim; only the kernel dispatch narrows to
+/// `u8`. Byte-identical to [`loop_filter_frame`] run on the same pixels widened
+/// to `u16` (`loopfilter_lowbd_diff`).
+pub fn loop_filter_frame_u8(
+    buf: &mut LfFrameBufU8,
+    grid: &LfMiGrid,
+    p: &LfParams,
+    plane_start: usize,
+    plane_end: usize,
+) {
+    let planes_to_lf = [
+        (p.filter_level[0] != 0 || p.filter_level[1] != 0) && plane_start == 0 && 0 < plane_end,
+        p.filter_level_u != 0 && plane_start <= 1 && 1 < plane_end,
+        p.filter_level_v != 0 && plane_start <= 2 && 2 < plane_end,
+    ];
+    if !planes_to_lf[0] && plane_start == 0 && 0 < plane_end {
+        return;
+    }
+    if !planes_to_lf[0] && !planes_to_lf[1] && !planes_to_lf[2] {
+        return;
+    }
+
+    let lfi = lf_frame_init(p, plane_start, plane_end);
+
+    let uv_w = (buf.crop_width + buf.ss_x as u32) >> buf.ss_x;
+    let uv_h = (buf.crop_height + buf.ss_y as u32) >> buf.ss_y;
+
+    let mut mi_row = 0usize;
+    while (mi_row as i32) < grid.mi_rows {
+        #[allow(clippy::needless_range_loop)]
+        for plane in 0..3 {
+            if !planes_to_lf[plane] {
+                continue;
+            }
+            for dir in 0..2 {
+                let mut mi_col = 0usize;
+                while (mi_col as i32) < grid.mi_cols {
+                    let (pb, stride, ss_x, ss_y, w, h): (&mut [u8], usize, usize, usize, u32, u32) =
+                        match plane {
+                            0 => (buf.y, buf.y_stride, 0, 0, buf.crop_width, buf.crop_height),
+                            1 => (buf.u, buf.uv_stride, buf.ss_x, buf.ss_y, uv_w, uv_h),
+                            _ => (buf.v, buf.uv_stride, buf.ss_x, buf.ss_y, uv_w, uv_h),
+                        };
+                    filter_block_plane_u8(
+                        dir, pb, stride, grid, p, &lfi, plane, ss_x, ss_y, w, h, mi_row, mi_col,
                     );
                     mi_col += MAX_MIB_SIZE;
                 }

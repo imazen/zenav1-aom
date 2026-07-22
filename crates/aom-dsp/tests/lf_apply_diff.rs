@@ -22,8 +22,8 @@
 //! LUMA deblocking (plane 0 never derives a chroma bsize) IS swept here.
 
 use aom_dsp::loopfilter::frame::{
-    lf_frame_init, loop_filter_frame, LfFrameBuf, LfMi, LfMiGrid, LfParams, LfSeg, FRAME_LF_COUNT,
-    MODE_LF_LUT,
+    lf_frame_init, loop_filter_frame, loop_filter_frame_u8, LfFrameBuf, LfFrameBufU8, LfMi,
+    LfMiGrid, LfParams, LfSeg, FRAME_LF_COUNT, MODE_LF_LUT,
 };
 use aom_sys_ref as c;
 
@@ -417,6 +417,35 @@ fn run_one(
     assert_eq!(y, cy, "LUMA {w}x{h} ss=({ss_x},{ss_y}) bd{bd} mono={mono}");
     assert_eq!(u, cu, "U {w}x{h} ss=({ss_x},{ss_y}) bd{bd}");
     assert_eq!(v, cv, "V {w}x{h} ss=({ss_x},{ss_y}) bd{bd}");
+
+    // bd8 lowbd (u8) whole-frame path: run the u8 twin on the SAME original
+    // planes (narrowed u16->u8, exact for bd8 samples) + the SAME grid/params,
+    // and require it to reproduce the u16 port result (== C) byte-for-byte. This
+    // exercises the u8 frame walk over the full randomized frame space (all
+    // sizes, subsamplings, strides, params, tx sizes) the u16 path is swept on.
+    if bd == 8 {
+        let mut y8: Vec<u8> = y0.iter().map(|&x| x as u8).collect();
+        let mut u8v: Vec<u8> = u0.iter().map(|&x| x as u8).collect();
+        let mut v8: Vec<u8> = v0.iter().map(|&x| x as u8).collect();
+        {
+            let mut buf8 = LfFrameBufU8 {
+                y: &mut y8,
+                y_stride,
+                u: &mut u8v,
+                v: &mut v8,
+                uv_stride,
+                crop_width: w as u32,
+                crop_height: h as u32,
+                ss_x,
+                ss_y,
+            };
+            loop_filter_frame_u8(&mut buf8, &mi_grid, &p, 0, num_planes);
+        }
+        let widen = |v: &[u8]| -> Vec<u16> { v.iter().map(|&x| x as u16).collect() };
+        assert_eq!(widen(&y8), y, "LOWBD-u8 LUMA {w}x{h} ss=({ss_x},{ss_y}) mono={mono}");
+        assert_eq!(widen(&u8v), u, "LOWBD-u8 U {w}x{h} ss=({ss_x},{ss_y})");
+        assert_eq!(widen(&v8), v, "LOWBD-u8 V {w}x{h} ss=({ss_x},{ss_y})");
+    }
     if force_zero_levels {
         // Zero levels: both sides must be exact no-ops.
         assert_eq!(y, y0, "zero-level walk must not touch luma");
