@@ -955,6 +955,7 @@ struct PlaneCtx<'a> {
     src_stride: usize,
     flt0: Vec<i32>,
     flt1: Vec<i32>,
+    wiener_scratch: crate::restore::wiener::WienerScratch,
 }
 
 impl<'a> PlaneCtx<'a> {
@@ -1013,6 +1014,7 @@ impl<'a> PlaneCtx<'a> {
             src_stride: p.stride,
             flt0: vec![0i32; RESTORATION_UNITPELS_MAX],
             flt1: vec![0i32; RESTORATION_UNITPELS_MAX],
+            wiener_scratch: crate::restore::wiener::WienerScratch::new(),
         }
     }
 
@@ -1092,6 +1094,7 @@ impl<'a> PlaneCtx<'a> {
             bit_depth,
             limits,
             false,
+            &mut self.wiener_scratch,
         );
         self.sse_dst(limits)
     }

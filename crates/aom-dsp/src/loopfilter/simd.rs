@@ -579,23 +579,107 @@ fn lpf_impl_u8(
         }};
     }
 
+    // ---- fast-path addressing (byte-identical; only the load/store SHAPE
+    // changes, the i32x4 filter arithmetic is untouched) -------------------
+    //
+    // The walk always calls with one of two layouts (`loopfilter::horizontal`
+    // ts=pitch/step=1, `loopfilter::vertical` ts=1/step=pitch):
+    //  * `hfast` (horizontal edge): the 4 lane positions are CONTIGUOUS bytes,
+    //    so each tap is one `[u8; 4]` load / store (LLVM: movd + pmovzxbd)
+    //    instead of 4 strided scalar accesses. Gated `ts >= 4` so distinct
+    //    taps' 4-byte runs cannot alias (they are `ts` apart).
+    //  * `vfast` (vertical edge): each lane row's taps are CONTIGUOUS, so the
+    //    4 rows stage into fixed `[u8; W]` windows (one bounds check per row,
+    //    const-index extracts) and store back as whole rows. Gated
+    //    `step >= W` so the 4 row windows cannot overlap. Writing back a
+    //    window's untouched columns rewrites their just-staged (current)
+    //    values — byte-identical in the sequential walk.
+    // Anything else (never produced by the walk, possible in a synthetic
+    // harness) takes the original strided-gather path unchanged.
+    let z4 = i32x4::splat(token, 0);
+    macro_rules! load_taps {
+        ($t:ident, $rows:ident, $kmin:expr, $vfast:expr, $hfast:expr) => {
+            if $vfast {
+                for (r, row) in $rows.iter_mut().enumerate() {
+                    let s = (c + r as isize * step + $kmin) as usize;
+                    let w = row.len();
+                    *row = buf[s..s + w].try_into().unwrap();
+                }
+                for (i, tv) in $t.iter_mut().enumerate() {
+                    *tv = i32x4::from_array(
+                        token,
+                        [
+                            $rows[0][i] as i32,
+                            $rows[1][i] as i32,
+                            $rows[2][i] as i32,
+                            $rows[3][i] as i32,
+                        ],
+                    );
+                }
+            } else if $hfast {
+                for (i, tv) in $t.iter_mut().enumerate() {
+                    let s = (c + (i as isize + $kmin) * ts) as usize;
+                    let b: [u8; 4] = buf[s..s + 4].try_into().unwrap();
+                    *tv = i32x4::from_array(
+                        token,
+                        [b[0] as i32, b[1] as i32, b[2] as i32, b[3] as i32],
+                    );
+                }
+            } else {
+                for (i, tv) in $t.iter_mut().enumerate() {
+                    *tv = load(i as isize + $kmin);
+                }
+            }
+        };
+    }
+    macro_rules! store_taps {
+        ($out:expr, $rows:ident, $kmin:expr, $col0:expr, $vfast:expr, $hfast:expr,
+         $($fb:tt)+) => {
+            if $vfast {
+                for (j, v) in $out.iter().enumerate() {
+                    let a = v.to_array();
+                    $rows[0][$col0 + j] = a[0] as u8;
+                    $rows[1][$col0 + j] = a[1] as u8;
+                    $rows[2][$col0 + j] = a[2] as u8;
+                    $rows[3][$col0 + j] = a[3] as u8;
+                }
+                for (r, row) in $rows.iter().enumerate() {
+                    let s = (c + r as isize * step + $kmin) as usize;
+                    buf[s..s + row.len()].copy_from_slice(row);
+                }
+            } else if $hfast {
+                for (j, v) in $out.iter().enumerate() {
+                    let a = v.to_array();
+                    let s = (c + ($col0 as isize + j as isize + $kmin) * ts) as usize;
+                    buf[s..s + 4]
+                        .copy_from_slice(&[a[0] as u8, a[1] as u8, a[2] as u8, a[3] as u8]);
+                }
+            } else {
+                store!($($fb)+);
+            }
+        };
+    }
+
     match width {
         4 => {
-            let op1 = load(-2);
-            let op0 = load(-1);
-            let oq0 = load(0);
-            let oq1 = load(1);
+            let mut rows = [[0u8; 4]; 4];
+            let vfast = ts == 1 && step >= 4;
+            let hfast = step == 1 && ts >= 4;
+            let mut t = [z4; 4];
+            load_taps!(t, rows, -2, vfast, hfast);
+            let [op1, op0, oq0, oq1] = t;
             let mask = fmask2(op1, op0, oq0, oq1);
             let (n1, n0, m0, m1) = filter4(op1, op0, oq0, oq1, mask);
-            store!(-2 => n1, -1 => n0, 0 => m0, 1 => m1);
+            let out = [n1, n0, m0, m1];
+            store_taps!(out, rows, -2, 0, vfast, hfast, -2 => n1, -1 => n0, 0 => m0, 1 => m1);
         }
         6 => {
-            let p2 = load(-3);
-            let p1 = load(-2);
-            let p0 = load(-1);
-            let q0 = load(0);
-            let q1 = load(1);
-            let q2 = load(2);
+            let mut rows = [[0u8; 6]; 4];
+            let vfast = ts == 1 && step >= 6;
+            let hfast = step == 1 && ts >= 4;
+            let mut t = [z4; 6];
+            load_taps!(t, rows, -3, vfast, hfast);
+            let [p2, p1, p0, q0, q1, q2] = t;
             let mask = fmask6(p2, p1, p0, q0, q1, q2);
             let flat = flat3(p2, p1, p0, q0, q1, q2);
             let use_wide = flat & mask;
@@ -608,17 +692,17 @@ fn lpf_impl_u8(
             let o_p0 = i32x4::blend(use_wide, w_p0, f_p0);
             let o_q0 = i32x4::blend(use_wide, w_q0, f_q0);
             let o_q1 = i32x4::blend(use_wide, w_q1, f_q1);
-            store!(-2 => o_p1, -1 => o_p0, 0 => o_q0, 1 => o_q1);
+            let out = [o_p1, o_p0, o_q0, o_q1];
+            store_taps!(out, rows, -3, 1, vfast, hfast,
+                -2 => o_p1, -1 => o_p0, 0 => o_q0, 1 => o_q1);
         }
         8 => {
-            let p3 = load(-4);
-            let p2 = load(-3);
-            let p1 = load(-2);
-            let p0 = load(-1);
-            let q0 = load(0);
-            let q1 = load(1);
-            let q2 = load(2);
-            let q3 = load(3);
+            let mut rows = [[0u8; 8]; 4];
+            let vfast = ts == 1 && step >= 8;
+            let hfast = step == 1 && ts >= 4;
+            let mut t = [z4; 8];
+            load_taps!(t, rows, -4, vfast, hfast);
+            let [p3, p2, p1, p0, q0, q1, q2, q3] = t;
             let mask = fmask8(p3, p2, p1, p0, q0, q1, q2, q3);
             let flat = flat4(p3, p2, p1, p0, q0, q1, q2, q3);
             let use_wide = flat & mask;
@@ -635,23 +719,17 @@ fn lpf_impl_u8(
             let o_q0 = i32x4::blend(use_wide, w_q0, f_q0);
             let o_q1 = i32x4::blend(use_wide, w_q1, f_q1);
             let o_q2 = i32x4::blend(use_wide, w_q2, q2);
-            store!(-3 => o_p2, -2 => o_p1, -1 => o_p0, 0 => o_q0, 1 => o_q1, 2 => o_q2);
+            let out = [o_p2, o_p1, o_p0, o_q0, o_q1, o_q2];
+            store_taps!(out, rows, -4, 1, vfast, hfast,
+                -3 => o_p2, -2 => o_p1, -1 => o_p0, 0 => o_q0, 1 => o_q1, 2 => o_q2);
         }
         14 => {
-            let p6 = load(-7);
-            let p5 = load(-6);
-            let p4 = load(-5);
-            let p3 = load(-4);
-            let p2 = load(-3);
-            let p1 = load(-2);
-            let p0 = load(-1);
-            let q0 = load(0);
-            let q1 = load(1);
-            let q2 = load(2);
-            let q3 = load(3);
-            let q4 = load(4);
-            let q5 = load(5);
-            let q6 = load(6);
+            let mut rows = [[0u8; 14]; 4];
+            let vfast = ts == 1 && step >= 14;
+            let hfast = step == 1 && ts >= 4;
+            let mut t = [z4; 14];
+            load_taps!(t, rows, -7, vfast, hfast);
+            let [p6, p5, p4, p3, p2, p1, p0, q0, q1, q2, q3, q4, q5, q6] = t;
 
             let mask = fmask8(p3, p2, p1, p0, q0, q1, q2, q3);
             let flat = flat4(p3, p2, p1, p0, q0, q1, q2, q3);
@@ -696,7 +774,10 @@ fn lpf_impl_u8(
             let o_q3 = i32x4::blend(use14, w14_q3, q3);
             let o_q4 = i32x4::blend(use14, w14_q4, q4);
             let o_q5 = i32x4::blend(use14, w14_q5, q5);
-            store!(
+            let out = [
+                o_p5, o_p4, o_p3, o_p2, o_p1, o_p0, o_q0, o_q1, o_q2, o_q3, o_q4, o_q5,
+            ];
+            store_taps!(out, rows, -7, 1, vfast, hfast,
                 -6 => o_p5, -5 => o_p4, -4 => o_p3, -3 => o_p2, -2 => o_p1, -1 => o_p0,
                 0 => o_q0, 1 => o_q1, 2 => o_q2, 3 => o_q3, 4 => o_q4, 5 => o_q5,
             );

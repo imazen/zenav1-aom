@@ -33,6 +33,22 @@ RATIO METHOD: port = inclusive Ir of aom_decode::frame::decode_frame_obus /
   deterministic and load-independent. Every cell byte-verified in the harness
   setup before profiling.
 
+LANDED FIXES MEASURED IN THIS FILE (same method, same cells):
+  fix1 = deblock u8 kernel load/store vectorization (loopfilter/simd.rs;
+    horizontal-edge contiguous [u8;4] taps + vertical-edge staged [u8;W] row
+    windows; i32x4 math untouched; strided-gather fallback kept).
+    4K cq40 −2.85% (2.153x→2.092x), 4K cq20 −1.90% (1.781x→1.747x),
+    2K cq40 −3.10% (2.301x→2.229x), q32 −1.17%.
+  fix2 = wiener scratch reuse + vector load/store (restore/wiener.rs
+    WienerScratch + [u16;8] fixed-array widen/narrow in wiener_impl only;
+    scalar twin untouched; scratch threaded via filter_unit/filter_plane +
+    pick.rs PlaneCtx). q32 −3.87% on top of fix1 (2.151x→2.067x; LR stage
+    −20.7%, kernel −24.7%).
+  Gates run per fix: loopfilter_lowbd_diff, lpf_simd_diff, lf_apply_diff,
+  lpf_diff, kernels_diff, wiener_simd_diff, frame_walk_diff, pick_search —
+  all green; full decode conformance (default + AOM_FORCE_SCALAR=1) run
+  before push (see the landing commit).
+
 HONEST LIMITS:
 - Ir only; NO wall-clock this pass (a concurrent transform agent makes wall
   noisy; the coordinator runs the final wall measurement).

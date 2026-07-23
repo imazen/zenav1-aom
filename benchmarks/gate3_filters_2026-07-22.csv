@@ -32,3 +32,15 @@ dec_352x288_q32,port,cdef_find_dir,32329440,13,2486880,4.7,
 dec_352x288_q32,port,apply_deblock,74892607,13,5760970,10.9,1.68
 dec_352x288_q32,C,av1_loop_filter_frame_mt,3421954,1,3421954,,
 dec_352x288_q32,port,loop_filter_frame_u8,71586788,13,5506676,10.4,
+dec_mosaic_4k_cq40,port-fix1,decode_frame_obus,7073512245,4,1768378061,100.0,2.092
+dec_mosaic_4k_cq40,port-fix1,apply_deblock,1338584308,4,334646077,18.9,1.54
+dec_mosaic_4k_cq40,port-fix1,__arcane_lpf_impl_u8_v3,893168264,4,223292066,12.6,
+dec_mosaic_4k_cq20,port-fix1,decode_frame_obus,10533780081,4,2633445020,100.0,1.747
+dec_mosaic_4k_cq20,port-fix1,apply_deblock,1452808497,4,363202124,13.8,1.51
+dec_mosaic_2k_cq40,port-fix1,decode_frame_obus,1550012993,4,387503248,100.0,2.229
+dec_mosaic_2k_cq40,port-fix1,apply_deblock,310924924,4,77731231,20.1,1.51
+dec_352x288_q32,port-fix1,decode_frame_obus,677259399,13,52096877,100.0,2.151
+dec_352x288_q32,port-fix2,decode_frame_obus,651052503,13,50081000,100.0,2.067
+dec_352x288_q32,port-fix2,apply_restoration,101826021,13,7832771,15.6,7.34
+dec_352x288_q32,port-fix2,__arcane_wiener_impl_v3,83904366,13,6454182,12.9,8.51
+dec_352x288_q32,port-fix2,apply_deblock,67248945,13,5172996,10.3,1.51

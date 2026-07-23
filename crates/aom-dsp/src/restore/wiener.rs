@@ -44,6 +44,29 @@ fn round_power_of_two(v: i32, n: i32) -> i32 {
     (v + ((1 << n) >> 1)) >> n
 }
 
+/// Reusable intermediate-row scratch for [`wiener_convolve_add_src_into`],
+/// killing the per-call `vec![0u16; (h + 7) * 128]` allocation (measured
+/// 12.8 % of the kernel's Ir on `dec_352x288_q32`). Reuse is byte-identical:
+/// both the SIMD and scalar passes write every `temp` cell the vertical pass
+/// reads (rows `0..h+7`, cols `0..w`) before reading it — same argument as
+/// the 2026-07-19 `ReconScratch`/`InvTxfmScratch` landing.
+#[derive(Default)]
+pub struct WienerScratch {
+    temp: Vec<u16>,
+}
+
+impl WienerScratch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    fn ensure(&mut self, n: usize) -> &mut [u16] {
+        if self.temp.len() < n {
+            self.temp.resize(n, 0);
+        }
+        &mut self.temp[..n]
+    }
+}
+
 /// `av1_[highbd_]wiener_convolve_add_src_c`: filter a `w x h` block whose
 /// top-left source sample is `src[src_off]` into `dst[dst_off]`. The source
 /// is read at `[-3, +4]` rows/cols around each output position (slot-7 taps
@@ -73,15 +96,51 @@ pub fn wiener_convolve_add_src(
     h: usize,
     bd: i32,
 ) {
+    let mut scratch = WienerScratch::new();
+    wiener_convolve_add_src_into(
+        src,
+        src_off,
+        src_stride,
+        dst,
+        dst_off,
+        dst_stride,
+        hfilter,
+        vfilter,
+        w,
+        h,
+        bd,
+        &mut scratch,
+    )
+}
+
+/// [`wiener_convolve_add_src`] with a caller-owned [`WienerScratch`] (the
+/// frame walk's hot entry — one scratch per plane instead of one heap
+/// allocation per 64-wide chunk).
+#[allow(clippy::too_many_arguments)]
+pub fn wiener_convolve_add_src_into(
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_off: usize,
+    dst_stride: usize,
+    hfilter: &[i16; 8],
+    vfilter: &[i16; 8],
+    w: usize,
+    h: usize,
+    bd: i32,
+    scratch: &mut WienerScratch,
+) {
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    let temp = scratch.ensure((h + SUBPEL_TAPS - 1) * MAX_SB_SIZE);
     if w < 8 {
-        return wiener_convolve_add_src_scalar(
-            src, src_off, src_stride, dst, dst_off, dst_stride, hfilter, vfilter, w, h, bd,
+        return wiener_scalar_into(
+            src, src_off, src_stride, dst, dst_off, dst_stride, hfilter, vfilter, w, h, bd, temp,
         );
     }
     archmage::incant!(
         wiener_impl(
-            src, src_off, src_stride, dst, dst_off, dst_stride, hfilter, vfilter, w, h, bd
+            src, src_off, src_stride, dst, dst_off, dst_stride, hfilter, vfilter, w, h, bd, temp
         ),
         [v3, neon, wasm128, scalar]
     )
@@ -102,9 +161,10 @@ fn wiener_impl_scalar(
     w: usize,
     h: usize,
     bd: i32,
+    temp: &mut [u16],
 ) {
-    wiener_convolve_add_src_scalar(
-        src, src_off, src_stride, dst, dst_off, dst_stride, hfilter, vfilter, w, h, bd,
+    wiener_scalar_into(
+        src, src_off, src_stride, dst, dst_off, dst_stride, hfilter, vfilter, w, h, bd, temp,
     )
 }
 
@@ -148,16 +208,50 @@ fn wiener_impl(
     w: usize,
     h: usize,
     bd: i32,
+    temp: &mut [u16],
 ) {
     assert!(w >= 8 && w <= MAX_SB_SIZE);
     let (round_0, round_1) = conv_params_wiener(bd);
     let intermediate_height = h + SUBPEL_TAPS - 1;
-    let mut temp = vec![0u16; intermediate_height * MAX_SB_SIZE];
+    debug_assert_eq!(temp.len(), intermediate_height * MAX_SB_SIZE);
 
+    // One-bounds-check `[u16; 8]` fixed-array load + `as i32` widen (LLVM:
+    // vpmovzxwd) instead of 8 checked scalar loads via `from_fn`; the
+    // lane VALUES are identical, so the arithmetic is untouched.
     let widen = |s: &[u16]| -> i32x8 {
-        let arr: [i32; 8] = core::array::from_fn(|k| s[k] as i32);
-        i32x8::from_array(token, arr)
+        let a: [u16; 8] = s[..8].try_into().unwrap();
+        i32x8::from_array(
+            token,
+            [
+                a[0] as i32,
+                a[1] as i32,
+                a[2] as i32,
+                a[3] as i32,
+                a[4] as i32,
+                a[5] as i32,
+                a[6] as i32,
+                a[7] as i32,
+            ],
+        )
     };
+    // Fixed-array narrow store (single 16-byte copy) — same `v as u16` lane
+    // narrowing as the previous per-element loop, one bounds check.
+    macro_rules! store8 {
+        ($dst:expr, $d0:expr, $v:expr) => {{
+            let a = ($v).to_array();
+            let n: [u16; 8] = [
+                a[0] as u16,
+                a[1] as u16,
+                a[2] as u16,
+                a[3] as u16,
+                a[4] as u16,
+                a[5] as u16,
+                a[6] as u16,
+                a[7] as u16,
+            ];
+            $dst[$d0..$d0 + 8].copy_from_slice(&n);
+        }};
+    }
 
     // ---- horizontal pass (lanes = 8 adjacent output columns) ----
     let clamp_limit = 1i32 << (bd + 1 + FILTER_BITS - round_0);
@@ -179,11 +273,7 @@ fn wiener_impl(
                 sum = sum + widen(&src[s0 + k..s0 + k + 8]) * htap[k];
             }
             let r = shr_round_by!(sum, round_0, h_half).clamp(zero, lim_v);
-            let arr = r.to_array();
-            let t0 = y * MAX_SB_SIZE + x0;
-            for (i, v) in arr.into_iter().enumerate() {
-                temp[t0 + i] = v as u16;
-            }
+            store8!(temp, y * MAX_SB_SIZE + x0, r);
             if x0 + 8 >= w {
                 break;
             }
@@ -210,11 +300,7 @@ fn wiener_impl(
                 sum = sum + widen(&temp[o..o + 8]) * vtap[k];
             }
             let r = shr_round_by!(sum, round_1, v_half).clamp(zero, pixel_max);
-            let arr = r.to_array();
-            let d0 = dst_off + y * dst_stride + x0;
-            for (i, v) in arr.into_iter().enumerate() {
-                dst[d0 + i] = v as u16;
-            }
+            store8!(dst, dst_off + y * dst_stride + x0, r);
             if x0 + 8 >= w {
                 break;
             }
@@ -238,10 +324,34 @@ pub fn wiener_convolve_add_src_scalar(
     h: usize,
     bd: i32,
 ) {
+    let mut temp = vec![0u16; (h + SUBPEL_TAPS - 1) * MAX_SB_SIZE];
+    wiener_scalar_into(
+        src, src_off, src_stride, dst, dst_off, dst_stride, hfilter, vfilter, w, h, bd, &mut temp,
+    )
+}
+
+/// The scalar body on a caller-provided intermediate buffer (identical
+/// arithmetic; `temp` is fully written before it is read, so a reused
+/// buffer is byte-identical to a fresh zeroed one).
+#[allow(clippy::too_many_arguments)]
+fn wiener_scalar_into(
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_off: usize,
+    dst_stride: usize,
+    hfilter: &[i16; 8],
+    vfilter: &[i16; 8],
+    w: usize,
+    h: usize,
+    bd: i32,
+    temp: &mut [u16],
+) {
     assert!(w <= MAX_SB_SIZE);
     let (round_0, round_1) = conv_params_wiener(bd);
     let intermediate_height = h + SUBPEL_TAPS - 1;
-    let mut temp = vec![0u16; intermediate_height * MAX_SB_SIZE];
+    debug_assert_eq!(temp.len(), intermediate_height * MAX_SB_SIZE);
 
     // convolve_add_src_horiz_hip: src starts SUBPEL_TAPS/2 - 1 = 3 rows above
     // and 3 columns left of the output origin.

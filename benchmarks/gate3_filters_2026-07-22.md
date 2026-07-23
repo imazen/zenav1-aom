@@ -111,6 +111,57 @@ its cost is NOT measured here — no claim made.
 3. **CDEF `cdef_find_dir` SIMD** (q32; 2.5 M/dec scalar): port the C
    `cdef_find_dir_avx2` shape. Does NOT re-open the delegate decision.
 
+## LANDED FIX 1 — deblock u8 kernel load/store vectorization (measured)
+
+`lpf_impl_u8` (loopfilter/simd.rs): axis-specialized addressing — horizontal
+edges load/store each tap as one contiguous `[u8; 4]` (was 4 strided scalar
+accesses each); vertical edges stage the 4 lane rows into fixed `[u8; W]`
+windows (one bounds check per row, const-index extracts, whole-row write-back);
+the original strided gather remains as the fallback for stride shapes the walk
+never produces. The i32x4 filter arithmetic is byte-untouched. Gates:
+`loopfilter_lowbd_diff` (vs REAL C lowbd kernels) + `lpf_simd_diff` (SIMD ==
+scalar at every token tier) + `lf_apply_diff` + `lpf_diff` all green.
+
+| cell | port Ir/dec before | after | Δ port | ratio before → after |
+|---|---:|---:|---:|---|
+| 4K cq40 | 1,820,303,428 | 1,768,378,061 | **−2.85 %** | 2.153x → **2.092x** |
+| 4K cq20 | 2,684,460,257 | 2,633,445,020 | −1.90 % | 1.781x → **1.747x** |
+| 2K cq40 |   399,886,721 |   387,503,248 | −3.10 % | 2.301x → **2.229x** |
+| q32     |    52,713,297 |    52,096,877 | −1.17 % | 2.176x → 2.151x |
+
+Deblock stage at 4K cq40: 386.6 M → 334.6 M/dec (−13.4 %); kernel 275.2 M →
+223.3 M/dec (−18.9 %, scalar-gather load/store lines 413 M → ~140 M total);
+stage ratio vs C 1.77x → **1.54x**. Remaining kernel gap = the i32x4
+one-tap-per-vector math shape (C packs i16 lanes denser) + the 71.5 M
+per-call `#[magetypes]` prologue (533 k dispatches/dec) — both documented as
+the next deblock levers, not taken this pass.
+
+## LANDED FIX 2 — wiener kernel scratch reuse + vector load/store (measured)
+
+`restore/wiener.rs`: `WienerScratch` (kills the per-call
+`vec![0u16; (h+7)*128]` — 12.8 % of the kernel; reuse byte-identical because
+every read cell is written first, both passes), fixed-array `[u16; 8]` widen
+loads (1 bounds check + `vpmovzxwd` instead of 9 checked scalar loads per
+vector) and `[u16; 8]` narrow stores in `wiener_impl` only (the scalar twin
+stays the verbatim reference). `filter_unit`/`filter_plane` +
+`pick.rs::PlaneCtx` thread one scratch per plane. Gates: `kernels_diff` (vs
+REAL C wiener kernels incl. odd widths) + `wiener_simd_diff` (every tier) +
+`frame_walk_diff` (vs REAL C `av1_loop_restoration_filter_frame`) +
+`pick_search` all green.
+
+| cell | metric | before (post-fix-1) | after | Δ |
+|---|---|---:|---:|---:|
+| q32 | port Ir/dec | 52,096,877 | 50,081,000 | **−3.87 %** |
+| q32 | Ir ratio | 2.151x | **2.067x** | (baseline 2.176x → cumulative −5.0 %) |
+| q32 | LR stage Ir/dec | 9,876,662 | 7,832,771 | −20.7 % |
+| q32 | wiener kernel Ir/dec | 8,570,208 | 6,454,182 | −24.7 % (11.3x → 8.5x vs C) |
+
+Remaining wiener ceiling: the i32x8 shape does one vector multiply per tap
+(9 loads + 8 muls per 8 outputs per pass); C's AVX2 lowbd kernel uses i16
+`madd` pairs at 16 lanes. magetypes 0.9.27 has no integer madd / widening
+converts (checked `i32x8`/`u16x8` generated impls) — a deeper rewrite needs
+either magetypes additions or per-arch intrinsics, out of this pass's scope.
+
 ## Provenance
 
 Box: dedicated aom-rs workstation. Tree: jj workspace on `origin/main`

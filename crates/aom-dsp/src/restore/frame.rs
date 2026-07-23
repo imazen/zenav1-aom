@@ -24,7 +24,7 @@
 //! but the memory must exist).
 
 use crate::restore::sgr::apply_selfguided_restoration;
-use crate::restore::wiener::wiener_convolve_add_src;
+use crate::restore::wiener::{WienerScratch, wiener_convolve_add_src_into};
 use crate::entropy::lr::{
     LrFrameConfig, LrUnitInfo, RESTORATION_PROC_UNIT_SIZE, RESTORATION_UNIT_OFFSET, RESTORE_NONE,
     RESTORE_SGRPROJ, RESTORE_WIENER,
@@ -271,6 +271,7 @@ fn filter_plane(
     let mut dst = vec![0u16; w_stride * (ph + 2 * MARGIN_V)];
 
     // --- the unit walk (foreach_rest_unit_in_plane) ---
+    let mut wiener_scratch = WienerScratch::new();
     let unit_size = lr.unit_size[plane];
     let (hu, _vu) = lr.plane_units(plane, ss_x, ss_y);
     let ext_size = unit_size * 3 / 2;
@@ -316,6 +317,7 @@ fn filter_plane(
                 bit_depth,
                 (v_start, v_end, x0, x0 + w),
                 optimized_lr,
+                &mut wiener_scratch,
             );
             x0 += w;
             j += 1;
@@ -347,6 +349,7 @@ pub(crate) fn filter_unit(
     bit_depth: i32,
     limits: (i32, i32, i32, i32),
     optimized_lr: bool,
+    wiener_scratch: &mut WienerScratch,
 ) {
     let (v_start, v_end, h_start, h_end) = limits;
     let unit_h = (v_end - v_start) as usize;
@@ -451,7 +454,7 @@ pub(crate) fn filter_unit(
                 let mut j = 0usize;
                 while j < unit_w {
                     let w = procunit_width.min((unit_w - j + 15) & !15);
-                    wiener_convolve_add_src(
+                    wiener_convolve_add_src_into(
                         src,
                         row0 + j,
                         w_stride,
@@ -463,6 +466,7 @@ pub(crate) fn filter_unit(
                         w,
                         h,
                         bit_depth,
+                        wiener_scratch,
                     );
                     j += procunit_width;
                 }
