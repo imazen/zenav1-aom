@@ -44,3 +44,6 @@ dec_352x288_q32,port-fix2,decode_frame_obus,651052503,13,50081000,100.0,2.067
 dec_352x288_q32,port-fix2,apply_restoration,101826021,13,7832771,15.6,7.34
 dec_352x288_q32,port-fix2,__arcane_wiener_impl_v3,83904366,13,6454182,12.9,8.51
 dec_352x288_q32,port-fix2,apply_deblock,67248945,13,5172996,10.3,1.51
+dec_352x288_q32,port-fix3,decode_frame_obus,639845963,13,49218920,100.0,2.032
+dec_352x288_q32,port-fix3,apply_cdef,93784669,13,7214205,14.7,3.68
+dec_352x288_q32,port-fix3,cdef_find_dir,9101664,13,700128,1.4,

@@ -403,20 +403,46 @@ pub fn cdef_find_dir(img: &[u16], stride: usize, coeff_shift: i32) -> (i32, i32)
     let mut cost = [0i32; 8];
     let mut partial = [[0i32; 15]; 8];
 
+    // Per-ROW slice adds instead of the per-pixel scattered adds. For a fixed
+    // row `i` each direction's target indices are affine in `j`, so the 8 (or
+    // pair-folded 4) contributions are a contiguous run at a per-row offset:
+    //   d0: partial[0][i + j]          += x_j        (row at offset i)
+    //   d1: partial[1][i + j/2]        += x_j        (pair-fold at offset i)
+    //   d2: partial[2][i]              += sum(row)
+    //   d3: partial[3][3 + i - j/2]    += x_j        (REVERSED pair-fold at i)
+    //   d4: partial[4][7 + i - j]      += x_j        (REVERSED row at offset i)
+    //   d5: partial[5][3 - i/2 + j]    += x_j        (row at offset 3 - i/2)
+    //   d6: partial[6][j]              += x_j        (row at offset 0)
+    //   d7: partial[7][i/2 + j]        += x_j        (row at offset i/2)
+    // Wrapping i32 adds commute, so regrouping the identical add set is
+    // byte-identical to the scattered order (gated by cdef_diff's
+    // cdef_find_dir_matches_c against the REAL C reference).
     for i in 0..8usize {
-        for j in 0..8usize {
-            // -128 to reduce the range of the squared partial sums.
-            let x = ((img[i * stride + j] as i32) >> coeff_shift) - 128;
-            let add = |p: &mut i32| *p = p.wrapping_add(x);
-            add(&mut partial[0][i + j]);
-            add(&mut partial[1][i + j / 2]);
-            add(&mut partial[2][i]);
-            add(&mut partial[3][3 + i - j / 2]);
-            add(&mut partial[4][7 + i - j]);
-            add(&mut partial[5][3 - i / 2 + j]);
-            add(&mut partial[6][j]);
-            add(&mut partial[7][i / 2 + j]);
+        let rw: [u16; 8] = img[i * stride..i * stride + 8].try_into().unwrap();
+        // -128 to reduce the range of the squared partial sums.
+        let row: [i32; 8] = core::array::from_fn(|j| ((rw[j] as i32) >> coeff_shift) - 128);
+        let rev: [i32; 8] = core::array::from_fn(|m| row[7 - m]);
+        let pf: [i32; 4] = core::array::from_fn(|k| row[2 * k].wrapping_add(row[2 * k + 1]));
+        let pfr: [i32; 4] = core::array::from_fn(|m| pf[3 - m]);
+        let mut rsum = 0i32;
+        for &v in &row {
+            rsum = rsum.wrapping_add(v);
         }
+        let slice_add = |dst: &mut [i32], src: &[i32]| {
+            for (d, &s) in dst.iter_mut().zip(src) {
+                *d = d.wrapping_add(s);
+            }
+        };
+        slice_add(&mut partial[0][i..i + 8], &row);
+        slice_add(&mut partial[1][i..i + 4], &pf);
+        partial[2][i] = partial[2][i].wrapping_add(rsum);
+        slice_add(&mut partial[3][i..i + 4], &pfr);
+        slice_add(&mut partial[4][i..i + 8], &rev);
+        let o5 = 3 - i / 2;
+        slice_add(&mut partial[5][o5..o5 + 8], &row);
+        slice_add(&mut partial[6][0..8], &row);
+        let o7 = i / 2;
+        slice_add(&mut partial[7][o7..o7 + 8], &row);
     }
 
     let sq = |a: i32| a.wrapping_mul(a);

@@ -49,6 +49,13 @@ LANDED FIXES MEASURED IN THIS FILE (same method, same cells):
   all green; full decode conformance (default + AOM_FORCE_SCALAR=1) run
   before push (see the landing commit).
 
+  fix3 = cdef_find_dir per-row slice-add restructure (cdef/mod.rs; wrapping
+    adds regrouped — commutative, byte-identical by construction; gated by
+    cdef_diff vs REAL C + all CDEF differentials). q32 −1.72% on top of fix2
+    (2.067x→2.032x; find_dir −71.8%, 1570→442 Ir/call). Does NOT re-open the
+    CDEF delegate decision.
+  Net after fixes 1-3: 4K 1.747x/2.092x, 2K cq40 2.229x, q32 2.032x (Ir).
+
 HONEST LIMITS:
 - Ir only; NO wall-clock this pass (a concurrent transform agent makes wall
   noisy; the coordinator runs the final wall measurement).

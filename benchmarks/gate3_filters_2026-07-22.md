@@ -162,6 +162,46 @@ Remaining wiener ceiling: the i32x8 shape does one vector multiply per tap
 converts (checked `i32x8`/`u16x8` generated impls) — a deeper rewrite needs
 either magetypes additions or per-arch intrinsics, out of this pass's scope.
 
+## LANDED FIX 3 — CDEF `cdef_find_dir` per-row slice-add restructure (measured)
+
+`cdef/mod.rs::cdef_find_dir`: the per-pixel 8-direction scattered adds (64 px x
+8 computed indices with `/2` divisions each) regrouped into per-row contiguous
+slice adds (row / reversed row / pair-fold / reversed pair-fold at per-row
+offsets — each direction's target run is affine in `j`). Wrapping i32 adds
+commute, so the regrouped add set is byte-identical by construction; gated by
+`cdef_diff::cdef_find_dir_matches_c` (REAL C reference) + all 4 other CDEF
+differentials green. The cost fold and the max/var tail are untouched. This
+does NOT touch the delegate-vs-direct-u8 CDEF decision (still DELEGATED per
+`cdef_lowbd_ir_2026-07-22.md`).
+
+| cell | metric | before (post-fix-2) | after | Δ |
+|---|---|---:|---:|---:|
+| q32 | port Ir/dec | 50,081,000 | 49,218,920 | **−1.72 %** |
+| q32 | Ir ratio | 2.067x | **2.032x** | (baseline 2.176x → cumulative −6.6 %) |
+| q32 | `cdef_find_dir` Ir/dec | 2,486,880 | 700,128 | **−71.8 %** (1570 → 442 Ir/call) |
+| q32 | CDEF stage Ir/dec | 8,050,525 | 7,214,205 | −10.4 % (4.11x → 3.68x vs C) |
+
+## Net position after this pass (all Ir, measured)
+
+| cell | baseline (this file, top) | after fixes 1-3 | Δ |
+|---|---:|---:|---:|
+| 4K cq20 | 1.781x | **1.747x** | −1.90 % port Ir |
+| 4K cq40 | 2.153x | **2.092x** | −2.85 % |
+| 2K cq40 | 2.301x | **2.229x** | −3.10 % |
+| q32     | 2.176x | **2.032x** | −6.63 % |
+
+(4K/2K cells re-measured after fix 1 only — fixes 2/3 touch LR/CDEF, which do
+not exist in those streams; their numbers are unchanged by construction. 2K
+cq20 not re-measured: same fix-1-only argument, its deblock share mirrors 2K
+cq40.)
+
+Remaining measured-but-not-taken levers, ranked: (1) deblock i32x4→denser-lane
+math repack (the last +117 M/dec at 4K cq40; C's i16 packing); (2) the
+per-call `#[magetypes]` prologue via a plane-level dispatch hoist (71.5 M
+total at 4K cq40); (3) wiener i16-madd shape and (4) CDEF u16 filter kernel —
+(3) and (4) both blocked on magetypes integer madd/pack primitives (feature
+request territory), per the fix-2 note.
+
 ## Provenance
 
 Box: dedicated aom-rs workstation. Tree: jj workspace on `origin/main`
