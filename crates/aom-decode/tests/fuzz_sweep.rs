@@ -32,8 +32,20 @@
 //! Knobs (env): `FUZZ_SMOKE_ITERS` sweep iterations (default 60000),
 //! `FUZZ_SMOKE_SEED` PRNG seed, `FUZZ_CRASH_DIR`.
 
+use aom_decode::{DecodeConfig, DecodeLimits};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
+
+/// 4 Mpx (2048×2048) — the same low `max_pixels` the cargo-fuzz targets pin.
+/// It bounds the peak per-frame allocation so an in-bounds-but-huge declared
+/// frame is rejected with `LimitExceeded` instead of a multi-GiB allocation.
+const FUZZ_MAX_PIXELS: u64 = 1 << 22;
+
+fn fuzz_config() -> DecodeConfig<'static> {
+    let mut limits = DecodeLimits::default();
+    limits.max_pixels = Some(FUZZ_MAX_PIXELS);
+    DecodeConfig::default().with_limits(limits)
+}
 
 struct Rng(u64);
 impl Rng {
@@ -100,13 +112,14 @@ fn panic_msg(p: &Box<dyn std::any::Any + Send>) -> String {
 /// Run one input through both public decode entries under `catch_unwind`.
 /// Returns the panic message of the first entry that panics, else `None`.
 fn probe(data: &[u8]) -> Option<String> {
+    let config = fuzz_config();
     if let Err(p) = catch_unwind(AssertUnwindSafe(|| {
-        let _ = aom_decode::frame::decode_frame_obus(data);
+        let _ = aom_decode::frame::decode_frame_obus_with(data, &config);
     })) {
         return Some(format!("[decode_frame_obus] {}", panic_msg(&p)));
     }
     if let Err(p) = catch_unwind(AssertUnwindSafe(|| {
-        let _ = aom_decode::frame::decode_frames(data);
+        let _ = aom_decode::frame::decode_frames_with(data, &config);
     })) {
         return Some(format!("[decode_frames] {}", panic_msg(&p)));
     }

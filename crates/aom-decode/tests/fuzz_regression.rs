@@ -14,7 +14,8 @@
 //! To add a seed: drop the (preferably `cargo fuzz tmin`-minimized, <8 KB,
 //! target <1 KB) crash file into `fuzz/regression/`. No other change needed.
 
-use aom_decode::frame::{decode_frame_obus, decode_frames};
+use aom_decode::frame::{decode_frame_obus_with, decode_frames_with};
+use aom_decode::{DecodeConfig, DecodeLimits};
 use std::fs;
 use std::path::PathBuf;
 
@@ -22,13 +23,26 @@ fn regression_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fuzz/regression")
 }
 
+/// 4 Mpx (2048×2048) — the same low `max_pixels` the cargo-fuzz targets pin
+/// (see `fuzz/fuzz_targets/decode_obus.rs`). It bounds the peak per-frame
+/// allocation to a few tens of MiB so an in-bounds-but-huge declared frame is
+/// rejected with `LimitExceeded` instead of driving a multi-GiB allocation.
+const FUZZ_MAX_PIXELS: u64 = 1 << 22;
+
+fn fuzz_config() -> DecodeConfig<'static> {
+    let mut limits = DecodeLimits::default();
+    limits.max_pixels = Some(FUZZ_MAX_PIXELS);
+    DecodeConfig::default().with_limits(limits)
+}
+
 /// Feed one seed through both untrusted-input entry points. A panic here
 /// unwinds with the seed name in the failure message (`#[test]` catches it).
 fn run_all_entry_points(input: &[u8]) {
+    let config = fuzz_config();
     // Multi-frame OBU stream (KEY + inter) — the superset entry.
-    let _ = decode_frames(input);
+    let _ = decode_frames_with(input, &config);
     // Single KEY-frame temporal unit — the still-AVIF entry.
-    let _ = decode_frame_obus(input);
+    let _ = decode_frame_obus_with(input, &config);
 }
 
 #[test]
