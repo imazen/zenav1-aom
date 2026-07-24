@@ -1,5 +1,24 @@
 # Intra near-tie deltas under the 5% criterion — 2026-07-23
 
+> **CORRECTION 2026-07-24 — the "17 invalid streams" headline was wrong for the
+> 196×196 cluster (12 of the 17); those were a TEST-HARNESS bug, not an encoder
+> bug.** The KB-13 real-content gate harness (`attempt_case_content_uv_sep`)
+> walked `floor(mi/16)` superblocks over an unpadded `h+4`-row source, so on a
+> non-SB-aligned frame (196px = 50 mi = 3.0625 SBs) it silently **dropped the
+> partial edge SB** and coded a short tile the real C decoder rejects — which
+> this measurement then recorded as `c_rejects`/"invalid stream". Rebuilt with
+> the KB-6 `run_case` partial-SB setup (`ceil(mi/16)` SBs over an SB-aligned,
+> border-extended source, matching C's `aom_extend_frame_borders`), the 196²
+> **cq63** cells byte-match real aomenc (4/12 now byte-exact; the gate went 41/60
+> → 45/60) and the remaining 196² cq12/cq32 are **ordinary valid-stream RD
+> near-ties**. The port ENCODER was correct throughout — KB-6 proves the same
+> `pack_tile` 30/30 byte-exact on 196² at speed 0. So for the whole 196² row of
+> the table below, read `stream = c_rejects` as `harness dropped the edge SB`,
+> not `encoder emitted invalid AV1`. **NOT re-examined this session (their
+> characterization below still stands as prior output):** the 4 noise-cq63
+> KB-10/11 cells (SB-aligned 64² — not a partial-SB path) and the 1 KB-15 intrabc
+> cell (a known in-progress feature). See KB-13 in CLAUDE.md and the CHANGELOG.
+
 **Question answered:** the remaining intra encoder divergences vs C are pinned "RD
 near-ties". Under the new acceptance criterion — a tie-break only matters if it
 changes **encoded size by >5%**, OR **ssim2 by >5%**, OR **hurts RD by >5%**

@@ -4,7 +4,30 @@
 
 ### [Unreleased]
 
+### Changed
+
+- **All files inherited from upstream libaom now live in a subfolder or the
+  submodule.** The upstream `LICENSE` (BSD-2-Clause) and `PATENTS` (AOM Patent
+  License 1.0) moved from the repo root into
+  [`upstream-notices/`](upstream-notices/) (byte-identical to the copies in the
+  `upstream/` submodule; a `README` there records provenance). The full libaom C
+  tree remains the pinned `upstream/` submodule; the gitignored working copy at
+  `reference/libaom/` is untracked. No inherited C source is tracked outside a
+  subfolder — the only tracked `.c` files are our own FFI oracle shims under
+  `crates/aom-sys-ref/shim/`.
+
 ### Fixed
+
+- **Test harness: the KB-13 real-content speed≥1 gate mis-reported partial-SB
+  frames (196×196) as encoder divergences / "invalid streams".** The harness
+  (`attempt_case_content_uv_sep`) walked `floor(mi/16)` superblocks over an
+  unpadded `h+4`-row source, silently dropping the partial edge SB (196px = 50
+  mi = 3.0625 SBs) and coding a short tile the real C decoder rejects. Given the
+  KB-6 `run_case` partial-SB setup — `ceil(mi/16)` SBs over an SB-aligned,
+  border-extended source (matching C's `aom_extend_frame_borders`) — the 196²
+  cq63 cells byte-match real aomenc (4/12 promoted; the whole gate 41/60 → 45/60)
+  and the rest are ordinary valid-stream near-ties. The port **encoder** was
+  correct throughout (KB-6 speed-0 30/30); this was a harness-only bug.
 
 - **Encoder intrabc (screen content): DV search + var-tx cost now match libaom to
   the unit at the KB-15 witness leaf mi(40,28)** — three independent roots, each
@@ -103,11 +126,12 @@
   (`zenav1-aom`, `-dsp`, `-decode`, `-encode`) + 2 dev-only (`-sys-ref`,
   `-bench`). (52be170)
 - Relicensed to `AGPL-3.0-only OR LicenseRef-Imazen-Commercial` — the standard
-  Imazen dual license (LICENSE-AGPL3 + LICENSE-COMMERCIAL added). Upstream
-  libaom LICENSE (BSD-2-Clause) and PATENTS (AOM Patent License 1.0) restored
-  at the repo root; they continue to cover the upstream work this port derives
-  from. We will release this port under MIT or the original upstream license
-  if Imazen's 2026 AI + server costs are covered. (527852efc15a)
+  Imazen dual license (LICENSE-AGPL3 + LICENSE-COMMERCIAL added). The inherited
+  upstream libaom LICENSE (BSD-2-Clause) and PATENTS (AOM Patent License 1.0)
+  live in [`upstream-notices/`](upstream-notices/) (and the `upstream/`
+  submodule); they continue to cover the upstream work this port derives from.
+  We will release this port under MIT or the original upstream license if
+  Imazen's 2026 AI + server costs are covered. (527852efc15a)
 - CI: added the org-bar platform matrix — `windows-11-arm`, `macos-15-intel`,
   and `i686-unknown-linux-gnu` (via cross) — as pure-Rust portability jobs
   (invariant A: no C toolchain, no cmake/nasm), while the full C-oracle

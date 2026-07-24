@@ -53,17 +53,25 @@ measured against the C oracle:
 - **Decoder — intra is conformance-clean.** Bit-identical to C across the AV1
   intra conformance scope (the CI-wired `xtask/conformance.py --scope intra`:
   byte-identity + golden per-plane MD5), including the aggressive q62/q63 quantizer
-  range, superres, 128×128 superblocks, multi-tile, and film-grain synthesis.
-  Inter-frame decode is progressing byte-exact through a single-reference feature
-  ladder and several real frames.
+  range, superres, 128×128 superblocks, multi-tile, and film-grain synthesis. The
+  8-bit path runs a dedicated `u8`-plane pipeline (byte-identical to the reference,
+  verified in both SIMD and `AOM_FORCE_SCALAR` dispatch) for speed. Inter-frame
+  decode is progressing byte-exact through a single-reference feature ladder and
+  several real frames.
 - **Encoder — ALLINTRA byte-matches aomenc.** The all-intra (usage=2), KEY-frame
   path byte-matches real `aomenc` across `--cpu-used 0..9` on synthetic grids and
-  on real conformance-decoded content at speed 0. Non-default stills knobs are
-  byte-exact too (QM, CDEF search, loop-restoration search, SB128, multi-tile,
-  film grain, lossless, 10/12-bit). A handful of high-qindex partition/mode
-  near-ties, real-content parity above speed 0, and the IntraBC + inter var-tx
-  coefficient arm are still open — each pinned by a self-promoting gate. Inter-frame
-  encode is an early skeleton.
+  on real conformance-decoded content at speed 0 — including partial-superblock
+  (non-64-aligned) frames. Non-default stills knobs are byte-exact too (QM, CDEF
+  search, loop-restoration search, SB128, multi-tile, film grain, lossless,
+  10/12-bit). Still open, each pinned by a self-promoting gate: a handful of
+  high-qindex partition/mode/tx RD near-ties, real-content parity above speed 0,
+  and the IntraBC + inter var-tx coefficient arm. Inter-frame encode is an early
+  skeleton.
+
+Every open item is held by a gate that *asserts the divergence is still present*,
+so the moment a fix makes a pinned cell byte-match, its gate fails and the cell is
+promoted — the suite can't silently drift, and "done" always means measured on the
+real C oracle, never asserted by hand.
 
 [`STATUS.md`](STATUS.md) tracks what has landed module-by-module; [`PARITY.md`](PARITY.md)
 is the stills-parity ledger; [`PORTING.md`](PORTING.md) maps each Rust module to the
@@ -119,8 +127,10 @@ See [LICENSE-COMMERCIAL](LICENSE-COMMERCIAL) for details.
 
 Upstream C code from [libaom](https://aomedia.googlesource.com/aom) is
 BSD-2-Clause with the Alliance for Open Media Patent License 1.0 — see
-[LICENSE](LICENSE) and [PATENTS](PATENTS); those terms continue to cover the
-upstream work this port derives from. libaom is battle-tested, carefully
+[`upstream-notices/LICENSE`](upstream-notices/LICENSE) and
+[`upstream-notices/PATENTS`](upstream-notices/PATENTS) (the inherited upstream
+files, also carried in the `upstream/` submodule); those terms continue to cover
+the upstream work this port derives from. libaom is battle-tested, carefully
 engineered code — this port stands entirely on that foundation.
 
 ### Path to MIT

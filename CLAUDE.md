@@ -955,21 +955,29 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   (av1_set_speed_features_qindex_dependent, speed_features.c:3032-3034: speed 3 → qindex >= 170
   ? 1 : 2; the port had 2 unconditionally). Cfg-fill site (aom-bench lib.rs). Did not flip the
   remaining cq63 cells — kept as a faithfulness fix.
-- **MAP (41/60 byte-exact vs real aomenc, gate `encoder_gate_real_content_speed1to4_e2e`):**
+- **196² "SEPARATE root" was a HARNESS BUG, not an encoder root — CORRECTED 2026-07-24.** The
+  gate harness `attempt_case_content_uv_sep` walked `floor(mi/16)` SBs (`n_sb = mi_cols / SB_MI`)
+  over an unpadded `h+4`-row source. 196px = 50 mi = 3.0625 SBs → floor 3 **dropped the partial
+  edge SB entirely**, coding a short tile the real C decoder REJECTS (this is what the
+  `intra_tiebreak_deltas_2026-07-23` "196² emits invalid AV1" rows actually measured — a harness
+  artifact, NOT the encoder). Fix: the KB-6 `run_case` partial-SB setup — `ceil(mi/16)` SBs over
+  an SB-aligned, border-EXTENDED source (replicate the crop edge into the overhang, matching C's
+  `aom_extend_frame_borders`; `av1_get_perpixel_variance`/`av1_subtract_txb` read the full block
+  incl. off-frame overhang). The port ENCODER was correct all along — KB-6 proves the same
+  `pack_tile` 30/30 byte-exact on 196² at speed 0. After the fix the 196² cq63 cells byte-match
+  and the map went 41/60 → **45/60**.
+- **MAP (45/60 byte-exact vs real aomenc, gate `encoder_gate_real_content_speed1to4_e2e`):**
   - `01-size-64x64` (1-SB, aligned): **12/12 MATCH**.
   - `00-quantizer-00` 64² crop: **11/12** (open: cpu4 cq32).
   - `00-quantizer-00` 128² crop: **8/12** (open: cpu3 cq63, cpu4 cq12/cq32/cq63).
   - `23-film_grain-50` 64² crop: **10/12** (open: cpu3 cq63, cpu4 cq32).
-  - `01-size-196x196` (PARTIAL-SB, multi-SB): **0/12** — the whole cluster still diverges; a
-    SEPARATE root (partial-SB × speed>=1 interaction). Localizer fact (2026-07-19, post-fix
-    run pending re-localization): first divergence at (0,12) BLOCK_16X16, real VERT_B vs ours
-    HORZ_B at cpu1 cq32 — an AB-vs-AB flip (not AB-vs-simple), so plausibly a DIFFERENT
-    mechanism than the mode cache (e.g. the cache's inputs differing at partial-SB edges, or
-    an edge-gate divergence).
-- **Remaining 19 DIFF cells (all pinned self-promoting):** the 196² cluster (12) + 7 interior
-  near-ties concentrated at cpu3/cpu4 (5 of 7 at cq63/cq32 high-speed corners). Next: re-run
-  `task39_localize_196_partial_sb_speed` + the interior localizer on the survivors and
-  sibling-C dump the first divergent node per the KB-3/KB-7 method.
+  - `01-size-196x196` (PARTIAL-SB, multi-SB): **4/12** — cpu1-4 **cq63 MATCH** (promoted into
+    `byte_exact`); cpu1-4 cq12/cq32 are ordinary valid-stream near-ties (first-diff at real tile
+    bytes 437/830/852 or a ±1 LF level, NOT short-tile rejects).
+- **Remaining 15 DIFF cells (all pinned self-promoting):** the 196² cq12/cq32 cluster (8) + 7
+  interior near-ties concentrated at cpu3/cpu4 (5 of 7 at cq63/cq32 high-speed corners). Next:
+  the interior localizer on the survivors + a sibling-C dump of the first divergent node per the
+  KB-3/KB-7 method.
 
 ### KB-14 — Decoder: superres single-SB-column coded frame decoded flat — FIXED ✅ (header coded-lossless false-positive; NOT the upscale)
 - **FIXED 2026-07-18.** Root cause is the HEADER PARSE, **not** the normative upscale (the original
