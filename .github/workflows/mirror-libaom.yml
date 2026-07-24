@@ -1,0 +1,64 @@
+name: mirror-libaom
+
+# Keeps imazen/libaom-mirror a faithful, browsable daily mirror of upstream
+# libaom (https://aomedia.googlesource.com/aom) — the C oracle this port pins as
+# its `upstream/` submodule. The mirror repo is kept PURE (its default branch is
+# libaom's own `main`), so the sync job cannot live there: GitHub fires scheduled
+# workflows only from the default branch, and a mirrored default branch has no
+# room for a workflow file. It runs here instead and pushes into the mirror over
+# SSH using a repo-scoped write DEPLOY KEY (secret LIBAOM_MIRROR_SSH_KEY), so no
+# personal token and no cross-repo GITHUB_TOKEN grant are involved.
+
+on:
+  schedule:
+    - cron: '23 5 * * *'   # daily, 05:23 UTC
+  workflow_dispatch: {}
+
+# This job talks only to upstream (anonymous read) and to the mirror (via the
+# deploy key). It needs no permissions on THIS repository.
+permissions: {}
+
+concurrency:
+  group: mirror-libaom
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror aomedia/aom -> imazen/libaom-mirror
+        env:
+          DEPLOY_KEY: ${{ secrets.LIBAOM_MIRROR_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_KEY:-}" ]; then
+            echo "::error::LIBAOM_MIRROR_SSH_KEY secret is not set" >&2
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+          UPSTREAM="https://aomedia.googlesource.com/aom"
+          MIRROR="git@github.com:imazen/libaom-mirror.git"
+
+          echo "::group::Bare-clone upstream"
+          git clone --bare "$UPSTREAM" aom.git
+          cd aom.git
+          echo "upstream HEAD: $(git rev-parse HEAD)"
+          echo "branches: $(git for-each-ref --format='%(refname)' refs/heads | wc -l), tags: $(git for-each-ref refs/tags | wc -l)"
+          echo "::endgroup::"
+
+          # Pure mirror: force + prune so branches/tags exactly track upstream
+          # (the mirror holds nothing of ours to protect).
+          echo "::group::Push heads (force + prune)"
+          git push --force --prune "$MIRROR" 'refs/heads/*:refs/heads/*'
+          echo "::endgroup::"
+
+          echo "::group::Push tags (force + prune)"
+          git push --force --prune "$MIRROR" 'refs/tags/*:refs/tags/*'
+          echo "::endgroup::"
+
+          echo "Mirror sync complete."
