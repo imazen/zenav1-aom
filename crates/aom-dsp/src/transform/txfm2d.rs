@@ -211,7 +211,7 @@ fn fwd_txfm2d_core(input: &[i16], output: &mut [i32], stride: usize, cfg: &Cfg) 
     // to this scalar loop (crate::transform::simd docs + differentials); it declines
     // (false) when the col kernel isn't ported / col_n < 8 / SIMD unavailable
     // or pinned off. Use `output` as scratch on the scalar path only.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let cols_done = crate::transform::simd::try_fwd_col_pass(
         cfg.txfm_type_col,
         input,
@@ -225,7 +225,7 @@ fn fwd_txfm2d_core(input: &[i16], output: &mut [i32], stride: usize, cfg: &Cfg) 
         cfg.ud_flip,
         cfg.lr_flip,
     );
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let cols_done = false;
     if !cols_done {
         // Scalar: temp_in = output[0..row], temp_out = output[row..2row].
@@ -250,7 +250,7 @@ fn fwd_txfm2d_core(input: &[i16], output: &mut [i32], stride: usize, cfg: &Cfg) 
 
     // Rows — same contract: the SIMD row pass (8-row lane batches) is
     // bit-identical to the scalar loop and declines when not applicable.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let rows_done = crate::transform::simd::try_fwd_row_pass(
         cfg.txfm_type_row,
         &buf,
@@ -261,7 +261,7 @@ fn fwd_txfm2d_core(input: &[i16], output: &mut [i32], stride: usize, cfg: &Cfg) 
         cfg.cos_bit_row as i32,
         rect_type.abs() == 1,
     );
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let rows_done = false;
     if !rows_done {
         let mut row_buffer = [0i32; 64];

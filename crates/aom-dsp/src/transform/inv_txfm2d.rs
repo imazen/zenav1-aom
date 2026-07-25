@@ -266,7 +266,7 @@ pub fn av1_inv_txfm2d_add_into(
     // Rows — the SIMD row pass (8-row lane batches) is bit-identical to this
     // scalar loop (crate::transform::simd docs + differentials); it declines (false) when
     // the row kernel isn't ported / row_n < 8 / SIMD unavailable or pinned off.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let rows_done = crate::transform::simd::try_inv_row_pass(
         cfg.txfm_type_row,
         &mod_input,
@@ -278,7 +278,7 @@ pub fn av1_inv_txfm2d_add_into(
         (bd + 8) as i8,
         &stage_range_row,
     );
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let rows_done = false;
     if !rows_done {
         for r in 0..row_n {
@@ -304,7 +304,7 @@ pub fn av1_inv_txfm2d_add_into(
     // Columns — same contract: the SIMD column pass (8-column lane batches)
     // is bit-identical to the scalar loop and declines when not applicable.
     let col_clamp = (bd + 6).max(16) as i8;
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let cols_done = crate::transform::simd::try_inv_col_pass(
         cfg.txfm_type_col,
         &buf,
@@ -319,7 +319,7 @@ pub fn av1_inv_txfm2d_add_into(
         cfg.lr_flip,
         bd,
     );
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let cols_done = false;
     if !cols_done {
         for c in 0..col_n {
@@ -411,7 +411,7 @@ pub fn av1_inv_txfm2d_add_u8_into(
     let mut temp_out = [0i32; 64];
 
     // ROW pass — shared verbatim with the highbd path (writes the i32 `buf`).
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let rows_done = crate::transform::simd::try_inv_row_pass(
         cfg.txfm_type_row,
         &mod_input,
@@ -423,7 +423,7 @@ pub fn av1_inv_txfm2d_add_u8_into(
         (BD + 8) as i8,
         &stage_range_row,
     );
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let rows_done = false;
     if !rows_done {
         for r in 0..row_n {
@@ -448,7 +448,7 @@ pub fn av1_inv_txfm2d_add_u8_into(
 
     // COLUMN pass — u8 destination.
     let col_clamp = (BD + 6).max(16) as i8;
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let cols_done = crate::transform::simd::try_inv_col_pass_u8(
         cfg.txfm_type_col,
         &buf,
@@ -462,7 +462,7 @@ pub fn av1_inv_txfm2d_add_u8_into(
         cfg.ud_flip,
         cfg.lr_flip,
     );
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let cols_done = false;
     if !cols_done {
         for c in 0..col_n {

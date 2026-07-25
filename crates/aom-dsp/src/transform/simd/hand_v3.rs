@@ -3,23 +3,28 @@
 //! `fdct4`, `iadst4` (all-i64 math), `fadst4` (sinpi, i32 wrapping), and the
 //! eight identity transforms. Per-lane bit-identical to the scalar ports on
 //! the full i32 domain (module docs in `super` + the `tests` differential).
+//!
+//! Like the transpiled kernels, each of these is ONE
+//! `#[magetypes(define(i32x8), v3, neon, -scalar)]` body: the macro emits the per-tier
+//! variants, and every architecture-specific helper (`hb`, `rshiftv`,
+//! `mul_rshiftv`, and the i64-lane `V64` family used by `iadst4`) is supplied by
+//! `super::prims` under a single cfg-selected name.
 
-use archmage::X64V3Token;
 use archmage::prelude::*;
-use magetypes::simd::i32x8;
+use magetypes::simd::generic::i32x8 as I32x8;
 
 use crate::transform::cospi::{NEW_INV_SQRT2, NEW_SQRT2, NEW_SQRT2_BITS, cospi_arr, sinpi_arr};
 
-use super::{hb, mul_rshiftv, rshiftv};
+use super::prims::{add64, hb, mul_rshiftv, mulc64, rshift64, rshiftv, sub64, widen64};
 
 /// Lane twin of [`crate::transform::av1_fdct4`] (`fdct.rs`) — wrapping stage-1 adds,
 /// four `half_btf`s, output permutation. Statement-for-statement.
-#[rite]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_fdct4_v3(
-    t: X64V3Token,
-    input: &[i32x8],
-    output: &mut [i32x8],
+pub(crate) fn av1_fdct4_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    output: &mut [I32x8<Token>],
     cos_bit: i32,
     _stage_range: &[i8],
 ) {
@@ -44,78 +49,17 @@ pub(crate) fn av1_fdct4_v3(
     output[3] = step3;
 }
 
-/// A lane vector held as two `i64x4` halves (lanes 0..4 / 4..8) — the
-/// representation for the all-i64 `iadst4` math.
-#[derive(Clone, Copy)]
-struct V64 {
-    lo: core::arch::x86_64::__m256i,
-    hi: core::arch::x86_64::__m256i,
-}
-
-/// Sign-extend the 8 i32 lanes to two i64x4 halves.
-#[rite(v3)]
-fn widen64(v: i32x8) -> V64 {
-    use core::arch::x86_64::*;
-    V64 {
-        lo: _mm256_cvtepi32_epi64(_mm256_castsi256_si128(v.raw())),
-        hi: _mm256_cvtepi32_epi64(_mm256_extracti128_si256::<1>(v.raw())),
-    }
-}
-
-#[rite(v3)]
-fn add64(a: V64, b: V64) -> V64 {
-    use core::arch::x86_64::*;
-    V64 { lo: _mm256_add_epi64(a.lo, b.lo), hi: _mm256_add_epi64(a.hi, b.hi) }
-}
-
-#[rite(v3)]
-fn sub64(a: V64, b: V64) -> V64 {
-    use core::arch::x86_64::*;
-    V64 { lo: _mm256_sub_epi64(a.lo, b.lo), hi: _mm256_sub_epi64(a.hi, b.hi) }
-}
-
-/// `c * v` per i64 lane for a NON-NEGATIVE constant `c < 2^31` — exact
-/// mod 2^64 (== the scalar i64 product wherever it fits, which the iadst4
-/// bounds guarantee: |v| < 2^34, c = sinpi < 2^14 → |c*v| < 2^48).
-/// Decompose v = v_lo_u + v_hi_u·2^32 (unsigned dwords): `c*v mod 2^64 =
-/// c*v_lo_u + ((c*v_hi_u) << 32)` with wrapping adds/shifts.
-#[rite(v3)]
-fn mulc64(v: V64, c: i32) -> V64 {
-    use core::arch::x86_64::*;
-    debug_assert!(c >= 0);
-    let cv = _mm256_set1_epi64x(c as i64); // low dword of each i64 lane = c
-    let part = |x: __m256i| -> __m256i {
-        let lo_prod = _mm256_mul_epu32(x, cv); // c * v_lo_u (exact, < 2^63)
-        let hi_prod = _mm256_mul_epu32(_mm256_srli_epi64::<32>(x), cv); // c * v_hi_u
-        _mm256_add_epi64(lo_prod, _mm256_slli_epi64::<32>(hi_prod))
-    };
-    V64 { lo: part(v.lo), hi: part(v.hi) }
-}
-
-/// `round_shift(v, bit)` from i64 lanes to i32 lanes — add rounding, LOGICAL
-/// shift, take the low dword (exact for `1 <= bit <= 32`, same identity as
-/// [`super::hb`]).
-#[rite]
-fn rshift64(t: X64V3Token, v: V64, bit: i32) -> i32x8 {
-    use core::arch::x86_64::*;
-    let rnd = _mm256_set1_epi64x(1i64 << (bit - 1));
-    let cnt = _mm_cvtsi32_si128(bit);
-    let lo = _mm256_srl_epi64(_mm256_add_epi64(v.lo, rnd), cnt);
-    let hi = _mm256_srl_epi64(_mm256_add_epi64(v.hi, rnd), cnt);
-    i32x8::from_m256i(t, super::low32_of_i64(lo, hi))
-}
-
 /// Lane twin of [`crate::transform::av1_iadst4`] (`special.rs`) — the all-i64 sinpi
 /// kernel. The scalar's all-zero-input early-out is an optimization, not a
 /// semantic branch: on zero input every product/sum is 0 and
 /// `round_shift(0, bit) == 0`, so computing through is bit-identical (the
 /// differential mixes zero and nonzero columns to pin this).
-#[rite]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_iadst4_v3(
-    t: X64V3Token,
-    input: &[i32x8],
-    output: &mut [i32x8],
+pub(crate) fn av1_iadst4_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    output: &mut [I32x8<Token>],
     cos_bit: i32,
     _stage_range: &[i8],
 ) {
@@ -161,12 +105,12 @@ pub(crate) fn av1_iadst4_v3(
 /// Lane twin of [`crate::transform::av1_fadst4`] (`special.rs`) — i32 wrapping sinpi
 /// products/sums (lane mul/add/sub wrap identically), i64 `round_shift` at
 /// the end. Same compute-through argument for the zero early-out as iadst4.
-#[rite]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_fadst4_v3(
-    t: X64V3Token,
-    input: &[i32x8],
-    output: &mut [i32x8],
+pub(crate) fn av1_fadst4_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    output: &mut [I32x8<Token>],
     cos_bit: i32,
     _stage_range: &[i8],
 ) {
@@ -215,12 +159,12 @@ pub(crate) fn av1_fadst4_v3(
 // full-i64-product [`mul_rshiftv`] recipe.
 
 /// `av1_iidentity4_c`: `round_shift(NewSqrt2 * x, NewSqrt2Bits)`.
-#[rite]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_iidentity4_v3(
-    t: X64V3Token,
-    input: &[i32x8],
-    output: &mut [i32x8],
+pub(crate) fn av1_iidentity4_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    output: &mut [I32x8<Token>],
     _cos_bit: i32,
     _stage_range: &[i8],
 ) {
@@ -230,12 +174,12 @@ pub(crate) fn av1_iidentity4_v3(
 }
 
 /// `av1_iidentity8_c`: `(x as i64 * 2) as i32` == wrapping `x << 1`.
-#[rite]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_iidentity8_v3(
-    t: X64V3Token,
-    input: &[i32x8],
-    output: &mut [i32x8],
+pub(crate) fn av1_iidentity8_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    output: &mut [I32x8<Token>],
     _cos_bit: i32,
     _stage_range: &[i8],
 ) {
@@ -245,12 +189,12 @@ pub(crate) fn av1_iidentity8_v3(
 }
 
 /// `av1_iidentity16_c`: `round_shift(NewSqrt2 * 2 * x, NewSqrt2Bits)`.
-#[rite]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_iidentity16_v3(
-    t: X64V3Token,
-    input: &[i32x8],
-    output: &mut [i32x8],
+pub(crate) fn av1_iidentity16_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    output: &mut [I32x8<Token>],
     _cos_bit: i32,
     _stage_range: &[i8],
 ) {
@@ -260,12 +204,12 @@ pub(crate) fn av1_iidentity16_v3(
 }
 
 /// `av1_iidentity32_c`: `(x as i64 * 4) as i32` == wrapping `x << 2`.
-#[rite]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_iidentity32_v3(
-    t: X64V3Token,
-    input: &[i32x8],
-    output: &mut [i32x8],
+pub(crate) fn av1_iidentity32_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    output: &mut [I32x8<Token>],
     _cos_bit: i32,
     _stage_range: &[i8],
 ) {
@@ -275,12 +219,12 @@ pub(crate) fn av1_iidentity32_v3(
 }
 
 /// `av1_fidentity4_c`: `round_shift(x * NewSqrt2, NewSqrt2Bits)`.
-#[rite]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_fidentity4_v3(
-    t: X64V3Token,
-    input: &[i32x8],
-    output: &mut [i32x8],
+pub(crate) fn av1_fidentity4_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    output: &mut [I32x8<Token>],
     _cos_bit: i32,
     _stage_range: &[i8],
 ) {
@@ -290,12 +234,12 @@ pub(crate) fn av1_fidentity4_v3(
 }
 
 /// `av1_fidentity8_c`: `x.wrapping_mul(2)`.
-#[rite]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_fidentity8_v3(
-    t: X64V3Token,
-    input: &[i32x8],
-    output: &mut [i32x8],
+pub(crate) fn av1_fidentity8_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    output: &mut [I32x8<Token>],
     _cos_bit: i32,
     _stage_range: &[i8],
 ) {
@@ -305,12 +249,12 @@ pub(crate) fn av1_fidentity8_v3(
 }
 
 /// `av1_fidentity16_c`: `round_shift(x * 2 * NewSqrt2, NewSqrt2Bits)`.
-#[rite]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_fidentity16_v3(
-    t: X64V3Token,
-    input: &[i32x8],
-    output: &mut [i32x8],
+pub(crate) fn av1_fidentity16_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    output: &mut [I32x8<Token>],
     _cos_bit: i32,
     _stage_range: &[i8],
 ) {
@@ -320,12 +264,12 @@ pub(crate) fn av1_fidentity16_v3(
 }
 
 /// `av1_fidentity32_c`: `x.wrapping_mul(4)`.
-#[rite]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_fidentity32_v3(
-    t: X64V3Token,
-    input: &[i32x8],
-    output: &mut [i32x8],
+pub(crate) fn av1_fidentity32_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    output: &mut [I32x8<Token>],
     _cos_bit: i32,
     _stage_range: &[i8],
 ) {

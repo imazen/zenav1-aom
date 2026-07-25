@@ -1,6 +1,28 @@
 //! SIMD (Gate 3) for the transform stack — lane-batched 1-D kernels + the
 //! 2-D drivers' vector passes, bit-identical to the scalar port per lane.
-//! x86-64 only (the module is cfg'd out elsewhere; NEON falls to scalar).
+//!
+//! # One body per kernel, every tier
+//!
+//! Nothing in this module is written twice per architecture. Every kernel and
+//! every pass driver is ONE `#[magetypes(define(i32x8), v3, neon, -scalar)]`
+//! body: the macro emits the per-tier variants (`_v3` = AVX2, `_neon`) with
+//! their own `#[target_feature]`, `Token` and `i32x8` are substituted per tier,
+//! and `incant!` resolves each call to the tier-matching callee at compile time
+//! (zero dispatcher hops once inside a tier body). `-scalar` drops the macro's
+//! default scalar fallback, because the scalar twin already exists as the
+//! transcribed port — which is exactly what the differentials compare against.
+//!
+//! The lane width is 8 on every target. On x86-64 that is one AVX2 register;
+//! on aarch64 magetypes' `i32x8` is the 2×NEON polyfill (`Repr =
+//! [int32x4_t; 2]`). Keeping the width identical across tiers is what lets the
+//! drivers and the ~4,200 generated lines of 1-D kernels stay a single body.
+//!
+//! The handful of operations the generic magetypes API cannot express —
+//! integer WIDENING (i32 → i64, verified absent at magetypes 0.9.28: the
+//! `cross_width` raising/lowering is f32-only) and cross-lane PERMUTES — live
+//! in [`prims`] as hand-written per-tier variants under one cfg-selected name.
+//! That module is the WHOLE architecture-dependent surface of the transform
+//! SIMD; its docs carry the per-tier exactness argument.
 //!
 //! # Shape (from the STATUS.md transform-SIMD design)
 //!
@@ -31,231 +53,51 @@
 //!   products + rounding in **i64**. At driver clamp bounds a product
 //!   reaches 2^32 and the sum needs 33 bits, so an i32-lane sum (libaom's
 //!   own SSE4/AVX2 shape) diverges on crafted-but-decodable streams. [`hb`]
-//!   reproduces the i64 sum exactly: `vpmulld` (wrapped products, ==
-//!   scalar), widen each 128-half via `vpmovsxdq` to 2×i64x4, `vpaddq` sums
-//!   (|p0|,|p1| <= 2^31, rnd <= 2^31 → no i64 overflow), then the
-//!   arithmetic-shift + truncate pair via LOGICAL `vpsrlq` + low-dword
-//!   gather — exact because `((v >>_arith b) as i32) == low32(v >>_logical
-//!   b)` for any v when `1 <= b <= 32` (the differing sign-fill bits all
-//!   land at positions >= 32 and are truncated away; cos_bit is 10..=13).
-//!   AVX2 has no `vpsraq`; the logical+truncate trick dodges it.
+//!   ([`prims::hb`]) reproduces the i64 sum exactly on both tiers — the
+//!   products wrap in i32, the sum and rounding happen in i64. Each tier
+//!   reaches that differently (AVX2 has no `vpsraq` and needs a
+//!   logical-shift + low-dword identity; AArch64 has a real 64-bit signed
+//!   shift), which is precisely why `hb` is per-tier; see the [`prims`] docs.
 //! * `round_shift(v as i64, bit)` (the positive-bit `round_shift_array`
-//!   arm): the same widen → add rounding → logical shift → truncate recipe.
-//!   [`rshiftv`]
+//!   arm): the same widen → add rounding → shift → truncate recipe.
+//!   [`prims::rshiftv`]
 //! * `highbd_clip_pixel_add`: the i32 lane add wraps like the scalar
 //!   `wrapping_add`; clamp to `[0, (1<<bd)-1]` is lane min/max; the `as u16`
 //!   narrowing is exact after the clamp.
 //! * `lr_flip` lane reversal and `ud_flip` row reversal are pure index
-//!   permutations ([`revv`] / loop order), identical to the scalar loops.
+//!   permutations ([`prims::revv`] / loop order), identical to the scalar
+//!   loops.
 //!
-//! magetypes has NO integer widening ops, so [`hb`]/[`rshiftv`] use the raw
-//! `__m256i` escape (`i32x8::raw()`/`from_m256i`) with VALUE intrinsics —
-//! safe inside `#[rite]`/`#[arcane]` `#[target_feature]` regions, keeping
-//! `#![forbid(unsafe_code)]`.
+//! Both tiers reach the inexpressible ops through raw value intrinsics inside
+//! a `#[rite]` `#[target_feature]` region, so `#![forbid(unsafe_code)]` holds.
 
 mod hand_v3;
 mod inv1d_v3_gen;
+// The bd8 i16-lane row/column specialization is x86-64 only for now: its
+// helpers are raw `core::arch::x86_64` pack/unpack/madd cross-lane ops that
+// have no magetypes expression and no NEON twin yet. aarch64 keeps the (fully
+// correct, i32-lane) generic path above — see the `lowbd16` module docs.
+#[cfg(target_arch = "x86_64")]
 mod inv1d_v3_i16_gen;
+#[cfg(target_arch = "x86_64")]
 mod lowbd16;
+pub(crate) mod prims;
 mod txfm1d_v3_gen;
 
-use archmage::SimdToken;
-use archmage::X64V3Token;
 use archmage::prelude::*;
-use magetypes::simd::i32x8;
+use magetypes::simd::generic::i32x8 as I32x8;
 
 use crate::transform::cospi::{NEW_INV_SQRT2, NEW_SQRT2, NEW_SQRT2_BITS};
-use hand_v3::{
-    av1_fadst4_v3, av1_fdct4_v3, av1_fidentity4_v3, av1_fidentity8_v3, av1_fidentity16_v3,
-    av1_fidentity32_v3, av1_iadst4_v3, av1_iidentity4_v3, av1_iidentity8_v3, av1_iidentity16_v3,
-    av1_iidentity32_v3,
-};
-use inv1d_v3_gen::{
-    av1_iadst8_v3, av1_iadst16_v3, av1_idct4_v3, av1_idct8_v3, av1_idct16_v3, av1_idct32_v3,
-    av1_idct64_v3,
-};
-use txfm1d_v3_gen::{
-    av1_fadst8_v3, av1_fadst16_v3, av1_fdct8_v3, av1_fdct16_v3, av1_fdct32_v3, av1_fdct64_v3,
-};
+use prims::{clampv, mul_rshiftv, revv, rshiftv, shl_clamp64v, transpose8, widen16};
 
-/// `half_btf` on 8 lanes — the exact-i64 recipe (see the module docs).
-/// Bit-identical to [`crate::transform::fdct::half_btf`] per lane for ANY i32 lanes and
-/// any `cos_bit` in `1..=32` (the transforms use 10..=13).
-#[rite]
-pub(crate) fn hb(t: X64V3Token, w0: i32, in0: i32x8, w1: i32, in1: i32x8, cos_bit: i32) -> i32x8 {
-    use core::arch::x86_64::*;
-    // Wrapped i32 products, exactly like the scalar port's wrapping_mul.
-    let p0 = _mm256_mullo_epi32(_mm256_set1_epi32(w0), in0.raw());
-    let p1 = _mm256_mullo_epi32(_mm256_set1_epi32(w1), in1.raw());
-    // Widen to i64 and sum with the rounding constant — no i64 overflow:
-    // |p0|,|p1| <= 2^31 and rnd <= 2^31, so |sum| <= 2^32 + 2^31 < 2^63.
-    let rnd = _mm256_set1_epi64x(1i64 << (cos_bit - 1));
-    let lo = _mm256_add_epi64(
-        _mm256_add_epi64(
-            _mm256_cvtepi32_epi64(_mm256_castsi256_si128(p0)),
-            _mm256_cvtepi32_epi64(_mm256_castsi256_si128(p1)),
-        ),
-        rnd,
-    );
-    let hi = _mm256_add_epi64(
-        _mm256_add_epi64(
-            _mm256_cvtepi32_epi64(_mm256_extracti128_si256::<1>(p0)),
-            _mm256_cvtepi32_epi64(_mm256_extracti128_si256::<1>(p1)),
-        ),
-        rnd,
-    );
-    // (sum >>_arith bit) as i32 == low32(sum >>_logical bit) for bit <= 32.
-    let cnt = _mm_cvtsi32_si128(cos_bit);
-    i32x8::from_m256i(t, low32_of_i64(_mm256_srl_epi64(lo, cnt), _mm256_srl_epi64(hi, cnt)))
-}
-
-/// Gather the low dword of each i64 lane of (`lo`, `hi`) into one `__m256i`.
-#[rite(v3)]
-fn low32_of_i64(
-    lo: core::arch::x86_64::__m256i,
-    hi: core::arch::x86_64::__m256i,
-) -> core::arch::x86_64::__m256i {
-    use core::arch::x86_64::*;
-    let idx = _mm256_setr_epi32(0, 2, 4, 6, 0, 2, 4, 6);
-    let a = _mm256_permutevar8x32_epi32(lo, idx);
-    let b = _mm256_permutevar8x32_epi32(hi, idx);
-    _mm256_blend_epi32::<0b1111_0000>(a, b)
-}
-
-/// `clamp_value(v, bit)` on lanes — identical to the scalar port for any i32
-/// lanes and any `bit`: `<= 0` and `>= 32` are identities (the scalar i64
-/// bounds cover all of i32 there), else lane min/max on the i32 bounds.
-#[rite]
-pub(crate) fn clampv(t: X64V3Token, v: i32x8, bit: i8) -> i32x8 {
-    if bit <= 0 || bit >= 32 {
-        return v;
-    }
-    let hi = ((1i64 << (bit - 1)) - 1) as i32;
-    let lo = (-(1i64 << (bit - 1))) as i32;
-    v.clamp(i32x8::splat(t, lo), i32x8::splat(t, hi))
-}
-
-/// `wrapping_neg` on lanes (`0 - v` wraps identically).
-#[rite]
-#[allow(dead_code)] // used by the iadst/fdct lane kernels (next chunks)
-pub(crate) fn negv(t: X64V3Token, v: i32x8) -> i32x8 {
-    i32x8::zero(t) - v
-}
-
-/// `round_shift(v as i64, bit)` on lanes for `bit` in `1..=32` — widen, add
-/// rounding, logical shift, truncate (the same identity as [`hb`]).
-#[rite]
-fn rshiftv(t: X64V3Token, v: i32x8, bit: i32) -> i32x8 {
-    use core::arch::x86_64::*;
-    debug_assert!((1..=32).contains(&bit));
-    let rnd = _mm256_set1_epi64x(1i64 << (bit - 1));
-    let lo = _mm256_add_epi64(_mm256_cvtepi32_epi64(_mm256_castsi256_si128(v.raw())), rnd);
-    let hi = _mm256_add_epi64(
-        _mm256_cvtepi32_epi64(_mm256_extracti128_si256::<1>(v.raw())),
-        rnd,
-    );
-    let cnt = _mm_cvtsi32_si128(bit);
-    i32x8::from_m256i(t, low32_of_i64(_mm256_srl_epi64(lo, cnt), _mm256_srl_epi64(hi, cnt)))
-}
-
-/// Reverse the 8 lanes (for `lr_flip` column groups).
-#[rite]
-fn revv(t: X64V3Token, v: i32x8) -> i32x8 {
-    use core::arch::x86_64::*;
-    let idx = _mm256_setr_epi32(7, 6, 5, 4, 3, 2, 1, 0);
-    i32x8::from_m256i(t, _mm256_permutevar8x32_epi32(v.raw(), idx))
-}
-
-/// `round_shift(v as i64 * mul, bit)` on lanes — the full-i64-product recipe
-/// (`vpmuldq` even/odd, exact 32×32→64 signed products == `v as i64 * mul`),
-/// add rounding (no overflow: |mul| <= 2^14 at the call sites → |prod| <=
-/// 2^45), LOGICAL shift + take the low dword of each i64 lane (exact for
-/// `1 <= bit <= 32`). Bit-identical to the scalar
-/// `round_shift(v as i64 * mul as i64, bit)` for ANY i32 `v`.
-#[rite]
-pub(crate) fn mul_rshiftv(t: X64V3Token, v: i32x8, mul: i32, bit: i32) -> i32x8 {
-    use core::arch::x86_64::*;
-    debug_assert!((1..=32).contains(&bit) && mul.unsigned_abs() < (1 << 15));
-    let m = _mm256_set1_epi32(mul);
-    // vpmuldq reads the SIGNED low dword of each 64-bit lane.
-    let even = _mm256_mul_epi32(v.raw(), m); // source lanes 0,2,4,6
-    let odd = _mm256_mul_epi32(_mm256_srli_epi64::<32>(v.raw()), m); // lanes 1,3,5,7
-    let rnd = _mm256_set1_epi64x(1i64 << (bit - 1));
-    let cnt = _mm_cvtsi32_si128(bit);
-    let re = _mm256_srl_epi64(_mm256_add_epi64(even, rnd), cnt);
-    let ro = _mm256_srl_epi64(_mm256_add_epi64(odd, rnd), cnt);
-    // Valid low dwords of `re` sit at dword positions 0,2,4,6 (source lanes
-    // 0,2,4,6); shift `ro`'s up to 1,3,5,7 and blend.
-    let out = _mm256_blend_epi32::<0b1010_1010>(re, _mm256_slli_epi64::<32>(ro));
-    i32x8::from_m256i(t, out)
-}
-
-/// The NEGATIVE-bit `round_shift_array` arm on lanes: `clamp_i64(v << k)`
-/// truncated to i32 — widen to i64 halves, shift left (exact: k <= 4 →
-/// |v<<k| < 2^36), clamp to the i32 range with cmpgt/blendv min/max (AVX2
-/// has no vpmin/maxq), take low dwords. Bit-identical to the scalar arm
-/// (`((1i64 << k) * v).clamp(i32::MIN, i32::MAX) as i32`) for ANY i32 v.
-/// Used by the FORWARD col pass (fwd shift[0] == 2); the inverse shifts are
-/// all positive-bit.
-#[rite]
-fn shl_clamp64v(t: X64V3Token, v: i32x8, k: i32) -> i32x8 {
-    use core::arch::x86_64::*;
-    debug_assert!((1..=4).contains(&k));
-    let cnt = _mm_cvtsi32_si128(k);
-    let min_v = _mm256_set1_epi64x(i32::MIN as i64);
-    let max_v = _mm256_set1_epi64x(i32::MAX as i64);
-    let part = |x: __m128i| -> __m256i {
-        let w = _mm256_sll_epi64(_mm256_cvtepi32_epi64(x), cnt);
-        // min(w, max): if w > max take max; then max(_, min): if min > w take min.
-        let w = _mm256_blendv_epi8(w, max_v, _mm256_cmpgt_epi64(w, max_v));
-        _mm256_blendv_epi8(w, min_v, _mm256_cmpgt_epi64(min_v, w))
-    };
-    let lo = part(_mm256_castsi256_si128(v.raw()));
-    let hi = part(_mm256_extracti128_si256::<1>(v.raw()));
-    i32x8::from_m256i(t, low32_of_i64(lo, hi))
-}
-
-/// Sign-extend 8 i16s (the forward transform's residual input) to i32 lanes.
-/// The fixed-size array round-trip lets LLVM emit `vpmovsxwd`.
-#[rite]
-fn widen16(t: X64V3Token, s: &[i16]) -> i32x8 {
-    let a: [i16; 8] = s[..8].try_into().unwrap();
-    i32x8::from_array(t, core::array::from_fn(|j| a[j] as i32))
-}
-
-/// 8x8 i32 in-register transpose (unpack32 → unpack64 → permute2x128, the
-/// standard 24-op AVX2 pattern) — a pure lane permutation, so exactness is
-/// structural. Used by the row passes (strided side of the tile).
-#[rite]
-fn transpose8(t: X64V3Token, v: &[i32x8]) -> [i32x8; 8] {
-    use core::arch::x86_64::*;
-    let a0 = _mm256_unpacklo_epi32(v[0].raw(), v[1].raw());
-    let a1 = _mm256_unpackhi_epi32(v[0].raw(), v[1].raw());
-    let a2 = _mm256_unpacklo_epi32(v[2].raw(), v[3].raw());
-    let a3 = _mm256_unpackhi_epi32(v[2].raw(), v[3].raw());
-    let a4 = _mm256_unpacklo_epi32(v[4].raw(), v[5].raw());
-    let a5 = _mm256_unpackhi_epi32(v[4].raw(), v[5].raw());
-    let a6 = _mm256_unpacklo_epi32(v[6].raw(), v[7].raw());
-    let a7 = _mm256_unpackhi_epi32(v[6].raw(), v[7].raw());
-    let b0 = _mm256_unpacklo_epi64(a0, a2);
-    let b1 = _mm256_unpackhi_epi64(a0, a2);
-    let b2 = _mm256_unpacklo_epi64(a1, a3);
-    let b3 = _mm256_unpackhi_epi64(a1, a3);
-    let b4 = _mm256_unpacklo_epi64(a4, a6);
-    let b5 = _mm256_unpackhi_epi64(a4, a6);
-    let b6 = _mm256_unpacklo_epi64(a5, a7);
-    let b7 = _mm256_unpackhi_epi64(a5, a7);
-    [
-        i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
-        i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
-        i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
-        i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
-        i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
-        i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
-        i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
-        i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
-    ]
-}
+// The 1-D kernels are `#[magetypes]` FAMILIES: each name below exists once per
+// tier (`av1_idct4_impl_v3`, `av1_idct4_impl_neon`, …) and is reached through
+// `incant!` from inside a tier body, which rewrites to the matching variant at
+// compile time. Glob-import so the per-tier names resolve without spelling all
+// 25 × 2 of them; the three modules' kernel names are disjoint.
+use hand_v3::*;
+use inv1d_v3_gen::*;
+use txfm1d_v3_gen::*;
 
 /// 1-D kernel selector — TXFM_TYPE ids 0..=11 (DCT4..64, ADST4/8/16,
 /// IDTX4/8/16/32), one enum per direction. ALL 12 are ported in each
@@ -351,56 +193,58 @@ fn fwd_kernel_n(k: Fwd1d) -> usize {
     }
 }
 
-/// Direct-dispatch the selected inverse 1-D lane kernel (rite→rite calls
-/// inline into the caller's feature region; kernels are `#[target_feature]`
-/// fns and cannot be stored as plain fn pointers).
-#[rite]
+/// Direct-dispatch the selected inverse 1-D lane kernel. `incant!` inside a
+/// tier body rewrites to the tier-matching variant at COMPILE time (no
+/// dispatcher branch, no cache probe — the callee inlines into this function's
+/// `#[target_feature]` region), which is also why the kernels cannot be stored
+/// as plain fn pointers: they are `#[target_feature]` fns.
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 fn run_inv1d(
-    t: X64V3Token,
+    t: Token,
     k: Inv1d,
-    input: &[i32x8],
-    out: &mut [i32x8],
+    input: &[I32x8<Token>],
+    out: &mut [I32x8<Token>],
     cos_bit: i32,
     stage_range: &[i8],
 ) {
     match k {
-        Inv1d::Dct4 => av1_idct4_v3(t, input, out, cos_bit, stage_range),
-        Inv1d::Dct8 => av1_idct8_v3(t, input, out, cos_bit, stage_range),
-        Inv1d::Dct16 => av1_idct16_v3(t, input, out, cos_bit, stage_range),
-        Inv1d::Dct32 => av1_idct32_v3(t, input, out, cos_bit, stage_range),
-        Inv1d::Dct64 => av1_idct64_v3(t, input, out, cos_bit, stage_range),
-        Inv1d::Adst4 => av1_iadst4_v3(t, input, out, cos_bit, stage_range),
-        Inv1d::Adst8 => av1_iadst8_v3(t, input, out, cos_bit, stage_range),
-        Inv1d::Adst16 => av1_iadst16_v3(t, input, out, cos_bit, stage_range),
-        Inv1d::Idtx4 => av1_iidentity4_v3(t, input, out, cos_bit, stage_range),
-        Inv1d::Idtx8 => av1_iidentity8_v3(t, input, out, cos_bit, stage_range),
-        Inv1d::Idtx16 => av1_iidentity16_v3(t, input, out, cos_bit, stage_range),
-        Inv1d::Idtx32 => av1_iidentity32_v3(t, input, out, cos_bit, stage_range),
+        Inv1d::Dct4 => incant!(av1_idct4_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Inv1d::Dct8 => incant!(av1_idct8_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Inv1d::Dct16 => incant!(av1_idct16_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Inv1d::Dct32 => incant!(av1_idct32_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Inv1d::Dct64 => incant!(av1_idct64_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Inv1d::Adst4 => incant!(av1_iadst4_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Inv1d::Adst8 => incant!(av1_iadst8_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Inv1d::Adst16 => incant!(av1_iadst16_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Inv1d::Idtx4 => incant!(av1_iidentity4_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Inv1d::Idtx8 => incant!(av1_iidentity8_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Inv1d::Idtx16 => incant!(av1_iidentity16_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Inv1d::Idtx32 => incant!(av1_iidentity32_impl(input, out, cos_bit, stage_range), [v3, neon]),
     }
 }
 
-#[rite]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 fn run_fwd1d(
-    t: X64V3Token,
+    t: Token,
     k: Fwd1d,
-    input: &[i32x8],
-    out: &mut [i32x8],
+    input: &[I32x8<Token>],
+    out: &mut [I32x8<Token>],
     cos_bit: i32,
     stage_range: &[i8],
 ) {
     match k {
-        Fwd1d::Dct4 => av1_fdct4_v3(t, input, out, cos_bit, stage_range),
-        Fwd1d::Dct8 => av1_fdct8_v3(t, input, out, cos_bit, stage_range),
-        Fwd1d::Dct16 => av1_fdct16_v3(t, input, out, cos_bit, stage_range),
-        Fwd1d::Dct32 => av1_fdct32_v3(t, input, out, cos_bit, stage_range),
-        Fwd1d::Dct64 => av1_fdct64_v3(t, input, out, cos_bit, stage_range),
-        Fwd1d::Adst4 => av1_fadst4_v3(t, input, out, cos_bit, stage_range),
-        Fwd1d::Adst8 => av1_fadst8_v3(t, input, out, cos_bit, stage_range),
-        Fwd1d::Adst16 => av1_fadst16_v3(t, input, out, cos_bit, stage_range),
-        Fwd1d::Idtx4 => av1_fidentity4_v3(t, input, out, cos_bit, stage_range),
-        Fwd1d::Idtx8 => av1_fidentity8_v3(t, input, out, cos_bit, stage_range),
-        Fwd1d::Idtx16 => av1_fidentity16_v3(t, input, out, cos_bit, stage_range),
-        Fwd1d::Idtx32 => av1_fidentity32_v3(t, input, out, cos_bit, stage_range),
+        Fwd1d::Dct4 => incant!(av1_fdct4_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Fwd1d::Dct8 => incant!(av1_fdct8_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Fwd1d::Dct16 => incant!(av1_fdct16_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Fwd1d::Dct32 => incant!(av1_fdct32_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Fwd1d::Dct64 => incant!(av1_fdct64_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Fwd1d::Adst4 => incant!(av1_fadst4_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Fwd1d::Adst8 => incant!(av1_fadst8_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Fwd1d::Adst16 => incant!(av1_fadst16_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Fwd1d::Idtx4 => incant!(av1_fidentity4_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Fwd1d::Idtx8 => incant!(av1_fidentity8_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Fwd1d::Idtx16 => incant!(av1_fidentity16_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Fwd1d::Idtx32 => incant!(av1_fidentity32_impl(input, out, cos_bit, stage_range), [v3, neon]),
     }
 }
 
@@ -428,29 +272,17 @@ pub(crate) fn try_inv_col_pass(
         return false;
     }
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
-    let Some(t) = X64V3Token::summon() else {
-        return false;
-    };
     let Some(kernel) = inv_kernel(txfm_type_col) else {
         return false;
     };
     debug_assert_eq!(inv_kernel_n(kernel), row_n);
-    inv_col_pass(
-        t,
-        kernel,
-        buf,
-        output,
-        stride,
-        col_n,
-        row_n,
-        shift1_bit,
-        col_clamp,
-        stage_range,
-        ud_flip,
-        lr_flip,
-        bd,
-    );
-    true
+    incant!(
+        inv_col_pass(
+            kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range, ud_flip,
+            lr_flip, bd
+        ),
+        [v3, neon, scalar]
+    )
 }
 
 /// Vector ROW pass of `av1_inv_txfm2d_add` — 8 rows per lane batch (or, for
@@ -477,9 +309,6 @@ pub(crate) fn try_inv_row_pass(
         return false;
     }
     let _ = crate::dispatch::scalar_forced();
-    let Some(t) = X64V3Token::summon() else {
-        return false;
-    };
     // Gate-3 rows lever (the Phase-C follow-up): the audited DCT kernels on
     // i16 lanes — 16 rows per vector. Fires only at the bd8 row constants
     // (row clamp 16 AND every stage_range entry 16 — the exact
@@ -487,22 +316,32 @@ pub(crate) fn try_inv_row_pass(
     // i32) with full 16-lane row groups. The i16 pass sign-extend-stores into
     // the same row-major i32 `buf`, so every column pass (i16 DCT or i32
     // iadst/identity) reads byte-identical values.
+    //
+    // x86-64 only: `lowbd16`'s helpers are raw AVX2 pack/unpack/madd cross-lane
+    // ops with no magetypes expression and no NEON twin yet. On aarch64 this
+    // arm simply doesn't exist and the i32 pass below runs — same output, one
+    // lane batch instead of two.
+    #[cfg(target_arch = "x86_64")]
     if row_clamp == 16 && stage_range.iter().all(|&b| b == 16) && row_n % 16 == 0 {
-        if let Some(k16) = lowbd16::inv_kernel_i16(txfm_type_row) {
-            debug_assert_eq!(lowbd16::inv_kernel_i16_n(k16), col_n);
-            debug_assert!((0..=2).contains(&shift0_bit));
-            lowbd16::inv_row_pass_i16(t, k16, mod_input, buf, col_n, row_n, rect1, shift0_bit);
-            return true;
+        if let Some(t) = X64V3Token::summon() {
+            if let Some(k16) = lowbd16::inv_kernel_i16(txfm_type_row) {
+                debug_assert_eq!(lowbd16::inv_kernel_i16_n(k16), col_n);
+                debug_assert!((0..=2).contains(&shift0_bit));
+                lowbd16::inv_row_pass_i16(t, k16, mod_input, buf, col_n, row_n, rect1, shift0_bit);
+                return true;
+            }
         }
     }
     let Some(kernel) = inv_kernel(txfm_type_row) else {
         return false;
     };
     debug_assert_eq!(inv_kernel_n(kernel), col_n);
-    inv_row_pass(
-        t, kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range,
-    );
-    true
+    incant!(
+        inv_row_pass(
+            kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range
+        ),
+        [v3, neon, scalar]
+    )
 }
 
 /// The lane-batched inverse row pass (8 rows per iteration; a 4-tall
@@ -515,10 +354,10 @@ pub(crate) fn try_inv_row_pass(
 /// dominated the small transforms once they took the vector path (measured
 /// +108M Ir of memset on a 4K decode). The core is `#[rite]`, so each arm
 /// inlines it with its exactly-sized scratch.
-#[arcane]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_row_pass(
-    t: X64V3Token,
+    t: Token,
     kernel: Inv1d,
     mod_input: &[i32],
     buf: &mut [i32],
@@ -528,37 +367,58 @@ fn inv_row_pass(
     shift0_bit: i32,
     row_clamp: i8,
     stage_range: &[i8; 12],
-) {
+) -> bool {
     debug_assert!(col_n <= 64 && (row_n % 8 == 0 || row_n == 4));
     if col_n <= 8 {
         let mut tin = [i32x8::zero(t); 8];
         let mut tout = [i32x8::zero(t); 8];
-        inv_row_pass_core(
-            t, kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range,
+        incant!(inv_row_pass_core(kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range,
             &mut tin, &mut tout,
-        );
+        ), [v3, neon]);
     } else if col_n <= 16 {
         let mut tin = [i32x8::zero(t); 16];
         let mut tout = [i32x8::zero(t); 16];
-        inv_row_pass_core(
-            t, kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range,
+        incant!(inv_row_pass_core(kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range,
             &mut tin, &mut tout,
-        );
+        ), [v3, neon]);
     } else {
         let mut tin = [i32x8::zero(t); 64];
         let mut tout = [i32x8::zero(t); 64];
-        inv_row_pass_core(
-            t, kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range,
+        incant!(inv_row_pass_core(kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range,
             &mut tin, &mut tout,
-        );
+        ), [v3, neon]);
     }
+    true
+}
+
+/// The `incant!` fallback for [`inv_row_pass`] when NO vector tier is available —
+/// x86-64 without AVX2, or every token disabled by the `AOM_FORCE_SCALAR` pin.
+/// Declining here is what routes the caller back to its scalar loop, so the
+/// pin and the no-AVX2 path take the SAME `false` branch the pre-SIMD code
+/// took. There is deliberately no scalar *implementation* of the pass: the
+/// scalar twin is the driver's own per-column/row loop, which is the
+/// differential's reference.
+#[allow(clippy::too_many_arguments)]
+fn inv_row_pass_scalar(
+    _: ScalarToken,
+    _kernel: Inv1d,
+    _mod_input: &[i32],
+    _buf: &mut [i32],
+    _col_n: usize,
+    _row_n: usize,
+    _rect1: bool,
+    _shift0_bit: i32,
+    _row_clamp: i8,
+    _stage_range: &[i8; 12],
+) -> bool {
+    false
 }
 
 /// The row-pass body over caller-sized scratch (see [`inv_row_pass`]).
-#[rite]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_row_pass_core(
-    t: X64V3Token,
+    t: Token,
     kernel: Inv1d,
     mod_input: &[i32],
     buf: &mut [i32],
@@ -568,8 +428,8 @@ fn inv_row_pass_core(
     shift0_bit: i32,
     row_clamp: i8,
     stage_range: &[i8; 12],
-    tin: &mut [i32x8],
-    tout: &mut [i32x8],
+    tin: &mut [I32x8<Token>],
+    tout: &mut [I32x8<Token>],
 ) {
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
     let mut rg = 0usize;
@@ -589,7 +449,7 @@ fn inv_row_pass_core(
             }
             *ti = clampv(t, v, row_clamp); // the driver's clamp_buf(bd+8)
         }
-        run_inv1d(t, kernel, &tin[..col_n], &mut tout[..col_n], cos_bit, stage_range);
+        incant!(run_inv1d(kernel, &tin[..col_n], &mut tout[..col_n], cos_bit, stage_range), [v3, neon]);
         if shift0_bit > 0 {
             // round_shift_array(buf_row, -shift[0]); shift[0] in {0,-1,-2}.
             for to in tout[..col_n].iter_mut() {
@@ -641,25 +501,24 @@ pub(crate) fn try_fwd_col_pass(
         return false;
     }
     let _ = crate::dispatch::scalar_forced();
-    let Some(t) = X64V3Token::summon() else {
-        return false;
-    };
     let Some(kernel) = fwd_kernel(txfm_type_col) else {
         return false;
     };
     debug_assert_eq!(fwd_kernel_n(kernel), row_n); // col kernel spans the H points
-    fwd_col_pass(
-        t, kernel, input, buf, stride, col_n, row_n, shift0, shift1_bit, cos_bit_col, ud_flip,
-        lr_flip,
-    );
-    true
+    incant!(
+        fwd_col_pass(
+            kernel, input, buf, stride, col_n, row_n, shift0, shift1_bit, cos_bit_col, ud_flip,
+            lr_flip
+        ),
+        [v3, neon, scalar]
+    )
 }
 
 /// The lane-batched forward column pass body (8 columns per iteration).
-#[arcane]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn fwd_col_pass(
-    t: X64V3Token,
+    t: Token,
     kernel: Fwd1d,
     input: &[i16],
     buf: &mut [i32],
@@ -671,7 +530,7 @@ fn fwd_col_pass(
     cos_bit_col: i32,
     ud_flip: bool,
     lr_flip: bool,
-) {
+) -> bool {
     debug_assert!(row_n <= 64 && col_n % 8 == 0);
     let mut tin = [i32x8::zero(t); 64];
     let mut tout = [i32x8::zero(t); 64];
@@ -687,7 +546,7 @@ fn fwd_col_pass(
             }
             *ti = v;
         }
-        run_fwd1d(t, kernel, &tin[..row_n], &mut tout[..row_n], cos_bit_col, &sr);
+        incant!(run_fwd1d(kernel, &tin[..row_n], &mut tout[..row_n], cos_bit_col, &sr), [v3, neon]);
         for (r, to) in tout[..row_n].iter_mut().enumerate() {
             let v = if shift1_bit > 0 { rshiftv(t, *to, shift1_bit) } else { *to };
             // Scalar: buf[r*col_n + dst_c] = temp_out[r], dst_c lr-flipped.
@@ -700,6 +559,32 @@ fn fwd_col_pass(
             }
         }
     }
+    true
+}
+
+/// The `incant!` fallback for [`fwd_col_pass`] when NO vector tier is available —
+/// x86-64 without AVX2, or every token disabled by the `AOM_FORCE_SCALAR` pin.
+/// Declining here is what routes the caller back to its scalar loop, so the
+/// pin and the no-AVX2 path take the SAME `false` branch the pre-SIMD code
+/// took. There is deliberately no scalar *implementation* of the pass: the
+/// scalar twin is the driver's own per-column/row loop, which is the
+/// differential's reference.
+#[allow(clippy::too_many_arguments)]
+fn fwd_col_pass_scalar(
+    _: ScalarToken,
+    _kernel: Fwd1d,
+    _input: &[i16],
+    _buf: &mut [i32],
+    _stride: usize,
+    _col_n: usize,
+    _row_n: usize,
+    _shift0: i32,
+    _shift1_bit: i32,
+    _cos_bit_col: i32,
+    _ud_flip: bool,
+    _lr_flip: bool,
+) -> bool {
+    false
 }
 
 /// Vector ROW pass of `fwd_txfm2d_core` — 8 rows per lane batch. Strided
@@ -723,22 +608,21 @@ pub(crate) fn try_fwd_row_pass(
         return false;
     }
     let _ = crate::dispatch::scalar_forced();
-    let Some(t) = X64V3Token::summon() else {
-        return false;
-    };
     let Some(kernel) = fwd_kernel(txfm_type_row) else {
         return false;
     };
     debug_assert_eq!(fwd_kernel_n(kernel), col_n); // row kernel spans the W points
-    fwd_row_pass(t, kernel, buf, output, col_n, row_n, shift2_bit, cos_bit_row, rect1);
-    true
+    incant!(
+        fwd_row_pass(kernel, buf, output, col_n, row_n, shift2_bit, cos_bit_row, rect1),
+        [v3, neon, scalar]
+    )
 }
 
 /// The lane-batched forward row pass body (8 rows per iteration).
-#[arcane]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn fwd_row_pass(
-    t: X64V3Token,
+    t: Token,
     kernel: Fwd1d,
     buf: &[i32],
     output: &mut [i32],
@@ -747,7 +631,7 @@ fn fwd_row_pass(
     shift2_bit: i32,
     cos_bit_row: i32,
     rect1: bool,
-) {
+) -> bool {
     debug_assert!(col_n <= 64 && row_n % 8 == 0);
     let mut tin = [i32x8::zero(t); 64];
     let mut tout = [i32x8::zero(t); 64];
@@ -768,7 +652,7 @@ fn fwd_row_pass(
         for c in full..col_n {
             tin[c] = i32x8::from_array(t, core::array::from_fn(|k| buf[(rg + k) * col_n + c]));
         }
-        run_fwd1d(t, kernel, &tin[..col_n], &mut tout[..col_n], cos_bit_row, &sr);
+        incant!(run_fwd1d(kernel, &tin[..col_n], &mut tout[..col_n], cos_bit_row, &sr), [v3, neon]);
         for (c, to) in tout[..col_n].iter_mut().enumerate() {
             let mut v = *to;
             if shift2_bit > 0 {
@@ -783,15 +667,38 @@ fn fwd_row_pass(
             v.store((&mut output[base..base + 8]).try_into().unwrap());
         }
     }
+    true
+}
+
+/// The `incant!` fallback for [`fwd_row_pass`] when NO vector tier is available —
+/// x86-64 without AVX2, or every token disabled by the `AOM_FORCE_SCALAR` pin.
+/// Declining here is what routes the caller back to its scalar loop, so the
+/// pin and the no-AVX2 path take the SAME `false` branch the pre-SIMD code
+/// took. There is deliberately no scalar *implementation* of the pass: the
+/// scalar twin is the driver's own per-column/row loop, which is the
+/// differential's reference.
+#[allow(clippy::too_many_arguments)]
+fn fwd_row_pass_scalar(
+    _: ScalarToken,
+    _kernel: Fwd1d,
+    _buf: &[i32],
+    _output: &mut [i32],
+    _col_n: usize,
+    _row_n: usize,
+    _shift2_bit: i32,
+    _cos_bit_row: i32,
+    _rect1: bool,
+) -> bool {
+    false
 }
 
 /// The lane-batched column pass body — the scalar per-column loop of
 /// `av1_inv_txfm2d_add`, 8 columns per iteration (module docs carry the
 /// per-stage exactness argument).
-#[arcane]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_col_pass(
-    t: X64V3Token,
+    t: Token,
     kernel: Inv1d,
     buf: &[i32],
     output: &mut [u16],
@@ -804,38 +711,62 @@ fn inv_col_pass(
     ud_flip: bool,
     lr_flip: bool,
     bd: i32,
-) {
+) -> bool {
     debug_assert!(row_n <= 64 && (col_n % 8 == 0 || col_n == 4));
     if row_n <= 8 {
         let mut tin = [i32x8::zero(t); 8];
         let mut tout = [i32x8::zero(t); 8];
-        inv_col_pass_core(
-            t, kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
+        incant!(inv_col_pass_core(kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
             ud_flip, lr_flip, bd, &mut tin, &mut tout,
-        );
+        ), [v3, neon]);
     } else if row_n <= 16 {
         let mut tin = [i32x8::zero(t); 16];
         let mut tout = [i32x8::zero(t); 16];
-        inv_col_pass_core(
-            t, kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
+        incant!(inv_col_pass_core(kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
             ud_flip, lr_flip, bd, &mut tin, &mut tout,
-        );
+        ), [v3, neon]);
     } else {
         let mut tin = [i32x8::zero(t); 64];
         let mut tout = [i32x8::zero(t); 64];
-        inv_col_pass_core(
-            t, kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
+        incant!(inv_col_pass_core(kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
             ud_flip, lr_flip, bd, &mut tin, &mut tout,
-        );
+        ), [v3, neon]);
     }
+    true
+}
+
+/// The `incant!` fallback for [`inv_col_pass`] when NO vector tier is available —
+/// x86-64 without AVX2, or every token disabled by the `AOM_FORCE_SCALAR` pin.
+/// Declining here is what routes the caller back to its scalar loop, so the
+/// pin and the no-AVX2 path take the SAME `false` branch the pre-SIMD code
+/// took. There is deliberately no scalar *implementation* of the pass: the
+/// scalar twin is the driver's own per-column/row loop, which is the
+/// differential's reference.
+#[allow(clippy::too_many_arguments)]
+fn inv_col_pass_scalar(
+    _: ScalarToken,
+    _kernel: Inv1d,
+    _buf: &[i32],
+    _output: &mut [u16],
+    _stride: usize,
+    _col_n: usize,
+    _row_n: usize,
+    _shift1_bit: i32,
+    _col_clamp: i8,
+    _stage_range: &[i8; 12],
+    _ud_flip: bool,
+    _lr_flip: bool,
+    _bd: i32,
+) -> bool {
+    false
 }
 
 /// The column-pass body over caller-sized scratch (see [`inv_row_pass`] for
 /// the tiering rationale).
-#[rite]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_col_pass_core(
-    t: X64V3Token,
+    t: Token,
     kernel: Inv1d,
     buf: &[i32],
     output: &mut [u16],
@@ -848,8 +779,8 @@ fn inv_col_pass_core(
     ud_flip: bool,
     lr_flip: bool,
     bd: i32,
-    tin: &mut [i32x8],
-    tout: &mut [i32x8],
+    tin: &mut [I32x8<Token>],
+    tout: &mut [I32x8<Token>],
 ) {
     let zero = i32x8::zero(t);
     let pix_hi = i32x8::splat(t, (1i32 << bd) - 1);
@@ -880,7 +811,7 @@ fn inv_col_pass_core(
             *ti = clampv(t, v, col_clamp); // the driver's clamp_buf
         }
         let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
-        run_inv1d(t, kernel, &tin[..row_n], &mut tout[..row_n], cos_bit, stage_range);
+        incant!(run_inv1d(kernel, &tin[..row_n], &mut tout[..row_n], cos_bit, stage_range), [v3, neon]);
         // round_shift_array(to, -shift[1]) — shift[1] is always negative for
         // the inverse sizes, so this is the positive-bit arm.
         for to in tout[..row_n].iter_mut() {
@@ -943,37 +874,40 @@ pub(crate) fn try_inv_col_pass_u8(
         return false;
     }
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
-    let Some(t) = X64V3Token::summon() else {
-        return false;
-    };
     // Phase C: the audited DCT column kernels run on i16 lanes (16 columns per
     // vector). Preconditions are the bd8 structural constants — asserted, not
-    // assumed: every caller of the u8 entry passes exactly these.
-    if let Some(k16) = lowbd16::inv_kernel_i16(txfm_type_col) {
-        debug_assert_eq!(lowbd16::inv_kernel_i16_n(k16), row_n);
-        debug_assert!(stage_range.iter().all(|&b| b == 16));
-        if shift1_bit == 4 && col_clamp == 16 {
-            lowbd16::inv_col_pass_u8_i16(
-                t, k16, buf, output, stride, col_n, row_n, ud_flip, lr_flip,
-            );
-            return true;
+    // assumed: every caller of the u8 entry passes exactly these. x86-64 only
+    // (see `try_inv_row_pass`); aarch64 takes the i32 pass below.
+    #[cfg(target_arch = "x86_64")]
+    if let Some(t) = X64V3Token::summon() {
+        if let Some(k16) = lowbd16::inv_kernel_i16(txfm_type_col) {
+            debug_assert_eq!(lowbd16::inv_kernel_i16_n(k16), row_n);
+            debug_assert!(stage_range.iter().all(|&b| b == 16));
+            if shift1_bit == 4 && col_clamp == 16 {
+                lowbd16::inv_col_pass_u8_i16(
+                    t, k16, buf, output, stride, col_n, row_n, ud_flip, lr_flip,
+                );
+                return true;
+            }
         }
     }
     let Some(kernel) = inv_kernel(txfm_type_col) else {
         return false;
     };
     debug_assert_eq!(inv_kernel_n(kernel), row_n);
-    inv_col_pass_u8(
-        t, kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range, ud_flip,
-        lr_flip,
-    );
-    true
+    incant!(
+        inv_col_pass_u8(
+            kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range, ud_flip,
+            lr_flip
+        ),
+        [v3, neon, scalar]
+    )
 }
 
-#[arcane]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_col_pass_u8(
-    t: X64V3Token,
+    t: Token,
     kernel: Inv1d,
     buf: &[i32],
     output: &mut [u8],
@@ -985,36 +919,59 @@ fn inv_col_pass_u8(
     stage_range: &[i8; 12],
     ud_flip: bool,
     lr_flip: bool,
-) {
+) -> bool {
     debug_assert!(row_n <= 64 && (col_n % 8 == 0 || col_n == 4));
     if row_n <= 8 {
         let mut tin = [i32x8::zero(t); 8];
         let mut tout = [i32x8::zero(t); 8];
-        inv_col_pass_u8_core(
-            t, kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
+        incant!(inv_col_pass_u8_core(kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
             ud_flip, lr_flip, &mut tin, &mut tout,
-        );
+        ), [v3, neon]);
     } else if row_n <= 16 {
         let mut tin = [i32x8::zero(t); 16];
         let mut tout = [i32x8::zero(t); 16];
-        inv_col_pass_u8_core(
-            t, kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
+        incant!(inv_col_pass_u8_core(kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
             ud_flip, lr_flip, &mut tin, &mut tout,
-        );
+        ), [v3, neon]);
     } else {
         let mut tin = [i32x8::zero(t); 64];
         let mut tout = [i32x8::zero(t); 64];
-        inv_col_pass_u8_core(
-            t, kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
+        incant!(inv_col_pass_u8_core(kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
             ud_flip, lr_flip, &mut tin, &mut tout,
-        );
+        ), [v3, neon]);
     }
+    true
 }
 
-#[rite]
+/// The `incant!` fallback for [`inv_col_pass_u8`] when NO vector tier is available —
+/// x86-64 without AVX2, or every token disabled by the `AOM_FORCE_SCALAR` pin.
+/// Declining here is what routes the caller back to its scalar loop, so the
+/// pin and the no-AVX2 path take the SAME `false` branch the pre-SIMD code
+/// took. There is deliberately no scalar *implementation* of the pass: the
+/// scalar twin is the driver's own per-column/row loop, which is the
+/// differential's reference.
+#[allow(clippy::too_many_arguments)]
+fn inv_col_pass_u8_scalar(
+    _: ScalarToken,
+    _kernel: Inv1d,
+    _buf: &[i32],
+    _output: &mut [u8],
+    _stride: usize,
+    _col_n: usize,
+    _row_n: usize,
+    _shift1_bit: i32,
+    _col_clamp: i8,
+    _stage_range: &[i8; 12],
+    _ud_flip: bool,
+    _lr_flip: bool,
+) -> bool {
+    false
+}
+
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_col_pass_u8_core(
-    t: X64V3Token,
+    t: Token,
     kernel: Inv1d,
     buf: &[i32],
     output: &mut [u8],
@@ -1026,8 +983,8 @@ fn inv_col_pass_u8_core(
     stage_range: &[i8; 12],
     ud_flip: bool,
     lr_flip: bool,
-    tin: &mut [i32x8],
-    tout: &mut [i32x8],
+    tin: &mut [I32x8<Token>],
+    tout: &mut [I32x8<Token>],
 ) {
     let zero = i32x8::zero(t);
     let pix_hi = i32x8::splat(t, 255); // (1<<8)-1
@@ -1054,7 +1011,7 @@ fn inv_col_pass_u8_core(
             *ti = clampv(t, v, col_clamp);
         }
         let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
-        run_inv1d(t, kernel, &tin[..row_n], &mut tout[..row_n], cos_bit, stage_range);
+        incant!(run_inv1d(kernel, &tin[..row_n], &mut tout[..row_n], cos_bit, stage_range), [v3, neon]);
         for to in tout[..row_n].iter_mut() {
             *to = rshiftv(t, *to, shift1_bit);
         }
@@ -1109,74 +1066,74 @@ mod tests {
         name: &'static str,
         size: usize,
         scalar: ScalarKernel,
-        v3: K,
+        simd: K,
     }
 
     fn cases() -> Vec<Case> {
         use K::{F, I};
         vec![
-            Case { name: "idct4", size: 4, scalar: crate::transform::av1_idct4, v3: I(Inv1d::Dct4) },
-            Case { name: "idct8", size: 8, scalar: crate::transform::av1_idct8, v3: I(Inv1d::Dct8) },
-            Case { name: "idct16", size: 16, scalar: crate::transform::av1_idct16, v3: I(Inv1d::Dct16) },
-            Case { name: "idct32", size: 32, scalar: crate::transform::av1_idct32, v3: I(Inv1d::Dct32) },
-            Case { name: "idct64", size: 64, scalar: crate::transform::av1_idct64, v3: I(Inv1d::Dct64) },
-            Case { name: "iadst4", size: 4, scalar: crate::transform::av1_iadst4, v3: I(Inv1d::Adst4) },
-            Case { name: "iadst8", size: 8, scalar: crate::transform::av1_iadst8, v3: I(Inv1d::Adst8) },
-            Case { name: "iadst16", size: 16, scalar: crate::transform::av1_iadst16, v3: I(Inv1d::Adst16) },
-            Case { name: "iidentity4", size: 4, scalar: crate::transform::av1_iidentity4, v3: I(Inv1d::Idtx4) },
-            Case { name: "iidentity8", size: 8, scalar: crate::transform::av1_iidentity8, v3: I(Inv1d::Idtx8) },
+            Case { name: "idct4", size: 4, scalar: crate::transform::av1_idct4, simd: I(Inv1d::Dct4) },
+            Case { name: "idct8", size: 8, scalar: crate::transform::av1_idct8, simd: I(Inv1d::Dct8) },
+            Case { name: "idct16", size: 16, scalar: crate::transform::av1_idct16, simd: I(Inv1d::Dct16) },
+            Case { name: "idct32", size: 32, scalar: crate::transform::av1_idct32, simd: I(Inv1d::Dct32) },
+            Case { name: "idct64", size: 64, scalar: crate::transform::av1_idct64, simd: I(Inv1d::Dct64) },
+            Case { name: "iadst4", size: 4, scalar: crate::transform::av1_iadst4, simd: I(Inv1d::Adst4) },
+            Case { name: "iadst8", size: 8, scalar: crate::transform::av1_iadst8, simd: I(Inv1d::Adst8) },
+            Case { name: "iadst16", size: 16, scalar: crate::transform::av1_iadst16, simd: I(Inv1d::Adst16) },
+            Case { name: "iidentity4", size: 4, scalar: crate::transform::av1_iidentity4, simd: I(Inv1d::Idtx4) },
+            Case { name: "iidentity8", size: 8, scalar: crate::transform::av1_iidentity8, simd: I(Inv1d::Idtx8) },
             Case {
                 name: "iidentity16",
                 size: 16,
                 scalar: crate::transform::av1_iidentity16,
-                v3: I(Inv1d::Idtx16),
+                simd: I(Inv1d::Idtx16),
             },
             Case {
                 name: "iidentity32",
                 size: 32,
                 scalar: crate::transform::av1_iidentity32,
-                v3: I(Inv1d::Idtx32),
+                simd: I(Inv1d::Idtx32),
             },
-            Case { name: "fdct4", size: 4, scalar: crate::transform::av1_fdct4, v3: F(Fwd1d::Dct4) },
-            Case { name: "fdct8", size: 8, scalar: crate::transform::av1_fdct8, v3: F(Fwd1d::Dct8) },
-            Case { name: "fdct16", size: 16, scalar: crate::transform::av1_fdct16, v3: F(Fwd1d::Dct16) },
-            Case { name: "fdct32", size: 32, scalar: crate::transform::av1_fdct32, v3: F(Fwd1d::Dct32) },
-            Case { name: "fdct64", size: 64, scalar: crate::transform::av1_fdct64, v3: F(Fwd1d::Dct64) },
-            Case { name: "fadst4", size: 4, scalar: crate::transform::av1_fadst4, v3: F(Fwd1d::Adst4) },
-            Case { name: "fadst8", size: 8, scalar: crate::transform::av1_fadst8, v3: F(Fwd1d::Adst8) },
-            Case { name: "fadst16", size: 16, scalar: crate::transform::av1_fadst16, v3: F(Fwd1d::Adst16) },
-            Case { name: "fidentity4", size: 4, scalar: crate::transform::av1_fidentity4, v3: F(Fwd1d::Idtx4) },
-            Case { name: "fidentity8", size: 8, scalar: crate::transform::av1_fidentity8, v3: F(Fwd1d::Idtx8) },
+            Case { name: "fdct4", size: 4, scalar: crate::transform::av1_fdct4, simd: F(Fwd1d::Dct4) },
+            Case { name: "fdct8", size: 8, scalar: crate::transform::av1_fdct8, simd: F(Fwd1d::Dct8) },
+            Case { name: "fdct16", size: 16, scalar: crate::transform::av1_fdct16, simd: F(Fwd1d::Dct16) },
+            Case { name: "fdct32", size: 32, scalar: crate::transform::av1_fdct32, simd: F(Fwd1d::Dct32) },
+            Case { name: "fdct64", size: 64, scalar: crate::transform::av1_fdct64, simd: F(Fwd1d::Dct64) },
+            Case { name: "fadst4", size: 4, scalar: crate::transform::av1_fadst4, simd: F(Fwd1d::Adst4) },
+            Case { name: "fadst8", size: 8, scalar: crate::transform::av1_fadst8, simd: F(Fwd1d::Adst8) },
+            Case { name: "fadst16", size: 16, scalar: crate::transform::av1_fadst16, simd: F(Fwd1d::Adst16) },
+            Case { name: "fidentity4", size: 4, scalar: crate::transform::av1_fidentity4, simd: F(Fwd1d::Idtx4) },
+            Case { name: "fidentity8", size: 8, scalar: crate::transform::av1_fidentity8, simd: F(Fwd1d::Idtx8) },
             Case {
                 name: "fidentity16",
                 size: 16,
                 scalar: crate::transform::av1_fidentity16,
-                v3: F(Fwd1d::Idtx16),
+                simd: F(Fwd1d::Idtx16),
             },
             Case {
                 name: "fidentity32",
                 size: 32,
                 scalar: crate::transform::av1_fidentity32,
-                v3: F(Fwd1d::Idtx32),
+                simd: F(Fwd1d::Idtx32),
             },
         ]
     }
 
-    /// Run one lane batch through the selected v3 kernel (the test-side
-    /// arcane entry — kernels are `#[target_feature]` fns and cannot be
-    /// stored as plain fn pointers).
-    #[arcane]
-    fn run_v3(
-        t: X64V3Token,
+    /// Run one lane batch through the selected kernel at the CURRENT tier
+    /// (a `#[magetypes]` body, because the kernels are `#[target_feature]`
+    /// fns and cannot be stored as plain fn pointers).
+    #[magetypes(define(i32x8), v3, neon, -scalar)]
+    fn run_kernel(
+        t: Token,
         k: K,
-        input: &[i32x8],
-        out: &mut [i32x8],
+        input: &[I32x8<Token>],
+        out: &mut [I32x8<Token>],
         cos_bit: i32,
         stage_range: &[i8],
     ) {
         match k {
-            K::I(k) => run_inv1d(t, k, input, out, cos_bit, stage_range),
-            K::F(k) => run_fwd1d(t, k, input, out, cos_bit, stage_range),
+            K::I(k) => incant!(run_inv1d(k, input, out, cos_bit, stage_range), [v3, neon]),
+            K::F(k) => incant!(run_fwd1d(k, input, out, cos_bit, stage_range), [v3, neon]),
         }
     }
 
@@ -1197,10 +1154,12 @@ mod tests {
         }
     }
 
-    /// Run one 8-column batch through the v3 kernel and the scalar kernel
-    /// per column; assert every lane matches.
+    /// Run one 8-column batch through the vector kernel and the scalar kernel
+    /// per column; assert every lane matches. A tier body, so the whole
+    /// comparison runs at whatever tier the enclosing permutation selected.
+    #[magetypes(define(i32x8), v3, neon, -scalar)]
     fn assert_batch(
-        t: X64V3Token,
+        t: Token,
         case: &Case,
         cols: &[[i32; 8]], // cols[r][lane] — row-major lane batch
         cos_bit: i32,
@@ -1213,7 +1172,7 @@ mod tests {
             vin[r] = i32x8::from_array(t, *c);
         }
         let mut vout = vec![i32x8::zero(t); n];
-        run_v3(t, case.v3, &vin, &mut vout, cos_bit, stage_range);
+        incant!(run_kernel(case.simd, &vin, &mut vout, cos_bit, stage_range), [v3, neon]);
 
         let mut sin = vec![0i32; n];
         let mut sout = vec![0i32; n];
@@ -1235,17 +1194,39 @@ mod tests {
     }
 
     #[test]
-    fn inv1d_v3_bit_identical_to_scalar_at_every_tier() {
+    fn inv1d_simd_bit_identical_to_scalar_at_every_tier() {
         // Fire the AOM_FORCE_SCALAR pin (if set) BEFORE the permutation
         // harness — the harness then owns token state, so the v3 arm runs
         // in its enabled permutations in BOTH dispatch modes.
         let _ = crate::dispatch::scalar_forced();
-        let mut v3_ran = 0usize;
+        let mut simd_ran = 0usize;
         let report = for_each_token_permutation(CompileTimePolicy::Warn, |tier| {
-            let Some(t) = X64V3Token::summon() else {
-                return; // scalar-only permutation: nothing to compare
-            };
-            v3_ran += 1;
+            // `incant!` picks the live tier for THIS permutation; the scalar
+            // twin returns false, which is how a scalar-only permutation is
+            // counted rather than silently skipped. Gating on a named token
+            // instead (the pre-2026-07-25 shape) made every aarch64
+            // permutation look scalar, because `X64V3Token` is a stub there.
+            if incant!(sweep_all_cases(&tier.label), [v3, neon, scalar]) {
+                simd_ran += 1;
+            }
+        });
+        eprintln!("inv1d simd parity: {report}, vector permutations run: {simd_ran}");
+        assert!(
+            simd_ran >= 1,
+            "a vector tier must run at least once (AVX2 on x86-64 CI, NEON on aarch64); \
+             on aarch64 that needs `archmage/testable_dispatch` in dev-dependencies"
+        );
+        assert!(report.permutations_run >= 2);
+    }
+
+    /// Scalar-only permutation: there is no vector kernel to compare against.
+    fn sweep_all_cases_scalar(_: ScalarToken, _tier: &str) -> bool {
+        false
+    }
+
+    /// The whole case sweep at ONE tier. Returns true (a vector tier ran).
+    #[magetypes(define(i32x8), v3, neon, -scalar)]
+    fn sweep_all_cases(t: Token, tier: &str) -> bool {
             let mut rng = Rng(0x_7ab5_11fe_c0de_0001);
             // Driver stage_range values (opt_range 16/18/20) + the 1-D
             // harness's 17; the drivers pass INV_COS_BIT=12, sweep 10..=13.
@@ -1262,14 +1243,13 @@ mod tests {
                                 let cols: Vec<[i32; 8]> = (0..n)
                                     .map(|_| core::array::from_fn(|_| rng.bounded(bits)))
                                     .collect();
-                                assert_batch(
-                                    t,
+                                incant!(assert_batch(
                                     &case,
                                     &cols,
                                     cos_bit,
                                     &stage_range,
                                     &format!("[{tier}] rand b{bits} rep{rep}"),
-                                );
+                                ), [v3, neon]);
                             }
                             // (b) exact clamp-bound sign patterns — the
                             // half_btf |p0 + p1| maximizers: all +B, all -B,
@@ -1285,14 +1265,13 @@ mod tests {
                             for (pi, pat) in pats.iter().enumerate() {
                                 let cols: Vec<[i32; 8]> =
                                     (0..n).map(|r| core::array::from_fn(|l| pat(r, l))).collect();
-                                assert_batch(
-                                    t,
+                                incant!(assert_batch(
                                     &case,
                                     &cols,
                                     cos_bit,
                                     &stage_range,
                                     &format!("[{tier}] bound b{bits} pat{pi}"),
-                                );
+                                ), [v3, neon]);
                             }
                         }
                         // (c) FULL-i32 random (the lane ops are exact on the
@@ -1302,14 +1281,13 @@ mod tests {
                             let cols: Vec<[i32; 8]> = (0..n)
                                 .map(|_| core::array::from_fn(|_| rng.next() as i32))
                                 .collect();
-                            assert_batch(
-                                t,
+                            incant!(assert_batch(
                                 &case,
                                 &cols,
                                 cos_bit,
                                 &stage_range,
                                 &format!("[{tier}] full-i32 rep{rep}"),
-                            );
+                            ), [v3, neon]);
                         }
                         let mut cols = vec![[0i32; 8]; n];
                         cols[0] = [
@@ -1323,20 +1301,16 @@ mod tests {
                             i32::MAX - 1,
                         ];
                         cols[n - 1] = [i32::MAX, i32::MIN, 1, 0, -(1 << 19), 1 << 19, -2, 2];
-                        assert_batch(
-                            t,
+                        incant!(assert_batch(
                             &case,
                             &cols,
                             cos_bit,
                             &stage_range,
                             &format!("[{tier}] extremes+zero-cols"),
-                        );
+                        ), [v3, neon]);
                     }
                 }
             }
-        });
-        eprintln!("inv1d v3 parity: {report}, v3 permutations run: {v3_ran}");
-        assert!(v3_ran >= 1, "the v3 arm must run at least once (AVX2 CI)");
-        assert!(report.permutations_run >= 2);
+        true
     }
 }
