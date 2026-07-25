@@ -1,3 +1,23 @@
+## Gate-3 wall baseline post rows+find_dir — 4K ≈1.22×/1.19×; user 1.5× bar met at 4K (2026-07-25, decoder track)
+
+The bd8 peak-perf series is CLOSED OUT: the i16 ROW pass (9f49ebc3, the entry
+below) and the CDEF `cdef_find_dir` per-row slice-add restructure (ea61406f —
+1570 → 442 Ir/call, −71.8%; q32 whole-decode 2.067x → 2.032x; byte-identical,
+gated by `cdef_find_dir_matches_c`) both landed after 418/418 validation in
+default AND `AOM_FORCE_SCALAR` dispatch. The clean PEAK wall run
+(`benchmarks/gate3_peak_wall_2026-07-25.md`, two agreeing runs): **4K cq20
+≈1.22× / cq40 ≈1.19× C** (down from Phase-B 1.286×/1.250×) — the user-set
+≤1.5× acceptance bar is met at the 4K headline cells; 2K 1.66–1.9× and small
+cells up to ~2.4× still exceed it (entropy/filter-dominated — ranked remaining
+levers in `gate3_filters_2026-07-22.md`). Caveat recorded in the benchmark md:
+zenbench's resource gate flags ~97% of rounds on this cloud VM (both runs,
+idle or loaded) → N=4/group; the 4K cells stay quotable via long per-call
+times + cross-run agreement. Also this date: the 2026-07-23 "17 invalid
+AV1 streams" finding was REFUTED as a KB-13 harness bug (see the KB-13
+CLAUDE.md correction + `intra_tiebreak_deltas_2026-07-23.md` banner), the
+stale agent bookmarks/worktrees were all audited landed-or-superseded and
+deleted, and CONTEXT-HANDOFF.md was rewritten as the current project handoff.
+
 ## bd8 i16-lane inverse-transform ROW pass — DCT rows h>=16 narrowed on the shared try_inv_row_pass (2026-07-23, decoder track)
 
 The Phase-C follow-up lever: the five audited DCT kernels (idct4/8/16/32/64) now run the

@@ -1,33 +1,111 @@
-# Session handoff 2026-07-17 (quota exhausted mid-fleet)
+# zenav1-aom — project handoff (2026-07-25)
 
-Origin verified through `72df1c4` (speeds 0-7 all 64/64; KB-4/5/6/7, QM, CDEF, LR-syntax closed; see PARITY.md + CLAUDE.md). Logs rescued: `/root/aom-rs-session-logs/2026-07-17-rescue/`.
+Current, verified state of the port for a new developer and/or a new machine.
+Everything below was checked against `origin/main` on 2026-07-25; where a claim
+has a proof artifact, it is cited. Older handoff snapshots are superseded by
+this file. Deep technical state lives in [`STATUS.md`](STATUS.md) (module log,
+newest first), [`PARITY.md`](PARITY.md) (stills-parity ledger),
+[`CLAUDE.md`](CLAUDE.md) (coordination rules + the Known Bugs ledger), and
+[`PORTING.md`](PORTING.md) (Rust module ↔ upstream C map).
 
-**Live agent worktrees with COMMITTED WIP (resume by reading branch + continuing; all under `.claude/worktrees/`):**
-- `agent-a907d1a3…` LR search: 5-commit stack 96d3464..41894f2 (8/8 byte-identical gate) suite-gated to push; then chunk 5 (speed arms, mono/444/bd12).
-- `agent-a27658295…` speed-8+9 (nonrd; KB-12 prep-facts in CLAUDE.md KB-11).
-- `agent-ad024881…` transform-SIMD (design handoff in STATUS.md a56744f).
-- `agent-adb54d0b…` toggle sweep C8-C11; `agent-a517b225…` screen-content palette+intrabc; `agent-a0734761…` tune=IQ on Opus (adopts `agent-a6595a97…` WIP; patch at jobs tmp/tune_wip.patch).
+## Fresh-box setup
 
-**Standing rules:** frugal = full invested scope per agent, ONE full suite at the end (memory: aom-rs-frugal-agents). New agents → Opus. Everything OFF-by-default; envelope stays byte-exact. Wall-clock Gate-3 baseline still owed on a quiet box (`just bench-gate3`).
+```sh
+git clone --recurse-submodules https://github.com/imazen/zenav1-aom.git
+cd zenav1-aom
+cargo test          # builds the C oracle once (needs cmake, nasm, a C compiler), then the differential suite
+python3 xtask/conformance.py --fetch --scope intra   # decode-conformance vectors (gitignored)
+```
 
-## Final salvage state (spend-limit shutdown)
-All agent WIP is COMMITTED on worktree branches (coordinator salvage pass ran; `git for-each-ref 'refs/heads/worktree-agent-*'`). Key branches:
-- `worktree-agent-a907d1a3…` @ a3bee0d — LR complete: validated 5-commit stack (8/8 byte-identical, push-ready) + chunk-5 arms committed-unvalidated + HANDOFF-LR.md.
-- `worktree-agent-a517b225…` @ c99db91 — screen-content palette+intrabc WIP.
-- `worktree-agent-ad024881…` — transform-SIMD WIP (salvage-committed mid-final-act).
-- `worktree-agent-a6595a97…` @ 5442f88 + `agent-a0734761…` @ 9f6dad0 — tune=IQ (original + Opus successor).
-- `worktree-agent-a27658295…` @ 72df1c4 — speed-8/9: no code yet; KB-12 prep-facts in CLAUDE.md KB-11.
-FIRST ACTION next session: push LR's validated stack (its HANDOFF-LR.md has the recipe), then work the HANDOFF-*.md docs per worktree.
+- The `upstream/` submodule (the pinned libaom v3.14.1 C oracle, `03087864`)
+  resolves from **github.com/imazen/libaom-mirror** — a pure daily-updated
+  mirror of `aomedia.googlesource.com/aom`. The mirror syncs via this repo's
+  `.github/workflows/mirror-libaom.yml` (05:23 UTC cron; pushes over a
+  repo-scoped deploy key stored as the `LIBAOM_MIRROR_SSH_KEY` secret).
+- `just test` / `just test-scalar` / `just test-fast` / `just bench-gate3` wrap
+  the common flows. `AOM_FORCE_SCALAR=1` forces every SIMD kernel through its
+  scalar twin — the full suite must pass in BOTH dispatch modes.
+- **Box-local dependency (the one thing not in git):** the Gate-3 wall-bench
+  vectors `conformance/data/mosaic-{2k,4k}-cq{20,40}.ivf` are gitignored.
+  Regeneration: `benchmarks/mk_mosaic_y4m.rs` tiles 25 gb82 576×576 lossless
+  photos into a y4m (sources on the 2026-07 dev box at `/root/mosaic-sources/`;
+  the y4m was verified byte-identical to the pre-wipe original), then encode
+  with the aomenc settings recorded in `benchmarks/gate3_*.meta`. Without them
+  the bench's mosaic cells skip via `from_vector_opt` and the conformance cells
+  still run. If you are migrating boxes: copy `/root/mosaic-sources/` (or the
+  four `.ivf`s) across, and back them up off-box.
 
-## ALL DUMPS COMPLETE (2026-07-17) — every family has committed code + a HANDOFF doc
-Branch tips (all under refs/heads/worktree-agent-*, recoverable from the shared store; NONE pushed except LR-ready):
-| Family | Branch tip | Code state | Handoff doc |
-|---|---|---|---|
-| LR search | a3bee0d | 5-commit stack 8/8 byte-identical PUSH-READY + chunk-5 arms unvalidated | HANDOFF-LR.md |
-| Toggles C8-C11 | 27a6705 | 22/30 knobs, 20 EXACT (60/60 cells), +1 real disable_cdf_update bug fixed; needs 1 suite→push | HANDOFF-TOGGLES.md |
-| tune=IQ/SSIM2 | a04104d | 6-piece WIP, 6 conflicts resolved, OFF-by-default; NEVER COMPILED | HANDOFF-TUNE.md |
-| Screen palette+intrabc | 70d1323 | salvaged WIP | HANDOFF-SCREEN.md |
-| Transform-SIMD | ccf030b | salvaged WIP | HANDOFF-TXSIMD.md |
-| Speed-8/9 nonrd | b5b8f7d | nonrd_pickmode.rs +880 (estimate arm), walk + pack wiring; NEVER COMPILED — 2 known blockers: pack.rs Option type-err L1003-1009 + nonrd_use_partition_real undispatched; nonrd KEY chroma = Y-only+uv-DC (resolved) | HANDOFF-SPEED89.md |
+## Where the four gates stand
 
-RESUME ORDER next session (highest ROI first): (1) push LR's validated stack (recipe in HANDOFF-LR.md — it's proven 8/8). (2) toggles: one `cargo test --workspace` → rebase → push (20 EXACT ready). (3) each remaining family: read its HANDOFF-*.md, fix compile blockers, validate, land. All new/successor agents → Opus (Fable 5 is spend-capped). Frugal = full invested scope, one suite at end (memory aom-rs-frugal-agents).
+- **Gate 1 — decoder byte-identity: intra scope DONE.** Bit-identical to C
+  across the CI-wired intra conformance corpus (byte-identity + golden MD5),
+  incl. q62/q63, superres, SB128, multi-tile, film grain. Inter-frame decode is
+  in progress through a single-reference feature ladder (concurrent track).
+- **Gate 2 — encoder byte-identity: DONE for ALLINTRA across --cpu-used 0-9**
+  on the synthetic grids, and on real conformance-decoded content at speed 0
+  (KB-6, 30/30) plus 45/60 at speeds 1-4 (KB-13). Non-default stills knobs
+  (QM, CDEF search, LR search, SB128, multi-tile, film grain, lossless,
+  10/12-bit, tune=IQ/SSIMULACRA2, deltaq modes, toggles) are byte-exact —
+  see PARITY.md section A. Open cells are pinned by self-promoting gates
+  (a fix flips the gate red → promote the cell; nothing can silently drift).
+- **Gate 3 — performance: the user-set ≤1.5× bar is met at the 4K headline
+  cells** — 4K decode wall ≈1.22× C (cq20) / ≈1.19× (cq40) after the bd8 lowbd
+  u8 pipeline, the i16 transform column+row narrowing, and the
+  deblock/wiener/CDEF filter work. 2K and small-frame cells still exceed the
+  bar (1.66–1.9× at 2K, up to ~2.4× on tiny/entropy-dominated cells). See
+  `benchmarks/gate3_peak_wall_2026-07-25.md` for the committed run + caveats,
+  the `bd8_*`/`gate3_*` series for per-lever Ir attribution, and
+  `benchmarks/gate3_filters_2026-07-22.md` for the ranked remaining levers.
+- **Gate 4 — coverage/integration:** `coverage-audit/COVERAGE.md` is the gap
+  matrix; the zenavif integration contract is specced in CLAUDE.md ("Zen codec
+  cross-cutting compliance") — DecodeError/limits/stop/alloc landed, probe +
+  estimate still open there.
+
+## Live tracks (each has its own docs; concurrent sessions may be active)
+
+- **Inter decode + encode** ("THE REST"): INTER-ROADMAP.md,
+  INTER-ENCODE-ROADMAP.md, INTER-FEATURES-PLAN.md, INTER_DECODE_ENVELOPE.md,
+  INTER-CHUNK{1,2}-HANDOFF.md. Encoder is at the single-ref translational
+  P-frame skeleton stage (KB-16 in STATUS).
+- **KB-15 intrabc coeff arm** (screen content): CLAUDE.md KB-15 — six roots
+  fixed, witness pinned at first-diff 1120 (an mi(40,28) partition near-tie).
+- **Decoder robustness/fuzz**: fuzz harness landed, campaign notes in STATUS;
+  keep the no-panic property as features land.
+- **Encoder near-tie residuals**: 8× 196² cq12/cq32 + 7 interior (KB-13),
+  4 speed-8 diag estimate-arm cells (KB-12), noise-cq63 speeds 6/7 (KB-10/11),
+  2 palette 128² (KB-P29), 1 toggle cell (HANDOFF-TOGGLES.md holds its
+  localization notes). All pinned self-promoting; the sibling-C RD-dump method
+  (KB-3/KB-7) is the standard close.
+
+## Conventions that keep multi-agent work safe here
+
+- jj (colocated) on `main` only; claim the repo with a `.workongoing` marker
+  before ANY work; push via `jj bookmark set main -r @ && jj git push
+  --bookmark main`; verify with `git merge-base --is-ancestor <sha> origin/main`.
+  **Never** `jj git push --change` (orphans work off-branch).
+- `jj status` ALWAYS shows `D conformance/data` (a tracked self-referential
+  symlink over the gitignored vector dir). Never commit that deletion — commit
+  with explicit per-file `git add <paths>` or scoped jj commands.
+- Differential-first: every kernel lands behind a diff test against the REAL
+  exported C function (`crates/aom-sys-ref` shims); e2e byte-gates pin whole
+  configurations; open divergences are pinned ASSERTED-PRESENT so fixes
+  self-promote. Never weaken a gate.
+- The C oracle build is deterministic single-threaded
+  (`reference/BUILD_CONFIG.md`); `reference/libaom/` is a gitignored working
+  copy — the tracked truth is the `upstream/` submodule.
+
+## Recent history you might otherwise re-derive (2026-07-23 → 07-25)
+
+- The "17 invalid AV1 streams" finding from
+  `benchmarks/intra_tiebreak_deltas_2026-07-23.md` was **refuted**: a KB-13
+  harness bug (floor(mi/16) SB walk + unpadded source dropped the partial edge
+  SB). Fixed in `c08a4c1`; the encoder was correct; 196² cq63 promoted. The
+  writeup carries a correction banner — trust the banner, not the old headline.
+- Inherited-C hygiene: upstream LICENSE/PATENTS live in `upstream-notices/`;
+  the only tracked `.c` files outside the submodule are our own oracle shims.
+- bd8 peak-perf series landed: Phase A/B/C (u8 planes → u8 kernels → i16
+  columns), then `9f49ebc3` (i16 rows) and `ea61406f` (CDEF find_dir), each
+  validated 418/418 in both dispatch modes before push.
+- All historical agent worktrees/bookmarks were audited landed-or-superseded
+  and deleted on 2026-07-24/25; there is NO stranded WIP. If you find a
+  `worktree-*` bookmark in the future it is new work, not archaeology.

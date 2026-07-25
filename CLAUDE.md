@@ -13,7 +13,12 @@ transcribed oracles can carry shared bugs).
 - **Gate 1 — Decoder:** bit-identical to C across the AV1 conformance corpus (intra scope
   wired in CI: `xtask/conformance.py --fetch --scope intra`; gate = byte-identity + golden MD5).
 - **Gate 2 — Encoder:** bitstream bit-identical for every `--cpu-used 0..9`.
-- **Gate 3 — Performance:** ≤ 1.20× C.
+- **Gate 3 — Performance:** user-set acceptance bar ≤ 1.5× C (2026-07-20 directive).
+  **Met at the 4K headline cells** (≈1.22× cq20 / ≈1.19× cq40 wall after the bd8 lowbd +
+  i16-rows + CDEF find_dir landings); 2K and small-frame cells still exceed it
+  (1.66–1.9× at 2K, up to ~2.4× on tiny/entropy-dominated cells) — see
+  `benchmarks/gate3_peak_wall_2026-07-25.md` for the committed run, caveats, and the
+  ranked remaining levers. The original ≤ 1.20× figure is retained as the stretch target.
 - **Gate 4 — Coverage checklist** (+ a zenavif integration gate).
 
 Primary configuration: ALLINTRA (usage=2), speed-0 KEY frame. **Single-frame (KEY-frame)

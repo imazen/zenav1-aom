@@ -1,0 +1,8 @@
+command: cargo bench -p zenav1-aom-bench --bench gate3 -- --group=dec   (x2 runs)
+commit: ea61406f249d (origin/main tip at measurement; includes 9f49ebc3 i16-rows)
+host: dev-32gb (16 threads, cloud VM "dev-32gb"); runs 2026-07-25 ~00:44 and ~01:04 UTC
+inputs: conformance corpus (xtask/conformance.py --scope intra) + gitignored mosaic-{2k,4k}-cq{20,40}.ivf
+  (regeneration: benchmarks/mk_mosaic_y4m.rs over /root/mosaic-sources gb82 576x576 tiles + aomenc; see gate3_*.meta provenance)
+caveat: zenbench resource gate flagged ~97% of rounds noisy on this VM (both runs) -> N=4/group;
+  cross-run agreement + long 4K per-call times make the 4K cells quotable; small cells indicative only.
+raw logs (ephemeral): /root/.claude/jobs/a919b472/tmp/gate3_peak_wall{,2}.log

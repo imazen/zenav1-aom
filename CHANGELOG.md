@@ -62,6 +62,33 @@
 
 ### Added
 
+- **bd8 decode: i16-lane inverse-transform ROW pass** — the five audited DCT
+  kernels (idct4/8/16/32/64) run the row pass on `i16x16` lanes for every bd8
+  transform with `row_n % 16 == 0`, byte-identical to the scalar port (same
+  audited-domain design as the Phase-C columns; iadst/identity + short rows
+  stay i32 by audit/design). Measured: narrowed row subset −45.4% Ir, whole
+  4K decode −1.26% (cq20) / −1.71% (cq40); see
+  `benchmarks/bd8_i16_rows_2026-07-23.md`. Validated 418/418 in default AND
+  `AOM_FORCE_SCALAR` dispatch before landing. (9f49ebc)
+- **CDEF `cdef_find_dir` per-row slice-add restructure** — the per-pixel
+  8-direction scattered adds regrouped into per-row contiguous slice adds
+  (byte-identical: wrapping adds commute; gated by the real-C
+  `cdef_find_dir_matches_c` differential). Measured: 1570 → 442 Ir/call
+  (−71.8%), q32 whole-decode 2.067× → 2.032×; see
+  `benchmarks/gate3_filters_2026-07-22.md` fix 3. (ea61406)
+- **Gate-3 decode wall baseline committed** — 4K stills decode ≈1.22× C (cq20)
+  / ≈1.19× (cq40) after the full bd8 peak-perf series; the ≤1.5× acceptance
+  bar is met at the 4K headline cells (2K/small cells 1.66–2.4×, levers
+  ranked). Two agreeing runs + measurement caveats:
+  `benchmarks/gate3_peak_wall_2026-07-25.{md,meta}`.
+- **`CONTEXT-HANDOFF.md` rewritten as the current project handoff** (fresh-box
+  setup incl. the mirror-backed submodule and mosaic-vector regeneration, the
+  four gates' verified state, live tracks, open pinned cells, jj/marker
+  conventions). Removed the consumed `HANDOFF-SCREEN.md` / `HANDOFF-TXSIMD.md`
+  (their content lives in CLAUDE.md KB-15/KB-P29 and the landed
+  `transform/simd` + STATUS entries; `HANDOFF-TOGGLES.md` stays — it holds the
+  live localization notes for the one open toggle cell).
+
 - **bd8 decode Phase C: i16-lane inverse-transform column pass** — the u8
   column pass runs idct4/8/16/32/64 on `i16x16` lanes (16 columns per AVX2
   vector; two-domain design keeps the unclamped butterfly transients in exact
