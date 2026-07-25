@@ -78,11 +78,19 @@ fn main() {
     println!("cargo:rustc-link-lib=static=aom_shim");
     println!("cargo:rustc-link-search=native={}", build_dir.display());
     println!("cargo:rustc-link-lib=static=aom");
-    // libaom is C, but the archive is linked by CXX; pull in libstdc++ + libm
-    // + pthread in case any TU needs them.
-    println!("cargo:rustc-link-lib=dylib=stdc++");
-    println!("cargo:rustc-link-lib=dylib=m");
-    println!("cargo:rustc-link-lib=dylib=pthread");
+    // libaom is C, but the archive is linked by CXX; pull in the C++ runtime +
+    // libm + pthread in case any TU needs them. The C++ runtime's NAME is
+    // platform-specific: Apple ships libc++ (there is no libstdc++ to link, and
+    // asking for it fails the link outright with "library 'stdc++' not found").
+    // On Apple targets libm and libpthread are both part of libSystem, which is
+    // always linked, so naming them is unnecessary there.
+    if cfg!(target_vendor = "apple") {
+        println!("cargo:rustc-link-lib=dylib=c++");
+    } else {
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+        println!("cargo:rustc-link-lib=dylib=m");
+        println!("cargo:rustc-link-lib=dylib=pthread");
+    }
 
     // Re-run when the pinned submodule commit changes (best-effort).
     if let Some(head) = submodule_head_file(&upstream) {

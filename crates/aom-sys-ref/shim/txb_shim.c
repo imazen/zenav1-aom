@@ -492,7 +492,13 @@ int shim_coeff_cost_eob(int ci, int abs_qc, int sign, int coeff_ctx,
                         const int *lps, int bhl, int tx_class) {
   LV_MAP_COEFF_COST cc;
   memset(&cc, 0, sizeof(cc));
-  tc_build(&cc, base_eob, cc.base_cost /*unused*/, dc_sign, lps);
+  /* The three memcpys below already do everything tc_build() would do here
+     (base_eob_cost / dc_sign_cost / lps_cost); its fourth copy was
+     `memcpy(cc.base_cost, cc.base_cost, ...)` — a self-copy of the
+     just-zeroed, unused base_cost, i.e. a no-op, and passing the 2-D
+     `int[42][8]` as `const int *` is a hard error on modern clang (it broke
+     the macOS/aarch64 build outright). Dropping the redundant call is
+     behaviour-identical and also removes the self-memcpy, which is UB. */
   memcpy(cc.base_eob_cost, base_eob, sizeof(cc.base_eob_cost));
   memcpy(cc.dc_sign_cost, dc_sign, sizeof(cc.dc_sign_cost));
   memcpy(cc.lps_cost, lps, sizeof(cc.lps_cost));

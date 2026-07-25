@@ -139,11 +139,28 @@ case 20:return aom_sub_pixel_variance128x64_c(a,as,xo,yo,b,bs,sse);
 case 21:return aom_sub_pixel_variance128x128_c(a,as,xo,yo,b,bs,sse);
 default:return 0;}}
 
-/* Production dispatch (post-rtcd -> AVX2/etc.), NOT the _c reference. */
+/* Production dispatch (post-rtcd -> AVX2/NEON/etc.), NOT the _c reference.
+   The x86-64 arm names aom_sad*_avx2 directly, as before. Off x86-64 that
+   symbol does not exist at all (it made the aarch64 link fail with "Undefined
+   symbols for architecture arm64: _aom_sad64x64_avx2"), so those targets go
+   through libaom's own RTCD FUNCTION POINTER — which is what "production
+   dispatch" means anyway, and on aarch64 resolves to neon or neon_dotprod
+   according to the running CPU. The pointer is NULL until aom_dsp_rtcd() has
+   run; the Rust wrapper (ref::prod_sad) already calls ref_init() first, the
+   same contract the other RTCD-pointer shims rely on. */
+#if defined(__x86_64__) || defined(_M_X64)
 unsigned int aom_sad64x64_avx2(const uint8_t*,int,const uint8_t*,int);
 unsigned int aom_sad128x128_avx2(const uint8_t*,int,const uint8_t*,int);
-unsigned int shim_sad_prod64(const uint8_t*s,int ss,const uint8_t*r,int rs){return aom_sad64x64_avx2(s,ss,r,rs);}
-unsigned int shim_sad_prod128(const uint8_t*s,int ss,const uint8_t*r,int rs){return aom_sad128x128_avx2(s,ss,r,rs);}
+#define SHIM_SAD64  aom_sad64x64_avx2
+#define SHIM_SAD128 aom_sad128x128_avx2
+#else
+extern unsigned int (*aom_sad64x64)(const uint8_t*,int,const uint8_t*,int);
+extern unsigned int (*aom_sad128x128)(const uint8_t*,int,const uint8_t*,int);
+#define SHIM_SAD64  aom_sad64x64
+#define SHIM_SAD128 aom_sad128x128
+#endif
+unsigned int shim_sad_prod64(const uint8_t*s,int ss,const uint8_t*r,int rs){return SHIM_SAD64(s,ss,r,rs);}
+unsigned int shim_sad_prod128(const uint8_t*s,int ss,const uint8_t*r,int rs){return SHIM_SAD128(s,ss,r,rs);}
 
 /* avg SAD (compound prediction motion search); libaom compiles only the
    17 non-4-side sizes in this config */

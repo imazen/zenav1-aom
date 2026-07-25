@@ -20,9 +20,25 @@
 #include "av1/encoder/intra_mode_search_utils.h"
 #define HOG_BINS 32
 
+/* The "explicitly the widest SIMD variant" arm. Which symbol that IS is
+ * per-architecture, and libaom's generated RTCD only declares the ones its
+ * target has: on x86-64 `av1_nn_predict_avx2` exists (and is what an
+ * AVX2-capable reference box dispatches to); on aarch64 there is no `_avx2` at
+ * all — av1_rtcd.h declares `av1_nn_predict_neon` and `#define`s
+ * `av1_nn_predict` straight to it. Naming `_avx2` unconditionally is what broke
+ * the aarch64 build of this shim ("call to undeclared function
+ * 'av1_nn_predict_avx2'"). Each arm below names the SIMD variant that actually
+ * exists on its target, so the harness's "widest SIMD agrees with dispatched"
+ * check stays meaningful everywhere instead of being x86-only. */
 void shim_hog_nn_predict(const float *hist, int reduce_prec, float *scores) {
-  av1_nn_predict_avx2(hist, &av1_intra_hog_model_nnconfig, reduce_prec,
-                      scores);
+#if defined(__x86_64__) || defined(_M_X64)
+  av1_nn_predict_avx2(hist, &av1_intra_hog_model_nnconfig, reduce_prec, scores);
+#elif defined(__aarch64__) || defined(_M_ARM64)
+  av1_nn_predict_neon(hist, &av1_intra_hog_model_nnconfig, reduce_prec, scores);
+#else
+  /* No SIMD variant on this target — the scalar reference IS the widest. */
+  av1_nn_predict_c(hist, &av1_intra_hog_model_nnconfig, reduce_prec, scores);
+#endif
 }
 
 void shim_hog_nn_predict_dispatched(const float *hist, int reduce_prec,
@@ -72,7 +88,9 @@ void shim_prune_intra_mode_with_hog_y(const uint16_t *src, int src_off,
   }
 
   float scores[DIRECTIONAL_MODES] = { 0.0f };
-  av1_nn_predict_avx2(hog, &av1_intra_hog_model_nnconfig, 1, scores);
+  /* Same per-architecture SIMD-variant selection as shim_hog_nn_predict (see
+     the note there); `reduce_prec = 1` is what the real caller passes. */
+  shim_hog_nn_predict(hog, 1, scores);
   for (int mode = V_PRED; mode <= D67_PRED; mode++) {
     if (scores[mode - V_PRED] <= th) {
       mask[mode] = 1;
