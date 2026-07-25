@@ -48,6 +48,18 @@ python3 xtask/conformance.py --fetch --scope intra   # decode-conformance vector
   10/12-bit, tune=IQ/SSIMULACRA2, deltaq modes, toggles) are byte-exact —
   see PARITY.md section A. Open cells are pinned by self-promoting gates
   (a fix flips the gate red → promote the cell; nothing can silently drift).
+- **aarch64 (added 2026-07-25):** the transform vector path now runs on ARM —
+  one `#[magetypes(v3, neon, -scalar)]` body per kernel, the whole
+  architecture-dependent surface in `transform/simd/prims.rs`. 30 of 34
+  transform bench cells improved 18–66% on an Apple M4 Pro
+  (`benchmarks/dsp_neon_transform_2026-07-25.md`). Two things to know before
+  working here: the full suite on ARM is 755/770, and the 15 failures are the
+  PRE-EXISTING float differentials in `aom-encode` (CLAUDE.md KB-ARM-FLOAT, not
+  yours); and `AOM_FORCE_SCALAR=1` is a no-op for the NEON tier outside test
+  builds, so never read a pinned/unpinned bench pair as scalar-vs-SIMD on ARM.
+  When you touch anything under `transform/simd`, check BOTH targets
+  (`cargo check --target x86_64-apple-darwin` catches tier-list errors the host
+  build cannot).
 - **Gate 3 — performance: the user-set ≤1.5× bar is met at the 4K headline
   cells** — 4K decode wall ≈1.22× C (cq20) / ≈1.19× (cq40) after the bd8 lowbd
   u8 pipeline, the i16 transform column+row narrowing, and the

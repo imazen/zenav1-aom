@@ -1,3 +1,79 @@
+## Transform SIMD runs on aarch64 — one magetypes body per kernel, NEON tier live (2026-07-25, ARM track)
+
+The transform vector path had **never run on ARM**. Every kernel and pass driver
+was `#[rite]`/`#[arcane]` over `X64V3Token`, `#[arcane]` cfg's its output to
+`target_arch = "x86_64"`, and the 2-D drivers' SIMD arms were `#[cfg(x86_64)]`
+too — so on aarch64 the whole `transform/simd` module was dead code and the
+scalar per-column/per-row driver loops ran. Every earlier entry's "NEON tier
+exists but is unexercised (the perf gate box is x86)" is now resolved.
+
+**Shape.** Every kernel and every pass driver is ONE
+`#[magetypes(define(i32x8), v3, neon, -scalar)]` body; the macro emits the
+per-tier variants, `Token`/`i32x8` substitute per tier, `incant!` resolves each
+call to the tier-matching callee at compile time. Nothing in the module is
+written twice per architecture, and the ~4,200 generated lines of 1-D kernels
+changed only in their attribute + signature (`transpile_txfm1d.py --lanes`
+emits the new form). The WHOLE architecture-dependent surface is the new
+`transform/simd/prims.rs`: the ops the generic magetypes API cannot express —
+integer widening (i32 → i64; verified absent at magetypes 0.9.28, whose
+`generic::cross_width` raising/lowering is f32-only) and cross-lane permutes —
+as per-tier `#[rite]` variants under one cfg-selected name.
+
+**Traps this cost, worth not re-learning:**
+- `-scalar` in the tier list is load-bearing. Without it the macro keeps its
+  default scalar fallback, whose variant calls the vector-token `prims` helpers
+  → 656 type errors. The scalar twin is the transcribed port, which is exactly
+  what the differentials compare against.
+- `define(i32x8)` aliases the type inside each variant's BODY only; signatures
+  must spell `I32x8<Token>`.
+- Nested `incant!`s need an explicit `[v3, neon]`. The default tier list looks
+  for a `_v4` variant these families do not have — and that only shows up on
+  x86-64, i.e. it was caught by `cargo check --target x86_64-apple-darwin` from
+  the ARM box, not by the host build. **Check both targets.**
+
+**Parity** (`aarch64-apple-darwin`, Apple M4 Pro): the in-module SIMD-vs-scalar
+differential runs **25 permutations, 24 with a vector tier live** — it was
+VACUOUS on ARM before (the closure gated on `X64V3Token`, a stub off x86-64);
+`txfm2d_simd_perm_diff` `simd_perms=24 scalar_perms=1`; the C-oracle transform
+differentials green, so C == scalar == every SIMD tier; full `aom-dsp` suite
+352/352 in BOTH dispatch modes. Workspace 755/770 — the 15 failures are the
+pre-existing aarch64 float-parity failures in aom-encode (KB-ARM-FLOAT), whose
+failure set is byte-identical at clean `4b92e2b`.
+
+**Measured** (`benchmarks/dsp_neon_transform_2026-07-25.{md,tsv,meta}`, port-only
+`dsp_kernels` bench, before = `4b92e2b`): **30 of 34 transform cells improved
+18–66%**; inverse transform (the decode hot path) −58% to −66% at every size
+from 8x8 up, in both the bd8/u8 and 10-bit entries; forward −25% to −53%.
+
+**The 4-wide cells produced a gate.** The first pass regressed
+`inv_txfm_u8::04x04_adst` +26.6% and `fwd_txfm::04x16_dct` +9.8% — a 4-wide
+vectorized dimension runs ONE half-empty lane batch and degrades the strided
+side to per-lane gather/scatter, and on aarch64 that has less to beat because
+`neon` is baseline so LLVM auto-vectorizes the scalar loop already. Two arms,
+two different answers, both measured:
+- **Half batches are repaid by a bigger kernel** → `half_batch_pays(kernel_points)`
+  (`>= 8` on aarch64, always true on x86-64). A blunt on/off flag fixed 4x4 but
+  gave back ~20 points on every 4x16 cell; the predicate keeps both (4x4_adst
+  +26.6% → +4.8%, 04x16_dct −36.2% kept at −35.8%). `kernel_points == 8` is
+  INTERPOLATED — `TX_CELLS` has no 4x8 cell.
+- **Gathers are not repaid** → `try_fwd_row_pass` declines flat at `col_n < 8`
+  on aarch64 (+9.8% → −0.3%). The INVERSE row pass is deliberately not gated on
+  `col_n`: its loads are contiguous and only its stores scatter, which is why
+  the same shape is the biggest 4-wide *win*. Gathers cost; scatters don't.
+
+x86-64 is untouched by all of this (`cargo check --target x86_64-apple-darwin`
+clean; the 4-wide arms stay live there because `gate3_transform_simd_2026-07-17.md`
+is what measured them and nothing here re-measured on an AVX2 box).
+
+**Still open:** the bd8 i16-lane specialization (`lowbd16` + `inv1d_v3_i16_gen`)
+is raw AVX2 pack/unpack/madd with no magetypes expression → cfg'd to x86-64,
+aarch64 takes the i32 path (correct, one lane batch instead of two). It was
+worth −31.5% on the x86 column pass, so a NEON i16 twin is the largest single
+remaining transform lever on ARM. Also: a 4x8 bench cell, and the magetypes gaps
+listed in the benchmark md (integer widening, `i64x4` `Mul`, runtime-count
+arithmetic shift, integer cross-lane permute/transpose) — closing those would
+collapse `prims.rs` to one generic body.
+
 ## Gate-3 wall baseline post rows+find_dir — 4K ≈1.22×/1.19×; user 1.5× bar met at 4K (2026-07-25, decoder track)
 
 The bd8 peak-perf series is CLOSED OUT: the i16 ROW pass (9f49ebc3, the entry

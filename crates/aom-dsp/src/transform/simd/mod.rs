@@ -99,6 +99,46 @@ use hand_v3::*;
 use inv1d_v3_gen::*;
 use txfm1d_v3_gen::*;
 
+/// Does a HALF-WIDTH lane batch (4 active lanes of 8) pay off here?
+///
+/// A transform whose vectorized dimension is 4 runs ONE batch with half the
+/// lanes idle, and its strided side degrades from 8x8 transposes to per-lane
+/// gather/scatter. Both costs are FIXED per batch, so whether they are repaid
+/// depends on how much work the batch does — which is the OTHER dimension,
+/// `kernel_points` (the 1-D kernel's point count). Hence a predicate, not a
+/// flag.
+///
+/// Whether it pays is also per-architecture, because the thing it has to beat
+/// is not equally fast everywhere: on aarch64 `neon` is a compile-time
+/// baseline, so LLVM already auto-vectorizes the scalar driver loop.
+///
+/// MEASURED 2026-07-25, Apple M4 Pro, port-only `dsp_kernels` bench, before =
+/// 4b92e2b (no vector path on aarch64 at all) —
+/// `benchmarks/dsp_neon_transform_2026-07-25.md`:
+///
+/// | cell (col_n x row_n) | half batch ON | OFF |
+/// |---|---|---|
+/// | `inv_txfm_u8::04x04_adst` (4x4)  | **+26.6%** | +4.3% |
+/// | `inv_txfm_u8::04x16_dct`  (4x16) | **-36.2%** | -15.6% |
+/// | `inv_txfm_u8::04x16_adst` (4x16) | **-29.3%** | -7.8% |
+/// | `inv_txfm_hbd10::04x16`   (4x16) | **-40.1%** | -20.0% |
+///
+/// So at 4 points the half batch loses badly and at 16 it is the single
+/// biggest win in the 4-wide column — the threshold below is the boundary
+/// between those two measurements. `kernel_points == 8` is INTERPOLATED, not
+/// measured: the bench's `TX_CELLS` has no 4x8 cell. The mechanism (a fixed
+/// per-batch cost amortized over the kernel) predicts monotone improvement
+/// with `kernel_points`, which is why 8 is on the paying side; add a 4x8 cell
+/// and re-measure before relying on it.
+///
+/// x86-64 always says yes: the 4-wide arms are the shape the 2026-07-17 AVX2
+/// landing measured and kept (`benchmarks/gate3_transform_simd_2026-07-17.md`),
+/// and nothing here re-measured them on an AVX2 box.
+#[inline]
+fn half_batch_pays(kernel_points: usize) -> bool {
+    if cfg!(target_arch = "aarch64") { kernel_points >= 8 } else { true }
+}
+
 /// 1-D kernel selector — TXFM_TYPE ids 0..=11 (DCT4..64, ADST4/8/16,
 /// IDTX4/8/16/32), one enum per direction. ALL 12 are ported in each
 /// direction; the `Option` maps stay for unknown-id safety (→ scalar loop).
@@ -268,7 +308,7 @@ pub(crate) fn try_inv_col_pass(
     lr_flip: bool,
     bd: i32,
 ) -> bool {
-    if col_n % 8 != 0 && col_n != 4 {
+    if col_n % 8 != 0 && !(col_n == 4 && half_batch_pays(row_n)) {
         return false;
     }
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
@@ -305,7 +345,7 @@ pub(crate) fn try_inv_row_pass(
     row_clamp: i8,
     stage_range: &[i8; 12],
 ) -> bool {
-    if row_n % 8 != 0 && row_n != 4 {
+    if row_n % 8 != 0 && !(row_n == 4 && half_batch_pays(col_n)) {
         return false;
     }
     let _ = crate::dispatch::scalar_forced();
@@ -604,7 +644,17 @@ pub(crate) fn try_fwd_row_pass(
     cos_bit_row: i32,
     rect1: bool,
 ) -> bool {
-    if row_n % 8 != 0 {
+    // `col_n < 8` degrades this pass's LOADS to per-lane gather — no full 8x8
+    // transpose tile exists — and unlike the half-batch trade above, that is
+    // NOT repaid by a bigger kernel: `fwd_txfm::04x16_dct` (col_n 4, row_n 16)
+    // measured +9.8% with it live, so `half_batch_pays(row_n)` would say yes
+    // where the bench says no. Hence the flat gate here.
+    //
+    // The INVERSE row pass is deliberately NOT gated on col_n: its loads are
+    // contiguous and only its STORES scatter, and it is the biggest 4-wide win
+    // in the sweep (`inv_txfm_u8::04x16_dct` −36.2%). Gathers cost; scatters
+    // don't.
+    if row_n % 8 != 0 || (col_n < 8 && cfg!(target_arch = "aarch64")) {
         return false;
     }
     let _ = crate::dispatch::scalar_forced();
@@ -870,7 +920,7 @@ pub(crate) fn try_inv_col_pass_u8(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    if col_n % 8 != 0 && col_n != 4 {
+    if col_n % 8 != 0 && !(col_n == 4 && half_batch_pays(row_n)) {
         return false;
     }
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin

@@ -23,3 +23,6 @@ crates/aom-decode/fuzz/fuzz-*.log
 local-corpus/
 tools/avif-extract/target/
 tools/avif-extract/Cargo.lock
+
+# zenbench baselines are local measurement state, not repo content
+.zenbench/

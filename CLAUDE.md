@@ -1446,6 +1446,33 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   Working notes: `docs/inter-vartx-coeff-arm-notes.md` (updated with the chroma inter path, the
   encode-vs-write walk-order difference, and the `set_skip_txfm` nonzero-rate detail).
 
+### KB-ARM-FLOAT — aarch64: 15 float C-differentials in aom-encode fail (PRE-EXISTING, not a transform bug)
+- **Symptom:** on `aarch64-apple-darwin` the workspace suite is 755 passed / 15 failed. Every
+  failure is float-domain and every one is in `zenav1-aom-encode`:
+  `cnn_partition_cnn_diff`, `cnn_partition_decision_diff`, `cnn_partition_nn_diff`,
+  `curvfit_diff`, `denoise_and_model_diff`, `hog_prune_diff`, `intra_rd_pick_diff`,
+  `noise_fft_diff`, `noise_model_diff`, `noise_strength_solver_diff`, `quant_setup_diff`,
+  `rd_mult_diff`, `wiener_denoise_diff`. Typical delta is a few ULP, e.g.
+  `cnn_buffer[1]: rust=0.5873599 (0x3f165d38) c_scalar=0.58736044 (0x3f165d41)` — 9 ULP.
+- **Scope, MEASURED 2026-07-25:** the failure set is BYTE-IDENTICAL to the set at clean
+  `4b92e2b` in a sibling worktree (`diff` of both sorted lists is empty), so it is a
+  property of the ARM box, not of any landing since. `aom-dsp` (352/352) and `aom-decode`
+  are unaffected — this is float-only; every integer differential passes.
+- **Likely root (NOT yet confirmed — do not treat as diagnosed):** the C oracle is built by
+  `aom-sys-ref` with the host clang, which on aarch64 contracts `a*b + c` into `fmadd` by
+  default (`-ffp-contract=on`), while the Rust port evaluates the multiply and add
+  separately. That changes rounding in exactly the NN/curve-fit/denoise kernels that fail
+  and in nothing else. First thing to try: build the oracle with `-ffp-contract=off` and
+  re-run; if the deltas vanish, decide whether the port or the oracle is the thing to pin.
+- **Why it is not "just relax the test":** STATUS's own rule is that the float decision
+  helpers stay scalar *because* float reassociation shifts RD decisions. A few-ULP oracle
+  disagreement on ARM is the same hazard wearing a different hat — it means an ARM-built
+  encoder can make different partition/mode choices than the x86 one. Diagnose, do not widen
+  the tolerance.
+- **Blast radius today:** none for the decoder or for any integer path; it blocks a green
+  full-suite run on ARM dev boxes, and it means "workspace green" on ARM currently reads as
+  755/770 rather than all-pass.
+
 ### KB-16 — INTER-ENCODE rung 1 ✅ (the port's OWN search codes the zero-MV P byte-exact, single-SB) + two pinned follow-ups
 - **LANDED 2026-07-23.** The inter RD loop is WIRED end-to-end: `PickFrameCfg::inter` →
   per-leaf `InterLeafArgs` (`leaf_pick_sb_modes`: `find_inter_mv_refs` + intra_inter/single-ref/
