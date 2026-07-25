@@ -1,0 +1,25 @@
+[package]
+name = "zenav1-aom-dsp-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Port-only DSP kernel benchmarks for aom-rs: times the port's own dispatch entry points with zenbench, with NO libaom C oracle dependency. Bench-only crate, never published."
+publish = false
+
+# WHY A SEPARATE CRATE (do not fold this back into aom-dsp): aom-dsp
+# dev-depends on `zenav1-aom-sys-ref`, whose build.rs REQUIRES the pinned
+# libaom submodule + cmake. A `[[bench]]` inside aom-dsp inherits that dev-dep,
+# so it cannot build on a box (or a target) without the C oracle — which is
+# exactly where per-architecture SIMD measurement happens (e.g. aarch64 dev
+# boxes). Keeping the bench in its own crate makes "no C dependency" a
+# STRUCTURAL property rather than a convention.
+[dependencies]
+zenav1-aom-dsp = { path = "../aom-dsp" }
+
+[dev-dependencies]
+zenbench = "0.1.9"
+
+[[bench]]
+name = "dsp_kernels"
+harness = false

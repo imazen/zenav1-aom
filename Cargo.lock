@@ -705,6 +705,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zenav1-aom-dsp-bench"
+version = "0.0.1"
+dependencies = [
+ "zenav1-aom-dsp",
+ "zenbench",
+]
+
+[[package]]
 name = "zenav1-aom-encode"
 version = "0.0.1"
 dependencies = [
