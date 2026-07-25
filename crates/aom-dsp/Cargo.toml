@@ -25,3 +25,13 @@ avx512 = ["archmage/avx512", "magetypes/avx512"]
 
 [dev-dependencies]
 zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
+# `testable_dispatch` lets the per-kernel differentials disable
+# COMPILE-TIME-GUARANTEED tokens under test. Without it, `neon` — a baseline
+# feature on every aarch64 target — is silently EXCLUDED from
+# `for_each_token_permutation`, so on ARM the differentials compared the NEON
+# path against itself and never pinned it to the scalar port. (Measured
+# 2026-07-25: `simd_perms=0` with four "compile-time guaranteed, excluded from
+# permutations" warnings.) This is what makes the differentials — the byte-exactness
+# mechanism that DOES cover ARM, since the `AOM_FORCE_SCALAR` pin cannot (see
+# `src/dispatch/mod.rs`) — actually load-bearing on aarch64.
+archmage = { version = "0.9.27", features = ["testable_dispatch"] }

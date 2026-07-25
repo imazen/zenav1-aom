@@ -216,7 +216,17 @@ fn txfm2d_simd_equals_scalar_at_every_permutation() {
     let mut scalar_perms = 0usize;
 
     let report = for_each_token_permutation(CompileTimePolicy::Warn, |tier| {
-        if X64V3Token::summon().is_some() {
+        // "Is a vector tier live in this permutation" is per-architecture: the
+        // transform's vector path is `X64V3` on x86-64 and `Neon` on aarch64.
+        // Testing only `X64V3Token` made every aarch64 permutation count as
+        // scalar (that token is a stub off x86), which is why the non-vacuity
+        // assert below failed on ARM.
+        let simd_live = if cfg!(target_arch = "aarch64") {
+            archmage::NeonToken::summon().is_some()
+        } else {
+            X64V3Token::summon().is_some()
+        };
+        if simd_live {
             simd_perms += 1;
         } else {
             scalar_perms += 1;
@@ -244,10 +254,20 @@ fn txfm2d_simd_equals_scalar_at_every_permutation() {
     eprintln!(
         "txfm2d SIMD==scalar parity: {report}; simd_perms={simd_perms} scalar_perms={scalar_perms}"
     );
-    // Non-vacuity: a SIMD permutation must have run (AVX2 present on x86 CI),
-    // and both a SIMD and a scalar permutation must have been compared so the
-    // equality chain actually pins the vector path against the scalar path.
-    assert!(simd_perms >= 1, "the SIMD (v3) permutation must run at least once (AVX2 CI)");
+    // Non-vacuity: a SIMD permutation must have run, and both a SIMD and a
+    // scalar permutation must have been compared so the equality chain actually
+    // pins the vector path against the scalar path. The tier named here is
+    // per-architecture (v3 on x86-64, neon on aarch64); reaching the neon arm
+    // requires archmage's `testable_dispatch` dev-feature, because baseline
+    // `neon` is otherwise excluded from the permutation set — see this crate's
+    // Cargo.toml.
+    assert!(
+        simd_perms >= 1,
+        "the SIMD permutation ({}) must run at least once — if this fails on \
+         aarch64, archmage's `testable_dispatch` dev-feature is not enabled and \
+         baseline neon was excluded from the permutations",
+        if cfg!(target_arch = "aarch64") { "neon" } else { "v3/AVX2" }
+    );
     assert!(scalar_perms >= 1, "the all-off (scalar) permutation must run at least once");
     assert!(report.permutations_run >= 2, "need >=2 permutations to compare SIMD vs scalar");
 }
