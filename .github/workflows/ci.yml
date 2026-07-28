@@ -110,6 +110,64 @@ jobs:
       - name: Test workspace under the scalar pin
         run: cargo test --workspace --no-fail-fast
 
+  # AARCH64 DIFFERENTIAL — the NEON tier's byte-identity gate.
+  #
+  # Added 2026-07-25 with the transform NEON landing. Until then the ONLY ARM leg
+  # was the pure-Rust `windows-11-arm` portability job below, which builds the
+  # crates but runs no differential — so every SIMD kernel's ARM byte-identity
+  # rested on a developer's laptop. `de35287` made the C oracle build on
+  # aarch64/macOS, which is what makes this leg possible.
+  #
+  # SCOPED TO aom-dsp ON PURPOSE, and this is not a silent skip: `cargo test
+  # --workspace` on aarch64 currently fails 15 float C-differentials in
+  # aom-encode (CNN/NN, curvfit, noise model, rd_mult) — CLAUDE.md KB-ARM-FLOAT,
+  # a pre-existing few-ULP oracle disagreement (fp-contract hypothesis), NOT a
+  # SIMD defect. aom-dsp is where every SIMD kernel lives and is 352/352 green on
+  # ARM in both dispatch modes. WIDEN THIS TO --workspace THE MOMENT
+  # KB-ARM-FLOAT IS FIXED; do not widen it by relaxing those tests.
+  #
+  # Both dispatch modes run, same as the linux pair: on aarch64 the scalar pin
+  # only reaches NEON because aom-dsp dev-depends on `archmage/testable_dispatch`
+  # (plain `neon` is a compile-time-guaranteed token archmage refuses to disable).
+  # That dev-feature is also what makes `for_each_token_permutation` include neon
+  # at all — without it the transform differential reports simd_perms=0 and
+  # compares the scalar path against itself. See `aom_dsp::dispatch` docs.
+  test-macos-aarch64:
+    name: aarch64 differential (aom-dsp, ${{ matrix.mode }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: default dispatch
+            force_scalar: "0"
+          - mode: forced-scalar pin
+            force_scalar: "1"
+    runs-on: macos-latest # macos-latest is aarch64 (Apple silicon)
+    env:
+      AOM_FORCE_SCALAR: ${{ matrix.force_scalar }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      # aom-sys-ref/build.rs hard-requires nasm even on aarch64, where it is
+      # unused (libaom's ARM paths are NEON intrinsics) — the tool check predates
+      # this leg. cmake is preinstalled on the macOS runner images.
+      - name: Install C-oracle build deps
+        run: brew list nasm >/dev/null 2>&1 || brew install nasm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache libaom oracle build
+        uses: actions/cache@v6
+        with:
+          path: upstream/build
+          key: libaom-${{ runner.os }}-${{ runner.arch }}-${{ env.LIBAOM_SHA }}-v2
+      - name: Build C libaom oracle (cargo-driven)
+        run: cargo build -p zenav1-aom-sys-ref
+      # The aom-dsp differentials are self-contained (generated vectors + the C
+      # oracle); they do not read conformance/data, so no corpus provisioning.
+      - name: Test aom-dsp (C oracle + scalar + every SIMD tier)
+        run: cargo test -p zenav1-aom-dsp --no-fail-fast
+
   # ORG-BAR PLATFORM MATRIX — pure-Rust portability (no C oracle).
   #
   # Invariant A (issue #3): a downstream consumer of any published crate builds
@@ -122,12 +180,14 @@ jobs:
   # regressions in the pure-Rust port. `cargo build`/`test` of these crates pulls
   # in neither aom-sys-ref nor its build.rs, so no cmake/nasm is needed here.
   #
-  # The full C-oracle DIFFERENTIAL gate runs on the two linux jobs above. Building
-  # libaom for these targets in CI (32-bit nasm/cmake for i686; MSVC + AV1 assembly
-  # for windows-arm) is a dedicated sub-project, so the differential is gated OFF
-  # here — NOT silently skipped: it is simply not invoked on these runners, and
-  # this comment says why. macos-15-intel is the most likely next candidate to
-  # gain the full differential (brew nasm/cmake + the portable aom-sys-ref build.rs).
+  # The full C-oracle DIFFERENTIAL gate runs on the two linux jobs above, and the
+  # aom-dsp differential also runs on aarch64 (macos-latest) in the job above
+  # this one. Building libaom for the REMAINING targets in CI (32-bit nasm/cmake
+  # for i686; MSVC + AV1 assembly for windows-arm) is a dedicated sub-project, so
+  # the differential is gated OFF here — NOT silently skipped: it is simply not
+  # invoked on these runners, and this comment says why. macos-15-intel is the
+  # most likely next candidate (the aarch64 leg proved the brew-nasm + portable
+  # aom-sys-ref build.rs recipe works on macOS).
   # These runners are unverified-pending-CI at landing (labels + toolchains match
   # the org runner set; the first CI run confirms the pure-Rust build is green).
   portability:
