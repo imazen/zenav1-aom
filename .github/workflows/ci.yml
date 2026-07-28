@@ -20,6 +20,10 @@ jobs:
   test-linux:
     name: linux differential (x86-64)
     runs-on: ubuntu-latest
+    # Was 5h47m then 6h00m (GitHub's hard cap, cancelled) on the debug profile.
+    # With --profile test-fast this should land far under; the cap here turns a
+    # future hang into a fast failure instead of a burned 6-hour runner slot.
+    timeout-minutes: 90
     steps:
       # `submodules: recursive` checks out the pinned libaom C oracle at
       # `upstream/`; the cargo-driven aom-sys-ref/build.rs builds it from there.
@@ -71,7 +75,7 @@ jobs:
       # so the AOM_FORCE_SCALAR token pin reaches every kernel crate).
 
       - name: Test workspace (differential vs C oracle)
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --profile test-fast --workspace --no-fail-fast
 
   # SCALAR-PIN mode (Gate-3 parity rule 3): AOM_FORCE_SCALAR disables every
   # archmage SIMD token process-wide (aom_dsp::dispatch), so every kernel
@@ -81,6 +85,7 @@ jobs:
   test-linux-scalar-pinned:
     name: linux differential (forced-scalar pin)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     env:
       AOM_FORCE_SCALAR: "1"
     steps:
@@ -108,7 +113,7 @@ jobs:
       - name: Provision conformance corpus (intra scope)
         run: python3 xtask/conformance.py --fetch --scope intra
       - name: Test workspace under the scalar pin
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --profile test-fast --workspace --no-fail-fast
 
   # AARCH64 DIFFERENTIAL — the NEON tier's byte-identity gate.
   #
