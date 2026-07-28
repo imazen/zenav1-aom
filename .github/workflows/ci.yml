@@ -21,8 +21,13 @@ jobs:
     name: linux differential (x86-64)
     runs-on: ubuntu-latest
     # Was 5h47m then 6h00m (GitHub's hard cap, cancelled) on the debug profile.
-    # With --profile test-fast this should land far under; the cap here turns a
-    # future hang into a fast failure instead of a burned 6-hour runner slot.
+    # MEASURED on --profile test-fast (run 30404938939): this leg 20m49s (~17x,
+    # matching the 10-20x the profile's Cargo.toml comment claims), the
+    # scalar-pin leg 36m19s, whole run ~36m instead of 6h — with every job green
+    # and no result changed, so the profile is coverage-identical in practice as
+    # well as by design. 90 leaves ~2.5x headroom over the slower of the two and
+    # turns a future hang into a fast failure instead of a burned 6-hour runner
+    # slot that reports as "cancelled" (which reads like a human cancelled it).
     timeout-minutes: 90
     steps:
       # `submodules: recursive` checks out the pinned libaom C oracle at
