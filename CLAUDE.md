@@ -1446,8 +1446,9 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   Working notes: `docs/inter-vartx-coeff-arm-notes.md` (updated with the chroma inter path, the
   encode-vs-write walk-order difference, and the `set_skip_txfm` nonzero-rate detail).
 
-### KB-ARM-FLOAT — aarch64: 15 float C-differentials in aom-encode fail (PRE-EXISTING, not a transform bug)
-- **Symptom:** on `aarch64-apple-darwin` the workspace suite is 755 passed / 15 failed. Every
+### KB-ARM-FLOAT — aarch64: 15 float C-differentials in aom-encode fail — ROOT #1 FIXED ✅ (11/15, oracle fp-contraction); 4 remain under two SEPARATE roots
+- **Symptom (as first logged):** on `aarch64-apple-darwin` the workspace suite is 755 passed
+  / 15 failed. Every
   failure is float-domain and every one is in `zenav1-aom-encode`:
   `cnn_partition_cnn_diff`, `cnn_partition_decision_diff`, `cnn_partition_nn_diff`,
   `curvfit_diff`, `denoise_and_model_diff`, `hog_prune_diff`, `intra_rd_pick_diff`,
@@ -1458,20 +1459,86 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   `4b92e2b` in a sibling worktree (`diff` of both sorted lists is empty), so it is a
   property of the ARM box, not of any landing since. `aom-dsp` (352/352) and `aom-decode`
   are unaffected — this is float-only; every integer differential passes.
-- **Likely root (NOT yet confirmed — do not treat as diagnosed):** the C oracle is built by
-  `aom-sys-ref` with the host clang, which on aarch64 contracts `a*b + c` into `fmadd` by
-  default (`-ffp-contract=on`), while the Rust port evaluates the multiply and add
-  separately. That changes rounding in exactly the NN/curve-fit/denoise kernels that fail
-  and in nothing else. First thing to try: build the oracle with `-ffp-contract=off` and
-  re-run; if the deltas vanish, decide whether the port or the oracle is the thing to pin.
-- **Why it is not "just relax the test":** STATUS's own rule is that the float decision
+- **ROOT #1 — FP CONTRACTION IN THE ORACLE. CONFIRMED + FIXED 2026-07-28 (11 of the 15).**
+  The fp-contract hypothesis was correct. Clang defaults to `-ffp-contract=on` for C; on
+  aarch64 `fmadd` is baseline so `a*b + c` fuses and rounds ONCE, while Rust never contracts.
+  On x86-64 the same source cannot fuse because **no libaom TU is compiled with FMA** — the
+  AVX2 object libraries get `-mavx2` only (`cmake/aom_optimization.cmake:57`,
+  `av1/av1.cmake:812-817`), and neither clang nor gcc lets `-mavx2` imply `-mfma`. That
+  asymmetry is the whole bug. Measured at the instruction level, not inferred:
+  `av1_nn_predict_c` in the ARM oracle carried 2 `fmadd`s (the scalar remainder loops; the
+  unrolled body was already `fmul.4s` + in-order `fadd`, which is why the deltas were only a
+  few ULP) → 0 with the flag. Isolated probe: `float v=0; for(i) v += w[i]*x[i];` at `-O3`
+  emits 1 `fmadd` under Apple clang 21 and Homebrew clang 22 on aarch64, 0 with
+  `-ffp-contract=off`, and 0 on `-target x86_64-apple-darwin` at the default.
+  **Fix:** `ORACLE_FP_CFLAGS = "-ffp-contract=off"` pinned in `crates/aom-sys-ref/build.rs`
+  on BOTH oracle compile paths (cmake `CMAKE_C_FLAGS` for libaom, and the shim `cc` line),
+  with the build-cache stamp keyed on the flags so stale build dirs rebuild.
+  **Measured:** `cargo test --profile test-fast -p zenav1-aom-encode` on aarch64 went
+  25 failed → 4 (the 15 KB-ARM-FLOAT tests → 4; the other 10 baseline failures were a
+  worktree-local missing `conformance/data`). Fixed outright: `cnn_partition_nn_diff` (2),
+  `curvfit_diff` (2), `denoise_and_model_diff`, `noise_fft_diff`, `noise_model_diff`,
+  `noise_strength_solver_diff`, `quant_setup_diff`, `rd_mult_diff`, `wiener_denoise_diff`.
+- **Why the ORACLE was the thing to pin, not the port** (the judgement call, recorded):
+  a differential is only meaningful if "the C answer" is ONE value. Contraction is
+  implementation-defined in C (`FP_CONTRACT`), so leaving it at the default makes
+  "bit-exact vs libaom" mean different things on different hosts — every KB-1..KB-16
+  byte-exactness claim would be host-qualified. Rust has no fast-math, so "make the port
+  match" would mean hand-placing `f32::mul_add` exactly where one clang version on one
+  target chose to fuse: that specifies nothing and cannot be maintained. Pinning
+  `-ffp-contract=off` makes the oracle strictly IEEE-per-operation and host-independent,
+  which is the same class of decision as the already-pinned `CONFIG_MULTITHREAD=0`.
+  **Honest tradeoff:** a *production* aarch64 libaom build DOES contract, so a real
+  ARM-native libaom encoder can make marginally different RD decisions from both this port
+  and from x86 libaom. That is a property of libaom-on-ARM; the port matches the x86-64
+  build, which is the platform every gate in this repo was established on.
+- **x86-64 impact: provably none.** No libaom or shim TU enables FMA on x86-64 (evidence
+  above), so the compiler could not contract there before the flag and cannot after — the
+  flag is a no-op on the x86 oracle. The x86 AVX2 float kernels use explicit intrinsics
+  (`ml_avx2.c` splits mul/add across statements, which `-ffp-contract=on` does not fuse
+  anyway). Full x86 confirmation is CI's.
+- **ROOT #2 — aarch64 RTCD binds SIMD at COMPILE TIME, so the "C-scalar" oracle isn't scalar
+  (OPEN; 3 of the 4 residual failures).** NEON is baseline on arm64, so libaom's generated
+  `config/av1_rtcd.h` emits `#define av1_nn_predict av1_nn_predict_neon` and
+  `#define av1_cnn_convolve_no_maxpool_padding_valid ..._neon` — a macro, not the swappable
+  function pointer x86-64 gets. `av1_cnn_predict_c` (cnn.c:703) therefore calls the NEON
+  convolve, and `rd_shim.c`'s `force_cscalar` pointer swap is compiled out on ARM (the shim
+  already documents this and exposes `shim_cnn_force_cscalar_supported()`, but
+  `cnn_partition_cnn_diff` never gates on it). Residual after root #1:
+  `cnn_partition_cnn_diff` 9 ULP → **1 ULP**, `cnn_partition_decision_diff` (downstream of
+  it), `hog_prune_diff`. **MEASURED for hog (throwaway shim probe, reverted): pointing the
+  aarch64 arm at `av1_nn_predict_c` gives 1 ULP, not 0** — the port's `hog_nn_predict`
+  mirrors the **x86 AVX2** accumulation order by design, which matches neither `_c`
+  (sequential) nor `_neon` (4-lane tree). So hog is NOT fixable by any ARM oracle build
+  option; its current contract is inherently x86-only. The CNN case IS fixable in principle
+  (the port is a faithful transcription of `..._valid_c`), but only by giving the shim a
+  scalar-bound copy of the engine — e.g. compiling `av1/encoder/cnn.c` into `libaom_shim.a`
+  with the RTCD macro redirected to `_c` and every exported symbol renamed to dodge the
+  duplicate-symbol collision with `libaom.a`. Do NOT "fix" either by widening a tolerance or
+  adding a `cfg!(target_arch)` skip.
+- **ROOT #3 — signed-overflow UB in `av1_block_error_c`, exploited differently per target
+  (OPEN; `intra_rd_pick_diff`; NOT a float bug at all).** `rdopt.c:892`'s
+  `error += diff * diff` multiplies in `int`; the differential feeds random coefficients
+  large enough to overflow, which is UB. Measured on aarch64 the oracle vectorises it as
+  `mul.4s` (32-bit, wrapping — same as x86) but widens with **`uaddw`/`uaddw2`, i.e.
+  ZERO-extension**: clang proved the product non-negative from the absence of UB, so a
+  wrapped-negative product gains exactly 2³². The port models the x86 sign-extending
+  behaviour. Signature confirms it: every failing `dist` differs from C by exactly
+  N·2³² (pre-shift) — e.g. port −387033316 vs C 3907933980 (N=1). Byte-identical before and
+  after the `-ffp-contract=off` change, so it is fully independent of root #1. This is a
+  differential-input-range artifact (real tx coefficients never overflow `diff*diff`), but
+  it IS a genuine UB finding in libaom. Fix direction = constrain the harness's coefficient
+  generator to the representable range the C kernel is defined on, not a tolerance.
+- **Why none of this is "just relax the test":** STATUS's own rule is that the float decision
   helpers stay scalar *because* float reassociation shifts RD decisions. A few-ULP oracle
   disagreement on ARM is the same hazard wearing a different hat — it means an ARM-built
   encoder can make different partition/mode choices than the x86 one. Diagnose, do not widen
   the tolerance.
-- **Blast radius today:** none for the decoder or for any integer path; it blocks a green
-  full-suite run on ARM dev boxes, and it means "workspace green" on ARM currently reads as
-  755/770 rather than all-pass.
+- **Blast radius today:** none for the decoder or for any integer path; ARM dev boxes are
+  now 4 failures short of a green full-suite run instead of 15, and the residuals are three
+  named, independent roots (#2 ×3, #3 ×1) rather than one undiagnosed class.
+- **CI:** `test-macos-aarch64` stays scoped to `aom-dsp` until roots #2 and #3 close — see
+  the scoping comment in `.github/workflows/ci.yml`, which now names the residual set.
 
 ### KB-16 — INTER-ENCODE rung 1 ✅ (the port's OWN search codes the zero-MV P byte-exact, single-SB) + two pinned follow-ups
 - **LANDED 2026-07-23.** The inter RD loop is WIRED end-to-end: `PickFrameCfg::inter` →
