@@ -1446,7 +1446,7 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   Working notes: `docs/inter-vartx-coeff-arm-notes.md` (updated with the chroma inter path, the
   encode-vs-write walk-order difference, and the `set_skip_txfm` nonzero-rate detail).
 
-### KB-ARM-FLOAT — aarch64: 15 float C-differentials in aom-encode fail — ROOT #1 FIXED ✅ (11/15, oracle fp-contraction) + ROOT #3 FIXED ✅ (1/15, harness fed UB); 3 remain under root #2
+### KB-ARM-FLOAT — aarch64: 15 float C-differentials in aom-encode fail — ROOT #1 FIXED ✅ (11/15, oracle fp-contraction) + ROOT #3 FIXED ✅ (1/15, harness fed UB) + ROOT #2 CNN HALF FIXED ✅ (2/15, scalar-bound CNN shim); 1 remains (`hog_prune_diff`, an inherently x86-only contract)
 - **Symptom (as first logged):** on `aarch64-apple-darwin` the workspace suite is 755 passed
   / 15 failed. Every
   failure is float-domain and every one is in `zenav1-aom-encode`:
@@ -1497,25 +1497,84 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   flag is a no-op on the x86 oracle. The x86 AVX2 float kernels use explicit intrinsics
   (`ml_avx2.c` splits mul/add across statements, which `-ffp-contract=on` does not fuse
   anyway). Full x86 confirmation is CI's.
-- **ROOT #2 — aarch64 RTCD binds SIMD at COMPILE TIME, so the "C-scalar" oracle isn't scalar
-  (OPEN; 3 of the 4 residual failures).** NEON is baseline on arm64, so libaom's generated
+- **ROOT #2 — aarch64 RTCD binds SIMD at COMPILE TIME, so the "C-scalar" oracle isn't scalar.
+  CNN HALF FIXED ✅ 2026-07-28 (2 of 3); `hog_prune_diff` remains, and is NOT fixable this
+  way — see the hog paragraph.** NEON is baseline on arm64, so libaom's generated
   `config/av1_rtcd.h` emits `#define av1_nn_predict av1_nn_predict_neon` and
   `#define av1_cnn_convolve_no_maxpool_padding_valid ..._neon` — a macro, not the swappable
-  function pointer x86-64 gets. `av1_cnn_predict_c` (cnn.c:703) therefore calls the NEON
-  convolve, and `rd_shim.c`'s `force_cscalar` pointer swap is compiled out on ARM (the shim
-  already documents this and exposes `shim_cnn_force_cscalar_supported()`, but
-  `cnn_partition_cnn_diff` never gates on it). Residual after root #1:
-  `cnn_partition_cnn_diff` 9 ULP → **1 ULP**, `cnn_partition_decision_diff` (downstream of
-  it), `hog_prune_diff`. **MEASURED for hog (throwaway shim probe, reverted): pointing the
-  aarch64 arm at `av1_nn_predict_c` gives 1 ULP, not 0** — the port's `hog_nn_predict`
-  mirrors the **x86 AVX2** accumulation order by design, which matches neither `_c`
-  (sequential) nor `_neon` (4-lane tree). So hog is NOT fixable by any ARM oracle build
-  option; its current contract is inherently x86-only. The CNN case IS fixable in principle
-  (the port is a faithful transcription of `..._valid_c`), but only by giving the shim a
-  scalar-bound copy of the engine — e.g. compiling `av1/encoder/cnn.c` into `libaom_shim.a`
-  with the RTCD macro redirected to `_c` and every exported symbol renamed to dodge the
-  duplicate-symbol collision with `libaom.a`. Do NOT "fix" either by widening a tolerance or
-  adding a `cfg!(target_arch)` skip.
+  function pointer x86-64 gets. `av1_cnn_predict_c` (cnn.c:703) therefore called the NEON
+  convolve, so `rd_shim.c`'s `force_cscalar` arm returned a NEON result on ARM while the
+  differential believed it was scalar (residual after root #1: `cnn_partition_cnn_diff`
+  9 ULP → **1 ULP**, `cnn_partition_decision_diff` downstream of it).
+- **CNN FIX: a scalar-bound copy of libaom's own engine in the shim archive.**
+  `crates/aom-sys-ref/shim/cnn_cscalar.c` includes `config/av1_rtcd.h` first (so its
+  per-target declarations are processed verbatim), then rebinds the CNN's ONE
+  RTCD-dispatched primitive to `av1_cnn_convolve_no_maxpool_padding_valid_c` and renames all
+  10 symbols `av1/encoder/cnn.c` exports (`shim_cscalar_*`, entry point
+  `shim_cnn_predict_img_multi_out_cscalar`), then `#include "av1/encoder/cnn.c"`. Nothing is
+  transcribed — it is libaom's source with one binding pinned. `rd_shim.c`'s `force_cscalar`
+  arm calls it; the `force_cscalar = 0` arm still calls libaom.a's dispatched
+  `av1_cnn_predict_img_multi_out`, so both bars of the differential survive.
+  `shim_cnn_force_cscalar_supported()` now returns 1 unconditionally.
+  **The rebinding is uniform across targets, deliberately** — the old pointer swap was a
+  second, x86-only mechanism that no CI leg could validate against the ARM one; one
+  mechanism means the CNN oracle denotes the same thing on every host, the same reasoning as
+  `-ffp-contract=off` and `CONFIG_MULTITHREAD=0`. build.rs compiles this one TU at
+  `-O3 -DNDEBUG` (`extra_shim_cflags()`) to match libaom's Release flags exactly; absent
+  fast-math the optimisation level cannot change float values anyway.
+  **Measured (aarch64-apple-darwin, `--profile test-fast -p zenav1-aom-encode
+  --no-fail-fast`, conformance/data provisioned): 269 passed / 3 failed →
+  271 passed / 1 failed.** `cnn_predict_matches_c_scalar_bit_exact_and_reports_avx2_gap`
+  and `predict_decision_matches_c` are bit-exact; no test was skipped, tolerated or
+  modified (the two test files are untouched).
+  **x86-64 impact, stated plainly: the mechanism changes, the values should not.** The
+  forced-scalar path used to be libaom.a's `_c` convolve reached through a swapped pointer;
+  it is now the shim's compiled-from-the-same-source `_c` convolve reached through a
+  compile-time binding. Verified by compiling both changed TUs with
+  `clang -target x86_64-apple-darwin` against a **real x86_64-generated** `config/av1_rtcd.h`
+  (`cmake -DAOM_TARGET_CPU=x86_64`, where the primitive is an `RTCD_EXTERN` pointer object,
+  `HAVE_AVX2=1`): both compile clean; `nm` shows the object exports exactly the 10 renamed
+  symbols (zero collision with libaom.a, which still owns `av1_cnn_predict_img_multi_out`)
+  and has **zero undefined CNN references** — i.e. it neither reads the RTCD pointer nor
+  calls the AVX2 variant, so the scalar binding resolved entirely inside the TU. Identical
+  `nm` shape on the arm64 object (no `_neon` reference). Running the x86 differential is
+  CI's. **No CI cache-salt bump is needed** (checked, not assumed): the `libaom-…-v3` caches
+  cover only `upstream/build`, and libaom's own cmake flags and the build.rs SHA/FP stamp are
+  unchanged — the new flags apply to a shim TU, whose objects live in the cargo target dir
+  and are rebuilt because build.rs itself changed plus its `rerun-if-changed` on the new
+  `shim/cnn_cscalar.c`. **What DOES need updating is the `test-macos-aarch64` comment block
+  in `.github/workflows/ci.yml` (~lines 131-147)**, which still says four tests fail under
+  two roots; it is now ONE (`hog_prune_diff`). Widening that leg to `--workspace` remains
+  blocked, but by a single inherently-x86 contract rather than by four unresolved failures.
+- **hog (`hog_prune_diff::hog_nn_predict_matches_avx2_and_dispatch`) is NOT fixable this way,
+  and must not be "fixed" by changing the port.** The port's `hog_nn_predict` replicates the
+  **x86 AVX2** kernel's lane math by design (hog.rs module docs), matching neither `_c`
+  (sequential) nor `_neon` (4-lane tree). The CNN worked because `..._valid_c` exists on
+  every target; `av1_nn_predict_avx2` does **not** exist in an ARM libaom at all (`ml_avx2.c`
+  is x86-intrinsic source, never compiled), so no shim or oracle build option can produce the
+  AVX2 accumulation order on an ARM box. Changing the port's order would change x86 output —
+  the shipping path — and is forbidden. Prior measurement: pointing the ARM arm at
+  `av1_nn_predict_c` gives 1 ULP, not 0.
+  **New measurement 2026-07-28 (throwaway probe, reverted), 20k cases × 8 lanes × 2 modes:**
+  at `reduce_prec = false` **49,918 / 160,000 lanes differ, worst |Δ| = 1.53e-5** (a few
+  ULP); at `reduce_prec = true` — what the real caller passes — only **56 / 160,000 differ,
+  but worst |Δ| = 1.953e-3 = exactly one 1/512 prec-reduce bucket.** So libaom's
+  `av1_nn_output_prec_reduce` is a *near*-equaliser across SIMD variants, not a guarantee:
+  ~0.035% of evaluations sit on a bucket boundary where a ULP flips a whole bucket, which can
+  flip the `score <= -1.2f` prune mask and hence the encode. That is a property of
+  libaom-on-ARM (same shape as the root-#1 contraction finding), and the port matches the
+  x86-64 build — the platform every gate here was established on. Consistent with that, the
+  three mask-level hog tests (`prune_intra_mode_with_hog_matches_c`, `..._uv_...`,
+  `generate_hog_matches_c`) all PASS on aarch64 today; only the ULP-level NN test fails.
+  **Recommended resolution (NOT implemented — needs a decision, it is a contract change):**
+  state the contract instead of hiding it — keep the AVX2-order assertion as an explicitly
+  x86-64 contract, and add a separately-named non-x86 test asserting what IS defined there
+  (agreement with the dispatched variant within one prec-reduce bucket, plus mask parity).
+  That is a target-conditional contract, uncomfortably adjacent to the banned
+  `cfg!(target_arch)` skip, so it is the coordinator's call. **Rejected alternative:** making
+  the port's NN kernel pick lane order by `cfg!(target_arch)` — it would pass everywhere but
+  make the *port's own output* host-dependent, contradicting the root-#1 decision that the
+  port matches the x86-64 build. Do NOT widen a tolerance.
 - **ROOT #3 — the harness fed `av1_block_error_c` OUTSIDE its defined domain
   (`intra_rd_pick_diff`; NOT a float bug at all) — FIXED ✅ 2026-07-28.**
   `rdopt.c:892`'s `error += diff * diff` multiplies in `int`, so the kernel is DEFINED

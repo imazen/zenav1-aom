@@ -2,11 +2,16 @@
 //! (`cnn_partition::cnn::cnn_predict`) vs the REAL libaom CNN engine
 //! (`av1_cnn_predict_img_multi_out`, `aom_sys_ref::ref_intra_cnn_run`).
 //!
-//! Two comparisons, one single-threaded test (the C-scalar oracle toggles a
-//! process-global RTCD pointer, so all calls must be on one thread):
+//! Two comparisons:
 //!   1. vs the pure **C-scalar** engine (`force_cscalar = true`) — must be
 //!      BIT-EXACT: proves the Rust cascade is a faithful transcription of
 //!      `av1_cnn_convolve_no_maxpool_padding_valid_c` + the layer wiring.
+//!      That oracle is `shim/cnn_cscalar.c`: libaom's own `av1/encoder/cnn.c`
+//!      compiled into the shim archive with the one RTCD-dispatched convolve
+//!      rebound to `_c` and its exports renamed. It is scalar on EVERY target,
+//!      unlike the runtime-pointer swap it replaced, which existed only on
+//!      x86-64 and left this comparison silently NEON-backed on aarch64
+//!      (CLAUDE.md KB-ARM-FLOAT root #2).
 //!   2. vs the **dispatched** (AVX2) engine (`force_cscalar = false`, what the
 //!      encoder runs) — reported as a max-abs gap. It need not be bit-exact
 //!      (libaom's own C-vs-SIMD tolerance is 1e-6); it only has to stay far

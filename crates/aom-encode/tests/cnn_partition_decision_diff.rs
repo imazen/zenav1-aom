@@ -2,7 +2,7 @@
 //! (`cnn_partition::decision::predict_decision`) vs the REAL
 //! `intra_mode_cnn_partition` (`aom_sys_ref::ref_intra_cnn_partition_decision`).
 //!
-//! Two bars, one single-threaded test (the C-scalar oracle toggles a global):
+//! Two bars:
 //!   1. **Flag parity vs the dispatched (AVX2) path** — what the encoder runs.
 //!      This is the byte-exactness-relevant guarantee: the CNN's only bitstream
 //!      effect is these four flags, so matching them = matching the partition
@@ -10,6 +10,8 @@
 //!   2. **Bit-exact logits vs the pure C-scalar path** — validates the new code
 //!      (log_q, feature assembly, thresholds, decision) as a faithful
 //!      transcription, on top of the already-bit-exact CNN + DNN engines.
+//!      The C-scalar CNN oracle is `shim/cnn_cscalar.c` (a scalar-bound copy of
+//!      libaom's engine, scalar on every target — CLAUDE.md KB-ARM-FLOAT #2).
 //!
 //! Sweeps all four bsizes over their full quad_tree_idx ranges, the real
 //! qindex band, and all three res tiers (lowres/midres/hdres via frame size).

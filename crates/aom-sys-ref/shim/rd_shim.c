@@ -44,49 +44,36 @@
  * the _c path reproduces whatever variant the encoder dispatched. */
 void av1_nn_predict_c(const float *input_nodes, const NN_CONFIG *const nn_config,
                       int reduce_prec, float *const output);
-/* RTCD-dispatched inner convolve of the CNN (av1_rtcd.h) + its scalar variant.
- * av1_cnn_predict is a plain #define to av1_cnn_predict_c, so this pointer is
- * the ONLY SIMD in the CNN path. Overriding it lets a shim expose the pure
- * C-scalar CNN result as the bit-exact transcription oracle for the Rust port,
- * distinct from the dispatched (AVX2) path the encoder actually runs. */
-/* The pointer-swap override is x86-64 ONLY, and that is a property of libaom's
- * generated RTCD, not a shim choice. On x86-64 `av1_cnn_convolve_no_maxpool_
- * padding_valid` is a runtime-dispatched function POINTER, so it can be
- * retargeted at the `_c` variant. On aarch64 the generated av1_rtcd.h instead
- * binds it statically:
+/* The C-scalar CNN oracle: a scalar-bound copy of libaom's own engine.
  *
- *     #define av1_cnn_convolve_no_maxpool_padding_valid \
- *             av1_cnn_convolve_no_maxpool_padding_valid_neon
+ * The CNN's only RTCD-dispatched primitive is the inner convolve
+ * (`av1_cnn_convolve_no_maxpool_padding_valid`); `av1_cnn_predict` and the
+ * add/activate/batchnorm/deconvolve helpers are plain `#define`s to their `_c`
+ * variants on every target. Reaching the pure C-scalar cascade therefore means
+ * binding that one primitive to `_c`.
  *
- * i.e. there is no pointer to swap — and the macro used to rewrite this very
- * declaration into a redefinition of the real NEON function, which is what broke
- * the aarch64/macOS build of this shim outright ("redefinition of
- * 'av1_cnn_convolve_no_maxpool_padding_valid_neon' as different kind of symbol"
- * plus three "non-object type is not assignable" errors at the swap sites).
+ * This shim USED to do that by swapping libaom's runtime RTCD function
+ * POINTER. That only works on x86-64: on aarch64 NEON is baseline, so the
+ * generated av1_rtcd.h binds the primitive at COMPILE TIME
+ * (`#define av1_cnn_convolve_no_maxpool_padding_valid ..._neon`) and there is
+ * no pointer to swap — libaom.a's `av1_cnn_predict_c` calls the NEON convolve
+ * and the "C-scalar" oracle silently was not scalar (KB-ARM-FLOAT root #2).
  *
- * So the C-scalar CNN oracle is genuinely UNAVAILABLE off x86-64. Rather than
- * quietly returning the NEON result and letting a differential believe it got
- * the scalar engine — a false oracle — the capability is reported to the caller
- * via shim_cnn_force_cscalar_supported() and the decision to skip is the Rust
- * test's, not this file's. */
-#if defined(__x86_64__) || defined(_M_X64)
-#define AOM_SHIM_CNN_CSCALAR_SWAPPABLE 1
-extern void (*av1_cnn_convolve_no_maxpool_padding_valid)(
-    const float **input, int in_width, int in_height, int in_stride,
-    const CNN_LAYER_CONFIG *layer_config, float **output, int out_stride,
-    int start_idx, int cstep, int channel_step);
-void av1_cnn_convolve_no_maxpool_padding_valid_c(
-    const float **input, int in_width, int in_height, int in_stride,
-    const CNN_LAYER_CONFIG *layer_config, float **output, int out_stride,
-    int start_idx, int cstep, int channel_step);
-#else
-#define AOM_SHIM_CNN_CSCALAR_SWAPPABLE 0
-#endif
+ * Instead, shim/cnn_cscalar.c compiles av1/encoder/cnn.c into libaom_shim.a
+ * with that one primitive rebound to `_c` and every export renamed, giving the
+ * SAME scalar oracle on every host. `av1_cnn_predict_img_multi_out` below is
+ * still libaom.a's dispatched copy — the `force_cscalar = 0` arm — so both
+ * bars of the differential stay available. */
+bool shim_cnn_predict_img_multi_out_cscalar(uint8_t **dgd, int width,
+                                            int height, int stride,
+                                            const CNN_CONFIG *cnn_config,
+                                            const CNN_THREAD_DATA *thread_data,
+                                            CNN_MULTI_OUT *output);
 
-/* 1 when `force_cscalar` on the CNN shims below can actually be honoured. */
-int shim_cnn_force_cscalar_supported(void) {
-  return AOM_SHIM_CNN_CSCALAR_SWAPPABLE;
-}
+/* 1 when `force_cscalar` on the CNN shims below can actually be honoured.
+ * Now unconditionally true; kept so callers written against the old
+ * x86-64-only capability keep compiling and simply stop skipping. */
+int shim_cnn_force_cscalar_supported(void) { return 1; }
 
 /* Exported (RTCD `_c`) transform-domain distortion primitives; hand-declared
  * (they live in the generated av1_rtcd.h, not a plain header the shim pulls). */
@@ -1564,28 +1551,13 @@ void shim_intra_cnn_partition_decision(const uint8_t *win, int qindex,
     .output_buffer = output_buffer,
   };
   uint8_t *image[1] = { (uint8_t *)win };
-#if AOM_SHIM_CNN_CSCALAR_SWAPPABLE
   if (force_cscalar) {
-    void (*saved)(const float **, int, int, int, const CNN_LAYER_CONFIG *,
-                  float **, int, int, int, int) =
-        av1_cnn_convolve_no_maxpool_padding_valid;
-    av1_cnn_convolve_no_maxpool_padding_valid =
-        av1_cnn_convolve_no_maxpool_padding_valid_c;
-    av1_cnn_predict_img_multi_out(image, 65, 65, 65, cnn_config, &thread_data,
-                                  &output);
-    av1_cnn_convolve_no_maxpool_padding_valid = saved;
+    shim_cnn_predict_img_multi_out_cscalar(image, 65, 65, 65, cnn_config,
+                                           &thread_data, &output);
   } else {
     av1_cnn_predict_img_multi_out(image, 65, 65, 65, cnn_config, &thread_data,
                                   &output);
   }
-#else
-  /* No swappable pointer on this target (see the note at the top of this file).
-   * `force_cscalar` cannot be honoured; callers must gate on
-   * shim_cnn_force_cscalar_supported() rather than trust the result. */
-  (void)force_cscalar;
-  av1_cnn_predict_img_multi_out(image, 65, 65, 65, cnn_config, &thread_data,
-                                &output);
-#endif
 
   /* ---- log_q normalisation (verbatim) ---- */
   const int dc_q =
@@ -1749,27 +1721,12 @@ void shim_intra_cnn_run(const uint8_t *win, int force_cscalar,
     .output_buffer = output_buffer,
   };
   uint8_t *image[1] = { (uint8_t *)win };
-#if AOM_SHIM_CNN_CSCALAR_SWAPPABLE
   if (force_cscalar) {
-    void (*saved)(const float **, int, int, int, const CNN_LAYER_CONFIG *,
-                  float **, int, int, int, int) =
-        av1_cnn_convolve_no_maxpool_padding_valid;
-    av1_cnn_convolve_no_maxpool_padding_valid =
-        av1_cnn_convolve_no_maxpool_padding_valid_c;
-    av1_cnn_predict_img_multi_out(image, 65, 65, 65, cnn_config, &thread_data,
-                                  &output);
-    av1_cnn_convolve_no_maxpool_padding_valid = saved;
+    shim_cnn_predict_img_multi_out_cscalar(image, 65, 65, 65, cnn_config,
+                                           &thread_data, &output);
   } else {
     av1_cnn_predict_img_multi_out(image, 65, 65, 65, cnn_config, &thread_data,
                                   &output);
   }
-#else
-  /* No swappable pointer on this target (see the note at the top of this file).
-   * `force_cscalar` cannot be honoured; callers must gate on
-   * shim_cnn_force_cscalar_supported() rather than trust the result. */
-  (void)force_cscalar;
-  av1_cnn_predict_img_multi_out(image, 65, 65, 65, cnn_config, &thread_data,
-                                &output);
-#endif
   memcpy(out_cnn_buffer, cnn_buffer, CNN_OUT_BUF_SIZE * sizeof(float));
 }

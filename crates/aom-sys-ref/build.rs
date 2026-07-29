@@ -71,7 +71,23 @@ const SHIMS: &[&str] = &[
     "obmc_shim",
     "me_shim",
     "interintra_shim",
+    "cnn_cscalar",
 ];
+
+/// Shims that need compile flags beyond the default `-O2 ORACLE_FP_CFLAGS`.
+///
+/// `cnn_cscalar` is the one shim that pulls a libaom .c (av1/encoder/cnn.c)
+/// into the shim archive, to get a scalar-bound copy of the CNN engine on
+/// targets where RTCD binds the convolve at compile time (KB-ARM-FLOAT root
+/// #2). It is built with libaom's own Release flags so it is the same source
+/// under the same settings as the copy inside libaom.a — see the header
+/// comment in shim/cnn_cscalar.c.
+fn extra_shim_cflags(name: &str) -> &'static [&'static str] {
+    match name {
+        "cnn_cscalar" => &["-O3", "-DNDEBUG"],
+        _ => &[],
+    }
+}
 
 fn main() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -338,6 +354,7 @@ fn compile_shims(manifest: &Path, upstream: &Path, build_dir: &Path) -> PathBuf 
         let obj = out_dir.join(format!("{name}.o"));
         let status = Command::new(cc)
             .args(["-O2", ORACLE_FP_CFLAGS, "-c"])
+            .args(extra_shim_cflags(name))
             .arg(&shim_c)
             .arg("-o")
             .arg(&obj)

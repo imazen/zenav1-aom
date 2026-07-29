@@ -27,6 +27,21 @@
   Note the consequence: a *production* aarch64 libaom build does contract, so it
   can differ from this oracle (and from x86-64 libaom) by a few ULP in the
   NN/curve-fit/denoise float kernels.
+- Shim TUs otherwise compile at `-O2`, with ONE documented exception:
+  `shim/cnn_cscalar.c` uses `-O3 -DNDEBUG` (libaom's own Release flags). It is
+  the only shim that pulls a libaom `.c` — `av1/encoder/cnn.c` — into
+  `libaom_shim.a`, to obtain a **scalar-bound copy of the CNN inference
+  engine**: the CNN's one RTCD-dispatched primitive
+  (`av1_cnn_convolve_no_maxpool_padding_valid`) is rebound to its `_c` variant
+  and every export is renamed `shim_cscalar_*`, so it links beside libaom.a's
+  dispatched copy. The former mechanism — swapping libaom's runtime RTCD
+  function *pointer* — only exists on x86-64; on aarch64 NEON is baseline and
+  the generated `config/av1_rtcd.h` binds the primitive with a compile-time
+  `#define ..._neon`, so the "C-scalar" CNN oracle silently was not scalar
+  (CLAUDE.md KB-ARM-FLOAT root #2). Matching libaom's Release flags on this one
+  TU makes it the same source under the same settings as the copy inside
+  libaom.a. Per-TU flags live in `extra_shim_cflags()` in
+  `crates/aom-sys-ref/build.rs`.
 - Artifacts: `upstream/build/{libaom.a, aomenc, aomdec}`, built automatically by
   `crates/aom-sys-ref/build.rs` (cached by the submodule SHA).
 - `CONFIG_COEFFICIENT_RANGE_CHECKING = 0`, `DO_RANGE_CHECK_CLAMP` off (default),
