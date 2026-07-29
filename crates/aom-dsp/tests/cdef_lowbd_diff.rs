@@ -24,8 +24,16 @@
 //! but with the bit depth fixed at 8 — the only depth the u8 path serves.
 //!
 //! An `AOM_FORCE_SCALAR=1` run of this binary exercises the same asserts with the
-//! CDEF SIMD dispatch pinned to the scalar core (the u8 filter reuses the u16
-//! SIMD+scalar dispatch via a per-block scratch — see `cdef_filter_block_u8`).
+//! CDEF SIMD dispatch pinned to the scalar core. Note the u8 filter has its OWN
+//! dedicated u8-store kernels — `cdef_filter_8_w8` / `cdef_filter_8_w4`
+//! (`cdef/simd.rs:462-474`), which share the u16 kernels' i16 filter math and
+//! duplicate only the narrowing store; they do NOT round-trip through a per-block
+//! u16 scratch (that was the FIRST `cdef_filter_block_u8`, replaced for the ~19%
+//! it cost a filter-heavy pass). Because those kernels are distinct code, this
+//! frame-level harness does not cover their SIMD-vs-scalar parity at every
+//! dispatch tier — `cdef_lowbd_simd_diff.rs` is the per-permutation differential
+//! that does (docs/SIMD_REACH_AUDIT_2026-07-28.md finding F3; the stale version of
+//! this very sentence was finding F7).
 
 use aom_dsp::cdef::frame::{cdef_frame, cdef_frame_u8, CdefFrameParams};
 use aom_sys_ref as c;
