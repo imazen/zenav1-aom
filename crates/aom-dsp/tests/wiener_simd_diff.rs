@@ -37,14 +37,17 @@ const M: usize = 8;
 
 #[test]
 fn wiener_simd_bit_identical_to_scalar_at_every_tier() {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use archmage::SimdToken;
-        assert!(
-            archmage::X64V3Token::summon().is_some(),
-            "x86-64 CI must have AVX2 for the SIMD differential to be non-vacuous"
-        );
-    }
+    // NOTE: there is deliberately no pre-flight `X64V3Token::summon().is_some()`
+    // check here. It looks like a non-vacuity guard but is an ordering trap:
+    // under AOM_FORCE_SCALAR=1 the pin disables every runtime-dispatchable
+    // token process-wide, so on x86-64 `summon()` correctly returns None right
+    // up until `for_each_token_permutation` resets that state and re-enables
+    // them. Tests that fire the pin first (the documented order) therefore
+    // failed the check on the linux scalar-pin CI leg while passing on
+    // aarch64, where baseline `neon` cannot be disabled at all. The real
+    // non-vacuity guard is the `simd_perms >= 1` assertion below, which runs
+    // INSIDE the harness and catches a genuinely vector-less box with a
+    // better message.
     // Widths straddle the 8-lane boundary + the overlap-back tail (9, 15, 17)
     // + the sub-8 scalar route (4) + real RU shapes.
     let dims: &[(usize, usize)] = &[

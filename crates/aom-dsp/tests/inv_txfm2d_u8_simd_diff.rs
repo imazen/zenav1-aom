@@ -287,13 +287,17 @@ fn run_arm(arm: Arm, min_changed_pct: u32) {
     // dispatch mode.
     let _ = aom_dsp::dispatch::scalar_forced();
 
-    #[cfg(target_arch = "x86_64")]
-    {
-        assert!(
-            X64V3Token::summon().is_some(),
-            "x86-64 CI must have AVX2 for this differential to be non-vacuous"
-        );
-    }
+    // NOTE: there is deliberately no pre-flight `X64V3Token::summon().is_some()`
+    // check here. It looks like a non-vacuity guard but is an ordering trap:
+    // under AOM_FORCE_SCALAR=1 the pin disables every runtime-dispatchable
+    // token process-wide, so on x86-64 `summon()` correctly returns None right
+    // up until `for_each_token_permutation` resets that state and re-enables
+    // them. Tests that fire the pin first (the documented order) therefore
+    // failed the check on the linux scalar-pin CI leg while passing on
+    // aarch64, where baseline `neon` cannot be disabled at all. The real
+    // non-vacuity guard is the `simd_perms >= 1` assertion below, which runs
+    // INSIDE the harness and catches a genuinely vector-less box with a
+    // better message.
 
     let mut reference: Option<Vec<(String, Vec<u8>)>> = None;
     let mut simd_perms = 0usize;

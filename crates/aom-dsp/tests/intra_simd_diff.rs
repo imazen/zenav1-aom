@@ -37,14 +37,17 @@ const MODES: [usize; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 #[test]
 fn intra_highbd_simd_bit_identical_to_scalar_at_every_tier() {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use archmage::SimdToken;
-        assert!(
-            archmage::X64V3Token::summon().is_some(),
-            "x86-64 CI must have AVX2 for the SIMD differential to be non-vacuous"
-        );
-    }
+    // NOTE: there is deliberately no pre-flight `X64V3Token::summon().is_some()`
+    // check here. It looks like a non-vacuity guard but is an ordering trap:
+    // under AOM_FORCE_SCALAR=1 the pin disables every runtime-dispatchable
+    // token process-wide, so on x86-64 `summon()` correctly returns None right
+    // up until `for_each_token_permutation` resets that state and re-enables
+    // them. Tests that fire the pin first (the documented order) therefore
+    // failed the check on the linux scalar-pin CI leg while passing on
+    // aarch64, where baseline `neon` cannot be disabled at all. The real
+    // non-vacuity guard is the `simd_perms >= 1` assertion below, which runs
+    // INSIDE the harness and catches a genuinely vector-less box with a
+    // better message.
     // Counts permutations in which a VECTOR tier is actually live. Asserting
     // only `permutations_run >= 2` is satisfiable with ZERO of them, which is
     // exactly how the transform tier sat dead on aarch64 for months while its
