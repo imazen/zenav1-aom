@@ -1446,7 +1446,7 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   Working notes: `docs/inter-vartx-coeff-arm-notes.md` (updated with the chroma inter path, the
   encode-vs-write walk-order difference, and the `set_skip_txfm` nonzero-rate detail).
 
-### KB-ARM-FLOAT — aarch64: 15 float C-differentials in aom-encode fail — ROOT #1 FIXED ✅ (11/15, oracle fp-contraction); 4 remain under two SEPARATE roots
+### KB-ARM-FLOAT — aarch64: 15 float C-differentials in aom-encode fail — ROOT #1 FIXED ✅ (11/15, oracle fp-contraction) + ROOT #3 FIXED ✅ (1/15, harness fed UB); 3 remain under root #2
 - **Symptom (as first logged):** on `aarch64-apple-darwin` the workspace suite is 755 passed
   / 15 failed. Every
   failure is float-domain and every one is in `zenav1-aom-encode`:
@@ -1516,19 +1516,63 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   with the RTCD macro redirected to `_c` and every exported symbol renamed to dodge the
   duplicate-symbol collision with `libaom.a`. Do NOT "fix" either by widening a tolerance or
   adding a `cfg!(target_arch)` skip.
-- **ROOT #3 — signed-overflow UB in `av1_block_error_c`, exploited differently per target
-  (OPEN; `intra_rd_pick_diff`; NOT a float bug at all).** `rdopt.c:892`'s
-  `error += diff * diff` multiplies in `int`; the differential feeds random coefficients
-  large enough to overflow, which is UB. Measured on aarch64 the oracle vectorises it as
-  `mul.4s` (32-bit, wrapping — same as x86) but widens with **`uaddw`/`uaddw2`, i.e.
-  ZERO-extension**: clang proved the product non-negative from the absence of UB, so a
-  wrapped-negative product gains exactly 2³². The port models the x86 sign-extending
-  behaviour. Signature confirms it: every failing `dist` differs from C by exactly
-  N·2³² (pre-shift) — e.g. port −387033316 vs C 3907933980 (N=1). Byte-identical before and
-  after the `-ffp-contract=off` change, so it is fully independent of root #1. This is a
-  differential-input-range artifact (real tx coefficients never overflow `diff*diff`), but
-  it IS a genuine UB finding in libaom. Fix direction = constrain the harness's coefficient
-  generator to the representable range the C kernel is defined on, not a tolerance.
+- **ROOT #3 — the harness fed `av1_block_error_c` OUTSIDE its defined domain
+  (`intra_rd_pick_diff`; NOT a float bug at all) — FIXED ✅ 2026-07-28.**
+  `rdopt.c:892`'s `error += diff * diff` multiplies in `int`, so the kernel is DEFINED
+  only where that product is representable (`|diff| <= 46340`). Past that it is
+  signed-overflow UB and "the C answer" is not one value: measured on aarch64 the oracle
+  vectorises as `mul.4s` (32-bit, wrapping — same as x86) but widens with
+  **`uaddw`/`uaddw2`, i.e. ZERO-extension** (clang proved the product non-negative from
+  the absence of UB), so a wrapped-negative product gains exactly 2³²; the port models the
+  x86 sign-extending behaviour. Signature confirmed it: every failing `dist` differed by
+  exactly N·2³² pre-shift (port −387033316 vs C 3907933980, N=1), and ONLY the `bd=8`
+  arm failed. Byte-identical before and after `-ffp-contract=off`, so fully independent
+  of root #1.
+- **The harness-vs-production question, ANSWERED WITH ARITHMETIC: only the harness could
+  reach it — this is NOT a libaom production bug.** At bit depth `bd`:
+  * `coeff` is forward-transform output, bounded to **`bd + 8` signed bits** by
+    `av1_gen_fwd_stage_range` (av1_fwd_txfm2d.c:41) over `fwd_txfm_range_mult2_list` +
+    `av1_fwd_txfm_shift_ls`. Evaluated across all 19 tx sizes × all 1-D type pairs
+    (`final = ((mult2_col[last] + mult2_row[last] + 1) >> 1) + shift[0] + shift[1] + bd + 1
+    + shift[2]`), the worst final width at bd=8 is exactly **16 signed bits** ⇒
+    `|coeff| <= 2^15`.
+  * `dqcoeff` is spec-clamped to `[-(1 << (7 + bd)), (1 << (7 + bd)) - 1]`
+    (decodetxb.c:116) ⇒ `|dqcoeff| <= 2^15` at bd=8, and **every** quantizer variant
+    writes it with `coeff`'s sign: `(abs_dqcoeff ^ coeff_sign) - coeff_sign`
+    (quantize.c:77 / :164 / :231 / :313).
+  Same sign + both `<= 2^15` ⇒ `|diff| <= 2^15` ⇒ `diff*diff <= 2^30`; concretely
+  `32768² = 1 073 741 824 < INT_MAX = 2 147 483 647`. bd>8 is structurally immune —
+  `av1_highbd_block_error_c` (rdopt.c:919) uses `int64_t diff` and explicit `(int64_t)`
+  casts. This is also the domain **libaom's own unit test declares** for the kernel
+  (`test/error_block_test.cc`: `msb = bit_depth + 8 - 1`, with the comment that coeff and
+  dqcoeff "always have at least the same sign"), and the bound
+  `aom-dsp/tests/block_error_diff.rs` already pinned for its lowbd generator (~14-bit
+  magnitudes) — which is why that differential always passed on ARM.
+- **What actually left the domain: an unrealizable QUANTIZER PARAMETER TRIPLE, not a
+  coefficient magnitude.** `intra_rd_pick_diff` drew `quant = 65536/dq` and
+  `quant_shift = rng.range(8000, 32767)` **independently**, but AOM_QUANT_B consumes the
+  two as ONE reciprocal —
+  `tmp32 = ((((tmp*quant) >> 16) + tmp) * quant_shift) >> (16 - log_scale + AOM_QM_BITS)`
+  (quantize.c:70) — and libaom builds them together in `invert_quant`
+  (av1_quantize.c:582): `quant = 1 + (1 << (16 + msb(d)))/d - 65536`,
+  `quant_shift = 1 << (16 - msb(d))`. For the harness's `d ∈ [16, 800)` the REAL
+  `quant_shift` is 128..4096, never up to 32767. With the real pair
+  `abs_dqcoeff ≈ tmp ≈ |coeff|`; with the independent pair
+  `abs_dqcoeff ≈ tmp·d·quant_shift / 2^16`, i.e. an overshoot factor of
+  `d·quant_shift/2^16` = 2× … ~400×, reaching **~1.3e7 against the spec's 32768 cap** —
+  hence `|diff| ~ 1.3e7` and a `diff*diff` that wraps many times.
+- **Fix (`crates/aom-encode/tests/intra_rd_pick_diff.rs`, harness only — no port change,
+  no tolerance, no `#[ignore]`, no `cfg!(target_arch)` skip):** derive the AOM_QUANT_B
+  `(quant, quant_shift)` from `dequant` exactly as `av1_build_quantizer` does; the Fp arm
+  keeps `65536/dq`, which IS libaom's `*_quant_fp` (av1_quantize.c:628), so the bd=12
+  arm's inputs are unchanged. Plus a **domain guard** asserting every bd=8
+  `(coeff, dqcoeff)` pair keeps `diff*diff` and `coeff*coeff` representable in int32, so a
+  future generator change fails loudly at the offending value instead of reporting a
+  target-dependent UB result as a port bug. The `argmin_spread >= 30` non-vacuity guard
+  still passes, so the argmin is still a real decision on the constrained inputs.
+  **Measured:** aarch64 `cargo test --profile test-fast -p zenav1-aom-encode
+  --no-fail-fast` 268 passed / 4 failed → **269 passed / 3 failed**; the 3 residuals are
+  all root #2 and were untouched.
 - **Why none of this is "just relax the test":** STATUS's own rule is that the float decision
   helpers stay scalar *because* float reassociation shifts RD decisions. A few-ULP oracle
   disagreement on ARM is the same hazard wearing a different hat — it means an ARM-built

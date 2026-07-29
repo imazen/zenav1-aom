@@ -12,6 +12,41 @@
 //! search, skip-RD, recon-domain distortion are out of scope — see the
 //! intra_rd module docs). The (above_ctx, left_ctx) pair feeding both sides'
 //! y_mode_costs lookup comes from the separately C-validated get_y_mode_ctx.
+//!
+//! ## Quantizer-parameter domain (why `invert_quant` and not a random triple)
+//!
+//! The tail of the chain is `dist_block_tx_domain` -> `av1_block_error_c`
+//! (rdopt.c:892), whose `error += diff * diff` multiplies in `int`. That kernel
+//! is therefore only DEFINED where `diff * diff` fits `int32`; past that it is
+//! signed-overflow UB and "the C answer" is not a single value (measured: clang
+//! widens the wrapped 32-bit product with `uaddw` — zero-extension — on aarch64
+//! and with sign-extension on x86-64, so the same source disagrees with itself
+//! by N*2^32 across targets). A differential can only be run inside that domain.
+//!
+//! Real encodes are always inside it. At bit depth `bd`:
+//!   * `coeff` is the forward-transform output, whose per-stage ranges
+//!     (`av1_gen_fwd_stage_range`, av1_fwd_txfm2d.c:41 over
+//!     `fwd_txfm_range_mult2_list` + `av1_fwd_txfm_shift_ls`) bound it to
+//!     `bd + 8` signed bits for every tx size and 1-D type pair -> at bd=8,
+//!     `|coeff| <= 2^15`.
+//!   * `dqcoeff` is spec-clamped to `[-(1 << (7 + bd)), (1 << (7 + bd)) - 1]`
+//!     (decodetxb.c:116) -> at bd=8, `|dqcoeff| <= 2^15`, and the quantizers
+//!     give it exactly `coeff`'s sign (`(abs_dqcoeff ^ coeff_sign) - coeff_sign`,
+//!     quantize.c:77). Same sign + both `<= 2^15` gives `|diff| <= 2^15`, so
+//!     `diff * diff <= 2^30 < INT_MAX`.
+//! This is also the domain libaom's own `av1_block_error` unit test declares
+//! (`test/error_block_test.cc`: `msb = bit_depth + 8 - 1`, coeff and dqcoeff
+//! drawn with matching signs), and the same bound `aom-dsp`'s
+//! `block_error_diff.rs` already pins for its lowbd generator.
+//!
+//! What takes an input OUT of that domain is an unrealizable quantizer
+//! parameter triple. libaom builds `(quant, quant_shift)` for the AOM_QUANT_B
+//! path from the dequant step via `invert_quant` (av1_quantize.c:582) so that
+//! `qcoeff * dequant ~= coeff`; drawing `quant_shift` independently at random
+//! breaks that reciprocal and inflates `dqcoeff` by ~`quant_shift / (1 << (16 - msb(d)))`,
+//! reaching ~1.3e7 where the spec caps at 32768. This harness therefore derives
+//! the AOM_QUANT_B triple the way `av1_build_quantizer` does, and asserts the
+//! resulting `(coeff, dqcoeff)` pairs stay inside the kernel's defined domain.
 
 use aom_encode::intra_rd::{
     IntraCandidate, IntraModeRd, IntraRdEnv, IntraRdRates, pick_intra_mode_rd,
@@ -61,6 +96,16 @@ impl Rng {
 
 fn tbl(rng: &mut Rng, n: usize) -> Vec<i32> {
     (0..n).map(|_| rng.cost()).collect()
+}
+
+/// libaom's `invert_quant` (av1/encoder/av1_quantize.c:582) — the exact
+/// `(quant, quant_shift)` pair `av1_build_quantizer` derives from a dequant
+/// step `d`. The AOM_QUANT_B path computes `qcoeff ~= tmp / d` from these two
+/// together, so they cannot be drawn independently (see the module docs).
+fn invert_quant(d: i32) -> (i16, i16) {
+    let l = 31 - (d as u32).leading_zeros() as i32; // get_msb(d)
+    let m = 1i64 + ((1i64 << (16 + l)) / d as i64);
+    ((m - (1 << 16)) as i16, (1i32 << (16 - l)) as i16)
 }
 
 /// Valid `nsymbs`-symbol inverse-CDF row padded to `padded` entries.
@@ -143,14 +188,28 @@ fn pick_intra_mode_rd_matches_c_chain() {
             // Quant params (reciprocal quant/dequant like the real tables).
             let dq = [rng.range(16, 800), rng.range(16, 800)];
             let dequant = [dq[0] as i16, dq[1] as i16];
-            let quant = [
+            // `*_quant_fp` is exactly `(1 << 16) / dequant` (av1_quantize.c:628).
+            let mut quant = [
                 (65536 / dq[0]).clamp(1, 32767) as i16,
                 (65536 / dq[1]).clamp(1, 32767) as i16,
             ];
             let zbin = [rng.range(1, 100) as i16, rng.range(1, 100) as i16];
             let round = [rng.range(1, 400) as i16, rng.range(1, 400) as i16];
-            let quant_shift = [rng.range(8000, 32767) as i16, rng.range(8000, 32767) as i16];
+            let mut quant_shift = [rng.range(8000, 32767) as i16, rng.range(8000, 32767) as i16];
             let kind = if bd == 8 { QuantKind::B } else { QuantKind::Fp };
+            if matches!(kind, QuantKind::B) {
+                // AOM_QUANT_B reads `quant` AND `quant_shift` as one reciprocal
+                // (`(((tmp * quant) >> 16) + tmp) * quant_shift >> ...`,
+                // quantize.c:70). Build them the way `av1_build_quantizer` does
+                // so `dqcoeff` lands back on `coeff`'s scale — an independently
+                // drawn `quant_shift` inflates it far past the spec's dequant
+                // clamp and out of `av1_block_error_c`'s defined domain.
+                for i in 0..2 {
+                    let (q, s) = invert_quant(dq[i]);
+                    quant[i] = q;
+                    quant_shift[i] = s;
+                }
+            }
 
             // Coefficient cost tables.
             let txb_skip = tbl(&mut rng, 13 * 2);
@@ -470,6 +529,26 @@ fn pick_intra_mode_rd_matches_c_chain() {
                     allow_intrabc,
                 );
                 let rate = coeff_rate + tx_type_rate + mode_rate;
+                // Domain guard: at bd=8 `dist_block_tx_domain` calls
+                // `av1_block_error_c`, whose `diff * diff` / `coeff * coeff`
+                // multiply in `int`. The differential is only meaningful where
+                // those products are representable (see the module docs); if a
+                // generator change ever pushes an input out of the kernel's
+                // defined domain, fail HERE with the offending value rather
+                // than reporting a target-dependent UB result as a port bug.
+                if bd == 8 {
+                    for i in 0..n_coeffs {
+                        let d = tcoeff[i] - dqc[i];
+                        assert!(
+                            d.checked_mul(d).is_some()
+                                && tcoeff[i].checked_mul(tcoeff[i]).is_some(),
+                            "av1_block_error_c domain violated at ts={tx_size} i={i}: \
+                             coeff={} dqcoeff={} diff={d} (|diff| must be <= 46340)",
+                            tcoeff[i],
+                            dqc[i],
+                        );
+                    }
+                }
                 let (dist, _sse) = c::ref_dist_block_tx_domain(tcoeff, &dqc, tx_size, bd);
                 let rd = c::ref_rdcost(rdmult, rate, dist);
                 want_evals.push(IntraModeRd {
