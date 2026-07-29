@@ -22,6 +22,27 @@ use std::process::{Command, Stdio};
 /// Used only as a fallback stamp key if `git` can't report the checked-out SHA.
 const PINNED_SHA: &str = "03087864cf4bea6abb0d28f95cf7843511413d8f";
 
+/// Floating-point flags pinned on EVERY oracle translation unit (libaom itself
+/// and the shims). See reference/BUILD_CONFIG.md §floating point.
+///
+/// `-ffp-contract=off` forbids the compiler from fusing `a*b + c` into a single
+/// FMA. This is NOT a micro-optimisation knob — it is part of the oracle's
+/// *definition*, in the same class as `CONFIG_MULTITHREAD=0`:
+///
+/// * clang defaults to `-ffp-contract=on` for C. On **aarch64** `fmadd` is
+///   baseline, so the default silently contracts and every multiply-accumulate
+///   kernel (NN inference, curve fitting, FFT, denoise) rounds ONCE instead of
+///   twice. On **x86-64** the same source cannot contract, because the scalar
+///   TUs are compiled without FMA — so the flag is a no-op there.
+/// * Rust never contracts (there is no fast-math), so the port can only ever
+///   produce the unfused value. Without this flag "bit-exact vs libaom" would
+///   mean two different things depending on which host ran the differential.
+///
+/// Pinning it makes the oracle's float arithmetic strictly IEEE-per-operation
+/// and therefore host-independent, which is the only form in which a
+/// differential harness means anything. (KB-ARM-FLOAT.)
+const ORACLE_FP_CFLAGS: &str = "-ffp-contract=off";
+
 /// The oracle shims (aom-sys-ref/shim/*.c), compiled into libaom_shim.a.
 const SHIMS: &[&str] = &[
     "entropy_shim",
@@ -190,7 +211,10 @@ fn build_libaom(upstream: &Path) -> PathBuf {
     let build_dir = upstream.join("build");
     let lib = build_dir.join("libaom.a");
     let stamp = build_dir.join(".aom-oracle-sha");
-    let sha = current_sha(upstream);
+    // The stamp keys on the submodule SHA *and* the pinned FP flags, so a build
+    // dir produced before ORACLE_FP_CFLAGS existed (or with different flags)
+    // rebuilds instead of being silently reused.
+    let sha = format!("{} {}", current_sha(upstream), ORACLE_FP_CFLAGS);
 
     // Cache (invariant C, the dominant cost): skip the minutes-long cmake build
     // when libaom.a already exists for the current submodule SHA.
@@ -213,6 +237,11 @@ fn build_libaom(upstream: &Path) -> PathBuf {
         .arg(upstream)
         .arg("-B")
         .arg(&build_dir)
+        // CMAKE_C_FLAGS is empty in libaom's own build (it accumulates into
+        // CMAKE_C_FLAGS_RELEASE), and cmake emits ${CMAKE_C_FLAGS} before
+        // ${CMAKE_C_FLAGS_<CONFIG>}; libaom never sets -ffp-contract itself, so
+        // this survives to every TU. See ORACLE_FP_CFLAGS.
+        .arg(format!("-DCMAKE_C_FLAGS={ORACLE_FP_CFLAGS}"))
         .args([
             "-DCMAKE_BUILD_TYPE=Release",
             "-DCONFIG_MULTITHREAD=0",
@@ -231,9 +260,18 @@ fn build_libaom(upstream: &Path) -> PathBuf {
 
     // Build the library + the aomenc/aomdec tools (used by the conformance +
     // coverage xtasks). One build, reused by every test binary.
-    let jobs = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
+    // Honour cargo's own job budget (`cargo build -j N` exports NUM_JOBS) so the
+    // oracle build cannot oversubscribe a box that is deliberately capped;
+    // fall back to the host parallelism when it is absent.
+    let jobs = std::env::var("NUM_JOBS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+        })
         .to_string();
     let build = Command::new("cmake")
         .arg("--build")
@@ -299,7 +337,7 @@ fn compile_shims(manifest: &Path, upstream: &Path, build_dir: &Path) -> PathBuf 
         let shim_c = shim_dir.join(format!("{name}.c"));
         let obj = out_dir.join(format!("{name}.o"));
         let status = Command::new(cc)
-            .args(["-O2", "-c"])
+            .args(["-O2", ORACLE_FP_CFLAGS, "-c"])
             .arg(&shim_c)
             .arg("-o")
             .arg(&obj)
