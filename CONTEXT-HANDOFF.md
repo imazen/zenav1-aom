@@ -95,9 +95,17 @@ python3 xtask/conformance.py --fetch --scope intra   # decode-conformance vector
   before ANY work; push via `jj bookmark set main -r @ && jj git push
   --bookmark main`; verify with `git merge-base --is-ancestor <sha> origin/main`.
   **Never** `jj git push --change` (orphans work off-branch).
-- `jj status` ALWAYS shows `D conformance/data` (a tracked self-referential
-  symlink over the gitignored vector dir). Never commit that deletion — commit
-  with explicit per-file `git add <paths>` or scoped jj commands.
+- `conformance/data` is a plain gitignored directory. Populate it with
+  `python3 xtask/conformance.py --fetch --scope intra`, or point
+  `AOM_CONFORMANCE_DIR` at an existing copy — every consumer checks that env
+  var first. (Until 2026-07-28 a *tracked symlink* lived at that path, aimed at
+  `/root/aom-rs/conformance/data` — self-referential on the box it was made on,
+  dangling everywhere else. `.gitignore` said `conformance/data/` with a
+  trailing slash, which matches a directory but not a symlink, so it was
+  committable. Every fresh worktree therefore started with ~10 conformance
+  failures unrelated to whatever was being changed, and three agents in one
+  session mistook that for their own baseline. The symlink is gone and the
+  ignore pattern is slashless.)
 - Differential-first: every kernel lands behind a diff test against the REAL
   exported C function (`crates/aom-sys-ref` shims); e2e byte-gates pin whole
   configurations; open divergences are pinned ASSERTED-PRESENT so fixes
