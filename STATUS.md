@@ -1,3 +1,119 @@
+## bd8 i16-lane inverse transform runs on aarch64 — NEON tier live, 16x16/32x32/64x64 DCT −45..−51% (2026-07-28, ARM track)
+
+The last piece fd7efe1 left behind is landed. The bd8 i16-lane row/column
+specialization (`transform/simd/lowbd16.rs` + the 5 generated
+`inv1d_v3_i16_gen` DCT kernels) had been cfg'd to x86-64 because its helpers
+were raw `core::arch::x86_64` pack/unpack/madd cross-lane ops with no
+magetypes expression and no NEON twin — aarch64 ran the (correct) i32x8 path,
+one lane batch where x86 gets two.
+
+**Shape** — the fd7efe1 pattern, one width down. NEW
+`transform/simd/prims16.rs` is the i16 counterpart of `prims.rs`: two tier
+modules (`x86` = the VERBATIM AVX2 sequences that shipped in `lowbd16.rs`,
+not one instruction changed; `neon` = their twin) exporting the SAME 14 names
+under one cfg-selected re-export. `lowbd16.rs` and the generated kernels are
+now ONE `#[magetypes(define(i16x16[, i32x8]), v3, neon, -scalar)]` body each;
+the two entry points in `simd/mod.rs` dispatch through
+`incant!(.., [v3, neon, scalar])` with a declining scalar twin, exactly like
+the i32 passes. `xtask/transpile_txfm1d.py --lanes16` emits the magetypes
+shape (header + signature only — every kernel BODY is byte-identical to the
+committed file, so the hand edit and the transpiler stay consistent;
+`reference/extracted/*.c` is absent on this box so regeneration could not be
+re-run).
+
+**magetypes audit (0.9.27 lock, 0.9.28 source read — verified, not assumed).**
+`i16x16<T>` offers wrapping add/sub/mul/neg, min/max/abs/clamp, comparisons,
+`blend`, const shifts, bitwise, load/store/array — and NOTHING else. Absent:
+saturating add/sub (the string does not occur in the integer surface at all),
+integer widening/narrowing (`backends::convert_int` is bitcast-only,
+`generic::cross_width` is f32-only), multiply-accumulate at any width, and
+i16 interleave/reverse/transpose (`block_ops_*` exists only for f32x4/8,
+f64x2/4, i32x4/8, i8x16, u32x4 — and only as array/byte views). All four are
+exactly what the i16 contract is built on, which is why `prims16` exists at
+all rather than a generic body.
+
+**Where the tiers genuinely diverge** (each still bit-exact, proofs in the
+`prims16` module docs): AVX2's `vpmaddwd` wants `half_btf`'s operands
+INTERLEAVED, so the x86 `P32` lives in unpack order (a permutation
+`vpackssdw` undoes for free); AArch64's `vmull_n_s16`/`vmlal_n_s16` read them
+separately, so the NEON `Upk` is a plain pair, `unpk16` is FREE, and `P32` is
+in natural lane order. Both exact on the audited domain (|w| <= 4096,
+|x| <= 2^15 → products <= 2^27, sum <= 2^28, no i32 wrap;
+`vrshrq_n_s32::<12>` IS the scalar `round_shift(_, 12)`). `vpackssdw` and
+`vqmovn_s32` are both "saturate to [-2^15, 2^15-1] then truncate" ==
+`clamp_value(_, 16)`. And the i16 `round_shift`: `_mm256_mulhrs_epi16(v, m)`
+computes `((v*m >> 14) + 1) >> 1` while `vqrdmulhq_s16(v, m)` computes
+`(2*v*m + 2^15) >> 16` — algebraically the same `floor((v*m + 2^14)/2^15)`
+for every i16 pair, so `m = 2^(15-bit)` gives `round_shift(v, bit)` on both.
+
+**Measured** (`benchmarks/dsp_neon_i16_2026-07-28.{md,tsv,meta}`, port-only
+`dsp_kernels`, Apple M4 Pro, two-BUILD pair 101784b → 674b36b, two after-runs
++ two same-binary control runs):
+
+| `inv_txfm_u8` cell | after1 | after2 | control (same binary, ×2) |
+|---|---|---|---|
+| `32x32_dct` | **−51.25%** | **−49.75%** | −0.08% / +2.45% |
+| `16x16_dct` | **−47.10%** | **−44.69%** | +0.31% / +2.50% |
+| `64x64_dct` | **−45.80%** | **−45.43%** | −0.06% / +1.94% |
+| `16x08_dct` | **−25.85%** | **−25.26%** | +0.78% / +2.15% |
+| `32x08_dct` | **−23.43%** | **−21.49%** | +0.99% / +2.55% |
+| `04x16_dct` | −6.44% | −3.65% | +0.20% / +2.69% |
+
+Throughput: `16x16_dct` 594M → 1.12 Gpx/s, `32x32_dct` 518M → 1.06 Gpx/s,
+`64x64_dct` 442M → 815 Mpx/s. **Read the control band before any other row in
+that run**: a same-binary re-run moves rows by up to +16.5% on this box
+(`intra::v_16x16` ctrl1), and the sub-30 µs `dist`/`quant`/`intra` batches
+swing ±10–29% — every non-transform "regression" the run prints is inside
+that band. The in-group paired controls are decisive: ADST cells and all of
+`inv_txfm_hbd10` (bd10 — the entry conditions fail) stay within ±5.5% while
+the DCT cells move 3–20× outside it. Two honest non-wins: `08x08_dct` is
+NEUTRAL (it does take the new i16 column path with half the lanes idle, but
+its +3.16/+5.25 matches its own ADST twin's +3.14/+5.52 measured in the same
+rounds — no DCT-specific effect either way at 8 wide), and `04x04_dct` never
+reaches the path at all (`half_batch_pays(4)` is false on aarch64).
+
+Why NEON gains more than the AVX2 landing did (−31.5% on the column pass,
+`gate3_transform_simd_2026-07-17.md`): the lane-count doubling is the smaller
+half. The i32 tier's `hb` must widen to i64 to sum exactly (~15 instructions
+per 8 lanes); on the audited i16 domain the products fit i32, so
+`vmull_n_s16`/`vmlal_n_s16`/`vrshrq_n_s32::<12>` do the butterfly in 12
+instructions per 16 lanes — ~2.5× less work for the dominant op, and it pays
+per BATCH regardless of active lanes, which is why the rectangular 16×8/32×8
+cells (col pass only; the row pass declines at `row_n % 16 != 0`) still take
+−21..−26%.
+
+**Validation** (aarch64-apple-darwin, `--profile test-fast`, debug-assertions
++ overflow-checks on): `aom-dsp` 354/354 in BOTH dispatch modes (default and
+`AOM_FORCE_SCALAR=1`) — up from 352, the two added arms being the i16
+differentials, which were compiled out on ARM before. Non-vacuity: `inv1d i16
+parity` and `inv row pass i16 parity` both report **24 vector permutations of
+25** (0 before, since the module did not exist on ARM);
+`txfm2d_simd_perm_diff` stays `simd_perms=24 scalar_perms=1`. C-oracle
+differentials green in both modes (`inv_txfm2d_diff` 3/3,
+`inv_txfm2d_lowbd_diff` 3/3, `txfm2d_diff` 2/2, `inv_txfm1d_diff` 2/2,
+`txfm1d_diff` 2/2, `fdct_diff` 2/2). End-to-end: `aom-decode` 64/64 with the
+corpus pointed at the populated `conformance/data`, i.e. the full Gate-1
+byte-identity + golden-MD5 walk passes on ARM with the i16 NEON path live.
+x86-64: `cargo check -p zenav1-aom-dsp --all-targets --target
+x86_64-apple-darwin` clean; no x86 instruction changed, and no AVX2 box was
+available to re-measure — that is the only x86 claim made.
+
+**Chunk 2 (next levers, in order):** (1) coverage is 5 of 12 kernels —
+`iadst4/8/16` and `iidentity4/8/16/32` stay on i32 because
+`audit_i16_safety.py` rejects them (iadst8/16 have unclamped
+`wrapping_neg()` terminals over 17-bit transients; iadst4 and the identities
+have unclamped 17–18-bit multiply terminals). Whether those specific
+terminals can be carried in the `P32` domain and narrowed only at the store —
+keeping the rest of each kernel on i16 lanes — is UNTESTED and unmeasured; it
+is the largest nominal remaining transform lever, not a known win; (2) a 4x8
+bench cell (still missing, so `half_batch_pays(8)` remains INTERPOLATED) plus
+a dedicated 8-wide i16-vs-i32 measurement to resolve `08x08_dct`; (3) the
+`half_batch_pays` threshold has never been re-measured with the i16 path
+live — the 4-wide cells' economics changed; (4) the same i16 narrowing on the
+FORWARD transform (encoder side, `fwd_txfm` group untouched here); (5) a
+whole-decode wall re-run (`aom-bench` gate3) to convert the kernel numbers
+into a frame-level Gate-3 figure — do NOT extrapolate one from the other.
+
 ## Transform SIMD runs on aarch64 — one magetypes body per kernel, NEON tier live (2026-07-25, ARM track)
 
 The transform vector path had **never run on ARM**. Every kernel and pass driver
@@ -65,11 +181,8 @@ x86-64 is untouched by all of this (`cargo check --target x86_64-apple-darwin`
 clean; the 4-wide arms stay live there because `gate3_transform_simd_2026-07-17.md`
 is what measured them and nothing here re-measured on an AVX2 box).
 
-**Still open:** the bd8 i16-lane specialization (`lowbd16` + `inv1d_v3_i16_gen`)
-is raw AVX2 pack/unpack/madd with no magetypes expression → cfg'd to x86-64,
-aarch64 takes the i32 path (correct, one lane batch instead of two). It was
-worth −31.5% on the x86 column pass, so a NEON i16 twin is the largest single
-remaining transform lever on ARM. Also: a 4x8 bench cell, and the magetypes gaps
+**Still open** (the i16 item is CLOSED — see the 2026-07-28 entry at the top of
+this file; the rest stand): a 4x8 bench cell, and the magetypes gaps
 listed in the benchmark md (integer widening, `i64x4` `Mul`, runtime-count
 arithmetic shift, integer cross-lane permute/transpose) — closing those would
 collapse `prims.rs` to one generic body.

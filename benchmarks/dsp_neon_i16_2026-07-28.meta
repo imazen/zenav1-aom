@@ -1,0 +1,45 @@
+what:        bd8 i16-lane inverse-transform NEON tier — before/after, port-only DSP harness
+date:        2026-07-28
+host:        Apple M4 Pro, 12 cores, macOS 26.5.2, aarch64-apple-darwin
+toolchain:   rustc 1.97.1 (8bab26f4f 2026-07-14)
+before:      101784b  (docs(ci): replace the test-fast prediction with the measured durations)
+after:       674b36b  (perf(dsp): bd8 i16-lane transform passes run on aarch64 — NEON tier live)
+             rebased onto e59ce64 and landed as 13b7c21 — same tree for
+             crates/aom-dsp/src/transform/**, so the numbers stand
+harness:     crates/aom-dsp-bench/benches/dsp_kernels.rs (zenbench; needs no C oracle)
+
+build (two SEPARATE builds — AOM_FORCE_SCALAR is NOT a scalar baseline on
+aarch64, so a pinned/unpinned pair inside ONE build measures the same code
+twice; see the harness module docs):
+
+  git checkout --detach 101784b
+  nice -n 19 cargo build -j 4 --release -p zenav1-aom-dsp-bench --benches
+  cp target/release/deps/dsp_kernels-b36f19fb97b442dd ~/tmp/dsp_kernels_before
+  git checkout agentb-i16neon
+  nice -n 19 cargo build -j 4 --release -p zenav1-aom-dsp-bench --benches
+  cp target/release/deps/dsp_kernels-b36f19fb97b442dd ~/tmp/dsp_kernels_after
+
+run (four full 77-row runs, back to back, no compilation in between):
+
+  nice -n 19 ~/tmp/dsp_kernels_before --save-baseline=i16neon-before   # baseline
+  nice -n 19 ~/tmp/dsp_kernels_after  --baseline=i16neon-before        # after1
+  nice -n 19 ~/tmp/dsp_kernels_before --baseline=i16neon-before        # ctrl1
+  nice -n 19 ~/tmp/dsp_kernels_after  --baseline=i16neon-before        # after2
+  nice -n 19 ~/tmp/dsp_kernels_before --baseline=i16neon-before        # ctrl2
+
+ctrl1/ctrl2 are the SAME BINARY re-run against its own baseline — the
+run-to-run noise floor, and the only honest reference for reading the
+non-transform groups.
+
+load:        shared box, two other agents active throughout.
+             1-min load average at each run start (uptime):
+               baseline 4.63 | after1 2.92 | ctrl1 2.35 | after2 4.52 | ctrl2 3.85
+             The after-runs bracket the control runs in load, and the largest
+             load (4.52, after2) still reproduced the wins, so the deltas are
+             not a load artifact.
+caveat:      the binary self-reports the CURRENT git sha in its banner (it reads
+             the repo at runtime), so both logs print 674b36b — the identity of
+             each build is the file it was copied from, above.
+
+per-cell deltas: dsp_neon_i16_2026-07-28.tsv (4 comparisons × 77 rows)
+writeup:         dsp_neon_i16_2026-07-28.md
