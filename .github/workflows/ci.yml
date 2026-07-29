@@ -131,20 +131,23 @@ jobs:
   # SCOPED TO aom-dsp ON PURPOSE, and this is not a silent skip. KB-ARM-FLOAT's
   # root #1 (oracle FP contraction) is FIXED as of 2026-07-28 — the oracle now
   # builds with `-ffp-contract=off` and 11 of the 15 float differentials pass —
-  # but `cargo test --workspace` on aarch64 still fails FOUR, under two roots
-  # that are unrelated to SIMD and unrelated to each other:
+  # and root #3 is FIXED as of 2026-07-28 too (see below). `cargo test
+  # --workspace` on aarch64 still fails THREE, all under one root:
   #   * root #2 (3 tests: cnn_partition_cnn_diff, cnn_partition_decision_diff,
   #     hog_prune_diff) — arm64 RTCD binds av1_nn_predict / the CNN convolve to
   #     _neon with a compile-time #define, so the "C-scalar" oracle isn't scalar
   #     and there is no pointer to swap; hog additionally pins the port to x86
-  #     AVX2 accumulation order, which no ARM oracle can reproduce;
-  #   * root #3 (1 test: intra_rd_pick_diff) — signed-overflow UB in
-  #     av1_block_error_c that aarch64 clang zero-extends (uaddw) and x86-64
-  #     sign-extends; an integer harness-input-range issue, not float at all.
+  #     AVX2 accumulation order, which no ARM oracle can reproduce.
+  #   * root #3 (1 test: intra_rd_pick_diff) — CLOSED 2026-07-28. It was
+  #     signed-overflow UB in av1_block_error_c that aarch64 clang zero-extends
+  #     (uaddw) and x86-64 sign-extends; the harness's independently-drawn
+  #     AOM_QUANT_B (quant, quant_shift) pair produced dqcoeff ~400x past the
+  #     spec's dequant clamp. Real coefficients cannot reach it. Fixed by
+  #     building that pair via libaom's own invert_quant, plus a domain guard.
   # See CLAUDE.md KB-ARM-FLOAT for the measurements. aom-dsp is where every SIMD
   # kernel lives and is 352/352 green on ARM in both dispatch modes. WIDEN THIS
-  # TO --workspace THE MOMENT ROOTS #2 AND #3 CLOSE; do not widen it by relaxing
-  # those tests or by skipping them on target_arch.
+  # TO --workspace THE MOMENT ROOT #2 CLOSES; do not widen it by relaxing those
+  # tests or by skipping them on target_arch.
   #
   # Both dispatch modes run, same as the linux pair: on aarch64 the scalar pin
   # only reaches NEON because aom-dsp dev-depends on `archmage/testable_dispatch`
