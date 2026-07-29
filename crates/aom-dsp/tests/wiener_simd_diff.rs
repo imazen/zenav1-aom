@@ -10,6 +10,9 @@
 //! tap0 == 0 form), plus width tails around the 8-lane overlap boundary.
 
 use aom_dsp::restore::wiener::{wiener_convolve_add_src, wiener_convolve_add_src_scalar};
+// `summon()` comes from this trait; needed at MODULE scope because the
+// non-vacuity counter below lives outside the fn-local `use` blocks.
+use archmage::SimdToken;
 use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
 struct Rng(u64);
@@ -56,7 +59,23 @@ fn wiener_simd_bit_identical_to_scalar_at_every_tier() {
         (64, 64),
         (128, 8),
     ];
+    // Counts permutations in which a VECTOR tier is actually live. Asserting
+    // only `permutations_run >= 2` is satisfiable with ZERO of them, which is
+    // exactly how the transform tier sat dead on aarch64 for months while its
+    // differential passed (it reported simd_perms=0 — comparing the scalar
+    // path against itself). See docs/SIMD_REACH_AUDIT_2026-07-28.md finding F4.
+    let mut simd_perms = 0usize;
     let report = for_each_token_permutation(CompileTimePolicy::Warn, |tier| {
+        // Per-architecture: this family's vector path is X64V3 on x86-64 and
+        // Neon on aarch64. Testing only X64V3Token counts every aarch64
+        // permutation as scalar (that token is a stub off x86).
+        if if cfg!(target_arch = "aarch64") {
+            archmage::NeonToken::summon().is_some()
+        } else {
+            archmage::X64V3Token::summon().is_some()
+        } {
+            simd_perms += 1;
+        }
         let mut rng = Rng(0xA5A5_9e37_79b9_1234);
         for &bd in &[8, 10, 12] {
             for &(w, h) in dims {
@@ -97,5 +116,13 @@ fn wiener_simd_bit_identical_to_scalar_at_every_tier() {
         }
     });
     eprintln!("wiener SIMD parity: {report}");
+    assert!(
+        simd_perms >= 1,
+        "the SIMD permutation ({}) must run at least once — a passing run with \
+         zero vector permutations compares the scalar path against itself. On \
+         aarch64 this needs archmage's `testable_dispatch` dev-feature, else \
+         baseline neon is excluded from the permutation set.",
+        if cfg!(target_arch = "aarch64") { "neon" } else { "v3/AVX2" }
+    );
     assert!(report.permutations_run >= 2);
 }
