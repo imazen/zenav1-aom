@@ -1,0 +1,116 @@
+# SIMD reach audit 2026-07-28 — runtime tier evidence, aarch64-apple-darwin (Apple M4 Pro), repo sha 101784b
+# Method (evidence class b): a one-shot-per-generated-variant `eprintln!` reporting
+#   `core::any::type_name_of_val(&token)`, injected as the first statement of every
+#   `#[magetypes]` body in aom-dsp (27 bodies), then reverted. One static per generated
+#   variant, so each (kernel, tier) pair reports exactly once per process.
+# Runs: `cargo test --profile test-fast -p zenav1-aom-dsp --no-fail-fast -- --nocapture`,
+#   in both dispatch modes. 'default' = AOM_FORCE_SCALAR unset; 'pinned' = AOM_FORCE_SCALAR=1.
+# RESULT: all 27 instrumented bodies executed on NeonToken in the default run (27/27 reached,
+#   zero unreached). Both runs were fully green (0 failures).
+# Under the pin, the ONLY vector-tier entries come from binaries that call
+#   `for_each_token_permutation`, which deliberately re-enables tokens per permutation.
+#   Every non-permuting binary shows zero SIMD entry -> the pin is total on aarch64 in test builds.
+mode	test_binary	kernel_body	token_tier
+default	tests/build_nd_diff.rs	paeth_impl	arm::NeonToken
+default	tests/build_nd_diff.rs	smooth_h_impl	arm::NeonToken
+default	tests/build_nd_diff.rs	smooth_impl	arm::NeonToken
+default	tests/build_nd_diff.rs	smooth_v_impl	arm::NeonToken
+default	tests/cdef_filter_diff.rs	cdef_filter_16_w4_impl	arm::NeonToken
+default	tests/cdef_filter_diff.rs	cdef_filter_16_w8_impl	arm::NeonToken
+default	tests/cdef_filter_simd_diff.rs	cdef_filter_16_w4_impl	arm::NeonToken
+default	tests/cdef_filter_simd_diff.rs	cdef_filter_16_w8_impl	arm::NeonToken
+default	tests/cdef_frame_diff.rs	cdef_filter_16_w4_impl	arm::NeonToken
+default	tests/cdef_frame_diff.rs	cdef_filter_16_w8_impl	arm::NeonToken
+default	tests/cdef_lowbd_diff.rs	cdef_filter_16_w4_impl	arm::NeonToken
+default	tests/cdef_lowbd_diff.rs	cdef_filter_16_w8_impl	arm::NeonToken
+default	tests/cdef_lowbd_diff.rs	cdef_filter_8_w4_impl	arm::NeonToken
+default	tests/cdef_lowbd_diff.rs	cdef_filter_8_w8_impl	arm::NeonToken
+default	tests/cost_coeffs_diff.rs	txb_init_levels_impl	arm::NeonToken
+default	tests/frame_walk_diff.rs	wiener_impl	arm::NeonToken
+default	tests/hbd_dist_diff.rs	highbd_variance64_impl	arm::NeonToken
+default	tests/hbd_lpf_diff.rs	lpf_impl	arm::NeonToken
+default	tests/hbd_variance_simd_diff.rs	highbd_variance64_impl	arm::NeonToken
+default	tests/highbd_diff.rs	paeth_impl	arm::NeonToken
+default	tests/highbd_diff.rs	smooth_h_impl	arm::NeonToken
+default	tests/highbd_diff.rs	smooth_impl	arm::NeonToken
+default	tests/highbd_diff.rs	smooth_v_impl	arm::NeonToken
+default	tests/intra_lowbd_diff.rs	paeth_impl	arm::NeonToken
+default	tests/intra_lowbd_diff.rs	smooth_h_impl	arm::NeonToken
+default	tests/intra_lowbd_diff.rs	smooth_impl	arm::NeonToken
+default	tests/intra_lowbd_diff.rs	smooth_v_impl	arm::NeonToken
+default	tests/intra_simd_diff.rs	paeth_impl	arm::NeonToken
+default	tests/intra_simd_diff.rs	smooth_h_impl	arm::NeonToken
+default	tests/intra_simd_diff.rs	smooth_impl	arm::NeonToken
+default	tests/intra_simd_diff.rs	smooth_v_impl	arm::NeonToken
+default	tests/inv_txfm2d_diff.rs	inv_col_pass	arm::NeonToken
+default	tests/inv_txfm2d_diff.rs	inv_col_pass_core	arm::NeonToken
+default	tests/inv_txfm2d_diff.rs	inv_row_pass	arm::NeonToken
+default	tests/inv_txfm2d_diff.rs	inv_row_pass_core	arm::NeonToken
+default	tests/inv_txfm2d_diff.rs	run_inv1d	arm::NeonToken
+default	tests/inv_txfm2d_lowbd_diff.rs	inv_col_pass	arm::NeonToken
+default	tests/inv_txfm2d_lowbd_diff.rs	inv_col_pass_core	arm::NeonToken
+default	tests/inv_txfm2d_lowbd_diff.rs	inv_col_pass_u8	arm::NeonToken
+default	tests/inv_txfm2d_lowbd_diff.rs	inv_col_pass_u8_core	arm::NeonToken
+default	tests/inv_txfm2d_lowbd_diff.rs	inv_row_pass	arm::NeonToken
+default	tests/inv_txfm2d_lowbd_diff.rs	inv_row_pass_core	arm::NeonToken
+default	tests/inv_txfm2d_lowbd_diff.rs	run_inv1d	arm::NeonToken
+default	tests/kernels_diff.rs	wiener_impl	arm::NeonToken
+default	tests/lf_apply_diff.rs	lpf_impl	arm::NeonToken
+default	tests/lf_apply_diff.rs	lpf_impl_u8	arm::NeonToken
+default	tests/loopfilter_lowbd_diff.rs	lpf_impl	arm::NeonToken
+default	tests/loopfilter_lowbd_diff.rs	lpf_impl_u8	arm::NeonToken
+default	tests/lpf_diff.rs	lpf_impl_u8	arm::NeonToken
+default	tests/lpf_simd_diff.rs	lpf_impl	arm::NeonToken
+default	tests/lpf_simd_diff.rs	lpf_impl_u8	arm::NeonToken
+default	tests/optimize_diff.rs	txb_init_levels_impl	arm::NeonToken
+default	tests/optimize_qm_diff.rs	txb_init_levels_impl	arm::NeonToken
+default	tests/pick_search.rs	wiener_impl	arm::NeonToken
+default	tests/predict_intra_diff.rs	paeth_impl	arm::NeonToken
+default	tests/predict_intra_diff.rs	smooth_h_impl	arm::NeonToken
+default	tests/predict_intra_diff.rs	smooth_impl	arm::NeonToken
+default	tests/predict_intra_diff.rs	smooth_v_impl	arm::NeonToken
+default	tests/quantize_fp_simd_diff.rs	quantize_fp_impl	arm::NeonToken
+default	tests/read_coeffs_diff.rs	txb_init_levels_impl	arm::NeonToken
+default	tests/read_txb_full_diff.rs	txb_init_levels_impl	arm::NeonToken
+default	tests/recon_lowbd_diff.rs	inv_col_pass	arm::NeonToken
+default	tests/recon_lowbd_diff.rs	inv_col_pass_core	arm::NeonToken
+default	tests/recon_lowbd_diff.rs	inv_col_pass_u8	arm::NeonToken
+default	tests/recon_lowbd_diff.rs	inv_col_pass_u8_core	arm::NeonToken
+default	tests/recon_lowbd_diff.rs	inv_row_pass	arm::NeonToken
+default	tests/recon_lowbd_diff.rs	inv_row_pass_core	arm::NeonToken
+default	tests/recon_lowbd_diff.rs	run_inv1d	arm::NeonToken
+default	tests/txb_diff.rs	txb_init_levels_impl	arm::NeonToken
+default	tests/txb_init_levels_simd_diff.rs	txb_init_levels_impl	arm::NeonToken
+default	tests/txfm2d_diff.rs	fwd_col_pass	arm::NeonToken
+default	tests/txfm2d_diff.rs	fwd_row_pass	arm::NeonToken
+default	tests/txfm2d_diff.rs	run_fwd1d	arm::NeonToken
+default	tests/txfm2d_simd_perm_diff.rs	fwd_col_pass	arm::NeonToken
+default	tests/txfm2d_simd_perm_diff.rs	fwd_row_pass	arm::NeonToken
+default	tests/txfm2d_simd_perm_diff.rs	inv_col_pass	arm::NeonToken
+default	tests/txfm2d_simd_perm_diff.rs	inv_col_pass_core	arm::NeonToken
+default	tests/txfm2d_simd_perm_diff.rs	inv_row_pass	arm::NeonToken
+default	tests/txfm2d_simd_perm_diff.rs	inv_row_pass_core	arm::NeonToken
+default	tests/txfm2d_simd_perm_diff.rs	run_fwd1d	arm::NeonToken
+default	tests/txfm2d_simd_perm_diff.rs	run_inv1d	arm::NeonToken
+default	tests/wiener_simd_diff.rs	wiener_impl	arm::NeonToken
+default	tests/write_coeffs_diff.rs	txb_init_levels_impl	arm::NeonToken
+default	tests/write_txb_full_diff.rs	txb_init_levels_impl	arm::NeonToken
+default	unittests src/lib.rs	assert_batch	arm::NeonToken
+default	unittests src/lib.rs	run_fwd1d	arm::NeonToken
+default	unittests src/lib.rs	run_inv1d	arm::NeonToken
+default	unittests src/lib.rs	run_kernel	arm::NeonToken
+default	unittests src/lib.rs	sweep_all_cases	arm::NeonToken
+pinned	tests/lpf_simd_diff.rs	lpf_impl_u8	arm::NeonToken
+pinned	tests/txfm2d_simd_perm_diff.rs	fwd_col_pass	arm::NeonToken
+pinned	tests/txfm2d_simd_perm_diff.rs	fwd_row_pass	arm::NeonToken
+pinned	tests/txfm2d_simd_perm_diff.rs	inv_col_pass	arm::NeonToken
+pinned	tests/txfm2d_simd_perm_diff.rs	inv_col_pass_core	arm::NeonToken
+pinned	tests/txfm2d_simd_perm_diff.rs	inv_row_pass	arm::NeonToken
+pinned	tests/txfm2d_simd_perm_diff.rs	inv_row_pass_core	arm::NeonToken
+pinned	tests/txfm2d_simd_perm_diff.rs	run_fwd1d	arm::NeonToken
+pinned	tests/txfm2d_simd_perm_diff.rs	run_inv1d	arm::NeonToken
+pinned	unittests src/lib.rs	assert_batch	arm::NeonToken
+pinned	unittests src/lib.rs	run_fwd1d	arm::NeonToken
+pinned	unittests src/lib.rs	run_inv1d	arm::NeonToken
+pinned	unittests src/lib.rs	run_kernel	arm::NeonToken
+pinned	unittests src/lib.rs	sweep_all_cases	arm::NeonToken
