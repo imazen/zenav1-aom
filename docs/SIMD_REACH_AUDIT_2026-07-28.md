@@ -28,9 +28,10 @@ transform's failure mode** (F4). Neither is a live hole today — both were meas
 non-vacuous — but F4 is precisely the guard whose absence let the transform bug survive.
 
 > **Status since the audit was written.** F4 is **fixed** (`33bb8a6` — all seven now assert
-> a per-architecture `simd_perms >= 1`). F3's CDEF half is **fixed**
-> (`cdef_lowbd_simd_diff.rs`); its transform half (`av1_inv_txfm2d_add_u8`) is still open.
-> F7 is **fixed**. Everything else below stands as measured at `101784b`.
+> a per-architecture `simd_perms >= 1`). **F3 is fixed in full** — the CDEF half by
+> `cdef_lowbd_simd_diff.rs`, the transform half (`av1_inv_txfm2d_add_u8`) by
+> `inv_txfm2d_u8_simd_diff.rs`. F7 is **fixed**. Everything else below stands as measured
+> at `101784b`.
 
 ## Method
 
@@ -69,7 +70,7 @@ a real decode/encode takes — not "does the attribute list mention `neon`".
 
 | family | tier list | reachable on aarch64? | evidence | differential non-vacuous on ARM? |
 |---|---|---|---|---|
-| **transform** — 2-D pass drivers `inv_row_pass`, `inv_col_pass`, `inv_col_pass_u8`, `fwd_col_pass`, `fwd_row_pass` (+ `run_inv1d`/`run_fwd1d` and 25 1-D lane kernels) | `define(i32x8), v3, neon, -scalar`; `incant!(…, [v3, neon, scalar])` | **YES** (fixed `fd7efe1`; call sites `any(x86_64, aarch64)`) | **(b)** all 7 driver/dispatcher bodies + both `_core`s printed `arm::NeonToken` under `inv_txfm2d_diff`, `inv_txfm2d_lowbd_diff`, `recon_lowbd_diff`, `txfm2d_diff`, `txfm2d_simd_perm_diff`. **(c)** `___arcane_av1_idct64_impl_neon` 4616 NEON ops / 9913 instrs; `run_fwd1d_neon` 3639; `av1_fdct64_impl_neon` 3580; `run_inv1d_neon` 2649; `av1_idct32_impl_neon` 1920 | **YES, and asserted.** `txfm2d_simd_perm_diff` is the only test in the crate that asserts `simd_perms >= 1` + `scalar_perms >= 1`. Measured 25 permutations. **Caveat:** it drives `av1_inv_txfm2d_add` (u16) and `av1_fwd_txfm2d` only — **not** `av1_inv_txfm2d_add_u8`, see F3 |
+| **transform** — 2-D pass drivers `inv_row_pass`, `inv_col_pass`, `inv_col_pass_u8`, `fwd_col_pass`, `fwd_row_pass` (+ `run_inv1d`/`run_fwd1d` and 25 1-D lane kernels) | `define(i32x8), v3, neon, -scalar`; `incant!(…, [v3, neon, scalar])` | **YES** (fixed `fd7efe1`; call sites `any(x86_64, aarch64)`) | **(b)** all 7 driver/dispatcher bodies + both `_core`s printed `arm::NeonToken` under `inv_txfm2d_diff`, `inv_txfm2d_lowbd_diff`, `recon_lowbd_diff`, `txfm2d_diff`, `txfm2d_simd_perm_diff`. **(c)** `___arcane_av1_idct64_impl_neon` 4616 NEON ops / 9913 instrs; `run_fwd1d_neon` 3639; `av1_fdct64_impl_neon` 3580; `run_inv1d_neon` 2649; `av1_idct32_impl_neon` 1920 | **YES, and asserted.** `txfm2d_simd_perm_diff` is the only test in the crate that asserts `simd_perms >= 1` + `scalar_perms >= 1`. Measured 25 permutations. It drives `av1_inv_txfm2d_add` (u16) and `av1_fwd_txfm2d` only; the u8 column pass is covered since 2026-07-28 by `inv_txfm2d_u8_simd_diff.rs`, which asserts BOTH its dispatch arms (i16-lane DCT and i32-lane ADST/IDTX) separately — see F3 |
 | **cdef** — `cdef_filter_16_w8`, `cdef_filter_16_w4` (u16) | `define(i16x8,u16x8), v3, neon, wasm128, -scalar` | **YES** | **(b)** both printed `arm::NeonToken` in `cdef_filter_diff`, `cdef_filter_simd_diff`, `cdef_frame_diff`, `cdef_lowbd_diff`. **(c)** `cdef_filter_16_w8` 667 NEON ops / 953 instrs; `_w4` 668 / 1075 | **YES** — `cdef_filter_simd_diff` entered NEON, 25 permutations. Asserts only `permutations_run >= 2` (F4) |
 | **cdef** — `cdef_filter_8_w8`, `cdef_filter_8_w4` (**u8, the bd8 decode walk**) | same | **YES** | **(b)** both printed `arm::NeonToken` under `cdef_lowbd_diff`; under `AOM_FORCE_SCALAR=1` the same binary printed **nothing** — the two tiers are directly A/B-observed. **(c)** `cdef_filter_8_w8` 667 / 988; `_w4` 667 / 1101 | **YES, and asserted (since 2026-07-28).** `cdef_lowbd_simd_diff.rs` drives the dispatching `cdef_filter_block_u8` against the never-dispatched scalar `cdef_filter_block`, 25 permutations × 3200 cases per width, with the same `simd_perms >= 1` guard. Frame-level `cdef_lowbd_diff` (vs REAL C lowbd + vs the u16 port) still pins the walk. See **F3** |
 | **loopfilter** — `lpf_impl` (u16 highbd) | `define(i32x4), v3, neon, wasm128, -scalar` | **YES** | **(b)** printed `arm::NeonToken` in `hbd_lpf_diff`, `lf_apply_diff`, `loopfilter_lowbd_diff`, `lpf_simd_diff`. **(c)** `___arcane_lpf_impl_neon` 597 NEON ops / 2294 instrs | **YES** — `lpf_simd_diff::hbd` entered NEON, 25 permutations. `permutations_run >= 2` only (F4) |
@@ -108,8 +109,8 @@ butterflies) — they are the only thing blocking the arm, and the `prims.rs` x8
 twin-module pattern (`prims.rs:535-545`) is the template.
 
 ### F3 — HIGH (correctness posture). Two bd8-primary kernels are pinned at one tier per test process
-**CDEF half FIXED 2026-07-28** (`crates/aom-dsp/tests/cdef_lowbd_simd_diff.rs`); the
-transform half is still open. Original finding:
+**FIXED IN FULL 2026-07-28** — CDEF half in `crates/aom-dsp/tests/cdef_lowbd_simd_diff.rs`,
+transform half in `crates/aom-dsp/tests/inv_txfm2d_u8_simd_diff.rs`. Original finding:
 
 `cdef_filter_8_w{4,8}` and the transform's `inv_col_pass_u8`/`inv_col_pass_u8_core` are
 **the** kernels the primary bd8 decode configuration runs, and neither has a
@@ -128,10 +129,44 @@ transform half is still open. Original finding:
   SIMD-only `eight` constant of each kernel makes the matching test fail on a
   single-pixel diff (`63` vs `62`), and disabling the counter fires the non-vacuity
   message — instrumentation reverted.
-* `txfm2d_simd_perm_diff` drives `av1_inv_txfm2d_add` (u16) and `av1_fwd_txfm2d`; the u8
+* ~~`txfm2d_simd_perm_diff` drives `av1_inv_txfm2d_add` (u16) and `av1_fwd_txfm2d`; the u8
   column pass is only reached by `inv_txfm2d_lowbd_diff` / `recon_lowbd_diff`, again at
-  the live tier. **STILL OPEN** — `crates/aom-dsp/src/transform/**` was under active
-  rewrite when the CDEF half landed, so `av1_inv_txfm2d_add_u8` was left alone.
+  the live tier.~~ **CLOSED:** `inv_txfm2d_u8_simd_diff.rs` drives `av1_inv_txfm2d_add_u8`
+  under `for_each_token_permutation` over the whole valid (tx_type × tx_size) matrix,
+  comparing every permutation's outputs byte-for-byte against the first — the same
+  reference shape `txfm2d_simd_perm_diff` uses, and for the same reason (there is
+  deliberately no scalar *implementation* of the pass; `inv_col_pass_u8_scalar` /
+  `inv_col_pass_u8_i16_scalar` decline, and the scalar twin is the driver's own
+  per-column loop).
+
+  Its point is that `try_inv_col_pass_u8` has **two** vector arms and covering one is half
+  a test: the **i16 arm** (`lowbd16::inv_col_pass_u8_i16`, 16 columns per vector, the
+  audited DCT4/8/16/32/64 column kernels — live NEON code only since `13b7c21`) and the
+  **i32 arm** (`inv_col_pass_u8`, 8 columns per vector, the ADST/FLIPADST/IDTX column
+  kernels). The selector is exactly `av1_vtx_tab[tx_type] == 0`, and the two tests
+  partition the matrix on it, each asserting its own side is non-empty and reached a
+  full-width lane group. The transcribed `VTX_TAB` is not trusted: a third test pins it
+  against the crate's public `inv_txfm_valid` (no ADST/FLIPADST column kernel exists at 32
+  points, and only DCT at 64, so validity at 8×32 / 16×64 reads the column class out
+  exactly). Domain: coefficients across ±2^20 plus the clamp-bound spike patterns, tight
+  AND strided u8 destinations with a pad guard (`inv_txfm2d_lowbd_diff` only ever passes
+  `stride == w`).
+
+  Proven to have teeth, per arm: `pix_hi` 255→254 inside `inv_col_pass_u8_core` fails the
+  **i32** test only; `rshift_mul(4)`→`(3)` inside `inv_col_pass_u8_i16_core` fails the
+  **i16** test only — mutual isolation, so each test demonstrably reaches its own arm and
+  only its own arm. Confirmed independently by audit method (b): a one-shot tier probe in
+  each core printed `arm::NeonToken` from inside the matching test and nothing from the
+  other. Zeroing the vector-tier counter fires the `simd_perms >= 1` message.
+  Instrumentation reverted.
+
+  **Structural note found while writing it:** the i16 arm's `ud_flip` branch is DEAD BY
+  CONSTRUCTION and no sweep can reach it — `ud_flip` is set only for the FLIPADST-vertical
+  tx_types (4, 6, 8, 14), every one of which has `vtx != 0` and is therefore on the i32
+  arm. Measured `ud_cells: 0` for i16 vs `41` for i32. The test asserts that invariant, so
+  the branch either stays unreachable or the sweep gets widened; it is exactly the "one
+  variant is a no-op by construction" trap that a liveness floor copied from the other arm
+  would walk into.
 
 Today both tiers *are* exercised, because CI runs the aarch64 aom-dsp suite twice — default
 dispatch and `AOM_FORCE_SCALAR=1` (`.github/workflows/ci.yml`, `test-macos-aarch64` matrix)
@@ -216,10 +251,10 @@ Also: on Darwin, `objdump` prints Apple syntax (`smin.4s v0, v1, v2`), so a
    on the i16 lane path (transform: ~12% decode / ~33% encode Ir; ARM currently at half lane width).
 2. **F4** — add `simd_perms >= 1` to the seven differentials that only check
    `permutations_run >= 2`. Cheap, and it is the exact guard whose absence hid the transform bug.
-3. **F3** — ~~give `cdef_filter_8_w{4,8}`~~ (DONE 2026-07-28, `cdef_lowbd_simd_diff.rs`)
-   and `av1_inv_txfm2d_add_u8` (still open) real `for_each_token_permutation`
-   differentials, so their tier coverage stops depending on the CI workflow's two
-   dispatch-mode legs (CDEF ~27% of q32 decode Ir).
+3. ~~**F3** — give `cdef_filter_8_w{4,8}` and `av1_inv_txfm2d_add_u8` real
+   `for_each_token_permutation` differentials, so their tier coverage stops depending on
+   the CI workflow's two dispatch-mode legs.~~ DONE 2026-07-28
+   (`cdef_lowbd_simd_diff.rs`, `inv_txfm2d_u8_simd_diff.rs`).
 4. **F6** — port `cdef_find_dir` to magetypes (~4.7% of q32 decode Ir, C has an AVX2 version);
    then the SATD/hadamard family.
 5. ~~**F7** — fix the stale `cdef_lowbd_diff.rs:28` comment (5 minutes; it actively
