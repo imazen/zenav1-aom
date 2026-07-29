@@ -39,6 +39,14 @@
 //! The differential sweeps this domain densely (all bd, all strength/damping
 //! combos, VERY_LARGE border mixes) plus the boundary values, at every token
 //! permutation.
+//!
+//! # Also in this module: `cdef_find_dir`'s partial sums
+//!
+//! The direction search's accumulation half has its own i16-lane kernel at the
+//! bottom of this file (`cdef_find_dir_partials`, SIMD_REACH_AUDIT F6). It does
+//! NOT share the filter kernels' *structural-domain* bit-exactness argument —
+//! its i16 fit rests on a **checked per-call value predicate** instead, so the
+//! entry is bit-identical for every input. See the section header there.
 
 use archmage::prelude::*;
 
@@ -856,5 +864,203 @@ fn cdef_filter_8_w8_impl(
             dst[row + j] = out[j] as u8;
         }
     }
+}
+
+
+// ===== cdef_find_dir — the 8x8 direction search partial sums =====
+//
+// `cdef_find_dir` is ~4.7 % of the q32 decode Ir and had no SIMD tier at all
+// (docs/SIMD_REACH_AUDIT_2026-07-28.md finding F6); C reaches
+// `cdef_find_dir_avx2`. What this kernel ports is the PARTIAL-SUM half — the
+// eight skewed accumulations over the 8x8 block. The cost fold, the argmax and
+// its normative tie-break stay in ONE shared copy
+// (`crate::cdef::find_dir_cost_fold`), so no bitstream decision is duplicated.
+//
+// # Why i16 lanes, and why that is still unconditionally bit-identical
+//
+// The scalar port accumulates in i32 because `cdef_find_dir_c` uses `int`.
+// LLVM already vectorises its per-row slice adds, so an i32-lane rewrite buys
+// nothing — the win is halving the lane width. i16 lanes are exact **iff**
+// every partial fits i16, which follows from a single checked condition,
+// `(px >> coeff_shift) <= 255` (`crate::cdef::cdef_find_dir_simd_eligible`,
+// evaluated per call — an assumption would be a silent-wrong-pixel bug, so
+// there is none):
+//
+// * `line = (px >> cs) - 128` is then in `[-128, 127]`.
+// * `partial[0]`, `partial[4]`, `partial[5]`, `partial[6]`, `partial[7]` take
+//   at most 8 line contributions per slot -> `|.| <= 1024`.
+// * `partial[2][i]` is one row's sum -> `|.| <= 1024`.
+// * `partial[1]`, `partial[3]` accumulate pair folds (`|pf| <= 256`), at most
+//   8 per slot -> `|.| <= 2048`.
+//
+// All well inside i16, so each i16 partial holds the SAME INTEGER as the
+// scalar port's i32 partial, and the shared fold (which widens back to i32 and
+// keeps the C's `wrapping_*` ops) produces the same `(dir, var)` bit for bit.
+// Outside the checked condition the entry runs `cdef_find_dir_scalar` instead;
+// nothing about the frame walk's behaviour is assumed.
+//
+// # Two rewrites that drop work the scalar port pays for
+//
+// 1. **No lane reversals.** The scalar port materialises `rev` (reversed row,
+//    for d4) and `pfr` (reversed pair fold, for d3). Here d3/d4 accumulate into
+//    REVERSED slot order instead — `q4[m] = partial[4][14 - m]`, i.e.
+//    `q4[7 - i + j] += row[j]`, and `q3[m] = partial[3][10 - m]`, i.e.
+//    `q3[7 - i + k] += pf[k]` — which is a plain forward slice add at a
+//    per-row offset. `cdef_find_dir` undoes the flip in its accessor.
+// 2. **Pair folding for d5/d6/d7.** Their per-row offsets are `3 - i/2`, `0`
+//    and `i/2`, so rows `2k` and `2k+1` share one offset: add the two rows
+//    once (`tmp`) and slice-add `tmp` instead of each row (libaom's SIMD does
+//    the same). Wrapping adds commute, so both rewrites are exact regroupings.
+//
+// Remaining shape gap vs `cdef_find_dir_avx2`: it keeps the accumulators in
+// registers and shifts LANES (`v128_shl_n_byte`), where this kernel keeps them
+// in a stack table and shifts the ADDRESS. magetypes 0.9.27 has no lane
+// shift / permute / integer widen for i16 lanes (checked against the 0.9.28
+// public-API snapshot), so register residency needs per-tier `#[rite]`
+// primitives — chunk 2, see benchmarks/cdef_find_dir_simd_2026-07-28.md.
+
+/// Dispatch entry for the [`crate::cdef::cdef_find_dir`] partial sums.
+///
+/// On `true`, `pa[d]` holds direction `d`'s partial sums — slots `0..=14` for
+/// d0/d4, `0..=10` for d1/d3/d5/d7, `0..=7` for d2/d6 — with **d3 and d4 in
+/// reversed slot order** (see the module note above). On `false` nothing was
+/// computed and the caller must run the scalar search.
+pub(crate) fn cdef_find_dir_partials(
+    img: &[u16],
+    stride: usize,
+    coeff_shift: i32,
+    pa: &mut [[i16; 16]; 8],
+) -> bool {
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    incant!(
+        cdef_find_dir_partials_impl(img, stride, coeff_shift, pa),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+/// Scalar tier: decline, so the entry runs the transcribed
+/// [`crate::cdef::cdef_find_dir_scalar`] — the same "scalar tier IS the scalar
+/// port" contract the filter kernels above hold, expressed as a route rather
+/// than a second transcription. This is what `AOM_FORCE_SCALAR=1` reaches.
+fn cdef_find_dir_partials_impl_scalar(
+    _t: archmage::ScalarToken,
+    _img: &[u16],
+    _stride: usize,
+    _coeff_shift: i32,
+    _pa: &mut [[i16; 16]; 8],
+) -> bool {
+    false
+}
+
+/// `v >> sh` (logical) for a per-call runtime `sh` in `0..=7`; lane-const
+/// shifts only exist as const generics. Same shape as `shr_by!` above.
+macro_rules! shr_u16_by {
+    ($v:expr, $sh:expr) => {
+        match $sh {
+            0 => $v,
+            1 => $v.shr_logical_const::<1>(),
+            2 => $v.shr_logical_const::<2>(),
+            3 => $v.shr_logical_const::<3>(),
+            4 => $v.shr_logical_const::<4>(),
+            5 => $v.shr_logical_const::<5>(),
+            6 => $v.shr_logical_const::<6>(),
+            _ => $v.shr_logical_const::<7>(),
+        }
+    };
+}
+
+#[magetypes(define(i16x8, u16x8), v3, neon, wasm128, -scalar)]
+fn cdef_find_dir_partials_impl(
+    token: Token,
+    img: &[u16],
+    stride: usize,
+    coeff_shift: i32,
+    pa: &mut [[i16; 16]; 8],
+) -> bool {
+    // ---- the checked eligibility condition (see the module note) ----
+    // `(px >> cs) <= 255` for every pixel <=> `px <= (256 << cs) - 1`. The
+    // shift bound also keeps that limit inside u16.
+    if !(0..=7).contains(&coeff_shift) {
+        return false;
+    }
+    let limit = u16x8::splat(token, ((256u32 << coeff_shift) - 1) as u16);
+    let mut over = u16x8::zero(token);
+    let mut raw = [u16x8::zero(token); 8];
+    for (i, slot) in raw.iter_mut().enumerate() {
+        let o = i * stride;
+        let r = u16x8::from_slice(token, &img[o..o + 8]);
+        over |= r.simd_gt(limit);
+        *slot = r;
+    }
+    if over.any_true() {
+        return false;
+    }
+
+    // ---- lines: (px >> cs) - 128, exactly the scalar port's `row` ----
+    let c128 = i16x8::splat(token, 128);
+    let mut line = [i16x8::zero(token); 8];
+    for (slot, r) in line.iter_mut().zip(raw) {
+        *slot = shr_u16_by!(r, coeff_shift).bitcast_i16x8() - c128;
+    }
+
+    *pa = [[0i16; 16]; 8];
+
+    // Load / add / store one 8-lane run at `off` (every `off` here is <= 7, so
+    // the fixed-size-array conversion is in bounds by construction).
+    let add8 = |acc: &mut [i16; 16], off: usize, v: i16x8| {
+        let dst: &mut [i16; 8] = (&mut acc[off..off + 8]).try_into().unwrap();
+        (i16x8::load(token, &*dst) + v).store(dst);
+    };
+    // pf[k] = row[2k] + row[2k+1] in the low 4 lanes, 0 in the high 4 (the
+    // zero lanes land on unread slots, and adding 0 is a no-op regardless).
+    let fold = |v: i16x8| -> i16x8 {
+        let a = v.to_array();
+        i16x8::from_array(
+            token,
+            [
+                a[0].wrapping_add(a[1]),
+                a[2].wrapping_add(a[3]),
+                a[4].wrapping_add(a[5]),
+                a[6].wrapping_add(a[7]),
+                0,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+
+    let mut a6 = i16x8::zero(token);
+    for k in 0..4usize {
+        let (i0, i1) = (2 * k, 2 * k + 1);
+        let (r0, r1) = (line[i0], line[i1]);
+
+        // d0: partial[0][i + j] += row[j]
+        add8(&mut pa[0], i0, r0);
+        add8(&mut pa[0], i1, r1);
+        // d4 reversed: q4[7 - i + j] += row[j]
+        add8(&mut pa[4], 7 - i0, r0);
+        add8(&mut pa[4], 7 - i1, r1);
+
+        let (p0, p1) = (fold(r0), fold(r1));
+        // d1: partial[1][i + k] += pf[k]
+        add8(&mut pa[1], i0, p0);
+        add8(&mut pa[1], i1, p1);
+        // d3 reversed: q3[7 - i + k] += pf[k]
+        add8(&mut pa[3], 7 - i0, p0);
+        add8(&mut pa[3], 7 - i1, p1);
+
+        // d2: partial[2][i] = sum(row)
+        pa[2][i0] = r0.reduce_add();
+        pa[2][i1] = r1.reduce_add();
+
+        // d5/d6/d7 share one offset per ROW PAIR, so fold the pair once.
+        let tmp = r0 + r1;
+        add8(&mut pa[5], 3 - k, tmp); // offset 3 - i/2
+        add8(&mut pa[7], k, tmp); // offset i/2
+        a6 += tmp; // offset 0
+    }
+    a6.store((&mut pa[6][..8]).try_into().unwrap());
+    true
 }
 

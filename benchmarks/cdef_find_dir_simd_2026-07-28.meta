@@ -1,0 +1,40 @@
+measurement: wall-clock A/B of `cdef::cdef_find_dir` after giving its
+  partial-sum half an i16-lane `#[magetypes]` kernel (SIMD_REACH_AUDIT F6).
+  Attribution is a TWO-BUILD ALTERNATION, not a single before/after pair:
+  `AOM_FORCE_SCALAR=1` is a no-op for the NEON tier on this box (documented in
+  crates/aom-dsp-bench/benches/dsp_kernels.rs), so the baseline must be a
+  separate BUILD. Both bench binaries were built from the same worktree and
+  staged to ~/tmp/fd_bench/{before,after} (sha1 0c634445 / aab03fc9 — verified
+  distinct), then run strictly alternating before,after x5 on the `cdef` group.
+  The `cdef` group carries its own CONTROL: `filter_u8_08x08` and
+  `filter_u8_04x04` are untouched by this change and are timed inside the same
+  interleaved rounds as `find_dir_08x08`.
+git commit (baseline): 47aba59 (origin/main at capture)
+git commit (measured): the commit this .meta lands in (worktree tree)
+date: 2026-07-28 (UTC ~03:55-04:05Z / 20:55-21:05 local)
+host: Apple M4 Pro, 12 cores, macOS 26.5.2, aarch64-apple-darwin
+  load average at capture: 1.39 (1m) / 1.85 (5m) / 2.29 (15m) before the
+  alternation; 1.33/1.94/2.34 after. NOTE: a concurrent agent was running
+  `zenav1-svt-dsp` benches on this box during the first whole-suite pair —
+  zenbench's exclusive lock serialised them, but that pair's control rows are
+  correspondingly noisy and are reported as such in the .md.
+toolchain: rustc via the workspace default; `bench` profile (release);
+  NO `-C target-cpu=native` (runtime dispatch is what users get).
+
+COMMANDS (exact):
+  # baseline build (git stash of the change)
+  cargo bench -p zenav1-aom-dsp-bench --bench dsp_kernels --no-run
+  cp target/release/deps/dsp_kernels-b36f19fb97b442dd ~/tmp/fd_bench/before
+  # landing build (git stash pop)
+  cargo bench -p zenav1-aom-dsp-bench --bench dsp_kernels --no-run
+  cp target/release/deps/dsp_kernels-b36f19fb97b442dd ~/tmp/fd_bench/after
+  # alternation
+  for i in 1 2 3 4 5; do for side in before after; do
+      nice -n 19 ./$side --group=cdef --format=csv > run_${side}_$i.csv; done; done
+  # whole-suite pair (reported as the secondary/noisy evidence)
+  nice -n 19 cargo bench -q -p zenav1-aom-dsp-bench --bench dsp_kernels -- --save-baseline=fd_before
+  nice -n 19 cargo bench -q -p zenav1-aom-dsp-bench --bench dsp_kernels -- --baseline=fd_before
+
+CAVEAT: run 1 of each side is a cold-start outlier (+25 % on every row,
+  both sides); medians over n=5 and the min-of-5 agree to 0.3 pp, so the
+  headline uses the median and quotes the min as a cross-check.

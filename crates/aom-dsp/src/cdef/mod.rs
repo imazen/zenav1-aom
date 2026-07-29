@@ -394,13 +394,79 @@ pub fn cdef_filter_block_16_scalar(
     );
 }
 
-/// Bit-exact port of `cdef_find_dir_c`. Operates on an 8x8 window of `img`
-/// (row stride `stride`). Returns `(best_dir, var)`.
+/// `cdef_find_dir_c`'s direction search — the DISPATCHING entry (the one the
+/// frame walk and `pickcdef` call). Operates on an 8x8 window of `img` (row
+/// stride `stride`); returns `(best_dir, var)`.
+///
+/// Routing: [`cdef_find_dir_simd_eligible`] is a **checked** value predicate,
+/// not a domain assumption. When it holds, the i16-lane magetypes kernel
+/// ([`simd::cdef_find_dir_partials`]) computes the partial-sum table and the
+/// shared cost fold runs on values that are *equal integers* to the scalar
+/// port's; otherwise (and under `AOM_FORCE_SCALAR`) the whole search falls to
+/// [`cdef_find_dir_scalar`]. So this entry is bit-identical to the scalar port
+/// for EVERY input, with no range reasoning — see `cdef/simd.rs` for the
+/// i16-fit proof and `tests/cdef_find_dir_simd_diff.rs` for the per-tier gate.
+pub fn cdef_find_dir(img: &[u16], stride: usize, coeff_shift: i32) -> (i32, i32) {
+    let mut pa = [[0i16; 16]; 8];
+    if simd::cdef_find_dir_partials(img, stride, coeff_shift, &mut pa) {
+        // Dirs 3 and 4 are accumulated in REVERSED slot order (the kernel's
+        // `q3`/`q4`, which is what lets it drop the two per-row lane reversals
+        // the scalar port builds); the index flip here hands the fold the C's
+        // `partial[d][k]` verbatim, so the fold needs no symmetry argument.
+        return find_dir_cost_fold(|d, k| match d {
+            3 => pa[3][10 - k] as i32,
+            4 => pa[4][14 - k] as i32,
+            _ => pa[d][k] as i32,
+        });
+    }
+    cdef_find_dir_scalar(img, stride, coeff_shift)
+}
+
+/// `true` when every pixel of the 8x8 window satisfies `(px >> coeff_shift) <=
+/// 255`, i.e. the exact condition under which the i16-lane SIMD partial sums
+/// hold the same integers as the scalar port's i32 ones (proof in
+/// `cdef/simd.rs`). Exposed so the SIMD differential can assert on the REAL
+/// predicate instead of a test-side replica.
+///
+/// The real decoder walk always satisfies it: `coeff_shift == bd - 8` and the
+/// find_dir window is interior plane data (`cdef/frame.rs` fills the borders
+/// with [`CDEF_VERY_LARGE`], and AV1's `mi_rows`/`mi_cols` are always even, so
+/// every dlist 8x8 lands inside the copied region). Nothing depends on that
+/// being true, though — this is checked per call.
+pub fn cdef_find_dir_simd_eligible(img: &[u16], stride: usize, coeff_shift: i32) -> bool {
+    if !(0..=7).contains(&coeff_shift) {
+        return false;
+    }
+    let limit = ((256u32 << coeff_shift) - 1) as u16;
+    (0..8).all(|i| img[i * stride..i * stride + 8].iter().all(|&p| p <= limit))
+}
+
+/// Test observer: runs the SIMD partial-sum kernel and reports whether it
+/// ACCEPTED, i.e. whether [`cdef_find_dir`] would take the vector path for this
+/// window at the currently-summonable tier.
+///
+/// Not API — it exists so `tests/cdef_find_dir_simd_diff.rs` can assert its own
+/// non-vacuity from *inside its own test binary*. That differential can
+/// otherwise only observe the entry, and the entry is bit-identical whichever
+/// route it takes, so a kernel that DECLINED every window would leave it
+/// comparing the scalar port against itself — the F4 vacuity failure one level
+/// deeper than the token permutation. Reading it in-binary is also what keeps
+/// the check race-free: `for_each_token_permutation` mutates process-global
+/// token availability, so a liveness check that lived in the LIBRARY test
+/// binary would race `dispatch::tests`' disable sweep (observed flaky).
+#[doc(hidden)]
+pub fn cdef_find_dir_took_simd_path(img: &[u16], stride: usize, coeff_shift: i32) -> bool {
+    let mut pa = [[0i16; 16]; 8];
+    simd::cdef_find_dir_partials(img, stride, coeff_shift, &mut pa)
+}
+
+/// Bit-exact port of `cdef_find_dir_c`, **never SIMD-routed** — the reference
+/// side of `tests/cdef_find_dir_simd_diff.rs` and the fallback [`cdef_find_dir`]
+/// takes outside [`cdef_find_dir_simd_eligible`]. Same relationship to
+/// [`cdef_find_dir`] that [`cdef_filter_block`] has to [`cdef_filter_block_u8`].
 // The indexed loops mirror the C's cost/partial table walk verbatim.
 #[allow(clippy::needless_range_loop)]
-pub fn cdef_find_dir(img: &[u16], stride: usize, coeff_shift: i32) -> (i32, i32) {
-    const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
-    let mut cost = [0i32; 8];
+pub fn cdef_find_dir_scalar(img: &[u16], stride: usize, coeff_shift: i32) -> (i32, i32) {
     let mut partial = [[0i32; 15]; 8];
 
     // Per-ROW slice adds instead of the per-pixel scattered adds. For a fixed
@@ -445,39 +511,58 @@ pub fn cdef_find_dir(img: &[u16], stride: usize, coeff_shift: i32) -> (i32, i32)
         slice_add(&mut partial[7][o7..o7 + 8], &row);
     }
 
+    find_dir_cost_fold(|d, k| partial[d][k])
+}
+
+/// The `cdef_find_dir_c` cost fold + argmax + `var`, verbatim, over an abstract
+/// partial-sum table. `get(d, k)` must return the C's `partial[d][k]`.
+///
+/// Shared by the scalar port and the SIMD path so there is exactly ONE copy of
+/// the normative tie-break: the argmax is a strict `>` scan from
+/// `best_cost = 0, best_dir = 0`, so the LOWEST-numbered direction wins a tie
+/// (and an all-non-positive cost vector yields dir 0). A different comparison
+/// order is a different bitstream decision, not a rounding difference.
+// The indexed loops mirror the C's cost/argmax walk verbatim.
+#[allow(clippy::needless_range_loop)]
+#[inline(always)]
+fn find_dir_cost_fold(get: impl Fn(usize, usize) -> i32) -> (i32, i32) {
+    const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
+    let mut cost = [0i32; 8];
+    let partial = |d: usize, k: usize| get(d, k);
+
     let sq = |a: i32| a.wrapping_mul(a);
     for i in 0..8 {
-        cost[2] = cost[2].wrapping_add(sq(partial[2][i]));
-        cost[6] = cost[6].wrapping_add(sq(partial[6][i]));
+        cost[2] = cost[2].wrapping_add(sq(partial(2, i)));
+        cost[6] = cost[6].wrapping_add(sq(partial(6, i)));
     }
     cost[2] = cost[2].wrapping_mul(DIV_TABLE[8]);
     cost[6] = cost[6].wrapping_mul(DIV_TABLE[8]);
 
     for i in 0..7 {
         cost[0] = cost[0].wrapping_add(
-            sq(partial[0][i])
-                .wrapping_add(sq(partial[0][14 - i]))
+            sq(partial(0, i))
+                .wrapping_add(sq(partial(0, 14 - i)))
                 .wrapping_mul(DIV_TABLE[i + 1]),
         );
         cost[4] = cost[4].wrapping_add(
-            sq(partial[4][i])
-                .wrapping_add(sq(partial[4][14 - i]))
+            sq(partial(4, i))
+                .wrapping_add(sq(partial(4, 14 - i)))
                 .wrapping_mul(DIV_TABLE[i + 1]),
         );
     }
-    cost[0] = cost[0].wrapping_add(sq(partial[0][7]).wrapping_mul(DIV_TABLE[8]));
-    cost[4] = cost[4].wrapping_add(sq(partial[4][7]).wrapping_mul(DIV_TABLE[8]));
+    cost[0] = cost[0].wrapping_add(sq(partial(0, 7)).wrapping_mul(DIV_TABLE[8]));
+    cost[4] = cost[4].wrapping_add(sq(partial(4, 7)).wrapping_mul(DIV_TABLE[8]));
 
     let mut i = 1;
     while i < 8 {
         for j in 0..5 {
-            cost[i] = cost[i].wrapping_add(sq(partial[i][3 + j]));
+            cost[i] = cost[i].wrapping_add(sq(partial(i, 3 + j)));
         }
         cost[i] = cost[i].wrapping_mul(DIV_TABLE[8]);
         for j in 0..3 {
             cost[i] = cost[i].wrapping_add(
-                sq(partial[i][j])
-                    .wrapping_add(sq(partial[i][10 - j]))
+                sq(partial(i, j))
+                    .wrapping_add(sq(partial(i, 10 - j)))
                     .wrapping_mul(DIV_TABLE[2 * j + 2]),
             );
         }
