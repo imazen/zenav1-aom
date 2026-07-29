@@ -73,15 +73,16 @@
 
 mod hand_v3;
 mod inv1d_v3_gen;
-// The bd8 i16-lane row/column specialization is x86-64 only for now: its
-// helpers are raw `core::arch::x86_64` pack/unpack/madd cross-lane ops that
-// have no magetypes expression and no NEON twin yet. aarch64 keeps the (fully
-// correct, i32-lane) generic path above — see the `lowbd16` module docs.
-#[cfg(target_arch = "x86_64")]
+// The bd8 i16-lane row/column specialization — 16 lanes per vector where the
+// i32 pass gets 8. Cross-architecture since 2026-07-28: like everything else
+// here it is ONE `#[magetypes]` body per kernel/driver, with the ops the
+// generic magetypes API cannot express (saturating add/sub, saturating narrow,
+// widening multiply-accumulate, lane reverse — audited absent, see the
+// `prims16` docs) supplied per tier by `prims16`.
 mod inv1d_v3_i16_gen;
-#[cfg(target_arch = "x86_64")]
 mod lowbd16;
 pub(crate) mod prims;
+mod prims16;
 mod txfm1d_v3_gen;
 
 use archmage::prelude::*;
@@ -357,17 +358,19 @@ pub(crate) fn try_inv_row_pass(
     // the same row-major i32 `buf`, so every column pass (i16 DCT or i32
     // iadst/identity) reads byte-identical values.
     //
-    // x86-64 only: `lowbd16`'s helpers are raw AVX2 pack/unpack/madd cross-lane
-    // ops with no magetypes expression and no NEON twin yet. On aarch64 this
-    // arm simply doesn't exist and the i32 pass below runs — same output, one
-    // lane batch instead of two.
-    #[cfg(target_arch = "x86_64")]
+    // Both vector tiers run it (AVX2 and NEON — see the `prims16` docs); the
+    // `scalar` arm declines, which routes back to the i32 pass below and from
+    // there to the driver's own loop.
     if row_clamp == 16 && stage_range.iter().all(|&b| b == 16) && row_n % 16 == 0 {
-        if let Some(t) = X64V3Token::summon() {
-            if let Some(k16) = lowbd16::inv_kernel_i16(txfm_type_row) {
-                debug_assert_eq!(lowbd16::inv_kernel_i16_n(k16), col_n);
-                debug_assert!((0..=2).contains(&shift0_bit));
-                lowbd16::inv_row_pass_i16(t, k16, mod_input, buf, col_n, row_n, rect1, shift0_bit);
+        if let Some(k16) = lowbd16::inv_kernel_i16(txfm_type_row) {
+            debug_assert_eq!(lowbd16::inv_kernel_i16_n(k16), col_n);
+            debug_assert!((0..=2).contains(&shift0_bit));
+            if incant!(
+                lowbd16::inv_row_pass_i16(
+                    k16, mod_input, buf, col_n, row_n, rect1, shift0_bit
+                ),
+                [v3, neon, scalar]
+            ) {
                 return true;
             }
         }
@@ -926,19 +929,21 @@ pub(crate) fn try_inv_col_pass_u8(
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     // Phase C: the audited DCT column kernels run on i16 lanes (16 columns per
     // vector). Preconditions are the bd8 structural constants — asserted, not
-    // assumed: every caller of the u8 entry passes exactly these. x86-64 only
-    // (see `try_inv_row_pass`); aarch64 takes the i32 pass below.
-    #[cfg(target_arch = "x86_64")]
-    if let Some(t) = X64V3Token::summon() {
-        if let Some(k16) = lowbd16::inv_kernel_i16(txfm_type_col) {
-            debug_assert_eq!(lowbd16::inv_kernel_i16_n(k16), row_n);
-            debug_assert!(stage_range.iter().all(|&b| b == 16));
-            if shift1_bit == 4 && col_clamp == 16 {
+    // assumed: every caller of the u8 entry passes exactly these. Both vector
+    // tiers run it (see `try_inv_row_pass`); the `scalar` arm declines.
+    if let Some(k16) = lowbd16::inv_kernel_i16(txfm_type_col) {
+        debug_assert_eq!(lowbd16::inv_kernel_i16_n(k16), row_n);
+        debug_assert!(stage_range.iter().all(|&b| b == 16));
+        if shift1_bit == 4
+            && col_clamp == 16
+            && incant!(
                 lowbd16::inv_col_pass_u8_i16(
-                    t, k16, buf, output, stride, col_n, row_n, ud_flip, lr_flip,
-                );
-                return true;
-            }
+                    k16, buf, output, stride, col_n, row_n, ud_flip, lr_flip
+                ),
+                [v3, neon, scalar]
+            )
+        {
+            return true;
         }
     }
     let Some(kernel) = inv_kernel(txfm_type_col) else {
