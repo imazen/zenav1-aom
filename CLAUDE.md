@@ -1658,6 +1658,37 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
 - **CI:** `test-macos-aarch64` stays scoped to `aom-dsp` until roots #2 and #3 close — see
   the scoping comment in `.github/workflows/ci.yml`, which now names the residual set.
 
+### KB-20 — Encoder: bd10/bd12 x `--cpu-used>=8` PANICS — the hbd nonrd estimate arm is unported
+- **Found 2026-07-30** by the speed axis of the config-permutation gate (`9a996b9`).
+- `crates/aom-encode/src/nonrd_pickmode.rs:602` is a hard `assert!(env.bd == 8, "HANDOFF: hbd
+  estimate arm (av1_quantize_fp + fp scans) not ported")`. Speeds 8 and 9 use the nonrd
+  PICKMODE path (KB-12), so **any bd10/bd12 encode at cpu-used >= 8 panics** — on a stream real
+  aomenc produces without complaint.
+- **This is worse than a divergence: it is a panic on valid input.** PARITY.md §A lists
+  cpu-used 8 and 9 as byte-identical, and separately lists bd10/bd12 as byte-identical — but
+  those two claims were each established on their OWN grid and never crossed. The panic sat in
+  the gap between two green rows. That is the whole thesis of the permutation work.
+- Status: bd10 x speed >= 8 is **unimplemented, not divergent** — do not report it as a
+  byte-mismatch. The gate pins the boundary so it cannot silently widen.
+- **Fix direction:** port the hbd arm (`av1_highbd_quantize_fp` + the fp scans) the way the
+  deltaq-mode-3 landing did for `av1_set_mb_wiener_variance` — that is the in-tree precedent
+  for "the only bd8-specific step is the FP-quantize; everything else was already
+  bd-parameterized".
+
+### KB-21 — Encoder: cpu-4/5 is the fragile band — 3 of 5 contexts diverge at STOCK knobs
+- **Found 2026-07-30** by the speed axis (`9a996b9`). Not a knob-combination bug: these
+  diverge with **every knob at its default**.
+- 3 of 5 contexts are byte-identical at speeds 0-3 AND 6-9 but diverge at 4 and 5. The nonrd
+  speeds (8/9), which look like the risky end, are clean.
+- **PARITY.md §A lists `--cpu-used=4` and `=5` as 64/64 byte-identical** — on the textured
+  synthetic grid those rows were established on. These are different contexts, so the §A rows
+  are not falsified; what is falsified is reading them as speed-4/5 coverage in general.
+- **Suspect list is one field.** The 4->5 speed-feature delta is `multi_winner_mode_type`
+  (2 -> 1), so winner-mode is the entire search space for a root cause. Closing it would
+  promote 3 contexts into the gated set and likely close several of the 8 speed-specific knob
+  combination divergences also pinned by that landing (3/63 at cpu-4, 5/63 at cpu-8).
+- Pinned self-promoting; no encoder change made.
+
 ### KB-18 — Encoder: SB128 x `--max-partition-size=32` performs a `restore_context` that C skips — pinned open
 - **Found 2026-07-30** by the size axis of the config-permutation gate (`fc44646`).
 - **The port asserts what C treats as a condition.** `crates/aom-encode/src/partition_pick.rs:3056`
