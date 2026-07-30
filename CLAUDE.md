@@ -1658,6 +1658,36 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
 - **CI:** `test-macos-aarch64` stays scoped to `aom-dsp` until roots #2 and #3 close — see
   the scoping comment in `.github/workflows/ci.yml`, which now names the residual set.
 
+### KB-18 — Encoder: SB128 x `--max-partition-size=32` performs a `restore_context` that C skips — pinned open
+- **Found 2026-07-30** by the size axis of the config-permutation gate (`fc44646`).
+- **The port asserts what C treats as a condition.** `crates/aom-encode/src/partition_pick.rs:3056`
+  carries `debug_assert!(bsize <= cfg.max_partition_size || bsize == env.sb_size)` with the
+  comment *"always true here"*. It is NOT always true: C's SPLIT-stage restore
+  (`partition_search.c:4646`) is gated *conditionally* on exactly that predicate, so where the
+  predicate is false C SKIPS the restore and the port performs it. In release builds
+  (`debug_assert` compiled out) that is a silent behavioural divergence, not a crash.
+- **Reachable only at SB128.** At SB64 the window between a 32px cap and the 64px SB size is
+  empty, so the predicate cannot be false — which is exactly why 2,617 cells at SB64 never saw
+  it. It took adding SB128 size classes to reach.
+- **Status:** rows are skipped via `SizeCtx::skip_reason` with the source citation rather than
+  silently dropped; no encoder change was made (the finding agent did not own `aom-encode/src`).
+- **Fix direction:** make the restore conditional per `partition_search.c:4646`, delete the
+  assert, drop the `skip_reason`, then run `--max-partition-size=32` on SB128 at full strength.
+  Encoder behaviour change → re-verify the full byte-exactness envelope, not just this gate.
+
+### KB-19 — Encoder: `default_min_partition_size`'s >=2160p arm is UNMODELLED — open, unreachable in the current gate
+- **Found 2026-07-30** by the same size-axis cross-check, in the direction that matters: it
+  compared libaom's framesize-dependent derivations against the port's BOTH ways, rather than
+  only checking that ported thresholds were right.
+- libaom sets `default_min_partition_size = BLOCK_8X8` at >=2160p (`speed_features.c:187-189`).
+  The port's `speed_features.rs:471` leaves it `BLOCK_4X4` unconditionally — no framesize arm.
+- **Every other framesize-dependent derivation was verified either correctly ported or dead on
+  the allintra-intra envelope** (auto_max_partition / ml_* breakouts / use_downsampled_sad /
+  partition_search_breakout are inter-only or speed-gated; the full table is in
+  `docs/CONFIG_PERMUTATION_DESIGN_2026-07-30.md`). This is the one real omission.
+- **Not reachable in the default tier** — a 2160x2160 cell costs ~250 s. Belongs in an
+  `--ignored` nightly tier; it is the only framesize class the gate cannot speak about.
+
 ### KB-17 — Encoder: `use_screen_content_tools` is hardcoded `false`, so `--use-intra-default-tx-only=1` diverges on ALL screen-detected content — ROOT-CAUSED, pinned open
 - **Root cause (found 2026-07-30, one line):** `crates/aom-encode/src/speed_features.rs:991`
   hardcodes `use_screen_content_tools: false` with the comment *"Non-screen textured envelope;
