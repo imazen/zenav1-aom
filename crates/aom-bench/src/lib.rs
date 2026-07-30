@@ -37,7 +37,9 @@ pub mod rd_close;
 use aom_encode::encode_intra::TrellisOptType;
 use aom_encode::encode_sb::SbEncodeEnv;
 use aom_encode::intra_uv_rd::UvLoopPolicy;
-use aom_encode::lf_search::{LfSearchFrame, build_lf_mi_grid, pick_filter_level};
+use aom_encode::lf_search::{
+    LfSearchFrame, build_lf_mi_grid, pick_filter_level, pick_filter_level_from_q,
+};
 use aom_encode::obu_assemble::assemble_frame_obu_payload_single_tile;
 use aom_encode::pack::{LrPackParams, pack_tile, pack_tile_lr};
 use aom_encode::partition_pick::{IntrabcFrameCfg, PickFrameCfg};
@@ -1709,7 +1711,22 @@ impl EncodeCell {
             mi_cols,
             delta_lf_present: dlf_present,
         };
-        let derived_lf = pick_filter_level(&lf_frame, allintra, 0, allintra && speed >= 4);
+        // `lpf_sf.lpf_pick`: LPF_PICK_FROM_FULL_IMAGE (DUAL) at allintra speed
+        // 0..=3, ..._NON_DUAL at 4/5 (speed_features.c:496), and the CLOSED-FORM
+        // LPF_PICK_FROM_Q at speed >= 6 (:559) — no search at all, the level is
+        // a fit on the AC quantizer. Without the >= 6 arm this harness ran the
+        // search at every speed, so EVERY speed >= 6 cell diverged in the frame
+        // header's deblock levels while its tile payload was already
+        // byte-identical (measured 2026-07-30: diag128 cq32 cpu-6, port 1297 B
+        // vs C 1297 B, first diff at payload byte 2). The aom-encode e2e gate
+        // has carried this arm since the speed-6 landing
+        // (`encoder_gate_e2e_byte_match.rs`, `pick_filter_level_from_q`,
+        // oracle-validated by `speed6_prep_lf_from_q_matches_real_aomenc`).
+        let derived_lf = if allintra && speed >= 6 {
+            pick_filter_level_from_q(qindex, bd, allintra, 0)
+        } else {
+            pick_filter_level(&lf_frame, allintra, 0, allintra && speed >= 4)
+        };
         // C gates av1_pick_filter_level on `!coded_lossless && !allow_intrabc`
         // (picklpf.c); a screen-content intrabc frame forces the deblock levels
         // to 0 (the decoder does the same; LR is off ⇒ the LR stage below is
