@@ -1689,45 +1689,166 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   combination divergences also pinned by that landing (3/63 at cpu-4, 5/63 at cpu-8).
 - Pinned self-promoting; no encoder change made.
 
-### KB-18 — Encoder: SB128 x `--max-partition-size=32` performs a `restore_context` that C skips — pinned open
+### KB-18 — Encoder: SB128 x `--max-partition-size=32` performs a `restore_context` that C skips — FIXED ✅ 2026-07-30
 - **Found 2026-07-30** by the size axis of the config-permutation gate (`fc44646`).
-- **The port asserts what C treats as a condition.** `crates/aom-encode/src/partition_pick.rs:3056`
-  carries `debug_assert!(bsize <= cfg.max_partition_size || bsize == env.sb_size)` with the
-  comment *"always true here"*. It is NOT always true: C's SPLIT-stage restore
-  (`partition_search.c:4646`) is gated *conditionally* on exactly that predicate, so where the
-  predicate is false C SKIPS the restore and the port performs it. In release builds
-  (`debug_assert` compiled out) that is a silent behavioural divergence, not a crash.
+- **Root cause — the port asserted what C treats as a condition.**
+  `crates/aom-encode/src/partition_pick.rs` carried
+  `debug_assert!(bsize <= cfg.max_partition_size || bsize == env.sb_size)` with the comment
+  *"always true here"*, then restored unconditionally. It is NOT always true: C's SPLIT-stage
+  restore is gated *conditionally* on exactly that predicate —
+  `if (bsize <= x->sb_enc.max_partition_size || bsize == cm->seq_params->sb_size)
+  av1_restore_context(x, x_ctx, mi_row, mi_col, bsize, av1_num_planes(cm));`
+  (`partition_search.c:4645-4646`, with C's own comment naming the two cases: block sizes at
+  or under the max-partition cap get a dry-run encode, and the SB-sized block gets the final
+  encode). Where the predicate is false C SKIPS the restore and the port performed it. In
+  release builds (`debug_assert` compiled out) that was a silent behavioural divergence, not
+  a crash.
 - **Reachable only at SB128.** At SB64 the window between a 32px cap and the 64px SB size is
   empty, so the predicate cannot be false — which is exactly why 2,617 cells at SB64 never saw
   it. It took adding SB128 size classes to reach.
-- **Status:** rows are skipped via `SizeCtx::skip_reason` with the source citation rather than
-  silently dropped; no encoder change was made (the finding agent did not own `aom-encode/src`).
-- **Fix direction:** make the restore conditional per `partition_search.c:4646`, delete the
-  assert, drop the `skip_reason`, then run `--max-partition-size=32` on SB128 at full strength.
-  Encoder behaviour change → re-verify the full byte-exactness envelope, not just this gate.
+- **Fix:** the restore is now taken inside `if bsize <= cfg.max_partition_size || bsize ==
+  env.sb_size`; the assert and its "always true here" comment are gone.
+- **Verified.** `SizeCtx::skip_reason` is now EMPTY (it kept the mechanism, not the entry), so
+  every SB128 size context runs `--max-partition-size=32` at full strength, and
+  `size_axis_open_divergences_pinned`'s Finding A is promoted from "assert that the port
+  panics" to a byte-identity gate: **port 1968 B == C 1968 B** (`S_SB128_128`, mono,
+  cq63, `--sb-size=128 --max-partition-size=32`). Bite proof: reverting to the unconditional
+  restore makes that cell **port 1963 B vs C 1968 B DIVERGE**, and the gate fails with
+  *"KB-18 REGRESSED: --sb-size=128 x --max-partition-size=32 is no longer byte-identical to
+  real aomenc"*. Envelope unmoved (see the KB-17 entry's counts — the same run covers all
+  three fixes).
 
-### KB-19 — Encoder: `default_min_partition_size`'s >=2160p arm is UNMODELLED — open, unreachable in the current gate
+### KB-19 — Encoder: `default_min_partition_size`'s >=2160p arm was UNMODELLED — FIXED ✅ 2026-07-30
 - **Found 2026-07-30** by the same size-axis cross-check, in the direction that matters: it
   compared libaom's framesize-dependent derivations against the port's BOTH ways, rather than
   only checking that ported thresholds were right.
-- libaom sets `default_min_partition_size = BLOCK_8X8` at >=2160p (`speed_features.c:187-189`).
-  The port's `speed_features.rs:471` leaves it `BLOCK_4X4` unconditionally — no framesize arm.
+- libaom sets `default_min_partition_size = BLOCK_8X8` at >=2160p — `if (is_4k_or_larger)
+  sf->part_sf.default_min_partition_size = BLOCK_8X8;` (`speed_features.c:187-189`, where
+  `is_4k_or_larger = AOMMIN(cm->width, cm->height) >= 2160`, :172). It is inside
+  `set_allintra_speed_feature_framesize_dependent` and unconditional on speed, so it also
+  applies below speed 7 (which sets the same value framesize-independently at :570). The port
+  left the field `BLOCK_4X4` unconditionally — no framesize arm.
 - **Every other framesize-dependent derivation was verified either correctly ported or dead on
   the allintra-intra envelope** (auto_max_partition / ml_* breakouts / use_downsampled_sad /
   partition_search_breakout are inter-only or speed-gated; the full table is in
-  `docs/CONFIG_PERMUTATION_DESIGN_2026-07-30.md`). This is the one real omission.
-- **Not reachable in the default tier** — a 2160x2160 cell costs ~250 s. Belongs in an
-  `--ignored` nightly tier; it is the only framesize class the gate cannot speak about.
+  `docs/CONFIG_PERMUTATION_DESIGN_2026-07-30.md`). This was the one real omission.
+- **Fix, in two halves** (the second is why the first bites):
+  1. `SpeedFeatures::apply_allintra_framesize_dependent(w, h)` — a new method holding the
+     modelled arms of `set_allintra_speed_feature_framesize_dependent`, currently just the
+     `is_4k_or_larger` one. `set_allintra` stays framesize-blind by design; the framesize arms
+     are applied afterwards from the frame's real dimensions, which is the shape the port
+     already used for `prune_tx_type_using_stats` (the `is_480p_or_larger` arm). Called from
+     `aom-bench/src/lib.rs`'s `port_encode_full` right after `set_allintra`.
+  2. `ToggleKnobs::min_partition_bsize` now takes `sf.default_min_partition_size` and AOMMAXes
+     with it, matching `set_max_min_partition_size` exactly (`partition_strategy.h:224-226`:
+     `min_partition_size = AOMMIN(AOMMAX(sf->part_sf.default_min_partition_size,
+     dim_to_size(oxcf px)), sb_size)`). It previously dropped the sf term with a comment
+     claiming the field is `BLOCK_4X4` "at every allintra speed" — false since speed 7 (:570),
+     and false at >=2160p at any speed. The `max` is an identity on the whole gated envelope
+     (speed 0..6 sub-2160p), which is why this half is byte-inert there.
+- **Verified — and be precise about what is and is not proven.**
+  - DERIVATION, default tier: `aom-encode`'s `framesize_dependent_min_partition_size_4k_arm`
+    unit test (speeds 0..9 x {64², 1920x1080, 4096x2159, 2159x4096} must NOT take the arm x
+    {2160², 3840x2160, 2160x3840, 7680x4320} must, plus a whole-struct equality check that the
+    arm moves no other field). Bite proof: stubbing the arm body out fails it with *"speed 0
+    2160x2160 must take the 4k arm (BLOCK_8X8)"*.
+  - E2E, `--ignored` tier: `aom-bench/tests/kb19_min_partition_4k.rs::
+    min_partition_4k_arm_e2e_pinned` — mirror-tiled `av1-1-b8-00-quantizer-00` at 2160x2160
+    bd8 4:2:0 cq32 speed-0. **Measured A/B, same binary, only the arm toggled:**
 
-### KB-17 — Encoder: `use_screen_content_tools` is hardcoded `false`, so `--use-intra-default-tx-only=1` diverges on ALL screen-detected content — ROOT-CAUSED, pinned open
-- **Root cause (found 2026-07-30, one line):** `crates/aom-encode/src/speed_features.rs:991`
-  hardcodes `use_screen_content_tools: false` with the comment *"Non-screen textured envelope;
-  screen-content would thread the real cpi->use_screen_content_tools here."* The rest of the
+    | port build | port bytes | C bytes | delta |
+    |---|---|---|---|
+    | WITHOUT the arm | 440,347 | 431,724 | **+8,623 (+2.00%)** |
+    | WITH it (shipped) | 431,574 | 431,724 | **-150 (-0.035%)** |
+
+    The arm closes 98.3% of the byte gap, so it is heavily load-bearing at this frame size —
+    NOT a paper fix. Wall on the reference box: C ~26 s, port ~195 s.
+  - **NOT proven: the >=2160p cell is still not byte-exact.** The residual 150 bytes are a
+    separate open defect, tracked as KB-22 below. The e2e test therefore PINS the divergence
+    (self-promoting both ways) instead of asserting identity; promote it to a hard byte gate
+    when KB-22 closes.
+
+### KB-22 — Encoder: a 150-byte residual at >=2160p after the KB-19 arm — OPEN, pinned
+- **Found 2026-07-30** while gating KB-19 end to end. It is the FIRST measurement the port has
+  at this frame size — no prior gate encodes above 640x640, so nothing else could have caught it.
+- **Measurement** (`aom-bench/tests/kb19_min_partition_4k.rs::min_partition_4k_arm_e2e_pinned`,
+  `--ignored`): mirror-tiled `av1-1-b8-00-quantizer-00`, 2160x2160, bd8 4:2:0, cq32, speed-0
+  ALLINTRA KEY, stock knobs, 1 tile — **port 431,574 B vs real aomenc 431,724 B**. The KB-19
+  `is_4k_or_larger` arm accounts for 8,623 of the original 8,773-byte gap; this is what is left.
+- **Scale argues near-tie, not a missing tool: 0.035% of the payload over ~1,156 superblocks.**
+  That is the KB-10/KB-12 "cheaper RD decision" signature at 4.6 MP, where a single late
+  divergence is near-certain. But it is NOT established — no localization has been run.
+- **Ruled out by construction, not by measurement:** the other framesize-dependent arms of
+  `set_allintra_speed_feature_framesize_dependent` were audited during KB-19 and are either
+  applied by their own consumer (`use_square_partition_only_threshold`, :175-185) or dead on
+  the all-intra KEY envelope (`auto_max_partition_based_on_simple_motion`, the `ml_*` breakout
+  thresholds and `ml_early_term_after_part_split_level` are all `!frame_is_intra_only`-gated).
+  A >=2160p-specific arm outside that function has not been searched for.
+- **Next step:** the standard decode-both localization (the KB-6 recipe) on this cell to find
+  the first divergent SB, then decide near-tie vs unmodelled arm. Budget ~4 min per encode pair.
+
+### KB-17 — Encoder: `use_screen_content_tools` was hardcoded `false`, so `--use-intra-default-tx-only=1` diverged on ALL screen-detected content — FIXED ✅ 2026-07-30
+- **Root cause (found 2026-07-30, one line):** `crates/aom-encode/src/speed_features.rs`'s
+  `tx_type_search_policy_for_stage` hardcoded `use_screen_content_tools: false` with the
+  comment *"Non-screen textured envelope; screen-content would thread the real
+  cpi->use_screen_content_tools here."* The rest of the
   plumbing is CORRECT and already present — `TxTypeSearchPolicy::use_screen_content_tools`
   (`tx_search.rs:100`) exists and `get_default_tx_type_y` (`:161`) consumes it faithfully — the
-  caller just pins it false. So where C resolves `--use-intra-default-tx-only=1` through
+  caller just pinned it false. So where C resolves `--use-intra-default-tx-only=1` through
   `get_default_tx_type(PLANE_TYPE_Y, xd, tx_size, cpi->use_screen_content_tools)`
-  (`tx_search.c:1806-1808`) and searches `DCT_DCT`, the port searches the mode-derived type.
+  (`tx_search.c:1806-1808`) and searches `DCT_DCT`, the port searched the mode-derived type.
+- **FIX:** `SpeedFeatures` carries `allow_screen_content_tools` — the flag `set_allintra`
+  ALREADY took as an argument (it branches `intra_cnn_based_part_prune_level`,
+  `prune_rectangular_split_based_on_qidx`, `prune_sub_8x8_partition_level` on it) and which
+  every caller sources from the parsed frame header's `allow_screen_content_tools`.
+  `tx_type_search_policy_for_stage` now hands that to the policy.
+  **Why the frame header is a faithful source for `cpi->use_screen_content_tools`:** in the
+  encoder the two are always equal. Every site that writes one writes the other —
+  `estimate_screen_content` (`encoder.c:2096`), the detection-mode-2 variant (`:2419`),
+  `screen_content_tools_determination` (`encoder_utils.c:1173/1180`, whose two branches set
+  both together, and whose caller `av1_determine_sc_tools_with_encoding` returns early when
+  the flag is already set, so it can only flip false→true). The ONE branch that would
+  desynchronise them — `av1_set_screen_content_options`'s `force_screen_content_tools != 2`
+  early return (`encoder.c:2442-2446`) sets `features->allow_screen_content_tools` without
+  touching `cpi->use_screen_content_tools` — is unreachable from the encoder, because
+  `seq->force_screen_content_tools` is hard-set to 2 at `encoder.c:598/607`. This reasoning is
+  recorded on the field's doc comment.
+- **VERIFIED (measured 2026-07-30, all counts from the same tree):**
+  - `combinations_screen_dtxo_verdict_set_pinned` (t=2 array x `dtxo=1` forced on, `scr_ibc_b8`
+    cq32): **12 of 17 rows diverged → 0 of 17.** `SCREEN_DTXO_DIVERGENT_ROWS` is now empty (the
+    pre-fix row list is retained in its doc comment so a regression is recognisable by shape).
+  - `CONTENT_DIVERGENT_CELLS`: **9 cells → 1.** All 8 `dtxo=1` cells across `scr_mono_b8`,
+    `scr_mono_b10` and `scr_ibc_b8` at cq12/32/63 are byte-identical.
+  - `mono_vector_open_divergences_pinned` (`av1-1-b10-24-monochrome`): `dtxo` at cq12/32/63 now
+    **exact at 623 B / 240 B / 15 B** (was DIVERGE 623/623, 229/240, 14/15).
+  - `dtxo` is PROMOTED out of `pin_dtxo_default` (deleted) — the screen covering arrays now run
+    all 21 axes at full strength, so `dtxo x anything` on screen content carries the same t-way
+    guarantee as every other axis.
+  - Bite proof: restoring `use_screen_content_tools: false` fails **five** pinned tests —
+    `combinations_screen_dtxo_verdict_set_pinned` (*"the screen-content
+    --use-intra-default-tx-only divergence set MOVED. It is EMPTY since KB-17 was fixed, so any
+    row here is a REGRESSION..."*), `mono_vector_open_divergences_pinned`, and all three
+    `content_sensitivity_screen_*` shards (*"...any `dtxo=1` cell reappearing here means the
+    screen-content tx-type flag ... stopped being threaded"*).
+- **ENVELOPE (the acceptance gate for all three of KB-17/18/19, one run, aarch64-apple-darwin,
+  `--profile test-fast`, `AOM_CONFORMANCE_DIR` provisioned):** `-p zenav1-aom-bench
+  --no-fail-fast` **146 passed / 0 failed / 3 ignored** (unchanged); `-p zenav1-aom-encode
+  --no-fail-fast` **272 passed / 1 failed** — the pass count is 271 + the new KB-19 unit test,
+  and the single failure is `hog_prune_diff::hog_nn_predict_matches_avx2_and_dispatch`
+  (2 ULP, `-0.9569025` vs `-0.9569026`), the named residual of KB-ARM-FLOAT root #2, not mine;
+  `-p zenav1-aom-dsp` **361 passed / 0 failed** (unchanged). The full
+  `config_permutations` gate is **62 passed / 0 failed** with the re-pins.
+- **RESIDUAL, pinned open, PRE-EXISTING (not caused by this fix):** one t=4 covering-array row
+  on `scr_ibc_b8` cq32 still diverges —
+  `p140-minp16-maxp64-smth0-diag0-flip0-dtxo1-txss0-cdf0`, **port 108 B vs C 79 B**. It only
+  became visible because the fix let `dtxo` out of its pin. Direct A/B on the same binary
+  toggling only this flag: **23 of 63 open without the fix (this row at 109 B vs 79 B), 1 of 63
+  with it** — so the fix closed 22 of 23 and this row was already divergent. Its `dtxo=0`
+  sibling is exact, so it IS a `dtxo x <something>` interaction (the row also carries `txss0` =
+  `--enable-tx-size-search=0` → TX_MODE_LARGEST, `maxp64`, `minp16`, `smth0`, `diag0`, `flip0`,
+  `cdf0`). The 29-byte gap is far outside the KB-10/KB-12 near-tie signature, so treat it as a
+  real second defect on the screen tx-type path, not a tie. Pinned self-promoting in
+  `SCREEN_ARRAY_OPEN_ROWS` (`config_permutations.rs`).
 - **SCOPE CORRECTION.** This entry originally read "the corpus's native monochrome vector" —
   that was the accidental discovery context, not the phenomenon. The real trigger is **any
   content on which `estimate_screen_content` fires** (`encoder.c:2042-2100`, the STANDARD
@@ -1744,23 +1865,22 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   Counter-intuitive and worth keeping: **DC-flat content does NOT trigger it** (0/16 blocks) —
   quantisation ringing keeps colour counts high, so perceptual flatness is not libaom's
   colour-count statistic.
-- **`--enable-diagonal-intra=0` is NOT part of this class.** It was in the original entry as a
-  second diverging knob; measurement shows one cell only (`scr_mono_b10` cq32) and **the bd8
-  twin of the same clip does not reproduce it** — a near-tie coincidence of the
-  KB-10/KB-12 "cheaper RD decision" family, not a class property.
+- **`--enable-diagonal-intra=0` is NOT part of this class — CONFIRMED by the fix.** It was in
+  the original entry as a second diverging knob; measurement showed one cell only
+  (`scr_mono_b10` cq32) and the bd8 twin of the same clip does not reproduce it. **Re-measured
+  on the fixed tree (2026-07-30): it did NOT move — still port 225 B vs C 231 B**, while every
+  `dtxo` cell on the same content, same run, flipped to exact. That settles it as a near-tie
+  coincidence of the KB-10/KB-12 "cheaper RD decision" family, not a screen-content-tools
+  consequence. It stays pinned open (the sole remaining entry of `CONTENT_DIVERGENT_CELLS`).
 - **Scale of the blast radius:** measured across a 936-cell content grid (12 content probes x
-  3 quality x 26 axis levels), **exactly 1 of the 21 knob axes is content-sensitive** — this
+  3 quality x 26 axis levels), **exactly 1 of the 21 knob axes was content-sensitive** — this
   one. The other 19 (+ the diag near-tie) show zero divergences across bd8/bd10, 4:2:0/4:0:0,
-  natural/noise/flat/detail/screen. Stock (all-default) encodes stay byte-exact, and the knob
-  is off by default, so the shipped envelope is unaffected.
+  natural/noise/flat/detail/screen. Stock (all-default) encodes stayed byte-exact, and the knob
+  is off by default, so the shipped envelope was never affected — which is why this was a
+  correctness debt on a reachable configuration rather than a shipping-path regression.
 - **Pinned self-promoting** in both directions by `check_content_shard` +
   `combinations_screen_dtxo_verdict_set_pinned` (`crates/aom-bench/tests/config_permutations.rs`).
   Do not "fix" by widening a tolerance or by excluding screen content from the matrix.
-- **Fix direction:** thread the parsed header's `allow_screen_content_tools` into
-  `TxTypeSearchPolicy` at `speed_features.rs:991`, then re-pin `CONTENT_DIVERGENT_CELLS`,
-  `SCREEN_DTXO_DIVERGENT_ROWS` and this entry's table, and promote `dtxo` out of
-  `pin_dtxo_default` into the screen arrays. Re-check `scr_mono_b10` cq32 `diag=0` separately —
-  it may or may not move with the same change.
 - **Related gap, larger than this bug:** palette and intrabc are forced OFF by
   `EncodeCell::c_encode_ctrls`, so the *biggest* consequence of screen detection sits outside
   the permutation matrix entirely. `EncodeCell::c_encode_screen` and `ToggleKnobs::enable_palette`
