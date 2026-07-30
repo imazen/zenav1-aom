@@ -3009,6 +3009,84 @@ int shim_flat_block_finder_run(const uint16_t *pixels, int w, int h,
   return num_flat;
 }
 
+/* One encoder run of the SUPERRES shim over the single prepared image: init a
+ * fresh context on cfg (whose g_pass the caller set), apply the superres shim's
+ * EXACT base control set in its EXACT original order, then the caller-supplied
+ * extra controls, encode img + flush, and collect either the FRAME packets or
+ * (collect_stats) the firstpass STATS packets into out. Factored out of
+ * shim_encode_av1_kf_superres verbatim so a two-pass superres encode can reuse
+ * it; with n_extra_ctrls == 0 and collect_stats == 0 the emitted controls and
+ * the encode loop are byte-for-byte the pre-existing ones. Returns bytes
+ * collected or a negative error code. */
+static long superres_kf_pass(aom_codec_iface_t *iface,
+                             aom_codec_enc_cfg_t *cfg, int bd, int cq_level,
+                             int cpu_used, int enable_cdef,
+                             int enable_restoration,
+                             const int *extra_ctrl_ids,
+                             const int *extra_ctrl_vals, int n_extra_ctrls,
+                             aom_image_t *img, int collect_stats, uint8_t *out,
+                             size_t out_cap) {
+  aom_codec_ctx_t ctx;
+  aom_codec_flags_t flags = bd > 8 ? AOM_CODEC_USE_HIGHBITDEPTH : 0;
+  if (aom_codec_enc_init(&ctx, iface, cfg, flags)) return -2;
+  if (aom_codec_control(&ctx, AOME_SET_CPUUSED, cpu_used) ||
+      aom_codec_control(&ctx, AOME_SET_CQ_LEVEL, cq_level) ||
+      aom_codec_control(&ctx, AV1E_SET_ENABLE_CDEF, enable_cdef) ||
+      aom_codec_control(&ctx, AV1E_SET_ENABLE_RESTORATION, enable_restoration) ||
+      aom_codec_control(&ctx, AV1E_SET_SUPERBLOCK_SIZE,
+                        AOM_SUPERBLOCK_SIZE_64X64) ||
+      aom_codec_control(&ctx, AV1E_SET_DELTAQ_MODE, 0) ||
+      aom_codec_control(&ctx, AV1E_SET_AQ_MODE, 0) ||
+      aom_codec_control(&ctx, AV1E_SET_ENABLE_SUPERRES, 1)) {
+    aom_codec_destroy(&ctx);
+    return -3;
+  }
+  /* Extra caller-supplied CLI-equivalent controls, applied AFTER the base set
+   * in caller order (so a toggle naming a base id OVERRIDES it — that is how
+   * --sb-size=128 / --tile-columns / --deltaq-mode / --aq-mode are reached).
+   * NULL/0 for every pre-existing caller, which therefore emits exactly the
+   * base set above and is byte-inert. Same pattern as encode_kf_pass. */
+  for (int ci = 0; ci < n_extra_ctrls; ci++) {
+    if (aom_codec_control(&ctx, extra_ctrl_ids[ci], extra_ctrl_vals[ci])) {
+      aom_codec_destroy(&ctx);
+      return -3;
+    }
+  }
+
+  long total = 0;
+  int rc = 0;
+  for (int pass = 0; pass < 2 && rc == 0; pass++) {
+    if (aom_codec_encode(&ctx, pass == 0 ? img : NULL, 0, 1,
+                         pass == 0 ? AOM_EFLAG_FORCE_KF : 0)) {
+      rc = -5;
+      break;
+    }
+    aom_codec_iter_t iter = NULL;
+    const aom_codec_cx_pkt_t *pkt;
+    while ((pkt = aom_codec_get_cx_data(&ctx, &iter)) != NULL) {
+      const void *buf;
+      size_t sz;
+      if (collect_stats && pkt->kind == AOM_CODEC_STATS_PKT) {
+        buf = pkt->data.twopass_stats.buf;
+        sz = pkt->data.twopass_stats.sz;
+      } else if (!collect_stats && pkt->kind == AOM_CODEC_CX_FRAME_PKT) {
+        buf = pkt->data.frame.buf;
+        sz = pkt->data.frame.sz;
+      } else {
+        continue;
+      }
+      if ((size_t)total + sz > out_cap) {
+        rc = -6;
+        break;
+      }
+      memcpy(out + total, buf, sz);
+      total += (long)sz;
+    }
+  }
+  aom_codec_destroy(&ctx);
+  return rc ? rc : total;
+}
+
 /* Encode one KEY frame WITH fixed-denominator superres: the REAL
  * aom_codec_av1_cx public API with AV1E_SET_SUPERRES_MODE = AOM_SUPERRES_FIXED
  * and AV1E_SET_SUPERRES_DENOMINATOR = superres_denom (9..16). The encoder codes
@@ -3016,20 +3094,31 @@ int shim_flat_block_finder_run(const uint16_t *pixels, int w, int h,
  * (w * SCALE_NUMERATOR(8) + superres_denom/2) / superres_denom, and the DECODER
  * upscales it back to the full UpscaledWidth = w (horizontal only). w/h are the
  * FULL (upscaled/display) dims; the image is fed at that size and the encoder
- * downscales internally. Controls: --cpu-used --end-usage=q --cq-level
+ * downscales internally. Base controls: --cpu-used --end-usage=q --cq-level
  * --enable-cdef --enable-restoration --sb-size=64, single tile, deltaq/aq off,
- * one-pass, no palette/intrabc/qm/lossless. usage picks GOOD (0) / ALL_INTRA
- * (2). Planes are u16 row-major tight. Self-contained (mirrors
- * encode_av1_kf_impl's single-pass setup + encode loop); every existing encode
- * entry point is UNCHANGED. Returns the bitstream length or a negative error
- * code. Append-only decoder-track addition. */
+ * no palette/intrabc/qm/lossless. usage picks GOOD (0) / ALL_INTRA (2).
+ *
+ * `two_pass` + `extra_ctrl_ids/vals/n` are the decoder-track SUPERRES-CROSSING
+ * additions (H14): `two_pass` runs the full firstpass-stats + last-pass
+ * sequence (rc_twopass_stats_in), which is what makes aq_mode 1/2 genuinely
+ * SEGMENT a KEY frame (a one-pass encode takes encode_without_recode and never
+ * runs av1_vaq_frame_setup — see encode_kf_pass); the extra controls are raw
+ * (aome_enc_control_id, value) pairs applied AFTER the base set, in order, so
+ * a pair may override a base control of the same id. Every PRE-EXISTING caller
+ * passes two_pass = 0, NULL, NULL, 0 and is byte-inert.
+ *
+ * Planes are u16 row-major tight. Self-contained (mirrors encode_av1_kf_impl's
+ * setup + encode loop); every existing encode entry point is UNCHANGED.
+ * Returns the bitstream length or a negative error code. */
 long shim_encode_av1_kf_superres(const uint16_t *y, const uint16_t *u,
                                  const uint16_t *v, int w, int h, int bd,
                                  int mono, int ss_x, int ss_y, int cq_level,
                                  int cpu_used, int enable_cdef,
                                  int enable_restoration, int usage,
-                                 int superres_denom, uint8_t *out,
-                                 size_t out_cap) {
+                                 int superres_denom, int two_pass,
+                                 const int *extra_ctrl_ids,
+                                 const int *extra_ctrl_vals, int n_extra_ctrls,
+                                 uint8_t *out, size_t out_cap) {
   aom_codec_iface_t *iface = aom_codec_av1_cx();
   aom_codec_enc_cfg_t cfg;
   if (aom_codec_enc_config_default(iface, &cfg, (unsigned int)usage)) return -1;
@@ -3092,49 +3181,43 @@ long shim_encode_av1_kf_superres(const uint16_t *y, const uint16_t *u,
     }
   }
 
-  aom_codec_ctx_t ctx;
-  aom_codec_flags_t flags = bd > 8 ? AOM_CODEC_USE_HIGHBITDEPTH : 0;
-  if (aom_codec_enc_init(&ctx, iface, &cfg, flags)) {
-    aom_img_free(img);
-    return -2;
-  }
-  if (aom_codec_control(&ctx, AOME_SET_CPUUSED, cpu_used) ||
-      aom_codec_control(&ctx, AOME_SET_CQ_LEVEL, cq_level) ||
-      aom_codec_control(&ctx, AV1E_SET_ENABLE_CDEF, enable_cdef) ||
-      aom_codec_control(&ctx, AV1E_SET_ENABLE_RESTORATION, enable_restoration) ||
-      aom_codec_control(&ctx, AV1E_SET_SUPERBLOCK_SIZE,
-                        AOM_SUPERBLOCK_SIZE_64X64) ||
-      aom_codec_control(&ctx, AV1E_SET_DELTAQ_MODE, 0) ||
-      aom_codec_control(&ctx, AV1E_SET_AQ_MODE, 0) ||
-      aom_codec_control(&ctx, AV1E_SET_ENABLE_SUPERRES, 1)) {
-    aom_codec_destroy(&ctx);
-    aom_img_free(img);
-    return -3;
-  }
-
-  long total = 0;
-  int rc = 0;
-  for (int pass = 0; pass < 2 && rc == 0; pass++) {
-    if (aom_codec_encode(&ctx, pass == 0 ? img : NULL, 0, 1,
-                         pass == 0 ? AOM_EFLAG_FORCE_KF : 0)) {
-      rc = -5;
-      break;
+  long total;
+  if (two_pass) {
+    /* Pass 1: firstpass stats, then a LAST_PASS run that consumes them — the
+     * aomenc --passes=2 sequence, identical in shape to encode_av1_kf_impl's.
+     * Reached only by the new *_ctrls entry point. */
+    static const size_t STATS_CAP = 65536;
+    uint8_t *stats = (uint8_t *)malloc(STATS_CAP);
+    if (!stats) {
+      aom_img_free(img);
+      return -4;
     }
-    aom_codec_iter_t iter = NULL;
-    const aom_codec_cx_pkt_t *pkt;
-    while ((pkt = aom_codec_get_cx_data(&ctx, &iter)) != NULL) {
-      if (pkt->kind != AOM_CODEC_CX_FRAME_PKT) continue;
-      if ((size_t)total + pkt->data.frame.sz > out_cap) {
-        rc = -6;
-        break;
-      }
-      memcpy(out + total, pkt->data.frame.buf, pkt->data.frame.sz);
-      total += (long)pkt->data.frame.sz;
+    cfg.g_pass = AOM_RC_FIRST_PASS;
+    long stats_len = superres_kf_pass(
+        iface, &cfg, bd, cq_level, cpu_used, enable_cdef, enable_restoration,
+        extra_ctrl_ids, extra_ctrl_vals, n_extra_ctrls, img, 1, stats,
+        STATS_CAP);
+    if (stats_len <= 0) {
+      free(stats);
+      aom_img_free(img);
+      return stats_len == 0 ? -7 : stats_len;
     }
+    cfg.g_pass = AOM_RC_LAST_PASS;
+    cfg.rc_twopass_stats_in.buf = stats;
+    cfg.rc_twopass_stats_in.sz = (size_t)stats_len;
+    total = superres_kf_pass(iface, &cfg, bd, cq_level, cpu_used, enable_cdef,
+                             enable_restoration, extra_ctrl_ids,
+                             extra_ctrl_vals, n_extra_ctrls, img, 0, out,
+                             out_cap);
+    free(stats);
+  } else {
+    total = superres_kf_pass(iface, &cfg, bd, cq_level, cpu_used, enable_cdef,
+                             enable_restoration, extra_ctrl_ids,
+                             extra_ctrl_vals, n_extra_ctrls, img, 0, out,
+                             out_cap);
   }
-  aom_codec_destroy(&ctx);
   aom_img_free(img);
-  return rc ? rc : total;
+  return total;
 }
 
 /* Encode one KEY frame with a DERIVED-denominator superres mode

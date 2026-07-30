@@ -43,9 +43,27 @@
 //! Axis pairs deliberately NOT crossed, with the reason, are tabulated in
 //! `docs/DECODER_CONFIG_COVERAGE_2026-07-30.md` (§ "Collapse table"). The two
 //! kinds are: (a) pairs whose port read-sites are provably disjoint, covered in
-//! parallel instead; (b) pairs the `aom_sys_ref` shim cannot currently co-emit
-//! (superres, whose shim takes no extra-control list) — recorded as open holes,
-//! not as covered.
+//! parallel instead; (b) pairs that are genuinely unreachable — either libaom
+//! will not co-emit them (superres x lossless: `--lossless=1` makes libaom drop
+//! superres, `features.all_lossless = coded_lossless && !av1_superres_scaled`,
+//! `av1/encoder/encodeframe.c:276`) or the PORT rejects them by design
+//! (superres x multi-tile-COLUMN, `aom-decode/src/frame.rs:752`) — recorded as
+//! open holes, not as covered.
+//!
+//! # GROUP SR — the superres crossings (hole H14)
+//!
+//! Superres used to be uncrossable: `shim_encode_av1_kf_superres` took no
+//! control list, so every superres stream in the suite was SB64 / single-tile /
+//! no-QM / no-seg / 4:2:0 or 4:4:4 / no delta. The shim now takes the same
+//! `extra_ctrl_ids/vals/n` passthrough `encode_kf_pass` has (plus a `two_pass`
+//! flag, which is what makes `--aq-mode=1` genuinely segment a KEY frame), so
+//! the SR cells below cross superres with SB128, tile ROWS, QM, segmentation,
+//! 4:2:2, delta-q/delta-lf, `disable_cdf_update`, `reduced_tx_set`, mono and
+//! 12-bit. That matters most for LOOP RESTORATION: `superres_scaled` is read
+//! INSIDE the RU-grid derivation (`aom-dsp/src/entropy/lr.rs`,
+//! `lr_corners_in_sb`) while the SB walk runs on the DOWNSCALED grid, so the
+//! superres x SB128 pairing changes `mi_size_wide` from 16 to 32 on exactly
+//! the arithmetic that superres rescales.
 //!
 //! # Encoder speed
 //!
@@ -69,6 +87,7 @@ use aom_sys_ref as c;
 const AV1E_SET_LOSSLESS: i32 = 31; // aomcx.h:366
 const AV1E_SET_TILE_COLUMNS: i32 = 33; // aomcx.h:393  (log2 count)
 const AV1E_SET_TILE_ROWS: i32 = 34; // aomcx.h:411  (log2 count)
+const AV1E_SET_AQ_MODE: i32 = 40; // aomcx.h:481 (1 = VARIANCE_AQ -> segments)
 const AV1E_SET_CDF_UPDATE_MODE: i32 = 44; // aomcx.h (0 = never update)
 const AV1E_SET_SUPERBLOCK_SIZE: i32 = 56; // aomcx.h:664 (1 = 128x128)
 const AV1E_SET_ENABLE_CDEF: i32 = 58; // aomcx.h:684
@@ -178,6 +197,20 @@ enum Enc {
         cdef: bool,
         lr: bool,
     },
+    /// `ref_encode_av1_kf_superres_ctrls` — fixed-denominator superres
+    /// (`rc_superres_mode = AOM_SUPERRES_FIXED`, `rc_superres_kf_denominator =
+    /// denom`) with the SAME arbitrary-control passthrough `Ctrls` has, plus a
+    /// `two_pass` flag (needed for `AV1E_SET_AQ_MODE` to genuinely segment —
+    /// a one-pass encode takes libaom's `encode_without_recode`, which never
+    /// runs `av1_vaq_frame_setup`). `w`/`h` are the FULL upscaled dims; the
+    /// encoder codes at `(w*8 + denom/2)/denom` and the decoder upscales back.
+    Superres {
+        denom: i32,
+        cdef: bool,
+        lr: bool,
+        two_pass: bool,
+        ctrls: &'static [(i32, i32)],
+    },
 }
 
 /// A realized-bitstream requirement. Every cell declares the features it claims
@@ -209,6 +242,9 @@ enum Req {
     TxSelect,
     /// `reduced_still_picture_hdr` in the sequence header.
     ReducedStillHdr,
+    /// The frame is genuinely SUPERRES-SCALED (`SuperresDenom > 8`, i.e. the
+    /// coded width is strictly below the upscaled width).
+    Superres,
 }
 
 struct Cell {
@@ -236,6 +272,7 @@ struct Realized {
     ss: (usize, usize),
     reduced_still_hdr: bool,
     superres: bool,
+    sr_denom: i32,
     qindex: i32,
     coded_lossless: bool,
     tx_select: bool,
@@ -278,12 +315,13 @@ impl Realized {
             Req::DeblockChroma => self.lf_chroma,
             Req::TxSelect => self.tx_select,
             Req::ReducedStillHdr => self.reduced_still_hdr,
+            Req::Superres => self.superres && self.sr_denom > 8,
         }
     }
 
     fn summary(&self) -> String {
         format!(
-            "sb128={} bd={} mono={} ss={:?} stillhdr={} sr={} q={} lossless={} txsel={} rtx={} \
+            "sb128={} bd={} mono={} ss={:?} stillhdr={} srD={} q={} lossless={} txsel={} rtx={} \
              nocdf={} dq={} dlf={} screen={} ibc={} tiles={}x{} lf_y={} lf_uv={} cdef={} lr={:?} \
              qm={}(L{}) seg={} bytes={}",
             self.sb128 as u8,
@@ -291,7 +329,7 @@ impl Realized {
             self.mono as u8,
             self.ss,
             self.reduced_still_hdr as u8,
-            self.superres as u8,
+            self.sr_denom,
             self.qindex,
             self.coded_lossless as u8,
             self.tx_select as u8,
@@ -363,6 +401,16 @@ fn encode(cell: &Cell) -> Vec<u8> {
             &y, &u, &v, cell.w, cell.h, cell.bd, cell.mono, cell.ss.0, cell.ss.1, cell.cq,
             cell.cpu, cdef, lr, cell.usage, aq, two_pass, sb128, tcl, trl,
         ),
+        Enc::Superres {
+            denom,
+            cdef,
+            lr,
+            two_pass,
+            ctrls,
+        } => c::ref_encode_av1_kf_superres_ctrls(
+            &y, &u, &v, cell.w, cell.h, cell.bd, cell.mono, cell.ss.0, cell.ss.1, cell.cq,
+            cell.cpu, cdef, lr, cell.usage, denom, two_pass, ctrls,
+        ),
     };
     assert!(
         bytes.len() > 40,
@@ -384,6 +432,7 @@ fn realize(cell: &Cell, bytes: &[u8]) -> Realized {
         ss: (cfg.subsampling_x, cfg.subsampling_y),
         reduced_still_hdr: fh.prefix.reduced_still_picture_hdr,
         superres: fh.superres_scaled,
+        sr_denom: fh.frame_size.scale_denominator,
         qindex: cfg.base_qindex,
         coded_lossless: fh.coded_lossless,
         tx_select: fh.tx_mode_select,
@@ -1175,6 +1224,303 @@ const CELLS: &[Cell] = &[
         enc: Enc::Ctrls(&[(AV1E_SET_ENABLE_CDEF, 1), (AV1E_SET_ENABLE_RESTORATION, 1)]),
         require: &[Req::DeblockLuma, Req::DeblockChroma],
     },
+    // ===================================================================
+    // GROUP SR — superres crossings (hole H14).
+    //
+    // Before the `shim_encode_av1_kf_superres` control passthrough, superres
+    // could not be co-emitted with ANY other tool: it is an
+    // `aom_codec_enc_cfg_t` field, not an `aome_enc_control_id`, and the shim
+    // hardcoded SB64 / single tile / deltaq+aq off / no QM / one-pass. Every
+    // superres stream in `superres_diff.rs` (90 of them) therefore sits at that
+    // one point of the config space.
+    //
+    // Superres is a NORMATIVE post-CDEF stage: the frame is CODED at the
+    // reduced width and upscaled horizontally before loop restoration. The
+    // sharp edge is that `superres_scaled` is read inside the RU-grid
+    // derivation (`lr_corners_in_sb`) — the RU grid is in UPSCALED units while
+    // the SB/tile walk is in DOWNSCALED mi — so SB size (mi_size_wide 16 -> 32)
+    // and the tile split genuinely interact with the superres rescale.
+    // ===================================================================
+    Cell {
+        // THE core crossing: superres x SB128 x LR x CDEF. `lr_corners_in_sb`
+        // runs at `mi_size_wide = 32` against a superres-rescaled RU column
+        // mapping (`u = D * MI_SIZE * m / N`).
+        //
+        // The 640-px WIDTH is load-bearing, not decorative. libaom picks
+        // `unit_size = 256` here, so the upscaled RU grid needs an upscaled
+        // width > 512 to have THREE unit columns; only then does an SB128's
+        // 32-mi span reach a unit corner that a 16-mi span would not
+        // (at D=12 a unit is 2048/48 = 42.67 downscaled mi, so the SB at
+        // mi_col 64 codes RU 2 with `mi_size_wide = 32` and NOTHING with 16).
+        // At 384/512 px wide the grid is 2 columns and the SB size cannot
+        // change the outcome — MEASURED: an SB64-assumption planted in the
+        // superres arm of `lr_corners_in_sb` leaves 384x192 and 512x192
+        // byte-identical and breaks 640x192 and 768x192. This is the teeth
+        // cell — see § "Teeth" in
+        // `docs/DECODER_CONFIG_COVERAGE_2026-07-30.md`.
+        label: "SR1_superres_d12_sb128_lr_cdef_420_bd8",
+        w: 640,
+        h: 192,
+        bd: 8,
+        mono: false,
+        ss: (1, 1),
+        cq: 36,
+        cpu: 4,
+        usage: 2,
+        content: Content::Photo,
+        enc: Enc::Superres {
+            denom: 12,
+            cdef: true,
+            lr: true,
+            two_pass: false,
+            ctrls: &[(AV1E_SET_SUPERBLOCK_SIZE, SB_128X128)],
+        },
+        require: &[Req::Superres, Req::Sb128, Req::LrLive, Req::CdefLive],
+    },
+    Cell {
+        // superres x TILE ROWS x SB128 x LR x CDEF. Tile COLUMNS are out of the
+        // port's envelope under superres (`frame.rs:752` — the per-tile-column
+        // upscale walk of `av1_upscale_normative_rows` is unported), but the
+        // upscale is horizontal-only, so a tile ROW split is in-envelope and is
+        // a real crossing: the per-tile entropy/CDF reset and the tile-row
+        // boundary both land inside a superres frame.
+        label: "SR2_superres_d12_tilerows_sb128_lr_420_bd8",
+        w: 384,
+        h: 512,
+        bd: 8,
+        mono: false,
+        ss: (1, 1),
+        cq: 36,
+        cpu: 5,
+        usage: 0,
+        content: Content::Photo,
+        enc: Enc::Superres {
+            denom: 12,
+            cdef: true,
+            lr: true,
+            two_pass: false,
+            ctrls: &[
+                (AV1E_SET_SUPERBLOCK_SIZE, SB_128X128),
+                (AV1E_SET_TILE_COLUMNS, 0),
+                (AV1E_SET_TILE_ROWS, 1),
+            ],
+        },
+        require: &[
+            Req::Superres,
+            Req::Sb128,
+            Req::Tiles(1, 2),
+            Req::LrLive,
+            Req::CdefLive,
+        ],
+    },
+    Cell {
+        // superres x per-SB DELTA-Q x DELTA-LF x live deblock x CDEF x LR. The
+        // delta-lf carry moves the DEBLOCK level, which runs BEFORE the
+        // superres upscale; the delta-q carry feeds the dequant of a frame
+        // coded at the reduced width.
+        label: "SR3_superres_d12_deltaq_deltalf_deblock_cdef_420_bd10",
+        w: 256,
+        h: 192,
+        bd: 10,
+        mono: false,
+        ss: (1, 1),
+        cq: 52,
+        cpu: 4,
+        usage: 0,
+        content: Content::Photo,
+        enc: Enc::Superres {
+            denom: 12,
+            cdef: true,
+            lr: true,
+            two_pass: false,
+            ctrls: &[(AV1E_SET_DELTAQ_MODE, 3), (AV1E_SET_DELTALF_MODE, 1)],
+        },
+        require: &[
+            Req::Superres,
+            Req::DeltaQ,
+            Req::DeltaLf,
+            Req::DeblockLuma,
+            Req::DeblockChroma,
+            Req::CdefLive,
+        ],
+    },
+    Cell {
+        // superres x QM x 4:2:2 x LR x live deblock at the STEEPEST denominator
+        // (16 = exact 2:1). 4:2:2 chroma is upscaled at its subsampled width,
+        // and the 4:2:2 chroma RU grid is the one `lr_corners_in_sb` derives
+        // with `(sx, sy) = (1, 0)` on top of the superres rescale.
+        label: "SR4_superres_d16_qm5_422_deblock_lr_bd10",
+        w: 260,
+        h: 160,
+        bd: 10,
+        mono: false,
+        ss: (1, 0),
+        cq: 24,
+        cpu: 2,
+        usage: 2,
+        content: Content::Photo,
+        enc: Enc::Superres {
+            denom: 16,
+            cdef: true,
+            lr: true,
+            two_pass: false,
+            ctrls: &[
+                (AV1E_SET_ENABLE_QM, 1),
+                (AV1E_SET_QM_MIN, 5),
+                (AV1E_SET_QM_MAX, 5),
+            ],
+        },
+        require: &[
+            Req::Superres,
+            Req::Qm,
+            Req::DeblockLuma,
+            Req::LrLive,
+            Req::CdefLive,
+        ],
+    },
+    Cell {
+        // superres x SEGMENTATION x CDEF x LR. Needs the two-pass sequence: a
+        // one-pass encode takes `encode_without_recode`, which never calls
+        // `av1_vaq_frame_setup` (verified empirically — `--aq-mode=1` one-pass
+        // comes out with `seg.enabled = 0`).
+        label: "SR5_superres_d12_seg_twopass_cdef_lr_420_bd8",
+        w: 256,
+        h: 128,
+        bd: 8,
+        mono: false,
+        ss: (1, 1),
+        cq: 36,
+        cpu: 3,
+        usage: 2,
+        content: Content::Photo,
+        enc: Enc::Superres {
+            denom: 12,
+            cdef: true,
+            lr: true,
+            two_pass: true,
+            ctrls: &[(AV1E_SET_AQ_MODE, 1)],
+        },
+        require: &[
+            Req::Superres,
+            Req::Seg,
+            Req::CdefLive,
+            Req::LrLive,
+            Req::DeblockLuma,
+        ],
+    },
+    Cell {
+        // superres x disable_cdf_update x SB128 x 4:2:2 x LR, denom 16.
+        label: "SR6_superres_d16_nocdfupdate_sb128_422_bd10",
+        w: 260,
+        h: 160,
+        bd: 10,
+        mono: false,
+        ss: (1, 0),
+        cq: 30,
+        cpu: 4,
+        usage: 2,
+        content: Content::Photo,
+        enc: Enc::Superres {
+            denom: 16,
+            cdef: true,
+            lr: true,
+            two_pass: false,
+            ctrls: &[
+                (AV1E_SET_CDF_UPDATE_MODE, 0),
+                (AV1E_SET_SUPERBLOCK_SIZE, SB_128X128),
+            ],
+        },
+        require: &[
+            Req::Superres,
+            Req::NoCdfUpdate,
+            Req::Sb128,
+            Req::LrLive,
+            Req::CdefLive,
+        ],
+    },
+    Cell {
+        // superres x QM x reduced_tx_set x SB128 x 4:4:4 — the reduced ext-tx
+        // alphabet and the QM dequant, both on a superres-coded 4:4:4 frame.
+        label: "SR7_superres_d12_qm5_reducedtx_sb128_444_bd8",
+        w: 384,
+        h: 192,
+        bd: 8,
+        mono: false,
+        ss: (0, 0),
+        cq: 30,
+        cpu: 5,
+        usage: 2,
+        content: Content::Photo,
+        enc: Enc::Superres {
+            denom: 12,
+            cdef: true,
+            lr: true,
+            two_pass: false,
+            ctrls: &[
+                (AV1E_SET_SUPERBLOCK_SIZE, SB_128X128),
+                (AV1E_SET_ENABLE_QM, 1),
+                (AV1E_SET_QM_MIN, 5),
+                (AV1E_SET_QM_MAX, 5),
+                (AV1E_SET_REDUCED_TX_TYPE_SET, 1),
+            ],
+        },
+        require: &[
+            Req::Superres,
+            Req::Qm,
+            Req::ReducedTxSet,
+            Req::Sb128,
+            Req::CdefLive,
+        ],
+    },
+    Cell {
+        // superres x monochrome x SB128 x LR at denom 16 — the no-chroma
+        // upscale path with the SB128 RU walk.
+        label: "SR8_superres_d16_mono_sb128_lr_bd8",
+        w: 384,
+        h: 192,
+        bd: 8,
+        mono: true,
+        ss: (1, 1),
+        cq: 30,
+        cpu: 4,
+        usage: 2,
+        content: Content::Photo,
+        enc: Enc::Superres {
+            denom: 16,
+            cdef: true,
+            lr: true,
+            two_pass: false,
+            ctrls: &[(AV1E_SET_SUPERBLOCK_SIZE, SB_128X128)],
+        },
+        require: &[Req::Superres, Req::Sb128, Req::LrLive],
+    },
+    Cell {
+        // superres x 12-bit x SB128 x live deblock — `superres_diff.rs` covers
+        // bd12 only at SB64.
+        label: "SR9_superres_d12_bd12_sb128_deblock_420",
+        w: 256,
+        h: 160,
+        bd: 12,
+        mono: false,
+        ss: (1, 1),
+        cq: 24,
+        cpu: 4,
+        usage: 2,
+        content: Content::Photo,
+        enc: Enc::Superres {
+            denom: 12,
+            cdef: true,
+            lr: true,
+            two_pass: false,
+            ctrls: &[(AV1E_SET_SUPERBLOCK_SIZE, SB_128X128)],
+        },
+        require: &[
+            Req::Superres,
+            Req::Sb128,
+            Req::DeblockLuma,
+            Req::DeblockChroma,
+        ],
+    },
 ];
 
 #[test]
@@ -1298,6 +1644,52 @@ fn config_permutations_decode_byte_identical_to_c() {
         if r.reduced_still_hdr {
             bump("reduced_still_picture_hdr");
         }
+        // Superres crossings (GROUP SR). Each pairing gets its own witness so a
+        // future edit cannot quietly collapse the group back onto the plain
+        // SB64/single-tile/no-tool superres point `superres_diff.rs` already
+        // owns.
+        if r.superres {
+            bump("superres");
+            if r.sb128 {
+                bump("superres_x_sb128");
+            }
+            if r.tiles.0 * r.tiles.1 > 1 {
+                bump("superres_x_tiles");
+            }
+            if r.lr.iter().any(|&t| t != 0) {
+                bump("superres_x_lr");
+            }
+            if r.sb128 && r.lr.iter().any(|&t| t != 0) {
+                bump("superres_x_sb128_x_lr");
+            }
+            if r.qm {
+                bump("superres_x_qm");
+            }
+            if r.seg {
+                bump("superres_x_seg");
+            }
+            if r.delta_lf {
+                bump("superres_x_deltalf");
+            }
+            if r.disable_cdf_update {
+                bump("superres_x_nocdf");
+            }
+            if r.reduced_tx_set {
+                bump("superres_x_reduced_tx_set");
+            }
+            if !r.mono && r.ss == (1, 0) {
+                bump("superres_x_422");
+            }
+            if r.bd == 12 {
+                bump("superres_x_bd12");
+            }
+            if r.mono {
+                bump("superres_x_mono");
+            }
+            if r.sr_denom == 16 {
+                bump("superres_d16");
+            }
+        }
 
         report.push_str(&format!(
             "  OK  {:<44} {:>6.0} ms  {}\n",
@@ -1363,7 +1755,26 @@ fn config_permutations_decode_byte_identical_to_c() {
         ("bd8", 20),
         ("bd10", 8),
         ("bd12", 3),
-        ("reduced_still_picture_hdr", 31),
+        ("reduced_still_picture_hdr", 40),
+        // GROUP SR — one witness per superres crossing this file exists to
+        // close (hole H14). All are STRUCTURAL (forced by the cell's controls)
+        // except `superres_x_lr` / `superres_x_sb128_x_lr`, which depend on the
+        // encoder's restoration search and therefore sit below the value
+        // MEASURED 2026-07-30 on libaom v3.14.1.
+        ("superres", 9),
+        ("superres_x_sb128", 6),
+        ("superres_x_tiles", 1),
+        ("superres_x_lr", 4),
+        ("superres_x_sb128_x_lr", 2),
+        ("superres_x_qm", 2),
+        ("superres_x_seg", 1),
+        ("superres_x_deltalf", 1),
+        ("superres_x_nocdf", 1),
+        ("superres_x_reduced_tx_set", 1),
+        ("superres_x_422", 2),
+        ("superres_x_bd12", 1),
+        ("superres_x_mono", 1),
+        ("superres_d16", 3),
     ] {
         let got = seen.get(k).copied().unwrap_or(0);
         assert!(

@@ -12001,6 +12001,10 @@ unsafe extern "C" {
         enable_restoration: i32,
         usage: i32,
         superres_denom: i32,
+        two_pass: i32,
+        extra_ctrl_ids: *const i32,
+        extra_ctrl_vals: *const i32,
+        n_extra_ctrls: i32,
         out: *mut u8,
         out_cap: usize,
     ) -> i64;
@@ -12014,6 +12018,10 @@ unsafe extern "C" {
 /// reduced width `(w*8 + denom/2)/denom` and the decoder upscales back to `w`
 /// (horizontal only). `--sb-size=64`, single tile, deltaq/aq off, one-pass, no
 /// palette / intrabc / qm / lossless. Panics on a negative shim return.
+///
+/// Thin wrapper over [`ref_encode_av1_kf_superres_ctrls`] with
+/// `two_pass = false` and an EMPTY control list, which is byte-for-byte the
+/// pre-existing behaviour.
 #[allow(clippy::too_many_arguments)]
 pub fn ref_encode_av1_kf_superres(
     y: &[u16],
@@ -12032,6 +12040,65 @@ pub fn ref_encode_av1_kf_superres(
     usage: u32,
     superres_denom: i32,
 ) -> Vec<u8> {
+    ref_encode_av1_kf_superres_ctrls(
+        y,
+        u,
+        v,
+        w,
+        h,
+        bd,
+        mono,
+        ss_x,
+        ss_y,
+        cq_level,
+        cpu_used,
+        enable_cdef,
+        enable_restoration,
+        usage,
+        superres_denom,
+        /*two_pass=*/ false,
+        /*ctrls=*/ &[],
+    )
+}
+
+/// Generic-controls variant of [`ref_encode_av1_kf_superres`] (decoder-track
+/// SUPERRES-CROSSING work, append-only — the wrapper above now routes through
+/// this with `two_pass = false, ctrls = &[]`, which the byte-inertness gate in
+/// `crates/aom-decode/tests/superres_diff.rs` pins as byte-identical).
+///
+/// Same fixed-denominator superres encode, plus:
+///
+/// * `ctrls` — raw `(aome_enc_control_id, value)` pairs ([`cx_ctrl`]) applied
+///   through `aom_codec_control` AFTER the shim's base set, in order. A pair
+///   naming a base id OVERRIDES it, which is how `AV1E_SET_SUPERBLOCK_SIZE`
+///   (SB128), `AV1E_SET_TILE_COLUMNS` / `_ROWS`, `AV1E_SET_DELTAQ_MODE`,
+///   `AV1E_SET_AQ_MODE` and friends become reachable on the superres path.
+/// * `two_pass` — run the firstpass-stats + last-pass sequence
+///   (`rc_twopass_stats_in`). Required for `AV1E_SET_AQ_MODE` 1/2 to genuinely
+///   SEGMENT a KEY frame: a one-pass encode takes libaom's
+///   `encode_without_recode`, which never calls `av1_vaq_frame_setup`
+///   (`av1/encoder/encoder.c:3495`, inside `encode_with_recode_loop`; the
+///   one-pass `DISALLOW_RECODE` is set at `speed_features.c:2784`).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_encode_av1_kf_superres_ctrls(
+    y: &[u16],
+    u: &[u16],
+    v: &[u16],
+    w: usize,
+    h: usize,
+    bd: i32,
+    mono: bool,
+    ss_x: i32,
+    ss_y: i32,
+    cq_level: i32,
+    cpu_used: i32,
+    enable_cdef: bool,
+    enable_restoration: bool,
+    usage: u32,
+    superres_denom: i32,
+    two_pass: bool,
+    ctrls: &[(i32, i32)],
+) -> Vec<u8> {
     let (cw, ch) = if mono {
         (0, 0)
     } else {
@@ -12039,6 +12106,8 @@ pub fn ref_encode_av1_kf_superres(
     };
     assert_eq!(y.len(), w * h);
     assert!(mono || (u.len() == cw * ch && v.len() == cw * ch));
+    let ids: Vec<i32> = ctrls.iter().map(|&(id, _)| id).collect();
+    let vals: Vec<i32> = ctrls.iter().map(|&(_, v)| v).collect();
     let mut out = vec![0u8; w * h * 8 + 65536];
     let n = unsafe {
         shim_encode_av1_kf_superres(
@@ -12057,6 +12126,10 @@ pub fn ref_encode_av1_kf_superres(
             enable_restoration as i32,
             usage as i32,
             superres_denom,
+            two_pass as i32,
+            ids.as_ptr(),
+            vals.as_ptr(),
+            ids.len() as i32,
             out.as_mut_ptr(),
             out.len(),
         )
