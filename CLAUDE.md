@@ -1658,6 +1658,32 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
 - **CI:** `test-macos-aarch64` stays scoped to `aom-dsp` until roots #2 and #3 close — see
   the scoping comment in `.github/workflows/ci.yml`, which now names the residual set.
 
+### KB-17 — Encoder: two search-narrowing knobs diverge on the corpus's native monochrome vector (CONTENT-isolated, pinned open)
+- **Found 2026-07-30** by the config-permutation gate (`crates/aom-bench/tests/config_permutations.rs`,
+  commit 54a5128) — the first cross-family combination gate. Not a combination bug: both knobs
+  diverge STANDALONE, on content the previous per-knob grid never used.
+- **Symptom** — `av1-1-b10-24-monochrome`, 64x64 crop at (64,64), speed-0 ALLINTRA:
+  `--use-intra-default-tx-only=1` diverges from real aomenc at cq12/20/32/48/63 (623/623 B,
+  418/424, 229/240, 79/80, 14/15) and `--enable-diagonal-intra=0` at cq32 (225/231). The
+  equal-size / one-byte deltas are the KB-10 / KB-12 "cheaper RD decision" near-tie signature.
+- **Isolated to the CONTENT, not the format.** Byte-exact on bd8 4:2:0, bd8 monochrome derived
+  from `av1-1-b8-01-size-64x64`, bd10 4:2:0, and bd10 monochrome derived from
+  `av1-1-b10-00-quantizer-00` — a full 27-knob singleton sweep over all six contexts reports 0
+  divergences. A bd12 promotion of the SAME content reproduces it, so it is not a bd10
+  quantizer path.
+- **Why it was invisible:** `toggles_rd_close.rs`'s grid is bd8 4:2:0 only. The knobs were
+  gated hundreds of times without ever meeting this content. The permutation gate replays the
+  knob set across contexts, which is what surfaced it.
+- **Blast radius: none for the shipped envelope** — the stock (all-default) encode of this
+  content is byte-exact. Only these two search-narrowing knobs move, and both are off by
+  default.
+- **Pinned self-promoting** by `mono_vector_open_divergences_pinned`: it FAILS if a divergent
+  cell starts matching (fix landed → re-pin, consider promoting the content to a full array
+  context) AND if a matching cell regresses. Do not "fix" it by widening a tolerance.
+- **Next probe:** the decode-both / sibling-C dump recipe (HANDOFF-TOGGLES.md's
+  `--use-intra-dct-only` method). This is a luma-only frame, so the chroma suspects that
+  dominated that earlier investigation are excluded up front.
+
 ### KB-16 — INTER-ENCODE rung 1 ✅ (the port's OWN search codes the zero-MV P byte-exact, single-SB) + two pinned follow-ups
 - **LANDED 2026-07-23.** The inter RD loop is WIRED end-to-end: `PickFrameCfg::inter` →
   per-leaf `InterLeafArgs` (`leaf_pick_sb_modes`: `find_inter_mv_refs` + intra_inter/single-ref/
