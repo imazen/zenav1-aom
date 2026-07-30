@@ -901,3 +901,353 @@ reverted; `git diff crates/aom-encode/` is clean.
 5. **Give the >= 480p contexts more breadth.** They currently run only the
    rect-kill interaction set. If the budget grows, t=2 over all 21 axes at
    576x576 is ~17 x 4 s = 68 s CPU.
+
+---
+
+# The SPEED axis (added 2026-07-30, same day)
+
+The three sections above run at **one speed**. `Ctx::cell`, `Content::cell` and
+`SizeCtx::cell` all call `EncodeCell::real_content(.., 0)`, so every one of the
+2,910 cells is `--cpu-used=0`. PARITY.md §A separately gates `--cpu-used 0..9`,
+but each speed on its **own** grid with **stock** knobs. The knob axes and the
+speed axis had never been crossed. This section is that crossing.
+
+## Short answer
+
+**2,910 is valid at speed 0 and says nothing above it, and the gap is not
+uniform — it is concentrated in two places nobody would have guessed.**
+
+* Replaying the array across the speed range found **8 knob COMBINATIONS that
+  diverge from real aomenc at a speed and nowhere else** — 3 at `--cpu-used=4`,
+  5 at `--cpu-used=8`. Each row's individual levels are byte-exact alone at that
+  speed, and the whole row is byte-exact at speed 0.
+* The **fragile band is speeds 4-5, not the nonrd speeds**. On three of five
+  contents the **stock** encode — every knob at its default — diverges at
+  `--cpu-used` 4 and 5 while matching at 0-3 and 6-9. Speeds 7-9 (`VAR_BASED_
+  PARTITION`, nonrd PICKMODE) are the *cleanest* levels above 0.
+* **bd10 is open at almost every speed.** `av1-1-b10-00-quantizer-00` is
+  byte-exact at speed 0 (a gated context of the main array) and at speed 7, and
+  diverges at 1, 2, 3, 4, 5, 6 — and at 8/9 it does not diverge, it **panics**:
+  `nonrd_pick_intra_mode` (`aom-encode/src/nonrd_pickmode.rs:601`) asserts
+  `env.bd == 8`, "HANDOFF: hbd estimate arm (av1_quantize_fp + fp scans) not
+  ported". The KB-12 nonrd path is bd8-only.
+* Two axes are genuinely **speed-sensitive in their meaning**, not just their
+  strength: `txss` (`--enable-tx-size-search`) stops being a configuration at
+  all from speed 8, and with it the matrix's single C-forbidden pair lapses.
+* And the coverage a cell can buy **decays monotonically with speed**: at
+  `--cpu-used=9` only **4 of 24** reachable axis levels still change real
+  aomenc's own output, so an unreduced t=4 array there would be ~85% vacuous.
+
+Plus one harness defect found and fixed en route, without which none of speeds
+6-9 was reachable at all (below).
+
+## Which axes move with speed — measured
+
+`run_speed_matrix` replays **every singleton axis level at every speed** on the
+primary context (bd8 4:2:0 photographic 64x64 cq32, `av1-1-b8-01-size-64x64` —
+the same cell as the `64cq32` context of the main array, so anything that moves
+is attributable to speed alone). 264 cells, each asserting byte-identity.
+
+Unlike the content axis — where the answer was "1 of 21 axes, one mechanism" —
+speed does not sort the axes into sensitive and insensitive. It changes **how
+much of the configuration reaches the encoder at all**:
+
+| `--cpu-used` | axis levels that still move real aomenc | of reachable | divergent |
+|---:|---:|---:|---:|
+| 0 | 20 | 26 | 0 |
+| 1 | 20 | 26 | 0 |
+| 2 | 20 | 26 | 0 |
+| 3 | 20 | 26 | 0 |
+| 4 | 17 | 26 | **3** (`dir0`, `rtx0`, `flip0`) |
+| 5 | 18 | 26 | **1** (`minp16`) |
+| 6 | 14 | 26 | 0 |
+| 7 | 13 | 25 | 0 |
+| 8 | 12 | 24 | **2** (`rtxs1`, `trel2`) |
+| 9 | **4** | 24 | 0 |
+
+(`SPEED_LIVE_LEVELS` pins the exact sets, not just the counts, so an axis that
+silently goes inert at a speed fails the test rather than quietly turning that
+speed's array into vacuous cells. The reachable count drops at speed 7/8 because
+`txss=0` becomes unreachable — see below.)
+
+The four survivors at speed 9 are `fint0`, `rtxs1`, `cdf0`, `trel1`: two
+header bits, the CDF-update switch, and trellis. Every partition and intra-mode
+knob is dead — the nonrd pickmode does not consult them.
+
+**The strengths in `SPEED_CONTEXTS` are set from this table, not uniformly**:
+t=4 at speed 2, t=3 at 4 / 6 / 7 / 8, t=2 at 0 / 1 / 3 / 5 / 9.
+
+### The speed-gated derivations, enumerated
+
+`speed_class_inventory_is_pinned` computes and pins the ALLINTRA speed-feature
+class partition — which `--cpu-used` steps move the resolved `SpeedFeatures` at
+all. Measured: **eight classes over ten speeds**, `{0} {1} {2} {3} {4} {5} {6}
+{7,8,9}` (identical at bd10 and under screen-content detection, also asserted).
+Per-step field deltas: 18 fields at 0→1, 5 at 1→2, 6 at 2→3, 12 at 3→4, **1** at
+4→5 (`multi_winner_mode_type` only), 21 at 5→6, 3 at 6→7, **0** at 7→8 and 8→9.
+
+**That partition is NOT a valid collapse, and the refutation is the useful
+part.** The encoder also branches on the raw `PickFrameCfg::speed`, at
+thresholds no `SpeedFeatures` field represents —
+`pack.rs:1474` (`speed >= 7`, `VAR_BASED_PARTITION`), `pack.rs:1791` /
+`partition_pick.rs:4569` (`speed >= 8`, `av1_nonrd_use_partition`),
+`pack.rs:1685`/`:2117` (`speed >= 9`, `cost_upd_off`),
+`partition_pick.rs:4772` (`hybrid_intra_pickmode`), and
+`partition_pick.rs:4854-4856` (three `speed >= 9` intra prunes). So the test
+asserts the refutation **against the oracle** rather than by inspection: real
+aomenc's own payload must differ at `--cpu-used` 7 vs 8 vs 9 on the same cell.
+It does (516 / 515 / 497 B). A collapse the oracle contradicts is not a
+collapse, so every speed keeps its own context.
+
+The four derivations gated on speed **and** framesize together are enumerated
+with citations in `cp::SPEED_X_FRAMESIZE_DERIVATIONS`; only one is live on this
+harness's all-intra KEY path, and it is the next section.
+
+## SPEED x SIZE — the crossing the size axis could not reach
+
+The SIZE section's chunk-2 item 4 reads *"Cross the size axis with speed.
+Everything here is speed 0."* That is closed here, on the exact cell it names.
+
+`prune_tx_type_using_stats` needs **both** `is_480p_or_larger` **and**
+`speed >= 2` (level 1) / `speed >= 4` (level 2) — libaom
+`speed_features.c:261`, `:299`. It is therefore 0 on all 2,910 speed-0 cells
+(in the port *and* in real aomenc, which is why the size section correctly
+reported nothing unexercised there) and 0 on every sub-480p cell at any speed.
+**512x512 monochrome at `--cpu-used=2` is the smallest cell where it is 1**, and
+`speed_size_txstats_*` runs a t=2 array there: 17 rows, all byte-identical to
+real aomenc.
+
+**The field is proved non-zero, not assumed.** `ToggleKnobs::disable_tx_stats_
+prune` forces the *port's* `sf.prune_tx_type_using_stats` to 0 while the C side
+(driven by `--cpu-used` alone) keeps pruning, so "port-without != port-with" is
+a direct measurement that the field is non-zero and load-bearing on this cell.
+Both directions are gated, which is what makes the witness meaningful:
+
+* `stock` and `trel1` **must** witness — trellis does not touch the tx-TYPE
+  candidate set, so the prune still has an IDTX/FLIPADST winner to remove;
+* `flip0` (`--enable-flip-idtx=0`) **must not** — the knob masks the
+  FLIPADST/IDTX family out of the ext-tx set (`get_tx_mask`'s `DCT_ADST_TX_MASK`
+  arm) *before* the stats prune runs, so forcing the prune off cannot change a
+  byte. A witness there would mean the harness knob perturbs something other
+  than the prune and every positive witness would be suspect.
+
+Measured over 16 singleton rows: **11 witness**. The five that do not are
+`rect0` and `cdf0` (the prune fires but does not flip the winner) plus the three
+that structurally disarm it — `flip0`, `dtxo1` (one tx type) and `dir0` (no
+directional mode left to carry a non-DCT default).
+
+**Level 2 (speed >= 4) is NOT gated**, and the reason is recorded rather than
+papered over: the same 512x512 cell's *stock* encode already diverges at
+`--cpu-used=4` (125,629 vs 125,630 B) — the pre-existing cpu-4 near-tie
+`tx_stats_prune_e2e.rs` documents. Gating level 2 would gate a divergence.
+
+## Findings
+
+### A. The harness could not encode ANY speed >= 6 cell — root-caused and FIXED
+
+Before this section, `EncodeCell::port_encode_with` diverged from real aomenc at
+`--cpu-used >= 6` on **every** content tried (photographic, monochrome, bd10 and
+the synthetic diag/vgrad content the `aom-encode` speed-6..9 gates use), with
+stock knobs. Since those `aom-encode` gates pass on that same content at those
+same speeds, the defect was in the bench harness's config threading, not the
+encoder.
+
+Root cause, one line: `aom-bench/src/lib.rs:1712` ran the loop-filter **search**
+at every speed. C's `lpf_sf.lpf_pick` is `LPF_PICK_FROM_FULL_IMAGE` (DUAL) at
+allintra speed 0-3, `..._NON_DUAL` at 4/5 (`speed_features.c:496`), and the
+closed-form `LPF_PICK_FROM_Q` at **speed >= 6** (`:559`) — no search at all, the
+level is a fit on the AC quantizer. The `aom-encode` e2e gate has carried that
+arm since the speed-6 landing (`pick_filter_level_from_q`, oracle-validated by
+`speed6_prep_lf_from_q_matches_real_aomenc`); the bench harness never got it.
+
+The evidence that it was header-only: at cpu-6 on 128x128 diag the port's
+payload was 1,297 B against C's 1,297 B with the **first difference at payload
+byte 2** and the tile payload already byte-identical — the deblock-level field,
+and (on the 64x64 cell) the two extra bytes C writes because a non-zero level
+gates the loop-filter delta block.
+
+Fixed in the same landing; speeds 6-9 go from "diverges on everything" to
+byte-exact on every default-tier context.
+
+### B. Eight knob COMBINATIONS diverge at a speed and nowhere else (pinned open)
+
+`SPEED_OPEN_COMBINATIONS`: 3 rows of 63 at `--cpu-used=4`, 5 of 63 at
+`--cpu-used=8`. Speeds 0, 1, 2, 3, 5, 6, 7 and 9 are clean at their gated
+strength — **including the full 187-row t=4 array at speed 2**. The signature is
+uniform and is the KB-10/KB-12 "cheaper RD decision" near-tie: port payloads 0-4
+bytes short of C's.
+
+The two speeds are exactly where the search **structure** changes rather than
+its thresholds — speed 4 is the winner-mode / multi-winner tier
+(`multi_winner_mode_type=2`, `prune_chroma_modes_using_luma_winner`,
+`fast_intra_tx_type_search=2`) and speed 8 is nonrd PICKMODE. Every speed-8 row
+carries `dir0` or `dtxo1` or both, i.e. a narrowed luma tx-type/mode set feeding
+the nonrd intra pickmode. That is a lead, not a root cause; **no encoder change
+was made** (this section does not own `crates/aom-encode/src`).
+
+Six singleton axis levels diverge at a speed too (`SPEED_OPEN_SINGLETONS`:
+`dir0`/`rtx0`/`flip0` at 4, `minp16` at 5, `rtxs1`/`trel2` at 8) and are pinned
+the same way. Both pins are self-promoting in both directions, and the pinned
+levels are remapped to their defaults inside that speed's array —
+level-granular, so pinning `trel=2` open at speed 8 does not cost the array its
+`trel=1` coverage.
+
+### C. `--enable-tx-size-search=0` stops being a configuration at speed >= 8
+
+```c
+if (!oxcf->txfm_cfg.enable_tx_size_search && sf->rt_sf.use_nonrd_pick_mode == 0)
+  sf->winner_mode_sf.tx_size_search_level = 3;
+```
+— libaom `av1/encoder/speed_features.c:2726-2729`
+
+and `set_allintra_speed_features_framesize_independent` sets
+`rt_sf.use_nonrd_pick_mode = 1` at `speed >= 8` (`:579`). From speed 8 the CLI
+knob never reaches `tx_size_search_level`, `select_tx_mode` does not return
+`TX_MODE_LARGEST`, and the harness's
+
+```rust
+assert!(knobs.enable_tx_size_search || !p.tx_mode_select)   // lib.rs:1119-1123
+```
+
+**panics on a stream real aomenc happily produced**. Measured: at `--cpu-used=8`
+the header codes `TX_MODE_SELECT` with the knob off; at `--cpu-used=9` on the
+same cell it happens to code LARGEST (C's post-hoc `txb_split_count == 0`
+demotion), so the panic is *data*-dependent from speed 8 up, not a clean
+threshold.
+
+Two consequences, both modelled: `cp::axis_level_dead_at_speed` removes the level
+from the matrix and the arrays at speed >= 8 (nothing is lost — it is inert
+there), and `cp::illegal_reason_at_speed` records that the matrix's **single
+C-forbidden pair lapses**: `txss=0 x tx64=0` exists because
+`assert(enable_tx64 || tx_search_type != USE_LARGESTALL)`
+(`encodeframe.c:2461`) trips when the CLI forces `USE_LARGESTALL`, and at speed
+>= 8 it no longer does. The matrix does not exploit that, but the model must not
+claim an exclusion libaom does not have. Pinned by
+`speed_txss_nonrd_lapse_is_pinned`.
+
+### D. The speed ENVELOPE, mapped — the fragile band is 4-5, and bd10 is open
+
+The gated speed contexts all ride one content, chosen because its stock encode
+is byte-exact at every speed. That is right for isolating the knob x speed
+interaction and would be dishonest as the only statement, so
+`speed_envelope_stock_map_is_pinned` maps four more contents and pins the result
+(the full grid is the committed TSV):
+
+| content | s0 | s1 | s2 | s3 | s4 | s5 | s6 | s7 | s8 | s9 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `sz64` (the gated one) | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok |
+| `q00_64` | ok | ok | ok | ok | **X** | **X** | ok | ok | ok | ok |
+| `q00_mono64` | ok | ok | ok | ok | **X** | **X** | ok | ok | ok | ok |
+| `q00_128` | ok | ok | ok | ok | **X** | **X** | ok | ok | ok | ok |
+| `b10_64` | ok | **X** | **X** | **X** | **X** | **X** | **X** | ok | **panic** | **panic** |
+
+`X` = the STOCK encode (every knob default) is not byte-identical to real
+aomenc. The bd10 speed-8/9 entries are not near-ties at all: they are the
+unported hbd nonrd arm (`nonrd_pickmode.rs:601`).
+
+This is why no bd10 speed context is gated — it would gate a divergence — and
+why the per-speed arrays ride the one content whose envelope is intact at all
+ten speeds.
+
+## What was added, and what each cell buys
+
+| gate | speed | strength | cells | ms/cell | what it buys |
+|---|---|---|---:|---:|---|
+| `speed_sensitivity_s{0,1,2}` | 0-9 | 26 singletons | 264 | 2-114 | the sensitivity table above; every axis level x every speed |
+| `combinations_t4_speed2_s{0,1,2}` | 2 | **t=4** | 187 | 48 | every 4-way interaction at the first ML/tx-stats tier |
+| `combinations_t3_speed{4,6,7,8}` | 4/6/7/8 | t=3 | 4 x 63 | 3-30 | the four structure changes: winner-mode, last-RD, VAR_BASED, nonrd |
+| `combinations_t2_speed{0,1,3,5,9}` | 0/1/3/5/9 | t=2 | 5 x 17 | 2-114 | pairwise where the sf delta is small; speed 0 is the runner-agrees control |
+| `speed_size_txstats_s{0,1,2}` | 2 | t=2 @ 512x512 | 17 | 780 | **the SPEED x SIZE closure** + the prune liveness witness |
+| `speed_envelope_stock_map_is_pinned` | 0-9 | stock | 50 | — | finding D |
+| `speed_txss_nonrd_lapse_is_pinned` | 6-9 | 1 knob | 4 | — | finding C |
+| `speed_axis_teeth_are_real` | 0-9 | stock | 10 | — | the envelope control + the no-duplicate-context invariants |
+| `speed_class_inventory_is_pinned` | — | — | 3 | — | the arithmetic + the oracle refutation of the collapse |
+| `speed_axis_budget_is_accounted` | — | — | 0 | — | the budget, pinned |
+
+**Cells: 2,910 -> 3,647** (+737). Nothing was thinned to hit the budget: every
+speed runs the full singleton matrix and an array, and what is in the
+`--ignored` deep tier is the *redundant* part — the four secondary contents'
+per-speed matrices, whose value is the envelope map that the default tier
+already pins in summary form.
+
+## Budget
+
+| tier | wall |
+|---|---|
+| pre-existing gate (2,910 cells, 44 tests) | 47.7 s |
+| + the speed axis (14 tests, 737 cells) -> 86 tests | **58.9-65.1 s** |
+| decoder gate, unchanged | 3.3 s |
+| deep tier (`--ignored`): `speed_axis_evidence_sweep`, 1,342 cells | 106 s, opt-in |
+
+(12-core M4, `cargo test --profile test-fast -j 4`, machine shared with two
+concurrent agents — upper bounds, and the 58.9/65.1 spread is that sharing.)
+Total default tier ~62-68 s against the 120 s ceiling.
+
+## Teeth — the asymmetry, twice
+
+Two perturbations of **speed-gated** paths, each applied, run, and reverted
+(`git diff` on `crates/*/src` clean afterwards, verified).
+
+**1. The framesize x speed derivation.** `aom-bench/src/lib.rs`, the
+`prune_tx_type_using_stats` gate, `speed >= 2` -> `speed >= 3`, so the port stops
+pruning at cpu-2 while real aomenc still does.
+
+Result: **84 passed, 2 failed** — and both failures are new speed x size cells:
+
+> `txstats512s2: 1 of 6 SPEED x SIZE cells are NOT byte-identical to real aomenc
+> — a knob combination diverges where the framesize-gated speed feature
+> prune_tx_type_using_stats is LIVE. Offenders: txstats512s2_stock
+> (port 126058B vs C 126057B)`
+
+> `txstats512s2 \`trel1\`: the witness row itself is not byte-identical to real
+> aomenc`
+
+Every one of the 2,910 pre-existing cells stayed GREEN — all eight
+`combinations_t4_*` contexts, all three quality-ladder shards, all eleven `size_*`
+gates, all twelve content gates, both collapse proofs, the per-axis liveness
+test and the arithmetic.
+
+**2. The speed >= 6 loop-filter derivation** (finding A, reverted to its
+pre-fix state): drop the `LPF_PICK_FROM_Q` arm.
+
+Result: **78 passed, 8 failed** — again all eight are new speed-section tests
+(`speed_sensitivity_s1`/`s2`, `combinations_t3_speed{6,7,8}`,
+`combinations_t2_speed9`, `speed_axis_teeth_are_real`,
+`speed_envelope_stock_map_is_pinned`):
+
+> `s6: the primary speed context's stock encode is not byte-identical to real
+> aomenc`
+
+> `the SPEED ENVELOPE moved. ... ["sz64 cpu-used=6: stock encode is now
+> \`diverge\` (pinned \`ok\`)", "sz64 cpu-used=7: ...", ... "b10_64 cpu-used=7:
+> stock encode is now \`diverge\` (pinned \`ok\`)"]`
+
+and the whole 2,910-cell speed-0 gate untouched again.
+
+2,910 cells that cannot see either a broken framesize x speed threshold or a
+broken speed >= 6 loop-filter derivation, against added cells that fail on both,
+is the asymmetry. Both perturbations were reverted.
+
+## Chunk 2 — what a follow-up should do
+
+1. **Root-cause the speed-4/5 stock divergences** (finding D). Three of five
+   contexts diverge with *every knob at its default* at cpu-4 and cpu-5, and the
+   sf delta from 4 to 5 is a single field (`multi_winner_mode_type` 2 -> 1), so
+   the winner-mode machinery is the whole suspect list. Decode-both / sibling-C
+   dump per KB-2/KB-6/KB-7. Closing it promotes three contexts into the gated
+   set and probably closes several of the eight combination rows with it.
+2. **Port the hbd nonrd arm** (`nonrd_pickmode.rs:601`, `av1_quantize_fp` + fp
+   scans). Until it lands, bd10 at speed >= 8 is not a divergence but an
+   unimplemented path, and no bd10 x speed>=8 cell can exist.
+3. **Widen speed x size.** Only `prune_tx_type_using_stats` level 1 is gated.
+   Level 2 (speed >= 4) is blocked behind the cpu-4 near-tie in item 1; the
+   720p tiers of `use_square_partition_only_threshold` need an SB128 >= 720p
+   context at speed >= 1, which the size section's cost table puts at ~4 s/cell —
+   an `--ignored` deep-tier candidate, not a default cell.
+4. **Cross speed with content.** The screen-content class (`dtxo`, KB-17) is
+   measured at speed 0 only, and `get_tx_mask`'s screen arm interacts with the
+   tx-type prunes that speed turns on. `scr_ibc_b8` x cpu-{2,6} is ~17 cells.
+5. **Fix the harness's TX_MODE_LARGEST assertion** (finding C) so `txss=0`
+   becomes reachable at speed >= 8 instead of pinned dead — it needs the
+   assertion made conditional on `speed < 8`, which is `aom-bench/src` work plus
+   a re-pin of `axis_level_dead_at_speed`.
