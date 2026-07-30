@@ -1658,31 +1658,52 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
 - **CI:** `test-macos-aarch64` stays scoped to `aom-dsp` until roots #2 and #3 close — see
   the scoping comment in `.github/workflows/ci.yml`, which now names the residual set.
 
-### KB-17 — Encoder: two search-narrowing knobs diverge on the corpus's native monochrome vector (CONTENT-isolated, pinned open)
-- **Found 2026-07-30** by the config-permutation gate (`crates/aom-bench/tests/config_permutations.rs`,
-  commit 54a5128) — the first cross-family combination gate. Not a combination bug: both knobs
-  diverge STANDALONE, on content the previous per-knob grid never used.
-- **Symptom** — `av1-1-b10-24-monochrome`, 64x64 crop at (64,64), speed-0 ALLINTRA:
-  `--use-intra-default-tx-only=1` diverges from real aomenc at cq12/20/32/48/63 (623/623 B,
-  418/424, 229/240, 79/80, 14/15) and `--enable-diagonal-intra=0` at cq32 (225/231). The
-  equal-size / one-byte deltas are the KB-10 / KB-12 "cheaper RD decision" near-tie signature.
-- **Isolated to the CONTENT, not the format.** Byte-exact on bd8 4:2:0, bd8 monochrome derived
-  from `av1-1-b8-01-size-64x64`, bd10 4:2:0, and bd10 monochrome derived from
-  `av1-1-b10-00-quantizer-00` — a full 27-knob singleton sweep over all six contexts reports 0
-  divergences. A bd12 promotion of the SAME content reproduces it, so it is not a bd10
-  quantizer path.
-- **Why it was invisible:** `toggles_rd_close.rs`'s grid is bd8 4:2:0 only. The knobs were
-  gated hundreds of times without ever meeting this content. The permutation gate replays the
-  knob set across contexts, which is what surfaced it.
-- **Blast radius: none for the shipped envelope** — the stock (all-default) encode of this
-  content is byte-exact. Only these two search-narrowing knobs move, and both are off by
-  default.
-- **Pinned self-promoting** by `mono_vector_open_divergences_pinned`: it FAILS if a divergent
-  cell starts matching (fix landed → re-pin, consider promoting the content to a full array
-  context) AND if a matching cell regresses. Do not "fix" it by widening a tolerance.
-- **Next probe:** the decode-both / sibling-C dump recipe (HANDOFF-TOGGLES.md's
-  `--use-intra-dct-only` method). This is a luma-only frame, so the chroma suspects that
-  dominated that earlier investigation are excluded up front.
+### KB-17 — Encoder: `use_screen_content_tools` is hardcoded `false`, so `--use-intra-default-tx-only=1` diverges on ALL screen-detected content — ROOT-CAUSED, pinned open
+- **Root cause (found 2026-07-30, one line):** `crates/aom-encode/src/speed_features.rs:991`
+  hardcodes `use_screen_content_tools: false` with the comment *"Non-screen textured envelope;
+  screen-content would thread the real cpi->use_screen_content_tools here."* The rest of the
+  plumbing is CORRECT and already present — `TxTypeSearchPolicy::use_screen_content_tools`
+  (`tx_search.rs:100`) exists and `get_default_tx_type_y` (`:161`) consumes it faithfully — the
+  caller just pins it false. So where C resolves `--use-intra-default-tx-only=1` through
+  `get_default_tx_type(PLANE_TYPE_Y, xd, tx_size, cpi->use_screen_content_tools)`
+  (`tx_search.c:1806-1808`) and searches `DCT_DCT`, the port searches the mode-derived type.
+- **SCOPE CORRECTION.** This entry originally read "the corpus's native monochrome vector" —
+  that was the accidental discovery context, not the phenomenon. The real trigger is **any
+  content on which `estimate_screen_content` fires** (`encoder.c:2042-2100`, the STANDARD
+  detector — `screen_detection_mode` defaults to `AOM_SCREEN_DETECTION_STANDARD` at
+  `av1_cx_iface.c:405`; the AA-aware variant is TUNE_IQ/SSIMULACRA2-only). Reproduced on
+  `av1-1-b8-24-monochrome` (bd8 4:0:0) and `av1-1-b8-16-intra_only-intrabc-extreme-dv`
+  (**bd8 4:2:0, NOT monochrome**), so it is neither a bd10 nor a monochrome phenomenon.
+  The original isolation work was sound — its mono-ised *natural* controls simply do not trip
+  the detector, so they were byte-exact for the right reason.
+- **The detector is a countable statistic, not a vibe:** fraction of full 16x16 luma blocks
+  with 2..4 distinct `pix >> (bd-8)` values >= 10%. It is bit-depth independent by
+  construction (`av1_count_colors_highbd`, `intra_mode_search.c:352-357`, down-converts to the
+  8-bit domain before binning), which is what makes this CONTENT rather than smuggled FORMAT.
+  Counter-intuitive and worth keeping: **DC-flat content does NOT trigger it** (0/16 blocks) —
+  quantisation ringing keeps colour counts high, so perceptual flatness is not libaom's
+  colour-count statistic.
+- **`--enable-diagonal-intra=0` is NOT part of this class.** It was in the original entry as a
+  second diverging knob; measurement shows one cell only (`scr_mono_b10` cq32) and **the bd8
+  twin of the same clip does not reproduce it** — a near-tie coincidence of the
+  KB-10/KB-12 "cheaper RD decision" family, not a class property.
+- **Scale of the blast radius:** measured across a 936-cell content grid (12 content probes x
+  3 quality x 26 axis levels), **exactly 1 of the 21 knob axes is content-sensitive** — this
+  one. The other 19 (+ the diag near-tie) show zero divergences across bd8/bd10, 4:2:0/4:0:0,
+  natural/noise/flat/detail/screen. Stock (all-default) encodes stay byte-exact, and the knob
+  is off by default, so the shipped envelope is unaffected.
+- **Pinned self-promoting** in both directions by `check_content_shard` +
+  `combinations_screen_dtxo_verdict_set_pinned` (`crates/aom-bench/tests/config_permutations.rs`).
+  Do not "fix" by widening a tolerance or by excluding screen content from the matrix.
+- **Fix direction:** thread the parsed header's `allow_screen_content_tools` into
+  `TxTypeSearchPolicy` at `speed_features.rs:991`, then re-pin `CONTENT_DIVERGENT_CELLS`,
+  `SCREEN_DTXO_DIVERGENT_ROWS` and this entry's table, and promote `dtxo` out of
+  `pin_dtxo_default` into the screen arrays. Re-check `scr_mono_b10` cq32 `diag=0` separately —
+  it may or may not move with the same change.
+- **Related gap, larger than this bug:** palette and intrabc are forced OFF by
+  `EncodeCell::c_encode_ctrls`, so the *biggest* consequence of screen detection sits outside
+  the permutation matrix entirely. `EncodeCell::c_encode_screen` and `ToggleKnobs::enable_palette`
+  already exist; the port's palette RD search needs gating into `port_encode_with`.
 
 ### KB-16 — INTER-ENCODE rung 1 ✅ (the port's OWN search codes the zero-MV P byte-exact, single-SB) + two pinned follow-ups
 - **LANDED 2026-07-23.** The inter RD loop is WIRED end-to-end: `PickFrameCfg::inter` →
