@@ -30,6 +30,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod config_perm;
 pub mod inter_localize;
 pub mod rd_close;
 
