@@ -3050,3 +3050,1256 @@ fn size_axis_budget_is_accounted() {
         total_ms / 1000
     );
 }
+
+
+// ===========================================================================
+// The SPEED axis (added 2026-07-30)
+// ===========================================================================
+//
+// Everything above this line runs at ONE speed. `Ctx::cell`, `Content::cell`
+// and `SizeCtx::cell` all call `EncodeCell::real_content(.., 0)`, so all 2,910
+// cells are `--cpu-used=0`. PARITY.md §A separately gates `--cpu-used 0..9`,
+// but each speed on its OWN grid with STOCK knobs — the knob axes and the speed
+// axis had never been crossed.
+//
+// That is not a cosmetic hole. The encoder is STRUCTURALLY different across the
+// range, so "replay the array at more speeds" is not a uniform expansion:
+//
+//   * speeds 0-6  RD partition search (`rd_pick_partition`);
+//   * speed  7    `VAR_BASED_PARTITION` fixed tree + `av1_rd_use_partition`
+//                 (`pack.rs:1474`, speed_features.c:571) — KB-11;
+//   * speeds 8-9  nonrd PICKMODE, `av1_nonrd_pick_intra_mode`
+//                 (`partition_pick.rs:4569`, partition_search.c:2960) — KB-12.
+//
+// A knob that steers the RD search can therefore be inert, or mean something
+// different, at 7+. This section MEASURES which axes move with speed rather
+// than assuming, exactly as the CONTENT section measured content-sensitivity,
+// and sizes the expansion by that measurement.
+//
+// The speed-gated derivations that ALSO need a framesize are enumerated in
+// `cp::SPEED_X_FRAMESIZE_DERIVATIONS` (four, each with its libaom line). Only
+// one is live on this harness's all-intra KEY path at any speed —
+// `prune_tx_type_using_stats` — and closing it is what `speed_size_txstats_*`
+// does: it is the exact cell the SIZE section could not reach ("this array is
+// speed-0 everywhere, so the four framesize x speed interactions are outside it
+// by construction").
+
+use aom_bench::config_perm::{ALL_SPEEDS, axis_level_dead_at_speed, speed_sf_classes};
+
+// ---------------------------------------------------------------------------
+// 7a. Contexts
+// ---------------------------------------------------------------------------
+
+/// The primary speed context's content: bd8 4:2:0 photographic, 64x64, one
+/// superblock, SB64 — the SAME cell as [`C_64_CQ32`], so everything this section
+/// reports is attributable to SPEED and nothing else. Its STOCK encode is
+/// byte-identical to real aomenc at every one of the ten speeds
+/// ([`speed_axis_teeth_are_real`] asserts that; it is the control the whole
+/// section rests on).
+const SPEED_VECTOR: &str = "av1-1-b8-01-size-64x64";
+const SPEED_CQ: i32 = 32;
+
+fn speed_cell(speed: i32) -> EncodeCell {
+    EncodeCell::real_content("spd", SPEED_VECTOR, None, SPEED_CQ, speed)
+}
+
+/// One speed context: the covering-array strength this speed earns, and why.
+///
+/// Strength is set by the MEASURED per-speed axis liveness in
+/// [`SPEED_LIVE_LEVELS`], not uniformly: at `--cpu-used=9` only 4 of the 26 axis
+/// levels still change real aomenc's own output, so a 187-row t=4 array there
+/// would be ~85% vacuous. Speeds where the encoder's structure changes (2 = the
+/// first ML/tx-stats tier, 4 = winner-mode + chroma prune, 6 = the last
+/// RD-search speed) earn more.
+struct SpeedCtx {
+    speed: i32,
+    /// Covering-array strength; the singleton matrix runs at every speed.
+    t: usize,
+    /// Shard count for this speed's array test.
+    shards: usize,
+    /// MEASURED cost of one cell (C encode + port encode) on the reference box.
+    ms_per_cell: u32,
+    /// Anti-vacuity floor for this speed's array — necessarily lower at high
+    /// speeds, where the encoder ignores more of the configuration. The floor
+    /// is a floor, not a target: the measured value is printed by every run.
+    min_moved_pct: f64,
+}
+
+/// Every speed, with the strength it earns. Ten contexts, no collapse — see
+/// [`aom_bench::config_perm::SPEED_SF_EQUALITY_IS_NOT_A_COLLAPSE`] for why
+/// `{7,8,9}` do NOT merge despite an identical resolved `SpeedFeatures`.
+const SPEED_CONTEXTS: &[SpeedCtx] = &[
+    SpeedCtx { speed: 0, t: 2, shards: 1, ms_per_cell: 114, min_moved_pct: 75.0 },
+    SpeedCtx { speed: 1, t: 2, shards: 1, ms_per_cell: 56, min_moved_pct: 75.0 },
+    SpeedCtx { speed: 2, t: 4, shards: 3, ms_per_cell: 48, min_moved_pct: 75.0 },
+    SpeedCtx { speed: 3, t: 2, shards: 1, ms_per_cell: 42, min_moved_pct: 75.0 },
+    SpeedCtx { speed: 4, t: 3, shards: 2, ms_per_cell: 30, min_moved_pct: 55.0 },
+    SpeedCtx { speed: 5, t: 2, shards: 1, ms_per_cell: 27, min_moved_pct: 55.0 },
+    SpeedCtx { speed: 6, t: 3, shards: 1, ms_per_cell: 16, min_moved_pct: 40.0 },
+    SpeedCtx { speed: 7, t: 3, shards: 1, ms_per_cell: 3, min_moved_pct: 30.0 },
+    SpeedCtx { speed: 8, t: 3, shards: 1, ms_per_cell: 3, min_moved_pct: 30.0 },
+    SpeedCtx { speed: 9, t: 2, shards: 1, ms_per_cell: 2, min_moved_pct: 15.0 },
+];
+
+fn speed_ctx(speed: i32) -> &'static SpeedCtx {
+    SPEED_CONTEXTS
+        .iter()
+        .find(|c| c.speed == speed)
+        .expect("every speed 0..=9 has a context")
+}
+
+// ---------------------------------------------------------------------------
+// 7b. The speed-sensitivity matrix — which axes move with speed
+// ---------------------------------------------------------------------------
+
+/// Every singleton axis level, as `(axis index, level)`, skipping the levels the
+/// speed makes unreachable ([`axis_level_dead_at_speed`]) and the ones no legal
+/// row can carry alone.
+fn singleton_levels(speed: i32) -> Vec<(usize, u8)> {
+    let mut out = Vec::new();
+    for (i, ax) in ALL_AXES.iter().enumerate() {
+        for l in 1..ax.n_levels() as u8 {
+            let mut row = DEFAULT_ROW;
+            row[i] = l;
+            if cp::illegal_reason_at_speed(&row, speed).is_some() {
+                continue;
+            }
+            if axis_level_dead_at_speed(*ax, l, speed).is_some() {
+                continue;
+            }
+            out.push((i, l));
+        }
+    }
+    out
+}
+
+/// OPEN, pinned: `(speed, singleton row label)` cells on the primary context
+/// where the port is NOT byte-identical to real aomenc.
+///
+/// Measured 2026-07-30 over the full 10 speeds x 26 axis levels grid. Every one
+/// carries the KB-10/KB-12 "cheaper RD decision" near-tie signature (equal or
+/// near-equal payload lengths), and every one is at speed >= 4 — the
+/// winner-mode / multi-winner tiers. The STOCK encode at each of those speeds is
+/// byte-exact, so these are knob x speed interactions, not a broken speed
+/// envelope.
+///
+/// Self-promoting: a cell that starts matching fails here (re-pin, and unpin the
+/// level from that speed's covering array in [`remap_open_levels`]); a cell that
+/// starts diverging is a regression.
+const SPEED_OPEN_SINGLETONS: &[(i32, &str)] = &[
+    (4, "dir0"),
+    (4, "rtx0"),
+    (4, "flip0"),
+    (5, "minp16"),
+    (8, "rtxs1"),
+    (8, "trel2"),
+];
+
+/// OPEN, pinned: `(speed, covering-array row label)` knob COMBINATIONS that are
+/// not byte-identical to real aomenc at that speed, on the primary context.
+///
+/// These are the cells this section exists to find: every one of them is a row
+/// whose individual axis levels are byte-exact alone at this speed (the
+/// singleton matrix above gates that) and byte-exact in combination at speed 0
+/// (the 2,910-cell array above gates that) — so they diverge only where the knob
+/// axis and the speed axis MEET.
+///
+/// Measured 2026-07-30: 3 rows at `--cpu-used=4` (of 63) and 5 at `--cpu-used=8`
+/// (of 63); speeds 0, 1, 2, 3, 5, 6, 7 and 9 are clean at their gated strength,
+/// including the 187-row t=4 array at speed 2. The signature is uniform and is
+/// the KB-10/KB-12 "cheaper RD decision" near-tie: port payloads 0-4 bytes short
+/// of C's. Speed 4 is the winner-mode / multi-winner-mode tier
+/// (`multi_winner_mode_type=2`, `prune_chroma_modes_using_luma_winner`,
+/// `fast_intra_tx_type_search=2`) and speed 8 is nonrd PICKMODE (KB-12) — the two
+/// places where the SEARCH STRUCTURE, not just its thresholds, changes.
+///
+/// Every speed-8 row carries `dir0` or `dtxo1` or both, i.e. a narrowed luma
+/// tx-type/mode set feeding the nonrd intra pickmode; that is a lead, not a root
+/// cause, and no encoder change was made here (this section does not own
+/// `crates/aom-encode/src`).
+///
+/// Self-promoting: a row that starts matching fails here, and so does a row that
+/// starts diverging.
+const SPEED_OPEN_COMBINATIONS: &[(i32, &str)] = &[
+    (4, "ab0-p140-maxp32-paeth0-cfl0-edgf0-tx640-dtxo1-rtxs1-cdf2-trel2"),
+    (4, "ab0-p140-maxp32-smth0-fint0-edgf0-rtxs1-txss0-cdf0-trel0"),
+    (4, "rect0-minp16-maxp64-smth0-tx640-dtxo1-cdf2"),
+    (8, "ab0-minp16-paeth0-dir0-adlt0-fint0-edgf0-rtx0-flip0-dtxo1-cdf2-trel0"),
+    (8, "ab0-p140-minp8-maxp64-cfl0-dir0-diag0-adlt0-fint0-flip0-dtxo1-cdf0"),
+    (8, "maxp32-dir0-adlt0-fint0-tx640-dtxo1"),
+    (8, "p140-maxp32-dir0-adlt0-fint0-tx640-rtx0-flip0-dtxo1"),
+    (8, "p140-minp8-maxp64-cfl0-dir0-diag0-fint0-cdf2"),
+];
+
+/// The axis levels that still change REAL AOMENC's own output at each speed, on
+/// the primary 64x64 cq32 context — i.e. the coverage a cell at that speed can
+/// actually buy. PINNED, because this table is the whole argument for the
+/// per-speed strengths in [`SPEED_CONTEXTS`].
+///
+/// Measured 2026-07-30. The count decays monotonically with speed
+/// (20/20/20/20/17/18/14/13/13/4 live out of 26/26/26/26/26/26/26/25/24/24
+/// reachable levels): the faster the encoder, the more of the configuration it
+/// ignores, so an unreduced array at speed 9 would spend ~85% of its cells on
+/// rows real aomenc cannot react to.
+const SPEED_LIVE_LEVELS: &[(i32, &[&str])] = &[
+    (0, &["rect0", "ab0", "p140", "minp8", "minp16", "smth0", "paeth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "rtx0", "flip0", "dtxo1", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
+    (1, &["rect0", "ab0", "p140", "minp8", "minp16", "smth0", "paeth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "rtx0", "flip0", "dtxo1", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
+    (2, &["rect0", "ab0", "p140", "minp8", "minp16", "smth0", "paeth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "rtx0", "flip0", "dtxo1", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
+    (3, &["rect0", "ab0", "p140", "minp8", "minp16", "smth0", "paeth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "rtx0", "flip0", "dtxo1", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
+    (4, &["rect0", "p140", "minp8", "minp16", "smth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "rtx0", "flip0", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
+    (5, &["rect0", "minp8", "minp16", "smth0", "paeth0", "cfl0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "rtx0", "flip0", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
+    (6, &["rect0", "minp16", "smth0", "dir0", "adlt0", "fint0", "edgf0", "rtx0", "flip0", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
+    (7, &["smth0", "paeth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "flip0", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
+    (8, &["smth0", "paeth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "flip0", "rtxs1", "cdf0", "trel1", "trel2"]),
+    (9, &["fint0", "rtxs1", "cdf0", "trel1"]),
+];
+
+fn live_levels_at(speed: i32) -> BTreeSet<String> {
+    SPEED_LIVE_LEVELS
+        .iter()
+        .find(|(s, _)| *s == speed)
+        .map(|(_, v)| v.iter().map(|s| s.to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// Replay every singleton axis level at one speed on the primary context.
+///
+/// Returns `(divergent labels, live labels, cells run)`. Every cell asserts
+/// byte-identity via [`run_cell`]'s decode fallback contract; the verdicts are
+/// compared against the pins by [`check_speed_shard`].
+fn run_speed_matrix(speeds: &[i32]) -> (BTreeSet<String>, BTreeMap<i32, BTreeSet<String>>, usize) {
+    c::ref_init();
+    let mut divergent = BTreeSet::new();
+    let mut live: BTreeMap<i32, BTreeSet<String>> = BTreeMap::new();
+    let mut cells = 0usize;
+    let mut report = String::new();
+    for &speed in speeds {
+        let cell = speed_cell(speed);
+        let stock = c_stock_payload(&cell);
+        // Harness-faithfulness control: the stock encode of this content must be
+        // byte-exact at THIS speed, else nothing measured here is attributable
+        // to a knob.
+        let base = run_cell(&cell, &format!("s{speed}_stock"), &ToggleKnobs::default(), &stock);
+        assert!(
+            base.exact,
+            "s{speed}: the STOCK encode of the primary speed context is NOT \
+             byte-identical to real aomenc — that is a plain speed-envelope \
+             regression, not a knob-vs-speed interaction"
+        );
+        cells += 1;
+        let mut here = Vec::new();
+        for (i, l) in singleton_levels(speed) {
+            let mut row = DEFAULT_ROW;
+            row[i] = l;
+            let label = cp::row_label(&row);
+            let r = run_cell(&cell, &format!("s{speed}_{label}"), &cp::knobs_of(&row), &stock);
+            cells += 1;
+            if !r.exact {
+                divergent.insert(format!("s{speed}/{label}"));
+                here.push(format!("{label}({}/{})", r.port_len, r.c_len));
+            }
+            if r.c_moved {
+                live.entry(speed).or_default().insert(label);
+            }
+        }
+        let _ = writeln!(
+            report,
+            "  cpu-used={speed:<2} {:>2} of {:>2} reachable levels move real aomenc; \
+             {} divergent [{}]",
+            live.get(&speed).map_or(0, |s| s.len()),
+            singleton_levels(speed).len(),
+            here.len(),
+            here.join(", ")
+        );
+    }
+    println!("\n=== speed-sensitivity matrix ({cells} cells) ===\n{report}");
+    (divergent, live, cells)
+}
+
+/// Assert one shard of the speed matrix matches the pins exactly.
+fn check_speed_shard(speeds: &[i32]) {
+    let (divergent, live, cells) = run_speed_matrix(speeds);
+    assert!(cells > 0, "empty speed shard");
+    let expected: BTreeSet<String> = SPEED_OPEN_SINGLETONS
+        .iter()
+        .filter(|(s, _)| speeds.contains(s))
+        .map(|(s, l)| format!("s{s}/{l}"))
+        .collect();
+    assert_eq!(
+        divergent, expected,
+        "the SPEED-sensitivity matrix MOVED. A cell that started matching means \
+         a speed x knob near-tie closed — re-pin SPEED_OPEN_SINGLETONS and unpin \
+         the level from that speed's array in remap_open_levels. A cell that \
+         started diverging is a regression."
+    );
+    for &speed in speeds {
+        assert_eq!(
+            live.get(&speed).cloned().unwrap_or_default(),
+            live_levels_at(speed),
+            "s{speed}: the set of axis levels that move REAL AOMENC changed. \
+             This table is the argument for this speed's covering-array strength \
+             in SPEED_CONTEXTS — re-measure the strength before re-pinning."
+        );
+    }
+}
+
+#[test]
+fn speed_sensitivity_s0() {
+    check_speed_shard(&[0, 1, 2, 3]);
+}
+#[test]
+fn speed_sensitivity_s1() {
+    check_speed_shard(&[4, 5, 6]);
+}
+#[test]
+fn speed_sensitivity_s2() {
+    check_speed_shard(&[7, 8, 9]);
+}
+
+// ---------------------------------------------------------------------------
+// 7c. The covering array, replayed per speed
+// ---------------------------------------------------------------------------
+
+/// Map any axis level this speed has pinned open ([`SPEED_OPEN_SINGLETONS`]) or
+/// dead ([`axis_level_dead_at_speed`]) back to its DEFAULT level.
+///
+/// Level-granular rather than axis-granular on purpose: pinning `trel=2` open at
+/// speed 8 must not cost the array its `trel=1` coverage. Forcing individual
+/// cells of a covering array to a constant leaves every t-tuple among the
+/// remaining (axis, level) pairs covered, and the pinned levels are covered
+/// standalone by the matrix above — the same treatment `dtxo` gets on screen
+/// content and `--use-intra-dct-only` gets globally.
+fn remap_open_levels(row: &Row, speed: i32) -> Row {
+    let mut r = *row;
+    for (i, ax) in ALL_AXES.iter().enumerate() {
+        if r[i] == 0 {
+            continue;
+        }
+        let mut probe = DEFAULT_ROW;
+        probe[i] = r[i];
+        let label = cp::row_label(&probe);
+        if SPEED_OPEN_SINGLETONS.iter().any(|(s, l)| *s == speed && *l == label)
+            || axis_level_dead_at_speed(*ax, r[i], speed).is_some()
+        {
+            r[i] = 0;
+        }
+    }
+    r
+}
+
+/// Replay a covering array at one speed on the primary context.
+///
+/// Same four-part gate as [`run_array`]: byte-identity on every cell,
+/// anti-vacuity against real aomenc's own output, collapse soundness in the
+/// stock direction, and a non-empty shard.
+fn run_speed_array(speed: i32, shard: usize, n_shards: usize) {
+    c::ref_init();
+    let sc = speed_ctx(speed);
+    let cell = speed_cell(speed);
+    let cctx = cell_ctx(&cell);
+    let stock = c_stock_payload(&cell);
+    let stock_eff = Effective::resolve(&DEFAULT_ROW, &cctx);
+    let tag = format!("s{speed}");
+
+    let mut seen: BTreeSet<Row> = BTreeSet::new();
+    let pinned: Vec<Row> = cp::covering_array(sc.t)
+        .into_iter()
+        .map(|r| remap_open_levels(&r, speed))
+        .filter(|r| cp::illegal_reason_at_speed(r, speed).is_none() && seen.insert(*r))
+        .collect();
+    let collapsed = cp::collapse(&pinned, &cctx);
+    let rows: Vec<Row> = collapsed
+        .representatives
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(i, _)| i % n_shards == shard)
+        .map(|(_, r)| r)
+        .collect();
+    assert!(!rows.is_empty(), "{tag}: shard {shard}/{n_shards} is empty");
+
+    let mut cells = Vec::new();
+    for row in &rows {
+        let label = format!("{tag}_{}", cp::row_label(row));
+        let r = run_cell(&cell, &label, &cp::knobs_of(row), &stock);
+        if Effective::resolve(row, &cctx) == stock_eff {
+            assert!(
+                !r.c_moved,
+                "{label}: the collapse engine resolves this row to the STOCK \
+                 effective config, but real aomenc produced different bytes at \
+                 THIS SPEED — the Effective signature is under-refined for the \
+                 speed-derived state"
+            );
+        }
+        cells.push(r);
+    }
+    let non_stock: Vec<&Cell> = cells.iter().filter(|c| !c.label.ends_with("_stock")).collect();
+    let moved = non_stock.iter().filter(|c| c.c_moved).count();
+    let moved_pct = if non_stock.is_empty() {
+        100.0
+    } else {
+        100.0 * moved as f64 / non_stock.len() as f64
+    };
+    println!("{}", render(&cells, &tag, sc.t, shard, n_shards, moved_pct));
+    let open: BTreeSet<String> = cells
+        .iter()
+        .filter(|c| !c.exact)
+        .map(|c| c.label[tag.len() + 1..].to_string())
+        .collect();
+    let here: BTreeSet<String> = rows.iter().map(|r| cp::row_label(r)).collect();
+    let expected: BTreeSet<String> = SPEED_OPEN_COMBINATIONS
+        .iter()
+        .filter(|(sp, l)| *sp == speed && here.contains(*l))
+        .map(|(_, l)| l.to_string())
+        .collect();
+    assert_eq!(
+        open, expected,
+        "{tag}: the set of covering-array cells that are NOT byte-identical to \
+         real aomenc at --cpu-used={speed} MOVED. The levels this speed pins \
+         open are remapped to default, so anything here is a knob COMBINATION \
+         that diverges at this SPEED and nowhere else. A row that started \
+         matching means a speed x combination near-tie closed — re-pin \
+         SPEED_OPEN_COMBINATIONS. A row that started diverging is a regression. \
+         ({} of {} cells open)",
+        open.len(),
+        cells.len()
+    );
+    assert!(
+        moved_pct >= sc.min_moved_pct,
+        "{tag}: only {moved_pct:.1}% of the {} non-stock rows changed real \
+         aomenc's output (floor {}%) — at this speed the encoder ignores more \
+         of the configuration than the strength assumes; lower t or re-measure \
+         SPEED_LIVE_LEVELS",
+        non_stock.len(),
+        sc.min_moved_pct
+    );
+}
+
+// t=4 at cpu-used 2 — every 4-way knob interaction at the first speed tier that
+// turns on the ML/tx-stats machinery (`prune_tx_type_using_stats`,
+// `ml_4_partition_search_level_index=2`, `disable_smooth_intra`,
+// `prune_filter_intra_level`, `perform_coeff_opt=3`), and cheap enough
+// (48 ms/cell) to afford full strength. 187 rows, sharded 3 ways.
+#[test]
+fn combinations_t4_speed2_s0() {
+    run_speed_array(2, 0, 3)
+}
+#[test]
+fn combinations_t4_speed2_s1() {
+    run_speed_array(2, 1, 3)
+}
+#[test]
+fn combinations_t4_speed2_s2() {
+    run_speed_array(2, 2, 3)
+}
+
+// t=3 at the two other structure changes inside the RD-search range: speed 4
+// (winner-mode multi-pass + `prune_chroma_modes_using_luma_winner` +
+// `fast_intra_tx_type_search`) and speed 6 (the last RD speed —
+// `default_max_partition_size=BLOCK_32X32`, `cfl_search_range=1`,
+// MULTI_WINNER_MODE_OFF).
+#[test]
+fn combinations_t3_speed4_s0() {
+    run_speed_array(4, 0, 2)
+}
+#[test]
+fn combinations_t3_speed4_s1() {
+    run_speed_array(4, 1, 2)
+}
+#[test]
+fn combinations_t3_speed6() {
+    run_speed_array(6, 0, 1)
+}
+
+// t=3 at the two NON-RD-search structures — speed 7 (VAR_BASED_PARTITION fixed
+// tree, KB-11) and speed 8 (nonrd PICKMODE, KB-12). These are the speeds where
+// a partition/mode knob's MEANING changes rather than its strength, and they
+// cost ~3 ms/cell, so they earn t=3 for free.
+#[test]
+fn combinations_t3_speed7() {
+    run_speed_array(7, 0, 1)
+}
+#[test]
+fn combinations_t3_speed8() {
+    run_speed_array(8, 0, 1)
+}
+
+// t=2 at the speeds whose sf delta is small (1, 3, 5) and at speed 9, where only
+// 4 of 24 reachable levels still move real aomenc — pairwise is already generous
+// there. Speed 0 gets a t=2 replay too: it is redundant with the 2,910-cell
+// array above by construction, and that is exactly why it is worth 17 cells —
+// it is the control proving this section's runner agrees with `run_array`.
+#[test]
+fn combinations_t2_speed0_control() {
+    run_speed_array(0, 0, 1)
+}
+#[test]
+fn combinations_t2_speed1() {
+    run_speed_array(1, 0, 1)
+}
+#[test]
+fn combinations_t2_speed3() {
+    run_speed_array(3, 0, 1)
+}
+#[test]
+fn combinations_t2_speed5() {
+    run_speed_array(5, 0, 1)
+}
+#[test]
+fn combinations_t2_speed9() {
+    run_speed_array(9, 0, 1)
+}
+
+// ---------------------------------------------------------------------------
+// 7d. SPEED x SIZE — the one framesize-gated speed feature that is live
+// ---------------------------------------------------------------------------
+
+/// A 512x512 monochrome pseudo-random-luma ALLINTRA cell — the content
+/// `tx_stats_prune_e2e.rs` established for this speed feature.
+///
+/// The residual after intra prediction is high-frequency and uncorrelated, which
+/// makes IDTX (identity transform, KF probability 2 < the threshold 10) genuinely
+/// competitive; `prune_tx_type_using_stats` removes it, so the sf is
+/// LOAD-BEARING on this content rather than a no-op. Monochrome keeps it
+/// luma-only (the prune is luma-side).
+fn speed_noise_cell(label: &str, w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+    let mut s: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut next = || {
+        s ^= s >> 12;
+        s ^= s << 25;
+        s ^= s >> 27;
+        s.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    };
+    let mut y = vec![0u16; w * h];
+    for p in y.iter_mut() {
+        *p = (next() % 256) as u16;
+    }
+    EncodeCell {
+        label: label.to_string(),
+        w,
+        h,
+        mono: true,
+        ss_x: 1,
+        ss_y: 1,
+        usage: 2,
+        cq_level: cq,
+        speed,
+        bd: 8,
+        y,
+        u: Vec::new(),
+        v: Vec::new(),
+    }
+}
+
+/// THE SPEED x SIZE CLOSURE — `prune_tx_type_using_stats` crossed with the knob
+/// axes, with the sf PROVEN non-zero rather than assumed.
+///
+/// This is the cell the SIZE section named as out of its reach and the reason
+/// this task exists. The sf needs BOTH conditions:
+///
+/// > `if (is_480p_or_larger) { ... sf->tx_sf.tx_type_search.prune_tx_type_using_stats = 1; }`
+/// > — inside `if (speed >= 2)`, libaom `av1/encoder/speed_features.c:261`
+///
+/// so it is 0 on every one of the 2,910 speed-0 cells (in the PORT *and* in real
+/// aomenc — nothing was unexercised there, the SIZE section already established
+/// that), and 0 on every sub-480p cell at any speed. 512x512 at `--cpu-used=2`
+/// is the smallest cell where it is 1.
+///
+/// **Liveness is proved, not asserted.** `ToggleKnobs::disable_tx_stats_prune`
+/// forces the port's `sf.prune_tx_type_using_stats` to 0 while leaving the C
+/// side (driven by `--cpu-used` alone) pruning. So:
+///
+/// * port WITH the prune must byte-match real aomenc, and
+/// * port WITHOUT it must DIVERGE from the port's own with-prune output —
+///
+/// which is only possible if the field is non-zero AND load-bearing on this
+/// content. `tx_stats_prune_e2e.rs` proves that for the STOCK knob row; this
+/// test additionally proves it composes — the witness is re-run on a non-stock
+/// covering-array row, so "the sf is live" is established inside the
+/// configuration space, not only at its origin.
+fn run_speed_size_txstats(shard: usize, n_shards: usize) {
+    c::ref_init();
+    let speed = 2;
+    let cell = speed_noise_cell("txstats_512_s2", 512, 512, 32, speed);
+    let cctx = CellCtx { w: 512, h: 512, mono: true, sb_px: 64 };
+    // The model must agree that this context is the one that turns the sf on.
+    let sd = cp::size_derived(&cctx, speed);
+    assert_eq!(
+        sd.prune_tx_type_using_stats, 1,
+        "the size model says prune_tx_type_using_stats is {} at 512x512 \
+         cpu-used=2 — this whole context exists to exercise level 1",
+        sd.prune_tx_type_using_stats
+    );
+    assert_eq!(
+        cp::size_derived(&cctx, 0).prune_tx_type_using_stats,
+        0,
+        "the same geometry at speed 0 must leave the sf off — otherwise this \
+         cell is not testing the SPEED x SIZE crossing"
+    );
+
+    let stock = c_stock_payload(&cell);
+    let mut seen: BTreeSet<Row> = BTreeSet::new();
+    let rows: Vec<Row> = cp::covering_array(2)
+        .into_iter()
+        .map(|r| remap_open_levels(&r, speed))
+        .filter(|r| cp::illegal_reason_at_speed(r, speed).is_none() && seen.insert(*r))
+        .enumerate()
+        .filter(|(i, _)| i % n_shards == shard)
+        .map(|(_, r)| r)
+        .collect();
+    assert!(!rows.is_empty(), "txstats: empty shard {shard}/{n_shards}");
+
+    let mut cells = Vec::new();
+    for row in &rows {
+        let knobs = cp::knobs_of(row);
+        let label = format!("txstats512s2_{}", cp::row_label(row));
+        let c_tu = cell.c_encode_ctrls(&knobs.c_ctrls());
+        assert!(!c_tu.is_empty(), "{label}: C encode failed");
+        let c_payload = EncodeCell::frame_obu_payload(&c_tu);
+        let port = cell.port_encode_with(&c_tu, &knobs);
+        cells.push(Cell {
+            label,
+            exact: port == c_payload,
+            c_moved: c_payload != stock,
+            port_len: port.len(),
+            c_len: c_payload.len(),
+        });
+    }
+    let moved = cells.iter().filter(|c| c.c_moved).count();
+    println!(
+        "{}",
+        render(&cells, "txstats512s2", 2, shard, n_shards, 100.0 * moved as f64 / cells.len() as f64)
+    );
+    let open: Vec<&Cell> = cells.iter().filter(|c| !c.exact).collect();
+    assert!(
+        open.is_empty(),
+        "txstats512s2: {} of {} SPEED x SIZE cells are NOT byte-identical to \
+         real aomenc — a knob combination diverges where the framesize-gated \
+         speed feature prune_tx_type_using_stats is LIVE. Offenders: {}",
+        open.len(),
+        cells.len(),
+        open.iter()
+            .map(|c| format!("{} (port {}B vs C {}B)", c.label, c.port_len, c.c_len))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    // ---- the LIVENESS WITNESS, one curated row per shard ------------------
+    //
+    // `ToggleKnobs::disable_tx_stats_prune` forces the PORT's
+    // `sf.prune_tx_type_using_stats` to 0 while the C side (driven by
+    // `--cpu-used` alone) keeps pruning, so "port-without != port-with" is a
+    // direct proof that the field is NON-ZERO and load-bearing on this cell —
+    // not an inference from the speed/framesize model.
+    //
+    // Both directions are gated, which is what makes the witness meaningful
+    // rather than a coin flip:
+    //
+    // * `stock` and `trel1` MUST witness — trellis has nothing to do with the
+    //   tx-TYPE candidate set, so the prune still has an IDTX/FLIPADST winner to
+    //   remove;
+    // * `flip0` (`--enable-flip-idtx=0`) MUST NOT — the knob masks the
+    //   FLIPADST/IDTX family out of the ext-tx set (`get_tx_mask`'s
+    //   DCT_ADST_TX_MASK arm) BEFORE the stats prune runs, so the prune has
+    //   nothing left to remove and forcing it off cannot change a byte. A
+    //   witness there would mean the harness knob is perturbing something other
+    //   than the stats prune, and every positive witness would be suspect.
+    //
+    // (Measured 2026-07-30 over 16 singleton rows: 11 witness, and the 5 that do
+    // not are `rect0`/`cdf0` — where the prune fires but does not flip the
+    // winner — plus the three that structurally disarm it: `flip0`, `dtxo1`
+    // (`--use-intra-default-tx-only`, one tx type) and `dir0` (no directional
+    // modes left to carry a non-DCT default).)
+    const WITNESS_ROWS: &[(Axis, u8, bool)] = &[
+        (Axis::CdfUpdate, 0, true),   // the stock row (level 0 = default)
+        (Axis::Trellis, 1, true),     // --disable-trellis-quant=1
+        (Axis::FlipIdtx, 1, false),   // --enable-flip-idtx=0: structurally blind
+    ];
+    let (ax, lv, must) = WITNESS_ROWS[shard % WITNESS_ROWS.len()];
+    let mut wrow = DEFAULT_ROW;
+    wrow[ix(ax)] = lv;
+    let wknobs = cp::knobs_of(&wrow);
+    let wlabel = cp::row_label(&wrow);
+    let c_tu = cell.c_encode_ctrls(&wknobs.c_ctrls());
+    let with = cell.port_encode_with(&c_tu, &wknobs);
+    let without = cell.port_encode_with(
+        &c_tu,
+        &ToggleKnobs { disable_tx_stats_prune: true, ..wknobs },
+    );
+    let witnessed = without != with;
+    println!(
+        "  prune_tx_type_using_stats=1 LIVENESS on `{wlabel}`: forcing the sf \
+         off {} the port's bytes ({} B -> {} B); expected {}",
+        if witnessed { "CHANGES" } else { "leaves unchanged" },
+        with.len(),
+        without.len(),
+        if must { "CHANGES" } else { "unchanged" }
+    );
+    assert_eq!(
+        with,
+        EncodeCell::frame_obu_payload(&c_tu),
+        "txstats512s2 `{wlabel}`: the witness row itself is not byte-identical \
+         to real aomenc"
+    );
+    assert_eq!(
+        witnessed, must,
+        "txstats512s2 `{wlabel}`: prune_tx_type_using_stats liveness flipped. \
+         If a MUST-witness row stopped witnessing, the >=480p x speed>=2 cell no \
+         longer exercises the sf and this whole context is vacuous. If the \
+         structurally-blind row STARTED witnessing, `disable_tx_stats_prune` is \
+         perturbing something other than the stats prune and every positive \
+         witness here is suspect."
+    );
+}
+
+#[test]
+fn speed_size_txstats_s0() {
+    run_speed_size_txstats(0, 3)
+}
+#[test]
+fn speed_size_txstats_s1() {
+    run_speed_size_txstats(1, 3)
+}
+#[test]
+fn speed_size_txstats_s2() {
+    run_speed_size_txstats(2, 3)
+}
+
+// ---------------------------------------------------------------------------
+// 7e. The speed inventory — arithmetic, pinned
+// ---------------------------------------------------------------------------
+
+/// The speed-class arithmetic, computed and PINNED — plus the REFUTATION of the
+/// one collapse the model could have offered.
+///
+/// Three claims:
+///
+/// 1. **the speed-feature class partition**: which `--cpu-used` steps move the
+///    resolved ALLINTRA `SpeedFeatures` at all. Measured: eight classes over ten
+///    speeds — `{0} {1} {2} {3} {4} {5} {6} {7,8,9}`;
+/// 2. **that partition is NOT a valid collapse.** The encoder also branches on
+///    the raw `PickFrameCfg::speed` (six cited sites), so 7 / 8 / 9 are distinct
+///    configurations with an identical `SpeedFeatures`. Asserted against the
+///    ORACLE, not by inspection: real aomenc's own frame payload must differ at
+///    `--cpu-used` 7 vs 8 vs 9 on the same cell. A collapse the oracle
+///    contradicts is not a collapse, so every speed keeps its own context;
+/// 3. **the speed x framesize table**: `cp::size_derived` evaluated across the
+///    speed range, showing which framesize-gated speed features come alive and
+///    where — the arithmetic the SIZE section pinned but could not encode.
+#[test]
+fn speed_class_inventory_is_pinned() {
+    c::ref_init();
+    let classes = speed_sf_classes(&ALL_SPEEDS, false, false);
+    let shape: Vec<Vec<i32>> = classes.iter().map(|(_, v)| v.clone()).collect();
+    println!("\n=== speed classes (ALLINTRA SpeedFeatures equality) ===\n  {shape:?}");
+    assert_eq!(
+        shape,
+        vec![
+            vec![0],
+            vec![1],
+            vec![2],
+            vec![3],
+            vec![4],
+            vec![5],
+            vec![6],
+            vec![7, 8, 9]
+        ],
+        "the ALLINTRA speed-feature class partition moved — a speed step \
+         started (or stopped) changing the resolved SpeedFeatures. Re-read \
+         set_allintra_speed_features_framesize_independent before re-pinning."
+    );
+    // bd10 and screen-content resolutions must partition the same way, else the
+    // per-speed strengths chosen on the bd8 non-screen context do not carry.
+    for (screen, hbd) in [(true, false), (false, true), (true, true)] {
+        assert_eq!(
+            speed_sf_classes(&ALL_SPEEDS, screen, hbd)
+                .iter()
+                .map(|(_, v)| v.clone())
+                .collect::<Vec<_>>(),
+            shape,
+            "the speed-class partition differs at (screen={screen}, hbd={hbd})"
+        );
+    }
+
+    // (2) The collapse is REFUTED by the oracle: C's own bytes differ at 7/8/9.
+    let mut payloads = Vec::new();
+    for speed in [7i32, 8, 9] {
+        let cell = speed_cell(speed);
+        payloads.push((speed, c_stock_payload(&cell)));
+    }
+    for i in 0..payloads.len() {
+        for j in i + 1..payloads.len() {
+            assert_ne!(
+                payloads[i].1, payloads[j].1,
+                "real aomenc produced IDENTICAL bytes at --cpu-used={} and \
+                 --cpu-used={}. If that ever becomes true the SpeedFeatures \
+                 collapse would be sound and these speeds could share a context \
+                 — but it is currently false, which is why they do not.",
+                payloads[i].0, payloads[j].0
+            );
+        }
+    }
+    println!(
+        "  {} — oracle payloads at cpu-used 7/8/9: {} / {} / {} B (all distinct)",
+        aom_bench::config_perm::SPEED_SF_EQUALITY_IS_NOT_A_COLLAPSE,
+        payloads[0].1.len(),
+        payloads[1].1.len(),
+        payloads[2].1.len()
+    );
+
+    // (3) speed x framesize. Sub-480p vs >=480p at every speed.
+    let small = CellCtx { w: 64, h: 64, mono: false, sb_px: 64 };
+    let big = CellCtx { w: 512, h: 512, mono: true, sb_px: 64 };
+    let mut table = String::from(
+        "\n=== speed x framesize (cp::size_derived) ===\n  speed | prune_tx_type_using_stats \
+         64x64 / 512x512 | sq_only_threshold 64x64 / 512x512\n",
+    );
+    for &sp in ALL_SPEEDS.iter() {
+        let _ = writeln!(
+            table,
+            "  {sp:<5} | {} / {}                        | {} / {}",
+            cp::size_derived(&small, sp).prune_tx_type_using_stats,
+            cp::size_derived(&big, sp).prune_tx_type_using_stats,
+            cp::sq_only_threshold_allintra(&small, sp),
+            cp::sq_only_threshold_allintra(&big, sp),
+        );
+    }
+    println!("{table}");
+    // The four PINS that make the speed x size cell meaningful.
+    assert_eq!(cp::size_derived(&big, 0).prune_tx_type_using_stats, 0);
+    assert_eq!(cp::size_derived(&big, 2).prune_tx_type_using_stats, 1);
+    assert_eq!(cp::size_derived(&big, 4).prune_tx_type_using_stats, 2);
+    assert_eq!(
+        cp::size_derived(&small, 9).prune_tx_type_using_stats,
+        0,
+        "sub-480p must never enable the stats prune at any speed"
+    );
+    // The four speed x framesize derivations are enumerated with citations.
+    assert_eq!(cp::SPEED_X_FRAMESIZE_DERIVATIONS.len(), 4);
+    for (thresh, size, field, cite) in cp::SPEED_X_FRAMESIZE_DERIVATIONS {
+        assert!(
+            cite.starts_with("speed_features.c:"),
+            "{field}: every speed x framesize derivation must cite its libaom line"
+        );
+        println!("  speed{thresh:<32} x {size:<40} -> {field}  ({cite})");
+    }
+}
+
+/// OPEN FINDING, pinned: `--enable-tx-size-search=0` stops being a
+/// configuration at ALLINTRA speed >= 8, and the harness's header assertion
+/// stops being a valid claim there.
+///
+/// > `if (!oxcf->txfm_cfg.enable_tx_size_search && sf->rt_sf.use_nonrd_pick_mode == 0)`
+/// > `  sf->winner_mode_sf.tx_size_search_level = 3;`
+/// > — libaom `av1/encoder/speed_features.c:2726-2729`
+///
+/// `set_allintra_speed_features_framesize_independent` sets
+/// `rt_sf.use_nonrd_pick_mode = 1` at `speed >= 8` (`:579`), so from speed 8 the
+/// CLI knob never reaches `tx_size_search_level`, `select_tx_mode` does not
+/// return `TX_MODE_LARGEST`, and `EncodeCell::port_encode_with`'s
+///
+/// > `assert!(knobs.enable_tx_size_search || !p.tx_mode_select)`
+/// > — `aom-bench/src/lib.rs:1119-1123`
+///
+/// PANICS on a stream real aomenc happily produced. Measured 2026-07-30: at
+/// `--cpu-used=8` on the primary context the frame header codes TX_MODE_SELECT
+/// with the knob off; at `--cpu-used=9` on the same cell it happens to code
+/// LARGEST (C's post-hoc `txb_split_count == 0` demotion), so the panic is
+/// DATA-dependent from speed 8 up, not a clean speed threshold.
+///
+/// Two consequences, both modelled rather than papered over:
+/// [`axis_level_dead_at_speed`] removes the level from the matrix and the array
+/// at speed >= 8 (it is inert there — nothing is lost), and
+/// [`cp::illegal_reason_at_speed`] records that the single C-forbidden pair
+/// (`txss=0 x tx64=0`, encodeframe.c:2461) LAPSES at speed >= 8 because the
+/// assert's `tx_search_type != USE_LARGESTALL` disjunct now holds.
+///
+/// This is a FINDING, not a fix — the assertion lives in the shared harness.
+/// Self-promoting: if the header ever codes LARGEST at speed 8 the pin fails.
+#[test]
+fn speed_txss_nonrd_lapse_is_pinned() {
+    c::ref_init();
+    let mut row = DEFAULT_ROW;
+    row[ix(Axis::TxSizeSearch)] = 1;
+    let knobs = cp::knobs_of(&row);
+    // The model's claim.
+    assert!(axis_level_dead_at_speed(Axis::TxSizeSearch, 1, 8).is_some());
+    assert!(axis_level_dead_at_speed(Axis::TxSizeSearch, 1, 7).is_none());
+    // The exclusion lapses with it.
+    let mut both = row;
+    both[ix(Axis::Tx64)] = 1;
+    assert!(
+        cp::illegal_reason(&both).is_some() && cp::illegal_reason_at_speed(&both, 7).is_some(),
+        "txss=0 x tx64=0 must stay excluded below speed 8"
+    );
+    assert!(
+        cp::illegal_reason_at_speed(&both, 8).is_none(),
+        "txss=0 x tx64=0 is not forbidden at speed >= 8 — the CLI no longer \
+         forces USE_LARGESTALL (speed_features.c:2726-2729)"
+    );
+    // The oracle's behaviour: C accepts the knob at speed 8 and still moves.
+    let mut report = String::from("\n=== --enable-tx-size-search=0 across speed ===\n");
+    for speed in [6i32, 7, 8, 9] {
+        let cell = speed_cell(speed);
+        let stock = c_stock_payload(&cell);
+        let c_payload = EncodeCell::frame_obu_payload(&cell.c_encode_ctrls(&knobs.c_ctrls()));
+        let port = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cell.port_encode_with(&cell.c_encode_ctrls(&knobs.c_ctrls()), &knobs)
+        }));
+        let _ = writeln!(
+            report,
+            "  cpu-used={speed}: C {} B ({}), harness {}",
+            c_payload.len(),
+            if c_payload == stock { "inert" } else { "moved" },
+            match &port {
+                Ok(p) if *p == c_payload => "byte-identical".to_string(),
+                Ok(p) => format!("DIVERGES ({} B)", p.len()),
+                Err(_) => "PANICS on the TX_MODE_LARGEST assertion".to_string(),
+            }
+        );
+        if speed == 8 {
+            assert!(
+                port.is_err(),
+                "cpu-used=8 with --enable-tx-size-search=0 no longer trips the \
+                 harness's TX_MODE_LARGEST assertion — the header now codes \
+                 LARGEST, so re-pin this finding and let the level back into the \
+                 speed-8 array (axis_level_dead_at_speed)"
+            );
+        }
+    }
+    println!("{report}");
+}
+
+/// TEETH INVARIANTS — the properties that make the added speed cells able to
+/// catch something the 2,910 speed-0 cells cannot.
+///
+/// No encoding beyond the ten stock controls. Three claims:
+///
+/// 1. **the speed envelope is intact**: the primary context's STOCK encode is
+///    byte-identical to real aomenc at every one of the ten speeds. This is the
+///    control every other assertion in the section rests on, and it is what a
+///    broken speed-gated derivation breaks first (the `LPF_PICK_FROM_Q` arm at
+///    speed >= 6 is exactly this shape — see the harness note in
+///    `aom-bench/src/lib.rs`);
+/// 2. **the pre-existing contexts cannot see any of it**: every `Ctx` /
+///    `SizeCtx` / `Content` cell is speed 0, where `SpeedFeatures::set_allintra`
+///    equals its speed-0 resolution by definition and every `speed >= N` gate in
+///    `aom-encode` is false;
+/// 3. **the speeds this section adds do differ**: consecutive speeds must
+///    resolve to different `SpeedFeatures` (up to the pinned `{7,8,9}` class),
+///    so no added context is a duplicate of its neighbour.
+#[test]
+fn speed_axis_teeth_are_real() {
+    c::ref_init();
+    let mut report = String::from("\n=== speed-axis teeth ===\n");
+    for &speed in ALL_SPEEDS.iter() {
+        let cell = speed_cell(speed);
+        let c_tu = cell.c_encode_ctrls(&[]);
+        let c_payload = EncodeCell::frame_obu_payload(&c_tu);
+        let port = cell.port_encode_with(&c_tu, &ToggleKnobs::default());
+        let _ = writeln!(
+            report,
+            "  TEETH s{speed}_stock exact={} port {}B real {}B",
+            port == c_payload,
+            port.len(),
+            c_payload.len()
+        );
+        assert_eq!(
+            port, c_payload,
+            "s{speed}: the primary speed context's stock encode is not \
+             byte-identical to real aomenc"
+        );
+    }
+    println!("{report}");
+
+    // (2) Everything above this section is speed 0.
+    let zero = aom_encode::speed_features::SpeedFeatures::set_allintra(0, false, false);
+    for &speed in ALL_SPEEDS.iter().skip(1) {
+        let sf = aom_encode::speed_features::SpeedFeatures::set_allintra(speed, false, false);
+        assert_ne!(
+            sf, zero,
+            "cpu-used={speed} resolves to the SPEED-0 feature set — a speed \
+             context that is speed-0-equivalent buys nothing"
+        );
+    }
+    // (3) Consecutive speeds differ, except inside the pinned {7,8,9} class.
+    for &speed in ALL_SPEEDS.iter().skip(1) {
+        let a = aom_encode::speed_features::SpeedFeatures::set_allintra(speed - 1, false, false);
+        let b = aom_encode::speed_features::SpeedFeatures::set_allintra(speed, false, false);
+        if speed <= 7 {
+            assert_ne!(a, b, "cpu-used={} and {speed} resolve identically", speed - 1);
+        } else {
+            assert_eq!(
+                a, b,
+                "cpu-used={} and {speed} now resolve DIFFERENTLY — the pinned \
+                 {{7,8,9}} class split; re-pin speed_class_inventory_is_pinned",
+                speed - 1
+            );
+        }
+    }
+}
+
+/// BUDGET ACCOUNTING for the speed axis — no encoding, just the arithmetic that
+/// justifies the strength chosen per speed, pinned so a strength bump fails here
+/// instead of quietly costing the suite a minute.
+///
+/// `ms_per_cell` is MEASURED (`benchmarks/config_perm_speed_axis_2026-07-30.tsv`)
+/// on a 12-core M4 shared with two concurrent agents, so the figures are upper
+/// bounds and the CPU total below is conservative.
+#[test]
+fn speed_axis_budget_is_accounted() {
+    let mut total_cells = 0usize;
+    let mut total_ms = 0u64;
+    let mut report = String::from("\n=== speed-axis budget ===\n");
+    for sc in SPEED_CONTEXTS {
+        let array_rows = cp::covering_array(sc.t).len();
+        let matrix_rows = singleton_levels(sc.speed).len() + 1; // + the stock control
+        let rows = array_rows + matrix_rows;
+        total_cells += rows;
+        total_ms += rows as u64 * sc.ms_per_cell as u64;
+        let _ = writeln!(
+            report,
+            "  cpu-used={:<2} t={} {:>3} array + {:>2} matrix rows x {:>4} ms   \
+             (live levels: {:>2})",
+            sc.speed,
+            sc.t,
+            array_rows,
+            matrix_rows,
+            sc.ms_per_cell,
+            live_levels_at(sc.speed).len()
+        );
+    }
+    // The SPEED x SIZE closure: a t=2 array on a 512x512 cpu-2 cell, each row
+    // encoded THREE times (C, port-with-sf, port-without-sf for the liveness
+    // witness).
+    let tx_rows = cp::covering_array(2).len();
+    total_cells += tx_rows;
+    total_ms += tx_rows as u64 * 780;
+    let _ = writeln!(
+        report,
+        "  txstats512s2  t=2 {tx_rows:>3} rows x  780 ms  (>=480p x speed>=2, \
+         3 encodes/row incl. the liveness witness)"
+    );
+    let _ = writeln!(
+        report,
+        "  TOTAL {total_cells} cells, {:.1} s CPU (upper bound; libtest spreads \
+         it across {} shards)",
+        total_ms as f64 / 1000.0,
+        SPEED_CONTEXTS.iter().map(|c| c.shards).sum::<usize>() + 3 + 3
+    );
+    println!("{report}");
+    assert!(
+        total_ms <= 120_000,
+        "the speed axis budget is {} s CPU — over the 120 s ceiling this section \
+         was designed to; drop a strength or a speed rather than letting the \
+         suite drift",
+        total_ms / 1000
+    );
+}
+
+/// THE SPEED ENVELOPE, mapped and pinned: which (content, `--cpu-used`) pairs
+/// the port encodes byte-identically to real aomenc with STOCK knobs.
+///
+/// The gated speed contexts above all ride ONE content, chosen because its stock
+/// encode is byte-exact at every speed. That is the right choice for isolating
+/// the knob x speed interaction — and it would be dishonest to leave as the only
+/// statement, because it is not representative. This test maps the envelope on
+/// four more contents and pins the result, so the section reports the shape of
+/// the speed axis rather than the shape of its best cell.
+///
+/// **Measured 2026-07-30, and the shape is counter-intuitive.** The fragile band
+/// is NOT the nonrd speeds (7-9), which are the cleanest above 0 — it is speeds
+/// **4 and 5**, the winner-mode / multi-winner tiers, where three of the five
+/// contexts diverge with every knob at its default. And bd10 is open at almost
+/// every speed: `av1-1-b10-00-quantizer-00` is byte-exact at speed 0 (a gated
+/// context of the main array) and at speed 7, and diverges at 1, 2, 3, 4, 5, 6, 8
+/// and 9. All of it carries the KB-10/KB-12 near-tie signature (0-6 byte
+/// deltas), and none of it is reachable from a speed-0 matrix.
+///
+/// Consequences, applied rather than just noted: no bd10 speed context is gated
+/// (it would gate a divergence), and the per-speed arrays run on the one content
+/// whose envelope is intact at all ten speeds. The full 1,342-cell grid behind
+/// this table is `benchmarks/config_perm_speed_axis_2026-07-30.tsv`
+/// ([`speed_axis_evidence_sweep`]).
+///
+/// Self-promoting in both directions.
+#[test]
+fn speed_envelope_stock_map_is_pinned() {
+    c::ref_init();
+    // (tag, vector, crop, mono, the speeds whose STOCK encode DIVERGES)
+    // (tag, vector, crop, mono, [(speed, expected verdict)]) — every speed not
+    // listed must be "ok".
+    let probes: &[(&str, &str, Option<(usize, usize, usize, usize)>, bool, &[(i32, &str)])] = &[
+        ("sz64", SPEED_VECTOR, None, false, &[]),
+        ("q00_64", "av1-1-b8-00-quantizer-00", Some((64, 64, 64, 64)), false, &[(4, "diverge"), (5, "diverge")]),
+        ("q00_mono64", "av1-1-b8-00-quantizer-00", Some((64, 64, 64, 64)), true, &[(4, "diverge"), (5, "diverge")]),
+        ("q00_128", "av1-1-b8-00-quantizer-00", Some((128, 128, 64, 64)), false, &[(4, "diverge"), (5, "diverge")]),
+        (
+            "b10_64",
+            "av1-1-b10-00-quantizer-00",
+            Some((64, 64, 64, 64)),
+            false,
+            // 8/9 are not a near-tie at all: `nonrd_pick_intra_mode`
+            // (aom-encode/src/nonrd_pickmode.rs:601) asserts `env.bd == 8`
+            // — "HANDOFF: hbd estimate arm (av1_quantize_fp + fp scans) not
+            // ported". The KB-12 nonrd path is bd8-only, so bd10 at speed >= 8
+            // is an UNPORTED ARM, not a divergence.
+            &[(1, "diverge"), (2, "diverge"), (3, "diverge"), (4, "diverge"),
+              (5, "diverge"), (6, "diverge"), (8, "panic"), (9, "panic")],
+        ),
+    ];
+    let mut report = String::from("\n=== speed envelope: stock byte-identity per (content, cpu-used) ===\n");
+    let mut failures = Vec::new();
+    // The bd10 speed>=8 probe deliberately trips an unported-arm assertion; keep
+    // its backtrace out of the log so a PASSING run reads clean.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    for (tag, vector, crop, mono, open) in probes {
+        let mut line = format!("  {tag:<11}");
+        for &speed in ALL_SPEEDS.iter() {
+            let mut cell = EncodeCell::real_content(tag, vector, *crop, SPEED_CQ, speed);
+            if *mono {
+                cell.mono = true;
+                cell.u.clear();
+                cell.v.clear();
+            }
+            let c_tu = cell.c_encode_ctrls(&[]);
+            let c_payload = EncodeCell::frame_obu_payload(&c_tu);
+            let got = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                cell.port_encode_with(&c_tu, &ToggleKnobs::default())
+            })) {
+                Ok(p) if p == c_payload => "ok",
+                Ok(_) => "diverge",
+                Err(_) => "panic",
+            };
+            let want = open.iter().find(|(s, _)| *s == speed).map_or("ok", |(_, v)| *v);
+            let _ = write!(line, " s{speed}={got}");
+            if got != want {
+                failures.push(format!(
+                    "{tag} cpu-used={speed}: stock encode is now `{got}` (pinned `{want}`)"
+                ));
+            }
+        }
+        let _ = writeln!(report, "{line}");
+    }
+    std::panic::set_hook(hook);
+    println!("{report}");
+    assert!(
+        failures.is_empty(),
+        "the SPEED ENVELOPE moved. A (content, speed) that started matching \
+         means a stock-level near-tie closed — re-pin, and consider promoting \
+         that content to a gated speed context. One that started diverging is a \
+         regression. {failures:?}"
+    );
+}
+
+/// DEEP TIER (`--ignored`) — the full speed-axis evidence grid, written to
+/// `benchmarks/config_perm_speed_axis_2026-07-30.tsv`.
+///
+/// The default tier runs the singleton matrix at all ten speeds but replays the
+/// covering array on ONE content. This sweep additionally replays the singleton
+/// matrix over five contents x ten speeds and records the per-cell timing that
+/// [`SPEED_CONTEXTS`]'s `ms_per_cell` figures come from — including the contents
+/// whose STOCK encode is NOT byte-exact at some speeds, which is why they are
+/// not default-tier contexts.
+#[test]
+#[ignore]
+fn speed_axis_evidence_sweep() {
+    c::ref_init();
+    // Schema note: the PRIMARY context (`sz64` — the one the default tier gates)
+    // is emitted in full, every (speed, axis level) cell. The four secondary
+    // contexts emit their stock row plus every DIVERGENT row, and their inert
+    // exact rows are summarised in the `[summary]` block instead of listed —
+    // that keeps the committed evidence under the repo's per-file size bar
+    // without dropping a single finding (an exact-and-inert cell carries no
+    // information the per-(content, speed) counts do not).
+    let mut summary = String::from(
+        "# [summary] one line per (content, speed): cells run, divergences, \
+         panics, stock verdict\ncontent\tspeed\tcells\tdivergent\tpanic\tstock\n",
+    );
+    let mut tsv = String::from(
+        "content\tspeed\trow\texact\tc_moved\tport_len\tc_len\tms\n",
+    );
+    struct Probe {
+        tag: &'static str,
+        vector: &'static str,
+        crop: Option<(usize, usize, usize, usize)>,
+        mono: bool,
+    }
+    let probes = [
+        Probe { tag: "sz64", vector: SPEED_VECTOR, crop: None, mono: false },
+        Probe { tag: "q00_64", vector: "av1-1-b8-00-quantizer-00", crop: Some((64, 64, 64, 64)), mono: false },
+        Probe { tag: "q00_mono64", vector: "av1-1-b8-00-quantizer-00", crop: Some((64, 64, 64, 64)), mono: true },
+        Probe { tag: "q00_128", vector: "av1-1-b8-00-quantizer-00", crop: Some((128, 128, 64, 64)), mono: false },
+        Probe { tag: "b10_64", vector: "av1-1-b10-00-quantizer-00", crop: Some((64, 64, 64, 64)), mono: false },
+    ];
+    for p in &probes {
+        for &speed in ALL_SPEEDS.iter() {
+            let mut cell = EncodeCell::real_content(p.tag, p.vector, p.crop, SPEED_CQ, speed);
+            if p.mono {
+                cell.mono = true;
+                cell.u.clear();
+                cell.v.clear();
+            }
+            let stock = c_stock_payload(&cell);
+            let stock_exact = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                cell.port_encode_with(&cell.c_encode_ctrls(&[]), &ToggleKnobs::default()) == stock
+            }))
+            .unwrap_or(false);
+            let full = p.tag == "sz64";
+            let (mut cells, mut divergent, mut panics) = (0usize, 0usize, 0usize);
+            let mut emit = |row: &Row, tsv: &mut String| {
+                let t0 = std::time::Instant::now();
+                let knobs = cp::knobs_of(row);
+                let c_tu = cell.c_encode_ctrls(&knobs.c_ctrls());
+                let c_payload = EncodeCell::frame_obu_payload(&c_tu);
+                let port = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    cell.port_encode_with(&c_tu, &knobs)
+                }));
+                let (exact, plen, panicked) = match &port {
+                    Ok(v) => (*v == c_payload, v.len(), false),
+                    Err(_) => (false, 0, true),
+                };
+                cells += 1;
+                divergent += usize::from(!exact);
+                panics += usize::from(panicked);
+                if full || !exact || *row == DEFAULT_ROW {
+                    let _ = writeln!(
+                        tsv,
+                        "{}\t{speed}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        p.tag,
+                        cp::row_label(row),
+                        exact,
+                        c_payload != stock,
+                        plen,
+                        c_payload.len(),
+                        t0.elapsed().as_millis()
+                    );
+                }
+            };
+            emit(&DEFAULT_ROW, &mut tsv);
+            for (i, l) in singleton_levels(speed) {
+                let mut row = DEFAULT_ROW;
+                row[i] = l;
+                emit(&row, &mut tsv);
+            }
+            let _ = writeln!(
+                summary,
+                "{}\t{speed}\t{cells}\t{divergent}\t{panics}\t{}",
+                p.tag,
+                if stock_exact { "exact" } else { "DIVERGENT" }
+            );
+        }
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../benchmarks/config_perm_speed_axis_2026-07-30.tsv");
+    let out = format!(
+        "# config-permutation SPEED axis — evidence sweep, {}\n\
+         # 5 contents x 10 --cpu-used levels x every singleton axis level, port \
+         vs real aomenc\n{summary}\n# [cells] `sz64` in full; the other \
+         contexts' stock + divergent rows\n{tsv}",
+        "2026-07-30"
+    );
+    std::fs::write(&path, &out).expect("write the speed-axis evidence TSV");
+    println!("wrote {}", path.display());
+}

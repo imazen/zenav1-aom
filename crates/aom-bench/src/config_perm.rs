@@ -1501,3 +1501,157 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// SPEED-derived encoder state (the SPEED axis of the matrix)
+// ---------------------------------------------------------------------------
+
+/// The `--cpu-used` levels the ALLINTRA encoder accepts.
+pub const ALL_SPEEDS: [i32; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+/// Partition `speeds` into classes with an IDENTICAL resolved
+/// [`aom_encode::speed_features::SpeedFeatures`] on the ALLINTRA path.
+///
+/// **This is a candidate collapse, and it is REFUTED — see
+/// [`SPEED_SF_EQUALITY_IS_NOT_A_COLLAPSE`].** It is computed and pinned anyway
+/// because the *shape* of the answer is the useful part: it says exactly which
+/// speed steps move the speed-feature struct and which do not, so a speed step
+/// that stops moving it (or starts) fails the pin instead of silently changing
+/// what the matrix covers.
+///
+/// Returns one entry per class, each `(representative speed, member speeds)`,
+/// in ascending representative order.
+pub fn speed_sf_classes(speeds: &[i32], screen: bool, hbd: bool) -> Vec<(i32, Vec<i32>)> {
+    let mut out: Vec<(aom_encode::speed_features::SpeedFeatures, i32, Vec<i32>)> = Vec::new();
+    for &sp in speeds {
+        let sf = aom_encode::speed_features::SpeedFeatures::set_allintra(sp, screen, hbd);
+        match out.iter_mut().find(|(k, _, _)| *k == sf) {
+            Some((_, _, v)) => v.push(sp),
+            None => out.push((sf, sp, vec![sp])),
+        }
+    }
+    out.into_iter().map(|(_, r, v)| (r, v)).collect()
+}
+
+/// Why [`speed_sf_classes`] must NOT be used to drop a speed context, even
+/// though it reports `{7, 8, 9}` as one class on the ALLINTRA path.
+///
+/// The resolved `SpeedFeatures` struct is not the whole speed-derived state:
+/// the encoder ALSO branches on the raw `PickFrameCfg::speed`, at thresholds
+/// that are not represented in any `SpeedFeatures` field. The ones that
+/// separate 7 / 8 / 9 (all in `crates/aom-encode/src`, each mirroring a libaom
+/// `speed >= N` gate):
+///
+/// * `pack.rs:1474` — `use_var_based_partition = allintra && speed >= 7`
+///   (`VAR_BASED_PARTITION`, speed_features.c:571);
+/// * `pack.rs:1791` / `partition_pick.rs:4569` — `speed >= 8` runs
+///   `av1_nonrd_use_partition` (partition_search.c:2960);
+/// * `pack.rs:1685`/`:2117` — `cost_upd_off = allintra && speed >= 9`;
+/// * `partition_pick.rs:4772` — `hybrid_intra_pickmode` 2 at speed 8, 0 at
+///   speed >= 9;
+/// * `partition_pick.rs:4854-4856` — `prune_h_pred_using_best_mode_so_far` /
+///   `enable_intra_mode_pruning_using_neighbors` /
+///   `prune_intra_mode_using_best_sad_so_far`, all `speed >= 9`.
+///
+/// And it is refuted EMPIRICALLY as well as by inspection: real aomenc's own
+/// frame payload differs at `--cpu-used` 7 vs 8 vs 9 on the same cell, which
+/// `speed_class_inventory_is_pinned` asserts against the oracle. A collapse the
+/// oracle contradicts is not a collapse.
+pub const SPEED_SF_EQUALITY_IS_NOT_A_COLLAPSE: &str =
+    "SpeedFeatures equality collapses ALLINTRA {7,8,9}, but the encoder also \
+     branches on the raw cfg.speed (pack.rs:1474/1685/1791, \
+     partition_pick.rs:4569/4772/4854-4856) and real aomenc's payload differs \
+     at cpu-used 7/8/9 — every speed keeps its own context";
+
+/// Is this axis level DEAD (or unreachable for the harness) at `speed`, and
+/// why? The speed analogue of [`illegal_reason`], and the reason the covering
+/// array pins the axis to its default rather than skipping the whole row.
+///
+/// One entry, and it is a real libaom-semantics change rather than a harness
+/// convenience:
+///
+/// **`--enable-tx-size-search=0` is a NO-OP at ALLINTRA speed >= 8.** The CLI
+/// override is conditional:
+///
+/// > `if (!oxcf->txfm_cfg.enable_tx_size_search && sf->rt_sf.use_nonrd_pick_mode == 0)`
+/// > `  sf->winner_mode_sf.tx_size_search_level = 3;`
+/// > — libaom `av1/encoder/speed_features.c:2726-2729`
+///
+/// and `set_allintra_speed_features_framesize_independent` sets
+/// `rt_sf.use_nonrd_pick_mode = 1` at `speed >= 8` (`:579`). So from speed 8 the
+/// knob never reaches `tx_size_search_level`, the frame does NOT code
+/// `TX_MODE_LARGEST`, and `EncodeCell::port_encode_with`'s
+/// "knob OFF must never yield a SELECT header" assertion
+/// (`aom-bench/src/lib.rs:1119-1123`) is no longer a valid claim — it fires.
+///
+/// TWO consequences, both modelled here:
+/// 1. the level is covered nowhere at speed >= 8 (it cannot be), so the array
+///    pins it to its default there and the fact is pinned as a finding;
+/// 2. [`illegal_reason`]'s single C-forbidden pair LAPSES at speed >= 8 — see
+///    [`illegal_reason_at_speed`].
+pub fn axis_level_dead_at_speed(ax: Axis, level: u8, speed: i32) -> Option<&'static str> {
+    if ax == Axis::TxSizeSearch && level == 1 && speed >= 8 {
+        return Some(
+            "--enable-tx-size-search=0 is inert at ALLINTRA speed>=8: the \
+             override at speed_features.c:2726-2729 is gated on \
+             use_nonrd_pick_mode==0, which :579 sets to 1 from speed 8",
+        );
+    }
+    None
+}
+
+/// [`illegal_reason`], evaluated at a speed.
+///
+/// The exclusion `--enable-tx-size-search=0 + --enable-tx64=0` exists because
+/// `assert(enable_tx64 || tx_search_type != USE_LARGESTALL)`
+/// (encodeframe.c:2461) trips when the CLI forces `USE_LARGESTALL`. At ALLINTRA
+/// speed >= 8 the CLI no longer forces it (see [`axis_level_dead_at_speed`]), so
+/// `tx_search_type != USE_LARGESTALL` holds and the assert cannot fire — the
+/// pair becomes LEGAL. The matrix does not exploit that (it pins the `txss`
+/// axis to its default from speed 8 anyway, because the level is inert there),
+/// but the model must not claim an exclusion libaom does not have.
+pub fn illegal_reason_at_speed(row: &Row, speed: i32) -> Option<&'static str> {
+    if speed >= 8 {
+        return None;
+    }
+    illegal_reason(row)
+}
+
+/// The speed-gated ALLINTRA speed-feature derivations, as
+/// `(speed threshold, framesize condition, field, libaom line)`.
+///
+/// This is the SPEED half of the table [`size_derived`] documents for framesize
+/// — specifically the four derivations that are gated on speed AND framesize
+/// together, i.e. the ones neither the speed-0 matrix nor a framesize-blind
+/// speed sweep can reach alone. Every other entry of
+/// `set_allintra_speed_feature_framesize_dependent` is either inert on an intra
+/// frame or carries no framesize distinction (see [`size_derived`]'s doc table
+/// for those, with citations).
+///
+/// `framesize` is the condition that must ALSO hold; `"-"` means none.
+pub const SPEED_X_FRAMESIZE_DERIVATIONS: &[(&str, &str, &str, &str)] = &[
+    (
+        ">=2 (level 1) / >=4 (level 2)",
+        "is_480p_or_larger",
+        "tx_type_search.prune_tx_type_using_stats",
+        "speed_features.c:261, :299",
+    ),
+    (
+        ">=1",
+        "is_480p_or_larger / is_720p_or_larger tiers",
+        "part_sf.use_square_partition_only_threshold",
+        "speed_features.c:211-217, :238-242, :315",
+    ),
+    (
+        ">=3",
+        "< 720p (no distinction below)",
+        "part_sf.max_intra_bsize",
+        "speed_features.c:283",
+    ),
+    (
+        ">=2 / >=3",
+        "< 480p AND use_highbitdepth",
+        "tx_sf.prune_tx_size_level (INTER var-tx only)",
+        "speed_features.c:263-265, :289",
+    ),
+];
