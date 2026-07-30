@@ -12,7 +12,22 @@ transcribed oracles can carry shared bugs).
 
 - **Gate 1 — Decoder:** bit-identical to C across the AV1 conformance corpus (intra scope
   wired in CI: `xtask/conformance.py --fetch --scope intra`; gate = byte-identity + golden MD5).
+  **Scope caveat, MEASURED 2026-07-30** (`benchmarks/decoder_corpus_feature_tuples_2026-07-30.tsv`,
+  every vector's frame 0 parsed): the intra corpus is a deep sweep of ONE sequence shape —
+  **235/235 are 4:2:0**, bd8 (169) or bd10 (66), 230/235 SB128, and ZERO carry superres,
+  tiles>1, QM, segmentation, `reduced_tx_set`, `disable_cdf_update`, `delta_lf_present`,
+  4:2:2, 4:4:4 or 12-bit. Those axes are covered by the port-generated gates instead
+  (`real_bitstream`, `config_permutations_decode`), NOT by conformance. Do not read "the
+  conformance corpus passes" as breadth across the format.
 - **Gate 2 — Encoder:** bitstream bit-identical for every `--cpu-used 0..9`.
+  **Scope caveat, VERIFIED 2026-07-30** (`docs/CONFIG_AXIS_INVENTORY_2026-07-30.md`): the port
+  never AUTHORS a sequence header — `write_sequence_header_obu`
+  (`aom-dsp/src/entropy/header.rs:1046`) has zero call sites in any `crates/*/src` (16 in
+  tests), and `SequenceHeaderObu` has no `Default`. Every encoder path parses a seq header
+  out of a real aomenc bootstrap stream and emits only an `OBU_FRAME`. So bit depth,
+  monochrome, subsampling, profile, SB size and every seq-level `enable_*` bit are
+  REPLAYED, not derived: gates asserting "the seq bit equals the knob" are agreement checks
+  against libaom's bits, not evidence the port can produce that configuration.
 - **Gate 3 — Performance:** user-set acceptance bar ≤ 1.5× C (2026-07-20 directive).
   **Met at the 4K headline cells** (≈1.22× cq20 / ≈1.19× cq40 wall after the bd8 lowbd +
   i16-rows + CDEF find_dir landings); 2K and small-frame cells still exceed it
