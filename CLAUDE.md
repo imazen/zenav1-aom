@@ -1461,7 +1461,7 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   Working notes: `docs/inter-vartx-coeff-arm-notes.md` (updated with the chroma inter path, the
   encode-vs-write walk-order difference, and the `set_skip_txfm` nonzero-rate detail).
 
-### KB-ARM-FLOAT — aarch64: 15 float C-differentials in aom-encode fail — ROOT #1 FIXED ✅ (11/15, oracle fp-contraction) + ROOT #3 FIXED ✅ (1/15, harness fed UB) + ROOT #2 CNN HALF FIXED ✅ (2/15, scalar-bound CNN shim); 1 remains (`hog_prune_diff`, an inherently x86-only contract)
+### KB-ARM-FLOAT — aarch64: 15 float C-differentials in aom-encode fail — CLOSED ✅ 2026-07-30 (all four roots; `--workspace` green on aarch64, CI leg widened)
 - **Symptom (as first logged):** on `aarch64-apple-darwin` the workspace suite is 755 passed
   / 15 failed. Every
   failure is float-domain and every one is in `zenav1-aom-encode`:
@@ -1580,16 +1580,53 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   libaom-on-ARM (same shape as the root-#1 contraction finding), and the port matches the
   x86-64 build — the platform every gate here was established on. Consistent with that, the
   three mask-level hog tests (`prune_intra_mode_with_hog_matches_c`, `..._uv_...`,
-  `generate_hog_matches_c`) all PASS on aarch64 today; only the ULP-level NN test fails.
-  **Recommended resolution (NOT implemented — needs a decision, it is a contract change):**
-  state the contract instead of hiding it — keep the AVX2-order assertion as an explicitly
-  x86-64 contract, and add a separately-named non-x86 test asserting what IS defined there
-  (agreement with the dispatched variant within one prec-reduce bucket, plus mask parity).
-  That is a target-conditional contract, uncomfortably adjacent to the banned
-  `cfg!(target_arch)` skip, so it is the coordinator's call. **Rejected alternative:** making
-  the port's NN kernel pick lane order by `cfg!(target_arch)` — it would pass everywhere but
-  make the *port's own output* host-dependent, contradicting the root-#1 decision that the
-  port matches the x86-64 build. Do NOT widen a tolerance.
+  `generate_hog_matches_c`) all PASSED on aarch64 throughout; only the ULP-level NN test
+  failed — which is itself evidence that the mask, not the ULP, is the encode-relevant layer.
+  **RESOLVED 2026-07-30 by STATING the contract, not by relaxing one** (user decision,
+  verbatim: *"as long as it matches libaom that is fine"* — the port matches x86-64 libaom,
+  which IS matching libaom; what was wrong is that the test did not SAY so, and failed on ARM
+  as though something were broken). `crates/aom-encode/tests/hog_prune_diff.rs` now carries
+  TWO tests over the SAME shared 20,000-case input corpus (`hog_case_hist`), each with a
+  one-sentence contract in its doc comment:
+  1. **`hog_nn_predict_matches_avx2_and_dispatch`** — `#[cfg(any(target_arch = "x86_64",
+     target_arch = "x86"))]`. **Assertions UNCHANGED** (f32 bit-equality vs
+     `av1_nn_predict_avx2` at both `reduce_prec` settings + RTCD-dispatch identity); only the
+     label is new. It is now stated as the x86-64 contract it always was.
+  2. **`hog_nn_predict_agrees_with_dispatch_within_one_prec_quantum`** — `#[cfg(not(...))]`.
+     The non-x86 contract, every clause a hard equality or an exact integer bound:
+     (a) the RTCD-dispatched kernel IS the widest SIMD variant libaom has on this target
+     (bit-equal — on aarch64 `av1_nn_predict` is `#define`d straight to `_neon`);
+     (b) each side's `reduce_prec = true` output is bit-equal to `av1_nn_output_prec_reduce`
+     (ml.c:19-25, transcribed in the test) of its OWN `reduce_prec = false` output — which
+     both establishes the 1/512 lattice rather than assuming it AND keeps the
+     `reduce_prec = false` regime covered instead of dropped;
+     (c) both sides land EXACTLY on that lattice (`v * 512` is integral, asserted — not a
+     rounding tolerance);
+     (d) their lattice indices differ by **at most 1** — the bound is `prec_bits = 9` read off
+     ml.c:20, not a chosen epsilon;
+     (e) **prune-mask parity**: `score <= th` agrees at every threshold production ever passes
+     (`{-1.2, -0.6, 0.0, 0.4, 1.2}` — intra_mode_search.c:1321/1505/961-964; `0.0` is itself
+     ON the lattice so it is the most exposed and is deliberately included), with both
+     polarities of every threshold asserted to occur >1,000 times so parity is not vacuous;
+     (f) the one-quantum divergence is **characterized and pinned**, not tolerated:
+     `one_quantum_lanes <= 56` so it cannot grow, and `> 0` so a target where it vanished gets
+     routed to the bit-exact x86 contract instead of silently passing this one.
+  **Measured on aarch64-apple-darwin (the test prints it):** `lanes=160000
+  one_quantum_lanes=56 worst_gap=1 quanta mask_flips=0` — i.e. the 56/160,000 one-bucket
+  figure above, and mask parity is EXACT on this corpus. **Teeth verified, not assumed:**
+  perturbing `INTRA_HOG_MODEL_BIAS[0]` by 0.002 (~one quantum) makes the ARM test FAIL first
+  on clause (e) — *"prune-mask parity broke: 28 flips (pinned max 0) across 160000 lanes x 5
+  production thresholds"*, samples showing exactly the predicted straddles
+  (`port=-1.1992188 (-614/512, prune=false)` vs `oracle=-1.2011719 (-615/512, prune=true)`).
+  Perturbation reverted; `git diff` clean on `src/`.
+  **Why this is not the banned `cfg!(target_arch)` skip:** a skip makes a test disappear and
+  leaves the kernel unasserted on that target. Here every target has a complete, hard contract
+  — the x86 one bit-exact, the ARM one exact-lattice + exact-integer-bound + mask parity — and
+  neither is a weakened form of the other; they assert different quantities because different
+  quantities are defined. Nothing is `#[ignore]`d and no tolerance was widened.
+  **Rejected alternative (still rejected):** making the port's NN kernel pick lane order by
+  `cfg!(target_arch)` — it would pass everywhere but make the *port's own output*
+  host-dependent, contradicting the root-#1 decision that the port matches the x86-64 build.
 - **ROOT #3 — the harness fed `av1_block_error_c` OUTSIDE its defined domain
   (`intra_rd_pick_diff`; NOT a float bug at all) — FIXED ✅ 2026-07-28.**
   `rdopt.c:892`'s `error += diff * diff` multiplies in `int`, so the kernel is DEFINED
@@ -1652,11 +1689,22 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   disagreement on ARM is the same hazard wearing a different hat — it means an ARM-built
   encoder can make different partition/mode choices than the x86 one. Diagnose, do not widen
   the tolerance.
-- **Blast radius today:** none for the decoder or for any integer path; ARM dev boxes are
-  now 4 failures short of a green full-suite run instead of 15, and the residuals are three
-  named, independent roots (#2 ×3, #3 ×1) rather than one undiagnosed class.
-- **CI:** `test-macos-aarch64` stays scoped to `aom-dsp` until roots #2 and #3 close — see
-  the scoping comment in `.github/workflows/ci.yml`, which now names the residual set.
+- **Blast radius today: none.** No decoder path, no integer path, and no *port* source line
+  changed for any of the four roots — roots #1/#2 moved the ORACLE's build/binding, root #3
+  and this one moved HARNESSES. The port's shipping bytes are byte-for-byte what they were.
+- **CI (2026-07-30):** `test-macos-aarch64` is **widened from `-p zenav1-aom-dsp` to
+  `cargo test --profile test-fast --workspace --no-fail-fast`**, both dispatch modes, with the
+  Gate-1 conformance corpus provisioned/cached exactly as the linux legs do (the workspace
+  suite fail-loud-asserts on an empty `conformance/data`) and `timeout-minutes: 90` matching
+  the linux legs. The scoping comment in `.github/workflows/ci.yml` is rewritten to record the
+  closure and to answer, in place, its own prior "do NOT resolve this by relaxing or skipping"
+  instruction.
+- **Verified before widening, on aarch64-apple-darwin (this box), `--profile test-fast
+  --workspace --no-fail-fast`, both dispatch modes:** default dispatch **850 passed / 0 failed
+  / 6 ignored**; `AOM_FORCE_SCALAR=1` scalar pin likewise green. Per-crate,
+  `-p zenav1-aom-encode` went **271 passed / 1 failed → 272 passed / 0 failed** (the +1 is the
+  new non-x86 test; the x86 test compiles on this host — checked by temporarily forcing its
+  `cfg` on, zero errors — but is correctly not selected here).
 
 ### KB-20 — Encoder: bd10/bd12 x `--cpu-used>=8` PANICS — the hbd nonrd estimate arm is unported
 - **Found 2026-07-30** by the speed axis of the config-permutation gate (`9a996b9`).

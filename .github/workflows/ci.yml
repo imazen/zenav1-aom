@@ -120,7 +120,7 @@ jobs:
       - name: Test workspace under the scalar pin
         run: cargo test --profile test-fast --workspace --no-fail-fast
 
-  # AARCH64 DIFFERENTIAL — the NEON tier's byte-identity gate.
+  # AARCH64 DIFFERENTIAL — the NEON tier's byte-identity gate, WORKSPACE-WIDE.
   #
   # Added 2026-07-25 with the transform NEON landing. Until then the ONLY ARM leg
   # was the pure-Rust `windows-11-arm` portability job below, which builds the
@@ -128,10 +128,10 @@ jobs:
   # rested on a developer's laptop. `de35287` made the C oracle build on
   # aarch64/macOS, which is what makes this leg possible.
   #
-  # SCOPED TO aom-dsp ON PURPOSE, and this is not a silent skip. Three of
-  # KB-ARM-FLOAT's four roots closed on 2026-07-28 and `cargo test --workspace`
-  # on aarch64 now fails exactly ONE test: hog_prune_diff's
-  # hog_nn_predict_matches_avx2_and_dispatch. Progress: 15 -> 4 -> 3 -> 1.
+  # WIDENED from `-p zenav1-aom-dsp` to `--workspace` on 2026-07-30: KB-ARM-FLOAT
+  # is CLOSED. All four roots of the original 15 aarch64 float-differential
+  # failures are resolved and `cargo test --profile test-fast --workspace` is
+  # green on aarch64-apple-darwin. Progress: 15 -> 4 -> 3 -> 1 -> 0.
   #   * root #1 (11 tests) CLOSED — the oracle was built with clang's default
   #     -ffp-contract=on, so on aarch64 (where fmadd is baseline) it fused
   #     multiply-accumulates that Rust never fuses. Oracle pinned to
@@ -146,16 +146,35 @@ jobs:
   #     libaom consumes them as ONE reciprocal, inflating dqcoeff ~400x past the
   #     spec clamp. Real coefficients cannot reach it. Fixed by deriving the
   #     pair via libaom's own invert_quant, plus a domain guard.
-  #   * root #2's hog half (1 test) OPEN, and it is NOT a build-config problem:
-  #     av1_nn_predict_avx2 does not exist in an ARM libaom at all (ml_avx2.c is
-  #     x86-intrinsic source, never compiled), while the port's hog_nn_predict
-  #     deliberately mirrors x86 AVX2 accumulation order. No shim or flag can
-  #     produce that order on ARM. Resolving it means deciding what the test
-  #     should assert on non-x86 — a CONTRACT decision, not a fix. Do NOT
-  #     resolve it by relaxing the assertion or by skipping on target_arch.
-  # See CLAUDE.md KB-ARM-FLOAT for the measurements and the open question.
+  #   * root #2's hog half (1 test) CLOSED BY STATING THE CONTRACT. The prior
+  #     revision of this comment said: "Do NOT resolve it by relaxing the
+  #     assertion or by skipping on target_arch." Neither was done, and the
+  #     distinction is the point. `av1_nn_predict_avx2` does not exist in an ARM
+  #     libaom at all (ml_avx2.c is x86-intrinsic source, never compiled) while
+  #     the port's hog_nn_predict deliberately mirrors x86 AVX2 accumulation
+  #     order, so bit-equality with it was never a property of this target —
+  #     asserting it here asserted against nothing. hog_prune_diff.rs now
+  #     carries TWO tests, each stating a different complete contract:
+  #       - hog_nn_predict_matches_avx2_and_dispatch — UNCHANGED assertions
+  #         (f32 bit equality vs av1_nn_predict_avx2 + RTCD-dispatch identity),
+  #         now labelled as the x86-64 contract it always was.
+  #       - hog_nn_predict_agrees_with_dispatch_within_one_prec_quantum — the
+  #         non-x86 contract: both kernels land EXACTLY on
+  #         av1_nn_output_prec_reduce's 1/512 lattice (ml.c:19-25, bound read
+  #         off the source), each side's reduced output equals prec_reduce of
+  #         its own raw output, the two never differ by more than ONE lattice
+  #         step, the `score <= th` prune mask agrees at every production
+  #         threshold (measured 0 flips over 160,000 lanes x 5 thresholds), and
+  #         the number of lanes that differ at all is pinned at <= 56 so the
+  #         divergence cannot grow silently.
+  #     No tolerance was widened, no assertion removed, nothing is #[ignore]d,
+  #     and no target is left with an unasserted kernel — a skip would leave one.
+  #     The ARM test has teeth: perturbing the model bias by ~one quantum makes
+  #     it fail with 28 mask-parity flips. See CLAUDE.md KB-ARM-FLOAT.
   # aom-dsp is where every SIMD kernel lives and is green on ARM in both
-  # dispatch modes. WIDEN THIS TO --workspace WHEN THE HOG CONTRACT IS SETTLED.
+  # dispatch modes; the workspace adds the aom-encode/aom-decode differentials
+  # (which is where all 15 KB-ARM-FLOAT failures lived) and needs the Gate-1
+  # conformance corpus, provisioned below exactly as the linux legs do it.
   #
   # Both dispatch modes run, same as the linux pair: on aarch64 the scalar pin
   # only reaches NEON because aom-dsp dev-depends on `archmage/testable_dispatch`
@@ -164,7 +183,12 @@ jobs:
   # at all — without it the transform differential reports simd_perms=0 and
   # compares the scalar path against itself. See `aom_dsp::dispatch` docs.
   test-macos-aarch64:
-    name: aarch64 differential (aom-dsp, ${{ matrix.mode }})
+    name: aarch64 differential (workspace, ${{ matrix.mode }})
+    # Same budget as the two linux differential legs (which measured 21m/36m on
+    # --profile test-fast): this leg now runs the same workspace suite, so give
+    # it the same ~2.5x headroom and turn a hang into a fast failure rather than
+    # a burned 6-hour runner slot.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -195,9 +219,20 @@ jobs:
       - name: Build C libaom oracle (cargo-driven)
         run: cargo build -p zenav1-aom-sys-ref
       # The aom-dsp differentials are self-contained (generated vectors + the C
-      # oracle); they do not read conformance/data, so no corpus provisioning.
-      - name: Test aom-dsp (C oracle + scalar + every SIMD tier)
-        run: cargo test -p zenav1-aom-dsp --no-fail-fast
+      # oracle), but the workspace suite includes conformance_corpus.rs and the
+      # aom-encode real-image gates, which fail-loud when conformance/data/ is
+      # empty (correct — no silent skip). Provision it the same way the linux
+      # legs do: libaom's own sha1-pinned intra-scope vectors, cached on the
+      # manifest.
+      - name: Cache conformance corpus
+        uses: actions/cache@v6
+        with:
+          path: conformance/data
+          key: conformance-intra-${{ runner.os }}-${{ hashFiles('upstream/test/test-data.sha1') }}-v1
+      - name: Provision conformance corpus (intra scope)
+        run: python3 xtask/conformance.py --fetch --scope intra
+      - name: Test workspace (C oracle + scalar + every SIMD tier)
+        run: cargo test --profile test-fast --workspace --no-fail-fast
 
   # ORG-BAR PLATFORM MATRIX — pure-Rust portability (no C oracle).
   #
