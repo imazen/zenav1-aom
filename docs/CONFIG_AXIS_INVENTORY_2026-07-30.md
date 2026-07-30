@@ -27,15 +27,19 @@ each with a *fixed* parameter list, plus **three mutually-exclusive knob structs
 
 | Surface | Where | Reaches |
 |---|---|---|
-| `ToggleKnobs` (29 fields) | `crates/aom-bench/src/lib.rs:305` | 25 ctrl ids via `c_encode_ctrls` |
+| `ToggleKnobs` (29 fields) | `crates/aom-bench/src/lib.rs:305` | 24 ctrl ids via `c_encode_ctrls` (of the 25 in `PROBE_TABLE`) |
 | `RefTuneKnobs` (11 fields) / `PortTune` (8 fields) | `crates/aom-sys-ref/src/lib.rs:13743` / `crates/aom-encode/tests/encoder_gate_tune_iq_e2e.rs:113` | the tune=IQ/SSIMULACRA2 bundle only |
 | ad-hoc shim params | `crates/aom-sys-ref/src/lib.rs:8847, 8906, 9074, 9133, 9188, 9250, 11780, 11856, 11930, 12018, 12106, 12680, 12776, 12859, 13796` | superres / film-grain / lossless / QM / sb128 / tiles / screen-content / min-max-q / defaults |
 
-The generic toggle path is bounded by `PROBE_TABLE` in the C shim
-(`crates/aom-sys-ref/shim/dec_shim.c:799-824`) — **exactly 25 control ids**, against
-**155** encoder controls in `enum aome_enc_control_id`
+The generic toggle path is bounded by `PROBE_TABLE` — declared as
+`[(i32, i32); 25]` at `crates/aom-sys-ref/src/lib.rs:9031-9057`, mirroring the C probe at
+`crates/aom-sys-ref/shim/dec_shim.c:799-824` (25 `case` arms, counted). Of those 25,
+`AV1E_SET_DV_COST_UPD_FREQ` (index 24) is never emitted by `c_ctrls`, so **24 controls are
+actually reachable** — against **155** encoder controls in `enum aome_enc_control_id`
 (`upstream/aom/aomcx.h`, counted: 155 numbered entries) and **41** decoder controls in
-`enum aom_dec_control_id` (`upstream/aom/aomdx.h`).
+`enum aom_dec_control_id` (`upstream/aom/aomdx.h`). `AV1E_SET_SUPERBLOCK_SIZE` is deliberately
+outside `PROBE_TABLE` and reachable only through the dedicated sb128 shim
+(`crates/aom-sys-ref/src/lib.rs:9022-9025`).
 
 **Consequence:** cross-family permutations are structurally unreachable. There is no way
 today to encode `--tune=iq --enable-rect-partitions=0`, or `--superres-denominator=12
