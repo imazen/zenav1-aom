@@ -98,6 +98,19 @@ with a 12-line explanation at `:168-179`) — but it lives in an *inter* test fi
 `set_good`: `PARITY.md:6, 140, 145-150` only, all inside the C2 loop-restoration narrative).
 That is exactly the "invisible to both permutation agents" case this audit was created to catch.
 
+### 0.35 The port never authors a sequence header — every seq-level axis is read-only
+
+`write_sequence_header_obu` (`crates/aom-dsp/src/entropy/header.rs:1046`) has **zero call sites in
+any `crates/*/src`** — only four test sites and the C reference. `SequenceHeaderObu`
+(`:1012`) has **no `Default`**, so it cannot be constructed piecemeal. Every encoder path parses
+the seq header out of a real aomenc bootstrap stream and emits only an `OBU_FRAME`.
+
+So bit depth, monochrome, subsampling, profile, SB size and every seq-level `enable_*` tool bit
+are **modelled on decode and replayed on encode, never derived**. Anything that reads "the seq
+bit is asserted equal to the knob" (e.g. `--enable-filter-intra` /
+`--enable-intra-edge-filter`, `crates/aom-bench/src/lib.rs:1093-1102`) is an agreement check
+against libaom's bits, not evidence the port can produce them. Full detail: §3.6a.
+
 ### 0.4 Axes that exist only as compile-time or env switches
 
 These never appear in any runtime config matrix, so no permutation gate will ever reach them.
@@ -361,7 +374,10 @@ look "covered" without being independently exercised.
 > Scope note: a deeper per-element decoder-coverage pass is Agent K's deliverable
 > (`docs/DECODER_CONFIG_COVERAGE_2026-07-30.md`). What follows is the axis *list* plus the
 > hardcoded-element findings, which are the part that bears on the "is the axis list complete"
-> question.
+> question. A per-element coverage classification of every field below (which are
+> **PIXEL**-tested vs **HDR-only** round-trip-tested vs untested) was produced by a sub-audit
+> and is summarised at §3.8; the two structural findings it produced (§3.6a, §3.6b) were
+> independently re-verified here before being written down.
 
 ### 3.1 `SequenceHeaderParams` — `crates/aom-dsp/src/entropy/header.rs:784`
 
@@ -451,14 +467,65 @@ those two hardcoded `false` lines and nothing else**.
 
 | Element | Hardcoded to | Site |
 |---|---|---|
-| `context_update_tile_id` | `0` | `crates/aom-dsp/src/entropy/header.rs:426` — `wb.write_literal(0, log2_cols + log2_rows)` |
-| `tile_size_bytes_minus_1` | `3` (⇒ `tile_size_bytes = 4`) | `crates/aom-dsp/src/entropy/header.rs:427` — `wb.write_literal(3, 2)` |
-| the whole multi-tile frame header | not re-serialized at all | `crates/aom-encode/src/obu_assemble.rs:128-135` takes the header as **raw bytes** precisely because the two above "do not yet round-trip"; the caller supplies bootstrapped bytes |
+| **the ENTIRE sequence header (all 39 elements of §3.1–§3.3)** | never authored | see §3.6a below — the single largest hardcoded surface in the port |
 | `segmentation_enabled` + all 8 `SEG_LVL_*` features | off / 0 | `crates/aom-encode/src/pack.rs:256-262` |
 | `delta_lf_multi` | `false` (`DEFAULT_DELTA_LF_MULTI`) | `crates/aom-encode/src/pack.rs:277`; open follow-up at `PARITY.md:279` |
 | `num_tg` (tile groups) | `1` | `crates/aom-encode/src/obu_assemble.rs:2, 102, 107-115` |
 | `tile_start_and_end_present_flag` | `0` | `crates/aom-encode/src/obu_assemble.rs:150-152` |
 | `temporal_layer_id` / `spatial_layer_id` | `0` / `0` | `crates/aom-bench/src/lib.rs:1019-1020` |
+
+### 3.6a THE PORT NEVER AUTHORS A SEQUENCE HEADER
+
+`write_sequence_header_obu` (`crates/aom-dsp/src/entropy/header.rs:1046`) has **zero call sites in
+any `crates/*/src`**. `grep -rn --include='*.rs' 'write_sequence_header_obu' crates/ xtask/`
+returns only: the definition, four **test** sites
+(`crates/aom-encode/tests/seq_header_matches_real_encoder.rs:116`,
+`crates/aom-encode/tests/frame_header_matches_real_encoder.rs:195`,
+`crates/aom-dsp/tests/rb_diff.rs:2079`, `crates/aom-dsp/tests/header_diff.rs:1063`), the C
+reference (`crates/aom-sys-ref/src/lib.rs:700, 4283-4303`), and doc comments.
+`SequenceHeaderObu` (`crates/aom-dsp/src/entropy/header.rs:1012`) derives only `Clone, Debug` —
+**no `Default`** — so it cannot even be partially constructed.
+
+Every encoder path *parses* a sequence header out of a real aomenc bootstrap stream
+(`crates/aom-bench/src/lib.rs:970, 2404, 2502`) and emits only an `OBU_FRAME`
+(`crates/aom-encode/src/obu_assemble.rs:42`, the sole `OBU_FRAME` writer).
+
+**Consequence:** bit depth, monochrome, subsampling, profile, SB size, and every seq-level
+`enable_*` tool bit are **read-only axes** — modelled on decode, replayed on encode, never
+derived. A standalone port encoder (one not handed a C reference stream) cannot produce a
+sequence header at all. This is the deepest instance of the bootstrap dependency: several axes
+that look "covered" in §3.1–§3.3 are covered only in the sense that the port can *parse* what
+libaom wrote.
+
+### 3.6b CORRECTION — `context_update_tile_id` / `tile_size_bytes_minus_1` are NOT hardcoded
+
+An earlier revision of this document (commit `20596b4`) listed these as hardcoded syntax
+elements, and a third as "the whole multi-tile frame header is not re-serialized". **All three
+were wrong.** Recorded here rather than silently deleted.
+
+The literals at `crates/aom-dsp/src/entropy/header.rs:426-427` are **placeholders**.
+`write_frame_header_obu` records the position immediately before them via
+`wb.mark_saved_position()`, and `assemble_multitile_frame_obu_payload_derived`
+(`crates/aom-encode/src/obu_assemble.rs:215`) overwrites both with **derived** values at
+`:254-255`:
+
+```
+wb.overwrite_literal(saved, largest_tile_id, ctx_bits);
+wb.overwrite_literal(saved + ctx_bits as usize, tile_size_bytes - 1, 2);
+```
+
+mirroring C's `write_tile_obu_size`. Both are **anti-vacuity asserted** — a non-zero
+`context_update_tile_id` and a `tile_size_bytes > 1` must each occur at least once
+(`crates/aom-encode/tests/obu_assemble_multitile_diff.rs:341-351`).
+
+What is true: there are **two** multi-tile assemblers, and only one derives.
+`assemble_multitile_frame_obu_payload` (`crates/aom-encode/src/obu_assemble.rs:143`) takes the
+header as **raw bootstrapped bytes** and is what `encoder_gate_multitile_e2e` uses
+(`crates/aom-encode/tests/encoder_gate_multitile.rs:477`); the deriving variant is used by
+`obu_assemble_multitile_diff.rs:202` and `encoder_gate_chroma_ss_e2e.rs:762`. So the
+**multi-tile byte gate runs on the non-deriving path** while the derivation is proven separately
+— worth knowing before treating `encoder_gate_multitile_e2e` as end-to-end proof of the tile
+header.
 
 Note the doc-path drift found while checking this: `crates/aom-encode/src/obu_assemble.rs:131-134`
 points at `crates/aom-entropy/src/header.rs`, a crate that does not exist in this worktree
@@ -474,6 +541,54 @@ everything that follows from it (`AV1_SET_TILE_MODE`, `AV1D_SET_EXT_REF_PTR`,
 `AV1D_SET_OPERATING_POINT` — §5.6).
 
 ---
+
+### 3.8 Coverage classification — the "HDR-only" trap
+
+A sub-audit classified all ~39 sequence-header and ~55 frame-header elements by *what kind* of
+test drives them to a non-default value. The distinction that matters:
+
+- **PIXEL** — a real decode / encode with a non-default value (e.g. `sb_size_128`,
+  `enable_superres`, `enable_cdef`, `enable_restoration`, `bit_depth`, `profile`, `monochrome`,
+  `subsampling_*`, `allow_intrabc`, `allow_screen_content_tools`, `disable_cdf_update`,
+  `using_qmatrix` + all 16 `qmatrix_level_*`, `delta_q_*`, `delta_lf_*`, `reduced_tx_set_used`,
+  `coded_lossless`, `film_grain_params_present`, `show_existing_frame`, `frame_type` 0/1).
+- **HDR-only** — randomized *only* in a header write→read→C-oracle round-trip
+  (`crates/aom-dsp/tests/header_diff.rs`, `crates/aom-dsp/tests/rb_diff.rs`). The bits are
+  proven correct; **nothing proves the decode or encode that consumes them is correct**, because
+  no pixel path ever sees a non-default value.
+- **ENC-BYTE** — proven only through an encoder byte gate.
+
+The **HDR-only** set is large and is the part most likely to be mistaken for coverage:
+`color_primaries`, `transfer_characteristics`, `color_range`, `chroma_sample_position`, all
+timing / decoder-model / display-model / per-operating-point fields (`tier`, `op_*`,
+`seq_level_idx` apart from a real-stream check), `frame_id_*` + `current_frame_id`,
+`buffer_removal_time_*`, `temporal_layer_id` / `spatial_layer_id`, `error_resilient_mode`,
+`cur_frame_force_integer_mv`, `refresh_frame_context_disabled`, `reference_mode_select`,
+`skip_mode_allowed` / `skip_mode_flag`, `allow_warped_motion`, `separate_uv_delta_q`, and the
+seq-level inter flags (`enable_interintra_compound`, `enable_masked_compound`,
+`enable_dual_filter`, `enable_dist_wtd_comp`, `enable_ref_frame_mvs`, `enable_warped_motion`,
+`enable_order_hint`, `force_screen_content_tools`, `force_integer_mv`,
+`order_hint_bits_minus_1`).
+
+Three items in that set are worth separating out because a pixel path *does* consume them:
+
+| element | status |
+|---|---|
+| `interp_filter` non-zero on a real pixel decode | randomized only at `crates/aom-dsp/tests/rb_diff.rs:2601`; the encoder gate asserts 0 (`crates/aom-encode/tests/inter_pack_tile_diff.rs:376`). Pixel coverage **NOT ESTABLISHED** |
+| `allow_ref_frame_mvs = true` on a pixel decode | implied by `crates/aom-decode/tests/animated_avif.rs:54-61` (the temporal-MV field is built only under it, `crates/aom-decode/src/frame.rs:1492`) but **no assertion pins it** — **NOT ESTABLISHED** |
+| `FilmGrainParams::num_y_points == 0` (luma-off grain) | the arms at `crates/aom-decode/src/film_grain.rs:125, 185, 346` are unreachable: `crates/aom-encode/tests/film_grain_diff.rs:121` guarantees ≥1 and `:532` asserts `> 0` |
+
+**Verification status of this subsection.** §3.6a, §3.6b and the `large_scale` finding were
+independently re-verified against source before being written down (the greps are quoted in
+those sections). The per-field PIXEL / HDR-only / ENC-BYTE classification above is **sourced
+from the sub-audit and NOT independently re-verified element by element** — treat it as a lead
+list to check, not as established fact. The sub-audit also self-flagged one single-file-scoped
+claim: `FilmGrainParams::monochrome` / `subsampling_x` / `subsampling_y`
+(`crates/aom-dsp/src/entropy/header.rs:568-571`) are unread *only within*
+`crates/aom-decode/src/film_grain.rs` — `add_film_grain` takes independent `mono`/`ss_x`/`ss_y`
+arguments (`:1084-1086`) — while the writer/parser does read them (`header.rs:615-620, 3168-3170`).
+The correct statement is "the synthesis stage ignores the header copies and trusts separately
+passed arguments, so a mismatch would be silent", **not** "unported".
 
 ## 4. COMPILE-TIME AND ENVIRONMENT AXES
 
@@ -774,6 +889,7 @@ non-default value*, or the port accepts it and does nothing.
 | 8 | **`--qm-y` / `--qm-u` / `--qm-v` per-plane overrides** | modelled per-plane internally but derived only from qm_min/qm_max; no override path, never driven | §5.4 item 3 |
 | 9 | **`--enable-hdr-deltaq`** | the `av1_set_quantizer` HDR arm is unported (`crates/aom-dsp/src/quant/build_quantizer.rs:333-336`). Latent until the first 10-bit BT.2020 cell is added | S7 |
 | 10 | **CICP color config** (`--color-primaries` / `--transfer-characteristics` / `--matrix-coefficients` / `--chroma-sample-position` / `--color-range` / `--render-size`) | these are **sequence-header bytes**. Randomized non-default values ARE exercised — but only in a **self round-trip** (`crates/aom-dsp/tests/rb_diff.rs:661-702, 1943-1946`; module doc `:1-4` — write→read inverse, not a C differential for these fields). No *encode* ever produces a non-default value and the encoder never derives them | §3.2, §5.4 item 6 |
+| 10b | **`large_scale` (`large_scale_tile`)** — the one frame-header field with **zero** non-default coverage anywhere | live write branch `crates/aom-dsp/src/entropy/header.rs:1565` and read branch `:3173`; every struct literal in the tree is `false` (`crates/aom-dsp/tests/rb_diff.rs:2423, 2734`; `crates/aom-dsp/tests/header_diff.rs:1751`). Declared out of scope on decode (`crates/aom-decode/src/frame.rs:24-26`) — but the **writer branch exists and is unreachable by any test** | §3.7 |
 | 11 | **`--enable-cdef=1` at `--cpu-used` 1..6** (`CDEF_FAST_SEARCH_LVL1..5`) | the fast search levels are ported and table-unit-tested but **not e2e-gated** — only speed-0 `CDEF_FULL_SEARCH` is. Self-declared at `PARITY.md:113-118`, which also names the cheap fix ("CDEF-on cells at `--cpu-used=1..6`") | `PARITY.md:113-118` |
 | 12 | **SB128 with CDEF on** | blocked on the pack's SB64 envelope; the search's >64-fb arms exist | `PARITY.md:117-118` |
 
