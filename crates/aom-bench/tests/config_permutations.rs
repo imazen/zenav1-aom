@@ -1039,43 +1039,54 @@ fn every_axis_level_is_live_in_some_context() {
 // 3b. FINDING (2026-07-30) — pinned open
 // ---------------------------------------------------------------------------
 
-/// FINDING, pinned open: two knobs that are byte-identical to real aomenc on
-/// every gated context diverge on the corpus's native monochrome vector.
+/// FINDING, PARTIALLY CLOSED: two knobs that are byte-identical to real aomenc
+/// on every gated context diverged on the corpus's native monochrome vector.
+/// `--use-intra-default-tx-only=1` was KB-17 and is now FIXED; the single
+/// `--enable-diagonal-intra=0` cell stays pinned open.
 ///
 /// `av1-1-b10-24-monochrome`, 64x64 crop at (64,64), speed-0 ALLINTRA:
 ///
 /// | knob | cq12 | cq20 | cq32 | cq48 | cq63 |
 /// |---|---|---|---|---|---|
-/// | `--use-intra-default-tx-only=1` | DIVERGE 623/623 B | DIVERGE 418/424 | DIVERGE 229/240 | DIVERGE 79/80 | DIVERGE 14/15 |
-/// | `--enable-diagonal-intra=0`     | exact | exact | DIVERGE 225/231 | exact | exact |
+/// | `--use-intra-default-tx-only=1` (was) | DIVERGE 623/623 B | DIVERGE 418/424 | DIVERGE 229/240 | DIVERGE 79/80 | DIVERGE 14/15 |
+/// | `--use-intra-default-tx-only=1` (KB-17 FIXED 2026-07-30) | exact 623 | — | exact 240 | — | exact 15 |
+/// | `--enable-diagonal-intra=0`     | exact | exact | **DIVERGE 225/231** | exact | exact |
+///
+/// KB-17's root was `speed_features.rs`'s hardcoded `use_screen_content_tools:
+/// false`: this vector is screen-detected, so C resolved the luma tx type
+/// through `get_default_tx_type(..., cpi->use_screen_content_tools)` to
+/// DCT_DCT (blockd.h:1183) while the port searched the mode-derived type.
+/// Threading the parsed header's `allow_screen_content_tools` closed all three
+/// `dtxo` cells here (measured 2026-07-30: 623/240/15 B, byte-identical).
+///
+/// **`diag=0` at cq32 did NOT move with that fix** — measured directly on the
+/// same run, still 225 vs 231 B. That confirms the KB-17 entry's separate
+/// classification: it is a KB-10 / KB-12 "cheaper RD decision" near-tie, not a
+/// screen-content-tools consequence. Its bd8 twin does not reproduce it.
 ///
 /// Isolated to the CONTENT, not to the format: the same knobs are byte-exact on
 /// bd8 4:2:0, on bd8 monochrome derived from `av1-1-b8-01-size-64x64`, on bd10
 /// 4:2:0, AND on bd10 monochrome derived from `av1-1-b10-00-quantizer-00` (a
 /// full 27-knob singleton sweep over all six contexts reports 0 divergences).
-/// A bd12 promotion of the same monochrome content reproduces the
-/// `default-tx-only` divergence, so it is not a bd10-specific quantizer path.
-/// The equal-size / one-byte deltas are the KB-10 / KB-12 "cheaper RD decision"
-/// near-tie signature.
 ///
 /// The stock (all-default) encode of this content IS byte-exact, so the
-/// envelope is unaffected; only these two search-narrowing knobs move.
-/// `toggles_rd_close.rs`'s grid is bd8 4:2:0 only, which is why this was
-/// invisible until the permutation gate replayed the knobs over other contexts.
+/// envelope is unaffected.
 ///
 /// This test pins the state exactly: it FAILS if a divergent cell starts
 /// matching (fix landed → re-pin and consider promoting this content to a
-/// context of the main array) and FAILS if a matching cell regresses.
+/// context of the main array) and FAILS if a matching cell regresses — which
+/// now includes every `dtxo` cell, i.e. it is the KB-17 regression gate for
+/// this content.
 #[test]
 fn mono_vector_open_divergences_pinned() {
     c::ref_init();
     /// `(cq, knob tag, expected-exact)`.
     const EXPECTED: &[(i32, &str, bool)] = &[
-        (12, "dtxo", false),
+        (12, "dtxo", true),
         (12, "diag", true),
-        (32, "dtxo", false),
+        (32, "dtxo", true),
         (32, "diag", false),
-        (63, "dtxo", false),
+        (63, "dtxo", true),
         (63, "diag", true),
     ];
     let mut measured = Vec::new();
@@ -1611,38 +1622,35 @@ fn content_taxonomy_is_measured_and_pinned() {
 ///
 /// **Measured 2026-07-30** by [`run_content_matrix`] over 12 contents x 26
 /// singleton axis levels (9 non-screen at cq32; the 3 screen contents at
-/// cq12/32/63) = 468 cells. **Exactly one of the 21 axes moves with content**:
-/// `dtxo` (`--use-intra-default-tx-only`), and it moves on exactly the
-/// screen-classified contents. `diag=0` at cq32 on `scr_mono_b10` is the
-/// KB-17 near-tie knock-on already pinned by
-/// [`mono_vector_open_divergences_pinned`].
+/// cq12/32/63) = 468 cells. The original measurement found **exactly one of
+/// the 21 axes content-sensitive**: `dtxo` (`--use-intra-default-tx-only`), on
+/// exactly the screen-classified contents — 8 cells, root-caused as KB-17.
 ///
-/// ROOT CAUSE (found 2026-07-30, code-cited, NOT fixed here):
-/// `get_tx_mask` (tx_search.c:1806-1808) resolves `use_default_intra_tx_type`
-/// through `get_default_tx_type(PLANE_TYPE_Y, xd, tx_size,
+/// **KB-17 is FIXED (2026-07-30) and all 8 `dtxo` cells are gone from this
+/// set.** Root cause was `crates/aom-encode/src/speed_features.rs`'s
+/// hardcoded `use_screen_content_tools: false` in
+/// `tx_type_search_policy_for_stage`: `get_tx_mask` (tx_search.c:1806-1808)
+/// resolves `use_default_intra_tx_type` through
+/// `get_default_tx_type(PLANE_TYPE_Y, xd, tx_size,
 /// cpi->use_screen_content_tools)`, which returns `DCT_DCT` when the screen
-/// flag is set instead of the mode-derived tx type. The port models the
+/// flag is set instead of the mode-derived tx type. The port modelled the
 /// function faithfully (`aom_encode::tx_search::get_default_tx_type_y`) but
-/// its caller hardcodes the flag:
-/// `crates/aom-encode/src/speed_features.rs:991` — `use_screen_content_tools:
-/// false`, commented "Non-screen textured envelope; screen-content would
-/// thread the real cpi->use_screen_content_tools here". So on any
-/// screen-detected content the port searches the mode-derived tx type where C
-/// searches DCT_DCT.
+/// pinned its 4th argument false, so on any screen-detected content it
+/// searched the mode-derived tx type where C searches DCT_DCT. The fix
+/// threads `SpeedFeatures::allow_screen_content_tools` (already an input to
+/// `set_allintra`, sourced from the parsed frame header) into the policy.
+/// With it, `dtxo` is no longer content-sensitive and is covered at full
+/// strength by the screen covering arrays ([`run_content_array`]).
+///
+/// The ONE remaining entry, `scr_mono_b10/cq32/diag=0`, was measured on the
+/// same run as NOT moving with the KB-17 fix — it is the separate
+/// KB-10/KB-12 "cheaper RD decision" near-tie also pinned by
+/// [`mono_vector_open_divergences_pinned`], whose bd8 twin does not reproduce
+/// it.
 ///
 /// This set is SELF-PROMOTING in both directions: a cell that starts matching
-/// (the flag got threaded) fails, and so does a cell that starts diverging.
-const CONTENT_DIVERGENT_CELLS: &[&str] = &[
-    "scr_ibc_b8/cq12/dtxo=1",
-    "scr_ibc_b8/cq32/dtxo=1",
-    "scr_mono_b10/cq12/dtxo=1",
-    "scr_mono_b10/cq32/diag=0",
-    "scr_mono_b10/cq32/dtxo=1",
-    "scr_mono_b10/cq63/dtxo=1",
-    "scr_mono_b8/cq12/dtxo=1",
-    "scr_mono_b8/cq32/dtxo=1",
-    "scr_mono_b8/cq63/dtxo=1",
-];
+/// fails, and so does a cell that starts diverging.
+const CONTENT_DIVERGENT_CELLS: &[&str] = &["scr_mono_b10/cq32/diag=0"];
 
 /// Run the singleton-axis sweep for `contents` x `cqs` and return
 /// `(divergent, inert)` cell keys plus the cell count.
@@ -1735,11 +1743,13 @@ fn check_content_shard(contents: &[&Content], cqs: &[i32]) {
     );
     assert_eq!(
         divergent, expected,
-        "the CONTENT-sensitivity matrix MOVED. A cell that started matching \
-         means the screen-content tx-type flag (speed_features.rs:991 \
-         `use_screen_content_tools: false`) was threaded — re-pin and consider \
-         promoting `dtxo` back into the screen contexts' covering array. A cell \
-         that started diverging is a regression."
+        "the CONTENT-sensitivity matrix MOVED. A cell that started diverging \
+         is a regression — in particular any `dtxo=1` cell reappearing here \
+         means the screen-content tx-type flag \
+         (`SpeedFeatures::allow_screen_content_tools` -> \
+         `TxTypeSearchPolicy::use_screen_content_tools`, KB-17) stopped being \
+         threaded. A cell that started matching means an open near-tie closed \
+         — re-pin."
     );
 }
 
@@ -1772,27 +1782,41 @@ fn content_sensitivity_screen_ibc_b8() {
 // 5c. The covering array, replayed on the SCREEN class
 // ---------------------------------------------------------------------------
 
-/// `dtxo` (`--use-intra-default-tx-only`), the one axis the matrix above
-/// measures as content-sensitive, held at its DEFAULT level.
+/// Covering-array rows on SCREEN-class content that are NOT byte-identical to
+/// real aomenc, pinned open and self-promoting in both directions.
 ///
-/// Forcing one column of a covering array to a constant leaves every t-tuple
-/// among the OTHER columns covered, so a t=4 array run this way still proves
-/// every 4-way interaction among the remaining 20 axes. `dtxo`'s own behaviour
-/// on this content class is covered separately and completely by
-/// [`CONTENT_DIVERGENT_CELLS`] (standalone) and
-/// [`combinations_screen_dtxo_verdict_set_pinned`] (in combination). This is
-/// the same treatment `--use-intra-dct-only` already gets.
-fn pin_dtxo_default(row: &Row) -> Row {
-    let mut r = *row;
-    r[ix(Axis::DefaultTxOnly)] = 0;
-    r
-}
+/// **One row, and it is PRE-EXISTING, not a consequence of the KB-17 fix.**
+/// It only became visible when the KB-17 fix let `dtxo` out of
+/// `pin_dtxo_default`, i.e. the pin had been hiding it. Direct A/B on
+/// `combinations_t4_scr_ibc_s0` (2026-07-30, same binary, only
+/// `TxTypeSearchPolicy::use_screen_content_tools` toggled):
+///
+/// | screen flag threaded | open cells / 63 | this row |
+/// |---|---|---|
+/// | no (pre-KB-17) | **23** | port 109 B vs C 79 B |
+/// | yes (KB-17 fixed) | **1** | port 108 B vs C 79 B |
+///
+/// So the fix closed 22 of the 23, and this row was already divergent without
+/// it. Its `dtxo=0` sibling is exact (the whole array was exact under the pin),
+/// so it IS a `dtxo x <something>` interaction — the row also carries
+/// `txss0` (`--enable-tx-size-search=0` -> TX_MODE_LARGEST), `maxp64`,
+/// `minp16`, `smth0`, `diag0`, `flip0`, `cdf0`. The 29-byte gap is far outside
+/// the KB-10/KB-12 near-tie signature, so this is a real second defect on the
+/// screen tx-type path and is tracked as such rather than dismissed.
+const SCREEN_ARRAY_OPEN_ROWS: &[&str] =
+    &["scr_ibc_b8cq32_p140-minp16-maxp64-smth0-diag0-flip0-dtxo1-txss0-cdf0"];
 
-/// Replay a covering array on one CONTENT probe, with `dtxo` pinned to default.
+/// Replay a covering array on one CONTENT probe, at FULL axis strength.
+///
+/// `dtxo` (`--use-intra-default-tx-only`) used to be pinned to its default
+/// level here, because it was the one axis the content matrix measured as
+/// content-sensitive (KB-17). **KB-17 is fixed and the pin is gone
+/// (2026-07-30)** — the screen contexts now run every axis, including `dtxo`,
+/// at full strength, so `dtxo x anything` on screen content is covered by the
+/// same t-way guarantee as every other axis.
 ///
 /// Same four-part gate as [`run_array`] (byte-identity, anti-vacuity,
-/// collapse soundness in the stock direction, non-empty shard); the array is
-/// de-duplicated after the pin so a pinned row is not encoded twice.
+/// collapse soundness in the stock direction, non-empty shard).
 fn run_content_array(ct: &Content, cq: i32, t: usize, shard: usize, n_shards: usize, min_moved_pct: f64) {
     c::ref_init();
     let cell = ct.cell(cq);
@@ -1804,7 +1828,6 @@ fn run_content_array(ct: &Content, cq: i32, t: usize, shard: usize, n_shards: us
     let mut seen: BTreeSet<Row> = BTreeSet::new();
     let pinned: Vec<Row> = cp::covering_array(t)
         .into_iter()
-        .map(|r| pin_dtxo_default(&r))
         .filter(|r| cp::illegal_reason(r).is_none() && seen.insert(*r))
         .collect();
     let collapsed = cp::collapse(&pinned, &cctx);
@@ -1840,16 +1863,32 @@ fn run_content_array(ct: &Content, cq: i32, t: usize, shard: usize, n_shards: us
         100.0 * moved as f64 / non_stock.len() as f64
     };
     println!("{}", render(&cells, &tag, t, shard, n_shards, moved_pct));
-    let open: Vec<&Cell> = cells.iter().filter(|c| !c.exact).collect();
-    assert!(
-        open.is_empty(),
-        "{tag}: {} of {} covering-array cells on SCREEN-class content are NOT \
-         byte-identical to real aomenc. `dtxo` is pinned to default here, so \
-         this is a knob combination that diverges on this CONTENT and nowhere \
-         else. Offenders: {}",
+    let open: BTreeSet<String> = cells
+        .iter()
+        .filter(|c| !c.exact)
+        .map(|c| c.label.clone())
+        .collect();
+    // The pinned set is global; restrict it to the rows THIS shard actually
+    // encoded, so the comparison is against what was measured here. (A pinned
+    // row disappearing from the array altogether would show up as an empty or
+    // shrunken shard, which the asserts around this one already cover.)
+    let expected: BTreeSet<String> = SCREEN_ARRAY_OPEN_ROWS
+        .iter()
+        .map(|s| s.to_string())
+        .filter(|l| cells.iter().any(|c| &c.label == l))
+        .collect();
+    assert_eq!(
+        open, expected,
+        "{tag}: the SCREEN-class covering-array divergence set MOVED ({} of {} \
+         cells open). Every axis runs at full strength here (no pins since \
+         KB-17 closed), so a NEW entry is a knob combination that diverges on \
+         this CONTENT and nowhere else; a vanished entry means an open row \
+         closed — re-pin SCREEN_ARRAY_OPEN_ROWS. Measured: {}",
         open.len(),
         cells.len(),
-        open.iter()
+        cells
+            .iter()
+            .filter(|c| !c.exact)
             .map(|c| format!("{} (port {}B vs C {}B)", c.label, c.port_len, c.c_len))
             .collect::<Vec<_>>()
             .join(", ")
@@ -1888,10 +1927,13 @@ fn combinations_t3_scr_mono_b8() {
 /// the combination companion to the standalone divergence in
 /// [`CONTENT_DIVERGENT_CELLS`].
 ///
-/// Pinned and self-promoting exactly like
-/// [`combinations_dct_only_verdict_set_pinned`]: a row that starts matching
-/// means the screen tx-type flag was threaded (re-pin, and promote `dtxo` back
-/// into [`run_content_array`]); a row that starts diverging is a regression.
+/// **KB-17 closed this set to EMPTY (2026-07-30):** all 17 t=2 rows are now
+/// byte-identical with `--use-intra-default-tx-only=1` forced on top, where 12
+/// of 17 diverged before the screen-content tx-type flag was threaded. The
+/// test is kept as the explicit, focused regression gate for that fix (the
+/// axis is also covered inside [`run_content_array`] now that its pin is
+/// gone); it is self-promoting in the regression direction — any row that
+/// starts diverging fails.
 #[test]
 fn combinations_screen_dtxo_verdict_set_pinned() {
     c::ref_init();
@@ -1901,7 +1943,6 @@ fn combinations_screen_dtxo_verdict_set_pinned() {
     let mut diverged = BTreeSet::new();
     let mut n = 0usize;
     for row in cp::covering_array(2) {
-        let row = pin_dtxo_default(&row);
         if cp::illegal_reason(&row).is_some() {
             continue;
         }
@@ -1924,33 +1965,39 @@ fn combinations_screen_dtxo_verdict_set_pinned() {
     assert_eq!(
         diverged, expected,
         "the screen-content --use-intra-default-tx-only divergence set MOVED. \
-         Rows that started matching mean speed_features.rs:991 \
-         (`use_screen_content_tools: false`) was threaded — re-pin and promote \
-         the axis. Rows that started diverging are a regression."
+         It is EMPTY since KB-17 was fixed, so any row here is a REGRESSION of \
+         the screen-content tx-type flag \
+         (`SpeedFeatures::allow_screen_content_tools` -> \
+         `TxTypeSearchPolicy::use_screen_content_tools` -> \
+         `get_default_tx_type_y`, tx_search.c:1806-1808)."
     );
+    assert!(n >= 17, "the t=2 array shrank to {n} legal rows — coverage lost");
 }
 
 /// Recorded divergence set for [`combinations_screen_dtxo_verdict_set_pinned`]:
-/// **12 of the 17** t=2 rows, measured 2026-07-30 on `scr_ibc_b8` (bd8 4:2:0
-/// screen content) at cq32. `stock` — the knob alone, no other change — is in
-/// the set, i.e. the combinations INHERIT the standalone content divergence
-/// rather than adding new ones, the same shape as the `--use-intra-dct-only`
-/// set. The 5 rows that stay exact are rows on which the C encoder's own
-/// `dtxo` output does not move.
-const SCREEN_DTXO_DIVERGENT_ROWS: &[&str] = &[
-    "ab0-p140-maxp64-paeth0-cfl0-diag0-fint0-rtx0-txss0-cdf2-trel2",
-    "minp16-maxp32-smth0-cfl0-diag0-rtx0-flip0-rtxs1-cdf2-trel0",
-    "p140-minp8-smth0-paeth0-diag0-adlt0-fint0-flip0-txss0-cdf2",
-    "rect0-ab0-diag0-fint0-edgf0-tx640-rtx0-flip0-rtxs1-trel1",
-    "rect0-ab0-minp16-cfl0-dir0-diag0-fint0-edgf0-trel2",
-    "rect0-ab0-p140-minp16-paeth0-dir0-adlt0-fint0-edgf0-rtxs1-cdf0",
-    "rect0-ab0-p140-minp8-paeth0-cfl0-dir0-diag0-rtx0-txss0-cdf2-trel1",
-    "rect0-p140-minp16-maxp64-smth0-cfl0-diag0-adlt0-fint0-edgf0-rtx0-rtxs1-txss0-trel0",
-    "rect0-p140-minp8-maxp32-adlt0-edgf0-rtx0-txss0-cdf0-trel2",
-    "rect0-p140-minp8-maxp64-smth0-paeth0-adlt0-fint0-tx640-rtx0",
-    "rect0-p140-paeth0-dir0-diag0-fint0-rtxs1-txss0-cdf0-trel0",
-    "stock",
-];
+/// **EMPTY since KB-17 was fixed (measured 2026-07-30, 0 of 17 rows diverge).**
+///
+/// It was **12 of the 17** t=2 rows on `scr_ibc_b8` (bd8 4:2:0 screen content)
+/// at cq32 before the fix, with `stock` — the knob alone, no other change —
+/// in the set: the combinations INHERITED the standalone content divergence
+/// rather than adding new ones. The pre-fix set is recorded here so a
+/// regression is recognisable by shape, not just by count:
+///
+/// ```text
+/// ab0-p140-maxp64-paeth0-cfl0-diag0-fint0-rtx0-txss0-cdf2-trel2
+/// minp16-maxp32-smth0-cfl0-diag0-rtx0-flip0-rtxs1-cdf2-trel0
+/// p140-minp8-smth0-paeth0-diag0-adlt0-fint0-flip0-txss0-cdf2
+/// rect0-ab0-diag0-fint0-edgf0-tx640-rtx0-flip0-rtxs1-trel1
+/// rect0-ab0-minp16-cfl0-dir0-diag0-fint0-edgf0-trel2
+/// rect0-ab0-p140-minp16-paeth0-dir0-adlt0-fint0-edgf0-rtxs1-cdf0
+/// rect0-ab0-p140-minp8-paeth0-cfl0-dir0-diag0-rtx0-txss0-cdf2-trel1
+/// rect0-p140-minp16-maxp64-smth0-cfl0-diag0-adlt0-fint0-edgf0-rtx0-rtxs1-txss0-trel0
+/// rect0-p140-minp8-maxp32-adlt0-edgf0-rtx0-txss0-cdf0-trel2
+/// rect0-p140-minp8-maxp64-smth0-paeth0-adlt0-fint0-tx640-rtx0
+/// rect0-p140-paeth0-dir0-diag0-fint0-rtxs1-txss0-cdf0-trel0
+/// stock
+/// ```
+const SCREEN_DTXO_DIVERGENT_ROWS: &[&str] = &[];
 
 /// DEEP TIER (`--ignored`) — the full content-axis evidence grid, written to
 /// `benchmarks/config_perm_content_axis_2026-07-30.tsv`.
@@ -2135,27 +2182,25 @@ impl SizeCtx {
 
     /// Rows this context must NOT run, each with the reason.
     ///
-    /// **`--max-partition-size=32` under `--sb-size=128`** (the only entry, and
-    /// the only skip in the whole matrix) is an OPEN PORT DEFECT this size axis
-    /// found, not a convenience exclusion: it is pinned, reproduced and
-    /// self-promoting in `size_axis_open_divergences_pinned`. Summary — C
-    /// restores the partition context CONDITIONALLY,
+    /// **EMPTY since KB-18 was FIXED (2026-07-30).** The only entry this ever
+    /// had was `--max-partition-size=32` under `--sb-size=128`, which the size
+    /// axis found as an open port defect: C restores the partition context
+    /// CONDITIONALLY,
     ///
     /// > `if (bsize <= x->sb_enc.max_partition_size || bsize == cm->seq_params->sb_size)`
     /// > `  av1_restore_context(...)` — partition_search.c:4646
     ///
-    /// and the port restores UNCONDITIONALLY, asserting that condition instead
-    /// (`aom-encode/src/partition_pick.rs:3056`). The assertion is FALSE
-    /// whenever a block size sits strictly between the max-partition cap and
-    /// the superblock size — impossible at SB64 (where `bsize == sb_size` covers
-    /// the top and the cap covers the rest) and reachable at SB128 with a 32 px
-    /// cap, where `bsize == BLOCK_64X64` satisfies neither clause.
+    /// and the port restored UNCONDITIONALLY, asserting that condition instead.
+    /// The predicate is FALSE whenever a block size sits strictly between the
+    /// max-partition cap and the superblock size — impossible at SB64 (where
+    /// `bsize == sb_size` covers the top and the cap covers the rest) and
+    /// reachable at SB128 with a 32 px cap, where `bsize == BLOCK_64X64`
+    /// satisfies neither clause. `partition_pick.rs` now takes the restore
+    /// conditionally, so the SB128 contexts run `MaxPart` level 2 at full
+    /// strength and this hook has no entries. The mechanism is kept (rather
+    /// than deleted) because it is the honest place for the NEXT such finding.
     fn skip_reason(&self, row: &Row) -> Option<&'static str> {
-        let maxp = row[ALL_AXES.iter().position(|a| *a == Axis::MaxPart).unwrap()];
-        if self.sb128 && maxp == 2 {
-            return Some("sb128 x --max-partition-size=32: open port defect, \
-                         partition_pick.rs:3056 vs partition_search.c:4646");
-        }
+        let _ = row;
         None
     }
 
@@ -2854,7 +2899,15 @@ fn size_class_inventory_is_pinned() {
 fn size_axis_open_divergences_pinned() {
     c::ref_init();
 
-    // --- Finding A ---------------------------------------------------------
+    // --- Finding A: CLOSED 2026-07-30 (KB-18 fixed), promoted to a gate ----
+    // The port used to `debug_assert!` C's restore CONDITION and then restore
+    // unconditionally; `partition_pick.rs` now takes the restore only when
+    // `bsize <= max_partition_size || bsize == sb_size` (partition_search.c:
+    // 4645-4646). This arm is the direct byte gate for the geometry that
+    // reaches the false branch: SB128 with a 32 px max-partition cap, where
+    // BLOCK_64X64 satisfies neither clause. It is ALSO covered at full
+    // strength by every SB128 size context now that `SizeCtx::skip_reason` is
+    // empty; keeping the focused cell here makes the regression legible.
     let a_cell = S_SB128_128.cell();
     let a_knobs = ToggleKnobs {
         max_partition_size_px: 32,
@@ -2863,23 +2916,21 @@ fn size_axis_open_divergences_pinned() {
     let a_ctrls = S_SB128_128.ctrls(&a_knobs);
     let c_tu = a_cell.c_encode_ctrls(&a_ctrls);
     assert!(!c_tu.is_empty(), "C must accept --sb-size=128 --max-partition-size=32");
-    let a_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        a_cell.port_encode_with(&c_tu, &a_knobs)
-    }));
-    if cfg!(debug_assertions) {
-        assert!(
-            a_result.is_err(),
-            "FINDING A HAS CLOSED: the port no longer asserts on \
-             --sb-size=128 x --max-partition-size=32. Remove \
-             SizeCtx::skip_reason's entry, drop this arm, and let the SB128 \
-             contexts run MaxPart level 2 at full strength."
-        );
-    } else {
-        // Without debug assertions the port takes the restore C skips. Whether
-        // that changes the bytes is unknown until the gate can run the row, so
-        // only the assertion behaviour is pinned here.
-        let _ = a_result;
-    }
+    let a_real = EncodeCell::frame_obu_payload(&c_tu);
+    let a_port = a_cell.port_encode_with(&c_tu, &a_knobs);
+    println!(
+        "  finding A (KB-18) sb128 x maxp32: port {} B vs C {} B ({})",
+        a_port.len(),
+        a_real.len(),
+        if a_port == a_real { "MATCH" } else { "DIVERGE" }
+    );
+    assert_eq!(
+        a_port, a_real,
+        "KB-18 REGRESSED: --sb-size=128 x --max-partition-size=32 is no longer \
+         byte-identical to real aomenc. The SPLIT-stage restore \
+         (partition_pick.rs, partition_search.c:4645-4646) must stay \
+         conditional on `bsize <= max_partition_size || bsize == sb_size`."
+    );
 
     // --- Finding B ---------------------------------------------------------
     let mut open = Vec::new();

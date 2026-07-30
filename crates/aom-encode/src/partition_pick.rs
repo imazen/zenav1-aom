@@ -3051,10 +3051,25 @@ pub fn rd_pick_partition_real(
                 }
             }
         }
-        // The SPLIT-stage restore (:4645-4647): gated `bsize <=
-        // max_partition_size || bsize == sb_size` — always true here.
-        debug_assert!(bsize <= cfg.max_partition_size || bsize == env.sb_size);
-        restore_context(tile, &saved, mi_row, mi_col, bsize, env.ss_x, env.ss_y);
+        // The SPLIT-stage restore (partition_search.c:4640-4647) is
+        // CONDITIONAL, not unconditional:
+        //
+        //   if (bsize <= x->sb_enc.max_partition_size ||
+        //       bsize == cm->seq_params->sb_size)
+        //     av1_restore_context(x, x_ctx, mi_row, mi_col, bsize, num_planes);
+        //
+        // (C's own comment: restore for "1) current block size not more than
+        // maximum partition size, as dry-run encode happens for these cases;
+        // 2) current block size same as superblock size, as the final encode
+        // happens for this case".) The predicate is FALSE for any bsize
+        // strictly between the max-partition cap and the SB size — empty at
+        // SB64 with the CLI cap floor of 8px, reachable at SB128 with e.g.
+        // `--max-partition-size=32`, where BLOCK_64X64 satisfies neither
+        // clause. KB-18: this used to be a `debug_assert!` + an unconditional
+        // restore, i.e. a silent behavioural divergence in release builds.
+        if bsize <= cfg.max_partition_size || bsize == env.sb_size {
+            restore_context(tile, &saved, mi_row, mi_col, bsize, env.ss_x, env.ss_y);
+        }
     }
 
     // ---- rectangular partition stage (rectangular_partition_search,

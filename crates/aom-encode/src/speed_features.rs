@@ -441,6 +441,25 @@ pub struct SpeedFeatures {
     /// `lpf_sf.enable_sgr_ep_pruning` — default 0; speed>=1 -> 1
     /// (speed_features.c:421).
     pub enable_sgr_ep_pruning: i32,
+
+    // ---- non-sf encoder state the sf cascade + its consumers read ---------
+    /// `cpi->use_screen_content_tools` — not a `SPEED_FEATURES` field, but the
+    /// same `set_allintra` input that already branches
+    /// `intra_cnn_based_part_prune_level` / `prune_rectangular_split_based_on
+    /// _qidx` / `prune_sub_8x8_partition_level`, carried on so
+    /// [`Self::tx_type_search_policy_for_stage`] can hand it to
+    /// [`crate::tx_search::get_default_tx_type_y`] (tx_search.c:1806-1808).
+    ///
+    /// In the encoder it always equals `cm->features.allow_screen_content_tools`
+    /// — every site that writes one writes the other (`estimate_screen_content`
+    /// encoder.c:2096, the detection-mode-2 variant :2419, `screen_content
+    /// _tools_determination` encoder_utils.c:1173/1180). The one branch that
+    /// would desynchronise them (`av1_set_screen_content_options`'s
+    /// `force_screen_content_tools != 2` early return, encoder.c:2442-2446) is
+    /// unreachable from the encoder: `seq->force_screen_content_tools` is
+    /// hard-set to 2 at encoder.c:598/607. So the parsed frame header's
+    /// `allow_screen_content_tools` is a faithful source for this flag.
+    pub allow_screen_content_tools: bool,
 }
 
 impl SpeedFeatures {
@@ -518,6 +537,8 @@ impl SpeedFeatures {
             cdef_pick_method: CDEF_FULL_SEARCH, // init_lpf_sf:2533
             dual_sgr_penalty_level: 0,
             enable_sgr_ep_pruning: 0,
+            // non-sf: cpi->use_screen_content_tools (encoder.c:2096).
+            allow_screen_content_tools,
         };
 
         // ---- if (speed >= 1) { ... } (speed_features.c:386-422 independent,
@@ -911,6 +932,40 @@ impl SpeedFeatures {
         sf
     }
 
+    /// Apply the FRAMESIZE-dependent all-intra arms
+    /// (`set_allintra_speed_feature_framesize_dependent`, speed_features.c:166)
+    /// that this port models, on top of a [`Self::set_allintra`] result.
+    ///
+    /// [`Self::set_allintra`] transcribes the framesize-INdependent cascade
+    /// only; every framesize arm is applied afterwards from the frame's real
+    /// `(width, height)`, which is the shape the port already uses for
+    /// `prune_tx_type_using_stats` (the `is_480p_or_larger` arm,
+    /// speed_features.c:261/299).
+    ///
+    /// Modelled here:
+    ///
+    /// - **`is_4k_or_larger` (`min(w, h) >= 2160`) → `default_min_partition
+    ///   _size = BLOCK_8X8`** (speed_features.c:187-189). Unconditional on
+    ///   speed inside that function, so it also applies below speed 7 (which
+    ///   sets the same value framesize-independently at :570). KB-19: the port
+    ///   previously left the field at `BLOCK_4X4` for every frame size.
+    ///
+    /// Audited and deliberately NOT modelled (the full table is in
+    /// `docs/CONFIG_PERMUTATION_DESIGN_2026-07-30.md`): the
+    /// `use_square_partition_only_threshold` arm (:175-185) is already applied
+    /// by its own consumer; `auto_max_partition_based_on_simple_motion`,
+    /// `ml_partition_search_breakout_thresh`,
+    /// `ml_early_term_after_part_split_level`, `use_downsampled_sad` and
+    /// `partition_search_breakout_*` are inter-only or speed-gated dead on the
+    /// all-intra KEY envelope.
+    pub fn apply_allintra_framesize_dependent(&mut self, width: usize, height: usize) {
+        // is_4k_or_larger = AOMMIN(cm->width, cm->height) >= 2160
+        // (speed_features.c:172). BLOCK_8X8 == 3 in the BLOCK_SIZE enum.
+        if width.min(height) >= 2160 {
+            self.default_min_partition_size = 3;
+        }
+    }
+
     /// Build the [`TxTypeSearchPolicy`] this speed level implies. `skip_trellis`
     /// (`!is_trellis_used(..)`, from CLI `disable_trellis_quant` / lossless) and
     /// `sharpness` (`oxcf.algo_cfg.sharpness`) are CLI-driven, not speed-driven,
@@ -986,9 +1041,14 @@ impl SpeedFeatures {
             intra_tx_size_init_depth_rect: self.intra_tx_size_search_init_depth_rect,
             intra_tx_size_init_depth_sqr: self.intra_tx_size_search_init_depth_sqr,
             use_default_intra_tx_type,
-            // Non-screen textured envelope; screen-content would thread the real
-            // cpi->use_screen_content_tools here.
-            use_screen_content_tools: false,
+            // `cpi->use_screen_content_tools`, the 4th argument of
+            // `get_default_tx_type(PLANE_TYPE_Y, xd, tx_size,
+            // cpi->use_screen_content_tools)` (tx_search.c:1806-1808). KB-17:
+            // this used to be hardcoded `false`, so every screen-detected
+            // frame searched the mode-derived luma tx type where C pins
+            // DCT_DCT (blockd.h:1183). Read only when
+            // `use_default_intra_tx_type` is set.
+            use_screen_content_tools: self.allow_screen_content_tools,
             // oxcf.tune_cfg knobs: the PSNR defaults here; callers apply
             // `TxTypeSearchPolicy::with_tune_knobs` for tune=IQ/SSIMULACRA2 /
             // --dist-metric=qm-psnr configs (which also forces the tx-domain
@@ -1470,6 +1530,54 @@ mod tests {
         assert_eq!(sf6.default_min_partition_size, 0); // BLOCK_4X4
         assert_eq!(sf6.partition_search_type, 0); // SEARCH_PARTITION
         assert_eq!(sf6.var_part_split_threshold_shift, 5); // init_rt_sf:2085
+    }
+
+    /// KB-19 — the `is_4k_or_larger` arm of
+    /// `set_allintra_speed_feature_framesize_dependent`
+    /// (speed_features.c:187-189): `default_min_partition_size = BLOCK_8X8`
+    /// at `min(w, h) >= 2160`, at EVERY speed, and untouched below it.
+    ///
+    /// This is the derivation-level gate for KB-19. It is a unit test rather
+    /// than an e2e byte gate because a 2160x2160 cell costs ~250 s per
+    /// encode-pair, which does not belong in the default tier.
+    #[test]
+    fn framesize_dependent_min_partition_size_4k_arm() {
+        // BLOCK_4X4 == 0, BLOCK_8X8 == 3.
+        for speed in 0..=9 {
+            // Framesize-independent baseline: BLOCK_4X4 below speed 7,
+            // BLOCK_8X8 from speed 7 (:570).
+            let base = SpeedFeatures::set_allintra(speed, false, false);
+            let expect_base = if speed >= 7 { 3 } else { 0 };
+            assert_eq!(base.default_min_partition_size, expect_base, "speed {speed}");
+
+            // Sub-2160p on the short side leaves the field alone, including
+            // the 3840x2160-is-not-4k-by-this-test case (min(w,h) == 2160
+            // IS >= 2160, so 3840x2160 DOES take the arm; 3840x2159 does
+            // not — the predicate is on the SHORT side).
+            for &(w, h) in &[(64, 64), (1920, 1080), (4096, 2159), (2159, 4096)] {
+                let mut sf = base;
+                sf.apply_allintra_framesize_dependent(w, h);
+                assert_eq!(
+                    sf.default_min_partition_size, expect_base,
+                    "speed {speed} {w}x{h} must not take the 4k arm"
+                );
+            }
+            // >= 2160 on both dimensions -> BLOCK_8X8 at every speed.
+            for &(w, h) in &[(2160, 2160), (3840, 2160), (2160, 3840), (7680, 4320)] {
+                let mut sf = base;
+                sf.apply_allintra_framesize_dependent(w, h);
+                assert_eq!(
+                    sf.default_min_partition_size, 3,
+                    "speed {speed} {w}x{h} must take the 4k arm (BLOCK_8X8)"
+                );
+            }
+            // The arm touches nothing else.
+            let mut sf = base;
+            sf.apply_allintra_framesize_dependent(2160, 2160);
+            let mut expect = base;
+            expect.default_min_partition_size = 3;
+            assert_eq!(sf, expect, "speed {speed}: the 4k arm moved another field");
+        }
     }
 
     /// KB-8 chunk 2a: the stage-aware [`SpeedFeatures::tx_type_search_policy_for_stage`]

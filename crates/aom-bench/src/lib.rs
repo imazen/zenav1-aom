@@ -642,11 +642,18 @@ impl ToggleKnobs {
             .min(sb_bsize)
     }
 
-    /// `x->sb_enc.min_partition_size`: `min(max(BLOCK_4X4,
-    /// dim_to_size(oxcf px)), sb_size)` (default_min_partition_size is
-    /// BLOCK_4X4 at every allintra speed — init_part_sf only).
-    fn min_partition_bsize(&self, sb_bsize: usize) -> usize {
-        dim_to_bsize(self.min_partition_size_px).min(sb_bsize)
+    /// `x->sb_enc.min_partition_size` (set_max_min_partition_size,
+    /// partition_strategy.h:224-230): `min(max(sf.default_min_partition_size,
+    /// dim_to_size(oxcf px)), sb_size)`.
+    ///
+    /// `sf_default_min` is `BLOCK_4X4` (0) on the whole gated envelope —
+    /// speed 0..6 sub-2160p — so the `max` is an identity there. It becomes
+    /// load-bearing at speed >= 7 (:570) and, per KB-19, at `min(w, h) >=
+    /// 2160` at any speed (speed_features.c:187-189).
+    fn min_partition_bsize(&self, sf_default_min: usize, sb_bsize: usize) -> usize {
+        sf_default_min
+            .max(dim_to_bsize(self.min_partition_size_px))
+            .min(sb_bsize)
     }
 }
 
@@ -1358,6 +1365,13 @@ impl EncodeCell {
 
         let speed = self.speed;
         let mut sf = SpeedFeatures::set_allintra(speed, p.allow_screen_content_tools, false);
+        // The modelled arms of set_allintra_speed_feature_framesize_dependent
+        // (speed_features.c:166) — currently the `is_4k_or_larger`
+        // default_min_partition_size arm (KB-19). Framesize-blind by design in
+        // `set_allintra`; applied here from the frame's real dimensions.
+        if allintra {
+            sf.apply_allintra_framesize_dependent(w, h);
+        }
         // Framesize-dependent tx-type stats prune (set_allintra_speed_feature_
         // framesize_dependent, speed_features.c:261/299): ALLINTRA sets
         // prune_tx_type_using_stats = 1 at speed>=2 / 2 at speed>=4, but ONLY
@@ -1579,7 +1593,7 @@ impl EncodeCell {
             // min(sf default, CLI dim, sb). `sb_block` is the live SB size
             // (BLOCK_64X64 or, at --sb-size=128, BLOCK_128X128).
             max_partition_size: knobs.max_partition_bsize(sf.default_max_partition_size, sb_block),
-            min_partition_size: knobs.min_partition_bsize(sb_block),
+            min_partition_size: knobs.min_partition_bsize(sf.default_min_partition_size, sb_block),
             enable_1to4_partitions: knobs.enable_1to4_partitions,
             enable_ab_partitions: knobs.enable_ab_partitions,
             allow_screen_content_tools: p.allow_screen_content_tools,
