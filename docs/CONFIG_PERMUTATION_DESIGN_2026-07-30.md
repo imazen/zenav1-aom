@@ -17,6 +17,13 @@ cdf-update pack bug and the `--disable-trellis-quant=2` FINAL_PASS
 The gate covers the *combination* space with small images, in **26.3 s wall**,
 by collapsing rather than exploding.
 
+> **Extended 2026-07-30 with a CONTENT axis** — see the section at the end of
+> this document. Short version: 12 content probes across 5 classes, a
+> 468-cell content-sensitivity matrix, and full-strength covering arrays on the
+> one class that moves. Exactly **one** of the 21 axes is content-sensitive,
+> and its root cause is now code-cited. Default tier: 44 tests, 3,352
+> byte-identity cells, 39.6 s.
+
 ## What a cell proves — DERIVED vs REPLAYED (read this before quoting a number)
 
 **The port never authors a sequence header.** `write_sequence_header_obu`
@@ -370,3 +377,261 @@ is where the next effort belongs.
    (`encoder_gate_lossless_cq0_e2e_kb5_repro`) and collapses several axes
    (`init_rd_sf` forces `NO_TRELLIS_OPT`), which `Effective::resolve` would need
    a lossless arm to model.
+
+---
+
+# The CONTENT axis (added 2026-07-30)
+
+Chunk-2 item 2 above says *"widen the content axis, not the knob axis"*. This
+section is that work: a content taxonomy derived from the encoder's own
+branch points, a measurement of which of the 21 axes actually move with
+content, and an expansion sized by that measurement rather than applied
+uniformly.
+
+## 1. The taxonomy, and why it is not a list of adjectives
+
+"Textured vs flat" is only a coverage axis if it *steers a decision*. So the
+taxonomy is derived from the content-dependent branch points that are live on
+this harness's envelope (speed 0, ALLINTRA, KEY, single tile, `--enable-palette=0`
+and `--enable-intrabc=0` — both forced off by `EncodeCell::c_encode_ctrls`).
+
+Walking those branches gives exactly **one** content property that survives:
+
+### `allow_screen_content_tools` — libaom's screen detector
+
+`av1_set_screen_content_options` (`av1/encoder/encoder.c:2439`) →
+`estimate_screen_content` (`:2042-2100`, the default detector: aomenc's
+`screen_detection_mode` defaults to `AOM_SCREEN_DETECTION_STANDARD`,
+`av1_cx_iface.c:405` — the anti-aliasing-aware variant is set only for
+`AOM_TUNE_IQ` / `AOM_TUNE_SSIMULACRA2`, `:1969`). It is a **hard threshold on a
+countable source statistic**:
+
+```text
+for each full 16x16 luma block:
+    n_colors = |{ pix >> (bd - 8) }|         // av1_count_colors{,_highbd}
+    if 1 < n_colors <= 4: ++counts_1         // kColorThresh = 4
+allow_screen_content_tools = counts_1 * 256 * 10 > width * height
+```
+
+Transcribed as `config_perm::screen_stat`, which is the classifier the whole
+section runs on. Two properties make it the right axis:
+
+* **it is bit-depth independent by construction** —
+  `av1_count_colors_highbd` (`intra_mode_search.c:352-357`) down-converts to
+  the 8-bit domain before binning, explicitly "to provide consistency of
+  behavior for palette search between lbd and hbd encodes". So the same clip at
+  bd8 and bd10 classifies identically, which is what makes this a *content*
+  axis and not a smuggled format axis;
+* **it changes the meaning of one of our 21 knobs.** `get_tx_mask`
+  (`tx_search.c:1806-1808`) resolves `--use-intra-default-tx-only=1` through
+  `get_default_tx_type(PLANE_TYPE_Y, xd, tx_size, cpi->use_screen_content_tools)`,
+  which returns `DCT_DCT` **when the screen flag is set** instead of the
+  mode-derived tx type.
+
+It also moves things that are *not* the mechanism here, listed so they are not
+mistaken for it: the per-block palette flag written by `write_palette_mode_info`
+and priced by `intra_mode_info_cost_y` (both gated on
+`av1_allow_palette(allow_screen_content_tools, bsize)`, independent of
+`--enable-palette`), and the speed-feature reads at `speed_features.c:375-381`
+and `:2909` (whose fields are inter-only on this envelope).
+
+### The classes actually probed
+
+| class | branch-point rationale | probes |
+|---|---|---|
+| **SCREEN** | `estimate_screen_content` fires ⇒ `get_tx_mask`'s default-tx-type arm changes, per-block palette flag coded+priced | `scr_mono_b8`, `scr_mono_b10`, `scr_ibc_b8` |
+| **NATURAL** | the detector's negative class — photographic, high colour count | `nat_64x64`, `nat_allintra`, `nat_cdfupd`, `nat_b10` |
+| **NOISE** | high-frequency energy drives the tx-type near-ties the `flip` / `rtx` / `rtxs` / `dtxo` axes narrow | `grain_b8`, `grain_b10` (film-grain-synthesised decodes) |
+| **DC-FLAT** | decoded at a crushing qindex ⇒ DC-dominated, large flat regions — the a-priori candidate for triggering the colour-count detector | `flat_b8_q63`, `flat_b10_q63` |
+| **DETAIL** | decoded at qindex 0 ⇒ maximum AC energy, the opposite pole | `det_b8_q00` |
+
+**Measured, and worth stating because it is counter-intuitive:** the DC-FLAT
+class does **not** trigger the screen detector. `flat_b8_q63` and
+`flat_b10_q63` score `0/16` blocks with ≤4 colours — quantisation ringing and
+dither keep the per-block colour count well above the threshold. Flatness in
+the perceptual sense is not the same property as libaom's colour-count
+statistic, and only the latter steers anything.
+
+Class populations are pinned by `content_taxonomy_is_measured_and_pinned`, and
+the classifier is **anchored to the oracle in the sound direction**: if
+`allow_screen_content_tools == 0` then `av1_allow_palette` is false for every
+block and `--enable-palette=1` *cannot* change the C payload, so any content
+this file calls NOT-screen must produce byte-identical C encodes with palette
+on and off. It does; all three SCREEN probes move. A wrong classifier fails
+that assert instead of silently invalidating the matrix.
+
+## 2. Which axes are content-sensitive — measured
+
+`run_content_matrix` replays **all 26 singleton axis levels** on each content
+(9 non-screen at cq32; the 3 screen contents at cq12/32/63 — 468 cells), each
+cell asserting byte-identity against real aomenc. The full 12 × 3 × 26 = 936
+cell grid is in `benchmarks/config_perm_content_axis_2026-07-30.tsv`
+(`content_axis_evidence_sweep`, `--ignored`).
+
+| axis | content-sensitive? | evidence |
+|---|---|---|
+| `dtxo` (`--use-intra-default-tx-only=1`) | **YES** | diverges on **every** SCREEN content and **no** non-screen content: `scr_mono_b8` cq12/32/63, `scr_mono_b10` cq12/32/63, `scr_ibc_b8` cq12/32 (cq63 is inert on the C side, so there is nothing to diverge on) |
+| `diag` (`--enable-diagonal-intra=0`) | knock-on only | one cell — `scr_mono_b10` cq32, the KB-17 near-tie; the bd8 twin of the same clip does **not** reproduce it, so it is a near-tie coincidence, not a class property |
+| the other **19** axes (rect, ab, p14, minp, maxp, smth, paeth, cfl, dir, adlt, fint, edgf, tx64, rtx, flip, rtxs, txss, cdf, trel) | **NO** | 0 divergences across 12 contents × 26 levels, spanning bd8/bd10, 4:2:0/4:0:0, natural/noise/flat/detail/screen |
+
+So the honest headline is close to the honest-stop clause, but not identical to
+it: **content is a live axis, but it is a one-axis phenomenon with a single
+mechanism**, and that mechanism is now root-caused (below) rather than
+mysterious. KB-17 is not a lone outlier in the sense of "unexplained"; it is
+the *visible tip* of one class-wide defect that reproduces on bd8 4:2:0
+non-monochrome content — which the KB-17 write-up could not know, because the
+only screen content it had was the two monochrome vectors.
+
+### Root cause of the `dtxo` class divergence (found 2026-07-30, NOT fixed)
+
+`crates/aom-encode/src/speed_features.rs:991`:
+
+```rust
+// Non-screen textured envelope; screen-content would thread the real
+// cpi->use_screen_content_tools here.
+use_screen_content_tools: false,
+```
+
+The port models `get_default_tx_type` faithfully
+(`aom_encode::tx_search::get_default_tx_type_y`, which takes
+`use_screen_content_tools` and returns `DCT_DCT` when it is set) — but the
+caller that builds `TxTypeSearchPolicy` hardcodes the flag to `false`. On
+screen-detected content C therefore searches `DCT_DCT` under
+`--use-intra-default-tx-only=1` while the port searches the mode-derived tx
+type. Every observed divergence in the matrix is that one line.
+
+This is a **finding, not a fix** — no encoder change was made here. The pin is
+self-promoting: `check_content_shard` fails if a cell starts matching (the flag
+got threaded → re-pin and promote `dtxo` into the screen contexts' array) and
+fails if a cell starts diverging.
+
+**This supersedes the CONTENT-vs-FORMAT framing of KB-17 finding 1**: the
+divergence is not "the corpus's one native monochrome vector", it is "any
+content on which `estimate_screen_content` fires", and the corpus's three such
+vectors all reproduce it (two monochrome, one 4:2:0). The isolation KB-17
+performed was correct — the mono-ised *natural* content it tested as a control
+does not trigger the detector, so it was byte-exact for the right reason.
+
+## 3. Is 2,617 valid on the content axis?
+
+**On its own terms, yes; as a statement about content, no.** The 2,617 array
+cells are 14 (context × quality) points that all draw luma from **two
+photographic clips** (`av1-1-b8-01-size-*` and the `*-00-quantizer-*` family) —
+one content class out of five, and the class in which zero of the 21 axes
+misbehave. Nothing in the old count was wrong; it simply could not speak about
+content, and the one place the port *does* steer on content was invisible to
+it (as KB-17 discovered by accident on a probe outside the array).
+
+The expansion is sized by the measurement, not applied uniformly:
+
+| addition | cells | why this size |
+|---|---:|---|
+| content-sensitivity matrix (26 singleton levels) | **468** | 9 non-screen × cq32 + 3 screen × cq{12,32,63}. The non-screen class is flat across quality in the 936-cell evidence sweep, so paying for its quality ladder in the default tier buys nothing |
+| t=4 covering array on `scr_ibc_b8` (bd8 4:2:0 SCREEN) | **187** | the class that moves gets FULL strength, in the *same format* as the primary 64cq32 context, so anything it catches is attributable to content alone |
+| t=3 covering array on `scr_mono_b8` (bd8 4:0:0 SCREEN) | **63** | the corpus's only bd8 monochrome content and the bd8 twin of KB-17's vector; t=3 because it is a second probe of a class already covered at t=4 |
+| `dtxo=1` × t=2 array on SCREEN content | **17** | the combination companion to the standalone class divergence |
+| **new total** | **735** | |
+
+Classes that changed **no** axis's outcome (NATURAL, NOISE, DC-FLAT, DETAIL)
+get the 26-level matrix and **no covering array of their own** — that is the
+"expand where the measurement says to" rule applied honestly. A content class
+on which every one of 26 axis levels behaves identically to the primary context
+does not need 187 more rows to say so again.
+
+Array cells go **2,617 → 2,867**; total byte-identity cells in the file go
+**2,617 → 3,352** (plus 48 stock-encode byte-identity checks).
+
+`dtxo` is pinned to its default level inside `run_content_array`. Forcing one
+column of a covering array to a constant leaves every t-tuple among the other
+columns covered, so the screen t=4 context still proves every 4-way interaction
+among the remaining 20 axes; the pinned axis is covered separately and
+completely by the matrix (standalone) and by the t=2 verdict set (in
+combination). This is the treatment `--use-intra-dct-only` already gets.
+
+**Result: all 735 new cells byte-identical to real aomenc except the pinned
+`dtxo` set.** No knob COMBINATION diverges on any content — the screen t=4
+array is clean at 100 % C-moved. The content risk is entirely the one
+standalone axis.
+
+## 4. Budget
+
+| tier | wall |
+|---|---|
+| pre-existing gate (33 tests) | 26.3 s |
+| + the content axis (11 tests, 735 cells) → 44 tests | **39.6 s (+13.3 s)** |
+| the content tests alone, run as a filtered set | 15.6 s |
+| deep tier (`--ignored`): `content_axis_evidence_sweep`, 936 cells | 106.5 s, opt-in |
+
+(12-core M4, `cargo test --profile test-fast -j 4`, default libtest thread
+count, machine shared with two other agents — so treat these as an upper
+bound rather than a clean measurement.)
+
+Nothing was thinned to hit the budget: the default tier runs every content
+probe, every axis level on the class that moves, and a full-strength t=4 array
+on it. What is in the deep tier is the *redundant* part — the non-screen
+classes' quality ladder, which the evidence sweep shows is flat.
+
+## 5. Teeth — the asymmetry, demonstrated
+
+The point of new cells is that they catch something the old ones cannot. One
+perturbation, applied to a **content-gated** path and then reverted
+(`git diff` on the port crates clean afterwards, verified):
+
+`crates/aom-encode/src/pack.rs:508`
+
+```rust
+-    kfs.allow_palette = allow_palette(cfg.allow_screen_content_tools, bsize);
++    kfs.allow_palette = allow_palette(false, bsize); // TEETH
+```
+
+This is invisible on every non-screen content **by construction**:
+`allow_screen_content_tools` is already `false` there, so the two expressions
+are the same value. It only bites where the detector fires.
+
+Result of one full run with the perturbation in place — **34 passed, 10
+failed**:
+
+* **all 2,617 pre-existing covering-array cells stayed GREEN** — every
+  `combinations_t4_*` shard (8 contexts), all three `combinations_quality_ladder_*`,
+  `combinations_dct_only_verdict_set_pinned`, both collapse proofs, the
+  per-axis liveness test, the arithmetic. 31 of the 32 pre-existing tests
+  passed;
+* the one pre-existing test that fired is `mono_vector_open_divergences_pinned`
+  — the KB-17 probe, which is the *only* pre-existing cell in the file that
+  touches screen content, and is not part of the 2,617;
+* **9 of the 12 new content tests failed**, and the 3 that passed are exactly
+  the three non-screen shards (`content_sensitivity_natural_s0/s1/s2`) — the
+  classes the taxonomy says cannot see this path.
+
+Two of the failure messages, quoted:
+
+> `scr_ibc_b8cq32: 63 of 63 covering-array cells on SCREEN-class content are
+> NOT byte-identical to real aomenc. `dtxo` is pinned to default here, so this
+> is a knob combination that diverges on this CONTENT and nowhere else.
+> Offenders: scr_ibc_b8cq32_stock (port 54B vs C 54B),
+> scr_ibc_b8cq32_rect0-ab0-p140-maxp32-smth0-paeth0-tx640-rtx0-flip0-rtxs1-trel2
+> (port 66B vs C 66B), …`
+
+> `scr_ibc_b8/cq12: the STOCK encode of this content is NOT byte-identical to
+> real aomenc — that is a plain envelope regression, not a knob-vs-content
+> interaction`
+
+After reverting: **44 passed, 0 failed, 2 ignored, 34.9 s.**
+
+## 6. What a follow-up should do
+
+1. **Thread `cpi->use_screen_content_tools`** into `TxTypeSearchPolicy`
+   (`crates/aom-encode/src/speed_features.rs:991`) from the parsed frame
+   header's `allow_screen_content_tools`, then re-pin
+   `CONTENT_DIVERGENT_CELLS`, `SCREEN_DTXO_DIVERGENT_ROWS` and KB-17's table,
+   and promote `dtxo` out of `pin_dtxo_default` into the screen arrays.
+   Watch the `scr_mono_b10` cq32 `diag=0` cell separately — it is a near-tie
+   that may or may not move with the same change.
+2. **Palette and intrabc as real axes.** Both are forced off by
+   `c_encode_ctrls`, so the largest consequence of screen detection is outside
+   the matrix entirely. `EncodeCell::c_encode_screen` and
+   `ToggleKnobs::enable_palette` already exist; wiring them as axes would need
+   the port's palette RD search gated into `port_encode_with`.
+3. **More screen content.** The corpus has exactly three screen-detected
+   vectors and this section uses all three. A fourth class of screen content
+   (synthetic text/UI) would have to be generated, not fetched.

@@ -29,7 +29,14 @@
 //!   and t=3 (63 rows) on the three expensive ones — bd10, monochrome, and the
 //!   four-superblock 128x128 cell — plus the collapse proof, the pinned
 //!   monochrome-vector finding, and the arithmetic. Target: under 120 s wall.
-//! * **Deep** (`-- --ignored`): only [`independence_evidence_sweep`], which is
+//! * **Content** (section 5, added 2026-07-30): 12 content probes over 5
+//!   taxonomy classes derived from `estimate_screen_content`
+//!   (encoder.c:2042) — a 468-cell singleton-axis sensitivity matrix, a t=4
+//!   array on bd8 4:2:0 screen content and a t=3 array on bd8 monochrome
+//!   screen content, plus the pinned `dtxo` combination verdict. See
+//!   `docs/CONFIG_PERMUTATION_DESIGN_2026-07-30.md` §"The CONTENT axis".
+//! * **Deep** (`-- --ignored`): [`independence_evidence_sweep`] and
+//!   [`content_axis_evidence_sweep`], both of which are
 //!   offline EVIDENCE GENERATION — it writes `benchmarks/`, so it is opt-in
 //!   rather than slow. Everything else, including the quality ladder, the
 //!   exhaustive redundant-level proof and the known-open
@@ -1425,3 +1432,607 @@ const DCT_ONLY_DIVERGENT_ROWS: &[&str] = &[
     "rect0-p140-minp8-maxp64-smth0-paeth0-adlt0-fint0-tx640-rtx0-dtxo1",
     "stock",
 ];
+
+// ---------------------------------------------------------------------------
+// 5. THE CONTENT AXIS (2026-07-30)
+//
+// See `docs/CONFIG_PERMUTATION_DESIGN_2026-07-30.md` §"The content axis".
+// Everything below is content generation + content contexts; the knob axes,
+// the covering array and the collapse engine are untouched.
+// ---------------------------------------------------------------------------
+
+/// One CONTENT probe: real conformance content, a 64x64 crop, and the
+/// taxonomy class it is *predicted* to fall in.
+struct Content {
+    tag: &'static str,
+    vector: &'static str,
+    crop: Option<(usize, usize, usize, usize)>,
+    /// Predicted `allow_screen_content_tools` — the pinned half of the
+    /// taxonomy. Computed by `cp::screen_stat` from the source pixels the
+    /// encoder actually sees, i.e. AFTER the crop.
+    screen: bool,
+}
+
+/// The content probe set. Every 64x64 crop, every one bd8/bd10 4:2:0 or 4:0:0
+/// — the FORMAT is held as constant as the corpus allows so that anything that
+/// moves is attributable to CONTENT.
+const CONTENTS: &[Content] = &[
+    // --- class NATURAL (screen detector does not fire) ---
+    Content { tag: "nat_64x64", vector: "av1-1-b8-01-size-64x64", crop: None, screen: false },
+    Content { tag: "nat_allintra", vector: "av1-1-b8-02-allintra", crop: Some((64, 64, 96, 96)), screen: false },
+    Content { tag: "nat_cdfupd", vector: "av1-1-b8-04-cdfupdate", crop: Some((64, 64, 96, 96)), screen: false },
+    Content { tag: "nat_b10", vector: "av1-1-b10-00-quantizer-00", crop: Some((64, 64, 64, 64)), screen: false },
+    // --- class NOISE (film grain synthesised into the decoded source) ---
+    Content { tag: "grain_b8", vector: "av1-1-b8-23-film_grain-50", crop: Some((64, 64, 96, 96)), screen: false },
+    Content { tag: "grain_b10", vector: "av1-1-b10-23-film_grain-50", crop: Some((64, 64, 96, 96)), screen: false },
+    // --- class DC-FLAT (decoded at a crushing qindex -> few colors per block) ---
+    Content { tag: "flat_b8_q63", vector: "av1-1-b8-00-quantizer-63", crop: Some((64, 64, 96, 96)), screen: false },
+    Content { tag: "flat_b10_q63", vector: "av1-1-b10-00-quantizer-63", crop: Some((64, 64, 64, 64)), screen: false },
+    Content { tag: "det_b8_q00", vector: "av1-1-b8-00-quantizer-00", crop: Some((64, 64, 96, 96)), screen: false },
+    // --- class SCREEN (the detector fires) ---
+    Content { tag: "scr_mono_b8", vector: "av1-1-b8-24-monochrome", crop: Some((64, 64, 64, 64)), screen: true },
+    Content { tag: "scr_mono_b10", vector: "av1-1-b10-24-monochrome", crop: Some((64, 64, 64, 64)), screen: true },
+    Content { tag: "scr_ibc_b8", vector: "av1-1-b8-16-intra_only-intrabc-extreme-dv", crop: Some((64, 64, 64, 64)), screen: true },
+];
+
+impl Content {
+    fn cell(&self, cq: i32) -> EncodeCell {
+        EncodeCell::real_content(self.tag, self.vector, self.crop, cq, 0)
+    }
+}
+
+
+/// The measured [`cp::screen_stat`] per content, PINNED:
+/// `(tag, counts_1, blocks, allow_screen_content_tools)`. Measured 2026-07-30
+/// on the exact 64x64 crops above.
+const CONTENT_SCREEN_STATS: &[(&str, usize, usize, bool)] = &[
+    ("nat_64x64", 0, 16, false),
+    ("nat_allintra", 0, 16, false),
+    ("nat_cdfupd", 0, 16, false),
+    ("nat_b10", 0, 16, false),
+    ("grain_b8", 0, 16, false),
+    ("grain_b10", 0, 16, false),
+    ("flat_b8_q63", 0, 16, false),
+    ("flat_b10_q63", 0, 16, false),
+    ("det_b8_q00", 0, 16, false),
+    ("scr_mono_b8", 6, 16, true),
+    ("scr_mono_b10", 4, 16, true),
+    ("scr_ibc_b8", 8, 16, true),
+];
+
+/// THE CONTENT TAXONOMY, executable.
+///
+/// The taxonomy is built on the ONE content property the speed-0 ALLINTRA
+/// encoder branches on that is derived from the source pixels:
+/// `estimate_screen_content` (encoder.c:2042-2100) — see [`cp::screen_stat`]
+/// for the transcription and the downstream branch citations.
+///
+/// Two claims are gated here:
+///
+/// 1. **the classification itself** — `counts_1 / blocks` and the resulting
+///    verdict are pinned per content, so a content probe that silently drifts
+///    out of its class (a changed crop, a changed vector) fails instead of
+///    quietly weakening the matrix below;
+/// 2. **the classifier is anchored to the real C encoder, in the SOUND
+///    direction.** `allow_screen_content_tools == 0` makes `av1_allow_palette`
+///    false for every block, so `--enable-palette=1` CANNOT change anything;
+///    the two C encodes must be byte-identical. If a content this test calls
+///    "not screen" reacts to `--enable-palette`, the classifier is wrong and
+///    every conclusion drawn from it is void. (The converse — screen ⇒ the
+///    payload must move — is empirical, not implied, so it is reported but
+///    only asserted as a non-vacuity floor: at least one screen content must
+///    react, else the anchor measures nothing.)
+///
+/// Cross-format control, also asserted: `scr_mono_b8` (bd8) and
+/// `scr_mono_b10` (bd10) are the same source clip at two bit depths and must
+/// land in the SAME class — `av1_count_colors_highbd` down-converts to the
+/// 8-bit domain before binning (intra_mode_search.c:352-357), so the statistic
+/// is bit-depth independent by construction. That is what makes this a
+/// CONTENT axis rather than a format axis.
+#[test]
+fn content_taxonomy_is_measured_and_pinned() {
+    c::ref_init();
+    let mut measured = Vec::new();
+    let mut report = String::from("\n=== content taxonomy (estimate_screen_content) ===\n");
+    let mut screen_reacted = 0usize;
+    for ct in CONTENTS {
+        let cell = ct.cell(32);
+        let st = cp::screen_stat(&cell.y, cell.w, cell.h, cell.bd);
+        // Every content this file introduces carries a byte-identity assert.
+        let c_tu = cell.c_encode_ctrls(&[]);
+        assert_eq!(
+            EncodeCell::frame_obu_payload(&c_tu),
+            cell.port_encode_with(&c_tu, &ToggleKnobs::default()),
+            "{}: the stock encode of this content probe is not byte-identical \
+             to real aomenc",
+            ct.tag
+        );
+        // Oracle anchor (sound direction): palette on vs off.
+        let pal_off = EncodeCell::frame_obu_payload(&cell.c_encode_screen(false, false));
+        let pal_on = EncodeCell::frame_obu_payload(&cell.c_encode_screen(true, false));
+        let reacted = pal_off != pal_on;
+        let _ = writeln!(
+            report,
+            "  {:<14} bd{} mono{} {:>2}/{:>2} blocks<=4colors -> screen={} | --enable-palette=1 {}",
+            ct.tag,
+            cell.bd,
+            cell.mono as u8,
+            st.counts_1,
+            st.blocks,
+            st.allow_screen_content_tools as u8,
+            if reacted { "MOVED the C payload" } else { "inert" }
+        );
+        assert!(
+            st.allow_screen_content_tools || !reacted,
+            "{}: classified NOT-screen, but real aomenc reacted to \
+             --enable-palette=1 — allow_screen_content_tools must therefore be \
+             1 and the content classifier is WRONG. Every conclusion the \
+             content matrix draws from this classification is void.",
+            ct.tag
+        );
+        if st.allow_screen_content_tools && reacted {
+            screen_reacted += 1;
+        }
+        assert_eq!(
+            st.allow_screen_content_tools, ct.screen,
+            "{}: measured screen verdict != the declared taxonomy class",
+            ct.tag
+        );
+        measured.push((ct.tag, st.counts_1, st.blocks, st.allow_screen_content_tools));
+    }
+    println!("{report}");
+    assert_eq!(
+        measured,
+        CONTENT_SCREEN_STATS.to_vec(),
+        "the content taxonomy MOVED — a probe's crop/vector changed, or \
+         cp::screen_stat changed. Re-derive the classes before re-pinning; the \
+         content-sensitivity matrix is only meaningful against a fixed partition."
+    );
+    assert!(
+        screen_reacted >= 1,
+        "no screen-classified content reacted to --enable-palette=1, so the \
+         oracle anchor is vacuous — the probe set no longer contains reachable \
+         screen content"
+    );
+    let n_screen = CONTENTS.iter().filter(|c| c.screen).count();
+    assert!(
+        n_screen >= 3 && n_screen < CONTENTS.len(),
+        "the taxonomy must partition the probe set into BOTH classes"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 5b. The content-sensitivity matrix — which axes move with content
+// ---------------------------------------------------------------------------
+
+/// One `(content, quality, axis=level)` cell whose port output is NOT
+/// byte-identical to real aomenc, in the pinned wire format
+/// `tag/cqN/axis=value`.
+///
+/// **Measured 2026-07-30** by [`run_content_matrix`] over 12 contents x 26
+/// singleton axis levels (9 non-screen at cq32; the 3 screen contents at
+/// cq12/32/63) = 468 cells. **Exactly one of the 21 axes moves with content**:
+/// `dtxo` (`--use-intra-default-tx-only`), and it moves on exactly the
+/// screen-classified contents. `diag=0` at cq32 on `scr_mono_b10` is the
+/// KB-17 near-tie knock-on already pinned by
+/// [`mono_vector_open_divergences_pinned`].
+///
+/// ROOT CAUSE (found 2026-07-30, code-cited, NOT fixed here):
+/// `get_tx_mask` (tx_search.c:1806-1808) resolves `use_default_intra_tx_type`
+/// through `get_default_tx_type(PLANE_TYPE_Y, xd, tx_size,
+/// cpi->use_screen_content_tools)`, which returns `DCT_DCT` when the screen
+/// flag is set instead of the mode-derived tx type. The port models the
+/// function faithfully (`aom_encode::tx_search::get_default_tx_type_y`) but
+/// its caller hardcodes the flag:
+/// `crates/aom-encode/src/speed_features.rs:991` — `use_screen_content_tools:
+/// false`, commented "Non-screen textured envelope; screen-content would
+/// thread the real cpi->use_screen_content_tools here". So on any
+/// screen-detected content the port searches the mode-derived tx type where C
+/// searches DCT_DCT.
+///
+/// This set is SELF-PROMOTING in both directions: a cell that starts matching
+/// (the flag got threaded) fails, and so does a cell that starts diverging.
+const CONTENT_DIVERGENT_CELLS: &[&str] = &[
+    "scr_ibc_b8/cq12/dtxo=1",
+    "scr_ibc_b8/cq32/dtxo=1",
+    "scr_mono_b10/cq12/dtxo=1",
+    "scr_mono_b10/cq32/diag=0",
+    "scr_mono_b10/cq32/dtxo=1",
+    "scr_mono_b10/cq63/dtxo=1",
+    "scr_mono_b8/cq12/dtxo=1",
+    "scr_mono_b8/cq32/dtxo=1",
+    "scr_mono_b8/cq63/dtxo=1",
+];
+
+/// Run the singleton-axis sweep for `contents` x `cqs` and return
+/// `(divergent, inert)` cell keys plus the cell count.
+///
+/// Each cell is one axis level ALONE on one content at one quality, encoded on
+/// both sides and compared byte-for-byte — the same contract as every
+/// covering-array cell. The `inert` list is the anti-vacuity companion: an
+/// axis level that never moves the C encoder on a content cannot be evidence
+/// about that content either way, and the caller reports it.
+fn run_content_matrix(contents: &[&Content], cqs: &[i32]) -> (BTreeSet<String>, usize, usize) {
+    c::ref_init();
+    let mut divergent = BTreeSet::new();
+    let mut cells = 0usize;
+    let mut inert = 0usize;
+    let mut report = String::new();
+    for ct in contents {
+        for &cq in cqs {
+            let cell = ct.cell(cq);
+            let stock = c_stock_payload(&cell);
+            let port_stock = cell.port_encode_with(&cell.c_encode_ctrls(&[]), &ToggleKnobs::default());
+            assert_eq!(
+                stock, port_stock,
+                "{}/cq{cq}: the STOCK encode of this content is NOT byte-identical \
+                 to real aomenc — that is a plain envelope regression, not a \
+                 knob-vs-content interaction",
+                ct.tag
+            );
+            let mut div_here: Vec<String> = Vec::new();
+            for (i, ax) in ALL_AXES.iter().enumerate() {
+                for l in 1..ax.n_levels() as u8 {
+                    let mut row = DEFAULT_ROW;
+                    row[i] = l;
+                    if cp::illegal_reason(&row).is_some() {
+                        continue;
+                    }
+                    let key = format!("{}/cq{cq}/{}={}", ct.tag, ax.tag(), ax.values()[l as usize]);
+                    let r = run_cell(&cell, &key, &cp::knobs_of(&row), &stock);
+                    cells += 1;
+                    if !r.c_moved {
+                        inert += 1;
+                    }
+                    if !r.exact {
+                        divergent.insert(key.clone());
+                        div_here.push(format!(
+                            "{}={} (port {}B vs C {}B)",
+                            ax.tag(),
+                            ax.values()[l as usize],
+                            r.port_len,
+                            r.c_len
+                        ));
+                    }
+                }
+            }
+            let _ = writeln!(
+                report,
+                "  {:<14} cq{:<2} bd{} mono{} screen={} : {} divergent [{}]",
+                ct.tag,
+                cq,
+                cell.bd,
+                cell.mono as u8,
+                ct.screen as u8,
+                div_here.len(),
+                div_here.join(", ")
+            );
+        }
+    }
+    println!("\n=== content-sensitivity matrix ({cells} cells) ===\n{report}");
+    (divergent, cells, inert)
+}
+
+/// Assert one shard's divergences are exactly the pinned subset for it.
+fn check_content_shard(contents: &[&Content], cqs: &[i32]) {
+    let (divergent, cells, inert) = run_content_matrix(contents, cqs);
+    let tags: BTreeSet<&str> = contents.iter().map(|c| c.tag).collect();
+    let expected: BTreeSet<String> = CONTENT_DIVERGENT_CELLS
+        .iter()
+        .filter(|k| {
+            let tag = k.split('/').next().unwrap();
+            let cq: i32 = k.split('/').nth(1).unwrap()[2..].parse().unwrap();
+            tags.contains(tag) && cqs.contains(&cq)
+        })
+        .map(|s| s.to_string())
+        .collect();
+    assert!(cells > 0, "empty content shard");
+    assert!(
+        inert * 2 < cells,
+        "over half this shard's cells ({inert}/{cells}) are INERT on the C \
+         encoder — the content probes are drifting toward configurations the \
+         encoder ignores, so the shard proves little about them"
+    );
+    assert_eq!(
+        divergent, expected,
+        "the CONTENT-sensitivity matrix MOVED. A cell that started matching \
+         means the screen-content tx-type flag (speed_features.rs:991 \
+         `use_screen_content_tools: false`) was threaded — re-pin and consider \
+         promoting `dtxo` back into the screen contexts' covering array. A cell \
+         that started diverging is a regression."
+    );
+}
+
+#[test]
+fn content_sensitivity_natural_s0() {
+    check_content_shard(&[&CONTENTS[0], &CONTENTS[1], &CONTENTS[2]], &[32]);
+}
+#[test]
+fn content_sensitivity_natural_s1() {
+    check_content_shard(&[&CONTENTS[3], &CONTENTS[4], &CONTENTS[5]], &[32]);
+}
+#[test]
+fn content_sensitivity_natural_s2() {
+    check_content_shard(&[&CONTENTS[6], &CONTENTS[7], &CONTENTS[8]], &[32]);
+}
+#[test]
+fn content_sensitivity_screen_mono_b8() {
+    check_content_shard(&[&CONTENTS[9]], &[12, 32, 63]);
+}
+#[test]
+fn content_sensitivity_screen_mono_b10() {
+    check_content_shard(&[&CONTENTS[10]], &[12, 32, 63]);
+}
+#[test]
+fn content_sensitivity_screen_ibc_b8() {
+    check_content_shard(&[&CONTENTS[11]], &[12, 32, 63]);
+}
+
+// ---------------------------------------------------------------------------
+// 5c. The covering array, replayed on the SCREEN class
+// ---------------------------------------------------------------------------
+
+/// `dtxo` (`--use-intra-default-tx-only`), the one axis the matrix above
+/// measures as content-sensitive, held at its DEFAULT level.
+///
+/// Forcing one column of a covering array to a constant leaves every t-tuple
+/// among the OTHER columns covered, so a t=4 array run this way still proves
+/// every 4-way interaction among the remaining 20 axes. `dtxo`'s own behaviour
+/// on this content class is covered separately and completely by
+/// [`CONTENT_DIVERGENT_CELLS`] (standalone) and
+/// [`combinations_screen_dtxo_verdict_set_pinned`] (in combination). This is
+/// the same treatment `--use-intra-dct-only` already gets.
+fn pin_dtxo_default(row: &Row) -> Row {
+    let mut r = *row;
+    r[ix(Axis::DefaultTxOnly)] = 0;
+    r
+}
+
+/// Replay a covering array on one CONTENT probe, with `dtxo` pinned to default.
+///
+/// Same four-part gate as [`run_array`] (byte-identity, anti-vacuity,
+/// collapse soundness in the stock direction, non-empty shard); the array is
+/// de-duplicated after the pin so a pinned row is not encoded twice.
+fn run_content_array(ct: &Content, cq: i32, t: usize, shard: usize, n_shards: usize, min_moved_pct: f64) {
+    c::ref_init();
+    let cell = ct.cell(cq);
+    let cctx = cell_ctx(&cell);
+    let stock = c_stock_payload(&cell);
+    let stock_eff = Effective::resolve(&DEFAULT_ROW, &cctx);
+    let tag = format!("{}cq{cq}", ct.tag);
+
+    let mut seen: BTreeSet<Row> = BTreeSet::new();
+    let pinned: Vec<Row> = cp::covering_array(t)
+        .into_iter()
+        .map(|r| pin_dtxo_default(&r))
+        .filter(|r| cp::illegal_reason(r).is_none() && seen.insert(*r))
+        .collect();
+    let collapsed = cp::collapse(&pinned, &cctx);
+    let rows: Vec<Row> = collapsed
+        .representatives
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(i, _)| i % n_shards == shard)
+        .map(|(_, r)| r)
+        .collect();
+    assert!(!rows.is_empty(), "{tag}: shard {shard}/{n_shards} is empty");
+
+    let mut cells = Vec::new();
+    for row in &rows {
+        let label = format!("{tag}_{}", cp::row_label(row));
+        let r = run_cell(&cell, &label, &cp::knobs_of(row), &stock);
+        if Effective::resolve(row, &cctx) == stock_eff {
+            assert!(
+                !r.c_moved,
+                "{label}: the collapse engine resolves this row to the STOCK \
+                 effective config, but real aomenc produced different bytes on \
+                 this CONTENT — the Effective signature is under-refined"
+            );
+        }
+        cells.push(r);
+    }
+    let non_stock: Vec<&Cell> = cells.iter().filter(|c| !c.label.ends_with("_stock")).collect();
+    let moved = non_stock.iter().filter(|c| c.c_moved).count();
+    let moved_pct = if non_stock.is_empty() {
+        100.0
+    } else {
+        100.0 * moved as f64 / non_stock.len() as f64
+    };
+    println!("{}", render(&cells, &tag, t, shard, n_shards, moved_pct));
+    let open: Vec<&Cell> = cells.iter().filter(|c| !c.exact).collect();
+    assert!(
+        open.is_empty(),
+        "{tag}: {} of {} covering-array cells on SCREEN-class content are NOT \
+         byte-identical to real aomenc. `dtxo` is pinned to default here, so \
+         this is a knob combination that diverges on this CONTENT and nowhere \
+         else. Offenders: {}",
+        open.len(),
+        cells.len(),
+        open.iter()
+            .map(|c| format!("{} (port {}B vs C {}B)", c.label, c.port_len, c.c_len))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    assert!(
+        moved_pct >= min_moved_pct,
+        "{tag}: only {moved_pct:.1}% of the {} non-stock rows changed the C \
+         encoder's output (floor {min_moved_pct}%)",
+        non_stock.len()
+    );
+}
+
+// t=4 (every 4-way interaction among the 20 non-dtxo axes) on the bd8 4:2:0
+// screen content — the format is the SAME as the primary 64cq32 context, so
+// anything these cells catch is attributable to content alone.
+#[test]
+fn combinations_t4_scr_ibc_s0() {
+    run_content_array(&CONTENTS[11], 32, 4, 0, 3, 80.0);
+}
+#[test]
+fn combinations_t4_scr_ibc_s1() {
+    run_content_array(&CONTENTS[11], 32, 4, 1, 3, 80.0);
+}
+#[test]
+fn combinations_t4_scr_ibc_s2() {
+    run_content_array(&CONTENTS[11], 32, 4, 2, 3, 80.0);
+}
+// t=3 on the bd8 native monochrome screen vector — the corpus's only bd8
+// monochrome content, and the bd8 twin of KB-17's bd10 vector.
+#[test]
+fn combinations_t3_scr_mono_b8() {
+    run_content_array(&CONTENTS[9], 32, 3, 0, 1, 70.0);
+}
+
+/// `--use-intra-default-tx-only=1` x a t=2 array, on SCREEN-class content:
+/// the combination companion to the standalone divergence in
+/// [`CONTENT_DIVERGENT_CELLS`].
+///
+/// Pinned and self-promoting exactly like
+/// [`combinations_dct_only_verdict_set_pinned`]: a row that starts matching
+/// means the screen tx-type flag was threaded (re-pin, and promote `dtxo` back
+/// into [`run_content_array`]); a row that starts diverging is a regression.
+#[test]
+fn combinations_screen_dtxo_verdict_set_pinned() {
+    c::ref_init();
+    let ct = &CONTENTS[11];
+    let cell = ct.cell(32);
+    let stock = c_stock_payload(&cell);
+    let mut diverged = BTreeSet::new();
+    let mut n = 0usize;
+    for row in cp::covering_array(2) {
+        let row = pin_dtxo_default(&row);
+        if cp::illegal_reason(&row).is_some() {
+            continue;
+        }
+        let mut knobs = cp::knobs_of(&row);
+        knobs.use_intra_default_tx_only = true;
+        let label = format!("scr_dtxo_{}", cp::row_label(&row));
+        let r = run_cell(&cell, &label, &knobs, &stock);
+        n += 1;
+        if !r.exact {
+            diverged.insert(cp::row_label(&row));
+        }
+    }
+    println!(
+        "\n=== --use-intra-default-tx-only=1 x t=2 array on SCREEN content: \
+         {}/{n} rows diverge\n{:#?}",
+        diverged.len(),
+        diverged
+    );
+    let expected: BTreeSet<String> = SCREEN_DTXO_DIVERGENT_ROWS.iter().map(|s| s.to_string()).collect();
+    assert_eq!(
+        diverged, expected,
+        "the screen-content --use-intra-default-tx-only divergence set MOVED. \
+         Rows that started matching mean speed_features.rs:991 \
+         (`use_screen_content_tools: false`) was threaded — re-pin and promote \
+         the axis. Rows that started diverging are a regression."
+    );
+}
+
+/// Recorded divergence set for [`combinations_screen_dtxo_verdict_set_pinned`]:
+/// **12 of the 17** t=2 rows, measured 2026-07-30 on `scr_ibc_b8` (bd8 4:2:0
+/// screen content) at cq32. `stock` — the knob alone, no other change — is in
+/// the set, i.e. the combinations INHERIT the standalone content divergence
+/// rather than adding new ones, the same shape as the `--use-intra-dct-only`
+/// set. The 5 rows that stay exact are rows on which the C encoder's own
+/// `dtxo` output does not move.
+const SCREEN_DTXO_DIVERGENT_ROWS: &[&str] = &[
+    "ab0-p140-maxp64-paeth0-cfl0-diag0-fint0-rtx0-txss0-cdf2-trel2",
+    "minp16-maxp32-smth0-cfl0-diag0-rtx0-flip0-rtxs1-cdf2-trel0",
+    "p140-minp8-smth0-paeth0-diag0-adlt0-fint0-flip0-txss0-cdf2",
+    "rect0-ab0-diag0-fint0-edgf0-tx640-rtx0-flip0-rtxs1-trel1",
+    "rect0-ab0-minp16-cfl0-dir0-diag0-fint0-edgf0-trel2",
+    "rect0-ab0-p140-minp16-paeth0-dir0-adlt0-fint0-edgf0-rtxs1-cdf0",
+    "rect0-ab0-p140-minp8-paeth0-cfl0-dir0-diag0-rtx0-txss0-cdf2-trel1",
+    "rect0-p140-minp16-maxp64-smth0-cfl0-diag0-adlt0-fint0-edgf0-rtx0-rtxs1-txss0-trel0",
+    "rect0-p140-minp8-maxp32-adlt0-edgf0-rtx0-txss0-cdf0-trel2",
+    "rect0-p140-minp8-maxp64-smth0-paeth0-adlt0-fint0-tx640-rtx0",
+    "rect0-p140-paeth0-dir0-diag0-fint0-rtxs1-txss0-cdf0-trel0",
+    "stock",
+];
+
+/// DEEP TIER (`--ignored`) — the full content-axis evidence grid, written to
+/// `benchmarks/config_perm_content_axis_2026-07-30.tsv`.
+///
+/// The default tier runs a deliberately asymmetric subset (9 non-screen
+/// contents at cq32; the 3 screen contents at cq12/32/63) because the
+/// measurement below says the non-screen class is flat across quality. This
+/// sweep is the evidence for that asymmetry: **all 12 contents x all 3
+/// qualities x all 26 singleton axis levels = 936 cells**, plus the screen
+/// statistic per content. It is opt-in because it writes `benchmarks/`, and
+/// because ~120 s of encoding to re-derive a table that has not moved is not
+/// worth the default-tier budget.
+///
+/// Re-run it whenever the axis set, the content probes, or the encoder's
+/// content handling changes.
+#[test]
+#[ignore = "offline evidence generation for the content axis; ~2 min, writes benchmarks/"]
+fn content_axis_evidence_sweep() {
+    c::ref_init();
+    let mut tsv = String::from(
+        "# Content-axis sensitivity of the 21 config-permutation knob axes.\n\
+         # Every data row is ONE singleton axis level on ONE content at ONE\n\
+         # quality, encoded by the port and by real libaom v3.14.1 and compared\n\
+         # byte for byte (frame OBU payload). speed 0, ALLINTRA, KEY, 1 tile.\n\
+         # `screen` is cp::screen_stat (estimate_screen_content, encoder.c:2042).\n\
+         # `c_moved` = the C encoder's own payload differs from its stock encode.\n\
+         # The per-content constants are in the `#C` preamble rows, not repeated\n\
+         # on every data row.\n\
+         #C\tcontent\tvector\tbd\tmono\tw\th\tcounts_1\tblocks\tscreen\n",
+    );
+    for ct in CONTENTS {
+        let cell = ct.cell(32);
+        let st = cp::screen_stat(&cell.y, cell.w, cell.h, cell.bd);
+        let _ = writeln!(
+            tsv,
+            "#C\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            ct.tag,
+            ct.vector,
+            cell.bd,
+            cell.mono as u8,
+            cell.w,
+            cell.h,
+            st.counts_1,
+            st.blocks,
+            st.allow_screen_content_tools as u8
+        );
+    }
+    // `c_len` is written as `-` whenever the cell is byte-identical (the two
+    // payloads are then the same bytes, so the column would be pure
+    // duplication) — this keeps the committed evidence file small.
+    tsv.push_str("content\tcq\taxis\tlevel\texact\tc_moved\tport_len\tc_len\n");
+    for ct in CONTENTS {
+        for cq in [12, 32, 63] {
+            let cell = ct.cell(cq);
+            let stock = c_stock_payload(&cell);
+            for (i, ax) in ALL_AXES.iter().enumerate() {
+                for l in 1..ax.n_levels() as u8 {
+                    let mut row = DEFAULT_ROW;
+                    row[i] = l;
+                    if cp::illegal_reason(&row).is_some() {
+                        continue;
+                    }
+                    let key = format!("{}/cq{cq}/{}={}", ct.tag, ax.tag(), ax.values()[l as usize]);
+                    let r = run_cell(&cell, &key, &cp::knobs_of(&row), &stock);
+                    let _ = writeln!(
+                        tsv,
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        ct.tag,
+                        cq,
+                        ax.tag(),
+                        ax.values()[l as usize],
+                        r.exact as u8,
+                        r.c_moved as u8,
+                        r.port_len,
+                        if r.exact { "-".to_string() } else { r.c_len.to_string() }
+                    );
+                }
+            }
+        }
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../benchmarks/config_perm_content_axis_2026-07-30.tsv");
+    std::fs::write(&path, &tsv).expect("write content-axis evidence TSV");
+    println!("wrote {}", path.display());
+}

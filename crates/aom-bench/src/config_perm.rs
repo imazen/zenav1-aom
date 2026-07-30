@@ -968,6 +968,101 @@ pub fn collapse(array: &[Row], ctx: &CellCtx) -> Collapsed {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CONTENT axis — the classifier the content taxonomy is built on
+// ---------------------------------------------------------------------------
+
+/// libaom's own screen-content statistic for one luma plane, transcribed from
+/// `estimate_screen_content` (av1/encoder/encoder.c:2042-2100).
+///
+/// This is the ONE content property the speed-0 ALLINTRA encoder branches on
+/// that is computed from the source pixels rather than from the configuration,
+/// and it is a *hard threshold on a countable statistic*, not an adjective —
+/// which is why the content taxonomy in
+/// `docs/CONFIG_PERMUTATION_DESIGN_2026-07-30.md` is built on it:
+///
+/// ```text
+/// for each full 16x16 luma block:
+///     n_colors = |{ pix >> (bd - 8) }|          // av1_count_colors{,_highbd}
+///     if 1 < n_colors <= 4: ++counts_1          // kColorThresh = 4
+/// allow_screen_content_tools = counts_1 * 256 * 10 > width * height
+/// ```
+///
+/// (`av1_count_colors_highbd`, intra_mode_search.c:338-370, down-converts to
+/// the 8-bit domain before binning — "provides consistency of behavior for
+/// palette search between lbd and hbd encodes" — so the statistic is bit-depth
+/// independent by construction, and a bd10 vs bd8 pair of the SAME content
+/// classifies identically. That is the fact that makes this a CONTENT axis and
+/// not a format axis.)
+///
+/// What the flag then changes on this harness's envelope (palette and intrabc
+/// are both forced off by `c_encode_ctrls`, so those are NOT the mechanism):
+///
+/// * `get_tx_mask` (tx_search.c:1806-1808) resolves
+///   `--use-intra-default-tx-only=1` through
+///   `get_default_tx_type(PLANE_TYPE_Y, xd, tx_size, cpi->use_screen_content_tools)`,
+///   which returns `DCT_DCT` **when the flag is set** instead of the
+///   mode-derived tx type. So this axis's meaning literally depends on the
+///   content class.
+/// * `write_palette_mode_info` / `intra_mode_info_cost_y` gate the per-block
+///   palette flag on `av1_allow_palette(allow_screen_content_tools, bsize)`,
+///   so every intra block's coded symbols AND rate move.
+/// * `set_allintra_speed_features_framesize_independent`
+///   (speed_features.c:375-381) and the qp-dependent speed-0 arm (:2909) read
+///   it, though the fields they set are inter-only on this envelope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenStat {
+    /// Full 16x16 luma blocks examined (`r + 16 <= h`, `c + 16 <= w`).
+    pub blocks: usize,
+    /// Blocks with `1 < n_colors <= 4` (libaom's `counts_1`).
+    pub counts_1: usize,
+    /// `counts_1 * 256 * 10 > w * h` — libaom's verdict.
+    pub allow_screen_content_tools: bool,
+}
+
+/// Compute [`ScreenStat`] over a tightly-packed `w x h` luma plane.
+///
+/// `y` holds one sample per entry at every bit depth (the harness's
+/// `EncodeCell::y` layout); `bd` is 8, 10 or 12.
+pub fn screen_stat(y: &[u16], w: usize, h: usize, bd: u8) -> ScreenStat {
+    assert_eq!(y.len(), w * h, "screen_stat: plane is not w*h");
+    let shift = bd.saturating_sub(8) as u32;
+    let mut blocks = 0usize;
+    let mut counts_1 = 0usize;
+    let mut r = 0usize;
+    while r + 16 <= h {
+        let mut c = 0usize;
+        while c + 16 <= w {
+            let mut bins = [false; 256];
+            let mut n_colors = 0usize;
+            for br in 0..16 {
+                for bc in 0..16 {
+                    let v = (y[(r + br) * w + c + bc] >> shift) as usize;
+                    // `if (this_val >= max_bin_val) continue;` (the hbd arm).
+                    if v >= 256 {
+                        continue;
+                    }
+                    if !bins[v] {
+                        bins[v] = true;
+                        n_colors += 1;
+                    }
+                }
+            }
+            blocks += 1;
+            if n_colors > 1 && n_colors <= 4 {
+                counts_1 += 1;
+            }
+            c += 16;
+        }
+        r += 16;
+    }
+    ScreenStat {
+        blocks,
+        counts_1,
+        allow_screen_content_tools: counts_1 as u64 * 256 * 10 > (w as u64) * (h as u64),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
