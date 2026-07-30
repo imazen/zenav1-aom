@@ -629,8 +629,8 @@ port consumes it) · **PINNED** (the shim base config forces one constant; the p
 
 | ctrl | `aomcx.h` | pinned to | pin site |
 |---|---|---|---|
-| `AV1E_SET_TILE_COLUMNS` 33 | `:393` | log2 = 0 | `crates/aom-sys-ref/shim/dec_shim.c:393` (and the port asserts single-tile at `crates/aom-bench/src/lib.rs:1086`) |
-| `AV1E_SET_TILE_ROWS` 34 | `:411` | log2 = 0 | `dec_shim.c:394` |
+| `AV1E_SET_TILE_COLUMNS` 33 | `:393` | log2 = 0 **in the base shim** | `crates/aom-sys-ref/shim/dec_shim.c:393`; the aom-bench encode path asserts single-tile at `crates/aom-bench/src/lib.rs:1086`. **NOT globally pinned** — `ref_encode_av1_kf_tiles` (`crates/aom-sys-ref/src/lib.rs:9250`) drives it non-zero, used by `crates/aom-decode/tests/real_bitstream.rs:879-889, 951` and by the encoder gate `encoder_gate_multitile_e2e` (`crates/aom-encode/tests/encoder_gate_multitile.rs`) |
+| `AV1E_SET_TILE_ROWS` 34 | `:411` | log2 = 0 **in the base shim** | `dec_shim.c:394`; same non-pinned caveat |
 | `AV1E_SET_NUM_TG` 70 | `:803` | 1 (by construction) | `crates/aom-encode/src/obu_assemble.rs:2, 102, 107-115` |
 | `AV1E_SET_DELTAQ_MODE` 107 | `:1151` | 0 in the base set | `dec_shim.c:395` (overridden per-family elsewhere) |
 | `AV1E_SET_AQ_MODE` 40 | `:481` | 0 at every encode call site | `dec_shim.c:402`; see S4 |
