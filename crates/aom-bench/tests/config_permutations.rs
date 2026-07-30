@@ -2036,3 +2036,1017 @@ fn content_axis_evidence_sweep() {
     std::fs::write(&path, &tsv).expect("write content-axis evidence TSV");
     println!("wrote {}", path.display());
 }
+
+// ===========================================================================
+// 8. THE SIZE AXIS — frame geometry as a first-class context (2026-07-30)
+// ===========================================================================
+//
+// The eight contexts above are 64x64, 32x32 and 128x128, all SB64. That is
+// THREE points on a size axis with more structure than three points, and the
+// question this section answers with data is: how many distinct SIZE CLASSES
+// exist, which ones does the pre-existing array cover, and what does each
+// added cell buy?
+//
+// The model is `config_perm::size_derived` — the size analogue of `Effective`.
+// It resolves a `CellCtx` to the encoder state its GEOMETRY determines, so two
+// sizes with the same `SizeDerived` cannot behave differently *because of their
+// size* and replaying the array at both is redundant. `size_class_partition`
+// does the collapse; `size_class_inventory_is_pinned` pins the resulting table.
+//
+// HEADLINE RESULT (`size_axis_class_table`, printed by the test):
+//
+//   * At SPEED 0 — the speed the whole array runs at — EVERY framesize-
+//     dependent SPEED FEATURE below 2160p is either inert on the all-intra KEY
+//     path or gated on speed >= 1. The `prune_tx_type_using_stats` >= 480p
+//     threshold the port comments at `aom-encode/src/speed_features.rs:695`
+//     needs speed >= 2, so it is 0 in real aomenc too on every one of the 2,617
+//     cells: that particular hole is NOT a divergence risk at this speed. The
+//     size axis at speed 0 is a GEOMETRY axis, not a speed-feature axis.
+//   * The ONE exception is `use_square_partition_only_threshold`
+//     (speed_features.c:176/181; port `partition_pick.rs:2446`), which is
+//     BLOCK_64X64 sub-480p and BLOCK_128X128 at >= 480p. Its only intra
+//     consumer is the square-only rect-kill (`bsize > threshold`,
+//     partition_search.c:5700; port `partition_pick.rs:2593`), which needs a
+//     block STRICTLY LARGER than the threshold — impossible at SB64, where the
+//     largest block is BLOCK_64X64. So it is structurally dead on all eight
+//     pre-existing contexts and becomes live only under `--sb-size=128`.
+//   * `--sb-size=128` IS reachable and byte-exact (`sb128_e2e.rs`), so
+//     `cell_ctx`'s "SB64 only" comment was stale. At SB128 the >= 480p
+//     threshold flips a real search-space decision, and no gate covered it.
+//   * Frame-EDGE geometry (dimensions not a multiple of the superblock) is a
+//     distinct code path with four KB-6 roots in it, and NONE of the eight
+//     contexts has a partial superblock except 32x32, which is smaller than one
+//     SB and therefore never reaches the multi-SB edge interactions.
+//
+// Out of budget, recorded rather than faked: `default_min_partition_size =
+// BLOCK_8X8` at `is_4k_or_larger` (speed_features.c:187-189) is UNMODELLED by
+// the port (`config_perm::PORT_GAP_DEFAULT_MIN_PARTITION_SIZE`). A 480x480
+// speed-0 cell already costs ~2.9-12.6 s; 2160x2160 is ~20x that per cell. It
+// is a documented port gap with a citation, not a gated one.
+
+use aom_bench::config_perm::{size_class_partition, size_derived};
+
+/// A SIZE context: geometry is the variable, so the content generator and the
+/// superblock size are explicit rather than implied.
+struct SizeCtx {
+    tag: &'static str,
+    w: usize,
+    h: usize,
+    /// `--sb-size=128` (the port reads `use_128x128_superblock` back out of the
+    /// bootstrap seq header; `port_encode_full`, aom-bench/src/lib.rs:993).
+    sb128: bool,
+    cq: i32,
+    mono: bool,
+    /// Source: a crop of this conformance vector, or (when the frame is bigger
+    /// than every vector in the intra scope) a mirror-tiling of it.
+    vector: &'static str,
+    /// Crop window `(w, h, ox, oy)` into the vector; `None` = mirror-tile the
+    /// whole decoded frame up to `w x h`.
+    crop: Option<(usize, usize, usize, usize)>,
+    /// Measured cost of one cell (C encode + port encode) on the reference box,
+    /// used to justify the strength chosen for this context.
+    ms_per_cell: u32,
+}
+
+impl SizeCtx {
+    fn ctx(&self) -> CellCtx {
+        CellCtx {
+            w: self.w,
+            h: self.h,
+            mono: self.mono,
+            sb_px: if self.sb128 { 128 } else { 64 },
+        }
+    }
+
+    fn cell(&self) -> EncodeCell {
+        let base = EncodeCell::real_content(self.tag, self.vector, self.crop, self.cq, 0);
+        let mut c = if base.w == self.w && base.h == self.h {
+            base
+        } else {
+            mirror_tile(&base, self.tag, self.w, self.h, self.cq)
+        };
+        if self.mono {
+            c.mono = true;
+            c.u.clear();
+            c.v.clear();
+        }
+        c
+    }
+
+    /// Rows this context must NOT run, each with the reason.
+    ///
+    /// **`--max-partition-size=32` under `--sb-size=128`** (the only entry, and
+    /// the only skip in the whole matrix) is an OPEN PORT DEFECT this size axis
+    /// found, not a convenience exclusion: it is pinned, reproduced and
+    /// self-promoting in `size_axis_open_divergences_pinned`. Summary — C
+    /// restores the partition context CONDITIONALLY,
+    ///
+    /// > `if (bsize <= x->sb_enc.max_partition_size || bsize == cm->seq_params->sb_size)`
+    /// > `  av1_restore_context(...)` — partition_search.c:4646
+    ///
+    /// and the port restores UNCONDITIONALLY, asserting that condition instead
+    /// (`aom-encode/src/partition_pick.rs:3056`). The assertion is FALSE
+    /// whenever a block size sits strictly between the max-partition cap and
+    /// the superblock size — impossible at SB64 (where `bsize == sb_size` covers
+    /// the top and the cap covers the rest) and reachable at SB128 with a 32 px
+    /// cap, where `bsize == BLOCK_64X64` satisfies neither clause.
+    fn skip_reason(&self, row: &Row) -> Option<&'static str> {
+        let maxp = row[ALL_AXES.iter().position(|a| *a == Axis::MaxPart).unwrap()];
+        if self.sb128 && maxp == 2 {
+            return Some("sb128 x --max-partition-size=32: open port defect, \
+                         partition_pick.rs:3056 vs partition_search.c:4646");
+        }
+        None
+    }
+
+    /// Every C encode in this context carries the superblock-size control, so
+    /// the C reference and the port bootstrap agree on the SB geometry.
+    fn ctrls(&self, knobs: &ToggleKnobs) -> Vec<(i32, i32)> {
+        let mut v = knobs.c_ctrls();
+        if self.sb128 {
+            v.push((
+                c::cx_ctrl::AV1E_SET_SUPERBLOCK_SIZE,
+                c::cx_ctrl::AOM_SUPERBLOCK_SIZE_128X128,
+            ));
+        }
+        v
+    }
+}
+
+/// Mirror-tile a decoded cell up to `w x h`. Mirroring (rather than wrapping)
+/// keeps the seam continuous, so the enlarged frame stays photographic content
+/// with real local statistics instead of acquiring a synthetic edge grid every
+/// tile period — the size axis must not smuggle in a content change.
+fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32) -> EncodeCell {
+    let mir = |i: usize, n: usize| {
+        let m = i % (2 * n);
+        if m < n {
+            m
+        } else {
+            2 * n - 1 - m
+        }
+    };
+    let (bw, bh) = (base.w, base.h);
+    let mut y = vec![0u16; w * h];
+    for r in 0..h {
+        for col in 0..w {
+            y[r * w + col] = base.y[mir(r, bh) * bw + mir(col, bw)];
+        }
+    }
+    let (bcw, bch) = (
+        (bw + base.ss_x) >> base.ss_x,
+        (bh + base.ss_y) >> base.ss_y,
+    );
+    let (cw, ch) = ((w + base.ss_x) >> base.ss_x, (h + base.ss_y) >> base.ss_y);
+    let mut u = vec![0u16; cw * ch];
+    let mut v = vec![0u16; cw * ch];
+    for r in 0..ch {
+        for col in 0..cw {
+            u[r * cw + col] = base.u[mir(r, bch) * bcw + mir(col, bcw)];
+            v[r * cw + col] = base.v[mir(r, bch) * bcw + mir(col, bcw)];
+        }
+    }
+    EncodeCell {
+        label: label.to_string(),
+        w,
+        h,
+        mono: false,
+        ss_x: base.ss_x,
+        ss_y: base.ss_y,
+        usage: 2,
+        cq_level: cq,
+        speed: 0,
+        bd: base.bd,
+        y,
+        u,
+        v,
+    }
+}
+
+// --- the size contexts -----------------------------------------------------
+// `av1-1-b8-00-quantizer-00` is 352x288 photographic bd8 4:2:0 — the same
+// source the KB-6 real-image gate and the SB128 gate ride, so any divergence
+// found here is attributable to GEOMETRY and not to unproven content.
+
+/// CLASS 4 — multi-SB with a partial superblock in BOTH dimensions, 4 px of
+/// overhang (68 = 64 + 4). The cheapest representative of the KB-6 frame-edge
+/// class: `set_partition_cost_for_edge_blk`'s frame-init cdf gather
+/// (partition_search.c:3415), `av1_set_entropy_contexts`' beyond-visible
+/// tail-zero (blockd.c:29), the visible-distortion clips, and the forced
+/// partitions from `av1_blk_has_rows_and_cols` (:3389) are ALL live, and all
+/// four interact with essentially every knob (which blocks land on the edge is
+/// a function of the partition and transform knobs). Full t=4 strength.
+const S_PART68: SizeCtx = SizeCtx {
+    tag: "part68",
+    w: 68,
+    h: 68,
+    sb128: false,
+    cq: 32,
+    mono: false,
+    vector: "av1-1-b8-00-quantizer-00",
+    crop: Some((68, 68, 0, 0)),
+    ms_per_cell: 199,
+};
+
+/// CLASS 4, second overhang magnitude — 32 px instead of 4 px. Overhang size is
+/// a CONTINUOUS sub-axis inside the class (it selects which transform-block
+/// footprints the tail-zero clips), not a class of its own, so it is sampled at
+/// a second point with a t=2 array rather than replayed at full strength.
+const S_PART96: SizeCtx = SizeCtx {
+    tag: "part96",
+    w: 96,
+    h: 96,
+    sb128: false,
+    cq: 32,
+    mono: false,
+    vector: "av1-1-b8-00-quantizer-00",
+    crop: Some((96, 96, 0, 0)),
+    ms_per_cell: 439,
+};
+
+/// CLASS 5 — partial in ONE dimension only (128 is SB-aligned, 96 is not). The
+/// above-context and left-context clipping are separate code paths, so
+/// "partial in x" and "partial in y" are not the same state as "partial in
+/// both"; this context is the asymmetric witness.
+const S_PART128X96: SizeCtx = SizeCtx {
+    tag: "part128x96",
+    w: 128,
+    h: 96,
+    sb128: false,
+    cq: 32,
+    mono: false,
+    vector: "av1-1-b8-00-quantizer-00",
+    crop: Some((128, 96, 0, 0)),
+    ms_per_cell: 500,
+};
+
+/// CLASS 9 — SB128 with a frame SMALLER than one superblock, so the 128 root is
+/// force-split and no 128-sized block exists (`av1_blk_has_rows_and_cols`).
+/// The SB128 analogue of the 32x32 context.
+const S_SB128_64: SizeCtx = SizeCtx {
+    tag: "sb128_64",
+    w: 64,
+    h: 64,
+    sb128: true,
+    cq: 32,
+    mono: false,
+    vector: "av1-1-b8-01-size-64x64",
+    crop: None,
+    ms_per_cell: 170,
+};
+
+/// CLASS 6 — SB128, one full 128 superblock, sub-480p. This is where
+/// `use_square_partition_only_threshold` first becomes REACHABLE: BLOCK_128X128
+/// > BLOCK_64X64, so the rect-kill fires and HORZ/VERT are removed at the 128
+/// root for full superblocks. The pre-existing array never reaches it.
+const S_SB128_128: SizeCtx = SizeCtx {
+    tag: "sb128_128",
+    w: 128,
+    h: 128,
+    sb128: true,
+    cq: 32,
+    mono: false,
+    vector: "av1-1-b8-00-quantizer-00",
+    crop: Some((128, 128, 64, 64)),
+    ms_per_cell: 1028,
+};
+
+/// CLASS 7 — SB128 AND a partial superblock (192 = 128 + 64): the composition
+/// of classes 4 and 6, where the edge paths and the rect-kill are live at once.
+const S_SB128_192: SizeCtx = SizeCtx {
+    tag: "sb128_192",
+    w: 192,
+    h: 192,
+    sb128: true,
+    cq: 32,
+    mono: false,
+    vector: "av1-1-b8-00-quantizer-00",
+    crop: Some((192, 192, 0, 0)),
+    ms_per_cell: 1987,
+};
+
+/// CLASS 8 — the >= 480p class: `min(w,h) >= 480` raises
+/// `use_square_partition_only_threshold` to BLOCK_128X128, so the rect-kill
+/// STOPS firing and HORZ/VERT return at the 128 root. This is THE
+/// framesize-dependent speed feature that is live at speed 0, and the only one
+/// below 2160p — and it is what `size_axis_teeth_are_real` perturbs.
+///
+/// Content/geometry/quality are chosen by measurement, not taste
+/// (`benchmarks/config_perm_size_axis_2026-07-30.tsv`):
+///
+/// * cq63, because the 128-level partitions this context exists to exercise are
+///   only chosen there — at cq40..55 real aomenc splits every 128 root and
+///   `--max-partition-size=64` produces the IDENTICAL stream, i.e. the context
+///   would be vacuous;
+/// * monochrome, because the 4:2:0 cq63 cell carries a divergence that
+///   reproduces identically at SB64 and is therefore not size-attributable
+///   (`size_axis_open_divergences_pinned`);
+/// * 576 rather than 480 or 512, because those two carry per-cell RD near-ties
+///   (`size_axis_open_divergences_pinned` finding B) that class-mates at 576
+///   and 640 do NOT reproduce — so they are content/near-tie divergences, not
+///   properties of the size class, and gating on them would mis-attribute a
+///   near-tie to the geometry.
+const S_SB128_576: SizeCtx = SizeCtx {
+    tag: "sb128_576m",
+    w: 576,
+    h: 576,
+    sb128: true,
+    cq: 63,
+    mono: true,
+    vector: "av1-1-b8-00-quantizer-00",
+    crop: None,
+    ms_per_cell: 4000,
+};
+
+/// >= 480p SB128, ALIGNED — NOT gated: `--enable-ab-partitions=0` carries the
+/// open near-tie pinned by `size_axis_open_divergences_pinned` finding B.
+const S_SB128_512_OPEN: SizeCtx = SizeCtx {
+    tag: "sb128_512m_open",
+    w: 512,
+    h: 512,
+    sb128: true,
+    cq: 63,
+    mono: true,
+    vector: "av1-1-b8-00-quantizer-00",
+    crop: None,
+    ms_per_cell: 3200,
+};
+
+/// >= 480p SB128, frame-edge PARTIAL — NOT gated: `--enable-1to4-partitions=0`
+/// carries the open near-tie pinned by `size_axis_open_divergences_pinned`.
+const S_SB128_480_OPEN: SizeCtx = SizeCtx {
+    tag: "sb128_480m_open",
+    w: 480,
+    h: 480,
+    sb128: true,
+    cq: 63,
+    mono: true,
+    vector: "av1-1-b8-00-quantizer-00",
+    crop: None,
+    ms_per_cell: 2850,
+};
+
+/// Every size context, cheapest first.
+const ALL_SIZE_CONTEXTS: &[&SizeCtx] = &[
+    &S_SB128_64,
+    &S_PART68,
+    &S_PART96,
+    &S_PART128X96,
+    &S_SB128_128,
+    &S_SB128_192,
+    &S_SB128_576,
+];
+
+/// One size cell: byte-identity against real aomenc, with the SB-size control
+/// on both sides.
+fn run_size_cell(sc: &SizeCtx, cell: &EncodeCell, label: &str, knobs: &ToggleKnobs, stock: &[u8]) -> Cell {
+    let c_tu = cell.c_encode_ctrls(&sc.ctrls(knobs));
+    assert!(!c_tu.is_empty(), "{label}: C encode failed");
+    let c_payload = EncodeCell::frame_obu_payload(&c_tu);
+    let port = cell.port_encode_with(&c_tu, knobs);
+    let exact = port == c_payload;
+    if !exact {
+        let tu = aom_bench::rd_close::splice_frame_obu(&c_tu, &port);
+        let dec = aom_bench::rd_close::port_decode_tu(label, &tu);
+        assert_eq!(
+            (dec.width, dec.height, dec.monochrome),
+            (cell.w, cell.h, cell.mono),
+            "{label}: port stream decodes to the wrong geometry"
+        );
+    }
+    Cell {
+        label: label.to_string(),
+        exact,
+        c_moved: c_payload != c_stock_slice(stock, &c_payload),
+        port_len: port.len(),
+        c_len: c_payload.len(),
+    }
+}
+
+/// `c_moved` helper kept explicit so the comparison reads the same way as
+/// `run_cell`'s.
+fn c_stock_slice<'a>(stock: &'a [u8], _payload: &[u8]) -> &'a [u8] {
+    stock
+}
+
+/// Replay a covering array of strength `t` at one size context.
+fn run_size_array(sc: &SizeCtx, t: usize, shard: usize, n_shards: usize, min_moved_pct: f64) {
+    c::ref_init();
+    let cell = sc.cell();
+    let cctx = sc.ctx();
+    let stock = EncodeCell::frame_obu_payload(&cell.c_encode_ctrls(&sc.ctrls(&ToggleKnobs::default())));
+    let stock_eff = Effective::resolve(&DEFAULT_ROW, &cctx);
+
+    let array = cp::covering_array(t);
+    let collapsed = cp::collapse(&array, &cctx);
+    let rows: Vec<Row> = collapsed
+        .representatives
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(i, _)| i % n_shards == shard)
+        .map(|(_, r)| r)
+        .collect();
+    assert!(!rows.is_empty(), "{}: shard {shard}/{n_shards} is empty", sc.tag);
+
+    let mut cells = Vec::new();
+    let mut skipped = 0usize;
+    for row in &rows {
+        if sc.skip_reason(row).is_some() {
+            skipped += 1;
+            continue;
+        }
+        let label = format!("{}_{}", sc.tag, cp::row_label(row));
+        let r = run_size_cell(sc, &cell, &label, &cp::knobs_of(row), &stock);
+        if Effective::resolve(row, &cctx) == stock_eff {
+            assert!(
+                !r.c_moved,
+                "{label}: the collapse engine resolves this row to the STOCK \
+                 effective config, but the C encoder produced different bytes \
+                 — the Effective signature is under-refined at this geometry"
+            );
+        }
+        cells.push(r);
+    }
+
+    let non_stock: Vec<&Cell> = cells.iter().filter(|c| !c.label.ends_with("_stock")).collect();
+    let moved = non_stock.iter().filter(|c| c.c_moved).count();
+    let moved_pct = if non_stock.is_empty() {
+        100.0
+    } else {
+        100.0 * moved as f64 / non_stock.len() as f64
+    };
+    println!("{}", render(&cells, sc.tag, t, shard, n_shards, moved_pct));
+    if skipped > 0 {
+        println!(
+            "  {}: {skipped} row(s) skipped — {}",
+            sc.tag,
+            sc.skip_reason(&rows.iter().copied().find(|r| sc.skip_reason(r).is_some()).unwrap())
+                .unwrap()
+        );
+    }
+
+    let open: Vec<&Cell> = cells.iter().filter(|c| !c.exact).collect();
+    assert!(
+        open.is_empty(),
+        "{}: {} of {} SIZE-context cells are NOT byte-identical to real aomenc \
+         — a knob combination diverges at this GEOMETRY where it is exact on \
+         the 64/32/128-square SB64 grid. Offenders: {}",
+        sc.tag,
+        open.len(),
+        cells.len(),
+        open.iter()
+            .map(|c| format!("{} (port {}B vs C {}B)", c.label, c.port_len, c.c_len))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    assert!(
+        moved_pct >= min_moved_pct,
+        "{}: only {moved_pct:.1}% of the {} non-stock rows changed the C \
+         encoder's output (floor {min_moved_pct}%)",
+        sc.tag,
+        non_stock.len()
+    );
+}
+
+/// The rows an expensive size context is reduced to: the FULL cross of the
+/// axes in `config_perm::RECT_KILL_INTERACTION_SET` (2 x 3 x 2 x 2 = 24 legal
+/// rows), every other axis at its default.
+///
+/// The reduction is argued, not assumed. The only size-derived state that is
+/// live at speed 0 below 2160p is `use_square_partition_only_threshold`, whose
+/// sole intra consumer is the rect-kill on `partition_rect_allowed`. An axis can
+/// interact with that only by changing whether rectangular partitions exist
+/// (`Rect`), whether the over-threshold block is reached at all (`MaxPart`
+/// force-splits the root below the SB size), or which rect-derived types are
+/// offered (`Ab`, `P1to4`, both gated on `partition_rect_allowed` at
+/// partition_search.c:5166/5172/5181/5187). Every other axis composes with the
+/// kill only THROUGH those four, and its composition with them is already
+/// covered at full t=4 strength on the cheap contexts.
+fn interaction_rows(full_maxpart: bool) -> Vec<Row> {
+    let idx = |a: Axis| ALL_AXES.iter().position(|x| *x == a).unwrap();
+    let mut out = Vec::new();
+    let maxp_levels: &[u8] = if full_maxpart { &[0, 1, 2] } else { &[0, 1] };
+    for rect in 0..2u8 {
+        for &maxp in maxp_levels {
+            for ab in 0..2u8 {
+                for p14 in 0..2u8 {
+                    let mut row = DEFAULT_ROW;
+                    row[idx(Axis::Rect)] = rect;
+                    row[idx(Axis::MaxPart)] = maxp;
+                    row[idx(Axis::Ab)] = ab;
+                    row[idx(Axis::P1to4)] = p14;
+                    if cp::illegal_reason(&row).is_none() {
+                        out.push(row);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Replay only the rect-kill interaction set at one size context.
+fn run_interaction_set(sc: &SizeCtx, full_maxpart: bool, shard: usize, n_shards: usize) {
+    c::ref_init();
+    let cell = sc.cell();
+    let stock = EncodeCell::frame_obu_payload(&cell.c_encode_ctrls(&sc.ctrls(&ToggleKnobs::default())));
+    let rows: Vec<Row> = interaction_rows(full_maxpart)
+        .into_iter()
+        .filter(|r| sc.skip_reason(r).is_none())
+        .enumerate()
+        .filter(|(i, _)| i % n_shards == shard)
+        .map(|(_, r)| r)
+        .collect();
+    assert!(!rows.is_empty(), "{}: empty interaction shard", sc.tag);
+    let mut cells = Vec::new();
+    for row in &rows {
+        let label = format!("{}_ix_{}", sc.tag, cp::row_label(row));
+        cells.push(run_size_cell(sc, &cell, &label, &cp::knobs_of(row), &stock));
+    }
+    let moved = cells.iter().filter(|c| c.c_moved).count();
+    println!(
+        "  {} rect-kill interaction set: {} rows, {} moved C's output, shard {shard}/{n_shards}",
+        sc.tag,
+        cells.len(),
+        moved
+    );
+    let open: Vec<&Cell> = cells.iter().filter(|c| !c.exact).collect();
+    assert!(
+        open.is_empty(),
+        "{}: {} of {} rect-kill interaction cells are NOT byte-identical to \
+         real aomenc: {}",
+        sc.tag,
+        open.len(),
+        cells.len(),
+        open.iter()
+            .map(|c| format!("{} (port {}B vs C {}B)", c.label, c.port_len, c.c_len))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    // Anti-vacuity: at least one row must move the C encoder, else the whole
+    // interaction set is measuring nothing at this geometry.
+    assert!(
+        moved > 0,
+        "{}: NO row of the rect-kill interaction set changed real aomenc's \
+         output — the reduced context is vacuous",
+        sc.tag
+    );
+}
+
+// --- the gates -------------------------------------------------------------
+
+// CLASS 4 at FULL t=4 strength — the frame-edge class has four KB-6 roots in it
+// and interacts with every knob, so it earns the same strength as the aligned
+// contexts. 187 rows x 199 ms = 37 s CPU, sharded 3 ways.
+#[test]
+fn size_t4_part68_s0() { run_size_array(&S_PART68, 4, 0, 3, 85.0) }
+#[test]
+fn size_t4_part68_s1() { run_size_array(&S_PART68, 4, 1, 3, 85.0) }
+#[test]
+fn size_t4_part68_s2() { run_size_array(&S_PART68, 4, 2, 3, 85.0) }
+
+// CLASS 4 second overhang magnitude + CLASS 5 (one-dimension partial) + CLASS 9
+// (frame smaller than an SB128 superblock) at t=2. Pairwise is the defensible
+// floor for a context whose purpose is to re-witness a class already covered at
+// t=4 under a different geometry parameter.
+#[test]
+fn size_t2_part96() { run_size_array(&S_PART96, 2, 0, 1, 85.0) }
+#[test]
+fn size_t2_part128x96() { run_size_array(&S_PART128X96, 2, 0, 1, 85.0) }
+#[test]
+fn size_t2_sb128_64() { run_size_array(&S_SB128_64, 2, 0, 1, 80.0) }
+
+// CLASS 6 — the cheap SB128 class where the rect-kill is live. t=2 for breadth
+// PLUS the full 24-row rect-kill interaction cross, so the reduction applied to
+// the expensive >= 480p context is demonstrated to be sufficient at the same
+// mechanism where a full cross is affordable.
+#[test]
+fn size_t2_sb128_128_s0() { run_size_array(&S_SB128_128, 2, 0, 2, 85.0) }
+#[test]
+fn size_t2_sb128_128_s1() { run_size_array(&S_SB128_128, 2, 1, 2, 85.0) }
+#[test]
+fn size_ix_sb128_128_s0() { run_interaction_set(&S_SB128_128, true, 0, 2) }
+#[test]
+fn size_ix_sb128_128_s1() { run_interaction_set(&S_SB128_128, true, 1, 2) }
+
+// CLASS 7 — SB128 + partial SB, interaction set only (1.99 s/cell).
+#[test]
+fn size_ix_sb128_192_s0() { run_interaction_set(&S_SB128_192, false, 0, 2) }
+#[test]
+fn size_ix_sb128_192_s1() { run_interaction_set(&S_SB128_192, false, 1, 2) }
+
+// CLASS 8 — the >= 480p class. 2.85 s/cell, so the interaction set runs with
+// MaxPart reduced to {128, 64}: level 2 (32 px) force-splits the 128 root
+// strictly harder than level 1 (64 px) already does, so it cannot expose a
+// rect-kill behaviour level 1 does not.
+#[test]
+fn size_ix_sb128_576_s0() { run_interaction_set(&S_SB128_576, false, 0, 2) }
+#[test]
+fn size_ix_sb128_576_s1() { run_interaction_set(&S_SB128_576, false, 1, 2) }
+
+/// THE VALIDITY ANSWER, computed rather than asserted: collapse a candidate
+/// size list into its distinct size classes and report which are covered by the
+/// pre-existing eight contexts, which are covered by the size contexts added
+/// here, and which remain out of budget.
+///
+/// This test does NO encoding — it is the arithmetic that justifies the cell
+/// count, and it fails if a class silently loses its representative.
+#[test]
+fn size_class_inventory_is_pinned() {
+    // The pre-existing contexts (all SB64), plus every size context added here,
+    // plus probe geometries that are expected to COLLAPSE into an existing
+    // class (so the collapse is exercised, not merely claimed).
+    let candidates: Vec<(&str, CellCtx)> = vec![
+        ("32x32 sb64 (existing)", CellCtx { w: 32, h: 32, mono: false, sb_px: 64 }),
+        ("64x64 sb64 (existing)", CellCtx { w: 64, h: 64, mono: false, sb_px: 64 }),
+        ("128x128 sb64 (existing)", CellCtx { w: 128, h: 128, mono: false, sb_px: 64 }),
+        ("512x512 sb64 (probe)", CellCtx { w: 512, h: 512, mono: false, sb_px: 64 }),
+        ("68x68 sb64 (added)", CellCtx { w: 68, h: 68, mono: false, sb_px: 64 }),
+        ("96x96 sb64 (added)", CellCtx { w: 96, h: 96, mono: false, sb_px: 64 }),
+        ("196x196 sb64 (probe)", CellCtx { w: 196, h: 196, mono: false, sb_px: 64 }),
+        ("128x96 sb64 (added)", CellCtx { w: 128, h: 96, mono: false, sb_px: 64 }),
+        ("64x64 sb128 (added)", CellCtx { w: 64, h: 64, mono: false, sb_px: 128 }),
+        ("128x128 sb128 (added)", CellCtx { w: 128, h: 128, mono: false, sb_px: 128 }),
+        ("192x192 sb128 (added)", CellCtx { w: 192, h: 192, mono: false, sb_px: 128 }),
+        ("512x512 sb128 (PINNED OPEN)", CellCtx { w: 512, h: 512, mono: true, sb_px: 128 }),
+        ("576x576 sb128 (added)", CellCtx { w: 576, h: 576, mono: true, sb_px: 128 }),
+        ("480x480 sb128 (PINNED OPEN)", CellCtx { w: 480, h: 480, mono: true, sb_px: 128 }),
+        ("2160x2160 sb64 (OUT OF BUDGET)", CellCtx { w: 2160, h: 2160, mono: false, sb_px: 64 }),
+    ];
+    let ctxs: Vec<CellCtx> = candidates.iter().map(|(_, c)| *c).collect();
+    let classes = size_class_partition(&ctxs, 0);
+
+    let mut report = String::from(
+        "\n=== SIZE CLASSES at speed 0 (config_perm::size_derived) ===\n\
+         (a class = one distinct size-derived encoder state; sizes inside a \
+         class are redundant with each other)\n",
+    );
+    for (i, (sd, members)) in classes.iter().enumerate() {
+        let names: Vec<&str> = candidates
+            .iter()
+            .filter(|(_, c)| members.contains(c))
+            .map(|(n, _)| *n)
+            .collect();
+        let _ = writeln!(
+            report,
+            "  class {:>2}: sb{:<3} full_sb={} multi=({},{}) partial=({},{}) \
+             rect_kill={} dmin_part={} tx_stats={}  <- {}",
+            i + 1,
+            sd.sb_px,
+            sd.full_sb_block as u8,
+            sd.multi_sb_cols as u8,
+            sd.multi_sb_rows as u8,
+            sd.partial_sb_x as u8,
+            sd.partial_sb_y as u8,
+            sd.rect_kill_reachable as u8,
+            sd.default_min_partition_size,
+            sd.prune_tx_type_using_stats,
+            names.join(" | ")
+        );
+    }
+    println!("{report}");
+
+    // 1. The collapse is real, not decorative: 480x480 SB64 must land in the
+    //    SAME class as 128x128 SB64. At speed 0 the only thing >= 480p changes
+    //    is `use_square_partition_only_threshold`, and at SB64 that threshold
+    //    has no block large enough to act on — so a 12.6 s/cell 480p SB64
+    //    context would buy exactly nothing over the 1.0 s/cell 128x128 one.
+    // (512 and 256 are both SB-aligned multi-SB frames, so >= 480p is the ONLY
+    // property that differs between them — the clean discriminator.)
+    let big64 = CellCtx { w: 512, h: 512, mono: false, sb_px: 64 };
+    let mid64 = CellCtx { w: 256, h: 256, mono: false, sb_px: 64 };
+    assert_eq!(
+        size_derived(&big64, 0),
+        size_derived(&mid64, 0),
+        ">= 480p must collapse into the multi-SB class at SB64 and speed 0 \
+         (the >= 480p threshold has no reachable consumer there)"
+    );
+    assert_ne!(
+        cp::sq_only_threshold_allintra(&big64, 0),
+        cp::sq_only_threshold_allintra(&mid64, 0),
+        "the collapse above must be a claim about REACHABILITY, not about the \
+         threshold being equal — the raw sf value does differ"
+    );
+
+    // 2. ... and it is NOT vacuous: the same size pair SPLITS at SB128, which
+    //    is exactly the gap `size_ix_sb128_480_*` closes.
+    let big128 = CellCtx { w: 512, h: 512, mono: false, sb_px: 128 };
+    let mid128 = CellCtx { w: 256, h: 256, mono: false, sb_px: 128 };
+    assert_ne!(
+        size_derived(&big128, 0),
+        size_derived(&mid128, 0),
+        ">= 480p must SPLIT from sub-480p at SB128 — the rect-kill is \
+         reachable there and the threshold decides whether it fires"
+    );
+    assert!(size_derived(&mid128, 0).rect_kill_reachable);
+    assert!(!size_derived(&big128, 0).rect_kill_reachable);
+
+    // 3. Every class in the candidate list has a representative that is either
+    //    an existing context, an added context, or explicitly out of budget.
+    for (sd, members) in &classes {
+        let names: Vec<&str> = candidates
+            .iter()
+            .filter(|(_, c)| members.contains(c))
+            .map(|(n, _)| *n)
+            .collect();
+        assert!(
+            names.iter().any(|n| {
+                n.contains("existing")
+                    || n.contains("added")
+                    || n.contains("OUT OF BUDGET")
+                    || n.contains("PINNED OPEN")
+            }),
+            "size class {sd:?} has no gated representative — it is covered by \
+             nothing: {names:?}"
+        );
+    }
+
+    // 4. The count is pinned, so adding a size-dependent derivation to
+    //    `size_derived` (or losing one) fails here instead of silently changing
+    //    what "the array is size-valid" means.
+    assert_eq!(
+        classes.len(),
+        11,
+        "the size-class count moved; re-derive the coverage argument in \
+         docs/CONFIG_PERMUTATION_DESIGN_2026-07-30.md before repinning"
+    );
+
+    // 5. Speed is the axis that turns the >= 480p threshold from a partition
+    //    knob into a TRANSFORM knob. Pinned so that raising the array's speed
+    //    (currently 0 everywhere) cannot silently leave `prune_tx_type_using_
+    //    stats` unexercised.
+    let s0 = size_derived(&big64, 0);
+    let s2 = size_derived(&big64, 2);
+    let s4 = size_derived(&big64, 4);
+    assert_eq!(s0.prune_tx_type_using_stats, 0);
+    assert_eq!(s2.prune_tx_type_using_stats, 1);
+    assert_eq!(s4.prune_tx_type_using_stats, 2);
+    assert_eq!(
+        size_derived(&mid64, 4).prune_tx_type_using_stats,
+        0,
+        "sub-480p keeps the stats prune off at every speed"
+    );
+}
+
+/// FINDINGS, pinned open — BOTH found by the size axis, both size-attributed,
+/// neither swept into a gate. The test is self-promoting: when the port stops
+/// diverging (or stops asserting), it FAILS and must be promoted.
+///
+/// ### Finding A — `--sb-size=128` x `--max-partition-size=32` trips a port
+/// assertion that C's own code contradicts
+///
+/// C restores the partition context CONDITIONALLY at the end of the SPLIT stage
+/// (partition_search.c:4643-4647):
+///
+/// > `// Restore the context for the following cases:`
+/// > `// 1) Current block size not more than maximum partition size ...`
+/// > `// 2) Current block size same as superblock size ...`
+/// > `if (bsize <= x->sb_enc.max_partition_size || bsize == cm->seq_params->sb_size)`
+/// > `  av1_restore_context(x, x_ctx, mi_row, mi_col, bsize, av1_num_planes(cm));`
+///
+/// The port restores UNCONDITIONALLY and encodes C's condition as a
+/// `debug_assert!` instead (`aom-encode/src/partition_pick.rs:3055-3057`,
+/// commented "always true here"). It is NOT always true: it fails exactly when a
+/// block size sits strictly between the max-partition cap and the superblock
+/// size. At SB64 that window is empty — the top block is `bsize == sb_size` and
+/// everything below is `<= cap` for every legal cap — which is why the eight
+/// pre-existing contexts never saw it. At SB128 with a 32 px cap,
+/// `bsize == BLOCK_64X64` satisfies neither clause. In a debug-assertions build
+/// the port panics; without them it performs a restore C SKIPS, which is a
+/// silent state divergence.
+///
+/// ### Finding B — three open near-ties on >= 480p SB128 monochrome cq63,
+/// SIZE-SURFACED but NOT size-class-attributed
+///
+/// Mirror-tiled `av1-1-b8-00-quantizer-00`, monochrome, cq63, speed-0
+/// `--sb-size=128`. The middle column is the size class
+/// (`config_perm::size_derived`), and it is what makes the attribution honest:
+///
+/// | frame | class | knob row | verdict |
+/// |---|---|---|---|
+/// | 480x480 | >= 480p, partial | `--enable-1to4-partitions=0` | **DIVERGE** port 849 B vs C 834 B |
+/// | 480x480 | >= 480p, partial | `--enable-ab-partitions=0 --enable-1to4-partitions=0` | **DIVERGE** port 846 B vs C 829 B |
+/// | 480x480 | >= 480p, partial | stock | exact |
+/// | **576x576** | **>= 480p, partial (SAME CLASS)** | both of the above, and stock | **exact** |
+/// | 512x512 | >= 480p, aligned | `--enable-ab-partitions=0` | **DIVERGE** port 929 B vs C 936 B |
+/// | **640x640** | **>= 480p, aligned (SAME CLASS)** | `--enable-ab-partitions=0` | **exact** |
+/// | 448x448 | sub-480p, partial | both p14 rows, and stock | exact |
+/// | 256x256 / 384x384 | sub-480p, aligned | `ab0`, `p140`, stock | exact |
+///
+/// **The first attribution attempted here was WRONG and the class-mates
+/// refuted it.** "480x480 diverges and 448/512 do not" reads like "the
+/// intersection of `>= 480p` and a partial superblock is broken" — until
+/// 576x576, which is in the SAME size class as 480x480, comes out exact on the
+/// identical knob rows; and 640x640, the class-mate of 512x512, likewise. A
+/// property that holds for one member of an equivalence class and fails for
+/// another is not a property of the class. These are per-cell RD near-ties (the
+/// KB-10/KB-12 "cheaper RD decision" signature: same order of magnitude, a
+/// handful of bytes either way, appearing and disappearing with content
+/// statistics), surfaced because the size axis encoded this content at sizes
+/// the harness had never reached — the same shape as the pre-existing
+/// `mono_vector_open_divergences_pinned` finding, which is a CONTENT finding.
+///
+/// They are therefore pinned, not gated, and the gated `>= 480p` contexts use
+/// the clean class-mates (576x576) so that a size gate never rests on a
+/// near-tie.
+#[test]
+fn size_axis_open_divergences_pinned() {
+    c::ref_init();
+
+    // --- Finding A ---------------------------------------------------------
+    let a_cell = S_SB128_128.cell();
+    let a_knobs = ToggleKnobs {
+        max_partition_size_px: 32,
+        ..Default::default()
+    };
+    let a_ctrls = S_SB128_128.ctrls(&a_knobs);
+    let c_tu = a_cell.c_encode_ctrls(&a_ctrls);
+    assert!(!c_tu.is_empty(), "C must accept --sb-size=128 --max-partition-size=32");
+    let a_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a_cell.port_encode_with(&c_tu, &a_knobs)
+    }));
+    if cfg!(debug_assertions) {
+        assert!(
+            a_result.is_err(),
+            "FINDING A HAS CLOSED: the port no longer asserts on \
+             --sb-size=128 x --max-partition-size=32. Remove \
+             SizeCtx::skip_reason's entry, drop this arm, and let the SB128 \
+             contexts run MaxPart level 2 at full strength."
+        );
+    } else {
+        // Without debug assertions the port takes the restore C skips. Whether
+        // that changes the bytes is unknown until the gate can run the row, so
+        // only the assertion behaviour is pinned here.
+        let _ = a_result;
+    }
+
+    // --- Finding B ---------------------------------------------------------
+    let mut open = Vec::new();
+    let p14 = ToggleKnobs { enable_1to4_partitions: false, ..Default::default() };
+    let ab0 = ToggleKnobs { enable_ab_partitions: false, ..Default::default() };
+    let ab0p14 = ToggleKnobs {
+        enable_ab_partitions: false,
+        enable_1to4_partitions: false,
+        ..Default::default()
+    };
+    let cells = [
+        (&S_SB128_480_OPEN, "480m_p140", &p14),
+        (&S_SB128_480_OPEN, "480m_ab0-p140", &ab0p14),
+        (&S_SB128_512_OPEN, "512m_ab0", &ab0),
+    ];
+    for (sc, tag, knobs) in cells {
+        let cell = sc.cell();
+        let tu = cell.c_encode_ctrls(&sc.ctrls(knobs));
+        let real = EncodeCell::frame_obu_payload(&tu);
+        let port = cell.port_encode_with(&tu, knobs);
+        println!(
+            "  finding B {tag}: port {} B vs C {} B ({})",
+            port.len(),
+            real.len(),
+            if port == real { "MATCH" } else { "DIVERGE" }
+        );
+        if port == real {
+            open.push(tag);
+        }
+    }
+    assert!(
+        open.is_empty(),
+        "FINDING B HAS CLOSED for {open:?}. These are pinned as OPEN near-ties; \
+         if they now match, re-measure the whole table (including the 576/640 \
+         class-mate controls) and either promote the cell into a gated size \
+         context or delete its row here."
+    );
+}
+
+/// TEETH — the proof that the size gap this section closes was REAL, in the
+/// asymmetric form the decoder track's `delta_lf` demonstration used.
+///
+/// The size-gated derivation under test is the ONLY framesize-dependent speed
+/// feature that is live at speed 0 below 2160p:
+///
+/// > `if (is_480p_or_larger) { sf->part_sf.use_square_partition_only_threshold = BLOCK_128X128; }`
+/// > `else                   { sf->part_sf.use_square_partition_only_threshold = BLOCK_64X64;   }`
+/// > — libaom `av1/encoder/speed_features.c:175-183`
+///
+/// ported at `aom-encode/src/partition_pick.rs:2450` and consumed by the
+/// square-only rect-kill (`partition_search.c:5700`, port
+/// `partition_pick.rs:2593`).
+///
+/// **Demonstrated 2026-07-30** by dropping the `>= 480p` arm — i.e. replacing
+/// `partition_pick.rs:2451` with `let mut t: usize = 12;` — and re-running:
+///
+/// * the added `>= 480p` SB128 cell FAILS
+///   > `TEETH 480m_cq63_sb128_stock  exact=false port 874B real 854B`
+/// * every control stays GREEN — sub-480p SB128, both SB64 sizes, and the two
+///   knob rows that make the kill moot:
+///   > `TEETH 480m_cq63_sb128_rect0 exact=true`, `480m_cq63_sb128_maxp64 exact=true`,
+///   > `128_cq32_sb128_stock exact=true`, `128_cq63_sb128_stock exact=true`,
+///   > `64_cq32_sb64_stock exact=true`, `128_cq32_sb64_stock exact=true`
+/// * and the whole pre-existing gate is untouched:
+///   > `test result: ok. 32 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 32.30s`
+///
+/// 2,617 cells that cannot see a broken `>= 480p` threshold, against one added
+/// cell that fails on it, is the asymmetry — the size gap was real.
+///
+/// What this test does at RUNTIME is the half that can run unperturbed: it
+/// asserts the rect-kill is REACHABLE in the gated SB128 contexts and DEAD in
+/// every pre-existing one, so a future refactor that quietly makes the added
+/// contexts SB64 (or drops the SB128 control) turns the teeth vacuous and fails
+/// here instead of passing silently.
+#[test]
+fn size_axis_teeth_are_real() {
+    for ctx in [
+        CellCtx { w: 64, h: 64, mono: false, sb_px: 64 },
+        CellCtx { w: 32, h: 32, mono: false, sb_px: 64 },
+        CellCtx { w: 128, h: 128, mono: false, sb_px: 64 },
+        CellCtx { w: 68, h: 68, mono: false, sb_px: 64 },
+    ] {
+        assert!(
+            !size_derived(&ctx, 0).rect_kill_reachable,
+            "{ctx:?}: the square-only rect-kill must be structurally dead at \
+             SB64 — if it is not, the pre-existing array's immunity to the \
+             >= 480p threshold (the teeth control) no longer holds"
+        );
+    }
+    let kill_on = S_SB128_128.ctx();
+    let kill_off = S_SB128_576.ctx();
+    assert!(
+        size_derived(&kill_on, 0).rect_kill_reachable,
+        "the sub-480p SB128 context must REACH the rect-kill"
+    );
+    assert!(
+        !size_derived(&kill_off, 0).rect_kill_reachable,
+        "the >= 480p SB128 context must NOT reach the rect-kill — that \
+         difference IS the derivation the teeth perturb"
+    );
+    assert_ne!(
+        cp::sq_only_threshold_allintra(&kill_on, 0),
+        cp::sq_only_threshold_allintra(&kill_off, 0),
+        "the two SB128 contexts must straddle the >= 480p threshold"
+    );
+    // And the contexts must actually be SB128 — an SB64 fallback would make
+    // both sides of the teeth vacuous.
+    assert!(S_SB128_128.sb128 && S_SB128_576.sb128 && S_SB128_192.sb128 && S_SB128_64.sb128);
+}
+
+/// BUDGET ACCOUNTING for the size axis — no encoding, just the arithmetic that
+/// justifies the strength chosen per context, pinned so that adding an
+/// expensive context (or raising a strength) fails here instead of quietly
+/// costing the suite a minute.
+///
+/// `ms_per_cell` is measured, not estimated
+/// (`benchmarks/config_perm_size_axis_2026-07-30.tsv`, `[cost]` section), on a
+/// 12-core M4 shared with two concurrent agents — so the figures are upper
+/// bounds and the CPU total below is conservative.
+#[test]
+fn size_axis_budget_is_accounted() {
+    // (context, strength "t" or 0 for interaction-set-only, rows actually run)
+    let plan: Vec<(&SizeCtx, &str, usize)> = vec![
+        (&S_PART68, "t=4", cp::covering_array(4).len()),
+        (&S_PART96, "t=2", cp::covering_array(2).len()),
+        (&S_PART128X96, "t=2", cp::covering_array(2).len()),
+        (&S_SB128_64, "t=2", cp::covering_array(2).len()),
+        (&S_SB128_128, "t=2 + full rect-kill cross", cp::covering_array(2).len() + 24),
+        (&S_SB128_192, "rect-kill cross", 16),
+        (&S_SB128_576, "rect-kill cross", 16),
+    ];
+    assert_eq!(
+        plan.len(),
+        ALL_SIZE_CONTEXTS.len(),
+        "every size context must appear in the budget plan"
+    );
+    let mut total_cells = 0usize;
+    let mut total_ms = 0u64;
+    let mut report = String::from("\n=== size-axis budget ===\n");
+    for (sc, strength, rows) in &plan {
+        assert!(
+            ALL_SIZE_CONTEXTS.iter().any(|c| c.tag == sc.tag),
+            "{} is budgeted but not in ALL_SIZE_CONTEXTS",
+            sc.tag
+        );
+        // SB128 contexts skip the --max-partition-size=32 rows (finding A), so
+        // the budget over-counts them rather than under-counting.
+        total_cells += rows;
+        total_ms += *rows as u64 * sc.ms_per_cell as u64;
+        let _ = writeln!(
+            report,
+            "  {:<12} {:>4}x{:<4} sb{:<3} {:<26} {:>4} rows x {:>5} ms",
+            sc.tag, sc.w, sc.h, if sc.sb128 { 128 } else { 64 }, strength, rows, sc.ms_per_cell
+        );
+    }
+    let _ = writeln!(
+        report,
+        "  TOTAL {total_cells} cells, {:.1} s CPU (upper bound; libtest spreads \
+         it across shards)",
+        total_ms as f64 / 1000.0
+    );
+    println!("{report}");
+    assert!(
+        total_ms <= 200_000,
+        "the size axis budget is {} s CPU — over the 200 s ceiling this section \
+         was designed to; drop a strength or a context rather than letting the \
+         suite drift",
+        total_ms / 1000
+    );
+}

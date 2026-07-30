@@ -635,3 +635,269 @@ After reverting: **44 passed, 0 failed, 2 ignored, 34.9 s.**
 3. **More screen content.** The corpus has exactly three screen-detected
    vectors and this section uses all three. A fourth class of screen content
    (synthetic text/UI) would have to be generated, not fetched.
+
+---
+
+# The SIZE axis (added 2026-07-30, same day)
+
+The section above replays the t=4 array at **three** frame geometries — 64x64,
+32x32, 128x128, all SB64 — and calls the result 2,617 cells. This section
+answers, with data rather than intuition, whether three is the right number.
+
+## Short answer
+
+**2,617 is valid on the framesize-SPEED-FEATURE axis and invalid on the frame
+GEOMETRY axis.** The two halves need separating, because the obvious reading of
+`crates/aom-encode/src/speed_features.rs:695` —
+
+> `prune_tx_type_using_stats = 2` (needs is_480p_or_larger — false on the
+> {64,128}^2 grid)
+
+— is that a speed feature is pinned to 0 in all 2,617 cells and could therefore
+be wrong without any cell noticing. That reading is **incorrect at this array's
+speed**: `prune_tx_type_using_stats` needs speed >= 2 (`speed_features.c:261`)
+or speed >= 4 (`:299`), and every cell in the matrix is **speed 0**
+(`Ctx::cell` -> `EncodeCell::real_content(.., 0)`). Real aomenc also computes 0
+there, so nothing is unexercised that a cell could witness. The same is true for
+every other framesize-dependent field: see the table below — each is either
+speed-gated above 0, or dead on an intra frame, with the citation.
+
+The **one** exception is `use_square_partition_only_threshold`, and the size
+axis turns out to be a *geometry* axis at speed 0, not a speed-feature axis:
+frame-edge partial superblocks and the superblock size itself are where the
+encoder's behaviour actually moves.
+
+## The size -> effective-config table
+
+Model: `config_perm::size_derived(ctx, speed) -> SizeDerived` — the size analogue
+of `Effective`. It resolves a `CellCtx` to the encoder state its geometry
+determines, so two sizes with equal `SizeDerived` cannot differ *because of
+size*. `config_perm::size_class_partition` collapses a candidate size list into
+classes; `size_class_inventory_is_pinned` pins the result.
+
+### Framesize-dependent derivations, both sides cited
+
+`set_allintra_speed_feature_framesize_dependent`, libaom
+`av1/encoder/speed_features.c:166-340`. LIVE = observable on the all-intra KEY
+path this harness encodes.
+
+| derivation | threshold | libaom | port | live at speed 0? |
+|---|---|---|---|---|
+| `use_square_partition_only_threshold` | `min(w,h) >= 480` -> BLOCK_128X128 else BLOCK_64X64 (and 720p tiers at speed>=1) | `speed_features.c:175-183`, `:211-217`, `:238-242`, `:315` | `aom-encode/src/partition_pick.rs:2446-2470`, applied `:2586-2594` | **YES — but only at SB128.** Its sole intra consumer is the rect-kill `if (bsize > threshold)` (`partition_search.c:5700`; port `partition_pick.rs:2593`), which needs a block strictly larger than the threshold. At SB64 the largest block IS BLOCK_64X64, so `bsize > BLOCK_64X64` is unsatisfiable and both sides of the 480p branch behave identically. (Its other reader, `partition_search.c:4265`, is inside a `!frame_is_intra_only` block.) |
+| `default_min_partition_size = BLOCK_8X8` | `min(w,h) >= 2160` | `speed_features.c:187-189` | **UNMODELLED** — `aom-encode/src/speed_features.rs:471` pins BLOCK_4X4 below speed 6 and `:891` sets BLOCK_8X8 unconditionally at speed>=6 | **YES, and it is a port gap.** Read by `set_max_min_partition_size` (`partition_strategy.h:225`) on every frame type. See "Out of budget" below. |
+| `prune_tx_type_using_stats` | `>= 480p` AND speed>=2 (=1) / speed>=4 (=2) | `speed_features.c:261`, `:299` | `aom-bench/src/lib.rs:1364` (the sf setter itself is framesize-blind by design) | **no** — speed-gated. Already gated at speed 2 by `tx_stats_prune_e2e.rs` on a 512x512 cell. |
+| `prune_tx_size_level` | `< 480p` AND `use_highbitdepth` | `speed_features.c:184`, `:263-265`, `:289` | not modelled | **no** — read only by `select_tx_block` (`tx_search.c:2631`), the INTER var-tx recursion under `av1_pick_recursive_tx_size_type_yrd`. |
+| `auto_max_partition_based_on_simple_motion` | 480p / 720p tiers | `speed_features.c:176-180`, `:305-309` | not modelled | **no** — `use_auto_max_partition` is `!frame_is_intra_only && ... && sb_size == BLOCK_128X128` (`partition_strategy.h:193`). |
+| `ml_partition_search_breakout_thresh[]` + `_model_index` | `< 720p` / `>= 720p` | `speed_features.c:192-201`, `:219-236` | not modelled | **no** — `av1_ml_predict_breakout` is called under `!frame_is_intra_only` (`partition_search.c:4260`). |
+| `ml_early_term_after_part_split_level` | `< 720p` | `speed_features.c:200`, `:207`, `:269` | not modelled | **no** — `av1_ml_early_term_after_split` under `!frame_is_intra_only` (`partition_search.c:4322`). |
+| `mv_sf.use_downsampled_sad` | `>= 720p` | `speed_features.c:203-206` | not modelled | **no** — motion search (`mcomp.c:131`). |
+| `partition_search_breakout_{dist,rate}_thr` | 720p tiers, speed>=2 | `speed_features.c:244-251`, `:273-286`, `:293-297` | not modelled | **no** — same `!frame_is_intra_only` block. |
+| `part_sf.max_intra_bsize` | `< 720p`, speed>=3 | `speed_features.c:283` | not modelled | **no** — speed-gated, and no framesize DISTINCTION below 720p. |
+
+Cross-checked against C in both directions: the port is **not** missing a
+threshold among the live fields (`use_square_partition_only_threshold_allintra`
+reproduces all four speed tiers and both framesize tiers), and it **is** missing
+one among fields it does not model at all — `default_min_partition_size` at 4K.
+
+### Geometry-dependent derivations (no sf involved)
+
+| derivation | condition | libaom | port |
+|---|---|---|---|
+| forced partitions at the frame edge | `!av1_blk_has_rows_and_cols` | `partition_search.c:3389` | KB-6 chunk series |
+| edge partition costs gathered from the FRAME-INIT cdf, not the adapting tile state | edge block | `set_partition_cost_for_edge_blk`, `partition_search.c:3415` | KB-6 CHUNK 3 (`4b8b1f1`) |
+| beyond-visible entropy-context tail zeroed | edge txb | `av1_set_entropy_contexts`, `blockd.c:29` | KB-6 `4567e58` |
+| distortion clipped to the visible area | edge block | `max_block_units` | KB-6 CHUNK 1-2 |
+| no SB-sized coding block (root force-split) | frame smaller than one SB | `partition_search.c:3389` | modelled by `CellCtx::has_full_sb_block` |
+| >64 coding blocks: L/U/V 64x64-chunk coefficient interleave | SB128 with a coded >64 leaf | `encodetxb.c:431-472` | KB-1 encoder cross-check |
+
+All four edge paths are **live at speed 0** and are the historically densest bug
+region in this repo (KB-6). None of the eight pre-existing contexts has a
+partial superblock except 32x32, which is *smaller* than one superblock and
+therefore never reaches the multi-SB edge interactions at all.
+
+### The resulting size classes at speed 0 (pinned, printed by the gate)
+
+| class | sb | full SB block | multi (col,row) | partial (x,y) | rect-kill reachable | representative | status |
+|---:|---|---|---|---|---|---|---|
+| 1 | 64 | yes | (0,0) | (0,0) | no | 64x64 | covered before |
+| 2 | 64 | no | (0,0) | (1,1) | no | 32x32 | covered before |
+| 3 | 64 | yes | (1,1) | (0,0) | no | 128x128 — **and 512x512** | covered before |
+| 4 | 64 | yes | (1,1) | (0,1) | no | 128x96 | **ADDED** |
+| 5 | 64 | yes | (1,1) | (1,1) | no | 68x68, 96x96 (196x196 collapses in) | **ADDED** |
+| 6 | 64 | yes | (1,1) | (1,1) | no, `default_min_partition_size=BLOCK_8X8` | 2160x2160 | **out of budget** |
+| 7 | 128 | no | (0,0) | (1,1) | no | 64x64 SB128 | **ADDED** |
+| 8 | 128 | yes | (1,1) | (0,0) | no (>= 480p) | 512x512 SB128 | **pinned open** (finding B) |
+| 9 | 128 | yes | (1,1) | (1,1) | no (>= 480p) | 576x576 SB128 | **ADDED** |
+| 10 | 128 | yes | (0,0) | (0,0) | **yes** | 128x128 SB128 | **ADDED** |
+| 11 | 128 | yes | (1,1) | (1,1) | **yes** | 192x192 SB128 | **ADDED** |
+
+**Eleven classes; the pre-existing array covered three.** The collapse is doing
+real work in both directions and both directions are asserted:
+
+* **it collapses** — 512x512 SB64 lands in the same class as 128x128 SB64, so a
+  12.6 s/cell 480p SB64 context would buy exactly nothing. That is the honest
+  half of "is 2,617 valid": on SB64, going bigger is not a new configuration.
+* **it splits** — the same pair does NOT collapse at SB128, because there the
+  >= 480p threshold decides whether the rect-kill fires.
+
+`SizeDerived` deliberately does **not** carry the raw
+`use_square_partition_only_threshold` value (exposed separately as
+`config_perm::sq_only_threshold_allintra`): at speed 0 on intra it is
+unobservable except through `rect_kill_reachable`, and carrying it would split
+512x512 SB64 away from 128x128 SB64 for a difference no cell could witness.
+Likewise the superblock GRID is carried as one-vs-many booleans rather than an
+exact count — a third superblock column adds no structure a second one did not.
+
+## What was added, and what each cell buys
+
+| gate | context | class | strength | cells | ms/cell | what it buys |
+|---|---|---|---|---:|---:|---|
+| `size_t4_part68_s{0,1,2}` | 68x68 SB64 | 5 | **t=4** | 187 | 199 | the KB-6 frame-edge class at FULL knob strength — four edge code paths, each interacting with essentially every knob (which blocks land on the edge is a function of the partition and transform knobs) |
+| `size_t2_part96` | 96x96 SB64 | 5 | t=2 | 17 | 439 | the second overhang magnitude (32 px vs 4 px) — which transform footprints the tail-zero clips |
+| `size_t2_part128x96` | 128x96 SB64 | 4 | t=2 | 17 | 500 | partial in ONE dimension: above-context and left-context clipping are separate paths |
+| `size_t2_sb128_64` | 64x64 SB128 | 7 | t=2 | 17-6 | 170 | frame smaller than an SB128 superblock (root force-split, no 128 block) |
+| `size_t2_sb128_128_s{0,1}` | 128x128 SB128 | 10 | t=2 | 17-6 | 1028 | breadth on the class where the rect-kill first becomes reachable |
+| `size_ix_sb128_128_s{0,1}` | 128x128 SB128 | 10 | full rect-kill cross | 24-8 | 1028 | the rect-kill interaction set at FULL cross, where it is affordable |
+| `size_ix_sb128_192_s{0,1}` | 192x192 SB128 | 11 | rect-kill cross | 16 | 1987 | rect-kill AND frame-edge live at once |
+| `size_ix_sb128_576_s{0,1}` | 576x576 SB128 | 9 | rect-kill cross | 16 | ~4000 | **the >= 480p class** — the one framesize speed feature live at speed 0 |
+| `size_class_inventory_is_pinned` | — | — | — | 0 | — | the arithmetic above, pinned |
+| `size_axis_teeth_are_real` | — | — | — | 0 | — | the rect-kill stays reachable in the added contexts and dead in the old ones |
+| `size_axis_open_divergences_pinned` | — | — | — | 5 | — | the two findings, self-promoting |
+
+**Cells: 2,617 -> 2,910** (+293 array/interaction cells, +5 pinned-finding
+cells). The `-6` / `-8` entries are the `--max-partition-size=32` rows skipped
+on SB128 by finding A.
+
+### Why the expensive contexts get a reduced array, argued from the interaction set
+
+At speed 0 below 2160p the only live size-derived state is
+`use_square_partition_only_threshold`, whose sole intra consumer acts on
+`partition_rect_allowed` at a block larger than the threshold. An axis can
+interact with that only by changing whether rectangular partitions exist
+(`--enable-rect-partitions`), whether the over-threshold block is reached at all
+(`--max-partition-size`, which force-splits the root below the SB size), or
+which rect-derived types are offered (`--enable-ab-partitions` and
+`--enable-1to4-partitions`, both gated on `partition_rect_allowed` at
+`partition_search.c:5166/5172/5181/5187`). That is
+`config_perm::RECT_KILL_INTERACTION_SET`, and every other axis composes with the
+kill only *through* those four — a composition already covered at full t=4
+strength on the cheap contexts. The same set is run at **full cross** on the
+1.0 s/cell SB128 context, so the reduction applied at 2-4 s/cell is
+demonstrated sufficient at the same mechanism rather than assumed.
+
+`--min-partition-size` is excluded: it raises the partition floor, never the
+root, so it cannot change whether an over-threshold block exists.
+
+### Out of budget, recorded rather than faked
+
+**`default_min_partition_size = BLOCK_8X8` at `is_4k_or_larger`
+(`speed_features.c:187-189`) is a genuine unmodelled port arm**
+(`config_perm::PORT_GAP_DEFAULT_MIN_PARTITION_SIZE`;
+`aom-encode/src/speed_features.rs:471`). It is class 6 and it is not gated: a
+480x480 speed-0 cell already costs 12.6 s, a 2160x2160 one is ~20x that per
+cell, so even a single cell would blow the whole suite's budget several times
+over. Gating it needs an `--ignored` deep tier and a decision about CI wall
+time; it is NOT closed by this landing. The speed>=6 1080p arm (`:311-313`) is
+subsumed by the port's unconditional speed-6 assignment, so only the 4K arm is a
+real divergence, and only below speed 6.
+
+The other structural limit is **speed**: this array is speed-0 everywhere, so
+the four framesize x speed interactions (`prune_tx_type_using_stats` at 480p,
+`use_square_partition_only_threshold`'s 720p tiers, `max_intra_bsize`,
+`prune_tx_size_level`) are outside it by construction.
+`size_class_inventory_is_pinned` pins `size_derived(.., {0,2,4})` so that raising
+the array's speed cannot silently leave them unexercised.
+
+## Findings
+
+### A. `--sb-size=128` x `--max-partition-size=32` trips a port assertion C contradicts
+
+C restores the partition context CONDITIONALLY at the end of the SPLIT stage:
+
+> `if (bsize <= x->sb_enc.max_partition_size || bsize == cm->seq_params->sb_size)`
+> `  av1_restore_context(x, x_ctx, mi_row, mi_col, bsize, av1_num_planes(cm));`
+> — `partition_search.c:4646`
+
+The port restores UNCONDITIONALLY and encodes C's condition as a `debug_assert!`
+instead (`aom-encode/src/partition_pick.rs:3055-3057`, commented "always true
+here"). It is not always true: it fails when a block size sits strictly between
+the max-partition cap and the superblock size. At SB64 that window is empty for
+every legal cap, which is why no pre-existing context saw it; at SB128 with a
+32 px cap `bsize == BLOCK_64X64` satisfies neither clause. In a debug-assertions
+build the port panics; without them it performs a restore C skips — a silent
+state divergence. Pinned and self-promoting in
+`size_axis_open_divergences_pinned`; the affected rows are skipped by
+`SizeCtx::skip_reason` with that citation. **No encoder change was made** (this
+agent does not own `crates/aom-encode/src`).
+
+### B. Three open near-ties on >= 480p SB128 monochrome cq63 — surfaced by size, NOT attributable to a size class
+
+See the doc comment on `size_axis_open_divergences_pinned` for the full table.
+The important part is the methodology: "480x480 diverges, 448x448 and 512x512 do
+not" reads like a real class property until **576x576 — the same size class as
+480x480 — comes out exact on the identical knob rows**, and 640x640 does the
+same for 512x512. A property that holds for one member of an equivalence class
+and fails for another is not a property of the class. These are per-cell RD
+near-ties (KB-10/KB-12 signature), surfaced because the size axis encoded this
+content at sizes the harness had never reached. They are pinned, not gated, and
+the gated >= 480p context uses a clean class-mate so no size gate rests on a
+near-tie.
+
+### C. The "SB64 only" scope note was stale
+
+`cell_ctx` carried "`--sb-size=128` encode is unstarted; HANDOFF-TOGGLES.md".
+`crates/aom-bench/tests/sb128_e2e.rs` proves SB128 encode byte-exact vs real
+aomenc, including a coded 128-level leaf. SB128 is where the >= 480p threshold
+stops being inert, so that stale note was hiding the single most consequential
+size class.
+
+## Teeth
+
+The size-gated derivation under test is `use_square_partition_only_threshold`'s
+`>= 480p` arm (`speed_features.c:175-183`; port `partition_pick.rs:2450`).
+Perturbation: replace `partition_pick.rs:2451` with `let mut t: usize = 12;`
+(the `>= 480p` arm dropped).
+
+**The added `>= 480p` SB128 cell FAILS:**
+
+> `TEETH 480m_cq63_sb128_stock  exact=false port 874B real 854B`
+
+**Every control stays GREEN** — the two knob rows that make the kill moot, the
+sub-480p SB128 contexts, and both SB64 sizes:
+
+> `TEETH 480m_cq63_sb128_rect0 exact=true port 864B real 864B`
+> `TEETH 480m_cq63_sb128_maxp64 exact=true port 874B real 874B`
+> `TEETH 128_cq32_sb128_stock exact=true port 1968B real 1968B`
+> `TEETH 128_cq63_sb128_stock exact=true port 70B real 70B`
+> `TEETH 64_cq32_sb64_stock exact=true port 415B real 415B`
+> `TEETH 128_cq32_sb64_stock exact=true port 1947B real 1947B`
+
+**And the whole pre-existing 2,617-cell gate is untouched by the same
+perturbation:**
+
+> `test result: ok. 32 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 32.30s`
+
+2,617 cells that cannot see a broken `>= 480p` threshold, against an added cell
+that fails on it, is the asymmetry — the size gap was real. The perturbation was
+reverted; `git diff crates/aom-encode/` is clean.
+
+## Chunk 2 — what a follow-up should do
+
+1. **Close finding A.** Make `restore_context` conditional exactly as
+   `partition_search.c:4646` is, delete the `debug_assert!`, remove
+   `SizeCtx::skip_reason`'s entry and let the SB128 contexts run
+   `--max-partition-size=32` at full strength. Needs `crates/aom-encode/src`
+   ownership.
+2. **Root-cause finding B** with the decode-both / sibling-C recipe. The 576/640
+   class-mate controls narrow it to an RD near-tie at specific content
+   statistics, which is the KB-10/KB-12 localisation shape.
+3. **Gate class 6 (4K) in an `--ignored` deep tier.** One 2160x2160 stock cell
+   plus the `--min-partition-size` interaction set would close the only
+   unmodelled framesize arm; budget it as a nightly, not a default-tier gate.
+4. **Cross the size axis with speed.** Everything here is speed 0. The
+   framesize x speed interactions are pinned as arithmetic in
+   `size_class_inventory_is_pinned` but not encoded. The cheapest real cell is
+   `tx_stats_prune_e2e.rs`'s 512x512 cpu-2 shape.
+5. **Give the >= 480p contexts more breadth.** They currently run only the
+   rect-kill interaction set. If the budget grows, t=2 over all 21 axes at
+   576x576 is ~17 x 4 s = 68 s CPU.

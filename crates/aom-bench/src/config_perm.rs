@@ -433,7 +433,276 @@ impl CellCtx {
     fn has_full_sb_block(self) -> bool {
         self.w >= self.sb_px && self.h >= self.sb_px
     }
+
+    /// `is_480p_or_larger` (speed_features.c:169): `AOMMIN(cm->width,
+    /// cm->height) >= 480`. Port mirror: `use_square_partition_only_threshold_
+    /// allintra` (`aom-encode/src/partition_pick.rs:2447`) and the harness's
+    /// `prune_tx_type_using_stats` wiring (`aom-bench/src/lib.rs:1364`).
+    pub fn is_480p_or_larger(self) -> bool {
+        self.w.min(self.h) >= 480
+    }
+
+    /// `is_720p_or_larger` (speed_features.c:170).
+    pub fn is_720p_or_larger(self) -> bool {
+        self.w.min(self.h) >= 720
+    }
+
+    /// `is_4k_or_larger` (speed_features.c:172) — `>= 2160`.
+    pub fn is_4k_or_larger(self) -> bool {
+        self.w.min(self.h) >= 2160
+    }
+
+    /// Superblock grid extent: `(cols, rows)` of `sb_px`-square superblocks
+    /// the frame walk visits (CEIL — `port_encode_full`'s `n_sb_x`/`n_sb_y`,
+    /// `aom-bench/src/lib.rs:1172-1173`).
+    pub fn sb_grid(self) -> (usize, usize) {
+        (
+            self.w.div_ceil(self.sb_px).max(1),
+            self.h.div_ceil(self.sb_px).max(1),
+        )
+    }
+
+    /// Does the frame have a PARTIAL superblock — a superblock the frame edge
+    /// cuts through? Partial SBs are a distinct code path, not a smaller one:
+    /// `av1_blk_has_rows_and_cols` forces partitions (partition_search.c:3389),
+    /// `set_partition_cost_for_edge_blk` gathers its partition costs from the
+    /// FRAME-INIT cdf rather than the adapting tile state (:3415), the
+    /// persistent entropy stamp zeroes the beyond-visible tail
+    /// (`av1_set_entropy_contexts`, blockd.c:29) and the distortion is clipped
+    /// to the visible area. All four are KB-6 roots.
+    pub fn has_partial_sb(self) -> bool {
+        self.w % self.sb_px != 0 || self.h % self.sb_px != 0
+    }
 }
+
+// ---------------------------------------------------------------------------
+// Size-derived encoder state (the SIZE axis of the matrix)
+// ---------------------------------------------------------------------------
+
+/// The encoder state that a [`CellCtx`]'s **frame geometry** determines, at one
+/// speed — i.e. everything `set_allintra_speed_feature_framesize_dependent`
+/// (speed_features.c:166-340) plus the frame-edge geometry contributes.
+///
+/// This is the size analogue of [`Effective`]: two frame sizes that resolve to
+/// the same `SizeDerived` cannot make the encoder behave differently *because
+/// of their size*, so replaying the covering array at both is redundant. The
+/// count of DISTINCT values over a candidate size list is exactly how many size
+/// contexts the array needs — see `size_class_partition`.
+///
+/// Only fields that are LIVE on the all-intra KEY path are carried. The
+/// framesize-dependent fields that C sets but this path never reads are listed
+/// in the module docs rather than modelled, each with the citation that kills
+/// them (they would otherwise inflate the class count with distinctions no
+/// cell could ever witness).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SizeDerived {
+    /// Superblock size in pixels. The partition-tree ROOT size is itself
+    /// size-derived state: it selects the partition-symbol CDF group at the
+    /// root, whether a >64 coding block can exist at all, and (for >64 blocks)
+    /// the `av1_write_intra_coeffs_mb` 64x64-chunk L/U/V coefficient interleave
+    /// (KB-1's encoder cross-check).
+    pub sb_px: usize,
+    /// Is the square-only rect-kill (`bsize > threshold` ⇒
+    /// `partition_rect_allowed[HORZ] &= !has_rows`, partition_search.c:5700;
+    /// port `partition_pick.rs:2593`) REACHABLE in this context? It needs a
+    /// coding block strictly larger than the threshold, and the largest block
+    /// the walk can offer is the superblock — so at SB64 with a `BLOCK_64X64`
+    /// threshold it is structurally dead, which is why speed-0 SB64 never
+    /// needed it (KB-3).
+    pub rect_kill_reachable: bool,
+    /// `part_sf.default_min_partition_size` (`BLOCK_SIZE` ordinal) —
+    /// `BLOCK_8X8` at `is_4k_or_larger` (speed_features.c:187-189) and at
+    /// speed>=6 `is_1080p_or_larger` (:311-313), else `BLOCK_4X4`
+    /// (`init_part_sf`, :2285). Read by `set_max_min_partition_size`
+    /// (partition_strategy.h:225) on EVERY frame type, so it is live on
+    /// all-intra KEY. **The port does not model either arm** — see
+    /// `PORT_GAP_DEFAULT_MIN_PARTITION_SIZE`.
+    pub default_min_partition_size: u8,
+    /// `tx_sf.tx_type_search.prune_tx_type_using_stats` — 1 at speed>=2 and 2
+    /// at speed>=4, both only when `is_480p_or_larger` (speed_features.c:261,
+    /// :299). Port: `aom-bench/src/lib.rs:1364`.
+    pub prune_tx_type_using_stats: u8,
+    /// More than one superblock COLUMN. One-vs-many is the structural
+    /// distinction (a left-neighbour SB exists, the tile CDF has adapted before
+    /// the second SB, the partition context carries across); a third column
+    /// adds no new structure, so the grid extent is deliberately NOT carried as
+    /// an exact count — that would over-refine every size into its own class.
+    pub multi_sb_cols: bool,
+    /// More than one superblock ROW (an above-neighbour SB exists; the
+    /// above-context array is reset at a row start).
+    pub multi_sb_rows: bool,
+    /// The frame edge cuts superblocks HORIZONTALLY (`w % sb_px != 0`) ⇒ the
+    /// KB-6 edge paths are live on the right column: forced partitions
+    /// (`av1_blk_has_rows_and_cols`, partition_search.c:3389), the frame-init
+    /// partition-cost gather (`set_partition_cost_for_edge_blk`, :3415), the
+    /// beyond-visible entropy tail-zero (`av1_set_entropy_contexts`,
+    /// blockd.c:29) and the visible-distortion clip.
+    ///
+    /// The overhang MAGNITUDE (4 px vs 32 px) is a continuous sub-axis inside
+    /// the class — it selects which transform footprints the tail-zero clips —
+    /// and is sampled, not classified.
+    pub partial_sb_x: bool,
+    /// The frame edge cuts superblocks VERTICALLY (`h % sb_px != 0`). Separate
+    /// from `partial_sb_x` because the above-context and left-context clipping
+    /// are separate code paths.
+    pub partial_sb_y: bool,
+    /// A full superblock-sized coding block can exist (so a 64-point transform
+    /// is reachable, and the rect-kill has something to bite).
+    pub full_sb_block: bool,
+}
+
+/// `part_sf.use_square_partition_only_threshold` (`BLOCK_SIZE` ordinal) for the
+/// ALLINTRA path — speed_features.c:176/181 (base), :211-217 (speed 1),
+/// :238-242 (speed 2), :315 (speed 6). Port mirror:
+/// `use_square_partition_only_threshold_allintra`,
+/// `aom-encode/src/partition_pick.rs:2446`.
+///
+/// Deliberately NOT a [`SizeDerived`] field: at speed 0 on an intra frame its
+/// only consumer is the rect-kill (partition_search.c:5700), and its other
+/// reader — the ML breakout gate at :4265 — is inside a `!frame_is_intra_only`
+/// block. So two sizes with different thresholds but the same
+/// [`SizeDerived::rect_kill_reachable`] are INDISTINGUISHABLE to this encoder
+/// path, and carrying the raw value would over-refine the class count (it would
+/// split 480x480 SB64 away from 128x128 SB64 for a difference no cell could
+/// witness).
+pub fn sq_only_threshold_allintra(ctx: &CellCtx, speed: i32) -> u8 {
+    let min_dim = ctx.w.min(ctx.h);
+    let (is_480, is_720) = (min_dim >= 480, min_dim >= 720);
+    let mut thr: u8 = if is_480 { 15 } else { 12 };
+    if speed >= 1 {
+        thr = if is_720 {
+            15
+        } else if is_480 {
+            12
+        } else {
+            9
+        };
+    }
+    if speed >= 2 {
+        thr = if is_720 { 12 } else { 9 };
+    }
+    if speed >= 6 {
+        thr = 6;
+    }
+    thr
+}
+
+/// PORT GAP, recorded here so the size class table stays honest: the port's
+/// [`crate::speed_features`] mirror pins `default_min_partition_size` to
+/// `BLOCK_4X4` at every speed below 6 (`aom-encode/src/speed_features.rs:471`)
+/// and to `BLOCK_8X8` unconditionally at speed>=6 (`:891`), modelling only the
+/// framesize-INDEPENDENT setter (speed_features.c:570). Two framesize-DEPENDENT
+/// arms are unmodelled:
+///
+/// * speed-0.. `is_4k_or_larger` ⇒ `BLOCK_8X8` (speed_features.c:187-189);
+/// * speed>=6 `is_1080p_or_larger` ⇒ `BLOCK_8X8` (:311-313) — subsumed by the
+///   port's unconditional speed-6 assignment, so only the 4K arm is a real
+///   divergence, and only below speed 6.
+///
+/// `min(w,h) >= 2160` is out of this harness's budget by three orders of
+/// magnitude (a 480x480 speed-0 cell already costs ~12.6 s), so the gap is
+/// DOCUMENTED, not gated. Reaching it needs a tiered deep gate, not a default
+/// cell.
+pub const PORT_GAP_DEFAULT_MIN_PARTITION_SIZE: &str =
+    "default_min_partition_size = BLOCK_8X8 at is_4k_or_larger \
+     (speed_features.c:187-189) is unmodelled by aom-encode/src/speed_features.rs:471";
+
+/// Resolve the size-derived encoder state for one context at one speed.
+///
+/// The all-intra KEY path reads only the fields carried by [`SizeDerived`].
+/// The framesize-dependent fields deliberately NOT modelled, with the line that
+/// makes each inert here:
+///
+/// | field | set at | why inert on all-intra KEY |
+/// |---|---|---|
+/// | `auto_max_partition_based_on_simple_motion` | :176-180, :305-309 | `use_auto_max_partition` is `!frame_is_intra_only && ... && sb_size == BLOCK_128X128` (partition_strategy.h:193) |
+/// | `ml_partition_search_breakout_thresh[]`, `ml_partition_search_breakout_model_index` | :192-201, :219-236 | `av1_ml_predict_breakout` runs under `!frame_is_intra_only` (partition_search.c:4260) |
+/// | `ml_early_term_after_part_split_level` | :200, :207, :269 | `av1_ml_early_term_after_split` runs under `!frame_is_intra_only` (partition_search.c:4322) |
+/// | `mv_sf.use_downsampled_sad` | :203-206 | motion search only (mcomp.c:131) |
+/// | `tx_sf.prune_tx_size_level` | :184, :263-265, :289 | read only by `select_tx_block` (tx_search.c:2631), the INTER var-tx recursion reached from `av1_pick_recursive_tx_size_type_yrd` |
+/// | `partition_search_breakout_{dist,rate}_thr` | :244-251, :273-286, :293-297 | the breakout block is `!frame_is_intra_only` (partition_search.c:4260) |
+/// | `part_sf.max_intra_bsize` | :283 | speed>=3 only, and sub-720p only — no framesize DISTINCTION below 720p |
+/// | `rt_sf.*` | :323-336 | speed>=8 real-time path |
+pub fn size_derived(ctx: &CellCtx, speed: i32) -> SizeDerived {
+    let min_dim = ctx.w.min(ctx.h);
+    let is_480 = min_dim >= 480;
+    let thr = sq_only_threshold_allintra(ctx, speed);
+    let sb_b = CellCtx::dim_to_bsize(ctx.sb_px);
+    // The rect-kill needs a block strictly larger than the threshold; the
+    // largest block the partition walk can offer is the superblock, and it can
+    // only offer it when a full SB fits in the frame.
+    let rect_kill_reachable = sb_b > thr && ctx.has_full_sb_block();
+    let default_min_partition_size = if ctx.is_4k_or_larger() || (speed >= 6 && min_dim >= 1080) {
+        3 // BLOCK_8X8
+    } else {
+        0 // BLOCK_4X4
+    };
+    let prune_tx_type_using_stats = if is_480 {
+        if speed >= 4 {
+            2
+        } else if speed >= 2 {
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    let (sb_cols, sb_rows) = ctx.sb_grid();
+    SizeDerived {
+        sb_px: ctx.sb_px,
+        rect_kill_reachable,
+        default_min_partition_size,
+        prune_tx_type_using_stats,
+        multi_sb_cols: sb_cols > 1,
+        multi_sb_rows: sb_rows > 1,
+        partial_sb_x: ctx.w % ctx.sb_px != 0,
+        partial_sb_y: ctx.h % ctx.sb_px != 0,
+        full_sb_block: ctx.has_full_sb_block(),
+    }
+}
+
+/// Collapse a candidate size list into its distinct size classes at one speed.
+///
+/// Returns, for each distinct [`SizeDerived`], the contexts that produce it,
+/// cheapest (smallest pixel count) first. THIS is the answer to "how many size
+/// contexts does the array need": one per returned class, not one per size.
+pub fn size_class_partition(sizes: &[CellCtx], speed: i32) -> Vec<(SizeDerived, Vec<CellCtx>)> {
+    let mut by_class: BTreeMap<SizeDerived, Vec<CellCtx>> = BTreeMap::new();
+    for &c in sizes {
+        by_class.entry(size_derived(&c, speed)).or_default().push(c);
+    }
+    for v in by_class.values_mut() {
+        v.sort_by_key(|c| (c.w * c.h, c.w, c.h, c.sb_px));
+    }
+    by_class.into_iter().collect()
+}
+
+/// The axes whose interaction with the size-derived state is not structurally
+/// zero — i.e. the ones a reduced-strength array at an expensive size context
+/// must still cross.
+///
+/// The ONLY size-derived state that is live at speed 0 below 2160p is
+/// [`SizeDerived::sq_only_threshold`] via [`SizeDerived::rect_kill_reachable`]
+/// (everything else in the table above is either inert on intra or
+/// speed-gated). The kill acts on `partition_rect_allowed[HORZ|VERT]` at a
+/// block strictly larger than the threshold, so an axis can interact with it
+/// only by changing (a) whether rectangular partitions exist at all, (b)
+/// whether the over-threshold block is reached, or (c) which rect-derived
+/// partition types are offered:
+///
+/// * [`Axis::Rect`] — `--enable-rect-partitions=0` clears
+///   `partition_rect_allowed` outright (partition_search.c:3383), so the kill
+///   is a no-op;
+/// * [`Axis::MaxPart`] — `--max-partition-size` below the superblock forces the
+///   root to SPLIT (`av1_set_square_split_only`), so the over-threshold block
+///   is never evaluated;
+/// * [`Axis::Ab`] / [`Axis::P1to4`] — AB and HORZ_4/VERT_4 are gated on
+///   `partition_rect_allowed` (:5166, :5172, :5181, :5187), so the kill
+///   propagates into their availability too.
+///
+/// [`Axis::MinPart`] is excluded: it raises the *floor*, never the root.
+pub const RECT_KILL_INTERACTION_SET: &[Axis] = &[Axis::Rect, Axis::MaxPart, Axis::Ab, Axis::P1to4];
 
 // ---------------------------------------------------------------------------
 // Effective configuration (mechanism 1)
