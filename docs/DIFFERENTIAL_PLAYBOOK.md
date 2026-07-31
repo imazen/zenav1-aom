@@ -1,0 +1,232 @@
+# Differential playbook — how work gets validated in this repo
+
+**Why this file exists.** The techniques below were each derived the expensive
+way, usually after something passed green while testing nothing. They are not
+style preferences; every one of them has a specific failure it prevents, and the
+failure is named. Read this before adding a gate, porting a kernel, or
+diagnosing a divergence.
+
+Companion docs: `PARITY.md` (what is proven), `CLAUDE.md` (Known Bugs +
+coordination rules), `docs/LIBAOM_UPSTREAM_NOTES.md` (libaom's own quirks),
+`HANDOFF-TOGGLES.md` (the sibling-C dump recipe).
+
+---
+
+## 1. A test that cannot fail is worse than no test
+
+**The failure it prevents:** the transform SIMD carried a `neon` tier for months
+that was entirely dead code on aarch64, while its differential passed green —
+because `for_each_token_permutation` silently excluded `neon` (a
+compile-time-guaranteed token archmage refuses to disable), so the test compared
+the scalar path against itself and reported `simd_perms=0`.
+
+**Before shipping any gate, break the thing it guards and watch it fail.** Then
+revert and confirm `git diff` is clean. Quote the failure message in the commit.
+
+**The strong form — asymmetry.** When a gate exists because a hole was
+suspected, the proof is not that your gate fails; it is that your gate fails
+*while the existing suite stays green*. Examples from this repo:
+
+- perturbing `delta_lf_from_base` → new decoder gate fails in 0.02 s, **all 25
+  pre-existing decoder gates stay green**;
+- mis-threading a knob combination → new permutation gate fails 21 of 27, while
+  `toggles_rd_close` stays **25/25**;
+- a SIMD-only splat perturbation → the i32 arm's test fails and the i16 arm's
+  passes, and vice versa, proving each test reaches its own arm.
+
+If the pre-existing suite *also* fails, you have not found a hole — you have
+found a regression, which is a different (and more urgent) report.
+
+**Watch for inert perturbations.** In `cdef_find_dir` the obvious change
+(`- 128` → `- 127`) is provably a no-op, because `DIV_TABLE[n] = 840/n`
+normalises a DC shift identically across every direction. It passed, which is
+what forced building a proper accept-observer. If your perturbation passes, ask
+whether it was reachable before concluding the gate is broken.
+
+## 2. Non-vacuity must be asserted, not assumed
+
+`assert!(report.permutations_run >= 2)` counts **permutations**, not **vector**
+permutations — it is satisfied on a machine with no vector tier at all. Seven
+differentials shipped with exactly that assertion and were technically vacuous.
+
+The correct form counts permutations in which a vector tier is live, and is
+per-architecture (`NeonToken` on aarch64, `X64V3Token` elsewhere — testing only
+`X64V3Token` counts every aarch64 permutation as scalar, because that token is a
+stub off x86):
+
+```rust
+if if cfg!(target_arch = "aarch64") { NeonToken::summon().is_some() }
+   else { X64V3Token::summon().is_some() } { simd_perms += 1; }
+...
+assert!(simd_perms >= 1, "...");
+```
+
+**Do NOT add a pre-flight `summon()` check outside the harness.** It looks like a
+non-vacuity guard and is an ordering trap: under `AOM_FORCE_SCALAR=1` the pin
+disables every runtime token *process-wide*, so on x86 `summon()` correctly
+returns `None` until `for_each_token_permutation` resets that state. Tests that
+fire the pin first — the documented order — fail on the linux scalar-pin CI leg
+while passing on aarch64. Removed in `854b2ac`; there is a note at each site.
+
+## 3. Verify on both targets, from whichever box you have
+
+`cargo check --target x86_64-apple-darwin` (or the reverse) catches an entire
+class of error the host build cannot see. Real instances:
+
+- a nested `incant!` whose default tier list looks for a `_v4` variant the
+  family does not have — invisible on aarch64, a hard error on x86;
+- the pre-flight `summon()` trap above, which is `#[cfg(target_arch = "x86_64")]`
+  and does not even compile on ARM.
+
+`cargo check` is not enough for C shims — it does **not** recompile shim C for a
+cross target. To verify a shim change on the other target, generate that
+target's libaom config and compile the TU against it, then check `nm` for the
+symbols you expect and, crucially, the ones you expect to be *absent*.
+
+## 4. When you cannot run the other target, predict it
+
+The strongest available substitute for executing on a target you lack: derive a
+falsifiable prediction on the box you have, then let CI adjudicate.
+
+Worked example (KB-20 root #4). The x86 arm of an ISA-conditional kernel could
+not be executed on an ARM box. Instead: instrument the `_c`/NEON arm to count,
+per cell, how many `aom_hadamard_16x16` outputs leave `int16` — the quantity the
+hypothesis says drives x86 divergence — and check it against the observed x86
+failure set. Result: **7/7 recall on the divergent cells, 22/24 overall**, the
+two misses false-negative by construction. CI then confirmed.
+
+That is a mechanism understood before confirmation, not a constant tuned until
+CI went green. Prefer it to iterating on CI blind, which costs ~30 min a cycle.
+
+## 5. Self-promoting pins for divergences you cannot close yet
+
+A known divergence is pinned with its **exact current state**, and the test fails
+in *both* directions — if it regresses, and if it silently starts matching. The
+second half is the point: when someone later fixes the root, the pin fires and
+tells them to re-pin rather than letting the fix pass unnoticed.
+
+Live examples: KB-17's screen-content set, KB-21's root-2 rows, KB-22's ≥2160p
+residual, `SCREEN_ARRAY_OPEN_ROWS`, `size_axis_open_divergences_pinned`.
+
+**Never** resolve a divergence by widening a tolerance, adding `#[ignore]`, or
+gating on `target_arch` so nothing is asserted. If a contract genuinely differs
+per target, write *two* tests with two explicitly-stated contracts — see
+`hog_prune_diff.rs`, where the x86 test asserts bit-equality against an AVX2
+kernel and the non-x86 test asserts lattice membership + mask parity + a pinned
+count of differing lanes. Rule of thumb: **if you cannot state what the test
+proves in one sentence without the word "approximately", you have written the
+banned version.**
+
+## 6. Benchmarks: report the control band first
+
+On this hardware a **same-binary re-run** moves rows by up to **±16%**
+(`intra::v_16x16`), and sub-30 µs cells swing ±10–29%. A single row's delta
+therefore proves nothing.
+
+- Always run untouched cells as a negative control and quote their spread
+  *alongside* the result.
+- Read whole size sweeps, not individual rows.
+- `AOM_FORCE_SCALAR=1` is **not** a scalar baseline on aarch64 — `neon` is a
+  compile-time-guaranteed token that cannot be disabled outside test builds, so
+  a pinned/unpinned pair measures the same code twice (a 77-row pair came back
+  inside ±3%: noise). Use a two-**build** pair instead.
+- Take object-code evidence from `--release`: `test-fast`'s `overflow-checks`
+  de-vectorizes `#[autoversion]` kernels (`sad_simd`: 0 NEON ops under
+  test-fast, 37 under release).
+- Commit `benchmarks/<thing>_<YYYY-MM-DD>.{md,tsv,meta}` with git commit, host,
+  command line, and `uptime` load.
+
+## 7. Config-permutation gates: collapse, don't enumerate
+
+Architecture in `docs/CONFIG_PERMUTATION_DESIGN_2026-07-30.md`; the load-bearing
+ideas:
+
+- **Effective-config collapse.** Hash the *resolved* internal state
+  (`SpeedFeatures` + `PackCfg` + header bits) and keep one representative per
+  signature. Validate the engine by checking it re-derives the known-inert cases
+  in `HANDOFF-TOGGLES.md` rather than hardcoding them. Raw cartesian 14.2M →
+  777.6k effective configs.
+- **Independence must be measured.** A 2×2 footprint experiment over all 210
+  axis pairs found **zero independent pairs** — on an intra encoder every knob
+  feeds the same RD loop. Do not assume orthogonality; the answer here was that
+  there is none.
+- **Cells compose.** Byte-identity is all-or-nothing over the pipeline, so one
+  cell with N features live covers every pairwise interaction among them. 31
+  decoder cells cover ~120 crossings.
+- **Coverage counts must not mix derived with replayed axes.** The port never
+  authors a sequence header, so seq-level axes are replayed from a bootstrap
+  stream, and a gate asserting "the seq bit equals the knob" is an agreement
+  check, not evidence the port can produce that configuration.
+
+**The thesis, empirically:** bugs live in the gap between two individually-green
+PARITY rows. KB-20 was a *panic* sitting between "cpu-used 8/9 byte-identical"
+and "bd10/bd12 byte-identical", each true on its own grid, never crossed.
+
+## 8. Derive coverage from artefacts, not from names
+
+A test called `..._superres_...` that decodes a stream with `use_superres=0`
+covers nothing. Build coverage matrices by **parsing the bitstreams** (or
+asserting the derived config field) and counting what is actually exercised.
+
+Doing this revealed that the AV1 intra conformance corpus — Gate 1's authority —
+is a deep sweep of *one* sequence shape: **235/235 are 4:2:0**, bd8 or bd10
+only, with zero superres, tiles>1, QM, segmentation, `reduced_tx_set`,
+`disable_cdf_update`, 4:2:2, 4:4:4 or 12-bit
+(`benchmarks/decoder_corpus_feature_tuples_2026-07-30.tsv`).
+
+Corollary: assert liveness per axis. Two knobs (`--enable-cfl-intra=0`,
+`--enable-tx64=0`) were covered hundreds of times on the primary context
+**without ever being exercised**.
+
+## 9. Distrust in-tree comments claiming a feature is inert
+
+`part_sf.early_term_after_none_split` was omitted from the port under the
+comment *"(C) INERT on this path (byte no-op, verified) — NONE always yields a
+valid rd on textured content"*. It fires at **6 nodes in a single 64×64 frame**
+of real photographic content. A previous session verified inertness against
+synthetic textured content and generalised.
+
+When a comment says "verified inert", check *what it was verified against*. The
+same applies to handoff notes describing what is missing: KB-20's assert named
+one bd8-specific step and there were **three**, the two it omitted being the
+substantive ones.
+
+## 10. Diagnose to the decision, not to the byte count
+
+A byte delta is a symptom. Drive to the **first divergent block** and compare the
+decisions on both sides. The exemplary close (KB-21 root #1) went further and
+proved everything *around* the divergence agreed — the NONE arm to the unit, the
+entire SPLIT accumulation child-for-child, the remaining budget entering the last
+child — leaving exactly one BLOCK_8X8 leaf where C early-terminates and the port
+falls through.
+
+Method: the sibling-C dump in `HANDOFF-TOGGLES.md` (ar-swap an instrumented
+`libaom.a`, temporarily repoint `aom-sys-ref/build.rs`'s `build_dir`, run the
+pinned cell, **revert everything**). Verify the revert by byte-comparing the
+restored object against a pristine backup.
+
+Rule the search space down by A/B rather than by intuition: KB-21's root-2 entry
+records nine single-flag reverts that did *not* reproduce C's numbers, which is
+what makes the remaining candidate set credible.
+
+## 11. Environment facts that have cost time
+
+- `conformance/data` is a **plain gitignored directory** as of `ae1c93d`.
+  Populate with `python3 xtask/conformance.py --fetch --scope intra` or set
+  `AOM_CONFORMANCE_DIR`. (It was previously a *tracked symlink* to a path
+  existing only on the original box, because `.gitignore` said
+  `conformance/data/` **with a trailing slash** — which matches a directory but
+  not a symlink. Every fresh worktree started with ~10 unrelated failures and
+  three agents in one session mistook that for their own baseline.)
+- `git worktree remove` refuses on worktrees containing submodules — use
+  `--force`, after pushing.
+- The repo is **not** rustfmt-clean (419 diffs in aom-dsp alone). Do **not** run
+  `cargo fmt`; it buries the change.
+- CI runs `--profile test-fast`, not debug. The debug profile put the x86-64 leg
+  at 5h47m and then 6h00m — GitHub's hard cap, reported as "cancelled". Coverage
+  is identical (`debug-assertions` and `overflow-checks` stay on); it is ~17×
+  faster.
+- Cost anchors for budgeting: ~60 ms/cell for a 64² e2e byte-identity cell with
+  the C oracle; per-cell cost falls steeply with speed (114 ms at speed 0 → 2 ms
+  at speed 9) and rises steeply with frame size (~12.6 s/cell at 480p, ~250 s at
+  2160²).

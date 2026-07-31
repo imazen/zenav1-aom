@@ -8,6 +8,22 @@ newest first), [`PARITY.md`](PARITY.md) (stills-parity ledger),
 [`CLAUDE.md`](CLAUDE.md) (coordination rules + the Known Bugs ledger), and
 [`PORTING.md`](PORTING.md) (Rust module ↔ upstream C map).
 
+**Read these two before your first change** — they exist so the expensive
+lessons are not re-derived:
+
+- [`docs/DIFFERENTIAL_PLAYBOOK.md`](docs/DIFFERENTIAL_PLAYBOOK.md) — how work
+  gets validated here. Each rule names the specific failure it prevents (a
+  differential that passed for months while comparing the scalar path against
+  itself; a non-vacuity assert satisfiable with zero vector permutations; a
+  benchmark claim inside the noise band). If you are adding a gate, porting a
+  kernel, or chasing a divergence, start here.
+- [`docs/LIBAOM_UPSTREAM_NOTES.md`](docs/LIBAOM_UPSTREAM_NOTES.md) — libaom's
+  own ISA divergences, undefined behaviour, and surprising-but-intended
+  behaviour. Same source really does produce different results per target in
+  several places, and libaom's own cross-tier tests do not catch them because
+  they exercise the domain where the tiers agree. Check here before concluding
+  the port is wrong.
+
 ## Fresh-box setup
 
 ```sh
@@ -39,8 +55,16 @@ python3 xtask/conformance.py --fetch --scope intra   # decode-conformance vector
 
 - **Gate 1 — decoder byte-identity: intra scope DONE.** Bit-identical to C
   across the CI-wired intra conformance corpus (byte-identity + golden MD5),
-  incl. q62/q63, superres, SB128, multi-tile, film grain. Inter-frame decode is
-  in progress through a single-reference feature ladder (concurrent track).
+  incl. q62/q63, SB128 (230/235) and film grain (2/235). **Corrected 2026-07-31:
+  this line previously also claimed superres and multi-tile; the corpus contains
+  ZERO of either** — every vector's frame 0 was parsed
+  (`benchmarks/decoder_corpus_feature_tuples_2026-07-30.tsv`) and the corpus is
+  235/235 4:2:0, bd8/bd10 only, with no superres, tiles>1, QM, segmentation,
+  `reduced_tx_set`, `disable_cdf_update`, 4:2:2, 4:4:4 or 12-bit. Those axes are
+  covered by the PORT-GENERATED gates (`real_bitstream`,
+  `config_permutations_decode`), not by conformance — see
+  `docs/DECODER_CONFIG_COVERAGE_2026-07-30.md`. Inter-frame decode is in progress
+  through a single-reference feature ladder (concurrent track).
 - **Gate 2 — encoder byte-identity: DONE for ALLINTRA across --cpu-used 0-9**
   on the synthetic grids, and on real conformance-decoded content at speed 0
   (KB-6, 30/30) plus 45/60 at speeds 1-4 (KB-13). Non-default stills knobs
@@ -53,10 +77,12 @@ python3 xtask/conformance.py --fetch --scope intra   # decode-conformance vector
   architecture-dependent surface in `transform/simd/prims.rs`. 30 of 34
   transform bench cells improved 18–66% on an Apple M4 Pro
   (`benchmarks/dsp_neon_transform_2026-07-25.md`). Two things to know before
-  working here: the full suite on ARM is 755/770, and the 15 failures are the
-  PRE-EXISTING float differentials in `aom-encode` (CLAUDE.md KB-ARM-FLOAT, not
-  yours); and `AOM_FORCE_SCALAR=1` is a no-op for the NEON tier outside test
-  builds, so never read a pinned/unpinned bench pair as scalar-vs-SIMD on ARM.
+  working here: **as of 2026-07-30 KB-ARM-FLOAT is CLOSED and the full workspace
+  is 875/875 on ARM** (this line previously said 755/770 with 15 pre-existing
+  float failures — all four roots are fixed, and CI's `test-macos-aarch64` leg
+  now runs `--workspace` in both dispatch modes); and `AOM_FORCE_SCALAR=1` is a
+  no-op for the NEON tier outside test builds, so never read a pinned/unpinned
+  bench pair as scalar-vs-SIMD on ARM.
   When you touch anything under `transform/simd`, check BOTH targets
   (`cargo check --target x86_64-apple-darwin` catches tier-list errors the host
   build cannot).
