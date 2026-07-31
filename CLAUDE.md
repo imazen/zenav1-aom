@@ -1807,6 +1807,17 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   inert). Its grid is deliberately CORRELATED: the first version used uniform white noise and
   self-reported `0 of 500` out-of-`int16` blocks — the combine only leaves `int16` when the four
   8x8 quadrants agree in sign, i.e. on the smooth content an intra residual actually produces.
+- **Root #4 CONFIRMED FROM THE AARCH64 BOX, before CI answered** — throwaway instrumentation
+  (added, run, reverted; never committed) counted, per KB-20 cell, how many `aom_hadamard_16x16`
+  outputs leave `int16` on the `_c`/NEON arm. That predicate is *exactly* the x86 mismatch set:
+  all 7 x86-divergent cells have out-of-`int16` coefficients (bd10 cq12/s9 4 blocks, cq20/s9 3,
+  cq32/s9 3, cq48/s8 4, cq48/s9 3, cq63/s8 16, cq63/s9 16) and all 15 x86-matching bd10/bd12
+  cells below cq63 have **zero**. 7/7 recall, 22/24 cells predicted. The two misses are bd12
+  cq63 s8/s9 (11 and 7 out-of-range blocks, MATCH on x86) — false negatives only, and expected:
+  the estimate is a *decision* input, so a numeric difference need not flip the winning mode,
+  least of all at cq63 where nearly everything skips. That also explains the otherwise odd shape
+  of the x86 table (all 12 bd12 cells matched while half of bd10 diverged): the bd12 residual
+  reaches the overflow band in fewer blocks on this crop, not more.
 - **VERIFICATION SPLIT — say which half is measured where.** aarch64 (this box): the 24-cell gate
   and all 6 unit gates are green, the non-x86 arm is byte-identical to before this fix (it is the
   same call), `-p zenav1-aom-encode/-bench/-dsp` = 280/171/361 all 0 failed. x86: the model rests
