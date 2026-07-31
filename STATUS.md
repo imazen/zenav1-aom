@@ -152,9 +152,18 @@ differential runs **25 permutations, 24 with a vector tier live** — it was
 VACUOUS on ARM before (the closure gated on `X64V3Token`, a stub off x86-64);
 `txfm2d_simd_perm_diff` `simd_perms=24 scalar_perms=1`; the C-oracle transform
 differentials green, so C == scalar == every SIMD tier; full `aom-dsp` suite
-352/352 in BOTH dispatch modes. Workspace 755/770 — the 15 failures are the
-pre-existing aarch64 float-parity failures in aom-encode (KB-ARM-FLOAT), whose
-failure set is byte-identical at clean `4b92e2b`.
+352/352 in BOTH dispatch modes. Workspace 755/770 at the time of THIS entry —
+the 15 failures were the pre-existing aarch64 float-parity failures in
+aom-encode (KB-ARM-FLOAT), failure set byte-identical at clean `4b92e2b`.
+**Superseded 2026-07-30: KB-ARM-FLOAT is CLOSED and the workspace is 875/875 on
+aarch64** (0 failed, 8 ignored), in both dispatch modes, and CI's
+`test-macos-aarch64` leg now runs `--workspace` in both modes rather than
+`-p zenav1-aom-dsp`. The four roots were: clang's default `-ffp-contract=on`
+fusing multiply-accumulates Rust never fuses (11 tests); arm64 RTCD binding the
+CNN convolve with a compile-time `#define` so the "C-scalar" oracle was not
+scalar (2); a harness feeding `av1_block_error_c` signed-overflow UB — not float
+at all (1); and one inherently x86-only contract, now split into an x86 test and
+a non-x86 test that asserts lattice/mask parity (1). See CLAUDE.md KB-ARM-FLOAT.
 
 **Measured** (`benchmarks/dsp_neon_transform_2026-07-25.{md,tsv,meta}`, port-only
 `dsp_kernels` bench, before = `4b92e2b`): **30 of 34 transform cells improved
