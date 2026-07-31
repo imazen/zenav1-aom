@@ -59,7 +59,8 @@ python3 xtask/conformance.py --fetch --scope intra   # decode-conformance vector
   this line previously also claimed superres and multi-tile; the corpus contains
   ZERO of either** — every vector's frame 0 was parsed
   (`benchmarks/decoder_corpus_feature_tuples_2026-07-30.tsv`) and the corpus is
-  235/235 4:2:0, bd8/bd10 only, with no superres, tiles>1, QM, segmentation,
+  233/235 4:2:0 + 2 monochrome (the subsampling flags read 4:2:0 on all 235,
+  but 2 carry `mono=1`), bd8/bd10 only, with no superres, tiles>1, QM, segmentation,
   `reduced_tx_set`, `disable_cdf_update`, 4:2:2, 4:4:4 or 12-bit. Those axes are
   covered by the PORT-GENERATED gates (`real_bitstream`,
   `config_permutations_decode`), not by conformance — see

@@ -130,17 +130,19 @@ multiplies `dqcoeff` in 16 bits.
   `av1_quantize_fp_avx2` at `:224`). `dqcoeff` is `_mm256_mullo_epi16` at `:211`.
   *(`_mm_packs_epi32` — the spelling the entry used to carry — is the SSE2
   variant, `av1/encoder/x86/av1_quantize_sse2.c:28-29`. Also saturating.)*
-- The SIMD group threshold `abs > (dequant>>1) - 1`
-  (`av1_quantize_avx2.c:51-54`, applied at `:204`) is one *more* permissive
-  than `_c`'s `abs*2 >= dequant` (`av1/encoder/av1_quantize.c:57`, inside
-  `av1_quantize_fp_no_qmatrix` at `:38`) whenever `dequant` is odd — `floor`
-  vs `ceil` of `dequant/2`.
-- **Bigger than the odd-`dequant` case:** the SIMD gate is per **16-coefficient
+- **The largest divergence in this entry — read this one first.** The SIMD
+  gate is per **16-coefficient
   group** — if any lane passes, all 16 are quantized (`av1_quantize_avx2.c:204-205`;
   `av1_quantize_sse2.c:91-95`, where two 8-lane masks are OR-reduced into one
   `nzflag`) — while `_c` gates each coefficient individually
   (`av1_quantize.c:57`). A sub-threshold coefficient in a passing group can come
   out nonzero in SIMD and is forced to zero in `_c`.
+- **Secondary, an off-by-one at odd `dequant`.** The SIMD group threshold
+  `abs > (dequant>>1) - 1`
+  (`av1_quantize_avx2.c:51-54`, applied at `:204`) is one *more* permissive
+  than `_c`'s `abs*2 >= dequant` (`av1/encoder/av1_quantize.c:57`, inside
+  `av1_quantize_fp_no_qmatrix` at `:38`) whenever `dequant` is odd — `floor`
+  vs `ceil` of `dequant/2`.
 - **SSE2 is a third variant, but not for the reason this entry used to give.**
   *(Corrected 2026-07-31.)* Its threshold `abs >= dequant>>1`
   (`av1_quantize_sse2.c:162-163`, compared at `:91-94`) is the *same integer

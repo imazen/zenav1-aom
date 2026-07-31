@@ -14,7 +14,9 @@ transcribed oracles can carry shared bugs).
   wired in CI: `xtask/conformance.py --fetch --scope intra`; gate = byte-identity + golden MD5).
   **Scope caveat, MEASURED 2026-07-30** (`benchmarks/decoder_corpus_feature_tuples_2026-07-30.tsv`,
   every vector's frame 0 parsed): the intra corpus is a deep sweep of ONE sequence shape —
-  **235/235 are 4:2:0**, bd8 (169) or bd10 (66), 230/235 SB128, and ZERO carry superres,
+  **233/235 are 4:2:0 and the other 2 are monochrome** (the subsampling flags read
+  4:2:0 on all 235, but 2 carry `mono=1` and so have no chroma planes at all),
+  bd8 (169) or bd10 (66), 230/235 SB128, and ZERO carry superres,
   tiles>1, QM, segmentation, `reduced_tx_set`, `disable_cdf_update`, `delta_lf_present`,
   4:2:2, 4:4:4 or 12-bit. Those axes are covered by the port-generated gates instead
   (`real_bitstream`, `config_permutations_decode`), NOT by conformance. Do not read "the
