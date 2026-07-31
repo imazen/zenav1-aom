@@ -1706,7 +1706,7 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   new non-x86 test; the x86 test compiles on this host — checked by temporarily forcing its
   `cfg` on, zero errors — but is correctly not selected here).
 
-### KB-20 — Encoder: bd10/bd12 x `--cpu-used>=8` PANICKED (unported hbd nonrd estimate arm) — FIXED ✅ 2026-07-30
+### KB-20 — Encoder: bd10/bd12 x `--cpu-used>=8` PANICKED (unported hbd nonrd estimate arm) — FIXED ✅ 2026-07-30 (roots 1-3 aarch64-measured; root 4 = the x86 `aom_hadamard_16x16` tier split, source-derived + CI-measured)
 - **Found 2026-07-30** by the speed axis of the config-permutation gate (`9a996b9`).
   `crates/aom-encode/src/nonrd_pickmode.rs` carried a hard `assert!(env.bd == 8, "HANDOFF: hbd
   estimate arm (av1_quantize_fp + fp scans) not ported")`. Speeds 8 and 9 use the nonrd
@@ -1749,9 +1749,11 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
      Port: `nonrd_pickmode::quantize_fp_dispatched`, `cfg(target_arch)`-selected (aarch64/arm =
      NEON model, MEASURED; x86/x86_64 = AVX2 model, TRANSCRIBED but not runnable on this host;
      otherwise `_c`). This is the same class of ISA-conditional truth as the `-ffp-contract` note
-     in `reference/BUILD_CONFIG.md`. **If the KB-20 gate ever fails on x86, check the SSE2 tier
-     first**: `av1_quantize_fp_sse2` uses `thr = dequant >> 1` without the `- 1` and gates per 8
-     lanes, so an x86 build that falls back to SSE2 can differ from the AVX2 model.
+     in `reference/BUILD_CONFIG.md`. **The "+-65534" premise holds on `_c`/NEON ONLY** — root #4
+     below is why it is false on x86, which made this model's x86 arm inert rather than wrong.
+     The old "if the KB-20 gate fails on x86, check the SSE2 tier first" hint pointed at the
+     wrong suspect: `av1_quantize_fp_sse2`'s `thr = dequant >> 1` (no `- 1`) and 8-lane grouping
+     do differ from AVX2, but neither is reachable at this call site once root #4 is modelled.
 - **Unit gates:** `aom-encode/tests/nonrd_block_yrd_hbd_diff.rs` — the walk composition vs a
   pure-C oracle (`ref_hadamard`/`ref_quantize_fp`/`ref_satd`/`ref_highbd_block_error`) over 4,800
   bd10/bd12 cells, run at 8-bit residual magnitude where every tier and `_c` provably agree (the
@@ -1764,15 +1766,54 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   42 B).
 - **Still out of envelope at every bit depth** (unchanged, both arms): lossless TX_4X4
   (`unimplemented!`) and the screen-content palette arm (`debug_assert`).
-- **OPEN, carried forward — the x86 arm of root 3 is transcribed, not measured.** This box is
-  aarch64, so `speed_nonrd_hbd_byte_identity` measures only the NEON model. On x86 CI two things
-  can bite: (a) the AVX2 transcription is wrong out of `int16` -> the 24-cell gate fails with the
-  ISA hint in its message; (b) the AVX2 group threshold `abs > (dequant>>1) - 1` is one MORE
-  permissive than `_c`'s `abs*2 >= dequant` at odd `dequant`, so
-  `quantize_fp_dispatched_reduces_to_c_inside_int16` could fail at a boundary coefficient even
-  in the agreeing regime. Both failures are self-describing and localised to
-  `quantize_fp_dispatched`; neither can produce corrupt output (a wrong intra-mode ESTIMATE picks
-  a legal mode, it does not mis-reconstruct pixels). First x86 run closes this.
+- **The first x86 CI run (30595796744) FAILED the 24-cell gate — and the failure exonerated
+  root 3 and named a FOURTH ISA-conditional kernel.** Both `quantize_fp_dispatched` unit teeth
+  (`..._reduces_to_c_inside_int16`, `..._differs_from_c_outside_int16`) PASSED on x86 while
+  `speed_nonrd_hbd_byte_identity` + the `speed_envelope_stock_map_is_pinned` b10_64 row failed
+  (identically under the scalar pin, as expected — the arm is `cfg`-selected, so
+  `AOM_FORCE_SCALAR` cannot reach it). That combination localises the divergence UPSTREAM of the
+  quantizer. Measured x86 table: bd10 s8 MATCH at cq{5,12,20,32} and MISMATCH at cq{48,63};
+  bd10 s9 MATCH at cq5 and MISMATCH at cq{12,20,32,48,63} (port 710/487/293/120 vs C
+  708/490/295/119) — i.e. bigger `dequant` (higher cq) -> more coefficients out of `int16`.
+- **ROOT #4 — `aom_hadamard_16x16` is ISA-conditional TOO, and it runs first. FIXED.**
+  The 4-way combine is `tran_low_t` (**int32**) in `aom_hadamard_16x16_c` (`aom_dsp/avg.c:249`)
+  and `int32x4_t` (`vhaddq_s32`/`vaddq_s32`) in `aom_hadamard_16x16_neon`
+  (`aom_dsp/arm/hadamard_neon.c:188`) — but **`int16` with wrapping** in
+  `aom_hadamard_16x16_avx2` (`aom_dsp/x86/avg_intrin_avx2.c:144`, `_mm256_add_epi16` +
+  `_mm256_srai_epi16`) and `aom_hadamard_16x16_sse2` (`aom_dsp/x86/avg_intrin_sse2.c:442`),
+  whose `store_tran_low` then sign-extends the wrapped `int16` back to `tran_low_t`. libaom's own
+  comments bound the input at 9-bit `src_diff` and the output at "[-32640, 32640]" — inside
+  `int16`, so at bd8 every tier agrees and the split is invisible (which is why upstream's
+  cross-tier tests never see it). The hbd estimate feeds an 11-/13-bit residual, the combine
+  reaches +-65534, and x86 wraps where `_c`/NEON do not — changing the coefficients BEFORE
+  `av1_quantize_fp`, `aom_satd` and `av1_highbd_block_error` ever see them. Port:
+  `nonrd_pickmode::hadamard_16x16_dispatched`, `cfg(target_arch)`-selected. **This arm is
+  tier-INDEPENDENT on x86-64** (AVX2 and SSE2 make the same `int16` choice, and SSE2 is baseline),
+  unlike root 3 — so the AVX2-vs-SSE2 worry recorded above is moot here.
+- **Root 3's model was RIGHT; its premise was wrong on x86.** With root #4 fixed, every
+  coefficient reaching `av1_quantize_fp` on x86 is `int16`-valued, so `_mm_packs_epi32` is inert
+  and the AVX2 group threshold `abs > (dequant>>1) - 1` never separates from `_c` at this call
+  site. `quantize_fp_dispatched` is unchanged.
+- **The three neighbouring kernels were checked the same way and are NOT ISA-conditional:**
+  `aom_hadamard_8x8` is `int16_t` in `_c` (`hadamard_col8`, avg.c:149), SSE2 and NEON alike;
+  `aom_satd_{avx2,sse2}` accumulate `abs_epi32` in 32 bits like `_c`; `av1_highbd_block_error_avx2`
+  subtracts in `epi32` and squares with `_mm256_mul_epi32` into 64-bit accumulators like `_c`.
+- **Unit gates for root #4** (`nonrd_block_yrd_hbd_diff.rs`, both arch arms assert something):
+  `hadamard_16x16_models_agree_with_c_at_bd8_magnitude` pins BOTH models to the real exported
+  `aom_hadamard_16x16_c` at 9-bit residual magnitude on every host;
+  `hadamard_16x16_dispatch_is_isa_conditional_at_hbd_magnitude` pins the `_c` model to the real C
+  fn at bd10 magnitude, requires the dispatched model to DIVERGE on x86 and to be byte-identical
+  off x86, and asserts the x86 output is `int16`-valued (the fact that makes root 3's narrow
+  inert). Its grid is deliberately CORRELATED: the first version used uniform white noise and
+  self-reported `0 of 500` out-of-`int16` blocks — the combine only leaves `int16` when the four
+  8x8 quadrants agree in sign, i.e. on the smooth content an intra residual actually produces.
+- **VERIFICATION SPLIT — say which half is measured where.** aarch64 (this box): the 24-cell gate
+  and all 6 unit gates are green, the non-x86 arm is byte-identical to before this fix (it is the
+  same call), `-p zenav1-aom-encode/-bench/-dsp` = 280/171/361 all 0 failed. x86: the model rests
+  on the C source cited above plus the CI legs — **no x86 code can be executed on an
+  aarch64-apple-darwin box** (Rosetta is not installed here, so even a cross-compiled AVX2 probe
+  cannot run). The `cargo check --target {x86_64,i686}-unknown-linux-gnu --lib` legs prove only
+  that the x86 arm compiles.
 
 ### KB-21 — Encoder: cpu-4/5 is the fragile band — ROOT #1 FIXED ✅ 2026-07-30 (`early_term_after_none_split` was unported); ROOT #2 OPEN, narrowed
 - **Found 2026-07-30** by the speed axis (`9a996b9`). Not a knob-combination bug: these

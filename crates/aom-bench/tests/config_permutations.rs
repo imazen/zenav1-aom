@@ -4341,12 +4341,19 @@ fn hbd_speed_cell(bd: u8, cq: i32, speed: i32) -> EncodeCell {
 ///    this grid (the prune is a ratio test) — but the wrong form `2*(bd-8)`
 ///    diverged here, which is how the right one was found;
 /// 3. `av1_quantize_fp` is **ISA-conditional** once a coefficient leaves
-///    `int16`, which `aom_hadamard_16x16` (+-65534) does routinely at bd10/12:
-///    NEON truncates on narrow, x86 saturates, `_c` does neither. That is the
-///    root of the last 3 divergent cells and is modelled by
-///    `nonrd_pickmode::quantize_fp_dispatched`. **This gate is therefore the
-///    one place that measures the model — it is expected to be sensitive to the
-///    host ISA, because libaom's own encoder is.**
+///    `int16`, which `aom_hadamard_16x16` (+-65534) does routinely at bd10/12
+///    on `_c`/NEON: NEON truncates on narrow, x86 saturates, `_c` does neither.
+///    That is the root of the last 3 divergent cells on aarch64 and is modelled
+///    by `nonrd_pickmode::quantize_fp_dispatched`;
+/// 4. `aom_hadamard_16x16` is **ISA-conditional too, and it runs first** — its
+///    4-way combine is int32 in `_c`/NEON but int16-WRAPPING in AVX2/SSE2, so
+///    the x86 tiers change the coefficients before the quantizer, satd and
+///    block-error ever see them (`nonrd_pickmode::hadamard_16x16_dispatched`).
+///    Found by the FIRST x86 run of this gate (CI 30595796744): 6 of 24 cells
+///    diverged there while both `quantize_fp_dispatched` unit teeth passed.
+///
+/// **This gate is therefore the one place that measures both models — it is
+/// expected to be sensitive to the host ISA, because libaom's own encoder is.**
 ///
 /// Nothing else on the arm was bd8-shaped: predict, subtract, the cost tables
 /// and `rdmult` were all already bd-parameterised — the same shape the
@@ -4401,13 +4408,18 @@ fn speed_nonrd_hbd_byte_identity() {
          a divergence here means the ported arm computes the wrong estimate, \
          which is worse than the panic was.\n\
          FIRST THING TO CHECK IF THIS IS A NEW HOST/ISA rather than a code \
-         change: `nonrd_pickmode::quantize_fp_dispatched` models the SIMD tier \
-         of `av1_quantize_fp` that THIS build dispatches, because outside int16 \
-         the tiers disagree with `av1_quantize_fp_c` and with each other. The \
-         aarch64 (NEON, truncating-narrow) arm is the measured one; the x86 \
-         (AVX2, saturating-narrow) arm is transcribed, and an x86 build that \
-         falls back to SSE2 uses `thr = dequant >> 1` without the `- 1`. \
-         Offenders: {failures:?}"
+         change: TWO kernels on this arm are ISA-conditional, and they compose \
+         in this order. (a) `nonrd_pickmode::hadamard_16x16_dispatched` — \
+         `aom_hadamard_16x16`'s 4-way combine is int32 in `_c` and NEON but \
+         int16-WRAPPING in AVX2 and SSE2, so on x86 every coefficient reaching \
+         the quantizer is already int16-valued. (b) \
+         `nonrd_pickmode::quantize_fp_dispatched` — outside int16 the \
+         `av1_quantize_fp` tiers disagree with `av1_quantize_fp_c` and with each \
+         other (NEON truncates on narrow, x86 saturates). Localise with the unit \
+         gates in `aom-encode/tests/nonrd_block_yrd_hbd_diff.rs`: if the two \
+         `quantize_fp_dispatched_*` teeth PASS and this gate fails, the \
+         divergence is UPSTREAM of the quantizer — that is exactly how (a) was \
+         found on the first x86 run. Offenders: {failures:?}"
     );
 }
 

@@ -137,9 +137,22 @@
 //!    `aom_highbd_sadWxH_bits{8,10,12}` — the raw SAD `>> (bd - 8)`. See
 //!    [`nonrd_pick_intra_mode`];
 //! 3. **`av1_quantize_fp` is ISA-conditional in this regime.** Every SIMD tier
-//!    is a 16-bit kernel; `aom_hadamard_16x16` reaches +-65534, so the tiers
-//!    stop agreeing with `av1_quantize_fp_c` — and with each other — exactly
-//!    here. [`quantize_fp_dispatched`] carries the measurement and the model.
+//!    is a 16-bit kernel; on `_c`/NEON `aom_hadamard_16x16` reaches +-65534, so
+//!    the tiers stop agreeing with `av1_quantize_fp_c` — and with each other —
+//!    exactly here. [`quantize_fp_dispatched`] carries the measurement and the
+//!    model;
+//! 4. **`aom_hadamard_16x16` is ISA-conditional too, and it comes FIRST.** Its
+//!    4-way combine is `int32` in `_c` and NEON but `int16` (wrapping) in AVX2
+//!    and SSE2. At bd8 the documented range fits `int16` and every tier agrees;
+//!    at bd10/bd12 the x86 tiers wrap where `_c`/NEON do not, which changes the
+//!    coefficients BEFORE quantization, satd and block-error ever see them.
+//!    [`hadamard_16x16_dispatched`] carries that model. (Found by the first x86
+//!    CI run of the KB-20 gate: the two `quantize_fp_dispatched` unit teeth
+//!    passed there while the byte gate failed, which localises the divergence
+//!    upstream of the quantizer.) `aom_hadamard_8x8`, `aom_satd` and
+//!    `av1_highbd_block_error` were checked the same way and are **not**
+//!    ISA-conditional: the 8x8 Hadamard is `int16_t` in every tier, and satd /
+//!    block-error are 32-/64-bit in every tier.
 //!
 //! Everything else on the arm was already bd-parameterised (predict, subtract,
 //! the cost tables, `rdmult`), which is the same shape the deltaq-mode-3
@@ -582,6 +595,112 @@ pub fn block_yrd_lowbd(
 }
 
 // ---------------------------------------------------------------------------
+// aom_hadamard_16x16 AS DISPATCHED — the ISA-conditional kernel (KB-20 root #4,
+// found 2026-07-30 by the FIRST x86 CI run of the KB-20 gate)
+// ---------------------------------------------------------------------------
+
+/// `aom_hadamard_16x16` **as the reference build actually dispatches it** —
+/// deliberately NOT always `aom_hadamard_16x16_c`.
+///
+/// ## Why this exists (KB-20 root #4)
+/// The 8x8 stage is `int16_t` in EVERY tier (`hadamard_col8`, `aom/dsp/avg.c:149`;
+/// `hadamard_8x8_sse2`; `hadamard8x8_one_pass` NEON), so all tiers agree there.
+/// The 16x16 **4-way combine** is where they split, and the split is by ISA:
+///
+/// * `aom_hadamard_16x16_c` (`aom_dsp/avg.c:249`) combines in `tran_low_t`
+///   (**int32**): `b0 = (a0 + a1) >> 1` then `coeff[0] = b0 + b2`, no narrowing;
+/// * `aom_hadamard_16x16_neon` (`aom_dsp/arm/hadamard_neon.c:188`) combines in
+///   `int32x4_t` — `vhaddq_s32` / `vaddq_s32` — i.e. **identical to `_c`**;
+/// * `aom_hadamard_16x16_avx2` (`aom_dsp/x86/avg_intrin_avx2.c:144`) and
+///   `aom_hadamard_16x16_sse2` (`aom_dsp/x86/avg_intrin_sse2.c:442`) combine in
+///   **int16** — `_mm256_add_epi16` / `_mm_add_epi16` then `_mm{,256}_srai_epi16`
+///   — so the sum **WRAPS**, and only the final `store_tran_low` sign-extends
+///   the wrapped `int16` back out to `tran_low_t`.
+///
+/// libaom's own comments bound the input at `src_diff` 9-bit ([-255, 255]) and
+/// the output at "16 bit, [-32640, 32640]", which fits `int16` — so at **bd8**
+/// every tier agrees and the divergence is invisible. The **hbd** nonrd estimate
+/// feeds an 11-/13-bit residual instead: the 8x8 stage already wraps in `int16`
+/// (all tiers, identically), and the combine then reaches **±65534**, where the
+/// x86 tiers wrap and `_c`/NEON do not.
+///
+/// The output ORDER is the same in all four (C's trailing "extra shift to match
+/// AVX2" loop reproduces the lane permutation AVX2's `store_tran_low` performs
+/// for free, and SSE2 gets there via `store_tran_low_offset_4`), so only the
+/// arithmetic width is ISA-conditional.
+///
+/// ## Why the x86 arm is tier-INDEPENDENT (unlike [`quantize_fp_dispatched`])
+/// AVX2 and SSE2 make the same `int16` choice here, and SSE2 is baseline on
+/// x86-64 — so on x86-64 this model holds whichever tier RTCD picks. (A 32-bit
+/// x86 build on a pre-SSE2 CPU would run `_c`; not a configuration this project
+/// tests, and not reachable on any CI leg.)
+///
+/// **NOT locally measurable on an aarch64 box** — this arm rests on the C source
+/// above plus the x86 CI leg of `config_permutations::speed_nonrd_hbd_byte_identity`.
+#[inline]
+fn hadamard_16x16_dispatched(src: &[i16], src_stride: usize) -> [i32; 256] {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        // aom_hadamard_16x16_avx2 / _sse2: the combine runs in int16 and wraps.
+        let mut t = [0i16; 256];
+        for idx in 0..4 {
+            let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
+            // aom_hadamard_8x8_c's output is int16_t-valued by construction
+            // (`buffer2` is int16_t), so this narrow is exact — it is the
+            // `int16_t *t_coeff` staging buffer both x86 tiers write into.
+            let sub = aom_dsp::dist::hadamard::hadamard_8x8(&src[off..], src_stride);
+            for (d, &s) in t[idx * 64..idx * 64 + 64].iter_mut().zip(sub.iter()) {
+                *d = s as i16;
+            }
+        }
+        let mut coeff = [0i32; 256];
+        for idx in 0..64 {
+            let a0 = t[idx];
+            let a1 = t[idx + 64];
+            let a2 = t[idx + 128];
+            let a3 = t[idx + 192];
+            // _mm256_add_epi16 / _mm256_sub_epi16 WRAP, then _mm256_srai_epi16
+            // shifts the already-wrapped int16 (C shifts the un-wrapped int32).
+            let b0 = a0.wrapping_add(a1) >> 1;
+            let b1 = a0.wrapping_sub(a1) >> 1;
+            let b2 = a2.wrapping_add(a3) >> 1;
+            let b3 = a2.wrapping_sub(a3) >> 1;
+            // store_tran_low sign-extends the wrapped int16 to tran_low_t.
+            coeff[idx] = i32::from(b0.wrapping_add(b2));
+            coeff[idx + 64] = i32::from(b1.wrapping_add(b3));
+            coeff[idx + 128] = i32::from(b0.wrapping_sub(b2));
+            coeff[idx + 192] = i32::from(b1.wrapping_sub(b3));
+        }
+        // Same lane permutation the `_c` port applies (AVX2 gets it from
+        // store_tran_low's 128-bit-lane unpack; SSE2 from store_tran_low_offset_4).
+        for i in 0..16 {
+            for j in 0..4 {
+                coeff.swap(i * 16 + 4 + j, i * 16 + 8 + j);
+            }
+        }
+        coeff
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        // `_c` == NEON (both combine in 32 bits). MEASURED on aarch64: the
+        // 24-cell KB-20 byte-identity gate is green with this arm.
+        aom_dsp::dist::hadamard::hadamard_16x16(src, src_stride)
+    }
+}
+
+/// Test hook: the `_c`/NEON model of `aom_hadamard_16x16`, and the
+/// as-dispatched one, side by side. Lets the KB-20 unit gate assert BOTH that
+/// they agree at bd8 residual magnitude (where libaom's own cross-tier tests
+/// live) and that the ISA split is real where the port claims it is.
+#[doc(hidden)]
+pub fn hadamard_16x16_models(src: &[i16], src_stride: usize) -> ([i32; 256], [i32; 256]) {
+    (
+        aom_dsp::dist::hadamard::hadamard_16x16(src, src_stride),
+        hadamard_16x16_dispatched(src, src_stride),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // av1_quantize_fp AS DISPATCHED — the ISA-conditional kernel (KB-20 root #3)
 // ---------------------------------------------------------------------------
 
@@ -621,6 +740,20 @@ pub fn block_yrd_lowbd(
 /// the aarch64 `-ffp-contract` note in `reference/BUILD_CONFIG.md`. The
 /// non-x86/non-arm arm falls back to the `_c` semantics, which is what a build
 /// with no SIMD tier would run.
+///
+/// ## x86 addendum (KB-20 root #4, 2026-07-30)
+/// On x86 the `±65534` premise above **does not hold**, and the reason is
+/// upstream of this function: [`hadamard_16x16_dispatched`] shows that
+/// `aom_hadamard_16x16_{avx2,sse2}` already wrap their combine to `int16`, so
+/// every coefficient reaching `av1_quantize_fp` on x86 is `int16`-valued and the
+/// `_mm_packs_epi32` narrow modelled below is **inert**. That is exactly what
+/// the first x86 CI run reported: both unit teeth
+/// (`quantize_fp_dispatched_reduces_to_c_inside_int16` and
+/// `..._differs_from_c_outside_int16`) PASSED while the 24-cell byte-identity
+/// gate failed — i.e. this function was right and its INPUT was wrong. The
+/// AVX2-vs-SSE2 threshold difference noted below is therefore also inert in this
+/// regime (it only ever mattered for the out-of-range coefficients x86 does not
+/// produce here), though the model is kept faithful to AVX2 regardless.
 ///
 /// `iscan` must be the inverse of the scan `av1_block_yrd` selected for this
 /// transform (the SIMD tiers derive the EOB from `iscan` in raster order, not
@@ -796,10 +929,7 @@ pub fn block_yrd_hbd(
             let n = step << 4; // coefficients in this sub-block
             let eob: u16 = match tx_size {
                 2 => {
-                    coeff.copy_from_slice(&aom_dsp::dist::hadamard::hadamard_16x16(
-                        src_diff,
-                        diff_stride,
-                    ));
+                    coeff.copy_from_slice(&hadamard_16x16_dispatched(src_diff, diff_stride));
                     quantize_fp_dispatched(
                         &coeff[..256],
                         &r2,

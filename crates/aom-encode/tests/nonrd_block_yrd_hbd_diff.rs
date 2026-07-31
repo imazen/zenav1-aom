@@ -342,3 +342,105 @@ fn hbd_transpose_scans_are_inverse_permutations() {
          carries an extra column shift that aom_hadamard_lp_16x16_c does not)"
     );
 }
+
+/// KB-20 root #4 — the `aom_hadamard_16x16` tier split, gated on BOTH sides.
+///
+/// At bd8 residual magnitude (`src_diff` 9-bit, the range libaom's own comments
+/// and cross-tier tests bound the function to) the combine cannot leave `int16`,
+/// so `_c`, NEON, AVX2 and SSE2 are contractually identical. Both of the port's
+/// models must therefore equal the REAL exported `aom_hadamard_16x16_c` here —
+/// on every host. This is the "agreement precondition", asserted rather than
+/// assumed, exactly like the walk differential above.
+#[test]
+fn hadamard_16x16_models_agree_with_c_at_bd8_magnitude() {
+    c::ref_init();
+    let mut rng = Rng(0x_4b20_0bad_c0de_0004);
+    for _ in 0..500 {
+        let src: Vec<i16> = (0..256).map(|_| rng.diff(8)).collect();
+        let want = c::ref_hadamard(16, &src, 16);
+        let (c_model, dispatched) = aom_encode::nonrd_pickmode::hadamard_16x16_models(&src, 16);
+        assert_eq!(c_model.as_slice(), want.as_slice(), "the _c/NEON model");
+        assert_eq!(
+            dispatched.as_slice(),
+            want.as_slice(),
+            "the as-dispatched model — inside the int16 combine range every \
+             tier is identical, so this must hold on EVERY arch"
+        );
+    }
+}
+
+/// TEETH for root #4: at hbd residual magnitude the combine reaches +-65534 and
+/// the tier split becomes observable. On x86 the dispatched model MUST diverge
+/// from `_c` (that is the whole reason it exists); everywhere else it MUST NOT
+/// (NEON combines in 32 bits, exactly like `_c`).
+///
+/// The `_c` model is pinned against the real exported `aom_hadamard_16x16_c` at
+/// this magnitude too, so a regression in the shared 8x8 stage cannot hide here.
+#[test]
+fn hadamard_16x16_dispatch_is_isa_conditional_at_hbd_magnitude() {
+    c::ref_init();
+    let mut rng = Rng(0x_4b20_0bad_c0de_0005);
+    let trials = 500usize;
+    let mut differed = 0usize;
+    let mut out_of_int16 = 0usize;
+    for _ in 0..trials {
+        // bd10 residual: [-1023, 1023], but CORRELATED across the 16x16.
+        // Independent white noise does NOT reach the interesting range (the
+        // first grid tried here was uniform-random and produced 0/500
+        // out-of-int16 blocks): the combine only leaves int16 when the four
+        // 8x8 quadrants agree in sign, i.e. on low-frequency content — which is
+        // exactly what an intra residual on a smooth block looks like.
+        let dc = i32::from(rng.diff(10));
+        let src: Vec<i16> = (0..256)
+            .map(|_| (dc + i32::from(rng.diff(6))).clamp(-1023, 1023) as i16)
+            .collect();
+        let want = c::ref_hadamard(16, &src, 16);
+        let (c_model, dispatched) = aom_encode::nonrd_pickmode::hadamard_16x16_models(&src, 16);
+        assert_eq!(
+            c_model.as_slice(),
+            want.as_slice(),
+            "the _c model must track aom_hadamard_16x16_c at every magnitude"
+        );
+        if want.iter().any(|v| i16::try_from(*v).is_err()) {
+            out_of_int16 += 1;
+        }
+        if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
+            // The x86 tiers store a sign-extended int16, so their output is
+            // int16-valued BY CONSTRUCTION. This is why `quantize_fp_dispatched`'s
+            // saturating `_mm_packs_epi32` narrow is inert on x86: it never sees
+            // an out-of-range coefficient at this call site.
+            assert!(
+                dispatched.iter().all(|v| i16::try_from(*v).is_ok()),
+                "the as-dispatched x86 model must be int16-valued"
+            );
+        }
+        if dispatched != c_model {
+            differed += 1;
+        }
+    }
+    assert!(
+        out_of_int16 * 5 > trials,
+        "degenerate grid: only {out_of_int16} of {trials} bd10 blocks left the \
+         int16 range, so this test would not be testing the split"
+    );
+    assert!(
+        differed >= out_of_int16 || !cfg!(any(target_arch = "x86", target_arch = "x86_64")),
+        "x86: every block whose _c coefficients leave int16 must wrap in the \
+         dispatched model, but only {differed} of {out_of_int16} did"
+    );
+    if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
+        assert!(
+            differed * 5 > trials,
+            "x86: the dispatched aom_hadamard_16x16 model agreed with _c on {} \
+             of {trials} out-of-int16 blocks — AVX2/SSE2 combine in int16 and \
+             must wrap, so KB-20 root #4 needs re-measuring",
+            trials - differed
+        );
+    } else {
+        assert_eq!(
+            differed, 0,
+            "non-x86: _c and NEON both combine in 32 bits, so the dispatched \
+             model must be byte-identical to _c"
+        );
+    }
+}
