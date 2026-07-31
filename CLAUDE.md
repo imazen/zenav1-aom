@@ -1794,6 +1794,11 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   coefficient reaching `av1_quantize_fp` on x86 is `int16`-valued, so `_mm_packs_epi32` is inert
   and the AVX2 group threshold `abs > (dequant>>1) - 1` never separates from `_c` at this call
   site. `quantize_fp_dispatched` is unchanged.
+- **Blast radius checked: `block_yrd_hbd` is the ONLY exposed call site.** The port's other
+  `hadamard_16x16` caller (`tx_search.rs:2626`) is the `(hbd == false, TX_16X16)` arm — the hbd
+  arm one line down calls `highbd_hadamard_16x16` instead, and `aom_highbd_hadamard_16x16` is
+  32-bit in every tier (`aom_dsp/x86/avg_intrin_avx2.c:419`). So no other path can feed
+  out-of-`int16` values into an `int16` x86 combine.
 - **The three neighbouring kernels were checked the same way and are NOT ISA-conditional:**
   `aom_hadamard_8x8` is `int16_t` in `_c` (`hadamard_col8`, avg.c:149), SSE2 and NEON alike;
   `aom_satd_{avx2,sse2}` accumulate `abs_epi32` in 32 bits like `_c`; `av1_highbd_block_error_avx2`
