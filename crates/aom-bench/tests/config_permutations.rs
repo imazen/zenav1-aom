@@ -3227,7 +3227,8 @@ fn singleton_levels(speed: i32) -> Vec<(usize, u8)> {
 /// OPEN, pinned: `(speed, singleton row label)` cells on the primary context
 /// where the port is NOT byte-identical to real aomenc.
 ///
-/// Measured 2026-07-30 over the full 10 speeds x 26 axis levels grid. Every one
+/// Measured 2026-07-30 over the full 10 speeds x 26 axis levels grid; re-pinned
+/// the same day after the KB-21 root closed two of the six. Every remaining one
 /// carries the KB-10/KB-12 "cheaper RD decision" near-tie signature (equal or
 /// near-equal payload lengths), and every one is at speed >= 4 — the
 /// winner-mode / multi-winner tiers. The STOCK encode at each of those speeds is
@@ -3238,8 +3239,8 @@ fn singleton_levels(speed: i32) -> Vec<(usize, u8)> {
 /// level from that speed's covering array in [`remap_open_levels`]); a cell that
 /// starts diverging is a regression.
 const SPEED_OPEN_SINGLETONS: &[(i32, &str)] = &[
-    (4, "dir0"),
-    (4, "rtx0"),
+    // `(4, "dir0")` and `(4, "rtx0")` closed 2026-07-30 with the KB-21
+    // `early_term_after_none_split` root.
     (4, "flip0"),
     (5, "minp16"),
     (8, "rtxs1"),
@@ -3256,7 +3257,11 @@ const SPEED_OPEN_SINGLETONS: &[(i32, &str)] = &[
 /// axis and the speed axis MEET.
 ///
 /// Measured 2026-07-30: 3 rows at `--cpu-used=4` (of 63) and 5 at `--cpu-used=8`
-/// (of 63); speeds 0, 1, 2, 3, 5, 6, 7 and 9 are clean at their gated strength,
+/// (of 63), re-measured the same day after the KB-21 root landed -> 2 at
+/// `--cpu-used=4` on a BROADER array (see the cpu-4 note below) and the 5 at
+/// `--cpu-used=8` unchanged, as expected: speed 8 is the nonrd PICKMODE path,
+/// which never runs `rd_pick_partition`, so the KB-21 root cannot reach it;
+/// speeds 0, 1, 2, 3, 5, 6, 7 and 9 are clean at their gated strength,
 /// including the 187-row t=4 array at speed 2. The signature is uniform and is
 /// the KB-10/KB-12 "cheaper RD decision" near-tie: port payloads 0-4 bytes short
 /// of C's. Speed 4 is the winner-mode / multi-winner-mode tier
@@ -3272,9 +3277,14 @@ const SPEED_OPEN_SINGLETONS: &[(i32, &str)] = &[
 /// Self-promoting: a row that starts matching fails here, and so does a row that
 /// starts diverging.
 const SPEED_OPEN_COMBINATIONS: &[(i32, &str)] = &[
-    (4, "ab0-p140-maxp32-paeth0-cfl0-edgf0-tx640-dtxo1-rtxs1-cdf2-trel2"),
-    (4, "ab0-p140-maxp32-smth0-fint0-edgf0-rtxs1-txss0-cdf0-trel0"),
-    (4, "rect0-minp16-maxp64-smth0-tx640-dtxo1-cdf2"),
+    // cpu-4 RE-MEASURED 2026-07-30 after the KB-21 root. Not a like-for-like
+    // count against the three rows this landing replaced: unpinning `(4, dir0)`
+    // and `(4, rtx0)` from SPEED_OPEN_SINGLETONS also lets those levels back
+    // into the array (remap_open_levels), so the executed rows changed. Both
+    // survivors carry `dir0` (no directional luma modes) — the same lead the
+    // speed-8 rows carry.
+    (4, "rect0-p140-maxp32-smth0-paeth0-dir0-tx640-cdf0-trel1"),
+    (4, "minp8-maxp32-smth0-cfl0-dir0-diag0-edgf0-dtxo1-txss0-trel0"),
     (8, "ab0-minp16-paeth0-dir0-adlt0-fint0-edgf0-rtx0-flip0-dtxo1-cdf2-trel0"),
     (8, "ab0-p140-minp8-maxp64-cfl0-dir0-diag0-adlt0-fint0-flip0-dtxo1-cdf0"),
     (8, "maxp32-dir0-adlt0-fint0-tx640-dtxo1"),
@@ -4172,7 +4182,12 @@ fn speed_axis_budget_is_accounted() {
 /// **Measured 2026-07-30, and the shape is counter-intuitive.** The fragile band
 /// is NOT the nonrd speeds (7-9), which are the cleanest above 0 — it is speeds
 /// **4 and 5**, the winner-mode / multi-winner tiers, where three of the five
-/// contexts diverge with every knob at its default. And bd10 is open at most
+/// contexts diverge with every knob at its default. KB-21 root-caused the first
+/// half of that band the same day — `early_term_after_none_split` (ALLINTRA
+/// speed>=4, `speed_features.c:477`) was unported — which closed the cpu-5
+/// column on `q00_64` and `q00_128`; cpu-4 on all three and cpu-5 on mono
+/// remain open on a SECOND root (a leaf-level rate/dist divergence with the
+/// SAME winner mode/tx_size, see the KB-21 entry). And bd10 is open at most
 /// speeds: `av1-1-b10-00-quantizer-00` is byte-exact at speed 0 (a gated
 /// context of the main array), at speed 7, and — since the KB-20 landing
 /// (2026-07-30) — at the nonrd speeds 8 and 9; it diverges at 1, 2, 3, 4, 5 and
@@ -4199,9 +4214,12 @@ fn speed_envelope_stock_map_is_pinned() {
     // listed must be "ok".
     let probes: &[(&str, &str, Option<(usize, usize, usize, usize)>, bool, &[(i32, &str)])] = &[
         ("sz64", SPEED_VECTOR, None, false, &[]),
-        ("q00_64", "av1-1-b8-00-quantizer-00", Some((64, 64, 64, 64)), false, &[(4, "diverge"), (5, "diverge")]),
+        // KB-21 (2026-07-30): the `early_term_after_none_split` root closed the
+        // cpu-5 column on the two 4:2:0 contexts. cpu-4 stays open on all three
+        // and cpu-5 on mono — a SECOND, distinct root (see the KB-21 entry).
+        ("q00_64", "av1-1-b8-00-quantizer-00", Some((64, 64, 64, 64)), false, &[(4, "diverge")]),
         ("q00_mono64", "av1-1-b8-00-quantizer-00", Some((64, 64, 64, 64)), true, &[(4, "diverge"), (5, "diverge")]),
-        ("q00_128", "av1-1-b8-00-quantizer-00", Some((128, 128, 64, 64)), false, &[(4, "diverge"), (5, "diverge")]),
+        ("q00_128", "av1-1-b8-00-quantizer-00", Some((128, 128, 64, 64)), false, &[(4, "diverge")]),
         (
             "b10_64",
             "av1-1-b10-00-quantizer-00",

@@ -157,6 +157,25 @@ pub struct SpeedFeatures {
     /// left/above neighbour -> prune both rects; near-vertical winner
     /// (V/D67/D113) -> prune HORZ; near-horizontal (H/D157/D203) -> prune VERT.
     pub prune_rect_part_using_none_pred_mode: bool,
+    /// `part_sf.early_term_after_none_split` — default 0 (init_part_sf:2319);
+    /// allintra speed>=4 -> 1 (`speed_features.c:477`). Between the SPLIT and
+    /// rectangular stages (`partition_search.c:5851-5856`): when BOTH the NONE
+    /// and the SPLIT stage produced `INT64_MAX` and the node is not the
+    /// superblock root, `terminate_partition_search = 1` — so the rect / AB /
+    /// 4-way stages are skipped and the node returns "no valid partition",
+    /// which INVALIDATES the parent's SPLIT candidate.
+    ///
+    /// KB-21: this was documented here as "INERT (byte no-op, verified) — NONE
+    /// always yields a valid rd on textured content". That is FALSE on real
+    /// photographic content: on `av1-1-b8-00-quantizer-00` 64x64 mono cq32 at
+    /// `--cpu-used=4` the instrumented C fires it at 6 nodes, and the first one
+    /// (mi 6,14, BLOCK_8X8) is what makes C keep PARTITION_NONE at the
+    /// mi(4,12) 16x16 where the port picked SPLIT.
+    ///
+    /// The GOOD arms (`:917`, `:954` — framesize-dependent, >=480p) and the
+    /// REALTIME arm (`:1997`) are outside this port's envelope; the ALLINTRA
+    /// arm is the one modelled here.
+    pub early_term_after_none_split: bool,
     /// `part_sf.prune_sub_8x8_partition_level` — default 0 (init_part_sf:2321);
     /// allintra speed>=6 -> `allow_screen_content_tools ? 0 : 1` (:541-542).
     /// At level 1 (partition_strategy.c:1760-1773): at bsize == BLOCK_8X8,
@@ -484,6 +503,7 @@ impl SpeedFeatures {
             prune_rectangular_split_based_on_qidx: 0, // init_part_sf:2316
             prune_rect_part_using_4x4_var_deviation: false, // init_part_sf:2317
             prune_rect_part_using_none_pred_mode: false, // init_part_sf:2318
+            early_term_after_none_split: false, // init_part_sf:2319
             prune_sub_8x8_partition_level: 0, // init_part_sf:2321
             prune_part4_search: 2,           // allintra base (:355; init default 0)
             default_max_partition_size: 15,  // BLOCK_LARGEST = BLOCK_128X128 (init_part_sf:2286)
@@ -656,6 +676,11 @@ impl SpeedFeatures {
         //      split into (A) wired now, (B) LIVE-but-unported (KB-8), (C) inert.
         //
         //   (A) WIRED on the bd8 4:2:0 allintra KEY path:
+        //     - `early_term_after_none_split = 1` (:477): the post-SPLIT
+        //       terminate (partition_search.c:5851). WIRED by KB-21 — it had been
+        //       listed under (C) as inert on the false premise that NONE always
+        //       yields a valid rd; on real photographic content it fires and is
+        //       what makes cpu-4/5 diverge at STOCK knobs. See the field doc.
         //     - `prune_chroma_modes_using_luma_winner = 1` (:480): chroma-mode
         //       prune keyed on the luma winner (below; consumer intra_uv_rd.rs:1497,
         //       wired per-block via cfg.speed in partition_pick.rs).
@@ -696,10 +721,6 @@ impl SpeedFeatures {
         //       .rs:1203).
         //
         //   (C) INERT on this path (byte no-op, verified):
-        //     - `early_term_after_none_split = 1` (:477): only fires when NONE and
-        //       SPLIT rd are BOTH INT64_MAX and `bsize != sb_size`
-        //       (partition_search.c:5851) — NONE always yields a valid rd on
-        //       textured content, so it never triggers here.
         //     - `ml_predict_breakout_level = 3` (:478): at bd8 the field is already
         //       3 from speed 0/1 (`use_hbd ? .. : 3`, :357/396), so speed 4 is a
         //       no-op at this bit depth.
@@ -716,6 +737,9 @@ impl SpeedFeatures {
         //       (INTER), `prune_tx_type_using_stats = 2` (needs is_480p_or_larger —
         //       false on the {64,128}^2 grid).
         if speed >= 4 {
+            // part_sf (:477) — LIVE, consumer wired in `rd_pick_partition_real`
+            // (KB-21). NOT inert: see the field doc.
+            sf.early_term_after_none_split = Self::early_term_after_none_split_allintra(speed);
             // intra_sf (:480) — LIVE, consumer wired (see (A) above).
             sf.prune_chroma_modes_using_luma_winner = true;
             // ---- KB-8 winner-mode two-pass deltas (chunk 2d-iv flip) ----
@@ -1115,6 +1139,18 @@ impl SpeedFeatures {
         TX_SIZE_SEARCH_METHODS[self.tx_size_search_level as usize][col]
     }
 
+    /// The ALLINTRA derivation of `part_sf.early_term_after_none_split`
+    /// (`speed_features.c:477`, inside `if (speed >= 4)`; default 0 at
+    /// `init_part_sf:2319`).
+    ///
+    /// A free function rather than only a struct field because
+    /// `rd_pick_partition_real` needs it per node and `PickFrameCfg` carries no
+    /// `Default` (19 construction sites); `set_allintra` fills the field from
+    /// THIS function, so there is one derivation.
+    pub const fn early_term_after_none_split_allintra(speed: i32) -> bool {
+        speed >= 4
+    }
+
     /// `winner_mode_count_allowed[multi_winner_mode_type]` (rdopt_utils.h:236):
     /// the top-N list size `store_winner_mode_stats` keeps — `{1, 2, 3}` for
     /// OFF / FAST / DEFAULT.
@@ -1242,6 +1278,8 @@ mod tests {
     #[test]
     fn speed4_allintra_deltas_match_source() {
         let sf = SpeedFeatures::set_allintra(4, false, false);
+        // NEW-and-WIRED at speed 4 (:477) — the post-SPLIT terminate (KB-21).
+        assert!(sf.early_term_after_none_split);
         // NEW-and-WIRED at speed 4 (:480).
         assert!(sf.prune_chroma_modes_using_luma_winner);
         // The :454 speed>=3 value 2 is OVERRIDDEN to 0 by the unconditional
@@ -1298,6 +1336,33 @@ mod tests {
         // Tx-size methods: MODE_EVAL LARGESTALL, WINNER FULL_RD.
         assert_eq!(sf.tx_size_search_method_for_stage(MODE_EVAL), 2);
         assert_eq!(sf.tx_size_search_method_for_stage(WINNER_MODE_EVAL), 0);
+    }
+
+    /// KB-21 lock: `part_sf.early_term_after_none_split` is 0 below ALLINTRA
+    /// speed 4 and 1 from speed 4 up (`speed_features.c:477`, inside
+    /// `if (speed >= 4)`; `init_part_sf:2319` default 0), and the struct field
+    /// agrees with the free derivation `rd_pick_partition_real` consumes.
+    ///
+    /// It had been documented as inert. It is not: on real photographic content
+    /// at `--cpu-used=4/5` it terminates the partition search at nodes where
+    /// both the NONE and the SPLIT stage produced INT64_MAX, which invalidates
+    /// the parent's SPLIT candidate.
+    #[test]
+    fn early_term_after_none_split_is_allintra_speed4_up() {
+        for speed in 0..=9 {
+            let sf = SpeedFeatures::set_allintra(speed, false, false);
+            assert_eq!(
+                sf.early_term_after_none_split,
+                speed >= 4,
+                "allintra cpu-used={speed}: early_term_after_none_split"
+            );
+            assert_eq!(
+                SpeedFeatures::early_term_after_none_split_allintra(speed),
+                sf.early_term_after_none_split,
+                "cpu-used={speed}: the free derivation and the struct field \
+                 must agree — they are the SAME derivation"
+            );
+        }
     }
 
     /// The speed-5 all-intra deltas, asserted against the source values

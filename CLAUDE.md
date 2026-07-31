@@ -1774,19 +1774,106 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   `quantize_fp_dispatched`; neither can produce corrupt output (a wrong intra-mode ESTIMATE picks
   a legal mode, it does not mis-reconstruct pixels). First x86 run closes this.
 
-### KB-21 — Encoder: cpu-4/5 is the fragile band — 3 of 5 contexts diverge at STOCK knobs
+### KB-21 — Encoder: cpu-4/5 is the fragile band — ROOT #1 FIXED ✅ 2026-07-30 (`early_term_after_none_split` was unported); ROOT #2 OPEN, narrowed
 - **Found 2026-07-30** by the speed axis (`9a996b9`). Not a knob-combination bug: these
-  diverge with **every knob at its default**.
-- 3 of 5 contexts are byte-identical at speeds 0-3 AND 6-9 but diverge at 4 and 5. The nonrd
-  speeds (8/9), which look like the risky end, are clean.
+  diverge with **every knob at its default**. 3 of 5 contexts are byte-identical at speeds
+  0-3 AND 6-9 but diverge at 4 and 5; the nonrd speeds (8/9) are clean.
+- **The `multi_winner_mode_type` framing in the original entry was WRONG.** The 4->5 delta
+  is that field, but the 4/5 BAND is what matters, and exactly two sf fields are non-default
+  in the band (measured by diffing `SpeedFeatures::set_allintra(s)` for s=0..9):
+  `prune_tx_type_est_rd` (true at 4,5; false everywhere else) and `multi_winner_mode_type`
+  (2/1 at 4/5; 0 everywhere else). Neither turned out to be root #1.
+- **ROOT #1 — `part_sf.early_term_after_none_split` was UNPORTED. FIXED.**
+  `speed_features.c:477` sets it inside `if (speed >= 4)` of
+  `set_allintra_speed_features_framesize_independent`, i.e. it is on at ALLINTRA speeds 4-9;
+  the port carried it in the speed-4 doc block as *"(C) INERT on this path (byte no-op,
+  verified) — NONE always yields a valid rd on textured content, so it never triggers here"*.
+  That premise is FALSE on real photographic content.
+  - **Localization (decode-both + ar-swapped sibling-C dump per HANDOFF-TOGGLES.md / KB-3).**
+    Repro cell `av1-1-b8-00-quantizer-00` cropped 64x64@(64,64), **monochrome** (so the root
+    is proven luma-side), cq32, `--cpu-used=4`, stock knobs: port 504 B vs real aomenc 498 B.
+    First divergent node **mi(4,12) BLOCK_16X16: real = PARTITION_NONE, port = PARTITION_SPLIT**;
+    everything before it byte-identical.
+  - **The two decisions side by side.** The NONE arm is not the problem — port and C agree to
+    the unit: `rate=132534 dist=85648 rdcost=22231958`, winner `H_PRED / angle_delta -3 /
+    TX_16X16` in BOTH. So is the whole SPLIT accumulation, child for child
+    (`sum_rate 88376 / sum_dist 47952 / sum_rdcost 13652233`, remaining budget 8,692,897
+    entering child 3 — identical in both). The divergence is entirely inside SPLIT **child 3**,
+    the BLOCK_8X8 at mi(6,14):
+    * **C**: `pick_sb_modes` returns `rate = INT_MAX` (the remaining budget covers no mode) =>
+      `part_none_rd = INT64_MAX`; `do_square_split == 0` at BLOCK_8X8 so the SPLIT stage never
+      runs => `part_split_rd = INT64_MAX`; `early_term_after_none_split` fires
+      (`partition_search.c:5851-5856`) => `terminate_partition_search = 1` => the rect / AB /
+      4-way stages are SKIPPED => `av1_rd_pick_partition` returns `found_best_partition = false`
+      => the parent invalidates `sum_rdc` and breaks => SPLIT loses => **NONE**.
+      Instrumented-C witness line:
+      `CTERM (6,14) bs=3 sf=1 none_rd=INT64_MAX split_rd=INT64_MAX mfvp=0 term=1`.
+    * **Port**: no early-term, so it fell through to the rect stage, found a valid
+      `PARTITION_HORZ` at mi(6,14), completed the SPLIT at `sum_rdcost = 21662749 <` NONE's
+      `22231958`, and picked **SPLIT**.
+    It fires at **6 nodes** in that single 64x64 frame — the "inert" claim was off by a lot.
+  - **FIX** (`crates/aom-encode/src/partition_pick.rs`, `rd_pick_partition_real`): track
+    `part_none_rd` (set POST-pt_cost at `:4474`, not gated on NONE winning) and `part_split_rd`
+    (`:4619`, INT64_MAX when the stage was skipped or a child aborted), then apply C's arm
+    between the SPLIT and rect stages. `terminate_partition_search` was a `let ... = false`
+    constant and is now a real variable; the rect/AB/4-way stages already read it.
+    `x->must_find_valid_partition` stays modelled as always false (the established
+    simplification; instrumented C confirms `mfvp=0` at every node of the repro frame).
+    `SpeedFeatures` gained `early_term_after_none_split` + the shared derivation
+    `early_term_after_none_split_allintra(speed) = speed >= 4`, unit-locked by
+    `early_term_after_none_split_is_allintra_speed4_up` (speeds 0..9) and asserted in
+    `speed4_allintra_deltas_match_source`.
+  - **What it closed** (all re-pinned in the same commit; every one is a self-promoting pin
+    that FAILED in the closing direction):
+    * `speed_envelope_stock_map_is_pinned`: `q00_64` **cpu-5** and `q00_128` **cpu-5** stock
+      encodes now byte-match (2 of the 6 pinned stock divergences).
+    * `speed_sensitivity_s1`: the cpu-4 open singletons went **{dir0, rtx0, flip0} -> {flip0}**.
+    * `combinations_t3_speed4_*`: the three pinned cpu-4 combination rows are gone. NOT a
+      like-for-like count — unpinning `(4,dir0)`/`(4,rtx0)` also lets those levels back into
+      the covering array (`remap_open_levels`), so the executed rows changed; on the broader
+      array **2** cpu-4 rows are open, both carrying `dir0`.
+    * The **5 cpu-8 combination rows are unchanged**, which is the expected answer, not a
+      surprise: speed 8 is the nonrd PICKMODE path and never enters `rd_pick_partition`, so
+      this root structurally cannot reach it.
+    * KB-13 (`encoder_gate_real_content_speed1to4_e2e`): **+2 cells promoted** —
+      `av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu4 cq12` and
+      `av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu4 cq32` (map 45/60 -> 47/60).
+  - **Bite proof:** with the arm reverted to a no-op,
+    `speed_envelope_stock_map_is_pinned` fails with *"q00_64 cpu-used=5: stock encode is now
+    `diverge` (pinned `ok`)"* + the same for `q00_128`, and
+    `encoder_gate_real_content_speed1to4_e2e` fails with *"regression: graduated real-content
+    cell `av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu4 cq12` must byte-match real aomenc"*.
+  - **Envelope (this box, `--profile test-fast`):** `-p zenav1-aom-encode` **274 passed /
+    0 failed** (was 272/1 with `hog_prune_diff` red; that closed on `main` at `faeaf50`, and
+    this landing adds the 1 new unit lock + the 1 re-pin), `-p zenav1-aom-bench` **170/0/5
+    ignored**, `-p zenav1-aom-dsp` **361/0/3 ignored**.
+- **ROOT #2 — OPEN. A leaf-level rate/dist divergence with the SAME winner, NOT established.**
+  After root #1, `q00_mono64` still diverges at cpu-4 AND cpu-5, and `q00_64` / `q00_128` at
+  cpu-4. Diffing the port's per-`pick_sb_modes` stream against the instrumented C's
+  (366 vs 362 records on the mono cpu-4 cell) the two agree for 40 records and then split at
+  **mi(2,4) BLOCK_8X8 PARTITION_NONE**:
+  `C rate=36535 dist=20304 rdcost=5705386` vs `port rate=41004 dist=17184 rdcost=5686013`,
+  with **identical** `mode=DC_PRED, angle_delta=0, filter_intra=0, tx_size=TX_4X4`. Same block,
+  same winner mode, same transform size, different rate and distortion — so this is
+  coefficient-level (tx-type / quant / trellis), not a search-space or pruning difference. The
+  direction (port spends MORE rate for LESS distortion) says the port codes more coefficients
+  than C on that block.
+  **Ruled out — single-flag reverts.** Forcing each band/speed-4 sf back to its
+  speed-3 or OFF value one at a time and re-reading that leaf: `multi_winner_mode_type=0`
+  (39508/16784), `prune_tx_type_est_rd=false` (41004/17184, byte-inert here),
+  `winner_mode_tx_type_pruning=0` (40566/17616), `fast_intra_tx_type_search=0` and `=1`
+  (40567/18416), `prune_2d_txfm_mode=2` (41004/17184), `perform_coeff_opt=3` (41004/17184),
+  `tx_domain_dist_thres_level=1` (41004/17184), `enable_winner_mode_for_coeff_opt=false`
+  (41004/17184), `..._use_tx_domain_dist=false` (39558/19072),
+  `..._tx_size_srch=false` (38531/18672) — **none** reproduces C's `36535/20304`. So it is not
+  "one speed-4 field is on when it should be off"; it is inside the mechanics of the
+  speed-4 winner-mode two-pass or its coefficient path.
+  **Next step:** instrument the per-txb tx_type + eob + trellis decision on both sides for
+  that one 8x8 leaf (C: `tx_search.c` `search_txk_type` / `encodemb.c` `av1_optimize_b`;
+  port: `tx_search.rs`), same ar-swap recipe.
 - **PARITY.md §A lists `--cpu-used=4` and `=5` as 64/64 byte-identical** — on the textured
   synthetic grid those rows were established on. These are different contexts, so the §A rows
   are not falsified; what is falsified is reading them as speed-4/5 coverage in general.
-- **Suspect list is one field.** The 4->5 speed-feature delta is `multi_winner_mode_type`
-  (2 -> 1), so winner-mode is the entire search space for a root cause. Closing it would
-  promote 3 contexts into the gated set and likely close several of the 8 speed-specific knob
-  combination divergences also pinned by that landing (3/63 at cpu-4, 5/63 at cpu-8).
-- Pinned self-promoting; no encoder change made.
 
 ### KB-18 — Encoder: SB128 x `--max-partition-size=32` performs a `restore_context` that C skips — FIXED ✅ 2026-07-30
 - **Found 2026-07-30** by the size axis of the config-permutation gate (`fc44646`).

@@ -3475,8 +3475,8 @@ fn encoder_gate_real_content_speed1to4_e2e() {
         "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu3 cq63",
         "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu4 cq12",
         "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu4 cq63",
-        // quantizer-00 128x128@64,64 (photo, 4-SB): 8 byte-exact (6 promoted
-        // 2026-07-19, AB mode-cache).
+        // quantizer-00 128x128@64,64 (photo, 4-SB): 9 byte-exact (6 promoted
+        // 2026-07-19, AB mode-cache; 1 more 2026-07-30, KB-21).
         "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu1 cq12",
         "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu1 cq32",
         "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu1 cq63",
@@ -3485,8 +3485,11 @@ fn encoder_gate_real_content_speed1to4_e2e() {
         "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu2 cq63",
         "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu3 cq12",
         "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu3 cq32",
-        // 23-film_grain-50 64x64@96,64 (film, 1-SB): 10 byte-exact (7 promoted
-        // 2026-07-19, AB mode-cache).
+        // +1 promoted 2026-07-30 by the KB-21 `early_term_after_none_split`
+        // root (ALLINTRA speed>=4, speed_features.c:477).
+        "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu4 cq12",
+        // 23-film_grain-50 64x64@96,64 (film, 1-SB): 11 byte-exact (7 promoted
+        // 2026-07-19, AB mode-cache; 1 more 2026-07-30, KB-21).
         "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu1 cq12",
         "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu1 cq32",
         "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu1 cq63",
@@ -3496,6 +3499,8 @@ fn encoder_gate_real_content_speed1to4_e2e() {
         "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu3 cq12",
         "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu3 cq32",
         "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu4 cq12",
+        // +1 promoted 2026-07-30 by the KB-21 `early_term_after_none_split` root.
+        "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu4 cq32",
         "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu4 cq63",
         // 01-size-196x196 (partial-SB, multi-SB): 4/12 byte-exact (2026-07-24).
         // These were mis-recorded as "invalid AV1" near-ties until this harness

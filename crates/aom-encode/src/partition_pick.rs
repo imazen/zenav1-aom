@@ -85,7 +85,8 @@
 //!   `prune_partitions_after_split` (:4309) are ENTIRELY
 //!   `!frame_is_intra_only`-gated — both no-ops at KEY;
 //! - `early_term_after_none_split` (:5851) = 0 at speed 0 both usages
-//!   (ALLINTRA speed >= 4, GOOD speed >= 3);
+//!   (ALLINTRA speed >= 4, GOOD speed >= 3) — LIVE from ALLINTRA speed 4,
+//!   wired below (KB-21);
 //!   `skip_non_sq_part_based_on_none` (:5859) = 0 at speed 0;
 //! - `av1_prune_partitions_before_search` (partition_strategy.c:1648)
 //!   reduces at speed-0 KEY to the `bsize > rect_partition_eval_thresh`
@@ -2599,7 +2600,14 @@ pub fn rd_pick_partition_real(
     // speed>=6 the post-NONE `prune_rect_part_using_none_pred_mode`
     // (partition_search.c:4488) sets the flags off the NONE winner's mode.
     let mut prune_rect_part = [false; 2];
-    let terminate_partition_search = false;
+    // `terminate_partition_search` (:3380): initialised 0. The one live writer
+    // on this envelope is the post-SPLIT `early_term_after_none_split` arm
+    // (:5851, ALLINTRA speed>=4 — KB-21), applied after the SPLIT stage below.
+    let mut terminate_partition_search = false;
+    // `part_none_rd` / `part_split_rd` (:5829/:5842): INT64_MAX unless the
+    // corresponding stage produced a valid cost. Inputs to the early-term arm.
+    let mut part_none_rd: i64 = i64::MAX;
+    let mut part_split_rd: i64 = i64::MAX;
 
     // ---- intra CNN partition prune (av1_prune_partitions_before_search ->
     //      intra_mode_cnn_partition, partition_strategy.c:1779-1791). Runs
@@ -2871,6 +2879,9 @@ pub fn rd_pick_partition_real(
                 this_rdc.rate += pt_cost;
                 this_rdc.rdcost = crate::rd::rdcost(env.rdmult, this_rdc.rate, this_rdc.dist);
             }
+            // `*part_none_rd = this_rdc->rdcost` (:4474) — POST-pt_cost, and
+            // NOT gated on NONE beating `best_rdc`.
+            part_none_rd = this_rdc.rdcost;
             if this_rdc.rdcost < best_rdc.rdcost {
                 best_rdc = this_rdc;
                 found = true;
@@ -3014,6 +3025,11 @@ pub fn rd_pick_partition_real(
             idx += 1;
         }
         let reached_last_index = idx == 4;
+        // `*part_split_rd = sum_rdc.rdcost` (:4619) — set unconditionally at the
+        // end of `split_partition_search`, i.e. INT64_MAX when a child aborted
+        // (`sum_rdc` invalidated) and untouched (INT64_MAX) when the stage was
+        // skipped entirely by `do_square_split == 0`.
+        part_split_rd = sum_rdc.rdcost;
 
         if reached_last_index && sum_rdc.rdcost < best_rdc.rdcost {
             // split_partition_penalty_level = 0 => factor 1.0.
@@ -3072,11 +3088,39 @@ pub fn rd_pick_partition_real(
         }
     }
 
+    // ---- early_term_after_none_split (partition_search.c:5851-5856) ----
+    //
+    //   if (cpi->sf.part_sf.early_term_after_none_split &&
+    //       part_none_rd == INT64_MAX && part_split_rd == INT64_MAX &&
+    //       !x->must_find_valid_partition && (bsize != cm->seq_params->sb_size))
+    //     part_search_state.terminate_partition_search = 1;
+    //
+    // ALLINTRA speed>=4 (`speed_features.c:477`). When the NONE arm returned
+    // INT_MAX (its remaining budget could not cover any mode) AND the SPLIT
+    // stage produced no valid cost, C abandons the node WITHOUT trying rect /
+    // AB / 4-way — which makes `rd_pick_partition` return "no valid partition",
+    // which in turn INVALIDATES the parent's SPLIT candidate. KB-21: the port
+    // used to fall through to the rect stage, find a valid HORZ, and complete a
+    // SPLIT that C had already abandoned.
+    //
+    // `x->must_find_valid_partition` is modelled as always false here — the
+    // same established simplification as the AB stage and the ALLINTRA variance
+    // arm (it only rises on a whole-SB no-valid-partition retry), and the
+    // instrumented C confirms `mfvp=0` at every node of the repro frame.
+    if cfg.allintra
+        && SpeedFeatures::early_term_after_none_split_allintra(cfg.speed)
+        && part_none_rd == i64::MAX
+        && part_split_rd == i64::MAX
+        && bsize != env.sb_size
+    {
+        terminate_partition_search = true;
+    }
+
     // ---- rectangular partition stage (rectangular_partition_search,
     // :3520; wired :5875) ----
-    // Between SPLIT and rect the C runs early_term_after_none_split (sf 0),
-    // skip_non_sq_part_based_on_none (sf 0) and prune_partitions_after_split
-    // (entirely !frame_is_intra_only-gated) — verified no-ops (module docs).
+    // Between SPLIT and rect the C also runs skip_non_sq_part_based_on_none
+    // (sf 0) and prune_partitions_after_split (entirely
+    // !frame_is_intra_only-gated) — verified no-ops (module docs).
     let mut rect_part_rd = [[0i64; 2]; 2]; // :3368 — an AB-stage input.
     let mut is_rect_ctx_is_ready = [false; 2]; // :3373 — an AB-stage input.
     // The rect stage's own sub-0 winner, captured whenever
