@@ -4131,6 +4131,17 @@ fn speed_axis_budget_is_accounted() {
         "  txstats512s2  t=2 {tx_rows:>3} rows x  780 ms  (>=480p x speed>=2, \
          3 encodes/row incl. the liveness witness)"
     );
+    // KB-20: bd10/bd12 x cpu-used {8,9}. Nonrd cells are the cheapest in the
+    // section (~17 ms measured incl. the C encode), which is why the crossing
+    // the panic hid in can be gated at 24 cells for well under a second.
+    let kb20_cells = 2 * 6 * 2;
+    total_cells += kb20_cells;
+    total_ms += kb20_cells as u64 * 17;
+    let _ = writeln!(
+        report,
+        "  hbd_nonrd         {kb20_cells:>3} cells x   17 ms  (bd{{10,12}} x \
+         cq{{5,12,20,32,48,63}} x cpu-used{{8,9}}, KB-20)"
+    );
     let _ = writeln!(
         report,
         "  TOTAL {total_cells} cells, {:.1} s CPU (upper bound; libtest spreads \
@@ -4161,11 +4172,17 @@ fn speed_axis_budget_is_accounted() {
 /// **Measured 2026-07-30, and the shape is counter-intuitive.** The fragile band
 /// is NOT the nonrd speeds (7-9), which are the cleanest above 0 — it is speeds
 /// **4 and 5**, the winner-mode / multi-winner tiers, where three of the five
-/// contexts diverge with every knob at its default. And bd10 is open at almost
-/// every speed: `av1-1-b10-00-quantizer-00` is byte-exact at speed 0 (a gated
-/// context of the main array) and at speed 7, and diverges at 1, 2, 3, 4, 5, 6, 8
-/// and 9. All of it carries the KB-10/KB-12 near-tie signature (0-6 byte
-/// deltas), and none of it is reachable from a speed-0 matrix.
+/// contexts diverge with every knob at its default. And bd10 is open at most
+/// speeds: `av1-1-b10-00-quantizer-00` is byte-exact at speed 0 (a gated
+/// context of the main array), at speed 7, and — since the KB-20 landing
+/// (2026-07-30) — at the nonrd speeds 8 and 9; it diverges at 1, 2, 3, 4, 5 and
+/// 6. All of that carries the KB-10/KB-12 near-tie signature (0-6 byte deltas),
+/// and none of it is reachable from a speed-0 matrix.
+///
+/// Speeds 8 and 9 read `panic` here until 2026-07-30: the KB-12 nonrd estimate
+/// arm was bd8-only and asserted on `env.bd == 8`, so EVERY bd10/bd12 encode at
+/// `--cpu-used >= 8` aborted. That is what [`speed_nonrd_hbd_byte_identity`]
+/// now gates, cell by cell, at byte-identity.
 ///
 /// Consequences, applied rather than just noted: no bd10 speed context is gated
 /// (it would gate a divergence), and the per-speed arrays run on the one content
@@ -4190,19 +4207,20 @@ fn speed_envelope_stock_map_is_pinned() {
             "av1-1-b10-00-quantizer-00",
             Some((64, 64, 64, 64)),
             false,
-            // 8/9 are not a near-tie at all: `nonrd_pick_intra_mode`
-            // (aom-encode/src/nonrd_pickmode.rs:601) asserts `env.bd == 8`
-            // — "HANDOFF: hbd estimate arm (av1_quantize_fp + fp scans) not
-            // ported". The KB-12 nonrd path is bd8-only, so bd10 at speed >= 8
-            // is an UNPORTED ARM, not a divergence.
+            // 8 and 9 were "panic" until 2026-07-30: the KB-12 nonrd path was
+            // bd8-only and `nonrd_pick_intra_mode` asserted `env.bd == 8`.
+            // The hbd estimate arm is now ported (KB-20) and both are "ok" —
+            // gated per-cell by [`speed_nonrd_hbd_byte_identity`].
             &[(1, "diverge"), (2, "diverge"), (3, "diverge"), (4, "diverge"),
-              (5, "diverge"), (6, "diverge"), (8, "panic"), (9, "panic")],
+              (5, "diverge"), (6, "diverge")],
         ),
     ];
     let mut report = String::from("\n=== speed envelope: stock byte-identity per (content, cpu-used) ===\n");
     let mut failures = Vec::new();
-    // The bd10 speed>=8 probe deliberately trips an unported-arm assertion; keep
-    // its backtrace out of the log so a PASSING run reads clean.
+    // No probe is expected to panic any more (KB-20 closed the last one), but
+    // the `catch_unwind` + silent hook stays: it is what lets a NEW unported
+    // arm be reported as `panic` against its `ok` pin instead of aborting the
+    // whole map.
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     for (tag, vector, crop, mono, open) in probes {
@@ -4243,6 +4261,138 @@ fn speed_envelope_stock_map_is_pinned() {
          regression. {failures:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 7e. BIT DEPTH x the nonrd speeds — KB-20
+// ---------------------------------------------------------------------------
+
+/// A high-bit-depth cell for the nonrd speeds, from the b10 conformance vector.
+///
+/// `bd = 10` is the vector's native depth. `bd = 12` promotes the same real
+/// content into the 12-bit range (`pix << 2`) — the precedent
+/// `deltaq_mode3_e2e.rs` established for the highbd FP-quantize arm: there is
+/// no b12 conformance vector (the intra corpus is bd8/bd10 only, CLAUDE.md
+/// Gate 1), and the depth enters this path only through the bd-indexed quant
+/// tables, `av1_highbd_block_error`'s `2*(bd-8)` shift and
+/// `aom_highbd_sadWxH_bits{10,12}`'s `bd-8` one — all of which shifted-but-real
+/// spatial structure exercises faithfully. bd12 is also the depth that pushes
+/// the Hadamard estimate furthest outside `int16`, which is where the
+/// ISA-conditional quantizer lives (root 3 below).
+fn hbd_speed_cell(bd: u8, cq: i32, speed: i32) -> EncodeCell {
+    let mut c = EncodeCell::real_content(
+        &format!("hbd{bd}_cq{cq}_s{speed}"),
+        "av1-1-b10-00-quantizer-00",
+        Some((64, 64, 64, 64)),
+        cq,
+        speed,
+    );
+    assert_eq!(c.bd, 10, "the b10 vector must decode as 10-bit");
+    if bd == 12 {
+        c.bd = 12;
+        for p in [&mut c.y, &mut c.u, &mut c.v] {
+            for v in p.iter_mut() {
+                *v <<= 2;
+            }
+        }
+    }
+    c
+}
+
+/// KB-20 — **bd10/bd12 x `--cpu-used` 8 and 9, byte-identical to real aomenc.**
+///
+/// Speeds 8 and 9 are the nonrd PICKMODE path (KB-12), whose per-leaf estimator
+/// `av1_block_yrd` (nonrd_opt.c:126) branches on `is_cur_buf_hbd(xd)`. Until
+/// 2026-07-30 only the lowbd arm was ported and the port carried a hard
+/// `assert!(env.bd == 8)` there, so **every** bd10/bd12 encode at `--cpu-used
+/// >= 8` PANICKED — on a stream real aomenc produces without complaint. It sat
+/// undiscovered because PARITY.md §A lists cpu-used 8/9 byte-identical AND
+/// bd10/bd12 byte-identical, each established on its own grid, never crossed.
+/// This test IS the crossing, and it is a byte-identity gate rather than a
+/// panic pin: a path that returns wrong pixels without panicking would be
+/// strictly worse than the assert.
+///
+/// THREE things were genuinely bd8-specific, two more than the old handoff
+/// message named:
+/// 1. `av1_block_yrd`'s hbd arm — `aom_hadamard_8x8/16x16` + `av1_quantize_fp`
+///    over the `*_transpose` scan/iscan PAIRS + `aom_satd` +
+///    `av1_highbd_block_error` (`nonrd_pickmode::block_yrd_hbd`). Every kernel
+///    already existed in `aom-dsp`, so this really was the deltaq-mode-3 shape;
+/// 2. the speed-9 SAD prune in `av1_estimate_block_intra` — `fn_ptr[bsize].sdf`
+///    is `aom_highbd_sadWxH_bits{8,10,12}`, i.e. the raw SAD `>> (bd-8)`
+///    (`MAKE_BFP_SAD_WRAPPER`, encoder_utils.h:158). Measured DECISION-INERT on
+///    this grid (the prune is a ratio test) — but the wrong form `2*(bd-8)`
+///    diverged here, which is how the right one was found;
+/// 3. `av1_quantize_fp` is **ISA-conditional** once a coefficient leaves
+///    `int16`, which `aom_hadamard_16x16` (+-65534) does routinely at bd10/12:
+///    NEON truncates on narrow, x86 saturates, `_c` does neither. That is the
+///    root of the last 3 divergent cells and is modelled by
+///    `nonrd_pickmode::quantize_fp_dispatched`. **This gate is therefore the
+///    one place that measures the model — it is expected to be sensitive to the
+///    host ISA, because libaom's own encoder is.**
+///
+/// Nothing else on the arm was bd8-shaped: predict, subtract, the cost tables
+/// and `rdmult` were all already bd-parameterised — the same shape the
+/// deltaq-mode-3 landing found for `av1_set_mb_wiener_variance` (PARITY.md §A).
+///
+/// Speed 9 exercises `prune_intra_mode_using_best_sad_so_far` and the
+/// all-estimate leaf dispatch; speed 8 runs the SAD prune off and the hybrid
+/// full-RD arm on, so the pair covers both leaf dispatches. cq5..cq63 spans the
+/// dense-coefficient and the everything-skips regimes of the estimator.
+#[test]
+fn speed_nonrd_hbd_byte_identity() {
+    c::ref_init();
+    let mut report = String::from(
+        "\n=== KB-20: bd10/bd12 x the nonrd speeds (stock knobs) ===\n\
+         bd\tcq\tspeed\tverdict\tport_B\tc_B\n",
+    );
+    let mut failures = Vec::new();
+    let mut cells = 0usize;
+    for bd in [10u8, 12] {
+        for cq in [5, 12, 20, 32, 48, 63] {
+            for speed in [8, 9] {
+                let cell = hbd_speed_cell(bd, cq, speed);
+                let stock = c_stock_payload(&cell);
+                let label = format!("kb20_b{bd}_cq{cq}_s{speed}");
+                let r = run_cell(&cell, &label, &ToggleKnobs::default(), &stock);
+                cells += 1;
+                let _ = writeln!(
+                    report,
+                    "{bd}\t{cq}\t{speed}\t{}\t{}\t{}",
+                    if r.exact { "MATCH" } else { "MISMATCH" },
+                    r.port_len,
+                    r.c_len
+                );
+                if !r.exact {
+                    failures.push(format!(
+                        "bd{bd} cq{cq} cpu-used={speed}: port {} B vs real {} B",
+                        r.port_len, r.c_len
+                    ));
+                }
+            }
+        }
+    }
+    println!("{report}");
+    assert_eq!(
+        cells, 24,
+        "the KB-20 grid is bd{{10,12}} x cq{{5,12,20,32,48,63}} x s{{8,9}}"
+    );
+    assert!(
+        failures.is_empty(),
+        "KB-20 REGRESSED: the hbd nonrd estimate arm is no longer byte-identical \
+         to real aomenc. Before 2026-07-30 these cells PANICKED (unported arm); \
+         a divergence here means the ported arm computes the wrong estimate, \
+         which is worse than the panic was.\n\
+         FIRST THING TO CHECK IF THIS IS A NEW HOST/ISA rather than a code \
+         change: `nonrd_pickmode::quantize_fp_dispatched` models the SIMD tier \
+         of `av1_quantize_fp` that THIS build dispatches, because outside int16 \
+         the tiers disagree with `av1_quantize_fp_c` and with each other. The \
+         aarch64 (NEON, truncating-narrow) arm is the measured one; the x86 \
+         (AVX2, saturating-narrow) arm is transcribed, and an x86 build that \
+         falls back to SSE2 uses `thr = dequant >> 1` without the `- 1`. \
+         Offenders: {failures:?}"
+    );
+}
+
 
 /// DEEP TIER (`--ignored`) — the full speed-axis evidence grid, written to
 /// `benchmarks/config_perm_speed_axis_2026-07-30.tsv`.

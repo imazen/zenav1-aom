@@ -1706,22 +1706,73 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   new non-x86 test; the x86 test compiles on this host — checked by temporarily forcing its
   `cfg` on, zero errors — but is correctly not selected here).
 
-### KB-20 — Encoder: bd10/bd12 x `--cpu-used>=8` PANICS — the hbd nonrd estimate arm is unported
+### KB-20 — Encoder: bd10/bd12 x `--cpu-used>=8` PANICKED (unported hbd nonrd estimate arm) — FIXED ✅ 2026-07-30
 - **Found 2026-07-30** by the speed axis of the config-permutation gate (`9a996b9`).
-- `crates/aom-encode/src/nonrd_pickmode.rs:602` is a hard `assert!(env.bd == 8, "HANDOFF: hbd
+  `crates/aom-encode/src/nonrd_pickmode.rs` carried a hard `assert!(env.bd == 8, "HANDOFF: hbd
   estimate arm (av1_quantize_fp + fp scans) not ported")`. Speeds 8 and 9 use the nonrd
-  PICKMODE path (KB-12), so **any bd10/bd12 encode at cpu-used >= 8 panics** — on a stream real
-  aomenc produces without complaint.
-- **This is worse than a divergence: it is a panic on valid input.** PARITY.md §A lists
-  cpu-used 8 and 9 as byte-identical, and separately lists bd10/bd12 as byte-identical — but
-  those two claims were each established on their OWN grid and never crossed. The panic sat in
-  the gap between two green rows. That is the whole thesis of the permutation work.
-- Status: bd10 x speed >= 8 is **unimplemented, not divergent** — do not report it as a
-  byte-mismatch. The gate pins the boundary so it cannot silently widen.
-- **Fix direction:** port the hbd arm (`av1_highbd_quantize_fp` + the fp scans) the way the
-  deltaq-mode-3 landing did for `av1_set_mb_wiener_variance` — that is the in-tree precedent
-  for "the only bd8-specific step is the FP-quantize; everything else was already
-  bd-parameterized".
+  PICKMODE path (KB-12), so **every bd10/bd12 encode at cpu-used >= 8 panicked** — on a stream
+  real aomenc produces without complaint. Worse than a divergence: a panic on valid input.
+  PARITY.md §A listed cpu-used 8/9 byte-identical AND bd10/bd12 byte-identical, each on its own
+  grid, never crossed; the panic sat in the gap between two green rows.
+- **FIXED — bd10 and bd12 x `--cpu-used` {8,9} are now BYTE-IDENTICAL to real aomenc**, 24 cells
+  (bd{10,12} x cq{5,12,20,32,48,63} x speed{8,9}, `av1-1-b10-00-quantizer-00` 64x64 crop; bd12
+  by the `pix << 2` promotion `deltaq_mode3_e2e.rs` established). Gate:
+  `config_permutations::speed_nonrd_hbd_byte_identity`; the `speed_envelope_stock_map_is_pinned`
+  b10_64 row flips `s8/s9` from `panic` to `ok`.
+- **THREE things were bd8-specific, and the assert named only one of them.**
+  1. `av1_block_yrd`'s hbd arm (`nonrd_opt.c:199-215` + `update_yrd_loop_vars_hbd` :92) —
+     `aom_hadamard_{8x8,16x16}` (32-bit `tran_low_t`), `av1_quantize_fp`, `aom_satd`,
+     `av1_highbd_block_error`, over `default_scan_8x8_transpose`/`av1_default_iscan_8x8_transpose`
+     and `default_scan_fp_16x16_transpose`/`av1_default_iscan_fp_16x16_transpose`. The 16x16 **fp**
+     scan pair is NOT the **lp** pair the lowbd arm uses (`aom_hadamard_16x16_c` carries an extra
+     AVX2-matching column shift `aom_hadamard_lp_16x16_c` does not), and libaom requires each
+     scan/iscan pair be used together. Port: `nonrd_pickmode::block_yrd_hbd` — every kernel was
+     already in `aom-dsp` (`dist::hadamard::{hadamard_8x8,hadamard_16x16,satd}`,
+     `dist::highbd_block_error`), so this really was the deltaq-mode-3 shape: reuse, don't invent.
+  2. the speed-9 SAD prune in `av1_estimate_block_intra` (`nonrd_opt.c:629`) —
+     `fn_ptr[bsize].sdf` is bound by `highbd_set_var_fns` to `aom_highbd_sadWxH_bits{8,10,12}`,
+     i.e. the raw SAD `>> (bd - 8)` (`MAKE_BFP_SAD_WRAPPER`, encoder_utils.h:158). NOT named by
+     the assert. **Measured decision-inert on the 24-cell grid** (the prune is a ratio test, so an
+     equal shift on both sides only changes rounding) — but the WRONG form `2 * (bd - 8)` diverged
+     on 1 of the first 12 cells, which is how the right one was found. Kept because it is what
+     libaom does; do not read the inertness as permission to drop it.
+  3. **`av1_quantize_fp` is ISA-CONDITIONAL in this regime — the real root of the last 3 cells.**
+     Every SIMD tier of `av1_quantize_fp` is a 16-bit kernel that narrows `tran_low_t` on load and
+     computes `dqcoeff` in 16 bits. `aom_hadamard_16x16`'s 4-way combine reaches **+-65534**, so
+     the hbd nonrd estimate leaves the `int16` range routinely and the tiers stop agreeing with
+     `av1_quantize_fp_c` **and with each other**: `av1_quantize_fp_neon`
+     (`arm/quantize_neon.c:57/76`) narrows with `vmovn_s32` (**TRUNCATING**), no per-coefficient
+     dequant threshold, `vmulq_s16` for `dqcoeff`; `av1_quantize_fp_avx2`
+     (`x86/av1_quantize_avx2.c:194/224`) narrows with `_mm_packs_epi32` (**SATURATING**) and gates
+     a 16-lane group on `abs > (dequant >> 1) - 1`. **Measured on this aarch64 reference build:
+     NEON model 12/12 byte-identical, saturating (x86) model 9/12, `av1_quantize_fp_c` 9/12.**
+     Port: `nonrd_pickmode::quantize_fp_dispatched`, `cfg(target_arch)`-selected (aarch64/arm =
+     NEON model, MEASURED; x86/x86_64 = AVX2 model, TRANSCRIBED but not runnable on this host;
+     otherwise `_c`). This is the same class of ISA-conditional truth as the `-ffp-contract` note
+     in `reference/BUILD_CONFIG.md`. **If the KB-20 gate ever fails on x86, check the SSE2 tier
+     first**: `av1_quantize_fp_sse2` uses `thr = dequant >> 1` without the `- 1` and gates per 8
+     lanes, so an x86 build that falls back to SSE2 can differ from the AVX2 model.
+- **Unit gates:** `aom-encode/tests/nonrd_block_yrd_hbd_diff.rs` — the walk composition vs a
+  pure-C oracle (`ref_hadamard`/`ref_quantize_fp`/`ref_satd`/`ref_highbd_block_error`) over 4,800
+  bd10/bd12 cells, run at 8-bit residual magnitude where every tier and `_c` provably agree (the
+  precondition is ASSERTED, not assumed); `quantize_fp_dispatched` reduces exactly to
+  `av1_quantize_fp_c` inside `int16`; and a teeth test that it genuinely differs outside it. The
+  scan tables are pinned as mutually inverse permutations, and fp != lp.
+- **Teeth (all re-verified, then reverted):** restoring the assert makes the 24-cell gate panic
+  with the original HANDOFF message; swapping `quantize_fp_dispatched` for the `_c` semantics
+  makes 3 cells diverge (bd10 cq12 s9 710 vs 709 B; bd12 cq63 s8 47 vs 46 B; bd12 cq63 s9 44 vs
+  42 B).
+- **Still out of envelope at every bit depth** (unchanged, both arms): lossless TX_4X4
+  (`unimplemented!`) and the screen-content palette arm (`debug_assert`).
+- **OPEN, carried forward — the x86 arm of root 3 is transcribed, not measured.** This box is
+  aarch64, so `speed_nonrd_hbd_byte_identity` measures only the NEON model. On x86 CI two things
+  can bite: (a) the AVX2 transcription is wrong out of `int16` -> the 24-cell gate fails with the
+  ISA hint in its message; (b) the AVX2 group threshold `abs > (dequant>>1) - 1` is one MORE
+  permissive than `_c`'s `abs*2 >= dequant` at odd `dequant`, so
+  `quantize_fp_dispatched_reduces_to_c_inside_int16` could fail at a boundary coefficient even
+  in the agreeing regime. Both failures are self-describing and localised to
+  `quantize_fp_dispatched`; neither can produce corrupt output (a wrong intra-mode ESTIMATE picks
+  a legal mode, it does not mis-reconstruct pixels). First x86 run closes this.
 
 ### KB-21 — Encoder: cpu-4/5 is the fragile band — 3 of 5 contexts diverge at STOCK knobs
 - **Found 2026-07-30** by the speed axis (`9a996b9`). Not a knob-combination bug: these

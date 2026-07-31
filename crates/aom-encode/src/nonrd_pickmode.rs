@@ -6,9 +6,15 @@
 //! `aomenc --cpu-used=9` 64/64 (canon) + noise; speed 8 60/64 (canon) + noise,
 //! with 4 `diag` estimate-arm V/H near-ties pinned open (KB-12 in CLAUDE.md).
 //! Every function carries its exact C provenance; the remaining `// HANDOFF:`
-//! marks are genuine out-of-8-bit-canon-envelope work (hbd estimate arm,
-//! lossless TX_4X4, screen-content palette). See CLAUDE.md KB-12 for the full
-//! state, gate names, and the pinned near-tie's next step.
+//! marks are genuine out-of-envelope work (lossless TX_4X4, screen-content
+//! palette). See CLAUDE.md KB-12 for the full state, gate names, and the pinned
+//! near-tie's next step.
+//!
+//! STATUS (2026-07-30, KB-20): the HBD estimate arm is ported — bd10/bd12 x
+//! `--cpu-used` {8,9} are byte-identical to real aomenc (24 cells,
+//! `config_permutations::speed_nonrd_hbd_byte_identity`). Before this the arm
+//! was a hard `assert!(env.bd == 8)`, so every such encode PANICKED. See the
+//! "Bit depth" section below.
 //!
 //! ## The chroma answer (the KB-11 flagged unknown — RESOLVED)
 //! `av1_nonrd_pick_intra_mode` is Y-only and hard-sets
@@ -100,14 +106,47 @@
 //!   estimate numerics decide `best_mode`, which is why `av1_block_yrd` must
 //!   be bit-exact.
 //!
-//! ## Lowbd-only
-//! The canon grid is 8-bit; `use_hbd` (`is_cur_buf_hbd`) is FALSE there, so
-//! only the `_lp` kernel family is live: `aom_hadamard_lp_8x8/16x16`,
-//! `aom_fdct4x4_lp`, `av1_quantize_lp`, `aom_satd_lp`, `av1_block_error_lp`,
-//! with the `*_lp_*_transpose` scans. The hbd arm (aom_hadamard_16x16 +
-//! av1_quantize_fp + `fp_16x16_transpose` scans, nonrd_opt.c:199-215) is NOT
-//! ported — guarded by an assert below. HANDOFF: port the hbd arm before any
-//! bd10/bd12 speed-8 gate.
+//! ## Bit depth (KB-20 — the hbd arm, PORTED 2026-07-30)
+//! `av1_block_yrd` branches on `use_hbd = is_cur_buf_hbd(xd)` (blockd.h — the
+//! buffer's `YV12_FLAG_HIGHBITDEPTH`, which this project's encode path sets
+//! exactly when `bd > 8`; `dec_shim.c` passes
+//! `bd > 8 ? AOM_CODEC_USE_HIGHBITDEPTH : 0`):
+//! - **lowbd** ([`block_yrd_lowbd`]): `aom_hadamard_lp_8x8/16x16`,
+//!   `aom_fdct4x4_lp`, `av1_quantize_lp`, `aom_satd_lp`, `av1_block_error_lp`,
+//!   over the `*_lp_*_transpose` scans (i16 throughout).
+//! - **hbd** ([`block_yrd_hbd`]): `aom_hadamard_8x8/16x16`, `aom_fdct4x4`,
+//!   `av1_quantize_fp`, `aom_satd`, `av1_highbd_block_error`, over
+//!   `default_scan_8x8_transpose`/`av1_default_iscan_8x8_transpose` and
+//!   `default_scan_fp_16x16_transpose`/`av1_default_iscan_fp_16x16_transpose`
+//!   (`tran_low_t` = i32 throughout; nonrd_opt.c:199-262). Note the 16x16 lp
+//!   and fp Hadamards produce DIFFERENT coefficient orders (the fp one carries
+//!   `aom_hadamard_16x16_c`'s extra AVX2-matching column shift), which is why
+//!   they need separate scan tables.
+//!
+//! `is_tx_8x8_dual_applicable` is force-zeroed for hbd (nonrd_opt.c:176) and is
+//! unreachable from the intra estimate arm anyway (see
+//! [`hadamard_lp_8x8_dual`]), so the two arms visit the same txb grid.
+//!
+//! The old handoff assert named only "av1_quantize_fp + fp scans". THREE things
+//! were actually bd8-specific, and the two it did not name are the interesting
+//! ones:
+//!
+//! 2. the speed-9 SAD prune in `av1_estimate_block_intra` (nonrd_opt.c:629)
+//!    calls `cpi->ppi->fn_ptr[bsize].sdf`, which `highbd_set_var_fns`
+//!    (encoder_utils.h:158 `MAKE_BFP_SAD_WRAPPER`) binds to
+//!    `aom_highbd_sadWxH_bits{8,10,12}` — the raw SAD `>> (bd - 8)`. See
+//!    [`nonrd_pick_intra_mode`];
+//! 3. **`av1_quantize_fp` is ISA-conditional in this regime.** Every SIMD tier
+//!    is a 16-bit kernel; `aom_hadamard_16x16` reaches +-65534, so the tiers
+//!    stop agreeing with `av1_quantize_fp_c` — and with each other — exactly
+//!    here. [`quantize_fp_dispatched`] carries the measurement and the model.
+//!
+//! Everything else on the arm was already bd-parameterised (predict, subtract,
+//! the cost tables, `rdmult`), which is the same shape the deltaq-mode-3
+//! landing found for `av1_set_mb_wiener_variance` (PARITY.md section A).
+//!
+//! Still out of envelope at every bit depth: lossless TX_4X4 (both arms) and
+//! the screen-content palette arm.
 
 use crate::encode_sb::SbEncodeEnv;
 use crate::partition::PartRdStats;
@@ -374,10 +413,57 @@ pub const DEFAULT_SCAN_LP_16X16_TRANSPOSE: [i16; 256] = [
     239, 245, 251, 253, 247, 255,
 ];
 
-// NOTE: the `av1_default_iscan_*_transpose` tables are NOT needed —
-// `av1_quantize_lp_c` ignores its iscan argument entirely ((void)iscan,
-// av1_quantize.c:219). The fp (hbd) quantizer DOES use iscan; port those
-// tables with the hbd arm if it's ever needed.
+// NOTE: `av1_quantize_lp_c` ignores its iscan argument entirely ((void)iscan,
+// av1_quantize.c:219), so the lowbd arm above needs only the forward scans.
+// The fp (hbd) quantizer DOES consume iscan (the SIMD tiers derive the EOB from
+// it while walking raster order), so the hbd arm below carries both halves of
+// each pair — and they MUST be used together, exactly as the C comments at
+// nonrd_opt.h:225/292/321 require.
+
+/// `av1_default_iscan_8x8_transpose` (nonrd_opt.h:227) — the inverse of
+/// [`DEFAULT_SCAN_8X8_TRANSPOSE`].
+pub const AV1_DEFAULT_ISCAN_8X8_TRANSPOSE: [i16; 64] = [
+    0, 2, 3, 9, 10, 20, 21, 35, 1, 4, 8, 11, 19, 22, 34, 36, 5, 7, 12, 18, 23, 33, 37, 48, 6, 13,
+    17, 24, 32, 38, 47, 49, 14, 16, 25, 31, 39, 46, 50, 57, 15, 26, 30, 40, 45, 51, 56, 58, 27, 29,
+    41, 44, 52, 55, 59, 62, 28, 42, 43, 53, 54, 60, 61, 63,
+];
+
+/// `default_scan_fp_16x16_transpose` (nonrd_opt.h:265) — the 16x16 scan for the
+/// **fp** (hbd) Hadamard, whose output order differs from the lp one by
+/// `aom_hadamard_16x16_c`'s extra AVX2-matching column shift.
+pub const DEFAULT_SCAN_FP_16X16_TRANSPOSE: [i16; 256] = [
+    0, 4, 2, 8, 6, 16, 20, 18, 12, 10, 64, 14, 24, 22, 32, 36, 34, 28, 26, 68, 66, 72, 70, 80, 30,
+    40, 38, 48, 52, 50, 44, 42, 84, 82, 76, 74, 128, 78, 88, 86, 96, 46, 56, 54, 1, 5, 3, 60, 58,
+    100, 98, 92, 90, 132, 130, 136, 134, 144, 94, 104, 102, 112, 62, 9, 7, 17, 21, 19, 13, 11, 116,
+    114, 108, 106, 148, 146, 140, 138, 192, 142, 152, 150, 160, 110, 120, 118, 65, 15, 25, 23, 33,
+    37, 35, 29, 27, 69, 67, 124, 122, 164, 162, 156, 154, 196, 194, 200, 198, 208, 158, 168, 166,
+    176, 126, 73, 71, 81, 31, 41, 39, 49, 53, 51, 45, 43, 85, 83, 77, 75, 180, 178, 172, 170, 212,
+    210, 204, 202, 206, 216, 214, 224, 174, 184, 182, 129, 79, 89, 87, 97, 47, 57, 55, 61, 59, 101,
+    99, 93, 91, 133, 131, 188, 186, 228, 226, 220, 218, 222, 232, 230, 240, 190, 137, 135, 145, 95,
+    105, 103, 113, 63, 117, 115, 109, 107, 149, 147, 141, 139, 244, 242, 236, 234, 238, 248, 246,
+    193, 143, 153, 151, 161, 111, 121, 119, 125, 123, 165, 163, 157, 155, 197, 195, 252, 250, 254,
+    201, 199, 209, 159, 169, 167, 177, 127, 181, 179, 173, 171, 213, 211, 205, 203, 207, 217, 215,
+    225, 175, 185, 183, 189, 187, 229, 227, 221, 219, 223, 233, 231, 241, 191, 245, 243, 237, 235,
+    239, 249, 247, 253, 251, 255,
+];
+
+/// `av1_default_iscan_fp_16x16_transpose` (nonrd_opt.h:323) — the inverse of
+/// [`DEFAULT_SCAN_FP_16X16_TRANSPOSE`].
+pub const AV1_DEFAULT_ISCAN_FP_16X16_TRANSPOSE: [i16; 256] = [
+    0, 44, 2, 46, 1, 45, 4, 64, 3, 63, 9, 69, 8, 68, 11, 87, 5, 65, 7, 67, 6, 66, 13, 89, 12, 88,
+    18, 94, 17, 93, 24, 116, 14, 90, 16, 92, 15, 91, 26, 118, 25, 117, 31, 123, 30, 122, 41, 148,
+    27, 119, 29, 121, 28, 120, 43, 150, 42, 149, 48, 152, 47, 151, 62, 177, 10, 86, 20, 96, 19, 95,
+    22, 114, 21, 113, 35, 127, 34, 126, 37, 144, 23, 115, 33, 125, 32, 124, 39, 146, 38, 145, 52,
+    156, 51, 155, 58, 173, 40, 147, 50, 154, 49, 153, 60, 175, 59, 174, 73, 181, 72, 180, 83, 198,
+    61, 176, 71, 179, 70, 178, 85, 200, 84, 199, 98, 202, 97, 201, 112, 219, 36, 143, 54, 158, 53,
+    157, 56, 171, 55, 170, 77, 185, 76, 184, 79, 194, 57, 172, 75, 183, 74, 182, 81, 196, 80, 195,
+    102, 206, 101, 205, 108, 215, 82, 197, 100, 204, 99, 203, 110, 217, 109, 216, 131, 223, 130,
+    222, 140, 232, 111, 218, 129, 221, 128, 220, 142, 234, 141, 233, 160, 236, 159, 235, 169, 245,
+    78, 193, 104, 208, 103, 207, 106, 213, 105, 212, 135, 227, 134, 226, 136, 228, 107, 214, 133,
+    225, 132, 224, 138, 230, 137, 229, 164, 240, 163, 239, 165, 241, 139, 231, 162, 238, 161, 237,
+    167, 243, 166, 242, 189, 249, 188, 248, 190, 250, 168, 244, 187, 247, 186, 246, 192, 252, 191,
+    251, 210, 254, 209, 253, 211, 255,
+];
 
 // ---------------------------------------------------------------------------
 // av1_block_yrd (nonrd_opt.c:126) — lowbd arm.
@@ -496,6 +582,281 @@ pub fn block_yrd_lowbd(
 }
 
 // ---------------------------------------------------------------------------
+// av1_quantize_fp AS DISPATCHED — the ISA-conditional kernel (KB-20 root #3)
+// ---------------------------------------------------------------------------
+
+/// `av1_quantize_fp` (`log_scale = 0`) **as the reference build actually
+/// dispatches it** — deliberately NOT `av1_quantize_fp_c`.
+///
+/// ## Why this exists (MEASURED 2026-07-30, KB-20)
+/// The hbd `av1_block_yrd` arm feeds `av1_quantize_fp` the output of
+/// `aom_hadamard_16x16`, whose 4-way combine stage can reach **±65534** —
+/// outside `int16`. Every SIMD tier of `av1_quantize_fp` is a 16-bit kernel
+/// that narrows `tran_low_t` on load and multiplies `dqcoeff` in 16 bits, so
+/// outside the `int16` range the tiers stop agreeing with `av1_quantize_fp_c`
+/// **and with each other**:
+///
+/// * `av1_quantize_fp_neon` (`av1/encoder/arm/quantize_neon.c:57`) loads via
+///   `load_tran_low_to_s16q` = `vmovn_s32` — a **TRUNCATING** narrow — with no
+///   per-coefficient dequant threshold, `vqaddq_s16` rounding, `vqdmulhq_s16`
+///   >> 1, and `vmulq_s16` for `dqcoeff`;
+/// * `av1_quantize_fp_avx2` (`av1/encoder/x86/av1_quantize_avx2.c:15`) loads
+///   via `_mm_packs_epi32` — a **SATURATING** narrow — gates a whole 16-lane
+///   group on `abs > (dequant >> 1) - 1`, and uses `_mm256_mulhi_epi16` /
+///   `_mm256_mullo_epi16`;
+/// * `av1_quantize_fp_c` narrows nothing (`int64_t abs_coeff`, 32-bit
+///   `dqcoeff`).
+///
+/// All three agree while every coefficient AND every `qcoeff * dequant` fits
+/// in `int16` — which is why the 8-bit `_lp` path, and every other
+/// `av1_quantize_fp` call site in this port, never noticed. The hbd nonrd
+/// estimate is the one place that leaves that range routinely.
+///
+/// Measured on this aarch64 reference build over bd{10,12} x cq{12,32,63} x
+/// cpu-used{8,9}: the NEON model is **12/12 byte-identical** to real aomenc;
+/// the saturating (x86) model is 9/12; `av1_quantize_fp_c` is 9/12. The shipped
+/// gate then widened to 24 cells (cq{5,12,20,32,48,63}), still 24/24.
+///
+/// So this is ISA-conditional because **libaom's own encoder is**, exactly like
+/// the aarch64 `-ffp-contract` note in `reference/BUILD_CONFIG.md`. The
+/// non-x86/non-arm arm falls back to the `_c` semantics, which is what a build
+/// with no SIMD tier would run.
+///
+/// `iscan` must be the inverse of the scan `av1_block_yrd` selected for this
+/// transform (the SIMD tiers derive the EOB from `iscan` in raster order, not
+/// from the forward scan).
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn quantize_fp_dispatched(
+    coeff: &[i32],
+    round_fp: &[i16; 2],
+    quant_fp: &[i16; 2],
+    dequant: &[i16; 2],
+    scan: &[i16],
+    iscan: &[i16],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    let _ = scan;
+    #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
+    {
+        // av1_quantize_fp_neon (av1/encoder/arm/quantize_neon.c:76) + its
+        // quantize_fp_8 lane kernel (:57). No dequant threshold; the EOB is the
+        // max `iscan` over lanes whose intermediate is > 0.
+        let mut eob_max: i32 = -1;
+        for (rc, &c) in coeff.iter().enumerate() {
+            let lane = usize::from(rc != 0);
+            // load_tran_low_to_s16q: vmovn_s32 truncates to the low 16 bits.
+            let c16 = c as i16;
+            let sign = c16 >> 15; // vshrq_n_s16(v_coeff, 15)
+            let abs = c16.saturating_abs(); // vabsq_s16 saturates at INT16_MIN
+            let tmp = abs.saturating_add(round_fp[lane]); // vqaddq_s16
+            // vshrq_n_s16(vqdmulhq_s16(tmp, quant), 1)
+            //   = (sat_i16((2 * tmp * quant) >> 16)) >> 1
+            let dmulh = ((i32::from(tmp) * i32::from(quant_fp[lane])) >> 15)
+                .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+            let tmp2 = dmulh >> 1;
+            let q = (tmp2 ^ sign).wrapping_sub(sign);
+            qcoeff[rc] = i32::from(q);
+            // vmulq_s16: the dequantized value is computed in 16 bits and WRAPS.
+            dqcoeff[rc] = i32::from(q.wrapping_mul(dequant[lane]));
+            if tmp2 > 0 {
+                eob_max = eob_max.max(i32::from(iscan[rc]));
+            }
+        }
+        (eob_max + 1) as u16
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        // av1_quantize_fp_avx2 (av1/encoder/x86/av1_quantize_avx2.c:224) + its
+        // quantize_fp_16 lane kernel (:194) and init_qp threshold (:30).
+        // NOTE (unverified on this host): the SSE2 tier uses
+        // `thr = dequant >> 1` WITHOUT the `- 1`, and gates per 8 lanes rather
+        // than per 16 — so an x86 build that falls back to SSE2 can differ from
+        // this model at a coefficient sitting exactly on the threshold. If the
+        // KB-20 byte-identity gate ever fails on x86, that is the first thing
+        // to check.
+        let thr = [(dequant[0] >> 1) - 1, (dequant[1] >> 1) - 1];
+        let mut eob_max: i32 = -1;
+        for base in (0..coeff.len()).step_by(16) {
+            let hi = (base + 16).min(coeff.len());
+            // The whole 16-lane group is discarded when no lane clears the
+            // threshold (`if (nzflag) ... else write_zero`).
+            let mut nzflag = false;
+            for rc in base..hi {
+                let lane = usize::from(rc != 0);
+                let c16 = saturating_narrow_i32(coeff[rc]);
+                if c16.wrapping_abs() > thr[lane] {
+                    nzflag = true;
+                    break;
+                }
+            }
+            if !nzflag {
+                qcoeff[base..hi].fill(0);
+                dqcoeff[base..hi].fill(0);
+                continue;
+            }
+            for rc in base..hi {
+                let lane = usize::from(rc != 0);
+                let c16 = saturating_narrow_i32(coeff[rc]);
+                // _mm256_abs_epi16 does NOT saturate: abs(INT16_MIN) is itself.
+                let abs = c16.wrapping_abs();
+                let tmp = abs.saturating_add(round_fp[lane]); // _mm256_adds_epi16
+                // _mm256_mulhi_epi16
+                let absq = ((i32::from(tmp) * i32::from(quant_fp[lane])) >> 16) as i16;
+                // _mm256_sign_epi16(absq, coeff): zero when the coefficient is 0.
+                let q = match c16.signum() {
+                    1 => absq,
+                    -1 => absq.wrapping_neg(),
+                    _ => 0,
+                };
+                qcoeff[rc] = i32::from(q);
+                // _mm256_mullo_epi16: 16-bit, wrapping.
+                dqcoeff[rc] = i32::from(q.wrapping_mul(dequant[lane]));
+                if absq > 0 {
+                    eob_max = eob_max.max(i32::from(iscan[rc]));
+                }
+            }
+        }
+        (eob_max + 1) as u16
+    }
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "x86",
+        target_arch = "x86_64"
+    )))]
+    {
+        // No SIMD tier for this ISA in libaom -> av1_quantize_fp_c semantics.
+        // The port's own dispatch is bit-identical to `_c` at every tier.
+        aom_dsp::quant::simd::av1_quantize_fp_no_qmatrix_dispatch(
+            quant_fp, dequant, round_fp, 0, scan, iscan, coeff, qcoeff, dqcoeff,
+        )
+    }
+}
+
+/// `_mm_packs_epi32` on one lane: signed saturating 32 -> 16 narrow.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline]
+fn saturating_narrow_i32(v: i32) -> i16 {
+    v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+}
+
+/// One txb's Hadamard-estimate RD, `av1_block_yrd` with `use_hbd == 1`
+/// (nonrd_opt.c:199-215 + `update_yrd_loop_vars_hbd`, :92) — the KB-20 arm.
+///
+/// Structurally identical to [`block_yrd_lowbd`]; every kernel is the 32-bit
+/// (`tran_low_t`) sibling of the `_lp` one, and the 16x16 scan pair is the
+/// **fp** one because the fp and lp 16x16 Hadamards emit different coefficient
+/// orders. `bd` feeds `av1_highbd_block_error`'s `2*(bd-8)` rounding shift —
+/// the only place the bit depth enters the arithmetic.
+///
+/// Same contract as [`block_yrd_lowbd`]: `diff` is the whole txb's residual at
+/// stride `4 * bw4`, `tx_size` is the CLAMPED loop size (`AOMMIN(mi->tx_size,
+/// TX_16X16)`), and the returned rate already carries C's final shifts.
+#[allow(clippy::too_many_arguments)]
+pub fn block_yrd_hbd(
+    diff: &[i16],
+    bw4: usize, // num_4x4_w of the txb bsize (diff stride = 4 * bw4)
+    bh4: usize, // num_4x4_h
+    max_blocks_wide: usize,
+    max_blocks_high: usize,
+    tx_size: usize,
+    round_fp: &[i16; 8],
+    quant_fp: &[i16; 8],
+    dequant: &[i16; 8],
+    bd: u8,
+) -> (i32, i64, bool) {
+    debug_assert!(tx_size <= 2, "clamped to <= TX_16X16 (nonrd_opt.c:660)");
+    debug_assert!(bd > 8, "the hbd arm runs only when is_cur_buf_hbd(xd)");
+    let diff_stride = 4 * bw4;
+    let block_step = 1usize << tx_size;
+    let step = 1usize << (tx_size << 1); // 4x4 units per sub-block
+    let _ = bh4;
+
+    // `av1_quantize_fp`'s `[rc != 0]` lanes: index 0 = DC, index 1 = AC.
+    let q2 = [quant_fp[0], quant_fp[1]];
+    let r2 = [round_fp[0], round_fp[1]];
+    let d2 = [dequant[0], dequant[1]];
+
+    let mut rate: i32 = 0;
+    let mut dist: i64 = 0;
+    let mut eob_cost: i32 = 0;
+    let mut temp_skippable = true;
+
+    let mut coeff = [0i32; 256];
+    let mut qcoeff = [0i32; 256];
+    let mut dqcoeff = [0i32; 256];
+
+    let mut r = 0usize;
+    while r < max_blocks_high {
+        let mut c = 0usize;
+        while c < max_blocks_wide {
+            let src_diff = &diff[(r * diff_stride + c) * 4..];
+            let n = step << 4; // coefficients in this sub-block
+            let eob: u16 = match tx_size {
+                2 => {
+                    coeff.copy_from_slice(&aom_dsp::dist::hadamard::hadamard_16x16(
+                        src_diff,
+                        diff_stride,
+                    ));
+                    quantize_fp_dispatched(
+                        &coeff[..256],
+                        &r2,
+                        &q2,
+                        &d2,
+                        &DEFAULT_SCAN_FP_16X16_TRANSPOSE,
+                        &AV1_DEFAULT_ISCAN_FP_16X16_TRANSPOSE,
+                        &mut qcoeff[..256],
+                        &mut dqcoeff[..256],
+                    )
+                }
+                1 => {
+                    coeff[..64].copy_from_slice(&aom_dsp::dist::hadamard::hadamard_8x8(
+                        src_diff,
+                        diff_stride,
+                    ));
+                    quantize_fp_dispatched(
+                        &coeff[..64],
+                        &r2,
+                        &q2,
+                        &d2,
+                        &DEFAULT_SCAN_8X8_TRANSPOSE,
+                        &AV1_DEFAULT_ISCAN_8X8_TRANSPOSE,
+                        &mut qcoeff[..64],
+                        &mut dqcoeff[..64],
+                    )
+                }
+                _ => {
+                    // TX_4X4: aom_fdct4x4 + av1_quantize_fp over the NORMAL
+                    // av1_scan_orders[TX_4X4][DCT_DCT] pair (no transpose,
+                    // nonrd_opt.c:250). Lossless-only — the same envelope hole
+                    // the lowbd arm has.
+                    unimplemented!("TX_4X4 block_yrd hbd (lossless) — out of canon envelope")
+                }
+            };
+            // update_yrd_loop_vars_hbd (nonrd_opt.c:92).
+            let ncoeffs = eob as usize;
+            temp_skippable &= ncoeffs == 0;
+            eob_cost += get_msb(ncoeffs as u32 + 1);
+            if ncoeffs == 1 {
+                rate += qcoeff[0].abs();
+            } else if ncoeffs > 1 {
+                rate += aom_dsp::dist::hadamard::satd(&qcoeff[..n]);
+            }
+            dist += aom_dsp::dist::highbd_block_error(&coeff[..n], &dqcoeff[..n], bd).0 >> 2;
+            c += block_step;
+        }
+        r += block_step;
+    }
+
+    // Same tail as the lowbd arm: `this_rdc->sse` is INT64_MAX from
+    // av1_invalid_rd_stats, so the skippable-dist arm never fires here.
+    let rate = (rate << (2 + AV1_PROB_COST_SHIFT)) + (eob_cost << AV1_PROB_COST_SHIFT);
+    (rate, dist, temp_skippable)
+}
+
+// ---------------------------------------------------------------------------
 // av1_nonrd_pick_intra_mode (nonrd_pickmode.c:1582) — the estimate arm.
 // ---------------------------------------------------------------------------
 
@@ -598,10 +959,9 @@ pub fn nonrd_pick_intra_mode(
     bsize: usize,
     rdmult: i32,
 ) -> NonrdIntraPick {
-    assert!(
-        env.bd == 8,
-        "HANDOFF: hbd estimate arm (av1_quantize_fp + fp scans) not ported"
-    );
+    // `use_hbd = is_cur_buf_hbd(xd)` — the buffer's YV12_FLAG_HIGHBITDEPTH,
+    // which this project's encode path raises exactly when `bd > 8`.
+    let use_hbd = env.bd > 8;
     let mi_w = MI_W[bsize];
     let mi_h = MI_H[bsize];
     let bw = mi_w * 4;
@@ -719,7 +1079,7 @@ pub fn nonrd_pick_intra_mode(
                 .copy_from_slice(&pred[r * bw..r * bw + bw]);
         }
 
-        // Speed-9 SAD prune (av1_estimate_block_intra:646-668).
+        // Speed-9 SAD prune (av1_estimate_block_intra, nonrd_opt.c:629-648).
         if prune_mode_based_on_sad {
             let mut this_sad: u32 = 0;
             for r in 0..bh {
@@ -729,6 +1089,26 @@ pub fn nonrd_pick_intra_mode(
                     this_sad += (s - p).unsigned_abs();
                 }
             }
+            // KB-20's SECOND bd8-specific step — NOT inside av1_block_yrd, and
+            // NOT named by the old handoff assert. `fn_ptr[bsize].sdf` is bound
+            // by `highbd_set_var_fns` to `aom_highbd_sadWxH_bits{8,10,12}`,
+            // whose `MAKE_BFP_SAD_WRAPPER` bodies (encoder_utils.h:158) return
+            // the raw SAD `>> 0` / `>> 2` / `>> 4` respectively — i.e. `bd - 8`,
+            // NOT `2 * (bd - 8)`: a SAD is linear in pixel magnitude, so the
+            // 10-bit range is 4x the 8-bit one and the shift is 2. The raw sum
+            // above is the `_bits8` value; normalise it to this bit depth.
+            //
+            // HONESTY NOTE (measured 2026-07-30): this normalisation is
+            // source-derived, and on the 24-cell KB-20 gate it is
+            // decision-INERT — deleting it leaves every cell byte-identical.
+            // That is expected: the prune is the RATIO test
+            // `this_sad > best_sad + (best_sad >> 4)`, so shifting both sides
+            // equally only changes the rounding. What the gate DOES witness is
+            // getting the shift WRONG: `2 * (bd - 8)` over-shifts far enough to
+            // destroy the ratio and diverged on 1 of the 12 cells first
+            // measured. Keep the correct form; do not read the inertness as
+            // permission to drop it.
+            this_sad >>= u32::from(env.bd) - 8;
             let sad_threshold = if best_sad != u32::MAX {
                 best_sad + (best_sad >> 4)
             } else {
@@ -755,17 +1135,32 @@ pub fn nonrd_pick_intra_mode(
             &pred,
             bw,
         );
-        let (rate_yrd, dist_yrd, skippable) = block_yrd_lowbd(
-            &diff,
-            mi_w,
-            mi_h,
-            max_blocks_wide,
-            max_blocks_high,
-            tx_clamped,
-            env.rows_y.round_fp,
-            env.rows_y.quant_fp,
-            env.rows_y.dequant,
-        );
+        let (rate_yrd, dist_yrd, skippable) = if use_hbd {
+            block_yrd_hbd(
+                &diff,
+                mi_w,
+                mi_h,
+                max_blocks_wide,
+                max_blocks_high,
+                tx_clamped,
+                env.rows_y.round_fp,
+                env.rows_y.quant_fp,
+                env.rows_y.dequant,
+                env.bd,
+            )
+        } else {
+            block_yrd_lowbd(
+                &diff,
+                mi_w,
+                mi_h,
+                max_blocks_wide,
+                max_blocks_high,
+                tx_clamped,
+                env.rows_y.round_fp,
+                env.rows_y.quant_fp,
+                env.rows_y.dequant,
+            )
+        };
 
         // (:1676-1687): skip-cost fold (skip_ctx 0 on KEY intra — module docs)
         // + the KF y-mode cost.
