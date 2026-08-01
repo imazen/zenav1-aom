@@ -1,0 +1,4 @@
+encoder	preset	content	alpha_ms	beta_ms_per_MP	max_resid_pct	loglog_k	mps_64	mps_256	mps_1024	mps_large	large_px
+libaom-c	0	photo	142.8991	1151.531	329.9	0.7394	0.1193	0.3113	0.6937	0.8503	4194304
+libaom-c	1	photo	65.0338	416.238	434.4	0.7283	0.3280	0.8895	1.7528	2.3471	4194304
+libaom-c	1	screen	6726.0205	1484.771	65865.4	0.5325	0.4014	0.3785	0.0384	0.5572	3444736

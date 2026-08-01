@@ -1,0 +1,73 @@
+# BD-rate with the libaom C arm added (2026-08-01). ref = svt-c preset 1.
+# Merged input = the published xbench_stage2_2026-08-01.tsv + xbench_stage2_svtc_matched_2026-08-01.tsv
+#   (relabelled svt-c@p4) + xbench_stage2_libaomc_cpu1_2026-08-01.tsv (label libaom-c)
+#   + xbench_stage2_libaomc_cpu6_2026-08-01.tsv (label libaom-c@cpu6)
+#   + xbench_stage2_aomport_cpu6_2026-08-01.tsv (label zenav1-aom@now).
+#   Relabel-and-concatenate only; no row is edited.
+# modes: libaom-c cpu-used 1 | svt-c preset 1 | svt-rust preset 4 | zenav1-aom cpu-used 6 |
+#        zenrav1e speed 7;  controls: svt-c@p4, libaom-c@cpu6, zenav1-aom@now(cpu6, 7b560c6)
+# grid: 14 quantizer points spanning each encoder's FULL native range
+# command: python3 scripts/xbench.py bdrate --tsv <merged> --ref svt-c --metric {ssim2,ba_3n,ba_max}
+########## metric=ssim2
+BD-rate vs svt-c  (metric = ssim2; negative = fewer bits at equal quality)
+  cid22_1025469    photo        +22.13%    +29.96%         --    +17.46%    +17.52%    +30.00%    +29.96%    +46.74%
+  cid22_1420710    photo         +2.12%     +9.26%         --     +3.93%     +3.93%     +9.16%     +9.26%    +11.71%
+  cid22_1624487    photo         +4.12%    +11.23%         --     +2.20%     +2.20%    +11.23%    +11.23%     +6.05%
+  cid22_225228     photo         +4.25%    +14.95%         --     +6.34%     +6.37%    +15.13%    +14.95%     +8.75%
+  cid22_2775196    photo         +4.73%    +16.70%         --     +4.30%     +4.31%    +16.66%    +16.70%    +14.12%
+  cid22_3316926    photo         +3.85%    +20.72%         --     +8.25%     +8.41%    +20.79%    +20.72%    +18.06%
+  cid22_382297     photo         +2.78%    +10.70%         --     +6.73%     +6.74%    +10.43%    +10.70%    +12.18%
+  cid22_6292444    photo         +5.54%    +17.88%         --     +9.98%    +10.00%    +18.19%    +18.25%    +25.97%
+  clic_8426ed22    photo-hr      +5.12%    +28.83%         --     +6.82%     +7.17%    +28.82%    +28.83%    +12.87%
+  clic_ebfd571f    photo-hr      -5.06%    +30.57%         --    +20.94%    +19.78%    +30.86%    +30.57%    +10.30%
+  sc_codec_wiki    screen       -13.57%    +14.10%         --    +27.85%    +27.90%    +41.31%    +42.09%    +39.23%
+  sc_imac_dark     screen       -21.22%    +33.48%         --    +33.98%    +33.04%   +150.73%   +150.27%   +157.48%
+  sc_terminal      screen       -15.32%    +18.34%         --    +28.38%    +27.04%   +130.53%   +131.77%   +136.83%
+
+                               libaom-c  libaom-c@cpu6      svt-c   svt-c@p4   svt-rust  zenav1-aom  zenav1-aom@now   zenrav1e
+  MEDIAN (all)                   +3.85%    +17.88%         --     +8.25%     +8.41%    +20.79%    +20.72%    +14.12%
+  MEDIAN photo                   +4.18%    +15.82%         --     +6.53%     +6.56%    +15.89%    +15.82%    +13.15%
+  MEDIAN photo-hr                +0.03%    +29.70%         --    +13.88%    +13.48%    +29.84%    +29.70%    +11.58%
+  MEDIAN screen                 -15.32%    +18.34%         --    +28.38%    +27.90%   +130.53%   +131.77%   +136.83%
+########## metric=ba_3n
+BD-rate vs svt-c  (metric = ba_3n; negative = fewer bits at equal quality)
+  cid22_1025469    photo        +38.30%    +42.69%         --    +25.20%    +25.28%    +42.62%    +42.69%    +37.30%
+  cid22_1420710    photo         +2.89%    +10.69%         --     +0.84%     +0.84%    +10.69%    +10.69%     +8.39%
+  cid22_1624487    photo         +3.86%    +17.21%         --     +3.47%     +3.47%    +17.21%    +17.21%     +1.78%
+  cid22_225228     photo         +4.37%    +21.16%         --     +4.55%     +4.23%    +20.70%    +21.16%    +17.42%
+  cid22_2775196    photo         +4.75%    +25.00%         --    +14.66%    +14.72%    +24.99%    +25.00%    +24.47%
+  cid22_3316926    photo         +4.37%    +20.36%         --     +4.56%     +4.84%    +20.40%    +20.36%    +28.30%
+  cid22_382297     photo         +2.78%     +7.90%         --     +3.16%     +3.20%     +7.28%     +7.90%    +11.56%
+  cid22_6292444    photo         +5.28%    +21.72%         --     +9.41%     +9.45%    +19.39%    +19.05%    +31.51%
+  clic_8426ed22    photo-hr      +8.76%    +26.77%         --     +9.10%     +9.33%    +26.79%    +26.77%    +21.56%
+  clic_ebfd571f    photo-hr      -7.13%    +18.97%         --    +18.40%    +17.28%    +18.71%    +18.97%    +10.19%
+  sc_codec_wiki    screen       -14.32%    +21.78%         --    +19.70%    +19.72%    +26.70%    +27.05%    +21.19%
+  sc_imac_dark     screen       -19.09%    +31.54%         --    +31.17%    +30.01%   +126.17%   +124.13%   +128.61%
+  sc_terminal      screen       -15.80%    +16.62%         --    +26.40%    +25.10%   +106.66%   +106.60%   +124.84%
+
+                               libaom-c  libaom-c@cpu6      svt-c   svt-c@p4   svt-rust  zenav1-aom  zenav1-aom@now   zenrav1e
+  MEDIAN (all)                   +3.86%    +21.16%         --     +9.41%     +9.45%    +20.70%    +21.16%    +21.56%
+  MEDIAN photo                   +4.37%    +20.76%         --     +4.55%     +4.53%    +19.90%    +19.71%    +20.95%
+  MEDIAN photo-hr                +0.82%    +22.87%         --    +13.75%    +13.31%    +22.75%    +22.87%    +15.87%
+  MEDIAN screen                 -15.80%    +21.78%         --    +26.40%    +25.10%   +106.66%   +106.60%   +124.84%
+########## metric=ba_max
+BD-rate vs svt-c  (metric = ba_max; negative = fewer bits at equal quality)
+  cid22_1025469    photo        +16.09%    +16.72%         --    +25.93%    +26.00%    +17.38%    +16.72%    +28.19%
+  cid22_1420710    photo         -6.54%     +1.02%         --     -2.27%     -2.27%     +0.23%     +1.02%     +3.20%
+  cid22_1624487    photo         -3.64%     +9.98%         --     +0.35%     +0.35%     +9.98%     +9.98%     -3.85%
+  cid22_225228     photo         +5.96%    +22.77%         --     +3.06%     +1.54%    +17.78%    +22.77%    +23.44%
+  cid22_2775196    photo         -0.04%     +5.95%         --    +27.75%    +27.76%     +5.94%     +5.95%    +23.59%
+  cid22_3316926    photo         +3.72%    +14.48%         --     -0.63%     -0.37%    +14.72%    +14.48%    +27.77%
+  cid22_382297     photo         -2.34%     +6.17%         --     -5.34%     -5.31%     +1.61%     +6.17%     +5.81%
+  cid22_6292444    photo         +0.10%    +14.35%         --     +0.83%     +0.88%    +13.73%    +12.72%    +22.74%
+  clic_8426ed22    photo-hr     +20.05%    +19.83%         --    +18.18%    +18.87%    +19.82%    +19.83%    +35.41%
+  clic_ebfd571f    photo-hr     -19.57%    -20.12%         --    +31.10%    +27.55%    -20.46%    -20.12%    -15.52%
+  sc_codec_wiki    screen        -8.61%     -1.03%         --    +16.98%    +16.99%    +10.11%    +10.87%    +19.90%
+  sc_imac_dark     screen       -20.12%    +34.25%         --    +30.56%    +29.06%   +119.33%   +122.30%   +102.44%
+  sc_terminal      screen       -15.31%     +6.29%         --    +21.32%    +18.89%    +88.21%    +88.84%    +99.73%
+
+                               libaom-c  libaom-c@cpu6      svt-c   svt-c@p4   svt-rust  zenav1-aom  zenav1-aom@now   zenrav1e
+  MEDIAN (all)                   -2.34%     +9.98%         --    +16.98%    +16.99%    +13.73%    +12.72%    +23.44%
+  MEDIAN photo                   +0.03%    +12.16%         --     +0.59%     +0.61%    +11.86%    +11.35%    +23.09%
+  MEDIAN photo-hr                +0.24%     -0.15%         --    +24.64%    +23.21%     -0.32%     -0.15%     +9.95%
+  MEDIAN screen                 -15.31%     +6.29%         --    +21.32%    +18.89%    +88.21%    +88.84%    +99.73%

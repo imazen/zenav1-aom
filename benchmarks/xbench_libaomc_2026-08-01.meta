@@ -1,0 +1,206 @@
+# xbench — the libaom C arm, provenance
+# Companion to benchmarks/xbench_2026-08-01.md (which this arm extends in place)
+# and benchmarks/xbench_2026-08-01.meta (which covers the other four encoders).
+#
+# This file documents ONLY what was added on 2026-08-01: the `libaom-c` arms and
+# the `zenav1-aom@now` re-measurement. Nothing in the original four-encoder run
+# was re-executed; every number published for svt-c / svt-rust / zenrav1e / the
+# original zenav1-aom row is unchanged.
+
+date                 2026-08-01
+box                  Apple M4 Pro, 12 cores, 24 GiB, macOS 26.5.2 / Darwin 25.5.0 (arm64)
+                     — same box as the original four-encoder run
+compiler             rustc 1.97.1 (8bab26f4f 2026-07-14) / Apple clang 21.0.0 (clang-2100.1.1.101)
+build flags          --release, NO -C target-cpu=native
+threading            SINGLE THREAD
+                       libaom-c   : cfg.g_threads = 1, CONFIG_MULTITHREAD=0 in the library itself
+                       zenav1-aom : single-threaded by construction
+nice                 every measured run under `nice -n 19`
+
+## The encoder under test
+
+libaom-c      the PINNED in-tree oracle libaom — the `upstream/` git submodule,
+              **v3.14.1, commit 03087864cf4bea6abb0d28f95cf7843511413d8f**, built by
+              crates/aom-sys-ref/build.rs into `upstream/build/libaom.a`.
+              NOT /opt/homebrew/bin/aomenc (unpinned version and build flags).
+
+              Library build config (reference/BUILD_CONFIG.md):
+                -DCMAKE_BUILD_TYPE=Release
+                -DCONFIG_MULTITHREAD=0        # single-thread: what this benchmark wants
+                -DCMAKE_C_FLAGS=-ffp-contract=off
+              Generated upstream/build/config/aom_config.h, checked on this box:
+                CONFIG_MULTITHREAD 0 | CONFIG_RUNTIME_CPU_DETECT 1 | HAVE_NEON 1
+                HAVE_NEON_DOTPROD 1 | HAVE_NEON_I8MM 1 | HAVE_SVE 1 | HAVE_SVE2 1
+              So SIMD is fully enabled and runtime-dispatched, as in a normal build.
+
+              CAVEAT, stated because it is a deviation from a stock libaom build:
+              `-ffp-contract=off` is pinned on every libaom TU because the ORACLE
+              needs host-independent float arithmetic (BUILD_CONFIG.md). On aarch64
+              a stock build WOULD contract a*b+c into fmadd. This can only affect
+              libaom's float kernels (NN partition/tx predictors, curve fits,
+              denoise); it was not measured what it costs in wall time here, so
+              treat the libaom-c throughput numbers as a lower bound of at most a
+              few per cent. It cannot affect the port comparison's direction: the
+              port is 10.8x slower at matched preset.
+
+zenav1-aom    this repo @ 7b560c6 (the `zenav1-aom@now` arm). The originally
+              published `zenav1-aom` row was measured at ea3bed3 — see the
+              "commit skew" section below; both rows are kept.
+
+## The driver
+
+benchmarks/xbench/csrc/drv_libaom.c, built by scripts/xbench_build.sh step 3/4:
+
+  cc -O2 -o benchmarks/xbench/target/drv_libaom benchmarks/xbench/csrc/drv_libaom.c \
+     -I upstream -I upstream/build -L upstream/build -laom -lm -lc++
+
+Same contract as the other four:
+  drv <w> <h> <cq 0..63> <cpu-used 0..9> <in.yuv> <out.obu> <warmup> <reps>
+  stdout: NS=<n> ... BYTES=<m>
+
+CONFIG FIDELITY. drv_libaom.c's setup is a line-for-line transcription of
+`shim_encode_av1_kf_defaults` (crates/aom-sys-ref/shim/dec_shim.c) — the
+function `drv-aom` already calls (via `EncodeCell::c_encode_defaults`) to obtain
+its sequence-header bootstrap. Same `aom_codec_enc_config_default(
+AOM_USAGE_ALL_INTRA)`, same g_* / rc_end_usage = AOM_Q fields, same five
+controls (CPUUSED, CQ_LEVEL, SUPERBLOCK_SIZE 64X64, TILE_COLUMNS 0,
+TILE_ROWS 0), same single FORCE_KF frame + flush. No coding-tool control is set,
+so every tool is at its ALLINTRA default (cdef OFF, loop-restoration ON, qm OFF,
+palette/intrabc at their config defaults = ON, gated by libaom's own
+screen-content detector).
+
+That transcription is NOT taken on trust — it is measured. `xbench.py byteid`
+compares whole-stream sha256 of drv_libaom and drv-aom over the RD corpus; on the
+first probe cell (256x256, cq 40, cpu-used 6) both write
+8a950ce39bf8321972f47acedc4b7940cc8a4b4f402c61a3ffac9aa8f7f35ce4, 1104 bytes,
+and 127/182 RD cells agree (table in the .md).
+
+TIMED REGION: `aom_codec_encode(img)` + the packet drain + the flush call + its
+drain. Excluded on every rep: config build, aom_img_alloc + the plane copy,
+aom_codec_enc_init (table build, buffer alloc), the controls, aom_codec_destroy.
+That is the same boundary drv_svtc.c draws around SVT-AV1. A FRESH codec context
+is built per rep (as drv_svtc.c does), so no rep inherits another's warm state;
+libaom's lazy first-frame buffer allocation is therefore inside the timed region,
+which is symmetric with drv-aom (whose timed `port_encode` allocates its working
+buffers on every call) and conservative for libaom-c.
+
+## Control band
+
+  python3 scripts/xbench.py control --modes '{"libaom-c":1}' --q '{"libaom-c":44}' \
+      --n 9 --size 1024
+
+  libaom-c preset 1, 1024x1024 photo, 9 INDEPENDENT process invocations,
+  each 2 warmup + 7 timed encodes:
+    median 611.648 ms | min 607.331 | max 615.446 | spread 1.33 % | stdev 0.39 %
+    distinct byte counts: 1  (bit-deterministic)
+
+  For reference the published bands are zenav1-aom 4.98 %, svt-c 1.64 %,
+  svt-rust 0.85 %, zenrav1e 0.35 %. So a libaom-c timing difference under
+  ~1.3 % is noise.
+
+## Stage-1 quality operating point
+
+cq 44, chosen so libaom-c sits on the SAME byte-matched operating point the
+study already uses: at 1024x1024 photo, cq 44 / cpu-used 6 gives 4472 B whole
+stream — which is byte-for-byte what zenav1-aom cpu-used 6 produces at cq 44
+(4458 frame bytes + 14 = 4472; the published stage-1 raw TSV records the frame
+figure, see the original .meta's "known caveat").
+
+## Exact commands
+
+  # driver
+  cc -O2 -o benchmarks/xbench/target/drv_libaom benchmarks/xbench/csrc/drv_libaom.c \
+     -I upstream -I upstream/build -L upstream/build -laom -lm -lc++
+  # (or: bash scripts/xbench_build.sh, step 3/4)
+
+  export XBENCH_WORK=$HOME/tmp/xb-aomc
+  python3 scripts/xbench.py prep
+
+  # stage 1 — preset screen + size ladder, libaom-c ONLY (--only leaves the four
+  # already-published arms untouched)
+  python3 scripts/xbench.py stage1 --out benchmarks/xbench_stage1_libaomc_2026-08-01.tsv \
+      --only libaom-c --only-frontier --q '{"libaom-c":44}'
+  python3 scripts/xbench.py fitreport --raw benchmarks/xbench_stage1_libaomc_2026-08-01.raw.tsv \
+      > benchmarks/xbench_stage1_libaomc_fit_2026-08-01.tsv
+
+  # control band
+  python3 scripts/xbench.py control --modes '{"libaom-c":1}' --q '{"libaom-c":44}' --n 9 --size 1024
+
+  # byte identity, port vs oracle at matched cpu-used
+  python3 scripts/xbench.py byteid --out benchmarks/xbench_aom_byteidentity_2026-08-01.tsv \
+      --a zenav1-aom --b libaom-c --preset-a 6 --preset-b 6
+
+  # stage 2 — three arms
+  python3 scripts/xbench.py stage2 --out benchmarks/xbench_stage2_libaomc_cpu1_2026-08-01.tsv  --modes '{"libaom-c":1}'
+  python3 scripts/xbench.py stage2 --out benchmarks/xbench_stage2_libaomc_cpu6_2026-08-01.tsv  --modes '{"libaom-c":6}'
+  python3 scripts/xbench.py stage2 --out benchmarks/xbench_stage2_aomport_cpu6_2026-08-01.tsv  --modes '{"zenav1-aom":6}'
+
+  # BD-rate: concatenate the published stage-2 TSV, the published svt-c@p4 TSV and
+  # the three new TSVs with the encoder column relabelled
+  # (svt-c@p4 | libaom-c | libaom-c@cpu6 | zenav1-aom@now), then:
+  python3 scripts/xbench.py bdrate --tsv <merged> --ref svt-c --metric ssim2   # and ba_3n, ba_max
+  python3 scripts/xbench.py rdtable --tsv <merged> --levels 50,60,70,80
+
+  # stage 3
+  python3 scripts/xbench.py stage3 --out benchmarks/xbench_stage3_libaomc_2026-08-01.tsv \
+      --modes '{"libaom-c":1}' --targets 50,60,70,80,90 --max-encodes 8
+
+The merged BD-rate/rdtable output is committed as
+benchmarks/xbench_stage2_libaomc_bdrate_2026-08-01.txt; the merge itself is a
+pure relabel-and-concatenate of the five committed TSVs (no row is edited).
+
+## Stage-1 ladder: what was and was NOT run
+
+Phase A (the preset screen at the 1 MP photo cell) ran the FULL cpu-used 0..9
+range — that is the table that establishes the qualifying mode.
+
+Phase B (the size ladder) ran with `--only-frontier`, i.e. the frontier preset
+(cpu-used 1) plus the bracket below it (cpu-used 0). The cpu-used 1 ladder is
+COMPLETE (photo 64/256/1024/2048 + screen 64/256/1024/1856). The cpu-used 0
+ladder completed photo 64/256/1024/2048 + screen 64/256 and was then
+INTERRUPTED, deliberately: its remaining two cells (screen 1024 and screen 1856
+at cpu-used 0) were projecting ~35 minutes of box time for a bracket row no
+table uses. cpu-used 0's 1 MP photo point — the number that decides the frontier
+— is in phase A and is not affected. Every row present in the raw TSV is a
+completed cell; nothing is partial.
+
+## Screen-content probe
+
+  for p in 9 8 7 6 5 4; do
+    benchmarks/xbench/target/drv_libaom 1024 1024 44 $p $XBENCH_WORK/src/screen_1024.yuv \
+        $XBENCH_WORK/sc_$p.obu 1 3
+  done
+
+-> benchmarks/xbench_stage1_libaomc_screen_2026-08-01.tsv (median of 3 per row).
+Same driver, same contract; only the loop is inline rather than in xbench.py,
+because xbench.py's preset screen is photo-only by construction.
+
+## Commit skew on the zenav1-aom arm — measured, not assumed
+
+The published `zenav1-aom` stage-2 row was measured with the port at ea3bed3.
+This run's byte-identity comparison necessarily uses the port as it is TODAY
+(7b560c6). Those are not the same encoder: comparing the published stage-2 byte
+counts against a re-run of the same 182 cells at 7b560c6, **101 of 182 cells
+differ** (by ~0.1-1.4 %; 81 are byte-equal). The moving commits are KB-24/KB-25
+(99e3d96), KB-26 (a264c50) and KB-29's encoder half (be2108f).
+
+Rather than restate the published row on the strength of a different build, this
+run adds `zenav1-aom@now` — the SAME 182 cells re-measured at 7b560c6 — so the
+byte-identity claim and the BD-rate claim rest on one build. Both rows are
+reported. They land in the same place (+20.79 % published vs +20.72 % at
+7b560c6, ssim2 median over all 13), so the decomposition does not depend on
+which is used; the re-measured one is quoted wherever byte identity is invoked.
+
+## What is NOT measured in this arm
+
+* libaom-c stage 3 at cpu-used 6 (only the qualifying mode, cpu-used 1, was run).
+* The cpu-used 0 screen ladder (above).
+* Multi-threaded libaom. `CONFIG_MULTITHREAD=0` is compiled in; a threaded libaom
+  build was never built, let alone timed.
+* Any libaom build other than the pinned oracle config. In particular a stock
+  aarch64 build with `-ffp-contract` at its clang default was not built or timed.
+* aomenc-the-CLI. The driver links libaom directly, so no CLI overhead is in
+  scope — and no claim here is about `aomenc`'s command line.
+* The mechanism behind the screen-ladder anomaly (see the .md): libaom-c at
+  cpu-used 1 spends 27.3 s on the 1 MP screen cell and 6.2 s on the 3.3x-larger
+  1856^2 screen cell at the same 0.30 bpp. Measured, reproducible, NOT diagnosed.
