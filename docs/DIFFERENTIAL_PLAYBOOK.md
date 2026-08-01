@@ -236,6 +236,17 @@ Corollary: assert liveness per axis. Two knobs (`--enable-cfl-intra=0`,
 **without ever being exercised**
 (`docs/CONFIG_PERMUTATION_DESIGN_2026-07-30.md:308`).
 
+**Make the coverage question a compile error.** KB-29's decode gate does not
+carry a hand-written list of which knobs need guarding — a no-`..` destructure of
+`ToggleKnobs` means adding a field breaks the build until someone classifies it,
+and the gate then RECOMPUTES "unguarded" as "flipping this knob emits no
+`aome_enc_control_id`". Measured answer: **7 of 31 knobs were unguarded**
+(`enable_palette`, `enable_intrabc`, `disable_tx_stats_prune`, `delta_lf_mode`,
+`qm`, `deltaq_mode2`, `deltaq_mode3`). The destructure paid for itself
+immediately — it caught `deltaq_mode2`/`deltaq_mode3`, which the author's hand
+list had missed. A list of what to cover goes stale the day someone adds a field;
+a compile error cannot.
+
 ## 9. Distrust in-tree comments claiming a feature is inert
 
 `part_sf.early_term_after_none_split` was omitted from the port under the
@@ -262,6 +273,30 @@ proved everything *around* the divergence agreed — the NONE arm to the unit, t
 entire SPLIT accumulation child-for-child, the remaining budget entering the last
 child — leaving exactly one BLOCK_8X8 leaf where C early-terminates and the port
 falls through.
+
+**A decoder's error message names the first check that FAILED, not the defect.**
+KB-29's stream was rejected by aomdec and dav1d with `Invalid intrabc dv`. The
+obvious reading — and the one the task brief was written around — is that the
+encoder emitted a DV violating the spec's validity constraints, so: check the
+wavefront lag, the sb_size-relative reference area, tile clamping, the
+delta-left-of-SB rule. **All four measured clean.** The port's `is_dv_valid` is
+differential-locked against C's and its inputs matched the decoder's exactly at
+every diverging site.
+
+What actually happened was a tile-payload DESYNC six roots deep (a missing chroma
+coefficient write, a stale txfm-partition context, a palette leaking onto an
+IntraBC winner, plus three decoder-side walk defects). Once the bitstream is
+desynced, a later block reads garbage, and `use_intrabc` + a garbage DV diff is
+simply the first thing libaom hard-errors on. The message pointed at the tripwire,
+not the cause.
+
+So treat a conformance rejection as "the stream went wrong at or before here",
+never as "the named field is what is wrong". The method that found it: instrument
+BOTH sides of the same stream with a per-block dump plus a running symbol count
+and `od_ec_*_tell`/range, align the walks, and find the first block whose symbol
+DELTA differs (a desync) or whose range differs at equal count (a CDF-index
+divergence). That distinction tells you which of the two failure modes you have
+before you know anything else.
 
 **Never infer the mechanism from the SIZE of the delta.** KB-22's ledger entry
 reasoned that 150 bytes over ~1,156 superblocks — 0.035% of the payload — "argues
