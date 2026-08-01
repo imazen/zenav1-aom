@@ -1289,7 +1289,8 @@ fn independence_evidence_sweep() {
     }
     let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../benchmarks/config_perm_independence_2026-07-30.tsv");
-    std::fs::write(&out, &tsv).expect("write independence TSV");
+    std::fs::write(&out, format!("{}{tsv}", evidence_provenance()))
+        .expect("write independence TSV");
     println!("\n=== independence sweep (ctx {} , C oracle) ===", ctx.tag);
     for (k, n) in &counts {
         println!("  {k:<18} {n}");
@@ -2080,7 +2081,8 @@ fn content_axis_evidence_sweep() {
     }
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../benchmarks/config_perm_content_axis_2026-07-30.tsv");
-    std::fs::write(&path, &tsv).expect("write content-axis evidence TSV");
+    std::fs::write(&path, format!("{}{tsv}", evidence_provenance()))
+        .expect("write content-axis evidence TSV");
     println!("wrote {}", path.display());
 }
 
@@ -3152,6 +3154,34 @@ fn size_axis_budget_is_accounted() {
 // by construction").
 
 use aom_bench::config_perm::{ALL_SPEEDS, axis_level_dead_at_speed, speed_sf_classes};
+
+/// Provenance stamp for the `--ignored` evidence sweeps.
+///
+/// These TSVs carry a DATE in their filename and in their own header, but both
+/// are static strings in the writer — regenerating the file months later
+/// reproduces the same claimed date over different content. And because the
+/// sweeps are `--ignored`, a committed file can sit for weeks while the very
+/// divergences it lists get fixed (exactly what happened between 2026-07-30 and
+/// 2026-08-01: KB-21/23/26 closed rows these files still listed, and the drift
+/// was only noticed because an unrelated agent happened to run the sweep).
+///
+/// Stamping the commit makes staleness self-evident: if this line does not match
+/// `git rev-parse --short HEAD`, the rows below may already be closed. Same
+/// principle as the `build_commit` rule for generated data.
+fn evidence_provenance() -> String {
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    format!(
+        "# generated at commit {head}. If that differs from `git rev-parse --short HEAD`,\n\
+         # treat every divergence below as possibly-already-fixed and re-run the sweep.\n"
+    )
+}
 
 // ---------------------------------------------------------------------------
 // 7a. Contexts
@@ -4553,6 +4583,7 @@ fn speed_axis_evidence_sweep() {
          contexts' stock + divergent rows\n{tsv}",
         "2026-07-30"
     );
-    std::fs::write(&path, &out).expect("write the speed-axis evidence TSV");
+    std::fs::write(&path, format!("{}{out}", evidence_provenance()))
+        .expect("write the speed-axis evidence TSV");
     println!("wrote {}", path.display());
 }
