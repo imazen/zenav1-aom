@@ -87,3 +87,29 @@ drv-aom's BYTES column in stage1_2026-08-01.raw.tsv is the FRAME OBU PAYLOAD (14
 the whole-stream figure the other three report). The driver was changed to report the whole
 stream for stage 2/3; stage 1 does not use the byte column for anything but the operating-point
 check above.
+
+## Stage 2 / Stage 3 modes and corpus
+
+modes                zenav1-aom cpu-used 6 | svt-c preset 1 | svt-rust preset 4 | zenrav1e speed 7
+                     (each encoder's SLOWEST mode that clears 1 MP/s at the 1 MP photo cell —
+                      i.e. the RD-best point of the qualifying set)
+extra control arm    svt-c preset 4 ("svt-c@p4"): the same C encoder at the Rust port's mode
+corpus               8 x CID22 validation 512x512 (square)  [class: photo]
+                     2 x CLIC 2025 final-test, 1024x1024 centre square  [class: photo-hr]
+                     3 x gb82-sc screenshots, 1024x1024 NATIVE centre crop (no resampling)
+                       [class: screen]
+q grid               14 points over each encoder's FULL native quantizer range
+                       0..63 scales: 10,14,18,...,62   |  zenrav1e: 40,56,72,...,248
+                     measured SSIMULACRA2 coverage: -64 .. +92
+BD-rate              PCHIP (monotone cubic) over log10(bpp) vs metric on the overlapping
+                     quality interval, 1000-point Simpson integration; per image, then median
+stage-3 search       identical for all four (scripts/xbench.py::target_search): anchor seed in
+                     normalized quantizer space, one offset probe, bracketed secant; band ±1.0
+                     SSIMULACRA2; max 8 encodes
+
+## Stage-2/3 timing caveat
+
+The `enc_ms` column in the stage-2/3 TSVs is INFORMATIONAL ONLY: the svt-c@p4 control arm and
+the zenav1-aom screen-tools A/B ran concurrently with parts of stage 2/3 on the same box. No
+timing number quoted in xbench_2026-08-01.md comes from those columns — every one comes from
+stage 1 or the control runs, which ran alone.
