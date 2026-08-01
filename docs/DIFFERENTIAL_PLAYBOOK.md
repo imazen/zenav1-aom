@@ -371,3 +371,33 @@ that proof is compatible with two real defects, because neither root was a flag.
 An exhaustive A/B over the wrong axis is still exhaustive, and still tells you
 nothing about the right one.
 
+## 13. Re-deriving a config from its base constructor silently drops every later pass
+
+**The failure it prevents:** KB-26. The port's speed>=4 winner-mode two-pass
+(`wm_parts`) built its tx policies from a **fresh** `SpeedFeatures::set_allintra`,
+which reproduces only C's framesize-INdependent cascade. Anything resolved later —
+`set_allintra_speed_feature_framesize_dependent`,
+`av1_set_speed_features_qindex_dependent` — is silently back at its default in that
+copy. So `prune_tx_type_using_stats` arrived as 0 on every frame >= 480p, and the
+whole luma tx search ran with the prune off. C never has this problem: it reads one
+frame-level `cpi->sf` in `get_tx_mask` (`tx_search.c:1887`), identical across all
+three stages.
+
+The signature is distinctive and worth recognising: **a setting that is provably
+load-bearing at one speed and provably inert at the next, on the same frame.** That
+is not a threshold moving — it is a code path that stopped seeing the value. In
+KB-26 speeds 0-3 used the caller's resolved policy and never entered `wm_parts`,
+which is exactly where the split fell.
+
+**Rule:** carry the resolved frame-level value down; do not reconstruct it. The fix
+was one function — `TxTypeSearchPolicy::carry_frame_level_tx_sf` — replacing two
+hand-copied lines.
+
+**Audit before adding any internal re-derivation.** Done for this tree on
+2026-08-01: production encoder code has exactly two `set_allintra` call sites, and
+the second (the palette derivation, `partition_pick.rs:1050`) is safe because every
+upstream assignment to both fields it reads is inside a `*_framesize_independent`
+function. Note *how* that was settled — by enumerating the assignments in upstream
+source, not by reasoning about what the fields "probably" are. A field's name tells
+you nothing about which pass sets it.
+

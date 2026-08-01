@@ -2514,6 +2514,24 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   `wm_parts` was the only such path reaching the tx policies; the palette derivation at
   `partition_pick.rs:1048` re-derives too but reads only framesize-independent fields. Audit that
   invariant before adding another internal `set_allintra` call.
+- **THE AUDIT IS DONE — 2026-08-01, independently, from upstream source.** Enumerating every
+  `SpeedFeatures::set_allintra(` call site: production ENCODER code has exactly **two**
+  (`partition_pick.rs:975` = `wm_parts`, fixed above; `partition_pick.rs:1050` = the palette
+  derivation). Everything else is `speed_features.rs`'s own unit tests, `tx_search.rs`'s tests, or
+  the `aom-bench` harness (`lib.rs:1450`, `lib.rs:2332`, `config_perm.rs:1527`) which resolves the
+  later passes itself.
+  The palette site reads exactly two fields, and **every assignment to either one in upstream is
+  inside a `*_framesize_independent` function** — verified, not taken on report:
+  `prune_palette_search_level` at `speed_features.c:402`/`:456`
+  (`set_allintra_speed_features_framesize_independent`), `:1204`/`:1329`
+  (`set_good_..._framesize_independent`), `:1956`/`:2431` (`set_rt_..._framesize_independent`);
+  `prune_luma_palette_size_search_level` at `:362`/`:403` (allintra fs-independent), `:1957`/`:2432`
+  (rt fs-independent). Neither field is touched by
+  `set_allintra_speed_feature_framesize_dependent` or `av1_set_speed_features_qindex_dependent`.
+  **So the palette site is safe, and KB-26's class has no second instance in the current tree.**
+  The invariant still binds any FUTURE internal `set_allintra` call — prefer
+  `TxTypeSearchPolicy::carry_frame_level_tx_sf`'s shape (carry the resolved frame-level value)
+  over re-deriving.
 - **Historical isolation trail (how the boundary was found) below:**
 - **Found 2026-08-01** by `aom-bench/tests/s4cov_hd_speed_axis.rs`, extending the speed axis above
   640×640 for the first time (nothing had run `--cpu-used >= 1` above 640² except KB-22's two
