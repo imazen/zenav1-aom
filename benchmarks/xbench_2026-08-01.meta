@@ -1,0 +1,89 @@
+# xbench — cross-encoder AV1 still-picture benchmark, provenance
+# Companion to benchmarks/xbench_2026-08-01.md and the stage TSVs.
+
+date                 2026-08-01
+box                  Apple M4 Pro, 12 cores, 24 GiB, macOS Darwin 25.5.0 (arm64)
+compiler             rustc 1.97.1 (8bab26f4f 2026-07-14) / Apple clang 21.0.0 (clang-2100.1.1.101)
+build flags          --release, NO -C target-cpu=native (runtime SIMD dispatch, what users get)
+threading            SINGLE THREAD for all four encoders
+                       svt-c    : cfg.level_of_parallelism = 1  (--lp 1)
+                       svt-rust : EncodePipeline::with_thread_count(1)
+                       zenrav1e : Config::with_threads(1), tiles = 1
+                       zenav1-aom: single-threaded by construction (no threading in the port)
+nice                 every measured run under `nice -n 19`
+
+## Encoders under test (exact commits)
+
+zenav1-aom    ~/work/zen/zenav1-aom       ea3bed3            pure-Rust libaom port; ALLINTRA usage=2,
+                                                             cq-level 1..63, cpu-used 0..9
+                                                             (libaom C oracle submodule: v3.14.1 / 03087864)
+svt-c         ~/work/zen/zenav1-svt-c     dfbfe849c          SVT-AV1 upstream C, `git describe` =
+                                                             v4.2.0-62-gdfbfe849c (62 upstream commits
+                                                             past v4.2.0, all authored at Meta);
+                                                             qp 0..63, preset 0..13
+svt-rust      ~/work/zen/zenav1-svt       c391e762d          pure-Rust SVT-AV1 still-picture port,
+                                                             targeting SVT-AV1 v4.2.0; qp 0..63, preset 0..13
+zenrav1e      ~/work/zen/zenrav1e         4d1ed620           rav1e fork, `git describe` = v0.1.4-109-g4d1ed620;
+                                                             quantizer 1..255, speed 0..10
+
+NOTE on the svt pair: svt-rust ports SVT-AV1 v4.2.0; the C tree measured here is 62 upstream
+commits past that tag. The two were nevertheless BYTE-IDENTICAL on the calibration cell at
+presets 0..13 except presets 5 and 6 (see the .md) — so the version skew is not a material
+confounder for the modes reported, but it is real and is stated rather than hidden.
+
+## Tooling
+
+decoder              aomdec, libaom 3.14.1 (Homebrew) — `aomdec --rawvideo`
+cross-decoder check  dav1d 1.5.4 (Homebrew)
+SSIMULACRA2          fast-ssim2 @ 3f1e957 (v0.8.2-13-g3f1e957), path dep
+butteraugli          butteraugli @ e49085e (v0.9.3-32-ge49085e), path dep — max-norm and 3-norm
+corpus               codec-corpus @ 28205bb (v1.1.0-4-g28205bb)
+
+## Colour + input handling (identical for all four)
+
+BT.709, LIMITED range, 8-bit, 4:2:0. xtool does RGB8 -> YUV444 -> 2x2 box-averaged chroma ONCE;
+the resulting .yuv is the byte-identical input handed to all four encoders. Scoring converts BOTH
+the reference .yuv and the decoded .yuv back to RGB with the SAME inverse (chroma replicated), so
+the score isolates codec loss: the reference-vs-reference control reads SSIM2 = 100.000000,
+BA_MAX = 0.0, BA_3N = 0.0.
+
+Stream shape: all four emit exactly OBU_TD + 7-byte OBU_SEQUENCE_HEADER + OBU_FRAME, i.e. 14 bytes
+of non-frame overhead each, so the reported BYTES are directly comparable.
+
+## Timed region (per driver, see benchmarks/xbench/*/src/main.rs)
+
+zenav1-aom  EncodeCell::port_encode(&bootstrap)          — the port's whole frame encode
+svt-c       svt_av1_enc_send_picture + EOS + drain       — init/alloc/thread spawn excluded
+svt-rust    EncodePipeline::encode_frame_420             — EncodePipeline::new excluded
+zenrav1e    send_frame + flush + receive_packet          — new_context / Frame build excluded
+
+Untimed on the zenav1-aom side ONLY: one C-libaom encode at the matched config, run purely to
+supply the sequence header. This is structural, not a shortcut — the port never authors a
+sequence header (Gate-2 scope note in CLAUDE.md); it parses one and emits only the OBU_FRAME.
+Every coded frame byte measured and scored is the port's own.
+
+## Exact commands
+
+  scripts/xbench_build.sh
+  python3 scripts/xbench.py prep
+  python3 scripts/xbench.py stage1 --out <tsv> \
+      --q '{"zenav1-aom":44,"svt-c":40,"svt-rust":40,"zenrav1e":187}'
+  python3 scripts/xbench.py control --modes '<modes>' --n 9 --size 1024
+  python3 scripts/xbench.py stage2 --out <tsv> --modes '<modes>'
+  python3 scripts/xbench.py bdrate --tsv <tsv> --ref svt-c --metric ssim2
+  python3 scripts/xbench.py stage3 --out <tsv> --modes '<modes>' --targets 50,60,70,80,90
+
+## Stage-1 quality operating point
+
+Encode time depends on the quantizer, so the four were put on a byte-matched operating point
+rather than a nominally-equal knob value. Measured on the 1024x1024 photo cell:
+  svt-c qp 40      -> 4990 B      svt-rust qp 40    -> 4990 B (byte-identical to svt-c)
+  zenav1-aom cq 44 -> 5014 B      zenrav1e q 187    -> 5090 B
+i.e. all four within +-2% of ~5 KB. That is the operating point every stage-1 number uses.
+
+## Known caveat in the stage-1 raw TSV
+
+drv-aom's BYTES column in stage1_2026-08-01.raw.tsv is the FRAME OBU PAYLOAD (14 bytes less than
+the whole-stream figure the other three report). The driver was changed to report the whole
+stream for stage 2/3; stage 1 does not use the byte column for anything but the operating-point
+check above.

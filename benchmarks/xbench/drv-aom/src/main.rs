@@ -139,7 +139,9 @@ fn main() {
     for s in &samples {
         line.push_str(&format!("NS={s} "));
     }
-    // BYTES = the coded frame OBU payload (the port's own output), not the
-    // container: the sequence header is the untimed C bootstrap's.
-    println!("{line}BYTES={}", last.len());
+    // BYTES = the whole section-5 OBU stream, so it is directly comparable
+    // with the other three drivers (all four emit exactly TD + 7-byte sequence
+    // header + frame OBU = 14 bytes of non-frame overhead — verified). The
+    // frame payload the port itself produced is reported separately.
+    println!("{line}BYTES={} FRAMEBYTES={}", stream.len(), last.len());
 }

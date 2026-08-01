@@ -1,0 +1,5 @@
+encoder	preset	size	n	median_ms	min_ms	max_ms	spread_pct	stdev_pct	bytes_unique
+zenav1-aom	6	1024	9	510.4431	503.4769	528.8931	4.98	1.76	1
+svt-c	1	1024	9	683.8950	675.2680	686.4850	1.64	0.46	1
+svt-rust	4	1024	9	811.1984	807.6120	814.5369	0.85	0.28	1
+zenrav1e	7	1024	9	590.3580	589.4660	591.5236	0.35	0.10	1

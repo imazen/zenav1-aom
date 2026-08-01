@@ -54,7 +54,9 @@ ENCODERS = {
 }
 
 NS_RE = re.compile(rb"NS=(\d+)")
-BYTES_RE = re.compile(rb"BYTES=(\d+)")
+# `(?<![A-Za-z])` so drv-aom's extra `FRAMEBYTES=` field can never be mistaken
+# for the comparable whole-stream `BYTES=`.
+BYTES_RE = re.compile(rb"(?<![A-Za-z])BYTES=(\d+)")
 
 
 def run_encode(enc, w, h, q, speed, yuv, out, warmup, reps, timeout=1800):
@@ -481,66 +483,151 @@ def cmd_stage3(args):
 
 
 def target_search(enc, preset, yuv, w, h, qlo, qhi, T, band, max_encodes, timeout):
-    """Bracketed secant on quantizer -> SSIMULACRA2. Identical for all four."""
+    """Seeded secant on quantizer -> SSIMULACRA2. IDENTICAL for all four.
+
+    Deliberately shaped like a real target-quality implementation (cf. zenavif's
+    `encode_rgb8_with_target`), not like an oracle:
+      1. seed from a fixed anchor line in NORMALIZED quantizer space
+         t = (q - qlo) / (qhi - qlo), so the seed is the same "position in the
+         encoder's own range" for every encoder;
+      2. take a second probe offset from the seed to get a secant slope;
+      3. secant, maintaining a bracket once one exists, clamped to the range;
+      4. stop on |achieved - target| <= band, on the bracket collapsing to one
+         quantizer step, or at `max_encodes`.
+    Boundary saturation (the target is off the top/bottom of what the encoder
+    can produce on this image) is reported as an honest failure, not hidden.
+    """
     seen = {}
 
-    def probe(q):
-        q = max(qlo, min(qhi, int(round(q))))
-        if q in seen:
-            return q, seen[q]
-        r = encode_score(enc, w, h, q, preset, yuv, "s3", timeout=timeout)
-        if "error" in r:
-            seen[q] = None
-        else:
-            seen[q] = r
+    def probe(qf):
+        q = max(qlo, min(qhi, int(round(qf))))
+        if q not in seen:
+            r = encode_score(enc, w, h, q, preset, yuv, "s3", timeout=timeout)
+            seen[q] = None if "error" in r else r
         return q, seen[q]
 
-    # Bracket ends first (they also give the anchor line and prove reachability).
-    q_hi_qual, r_hi = probe(qlo)          # lowest quantizer  = highest quality
-    q_lo_qual, r_lo = probe(qhi)          # highest quantizer = lowest quality
-    if r_hi is None or r_lo is None:
+    span = qhi - qlo
+    # Anchor: SSIMULACRA2 ~100 at the low-quantizer end, ~40 at the high end.
+    t = min(max((100.0 - T) / 60.0, 0.0), 1.0)
+    q1, r1 = probe(qlo + t * span)
+    if r1 is None:
         return dict(achieved=float("nan"), abs_err=float("nan"), encodes=len(seen),
                     converged=False, q=-1, bytes=0, bpp=0.0, reason="encode_error")
-    if T > r_hi["ssim2"] + band:
-        best = r_hi
-        return dict(achieved=best["ssim2"], abs_err=abs(T - best["ssim2"]),
-                    encodes=len(seen), converged=False, q=q_hi_qual,
-                    bytes=best["bytes"], bpp=best["bytes"] * 8 / (w * h),
-                    reason="above_max_quality")
-    if T < r_lo["ssim2"] - band:
-        best = r_lo
-        return dict(achieved=best["ssim2"], abs_err=abs(T - best["ssim2"]),
-                    encodes=len(seen), converged=False, q=q_lo_qual,
-                    bytes=best["bytes"], bpp=best["bytes"] * 8 / (w * h),
-                    reason="below_min_quality")
-    a, fa = float(q_hi_qual), r_hi["ssim2"]
-    b, fb = float(q_lo_qual), r_lo["ssim2"]
-    best_q, best_r = (q_hi_qual, r_hi) if abs(r_hi["ssim2"] - T) < abs(r_lo["ssim2"] - T) \
-        else (q_lo_qual, r_lo)
-    while len(seen) < max_encodes:
-        if abs(best_r["ssim2"] - T) <= band:
-            break
+    # Second probe on the side the first one missed.
+    step = max(2.0, span / 8.0)
+    q2, r2 = probe(q1 - step if r1["ssim2"] < T else q1 + step)
+    if r2 is None:
+        return dict(achieved=r1["ssim2"], abs_err=abs(T - r1["ssim2"]), encodes=len(seen),
+                    converged=abs(T - r1["ssim2"]) <= band, q=q1, bytes=r1["bytes"],
+                    bpp=r1["bytes"] * 8 / (w * h), reason="encode_error")
+
+    pts = {q1: r1["ssim2"], q2: r2["ssim2"]}
+    best_q, best_r = min(((q1, r1), (q2, r2)), key=lambda p: abs(p[1]["ssim2"] - T))
+    while len(seen) < max_encodes and abs(best_r["ssim2"] - T) > band:
+        # bracket if we have one, else secant-extrapolate from the two nearest.
+        above = [(q, s) for q, s in pts.items() if s >= T]
+        below = [(q, s) for q, s in pts.items() if s < T]
+        if above and below:
+            a, fa = max(above, key=lambda p: p[0])   # largest q still >= T
+            b, fb = min(below, key=lambda p: p[0])   # smallest q already < T
+            if abs(b - a) <= 1:
+                break
+        else:
+            srt = sorted(pts.items(), key=lambda p: abs(p[1] - T))[:2]
+            (a, fa), (b, fb) = srt[0], srt[1]
+            if abs(a - b) < 1e-9:
+                break
         if abs(fb - fa) < 1e-9:
             break
-        q = a + (T - fa) * (b - a) / (fb - fa)          # secant
-        q = min(max(q, min(a, b) + 1e-9), max(a, b) - 1e-9)
-        qi, r = probe(q)
+        qn = a + (T - fa) * (b - a) / (fb - fa)
+        qn = min(max(qn, qlo), qhi)
+        if int(round(qn)) in seen:
+            # nudge toward the target side rather than re-probing a known point
+            qn = int(round(qn)) + (-1 if fa < T else 1)
+            if int(round(qn)) in seen or not (qlo <= qn <= qhi):
+                break
+        qi, r = probe(qn)
         if r is None:
             break
+        pts[qi] = r["ssim2"]
         if abs(r["ssim2"] - T) < abs(best_r["ssim2"] - T):
             best_q, best_r = qi, r
-        # keep the bracket: quality DEcreases as quantizer increases
-        if r["ssim2"] > T:
-            a, fa = float(qi), r["ssim2"]
-        else:
-            b, fb = float(qi), r["ssim2"]
-        if abs(b - a) <= 1.0:
-            break
     conv = abs(best_r["ssim2"] - T) <= band
+    reason = ""
+    if not conv:
+        if best_q == qlo and best_r["ssim2"] < T:
+            reason = "above_max_quality"          # even the best quantizer misses
+        elif best_q == qhi and best_r["ssim2"] > T:
+            reason = "below_min_quality"
+        else:
+            reason = "band_not_reached"
     return dict(achieved=best_r["ssim2"], abs_err=abs(best_r["ssim2"] - T),
                 encodes=len(seen), converged=conv, q=best_q, bytes=best_r["bytes"],
-                bpp=best_r["bytes"] * 8 / (w * h),
-                reason="" if conv else "band_not_reached")
+                bpp=best_r["bytes"] * 8 / (w * h), reason=reason)
+
+
+def cmd_fitreport(args):
+    """Re-derive the stage-1 fit from the RAW samples and report how well the
+    `total = alpha + beta*pixels` model actually holds.
+
+    Reporting a bare alpha/beta would be misleading where the model misfits, so
+    this also emits the per-size residual of the fit and the LOG-LOG exponent
+    (t ~ pixels^k). k == 1 means the linear model is the right shape; k < 1
+    means per-pixel cost falls with frame size and the intercept is doing work
+    the model cannot honestly attribute to a fixed per-call cost."""
+    import math
+    cells = {}
+    with open(args.raw) as f:
+        hdr = f.readline().rstrip("\n").split("\t")
+        for line in f:
+            r = dict(zip(hdr, line.rstrip("\n").split("\t")))
+            if r["phase"] != "ladder":
+                continue
+            cells.setdefault((r["encoder"], int(r["preset"]), r["content"]), {}) \
+                 .setdefault((int(r["pixels"]), int(r["size"])), []).append(int(r["ns"]))
+    print("encoder\tpreset\tcontent\talpha_ms\tbeta_ms_per_MP\tmax_resid_pct\t"
+          "loglog_k\tmps_64\tmps_256\tmps_1024\tmps_large\tlarge_px")
+    for (enc, preset, content), by_px in sorted(cells.items()):
+        pts = sorted((px, statistics.median(v) / 1e9, n) for (px, n), v in by_px.items())
+        if len(pts) < 3:
+            continue
+        fit = fit_alpha_beta([(p[0], p[1], 0, p[2]) for p in pts])
+        a, b = fit["alpha_ms"] / 1e3, fit["beta_ms_per_mp"] / 1e3 / 1e6
+        resid = max(abs((a + b * px) - t) / t * 100 for px, t, _ in pts)
+        ks = [math.log(pts[i + 1][1] / pts[i][1]) / math.log(pts[i + 1][0] / pts[i][0])
+              for i in range(len(pts) - 1)]
+        mps = {n: px / t / 1e6 for px, t, n in pts}
+        print(f"{enc}\t{preset}\t{content}\t{fit['alpha_ms']:.4f}\t"
+              f"{fit['beta_ms_per_mp']:.3f}\t{resid:.1f}\t{statistics.mean(ks):.4f}\t"
+              + "\t".join(f"{mps.get(n, float('nan')):.4f}" for n in (64, 256, 1024))
+              + f"\t{pts[-1][0]/pts[-1][1]/1e6:.4f}\t{pts[-1][0]}")
+
+
+def cmd_control(args):
+    """Run-to-run control band: re-run the SAME cell as N INDEPENDENT process
+    invocations and report the spread of the per-invocation median. Anything
+    smaller than this band in the tables below is noise, not a result."""
+    modes = json.loads(args.modes)
+    qmap = json.loads(args.q)
+    print("encoder\tpreset\tsize\tn\tmedian_ms\tmin_ms\tmax_ms\tspread_pct\tstdev_pct\tbytes_unique")
+    for enc, preset in modes.items():
+        yuv = WORK / "src" / f"photo_{args.size}.yuv"
+        meds, bys = [], set()
+        for _ in range(args.n):
+            ns, by, err = run_encode(enc, args.size, args.size, qmap[enc], preset, yuv,
+                                     WORK / "ctl.obu", 2, reps_for(args.size ** 2),
+                                     timeout=args.timeout)
+            if err:
+                print(f"{enc}: FAILED {err}")
+                break
+            meds.append(median_ns(ns) / 1e6)
+            bys.add(by)
+        if not meds:
+            continue
+        m = statistics.median(meds)
+        sd = statistics.stdev(meds) if len(meds) > 1 else 0.0
+        print(f"{enc}\t{preset}\t{args.size}\t{len(meds)}\t{m:.4f}\t{min(meds):.4f}\t"
+              f"{max(meds):.4f}\t{(max(meds)-min(meds))/m*100:.2f}\t{sd/m*100:.2f}\t{len(bys)}")
 
 
 def main():
@@ -569,7 +656,19 @@ def main():
     s3.add_argument("--band", type=float, default=1.0)
     s3.add_argument("--max-encodes", type=int, default=10)
     s3.add_argument("--timeout", type=int, default=1800)
+    ct = sub.add_parser("control")
+    ct.add_argument("--modes", required=True)
+    ct.add_argument("--q", default='{"zenav1-aom":44,"svt-c":40,"svt-rust":40,"zenrav1e":187}')
+    ct.add_argument("--size", type=int, default=1024)
+    ct.add_argument("--n", type=int, default=9)
+    ct.add_argument("--timeout", type=int, default=1800)
+    fr = sub.add_parser("fitreport")
+    fr.add_argument("--raw", required=True)
     a = ap.parse_args()
+    if a.cmd == "fitreport":
+        return cmd_fitreport(a)
+    if a.cmd == "control":
+        return cmd_control(a)
     if a.cmd == "prep":
         cmd_prep(a)
     elif a.cmd == "stage1":

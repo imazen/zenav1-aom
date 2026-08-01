@@ -1,0 +1,13 @@
+# Ladder content control: is the sub-linear time-vs-pixels trend an artifact of building the
+# size ladder by DOWNSCALING one source? Same source PNG (clic2025 8426ed22..., 2048x2048),
+# same encoder/preset/qp, two ways to make the cell: Lanczos3 square downscale vs native-
+# resolution centre crop (no resampling). svt-c preset 1, qp 40, 1 warmup + 3 timed encodes.
+# Commands: xtool prep <src> <out> square:N   |   xtool prep <src> <out> crop:NxN
+#           target/drv_svtc N N 40 1 <yuv> <obu> 1 3
+encoder	preset	qp	size	pixels	ladder_kind	ns_1	ns_2	ns_3	median_ms	us_per_px
+svt-c	1	40	64	4096	downscale	12300000	12326000	12432000	12.326	3.009
+svt-c	1	40	64	4096	native_crop	8969000	8947000	8985000	8.969	2.190
+svt-c	1	40	256	65536	downscale	84260000	84226000	84299000	84.260	1.286
+svt-c	1	40	256	65536	native_crop	122936000	123499000	123204000	123.204	1.880
+svt-c	1	40	1024	1048576	downscale	697350000	697797000	697777000	697.777	0.665
+svt-c	1	40	1024	1048576	native_crop	1153097000	1155907000	1157344000	1155.907	1.102
