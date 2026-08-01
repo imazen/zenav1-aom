@@ -126,11 +126,25 @@ use txfm1d_v3_gen::*;
 ///
 /// So at 4 points the half batch loses badly and at 16 it is the single
 /// biggest win in the 4-wide column — the threshold below is the boundary
-/// between those two measurements. `kernel_points == 8` is INTERPOLATED, not
-/// measured: the bench's `TX_CELLS` has no 4x8 cell. The mechanism (a fixed
-/// per-batch cost amortized over the kernel) predicts monotone improvement
-/// with `kernel_points`, which is why 8 is on the paying side; add a 4x8 cell
-/// and re-measure before relying on it.
+/// between those two measurements.
+///
+/// **`kernel_points == 8` is now MEASURED, 2026-07-31** (Apple M4 Pro, same
+/// port-only `dsp_kernels` bench; `benchmarks/dsp_neon_half_batch_4x8_2026-07-31.md`).
+/// This rung used to be INTERPOLATED — the grid had no 4x8 cell, and the note
+/// here said so and asked for one before relying on it. `TX_4X8`/`TX_8X4` cells
+/// were added and the threshold A/B'd by flipping it to `>= 16`:
+///
+/// | cell | half batch ON (`>= 8`) | OFF (`>= 16`) | ON is |
+/// |---|---|---|---|
+/// | `inv_txfm_u8::04x08_dct`  | 216.1 us | 273.4 us | **21.0% faster** |
+/// | `inv_txfm_u8::04x08_adst` | 248.0 us | 317.6 us | **21.9% faster** |
+/// | `inv_txfm_u8::08x04_dct`  | 208.6 us | 253.0 us | **17.6% faster** |
+/// | `inv_txfm_u8::08x04_adst` | 234.4 us | 296.1 us | **20.8% faster** |
+///
+/// The interpolation held: 8 is on the paying side, and the mechanism's
+/// predicted monotonicity (4 loses, 8 pays, 16 pays more) is what the numbers
+/// show. Every row is far outside the +-2% run-to-run band. Note `08x04` moves
+/// too — TX_8X4's other pass is an 8-point kernel, so it sits on the same rung.
 ///
 /// x86-64 always says yes: the 4-wide arms are the shape the 2026-07-17 AVX2
 /// landing measured and kept (`benchmarks/gate3_transform_simd_2026-07-17.md`),

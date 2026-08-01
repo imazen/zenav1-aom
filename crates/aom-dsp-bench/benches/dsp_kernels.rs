@@ -87,12 +87,22 @@ const TX_H: [usize; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4,
 
 /// Transform cells spanning the size axis: squares 4x4..64x64 plus the extreme
 /// aspect ratios (1:4 / 4:1), which take different driver paths.
+///
+/// `04x08` / `08x04` (TX_4X8 / TX_8X4) were added 2026-07-31 specifically to
+/// measure the `kernel_points == 8` rung of
+/// `aom_dsp::transform::simd::half_batch_pays`, whose aarch64 threshold was
+/// INTERPOLATED between the measured 4-point and 16-point cells because this
+/// grid had no 4x8 cell. `04x08` is the 4-wide (half-batch) column at
+/// `kernel_points = 8` — i.e. the exact rung the threshold sits on; `08x04` is
+/// the complementary shape (full-width lanes, 4-point kernel).
 const TX_CELLS: &[(usize, &str)] = &[
     (0, "04x04"),
     (1, "08x08"),
     (2, "16x16"),
     (3, "32x32"),
     (4, "64x64"),
+    (5, "04x08"),
+    (6, "08x04"),
     (8, "16x08"),
     (13, "04x16"),
     (16, "32x08"),
