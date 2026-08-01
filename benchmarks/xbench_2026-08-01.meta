@@ -27,9 +27,10 @@ zenrav1e      ~/work/zen/zenrav1e         4d1ed620           rav1e fork, `git de
                                                              quantizer 1..255, speed 0..10
 
 NOTE on the svt pair: svt-rust ports SVT-AV1 v4.2.0; the C tree measured here is 62 upstream
-commits past that tag. The two were nevertheless BYTE-IDENTICAL on the calibration cell at
-presets 0..13 except presets 5 and 6 (see the .md) — so the version skew is not a material
-confounder for the modes reported, but it is real and is stated rather than hidden.
+commits past that tag. Measured on the calibration cell (whole-stream sha256, see
+xbench_svt_byteidentity_2026-08-01.tsv): BYTE-IDENTICAL at presets 4, 7, 8, 9, 13; DIFFERING at
+presets 1, 2, 3, 5, 6. Preset 4 is the port's qualifying mode AND the mode the svt-c@p4 control
+arm uses, so that control compares identical work. The skew is real and is stated, not hidden.
 
 ## Tooling
 

@@ -1,0 +1,21 @@
+# svt-c vs svt-rust byte identity on the stage-1 calibration cell.
+# Image: clic2025 8426ed22... square:1024 (1024x1024 photo), qp 40, 8-bit 4:2:0, single tile,
+# single thread, 0 warmup / 1 encode. Whole section-5 OBU stream hashed (TD + seq hdr + frame).
+# Matters because the stage-2 "matched preset" control assumes the two encoders do the same
+# work at preset 4 — and at preset 4 they emit the SAME BYTES.
+preset	svtc_sha256_12	svtc_bytes	svtrust_sha256_12	svtrust_bytes	verdict
+1	fe061f00b6ad	4594	1fd69e391a0d	4570	DIFFER
+2	5c6463497716	4665	663b18442ac0	4669	DIFFER
+3	81d221f45f6f	4618	a7dd25f4f561	4620	DIFFER
+4	2c1616476194	4628	2c1616476194	4628	IDENTICAL
+5	4144a7c4e8d5	4653	1774ed9e09c6	4660	DIFFER
+6	7434b668cbca	5015	822a51e1b0cf	5019	DIFFER
+7	4b1dfc56491c	5131	4b1dfc56491c	5131	IDENTICAL
+8	a702adc44650	5148	a702adc44650	5148	IDENTICAL
+9	409f62e72bb2	4990	409f62e72bb2	4990	IDENTICAL
+13	409f62e72bb2	4990	409f62e72bb2	4990	IDENTICAL
+# The C tree measured here is 62 upstream commits past the v4.2.0 the port targets, so a
+# divergence at 1/2/3/5/6 on ONE image is expected drift and/or one of the port's documented
+# pinned near-ties; it is NOT evidence either encoder is wrong. Preset 4 — the port's qualifying
+# mode, and the mode the svt-c@p4 control arm uses — is byte-identical, so that control compares
+# identical work.
