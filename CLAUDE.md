@@ -2610,30 +2610,135 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
 - **Pinned** as `Verdict::Panic` in `hd_speed_axis_byte_matches::LARGE_FRAME_OPEN` (cq24 and
   cq40), both directions.
 
-### KB-29 — Encoder: the IntraBC-armed encode produces a NON-CONFORMANT bitstream (`Invalid intrabc dv`) — OPEN
+### KB-29 — Encoder: the IntraBC-armed encode produced a NON-CONFORMANT bitstream (`Invalid intrabc dv`) — FIXED ✅ 2026-08-01 (5 roots), + the general decode-side gate it was missing
 - **Found 2026-08-01** by the cross-encoder still-picture benchmark
   (`benchmarks/xbench_2026-08-01.md` stage 2, raw
   `benchmarks/xbench_stage2_aom_screentools_2026-08-01.tsv`). Repro: `EncodeCell::port_encode_with`
   on real screen content (`codec-corpus/gb82-sc/terminal.png`, 1024×1024 native centre crop,
   8-bit 4:2:0), `cpu-used 6`, `cq 50`, `ToggleKnobs { enable_intrabc: true, ..default() }` with a
-  `c_encode_defaults` bootstrap. Driver:
-  `benchmarks/xbench/drv-aom` with `XBENCH_AOM_INTRABC=1`.
-- **Symptom:** the stream is REJECTED by both reference decoders — `aomdec` (libaom 3.14.1):
-  *"Failed to decode frame 1: Corrupt frame detected / Additional information: Invalid intrabc dv"*;
-  `dav1d` 1.5.4: *"Error decoding frame: Invalid argument"*. The port emits a DV the spec's
-  validity constraints reject, so this is an encoder-side conformance defect, not a decoder gap.
-  It is NOT caught by any current gate: the byte-exactness gates compare against an aomenc
-  reference and the harness path (`port_encode` = `ToggleKnobs::default()`) leaves
-  `enable_intrabc` OFF, so no test ever decodes an IntraBC-armed stream.
-- **Also measured in the same run** (same image/mode/cq, one encode each): arming IntraBC costs
-  **45x** encode time (1.70 s → 77.1 s for 1 MP, i.e. 0.62 → 0.014 MP/s) and arming the PALETTE
-  search alone makes the file **5.7 % BIGGER** (19 801 B → 20 926 B) while decoding fine. So the
-  port's large screen-content RD gap (+130 % BD-rate vs SVT-AV1 C at a matched ≥1 MP/s budget)
-  is not closable by simply switching the existing tools on.
-- **Wanted:** a decode-side gate. The byte-match gates cannot see this class — any
-  `enable_intrabc` / `enable_palette` arm should additionally be round-tripped through the C
-  decoder (and ideally `dav1d`) and asserted to decode, exactly as the zenav1-svt port's gates do.
-  Consistent with README.md already listing "the IntraBC + inter var-tx coefficient arm" as open.
+  `c_encode_defaults` bootstrap. Driver: `benchmarks/xbench/drv-aom` with `XBENCH_AOM_INTRABC=1`.
+  **The same defect reproduces in ~2 s on a 196² crop of the corpus vector**
+  (`av1-1-b8-16-intra_only-intrabc-extreme-dv` @ (480,180), the KB-15 witness cell) — no 1 MP
+  encode needed, which is what made the close tractable.
+- **Symptom:** the stream was REJECTED by both reference decoders — `aomdec` (libaom 3.14.1):
+  *"Corrupt frame detected / Invalid intrabc dv"*; `dav1d` 1.5.4: *"Invalid argument"*.
+  **`Invalid intrabc dv` was a DOWNSTREAM symptom, not the root: no DV validity constraint is
+  violated.** The port's own `is_dv_valid` (`aom-dsp/src/entropy/dv_ref.rs:1578`) is
+  differential-locked against the real `static inline av1_is_dv_valid`, and at every diverging
+  site its inputs (tile bounds, `mib_size_log2`, `is_chroma_ref`) and the coded DV diff matched
+  the decoder's exactly. What actually happened is a **tile-payload desync**: a defect in the
+  IntraBC coefficient pack moved the bit position, and some later block's garbage
+  `use_intrabc` + DV diff then failed validity, which is the first check libaom happens to
+  hard-error on. **Do not re-chase the wavefront / 256-px lag / reference-area / tile-clamp
+  constraints — all measured clean.** (KB-15 root #1 was a genuine tile-bounds bug; this is NOT
+  a recurrence of it.)
+- **Method that closed it** (reusable): instrument BOTH sides of the same stream — the encoder's
+  `pack_leaf` and the decoder's `decode_block` — with a per-block `(mi_row, mi_col, bsize,
+  use_intrabc, skip)` dump plus a running arithmetic-symbol count and `od_ec_*_tell` / range.
+  Align the two walks and find the first block whose **symbol delta** differs (a desync moves the
+  count) or whose **range** differs at equal count (a CDF-index/state divergence at equal symbol
+  count). Then bisect inside the block with checkpoints after mode-info / after tx-size /
+  after coefficients. Every root below was localized to one block in one pass this way.
+- **ROOT 1 (encoder, `pack.rs`) — the IntraBC coeff arm never wrote CHROMA coefficients for any
+  block with a 4-px side.** `write_inter_txb_coeff` (`bitstream.c:1414-1421`) recomputes the
+  chunk extent from the **chroma-plane** 64×64 unit — `get_plane_block_size(BLOCK_64X64, ss)` =
+  `BLOCK_32X32` at 4:2:0, so 8 mi units — and offsets by `row >> ss_y`. The port instead
+  subsampled the LUMA chunk bound: `(row + mu_h) >> ss_y`. For a block spanning ONE mi unit in a
+  subsampled dimension (BLOCK_4X4 / 4X8 / 8X4 / 4X16 / 16X4 at 4:2:0) that truncates `1 >> 1` to
+  **0**, so the chroma loop ran zero times and the block's U and V `all_zero` symbols were never
+  emitted. Measured at the first divergent block, `mi(39,10)` BLOCK_8X4: encoder wrote 26 symbols,
+  the decoder read 28. Those shapes are the MAJORITY of real IntraBC blocks (KB-15 measured 42 of
+  49 non-square on this crop), so essentially every screen-content IntraBC encode was corrupt.
+- **ROOT 2 (encoder, `pack.rs`) — an IntraBC coeff leaf that does not SIGNAL its tx size never ran
+  `set_txfm_ctxs`.** `write_modes_b`'s else arm (`bitstream.c:1554-1556`) stamps the
+  txfm-partition contexts from the derived tx size whenever the tx-size branch is not taken —
+  which for an IntraBC coeff leaf means `block_signals_txsize(bsize)` false (BLOCK_4X4),
+  TX_MODE_LARGEST, or lossless. Neither port arm covered it: the var-tx write is gated on the
+  same predicate, and `encode_b_intrabc_coeff` returns before `encode_b_intra_dry`'s step-6
+  stamp (correctly — the var-tx write owns the stamp when it runs). The context stayed STALE, so
+  a later leaf's `txfm_partition_context` picked a different CDF row than the decoder's: **same
+  symbol count, divergent arithmetic range**, desync a few blocks later. Measured at speed 2
+  cq12: a BLOCK_4X4 IntraBC coeff leaf at `mi(40,30)` left `above_tctx[30]` at 8 where every
+  conforming decoder derives 4; the visible failure was 5 blocks later at `mi(46,40)`, whose
+  var-tx symbol split the range (enc rng 38168 vs dec 45916 at an identical symbol index and an
+  identical CDF slot `[31223, 30352, 28283, 27407]`).
+- **ROOT 3 (encoder, `partition_pick.rs`) — a PALETTE leaked onto an IntraBC/inter winner.** C
+  zeroes both palette sizes inside the DV loop (`memset(&mbmi->palette_mode_info, 0, ...)`,
+  `rdopt.c:3592`, immediately before `mbmi->use_intrabc = 1`; the inter path does the same at
+  `:4804-4805`), so a winning `best_mbmi` never carries one. The port carried the intra
+  candidate's `palette_y`/`palette_uv` through onto the IntraBC winner, and `pack_leaf` then
+  emitted the colour-map tokens for a block whose mode info wrote none — `write_mb_modes_kf`
+  RETURNS right after `write_intrabc_info` when the block is IntraBC
+  (`bitstream.c:1289-1291`), so the decoder reads no palette syntax at all. Observed directly:
+  encoder `mi=(40,28) ibc=true paly=Some(6)`, decoder `mi=(40,28) ibc=1 paly=0`. This is the root
+  of the **palette + IntraBC** arm specifically (each tool alone was fine at that cell), i.e. the
+  "both" row of the xbench table. Fixed with the same `non_intra` gate the `mode` / `angle_delta`
+  / `use_filter_intra` / `uv_mode` fields at that site already used.
+- **ROOT 4 (decoder, `aom-decode/src/lib.rs`) — the 64×64 chunk walk (which contains the CHROMA
+  read) was gated on `do_uniform`**, so a split IntraBC var-tx block never read its U/V
+  coefficients. `write_tokens_b`'s inter arm writes them regardless (`bitstream.c:1463-1468`
+  breaks only on `!is_chroma_ref`). Only the LUMA sub-loop should be skipped when the leaf arm
+  has already consumed it.
+- **ROOT 5 (decoder) — the leaf-vs-raster var-tx walk was selected on "leaf SIZES differ", not on
+  "the quadtree was READ".** Equal leaf sizes do not make the raster loop equivalent: a
+  BLOCK_16X8 split all the way to TX_4X4 has eight same-size leaves whose DFS order is
+  `(0,0)(0,1)(1,0)(1,1)(0,2)(0,3)(1,2)(1,3)` — not raster — so the per-txb `txb_skip_ctx`
+  sequence differs and the decode desyncs at the third txb. Bite: at the 196² crop, speed 6
+  cq12, C accepts the stream and the port decoder rejects it.
+- **ROOT 6 (decoder) — the leaf arm was missing the CfL luma store** that the raster arm runs
+  (`predict_and_reconstruct_intra_block` tail, `store_cfl_required`): a NON-chroma-reference
+  block always stores, because a later member of its shared chroma group may pick `UV_CFL_PRED`
+  over a footprint containing it, and `is_inter_block(mbmi)` is TRUE for IntraBC
+  (`blockd.h:372`) — the exact mirror of KB-15 root #4 on the encoder side. Symptom: luma
+  byte-identical to the C decoder, chroma off by 253 of 9604 U samples (first at chroma (80,44)).
+  Only became reachable once root 5 routed more blocks through the leaf arm.
+- **TEETH, per root** (playbook §1 "revert each ONE ALONE and compare which cells fail" — every
+  root fails a DIFFERENT cell, which is what proves they are separate roots):
+  | reverted root | failing cell | failure |
+  |---|---|---|
+  | 1 (chroma chunk extent) | `scc196_cq48_s0/enable_intrabc` | C decoder REJECTS (1886 B) |
+  | 2 (`set_txfm_ctxs`) | `scc196_cq12_s2/enable_intrabc` | C decoder REJECTS (6138 B) |
+  | 3 (palette leak) | `scc196_cq12_s2/enable_palette+enable_intrabc` | C decoder REJECTS |
+  | 4 (chunk-walk gate) | `scc196_cq12_s2/enable_intrabc` | port decoder rejects a stream C accepts |
+  | 5 (walk selection) | `scc196_cq12_s6/enable_intrabc` | port decoder rejects a stream C accepts |
+  | 6 (CfL store) | `scc196_cq48_s0/enable_intrabc` | chroma differs C-vs-port, 253/9604 U |
+  End-to-end control on the ORIGINAL repro shape (196² crop, `enable_intrabc`, speeds {0,3,6} ×
+  cq {12,32,48,63}, streams written out and run through the real binaries): **pre-fix 9 of 12
+  rejected by BOTH `aomdec` and `dav1d`; post-fix 0 of 12** (the 3 cq63 cells code no IntraBC
+  coeff leaf with a 4-px side and were already clean — a negative control). A wider post-fix
+  sweep (speeds 0..7 × 8 quality levels × {intrabc, palette+intrabc} = 144 cells) is clean on
+  all three decoders with pixel identity.
+- **THE STRUCTURAL FIX — `crates/aom-bench/tests/armed_tools_decode_gate.rs` (new).**
+  **Byte-identity to a reference proves conformance only where a reference exists AND is
+  asserted equal.** Every `ToggleKnobs` arm aomenc cannot be driven into from
+  `ToggleKnobs::c_ctrls` is a configuration the port can PRODUCE and that nothing ever decodes —
+  the port could emit arbitrary garbage there and the whole suite would stay green. The gate
+  encodes each such arm and asserts (1) the REAL `aom_codec_av1_dx` accepts it — the authority,
+  (2) the port decoder accepts it, (3) **both produce identical pixels**, and (4) `dav1d`
+  accepts it when `AOM_DAV1D_BIN` is set (wired in `just gate-armed-decode`, so the skip decision
+  is the caller's, never inside the test body). 4 cells × 8 arms = 32 decode round-trips, ~26 s.
+  - **Coverage is DERIVED, not asserted by name.** `single_knob_arms()` lists every
+    one-knob-off-default `ToggleKnobs` value (kept exhaustive by a no-`..` destructure, so a NEW
+    field is a COMPILE error), and the gate recomputes the unguarded set as "flipping this knob
+    emits no `aome_enc_control_id`". **The measured answer, 2026-08-01 — 7 of 31 knobs:**
+    `enable_palette`, `enable_intrabc`, `disable_tx_stats_prune`, `delta_lf_mode`, `qm`,
+    `deltaq_mode2`, `deltaq_mode3`. IntraBC was simply the one we tripped over. Adding a knob
+    without a C control now fails `armed_arm_coverage_is_complete` until it gets a decode arm.
+  - The destructure earned its keep on the first run: it caught `deltaq_mode2`/`deltaq_mode3`,
+    which the hand-written list had missed.
+- **ENVELOPE (aarch64-apple-darwin, `--profile test-fast`, `AOM_CONFORMANCE_DIR` provisioned):**
+  `-p zenav1-aom-encode -p zenav1-aom-decode --no-fail-fast` **354 passed / 0 failed**;
+  `-p zenav1-aom-bench --no-fail-fast` **177 passed / 0 failed / 17 ignored** (the 17 pre-date
+  this change); the decoder conformance corpus is **274 frames OK / 0 failed**, including both
+  frames of `av1-1-b8-16-intra_only-intrabc-extreme-dv`, which is what exercises roots 4-6.
+  All three encoder roots are inside `if winner.use_intrabc` / `non_intra` branches and all three
+  decoder roots inside `if info.use_intrabc != 0`, so a non-screen frame is byte-inert by
+  construction — confirmed by the unchanged byte-exactness suite.
+- **RESIDUAL / open:** (a) the >64×64 multi-chunk non-uniform IntraBC block still reads all luma
+  leaves before any chroma where C interleaves L,U,V per 64×64 chunk — not reachable from this
+  port's encoder and strictly better than the pre-fix "no chroma at all", noted at the site;
+  (b) KB-15's byte-exactness pin against aomenc is untouched — this work makes the port's
+  IntraBC output CONFORMANT, not byte-identical to libaom's.
 
 ### KB-17 — Encoder: `use_screen_content_tools` was hardcoded `false`, so `--use-intra-default-tx-only=1` diverged on ALL screen-detected content — FIXED ✅ 2026-07-30
 - **Root cause (found 2026-07-30, one line):** `crates/aom-encode/src/speed_features.rs`'s
