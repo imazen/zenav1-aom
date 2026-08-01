@@ -59,7 +59,9 @@ use aom_dsp::entropy::obu::read_obu_header;
 use aom_dsp::entropy::partition::KfFrameContext;
 use aom_dsp::entropy::rb::ReadBitBuffer;
 use aom_dsp::loopfilter::frame::{LfFrameBuf, LfMiGrid, LfParams, loop_filter_frame};
-use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, av1_dc_quant_qtx, set_q_index};
+use aom_dsp::quant::{
+    Dequants, Quants, aom_get_qmlevel_allintra, av1_build_quantizer, av1_dc_quant_qtx, set_q_index,
+};
 use aom_dsp::restore::pick::{LrPlanePixels, LrSearchInput, LrSearchSf, pick_filter_restoration};
 use aom_sys_ref as c;
 use aom_dsp::txb::cost_tokens_from_cdf;
@@ -439,6 +441,17 @@ pub struct ToggleKnobs {
     /// whether the port RUNS the DV search (so `false` gives the all-intra
     /// witness against `true`). Default OFF.
     pub enable_intrabc: bool,
+    /// `--enable-qm=1 --qm-min=<min> --qm-max=<max>` (quantization matrices).
+    /// `Some((qm_min, qm_max))` makes the port derive the frame
+    /// `qmatrix_level_{y,u,v}` per `av1_set_quantizer`'s allintra arm
+    /// (`aom_get_qmlevel_allintra`) and thread them into the SB search + pack;
+    /// the derived levels are CROSS-CHECKED against the levels the bootstrap
+    /// stream's frame header actually signalled, so a wiring error fails loudly
+    /// before any byte comparison. PORT-side only — not emitted by
+    /// [`ToggleKnobs::c_ctrls`] (no `cx_ctrl` id is wired for QM); drive the C
+    /// side with [`EncodeCell::c_encode_qm`], which is the same base config as
+    /// [`EncodeCell::c_encode`] plus the three QM controls. Default `None`.
+    pub qm: Option<(i32, i32)>,
 }
 
 impl Default for ToggleKnobs {
@@ -474,6 +487,7 @@ impl Default for ToggleKnobs {
             disable_tx_stats_prune: false,
             delta_lf_mode: false,
             enable_intrabc: false,
+            qm: None,
         }
     }
 }
@@ -825,6 +839,34 @@ impl EncodeCell {
         )
     }
 
+    /// The C oracle's KEY encode with quantization matrices on
+    /// (`--enable-qm=1 --qm-min --qm-max`, the `shim_encode_av1_kf_qm` path) —
+    /// otherwise identical to [`Self::c_encode`], INCLUDING `--cpu-used =
+    /// self.speed`. The port counterpart is
+    /// `port_encode_with(.., ToggleKnobs { qm: Some((qm_min, qm_max)), .. })`.
+    pub fn c_encode_qm(&self, qm_min: i32, qm_max: i32) -> Vec<u8> {
+        c::ref_encode_av1_kf_qm(
+            &self.y,
+            &self.u,
+            &self.v,
+            self.w,
+            self.h,
+            i32::from(self.bd),
+            self.mono,
+            self.ss_x as i32,
+            self.ss_y as i32,
+            self.cq_level,
+            self.speed,
+            false,
+            false,
+            self.usage,
+            0,
+            false,
+            qm_min,
+            qm_max,
+        )
+    }
+
     /// [`Self::c_encode`] plus extra `(ctrl_id, value)` control pairs
     /// ([`c::cx_ctrl`]) — the toggle-sweep C side. `&[]` reproduces
     /// `c_encode` exactly (same base config, no extra controls).
@@ -1157,6 +1199,47 @@ impl EncodeCell {
         let rows_u = set_q_index(&quants, &deq, qindex as usize, 1);
         let rows_v = set_q_index(&quants, &deq, qindex as usize, 2);
 
+        // Frame QM levels (`av1_set_quantizer`, av1_quantize.c: the `is_allintra`
+        // arm selects `aom_get_qmlevel_allintra` for BOTH planes). Derived from
+        // the knob's requested (qm_min, qm_max) and CROSS-CHECKED against the
+        // levels the reference encoder signalled in the bootstrap frame header —
+        // a wiring witness that fails before any byte comparison can. Mirrors
+        // `encoder_gate_chroma_ss_e2e::run_case_ext`.
+        let qm_levels = if let Some((qm_min, qm_max)) = knobs.qm {
+            assert!(
+                p.quant.using_qmatrix,
+                "{}: knobs.qm asked for QM but the reference stream did not signal \
+                 using_qmatrix (drive the C side with EncodeCell::c_encode_qm)",
+                self.label
+            );
+            let ly = aom_get_qmlevel_allintra(qindex, qm_min, qm_max);
+            let lu = aom_get_qmlevel_allintra(qindex + p.quant.u_ac_delta_q, qm_min, qm_max);
+            let lv = if cc.separate_uv_delta_q {
+                aom_get_qmlevel_allintra(qindex + p.quant.v_ac_delta_q, qm_min, qm_max)
+            } else {
+                lu
+            };
+            assert_eq!(
+                [ly, lu, lv],
+                [
+                    p.quant.qmatrix_level_y,
+                    p.quant.qmatrix_level_u,
+                    p.quant.qmatrix_level_v
+                ],
+                "{}: derived qmatrix_level_{{y,u,v}} must match the reference header's \
+                 signalled levels",
+                self.label
+            );
+            Some([ly as usize, lu as usize, lv as usize])
+        } else {
+            assert!(
+                !p.quant.using_qmatrix,
+                "{}: reference stream signals using_qmatrix but knobs.qm is None",
+                self.label
+            );
+            None
+        };
+
         let mut kf_write = KfFrameContext::default_for_qindex(qindex);
         let real = derive_real_costs(&kf_write, knobs.enable_filter_intra);
         let rdmult = av1_compute_rd_mult_based_on_qindex(
@@ -1436,9 +1519,9 @@ impl EncodeCell {
             } else {
                 trellis_opt_of_knob(knobs.disable_trellis_quant)
             },
-            // Stock encode is QM-off (the allintra default; QM cells live in
-            // the qm_encode_witness gate, not this harness).
-            qm_levels: None,
+            // QM-off by default (the allintra default); `knobs.qm` drives the
+            // QM-on path (levels derived + cross-checked above).
+            qm_levels,
             tune: Default::default(),
             deltaq: if dq3_present {
                 Some(aom_encode::encode_sb::DeltaQFrameCtx {
@@ -1605,7 +1688,7 @@ impl EncodeCell {
             enable_1to4_partitions: knobs.enable_1to4_partitions,
             enable_ab_partitions: knobs.enable_ab_partitions,
             allow_screen_content_tools: p.allow_screen_content_tools,
-            qm_levels: None,
+            qm_levels,
             palette_costs: knobs.enable_palette.then_some(&real.palette_costs),
             intrabc: ibc_frame,
         };

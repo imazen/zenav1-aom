@@ -545,6 +545,41 @@ pub fn xform_quant_optimize(
     bctx: &BlockContext,
     opt: &OptimizeInputs,
 ) -> XformQuantOptResult {
+    xform_quant_optimize_split(residual, tx_size, tx_type, kind, qp, qp, bctx, opt)
+}
+
+/// [`xform_quant_optimize`] with the quantizer's and the trellis's quant-matrix
+/// sources given SEPARATELY — the two are genuinely independent in libaom:
+///
+/// - `av1_quant` reads the matrices off the **`QUANT_PARAM` block**
+///   (`av1_quantize_{fp,b}_facade`'s `qm_ptr != NULL && iqm_ptr != NULL` branch,
+///   `av1_quantize.c`), which `av1_setup_quant` NULLs on every call
+///   (`encodemb.c:367-368`);
+/// - `av1_optimize_txb` selects its own straight off the **frame** state,
+///   `av1_get_iqmatrix(&cpi->common.quant_params, ...)` (`txb_rdopt.c:344-349`),
+///   so no `av1_setup_quant` can take them away from it.
+///
+/// They coincide on every path that calls `av1_setup_qmatrix` last, which is why
+/// [`xform_quant_optimize`] passes one `QuantParams` for both. They DIVERGE where
+/// C re-runs `av1_setup_quant` after the matrix was installed — in the intra
+/// tx-type search that is `skip_trellis_opt_based_on_satd`
+/// (`tx_search.c:2001-2006`, reachable at ALLINTRA speed >= 4), after which the
+/// candidate quantizes flat while the trellis still folds the inverse matrix.
+///
+/// `qp_quant` supplies everything else (rows, bd, lossless, kind tables);
+/// `qp_trellis` is read ONLY for its quant-matrix selection.
+#[allow(clippy::too_many_arguments)]
+pub fn xform_quant_optimize_split(
+    residual: &[i16],
+    tx_size: usize,
+    tx_type: usize,
+    kind: QuantKind,
+    qp_quant: &QuantParams,
+    qp_trellis: &QuantParams,
+    bctx: &BlockContext,
+    opt: &OptimizeInputs,
+) -> XformQuantOptResult {
+    let qp = qp_quant;
     // av1_xform_quant with use_optimize_b: quantize but defer the entropy ctx.
     let xq = xform_quant(residual, tx_size, tx_type, kind, qp, true);
     let XformQuantResult {
@@ -591,8 +626,8 @@ pub fn xform_quant_optimize(
     // the inverse matrix. The explicit-slice path (`qp.qm`/`qp.iqm`,
     // kernel-diff tests) keeps weighting the distortion — it models the
     // QM_PSNR arm the C shim oracle validates.
-    let (qm_sel, iqm_sel) = resolve_qm(qp, tx_size, tx_type);
-    let trellis_dist_qm = match qp.qm_ctx {
+    let (qm_sel, iqm_sel) = resolve_qm(qp_trellis, tx_size, tx_type);
+    let trellis_dist_qm = match qp_trellis.qm_ctx {
         Some(cx) if cx.use_qm_dist_metric => qm_sel,
         Some(_) => None,
         None => qm_sel,

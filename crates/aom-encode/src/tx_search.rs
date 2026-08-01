@@ -541,7 +541,7 @@ fn pixel_diff_stats(
 use crate::rd::rdcost;
 use crate::{
     BlockContext, OptimizeInputs, QuantKind, QuantParams, XformQuantOptResult, xform_quant,
-    xform_quant_optimize,
+    xform_quant_optimize_split,
 };
 use aom_dsp::txb::{
     CoeffCostSet, CoeffCostTables, TxTypeCosts, cost_coeffs_txb, cost_coeffs_txb_laplacian,
@@ -581,6 +581,57 @@ fn av1_get_max_eob(tx_size: usize) -> usize {
         4 | 11 | 12 => 1024, // TX_64X64 / TX_32X64 / TX_64X32
         17 | 18 => 512,      // TX_16X64 / TX_64X16
         _ => TX_SIZE_2D_TBL[tx_size] as usize,
+    }
+}
+
+/// `skip_trellis_opt_based_on_satd`'s EARLY RETURN (`tx_search.c:1988`):
+/// `if (skip_trellis || (coeff_opt_satd_threshold == UINT_MAX)) return skip_trellis;`.
+/// `true` means the helper runs its BODY instead — which matters beyond the SATD
+/// comparison itself, because the body unconditionally re-runs `av1_setup_quant`
+/// (`:2001-2006`). Both inputs are block-level, so the answer is invariant across
+/// `search_tx_type`'s tx-type loop.
+///
+/// The threshold is `txfm_params->coeff_opt_thresholds[1]` for the live
+/// MODE_EVAL stage (`coeff_opt_thresholds[perform_coeff_opt]`,
+/// `speed_features.c:88-98` + `:2804-2809`). On ALLINTRA, `perform_coeff_opt` is
+/// 1/2/3 at speeds 0/2/3 (`:383/:415/:433`) — rows whose satd column is
+/// `UINT_MAX` in EVERY stage — 5 at speeds 4-5 (`:493`) and 6 at speeds >= 6
+/// (`:555`), whose DEFAULT_EVAL and MODE_EVAL satd columns are finite (97 / 16).
+/// `WINNER_MODE_EVAL` is `UINT_MAX` in every row.
+#[inline]
+pub fn satd_trellis_skip_arm_runs(coeff_opt_satd_threshold: u32, skip_trellis: bool) -> bool {
+    !(skip_trellis || coeff_opt_satd_threshold == u32::MAX)
+}
+
+/// The quant-matrix level the **`QUANT_PARAM` block** still carries inside
+/// `search_tx_type`'s per-tx-type loop — i.e. what `av1_quant` (`:2221`) and
+/// `dist_block_tx_domain` (`:2248`/`:2265`, which is handed
+/// `quant_param.qmatrix`) actually see. `None` = flat.
+///
+/// `av1_setup_quant` (`encodemb.c:353`) ends by NULLing `qparam->qmatrix` and
+/// `qparam->iqmatrix` (`:367-368`), unconditionally. The SATD trellis-skip helper
+/// CALLS it whenever it does not early-return, and it sits INSIDE the loop —
+/// between the `av1_setup_qmatrix` that installs the matrix (`:2204-2207`) and
+/// the `av1_quant` that would use it. So on the reachable band
+/// ([`satd_trellis_skip_arm_runs`] = ALLINTRA speed >= 4 with the block-level
+/// trellis on) the whole tx-type search quantizes FLAT and measures
+/// transform-domain distortion FLAT, however the matrix was just selected.
+///
+/// This is the QPARAM-level state ONLY. The frame-level QM state is untouched:
+/// `av1_optimize_txb` selects its own matrices from `cm->quant_params` directly
+/// (`txb_rdopt.c:344-349`), so the trellis keeps folding the inverse matrix on
+/// exactly the candidates whose quantization went flat — see
+/// [`crate::xform_quant_optimize_split`].
+#[inline]
+pub fn qparam_qm_level_in_search(
+    coeff_opt_satd_threshold: u32,
+    skip_trellis: bool,
+    frame_qm_level: Option<usize>,
+) -> Option<usize> {
+    if satd_trellis_skip_arm_runs(coeff_opt_satd_threshold, skip_trellis) {
+        None
+    } else {
+        frame_qm_level
     }
 }
 
@@ -1332,18 +1383,15 @@ pub fn search_tx_type_intra(
         use_transform_domain_distortion = false;
     }
 
-    // av1_setup_quant: FP with trellis, B without (USE_B_QUANT_NO_TRELLIS=1).
-    //
-    // BOTH parameter sets are materialised because `av1_setup_quant` is re-run
-    // PER TX TYPE inside `skip_trellis_opt_based_on_satd` (tx_search.c:2002),
-    // which can flip the quantizer to B for one candidate and back for the
-    // next. `QuantParams` bakes the facade's table choice (`quant_fp_QTX` /
-    // `round_fp_QTX` for FP vs `quant_QTX` / `round_QTX` for B), so the kind
-    // and the parameter block must be selected together — see `kind_this`
-    // below.
-    let build_qp = |k: QuantKind| {
+    // Whether `skip_trellis_opt_based_on_satd` runs its BODY (tx_search.c:1988's
+    // early return is block-level, so this is invariant across the loop below) —
+    // and, with it, the quant-matrix level the QUANT_PARAM block still carries.
+    let satd_arm_runs = satd_trellis_skip_arm_runs(pol.coeff_opt_satd_threshold, skip_trellis);
+    let qparam_qm_level =
+        qparam_qm_level_in_search(pol.coeff_opt_satd_threshold, skip_trellis, inp.qm_level);
+    let build_qp = |k: QuantKind, qm_level: Option<usize>| {
         let mut qp = QuantParams::from_plane_rows(inp.rows, k, inp.bd, inp.lossless);
-        if let Some(level) = inp.qm_level {
+        if let Some(level) = qm_level {
             qp = qp.with_qm(level, inp.plane);
             if pol.use_qm_dist_metric {
                 // AOM_DIST_METRIC_QM_PSNR: the trellis weights its distortion by
@@ -1353,8 +1401,21 @@ pub fn search_tx_type_intra(
         }
         qp
     };
-    let qp_fp = build_qp(QuantKind::Fp);
-    let qp_b = build_qp(QuantKind::B);
+    // The `QUANT_PARAM` block itself: FP with trellis, B without
+    // (USE_B_QUANT_NO_TRELLIS=1). BOTH kinds are materialised because
+    // `av1_setup_quant` is re-run PER TX TYPE inside the SATD helper, which can
+    // flip the quantizer to B for one candidate and back for the next.
+    // `QuantParams` bakes the facade's table choice (`quant_fp_QTX` /
+    // `round_fp_QTX` for FP vs `quant_QTX` / `round_QTX` for B), so the kind and
+    // the parameter block must be selected together — see `kind_this` below.
+    let qp_fp = build_qp(QuantKind::Fp, qparam_qm_level);
+    let qp_b = build_qp(QuantKind::B, qparam_qm_level);
+    // The FRAME quant-matrix state `av1_optimize_txb` selects from directly
+    // (`av1_get_iqmatrix(&cpi->common.quant_params, ..)`, txb_rdopt.c:344-349) —
+    // never routed through a `QUANT_PARAM`, so `av1_setup_quant` cannot take it
+    // away. The trellis therefore keeps folding the inverse matrix on exactly the
+    // candidates whose quantization went flat.
+    let qp_trellis = build_qp(QuantKind::Fp, inp.qm_level);
     let trellis_rdmult = trellis_rdmult_intra(
         inp.rdmult,
         pol.sharpness,
@@ -1390,7 +1451,7 @@ pub fn search_tx_type_intra(
         // always UINT_MAX there, so this is a no-op below speed 4). At speed>=4
         // perform_coeff_opt=5 gives a finite satd threshold; the body forward-
         // transforms + Σ|coeff| and may skip trellis for large residuals.
-        let skip_trellis_this = if skip_trellis || pol.coeff_opt_satd_threshold == u32::MAX {
+        let skip_trellis_this = if !satd_arm_runs {
             skip_trellis
         } else {
             skip_trellis_opt_based_on_satd(
@@ -1423,12 +1484,15 @@ pub fn search_tx_type_intra(
 
         // Forward transform + quantize (+ trellis + rate).
         let (res, rate_cost): (XformQuantOptResult, i32) = if !skip_trellis_this {
-            let r = xform_quant_optimize(
+            let r = xform_quant_optimize_split(
                 inp.residual,
                 tx_size,
                 tx_type,
                 kind_this,
                 qp,
+                // av1_optimize_txb's own frame-level matrix selection — see
+                // `qp_trellis` above. Identical to `qp` unless the SATD arm ran.
+                &qp_trellis,
                 inp.bctx,
                 &opt,
             );
@@ -1508,7 +1572,9 @@ pub fn search_tx_type_intra(
         // tx_type) forward matrix C threads via `quant_param.qmatrix`
         // (av1_setup_qmatrix inside the loop, tx_search.c:2204-2249) — only
         // weighted under the QM-PSNR metric (`dist_block_tx_domain`'s
-        // `qmatrix == NULL || !use_qm_dist_metric` gate, :1150/:1159).
+        // `qmatrix == NULL || !use_qm_dist_metric` gate, :1150/:1159). `qp` is
+        // the QUANT_PARAM-level block, so this correctly reads NULL wherever the
+        // SATD arm re-ran `av1_setup_quant` (see `qparam_qm_level_in_search`).
         let dqm = crate::dist_qmatrix(qp, tx_size, tx_type);
         let dscan = aom_dsp::txb::scan(tx_size, tx_type);
         let (dist, sse): (i64, i64) = if res.eob == 0 {

@@ -1834,7 +1834,7 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   cannot run). The `cargo check --target {x86_64,i686}-unknown-linux-gnu --lib` legs prove only
   that the x86 arm compiles.
 
-### KB-21 — Encoder: cpu-4/5 is the fragile band — CLOSED ✅ (bd8). ROOT #1 FIXED 2026-07-30 (`early_term_after_none_split` was unported); ROOT #2 FIXED 2026-07-31 (two coefficient-path defects in the speed>=4 tx-type search)
+### KB-21 — Encoder: cpu-4/5 is the fragile band — CLOSED ✅ (bd8). ROOT #1 FIXED 2026-07-30 (`early_term_after_none_split` was unported); ROOT #2 FIXED 2026-07-31 (two coefficient-path defects in the speed>=4 tx-type search); ROOT #3 FIXED 2026-07-31 (the QM x speed>=4 axis root #2 predicted — `av1_setup_quant`'s qmatrix NULLing inside the SATD trellis-skip helper)
 - **Found 2026-07-30** by the speed axis (`9a996b9`). Not a knob-combination bug: these
   diverge with **every knob at its default**. 3 of 5 contexts are byte-identical at speeds
   0-3 AND 6-9 but diverge at 4 and 5; the nonrd speeds (8/9) are clean.
@@ -2013,15 +2013,85 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   - **Envelope (this box, `--profile test-fast`, both dispatch modes):**
     `-p zenav1-aom-encode -p zenav1-aom-bench` **452 passed / 0 failed / 5 ignored** with
     default dispatch AND with `AOM_FORCE_SCALAR=1`.
-  - **UNMODELLED upstream quirk found en route (NOT fixed here, QM-only).** `av1_setup_quant`
-    also NULLs `qparam->qmatrix` / `iqmatrix` (encodemb.c:367-368), and
-    `skip_trellis_opt_based_on_satd` calls it whenever it does not early-return — including
-    when `skip_block_trellis == 0`. So with QM enabled at speed >= 4, C's `av1_quant` and the
-    following `dist_block_tx_domain` run with NO quant matrix for every tx type of every txb,
-    even though the loop just installed one via `av1_setup_qmatrix` (tx_search.c:2204). The
-    port keeps the matrix attached. Byte-inert on every configuration this landing touched (QM
-    off throughout), but it is a real divergence on the QM x speed>=4 axis and should be the
-    first suspect there.
+  - **ROOT #3 (the QM x speed>=4 quirk this landing named but did not fix) — CONFIRMED BY
+    MEASUREMENT AND FIXED 2026-07-31.** `av1_setup_quant` also NULLs `qparam->qmatrix` /
+    `iqmatrix` (encodemb.c:367-368) as its last two statements, and
+    `skip_trellis_opt_based_on_satd` CALLS it (tx_search.c:2001-2006) whenever it does not
+    take its early return (:1988, `skip_trellis || coeff_opt_satd_threshold == UINT_MAX`) —
+    including when `skip_block_trellis == 0`. That call sits INSIDE `search_tx_type`'s
+    per-tx-type loop, between the `av1_setup_qmatrix` that installs the matrix (:2204-2207)
+    and the `av1_quant` that would use it (:2221), so with QM enabled at speed >= 4 C
+    quantizes — and measures `dist_block_tx_domain` (:2248/:2265, handed
+    `quant_param.qmatrix`) — with NO quant matrix for every tx type of every txb. The
+    quantize facades branch on `qm_ptr != NULL && iqm_ptr != NULL` (av1_quantize.c), so NULL
+    means the flat kernels. The port kept the matrix attached.
+    - **PREDICTED, THEN MEASURED (playbook §4).** New e2e gate
+      `aom-bench/tests/kb21_qm_speed4.rs::qm_speed_map_byte_matches` — 3 real-content 4:2:0
+      cells (`quantizer-00` 64x64@64,64 and 128x128@64,64, `film_grain-50` 64x64@96,64, all
+      cq32) x `--cpu-used` 0..7, QM on via `--enable-qm=1 --qm-min=4 --qm-max=10`
+      (`EncodeCell::c_encode_qm`, the `shim_encode_av1_kf_qm` path). **The split landed
+      exactly on the predicted boundary: speeds 0-3 12/12 MATCH, speeds 4-7 12/12 MISMATCH**
+      (e.g. `q00 128x128 cpu4` port 1722 B vs real 1751 B; `cpu5` 1751 vs 1806). Per-cell
+      byte deltas are 1-55 B — playbook §10: that says nothing about mechanism, and here the
+      mechanism is a systematic quantizer difference at every txb.
+    - **Reachability is exactly the finite-satd rows of `coeff_opt_thresholds`**
+      (speed_features.c:88-98 + :2804-2809). ALLINTRA `perform_coeff_opt` is 1/2/3 at speeds
+      0/2/3 (:383/:415/:433) — rows whose satd column is `UINT_MAX` in EVERY MODE_EVAL slot —
+      5 at speeds 4-5 (:493) and 6 at speeds >= 6 (:555), whose DEFAULT_EVAL / MODE_EVAL satd
+      columns are finite (97 / 16). `WINNER_MODE_EVAL` is `UINT_MAX` in every row, so it never
+      drops the matrix. Speeds 8-9 are nonrd PICKMODE and never enter this search.
+    - **FIX, in two halves — and the second is what makes the first correct.**
+      1. `crates/aom-encode/src/tx_search.rs`: the `QUANT_PARAM`-level matrix is now
+         `qparam_qm_level_in_search(coeff_opt_satd_threshold, skip_trellis, frame_qm_level)`
+         (new pub helper next to `satd_trellis_skip_arm_runs`), i.e. `None` whenever the SATD
+         helper runs its body. Both `qp_fp`/`qp_b` and the `dist_qmatrix` the tx-domain arms
+         read are built from it.
+      2. The TRELLIS must NOT lose its matrix: `av1_optimize_txb` selects its own straight
+         off the frame state, `av1_get_iqmatrix(&cpi->common.quant_params, ..)`
+         (txb_rdopt.c:344-349), never through a `QUANT_PARAM`. So on this band C quantizes
+         flat and then trellises with the real inverse matrix. New
+         `crate::xform_quant_optimize_split` takes the quantizer's and the trellis's
+         `QuantParams` separately (`xform_quant_optimize` = both the same, unchanged for
+         every other caller). **This is the KB-21 root-#2 lesson again on a new axis: the
+         two matrix sources are independent in C, and modelling only one of them makes a
+         DIFFERENT set of cells wrong** (see the bite proofs).
+      Also `prune_txk_type` is correct as-is and was NOT touched: its `av1_setup_quant` runs
+      BEFORE its loop (tx_search.c:1334-1335) and the in-loop `av1_setup_qmatrix` (:1348) is
+      the last word, so the prune's est-rd genuinely uses the matrix.
+    - **Byte-inert below speed 4, structurally**, and the pre-existing speed-0 QM gate
+      (`encoder_gate_qm_on_e2e`, 24 cells) is untouched — `satd_trellis_skip_arm_runs` is
+      false at speeds 0-3, so `qparam_qm_level == frame_qm_level` and every `qp` is what it
+      was. Unit-locked over speeds 0..9 x BOTH QM states by
+      `aom-encode/tests/kb21_qm_satd_arm_lock.rs::qparam_qm_is_dropped_exactly_from_allintra
+      _speed_4`, which asserts both directions (inertness at 0-3, at-least-one-stage
+      reachability at 4-9 so the drop cannot be dead code), that QM-off stays flat everywhere,
+      that `skip_trellis == true` keeps the matrix at every speed (the first term of C's early
+      return), and that `WINNER_MODE_EVAL` never fires.
+    - **Bite proofs (each half reverted ALONE, everything else in place):**
+      * revert half 1 (`qparam_qm_level = inp.qm_level`) -> `qm_speed_map_byte_matches` fails
+        on the SAME 12 cells with the SAME byte counts as the pre-fix map; the unit lock stays
+        green (it guards the derivation, not its consumption).
+      * revert half 2 (trellis shares the qparam block) -> the gate fails on a **different,
+        smaller set of 7** (`cpu4` x3, `cpu5` x2, `cpu7` x2) — the evidence these are two
+        things and not one.
+      * stub `qparam_qm_level_in_search` to return `frame_qm_level` -> the unit lock fails
+        with *"speed 4 DEFAULT_EVAL: QM must be dropped iff the SATD arm runs, left: Some(8)
+        right: None"*.
+    - **Verification.** `qm_speed_map_byte_matches` 24/24 byte-exact in BOTH dispatch modes
+      (default and `AOM_FORCE_SCALAR=1`); envelope `-p zenav1-aom-encode -p zenav1-aom-bench`
+      **455 passed / 0 failed / 6 ignored** in both modes (was 452/0/5 before KB-21 root #2's
+      landing plus this landing's 2 new tests + 1 new ignored e2e). No new clippy findings
+      (29 pre-existing errors on `main`, 29 after).
+    - **Harness addition:** `ToggleKnobs::qm: Option<(qm_min, qm_max)>` (PORT side; the C side
+      is `EncodeCell::c_encode_qm`, same pattern as `deltaq_mode2/3` and `enable_intrabc`).
+      `port_encode_full` derives `qmatrix_level_{y,u,v}` via `aom_get_qmlevel_allintra` and
+      CROSS-CHECKS them against the levels the bootstrap header signalled, so a wiring error
+      fails before any byte comparison.
+    - **Still open (stated plainly):** only 4:2:0 bd8 cq32 cells were run. bd10/bd12 QM at
+      speed >= 4, monochrome, 4:4:4/4:2:2, and the qindex extremes (cq5 / cq63, which move the
+      derived QM level) are unmeasured on this axis; so is `--dist-metric=qm-psnr` (tune=IQ /
+      SSIMULACRA2), where `use_qm_dist_metric` makes `dist_block_tx_domain`'s NULL matrix
+      observable directly rather than only through `av1_quant`.
 - **PARITY.md §A lists `--cpu-used=4` and `=5` as 64/64 byte-identical** — on the textured
   synthetic grid those rows were established on. These are different contexts, so the §A rows
   are not falsified; what is falsified is reading them as speed-4/5 coverage in general.
