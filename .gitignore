@@ -26,3 +26,6 @@ tools/avif-extract/Cargo.lock
 
 # zenbench baselines are local measurement state, not repo content
 .zenbench/
+
+# xbench cross-encoder benchmark harness build output (own cargo workspace)
+benchmarks/xbench/target/

@@ -1,0 +1,13 @@
+[package]
+name = "drv-aom"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The zenav1-aom port under measurement, plus the C libaom oracle that supplies
+# the sequence-header bootstrap the port's encode path requires.
+zenav1-aom-bench = { path = "../../../crates/aom-bench" }
+
+[profile.release]
+opt-level = 3

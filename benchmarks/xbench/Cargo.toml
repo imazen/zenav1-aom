@@ -1,0 +1,14 @@
+# xbench — cross-encoder AV1 still-picture benchmark harness.
+#
+# Its OWN cargo workspace (not a member of the zenav1-aom workspace) so the
+# product workspace's Cargo.toml / Cargo.lock stay untouched: this crate set
+# path-depends on three SIBLING repos and dragging their dep graphs into the
+# product lock would be a real change to the shipping crates' resolution.
+[workspace]
+resolver = "2"
+members = ["xtool", "drv-aom", "drv-svtrs", "drv-rav1e"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+publish = false

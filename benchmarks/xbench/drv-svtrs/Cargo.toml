@@ -1,0 +1,12 @@
+[package]
+name = "drv-svtrs"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The pure-Rust SVT-AV1 still-picture port (sibling repo, built read-only).
+zenav1-svt-encoder = { path = "../../../../zenav1-svt/rust/crates/svtav1-encoder" }
+
+[profile.release]
+opt-level = 3
