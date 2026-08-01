@@ -1138,6 +1138,13 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
     today the port's stream does NOT decode past the divergence (bitstream desync), so the
     block-level localization needs the C-side dump method (KB-2/KB-3/KB-7) or a
     truncate-at-first-divergence probe.
+    **UPDATE 2026-08-01 — that desync is EXPLAINED AND FIXED: it is KB-29.** This same witness
+    cell (`scc_480x180_196_cq48`) was the cheap repro that closed KB-29's six roots; the port's
+    stream now decodes cleanly through `aomdec`, `dav1d` AND the port decoder, with C-vs-port
+    pixel identity (`crates/aom-bench/tests/armed_tools_decode_gate.rs`, cell
+    `scc196_cq48_s0`). So the gate's "when the port's stream still decodes" branch is now the
+    live one and block-level localization no longer needs the C-side dump. The BYTE-EXACTNESS
+    pin against aomenc is unaffected — KB-29 made the output CONFORMANT, not byte-identical.
   - **Three real bugs found while wiring (all fixed in `351143a1`):** the pack's intrabc branch
     returned early and skipped the neighbour-grid stamp; chroma prediction buffers were sized
     `bw >> ss_x` while the chroma PLANE block is padded to a 4x4 minimum (sub-8x8 luma overran
