@@ -2102,9 +2102,25 @@ fn content_axis_evidence_sweep() {
 //
 // HEADLINE RESULT (`size_axis_class_table`, printed by the test):
 //
-//   * At SPEED 0 — the speed the whole array runs at — EVERY framesize-
+//   * At SPEED 0 — the speed the whole array runs at — every framesize-
 //     dependent SPEED FEATURE below 2160p is either inert on the all-intra KEY
-//     path or gated on speed >= 1. The `prune_tx_type_using_stats` >= 480p
+//     path or gated on speed >= 1.
+//
+//     SCOPE, CORRECTED 2026-07-31 (KB-22): this survey covered
+//     `set_allintra_speed_feature_framesize_dependent` ONLY, and must not be
+//     read as a statement about the port in general. C runs a THIRD
+//     speed-feature pass — `av1_set_speed_features_qindex_dependent`
+//     (speed_features.c:2873, called from encoder.c:3114) — whose `speed == 0`
+//     block has an arm gated on `is_720p_or_larger && base_qindex <= 128`
+//     (:2914) that moves `perform_coeff_opt` and
+//     `intra_tx_size_search_init_depth_rect`. The port did not model that pass
+//     at all until KB-22; it is live from 720p UP. Every cell in THIS array is
+//     <= 640px, so the headline holds for the cells it was measured on — which
+//     is exactly why the gap went unseen here and had to be found at 2160p.
+//     Read this bullet as "sub-720p", not "below 2160p", for anything outside
+//     this array.
+//
+//     The `prune_tx_type_using_stats` >= 480p
 //     threshold the port comments at `aom-encode/src/speed_features.rs:695`
 //     needs speed >= 2, so it is 0 in real aomenc too on every one of the 2,617
 //     cells: that particular hole is NOT a divergence risk at this speed. The
