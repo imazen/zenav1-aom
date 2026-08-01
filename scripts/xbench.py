@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
 """xbench — cross-encoder AV1 still-picture benchmark orchestrator.
 
-Four encoders, one input byte stream, one timing contract, one scorer:
+Five encoders, one input byte stream, one timing contract, one scorer:
 
   zenav1-aom  the pure-Rust libaom port   (this repo)  cq 0..63, cpu-used 0..9
+  libaom-c    libaom, upstream C (the port's oracle)   cq 0..63, cpu-used 0..9
   svt-c       SVT-AV1, upstream C                      qp 0..63, preset 0..13
   svt-rust    zenav1-svt, pure-Rust SVT port           qp 0..63, preset 0..13
   zenrav1e    the rav1e fork                           quantizer 0..255, speed 0..10
 
-Every driver implements the SAME contract (see benchmarks/xbench/*/src/main.rs):
+Every driver implements the SAME contract (see benchmarks/xbench/*/src/main.rs
+and benchmarks/xbench/csrc/*.c):
 
     drv <w> <h> <q> <speed> <in.yuv> <out.obu> <warmup> <reps>
     stdout: NS=<n> NS=<n> ... BYTES=<m>
 
 and times ONLY its own frame-encode call — never process startup, never file
-I/O, never its own constructor/init.  All four are SINGLE-THREADED.
+I/O, never its own constructor/init.  All five are SINGLE-THREADED.
 
 Subcommands:
   prep     build the source .yuv ladders from the corpus
   stage1   throughput calibration: MP/s per encoder per preset + the
            alpha (fixed per-call cost) / beta (per-pixel cost) fit
   stage2   RD sweep at the qualifying modes
-  stage3   quality-target accuracy (identical external search for all four)
+  stage3   quality-target accuracy (identical external search for all five)
+  byteid   whole-stream sha256 of two encoders over the RD corpus
 """
 
 import argparse
@@ -49,6 +52,11 @@ XTOOL = BIN / "xtool"
 # label -> (driver path, q-range, speed-range, q-scale note)
 ENCODERS = {
     "zenav1-aom": (BIN / "drv-aom", (1, 63), list(range(0, 10))),
+    # The C encoder zenav1-aom is a port of, driven at the IDENTICAL config the
+    # port's own bootstrap uses (drv_libaom.c transcribes
+    # shim_encode_av1_kf_defaults). Added 2026-08-01 as the decomposition arm
+    # the original four-encoder study listed as its biggest gap.
+    "libaom-c": (CBIN / "drv_libaom", (1, 63), list(range(0, 10))),
     "svt-c": (CBIN / "drv_svtc", (1, 63), list(range(0, 14))),
     "svt-rust": (BIN / "drv-svtrs", (1, 63), list(range(0, 14))),
     "zenrav1e": (BIN / "drv-rav1e", (1, 255), list(range(0, 11))),
@@ -125,17 +133,33 @@ def median_ns(ns):
     return statistics.median(ns)
 
 
+def selected(args):
+    """The encoders this invocation touches: all of ENCODERS unless --only.
+
+    `--only` exists so a NEW arm can be added to a published study without
+    re-running (and thereby perturbing) the arms already measured.
+    """
+    if not getattr(args, "only", ""):
+        return list(ENCODERS)
+    want = [e.strip() for e in args.only.split(",") if e.strip()]
+    for e in want:
+        if e not in ENCODERS:
+            raise SystemExit(f"--only: unknown encoder {e!r}; known: {', '.join(ENCODERS)}")
+    return want
+
+
 def cmd_stage1(args):
     """Screen every preset at 1 MP, then fit alpha+beta over the full ladder."""
     out_tsv = Path(args.out)
     raw_tsv = out_tsv.with_suffix(".raw.tsv")
     qmap = json.loads(args.q)
+    only = selected(args)
     rawf = open(raw_tsv, "w")
     rawf.write("phase\tencoder\tpreset\tcontent\tsize\tpixels\tq\trep\tns\tbytes\n")
 
     # ---- phase A: screen at the medium (1024x1024 = 1.05 MP) photo cell.
     screen = {}
-    for enc, (_drv, _qr, presets) in ENCODERS.items():
+    for enc, (_drv, _qr, presets) in ((e, ENCODERS[e]) for e in only):
         q = qmap[enc]
         yuv = WORK / "src" / "photo_1024.yuv"
         for preset in sorted(presets, reverse=True):   # fastest first
@@ -163,7 +187,7 @@ def cmd_stage1(args):
     # ---- phase B: full size ladder for every preset that CLEARED 1 MP/s at
     # 1 MP, plus the first preset below it (so the frontier is bracketed).
     fits = {}
-    for enc, (_drv, _qr, presets) in ENCODERS.items():
+    for enc, (_drv, _qr, presets) in ((e, ENCODERS[e]) for e in only):
         q = qmap[enc]
         ok = [p for p in presets if screen.get((enc, p), (None,))[0] is not None
               and (1024 * 1024) / (screen[(enc, p)][0] / 1e9) / 1e6 >= 1.0]
@@ -611,6 +635,59 @@ def target_search(enc, preset, yuv, w, h, qlo, qhi, T, band, max_encodes, timeou
                 bpp=best_r["bytes"] * 8 / (w * h), reason=reason)
 
 
+def cmd_byteid(args):
+    """Whole-stream sha256 of TWO encoders over the RD corpus x q grid.
+
+    Written for the `zenav1-aom` vs `libaom-c` decomposition: the port is a
+    byte-exactness port of libaom, so wherever the two streams hash equal their
+    BD-rate is identical BY CONSTRUCTION and no RD comparison at that cell can
+    say anything about coding. Reporting the identical FRACTION (and naming the
+    cells that diverge) is what makes the matched-preset arm interpretable —
+    the same role xbench_svt_byteidentity_2026-08-01.tsv plays for the SVT pair,
+    but per RD cell rather than per preset on one calibration image.
+    """
+    import hashlib
+    a, b = args.a, args.b
+    pa, pb = args.preset_a, args.preset_b
+    corpus = prep_rd_corpus()
+    if args.classes:
+        keep = set(args.classes.split(","))
+        corpus = [c for c in corpus if c[1] in keep]
+    qs = [int(x) for x in args.qgrid.split(",")] if args.qgrid else QGRID[a]
+    tmp = WORK / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    out = Path(args.out)
+    n_ok = n_tot = 0
+    with open(out, "w") as f:
+        f.write("image\tclass\tw\th\tq\tenc_a\tpreset_a\tbytes_a\tsha_a\t"
+                "enc_b\tpreset_b\tbytes_b\tsha_b\tidentical\n")
+        for label, cls, yuv, w, h in corpus:
+            for q in qs:
+                shas, bys, bad = [], [], None
+                for enc, preset, tag in ((a, pa, "bidA"), (b, pb, "bidB")):
+                    obu = tmp / f"{tag}.obu"
+                    ns, by, err = run_encode(enc, w, h, q, preset, yuv, obu, 0, 1,
+                                             timeout=args.timeout)
+                    if err:
+                        bad = f"{enc}: {err}"
+                        break
+                    shas.append(hashlib.sha256(obu.read_bytes()).hexdigest())
+                    bys.append(by)
+                if bad:
+                    print(f"  FAIL {label} q{q}: {bad}", flush=True)
+                    continue
+                same = int(shas[0] == shas[1])
+                n_tot += 1
+                n_ok += same
+                f.write(f"{label}\t{cls}\t{w}\t{h}\t{q}\t{a}\t{pa}\t{bys[0]}\t{shas[0]}\t"
+                        f"{b}\t{pb}\t{bys[1]}\t{shas[1]}\t{same}\n")
+                f.flush()
+                print(f"  {label:15s} q{q:3d}  {bys[0]:8d} vs {bys[1]:8d}  "
+                      f"{'IDENTICAL' if same else 'DIFFER'}", flush=True)
+    print(f"\n{n_ok}/{n_tot} cells byte-identical "
+          f"({a}@{pa} vs {b}@{pb})\nwrote {out}")
+
+
 def cmd_fitreport(args):
     """Re-derive the stage-1 fit from the RAW samples and report how well the
     `total = alpha + beta*pixels` model actually holds.
@@ -681,11 +758,14 @@ def main():
     sub.add_parser("prep")
     s1 = sub.add_parser("stage1")
     s1.add_argument("--out", required=True)
-    s1.add_argument("--q", default='{"zenav1-aom":40,"svt-c":40,"svt-rust":40,"zenrav1e":160}')
+    s1.add_argument("--q", default='{"zenav1-aom":40,"libaom-c":40,"svt-c":40,'
+                                   '"svt-rust":40,"zenrav1e":160}')
     s1.add_argument("--floor", type=float, default=0.30,
                     help="stop descending presets below this MP/s")
     s1.add_argument("--timeout", type=int, default=1800)
     s1.add_argument("--only-frontier", action="store_true")
+    s1.add_argument("--only", default="",
+                    help="comma list of encoders to run (default: all)")
     s2 = sub.add_parser("stage2")
     s2.add_argument("--out", required=True)
     s2.add_argument("--modes", required=True, help='{"svt-c":1,...} encoder->preset')
@@ -705,10 +785,20 @@ def main():
     s3.add_argument("--timeout", type=int, default=1800)
     ct = sub.add_parser("control")
     ct.add_argument("--modes", required=True)
-    ct.add_argument("--q", default='{"zenav1-aom":44,"svt-c":40,"svt-rust":40,"zenrav1e":187}')
+    ct.add_argument("--q", default='{"zenav1-aom":44,"libaom-c":44,"svt-c":40,'
+                                   '"svt-rust":40,"zenrav1e":187}')
     ct.add_argument("--size", type=int, default=1024)
     ct.add_argument("--n", type=int, default=9)
     ct.add_argument("--timeout", type=int, default=1800)
+    bi = sub.add_parser("byteid")
+    bi.add_argument("--out", required=True)
+    bi.add_argument("--a", required=True, help="encoder A label")
+    bi.add_argument("--b", required=True, help="encoder B label")
+    bi.add_argument("--preset-a", required=True, type=int)
+    bi.add_argument("--preset-b", required=True, type=int)
+    bi.add_argument("--qgrid", default="", help="comma list; default = QGRID[a]")
+    bi.add_argument("--classes", default="")
+    bi.add_argument("--timeout", type=int, default=1800)
     rt = sub.add_parser("rdtable")
     rt.add_argument("--tsv", required=True, nargs="+")
     rt.add_argument("--levels", default="50,60,70,80,90")
@@ -721,6 +811,8 @@ def main():
         return cmd_fitreport(a)
     if a.cmd == "control":
         return cmd_control(a)
+    if a.cmd == "byteid":
+        return cmd_byteid(a)
     if a.cmd == "prep":
         cmd_prep(a)
     elif a.cmd == "stage1":

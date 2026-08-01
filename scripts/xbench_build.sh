@@ -37,16 +37,38 @@ if [ ! -f "$SVTC_BIN/libSvtAv1Enc.a" ]; then
 fi
 ls -l "$SVTC_BIN/libSvtAv1Enc.a"
 
-echo "== 2/3  drv_svtc (C driver against that lib)"
+echo "== 2/4  drv_svtc (C driver against that lib)"
 nice -n 19 cc -O2 -o "$XB/target/drv_svtc" "$XB/csrc/drv_svtc.c" \
   -I"$SVTC_SRC/Source/API" \
   -L"$SVTC_BIN" -lSvtAv1Enc -lm -lpthread -lstdc++
 echo "  -> $XB/target/drv_svtc"
 
-echo "== 3/3  Rust drivers + xtool"
+echo "== 3/4  drv_libaom (C driver against the PINNED in-tree oracle libaom)"
+# upstream/build/libaom.a is built by crates/aom-sys-ref/build.rs from the
+# pinned `upstream/` submodule (v3.14.1, 03087864) — NOT a system/Homebrew
+# aomenc, whose version and flags are unpinned. Build it first if absent.
+if [ ! -f "$HERE/upstream/build/libaom.a" ]; then
+  echo "  (building the oracle libaom via cargo -p zenav1-aom-sys-ref)"
+  (cd "$HERE" && nice -n 19 cargo build --release -j "$JOBS" -p zenav1-aom-sys-ref) \
+    >"$LOGS/libaom-oracle-build.log" 2>&1
+fi
+mkdir -p "$XB/target"
+LIBAOM_LINK="-lm"
+case "$(uname -s)" in
+  Darwin) LIBAOM_LINK="-lm -lc++" ;;
+  *)      LIBAOM_LINK="-lm -lpthread -lstdc++" ;;
+esac
+# shellcheck disable=SC2086
+nice -n 19 cc -O2 -o "$XB/target/drv_libaom" "$XB/csrc/drv_libaom.c" \
+  -I"$HERE/upstream" -I"$HERE/upstream/build" \
+  -L"$HERE/upstream/build" -laom $LIBAOM_LINK
+echo "  -> $XB/target/drv_libaom"
+
+echo "== 4/4  Rust drivers + xtool"
 cd "$XB"
 # NO -C target-cpu=native: runtime SIMD dispatch is what users get.
 nice -n 19 cargo build --release -j "$JOBS" \
   -p xtool -p drv-svtrs -p drv-rav1e -p drv-aom 2>&1 | tail -5
 ls -l "$XB/target/release/xtool" "$XB/target/release/drv-svtrs" \
-      "$XB/target/release/drv-rav1e" "$XB/target/release/drv-aom"
+      "$XB/target/release/drv-rav1e" "$XB/target/release/drv-aom" \
+      "$XB/target/drv_libaom"
