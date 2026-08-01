@@ -2754,6 +2754,40 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   (b) KB-15's byte-exactness pin against aomenc is untouched — this work makes the port's
   IntraBC output CONFORMANT, not byte-identical to libaom's.
 
+### KB-30 — Encoder: `cid22_6292444` at `--cpu-used=6` diverges at EVERY quantizer (1 of 10 real photographs) — OPEN, not localized
+- **Found 2026-08-01** by the libaom-C arm of the cross-encoder benchmark
+  (`benchmarks/xbench_2026-08-01.md`, "The same control for the aom port"). The measurement is a
+  whole-stream sha256 of `drv-aom` against `drv_libaom` over the RD corpus at MATCHED
+  `--cpu-used 6` — both drivers running the same `shim_encode_av1_kf_defaults` config, so the
+  only difference is which encoder coded the frame
+  (`benchmarks/xbench_aom_byteidentity_2026-08-01.tsv`, reproduce with
+  `python3 scripts/xbench.py byteid --a zenav1-aom --b libaom-c --preset-a 6 --preset-b 6`).
+- **The map: 127/182 cells byte-identical.** photo-hr 28/28. photo 99/112 — seven of the eight
+  CID22 512² images are 14/14 across the whole quantizer grid, and **`cid22_6292444` is 1/14**
+  (identical only at cq62, where both encoders emit the same 1619 bytes). screen 0/42, which is
+  a different and understood thing (`ToggleKnobs::default()` has palette/IntraBC off while
+  libaom's ALLINTRA defaults have them on) — that half is KB-15/KB-29 territory, not this entry.
+- **Shape of the divergence.** At every cq from 10 to 58 the port emits **0.25-2.52 % FEWER
+  bytes** at an equal-or-slightly-lower SSIMULACRA2 (−0.00 to −2.46), widening monotonically
+  toward the aggressive end: −0.27 % at cq10, −1.56 % at cq50, −2.52 % at cq58. Net BD-rate
+  cost +0.37 pp (+18.25 % for the port vs +17.88 % for C, ssim2 vs `svt-c` p1). Fewer bytes for
+  slightly less quality is the classic near-tie-won-by-an-underestimated-RD signature — the same
+  shape KB-13's AB mode-cache root had before it was found — so the first suspect is a search
+  the port runs LESS constrained than C, not a coefficient-path defect.
+- **Why no green test saw it:** every real-content byte-parity gate in the tree runs the AV1
+  conformance vectors (KB-13's 5-vector map, speeds 1-4) or synthetic/diagnostic content. CID22
+  photographs at cpu-used 6 are not in any gate, and cpu-used 6 is outside KB-13's 1-4 band.
+  Playbook §8 applies literally: coverage here was derived from a corpus name, and the corpus
+  does not reach this cell.
+- **Minimal repro** (no harness needed):
+  `benchmarks/xbench/target/drv_libaom 512 512 50 6 <cid22_6292444.yuv> c.obu 0 1` vs
+  `benchmarks/xbench/target/release/drv-aom 512 512 50 6 <same.yuv> p.obu 0 1`, then `shasum`.
+  The `.yuv` is produced by `xtool prep <CID22-512/validation/6292444.png> out.yuv square:512`.
+- **Not localized.** No first-divergent-block walk has been run. Per playbook §10 the next step
+  is the sibling-C dump with a per-block symbol count on this exact cell, NOT reasoning from the
+  byte delta — which is small (0.25-2.52 %) and, per KB-22's lesson, says nothing about whether
+  the cause is a near-tie or a whole unmodelled pass.
+
 ### KB-17 — Encoder: `use_screen_content_tools` was hardcoded `false`, so `--use-intra-default-tx-only=1` diverged on ALL screen-detected content — FIXED ✅ 2026-07-30
 - **Root cause (found 2026-07-30, one line):** `crates/aom-encode/src/speed_features.rs`'s
   `tx_type_search_policy_for_stage` hardcoded `use_screen_content_tools: false` with the
