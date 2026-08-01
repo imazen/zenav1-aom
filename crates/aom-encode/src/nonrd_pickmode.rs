@@ -803,12 +803,29 @@ pub fn quantize_fp_dispatched(
     {
         // av1_quantize_fp_avx2 (av1/encoder/x86/av1_quantize_avx2.c:224) + its
         // quantize_fp_16 lane kernel (:194) and init_qp threshold (:30).
-        // NOTE (unverified on this host): the SSE2 tier uses
-        // `thr = dequant >> 1` WITHOUT the `- 1`, and gates per 8 lanes rather
-        // than per 16 — so an x86 build that falls back to SSE2 can differ from
-        // this model at a coefficient sitting exactly on the threshold. If the
-        // KB-20 byte-identity gate ever fails on x86, that is the first thing
-        // to check.
+        // CORRECTED 2026-07-31 (this note previously named two SSE2/AVX2
+        // differences as the first thing to check on an x86 gate failure; BOTH
+        // were wrong, i.e. it pointed at a non-difference. Re-read from
+        // upstream source):
+        //   * The thresholds are the SAME integer predicate. SSE2 computes
+        //     `thr = dequant >> 1` (av1_quantize_sse2.c:162-163) and masks with
+        //     `qcoeff > thr || qcoeff == thr` (:91-92), i.e. `>= thr`; AVX2
+        //     computes `thr = (dequant >> 1) - 1` and uses `>`, which is the
+        //     same set. libaom says exactly why: "Subtracting 1 here eliminates
+        //     a _mm256_cmpeq_epi16() instruction when calculating the zbin
+        //     mask" (av1_quantize_avx2.c:52-53).
+        //   * SSE2 does NOT gate per 8 lanes. It ORs two 8-lane masks into one
+        //     `nzflag` (`_mm_movemask_epi8(mask0) | _mm_movemask_epi8(mask1)`,
+        //     av1_quantize_sse2.c:95) and branches once — a 16-coefficient
+        //     gate, same granularity as AVX2 and as the loop below.
+        // The difference that IS real between the two x86 tiers is the eob
+        // SOURCE: SSE2 scans the DEQUANTIZED value (`coeff0 = qcoeff0 *
+        // dequant0`, then "Scan for eob", :111-121) while AVX2 tests the
+        // QUANTIZED magnitude (`nz_mask = abs_q > 0`, av1_quantize_avx2.c:212)
+        // — as does `_c`. So a `q * dequant` product that wraps to exactly 0 in
+        // int16 gives SSE2 a different eob. That, not the threshold, is what to
+        // check if the KB-20 byte-identity gate fails on an SSE2-only x86 host.
+        // Catalogued as entry A2 in docs/LIBAOM_UPSTREAM_NOTES.md.
         let thr = [(dequant[0] >> 1) - 1, (dequant[1] >> 1) - 1];
         let mut eob_max: i32 = -1;
         for base in (0..coeff.len()).step_by(16) {
