@@ -35,12 +35,14 @@ pub mod inter_localize;
 pub mod rd_close;
 
 use aom_encode::encode_intra::TrellisOptType;
-use aom_encode::encode_sb::SbEncodeEnv;
+use aom_encode::encode_sb::{SbEncodeEnv, SbTree};
 use aom_encode::intra_uv_rd::UvLoopPolicy;
 use aom_encode::lf_search::{
     LfSearchFrame, build_lf_mi_grid, pick_filter_level, pick_filter_level_from_q,
 };
-use aom_encode::obu_assemble::assemble_frame_obu_payload_single_tile;
+use aom_encode::obu_assemble::{
+    assemble_frame_obu_payload_single_tile, assemble_multitile_frame_obu_payload_derived,
+};
 use aom_encode::pack::{LrPackParams, pack_tile, pack_tile_lr};
 use aom_encode::partition_pick::{IntrabcFrameCfg, PickFrameCfg};
 use aom_encode::rd::{
@@ -1134,8 +1136,32 @@ impl EncodeCell {
             p.quant.base_qindex > 0,
             "lossless cells are out of this harness's scope"
         );
+        // MULTI-TILE (KB-31). `av1_get_tile_limits` (tile_common.c) makes more
+        // than one tile MANDATORY once either
+        //   * `sb_cols > MAX_TILE_WIDTH >> sb_size_log2` (a frame wider than
+        //     4096 px at SB64), or
+        //   * `sb_cols * sb_rows > MAX_TILE_AREA >> 2*sb_size_log2` (2304 SB64s
+        //     ~ 9.44 MP),
+        // so `min_log2_tiles > 0` and libaom's own uniform-spacing default
+        // (`tile_columns == 0`) still resolves `log2_cols + log2_rows >= 1`.
+        // This harness asserted `tiles_log2 == 0` and therefore PANICKED on every
+        // frame at or above that threshold, at every speed (issue #6). The
+        // per-tile walk below is the composition of two independently
+        // byte-proven pieces: the per-tile `pack_tile` + tile-bound isolation
+        // (`aom-encode/tests/encoder_gate_multitile.rs`) and the derived
+        // multi-tile header + tile-group assembler
+        // (`aom-encode/tests/obu_assemble_multitile_diff.rs`).
         let tiles_log2 = p.tile_info.log2_cols + p.tile_info.log2_rows;
-        assert_eq!(tiles_log2, 0, "single-tile envelope only");
+        let n_tile_cols = p.tile_info.cols;
+        let n_tile_rows = p.tile_info.rows;
+        assert_eq!(
+            n_tile_cols * n_tile_rows,
+            1usize << tiles_log2,
+            "{}: uniform-spacing tile grid must be 2^log2_cols x 2^log2_rows",
+            self.label
+        );
+        let col_start_sb = p.tile_info.col_start_sb;
+        let row_start_sb = p.tile_info.row_start_sb;
         let allintra = self.usage == 2;
 
         // Seq-level toggles (`--enable-filter-intra` / `--enable-intra-edge-
@@ -1240,7 +1266,7 @@ impl EncodeCell {
             None
         };
 
-        let mut kf_write = KfFrameContext::default_for_qindex(qindex);
+        let kf_write = KfFrameContext::default_for_qindex(qindex);
         let real = derive_real_costs(&kf_write, knobs.enable_filter_intra);
         let rdmult = av1_compute_rd_mult_based_on_qindex(
             bd,
@@ -1446,6 +1472,22 @@ impl EncodeCell {
             p.delta_q.delta_lf_present = dlf_present;
         }
 
+        // Multi-tile x per-SB delta-q is NOT modelled and is refused rather than
+        // silently mis-coded: `pack_tile`'s `av1_adjust_q_from_delta_q_res`
+        // running base restarts at every `pack_tile` call (i.e. per tile), while
+        // the frame-raster replay loops above (`dq3_present`/`dq2_present` and
+        // `stamp_lf_delta_lf` below) carry ONE running base across the whole
+        // frame. Those two agree only at a single tile. No `--deltaq-mode` gate
+        // encodes a frame large enough to need tiles, so this arm is unreached
+        // today; it exists so the day one does, it fails loudly.
+        assert!(
+            tiles_log2 == 0 || !(dq3_present || dq2_present),
+            "{}: multi-tile x per-SB delta-q is unmodelled (the running qindex \
+             base resets per tile in pack_tile but not in this harness's \
+             frame-raster replay) — see KB-31",
+            self.label
+        );
+
         let speed = self.speed;
         let mut sf = SpeedFeatures::set_allintra(speed, p.allow_screen_content_tools, false);
         // The modelled arms of set_allintra_speed_feature_framesize_dependent
@@ -1480,15 +1522,46 @@ impl EncodeCell {
             } else {
                 0
             };
-        let env = SbEncodeEnv {
+        // Tile geometry, raster (tile-row-major) order: each entry is
+        // `(mi_row_start, mi_col_start, mi_row_end, mi_col_end, n_sb_rows,
+        // n_sb_cols)`. The mi ENDS are clamped to the frame exactly like C's
+        // `av1_tile_set_row`/`_col` (`tile->mi_row_end = AOMMIN(..., mi_rows)`,
+        // av1/common/tile_common.c). Single tile => one entry covering the frame,
+        // which is what every pre-existing gate encodes.
+        let tile_grid: Vec<(i32, i32, i32, i32, i32, i32)> = (0..n_tile_rows)
+            .flat_map(|trow| {
+                (0..n_tile_cols).map(move |tcol| {
+                    let r0 = row_start_sb[trow] << mib_size_log2;
+                    let r1 = (row_start_sb[trow + 1] << mib_size_log2).min(mi_rows);
+                    let c0 = col_start_sb[tcol] << mib_size_log2;
+                    let c1 = (col_start_sb[tcol + 1] << mib_size_log2).min(mi_cols);
+                    (
+                        r0,
+                        c0,
+                        r1,
+                        c1,
+                        row_start_sb[trow + 1] - row_start_sb[trow],
+                        col_start_sb[tcol + 1] - col_start_sb[tcol],
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(
+            tile_grid.iter().map(|t| (t.4 * t.5) as usize).sum::<usize>(),
+            (n_sb_x * n_sb_y) as usize,
+            "{}: the tile grid must partition every superblock exactly once",
+            self.label
+        );
+
+        let mut env = SbEncodeEnv {
             ref_frame: None,
             sb_size: sb_block,
             mi_rows,
             mi_cols,
-            tile_row_start: 0,
-            tile_col_start: 0,
-            tile_row_end: 1 << 16,
-            tile_col_end: 1 << 16,
+            tile_row_start: tile_grid[0].0,
+            tile_col_start: tile_grid[0].1,
+            tile_row_end: tile_grid[0].2,
+            tile_col_end: tile_grid[0].3,
             monochrome: mono,
             ss_x,
             ss_y,
@@ -1713,30 +1786,61 @@ impl EncodeCell {
         let mut recon_y = src_y_strided.clone();
         let mut recon_u = src_u_strided.clone();
         let mut recon_v = src_v_strided.clone();
-        let mut enc = OdEcEnc::new();
-        let trees = pack_tile(
-            &mut enc,
-            &env,
-            &pick_cfg,
-            &pack_cfg,
-            &mut kf_write,
-            &mut recon_y,
-            &mut recon_u,
-            &mut recon_v,
-            0,
-            0,
-            n_sb_y,
-            n_sb_x,
-            sb_mi,
-            sb_block,
-        );
-        assert_eq!(
-            trees.len(),
-            (n_sb_x * n_sb_y) as usize,
-            "{}: pack_tile must walk every SB",
-            self.label
-        );
-        let our_tile_bytes = enc.done().to_vec();
+        // Per-tile pack in raster order. AV1 tiles are entropy-independent, so
+        // every tile gets a FRESH `KfFrameContext` + `OdEcEnc`, exactly like C's
+        // `av1_init_tile_data` (`cpi->tile_data[i].tctx = *cm->fc`). The
+        // reconstruction buffers are FRAME-level and shared: each tile writes
+        // only its own region, and the tile mi bounds in `env` are what stop
+        // intra prediction / tx-size context / the RD search from reading across
+        // a tile edge.
+        let mut tile_payloads: Vec<Vec<u8>> = Vec::with_capacity(tile_grid.len());
+        // Frame-raster SB trees, reassembled from the per-tile walks so the
+        // loop-filter grid below (which indexes trees by FRAME SB raster) is
+        // tile-layout-independent.
+        let mut frame_trees: Vec<Option<SbTree>> = vec![None; (n_sb_x * n_sb_y) as usize];
+        for (t, &(mi_row_start, mi_col_start, mi_row_end, mi_col_end, n_sb_rows, n_sb_cols)) in
+            tile_grid.iter().enumerate()
+        {
+            env.tile_row_start = mi_row_start;
+            env.tile_col_start = mi_col_start;
+            env.tile_row_end = mi_row_end;
+            env.tile_col_end = mi_col_end;
+            let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
+            let mut enc = OdEcEnc::new();
+            let trees = pack_tile(
+                &mut enc,
+                &env,
+                &pick_cfg,
+                &pack_cfg,
+                &mut kf_tile,
+                &mut recon_y,
+                &mut recon_u,
+                &mut recon_v,
+                mi_row_start,
+                mi_col_start,
+                n_sb_rows,
+                n_sb_cols,
+                sb_mi,
+                sb_block,
+            );
+            assert_eq!(
+                trees.len(),
+                (n_sb_rows * n_sb_cols) as usize,
+                "{}: pack_tile must walk every SB of tile {t}",
+                self.label
+            );
+            let (sb_row0, sb_col0) = (mi_row_start / sb_mi, mi_col_start / sb_mi);
+            for (i, tree) in trees.into_iter().enumerate() {
+                let sb_r = sb_row0 + i as i32 / n_sb_cols;
+                let sb_c = sb_col0 + i as i32 % n_sb_cols;
+                frame_trees[(sb_r * n_sb_x + sb_c) as usize] = Some(tree);
+            }
+            tile_payloads.push(enc.done().to_vec());
+        }
+        let trees: Vec<SbTree> = frame_trees
+            .into_iter()
+            .map(|t| t.expect("every superblock belongs to exactly one tile"))
+            .collect();
 
         // Port-derived loop-filter level. allintra `lpf_pick` is DUAL for
         // speed 0..=3 and NON_DUAL for speed >= 4 (speed_features.c:496).
@@ -1868,7 +1972,6 @@ impl EncodeCell {
         // off bootstraps (every `--enable-restoration=0` gate) derive `false` —
         // unchanged.
         let lr_stage = lr_stage || (s.enable_restoration && !p.coded_lossless);
-        let mut our_tile_bytes = our_tile_bytes;
         if lr_stage {
             assert!(
                 s.enable_restoration,
@@ -1971,8 +2074,16 @@ impl EncodeCell {
                 mib_size_log2: mib_size_log2 as i32,
                 mi_rows,
                 mi_cols,
-                tile_sb_rows: vec![(0, n_sb_y)],
-                tile_sb_cols: vec![(0, n_sb_x)],
+                // `av1_pick_filter_restoration` walks tiles outer / SBs inner and
+                // resets the per-RU delta-coding references at every tile start,
+                // so the tile SB spans must be the REAL ones. Single tile =>
+                // `[(0, n_sb_y)]` / `[(0, n_sb_x)]`, unchanged.
+                tile_sb_rows: (0..n_tile_rows)
+                    .map(|t| (row_start_sb[t], row_start_sb[t + 1]))
+                    .collect(),
+                tile_sb_cols: (0..n_tile_cols)
+                    .map(|t| (col_start_sb[t], col_start_sb[t + 1]))
+                    .collect(),
                 wiener_restore_cost: wiener_cost,
                 sgrproj_restore_cost: sgrproj_cost,
                 switchable_restore_cost: switchable_cost,
@@ -2007,40 +2118,61 @@ impl EncodeCell {
                     units: [&outcome.units[0], &outcome.units[1], &outcome.units[2]],
                     num_planes: num_planes as usize,
                 };
-                let mut kf2 = KfFrameContext::default_for_qindex(qindex);
                 let mut ry2 = src_y_strided.clone();
                 let mut ru2 = src_u_strided.clone();
                 let mut rv2 = src_v_strided.clone();
-                let mut enc2 = OdEcEnc::new();
-                let trees2 = pack_tile_lr(
-                    &mut enc2,
-                    &env,
-                    &pick_cfg,
-                    &pack_cfg,
-                    &mut kf2,
-                    &mut ry2,
-                    &mut ru2,
-                    &mut rv2,
-                    0,
-                    0,
-                    n_sb_y,
-                    n_sb_x,
-                    sb_mi,
-                    sb_block,
-                    Some(&lr_pack),
-                    None,
-                );
-                assert_eq!(
-                    trees2.len(),
-                    (n_sb_x * n_sb_y) as usize,
-                    "{}: LR repack must walk every SB",
-                    self.label
-                );
-                our_tile_bytes = enc2.done().to_vec();
+                // Same per-tile shape as pass 1 — `pack_tile_lr` resets its
+                // `LrRefState` (C's `av1_reset_loop_restoration`, called from
+                // `write_modes` per tile) on every call, so the per-tile loop is
+                // what makes the LR delta-coding references tile-local.
+                for (t, &(mi_row_start, mi_col_start, mi_row_end, mi_col_end, n_sb_rows, n_sb_cols)) in
+                    tile_grid.iter().enumerate()
+                {
+                    env.tile_row_start = mi_row_start;
+                    env.tile_col_start = mi_col_start;
+                    env.tile_row_end = mi_row_end;
+                    env.tile_col_end = mi_col_end;
+                    let mut kf2 = KfFrameContext::default_for_qindex(qindex);
+                    let mut enc2 = OdEcEnc::new();
+                    let trees2 = pack_tile_lr(
+                        &mut enc2,
+                        &env,
+                        &pick_cfg,
+                        &pack_cfg,
+                        &mut kf2,
+                        &mut ry2,
+                        &mut ru2,
+                        &mut rv2,
+                        mi_row_start,
+                        mi_col_start,
+                        n_sb_rows,
+                        n_sb_cols,
+                        sb_mi,
+                        sb_block,
+                        Some(&lr_pack),
+                        None,
+                    );
+                    assert_eq!(
+                        trees2.len(),
+                        (n_sb_rows * n_sb_cols) as usize,
+                        "{}: LR repack must walk every SB of tile {t}",
+                        self.label
+                    );
+                    tile_payloads[t] = enc2.done().to_vec();
+                }
             }
         }
 
-        assemble_frame_obu_payload_single_tile(&p, tiles_log2, &our_tile_bytes)
+        if tiles_log2 == 0 {
+            assemble_frame_obu_payload_single_tile(&p, tiles_log2, &tile_payloads[0])
+        } else {
+            // Multi-tile: the header is re-serialized here too (nothing is
+            // spliced from the bootstrap), with `context_update_tile_id` =
+            // `largest_tile_id` and `tile_size_bytes` derived from the packed
+            // tile lengths the way `write_tile_obu_size` does, then each
+            // non-last tile length-prefixed.
+            assemble_multitile_frame_obu_payload_derived(&p, &tile_payloads)
+        }
     }
 
     /// Setup-time validation: the port's assembled frame OBU payload is

@@ -2788,6 +2788,164 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   byte delta — which is small (0.25-2.52 %) and, per KB-22's lesson, says nothing about whether
   the cause is a near-tie or a whole unmodelled pass.
 
+### KB-31 — Encoder: every frame big enough to REQUIRE more than one tile PANICKED (`single-tile envelope only`) — FIXED ✅ 2026-08-01 (TWO roots: a driver gap and a real frame-header PARSE defect)
+- **Reported as GitHub issue #6** from zensysbench: `EncodeCell::port_encode` exits 101 at
+  5472x3648 (20 MP) and 12000x9000 (108 MP), across `--cpu-used` {3,6,9} and cq {30,50},
+  bd8 4:2:0 allintra; 512x512 fine. The panic text was swallowed by the reporting harness.
+  It is `crates/aom-bench/src/lib.rs:1138` (pre-fix line):
+  *`assertion left == right failed: single-tile envelope only; left: 1, right: 0`*,
+  frame `<aom_bench::EncodeCell>::port_encode_full`.
+- **The governing property is NOT the issue's guess.** The issue noted both failing widths
+  are `64k+32` (a partial-superblock column) and suspected a partial-SB path. Measured, with
+  SB-EXACT sizes deliberately interleaved so the two candidate explanations were separable by
+  the result pattern rather than by intuition:
+
+  | size | multiple of 64? | MP | verdict (pre-fix) |
+  |---|---|---|---|
+  | 512x512, 4032x64 | yes | 0.26 / 0.26 | OK |
+  | 3072x3072 (exactly 2304 SB64s) | yes | 9.44 | OK |
+  | **4096x64** | **yes** | **0.26** | **PANIC** |
+  | 4096x3072, 3136x3072 | yes / no | 12.6 / 9.6 | PANIC |
+  | 4160x2048, 5472x3648 | no | 8.5 / 20 | PANIC |
+
+  4096x64 panics while 3072x3072 — 36x its area and equally SB-exact — does not, so it is
+  neither alignment nor "large". It is libaom's **tile requirement**, and there are TWO
+  independent triggers (`av1_get_tile_limits`, `av1/common/tile_common.c:31-50`):
+  * **width** — `min_log2_cols = tile_log2(MAX_TILE_WIDTH >> sb_size_log2, sb_cols)`; and the
+    ENCODER's own bound is stricter still, `set_tile_info` (`av1/encoder/encoder.c:385-390`)
+    re-raises `log2_cols` with a **`<=`** loop, so **64 SB columns is already 2 tiles** rather
+    than 1 — `mi_cols >= 1009`, i.e. width >= 4033 px (measured: 4032 -> 1 tile, 4096 -> 2);
+  * **area** — `min_log2 = tile_log2(MAX_TILE_AREA >> 2*sb_size_log2, sb_cols*sb_rows)`,
+    i.e. more than 2304 SB64s ~ **9.44 MP**.
+  With libaom's uniform-spacing default (`--tile-columns` unset) that resolves
+  `log2_cols + log2_rows >= 1`, which the harness refused. 12 MP was never in doubt: 4000x3000
+  would have panicked too (3000 SB64s).
+- **ROOT #1 (port-only SCALING defect, no C counterpart): the frame driver only ever packed
+  one tile.** `port_encode_full` asserted `tiles_log2 == 0` before any speed-dependent code —
+  which is why the panic was speed-invariant — and then called `pack_tile` once over the whole
+  frame. Nothing was missing from the ENCODER: `pack_tile` already takes
+  `(mi_row0, mi_col0, n_sb_rows, n_sb_cols)` and `SbEncodeEnv` already carries tile bounds; the
+  per-tile walk with tile-edge isolation is byte-proven by
+  `aom-encode/tests/encoder_gate_multitile.rs`, and the derived multi-tile header + tile-group
+  assembly by `aom-encode/tests/obu_assemble_multitile_diff.rs`. **The fix is composition**: a
+  per-tile loop in raster order with a fresh `KfFrameContext` + `OdEcEnc` per tile (C's
+  `av1_init_tile_data`), FRAME-level shared recon, the tile mi ends clamped like
+  `av1_tile_set_row`/`_col` (`AOMMIN(.., mi_rows)`, tile_common.c:124-140), the per-tile SB
+  trees re-assembled into frame raster for `build_lf_mi_grid`, the real tile SB spans handed to
+  the loop-restoration search (which already resets its delta-coding refs per tile), the LR
+  repack looped identically, and `assemble_multitile_frame_obu_payload_derived` for
+  `tiles_log2 > 0`.
+- **ROOT #2 (port-FIDELITY defect, decoder-side too — and the composition is what exposed it):
+  `read_tile_info_max_tile` never ran `av1_calculate_tile_cols` between the column and row
+  reads.** C calls it there unconditionally (`av1/decoder/decodeframe.c:2180`) and it
+  RE-DERIVES the row bound from the just-read column count:
+  `tiles->min_log2_rows = AOMMAX(tiles->min_log2 - tiles->log2_cols, 0)`
+  (`av1/common/tile_common.c:73`). The port used the caller's `min_log2_rows`, which is
+  `av1_get_tile_limits`' composition `max(min_log2 - min_log2_cols, 0)` — equal only when the
+  stream codes `log2_cols == min_log2_cols`. libaom's encoder breaks that tie routinely via the
+  `<=` loop above. Measured at 4096x3072: the row unary started at 1 instead of 0, so
+  `log2_rows` read as 1 instead of 0 (a 2x2 grid where C coded 2x1) and
+  `context_update_tile_id` — whose width is `log2_cols + log2_rows` bits — consumed one bit too
+  many, **desyncing the entire rest of the frame header**: `base_qindex` parsed as 240 instead
+  of 120 and the port coded 77,639 B where aomenc coded 1,336,439. Fixed by restructuring the
+  reader into C's order (read cols -> `av1_calculate_tile_cols` -> read rows), recovering
+  `min_log2` as `min_log2_cols + min_log2_rows` (exact, since `av1_get_tile_limits` ends with
+  `min_log2 = AOMMAX(min_log2, min_log2_cols)`, `:49`). One fix repairs BOTH directions: the
+  writer's unary is relative to `t.min_log2_rows`, so a re-serialized header was equally wrong.
+  **The DECODER had this too** — `aom-decode/src/frame.rs:183`'s `tile_limits` composes
+  `min_log2_rows` identically — so any conformant stream with `log2_cols > min_log2_cols` and
+  `min_log2 > 0` mis-parsed. No in-repo decoder gate reached it: every multi-tile decode fixture
+  is small enough that `min_log2 == 0`, where the re-derivation is an identity.
+- **Verified.**
+  * NEW `aom-bench/tests/kb31_mandatory_tiles.rs`. Default tier (0.15 s):
+    `mandatory_tile_split_encodes_byte_identical` — 4032x64 (1x1, the negative control),
+    **4096x64 (2x1)**, 4160x64 (2x1), 4160x128 (2x1) at cq30 cpu9, all BYTE-IDENTICAL to real
+    `aomenc --allintra`, with the coded tile grid read back off the reference stream
+    (`decode_frame_obus_prefilter`) rather than derived (playbook §8). 4096x64 is the SMALLEST
+    frame that reproduces issue #6 — 0.26 MP — which is why this sits in the default tier.
+    `--ignored` tier: `area_forced_tile_split_byte_identical` (4096x2368 -> 2x1 and 4032x2368 ->
+    1x2, ~9.6 MP at cpu7, both byte-identical — the only cells with a tile ROW boundary and the
+    only ones that reach root #2); `mandatory_tile_split_byte_identical_across_speeds` (4160x64
+    tiled + 4032x64 control at every speed 0..9); `issue6_reported_sizes_encode` (the issue's own
+    5472x3648 and 12000x9000).
+  * **Bite proof, per root, with different cell sets (playbook §1).** Restoring the
+    `tiles_log2 == 0` assert alone fails ONLY `mandatory_tile_split_encodes_byte_identical`, with
+    the issue's exact text, while config_permutations (87) + toggles_rd_close (5) + sb128_e2e (25)
+    stay green. Reverting the parse re-derivation alone fails a DIFFERENT pair —
+    `rb_diff::read_tile_info_inverts_write` (*"uniform log2, left: (2, 2) right: (2, 0)"*) and
+    `kb31::area_forced_tile_split_byte_identical` (*"real aomenc coded 2x2 tiles"*) — while the
+    width-predicate default gate stays green, because those cells have `min_log2 == 0`.
+  * **Byte-inertness of the refactor, measured not argued.** The single-tile path now passes real
+    clamped tile bounds where it passed a `1 << 16` sentinel. Same-binary A/B via `git stash`:
+    4032x64, 1024x1024, 2048x2048 and 3072x3072 at cpu8 and cpu9 produce **byte-identical port
+    payloads before and after** (13,224 / 111,581 / 436,835 / 977,820 B at cpu8). Full suites:
+    `-p zenav1-aom-dsp -p zenav1-aom-decode` 15 files 0 failed; `-p zenav1-aom-encode -p
+    zenav1-aom-bench` **463 passed / 0 failed / 19 ignored**. Both dispatch modes (default and
+    `AOM_FORCE_SCALAR=1`); `cargo check --target x86_64-apple-darwin -p zenav1-aom-dsp` clean.
+  * `rb_diff`'s uniform tile fixture drew `min_log2_rows` INDEPENDENTLY of `log2_cols` — a state
+    C cannot produce, and precisely what hid this root. It now derives both row bounds from one
+    `min_log2` (the reader's arg `max(min_log2 - min_log2_cols, 0)`, the writer's
+    `max(min_log2 - log2_cols, 0)`) and asserts the re-derived `g.min_log2_rows`. That is a
+    TIGHTENING, not a relaxation.
+  * The issue's own cells, `--cpu-used=9`, cq30 (aarch64-apple-darwin): 5472x3648 -> **2x2 tiles**,
+    2,124,645 B vs aomenc's 2,121,452 (+3,193, +0.15%), 1.6 s, 0.79 GB peak RSS; 12000x9000 ->
+    **4x4 tiles**, 11,548,497 B vs 11,520,317 (+28,180, +0.24%), 8.5 s, **3.11 GB peak RSS** (whole
+    process, `/usr/bin/time -l`). Neither OOMs; 108 MP is the memory ceiling to expect from this
+    harness. The residual sub-percent deltas are **KB-32's**, not tiles' — proven by the
+    single-tile controls (see below), which is why `issue6_reported_sizes_encode` pins a verdict
+    plus a `< 1%` bound rather than byte-identity.
+- **Why no green test could have caught it:** the widest frame any pre-existing gate encodes is
+  2160 px (KB-19's 2160x2160 = 34 SB columns, 1,156 SBs), so no cell in the tree came near
+  either predicate and none had `tiles_log2 > 0` at all. `encoder_gate_multitile.rs`
+  DOES encode multi-tile frames byte-exactly — but it drives them with explicit
+  `AV1E_SET_TILE_COLUMNS`, never through `EncodeCell::port_encode`, and at sizes where
+  `min_log2 == 0`. Playbook §7 and §12 together: two individually-green rows (the tile machinery,
+  the frame driver) with nothing crossing them, and a green unit differential that licenses a
+  kernel and not its caller.
+- **RESIDUAL, stated plainly.** (a) Multi-tile x per-SB delta-q (`--deltaq-mode` 2/3) is REFUSED
+  with a loud assert, not modelled: `pack_tile`'s running qindex base restarts per tile while the
+  harness's frame-raster replay loops (`dq3_present`, `stamp_lf_delta_lf`) carry one base across
+  the frame; no delta-q gate encodes a frame large enough to need tiles, so the arm is unreached
+  today. (b) `av1_calculate_tile_cols` also re-derives `max_height_sb` from the widest tile
+  (`tile_common.c:82-95`); that is deliberately NOT modelled and the caller's value is still used,
+  because it is read only by the NON-uniform row read and libaom emits non-uniform spacing only
+  under `--tile-width`/`--tile-height`, so there is no real-stream gate to prove a change against.
+  Noted at the site. (c) Nothing here is swept at SB128, bd10/12, 4:4:4/4:2:2 or monochrome —
+  the whole file is bd8 4:2:0 SB64.
+
+### KB-32 — Encoder: `--cpu-used` 8 (every size >= 512²) and `--cpu-used` 9 (>= ~1 MP) diverge on real content — OPEN, pinned
+- **Found 2026-08-01** while separating KB-31's roots: the tiled cells' single-tile CONTROLS
+  diverged too, which is what proved the residual is not tiles'. Measured (cq30,
+  `c_encode_defaults`, mirror-tiled `av1-1-b8-00-quantizer-00`, bd8 4:2:0, aarch64):
+
+  | size | SBs | cpu7 | cpu8 | cpu9 |
+  |---|---|---|---|---|
+  | 512² | 64 | +0 | **+61** | +0 |
+  | 576² / 640² / 704² / 768² / 896² | 81..196 | +0 | **+31 / +46 / +102 / +152 / +253** | +0 |
+  | 1024² | 256 | +0 | **+581** | **+613** |
+  | 2048² | 1024 | — | **+2,576** | **+2,311** |
+  | 3072² | 2304 | — | **+5,643** | **-1,883** |
+  | 4096x2368 (9.7 MP) | 2368 | **+0** | — | +512 |
+  | 4032x2368 (9.5 MP) | 2331 | **+0** | — | -912 |
+  | 5472x3648 (20 MP) | 4902 | — | — | +3,193 |
+  | 12000x9000 (108 MP) | 26508 | — | — | +28,180 |
+
+- **What it is not:** not tiles (4032x64 and 4032x2368 are single-tile and behave identically
+  to their tiled twins), not size at speed 7 (9.7 MP is BYTE-EXACT at cpu7), and not KB-26
+  (that was speed>=4 and is closed; speeds 4..7 are byte-exact here at every size measured).
+- **What it looks like:** two bands. **cpu9** has a clean size threshold between 896² (196 SBs,
+  byte-exact) and 1024² (256 SBs) — a size axis nothing has swept, since
+  `s4cov_hd_speed_axis` runs speeds 1..7 only and KB-12's speed-9 "64/64 canon" was measured at
+  64x64/128x128. **cpu8** diverges at EVERY size from 512² up with a delta growing roughly
+  linearly in area — most likely KB-12's pinned speed-8 nonrd estimate-arm class (4/64 cells
+  open at 64x64) seen on real content at scale, but that attribution is NOT established.
+- **Pinned** in `kb31_mandatory_tiles::mandatory_tile_split_byte_identical_across_speeds`
+  (`OPEN = [(4032, 8), (4160, 8)]`, fails in both directions) and, as a verdict plus a `< 1%`
+  payload bound, in `issue6_reported_sizes_encode`.
+- **Next probe:** the cpu9 threshold is sharp and cheap to bisect (896² vs 1024² is <100 ms a
+  cell) — take the decode-both localization (`decode_diff_multisb.rs`) to the first divergent
+  partition node at 1024² cpu9 before assuming it is the same root as cpu8.
+
 ### KB-17 — Encoder: `use_screen_content_tools` was hardcoded `false`, so `--use-intra-default-tx-only=1` diverged on ALL screen-detected content — FIXED ✅ 2026-07-30
 - **Root cause (found 2026-07-30, one line):** `crates/aom-encode/src/speed_features.rs`'s
   `tx_type_search_policy_for_stage` hardcoded `use_screen_content_tools: false` with the
