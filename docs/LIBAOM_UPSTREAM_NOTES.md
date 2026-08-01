@@ -388,6 +388,55 @@ on the assumption that adding ≥480p contexts would exercise it; at speed 0 it
 stays at its init value 0 (`:2464`) in real aomenc too. The full framesize table
 is in `docs/CONFIG_PERMUTATION_DESIGN_2026-07-30.md:678-699`.
 
+### C5. Superres doubles the minimum tile width, and libaom's encoder ignores it
+
+`av1_is_min_tile_width_satisfied` (`av1/common/tile_common.c:200-206`) requires
+every INNER (non-rightmost) tile column to satisfy
+`min_inner_width << MI_SIZE_LOG2 >= 64 << av1_superres_scaled(cm)` — 64 luma
+pixels normally, **128 under superres**, measured on the CODED (downscaled)
+frame. The decoder enforces it immediately after `read_tile_info`
+(`av1/decoder/decodeframe.c:5114-5118`) and reports `AOM_CODEC_CORRUPT_FRAME`.
+
+Without superres the bound is unreachable — a tile column is at least one
+superblock, i.e. ≥ 64 px — so it looks like dead code until superres is in play.
+
+**The encoder checks it only in an `assert`.** `av1_get_tile_limits` /
+`av1_calculate_tile_cols` (`tile_common.c:32`, `:52`) clamp tile columns against
+`MAX_TILE_WIDTH`, `MAX_TILE_AREA` and the superblock grid — none of which knows
+about superres. The one encode-side consultation is
+`assert(av1_is_min_tile_width_satisfied(cm))` at the tail of `av1_setup_frame_size`
+(`av1/encoder/superres_scale.c:397`), i.e. libaom *states* the invariant but
+enforces it only when assertions are live. Our pinned oracle build is
+`CMAKE_BUILD_TYPE=Release` → `-DNDEBUG` (`upstream/build/CMakeCache.txt:84`,
+`:118`), so the assert is compiled out and aomenc silently produces streams its
+own decoder refuses. There is no clamp that would have avoided the shape; a debug
+libaom would abort instead.
+
+**MEASURED (2026-07-31).** `--tile-columns=2` with `rc_superres_kf_denominator=16`
+on a 512×96 frame: the coded frame is 256 px = 4 superblocks, split into 4 columns
+of 1 superblock each = 64 px inner columns. The encode succeeds; `aomdec` then
+says `Failed to decode frame 1: Corrupt frame detected / Additional information:
+Minimum tile width requirement not satisfied`. Same at denom 12 on 512×96 and
+denom 16 on 768×128. Halving the request (`--tile-columns=1`, 2-superblock
+columns) is accepted and byte-decodes normally — the asymmetric control.
+
+**How we handle it:** `parse_frame_header_ext`
+(`crates/aom-decode/src/frame.rs`) applies the same predicate via
+`min_inner_tile_width_mi` and returns `DecodeError::Malformed`, so the port
+refuses exactly what the reference decoder refuses. Pinned by
+`superres_multitile_below_min_tile_width_is_rejected`
+(`crates/aom-decode/tests/superres_tiles_diff.rs`), which asserts BOTH halves
+(C rejects, port rejects) against a conformant control at half the column count.
+
+**Why libaom's own tests do not catch it:** the constraint only binds when
+superres and multiple tile columns are combined, and libaom's encode/decode
+round-trip tests do not cross those two axes — the same gap that left the AV1
+intra conformance corpus with zero superres and zero `tiles > 1` vectors
+(`benchmarks/decoder_corpus_feature_tuples_2026-07-30.tsv`). It also means a
+harness that generates its own superres multi-tile vectors must pick
+(width, denominator, tile-columns) triples on the legal side, or it will be
+comparing against a C decoder that never ran.
+
 ---
 
 ## How to add an entry

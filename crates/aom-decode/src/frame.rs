@@ -271,6 +271,31 @@ fn read_full_tile_group(rb: &mut ReadBitBuffer, ti: &TileInfoHeader) -> Result<(
     Ok(())
 }
 
+/// `tiles->min_inner_width` (`av1_calculate_tile_cols`, tile_common.c:61-100) in
+/// MI units: the narrowest tile column IGNORING the rightmost one. Callers must
+/// gate on `cols > 1` first, mirroring `av1_is_min_tile_width_satisfied`'s early
+/// return (C leaves `min_inner_width` at its `-1` init when there is no inner
+/// column); `i32::MAX` is returned in that case so a missing gate cannot read as
+/// a narrow tile.
+///
+/// C derives this in two branches — the uniform-spacing one takes the common
+/// tile width `AOMMIN(size_sb << mib_size_log2, mi_cols)` and the explicit one
+/// minimises over the actual `col_start_sb` deltas. The single expression below
+/// covers both: under uniform spacing every INNER column is exactly `size_sb`
+/// superblocks (only the last may be short), so the minimum over inner deltas IS
+/// `size_sb << mib_size_log2`, and the `AOMMIN` with `mi_cols` cannot bite while
+/// `cols > 1` (`cols > 1` forces `size_sb <= sb_cols - 1`, hence
+/// `size_sb << mib_size_log2 < mi_cols`).
+fn min_inner_tile_width_mi(t: &TileInfoHeader) -> i32 {
+    if t.cols <= 1 {
+        return i32::MAX;
+    }
+    (0..t.cols - 1)
+        .map(|i| (t.col_start_sb[i + 1] - t.col_start_sb[i]) << t.mib_size_log2)
+        .min()
+        .unwrap_or(i32::MAX)
+}
+
 /// `mem_get_varsize` (`aom_ports/mem_ops.h`): an `n`-byte (1..=4) little-endian
 /// unsigned read — the width `read_tile_info` parsed as `tile_size_bytes`.
 fn mem_get_varsize(data: &[u8], n: usize) -> usize {
@@ -747,13 +772,29 @@ fn parse_frame_header_ext(
     // Superres (SuperresDenom in [9,16]) IS in the envelope: the frame is coded
     // at a reduced width and upscaled back to the full UpscaledWidth
     // horizontally, as a normative post-CDEF stage ([`crate::superres`], spliced
-    // between CDEF and loop-restoration in `decode_frame_obus`). Only the
-    // single-tile-column upscale is implemented — the AVIF-still / KEY superres
-    // path is single-tile; multi-tile superres would need the per-tile-column
-    // convolve loop (`av1_upscale_normative_rows`'s tile walk).
-    if superres::superres_scaled(p.frame_size.scale_denominator) && p.tile_info.cols > 1 {
-        return Err(DecodeError::UnsupportedFeature(
-            "multi-tile superres (out of envelope)",
+    // between CDEF and loop-restoration in `decode_frame_obus`). Multi-tile-column
+    // superres is in the envelope too: `superres_upscale_planes` runs
+    // `av1_upscale_normative_rows`'s per-tile-column convolve walk (one pass per
+    // column, frame-edge-only pad replication, carried `x0_qn`), so no reject.
+    //
+    // What multi-tile superres DOES bring is a bitstream-conformance constraint
+    // the single-tile path could never violate: `av1_is_min_tile_width_satisfied`
+    // (tile_common.c:200), which C checks immediately after `read_tile_info`
+    // (decodeframe.c:5115) and reports as AOM_CODEC_CORRUPT_FRAME. Every INNER
+    // (non-last) tile column must be at least `64 << superres_scaled` luma pixels
+    // wide in the CODED (downscaled) domain — 64 without superres, 128 with it.
+    // Without superres it is unreachable (a tile column is at least one
+    // superblock, i.e. >= 64 px), which is why the port has not needed it before.
+    // With superres, one-superblock inner columns at SB64 are illegal AND
+    // libaom's own encoder emits them (`--tile-columns=2` at denom 16 over a
+    // 4-superblock-wide coded frame), so without this the port would decode
+    // streams the reference decoder refuses.
+    if p.tile_info.cols > 1
+        && min_inner_tile_width_mi(&p.tile_info) * 4
+            < (64 << superres::superres_scaled(p.frame_size.scale_denominator) as i32)
+    {
+        return Err(DecodeError::Malformed(
+            "minimum tile width requirement not satisfied (non-conformant)".into(),
         ));
     }
     // Quantization matrices (`using_qmatrix`): each 2-D-transform coefficient is
@@ -1630,12 +1671,19 @@ pub fn apply_restoration(
 }
 
 /// Upscale a downscaled `(y, u, v)` plane triplet horizontally to the full
-/// UpscaledWidth (`av1_upscale_normative_rows`, single tile column), returning
+/// UpscaledWidth (`av1_upscale_normative_rows`), returning
 /// `(y, stride, u, v, stride_uv)` at the upscaled width (tight strides). Height
 /// and row count are unchanged — superres is horizontal only. Shared by
 /// [`apply_superres`] (the post-CDEF recon) and the deblocked-snapshot upscale
 /// that feeds LR's internal stripe boundaries. `src_stride`/`src_stride_uv` are
 /// the DOWNSCALED strides; `cfg.mi_cols` is the downscaled mi grid.
+///
+/// One convolve pass per tile column, driven by `p.tile_info`: the boundary list
+/// is `av1_tile_set_col`'s `mi_col_start`/`mi_col_end` converted to plane pixels
+/// (`<< (MI_SIZE_LOG2 - ss_x)`), and `x0_qn` carries between columns inside
+/// [`superres::upscale_plane_tiles`]. A single-tile-column frame produces the
+/// boundary list `[0, mi_cols * MI_SIZE]`, i.e. exactly the former
+/// [`superres::upscale_plane`] call.
 #[doc(hidden)]
 #[allow(clippy::type_complexity)]
 pub fn superres_upscale_planes(
@@ -1658,12 +1706,36 @@ pub fn superres_upscale_planes(
     // SB overhang that libaom's normative upscale does NOT read.
     let mi_w_luma = cfg.mi_cols * 4;
 
+    // Tile-column boundaries in mi units (`av1_tile_set_col`, tile_common.c:138):
+    // start `col_start_sb[j] << mib_size_log2`, end the same expression for j+1
+    // clamped to `mi_cols`. The clamp is a no-op for every interior boundary (a
+    // tile column is never empty) and pins the final entry at `mi_cols`, so one
+    // clamped expression yields the whole contiguous list.
+    let ti = &p.tile_info;
+    debug_assert_eq!(
+        ti.mi_cols, cfg.mi_cols,
+        "tile_info mi grid must be the DOWNSCALED grid the recon was decoded on"
+    );
+    let tile_x_luma: Vec<i32> = (0..=ti.cols)
+        .map(|j| (ti.col_start_sb[j] << ti.mib_size_log2).min(cfg.mi_cols) * 4)
+        .collect();
+
     // Luma.
     let rows = y.len() / src_stride;
     let dst_stride = upscaled_w as usize;
     let mut y_up = vec![0u16; dst_stride * rows];
-    superres::upscale_plane(
-        y, src_stride, &mut y_up, dst_stride, coded_w, upscaled_w, mi_w_luma, rows, bd,
+    superres::upscale_plane_tiles(
+        y,
+        src_stride,
+        &mut y_up,
+        dst_stride,
+        coded_w,
+        upscaled_w,
+        mi_w_luma,
+        &tile_x_luma,
+        denom,
+        rows,
+        bd,
     );
 
     // Chroma (absent for monochrome).
@@ -1676,9 +1748,13 @@ pub fn superres_upscale_planes(
         let mi_w_uv = mi_w_luma >> ss_x;
         let dst_stride_uv = upscaled_w_uv as usize;
         let _ = ss_y; // superres does not touch the vertical axis
+        // C shifts the tile's mi bounds by `MI_SIZE_LOG2 - ss_x` for chroma, so
+        // the boundary list is the luma one shifted right by ss_x (exact: every
+        // luma entry is a multiple of 4).
+        let tile_x_uv: Vec<i32> = tile_x_luma.iter().map(|&x| x >> ss_x).collect();
         let mut u2 = vec![0u16; dst_stride_uv * rows_uv];
         let mut v2 = vec![0u16; dst_stride_uv * rows_uv];
-        superres::upscale_plane(
+        superres::upscale_plane_tiles(
             u,
             src_stride_uv,
             &mut u2,
@@ -1686,10 +1762,12 @@ pub fn superres_upscale_planes(
             coded_w_uv,
             upscaled_w_uv,
             mi_w_uv,
+            &tile_x_uv,
+            denom,
             rows_uv,
             bd,
         );
-        superres::upscale_plane(
+        superres::upscale_plane_tiles(
             v,
             src_stride_uv,
             &mut v2,
@@ -1697,6 +1775,8 @@ pub fn superres_upscale_planes(
             coded_w_uv,
             upscaled_w_uv,
             mi_w_uv,
+            &tile_x_uv,
+            denom,
             rows_uv,
             bd,
         );

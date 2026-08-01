@@ -87,6 +87,7 @@ Byte-identity gates landed and green on origin/main. Any regression here is a sh
 |---|---|---|
 | Gate-1 conformance corpus, intra scope, **incl. q62/q63** (KB-1 fixed) + film-grain-synthesis / monochrome / cdf-update frame-0 breadth | `conformance_corpus` (byte-identity + golden MD5, CI `xtask/conformance.py --fetch --scope intra`) | 386c24f → 463f49f → 134c43c → ae0e6a1 |
 | Real-bitstream KEY envelope (deblock, CDEF, LR, superres, SB128, lossless, QM, multi-tile, palette, intrabc, disable-cdf-update, 4:2:2 chroma deblock) | `real_bitstream` gate family | b8d79b2 → 3380a91, 798ec25, a90b0e7, 8502e13, 6899bea, 1dfbcc3, 42423ab, 351a160 |
+| Superres **crossed with multi-tile-column** (the `UnsupportedFeature("multi-tile superres")` reject is GONE): 44 real libaom streams byte-identical, 2/3/4 tile columns × denoms {9,12,16} × bd8/bd10 × mono/4:2:0/4:4:4, composed with CDEF, LR and tile rows. Per-tile-column convolve walk (`av1_upscale_normative_rows`) in `superres::upscale_plane_tiles`. Also enforces `av1_is_min_tile_width_satisfied`, which superres tightens to 128 coded px per inner column and libaom's Release encoder violates (see `docs/LIBAOM_UPSTREAM_NOTES.md` C5). | `superres_tiles_diff` (4 byte-identity gates + the min-tile-width reject pair), `superres::tests::tile_walk_matches_the_continuous_walk` | (this landing) |
 
 ## Section B — PORTED, RD-CLOSE (not yet bit-exact)
 
