@@ -1,0 +1,7 @@
+encoder	preset	content	size	q	n	median_ms	mps	bytes
+libaom-c	9	screen	1024	44	3	12.8130	81.8369	70599
+libaom-c	8	screen	1024	44	3	73.8470	14.1993	71638
+libaom-c	7	screen	1024	44	3	150.5970	6.9628	63181
+libaom-c	6	screen	1024	44	3	284.4670	3.6861	72989
+libaom-c	5	screen	1024	44	3	1048.6030	1.0000	61804
+libaom-c	4	screen	1024	44	3	1524.4950	0.6878	61035

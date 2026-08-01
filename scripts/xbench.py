@@ -290,6 +290,10 @@ RD_CORPUS = [
 # least as densely as the high-quality end — this is web-compression work.
 QGRID = {
     "zenav1-aom": [10, 14, 18, 22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62],
+    # libaom-c shares zenav1-aom's cq-level scale AND its grid, deliberately:
+    # the two are compared cell-for-cell, so any grid difference would show up
+    # as a BD-rate difference that is really an interpolation difference.
+    "libaom-c": [10, 14, 18, 22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62],
     "svt-c": [10, 14, 18, 22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62],
     "svt-rust": [10, 14, 18, 22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62],
     "zenrav1e": [40, 56, 72, 88, 104, 120, 136, 152, 168, 184, 200, 216, 232, 248],
