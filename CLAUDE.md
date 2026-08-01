@@ -2531,6 +2531,31 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
 - **Pinned** as `Verdict::Panic` in `hd_speed_axis_byte_matches::LARGE_FRAME_OPEN` (cq24 and
   cq40), both directions.
 
+### KB-29 — Encoder: the IntraBC-armed encode produces a NON-CONFORMANT bitstream (`Invalid intrabc dv`) — OPEN
+- **Found 2026-08-01** by the cross-encoder still-picture benchmark
+  (`benchmarks/xbench_2026-08-01.md` stage 2, raw
+  `benchmarks/xbench_stage2_aom_screentools_2026-08-01.tsv`). Repro: `EncodeCell::port_encode_with`
+  on real screen content (`codec-corpus/gb82-sc/terminal.png`, 1024×1024 native centre crop,
+  8-bit 4:2:0), `cpu-used 6`, `cq 50`, `ToggleKnobs { enable_intrabc: true, ..default() }` with a
+  `c_encode_defaults` bootstrap. Driver:
+  `benchmarks/xbench/drv-aom` with `XBENCH_AOM_INTRABC=1`.
+- **Symptom:** the stream is REJECTED by both reference decoders — `aomdec` (libaom 3.14.1):
+  *"Failed to decode frame 1: Corrupt frame detected / Additional information: Invalid intrabc dv"*;
+  `dav1d` 1.5.4: *"Error decoding frame: Invalid argument"*. The port emits a DV the spec's
+  validity constraints reject, so this is an encoder-side conformance defect, not a decoder gap.
+  It is NOT caught by any current gate: the byte-exactness gates compare against an aomenc
+  reference and the harness path (`port_encode` = `ToggleKnobs::default()`) leaves
+  `enable_intrabc` OFF, so no test ever decodes an IntraBC-armed stream.
+- **Also measured in the same run** (same image/mode/cq, one encode each): arming IntraBC costs
+  **45x** encode time (1.70 s → 77.1 s for 1 MP, i.e. 0.62 → 0.014 MP/s) and arming the PALETTE
+  search alone makes the file **5.7 % BIGGER** (19 801 B → 20 926 B) while decoding fine. So the
+  port's large screen-content RD gap (+130 % BD-rate vs SVT-AV1 C at a matched ≥1 MP/s budget)
+  is not closable by simply switching the existing tools on.
+- **Wanted:** a decode-side gate. The byte-match gates cannot see this class — any
+  `enable_intrabc` / `enable_palette` arm should additionally be round-tripped through the C
+  decoder (and ideally `dav1d`) and asserted to decode, exactly as the zenav1-svt port's gates do.
+  Consistent with README.md already listing "the IntraBC + inter var-tx coefficient arm" as open.
+
 ### KB-17 — Encoder: `use_screen_content_tools` was hardcoded `false`, so `--use-intra-default-tx-only=1` diverged on ALL screen-detected content — FIXED ✅ 2026-07-30
 - **Root cause (found 2026-07-30, one line):** `crates/aom-encode/src/speed_features.rs`'s
   `tx_type_search_policy_for_stage` hardcoded `use_screen_content_tools: false` with the
