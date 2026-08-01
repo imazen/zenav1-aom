@@ -58,6 +58,23 @@ a DC shift identically across every direction. It passed, which is
 what forced building a proper accept-observer. If your perturbation passes, ask
 whether it was reachable before concluding the gate is broken.
 
+**When one landing fixes several things, revert each ONE ALONE — and compare
+which cells fail.** This is what distinguishes "two roots" from "one root plus a
+redundant change", and it has now paid twice in a row:
+
+- KB-21 root #2: reverting the rate-composition defect alone failed the envelope
+  on `q00_128 cpu-4` + KB-13's two 128x128 cpu4 cells; reverting the quantizer
+  switch alone failed those four **plus** both noise gates' cq63 pairs.
+- KB-21 root #3 (QM x speed>=4): reverting the QUANT_PARAM half alone failed the
+  same 12 cells with the same byte counts as the pre-fix map; reverting the
+  trellis half alone failed a **different, smaller set of 7**.
+
+**Different cell sets = genuinely different roots.** Identical cell sets are a
+warning that one of your two changes may be doing nothing, or that they are two
+spellings of one fix — investigate before claiming both. Note also that a
+per-root bite proof is strictly stronger than one bite proof for the whole
+landing: the latter passes even if one of your changes is inert.
+
 ## 2. Non-vacuity must be asserted, not assumed
 
 `assert!(report.permutations_run >= 2)` counts **permutations**, not **vector**
