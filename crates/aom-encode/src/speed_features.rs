@@ -990,6 +990,75 @@ impl SpeedFeatures {
         }
     }
 
+    /// The ALLINTRA-reachable arms of `av1_set_speed_features_qindex_dependent`
+    /// (speed_features.c:2873) that this port models — the qindex+framesize
+    /// override pass C runs AFTER both `set_allintra` cascades
+    /// (`encoder.c:3114`, `encoder_utils.c:1280`), so it is applied here after
+    /// [`Self::set_allintra`] and [`Self::apply_allintra_framesize_dependent`].
+    ///
+    /// `base_qindex` is the frame's resolved `cm->quant_params.base_qindex`.
+    /// The C function's `boosted` term is `frame_is_boosted(cpi)` =
+    /// `frame_is_kf_gf_arf`, which is **true on every KEY frame** — the only
+    /// frame type this port authors — so it is not a parameter.
+    ///
+    /// Modelled here — the `speed == 0` block (speed_features.c:2904-2937):
+    ///
+    /// - **`is_720p_or_larger && base_qindex <= 128` (:2914)** →
+    ///   `perform_coeff_opt = 2 + is_1080p_or_larger` (:2915, plus the
+    ///   `coeff_opt_thresholds` memcpy the port re-derives from the same table
+    ///   in [`Self::tx_type_search_policy_for_stage`]) and
+    ///   `intra_tx_size_search_init_depth_rect = 1` (:2923). Both are LIVE on
+    ///   the intra path: the first moves the trellis dist gate (row 1's 3200 →
+    ///   row 3's 864 at `DEFAULT_EVAL`), the second raises the rectangular
+    ///   intra tx-size search floor in `get_search_init_depth_intra`.
+    ///   **KB-22**: unmodelled until 2026-07-31, and unreachable below 720p —
+    ///   every pre-existing gate encodes at most 640x640, so no green test
+    ///   could have covered it.
+    /// - **`!is_720p_or_larger && base_qindex <= 70` (:2907)** and the >=720p
+    ///   arm both zero `model_based_prune_tx_search_level` (:2911/:2924). That
+    ///   field's only C consumer is `av1_pick_recursive_tx_size_type_yrd`
+    ///   (tx_search.c:3563), which asserts `is_inter_block` — byte-inert on
+    ///   this envelope, modelled for faithfulness only.
+    ///
+    /// Deliberately NOT modelled: `simple_motion_search_*`, `selective_ref
+    /// _frame`, `tx_domain_dist_*`, `ml_tx_split_thresh`, `cb_pred_filter
+    /// _search`, `prune_2d_txfm_mode`, `skip_tx_search` and
+    /// `inter_tx_size_search_init_depth_*` (the `is_1080p_or_larger &&
+    /// base_qindex <= 108` sub-block, :2926-2935) — all inter-only, and the
+    /// port carries no field for them; `zero_low_cdef_strengths` (:2889, CDEF
+    /// pick, not a search knob); `min_lr_unit_size`/`max_lr_unit_size`
+    /// (:3080-3108, the loop-restoration search — framesize-dependent at
+    /// speed >= 1, so it is a live gap for a >=720p `--enable-restoration=1`
+    /// cell, tracked in KB-22 rather than modelled here since this port's LR
+    /// search takes its unit-size range from its own caller); and the
+    /// `speed >= 2` `ext_partition_eval_thresh` / `speed >= 3`
+    /// `rect_partition_eval_thresh` blocks (:2939-2973 / :2975-2985), which are already
+    /// modelled by their own consumer
+    /// (`partition_pick::ext_partition_eval_thresh_allintra_key`).
+    pub fn apply_allintra_qindex_dependent(
+        &mut self,
+        width: usize,
+        height: usize,
+        base_qindex: i32,
+        speed: i32,
+    ) {
+        if speed != 0 {
+            return;
+        }
+        let min_dim = width.min(height);
+        let is_720p_or_larger = min_dim >= 720;
+        let is_1080p_or_larger = min_dim >= 1080;
+        // qindex_thresh = boosted ? 70 : ... ; KEY is always boosted.
+        if !is_720p_or_larger && base_qindex <= 70 {
+            self.model_based_prune_tx_search_level = 0;
+        }
+        if is_720p_or_larger && base_qindex <= 128 {
+            self.perform_coeff_opt = 2 + i32::from(is_1080p_or_larger);
+            self.intra_tx_size_search_init_depth_rect = 1;
+            self.model_based_prune_tx_search_level = 0;
+        }
+    }
+
     /// Build the [`TxTypeSearchPolicy`] this speed level implies. `skip_trellis`
     /// (`!is_trellis_used(..)`, from CLI `disable_trellis_quant` / lossless) and
     /// `sharpness` (`oxcf.algo_cfg.sharpness`) are CLI-driven, not speed-driven,
@@ -1643,6 +1712,113 @@ mod tests {
             expect.default_min_partition_size = 3;
             assert_eq!(sf, expect, "speed {speed}: the 4k arm moved another field");
         }
+    }
+
+    /// KB-22 — the `speed == 0` block of
+    /// `av1_set_speed_features_qindex_dependent` (speed_features.c:2904-2937).
+    ///
+    /// The >=720p arm (`is_720p_or_larger && base_qindex <= 128`, :2914) raises
+    /// `perform_coeff_opt` to `2 + is_1080p_or_larger` and
+    /// `intra_tx_size_search_init_depth_rect` to 1 — two knobs that feed the
+    /// intra tx search directly. It is UNREACHABLE below 720p, which is why the
+    /// port's entire pre-2026-07-31 gate set (<= 640x640) could be green with it
+    /// missing.
+    ///
+    /// Locks: the arm fires only at speed 0, only at `min(w, h) >= 720`, only at
+    /// `base_qindex <= 128`; the 1080p step in `perform_coeff_opt`; the sub-720p
+    /// `boosted` threshold of 70; and the whole-struct check that nothing else
+    /// moves.
+    #[test]
+    fn qindex_dependent_speed0_hd_arm() {
+        // Threshold-boundary pairs on the SHORT side: 719 is sub-720p, 720 is
+        // not; 1079 is sub-1080p, 1080 is not.
+        for speed in 0..=9 {
+            let base = SpeedFeatures::set_allintra(speed, false, false);
+            // Baseline (allintra framesize-independent): perform_coeff_opt = 1
+            // at speed 0 (:383), rect init depth 0 at speed 0 (:2453 default,
+            // raised to 1 at speed >= 1 by :409).
+            if speed == 0 {
+                assert_eq!(base.perform_coeff_opt, 1);
+                assert_eq!(base.intra_tx_size_search_init_depth_rect, 0);
+            }
+
+            // Cells that must NOT take the >=720p arm: sub-720p at any qindex,
+            // and >=720p above the qindex threshold.
+            for &(w, h, q) in &[
+                (640, 640, 128),
+                (1280, 719, 128),
+                (719, 1280, 128),
+                (2160, 2160, 129),
+                (3840, 2160, 255),
+            ] {
+                let mut sf = base;
+                sf.apply_allintra_qindex_dependent(w, h, q, speed);
+                assert_eq!(
+                    (sf.perform_coeff_opt, sf.intra_tx_size_search_init_depth_rect),
+                    (
+                        base.perform_coeff_opt,
+                        base.intra_tx_size_search_init_depth_rect
+                    ),
+                    "speed {speed} {w}x{h} q{q} must not take the >=720p qindex arm"
+                );
+            }
+
+            // Cells that DO take it — at speed 0 only.
+            for &(w, h, q, want_coeff_opt) in &[
+                (1280, 720, 128, 2),
+                (720, 1280, 0, 2),
+                (1920, 1080, 128, 3),
+                (2160, 2160, 128, 3),
+                (7680, 4320, 96, 3),
+            ] {
+                let mut sf = base;
+                sf.apply_allintra_qindex_dependent(w, h, q, speed);
+                if speed == 0 {
+                    assert_eq!(
+                        (sf.perform_coeff_opt, sf.intra_tx_size_search_init_depth_rect),
+                        (want_coeff_opt, 1),
+                        "speed 0 {w}x{h} q{q} must take the >=720p qindex arm"
+                    );
+                } else {
+                    assert_eq!(
+                        sf, base,
+                        "speed {speed} {w}x{h} q{q}: the qindex pass is speed-0-only"
+                    );
+                }
+            }
+
+            // The sub-720p arm: boosted (KEY) threshold is 70, and its only
+            // ported field is model_based_prune_tx_search_level.
+            let mut lo = base;
+            lo.apply_allintra_qindex_dependent(640, 640, 70, speed);
+            let mut hi = base;
+            hi.apply_allintra_qindex_dependent(640, 640, 71, speed);
+            assert_eq!(hi, base, "speed {speed}: q71 is above the boosted threshold");
+            if speed == 0 {
+                let mut expect = base;
+                expect.model_based_prune_tx_search_level = 0;
+                assert_eq!(lo, expect, "speed 0: sub-720p q<=70 zeroes only that field");
+            } else {
+                assert_eq!(lo, base, "speed {speed}: the qindex pass is speed-0-only");
+            }
+        }
+
+        // Whole-struct check at the KB-22 cell: the arm moves exactly the three
+        // fields it claims and nothing else.
+        let base = SpeedFeatures::set_allintra(0, false, false);
+        let mut sf = base;
+        sf.apply_allintra_qindex_dependent(2160, 2160, 128, 0);
+        let mut expect = base;
+        expect.perform_coeff_opt = 3;
+        expect.intra_tx_size_search_init_depth_rect = 1;
+        expect.model_based_prune_tx_search_level = 0;
+        assert_eq!(sf, expect, "the qindex arm moved another field");
+
+        // ... and it reaches the derived tx policy: coeff_opt_thresholds row 1
+        // (3200) becomes row 3 (864) at DEFAULT_EVAL.
+        assert_eq!(base.tx_type_search_policy(false, 0).coeff_opt_dist_threshold, 3200);
+        assert_eq!(sf.tx_type_search_policy(false, 0).coeff_opt_dist_threshold, 864);
+        assert_eq!(sf.tx_type_search_policy(false, 0).intra_tx_size_init_depth_rect, 1);
     }
 
     /// KB-8 chunk 2a: the stage-aware [`SpeedFeatures::tx_type_search_policy_for_stage`]

@@ -1998,8 +1998,9 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
     arm moves no other field). Bite proof: stubbing the arm body out fails it with *"speed 0
     2160x2160 must take the 4k arm (BLOCK_8X8)"*.
   - E2E, `--ignored` tier: `aom-bench/tests/kb19_min_partition_4k.rs::
-    min_partition_4k_arm_e2e_pinned` — mirror-tiled `av1-1-b8-00-quantizer-00` at 2160x2160
-    bd8 4:2:0 cq32 speed-0. **Measured A/B, same binary, only the arm toggled:**
+    min_partition_4k_arm_e2e_byte_match` (renamed from `..._pinned` on 2026-07-31 when KB-22
+    closed and it became a hard byte gate) — mirror-tiled `av1-1-b8-00-quantizer-00` at
+    2160x2160 bd8 4:2:0 cq32 speed-0. **Measured A/B, same binary, only the arm toggled:**
 
     | port build | port bytes | C bytes | delta |
     |---|---|---|---|
@@ -2008,29 +2009,89 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
 
     The arm closes 98.3% of the byte gap, so it is heavily load-bearing at this frame size —
     NOT a paper fix. Wall on the reference box: C ~26 s, port ~195 s.
-  - **NOT proven: the >=2160p cell is still not byte-exact.** The residual 150 bytes are a
-    separate open defect, tracked as KB-22 below. The e2e test therefore PINS the divergence
-    (self-promoting both ways) instead of asserting identity; promote it to a hard byte gate
-    when KB-22 closes.
+  - **The residual 150 bytes were a SECOND unmodelled arm, not a near-tie — closed 2026-07-31,
+    see KB-22 below.** The cell is now byte-identical and the e2e test is a hard `assert_eq!`
+    byte gate (it was a self-promoting pin until then, and it is what fired to report the
+    close).
 
-### KB-22 — Encoder: a 150-byte residual at >=2160p after the KB-19 arm — OPEN, pinned
-- **Found 2026-07-30** while gating KB-19 end to end. It is the FIRST measurement the port has
-  at this frame size — no prior gate encodes above 640x640, so nothing else could have caught it.
-- **Measurement** (`aom-bench/tests/kb19_min_partition_4k.rs::min_partition_4k_arm_e2e_pinned`,
-  `--ignored`): mirror-tiled `av1-1-b8-00-quantizer-00`, 2160x2160, bd8 4:2:0, cq32, speed-0
-  ALLINTRA KEY, stock knobs, 1 tile — **port 431,574 B vs real aomenc 431,724 B**. The KB-19
-  `is_4k_or_larger` arm accounts for 8,623 of the original 8,773-byte gap; this is what is left.
-- **Scale argues near-tie, not a missing tool: 0.035% of the payload over ~1,156 superblocks.**
-  That is the KB-10/KB-12 "cheaper RD decision" signature at 4.6 MP, where a single late
-  divergence is near-certain. But it is NOT established — no localization has been run.
-- **Ruled out by construction, not by measurement:** the other framesize-dependent arms of
-  `set_allintra_speed_feature_framesize_dependent` were audited during KB-19 and are either
-  applied by their own consumer (`use_square_partition_only_threshold`, :175-185) or dead on
-  the all-intra KEY envelope (`auto_max_partition_based_on_simple_motion`, the `ml_*` breakout
-  thresholds and `ml_early_term_after_part_split_level` are all `!frame_is_intra_only`-gated).
-  A >=2160p-specific arm outside that function has not been searched for.
-- **Next step:** the standard decode-both localization (the KB-6 recipe) on this cell to find
-  the first divergent SB, then decide near-tie vs unmodelled arm. Budget ~4 min per encode pair.
+### KB-22 — Encoder: `av1_set_speed_features_qindex_dependent`'s speed-0 >=720p arm was UNMODELLED — FIXED ✅ 2026-07-31 (the 2160p cell is byte-exact)
+- **The 2026-07-30 framing was WRONG and is corrected here.** The entry reasoned that 150 bytes
+  over ~1,156 superblocks (0.035% of payload) "argues near-tie, not a missing tool" — while
+  stating plainly that this was not established. It is now established, and it was **an
+  unmodelled arm**, KB-19-shaped. Scale arguments about byte deltas are not evidence about
+  mechanism; the localization is.
+- **Localization (decode-both, the KB-6 recipe — `decode_diff_multisb.rs` retargeted).** Encode
+  the cell with real aomenc and with the port, splice the port's frame-OBU payload back into the
+  reference stream, decode both with the (bit-exact vs C) decoder, replay both partition trees:
+  **the FIRST divergence is node 1 — SB(0,0)'s first `BLOCK_32X32` node at mi(0,0): real picks
+  `PARTITION_VERT_B`, the port picks `PARTITION_SPLIT`.** First divergent recon pixel is luma
+  (0,0) (real 81, port 89). Whole-frame decoded shape: real 33,371 tree nodes / 40,403 blocks vs
+  port 29,105 / 38,398. A divergence at the very first 32x32 node of the very first superblock,
+  with a frame-wide shape difference, is NOT a late near-tie — it is a systematic
+  search-configuration difference.
+- **ROOT CAUSE: the port never modelled `av1_set_speed_features_qindex_dependent`
+  (speed_features.c:2873) at all** — C's THIRD speed-feature derivation pass, run after both
+  `set_allintra` cascades (`encoder.c:3114`, `encoder_utils.c:1280`). Its `speed == 0` block
+  (:2904-2937) has an arm gated on `is_720p_or_larger && base_qindex <= 128` (:2914) that sets:
+  - `rd_sf.perform_coeff_opt = 2 + is_1080p_or_larger` (:2915) + the `coeff_opt_thresholds`
+    memcpy (:2916) → at 2160x2160 that is **1 → 3**, moving the DEFAULT_EVAL trellis dist gate
+    from row 1's **3200 to row 3's 864** (`coeff_opt_thresholds`, speed_features.c:88-98);
+  - `tx_sf.intra_tx_size_search_init_depth_rect = 1` (:2923) → **0 → 1**, raising the
+    rectangular intra tx-size search floor in `get_search_init_depth_intra`;
+  - `tx_sf.model_based_prune_tx_search_level = 0` (:2924) → byte-INERT here: its only C consumer
+    is `av1_pick_recursive_tx_size_type_yrd` (tx_search.c:3563), which asserts `is_inter_block`.
+
+  The cell sits exactly on the qindex boundary: cq32 → `base_qindex` 128 → `<= 128` holds.
+- **Why no green test could have caught it:** the arm is unreachable below 720p, and every
+  pre-existing encoder gate encodes at most 640x640 (the config-permutation size axis tops out
+  at 640; the KB-6 real-content map is 196x196). Same structural blind spot as KB-19 — this is
+  the playbook §7 thesis (bugs live in the gap between two individually-green rows), on the
+  frame-size axis.
+- **FIX:** `SpeedFeatures::apply_allintra_qindex_dependent(width, height, base_qindex, speed)`
+  (`crates/aom-encode/src/speed_features.rs`), modelling the `speed == 0` block — both the
+  >=720p arm and the sub-720p `base_qindex <= 70` arm (C's `boosted` term is
+  `frame_is_kf_gf_arf`, true on every KEY frame, the only frame type this port authors). Called
+  from `aom-bench/src/lib.rs`'s `port_encode_full` immediately after
+  `apply_allintra_framesize_dependent`, matching C's pass order. The method's doc comment lists
+  every field of that function it deliberately does NOT model, with the reason.
+- **Verified.**
+  - DERIVATION, default tier: `aom-encode`'s `qindex_dependent_speed0_hd_arm` unit test — the
+    arm fires only at speed 0, only at `min(w,h) >= 720`, only at `base_qindex <= 128`
+    (719/720 and 128/129 boundary pairs both directions), the 1080p step in `perform_coeff_opt`,
+    the sub-720p threshold of 70, a whole-struct equality check that nothing else moves, and the
+    derived `TxTypeSearchPolicy` (3200 → 864 dist threshold, rect init depth 1). Bite proof:
+    stubbing the arm body (`if false && ...`) fails it with *"speed 0 1280x720 q128 must take
+    the >=720p qindex arm, left: (1, 0) right: (2, 1)"*; the rest of the `speed_features` suite
+    stays green (13/14 → the asymmetry playbook §1 asks for).
+  - E2E, `--ignored` tier: `aom-bench/tests/kb19_min_partition_4k.rs::
+    min_partition_4k_arm_e2e_byte_match`, now a hard `assert_eq!` byte gate.
+    **Measured A/B on the same box, same cell (C reference 431,724 B, ~26 s):**
+
+    | port build | port bytes | delta vs C | port wall |
+    |---|---|---|---|
+    | KB-19 arm only (2026-07-30) | 431,574 | -150 (-0.035%) | 125 s |
+    | + the KB-22 qindex arm | 431,724 | **0 — BYTE IDENTICAL** | 83 s |
+
+    The 34% wall drop is the arm doing real work (a higher `perform_coeff_opt` row and a deeper
+    rectangular tx-size init depth both cut search). Confirmed in BOTH dispatch modes (default
+    and `AOM_FORCE_SCALAR=1`). Record: `benchmarks/kb22_qindex_arm_2026-07-31.tsv`.
+  - The self-promoting pin worked as designed: the old `assert_ne!` fired with *"KB-22 HAS
+    CLOSED"* rather than letting the fix pass unnoticed (playbook §5).
+- **Still open (stated plainly, not fixed here):**
+  1. **No e2e cell in the 720p..2159p band.** The arm is now modelled and unit-gated across it,
+     but the only e2e evidence is at 2160x2160, where the KB-19 arm is also live. A 1280x720 or
+     1920x1080 cq32 cell would isolate the KB-22 arm alone; it was not run (budget — a 1080p
+     speed-0 pair is minutes).
+  2. **`lpf_sf.min_lr_unit_size` / `max_lr_unit_size` (speed_features.c:3080-3108) are still
+     unmodelled.** They are framesize+qindex dependent (`is_1440p_or_larger` /
+     `is_720p_or_larger`) and LIVE for ALLINTRA at `speed >= 1`, so a `--enable-restoration=1`
+     cell at >=720p and speed>=1 is expected to diverge. The KB-22 cell uses
+     `--enable-restoration=0`, so it is not exercised here. This is a named, unmeasured gap.
+  3. **`config_permutations.rs`'s size-axis headline** ("at SPEED 0 every framesize-dependent
+     SPEED FEATURE below 2160p is either inert on the all-intra KEY path or gated on speed >= 1")
+     surveyed `set_allintra_speed_feature_framesize_dependent` only. It is true of that gate's
+     own cells (all <= 640x640), but it does NOT cover `av1_set_speed_features_qindex_dependent`,
+     whose speed-0 arm is live from 720p up. Read it as scoped to sub-720p.
 
 ### KB-17 — Encoder: `use_screen_content_tools` was hardcoded `false`, so `--use-intra-default-tx-only=1` diverged on ALL screen-detected content — FIXED ✅ 2026-07-30
 - **Root cause (found 2026-07-30, one line):** `crates/aom-encode/src/speed_features.rs`'s

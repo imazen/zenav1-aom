@@ -1371,6 +1371,14 @@ impl EncodeCell {
         // `set_allintra`; applied here from the frame's real dimensions.
         if allintra {
             sf.apply_allintra_framesize_dependent(w, h);
+            // The ALLINTRA-reachable arms of av1_set_speed_features_qindex_
+            // dependent (speed_features.c:2872) — C's third pass, run after
+            // BOTH set_allintra cascades (encoder.c:3114). At speed 0 its
+            // `is_720p_or_larger && base_qindex <= 128` arm raises
+            // perform_coeff_opt and the rectangular intra tx-size init depth
+            // (KB-22); it is a no-op below 720p, which is every other cell in
+            // this harness.
+            sf.apply_allintra_qindex_dependent(w, h, qindex, speed);
         }
         // Framesize-dependent tx-type stats prune (set_allintra_speed_feature_
         // framesize_dependent, speed_features.c:261/299): ALLINTRA sets

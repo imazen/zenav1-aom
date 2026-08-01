@@ -1,0 +1,23 @@
+# KB-22 — av1_set_speed_features_qindex_dependent's speed-0 >=720p arm
+# (speed_features.c:2914): the second unmodelled framesize arm at >=2160p,
+# found by decode-both localization of the 150-byte KB-19 residual.
+# commit: 9d785a0 (base) ; box: aarch64-apple-darwin (M-series), macOS 25.5.0
+# build: cargo test --profile test-fast -j 4 -p zenav1-aom-bench
+#        --test kb19_min_partition_4k -- --ignored --nocapture --test-threads 1
+# cell: mirror-tiled av1-1-b8-00-quantizer-00 -> 2160x2160, bd8 4:2:0, cq32
+#       (base_qindex 128 — exactly on the arm's `<= 128` boundary), speed-0
+#       ALLINTRA KEY, stock knobs, 1 tile, SB64. C reference: 431,724 B.
+# Sections: [ab] the A/B ladder ; [localize] the decode-both finding ;
+#           [dispatch] both dispatch modes at the shipped build.
+section	arm_state	dispatch	port_bytes	c_bytes	delta_bytes	byte_identical	port_ms	c_ms	note
+ab	no_kb19_no_kb22	default	440347	431724	8623	0	-	-	measured 2026-07-30 (KB-19 landing)
+ab	kb19_only	default	431574	431724	-150	0	125175	26711	measured 2026-07-31, this session, pre-fix baseline
+ab	kb19_plus_kb22	default	431724	431724	0	1	82842	25708	shipped
+dispatch	kb19_plus_kb22	default	431724	431724	0	1	84765	25878	re-run, clean tree
+dispatch	kb19_plus_kb22	AOM_FORCE_SCALAR=1	431724	431724	0	1	85926	27063	scalar-pin leg
+# [localize] decode BOTH streams (port frame-OBU payload spliced into the
+# reference stream's seq header) and replay both partition trees. Run at the
+# kb19_only build — i.e. against the 150-byte residual this entry explains.
+localize	kb19_only	default	431574	431724	-150	0	-	-	first partition divergence: node 1, mi(0,0), BLOCK_32X32 — real PARTITION_VERT_B vs port PARTITION_SPLIT
+localize	kb19_only	default	-	-	-	-	-	-	first recon pixel divergence: luma (0,0), real 81 vs port 89
+localize	kb19_only	default	-	-	-	-	-	-	decoded shape: real 33371 tree nodes / 40403 blocks vs port 29105 / 38398
