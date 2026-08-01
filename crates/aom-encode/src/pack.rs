@@ -634,6 +634,40 @@ pub fn pack_leaf(
             }
             idy += txbh;
         }
+    } else if winner.use_intrabc && !winner.skip_txfm {
+        // `write_modes_b`'s ELSE arm (bitstream.c:1554-1556):
+        // `set_txfm_ctxs(mbmi->tx_size, xd->width, xd->height, skip_txfm &&
+        // is_inter_block(mbmi), xd)`. An intrabc COEFF-arm leaf that does NOT
+        // signal its tx size — `block_signals_txsize(bsize)` is false at
+        // BLOCK_4X4, or TX_MODE_LARGEST, or lossless — takes it with skip = 0,
+        // i.e. the contexts are stamped from the DERIVED tx size, exactly as
+        // the decoder's `read_tx_size` else-arm does. Neither of the two arms
+        // that normally cover an intrabc leaf reaches this case: the var-tx
+        // write above is gated on the same `block_signals_txsize`, and
+        // `encode_b_intrabc_coeff` returns before `encode_b_intra_dry`'s step-6
+        // stamp (correctly — the var-tx write owns the stamp when it runs). So
+        // the txfm-partition context stayed STALE from an earlier block and the
+        // NEXT intrabc leaf's `txfm_partition_context` picked a different CDF
+        // row than the decoder's — same symbol count, divergent arithmetic
+        // range, and a desync a few blocks later (KB-29, the speed-2 cq12 arm:
+        // a BLOCK_4X4 intrabc coeff leaf at mi(40,30) left `above_tctx[30]` at
+        // 8 where every conforming decoder derives 4).
+        let ts = if bsize > 0 {
+            aom_dsp::entropy::partition::tx_size_from_tx_mode(
+                bsize,
+                if cfg.tx_mode_is_select {
+                    aom_dsp::entropy::partition::TxMode::Select
+                } else {
+                    aom_dsp::entropy::partition::TxMode::Largest
+                },
+            )
+        } else {
+            crate::tx_search::MAX_TXSIZE_RECT_LOOKUP[bsize]
+        };
+        let a0 = mi_col as usize;
+        let l0 = (mi_row & 31) as usize;
+        tile.above_tctx[a0..a0 + mi_w].fill(TXS_W[ts] as u8);
+        tile.left_tctx[l0..l0 + mi_h].fill(TXS_H[ts] as u8);
     }
 
     if cfg.tx_mode_is_select && bsize > 0 && !env.lossless && !winner.use_intrabc {
@@ -727,6 +761,25 @@ pub fn pack_leaf(
             env.ss_x,
             env.ss_y,
         );
+        // `write_inter_txb_coeff`'s per-PLANE chunk extent (bitstream.c:1414-1421).
+        // C recomputes `mu_blocks_{wide,high}` from the CHROMA-plane 64x64 unit
+        // (`get_plane_block_size(BLOCK_64X64, ss)` = BLOCK_32X32 at 4:2:0, so 8
+        // mi units) and offsets by `row >> ss_y` — it does NOT subsample the
+        // LUMA chunk bound. Those differ exactly when the luma block spans ONE
+        // mi unit in a subsampled dimension (BLOCK_4X4 / 4X8 / 8X4 / 4X16 /
+        // 16X4 at 4:2:0): `(row + mu_h) >> ss_y` truncates 1 >> 1 to 0, so the
+        // chroma loop ran ZERO times and the block's U/V `all_zero` symbols were
+        // never written — a bitstream desync against every conforming decoder
+        // (KB-29). The `.min(cvis_*)` frame-edge clamp stands in for
+        // `pack_txb_tokens`'s `blk_row >= max_block_high(plane)` early return
+        // (equivalent on a raster over a rectangle) and is <= the plane-bsize
+        // extent `num_4x4_{w,h}` C clamps to, so it subsumes that bound too.
+        let mu_w_c = MI_SIZE_WIDE_B[aom_dsp::entropy::partition::get_plane_block_size(
+            12, env.ss_x, env.ss_y,
+        )];
+        let mu_h_c = MI_SIZE_HIGH_B[aom_dsp::entropy::partition::get_plane_block_size(
+            12, env.ss_x, env.ss_y,
+        )];
         let mut row = 0usize;
         while row < mi_h {
             let mut col = 0usize;
@@ -748,8 +801,8 @@ pub fn pack_leaf(
                 }
                 // planes 1/2: uniform uv tx over the subsampled chunk.
                 if has_uv {
-                    let cuh = ((row + mu_h) >> env.ss_y).min(cvis_h);
-                    let cuw = ((col + mu_w) >> env.ss_x).min(cvis_w);
+                    let cuh = ((row >> env.ss_y) + mu_h_c).min(cvis_h);
+                    let cuw = ((col >> env.ss_x) + mu_w_c).min(cvis_w);
                     for (plane, cursor) in [(1usize, &mut uc), (2usize, &mut vc)] {
                         let txbs = if plane == 1 {
                             &out.u.as_ref().unwrap().txbs
@@ -760,18 +813,29 @@ pub fn pack_leaf(
                         while cbr < cuh {
                             let mut cbc = col >> env.ss_x;
                             while cbc < cuw {
-                                if *cursor < txbs.len() {
-                                    write_one_txb_inter(
-                                        enc,
-                                        kf,
-                                        cfg,
-                                        env,
-                                        &txbs[*cursor],
-                                        uv_tx,
-                                        plane,
-                                    );
-                                    *cursor += 1;
-                                }
+                                // A cursor that runs past the re-encode's txb
+                                // list means the pack walk and the recon walk
+                                // disagree on the plane's txb count — the
+                                // KB-29 desync shape. Fail loudly rather than
+                                // silently emitting a short block.
+                                assert!(
+                                    *cursor < txbs.len(),
+                                    "intrabc coeff pack: plane {plane} txb cursor {} past the \
+                                     re-encoded txb list ({}) at mi=({mi_row},{mi_col}) \
+                                     bsize={bsize}",
+                                    *cursor,
+                                    txbs.len()
+                                );
+                                write_one_txb_inter(
+                                    enc,
+                                    kf,
+                                    cfg,
+                                    env,
+                                    &txbs[*cursor],
+                                    uv_tx,
+                                    plane,
+                                );
+                                *cursor += 1;
                                 cbc += utxw_u;
                             }
                             cbr += utxh_u;
@@ -782,6 +846,17 @@ pub fn pack_leaf(
             }
             row += mu_h;
         }
+        // Every txb the re-encode produced must have been written: a leftover
+        // is the KB-29 shape (the pack's chunk extent under-covering the
+        // plane), which desyncs every conforming decoder.
+        assert!(
+            out.u.as_ref().is_none_or(|u| uc == u.txbs.len())
+                && out.v.as_ref().is_none_or(|v| vc == v.txbs.len()),
+            "intrabc coeff pack left chroma txbs unwritten at mi=({mi_row},{mi_col}) \
+             bsize={bsize}: U {uc}/{:?} V {vc}/{:?}",
+            out.u.as_ref().map(|u| u.txbs.len()),
+            out.v.as_ref().map(|v| v.txbs.len()),
+        );
     }
 
     // The INTRA coefficient write (av1_write_intra_coeffs_mb). Excludes the
@@ -2192,10 +2267,19 @@ fn pack_vartx_txb(
     let idx = crate::var_tx::get_txb_size_index(winner.bsize, blk_row, blk_col);
     let plane_tx_size = winner.inter_tx_size[idx];
     if tx_size == plane_tx_size {
-        if *cursor < txbs.len() {
-            write_one_txb_inter(enc, kf, cfg, env, &txbs[*cursor], tx_size, 0);
-            *cursor += 1;
-        }
+        // Same loud-fail contract as the chroma cursor in `pack_leaf`: running
+        // past the re-encode's txb list means the pack walk and the recon walk
+        // disagree, which silently emits a short block and desyncs every
+        // conforming decoder (KB-29).
+        assert!(
+            *cursor < txbs.len(),
+            "intrabc coeff pack: luma txb cursor {} past the re-encoded txb list ({}) at \
+             blk=({blk_row},{blk_col}) tx_size={tx_size}",
+            *cursor,
+            txbs.len()
+        );
+        write_one_txb_inter(enc, kf, cfg, env, &txbs[*cursor], tx_size, 0);
+        *cursor += 1;
         return;
     }
     let sub_txs = crate::var_tx::SUB_TX_SIZE_MAP[tx_size];

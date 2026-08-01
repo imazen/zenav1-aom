@@ -1724,8 +1724,27 @@ fn leaf_pick_sb_modes(
                 cfl_alpha_signs,
                 uv_edge_filter_type: chroma_edge_filter_type,
                 tx_type_map: best.tx_type_map,
-                palette_y: best.y.palette_y.clone(),
-                palette_uv,
+                // C zeroes BOTH palette sizes inside the intrabc DV loop —
+                // `memset(&mbmi->palette_mode_info, 0, sizeof(...))`
+                // (rdopt.c:3592, immediately before `mbmi->use_intrabc = 1`) —
+                // so a winning `best_mbmi` never carries a palette, and the
+                // inter path zeroes them too (rdopt.c:4804-4805). The port
+                // carried the INTRA candidate's palette through onto an
+                // intrabc/inter winner, and `pack_leaf` then emitted the
+                // colour-map tokens for a block whose mode info wrote none:
+                // `write_mb_modes_kf` RETURNS right after `write_intrabc_info`
+                // when the block is intrabc (bitstream.c:1289-1291), so the
+                // decoder reads no palette syntax at all and the tokens desync
+                // the tile (KB-29 — the palette+IntraBC arm, which is exactly
+                // the combination `xbench_stage2_aom_screentools` measured).
+                // Same `non_intra` gate the mode / angle / filter-intra /
+                // uv_mode fields above already use.
+                palette_y: if non_intra {
+                    None
+                } else {
+                    best.y.palette_y.clone()
+                },
+                palette_uv: if non_intra { None } else { palette_uv },
                 skip_txfm: non_intra && best.skip_txfm,
                 use_intrabc: best.use_intrabc,
                 inter_tx_size: best.inter_tx_size,
