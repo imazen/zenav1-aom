@@ -2714,7 +2714,14 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   rejected by BOTH `aomdec` and `dav1d`; post-fix 0 of 12** (the 3 cq63 cells code no IntraBC
   coeff leaf with a 4-px side and were already clean — a negative control). A wider post-fix
   sweep (speeds 0..7 × 8 quality levels × {intrabc, palette+intrabc} = 144 cells) is clean on
-  all three decoders with pixel identity.
+  all three decoders with pixel identity. **The LITERAL headline repro re-run post-fix**
+  (`drv-aom`, `terminal.png` 1024² native centre crop, cpu-used 6, cq 50, one encode each):
+  IntraBC-only 10 031 B and palette+IntraBC 10 082 B, **both accepted by `aomdec` AND `dav1d`**
+  (were both FAIL); table re-measured in `benchmarks/xbench_2026-08-01.md`. The −49 % IntraBC
+  byte win is therefore REAL compression — the benchmark's "that −49 % is not achievable" line
+  was wrong and is corrected there. What remains open on that arm is **speed**: 70.0 s for 1 MP
+  = 0.015 MP/s, ~43x the default path, which is a separate performance item, not a correctness
+  one.
 - **THE STRUCTURAL FIX — `crates/aom-bench/tests/armed_tools_decode_gate.rs` (new).**
   **Byte-identity to a reference proves conformance only where a reference exists AND is
   asserted equal.** Every `ToggleKnobs` arm aomenc cannot be driven into from
