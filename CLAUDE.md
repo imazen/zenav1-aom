@@ -948,7 +948,11 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   dead on the 8-bit canon grid (nonrd_pickmode.rs:594/460/784); required before any high-bit-depth
   or screen-content speed-8/9 cell.
 
-### KB-13 — Encoder: REAL-content byte-parity at speed >= 1 — ROOT FOUND (41/60 byte-exact; AB mode-cache landed 2026-07-19)
+### KB-13 — Encoder: REAL-content byte-parity at speed >= 1 — ROOT FOUND (**50/60 byte-exact** as of 2026-07-31; AB mode-cache landed 2026-07-19)
+
+> Headline count corrected 2026-07-31: this line read `41/60` while the entry's own
+> body recorded the map at 45 -> 47 (KB-21 root #1) -> **50/60** (KB-21 root #2).
+> The map is the source of truth; the headline had simply not been re-read.
 
 - **ROOT FOUND + FIXED 2026-07-19 — `part_sf.reuse_best_prediction_for_part_ab` (the AB
   MODE CACHE) was unmodelled. 24/60 → 41/60 byte-exact (17 cells promoted, 0 regressions).**

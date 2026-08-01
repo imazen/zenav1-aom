@@ -68,7 +68,8 @@ python3 xtask/conformance.py --fetch --scope intra   # decode-conformance vector
   through a single-reference feature ladder (concurrent track).
 - **Gate 2 — encoder byte-identity: DONE for ALLINTRA across --cpu-used 0-9**
   on the synthetic grids, and on real conformance-decoded content at speed 0
-  (KB-6, 30/30) plus 45/60 at speeds 1-4 (KB-13). Non-default stills knobs
+  (KB-6, 30/30) plus **50/60** at speeds 1-4 (KB-13; was 45/60 — KB-21's two roots
+  promoted 5 cells on 2026-07-30/31). Non-default stills knobs
   (QM, CDEF search, LR search, SB128, multi-tile, film grain, lossless,
   10/12-bit, tune=IQ/SSIMULACRA2, deltaq modes, toggles) are byte-exact —
   see PARITY.md section A. Open cells are pinned by self-promoting gates
@@ -110,11 +111,14 @@ python3 xtask/conformance.py --fetch --scope intra   # decode-conformance vector
   fixed, witness pinned at first-diff 1120 (an mi(40,28) partition near-tie).
 - **Decoder robustness/fuzz**: fuzz harness landed, campaign notes in STATUS;
   keep the no-panic property as features land.
-- **Encoder near-tie residuals**: 8× 196² cq12/cq32 + 7 interior (KB-13),
-  4 speed-8 diag estimate-arm cells (KB-12), noise-cq63 speeds 6/7 (KB-10/11),
-  2 palette 128² (KB-P29), 1 toggle cell (HANDOFF-TOGGLES.md holds its
-  localization notes). All pinned self-promoting; the sibling-C RD-dump method
-  (KB-3/KB-7) is the standard close.
+- **Encoder near-tie residuals** (shrunk sharply 2026-07-30/31): KB-13 is at
+  50/60, KB-12's 4 speed-8 diag estimate-arm cells stand, 2 palette 128²
+  (KB-P29) and 1 toggle cell (HANDOFF-TOGGLES.md holds its localization notes).
+  **KB-10/KB-11's noise-cq63 speed-6/7 pairs are CLOSED** (by KB-21 root #2), as
+  is the whole cpu-4/5 "fragile band" on bd8 — KB-21 is closed and the RD-search
+  speeds 0..7 now have NO open singleton in the speed axis; the only two left are
+  nonrd (speed 8). All remaining cells are pinned self-promoting; the sibling-C
+  RD-dump method (KB-3/KB-7) is the standard close.
 
 ## Conventions that keep multi-agent work safe here
 
