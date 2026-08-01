@@ -4863,7 +4863,9 @@ impl<'c> TileKf<'c> {
         let bw4 = MI_SIZE_WIDE[bsize] as usize;
         let bh4 = MI_SIZE_HIGH[bsize] as usize;
         let mut vartx_leaf_grid: Vec<u8> = Vec::new();
-        let mut vartx_non_uniform = false;
+        // Set when the intrabc var-tx quadtree was actually READ for this
+        // block — the gate that selects the leaf walk (see `do_uniform` below).
+        let mut vartx_quadtree_read = false;
         let tx_size = if self.st.coded_lossless {
             // read_tx_size (decodeframe.c): xd->lossless[segment_id] preempts to
             // TX_4X4 before any tx-size symbol / block_signals_txsize test. The
@@ -4932,11 +4934,11 @@ impl<'c> TileKf<'c> {
                     }
                     idy += bh_u;
                 }
-                // For a UNIFORM partition the coeff loop below tiles the whole
-                // block with this single scalar tx size. A NON-uniform partition
-                // (distinct leaf sizes) instead drives the reconstruction phase
-                // through `collect_vartx_leaves` over `vartx_leaf_grid`; flag it.
-                vartx_non_uniform = non_uniform;
+                // `read_tx_size_vartx` reports whether the leaf SIZES differ;
+                // that is not what selects the walk (see `do_uniform` below),
+                // so it is deliberately unused here.
+                let _ = non_uniform;
+                vartx_quadtree_read = true;
                 vartx_tx
             } else {
                 let ts = if bsize > 0 {
@@ -5125,13 +5127,20 @@ impl<'c> TileKf<'c> {
         };
         let mut txbs = Vec::new();
 
-        // Non-uniform intrabc var-tx: the reconstruction phase
-        // (`decode_reconstruct_tx`) walks the per-leaf partition rather than
-        // tiling the block with one scalar tx size. Each leaf reads its own
-        // coeffs + tx_type (inter ext-tx at the leaf size) in DFS order, then the
-        // integer block copy + inverse transform, all at the leaf's size. The
-        // uniform fast loop below is skipped in this case.
-        let do_uniform = !(info.use_intrabc != 0 && vartx_non_uniform);
+        // Intrabc var-tx: the reconstruction phase (`decode_reconstruct_tx`,
+        // decodeframe.c) walks the per-leaf partition rather than tiling the
+        // block with one scalar tx size. Each leaf reads its own coeffs +
+        // tx_type (inter ext-tx at the leaf size) in DFS order, then the
+        // integer block copy + inverse transform, all at the leaf's size.
+        //
+        // The gate is "was the quadtree read", NOT "are the leaf sizes
+        // distinct" (KB-29). Equal leaf sizes do NOT imply the raster fast
+        // loop is equivalent: a BLOCK_16X8 split all the way to TX_4X4 has
+        // eight same-size leaves whose DFS order is
+        // (0,0)(0,1)(1,0)(1,1)(0,2)(0,3)(1,2)(1,3) — not raster — so the
+        // per-txb `txb_skip_ctx` sequence differs and the arithmetic decode
+        // desyncs from byte one of the third txb.
+        let do_uniform = !(info.use_intrabc != 0 && vartx_quadtree_read);
         if !do_uniform {
             let max_tx = MAX_TXSIZE_RECT_LOOKUP[bsize];
             let bw_mt = TX_SIZE_WIDE_UNIT[max_tx];
@@ -5291,6 +5300,35 @@ impl<'c> TileKf<'c> {
                         ),
                     }
                 }
+                // (4) CfL luma store — the same
+                // `predict_and_reconstruct_intra_block` tail the uniform loop
+                // runs (`store_cfl_required`): a NON-chroma-reference block
+                // always stores, because a later member of its shared chroma
+                // group may pick `UV_CFL_PRED` over a footprint that contains
+                // this block. `is_inter_block(mbmi)` is TRUE for intrabc
+                // (blockd.h:372), which is exactly why C's `encode_superblock`
+                // has the mirrored `cfl_store_block` call on its inter path —
+                // the encoder-side twin of this was KB-15 root #4. Omitting it
+                // here left the CfL predictor reading a STALE luma buffer, so
+                // the sibling's chroma reconstruction diverged from the C
+                // decoder's while luma matched exactly (KB-29's leaf-arm
+                // residual: 253 of 9604 U samples, first at chroma (80,44)).
+                if !cfg.monochrome && (!chroma_ref || info.uv_mode == UV_CFL_PRED) {
+                    let block_off = (mi_row * 4) as usize * self.stride + (mi_col * 4) as usize;
+                    cfl_store_tx_any(
+                        &mut self.cfl,
+                        &self.recon,
+                        block_off,
+                        self.stride,
+                        blk_row as i32,
+                        blk_col as i32,
+                        cur_tx,
+                        bsize,
+                        mi_row,
+                        mi_col,
+                        &mut self.wide_rect,
+                    );
+                }
                 txbs.push((eob, tx_type));
             }
         }
@@ -5305,14 +5343,32 @@ impl<'c> TileKf<'c> {
         let mut txbs_uv = Vec::new();
         let mu_w = max_blocks_wide.min(MI_SIZE_WIDE[BLOCK_64X64] as usize);
         let mu_h = max_blocks_high.min(MI_SIZE_HIGH[BLOCK_64X64] as usize);
+        // The chunk walk runs for EVERY block, including the non-uniform
+        // intrabc var-tx case handled above: that arm reads plane 0's leaves
+        // only, and `write_tokens_b`'s inter arm still writes U and V for the
+        // block (`write_inter_txb_coeff(plane)` — bitstream.c:1463-1468, with
+        // `break` only on `!is_chroma_ref`). Gating the whole walk on
+        // `do_uniform` left those chroma `all_zero` symbols unread, desyncing
+        // the decode of any conformant stream with a split intrabc var-tx
+        // block (KB-29's decoder half). Only the LUMA sub-loop is skipped when
+        // the non-uniform arm has already consumed it.
+        //
+        // ORDERING CAVEAT, stated rather than assumed: for a >64x64 non-uniform
+        // intrabc block (>1 chunk) the luma arm above reads ALL chunks' leaves
+        // before this loop reads any chroma, where C interleaves L,U,V per
+        // 64x64 chunk. That case is not reachable from this port's encoder
+        // (`rd_pick_intrabc_mode_sb` is offered per leaf and the var-tx root
+        // walk is per TX_64X64 unit), and it was 100% wrong before (no chroma
+        // at all), so this is strictly closer; a multi-chunk non-uniform
+        // intrabc block still needs the leaf read folded into this loop.
         let mut chunk_row = 0usize;
-        while do_uniform && chunk_row < max_blocks_high {
+        while chunk_row < max_blocks_high {
             let mut chunk_col = 0usize;
             while chunk_col < max_blocks_wide {
                 let luma_row_end = (chunk_row + mu_h).min(max_blocks_high);
                 let luma_col_end = (chunk_col + mu_w).min(max_blocks_wide);
                 let mut blk_row = chunk_row;
-                while blk_row < luma_row_end {
+                while do_uniform && blk_row < luma_row_end {
                     let mut blk_col = chunk_col;
                     while blk_col < luma_col_end {
                         // (1) coefficients — read_coeffs_tx_intra_block (skipped blocks
