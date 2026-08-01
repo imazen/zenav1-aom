@@ -246,6 +246,19 @@ entire SPLIT accumulation child-for-child, the remaining budget entering the las
 child — leaving exactly one BLOCK_8X8 leaf where C early-terminates and the port
 falls through.
 
+**Never infer the mechanism from the SIZE of the delta.** KB-22's ledger entry
+reasoned that 150 bytes over ~1,156 superblocks — 0.035% of the payload — "argues
+near-tie, not a missing tool", and (to its credit) flagged that as unestablished.
+It was wrong. The localization put the first divergence at **node 1**: the first
+32x32 of the first superblock, real aomenc choosing `PARTITION_VERT_B` where the
+port chose `SPLIT`, with the whole frame differing in shape (33,371 vs 29,105
+tree nodes). The cause was an entire unmodelled speed-feature pass
+(`av1_set_speed_features_qindex_dependent`). A systematic search-configuration
+difference can wear a tiny byte delta, because two different-but-comparable
+search outcomes cost nearly the same number of bits. Small delta means "the two
+encoders agree about most of the picture", NOT "the two encoders nearly agreed
+about one decision".
+
 Method: the sibling-C dump in `HANDOFF-TOGGLES.md:42-46` (ar-swap an
 instrumented `libaom.a`, run the pinned cell, **revert everything**). Verify the
 revert by byte-comparing the restored archive against a pristine backup. *Stale
@@ -312,3 +325,32 @@ wrong.
   114 ms→2 ms figures are **NOT ESTABLISHED** — checked 2026-07-31, they appear
   nowhere else in the repo (no `benchmarks/*` row, no commit message). Use them
   as order-of-magnitude only, and re-time before budgeting on them.
+
+## 12. A green unit differential does not clear the code that composes it
+
+**The failure it prevents:** KB-21 root #2 was a rate-composition defect —
+`prune_txk_type_intra` added the tx-type signalling cost to `eob == 0`
+candidates, where C adds it only on the `eob > 0` path
+(`upstream/av1/encoder/txb_rdopt.c:742-744` early-returns
+`txb_skip_cost[ctx][1]`; the cost is reached only inside
+`warehouse_efficients_txb_laplacian`, `:674`). The port sorted its candidate list
+by signalling cost where C sorted by distortion, so `txk_map` came out in a
+different ORDER and the two encoders evaluated different candidate sets.
+
+**The DSP differential for that cost function stayed green the entire time** —
+it deliberately scopes the tx-type cost out, so it could not see the defect. The
+kernel was right; its caller composed it wrongly.
+
+So: a passing unit differential licenses the kernel, and **nothing else**. When a
+divergence survives a green unit suite, do not re-examine the kernel — examine
+what the caller does with its result: the order it walks candidates, which
+branch it adds a cost on, which parameter block it hands down. Ask specifically
+*what the differential scopes out*, because that is where the surviving bug is.
+
+Corollary, from the same close: **ruling out every flag does not rule out the
+mechanism.** Ten single-flag reverts across eleven settings failed to reproduce
+C's numbers, which correctly proved "no speed-4 sf field is set wrong" — and
+that proof is compatible with two real defects, because neither root was a flag.
+An exhaustive A/B over the wrong axis is still exhaustive, and still tells you
+nothing about the right one.
+
