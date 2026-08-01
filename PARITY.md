@@ -346,8 +346,14 @@ deltaq_mode=6 (VARIANCE_BOOST)`; IQ adds `enable_adaptive_sharpness=1`.
      AUTO && !SOLO && `frames_to_key>1`; a single-frame KEY still has `frames_to_key<=1`, so the
      recode loop NEVER fires for it (confirmed by the AUTO e2e denom match — the non-recode denom is
      exact). The `SUPERRES_AUTO_DUAL` multi-pass recode search is only reachable with a multi-frame
-     GOP, so it is out of the single-frame KEY scope. **Decoder note:** the port DECODER's superres
-     denom-16 (exact-2:1) upscale diverges from C (KB-14, decoder track) — the encoder is byte-exact.
+     GOP, so it is out of the single-frame KEY scope. **Decoder note, CORRECTED 2026-07-31:** this line
+     used to say the port DECODER's superres denom-16 (exact-2:1) upscale diverges from C. It does
+     not, and the cited KB was already recording that: KB-14 is FIXED, and its root was a header
+     coded-lossless false-positive — explicitly **NOT the upscale**. The gate
+     `superres_denom16_single_sb_column_byte_identical_kb14` (`aom-decode/tests/superres_diff.rs:315`)
+     is green in-tree (re-run 2026-07-31: 5/5 in that file). Superres decode is byte-identical to C,
+     now including the multi-tile-column walk (`superres_tiles_diff.rs`, 44 streams). The encoder is
+     byte-exact as this row already said.
 
 ### C7 — Film grain / denoise estimation — table-inject DONE (byte-exact → section A); estimation ABSENT (L)
 - **`--film-grain-table` — DONE (this landing, → section A).** Ported `aom_dsp/grain_table.c`
