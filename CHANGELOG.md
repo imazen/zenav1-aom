@@ -18,6 +18,20 @@
 
 ### Fixed
 
+- **Encoder: every frame with `min(w,h) >= 480` diverged from real aomenc at
+  `--cpu-used >= 4` (KB-26).** The speed≥4 winner-mode two-pass in
+  `partition_pick` derived its MODE_EVAL / WINNER_MODE_EVAL transform policies
+  from a fresh `SpeedFeatures::set_allintra`, which is framesize-blind by design,
+  so the framesize-derived `tx_type_search.prune_tx_type_using_stats`
+  (`is_480p_or_larger`, `speed_features.c:261/299`) arrived as 0 for the whole
+  luma tx search — while speeds 0..3, which use the caller's resolved policy
+  directly, kept it. Fixed by `TxTypeSearchPolicy::carry_frame_level_tx_sf`,
+  which carries the frame-level stage-independent tx-search inputs across the
+  stage derivation. `s4cov_hd_speed_axis` goes 15/28 → 26/28 byte-exact (the two
+  remaining are KB-28's speed-7 refusal) and the 256..640 `--cpu-used=4` size
+  ladder goes 4/7 → 7/7. Record:
+  `benchmarks/kb26_large_frame_speed4_2026-08-01.tsv`.
+
 - **Test harness: the KB-13 real-content speed≥1 gate mis-reported partial-SB
   frames (196×196) as encoder divergences / "invalid streams".** The harness
   (`attempt_case_content_uv_sep`) walked `floor(mi/16)` superblocks over an

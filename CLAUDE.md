@@ -2451,7 +2451,70 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   tests — while KB-24's 36 SB128 speed-1..6 cells stay green. Different cell sets, different
   roots (playbook §1).
 
-### KB-26 — Encoder: LARGE FRAMES (`min(w,h) >= 480`) diverge at `--cpu-used >= 4` — OPEN, pinned
+### KB-26 — Encoder: LARGE FRAMES (`min(w,h) >= 480`) diverge at `--cpu-used >= 4` — FIXED ✅ 2026-08-01 (framesize-derived sf dropped by the winner-mode stage derivation)
+- **ROOT (one line, one root).** `partition_pick.rs`'s speed>=4 winner-mode two-pass
+  (`wm_parts`) builds its MODE_EVAL and WINNER_MODE_EVAL tx policies from a **fresh
+  `SpeedFeatures::set_allintra`**, and that constructor is **framesize-BLIND by design** (its own
+  doc says so; the framesize arms are applied afterwards from the frame's real dimensions). So
+  `tx_sf.tx_type_search.prune_tx_type_using_stats` — which is set ONLY by
+  `set_allintra_speed_feature_framesize_dependent` (`is_480p_or_larger`,
+  `speed_features.c:261-263` / `:299-301`) — arrived as **0** in both stage policies on every
+  frame. C reads it straight off `cpi->sf` inside `get_tx_mask` (`tx_search.c:1887`): one
+  frame-level value, identical in all three mode-eval stages. Result: the ENTIRE luma tx search
+  ran with the stats prune off on every >=480p frame at `--cpu-used >= 4`, while speeds 0..3 —
+  which use the caller's already-resolved policy directly and never enter `wm_parts` — kept it
+  on. That is exactly the measured "load-bearing at 2-3, provably INERT at 4-5" split below.
+- **FIX:** `TxTypeSearchPolicy::carry_frame_level_tx_sf` (`aom-encode/src/tx_search.rs`) — copies
+  the frame-level, stage-INDEPENDENT tx-search inputs (`oxcf.txfm_cfg.enable_flip_idtx`,
+  `oxcf.txfm_cfg.use_intra_dct_only`, and now `sf.prune_tx_type_using_stats`) from the resolved
+  policy onto each derived stage policy. `partition_pick`'s `wm_parts` calls it in place of the
+  two hand-copied oxcf lines it already had.
+- **How it was found (playbook §10, "diagnose to the decision"):** temporary counters around
+  `get_tx_mask_intra`'s three arms on the 512² cq24 cpu4 cell. The named suspicion — that the
+  multi-type arm was not reached at speed>=4 — was **wrong and the counter said so immediately**:
+  the arm is reached **140,154 times**, but the stats-prune body inside it ran **0 times**. That
+  moved the question from "which arm" to "why is the sf zero here", i.e. from the kernel to its
+  caller — playbook §12's shape exactly (the `tx_mask_diff` differential sweeps
+  `prune_tx_type_using_stats ∈ {0,1,2}` and was green throughout; it licenses the kernel and
+  nothing else). Post-fix the same counters read 140,516 stats-prune runs, changing the mask on
+  1,174 of them.
+- **MEASURED (`benchmarks/kb26_large_frame_speed4_2026-08-01.tsv`):**
+  `hd_speed_axis_byte_matches` **13 open rows → 0**; the gate is now **26/28 byte-exact**, the
+  only two non-matches being KB-28's speed-7 1280×720 panics. `large_frame_speed4_size_ladder`
+  **7/7 byte-exact** (was 512²/576²/640² divergent at −28/+29/−33 B).
+  `tx_stats_prune_ab_across_the_480p_boundary`: the prune is now load-bearing at **4/4** of
+  speeds 2,3,4,5 on 512² and still inert at 448² — every prune-on cell byte-matches real aomenc.
+- **Gates (all three re-pinned; two PROMOTED from open-divergence probes to hard byte-match
+  gates):** `LARGE_FRAME_OPEN` now holds only the two KB-28 panics and the clean-speed assertion
+  widened from 1..3 to 1..6; the size ladder asserts 7/7 byte-exact with a reach assertion that
+  it straddles 480; the A/B asserts `(load_bearing_at_4_5, inert_at_4_5) == (2, 0)` — i.e. it
+  fails the moment the framesize-derived sf goes dead again. Unit lock:
+  `tx_search::kb26_frame_level_sf_tests` sweeps **`--cpu-used` 0..9 × {448², 512²}** and asserts
+  in BOTH directions (sub-480p must stay 0 at every speed; >=480p must reach 1 at speed 2-3 and
+  2 at speed >= 4, in BOTH stages), plus a lock that `set_allintra` really is framesize-blind so
+  the carry cannot silently become redundant.
+- **Bite proof (playbook §1, asymmetric form).** Removing the single carry line and nothing else:
+  `kb26_frame_level_sf_tests` 2/2 FAIL, `large_frame_speed4_size_ladder` FAILS reproducing the
+  original deltas exactly (512² −28, 576² +29, 640² −33, with 256²..448² still clean), and
+  `tx_stats_prune_ab_across_the_480p_boundary` FAILS with *"KB-26 REGRESSED"* (inert 2/2) — while
+  the pre-existing suites stay green in that same state. ONE root, ONE change, so there is no
+  per-root revert split to report.
+- **Regression envelope, same box** (aarch64-apple-darwin, `--profile test-fast`,
+  `AOM_CONFORMANCE_DIR` provisioned): `-p zenav1-aom-encode --no-fail-fast` **285 passed /
+  0 failed**; `-p zenav1-aom-bench --no-fail-fast` **174 passed / 0 failed / 17 ignored**;
+  `AOM_FORCE_SCALAR=1` reproduces both KB-26 e2e gates identically; `cargo check --target
+  x86_64-apple-darwin -p zenav1-aom-encode` clean. The fix is inert outside
+  (`allintra && min(w,h) >= 480 && speed >= 4`), and no other ignored gate has a cell in that
+  class — every one of them is sub-480p or speed <= 3.
+- **The general lesson, worth more than the byte count:** `SpeedFeatures::set_allintra` models
+  only C's framesize-INdependent cascade. Anything derived from the frame's dimensions or qindex
+  (`apply_allintra_framesize_dependent`, `apply_allintra_qindex_dependent`, and the harness's own
+  `prune_tx_type_using_stats` wiring) lives OUTSIDE it — so **any code path that re-derives an sf
+  from `set_allintra` silently resets every framesize/qindex-resolved field to its default.**
+  `wm_parts` was the only such path reaching the tx policies; the palette derivation at
+  `partition_pick.rs:1048` re-derives too but reads only framesize-independent fields. Audit that
+  invariant before adding another internal `set_allintra` call.
+- **Historical isolation trail (how the boundary was found) below:**
 - **Found 2026-08-01** by `aom-bench/tests/s4cov_hd_speed_axis.rs`, extending the speed axis above
   640×640 for the first time (nothing had run `--cpu-used >= 1` above 640² except KB-22's two
   1280×720 speed-0/1 cells). bd8 4:2:0 real content, stock knobs:
@@ -2485,14 +2548,12 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   `thresh_arr[0][0] == thresh_arr[1][0] == 10` (`tx_search.c:1887-1891`), so the 1→2 level change
   is EXPECTED to be a no-op — which makes *"the prune stopped mattering at all"* the thing to
   explain, not the level.
-- **Next step (named, not guessed):** the KB-21-root-#2 per-txb dump (playbook §10) around
-  `get_tx_mask_intra`'s multi-type arm on the 512² cpu4 cell, checking whether that arm is
-  reached. At `speed >= 4` the MODE_EVAL stage takes the single-type
-  `use_default_intra_tx_type` arm (`tx_search.c:1871`), which never reaches the stats prune, so
-  the question is whether WINNER_MODE_EVAL is reaching it. 512×512 cq24 cpu4 is the smallest
-  SB-exact repro — use that, not 640² or 1280×720.
-- **Pinned** in `hd_speed_axis_byte_matches::LARGE_FRAME_OPEN`, both directions, alongside the
-  hard assertion that speeds 1..3 stay clean at both framesizes.
+- **The named next probe was the right instrument and the wrong hypothesis.** It read: *"at
+  `speed >= 4` the MODE_EVAL stage takes the single-type `use_default_intra_tx_type` arm
+  (`tx_search.c:1871`), which never reaches the stats prune, so the question is whether
+  WINNER_MODE_EVAL is reaching it."* WINNER_MODE_EVAL **was** reaching it — 140,154 times on that
+  one cell. Both stages were reaching it and both had the sf zeroed. Keep the probe (a reach
+  counter answers "is this arm live" in one run); do not keep the inference.
 
 ### KB-27 — Encoder: MONOCHROME at `--cq-level 24` (`base_qindex` 96), speed 0 — a single-point near-tie — OPEN, pinned
 - **Found 2026-08-01** by adding monochrome to KB-23's (partial-SB × speed) grid. First read as

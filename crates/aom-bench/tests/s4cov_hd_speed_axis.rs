@@ -131,20 +131,29 @@ fn measure(cell: &EncodeCell) -> (Verdict, i64, String) {
 /// speed >= 1 half that was missing.
 ///
 /// **MEASURED 2026-08-01** (`benchmarks/s4cov_axes_2026-08-01.tsv`,
-/// aarch64-apple-darwin, `--profile test-fast`):
+/// aarch64-apple-darwin, `--profile test-fast`) — the ORIGINAL map, kept so a
+/// regression is recognisable by shape:
 ///
 /// | speed | 640x640 | 1280x720 |
 /// |---|---|---|
 /// | 1, 2, 3 | MATCH (both cq) | MATCH (both cq) |
-/// | 4, 5, 6 | **DIVERGE (both cq)** | **DIVERGE** |
-/// | 7 | DIVERGE at cq24, MATCH at cq40 | **PANIC** (see below) |
+/// | 4, 5, 6 | DIVERGE (both cq) | DIVERGE |
+/// | 7 | DIVERGE at cq24, MATCH at cq40 | PANIC (see below) |
 ///
-/// **The 640x640 twins diverge exactly as the 1280x720 rows do, so this is NOT
-/// an `is_720p_or_larger` arm** — the control the grid exists to provide says
-/// the framesize predicate is not what is moving. It is a LARGE-FRAME x
-/// `--cpu-used >= 4` divergence, and `large_frame_speed4_size_ladder` below
-/// bounds where it starts. All of it is pinned in `LARGE_FRAME_OPEN`, in both
-/// directions.
+/// The 640x640 twins diverged exactly as the 1280x720 rows did, so it was never
+/// an `is_720p_or_larger` arm — it was a LARGE-FRAME x `--cpu-used >= 4`
+/// divergence (KB-26).
+///
+/// **RE-MEASURED 2026-08-01 after the KB-26 fix: 26/28 byte-exact.** All 13
+/// divergent rows closed. Root: the speed>=4 winner-mode two-pass derived its
+/// MODE_EVAL / WINNER_MODE_EVAL tx policies from a fresh, FRAMESIZE-BLIND
+/// `SpeedFeatures::set_allintra`, dropping the framesize-derived
+/// `tx_sf.tx_type_search.prune_tx_type_using_stats` (`is_480p_or_larger`,
+/// `speed_features.c:261/299`) for the entire luma tx search on every >=480p
+/// frame — while speeds 0..3, which use the caller's resolved policy directly,
+/// kept it. Fixed by `TxTypeSearchPolicy::carry_frame_level_tx_sf`
+/// (`tx_search.rs`), called from `partition_pick`'s `wm_parts`.
+/// `LARGE_FRAME_OPEN` now holds ONLY the two KB-28 speed-7 panics.
 ///
 /// The 1280x720 speed-7 PANIC is a different thing again and is a deliberate
 /// port guard, not a crash: `pack.rs`'s VBP-threshold arm needs `cm->width *
@@ -162,21 +171,10 @@ fn hd_speed_axis_byte_matches() {
     let base = EncodeCell::real_content("s4hd", "av1-1-b8-00-quantizer-00", None, 24, 0);
     const SIZES: &[(usize, usize)] = &[(640, 640), (1280, 720)];
     // (w, h, cq, speed, verdict) — the exact current state, pinned.
+    // KB-26 closed every DIVERGE row on 2026-08-01; what remains is KB-28, the
+    // deliberate VBP-threshold crop-ambiguity refusal at exactly 1280x720.
     const LARGE_FRAME_OPEN: &[(usize, usize, i32, i32, Verdict)] = &[
-        (640, 640, 24, 4, Verdict::Diverge),
-        (640, 640, 24, 5, Verdict::Diverge),
-        (640, 640, 24, 6, Verdict::Diverge),
-        (640, 640, 24, 7, Verdict::Diverge),
-        (640, 640, 40, 4, Verdict::Diverge),
-        (640, 640, 40, 5, Verdict::Diverge),
-        (640, 640, 40, 6, Verdict::Diverge),
-        (1280, 720, 24, 4, Verdict::Diverge),
-        (1280, 720, 24, 5, Verdict::Diverge),
-        (1280, 720, 24, 6, Verdict::Diverge),
         (1280, 720, 24, 7, Verdict::Panic),
-        (1280, 720, 40, 4, Verdict::Diverge),
-        (1280, 720, 40, 5, Verdict::Diverge),
-        (1280, 720, 40, 6, Verdict::Diverge),
         (1280, 720, 40, 7, Verdict::Panic),
     ];
     let mut observed: Vec<(usize, usize, i32, i32, Verdict)> = Vec::new();
@@ -218,21 +216,29 @@ fn hd_speed_axis_byte_matches() {
         rows - observed.len()
     );
 
-    // Speeds 1..3 must be clean at BOTH framesizes and BOTH qindex sides —
-    // that is this grid's positive result and the teeth on the framesize arms
+    // Speeds 1..6 must be clean at BOTH framesizes and BOTH qindex sides — that
+    // is this grid's positive result and the teeth on the framesize arms
     // (`use_square_partition_only_threshold`'s 720p/480p tiers at speeds 1-2,
     // `perform_coeff_opt = 2 + is_1080p_or_larger` at 720p) it reaches first.
+    // Speeds 1..3 were clean from the start; 4..6 were the KB-26 divergence and
+    // became clean when the framesize-derived `prune_tx_type_using_stats`
+    // stopped being dropped by the winner-mode stage derivation. Speed 7 is
+    // excluded only because of KB-28's 1280x720 refusal.
     let low_speed_bad: Vec<String> = observed
         .iter()
-        .filter(|(_, _, _, s, _)| *s <= 3)
+        .filter(|(_, _, _, s, _)| *s <= 6)
         .map(|(w, h, cq, s, v)| format!("{w}x{h} cq{cq} cpu{s} {v:?}"))
         .collect();
     assert!(
         low_speed_bad.is_empty(),
-        "an HD cell stopped byte-matching at speed 1..3. Compare each 1280x720 row against \
-         its 640x640 twin at the same (cq, speed): only-720p means an `is_720p_or_larger` \
-         framesize arm (speed_features.c:175-316 / :88-98); both means it is not a \
-         framesize arm: {low_speed_bad:?}"
+        "an HD cell stopped byte-matching at speed 1..6. If the row is at speed >= 4 and \
+         >= 480p on its short side, suspect KB-26 first: the winner-mode two-pass in \
+         `partition_pick` re-derives its stage tx policies from a FRAMESIZE-BLIND \
+         `SpeedFeatures::set_allintra`, so anything framesize-derived must be carried \
+         across by `TxTypeSearchPolicy::carry_frame_level_tx_sf`. Otherwise compare each \
+         1280x720 row against its 640x640 twin at the same (cq, speed): only-720p means \
+         an `is_720p_or_larger` framesize arm (speed_features.c:175-316 / :88-98); both \
+         means it is not a framesize arm: {low_speed_bad:?}"
     );
 
     let pinned: Vec<(usize, usize, i32, i32, Verdict)> = LARGE_FRAME_OPEN.to_vec();
@@ -245,48 +251,66 @@ fn hd_speed_axis_byte_matches() {
     );
 }
 
-/// **Where does the large-frame `--cpu-used >= 4` divergence start?**
+/// **The size ladder across `is_480p_or_larger`, at `--cpu-used=4` — now a
+/// positive byte-match gate.**
 ///
 /// The speed axis of the config-permutation gate runs 64x64 and 128x128
 /// (`benchmarks/config_perm_speed_axis_2026-07-30.tsv`) and KB-23's grid tops
-/// out at 256x256 — all byte-exact at speed 4 after KB-21 root #3. The gate
-/// above shows 640x640 is not. This walks SB-exact sizes between them at
-/// `--cpu-used=4`, cq24, so whoever localizes it starts from the smallest
-/// reproducing frame instead of a 640x640 one.
+/// out at 256x256; this walks SB-exact sizes from there to 640x640 at
+/// `--cpu-used=4`, cq24. It was written as a bisector — "where does the
+/// large-frame cpu4 divergence start?" — and it did its job: **448 MATCH,
+/// 512 DIVERGE (-28 B)** put the boundary exactly on `is_480p_or_larger`
+/// (`speed_features.c:169`), which is what named KB-26's root.
 ///
 /// SB-exact sizes only: mixing in partial-SB frames would confound the
 /// frame-edge axis with the size axis, which is the mistake KB-23 was found by
 /// avoiding.
 ///
-/// **MEASURED 2026-08-01**: see the printed ladder. The smallest reproducing
-/// size is asserted below so a change in it is reported rather than absorbed.
+/// **MEASURED 2026-08-01, after the KB-26 fix: 7/7 byte-exact** (256, 320, 384,
+/// 448, 512, 576, 640 — all `+0`). It is kept and PROMOTED to a hard gate
+/// rather than deleted, because it is the only thing in the suite that crosses
+/// the 480p predicate at a speed where the winner-mode two-pass runs: the
+/// 448/512 pair is exactly the A/B that would go divergent again if a
+/// framesize-derived speed feature were once more dropped by
+/// `partition_pick`'s stage-policy derivation.
 #[test]
-#[ignore = "7 encode pairs up to 640x640 at speed 4; diagnostic, run explicitly"]
+#[ignore = "7 encode pairs up to 640x640 at speed 4; nightly / on-demand tier"]
 fn large_frame_speed4_size_ladder() {
     c::ref_init();
     let base = EncodeCell::real_content("s4ladder", "av1-1-b8-00-quantizer-00", None, 24, 0);
     const SIZES: &[usize] = &[256, 320, 384, 448, 512, 576, 640];
-    let mut first_bad: Option<usize> = None;
+    // Reach assertion (playbook §2): the ladder is worthless unless it actually
+    // straddles `is_480p_or_larger` — 448 below it, 512 above.
+    assert!(
+        SIZES.iter().any(|&n| n < 480) && SIZES.iter().any(|&n| n >= 480),
+        "the ladder must cross AOMMIN(w,h) >= 480 to gate the KB-26 root"
+    );
+    let mut bad: Vec<String> = Vec::new();
     for &n in SIZES {
         assert_eq!(n % 64, 0, "SB-exact sizes only — see the doc comment");
         let cell = mirror_tile(&base, &format!("ladder{n}"), n, n, 24, 4);
         let (v, delta, _) = measure(&cell);
-        println!("  {n}x{n} cq24 cpu4: delta {delta:+} -> {v:?}");
-        if v != Verdict::Ok && first_bad.is_none() {
-            first_bad = Some(n);
+        println!(
+            "  {n}x{n} ({}) cq24 cpu4: delta {delta:+} -> {v:?}",
+            if n >= 480 { ">=480p" } else { "<480p " }
+        );
+        if v != Verdict::Ok {
+            bad.push(format!("{n}x{n} {v:?} ({delta:+})"));
         }
     }
-    println!("  large-frame cpu4 ladder: smallest reproducing SB-exact size {first_bad:?}");
     assert!(
-        first_bad.is_some(),
-        "no size on the ladder reproduces the large-frame cpu4 divergence any more — it \
-         closed; re-pin `LARGE_FRAME_OPEN` in `hd_speed_axis_byte_matches` and delete this \
-         ladder"
+        bad.is_empty(),
+        "the cpu4 SB-exact size ladder stopped byte-matching. If the failing sizes are \
+         >= 480 and the sub-480 ones are clean, this is KB-26 regressing: something \
+         framesize-derived is being dropped when `partition_pick`'s winner-mode two-pass \
+         re-derives its stage tx policies from a framesize-blind \
+         `SpeedFeatures::set_allintra` (see `TxTypeSearchPolicy::carry_frame_level_tx_sf`). \
+         Offenders: {bad:?}"
     );
 }
 
-/// **Handoff diagnostic for the large-frame `cpu >= 4` divergence: the ONE
-/// `is_480p_or_larger` x `speed >= 4` arm C has, A/B'd.**
+/// **The KB-26 root, A/B'd: the ONE `is_480p_or_larger` x `speed >= 4` arm C
+/// has, asserted LIVE on both sides of the winner-mode boundary.**
 ///
 /// `set_allintra_speed_feature_framesize_dependent` (`speed_features.c:166-320`)
 /// contains exactly one setting keyed on BOTH `is_480p_or_larger` and
@@ -298,36 +322,49 @@ fn large_frame_speed4_size_ladder() {
 ///
 /// `ToggleKnobs::disable_tx_stats_prune` forces the port's derived value to 0
 /// while leaving the C reference untouched, which turns the prune into a
-/// falsifiable A/B. **MEASURED 2026-08-01, and the result is an anomaly worth
-/// handing off rather than a fix:**
+/// falsifiable A/B.
+///
+/// **MEASURED 2026-08-01 (PRE-FIX) — this table is what localized KB-26:**
 ///
 /// | cell | prune on | prune forced off |
 /// |---|---|---|
 /// | 448x448 (sub-480p) cpu2..5 | MATCH | MATCH — inert, correctly |
-/// | 512x512 cpu2 | MATCH | DIVERGE -100 — **load-bearing** |
-/// | 512x512 cpu3 | MATCH | DIVERGE -61 — **load-bearing** |
-/// | 512x512 cpu4 | DIVERGE -28 | DIVERGE -28 — **byte-identical, i.e. INERT** |
-/// | 512x512 cpu5 | DIVERGE +106 | DIVERGE +106 — **byte-identical, INERT** |
+/// | 512x512 cpu2 | MATCH | DIVERGE -100 — load-bearing |
+/// | 512x512 cpu3 | MATCH | DIVERGE -61 — load-bearing |
+/// | 512x512 cpu4 | DIVERGE -28 | DIVERGE -28 — byte-identical, i.e. INERT |
+/// | 512x512 cpu5 | DIVERGE +106 | DIVERGE +106 — byte-identical, INERT |
 ///
-/// So the port's stats prune demonstrably changes the bitstream at speeds 2-3
-/// and demonstrably does not at speeds 4-5, on the same frame, where C's only
-/// change across that boundary is the prune's own level going 1 -> 2. On a lone
-/// KEY frame `update_type == KF_UPDATE == 0` and `thresh_arr[0][0] ==
-/// thresh_arr[1][0] == 10` (`tx_search.c:1887-1891`), so the level change is
-/// expected to be a NO-OP — which makes "the prune stopped mattering at all"
-/// the thing to explain, not the level. The next step is the per-txb dump of
-/// KB-21 root #2 (playbook §10) around `get_tx_mask_intra`'s multi-type arm at
-/// speed 4, checking whether it is reached at all: at speed >= 4 the MODE_EVAL
-/// stage takes the single-type `use_default_intra_tx_type` arm
-/// (`tx_search.c:1871`), which never reaches the stats prune, so the question
-/// is whether the WINNER_MODE_EVAL pass is reaching it.
+/// The prune demonstrably changed the bitstream at speeds 2-3 and demonstrably
+/// did not at speeds 4-5, on the same frame — while C's only change across that
+/// boundary is the prune's own level going 1 -> 2, which on a lone KEY frame is
+/// a NO-OP (`update_type == KF_UPDATE == 0`, `thresh_arr[0][0] ==
+/// thresh_arr[1][0] == 10`, `tx_search.c:1887-1891`). So "the prune stopped
+/// mattering AT ALL" was the thing to explain, not the level.
+///
+/// **ROOT (2026-08-01, closed).** An instrumented reach count over
+/// `get_tx_mask_intra` on the 512x512 cpu4 cell answered it directly: the
+/// multi-type arm IS reached (140,154 times), but the stats-prune body inside
+/// it ran **0 times** — the sf arrived as 0. At speed >= 4 `partition_pick`'s
+/// winner-mode two-pass builds its MODE_EVAL / WINNER_MODE_EVAL policies from a
+/// FRESH `SpeedFeatures::set_allintra`, which is framesize-blind, so the
+/// framesize-derived `prune_tx_type_using_stats` was silently 0 for the whole
+/// luma tx search on every >=480p frame. Speeds 0..3 use the caller's resolved
+/// policy directly and so were unaffected — precisely the observed split.
+/// Fixed by `TxTypeSearchPolicy::carry_frame_level_tx_sf`.
+///
+/// **RE-MEASURED after the fix: the prune is load-bearing at 4/4 of speeds
+/// 2,3,4,5 on 512x512 and still inert at 448x448**, and every prune-on cell
+/// byte-matches real aomenc. This test is now that gate: `inert_at_4_5`
+/// returning to nonzero means the framesize-derived sf is being dropped again.
 #[test]
-#[ignore = "16 encode pairs at 448/512; diagnostic, run explicitly"]
+#[ignore = "16 encode pairs at 448/512; nightly / on-demand tier"]
 fn tx_stats_prune_ab_across_the_480p_boundary() {
     c::ref_init();
     let base = EncodeCell::real_content("s4ab", "av1-1-b8-00-quantizer-00", None, 24, 0);
     let mut inert_at_4_5 = 0usize;
     let mut load_bearing_at_2_3 = 0usize;
+    let mut load_bearing_at_4_5 = 0usize;
+    let mut on_mismatch: Vec<String> = Vec::new();
     for n in [448usize, 512] {
         for speed in [2i32, 3, 4, 5] {
             let cell = mirror_tile(&base, &format!("ab{n}_{speed}"), n, n, 24, speed);
@@ -351,11 +388,17 @@ fn tx_stats_prune_ab_across_the_480p_boundary() {
                 off.len() as i64 - real.len() as i64,
                 if bites { "CHANGES" } else { "does NOT change" }
             );
+            if on != real {
+                on_mismatch.push(format!("{n}x{n} cpu{speed}"));
+            }
             if n == 512 && speed <= 3 && bites {
                 load_bearing_at_2_3 += 1;
             }
             if n == 512 && speed >= 4 && !bites {
                 inert_at_4_5 += 1;
+            }
+            if n == 512 && speed >= 4 && bites {
+                load_bearing_at_4_5 += 1;
             }
             if n == 448 {
                 assert!(
@@ -367,18 +410,30 @@ fn tx_stats_prune_ab_across_the_480p_boundary() {
         }
     }
     println!(
-        "  tx-stats A/B: 512x512 load-bearing at {load_bearing_at_2_3}/2 of speeds 2-3, \
-         INERT at {inert_at_4_5}/2 of speeds 4-5"
+        "  tx-stats A/B: 512x512 load-bearing at {load_bearing_at_2_3}/2 of speeds 2-3 and \
+         {load_bearing_at_4_5}/2 of speeds 4-5 (INERT at {inert_at_4_5}/2)"
     );
     assert_eq!(
         load_bearing_at_2_3, 2,
         "the stats prune stopped changing the >=480p bitstream at speeds 2-3, so this A/B \
          no longer isolates anything — re-derive it before reading the speed 4-5 row"
     );
+    // The KB-26 teeth. Before the fix this was 0/2 and `inert_at_4_5` was 2/2:
+    // the winner-mode stage derivation dropped the framesize-resolved sf, so the
+    // knob that is supposed to control the prune controlled nothing at speed >= 4.
     assert_eq!(
-        inert_at_4_5, 2,
-        "the stats prune now CHANGES the >=480p bitstream at speeds 4-5. That is the \
-         anomaly this diagnostic recorded closing — re-read `LARGE_FRAME_OPEN` in \
-         `hd_speed_axis_byte_matches`, which may have moved with it"
+        (load_bearing_at_4_5, inert_at_4_5),
+        (2, 0),
+        "KB-26 REGRESSED: the tx-type stats prune has gone inert on a >=480p frame at \
+         speed >= 4, which means `partition_pick`'s winner-mode two-pass is again \
+         deriving its MODE_EVAL / WINNER_MODE_EVAL policies from a framesize-BLIND \
+         `SpeedFeatures::set_allintra` instead of carrying the frame-resolved \
+         `prune_tx_type_using_stats` across (`TxTypeSearchPolicy::carry_frame_level_tx_sf`, \
+         speed_features.c:261/299)"
+    );
+    assert!(
+        on_mismatch.is_empty(),
+        "a stats-prune A/B cell stopped byte-matching real aomenc with the prune ON: \
+         {on_mismatch:?}"
     );
 }

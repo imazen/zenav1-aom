@@ -989,14 +989,16 @@ fn leaf_pick_sb_modes(
             cfg.pol.skip_trellis,
             cfg.pol.sharpness,
         );
-        // CLI tx-type toggles are stage-INDEPENDENT oxcf reads in C
-        // (get_tx_mask) — carry them from the caller's policy onto the
-        // derived stage policies; MODE_EVAL additionally ORs the CLI
-        // `--use-intra-default-tx-only` knob (rdopt_utils.h:579-581 — the
-        // caller's policy carries it; WINNER forces 0, :612).
+        // The frame-level, stage-INDEPENDENT tx-search inputs `get_tx_mask`
+        // reads: the two oxcf CLI toggles AND the FRAMESIZE-derived
+        // `prune_tx_type_using_stats` (KB-26 — `set_allintra` above is
+        // framesize-blind, so `sf` reports 0 for it on every frame). See
+        // `TxTypeSearchPolicy::carry_frame_level_tx_sf`. MODE_EVAL
+        // additionally ORs the CLI `--use-intra-default-tx-only` knob
+        // (rdopt_utils.h:579-581 — the caller's policy carries it; WINNER
+        // forces 0, :612).
         for p in [&mut mode_eval_pol, &mut winner_pol] {
-            p.enable_flip_idtx = cfg.pol.enable_flip_idtx;
-            p.use_intra_dct_only = cfg.pol.use_intra_dct_only;
+            p.carry_frame_level_tx_sf(cfg.pol);
         }
         mode_eval_pol.use_default_intra_tx_type |= cfg.pol.use_default_intra_tx_type;
         // The stage-derived policies also inherit the frame's tune knobs from

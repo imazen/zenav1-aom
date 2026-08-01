@@ -1072,6 +1072,38 @@ impl TxTypeSearchPolicy {
         self
     }
 
+    /// Copy the FRAME-level, stage-INDEPENDENT tx-search inputs from an
+    /// already-resolved policy onto a policy derived per mode-eval stage.
+    ///
+    /// **Why this exists (KB-26).** `set_mode_eval_params` (rdopt_utils.h:546)
+    /// re-derives only the *stage* columns; every other input `get_tx_mask`
+    /// reads is a single frame-level value it takes straight off `cpi->oxcf` or
+    /// `cpi->sf`, identical in DEFAULT_EVAL / MODE_EVAL / WINNER_MODE_EVAL:
+    ///
+    /// * `oxcf.txfm_cfg.enable_flip_idtx` and `oxcf.txfm_cfg.use_intra_dct_only`
+    ///   (tx_search.c:1862/1866) — CLI toggles;
+    /// * `sf.tx_sf.tx_type_search.prune_tx_type_using_stats` (tx_search.c:1887)
+    ///   — and this one is **FRAMESIZE-dependent** (`is_480p_or_larger`,
+    ///   speed_features.c:261/299), so it cannot be recovered from
+    ///   [`crate::speed_features::SpeedFeatures::set_allintra`], which is
+    ///   framesize-blind by design.
+    ///
+    /// The speed>=4 winner-mode two-pass in `partition_pick` derives its two
+    /// stage policies from a *fresh* `set_allintra`, so without this carry the
+    /// stats prune silently reverted to 0 for the WHOLE luma tx search on
+    /// every `>= 480p` frame at speed >= 4 — while speeds 0..3, which use the
+    /// caller's resolved policy directly, ran with it on. That was KB-26.
+    ///
+    /// A green differential over `get_tx_mask_intra` could never see this: the
+    /// kernel was right, its caller composed it with the wrong inputs
+    /// (`docs/DIFFERENTIAL_PLAYBOOK.md` §12).
+    pub fn carry_frame_level_tx_sf(&mut self, frame: &TxTypeSearchPolicy) {
+        self.enable_flip_idtx = frame.enable_flip_idtx;
+        self.use_intra_dct_only = frame.use_intra_dct_only;
+        self.prune_tx_type_using_stats = frame.prune_tx_type_using_stats;
+
+    }
+
     /// Speed-0 usage-GOOD defaults — the KEY-frame encoder-gate envelope
     /// (`aomenc --cpu-used=0` with one forced KEY frame runs usage GOOD,
     /// not ALLINTRA). Verified vs `set_good_speed_features_framesize_
@@ -3093,5 +3125,113 @@ mod largest_tx_tests {
         assert_eq!(get_default_tx_type_y(4, 0, false, true), 0); // screen content
         // Non-degenerate: V_PRED (mode 1) at TX_8X8 is ADST_DCT (1), NOT DCT.
         assert_eq!(get_default_tx_type_y(1, 1, false, false), 1);
+    }
+}
+
+#[cfg(test)]
+mod kb26_frame_level_sf_tests {
+    use crate::speed_features::{DEFAULT_EVAL, MODE_EVAL, SpeedFeatures, WINNER_MODE_EVAL};
+
+    /// `set_allintra_speed_feature_framesize_dependent`'s ONE
+    /// `prune_tx_type_using_stats` ladder (speed_features.c:261-263 / :299-301),
+    /// as the encoder resolves it for an ALLINTRA frame.
+    fn stats_prune_for(width: usize, height: usize, speed: i32) -> u8 {
+        if width.min(height) < 480 {
+            0
+        } else if speed >= 4 {
+            2
+        } else if speed >= 2 {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// **KB-26 lock.** The winner-mode two-pass derives its MODE_EVAL /
+    /// WINNER_MODE_EVAL policies from a FRESH `SpeedFeatures::set_allintra`,
+    /// which is framesize-blind — so the framesize-derived
+    /// `prune_tx_type_using_stats` is 0 in that derivation for EVERY frame, and
+    /// must be carried from the frame-resolved policy.
+    ///
+    /// Swept over every `--cpu-used 0..9` and BOTH sides of `is_480p_or_larger`
+    /// (`speed_features.c:169`), asserting in BOTH directions: sub-480p must
+    /// stay 0 at every speed, and >=480p must reach the frame's resolved level
+    /// (1 at speed 2-3, 2 at speed >= 4) in BOTH stages.
+    ///
+    /// This is what silently broke: at speed >= 4 the whole luma tx search ran
+    /// with the stats prune OFF on every >=480p frame, while speeds 0..3 (which
+    /// use the caller's resolved policy directly) ran with it ON — the
+    /// "load-bearing at 2-3, provably inert at 4-5" anomaly KB-26 recorded.
+    #[test]
+    fn frame_resolved_stats_prune_survives_the_winner_mode_stage_derivation() {
+        let mut checked_zero = 0usize;
+        let mut checked_nonzero = 0usize;
+        for speed in 0..=9 {
+            for &(w, h) in &[(448usize, 448usize), (512, 512)] {
+                let want = stats_prune_for(w, h, speed);
+
+                // The frame-resolved policy: `set_allintra` + the framesize pass.
+                let mut frame_sf = SpeedFeatures::set_allintra(speed, false, false);
+                frame_sf.prune_tx_type_using_stats = want;
+                let frame_pol = frame_sf.tx_type_search_policy_for_stage(DEFAULT_EVAL, false, 0);
+                assert_eq!(
+                    frame_pol.prune_tx_type_using_stats, want,
+                    "the frame-level policy must carry the framesize-resolved sf"
+                );
+
+                // The winner-mode derivation, exactly as `partition_pick` builds
+                // it: a fresh, framesize-BLIND `set_allintra`.
+                let blind = SpeedFeatures::set_allintra(speed, false, false);
+                let mut me = blind.tx_type_search_policy_for_stage(MODE_EVAL, false, 0);
+                let mut win = blind.tx_type_search_policy_for_stage(WINNER_MODE_EVAL, false, 0);
+                assert_eq!(
+                    (me.prune_tx_type_using_stats, win.prune_tx_type_using_stats),
+                    (0, 0),
+                    "`set_allintra` is framesize-blind — if it ever starts resolving \
+                     `prune_tx_type_using_stats` itself, this carry becomes redundant \
+                     and the framesize pass must be the single source of truth"
+                );
+
+                for p in [&mut me, &mut win] {
+                    p.carry_frame_level_tx_sf(&frame_pol);
+                }
+                assert_eq!(
+                    me.prune_tx_type_using_stats, want,
+                    "MODE_EVAL lost the framesize-resolved stats prune at {w}x{h} cpu{speed}"
+                );
+                assert_eq!(
+                    win.prune_tx_type_using_stats, want,
+                    "WINNER_MODE_EVAL lost the framesize-resolved stats prune at \
+                     {w}x{h} cpu{speed}"
+                );
+                if want == 0 {
+                    checked_zero += 1;
+                } else {
+                    checked_nonzero += 1;
+                }
+            }
+        }
+        // Reach assertion (playbook §2): the sweep must actually cover BOTH
+        // directions, not just the inert one.
+        assert_eq!(checked_zero, 12, "sub-480p (10 speeds) + >=480p speeds 0..1");
+        assert_eq!(checked_nonzero, 8, ">=480p speeds 2..9");
+    }
+
+    /// The other two fields the same carry covers are the stage-independent
+    /// `oxcf.txfm_cfg` toggles (`tx_search.c:1862/1866`) — locked here so a
+    /// future edit cannot narrow the carry to only the KB-26 field.
+    #[test]
+    fn carry_frame_level_tx_sf_covers_the_oxcf_toggles() {
+        let sf = SpeedFeatures::set_allintra(4, false, false);
+        let mut frame = sf.tx_type_search_policy_for_stage(DEFAULT_EVAL, false, 0);
+        frame.enable_flip_idtx = false;
+        frame.use_intra_dct_only = true;
+        frame.prune_tx_type_using_stats = 2;
+        let mut stage = sf.tx_type_search_policy_for_stage(WINNER_MODE_EVAL, false, 0);
+        assert!(stage.enable_flip_idtx && !stage.use_intra_dct_only);
+        stage.carry_frame_level_tx_sf(&frame);
+        assert!(!stage.enable_flip_idtx);
+        assert!(stage.use_intra_dct_only);
+        assert_eq!(stage.prune_tx_type_using_stats, 2);
     }
 }

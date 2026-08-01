@@ -1,0 +1,76 @@
+# KB-26 close — LARGE FRAMES (min(w,h) >= 480) at --cpu-used >= 4 — imazen/zenav1-aom
+# date	2026-08-01
+# host	aarch64-apple-darwin (Darwin 25.5.0)
+# profile	cargo test --profile test-fast (debug-assertions + overflow-checks ON)
+# base	37a8175 (origin/main at session start)
+# corpus	AOM_CONFORMANCE_DIR=<repo>/conformance/data (xtask/conformance.py --scope intra)
+# tests	aom-bench/tests/s4cov_hd_speed_axis.rs (all three), aom-encode tx_search::kb26_frame_level_sf_tests
+# content	av1-1-b8-00-quantizer-00 frame 0, mirror-tiled to each size, bd8 4:2:0, stock knobs
+#
+# ROOT: partition_pick's speed>=4 winner-mode two-pass derived its MODE_EVAL /
+# WINNER_MODE_EVAL tx policies from a FRESH SpeedFeatures::set_allintra, which is
+# framesize-BLIND, so the framesize-derived
+# tx_sf.tx_type_search.prune_tx_type_using_stats (is_480p_or_larger,
+# speed_features.c:261/299) arrived as 0 for the WHOLE luma tx search on every
+# >=480p frame. Speeds 0..3 use the caller's resolved policy directly and were
+# unaffected. Fixed by TxTypeSearchPolicy::carry_frame_level_tx_sf.
+#
+# REACH EVIDENCE (temporary instrumented counters over get_tx_mask_intra, 512x512
+# cq24 cpu4, since reverted): the multi-type arm IS reached 140154 times; the
+# stats-prune body inside it ran 0 times pre-fix and 140516 times post-fix
+# (changing the mask on 1174 of them).
+#
+# Columns: gate / cell / speed / pre_fix / post_fix / pre_delta_B / post_delta_B / note
+gate	cell	speed	pre_fix	post_fix	pre_delta_B	post_delta_B	note
+hd_speed_axis	640x640 cq24	1	MATCH	MATCH	0	0	control, <720p
+hd_speed_axis	640x640 cq24	2	MATCH	MATCH	0	0	control, <720p
+hd_speed_axis	640x640 cq24	3	MATCH	MATCH	0	0	control, <720p
+hd_speed_axis	640x640 cq24	4	DIVERGE	MATCH	n/a	0	KB-26 row
+hd_speed_axis	640x640 cq24	5	DIVERGE	MATCH	n/a	0	KB-26 row
+hd_speed_axis	640x640 cq24	6	DIVERGE	MATCH	n/a	0	KB-26 row
+hd_speed_axis	640x640 cq24	7	DIVERGE	MATCH	n/a	0	KB-26 row
+hd_speed_axis	640x640 cq40	4	DIVERGE	MATCH	n/a	0	KB-26 row
+hd_speed_axis	640x640 cq40	5	DIVERGE	MATCH	n/a	0	KB-26 row
+hd_speed_axis	640x640 cq40	6	DIVERGE	MATCH	n/a	0	KB-26 row
+hd_speed_axis	640x640 cq40	7	MATCH	MATCH	0	0	was already clean
+hd_speed_axis	1280x720 cq24	4	DIVERGE	MATCH	n/a	0	KB-26 row
+hd_speed_axis	1280x720 cq24	5	DIVERGE	MATCH	n/a	0	KB-26 row
+hd_speed_axis	1280x720 cq24	6	DIVERGE	MATCH	n/a	0	KB-26 row
+hd_speed_axis	1280x720 cq24	7	PANIC	PANIC	n/a	n/a	KB-28, untouched
+hd_speed_axis	1280x720 cq40	4	DIVERGE	MATCH	n/a	0	KB-26 row
+hd_speed_axis	1280x720 cq40	5	DIVERGE	MATCH	n/a	0	KB-26 row
+hd_speed_axis	1280x720 cq40	6	DIVERGE	MATCH	n/a	0	KB-26 row
+hd_speed_axis	1280x720 cq40	7	PANIC	PANIC	n/a	n/a	KB-28, untouched
+hd_speed_axis	TOTAL	1..7	13/28 open	2/28 open	n/a	n/a	26/28 byte-exact post-fix
+size_ladder	256x256 cq24	4	MATCH	MATCH	0	0	<480p
+size_ladder	320x320 cq24	4	MATCH	MATCH	0	0	<480p
+size_ladder	384x384 cq24	4	MATCH	MATCH	0	0	<480p
+size_ladder	448x448 cq24	4	MATCH	MATCH	0	0	<480p, the negative control
+size_ladder	512x512 cq24	4	DIVERGE	MATCH	-28	0	first >=480p size
+size_ladder	576x576 cq24	4	DIVERGE	MATCH	+29	0	>=480p
+size_ladder	640x640 cq24	4	DIVERGE	MATCH	-33	0	>=480p
+# tx-stats A/B: does forcing the port's derived sf to 0 change the port's bytes?
+# "bites" = the knob is load-bearing; pre-fix it went dead at speed >= 4.
+ab_prune	448x448 cq24	2	no-bite	no-bite	0	0	sub-480p: sf is 0 either way
+ab_prune	448x448 cq24	3	no-bite	no-bite	0	0	sub-480p
+ab_prune	448x448 cq24	4	no-bite	no-bite	0	0	sub-480p
+ab_prune	448x448 cq24	5	no-bite	no-bite	0	0	sub-480p
+ab_prune	512x512 cq24	2	bites	bites	0	0	prune-off -100 B; prune-on MATCH
+ab_prune	512x512 cq24	3	bites	bites	0	0	prune-off -61 B; prune-on MATCH
+ab_prune	512x512 cq24	4	NO-BITE	bites	-28	0	the anomaly; prune-off -28 B post-fix
+ab_prune	512x512 cq24	5	NO-BITE	bites	+106	0	the anomaly; prune-off +106 B post-fix
+#
+# BITE PROOF (the one-line carry removed, everything else identical):
+#   aom-encode  tx_search::kb26_frame_level_sf_tests  2/2 FAIL
+#   aom-bench   large_frame_speed4_size_ladder        FAIL (512 -28, 576 +29, 640 -33; 256..448 clean)
+#   aom-bench   tx_stats_prune_ab_across_the_480p_boundary  FAIL ("KB-26 REGRESSED", inert 2/2)
+#   pre-existing suites stay green in the same state (playbook 1, the asymmetry form).
+# ONE root, ONE change — no per-root split to report.
+#
+# REGRESSION ENVELOPE (with the fix, same box/profile):
+#   -p zenav1-aom-encode --no-fail-fast   285 passed / 0 failed
+#   -p zenav1-aom-bench  --no-fail-fast   174 passed / 0 failed / 17 ignored
+#   AOM_FORCE_SCALAR=1 on both KB-26 e2e gates: identical verdicts, 2 passed / 0 failed
+#   cargo check --target x86_64-apple-darwin -p zenav1-aom-encode: clean
+# The fix is inert outside (allintra AND min(w,h) >= 480 AND speed >= 4): every other
+# ignored gate's cells are sub-480p or speed <= 3, so none is in the affected class.
