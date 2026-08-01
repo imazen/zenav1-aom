@@ -93,3 +93,14 @@ gen-txfm1d:
     python3 xtask/transpile_txfm1d.py --inv --lanes reference/extracted/idct4.c reference/extracted/idct8.c reference/extracted/idct16.c reference/extracted/idct32.c reference/extracted/idct64.c reference/extracted/iadst8.c reference/extracted/iadst16.c > crates/aom-dsp/src/transform/simd/inv1d_v3_gen.rs
     python3 xtask/transpile_txfm1d.py --lanes reference/extracted/fdct8.c reference/extracted/fdct16.c reference/extracted/fdct32.c reference/extracted/fdct64.c reference/extracted/fadst8.c reference/extracted/fadst16.c > crates/aom-dsp/src/transform/simd/txfm1d_v3_gen.rs
     python3 xtask/transpile_txfm1d.py --inv --lanes16 reference/extracted/idct4.c reference/extracted/idct8.c reference/extracted/idct16.c reference/extracted/idct32.c reference/extracted/idct64.c > crates/aom-dsp/src/transform/simd/inv1d_v3_i16_gen.rs
+
+# ARMED-TOOL DECODE GATE (KB-29). Byte-identity gates prove conformance only
+# where a reference stream exists and is asserted equal; every `ToggleKnobs` arm
+# aomenc cannot be driven into is a configuration the port can PRODUCE and that
+# nothing ever decodes. This runs each such arm through the REAL C decoder, the
+# port decoder, and (when `dav1d` is on PATH) dav1d, asserting all three agree.
+# The dav1d leg is wired HERE, not inside the test — the skip decision belongs
+# to the caller. Included in `just test` / `just test-fast` as an ordinary
+# aom-bench test; this recipe exists to add the dav1d leg.
+gate-armed-decode:
+    AOM_DAV1D_BIN="$(command -v dav1d || true)" cargo test --profile test-fast -p zenav1-aom-bench --test armed_tools_decode_gate -- --nocapture
