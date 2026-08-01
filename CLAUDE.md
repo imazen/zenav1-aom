@@ -2939,6 +2939,7 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   64x64/128x128. **cpu8** diverges at EVERY size from 512² up with a delta growing roughly
   linearly in area — most likely KB-12's pinned speed-8 nonrd estimate-arm class (4/64 cells
   open at 64x64) seen on real content at scale, but that attribution is NOT established.
+- **Tracked as GitHub issue #7.**
 - **Pinned** in `kb31_mandatory_tiles::mandatory_tile_split_byte_identical_across_speeds`
   (`OPEN = [(4032, 8), (4160, 8)]`, fails in both directions) and, as a verdict plus a `< 1%`
   payload bound, in `issue6_reported_sizes_encode`.
