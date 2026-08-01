@@ -2239,21 +2239,118 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
     and `AOM_FORCE_SCALAR=1`). Record: `benchmarks/kb22_qindex_arm_2026-07-31.tsv`.
   - The self-promoting pin worked as designed: the old `assert_ne!` fired with *"KB-22 HAS
     CLOSED"* rather than letting the fix pass unnoticed (playbook §5).
-- **Still open (stated plainly, not fixed here):**
-  1. **No e2e cell in the 720p..2159p band.** The arm is now modelled and unit-gated across it,
-     but the only e2e evidence is at 2160x2160, where the KB-19 arm is also live. A 1280x720 or
-     1920x1080 cq32 cell would isolate the KB-22 arm alone; it was not run (budget — a 1080p
-     speed-0 pair is minutes).
-  2. **`lpf_sf.min_lr_unit_size` / `max_lr_unit_size` (speed_features.c:3080-3108) are still
-     unmodelled.** They are framesize+qindex dependent (`is_1440p_or_larger` /
-     `is_720p_or_larger`) and LIVE for ALLINTRA at `speed >= 1`, so a `--enable-restoration=1`
-     cell at >=720p and speed>=1 is expected to diverge. The KB-22 cell uses
-     `--enable-restoration=0`, so it is not exercised here. This is a named, unmeasured gap.
+- **Both follow-ups CLOSED 2026-07-31** (record: `benchmarks/kb23_partial_sb_2026-07-31.tsv`,
+  gates: `crates/aom-bench/tests/kb22_hd_arms.rs`):
+  1. **The 720p..2159p isolation cell — DONE, byte-identical.**
+     `kb22_hd_arms::qindex_arm_720p_isolation_e2e_byte_match` encodes mirror-tiled
+     `av1-1-b8-00-quantizer-00` at **1280x720 cq32 (base_qindex 128) speed 0**: port
+     **85,441 B == C 85,441 B** (C 8.6 s, port 25.6 s). The cell is live for the KB-22 arm
+     ALONE — `min(w,h) >= 720` fires it, `< 2160` keeps KB-19's `is_4k_or_larger` arm dead,
+     and `< 1080` makes `perform_coeff_opt` resolve **2**, a `coeff_opt_thresholds` row
+     (DEFAULT_EVAL dist gate 1600) no other cell in the suite reaches (the 2160p cell resolves
+     3 / gate 864; every sub-720p cell resolves 1 / gate 3200). Bite proof: stubbing the arm
+     body to `if false && is_720p_or_larger` fails this cell at **+226 B (85,667 vs 85,441)**,
+     and the asymmetry playbook §1 asks for holds — **61 of the 62 `aom-encode` lib tests stay
+     green**, the one failure being that arm's own derivation test
+     (`qindex_dependent_speed0_hd_arm`, *"left: (1, 0) right: (2, 1)"*).
+  2. **The `min_lr_unit_size` / `max_lr_unit_size` prediction — MEASURED AND REFUTED. The
+     "still unmodelled" claim above was WRONG.** They carry no field in
+     `aom_encode::SpeedFeatures` because the port's LR search takes its whole `LrSearchSf`
+     from its caller, and that caller (`aom_bench::lr_search_sf_allintra` / `..._good`)
+     already transcribes speed_features.c:3080-3108 **including both framesize arms**.
+     Measured at 1280x720 speed 1 with `--enable-restoration=1`, `base_qindex` on both sides
+     of the `<= 96` threshold (`kb22_hd_arms::lr_unit_size_hd_speed1_e2e`): the port codes
+     exactly C's restoration unit size — cq24/q96 → `[128,128,128]` both sides, cq25/q100 →
+     `[256,256,256]` both sides — and the coded size IS the derived bound, so the fields
+     reach the bitstream correctly. Two structural notes that make the prediction wrong on
+     independent counts: for ALLINTRA at `speed >= 1` the `speed >= 1` framesize block
+     (:3085-3093) is entirely **overwritten** by the `ALLINTRA && speed >= 1` block
+     (:3095-3107), so the only surviving framesize term is `is_1440p_or_larger` — **720p is
+     not a size at which the allintra bounds move at all**; and the whole derivation is now
+     locked over speeds 0..9 × the 719/720, 1439/1440 and 96/97 boundaries in both directions
+     (allintra AND good) by `kb22_hd_arms::lr_unit_size_bounds_track_c`. The residual byte
+     delta those cells showed was **identical with restoration ON and OFF** (-3/-3 at cq24,
+     +31/+31 at cq25), i.e. entirely in the base encode — that is **KB-23**, and with it fixed
+     all four pairs are byte-identical.
   3. **`config_permutations.rs`'s size-axis headline** ("at SPEED 0 every framesize-dependent
      SPEED FEATURE below 2160p is either inert on the all-intra KEY path or gated on speed >= 1")
      surveyed `set_allintra_speed_feature_framesize_dependent` only. It is true of that gate's
      own cells (all <= 640x640), but it does NOT cover `av1_set_speed_features_qindex_dependent`,
-     whose speed-0 arm is live from 720p up. Read it as scoped to sub-720p.
+     whose speed-0 arm is live from 720p up. Read it as scoped to sub-720p. **Additional
+     scoping (KB-23):** at `speed >= 1` the size axis is not only a geometry axis — whether a
+     frame is an exact multiple of the 64-px superblock changes which speed features can fire
+     inside its edge superblocks. Every size that axis uses (64, 128, ..., 640) is SB-exact,
+     which is why it never saw KB-23.
+
+### KB-23 — Encoder: the intra-CNN partition prune fired inside FRAME-EDGE superblocks (C's `cnn_output_valid` latch was unmodelled) — FIXED ✅ 2026-07-31
+- **Found 2026-07-31 while testing KB-22's loop-restoration prediction**, from the control
+  rather than the subject: the `--enable-restoration=1` cell at 1280x720 speed 1 diverged, but
+  so did the `--enable-restoration=0` control at the identical cell, **by exactly the same byte
+  delta** (-3/-3 at cq24, +31/+31 at cq25). A divergence that is unchanged by turning the
+  feature under test off is not that feature's.
+- **Localization — the size axis, with SB-exact and partial-SB sizes INTERLEAVED so the two
+  candidate explanations were separable by the result pattern** rather than by intuition
+  (`kb22_hd_arms::kb23_partial_sb_size_and_speed_axis`, cq24 / speed 1 / mirror-tiled
+  `av1-1-b8-00-quantizer-00`):
+
+  | size | multiple of 64? | verdict |
+  |---|---|---|
+  | 132², 196², 480², 720², 1280x720 | no | **DIVERGE (5/5)** |
+  | 192², 256², 448², 512², 640², 704² | yes | MATCH (0/6) |
+
+  The split is total, and it is **not** a framesize bucket: 480x480 diverges while 512/640/704
+  all match, so no `is_480p_or_larger` arm can explain it. 132x132 diverges at an IDENTICAL
+  total length (2,407 B both) — a different tile, not a size effect. The speed sub-sweep then
+  showed the same partial-SB sizes are byte-exact at **speed 0** and divergent at 1/2/3, i.e.
+  the frame-EDGE path at `speed >= 1`.
+- **ROOT CAUSE: `cnn_output_valid`.** C runs the intra-CNN partition prune through a cached
+  output, not per block. `intra_mode_cnn_partition` (partition_strategy.c:142) COMPUTES the CNN
+  only when `bsize == BLOCK_64X64 && !part_info->cnn_output_valid` (:160-224) and every smaller
+  node returns at `if (!part_info->cnn_output_valid) return;` (:227);
+  `init_partition_search_state_params` INVALIDATES it at every BLOCK_64X64 node
+  (partition_search.c:3340-3343). The compute is additionally gated on the block being
+  whole-in-frame (`av1_is_whole_blk_in_frame`, partition_strategy.c:1784). So in a superblock
+  whose 64x64 root is NOT whole-in-frame, **C computes nothing and prunes NOTHING anywhere
+  inside it** — including the 32x32/16x16/8x8 sub-blocks that ARE whole-in-frame. The port had
+  only the per-block whole-in-frame gate (`partition_pick.rs`), so inside every frame-edge
+  superblock it CNN-pruned where C does not. Live from speed 1 up because
+  `intra_cnn_based_part_prune_level` is 0 at speed 0 (speed_features.c:387-388), which is why
+  KB-6's speed-0 partial-SB series was unaffected.
+- **FIX:** `cnn_root_whole_in_frame` in `partition_pick.rs` — the containing 64x64
+  (`(mi/16)*16`) must be whole-in-frame before the CNN block runs. Correct under SB64 and
+  SB128 alike because C's reset is per-64x64, not per-superblock; byte-inert on SB-exact
+  frames, where the containing-64 test is implied by the per-block one.
+- **Verified — and note which halves are asymmetric.**
+  - The size axis goes **5/5 divergent → 0/6**, while the SB-exact sizes stay 0/6 both ways.
+  - The speed sweep goes 6/8 divergent → 0/8 over speeds 0..3 on the partial-SB sizes.
+  - **The speed-4 deltas are BYTE-IDENTICAL pre and post** (-1 at 192², -25 at 256²; all four
+    sizes stayed divergent). That is the evidence the fix does not reach into KB-21's cpu-4/5
+    band. (Rebasing onto **KB-21 root #3, `8a0faa7`** then took speed 4 to 0/4 divergent on
+    this grid — that is KB-21's result, not KB-23's, and the gate deliberately does not assert
+    that band from here.)
+  - `encoder_gate_real_content_speed1to4_e2e`'s self-promoting pin fired and **6 cells
+    graduated on KB-23 alone**: `av1-1-b8-01-size-196x196 420 cpu{1,2,3} cq{12,32}` (196x196
+    is 3.0625 SB — a partial-SB frame). That took the 196² block 4/12 → 10/12 and the gate
+    47/60 → 53/60. They had been attributed to KB-13's interior AB/SPLIT near-tie class; that
+    attribution was wrong — the whole cpu1-3 block closed at once. **Rebasing onto KB-21 root
+    #3 (`8a0faa7`) then closed the last two, cpu4 cq{12,32}** — measured still-divergent with
+    KB-23 alone, so that pair is the COMBINATION's, not KB-23's. The 196² block is now 12/12
+    and the gate 58/60; the two remaining divergences (`quantizer-00 128x128@64,64 cpu3 cq63`,
+    `film_grain-50 64x64@96,64 cpu3 cq63`) are SB-EXACT crops and therefore not KB-23's shape.
+  - Full `aom-encode` + `aom-bench` suites green in BOTH dispatch modes (default and
+    `AOM_FORCE_SCALAR=1`).
+  - Bite proof: reverting `cnn_root_whole_in_frame` restores exactly the pre-fix table above.
+- **Why no green test could have caught it:** the config-permutation speed axis runs 64x64 and
+  128x128 only (`benchmarks/config_perm_speed_axis_2026-07-30.tsv`) — **both exact multiples of
+  64**; the KB-6 real-content partial-SB map (196x196) is speed 0, where the CNN level is 0;
+  and the one place the two DID cross — 196² at cpu1-4 — was sitting in a pinned near-tie list
+  under a different root's name. Playbook §7 thesis again (bugs live in the gap between two
+  individually-green rows), on the (frame-alignment × speed) crossing.
+- **Record:** `benchmarks/kb23_partial_sb_2026-07-31.tsv` (three states kept distinct: base
+  `999d295`, +KB-23, and rebased onto KB-21 root #3). **Residual, stated plainly:** none on this
+  grid after the rebase — but the grid is one content source at cq24, bd8 4:2:0, SB64, speeds
+  0..4. KB-21 root #2 remains open on its own terms, and the partial-SB × speed crossing has
+  not been swept at other bit depths, subsamplings, or SB128.
 
 ### KB-17 — Encoder: `use_screen_content_tools` was hardcoded `false`, so `--use-intra-default-tx-only=1` diverged on ALL screen-detected content — FIXED ✅ 2026-07-30
 - **Root cause (found 2026-07-30, one line):** `crates/aom-encode/src/speed_features.rs`'s

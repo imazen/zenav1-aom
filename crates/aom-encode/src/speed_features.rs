@@ -1027,10 +1027,21 @@ impl SpeedFeatures {
     /// base_qindex <= 108` sub-block, :2926-2935) — all inter-only, and the
     /// port carries no field for them; `zero_low_cdef_strengths` (:2889, CDEF
     /// pick, not a search knob); `min_lr_unit_size`/`max_lr_unit_size`
-    /// (:3080-3108, the loop-restoration search — framesize-dependent at
-    /// speed >= 1, so it is a live gap for a >=720p `--enable-restoration=1`
-    /// cell, tracked in KB-22 rather than modelled here since this port's LR
-    /// search takes its unit-size range from its own caller); and the
+    /// (:3080-3108, the loop-restoration unit-size search) — this struct carries
+    /// no field for them because the port's LR search takes its whole
+    /// `LrSearchSf` from its caller, and that caller
+    /// (`aom_bench::lr_search_sf_allintra` / `..._good`) transcribes that block
+    /// INCLUDING both framesize arms. KB-22 recorded this as "a live gap for a
+    /// >=720p `--enable-restoration=1` cell"; that was **measured and refuted**
+    /// 2026-07-31 — at 1280x720 speed 1 the port codes exactly C's restoration
+    /// unit size on both sides of the `base_qindex <= 96` threshold (128 and
+    /// 256), and the derivation is locked over speeds 0..9 and every framesize
+    /// and qindex boundary by `kb22_hd_arms::lr_unit_size_bounds_track_c`. Note
+    /// also that for ALLINTRA at `speed >= 1` the `speed >= 1` framesize block
+    /// (:3085-3093) is entirely OVERWRITTEN by the `ALLINTRA && speed >= 1`
+    /// block (:3095-3107), so the only surviving framesize term there is
+    /// `is_1440p_or_larger` — 720p is not a size at which the allintra bounds
+    /// move at all. And the
     /// `speed >= 2` `ext_partition_eval_thresh` / `speed >= 3`
     /// `rect_partition_eval_thresh` blocks (:2939-2973 / :2975-2985), which are already
     /// modelled by their own consumer

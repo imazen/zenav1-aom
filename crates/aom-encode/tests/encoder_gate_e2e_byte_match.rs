@@ -3493,17 +3493,37 @@ fn encoder_gate_real_content_speed1to4_e2e() {
         // +1 promoted 2026-07-30 by the KB-21 `early_term_after_none_split` root.
         "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu4 cq32",
         "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu4 cq63",
-        // 01-size-196x196 (partial-SB, multi-SB): 4/12 byte-exact (2026-07-24).
-        // These were mis-recorded as "invalid AV1" near-ties until this harness
-        // walked CEIL(mi/16) SBs over an SB-aligned, border-extended source (the
-        // KB-6 run_case partial-SB pattern); FLOOR n_sb + an unpadded buffer had
-        // dropped the partial edge SB, coding a short tile the C decoder rejects.
-        // The port ENCODER was correct all along (KB-6 speed-0 30/30). The
-        // remaining 196² cpu1-4 cq12/cq32 are genuine valid-stream near-ties.
+        // 01-size-196x196 (partial-SB, multi-SB): 4/12 byte-exact (2026-07-24),
+        // now 10/12 (2026-07-31, KB-23). These were mis-recorded as "invalid
+        // AV1" near-ties until this harness walked CEIL(mi/16) SBs over an
+        // SB-aligned, border-extended source (the KB-6 run_case partial-SB
+        // pattern); FLOOR n_sb + an unpadded buffer had dropped the partial edge
+        // SB, coding a short tile the C decoder rejects. The port ENCODER was
+        // correct all along (KB-6 speed-0 30/30).
         "av1-1-b8-01-size-196x196 420 cpu1 cq63",
         "av1-1-b8-01-size-196x196 420 cpu2 cq63",
         "av1-1-b8-01-size-196x196 420 cpu3 cq63",
         "av1-1-b8-01-size-196x196 420 cpu4 cq63",
+        // +6 promoted 2026-07-31 by KB-23: 196x196 is a PARTIAL-superblock frame
+        // (3.0625 SB), and the intra-CNN partition prune was firing inside its
+        // frame-edge superblocks where C computes no CNN at all
+        // (`cnn_output_valid`, partition_strategy.c:160/227 +
+        // partition_search.c:3340-3343). These were NOT the KB-13 interior
+        // AB/SPLIT near-tie the comment below describes — the whole cpu1-3
+        // cq12/cq32 block closed at once.
+        "av1-1-b8-01-size-196x196 420 cpu1 cq12",
+        "av1-1-b8-01-size-196x196 420 cpu1 cq32",
+        "av1-1-b8-01-size-196x196 420 cpu2 cq12",
+        "av1-1-b8-01-size-196x196 420 cpu2 cq32",
+        "av1-1-b8-01-size-196x196 420 cpu3 cq12",
+        "av1-1-b8-01-size-196x196 420 cpu3 cq32",
+        // +2 more, 2026-07-31: with the KB-23 fix ALONE these two still diverged
+        // (measured), and they closed on top of it by KB-21 root #3 (8a0faa7,
+        // the quant matrix in the SATD trellis-skip arm) — cpu4 is that band.
+        // So the pair is attributable to the COMBINATION, not to KB-23 alone.
+        // The whole 196x196 block is now byte-exact, 12/12.
+        "av1-1-b8-01-size-196x196 420 cpu4 cq12",
+        "av1-1-b8-01-size-196x196 420 cpu4 cq32",
     ];
 
     let mut results: Vec<(String, bool)> = Vec::new();

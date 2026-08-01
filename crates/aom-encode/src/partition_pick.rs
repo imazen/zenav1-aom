@@ -2420,8 +2420,19 @@ fn rd_pick_ab_part(
 /// edge-replicated (`av1_copy_and_extend_frame`). In this envelope `sb_size ==
 /// BLOCK_64X64`, so the containing 64×64 is the SB; its mi origin is `(mi_row,
 /// mi_col)` rounded down to the 16-mi (64px) grid. Reads the bd8 source (u16,
-/// 0..=255) as u8, clamping to the frame crop (`mi_{rows,cols}*4`, exact for the
-/// multiple-of-64 e2e frames — non-multiple crops would need the true width).
+/// 0..=255) as u8, clamping to the MI-ALIGNED extent (`mi_{rows,cols}*4`).
+///
+/// That clamp is **not** a crop approximation, contrary to an earlier comment
+/// here ("non-multiple crops would need the true width"): the harness's source
+/// plane is edge-replicated from the TRUE crop by `extend_plane`
+/// (`aom-bench/src/lib.rs`), exactly as C's `av1_copy_and_extend_frame` extends
+/// its own, so a read between the true crop and the MI-aligned extent returns
+/// the same replicated pixel on both sides. Since KB-23 this function is only
+/// reached from a whole-in-frame 64×64 anyway, whose window spans
+/// `[origin-1, origin+63]` with `origin + 64 <= mi_*4`. Measured: 250x250
+/// (`mi_dim(250) * 4 == 256`, so the last whole 64×64's window does read six
+/// rows past the true crop) is byte-identical to real aomenc at speed 1 —
+/// `kb22_hd_arms::kb23_partial_sb_size_and_speed_axis`.
 fn extract_intra_cnn_window(env: &SbEncodeEnv, mi_row: i32, mi_col: i32) -> Vec<u8> {
     const SB64_MIB: i32 = 16; // BLOCK_64X64 in mi units
     let sb_py = (mi_row / SB64_MIB) * SB64_MIB * 4;
@@ -2673,7 +2684,27 @@ pub fn rd_pick_partition_real(
     } else {
         0
     };
+    // KB-23: `cnn_output_valid` — C computes the CNN ONLY at a BLOCK_64X64 node
+    // and caches it (`intra_mode_cnn_partition`, partition_strategy.c:160-224);
+    // `init_partition_search_state_params` INVALIDATES it at every BLOCK_64X64
+    // node (partition_search.c:3340-3343), and every smaller node returns at
+    // `if (!part_info->cnn_output_valid) return;` (:227) rather than predicting.
+    // So when the containing 64x64 is NOT whole-in-frame — the CNN's own
+    // `av1_is_whole_blk_in_frame` gate at partition_strategy.c:1784 — nothing is
+    // computed and NO block inside that 64x64 is CNN-pruned, including the
+    // 32x32/16x16/8x8 sub-blocks that ARE whole-in-frame. The port had only the
+    // per-block gate, so inside a frame-edge superblock it pruned where C does
+    // not. Byte-inert on frames whose dimensions are exact multiples of 64 (the
+    // containing-64 test is then implied by the per-block one); measured to
+    // close 5/5 partial-SB size cells at speed 1 while leaving 6/6 SB-exact
+    // cells byte-identical (`kb22_hd_arms::speed1_size_axis_localize`).
+    // `(mi/16)*16` is the containing 64x64's mi origin; blocks are aligned to
+    // their own size, so every node <= 64x64 lies inside exactly one of them,
+    // under SB64 and SB128 alike (C's reset is per-64x64, not per-superblock).
+    let cnn_root_whole_in_frame = ((mi_row / 16) * 16 + 16) <= env.mi_rows
+        && ((mi_col / 16) * 16 + 16) <= env.mi_cols;
     if intra_cnn_based_part_prune_level != 0
+        && cnn_root_whole_in_frame
         && env.sb_size >= 12 // BLOCK_64X64
         && bsize <= 12 // BLOCK_64X64
         && bsize_at_least_8x8

@@ -1,0 +1,147 @@
+# KB-22 follow-ups + KB-23 — HD / partial-superblock encoder measurements, 2026-07-31
+# base commit  999d295 (fix(encode): KB-22 was an unmodelled arm ...)
+# host         Apple M4 Pro, Darwin 25.5.0 arm64, load avg 6.03/5.01/4.43 at start
+# build        cargo test --profile test-fast -j 4, default dispatch (aarch64 NEON live)
+#              (every row re-confirmed under AOM_FORCE_SCALAR=1 — see the .md)
+# harness      crates/aom-bench/tests/kb22_hd_arms.rs (--ignored tier)
+# content      mirror-tiled first KEY frame of av1-1-b8-00-quantizer-00, bd8 4:2:0,
+#              ALLINTRA usage=2, single KEY frame, 1 tile, stock knobs
+# reference    real libaom aom_codec_av1_cx via aom-sys-ref; compared unit is the
+#              frame-OBU payload
+# arm_state    "pre"  = origin/main 999d295
+#              "post" = + the KB-23 cnn_output_valid latch (partition_pick.rs
+#                       cnn_root_whole_in_frame)
+#
+# --- Section 1: the KB-22 720p..2159p isolation cell (item 2). ---------------
+# The `is_720p_or_larger && base_qindex <= 128` arm of
+# av1_set_speed_features_qindex_dependent (speed_features.c:2914) is live here and
+# KB-19's is_4k_or_larger arm (speed_features.c:187-189) is NOT. perform_coeff_opt
+# resolves 2 (not the 3 the 2160p cell covers, and not the 1 every sub-720p gate
+# resolves). Speed 0, so KB-23 is not live either.
+section	arm_state	test	w	h	cq	qindex	speed	port_bytes	c_bytes	delta	verdict	c_ms	port_ms
+kb22_720p	pre	qindex_arm_720p_isolation_e2e_byte_match	1280	720	32	128	0	85441	85441	0	MATCH	9948	25875
+kb22_720p	post	qindex_arm_720p_isolation_e2e_byte_match	1280	720	32	128	0	85441	85441	0	MATCH	8561	25622
+# Bite proof (stub -> fail -> restore), stubbing the arm body to
+#   `if false && is_720p_or_larger && base_qindex <= 128`:
+kb22_720p	stubbed	qindex_arm_720p_isolation_e2e_byte_match	1280	720	32	128	0	85667	85441	226	DIVERGE	8542	33300
+# and the asymmetry: 61 of the 62 aom-encode lib tests stay GREEN under that stub, the sole
+# failure being the arm's own derivation test speed_features::tests::qindex_dependent
+# _speed0_hd_arm ("left: (1, 0) right: (2, 1)"). Restored; git diff clean.
+#
+# --- Section 2: KB-23 — the speed>=1 partial-superblock divergence. ----------
+# Sizes interleave exact multiples of the 64-px superblock with non-multiples,
+# across the is_480p_or_larger and is_720p_or_larger predicates. All cq24
+# (base_qindex 96), --enable-restoration=0, speed 1.
+section	arm_state	size_class	w	h	cq	qindex	speed	port_bytes	c_bytes	delta	verdict	port_ms
+kb23_size	pre	PARTIAL-SB	132	132	24	96	1	2407	2407	0	DIVERGE	389
+kb23_size	pre	SB-exact	192	192	24	96	1	5273	5273	0	MATCH	825
+kb23_size	pre	PARTIAL-SB	196	196	24	96	1	5610	5603	7	DIVERGE	902
+kb23_size	pre	SB-exact	256	256	24	96	1	9785	9785	0	MATCH	1609
+kb23_size	pre	SB-exact	448	448	24	96	1	32162	32162	0	MATCH	5115
+kb23_size	pre	PARTIAL-SB	480	480	24	96	1	37529	37505	24	DIVERGE	5326
+kb23_size	pre	SB-exact	512	512	24	96	1	42381	42381	0	MATCH	5900
+kb23_size	pre	SB-exact	640	640	24	96	1	59643	59643	0	MATCH	8426
+kb23_size	pre	SB-exact	704	704	24	96	1	74197	74197	0	MATCH	9556
+kb23_size	pre	PARTIAL-SB	720	720	24	96	1	77820	77801	19	DIVERGE	8553
+kb23_size	pre	PARTIAL-SB	1280	720	24	96	1	137377	137380	-3	DIVERGE	15203
+# 132x132 diverges at IDENTICAL total length (2407 == 2407) — a different tile,
+# not a size effect. 480x480 diverges while 512/640/704 all match, which rules
+# out any is_480p_or_larger framesize arm as the explanation.
+kb23_size	post	PARTIAL-SB	132	132	24	96	1	2407	2407	0	MATCH	329
+kb23_size	post	SB-exact	192	192	24	96	1	5273	5273	0	MATCH	697
+kb23_size	post	PARTIAL-SB	196	196	24	96	1	5603	5603	0	MATCH	728
+kb23_size	post	SB-exact	256	256	24	96	1	9785	9785	0	MATCH	1336
+kb23_size	post	SB-exact	448	448	24	96	1	32162	32162	0	MATCH	4232
+kb23_size	post	PARTIAL-SB	480	480	24	96	1	37505	37505	0	MATCH	4715
+kb23_size	post	SB-exact	512	512	24	96	1	42381	42381	0	MATCH	5330
+kb23_size	post	SB-exact	640	640	24	96	1	59643	59643	0	MATCH	7962
+kb23_size	post	SB-exact	704	704	24	96	1	74197	74197	0	MATCH	9545
+kb23_size	post	PARTIAL-SB	720	720	24	96	1	77801	77801	0	MATCH	8470
+kb23_size	post	PARTIAL-SB	1280	720	24	96	1	137380	137380	0	MATCH	14957
+kb23_size	post	PARTIAL-SB	250	250	24	96	1	9647	9647	0	MATCH	1313
+# 250x250 was added post-fix: mi_dim(250)*4 == 256 vs a true 250-px crop, so the
+# last whole 64x64's CNN window reads 6 rows past the crop. It matches, which
+# retires the "non-multiple crops would need the true width" worry in
+# extract_intra_cnn_window (the harness's extend_plane replicates from the true
+# crop exactly as C's av1_copy_and_extend_frame does).
+# pre : PARTIAL-SB 5/5 divergent, SB-exact 0/6 divergent
+# post: PARTIAL-SB 0/6 divergent, SB-exact 0/6 divergent
+# The "pre" rows ARE the KB-23 bite proof: reverting cnn_root_whole_in_frame reproduces them
+# exactly, while every SB-exact row is byte-identical in both states.
+# Bite proofs for the derivation locks (stub -> fail -> restore, all restored, git diff clean):
+#   lr_search_sf_allintra, drop `&& !is_1440p_or_larger`
+#     -> lr_unit_size_bounds_track_c fails "ALLINTRA speed 1 2560x1440 qindex 96 ...
+#        left: (128, 128) right: (256, 256)"
+#   lr_search_sf_allintra, `qindex <= 96` -> `qindex <= 95`
+#     -> fails "ALLINTRA speed 1 64x64 qindex 96 ... left: (256, 256) right: (128, 128)"
+#
+# --- Section 3: KB-23 speed axis (same content, cq24, restoration off). ------
+section	arm_state	size_class	w	h	speed	delta	verdict
+kb23_speed	pre	PARTIAL-SB	132	132	0	0	MATCH
+kb23_speed	pre	PARTIAL-SB	132	132	1	0	DIVERGE
+kb23_speed	pre	PARTIAL-SB	132	132	2	-2	DIVERGE
+kb23_speed	pre	PARTIAL-SB	132	132	3	-14	DIVERGE
+kb23_speed	pre	PARTIAL-SB	132	132	4	-31	DIVERGE
+kb23_speed	pre	SB-exact	192	192	0	0	MATCH
+kb23_speed	pre	SB-exact	192	192	1	0	MATCH
+kb23_speed	pre	SB-exact	192	192	2	0	MATCH
+kb23_speed	pre	SB-exact	192	192	3	0	MATCH
+kb23_speed	pre	SB-exact	192	192	4	-1	DIVERGE
+kb23_speed	pre	PARTIAL-SB	196	196	0	0	MATCH
+kb23_speed	pre	PARTIAL-SB	196	196	1	7	DIVERGE
+kb23_speed	pre	PARTIAL-SB	196	196	2	-5	DIVERGE
+kb23_speed	pre	PARTIAL-SB	196	196	3	4	DIVERGE
+kb23_speed	pre	PARTIAL-SB	196	196	4	-8	DIVERGE
+kb23_speed	pre	SB-exact	256	256	0	0	MATCH
+kb23_speed	pre	SB-exact	256	256	1	0	MATCH
+kb23_speed	pre	SB-exact	256	256	2	0	MATCH
+kb23_speed	pre	SB-exact	256	256	3	0	MATCH
+kb23_speed	pre	SB-exact	256	256	4	-25	DIVERGE
+kb23_speed	post	PARTIAL-SB	132	132	0	0	MATCH
+kb23_speed	post	PARTIAL-SB	132	132	1	0	MATCH
+kb23_speed	post	PARTIAL-SB	132	132	2	0	MATCH
+kb23_speed	post	PARTIAL-SB	132	132	3	0	MATCH
+kb23_speed	post	PARTIAL-SB	132	132	4	-33	DIVERGE
+kb23_speed	post	SB-exact	192	192	0	0	MATCH
+kb23_speed	post	SB-exact	192	192	1	0	MATCH
+kb23_speed	post	SB-exact	192	192	2	0	MATCH
+kb23_speed	post	SB-exact	192	192	3	0	MATCH
+kb23_speed	post	SB-exact	192	192	4	-1	DIVERGE
+kb23_speed	post	PARTIAL-SB	196	196	0	0	MATCH
+kb23_speed	post	PARTIAL-SB	196	196	1	0	MATCH
+kb23_speed	post	PARTIAL-SB	196	196	2	0	MATCH
+kb23_speed	post	PARTIAL-SB	196	196	3	0	MATCH
+kb23_speed	post	PARTIAL-SB	196	196	4	-28	DIVERGE
+kb23_speed	post	SB-exact	256	256	0	0	MATCH
+kb23_speed	post	SB-exact	256	256	1	0	MATCH
+kb23_speed	post	SB-exact	256	256	2	0	MATCH
+kb23_speed	post	SB-exact	256	256	3	0	MATCH
+kb23_speed	post	SB-exact	256	256	4	-25	DIVERGE
+# The SB-exact speed-4 deltas are BYTE-IDENTICAL pre and post (-1 at 192x192,
+# -25 at 256x256), and speed 4 stays divergent on all four sizes: the KB-23 fix
+# does not reach into KB-21's cpu-4/5 band. That is what makes A->B attributable
+# to KB-23 alone.
+#
+# THIRD STATE, post-rebase onto 8a0faa7 (KB-21 root #3 — the quant matrix in the
+# SATD trellis-skip arm) with the KB-23 latch: the whole matrix goes clean,
+# INCLUDING speed 4 (0/8 partial-SB divergent, 0/... SB-exact divergent, speed-4
+# rows now MATCH on all four sizes). That movement is KB-21 root #3's, not
+# KB-23's — the pre/post rows above are what separate them. Re-measured in both
+# dispatch modes at that base; the size axis stays 12/12 byte-exact and the
+# LR pairs 4/4.
+#
+# --- Section 4: the KB-22 loop-restoration prediction (item 1). --------------
+# --enable-restoration=1 at 1280x720 speed 1, base_qindex on both sides of the
+# `<= 96` threshold that selects the LR unit size (speed_features.c:3095-3107).
+# The restoration-OFF control at the identical cell isolates the LR path.
+section	arm_state	cq	qindex	derived_min_max_lr_unit	c_coded_unit_size	port_coded_unit_size	lr_on_port	lr_on_c	lr_on_delta	lr_off_port	lr_off_c	lr_off_delta	c_ms	port_ms
+kb22_lr	pre	24	96	128,128	128,128,128	128,128,128	137597	137600	-3	137377	137380	-3	4644	32472
+kb22_lr	pre	25	100	256,256	256,256,256	256,256,256	129482	129451	31	129434	129403	31	4799	31286
+kb22_lr	post	24	96	128,128	128,128,128	128,128,128	137600	137600	0	137380	137380	0	4633	31058
+kb22_lr	post	25	100	256,256	256,256,256	256,256,256	129451	129451	0	129403	129403	0	4769	32086
+# THE PREDICTION DOES NOT HOLD. Even PRE-fix the port coded exactly C's
+# restoration unit size on both sides of the threshold, and the coded size IS the
+# derived bound — min_lr_unit_size/max_lr_unit_size reach the bitstream
+# correctly. The pre-fix byte delta is IDENTICAL with restoration ON and OFF
+# (-3/-3, +31/+31), i.e. entirely in the base encode: KB-23, not loop
+# restoration. Post-fix all four pairs are byte-identical.
