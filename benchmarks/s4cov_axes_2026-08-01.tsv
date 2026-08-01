@@ -1,0 +1,580 @@
+# S4 coverage-extension sweeps — imazen/zenav1-aom
+# date	2026-08-01
+# host	aarch64-apple-darwin (Darwin 25.5.0)
+# profile	cargo test --profile test-fast (debug-assertions + overflow-checks ON)
+# base	ea3bed3 (origin/main at session start); fixes landed in the same commit as this file
+# corpus	AOM_CONFORMANCE_DIR=<repo>/conformance/data (xtask/conformance.py --scope intra)
+# tests	aom-bench/tests/s4cov_qm_axis.rs, s4cov_partial_sb_axis.rs, s4cov_hd_speed_axis.rs
+#
+# Columns: axis / cell / speed / verdict / port_bytes / real_bytes / delta / note
+axis	cell	speed	verdict	port_B	real_B	delta	note
+qm-on	bd8 420 cq5	0	MATCH	1870	1870	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq5	0	MATCH	1918	1918	0	stock knobs, same cell
+qm-on	bd8 420 cq5	1	MATCH	1857	1857	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq5	1	MATCH	1937	1937	0	stock knobs, same cell
+qm-on	bd8 420 cq5	2	MATCH	1859	1859	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq5	2	MATCH	1933	1933	0	stock knobs, same cell
+qm-on	bd8 420 cq5	3	MATCH	1877	1877	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq5	3	MATCH	1911	1911	0	stock knobs, same cell
+qm-on	bd8 420 cq5	4	MATCH	1850	1850	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq5	4	MATCH	1922	1922	0	stock knobs, same cell
+qm-on	bd8 420 cq5	5	MATCH	1848	1848	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq5	5	MATCH	1933	1933	0	stock knobs, same cell
+qm-on	bd8 420 cq5	6	MATCH	1803	1803	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq5	6	MATCH	1925	1925	0	stock knobs, same cell
+qm-on	bd8 420 cq5	7	MATCH	1787	1787	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq5	7	MATCH	1901	1901	0	stock knobs, same cell
+qm-on	bd8 420 cq5	8	MATCH	1781	1781	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq5	8	MATCH	1900	1900	0	stock knobs, same cell
+qm-on	bd8 420 cq5	9	MATCH	1818	1818	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq5	9	MATCH	1978	1978	0	stock knobs, same cell
+qm-on	bd8 420 cq63	0	MATCH	28	28	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq63	0	MATCH	29	29	0	stock knobs, same cell
+qm-on	bd8 420 cq63	1	MATCH	36	36	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq63	1	MATCH	36	36	0	stock knobs, same cell
+qm-on	bd8 420 cq63	2	MATCH	36	36	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq63	2	MATCH	36	36	0	stock knobs, same cell
+qm-on	bd8 420 cq63	3	MATCH	36	36	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq63	3	MATCH	36	36	0	stock knobs, same cell
+qm-on	bd8 420 cq63	4	MATCH	36	36	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq63	4	MATCH	34	34	0	stock knobs, same cell
+qm-on	bd8 420 cq63	5	MATCH	36	36	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq63	5	MATCH	34	34	0	stock knobs, same cell
+qm-on	bd8 420 cq63	6	MATCH	37	37	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq63	6	MATCH	37	37	0	stock knobs, same cell
+qm-on	bd8 420 cq63	7	MATCH	52	52	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq63	7	MATCH	51	51	0	stock knobs, same cell
+qm-on	bd8 420 cq63	8	MATCH	53	53	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq63	8	MATCH	53	53	0	stock knobs, same cell
+qm-on	bd8 420 cq63	9	MATCH	44	44	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 420 cq63	9	MATCH	44	44	0	stock knobs, same cell
+qm-on	bd8 444 cq32	0	MATCH	622	622	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq32	0	MATCH	620	620	0	stock knobs, same cell
+qm-on	bd8 444 cq32	1	MATCH	605	605	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq32	1	MATCH	610	610	0	stock knobs, same cell
+qm-on	bd8 444 cq32	2	MATCH	601	601	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq32	2	MATCH	620	620	0	stock knobs, same cell
+qm-on	bd8 444 cq32	3	MATCH	578	578	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq32	3	MATCH	606	606	0	stock knobs, same cell
+qm-on	bd8 444 cq32	4	MATCH	587	587	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq32	4	MATCH	628	628	0	stock knobs, same cell
+qm-on	bd8 444 cq32	5	MATCH	609	609	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq32	5	MATCH	645	645	0	stock knobs, same cell
+qm-on	bd8 444 cq32	6	MATCH	600	600	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq32	6	MATCH	621	621	0	stock knobs, same cell
+qm-on	bd8 444 cq32	7	MATCH	582	582	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq32	7	MATCH	611	611	0	stock knobs, same cell
+qm-on	bd8 444 cq32	8	MATCH	592	592	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq32	8	MATCH	624	624	0	stock knobs, same cell
+qm-on	bd8 444 cq32	9	MATCH	565	565	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq32	9	MATCH	622	622	0	stock knobs, same cell
+qm-on	bd8 422 cq32	0	MATCH	567	567	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq32	0	MATCH	591	591	0	stock knobs, same cell
+qm-on	bd8 422 cq32	1	MATCH	538	538	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq32	1	MATCH	582	582	0	stock knobs, same cell
+qm-on	bd8 422 cq32	2	MATCH	550	550	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq32	2	MATCH	582	582	0	stock knobs, same cell
+qm-on	bd8 422 cq32	3	MATCH	561	561	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq32	3	MATCH	584	584	0	stock knobs, same cell
+qm-on	bd8 422 cq32	4	MATCH	570	570	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq32	4	MATCH	589	589	0	stock knobs, same cell
+qm-on	bd8 422 cq32	5	MATCH	571	571	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq32	5	MATCH	577	577	0	stock knobs, same cell
+qm-on	bd8 422 cq32	6	MATCH	555	555	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq32	6	MATCH	585	585	0	stock knobs, same cell
+qm-on	bd8 422 cq32	7	MATCH	540	540	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq32	7	MATCH	573	573	0	stock knobs, same cell
+qm-on	bd8 422 cq32	8	MATCH	547	547	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq32	8	MATCH	584	584	0	stock knobs, same cell
+qm-on	bd8 422 cq32	9	MATCH	520	520	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq32	9	MATCH	579	579	0	stock knobs, same cell
+qm-on	bd8 444 cq5	0	MATCH	2329	2329	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq5	0	MATCH	2453	2453	0	stock knobs, same cell
+qm-on	bd8 444 cq5	1	MATCH	2315	2315	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq5	1	MATCH	2464	2464	0	stock knobs, same cell
+qm-on	bd8 444 cq5	2	MATCH	2312	2312	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq5	2	MATCH	2457	2457	0	stock knobs, same cell
+qm-on	bd8 444 cq5	3	MATCH	2292	2292	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq5	3	MATCH	2457	2457	0	stock knobs, same cell
+qm-on	bd8 444 cq5	4	MATCH	2266	2266	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq5	4	MATCH	2443	2443	0	stock knobs, same cell
+qm-on	bd8 444 cq5	5	MATCH	2262	2262	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq5	5	MATCH	2454	2454	0	stock knobs, same cell
+qm-on	bd8 444 cq5	6	MATCH	2256	2256	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq5	6	MATCH	2479	2479	0	stock knobs, same cell
+qm-on	bd8 444 cq5	7	MATCH	2212	2212	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq5	7	MATCH	2426	2426	0	stock knobs, same cell
+qm-on	bd8 444 cq5	8	MATCH	2207	2207	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq5	8	MATCH	2429	2429	0	stock knobs, same cell
+qm-on	bd8 444 cq5	9	MATCH	2241	2241	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 444 cq5	9	MATCH	2478	2478	0	stock knobs, same cell
+qm-on	bd8 422 cq63	0	MATCH	30	30	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq63	0	MATCH	30	30	0	stock knobs, same cell
+qm-on	bd8 422 cq63	1	MATCH	36	36	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq63	1	MATCH	35	35	0	stock knobs, same cell
+qm-on	bd8 422 cq63	2	MATCH	37	37	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq63	2	MATCH	37	37	0	stock knobs, same cell
+qm-on	bd8 422 cq63	3	MATCH	37	37	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq63	3	MATCH	37	37	0	stock knobs, same cell
+qm-on	bd8 422 cq63	4	MATCH	38	38	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq63	4	MATCH	36	36	0	stock knobs, same cell
+qm-on	bd8 422 cq63	5	MATCH	39	39	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq63	5	MATCH	38	38	0	stock knobs, same cell
+qm-on	bd8 422 cq63	6	MATCH	38	38	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq63	6	MATCH	37	37	0	stock knobs, same cell
+qm-on	bd8 422 cq63	7	MATCH	52	52	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq63	7	MATCH	51	51	0	stock knobs, same cell
+qm-on	bd8 422 cq63	8	MATCH	53	53	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq63	8	MATCH	53	53	0	stock knobs, same cell
+qm-on	bd8 422 cq63	9	MATCH	45	45	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 422 cq63	9	MATCH	44	44	0	stock knobs, same cell
+qm-on	bd8 mono cq32	0	MATCH	484	484	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq32	0	MATCH	498	498	0	stock knobs, same cell
+qm-on	bd8 mono cq32	1	MATCH	471	471	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq32	1	MATCH	499	499	0	stock knobs, same cell
+qm-on	bd8 mono cq32	2	MATCH	477	477	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq32	2	MATCH	504	504	0	stock knobs, same cell
+qm-on	bd8 mono cq32	3	MATCH	477	477	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq32	3	MATCH	497	497	0	stock knobs, same cell
+qm-on	bd8 mono cq32	4	MATCH	473	473	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq32	4	MATCH	498	498	0	stock knobs, same cell
+qm-on	bd8 mono cq32	5	MATCH	483	483	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq32	5	MATCH	503	503	0	stock knobs, same cell
+qm-on	bd8 mono cq32	6	MATCH	471	471	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq32	6	MATCH	500	500	0	stock knobs, same cell
+qm-on	bd8 mono cq32	7	MATCH	455	455	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq32	7	MATCH	489	489	0	stock knobs, same cell
+qm-on	bd8 mono cq32	8	MATCH	459	459	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq32	8	MATCH	492	492	0	stock knobs, same cell
+qm-on	bd8 mono cq32	9	MATCH	432	432	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq32	9	MATCH	485	485	0	stock knobs, same cell
+qm-on	bd8 mono cq5	0	MATCH	1547	1547	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq5	0	MATCH	1571	1571	0	stock knobs, same cell
+qm-on	bd8 mono cq5	1	MATCH	1542	1542	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq5	1	MATCH	1556	1556	0	stock knobs, same cell
+qm-on	bd8 mono cq5	2	MATCH	1547	1547	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq5	2	MATCH	1563	1563	0	stock knobs, same cell
+qm-on	bd8 mono cq5	3	MATCH	1535	1535	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq5	3	MATCH	1559	1559	0	stock knobs, same cell
+qm-on	bd8 mono cq5	4	MATCH	1527	1527	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq5	4	MATCH	1576	1576	0	stock knobs, same cell
+qm-on	bd8 mono cq5	5	MATCH	1534	1534	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq5	5	MATCH	1564	1564	0	stock knobs, same cell
+qm-on	bd8 mono cq5	6	MATCH	1510	1510	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq5	6	MATCH	1562	1562	0	stock knobs, same cell
+qm-on	bd8 mono cq5	7	MATCH	1497	1497	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq5	7	MATCH	1559	1559	0	stock knobs, same cell
+qm-on	bd8 mono cq5	8	MATCH	1491	1491	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq5	8	MATCH	1558	1558	0	stock knobs, same cell
+qm-on	bd8 mono cq5	9	MATCH	1502	1502	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd8 mono cq5	9	MATCH	1595	1595	0	stock knobs, same cell
+qm-on	bd10 420 cq32	0	MATCH	251	251	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq32	0	MATCH	247	247	0	stock knobs, same cell
+qm-on	bd10 420 cq32	1	DIVERGE	273	251	22	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq32	1	DIVERGE	263	254	9	stock knobs, same cell
+qm-on	bd10 420 cq32	2	DIVERGE	264	245	19	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq32	2	DIVERGE	259	247	12	stock knobs, same cell
+qm-on	bd10 420 cq32	3	DIVERGE	270	244	26	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq32	3	DIVERGE	267	252	15	stock knobs, same cell
+qm-on	bd10 420 cq32	4	DIVERGE	268	259	9	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq32	4	DIVERGE	281	259	22	stock knobs, same cell
+qm-on	bd10 420 cq32	5	DIVERGE	266	258	8	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq32	5	DIVERGE	274	261	13	stock knobs, same cell
+qm-on	bd10 420 cq32	6	DIVERGE	272	263	9	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq32	6	DIVERGE	270	259	11	stock knobs, same cell
+qm-on	bd10 420 cq32	7	MATCH	253	253	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq32	7	MATCH	266	266	0	stock knobs, same cell
+qm-on	bd10 420 cq32	8	MATCH	254	254	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq32	8	MATCH	268	268	0	stock knobs, same cell
+qm-on	bd10 420 cq32	9	MATCH	277	277	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq32	9	MATCH	293	293	0	stock knobs, same cell
+qm-on	bd10 420 cq5	0	MATCH	1132	1132	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq5	0	MATCH	1159	1159	0	stock knobs, same cell
+qm-on	bd10 420 cq5	1	DIVERGE	1127	1112	15	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq5	1	DIVERGE	1181	1162	19	stock knobs, same cell
+qm-on	bd10 420 cq5	2	DIVERGE	1155	1129	26	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq5	2	DIVERGE	1166	1164	2	stock knobs, same cell
+qm-on	bd10 420 cq5	3	DIVERGE	1117	1120	-3	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq5	3	DIVERGE	1168	1162	6	stock knobs, same cell
+qm-on	bd10 420 cq5	4	DIVERGE	1121	1118	3	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq5	4	DIVERGE	1153	1164	-11	stock knobs, same cell
+qm-on	bd10 420 cq5	5	DIVERGE	1120	1132	-12	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq5	5	DIVERGE	1150	1154	-4	stock knobs, same cell
+qm-on	bd10 420 cq5	6	DIVERGE	1151	1156	-5	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq5	6	DIVERGE	1205	1199	6	stock knobs, same cell
+qm-on	bd10 420 cq5	7	MATCH	1107	1107	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq5	7	MATCH	1166	1166	0	stock knobs, same cell
+qm-on	bd10 420 cq5	8	MATCH	1125	1125	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq5	8	MATCH	1198	1198	0	stock knobs, same cell
+qm-on	bd10 420 cq5	9	MATCH	1229	1229	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq5	9	MATCH	1322	1322	0	stock knobs, same cell
+qm-on	bd10 420 cq63	0	MATCH	28	28	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq63	0	MATCH	27	27	0	stock knobs, same cell
+qm-on	bd10 420 cq63	1	MATCH	31	31	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq63	1	MATCH	31	31	0	stock knobs, same cell
+qm-on	bd10 420 cq63	2	MATCH	31	31	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq63	2	MATCH	31	31	0	stock knobs, same cell
+qm-on	bd10 420 cq63	3	MATCH	34	34	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq63	3	MATCH	33	33	0	stock knobs, same cell
+qm-on	bd10 420 cq63	4	MATCH	34	34	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq63	4	MATCH	33	33	0	stock knobs, same cell
+qm-on	bd10 420 cq63	5	MATCH	31	31	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq63	5	MATCH	29	29	0	stock knobs, same cell
+qm-on	bd10 420 cq63	6	DIVERGE	50	45	5	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq63	6	DIVERGE	50	44	6	stock knobs, same cell
+qm-on	bd10 420 cq63	7	MATCH	48	48	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq63	7	MATCH	47	47	0	stock knobs, same cell
+qm-on	bd10 420 cq63	8	MATCH	49	49	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq63	8	MATCH	48	48	0	stock knobs, same cell
+qm-on	bd10 420 cq63	9	MATCH	45	45	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 420 cq63	9	MATCH	44	44	0	stock knobs, same cell
+qm-on	bd10 444 cq32	0	MATCH	267	267	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 444 cq32	0	MATCH	269	269	0	stock knobs, same cell
+qm-on	bd10 444 cq32	1	DIVERGE	281	274	7	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 444 cq32	1	DIVERGE	291	278	13	stock knobs, same cell
+qm-on	bd10 444 cq32	2	DIVERGE	279	266	13	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 444 cq32	2	DIVERGE	281	281	0	stock knobs, same cell
+qm-on	bd10 444 cq32	3	DIVERGE	287	261	26	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 444 cq32	3	DIVERGE	291	276	15	stock knobs, same cell
+qm-on	bd10 444 cq32	4	DIVERGE	283	286	-3	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 444 cq32	4	DIVERGE	298	275	23	stock knobs, same cell
+qm-on	bd10 444 cq32	5	DIVERGE	290	279	11	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 444 cq32	5	DIVERGE	292	283	9	stock knobs, same cell
+qm-on	bd10 444 cq32	6	DIVERGE	304	286	18	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 444 cq32	6	DIVERGE	304	295	9	stock knobs, same cell
+qm-on	bd10 444 cq32	7	MATCH	279	279	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 444 cq32	7	MATCH	301	301	0	stock knobs, same cell
+qm-on	bd10 444 cq32	8	MATCH	279	279	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 444 cq32	8	MATCH	303	303	0	stock knobs, same cell
+qm-on	bd10 444 cq32	9	MATCH	318	318	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 444 cq32	9	MATCH	332	332	0	stock knobs, same cell
+qm-on	bd10 mono cq32	0	MATCH	208	208	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 mono cq32	0	MATCH	205	205	0	stock knobs, same cell
+qm-on	bd10 mono cq32	1	DIVERGE	228	209	19	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 mono cq32	1	DIVERGE	226	212	14	stock knobs, same cell
+qm-on	bd10 mono cq32	2	DIVERGE	225	208	17	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 mono cq32	2	DIVERGE	223	214	9	stock knobs, same cell
+qm-on	bd10 mono cq32	3	DIVERGE	225	214	11	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 mono cq32	3	DIVERGE	219	214	5	stock knobs, same cell
+qm-on	bd10 mono cq32	4	DIVERGE	219	221	-2	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 mono cq32	4	DIVERGE	220	216	4	stock knobs, same cell
+qm-on	bd10 mono cq32	5	DIVERGE	215	222	-7	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 mono cq32	5	DIVERGE	229	209	20	stock knobs, same cell
+qm-on	bd10 mono cq32	6	DIVERGE	230	217	13	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 mono cq32	6	DIVERGE	230	230	0	stock knobs, same cell
+qm-on	bd10 mono cq32	7	MATCH	208	208	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 mono cq32	7	MATCH	225	225	0	stock knobs, same cell
+qm-on	bd10 mono cq32	8	MATCH	208	208	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 mono cq32	8	MATCH	222	222	0	stock knobs, same cell
+qm-on	bd10 mono cq32	9	MATCH	230	230	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd10 mono cq32	9	MATCH	241	241	0	stock knobs, same cell
+qm-on	bd12 420 cq32	0	MATCH	216	216	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq32	0	MATCH	221	221	0	stock knobs, same cell
+qm-on	bd12 420 cq32	1	DIVERGE	248	216	32	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq32	1	DIVERGE	253	231	22	stock knobs, same cell
+qm-on	bd12 420 cq32	2	DIVERGE	251	214	37	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq32	2	DIVERGE	253	222	31	stock knobs, same cell
+qm-on	bd12 420 cq32	3	DIVERGE	252	228	24	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq32	3	DIVERGE	252	224	28	stock knobs, same cell
+qm-on	bd12 420 cq32	4	DIVERGE	245	229	16	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq32	4	DIVERGE	264	237	27	stock knobs, same cell
+qm-on	bd12 420 cq32	5	DIVERGE	245	233	12	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq32	5	DIVERGE	251	234	17	stock knobs, same cell
+qm-on	bd12 420 cq32	6	DIVERGE	243	230	13	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq32	6	DIVERGE	263	240	23	stock knobs, same cell
+qm-on	bd12 420 cq32	7	MATCH	247	247	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq32	7	MATCH	254	254	0	stock knobs, same cell
+qm-on	bd12 420 cq32	8	MATCH	243	243	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq32	8	MATCH	255	255	0	stock knobs, same cell
+qm-on	bd12 420 cq32	9	MATCH	268	268	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq32	9	MATCH	284	284	0	stock knobs, same cell
+qm-on	bd12 420 cq5	0	MATCH	1200	1200	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq5	0	MATCH	1257	1257	0	stock knobs, same cell
+qm-on	bd12 420 cq5	1	DIVERGE	1258	1207	51	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq5	1	DIVERGE	1287	1276	11	stock knobs, same cell
+qm-on	bd12 420 cq5	2	DIVERGE	1259	1209	50	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq5	2	DIVERGE	1300	1286	14	stock knobs, same cell
+qm-on	bd12 420 cq5	3	DIVERGE	1233	1200	33	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq5	3	DIVERGE	1301	1254	47	stock knobs, same cell
+qm-on	bd12 420 cq5	4	DIVERGE	1246	1227	19	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq5	4	DIVERGE	1303	1275	28	stock knobs, same cell
+qm-on	bd12 420 cq5	5	DIVERGE	1258	1233	25	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq5	5	DIVERGE	1316	1272	44	stock knobs, same cell
+qm-on	bd12 420 cq5	6	DIVERGE	1253	1263	-10	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq5	6	DIVERGE	1317	1316	1	stock knobs, same cell
+qm-on	bd12 420 cq5	7	MATCH	1218	1218	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq5	7	MATCH	1283	1283	0	stock knobs, same cell
+qm-on	bd12 420 cq5	8	MATCH	1244	1244	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq5	8	MATCH	1296	1296	0	stock knobs, same cell
+qm-on	bd12 420 cq5	9	MATCH	1333	1333	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq5	9	MATCH	1427	1427	0	stock knobs, same cell
+qm-on	bd12 420 cq63	0	MATCH	19	19	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq63	0	MATCH	18	18	0	stock knobs, same cell
+qm-on	bd12 420 cq63	1	MATCH	24	24	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq63	1	MATCH	23	23	0	stock knobs, same cell
+qm-on	bd12 420 cq63	2	MATCH	24	24	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq63	2	MATCH	23	23	0	stock knobs, same cell
+qm-on	bd12 420 cq63	3	MATCH	25	25	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq63	3	MATCH	24	24	0	stock knobs, same cell
+qm-on	bd12 420 cq63	4	MATCH	23	23	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq63	4	MATCH	22	22	0	stock knobs, same cell
+qm-on	bd12 420 cq63	5	MATCH	23	23	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq63	5	MATCH	22	22	0	stock knobs, same cell
+qm-on	bd12 420 cq63	6	DIVERGE	40	37	3	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq63	6	DIVERGE	39	36	3	stock knobs, same cell
+qm-on	bd12 420 cq63	7	MATCH	48	48	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq63	7	MATCH	47	47	0	stock knobs, same cell
+qm-on	bd12 420 cq63	8	MATCH	47	47	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq63	8	MATCH	46	46	0	stock knobs, same cell
+qm-on	bd12 420 cq63	9	MATCH	43	43	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 420 cq63	9	MATCH	42	42	0	stock knobs, same cell
+qm-on	bd12 mono cq32	0	MATCH	188	188	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 mono cq32	0	MATCH	185	185	0	stock knobs, same cell
+qm-on	bd12 mono cq32	1	DIVERGE	207	187	20	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 mono cq32	1	DIVERGE	211	194	17	stock knobs, same cell
+qm-on	bd12 mono cq32	2	DIVERGE	208	187	21	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 mono cq32	2	DIVERGE	211	193	18	stock knobs, same cell
+qm-on	bd12 mono cq32	3	DIVERGE	212	193	19	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 mono cq32	3	DIVERGE	212	189	23	stock knobs, same cell
+qm-on	bd12 mono cq32	4	DIVERGE	209	192	17	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 mono cq32	4	DIVERGE	217	202	15	stock knobs, same cell
+qm-on	bd12 mono cq32	5	DIVERGE	201	193	8	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 mono cq32	5	DIVERGE	215	200	15	stock knobs, same cell
+qm-on	bd12 mono cq32	6	DIVERGE	210	196	14	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 mono cq32	6	DIVERGE	228	202	26	stock knobs, same cell
+qm-on	bd12 mono cq32	7	MATCH	205	205	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 mono cq32	7	MATCH	215	215	0	stock knobs, same cell
+qm-on	bd12 mono cq32	8	MATCH	202	202	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 mono cq32	8	MATCH	210	210	0	stock knobs, same cell
+qm-on	bd12 mono cq32	9	MATCH	224	224	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 mono cq32	9	MATCH	235	235	0	stock knobs, same cell
+qm-on	bd12 444 cq32	0	MATCH	236	236	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 444 cq32	0	MATCH	249	249	0	stock knobs, same cell
+qm-on	bd12 444 cq32	1	DIVERGE	270	242	28	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 444 cq32	1	DIVERGE	272	253	19	stock knobs, same cell
+qm-on	bd12 444 cq32	2	DIVERGE	270	244	26	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 444 cq32	2	DIVERGE	278	242	36	stock knobs, same cell
+qm-on	bd12 444 cq32	3	DIVERGE	271	253	18	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 444 cq32	3	DIVERGE	285	250	35	stock knobs, same cell
+qm-on	bd12 444 cq32	4	DIVERGE	269	254	15	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 444 cq32	4	DIVERGE	284	254	30	stock knobs, same cell
+qm-on	bd12 444 cq32	5	DIVERGE	277	261	16	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 444 cq32	5	DIVERGE	283	257	26	stock knobs, same cell
+qm-on	bd12 444 cq32	6	DIVERGE	274	256	18	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 444 cq32	6	DIVERGE	289	265	24	stock knobs, same cell
+qm-on	bd12 444 cq32	7	MATCH	274	274	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 444 cq32	7	MATCH	284	284	0	stock knobs, same cell
+qm-on	bd12 444 cq32	8	MATCH	274	274	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 444 cq32	8	MATCH	286	286	0	stock knobs, same cell
+qm-on	bd12 444 cq32	9	MATCH	307	307	0	--enable-qm=1 --qm-min=4 --qm-max=10
+qm-off-control	bd12 444 cq32	9	MATCH	318	318	0	stock knobs, same cell
+partial-sb-speed-bd10	132x132 cq24 bd10	7	MATCH			+0	PARTIAL-SB
+partial-sb-speed-bd10	192x192 cq24 bd10	0	MATCH			+0	SB-exact
+partial-sb-speed-bd10	192x192 cq24 bd10	7	MATCH			+0	SB-exact
+partial-sb-speed-bd10	196x196 cq24 bd10	0	MATCH			+0	PARTIAL-SB
+partial-sb-speed-bd10	196x196 cq24 bd10	7	MATCH			+0	PARTIAL-SB
+partial-sb-speed-bd10	256x256 cq24 bd10	0	MATCH			+0	SB-exact
+partial-sb-speed-bd10	256x256 cq24 bd10	7	MATCH			+0	SB-exact
+partial-sb-speed-mono	132x132 cq24 mono	1	MATCH			+0	PARTIAL-SB
+partial-sb-speed-mono	132x132 cq24 mono	2	MATCH			+0	PARTIAL-SB
+partial-sb-speed-mono	132x132 cq24 mono	3	MATCH			+0	PARTIAL-SB
+partial-sb-speed-mono	132x132 cq24 mono	4	MATCH			+0	PARTIAL-SB
+partial-sb-speed-mono	132x132 cq24 mono	5	MATCH			+0	PARTIAL-SB
+partial-sb-speed-mono	132x132 cq24 mono	6	MATCH			+0	PARTIAL-SB
+partial-sb-speed-mono	132x132 cq24 mono	7	MATCH			+0	PARTIAL-SB
+partial-sb-speed-mono	192x192 cq24 mono	0	DIVERGE			-53	SB-exact
+partial-sb-speed-mono	192x192 cq24 mono	1	MATCH			+0	SB-exact
+partial-sb-speed-mono	192x192 cq24 mono	2	MATCH			+0	SB-exact
+partial-sb-speed-mono	192x192 cq24 mono	3	MATCH			+0	SB-exact
+partial-sb-speed-mono	192x192 cq24 mono	4	MATCH			+0	SB-exact
+partial-sb-speed-mono	192x192 cq24 mono	5	MATCH			+0	SB-exact
+partial-sb-speed-mono	192x192 cq24 mono	6	MATCH			+0	SB-exact
+partial-sb-speed-mono	192x192 cq24 mono	7	MATCH			+0	SB-exact
+partial-sb-speed-mono	196x196 cq24 mono	0	DIVERGE			+7	PARTIAL-SB
+partial-sb-speed-mono	196x196 cq24 mono	1	MATCH			+0	PARTIAL-SB
+partial-sb-speed-mono	196x196 cq24 mono	2	MATCH			+0	PARTIAL-SB
+partial-sb-speed-mono	196x196 cq24 mono	3	MATCH			+0	PARTIAL-SB
+partial-sb-speed-mono	196x196 cq24 mono	4	MATCH			+0	PARTIAL-SB
+partial-sb-speed-mono	196x196 cq24 mono	5	MATCH			+0	PARTIAL-SB
+partial-sb-speed-mono	196x196 cq24 mono	6	MATCH			+0	PARTIAL-SB
+partial-sb-speed-mono	196x196 cq24 mono	7	MATCH			+0	PARTIAL-SB
+partial-sb-speed-mono	256x256 cq24 mono	0	DIVERGE			+11	SB-exact
+partial-sb-speed-mono	256x256 cq24 mono	1	MATCH			+0	SB-exact
+partial-sb-speed-mono	256x256 cq24 mono	2	MATCH			+0	SB-exact
+partial-sb-speed-mono	256x256 cq24 mono	3	MATCH			+0	SB-exact
+partial-sb-speed-mono	256x256 cq24 mono	4	MATCH			+0	SB-exact
+partial-sb-speed-mono	256x256 cq24 mono	5	MATCH			+0	SB-exact
+partial-sb-speed-mono	256x256 cq24 mono	6	MATCH			+0	SB-exact
+partial-sb-speed-mono	256x256 cq24 mono	7	MATCH			+0	SB-exact
+partial-sb-speed-444	132x132 cq24 444	0	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	132x132 cq24 444	1	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	132x132 cq24 444	2	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	132x132 cq24 444	3	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	132x132 cq24 444	4	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	132x132 cq24 444	5	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	132x132 cq24 444	6	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	132x132 cq24 444	7	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	192x192 cq24 444	0	MATCH			+0	SB-exact
+partial-sb-speed-444	192x192 cq24 444	1	MATCH			+0	SB-exact
+partial-sb-speed-444	192x192 cq24 444	2	MATCH			+0	SB-exact
+partial-sb-speed-444	192x192 cq24 444	3	MATCH			+0	SB-exact
+partial-sb-speed-444	192x192 cq24 444	4	MATCH			+0	SB-exact
+partial-sb-speed-444	192x192 cq24 444	5	MATCH			+0	SB-exact
+partial-sb-speed-444	192x192 cq24 444	6	MATCH			+0	SB-exact
+partial-sb-speed-444	192x192 cq24 444	7	MATCH			+0	SB-exact
+partial-sb-speed-444	196x196 cq24 444	0	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	196x196 cq24 444	1	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	196x196 cq24 444	2	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	196x196 cq24 444	3	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	196x196 cq24 444	4	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	196x196 cq24 444	5	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	196x196 cq24 444	6	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	196x196 cq24 444	7	MATCH			+0	PARTIAL-SB
+partial-sb-speed-444	256x256 cq24 444	0	MATCH			+0	SB-exact
+partial-sb-speed-444	256x256 cq24 444	1	MATCH			+0	SB-exact
+partial-sb-speed-444	256x256 cq24 444	2	MATCH			+0	SB-exact
+partial-sb-speed-444	256x256 cq24 444	3	MATCH			+0	SB-exact
+partial-sb-speed-444	256x256 cq24 444	4	MATCH			+0	SB-exact
+partial-sb-speed-444	256x256 cq24 444	5	MATCH			+0	SB-exact
+partial-sb-speed-444	256x256 cq24 444	6	MATCH			+0	SB-exact
+partial-sb-speed-444	256x256 cq24 444	7	MATCH			+0	SB-exact
+partial-sb-speed-422	132x132 cq24 422	0	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	132x132 cq24 422	1	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	132x132 cq24 422	2	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	132x132 cq24 422	3	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	132x132 cq24 422	4	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	132x132 cq24 422	5	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	132x132 cq24 422	6	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	132x132 cq24 422	7	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	192x192 cq24 422	0	MATCH			+0	SB-exact
+partial-sb-speed-422	192x192 cq24 422	1	MATCH			+0	SB-exact
+partial-sb-speed-422	192x192 cq24 422	2	MATCH			+0	SB-exact
+partial-sb-speed-422	192x192 cq24 422	3	MATCH			+0	SB-exact
+partial-sb-speed-422	192x192 cq24 422	4	MATCH			+0	SB-exact
+partial-sb-speed-422	192x192 cq24 422	5	MATCH			+0	SB-exact
+partial-sb-speed-422	192x192 cq24 422	6	MATCH			+0	SB-exact
+partial-sb-speed-422	192x192 cq24 422	7	MATCH			+0	SB-exact
+partial-sb-speed-422	196x196 cq24 422	0	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	196x196 cq24 422	1	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	196x196 cq24 422	2	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	196x196 cq24 422	3	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	196x196 cq24 422	4	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	196x196 cq24 422	5	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	196x196 cq24 422	6	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	196x196 cq24 422	7	MATCH			+0	PARTIAL-SB
+partial-sb-speed-422	256x256 cq24 422	0	MATCH			+0	SB-exact
+partial-sb-speed-422	256x256 cq24 422	1	MATCH			+0	SB-exact
+partial-sb-speed-422	256x256 cq24 422	2	MATCH			+0	SB-exact
+partial-sb-speed-422	256x256 cq24 422	3	MATCH			+0	SB-exact
+partial-sb-speed-422	256x256 cq24 422	4	MATCH			+0	SB-exact
+partial-sb-speed-422	256x256 cq24 422	5	MATCH			+0	SB-exact
+partial-sb-speed-422	256x256 cq24 422	6	MATCH			+0	SB-exact
+partial-sb-speed-422	256x256 cq24 422	7	MATCH			+0	SB-exact
+sb128-partial-sb-speed	128x128 cq24 sb128	1	MATCH			+0	SB-exact
+sb128-partial-sb-speed	128x128 cq24 sb128	2	MATCH			+0	SB-exact
+sb128-partial-sb-speed	128x128 cq24 sb128	3	MATCH			+0	SB-exact
+sb128-partial-sb-speed	128x128 cq24 sb128	4	MATCH			+0	SB-exact
+sb128-partial-sb-speed	128x128 cq24 sb128	5	MATCH			+0	SB-exact
+sb128-partial-sb-speed	128x128 cq24 sb128	6	MATCH			+0	SB-exact
+sb128-partial-sb-speed	128x128 cq24 sb128	7	MATCH			+0	SB-exact
+sb128-partial-sb-speed	132x132 cq24 sb128	0	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	132x132 cq24 sb128	1	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	132x132 cq24 sb128	2	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	132x132 cq24 sb128	3	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	132x132 cq24 sb128	4	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	132x132 cq24 sb128	5	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	132x132 cq24 sb128	6	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	132x132 cq24 sb128	7	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	192x192 cq24 sb128	0	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	192x192 cq24 sb128	1	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	192x192 cq24 sb128	2	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	192x192 cq24 sb128	3	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	192x192 cq24 sb128	4	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	192x192 cq24 sb128	5	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	192x192 cq24 sb128	6	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	192x192 cq24 sb128	7	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	196x196 cq24 sb128	0	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	196x196 cq24 sb128	1	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	196x196 cq24 sb128	2	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	196x196 cq24 sb128	3	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	196x196 cq24 sb128	4	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	196x196 cq24 sb128	5	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	196x196 cq24 sb128	6	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	196x196 cq24 sb128	7	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	256x256 cq24 sb128	0	MATCH			+0	SB-exact
+sb128-partial-sb-speed	256x256 cq24 sb128	1	MATCH			+0	SB-exact
+sb128-partial-sb-speed	256x256 cq24 sb128	2	MATCH			+0	SB-exact
+sb128-partial-sb-speed	256x256 cq24 sb128	3	MATCH			+0	SB-exact
+sb128-partial-sb-speed	256x256 cq24 sb128	4	MATCH			+0	SB-exact
+sb128-partial-sb-speed	256x256 cq24 sb128	5	MATCH			+0	SB-exact
+sb128-partial-sb-speed	256x256 cq24 sb128	6	MATCH			+0	SB-exact
+sb128-partial-sb-speed	256x256 cq24 sb128	7	MATCH			+0	SB-exact
+sb128-partial-sb-speed	320x320 cq24 sb128	0	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	320x320 cq24 sb128	1	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	320x320 cq24 sb128	2	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	320x320 cq24 sb128	3	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	320x320 cq24 sb128	4	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	320x320 cq24 sb128	5	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	320x320 cq24 sb128	6	MATCH			+0	PARTIAL-SB
+sb128-partial-sb-speed	320x320 cq24 sb128	7	MATCH			+0	PARTIAL-SB
+hd-speed	640x640 cq24	2	OK			+0	<720p
+hd-speed	640x640 cq24	3	OK			+0	<720p
+hd-speed	640x640 cq24	4	DIVERGE			-33	<720p
+hd-speed	640x640 cq24	5	DIVERGE			-23	<720p
+hd-speed	640x640 cq24	6	DIVERGE			-23	<720p
+hd-speed	640x640 cq24	7	DIVERGE			-3	<720p
+hd-speed	640x640 cq40	1	OK			+0	<720p
+hd-speed	640x640 cq40	2	OK			+0	<720p
+hd-speed	640x640 cq40	3	OK			+0	<720p
+hd-speed	640x640 cq40	4	DIVERGE			+133	<720p
+hd-speed	640x640 cq40	5	DIVERGE			-26	<720p
+hd-speed	640x640 cq40	6	DIVERGE			-59	<720p
+hd-speed	640x640 cq40	7	OK			+0	<720p
+hd-speed	1280x720 cq24	1	OK			+0	>=720p
+hd-speed	1280x720 cq24	2	OK			+0	>=720p
+hd-speed	1280x720 cq24	3	OK			+0	>=720p
+hd-speed	1280x720 cq24	4	DIVERGE			-111	>=720p
+hd-speed	1280x720 cq24	5	DIVERGE			+152	>=720p
+hd-speed	1280x720 cq24	6	DIVERGE			-37	>=720p
+hd-speed	1280x720 cq24	7	PANIC			+0	>=720p
+hd-speed	1280x720 cq40	1	OK			+0	>=720p
+hd-speed	1280x720 cq40	2	OK			+0	>=720p
+hd-speed	1280x720 cq40	3	OK			+0	>=720p
+hd-speed	1280x720 cq40	4	DIVERGE			+22	>=720p
+hd-speed	1280x720 cq40	5	DIVERGE			+110	>=720p
+hd-speed	1280x720 cq40	6	DIVERGE			-72	>=720p
+hd-speed	1280x720 cq40	7	PANIC			+0	>=720p
+large-frame-size-ladder	320x320 cq24	4	OK			+0	SB-exact; is_480p_or_larger boundary at 448->512
+large-frame-size-ladder	384x384 cq24	4	OK			+0	SB-exact; is_480p_or_larger boundary at 448->512
+large-frame-size-ladder	448x448 cq24	4	OK			+0	SB-exact; is_480p_or_larger boundary at 448->512
+large-frame-size-ladder	512x512 cq24	4	DIVERGE			-28	SB-exact; is_480p_or_larger boundary at 448->512
+large-frame-size-ladder	576x576 cq24	4	DIVERGE			+29	SB-exact; is_480p_or_larger boundary at 448->512
+large-frame-size-ladder	640x640 cq24	4	DIVERGE			-33	SB-exact; is_480p_or_larger boundary at 448->512
+#
+# --- tx-stats prune A/B across the is_480p_or_larger boundary (KB-26 handoff) ---
+# tx_stats_prune_ab_across_the_480p_boundary, cq24, bd8 4:2:0
+# cell	speed	prune-on	prune-off	prune changes bitstream?
+# 448x448	2	MATCH +0	MATCH +0	no  (correctly inert below 480p)
+# 448x448	3	MATCH +0	MATCH +0	no
+# 448x448	4	MATCH +0	MATCH +0	no
+# 448x448	5	MATCH +0	MATCH +0	no
+# 512x512	2	MATCH +0	DIVERGE -100	YES (load-bearing)
+# 512x512	3	MATCH +0	DIVERGE -61	YES (load-bearing)
+# 512x512	4	DIVERGE -28	DIVERGE -28	NO  (byte-identical -> INERT; the anomaly)
+# 512x512	5	DIVERGE +106	DIVERGE +106	NO  (byte-identical -> INERT)
+#
+# --- monochrome localizer (KB-27) ---
+# 64x64 mono cpu0, dense cq sweep 18..30: DIVERGE at cq24 ONLY (-5 B, first payload diff at byte 2)
+# 64x64 mono cq24, speeds 0..7:            DIVERGE at cpu0 ONLY; 4:2:0 control clean at every speed
+# content scan (5 crops x cq22..26 x {mono,420} = 50 cells): exactly 1 divergent cell
+#
+# --- envelope after the KB-24 + KB-25 fixes ---
+# cargo test --profile test-fast -p zenav1-aom-encode -p zenav1-aom-bench
+#   default dispatch    457 passed / 0 failed / 17 ignored
+#   AOM_FORCE_SCALAR=1  457 passed / 0 failed / 17 ignored
+# The three new --ignored sweeps also re-run clean under AOM_FORCE_SCALAR=1 (8/8 tests).
+#
+# --- bite proofs ---
+# KB-24 both halves reverted -> sb128 axis 12/48 byte-exact, 36 panics; mono/444/422/bd10 UNCHANGED
+# KB-24 each half reverted alone -> 48/48, 0 panics (two spellings of one fix on this grid; stated in KB-24)
+# KB-25 reverted -> a DIFFERENT set: bd10 132^2 cpu7, mono 196^2 cpu7, 444 196^2 cpu7, sb128 196^2 cpu7

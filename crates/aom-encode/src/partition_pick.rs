@@ -2527,10 +2527,12 @@ pub fn rd_pick_partition_real(
     bsize: usize,
     mut best_rdc: PartRdStats,
     pc_index: usize,
-    // `x->part_search_info.quad_tree_idx` — the block's position in the SB's
-    // quad-tree (0 at the 64×64 SB root; a SPLIT into child `idx` recurses with
-    // `4*quad_tree_idx + idx + 1`, partition_search.c:4574). Feeds the intra
-    // CNN partition prune's per-sub-block feature selection.
+    // `x->part_search_info.quad_tree_idx` — the block's position in the
+    // **64×64's** quad-tree (0 at every BLOCK_64X64 node; a SPLIT into child
+    // `idx` recurses with `4*quad_tree_idx + idx + 1`, partition_search.c:4574).
+    // Feeds the intra CNN partition prune's per-sub-block feature selection.
+    // NOTE the anchor is the 64×64, NOT the superblock — see the re-anchoring
+    // at the top of the body.
     quad_tree_idx: i32,
     // OUT: the NONE-arm winner's `(mode, use_filter_intra, filter_intra_mode)`
     // — C's `pc_tree->split[i]->none->mic` the parent's AB mode cache reads
@@ -2562,6 +2564,26 @@ pub fn rd_pick_partition_real(
     if let Some(out) = none_rd_out.as_deref_mut() {
         *out = 0;
     }
+    // `init_partition_search_state_params` re-anchors the intra-CNN quad-tree
+    // index at EVERY BLOCK_64X64 node, not at the superblock root:
+    //   `if (frame_is_intra_only(cm) && bsize == BLOCK_64X64) {
+    //      part_search_state->intra_part_info->quad_tree_idx = 0;
+    //      part_search_state->intra_part_info->cnn_output_valid = 0; }`
+    // (partition_search.c:3339-3343; the same pair is repeated at :5779-5782
+    // under `must_find_valid_partition`, which the port models as always
+    // false). The two facts are one design: the CNN is computed per 64x64 and
+    // its features are selected by the block's position WITHIN that 64x64, so
+    // the index has to restart there. Under SB64 the 64x64 IS the superblock
+    // and seeding 0 at the SB root is equivalent — under `--sb-size=128` it is
+    // not, and the 64x64 children of a 128 root would carry 1..4 instead of 0,
+    // walking `quad_to_linear_1[]` (len 4) off its end at their 32x32 children.
+    // Byte-inert at SB64: the root already arrives with 0 and no descendant is
+    // BLOCK_64X64.
+    let quad_tree_idx = if cfg.allintra && bsize == 12 {
+        0
+    } else {
+        quad_tree_idx
+    };
     if best_rdc.rdcost < 0 {
         return (None, PartRdStats::invalid(), false);
     }
@@ -3014,8 +3036,16 @@ pub fn rd_pick_partition_real(
                 subsize,
                 best_remain,
                 idx,
-                // child quad_tree_idx = 4*parent + idx + 1 (partition_search.c:4574).
-                4 * quad_tree_idx + idx as i32 + 1,
+                // child quad_tree_idx = 4*parent + idx + 1 — but ONLY when
+                // `bsize <= BLOCK_64X64` (partition_search.c:4572-4575, restored
+                // at :4590-4592). A BLOCK_128X128 root under `--sb-size=128`
+                // passes its index through untouched; its 64x64 children then
+                // re-anchor to 0 themselves (the reset at the top of this fn).
+                if bsize <= 12 {
+                    4 * quad_tree_idx + idx as i32 + 1
+                } else {
+                    quad_tree_idx
+                },
                 &mut split_none_cache[idx],
                 Some(&mut split_rd[idx]),
                 Some(&mut split_part_rect_win[idx]),
@@ -4398,19 +4428,53 @@ pub fn rd_use_partition_real(
                     SbTree::Vert(Box::new([w0, w1]))
                 }
             } else {
-                // Frame-edge rect: sub 0 alone. The SbTree Horz/Vert
-                // variants carry both winners (interior envelope, module
-                // docs on encode_sb.rs) — an edge single-strip rect is
-                // representable only once that envelope lifts. The KEY
-                // variance tree produces edge rects solely on
-                // non-multiple-of-64 frames (var_part.rs's
-                // `edge_vert_single_strip_stamp`), outside the current
-                // speed-7 gate grid.
-                unimplemented!(
-                    "frame-edge single-strip {} at ({mi_row},{mi_col}) bsize {bsize}: \
-                     out of the interior-envelope SbTree rect representation",
-                    if is_horz { "HORZ" } else { "VERT" }
-                )
+                // Frame-edge rect: sub 0 alone (C's `av1_rd_use_partition`
+                // gates sub 1 on `mi_row + hbs < mi_rows` / `mi_col + hbs <
+                // mi_cols`, partition_search.c:1869-1938 — see this function's
+                // docs). This used to be an `unimplemented!()` on the grounds
+                // that `SbTree::Horz`/`Vert` carry BOTH winners; that reading
+                // of the representation was wrong. **Every one of the four
+                // consumers of slot 1 already gates it on the identical frame
+                // predicate** — `encode_sb.rs::encode_sb_dry` (`if mi_row +
+                // hbs < env.mi_rows` / `if mi_col + hbs < env.mi_cols`),
+                // `pack.rs::pack_sb_tree`, `partition_pick.rs::
+                // stamp_grid_from_tree`, `lf_search.rs::stamp_tree_lf` — so on
+                // exactly the branch taken here, slot 1 is never read by
+                // anything.
+                //
+                // It is filled with a POISONED clone of sub 0 rather than a
+                // second real winner, so the unreadability is enforced rather
+                // than asserted in prose: `bsize = usize::MAX` can never equal
+                // a subsize, so the `debug_assert_eq!(s1.bsize, subsize)` that
+                // both `encode_sb_dry` and `pack_sb_tree` run before touching
+                // slot 1 fires immediately if a future consumer drops its
+                // frame gate. CI builds carry `debug-assertions`
+                // (`--profile test-fast`), so that guard is live there.
+                //
+                // Reached by the speed-7 VAR_BASED_PARTITION walk on frames
+                // whose dimensions are not multiples of 64 — measured at
+                // 196x196 cq24 cpu7 on monochrome, 4:4:4, bd10 and
+                // `--sb-size=128` (`s4cov_partial_sb_axis.rs`), all of which
+                // panicked here before this change.
+                // The `rate == INT_MAX` half of the guard above is a DIFFERENT
+                // case and stays unmodelled: there sub 1 IS in frame, so slot 1
+                // would be read and a poisoned winner would be a wrong answer
+                // rather than an unread one. (It cannot occur on this path —
+                // the leaf pick runs on an unbounded budget — but the
+                // distinction is what makes the poison sound.)
+                assert!(
+                    !sub1_in_frame,
+                    "rd_use_partition rect at ({mi_row},{mi_col}) bsize {bsize}: sub 1 is \
+                     IN FRAME but its leaf rate is INT_MAX — the unbounded-budget leaf pick \
+                     must never produce that, and slot 1 is read on this branch"
+                );
+                let mut poison = w0.clone();
+                poison.bsize = usize::MAX;
+                if is_horz {
+                    SbTree::Horz(Box::new([w0, poison]))
+                } else {
+                    SbTree::Vert(Box::new([w0, poison]))
+                }
             }
         }
         // PARTITION_SPLIT (:1940-1974).

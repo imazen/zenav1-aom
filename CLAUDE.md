@@ -2092,6 +2092,29 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
       derived QM level) are unmeasured on this axis; so is `--dist-metric=qm-psnr` (tune=IQ /
       SSIMULACRA2), where `use_qm_dist_metric` makes `dist_block_tx_domain`'s NULL matrix
       observable directly rather than only through `av1_quant`.
+    - **MEASURED 2026-08-01** (`aom-bench/tests/s4cov_qm_axis.rs`, 18 cells × `--cpu-used` 0..9 ×
+      both QM states = 360 encode pairs; record `benchmarks/s4cov_axes_2026-08-01.tsv`). All of
+      the above EXCEPT `--dist-metric=qm-psnr` is now swept, and the answer is clean:
+      * **bd8 is 80/80 byte-exact in BOTH QM states** across 4:4:4, 4:2:2, monochrome and the
+        cq5/cq63 extremes, at every speed 0..9 (the nonrd speeds included — "QM × nonrd" was
+        itself unmeasured and is byte-exact);
+      * **QM never changes a verdict on any of the 180 rows.** Every high-bit-depth cell agrees
+        between QM-on and QM-off, so the QM path adds no divergence anywhere on the extended axis.
+      * The only divergences are the QM-OFF controls at bd10/bd12, `--cpu-used` 1..6 — the
+        pre-existing pinned `b10_64` band of `speed_envelope_stock_map_is_pinned`. **This sweep
+        widens the known shape of that band**: it is not 4:2:0-specific (4:4:4 diverges
+        identically), not bd10-specific (bd12 too), **not chroma-borne (MONOCHROME diverges
+        identically, which puts the root on the LUMA path)**, and its speed reach is
+        qindex-dependent (cq5 reaches 1..6 like cq32; cq63 only reaches cpu6). Speeds 0, 7, 8, 9
+        are clean at every bit depth. Pinned as `HBD_OPEN` in `s4cov_qm_axis.rs`.
+      * Caveat found while building the cells: the (0,0) 64×64 corner of
+        `av1-1-b10-24-monochrome` codes an 18-22 byte all-skip frame at every speed, so a
+        byte-match there proves nothing — the hbd mono cells drop the chroma of the textured
+        `av1-1-b10-00-quantizer-00` crop instead. Switching to it is what exposed the mono row
+        above; the flat crop had reported "mono is clean".
+      * `--dist-metric=qm-psnr` × speed >= 4 REMAINS unmeasured: it needs `ref_encode_av1_kf_tune`
+        (whose port-side pipeline lives in `encoder_gate_tune_iq_e2e.rs` and hardcodes
+        `let speed = 0`), not `ToggleKnobs`, which carries no dist-metric field.
 - **PARITY.md §A lists `--cpu-used=4` and `=5` as 64/64 byte-identical** — on the textured
   synthetic grid those rows were established on. These are different contexts, so the §A rows
   are not falsified; what is falsified is reading them as speed-4/5 coverage in general.
@@ -2351,6 +2374,162 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   grid after the rebase — but the grid is one content source at cq24, bd8 4:2:0, SB64, speeds
   0..4. KB-21 root #2 remains open on its own terms, and the partial-SB × speed crossing has
   not been swept at other bit depths, subsamplings, or SB128.
+- **Residual RESOLVED 2026-08-01** by `aom-bench/tests/s4cov_partial_sb_axis.rs`: the crossing is
+  now swept at 4:4:4 (32/32), 4:2:2 (32/32), monochrome (28/32 — its 4 failures are speed-0 and
+  belong to KB-27, not to this axis), bd10 (8/8 at the speeds where bd10 is readable) and
+  **SB128 (48/48)**. Getting there took two fixes, KB-24 and KB-25. KB-24 in particular is this
+  entry's own thesis one level up: KB-23's fix keyed `cnn_output_valid` off the containing 64×64
+  correctly, but the SIBLING piece of the same C statement — `quad_tree_idx`, reset by the same
+  two lines of `init_partition_search_state_params` — was still keyed off the superblock.
+
+### KB-24 — Encoder: the intra-CNN `quad_tree_idx` was anchored at the SUPERBLOCK, not at the 64×64 — `--sb-size=128` PANICKED at every RD speed 1..6 — FIXED ✅ 2026-08-01
+- **Found 2026-08-01** by extending KB-23's (partial-SB × speed) crossing to SB128, which its own
+  residual note named as unmeasured. Symptom: `index out of bounds: the len is 4 but the index
+  is 4` in `crates/aom-encode/src/cnn_partition/decision.rs:146` —
+  `quad_to_linear_1[quad_tree_idx - 1]` at a BLOCK_32X32 node. **36 of 48 SB128 cells panicked**
+  (every size × every speed 1..6); speed 0 was clean because `intra_cnn_based_part_prune_level`
+  is 0 there (`speed_features.c:387-388`), and speed 7 because the VAR_BASED walk never enters
+  `rd_pick_partition_real`. Frame alignment was irrelevant — 128² and 256², both exact multiples
+  of 128, panicked exactly like 132²/192²/196²/320².
+- **ROOT CAUSE.** C maintains `x->part_search_info.quad_tree_idx` **per BLOCK_64X64**, in two
+  places that must be read together:
+  * `init_partition_search_state_params` resets it (with `cnn_output_valid`) at every
+    `bsize == BLOCK_64X64` node — `partition_search.c:3339-3343`;
+  * the SPLIT recursion advances it to `4*idx_parent + idx + 1` and restores it afterwards
+    **only when `bsize <= BLOCK_64X64`** — `partition_search.c:4571-4575` / `:4590-4592`.
+  Together those make the index a position WITHIN one 64×64, which is what
+  `intra_mode_cnn_partition`'s per-bsize feature selection indexes with (`quad_to_linear_1[4]` /
+  `_2[16]` / `_3[64]`, `partition_strategy.c:268/283/298`). The port seeded 0 at the SUPERBLOCK
+  root (`pack.rs:1846`, comment: *"quad_tree_idx: 0 at the SB (64×64) root"* — true under SB64,
+  false under SB128) and advanced it unconditionally. Under `--sb-size=128` the 64×64 children of
+  the 128 root therefore carried 1..4 instead of 0, and their 32×32 children 5..20, walking a
+  4-entry table off its end.
+- **FIX** (`partition_pick.rs`, `rd_pick_partition_real`): re-anchor `quad_tree_idx` to 0 at
+  entry when `bsize == BLOCK_64X64`, and gate the SPLIT-child advance on `bsize <= BLOCK_64X64`.
+  Byte-inert under SB64 (the root already arrives with 0 and no descendant is BLOCK_64X64; every
+  node in the recursion is `<= 64X64` so the guard is always true).
+- **Result:** `s4cov_partial_sb_axis::sb128_partial_sb_speed_axis_byte_matches` goes **11/48
+  byte-exact with 37 panics → 48/48 byte-exact, 0 panics** (the 37th panic was KB-25's).
+  Every one of the 36 previously-panicking cells now BYTE-MATCHES real
+  `aomenc --sb-size=128` — the fix did not merely stop the crash.
+- **Bite proof, and an honest note on it.** Reverting BOTH halves restores 36 panics on the same
+  SB128 cells while `mono`/`444`/`422`/`bd10` stay exactly as they were (playbook §1 asymmetry).
+  But reverting each half ALONE leaves the grid at **48/48, 0 panics** in both directions — on
+  this grid the two halves are two spellings of one fix, not two roots, because the only >64×64
+  node an SB128 frame has is the 128 root itself. Both are kept because both are in C and the
+  pair is what makes the invariant ("the index is a position inside a 64×64") true by
+  construction rather than by the shape of the current grid; the honest claim is one root, not
+  two. Playbook §1's warning about identical cell sets is exactly this case, investigated.
+- **Why no green test could have caught it:** `sb128_e2e.rs` runs SB128 at **speed 0 only**
+  (5 tests, all `speed = 0`), where the CNN prune does not exist; the config-permutation speed
+  axis runs SB64 at 64×64/128×128. Playbook §7, on the (superblock size × speed) crossing.
+
+### KB-25 — Encoder: the speed-7 VAR_BASED walk PANICKED on a frame-edge single-strip rect — FIXED ✅ 2026-08-01
+- **Found 2026-08-01** on the same sweep: `not implemented: frame-edge single-strip VERT at
+  (20,48) bsize 6: out of the interior-envelope SbTree rect representation`
+  (`partition_pick.rs`, `rd_use_partition_real`). Fires at 196×196 cq24 `--cpu-used=7` on
+  monochrome, 4:4:4, bd10 and `--sb-size=128`, and at 132×132 cpu7 on bd10 — i.e. wherever the
+  speed-7 variance tree happens to pick PARTITION_VERT on a block whose right half is out of
+  frame. The bd8 4:2:0 grid KB-23 was closed on never picked one.
+- **The `unimplemented!()`'s stated reason was wrong.** It read *"the SbTree Horz/Vert variants
+  carry both winners ... an edge single-strip rect is representable only once that envelope
+  lifts"*. In fact **all four consumers of slot 1 already gate it on the identical frame
+  predicate** the constructor was refusing on: `encode_sb.rs::encode_sb_dry`
+  (`if mi_row + hbs < env.mi_rows` / `if mi_col + hbs < env.mi_cols`), `pack.rs::pack_sb_tree`,
+  `partition_pick.rs::stamp_grid_from_tree`, `lf_search.rs::stamp_tree_lf`. The representation
+  supported the shape; only the constructor did not build it. This is playbook §9 in a new
+  costume — a comment asserting a limitation, checked against the code and found stale.
+- **FIX:** build `SbTree::Horz`/`Vert` with sub 0 and a **poisoned** clone of it
+  (`bsize = usize::MAX`) in slot 1. The poison is what makes the unreadability enforced instead
+  of argued: both `encode_sb_dry` and `pack_sb_tree` run `debug_assert_eq!(s1.bsize, subsize)`
+  before touching slot 1, so a future consumer that drops its frame gate fails immediately under
+  `--profile test-fast` (CI's profile, `debug-assertions` on). The `rate == INT_MAX` half of the
+  original guard is a genuinely different case (sub 1 IS in frame there, so slot 1 would be
+  read) and is kept as a hard `assert!` rather than folded in.
+- **Bite proof:** restoring the `unimplemented!()` fails **a different cell set from KB-24's** —
+  `bd10 132² cpu7`, `mono 196² cpu7`, `444 196² cpu7`, `sb128 196² cpu7`, across four different
+  tests — while KB-24's 36 SB128 speed-1..6 cells stay green. Different cell sets, different
+  roots (playbook §1).
+
+### KB-26 — Encoder: LARGE FRAMES (`min(w,h) >= 480`) diverge at `--cpu-used >= 4` — OPEN, pinned
+- **Found 2026-08-01** by `aom-bench/tests/s4cov_hd_speed_axis.rs`, extending the speed axis above
+  640×640 for the first time (nothing had run `--cpu-used >= 1` above 640² except KB-22's two
+  1280×720 speed-0/1 cells). bd8 4:2:0 real content, stock knobs:
+  * **speeds 1, 2, 3: byte-exact** at 640×640 AND 1280×720, at cq24 and cq40 both;
+  * **speeds 4, 5, 6: DIVERGE** at both framesizes and both quality points (deltas −111..+152 B
+    on frames of 17–137 KB);
+  * speed 7: diverges at 640² cq24, matches at 640² cq40, and PANICS at 1280×720 (KB-28).
+- **It is NOT a `is_720p_or_larger` arm.** The 640×640 control — deliberately included for this
+  purpose — diverges exactly as the 1280×720 rows do. `large_frame_speed4_size_ladder` then
+  walks SB-EXACT sizes at cpu4/cq24 and lands the boundary precisely on the OTHER framesize
+  predicate: **448² MATCH, 512² DIVERGE (−28 B)**, with 576²/640² divergent and 256²/320²/384²
+  clean. `is_480p_or_larger` is `AOMMIN(w,h) >= 480` (`speed_features.c:169`).
+- **The one `is_480p_or_larger` × `speed >= 4` setting in C, A/B'd — and the result is an
+  anomaly, not a fix.** `set_allintra_speed_feature_framesize_dependent` has exactly one:
+  `tx_sf.tx_type_search.prune_tx_type_using_stats = 2` (`:299-301`; the same predicate sets **1**
+  at `speed >= 2`, `:261-263`). Everything else 480p-keyed there is speed-independent or
+  `is_720p_or_larger`-keyed, and 640² is below 720p.
+  `tx_stats_prune_ab_across_the_480p_boundary` forces the port's derived value to 0 with
+  `ToggleKnobs::disable_tx_stats_prune` and measures:
+
+  | cell | prune on | prune forced off | verdict |
+  |---|---|---|---|
+  | 448² cpu2..5 (sub-480p) | MATCH | MATCH | inert, correctly |
+  | 512² cpu2 | MATCH | DIVERGE −100 | **load-bearing** |
+  | 512² cpu3 | MATCH | DIVERGE −61 | **load-bearing** |
+  | 512² cpu4 | DIVERGE −28 | DIVERGE −28 | **byte-identical ⇒ INERT** |
+  | 512² cpu5 | DIVERGE +106 | DIVERGE +106 | **byte-identical ⇒ INERT** |
+
+  So the port's stats prune changes the bitstream at speeds 2-3 and provably does not at 4-5, on
+  the same frame. On a lone KEY frame `update_type == KF_UPDATE == 0` and
+  `thresh_arr[0][0] == thresh_arr[1][0] == 10` (`tx_search.c:1887-1891`), so the 1→2 level change
+  is EXPECTED to be a no-op — which makes *"the prune stopped mattering at all"* the thing to
+  explain, not the level.
+- **Next step (named, not guessed):** the KB-21-root-#2 per-txb dump (playbook §10) around
+  `get_tx_mask_intra`'s multi-type arm on the 512² cpu4 cell, checking whether that arm is
+  reached. At `speed >= 4` the MODE_EVAL stage takes the single-type
+  `use_default_intra_tx_type` arm (`tx_search.c:1871`), which never reaches the stats prune, so
+  the question is whether WINNER_MODE_EVAL is reaching it. 512×512 cq24 cpu4 is the smallest
+  SB-exact repro — use that, not 640² or 1280×720.
+- **Pinned** in `hd_speed_axis_byte_matches::LARGE_FRAME_OPEN`, both directions, alongside the
+  hard assertion that speeds 1..3 stay clean at both framesizes.
+
+### KB-27 — Encoder: MONOCHROME at `--cq-level 24` (`base_qindex` 96), speed 0 — a single-point near-tie — OPEN, pinned
+- **Found 2026-08-01** by adding monochrome to KB-23's (partial-SB × speed) grid. First read as
+  a multi-superblock effect (132²/192²/196²/256² all divergent at cpu0 while every speed 1..7 was
+  byte-exact); `mono_speed0_size_qindex_localize` reduced it much further:
+  **64×64 monochrome — ONE superblock — diverges too, at cq24 and at NO other cq in 18..30, and
+  at speed 0 only.** Its 4:2:0 control on the identical crop and cq is byte-exact at every speed.
+- **What it is not:** not loop-restoration (diverges identically with LR off, LR on, and via
+  `c_encode_ctrls(&[])`), not multi-SB, not partial-SB, not a qindex band (a single cq).
+- **What it looks like:** the KB-2/KB-6 near-tie signature. The port codes 5 fewer bytes of 320
+  and the payload first-differs at byte 2 — the loop-filter-level field, a value the port derives
+  from its OWN reconstruction, so the header delta is downstream of a tile difference rather than
+  the cause of it. Content-specificity was measured, not assumed: across 5 crops × 5 quality
+  points × {mono, 4:2:0} = 50 cells, exactly ONE diverges
+  (`av1-1-b8-00-quantizer-00` crop (64,64)@(0,0), mono, cq24, cpu0).
+- **Why no green test saw it:** `config_permutations.rs::speed_envelope_stock_map_is_pinned` runs
+  the same 64×64 mono content at every speed 0..9 — at `SPEED_CQ = 32`, one quality point away.
+- **Minimal repro:** `EncodeCell::real_content(_, "av1-1-b8-00-quantizer-00", Some((64,64,0,0)),
+  24, 0)` with `mono = true` and the chroma planes cleared. Pinned in
+  `partial_sb_speed_axis_chroma_formats_byte_match::MONO_S0_OPEN` plus the localizer, both
+  directions.
+
+### KB-28 — Encoder: an EXACTLY 1280×720 frame at `--cpu-used=7` REFUSES to encode (VBP threshold crop-ambiguity guard) — OPEN, pinned
+- **Found 2026-08-01.** `pack.rs:1477-1495` needs `cm->width * cm->height` to select
+  `set_vbp_thresholds`' sub-720p bucket for the speed-7 VAR_BASED partitioning, but `pack_tile`
+  is given only mi-aligned extents. Rather than guess, it asserts — and the window it refuses on
+  is "the mi-aligned area and the up-to-3px-smaller crop could land on opposite sides of
+  1280*720". An exactly-1280×720 frame is inside that window (`mi_px == 921600` is not `<`
+  921600 while `min_crop_px` is), so the most ordinary HD frame there is panics with *"VBP
+  threshold resolution arm is crop-ambiguous at 1280x720 mi-aligned: thread the true crop dims"*.
+- The guard is doing its job — this is a refusal, not silent corruption — but the configuration
+  it refuses is a legal one a drop-in replacement must encode.
+- **Fix:** thread the true crop dims into `SbEncodeEnv`, which today carries mi-aligned extents
+  only. That is the same gap KB-23's 250×250 row names for `extract_intra_cnn_window`, so the
+  two want one change.
+- **Pinned** as `Verdict::Panic` in `hd_speed_axis_byte_matches::LARGE_FRAME_OPEN` (cq24 and
+  cq40), both directions.
 
 ### KB-17 — Encoder: `use_screen_content_tools` was hardcoded `false`, so `--use-intra-default-tx-only=1` diverged on ALL screen-detected content — FIXED ✅ 2026-07-30
 - **Root cause (found 2026-07-30, one line):** `crates/aom-encode/src/speed_features.rs`'s
