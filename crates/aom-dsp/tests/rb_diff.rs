@@ -963,7 +963,19 @@ fn read_tile_info_inverts_write() {
             let min_c = (rng.next() % 3) as i32;
             let max_c = min_c + (rng.next() % 3) as i32;
             let log2_c = min_c + (rng.next() % (max_c - min_c + 1) as u64) as i32;
-            let min_r = (rng.next() % 3) as i32;
+            // `min_log2_rows` is NOT free (KB-31). `av1_get_tile_limits` produces one
+            // scalar `min_log2` (`tile_common.c:48-49`, already `AOMMAX`ed with
+            // `min_log2_cols`) and BOTH row bounds descend from it:
+            //   * the value handed to the reader is `min_log2 - min_log2_cols`;
+            //   * the value in force once the columns are read — the one the writer's
+            //     unary is relative to — is `av1_calculate_tile_cols`' re-derivation
+            //     `AOMMAX(min_log2 - log2_cols, 0)` (`tile_common.c:73`).
+            // Those coincide only at `log2_cols == min_log2_cols`. Drawing `min_r`
+            // independently (as this fixture did until 2026-08-01) builds a state C
+            // cannot reach and hid the missing re-derivation in the reader.
+            let min_log2 = min_c + (rng.next() % 3) as i32;
+            let min_r_arg = (min_log2 - min_c).max(0);
+            let min_r = (min_log2 - log2_c).max(0);
             let max_r = min_r + (rng.next() % 3) as i32;
             let log2_r = min_r + (rng.next() % (max_r - min_r + 1) as u64) as i32;
             let (mi_cols, mi_rows) = (
@@ -1027,11 +1039,19 @@ fn read_tile_info_inverts_write() {
             write_tile_info(&mut wb, &t);
             let b = wb.bytes().to_vec();
             let mut rb = ReadBitBuffer::new(&b);
+            // `min_r_arg` (not `min_r`) is what `av1_get_tile_limits` hands the decoder;
+            // the reader must re-derive `min_r` itself from the log2_cols it just read.
             let (g, ctx, tsb) = read_tile_info(
-                &mut rb, mi_cols, mi_rows, mib, min_c, max_c, min_r, max_r, 64, 64,
+                &mut rb, mi_cols, mi_rows, mib, min_c, max_c, min_r_arg, max_r, 64, 64,
             );
             assert!(g.uniform_spacing, "uniform flag");
             assert_eq!((g.log2_cols, g.log2_rows), (log2_c, log2_r), "uniform log2");
+            assert_eq!(
+                g.min_log2_rows, min_r,
+                "the reader must re-derive min_log2_rows from the READ log2_cols \
+                 (av1_calculate_tile_cols, tile_common.c:73): min_log2={min_log2} \
+                 min_log2_cols={min_c} log2_cols={log2_c}"
+            );
             assert_eq!(
                 (g.cols, g.rows),
                 (exp_cols, exp_rows),

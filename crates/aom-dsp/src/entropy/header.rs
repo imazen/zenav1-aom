@@ -2254,11 +2254,31 @@ fn tile_log2(blk_size: i32, target: i32) -> i32 {
     k
 }
 
-/// `read_tile_info_max_tile` (`av1/decoder/decodeframe.c`) — inverse of
+/// `read_tile_info_max_tile` (`av1/decoder/decodeframe.c:2146`) — inverse of
 /// [`write_tile_info_max_tile`]: the uniform/non-uniform tile-spacing flag, then either
 /// the log2 column/row counts (uniform, via increment bits) or the explicit per-tile
 /// `col/row_start_sb` (non-uniform, via `read_uniform`). Fills the geometry fields of a
 /// [`TileInfoHeader`]; the min/max log2 bounds + `max_*_sb` come from `av1_get_tile_limits`.
+///
+/// **`min_log2_rows` is NOT the caller's value once the columns are read** (KB-31). C
+/// calls `av1_calculate_tile_cols` BETWEEN the column read and the row read
+/// (`decodeframe.c:2180`), and that function RE-DERIVES the row bound from the
+/// just-read column count: `tiles->min_log2_rows = AOMMAX(tiles->min_log2 -
+/// tiles->log2_cols, 0)` (`av1/common/tile_common.c:73`) plus
+/// `max_height_sb = sb_rows >> min_log2_rows` (`:74`). The caller's `min_log2_rows` is
+/// `av1_get_tile_limits`' composition `max(min_log2 - min_log2_cols, 0)`, which is the
+/// same value ONLY when the stream codes `log2_cols == min_log2_cols`. libaom's own
+/// encoder breaks that tie routinely: `set_tile_info` (`av1/encoder/encoder.c:385-390`)
+/// raises `log2_cols` with a **`<=`** loop (`(max_width_sb << k) <= sb_cols`), one column
+/// MORE than `av1_get_tile_limits`' `<` bound, so a frame with 64 SB columns (width >= 4033 px
+/// at SB64) codes 2 tile columns while `min_log2_cols` is still 0. Without the re-derivation the row unary starts
+/// at the wrong base — wrong `log2_rows` and, because `context_update_tile_id` is
+/// `log2_cols + log2_rows` bits wide, a bit-level DESYNC of the whole rest of the frame
+/// header.
+///
+/// `min_log2` itself is recovered as `min_log2_cols + min_log2_rows`: `av1_get_tile_limits`
+/// ends with `min_log2 = AOMMAX(min_log2, min_log2_cols)` (`tile_common.c:49`), so the
+/// caller's `min_log2_rows` is exactly `min_log2 - min_log2_cols`.
 #[allow(clippy::too_many_arguments)]
 pub fn read_tile_info_max_tile(
     rb: &mut ReadBitBuffer,
@@ -2292,7 +2312,11 @@ pub fn read_tile_info_max_tile(
     };
     let sb_cols = ceil_power_of_two(mi_cols, mib_size_log2);
     let sb_rows = ceil_power_of_two(mi_rows, mib_size_log2);
+    // `av1_get_tile_limits`' `min_log2` (tile_common.c:48-49), recovered from the two
+    // caller-supplied bounds — see this function's doc comment.
+    let min_log2 = min_log2_cols + min_log2_rows;
     t.uniform_spacing = rb.read_bit() != 0;
+    // ---- Read tile COLUMNS (decodeframe.c:2158-2179).
     if t.uniform_spacing {
         t.log2_cols = min_log2_cols;
         while t.log2_cols < max_log2_cols {
@@ -2301,41 +2325,6 @@ pub fn read_tile_info_max_tile(
             }
             t.log2_cols += 1;
         }
-        t.log2_rows = min_log2_rows;
-        while t.log2_rows < max_log2_rows {
-            if rb.read_bit() == 0 {
-                break;
-            }
-            t.log2_rows += 1;
-        }
-        // av1_calculate_tile_cols / av1_calculate_tile_rows (uniform-spacing
-        // branch, tile_common.c): derive the per-tile SB-grid start offsets
-        // from the coded log2 counts — needed by any per-tile consumer (the
-        // multi-tile decode driver's TileInfo::mi_row/col_start/end) since
-        // only the non-uniform branch below filled these before. `tiles->cols`
-        // /`rows` are re-derived as the loop count (== 1 << log2_cols/rows for
-        // every conformant stream, but computed exactly as the C does it).
-        let size_sb_c = ceil_power_of_two(sb_cols, t.log2_cols as u32);
-        let mut start_sb = 0;
-        let mut i = 0;
-        while start_sb < sb_cols {
-            t.col_start_sb[i] = start_sb;
-            start_sb += size_sb_c;
-            i += 1;
-        }
-        t.cols = i;
-        t.col_start_sb[i] = sb_cols;
-
-        let size_sb_r = ceil_power_of_two(sb_rows, t.log2_rows as u32);
-        let mut start_sb = 0;
-        let mut j = 0;
-        while start_sb < sb_rows {
-            t.row_start_sb[j] = start_sb;
-            start_sb += size_sb_r;
-            j += 1;
-        }
-        t.rows = j;
-        t.row_start_sb[j] = sb_rows;
     } else {
         let mut width_sb = sb_cols;
         let mut start_sb = 0;
@@ -2349,8 +2338,56 @@ pub fn read_tile_info_max_tile(
         }
         t.cols = i;
         t.col_start_sb[i] = start_sb + width_sb;
-        t.log2_cols = tile_log2(1, i as i32);
-
+    }
+    // ---- `av1_calculate_tile_cols` (tile_common.c:52-100), called UNCONDITIONALLY
+    // between the two reads (decodeframe.c:2180). In the uniform branch it derives the
+    // per-tile SB-grid column starts (and re-derives `cols` as the loop count, == 1 <<
+    // log2_cols for every conformant stream, but computed exactly as C does it); in BOTH
+    // branches it re-derives `min_log2_rows` — which the row read below depends on.
+    if t.uniform_spacing {
+        let size_sb_c = ceil_power_of_two(sb_cols, t.log2_cols as u32);
+        let mut start_sb = 0;
+        let mut i = 0;
+        while start_sb < sb_cols {
+            t.col_start_sb[i] = start_sb;
+            start_sb += size_sb_c;
+            i += 1;
+        }
+        t.cols = i;
+        t.col_start_sb[i] = sb_cols;
+        t.min_log2_rows = (min_log2 - t.log2_cols).max(0);
+        t.max_height_sb = sb_rows >> t.min_log2_rows;
+    } else {
+        t.log2_cols = tile_log2(1, t.cols as i32);
+        t.min_log2_rows = (min_log2 - t.log2_cols).max(0);
+        // NOTE: C also re-derives `max_height_sb` here from the widest tile
+        // (`tile_common.c:82-95`); the non-uniform ROW read below is the only consumer and
+        // no stream this port is validated against codes non-uniform spacing (libaom emits
+        // it only under `--tile-width`/`--tile-height`), so that derivation is deliberately
+        // NOT modelled and the caller's `max_height_sb` is used — recorded as the KB-31
+        // residual rather than changed without a real-stream gate.
+    }
+    // ---- Read tile ROWS (decodeframe.c:2183-2204) against the RE-DERIVED bound.
+    if t.uniform_spacing {
+        t.log2_rows = t.min_log2_rows;
+        while t.log2_rows < max_log2_rows {
+            if rb.read_bit() == 0 {
+                break;
+            }
+            t.log2_rows += 1;
+        }
+        // `av1_calculate_tile_rows` (tile_common.c:102-121).
+        let size_sb_r = ceil_power_of_two(sb_rows, t.log2_rows as u32);
+        let mut start_sb = 0;
+        let mut j = 0;
+        while start_sb < sb_rows {
+            t.row_start_sb[j] = start_sb;
+            start_sb += size_sb_r;
+            j += 1;
+        }
+        t.rows = j;
+        t.row_start_sb[j] = sb_rows;
+    } else {
         let mut height_sb = sb_rows;
         let mut start_sb = 0;
         let mut j = 0;
