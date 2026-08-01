@@ -26,6 +26,7 @@ Subcommands:
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -315,12 +316,16 @@ def encode_score(enc, w, h, q, speed, yuv, tag, timeout=1800):
 def cmd_stage2(args):
     modes = json.loads(args.modes)          # {"encoder": preset}
     corpus = prep_rd_corpus()
+    if args.classes:
+        keep = set(args.classes.split(","))
+        corpus = [c for c in corpus if c[1] in keep]
+    qgrid = json.loads(args.qgrid) if args.qgrid else None
     out = Path(args.out)
     f = open(out, "w")
     f.write("encoder\tpreset\timage\tclass\tw\th\tq\tbytes\tbpp\tssim2\tba_max\tba_3n\tenc_ms\n")
     for label, cls, yuv, w, h in corpus:
         for enc, preset in modes.items():
-            for q in QGRID[enc]:
+            for q in (qgrid or QGRID[enc]):
                 r = encode_score(enc, w, h, q, preset, yuv, "s2", timeout=args.timeout)
                 if "error" in r:
                     print(f"  FAIL {enc} p{preset} {label} q{q}: {r['error']}", flush=True)
@@ -446,6 +451,46 @@ def cmd_bdrate(args):
 
 
 # ------------------------------------------------------------------ stage3 --
+
+def cmd_rdtable(args):
+    """bpp needed to reach fixed SSIMULACRA2 levels — the BD-rate numbers in
+    concrete units. Monotone-cubic interpolation of log10(bpp) vs the metric,
+    per image; the table reports the median across images in each class."""
+    rows = []
+    for t in args.tsv:
+        with open(t) as f:
+            hdr = f.readline().rstrip("\n").split("\t")
+            for line in f:
+                rows.append(dict(zip(hdr, line.rstrip("\n").split("\t"))))
+    keys = sorted({(r["encoder"], r["preset"]) for r in rows})
+    levels = [float(x) for x in args.levels.split(",")]
+    classes = sorted({r["class"] for r in rows})
+    print(f"bpp to reach each SSIMULACRA2 level (median over images in the class; "
+          f"'--' = level outside the measured range for >half the images)")
+    print("class\tencoder\tpreset\t" + "\t".join(f"ss2_{int(l)}" for l in levels))
+    for c in classes:
+        imgs = sorted({r["image"] for r in rows if r["class"] == c})
+        for enc, preset in keys:
+            out = []
+            for L in levels:
+                vals = []
+                for img in imgs:
+                    pts = sorted((float(r["ssim2"]), math.log10(float(r["bpp"])))
+                                 for r in rows if r["image"] == img
+                                 and r["encoder"] == enc and r["preset"] == preset)
+                    ded = []
+                    for m, lb in pts:
+                        if not ded or m > ded[-1][0]:
+                            ded.append((m, lb))
+                    if len(ded) < 4 or not (ded[0][0] <= L <= ded[-1][0]):
+                        continue
+                    xs = [p[0] for p in ded]
+                    ys = [p[1] for p in ded]
+                    vals.append(10 ** _pchip_eval(xs, ys, _pchip_slopes(xs, ys), L))
+                out.append(f"{statistics.median(vals):.4f}" if len(vals) > len(imgs) // 2
+                           else "--")
+            print(f"{c}\t{enc}\t{preset}\t" + "\t".join(out))
+
 
 def cmd_stage3(args):
     """Quality-target accuracy.
@@ -645,6 +690,8 @@ def main():
     s2.add_argument("--out", required=True)
     s2.add_argument("--modes", required=True, help='{"svt-c":1,...} encoder->preset')
     s2.add_argument("--timeout", type=int, default=1800)
+    s2.add_argument("--classes", default="", help="comma list of content classes to keep")
+    s2.add_argument("--qgrid", default="", help="JSON list overriding the default q grid")
     bd = sub.add_parser("bdrate")
     bd.add_argument("--tsv", required=True)
     bd.add_argument("--ref", default="svt-c")
@@ -662,9 +709,14 @@ def main():
     ct.add_argument("--size", type=int, default=1024)
     ct.add_argument("--n", type=int, default=9)
     ct.add_argument("--timeout", type=int, default=1800)
+    rt = sub.add_parser("rdtable")
+    rt.add_argument("--tsv", required=True, nargs="+")
+    rt.add_argument("--levels", default="50,60,70,80,90")
     fr = sub.add_parser("fitreport")
     fr.add_argument("--raw", required=True)
     a = ap.parse_args()
+    if a.cmd == "rdtable":
+        return cmd_rdtable(a)
     if a.cmd == "fitreport":
         return cmd_fitreport(a)
     if a.cmd == "control":

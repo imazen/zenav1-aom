@@ -1,0 +1,15 @@
+# zenav1-aom screen-content tool A/B — why the port's screen-content BD-rate is what it is.
+# Image: gb82-sc/terminal.png, 1024x1024 NATIVE centre crop (no resampling). cpu-used 6, cq 50.
+# 0 warmup, 1 timed encode. Driver: benchmarks/xbench/drv-aom (XBENCH_AOM_PALETTE /
+# XBENCH_AOM_INTRABC / XBENCH_AOM_SCREEN_TOOLS select ToggleKnobs.enable_palette /
+# .enable_intrabc). Decode: aomdec (libaom 3.14.1) and dav1d 1.5.4, both on the same stream.
+arm	bytes	enc_ms	mps_at_1MP	aomdec	dav1d	note
+default(both off)	19801	1695.2	0.6187	OK	OK	the path every headline zenav1-aom number uses
+palette only	20926	1811.7	0.5789	OK	OK	+5.7% BYTES — the palette search does not pay here
+intrabc only	10040	77148.2	0.0136	FAIL	FAIL	-49.3% bytes but NON-CONFORMANT: "Invalid intrabc dv"
+both	13254	71372.0	0.0147	FAIL	FAIL	same intrabc defect; 42x slower than default
+# Conclusion: the port's screen-content deficit CANNOT be closed by simply arming the existing
+# tools. Palette costs bytes rather than saving them on this image, and the IntraBC arm produces
+# a bitstream both reference decoders reject ("Invalid intrabc dv") at ~1/45 the throughput —
+# i.e. it is out of the >=1 MP/s envelope even if it were conformant. Consistent with the port
+# README listing "the IntraBC + inter var-tx coefficient arm" as still open.

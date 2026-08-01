@@ -20,7 +20,14 @@
 //! (`c_encode_defaults`: CDEF off, loop-restoration ON), and the port's
 //! restoration-aware default path is what runs.
 
-use aom_bench::EncodeCell;
+//! `XBENCH_AOM_SCREEN_TOOLS=1` additionally turns ON the port's palette and
+//! IntraBC RD searches. They are OFF in `ToggleKnobs::default()` (the path
+//! `port_encode` takes), which is what the default runs measure — so this env
+//! switch exists to QUANTIFY that gap on screen content rather than leave it
+//! as an unmeasured caveat. The frame still has to signal
+//! `allow_screen_content_tools` / `allow_intrabc` for either search to run.
+
+use aom_bench::{EncodeCell, ToggleKnobs};
 use std::time::Instant;
 
 const OBU_FRAME: u8 = 6;
@@ -122,14 +129,21 @@ fn main() {
     let bootstrap = cell.c_encode_defaults();
     assert!(!bootstrap.is_empty(), "C bootstrap encode failed");
 
+    let on = |k: &str| std::env::var(k).as_deref() == Ok("1");
+    let both = on("XBENCH_AOM_SCREEN_TOOLS");
+    let knobs = ToggleKnobs {
+        enable_palette: both || on("XBENCH_AOM_PALETTE"),
+        enable_intrabc: both || on("XBENCH_AOM_INTRABC"),
+        ..ToggleKnobs::default()
+    };
     for _ in 0..warmup {
-        let _ = cell.port_encode(&bootstrap);
+        let _ = cell.port_encode_with(&bootstrap, &knobs);
     }
     let mut samples = Vec::with_capacity(reps);
     let mut last = Vec::new();
     for _ in 0..reps {
         let t = Instant::now();
-        let payload = cell.port_encode(&bootstrap);
+        let payload = cell.port_encode_with(&bootstrap, &knobs);
         samples.push(t.elapsed().as_nanos());
         last = payload;
     }

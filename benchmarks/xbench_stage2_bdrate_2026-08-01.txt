@@ -1,0 +1,91 @@
+# BD-rate at the >=1 MP/s qualifying modes, and the matched-preset control.
+# ref = svt-c preset 1 (its slowest mode that clears 1 MP/s at 1 MP on photos).
+# svt-c@p4 = the SAME C encoder at the Rust port's qualifying preset — the control that
+#            separates 'the port codes worse' from 'the port has to run a faster preset'.
+# modes: zenav1-aom cpu-used 6 | svt-c preset 1 | svt-rust preset 4 | zenrav1e speed 7
+# grid: 14 quantizer points spanning each encoder's FULL native range (ssim2 -64 .. +92)
+
+########## metric=ssim2
+BD-rate vs svt-c  (metric = ssim2; negative = fewer bits at equal quality)
+  cid22_1025469    photo             --    +17.46%    +17.52%    +30.00%    +46.74%
+  cid22_1420710    photo             --     +3.93%     +3.93%     +9.16%    +11.71%
+  cid22_1624487    photo             --     +2.20%     +2.20%    +11.23%     +6.05%
+  cid22_225228     photo             --     +6.34%     +6.37%    +15.13%     +8.75%
+  cid22_2775196    photo             --     +4.30%     +4.31%    +16.66%    +14.12%
+  cid22_3316926    photo             --     +8.25%     +8.41%    +20.79%    +18.06%
+  cid22_382297     photo             --     +6.73%     +6.74%    +10.43%    +12.18%
+  cid22_6292444    photo             --     +9.98%    +10.00%    +18.19%    +25.97%
+  clic_8426ed22    photo-hr          --     +6.82%     +7.17%    +28.82%    +12.87%
+  clic_ebfd571f    photo-hr          --    +20.94%    +19.78%    +30.86%    +10.30%
+  sc_codec_wiki    screen            --    +27.85%    +27.90%    +41.31%    +39.23%
+  sc_imac_dark     screen            --    +33.98%    +33.04%   +150.73%   +157.48%
+  sc_terminal      screen            --    +28.38%    +27.04%   +130.53%   +136.83%
+
+                                  svt-c   svt-c@p4   svt-rust  zenav1-aom   zenrav1e
+  MEDIAN (all)                       --     +8.25%     +8.41%    +20.79%    +14.12%
+  MEDIAN photo                       --     +6.53%     +6.56%    +15.89%    +13.15%
+  MEDIAN photo-hr                    --    +13.88%    +13.48%    +29.84%    +11.58%
+  MEDIAN screen                      --    +28.38%    +27.90%   +130.53%   +136.83%
+
+########## metric=ba_3n
+BD-rate vs svt-c  (metric = ba_3n; negative = fewer bits at equal quality)
+  cid22_1025469    photo             --    +25.20%    +25.28%    +42.62%    +37.30%
+  cid22_1420710    photo             --     +0.84%     +0.84%    +10.69%     +8.39%
+  cid22_1624487    photo             --     +3.47%     +3.47%    +17.21%     +1.78%
+  cid22_225228     photo             --     +4.55%     +4.23%    +20.70%    +17.42%
+  cid22_2775196    photo             --    +14.66%    +14.72%    +24.99%    +24.47%
+  cid22_3316926    photo             --     +4.56%     +4.84%    +20.40%    +28.30%
+  cid22_382297     photo             --     +3.16%     +3.20%     +7.28%    +11.56%
+  cid22_6292444    photo             --     +9.41%     +9.45%    +19.39%    +31.51%
+  clic_8426ed22    photo-hr          --     +9.10%     +9.33%    +26.79%    +21.56%
+  clic_ebfd571f    photo-hr          --    +18.40%    +17.28%    +18.71%    +10.19%
+  sc_codec_wiki    screen            --    +19.70%    +19.72%    +26.70%    +21.19%
+  sc_imac_dark     screen            --    +31.17%    +30.01%   +126.17%   +128.61%
+  sc_terminal      screen            --    +26.40%    +25.10%   +106.66%   +124.84%
+
+                                  svt-c   svt-c@p4   svt-rust  zenav1-aom   zenrav1e
+  MEDIAN (all)                       --     +9.41%     +9.45%    +20.70%    +21.56%
+  MEDIAN photo                       --     +4.55%     +4.53%    +19.90%    +20.95%
+  MEDIAN photo-hr                    --    +13.75%    +13.31%    +22.75%    +15.87%
+  MEDIAN screen                      --    +26.40%    +25.10%   +106.66%   +124.84%
+
+########## metric=ba_max
+BD-rate vs svt-c  (metric = ba_max; negative = fewer bits at equal quality)
+  cid22_1025469    photo             --    +25.93%    +26.00%    +17.38%    +28.19%
+  cid22_1420710    photo             --     -2.27%     -2.27%     +0.23%     +3.20%
+  cid22_1624487    photo             --     +0.35%     +0.35%     +9.98%     -3.85%
+  cid22_225228     photo             --     +3.06%     +1.54%    +17.78%    +23.44%
+  cid22_2775196    photo             --    +27.75%    +27.76%     +5.94%    +23.59%
+  cid22_3316926    photo             --     -0.63%     -0.37%    +14.72%    +27.77%
+  cid22_382297     photo             --     -5.34%     -5.31%     +1.61%     +5.81%
+  cid22_6292444    photo             --     +0.83%     +0.88%    +13.73%    +22.74%
+  clic_8426ed22    photo-hr          --    +18.18%    +18.87%    +19.82%    +35.41%
+  clic_ebfd571f    photo-hr          --    +31.10%    +27.55%    -20.46%    -15.52%
+  sc_codec_wiki    screen            --    +16.98%    +16.99%    +10.11%    +19.90%
+  sc_imac_dark     screen            --    +30.56%    +29.06%   +119.33%   +102.44%
+  sc_terminal      screen            --    +21.32%    +18.89%    +88.21%    +99.73%
+
+                                  svt-c   svt-c@p4   svt-rust  zenav1-aom   zenrav1e
+  MEDIAN (all)                       --    +16.98%    +16.99%    +13.73%    +23.44%
+  MEDIAN photo                       --     +0.59%     +0.61%    +11.86%    +23.09%
+  MEDIAN photo-hr                    --    +24.64%    +23.21%     -0.32%     +9.95%
+  MEDIAN screen                      --    +21.32%    +18.89%    +88.21%    +99.73%
+
+########## bpp at fixed SSIMULACRA2
+bpp to reach each SSIMULACRA2 level (median over images in the class; '--' = level outside the measured range for >half the images)
+class	encoder	preset	ss2_50	ss2_60	ss2_70	ss2_80	ss2_90
+photo	svt-c	1	0.2482	0.3342	0.4753	0.7564	--
+photo	svt-c@p4	4	0.2608	0.3501	0.5011	0.7954	--
+photo	svt-rust	4	0.2608	0.3501	0.5011	0.7954	--
+photo	zenav1-aom	6	0.2737	0.3631	0.5171	0.8031	--
+photo	zenrav1e	7	0.2830	0.3689	0.5067	0.7848	--
+photo-hr	svt-c	1	0.1071	0.1453	0.2162	0.3742	--
+photo-hr	svt-c@p4	4	0.1208	0.1670	0.2394	0.4033	--
+photo-hr	svt-rust	4	0.1210	0.1661	0.2378	0.4057	--
+photo-hr	zenav1-aom	6	0.1322	0.1757	0.2640	0.4329	--
+photo-hr	zenrav1e	7	0.1101	0.1680	0.2659	0.4595	--
+screen	svt-c	1	0.0612	0.0702	0.0803	0.0942	0.1512
+screen	svt-c@p4	4	0.0842	0.0939	0.0944	0.1115	0.1278
+screen	svt-rust	4	0.0830	0.0929	0.0940	0.1111	0.1288
+screen	zenav1-aom	6	0.1340	0.1802	0.2219	0.3135	0.4713
+screen	zenrav1e	7	0.1247	0.1691	0.2425	0.3622	0.6274
