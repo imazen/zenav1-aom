@@ -125,8 +125,8 @@ in *both* directions — if it regresses, and if it silently starts matching. Th
 second half is the point: when someone later fixes the root, the pin fires and
 tells them to re-pin rather than letting the fix pass unnoticed.
 
-Live examples: KB-17's screen-content set, KB-21's root-2 rows, KB-22's ≥2160p
-residual (all CLAUDE.md), `SCREEN_ARRAY_OPEN_ROWS`
+Live examples: KB-17's screen-content set, KB-22's ≥2160p residual (both
+CLAUDE.md), `SCREEN_ARRAY_OPEN_ROWS`
 (`crates/aom-bench/tests/config_permutations.rs:1806`, re-pin message at
 `:1886`), `size_axis_open_divergences_pinned` (`:2899`).
 
@@ -247,19 +247,40 @@ child — leaving exactly one BLOCK_8X8 leaf where C early-terminates and the po
 falls through.
 
 Method: the sibling-C dump in `HANDOFF-TOGGLES.md:42-46` (ar-swap an
-instrumented `libaom.a`, temporarily repoint `aom-sys-ref/build.rs`'s `build_dir`
-— a real local at `crates/aom-sys-ref/build.rs:108`/`:227` — run the pinned
-cell, **revert everything**). Verify the revert by byte-comparing the restored
-object against a pristine backup. *Stale path warning (2026-07-31): the recipe
-names `reference/libaom/build/libaom.a`, but `build_dir` now derives from
-`upstream/build`; `reference/libaom` is only a gitignored fallback
-(`reference/BUILD_CONFIG.md:2-3`). The mechanism is right, the path is not.*
+instrumented `libaom.a`, run the pinned cell, **revert everything**). Verify the
+revert by byte-comparing the restored archive against a pristine backup. *Stale
+path warning (2026-07-31): the recipe names `reference/libaom/build/libaom.a`,
+but `build_dir` now derives from `upstream/build`; `reference/libaom` is only a
+gitignored fallback (`reference/BUILD_CONFIG.md:2-3`). The mechanism is right,
+the path is not. Repointing `build.rs` is also unnecessary when the instrumented
+TU replaces its member in `upstream/build/libaom.a` directly — `ar r` +
+`ranlib`, then `cargo clean -p zenav1-aom-sys-ref` to force the relink, since
+the build script's SHA-stamped cache will not rebuild libaom over your swap.*
 
 Rule the search space down by A/B rather than by intuition: KB-21's root-2 entry
-(CLAUDE.md:1918-1927) records **ten** single-flag reverts across eleven settings
-that did *not* reproduce C's numbers, which is what makes the remaining
-candidate set credible. *(This said "nine" until 2026-07-31; the block lists ten
-distinct flags, with `fast_intra_tx_type_search` tried at both 0 and 1.)*
+recorded **ten** single-flag reverts across eleven settings that did *not*
+reproduce C's numbers. That A/B was what proved the divergence was not "one
+speed-4 sf field is set wrong" — and it was right: the two actual roots were a
+rate-composition rule and a per-tx-type quantizer switch, neither of them an sf
+field, so no flag revert could ever have reproduced C.
+
+**Then dump the layer below the one you localized to.** KB-21 root #2 sat at
+"same leaf, same winner mode, same tx_size, different rate and dist" for a day.
+What closed it was dumping the per-txb (entry state, per-candidate, winner)
+triple on both sides and aligning them by group index: 51 groups at the suspect
+block, agreeing on 11 and splitting on the 12th, with the entry state
+(`allowed_tx_mask`, `block_sse`, `block_mse_q8`, `qstep`, `rdmult`,
+`ref_best_rd`) byte-equal — which localized the fault to the *ordering* the
+candidate loop walked, not to any quantity it computed. Print the loop's inputs
+alongside its outputs; an identical input set with a different output ORDER is a
+much sharper signal than a rate delta.
+
+**And when a fix moves the number the wrong way, suspect a half-applied
+change.** Switching the SATD arm's quantizer kind to B *increased* the error
+(dist 48017 → 152297 against C's 57169) because `QuantParams` bakes the
+quantizer's table choice: the B algorithm ran on FP's tables. A "fix" that
+overshoots in the direction you intended is usually correct-but-incomplete, not
+wrong.
 
 ## 11. Environment facts that have cost time
 

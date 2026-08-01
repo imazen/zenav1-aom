@@ -656,7 +656,7 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   DC-block prediction, odd-delta-angle prune) — NOT a pure re-parameterization like speed 5 was.
   **All of the above LANDED — see KB-10.**
 
-### KB-10 — Encoder: `--cpu-used=6` speed-6 deltas — PORTED ✅ (64/64 byte-identical on the canon grid; ONE pinned-open near-tie class on the noise extension)
+### KB-10 — Encoder: `--cpu-used=6` speed-6 deltas — PORTED ✅ (64/64 canon; the noise-extension cq63 near-tie CLOSED 2026-07-31 by KB-21 root #2)
 - **Status (2026-07-16): the canon gate is 64/64 byte-identical** vs real aomenc
   (`encoder_gate_speed6_textured_allintra`, {64,128}² × cq{12,32,48,63} ×
   {flat,two-tone,vgrad,diag} × {mono,420}) + the anti-vacuous witness
@@ -740,16 +740,14 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   `rect_partition_eval_thresh` (boosted-gated, KEY is boosted); the qindex-dep
   speed>=5 screen sub-8x8 re-zero (screen arm). `chroma_intra_pruning_with_hog = 4`
   (:530) is still zeroed by the :608-616 tail (chroma HOG stays OFF at speed>=4).
-- **PINNED OPEN (near-tie class, KB-2 family):** `noise 64² cq63` (mono + 420) on the
-  NEW `encoder_gate_speed6_noise_flatuv_allintra` extension diverges — localized to
-  the (mi 8,0) 32×32 leaf's WINNER-pass tx-size sweep picking TX_16X16 over TX_32X32
-  by a 0.19% rd margin where real keeps 32 (the search partition tree matches real
-  EXACTLY; the frame codes tx_mode LARGEST post-hoc so the tx-plan difference desyncs
-  the parse). Not closed by any single-feature revert (NN / predict_dc / rd tables /
-  winner arm / intra-loop / partition prunes — each still diverges) ⇒ multi-feature
-  interaction at qindex 255. The test asserts the divergence PRESENT (fails on match →
-  promote). Next step: sibling-C RD dump of the winner sweep at (8,0). cq32/48 noise
-  cells (mono+420) are hard-asserted byte-match.
+- **WAS PINNED OPEN, CLOSED ✅ 2026-07-31 by KB-21 root #2:** `noise 64² cq63` (mono +
+  420) on the `encoder_gate_speed6_noise_flatuv_allintra` extension. The old
+  localization — the (mi 8,0) 32×32 leaf's WINNER-pass tx-size sweep picking TX_16X16
+  over TX_32X32 by a 0.19% rd margin — was a SYMPTOM: the rd it compared was computed
+  from a mis-ordered `prune_txk_type` est-rd and an FP-instead-of-B quantized txb (see
+  KB-21 root #2). That also explains why no single-feature revert closed it: neither
+  defect is an sf field. **The gate is now a full byte-identity assert over all 6 cells**
+  (cq32/48/63 × mono/420).
 - **Unit locks:** `speed6_allintra_deltas_match_source` (the full sf-block field set +
   stage policies incl. predict_dc columns + the speed-5 regression guard);
   `store_winner_mode_stats_matches_c_semantics` (the OFF count-1 no-store arm);
@@ -757,7 +755,7 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   sf-driven (`min(default_max, CLI cap, SB)` — BLOCK_64X64 through speed 5, unchanged
   consumer outcomes; BLOCK_32X32 at 6).
 
-### KB-11 — Encoder: `--cpu-used=7` speed-7 VAR_BASED_PARTITION — PORTED ✅ (64/64 canon; the KB-10-twin near-tie pinned open on the noise extension)
+### KB-11 — Encoder: `--cpu-used=7` speed-7 VAR_BASED_PARTITION — PORTED ✅ (64/64 canon; the KB-10-twin noise near-tie CLOSED 2026-07-31 by KB-21 root #2)
 - **Status (2026-07-17): the canon gate is 64/64 byte-identical** vs real aomenc
   (`encoder_gate_speed7_textured_allintra`, {64,128}² × cq{12,32,48,63} ×
   {flat,two-tone,vgrad,diag} × {mono,420}) + the anti-vacuous witness
@@ -811,17 +809,16 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
      `rt_sf.force_large_partition_blocks_intra`, which is 0 below speed 8/720p+
      [speed_features.c:327] and in this envelope; carried as a field for provenance).
      Everything else carries the speed-6 set unchanged (incl. LPF_PICK_FROM_Q).
-- **PINNED OPEN — the KB-10 near-tie TWIN:** `noise 64² cq63` (mono + 420) on
-  `encoder_gate_speed7_noise_flatuv_allintra` diverges — localized by
-  `kb11_speed7_noise_localize.rs` (decode-both + the search's intended-winner dump):
-  decoded partition trees IDENTICAL (SPLIT + four NONE-32s — the variance tree fixes the
-  same shape real uses), every decoded mode record matches, and the port's (mi 8,0) leaf
-  carries **tx_size TX_16X16 where real keeps TX_32X32** — exactly KB-10's "(mi 8,0)
-  32×32 WINNER-pass uniform tx-size sweep picks TX_16X16 over TX_32X32 by 0.19%" cell
-  (same leaf machinery at speeds 6 and 7; the tx-plan difference desyncs the LARGEST-tx
-  parse — the decoded eob-50 / 420 "(8,8) tree diff" are desync artifacts). Both tests
-  assert the divergence PRESENT (fail on match → promote). Next step: KB-10's sibling-C
-  RD dump of the winner sweep at (8,0) — closes both speeds' cells at once.
+- **WAS PINNED OPEN (the KB-10 near-tie TWIN), CLOSED ✅ 2026-07-31 by KB-21 root #2:**
+  `noise 64² cq63` (mono + 420) on `encoder_gate_speed7_noise_flatuv_allintra`. The
+  localization by `kb11_speed7_noise_localize.rs` was accurate as far as it went —
+  decoded partition trees IDENTICAL, every decoded mode record matching, and the port's
+  (mi 8,0) leaf carrying **tx_size TX_16X16 where real keeps TX_32X32** (the tx-plan
+  difference desyncing the LARGEST-tx parse; the decoded eob-50 / 420 "(8,8) tree diff"
+  were desync artifacts) — but the tx-size choice was downstream of the two KB-21 root-2
+  coefficient-path defects, exactly as predicted ("closes both speeds' cells at once").
+  Both gates are full byte-identity asserts now; the localizer test is
+  `kb11_speed7_noise_cq63_byte_matches` and still prints the structural diff on failure.
 - **Unit locks:** `speed7_allintra_deltas_match_source` (+ speed-6 regression guard);
   `avg_4x4_diff` (REAL-C kernel differential); var_part.rs threshold/shape/edge tests;
   `kb11_speed7_noise_cq32_control_matches` (the localization harness's own soundness).
@@ -1833,7 +1830,7 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   cannot run). The `cargo check --target {x86_64,i686}-unknown-linux-gnu --lib` legs prove only
   that the x86 arm compiles.
 
-### KB-21 — Encoder: cpu-4/5 is the fragile band — ROOT #1 FIXED ✅ 2026-07-30 (`early_term_after_none_split` was unported); ROOT #2 OPEN, narrowed
+### KB-21 — Encoder: cpu-4/5 is the fragile band — CLOSED ✅ (bd8). ROOT #1 FIXED 2026-07-30 (`early_term_after_none_split` was unported); ROOT #2 FIXED 2026-07-31 (two coefficient-path defects in the speed>=4 tx-type search)
 - **Found 2026-07-30** by the speed axis (`9a996b9`). Not a knob-combination bug: these
   diverge with **every knob at its default**. 3 of 5 contexts are byte-identical at speeds
   0-3 AND 6-9 but diverge at 4 and 5; the nonrd speeds (8/9) are clean.
@@ -1906,30 +1903,121 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
     0 failed** (was 272/1 with `hog_prune_diff` red; that closed on `main` at `faeaf50`, and
     this landing adds the 1 new unit lock + the 1 re-pin), `-p zenav1-aom-bench` **170/0/5
     ignored**, `-p zenav1-aom-dsp` **361/0/3 ignored**.
-- **ROOT #2 — OPEN. A leaf-level rate/dist divergence with the SAME winner, NOT established.**
-  After root #1, `q00_mono64` still diverges at cpu-4 AND cpu-5, and `q00_64` / `q00_128` at
-  cpu-4. Diffing the port's per-`pick_sb_modes` stream against the instrumented C's
-  (366 vs 362 records on the mono cpu-4 cell) the two agree for 40 records and then split at
-  **mi(2,4) BLOCK_8X8 PARTITION_NONE**:
-  `C rate=36535 dist=20304 rdcost=5705386` vs `port rate=41004 dist=17184 rdcost=5686013`,
-  with **identical** `mode=DC_PRED, angle_delta=0, filter_intra=0, tx_size=TX_4X4`. Same block,
-  same winner mode, same transform size, different rate and distortion — so this is
-  coefficient-level (tx-type / quant / trellis), not a search-space or pruning difference. The
-  direction (port spends MORE rate for LESS distortion) says the port codes more coefficients
-  than C on that block.
-  **Ruled out — single-flag reverts.** Forcing each band/speed-4 sf back to its
-  speed-3 or OFF value one at a time and re-reading that leaf: `multi_winner_mode_type=0`
-  (39508/16784), `prune_tx_type_est_rd=false` (41004/17184, byte-inert here),
-  `winner_mode_tx_type_pruning=0` (40566/17616), `fast_intra_tx_type_search=0` and `=1`
-  (40567/18416), `prune_2d_txfm_mode=2` (41004/17184), `perform_coeff_opt=3` (41004/17184),
-  `tx_domain_dist_thres_level=1` (41004/17184), `enable_winner_mode_for_coeff_opt=false`
-  (41004/17184), `..._use_tx_domain_dist=false` (39558/19072),
-  `..._tx_size_srch=false` (38531/18672) — **none** reproduces C's `36535/20304`. So it is not
-  "one speed-4 field is on when it should be off"; it is inside the mechanics of the
-  speed-4 winner-mode two-pass or its coefficient path.
-  **Next step:** instrument the per-txb tx_type + eob + trellis decision on both sides for
-  that one 8x8 leaf (C: `tx_search.c` `search_txk_type` / `encodemb.c` `av1_optimize_b`;
-  port: `tx_search.rs`), same ar-swap recipe.
+- **ROOT #2 — FIXED ✅ 2026-07-31. TWO defects in `search_tx_type`'s coefficient path, both
+  reachable only at ALLINTRA speed >= 4.** The narrowing below was right about the layer
+  (coefficient-level, not search-space) and right that no single sf flip explains it.
+  - **Localization method (the deliverable — reusable).** Per-txb dump on BOTH sides, aligned
+    into (entry, per-candidate, winner) groups and diffed by group index. C side: the
+    HANDOFF-TOGGLES ar-swap — one instrumented `av1/encoder/tx_search.c` TU compiled with the
+    flags from `upstream/build/CMakeFiles/aom_av1_encoder.dir/flags.make`, `ar r`'d into
+    `upstream/build/libaom.a`, `cargo clean -p zenav1-aom-sys-ref` to force the relink, and the
+    archive restored from a pristine copy + `cmp`-verified afterwards. Port side: the same three
+    dumps around `search_tx_type_intra`. Both filtered by `mi(row,col)`. **All instrumentation
+    was removed before landing.**
+  - **FIRST DIVERGENT TXB — group 11 of 51 at mi(2,4)**: BLOCK_8X8, WINNER_MODE_EVAL,
+    `DC_PRED / angle_delta 0 / filter_intra 0`, TX_4X4, txb `blk_row=0, blk_col=1` (top-right
+    4x4). Everything entering it is IDENTICAL on both sides: allowed tx mask `0x080f` (5 types),
+    `block_sse 6480`, `block_mse_q8 6480`, `qstep 22`, `rdmult 43534`, `ref_best_rd 3165954`,
+    `skip_trellis 0`, `perform_block_coeff_opt 1`, `use_transform_domain_distortion 0`.
+    * **C evaluates exactly ONE candidate and stops**: `tx_type=11 (H_DCT), eob=0,
+      rate=1612, dist=6480, rd=966504` — winner, `skip_txfm=1`. It stops because
+      `tx_type_search.skip_tx_search && !best_eob` breaks the loop on the FIRST candidate
+      (tx_search.c:2352).
+    * **The port evaluated five**, in the order `3, 0, 2, 1, 11`, and its first
+      (`ADST_ADST`) kept coefficients through the trellis: `eob=3, rate=5802, dist=2960,
+      rd=872209` — cheaper than the skip's 966504, so ADST_ADST won and the search never
+      terminated early.
+    * The whole difference is the ORDER `prune_txk_type` wrote into `txk_map`.
+  - **DEFECT 2a — `prune_txk_type`'s est-rd added the tx-type cost to `eob == 0` candidates.**
+    At this txb ALL FIVE allowed types quantize to `eob = 0` under the prune's B-quant, so C's
+    `av1_cost_coeffs_txb_laplacian` returns `txb_skip_cost[ctx][1] = 1612` for every one
+    (txb_rdopt.c:742-744, the early return) and the sort is decided purely by tx-domain
+    distortion: `11:6458 < 2:6493 < 0:6501 < 3:6525 < 1:6529` => `txk_map[0] = H_DCT`. C only
+    reaches `get_tx_type_cost` inside `warehouse_efficients_txb_laplacian` (txb_rdopt.c:674),
+    i.e. on the `eob > 0` path. The port's caller added it unconditionally
+    (2807/3103/3011/2440/3309), so the five sorted by tx-type SIGNALLING cost instead:
+    `3 < 0 < 2 < 1 < 11` => `txk_map[0] = ADST_ADST`. **Fix:** gate the caller's
+    `get_tx_type_cost` on `xq.eob > 0` in `prune_txk_type_intra`
+    (`crates/aom-encode/src/tx_search.rs`) — the same gate the main loop's no-trellis arm
+    already had. NOTE the DSP-level differential `cost_coeffs_diff.rs` was green throughout:
+    it validates `cost_coeffs_txb_laplacian` alone against a shim that puts the tx-type cost
+    out of scope, so the defect lived in the CALLER's composition — a playbook §7 "gap between
+    two green rows".
+  - **DEFECT 2b (exposed once 2a closed) — the SATD trellis-skip did not switch the
+    QUANTIZER.** Next divergence: mi(0,6) BLOCK_8X16, MODE_EVAL, `H_PRED / angle_delta 1`,
+    TX_8X16, DCT-only mask. Both sides agreed the SATD gate fired (`satdskip=1`, `optb=0`) and
+    both produced the SAME forward coefficients (`sse` 503325 identical on both), but the
+    dequantized ones differed: `C rate=54833 dist=57169` vs `port rate=63012 dist=48017`.
+    `skip_trellis_opt_based_on_satd` does not merely return a flag — it re-runs
+    `av1_setup_quant` (tx_search.c:2002-2007) with
+    `skip_block_trellis ? (USE_B_QUANT_NO_TRELLIS ? AV1_XFORM_QUANT_B : AV1_XFORM_QUANT_FP)
+    : AV1_XFORM_QUANT_FP`, and `USE_B_QUANT_NO_TRELLIS` is 1 (blockd.h:34), so that tx type
+    quantizes with **B**. The port carried the block-level `kind` into both arms.
+    **Fix:** a per-tx-type `kind_this`, and — the part that matters — a per-tx-type
+    `QuantParams` to go with it. `QuantParams::from_plane_rows` BAKES the facade's table
+    choice (`quant_fp_QTX`/`round_fp_QTX` vs `quant_QTX`/`round_QTX`), so switching only the
+    kind ran B's algorithm on FP's tables and made it WORSE (dist 48017 -> 152297 against C's
+    57169). Both `qp_fp` and `qp_b` are now materialised once and selected together with the
+    kind.
+  - **Byte-inert below speed 4, structurally:** `skip_trellis_opt_based_on_satd` short-circuits
+    on `coeff_opt_satd_threshold == UINT_MAX` (tx_search.c:1986), which is every eval stage's
+    value at ALLINTRA speeds 0..3, and then `skip_trellis_this == skip_trellis` so `kind_this`
+    reproduces the old `kind` exactly. Defect 2a is likewise unreachable below speed 4
+    (`prune_tx_type_est_rd` is speed 4/5 only). Unit-locked over speeds 0..9 by
+    `satd_trellis_skip_arm_is_allintra_speed4_up` (`speed_features.rs`), which asserts BOTH
+    directions — no stage has a finite SATD threshold at speeds 0..3 (inertness) AND at least
+    one does at speeds 4..9 (non-vacuity: without the second half the lock would pass on a
+    port that never enables the arm).
+  - **Verification.** On the repro cell the port's per-txb stream is **4346/4346 groups
+    identical to instrumented C** frame-wide, and the encode is a byte match (498 == 498 B).
+  - **What it closed** (every one a self-promoting pin that FAILED in the closing direction,
+    all re-pinned in this landing):
+    * `speed_envelope_stock_map_is_pinned`: `q00_64` cpu-4, `q00_mono64` cpu-4 AND cpu-5,
+      `q00_128` cpu-4 — **all three bd8 contexts are now byte-identical at every speed 0..9**,
+      so the "fragile band" is a bd10-only statement now.
+    * `speed_sensitivity_s1`: `(4, flip0)` and `(5, minp16)` closed — **no RD-search speed
+      (0..7) has an open singleton left**; the only survivors are nonrd (speed 8).
+    * `combinations_t3_speed4_s0`/`_s1`: both open cpu-4 combination rows closed — **0 open of
+      31 and 0 of 32**, so `SPEED_OPEN_COMBINATIONS` has no cpu-4 entry at all. (Re-measured
+      AFTER removing the two singletons, since `remap_open_levels` reads that table and the
+      executed rows change with it.) The 5 cpu-8 rows are unchanged, as expected — nonrd
+      PICKMODE never enters this tx-type search.
+    * `encoder_gate_speed6_noise_flatuv_allintra` + `encoder_gate_speed7_noise_flatuv_allintra`
+      + `kb11_speed7_noise_cq63_pinned_open`: the KB-10 and KB-11 pinned-open cq63 near-tie
+      pairs (mono + 4:2:0) now byte-match. Both gates are full byte-identity asserts now and
+      the KB-11 localizer is renamed `kb11_speed7_noise_cq63_byte_matches`.
+    * KB-13 (`encoder_gate_real_content_speed1to4_e2e`): **+3 cells, map 47/60 -> 50/60**
+      (`quantizer-00 420 64x64@96,64 cpu4 cq32`, `quantizer-00 420 128x128@64,64 cpu4 cq32`
+      and `cq63`). Its per-cell `assert!` was restructured to accumulate both directions first
+      — it used to stop at the first promotion and hide the rest.
+  - **Bite proof (each defect reverted ALONE, everything else in place):**
+    * revert 2a (drop the `eob > 0` gate) ->
+      `speed_envelope_stock_map_is_pinned` fails with *"q00_128 cpu-used=4: stock encode is
+      now `diverge` (pinned `ok`)"* and `encoder_gate_real_content_speed1to4_e2e` fails with
+      *"regression: graduated real-content cells must byte-match real aomenc:
+      [\"av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu4 cq32\",
+      \"... cpu4 cq63\"]"*.
+    * revert 2b (carry the block-level kind/qp into both arms) -> the envelope fails on ALL
+      FOUR cells (`q00_64` cpu-4, `q00_mono64` cpu-4 + cpu-5, `q00_128` cpu-4), plus
+      `encoder_gate_speed6_noise_flatuv_allintra` and `..._speed7_...` with
+      *"diverging: [\"64x64 mono cq63\", \"64x64 420 cq63\"]"* and
+      `kb11_speed7_noise_cq63_byte_matches`.
+    The two reverts fail DIFFERENT cell sets, which is the evidence they are two roots and
+    not one. Note the unit lock passes in both reverted states by design — it guards the
+    *inertness* claim (which speeds can reach the arm), not the fix; the byte gates guard
+    the fix.
+  - **Envelope (this box, `--profile test-fast`, both dispatch modes):**
+    `-p zenav1-aom-encode -p zenav1-aom-bench` **452 passed / 0 failed / 5 ignored** with
+    default dispatch AND with `AOM_FORCE_SCALAR=1`.
+  - **UNMODELLED upstream quirk found en route (NOT fixed here, QM-only).** `av1_setup_quant`
+    also NULLs `qparam->qmatrix` / `iqmatrix` (encodemb.c:367-368), and
+    `skip_trellis_opt_based_on_satd` calls it whenever it does not early-return — including
+    when `skip_block_trellis == 0`. So with QM enabled at speed >= 4, C's `av1_quant` and the
+    following `dist_block_tx_domain` run with NO quant matrix for every tx type of every txb,
+    even though the loop just installed one via `av1_setup_qmatrix` (tx_search.c:2204). The
+    port keeps the matrix attached. Byte-inert on every configuration this landing touched (QM
+    off throughout), but it is a real divergence on the QM x speed>=4 axis and should be the
+    first suspect there.
 - **PARITY.md §A lists `--cpu-used=4` and `=5` as 64/64 byte-identical** — on the textured
   synthetic grid those rows were established on. These are different contexts, so the §A rows
   are not falsified; what is falsified is reading them as speed-4/5 coverage in general.

@@ -1407,6 +1407,55 @@ mod tests {
         assert_eq!(sf.tx_size_search_method_for_stage(WINNER_MODE_EVAL), 0);
     }
 
+    /// KB-21 root #2 lock: over ALLINTRA speeds 0..=9, WHICH speeds can reach
+    /// the SATD trellis-skip arm at all.
+    ///
+    /// `skip_trellis_opt_based_on_satd` (tx_search.c:1986) short-circuits on
+    /// `coeff_opt_satd_threshold == UINT_MAX`, and when it does NOT
+    /// short-circuit it re-runs `av1_setup_quant` (:2002-2007), flipping the
+    /// quantizer to `AV1_XFORM_QUANT_B` for that tx type. That per-tx-type
+    /// quantizer switch is the second half of KB-21 root #2. This locks the
+    /// two claims the fix rests on:
+    ///
+    /// * **inert at speeds 0..=3** — every eval stage has an infinite SATD
+    ///   threshold there, so `kind_this` provably reproduces the pre-loop
+    ///   `kind` and the change cannot move a speed-0..3 byte;
+    /// * **live at speeds 4..=9** — at least one stage has a finite threshold,
+    ///   so the arm is genuinely reachable (non-vacuity: without this half the
+    ///   test would pass on a port that never enables the SATD skip at all).
+    #[test]
+    fn satd_trellis_skip_arm_is_allintra_speed4_up() {
+        for speed in 0..=9i32 {
+            let sf = SpeedFeatures::set_allintra(speed, false, false);
+            let live: Vec<usize> = [DEFAULT_EVAL, MODE_EVAL, WINNER_MODE_EVAL]
+                .into_iter()
+                .filter(|&stage| {
+                    sf.tx_type_search_policy_for_stage(stage, false, 0)
+                        .coeff_opt_satd_threshold
+                        != u32::MAX
+                })
+                .collect();
+            if speed <= 3 {
+                assert!(
+                    live.is_empty(),
+                    "speed {speed}: the SATD trellis-skip arm must be unreachable \
+                     (coeff_opt_satd_threshold == UINT_MAX at every eval stage), \
+                     which is what makes the per-tx-type QUANT_B switch \
+                     byte-inert below speed 4; live stages: {live:?}"
+                );
+            } else {
+                assert!(
+                    !live.is_empty(),
+                    "speed {speed}: no eval stage has a finite \
+                     coeff_opt_satd_threshold, so `skip_trellis_opt_based_on_satd` \
+                     can never fire — the speed>=4 QUANT_B switch would be dead \
+                     code (speed_features.c:88-98 coeff_opt_thresholds x \
+                     perform_coeff_opt)"
+                );
+            }
+        }
+    }
+
     /// KB-21 lock: `part_sf.early_term_after_none_split` is 0 below ALLINTRA
     /// speed 4 and 1 from speed 4 up (`speed_features.c:477`, inside
     /// `if (speed >= 4)`; `init_part_sf:2319` default 0), and the struct field

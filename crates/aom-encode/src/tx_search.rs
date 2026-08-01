@@ -668,8 +668,11 @@ fn sort_rd(rds: &mut [i64], txk: &mut [usize], len: usize) {
 /// `get_tx_mask`'s multi-type arm on `num_allowed > 2`; no inter gate). For
 /// each allowed tx type: forward transform + **B-quant** (av1_setup_quant with
 /// AV1_XFORM_QUANT_B, quant_b_adapt=0 — regardless of the trellis setting),
-/// FAST rate via [`cost_coeffs_txb_laplacian`] (+ tx-type cost — C folds it
-/// inside `av1_cost_coeffs_txb_laplacian`), tx-domain distortion
+/// FAST rate via [`cost_coeffs_txb_laplacian`] (+ tx-type cost **only when
+/// `eob > 0`** — C folds `get_tx_type_cost` inside
+/// `warehouse_efficients_txb_laplacian`, txb_rdopt.c:674, which
+/// `av1_cost_coeffs_txb_laplacian` reaches ONLY past its `eob == 0` early
+/// return, txb_rdopt.c:742-744; see KB-21 root #2), tx-domain distortion
 /// (`dist_block_tx_domain`), `RDCOST` (0 fixed up to 1). Sorts `txk_map`
 /// ascending by est-rd ([`sort_rd`] — non-allowed types fill the tail in
 /// REVERSE tx-type order, matching C's `txk_map[last--]` walk) and returns the
@@ -714,6 +717,17 @@ fn prune_txk_type_intra(
         let xq = xform_quant(inp.residual, tx_size, tx_type, QuantKind::B, &qp_b, false);
         // estimate rate cost (av1_cost_coeffs_txb_laplacian, adjust_eob=0);
         // C includes get_tx_type_cost inside — the port's split adds it here.
+        //
+        // KB-21 root #2: the add is `eob > 0`-GATED, because C's
+        // `av1_cost_coeffs_txb_laplacian` returns `txb_skip_cost[ctx][1]`
+        // ALONE from its `eob == 0` early return (txb_rdopt.c:742-744) and
+        // only reaches `get_tx_type_cost` inside
+        // `warehouse_efficients_txb_laplacian` (:674) when `eob > 0`. Adding
+        // it unconditionally re-ranked all-zero candidates by their tx-type
+        // SIGNALLING cost instead of by distortion — and an all-zero
+        // `txk_map[0]` is exactly what makes the main loop's
+        // `skip_tx_search && !best_eob` break fire on the FIRST candidate.
+        // Same gate as the no-trellis arm of the main loop below.
         let mut rate_cost = cost_coeffs_txb_laplacian(
             &xq.qcoeff,
             xq.eob as usize,
@@ -722,18 +736,20 @@ fn prune_txk_type_intra(
             txb_skip_ctx as usize,
             inp.coeff_costs,
         );
-        rate_cost += get_tx_type_cost(
-            inp.tx_type_costs,
-            inp.plane,
-            tx_size,
-            tx_type,
-            false,
-            inp.reduced_tx_set_used,
-            inp.lossless,
-            inp.use_filter_intra,
-            inp.filter_intra_mode,
-            inp.mode,
-        );
+        if xq.eob > 0 {
+            rate_cost += get_tx_type_cost(
+                inp.tx_type_costs,
+                inp.plane,
+                tx_size,
+                tx_type,
+                false,
+                inp.reduced_tx_set_used,
+                inp.lossless,
+                inp.use_filter_intra,
+                inp.filter_intra_mode,
+                inp.mode,
+            );
+        }
         // tx-domain dist — the QM-PSNR metric weights it by the per-transform
         // forward matrix (same gate as the main loop, tx_search.c:1361).
         let (dist, _sse) = crate::dist_block_tx_domain_qm(
@@ -1317,20 +1333,28 @@ pub fn search_tx_type_intra(
     }
 
     // av1_setup_quant: FP with trellis, B without (USE_B_QUANT_NO_TRELLIS=1).
-    let kind = if skip_trellis {
-        QuantKind::B
-    } else {
-        QuantKind::Fp
-    };
-    let mut qp = QuantParams::from_plane_rows(inp.rows, kind, inp.bd, inp.lossless);
-    if let Some(level) = inp.qm_level {
-        qp = qp.with_qm(level, inp.plane);
-        if pol.use_qm_dist_metric {
-            // AOM_DIST_METRIC_QM_PSNR: the trellis weights its distortion by
-            // the forward matrix (av1_optimize_txb, txb_rdopt.c:346-351).
-            qp = qp.with_qm_dist_metric();
+    //
+    // BOTH parameter sets are materialised because `av1_setup_quant` is re-run
+    // PER TX TYPE inside `skip_trellis_opt_based_on_satd` (tx_search.c:2002),
+    // which can flip the quantizer to B for one candidate and back for the
+    // next. `QuantParams` bakes the facade's table choice (`quant_fp_QTX` /
+    // `round_fp_QTX` for FP vs `quant_QTX` / `round_QTX` for B), so the kind
+    // and the parameter block must be selected together — see `kind_this`
+    // below.
+    let build_qp = |k: QuantKind| {
+        let mut qp = QuantParams::from_plane_rows(inp.rows, k, inp.bd, inp.lossless);
+        if let Some(level) = inp.qm_level {
+            qp = qp.with_qm(level, inp.plane);
+            if pol.use_qm_dist_metric {
+                // AOM_DIST_METRIC_QM_PSNR: the trellis weights its distortion by
+                // the forward matrix (av1_optimize_txb, txb_rdopt.c:346-351).
+                qp = qp.with_qm_dist_metric();
+            }
         }
-    }
+        qp
+    };
+    let qp_fp = build_qp(QuantKind::Fp);
+    let qp_b = build_qp(QuantKind::B);
     let trellis_rdmult = trellis_rdmult_intra(
         inp.rdmult,
         pol.sharpness,
@@ -1378,10 +1402,36 @@ pub fn search_tx_type_intra(
                 pol.coeff_opt_satd_threshold,
             )
         };
+        // KB-21 root #2 (second half): the SATD arm does not merely *skip* the
+        // trellis — `skip_trellis_opt_based_on_satd` re-runs `av1_setup_quant`
+        // (tx_search.c:2002-2007) with
+        // `skip_block_trellis ? (USE_B_QUANT_NO_TRELLIS ? AV1_XFORM_QUANT_B :
+        // AV1_XFORM_QUANT_FP) : AV1_XFORM_QUANT_FP`, so the QUANTIZER ITSELF
+        // switches to B for that tx type. The port previously carried the
+        // block-level `kind` into both arms, quantizing FP where C quantizes B
+        // — same eob, different coefficients, hence different rate AND dist.
+        // Byte-identical below speed 4: the whole SATD body is short-circuited
+        // when `coeff_opt_satd_threshold == UINT_MAX`, and then
+        // `skip_trellis_this == skip_trellis`, so this expression reproduces
+        // the pre-loop `kind` exactly.
+        let kind_this = if skip_trellis_this {
+            QuantKind::B
+        } else {
+            QuantKind::Fp
+        };
+        let qp = if skip_trellis_this { &qp_b } else { &qp_fp };
 
         // Forward transform + quantize (+ trellis + rate).
         let (res, rate_cost): (XformQuantOptResult, i32) = if !skip_trellis_this {
-            let r = xform_quant_optimize(inp.residual, tx_size, tx_type, kind, &qp, inp.bctx, &opt);
+            let r = xform_quant_optimize(
+                inp.residual,
+                tx_size,
+                tx_type,
+                kind_this,
+                qp,
+                inp.bctx,
+                &opt,
+            );
             // av1_optimize_txb rate += tx_type cost when eob > 0.
             let ttc = if r.eob > 0 {
                 get_tx_type_cost(
@@ -1404,7 +1454,7 @@ pub fn search_tx_type_intra(
         } else {
             // No-trellis arm: B quant, entropy ctx computed by av1_quant,
             // rate via av1_cost_coeffs_txb (+ tx_type inside its eob>0 body).
-            let xq = xform_quant(inp.residual, tx_size, tx_type, kind, &qp, false);
+            let xq = xform_quant(inp.residual, tx_size, tx_type, kind_this, qp, false);
             let (txb_skip_ctx, dc_sign_ctx) = aom_dsp::txb::get_txb_ctx(
                 inp.bctx.plane_bsize,
                 tx_size,
@@ -1459,7 +1509,7 @@ pub fn search_tx_type_intra(
         // (av1_setup_qmatrix inside the loop, tx_search.c:2204-2249) — only
         // weighted under the QM-PSNR metric (`dist_block_tx_domain`'s
         // `qmatrix == NULL || !use_qm_dist_metric` gate, :1150/:1159).
-        let dqm = crate::dist_qmatrix(&qp, tx_size, tx_type);
+        let dqm = crate::dist_qmatrix(qp, tx_size, tx_type);
         let dscan = aom_dsp::txb::scan(tx_size, tx_type);
         let (dist, sse): (i64, i64) = if res.eob == 0 {
             (block_sse, block_sse)

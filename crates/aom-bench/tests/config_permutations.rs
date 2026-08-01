@@ -3256,9 +3256,9 @@ fn singleton_levels(speed: i32) -> Vec<(usize, u8)> {
 /// starts diverging is a regression.
 const SPEED_OPEN_SINGLETONS: &[(i32, &str)] = &[
     // `(4, "dir0")` and `(4, "rtx0")` closed 2026-07-30 with the KB-21
-    // `early_term_after_none_split` root.
-    (4, "flip0"),
-    (5, "minp16"),
+    // `early_term_after_none_split` root; `(4, "flip0")` and `(5, "minp16")`
+    // closed 2026-07-31 with KB-21 root #2. The RD-search speeds 0..7 now have
+    // NO open singleton — every remaining one is nonrd (speed 8).
     (8, "rtxs1"),
     (8, "trel2"),
 ];
@@ -3293,14 +3293,11 @@ const SPEED_OPEN_SINGLETONS: &[(i32, &str)] = &[
 /// Self-promoting: a row that starts matching fails here, and so does a row that
 /// starts diverging.
 const SPEED_OPEN_COMBINATIONS: &[(i32, &str)] = &[
-    // cpu-4 RE-MEASURED 2026-07-30 after the KB-21 root. Not a like-for-like
-    // count against the three rows this landing replaced: unpinning `(4, dir0)`
-    // and `(4, rtx0)` from SPEED_OPEN_SINGLETONS also lets those levels back
-    // into the array (remap_open_levels), so the executed rows changed. Both
-    // survivors carry `dir0` (no directional luma modes) — the same lead the
-    // speed-8 rows carry.
-    (4, "rect0-p140-maxp32-smth0-paeth0-dir0-tx640-cdf0-trel1"),
-    (4, "minp8-maxp32-smth0-cfl0-dir0-diag0-edgf0-dtxo1-txss0-trel0"),
+    // cpu-4 is EMPTY as of 2026-07-31: KB-21 root #2 (the `prune_txk_type`
+    // eob==0 est-rd ordering + the SATD trellis-skip QUANT_B switch) closed the
+    // last two open cpu-4 combination rows — both shards now report 0 open of
+    // 31 / 32 cells. Every cpu-4 knob COMBINATION in the array is byte-identical
+    // to real aomenc; the remaining open rows are speed-8 only.
     (8, "ab0-minp16-paeth0-dir0-adlt0-fint0-edgf0-rtx0-flip0-dtxo1-cdf2-trel0"),
     (8, "ab0-p140-minp8-maxp64-cfl0-dir0-diag0-adlt0-fint0-flip0-dtxo1-cdf0"),
     (8, "maxp32-dir0-adlt0-fint0-tx640-dtxo1"),
@@ -4201,9 +4198,15 @@ fn speed_axis_budget_is_accounted() {
 /// contexts diverge with every knob at its default. KB-21 root-caused the first
 /// half of that band the same day — `early_term_after_none_split` (ALLINTRA
 /// speed>=4, `speed_features.c:477`) was unported — which closed the cpu-5
-/// column on `q00_64` and `q00_128`; cpu-4 on all three and cpu-5 on mono
-/// remain open on a SECOND root (a leaf-level rate/dist divergence with the
-/// SAME winner mode/tx_size, see the KB-21 entry). And bd10 is open at most
+/// column on `q00_64` and `q00_128`. **KB-21 root #2 (2026-07-31) closed the
+/// rest of the bd8 band**: two coefficient-level defects in the speed>=4
+/// tx-type search — `prune_txk_type`'s est-rd estimate added the tx-type cost
+/// to `eob == 0` candidates that C costs as a bare txb-skip flag (so all-zero
+/// candidates sorted by SIGNALLING cost and never reached `txk_map[0]`, where
+/// C's `skip_tx_search` break ends the search on the first candidate), and the
+/// SATD trellis-skip failed to switch that tx type's quantizer to
+/// `AV1_XFORM_QUANT_B`. All three bd8 contexts are now byte-identical at every
+/// speed 0..9, so the fragile band is now a bd10-only statement. And bd10 is open at most
 /// speeds: `av1-1-b10-00-quantizer-00` is byte-exact at speed 0 (a gated
 /// context of the main array), at speed 7, and — since the KB-20 landing
 /// (2026-07-30) — at the nonrd speeds 8 and 9; it diverges at 1, 2, 3, 4, 5 and
@@ -4231,11 +4234,14 @@ fn speed_envelope_stock_map_is_pinned() {
     let probes: &[(&str, &str, Option<(usize, usize, usize, usize)>, bool, &[(i32, &str)])] = &[
         ("sz64", SPEED_VECTOR, None, false, &[]),
         // KB-21 (2026-07-30): the `early_term_after_none_split` root closed the
-        // cpu-5 column on the two 4:2:0 contexts. cpu-4 stays open on all three
-        // and cpu-5 on mono — a SECOND, distinct root (see the KB-21 entry).
-        ("q00_64", "av1-1-b8-00-quantizer-00", Some((64, 64, 64, 64)), false, &[(4, "diverge")]),
-        ("q00_mono64", "av1-1-b8-00-quantizer-00", Some((64, 64, 64, 64)), true, &[(4, "diverge"), (5, "diverge")]),
-        ("q00_128", "av1-1-b8-00-quantizer-00", Some((128, 128, 64, 64)), false, &[(4, "diverge")]),
+        // cpu-5 column on the two 4:2:0 contexts. KB-21 root #2 (2026-07-31)
+        // closed the REST of the bd8 band — the `prune_txk_type` est-rd
+        // ordering (tx-type cost added to an `eob == 0` laplacian estimate) and
+        // the SATD trellis-skip's per-tx-type `AV1_XFORM_QUANT_B` switch — so
+        // all three bd8 contexts are byte-identical at every speed 0..9.
+        ("q00_64", "av1-1-b8-00-quantizer-00", Some((64, 64, 64, 64)), false, &[]),
+        ("q00_mono64", "av1-1-b8-00-quantizer-00", Some((64, 64, 64, 64)), true, &[]),
+        ("q00_128", "av1-1-b8-00-quantizer-00", Some((128, 128, 64, 64)), false, &[]),
         (
             "b10_64",
             "av1-1-b10-00-quantizer-00",

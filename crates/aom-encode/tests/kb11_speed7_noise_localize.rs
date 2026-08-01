@@ -601,19 +601,20 @@ fn run_and_localize(cq_level: i32, mono: bool) -> bool {
     false
 }
 
-/// The two KB-11 pinned-open cells (mono + 4:2:0 noise 64x64 cq63) must
-/// still DIVERGE — this test FAILS the moment either starts matching
-/// (promote it + the noise gate's cq63 arm to hard byte-match asserts).
-/// The localization prints above document the current structural diff.
+/// PROMOTED 2026-07-31 by KB-21 root #2: the two former KB-11 pinned-open
+/// cells (mono + 4:2:0 noise 64x64 cq63) now BYTE-MATCH real aomenc, so this
+/// is a hard byte-identity gate. The localization prints above still fire on
+/// failure, so a regression reports the structural diff, not just a boolean.
 #[test]
-fn kb11_speed7_noise_cq63_pinned_open() {
+fn kb11_speed7_noise_cq63_byte_matches() {
     let mono_match = run_and_localize(63, true);
     let s420_match = run_and_localize(63, false);
     assert!(
-        !mono_match && !s420_match,
-        "the KB-11 pinned-open speed-7 noise cq63 cell(s) started BYTE-MATCHING real aomenc \
-         (mono match: {mono_match}, 420 match: {s420_match}) — promote the characterization \
-         to full byte-match asserts and close the KB-11 open item"
+        mono_match && s420_match,
+        "the speed-7 noise cq63 cells must byte-match real aomenc (mono match: \
+         {mono_match}, 420 match: {s420_match}) — they were promoted from \
+         pinned-open by KB-21 root #2 (the `prune_txk_type` eob==0 est-rd \
+         ordering + the SATD trellis-skip QUANT_B switch)"
     );
 }
 

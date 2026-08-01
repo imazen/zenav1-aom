@@ -2681,7 +2681,6 @@ fn encoder_gate_speed6_noise_flatuv_allintra() {
     };
     let flat_uv = |_r: usize, _c: usize| 128u8;
     let mut failures: Vec<String> = Vec::new();
-    let mut open_matches: Vec<String> = Vec::new();
     for &cq in &[32i32, 48, 63] {
         for &mono in &[true, false] {
             let ok = attempt_case_content_uv(64, 64, mono, 1, 1, 2, cq, 6, 6, noise, flat_uv);
@@ -2690,26 +2689,18 @@ fn encoder_gate_speed6_noise_flatuv_allintra() {
                 "speed6-noise-flatuv 64x64 {fmt} cq{cq}: {}",
                 if ok { "MATCH" } else { "DIFF" }
             );
-            if cq == 63 {
-                // The pinned-open KB-10 near-tie cells (docs above).
-                if ok {
-                    open_matches.push(format!("64x64 {fmt} cq{cq}"));
-                }
-            } else if !ok {
+            // KB-21 root #2 (2026-07-31) closed the former cq63 pinned-open
+            // pair — the whole grid is now asserted at byte-identity.
+            if !ok {
                 failures.push(format!("64x64 {fmt} cq{cq}"));
             }
         }
     }
     assert!(
         failures.is_empty(),
-        "every asserted speed-6 noise/flat-uv cell must byte-match real aomenc; \
-         diverging: {failures:?}"
-    );
-    assert!(
-        open_matches.is_empty(),
-        "the pinned-open KB-10 cq63 near-tie cells started BYTE-MATCHING real aomenc \
-         ({open_matches:?}) — promote this characterization to a full byte-match assert \
-         and close the KB-10 open item"
+        "every speed-6 noise/flat-uv cell must byte-match real aomenc (the cq63 \
+         pair was promoted from pinned-open by KB-21 root #2); diverging: \
+         {failures:?}"
     );
 }
 
@@ -2866,7 +2857,6 @@ fn encoder_gate_speed7_noise_flatuv_allintra() {
     };
     let flat_uv = |_r: usize, _c: usize| 128u8;
     let mut failures: Vec<String> = Vec::new();
-    let mut open_matches: Vec<String> = Vec::new();
     for &cq in &[12i32, 32, 48, 63] {
         for &mono in &[true, false] {
             let ok = attempt_case_content_uv(64, 64, mono, 1, 1, 2, cq, 7, 7, noise, flat_uv);
@@ -2875,27 +2865,19 @@ fn encoder_gate_speed7_noise_flatuv_allintra() {
                 "speed7-noise-flatuv 64x64 {fmt} cq{cq}: {}",
                 if ok { "MATCH" } else { "DIFF" }
             );
-            if cq == 63 {
-                // The pinned-open KB-11 cells (== the KB-10 near-tie; docs above).
-                if ok {
-                    open_matches.push(format!("64x64 {fmt} cq{cq}"));
-                }
-            } else if !ok {
+            // KB-21 root #2 (2026-07-31) closed the former cq63 pinned-open
+            // pair (the KB-10 speed-6 twin closed in the same landing) — the
+            // whole grid is now asserted at byte-identity.
+            if !ok {
                 failures.push(format!("64x64 {fmt} cq{cq}"));
             }
         }
     }
     assert!(
         failures.is_empty(),
-        "every asserted speed-7 noise/flat-uv cell must byte-match real aomenc; \
-         diverging: {failures:?}"
-    );
-    assert!(
-        open_matches.is_empty(),
-        "the pinned-open KB-11 cq63 near-tie cells started BYTE-MATCHING real aomenc \
-         ({open_matches:?}) — promote this characterization (and \
-         kb11_speed7_noise_localize.rs) to full byte-match asserts and close the KB-11 \
-         open item (KB-10's speed-6 twin likely closed too)"
+        "every speed-7 noise/flat-uv cell must byte-match real aomenc (the cq63 \
+         pair was promoted from pinned-open by KB-21 root #2); diverging: \
+         {failures:?}"
     );
 }
 
@@ -3426,8 +3408,11 @@ fn ivf_temporal_units(data: &[u8]) -> Vec<Vec<u8>> {
 /// through the sibling `run_case`; proves `attempt_case_content_uv_sep`
 /// reproduces that speed-0 encode on real separate-U/V content); (2) the 24
 /// `byte_exact` cells MUST byte-match (regression guard); (3) every OTHER cell is
-/// a PINNED near-tie and MUST diverge (self-promoting, KB-P29/KB-12 pattern). The
-/// 36 pinned DIFFs are all interior BLOCK_16X16/8X8 partition RD near-ties
+/// a PINNED near-tie and MUST diverge (self-promoting, KB-P29/KB-12 pattern).
+/// The map is **50/60** as of 2026-07-31 (24 at the landing commit, 41 after the
+/// AB mode-cache root, 45 after the partial-SB harness fix, 47 after KB-21
+/// root #1, 50 after KB-21 root #2). The pinned DIFFs are interior
+/// BLOCK_16X16/8X8 partition RD near-ties
 /// (KB-13: the port over-picks AB/SPLIT where C picks simpler) — genuine, not a
 /// shared root (the AB prune is C-faithful for allintra). When a fix closes a
 /// pinned cell this test FAILS on it → move it into `byte_exact` (never relax).
@@ -3474,6 +3459,9 @@ fn encoder_gate_real_content_speed1to4_e2e() {
         "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu3 cq32",
         "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu3 cq63",
         "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu4 cq12",
+        // +1 promoted 2026-07-31 by KB-21 root #2 (the `prune_txk_type`
+        // eob==0 est-rd ordering + the SATD trellis-skip QUANT_B switch).
+        "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu4 cq32",
         "av1-1-b8-00-quantizer-00 420 64x64@96,64 cpu4 cq63",
         // quantizer-00 128x128@64,64 (photo, 4-SB): 9 byte-exact (6 promoted
         // 2026-07-19, AB mode-cache; 1 more 2026-07-30, KB-21).
@@ -3486,8 +3474,11 @@ fn encoder_gate_real_content_speed1to4_e2e() {
         "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu3 cq12",
         "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu3 cq32",
         // +1 promoted 2026-07-30 by the KB-21 `early_term_after_none_split`
-        // root (ALLINTRA speed>=4, speed_features.c:477).
+        // root (ALLINTRA speed>=4, speed_features.c:477); +2 more promoted
+        // 2026-07-31 by KB-21 root #2.
         "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu4 cq12",
+        "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu4 cq32",
+        "av1-1-b8-00-quantizer-00 420 128x128@64,64 cpu4 cq63",
         // 23-film_grain-50 64x64@96,64 (film, 1-SB): 11 byte-exact (7 promoted
         // 2026-07-19, AB mode-cache; 1 more 2026-07-30, KB-21).
         "av1-1-b8-23-film_grain-50 420 64x64@96,64 cpu1 cq12",
@@ -3609,19 +3600,27 @@ fn encoder_gate_real_content_speed1to4_e2e() {
     // — genuine, not a shared root (the AB prune is C-faithful for allintra). When
     // a fix closes one, this test FAILS on the flipped cell -> move it into
     // `byte_exact`. A byte_exact cell that regresses to DIVERGE also FAILS here.
+    //
+    // Both directions are accumulated before asserting, so ONE run reports the
+    // whole movement (a per-cell `assert!` stopped at the first promotion and
+    // hid the rest — KB-21 root #2 promoted several at once).
+    let mut regressed: Vec<&str> = Vec::new();
+    let mut promote: Vec<&str> = Vec::new();
     for (label, ok) in &results {
         let graduated = byte_exact.contains(&label.as_str());
-        if graduated {
-            assert!(
-                *ok,
-                "regression: graduated real-content cell `{label}` must byte-match real aomenc"
-            );
-        } else {
-            assert!(
-                !*ok,
-                "PROMOTE: pinned real-content near-tie `{label}` now byte-matches real aomenc — \
-                 move it into `byte_exact` (a root was fixed; see KB-13)"
-            );
+        if graduated && !*ok {
+            regressed.push(label.as_str());
+        } else if !graduated && *ok {
+            promote.push(label.as_str());
         }
     }
+    assert!(
+        regressed.is_empty(),
+        "regression: graduated real-content cells must byte-match real aomenc: {regressed:?}"
+    );
+    assert!(
+        promote.is_empty(),
+        "PROMOTE: pinned real-content near-ties now byte-match real aomenc — move them \
+         into `byte_exact` (a root was fixed; see KB-13): {promote:?}"
+    );
 }
