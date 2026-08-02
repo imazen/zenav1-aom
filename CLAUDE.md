@@ -3426,6 +3426,81 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   + pixel compare over a manifest). `xtool prep` gained an additive `at:WxH+X+Y` explicit-offset
   crop mode; `native` / `crop:WxH` / `square:N` are byte-unchanged.
 
+### KB-PERF-1 — Encoder: the intra-mode CNN is recomputed ~10x per superblock (C computes it ONCE and caches) — OPEN, MEASURED 2026-08-02
+
+**Not a correctness bug — a 10x throughput bug, and the largest single measured
+item in the whole project.** Full profile, method, control band and ranked
+levers: `benchmarks/encoder_hotspot_profile_2026-08-02.md` (+ `.meta`, five TSVs).
+
+libaom runs the intra-mode partition CNN **once per BLOCK_64X64 node** and caches
+the 1636-float multi-out buffer in `x->part_search_info.cnn_buffer`
+(`av1/encoder/partition_strategy.c:160` `if (bsize == BLOCK_64X64 &&
+!part_info->cnn_output_valid)`; invalidated per 64x64 at
+`partition_search.c:3342`; every smaller node returns at
+`if (!part_info->cnn_output_valid) return;` on :227 and runs only the small
+branch DNN). The port's `partition_pick.rs:2805` calls
+`cnn_partition::decision::predict_decision`, which at `decision.rs:232` calls
+`cnn::cnn_predict` **unconditionally**, at every 64x64 / 32x32 / 16x16 / 8x8 node.
+`extract_intra_cnn_window` (`partition_pick.rs:2493`) snaps its origin to the
+containing 64x64, so **every one of those calls convolves the identical window
+and returns the identical buffer.** Output is byte-correct; the work is discarded.
+
+KB-23 modelled the *gating* half of that latch (the frame-edge
+`av1_is_whole_blk_in_frame` implication) and is correct; it did NOT model the
+*caching* half.
+
+MEASURED, 1024x1024 photo / cq44 / cpu-used 6 (the mode xbench's +15.9 %
+photographic BD-rate deficit is measured at), Apple M4 Pro:
+
+* **2558 CNN cascade runs per frame vs libaom's 256** — 9.99 per 64x64 SB vs 1.00.
+  Counted exactly by a counting `GlobalAlloc` with exact-size call-site counters
+  (`crates/aom-bench/examples/eprof_alloc.rs`).
+* **144.5 µs per run** vs libaom's `_c` 125.2 µs (so the Rust transcription is
+  within 15 % of the C it copies) and vs libaom's dispatched NEON 16.4 µs
+  (`crates/aom-bench/examples/eprof_cnn_bench.rs`).
+* The two factors multiply to **85-90x** on that stage, which is
+  **74.7 % of the port's entire encode** and **81.5 % of the whole 10.7x gap
+  to libaom**. Remove it and the port is **~3x** libaom, not ~10x — confirmed
+  independently at `cpu-used` 7 and 8, where the port takes the
+  VAR_BASED_PARTITION path, runs the CNN **zero** times, and measures **2.69x**
+  and **3.45x**.
+* Armed at **every allintra `cpu-used >= 1`** (`partition_pick.rs:2759`), so this
+  is not one preset's quirk. Redundancy is worse at smaller frames (26.4/SB at
+  256²) and lower quantizers (22.4/SB at cq 10, where the ratio hits 15.2x).
+
+Fix shape: hoist + memoize the cascade at the 64x64 node exactly as
+`cnn_output_valid` does, leaving the branch DNN per node. **Byte-identical by
+construction** — a byte-identity gate over the existing corpus is the whole
+verification. Projected from the measurement: 511.7 ms → 167.6-178.9 ms, i.e.
+10.6x → **3.5-3.7x**, which is enough to move the port's `>= 1 MP/s` qualifying
+mode from `cpu-used 6` to `cpu-used 5` (measured 1191 ms = 0.88 MP/s today →
+936 ms = 1.12 MP/s). Nothing was changed in that session — the numbers above are
+measurement plus arithmetic, not a before/after.
+
+Two adjacent findings from the same profile, both recorded in the .md:
+
+1. **`cpu-used 9` REFUSES the 1024²/cq44 cell at `0953fa7`** — panics in
+   `crates/aom-encode/src/nonrd_pickmode.rs:1135` with the KB-32 handoff message
+   ("nonrd estimate arm at non-square leaf bsize 4"). `cpu-used 8` on the same
+   cell is fine. `xbench_2026-08-01.md` publishes a cpu-used 9 throughput number
+   for this exact cell, measured at `ea3bed3`. Not diagnosed.
+2. **libaom's own NEON CNN kernel is not bit-identical to libaom's own `_c`
+   kernel** — 906/1636 output floats differ, max |Δ| 5.28e-6 (the
+   `docs/LIBAOM_UPSTREAM_NOTES.md` divergence class). The port matches `_c`,
+   libaom ships `_neon`, and the frames still come out byte-identical — the CNN's
+   threshold comparisons are robust to ~5e-6 *on this corpus*, which is an
+   observation, not a proof. Any SIMD rewrite of the port's `conv_valid` must be
+   gated on the full byte-identity corpus.
+
+Second-largest lever from the same profile: the port runs the **highbd** forward
+transform + intra predictors where libaom runs `lowbd_fwd_txfm2d_*_neon` /
+`av1_dr_prediction_z2_neon` — +38.9 ms, i.e. the SAME structural lever that
+`benchmarks/gate3_decode_profile_2026-07-19.md` Finding 1 ranked #1 on the
+decode side. Third: 870 167 allocator calls and 559.7 MB per 1 MP encode
+(3 399 per superblock), +24.1 ms — the encode-side twin of the per-txb allocation
+the decoder fixed with `ReconScratch` / `InvTxfmScratch`.
+
+
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 
 Primary config = ALLINTRA (usage=2), speed-0 KEY frame. libaom's own allintra tuning

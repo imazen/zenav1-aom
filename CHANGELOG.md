@@ -4,6 +4,26 @@
 
 ### [Unreleased]
 
+### Added
+
+- **The encoder has been profiled for the first time
+  ([`benchmarks/encoder_hotspot_profile_2026-08-02.md`](benchmarks/encoder_hotspot_profile_2026-08-02.md)).**
+  Every prior profiling artifact in `benchmarks/` was decode-side. The 10.8x
+  matched-preset gap to libaom that `xbench_2026-08-01.md` measured reproduces at
+  **10.72x** (9 interleaved invocations per arm, 2.88 % / 5.06 % control spread)
+  and is **concentrated, not diffuse**: `cnn_partition::cnn::cnn_predict` is
+  74.7 % of the port's whole encode and **81.5 % of the entire gap**, because the
+  port recomputes the intra-mode CNN at every 64/32/16/8 node (2558 runs/frame)
+  where libaom computes it once per 64x64 and caches (256). Take it out and the
+  port is ~3x libaom — confirmed at `cpu-used` 7/8 where the CNN never runs
+  (2.69x / 3.45x measured). Ranked levers, per-stage port-vs-libaom absolute-ms
+  alignment, an exact allocation census (870 167 allocator calls / 559.7 MB per
+  1 MP encode) and a size/speed/quantizer breadth sweep are in the writeup;
+  durable summary in `CLAUDE.md` **KB-PERF-1**. Nothing was optimized — this is
+  measurement only. New reusable harness: `scripts/eprof_{control,sample,breadth}.sh`,
+  `scripts/eprof_{rollup,align,callers}.py`, and
+  `crates/aom-bench/examples/eprof_{alloc,cnn_bench}.rs`.
+
 ### Changed
 
 - **All files inherited from upstream libaom now live in a subfolder or the
