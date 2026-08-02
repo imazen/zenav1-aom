@@ -2487,7 +2487,7 @@ fn rd_pick_ab_part(
 /// KB-23's 250x250 row byte-identical BEFORE this change and keeps it so
 /// after — the 250x250 row exercised the CNN *window*, which is insensitive to
 /// this, and not the CNN *res-tier threshold*, which is not (see the
-/// `predict_decision` call site). Measured both ways:
+/// `intra_mode_cnn_partition` call site). Measured both ways:
 /// `kb22_hd_arms::kb23_partial_sb_size_and_speed_axis` and
 /// `kb28_crop_dims::cnn_window_clamp_is_replication_inert`.
 fn extract_intra_cnn_window(env: &SbEncodeEnv, mi_row: i32, mi_col: i32) -> Vec<u8> {
@@ -2591,6 +2591,13 @@ pub fn rd_pick_partition_real(
     // NOTE the anchor is the 64×64, NOT the superblock — see the re-anchoring
     // at the top of the body.
     quad_tree_idx: i32,
+    // `x->part_search_info` (the intra-CNN half): the cascade output C computes
+    // ONCE per BLOCK_64X64 and every smaller node reads. Threaded rather than
+    // node-local precisely because it must OUTLIVE the 64×64 node that fills it
+    // — that is the cache. Invalidated below at the same BLOCK_64X64 re-anchor
+    // that resets `quad_tree_idx` (they are the same two lines of C,
+    // partition_search.c:3339-3343). See KB-PERF-1.
+    part_info: &mut crate::cnn_partition::decision::PartitionSearchInfo,
     // OUT: the NONE-arm winner's `(mode, use_filter_intra, filter_intra_mode)`
     // — C's `pc_tree->split[i]->none->mic` the parent's AB mode cache reads
     // (set_mode_cache_for_partition_ab). `None` when the NONE arm never
@@ -2637,6 +2644,9 @@ pub fn rd_pick_partition_real(
     // Byte-inert at SB64: the root already arrives with 0 and no descendant is
     // BLOCK_64X64.
     let quad_tree_idx = if cfg.allintra && bsize == 12 {
+        // The SIBLING half of the same C statement (KB-PERF-1): the CNN cascade
+        // is cached per 64x64, so the latch resets exactly where the index does.
+        part_info.invalidate_cnn();
         0
     } else {
         quad_tree_idx
@@ -2765,27 +2775,23 @@ pub fn rd_pick_partition_real(
     } else {
         0
     };
-    // KB-23: `cnn_output_valid` — C computes the CNN ONLY at a BLOCK_64X64 node
-    // and caches it (`intra_mode_cnn_partition`, partition_strategy.c:160-224);
-    // `init_partition_search_state_params` INVALIDATES it at every BLOCK_64X64
-    // node (partition_search.c:3340-3343), and every smaller node returns at
-    // `if (!part_info->cnn_output_valid) return;` (:227) rather than predicting.
-    // So when the containing 64x64 is NOT whole-in-frame — the CNN's own
-    // `av1_is_whole_blk_in_frame` gate at partition_strategy.c:1784 — nothing is
-    // computed and NO block inside that 64x64 is CNN-pruned, including the
-    // 32x32/16x16/8x8 sub-blocks that ARE whole-in-frame. The port had only the
-    // per-block gate, so inside a frame-edge superblock it pruned where C does
-    // not. Byte-inert on frames whose dimensions are exact multiples of 64 (the
-    // containing-64 test is then implied by the per-block one); measured to
-    // close 5/5 partial-SB size cells at speed 1 while leaving 6/6 SB-exact
-    // cells byte-identical (`kb22_hd_arms::speed1_size_axis_localize`).
-    // `(mi/16)*16` is the containing 64x64's mi origin; blocks are aligned to
-    // their own size, so every node <= 64x64 lies inside exactly one of them,
-    // under SB64 and SB128 alike (C's reset is per-64x64, not per-superblock).
-    let cnn_root_whole_in_frame = ((mi_row / 16) * 16 + 16) <= env.mi_rows
-        && ((mi_col / 16) * 16 + 16) <= env.mi_cols;
+    // The gate is C's `try_intra_cnn_based_part_prune`
+    // (partition_strategy.c:1783-1789) VERBATIM: level, frame-intra, sb_size >=
+    // BLOCK_64X64, bsize <= BLOCK_64X64, bsize_at_least_8x8, and THIS block
+    // whole-in-frame (`av1_is_whole_blk_in_frame`).
+    //
+    // KB-23's `cnn_root_whole_in_frame` — the containing 64x64 also had to be
+    // whole-in-frame — is no longer written out here because the CACHE now makes
+    // it emergent, exactly as it is in C (KB-PERF-1). At a BLOCK_64X64 node the
+    // per-block test IS the containing-64 test (blocks are aligned to their own
+    // size), so a frame-edge 64x64 never reaches the compute branch, the latch
+    // stays 0, and every smaller node inside it returns `None` at
+    // partition_strategy.c:227 — pruning nothing, which is precisely what KB-23
+    // established C does. Verified, not argued: `s4cov_partial_sb_axis` (4:4:4,
+    // 4:2:2, mono, bd10, SB128) and `kb22_hd_arms::kb23_partial_sb_size_and_
+    // speed_axis` are byte-identical across this change, and reverting the
+    // `invalidate_cnn()` call above re-breaks exactly KB-23's cell set.
     if intra_cnn_based_part_prune_level != 0
-        && cnn_root_whole_in_frame
         && env.sb_size >= 12 // BLOCK_64X64
         && bsize <= 12 // BLOCK_64X64
         && bsize_at_least_8x8
@@ -2801,9 +2807,13 @@ pub fn rd_pick_partition_real(
             _ => 0,
         };
         if bsize_idx != 0 {
-            let win = extract_intra_cnn_window(env, mi_row, mi_col);
-            let (_logits, dec) = crate::cnn_partition::decision::predict_decision(
-                &win,
+            // The 65x65 window is extracted ONLY on the computing path (once per
+            // 64x64). Every node inside one 64x64 would build the identical
+            // window — `extract_intra_cnn_window` snaps its origin to the
+            // containing 64x64 — which is why the cache is byte-inert.
+            let dec = crate::cnn_partition::decision::intra_mode_cnn_partition(
+                part_info,
+                || extract_intra_cnn_window(env, mi_row, mi_col),
                 cfg.qindex,
                 i32::from(env.bd),
                 // The res-tier threshold select reads `AOMMIN(cm->width,
@@ -2815,21 +2825,24 @@ pub fn rd_pick_partition_real(
                 quad_tree_idx,
                 intra_cnn_based_part_prune_level,
             );
-            // logits[0] > split_thresh: disallow NONE (level != 1) +
-            // do_square_split + av1_disable_rect_partitions.
-            if dec.none_disallowed {
-                partition_none_allowed = false;
-            }
-            if dec.do_square_split {
-                do_square_split = true;
-            }
-            if dec.rect_disabled {
-                do_rectangular_split = false;
-                partition_rect_allowed = [false, false];
-            }
-            // logits[0] < no_split_thresh: av1_disable_square_split_partition.
-            if dec.square_split_disabled {
-                do_square_split = false;
+            // `None` == C's early return at :227 (no valid cascade, no prune).
+            if let Some((_logits, dec)) = dec {
+                // logits[0] > split_thresh: disallow NONE (level != 1) +
+                // do_square_split + av1_disable_rect_partitions.
+                if dec.none_disallowed {
+                    partition_none_allowed = false;
+                }
+                if dec.do_square_split {
+                    do_square_split = true;
+                }
+                if dec.rect_disabled {
+                    do_rectangular_split = false;
+                    partition_rect_allowed = [false, false];
+                }
+                // logits[0] < no_split_thresh: av1_disable_square_split_partition.
+                if dec.square_split_disabled {
+                    do_square_split = false;
+                }
             }
         }
     }
@@ -3108,6 +3121,7 @@ pub fn rd_pick_partition_real(
                 } else {
                     quad_tree_idx
                 },
+                part_info,
                 &mut split_none_cache[idx],
                 Some(&mut split_rd[idx]),
                 Some(&mut split_part_rect_win[idx]),

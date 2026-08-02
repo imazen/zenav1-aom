@@ -2414,6 +2414,11 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   (`(mi/16)*16`) must be whole-in-frame before the CNN block runs. Correct under SB64 and
   SB128 alike because C's reset is per-64x64, not per-superblock; byte-inert on SB-exact
   frames, where the containing-64 test is implied by the per-block one.
+  **SUPERSEDED 2026-08-02 by KB-PERF-1**: that predicate is now DELETED, because the real
+  `cnn_output_valid` latch it was standing in for is implemented, and under a real latch
+  the containing-64 condition is emergent exactly as it is in C (a frame-edge 64x64 never
+  reaches the compute branch, so nothing inside it prunes). KB-23's RESULT is unchanged and
+  its whole grid still gates it — see KB-PERF-1's "RESULT" for the measurement.
 - **Verified — and note which halves are asymmetric.**
   - The size axis goes **5/5 divergent → 0/6**, while the SB-exact sizes stay 0/6 both ways.
   - The speed sweep goes 6/8 divergent → 0/8 over speeds 0..3 on the partial-SB sizes.
@@ -3426,11 +3431,14 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   + pixel compare over a manifest). `xtool prep` gained an additive `at:WxH+X+Y` explicit-offset
   crop mode; `native` / `crop:WxH` / `square:N` are byte-unchanged.
 
-### KB-PERF-1 — Encoder: the intra-mode CNN is recomputed ~10x per superblock (C computes it ONCE and caches) — OPEN, MEASURED 2026-08-02
+### KB-PERF-1 — Encoder: the intra-mode CNN is recomputed ~10x per superblock (C computes it ONCE and caches) — FIXED ✅ 2026-08-02
 
 **Not a correctness bug — a 10x throughput bug, and the largest single measured
 item in the whole project.** Full profile, method, control band and ranked
 levers: `benchmarks/encoder_hotspot_profile_2026-08-02.md` (+ `.meta`, five TSVs).
+**The fix and its measurement: `benchmarks/encoder_cnn_cache_2026-08-02.md`
+(+ `.meta`, `.control.tsv`, `.breadth.tsv`) — see "RESULT" at the end of this
+entry.**
 
 libaom runs the intra-mode partition CNN **once per BLOCK_64X64 node** and caches
 the 1636-float multi-out buffer in `x->part_search_info.cnn_buffer`
@@ -3499,6 +3507,99 @@ transform + intra predictors where libaom runs `lowbd_fwd_txfm2d_*_neon` /
 decode side. Third: 870 167 allocator calls and 559.7 MB per 1 MP encode
 (3 399 per superblock), +24.1 ms — the encode-side twin of the per-txb allocation
 the decoder fixed with `ReconScratch` / `InvTxfmScratch`.
+
+**RESULT — FIXED 2026-08-02. MEASURED 10.66x → 3.36x, zero bytes moved.**
+Record: `benchmarks/encoder_cnn_cache_2026-08-02.md` + `.meta` + `.control.tsv`
++ `.breadth.tsv`.
+
+- **FIX.** `cnn_partition::decision::PartitionSearchInfo` is C's
+  `x->part_search_info` (`block.h:391-398`): `cnn_output_valid` +
+  `cnn_buffer[1636]` + `log_q`. `rd_pick_partition_real` threads it and calls
+  `invalidate_cnn()` at the SAME `BLOCK_64X64` re-anchor that already resets
+  `quad_tree_idx` (literally the same two lines of C,
+  `partition_search.c:3339-3343` — KB-24's sibling, now both modelled);
+  `pack_tile` builds a fresh one per superblock (`encodeframe.c:692`);
+  `decision::intra_mode_cnn_partition` computes on the
+  `bsize == BLOCK_64X64 && !valid` branch only and returns `None` where C
+  returns at `:227`. The 65×65 window is a CLOSURE, so
+  `extract_intra_cnn_window` runs only on the computing path.
+- **KB-23's `cnn_root_whole_in_frame` predicate is DELETED** — with a real latch
+  it is emergent, exactly as in C: at a 64×64 node the per-block
+  `av1_is_whole_blk_in_frame` test IS the containing-64 test (blocks are aligned
+  to their own size), so a frame-edge 64×64 never computes and everything inside
+  it prunes nothing. Verified, not argued: the whole partial-SB axis
+  (`s4cov_partial_sb_axis`, `kb22_hd_arms`, `kb28_crop_dims`) is unchanged.
+- **MEASURED**, 1024×1024 photo / cq44 / cpu-used 6, 3 arms interleaved over 9
+  invocations each (`scripts/eprof_control_ab.sh`, NEW — the N-arm form of
+  `eprof_control.sh`): base **520.93 ms** (spread 3.31 %) → cache **164.03 ms**
+  (4.90 %) vs libaom-c **48.88 ms** (2.95 %); **10.657x → 3.356x**, −356.9 ms,
+  paired cache/C ratios 3.25-3.46 against paired base/C 10.48-11.15. All three
+  arms emit the same 4472-byte stream.
+- **Cascade runs 2558 → 256 = 1.00 per 64×64, i.e. exactly libaom's 256**
+  (`eprof_alloc`, all five exact-size CNN counters). The window copy came with
+  it: `extract_intra_cnn_window`'s 4225-byte allocation also 2558 → 256, so the
+  profile's "3.70 ms + 2558 allocations, no libaom counterpart" symbol is 10x
+  smaller for free. (Removing the copy ENTIRELY — C passes
+  `src.buf - stride - 1` in place — was NOT done: it needs `cnn_predict` to take
+  a strided u16 source plus the crop clamp, which is not a clean drop-in, and it
+  is now ~0.37 ms of a ~164 ms encode.)
+- **The cached value is PROVEN equal to a recomputation, not assumed.**
+  `decision::set_cnn_cache_verify(true)` makes every cache READ re-extract its
+  window, re-run the cascade and assert bit-identity. On the profile cell:
+  **256 computes + 2302 reads = 2558, and 2302/2302 reads bit-identical**
+  (`examples/eprof_cnn_verify.rs`). Gated in CI at four cells by
+  `aom-bench/tests/cnn_cache_identity.rs`, which also pins
+  `computes == whole-in-frame 64×64 nodes` — **9, not 16, at 196×196**, which is
+  KB-23 restated as an assertion.
+- **Breadth** (`eprof_breadth.sh`, 12 cells, `port_bytes == c_bytes` at every
+  one): 256² 13.88x → **3.32x**, 1024² 10.88x → **3.33x**, 2048² 9.85x →
+  **3.27x**, cq10 15.23x → **2.90x** (was the worst ratio measured anywhere),
+  cq26 10.51x → 3.06x, cq58 10.92x → 3.34x, cpu5 5.68x → **4.16x**, cpu4 9.39x →
+  7.95x, cpu3 8.18x → 6.88x. **`cnn_per_sb` is 1.00 at every armed cell** (2.00
+  at cpu 3/4, where the SB walk runs twice — the before-data shows the identical
+  doubling, 15.78/15.77 vs cpu5's 7.89). **cpu-used 7 and 8 are the negative
+  control**: CNN runs 0 both ways, 2.69x → 2.66x and 3.45x → 3.39x, inside the
+  control spread.
+- **Qualifying mode moves 6 → 5, measured both sides**: cpu6 497.67 ms
+  (2.11 MP/s) → 159.32 ms (**6.58 MP/s**); cpu5 1191.11 ms (0.88 MP/s, fails
+  the bar) → 905.08 ms (**1.16 MP/s**, clears it).
+- **Bite proof.** (a) Neutering the latch (compute at every node) restores 2558
+  cascade runs, 2558 window extractions and 565.69 ms — bytes still 4472, which
+  is a third independent statement that cached == recomputed. (b) Deleting
+  `invalidate_cnn()` takes `s4cov_partial_sb_axis::
+  sb128_partial_sb_speed_axis_byte_matches` from 48/48 to **12/48** (36 DIVERGE =
+  every size × cpu-used 1..6, KB-24's cell set) and makes `cnn_cache_identity`
+  panic with *"intra-CNN cache read differs from a recomputation at bsize_idx 1
+  quad_tree_idx 0"*, while the three SB64 tests in the same binary stay green.
+  **Honest scoping (KB-24 precedent):** (b) bites under `--sb-size=128` only —
+  under SB64 a superblock IS a 64×64, so `pack_tile`'s per-SB construction is
+  already the per-64×64 reset and the explicit call is inert there (measured:
+  SB64 1024²/256²/2048² stay byte-identical with it deleted). Both are kept
+  because both are in C.
+- **Gates:** full workspace **945/945** with `--run-ignored all` (the nightly
+  tier included), plus the scalar-pinned (`AOM_FORCE_SCALAR=1`) full run and
+  `cargo check --target x86_64-apple-darwin --workspace --all-targets`. Gate 2
+  keeps **zero pinned cells** across cpu-used 0..9. The `--run-ignored all` pass
+  did surface two failures, and neither was this change: see the KB-31 re-pin
+  note below.
+- **Two self-promoting KB-31 pins fired in the GOOD direction, and they are
+  KB-12's, not this change's.** `kb31_mandatory_tiles::mandatory_tile_split_
+  byte_identical_across_speeds` (OPEN `[(4032,8),(4160,8)]` → observed `[]`,
+  20/20 byte-identical) and `::issue6_reported_sizes_encode` (5472x3648 20 MP
+  now byte-identical, was +339 B). Both are `#[ignore]`d nightly tests that had
+  not run since 2026-07-30 — 74 commits, including **KB-12 `0953fa7`** (the
+  dropped Hadamard transpose in the nonrd estimate arm), which both tests' own
+  doc comments already named as the owner of those cells. Both are cpu-used 8/9,
+  where the intra-CNN prune runs **zero** times (measured), so the cache cannot
+  reach them, and **both reproduce on the pristine baseline** — verified by
+  re-running the file with the change stashed. Re-pinned to the tighter
+  expectation (empty OPEN set / hard `assert_eq!`), which is what each test's own
+  failure message asked for; nothing was relaxed. Same story for the three
+  regenerated `benchmarks/config_perm_*_2026-07-30.tsv` evidence sweeps.
+- **Still open, unchanged by this:** `cpu-used 9` refuses the 1024²/cq44 cell
+  (`nonrd_pickmode.rs:1135`, KB-32) — pre-existing and separately tracked. The
+  residual 3.36x was NOT re-profiled; the profile's levers 2-5 are arithmetic on
+  the OLD build's self-costs, so re-profile before ranking them again.
 
 
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)

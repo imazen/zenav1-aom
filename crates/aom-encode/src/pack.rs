@@ -1886,6 +1886,13 @@ pub fn pack_tile_lr(
             // node's own NONE/SPLIT/RECT stages has always already
             // overwritten it in every case this port's envelope reaches.
             let mut last_source_variance = 0u32;
+            // `x->part_search_info`'s intra-CNN half. C's storage is per
+            // MACROBLOCK (i.e. per tile worker) but it is invalidated at every
+            // superblock — `x->part_search_info.cnn_output_valid = 0`,
+            // encodeframe.c:692 — so a fresh one per SB is exactly C's state.
+            // (It is invalidated again at every BLOCK_64X64 inside the search,
+            // which is what makes it a per-64x64 cache; see KB-PERF-1.)
+            let mut part_search_info = crate::cnn_partition::decision::PartitionSearchInfo::new();
             let mut tree = if let Some(vf) = &vbp_frame {
                 // encode_rd_sb's VAR_BASED_PARTITION arm (encodeframe.c:
                 // 876-895): av1_choose_var_based_partitioning fixes the tree.
@@ -1963,6 +1970,7 @@ pub fn pack_tile_lr(
                     PartRdStats::invalid(),
                     0,
                     0, // quad_tree_idx: 0 at the SB (64×64) root
+                    &mut part_search_info,
                     &mut root_none_mode_cache,
                     None,
                     None, // rect_part_win_info: NULL at the SB root (encodeframe.c:826)

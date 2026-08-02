@@ -1525,6 +1525,8 @@ fn rd_pick_partition_real_matches_c_recursion() {
             PartRdStats::invalid(),
             0,
             0, // quad_tree_idx: 0 at the SB root
+            // `x->part_search_info` — fresh per SB (encodeframe.c:692).
+            &mut aom_encode::cnn_partition::decision::PartitionSearchInfo::new(),
             &mut None, // none-mode cache capture: discarded at the SB root
             None,
             None, // rect_part_win_info: NULL at the SB root

@@ -9,9 +9,17 @@
 //! feature assembly (`branch_*` spatial slicing via the `quad_to_linear` maps),
 //! the threshold selection, and the decision — all diffed against
 //! `av1/encoder/partition_strategy.c` via `aom_sys_ref::ref_intra_cnn_partition_decision`.
+//!
+//! Two entry points, and the difference between them is the whole of KB-PERF-1:
+//! [`intra_mode_cnn_partition`] carries C's per-`BLOCK_64X64` cache
+//! ([`PartitionSearchInfo`], C's `x->part_search_info`) and is what the search
+//! calls; [`predict_decision`] is the uncached form the C differential gates.
+//! Both share one per-node tail, so the cached path cannot drift from the
+//! differentialled one.
 
 use super::{cnn, nn, weights as w};
 use aom_dsp::quant::av1_dc_quant_qtx;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 
 /// The four prune effects `intra_mode_cnn_partition` applies to the partition
 /// search state. `none_disallowed` = `partition_none_allowed = 0` (only when
@@ -214,7 +222,180 @@ pub(crate) fn res_tier_thresholds(frame_w: i32, frame_h: i32, bsize_idx: usize) 
     }
 }
 
-/// Run the intra-CNN partition-prune decision for one block. `win` is the
+/// The intra-CNN half of C's `PartitionSearchInfo` (`av1/encoder/block.h:391-398`):
+/// the cascade's multi-out buffer, its `log_q` companion, and the **validity
+/// latch** that makes `intra_mode_cnn_partition` run the cascade ONCE per
+/// `BLOCK_64X64` and merely READ it at every 32×32 / 16×16 / 8×8 node inside
+/// that 64×64.
+///
+/// C's storage lives on the `MACROBLOCK` (`x->part_search_info`) and is
+/// invalidated in exactly two places:
+///
+/// * per superblock — `encodeframe.c:692` (`x->part_search_info.cnn_output_valid = 0`);
+/// * per `BLOCK_64X64` node — `init_partition_search_state_params`,
+///   `partition_search.c:3339-3343`, the same two lines that re-anchor
+///   `quad_tree_idx` (KB-24).
+///
+/// The port mirrors both: `pack_tile` builds a fresh one per superblock, and
+/// [`rd_pick_partition_real`](crate::partition_pick::rd_pick_partition_real)
+/// calls [`Self::invalidate_cnn`] at its `BLOCK_64X64` re-anchor.
+///
+/// The sibling field C keeps here, `quad_tree_idx`, stays a function parameter
+/// in the port: C's SPLIT recursion advances it and then RESTORES it
+/// (`partition_search.c:4571-4575` / `:4590-4592`), which a by-value parameter
+/// expresses directly. Only the CNN cache genuinely needs to outlive a node.
+#[derive(Clone)]
+pub struct PartitionSearchInfo {
+    /// `cnn_output_valid` (block.h:395).
+    cnn_output_valid: bool,
+    /// `cnn_buffer[CNN_OUT_BUF_SIZE]` (block.h:397).
+    cnn_buffer: [f32; cnn::CNN_OUT_BUF_SIZE],
+    /// `log_q` — "log of the quantization parameter of the ancestor
+    /// BLOCK_64X64" (block.h:399). C computes it inside the same
+    /// `bsize == BLOCK_64X64 && !cnn_output_valid` branch as the cascade
+    /// (`partition_strategy.c:193-198`), so it is cached with it.
+    log_q: f32,
+}
+
+impl Default for PartitionSearchInfo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PartitionSearchInfo {
+    /// A fresh (invalid) cache — C's `av1_zero(x->part_search_info)` state.
+    pub fn new() -> Self {
+        PartitionSearchInfo {
+            cnn_output_valid: false,
+            cnn_buffer: [0.0; cnn::CNN_OUT_BUF_SIZE],
+            log_q: 0.0,
+        }
+    }
+
+    /// `part_search_state->intra_part_info->cnn_output_valid = 0`
+    /// (`partition_search.c:3342`, and the `must_find_valid_partition` repeat at
+    /// `:5781`). Called at every `BLOCK_64X64` node on an intra frame.
+    pub fn invalidate_cnn(&mut self) {
+        self.cnn_output_valid = false;
+    }
+}
+
+/// Opt-in self-check for the cache (KB-PERF-1): when enabled, EVERY node that
+/// reads the cached cascade instead of computing it re-runs `cnn_predict` on a
+/// freshly extracted window and asserts the result is bit-identical to what is
+/// cached. Off by default; enabling it makes the encode roughly 2x slower
+/// (every avoided cascade is run after all) and is for verification only.
+static CNN_CACHE_VERIFY: AtomicBool = AtomicBool::new(false);
+/// Cascades actually COMPUTED (the `bsize == BLOCK_64X64 && !valid` branch).
+static CNN_CACHE_COMPUTES: AtomicU64 = AtomicU64::new(0);
+/// Cache READS re-verified against a recomputation (only counted while
+/// [`set_cnn_cache_verify`] is on).
+static CNN_CACHE_READS_VERIFIED: AtomicU64 = AtomicU64::new(0);
+
+/// Turn the cache self-check on/off (process-wide). See [`CNN_CACHE_VERIFY`].
+pub fn set_cnn_cache_verify(on: bool) {
+    CNN_CACHE_VERIFY.store(on, Relaxed);
+}
+
+/// `(cascades_computed, cache_reads_verified)` since the last
+/// [`reset_cnn_cache_stats`]. `cascades_computed` is counted unconditionally
+/// (one relaxed increment per 64×64); the second only while the check is on.
+pub fn cnn_cache_stats() -> (u64, u64) {
+    (
+        CNN_CACHE_COMPUTES.load(Relaxed),
+        CNN_CACHE_READS_VERIFIED.load(Relaxed),
+    )
+}
+
+/// Zero both counters.
+pub fn reset_cnn_cache_stats() {
+    CNN_CACHE_COMPUTES.store(0, Relaxed);
+    CNN_CACHE_READS_VERIFIED.store(0, Relaxed);
+}
+
+/// Port of `intra_mode_cnn_partition` (`partition_strategy.c:140-330`) **with
+/// C's per-64×64 cache**, which is the whole point of this entry point:
+///
+/// * `:160` — the cascade runs only `if (bsize == BLOCK_64X64 &&
+///   !part_info->cnn_output_valid)`, and stores into `part_info->cnn_buffer`
+///   (`:224` sets the latch);
+/// * `:227` — `if (!part_info->cnn_output_valid) return;` — a smaller node whose
+///   ancestor 64×64 never computed (because it was not whole-in-frame, KB-23)
+///   prunes nothing;
+/// * `:230-330` — feature assembly + branch DNN + thresholds, per node.
+///
+/// `window` is called AT MOST ONCE, and only on the computing path, so the
+/// caller's 65×65 extraction+copy is skipped entirely at the ~90 % of nodes that
+/// hit the cache. Every node inside one 64×64 would produce the identical window
+/// (`extract_intra_cnn_window` snaps its origin to the containing 64×64), which
+/// is exactly why the cache cannot change a decision.
+///
+/// Returns `None` when C returns at `:227` (no valid cascade → no prune).
+pub fn intra_mode_cnn_partition<F: Fn() -> Vec<u8>>(
+    info: &mut PartitionSearchInfo,
+    window: F,
+    qindex: i32,
+    bd: i32,
+    frame_w: i32,
+    frame_h: i32,
+    bsize_idx: i32,
+    quad_tree_idx: i32,
+    level: i32,
+) -> Option<([f32; 4], CnnPruneDecision)> {
+    // partition_strategy.c:160-224 — compute once per 64x64, cache in part_info.
+    let computed_here = if bsize_idx == 1 && !info.cnn_output_valid {
+        // C computes log_q here too (:193-198) off the 64x64's own x->qindex.
+        info.log_q = compute_log_q(qindex, bd);
+        info.cnn_buffer = cnn::cnn_predict(&window());
+        info.cnn_output_valid = true;
+        CNN_CACHE_COMPUTES.fetch_add(1, Relaxed);
+        true
+    } else {
+        false
+    };
+
+    // partition_strategy.c:227.
+    if !info.cnn_output_valid {
+        return None;
+    }
+
+    // Cache self-check (off by default): a READ must equal a recomputation.
+    if !computed_here && CNN_CACHE_VERIFY.load(Relaxed) {
+        let fresh = cnn::cnn_predict(&window());
+        assert!(
+            fresh == info.cnn_buffer,
+            "intra-CNN cache read differs from a recomputation at bsize_idx {bsize_idx} \
+             quad_tree_idx {quad_tree_idx}"
+        );
+        assert_eq!(
+            compute_log_q(qindex, bd),
+            info.log_q,
+            "intra-CNN cached log_q differs from a recomputation"
+        );
+        CNN_CACHE_READS_VERIFIED.fetch_add(1, Relaxed);
+    }
+
+    let mut features = [0.0f32; 100];
+    let nf = assemble_features(
+        &info.cnn_buffer,
+        bsize_idx,
+        quad_tree_idx,
+        info.log_q,
+        &mut features,
+    );
+    Some(finish_decision(
+        &features[..nf],
+        frame_w,
+        frame_h,
+        bsize_idx,
+        level,
+    ))
+}
+
+/// Run the intra-CNN partition-prune decision for one block, **uncached** —
+/// the C differential's entry point (`cnn_partition_decision_diff`), and the
+/// definition of what [`intra_mode_cnn_partition`] must reproduce. `win` is the
 /// parent 64×64's 65×65 luma window (replicated top/left border); `bsize_idx`
 /// is `convert_bsize_to_idx` (1=64×64 .. 4=8×8); `quad_tree_idx` is the block's
 /// position in the quad-tree; `level` is `intra_cnn_based_part_prune_level`
@@ -234,12 +415,24 @@ pub fn predict_decision(
 
     let mut features = [0.0f32; 100];
     let nf = assemble_features(&cnn_buffer, bsize_idx, quad_tree_idx, log_q, &mut features);
+    finish_decision(&features[..nf], frame_w, frame_h, bsize_idx, level)
+}
 
+/// The per-node tail both entry points share: branch DNN
+/// (`partition_strategy.c:330-341`) + res-tier thresholds (`:311-329`) + the
+/// four prune flags (`:343-357`).
+fn finish_decision(
+    features: &[f32],
+    frame_w: i32,
+    frame_h: i32,
+    bsize_idx: i32,
+    level: i32,
+) -> ([f32; 4], CnnPruneDecision) {
     let (w0, b0, w1, b1, wl, bl) = branch_dnn(bsize_idx);
     let mut logits = [0.0f32; 4];
     // num_outputs = BRANCH_*_NUM_LOGITS = 1; reduce_prec = 1 (as C calls it).
     nn::nn_predict(
-        &features[..nf],
+        features,
         &[16, 24],
         &[w0, w1, wl],
         &[b0, b1, bl],

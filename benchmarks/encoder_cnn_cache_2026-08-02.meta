@@ -1,0 +1,133 @@
+# encoder_cnn_cache_2026-08-02 — provenance
+# Companion to encoder_cnn_cache_2026-08-02.md and its two TSVs.
+# Follow-up to encoder_hotspot_profile_2026-08-02.{md,meta}: this is the
+# implementation + measurement of that profile's ranked lever #1 (KB-PERF-1).
+
+date                 2026-08-02
+box                  Apple M4 Pro, 12 cores, 24 GiB, macOS 26.5.2 (Darwin 25.5.0, arm64)
+baseline commit      5e29589499a4d90919deff8978163c9d16dede00   ("perf(encode): first ENCODER profile")
+subject              the working tree of worktree zenav1-aom--cnn1 at that commit + the CNN-cache change
+libaom oracle        upstream/ submodule 03087864cf4bea6abb0d28f95cf7843511413d8f  (v3.14.1)
+rustc                1.97.1 (8bab26f4f 2026-07-14)
+C compiler           Apple clang 21.0.0 (clang-2100.1.1.101)
+build flags          --release, NO -C target-cpu=native (runtime SIMD dispatch, what users get)
+threading            single-threaded on both arms (the port has no threading; the oracle
+                     libaom is built CONFIG_MULTITHREAD=0)
+nice                 every measured run under `nice -n 19`
+
+## BOX WAS NOT IDLE — read this before reading any absolute millisecond
+
+The same `zenmetrics` mac-worker fleet as the original profile held the box at a
+whole-box load average of 29-32 (of 12 cores) throughout. It was another agent's
+live work and was NOT interfered with. Handled the same way the profile handled
+it: the control band is INTERLEAVED across all three arms, the breadth sweep runs
+its arms back to back per cell, and every spread is quoted before its delta.
+
+## Arms
+
+port-base    benchmarks/xbench/target/release/drv-aom-base   built from the PRISTINE tree at 5e29589
+port-cache   benchmarks/xbench/target/release/drv-aom-cache  built from that tree + this change
+libaom-c     benchmarks/xbench/target/drv_libaom             the pinned in-tree oracle libaom
+
+The two port binaries differ ONLY by the change under test: `drv-aom-base` was
+produced by `git stash`ing the four modified files, rebuilding, and popping the
+stash (`git status` verified clean before and after).
+
+## Cell
+
+1024x1024 photo, cq-level 44, cpu-used 6, ALLINTRA (usage 2), 8-bit 4:2:0,
+single tile, single thread — the 2026-08-02 profile's cell, unchanged.
+Source: $HOME/tmp/xb/src/photo_1024.yuv (`python3 scripts/xbench.py prep`,
+Lanczos3 square:1024 of codec-corpus clic2025/final-test/8426ed22...png),
+byte-identical to the file the 2026-08-01 cross-encoder study used.
+All three arms emit the same 4472-byte stream at this cell.
+
+## Exact commands
+
+  git worktree add --detach ~/work/zen/zenav1-aom--cnn1 main
+  git -C ~/work/zen/zenav1-aom--cnn1 submodule update --init
+  ln -s ../../zenav1-aom/conformance/data      conformance/data       # corpus, gitignored
+  ln -s ../../zenav1-aom/conformance/vectors.json conformance/vectors.json
+
+  nice -n 19 cargo build --release -j 4 -p zenav1-aom-sys-ref          # the C oracle
+  nice -n 19 cc -O2 -o benchmarks/xbench/target/drv_libaom \
+      benchmarks/xbench/csrc/drv_libaom.c -Iupstream -Iupstream/build \
+      -Lupstream/build -laom -lm -lc++
+  (cd benchmarks/xbench && nice -n 19 cargo build --release -j 2 -p drv-aom)   # x2, see Arms
+  nice -n 19 cargo build --release -j 4 -p zenav1-aom-bench \
+      --example eprof_alloc --example eprof_cnn_verify
+
+  ARMS="port-base=$XB/target/release/drv-aom-base \
+        port-cache=$XB/target/release/drv-aom-cache \
+        libaom-c=$XB/target/drv_libaom" \
+    nice -n 19 bash scripts/eprof_control_ab.sh 9 ~/tmp/cnn1_control_ab.tsv
+  nice -n 19 bash scripts/eprof_breadth.sh ~/tmp/cnn1_breadth.tsv
+  ./target/release/examples/eprof_alloc      1024 1024 44 6 ~/tmp/xb/src/photo_1024.yuv
+  ./target/release/examples/eprof_cnn_verify 1024 1024 44 6 ~/tmp/xb/src/photo_1024.yuv
+
+  # gates
+  nice -n 19 cargo nextest run --cargo-profile test-fast --workspace \
+      --no-fail-fast --run-ignored all -j 4 --build-jobs 4
+  AOM_FORCE_SCALAR=1 nice -n 19 cargo nextest run --cargo-profile test-fast \
+      --workspace --no-fail-fast -j 4 --build-jobs 4
+  cargo check --target x86_64-apple-darwin --workspace --all-targets
+
+Note `scripts/eprof_breadth.sh` reads `benchmarks/xbench/target/release/drv-aom`,
+so that path must hold the arm you intend to sweep (it was set to the cache build
+by copying `drv-aom-cache` over it).
+
+## Tooling
+
+control band     scripts/eprof_control_ab.sh  — NEW here: the N-arm interleaved form of
+                 the profile's scripts/eprof_control.sh, same protocol (9 independent
+                 invocations per arm, 2 warm-up + 7 timed encodes each, own median).
+                 eprof_control.sh is unchanged and still the committed 2-arm form.
+breadth          scripts/eprof_breadth.sh     — unchanged, from the profile.
+call count       crates/aom-bench/examples/eprof_alloc.rs — unchanged, from the profile.
+                 The exact-size counters ARE the CNN call count (one call site each).
+cache verifier   crates/aom-bench/examples/eprof_cnn_verify.rs — NEW. Runs the profile
+                 cell twice, once with decision::set_cnn_cache_verify(true), which makes
+                 every cache READ re-extract its window and re-run the cascade and assert
+                 bit-identity. Prints the compute/read split and byte-compares the frame.
+CI gate          crates/aom-bench/tests/cnn_cache_identity.rs — NEW. The same verifier at
+                 four small cells (incl. one partial-SB and one --sb-size=128), plus the
+                 structural assertion `computes == whole-in-frame 64x64 nodes`.
+
+## Denominators
+
+port-base   520.93 ms/encode   (median of 9 interleaved invocation-medians)
+port-cache  164.03 ms/encode   (same)
+libaom-c     48.88 ms/encode   (same)
+ratios 10.657x / 3.356x; speed-up 3.176x, -356.9 ms.
+
+## Bite proofs (both reverted; `git diff` clean afterwards)
+
+(a) latch neutered  `bsize_idx == 1 && !info.cnn_output_valid` -> `true`
+    -> 2558 cascade runs (9.99/SB), 2558 window extractions, 565.69 ms, bytes 4472.
+(b) `part_info.invalidate_cnn()` deleted at the BLOCK_64X64 re-anchor
+    -> s4cov_partial_sb_axis::sb128_partial_sb_speed_axis_byte_matches 48/48 -> 12/48
+       (36 DIVERGE = every size x cpu-used 1..6); cnn_cache_identity panics with
+       "intra-CNN cache read differs from a recomputation at bsize_idx 1 quad_tree_idx 0";
+       the three SB64 tests in the same binary stay green, and the SB64 1024/256/2048
+       encodes stay byte-identical — the reset is load-bearing under --sb-size=128 only
+       (the per-superblock construction covers SB64). Scoped honestly per KB-24.
+
+## Raw artifacts NOT committed (regenerate with the commands above)
+
+  ~/tmp/cnn1_test_default.log   nextest, default tier   (919/919 pass)
+  ~/tmp/cnn1_final_all.log      nextest, --run-ignored all
+  ~/tmp/cnn1_scalar.log         nextest under AOM_FORCE_SCALAR=1
+  ~/tmp/cnn1_bite_b2.log        bite (b)
+  benchmarks/xbench/target/     the three driver binaries
+
+## Known gaps in this measurement, stated so nothing above is over-read
+
+* ONE image, one content class (photographic). No screen content, no synthetic.
+* 8-bit 4:2:0 only; no 10-bit, no 4:4:4, no monochrome — those axes are covered by
+  the test suite's byte gates, not by this benchmark.
+* cpu-used 0, 1 and 2 were NOT measured; cpu-used 9 REFUSES this cell at this
+  commit (KB-32, pre-existing, flagged in the profile and untouched here).
+* NO re-profile. The residual 3.36x was not decomposed; the profile's ranked
+  levers 2-5 are arithmetic on the OLD build's self-costs, not on this one.
+* No instruction-count profile (no valgrind on Apple Silicon).
+* No multi-threaded measurement. Neither arm is threaded.

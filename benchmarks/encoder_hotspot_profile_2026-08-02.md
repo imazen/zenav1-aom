@@ -1,5 +1,11 @@
 # Encoder hotspot profile — where the 10.8x goes (2026-08-02)
 
+> **Lever 1 has since LANDED** (same day, KB-PERF-1): the CNN is now cached per
+> 64x64 as C does. Measured **10.66x -> 3.36x**, cascade runs 2558 -> 256, no
+> byte moved — `encoder_cnn_cache_2026-08-02.md`. Everything below is the
+> pre-fix state, and its ranked levers 2-5 are arithmetic on the pre-fix
+> self-costs; re-profile before ranking them again.
+
 **The gap is CONCENTRATED, not diffuse. One function is 81.5 % of it.**
 
 `benchmarks/xbench_2026-08-01.md` established that the port has no coding
