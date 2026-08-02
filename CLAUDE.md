@@ -944,6 +944,19 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   8's unpruned mixed hybrid exposes the V/H sign. **Next step:** sibling-C per-mode `this_rdc`
   dump at that leaf (the KB-10/KB-11 method) to find which of V/H's rate the port tips —
   everything readable already agrees, so the tip is sub-trace.
+  - **SCOPE CORRECTED 2026-08-01 by KB-32, on real content at scale.** Two claims above are
+    narrower than the class: (1) it is **not V-vs-H only** — decode-both localization across
+    512²/256²/2176² at cq30/48/63 shows DC-vs-SMOOTH, V-vs-SMOOTH, DC-vs-H and DC-vs-V as well,
+    i.e. any pair inside `av1_nonrd_pick_intra_mode`'s `intra_mode_list` {DC, V, H, SMOOTH};
+    (2) **speed 9's prunes MASK it rather than removing it** — "same cells 64/64 there" was
+    measured at 64²/128², and at 512² cq48 and 2176² cq30 the class fires at speed 9 too. In
+    every case the partition trees agree EXACTLY (45,780 nodes at 2176²) and `tx_size`,
+    `uv_mode`, angle delta and filter-intra all match, so the localization stands — only its
+    extent was understated. Now gated by
+    `aom-bench/tests/kb32_nonrd_size_bands.rs::estimate_arm_residual_is_a_leaf_mode_near_tie`,
+    which asserts both the tree agreement and the mode set and self-promotes when the class
+    closes. This is the whole of what KB-32 left open on square leaves; the next step is
+    unchanged.
 - **HBD (bd10/12) estimate arm + lossless TX_4X4 + palette (screen) arms NOT ported** — asserted
   dead on the 8-bit canon grid (nonrd_pickmode.rs:594/460/784); required before any high-bit-depth
   or screen-content speed-8/9 cell.
@@ -2913,39 +2926,126 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   Noted at the site. (c) Nothing here is swept at SB128, bd10/12, 4:4:4/4:2:2 or monochrome —
   the whole file is bd8 4:2:0 SB64.
 
-### KB-32 — Encoder: `--cpu-used` 8 (every size >= 512²) and `--cpu-used` 9 (>= ~1 MP) diverge on real content — OPEN, pinned
-- **Found 2026-08-01** while separating KB-31's roots: the tiled cells' single-tile CONTROLS
-  diverged too, which is what proved the residual is not tiles'. Measured (cq30,
-  `c_encode_defaults`, mirror-tiled `av1-1-b8-00-quantizer-00`, bd8 4:2:0, aarch64):
+### KB-32 — Encoder: `--cpu-used` 8 (every size >= 512²) and `--cpu-used` 9 (>= ~1 MP) diverged on real content — BOTH BANDS FIXED ✅ 2026-08-01 (two roots; the residual is KB-12's, now ATTRIBUTED)
+- **Reported as GitHub issue #7**, found 2026-08-01 while separating KB-31's roots (the tiled
+  cells' single-tile CONTROLS diverged too, which is what proved the residual was not tiles').
+  Measured (cq30, `c_encode_defaults`, mirror-tiled `av1-1-b8-00-quantizer-00`, bd8 4:2:0,
+  aarch64), port bytes minus real aomenc, **before -> after**:
 
-  | size | SBs | cpu7 | cpu8 | cpu9 |
-  |---|---|---|---|---|
-  | 512² | 64 | +0 | **+61** | +0 |
-  | 576² / 640² / 704² / 768² / 896² | 81..196 | +0 | **+31 / +46 / +102 / +152 / +253** | +0 |
-  | 1024² | 256 | +0 | **+581** | **+613** |
-  | 2048² | 1024 | — | **+2,576** | **+2,311** |
-  | 3072² | 2304 | — | **+5,643** | **-1,883** |
-  | 4096x2368 (9.7 MP) | 2368 | **+0** | — | +512 |
-  | 4032x2368 (9.5 MP) | 2331 | **+0** | — | -912 |
-  | 5472x3648 (20 MP) | 4902 | — | — | +3,193 |
-  | 12000x9000 (108 MP) | 26508 | — | — | +28,180 |
+  | size | SBs | cpu8 before | cpu8 after | cpu9 before | cpu9 after |
+  |---|---|---|---|---|---|
+  | 512² | 64 | +61 | +61 | +0 | +0 |
+  | 768² | 144 | +152 | -50 | — | — |
+  | 896² | 196 | +253 | -23 | +0 | +0 |
+  | 1024² | 256 | +581 | -168 | +613 | **+0** |
+  | 2048² | 1,024 | +2,576 | **+21** | +2,311 | **+0** |
+  | 2112² | 1,089 | — | — | (never run) | **+0** |
+  | 2176² | 1,156 | — | — | (never run) | -184 |
+  | 3072² | 2,304 | +5,643 | — | -1,883 | -325 |
+  | 5472x3648 (20 MP) | 4,902 | — | — | +3,193 | **+339 (0.016 %)** |
 
-- **What it is not:** not tiles (4032x64 and 4032x2368 are single-tile and behave identically
-  to their tiled twins), not size at speed 7 (9.7 MP is BYTE-EXACT at cpu7), and not KB-26
-  (that was speed>=4 and is closed; speeds 4..7 are byte-exact here at every size measured).
-- **What it looks like:** two bands. **cpu9** has a clean size threshold between 896² (196 SBs,
-  byte-exact) and 1024² (256 SBs) — a size axis nothing has swept, since
-  `s4cov_hd_speed_axis` runs speeds 1..7 only and KB-12's speed-9 "64/64 canon" was measured at
-  64x64/128x128. **cpu8** diverges at EVERY size from 512² up with a delta growing roughly
-  linearly in area — most likely KB-12's pinned speed-8 nonrd estimate-arm class (4/64 cells
-  open at 64x64) seen on real content at scale, but that attribution is NOT established.
-- **Tracked as GitHub issue #7.**
-- **Pinned** in `kb31_mandatory_tiles::mandatory_tile_split_byte_identical_across_speeds`
-  (`OPEN = [(4032, 8), (4160, 8)]`, fails in both directions) and, as a verdict plus a `< 1%`
-  payload bound, in `issue6_reported_sizes_encode`.
-- **Next probe:** the cpu9 threshold is sharp and cheap to bisect (896² vs 1024² is <100 ms a
-  cell) — take the decode-both localization (`decode_diff_multisb.rs`) to the first divergent
-  partition node at 1024² cpu9 before assuming it is the same root as cpu8.
+- **ROOT #1 — `rt_sf.force_large_partition_blocks_intra` was UNMODELLED, and it is BOTH bands.**
+  `set_allintra_speed_feature_framesize_dependent` sets it at `speed >= 8 && is_720p_or_larger`
+  (`speed_features.c:326-328`). Its ONLY consumer anywhere in libaom is
+  `set_vbp_thresholds_key_frame` (`var_based_part.c:535-560`) — the KEY variance partitioner this
+  port runs from speed 7 up — where it has TWO arms, and the two reported bands are the two arms:
+  * `threshold_base <<= (var_part_split_threshold_shift - 7)` (`:539-544`). The shift is **8** at
+    speed 8 (`:581`) and back to **7** at speed 9 (`:601`, *"intentionally lower than speed 8's"*),
+    so `shift_steps` is 1 at speed 8 and 0 at speed 9. **That is the cpu8 band**, and it is why
+    cpu8 had no threshold: every frame at least 720 px on its short side takes it, and the effect
+    grows with the number of superblocks;
+  * `shift_val = 1` instead of 2 inside the `num_pixels >= RESOLUTION_720P` arm (`:552-554`).
+    `RESOLUTION_720P` is `1280 * 720` **pixels of AREA** (`rd.h:65`) — 921,600, which falls
+    between 896² = 802,816 and 1024² = 1,048,576. **That is the cpu9 threshold, exactly**, and
+    that arm is live at BOTH speeds.
+  The port's `var_part` module doc asserted *"`force_large_partition_blocks_intra` ... is 0 on
+  this path"* and dropped both arms — playbook §9 in its purest form: true of the envelope it was
+  written against (nothing above 640 px had ever run `--cpu-used >= 8`), false of the format.
+- **The threshold is AREA, not the short side, and the gate proves it by RESULT PATTERN.**
+  `nonrd_speed9_area_threshold_byte_identical` holds the short side at 768 across the area
+  threshold (884,736 -> 933,888 px) and then at 704 — below 720, so the speed feature must NOT
+  arm — across the same threshold. Measured before the fix: 768x1216 **+498**, 704x1408 +2
+  (the residual only). A port keyed on the short side passes the first pair and fails 704x1280;
+  one keyed on area alone fails it too.
+- **ROOT #2 — the speed-9 cost-update level was hardcoded OFF, dropping `INTERNAL_COST_UPD_SBROW`
+  at 4k.** The framesize-INdependent cascade sets `coeff_cost_upd_level` /`mode_cost_upd_level` to
+  `INTERNAL_COST_UPD_SBROW` at speed 9 (`speed_features.c:593-594`) and the framesize-dependent
+  pass demotes them to `INTERNAL_COST_UPD_OFF` **only below 4k** (`:648-651`,
+  `if (!is_4k_or_larger)`). `pack.rs` carried this as a written HANDOFF ("4k+ frames keep
+  INTERNAL_COST_UPD_SBROW — out of the canon envelope, unmodelled"); KB-31's 20/108 MP cells and
+  this ladder are what made it reachable. Fix: `refresh = c == 0` at `is_4k_or_larger` (C's
+  `skip_cost_update`'s `mi_col != tile_info->mi_col_start` early return,
+  `encodeframe_utils.c:1556-1564`), with the derivation carried across the SB row.
+- **FIX SHAPE (playbook §13 / KB-26): carry the resolved value, do not re-derive it.**
+  `SpeedFeatures` gains `force_large_partition_blocks_intra` + the speed-8/9
+  `var_part_split_threshold_shift` steps; `apply_allintra_framesize_dependent` gains a `speed`
+  argument and the `>=720p` arm; a new `partition_pick::FrameSizeSf { vbp: var_part::VbpSf,
+  is_4k_or_larger }` carries both resolved facts from `aom-bench`'s resolver through
+  `PickFrameCfg` into `pack_tile`'s `VbpFrame`. **`pack_tile` deliberately does not compute the
+  predicates itself — it only has mi-ALIGNED dimensions**, which would be wrong for any crop
+  within 3 px of a boundary; it asserts them instead wherever the mi-aligned value is unambiguous,
+  so a caller that leaves `fs_sf` at `Default` on a big frame fails loudly. That check is the
+  structural fix for how both roots hid.
+- **PER-ROOT BITE PROOF, different cell sets (playbook §1).** Reverting root #1 alone (`if false
+  && sf.force_large_partition_blocks_intra` at both arms) fails **all four** KB-32 gates and
+  reproduces the original ladder EXACTLY (768² +152, 896² +253, 1024² +581, 2048² +2,576;
+  768x1216 +498). Reverting root #2 alone fails **exactly one** —
+  `nonrd_speed9_4k_cost_upd_sbrow`, at exactly -2,599 on 2176² — while the cpu9 area gate, the
+  cpu8 ladder and the localizer stay green. Two roots, two disjoint cell sets.
+- **THE RESIDUAL IS KB-12'S, AND THE ATTRIBUTION IS NOW ESTABLISHED (it was explicitly flagged as
+  NOT established).** Decode-both localization (playbook §10) on every surviving cell:
+  **partition trees agree EXACTLY** — 45,780 nodes at 2176², 3,496 at 512², 892 at 256² — and the
+  first divergence is a leaf `y_mode`, both sides inside `av1_nonrd_pick_intra_mode`'s four-mode
+  `intra_mode_list` {DC, V, H, SMOOTH}, with `tx_size`, `uv_mode`, angle delta and filter-intra
+  all equal. Examples: 512² cq30 s8 mi(4,108) BLOCK_8X8 real SMOOTH / port DC; 2176² cq30 s9
+  mi(108,174) BLOCK_8X8 real DC / port V. **Two corrections to KB-12 fall out**: the class is
+  broader than the V-vs-H it recorded (DC-vs-SMOOTH, V-vs-SMOOTH, DC-vs-H, DC-vs-V all occur),
+  and it is **not speed-8-only** — 512² cq48 and 2176² cq30 diverge at speed 9, so speed 9's
+  three estimate-loop prunes MASK it on 64²/128² rather than removing it. Gate:
+  `kb32_nonrd_size_bands::estimate_arm_residual_is_a_leaf_mode_near_tie` (asserts both the
+  tree agreement and the mode set, self-promoting in both directions).
+  Shape after the fix: sign-random and flat in area (per superblock 512² 0.95 -> 0.95 [the arm is
+  unreachable below 720], 768² 1.06 -> 0.35, 896² 1.29 -> 0.12, 1024² 2.27 -> 0.66, 2048²
+  2.52 -> 0.02) where the pre-fix ladder ROSE monotonically. **KB-12's open next step is
+  unchanged and is now the whole of what is left: the sibling-C per-mode `this_rdc` dump at a
+  divergent estimate leaf.**
+- **NEW, and a real consequence of the fix: 12000x9000 at cpu9 now REFUSES instead of encoding.**
+  Correct thresholds are LARGER thresholds, which lets `set_vt_partitioning`'s HORZ/VERT pair arms
+  win on 108 MP of extremely smooth mirror-tiled content — and the nonrd ESTIMATE arm cannot code
+  a non-square leaf: for `BLOCK_16X8` etc. `max_txsize_lookup` (`common_data.h:105`) gives the
+  square tx of the SHORT side, so `av1_foreach_transformed_block_in_plane` visits TWO txbs and
+  `nonrd_pick_intra_mode` is written around a documented single-txb invariant. The pre-fix stream
+  for that cell was 0.24 % wrong; it is now a loud named refusal. **Measured reachability: of 18
+  large cells probed at speeds 8 and 9 (768² through 5472x3648) NONE reach a non-square leaf** —
+  the 108 MP cell is the only one in the tree that does. The fix is scoped precisely on
+  `nonrd_pickmode::nonrd_leaf_tx_size`'s HANDOFF (per-txb predict / facade write-back / subtract /
+  `av1_block_yrd` with C's `estimate_block_intra_args` accumulation, `intra_avail` fed the txb's
+  `blk_row`/`blk_col`); it is **byte-INERT for every square leaf**, where `bsize ==
+  txsize_to_bsize[tx_size]` makes the loop run exactly once with today's arguments. That, plus
+  KB-12's estimate-arm near-tie, is everything still open on this entry.
+- **Gates.** New `aom-bench/tests/kb32_nonrd_size_bands.rs`:
+  `nonrd_speed9_area_threshold_byte_identical` (default tier, 4 cells, hard byte asserts +
+  non-vacuity that the grid straddles both predicates), `nonrd_speed9_4k_cost_upd_sbrow`
+  (`--ignored`: 2112² byte-exact control + 2176² pinned open with a 1,000 B bound),
+  `nonrd_speed8_size_ladder_residual_is_bounded` (`--ignored`: the 5-cell ladder, pinned on the
+  SHAPE — worst armed-cell residual < 1.0 B/SB against a pre-fix 1.06-2.52 and rising),
+  `estimate_arm_residual_is_a_leaf_mode_near_tie` (`--ignored`, the localizer above).
+  Unit locks: `speed_features::tests::kb32_force_large_partition_blocks_intra_arm` (speeds 0..9 x
+  the 719/720 boundary on both axes, both directions, whole-struct check) and
+  `var_part::tests::kb32_force_large_intra_threshold_arms` (both arms x both sides of
+  `RESOLUTION_720P`, plus `kb32_shift_steps_floor_is_asserted` for C's `assert(shift_steps >= 0)`).
+  Re-pinned: `kb31_mandatory_tiles::issue6_reported_sizes_encode` (20 MP bound tightened
+  0.01 -> 0.001; the 108 MP refusal pinned by message, and re-pinned the moment it encodes),
+  `mandatory_tile_split_byte_identical_across_speeds` (`OPEN` unchanged — those cells are 64 px on
+  the short side, below the speed feature's 720),
+  `config_permutations::speed_class_inventory_is_pinned` + `speed_axis_teeth_are_real` (the
+  ALLINTRA speed-feature class partition moved from `{0}..{6} {7,8,9}` to `{0}..{6} {7,9} {8}` —
+  speed 8 now stands alone because it is the only speed whose `var_part_split_threshold_shift`
+  is 8), and `speed_features::tests::framesize_dependent_min_partition_size_4k_arm`'s
+  whole-struct expectation (2160² is also >= 720, so the new arm fires there at speed >= 8).
+- **Regression envelope, same box** (aarch64-apple-darwin, `--profile test-fast`,
+  `AOM_CONFORMANCE_DIR` provisioned): see the commit message for the counts, in both dispatch
+  modes.
 
 ### KB-17 — Encoder: `use_screen_content_tools` was hardcoded `false`, so `--use-intra-default-tx-only=1` diverged on ALL screen-detected content — FIXED ✅ 2026-07-30
 - **Root cause (found 2026-07-30, one line):** `crates/aom-encode/src/speed_features.rs`'s

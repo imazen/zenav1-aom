@@ -1063,7 +1063,43 @@ pub fn nonrd_leaf_tx_size(bsize: usize) -> usize {
         6 => 2,  // BLOCK_16X16 -> TX_16X16
         9 => 3,  // BLOCK_32X32 -> TX_32X32
         12 => 4, // BLOCK_64X64 -> TX_64X64
-        _ => panic!("nonrd leaf bsize {bsize}: KEY VBP tree stamps squares 8x8..64x64 only"),
+        // KB-32 CORRECTION. This used to read "KEY VBP tree stamps squares
+        // 8x8..64x64 only", which is FALSE (playbook §9 — an in-tree comment
+        // asserting inertness from the envelope it happened to be tested on).
+        // `set_vt_partitioning`'s HORZ/VERT pair arms (var_based_part.c:149-253)
+        // stamp BLOCK_64X32 / 32X64 / 32X16 / 16X32 / 16X8 / 8X16 whenever a
+        // node's own variance exceeds its threshold but BOTH halves are under
+        // it. Speeds 0-7 handle those leaves through the full RD search; the
+        // nonrd ESTIMATE arm cannot yet, because for a non-square leaf
+        // `max_txsize_lookup[bsize]` (common_data.h:105) is the square tx of the
+        // SHORT side, so `av1_foreach_transformed_block_in_plane` visits TWO
+        // txbs and `nonrd_pick_intra_mode` is written around a documented
+        // single-txb invariant (predict + subtract + `av1_block_yrd` over the
+        // whole leaf, one visit inlined).
+        //
+        // HANDOFF, precisely scoped: give `nonrd_pick_intra_mode` the real
+        // per-txb loop over `txsize_to_bsize[mi->tx_size]` — predict, the facade
+        // write-back, subtract and `av1_block_yrd` per txb with the rate/dist/
+        // skippable accumulation C's `struct estimate_block_intra_args` does,
+        // and `intra_avail` fed the txb's own `blk_row`/`blk_col`. It is
+        // byte-INERT for every square leaf (there `bsize == txsize_to_bsize[
+        // tx_size]`, so the loop runs exactly once with today's arguments),
+        // which is what makes it a contained change. The speed-9 SAD prune
+        // stays single-txb by construction — C gates it on `bsize == tx_bsize`
+        // (nonrd_pickmode.c:1600).
+        //
+        // REACHABILITY, MEASURED 2026-08-01: of 18 large cells probed at speeds
+        // 8 and 9 (768² through 5472x3648), NONE reach a non-square leaf. The
+        // only cell in the tree that does is issue #6's 12000x9000 at cpu9 —
+        // 108 MP of mirror-tiled content, where the KB-32 threshold fix
+        // legitimately enlarges the thresholds enough for the HORZ/VERT arms to
+        // win. Pinned there by `kb31_mandatory_tiles::issue6_reported_sizes_encode`.
+        _ => panic!(
+            "HANDOFF: nonrd estimate arm at non-square leaf bsize {bsize} — \
+             max_txsize_lookup gives a tx smaller than the leaf, so \
+             av1_foreach_transformed_block_in_plane visits more than one txb and \
+             nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)"
+        ),
     }
 }
 

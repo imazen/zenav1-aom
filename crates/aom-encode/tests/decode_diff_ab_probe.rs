@@ -515,6 +515,7 @@ fn run_one(name: &str, content: impl Fn(usize, usize) -> u8) {
         deltaq: None,
     };
     let pick_cfg = PickFrameCfg {
+            fs_sf: Default::default(),
             inter: None,
         intrabc: None,
         intra_tools: Default::default(),

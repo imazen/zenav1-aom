@@ -358,6 +358,7 @@ fn port_encode_cdef(cell: &EncodeCell, bootstrap: &[u8]) -> Vec<u8> {
         deltaq: None,
     };
     let pick_cfg = PickFrameCfg {
+            fs_sf: Default::default(),
             inter: None,
         intrabc: None,
         intra_tools: Default::default(),

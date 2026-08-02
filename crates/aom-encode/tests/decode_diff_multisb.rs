@@ -403,6 +403,7 @@ fn localize(w: usize, h: usize, cq_level: i32, content: impl Fn(usize, usize) ->
         deltaq: None,
     };
     let pick_cfg = PickFrameCfg {
+            fs_sf: Default::default(),
             inter: None,
         intrabc: None,
         intra_tools: Default::default(),

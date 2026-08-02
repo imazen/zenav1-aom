@@ -226,11 +226,23 @@ pub struct SpeedFeatures {
     /// Consumed by `set_vbp_thresholds`' NON-key arm (`thresholds[3] =
     /// threshold_base << shift`) and by `set_vbp_thresholds_key_frame` ONLY
     /// under `rt_sf.force_large_partition_blocks_intra` (var_based_part.c:
-    /// 539-544) — which stays 0 on allintra KEY below speed 8/720p
-    /// (speed_features.c:327). **Byte-INERT on this port's KEY envelope**
-    /// (carried for provenance + the speed-8/9 arms; see
-    /// [`crate::var_part`] module docs).
+    /// 539-544) — which is 0 on allintra KEY below speed 8 / 720p
+    /// (speed_features.c:326-328), and 1 at or above BOTH. It is therefore
+    /// byte-LIVE from speed 8 up on any frame with `min(w, h) >= 720`
+    /// (KB-32): at speed 8 the shift is 8, so `shift_steps = 8 - 7 = 1`
+    /// doubles `threshold_base`; at speed 9 the shift is back to 7, so
+    /// `shift_steps = 0` and only the `shift_val` arm moves.
     pub var_part_split_threshold_shift: i32,
+
+    /// `rt_sf.force_large_partition_blocks_intra` — default 0
+    /// (`init_rt_sf`, speed_features.c:2579); allintra `speed >= 8 &&
+    /// is_720p_or_larger` -> 1 (:326-328). Its ONLY consumer anywhere in
+    /// libaom is `set_vbp_thresholds_key_frame` (var_based_part.c:539/552),
+    /// i.e. exactly this port's KEY variance-partition path — see
+    /// [`crate::var_part::set_vbp_thresholds_key`]. KB-32 root #1: this was
+    /// unmodelled, and the `var_part` module doc asserted it "is 0 on this
+    /// path" from an envelope that stopped at 640 px.
+    pub force_large_partition_blocks_intra: i32,
 
     // ---- intra_sf --------------------------------------------------------
     /// `intra_sf.intra_pruning_with_hog` — allintra base 1
@@ -511,6 +523,7 @@ impl SpeedFeatures {
             partition_search_type: 0,        // SEARCH_PARTITION (init_part_sf:2284)
             // rt_sf
             var_part_split_threshold_shift: 5, // init_rt_sf:2085
+            force_large_partition_blocks_intra: 0, // init_rt_sf:2579
             // intra_sf
             intra_pruning_with_hog: 1, // allintra base (speed_features.c:360)
             chroma_intra_pruning_with_hog: 0, // init_intra_sf default (off)
@@ -935,7 +948,28 @@ impl SpeedFeatures {
         if speed >= 7 {
             sf.default_min_partition_size = 3; // BLOCK_8X8 (:570)
             sf.partition_search_type = 2; // VAR_BASED_PARTITION (:571)
-            sf.var_part_split_threshold_shift = 7; // :574 (inert on KEY)
+            sf.var_part_split_threshold_shift = 7; // :574
+        }
+
+        // ---- if (speed >= 8) / if (speed >= 9) (speed_features.c:577-606).
+        //      Only the `var_part_split_threshold_shift` steps are carried
+        //      here; the rest of those blocks (the nonrd PICKMODE flips —
+        //      `use_nonrd_pick_mode`, `hybrid_intra_pickmode`, the intra mode
+        //      masks, the estimate-loop prunes, the cost-upd levels) are
+        //      modelled at their consumers in `nonrd_pickmode` / `pack`
+        //      (KB-12), not through this struct.
+        //
+        //      The shift matters because `set_vbp_thresholds_key_frame`
+        //      computes `shift_steps = shift - 7` (ALLINTRA) whenever
+        //      `force_large_partition_blocks_intra` is set: 1 at speed 8,
+        //      0 at speed 9. That is why the two speeds have DIFFERENT
+        //      >=720p behaviour on the same frame (KB-32).
+        if speed >= 8 {
+            sf.var_part_split_threshold_shift = 8; // :581
+        }
+        if speed >= 9 {
+            // "intentionally lower than speed 8's" (the comment at :598-600).
+            sf.var_part_split_threshold_shift = 7; // :601
         }
 
         // The unconditional tail of set_allintra_speed_features_framesize_
@@ -973,6 +1007,14 @@ impl SpeedFeatures {
     ///   speed inside that function, so it also applies below speed 7 (which
     ///   sets the same value framesize-independently at :570). KB-19: the port
     ///   previously left the field at `BLOCK_4X4` for every frame size.
+    /// - **`speed >= 8 && is_720p_or_larger` (`min(w, h) >= 720`) →
+    ///   `rt_sf.force_large_partition_blocks_intra = 1`**
+    ///   (speed_features.c:326-328). KB-32 root #1. Its only consumer is
+    ///   `set_vbp_thresholds_key_frame` (var_based_part.c:539/552), the
+    ///   variance partitioner this port runs from speed 7 up, so it is
+    ///   byte-LIVE the moment a speed-8/9 frame is at least 720 px on its
+    ///   short side. Note the `speed >= 8` here is the C *block* gate, which
+    ///   is why this method needs `speed`.
     ///
     /// Audited and deliberately NOT modelled (the full table is in
     /// `docs/CONFIG_PERMUTATION_DESIGN_2026-07-30.md`): the
@@ -982,11 +1024,27 @@ impl SpeedFeatures {
     /// `ml_early_term_after_part_split_level`, `use_downsampled_sad` and
     /// `partition_search_breakout_*` are inter-only or speed-gated dead on the
     /// all-intra KEY envelope.
-    pub fn apply_allintra_framesize_dependent(&mut self, width: usize, height: usize) {
+    pub fn apply_allintra_framesize_dependent(
+        &mut self,
+        width: usize,
+        height: usize,
+        speed: i32,
+    ) {
+        let min_dim = width.min(height);
         // is_4k_or_larger = AOMMIN(cm->width, cm->height) >= 2160
         // (speed_features.c:172). BLOCK_8X8 == 3 in the BLOCK_SIZE enum.
-        if width.min(height) >= 2160 {
+        if min_dim >= 2160 {
             self.default_min_partition_size = 3;
+        }
+        // if (speed >= 8) { if (is_720p_or_larger) force_large... = 1; }
+        // (speed_features.c:325-328). The sibling arm in that block,
+        // `if (!is_480p_or_larger) rt_sf.nonrd_check_partition_merge_mode = 2`
+        // (:325-326), is deliberately not carried: every consumer of
+        // `nonrd_check_partition_merge_mode` is `!frame_is_intra_only`-gated
+        // (`av1_nonrd_use_partition`, partition_search.c) and this port only
+        // authors KEY frames — see KB-12.
+        if speed >= 8 && min_dim >= 720 {
+            self.force_large_partition_blocks_intra = 1;
         }
     }
 
@@ -1750,7 +1808,7 @@ mod tests {
             // not — the predicate is on the SHORT side).
             for &(w, h) in &[(64, 64), (1920, 1080), (4096, 2159), (2159, 4096)] {
                 let mut sf = base;
-                sf.apply_allintra_framesize_dependent(w, h);
+                sf.apply_allintra_framesize_dependent(w, h, speed);
                 assert_eq!(
                     sf.default_min_partition_size, expect_base,
                     "speed {speed} {w}x{h} must not take the 4k arm"
@@ -1759,18 +1817,89 @@ mod tests {
             // >= 2160 on both dimensions -> BLOCK_8X8 at every speed.
             for &(w, h) in &[(2160, 2160), (3840, 2160), (2160, 3840), (7680, 4320)] {
                 let mut sf = base;
-                sf.apply_allintra_framesize_dependent(w, h);
+                sf.apply_allintra_framesize_dependent(w, h, speed);
                 assert_eq!(
                     sf.default_min_partition_size, 3,
                     "speed {speed} {w}x{h} must take the 4k arm (BLOCK_8X8)"
                 );
             }
-            // The arm touches nothing else.
+            // The arm touches nothing else. (2160x2160 is also >= 720 on both
+            // sides, so at speed >= 8 the KB-32 `force_large_partition_blocks
+            // _intra` arm in the same C block fires too — it is expected here,
+            // and `kb32_force_large_partition_blocks_intra_arm` is what locks
+            // IT in isolation.)
             let mut sf = base;
-            sf.apply_allintra_framesize_dependent(2160, 2160);
+            sf.apply_allintra_framesize_dependent(2160, 2160, speed);
             let mut expect = base;
             expect.default_min_partition_size = 3;
+            expect.force_large_partition_blocks_intra = i32::from(speed >= 8);
             assert_eq!(sf, expect, "speed {speed}: the 4k arm moved another field");
+        }
+    }
+
+    /// KB-32 root #1 — `rt_sf.force_large_partition_blocks_intra`
+    /// (speed_features.c:325-328) and the `var_part_split_threshold_shift`
+    /// steps it consumes (:574 / :581 / :601).
+    ///
+    /// Locks, in BOTH directions and over the whole speed range: the shift
+    /// ladder (5 below speed 7, 7 at speed 7, **8 at speed 8**, 7 again at
+    /// speed 9); the arm firing only at `speed >= 8` AND only at
+    /// `min(w, h) >= 720`, with the 719/720 boundary pair on both axes; and a
+    /// whole-struct check that the arm moves nothing else.
+    ///
+    /// The 7 -> 8 -> 7 shift ladder is the reason speeds 8 and 9 behave
+    /// DIFFERENTLY on the same >=720p frame:
+    /// `set_vbp_thresholds_key_frame`'s `shift_steps = shift - 7` is 1 at
+    /// speed 8 (doubling `threshold_base`) and 0 at speed 9.
+    #[test]
+    fn kb32_force_large_partition_blocks_intra_arm() {
+        for speed in 0..=9 {
+            let base = SpeedFeatures::set_allintra(speed, false, false);
+            let want_shift = match speed {
+                0..=6 => 5, // init_rt_sf:2085, never overwritten below speed 7
+                7 => 7,     // :574
+                8 => 8,     // :581
+                _ => 7,     // :601 — "intentionally lower than speed 8's"
+            };
+            assert_eq!(
+                base.var_part_split_threshold_shift, want_shift,
+                "speed {speed}: var_part_split_threshold_shift"
+            );
+            assert_eq!(
+                base.force_large_partition_blocks_intra, 0,
+                "speed {speed}: the arm is framesize-DEPENDENT, so the \
+                 framesize-blind cascade must leave it at init_rt_sf's 0"
+            );
+
+            // Below 720 on the SHORT side the arm never fires, at any speed.
+            for &(w, h) in &[(64, 64), (719, 4096), (4096, 719), (1280, 719)] {
+                let mut sf = base;
+                sf.apply_allintra_framesize_dependent(w, h, speed);
+                assert_eq!(
+                    sf.force_large_partition_blocks_intra, 0,
+                    "speed {speed} {w}x{h}: min(w,h) < 720 must not arm it"
+                );
+            }
+            // At or above 720 on both sides it fires iff speed >= 8.
+            let want = i32::from(speed >= 8);
+            for &(w, h) in &[(720, 720), (720, 4096), (4096, 720), (1280, 1280)] {
+                let mut sf = base;
+                sf.apply_allintra_framesize_dependent(w, h, speed);
+                assert_eq!(
+                    sf.force_large_partition_blocks_intra, want,
+                    "speed {speed} {w}x{h}: expected force_large = {want}"
+                );
+            }
+            // Nothing else moves (the 4k arm is deliberately kept out of the
+            // comparison by staying below 2160).
+            let mut sf = base;
+            sf.apply_allintra_framesize_dependent(1280, 1280, speed);
+            let mut expect = base;
+            expect.force_large_partition_blocks_intra = want;
+            assert_eq!(
+                sf, expect,
+                "speed {speed}: the >=720p arm moved another field"
+            );
         }
     }
 

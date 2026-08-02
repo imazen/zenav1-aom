@@ -1547,6 +1547,48 @@ pub fn pack_tile_lr(
     // `av1_choose_var_based_partitioning` + `av1_rd_use_partition`
     // (encode_rd_sb, encodeframe.c:876-895).
     let use_var_based_partition = pick_cfg.allintra && pick_cfg.speed >= 7;
+    // `PickFrameCfg::fs_sf` must be RESOLVED by the caller, not defaulted
+    // (KB-32). This walk cannot compute the predicates itself — it only has
+    // mi-ALIGNED dimensions — but it CAN check them wherever the mi-aligned
+    // value is unambiguous (>= 3 px clear of a boundary), which is enough to
+    // catch a caller that silently left the field at `Default` on a big frame.
+    // That is exactly how KB-32's two roots were able to hide.
+    {
+        let mi_min_px = (env.mi_cols * 4).min(env.mi_rows * 4);
+        let want_large = pick_cfg.allintra && pick_cfg.speed >= 8;
+        if mi_min_px - 3 >= 720 {
+            assert!(
+                pick_cfg.fs_sf.vbp.force_large_partition_blocks_intra == want_large,
+                "fs_sf.vbp.force_large_partition_blocks_intra is {} on a frame \
+                 whose short side is unambiguously >= 720 px (mi-aligned {}) at \
+                 allintra={} speed={} — resolve it from the frame's real \
+                 dimensions (speed_features.c:326-328)",
+                pick_cfg.fs_sf.vbp.force_large_partition_blocks_intra,
+                mi_min_px,
+                pick_cfg.allintra,
+                pick_cfg.speed
+            );
+        } else if mi_min_px < 720 {
+            assert!(
+                !pick_cfg.fs_sf.vbp.force_large_partition_blocks_intra,
+                "fs_sf.vbp.force_large_partition_blocks_intra is set on a frame \
+                 whose short side is below 720 px (mi-aligned {mi_min_px})"
+            );
+        }
+        if mi_min_px - 3 >= 2160 {
+            assert!(
+                pick_cfg.fs_sf.is_4k_or_larger,
+                "fs_sf.is_4k_or_larger is false on a frame whose short side is \
+                 unambiguously >= 2160 px (mi-aligned {mi_min_px})"
+            );
+        } else if mi_min_px < 2160 {
+            assert!(
+                !pick_cfg.fs_sf.is_4k_or_larger,
+                "fs_sf.is_4k_or_larger is set on a frame whose short side is \
+                 below 2160 px (mi-aligned {mi_min_px})"
+            );
+        }
+    }
     let mut vbp_stamps = if use_var_based_partition {
         vec![0u8; env.mi_rows as usize * mi_cols]
     } else {
@@ -1581,6 +1623,9 @@ pub fn pack_tile_lr(
             bit_depth: env.bd,
             ss_x: if env.monochrome { 1 } else { env.ss_x },
             ss_y: if env.monochrome { 1 } else { env.ss_y },
+            // Resolved by the caller from the frame's real dimensions — this
+            // walk deliberately does not re-derive it (KB-32 / playbook §13).
+            sf: pick_cfg.fs_sf.vbp,
         })
     } else {
         None
@@ -1596,7 +1641,13 @@ pub fn pack_tile_lr(
         .map(|d| d.base_qindex)
         .unwrap_or(pack_cfg.base_qindex);
 
+    // `INTERNAL_COST_UPD_SBROW` carries ONE derivation across the whole SB row
+    // (C fills `x->coeff_costs`/`x->mode_costs` at `mi_col == tile mi_col_start`
+    // and they persist until the next refresh — `skip_cost_update`,
+    // encodeframe_utils.c:1556-1564). Row-scoped so the tile's first row starts
+    // from a fresh derivation like every other row.
     for r in 0..n_sb_rows {
+        let mut row_real: Option<crate::real_costs::RealCosts> = None;
         search_tile.left_ectx = [[0; 32]; 3];
         search_tile.left_pctx = [0; 32];
         search_tile.left_tctx = [aom_dsp::entropy::partition::TXFM_CTX_INIT; 32];
@@ -1750,16 +1801,29 @@ pub fn pack_tile_lr(
             // mode on a steep diagonal ramp); SB 0 / single-SB frames read the frame-init
             // defaults unchanged, since nothing adapted yet.
             // KB-12: allintra speed >= 9 flips coeff/mode_cost_upd_level to
-            // INTERNAL_COST_UPD_OFF for <4k (set_allintra_speed_feature_
-            // framesize_dependent, speed_features.c:166-177 -- runs AFTER the
-            // framesize-independent SBROW setting :593-594 and wins) -> the
-            // per-SB cost refresh STOPS: every SB reads the FRAME-INIT tables
-            // (pick_cfg/env), byte-visible on multi-SB (128 sq) frames.
-            // HANDOFF(speed 9): 4k+ frames keep INTERNAL_COST_UPD_SBROW --
-            // out of the canon envelope, unmodelled.
-            let cost_upd_off = pick_cfg.allintra && pick_cfg.speed >= 9;
-            let sb_real = (!cost_upd_off)
-                .then(|| crate::real_costs::derive_real_costs(kf, pick_cfg.enable_filter_intra));
+            // INTERNAL_COST_UPD_SBROW framesize-INdependently
+            // (speed_features.c:593-594), and the framesize-DEPENDENT pass
+            // then demotes it to INTERNAL_COST_UPD_OFF -- but ONLY below 4k
+            // (:648-651, `if (!is_4k_or_larger)`). KB-32 root #2: the port
+            // hardcoded OFF at speed 9, dropping the per-SB-ROW refresh on
+            // every 4k+ frame. INTERNAL_COST_UPD_SB (speeds 0-8) refreshes at
+            // every SB; SBROW refreshes at the tile's first column only
+            // (`skip_cost_update`'s `mi_col != tile_info->mi_col_start` early
+            // return, encodeframe_utils.c:1564) and the row carries it.
+            let refresh = if !(pick_cfg.allintra && pick_cfg.speed >= 9) {
+                true // INTERNAL_COST_UPD_SB
+            } else if pick_cfg.fs_sf.is_4k_or_larger {
+                c == 0 // INTERNAL_COST_UPD_SBROW
+            } else {
+                false // INTERNAL_COST_UPD_OFF
+            };
+            if refresh {
+                row_real = Some(crate::real_costs::derive_real_costs(
+                    kf,
+                    pick_cfg.enable_filter_intra,
+                ));
+            }
+            let sb_real: Option<&crate::real_costs::RealCosts> = row_real.as_ref();
             // INTERNAL_COST_UPD_SB, inter arm: `av1_fill_mode_rates`' inter
             // tables (intra_inter/single_ref/newmv/zeromv/refmv/drl) re-derive
             // from the CURRENT (adapting) inter CDFs at every SB, exactly like
@@ -2098,6 +2162,9 @@ pub fn pack_tile_from_trees(
         .unwrap_or(pack_cfg.base_qindex);
 
     for r in 0..n_sb_rows {
+        // See `pack_tile_lr`'s identical declaration — INTERNAL_COST_UPD_SBROW
+        // carries one derivation across the row.
+        let mut row_real: Option<crate::real_costs::RealCosts> = None;
         pack_tile_ctx.left_ectx = [[0; 32]; 3];
         pack_tile_ctx.left_pctx = [0; 32];
         pack_tile_ctx.left_tctx = [aom_dsp::entropy::partition::TXFM_CTX_INIT; 32];
@@ -2182,16 +2249,29 @@ pub fn pack_tile_from_trees(
                 sb_base_rdmult
             };
             // KB-12: allintra speed >= 9 flips coeff/mode_cost_upd_level to
-            // INTERNAL_COST_UPD_OFF for <4k (set_allintra_speed_feature_
-            // framesize_dependent, speed_features.c:166-177 -- runs AFTER the
-            // framesize-independent SBROW setting :593-594 and wins) -> the
-            // per-SB cost refresh STOPS: every SB reads the FRAME-INIT tables
-            // (pick_cfg/env), byte-visible on multi-SB (128 sq) frames.
-            // HANDOFF(speed 9): 4k+ frames keep INTERNAL_COST_UPD_SBROW --
-            // out of the canon envelope, unmodelled.
-            let cost_upd_off = pick_cfg.allintra && pick_cfg.speed >= 9;
-            let sb_real = (!cost_upd_off)
-                .then(|| crate::real_costs::derive_real_costs(kf, pick_cfg.enable_filter_intra));
+            // INTERNAL_COST_UPD_SBROW framesize-INdependently
+            // (speed_features.c:593-594), and the framesize-DEPENDENT pass
+            // then demotes it to INTERNAL_COST_UPD_OFF -- but ONLY below 4k
+            // (:648-651, `if (!is_4k_or_larger)`). KB-32 root #2: the port
+            // hardcoded OFF at speed 9, dropping the per-SB-ROW refresh on
+            // every 4k+ frame. INTERNAL_COST_UPD_SB (speeds 0-8) refreshes at
+            // every SB; SBROW refreshes at the tile's first column only
+            // (`skip_cost_update`'s `mi_col != tile_info->mi_col_start` early
+            // return, encodeframe_utils.c:1564) and the row carries it.
+            let refresh = if !(pick_cfg.allintra && pick_cfg.speed >= 9) {
+                true // INTERNAL_COST_UPD_SB
+            } else if pick_cfg.fs_sf.is_4k_or_larger {
+                c == 0 // INTERNAL_COST_UPD_SBROW
+            } else {
+                false // INTERNAL_COST_UPD_OFF
+            };
+            if refresh {
+                row_real = Some(crate::real_costs::derive_real_costs(
+                    kf,
+                    pick_cfg.enable_filter_intra,
+                ));
+            }
+            let sb_real: Option<&crate::real_costs::RealCosts> = row_real.as_ref();
             // Variance-Boost delta-q per-SB quantizer rows (None = identity when
             // delta-q is off — env.rows_* — so speeds 0-9 stay byte-unchanged).
             let sb_env = if let Some(sb_real) = &sb_real {

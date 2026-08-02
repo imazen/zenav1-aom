@@ -1534,7 +1534,9 @@ pub fn speed_sf_classes(speeds: &[i32], screen: bool, hbd: bool) -> Vec<(i32, Ve
 }
 
 /// Why [`speed_sf_classes`] must NOT be used to drop a speed context, even
-/// though it reports `{7, 8, 9}` as one class on the ALLINTRA path.
+/// though it reports `{7, 9}` as one class on the ALLINTRA path. (It reported
+/// `{7, 8, 9}` until KB-32 modelled the `var_part_split_threshold_shift`
+/// steps at speeds 8 and 9 — speed 8 now stands alone.)
 ///
 /// The resolved `SpeedFeatures` struct is not the whole speed-derived state:
 /// the encoder ALSO branches on the raw `PickFrameCfg::speed`, at thresholds
@@ -1558,7 +1560,7 @@ pub fn speed_sf_classes(speeds: &[i32], screen: bool, hbd: bool) -> Vec<(i32, Ve
 /// `speed_class_inventory_is_pinned` asserts against the oracle. A collapse the
 /// oracle contradicts is not a collapse.
 pub const SPEED_SF_EQUALITY_IS_NOT_A_COLLAPSE: &str =
-    "SpeedFeatures equality collapses ALLINTRA {7,8,9}, but the encoder also \
+    "SpeedFeatures equality collapses ALLINTRA {7,9}, but the encoder also \
      branches on the raw cfg.speed (pack.rs:1474/1685/1791, \
      partition_pick.rs:4569/4772/4854-4856) and real aomenc's payload differs \
      at cpu-used 7/8/9 — every speed keeps its own context";

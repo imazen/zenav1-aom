@@ -581,6 +581,7 @@ fn run_tune_case(
         tune,
     };
     let pick_cfg = PickFrameCfg {
+            fs_sf: Default::default(),
             inter: None,
         mode_costs: &real.mode_costs,
         tx_size_costs: &real.tx_size_costs,

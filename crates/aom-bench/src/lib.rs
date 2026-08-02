@@ -1495,7 +1495,7 @@ impl EncodeCell {
         // default_min_partition_size arm (KB-19). Framesize-blind by design in
         // `set_allintra`; applied here from the frame's real dimensions.
         if allintra {
-            sf.apply_allintra_framesize_dependent(w, h);
+            sf.apply_allintra_framesize_dependent(w, h, speed);
             // The ALLINTRA-reachable arms of av1_set_speed_features_qindex_
             // dependent (speed_features.c:2872) — C's third pass, run after
             // BOTH set_allintra cascades (encoder.c:3114). At speed 0 its
@@ -1709,6 +1709,23 @@ impl EncodeCell {
         };
 
         let pick_cfg = PickFrameCfg {
+            // KB-32 root #1. The KEY variance partitioner's two
+            // `force_large_partition_blocks_intra` arms (var_based_part.c:
+            // 539-544 and :552-554) were dropped. Carry the RESOLVED
+            // frame-level values down — the walk must not re-derive them
+            // from the frame dimensions it has (playbook §13); `pack_tile`
+            // only ever sees mi-ALIGNED dimensions, so a re-derivation there
+            // would be wrong on any crop within 3 px of the 720 boundary.
+            fs_sf: aom_encode::partition_pick::FrameSizeSf {
+                vbp: aom_encode::var_part::VbpSf {
+                    force_large_partition_blocks_intra: sf.force_large_partition_blocks_intra != 0,
+                    var_part_split_threshold_shift: sf.var_part_split_threshold_shift,
+                    allintra,
+                },
+                // `is_4k_or_larger` (speed_features.c:172) — the predicate
+                // the speed-9 cost-upd arm keys on (:648-651). KB-32 root #2.
+                is_4k_or_larger: w.min(h) >= 2160,
+            },
             inter: None,
             intra_tools: aom_encode::partition_pick::IntraToolCfg {
                 enable_diagonal_intra: knobs.enable_diagonal_intra,
@@ -2503,6 +2520,7 @@ impl MultiFrameEncodeCell {
             tx_type_costs: &frame_real.tx_type_costs_y,
         };
         let pick_cfg = PickFrameCfg {
+            fs_sf: Default::default(),
             inter: Some(aom_encode::partition_pick::InterSearchCfg {
                 costs: &frame_inter_costs,
                 interp_costs: &interp_costs,

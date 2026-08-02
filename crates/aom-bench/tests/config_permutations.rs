@@ -3879,8 +3879,14 @@ fn speed_size_txstats_s2() {
 /// Three claims:
 ///
 /// 1. **the speed-feature class partition**: which `--cpu-used` steps move the
-///    resolved ALLINTRA `SpeedFeatures` at all. Measured: eight classes over ten
-///    speeds — `{0} {1} {2} {3} {4} {5} {6} {7,8,9}`;
+///    resolved ALLINTRA `SpeedFeatures` at all. Measured: **nine** classes over
+///    ten speeds — `{0} {1} {2} {3} {4} {5} {6} {7,9} {8}`. The last class is
+///    non-consecutive on purpose: speed 8 raises
+///    `var_part_split_threshold_shift` to 8 (speed_features.c:581) and speed 9
+///    puts it back to 7 (:601, *"intentionally lower than speed 8's"*), so 7
+///    and 9 resolve to the SAME struct while 8 stands alone. It was
+///    `{7,8,9}` until KB-32 — the shift steps were unmodelled, which is what
+///    made `force_large_partition_blocks_intra`'s two arms invisible;
 /// 2. **that partition is NOT a valid collapse.** The encoder also branches on
 ///    the raw `PickFrameCfg::speed` (six cited sites), so 7 / 8 / 9 are distinct
 ///    configurations with an identical `SpeedFeatures`. Asserted against the
@@ -3906,7 +3912,8 @@ fn speed_class_inventory_is_pinned() {
             vec![4],
             vec![5],
             vec![6],
-            vec![7, 8, 9]
+            vec![7, 9],
+            vec![8]
         ],
         "the ALLINTRA speed-feature class partition moved — a speed step \
          started (or stopped) changing the resolved SpeedFeatures. Re-read \
@@ -4090,8 +4097,9 @@ fn speed_txss_nonrd_lapse_is_pinned() {
 ///    equals its speed-0 resolution by definition and every `speed >= N` gate in
 ///    `aom-encode` is false;
 /// 3. **the speeds this section adds do differ**: consecutive speeds must
-///    resolve to different `SpeedFeatures` (up to the pinned `{7,8,9}` class),
-///    so no added context is a duplicate of its neighbour.
+///    resolve to different `SpeedFeatures` (up to the pinned `{7,9}` class,
+///    which is non-consecutive), so no added context is a duplicate of its
+///    neighbour.
 #[test]
 fn speed_axis_teeth_are_real() {
     c::ref_init();
@@ -4126,21 +4134,23 @@ fn speed_axis_teeth_are_real() {
              context that is speed-0-equivalent buys nothing"
         );
     }
-    // (3) Consecutive speeds differ, except inside the pinned {7,8,9} class.
+    // (3) EVERY consecutive pair now differs — 7->8 and 8->9 both move
+    // `var_part_split_threshold_shift` (speed_features.c:581 / :601), which is
+    // what KB-32 added. The one remaining equality is the NON-consecutive
+    // {7, 9} class, asserted separately below so it cannot rot silently.
     for &speed in ALL_SPEEDS.iter().skip(1) {
         let a = aom_encode::speed_features::SpeedFeatures::set_allintra(speed - 1, false, false);
         let b = aom_encode::speed_features::SpeedFeatures::set_allintra(speed, false, false);
-        if speed <= 7 {
-            assert_ne!(a, b, "cpu-used={} and {speed} resolve identically", speed - 1);
-        } else {
-            assert_eq!(
-                a, b,
-                "cpu-used={} and {speed} now resolve DIFFERENTLY — the pinned \
-                 {{7,8,9}} class split; re-pin speed_class_inventory_is_pinned",
-                speed - 1
-            );
-        }
+        assert_ne!(a, b, "cpu-used={} and {speed} resolve identically", speed - 1);
     }
+    assert_eq!(
+        aom_encode::speed_features::SpeedFeatures::set_allintra(7, false, false),
+        aom_encode::speed_features::SpeedFeatures::set_allintra(9, false, false),
+        "cpu-used 7 and 9 now resolve DIFFERENTLY — the pinned {{7,9}} class \
+         split; re-pin speed_class_inventory_is_pinned. (They are equal only \
+         because every OTHER speed-8/9 setting is modelled at its consumer \
+         rather than in this struct — see SPEED_SF_EQUALITY_IS_NOT_A_COLLAPSE.)"
+    );
 }
 
 /// BUDGET ACCOUNTING for the speed axis — no encoding, just the arithmetic that

@@ -252,7 +252,11 @@ fn area_forced_tile_split_byte_identical() {
 /// every speed 0..7 and 9, tiled and control alike. The two open cells are
 /// `cpu8`, and they are open **on the control too** (-59 B single-tile, -134 B
 /// tiled), so they belong to KB-12's pinned speed-8 estimate-arm class, not to
-/// tiles. Independently confirmed by a same-binary A/B: the single-tile control's
+/// tiles. **Re-verified unchanged after KB-32 closed both size-band roots** —
+/// as predicted, because these cells are 64 px on the short side and KB-32's
+/// speed feature needs 720. What survives here is the leaf-mode class
+/// `kb32_nonrd_size_bands::estimate_arm_residual_is_a_leaf_mode_near_tie`
+/// localizes. Independently confirmed by a same-binary A/B: the single-tile control's
 /// cpu8 payload is BYTE-IDENTICAL (13,224 B, -59) before and after the KB-31
 /// landing, as are 1024², 2048² and 3072² at cpu8/cpu9 — see KB-32 for that
 /// separate, pre-existing large-frame speed-8/9 divergence.
@@ -311,20 +315,32 @@ fn mandatory_tile_split_byte_identical_across_speeds() {
 /// NOT a tile effect (see the speed-axis test above).
 ///
 /// **MEASURED 2026-08-01** (aarch64-apple-darwin, `--profile test-fast`, cq30,
-/// `--cpu-used=9`, `c_encode_defaults`):
+/// `--cpu-used=9`, `c_encode_defaults`), before and after KB-32's two roots:
 ///
-/// | cell | tiles | port | real aomenc | delta | wall | peak RSS (whole process) |
-/// |---|---|---|---|---|---|---|
-/// | 5472x3648 (20 MP) | 2x2 | 2,124,645 B | 2,121,452 B | +3,193 (+0.15%) | 1.6 s | 0.79 GB |
-/// | 12000x9000 (108 MP) | 4x4 | 11,548,497 B | 11,520,317 B | +28,180 (+0.24%) | 8.5 s | 3.11 GB |
+/// | cell | tiles | real aomenc | port BEFORE KB-32 | port AFTER |
+/// |---|---|---|---|---|
+/// | 5472x3648 (20 MP) | 2x2 | 2,121,452 B | 2,124,645 (+3,193, +0.15%) | 2,121,791 (**+339, +0.016%**) |
+/// | 12000x9000 (108 MP) | 4x4 | 11,520,317 B | 11,548,497 (+28,180, +0.24%) | **refuses — see below** |
 ///
-/// Neither OOMs on a 64 GB box; 108 MP is nonetheless the memory ceiling anyone
-/// should expect from this harness (it holds the source, the SB-aligned strided
-/// copy and a full reconstruction, all at u16, plus libaom's own frame buffers).
+/// Wall/RSS for the pair: 1.6 s / 0.79 GB and 8.5 s / 3.11 GB. Neither OOMs on a
+/// 64 GB box; 108 MP is nonetheless the memory ceiling anyone should expect from
+/// this harness (source + SB-aligned strided copy + full reconstruction, all at
+/// u16, plus libaom's own frame buffers).
 ///
-/// Pinned as `Verdict`, not as a byte count: a byte count would fire on every
-/// unrelated encoder landing, while the verdict fires exactly when the panic comes
-/// back or when KB-32 closes and these become byte-exact.
+/// **The 108 MP cell now REFUSES rather than encoding, and that is a real
+/// consequence of KB-32, recorded honestly rather than smoothed over.** Closing
+/// the variance-partition thresholds legitimately ENLARGES them, which lets
+/// `set_vt_partitioning`'s HORZ/VERT pair arms win on this extremely smooth
+/// mirror-tiled content — and the nonrd estimate arm cannot code a non-square
+/// leaf yet (`nonrd_pickmode::nonrd_leaf_tx_size`'s HANDOFF has the precise
+/// scope and the fix). The pre-KB-32 stream for this cell was 0.24% wrong; it is
+/// now a loud, named refusal instead. **Measured reachability: of 18 large cells
+/// probed at speeds 8 and 9 (768² through 5472x3648) NONE reach a non-square
+/// leaf — this cell is the only one in the tree that does.**
+///
+/// Pinned as a verdict plus bounds, not as byte counts: byte counts would fire on
+/// every unrelated encoder landing, while these fire exactly when the tile panic
+/// comes back, when the 20 MP cell drifts, or when the non-square arm lands.
 #[test]
 #[ignore = "108 MP encode: ~11 s and ~3.1 GB peak RSS; on-demand tier"]
 fn issue6_reported_sizes_encode() {
@@ -346,25 +362,55 @@ fn issue6_reported_sizes_encode() {
         let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             cell.port_encode_with(&c_tu, &ToggleKnobs::default())
         }));
-        let ours = got.unwrap_or_else(|_| {
-            panic!("{w}x{h} ({want_cols}x{want_rows} tiles): port_encode PANICKED — issue #6 is back")
-        });
+        let ours = match got {
+            Ok(p) => p,
+            Err(e) => {
+                // Exactly ONE refusal is expected, and only for the reason named
+                // above. Anything else — including issue #6's tile panic — fails.
+                let msg = e
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                    .unwrap_or_default();
+                assert!(
+                    (w, h) == (12000, 9000) && msg.contains("non-square leaf bsize"),
+                    "{w}x{h} ({want_cols}x{want_rows} tiles): port_encode PANICKED \
+                     with {msg:?}. The only sanctioned refusal here is 12000x9000's \
+                     non-square nonrd leaf (KB-32); a tile panic means issue #6 is back."
+                );
+                println!(
+                    "  {w}x{h} ({want_cols}x{want_rows} tiles): REFUSED (KB-32 \
+                     non-square nonrd leaf) — {msg}"
+                );
+                continue;
+            }
+        };
+        assert_ne!(
+            (w, h),
+            (12000, 9000),
+            "12000x9000 now ENCODES — the non-square nonrd estimate arm landed. \
+             Re-pin: assert its byte delta instead of this refusal."
+        );
         let delta = ours.len() as i64 - real.len() as i64;
         println!("  {w}x{h} ({want_cols}x{want_rows} tiles): {} B vs {} B, delta {delta:+}", ours.len(), real.len());
-        // KB-32's residual is a fraction of a percent; anything larger means the
-        // tile walk itself went wrong (the pre-fix header desync coded 6% of the
-        // expected payload, which this bound catches).
+        // KB-32's two roots took this from +3,193 (0.15%) to +339 (0.016%); what
+        // is left is the estimate-arm leaf-mode class
+        // (`kb32_nonrd_size_bands::estimate_arm_residual_is_a_leaf_mode_near_tie`).
+        // The bound is one order of magnitude tighter than the pre-KB-32 0.01,
+        // so a re-opened size band cannot hide under it — while the pre-KB-31
+        // header desync (6% of the expected payload) is still caught.
         let frac = (delta.abs() as f64) / (real.len() as f64);
         assert!(
-            frac < 0.01,
-            "{w}x{h}: payload is {:.2}% off real aomenc — that is not KB-32's \
-             sub-percent residual, the tile walk is wrong",
+            frac < 0.001,
+            "{w}x{h}: payload is {:.3}% off real aomenc — that is above KB-32's \
+             post-fix residual (0.016%); a size-scaling root or the tile walk is wrong",
             frac * 100.0
         );
         assert_ne!(
             ours, real,
-            "{w}x{h} is now BYTE-IDENTICAL — KB-32 closed. Promote this to a hard \
-             byte gate and re-pin the table in this doc comment."
+            "{w}x{h} is now BYTE-IDENTICAL — the KB-32 estimate-arm residual \
+             closed. Promote this to a hard byte gate and re-pin the table in \
+             this doc comment."
         );
     }
 }

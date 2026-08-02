@@ -1463,6 +1463,7 @@ fn rd_pick_partition_real_matches_c_recursion() {
             deltaq: None,
         };
         let cfg = PickFrameCfg {
+            fs_sf: Default::default(),
             inter: None,
             intrabc: None,
             intra_tools: Default::default(),

@@ -265,6 +265,20 @@ one bd8-specific step and there were **three**, the two it omitted being the
 substantive ones (CLAUDE.md:1722-1735;
 `crates/aom-encode/src/nonrd_pickmode.rs:1222` marks the second).
 
+**The strongest form of the trap is a comment that cites the right C line and
+still concludes wrongly.** KB-32: `var_part`'s module doc said
+`force_large_partition_blocks_intra` *"is 0 on this path — it only rises at
+allintra speed>=8/720p+ (speed_features.c:327)"* and dropped both of that
+field's arms. The citation is correct; the conclusion was an artefact of the
+envelope — no gate in the tree had ever run `--cpu-used >= 8` above 640 px, and
+the port had shipped speeds 8 and 9 since KB-12. Both of GitHub issue #7's
+reported size bands were those two arms. So when a comment justifies an omission
+with a *gate* (a speed, a size, a bit depth), check whether the gate is
+unreachable **in the format** or merely unreached **by the current cells** — and
+say which. The same file's *second* claim, that the VBP tree "stamps squares
+8x8..64x64 only", was false for the same reason and only surfaced once the first
+fix made the HORZ/VERT arms win.
+
 ## 10. Diagnose to the decision, not to the byte count
 
 A byte delta is a symptom. Drive to the **first divergent block** and compare the

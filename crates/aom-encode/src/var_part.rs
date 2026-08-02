@@ -17,12 +17,14 @@
 //!    → `set_vbp_thresholds_key_frame` :535-560): `threshold_base = 120 *
 //!    av1_ac_quant_QTX(qindex, 0, bit_depth)`; `[0]=[1]=base`; `<720p:
 //!    [2]=base/3, [3]=base>>1` else `[2]=[3]=base>>2`; `[4]=base<<2`.
-//!    `rt_sf.force_large_partition_blocks_intra` (which is what consumes the
-//!    speed-7 `var_part_split_threshold_shift = 7`) is 0 on this path — it
-//!    only rises at allintra speed>=8/720p+ (speed_features.c:327) and in RT
-//!    (:1647) — so the shift-steps arm is dead and the speed-7 shift is
-//!    byte-INERT on KEY frames (carried in [`crate::speed_features`] for
-//!    provenance). The frame-level `av1_set_variance_partition_thresholds`
+//!    `rt_sf.force_large_partition_blocks_intra` (which is what consumes
+//!    `var_part_split_threshold_shift`) rises at allintra speed>=8 AND
+//!    720p+ (speed_features.c:326-328) and in RT (:1647). **KB-32 root #1:
+//!    this module previously asserted it "is 0 on this path" and dropped
+//!    both of its arms** — true only of an envelope that stopped at 640 px,
+//!    which is where every gate sat when that comment was written. It is now
+//!    carried as [`VbpSf`] from the resolved frame-level speed features.
+//!    The frame-level `av1_set_variance_partition_thresholds`
 //!    copy + `threshold_minmax` are likewise dead here: the per-SB
 //!    `set_vbp_thresholds` call fully overwrites all five local thresholds
 //!    for key frames, and `threshold_minmax` feeds only the
@@ -239,15 +241,74 @@ pub struct VbpFrame {
     /// >= num_planes to ss (1,1)).
     pub ss_x: usize,
     pub ss_y: usize,
+    /// The resolved frame-level speed features `set_vbp_thresholds_key_frame`
+    /// reads. See [`VbpSf`].
+    pub sf: VbpSf,
+}
+
+/// The RESOLVED frame-level speed-feature inputs `set_vbp_thresholds_key_frame`
+/// reads (var_based_part.c:535-560), carried down rather than re-derived
+/// (playbook §13 / KB-26: anything reconstructed from a base constructor
+/// silently drops every later pass).
+///
+/// `Default` is the pre-speed-8 state — `force_large_partition_blocks_intra`
+/// off, which makes `var_part_split_threshold_shift` unread — so every caller
+/// below speed 8 is byte-identical whether it fills this in or not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VbpSf {
+    /// `cpi->sf.rt_sf.force_large_partition_blocks_intra` (allintra
+    /// `speed >= 8 && min(w, h) >= 720`, speed_features.c:326-328).
+    pub force_large_partition_blocks_intra: bool,
+    /// `cpi->sf.rt_sf.var_part_split_threshold_shift` (allintra: 7 at speed 7,
+    /// **8 at speed 8**, 7 again at speed 9 — speed_features.c:574/581/601).
+    /// Read only when `force_large_partition_blocks_intra` is set.
+    pub var_part_split_threshold_shift: i32,
+    /// `cpi->oxcf.mode == ALLINTRA` — selects both the `? 7 : 8` shift-steps
+    /// base and the `? 1 : 0` `shift_val`.
+    pub allintra: bool,
+}
+
+impl Default for VbpSf {
+    fn default() -> Self {
+        Self {
+            force_large_partition_blocks_intra: false,
+            // init_rt_sf:2589; unread while force_large is false.
+            var_part_split_threshold_shift: 7,
+            allintra: true,
+        }
+    }
 }
 
 /// `set_vbp_thresholds` (var_based_part.c:654) — KEY-frame arm only
-/// (`set_vbp_thresholds_key_frame` :535, `force_large_partition_blocks_intra
-/// == 0` — module docs). Returns `thresholds[5]`.
-pub fn set_vbp_thresholds_key(qindex: i32, bit_depth: u8, num_pixels: i64) -> [i64; 5] {
+/// (`set_vbp_thresholds_key_frame` :535). Returns `thresholds[5]`.
+///
+/// Both `force_large_partition_blocks_intra` arms are modelled (KB-32 root
+/// #1): the `shift_steps` scaling of `threshold_base` (:539-544, LIVE at
+/// speed 8 where the shift is 8 and therefore `shift_steps == 1`; a no-op at
+/// speed 9 where the shift is back to 7) and the `shift_val` override in the
+/// `num_pixels >= RESOLUTION_720P` arm (:552-554, LIVE at BOTH speeds).
+pub fn set_vbp_thresholds_key(
+    qindex: i32,
+    bit_depth: u8,
+    num_pixels: i64,
+    sf: VbpSf,
+) -> [i64; 5] {
     const RESOLUTION_720P: i64 = 1280 * 720;
     let ac_q = av1_ac_quant_qtx(qindex, 0, bit_depth);
-    let threshold_base: i64 = 120i64 * i64::from(ac_q);
+    let mut threshold_base: i64 = 120i64 * i64::from(ac_q);
+    if sf.force_large_partition_blocks_intra {
+        // shift_steps = threshold_left_shift - (mode == ALLINTRA ? 7 : 8);
+        // assert(shift_steps >= 0);  (var_based_part.c:540-543)
+        let shift_steps = sf.var_part_split_threshold_shift - if sf.allintra { 7 } else { 8 };
+        assert!(
+            shift_steps >= 0,
+            "var_part_split_threshold_shift {} is below the {} floor \
+             set_vbp_thresholds_key_frame asserts (var_based_part.c:542)",
+            sf.var_part_split_threshold_shift,
+            if sf.allintra { 7 } else { 8 }
+        );
+        threshold_base <<= shift_steps;
+    }
     let mut thresholds = [0i64; 5];
     thresholds[0] = threshold_base;
     thresholds[1] = threshold_base;
@@ -255,9 +316,13 @@ pub fn set_vbp_thresholds_key(qindex: i32, bit_depth: u8, num_pixels: i64) -> [i
         thresholds[2] = threshold_base / 3;
         thresholds[3] = threshold_base >> 1;
     } else {
-        // force_large_partition_blocks_intra == 0 => shift_val stays 2.
-        thresholds[2] = threshold_base >> 2;
-        thresholds[3] = threshold_base >> 2;
+        let shift_val = if sf.force_large_partition_blocks_intra {
+            i32::from(sf.allintra) // (mode == ALLINTRA ? 1 : 0)
+        } else {
+            2
+        };
+        thresholds[2] = threshold_base >> shift_val;
+        thresholds[3] = threshold_base >> shift_val;
     }
     thresholds[4] = threshold_base << 2;
     thresholds
@@ -427,7 +492,7 @@ pub fn choose_var_based_partitioning_key(
     let is_small_sb = f.sb_size == BLOCK_64X64;
     let num_64x64_blocks = if is_small_sb { 1usize } else { 4 };
 
-    let thresholds = set_vbp_thresholds_key(f.qindex, f.bit_depth, f.num_pixels);
+    let thresholds = set_vbp_thresholds_key(f.qindex, f.bit_depth, f.num_pixels, f.sf);
 
     // force_split[85]: 0 root, 1-4 the 64x64s, 5-20 the 32x32s, 21-84 the
     // 16x16s (:1610/:1699).
@@ -769,6 +834,107 @@ pub fn get_partition_from_stamps(
 mod tests {
     use super::*;
 
+    /// KB-32 root #1 — `set_vbp_thresholds_key_frame`'s two
+    /// `force_large_partition_blocks_intra` arms (var_based_part.c:539-544 and
+    /// :552-554), locked in BOTH directions on both sides of
+    /// `RESOLUTION_720P` (= 1280 * 720 pixels — an AREA threshold, not a
+    /// dimension one).
+    ///
+    /// The speed-8 and speed-9 columns are the interesting pair: the arm is
+    /// armed at both speeds on a >=720p frame, but `shift_steps` is 1 at speed
+    /// 8 (shift 8) and 0 at speed 9 (shift 7), so speed 9 keeps the plain
+    /// `threshold_base` and only its `shift_val` moves.
+    #[test]
+    fn kb32_force_large_intra_threshold_arms() {
+        const SUB: i64 = 1280 * 720 - 1;
+        const OVER: i64 = 1280 * 720;
+        let off = VbpSf::default();
+        let s8 = VbpSf {
+            force_large_partition_blocks_intra: true,
+            var_part_split_threshold_shift: 8,
+            allintra: true,
+        };
+        let s9 = VbpSf {
+            force_large_partition_blocks_intra: true,
+            var_part_split_threshold_shift: 7,
+            allintra: true,
+        };
+        // qindex 100 bd8: threshold_base = 120 * av1_ac_quant_QTX(100, 0, 8).
+        let b = 120i64 * i64::from(av1_ac_quant_qtx(100, 0, 8));
+        assert!(b > 0, "the fixture must have a non-degenerate base");
+
+        // OFF — the pre-KB-32 behaviour, unchanged at every size.
+        assert_eq!(
+            set_vbp_thresholds_key(100, 8, SUB, off),
+            [b, b, b / 3, b >> 1, b << 2]
+        );
+        assert_eq!(
+            set_vbp_thresholds_key(100, 8, OVER, off),
+            [b, b, b >> 2, b >> 2, b << 2]
+        );
+
+        // SPEED 8 — `threshold_base <<= (8 - 7)`, i.e. every threshold doubles;
+        // above RESOLUTION_720P `shift_val` is also 1 instead of 2.
+        let d = b << 1;
+        assert_eq!(
+            set_vbp_thresholds_key(100, 8, SUB, s8),
+            [d, d, d / 3, d >> 1, d << 2],
+            "speed 8 below RESOLUTION_720P: only the shift_steps arm applies"
+        );
+        assert_eq!(
+            set_vbp_thresholds_key(100, 8, OVER, s8),
+            [d, d, d >> 1, d >> 1, d << 2],
+            "speed 8 at/above RESOLUTION_720P: BOTH arms apply"
+        );
+
+        // SPEED 9 — shift_steps is 0, so the base is untouched; only shift_val
+        // moves, and only above the area threshold. Below it, speed 9 armed is
+        // byte-identical to the arm being off, which is exactly why the cpu9
+        // band has a SHARP area threshold while cpu8 does not.
+        assert_eq!(
+            set_vbp_thresholds_key(100, 8, SUB, s9),
+            set_vbp_thresholds_key(100, 8, SUB, off),
+            "speed 9 below RESOLUTION_720P must be indistinguishable from off"
+        );
+        assert_eq!(
+            set_vbp_thresholds_key(100, 8, OVER, s9),
+            [b, b, b >> 1, b >> 1, b << 2],
+            "speed 9 at/above RESOLUTION_720P: shift_val 1, base untouched"
+        );
+        assert_ne!(
+            set_vbp_thresholds_key(100, 8, OVER, s9),
+            set_vbp_thresholds_key(100, 8, OVER, off),
+            "the speed-9 arm must be observable above the area threshold, or \
+             the cpu9 band would not exist"
+        );
+
+        // The area threshold is on `num_pixels`, exclusive at 1280*720 - 1 and
+        // inclusive at 1280*720 — the boundary pair, both directions.
+        assert_ne!(
+            set_vbp_thresholds_key(100, 8, SUB, off)[2],
+            set_vbp_thresholds_key(100, 8, OVER, off)[2]
+        );
+    }
+
+    /// The `assert(shift_steps >= 0)` C carries (var_based_part.c:542) is a
+    /// real bound, not decoration: a shift below the ALLINTRA floor of 7 with
+    /// the arm armed is an unreachable state, and the port must say so loudly
+    /// rather than shift by a negative amount.
+    #[test]
+    #[should_panic(expected = "below the 7 floor")]
+    fn kb32_shift_steps_floor_is_asserted() {
+        set_vbp_thresholds_key(
+            100,
+            8,
+            64 * 64,
+            VbpSf {
+                force_large_partition_blocks_intra: true,
+                var_part_split_threshold_shift: 5,
+                allintra: true,
+            },
+        );
+    }
+
     /// `get_variance` matches the plain (sse - sum^2/n) * 256 / n definition
     /// on in-range inputs (the C expression form is wrap-faithful; this
     /// pins the arithmetic on representative values).
@@ -815,6 +981,7 @@ mod tests {
             bit_depth: 8,
             ss_x: 1,
             ss_y: 1,
+            sf: Default::default(),
         };
         let mut stamps = vec![0u8; 16 * 16];
         choose_var_based_partitioning_key(&mut stamps, &f, &src, 0, stride, 0, 0, false);
@@ -866,6 +1033,7 @@ mod tests {
             bit_depth: 8,
             ss_x: 1,
             ss_y: 1,
+            sf: Default::default(),
         };
         let mut stamps = vec![0u8; 16 * 16];
         choose_var_based_partitioning_key(&mut stamps, &f, &src, 0, stride, 0, 0, false);
@@ -909,6 +1077,7 @@ mod tests {
             bit_depth: 8,
             ss_x: 1,
             ss_y: 1,
+            sf: Default::default(),
         };
         let mut stamps = vec![0u8; 12 * 12];
         choose_var_based_partitioning_key(&mut stamps, &f, &src, 0, stride, 0, 0, false);

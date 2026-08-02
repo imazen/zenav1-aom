@@ -502,6 +502,30 @@ fn is_neighbor_blk_larger_than_cur_blk(
     false
 }
 
+/// The RESOLVED framesize-dependent speed features
+/// (`set_allintra_speed_feature_framesize_dependent`, speed_features.c:166)
+/// that the superblock walk consumes.
+///
+/// KB-26's lesson in struct form: these are **carried down from the caller
+/// that knows the frame's real dimensions**, never re-derived inside the walk
+/// (`pack_tile` only ever sees mi-ALIGNED dimensions, so a re-derivation there
+/// is wrong for any crop within 3 px of a boundary). `Default` is the
+/// small-frame state — sub-720p, sub-4k — under which every field is inert,
+/// so a caller on a small frame may leave it alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameSizeSf {
+    /// The KEY variance partitioner's threshold inputs.
+    pub vbp: crate::var_part::VbpSf,
+    /// `is_4k_or_larger` = `AOMMIN(cm->width, cm->height) >= 2160`
+    /// (speed_features.c:172). At allintra `speed >= 9` the framesize-
+    /// INdependent cascade sets `coeff_cost_upd_level` and
+    /// `mode_cost_upd_level` to `INTERNAL_COST_UPD_SBROW` (:593-594) and this
+    /// arm demotes them to `INTERNAL_COST_UPD_OFF` **only below 4k**
+    /// (:648-651). KB-32 root #2: the port hardcoded OFF at speed 9, so every
+    /// 4k+ speed-9 frame lost the per-SB-row cost refresh.
+    pub is_4k_or_larger: bool,
+}
+
 /// The frame-level leaf-search configuration (`pick_sb_modes` +
 /// `av1_rd_pick_intra_mode_sb` inputs shared across leaves).
 pub struct PickFrameCfg<'a> {
@@ -528,6 +552,11 @@ pub struct PickFrameCfg<'a> {
     pub allintra: bool,
     pub speed: i32,
     pub qindex: i32,
+    /// The RESOLVED framesize-dependent speed features the SB walk consumes
+    /// — carried, not re-derived (playbook §13 / KB-26). `Default` is the
+    /// sub-720p, sub-4k, pre-speed-8 state, which is why every caller on a
+    /// small frame can leave it alone and stay byte-identical.
+    pub fs_sf: FrameSizeSf,
     pub enable_filter_intra: bool,
     pub enable_tx64: bool,
     pub enable_rect_tx: bool,
