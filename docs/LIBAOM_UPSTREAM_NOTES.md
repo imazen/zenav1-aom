@@ -455,3 +455,43 @@ comparing against a C decoder that never ran.
 5. Cite something a fresh checkout can open. Build-generated headers
    (`config/*_rtcd.h`), build directories, and anything under `target/` are not
    citable — cite the generator or the `.pl`/`.cmake` that produces them.
+
+### C6. libaom's quality-vs-quantizer curve is NOT monotone on screen content at cpu-used 1
+
+**Why it matters:** every bracketed target-quality search assumes monotonicity —
+raise the quantizer, quality falls. On libaom's cpu-used 1 screen-content path
+that assumption is false, and a search that relies on it maintains a "bracket"
+that is not one.
+
+**MEASURED** (`benchmarks/xbench_2026-08-01.md` stage 3, 260 searches over five
+encoders): on `sc_codec_wiki`, SSIMULACRA2 across adjacent quantizers runs
+**73.819 (q49) → 70.610 (q50) → 74.445 (q51)** — going from q50 to q51 *raises*
+quality by 3.8 points **while lowering the rate**. `sc_imac_dark` shows the same
+sign flip, smaller (58.700 at q50 → 58.735 at q51).
+
+**Mechanism** (SOURCE, reasoned not instrumented): the deep palette/IntraBC
+search re-decides block-level tooling between adjacent quantizers, so two
+neighbouring q values can select materially different tool sets. It is a property
+of that search path, not a measurement artifact — it reproduces, and the rate
+moves the *expected* direction while the quality does not.
+
+**Consequences for anything that targets a quality level against libaom:**
+
+- It is a **distinct failure mode from quantizer granularity**, and the two are
+  easy to conflate. Granularity means the target band is *narrower than one
+  step* (on a 0..63 scale one step is ~1.9 SSIMULACRA2, wider than a ±1 band —
+  see the same document). Non-monotonicity means the band can be **stepped over
+  in both directions**. A finer quantizer scale fixes the first and not the
+  second.
+- It is why libaom-C converges lowest of the five encoders measured (83.1 %)
+  despite an unremarkable 1.911 SSIMULACRA2/step, and it is the ONLY miss above
+  target 70 anywhere in that study.
+- A search that assumes monotonicity should at minimum detect the inversion and
+  fall back (e.g. sample the neighbourhood rather than bisect), not iterate until
+  it exhausts a budget.
+
+**Not established:** whether this extends to cpu-used 0, to photographic content
+at any speed, or to the port's own screen path — only libaom-C at cpu-used 1 on
+screen content was measured. Our `encode_rgb8_with_target` work should not assume
+it is libaom-specific without checking.
+
