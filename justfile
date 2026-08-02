@@ -104,3 +104,15 @@ gen-txfm1d:
 # aom-bench test; this recipe exists to add the dav1d leg.
 gate-armed-decode:
     AOM_DAV1D_BIN="$(command -v dav1d || true)" cargo test --profile test-fast -p zenav1-aom-bench --test armed_tools_decode_gate -- --nocapture
+
+# CROSS-ENCODER INTRABC DECODE GATE (GitHub #5). The armed gate above decodes
+# streams from THIS port's encoder, and the conformance corpus is entirely
+# libaom-encoded — so neither covers "a conformant IntraBC stream from a
+# different encoder", which reaches neighbour configurations libaom's own
+# encoder never emits. This decodes four committed REAL SVT-AV1 v4.2.0 C
+# encodes through the real C decoder, the port decoder, and (when `dav1d` is on
+# PATH) dav1d, asserting all agree pixel-for-pixel. Same caller-owns-the-skip
+# rule: the dav1d leg is wired here, not inside the test. Regenerate/extend the
+# corpus with scripts/svt_interop/.
+gate-svt-interop:
+    AOM_DAV1D_BIN="$(command -v dav1d || true)" cargo test --profile test-fast -p zenav1-aom-bench --test svt_interop_decode_gate -- --nocapture

@@ -1,0 +1,76 @@
+# svt_interop — cross-encoder IntraBC decode interop (GitHub #5), provenance
+# Companion to benchmarks/svt_interop_2026-08-02.md and .tsv.
+
+date                 2026-08-02
+box                  Apple M4 Pro, 12 cores, macOS Darwin 25.5.0 (arm64)
+port commit          5925983 (zenav1-aom main, worktree zenav1-aom--i5)
+compiler             Apple clang 21.0.0 (clang-2100.1.1.101); cargo --profile test-fast
+build flags          NO -C target-cpu=native (runtime SIMD dispatch, what users get)
+nice                 every encode/decode run under `nice -n 19`, -j 4
+
+## Encoder under test (the stream SOURCE)
+
+svt-c        ~/work/zen/zenav1-svt-c    dfbfe849c   SVT-AV1 upstream C mirror,
+                                                    `git describe` = v4.2.0-62-gdfbfe849c
+             Built OUT-OF-TREE (cmake -B ~/tmp/svtc-build, -DCMAKE_OUTPUT_DIRECTORY=
+             ~/tmp/svtc-bin, BUILD_SHARED_LIBS=OFF, BUILD_APPS=OFF, BUILD_TESTING=OFF,
+             SVT_AV1_LTO=OFF). The sibling repo is READ ONLY — nothing in it is modified.
+             asm level selected: up to neon_i8mm.
+
+             Config (scripts/svt_interop/svt_scc_encode.c), identical to the xbench
+             `svt-c` arm except for screen_content_mode and the tile knobs:
+               rate_control_mode 0, aq_mode 0, qp Q, avif true (still_picture +
+               reduced_still_picture_header), level_of_parallelism 1,
+               encoder_bit_depth 8, encoder_color_format EB_YUV420,
+               screen_content_mode 1 (forced on — this is what arms IntraBC/palette),
+               tile_columns / tile_rows from SVT_TILE_COLS / SVT_TILE_ROWS (log2).
+
+## Decoders
+
+libaom-c     upstream/ submodule        03087864    v3.14.1, via aom_sys_ref::
+                                                    ref_decode_av1_kf -> the REAL
+                                                    aom_codec_av1_dx. THE AUTHORITY.
+zenav1-aom   crates/aom-decode          5925983     aom_decode::frame::decode_frame_obus
+inspect      upstream/examples/inspect  03087864    SEPARATE build with CONFIG_INSPECTION=1
+                                                    CONFIG_ACCOUNTING=1 (~/tmp/i5/
+                                                    aom-inspect-build). Used ONLY for the
+                                                    IntraBC census (-ibc -bs), never in the
+                                                    accept/reject or pixel comparison.
+
+## Input preparation
+
+codec-corpus/gb82-sc/*.png -> 8-bit I420 via benchmarks/xbench/xtool `prep`
+(BT.709 limited range, RGB->YUV444 then 2x2 box average for chroma) — ONE
+converter, the same one every xbench encoder is fed from. The `at:WxH+X+Y`
+explicit-offset crop mode was added to `prep` for this run (additive; `native`,
+`crop:WxH` and `square:N` are untouched).
+
+## Harness
+
+scripts/svt_interop/build.sh                    build the SVT lib + driver
+scripts/svt_interop/gen_corpus.sh               tile + encode + write manifest.tsv
+crates/aom-bench/examples/svt_interop_probe.rs  dual-decode + pixel compare
+crates/aom-bench/tests/svt_interop_decode_gate.rs   the standing gate (4 fixtures)
+
+Commands (one per corpus; OUT differs per corpus):
+  TILESET=square PRESETS="3"       QPS="48"             gen_corpus.sh   # 50
+  TILESET=square PRESETS="0 3 6 9" QPS="20 35 48 58"    gen_corpus.sh   # 800
+  TILESET=square PRESETS="0 1 2 3" QPS="15 30 45 58"    gen_corpus.sh   # 800
+  TILESET=geom   PRESETS="3 6 9"   QPS="35 48"          gen_corpus.sh   # 168
+  TILESET=geom   PRESETS="0 1 2"   QPS="30 48"          gen_corpus.sh   # 168
+  TILESET=geom   PRESETS="3"       QPS="35 48"  SVT_TILE_COLS=2 SVT_TILE_ROWS=1  # 56
+  ./target/test-fast/examples/svt_interop_probe <manifest.tsv>
+
+2,042 decodes over 1,992 unique (corpus, cell) pairs — the 50-cell p3q48 square
+corpus repeats configs also present in the 800-cell square sweep.
+
+## Result
+
+c_reject 0 / 2042    port_reject 0 / 2042    pixel_diff 0 / 2042
+IntraBC-bearing 1,328 / 2,042 decodes; 3,100,958 IntraBC mi units total.
+
+## Not committed
+
+The per-stream TSVs (~180 KB) are omitted per the repo's 30 KB binary/large-file
+bar; the committed .tsv carries every aggregate they support and the run is
+deterministic from the committed scripts + driver + probe.

@@ -312,6 +312,32 @@ DELTA differs (a desync) or whose range differs at equal count (a CDF-index
 divergence). That distinction tells you which of the two failure modes you have
 before you know anything else.
 
+**The same trap sprung a second time, on the DECODE side, and was settled by a
+one-line revert rather than by more DV analysis.** GitHub #5 (KB-33) reported the
+decoder rejecting 37 of 100 conformant SVT-AV1 streams with `intrabc DV failed
+validity`, and reasoned — from the fact that `is_dv_valid` is
+differential-locked — that the *reconstructed* DV must be at fault, i.e. that
+`find_dv_ref_mvs` picks a different reference DV on SVT-reachable neighbour
+configurations. Wrong again: the cause was KB-29's missing/misordered
+coefficient reads, and the cheapest proof was not a `dv_ref` audit but
+**reverting each candidate root ALONE and watching the exact reported message
+come back with the DV code untouched**. When you inherit a hypothesis about
+which *value* is wrong, first ask whether the reported check is downstream of a
+desync — and prefer a revert-one-root experiment over any amount of reading, it
+is minutes of work and it is decisive.
+
+Corollary on where these bugs hide: **a differential is blind to inputs no
+available encoder produces.** Every intrabc conformance vector is
+libaom-encoded, and this port's own gates decode its own encoder's output, so
+neither could reach the block/neighbour shapes that tripped KB-29's decoder
+roots — a *third* encoder found them. When a decoder path is guarded only by
+streams from encoders you also implement, that path is unguarded in exactly the
+way §1 means. Fix it by pulling in a foreign encoder
+(`crates/aom-bench/tests/svt_interop_decode_gate.rs` does this with real SVT-AV1
+C encodes), and check what the foreign encoder *cannot* reach either: SVT emits
+no IntraBC block above BLOCK_64X64, so KB-29's >64×64 multi-chunk residual is
+still uncovered and is recorded as such rather than counted as breadth.
+
 **Never infer the mechanism from the SIZE of the delta.** KB-22's ledger entry
 reasoned that 150 bytes over ~1,156 superblocks — 0.035% of the payload — "argues
 near-tie, not a missing tool", and (to its credit) flagged that as unestablished.

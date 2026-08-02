@@ -91,10 +91,14 @@ fn cmd_prep(args: &[String]) {
     // prep <in.png> <out.yuv> <mode>
     //   mode = native            — even-cropped source, no resample
     //        | crop:WxH          — CENTER crop to WxH, no resample
+    //        | at:WxH+X+Y        — crop WxH at the EXPLICIT offset (X, Y), no
+    //                              resample. Added for the issue-#5 SVT interop
+    //                              corpus, which needs many distinct tiles per
+    //                              source image rather than one centre crop.
     //        | square:N          — center square crop, then Lanczos3 to NxN
     //                              (DOWNSCALE ONLY — errors out on upscale)
     if args.len() != 3 {
-        die("usage: prep <in.png> <out.yuv> <native|crop:WxH|square:N>");
+        die("usage: prep <in.png> <out.yuv> <native|crop:WxH|at:WxH+X+Y|square:N>");
     }
     let img = image::open(&args[0]).unwrap_or_else(|e| die(&format!("open {}: {e}", args[0])));
     let mut rgb = img.to_rgb8();
@@ -125,6 +129,24 @@ fn cmd_prep(args: &[String]) {
             die(&format!("{}: crop {cw}x{chh} exceeds source", args[0]));
         }
         let (ox, oy) = ((rgb.width() - cw) / 2, (rgb.height() - chh) / 2);
+        rgb = image::imageops::crop_imm(&rgb, ox, oy, cw, chh).to_image();
+    } else if let Some(spec) = mode.strip_prefix("at:") {
+        // at:WxH+X+Y
+        let (wh, off) = spec.split_once('+').unwrap_or_else(|| die("at:WxH+X+Y"));
+        let (ox, oy) = off.split_once('+').unwrap_or_else(|| die("at:WxH+X+Y"));
+        let (cw, chh) = wh.split_once('x').unwrap_or_else(|| die("at:WxH+X+Y"));
+        let cw: u32 = cw.parse().unwrap_or_else(|_| die("at W"));
+        let chh: u32 = chh.parse().unwrap_or_else(|_| die("at H"));
+        let ox: u32 = ox.parse().unwrap_or_else(|_| die("at X"));
+        let oy: u32 = oy.parse().unwrap_or_else(|_| die("at Y"));
+        if ox + cw > rgb.width() || oy + chh > rgb.height() {
+            die(&format!(
+                "{}: crop {cw}x{chh}+{ox}+{oy} exceeds the {}x{} source",
+                args[0],
+                rgb.width(),
+                rgb.height()
+            ));
+        }
         rgb = image::imageops::crop_imm(&rgb, ox, oy, cw, chh).to_image();
     } else if mode != "native" {
         die(&format!("unknown prep mode {mode}"));

@@ -2763,9 +2763,18 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   construction — confirmed by the unchanged byte-exactness suite.
 - **RESIDUAL / open:** (a) the >64×64 multi-chunk non-uniform IntraBC block still reads all luma
   leaves before any chroma where C interleaves L,U,V per 64×64 chunk — not reachable from this
-  port's encoder and strictly better than the pre-fix "no chroma at all", noted at the site;
+  port's encoder and strictly better than the pre-fix "no chroma at all", noted at the site.
+  **Re-checked 2026-08-02 against a DIFFERENT encoder and still not reachable**: across 1,992
+  real SVT-AV1 v4.2.0 screen-content streams, SVT never emits an IntraBC block larger than
+  BLOCK_64X64 and emits no 128-px block size at all, so closing (a) needs an SB128
+  screen-content encoder (IntraBC on BLOCK_128X128 / 128X64 / 64X128). Still open, still
+  untested;
   (b) KB-15's byte-exactness pin against aomenc is untouched — this work makes the port's
   IntraBC output CONFORMANT, not byte-identical to libaom's.
+- **CONFIRMED CAUSAL FOR GitHub #5, 2026-08-02.** Roots 4 and 5 are what closed the
+  cross-encoder rejection issue: reverting EITHER one alone makes a real SVT-AV1 stream fail
+  with the exact issue-#5 message (`corrupt frame: intrabc DV failed validity
+  (non-conformant stream)`), with the DV code untouched. See KB-33.
 
 ### KB-30 — Encoder: `cid22_6292444` at `--cpu-used=6` diverges at EVERY quantizer (1 of 10 real photographs) — OPEN, not localized
 - **Found 2026-08-01** by the libaom-C arm of the cross-encoder benchmark
@@ -3205,6 +3214,68 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   per-bsize linear term/prune models (also covers the measured-firing
   `simple_motion_search_prune_rect` at interior nodes).
   Full detail + next-rung plan: `INTER-CHUNK2-HANDOFF.md` §SESSION 2026-07-23.
+
+### KB-33 — Decoder: conformant IntraBC streams from a NON-libaom encoder were rejected — FIXED ✅ (by KB-29 roots 4+5), re-measured 37/100 → 0/1992, gated (GitHub #5)
+- **Reported 2026-07-23** (GitHub #5): **37 of 100** real SVT-AV1 v4.2.0 C screen-content
+  encodes were rejected by `aom-decode` with `corrupt frame: intrabc DV failed validity
+  (non-conformant stream)` (`assign_and_validate_dv`) while real libaom 3.14.1 decoded every
+  one of them clean. Gate 1 could not see it: **every intrabc conformance vector is
+  libaom-encoded**, and libaom's own encoder never emits the neighbour configurations that
+  tripped it.
+- **RE-MEASURED 2026-08-02 on `main` (`5925983`): 0 of 1,992 rejected, 0 pixel differences**
+  — 10 gb82-sc sources × 50 square crops + 28 geometry cells × presets {0,1,2,3,6,9} ×
+  quantizers {15,20,30,35,45,48,58} × 1x1 AND {2x2, 4x1, 4x2} tile grids, all real SVT-AV1
+  v4.2.0 C encodes at `screen_content_mode = 1`. Non-vacuity measured with the REAL libaom
+  `inspect` (`CONFIG_INSPECTION=1`, `-ibc -bs`): **1,328 of 2,042 decodes carry IntraBC,
+  3,100,958 IntraBC mi units**, shapes spanning BLOCK_4X4/4X8/8X4/4X16/16X4 through
+  BLOCK_64X64. Record: `benchmarks/svt_interop_2026-08-02.{md,tsv,meta}`.
+- **THE ISSUE'S NAMED HYPOTHESIS IS REFUTED — do not re-chase it.** It was NOT a `dv_ref`
+  derivation divergence. `find_dv_ref_mvs` / `find_ref_dv` / `is_mv_valid` / `is_dv_valid` and
+  the `assign_dv` composition (`aom-dsp/src/entropy/dv_ref.rs`) were read line-for-line against
+  `mvref_common.h:267-338` + `decodemv.c:677-731` and transcribe exactly — tile bounds, the
+  sub-8x8 chroma case, `total_sb64_per_row`, the `INTRABC_DELAY_SB64` ordering gate, the
+  wavefront gradient, and C's truncate-toward-zero division. **The cause was a tile-payload
+  desync from missing/misordered COEFFICIENT reads** — KB-29 decoder roots 4 (the 64×64 chunk
+  walk, containing the chroma read, gated on `do_uniform`) and 5 (the leaf-vs-raster var-tx
+  walk selected on "leaf SIZES differ" instead of "the quadtree was READ"). Reverting EITHER
+  alone reproduces the issue's message verbatim on a real SVT stream with the DV code
+  untouched. **Third time this exact trap has been sprung** (KB-29, this) — see
+  `DIFFERENTIAL_PLAYBOOK.md` §10: an intrabc-DV rejection means "the stream went wrong at or
+  before here", never "the DV is what is wrong".
+- **Class: port-only, decoder-side.** libaom is right; the port's walk over a correct C
+  algorithm was wrong. Not a port-fidelity defect in the DV math.
+- **THE GATE — `crates/aom-bench/tests/svt_interop_decode_gate.rs` (new), `just
+  gate-svt-interop`.** Four committed REAL SVT-AV1 C encodes (8.7 KB total, in
+  `crates/aom-bench/tests/fixtures/svt_interop/`), each asserted: length+FNV-1a-64 pinned to
+  the committed IntraBC census, accepted by the REAL `aom_codec_av1_dx`, accepted by the port,
+  **pixel-identical between the two**, and carrying the tile grid the table claims; plus an
+  optional `dav1d` leg wired in the justfile (caller owns the skip). The fixtures cover
+  BLOCK_64X64 IntraBC (the 64×64 chunk boundary), non-square 16X8/32X16/16X32, 4-px-side
+  BLOCK_4X4/8X4, and a **4x2 tile grid** — `av1_is_dv_valid` reads `tile->mi_col_start/end`
+  directly, so multi-tile is load-bearing coverage, not decoration.
+  **This is the coverage class the whole suite was missing: a conformant stream from an
+  encoder that is not libaom and not this port.**
+- **TEETH (verified, `benchmarks/svt_interop_2026-08-02.md`):** gate FAILS with KB-29 root 4
+  reverted, FAILS with root 5 reverted, PASSES on `main`. Root 6 (the leaf-arm CfL luma store)
+  is **NOT covered** — its `!chroma_ref || uv_mode == UV_CFL_PRED` condition is not satisfied
+  by any fixture's IntraBC blocks, though the leaf arm itself IS exercised (instrumented count:
+  70 IntraBC blocks, 40 with `do_uniform == false`). Stated, not hidden.
+- **Two SVT facts that BOUND the result** (re-verify before reading it as breadth): SVT emits
+  IntraBC only at **presets ≤ 3** (presets 6/9 produce zero IntraBC blocks at every cell
+  measured — those streams are vacuous for this bug), and SVT never emits an IntraBC block
+  larger than **BLOCK_64X64** here, so KB-29 residual (a) (>64×64 multi-chunk) stays
+  unreachable and untested.
+- **Discrepancy with the issue's stated repro, recorded:** it names "a 512² crop of
+  `gb82-sc/windows95.png`", but that source is **640x480** — no 512² crop of it exists. The
+  original artefacts (`/root/aom-rs-oracle-reject-repro-2026-07-23/`) are a Linux path absent
+  from this machine, so this is a REGENERATION, not a replay of the original bytes. That is the
+  one honest gap.
+- **Harness (committed, reusable): `scripts/svt_interop/`** — `svt_scc_encode.c` (SVT-AV1 C
+  still-picture driver with `screen_content_mode` + `SVT_TILE_COLS`/`SVT_TILE_ROWS`),
+  `build.sh` (out-of-tree, never modifies the `zenav1-svt-c` sibling), `gen_corpus.sh`
+  (`TILESET=square|geom`). Probe: `crates/aom-bench/examples/svt_interop_probe.rs` (dual-decode
+  + pixel compare over a manifest). `xtool prep` gained an additive `at:WxH+X+Y` explicit-offset
+  crop mode; `native` / `crop:WxH` / `square:N` are byte-unchanged.
 
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 
