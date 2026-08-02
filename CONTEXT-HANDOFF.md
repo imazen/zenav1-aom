@@ -1,7 +1,7 @@
-# zenav1-aom — project handoff (2026-07-25)
+# zenav1-aom — project handoff (2026-08-01)
 
 Current, verified state of the port for a new developer and/or a new machine.
-Everything below was checked against `origin/main` on 2026-07-25; where a claim
+Everything below was checked against `origin/main` on 2026-08-01; where a claim
 has a proof artifact, it is cited. Older handoff snapshots are superseded by
 this file. Deep technical state lives in [`STATUS.md`](STATUS.md) (module log,
 newest first), [`PARITY.md`](PARITY.md) (stills-parity ledger),
@@ -68,8 +68,9 @@ python3 xtask/conformance.py --fetch --scope intra   # decode-conformance vector
   through a single-reference feature ladder (concurrent track).
 - **Gate 2 — encoder byte-identity: DONE for ALLINTRA across --cpu-used 0-9**
   on the synthetic grids, and on real conformance-decoded content at speed 0
-  (KB-6, 30/30) plus **50/60** at speeds 1-4 (KB-13; was 45/60 — KB-21's two roots
-  promoted 5 cells on 2026-07-30/31). Non-default stills knobs
+  (KB-6, 30/30) plus **58/60** at speeds 1-4 (KB-13; was 45/60 — KB-21's three
+  roots and KB-23 promoted 13 cells on 2026-07-30/08-01). **The two still open are
+  both `cpu3 cq63`; speed 4 is 12/12 on every cell.** Non-default stills knobs
   (QM, CDEF search, LR search, SB128, multi-tile, film grain, lossless,
   10/12-bit, tune=IQ/SSIMULACRA2, deltaq modes, toggles) are byte-exact —
   see PARITY.md section A. Open cells are pinned by self-promoting gates
@@ -100,6 +101,38 @@ python3 xtask/conformance.py --fetch --scope intra   # decode-conformance vector
   matrix; the zenavif integration contract is specced in CLAUDE.md ("Zen codec
   cross-cutting compliance") — DecodeError/limits/stop/alloc landed, probe +
   estimate still open there.
+
+## What changed on 2026-07-31 / 08-01 (ten KB closures — read this before trusting older notes)
+
+A large sweep closed KB-21 (3 roots), KB-22, KB-23, KB-24, KB-25, KB-26, KB-29
+(6 roots), KB-31 (2 roots) and KB-32 (2 roots), plus GitHub issues #6 and #7.
+Anything written before 2026-07-31 about the encoder's speed/size envelope is
+likely stale. The headlines:
+
+- **Every one of those bugs came from measuring an axis nobody had measured** —
+  above 640 px, QM on at speed>=4, partial superblocks, >=720p, screen tools
+  armed, frames that REQUIRE a tile split. Speed 4 looked closed on the morning
+  of 07-31; it was closed only on what had been swept. Treat the "still
+  unmeasured" list in each KB entry as a work queue, not as reassurance.
+- **Three separate blind spots were doc claims of inertness that source did not
+  support** (playbook §9): `early_term_after_none_split`, the `var_part` field
+  "is 0 on this path", and KB-22's "unmodelled LR fields". Each cited a correct C
+  line and drew a conclusion true only of the envelope that had been run.
+- **The decoder gained two real fixes from encoder work**: superres x
+  multi-tile-column (previously refused outright) and a tile-info re-derivation
+  that mis-parsed any real stream with `log2_cols > min_log2_cols && min_log2 > 0`
+  (KB-31 root #2 — no conformance vector reaches it).
+- **A whole class of gate was missing and now exists**: `armed_tools_decode_gate`
+  round-trips any encode with a non-default tool armed through the C decoder and
+  dav1d. Byte-identity to a reference proves nothing for configs the reference
+  never encodes; 7 of 31 `ToggleKnobs` were unguarded, and its coverage is a
+  compile error rather than a list.
+- **Cross-encoder position is now measured**, including libaom C:
+  `benchmarks/xbench_2026-08-01.md`. At a >=1 MP/s budget the port has **no
+  coding deficit vs libaom on photographs** (identical BD-rate, 9/10 images
+  byte-identical at every quantizer) — its gap is that it runs 10.8x slower at
+  matched cpu-used. On screen content there is a real gap, and it is a SPEED
+  problem: IntraBC is correct now but costs 558x libaom's time for that tool.
 
 ## Live tracks (each has its own docs; concurrent sessions may be active)
 
