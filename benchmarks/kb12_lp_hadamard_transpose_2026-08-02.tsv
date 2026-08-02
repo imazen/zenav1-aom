@@ -1,0 +1,110 @@
+# KB-12 — the nonrd estimate arm's "leaf-mode near-tie" was aom_hadamard_lp_8x8's
+# missing trailing transpose (aom_dsp/avg.c:232-236). 2026-08-02
+# base commit  2a5ddac (fix(encode): KB-28 — the framesize predicates read the TRUE CROP)
+# host         Apple M4 Pro, Darwin 25.5.0 arm64
+# build        cargo test --profile test-fast -j 4, default dispatch (aarch64 NEON live)
+# harness      crates/aom-encode/tests/encoder_gate_e2e_byte_match.rs (speed8/9 canon grids)
+#              crates/aom-bench/tests/kb32_nonrd_size_bands.rs (--ignored tier)
+#              crates/aom-bench/tests/kb28_crop_dims.rs (--ignored tier)
+#              crates/aom-bench/tests/config_permutations.rs (speed_sensitivity_*, combinations_t3_speed8)
+#              crates/aom-encode/tests/nonrd_block_yrd_lp_diff.rs (the new kernel differential)
+# content      synthetic canon grids (speed8/9 gates) + mirror-tiled first KEY frame of
+#              av1-1-b8-00-quantizer-00 (KB-32/KB-28 cells), bd8 4:2:0 + mono,
+#              ALLINTRA usage=2, single KEY frame, 1 tile, stock knobs
+# reference    real libaom aom_codec_av1_cx via aom-sys-ref; compared unit is the frame-OBU payload
+#
+# arm_state
+#   post     = the landed fix (hadamard_lp_8x8 ends with C's coeff[i*8+j] = buffer2[j*8+i])
+#   pre      = bite proof: that loop reverted to `coeff[..64].copy_from_slice(&buffer2)`,
+#              nothing else changed. Reproduces every previously-recorded number exactly.
+#
+# The blast radius is ONE caller: block_yrd_lowbd, i.e. av1_block_yrd's use_hbd==0 branch,
+# reached only from av1_nonrd_pick_intra_mode at --cpu-used 8/9 and bd8. Speeds 0..7, every
+# bd10/bd12 cell, and every decoder gate are byte-unchanged by the fix.
+#
+# WHY IT WAS INVISIBLE: of everything the estimate arm derives from these coefficients, only
+# the EOB is order-sensitive. aom_satd_lp and av1_block_error_lp sum the whole array; eob==0
+# (skippable) is a set property; eob==1 can only mean the DC, the transpose's fixed point.
+# Measured over 4,000 correlated 8x8 blocks at qindex 128 (the teeth test):
+#   eob differs on ......................... 477 / 4000 blocks
+#   aom_satd_lp differs on ................. 0 / 4000
+#   av1_block_error_lp differs on .......... 0 / 4000
+#   skippable (eob == 0) differs on ........ 0 / 4000
+# The eob reaches the rate only through eob_cost += get_msb(eob+1), rate += eob_cost << 9.
+#
+gate	cell	speed	cq	arm_state	port_bytes	real_bytes	delta	verdict
+encoder_gate_speed8_textured	diag 64x64 mono	8	12	pre	-	-	-	DIVERGE
+encoder_gate_speed8_textured	diag 64x64 mono	8	12	post	-	-	0	MATCH
+encoder_gate_speed8_textured	diag 64x64 420	8	12	pre	-	-	-	DIVERGE
+encoder_gate_speed8_textured	diag 64x64 420	8	12	post	-	-	0	MATCH
+encoder_gate_speed8_textured	diag 128x128 mono	8	32	pre	-	-	-	DIVERGE
+encoder_gate_speed8_textured	diag 128x128 mono	8	32	post	-	-	0	MATCH
+encoder_gate_speed8_textured	diag 128x128 420	8	32	pre	-	-	-	DIVERGE
+encoder_gate_speed8_textured	diag 128x128 420	8	32	post	-	-	0	MATCH
+encoder_gate_speed8_textured	(whole 64-cell canon grid)	8	12/32/48/63	pre	-	-	-	60/64
+encoder_gate_speed8_textured	(whole 64-cell canon grid)	8	12/32/48/63	post	-	-	-	64/64
+encoder_gate_speed9_textured	(whole 64-cell canon grid)	9	12/32/48/63	pre	-	-	-	64/64
+encoder_gate_speed9_textured	(whole 64-cell canon grid)	9	12/32/48/63	post	-	-	-	64/64
+kb32_speed8_ladder	512x512	8	30	pre	29054	28993	+61	DIVERGE
+kb32_speed8_ladder	512x512	8	30	post	28993	28993	0	MATCH
+kb32_speed8_ladder	768x768	8	30	pre	61344	61394	-50	DIVERGE
+kb32_speed8_ladder	768x768	8	30	post	61394	61394	0	MATCH
+kb32_speed8_ladder	896x896	8	30	pre	84543	84566	-23	DIVERGE
+kb32_speed8_ladder	896x896	8	30	post	84566	84566	0	MATCH
+kb32_speed8_ladder	1024x1024	8	30	pre	110832	111000	-168	DIVERGE
+kb32_speed8_ladder	1024x1024	8	30	post	111000	111000	0	MATCH
+kb32_speed8_ladder	2048x2048	8	30	pre	434280	434259	+21	DIVERGE
+kb32_speed8_ladder	2048x2048	8	30	post	434259	434259	0	MATCH
+kb32_speed9_4k	2112x2112	9	30	pre	476276	476276	0	MATCH
+kb32_speed9_4k	2112x2112	9	30	post	476276	476276	0	MATCH
+kb32_speed9_4k	2176x2176	9	30	pre	511755	511939	-184	DIVERGE
+kb32_speed9_4k	2176x2176	9	30	post	511939	511939	0	MATCH
+kb32_speed9_area	768x1152	9	30	pre	-	-	0	MATCH
+kb32_speed9_area	768x1216	9	30	pre	-	-	0	MATCH
+kb32_speed9_area	704x1280	9	30	pre	-	-	0	MATCH
+kb32_speed9_area	1024x1024	9	30	pre	-	-	0	MATCH
+kb32_speed9_area	(all four)	9	30	post	-	-	0	MATCH
+kb28_vbp_band	1280x720	8	24	pre	-	-	-132	DIVERGE
+kb28_vbp_band	1280x720	8	40	pre	-	-	+36	DIVERGE
+kb28_vbp_band	1280x720	9	24	pre	-	-	-8	DIVERGE
+kb28_vbp_band	1280x720	9	40	pre	-	-	+4	DIVERGE
+kb28_vbp_band	1272x724	8	24	pre	-	-	-13	DIVERGE
+kb28_vbp_band	1288x716	8	24	pre	-	-	-1	DIVERGE
+kb28_vbp_band	1288x716	9	24	pre	-	-	+8	DIVERGE
+kb28_vbp_band	1274x722	8	24	pre	-	-	+83	DIVERGE
+kb28_vbp_band	1274x722	9	24	pre	-	-	-4	DIVERGE
+kb28_vbp_band	954x962	8	24	pre	-	-	+25	DIVERGE
+kb28_vbp_band	1280x712	8	24	pre	-	-	-6	DIVERGE
+kb28_vbp_band	1280x712	9	24	pre	-	-	-5	DIVERGE
+kb28_vbp_band	1280x728	8	24	pre	-	-	-116	DIVERGE
+kb28_vbp_band	1280x728	9	24	pre	-	-	-7	DIVERGE
+kb28_vbp_band	1280x704	8	24	pre	-	-	-1	DIVERGE
+kb28_vbp_band	1280x704	9	24	pre	-	-	-6	DIVERGE
+kb28_vbp_band	1216x768	8	24	pre	-	-	+1	DIVERGE
+kb28_vbp_band	1216x768	9	24	pre	-	-	-8	DIVERGE
+kb28_vbp_band	(all 18 rows above)	8/9	24/40	post	-	-	0	MATCH
+kb28_vbp_band	1272x724	9	24	pre	-	-	-	PANIC-nonsquare-leaf
+kb28_vbp_band	1272x724	9	24	post	-	-	-	PANIC-nonsquare-leaf
+kb28_vbp_band	954x962	9	24	pre	-	-	-	PANIC-nonsquare-leaf
+kb28_vbp_band	954x962	9	24	post	-	-	-	PANIC-nonsquare-leaf
+kb28_vbp_band	(all 9 shapes)	7	24	pre	-	-	0	MATCH
+kb28_vbp_band	(all 9 shapes)	7	24	post	-	-	0	MATCH
+config_perm_singletons	rtxs1	8	32	pre	-	-	-	DIVERGE
+config_perm_singletons	rtxs1	8	32	post	-	-	0	MATCH
+config_perm_singletons	trel2	8	32	pre	-	-	-	DIVERGE
+config_perm_singletons	trel2	8	32	post	-	-	0	MATCH
+config_perm_combinations	(63-row t=3 speed-8 array)	8	32	pre	-	-	-	58/63
+config_perm_combinations	(63-row t=3 speed-8 array, BROADENED)	8	32	post	-	-	-	63/63
+#
+# KB-32's decode-both localizer, both arms. Under `pre` it lands on exactly the leaf and mode
+# pair KB-32 recorded on 2026-08-01; under `post` every cell is byte-identical so it reports
+# nothing. Partition trees agree in BOTH arms — this root never touched the tree.
+#
+localizer_cell	arm_state	tree_nodes	first_mismatch_mi	real_y_mode	port_y_mode
+512x512 cq30 s8	pre	3496	(4,108)	SMOOTH	DC
+512x512 cq48 s8	pre	2700	(14,96)	DC	H
+512x512 cq63 s8	pre	1892	(88,40)	SMOOTH	DC
+256x256 cq30 s8	pre	892	(26,4)	SMOOTH	V
+512x512 cq48 s9	pre	1892	(80,48)	H	DC
+2176x2176 cq30 s9	pre	45780	(108,174)	DC	V
+(all six)	post	-	none	-	-

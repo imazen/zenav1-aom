@@ -111,6 +111,30 @@ is baseline, so a compile-time model is valid here (unlike A2).
   (`aom_dsp/aom_dsp_rtcd_defs.pl:1301`).
 - **Likely a latent libaom bug** for any high-bit-depth caller of the nonrd
   path. Not reported upstream; would need a minimal repro first.
+- **The LOW-PRECISION twin is NOT ISA-conditional, and that was worth
+  measuring** (added 2026-08-02). `aom_hadamard_lp_16x16`'s 4-way combine is
+  `int16` in `_c` too (`aom_dsp/avg.c:305-317`), and the x86 tiers spell it
+  slightly differently: `_mm_add_epi16` + `_mm_srai_epi16`
+  (`aom_dsp/x86/avg_intrin_sse2.c:442`, AVX2 twin at
+  `avg_intrin_avx2.c` `aom_hadamard_lp_16x16_avx2`) truncate to int16 BEFORE
+  the shift, where `_c`'s `int16_t b0 = (a0 + a1) >> 1` promotes to `int`,
+  shifts, and narrows only the result. That is the same A1 hazard one width
+  down — but the *lowbd* arm is bd8-only by construction (`av1_block_yrd`'s
+  `use_hbd == 0` branch), the residual is 9-bit (`src - pred`, both u8), so the
+  8x8 stage peaks at `255 * 64 = 16320` and `|a0 + a1| <= 32640 < 32768`. Every
+  tier agrees over that whole domain, MEASURED on aarch64 by
+  `crates/aom-encode/tests/nonrd_block_yrd_lp_diff.rs::lp_hadamard_tiers_agree_over_the_reachable_range`,
+  which also asserts the grid actually drives `|coeff|` past 16000 so the
+  agreement is not vacuous. **Do not port that agreement to any hbd or
+  synthetic-input caller of the lp kernels** — it is a statement about the
+  input range, not about the kernels.
+
+  Separately, and it is the reason this note exists: `aom_hadamard_lp_8x8_c`
+  and `aom_hadamard_8x8_c` both END with a transpose the SIMD tiers get for
+  free (`avg.c:232-236` and `:201-205`, *"Extra transpose to match SSE2
+  behavior"*). It is part of the kernel's contract, not a C implementation
+  detail, and dropping it is invisible to every order-invariant consumer —
+  which is exactly how it cost this project sixteen days as KB-12.
 
 ### A2. `av1_quantize_fp`'s SIMD tiers disagree with `_c` and with each other outside int16
 

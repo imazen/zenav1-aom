@@ -18,6 +18,30 @@
 
 ### Fixed
 
+- **Encoder: the nonrd (`--cpu-used` 8/9) estimate arm computed its Hadamard
+  coefficients TRANSPOSED (KB-12).** `aom_hadamard_lp_8x8_c` ends with a
+  transpose the SIMD tiers get for free (`aom_dsp/avg.c:232-236`, *"Extra
+  transpose to match SSE2 behavior"*); the port wrote its intermediate buffer
+  straight out, so `hadamard_lp_8x8` produced libaom's output transposed and
+  `hadamard_lp_16x16` its per-64-quadrant transpose. Every order-invariant
+  consumer — `aom_satd_lp`, `av1_block_error_lp`, the `eob == 0` skippable flag
+  — was blind to it, so rate, distortion and skippability were correct and only
+  the `eob` drifted, through `eob_cost += get_msb(eob + 1)`. That is why it read
+  as a "leaf-mode near-tie" from 2026-07-17: it flipped occasional winners in
+  `av1_nonrd_pick_intra_mode`'s four-mode loop and did nothing else. Closes the
+  four pinned speed-8 `diag` cells (`encoder_gate_speed8_textured_allintra`
+  60/64 → **64/64**), KB-32's entire surviving residual (the cpu8 size ladder
+  512²–2048² and the 2176² cpu9 cell, all promoted from shape/bound pins to hard
+  byte gates), KB-28's speed-8/9 rows (`vbp_band_crop_dims_byte_match` 18 open →
+  0), and both `config_permutations` pin lists
+  (`SPEED_OPEN_SINGLETONS` / `SPEED_OPEN_COMBINATIONS` are now **empty at every
+  speed 0..9**). `_c` and `_neon` agree bit-for-bit over the reachable 9-bit
+  residual domain, so nothing here is ISA-conditional (contrast
+  `aom_hadamard_16x16`, KB-20 root #4). New gate:
+  `crates/aom-encode/tests/nonrd_block_yrd_lp_diff.rs` — the lowbd twin of the
+  hbd differential, locking all five estimate kernels and the `block_yrd_lowbd`
+  walk against the exported C symbols. Its absence was the root's root.
+
 - **Encoder: every frame with `min(w,h) >= 480` diverged from real aomenc at
   `--cpu-used >= 4` (KB-26).** The speed≥4 winner-mode two-pass in
   `partition_pick` derived its MODE_EVAL / WINNER_MODE_EVAL transform policies

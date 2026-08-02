@@ -209,6 +209,149 @@ pub fn ref_satd(coeff: &[i32]) -> i32 {
     unsafe { aom_satd_c(coeff.as_ptr(), coeff.len() as i32) }
 }
 
+// aom_dsp/avg.c + av1/encoder/{av1_quantize,rdopt}.c — the LOW-PRECISION
+// (int16) estimate kernels the nonrd lowbd arm runs (`av1_block_yrd`'s
+// `use_hbd == 0` switch, nonrd_opt.c:266-295). Both the portable `_c` symbol
+// and the architecture-specialised tier are exported so a differential can
+// prove the two agree (see `nonrd_block_yrd_lp_diff.rs`; contrast
+// LIBAOM_UPSTREAM_NOTES A1, where the 32-bit `aom_hadamard_16x16` tiers do
+// NOT agree outside int16).
+unsafe extern "C" {
+    pub fn aom_hadamard_lp_8x8_c(src: *const i16, stride: isize, coeff: *mut i16);
+    pub fn aom_hadamard_lp_16x16_c(src: *const i16, stride: isize, coeff: *mut i16);
+    pub fn aom_satd_lp_c(coeff: *const i16, length: i32) -> i32;
+    pub fn av1_block_error_lp_c(coeff: *const i16, dqcoeff: *const i16, block_size: isize) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    pub fn av1_quantize_lp_c(
+        coeff: *const i16,
+        n_coeffs: isize,
+        round_ptr: *const i16,
+        quant_ptr: *const i16,
+        qcoeff_ptr: *mut i16,
+        dqcoeff_ptr: *mut i16,
+        dequant_ptr: *const i16,
+        eob_ptr: *mut u16,
+        scan: *const i16,
+        iscan: *const i16,
+    );
+}
+
+/// The architecture-specialised tier of the same two kernels, named directly
+/// rather than reached through RTCD's pointer (arm64 binds some kernels at
+/// compile time anyway — LIBAOM_UPSTREAM_NOTES A5).
+///
+/// x86 uses the **SSE2** tier deliberately: it is baseline on x86-64 so calling
+/// it unconditionally cannot fault, and `aom_hadamard_lp_8x8` has no AVX2 tier
+/// at all (`aom_dsp/aom_dsp_rtcd_defs.pl:1288` specialises `sse2 neon`).
+/// `aom_hadamard_lp_16x16` additionally has an AVX2 tier (`:1291`) that makes
+/// the same int16 arithmetic choice as SSE2, so SSE2 is representative.
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" {
+    pub fn aom_hadamard_lp_8x8_neon(src: *const i16, stride: isize, coeff: *mut i16);
+    pub fn aom_hadamard_lp_16x16_neon(src: *const i16, stride: isize, coeff: *mut i16);
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe extern "C" {
+    pub fn aom_hadamard_lp_8x8_sse2(src: *const i16, stride: isize, coeff: *mut i16);
+    pub fn aom_hadamard_lp_16x16_sse2(src: *const i16, stride: isize, coeff: *mut i16);
+}
+
+/// Reference `aom_hadamard_lp_<n>x<n>_c` for `n` in {8,16}; `n*n` int16 coeffs.
+pub fn ref_hadamard_lp(n: usize, src: &[i16], stride: usize) -> Vec<i16> {
+    let mut coeff = vec![0i16; n * n];
+    unsafe {
+        match n {
+            8 => aom_hadamard_lp_8x8_c(src.as_ptr(), stride as isize, coeff.as_mut_ptr()),
+            16 => aom_hadamard_lp_16x16_c(src.as_ptr(), stride as isize, coeff.as_mut_ptr()),
+            _ => unreachable!("aom_hadamard_lp is only specialised for 8x8 and 16x16"),
+        }
+    }
+    coeff
+}
+
+/// The SIMD tier of `aom_hadamard_lp_<n>x<n>` where one exists on this target,
+/// else `_c`. Used only to prove the two agree over the reachable input range.
+pub fn ref_hadamard_lp_simd(n: usize, src: &[i16], stride: usize) -> Vec<i16> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut coeff = vec![0i16; n * n];
+        unsafe {
+            match n {
+                8 => aom_hadamard_lp_8x8_neon(src.as_ptr(), stride as isize, coeff.as_mut_ptr()),
+                16 => aom_hadamard_lp_16x16_neon(src.as_ptr(), stride as isize, coeff.as_mut_ptr()),
+                _ => unreachable!(),
+            }
+        }
+        coeff
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut coeff = vec![0i16; n * n];
+        unsafe {
+            match n {
+                8 => aom_hadamard_lp_8x8_sse2(src.as_ptr(), stride as isize, coeff.as_mut_ptr()),
+                16 => aom_hadamard_lp_16x16_sse2(src.as_ptr(), stride as isize, coeff.as_mut_ptr()),
+                _ => unreachable!(),
+            }
+        }
+        coeff
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        ref_hadamard_lp(n, src, stride)
+    }
+}
+
+/// True when [`ref_hadamard_lp_simd`] really is a different kernel from
+/// [`ref_hadamard_lp`] on this target (non-vacuity, playbook §2). False only on
+/// targets with no specialised tier at all — 32-bit x86 included, where SSE2 is
+/// not baseline and calling the tier unconditionally would be unsound.
+pub const REF_HADAMARD_LP_SIMD_IS_DISTINCT: bool =
+    cfg!(any(target_arch = "aarch64", target_arch = "x86_64"));
+
+/// Reference `aom_satd_lp_c`.
+pub fn ref_satd_lp(coeff: &[i16]) -> i32 {
+    unsafe { aom_satd_lp_c(coeff.as_ptr(), coeff.len() as i32) }
+}
+
+/// Reference `av1_block_error_lp_c`.
+pub fn ref_block_error_lp(coeff: &[i16], dqcoeff: &[i16]) -> i64 {
+    assert_eq!(coeff.len(), dqcoeff.len());
+    unsafe { av1_block_error_lp_c(coeff.as_ptr(), dqcoeff.as_ptr(), coeff.len() as isize) }
+}
+
+/// Reference `av1_quantize_lp_c` — returns `(qcoeff, dqcoeff, eob)`.
+/// `round`/`quant`/`dequant` are the 2-lane QTX rows (`[dc, ac]`).
+pub fn ref_quantize_lp(
+    coeff: &[i16],
+    round: &[i16; 8],
+    quant: &[i16; 8],
+    dequant: &[i16; 8],
+    scan: &[i16],
+    iscan: &[i16],
+) -> (Vec<i16>, Vec<i16>, u16) {
+    let n = coeff.len();
+    let mut qcoeff = vec![0i16; n];
+    let mut dqcoeff = vec![0i16; n];
+    let mut eob: u16 = 0;
+    unsafe {
+        av1_quantize_lp_c(
+            coeff.as_ptr(),
+            n as isize,
+            round.as_ptr(),
+            quant.as_ptr(),
+            qcoeff.as_mut_ptr(),
+            dqcoeff.as_mut_ptr(),
+            dequant.as_ptr(),
+            &mut eob,
+            scan.as_ptr(),
+            iscan.as_ptr(),
+        );
+    }
+    (qcoeff, dqcoeff, eob)
+}
+
 /// Reference `aom_avg_4x4_c` (lowbd): `src` must hold 4 rows of 4 samples at
 /// `stride`; returns `(sum + 8) >> 4`. The variance-based partitioner's
 /// KEY-frame 4x4 downsampling kernel (var_based_part.c

@@ -3065,33 +3065,22 @@ fn textured_content_for(w: usize, h: usize, name: &str) -> Box<dyn Fn(usize, usi
 /// on the estimate arm (nonrd_pickmode.c:1735). Same canon grid as speeds
 /// 4-7 ({64,128}² × cq{12,32,48,63} × {flat,two-tone,vgrad,diag} × {mono,420}).
 ///
-/// **60/64 byte-identical vs real `aomenc --cpu-used=8`. FOUR pinned-open
-/// near-tie cells** (KB-12, the same near-tie CLASS as KB-10/KB-11):
-/// `diag {64² cq12, 128² cq32}` × {mono,420}. Localized (via a decode-both
-/// diff, the `kb11_speed7_noise_localize.rs` shape) to a single BLOCK_8X8
-/// **estimate-arm** leaf (mi 2,2 on the 64² cells): the partition trees are
-/// IDENTICAL and every earlier leaf byte-matches, but `av1_nonrd_pick_intra_
-/// mode` picks **V_PRED** where real codes **H_PRED** — a directional-mode
-/// near-tie decided by ~0.7 % rdcost (V 624968 vs H 629535; identical dist,
-/// bmode_costs V 1596 / H 1385). The whole traced estimate chain (the LP
-/// Hadamard/`quantize_lp`/`satd_lp`/`block_error_lp` kernels + the mode loop)
-/// matches libaom to the line, so the exact tip needs a sibling-C per-mode
-/// RD dump at that leaf (the KB-10/KB-11 next step). Speed 9 (all-estimate,
-/// with the speed-9 mode prunes) byte-matches the SAME cells 64/64, i.e. the
-/// prunes mask this near-tie; only speed 8's unpruned mixed hybrid exposes it.
-/// The mono cells prove it is luma-side. The test FAILS if a pinned cell
-/// starts matching (→ promote) or if any non-pinned cell diverges.
+/// **64/64 byte-identical vs real `aomenc --cpu-used=8`** since 2026-08-02.
+///
+/// Four cells — `diag {64² cq12, 128² cq32}` × {mono,420} — were pinned open
+/// from 2026-07-17 as a leaf-mode "near-tie" in `av1_nonrd_pick_intra_mode`'s
+/// four-mode loop (localized to one BLOCK_8X8 estimate-arm leaf, mi(2,2) on
+/// the 64² cells, with the partition trees identical and every other leaf
+/// byte-matching). It was not a tie: `hadamard_lp_8x8` omitted the trailing
+/// transpose at `aom_dsp/avg.c:232-236`, so the estimate arm's coefficients
+/// were the TRANSPOSE of libaom's. Every order-invariant consumer
+/// (`aom_satd_lp`, `av1_block_error_lp`, `eob == 0`) was blind to it and only
+/// the `eob` moved, which is why it wore a near-tie's clothes. See KB-12 and
+/// `nonrd_block_yrd_lp_diff.rs`, the kernel differential whose absence let it
+/// through.
 #[test]
 fn encoder_gate_speed8_textured_allintra() {
-    // KB-12 pinned-open near-tie cells (see the fn doc).
-    let pinned: &[&str] = &[
-        "diag 64x64 mono cq12",
-        "diag 64x64 420 cq12",
-        "diag 128x128 mono cq32",
-        "diag 128x128 420 cq32",
-    ];
     let mut failures: Vec<String> = Vec::new();
-    let mut pinned_now_matching: Vec<String> = Vec::new();
     let mut total = 0usize;
     for &(w, h) in &[(64usize, 64usize), (128usize, 128usize)] {
         for &name in &["flat", "two-tone", "vgrad", "diag"] {
@@ -3114,11 +3103,7 @@ fn encoder_gate_speed8_textured_allintra() {
                     let fmt = if mono { "mono" } else { "420" };
                     let cell = format!("{name} {w}x{h} {fmt} cq{cq}");
                     eprintln!("speed8 {cell}: {}", if ok { "MATCH" } else { "DIFF" });
-                    if pinned.contains(&cell.as_str()) {
-                        if ok {
-                            pinned_now_matching.push(cell);
-                        }
-                    } else if !ok {
+                    if !ok {
                         failures.push(cell);
                     }
                     total += 1;
@@ -3128,20 +3113,16 @@ fn encoder_gate_speed8_textured_allintra() {
     }
     eprintln!(
         "encoder_gate_speed8_textured_allintra: {}/{total} cells byte-identical vs aomenc \
-         --cpu-used=8 ({} pinned-open near-tie cells)",
-        total - failures.len() - pinned.len() + pinned_now_matching.len(),
-        pinned.len()
+         --cpu-used=8",
+        total - failures.len(),
     );
+    assert_eq!(total, 64, "the canon grid must stay 64 cells");
     assert!(
         failures.is_empty(),
-        "every non-pinned cpu-used=8 all-intra cell must byte-match real aomenc; \
-         diverging: {failures:?}"
-    );
-    assert!(
-        pinned_now_matching.is_empty(),
-        "KB-12 pinned-open speed-8 near-tie cell(s) started BYTE-MATCHING real aomenc \
-         ({pinned_now_matching:?}) — promote them to hard byte-match asserts and close the \
-         KB-12 estimate-arm V/H near-tie"
+        "every cpu-used=8 all-intra cell must byte-match real aomenc; diverging: \
+         {failures:?}. The four `diag` cells were KB-12's pinned estimate-arm \
+         class until the aom_hadamard_lp_8x8 transpose landed — if they are back, \
+         start at nonrd_block_yrd_lp_diff.rs"
     );
 }
 

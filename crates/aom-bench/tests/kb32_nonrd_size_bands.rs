@@ -196,7 +196,11 @@ fn nonrd_speed9_area_threshold_byte_identical() {
 ///
 /// Bite proof: reverting the cost-upd arm alone (hardcoding OFF at speed 9)
 /// leaves [`nonrd_speed9_area_threshold_byte_identical`] green and moves ONLY
-/// the 2176² row, -184 -> -2,599.
+/// the 2176² row, 0 -> -2,599.
+///
+/// **PROMOTED 2026-08-02.** 2176² was pinned open at -184 for KB-12's
+/// estimate-arm residual; the `aom_hadamard_lp_8x8` transpose closed it and
+/// both rows are now hard byte gates.
 #[test]
 #[ignore = "two ~4.5 MP encode pairs; on-demand tier"]
 fn nonrd_speed9_4k_cost_upd_sbrow() {
@@ -210,18 +214,12 @@ fn nonrd_speed9_4k_cost_upd_sbrow() {
          be exact there, or the fix changed a sub-4k frame"
     );
     let (d, exact) = run(&base, 2176, 2176, 30, 9);
-    // Pinned OPEN in both directions (playbook §5): the residual is the
-    // estimate-arm class, not the cost-upd arm.
     assert!(
-        !exact,
-        "2176x2176 cpu9 is now BYTE-IDENTICAL — the KB-12 estimate-arm residual \
-         closed. Promote this to a hard byte gate and re-pin."
-    );
-    assert!(
-        d.abs() < 1_000,
-        "2176x2176 cpu9 delta {d:+} is far outside the estimate-arm residual \
-         band (-2,599 before the INTERNAL_COST_UPD_SBROW arm, -184 after) — \
-         the cost-update level regressed"
+        exact,
+        "2176x2176 cpu9 delta {d:+} — this cell was -2,599 before the \
+         INTERNAL_COST_UPD_SBROW arm and -184 before KB-12's \
+         aom_hadamard_lp_8x8 transpose. A delta near -2,599 is the cost-update \
+         level regressing; a small one is the estimate arm's"
     );
 }
 
@@ -238,58 +236,49 @@ fn nonrd_speed9_4k_cost_upd_sbrow() {
 ///
 /// | cell | SBs | pre-fix | post-fix |
 /// |---|---|---|---|
-/// | 512² | 64 | +61 | +61 (arm unreachable: 512 < 720) |
-/// | 768² | 144 | +152 | -50 |
-/// | 896² | 196 | +253 | -23 |
-/// | 1024² | 256 | +581 | -168 |
-/// | 2048² | 1,024 | +2,576 | **+21** |
+/// | cell | SBs | pre-fix | post-KB-32 | post-KB-12 (2026-08-02) |
+/// |---|---|---|---|---|
+/// | 512² | 64 | +61 | +61 (arm unreachable: 512 < 720) | **0** |
+/// | 768² | 144 | +152 | -50 | **0** |
+/// | 896² | 196 | +253 | -23 | **0** |
+/// | 1024² | 256 | +581 | -168 | **0** |
+/// | 2048² | 1,024 | +2,576 | +21 | **0** |
 ///
-/// Per superblock, pre-fix -> post-fix: 512² 0.95 -> **0.95** (unchanged —
-/// 512 < 720, the arm is unreachable there), 768² 1.06 -> 0.35, 896²
-/// 1.29 -> 0.12, 1024² 2.27 -> 0.66, 2048² 2.52 -> **0.02**. The pre-fix
-/// column RISES monotonically with area; the post-fix column does not, and on
-/// the four cells the arm actually reaches it falls by 3-100x. That is what is
-/// pinned — a shape property, not byte counts — so the gate does not fire on
-/// every unrelated encoder landing but does fire the moment a size-scaling
-/// root returns.
+/// The middle column was pinned on a SHAPE (worst armed-cell residual
+/// < 1.0 B/SB against a pre-fix 1.06-2.52 and rising) because what remained
+/// was KB-12's estimate-arm class. That class closed with the
+/// `aom_hadamard_lp_8x8` transpose, so **the whole ladder is a hard byte gate
+/// now** — including 512², whose +61 the KB-32 arm could never have touched
+/// (512 < 720) and which was therefore always KB-12's.
 #[test]
 #[ignore = "5 cells up to 4.2 MP; on-demand tier"]
 fn nonrd_speed8_size_ladder_residual_is_bounded() {
     c::ref_init();
     let base = EncodeCell::real_content("kb32", "av1-1-b8-00-quantizer-00", None, 30, 8);
     println!("KB-32 cpu8 ladder:");
-    // (w, h, superblocks at SB64, the PRE-fix delta)
-    const LADDER: &[(usize, usize, i64, i64)] = &[
-        (512, 512, 64, 61),
-        (768, 768, 144, 152),
-        (896, 896, 196, 253),
-        (1024, 1024, 256, 581),
-        (2048, 2048, 1024, 2576),
+    // (w, h, superblocks at SB64, the PRE-fix delta, the post-KB-32 delta)
+    const LADDER: &[(usize, usize, i64, i64, i64)] = &[
+        (512, 512, 64, 61, 61),
+        (768, 768, 144, 152, -50),
+        (896, 896, 196, 253, -23),
+        (1024, 1024, 256, 581, -168),
+        (2048, 2048, 1024, 2576, 21),
     ];
-    // Worst per-SB residual among the cells the arm actually REACHES
-    // (min(w, h) >= 720). 512² is excluded on purpose: the arm is unreachable
-    // there, so its 0.95 B/SB is untouched by this fix and including it would
-    // make the bound vacuous.
-    let mut worst_armed_per_sb = 0.0f64;
-    for &(w, h, sbs, pre) in LADDER {
-        let (d, _) = run(&base, w, h, 30, 8);
-        let per_sb = (d.abs() as f64) / (sbs as f64);
-        if w.min(h) >= 720 {
-            worst_armed_per_sb = worst_armed_per_sb.max(per_sb);
+    let mut diverging: Vec<String> = Vec::new();
+    for &(w, h, sbs, pre, mid) in LADDER {
+        let (d, exact) = run(&base, w, h, 30, 8);
+        if !exact {
+            diverging.push(format!(
+                "{w}x{h} ({sbs} SBs): {d:+} [{pre:+} pre-KB-32, {mid:+} pre-KB-12]"
+            ));
         }
-        assert!(
-            d.abs() <= pre.abs().max(200),
-            "{w}x{h} cpu8: delta {d:+} exceeds its pre-fix value {pre:+} — the \
-             force_large_partition_blocks_intra arm regressed"
-        );
     }
-    println!("  worst armed-cell residual: {worst_armed_per_sb:.3} B per superblock");
     assert!(
-        worst_armed_per_sb < 1.0,
-        "the worst >=720p cpu8 residual is {worst_armed_per_sb:.3} B/SB — those \
-         four cells ran at 1.06 / 1.29 / 2.27 / 2.52 B/SB and RISING before the \
-         force_large_partition_blocks_intra arm was modelled, so a size-scaling \
-         root is back"
+        diverging.is_empty(),
+        "the cpu8 ladder must be byte-identical at every size. Diverging: \
+         {diverging:?}. A delta that GROWS with area is a size-scaling root \
+         (force_large_partition_blocks_intra was one); a small sign-random one \
+         is the nonrd estimate arm — start at nonrd_block_yrd_lp_diff.rs"
     );
 }
 
@@ -483,26 +472,30 @@ fn localize_leaf_mode(w: usize, h: usize, cq: i32, speed: i32) -> Option<(i32, i
     panic!("{w}x{h} s{speed}: payloads differ but every shared leaf agrees");
 }
 
-/// **What the residual IS, asserted rather than asserted-about.**
+/// **CLOSED 2026-08-02 — this is now a byte gate, and its localizer is the
+/// diagnostic that runs when a cell comes back.**
 ///
-/// Every surviving KB-32 cell — at BOTH speeds, at three quality points, and
-/// at 4k where root #2 lived — has (a) partition trees in EXACT agreement and
-/// (b) a first divergence that is a leaf `y_mode`, both sides inside
+/// History, because it is the whole reason the localizer stays: every
+/// surviving KB-32 cell — at BOTH speeds, at three quality points, and at 4k
+/// where root #2 lived — had (a) partition trees in EXACT agreement and (b) a
+/// first divergence that was a leaf `y_mode`, both sides inside
 /// `av1_nonrd_pick_intra_mode`'s four-mode `intra_mode_list`
 /// {DC, V, H, SMOOTH}, with `tx_size`, `uv_mode`, angle delta and filter-intra
-/// all equal. That is KB-12's pinned speed-8 estimate-arm class — the
-/// attribution KB-32 recorded as a hypothesis and explicitly flagged as NOT
-/// established. It is established now, and it is BROADER than KB-12's entry
-/// says: KB-12 localized V-vs-H, and the pairs below include DC-vs-SMOOTH,
-/// V-vs-SMOOTH, DC-vs-H and DC-vs-V.
+/// all equal (512² cq30 s8 -> 3,496 nodes, mi(4,108) BLOCK_8X8 real SMOOTH /
+/// port DC; 2176² cq30 s9 -> 45,780 nodes, mi(108,174) real DC / port V). It
+/// read like a rounding-level near-tie in a four-way RD comparison.
 ///
-/// It also fires at `--cpu-used=9` (KB-12 recorded speed 9 as 64/64 canon, at
-/// 64² and 128²), so speed 9's three estimate-loop prunes MASK the class on
-/// small frames rather than removing it.
+/// It was not a tie. `hadamard_lp_8x8` omitted the trailing transpose C
+/// performs at `aom_dsp/avg.c:232-236`, so the estimate arm's coefficients
+/// were the exact TRANSPOSE of libaom's. `aom_satd_lp`,
+/// `av1_block_error_lp` and `eob == 0` are all order-invariant, so rate,
+/// distortion and skippability were RIGHT and only the `eob` moved — through
+/// `eob_cost += get_msb(eob + 1)` into `rate += eob_cost << 9`. A defect that
+/// perturbs one small additive term in a four-way comparison expresses itself
+/// as an occasional mode flip and nothing else, which is exactly the shape
+/// that got read as a tie. See KB-12 and `nonrd_block_yrd_lp_diff.rs`.
 ///
-/// MEASURED 2026-08-01: 512² cq30 s8 -> trees agree (3,496 nodes), first
-/// mismatch mi(4,108) BLOCK_8X8 real SMOOTH vs port DC; 2176² cq30 s9 -> trees
-/// agree (45,780 nodes), first mismatch mi(108,174) BLOCK_8X8 real DC vs port V.
+/// Every cell below is byte-identical as of 2026-08-02.
 #[test]
 #[ignore = "includes a 4.7 MP pair; on-demand tier"]
 fn estimate_arm_residual_is_a_leaf_mode_near_tie() {
@@ -514,26 +507,30 @@ fn estimate_arm_residual_is_a_leaf_mode_near_tie() {
         (512, 512, 48, 9),
         (2176, 2176, 30, 9),
     ];
-    let mut seen = 0usize;
+    let mut diverging: Vec<String> = Vec::new();
     for &(w, h, cq, speed) in cells {
+        // `localize_leaf_mode` returns None on a byte-identical cell, PANICS
+        // when the partition trees disagree (a partition-side root, which both
+        // KB-32 roots were), and otherwise reports the leaf `y_mode` pair.
         if let Some((r, o)) = localize_leaf_mode(w, h, cq, speed) {
-            assert!(
-                RTC_INTRA_MODES.contains(&r) && RTC_INTRA_MODES.contains(&o),
-                "{w}x{h} cq{cq} s{speed}: the diverging leaf modes are real={r} \
-                 port={o}, and at least one is OUTSIDE \
-                 av1_nonrd_pick_intra_mode's intra_mode_list {RTC_INTRA_MODES:?} \
-                 — this is no longer the estimate-arm class"
-            );
-            seen += 1;
+            diverging.push(format!(
+                "{w}x{h} cq{cq} s{speed}: leaf y_mode real={r} port={o}{}",
+                if RTC_INTRA_MODES.contains(&r) && RTC_INTRA_MODES.contains(&o) {
+                    " (both inside av1_nonrd_pick_intra_mode's intra_mode_list)"
+                } else {
+                    " (OUTSIDE the estimate arm's intra_mode_list — a different class)"
+                }
+            ));
         }
     }
-    // Non-vacuity: if every cell became byte-exact the class closed, and this
-    // test must be re-pinned rather than silently passing on zero evidence.
     assert!(
-        seen >= 5,
-        "only {seen} of {} cells still diverge — the estimate-arm class is \
-         closing. Re-pin this test (and KB-12).",
-        cells.len()
+        diverging.is_empty(),
+        "the nonrd estimate arm diverged again: {diverging:?}. If the modes are \
+         inside {RTC_INTRA_MODES:?} with the trees agreeing, this is KB-12's \
+         class returning — run nonrd_block_yrd_lp_diff.rs first, it locks every \
+         lowbd estimate kernel against the exported C symbol and is where the \
+         2026-08-02 root (the aom_hadamard_lp_8x8 transpose) would have been \
+         caught in seconds"
     );
 }
 

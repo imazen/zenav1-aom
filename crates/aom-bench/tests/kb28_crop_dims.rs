@@ -393,62 +393,38 @@ fn measure(cell: &EncodeCell) -> (Verdict, i64, String) {
 /// | speeds 8/9, SB-EXACT controls | MATCH | MATCH |
 /// | speeds 8/9, PARTIAL-SB cells | (masked by the refusal) | DIVERGE — pinned |
 ///
-/// **The speed-8/9 divergence is NOT this bug, and it is not new** — it is
-/// KB-12's nonrd estimate-arm leaf-mode near-tie, which KB-32 attributed and
-/// pinned (`kb32_nonrd_size_bands::estimate_arm_residual_is_a_leaf_mode_near_tie`,
-/// and its `nonrd_speed8_size_ladder_residual_is_bounded` shape bound). Three
-/// independent things say so, and the first was a hypothesis this grid
-/// *refuted*:
-/// * a partial-superblock explanation was tested and is WRONG: `1280x704` and
-///   `1216x768` are exact multiples of 64 and diverge at 8/9 as well (-1/-6
-///   and +1/-8);
-/// * `1280x720`, `1280x704`, `1280x712`, `1280x728` and `1216x768` all have
-///   `cm->width == mi_cols * 4` on **both** axes, so this fix is a literal
-///   no-op on them — every expression it touched evaluates to what it
-///   evaluated to before — and their speed-8/9 deltas are byte-identical with
-///   the fix reverted (measured; the four non-720 ones can be measured
-///   pre-fix because the old guard did not fire on them);
-/// * every speed-8 residual is under KB-32's pinned `< 1.0 B/SB` shape (worst
-///   here 0.55 B/SB at 1280x720 cq24), asserted below.
+/// **The speed-8/9 divergence was NOT this bug** — it was KB-12's nonrd
+/// estimate-arm class, and this grid was the evidence that named it: a
+/// partial-superblock explanation was *refuted* here (`1280x704` and
+/// `1216x768` are exact multiples of 64 and diverged at 8/9 too, -1/-6 and
+/// +1/-8), and the five shapes with `cm->width == mi_cols * 4` on both axes —
+/// where KB-28's fix is a literal no-op — carried byte-identical deltas with
+/// the fix reverted.
 ///
-/// What the refusal WAS doing is hiding those rows: 1280x720 could not be
-/// measured at cpu 8 or 9 at all, so "1280x720 is byte-identical at every
-/// speed" was never true and is still not true — it is byte-identical at cpu 7
-/// and carries KB-12's near-tie at cpu 8/9, like every other ~1 MP frame.
+/// **CLOSED 2026-08-02**: `hadamard_lp_8x8` omitted the trailing transpose at
+/// `aom_dsp/avg.c:232-236`, so the nonrd estimate arm's coefficients were the
+/// transpose of libaom's and its `eob` — the only order-sensitive output —
+/// drifted. Every row below is byte-exact now, so "1280x720 is byte-identical
+/// at every speed" is finally true. See KB-12 and `nonrd_block_yrd_lp_diff.rs`.
 ///
-/// Two speed-9 cells additionally reach KB-32's documented non-square-leaf
-/// refusal ("HANDOFF: nonrd estimate arm at non-square leaf"), which KB-32
-/// measured as reachable only on its 108 MP cell — 0.9 MP frames reach it too.
+/// Two speed-9 cells still reach KB-32's documented non-square-leaf refusal
+/// ("HANDOFF: nonrd estimate arm at non-square leaf"), which KB-32 measured as
+/// reachable only on its 108 MP cell — 0.9 MP frames reach it too. That is a
+/// separate, still-open HANDOFF and is pinned as such below.
 #[test]
 #[ignore = "large-frame encode pairs at cpu 7/8/9; nightly / on-demand tier"]
 fn vbp_band_crop_dims_byte_match() {
     c::ref_init();
     let base = EncodeCell::real_content("kb28base", "av1-1-b8-00-quantizer-00", None, 24, 0);
-    // KB-12's nonrd estimate-arm residual on this grid, pinned EXACTLY and
-    // self-promoting: a cell that starts matching means KB-12 moved (re-pin
-    // here); a cell that starts diverging is a regression. Nothing at speed 7
-    // may appear — speed 7 is KB-28's own band and is asserted clean.
+    // What is still not byte-exact on this grid, pinned EXACTLY and
+    // self-promoting in both directions. KB-12's estimate-arm class occupied
+    // 18 of these 20 rows until 2026-08-02 and is now empty; what remains is
+    // KB-32's non-square-leaf HANDOFF refusal, which is a REFUSAL rather than
+    // a wrong stream and is tracked on KB-32. Nothing at speed 7 may appear —
+    // speed 7 is KB-28's own band and is asserted clean.
     const NONRD_ESTIMATE_ARM_OPEN: &[(i32, i32, i32, i32, Verdict)] = &[
-        (1280, 720, 24, 8, Verdict::Diverge),
-        (1280, 720, 40, 8, Verdict::Diverge),
-        (1280, 720, 24, 9, Verdict::Diverge),
-        (1280, 720, 40, 9, Verdict::Diverge),
-        (1272, 724, 24, 8, Verdict::Diverge),
         (1272, 724, 24, 9, Verdict::Panic),
-        (1288, 716, 24, 8, Verdict::Diverge),
-        (1288, 716, 24, 9, Verdict::Diverge),
-        (1274, 722, 24, 8, Verdict::Diverge),
-        (1274, 722, 24, 9, Verdict::Diverge),
-        (954, 962, 24, 8, Verdict::Diverge),
         (954, 962, 24, 9, Verdict::Panic),
-        (1280, 712, 24, 8, Verdict::Diverge),
-        (1280, 712, 24, 9, Verdict::Diverge),
-        (1280, 728, 24, 8, Verdict::Diverge),
-        (1280, 728, 24, 9, Verdict::Diverge),
-        (1280, 704, 24, 8, Verdict::Diverge),
-        (1280, 704, 24, 9, Verdict::Diverge),
-        (1216, 768, 24, 8, Verdict::Diverge),
-        (1216, 768, 24, 9, Verdict::Diverge),
     ];
     let mut observed: Vec<(i32, i32, i32, i32, Verdict)> = Vec::new();
     let mut worst_b_per_sb = 0.0f64;
@@ -518,29 +494,37 @@ fn vbp_band_crop_dims_byte_match() {
          {s7_bad:?}"
     );
 
-    // --- The attribution SHAPE (KB-32's `nonrd_speed8_size_ladder_residual_is
-    //     _bounded`): KB-12's estimate-arm near-tie costs well under one byte
-    //     per superblock and is sign-random. A residual that grows past that is
-    //     a systematic search-configuration difference, not a near-tie — which
-    //     is exactly the reading KB-22 got wrong (playbook §10, "never infer
-    //     the mechanism from the SIZE of the delta" — the bound is a
-    //     falsifier here, not an explanation).
+    // --- The speed-8 band, closed 2026-08-02. It used to be pinned on a SHAPE
+    //     (worst residual < 1.0 B/SB, sign-random) because KB-12's estimate-arm
+    //     class sat on 18 of these rows; that class is fixed, so the band is a
+    //     hard byte gate. The B/SB figure is still reported because it is the
+    //     falsifier if a row comes back: sub-byte-per-SB and sign-random is the
+    //     estimate arm, a residual that GROWS with area is a systematic
+    //     search-configuration difference (playbook §10 — never infer the
+    //     mechanism from the SIZE of the delta).
     println!("  worst speed-8 residual: {worst_b_per_sb:.3} B/SB ({worst_cell})");
+    let s8_bad: Vec<String> = observed
+        .iter()
+        .filter(|(_, _, _, s, v)| *s == 8 && *v == Verdict::Diverge)
+        .map(|(w, h, cq, s, v)| format!("{w}x{h} cq{cq} cpu{s} {v:?}"))
+        .collect();
     assert!(
-        worst_b_per_sb < 1.0,
-        "the speed-8 residual on this grid grew past KB-32's pinned < 1.0 B/SB \
-         shape ({worst_b_per_sb:.3} at {worst_cell}). That is no longer KB-12's \
-         leaf-mode near-tie and needs its own localization."
+        s8_bad.is_empty(),
+        "the speed-8 VBP band diverged again ({s8_bad:?}; worst \
+         {worst_b_per_sb:.3} B/SB at {worst_cell}). Under 1 B/SB and \
+         sign-random is KB-12's estimate arm — run \
+         `nonrd_block_yrd_lp_diff.rs` first. Growing with area is a \
+         size-scaling speed feature, KB-32's shape."
     );
 
     let pinned: Vec<(i32, i32, i32, i32, Verdict)> = NONRD_ESTIMATE_ARM_OPEN.to_vec();
     assert_eq!(
         observed, pinned,
-        "the nonrd estimate-arm map moved. A row that started MATCHING means \
-         KB-12 closed — re-pin here. A row that started DIVERGING or PANICKING \
-         is a regression. Note this list is deliberately NOT partitioned by \
-         SB-alignment: 1280x704 and 1216x768 are exact multiples of 64 and \
-         diverge too, which is what refuted the partial-SB reading of this band."
+        "the nonrd map moved. The two pinned rows are KB-32's non-square-leaf \
+         HANDOFF refusal at speed 9 — if they start MATCHING, that HANDOFF was \
+         implemented and this pin promotes to empty. Any other row is a \
+         regression: 18 rows of KB-12's estimate-arm class lived here until \
+         2026-08-02 and closed with the aom_hadamard_lp_8x8 transpose."
     );
 }
 

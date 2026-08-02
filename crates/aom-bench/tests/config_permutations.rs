@@ -3273,13 +3273,10 @@ fn singleton_levels(speed: i32) -> Vec<(usize, u8)> {
 /// OPEN, pinned: `(speed, singleton row label)` cells on the primary context
 /// where the port is NOT byte-identical to real aomenc.
 ///
-/// Measured 2026-07-30 over the full 10 speeds x 26 axis levels grid; re-pinned
-/// the same day after the KB-21 root closed two of the six. Every remaining one
-/// carries the KB-10/KB-12 "cheaper RD decision" near-tie signature (equal or
-/// near-equal payload lengths), and every one is at speed >= 4 — the
-/// winner-mode / multi-winner tiers. The STOCK encode at each of those speeds is
-/// byte-exact, so these are knob x speed interactions, not a broken speed
-/// envelope.
+/// Measured 2026-07-30 over the full 10 speeds x 26 axis levels grid, re-pinned
+/// three times as roots closed, and **EMPTY since 2026-08-02**: the port is
+/// byte-identical to real aomenc on every single-axis perturbation at every
+/// speed 0..9 on the primary context.
 ///
 /// Self-promoting: a cell that starts matching fails here (re-pin, and unpin the
 /// level from that speed's covering array in [`remap_open_levels`]); a cell that
@@ -3287,10 +3284,13 @@ fn singleton_levels(speed: i32) -> Vec<(usize, u8)> {
 const SPEED_OPEN_SINGLETONS: &[(i32, &str)] = &[
     // `(4, "dir0")` and `(4, "rtx0")` closed 2026-07-30 with the KB-21
     // `early_term_after_none_split` root; `(4, "flip0")` and `(5, "minp16")`
-    // closed 2026-07-31 with KB-21 root #2. The RD-search speeds 0..7 now have
-    // NO open singleton — every remaining one is nonrd (speed 8).
-    (8, "rtxs1"),
-    (8, "trel2"),
+    // closed 2026-07-31 with KB-21 root #2; `(8, "rtxs1")` and `(8, "trel2")`
+    // closed 2026-08-02 with KB-12's `aom_hadamard_lp_8x8` transpose (both were
+    // read as the "cheaper RD decision" near-tie signature, which is exactly
+    // what a dropped transpose in the nonrd estimate arm looks like — see
+    // `nonrd_block_yrd_lp_diff.rs`). Emptying this list also BROADENS the
+    // speed-8 covering array, because `remap_open_levels` no longer folds
+    // `rtxs1` / `trel2` back to their defaults there.
 ];
 
 /// OPEN, pinned: `(speed, covering-array row label)` knob COMBINATIONS that are
@@ -3315,24 +3315,23 @@ const SPEED_OPEN_SINGLETONS: &[(i32, &str)] = &[
 /// `fast_intra_tx_type_search=2`) and speed 8 is nonrd PICKMODE (KB-12) — the two
 /// places where the SEARCH STRUCTURE, not just its thresholds, changes.
 ///
-/// Every speed-8 row carries `dir0` or `dtxo1` or both, i.e. a narrowed luma
-/// tx-type/mode set feeding the nonrd intra pickmode; that is a lead, not a root
-/// cause, and no encoder change was made here (this section does not own
-/// `crates/aom-encode/src`).
+/// Every speed-8 row carried `dir0` or `dtxo1` or both, i.e. a narrowed luma
+/// tx-type/mode set feeding the nonrd intra pickmode. That was recorded as "a
+/// lead, not a root cause", and it was a good lead: the root (2026-08-02) is
+/// that `hadamard_lp_8x8` dropped the trailing transpose C performs at
+/// `aom_dsp/avg.c:232-236`, so the nonrd estimate arm's `eob` — its one
+/// order-sensitive output — drifted. Narrowing the mode/tx-type set changes how
+/// often that drift is decisive, which is why these rows and no others.
 ///
 /// Self-promoting: a row that starts matching fails here, and so does a row that
 /// starts diverging.
 const SPEED_OPEN_COMBINATIONS: &[(i32, &str)] = &[
-    // cpu-4 is EMPTY as of 2026-07-31: KB-21 root #2 (the `prune_txk_type`
-    // eob==0 est-rd ordering + the SATD trellis-skip QUANT_B switch) closed the
-    // last two open cpu-4 combination rows — both shards now report 0 open of
-    // 31 / 32 cells. Every cpu-4 knob COMBINATION in the array is byte-identical
-    // to real aomenc; the remaining open rows are speed-8 only.
-    (8, "ab0-minp16-paeth0-dir0-adlt0-fint0-edgf0-rtx0-flip0-dtxo1-cdf2-trel0"),
-    (8, "ab0-p140-minp8-maxp64-cfl0-dir0-diag0-adlt0-fint0-flip0-dtxo1-cdf0"),
-    (8, "maxp32-dir0-adlt0-fint0-tx640-dtxo1"),
-    (8, "p140-maxp32-dir0-adlt0-fint0-tx640-rtx0-flip0-dtxo1"),
-    (8, "p140-minp8-maxp64-cfl0-dir0-diag0-fint0-cdf2"),
+    // cpu-4 went EMPTY 2026-07-31 with KB-21 root #2 (the `prune_txk_type`
+    // eob==0 est-rd ordering + the SATD trellis-skip QUANT_B switch); cpu-8
+    // went EMPTY 2026-08-02 with KB-12's `aom_hadamard_lp_8x8` transpose, on a
+    // BROADER array than the one the five rows were measured on (emptying
+    // SPEED_OPEN_SINGLETONS un-remaps `rtxs1` / `trel2` at speed 8). Every knob
+    // COMBINATION in every speed's array is now byte-identical to real aomenc.
 ];
 
 /// The axis levels that still change REAL AOMENC's own output at each speed, on

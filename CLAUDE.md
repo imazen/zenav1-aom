@@ -885,9 +885,10 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   palette ON to find whether a specific leaf's palette RD/flag (or a pruning gate) tips it. The
   localizer asserts the divergence PRESENT, so any fix self-promotes the cell into
   `BYTE_EXACT_CELLS`.
-### KB-12 — Encoder: `--cpu-used=8/9` nonrd PICKMODE — PORTED ✅ (speed-9 64/64 canon + noise; speed-8 60/64 canon, 4 diag estimate-arm near-ties pinned open + noise 8/8) — GATE 2 (cpu 0-9) COMPLETE
-- **Status (2026-07-17): speed 8 AND speed 9 land, Gate-2 (cpu-used 0..9) is byte-complete
-  except 4 pinned speed-8 near-ties.** The nonrd PICKMODE (`use_nonrd_pick_mode = 1`,
+### KB-12 — Encoder: `--cpu-used=8/9` nonrd PICKMODE — PORTED ✅, and the estimate-arm residual is CLOSED ✅ 2026-08-02 (speed-8 AND speed-9 **64/64** canon + noise 8/8; the "leaf-mode near-tie" was `aom_hadamard_lp_8x8`'s missing trailing transpose) — GATE 2 (cpu 0-9) COMPLETE
+- **Status (2026-07-17, updated 2026-08-02): speed 8 AND speed 9 land, and Gate-2 (cpu-used
+  0..9) is byte-complete with NO pinned cells** — the 4 speed-8 near-ties that stood here from
+  2026-07-17 closed 2026-08-02 (see the transpose section below).** The nonrd PICKMODE (`use_nonrd_pick_mode = 1`,
   speed_features.c:578): the SAME `av1_choose_var_based_partitioning` KEY tree the speed-7
   gate fixes now drives **`av1_nonrd_use_partition`** (partition_pick.rs `nonrd_use_partition_
   real`) — a SINGLE-PASS walk (NO save/restore, NO mid-strip re-encode, NO root winner walk):
@@ -927,36 +928,86 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
     (`ModeGrid::stamp` + `LeafWinner` gained palette params/fields).
 - **Gates (encoder_gate_e2e_byte_match.rs):** `encoder_gate_speed9_textured_allintra` **64/64**
   + `encoder_gate_speed9_noise_flatuv_allintra` **8/8** (cq12/32/48/63) + `encoder_gate_speed9_
-  vs_speed8_sf_witness`; `encoder_gate_speed8_textured_allintra` **60/64** + `encoder_gate_
-  speed8_noise_flatuv_allintra` **8/8** + `encoder_gate_speed8_vs_speed7_sf_witness`. Speeds
+  vs_speed8_sf_witness`; `encoder_gate_speed8_textured_allintra` **64/64** (60/64 until
+  2026-08-02) + `encoder_gate_speed8_noise_flatuv_allintra` **8/8** +
+  `encoder_gate_speed8_vs_speed7_sf_witness`. Speeds
   0-7 re-verified byte-unchanged (full `cargo test -p aom-encode` green). NOTE: the KB-10/KB-11
   noise-cq63 (mi 8,0) TX_16X16-vs-TX_32X32 near-tie does NOT reproduce at speed 8/9 — the
   estimate arm codes tx_size = max-square directly (no winner-pass tx sweep to flip), so the
   speed-8/9 noise cq63 cells byte-match (unlike speeds 6/7).
-- **PINNED OPEN (KB-2/KB-10/KB-11 near-tie family) — 4 speed-8 diag cells:** `diag {64² cq12,
-  128² cq32}` × {mono,420}. Localized (decode-both, the `kb11_speed7_noise_localize.rs` shape)
-  to ONE BLOCK_8X8 **estimate-arm** leaf (mi 2,2 on the 64² cells): partition trees IDENTICAL,
-  every earlier leaf byte-matches, but `av1_nonrd_pick_intra_mode` picks **V_PRED** where real
-  codes **H_PRED** — a directional near-tie at ~0.7 % rdcost (V 624968 vs H 629535; identical
-  dist 563, bmode_costs V 1596 / H 1385, src_var 24 → estimate arm both). The entire traced
-  estimate chain (the LP kernels + `quantize_lp` + `block_yrd` structure + the mode loop) matches
-  libaom line-for-line, and speed 9's mode prunes mask it (same cells 64/64 there); only speed
-  8's unpruned mixed hybrid exposes the V/H sign. **Next step:** sibling-C per-mode `this_rdc`
-  dump at that leaf (the KB-10/KB-11 method) to find which of V/H's rate the port tips —
-  everything readable already agrees, so the tip is sub-trace.
-  - **SCOPE CORRECTED 2026-08-01 by KB-32, on real content at scale.** Two claims above are
-    narrower than the class: (1) it is **not V-vs-H only** — decode-both localization across
-    512²/256²/2176² at cq30/48/63 shows DC-vs-SMOOTH, V-vs-SMOOTH, DC-vs-H and DC-vs-V as well,
-    i.e. any pair inside `av1_nonrd_pick_intra_mode`'s `intra_mode_list` {DC, V, H, SMOOTH};
-    (2) **speed 9's prunes MASK it rather than removing it** — "same cells 64/64 there" was
-    measured at 64²/128², and at 512² cq48 and 2176² cq30 the class fires at speed 9 too. In
-    every case the partition trees agree EXACTLY (45,780 nodes at 2176²) and `tx_size`,
-    `uv_mode`, angle delta and filter-intra all match, so the localization stands — only its
-    extent was understated. Now gated by
-    `aom-bench/tests/kb32_nonrd_size_bands.rs::estimate_arm_residual_is_a_leaf_mode_near_tie`,
-    which asserts both the tree agreement and the mode set and self-promotes when the class
-    closes. This is the whole of what KB-32 left open on square leaves; the next step is
-    unchanged.
+- **THE "NEAR-TIE" WAS A DROPPED TRANSPOSE — FIXED ✅ 2026-08-02 (`aom_hadamard_lp_8x8`).**
+  The four pinned speed-8 `diag` cells, KB-32's whole surviving residual and KB-28's speed-8/9
+  rows were ONE root: `nonrd_pickmode::hadamard_lp_8x8` omitted the trailing transpose C
+  performs at **`aom_dsp/avg.c:232-236`** (*"Extra transpose to match SSE2 behavior (i.e.,
+  aom_hadamard_lp_8x8_sse2)"* — `coeff[i * 8 + j] = buffer2[j * 8 + i]`), so the lowbd estimate
+  arm's coefficients were the exact TRANSPOSE of libaom's, and `aom_hadamard_lp_16x16`'s the
+  per-64-quadrant transpose. **Not an ISA divergence**: `aom_hadamard_lp_8x8_c` and `_neon`
+  agree bit-for-bit over the whole 9-bit residual domain (measured), unlike `aom_hadamard_16x16`
+  (LIBAOM_UPSTREAM_NOTES A1 / KB-20 root #4). Fix: one 4-line transpose loop
+  (`crates/aom-encode/src/nonrd_pickmode.rs`).
+  - **WHY IT WORE A NEAR-TIE'S CLOTHES, which is the transferable part.** Every consumer of
+    those coefficients except the EOB is ORDER-INVARIANT: `aom_satd_lp` and `av1_block_error_lp`
+    are sums over the whole array, `eob == 0` (the `skippable` flag) is a set property, and
+    `eob == 1` can only mean the DC — a transpose fixed point. So rate, distortion and
+    skippability were all RIGHT, and the single quantity that moved was `eob` itself, through
+    `eob_cost += get_msb(eob + 1)` into `rate += eob_cost << 9`. **Measured: the pre-fix kernel
+    changed the eob on 477 of 4,000 correlated 8x8 blocks and changed satd / block-error /
+    skippable on ZERO** (`nonrd_block_yrd_lp_diff::lp_hadamard_transpose_is_load_bearing_and_
+    only_moves_the_eob`). A defect that perturbs one small additive term inside a four-way RD
+    comparison expresses itself as an occasional mode flip and nothing else — which is exactly
+    what four separate localization passes read as "a genuine tie at ~0.7 % rdcost". Playbook
+    §10's "never infer the mechanism from the SIZE of the delta" has a twin: **never infer it
+    from the delta's SHAPE either.** Sign-random, sub-byte-per-superblock, flat in area, only
+    at leaves — all four held, and it was still a kernel bug.
+  - **THE ROOT CAUSE OF THE ROOT CAUSE: there was no differential.** KB-12 recorded *"the whole
+    traced estimate chain (the LP kernels + `quantize_lp` + `block_yrd` structure + the mode
+    loop) matches libaom line-for-line"*. That was a READING. The five lowbd kernels were the
+    only hand-transcribed kernels in the tree with no lock against their exported C symbol —
+    the hbd twin has had `nonrd_block_yrd_hbd_diff.rs` since KB-20. The in-module unit tests
+    that did exist (`hadamard_lp_8x8_flat`, `hadamard_lp_16x16_flat`) are transpose-BLIND by
+    construction: a flat input puts all the energy at coefficient 0, the transpose's fixed
+    point. Playbook §1 in its purest form. New gate:
+    **`crates/aom-encode/tests/nonrd_block_yrd_lp_diff.rs`** (5 tests) — every kernel vs the
+    exported `_c`, the SIMD tier vs `_c` over the reachable range with the magnitude bound
+    asserted, the whole `block_yrd_lowbd` walk vs a C-composed oracle (2,400 walks x skippable
+    / coded / edge-clamped coverage asserted), and the teeth above. Plus a golden
+    asymmetric-impulse vector in-module (`hadamard_lp_8x8_golden_asymmetric_impulse`) and a
+    speeds-0..9 reachability lock that both `hybrid_intra_pickmode` arms reach the kernel
+    (`estimate_arm_is_reachable_from_both_hybrid_arms`).
+  - **BITE PROOF (playbook §1).** Reverting the transpose ALONE reproduces every recorded
+    pre-fix number exactly: the 4 KB-12 `diag` cells (speed-8 gate back to 60/64, speed 9 still
+    64/64 at 64²/128² — the prunes really do mask it there); KB-32's ladder 512² +61, 768² −50,
+    896² −23, 1024² −168, 2048² +21, 2176² s9 −184; KB-32's localizer back to the SAME first
+    leaf and mode pair it recorded (512² cq30 s8 mi(4,108) real SMOOTH / port DC; 2176² cq30 s9
+    mi(108,174) real DC / port V); KB-28's map back to −132/+36 at 1280x720 cpu8 cq24/cq40 and
+    −8/+4 at cpu9, 1280x704 −1/−6, 1216x768 +1/−8. `nonrd_speed9_area_threshold_byte_identical`
+    stays GREEN under the revert, so this root's cell set is disjoint from KB-32 root #1's.
+    Speed 7 and below never move: `block_yrd_lowbd` has exactly one caller.
+  - **WHAT CLOSED, all measured 2026-08-02 on aarch64-apple-darwin, `--profile test-fast`:**
+    `encoder_gate_speed8_textured_allintra` **60/64 → 64/64** (the pinned list is deleted, not
+    relaxed); KB-32's four gates all byte-exact including the 2176² cpu9 cell and the whole
+    cpu8 size ladder (both promoted from shape-pins to hard byte gates);
+    `kb28_crop_dims::vbp_band_crop_dims_byte_match` **18 of 20 open rows → 0** (the 2 that
+    remain are KB-32's non-square-leaf HANDOFF *refusal* at speed 9, not a wrong stream);
+    `config_permutations::speed_sensitivity_s2` — `SPEED_OPEN_SINGLETONS` is now **EMPTY at
+    every speed 0..9** (`(8, "rtxs1")` and `(8, "trel2")` closed), and
+    `SPEED_OPEN_COMBINATIONS` is **EMPTY** too, re-measured on the BROADER speed-8 array that
+    emptying the singleton list produces.
+  - **Also recorded while here, NOT changed (inert, and now asserted so):** the port's
+    `hadamard_lp_16x16` combine spells `a0.wrapping_add(a1) >> 1` — truncate-then-shift, which
+    is what `_mm_srai_epi16` does in `aom_hadamard_lp_16x16_sse2` (avg_intrin_sse2.c:442) and
+    its AVX2 twin — whereas `_c` writes `int16_t b0 = (a0 + a1) >> 1`, where the sum promotes
+    to `int` and only the result narrows. They differ only if `|a0 + a1| > i16::MAX`, and
+    `block_yrd_lowbd` runs only at bd8 where the residual is 9-bit by construction, so the 8x8
+    stage peaks at 16320 and the sum at 32640. `lp_hadamard_tiers_agree_over_the_reachable_
+    range` asserts BOTH halves (tiers agree; the grid drives |coeff| past 16000).
+  - **Record:** `benchmarks/kb12_lp_hadamard_transpose_2026-08-02.tsv` (every cell in both arms,
+    the 477/4000-vs-0/0/0 teeth counts, and KB-32's localizer output under the revert).
+    Verified on aarch64-apple-darwin in both dispatch modes + `cargo check --target
+    x86_64-apple-darwin` and `--target i686-unknown-linux-gnu`. The x86 arm of the new
+    differential calls `aom_hadamard_lp_{8x8,16x16}_sse2` (SSE2 is x86-64 baseline and
+    `aom_hadamard_lp_8x8` has no AVX2 tier at all, rtcd_defs.pl:1288), so the tier-agreement
+    assertion is real on both CI architectures rather than vacuous off aarch64.
 - **HBD (bd10/12) estimate arm + lossless TX_4X4 + palette (screen) arms NOT ported** — asserted
   dead on the 8-bit canon grid (nonrd_pickmode.rs:594/460/784); required before any high-bit-depth
   or screen-content speed-8/9 cell.
@@ -2686,9 +2737,13 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   `partition_pick::kb28_crop_dim_locks` (3 tests — speeds 0..9 × both sides of 480 and 720 in
   both directions, plus the "crop and mi readings must DISAGREE on the gated crops"
   non-vacuity assertion) and `var_part::tests::kb28_num_pixels_is_the_crop_area_not_the_mi_area`.
-- **RESIDUAL, stated plainly — the refusal was HIDING a divergence.** 1280×720 is byte-identical
-  at cpu 7 (both cq) and is **NOT** byte-identical at cpu 8/9: −132/+36 (cq24/cq40) at cpu 8 and
-  −8/+4 at cpu 9. That is **KB-12's nonrd estimate-arm leaf-mode near-tie**, not KB-28: a
+- **RESIDUAL, stated plainly — the refusal was HIDING a divergence. CLOSED ✅ 2026-08-02.**
+  1280×720 was byte-identical at cpu 7 (both cq) and **NOT** byte-identical at cpu 8/9: −132/+36
+  (cq24/cq40) at cpu 8 and −8/+4 at cpu 9. That was **KB-12's nonrd estimate arm** — and it was
+  not a near-tie but `aom_hadamard_lp_8x8`'s missing trailing transpose (KB-12, fixed
+  2026-08-02). All 18 open rows of `vbp_band_crop_dims_byte_match` are byte-exact now; the 2
+  that remain are KB-32's non-square-leaf HANDOFF *refusal* at speed 9. The attribution
+  evidence stands as recorded: a
   partial-superblock explanation was tested and REFUTED (the SB-exact controls 1280×704 and
   1216×768 diverge too, −1/−6 and +1/−8), the cells with `cm->width == mi_cols * 4` on both
   axes — where this fix is a literal no-op — carry byte-identical deltas in all three arms
@@ -3016,7 +3071,7 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   Noted at the site. (c) Nothing here is swept at SB128, bd10/12, 4:4:4/4:2:2 or monochrome —
   the whole file is bd8 4:2:0 SB64.
 
-### KB-32 — Encoder: `--cpu-used` 8 (every size >= 512²) and `--cpu-used` 9 (>= ~1 MP) diverged on real content — BOTH BANDS FIXED ✅ 2026-08-01 (two roots; the residual is KB-12's, now ATTRIBUTED)
+### KB-32 — Encoder: `--cpu-used` 8 (every size >= 512²) and `--cpu-used` 9 (>= ~1 MP) diverged on real content — BOTH BANDS FIXED ✅ 2026-08-01 (two roots) + the attributed residual CLOSED ✅ 2026-08-02 (KB-12's third root)
 - **Reported as GitHub issue #7**, found 2026-08-01 while separating KB-31's roots (the tiled
   cells' single-tile CONTROLS diverged too, which is what proved the residual was not tiles').
   Measured (cq30, `c_encode_defaults`, mirror-tiled `av1-1-b8-00-quantizer-00`, bd8 4:2:0,
@@ -3096,9 +3151,20 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   tree agreement and the mode set, self-promoting in both directions).
   Shape after the fix: sign-random and flat in area (per superblock 512² 0.95 -> 0.95 [the arm is
   unreachable below 720], 768² 1.06 -> 0.35, 896² 1.29 -> 0.12, 1024² 2.27 -> 0.66, 2048²
-  2.52 -> 0.02) where the pre-fix ladder ROSE monotonically. **KB-12's open next step is
-  unchanged and is now the whole of what is left: the sibling-C per-mode `this_rdc` dump at a
-  divergent estimate leaf.**
+  2.52 -> 0.02) where the pre-fix ladder ROSE monotonically.
+- **THE RESIDUAL IS CLOSED ✅ 2026-08-02, and it was NOT a near-tie** — `hadamard_lp_8x8`
+  dropped the trailing transpose at `aom_dsp/avg.c:232-236`, so the nonrd estimate arm's `eob`
+  (its only order-sensitive output) drifted; full record in **KB-12**. Every cell in this entry
+  is byte-identical now: the cpu8 ladder 512²/768²/896²/1024²/2048² all **0**, and 2176² cpu9
+  **0** (was -184). All four gates are hard byte gates —
+  `nonrd_speed8_size_ladder_residual_is_bounded` and `nonrd_speed9_4k_cost_upd_sbrow` were
+  PROMOTED from their shape/bound pins, and `estimate_arm_residual_is_a_leaf_mode_near_tie`
+  keeps its decode-both localizer as the DIAGNOSTIC that runs if a cell returns.
+  **The methodological lesson is worth more than the fix:** this residual's shape —
+  sign-random, sub-byte-per-superblock, flat in area, partition trees identical to 45,780
+  nodes, every leaf field equal except `y_mode`, all four candidates inside the estimate arm's
+  own `intra_mode_list` — was read by three separate sessions as proof of a genuine tie. It was
+  a dropped transpose in a kernel that had no differential. Playbook §1 + §10.
 - **NEW, and a real consequence of the fix: 12000x9000 at cpu9 now REFUSES instead of encoding.**
   Correct thresholds are LARGER thresholds, which lets `set_vt_partitioning`'s HORZ/VERT pair arms
   win on 108 MP of extremely smooth mirror-tiled content — and the nonrd ESTIMATE arm cannot code
@@ -3116,10 +3182,12 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
 - **Gates.** New `aom-bench/tests/kb32_nonrd_size_bands.rs`:
   `nonrd_speed9_area_threshold_byte_identical` (default tier, 4 cells, hard byte asserts +
   non-vacuity that the grid straddles both predicates), `nonrd_speed9_4k_cost_upd_sbrow`
-  (`--ignored`: 2112² byte-exact control + 2176² pinned open with a 1,000 B bound),
-  `nonrd_speed8_size_ladder_residual_is_bounded` (`--ignored`: the 5-cell ladder, pinned on the
+  (`--ignored`: 2112² byte-exact control + 2176², **promoted to a hard byte gate 2026-08-02**,
+  was pinned open with a 1,000 B bound), `nonrd_speed8_size_ladder_residual_is_bounded`
+  (`--ignored`: the 5-cell ladder, **now a hard byte gate at every size**; it was pinned on the
   SHAPE — worst armed-cell residual < 1.0 B/SB against a pre-fix 1.06-2.52 and rising),
-  `estimate_arm_residual_is_a_leaf_mode_near_tie` (`--ignored`, the localizer above).
+  `estimate_arm_residual_is_a_leaf_mode_near_tie` (`--ignored`, the localizer above, now
+  asserting byte-identity and kept for the diagnosis it prints if a cell returns).
   Unit locks: `speed_features::tests::kb32_force_large_partition_blocks_intra_arm` (speeds 0..9 x
   the 719/720 boundary on both axes, both directions, whole-struct check) and
   `var_part::tests::kb32_force_large_intra_threshold_arms` (both arms x both sides of
@@ -3412,17 +3480,19 @@ only LF-level (and, on the default path, the restoration decision) is port-deriv
   `intra_tx_size_init_depth_rect` field — and the asserted per-feature-revert witness
   `encoder_gate_speed1_rect_and_4way_25` (in `encoder_gate_e2e_byte_match.rs`) re-diverges if either
   fix is reverted. (Earlier "need test cells to validate" note was stale.)
-- **#10 cpu-used 0..9 speed-feature sweep** (Gate 2) — **DONE ✅ (all speeds 0-9)**: speeds 0-7
-  (KB-8/KB-9/KB-10/KB-11; 6/7 = 64/64 canon each), speed 9 = 64/64 canon + noise, speed 8 =
-  60/64 canon (4 diag estimate-arm V/H near-ties pinned open, KB-12) + noise — the nonrd
+- **#10 cpu-used 0..9 speed-feature sweep** (Gate 2) — **DONE ✅ (all speeds 0-9, ZERO pinned
+  cells since 2026-08-02)**: speeds 0-7 (KB-8/KB-9/KB-10/KB-11; 6/7 = 64/64 canon each), speed 9
+  = 64/64 canon + noise, speed 8 = **64/64** canon + noise (was 60/64 — the 4 diag
+  "estimate-arm near-tie" cells closed with KB-12's `aom_hadamard_lp_8x8` transpose) — the nonrd
   PICKMODE (`use_nonrd_pick_mode`, `av1_nonrd_use_partition` single-pass walk,
   `av1_nonrd_pick_intra_mode` + `hybrid_intra_mode_search`). See KB-12. The speed sweep above is
   SYNTHETIC content; **REAL content at speed>=1 is a SEPARATE residual (KB-13, task #39)** — the
   synthetic gates are 64/64 but decoded-conformance content diverges at 36/60 speed-1..4 cells (all
   interior BLOCK_16X16/8X8 partition RD near-ties, port over-picks AB/SPLIT), pinned self-promoting
-  in `encoder_gate_real_content_speed1to4_e2e`. Remaining Gate-2 byte-exactness is the 4 speed-8
-  diag near-ties + the KB-10/KB-11 speed-6/7 noise-cq63 near-tie + the KB-13 real-content set (all a
-  sibling-C RD dump away). (#8 qindex-from-cq and #21 decoder q62/q63 also DONE + CI-green.)
+  in `encoder_gate_real_content_speed1to4_e2e`. Remaining Gate-2 byte-exactness is the
+  KB-10/KB-11 speed-6/7 noise-cq63 near-tie + the KB-13 real-content set (the 4 speed-8 diag
+  cells CLOSED 2026-08-02 — and they were never a tie: see KB-12's transpose root, which is a
+  standing warning against reading this shape as a tie in the two that remain). (#8 qindex-from-cq and #21 decoder q62/q63 also DONE + CI-green.)
 
 **Confirmed NON-divergences (ruled out — do not re-chase):**
 - **#27 `model_based_prune_tx_search_level`.** `av1_set_speed_features_qindex_dependent` sets it

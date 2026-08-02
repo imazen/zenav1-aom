@@ -55,7 +55,7 @@ Byte-identity gates landed and green on origin/main. Any regression here is a sh
 | `--cpu-used=5` (64/64) | `encoder_gate_speed5_textured_allintra` (+ `encoder_gate_speed5_vs_speed4_sf_witness`) | 9aeb0ee |
 | `--cpu-used=6` (64/64 canon; noise ext 6/6 asserted — the cq63 near-tie CLOSED 2026-07-31 by KB-21 root #2) | `encoder_gate_speed6_textured_allintra` (+ `encoder_gate_speed6_vs_speed5_sf_witness`, `encoder_gate_speed6_noise_flatuv_allintra`) | 90e69e8 |
 | `--cpu-used=7` (64/64 canon; VAR_BASED_PARTITION fixed-tree + rd_use_partition; noise ext 8/8 asserted — the cq63 KB-10-twin near-tie CLOSED 2026-07-31 by KB-21 root #2) | `encoder_gate_speed7_textured_allintra` (+ `encoder_gate_speed7_vs_speed6_sf_witness`, `encoder_gate_speed7_noise_flatuv_allintra`, `kb11_speed7_noise_localize`) | a9dc5f1 |
-| `--cpu-used=8` (60/64 canon; nonrd PICKMODE — `nonrd_use_partition` single-pass walk + `av1_nonrd_pick_intra_mode` estimate/hybrid arm; noise ext cq12/32/48/63 asserted; 4 `diag` estimate-arm V/H near-ties pinned open — KB-12. **Real content >= 720 px on the short side: the `force_large_partition_blocks_intra` threshold arms landed 2026-08-01 (KB-32 / issue #7)**; residual is the estimate-arm leaf-mode class) | `encoder_gate_speed8_textured_allintra` (+ `encoder_gate_speed8_vs_speed7_sf_witness`, `encoder_gate_speed8_noise_flatuv_allintra`) | 9b57803 |
+| `--cpu-used=8` (**64/64 canon**; nonrd PICKMODE — `nonrd_use_partition` single-pass walk + `av1_nonrd_pick_intra_mode` estimate/hybrid arm; noise ext cq12/32/48/63 asserted. **Real content >= 720 px on the short side: the `force_large_partition_blocks_intra` threshold arms landed 2026-08-01 (KB-32 / issue #7); the last residual — 4 `diag` cells read as an estimate-arm near-tie since 2026-07-17 — closed 2026-08-02 with `aom_hadamard_lp_8x8`'s missing trailing transpose, KB-12**) | `encoder_gate_speed8_textured_allintra` (+ `encoder_gate_speed8_vs_speed7_sf_witness`, `encoder_gate_speed8_noise_flatuv_allintra`) | 9b57803 |
 | `--cpu-used=9` (64/64 canon; all-estimate `hybrid_intra_pickmode=0` + the 3 speed-9 mode prunes + INTERNAL_COST_UPD_OFF **below 4k / SBROW at 4k+**; noise ext cq12/32/48/63 asserted — KB-12) — GATE 2 (cpu 0-9) COMPLETE. **Real content: byte-exact across the `RESOLUTION_720P` area threshold and up to 2112² since 2026-08-01 (KB-32 / issue #7)** | `encoder_gate_speed9_textured_allintra` (+ `encoder_gate_speed9_vs_speed8_sf_witness`, `encoder_gate_speed9_noise_flatuv_allintra`) | 9b57803 |
 | bd10/bd12 mono+4:2:0 aggressive-HF (12/12) | `kb4_gate_bd10_bd12_mono_hf_byte_match` | a2dd28e (KB-4) |
 | bd10 non-4:2:0 (444/422 × 64²/128²) | `encoder_gate_bd10_non420_e2e_kb4_repro` | 1ecfafb |
@@ -435,8 +435,10 @@ deltaq_mode=6 (VARIANCE_BOOST)`; IQ adds `enable_adaptive_sharpness=1`.
   **One PINNED near-tie: `mono 256² cq63`** (port codes 1 fewer byte, the KB-2/KB-10/KB-12 "cheaper
   RD decision" signature) — NOT a mu-64 bug (4:2:0 + 4:4:4 128-leaves at cq63 AND mono cq55 all
   byte-match; only mono-cq63, with no chroma RD to break a qindex-252 tie, flips), same class as the
-  pinned KB-10/KB-11/KB-12 high-qindex near-ties; the gate asserts the divergence PRESENT
-  (self-promoting), closing needs a sibling-C RD dump. Deferred: a coded 128-LEAF at a frame edge
+  pinned KB-10/KB-11 high-qindex near-ties; the gate asserts the divergence PRESENT
+  (self-promoting), closing needs a sibling-C RD dump. **KB-12's member of this "class" turned
+  out to be a dropped kernel transpose, not a tie (2026-08-02) — treat the signature as a lead,
+  not a diagnosis.** Deferred: a coded 128-LEAF at a frame edge
   (the partial-SB cells split to ≤64, so the 128-leaf mu-64 edge-clip itself is still untested);
   non-default knob × sb128 combos; speed≥1 × sb128.
 - External partition / `--partition-info-path` / `--sb-qp-sweep`: diagnostic, lowest
@@ -527,11 +529,15 @@ deltaq_mode=6 (VARIANCE_BOOST)`; IQ adds `enable_adaptive_sharpness=1`.
   + predict_dc skip + 8×8 NN tx-depth prune + winner-mode restructure), 64/64; speed 7 =
   VAR_BASED_PARTITION fixed-tree + `av1_rd_use_partition`, 64/64; speeds 8/9 = the nonrd PICKMODE
   (`av1_nonrd_use_partition` single-pass walk + `av1_nonrd_pick_intra_mode`), speed 9 64/64 +
-  speed 8 60/64. `top_intra_model_count_allowed=2` lands at speed≥6. See CLAUDE.md KB-10/11/12.
+  speed 8 **64/64** (60/64 until 2026-08-02, when KB-12's `aom_hadamard_lp_8x8` transpose closed
+  the last four). `top_intra_model_count_allowed=2` lands at speed≥6. See CLAUDE.md KB-10/11/12.
 - **Remaining (pinned near-ties, self-promoting — NOT coverage gaps):** speed-6/7 noise-cq63
-  (mi 8,0) TX_16X16-vs-TX_32X32 (KB-10/11); the 4 speed-8 `diag` estimate-arm V/H near-ties
-  (KB-12); the nonrd bd10/12 + lossless + screen-palette arms (asserted dead on the 8-bit canon
-  grid). Real content at cpu≥1 is a separate residual (KB-13, 24/60 at cpu 1–4).
+  (mi 8,0) TX_16X16-vs-TX_32X32 (KB-10/11); the nonrd bd10/12 + lossless + screen-palette arms
+  (asserted dead on the 8-bit canon grid). Real content at cpu≥1 is a separate residual (KB-13,
+  24/60 at cpu 1–4). **The 4 speed-8 `diag` cells left this list 2026-08-02 — and they were
+  never a near-tie** (a dropped Hadamard transpose, KB-12), which is a standing caution about
+  the two entries above: the "cheaper RD decision" signature is what a small unmodelled rate
+  term looks like, not evidence of a tie.
 
 ### Priority order (proposed)
 ~~1. **C2 LR search**~~ DONE (section A, 2026-07-17) → ~~2. **C1 CDEF search**~~ DONE

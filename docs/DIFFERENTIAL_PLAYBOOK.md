@@ -50,6 +50,29 @@ suspected, the proof is not that your gate fails; it is that your gate fails
 If the pre-existing suite *also* fails, you have not found a hole — you have
 found a regression, which is a different (and more urgent) report.
 
+**A kernel with no differential is the same hole, and it hides best when the
+kernel is nearly-invariant.** KB-12 sat pinned for sixteen days as "a genuine
+leaf-mode near-tie" in the nonrd estimate arm. It was `hadamard_lp_8x8` dropping
+the trailing transpose `aom_hadamard_lp_8x8_c` performs at
+`upstream/aom_dsp/avg.c:232-236`, so the port's coefficients were the exact
+TRANSPOSE of libaom's. Two things kept it invisible:
+
+- **every consumer except one is order-invariant.** `aom_satd_lp` and
+  `av1_block_error_lp` are sums over the whole array; `eob == 0` is a set
+  property; `eob == 1` can only mean the DC, which is the transpose's fixed
+  point. Rate, distortion and skippability were all CORRECT. Only `eob` moved —
+  on 477 of 4,000 blocks — and only through `eob_cost += get_msb(eob + 1)`;
+- **the unit tests that existed were transpose-blind.** `hadamard_lp_8x8_flat`
+  fed a constant block, which puts all the energy at coefficient 0. It passed
+  the whole time. A test whose input is symmetric under the transformation you
+  got wrong cannot fail.
+
+So when choosing a probe for a kernel, ask what symmetry the input has, and pick
+one the suspected defect breaks. And when a kernel is hand-transcribed rather
+than reused, lock it against the exported C symbol even if "the code matches the
+C line-for-line" — that phrase is in KB-12's own ledger entry, written about
+this function.
+
 **Watch for inert perturbations.** In `cdef_find_dir` the obvious change
 (`- 128` → `- 127`) is provably a no-op, because `DIV_TABLE[n] = 840/n`
 (`upstream/av1/common/cdef_block.c:67`, and the "output is then 840 times
@@ -337,6 +360,18 @@ way §1 means. Fix it by pulling in a foreign encoder
 C encodes), and check what the foreign encoder *cannot* reach either: SVT emits
 no IntraBC block above BLOCK_64X64, so KB-29's >64×64 multi-chunk residual is
 still uncovered and is recorded as such rather than counted as breadth.
+
+**Never infer the mechanism from the delta's SHAPE either.** KB-12's residual
+was sign-random, under one byte per superblock, flat in area, confined to
+leaves, with the partition trees agreeing to 45,780 nodes and every leaf field
+equal except `y_mode` — and all four candidate modes inside the estimate arm's
+own four-entry `intra_mode_list`. Three sessions read that as proof of a genuine
+tie; the KB-32 gate even asserted the shape. It was a dropped transpose in a
+kernel with no differential. Every one of those observations was true and none
+of them was evidence about the mechanism: a defect that perturbs one small
+additive term in an N-way comparison produces exactly that shape. The shape
+tells you *where* to look (the estimate arm's rate composition), never *what*
+is wrong.
 
 **Never infer the mechanism from the SIZE of the delta.** KB-22's ledger entry
 reasoned that 150 bytes over ~1,156 superblocks — 0.035% of the payload — "argues

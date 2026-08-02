@@ -113,7 +113,10 @@
 //! `bd > 8 ? AOM_CODEC_USE_HIGHBITDEPTH : 0`):
 //! - **lowbd** ([`block_yrd_lowbd`]): `aom_hadamard_lp_8x8/16x16`,
 //!   `aom_fdct4x4_lp`, `av1_quantize_lp`, `aom_satd_lp`, `av1_block_error_lp`,
-//!   over the `*_lp_*_transpose` scans (i16 throughout).
+//!   over the `*_lp_*_transpose` scans (i16 throughout). Every one of these is
+//!   locked against the exported C symbol by
+//!   `tests/nonrd_block_yrd_lp_diff.rs` — added 2026-08-02, because its
+//!   absence WAS KB-12 (see [`hadamard_lp_8x8`]).
 //! - **hbd** ([`block_yrd_hbd`]): `aom_hadamard_8x8/16x16`, `aom_fdct4x4`,
 //!   `av1_quantize_fp`, `aom_satd`, `av1_highbd_block_error`, over
 //!   `default_scan_8x8_transpose`/`av1_default_iscan_8x8_transpose` and
@@ -233,8 +236,19 @@ fn hadamard_col8(src: &[i16], stride: usize, coeff: &mut [i16; 8]) {
 }
 
 /// `aom_hadamard_lp_8x8_c` (aom_dsp/avg.c:209): 8x8 2D Hadamard, int16 out.
-/// `coeff` receives 64 values in the C's transposed-output order (which is
-/// why the `*_transpose` scans exist).
+///
+/// **The trailing transpose is part of the kernel** (avg.c:232-236, *"Extra
+/// transpose to match SSE2 behavior (i.e., aom_hadamard_lp_8x8_sse2)"*): C
+/// writes `coeff[i * 8 + j] = buffer2[j * 8 + i]`, so the exported coefficient
+/// order is `buffer2` TRANSPOSED, not `buffer2`. Omitting it (KB-12's root)
+/// leaves every order-invariant quantity — `aom_satd_lp`,
+/// `av1_block_error_lp`, `eob == 0` — correct while moving `eob` itself, which
+/// is the only scan-order-sensitive output of the estimate arm.
+///
+/// `_c` and `_neon` agree here (verified in
+/// `tests/nonrd_block_yrd_lp_diff.rs`), so unlike `aom_hadamard_16x16`
+/// (LIBAOM_UPSTREAM_NOTES A1 / KB-20 root #4) there is nothing
+/// ISA-conditional to model.
 pub fn hadamard_lp_8x8(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
     let mut buffer = [0i16; 64];
     let mut buffer2 = [0i16; 64];
@@ -248,7 +262,12 @@ pub fn hadamard_lp_8x8(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
         hadamard_col8(&buffer[idx..], 8, &mut col);
         buffer2[idx * 8..idx * 8 + 8].copy_from_slice(&col);
     }
-    coeff[..64].copy_from_slice(&buffer2);
+    // avg.c:232-236 — the extra transpose.
+    for i in 0..8 {
+        for j in 0..8 {
+            coeff[i * 8 + j] = buffer2[j * 8 + i];
+        }
+    }
 }
 
 /// `aom_hadamard_lp_8x8_dual_c` (avg.c:240): two adjacent 8x8s. UNREACHABLE
@@ -263,6 +282,25 @@ pub fn hadamard_lp_8x8_dual(src_diff: &[i16], src_stride: usize, coeff: &mut [i1
 
 /// `aom_hadamard_lp_16x16_c` (avg.c:291): four 8x8 stages + a cross-combine
 /// with `>> 1` normalization. int16 wrapping.
+///
+/// No trailing transpose of its own — it inherits [`hadamard_lp_8x8`]'s, per
+/// 64-coefficient quadrant, and the elementwise 4-way combine below commutes
+/// with that. (Nor does it carry `aom_hadamard_16x16_c`'s extra AVX2-matching
+/// column shift; that difference is why the lp and fp 16x16 scans are distinct
+/// tables.)
+///
+/// **Note on the shift order, measured-inert rather than assumed.** C writes
+/// `int16_t b0 = (a0 + a1) >> 1`, where the sum promotes to `int` and only the
+/// *result* narrows — shift-then-truncate. `_mm_srai_epi16` in
+/// `aom_hadamard_lp_16x16_sse2` (avg_intrin_sse2.c:442) and its AVX2 twin
+/// truncate first, which is what the `wrapping_add(..) >> 1` below spells. The
+/// two agree unless `|a0 + a1|` exceeds `i16::MAX`, and on this call site it
+/// cannot: `block_yrd_lowbd` runs only at bd8, where the residual is 9-bit by
+/// construction (`src - pred`, both u8) and the 8x8 stage peaks at
+/// `255 * 64 = 16320`, so `|a0 + a1| <= 32640 < 32768`.
+/// `nonrd_block_yrd_lp_diff::lp_hadamard_tiers_agree_over_the_reachable_range`
+/// asserts both halves of that: the tiers agree, and the grid really does
+/// drive `|coeff|` above 16000.
 pub fn hadamard_lp_16x16(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
     for idx in 0..4 {
         let src_off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
@@ -1440,6 +1478,13 @@ mod tests {
     }
 
     /// Hadamard lp 8x8: DC-only input → coeff[0] = 64 * v (sum), others 0.
+    ///
+    /// **This test is transpose-BLIND and that is why it is not the gate.**
+    /// A flat input puts all the energy at coefficient 0, which is the one
+    /// fixed point of the transpose — so it passed for the whole time
+    /// `hadamard_lp_8x8` was missing C's trailing transpose (KB-12). The
+    /// kernel's real lock is `tests/nonrd_block_yrd_lp_diff.rs`, against the
+    /// exported `aom_hadamard_lp_8x8_c`. Kept as a cheap smoke test only.
     #[test]
     fn hadamard_lp_8x8_flat() {
         let src = [3i16; 64];
@@ -1450,7 +1495,7 @@ mod tests {
     }
 
     /// Hadamard lp 16x16: flat input → DC = 256*v/4 (the >>1 stages halve
-    /// twice), others 0.
+    /// twice), others 0. Transpose-blind for the same reason as the 8x8 one.
     #[test]
     fn hadamard_lp_16x16_flat() {
         let src = [2i16; 256];
@@ -1459,6 +1504,77 @@ mod tests {
         // per-8x8 DC = 128; combine: b0 = (128+128)>>1 = 128; c0 = 128+128 = 256.
         assert_eq!(coeff[0], 256);
         assert!(coeff[1..].iter().all(|&c| c == 0));
+    }
+
+    /// A GOLDEN vector that sees the transpose, so this crate's own test suite
+    /// (which cannot link the C oracle) is not left guarding the lowbd estimate
+    /// kernel with flat inputs alone. Two impulses — `src[1]` at (row 0, col 1)
+    /// and `src[8]` at (row 1, col 0) — make the output asymmetric, and the
+    /// expected values are `aom_hadamard_lp_8x8_c`'s, captured 2026-08-02 from
+    /// the reference build (the exhaustive lock is
+    /// `tests/nonrd_block_yrd_lp_diff.rs::lp_hadamard_matches_c`).
+    #[test]
+    fn hadamard_lp_8x8_golden_asymmetric_impulse() {
+        let mut src = [0i16; 64];
+        src[1] = 100;
+        src[8] = -40;
+        #[rustfmt::skip]
+        const WANT: [i16; 64] = [
+            60, 60, 60, 60, 140, 140, 140, 140,
+            60, 60, 60, 60, 140, 140, 140, 140,
+            60, 60, 60, 60, 140, 140, 140, 140,
+            60, 60, 60, 60, 140, 140, 140, 140,
+            -140, -140, -140, -140, -60, -60, -60, -60,
+            -140, -140, -140, -140, -60, -60, -60, -60,
+            -140, -140, -140, -140, -60, -60, -60, -60,
+            -140, -140, -140, -140, -60, -60, -60, -60,
+        ];
+        let mut coeff = [0i16; 64];
+        hadamard_lp_8x8(&src, 8, &mut coeff);
+        assert_eq!(
+            coeff, WANT,
+            "aom_hadamard_lp_8x8_c golden vector. If the values are a TRANSPOSE \
+             of the expected ones, the trailing transpose at aom_dsp/avg.c:232-236 \
+             was dropped again — that was KB-12's root"
+        );
+        // Non-vacuity: the golden output must genuinely differ from its own
+        // transpose, or it could not witness the defect it exists for.
+        let transposed: Vec<i16> = (0..64).map(|i| WANT[(i % 8) * 8 + i / 8]).collect();
+        assert_ne!(WANT.to_vec(), transposed, "the golden vector is transpose-blind");
+    }
+
+    /// The speed axis, 0..9: which leaves reach the LOWBD estimate arm the
+    /// KB-12 fix lives in. `hybrid_intra_pickmode` is 2 at speed 8 and 0 at
+    /// speed >= 9 (speed_features.c:578 / :597, resolved in
+    /// `partition_pick::nonrd_leaf_pick`); speeds 0..7 never run the nonrd
+    /// pickmode at all. Both live arms must reach the estimate kernel, or the
+    /// e2e speed-8/9 gates are covering one arm twice.
+    #[test]
+    fn estimate_arm_is_reachable_from_both_hybrid_arms() {
+        // (speed, hybrid_intra_pickmode) as the port resolves it.
+        for speed in 0..=9i32 {
+            let hybrid = if speed >= 9 { 0 } else { 2 };
+            if speed < 8 {
+                continue; // no nonrd pickmode below speed 8 (speed_features.c:578)
+            }
+            // BLOCK_8X8 (3) with high source variance is the ONLY shape whose
+            // arm depends on the speed: full-RD at 8, estimate at 9.
+            assert_eq!(
+                hybrid_use_rdopt(hybrid, 3, 5000),
+                speed == 8,
+                "speed {speed}: BLOCK_8X8 high-variance arm"
+            );
+            // Every leaf at or above BLOCK_16X16 takes the estimate arm at both
+            // speeds, so the LOWBD kernels are live at 8 AND 9.
+            for bsize in [6usize, 9, 12] {
+                assert!(
+                    !hybrid_use_rdopt(hybrid, bsize, 5000),
+                    "speed {speed}: bsize {bsize} must take the estimate arm"
+                );
+            }
+            // Low-variance 8x8 takes the estimate arm at both speeds too.
+            assert!(!hybrid_use_rdopt(hybrid, 3, 100), "speed {speed}: 8x8 var 100");
+        }
     }
 
     #[test]

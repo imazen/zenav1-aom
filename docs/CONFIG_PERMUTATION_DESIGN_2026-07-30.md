@@ -1082,7 +1082,21 @@ its thresholds — speed 4 is the winner-mode / multi-winner tier
 (`multi_winner_mode_type=2`, `prune_chroma_modes_using_luma_winner`,
 `fast_intra_tx_type_search=2`) and speed 8 is nonrd PICKMODE. Every speed-8 row
 carries `dir0` or `dtxo1` or both, i.e. a narrowed luma tx-type/mode set feeding
-the nonrd intra pickmode. That is a lead, not a root cause; **no encoder change
+the nonrd intra pickmode.
+
+> **Update 2026-08-02 — that lead was right and both lists are now EMPTY.** The
+> cpu-4 rows closed 2026-07-31 (KB-21 root #2); the cpu-8 rows and the two
+> remaining `SPEED_OPEN_SINGLETONS` (`rtxs1`, `trel2`) closed 2026-08-02 with
+> KB-12's root: `hadamard_lp_8x8` dropped the trailing transpose at
+> `aom_dsp/avg.c:232-236`, so the nonrd estimate arm's `eob` — its only
+> order-sensitive output — drifted, and narrowing the mode/tx-type set changes
+> how often that drift is decisive. The "cheaper RD decision near-tie" signature
+> named here is what a small unmodelled RATE TERM looks like, not evidence of a
+> tie. Emptying the singleton list also broadens the speed-8 covering array
+> (`remap_open_levels` no longer folds those two levels back to default); the
+> broadened array is 63/63 exact.
+
+That is a lead, not a root cause; **no encoder change
 was made** (this section does not own `crates/aom-encode/src`).
 
 Six singleton axis levels diverge at a speed too (`SPEED_OPEN_SINGLETONS`:

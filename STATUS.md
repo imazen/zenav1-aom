@@ -1,3 +1,49 @@
+## KB-12 — the nonrd "leaf-mode near-tie" was a dropped Hadamard transpose; speed 8 is 64/64 (2026-08-02)
+
+`aom_hadamard_lp_8x8_c` ends with a transpose — `coeff[i * 8 + j] =
+buffer2[j * 8 + i]`, *"Extra transpose to match SSE2 behavior"*,
+`aom_dsp/avg.c:232-236`. The port's `hadamard_lp_8x8` wrote `buffer2`
+straight out, so every coefficient the **lowbd** nonrd estimate arm computed
+was the exact TRANSPOSE of libaom's (and `hadamard_lp_16x16`'s the
+per-64-quadrant transpose, since it composes the 8x8 four times).
+
+It hid for four localization passes because **every consumer of those
+coefficients except the EOB is order-invariant**: `aom_satd_lp` and
+`av1_block_error_lp` are sums over the whole array, `eob == 0` is a set
+property, `eob == 1` can only mean the DC. Rate, distortion and skippability
+were all right; the one thing that moved was `eob`, through
+`eob_cost += get_msb(eob + 1)` into `rate += eob_cost << 9`. Measured: the
+pre-fix kernel moved the eob on **477 of 4,000** correlated 8x8 blocks and
+moved satd / block-error / skippable on **zero**. A small additive rate term
+inside a four-way RD comparison shows up as an occasional mode flip and
+nothing else — which is exactly the "genuine near-tie at ~0.7 % rdcost"
+three sessions recorded.
+
+The real root is one level up: the five lowbd estimate kernels were the only
+hand-transcribed kernels in the tree with **no differential against their
+exported C symbol** (the hbd twin has had one since KB-20), and the in-module
+unit tests that did exist used flat inputs — transpose-blind by construction,
+because a flat input puts all the energy at coefficient 0, the transpose's
+fixed point. Playbook §1.
+
+`_c` and `_neon` agree bit-for-bit over the whole 9-bit residual domain, so —
+unlike `aom_hadamard_16x16` (A1 / KB-20 root #4) — nothing here is
+ISA-conditional; that is now asserted rather than assumed.
+
+Closed by one 4-line transpose loop: `encoder_gate_speed8_textured_allintra`
+**60/64 -> 64/64** (pins deleted, not relaxed); all four KB-32 gates byte-exact
+(the cpu8 size ladder 512²..2048² and 2176² cpu9 promoted from shape/bound pins
+to hard byte gates); `kb28_crop_dims::vbp_band_crop_dims_byte_match` **18 open
+rows -> 0**; `config_permutations`' `SPEED_OPEN_SINGLETONS` and
+`SPEED_OPEN_COMBINATIONS` both **empty at every speed 0..9**, the latter
+re-measured on the broader speed-8 array that emptying the former produces.
+Reverting the transpose alone reproduces every recorded pre-fix number exactly,
+including KB-32's localizer landing on the same leaf and mode pair.
+New: `aom-encode/tests/nonrd_block_yrd_lp_diff.rs` (5 tests) + a golden
+asymmetric-impulse vector and a speeds-0..9 both-arms reachability lock in
+`nonrd_pickmode`. Record:
+`benchmarks/kb12_lp_hadamard_transpose_2026-08-02.tsv`.
+
 ## KB-28 — the framesize predicates now read `cm->width`/`cm->height`, not the mi grid; 1280x720 encodes at cpu 7 (2026-08-02)
 
 `SbEncodeEnv` carried mi-ALIGNED extents only. `av1_get_MBs`
@@ -27,13 +73,14 @@ tests) + unit locks in `partition_pick` and `var_part` over speeds 0..9 and
 both sides of 480 / 720 / RESOLUTION_720P in both directions. Record:
 `benchmarks/kb28_crop_dims_2026-08-02.tsv`.
 
-**Residual, and it is new information the refusal was hiding:** 1280x720 is
-byte-identical at cpu 7 and is NOT at cpu 8/9 (-132/+36, -8/+4). That is
-KB-12's nonrd estimate-arm near-tie — a partial-SB explanation was tested and
-refuted (SB-exact 1280x704 / 1216x768 diverge too), the mi==crop cells diverge
-identically, and every cpu-8 residual is inside KB-32's < 1.0 B/SB shape.
-Pinned self-promoting. Two cpu-9 cells also reach KB-32's non-square-leaf
-HANDOFF refusal, which KB-32 had measured as reachable only at 108 MP.
+**Residual, and it is new information the refusal was hiding:** 1280x720 was
+byte-identical at cpu 7 and NOT at cpu 8/9 (-132/+36, -8/+4). That was the
+nonrd estimate arm — **closed the same day by KB-12's Hadamard transpose (see
+the section above); it was never a near-tie.** The attribution evidence still
+stands as recorded: a partial-SB explanation was tested and refuted (SB-exact
+1280x704 / 1216x768 diverged too) and the mi==crop cells diverged identically.
+Two cpu-9 cells also reach KB-32's non-square-leaf HANDOFF refusal, which
+KB-32 had measured as reachable only at 108 MP; those two rows stay pinned.
 
 ## bd8 i16-lane inverse transform runs on aarch64 — NEON tier live, 16x16/32x32/64x64 DCT −45..−51% (2026-07-28, ARM track)
 
