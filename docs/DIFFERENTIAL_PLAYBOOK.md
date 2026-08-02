@@ -535,3 +535,42 @@ function. Note *how* that was settled — by enumerating the assignments in upst
 source, not by reasoning about what the fields "probably" are. A field's name tells
 you nothing about which pass sets it.
 
+## 14. A profile's ranked table and its stated attribution limits can contradict each other
+
+**The failure it prevents:** KB-PERF-2. The encoder re-profile ranked
+`alloc/libc` at **+24.76 ms, 20.9 % of the gap**, and the follow-up landed a
+−40 % reduction in allocator calls (854,053 → 512,557) for **−1.34 ms**. The
+ceiling was **18x optimistic**.
+
+The reason was already written in the same document, in its own "Attribution
+limits" section: `alloc/libc` is a **leaf class matched by symbol name**, and most
+of its mass is `_platform_memset` (5.36 % of window) plus `_platform_memmove`
+(2.68 %) against the allocator's own `xzm_free` (2.34 %). Removing malloc/free
+pairs does not remove the bytes those buffers still get zeroed with. The caveat
+and the ranked table were both correct; they were about different quantities, and
+**the ranked table is the part people act on.**
+
+**Rules that follow:**
+
+- When a profile ranks a *class* rather than a function, read what the class
+  actually matches before sizing a lever off it. "Allocation" that is mostly
+  `memset` is a zeroing cost, and the fix for zeroing is not reuse.
+- A lever's projected ceiling should name the **mechanism** it removes, not just
+  the stage it targets — "removes N allocator calls" and "removes N bytes of
+  zeroing" have different ceilings even when the profiler puts them in one row.
+- Read a profile's caveats section as part of its ranking, not as boilerplate
+  after it. If a caveat undercuts a row in the table, fix the table.
+
+**The companion positive result:** the sibling lever (3a, tiering the forward
+transform scratch) projected +5.30 ms and delivered −3.13 ms — right order,
+because its mechanism was named exactly (a 4 KiB memset per forward transform at
+every size, against tiered inverse passes in the same file). Same profile, same
+day; the difference is whether the projection was tied to a mechanism or to a row.
+
+**And measure the levers separately even when you ship them together.** Here 3a
+alone was −3.128 ms with **zero** allocator-call change (its scratch is a stack
+array and cannot appear in a census — proven by the two censuses being identical
+to the digit), while lever 3 alone was −1.339 ms with −341,496 calls. Summed:
+4.467 vs 4.641 measured. Had they been shipped as one change, the 18x-optimistic
+projection would have been quietly absorbed by the honest one.
+
