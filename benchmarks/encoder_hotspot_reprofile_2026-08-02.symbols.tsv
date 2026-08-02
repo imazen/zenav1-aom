@@ -1,0 +1,360 @@
+arm	kind	stage	symbol	self_samples	self_pct	incl_samples	incl_pct	src
+port	stage	cnn-partition-prune		10979	24.1079			
+port	stage	dsp:transform		8339	18.3110			
+port	stage	alloc/libc		6836	15.0106			
+port	stage	hog-intra-prune		3491	7.6656			
+port	stage	dsp:intra-pred		3242	7.1189			
+port	stage	entropy/rate-model		2156	4.7342			
+port	stage	dsp:dist(sad/var/satd)		2134	4.6859			
+port	stage	tx-search		2099	4.6090			
+port	stage	intra-mode-rd		1991	4.3719			
+port	stage	dsp:quant		1227	2.6943			
+port	stage	trellis(optimize_txb)		962	2.1124			
+port	stage	os/setjmp		743	1.6315			
+port	stage	encode-driver		464	1.0189			
+port	stage	other		400	0.8783			
+port	stage	partition-search		398	0.8739			
+port	stage	pack/entropy-write		34	0.0747			
+port	stage	postfilter-search		30	0.0659			
+port	stage	rust-core		16	0.0351			
+port	stage	screen-tools		0	0.0000			
+port	symbol	cnn-partition-prune	aom_encode::cnn_partition::cnn::cnn_predict	10869	23.8664	10932	24.0047	cnn.rs:191
+port	symbol	dsp:transform	aom_dsp::transform::simd::___arcane_run_fwd1d_neo	3566	7.8303	3566	7.8303	mod.rs:281
+port	symbol	hog-intra-prune	aom_encode::hog::generate_hog	3447	7.5690	3447	7.5690	hog.rs:109
+port	symbol	alloc/libc	platform_memset	2441	5.3600	2441	5.3600	
+port	symbol	dsp:transform	aom_dsp::transform::simd::try_fwd_col_pass	1614	3.5441	4051	8.8953	mod.rs:565
+port	symbol	alloc/libc	platform_memmove	1219	2.6767	1219	2.6767	
+port	symbol	dsp:quant	aom_dsp::quant::simd::av1_quantize_fp_no_qmatrix_dispatch	1175	2.5801	1175	2.5801	simd.rs:68
+port	symbol	alloc/libc	xzm_free	1065	2.3386	2101	4.6134	
+port	symbol	trellis(optimize_txb)	aom_dsp::txb::optimize::optimize_txb_core	922	2.0245	1727	3.7922	optimize.rs:195
+port	symbol	dsp:transform	aom_dsp::transform::simd::try_fwd_row_pass	832	1.8269	3354	7.3648	mod.rs:682
+port	symbol	tx-search	aom_encode::tx_search::search_tx_type_intra	798	1.7523	9068	19.9117	tx_search.rs:1519
+port	symbol	os/setjmp	mach_absolute_time	741	1.6271	741	1.6271	
+port	symbol	dsp:dist(sad/var/satd)	aom_dsp::dist::variance	692	1.5195	692	1.5195	mod.rs:295
+port	symbol	tx-search	aom_encode::tx_search::intra_model_rd_y	689	1.5129	3918	8.6032	tx_search.rs:2897
+port	symbol	dsp:dist(sad/var/satd)	aom_dsp::dist::hadamard::hadamard_col8	617	1.3548	617	1.3548	hadamard.rs:35
+port	symbol	dsp:intra-pred	aom_dsp::intra::simd::smooth	573	1.2582	573	1.2582	simd.rs:95
+port	symbol	tx-search	aom_encode::tx_search::txfm_rd_in_plane_intra	563	1.2362	9881	21.6969	tx_search.rs:2204
+port	symbol	dsp:transform	aom_dsp::transform::simd::___arcane_inv_col_pass_core_neo	539	1.1835	1151	2.5274	mod.rs:833
+port	symbol	dsp:intra-pred	aom_dsp::intra::dir::z2_high	516	1.1330	516	1.1330	dir.rs:237
+port	symbol	entropy/rate-model	aom_dsp::txb::txb_init_levels	487	1.0694	499	1.0957	mod.rs:152
+port	symbol	dsp:dist(sad/var/satd)	aom_dsp::dist::hadamard::hadamard_8x8	468	1.0276	1059	2.3254	hadamard.rs:82
+port	symbol	intra-mode-rd	aom_encode::encode_intra::encode_intra_block_plane_y	464	1.0189	6110	13.4165	encode_intra.rs:481
+port	symbol	entropy/rate-model	aom_dsp::txb::prob_cost::cost_tokens_from_cdf	435	0.9552	435	0.9552	prob_cost.rs:55
+port	symbol	dsp:transform	aom_dsp::transform::simd::inv1d_v3_gen::___arcane_av1_idct32_impl_neo	426	0.9354	426	0.9354	inv1d_v3_gen.rs:265
+port	symbol	dsp:intra-pred	aom_dsp::intra::cfl::cfl_predict_block	409	0.8981	409	0.8981	cfl.rs:480
+port	symbol	alloc/libc	xzm_xzone_malloc_tiny	398	0.8739	398	0.8739	
+port	symbol	alloc/libc	xzm_xzone_malloc	382	0.8388	382	0.8388	
+port	symbol	dsp:transform	aom_dsp::transform::simd::___arcane_run_inv1d_neo	319	0.7005	319	0.7005	mod.rs:256
+port	symbol	dsp:transform	aom_dsp::transform::simd::lowbd16::___arcane_run_inv1d_i16_neo	273	0.5995	273	0.5995	lowbd16.rs:91
+port	symbol	alloc/libc	xzm_malloc_zone_malloc_type_calloc_entry	267	0.5863	267	0.5863	
+port	symbol	dsp:intra-pred	aom_dsp::intra::simd::paeth	262	0.5753	262	0.5753	simd.rs:410
+port	symbol	intra-mode-rd	aom_encode::encode_intra::encode_intra_block_plane_uv	245	0.5380	2121	4.6573	encode_intra.rs:812
+port	symbol	dsp:transform	aom_dsp::transform::txfm2d::av1_fwd_txfm2d	239	0.5248	8440	18.5328	txfm2d.rs:290
+port	symbol	intra-mode-rd	aom_encode::intra_uv_rd::txfm_rd_in_plane_uv_p	239	0.5248	2525	5.5445	intra_uv_rd.rs:714
+port	symbol	alloc/libc	free	223	0.4897	223	0.4897	
+port	symbol	dsp:intra-pred	aom_dsp::intra::dir::z1_high	222	0.4875	222	0.4875	dir.rs:202
+port	symbol	dsp:intra-pred	aom_dsp::intra::dir::z3_high	219	0.4809	219	0.4809	dir.rs:270
+port	symbol	intra-mode-rd	aom_encode::intra_uv_rd::intra_model_rd_uv	218	0.4787	1786	3.9217	intra_uv_rd.rs:1048
+port	symbol	dsp:intra-pred	aom_dsp::intra::edge::highbd_filter_intra_edge	215	0.4721	235	0.5160	edge.rs:0
+port	symbol	dsp:intra-pred	aom_dsp::intra::build_non_directional_intra_high	213	0.4677	1269	2.7865	mod.rs:611
+port	symbol	dsp:intra-pred	aom_dsp::intra::predict_highbd	204	0.4479	776	1.7040	mod.rs:284
+port	symbol	intra-mode-rd	aom_encode::intra_rd::_1::Int::visits	197	0.4326	221	0.4853	intra_rd.rs:405
+port	symbol	entropy/rate-model	aom_dsp::txb::entropy_ctx::get_txb_ctx	192	0.4216	192	0.4216	entropy_ctx.rs:69
+port	symbol	entropy/rate-model	aom_dsp::txb::fill::fill_lv_map_coeff_cost	180	0.3952	518	1.1374	fill.rs:79
+port	symbol	alloc/libc	malloc_zone_calloc	179	0.3931	179	0.3931	
+port	symbol	dsp:dist(sad/var/satd)	aom_dsp::dist::hadamard::hadamard_16x16	167	0.3667	1167	2.5625	hadamard.rs:99
+port	symbol	entropy/rate-model	aom_dsp::entropy::partition::intra_avail	165	0.3623	193	0.4238	partition.rs:0
+port	symbol	encode-driver	aom_encode::dist_block_tx_domain	160	0.3513	160	0.3513	lib.rs:916
+port	symbol	dsp:dist(sad/var/satd)	aom_dsp::dist::highbd_variance	157	0.3447	157	0.3447	mod.rs:220
+port	symbol	alloc/libc	DYLD-STUB$$memcpy	154	0.3382	154	0.3382	
+port	symbol	dsp:intra-pred	aom_dsp::intra::assemble_dir_edges	146	0.3206	156	0.3425	mod.rs:821
+port	symbol	intra-mode-rd	aom_encode::intra_rd::calc_normalized_variance_4x4	140	0.3074	811	1.7808	intra_rd.rs:628
+port	symbol	other	<deduplicated_symbol>	135	0.2964	135	0.2964	
+port	symbol	intra-mode-rd	aom_encode::intra_rd::rd_pick_intra_sby_mode_y	132	0.2898	14233	31.2532	intra_rd.rs:1372
+port	symbol	intra-mode-rd	aom_encode::intra_uv_rd::predict_uv_txb	131	0.2877	859	1.8862	intra_uv_rd.rs:425
+port	symbol	dsp:transform	aom_dsp::transform::simd::lowbd16::___arcane_inv_row_pass_i16_core_neo	131	0.2877	402	0.8827	lowbd16.rs:357
+port	symbol	entropy/rate-model	aom_dsp::txb::entropy_ctx::txb_entropy_context	129	0.2833	129	0.2833	entropy_ctx.rs:113
+port	symbol	partition-search	aom_encode::partition_pick::extract_intra_cnn_window	127	0.2789	137	0.3008	partition_pick.rs:2503
+port	symbol	encode-driver	aom_encode::encode_sb::encode_b_intra_dry	108	0.2371	6657	14.6176	encode_sb.rs:1066
+port	symbol	alloc/libc	DYLD-STUB$$free	104	0.2284	104	0.2284	
+port	symbol	dsp:intra-pred	aom_dsp::intra::build_directional_intra_high	98	0.2152	1509	3.3135	mod.rs:1054
+port	symbol	partition-search	aom_encode::partition_pick::rd_pick_partition_real	94	0.2064	41877	91.9545	partition_pick.rs:3100
+port	symbol	intra-mode-rd	aom_encode::intra_rd::_15B::x4Va::sb_cache	92	0.2020	97	0.2130	intra_rd.rs:607
+port	symbol	alloc/libc	malloc_zone_malloc	87	0.1910	87	0.1910	
+port	symbol	cnn-partition-prune	aom_encode::cnn_partition::nn::relu_layer	87	0.1910	87	0.1910	nn.rs:43
+port	symbol	encode-driver	aom_encode::xform_quant_optimize_split	86	0.1888	9668	21.2292	lib.rs:584
+port	symbol	entropy/rate-model	aom_dsp::txb::cost::eob_cost	82	0.1801	82	0.1801	cost.rs:103
+port	symbol	dsp:transform	aom_dsp::transform::simd::___arcane_inv_row_pass_core_neo	82	0.1801	206	0.4523	mod.rs:475
+port	symbol	encode-driver	aom_encode::xform_quant	81	0.1779	7751	17.0198	lib.rs:334
+port	symbol	other	___rust::___rdl_alloc_zeroe	79	0.1735	79	0.1735	alloc.rs:487
+port	symbol	dsp:transform	aom_dsp::transform::txfm2d::get_fwd_txfm_cfg	78	0.1713	78	0.1713	txfm2d.rs:153
+port	symbol	alloc/libc	bzero	76	0.1669	76	0.1669	
+port	symbol	dsp:intra-pred	aom_dsp::intra::cfl::cfl_store	74	0.1625	74	0.1625	cfl.rs:394
+port	symbol	partition-search	aom_encode::partition_pick::leaf_pick_sb_modes	68	0.1493	24832	54.5267	partition_pick.rs:1677
+port	symbol	other	___rust::___rust_no_alloc_shim_is_unstable_v	63	0.1383	63	0.1383	
+port	symbol	entropy/rate-model	aom_dsp::txb::trellis_cost::coeff_cost_general	62	0.1361	62	0.1361	trellis_cost.rs:0
+port	symbol	entropy/rate-model	aom_dsp::txb::trellis_cost::coeff_cost_eob	59	0.1296	59	0.1296	trellis_cost.rs:103
+port	symbol	dsp:quant	aom_dsp::quant::aom_quantize_b_no_qmatrix	49	0.1076	52	0.1142	mod.rs:139
+port	symbol	dsp:transform	aom_dsp::transform::txfm1d_gen::av1_fdct8	49	0.1076	49	0.1076	txfm1d_gen.rs:12
+port	symbol	dsp:transform	aom_dsp::transform::simd::try_inv_row_pass	45	0.0988	693	1.5217	mod.rs:396
+port	symbol	dsp:intra-pred	aom_dsp::intra::edge::highbd_upsample_intra_edge	42	0.0922	42	0.0922	edge.rs:198
+port	symbol	dsp:transform	aom_dsp::transform::inv_txfm2d::av1_inv_txfm2d_add_into	42	0.0922	2039	4.4773	inv_txfm2d.rs:308
+port	symbol	intra-mode-rd	aom_encode::intra_uv_rd::rd_pick_intra_sbuv_mode	37	0.0812	4554	9.9998	intra_uv_rd.rs:1696
+port	symbol	other	___rust::___rdl_allo	35	0.0769	35	0.0769	alloc.rs:450
+port	symbol	alloc/libc	DYLD-STUB$$_platform_bzero	34	0.0747	34	0.0747	
+port	symbol	entropy/rate-model	aom_dsp::txb::write::write_txb_body	34	0.0747	119	0.2613	write.rs:187
+port	symbol	trellis(optimize_txb)	aom_dsp::txb::optimize::update_coeff_general	33	0.0725	70	0.1537	optimize.rs:511
+port	symbol	partition-search	aom_encode::partition_pick::perpixel_variance_y	33	0.0725	236	0.5182	partition_pick.rs:225
+port	symbol	dsp:dist(sad/var/satd)	aom_dsp::dist::hadamard::hadamard_32x32	33	0.0725	897	1.9697	hadamard.rs:131
+port	symbol	entropy/rate-model	aom_dsp::entropy::partition::is_directional_mode	31	0.0681	31	0.0681	partition.rs:2382
+port	symbol	alloc/libc	xzm_realloc	30	0.0659	64	0.1405	
+port	symbol	dsp:transform	aom_dsp::transform::simd::try_inv_col_pass	29	0.0637	1206	2.6482	mod.rs:334
+port	symbol	entropy/rate-model	aom_dsp::txb::fill::_12C::tables	29	0.0637	29	0.0637	fill.rs:241
+port	symbol	entropy/rate-model	aom_dsp::entropy::enc::_7Od::normalize	29	0.0637	30	0.0659	enc.rs:84
+port	symbol	dsp:intra-pred	aom_dsp::intra::dr_predict_high	27	0.0593	988	2.1695	mod.rs:651
+port	symbol	other	_Nt5::raw_vec::_11Ra::finish_grow::aom_encode	26	0.0571	249	0.5468	mod.rs:548
+port	symbol	hog-intra-prune	aom_encode::hog::prune_intra_mode_with_hog_y	26	0.0571	3490	7.6634	hog.rs:286
+port	symbol	partition-search	aom_encode::partition_pick::log_sub_block_var	25	0.0549	566	1.2428	partition_pick.rs:265
+port	symbol	alloc/libc	DYLD-STUB$$malloc	24	0.0527	24	0.0527	
+port	symbol	alloc/libc	DYLD-STUB$$calloc	23	0.0505	23	0.0505	
+port	symbol	entropy/rate-model	aom_dsp::txb::trellis_cost::two_coeff_cost_simple	23	0.0505	23	0.0505	trellis_cost.rs:74
+port	symbol	tx-search	aom_encode::tx_search::get_tx_mask_intra	23	0.0505	23	0.0505	tx_search.rs:253
+port	symbol	entropy/rate-model	aom_dsp::txb::get_nz_map_contexts	23	0.0505	23	0.0505	mod.rs:412
+port	symbol	dsp:transform	aom_dsp::transform::fdct::av1_fdct4	23	0.0505	23	0.0505	fdct.rs:71
+port	symbol	entropy/rate-model	aom_dsp::txb::ext_tx::get_tx_type_cost	22	0.0483	22	0.0483	ext_tx.rs:0
+port	symbol	dsp:intra-pred	aom_dsp::intra::predict_intra_high	22	0.0483	22	0.0483	mod.rs:1085
+port	symbol	postfilter-search	aom_encode::lf_search::stamp_lf_tree	22	0.0483	22	0.0483	lf_search.rs:657
+port	symbol	intra-mode-rd	aom_encode::rd_pick::rd_pick_intra_mode_sb	21	0.0461	20849	45.7807	rd_pick.rs:318
+port	symbol	dsp:transform	aom_dsp::transform::txfm1d_gen::av1_fadst8	21	0.0461	21	0.0461	txfm1d_gen.rs:1184
+port	symbol	alloc/libc	DYLD-STUB$$bzero	18	0.0395	18	0.0395	
+port	symbol	entropy/rate-model	aom_dsp::txb::cost::cost_coeffs_txb	18	0.0395	39	0.0856	cost.rs:134
+port	symbol	alloc/libc	DYLD-STUB$$mach_absolute_time	18	0.0395	18	0.0395	
+port	symbol	hog-intra-prune	aom_encode::hog::hog_nn_predict	18	0.0395	18	0.0395	hog.rs:233
+port	symbol	pack/entropy-write	aom_encode::pack::pack_leaf	18	0.0395	2295	5.0394	pack.rs:713
+port	symbol	entropy/rate-model	aom_dsp::entropy::enc::_7Od::encode_cdf_q15	17	0.0373	17	0.0373	enc.rs:149
+port	symbol	entropy/rate-model	aom_encode::speed_features::_1::Spe::tx_type_search_policy_for_stage	16	0.0351	16	0.0351	speed_features.rs:1182
+port	symbol	other	___rust::___rdl_deallo	15	0.0329	15	0.0329	alloc.rs:463
+port	symbol	entropy/rate-model	aom_dsp::entropy::partition::has_top_right	15	0.0329	15	0.0329	partition.rs:0
+port	symbol	partition-search	aom_encode::partition_pick::save_context	15	0.0329	55	0.1208	partition_pick.rs:1842
+port	symbol	entropy/rate-model	aom_encode::mode_costs::intra_mode_info_cost_y	14	0.0307	16	0.0351	mode_costs.rs:0
+port	symbol	partition-search	aom_encode::partition_pick::_8::stamp	14	0.0307	39	0.0856	partition_pick.rs:421
+port	symbol	entropy/rate-model	aom_dsp::txb::get_lower_levels_ctx_general	13	0.0285	13	0.0285	mod.rs:387
+port	symbol	entropy/rate-model	aom_dsp::entropy::partition::has_bottom_left	13	0.0285	13	0.0285	partition.rs:7459
+port	symbol	cnn-partition-prune	aom_encode::cnn_partition::nn::nn_predict	13	0.0285	102	0.2240	nn.rs:0
+port	symbol	alloc/libc	DYLD-STUB$$memset	12	0.0263	12	0.0263	
+port	symbol	intra-mode-rd	aom_encode::intra_uv_rd::txfm_uvrd_p	10	0.0220	2248	4.9362	intra_uv_rd.rs:851
+port	symbol	entropy/rate-model	aom_encode::speed_features::_1::Spe::set_allintra	10	0.0220	10	0.0220	speed_features.rs:509
+libaom-c	stage	hog-intra-prune		11520	24.9248			
+libaom-c	stage	dsp:transform		4448	9.6237			
+libaom-c	stage	cnn-partition-prune		4328	9.3641			
+libaom-c	stage	trellis(optimize_txb)		3835	8.2975			
+libaom-c	stage	intra-mode-rd		3576	7.7371			
+libaom-c	stage	alloc/libc		2785	6.0257			
+libaom-c	stage	dsp:dist(sad/var/satd)		2626	5.6816			
+libaom-c	stage	dsp:quant		2422	5.2403			
+libaom-c	stage	tx-search		2030	4.3921			
+libaom-c	stage	entropy/rate-model		1993	4.3121			
+libaom-c	stage	screen-content-detect		1948	4.2147			
+libaom-c	stage	other		1515	3.2779			
+libaom-c	stage	dsp:intra-pred		822	1.7785			
+libaom-c	stage	os/setjmp		781	1.6898			
+libaom-c	stage	pack/entropy-write		634	1.3717			
+libaom-c	stage	partition-search		528	1.1424			
+libaom-c	stage	postfilter-search		397	0.8590			
+libaom-c	stage	dsp:recon		31	0.0671			
+libaom-c	symbol	hog-intra-prune	compute_gradient_info_sb	10220	22.1121	10220	22.1121	
+libaom-c	symbol	cnn-partition-prune	av1_cnn_convolve_no_maxpool_padding_valid_neon	3292	7.1226	3292	7.1226	
+libaom-c	symbol	trellis(optimize_txb)	av1_optimize_txb	3281	7.0988	4262	9.2213	
+libaom-c	symbol	entropy/rate-model	av1_cost_tokens_from_cdf	1558	3.3709	1558	3.3709	
+libaom-c	symbol	dsp:quant	av1_quantize_fp_32x32_neon	1383	2.9923	1922	4.1585	
+libaom-c	symbol	hog-intra-prune	prune_intra_mode_with_hog	1300	2.8127	1344	2.9079	
+libaom-c	symbol	tx-search	search_tx_type	1269	2.7456	9853	21.3181	
+libaom-c	symbol	screen-content-detect	av1_set_screen_content_options	1225	2.6504	1782	3.8556	
+libaom-c	symbol	intra-mode-rd	av1_predict_intra_block	1175	2.5422	2460	5.3225	
+libaom-c	symbol	intra-mode-rd	av1_rd_pick_intra_sby_mode	1051	2.2740	15256	33.0081	
+libaom-c	symbol	alloc/libc	platform_memset	973	2.1052	973	2.1052	
+libaom-c	symbol	dsp:quant	av1_quantize_fp_neon	873	1.8888	873	1.8888	
+libaom-c	symbol	alloc/libc	platform_memmove	741	1.6032	741	1.6032	
+libaom-c	symbol	dsp:transform	fdct8x32_col_neon	621	1.3436	621	1.3436	
+libaom-c	symbol	dsp:dist(sad/var/satd)	aom_hadamard_16x16_neon	611	1.3220	611	1.3220	
+libaom-c	symbol	dsp:transform	fdct8x32_row_neon	603	1.3047	603	1.3047	
+libaom-c	symbol	screen-content-detect	av1_count_colors_with_threshold	537	1.1619	537	1.1619	
+libaom-c	symbol	dsp:dist(sad/var/satd)	aom_subtract_block_neon	530	1.1467	530	1.1467	
+libaom-c	symbol	dsp:transform	fdct8x16_row_neon	508	1.0991	508	1.0991	
+libaom-c	symbol	dsp:dist(sad/var/satd)	aom_satd_neon	460	0.9953	460	0.9953	
+libaom-c	symbol	os/setjmp	sigprocmask	438	0.9477	438	0.9477	
+libaom-c	symbol	dsp:transform	av1_lowbd_inv_txfm2d_add_neon	428	0.9260	789	1.7071	
+libaom-c	symbol	dsp:dist(sad/var/satd)	av1_block_error_neon	427	0.9239	427	0.9239	
+libaom-c	symbol	trellis(optimize_txb)	av1_get_txb_entropy_context	376	0.8135	376	0.8135	
+libaom-c	symbol	dsp:transform	fdct8x16_col_neon	376	0.8135	376	0.8135	
+libaom-c	symbol	tx-search	av1_txb_init_levels_neon	349	0.7551	408	0.8828	
+libaom-c	symbol	cnn-partition-prune	av1_cnn_convolve_no_maxpool_padding_valid_2x2_neon	328	0.7097	328	0.7097	
+libaom-c	symbol	os/setjmp	sigaltstack	320	0.6924	320	0.6924	
+libaom-c	symbol	dsp:intra-pred	av1_dr_prediction_z2_neon	265	0.5734	265	0.5734	
+libaom-c	symbol	intra-mode-rd	encode_block_intra_and_set_context	264	0.5712	4967	10.7467	
+libaom-c	symbol	dsp:transform	fadst8x16_row_neon	259	0.5604	259	0.5604	
+libaom-c	symbol	pack/entropy-write	av1_update_and_record_txb_context	257	0.5560	471	1.0191	
+libaom-c	symbol	dsp:transform	lowbd_fwd_txfm2d_32x32_neon	253	0.5474	1477	3.1957	
+libaom-c	symbol	cnn-partition-prune	av1_cnn_convolve_no_maxpool_padding_valid_c	247	0.5344	247	0.5344	
+libaom-c	symbol	cnn-partition-prune	av1_nn_predict_neon	232	0.5020	232	0.5020	
+libaom-c	symbol	entropy/rate-model	get_txb_ctx	224	0.4846	224	0.4846	
+libaom-c	symbol	partition-search	av1_rd_pick_partition	222	0.4803	31269	67.6540	
+libaom-c	symbol	dsp:transform	lowbd_fwd_txfm2d_16x16_neon	214	0.4630	1564	3.3839	
+libaom-c	symbol	dsp:transform	fadst8x16_col_neon	210	0.4544	210	0.4544	
+libaom-c	symbol	alloc/libc	bzero	195	0.4219	195	0.4219	
+libaom-c	symbol	alloc/libc	DYLD-STUB$$memcpy	189	0.4089	189	0.4089	
+libaom-c	symbol	screen-content-detect	av1_calc_normalized_variance	186	0.4024	353	0.7638	
+libaom-c	symbol	dsp:transform	lowbd_fwd_txfm2d_8x8_neon	184	0.3981	237	0.5128	
+libaom-c	symbol	intra-mode-rd	av1_rd_pick_intra_sbuv_mode	179	0.3873	4633	10.0240	
+libaom-c	symbol	trellis(optimize_txb)	av1_optimize_b	178	0.3851	3884	8.4035	
+libaom-c	symbol	dsp:dist(sad/var/satd)	aom_variance4x4_neon	167	0.3613	167	0.3613	
+libaom-c	symbol	tx-search	av1_foreach_transformed_block_in_plane	165	0.3570	3718	8.0443	
+libaom-c	symbol	intra-mode-rd	av1_predict_intra_block_facade	162	0.3505	2829	6.1209	
+libaom-c	symbol	postfilter-search	lpf_14_neon	161	0.3483	161	0.3483	
+libaom-c	symbol	alloc/libc	xzm_free	144	0.3116	223	0.4825	
+libaom-c	symbol	dsp:dist(sad/var/satd)	aom_hadamard_32x32_neon	140	0.3029	562	1.2160	
+libaom-c	symbol	entropy/rate-model	av1_fill_coeff_costs	139	0.3007	1099	2.3778	
+libaom-c	symbol	cnn-partition-prune	av1_cnn_predict_c	137	0.2964	4204	9.0958	
+libaom-c	symbol	tx-search	block_rd_txfm	134	0.2899	11498	24.8772	
+libaom-c	symbol	dsp:intra-pred	aom_smooth_predictor_32x32_neon	127	0.2748	127	0.2748	
+libaom-c	symbol	intra-mode-rd	intra_model_rd	126	0.2726	2799	6.0560	
+libaom-c	symbol	dsp:dist(sad/var/satd)	aom_sum_sse_2d_i16_nxn_neon	115	0.2488	115	0.2488	
+libaom-c	symbol	intra-mode-rd	av1_filter_intra_edge_neon	102	0.2207	150	0.3245	
+libaom-c	symbol	other	update_coeff_general	100	0.2164	183	0.3959	
+libaom-c	symbol	dsp:intra-pred	aom_paeth_predictor_32x32_neon	98	0.2120	98	0.2120	
+libaom-c	symbol	pack/entropy-write	av1_write_coeffs_txb	97	0.2099	286	0.6188	
+libaom-c	symbol	other	intra_edge_filter_strength	94	0.2034	94	0.2034	
+libaom-c	symbol	other	av1_get_eob_pos_token	92	0.1991	92	0.1991	
+libaom-c	symbol	dsp:transform	idct32_low8_neon	92	0.1991	92	0.1991	
+libaom-c	symbol	partition-search	av1_set_offsets_without_segment_id	89	0.1926	126	0.2726	
+libaom-c	symbol	dsp:transform	fdct8x16_row_rect_neon	89	0.1926	89	0.1926	
+libaom-c	symbol	cnn-partition-prune	av1_cnn_predict_img_multi_out	88	0.1904	4305	9.3144	
+libaom-c	symbol	postfilter-search	av1_pick_uniform_tx_size_type_yrd	87	0.1882	10219	22.1100	
+libaom-c	symbol	alloc/libc	av1_free_pmc	86	0.1861	270	0.5842	
+libaom-c	symbol	other	get_coeff_cost_general	83	0.1796	83	0.1796	
+libaom-c	symbol	dsp:intra-pred	av1_dr_prediction_z1_neon	83	0.1796	83	0.1796	
+libaom-c	symbol	other	av1_get_tx_scale	81	0.1753	81	0.1753	
+libaom-c	symbol	intra-mode-rd	cfl_pick_plane_parameter	81	0.1753	1067	2.3086	
+libaom-c	symbol	other	av1_update_state	81	0.1753	93	0.2012	
+libaom-c	symbol	pack/entropy-write	od_ec_encode_cdf_q15	81	0.1753	81	0.1753	
+libaom-c	symbol	alloc/libc	DYLD-STUB$$memset	75	0.1623	75	0.1623	
+libaom-c	symbol	tx-search	dist_block_tx_domain	72	0.1558	509	1.1013	
+libaom-c	symbol	other	av1_get_iqmatrix	66	0.1428	66	0.1428	
+libaom-c	symbol	pack/entropy-write	od_ec_enc_normalize	66	0.1428	66	0.1428	
+libaom-c	symbol	dsp:quant	av1_quant	63	0.1363	1578	3.4142	
+libaom-c	symbol	other	av1_get_nz_map_contexts_neon	63	0.1363	63	0.1363	
+libaom-c	symbol	dsp:transform	iadst16_low8_neon	58	0.1255	58	0.1255	
+libaom-c	symbol	intra-mode-rd	cfl_load_dc_pred	56	0.1212	235	0.5084	
+libaom-c	symbol	alloc/libc	platform_memset_pattern16	55	0.1190	55	0.1190	
+libaom-c	symbol	dsp:quant	av1_quantize_fp_facade	52	0.1125	2844	6.1533	
+libaom-c	symbol	dsp:dist(sad/var/satd)	aom_hadamard_8x8_neon	52	0.1125	52	0.1125	
+libaom-c	symbol	intra-mode-rd	cfl_predict_lbd_16x16_neon	52	0.1125	52	0.1125	
+libaom-c	symbol	alloc/libc	xzm_xzone_malloc	50	0.1082	50	0.1082	
+libaom-c	symbol	partition-search	pick_sb_modes	49	0.1060	20117	43.5254	
+libaom-c	symbol	pack/entropy-write	encode_superblock	49	0.1060	4064	8.7929	
+libaom-c	symbol	dsp:intra-pred	aom_smooth_predictor_16x16_neon	48	0.1039	48	0.1039	
+libaom-c	symbol	dsp:transform	idct16_low8_neon	48	0.1039	48	0.1039	
+libaom-c	symbol	intra-mode-rd	av1_cfl_predict_block	48	0.1039	68	0.1471	
+libaom-c	symbol	intra-mode-rd	intra_mode_info_cost_y	46	0.0995	46	0.0995	
+libaom-c	symbol	other	av1_quick_txfm	45	0.0974	463	1.0018	
+libaom-c	symbol	alloc/libc	av1_free_pc_tree_recursive	45	0.0974	381	0.8243	
+libaom-c	symbol	other	log_sub_block_var	44	0.0952	417	0.9022	
+libaom-c	symbol	dsp:transform	fdct8x8_row_rect_neon	43	0.0930	43	0.0930	
+libaom-c	symbol	intra-mode-rd	av1_encode_intra_block_plane	42	0.0909	5124	11.0863	
+libaom-c	symbol	other	<deduplicated_symbol>	40	0.0865	40	0.0865	
+libaom-c	symbol	other	av1_subtract_txb	39	0.0844	39	0.0844	
+libaom-c	symbol	alloc/libc	malloc_zone_malloc	39	0.0844	39	0.0844	
+libaom-c	symbol	other	av1_filter_block_plane_vert_opt	39	0.0844	171	0.3700	
+libaom-c	symbol	partition-search	av1_prune_partitions_before_search	38	0.0822	4533	9.8077	
+libaom-c	symbol	dsp:transform	fadst8x8_col_neon	37	0.0801	37	0.0801	
+libaom-c	symbol	entropy/rate-model	av1_cost_coeffs_txb	37	0.0801	63	0.1363	
+libaom-c	symbol	intra-mode-rd	av1_rd_pick_intra_mode_sb	36	0.0779	19968	43.2030	
+libaom-c	symbol	dsp:transform	av1_lowbd_fwd_txfm_neon	36	0.0779	36	0.0779	
+libaom-c	symbol	other	av1_txfm_uvrd	35	0.0757	1489	3.2216	
+libaom-c	symbol	postfilter-search	aom_lpf_vertical_14_dual_neon	35	0.0757	116	0.2510	
+libaom-c	symbol	other	av1_sum_intra_stats	34	0.0736	36	0.0779	
+libaom-c	symbol	other	av1_filter_block_plane_vert_opt_chroma	34	0.0736	67	0.1450	
+libaom-c	symbol	other	av1_filter_block_plane_horz_opt_chroma	34	0.0736	62	0.1341	
+libaom-c	symbol	dsp:intra-pred	av1_upsample_intra_edge_neon	33	0.0714	50	0.1082	
+libaom-c	symbol	other	av1_alloc_pmc	32	0.0692	208	0.4500	
+libaom-c	symbol	other	av1_filter_block_plane_horz_opt	32	0.0692	153	0.3310	
+libaom-c	symbol	dsp:transform	av1_fwd_txfm	31	0.0671	31	0.0671	
+libaom-c	symbol	postfilter-search	aom_lpf_horizontal_14_dual_neon	31	0.0671	111	0.2402	
+libaom-c	symbol	postfilter-search	aom_lpf_vertical_6_neon	31	0.0671	31	0.0671	
+libaom-c	symbol	tx-search	av1_txfm_rd_in_plane	30	0.0649	5238	11.3330	
+libaom-c	symbol	dsp:transform	fdct8x8_col_neon	30	0.0649	30	0.0649	
+libaom-c	symbol	alloc/libc	free	30	0.0649	30	0.0649	
+libaom-c	symbol	other	av1_setup_xform	29	0.0627	29	0.0627	
+libaom-c	symbol	partition-search	encode_sb	29	0.0627	4032	8.7237	
+libaom-c	symbol	dsp:dist(sad/var/satd)	aom_variance64x64_neon_dotprod	29	0.0627	29	0.0627	
+libaom-c	symbol	partition-search	av1_encode_sb_row	28	0.0606	33021	71.4446	
+libaom-c	symbol	dsp:recon	av1_inverse_transform_block	28	0.0606	819	1.7720	
+libaom-c	symbol	dsp:transform	idct32_low16_neon	28	0.0606	28	0.0606	
+libaom-c	symbol	dsp:quant	av1_build_quantizer	28	0.0606	32	0.0692	
+libaom-c	symbol	dsp:transform	lowbd_fwd_txfm2d_8x16_neon	27	0.0584	104	0.2250	
+libaom-c	symbol	alloc/libc	DYLD-STUB$$bzero	26	0.0563	26	0.0563	
+libaom-c	symbol	partition-search	av1_prune_ab_partitions	26	0.0563	28	0.0606	
+libaom-c	symbol	postfilter-search	aom_lpf_horizontal_6_neon	26	0.0563	26	0.0563	
+libaom-c	symbol	other	av1_setup_quant	25	0.0541	54	0.1168	
+libaom-c	symbol	dsp:transform	fadst8x8_row_neon	24	0.0519	24	0.0519	
+libaom-c	symbol	entropy/rate-model	av1_get_entropy_contexts	24	0.0519	111	0.2402	
+libaom-c	symbol	other	av1_setup_dst_planes	24	0.0519	24	0.0519	
+libaom-c	symbol	dsp:transform	lowbd_fwd_txfm2d_16x8_neon	24	0.0519	175	0.3786	
+libaom-c	symbol	dsp:transform	fadst8x16_row_rect_neon	24	0.0519	24	0.0519	
+libaom-c	symbol	intra-mode-rd	cfl_subsample_lbd_420_32x32_neon	24	0.0519	24	0.0519	
+libaom-c	symbol	pack/entropy-write	write_modes_b	24	0.0519	385	0.8330	
+libaom-c	symbol	alloc/libc	xzm_xzone_malloc_tiny	23	0.0498	23	0.0498	
+libaom-c	symbol	other	av1_set_entropy_contexts	23	0.0498	53	0.1147	
+libaom-c	symbol	dsp:intra-pred	aom_smooth_predictor_8x8_neon	22	0.0476	22	0.0476	
+libaom-c	symbol	other	dr_prediction_z3_16x16_neon	22	0.0476	22	0.0476	
+libaom-c	symbol	alloc/libc	aom_calloc	22	0.0476	183	0.3959	
+libaom-c	symbol	other	log1p	21	0.0454	21	0.0454	
+libaom-c	symbol	other	av1_get_qmatrix	21	0.0454	21	0.0454	
+libaom-c	symbol	pack/entropy-write	write_modes_sb	21	0.0454	418	0.9044	
+libaom-c	symbol	alloc/libc	aom_memalign	20	0.0433	100	0.2164	
+libaom-c	symbol	dsp:dist(sad/var/satd)	aom_sum_squares_2d_i16_nxn_neon	19	0.0411	19	0.0411	
+libaom-c	symbol	intra-mode-rd	rd_pick_intra_angle_sbuv	19	0.0411	732	1.5838	
+libaom-c	symbol	dsp:dist(sad/var/satd)	aom_variance16x16_neon_dotprod	19	0.0411	19	0.0411	
+libaom-c	symbol	other	encode_b	19	0.0411	3987	8.6263	
+libaom-c	symbol	other	dr_prediction_z3_8x8_neon	18	0.0389	18	0.0389	
+libaom-c	symbol	os/setjmp	mach_absolute_time	18	0.0389	18	0.0389	
+libaom-c	symbol	other	av1_use_qmatrix	17	0.0368	17	0.0368	
+libaom-c	symbol	dsp:intra-pred	aom_paeth_predictor_16x16_neon	17	0.0368	17	0.0368	
+libaom-c	symbol	dsp:intra-pred	aom_smooth_predictor_16x8_neon	17	0.0368	17	0.0368	
+libaom-c	symbol	dsp:transform	lowbd_fwd_txfm2d_8x4_neon	17	0.0368	39	0.0844	
+libaom-c	symbol	pack/entropy-write	write_intra_prediction_modes	17	0.0368	33	0.0714	
+libaom-c	symbol	other	fidentity8x16_row_neon	16	0.0346	16	0.0346	
+libaom-c	symbol	intra-mode-rd	cfl_pick_plane_rd	16	0.0346	180	0.3895	
+libaom-c	symbol	partition-search	av1_setup_src_planes	16	0.0346	16	0.0346	
+libaom-c	symbol	dsp:intra-pred	aom_dc_predictor_32x32_neon	16	0.0346	16	0.0346	
+libaom-c	symbol	dsp:transform	idct32_low1_neon	16	0.0346	16	0.0346	
+libaom-c	symbol	other	chkstk_darwin	15	0.0325	15	0.0325	
+libaom-c	symbol	dsp:intra-pred	aom_paeth_predictor_8x8_neon	15	0.0325	15	0.0325	
+libaom-c	symbol	dsp:dist(sad/var/satd)	aom_variance32x32_neon_dotprod	15	0.0325	15	0.0325	
+libaom-c	symbol	pack/entropy-write	av1_write_intra_coeffs_mb	15	0.0325	316	0.6837	
+libaom-c	symbol	dsp:intra-pred	aom_dc_predictor_8x8_neon	14	0.0303	14	0.0303	
+libaom-c	symbol	other	av1_subtract_block	14	0.0303	14	0.0303	
+libaom-c	symbol	dsp:transform	iadst16_low1_neon	14	0.0303	14	0.0303	
+libaom-c	symbol	dsp:dist(sad/var/satd)	aom_variance8x8_neon_dotprod	14	0.0303	14	0.0303	
+libaom-c	symbol	dsp:transform	fdct4x8_row_rect_neon	14	0.0303	14	0.0303	
+libaom-c	symbol	other	av1_restore_context	14	0.0303	64	0.1385	
+libaom-c	symbol	dsp:transform	idct8_neon	13	0.0281	13	0.0281	
+libaom-c	symbol	dsp:transform	iadst16_neon	13	0.0281	13	0.0281	
+libaom-c	symbol	intra-mode-rd	cfl_predict_lbd_8x8_neon	13	0.0281	13	0.0281	
+libaom-c	symbol	dsp:transform	iadst8_neon	12	0.0260	12	0.0260	
+libaom-c	symbol	intra-mode-rd	cfl_store	12	0.0260	13	0.0281	
+libaom-c	symbol	partition-search	av1_get_perpixel_variance_facade	12	0.0260	96	0.2077	
+libaom-c	symbol	other	av1_update_intra_mb_txb_context	12	0.0260	508	1.0991	
+libaom-c	symbol	other	update_ext_partition_context	12	0.0260	17	0.0368	
+libaom-c	symbol	alloc/libc	DYLD-STUB$$free	12	0.0260	12	0.0260	
+libaom-c	symbol	dsp:quant	aom_quantize_b_32x32_neon	12	0.0260	12	0.0260	
+libaom-c	symbol	other	dr_prediction_z3_32x32_neon	12	0.0260	12	0.0260	
+libaom-c	symbol	intra-mode-rd	cfl_subtract_average_16x16_neon	12	0.0260	12	0.0260	
+libaom-c	symbol	intra-mode-rd	intra_block_yrd	11	0.0238	5122	11.0820	
+libaom-c	symbol	intra-mode-rd	intra_rd_variance_factor	11	0.0238	11	0.0238	
+libaom-c	symbol	dsp:dist(sad/var/satd)	aom_sum_sse_2d_i16_neon	10	0.0216	10	0.0216	
+libaom-c	symbol	dsp:transform	lowbd_fwd_txfm2d_4x8_neon	10	0.0216	22	0.0476	
+libaom-c	symbol	dsp:transform	av1_idct4	10	0.0216	11	0.0238	
+libaom-c	symbol	alloc/libc	aom_free	10	0.0216	10	0.0216	
+libaom-c	symbol	alloc/libc	DYLD-STUB$$_platform_bzero	10	0.0216	10	0.0216	

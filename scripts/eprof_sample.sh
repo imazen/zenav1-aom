@@ -19,7 +19,10 @@ INTERVAL=${INTERVAL:-1}
 ARM=$1; REPS=$2; SECS=$3; OUT=$4; SKIP=${5:-3}
 case $ARM in
   port)      DRV="$XB/target/release/drv-aom" ;;
-  port-dbg)  DRV="$HOME/tmp/eprof-dbg-target/release/drv-aom" ;;
+  # PORT_DBG is overridable so a re-profile at a NEW baseline cannot silently
+  # sample a STALE debug build left in ~/tmp by an earlier session (the 2026-08-02
+  # re-profile found exactly such a binary sitting at the default path).
+  port-dbg)  DRV="${PORT_DBG:-$HOME/tmp/eprof-dbg-target/release/drv-aom}" ;;
   libaom-c)  DRV="$XB/target/drv_libaom" ;;
   *) echo "unknown arm $ARM" >&2; exit 2 ;;
 esac

@@ -3638,6 +3638,48 @@ decode side. Third: 870 167 allocator calls and 559.7 MB per 1 MP encode
 (3 399 per superblock), +24.1 ms — the encode-side twin of the per-txb allocation
 the decoder fixed with `ReconScratch` / `InvTxfmScratch`.
 
+**RE-PROFILED at the post-fix baseline, same day —
+`benchmarks/encoder_hotspot_reprofile_2026-08-02.md` (+ `.meta`, six TSVs).**
+Control band **159.78 ms vs 47.80 ms = 3.343x** (9 interleaved invocations/arm,
+spreads 2.98 %/3.69 %, ratio spread 3.9 %, both arms 4472 B). **The gap is now
+DIFFUSE**: CNN 30.0 %, dsp:transform 21.8 %, allocation 20.9 %, intra pred+RD
+12.3 % of a 118.37 ms gap — nothing over 30 %, and the port's profile now has
+the same shape as libaom's (top symbol 23.9 % vs 22.1 %, top ten spanning six
+stages vs seven). Every non-CNN ABSOLUTE gap from the pre-fix table is confirmed
+unchanged to within ±0.5 ms; only the shares moved. Load-bearing corrections and
+new findings:
+
+* **The bd8 lowbd lane path is now the single biggest PROGRAMME, at 34.1 % of
+  the gap** — bigger than the CNN. Forward transform 6.16x/+19.63 ms, intra
+  pred+RD 4.21x/+14.54 ms, inverse 8.55x/+6.15 ms. Source-verified both sides:
+  libaom's fdct/fadst NEON kernels take `const int16x8_t *`
+  (`upstream/av1/encoder/arm/av1_fwd_txfm2d_neon.c:401-1476`); the port's
+  `fwd_col_pass`/`fwd_row_pass` (`aom-dsp/src/transform/simd/mod.rs:574,:685`)
+  are `i32x8` and `widen16()` on load — **half the lane width**, and
+  `lowbd16.rs` has INVERSE kernels only. Of the port's encode-side inverse,
+  **79 % still runs the wide i32 path** (`lowbd16.rs:69-76` — only the DCT
+  family passed the i16 audit).
+* **The port's `os/setjmp` stage is allocator bookkeeping, not setjmp** —
+  `mach_absolute_time` is 98.7 % under `xzm_free`; on libaom the same stage is
+  97.6 % genuine `setjmp`. **Corrected allocation class: 27.63 ms vs 2.87 ms =
+  9.63x, +24.76 ms.** Retroactive: the pre-fix alloc gap was +26.71, not +24.05.
+* **A cheap named sub-lever: 4.5 % of the gap in four lines.**
+  `fwd_col_pass`/`fwd_row_pass` open with a flat `[i32x8::zero(t); 64]` x2 =
+  **4 KiB memset per forward transform, at every size**. The *inverse* passes in
+  the same file are tiered {8,16,64} (`mod.rs:430-443,:784-797,:994-1000`) and
+  `lowbd16.rs:132` says why. Those two are the **top two allocator/memset
+  callers** (19.2 % of the class, 5.30 ms).
+* Allocation re-census: **854 053 calls / 448.8 MB / 3 336 per SB** (was
+  870 167 / 559.7 / 3 399) — the cache removed 16 114 calls and 110.9 MB,
+  landing within 0.1 % of what that profile projected. CNN cascade **256 runs,
+  1.00/SB**, per-call cost unchanged at 146.2 µs vs libaom NEON 17.1 µs (8.57x).
+* **`cpu-used 9` is no longer a refusal (KB-34) and is the WORST ratio measured
+  anywhere: 5.64x** (22.86 ms vs 4.05 ms, CNN never runs). cpu-used 4 is 7.76x.
+  **Neither is profiled** — do not carry the ranking to them.
+* Projected floor (arithmetic on measured self-costs, NOT a forecast): CNN-NEON
+  + the fwd-scratch tiering + the i16 forward path → **2.21x** (2.42x at
+  half-credit on the transform); levers 1-4 at their ceilings → 1.50x.
+
 **RESULT — FIXED 2026-08-02. MEASURED 10.66x → 3.36x, zero bytes moved.**
 Record: `benchmarks/encoder_cnn_cache_2026-08-02.md` + `.meta` + `.control.tsv`
 + `.breadth.tsv`.

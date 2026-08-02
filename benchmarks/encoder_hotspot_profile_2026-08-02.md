@@ -5,6 +5,17 @@
 > byte moved — `encoder_cnn_cache_2026-08-02.md`. Everything below is the
 > pre-fix state, and its ranked levers 2-5 are arithmetic on the pre-fix
 > self-costs; re-profile before ranking them again.
+>
+> **THAT RE-PROFILE EXISTS — read it instead of this ranking:**
+> [`encoder_hotspot_reprofile_2026-08-02.md`](encoder_hotspot_reprofile_2026-08-02.md).
+> At the new 3.34x baseline the gap is **DIFFUSE** (CNN 30.0 %, transform
+> 21.8 %, allocation 20.9 %, intra pred+RD 12.3 %), so this file's
+> "CONCENTRATED" headline no longer describes the program. Every ABSOLUTE gap
+> below is confirmed still correct (nothing but the CNN row and its call-site
+> copy moved by more than 0.5 ms); only the shares are stale. Two corrections
+> the re-profile makes to the table below: the port's `os/setjmp` row is
+> allocator bookkeeping under `xzm_free`, not setjmp (so the alloc gap is
+> +26.71, not +24.05), and `cpu-used 9` is no longer a refusal (KB-34).
 
 **The gap is CONCENTRATED, not diffuse. One function is 81.5 % of it.**
 

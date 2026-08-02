@@ -1,0 +1,213 @@
+# encoder_hotspot_reprofile_2026-08-02 — provenance
+# Companion to encoder_hotspot_reprofile_2026-08-02.md and its six TSVs.
+#
+# This RE-RUNS the methodology of encoder_hotspot_profile_2026-08-02.{md,meta}
+# at a NEW baseline. That profile's ranking was taken against a 520.93 ms encode
+# in which cnn_predict was 74.7 % self; KB-PERF-1 (6432e06) cached the CNN and
+# the encode is now ~160 ms, so every SHARE in that ranking was stale and its
+# levers 2-5 were explicitly arithmetic on the pre-fix self-costs. That file
+# says "re-profile before ranking them again". This is that re-profile.
+#
+# NOTHING WAS OPTIMIZED IN THIS SESSION. This is a measurement task; every
+# ceiling in the ranked table is arithmetic on a measured self-cost.
+
+date                 2026-08-02
+box                  Apple M4 Pro, 12 cores, 24 GiB, macOS 26.5.2 (build 25F84, Darwin arm64)
+repo commit          ab1748927cdeef0c40574401729942d404294b87   (worktree zenav1-aom--eprof2, detached at main)
+  first profile was  0953fa758cf2612d962fb0c8429c01b9abb4251b
+  changes between    6432e06 (KB-PERF-1, the CNN cache — the reason for this re-profile)
+                     bc545df (test/bench re-pins)
+                     ab17489 (KB-34, the nonrd non-square leaf walk — ALSO unblocked
+                              cpu-used 9, which the first profile recorded as a refusal)
+libaom oracle        upstream/ submodule 03087864cf4bea6abb0d28f95cf7843511413d8f  (v3.14.1)
+                     — the SAME build as the first profile, deliberately.
+rustc                1.97.1 (8bab26f4f 2026-07-14)
+C compiler           Apple clang 21.0.0 (clang-2100.1.1.101)
+python               3.14.6
+build flags          --release, NO -C target-cpu=native (runtime SIMD dispatch, what users get)
+threading            single-threaded on both arms (the port has no threading; the oracle
+                     libaom is built CONFIG_MULTITHREAD=0)
+nice                 every measured run under `nice -n 19`
+
+## BOX WAS NOT IDLE — read this before reading any absolute millisecond
+
+A concurrent `zenmetrics` mac-worker fleet held the whole-box load average at
+28-34 (of 12 cores) throughout, as it did during the first profile and the
+CNN-cache study. It was another agent's live work and was NOT interfered with.
+Handled, not hoped about:
+
+* The control band is INTERLEAVED (port, C, port, C, …) over 9 independent
+  invocations per arm and is reported FIRST, per docs/DIFFERENTIAL_PLAYBOOK.md
+  §6. Spread: port 2.98 %, libaom-c 3.69 %, ratio 3.9 %.
+* The PORT ARM WAS SAMPLED TWICE, independently, as a stability control
+  (.stability.tsv). Every stage above 2 % of the window agrees within 5 %
+  relative between the two runs; the worst is alloc/libc at −9.9 % (1.57 pp).
+* libaom's own stage table is unchanged from the first profile to a tenth of a
+  point (hog 24.92 vs 24.98, dsp:transform 9.62 vs 9.67, cnn 9.36 vs 9.33,
+  trellis 8.30 vs 8.25) — same binary, same cell, two sessions. That is the
+  method reproducing, not an assumption.
+
+## Encoder arms (identical to benchmarks/xbench and to the first profile)
+
+port        benchmarks/xbench/drv-aom          `EncodeCell::port_encode_with(&bootstrap, default knobs)`
+                                                timed region = the port's whole frame encode; the
+                                                UNTIMED C sequence-header bootstrap is structural
+                                                (the port never authors a sequence header).
+libaom-c    benchmarks/xbench/csrc/drv_libaom.c timed region = aom_codec_encode + drain + flush + drain;
+                                                enc_init/destroy/img_alloc excluded. The first profile
+                                                MEASURED the untimed fraction at 0.15 % (200 reps),
+                                                so no correction is applied.
+
+## Profile cell — unchanged from the first profile, for continuity
+
+1024x1024 photo, cq-level 44, cpu-used 6, ALLINTRA (usage 2), 8-bit 4:2:0,
+single tile, single thread. Source: $HOME/tmp/xb/src/photo_1024.yuv, produced by
+`python3 scripts/xbench.py prep` (Lanczos3 square:1024 downscale of
+codec-corpus clic2025/final-test/8426ed22...png), byte-identical to the file the
+2026-08-01 cross-encoder study and the first profile used.
+Both arms emit the SAME 4472-byte stream (4458-byte coded frame) at this cell,
+and at all 13 breadth cells `port_bytes == c_bytes`.
+
+## Tooling — reused unchanged from the first profile
+
+profiler             /usr/bin/sample, 1 ms interval, 60 s window, started 5 s after launch
+                     so the .yuv read, the C bootstrap and the warm-up encode are outside it.
+                     45 541 samples (port run 2), 45 846 (port run 1), 46 219 (libaom-c).
+  * WALL-CLOCK SAMPLER, not an instruction counter. No valgrind on Apple Silicon,
+    so the deterministic-Ir method the decode-side gate3 profiles used is not on
+    the table. IPC and cache behaviour are folded into every number here.
+  * Does NOT expand inlined frames — self cost is charged to the outermost
+    NON-inlined function. See the .md's "Attribution limits" section for the six
+    specific rows this damages and for which of them are cross-checked by a
+    measurement that does not use the profiler at all.
+  * libaom.a carries no -g, so its `static` functions symbolicate to the nearest
+    preceding exported symbol. Globals (nearly all the top of its profile) are exact.
+  * The port arm is a CARGO_PROFILE_RELEASE_DEBUG=2 build (+ dsymutil). Debug info
+    does not change codegen: BYTE-IDENTICAL .obu, 158.3-158.8 ms vs the plain
+    release build's 159.78 ms — inside the 2.98 % control spread.
+
+rollup               scripts/eprof_rollup.py    (unchanged)
+alignment            scripts/eprof_align.py     (unchanged)
+caller attribution   scripts/eprof_callers.py   (unchanged)
+alloc census         crates/aom-bench/examples/eprof_alloc.rs      (unchanged)
+CNN per-call bench   crates/aom-bench/examples/eprof_cnn_bench.rs  (unchanged)
+control band         scripts/eprof_control.sh   (unchanged)
+breadth              scripts/eprof_breadth.sh   (unchanged)
+sampler wrapper      scripts/eprof_sample.sh    — ONE change, made here: the `port-dbg`
+                     arm's binary path is now overridable via $PORT_DBG. A STALE
+                     debug build from the first profile's session was sitting at the
+                     hardcoded default path ($HOME/tmp/eprof-dbg-target/release/drv-aom,
+                     built 03:37 at the PRE-CACHE commit); sampling it would have
+                     silently re-measured the old encoder. Not hypothetical — it was
+                     found there.
+
+## Exact commands
+
+  git worktree add --detach ~/work/zen/zenav1-aom--eprof2 main
+  git -C ~/work/zen/zenav1-aom--eprof2 submodule update --init
+
+  nice -n 19 cargo build --release -j 4 -p zenav1-aom-sys-ref          # the C oracle
+  nice -n 19 cc -O2 -o benchmarks/xbench/target/drv_libaom \
+      benchmarks/xbench/csrc/drv_libaom.c -Iupstream -Iupstream/build \
+      -Lupstream/build -laom -lm -lc++
+  (cd benchmarks/xbench && nice -n 19 cargo build --release -j 4 -p drv-aom)
+  (cd benchmarks/xbench && CARGO_TARGET_DIR=$HOME/tmp/eprof2-dbg-target \
+      CARGO_PROFILE_RELEASE_DEBUG=2 nice -n 19 cargo build --release -j 4 -p drv-aom)
+  dsymutil ~/tmp/eprof2-dbg-target/release/drv-aom
+  nice -n 19 cargo build --release -j 4 -p zenav1-aom-bench \
+      --example eprof_alloc --example eprof_cnn_bench --example eprof_cnn_verify
+
+  nice -n 19 bash scripts/eprof_control.sh 9 ~/tmp/eprof2_control.tsv
+  PORT_DBG=$HOME/tmp/eprof2-dbg-target/release/drv-aom \
+    nice -n 19 bash scripts/eprof_sample.sh port-dbg 500 60 ~/tmp/eprof2_port.sample.txt 5
+  nice -n 19 bash scripts/eprof_sample.sh libaom-c 1500 60 ~/tmp/eprof2_libaomc.sample.txt 5
+  PORT_DBG=$HOME/tmp/eprof2-dbg-target/release/drv-aom \
+    nice -n 19 bash scripts/eprof_sample.sh port-dbg 500 60 ~/tmp/eprof2_port2.sample.txt 5
+  python3 scripts/eprof_rollup.py ~/tmp/eprof2_port2.sample.txt   --arm port     --rules rust --tsv ~/tmp/eprof2_port2.tsv
+  python3 scripts/eprof_rollup.py ~/tmp/eprof2_libaomc.sample.txt --arm libaom-c --rules c    --tsv ~/tmp/eprof2_c.tsv
+  python3 scripts/eprof_align.py --port ~/tmp/eprof2_port2.tsv --port-ms 166.017 \
+                                 --c    ~/tmp/eprof2_c.tsv     --c-ms     47.647
+  python3 scripts/eprof_callers.py ~/tmp/eprof2_port2.sample.txt --leaf '<allocator class>'
+  python3 scripts/eprof_callers.py ~/tmp/eprof2_port2.sample.txt --leaf 'mach_absolute_time|clock_gettime|gettimeofday'
+  python3 scripts/eprof_callers.py ~/tmp/eprof2_libaomc.sample.txt --leaf 'sigprocmask|sigaltstack|mach_absolute_time'
+  ./target/release/examples/eprof_alloc     1024 1024 44 6 ~/tmp/xb/src/photo_1024.yuv
+  ./target/release/examples/eprof_cnn_bench 1024 1024        ~/tmp/xb/src/photo_1024.yuv 2000
+  nice -n 19 bash scripts/eprof_breadth.sh ~/tmp/eprof2_breadth.tsv
+
+## Denominators used in the aligned table
+
+port       166.017 ms/encode  (median of the 500 timed reps taken DURING port sample run 2)
+libaom-c    47.647 ms/encode  (median of the 1500 timed reps taken DURING the libaom-c run)
+ratio during profiling 3.484x; ratio in the clean interleaved control 3.343x.
+`sample` suspends the target to walk stacks, which inflates the port arm's
+during-profile median by ~4 % (port run 1 during-profile median was 163.632 ms).
+The .md quotes the CONTROL-BAND ratio for the headline and the during-profile
+medians for the aligned table, so each number is paired with the run it came from.
+
+## Cross-checks that do NOT use the profiler
+
+* CNN call count: 256 per frame, 1.00 per 64x64 SB, on all five load-bearing
+  exact-size counters (eprof_alloc). libaom's is 256. (Two of the seven watch
+  sizes, 64 B and 80 B, are shared with unrelated call sites and are NOT usable
+  as CNN counters — they report 71 908 and 1 852. The five that ARE single-site
+  move in lockstep.)
+* CNN per-call cost: 146 171 ns port / 128 692 ns libaom `_c` / 17 059 ns libaom
+  NEON (eprof_cnn_bench, 7 rounds x 2000 iters, outputs compared first).
+  256 x 146.17 µs = 37.42 ms vs the profile's 40.02 ms (6.9 % apart);
+  256 x 17.06 µs = 4.37 ms vs the profile's 4.46 ms (2.1 % apart).
+* Forward-transform lane width: read from BOTH sources, not inferred.
+  upstream/av1/encoder/arm/av1_fwd_txfm2d_neon.c:401-1476 — every fdct/fadst/
+  fidentity kernel takes `const int16x8_t *`. The port's
+  crates/aom-dsp/src/transform/simd/mod.rs:574,:685 are
+  `#[magetypes(define(i32x8), ...)]` and widen16() on load. lowbd16.rs contains
+  INVERSE kernels only.
+* Forward-pass scratch memset: profiler attribution (try_fwd_col_pass +124 ->
+  _platform_memset at mod.rs:0) AND source (mod.rs:592,:703 flat
+  `[i32x8::zero(t); 64]` x2 = 4 KiB/call, vs the tiered {8,16,64} at :430-443,
+  :784-797, :994-1000) AND the in-repo comment at lowbd16.rs:132 that states the
+  tiering exists because "a flat 64-entry array zero-init is a memset that
+  dominates the small transforms".
+* Stage-table internal consistency: the sum of the two rows that moved since the
+  first profile (cnn −342.33, partition-search −3.17) is −345.50 against a
+  measured total gap move of −345.15 ms, across sixteen independently-sampled
+  stages.
+
+## Committed data files
+
+  .control.tsv         9 invocations x 2 arms, per-invocation median + all 7 sample NS + bytes
+  .stages.tsv          the aligned stage table (eprof_align.py --out)
+  .symbols.tsv         BOTH arms' rollups concatenated. TRUNCATED to symbols with
+                       self_samples >= 10 to stay under the repo's 30 KB file rule;
+                       that keeps 99.07 % of the port's and 98.97 % of libaom's self
+                       samples. Every stage row is present untruncated, so the stage
+                       totals in the .md are reproducible from this file; the dropped
+                       rows are individually <= 0.022 % of a window and are below the
+                       reproducibility floor measured in .stability.tsv. Regenerate
+                       the full lists with the eprof_rollup.py commands above.
+  .breadth.tsv         13 cells, both arms, with the exact CNN call count per cell
+  .alloc_callers.tsv   full caller attribution of the allocator/memset/memcpy leaf class
+  .stability.tsv       port sample run 1 vs run 2, per stage — the sampling control
+
+## Raw artifacts NOT committed (regenerate with the commands above)
+
+  ~/tmp/eprof2_port.sample.txt      2.4 MB  `sample` call graph, port run 1
+  ~/tmp/eprof2_port2.sample.txt     3.5 MB  `sample` call graph, port run 2 (primary)
+  ~/tmp/eprof2_libaomc.sample.txt   1.4 MB  `sample` call graph, libaom-c
+  ~/tmp/eprof2-dbg-target/                  the debug-info build + its .dSYM
+  ~/tmp/eprof2_alloc.txt                    the allocation census
+  ~/tmp/eprof2_cnnbench.txt                 the CNN per-call microbenchmark
+
+## Known gaps in this measurement, stated so nothing above is over-read
+
+* ONE image, one content class (photographic). No screen content, no synthetic.
+* 8-bit 4:2:0 only; no 10-bit, no 4:4:4, no monochrome. Note the irony: the
+  largest lever identified is "run the 8-bit path at 8-bit lane width", and its
+  10-bit behaviour is not measured at all.
+* cpu-used 0, 1, 2 NOT measured. cpu-used 3, 4, 5 and 9 were breadth-measured
+  but NOT profiled — and cpu-used 9 (5.64x) and cpu-used 4 (7.76x) are both
+  WORSE than the profiled cell. The composition of those gaps is unknown; do not
+  carry the ranking to them.
+* No instruction-count profile (no valgrind on Apple Silicon).
+* No multi-threaded measurement. Neither arm is threaded here.
+* NO CHANGE WAS MADE and nothing was re-measured after a change. Every ceiling
+  in the ranked table is arithmetic on measured self-costs, labelled as such.
