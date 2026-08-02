@@ -407,25 +407,25 @@ fn measure(cell: &EncodeCell) -> (Verdict, i64, String) {
 /// drifted. Every row below is byte-exact now, so "1280x720 is byte-identical
 /// at every speed" is finally true. See KB-12 and `nonrd_block_yrd_lp_diff.rs`.
 ///
-/// Two speed-9 cells still reach KB-32's documented non-square-leaf refusal
-/// ("HANDOFF: nonrd estimate arm at non-square leaf"), which KB-32 measured as
-/// reachable only on its 108 MP cell — 0.9 MP frames reach it too. That is a
-/// separate, still-open HANDOFF and is pinned as such below.
+/// **The last two rows CLOSED 2026-08-02 as well (KB-34).** They were the two
+/// speed-9 cells reaching KB-32's non-square-leaf refusal ("HANDOFF: nonrd
+/// estimate arm at non-square leaf") — which KB-32 had measured as reachable
+/// only on its 108 MP cell, so finding it at 0.9 MP here was the first
+/// contradiction of that claim. The estimate arm now runs C's real per-txb
+/// walk and both rows are byte-exact, so this grid is **20/20** and
+/// `NONRD_ESTIMATE_ARM_OPEN` is empty.
 #[test]
 #[ignore = "large-frame encode pairs at cpu 7/8/9; nightly / on-demand tier"]
 fn vbp_band_crop_dims_byte_match() {
     c::ref_init();
     let base = EncodeCell::real_content("kb28base", "av1-1-b8-00-quantizer-00", None, 24, 0);
     // What is still not byte-exact on this grid, pinned EXACTLY and
-    // self-promoting in both directions. KB-12's estimate-arm class occupied
-    // 18 of these 20 rows until 2026-08-02 and is now empty; what remains is
-    // KB-32's non-square-leaf HANDOFF refusal, which is a REFUSAL rather than
-    // a wrong stream and is tracked on KB-32. Nothing at speed 7 may appear —
-    // speed 7 is KB-28's own band and is asserted clean.
-    const NONRD_ESTIMATE_ARM_OPEN: &[(i32, i32, i32, i32, Verdict)] = &[
-        (1272, 724, 24, 9, Verdict::Panic),
-        (954, 962, 24, 9, Verdict::Panic),
-    ];
+    // self-promoting in both directions. It is now EMPTY: KB-12's estimate-arm
+    // class held 18 of these 20 rows until 2026-08-02 (closed by the
+    // aom_hadamard_lp_8x8 transpose) and KB-34's non-square-leaf refusal held
+    // the other 2 (closed the same day by the per-txb walk). Nothing at speed 7
+    // may appear either — speed 7 is KB-28's own band and is asserted clean.
+    const NONRD_ESTIMATE_ARM_OPEN: &[(i32, i32, i32, i32, Verdict)] = &[];
     let mut observed: Vec<(i32, i32, i32, i32, Verdict)> = Vec::new();
     let mut worst_b_per_sb = 0.0f64;
     let mut worst_cell = String::new();
@@ -520,11 +520,12 @@ fn vbp_band_crop_dims_byte_match() {
     let pinned: Vec<(i32, i32, i32, i32, Verdict)> = NONRD_ESTIMATE_ARM_OPEN.to_vec();
     assert_eq!(
         observed, pinned,
-        "the nonrd map moved. The two pinned rows are KB-32's non-square-leaf \
-         HANDOFF refusal at speed 9 — if they start MATCHING, that HANDOFF was \
-         implemented and this pin promotes to empty. Any other row is a \
-         regression: 18 rows of KB-12's estimate-arm class lived here until \
-         2026-08-02 and closed with the aom_hadamard_lp_8x8 transpose."
+        "the nonrd map moved, and it is pinned EMPTY — every row is a \
+         regression. `Panic` at speed 9 is KB-34's non-square-leaf arm coming \
+         back (2 rows lived there until 2026-08-02); a sub-byte-per-SB \
+         sign-random `Diverge` is KB-12's estimate arm (18 rows, closed the \
+         same day by the aom_hadamard_lp_8x8 transpose); a delta that grows \
+         with area is a size-scaling speed feature, KB-32's shape."
     );
 }
 

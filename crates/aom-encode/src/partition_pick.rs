@@ -5059,11 +5059,49 @@ pub fn nonrd_use_partition_real(
                     SbTree::Vert(Box::new([w0, w1]))
                 }
             } else {
-                // Same interior-envelope limitation as rd_use_partition_real:
-                // the SbTree rect variants carry both winners.
-                unimplemented!(
-                    "frame-edge single-strip nonrd rect at ({mi_row},{mi_col}) bsize {bsize}"
-                )
+                // Frame-edge rect: sub 0 alone. This was an `unimplemented!()`
+                // reading "the SbTree rect variants carry both winners" — the
+                // same stale claim KB-25 removed from `rd_use_partition_real`
+                // (speed 7) on 2026-08-01, in the same words. It was left here
+                // because no speed-8/9 cell had ever got this far: the VBP tree
+                // only stamps a rect where the HORZ/VERT pair arms win, and
+                // every such cell hit KB-32's non-square-leaf refusal in the
+                // leaf pick ABOVE this line first. With that refusal gone
+                // (2026-08-02) this became the next thing in the way, on
+                // exactly KB-28's 954x962 / 1272x724 cq24 cpu9 pair.
+                //
+                // The representation supports the shape; only the constructor
+                // did not build it. All four consumers of slot 1 gate it on
+                // this same frame predicate — `encode_sb.rs::encode_sb_dry`,
+                // `pack.rs::pack_sb_tree`, `stamp_grid_from_tree`,
+                // `lf_search.rs::stamp_tree_lf` — so slot 1 is never read on
+                // this branch, and it gets a POISONED clone of sub 0
+                // (`bsize = usize::MAX`) so that unreadability is ENFORCED:
+                // both `encode_sb_dry` and `pack_sb_tree` run
+                // `debug_assert_eq!(s1.bsize, subsize)` before touching it.
+                //
+                // The OTHER half of the guard above — sub 1 in frame but
+                // `bsize == BLOCK_8X8`, where C also codes strip 0 only
+                // (partition_search.c:3046/:3070) — is a genuinely different
+                // case: there the consumers' frame gate PASSES, slot 1 is read,
+                // and a poison would be a wrong stream rather than an unread
+                // one. It stays a hard refusal (and is unreachable: the KEY VBP
+                // tree's `bsize_min` is BLOCK_8X8, and `set_vt_partitioning`
+                // offers NONE or split — never a rect — at `bsize == bsize_min`,
+                // var_based_part.c:186-199).
+                assert!(
+                    !sub1_in_frame,
+                    "nonrd rect at ({mi_row},{mi_col}) bsize {bsize}: sub 1 is IN FRAME but \
+                     `bsize > BLOCK_8X8` fails, so C codes strip 0 only while every SbTree \
+                     consumer would read slot 1 — the sub-8x8 rect arm is unported"
+                );
+                let mut poison = w0.clone();
+                poison.bsize = usize::MAX;
+                if is_horz {
+                    SbTree::Horz(Box::new([w0, poison]))
+                } else {
+                    SbTree::Vert(Box::new([w0, poison]))
+                }
             }
         }
         // PARTITION_SPLIT (:3078-3117): plain recursion (try_merge/direct

@@ -1,0 +1,123 @@
+# KB-34 per-root bite proof (playbook §1) — four arms over ONE cell list.
+#   before  = both hunks stashed (pristine bc545df)
+#   after   = both live
+#   revertA = crates/aom-encode/src/nonrd_pickmode.rs stashed (the txb walk alone)
+#   revertB = crates/aom-encode/src/partition_pick.rs stashed (the frame-edge rect constructor alone)
+# tag: gate = KB-34's gate cells; rd = the RD-speed ladder; photo8 = the pre-existing cpu-8 photo divergences; profile/sbexact = SB-EXACT frames reaching an INTERIOR rect
+arm	tag	size	cq	speed	verdict	port_bytes	delta	panic_message
+before	gate	1272x724	cq24	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 4 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+before	gate	954x962	cq24	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 5 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+before	gate	954x962	cq56	cpu8	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 5 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+before	gate	1920x1080	cq24	cpu8	PANIC	-1	+0	not implemented: frame-edge single-strip nonrd rect at (268,8) bsize 6
+before	gate	1920x1080	cq48	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 5 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+before	gate	1280x720	cq24	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 8 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+before	gate	1280x720	cq48	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 8 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+before	gate	196x196	cq24	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 4 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+before	gate	196x196	cq24	cpu8	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 4 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+before	gate	250x250	cq24	cpu9	MATCH	9690	+0
+before	rd	1272x724	cq24	cpu0	MATCH	139544	+0
+before	rd	1272x724	cq24	cpu1	MATCH	138700	+0
+before	rd	1272x724	cq24	cpu2	DIVERGE	138535	-14
+before	rd	1272x724	cq24	cpu3	DIVERGE	138216	-104
+before	rd	1272x724	cq24	cpu4	DIVERGE	138505	-167
+before	rd	1272x724	cq24	cpu5	DIVERGE	138384	-189
+before	rd	1272x724	cq24	cpu6	MATCH	138441	+0
+before	rd	1272x724	cq24	cpu7	MATCH	135564	+0
+before	photo8	512x512	cq32	cpu8	DIVERGE	2556	-11
+before	photo8	512x512	cq44	cpu8	DIVERGE	1133	+2
+before	photo8	768x768	cq52	cpu8	DIVERGE	1918	-15
+before	photo8	896x896	cq52	cpu8	DIVERGE	2499	+8
+before	photo8	1024x1024	cq52	cpu8	DIVERGE	2802	-4
+before	photo8	1024x1024	cq63	cpu8	DIVERGE	1031	+2
+before	profile	1024x1024	cq44	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 4 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+before	sbexact	768x768	cq32	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 7 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+before	sbexact	896x896	cq28	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 4 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+before	sbexact	1024x1024	cq24	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 7 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+before	sbexact	1024x1024	cq36	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 7 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+after	gate	1272x724	cq24	cpu9	MATCH	138774	+0
+after	gate	954x962	cq24	cpu9	MATCH	142895	+0
+after	gate	954x962	cq56	cpu8	MATCH	8388	+0
+after	gate	1920x1080	cq24	cpu8	MATCH	318638	+0
+after	gate	1920x1080	cq48	cpu9	MATCH	44426	+0
+after	gate	1280x720	cq24	cpu9	MATCH	115172	+0
+after	gate	1280x720	cq48	cpu9	MATCH	15146	+0
+after	gate	196x196	cq24	cpu9	MATCH	5752	+0
+after	gate	196x196	cq24	cpu8	MATCH	5570	+0
+after	gate	250x250	cq24	cpu9	MATCH	9690	+0
+after	rd	1272x724	cq24	cpu0	MATCH	139544	+0
+after	rd	1272x724	cq24	cpu1	MATCH	138700	+0
+after	rd	1272x724	cq24	cpu2	DIVERGE	138535	-14
+after	rd	1272x724	cq24	cpu3	DIVERGE	138216	-104
+after	rd	1272x724	cq24	cpu4	DIVERGE	138505	-167
+after	rd	1272x724	cq24	cpu5	DIVERGE	138384	-189
+after	rd	1272x724	cq24	cpu6	MATCH	138441	+0
+after	rd	1272x724	cq24	cpu7	MATCH	135564	+0
+after	photo8	512x512	cq32	cpu8	DIVERGE	2556	-11
+after	photo8	512x512	cq44	cpu8	DIVERGE	1133	+2
+after	photo8	768x768	cq52	cpu8	DIVERGE	1918	-15
+after	photo8	896x896	cq52	cpu8	DIVERGE	2499	+8
+after	photo8	1024x1024	cq52	cpu8	DIVERGE	2802	-4
+after	photo8	1024x1024	cq63	cpu8	DIVERGE	1031	+2
+after	profile	1024x1024	cq44	cpu9	MATCH	4728	+0
+after	sbexact	768x768	cq32	cpu9	MATCH	8307	+0
+after	sbexact	896x896	cq28	cpu9	MATCH	14262	+0
+after	sbexact	1024x1024	cq24	cpu9	MATCH	21023	+0
+after	sbexact	1024x1024	cq36	cpu9	MATCH	8592	+0
+revertA	gate	1272x724	cq24	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 4 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+revertA	gate	954x962	cq24	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 5 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+revertA	gate	954x962	cq56	cpu8	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 5 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+revertA	gate	1920x1080	cq24	cpu8	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 5 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+revertA	gate	1920x1080	cq48	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 5 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+revertA	gate	1280x720	cq24	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 8 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+revertA	gate	1280x720	cq48	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 8 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+revertA	gate	196x196	cq24	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 4 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+revertA	gate	196x196	cq24	cpu8	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 4 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+revertA	gate	250x250	cq24	cpu9	MATCH	9690	+0
+revertA	rd	1272x724	cq24	cpu0	MATCH	139544	+0
+revertA	rd	1272x724	cq24	cpu1	MATCH	138700	+0
+revertA	rd	1272x724	cq24	cpu2	DIVERGE	138535	-14
+revertA	rd	1272x724	cq24	cpu3	DIVERGE	138216	-104
+revertA	rd	1272x724	cq24	cpu4	DIVERGE	138505	-167
+revertA	rd	1272x724	cq24	cpu5	DIVERGE	138384	-189
+revertA	rd	1272x724	cq24	cpu6	MATCH	138441	+0
+revertA	rd	1272x724	cq24	cpu7	MATCH	135564	+0
+revertA	photo8	512x512	cq32	cpu8	DIVERGE	2556	-11
+revertA	photo8	512x512	cq44	cpu8	DIVERGE	1133	+2
+revertA	photo8	768x768	cq52	cpu8	DIVERGE	1918	-15
+revertA	photo8	896x896	cq52	cpu8	DIVERGE	2499	+8
+revertA	photo8	1024x1024	cq52	cpu8	DIVERGE	2802	-4
+revertA	photo8	1024x1024	cq63	cpu8	DIVERGE	1031	+2
+revertA	profile	1024x1024	cq44	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 4 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+revertA	sbexact	768x768	cq32	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 7 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+revertA	sbexact	896x896	cq28	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 4 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+revertA	sbexact	1024x1024	cq24	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 7 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+revertA	sbexact	1024x1024	cq36	cpu9	PANIC	-1	+0	HANDOFF: nonrd estimate arm at non-square leaf bsize 7 — max_txsize_lookup gives a tx smaller than the leaf, so av1_foreach_transformed_block_in_plane visits more than one txb and nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)
+revertB	gate	1272x724	cq24	cpu9	PANIC	-1	+0	not implemented: frame-edge single-strip nonrd rect at (0,316) bsize 6
+revertB	gate	954x962	cq24	cpu9	PANIC	-1	+0	not implemented: frame-edge single-strip nonrd rect at (240,24) bsize 6
+revertB	gate	954x962	cq56	cpu8	PANIC	-1	+0	not implemented: frame-edge single-strip nonrd rect at (240,8) bsize 6
+revertB	gate	1920x1080	cq24	cpu8	PANIC	-1	+0	not implemented: frame-edge single-strip nonrd rect at (268,8) bsize 6
+revertB	gate	1920x1080	cq48	cpu9	PANIC	-1	+0	not implemented: frame-edge single-strip nonrd rect at (268,8) bsize 6
+revertB	gate	1280x720	cq24	cpu9	PANIC	-1	+0	not implemented: frame-edge single-strip nonrd rect at (176,48) bsize 9
+revertB	gate	1280x720	cq48	cpu9	PANIC	-1	+0	not implemented: frame-edge single-strip nonrd rect at (176,16) bsize 9
+revertB	gate	196x196	cq24	cpu9	PANIC	-1	+0	not implemented: frame-edge single-strip nonrd rect at (20,48) bsize 6
+revertB	gate	196x196	cq24	cpu8	PANIC	-1	+0	not implemented: frame-edge single-strip nonrd rect at (20,48) bsize 6
+revertB	gate	250x250	cq24	cpu9	MATCH	9690	+0
+revertB	rd	1272x724	cq24	cpu0	MATCH	139544	+0
+revertB	rd	1272x724	cq24	cpu1	MATCH	138700	+0
+revertB	rd	1272x724	cq24	cpu2	DIVERGE	138535	-14
+revertB	rd	1272x724	cq24	cpu3	DIVERGE	138216	-104
+revertB	rd	1272x724	cq24	cpu4	DIVERGE	138505	-167
+revertB	rd	1272x724	cq24	cpu5	DIVERGE	138384	-189
+revertB	rd	1272x724	cq24	cpu6	MATCH	138441	+0
+revertB	rd	1272x724	cq24	cpu7	MATCH	135564	+0
+revertB	photo8	512x512	cq32	cpu8	DIVERGE	2556	-11
+revertB	photo8	512x512	cq44	cpu8	DIVERGE	1133	+2
+revertB	photo8	768x768	cq52	cpu8	DIVERGE	1918	-15
+revertB	photo8	896x896	cq52	cpu8	DIVERGE	2499	+8
+revertB	photo8	1024x1024	cq52	cpu8	DIVERGE	2802	-4
+revertB	photo8	1024x1024	cq63	cpu8	DIVERGE	1031	+2
+revertB	profile	1024x1024	cq44	cpu9	MATCH	4728	+0
+revertB	sbexact	768x768	cq32	cpu9	MATCH	8307	+0
+revertB	sbexact	896x896	cq28	cpu9	MATCH	14262	+0
+revertB	sbexact	1024x1024	cq24	cpu9	MATCH	21023	+0
+revertB	sbexact	1024x1024	cq36	cpu9	MATCH	8592	+0

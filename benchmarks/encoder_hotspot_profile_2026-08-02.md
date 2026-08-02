@@ -389,6 +389,14 @@ same cell is fine. `xbench_2026-08-01.md` publishes a cpu-used 9 throughput
 number for this exact cell (44.62 MP/s), measured at `ea3bed3`. Not diagnosed
 here — flagged.
 
+> **DIAGNOSED AND FIXED the same day (KB-34).** The nonrd estimate arm now runs
+> C's real per-txb walk, and **this exact cell encodes byte-identically to real
+> aomenc (4,728 B, delta 0)**. Flagging it here was load-bearing: the refusal's
+> in-code note claimed it was reachable only on a 12000x9000 frame, and the
+> sweep that this flag prompted found 627 reaching cells, the smallest a
+> **100x100** thumbnail. Record:
+> `benchmarks/nonsquare_leaf_reach_2026-08-02.{tsv,meta}`, CLAUDE.md KB-34.
+
 **2. libaom's own NEON CNN kernel is not bit-identical to libaom's own `_c`
 kernel.** Measured on this window: **906 of 1636** output floats differ, max
 |Δ| **5.28e-6** — the class of upstream ISA divergence catalogued in

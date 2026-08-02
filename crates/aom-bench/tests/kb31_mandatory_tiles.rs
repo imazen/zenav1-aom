@@ -322,51 +322,38 @@ fn mandatory_tile_split_byte_identical_across_speeds() {
 }
 
 /// **The two frame sizes issue #6 actually reported**, at the cheapest of its three
-/// speeds. Both used to exit 101; the contract asserted here is that they ENCODE —
-/// producing the tile grid real aomenc produced, at the payload length real aomenc
-/// produced ±the KB-32 residual — not that they are byte-identical, because they
-/// are not yet: KB-32 (large frames at `--cpu-used` 8/9) is open and is measurably
-/// NOT a tile effect (see the speed-axis test above).
+/// speeds. Both used to exit 101, then both became byte gates; as of 2026-08-02
+/// **both encode BYTE-IDENTICALLY to real aomenc**, which is the strongest form the
+/// contract can take and is what is asserted below.
 ///
-/// **MEASURED 2026-08-01** (aarch64-apple-darwin, `--profile test-fast`, cq30,
-/// `--cpu-used=9`, `c_encode_defaults`), before and after KB-32's two roots:
+/// | cell | tiles | real aomenc | pre-KB-32 | post-KB-32 | post-KB-12 | post-KB-34 |
+/// |---|---|---|---|---|---|---|
+/// | 5472x3648 (20 MP) | 2x2 | 2,121,452 B | +3,193 (0.15%) | +339 (0.016%) | **0** | 0 |
+/// | 12000x9000 (108 MP) | 4x4 | 11,520,317 B | +28,180 (0.24%) | *refused* | *refused* | **0** |
 ///
-/// | cell | tiles | real aomenc | port BEFORE KB-32 | port AFTER |
-/// |---|---|---|---|---|
-/// | 5472x3648 (20 MP) | 2x2 | 2,121,452 B | 2,124,645 (+3,193, +0.15%) | 2,121,791 (**+339, +0.016%**) |
-/// | 12000x9000 (108 MP) | 4x4 | 11,520,317 B | 11,548,497 (+28,180, +0.24%) | **refuses — see below** |
+/// Wall/RSS for the pair: **14.2 s and 2.69 GB peak RSS** for both cells together
+/// (`/usr/bin/time -l`, 2026-08-02). Neither OOMs on a 64 GB box; 108 MP is
+/// nonetheless the memory ceiling anyone should expect from this harness (source +
+/// SB-aligned strided copy + full reconstruction, all at u16, plus libaom's own
+/// frame buffers).
 ///
-/// Wall/RSS for the pair: 1.6 s / 0.79 GB and 8.5 s / 3.11 GB. Neither OOMs on a
-/// 64 GB box; 108 MP is nonetheless the memory ceiling anyone should expect from
-/// this harness (source + SB-aligned strided copy + full reconstruction, all at
-/// u16, plus libaom's own frame buffers).
-///
-/// **The 108 MP cell now REFUSES rather than encoding, and that is a real
-/// consequence of KB-32, recorded honestly rather than smoothed over.** Closing
-/// the variance-partition thresholds legitimately ENLARGES them, which lets
+/// **How 12000x9000 came to refuse, and how it stopped.** KB-32's threshold fix
+/// legitimately ENLARGED the variance-partition thresholds, which let
 /// `set_vt_partitioning`'s HORZ/VERT pair arms win on this extremely smooth
-/// mirror-tiled content — and the nonrd estimate arm cannot code a non-square
-/// leaf yet (`nonrd_pickmode::nonrd_leaf_tx_size`'s HANDOFF has the precise
-/// scope and the fix). The pre-KB-32 stream for this cell was 0.24% wrong; it is
-/// now a loud, named refusal instead. **Measured reachability: of 18 large cells
-/// probed at speeds 8 and 9 (768² through 5472x3648) NONE reach a non-square
-/// leaf — this cell is the only one in the tree that does.**
+/// mirror-tiled content — and the nonrd estimate arm could not code a non-square
+/// leaf. That refusal carried the claim *"of 18 large cells probed at speeds 8 and
+/// 9 (768² through 5472x3648) NONE reach a non-square leaf — this cell is the only
+/// one in the tree that does"*, and it was **false**: KB-34's sweep found 609
+/// reaching cells, the smallest a **100x100 thumbnail**. The arm landed 2026-08-02
+/// and this cell went straight to byte-identical. See KB-34 in CLAUDE.md and
+/// `crates/aom-bench/tests/kb34_nonsquare_nonrd_leaf.rs`.
 ///
-/// Pinned as a verdict plus bounds, not as byte counts: byte counts would fire on
-/// every unrelated encoder landing, while these fire exactly when the tile panic
-/// comes back, when the 20 MP cell drifts, or when the non-square arm lands.
-///
-/// **RE-PINNED 2026-08-02: 5472x3648 is now BYTE-IDENTICAL to real aomenc**
-/// (2,121,452 B, delta 0) — the +339 B estimate-arm residual in the table above
-/// closed with **KB-12** (`0953fa7`, the dropped Hadamard transpose in the nonrd
-/// estimate arm; this cell is `--cpu-used=9`, i.e. that arm). The
-/// self-promoting `assert_ne!` fired asking for exactly this promotion, so the
-/// 20 MP cell is now a HARD byte gate. Observed while running the nightly tier
-/// for the KB-PERF-1 intra-CNN cache landing and reproduced on that landing's
-/// pristine baseline, so it is not that change's — and could not be: the CNN
-/// prune runs zero times on the cpu-used 8/9 nonrd path
-/// (`benchmarks/encoder_cnn_cache_2026-08-02.breadth.tsv`). 12000x9000 still
-/// refuses on KB-32's non-square nonrd leaf; that arm is unchanged.
+/// **RE-PINNED 2026-08-02 (twice).** First: 5472x3648 became byte-identical when
+/// **KB-12** (`0953fa7`, the dropped Hadamard transpose in the nonrd estimate arm)
+/// closed the +339 B residual — the self-promoting `assert_ne!` fired asking for
+/// exactly that promotion. Then: 12000x9000's refusal branch was deleted when
+/// KB-34 landed the non-square leaf, so the `Err` arm now fails unconditionally and
+/// names which of the three panics came back.
 #[test]
 #[ignore = "108 MP encode: ~11 s and ~3.1 GB peak RSS; on-demand tier"]
 fn issue6_reported_sizes_encode() {
@@ -391,32 +378,22 @@ fn issue6_reported_sizes_encode() {
         let ours = match got {
             Ok(p) => p,
             Err(e) => {
-                // Exactly ONE refusal is expected, and only for the reason named
-                // above. Anything else — including issue #6's tile panic — fails.
+                // NO refusal is sanctioned here any more (see the doc comment's
+                // 2026-08-02 re-pin). Both cells must encode.
                 let msg = e
                     .downcast_ref::<String>()
                     .cloned()
                     .or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_string()))
                     .unwrap_or_default();
-                assert!(
-                    (w, h) == (12000, 9000) && msg.contains("non-square leaf bsize"),
-                    "{w}x{h} ({want_cols}x{want_rows} tiles): port_encode PANICKED \
-                     with {msg:?}. The only sanctioned refusal here is 12000x9000's \
-                     non-square nonrd leaf (KB-32); a tile panic means issue #6 is back."
+                panic!(
+                    "{w}x{h} ({want_cols}x{want_rows} tiles): port_encode PANICKED with \
+                     {msg:?}. Both of issue #6's sizes have encoded since 2026-08-02 — \
+                     `non-square leaf bsize` means KB-34's txb walk regressed, \
+                     `frame-edge single-strip nonrd rect` means its rect constructor \
+                     did, and a tile panic means issue #6 itself is back."
                 );
-                println!(
-                    "  {w}x{h} ({want_cols}x{want_rows} tiles): REFUSED (KB-32 \
-                     non-square nonrd leaf) — {msg}"
-                );
-                continue;
             }
         };
-        assert_ne!(
-            (w, h),
-            (12000, 9000),
-            "12000x9000 now ENCODES — the non-square nonrd estimate arm landed. \
-             Re-pin: assert its byte delta instead of this refusal."
-        );
         let delta = ours.len() as i64 - real.len() as i64;
         println!("  {w}x{h} ({want_cols}x{want_rows} tiles): {} B vs {} B, delta {delta:+}", ours.len(), real.len());
         // KB-32's two roots took this from +3,193 (0.15%) to +339 (0.016%), and

@@ -1,0 +1,54 @@
+# Provenance for nonsquare_leaf_reach_2026-08-02.tsv + nonsquare_leaf_reach_bite_2026-08-02.tsv
+# (KB-34 — the nonrd estimate arm's non-square leaf).
+
+base commit      : bc545dfd13fbac8d5372bc9862245d43b74dfd8d   (pristine tree for the 'before' arm)
+host             : Darwin arm64 / Apple M4 Pro
+profile          : test-fast (opt-level 3, debug-assertions + overflow-checks ON)
+dispatch         : default (archmage SIMD tokens live)
+load             : `uptime` at the end of the run: 6:22  up 8 days,  3:41, 3 users, load averages: 25.08 27.92 27.83
+conformance dir  : AOM_CONFORMANCE_DIR=<repo>/conformance/data
+
+reach sweep      : cargo run --profile test-fast -p zenav1-aom-bench \
+                     --example nonsquare_leaf_reach -- ~/tmp/xb/src/photo_1024.yuv 1024 1024
+bite proof       : cargo run --profile test-fast -p zenav1-aom-bench \
+                     --example nonsquare_leaf_bite  -- ~/tmp/xb/src/photo_1024.yuv 1024 1024
+                   run four times: pristine / patched / `git stash push -- <one file>` each way.
+
+CONTENT CLASSES
+  real / smallreal  mirror-tiled frame 0 of the conformance vector
+                    av1-1-b8-00-quantizer-00 (in repo; the kb28/kb31/kb32 recipe)
+  diag / smalldiag  EncodeCell::synthetic_diag — a smooth 8-bit gradient
+  photo             ~/tmp/xb/src/photo_1024.yuv, the 1024x1024 I420 photograph
+                    benchmarks/encoder_hotspot_profile_2026-08-02.md is measured on.
+                    NOT in the repo (a >30 KB binary); the durable gate cells in
+                    crates/aom-bench/tests/kb34_nonsquare_nonrd_leaf.rs therefore use
+                    the first two classes only, and the photo rows are evidence rather
+                    than a gate. The profile's own cell (1024x1024 cq44 cpu-used 9)
+                    is the 'profile' row of the bite TSV: PANIC before, 4728 B and
+                    byte-identical after.
+
+COLUMNS (reach sweep)
+  content size px cq speed port_bytes delta c_bytes verdict nsq nsq_by_bsize
+  nsq          = leaves the estimate arm coded with more than one txb, i.e. non-square
+                 leaves (aom_encode::nonrd_pickmode::multi_txb_leaf_counts). A row with
+                 nsq > 0 is a row the pre-fix port REFUSED to encode.
+  port_bytes   = -1 on PANIC.
+
+VECTOR-SCAN PASS (appended, `NSQ_VECTOR_SCAN=1`)
+  80 rows: mirror-tiled decodes of av1-1-b8-00-quantizer-{00,10,20,30,40,50,58,60,62,63}
+  at 1024x1024 x cq{24,36,44,52} x cpu{8,9}. 1024x1024 is SB-EXACT, so the only
+  route to a rect leaf there is an INTERIOR variance win, which needs flat
+  content — and that is what the heavily-quantized decodes are. -58 and -40 are
+  the two that reach; -00..-30 never do. `-58 cq44 cpu9` (42 leaves, 18 8X16 +
+  24 16X8) is the in-repo stand-in the KB-34 gate uses for the encoder hotspot
+  profile's 1024x1024/cq44/cpu-used-9 cell, whose own source is the out-of-repo
+  photograph above. The cpu-8 PANIC rows in this pass are the pre-existing
+  screen-content palette HANDOFF, not this arm.
+
+WHAT IS NOT MEASURED
+  * bd8 4:2:0 only — no 10/12-bit, no 4:4:4, no monochrome, no multi-tile, no SB128
+    override, and no screen content (the screen-content palette arm is a separate,
+    pre-existing HANDOFF and accounts for all 136 PANIC rows in the reach sweep).
+  * one photographic source and one conformance vector; 'how much ordinary content
+    lands in the reaching class' is answered structurally (partial superblocks), not
+    by a corpus.

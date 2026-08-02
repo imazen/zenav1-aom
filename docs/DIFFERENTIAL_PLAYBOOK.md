@@ -302,6 +302,30 @@ say which. The same file's *second* claim, that the VBP tree "stamps squares
 8x8..64x64 only", was false for the same reason and only surfaced once the first
 fix made the HORZ/VERT arms win.
 
+**And the fix for THAT wrote a third one, in the same commit.** KB-32 replaced
+the "squares only" comment with a refusal whose own note read *"REACHABILITY,
+MEASURED 2026-08-01: of 18 large cells probed at speeds 8 and 9 (768² through
+5472x3648), NONE reach a non-square leaf. The only cell in the tree that does is
+issue #6's 12000x9000 at cpu9."* It was measured, it named its grid, it was
+honest about being a measurement — and it was wrong by **four orders of
+magnitude in area**: KB-34's sweep found 627 reaching cells, the smallest a
+**100x100 thumbnail**, and 768² — the first size inside the note's own stated
+range — reaches at cq32 cpu9. Two sessions had already contradicted it (KB-28
+at 0.9 MP, the encoder profile at 1024²) before anyone re-derived it.
+
+Two lessons, both cheap:
+
+- **"Measured on N cells" is not a reachability result; it is a statement about
+  those N cells.** A reachability claim needs a *predicate* — something of the
+  form "reachable exactly when X" that a reader can falsify on one new cell. The
+  18-cell probe had no predicate, so nothing about it was checkable.
+- **When you do find the predicate, try to break it before writing it down.** The
+  first hypothesis here (`min(w,h) >= 720`, i.e. the very speed feature KB-32 was
+  about) fitted the entire first sweep and is FALSE — 1272x716 reaches 22 leaves.
+  What actually governs is whether the frame has a partial superblock, which the
+  size-shaped hypothesis could never have expressed. The straddle test that would
+  have refuted it costs two encodes.
+
 ## 10. Diagnose to the decision, not to the byte count
 
 A byte delta is a symptom. Drive to the **first divergent block** and compare the

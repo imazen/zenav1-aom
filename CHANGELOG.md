@@ -38,6 +38,30 @@
 
 ### Fixed
 
+- **Encoder: `--cpu-used 9` refused to encode ordinary images — the nonrd
+  estimate arm could not code a NON-SQUARE leaf (KB-34).** Since KB-32,
+  `nonrd_pickmode::nonrd_leaf_tx_size` panicked with a named HANDOFF whenever
+  `set_vt_partitioning` stamped a rect leaf, because `max_txsize_lookup` gives
+  the square tx of the block's SHORT side and
+  `av1_foreach_transformed_block_in_plane` then visits more than one txb. The
+  refusal carried a measured claim that only a 12000x9000 frame reached it; a
+  2,012-cell sweep found **609 reaching cells and the smallest at 100x100**. The
+  predictor is not size or quality but whether the frame has a **partial
+  superblock**: 68.9 % of partial-SB rows reach it against 1.7 % of SB-exact
+  ones, so 1920x1080, 1280x720 and essentially any non-multiple-of-64 crop are in
+  the reaching class. `av1_nonrd_pick_intra_mode` now runs C's real per-txb walk
+  (per-txb predict into the recon plane before the next txb reads it, the
+  TXB-sized `av1_block_yrd` clamp against the LEAF's `mb_to_*_edge`, and C's
+  assign-don't-AND `skippable`), and the frame-edge single-strip rect
+  constructor one line behind it got KB-25's poisoned-slot fix. Byte-identical on
+  every newly-encodable cell measured, including the encoder profile's
+  1024x1024 cq44 cpu-used 9 photograph and **issue #6's 12000x9000 108 MP frame
+  (11,520,317 B, delta 0)**, which had been the refusal's own example.
+  `kb28_crop_dims::vbp_band_crop_dims_byte_match` goes 28/30 → **30/30**. New
+  gate `crates/aom-bench/tests/kb34_nonsquare_nonrd_leaf.rs`; sweep and
+  per-root bite proof in `benchmarks/nonsquare_leaf_reach_2026-08-02.{tsv,meta}`
+  and `..._bite_2026-08-02.tsv`.
+
 - **Encoder: the nonrd (`--cpu-used` 8/9) estimate arm computed its Hadamard
   coefficients TRANSPOSED (KB-12).** `aom_hadamard_lp_8x8_c` ends with a
   transpose the SIMD tiers get for free (`aom_dsp/avg.c:232-236`, *"Extra

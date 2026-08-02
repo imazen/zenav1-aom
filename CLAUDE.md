@@ -2753,10 +2753,12 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   1216×768 diverge too, −1/−6 and +1/−8), the cells with `cm->width == mi_cols * 4` on both
   axes — where this fix is a literal no-op — carry byte-identical deltas in all three arms
   (post, revert-VBP, revert-min-dim; `benchmarks/kb28_crop_dims_2026-08-02.tsv`), and every speed-8 residual is
-  inside KB-32's pinned `< 1.0 B/SB` shape (worst 0.550 at 1280×720 cq24). Pinned exactly and
-  self-promoting as `NONRD_ESTIMATE_ARM_OPEN`. Also: two speed-9 cells reach KB-32's documented
-  non-square-leaf HANDOFF refusal, which KB-32 measured as reachable only on its 108 MP cell —
-  **0.9 MP frames reach it too**.
+  inside KB-32's pinned `< 1.0 B/SB` shape (worst 0.550 at 1280×720 cq24). Also: two speed-9
+  cells reached KB-32's non-square-leaf HANDOFF refusal, which KB-32 measured as reachable only
+  on its 108 MP cell — **0.9 MP frames reach it too**, which was the first contradiction of that
+  claim and is what started KB-34. Both closed 2026-08-02 when the estimate arm learned the
+  non-square leaf: `vbp_band_crop_dims_byte_match` is **30/30 byte-exact** and
+  `NONRD_ESTIMATE_ARM_OPEN` is **empty**.
 - **Is there an analogous window at another `set_vbp_thresholds` bucket? NO — checked in
   source.** `set_vbp_thresholds` compares `num_pixels` against `RESOLUTION_288P/480P/720P/
   1080P/1440P`, but on the KEY path it delegates to `set_vbp_thresholds_key_frame` and
@@ -3170,20 +3172,19 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   nodes, every leaf field equal except `y_mode`, all four candidates inside the estimate arm's
   own `intra_mode_list` — was read by three separate sessions as proof of a genuine tie. It was
   a dropped transpose in a kernel that had no differential. Playbook §1 + §10.
-- **NEW, and a real consequence of the fix: 12000x9000 at cpu9 now REFUSES instead of encoding.**
-  Correct thresholds are LARGER thresholds, which lets `set_vt_partitioning`'s HORZ/VERT pair arms
-  win on 108 MP of extremely smooth mirror-tiled content — and the nonrd ESTIMATE arm cannot code
-  a non-square leaf: for `BLOCK_16X8` etc. `max_txsize_lookup` (`common_data.h:105`) gives the
-  square tx of the SHORT side, so `av1_foreach_transformed_block_in_plane` visits TWO txbs and
-  `nonrd_pick_intra_mode` is written around a documented single-txb invariant. The pre-fix stream
-  for that cell was 0.24 % wrong; it is now a loud named refusal. **Measured reachability: of 18
-  large cells probed at speeds 8 and 9 (768² through 5472x3648) NONE reach a non-square leaf** —
-  the 108 MP cell is the only one in the tree that does. The fix is scoped precisely on
-  `nonrd_pickmode::nonrd_leaf_tx_size`'s HANDOFF (per-txb predict / facade write-back / subtract /
-  `av1_block_yrd` with C's `estimate_block_intra_args` accumulation, `intra_avail` fed the txb's
-  `blk_row`/`blk_col`); it is **byte-INERT for every square leaf**, where `bsize ==
-  txsize_to_bsize[tx_size]` makes the loop run exactly once with today's arguments. That, plus
-  KB-12's estimate-arm near-tie, is everything still open on this entry.
+- **A real consequence of the fix, since CLOSED as KB-34: 12000x9000 at cpu9 REFUSED instead of
+  encoding.** Correct thresholds are LARGER thresholds, which lets `set_vt_partitioning`'s
+  HORZ/VERT pair arms win on 108 MP of extremely smooth mirror-tiled content — and the nonrd
+  ESTIMATE arm could not code a non-square leaf: for `BLOCK_16X8` etc. `max_txsize_lookup`
+  (`common_data.h:105`) gives the square tx of the SHORT side, so
+  `av1_foreach_transformed_block_in_plane` visits TWO txbs and `nonrd_pick_intra_mode` was written
+  around a single-txb invariant. **The refusal's own reachability claim — "of 18 large cells
+  probed at speeds 8 and 9 (768² through 5472x3648) NONE reach a non-square leaf; the 108 MP cell
+  is the only one in the tree that does" — was FALSE, and is playbook §9 written by the same
+  session that had just been bitten by §9.** KB-34's sweep found **609 of 884 partial-superblock
+  rows reaching it, the smallest a 100x100 thumbnail**, and 768² (the first size the claim's own
+  range covers) reaches at cq32 cpu9. The arm landed 2026-08-02 (KB-34) and the 108 MP cell is
+  byte-identical.
 - **Gates.** New `aom-bench/tests/kb32_nonrd_size_bands.rs`:
   `nonrd_speed9_area_threshold_byte_identical` (default tier, 4 cells, hard byte asserts +
   non-vacuity that the grid straddles both predicates), `nonrd_speed9_4k_cost_upd_sbrow`
@@ -3431,6 +3432,132 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   + pixel compare over a manifest). `xtool prep` gained an additive `at:WxH+X+Y` explicit-offset
   crop mode; `native` / `crop:WxH` / `square:N` are byte-unchanged.
 
+### KB-34 — Encoder: the fastest preset REFUSED ordinary images — the nonrd estimate arm could not code a NON-SQUARE leaf — FIXED ✅ 2026-08-02 (two roots), 108 MP cell byte-identical
+- **Symptom.** `crates/aom-encode/src/nonrd_pickmode.rs:1135` panicked with *"HANDOFF: nonrd
+  estimate arm at non-square leaf bsize {bsize} — `max_txsize_lookup` gives a tx smaller than the
+  leaf, so `av1_foreach_transformed_block_in_plane` visits more than one txb and
+  `nonrd_pick_intra_mode`'s single-txb invariant does not hold (KB-32)"*, so **`--cpu-used 9`
+  could not encode a frame that reached one at all**. Introduced by KB-32 (correct thresholds are
+  LARGER thresholds, which is what lets `set_vt_partitioning`'s HORZ/VERT pair arms win).
+- **ITS OWN REACHABILITY COMMENT WAS FALSE, and that is the most transferable part.** It read
+  *"REACHABILITY, MEASURED 2026-08-01: of 18 large cells probed at speeds 8 and 9 (768² through
+  5472x3648), NONE reach a non-square leaf. The only cell in the tree that does is issue #6's
+  12000x9000 at cpu9."* Playbook §9 in its purest form — and written by the session that had just
+  been bitten by §9 twice (the `var_part` module doc, then the "stamps squares only" claim). It
+  was already contradicted twice before this landing (KB-28's two 0.9 MP cells; the encoder
+  hotspot profile's 1024² cq44). Measured properly:
+- **THE TRUE REACHABLE SET, as a shape (2,012 sweep rows,
+  `benchmarks/nonsquare_leaf_reach_2026-08-02.tsv` + `.meta`).** The predictor is neither size nor
+  quality; it is whether the frame has a **partial superblock**. `set_vt_partitioning` fits a
+  candidate by `mi_col + bs_width_check <= tile->mi_col_end` and at the frame's right/bottom edge
+  (SB64 only) relaxes the two checks ASYMMETRICALLY — `bs_width_check` to `(block_width >> 1) + 1`
+  but `bs_width_vert_check` to `(block_width >> 2) + 1` (var_based_part.c:164-173) — so an edge
+  node's NONE candidate stops fitting while its VERT/HORZ pair still does, and a rect gets
+  stamped. `av1_select_sb_size` (encoder_utils.c:958) picks which superblock: 64x64 at
+  `min(w,h) <= 480`, 64x64 again at allintra speed 9 below 4k, 128x128 otherwise.
+
+  | frame class | rows reaching | smallest reaching |
+  |---|---|---|
+  | mi-aligned extent NOT a whole number of SBs | **609 / 884 = 68.9 %** | **100x100 = 10,000 px** |
+  | mi-aligned extent IS a whole number of SBs | 18 / 1088 = 1.7 % | 589,824 px (768²) |
+
+  So the refusal was wrong by **four orders of magnitude in area** and ~600 cells, and wrong in a
+  way no size threshold would have caught: **a 100x100 thumbnail reaches it while 512², 1024² and
+  2176² mostly do not.** Any frame whose dimensions are not a whole number of superblocks —
+  1920x1080, 1280x720, essentially every non-multiple-of-64 crop — is in the reaching class. The
+  1.7 % SB-exact column is the second, rarer route: a genuine interior variance win, needing
+  locally flat content (only the photographic source produced it here). **A `min(w,h) >= 720`
+  hypothesis fitted the first sweep exactly and is FALSE** — 1272x716 reaches 22 leaves at cq24
+  cpu9; recorded because it is the same mistake one sweep later.
+  Exactly four shapes occur — BLOCK_8X16 / 16X8 / 16X32 / 32X16 — which is what
+  `set_vt_partitioning` predicts (`bsize > BLOCK_32X32` returns 0 on a key frame, :205-209, so no
+  64X32/32X64; `bsize == bsize_min` offers only NONE-or-split, :186-199, so nothing below 8x8).
+  **No RD speed reaches it**: `nonrd_pick_intra_mode` has one dispatch site,
+  `pack.rs:1917`'s `allintra && speed >= 8` — measured, not asserted.
+- **ROOT #1 — the txb walk (`nonrd_pickmode.rs`).** `nonrd_leaf_tx_size` is now
+  `max_txsize_lookup[]` verbatim at every `bsize`, and `nonrd_pick_intra_mode` runs C's real
+  `av1_foreach_transformed_block_in_plane` (encodemb.c:536-585) instead of one inlined visit.
+  Three details of C's walk that a naive txb loop gets wrong, each modelled and cited in the code:
+  * each visit predicts into `pd->dst` **before** the next visit reads its neighbours out of that
+    same buffer (`av1_predict_intra_block_facade`'s `ref == dst`, reconintra.c:1622) — so txb 1 of
+    a BLOCK_8X16 predicts from txb 0's *prediction*, there being no residual on this arm;
+  * `av1_block_yrd` is handed `bsize_tx = txsize_to_bsize[tx_size]` (nonrd_opt.c:658) so its
+    `num_4x4_w/h` are the TXB's — but `xd->mb_to_right_edge` is still the LEAF's, so the frame-edge
+    clamp at nonrd_opt.c:141-144 subtracts the leaf's overhang from EACH txb's extent (and can
+    clamp a txb to zero rows, which C then codes as rate 0 / dist 0 / skippable). The WALK's own
+    clamp is a different formula (`max_block_wide`, av1_common_int.h:1567, which reduces to
+    `mi_cols - mi_col`); at a square leaf the two coincide, at a rect they do not;
+  * `args->skippable` is **assigned, not accumulated**: `av1_block_yrd` ends
+    `this_rdc->skip_txfm = *skippable = temp_skippable` (nonrd_opt.c:327) with `temp_skippable`
+    restarting at 1 each call, so a multi-txb leaf's flag is the LAST txb's, not the AND. Rate and
+    dist DO accumulate (:667-668).
+  The SAD prune stays single-txb by construction — C gates it on `bsize == tx_bsize`
+  (nonrd_pickmode.c:1600). Byte-INERT at every square leaf.
+- **ROOT #2 — the frame-edge single-strip rect constructor (`partition_pick.rs`), exposed the
+  moment root #1 landed.** `nonrd_use_partition_real`'s rect arm carried
+  `unimplemented!("frame-edge single-strip nonrd rect ...")` under *"the SbTree rect variants carry
+  both winners"* — **the exact claim, in the same words, that KB-25 had already deleted from the
+  speed-7 walk on 2026-08-01**. It survived only because every cell that could reach it hit root
+  #1's panic first, in the leaf pick one line above. Same fix as KB-25: slot 1 gets a POISONED
+  clone of sub 0 (`bsize = usize::MAX`) so the four consumers' `debug_assert_eq!(s1.bsize,
+  subsize)` fires if any of them ever drops its frame gate. The OTHER half of C's guard —
+  sub 1 in frame but `bsize == BLOCK_8X8` (partition_search.c:3046/:3070) — stays a hard refusal,
+  because there the consumers' gate PASSES and a poison would be a wrong stream; it is unreachable
+  (the KEY tree offers no rect at `bsize == bsize_min`).
+- **PER-ROOT BITE PROOF, ordered cell sets (playbook §1),
+  `benchmarks/nonsquare_leaf_reach_bite_2026-08-02.tsv`.** Four arms over one 26-cell list:
+  pristine **14 PANIC**, both fixes **0**, revert-root-1-alone **14** (the same 14), revert-root-2-alone
+  **9** — a strict subset. The five cells that separate them are the SB-EXACT frames reaching an
+  INTERIOR rect (768² cq32, 896² cq28, 1024² cq24/cq36 and the encoder profile's 1024² cq44, all
+  cpu9): both strips are in frame there, so they need the txb walk and NOT the rect constructor.
+  Every non-panicking byte count is identical across all four arms.
+- **TEETH.** Every gate cell panics on the pristine tree with the exact message quoted above (or
+  root #2's, for 1920x1080 cq24 cpu8), and `250x250 cq24 cpu9` — mi-aligned to 256 px, i.e.
+  SB-exact — MATCHES in both arms, which is the negative control that the harness is not simply
+  reporting "panic" for everything.
+- **BYTE-IDENTITY on every newly-encodable cell.** `nonsquare_leaf_reach` sweep: **1,859 MATCH /
+  2,012 rows, and 0 of the 627 reaching rows is anything but MATCH**. Named cells: KB-28's `1272x724 cq24 cpu9`
+  and `954x962 cq24 cpu9`; `1920x1080` cq24 cpu8 and cq48 cpu9; `1280x720` diag cq24/cq48 cpu9;
+  `196x196` cq24 cpu8/cpu9; the encoder profile's `1024x1024 cq44 cpu-used 9` photograph (**4,728
+  B, delta 0** — the cell `benchmarks/encoder_hotspot_profile_2026-08-02.md` reported as refusing;
+  the GATE carries that size/quantizer/speed on in-repo content instead, the mirror-tiled
+  `av1-1-b8-00-quantizer-58` decode, 42 leaves, byte-identical — an SB-exact INTERIOR-rect cell,
+  found by the `NSQ_VECTOR_SCAN=1` pass);
+  and **issue #6's `12000x9000` 108 MP cell, 11,520,317 B, delta 0** (both issue-#6 sizes together:
+  14.2 s, 2.69 GB peak RSS).
+- **Gates.** New `aom-bench/tests/kb34_nonsquare_nonrd_leaf.rs`:
+  `partial_superblocks_are_what_reaches_it_not_frame_size` (**default tier**, 4 cells at
+  10k-62k px: 100x100 and 196x196 reach, 128x128 and 250x250 do not — the shape, and the proof the
+  counter can read zero), `nonsquare_leaf_cells_byte_match` (`--ignored`, 7 cells, byte-identity +
+  a per-cell "this cell reached the arm" non-vacuity assert + a shape-coverage assert that only
+  the four KEY rect bsizes ever appear), `rd_speeds_never_reach_the_estimate_arm` (`--ignored`,
+  cpu 0..7 + a cpu9 control). Non-vacuity instrument:
+  `nonrd_pickmode::multi_txb_leaf_counts()` / `reset_multi_txb_leaf_counts()`, a per-`bsize`
+  relaxed-atomic counter bumped only on the multi-txb path. Unit locks:
+  `nonrd_leaf_tx_size_is_the_largest_square_tx_that_fits` (derives `max_txsize_lookup`'s MEANING
+  from `MI_W`/`MI_H` rather than re-typing the table; also pins that single-txb means "square AND
+  <= 64 px", not "square" — BLOCK_128X128 is four txbs) and
+  `kb34_key_rect_leaves_are_two_txbs_each`. Re-pinned: `kb31_mandatory_tiles::
+  issue6_reported_sizes_encode` (its self-promoting `assert_ne!` fired — the 108 MP refusal branch
+  is deleted and both sizes are hard byte gates) and `kb28_crop_dims::vbp_band_crop_dims_byte_match`
+  (**28/30 → 30/30**, `NONRD_ESTIMATE_ARM_OPEN` now empty).
+- **FOUND WHILE HERE, NOT THIS LANDING'S, pinned rather than smoothed over.** Two open divergence
+  classes the sweep turned up, both measured byte-for-byte identical with this landing's two hunks
+  stashed, and both on cells that reach ZERO non-square leaves:
+  * **`RD_BAND_OPEN`** (pinned in `kb34_nonsquare_nonrd_leaf.rs`): 1272x724 cq24 diverges at
+    `--cpu-used` 2/3/4/5 by −14/−104/−167/−189 B and matches at 0, 1, 6, 7, 8, 9. Adjacent to
+    KB-28's `rd_band_min_dim_tiers_byte_match` band (474×480, 714×720 at cpu 1..6, 12/12) but at a
+    size no gate covers;
+  * **the cpu-8 photographic high-q class**: 17 rows of the sweep DIVERGE, all `photo` content, all
+    `--cpu-used 8`, all cq 32-63, by −24..+13 B (512²/768²/896²/1024²/2176²). Not on any in-repo
+    content, so not reachable by any existing gate; recorded in the sweep TSV.
+  Gate 2 (the canon `--cpu-used 0..9` grid) is unaffected and still has **zero pinned cells**.
+- **Still refused at `--cpu-used` 8/9, unchanged and pre-existing:** the screen-content palette arm
+  (`av1_search_palette_mode_luma`, `nonrd_pickmode.rs`'s `allow_screen_content_tools` debug-assert)
+  — all 136 remaining PANIC rows in the sweep, fired by libaom's own screen-content detection on
+  the synthetic gradient and on low-q real content. Also unchanged: the lossless TX_4X4 arm
+  (`block_yrd_lowbd`/`_hbd`'s `unimplemented!`) and the HBD estimate arm's own gaps.
+
 ### KB-PERF-1 — Encoder: the intra-mode CNN is recomputed ~10x per superblock (C computes it ONCE and caches) — FIXED ✅ 2026-08-02
 
 **Not a correctness bug — a 10x throughput bug, and the largest single measured
@@ -3487,11 +3614,14 @@ measurement plus arithmetic, not a before/after.
 
 Two adjacent findings from the same profile, both recorded in the .md:
 
-1. **`cpu-used 9` REFUSES the 1024²/cq44 cell at `0953fa7`** — panics in
+1. **`cpu-used 9` REFUSED the 1024²/cq44 cell at `0953fa7`** — panicked in
    `crates/aom-encode/src/nonrd_pickmode.rs:1135` with the KB-32 handoff message
    ("nonrd estimate arm at non-square leaf bsize 4"). `cpu-used 8` on the same
-   cell is fine. `xbench_2026-08-01.md` publishes a cpu-used 9 throughput number
-   for this exact cell, measured at `ea3bed3`. Not diagnosed.
+   cell was fine. `xbench_2026-08-01.md` publishes a cpu-used 9 throughput number
+   for this exact cell, measured at `ea3bed3`. **DIAGNOSED AND FIXED 2026-08-02 —
+   see KB-34**; that exact cell now encodes byte-identically to real aomenc
+   (4,728 B), and the refusal turned out to be reachable on ordinary content from
+   100x100 up, not only at 108 MP.
 2. **libaom's own NEON CNN kernel is not bit-identical to libaom's own `_c`
    kernel** — 906/1636 output floats differ, max |Δ| 5.28e-6 (the
    `docs/LIBAOM_UPSTREAM_NOTES.md` divergence class). The port matches `_c`,
@@ -3596,8 +3726,9 @@ Record: `benchmarks/encoder_cnn_cache_2026-08-02.md` + `.meta` + `.control.tsv`
   expectation (empty OPEN set / hard `assert_eq!`), which is what each test's own
   failure message asked for; nothing was relaxed. Same story for the three
   regenerated `benchmarks/config_perm_*_2026-07-30.tsv` evidence sweeps.
-- **Still open, unchanged by this:** `cpu-used 9` refuses the 1024²/cq44 cell
-  (`nonrd_pickmode.rs:1135`, KB-32) — pre-existing and separately tracked. The
+- **Was still open, unchanged by this, and has since CLOSED (KB-34, same day):**
+  `cpu-used 9` refused the 1024²/cq44 cell (`nonrd_pickmode.rs:1135`, KB-32) —
+  pre-existing, separately tracked, and now byte-identical. The
   residual 3.36x was NOT re-profiled; the profile's levers 2-5 are arithmetic on
   the OLD build's self-costs, so re-profile before ranking them again.
 

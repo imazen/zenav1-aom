@@ -1,3 +1,65 @@
+## KB-34 — the fastest preset refused ordinary images; the nonrd estimate arm codes a non-square leaf (2026-08-02)
+
+`--cpu-used 9` could not encode a frame on which the KEY variance partitioner
+stamped a HORZ/VERT pair: `nonrd_pickmode.rs:1135` panicked with a named
+HANDOFF, because `max_txsize_lookup` gives the square tx of the block's SHORT
+side and `av1_foreach_transformed_block_in_plane` then visits more than one txb.
+
+**The refusal's own reachability comment was false, and that is finding #1.**
+It claimed only issue #6's 12000x9000 reached it, "of 18 large cells probed at
+speeds 8 and 9 (768² through 5472x3648), NONE" — playbook §9, written by the
+session that had just been bitten by §9 twice, and already contradicted twice
+(KB-28's two 0.9 MP cells, the encoder profile's 1024² cq44). A 2,012-cell
+sweep replaces it with a **shape**: the predictor is neither size nor quality
+but whether the frame has a **partial superblock** (`set_vt_partitioning`
+relaxes its NONE and rect fit-checks asymmetrically at the frame edge,
+var_based_part.c:164-173, so NONE stops fitting where the pair still does).
+
+| frame class | rows reaching | smallest reaching |
+|---|---|---|
+| mi-aligned extent NOT a whole number of SBs | **609 / 884 = 68.9 %** | **100x100 = 10,000 px** |
+| mi-aligned extent IS a whole number of SBs | 18 / 1088 = 1.7 % | 589,824 px (768²) |
+
+So the claim was wrong by four orders of magnitude in area: a 100x100
+thumbnail reaches it while 512², 1024² and 2176² mostly do not, and 1920x1080 /
+1280x720 / any non-multiple-of-64 crop are in the reaching class. (A
+`min(w,h) >= 720` hypothesis fitted the first sweep exactly and is also FALSE —
+1272x716 reaches 22 leaves.) No RD speed reaches it; that is measured, not
+asserted.
+
+**Root 1** — `nonrd_pick_intra_mode` runs C's real
+`av1_foreach_transformed_block_in_plane` walk. Three details C has that a naive
+txb loop does not: each visit predicts into `pd->dst` before the next reads its
+neighbours out of it; `av1_block_yrd` gets the TXB's `num_4x4` but the LEAF's
+`mb_to_*_edge` (and can clamp a txb to zero rows); and `args->skippable` is
+ASSIGNED, not ANDed, so a multi-txb leaf's flag is the last txb's. Byte-inert
+at every square leaf. **Root 2** — `partition_pick.rs`'s
+`unimplemented!("frame-edge single-strip nonrd rect")`, whose stated reason is
+the exact claim KB-25 deleted from the speed-7 walk on 2026-08-01; it survived
+only because root 1 fired one line earlier. Fixed with KB-25's poisoned slot-1
+clone.
+
+Per-root bite proof over one cell list: pristine **14 PANIC**, both fixes
+**0**, revert-root-1 **14** (the same set), revert-root-2 **9** (a strict
+subset) — the five separating cells are SB-EXACT frames reaching an INTERIOR
+rect. Byte-identity on every newly-encodable cell: **1,859 / 2,012** sweep rows
+MATCH, and **0 of the 627 reaching rows is anything but MATCH**, including the encoder
+profile's 1024x1024 cq44 cpu9 photograph (4,728 B, delta 0 — the gate carries
+that size/quantizer/speed on in-repo content, the mirror-tiled
+`av1-1-b8-00-quantizer-58` decode) and **issue #6's
+12000x9000 108 MP frame (11,520,317 B, delta 0)**, whose refusal branch in
+`kb31_mandatory_tiles::issue6_reported_sizes_encode` is deleted. Gate 2 keeps
+**zero pinned cells**. New: `aom-bench/tests/kb34_nonsquare_nonrd_leaf.rs`
+(3 tests, one default-tier) + `nonrd_pickmode::multi_txb_leaf_counts()` as the
+non-vacuity instrument + two unit locks. Records:
+`benchmarks/nonsquare_leaf_reach_2026-08-02.{tsv,meta}` and
+`..._bite_2026-08-02.tsv`.
+
+Two open divergence classes the sweep turned up, both measured identical with
+this landing stashed and both on cells reaching ZERO non-square leaves:
+1272x724 cq24 at cpu 2/3/4/5 (−14/−104/−167/−189, pinned as `RD_BAND_OPEN`),
+and 17 cpu-8 high-quantizer rows on the out-of-repo photographic source.
+
 ## KB-12 — the nonrd "leaf-mode near-tie" was a dropped Hadamard transpose; speed 8 is 64/64 (2026-08-02)
 
 `aom_hadamard_lp_8x8_c` ends with a transpose — `coeff[i * 8 + j] =
@@ -79,8 +141,10 @@ nonrd estimate arm — **closed the same day by KB-12's Hadamard transpose (see
 the section above); it was never a near-tie.** The attribution evidence still
 stands as recorded: a partial-SB explanation was tested and refuted (SB-exact
 1280x704 / 1216x768 diverged too) and the mi==crop cells diverged identically.
-Two cpu-9 cells also reach KB-32's non-square-leaf HANDOFF refusal, which
-KB-32 had measured as reachable only at 108 MP; those two rows stay pinned.
+Two cpu-9 cells also reached KB-32's non-square-leaf HANDOFF refusal, which
+KB-32 had measured as reachable only at 108 MP — the first contradiction of
+that claim, and what started KB-34. Both closed the same day: the grid is
+**30/30** and `NONRD_ESTIMATE_ARM_OPEN` is empty.
 
 ## bd8 i16-lane inverse transform runs on aarch64 — NEON tier live, 16x16/32x32/64x64 DCT −45..−51% (2026-07-28, ARM track)
 

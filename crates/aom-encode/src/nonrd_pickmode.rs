@@ -16,6 +16,16 @@
 //! was a hard `assert!(env.bd == 8)`, so every such encode PANICKED. See the
 //! "Bit depth" section below.
 //!
+//! STATUS (2026-08-02, KB-12 + KB-34): the "leaf-mode near-tie" was
+//! `aom_hadamard_lp_8x8`'s dropped trailing transpose and speed 8 is now
+//! **64/64** (see [`hadamard_lp_8x8`]); and the arm codes a **NON-SQUARE
+//! leaf** — `nonrd_pick_intra_mode` runs C's real
+//! `av1_foreach_transformed_block_in_plane` walk instead of one inlined visit,
+//! so `--cpu-used 9` no longer refuses the ordinary frames the KEY variance
+//! partitioner stamps a HORZ/VERT pair on (a 100x100 thumbnail is enough — the
+//! refusal's own "only at 108 MP" measurement was wrong by four orders of
+//! magnitude). Gate: `aom-bench/tests/kb34_nonsquare_nonrd_leaf.rs`.
+//!
 //! ## The chroma answer (the KB-11 flagged unknown — RESOLVED)
 //! `av1_nonrd_pick_intra_mode` is Y-only and hard-sets
 //! `mi->uv_mode = UV_DC_PRED` (nonrd_pickmode.c:1735, comment "Keep DC for UV
@@ -162,7 +172,10 @@
 //! landing found for `av1_set_mb_wiener_variance` (PARITY.md section A).
 //!
 //! Still out of envelope at every bit depth: lossless TX_4X4 (both arms) and
-//! the screen-content palette arm.
+//! the screen-content palette arm — which is now the ONLY refusal a bd8
+//! `--cpu-used` 8/9 encode can hit, and it accounts for all 136 refusing rows
+//! of KB-34's 1,264-cell sweep (libaom's own screen-content detection firing on
+//! a smooth synthetic gradient and on low-quantizer real content).
 
 use crate::encode_sb::SbEncodeEnv;
 use crate::partition::PartRdStats;
@@ -271,9 +284,12 @@ pub fn hadamard_lp_8x8(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
 }
 
 /// `aom_hadamard_lp_8x8_dual_c` (avg.c:240): two adjacent 8x8s. UNREACHABLE
-/// from the intra estimate arm (needs `tx_size == TX_8X8 && block_width >=
-/// 16`, but a square single-txb leaf clamps 8x8 only when the txb IS 8x8) —
-/// kept for completeness / the inter path.
+/// from the intra estimate arm: `is_tx_8x8_dual_applicable` (nonrd_opt.c:167)
+/// wants `tx_size == TX_8X8 && block_size_wide[bsize] >= 16`, and
+/// `av1_block_yrd` is always called from `av1_estimate_block_intra` with
+/// `bsize_tx = txsize_to_bsize[tx_size]` (nonrd_opt.c:658) — the TX block's own
+/// size, 8 px wide whenever the tx is TX_8X8, at a NON-square leaf as much as a
+/// square one. Kept for completeness / the inter path.
 pub fn hadamard_lp_8x8_dual(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
     for i in 0..2 {
         hadamard_lp_8x8(&src_diff[i * 8..], src_stride, &mut coeff[i * 64..]);
@@ -1088,7 +1104,10 @@ pub struct NonrdIntraPick {
     pub rd: PartRdStats,
 }
 
-/// `max_txsize_lookup[bsize]` for the square sizes, capped TX_64X64
+/// `mi->tx_size` for an estimate-arm leaf: `AOMMIN(max_txsize_lookup[bsize],
+/// tx_mode_to_biggest_tx_size[tx_mode_search_type])` (nonrd_pickmode.c:1591),
+/// at EVERY `bsize` — square or not (KB-32's non-square refusal lived here
+/// until 2026-08-02; see [`nonrd_pick_intra_mode`]'s per-txb walk).
 /// (tx_mode_to_biggest_tx_size[TX_MODE_SELECT] = TX_64X64; allintra speed 8/9
 /// keeps tx_size_search_method != USE_LARGEST_TX_SIZE → cm tx_mode =
 /// TX_MODE_SELECT — HANDOFF: re-verify select_tx_mode at speed 8/9 allintra
@@ -1096,49 +1115,84 @@ pub struct NonrdIntraPick {
 /// TX_MODE_LARGEST the biggest is TX_64X64 anyway, same value — only
 /// ONLY_4X4/lossless differs and that's out of envelope).
 pub fn nonrd_leaf_tx_size(bsize: usize) -> usize {
-    match bsize {
-        3 => 1,  // BLOCK_8X8  -> TX_8X8
-        6 => 2,  // BLOCK_16X16 -> TX_16X16
-        9 => 3,  // BLOCK_32X32 -> TX_32X32
-        12 => 4, // BLOCK_64X64 -> TX_64X64
-        // KB-32 CORRECTION. This used to read "KEY VBP tree stamps squares
-        // 8x8..64x64 only", which is FALSE (playbook §9 — an in-tree comment
-        // asserting inertness from the envelope it happened to be tested on).
-        // `set_vt_partitioning`'s HORZ/VERT pair arms (var_based_part.c:149-253)
-        // stamp BLOCK_64X32 / 32X64 / 32X16 / 16X32 / 16X8 / 8X16 whenever a
-        // node's own variance exceeds its threshold but BOTH halves are under
-        // it. Speeds 0-7 handle those leaves through the full RD search; the
-        // nonrd ESTIMATE arm cannot yet, because for a non-square leaf
-        // `max_txsize_lookup[bsize]` (common_data.h:105) is the square tx of the
-        // SHORT side, so `av1_foreach_transformed_block_in_plane` visits TWO
-        // txbs and `nonrd_pick_intra_mode` is written around a documented
-        // single-txb invariant (predict + subtract + `av1_block_yrd` over the
-        // whole leaf, one visit inlined).
-        //
-        // HANDOFF, precisely scoped: give `nonrd_pick_intra_mode` the real
-        // per-txb loop over `txsize_to_bsize[mi->tx_size]` — predict, the facade
-        // write-back, subtract and `av1_block_yrd` per txb with the rate/dist/
-        // skippable accumulation C's `struct estimate_block_intra_args` does,
-        // and `intra_avail` fed the txb's own `blk_row`/`blk_col`. It is
-        // byte-INERT for every square leaf (there `bsize == txsize_to_bsize[
-        // tx_size]`, so the loop runs exactly once with today's arguments),
-        // which is what makes it a contained change. The speed-9 SAD prune
-        // stays single-txb by construction — C gates it on `bsize == tx_bsize`
-        // (nonrd_pickmode.c:1600).
-        //
-        // REACHABILITY, MEASURED 2026-08-01: of 18 large cells probed at speeds
-        // 8 and 9 (768² through 5472x3648), NONE reach a non-square leaf. The
-        // only cell in the tree that does is issue #6's 12000x9000 at cpu9 —
-        // 108 MP of mirror-tiled content, where the KB-32 threshold fix
-        // legitimately enlarges the thresholds enough for the HORZ/VERT arms to
-        // win. Pinned there by `kb31_mandatory_tiles::issue6_reported_sizes_encode`.
-        _ => panic!(
-            "HANDOFF: nonrd estimate arm at non-square leaf bsize {bsize} — \
-             max_txsize_lookup gives a tx smaller than the leaf, so \
-             av1_foreach_transformed_block_in_plane visits more than one txb and \
-             nonrd_pick_intra_mode's single-txb invariant does not hold (KB-32)"
-        ),
-    }
+    // `max_txsize_lookup[]` verbatim (common_data.h:105-124), BLOCK_SIZES_ALL
+    // order — the square tx of the SHORT side, so it is smaller than the block
+    // for every non-square `bsize`. `AOMMIN(.., tx_mode_to_biggest_tx_size[
+    // TX_MODE_SELECT] = TX_64X64)` is the identity on this table (its maximum
+    // IS TX_64X64), so no cap is applied.
+    const MAX_TXSIZE_LOOKUP: [usize; 22] = [
+        0, // 4X4                         TX_4X4
+        0, 0, 1, // 4X8,     8X4,     8X8      TX_4X4,   TX_4X4,   TX_8X8
+        1, 1, 2, // 8X16,    16X8,    16X16    TX_8X8,   TX_8X8,   TX_16X16
+        2, 2, 3, // 16X32,   32X16,   32X32    TX_16X16, TX_16X16, TX_32X32
+        3, 3, // 32X64,   64X32             TX_32X32, TX_32X32
+        4, // 64X64                       TX_64X64
+        4, 4, 4, // 64X128,  128X64,  128X128  TX_64X64 x3
+        0, 0, 1, // 4X16,    16X4,    8X32     TX_4X4,   TX_4X4,   TX_8X8
+        1, 2, 2, // 32X8,    16X64,   64X16    TX_8X8,   TX_16X16, TX_16X16
+    ];
+    MAX_TXSIZE_LOOKUP[bsize]
+}
+
+/// `txsize_to_bsize[]` (common_data.h:280-284) for the five SQUARE tx sizes —
+/// the only ones [`nonrd_leaf_tx_size`] can return, because
+/// `max_txsize_lookup` is square-valued by construction.
+const TXSIZE_TO_BSIZE: [usize; 5] = [
+    0,  // TX_4X4   -> BLOCK_4X4
+    3,  // TX_8X8   -> BLOCK_8X8
+    6,  // TX_16X16 -> BLOCK_16X16
+    9,  // TX_32X32 -> BLOCK_32X32
+    12, // TX_64X64 -> BLOCK_64X64
+];
+
+/// `mi_size_wide[BLOCK_64X64]` — `av1_foreach_transformed_block_in_plane`'s
+/// `mu_blocks_wide/high` unit (encodemb.c:551-556, luma: `max_unit_bsize` is
+/// BLOCK_64X64 at subsampling 0). Only bites for a leaf wider/taller than
+/// 64 px, which the KEY VBP tree never stamps; carried so the walk is C's.
+const MU_UNIT_4X4: usize = 16;
+
+// ---------------------------------------------------------------------------
+// Test instrumentation: how often the estimate arm codes a MULTI-txb leaf.
+// ---------------------------------------------------------------------------
+//
+// A gate that encodes a cell "which reaches a non-square leaf" is vacuous
+// unless it can show the cell reached one (playbook §2/§8: derive coverage
+// from artefacts, not from names). Before 2026-08-02 the evidence was a panic;
+// now that the arm codes these leaves the counter is what is left. Indexed by
+// `bsize`, bumped once per leaf on the multi-txb path only, so a square leaf
+// pays nothing.
+//
+// THREAD-LOCAL, deliberately. A process-global counter would be read by
+// whichever test happened to finish its encode first — `cargo test` runs the
+// tests in one binary CONCURRENTLY, so a shared counter turns
+// "reset / encode / read" into a race and the non-vacuity assertions into
+// coin flips. The encode is single-threaded, so per-thread is exactly the
+// right granularity and costs no atomics.
+thread_local! {
+    static MULTI_TXB_LEAVES: std::cell::Cell<[u64; 22]> = const {
+        std::cell::Cell::new([0; 22])
+    };
+}
+
+/// Per-`bsize` count of leaves the estimate arm has coded with more than one
+/// txb since the last [`reset_multi_txb_leaf_counts`] **on this thread**.
+/// Test instrumentation.
+pub fn multi_txb_leaf_counts() -> [u64; 22] {
+    MULTI_TXB_LEAVES.with(std::cell::Cell::get)
+}
+
+/// Zero this thread's [`multi_txb_leaf_counts`] counters. Test instrumentation.
+pub fn reset_multi_txb_leaf_counts() {
+    MULTI_TXB_LEAVES.with(|c| c.set([0; 22]));
+}
+
+#[inline]
+fn note_multi_txb_leaf(bsize: usize) {
+    MULTI_TXB_LEAVES.with(|c| {
+        let mut v = c.get();
+        v[bsize] += 1;
+        c.set(v);
+    });
 }
 
 /// `should_prune_intra_modes_using_neighbors` (nonrd_pickmode.c:1566).
@@ -1167,9 +1221,33 @@ fn should_prune_intra_modes_using_neighbors(
 /// (`encode_b_intra_dry`) re-predicts + adds residual afterwards, exactly like
 /// C's encode_superblock.
 ///
-/// Single-txb invariant: `mi->tx_size` is the max square tx of the leaf, so
-/// `av1_foreach_transformed_block_in_plane` visits exactly ONE txb (the whole
-/// block) — the loop below is that one visit inlined.
+/// **The txb walk** is `av1_foreach_transformed_block_in_plane` (encodemb.c:536)
+/// inlined. `mi->tx_size` is `max_txsize_lookup[bsize]`, the max square tx of
+/// the SHORT side, so `txsize_to_bsize[mi->tx_size] == bsize` — one visit at
+/// `(0,0)`, C's `plane_bsize == tx_bsize` early return (`:546-549`) — for every
+/// SQUARE leaf, and TWO visits for the four non-square leaves the KEY VBP tree
+/// can stamp (BLOCK_16X8 / 8X16 / 32X16 / 16X32). Until 2026-08-02 the
+/// non-square case was a named refusal (KB-32); everything about the walk below
+/// is byte-inert at a square leaf, where it degenerates to the single visit the
+/// refusal's invariant described.
+///
+/// Three details of C's the walk carries that a naive "loop the txbs" does not:
+///
+/// * each visit predicts into `pd->dst` **before** the next visit reads its
+///   neighbours out of that same buffer (`av1_predict_intra_block_facade`'s
+///   `ref == dst`, reconintra.c:1622) — so txb 1 of a BLOCK_8X16 predicts from
+///   txb 0's *prediction*, there being no residual on this arm;
+/// * `av1_block_yrd` is handed `bsize_tx = txsize_to_bsize[tx_size]`
+///   (nonrd_opt.c:658), so its `num_4x4_w/h` are the TXB's — but
+///   `xd->mb_to_right_edge` is still the LEAF's, so the frame-edge clamp at
+///   nonrd_opt.c:141-144 subtracts the leaf's overhang from each txb's extent
+///   (and can clamp a txb to zero rows, which C then codes as rate 0 / dist 0
+///   / skippable). Reproduced exactly;
+/// * `args->skippable` is **assigned**, not accumulated: `av1_block_yrd` ends
+///   `this_rdc->skip_txfm = *skippable = temp_skippable` (nonrd_opt.c:327), and
+///   `temp_skippable` restarts at 1 in each call — so a multi-txb leaf's
+///   skippable flag is the LAST txb's, not the AND. Rate and dist DO accumulate
+///   (`args->rdc->rate += ...`, nonrd_opt.c:667-668).
 #[allow(clippy::too_many_arguments)]
 pub fn nonrd_pick_intra_mode(
     env: &SbEncodeEnv,
@@ -1189,14 +1267,49 @@ pub fn nonrd_pick_intra_mode(
     let bh = mi_h * 4;
     let tx_size_full = nonrd_leaf_tx_size(bsize); // mi->tx_size (signalled)
     let tx_clamped = tx_size_full.min(2); // AOMMIN(tx_size, TX_16X16) for block_yrd
+    // `tx_bsize = txsize_to_bsize[mi->tx_size]` (nonrd_pickmode.c:1594) — the
+    // per-visit block C hands `av1_block_yrd` as `bsize_tx`.
+    let tx_bsize = TXSIZE_TO_BSIZE[tx_size_full];
+    let tx_w4 = MI_W[tx_bsize];
+    let tx_h4 = MI_H[tx_bsize];
+    let tx_bw = tx_w4 * 4;
+    let tx_bh = tx_h4 * 4;
+    // C's `plane_bsize == tx_bsize` early return (encodemb.c:546-549).
+    let single_txb = bsize == tx_bsize;
+    if !single_txb {
+        note_multi_txb_leaf(bsize);
+    }
 
-    // Edge clamps (block_yrd's max_blocks_wide/high; av1_block_yrd:141-144):
-    // mb_to_right_edge = (mi_cols - mi_w - mi_col) * 4 * 8 (in 1/8 pel).
+    // Edge clamps. `mb_to_right_edge = (mi_cols - mi_w - mi_col) * 4 * 8` (in
+    // 1/8 pel) is the LEAF's, and BOTH clamps below read it — they differ only
+    // in what they add it to:
+    //
+    // * the WALK's (`max_block_wide(xd, plane_bsize, 0)`,
+    //   av1_common_int.h:1567) adds it to the LEAF's width, which reduces to
+    //   `mi_cols - mi_col` exactly (the >>3 and >>2 are both exact here since
+    //   the quantity is a multiple of 32). It decides which txbs are visited;
+    // * `av1_block_yrd`'s (nonrd_opt.c:141-144) adds `mb_to_right_edge >> 5` to
+    //   the **TXB's** `num_4x4_w`. At a square leaf the two are the same
+    //   number; at a non-square one they are not, and this is the one C uses
+    //   inside the transform loop.
     let mb_right = (env.mi_cols - mi_w as i32 - mi_col) * 32;
     let mb_bottom = (env.mi_rows - mi_h as i32 - mi_row) * 32;
-    let max_blocks_wide = mi_w as i32 + if mb_right >= 0 { 0 } else { mb_right >> 5 };
-    let max_blocks_high = mi_h as i32 + if mb_bottom >= 0 { 0 } else { mb_bottom >> 5 };
+    let max_blocks_wide = (tx_w4 as i32 + if mb_right >= 0 { 0 } else { mb_right >> 5 }).max(0);
+    let max_blocks_high = (tx_h4 as i32 + if mb_bottom >= 0 { 0 } else { mb_bottom >> 5 }).max(0);
     let (max_blocks_wide, max_blocks_high) = (max_blocks_wide as usize, max_blocks_high as usize);
+    let walk_blocks_wide = if mb_right >= 0 {
+        mi_w
+    } else {
+        (env.mi_cols - mi_col).max(0) as usize
+    };
+    let walk_blocks_high = if mb_bottom >= 0 {
+        mi_h
+    } else {
+        (env.mi_rows - mi_row).max(0) as usize
+    };
+    // `mu_blocks_wide/high` (encodemb.c:553-556).
+    let mu_w = MU_UNIT_4X4.min(walk_blocks_wide);
+    let mu_h = MU_UNIT_4X4.min(walk_blocks_high);
 
     let ref_off = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
     let src_off = ref_off; // src and recon share layout in this port
@@ -1211,11 +1324,56 @@ pub fn nonrd_pick_intra_mode(
     let mut best_rdc = PartRdStats::invalid();
     let mut best_mode = 0usize; // DC_PRED
     let mut best_sad = u32::MAX;
-    let prune_mode_based_on_sad = lctx.prune_intra_mode_using_best_sad_so_far; // bsize == tx_bsize always
+    // `sf.rt_sf.prune_intra_mode_using_best_sad_so_far && bsize == tx_bsize`
+    // (nonrd_pickmode.c:1599-1601) — C gates the SAD prune on the leaf BEING
+    // one txb, so it is structurally unreachable on the multi-txb walk.
+    let prune_mode_based_on_sad = lctx.prune_intra_mode_using_best_sad_so_far && single_txb;
     let allow_skip_nondc = true; // flat_blocks_screen is REALTIME+SCREEN only → const true (ALLINTRA)
 
-    let mut diff = vec![0i16; bw * bh];
-    let mut pred = vec![0u16; bw * bh];
+    // The txb visit list, `av1_foreach_transformed_block_in_plane` (encodemb.c:
+    // 536-585) evaluated once — it does not depend on the mode. 4 is the true
+    // maximum over BLOCK_SIZES_ALL (`max_txsize_lookup` is never more than one
+    // "step" below the block on either axis); the array is 8 with an assert so
+    // an unexpected shape fails loudly instead of truncating.
+    let mut visits = [(0usize, 0usize); 8];
+    let mut n_visits = 0usize;
+    if single_txb {
+        visits[0] = (0, 0);
+        n_visits = 1;
+    } else {
+        let mut chunk_r = 0usize;
+        while chunk_r < walk_blocks_high {
+            let unit_h = (mu_h + chunk_r).min(walk_blocks_high);
+            let mut chunk_c = 0usize;
+            while chunk_c < walk_blocks_wide {
+                let unit_w = (mu_w + chunk_c).min(walk_blocks_wide);
+                let mut blk_row = chunk_r;
+                while blk_row < unit_h {
+                    let mut blk_col = chunk_c;
+                    while blk_col < unit_w {
+                        assert!(
+                            n_visits < visits.len(),
+                            "nonrd estimate arm: bsize {bsize} / tx_size {tx_size_full} needs \
+                             more than {} txb visits — widen `visits`",
+                            visits.len()
+                        );
+                        visits[n_visits] = (blk_row, blk_col);
+                        n_visits += 1;
+                        blk_col += tx_w4;
+                    }
+                    blk_row += tx_h4;
+                }
+                chunk_c += mu_w;
+            }
+            chunk_r += mu_h;
+        }
+        // encodemb.c:584 `assert(i >= 1)`.
+        assert!(n_visits >= 1, "the txb walk visited nothing at bsize {bsize}");
+    }
+    let visits = &visits[..n_visits];
+
+    let mut diff = vec![0i16; tx_bw * tx_bh];
+    let mut pred = vec![0u16; tx_bw * tx_bh];
 
     for &this_mode in INTRA_MODE_LIST.iter() {
         // Force DC for spatially flat block at top-left, bsize >= 32x32
@@ -1249,139 +1407,172 @@ pub fn nonrd_pick_intra_mode(
             }
         }
 
-        // --- av1_estimate_block_intra, single txb == whole block ---
-        // Predict with the leaf's SIGNALLED tx_size (prediction granularity
-        // is mi->tx_size, NOT the clamped block_yrd loop size).
-        let (n_top, n_topright, n_left, n_bottomleft) = aom_dsp::entropy::partition::intra_avail(
-            env.sb_size,
-            bsize,
-            mi_row,
-            mi_col,
-            lctx.up_available,
-            lctx.left_available,
-            env.tile_col_end,
-            env.tile_row_end,
-            lctx.partition,
-            tx_size_full,
-            0,
-            0,
-            0, // blk_row
-            0, // blk_col
-            bw as i32,
-            bh as i32,
-            env.mi_cols,
-            env.mi_rows,
-            this_mode,
-            0,     // angle_delta * ANGLE_STEP
-            false, // use_filter_intra
-        );
-        predict_intra_high(
-            recon_y,
-            ref_off,
-            env.stride,
-            &mut pred,
-            bw,
-            this_mode,
-            0,
-            false,
-            0,
-            env.disable_edge_filter,
-            lctx.luma_edge_filter_type,
-            tx_size_full,
-            n_top as usize,
-            n_topright,
-            n_left as usize,
-            n_bottomleft,
-            i32::from(env.bd),
-        );
-        // Facade writes prediction into the recon plane (dst) — mirror that.
-        for r in 0..bh {
-            recon_y[ref_off + r * env.stride..ref_off + r * env.stride + bw]
-                .copy_from_slice(&pred[r * bw..r * bw + bw]);
-        }
+        // --- av1_foreach_transformed_block_in_plane(.., av1_estimate_block_
+        //     intra, &args) (nonrd_pickmode.c:1671) ---
+        // `args.rdc` starts at rate 0 / dist 0 (:1665) and ACCUMULATES over the
+        // visits; `args.skippable` starts at 1 (:1667) but each `av1_block_yrd`
+        // ASSIGNS it (nonrd_opt.c:327), so the leaf's flag is the last txb's.
+        let mut acc_rate: i32 = 0;
+        let mut acc_dist: i64 = 0;
+        let mut skippable = true;
+        let mut sad_pruned = false;
+        for &(blk_row, blk_col) in visits {
+            let txb_off = ref_off + (blk_row * env.stride + blk_col) * 4;
+            let txb_src = src_off + (blk_row * env.stride + blk_col) * 4;
+            // Predict with the leaf's SIGNALLED tx_size (prediction granularity
+            // is mi->tx_size, NOT the clamped block_yrd loop size).
+            let (n_top, n_topright, n_left, n_bottomleft) = aom_dsp::entropy::partition::intra_avail(
+                env.sb_size,
+                bsize,
+                mi_row,
+                mi_col,
+                lctx.up_available,
+                lctx.left_available,
+                env.tile_col_end,
+                env.tile_row_end,
+                lctx.partition,
+                tx_size_full,
+                0,
+                0,
+                blk_row as i32,
+                blk_col as i32,
+                bw as i32,
+                bh as i32,
+                env.mi_cols,
+                env.mi_rows,
+                this_mode,
+                0,     // angle_delta * ANGLE_STEP
+                false, // use_filter_intra
+            );
+            predict_intra_high(
+                recon_y,
+                txb_off,
+                env.stride,
+                &mut pred,
+                tx_bw,
+                this_mode,
+                0,
+                false,
+                0,
+                env.disable_edge_filter,
+                lctx.luma_edge_filter_type,
+                tx_size_full,
+                n_top as usize,
+                n_topright,
+                n_left as usize,
+                n_bottomleft,
+                i32::from(env.bd),
+            );
+            // Facade writes prediction into the recon plane (dst) — mirror that.
+            // It must land BEFORE the next txb's `intra_avail`/`predict` reads its
+            // above/left neighbours out of the same buffer.
+            for r in 0..tx_bh {
+                recon_y[txb_off + r * env.stride..txb_off + r * env.stride + tx_bw]
+                    .copy_from_slice(&pred[r * tx_bw..r * tx_bw + tx_bw]);
+            }
 
-        // Speed-9 SAD prune (av1_estimate_block_intra, nonrd_opt.c:629-648).
-        if prune_mode_based_on_sad {
-            let mut this_sad: u32 = 0;
-            for r in 0..bh {
-                for c in 0..bw {
-                    let s = env.src_y[src_off + r * env.stride + c] as i32;
-                    let p = pred[r * bw + c] as i32;
-                    this_sad += (s - p).unsigned_abs();
+            // Speed-9 SAD prune (av1_estimate_block_intra, nonrd_opt.c:629-648).
+            // `prune_mode_based_on_sad` implies `bsize == tx_bsize`, so `sdf` runs
+            // over the whole leaf and this is the only visit.
+            if prune_mode_based_on_sad {
+                // Enforced, not argued: `pred` is tx-sized, so reading it over
+                // the LEAF's bw x bh below is only sound when they are the same
+                // block. C's own gate guarantees that; this is the tripwire if
+                // it ever stops.
+                debug_assert!(single_txb, "the SAD prune requires bsize == tx_bsize");
+                let mut this_sad: u32 = 0;
+                for r in 0..bh {
+                    for c in 0..bw {
+                        let s = env.src_y[src_off + r * env.stride + c] as i32;
+                        let p = pred[r * bw + c] as i32;
+                        this_sad += (s - p).unsigned_abs();
+                    }
+                }
+                // KB-20's SECOND bd8-specific step — NOT inside av1_block_yrd, and
+                // NOT named by the old handoff assert. `fn_ptr[bsize].sdf` is bound
+                // by `highbd_set_var_fns` to `aom_highbd_sadWxH_bits{8,10,12}`,
+                // whose `MAKE_BFP_SAD_WRAPPER` bodies (encoder_utils.h:158) return
+                // the raw SAD `>> 0` / `>> 2` / `>> 4` respectively — i.e. `bd - 8`,
+                // NOT `2 * (bd - 8)`: a SAD is linear in pixel magnitude, so the
+                // 10-bit range is 4x the 8-bit one and the shift is 2. The raw sum
+                // above is the `_bits8` value; normalise it to this bit depth.
+                //
+                // HONESTY NOTE (measured 2026-07-30): this normalisation is
+                // source-derived, and on the 24-cell KB-20 gate it is
+                // decision-INERT — deleting it leaves every cell byte-identical.
+                // That is expected: the prune is the RATIO test
+                // `this_sad > best_sad + (best_sad >> 4)`, so shifting both sides
+                // equally only changes the rounding. What the gate DOES witness is
+                // getting the shift WRONG: `2 * (bd - 8)` over-shifts far enough to
+                // destroy the ratio and diverged on 1 of the 12 cells first
+                // measured. Keep the correct form; do not read the inertness as
+                // permission to drop it.
+                this_sad >>= u32::from(env.bd) - 8;
+                let sad_threshold = if best_sad != u32::MAX {
+                    best_sad + (best_sad >> 4)
+                } else {
+                    u32::MAX
+                };
+                if this_sad > sad_threshold {
+                    // rate INT_MAX → the caller-side `if (this_rdc.rate == INT_MAX)
+                    // continue` (:1674).
+                    sad_pruned = true;
+                    break;
+                }
+                if this_sad < best_sad {
+                    best_sad = this_sad;
                 }
             }
-            // KB-20's SECOND bd8-specific step — NOT inside av1_block_yrd, and
-            // NOT named by the old handoff assert. `fn_ptr[bsize].sdf` is bound
-            // by `highbd_set_var_fns` to `aom_highbd_sadWxH_bits{8,10,12}`,
-            // whose `MAKE_BFP_SAD_WRAPPER` bodies (encoder_utils.h:158) return
-            // the raw SAD `>> 0` / `>> 2` / `>> 4` respectively — i.e. `bd - 8`,
-            // NOT `2 * (bd - 8)`: a SAD is linear in pixel magnitude, so the
-            // 10-bit range is 4x the 8-bit one and the shift is 2. The raw sum
-            // above is the `_bits8` value; normalise it to this bit depth.
-            //
-            // HONESTY NOTE (measured 2026-07-30): this normalisation is
-            // source-derived, and on the 24-cell KB-20 gate it is
-            // decision-INERT — deleting it leaves every cell byte-identical.
-            // That is expected: the prune is the RATIO test
-            // `this_sad > best_sad + (best_sad >> 4)`, so shifting both sides
-            // equally only changes the rounding. What the gate DOES witness is
-            // getting the shift WRONG: `2 * (bd - 8)` over-shifts far enough to
-            // destroy the ratio and diverged on 1 of the 12 cells first
-            // measured. Keep the correct form; do not read the inertness as
-            // permission to drop it.
-            this_sad >>= u32::from(env.bd) - 8;
-            let sad_threshold = if best_sad != u32::MAX {
-                best_sad + (best_sad >> 4)
-            } else {
-                u32::MAX
-            };
-            if this_sad > sad_threshold {
-                // rate INT_MAX → the caller-side `if (this_rdc.rate == INT_MAX)
-                // continue` (:1674).
-                continue;
-            }
-            if this_sad < best_sad {
-                best_sad = this_sad;
-            }
-        }
 
-        // av1_subtract_block over the whole txb.
-        highbd_subtract_block(
-            bh,
-            bw,
-            &mut diff,
-            bw,
-            &env.src_y[src_off..],
-            env.stride,
-            &pred,
-            bw,
-        );
-        let (rate_yrd, dist_yrd, skippable) = if use_hbd {
-            block_yrd_hbd(
-                &diff,
-                mi_w,
-                mi_h,
-                max_blocks_wide,
-                max_blocks_high,
-                tx_clamped,
-                env.rows_y.round_fp,
-                env.rows_y.quant_fp,
-                env.rows_y.dequant,
-                env.bd,
-            )
-        } else {
-            block_yrd_lowbd(
-                &diff,
-                mi_w,
-                mi_h,
-                max_blocks_wide,
-                max_blocks_high,
-                tx_clamped,
-                env.rows_y.round_fp,
-                env.rows_y.quant_fp,
-                env.rows_y.dequant,
-            )
-        };
+            // av1_subtract_block over the txb (`bsize_tx` dims, nonrd_opt.c:657 →
+            // :157-160, from `p->src.buf` / `pd->dst.buf` offset by
+            // `4 * (row * stride + col)`, :653-654).
+            highbd_subtract_block(
+                tx_bh,
+                tx_bw,
+                &mut diff,
+                tx_bw,
+                &env.src_y[txb_src..],
+                env.stride,
+                &pred,
+                tx_bw,
+            );
+            let (rate_yrd, dist_yrd, txb_skippable) = if use_hbd {
+                block_yrd_hbd(
+                    &diff,
+                    tx_w4,
+                    tx_h4,
+                    max_blocks_wide,
+                    max_blocks_high,
+                    tx_clamped,
+                    env.rows_y.round_fp,
+                    env.rows_y.quant_fp,
+                    env.rows_y.dequant,
+                    env.bd,
+                )
+            } else {
+                block_yrd_lowbd(
+                    &diff,
+                    tx_w4,
+                    tx_h4,
+                    max_blocks_wide,
+                    max_blocks_high,
+                    tx_clamped,
+                    env.rows_y.round_fp,
+                    env.rows_y.quant_fp,
+                    env.rows_y.dequant,
+                )
+            };
+            // `args->rdc->rate += this_rdc.rate; args->rdc->dist += this_rdc.dist`
+            // (nonrd_opt.c:667-668) — `int` / `int64_t` adds in C.
+            acc_rate = acc_rate.wrapping_add(rate_yrd);
+            acc_dist = acc_dist.wrapping_add(dist_yrd);
+            skippable = txb_skippable;
+        }
+        if sad_pruned {
+            continue;
+        }
+        let (rate_yrd, dist_yrd) = (acc_rate, acc_dist);
 
         // (:1676-1687): skip-cost fold (skip_ctx 0 on KEY intra — module docs)
         // + the KF y-mode cost.
@@ -1574,6 +1765,62 @@ mod tests {
             }
             // Low-variance 8x8 takes the estimate arm at both speeds too.
             assert!(!hybrid_use_rdopt(hybrid, 3, 100), "speed {speed}: 8x8 var 100");
+        }
+    }
+
+    /// **KB-34 — `nonrd_leaf_tx_size` IS `max_txsize_lookup`, derived rather
+    /// than re-typed.** The table it returns is a transcription of
+    /// `common_data.h:105-124`, and a second transcription would prove nothing
+    /// about the first. What `max_txsize_lookup` actually *means* is "the
+    /// largest SQUARE transform that fits inside the block on both axes", so
+    /// that is what is checked here, against `MI_W`/`MI_H` — which the walk
+    /// itself uses and which the e2e byte gates therefore also exercise.
+    #[test]
+    fn nonrd_leaf_tx_size_is_the_largest_square_tx_that_fits() {
+        for bsize in 0..22usize {
+            let (w, h) = (MI_W[bsize] * 4, MI_H[bsize] * 4);
+            let tx = nonrd_leaf_tx_size(bsize);
+            let side = 4usize << tx;
+            assert!(
+                side <= w && side <= h,
+                "bsize {bsize} ({w}x{h}): TX side {side} does not fit"
+            );
+            // ... and it is the LARGEST such square, up to TX_64X64.
+            let bigger = 2 * side;
+            assert!(
+                tx == 4 || bigger > w || bigger > h,
+                "bsize {bsize} ({w}x{h}): TX side {side} but {bigger} also fits"
+            );
+            // Its bsize is the square this walk splits the leaf into.
+            let tx_b = TXSIZE_TO_BSIZE[tx];
+            assert_eq!((MI_W[tx_b] * 4, MI_H[tx_b] * 4), (side, side));
+            // Single-txb is exactly "square AND at most 64 px" — square is
+            // necessary but not sufficient, because `max_txsize_lookup` tops
+            // out at TX_64X64, so BLOCK_128X128 is four txbs. The
+            // pre-2026-08-02 refusal described the invariant as "square", which
+            // was right about every leaf the KEY VBP tree stamps and wrong in
+            // general; asserted here rather than assumed either way.
+            assert_eq!(
+                tx_b == bsize,
+                w == h && w <= 64,
+                "bsize {bsize} ({w}x{h}): single-txb must mean square and <= 64 px"
+            );
+        }
+    }
+
+    /// The KEY variance partitioner can stamp exactly four non-square leaves,
+    /// and each one splits into exactly TWO txbs. `set_vt_partitioning` returns
+    /// 0 for `bsize > BLOCK_32X32` on an intra frame (var_based_part.c:205-209)
+    /// so 64X32/32X64 never reach the estimate arm, and offers only
+    /// NONE-or-split at `bsize == bsize_min` (:186-199) so nothing below 8x8
+    /// does either. `kb34_nonsquare_nonrd_leaf.rs` asserts the same set from
+    /// the other end — over what real encodes actually produced.
+    #[test]
+    fn kb34_key_rect_leaves_are_two_txbs_each() {
+        for bsize in [4usize, 5, 7, 8] {
+            let tx_b = TXSIZE_TO_BSIZE[nonrd_leaf_tx_size(bsize)];
+            let n = (MI_W[bsize] / MI_W[tx_b]) * (MI_H[bsize] / MI_H[tx_b]);
+            assert_eq!(n, 2, "bsize {bsize} splits into {n} txbs, expected 2");
         }
     }
 
