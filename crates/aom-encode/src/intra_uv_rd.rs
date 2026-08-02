@@ -49,7 +49,7 @@
 use crate::rd::rdcost;
 use crate::tx_search::{
     MAX_TXSIZE_RECT_LOOKUP, RdStats, TxTypeSearchInputs, TxTypeSearchPolicy, TxbWinner,
-    get_txb_visible_dimensions, max_block_units, search_tx_type_intra,
+    get_txb_visible_dimensions, max_block_units,
 };
 use aom_dsp::entropy::partition::{get_plane_block_size, get_uv_mode, intra_avail};
 use aom_dsp::intra::cfl::{CFL_BUF_LINE, CflCtx, cfl_predict_block};
@@ -348,6 +348,7 @@ pub(crate) fn predict_uv_txb(
     blk_row: usize,
     blk_col: usize,
     txb_off: usize,
+    pred: &mut Vec<u16>,
 ) {
     let (txw, txh) = (TXS_W[tx_size], TXS_H[tx_size]);
     let mode = get_uv_mode(uv_mode) as usize;
@@ -389,12 +390,14 @@ pub(crate) fn predict_uv_txb(
                 0,
                 false,
             );
-            let mut pred = vec![0u16; txw * txh];
+            // Caller-owned (see `tx_search::TxWalkScratch`); same contents.
+            pred.clear();
+            pred.resize(txw * txh, 0);
             predict_intra_high(
                 recon,
                 txb_off,
                 env.ref_stride,
-                &mut pred,
+                pred,
                 txw,
                 mode,
                 0,
@@ -460,12 +463,13 @@ pub(crate) fn predict_uv_txb(
             angle_delta_uv * 3, // ANGLE_STEP
             false,
         );
-        let mut pred = vec![0u16; txw * txh];
+        pred.clear();
+        pred.resize(txw * txh, 0);
         predict_intra_high(
             recon,
             txb_off,
             env.ref_stride,
-            &mut pred,
+            pred,
             txw,
             mode,
             angle_delta_uv * 3,
@@ -509,6 +513,7 @@ pub fn txfm_rd_in_plane_uv(
     ref_best_rd: i64,
     current_rd_in: i64,
     pol: &TxTypeSearchPolicy,
+    txs: &mut crate::tx_search::IntraTxScratch,
 ) -> Option<(RdStats, Vec<TxbWinner>)> {
     txfm_rd_in_plane_uv_p(
         env,
@@ -522,6 +527,7 @@ pub fn txfm_rd_in_plane_uv(
         current_rd_in,
         pol,
         None,
+        txs,
     )
 }
 
@@ -539,6 +545,7 @@ pub fn txfm_rd_in_plane_uv_p(
     current_rd_in: i64,
     pol: &TxTypeSearchPolicy,
     palette: Option<&PaletteUvPred>,
+    txs: &mut crate::tx_search::IntraTxScratch,
 ) -> Option<(RdStats, Vec<TxbWinner>)> {
     if current_rd_in > ref_best_rd {
         return None;
@@ -588,6 +595,9 @@ pub fn txfm_rd_in_plane_uv_p(
     let mut winners: Vec<TxbWinner> = Vec::new();
     let mut current_rd = current_rd_in;
     let mut exit_early = false;
+    // Per-txb buffers hoisted out of the walk AND out of this call — the same
+    // treatment the luma walk gets (see `tx_search::IntraTxScratch`).
+    let crate::tx_search::IntraTxScratch { walk, search } = txs;
 
     // mu-64 chunk walk (see `txfm_rd_in_plane_intra`): chroma unit =
     // get_plane_block_size(BLOCK_64X64, ss) (encodemb.c:560-561); above 64x64
@@ -637,10 +647,13 @@ pub fn txfm_rd_in_plane_uv_p(
                     blk_row,
                     blk_col,
                     txb_off,
+                    &mut walk.tight,
                 );
             }
             // Snapshot the prediction (tight) for the search + recon base.
-            let mut pred = vec![0u16; txw * txh];
+            let pred = &mut walk.pred;
+            pred.clear();
+            pred.resize(txw * txh, 0);
             for r in 0..txh {
                 pred[r * txw..r * txw + txw].copy_from_slice(
                     &recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw],
@@ -650,15 +663,17 @@ pub fn txfm_rd_in_plane_uv_p(
             // av1_subtract_txb.
             let src = env.src(plane);
             let src_txb_off = env.src_off[pi] + (blk_row * env.src_stride + blk_col) * 4;
-            let mut residual = vec![0i16; txw * txh];
+            walk.residual.clear();
+            walk.residual.resize(txw * txh, 0);
+            let (pred, residual) = (&walk.pred, &mut walk.residual);
             aom_dsp::dist::highbd_subtract_block(
                 txh,
                 txw,
-                &mut residual,
+                residual,
                 txw,
                 &src[src_txb_off..],
                 env.src_stride,
-                &pred,
+                pred,
                 txw,
             );
 
@@ -682,11 +697,11 @@ pub fn txfm_rd_in_plane_uv_p(
                 env.ss_y as u32,
             );
             let inp = TxTypeSearchInputs {
-                residual: &residual,
+                residual,
                 src,
                 src_off: src_txb_off,
                 src_stride: env.src_stride,
-                pred: &pred,
+                pred,
                 tx_size,
                 plane,
                 uv_mode,
@@ -711,15 +726,22 @@ pub fn txfm_rd_in_plane_uv_p(
             // C's raw int64_t wraparound with `wrapping_sub`, not
             // `saturating_sub`. See the detailed comment at
             // `tx_search::txfm_rd_in_plane_intra`'s analogous call site.
-            let win = search_tx_type_intra(&inp, pol, ref_best_rd.wrapping_sub(current_rd))
-                .expect("search_tx_type always yields a winner");
+            let win = crate::tx_search::search_tx_type_intra_into(
+                &inp,
+                pol,
+                ref_best_rd.wrapping_sub(current_rd),
+                search,
+            )
+            .expect("search_tx_type always yields a winner");
 
             // recon_intra: reconstruct the winner over the prediction.
             if win.best_eob > 0 {
-                let mut tight = pred.clone();
+                let crate::tx_search::TxWalkScratch { pred, tight, .. } = &mut *walk;
+                tight.clear();
+                tight.extend_from_slice(pred);
                 aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add(
-                    &win.dqcoeff,
-                    &mut tight,
+                    &search.best_dqcoeff,
+                    tight,
                     txw,
                     win.best_tx_type,
                     tx_size,
@@ -806,6 +828,7 @@ pub fn txfm_uvrd(
     angle_delta_uv: i32,
     ref_best_rd: i64,
     pol: &TxTypeSearchPolicy,
+    txs: &mut crate::tx_search::IntraTxScratch,
 ) -> Option<(RdStats, Vec<TxbWinner>, Vec<TxbWinner>)> {
     txfm_uvrd_p(
         env,
@@ -816,6 +839,7 @@ pub fn txfm_uvrd(
         ref_best_rd,
         pol,
         None,
+        txs,
     )
 }
 
@@ -832,6 +856,7 @@ pub fn txfm_uvrd_p(
     ref_best_rd: i64,
     pol: &TxTypeSearchPolicy,
     palette: Option<&PaletteUvPred>,
+    txs: &mut crate::tx_search::IntraTxScratch,
 ) -> Option<(RdStats, Vec<TxbWinner>, Vec<TxbWinner>)> {
     debug_assert_ne!(
         uv_mode, UV_CFL_PRED,
@@ -860,6 +885,7 @@ pub fn txfm_uvrd_p(
             0,
             pol,
             palette,
+            txs,
         )?;
         if this_stats.rate == i32::MAX {
             return None; // "if (this_rd_stats.rate == INT_MAX)" break
@@ -986,6 +1012,7 @@ pub fn intra_model_rd_uv(
     plane: usize,
     cfl: &mut CflPredict,
     tx_size: usize,
+    txs: &mut crate::tx_search::IntraTxScratch,
 ) -> i64 {
     let plane_bsize = get_plane_block_size(env.bsize, env.ss_x, env.ss_y);
     let (txw, txh) = (TXS_W[tx_size], TXS_H[tx_size]);
@@ -1024,28 +1051,44 @@ pub fn intra_model_rd_uv(
                 blk_row,
                 blk_col,
                 txb_off,
+                &mut txs.walk.tight,
             );
-            let mut pred = vec![0u16; n];
+            // Caller-owned per-txb buffers (see `tx_search::IntraTxScratch`);
+            // same contents as the `vec![]`s they replace.
+            let pred = &mut txs.walk.pred;
+            pred.clear();
+            pred.resize(n, 0);
             for r in 0..txh {
                 pred[r * txw..r * txw + txw].copy_from_slice(
                     &recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw],
                 );
             }
             let src_txb_off = env.src_off[pi] + (blk_row * env.src_stride + blk_col) * 4;
-            let mut residual = vec![0i16; n];
+            txs.walk.residual.clear();
+            txs.walk.residual.resize(n, 0);
+            let (pred, residual) = (&txs.walk.pred, &mut txs.walk.residual);
             aom_dsp::dist::highbd_subtract_block(
                 txh,
                 txw,
-                &mut residual,
+                residual,
                 txw,
                 &src[src_txb_off..],
                 env.src_stride,
-                &pred,
+                pred,
                 txw,
             );
             // av1_quick_txfm(use_hadamard=0): DCT_DCT forward transform.
-            let mut coeff = vec![0i32; n];
-            aom_dsp::transform::txfm2d::av1_fwd_txfm2d(&residual, &mut coeff, txw, 0, tx_size);
+            let coeff = &mut txs.search.satd_coeff;
+            coeff.clear();
+            coeff.resize(n, 0);
+            aom_dsp::transform::txfm2d::av1_fwd_txfm2d_into(
+                &txs.walk.residual,
+                coeff,
+                txw,
+                0,
+                tx_size,
+                &mut txs.search.xq.fwd,
+            );
             satd_cost += i64::from(aom_dsp::dist::hadamard::satd(&coeff[..n]));
             blk_col += txw_unit;
         }
@@ -1072,6 +1115,7 @@ pub fn cfl_compute_rd(
     cfl_idx: i32,
     fast_mode: bool,
     pol: &TxTypeSearchPolicy,
+    txs: &mut crate::tx_search::IntraTxScratch,
 ) -> (i64, Option<CflRdStats>) {
     let pred_plane = plane - 1;
     let (cfl_sign, cfl_alpha) = cfl_idx_to_sign_and_alpha(cfl_idx);
@@ -1086,7 +1130,7 @@ pub fn cfl_compute_rd(
     };
 
     if fast_mode {
-        let cost = intra_model_rd_uv(env, recon, plane, &mut cflp, tx_size);
+        let cost = intra_model_rd_uv(env, recon, plane, &mut cflp, tx_size, txs);
         (cost, None)
     } else {
         let Some((stats, _winners)) = txfm_rd_in_plane_uv(
@@ -1100,6 +1144,7 @@ pub fn cfl_compute_rd(
             i64::MAX, // cfl_compute_rd passes INT64_MAX — no early exit
             0,
             pol,
+            txs,
         ) else {
             unreachable!("budget-free UV walk is always valid");
         };
@@ -1130,6 +1175,7 @@ pub fn cfl_pick_plane_parameter(
     tx_size: usize,
     cfl_search_range: usize,
     pol: &TxTypeSearchPolicy,
+    txs: &mut crate::tx_search::IntraTxScratch,
 ) -> i32 {
     debug_assert!((1..=CFL_MAGS_SIZE).contains(&cfl_search_range));
     if cfl_search_range == CFL_MAGS_SIZE {
@@ -1147,6 +1193,7 @@ pub fn cfl_pick_plane_parameter(
         start_cfl_idx,
         true,
         pol,
+        txs,
     );
     for dir in [1i32, -1] {
         for i in 1..CFL_MAGS_SIZE as i32 {
@@ -1155,7 +1202,7 @@ pub fn cfl_pick_plane_parameter(
                 break;
             }
             let (cfl_cost, _) =
-                cfl_compute_rd(env, recon, plane, ctx, cache, tx_size, cfl_idx, true, pol);
+                cfl_compute_rd(env, recon, plane, ctx, cache, tx_size, cfl_idx, true, pol, txs);
             if cfl_cost < best_cfl_cost {
                 best_cfl_cost = cfl_cost;
                 est_best_cfl_idx = cfl_idx;
@@ -1181,6 +1228,7 @@ pub fn cfl_pick_plane_rd(
     cfl_search_range: usize,
     est_best_cfl_idx: i32,
     pol: &TxTypeSearchPolicy,
+    txs: &mut crate::tx_search::IntraTxScratch,
 ) -> [CflRdStats; CFL_MAGS_SIZE] {
     debug_assert!((1..=CFL_MAGS_SIZE).contains(&cfl_search_range));
     let mut arr = [CflRdStats::invalid(); CFL_MAGS_SIZE];
@@ -1195,6 +1243,7 @@ pub fn cfl_pick_plane_rd(
         start_cfl_idx,
         false,
         pol,
+        txs,
     );
     arr[start_cfl_idx as usize] = s.expect("full mode returns stats");
     if cfl_search_range == 1 {
@@ -1207,7 +1256,7 @@ pub fn cfl_pick_plane_rd(
                 break;
             }
             let (_, s) =
-                cfl_compute_rd(env, recon, plane, ctx, cache, tx_size, cfl_idx, false, pol);
+                cfl_compute_rd(env, recon, plane, ctx, cache, tx_size, cfl_idx, false, pol, txs);
             arr[cfl_idx as usize] = s.expect("full mode returns stats");
         }
     }
@@ -1245,6 +1294,7 @@ pub fn cfl_rd_pick_alpha(
     cfl_costs: &crate::mode_costs::CflCosts,
     uv_mode_cost: i32,
     pol: &TxTypeSearchPolicy,
+    txs: &mut crate::tx_search::IntraTxScratch,
 ) -> Option<CflAlphaResult> {
     debug_assert!((1..=CFL_MAGS_SIZE).contains(&cfl_search_range));
     let mut cache = CflDcCache::cleared();
@@ -1260,6 +1310,7 @@ pub fn cfl_rd_pick_alpha(
         tx_size,
         cfl_search_range,
         pol,
+        txs,
     );
     let est_best_cfl_idx_v = cfl_pick_plane_parameter(
         env,
@@ -1270,6 +1321,7 @@ pub fn cfl_rd_pick_alpha(
         tx_size,
         cfl_search_range,
         pol,
+        txs,
     );
 
     if cfl_search_range == 1 {
@@ -1298,6 +1350,7 @@ pub fn cfl_rd_pick_alpha(
         cfl_search_range,
         est_best_cfl_idx_u,
         pol,
+        txs,
     );
     let cfl_rd_arr_v = cfl_pick_plane_rd(
         env,
@@ -1309,6 +1362,7 @@ pub fn cfl_rd_pick_alpha(
         cfl_search_range,
         est_best_cfl_idx_v,
         pol,
+        txs,
     );
     // clear_cfl_dc_pred_cache_flags(&xd->cfl): the cache scope ends here (the
     // joint scan below re-evaluates nothing).
@@ -1473,6 +1527,7 @@ fn pick_intra_angle_routine_sbuv(
     best_angle_delta: &mut i32,
     best_rd: &mut i64,
     best_stats: &mut Option<(i32, i64, bool)>,
+    txs: &mut crate::tx_search::IntraTxScratch,
 ) -> i64 {
     let Some((tokenonly, _wu, _wv)) = txfm_uvrd(
         env,
@@ -1482,6 +1537,7 @@ fn pick_intra_angle_routine_sbuv(
         angle_delta_uv,
         best_rd_in,
         pol,
+        txs,
     ) else {
         return i64::MAX;
     };
@@ -1524,6 +1580,7 @@ pub fn rd_pick_intra_angle_sbuv(
     costs: &IntraModeCosts,
     pol: &TxTypeSearchPolicy,
     lp: &UvLoopPolicy,
+    txs: &mut crate::tx_search::IntraTxScratch,
 ) -> Option<(i32, i32, i64, bool, i64)> {
     let mut best_angle_delta = 0i32;
     let mut best_stats: Option<(i32, i64, bool)> = None;
@@ -1551,6 +1608,7 @@ pub fn rd_pick_intra_angle_sbuv(
                 &mut best_angle_delta,
                 &mut best_rd,
                 &mut best_stats,
+                txs,
             );
             rd_cost[(2 * angle_delta + i) as usize] = this_rd;
             if angle_delta == 0 {
@@ -1586,6 +1644,7 @@ pub fn rd_pick_intra_angle_sbuv(
                     &mut best_angle_delta,
                     &mut best_rd,
                     &mut best_stats,
+                    txs,
                 );
             }
         }
@@ -1636,6 +1695,9 @@ pub fn rd_pick_intra_sbuv_mode(
         palette_uv: None,
     };
     let mut visits: Vec<UvModeVisit> = Vec::new();
+    // ONE set of per-transform-block buffers for the whole chroma mode loop —
+    // see `tx_search::IntraTxScratch` (the luma loop owns the twin).
+    let mut txs = crate::tx_search::IntraTxScratch::default();
     let sqr_up = crate::tx_search::TXSIZE_SQR_UP_MAP[max_tx_size];
     let _ = sqr_up; // the caller resolved intra_uv_mode_mask by this class
 
@@ -1704,6 +1766,7 @@ pub fn rd_pick_intra_sbuv_mode(
                 cfl_costs,
                 uv_mode_costs[env.luma_mode][UV_CFL_PRED],
                 pol,
+                &mut txs,
             ) else {
                 visits.push(visit);
                 continue;
@@ -1729,6 +1792,7 @@ pub fn rd_pick_intra_sbuv_mode(
                 costs,
                 pol,
                 lp,
+                &mut txs,
             ) else {
                 visits.push(visit);
                 continue;
@@ -1744,7 +1808,7 @@ pub fn rd_pick_intra_sbuv_mode(
                 continue;
             }
             let Some((stats, _wu, _wv)) =
-                txfm_uvrd(env, recon_u, recon_v, uv_mode, 0, best.best_rd, pol)
+                txfm_uvrd(env, recon_u, recon_v, uv_mode, 0, best.best_rd, pol, &mut txs)
             else {
                 visits.push(visit);
                 continue;

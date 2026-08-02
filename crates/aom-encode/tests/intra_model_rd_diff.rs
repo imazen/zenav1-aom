@@ -143,7 +143,14 @@ fn intra_model_rd_matches_c_chain() {
             };
 
             let mut recon_rust = recon0.clone();
-            let got = intra_model_rd_y(&env, &mut recon_rust, model_tx);
+            let got = intra_model_rd_y(
+                &env,
+                &mut recon_rust,
+                model_tx,
+                // Per-txb scratch (owned by the mode loop in production; a fresh
+                // one per call is behaviourally identical).
+                &mut aom_encode::tx_search::TxWalkScratch::default(),
+            );
 
             let mut recon_c = recon0.clone();
             let want = c_intra_model_rd(

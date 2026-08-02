@@ -1085,6 +1085,10 @@ pub fn rd_pick_intra_sby_mode_y(
     env.tx_mode_is_select = select_default && pass_method != crate::tx_search::USE_LARGESTALL;
     // zero_winner_mode_stats + x->winner_mode_count = 0 (:1520-1521).
     let mut winner_stats: Vec<WinnerModeEntry> = Vec::new();
+    // ONE set of per-transform-block buffers for the whole mode loop (every
+    // mode x tx size x txb x candidate tx type below shares it) — see
+    // `tx_search::IntraTxScratch`. These were per-txb `vec![]`s.
+    let mut txs = crate::tx_search::IntraTxScratch::default();
 
     let mut best_rd = best_rd_in;
     let mut best: Option<IntraSbyBest> = None;
@@ -1118,7 +1122,7 @@ pub fn rd_pick_intra_sby_mode_y(
         }
 
         // Model estimate + prune (the prediction walk mutates recon).
-        let this_model_rd = intra_model_rd_y(env, recon, model_tx_size);
+        let this_model_rd = intra_model_rd_y(env, recon, model_tx_size, &mut txs.walk);
         let model_rd_index_for_pruning = get_model_rd_index_for_pruning(
             mode,
             cfg.qindex,
@@ -1150,6 +1154,7 @@ pub fn rd_pick_intra_sby_mode_y(
             cfg.enable_rect_tx,
             pass_method,
             None,
+            &mut txs,
         ) else {
             continue; // this_rate_tokenonly == INT_MAX
         };
@@ -1299,6 +1304,7 @@ pub fn rd_pick_intra_sby_mode_y(
             pass_pol,
             pass_method,
             &mut winner_stats,
+            &mut txs,
         ) {
             best = Some(fi);
         }
@@ -1379,6 +1385,7 @@ pub fn rd_pick_intra_sby_mode_y(
                     cfg.enable_rect_tx,
                     wm.winner_tx_size_method,
                     pal_yrd.as_ref(),
+                    &mut txs,
                 ) else {
                     continue; // rd_stats.rate == INT_MAX (:1204)
                 };
@@ -1511,9 +1518,10 @@ pub fn model_intra_yrd_and_prune(
     env: &TxfmYrdEnv,
     recon: &mut [u16],
     best_model_rd: &mut i64,
+    walk: &mut crate::tx_search::TxWalkScratch,
 ) -> bool {
     let tx_size = MAX_TXSIZE_LOOKUP[env.bsize].min(3);
-    let this_model_rd = intra_model_rd_y(env, recon, tx_size);
+    let this_model_rd = intra_model_rd_y(env, recon, tx_size, walk);
     if *best_model_rd != i64::MAX && this_model_rd > *best_model_rd + (*best_model_rd >> 2) {
         return true;
     } else if this_model_rd < *best_model_rd {
@@ -1550,6 +1558,7 @@ pub fn rd_pick_filter_intra_sby_y(
     pass_pol: &TxTypeSearchPolicy,
     pass_method: usize,
     winner_stats: &mut Vec<WinnerModeEntry>,
+    txs: &mut crate::tx_search::IntraTxScratch,
 ) -> Option<IntraSbyBest> {
     if cfg.gates.prune_filter_intra_level == 2 {
         return None;
@@ -1584,7 +1593,7 @@ pub fn rd_pick_filter_intra_sby_y(
             }
         }
 
-        if model_intra_yrd_and_prune(env, recon, best_model_rd) {
+        if model_intra_yrd_and_prune(env, recon, best_model_rd, &mut txs.walk) {
             continue;
         }
         let Some(choice) = pick_uniform_tx_size_type_yrd_intra(
@@ -1597,6 +1606,7 @@ pub fn rd_pick_filter_intra_sby_y(
             cfg.enable_rect_tx,
             pass_method,
             None,
+            txs,
         ) else {
             continue; // rate == INT_MAX
         };

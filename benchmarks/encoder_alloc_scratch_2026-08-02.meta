@@ -1,0 +1,93 @@
+# encoder_alloc_scratch_2026-08-02 — provenance
+# Companion to encoder_alloc_scratch_2026-08-02.md and its two TSVs.
+#
+# This is a CHANGE + its before/after measurement, not a profiling session:
+# levers 3a and 3 of benchmarks/encoder_hotspot_reprofile_2026-08-02.md
+# ("tier the forward-pass scratch", +5.30 ms projected; "per-txb scratch reuse",
+# +24.76 ms projected). The re-profile's own ceilings are ARITHMETIC ON MEASURED
+# SELF-COSTS, not forecasts of a change; this file is what the change actually
+# returned.
+
+date                 2026-08-02
+box                  Apple M4 Pro, 12 cores, 24 GiB, macOS 26.5.2 (Darwin arm64)
+baseline commit      578653ff30b4116e29453b414c4da0702959ed63  (the re-profile)
+worktree             zenav1-aom--alloc, detached at main
+libaom oracle        upstream/ submodule 03087864cf4bea6abb0d28f95cf7843511413d8f (v3.14.1),
+                     prebuilt libaom.a copied in from the primary checkout (same submodule sha)
+rustc                1.97.1 (8bab26f4f 2026-07-14)
+C compiler           Apple clang 21.0.0 (clang-2100.1.1.101)
+build flags          --release, NO -C target-cpu=native (runtime SIMD dispatch, what users get)
+threading            single-threaded on both arms
+nice                 every measured run under `nice -n 19`
+
+## BOX WAS NOT IDLE — read this before reading any millisecond
+
+Whole-box load average 28-34 (of 12 cores) throughout, the same concurrent
+`zenmetrics` fleet the re-profile ran under. Handled the same way, and the
+reason for the new harness below:
+
+* scripts/eprof_ab.sh — an INTERLEAVED control band over N arbitrary encoder
+  binaries (eprof_control.sh only interleaves two fixed arms). One invocation of
+  every arm per round, round after round, so drift lands on all arms equally.
+  Each invocation is 2 warm-up + 7 timed encodes with its own median, identical
+  to eprof_control.sh. Comparing separately-taken medians is exactly what
+  docs/DIFFERENTIAL_PLAYBOOK.md §6 forbids on this box.
+* scripts/eprof_ab_stats.py — per-arm median/min/max/spread FIRST, then the
+  paired per-round ratios. The paired-median column is the load-robust one.
+
+## Profile cell — unchanged from both encoder profiles, for continuity
+
+1024x1024 photo, cq-level 44, cpu-used 6, ALLINTRA (usage 2), 8-bit 4:2:0,
+single tile, single thread. Source $HOME/tmp/xb/src/photo_1024.yuv (the file
+the 2026-08-01 cross-encoder study and both profiles used). Both arms emit the
+same 4472-byte stream at this cell.
+
+## Exact commands
+
+  git worktree add --detach ~/work/zen/zenav1-aom--alloc main
+  git -C ~/work/zen/zenav1-aom--alloc submodule update --init
+  cp -R ../zenav1-aom/upstream/build upstream/build          # same submodule sha
+  cp -R ../zenav1-aom/conformance/data conformance/data      # gitignored corpus
+
+  nice -n 19 cc -O2 -o benchmarks/xbench/target/drv_libaom \
+      benchmarks/xbench/csrc/drv_libaom.c -Iupstream -Iupstream/build \
+      -Lupstream/build -laom -lm -lc++
+  (cd benchmarks/xbench && nice -n 19 cargo build --release -j 4 -p drv-aom)
+  nice -n 19 cargo build --release -j 4 -p zenav1-aom-bench --example eprof_alloc
+
+  # one drv-aom per arm, kept side by side in ~/tmp/allocbin/
+  nice -n 19 bash scripts/eprof_ab.sh 12 <out.tsv> \
+      base=...BASE l3a=...L3a l3=...L3ONLY final=...FINAL \
+      libaom-c=benchmarks/xbench/target/drv_libaom
+  python3 scripts/eprof_ab_stats.py <out.tsv> --ref libaom-c --vs base
+
+  nice -n 19 ./target/release/examples/eprof_alloc 1024 1024 44 6 \
+      ~/tmp/xb/src/photo_1024.yuv
+
+## Byte-identity gate
+
+  cargo nextest run --cargo-profile test-fast --workspace --no-fail-fast \
+      --run-ignored all                       # SIMD dispatch live
+  AOM_FORCE_SCALAR=1 cargo nextest run --cargo-profile test-fast --workspace \
+      --no-fail-fast --run-ignored all        # scalar-pinned
+  cargo check --target x86_64-apple-darwin --workspace --all-targets
+
+`--run-ignored all` is included deliberately: the KB-PERF-1 session found two
+stale pins that way. The conformance corpus must be present
+(`conformance/data`, gitignored) or ~40 tests fail-loud with "conformance
+vector missing" — that is the fail-loud design working, not a regression.
+
+## Committed data files
+
+  .ab.tsv         the interleaved control band, every arm x every round
+  .alloc.tsv      the allocation census, per arm
+
+## Known gaps
+
+* ONE cell, one image, one content class. cpu-used 3/4/5/9 not measured here —
+  the re-profile records that 9 (5.64x) and 4 (7.76x) are worse cells and were
+  never decomposed.
+* Wall-clock only. No instruction count (no valgrind on Apple Silicon), so
+  "fewer allocator calls" and "less time in the allocator" are two different
+  measurements and only the second one is what the ratio moved on.
+* No multi-threaded measurement; neither arm is threaded.

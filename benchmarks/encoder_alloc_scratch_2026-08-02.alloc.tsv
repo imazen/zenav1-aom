@@ -1,0 +1,14 @@
+# eprof_alloc census, 1024x1024 photo / cq44 / cpu-used 6, MEASURED (second) port_encode call.
+# base  = 578653f (the re-profile commit)
+# l3a   = lever 3a only (forward-pass scratch tiering). NOT separately censused:
+#         3a's scratch is a STACK array, so it cannot move an allocator count. The
+#         proof is the l3 row == the final row exactly (512557/267465686), i.e. adding
+#         3a on top of lever 3 changes nothing here; the l3a row is therefore the
+#         base row and is written as such.
+# l3    = lever 3 only (per-txb scratch reuse), 3a reverted
+# final = both levers
+arm	alloc	alloc_zeroed	realloc	dealloc	total_allocish	bytes	peak_live_bytes	per_megapixel	per_superblock
+base	241781	606000	6272	847779	854053	448818422	27705399	814488	3336.1
+l3a	241781	606000	6272	847779	854053	448818422	27705399	814488	3336.1
+l3	434027	69906	8624	503931	512557	267465686	27705399	488812	2002.2
+final	434027	69906	8624	503931	512557	267465686	27705399	488812	2002.2

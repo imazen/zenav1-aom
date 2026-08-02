@@ -651,6 +651,9 @@ struct PaletteRdState<'a> {
     /// `best.is_some()` here since the enclosing search seeds `best: None`
     /// into this struct only when nothing had won yet — the caller merges).
     winner_stats: &'a mut Vec<WinnerModeEntry>,
+    /// Per-transform-block scratch for the palette candidates' tx searches —
+    /// one set for the whole palette search (see `tx_search::IntraTxScratch`).
+    txs: crate::tx_search::IntraTxScratch,
 }
 
 /// `palette_rd_y` (palette.c:229): evaluate ONE candidate colour set.
@@ -774,6 +777,7 @@ fn palette_rd_y(
             args.cfg.enable_rect_tx,
             args.pass_method,
             Some(&pal),
+            &mut st.txs,
         ) else {
             return (false, false);
         };
@@ -790,6 +794,7 @@ fn palette_rd_y(
             args.cfg.enable_rect_tx,
             args.pass_method,
             Some(&pal),
+            &mut st.txs,
         ) else {
             return (false, false);
         };
@@ -1052,6 +1057,7 @@ pub fn rd_pick_palette_intra_sby(
         best_rd: *best_rd,
         best: None,
         winner_stats,
+        txs: crate::tx_search::IntraTxScratch::default(),
     };
 
     if colors_threshold > 1 && colors_threshold <= color_thresh_palette {
@@ -1379,6 +1385,8 @@ pub fn rd_pick_palette_intra_sbuv(
 
     // Colour counts per channel (the 8-bit-domain threshold for hbd).
     let mut count_buf = vec![0i32; 1 << 12];
+    // One set of per-transform-block buffers for this palette-UV search.
+    let mut txs = crate::tx_search::IntraTxScratch::default();
     let (mut thr_u, mut thr_v) = (0i32, 0i32);
     let colors_u = if is_hbd {
         count_colors_highbd(
@@ -1576,6 +1584,7 @@ pub fn rd_pick_palette_intra_sbuv(
                 best.best_rd,
                 args.pol,
                 Some(&pal_pred),
+                &mut txs,
             ) else {
                 continue;
             };
@@ -1595,6 +1604,7 @@ pub fn rd_pick_palette_intra_sbuv(
                 best.best_rd,
                 args.pol,
                 Some(&pal_pred),
+                &mut txs,
             ) else {
                 continue;
             };

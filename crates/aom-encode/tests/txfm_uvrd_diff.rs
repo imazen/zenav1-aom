@@ -306,6 +306,7 @@ fn txfm_uvrd_matches_c_walk() {
                 angle_delta_uv,
                 ref_best_rd,
                 &pol,
+                &mut aom_encode::tx_search::IntraTxScratch::default(),
             );
 
             let cenv = CUvEnv {
@@ -577,6 +578,7 @@ fn txfm_uvrd_matches_c_walk_lossless_q0() {
                 angle_delta_uv,
                 i64::MAX,
                 &pol,
+                &mut aom_encode::tx_search::IntraTxScratch::default(),
             );
             let mut recon_u_c = sc.recon_u0.clone();
             let mut recon_v_c = sc.recon_v0.clone();
@@ -634,6 +636,7 @@ fn txfm_uvrd_matches_c_walk_lossless_q0() {
                     angle_delta_uv,
                     probe,
                     &pol,
+                    &mut aom_encode::tx_search::IntraTxScratch::default(),
                 );
                 let mut pcu = sc.recon_u0.clone();
                 let mut pcv = sc.recon_v0.clone();
@@ -898,6 +901,7 @@ fn txfm_rd_in_plane_uv_cfl_matches_c_walk() {
                     i64::MAX,
                     0,
                     &pol,
+                    &mut aom_encode::tx_search::IntraTxScratch::default(),
                 );
                 let cres = c_txfm_rd_in_plane_uv(
                     &cenv,

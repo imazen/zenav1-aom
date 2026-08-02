@@ -24,6 +24,19 @@ Data: `.stages.tsv`, `.symbols.tsv`, `.control.tsv`, `.breadth.tsv`,
 **Nothing was optimized in this session.** Every ceiling below is arithmetic on
 a measured self-cost, labelled as such.
 
+> **Levers 3a and 3 have since LANDED, and lever 3's ceiling below was 18x
+> optimistic** — `encoder_alloc_scratch_2026-08-02.md`. Measured 3.346x →
+> 3.248x (−4.64 ms), allocator calls 854 053 → 512 557, zero bytes moved.
+> 3a returned −3.13 ms against its +5.30 projection; lever 3 returned
+> **−1.34 ms** against its +24.76. The reason is "Attribution limits" item 4
+> below, which the ranked table at the bottom of this file contradicts: the
+> `alloc/libc` stage is a **leaf class matched by symbol name**, and most of its
+> mass is `_platform_memset` (5.36 % of the window) + `_platform_memmove`
+> (2.68 %) rather than the allocator's own `xzm_free` (2.34 %). Scratch reuse
+> removes malloc/free pairs; it does not remove the bytes those buffers still
+> have to be zeroed with. **Split those symbols before crediting any lever with
+> that stage total.**
+
 ---
 
 ## Control band — read this before reading any delta

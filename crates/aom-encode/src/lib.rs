@@ -69,7 +69,7 @@ use aom_dsp::quant::{
     av1_highbd_quantize_fp_qm, av1_quantize_dc, av1_quantize_fp_qm,
 };
 use aom_dsp::transform::inv_txfm2d::av1_fwht4x4;
-use aom_dsp::transform::txfm2d::av1_fwd_txfm2d;
+use aom_dsp::transform::txfm2d::av1_fwd_txfm2d_into;
 use aom_dsp::txb::{
     CoeffCostTables, get_txb_ctx, iscan, optimize_txb, optimize_txb_qm, scan, txb_entropy_context,
     txb_high, txb_wide, write_coeffs_txb, write_coeffs_txb_full,
@@ -301,6 +301,50 @@ pub struct XformQuantResult {
     pub txb_entropy_ctx: u8,
 }
 
+/// Reusable per-transform-block buffers for [`xform_quant_into`] and
+/// [`xform_quant_optimize_split_into`] — the encode-side twin of the decoder's
+/// [`aom_dsp::recon::ReconScratch`].
+///
+/// Every buffer is filled with `clear()` + `resize(n, 0)`, which writes exactly
+/// the zeros the `vec![0i32; n]` it replaces wrote, so a live scratch is
+/// byte-identical to a fresh allocation **by construction**. What is removed is
+/// the malloc/free pair, and the tx-type search runs one of these per candidate
+/// type per transform block.
+///
+/// The `memset` is deliberately KEPT even though all three buffers are provably
+/// overwritten in full by their producers (`av1_fwd_txfm2d_into` writes every
+/// `coeff[..full]`; every quantizer this dispatches to opens with
+/// `qcoeff[..n].fill(0); dqcoeff[..n].fill(0)`, and the SIMD `quantize_fp`
+/// kernel stores all `n/8` chunks of both). A variant that skipped the re-zero
+/// was built and measured on 2026-08-02: **it landed inside the control band**
+/// (16 interleaved rounds, −3.34 % vs −2.40 % against the same baseline, the
+/// two arms within each other's spread), so the safer form — identical by
+/// construction, no reasoning about dead bytes — is what ships. See
+/// `benchmarks/encoder_alloc_scratch_2026-08-02.md`.
+///
+/// Gate 3: `xform_quant` (5.87 %), `av1_fwd_txfm2d` (7.62 %) and the drop glue
+/// of the `Vec`s they returned (3.23 %) were together 16.7 % of the encoder
+/// re-profile's allocator/memset class (`benchmarks/encoder_hotspot_reprofile_2026-08-02.alloc_callers.tsv`).
+#[derive(Default, Clone, Debug)]
+pub struct XformQuantScratch {
+    /// Forward-transform coefficients (`TX_W * TX_H`).
+    pub coeff: Vec<i32>,
+    /// Quantized coefficients (`av1_get_max_eob`).
+    pub qcoeff: Vec<i32>,
+    /// Dequantized coefficients (`av1_get_max_eob`).
+    pub dqcoeff: Vec<i32>,
+    /// The forward transform's own column-pass buffer.
+    pub fwd: aom_dsp::transform::txfm2d::FwdTxfmScratch,
+}
+
+/// Scalar half of [`xform_quant`]'s result when the coefficient buffers stay in
+/// a caller-owned [`XformQuantScratch`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct XformQuantSummary {
+    pub eob: u16,
+    pub txb_entropy_ctx: u8,
+}
+
 /// `av1_xform_quant` for a single (bd=8) transform block: forward-transform the
 /// `residual` (full `TX_W*TX_H`, row-major, stride `TX_W`), quantize with `kind`,
 /// and (unless `use_optimize_b`, which defers to the trellis) write the neighbour
@@ -314,6 +358,29 @@ pub fn xform_quant(
     qp: &QuantParams,
     use_optimize_b: bool,
 ) -> XformQuantResult {
+    let mut s = XformQuantScratch::default();
+    let sum = xform_quant_into(residual, tx_size, tx_type, kind, qp, use_optimize_b, &mut s);
+    XformQuantResult {
+        coeff: s.coeff,
+        qcoeff: s.qcoeff,
+        dqcoeff: s.dqcoeff,
+        eob: sum.eob,
+        txb_entropy_ctx: sum.txb_entropy_ctx,
+    }
+}
+
+/// [`xform_quant`] with caller-owned coefficient buffers. Byte-identical
+/// output; see [`XformQuantScratch`].
+#[allow(clippy::too_many_arguments)]
+pub fn xform_quant_into(
+    residual: &[i16],
+    tx_size: usize,
+    tx_type: usize,
+    kind: QuantKind,
+    qp: &QuantParams,
+    use_optimize_b: bool,
+    scratch: &mut XformQuantScratch,
+) -> XformQuantSummary {
     let full = TX_W[tx_size] * TX_H[tx_size];
     assert_eq!(residual.len(), full, "residual must be full TX_W*TX_H");
     let n_coeffs = txb_wide(tx_size) * txb_high(tx_size); // == av1_get_max_eob
@@ -325,18 +392,25 @@ pub fn xform_quant(
     // coded-lossless block libaom's `highbd_fwd_txfm_4x4` (hybrid_fwd_txfm.c:83)
     // swaps the DCT for the reversible 4x4 Walsh–Hadamard; lossless forces
     // TX_4X4 (== 0) and DCT_DCT (== 0) upstream, so this is the only tx here.
-    let mut coeff = vec![0i32; full];
+    // `clear` + `resize(_, 0)` reproduces the `vec![0i32; n]` these three
+    // replace element for element (see `XformQuantScratch`).
+    let XformQuantScratch { coeff, qcoeff, dqcoeff, fwd } = scratch;
+    coeff.clear();
+    coeff.resize(full, 0);
     if qp.lossless {
         debug_assert_eq!(tx_size, 0, "lossless forces TX_4X4");
         debug_assert_eq!(tx_type, 0, "lossless forces DCT_DCT");
-        av1_fwht4x4(residual, &mut coeff, TX_W[tx_size]);
+        av1_fwht4x4(residual, coeff, TX_W[tx_size]);
     } else {
-        av1_fwd_txfm2d(residual, &mut coeff, TX_W[tx_size], tx_type, tx_size);
+        av1_fwd_txfm2d_into(residual, coeff, TX_W[tx_size], tx_type, tx_size, fwd);
     }
 
     // av1_quant: quantize the valid coefficient block.
-    let mut qcoeff = vec![0i32; n_coeffs];
-    let mut dqcoeff = vec![0i32; n_coeffs];
+    qcoeff.clear();
+    qcoeff.resize(n_coeffs, 0);
+    dqcoeff.clear();
+    dqcoeff.resize(n_coeffs, 0);
+    let (qcoeff, dqcoeff) = (&mut qcoeff[..], &mut dqcoeff[..]);
     let src = &coeff[..n_coeffs];
     let hbd = qp.bd > 8;
     // av1_setup_qmatrix: per-(tx_size, tx_type) QM selection (QM-off / explicit
@@ -348,11 +422,11 @@ pub fn xform_quant(
         // /iqm_sel carry the per-transform QM (None = flat). FP/DC unaffected.
         (QuantKind::B, _, _, true) if qp.adaptive => aom_highbd_quantize_b_adaptive_helper(
             qp.zbin, qp.round, qp.quant, qp.quant_shift, qp.dequant, log_scale, qm_sel, iqm_sel, sc,
-            src, &mut qcoeff, &mut dqcoeff,
+            src, qcoeff, dqcoeff,
         ),
         (QuantKind::B, _, _, false) if qp.adaptive => aom_quantize_b_adaptive_helper(
             qp.zbin, qp.round, qp.quant, qp.quant_shift, qp.dequant, log_scale, qm_sel, iqm_sel, sc,
-            src, &mut qcoeff, &mut dqcoeff,
+            src, qcoeff, dqcoeff,
         ),
         (QuantKind::Fp, Some(qm), Some(iqm), false) => av1_quantize_fp_qm(
             qp.round,
@@ -363,8 +437,8 @@ pub fn xform_quant(
             iqm,
             sc,
             src,
-            &mut qcoeff,
-            &mut dqcoeff,
+            qcoeff,
+            dqcoeff,
         ),
         (QuantKind::Fp, Some(qm), Some(iqm), true) => av1_highbd_quantize_fp_qm(
             qp.round,
@@ -375,8 +449,8 @@ pub fn xform_quant(
             iqm,
             sc,
             src,
-            &mut qcoeff,
-            &mut dqcoeff,
+            qcoeff,
+            dqcoeff,
         ),
         // The hottest quantizer (speed-0 search path): SIMD-dispatched, bit-
         // identical to the scalar port at every tier (quantize_fp_simd_diff);
@@ -389,8 +463,8 @@ pub fn xform_quant(
             sc,
             iscan(tx_size, tx_type),
             src,
-            &mut qcoeff,
-            &mut dqcoeff,
+            qcoeff,
+            dqcoeff,
         ),
         (QuantKind::Fp, _, _, true) => av1_highbd_quantize_fp_no_qmatrix(
             qp.quant,
@@ -399,8 +473,8 @@ pub fn xform_quant(
             log_scale,
             sc,
             src,
-            &mut qcoeff,
-            &mut dqcoeff,
+            qcoeff,
+            dqcoeff,
         ),
         (QuantKind::B, Some(qm), Some(iqm), false) => aom_quantize_b_qm(
             qp.zbin,
@@ -413,8 +487,8 @@ pub fn xform_quant(
             iqm,
             sc,
             src,
-            &mut qcoeff,
-            &mut dqcoeff,
+            qcoeff,
+            dqcoeff,
         ),
         (QuantKind::B, Some(qm), Some(iqm), true) => aom_highbd_quantize_b_qm(
             qp.zbin,
@@ -427,8 +501,8 @@ pub fn xform_quant(
             iqm,
             sc,
             src,
-            &mut qcoeff,
-            &mut dqcoeff,
+            qcoeff,
+            dqcoeff,
         ),
         (QuantKind::B, _, _, false) => aom_quantize_b_no_qmatrix(
             qp.zbin,
@@ -439,8 +513,8 @@ pub fn xform_quant(
             log_scale,
             sc,
             src,
-            &mut qcoeff,
-            &mut dqcoeff,
+            qcoeff,
+            dqcoeff,
         ),
         (QuantKind::B, _, _, true) => aom_highbd_quantize_b_no_qmatrix(
             qp.zbin,
@@ -451,8 +525,8 @@ pub fn xform_quant(
             log_scale,
             sc,
             src,
-            &mut qcoeff,
-            &mut dqcoeff,
+            qcoeff,
+            dqcoeff,
         ),
         // DC-only: the DC scalars (quant[0]/dequant[0]); qm/iqm handled internally.
         (QuantKind::Dc, qm, iqm, false) => av1_quantize_dc(
@@ -463,8 +537,8 @@ pub fn xform_quant(
             qm,
             iqm,
             src,
-            &mut qcoeff,
-            &mut dqcoeff,
+            qcoeff,
+            dqcoeff,
         ),
         (QuantKind::Dc, qm, iqm, true) => av1_highbd_quantize_dc(
             qp.round,
@@ -474,8 +548,8 @@ pub fn xform_quant(
             qm,
             iqm,
             src,
-            &mut qcoeff,
-            &mut dqcoeff,
+            qcoeff,
+            dqcoeff,
         ),
     };
 
@@ -483,16 +557,10 @@ pub fn xform_quant(
     let txb_entropy_ctx = if use_optimize_b {
         0
     } else {
-        txb_entropy_context(&qcoeff, tx_size, tx_type, eob as usize)
+        txb_entropy_context(qcoeff, tx_size, tx_type, eob as usize)
     };
 
-    XformQuantResult {
-        coeff,
-        qcoeff,
-        dqcoeff,
-        eob,
-        txb_entropy_ctx,
-    }
+    XformQuantSummary { eob, txb_entropy_ctx }
 }
 
 /// Neighbour entropy contexts + plane geometry for `get_txb_ctx` (the block's
@@ -579,16 +647,50 @@ pub fn xform_quant_optimize_split(
     bctx: &BlockContext,
     opt: &OptimizeInputs,
 ) -> XformQuantOptResult {
+    let mut s = XformQuantScratch::default();
+    let sum = xform_quant_optimize_split_into(
+        residual, tx_size, tx_type, kind, qp_quant, qp_trellis, bctx, opt, &mut s,
+    );
+    XformQuantOptResult {
+        coeff: s.coeff,
+        qcoeff: s.qcoeff,
+        dqcoeff: s.dqcoeff,
+        eob: sum.eob,
+        txb_entropy_ctx: sum.txb_entropy_ctx,
+        rate: sum.rate,
+        txb_skip_ctx: sum.txb_skip_ctx,
+        dc_sign_ctx: sum.dc_sign_ctx,
+    }
+}
+
+/// Scalar half of [`xform_quant_optimize_split`]'s result when the coefficient
+/// buffers stay in a caller-owned [`XformQuantScratch`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct XformQuantOptSummary {
+    pub eob: u16,
+    pub txb_entropy_ctx: u8,
+    pub rate: i32,
+    pub txb_skip_ctx: usize,
+    pub dc_sign_ctx: usize,
+}
+
+/// [`xform_quant_optimize_split`] with caller-owned coefficient buffers.
+/// Byte-identical output; see [`XformQuantScratch`].
+#[allow(clippy::too_many_arguments)]
+pub fn xform_quant_optimize_split_into(
+    residual: &[i16],
+    tx_size: usize,
+    tx_type: usize,
+    kind: QuantKind,
+    qp_quant: &QuantParams,
+    qp_trellis: &QuantParams,
+    bctx: &BlockContext,
+    opt: &OptimizeInputs,
+    scratch: &mut XformQuantScratch,
+) -> XformQuantOptSummary {
     let qp = qp_quant;
     // av1_xform_quant with use_optimize_b: quantize but defer the entropy ctx.
-    let xq = xform_quant(residual, tx_size, tx_type, kind, qp, true);
-    let XformQuantResult {
-        coeff,
-        mut qcoeff,
-        mut dqcoeff,
-        eob,
-        ..
-    } = xq;
+    let eob = xform_quant_into(residual, tx_size, tx_type, kind, qp, true, scratch).eob;
 
     // get_txb_ctx: neighbour contexts -> (txb_skip_ctx, dc_sign_ctx).
     let (txb_skip_ctx, dc_sign_ctx) =
@@ -599,10 +701,7 @@ pub fn xform_quant_optimize_split(
     // av1_optimize_b: eob 0 -> skip-txb cost; else run the trellis.
     if eob == 0 {
         let rate = opt.cost.txb_skip[txb_skip_ctx * 2 + 1];
-        return XformQuantOptResult {
-            coeff,
-            qcoeff,
-            dqcoeff,
+        return XformQuantOptSummary {
             eob: 0,
             txb_entropy_ctx: 0,
             rate,
@@ -613,6 +712,7 @@ pub fn xform_quant_optimize_split(
 
     let dequant = [qp.dequant[0], qp.dequant[1]];
     let sc = scan(tx_size, tx_type);
+    let XformQuantScratch { coeff, qcoeff, dqcoeff, .. } = scratch;
     let tcoeff = &coeff[..qcoeff.len()];
     // Same av1_setup_qmatrix selection the quantize above used — the trellis
     // (optimize_txb_qm's get_dqv) must fold the SAME per-position inverse.
@@ -636,8 +736,8 @@ pub fn xform_quant_optimize_split(
         (qm, Some(iqm)) => optimize_txb_qm(
             tx_size,
             tx_type,
-            &mut qcoeff,
-            &mut dqcoeff,
+            qcoeff,
+            dqcoeff,
             tcoeff,
             eob as usize,
             dequant,
@@ -653,8 +753,8 @@ pub fn xform_quant_optimize_split(
         _ => optimize_txb(
             tx_size,
             tx_type,
-            &mut qcoeff,
-            &mut dqcoeff,
+            qcoeff,
+            dqcoeff,
             tcoeff,
             eob as usize,
             dequant,
@@ -668,11 +768,8 @@ pub fn xform_quant_optimize_split(
     };
 
     // Trellis tail: entropy ctx from the *optimized* qcoeff / eob.
-    let txb_entropy_ctx = txb_entropy_context(&qcoeff, tx_size, tx_type, res.eob);
-    XformQuantOptResult {
-        coeff,
-        qcoeff,
-        dqcoeff,
+    let txb_entropy_ctx = txb_entropy_context(qcoeff, tx_size, tx_type, res.eob);
+    XformQuantOptSummary {
         eob: res.eob as u16,
         txb_entropy_ctx,
         rate: res.rate,

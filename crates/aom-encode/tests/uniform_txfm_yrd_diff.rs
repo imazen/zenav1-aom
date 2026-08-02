@@ -200,6 +200,8 @@ fn uniform_txfm_yrd_intra_matches_c_walk() {
                 &pol,
                 None,
                 None,
+                // Per-txb scratch (production owns one per mode loop).
+                &mut aom_encode::tx_search::IntraTxScratch::default(),
             );
 
             // ---- C-side walk ----
@@ -586,6 +588,8 @@ fn pick_uniform_tx_size_type_yrd_matches_c_depth_loop() {
                 true,
                 aom_encode::tx_search::USE_FULL_RD,
                 None,
+                // Per-txb scratch (production owns one per mode loop).
+                &mut aom_encode::tx_search::IntraTxScratch::default(),
             );
 
             // ---- C-side depth loop (choose_tx_size_type_from_rd transcribed) ----

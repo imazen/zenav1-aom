@@ -540,8 +540,8 @@ fn pixel_diff_stats(
 
 use crate::rd::rdcost;
 use crate::{
-    BlockContext, OptimizeInputs, QuantKind, QuantParams, XformQuantOptResult, xform_quant,
-    xform_quant_optimize_split,
+    BlockContext, OptimizeInputs, QuantKind, QuantParams, XformQuantOptSummary, xform_quant_into,
+    xform_quant_optimize_split_into,
 };
 use aom_dsp::txb::{
     CoeffCostSet, CoeffCostTables, TxTypeCosts, cost_coeffs_txb, cost_coeffs_txb_laplacian,
@@ -648,6 +648,7 @@ pub fn qparam_qm_level_in_search(
 /// `satd_threshold * qstep * sqrt_tx_pixels_2d[tx_size]` (⇒ SKIP trellis for
 /// this block). The `skip_trellis || threshold == UINT_MAX` early return
 /// (tx_search.c:1986) is applied by the caller before this runs.
+#[allow(clippy::too_many_arguments)]
 fn skip_trellis_opt_based_on_satd(
     residual: &[i16],
     tx_size: usize,
@@ -655,13 +656,19 @@ fn skip_trellis_opt_based_on_satd(
     bd: u8,
     qstep: u32,
     satd_threshold: u32,
+    coeff: &mut Vec<i32>,
+    fwd: &mut aom_dsp::transform::txfm2d::FwdTxfmScratch,
 ) -> bool {
     // av1_xform: forward transform into a full TX_W*TX_H buffer (64-point sizes
     // repack their valid area into the first av1_get_max_eob entries in-place;
     // TXS_W/TXS_H == the crate's TX_W/TX_H the quant path uses).
     let full = TXS_W[tx_size] * TXS_H[tx_size];
-    let mut coeff = vec![0i32; full];
-    aom_dsp::transform::txfm2d::av1_fwd_txfm2d(residual, &mut coeff, TXS_W[tx_size], tx_type, tx_size);
+    // Same contents as the `vec![0i32; full]` this replaces (see `TxSearchScratch`).
+    coeff.clear();
+    coeff.resize(full, 0);
+    aom_dsp::transform::txfm2d::av1_fwd_txfm2d_into(
+        residual, coeff, TXS_W[tx_size], tx_type, tx_size, fwd,
+    );
     let n_coeffs = av1_get_max_eob(tx_size);
     // aom_satd: Σ|coeff| over the first n_coeffs (aom_dsp::dist::hadamard::satd is
     // proven byte-identical to aom_satd_c — aom-dist/tests/hadamard_diff.rs).
@@ -738,6 +745,7 @@ fn prune_txk_type_intra(
     prune_factor: i64,
     txk_map: &mut [usize; TX_TYPES],
     use_qm_dist_metric: bool,
+    xq_scratch: &mut crate::XformQuantScratch,
 ) -> u16 {
     // C's prune_txk_type also runs av1_setup_qmatrix per tx type
     // (tx_search.c:1349): QM shapes the B-quant estimate AND (under the
@@ -765,7 +773,8 @@ fn prune_txk_type_intra(
             continue;
         }
         // do txfm and quantization (av1_xform_quant, AV1_XFORM_QUANT_B).
-        let xq = xform_quant(inp.residual, tx_size, tx_type, QuantKind::B, &qp_b, false);
+        let xq =
+            xform_quant_into(inp.residual, tx_size, tx_type, QuantKind::B, &qp_b, false, xq_scratch);
         // estimate rate cost (av1_cost_coeffs_txb_laplacian, adjust_eob=0);
         // C includes get_tx_type_cost inside — the port's split adds it here.
         //
@@ -780,7 +789,7 @@ fn prune_txk_type_intra(
         // `skip_tx_search && !best_eob` break fire on the FIRST candidate.
         // Same gate as the no-trellis arm of the main loop below.
         let mut rate_cost = cost_coeffs_txb_laplacian(
-            &xq.qcoeff,
+            &xq_scratch.qcoeff,
             xq.eob as usize,
             tx_size,
             tx_type,
@@ -804,8 +813,8 @@ fn prune_txk_type_intra(
         // tx-domain dist — the QM-PSNR metric weights it by the per-transform
         // forward matrix (same gate as the main loop, tx_search.c:1361).
         let (dist, _sse) = crate::dist_block_tx_domain_qm(
-            &xq.coeff,
-            &xq.dqcoeff,
+            &xq_scratch.coeff,
+            &xq_scratch.dqcoeff,
             tx_size,
             inp.bd,
             crate::dist_qmatrix(&qp_b, tx_size, tx_type),
@@ -1207,6 +1216,73 @@ pub struct TxTypeSearchResult {
     pub evaluated_mask: u16,
 }
 
+/// [`TxTypeSearchResult`] without the two coefficient `Vec`s — the winner's
+/// coefficients live in the caller's [`TxSearchScratch`] instead. Returned by
+/// [`search_tx_type_intra_into`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TxTypeSearchSummary {
+    pub best_tx_type: usize,
+    pub best_eob: u16,
+    pub best_txb_ctx: u8,
+    pub rate: i32,
+    pub dist: i64,
+    pub sse: i64,
+    pub rd: i64,
+    pub skip_txfm: bool,
+    pub evaluated_mask: u16,
+}
+
+/// Reusable buffers for the intra tx walks — the encode-side twin of the
+/// decoder's [`aom_dsp::recon::ReconScratch`], one level up: it spans a whole
+/// `txfm_rd_in_plane_*` walk, so every transform block and every candidate
+/// tx type inside it shares one set of allocations.
+///
+/// Every buffer is refilled with `clear()` + `resize(n, v)` or
+/// `clear()` + `extend_from_slice()`, both of which write exactly what the
+/// `vec![v; n]` / `to_vec()` they replace wrote, so a live scratch is
+/// byte-identical to fresh allocations **by construction**.
+///
+/// Gate 3: the callers this covers — `av1_fwd_txfm2d`, `txfm_rd_in_plane_intra`,
+/// `search_tx_type_intra`, `xform_quant`, `txfm_rd_in_plane_uv_p`,
+/// `predict_uv_txb` and the drop glue of the `Vec`s they returned — are together
+/// ~38 % of the allocator/memset class in
+/// `benchmarks/encoder_hotspot_reprofile_2026-08-02.alloc_callers.tsv`.
+#[derive(Default, Clone, Debug)]
+pub struct TxSearchScratch {
+    /// `xform_quant`'s coeff/qcoeff/dqcoeff + the forward transform's own buffer.
+    pub xq: crate::XformQuantScratch,
+    /// The running winner's quantized/dequantized coefficients (C keeps these by
+    /// buffer swap; the port copies them, which is one memcpy per improvement
+    /// instead of two allocations per candidate).
+    pub best_qcoeff: Vec<i32>,
+    pub best_dqcoeff: Vec<i32>,
+    /// `dist_block_px_domain`'s `pred + inv_txfm(dqcoeff)` reconstruction.
+    pub recon: Vec<u16>,
+    /// `skip_trellis_opt_based_on_satd`'s forward-transform output.
+    pub satd_coeff: Vec<i32>,
+}
+
+/// The per-transform-block buffers of the `txfm_rd_in_plane_*` / model walks:
+/// the prediction, the subtracted residual, and `recon_intra`'s tight
+/// reconstruction. Split from [`TxSearchScratch`] because the walk hands the
+/// first two to the tx-type search BY REFERENCE while the search needs its own
+/// buffers mutably — two disjoint fields, one owner.
+#[derive(Default, Clone, Debug)]
+pub struct TxWalkScratch {
+    pub pred: Vec<u16>,
+    pub residual: Vec<i16>,
+    pub tight: Vec<u16>,
+}
+
+/// Everything the intra luma/chroma transform search allocates per transform
+/// block, owned once per coding block by `rd_pick_intra_sby_mode_y` and threaded
+/// down. See [`TxSearchScratch`] for why reuse is byte-identical.
+#[derive(Default, Clone, Debug)]
+pub struct IntraTxScratch {
+    pub walk: TxWalkScratch,
+    pub search: TxSearchScratch,
+}
+
 /// `search_tx_type` (tx_search.c, static) for one INTERIOR luma intra txb at
 /// the speed-0 policy: iterate the allowed tx types (identity `txk_map`), per
 /// type forward-transform + quantize (+ trellis when enabled) + rate + the
@@ -1224,6 +1300,33 @@ pub fn search_tx_type_intra(
     pol: &TxTypeSearchPolicy,
     ref_best_rd: i64,
 ) -> Option<TxTypeSearchResult> {
+    let mut s = TxSearchScratch::default();
+    let b = search_tx_type_intra_into(inp, pol, ref_best_rd, &mut s)?;
+    Some(TxTypeSearchResult {
+        best_tx_type: b.best_tx_type,
+        best_eob: b.best_eob,
+        best_txb_ctx: b.best_txb_ctx,
+        rate: b.rate,
+        dist: b.dist,
+        sse: b.sse,
+        rd: b.rd,
+        skip_txfm: b.skip_txfm,
+        qcoeff: s.best_qcoeff,
+        dqcoeff: s.best_dqcoeff,
+        evaluated_mask: b.evaluated_mask,
+    })
+}
+
+/// [`search_tx_type_intra`] with caller-owned buffers: the winner's
+/// coefficients are left in `scratch.best_qcoeff` / `scratch.best_dqcoeff`
+/// instead of being returned as fresh `Vec`s. Byte-identical; see
+/// [`TxSearchScratch`].
+pub fn search_tx_type_intra_into(
+    inp: &TxTypeSearchInputs,
+    pol: &TxTypeSearchPolicy,
+    ref_best_rd: i64,
+    scratch: &mut TxSearchScratch,
+) -> Option<TxTypeSearchSummary> {
     let tx_size = inp.tx_size;
     // Only the txb WIDTH is needed here now (residual stride + block_sse math);
     // the distortion measures `inp.visible_{cols,rows}`, not the full tx height.
@@ -1290,7 +1393,12 @@ pub fn search_tx_type_intra(
                 let dist = sse_s << 4;
                 let rate = inp.predict_skip_zero_blk_rate;
                 let full = TXS_W[tx_size] * TXS_H[tx_size];
-                return Some(TxTypeSearchResult {
+                // Same `vec![0; full]` contents the owned-Vec form returned.
+                scratch.best_qcoeff.clear();
+                scratch.best_qcoeff.resize(full, 0);
+                scratch.best_dqcoeff.clear();
+                scratch.best_dqcoeff.resize(full, 0);
+                return Some(TxTypeSearchSummary {
                     best_tx_type: 0, // DCT_DCT (:2115)
                     best_eob: 0,
                     best_txb_ctx: 0, // txb_entropy_ctx[block] = 0 (:2069)
@@ -1299,8 +1407,6 @@ pub fn search_tx_type_intra(
                     sse: dist,
                     rd: rdcost(inp.rdmult, rate, dist),
                     skip_txfm: true,
-                    qcoeff: vec![0; full],
-                    dqcoeff: vec![0; full],
                     evaluated_mask: 0,
                 });
             }
@@ -1391,6 +1497,7 @@ pub fn search_tx_type_intra(
             pf,
             &mut txk_map,
             pol.use_qm_dist_metric,
+            &mut scratch.xq,
         );
         allowed_tx_mask &= !prune;
         // "Need to have at least one transform type allowed" (tx_search.c:1944):
@@ -1462,7 +1569,7 @@ pub fn search_tx_type_intra(
         sharpness: pol.sharpness,
     };
 
-    let mut best: Option<TxTypeSearchResult> = None;
+    let mut best: Option<TxTypeSearchSummary> = None;
     let mut best_rd = i64::MAX;
     let mut evaluated_mask = 0u16;
 
@@ -1493,6 +1600,8 @@ pub fn search_tx_type_intra(
                 inp.bd,
                 qstep,
                 pol.coeff_opt_satd_threshold,
+                &mut scratch.satd_coeff,
+                &mut scratch.xq.fwd,
             )
         };
         // KB-21 root #2 (second half): the SATD arm does not merely *skip* the
@@ -1514,9 +1623,11 @@ pub fn search_tx_type_intra(
         };
         let qp = if skip_trellis_this { &qp_b } else { &qp_fp };
 
-        // Forward transform + quantize (+ trellis + rate).
-        let (res, rate_cost): (XformQuantOptResult, i32) = if !skip_trellis_this {
-            let r = xform_quant_optimize_split(
+        // Forward transform + quantize (+ trellis + rate). The coefficient
+        // buffers live in `scratch.xq` — one set for the whole walk instead of
+        // three `Vec`s per candidate tx type.
+        let (res, rate_cost): (XformQuantOptSummary, i32) = if !skip_trellis_this {
+            let r = xform_quant_optimize_split_into(
                 inp.residual,
                 tx_size,
                 tx_type,
@@ -1527,6 +1638,7 @@ pub fn search_tx_type_intra(
                 &qp_trellis,
                 inp.bctx,
                 &opt,
+                &mut scratch.xq,
             );
             // av1_optimize_txb rate += tx_type cost when eob > 0.
             let ttc = if r.eob > 0 {
@@ -1550,7 +1662,8 @@ pub fn search_tx_type_intra(
         } else {
             // No-trellis arm: B quant, entropy ctx computed by av1_quant,
             // rate via av1_cost_coeffs_txb (+ tx_type inside its eob>0 body).
-            let xq = xform_quant(inp.residual, tx_size, tx_type, kind_this, qp, false);
+            let xq =
+                xform_quant_into(inp.residual, tx_size, tx_type, kind_this, qp, false, &mut scratch.xq);
             let (txb_skip_ctx, dc_sign_ctx) = aom_dsp::txb::get_txb_ctx(
                 inp.bctx.plane_bsize,
                 tx_size,
@@ -1559,7 +1672,7 @@ pub fn search_tx_type_intra(
                 inp.bctx.left,
             );
             let rate = cost_coeffs_txb(
-                &xq.qcoeff,
+                &scratch.xq.qcoeff,
                 xq.eob as usize,
                 tx_size,
                 tx_type,
@@ -1582,10 +1695,7 @@ pub fn search_tx_type_intra(
             } else {
                 0
             };
-            let r = XformQuantOptResult {
-                coeff: xq.coeff,
-                qcoeff: xq.qcoeff,
-                dqcoeff: xq.dqcoeff,
+            let r = XformQuantOptSummary {
                 eob: xq.eob,
                 txb_entropy_ctx: xq.txb_entropy_ctx,
                 rate,
@@ -1613,8 +1723,8 @@ pub fn search_tx_type_intra(
             (block_sse, block_sse)
         } else if use_transform_domain_distortion {
             crate::dist_block_tx_domain_qm(
-                &res.coeff,
-                &res.dqcoeff,
+                &scratch.xq.coeff,
+                &scratch.xq.dqcoeff,
                 tx_size,
                 inp.bd,
                 dqm,
@@ -1631,8 +1741,8 @@ pub fn search_tx_type_intra(
             let mut sse_diff = i64::MAX;
             if is_tx64 || is_high_energy {
                 let (dt, st) = crate::dist_block_tx_domain_qm(
-                    &res.coeff,
-                    &res.dqcoeff,
+                    &scratch.xq.coeff,
+                    &scratch.xq.dqcoeff,
                     tx_size,
                     inp.bd,
                     dqm,
@@ -1645,8 +1755,8 @@ pub fn search_tx_type_intra(
             }
             if !is_tx64 || !is_high_energy || sse_diff * 2 < s_tx {
                 let tx_domain_dist = d;
-                d = dist_block_px_domain(
-                    &res.dqcoeff,
+                d = dist_block_px_domain_into(
+                    &scratch.xq.dqcoeff,
                     tx_size,
                     tx_type,
                     inp.pred,
@@ -1658,6 +1768,7 @@ pub fn search_tx_type_intra(
                     inp.visible_rows,
                     res.eob as usize,
                     inp.lossless,
+                    &mut scratch.recon,
                 );
                 if is_high_energy && d < tx_domain_dist {
                     d = tx_domain_dist;
@@ -1671,7 +1782,15 @@ pub fn search_tx_type_intra(
         let rd = rdcost(inp.rdmult, rate_cost, dist);
         if rd < best_rd {
             best_rd = rd;
-            best = Some(TxTypeSearchResult {
+            // C keeps the winner by swapping the dqcoeff buffer pointer
+            // (`av1_txb_init_levels` / `best_dqcoeff` in tx_search.c); the port
+            // copies into the scratch's winner buffers, which is one memcpy per
+            // improvement in place of two allocations per candidate.
+            scratch.best_qcoeff.clear();
+            scratch.best_qcoeff.extend_from_slice(&scratch.xq.qcoeff);
+            scratch.best_dqcoeff.clear();
+            scratch.best_dqcoeff.extend_from_slice(&scratch.xq.dqcoeff);
+            best = Some(TxTypeSearchSummary {
                 best_tx_type: tx_type,
                 best_eob: res.eob,
                 best_txb_ctx: res.txb_entropy_ctx,
@@ -1680,8 +1799,6 @@ pub fn search_tx_type_intra(
                 sse,
                 rd,
                 skip_txfm: false, // set from best_eob below
-                qcoeff: res.qcoeff,
-                dqcoeff: res.dqcoeff,
                 evaluated_mask: 0,
             });
         }
@@ -1711,8 +1828,8 @@ pub fn search_tx_type_intra(
         // pixel-domain reconstruct+SSE the C `dist_block_px_domain` computes
         // (already used as the pixel-domain component of the speed-0 hybrid).
         if calc_pixel_domain_distortion_final && b.best_eob != 0 {
-            b.dist = dist_block_px_domain(
-                &b.dqcoeff,
+            b.dist = dist_block_px_domain_into(
+                &scratch.best_dqcoeff,
                 tx_size,
                 b.best_tx_type,
                 inp.pred,
@@ -1724,6 +1841,7 @@ pub fn search_tx_type_intra(
                 inp.visible_rows,
                 b.best_eob as usize,
                 inp.lossless,
+                &mut scratch.recon,
             );
             b.sse = block_sse;
             b.rd = rdcost(inp.rdmult, b.rate, b.dist);
@@ -1755,11 +1873,38 @@ pub fn dist_block_px_domain(
     eob: usize,
     lossless: bool,
 ) -> i64 {
+    let mut recon = Vec::new();
+    dist_block_px_domain_into(
+        dqcoeff, tx_size, tx_type, pred, src, src_off, src_stride, bd, visible_cols, visible_rows,
+        eob, lossless, &mut recon,
+    )
+}
+
+/// [`dist_block_px_domain`] with a caller-owned reconstruction buffer. The
+/// buffer is refilled with `clear()` + `extend_from_slice(&pred[..w*h])`, i.e.
+/// exactly the `to_vec()` it replaces, so the result is byte-identical.
+#[allow(clippy::too_many_arguments)]
+pub fn dist_block_px_domain_into(
+    dqcoeff: &[i32],
+    tx_size: usize,
+    tx_type: usize,
+    pred: &[u16],
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    bd: u8,
+    visible_cols: usize,
+    visible_rows: usize,
+    eob: usize,
+    lossless: bool,
+    recon: &mut Vec<u16>,
+) -> i64 {
     let (w, h) = (TXS_W[tx_size], TXS_H[tx_size]);
-    let mut recon = pred[..w * h].to_vec();
+    recon.clear();
+    recon.extend_from_slice(&pred[..w * h]);
     aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add(
         dqcoeff,
-        &mut recon,
+        recon,
         w,
         tx_type,
         tx_size,
@@ -1957,6 +2102,7 @@ pub fn txfm_rd_in_plane_intra(
     // the depth loop's largest-tx iteration when the speed>=6 NN sf is on.
     mut nn_prune: Option<NnDepthPruneCtx<'_>>,
     palette: Option<&PaletteYrd>,
+    txs: &mut IntraTxScratch,
 ) -> Option<(RdStats, Vec<TxbWinner>)> {
     if current_rd_in > ref_best_rd {
         return None;
@@ -1994,6 +2140,15 @@ pub fn txfm_rd_in_plane_intra(
     let mut current_rd = current_rd_in;
     let mut exit_early = false;
 
+    // Per-txb working buffers, hoisted OUT of the walk and out of this call:
+    // `tx_size` is fixed for the whole walk so every txb wants the same
+    // `txw * txh` shape, and each of these was a fresh `vec![]` per transform
+    // block. They are refilled with `clear()` + `resize(_, 0)` /
+    // `extend_from_slice`, i.e. byte-for-byte what the per-txb allocations held
+    // on entry. `txfm_rd_in_plane_intra` was the 4th-largest allocator/memset
+    // caller in the 2026-08-02 encoder re-profile.
+    let IntraTxScratch { walk, search } = txs;
+
     // `av1_foreach_transformed_block_in_plane` mu-64 chunk walk (encodemb.c:
     // 560-582): a coding block > 64x64 is searched/reconstructed in 64x64-unit
     // chunk order — above 64x64 the per-txb prediction pixels AND the
@@ -2020,7 +2175,9 @@ pub fn txfm_rd_in_plane_intra(
 
             // av1_predict_intra_block_facade: predict INTO the recon plane.
             let txb_off = env.ref_off + (blk_row * env.ref_stride + blk_col) * 4;
-            let mut pred = vec![0u16; txw * txh];
+            walk.pred.clear();
+            walk.pred.resize(txw * txh, 0);
+            let pred = &mut walk.pred;
             if let Some(pal) = palette {
                 // av1_predict_intra_block's use_palette arm: the colour-index
                 // map fill at this txb's pixel offset (x = blk_col*4,
@@ -2060,7 +2217,7 @@ pub fn txfm_rd_in_plane_intra(
                     recon,
                     txb_off,
                     env.ref_stride,
-                    &mut pred,
+                    pred,
                     txw,
                     env.mode,
                     env.angle_delta * 3,
@@ -2084,11 +2241,13 @@ pub fn txfm_rd_in_plane_intra(
 
             // av1_subtract_txb.
             let src_txb_off = env.src_off + (blk_row * env.src_stride + blk_col) * 4;
-            let mut residual = vec![0i16; txw * txh];
+            walk.residual.clear();
+            walk.residual.resize(txw * txh, 0);
+            let (pred, residual) = (&walk.pred, &mut walk.residual);
             highbd_subtract_block(
                 txh,
                 txw,
-                &mut residual,
+                residual,
                 txw,
                 &env.src[src_txb_off..],
                 env.src_stride,
@@ -2201,8 +2360,13 @@ pub fn txfm_rd_in_plane_intra(
             // `-` panicked "attempt to subtract with overflow" at this exact site
             // for allintra/4:2:0/qindex=98 at the true (0,0) corner -- see
             // `pack_tile_roundtrips_true_corner`'s `allintra=true` case.
-            let win = search_tx_type_intra(&inp, pol, ref_best_rd.wrapping_sub(current_rd))
-                .expect("search_tx_type always yields a winner");
+            let win = search_tx_type_intra_into(
+                &inp,
+                pol,
+                ref_best_rd.wrapping_sub(current_rd),
+                search,
+            )
+            .expect("search_tx_type always yields a winner");
 
             // recon_intra: reconstruct the winner on top of the prediction so
             // the next txb predicts from decoded pixels. C's `recon_intra`
@@ -2227,10 +2391,12 @@ pub fn txfm_rd_in_plane_intra(
             let not_last_txb =
                 blk_row + txh_unit < max_blocks_high || blk_col + txw_unit < max_blocks_wide;
             if win.best_eob > 0 && not_last_txb {
-                let mut tight = pred.clone();
+                let TxWalkScratch { pred, tight, .. } = &mut *walk;
+                tight.clear();
+                tight.extend_from_slice(pred);
                 aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add(
-                    &win.dqcoeff,
-                    &mut tight,
+                    &search.best_dqcoeff,
+                    tight,
                     txw,
                     win.best_tx_type,
                     tx_size,
@@ -2306,6 +2472,7 @@ pub fn uniform_txfm_yrd_intra(
     // Palette-Y candidate (av1_rd_pick_palette_intra_sby's tx search —
     // prediction becomes the colour-map fill).
     palette: Option<&PaletteYrd>,
+    txs: &mut IntraTxScratch,
 ) -> (i64, Option<(RdStats, Vec<TxbWinner>)>) {
     let tx_select = env.tx_mode_is_select && block_signals_txsize(env.bsize);
     let tx_size_rate = if tx_select {
@@ -2326,6 +2493,7 @@ pub fn uniform_txfm_yrd_intra(
         pol,
         nn_prune,
         palette,
+        txs,
     ) else {
         return (i64::MAX, None);
     };
@@ -2610,6 +2778,7 @@ pub fn choose_tx_size_type_from_rd_intra(
     enable_tx64: bool,
     enable_rect_tx: bool,
     palette: Option<&PaletteYrd>,
+    txs: &mut IntraTxScratch,
 ) -> Option<TxSizeChoice> {
     let bsize = env.bsize;
     let max_rect_tx_size = MAX_TXSIZE_RECT_LOOKUP[bsize];
@@ -2663,7 +2832,7 @@ pub fn choose_tx_size_type_from_rd_intra(
             ref_best_rd
         };
         let (this_rd, res) =
-            uniform_txfm_yrd_intra(env, recon, tx_size, rd_thresh, pol, nn_ctx, palette);
+            uniform_txfm_yrd_intra(env, recon, tx_size, rd_thresh, pol, nn_ctx, palette, txs);
         rd[depth as usize] = this_rd;
         if this_rd < best_rd {
             let (stats, winners) = res.expect("valid rd implies stats");
@@ -2710,6 +2879,7 @@ pub fn pick_uniform_tx_size_type_yrd_intra(
     enable_rect_tx: bool,
     tx_size_search_method: usize,
     palette: Option<&PaletteYrd>,
+    txs: &mut IntraTxScratch,
 ) -> Option<TxSizeChoice> {
     // select_tx_mode (rdopt_utils.h) couples the two at frame level:
     // coded_lossless => ONLY_4X4, i.e. never TX_MODE_SELECT.
@@ -2719,7 +2889,7 @@ pub fn pick_uniform_tx_size_type_yrd_intra(
     );
     if env.lossless {
         // choose_smallest_tx_size: evaluate TX_4X4 only.
-        let (rd, res) = uniform_txfm_yrd_intra(env, recon, 0, ref_best_rd, pol, None, palette);
+        let (rd, res) = uniform_txfm_yrd_intra(env, recon, 0, ref_best_rd, pol, None, palette, txs);
         return res.map(|(stats, winners)| TxSizeChoice {
             best_tx_size: 0,
             best_rd: rd,
@@ -2732,7 +2902,7 @@ pub fn pick_uniform_tx_size_type_yrd_intra(
         // size (no depth sweep, no size-RD comparison, no low-contrast prune).
         let tx_size = choose_largest_tx_size_intra(env.bsize, enable_tx64, enable_rect_tx);
         let (rd, res) =
-            uniform_txfm_yrd_intra(env, recon, tx_size, ref_best_rd, pol, None, palette);
+            uniform_txfm_yrd_intra(env, recon, tx_size, ref_best_rd, pol, None, palette, txs);
         return res.map(|(stats, winners)| TxSizeChoice {
             best_tx_size: tx_size,
             best_rd: rd,
@@ -2749,6 +2919,7 @@ pub fn pick_uniform_tx_size_type_yrd_intra(
         enable_tx64,
         enable_rect_tx,
         palette,
+        txs,
     )
 }
 
@@ -2796,7 +2967,12 @@ fn wht_satd(residual: &[i16], stride: usize, tx_size: usize, bd: u8) -> i32 {
 ///
 /// The `env` quantizer/cost fields are unused here — only geometry, the
 /// candidate mode fields, and `bd` are read.
-pub fn intra_model_rd_y(env: &TxfmYrdEnv, recon: &mut [u16], tx_size: usize) -> i64 {
+pub fn intra_model_rd_y(
+    env: &TxfmYrdEnv,
+    recon: &mut [u16],
+    tx_size: usize,
+    walk: &mut TxWalkScratch,
+) -> i64 {
     assert!(tx_size <= 3, "model tx size is square TX_4X4..TX_32X32");
     let bsize = env.bsize;
     let (bw, bh) = (BLK_W_B[bsize], BLK_H_B[bsize]);
@@ -2853,12 +3029,15 @@ pub fn intra_model_rd_y(env: &TxfmYrdEnv, recon: &mut [u16], tx_size: usize) -> 
                 env.use_filter_intra,
             );
             let txb_off = env.ref_off + (blk_row * env.ref_stride + blk_col) * 4;
-            let mut pred = vec![0u16; txw * txh];
+            // Hoisted out of the walk — see `TxWalkScratch`.
+            walk.pred.clear();
+            walk.pred.resize(txw * txh, 0);
+            let pred = &mut walk.pred;
             predict_intra_high(
                 recon,
                 txb_off,
                 env.ref_stride,
-                &mut pred,
+                pred,
                 txw,
                 env.mode,
                 env.angle_delta * 3,
@@ -2882,19 +3061,21 @@ pub fn intra_model_rd_y(env: &TxfmYrdEnv, recon: &mut [u16], tx_size: usize) -> 
             // at block_size_wide[plane_bsize] stride and reads it back with
             // the same stride — values per (r, c) identical).
             let src_txb_off = env.src_off + (blk_row * env.src_stride + blk_col) * 4;
-            let mut residual = vec![0i16; txw * txh];
+            walk.residual.clear();
+            walk.residual.resize(txw * txh, 0);
+            let (pred, residual) = (&walk.pred, &mut walk.residual);
             highbd_subtract_block(
                 txh,
                 txw,
-                &mut residual,
+                residual,
                 txw,
                 &env.src[src_txb_off..],
                 env.src_stride,
-                &pred,
+                pred,
                 txw,
             );
 
-            satd_cost += i64::from(wht_satd(&residual, txw, tx_size, env.bd));
+            satd_cost += i64::from(wht_satd(residual, txw, tx_size, env.bd));
             blk_col += txw_unit;
                 }
                 blk_row += txh_unit;
@@ -2985,7 +3166,16 @@ mod satd_skip_tests {
                     for dt in [-1i64, 0, 1, 2] {
                         let thr = (base as i64 + dt).max(0) as u32;
                         let want = scaled > u64::from(thr) * u64::from(qstep) * sqrt_px;
-                        let got = skip_trellis_opt_based_on_satd(&residual, ts, 0, bd, qstep, thr);
+                        let got = skip_trellis_opt_based_on_satd(
+                            &residual,
+                            ts,
+                            0,
+                            bd,
+                            qstep,
+                            thr,
+                            &mut Vec::new(),
+                            &mut Default::default(),
+                        );
                         assert_eq!(got, want, "ts={ts} mag={mag} qstep={qstep} thr={thr}");
                     }
                 }
@@ -3003,7 +3193,16 @@ mod satd_skip_tests {
         let full = TXS_W[2] * TXS_H[2]; // TX_16X16
         // Large residual, threshold 0 => satd>0 => skip.
         let big = vec![200i16; full];
-        assert!(skip_trellis_opt_based_on_satd(&big, 2, 0, 8, 20, 0));
+        assert!(skip_trellis_opt_based_on_satd(
+            &big,
+            2,
+            0,
+            8,
+            20,
+            0,
+            &mut Vec::new(),
+            &mut Default::default()
+        ));
         // Small residual, huge threshold => never skip.
         let mut small = vec![0i16; full];
         small[0] = 1;
@@ -3013,7 +3212,9 @@ mod satd_skip_tests {
             0,
             8,
             20,
-            u32::MAX - 1
+            u32::MAX - 1,
+            &mut Vec::new(),
+            &mut Default::default()
         ));
     }
 }

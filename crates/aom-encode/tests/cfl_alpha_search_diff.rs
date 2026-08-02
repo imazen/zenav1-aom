@@ -271,6 +271,9 @@ fn cfl_rd_pick_alpha_matches_c() {
                 &cfl_costs,
                 uv_mode_cost,
                 &pol,
+                // The per-txb scratch the production caller owns across its whole
+                // UV mode loop; a fresh one per call is behaviourally identical.
+                &mut aom_encode::tx_search::IntraTxScratch::default(),
             );
 
             let cenv = CUvEnv {

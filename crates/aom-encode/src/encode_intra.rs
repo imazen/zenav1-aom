@@ -81,7 +81,7 @@ use crate::tx_search::{
     max_block_units, trellis_rdmult_intra, trellis_rdmult_intra_y, uv_intra_tx_type,
 };
 use crate::{
-    BlockContext, OptimizeInputs, QuantKind, QuantParams, xform_quant, xform_quant_optimize,
+    BlockContext, OptimizeInputs, QuantKind, QuantParams,
 };
 use aom_dsp::dist::highbd_subtract_block;
 use aom_dsp::entropy::partition::{get_plane_block_size, intra_avail};
@@ -324,6 +324,18 @@ pub fn encode_intra_block_plane_y(
     tl.copy_from_slice(&env.left_ctx[..max_blocks_high]);
     let use_trellis = is_trellis_used(env.enable_optimize_b, env.dry_run_output_enabled);
 
+    // Per-txb working buffers hoisted out of the walk (see
+    // `tx_search::TxWalkScratch`): each of these was a fresh `vec![]` per
+    // transform block, and `encode_intra_block_plane_y`/`_uv` were the 8th and
+    // 9th largest allocator/memset callers in the 2026-08-02 encoder
+    // re-profile. Refilled with `clear()` + `resize(_, 0)`, i.e. identical
+    // contents. `xq` additionally reuses the forward transform's own buffers;
+    // its `qcoeff`/`dqcoeff` are MOVED into `TxbEncode` (they are retained
+    // per-txb output, not churn), so those two still allocate as before.
+    let mut pred: Vec<u16> = Vec::new();
+    let mut residual: Vec<i16> = Vec::new();
+    let mut tight: Vec<u16> = Vec::new();
+    let mut xq = crate::XformQuantScratch::default();
     let mut txbs: Vec<TxbEncode> = Vec::new();
     // `av1_foreach_transformed_block_in_plane` mu-64 chunk walk (encodemb.c:
     // 560-582): a coding block > 64x64 is split into 64x64 units so prediction
@@ -349,7 +361,8 @@ pub fn encode_intra_block_plane_y(
             // --- encode_block_intra ---
             // av1_predict_intra_block_facade: predict INTO the recon plane.
             let txb_off = env.ref_off + (blk_row * env.ref_stride + blk_col) * 4;
-            let mut pred = vec![0u16; txw * txh];
+            pred.clear();
+            pred.resize(txw * txh, 0);
             if let Some(pal) = &env.palette {
                 // av1_predict_intra_block's use_palette arm: the colour-index
                 // map fill at this txb's pixel offset — no spatial prediction.
@@ -424,7 +437,8 @@ pub fn encode_intra_block_plane_y(
             } else {
                 // av1_subtract_txb.
                 let src_txb_off = env.src_off + (blk_row * env.src_stride + blk_col) * 4;
-                let mut residual = vec![0i16; txw * txh];
+                residual.clear();
+                residual.resize(txw * txh, 0);
                 highbd_subtract_block(
                     txh,
                     txw,
@@ -477,18 +491,21 @@ pub fn encode_intra_block_plane_y(
                     };
                     // av1_xform_quant(FP, use_optimize_b) + get_txb_ctx +
                     // av1_optimize_b; the rate is C's dummy_rate_cost.
-                    let r =
-                        xform_quant_optimize(&residual, tx_size, tx_type, kind, &qp, &bctx, &opt);
-                    qcoeff = r.qcoeff;
-                    dqcoeff = r.dqcoeff;
+                    let r = crate::xform_quant_optimize_split_into(
+                        &residual, tx_size, tx_type, kind, &qp, &qp, &bctx, &opt, &mut xq,
+                    );
+                    qcoeff = core::mem::take(&mut xq.qcoeff);
+                    dqcoeff = core::mem::take(&mut xq.dqcoeff);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     txb_skip_ctx = r.txb_skip_ctx;
                     dc_sign_ctx = r.dc_sign_ctx;
                 } else {
-                    let r = xform_quant(&residual, tx_size, tx_type, kind, &qp, false);
-                    qcoeff = r.qcoeff;
-                    dqcoeff = r.dqcoeff;
+                    let r = crate::xform_quant_into(
+                        &residual, tx_size, tx_type, kind, &qp, false, &mut xq,
+                    );
+                    qcoeff = core::mem::take(&mut xq.qcoeff);
+                    dqcoeff = core::mem::take(&mut xq.dqcoeff);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     // get_txb_ctx: xform_quant (non-optimize_b) doesn't derive
@@ -502,7 +519,8 @@ pub fn encode_intra_block_plane_y(
 
             // if (*eob) av1_inverse_transform_block into the recon plane.
             if eob > 0 {
-                let mut tight = pred.clone();
+                tight.clear();
+                tight.extend_from_slice(&pred);
                 av1_inverse_transform_add(
                     &dqcoeff,
                     &mut tight,
@@ -670,6 +688,12 @@ pub fn encode_intra_block_plane_uv(
     // runs the fresh-DC + alpha-AC path.
     let mut dc_cache = CflDcCache::cleared();
 
+    // Per-txb buffers hoisted out of the walk — see the luma twin above.
+    let mut uv_pred_scratch: Vec<u16> = Vec::new();
+    let mut pred: Vec<u16> = Vec::new();
+    let mut residual: Vec<i16> = Vec::new();
+    let mut tight: Vec<u16> = Vec::new();
+    let mut xq = crate::XformQuantScratch::default();
     let mut txbs: Vec<TxbEncode> = Vec::new();
     // mu-64 chunk walk (see `encode_intra_block_plane_y`). The chroma unit is
     // `get_plane_block_size(BLOCK_64X64, ss_x, ss_y)` (encodemb.c:560-561) — at
@@ -731,6 +755,7 @@ pub fn encode_intra_block_plane_uv(
                     blk_row,
                     blk_col,
                     txb_off,
+                    &mut uv_pred_scratch,
                 );
             }
 
@@ -747,7 +772,8 @@ pub fn encode_intra_block_plane_uv(
                 dc_sign_ctx = 0;
             } else {
                 // av1_subtract_txb: prediction snapshot (tight) as base.
-                let mut pred = vec![0u16; txw * txh];
+                pred.clear();
+                pred.resize(txw * txh, 0);
                 for r in 0..txh {
                     pred[r * txw..r * txw + txw].copy_from_slice(
                         &recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw],
@@ -755,7 +781,8 @@ pub fn encode_intra_block_plane_uv(
                 }
                 let src = if plane == 1 { env.src_u } else { env.src_v };
                 let src_txb_off = env.src_off[pi] + (blk_row * env.src_stride + blk_col) * 4;
-                let mut residual = vec![0i16; txw * txh];
+                residual.clear();
+                residual.resize(txw * txh, 0);
                 highbd_subtract_block(
                     txh,
                     txw,
@@ -808,18 +835,21 @@ pub fn encode_intra_block_plane_uv(
                         ),
                         sharpness: prm.sharpness,
                     };
-                    let r =
-                        xform_quant_optimize(&residual, tx_size, tx_type, kind, &qp, &bctx, &opt);
-                    qcoeff = r.qcoeff;
-                    dqcoeff = r.dqcoeff;
+                    let r = crate::xform_quant_optimize_split_into(
+                        &residual, tx_size, tx_type, kind, &qp, &qp, &bctx, &opt, &mut xq,
+                    );
+                    qcoeff = core::mem::take(&mut xq.qcoeff);
+                    dqcoeff = core::mem::take(&mut xq.dqcoeff);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     txb_skip_ctx = r.txb_skip_ctx;
                     dc_sign_ctx = r.dc_sign_ctx;
                 } else {
-                    let r = xform_quant(&residual, tx_size, tx_type, kind, &qp, false);
-                    qcoeff = r.qcoeff;
-                    dqcoeff = r.dqcoeff;
+                    let r = crate::xform_quant_into(
+                        &residual, tx_size, tx_type, kind, &qp, false, &mut xq,
+                    );
+                    qcoeff = core::mem::take(&mut xq.qcoeff);
+                    dqcoeff = core::mem::take(&mut xq.dqcoeff);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     let (sc, dc) =
@@ -831,7 +861,8 @@ pub fn encode_intra_block_plane_uv(
 
             // if (*eob) av1_inverse_transform_block into the recon plane.
             if eob > 0 {
-                let mut tight = vec![0u16; txw * txh];
+                tight.clear();
+                tight.resize(txw * txh, 0);
                 for r in 0..txh {
                     tight[r * txw..r * txw + txw].copy_from_slice(
                         &recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw],

@@ -3774,6 +3774,80 @@ Record: `benchmarks/encoder_cnn_cache_2026-08-02.md` + `.meta` + `.control.tsv`
   residual 3.36x was NOT re-profiled; the profile's levers 2-5 are arithmetic on
   the OLD build's self-costs, so re-profile before ranking them again.
 
+### KB-PERF-2 — Encoder: per-txb allocation churn + the un-tiered forward-pass scratch — LANDED ✅ 2026-08-02, and the projection was 18x optimistic
+
+Levers **3a** and **3** of `benchmarks/encoder_hotspot_reprofile_2026-08-02.md`.
+Record: **`benchmarks/encoder_alloc_scratch_2026-08-02.md`** (+ `.meta`,
+`.ab.tsv`, `.alloc.tsv`, `.callers.tsv`).
+
+**MEASURED, 1024×1024 photo / cq44 / cpu-used 6, 5 arms interleaved over 12
+rounds** (`scripts/eprof_ab.sh` + `scripts/eprof_ab_stats.py`, NEW — the N-arm
+form of `eprof_control.sh`, since a perf landing has to compare four port
+builds and §6 forbids comparing separately-taken medians on this box):
+base **159.594 ms** (spread 3.51 %) → **154.953 ms** (3.04 %) vs libaom-c
+**47.701 ms** (4.77 %); **3.3457x → 3.2484x**, −4.641 ms (paired-median
+−3.05 %), paired final/C ratios 3.126-3.284. All arms emit the same 4472 bytes.
+The base arm reproduces the re-profile's published 3.343x to 0.1 % on a
+different day, so the deltas are read against a live control.
+
+- **Allocator census: 854 053 → 512 557 calls (−40.0 %), 448.8 MB → 267.5 MB,
+  3 336 → 2 002 per superblock, peak live UNCHANGED at 27 705 399 B** — it was
+  churn, exactly as the re-profile said, and nothing here reduces footprint.
+- **THE LESSON, and it invalidates a whole class of ranking: `alloc/libc` is a
+  LEAF CLASS MATCHED BY SYMBOL NAME, and most of its mass is `memset`/`memcpy`,
+  not allocator bookkeeping.** In the re-profile's own numbers `_platform_memset`
+  was 5.36 % of the port window and `_platform_memmove` 2.68 % against
+  `xzm_free`'s 2.34 % — so crediting the scratch-reuse lever with the whole
+  27.63 ms class was never sound. Projected +24.76 ms; delivered **−1.34 ms**.
+  Removing 341 496 malloc/free pairs does not remove the bytes those buffers
+  still have to be zeroed with. **Split the allocator symbols from
+  `_platform_memset`/`_platform_memmove` before crediting any future lever with
+  that stage total.** (The re-profile flags this in "Attribution limits" item 4
+  and its ranked table contradicts it — read the limits, not the table.)
+- **Per-lever bite proof, and the two levers bite on DIFFERENT axes** (§1):
+  3a alone **−3.128 ms / 0 allocator calls** (its scratch is a stack array, so
+  it cannot appear in a census — proven, not asserted: the `l3` census and the
+  `final` census are identical to the digit); lever 3 alone **−1.339 ms /
+  −341 496 calls**. Additive to 3.9 %, inside the control spread.
+- **3a** = tier `fwd_col_pass`/`fwd_row_pass` `{8,16,64}` exactly as the INVERSE
+  passes in the same file already were (`mod.rs:430-443`, `:784-797`,
+  `:994-1000`; `lowbd16.rs:132` states why). The flat `[i32x8; 64]`×2 was 4 KiB
+  of memset per forward transform at every size, and those two were the top TWO
+  callers of the class — **both are now absent from the top 22** (`.callers.tsv`).
+- **3** = the decoder's `ReconScratch`/`InvTxfmScratch` pattern encode-side:
+  `FwdTxfmScratch` + `av1_fwd_txfm2d_into`, `XformQuantScratch` +
+  `xform_quant_into`/`xform_quant_optimize_split_into`,
+  `{TxWalk,TxSearch,IntraTx}Scratch` + `search_tx_type_intra_into` /
+  `dist_block_px_domain_into`. Every public entry point kept its signature by
+  delegating to the `*_into` form over a fresh scratch.
+  **OWNERSHIP IS THE WHOLE LEVER**: owned by `rd_pick_intra_sby_mode_y` (luma
+  mode loop), `rd_pick_intra_sbuv_mode` (chroma mode loop) and `PaletteRdState`.
+  An earlier revision owned it inside `txfm_rd_in_plane_intra` and returned only
+  **−6.4 %** of the calls (854 053 → 799 552) — most walks are a single
+  transform block, so a per-walk scratch has nothing to reuse.
+- **The `memset` is deliberately KEPT.** Every buffer refills with `clear()` +
+  `resize(n, 0)`, byte-identical to the `vec![0; n]` it replaces *by
+  construction*. A skip-the-re-zero variant was built (all three
+  `XformQuantScratch` buffers are provably fully overwritten — `av1_fwd_txfm2d`
+  writes every `coeff[..full]`; all twelve quantizers open with
+  `qcoeff[..n].fill(0)`) and **measured inside the control band** (16 rounds,
+  −3.34 % vs −2.40 %, each inside the other's spread), so it was reverted.
+- **Gates: 950/950 with `--run-ignored all`, 0 skipped, in BOTH dispatch modes**
+  (SIMD live and `AOM_FORCE_SCALAR=1`) + `cargo check --target
+  x86_64-apple-darwin --workspace --all-targets`. Gate 2 keeps **zero pinned
+  cells** across cpu-used 0..9. A fourth gate fell out for free: the
+  `config_permutations` sweep regenerates three evidence TSVs, and across
+  **616 rows** (5 contents × 10 `--cpu-used` × every singleton knob axis, port
+  vs real `aomenc`) the regenerated files differ in the **timing column only** —
+  every `exact`/`port_len`/`c_len` unchanged, so they are left as committed
+  rather than re-pinned from a load-31 box.
+- **Residual: allocation is still 16.4 % of the (now 107.25 ms) gap, and the
+  part that is left is the part scratch reuse CANNOT reach** — `finish_grow`
+  (Vec growth in `aom_encode`, now rank 1 of the class at 8.85 %), the
+  `qcoeff`/`dqcoeff` that `encode_intra_block_plane_{y,uv}` legitimately RETAIN
+  per transform block into `TxbEncode`, and the memset bytes themselves.
+  Attacking it further means changing what the encoder *stores*, not where.
+
 
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 

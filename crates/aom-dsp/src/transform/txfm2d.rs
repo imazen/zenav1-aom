@@ -198,14 +198,45 @@ fn round_shift_array(arr: &mut [i32], bit: i32) {
 
 const SR: [i8; 12] = [0; 12]; // stage_range: ignored by the 1-D kernels
 
+/// Reusable scratch for [`av1_fwd_txfm2d_into`]: the column-pass output buffer
+/// the row pass then reads.
+///
+/// The forward twin of [`InvTxfmScratch`](super::inv_txfm2d::InvTxfmScratch),
+/// and reused the same way: `clear()` + `resize(n, 0)` reproduces the
+/// `vec![0i32; n]` it replaces **element for element**, so a live scratch is
+/// byte-identical to a fresh allocation by construction — no argument about
+/// which elements the passes overwrite is needed. Only the malloc/free pair is
+/// removed.
+///
+/// Gate 3: `av1_fwd_txfm2d` was the third-largest allocator/memset caller in
+/// the 2026-08-02 encoder re-profile (7.62 % of that class, 2.11 ms/encode),
+/// and it is one `vec![]` per forward transform — i.e. per (txb x tx-type)
+/// candidate in the tx search.
+#[derive(Default, Clone, Debug)]
+pub struct FwdTxfmScratch {
+    buf: Vec<i32>,
+}
+
 /// Core composition, bit-exact port of `fwd_txfm2d_c`.
-fn fwd_txfm2d_core(input: &[i16], output: &mut [i32], stride: usize, cfg: &Cfg) {
+fn fwd_txfm2d_core(
+    input: &[i16],
+    output: &mut [i32],
+    stride: usize,
+    cfg: &Cfg,
+    scratch: &mut FwdTxfmScratch,
+) {
     let col_n = TX_SIZE_WIDE[cfg.tx_size];
     let row_n = TX_SIZE_HIGH[cfg.tx_size];
     let shift = cfg.shift;
     let rect_type = get_rect_tx_log_ratio(col_n as i64, row_n as i64);
 
-    let mut buf = vec![0i32; col_n * row_n];
+    // Reused across calls when the caller supplies a live scratch. `clear` +
+    // `resize(_, 0)` writes exactly the `col_n * row_n` zeros `vec![0i32; n]`
+    // wrote, so nothing downstream can observe the difference.
+    let buf = &mut scratch.buf;
+    buf.clear();
+    buf.resize(col_n * row_n, 0);
+    let buf = &mut buf[..];
 
     // Columns — the SIMD column pass (8-column lane batches) is bit-identical
     // to this scalar loop (crate::transform::simd docs + differentials); it declines
@@ -215,7 +246,7 @@ fn fwd_txfm2d_core(input: &[i16], output: &mut [i32], stride: usize, cfg: &Cfg) 
     let cols_done = crate::transform::simd::try_fwd_col_pass(
         cfg.txfm_type_col,
         input,
-        &mut buf,
+        buf,
         stride,
         col_n,
         row_n,
@@ -253,7 +284,7 @@ fn fwd_txfm2d_core(input: &[i16], output: &mut [i32], stride: usize, cfg: &Cfg) 
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let rows_done = crate::transform::simd::try_fwd_row_pass(
         cfg.txfm_type_row,
-        &buf,
+        buf,
         output,
         col_n,
         row_n,
@@ -285,9 +316,23 @@ fn fwd_txfm2d_core(input: &[i16], output: &mut [i32], stride: usize, cfg: &Cfg) 
 /// given `tx_size`. Mirrors the C `av1_fwd_txfm2d_<size>_c` entry points,
 /// including the 64-point coefficient zeroing/repacking.
 pub fn av1_fwd_txfm2d(input: &[i16], output: &mut [i32], stride: usize, tx_type: usize, tx_size: usize) {
+    let mut scratch = FwdTxfmScratch::default();
+    av1_fwd_txfm2d_into(input, output, stride, tx_type, tx_size, &mut scratch);
+}
+
+/// [`av1_fwd_txfm2d`] with a caller-owned column-pass buffer. Byte-identical
+/// output; see [`FwdTxfmScratch`].
+pub fn av1_fwd_txfm2d_into(
+    input: &[i16],
+    output: &mut [i32],
+    stride: usize,
+    tx_type: usize,
+    tx_size: usize,
+    scratch: &mut FwdTxfmScratch,
+) {
     let cfg = get_fwd_txfm_cfg(tx_type, tx_size);
     assert!(cfg.valid, "unsupported (tx_type={tx_type}, tx_size={tx_size})");
-    fwd_txfm2d_core(input, output, stride, &cfg);
+    fwd_txfm2d_core(input, output, stride, &cfg, scratch);
 
     // Post-process for the transforms whose active area is capped at 32.
     match tx_size {

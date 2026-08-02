@@ -571,7 +571,16 @@ pub(crate) fn try_fwd_col_pass(
     )
 }
 
-/// The lane-batched forward column pass body (8 columns per iteration).
+/// The lane-batched forward column pass (8 columns per iteration).
+///
+/// The vector scratch is TIERED by `row_n` (8/16/64 lane vectors) for exactly
+/// the reason [`inv_row_pass`] tiers by `col_n` and `lowbd16.rs:132` states: a
+/// flat `[i32x8; 64]` zero-init compiles to a 2 KiB memset per array, which
+/// dominates the small transforms. The forward passes were the only two in this
+/// file that never got the treatment, and the 2026-08-02 encoder re-profile
+/// measured them as the top TWO allocator/memset callers in the whole encode
+/// (19.2 % of that class). The core is a separate `#[magetypes]` body, so each
+/// arm inlines it with its exactly-sized scratch.
 #[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn fwd_col_pass(
@@ -589,8 +598,47 @@ fn fwd_col_pass(
     lr_flip: bool,
 ) -> bool {
     debug_assert!(row_n <= 64 && col_n % 8 == 0);
-    let mut tin = [i32x8::zero(t); 64];
-    let mut tout = [i32x8::zero(t); 64];
+    if row_n <= 8 {
+        let mut tin = [i32x8::zero(t); 8];
+        let mut tout = [i32x8::zero(t); 8];
+        incant!(fwd_col_pass_core(kernel, input, buf, stride, col_n, row_n, shift0, shift1_bit, cos_bit_col,
+            ud_flip, lr_flip, &mut tin, &mut tout,
+        ), [v3, neon]);
+    } else if row_n <= 16 {
+        let mut tin = [i32x8::zero(t); 16];
+        let mut tout = [i32x8::zero(t); 16];
+        incant!(fwd_col_pass_core(kernel, input, buf, stride, col_n, row_n, shift0, shift1_bit, cos_bit_col,
+            ud_flip, lr_flip, &mut tin, &mut tout,
+        ), [v3, neon]);
+    } else {
+        let mut tin = [i32x8::zero(t); 64];
+        let mut tout = [i32x8::zero(t); 64];
+        incant!(fwd_col_pass_core(kernel, input, buf, stride, col_n, row_n, shift0, shift1_bit, cos_bit_col,
+            ud_flip, lr_flip, &mut tin, &mut tout,
+        ), [v3, neon]);
+    }
+    true
+}
+
+/// The forward column-pass body over caller-sized scratch (see [`fwd_col_pass`]).
+#[magetypes(define(i32x8), v3, neon, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn fwd_col_pass_core(
+    t: Token,
+    kernel: Fwd1d,
+    input: &[i16],
+    buf: &mut [i32],
+    stride: usize,
+    col_n: usize,
+    row_n: usize,
+    shift0: i32,
+    shift1_bit: i32,
+    cos_bit_col: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+    tin: &mut [I32x8<Token>],
+    tout: &mut [I32x8<Token>],
+) {
     let sr = [0i8; 12]; // fwd kernels ignore stage_range
     for cg in (0..col_n).step_by(8) {
         for (r, ti) in tin[..row_n].iter_mut().enumerate() {
@@ -616,7 +664,6 @@ fn fwd_col_pass(
             }
         }
     }
-    true
 }
 
 /// The `incant!` fallback for [`fwd_col_pass`] when NO vector tier is available —
@@ -685,7 +732,10 @@ pub(crate) fn try_fwd_row_pass(
     )
 }
 
-/// The lane-batched forward row pass body (8 rows per iteration).
+/// The lane-batched forward row pass (8 rows per iteration).
+///
+/// TIERED by `col_n` (8/16/64 lane vectors) — the same treatment, and for the
+/// same measured reason, as [`fwd_col_pass`] above.
 #[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn fwd_row_pass(
@@ -700,8 +750,44 @@ fn fwd_row_pass(
     rect1: bool,
 ) -> bool {
     debug_assert!(col_n <= 64 && row_n % 8 == 0);
-    let mut tin = [i32x8::zero(t); 64];
-    let mut tout = [i32x8::zero(t); 64];
+    if col_n <= 8 {
+        let mut tin = [i32x8::zero(t); 8];
+        let mut tout = [i32x8::zero(t); 8];
+        incant!(fwd_row_pass_core(kernel, buf, output, col_n, row_n, shift2_bit, cos_bit_row, rect1,
+            &mut tin, &mut tout,
+        ), [v3, neon]);
+    } else if col_n <= 16 {
+        let mut tin = [i32x8::zero(t); 16];
+        let mut tout = [i32x8::zero(t); 16];
+        incant!(fwd_row_pass_core(kernel, buf, output, col_n, row_n, shift2_bit, cos_bit_row, rect1,
+            &mut tin, &mut tout,
+        ), [v3, neon]);
+    } else {
+        let mut tin = [i32x8::zero(t); 64];
+        let mut tout = [i32x8::zero(t); 64];
+        incant!(fwd_row_pass_core(kernel, buf, output, col_n, row_n, shift2_bit, cos_bit_row, rect1,
+            &mut tin, &mut tout,
+        ), [v3, neon]);
+    }
+    true
+}
+
+/// The forward row-pass body over caller-sized scratch (see [`fwd_row_pass`]).
+#[magetypes(define(i32x8), v3, neon, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn fwd_row_pass_core(
+    t: Token,
+    kernel: Fwd1d,
+    buf: &[i32],
+    output: &mut [i32],
+    col_n: usize,
+    row_n: usize,
+    shift2_bit: i32,
+    cos_bit_row: i32,
+    rect1: bool,
+    tin: &mut [I32x8<Token>],
+    tout: &mut [I32x8<Token>],
+) {
     let sr = [0i8; 12];
     for rg in (0..row_n).step_by(8) {
         // Load: tin[c].lane(k) = buf[(rg+k)*col_n + c] — transpose 8x8 tiles
@@ -734,7 +820,6 @@ fn fwd_row_pass(
             v.store((&mut output[base..base + 8]).try_into().unwrap());
         }
     }
-    true
 }
 
 /// The `incant!` fallback for [`fwd_row_pass`] when NO vector tier is available —
