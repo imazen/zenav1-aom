@@ -1,0 +1,178 @@
+# KB-28 — the framesize predicates key on the TRUE CROP, not the mi-aligned extent. 2026-08-02
+# base commit  88111eb (docs: bring the handoff up to 2026-08-01 — ten KB closures it predated)
+# host         Apple M4 Pro, Darwin 25.5.0 arm64
+# build        cargo test --profile test-fast -j 4, default dispatch (aarch64 NEON live)
+# harness      crates/aom-bench/tests/kb28_crop_dims.rs (--ignored tier) +
+#              crates/aom-bench/tests/s4cov_hd_speed_axis.rs
+# content      mirror-tiled first KEY frame of av1-1-b8-00-quantizer-00, bd8 4:2:0,
+#              ALLINTRA usage=2, single KEY frame, 1 tile, stock knobs
+# reference    real libaom aom_codec_av1_cx via aom-sys-ref; compared unit is the frame-OBU payload
+#
+# arm_state
+#   post                       = the landed fix (SbEncodeEnv::frame_{width,height} threaded to all
+#                                six framesize consumers)
+#   revert-vbp-numpixels       = bite proof A: pack.rs's VBP `num_pixels` back to the mi-aligned
+#                                area + the old crop-ambiguity assert. Everything else landed.
+#   revert-mindim-predicates   = bite proof B: partition_pick.rs's four AOMMIN(w,h) consumers back
+#                                to `mi_cols*4 / mi_rows*4`. Everything else landed.
+#
+# The two reverts fail DISJOINT cell sets (playbook §1): A fails only the cpu 7..9 VBP band,
+# B fails only the cpu 1..6 min-dim band. Same root (the walk had no crop dims), different
+# consumers, separately provable.
+#
+# Geometry per shape (crop -> mi-aligned, and what each reading says):
+#   1280x720 -> 1280x720   area 921600 == R720 both; old guard FIRED anyway (1277*717 < R720)
+#   1272x724 -> 1272x728   crop area 920928 < R720 <= mi 925856; old guard FIRED
+#   1288x716 -> 1288x720   areas agree; min-dim 716 < 720 <= mi 720; old guard FIRED
+#   1274x722 -> 1280x728   crop area 919828 < R720 <= mi 931840; old guard SILENT (the hole)
+#   954x962  -> 960x968    crop area 917748 < R720 <= mi 929280; old guard SILENT (the hole)
+#   1280x712 / 1280x728    controls, mi == crop (partial-SB)
+#   1280x704 / 1216x768    controls, mi == crop AND multiples of 64 (SB-exact)
+#   474x480  -> 480x480    min-dim 474 < 480 <= mi 480
+#   714x720  -> 720x720    min-dim 714 < 720 <= mi 720
+#   250x250  -> 256x256    KB-23's row: CNN window only; both readings are sub-480p
+#
+arm_state	band	w	h	cq	speed	verdict	delta	port_ms	note
+post	cnn-window	250	250	24	1	Ok	+0		
+post	cnn-window	250	250	24	2	Ok	+0		
+post	rd	474	480	24	1	Ok	+0	6636	
+post	rd	474	480	24	2	Ok	+0	5646	
+post	rd	474	480	24	3	Ok	+0	3743	
+post	rd	474	480	24	4	Ok	+0	2215	
+post	rd	474	480	24	5	Ok	+0	1885	
+post	rd	474	480	24	6	Ok	+0	971	
+post	rd	714	720	24	1	Ok	+0	12679	
+post	rd	714	720	24	2	Ok	+0	10663	
+post	rd	714	720	24	3	Ok	+0	7900	
+post	rd	714	720	24	4	Ok	+0	4948	
+post	rd	714	720	24	5	Ok	+0	4355	
+post	rd	714	720	24	6	Ok	+0	2241	
+post	vbp	1280	720	24	7	Ok	+0	494	
+post	vbp	1280	720	40	7	Ok	+0	371	
+post	vbp	1280	720	24	8	Diverge	-132	265	
+post	vbp	1280	720	40	8	Diverge	+36	177	
+post	vbp	1280	720	24	9	Diverge	-8	90	
+post	vbp	1280	720	40	9	Diverge	+4	62	
+post	vbp	1272	724	24	7	Ok	+0	487	
+post	vbp	1272	724	24	8	Diverge	-13	272	
+post	vbp	1272	724	24	9	Panic	+0	23	nonsquare-leaf-HANDOFF
+post	vbp	1288	716	24	7	Ok	+0	485	
+post	vbp	1288	716	24	8	Diverge	-1	303	
+post	vbp	1288	716	24	9	Diverge	+8	93	
+post	vbp	1274	722	24	7	Ok	+0	480	
+post	vbp	1274	722	24	8	Diverge	+83	272	
+post	vbp	1274	722	24	9	Diverge	-4	90	
+post	vbp	954	962	24	7	Ok	+0	468	
+post	vbp	954	962	24	8	Diverge	+25	261	
+post	vbp	954	962	24	9	Panic	+0	88	nonsquare-leaf-HANDOFF
+post	vbp	1280	712	24	7	Ok	+0	456	
+post	vbp	1280	712	24	8	Diverge	-6	273	
+post	vbp	1280	712	24	9	Diverge	-5	84	
+post	vbp	1280	728	24	7	Ok	+0	477	
+post	vbp	1280	728	24	8	Diverge	-116	261	
+post	vbp	1280	728	24	9	Diverge	-7	85	
+post	vbp	1280	704	24	7	Ok	+0	440	
+post	vbp	1280	704	24	8	Diverge	-1	267	
+post	vbp	1280	704	24	9	Diverge	-6	83	
+post	vbp	1216	768	24	7	Ok	+0	486	
+post	vbp	1216	768	24	8	Diverge	+1	266	
+post	vbp	1216	768	24	9	Diverge	-8	89	
+revert-vbp-numpixels	cnn-window	250	250	24	1	Ok	+0		
+revert-vbp-numpixels	cnn-window	250	250	24	2	Ok	+0		
+revert-vbp-numpixels	rd	474	480	24	1	Ok	+0	6430	
+revert-vbp-numpixels	rd	474	480	24	2	Ok	+0	5458	
+revert-vbp-numpixels	rd	474	480	24	3	Ok	+0	3753	
+revert-vbp-numpixels	rd	474	480	24	4	Ok	+0	2224	
+revert-vbp-numpixels	rd	474	480	24	5	Ok	+0	1880	
+revert-vbp-numpixels	rd	474	480	24	6	Ok	+0	963	
+revert-vbp-numpixels	rd	714	720	24	1	Ok	+0	12789	
+revert-vbp-numpixels	rd	714	720	24	2	Ok	+0	10736	
+revert-vbp-numpixels	rd	714	720	24	3	Ok	+0	7954	
+revert-vbp-numpixels	rd	714	720	24	4	Ok	+0	4795	
+revert-vbp-numpixels	rd	714	720	24	5	Ok	+0	4125	
+revert-vbp-numpixels	rd	714	720	24	6	Ok	+0	2109	
+revert-vbp-numpixels	vbp	1280	720	24	7	Panic	+0	116	crop-ambiguous-refusal
+revert-vbp-numpixels	vbp	1280	720	40	7	Panic	+0	81	crop-ambiguous-refusal
+revert-vbp-numpixels	vbp	1280	720	24	8	Panic	+0	60	crop-ambiguous-refusal
+revert-vbp-numpixels	vbp	1280	720	40	8	Panic	+0	36	crop-ambiguous-refusal
+revert-vbp-numpixels	vbp	1280	720	24	9	Panic	+0	17	crop-ambiguous-refusal
+revert-vbp-numpixels	vbp	1280	720	40	9	Panic	+0	10	crop-ambiguous-refusal
+revert-vbp-numpixels	vbp	1272	724	24	7	Panic	+0	112	crop-ambiguous-refusal
+revert-vbp-numpixels	vbp	1272	724	24	8	Panic	+0	61	crop-ambiguous-refusal
+revert-vbp-numpixels	vbp	1272	724	24	9	Panic	+0	18	crop-ambiguous-refusal
+revert-vbp-numpixels	vbp	1288	716	24	7	Panic	+0	115	crop-ambiguous-refusal
+revert-vbp-numpixels	vbp	1288	716	24	8	Panic	+0	69	crop-ambiguous-refusal
+revert-vbp-numpixels	vbp	1288	716	24	9	Panic	+0	18	crop-ambiguous-refusal
+revert-vbp-numpixels	vbp	1274	722	24	7	Diverge	+775	475	
+revert-vbp-numpixels	vbp	1274	722	24	8	Diverge	+131	260	
+revert-vbp-numpixels	vbp	1274	722	24	9	Diverge	-7	86	
+revert-vbp-numpixels	vbp	954	962	24	7	Diverge	+1196	462	
+revert-vbp-numpixels	vbp	954	962	24	8	Diverge	+144	247	
+revert-vbp-numpixels	vbp	954	962	24	9	Panic	+0	84	nonsquare-leaf-HANDOFF
+revert-vbp-numpixels	vbp	1280	712	24	7	Ok	+0	444	
+revert-vbp-numpixels	vbp	1280	712	24	8	Diverge	-6	271	
+revert-vbp-numpixels	vbp	1280	712	24	9	Diverge	-5	84	
+revert-vbp-numpixels	vbp	1280	728	24	7	Ok	+0	474	
+revert-vbp-numpixels	vbp	1280	728	24	8	Diverge	-116	259	
+revert-vbp-numpixels	vbp	1280	728	24	9	Diverge	-7	85	
+revert-vbp-numpixels	vbp	1280	704	24	7	Ok	+0	437	
+revert-vbp-numpixels	vbp	1280	704	24	8	Diverge	-1	265	
+revert-vbp-numpixels	vbp	1280	704	24	9	Diverge	-6	84	
+revert-vbp-numpixels	vbp	1216	768	24	7	Ok	+0	482	
+revert-vbp-numpixels	vbp	1216	768	24	8	Diverge	+1	273	
+revert-vbp-numpixels	vbp	1216	768	24	9	Diverge	-8	125	
+revert-mindim-predicates	cnn-window	250	250	24	1	Ok	+0		
+revert-mindim-predicates	cnn-window	250	250	24	2	Ok	+0		
+revert-mindim-predicates	rd	474	480	24	1	Diverge	-69	6296	
+revert-mindim-predicates	rd	474	480	24	2	Diverge	-178	5325	
+revert-mindim-predicates	rd	474	480	24	3	Diverge	-86	3691	
+revert-mindim-predicates	rd	474	480	24	4	Diverge	+13	2529	
+revert-mindim-predicates	rd	474	480	24	5	Diverge	-94	2060	
+revert-mindim-predicates	rd	474	480	24	6	Diverge	+9	1057	
+revert-mindim-predicates	rd	714	720	24	1	Diverge	-416	12427	
+revert-mindim-predicates	rd	714	720	24	2	Diverge	-555	9790	
+revert-mindim-predicates	rd	714	720	24	3	Diverge	-338	7983	
+revert-mindim-predicates	rd	714	720	24	4	Diverge	+317	4535	
+revert-mindim-predicates	rd	714	720	24	5	Diverge	-42	3629	
+revert-mindim-predicates	rd	714	720	24	6	Diverge	+30	1753	
+revert-mindim-predicates	vbp	1280	720	24	7	Ok	+0	470	
+revert-mindim-predicates	vbp	1280	720	40	7	Ok	+0	353	
+revert-mindim-predicates	vbp	1280	720	24	8	Diverge	-132	254	
+revert-mindim-predicates	vbp	1280	720	40	8	Diverge	+36	168	
+revert-mindim-predicates	vbp	1280	720	24	9	Diverge	-8	83	
+revert-mindim-predicates	vbp	1280	720	40	9	Diverge	+4	57	
+revert-mindim-predicates	vbp	1272	724	24	7	Ok	+0	456	
+revert-mindim-predicates	vbp	1272	724	24	8	Diverge	-13	259	
+revert-mindim-predicates	vbp	1272	724	24	9	Panic	+0	22	nonsquare-leaf-HANDOFF
+revert-mindim-predicates	vbp	1288	716	24	7	Ok	+0	471	
+revert-mindim-predicates	vbp	1288	716	24	8	Diverge	-1	292	
+revert-mindim-predicates	vbp	1288	716	24	9	Diverge	+8	92	
+revert-mindim-predicates	vbp	1274	722	24	7	Ok	+0	455	
+revert-mindim-predicates	vbp	1274	722	24	8	Diverge	+83	256	
+revert-mindim-predicates	vbp	1274	722	24	9	Diverge	-4	85	
+revert-mindim-predicates	vbp	954	962	24	7	Ok	+0	444	
+revert-mindim-predicates	vbp	954	962	24	8	Diverge	+25	248	
+revert-mindim-predicates	vbp	954	962	24	9	Panic	+0	84	nonsquare-leaf-HANDOFF
+revert-mindim-predicates	vbp	1280	712	24	7	Ok	+0	444	
+revert-mindim-predicates	vbp	1280	712	24	8	Diverge	-6	268	
+revert-mindim-predicates	vbp	1280	712	24	9	Diverge	-5	84	
+revert-mindim-predicates	vbp	1280	728	24	7	Ok	+0	570	
+revert-mindim-predicates	vbp	1280	728	24	8	Diverge	-116	292	
+revert-mindim-predicates	vbp	1280	728	24	9	Diverge	-7	97	
+revert-mindim-predicates	vbp	1280	704	24	7	Ok	+0	495	
+revert-mindim-predicates	vbp	1280	704	24	8	Diverge	-1	298	
+revert-mindim-predicates	vbp	1280	704	24	9	Diverge	-6	93	
+revert-mindim-predicates	vbp	1216	768	24	7	Ok	+0	540	
+revert-mindim-predicates	vbp	1216	768	24	8	Diverge	+1	301	
+revert-mindim-predicates	vbp	1216	768	24	9	Diverge	-8	99	
+#
+# --- s4cov_hd_speed_axis::hd_speed_axis_byte_matches, re-pinned. ---
+# 640x640 and 1280x720 x cq{24,40} x cpu 1..7 = 28 cells.
+#   before KB-28: 26/28, the two non-matches being 1280x720 cq{24,40} cpu7 = PANIC
+#   after  KB-28: 28/28 byte-exact; LARGE_FRAME_OPEN is now EMPTY
+#
+# --- Residual at cpu 8/9 (NOT KB-28's — see CLAUDE.md KB-28 "RESIDUAL"). ---
+# Every cpu-8 residual is inside KB-32's pinned < 1.0 B/SB shape; worst 0.550 B/SB
+# (1280x720 cq24, -132 B over 240 SB). The SB-exact controls 1280x704 and 1216x768
+# diverge too, which refutes a partial-superblock reading; the cells with
+# mi == crop diverge identically, which is what makes it not crop-dependent.

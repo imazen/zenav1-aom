@@ -153,17 +153,19 @@ fn measure(cell: &EncodeCell) -> (Verdict, i64, String) {
 /// frame — while speeds 0..3, which use the caller's resolved policy directly,
 /// kept it. Fixed by `TxTypeSearchPolicy::carry_frame_level_tx_sf`
 /// (`tx_search.rs`), called from `partition_pick`'s `wm_parts`.
-/// `LARGE_FRAME_OPEN` now holds ONLY the two KB-28 speed-7 panics.
+/// `LARGE_FRAME_OPEN` then held ONLY the two KB-28 speed-7 panics.
 ///
-/// The 1280x720 speed-7 PANIC is a different thing again and is a deliberate
-/// port guard, not a crash: `pack.rs`'s VBP-threshold arm needs `cm->width *
-/// cm->height` to pick `set_vbp_thresholds`' <720p bucket, `pack_tile` is not
-/// given the true crop dims, and rather than guess it refuses whenever the
-/// mi-aligned area and the "up to 3px smaller per axis" crop could land on
-/// opposite sides of `1280*720`. An EXACTLY 1280x720 frame is inside that
-/// window, so the first HD frame anyone would reach for at speed 7 refuses to
-/// encode. Fix is to thread the true crop dims into `SbEncodeEnv` (it carries
-/// only mi-aligned extents today — the same gap KB-23's 250x250 row names).
+/// **RE-MEASURED 2026-08-02 after the KB-28 fix: 28/28 byte-exact, and
+/// `LARGE_FRAME_OPEN` is now EMPTY** — this pin fired unprompted, which is
+/// what it was for. The two speed-7 rows were never a crash: `pack.rs`'s
+/// VBP-threshold arm needs `cm->width * cm->height` to pick
+/// `set_vbp_thresholds`' <720p bucket (var_based_part.c:667 -> :547),
+/// `pack_tile` was given only mi-ALIGNED extents, and rather than guess it
+/// refused across the window where the two could straddle `1280*720`. The fix
+/// threads the true crop dims through `SbEncodeEnv::frame_{width,height}` to
+/// all six framesize consumers; the refusal window, its `mi - 3`-vs-`mi - 7`
+/// error and the 8,776 crops it silently missed are mapped in
+/// `kb28_crop_dims::refusal_window_is_characterised`.
 #[test]
 #[ignore = "28 encode pairs up to 1280x720; nightly / on-demand tier"]
 fn hd_speed_axis_byte_matches() {
@@ -171,12 +173,11 @@ fn hd_speed_axis_byte_matches() {
     let base = EncodeCell::real_content("s4hd", "av1-1-b8-00-quantizer-00", None, 24, 0);
     const SIZES: &[(usize, usize)] = &[(640, 640), (1280, 720)];
     // (w, h, cq, speed, verdict) — the exact current state, pinned.
-    // KB-26 closed every DIVERGE row on 2026-08-01; what remains is KB-28, the
-    // deliberate VBP-threshold crop-ambiguity refusal at exactly 1280x720.
-    const LARGE_FRAME_OPEN: &[(usize, usize, i32, i32, Verdict)] = &[
-        (1280, 720, 24, 7, Verdict::Panic),
-        (1280, 720, 40, 7, Verdict::Panic),
-    ];
+    // KB-26 closed every DIVERGE row on 2026-08-01, leaving only KB-28's two
+    // speed-7 crop-ambiguity refusals; **KB-28 closed on 2026-08-02 and this
+    // pin fired**, so the list is now EMPTY: 28/28 byte-exact. Anything
+    // appearing here again is a regression, not a known-open cell.
+    const LARGE_FRAME_OPEN: &[(usize, usize, i32, i32, Verdict)] = &[];
     let mut observed: Vec<(usize, usize, i32, i32, Verdict)> = Vec::new();
     let mut rows = 0usize;
     for &(w, h) in SIZES {
@@ -222,11 +223,12 @@ fn hd_speed_axis_byte_matches() {
     // `perform_coeff_opt = 2 + is_1080p_or_larger` at 720p) it reaches first.
     // Speeds 1..3 were clean from the start; 4..6 were the KB-26 divergence and
     // became clean when the framesize-derived `prune_tx_type_using_stats`
-    // stopped being dropped by the winner-mode stage derivation. Speed 7 is
-    // excluded only because of KB-28's 1280x720 refusal.
+    // stopped being dropped by the winner-mode stage derivation. Speed 7 was
+    // excluded until 2026-08-02 because of KB-28's 1280x720 refusal; it is now
+    // inside the range, which is why this filter reads `<= 7`.
     let low_speed_bad: Vec<String> = observed
         .iter()
-        .filter(|(_, _, _, s, _)| *s <= 6)
+        .filter(|(_, _, _, s, _)| *s <= 7)
         .map(|(w, h, cq, s, v)| format!("{w}x{h} cq{cq} cpu{s} {v:?}"))
         .collect();
     assert!(

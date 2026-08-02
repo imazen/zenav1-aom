@@ -679,6 +679,9 @@ fn run_pack_roundtrip_case(ss_x: usize, ss_y: usize, allintra: bool, qindex: usi
             sb_size: SB,
             mi_rows,
             mi_cols,
+            // `cm->width`/`cm->height` — the TRUE crop (KB-28).
+            frame_width: mi_cols * 4,
+            frame_height: mi_rows * 4,
             tile_row_start: 0,
             tile_col_start: 0,
             tile_row_end: 1 << 16,
@@ -1173,6 +1176,9 @@ fn pack_tile_roundtrips_with_real_costs() {
             sb_size: SB,
             mi_rows,
             mi_cols,
+            // `cm->width`/`cm->height` — the TRUE crop (KB-28).
+            frame_width: mi_cols * 4,
+            frame_height: mi_rows * 4,
             tile_row_start: 0,
             tile_col_start: 0,
             tile_row_end: 1 << 16,

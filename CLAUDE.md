@@ -2401,6 +2401,24 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   entry's own thesis one level up: KB-23's fix keyed `cnn_output_valid` off the containing 64×64
   correctly, but the SIBLING piece of the same C statement — `quad_tree_idx`, reset by the same
   two lines of `init_partition_search_state_params` — was still keyed off the superblock.
+- **The 250×250 row: SETTLED 2026-08-02 (KB-28), and it was HALF a different thing.** KB-28's
+  entry claimed 250×250 "names the same gap"; the honest split is:
+  * the row exercises the intra-CNN **window** (`extract_intra_cnn_window`), which is **inert**
+    whether it clamps to the crop or to the mi extent. C does not clamp at all — it reads
+    `x->plane[0].src.buf - stride - 1` out of the border-extended source
+    (partition_strategy.c:205-220) where everything past the crop is the replicated edge pixel,
+    so both clamps produce the identical 65×65 window. Measured both ways: 250×250 was
+    byte-identical before KB-28's change and after it
+    (`kb28_crop_dims::cnn_window_clamp_is_replication_inert`, and the row here). It is a control,
+    not a witness.
+  * the row **cannot reach** the crop-dependent CNN consumer — the res-tier threshold select
+    (partition_strategy.c:311-312) — because `min(250,250)` and `min(256,256)` are both below
+    480. That consumer WAS KB-28's root, and the rows that reach it are 474×480 (mi 480×480) and
+    714×720 (mi 720×720), now gated at cpu 1..6 in
+    `kb28_crop_dims::rd_band_min_dim_tiers_byte_match` (0/12 with the predicates reverted).
+  So: same underlying gap (the walk had no crop dims), **different effect** — one arm of it was
+  observable and one was provably not. Recorded per playbook §1 / the KB-24 precedent for saying
+  so rather than claiming two fixes.
 
 ### KB-24 — Encoder: the intra-CNN `quad_tree_idx` was anchored at the SUPERBLOCK, not at the 64×64 — `--sb-size=128` PANICKED at every RD speed 1..6 — FIXED ✅ 2026-08-01
 - **Found 2026-08-01** by extending KB-23's (partial-SB × speed) crossing to SB128, which its own
@@ -2500,13 +2518,15 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   1,174 of them.
 - **MEASURED (`benchmarks/kb26_large_frame_speed4_2026-08-01.tsv`):**
   `hd_speed_axis_byte_matches` **13 open rows → 0**; the gate is now **26/28 byte-exact**, the
-  only two non-matches being KB-28's speed-7 1280×720 panics. `large_frame_speed4_size_ladder`
+  only two non-matches being KB-28's speed-7 1280×720 panics (KB-28 closed 2026-08-02 and it is
+  now **28/28** with `LARGE_FRAME_OPEN` empty). `large_frame_speed4_size_ladder`
   **7/7 byte-exact** (was 512²/576²/640² divergent at −28/+29/−33 B).
   `tx_stats_prune_ab_across_the_480p_boundary`: the prune is now load-bearing at **4/4** of
   speeds 2,3,4,5 on 512² and still inert at 448² — every prune-on cell byte-matches real aomenc.
 - **Gates (all three re-pinned; two PROMOTED from open-divergence probes to hard byte-match
-  gates):** `LARGE_FRAME_OPEN` now holds only the two KB-28 panics and the clean-speed assertion
-  widened from 1..3 to 1..6; the size ladder asserts 7/7 byte-exact with a reach assertion that
+  gates):** `LARGE_FRAME_OPEN` held only the two KB-28 panics (empty since 2026-08-02) and the
+  clean-speed assertion widened from 1..3 to 1..6 (to 1..7 once KB-28 closed);
+  the size ladder asserts 7/7 byte-exact with a reach assertion that
   it straddles 480; the A/B asserts `(load_bearing_at_4_5, inert_at_4_5) == (2, 0)` — i.e. it
   fails the moment the framesize-derived sf goes dead again. Unit lock:
   `tx_search::kb26_frame_level_sf_tests` sweeps **`--cpu-used` 0..9 × {448², 512²}** and asserts
@@ -2559,7 +2579,8 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   * **speeds 1, 2, 3: byte-exact** at 640×640 AND 1280×720, at cq24 and cq40 both;
   * **speeds 4, 5, 6: DIVERGE** at both framesizes and both quality points (deltas −111..+152 B
     on frames of 17–137 KB);
-  * speed 7: diverges at 640² cq24, matches at 640² cq40, and PANICS at 1280×720 (KB-28).
+  * speed 7: diverges at 640² cq24, matches at 640² cq40, and PANICS at 1280×720 (KB-28 — that
+    panic is gone since 2026-08-02; the whole grid is 28/28).
 - **It is NOT a `is_720p_or_larger` arm.** The 640×640 control — deliberately included for this
   purpose — diverges exactly as the 1280×720 rows do. `large_frame_speed4_size_ladder` then
   walks SB-EXACT sizes at cpu4/cq24 and lands the boundary precisely on the OTHER framesize
@@ -2614,21 +2635,81 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   `partial_sb_speed_axis_chroma_formats_byte_match::MONO_S0_OPEN` plus the localizer, both
   directions.
 
-### KB-28 — Encoder: an EXACTLY 1280×720 frame at `--cpu-used=7` REFUSES to encode (VBP threshold crop-ambiguity guard) — OPEN, pinned
-- **Found 2026-08-01.** `pack.rs:1477-1495` needs `cm->width * cm->height` to select
-  `set_vbp_thresholds`' sub-720p bucket for the speed-7 VAR_BASED partitioning, but `pack_tile`
-  is given only mi-aligned extents. Rather than guess, it asserts — and the window it refuses on
-  is "the mi-aligned area and the up-to-3px-smaller crop could land on opposite sides of
-  1280*720". An exactly-1280×720 frame is inside that window (`mi_px == 921600` is not `<`
-  921600 while `min_crop_px` is), so the most ordinary HD frame there is panics with *"VBP
-  threshold resolution arm is crop-ambiguous at 1280x720 mi-aligned: thread the true crop dims"*.
-- The guard is doing its job — this is a refusal, not silent corruption — but the configuration
-  it refuses is a legal one a drop-in replacement must encode.
-- **Fix:** thread the true crop dims into `SbEncodeEnv`, which today carries mi-aligned extents
-  only. That is the same gap KB-23's 250×250 row names for `extract_intra_cnn_window`, so the
-  two want one change.
-- **Pinned** as `Verdict::Panic` in `hd_speed_axis_byte_matches::LARGE_FRAME_OPEN` (cq24 and
-  cq40), both directions.
+### KB-28 — Encoder: the framesize predicates read the mi-aligned extent, not `cm->width`/`cm->height` — an EXACTLY 1280×720 frame REFUSED to encode at `--cpu-used` 7, 8 AND 9 — FIXED ✅ 2026-08-02
+- **Found 2026-08-01, fixed 2026-08-02.** `pack.rs` needed `cm->width * cm->height` to select
+  `set_vbp_thresholds`' sub-720p bucket (var_based_part.c:667 → `..._key_frame` :547) for the
+  VAR_BASED partitioning, but `pack_tile` was given only **mi-aligned** extents. Rather than
+  guess it asserted, refusing across the window where "the mi-aligned area and the up-to-3px-
+  smaller crop could land on opposite sides of 1280*720". An exactly-1280×720 frame is inside
+  that window (`mi_px == 921600` is not `< 921600` while `1277*717 == 915609` is), so the most
+  ordinary HD frame panicked with *"VBP threshold resolution arm is crop-ambiguous at 1280x720
+  mi-aligned: thread the true crop dims"*. **Title corrected: the refusal fired at speeds 7, 8
+  and 9**, not 7 alone — the entry said speed 7 because `hd_speed_axis_byte_matches` stops at 7.
+- **The mi grid rounds UP to 8 px, not 4.** `av1_get_MBs` (alloccommon.c:30-33) sets
+  `mi_cols = ALIGN_POWER_OF_TWO(width, 3) >> MI_SIZE_LOG2`, so `mi_cols * 4` is up to **7** px
+  larger than the crop. The guard's `mi - 3` was therefore too narrow, and that had a
+  consequence worse than the refusal: **8,776 crops (both mi extents ≤ 4096) took the wrong
+  threshold arm with NO refusal at all** — e.g. 1274×722 → mi 1280×728, where
+  `(1280-3)*(728-3) = 925,825 ≥ 921600` so the guard stayed silent while the true crop area
+  919,828 is below it. Measured pre-fix at speed 7: **+775 B on 1274×722 and +1196 B on
+  954×962**, silently. The window and the hole are enumerated and pinned in
+  `kb28_crop_dims::refusal_window_is_characterised` (369 in-window mi shapes; of the crops that
+  would take the WRONG arm, 19,071 were refused loudly and 8,776 were not refused at all).
+- **SIX consumers, one root — all of them re-derived a framesize predicate from `env.mi_*`:**
+  `pack.rs`'s VBP `num_pixels` (var_based_part.c:667→:547);
+  `partition_pick.rs`'s `use_square_partition_only_threshold` (speed_features.c:175-316),
+  intra-CNN res-tier thresholds (partition_strategy.c:311-312),
+  `ext_partition_eval_thresh` (speed_features.c:510-511), and
+  `av1_ml_prune_4_partition`'s `res_idx` (partition_strategy.c:1349-1352);
+  plus `extract_intra_cnn_window`'s clamp (inert — see the KB-23 note below).
+  The last two carried in-tree comments naming the gap and leaving it open (playbook §9 again:
+  a correct citation with a conclusion true only of the envelope that had been run — every
+  size any gate encoded was either SB-exact or far from 480/720).
+- **FIX:** `SbEncodeEnv` gains `frame_width` / `frame_height` (= `cm->width`/`cm->height`) plus
+  `frame_min_dim()` / `frame_num_pixels()` / `assert_crop_dims_match_mi()`; all 22 construction
+  sites pass the real crop. `pack.rs`'s `fs_sf` checks (KB-32's caller guard) become **exact**
+  instead of "unambiguous only ≥ 3 px clear of a boundary", and the crop-ambiguity refusal is
+  deleted — not relaxed: it is replaced by the value it was refusing for lack of.
+- **PER-ROOT BITE PROOF, disjoint cell sets (playbook §1).** Reverting the VBP half alone
+  (`num_pixels` back to the mi area + the old assert) fails `vbp_band_crop_dims_byte_match`
+  only — 4 PANICs with the original message at speed 7 + the two silent divergences above —
+  while `rd_band_min_dim_tiers_byte_match` stays **12/12**. Reverting the four
+  `partition_pick.rs` predicates alone fails `rd_band_min_dim_tiers_byte_match` **0/12**
+  (474×480 −69/−178/−86/+13/−94/+9 and 714×720 −416/−555/−338/+317/−42/+30 at cpu 1..6) while
+  the whole VBP band stays green. Different consumers of one root, provably separate bands.
+- **VERIFIED: `hd_speed_axis_byte_matches` is now 28/28** (was 26/28) — its self-promoting pin
+  fired unprompted and `LARGE_FRAME_OPEN` is **empty**. New gates:
+  `aom-bench/tests/kb28_crop_dims.rs` — `refusal_window_is_characterised` (default tier, pure
+  arithmetic + the reach assertions for every encoded cell), `vbp_band_crop_dims_byte_match`
+  (9 shapes × cpu 7/8/9), `rd_band_min_dim_tiers_byte_match` (474×480 / 714×720 × cpu 1..6),
+  `cnn_window_clamp_is_replication_inert`. Unit locks:
+  `partition_pick::kb28_crop_dim_locks` (3 tests — speeds 0..9 × both sides of 480 and 720 in
+  both directions, plus the "crop and mi readings must DISAGREE on the gated crops"
+  non-vacuity assertion) and `var_part::tests::kb28_num_pixels_is_the_crop_area_not_the_mi_area`.
+- **RESIDUAL, stated plainly — the refusal was HIDING a divergence.** 1280×720 is byte-identical
+  at cpu 7 (both cq) and is **NOT** byte-identical at cpu 8/9: −132/+36 (cq24/cq40) at cpu 8 and
+  −8/+4 at cpu 9. That is **KB-12's nonrd estimate-arm leaf-mode near-tie**, not KB-28: a
+  partial-superblock explanation was tested and REFUTED (the SB-exact controls 1280×704 and
+  1216×768 diverge too, −1/−6 and +1/−8), the cells with `cm->width == mi_cols * 4` on both
+  axes — where this fix is a literal no-op — carry byte-identical deltas in all three arms
+  (post, revert-VBP, revert-min-dim; `benchmarks/kb28_crop_dims_2026-08-02.tsv`), and every speed-8 residual is
+  inside KB-32's pinned `< 1.0 B/SB` shape (worst 0.550 at 1280×720 cq24). Pinned exactly and
+  self-promoting as `NONRD_ESTIMATE_ARM_OPEN`. Also: two speed-9 cells reach KB-32's documented
+  non-square-leaf HANDOFF refusal, which KB-32 measured as reachable only on its 108 MP cell —
+  **0.9 MP frames reach it too**.
+- **Is there an analogous window at another `set_vbp_thresholds` bucket? NO — checked in
+  source.** `set_vbp_thresholds` compares `num_pixels` against `RESOLUTION_288P/480P/720P/
+  1080P/1440P`, but on the KEY path it delegates to `set_vbp_thresholds_key_frame` and
+  **returns** (var_based_part.c:660-664) before `tune_base_thresh_content`,
+  `tune_thresh_based_on_resolution` and `tune_thresh_based_on_qindex` — where every other
+  bucket lives. `..._key_frame`'s only bucket is `RESOLUTION_720P` (:547). The file's other
+  `cm->width * cm->height` reads are `chroma_check` (:1004, returns immediately on a key frame)
+  and two `!is_key_frame`-gated arms (:1344/:1358, :1821). The MIN-DIM axis has three boundaries
+  (480/720/2160, speed_features.c:169-172) and all three are covered by the same change — the
+  frame-level SF resolver already read the true crop, only the in-walk re-derivations did not.
+- **Still unmeasured:** the crop axis at bd10/12, 4:2:2/4:4:4, monochrome, SB128 and multi-tile;
+  crops straddling the `is_4k_or_larger` (2160) predicate; and the 480/720 straddle at
+  `--cpu-used 0` (where `use_square_partition_only_threshold`'s base tier still moves).
 
 ### KB-29 — Encoder: the IntraBC-armed encode produced a NON-CONFORMANT bitstream (`Invalid intrabc dv`) — FIXED ✅ 2026-08-01 (5 roots), + the general decode-side gate it was missing
 - **Found 2026-08-01** by the cross-encoder still-picture benchmark

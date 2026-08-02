@@ -1558,6 +1558,9 @@ impl EncodeCell {
             sb_size: sb_block,
             mi_rows,
             mi_cols,
+            // `cm->width`/`cm->height` — the TRUE crop (KB-28).
+            frame_width: w as i32,
+            frame_height: h as i32,
             tile_row_start: tile_grid[0].0,
             tile_col_start: tile_grid[0].1,
             tile_row_end: tile_grid[0].2,
@@ -2486,6 +2489,9 @@ impl MultiFrameEncodeCell {
             sb_size: sb_block,
             mi_rows,
             mi_cols,
+            // `cm->width`/`cm->height` — the TRUE crop (KB-28).
+            frame_width: w as i32,
+            frame_height: h as i32,
             tile_row_start: 0,
             tile_col_start: 0,
             tile_row_end: 1 << 16,

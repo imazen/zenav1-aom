@@ -1,3 +1,40 @@
+## KB-28 — the framesize predicates now read `cm->width`/`cm->height`, not the mi grid; 1280x720 encodes at cpu 7 (2026-08-02)
+
+`SbEncodeEnv` carried mi-ALIGNED extents only. `av1_get_MBs`
+(alloccommon.c:30-33) aligns the mi grid UP to 8 px, so `mi_cols * 4` runs up
+to **7** px larger than the crop — and six places re-derived a framesize
+predicate from it: `pack.rs`'s VBP `num_pixels` (var_based_part.c:667 -> :547),
+`partition_pick.rs`'s `use_square_partition_only_threshold`
+(speed_features.c:175-316), the intra-CNN res-tier thresholds
+(partition_strategy.c:311-312), `ext_partition_eval_thresh`
+(speed_features.c:510-511), `av1_ml_prune_4_partition`'s `res_idx`
+(:1349-1352), and `extract_intra_cnn_window`'s clamp (the only inert one).
+
+The VBP site refused rather than guessed, and an exactly 1280x720 frame was
+inside its refusal window — the most ordinary HD frame would not encode at
+`--cpu-used` 7, 8 or 9 (the ledger said 7 because no gate ran 8/9 at that
+size). The guard also used `mi - 3` where the alignment is 8, so **8,776 crops
+took the wrong threshold arm with no refusal at all**; measured at speed 7,
+1274x722 was +775 B and 954x962 +1196 B wrong, silently.
+
+Fix: `SbEncodeEnv::frame_width` / `frame_height` (+ `frame_min_dim()`,
+`frame_num_pixels()`, `assert_crop_dims_match_mi()`), threaded from all 22
+construction sites; `pack.rs`'s KB-32 caller guard became exact instead of
+conservative. Per-root bite proofs fail disjoint cell sets (VBP band vs
+min-dim band). `hd_speed_axis_byte_matches` **26/28 -> 28/28**, its pin fired,
+`LARGE_FRAME_OPEN` is empty. New: `aom-bench/tests/kb28_crop_dims.rs` (4
+tests) + unit locks in `partition_pick` and `var_part` over speeds 0..9 and
+both sides of 480 / 720 / RESOLUTION_720P in both directions. Record:
+`benchmarks/kb28_crop_dims_2026-08-02.tsv`.
+
+**Residual, and it is new information the refusal was hiding:** 1280x720 is
+byte-identical at cpu 7 and is NOT at cpu 8/9 (-132/+36, -8/+4). That is
+KB-12's nonrd estimate-arm near-tie — a partial-SB explanation was tested and
+refuted (SB-exact 1280x704 / 1216x768 diverge too), the mi==crop cells diverge
+identically, and every cpu-8 residual is inside KB-32's < 1.0 B/SB shape.
+Pinned self-promoting. Two cpu-9 cells also reach KB-32's non-square-leaf
+HANDOFF refusal, which KB-32 had measured as reachable only at 108 MP.
+
 ## bd8 i16-lane inverse transform runs on aarch64 — NEON tier live, 16x16/32x32/64x64 DCT −45..−51% (2026-07-28, ARM track)
 
 The last piece fd7efe1 left behind is landed. The bd8 i16-lane row/column

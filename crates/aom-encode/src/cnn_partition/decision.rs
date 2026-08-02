@@ -189,6 +189,31 @@ fn assemble_features(
     f
 }
 
+/// `intra_mode_cnn_partition`'s resolution-tier threshold select
+/// (partition_strategy.c:311-329). `frame_w` / `frame_h` are `cm->width` /
+/// `cm->height` — the TRUE CROP, never the mi-aligned extent (KB-28): the mi
+/// grid rounds UP to 8 px, so a 474x480 crop reads as 480x480 there and takes
+/// the midres tier where C takes lowres.
+pub(crate) fn res_tier_thresholds(frame_w: i32, frame_h: i32, bsize_idx: usize) -> (f32, f32) {
+    let mind = frame_w.min(frame_h);
+    if mind >= 720 {
+        (
+            w::SPLIT_THRESH_HDRES[bsize_idx],
+            w::NO_SPLIT_THRESH_HDRES[bsize_idx],
+        )
+    } else if mind >= 480 {
+        (
+            w::SPLIT_THRESH_MIDRES[bsize_idx],
+            w::NO_SPLIT_THRESH_MIDRES[bsize_idx],
+        )
+    } else {
+        (
+            w::SPLIT_THRESH_LOWRES[bsize_idx],
+            w::NO_SPLIT_THRESH_LOWRES[bsize_idx],
+        )
+    }
+}
+
 /// Run the intra-CNN partition-prune decision for one block. `win` is the
 /// parent 64×64's 65×65 luma window (replicated top/left border); `bsize_idx`
 /// is `convert_bsize_to_idx` (1=64×64 .. 4=8×8); `quad_tree_idx` is the block's
@@ -224,15 +249,7 @@ pub fn predict_decision(
     );
 
     // Res-tier thresholds (partition_strategy.c:311-329).
-    let mind = frame_w.min(frame_h);
-    let bi = bsize_idx as usize;
-    let (split_thresh, no_split_thresh) = if mind >= 720 {
-        (w::SPLIT_THRESH_HDRES[bi], w::NO_SPLIT_THRESH_HDRES[bi])
-    } else if mind >= 480 {
-        (w::SPLIT_THRESH_MIDRES[bi], w::NO_SPLIT_THRESH_MIDRES[bi])
-    } else {
-        (w::SPLIT_THRESH_LOWRES[bi], w::NO_SPLIT_THRESH_LOWRES[bi])
-    };
+    let (split_thresh, no_split_thresh) = res_tier_thresholds(frame_w, frame_h, bsize_idx as usize);
 
     let mut d = CnnPruneDecision::default();
     if logits[0] > split_thresh {

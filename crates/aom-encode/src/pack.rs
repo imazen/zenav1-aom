@@ -1548,46 +1548,36 @@ pub fn pack_tile_lr(
     // (encode_rd_sb, encodeframe.c:876-895).
     let use_var_based_partition = pick_cfg.allintra && pick_cfg.speed >= 7;
     // `PickFrameCfg::fs_sf` must be RESOLVED by the caller, not defaulted
-    // (KB-32). This walk cannot compute the predicates itself — it only has
-    // mi-ALIGNED dimensions — but it CAN check them wherever the mi-aligned
-    // value is unambiguous (>= 3 px clear of a boundary), which is enough to
-    // catch a caller that silently left the field at `Default` on a big frame.
-    // That is exactly how KB-32's two roots were able to hide.
+    // (KB-32). Since KB-28 the walk carries the TRUE crop dims
+    // (`SbEncodeEnv::frame_{width,height}` = `cm->width`/`cm->height`), so
+    // these checks are now EXACT rather than "unambiguous only >= 3 px clear
+    // of a boundary" — a caller that silently left `fs_sf` at `Default` on a
+    // big frame fails on every frame, not just the ones comfortably clear of
+    // the predicate. That is exactly how KB-32's two roots were able to hide.
     {
-        let mi_min_px = (env.mi_cols * 4).min(env.mi_rows * 4);
-        let want_large = pick_cfg.allintra && pick_cfg.speed >= 8;
-        if mi_min_px - 3 >= 720 {
-            assert!(
-                pick_cfg.fs_sf.vbp.force_large_partition_blocks_intra == want_large,
-                "fs_sf.vbp.force_large_partition_blocks_intra is {} on a frame \
-                 whose short side is unambiguously >= 720 px (mi-aligned {}) at \
-                 allintra={} speed={} — resolve it from the frame's real \
-                 dimensions (speed_features.c:326-328)",
-                pick_cfg.fs_sf.vbp.force_large_partition_blocks_intra,
-                mi_min_px,
-                pick_cfg.allintra,
-                pick_cfg.speed
-            );
-        } else if mi_min_px < 720 {
-            assert!(
-                !pick_cfg.fs_sf.vbp.force_large_partition_blocks_intra,
-                "fs_sf.vbp.force_large_partition_blocks_intra is set on a frame \
-                 whose short side is below 720 px (mi-aligned {mi_min_px})"
-            );
-        }
-        if mi_min_px - 3 >= 2160 {
-            assert!(
-                pick_cfg.fs_sf.is_4k_or_larger,
-                "fs_sf.is_4k_or_larger is false on a frame whose short side is \
-                 unambiguously >= 2160 px (mi-aligned {mi_min_px})"
-            );
-        } else if mi_min_px < 2160 {
-            assert!(
-                !pick_cfg.fs_sf.is_4k_or_larger,
-                "fs_sf.is_4k_or_larger is set on a frame whose short side is \
-                 below 2160 px (mi-aligned {mi_min_px})"
-            );
-        }
+        env.assert_crop_dims_match_mi("pack_tile");
+        let min_px = env.frame_min_dim();
+        let want_large = pick_cfg.allintra && pick_cfg.speed >= 8 && min_px >= 720;
+        assert_eq!(
+            pick_cfg.fs_sf.vbp.force_large_partition_blocks_intra, want_large,
+            "fs_sf.vbp.force_large_partition_blocks_intra is {} on a {}x{} crop \
+             (short side {min_px}) at allintra={} speed={} — resolve it from the \
+             frame's real dimensions (speed_features.c:326-328)",
+            pick_cfg.fs_sf.vbp.force_large_partition_blocks_intra,
+            env.frame_width,
+            env.frame_height,
+            pick_cfg.allintra,
+            pick_cfg.speed
+        );
+        assert_eq!(
+            pick_cfg.fs_sf.is_4k_or_larger,
+            min_px >= 2160,
+            "fs_sf.is_4k_or_larger is {} on a {}x{} crop (short side {min_px}) \
+             — speed_features.c:172",
+            pick_cfg.fs_sf.is_4k_or_larger,
+            env.frame_width,
+            env.frame_height
+        );
     }
     let mut vbp_stamps = if use_var_based_partition {
         vec![0u8; env.mi_rows as usize * mi_cols]
@@ -1595,21 +1585,6 @@ pub fn pack_tile_lr(
         Vec::new()
     };
     let vbp_frame = if use_var_based_partition {
-        // `cm->width * cm->height` feeds set_vbp_thresholds' <720p arm; the
-        // true crop dims aren't threaded to pack_tile, so use the mi-aligned
-        // dims and LOUDLY reject the (up-to-3px-per-axis) window where the
-        // crop could straddle the 1280x720 boundary and flip the thresholds.
-        const RESOLUTION_720P: i64 = 1280 * 720;
-        let mi_px = i64::from(env.mi_cols * 4) * i64::from(env.mi_rows * 4);
-        let min_crop_px = i64::from(env.mi_cols * 4 - 3) * i64::from(env.mi_rows * 4 - 3);
-        assert_eq!(
-            mi_px < RESOLUTION_720P,
-            min_crop_px < RESOLUTION_720P,
-            "VBP threshold resolution arm is crop-ambiguous at {}x{} mi-aligned: \
-             thread the true crop dims",
-            env.mi_cols * 4,
-            env.mi_rows * 4
-        );
         Some(crate::var_part::VbpFrame {
             mi_rows: env.mi_rows,
             mi_cols: env.mi_cols,
@@ -1617,7 +1592,12 @@ pub fn pack_tile_lr(
             // tile_row_end/tile_col_end are unclamped sentinels).
             tile_mi_row_end: env.mi_rows.min(env.tile_row_end),
             tile_mi_col_end: env.mi_cols.min(env.tile_col_end),
-            num_pixels: mi_px,
+            // `num_pixels = cm->width * cm->height` (var_based_part.c:667) —
+            // the TRUE crop area, NOT the mi-aligned one. KB-28: this used the
+            // mi extent and refused to encode wherever the two could straddle
+            // `RESOLUTION_720P` (var_based_part.c:547), which an exactly
+            // 1280x720 frame does.
+            num_pixels: env.frame_num_pixels(),
             sb_size,
             qindex: pick_cfg.qindex,
             bit_depth: env.bd,

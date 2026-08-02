@@ -584,13 +584,20 @@ fn kb23_partial_sb_size_and_speed_axis() {
         (720, 720), // 11.25 SB partial   is_720p_or_larger boundary
         (1280, 720), // partial rows      >=720p
         // A size where the MI-ALIGNED dims and the TRUE crop disagree ACROSS a
-        // 64-px superblock boundary: mi_dim(250) = 256, so `mi_rows * 4` says
-        // 256 while the frame is 250 tall. `extract_intra_cnn_window` clamps to
-        // the MI-aligned extent, where C's source buffer is edge-replicated from
-        // the true crop (`av1_copy_and_extend_frame`) — so the last whole 64x64
-        // (origin 192, window rows 191..256) reads 6 rows the two sides derive
-        // differently. This is the one shape that can still reach that
-        // difference after the KB-23 latch.
+        // 64-px superblock boundary: mi_dim(250) * 4 = 256, so the mi extent
+        // says 256 while the frame is 250 tall, and the last whole 64x64
+        // (origin 192, window rows 191..256) reads 6 rows past the crop.
+        // **KB-28 (2026-08-02) settled what that row does and does not show.**
+        // It exercises the CNN *window* only, which is inert either way: C
+        // reads the border-extended source with no clamp at all
+        // (partition_strategy.c:205-220) and every read past the crop returns
+        // the replicated edge pixel, so a clamp to the crop and a clamp to the
+        // mi extent produce identical windows. It does NOT reach the CNN
+        // *res-tier threshold* (:311-312), which was the real crop-dependent
+        // consumer, because min(250,250) and min(256,256) are both below 480.
+        // The rows that DO reach it are 474x480 and 714x720 in
+        // `kb28_crop_dims::rd_band_min_dim_tiers_byte_match`; this one stays
+        // here as the window control.
         (250, 250),
     ];
     let mut verdicts = Vec::new();

@@ -935,6 +935,81 @@ mod tests {
         );
     }
 
+    /// **KB-28 — `num_pixels` is `cm->width * cm->height`, the TRUE CROP area
+    /// (var_based_part.c:667), and the mi-aligned area is a different number.**
+    ///
+    /// `av1_get_MBs` rounds the mi grid UP to 8 px (alloccommon.c:30-33), so
+    /// feeding this function `mi_cols * 4 * mi_rows * 4` picks the wrong arm on
+    /// every crop whose rounding crosses `RESOLUTION_720P`. Locked over all
+    /// three speeds the VAR_BASED partitioner runs at (7, 8, 9) and both sides
+    /// of the boundary, in both directions, on the exact crops
+    /// `kb28_crop_dims`' byte gates encode — so a regression is caught here in
+    /// microseconds instead of in a 30-cell encode sweep.
+    #[test]
+    fn kb28_num_pixels_is_the_crop_area_not_the_mi_area() {
+        const fn mi_aligned(px: i64) -> i64 {
+            (px + 7) & !7
+        }
+        // (crop_w, crop_h): every one has crop area < 1280*720 <= mi area.
+        const STRADDLERS: &[(i64, i64)] = &[(1272, 724), (1274, 722), (954, 962)];
+        // Speed 7 (arm off), speed 8 (shift 8), speed 9 (shift 7) — the three
+        // `VbpSf` states reachable on the allintra KEY path.
+        let sfs = [
+            VbpSf::default(),
+            VbpSf {
+                force_large_partition_blocks_intra: true,
+                var_part_split_threshold_shift: 8,
+                allintra: true,
+            },
+            VbpSf {
+                force_large_partition_blocks_intra: true,
+                var_part_split_threshold_shift: 7,
+                allintra: true,
+            },
+        ];
+        for &(w, h) in STRADDLERS {
+            let crop_px = w * h;
+            let mi_px = mi_aligned(w) * mi_aligned(h);
+            assert!(
+                crop_px < 1280 * 720 && mi_px >= 1280 * 720,
+                "{w}x{h} must straddle RESOLUTION_720P (crop {crop_px}, mi {mi_px})"
+            );
+            for (i, sf) in sfs.iter().enumerate() {
+                let from_crop = set_vbp_thresholds_key(100, 8, crop_px, *sf);
+                let from_mi = set_vbp_thresholds_key(100, 8, mi_px, *sf);
+                // Speed 9 armed below the threshold is indistinguishable from
+                // the arm being off, but the two READINGS still differ because
+                // they land on opposite sides of it.
+                assert_ne!(
+                    from_crop, from_mi,
+                    "{w}x{h} sf#{i}: the crop and mi-aligned areas must resolve \
+                     DIFFERENT thresholds, or the byte gate for this shape is \
+                     vacuous"
+                );
+                // And the crop reading must be the sub-720p arm.
+                let b = from_crop[0];
+                assert_eq!(
+                    (from_crop[2], from_crop[3]),
+                    (b / 3, b >> 1),
+                    "{w}x{h} sf#{i}: the true crop is below RESOLUTION_720P, so \
+                     thresholds[2]/[3] take the `base/3, base>>1` arm (:548-549)"
+                );
+            }
+        }
+        // Both controls: mi == crop, so the two readings must AGREE — that is
+        // what makes those cells a valid negative control for this fix.
+        for &(w, h) in &[(1280i64, 720i64), (1280, 712), (1280, 728), (1216, 768)] {
+            assert_eq!(mi_aligned(w), w);
+            assert_eq!(mi_aligned(h), h);
+            for sf in &sfs {
+                assert_eq!(
+                    set_vbp_thresholds_key(100, 8, w * h, *sf),
+                    set_vbp_thresholds_key(100, 8, mi_aligned(w) * mi_aligned(h), *sf)
+                );
+            }
+        }
+    }
+
     /// `get_variance` matches the plain (sse - sum^2/n) * 256 / n definition
     /// on in-range inputs (the C expression form is wrap-faithful; this
     /// pins the arithmetic on representative values).

@@ -411,6 +411,9 @@ fn decode_diff_pseudo_random_noise_case() {
         sb_size: SB,
         mi_rows,
         mi_cols,
+        // `cm->width`/`cm->height` — the TRUE crop (KB-28).
+        frame_width: s.max_frame_width,
+        frame_height: s.max_frame_height,
         tile_row_start: 0,
         tile_col_start: 0,
         tile_row_end: 1 << 16,

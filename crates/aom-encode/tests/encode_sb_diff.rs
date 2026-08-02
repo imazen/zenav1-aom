@@ -403,6 +403,9 @@ fn encode_sb_dry_run_matches_c_walk() {
             sb_size: 12,
             mi_rows: 512,
             mi_cols: 512,
+            // `cm->width`/`cm->height` — the TRUE crop (KB-28).
+            frame_width: 512 * 4,
+            frame_height: 512 * 4,
             tile_row_start: 0,
             tile_col_start: 0,
             tile_row_end: 1 << 16,

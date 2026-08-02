@@ -366,6 +366,27 @@ pub struct SbEncodeEnv<'a> {
     pub sb_size: usize,
     pub mi_rows: i32,
     pub mi_cols: i32,
+    /// `cm->width` — the frame's TRUE CROP width in luma pixels.
+    ///
+    /// **Not** `mi_cols * 4` (KB-28). `av1_get_MBs` (alloccommon.c:30-33) sets
+    /// `mi_cols = ALIGN_POWER_OF_TWO(width, 3) >> MI_SIZE_LOG2`, so the
+    /// mi-aligned extent runs up to **7 px larger** than the crop on each
+    /// axis. Every framesize predicate libaom evaluates keys on `cm->width` /
+    /// `cm->height` and never on the mi extent:
+    /// * `AOMMIN(cm->width, cm->height) >= 480 / >= 720`
+    ///   (`set_allintra_speed_feature_framesize_dependent`,
+    ///   speed_features.c:169-170; `intra_mode_cnn_partition`'s res tier,
+    ///   partition_strategy.c:311-312; `av1_ml_prune_4_partition`'s `res_idx`,
+    ///   partition_strategy.c:1349-1352);
+    /// * `cm->width * cm->height` vs `RESOLUTION_720P`
+    ///   (`set_vbp_thresholds`, var_based_part.c:667 -> `..._key_frame` :547).
+    ///
+    /// Re-deriving any of those from `mi_cols`/`mi_rows` inside the walk is
+    /// playbook §13's failure mode with a different spelling — the resolved
+    /// frame-level fact must be carried down, not reconstructed.
+    pub frame_width: i32,
+    /// `cm->height` — see [`frame_width`](Self::frame_width).
+    pub frame_height: i32,
     /// Tile bounds (mi units; interior fixtures use 0 / large ends).
     pub tile_row_start: i32,
     pub tile_col_start: i32,
@@ -434,6 +455,55 @@ pub struct SbEncodeEnv<'a> {
     /// it, and [`encode_b_intra_dry`]'s inter arm reconstructs from it).
     /// `None` on every KEY/intra envelope — byte-inert by construction.
     pub ref_frame: Option<&'a crate::inter_frame::RefFrame>,
+}
+
+impl SbEncodeEnv<'_> {
+    /// `AOMMIN(cm->width, cm->height)` — the input to every `is_480p_or_larger`
+    /// / `is_720p_or_larger` framesize predicate. See
+    /// [`frame_width`](Self::frame_width) for why this is not `min(mi_cols,
+    /// mi_rows) * 4`.
+    #[inline]
+    pub fn frame_min_dim(&self) -> i32 {
+        self.frame_width.min(self.frame_height)
+    }
+
+    /// `cm->width * cm->height` — `set_vbp_thresholds`' `num_pixels`
+    /// (var_based_part.c:667). `i64` because the product overflows `i32` above
+    /// ~46k x 46k and the C compare is against `RESOLUTION_*` int constants.
+    #[inline]
+    pub fn frame_num_pixels(&self) -> i64 {
+        i64::from(self.frame_width) * i64::from(self.frame_height)
+    }
+
+    /// Assert the crop dims are consistent with the mi grid built from them:
+    /// `mi_cols * 4 == ALIGN_POWER_OF_TWO(cm->width, 3)` (alloccommon.c:30-33).
+    ///
+    /// This is the structural half of the KB-28 fix. It cannot detect a caller
+    /// that passed a *plausible but wrong* crop, but it does catch the exact
+    /// defect KB-28 was: handing the walk the mi-ALIGNED extent as if it were
+    /// the crop is only consistent when the two genuinely coincide, and the
+    /// upper bound below fails the moment a caller passes something larger.
+    ///
+    /// Fixtures whose `mi_*` are not even (so `mi_* * 4` is not a multiple of
+    /// 8, unreachable for a real frame) are accepted by the range form.
+    #[inline]
+    pub fn assert_crop_dims_match_mi(&self, who: &str) {
+        for (label, crop, mi) in [
+            ("width", self.frame_width, self.mi_cols * 4),
+            ("height", self.frame_height, self.mi_rows * 4),
+        ] {
+            assert!(
+                crop <= mi && crop > mi - 8,
+                "{who}: SbEncodeEnv::frame_{label} is {crop} on a frame whose \
+                 mi grid spans {mi} px. `av1_get_MBs` (alloccommon.c:30-33) \
+                 aligns the mi grid UP to 8 px, so the crop must lie in \
+                 ({}, {mi}]. Passing the mi-aligned extent as the crop is the \
+                 KB-28 defect — every framesize predicate then reads up to 7 px \
+                 too large.",
+                mi - 8
+            );
+        }
+    }
 }
 
 /// The frame-level inputs of the per-SB Variance Boost delta-q derivation

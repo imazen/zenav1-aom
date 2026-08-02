@@ -370,6 +370,9 @@ fn attempt_multitile_case(
                 sb_size: SB,
                 mi_rows,
                 mi_cols,
+                // `cm->width`/`cm->height` — the TRUE crop (KB-28).
+                frame_width: s.max_frame_width,
+                frame_height: s.max_frame_height,
                 // The tile's OWN mi bounds -- gates intra-pred / tx-size ctx /
                 // RD-search neighbour availability at the tile edges.
                 tile_row_start: mi_row_start,

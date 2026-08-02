@@ -467,6 +467,9 @@ fn port_encode_superres(cell: &EncodeCell, denom: i32, bootstrap: &[u8]) -> Vec<
         sb_size: SB,
         mi_rows,
         mi_cols,
+        // `cm->width`/`cm->height` — the TRUE crop (KB-28).
+        frame_width: coded_w as i32,
+        frame_height: h as i32,
         tile_row_start: 0,
         tile_col_start: 0,
         tile_row_end: 1 << 16,

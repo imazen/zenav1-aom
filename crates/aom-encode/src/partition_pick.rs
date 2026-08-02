@@ -2470,25 +2470,32 @@ fn rd_pick_ab_part(
 /// edge-replicated (`av1_copy_and_extend_frame`). In this envelope `sb_size ==
 /// BLOCK_64X64`, so the containing 64×64 is the SB; its mi origin is `(mi_row,
 /// mi_col)` rounded down to the 16-mi (64px) grid. Reads the bd8 source (u16,
-/// 0..=255) as u8, clamping to the MI-ALIGNED extent (`mi_{rows,cols}*4`).
+/// 0..=255) as u8, clamping to the TRUE CROP (`frame_{width,height}`).
 ///
-/// That clamp is **not** a crop approximation, contrary to an earlier comment
-/// here ("non-multiple crops would need the true width"): the harness's source
-/// plane is edge-replicated from the TRUE crop by `extend_plane`
-/// (`aom-bench/src/lib.rs`), exactly as C's `av1_copy_and_extend_frame` extends
-/// its own, so a read between the true crop and the MI-aligned extent returns
-/// the same replicated pixel on both sides. Since KB-23 this function is only
-/// reached from a whole-in-frame 64×64 anyway, whose window spans
-/// `[origin-1, origin+63]` with `origin + 64 <= mi_*4`. Measured: 250x250
-/// (`mi_dim(250) * 4 == 256`, so the last whole 64×64's window does read six
-/// rows past the true crop) is byte-identical to real aomenc at speed 1 —
-/// `kb22_hd_arms::kb23_partial_sb_size_and_speed_axis`.
+/// The clamp is against the TRUE crop (`cm->width`/`cm->height`) since KB-28.
+/// C does not clamp at all — it reads `x->plane[0].src.buf - stride - 1`
+/// straight out of the border-extended source (partition_strategy.c:205-220),
+/// where every pixel outside the crop is the replicated edge pixel
+/// (`av1_copy_and_extend_frame`). Clamping to the crop reproduces that
+/// replication explicitly, which is why it also does not matter whether the
+/// caller's plane was extended: it reads the same value either way.
+///
+/// **This is byte-inert versus the previous mi-aligned clamp** whenever the
+/// caller's source IS edge-replicated (the harness's `extend_plane`,
+/// `aom-bench/src/lib.rs`), because the two clamps only differ on reads in
+/// `[crop, mi-aligned)` and replication makes those equal. That is what made
+/// KB-23's 250x250 row byte-identical BEFORE this change and keeps it so
+/// after — the 250x250 row exercised the CNN *window*, which is insensitive to
+/// this, and not the CNN *res-tier threshold*, which is not (see the
+/// `predict_decision` call site). Measured both ways:
+/// `kb22_hd_arms::kb23_partial_sb_size_and_speed_axis` and
+/// `kb28_crop_dims::cnn_window_clamp_is_replication_inert`.
 fn extract_intra_cnn_window(env: &SbEncodeEnv, mi_row: i32, mi_col: i32) -> Vec<u8> {
     const SB64_MIB: i32 = 16; // BLOCK_64X64 in mi units
     let sb_py = (mi_row / SB64_MIB) * SB64_MIB * 4;
     let sb_px = (mi_col / SB64_MIB) * SB64_MIB * 4;
-    let crop_h = env.mi_rows * 4;
-    let crop_w = env.mi_cols * 4;
+    let crop_h = env.frame_height;
+    let crop_w = env.frame_width;
     let mut win = vec![0u8; 65 * 65];
     for i in 0..65i32 {
         let r = (sb_py + i - 1).clamp(0, crop_h - 1) as usize;
@@ -2668,10 +2675,12 @@ pub fn rd_pick_partition_real(
     // killed. `&= !has_rows` (HORZ) / `&= !has_cols` (VERT) leaves the fitting
     // rect on true frame-edge blocks, matching C.
     if cfg.allintra {
+        // `AOMMIN(cm->width, cm->height)` — the TRUE crop, not the mi-aligned
+        // extent (KB-28; speed_features.c:169-170).
         let sq_only_thresh = use_square_partition_only_threshold_allintra(
             cfg.speed,
-            env.mi_cols * 4,
-            env.mi_rows * 4,
+            env.frame_width,
+            env.frame_height,
         );
         if bsize > sq_only_thresh {
             partition_rect_allowed[0] &= !has_rows;
@@ -2797,8 +2806,11 @@ pub fn rd_pick_partition_real(
                 &win,
                 cfg.qindex,
                 i32::from(env.bd),
-                env.mi_cols * 4,
-                env.mi_rows * 4,
+                // The res-tier threshold select reads `AOMMIN(cm->width,
+                // cm->height)` (partition_strategy.c:311-312) — the TRUE crop
+                // (KB-28), not the mi-aligned extent.
+                env.frame_width,
+                env.frame_height,
                 bsize_idx,
                 quad_tree_idx,
                 intra_cnn_based_part_prune_level,
@@ -3416,11 +3428,13 @@ pub fn rd_pick_partition_real(
     // below (the AB gate :4005 and the 4-way gate :4136 read the same sf
     // field). BLOCK_8X8 (default) through speed 4; speed 5 disables AB+4-way
     // on sub-480p frames (BLOCK_128X128) — see the helper's docs.
+    // `is_480p_or_larger` = `AOMMIN(cm->width, cm->height) >= 480` — the TRUE
+    // crop (KB-28), not the mi-aligned extent.
     let ext_partition_eval_thresh = ext_partition_eval_thresh_allintra_key(
         cfg.allintra,
         cfg.speed,
-        env.mi_cols * 4,
-        env.mi_rows * 4,
+        env.frame_width,
+        env.frame_height,
         cfg.allow_screen_content_tools,
     );
 
@@ -3733,16 +3747,13 @@ pub fn rd_pick_partition_real(
                 );
             }
             // res_idx = is_480p_or_larger + is_720p_or_larger, from
-            // AOMMIN(cm->width, cm->height). Derived from mi_cols/mi_rows*4
-            // (the coded frame size) rather than a separate exact-pixel
-            // field -- exact for every case this port currently tests
-            // (SB-aligned frames); a frame whose true width/height sits
-            // strictly between its mi-rounded size and the 480/720
-            // boundary would misclassify (documented gap, not silently
-            // assumed away).
-            let frame_w_px = env.mi_cols * 4;
-            let frame_h_px = env.mi_rows * 4;
-            let min_dim = frame_w_px.min(frame_h_px);
+            // AOMMIN(cm->width, cm->height) (partition_strategy.c:1349-1352).
+            // KB-28: this used to read `mi_cols/mi_rows * 4` under a comment
+            // naming the gap ("a frame whose true width/height sits strictly
+            // between its mi-rounded size and the 480/720 boundary would
+            // misclassify") — the TRUE crop is now carried on the env, so the
+            // gap is closed rather than documented.
+            let min_dim = env.frame_min_dim();
             let res_idx = usize::from(min_dim >= 480) + usize::from(min_dim >= 720);
             // ml_4_partition_search_level_index (part_sf): 0 at speed 0, then
             // min(speed,3) — 1 at speed>=1 (speed_features.c:210), 2 at speed>=2
@@ -4685,6 +4696,141 @@ mod ext_partition_eval_thresh_tests {
             ext_partition_eval_thresh_allintra_key(false, 5, 64, 64, false),
             3
         );
+    }
+}
+
+/// **KB-28 unit locks — every framesize predicate reads the TRUE CROP.**
+///
+/// `av1_get_MBs` (alloccommon.c:30-33) aligns the mi grid UP to 8 px, so
+/// `mi_cols * 4` is up to 7 px larger than `cm->width`. These lock the three
+/// framesize-keyed helpers this file owns over **every `--cpu-used` 0..=9 and
+/// both sides of both thresholds, in both directions**, and — the part that
+/// gives them teeth — assert that the crop reading and the mi-aligned reading
+/// actually DISAGREE on the crops the e2e gates encode. A lock that only
+/// checked the tables would pass with the bug still in place.
+#[cfg(test)]
+mod kb28_crop_dim_locks {
+    use super::{ext_partition_eval_thresh_allintra_key, use_square_partition_only_threshold_allintra};
+
+    /// `ALIGN_POWER_OF_TWO(px, 3)` — what the mi grid would have reported.
+    const fn mi_aligned(px: i32) -> i32 {
+        (px + 7) & !7
+    }
+
+    /// Both sides of `is_480p_or_larger` / `is_720p_or_larger`
+    /// (speed_features.c:169-170), at every speed, in both directions.
+    #[test]
+    fn square_only_threshold_tracks_the_min_dim_at_every_speed() {
+        // (min_dim, expected threshold per speed 0..=9). Values from
+        // speed_features.c:175-182 / :211-217 / :238-242 / :315.
+        const CASES: &[(i32, [usize; 10])] = &[
+            // sub-480p: 64X64 at speed 0, 32X32 at 1..5, 16X16 from 6.
+            (479, [12, 9, 9, 9, 9, 9, 6, 6, 6, 6]),
+            // 480p..719: 128X128 at 0, 64X64 at 1, 32X32 at 2..5, 16X16 from 6.
+            (480, [15, 12, 9, 9, 9, 9, 6, 6, 6, 6]),
+            (719, [15, 12, 9, 9, 9, 9, 6, 6, 6, 6]),
+            // 720p+: 128X128 at 0..1, 64X64 at 2..5, 16X16 from 6.
+            (720, [15, 15, 12, 12, 12, 12, 6, 6, 6, 6]),
+        ];
+        for &(min_dim, want) in CASES {
+            for (speed, &w) in want.iter().enumerate() {
+                // Square and both non-square orientations — `AOMMIN` must be
+                // read on both axes, not just the first.
+                for &(fw, fh) in &[
+                    (min_dim, min_dim),
+                    (min_dim, 4096),
+                    (4096, min_dim),
+                ] {
+                    assert_eq!(
+                        use_square_partition_only_threshold_allintra(speed as i32, fw, fh),
+                        w,
+                        "speed {speed} {fw}x{fh} (min {min_dim})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The crops the e2e gates encode must resolve DIFFERENTLY under the true
+    /// crop and under the mi-aligned extent — otherwise those cells prove
+    /// nothing (playbook §2). Asserted for BOTH helpers, at every speed where
+    /// the helper's arms actually move.
+    #[test]
+    fn crop_and_mi_aligned_readings_disagree_on_the_gated_crops() {
+        // 474x480 -> mi 480x480 crosses 480; 714x720 -> mi 720x720 crosses 720.
+        for &(w, h) in &[(474, 480), (714, 720)] {
+            let (mw, mh) = (mi_aligned(w), mi_aligned(h));
+            assert!(
+                w.min(h) < mw.min(mh),
+                "{w}x{h}: the mi rounding must actually move AOMMIN(w, h)"
+            );
+            let mut moved = 0;
+            for speed in 0..=9 {
+                if use_square_partition_only_threshold_allintra(speed, w, h)
+                    != use_square_partition_only_threshold_allintra(speed, mw, mh)
+                {
+                    moved += 1;
+                }
+            }
+            assert!(
+                moved >= 2,
+                "{w}x{h}: the mi-aligned reading must change \
+                 `use_square_partition_only_threshold` at >= 2 speeds \
+                 (got {moved}) — otherwise the e2e cell is vacuous"
+            );
+        }
+        // `ext_partition_eval_thresh` only has a 480 arm, and only at speed 5.
+        let (w, h) = (474, 480);
+        let (mw, mh) = (mi_aligned(w), mi_aligned(h));
+        assert_eq!(ext_partition_eval_thresh_allintra_key(true, 5, w, h, false), 15);
+        assert_eq!(
+            ext_partition_eval_thresh_allintra_key(true, 5, mw, mh, false),
+            6,
+            "474x480 read as 480x480 takes the >=480p arm — that IS the bug"
+        );
+        // 714x720 is >= 480 either way, so this helper must NOT move there:
+        // the two e2e rows exercise different consumers, which is what makes
+        // a per-row failure diagnostic.
+        for speed in 0..=9 {
+            assert_eq!(
+                ext_partition_eval_thresh_allintra_key(true, speed, 714, 720, false),
+                ext_partition_eval_thresh_allintra_key(true, speed, 720, 720, false),
+                "speed {speed}: 714x720 must be indistinguishable from 720x720 here"
+            );
+        }
+    }
+
+    /// `av1_ml_prune_4_partition`'s `res_idx` (partition_strategy.c:1349-1352)
+    /// and the intra-CNN res tier (:311-312) share the same two predicates;
+    /// lock the mapping in both directions.
+    #[test]
+    fn res_idx_and_cnn_tier_track_the_crop() {
+        let res_idx = |w: i32, h: i32| {
+            let m = w.min(h);
+            usize::from(m >= 480) + usize::from(m >= 720)
+        };
+        assert_eq!(res_idx(479, 4096), 0);
+        assert_eq!(res_idx(480, 4096), 1);
+        assert_eq!(res_idx(719, 4096), 1);
+        assert_eq!(res_idx(720, 4096), 2);
+        assert_eq!(res_idx(474, 480), 0, "the crop is 474 -> lowres");
+        assert_eq!(res_idx(480, 480), 1, "the mi-aligned reading -> midres");
+        assert_eq!(res_idx(714, 720), 1, "the crop is 714 -> midres");
+        assert_eq!(res_idx(720, 720), 2, "the mi-aligned reading -> hdres");
+        // And the CNN's tier tables must genuinely differ between the tiers the
+        // two crops straddle, at every bsize_idx the prune runs on (1..=4).
+        for bi in 1..=4 {
+            let lo = crate::cnn_partition::decision::res_tier_thresholds(474, 480, bi);
+            let mid = crate::cnn_partition::decision::res_tier_thresholds(480, 480, bi);
+            let hd = crate::cnn_partition::decision::res_tier_thresholds(720, 720, bi);
+            assert_ne!(lo, mid, "bsize_idx {bi}: lowres and midres thresholds are equal");
+            assert_ne!(mid, hd, "bsize_idx {bi}: midres and hdres thresholds are equal");
+            assert_eq!(
+                crate::cnn_partition::decision::res_tier_thresholds(714, 720, bi),
+                mid,
+                "bsize_idx {bi}: a 714x720 CROP is midres"
+            );
+        }
     }
 }
 
