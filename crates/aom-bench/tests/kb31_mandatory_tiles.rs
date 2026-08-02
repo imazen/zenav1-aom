@@ -264,14 +264,28 @@ fn area_forced_tile_split_byte_identical() {
 /// Pinned in BOTH directions (playbook §5): if a byte-exact cell regresses this
 /// fails, and if `cpu8` silently starts matching it also fails and asks for a
 /// re-pin.
+///
+/// **RE-PINNED 2026-08-02 — the open set is now EMPTY: 20/20 byte-identical.**
+/// The self-promoting half fired exactly as designed. Both `cpu8` cells closed,
+/// and the doc above already named their owner: **KB-12** (`0953fa7`, "the nonrd
+/// leaf-mode near-tie is a dropped Hadamard transpose") is the leaf-mode
+/// estimate-arm class those two belonged to. This `#[ignore]`d test had not been
+/// run since 2026-07-30, 74 commits earlier, which is why the closure was only
+/// observed now — it was observed while running the full nightly tier for the
+/// KB-PERF-1 intra-CNN cache landing, and it reproduces on that landing's
+/// PRISTINE baseline, so it is not that change's (which also cannot reach
+/// cpu-used 8: the CNN prune runs zero times on the VAR_BASED/nonrd path,
+/// measured in `benchmarks/encoder_cnn_cache_2026-08-02.breadth.tsv`).
+/// With `OPEN` empty this is now a hard byte gate over the whole speed axis.
 #[test]
 #[ignore = "20 encode pairs incl. speed 0; on-demand tier (~97 s)"]
 fn mandatory_tile_split_byte_identical_across_speeds() {
     c::ref_init();
     let base = EncodeCell::real_content("kb31s", "av1-1-b8-00-quantizer-00", None, 30, 0);
-    /// `(w, speed)` of the cells that are NOT byte-identical today. Both are
-    /// `cpu8`, on the tiled cell AND its single-tile control — KB-12's class.
-    const OPEN: &[(usize, i32)] = &[(4032, 8), (4160, 8)];
+    /// `(w, speed)` of the cells that are NOT byte-identical today. EMPTY since
+    /// 2026-08-02: KB-12 closed the two `cpu8` cells that used to sit here, so
+    /// every cell on this axis is now a hard byte gate.
+    const OPEN: &[(usize, i32)] = &[];
     let mut observed: Vec<(usize, i32)> = Vec::new();
     for speed in 0..=9 {
         for &(w, h, tiles) in &[(4032usize, 64usize, "1x1"), (4160, 64, "2x1")] {
@@ -341,6 +355,18 @@ fn mandatory_tile_split_byte_identical_across_speeds() {
 /// Pinned as a verdict plus bounds, not as byte counts: byte counts would fire on
 /// every unrelated encoder landing, while these fire exactly when the tile panic
 /// comes back, when the 20 MP cell drifts, or when the non-square arm lands.
+///
+/// **RE-PINNED 2026-08-02: 5472x3648 is now BYTE-IDENTICAL to real aomenc**
+/// (2,121,452 B, delta 0) — the +339 B estimate-arm residual in the table above
+/// closed with **KB-12** (`0953fa7`, the dropped Hadamard transpose in the nonrd
+/// estimate arm; this cell is `--cpu-used=9`, i.e. that arm). The
+/// self-promoting `assert_ne!` fired asking for exactly this promotion, so the
+/// 20 MP cell is now a HARD byte gate. Observed while running the nightly tier
+/// for the KB-PERF-1 intra-CNN cache landing and reproduced on that landing's
+/// pristine baseline, so it is not that change's — and could not be: the CNN
+/// prune runs zero times on the cpu-used 8/9 nonrd path
+/// (`benchmarks/encoder_cnn_cache_2026-08-02.breadth.tsv`). 12000x9000 still
+/// refuses on KB-32's non-square nonrd leaf; that arm is unchanged.
 #[test]
 #[ignore = "108 MP encode: ~11 s and ~3.1 GB peak RSS; on-demand tier"]
 fn issue6_reported_sizes_encode() {
@@ -393,24 +419,19 @@ fn issue6_reported_sizes_encode() {
         );
         let delta = ours.len() as i64 - real.len() as i64;
         println!("  {w}x{h} ({want_cols}x{want_rows} tiles): {} B vs {} B, delta {delta:+}", ours.len(), real.len());
-        // KB-32's two roots took this from +3,193 (0.15%) to +339 (0.016%); what
-        // is left is the estimate-arm leaf-mode class
-        // (`kb32_nonrd_size_bands::estimate_arm_residual_is_a_leaf_mode_near_tie`).
-        // The bound is one order of magnitude tighter than the pre-KB-32 0.01,
-        // so a re-opened size band cannot hide under it — while the pre-KB-31
-        // header desync (6% of the expected payload) is still caught.
-        let frac = (delta.abs() as f64) / (real.len() as f64);
-        assert!(
-            frac < 0.001,
-            "{w}x{h}: payload is {:.3}% off real aomenc — that is above KB-32's \
-             post-fix residual (0.016%); a size-scaling root or the tile walk is wrong",
-            frac * 100.0
-        );
-        assert_ne!(
-            ours, real,
-            "{w}x{h} is now BYTE-IDENTICAL — the KB-32 estimate-arm residual \
-             closed. Promote this to a hard byte gate and re-pin the table in \
-             this doc comment."
+        // KB-32's two roots took this from +3,193 (0.15%) to +339 (0.016%), and
+        // KB-12 (0953fa7) closed the remaining estimate-arm leaf-mode residual to
+        // ZERO — so this is a HARD BYTE GATE since 2026-08-02, not a bound. The
+        // pre-KB-31 header desync (6% of the expected payload) is still caught,
+        // now by the strongest possible form of the assertion.
+        assert_eq!(
+            ours,
+            real,
+            "{w}x{h}: payload differs from real aomenc by {delta:+} B ({:.3}%). \
+             This cell has been byte-identical since KB-12 (0953fa7) closed the \
+             nonrd estimate-arm leaf-mode residual; any delta is a regression \
+             (a size-scaling root, the tile walk, or the nonrd leaf arm).",
+            (delta.abs() as f64) / (real.len() as f64) * 100.0
         );
     }
 }
