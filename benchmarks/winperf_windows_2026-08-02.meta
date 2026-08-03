@@ -95,8 +95,10 @@ Windows (both targets, one dispatch each):
   gh workflow run winperf.yml --ref main \
       -f base_sha=578653ff30b4116e29453b414c4da0702959ed63 -f rounds=16
 
-  run 30779168799  n=16, both contents      <- quoted in the .md
-  run 30778499397  n=12, detail only        <- .replication_run1.tsv
+  run 30779168799  n=16, both contents      <- quoted in the .md   (11m35s)
+  run 30778499397  n=12, detail only        <- .replication_run1.tsv (8m35s)
+
+Both jobs run in parallel; four release builds dominate the wall time.
 
 Photo control (the landing's own binaries, re-run today on the idle box):
 

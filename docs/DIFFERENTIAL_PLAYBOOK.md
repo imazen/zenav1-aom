@@ -504,9 +504,12 @@ wrong.
   for `--lib` and the `winperf*` examples only; the tests are NOT gated, so
   build those with default features as CI does.
 - **The encoder CAN be run on Windows now** — `.github/workflows/winperf.yml`,
-  `workflow_dispatch`-only, both `windows-11-arm` and `windows-latest`, ~9 min
-  per dispatch. Before 2026-08-02 the only Windows job was `portability`, which
-  builds and executes nothing.
+  `workflow_dispatch`-only (so it costs nothing per push), both
+  `windows-11-arm` and `windows-latest`, the two jobs in parallel. MEASURED:
+  **8m35s** at `rounds=12` on one content, **11m35s** at `rounds=16` on two —
+  four release builds of aom-dsp+aom-encode+aom-bench dominate, the timing
+  bands are a few minutes. Before 2026-08-02 the only Windows job was
+  `portability`, which builds and executes nothing.
 - The repo is **not** rustfmt-clean (419 diffs in aom-dsp alone — **NOT
   ESTABLISHED**: checked 2026-07-31, this count has no second record in the
   repo; re-run `cargo fmt -p aom-dsp --check` before quoting it). Do **not** run
