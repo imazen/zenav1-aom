@@ -1,0 +1,226 @@
+=== M*: the i16-safe INPUT BOUND per (kernel, cos_bit) ===
+the largest |input| for which EVERY value inside that kernel stays
+inside i16::MAX, hence for which i16 lane arithmetic is bit-identical
+to the scalar i32 kernel. `L1` is the peak coefficient sum (the gain
+that binds) and `E` the peak accumulated rounding error.
+
+kernel           cb=10    cb=11    cb=12    cb=13     peak L1      E
+fdct4            11585    11585    11585    11583      2.8286   0.50
+fdct8             5792     5792     5792     5791      5.6572   1.19
+fdct16            2896     2896     2896     2895     11.3145   2.83
+fdct32            1448     1448     1448     1447     22.6289   6.72
+fdct64             724      724      724      723     45.2578  15.89
+fadst8            6419     6422     6422     6422      5.1015   2.83
+fadst16           3214     3214     3214     3214     10.1907   6.72
+fidentity4       23167    23167    23167    23167      1.4143   0.50
+fidentity8       16383    16383    16383    16383      2.0000   0.00
+fidentity16      11583    11583    11583    11583      2.8286   0.50
+fidentity32       8191     8191     8191     8191      4.0000   0.00
+fadst4              11        5        2        1   21901.0000   0.50
+
+=== bd8 reach: |residual| <= 255 pushed through the driver ===
+col_in = 255 << shift[0];  row_in = round_shift(col_out_bound, -shift[1]).
+A pass is REACHABLE when its entry bound is <= that kernel's M*.
+
+tx_size  tx_type  col kernel     col_in       M* col   row kernel     row_in       M* row 
+0        0        fdct4            1020    11583 OK    fdct4            2885    11583 OK  
+0        1        fadst4           1020        1 NO    fdct4            2727    11583 OK  
+0        2        fdct4            1020    11583 OK    fadst4           2885        1 NO  
+0        3        fadst4           1020        1 NO    fadst4           2727        1 NO  
+0        4        fadst4           1020        1 NO    fdct4            2727    11583 OK  
+0        5        fdct4            1020    11583 OK    fadst4           2885        1 NO  
+0        6        fadst4           1020        1 NO    fadst4           2727        1 NO  
+0        7        fadst4           1020        1 NO    fadst4           2727        1 NO  
+0        8        fadst4           1020        1 NO    fadst4           2727        1 NO  
+0        9        fidentity4       1020    23167 OK    fidentity4       1443    23167 OK  
+0        10       fdct4            1020    11583 OK    fidentity4       2885    23167 OK  
+0        11       fidentity4       1020    23167 OK    fdct4            1443    11583 OK  
+0        12       fadst4           1020        1 NO    fidentity4       2727    23167 OK  
+0        13       fidentity4       1020    23167 OK    fadst4           1443        1 NO  
+0        14       fadst4           1020        1 NO    fidentity4       2727    23167 OK  
+0        15       fidentity4       1020    23167 OK    fadst4           1443        1 NO  
+1        0        fdct8            1020     5791 OK    fdct8            2886     5791 OK  
+1        1        fadst8           1020     6422 OK    fdct8            2603     5791 OK  
+1        2        fdct8            1020     5791 OK    fadst8           2886     6422 OK  
+1        3        fadst8           1020     6422 OK    fadst8           2603     6422 OK  
+1        4        fadst8           1020     6422 OK    fdct8            2603     5791 OK  
+1        5        fdct8            1020     5791 OK    fadst8           2886     6422 OK  
+1        6        fadst8           1020     6422 OK    fadst8           2603     6422 OK  
+1        7        fadst8           1020     6422 OK    fadst8           2603     6422 OK  
+1        8        fadst8           1020     6422 OK    fadst8           2603     6422 OK  
+1        9        fidentity8       1020    16383 OK    fidentity8       1020    16383 OK  
+1        10       fdct8            1020     5791 OK    fidentity8       2886    16383 OK  
+1        11       fidentity8       1020    16383 OK    fdct8            1020     5791 OK  
+1        12       fadst8           1020     6422 OK    fidentity8       2603    16383 OK  
+1        13       fidentity8       1020    16383 OK    fadst8           1020     6422 OK  
+1        14       fadst8           1020     6422 OK    fidentity8       2603    16383 OK  
+1        15       fidentity8       1020    16383 OK    fadst8           1020     6422 OK  
+2        0        fdct16           1020     2895 OK    fdct16           2886     2896 OK  
+2        1        fadst16          1020     3214 OK    fdct16           2600     2896 OK  
+2        2        fdct16           1020     2895 OK    fadst16          2886     3214 OK  
+2        3        fadst16          1020     3214 OK    fadst16          2600     3214 OK  
+2        4        fadst16          1020     3214 OK    fdct16           2600     2896 OK  
+2        5        fdct16           1020     2895 OK    fadst16          2886     3214 OK  
+2        6        fadst16          1020     3214 OK    fadst16          2600     3214 OK  
+2        7        fadst16          1020     3214 OK    fadst16          2600     3214 OK  
+2        8        fadst16          1020     3214 OK    fadst16          2600     3214 OK  
+2        9        fidentity16      1020    11583 OK    fidentity16       721    11583 OK  
+2        10       fdct16           1020     2895 OK    fidentity16      2886    11583 OK  
+2        11       fidentity16      1020    11583 OK    fdct16            721     2896 OK  
+2        12       fadst16          1020     3214 OK    fidentity16      2600    11583 OK  
+2        13       fidentity16      1020    11583 OK    fadst16           721     3214 OK  
+2        14       fadst16          1020     3214 OK    fidentity16      2600    11583 OK  
+2        15       fidentity16      1020    11583 OK    fadst16           721     3214 OK  
+3        0        fdct32           1020     1448 OK    fdct32           1443     1448 OK  
+3        9        fidentity32      1020     8191 OK    fidentity32       255     8191 OK  
+3        10       fdct32           1020     1448 OK    fidentity32      1443     8191 OK  
+3        11       fidentity32      1020     8191 OK    fdct32            255     1448 OK  
+4        0        fdct64            255      723 OK    fdct64           2889      724 NO  
+5        0        fdct8            1020     5791 OK    fdct4            2886    11583 OK  
+5        1        fadst8           1020     6422 OK    fdct4            2603    11583 OK  
+5        2        fdct8            1020     5791 OK    fadst4           2886        1 NO  
+5        3        fadst8           1020     6422 OK    fadst4           2603        1 NO  
+5        4        fadst8           1020     6422 OK    fdct4            2603    11583 OK  
+5        5        fdct8            1020     5791 OK    fadst4           2886        1 NO  
+5        6        fadst8           1020     6422 OK    fadst4           2603        1 NO  
+5        7        fadst8           1020     6422 OK    fadst4           2603        1 NO  
+5        8        fadst8           1020     6422 OK    fadst4           2603        1 NO  
+5        9        fidentity8       1020    16383 OK    fidentity4       1020    23167 OK  
+5        10       fdct8            1020     5791 OK    fidentity4       2886    23167 OK  
+5        11       fidentity8       1020    16383 OK    fdct4            1020    11583 OK  
+5        12       fadst8           1020     6422 OK    fidentity4       2603    23167 OK  
+5        13       fidentity8       1020    16383 OK    fadst4           1020        1 NO  
+5        14       fadst8           1020     6422 OK    fidentity4       2603    23167 OK  
+5        15       fidentity8       1020    16383 OK    fadst4           1020        1 NO  
+6        0        fdct4            1020    11583 OK    fdct8            1443     5791 OK  
+6        1        fadst4           1020        1 NO    fdct8            1364     5791 OK  
+6        2        fdct4            1020    11583 OK    fadst8           1443     6422 OK  
+6        3        fadst4           1020        1 NO    fadst8           1364     6422 OK  
+6        4        fadst4           1020        1 NO    fdct8            1364     5791 OK  
+6        5        fdct4            1020    11583 OK    fadst8           1443     6422 OK  
+6        6        fadst4           1020        1 NO    fadst8           1364     6422 OK  
+6        7        fadst4           1020        1 NO    fadst8           1364     6422 OK  
+6        8        fadst4           1020        1 NO    fadst8           1364     6422 OK  
+6        9        fidentity4       1020    23167 OK    fidentity8        722    16383 OK  
+6        10       fdct4            1020    11583 OK    fidentity8       1443    16383 OK  
+6        11       fidentity4       1020    23167 OK    fdct8             722     5791 OK  
+6        12       fadst4           1020        1 NO    fidentity8       1364    16383 OK  
+6        13       fidentity4       1020    23167 OK    fadst8            722     6422 OK  
+6        14       fadst4           1020        1 NO    fidentity8       1364    16383 OK  
+6        15       fidentity4       1020    23167 OK    fadst8            722     6422 OK  
+7        0        fdct16           1020     2895 OK    fdct8            2886     5791 OK  
+7        1        fadst16          1020     3214 OK    fdct8            2600     5791 OK  
+7        2        fdct16           1020     2895 OK    fadst8           2886     6422 OK  
+7        3        fadst16          1020     3214 OK    fadst8           2600     6422 OK  
+7        4        fadst16          1020     3214 OK    fdct8            2600     5791 OK  
+7        5        fdct16           1020     2895 OK    fadst8           2886     6422 OK  
+7        6        fadst16          1020     3214 OK    fadst8           2600     6422 OK  
+7        7        fadst16          1020     3214 OK    fadst8           2600     6422 OK  
+7        8        fadst16          1020     3214 OK    fadst8           2600     6422 OK  
+7        9        fidentity16      1020    11583 OK    fidentity8        721    16383 OK  
+7        10       fdct16           1020     2895 OK    fidentity8       2886    16383 OK  
+7        11       fidentity16      1020    11583 OK    fdct8             721     5791 OK  
+7        12       fadst16          1020     3214 OK    fidentity8       2600    16383 OK  
+7        13       fidentity16      1020    11583 OK    fadst8            721     6422 OK  
+7        14       fadst16          1020     3214 OK    fidentity8       2600    16383 OK  
+7        15       fidentity16      1020    11583 OK    fadst8            721     6422 OK  
+8        0        fdct8            1020     5791 OK    fdct16           1443     2895 OK  
+8        1        fadst8           1020     6422 OK    fdct16           1302     2895 OK  
+8        2        fdct8            1020     5791 OK    fadst16          1443     3214 OK  
+8        3        fadst8           1020     6422 OK    fadst16          1302     3214 OK  
+8        4        fadst8           1020     6422 OK    fdct16           1302     2895 OK  
+8        5        fdct8            1020     5791 OK    fadst16          1443     3214 OK  
+8        6        fadst8           1020     6422 OK    fadst16          1302     3214 OK  
+8        7        fadst8           1020     6422 OK    fadst16          1302     3214 OK  
+8        8        fadst8           1020     6422 OK    fadst16          1302     3214 OK  
+8        9        fidentity8       1020    16383 OK    fidentity16       510    11583 OK  
+8        10       fdct8            1020     5791 OK    fidentity16      1443    11583 OK  
+8        11       fidentity8       1020    16383 OK    fdct16            510     2895 OK  
+8        12       fadst8           1020     6422 OK    fidentity16      1302    11583 OK  
+8        13       fidentity8       1020    16383 OK    fadst16           510     3214 OK  
+8        14       fadst8           1020     6422 OK    fidentity16      1302    11583 OK  
+8        15       fidentity8       1020    16383 OK    fadst16           510     3214 OK  
+9        0        fdct32           1020     1448 OK    fdct16           1443     2895 OK  
+9        2        fdct32           1020     1448 OK    fadst16          1443     3214 OK  
+9        5        fdct32           1020     1448 OK    fadst16          1443     3214 OK  
+9        9        fidentity32      1020     8191 OK    fidentity16       255    11583 OK  
+9        10       fdct32           1020     1448 OK    fidentity16      1443    11583 OK  
+9        11       fidentity32      1020     8191 OK    fdct16            255     2895 OK  
+9        13       fidentity32      1020     8191 OK    fadst16           255     3214 OK  
+9        15       fidentity32      1020     8191 OK    fadst16           255     3214 OK  
+10       0        fdct16           1020     2895 OK    fdct32            721     1447 OK  
+10       1        fadst16          1020     3214 OK    fdct32            650     1447 OK  
+10       4        fadst16          1020     3214 OK    fdct32            650     1447 OK  
+10       9        fidentity16      1020    11583 OK    fidentity32       180     8191 OK  
+10       10       fdct16           1020     2895 OK    fidentity32       721     8191 OK  
+10       11       fidentity16      1020    11583 OK    fdct32            180     1447 OK  
+10       12       fadst16          1020     3214 OK    fidentity32       650     8191 OK  
+10       14       fadst16          1020     3214 OK    fidentity32       650     8191 OK  
+11       0        fdct64            255      723 OK    fdct32           2889     1448 NO  
+11       10       fdct64            255      723 OK    fidentity32      2889     8191 OK  
+12       0        fdct32           1020     1448 OK    fdct64           1443      724 NO  
+12       11       fidentity32      1020     8191 OK    fdct64            255      724 OK  
+13       0        fdct16           1020     2895 OK    fdct4            5772    11585 OK  
+13       1        fadst16          1020     3214 OK    fdct4            5201    11585 OK  
+13       2        fdct16           1020     2895 OK    fadst4           5772        2 NO  
+13       3        fadst16          1020     3214 OK    fadst4           5201        2 NO  
+13       4        fadst16          1020     3214 OK    fdct4            5201    11585 OK  
+13       5        fdct16           1020     2895 OK    fadst4           5772        2 NO  
+13       6        fadst16          1020     3214 OK    fadst4           5201        2 NO  
+13       7        fadst16          1020     3214 OK    fadst4           5201        2 NO  
+13       8        fadst16          1020     3214 OK    fadst4           5201        2 NO  
+13       9        fidentity16      1020    11583 OK    fidentity4       1443    23167 OK  
+13       10       fdct16           1020     2895 OK    fidentity4       5772    23167 OK  
+13       11       fidentity16      1020    11583 OK    fdct4            1443    11585 OK  
+13       12       fadst16          1020     3214 OK    fidentity4       5201    23167 OK  
+13       13       fidentity16      1020    11583 OK    fadst4           1443        2 NO  
+13       14       fadst16          1020     3214 OK    fidentity4       5201    23167 OK  
+13       15       fidentity16      1020    11583 OK    fadst4           1443        2 NO  
+14       0        fdct4            1020    11583 OK    fdct16           1443     2895 OK  
+14       1        fadst4           1020        1 NO    fdct16           1364     2895 OK  
+14       2        fdct4            1020    11583 OK    fadst16          1443     3214 OK  
+14       3        fadst4           1020        1 NO    fadst16          1364     3214 OK  
+14       4        fadst4           1020        1 NO    fdct16           1364     2895 OK  
+14       5        fdct4            1020    11583 OK    fadst16          1443     3214 OK  
+14       6        fadst4           1020        1 NO    fadst16          1364     3214 OK  
+14       7        fadst4           1020        1 NO    fadst16          1364     3214 OK  
+14       8        fadst4           1020        1 NO    fadst16          1364     3214 OK  
+14       9        fidentity4       1020    23167 OK    fidentity16       722    11583 OK  
+14       10       fdct4            1020    11583 OK    fidentity16      1443    11583 OK  
+14       11       fidentity4       1020    23167 OK    fdct16            722     2895 OK  
+14       12       fadst4           1020        1 NO    fidentity16      1364    11583 OK  
+14       13       fidentity4       1020    23167 OK    fadst16           722     3214 OK  
+14       14       fadst4           1020        1 NO    fidentity16      1364    11583 OK  
+14       15       fidentity4       1020    23167 OK    fadst16           722     3214 OK  
+15       0        fdct32           1020     1448 OK    fdct8            5771     5792 OK  
+15       2        fdct32           1020     1448 OK    fadst8           5771     6422 OK  
+15       5        fdct32           1020     1448 OK    fadst8           5771     6422 OK  
+15       9        fidentity32      1020     8191 OK    fidentity8       1020    16383 OK  
+15       10       fdct32           1020     1448 OK    fidentity8       5771    16383 OK  
+15       11       fidentity32      1020     8191 OK    fdct8            1020     5792 OK  
+15       13       fidentity32      1020     8191 OK    fadst8           1020     6422 OK  
+15       15       fidentity32      1020     8191 OK    fadst8           1020     6422 OK  
+16       0        fdct8            1020     5791 OK    fdct32           1443     1448 OK  
+16       1        fadst8           1020     6422 OK    fdct32           1302     1448 OK  
+16       4        fadst8           1020     6422 OK    fdct32           1302     1448 OK  
+16       9        fidentity8       1020    16383 OK    fidentity32       510     8191 OK  
+16       10       fdct8            1020     5791 OK    fidentity32      1443     8191 OK  
+16       11       fidentity8       1020    16383 OK    fdct32            510     1448 OK  
+16       12       fadst8           1020     6422 OK    fidentity32      1302     8191 OK  
+16       14       fadst8           1020     6422 OK    fidentity32      1302     8191 OK  
+17       0        fdct64            255      723 OK    fdct16           2889     2896 OK  
+17       2        fdct64            255      723 OK    fadst16          2889     3214 OK  
+17       5        fdct64            255      723 OK    fadst16          2889     3214 OK  
+17       10       fdct64            255      723 OK    fidentity16      2889    11583 OK  
+18       0        fdct16           1020     2895 OK    fdct64            721      724 OK  
+18       1        fadst16          1020     3214 OK    fdct64            650      724 OK  
+18       4        fadst16          1020     3214 OK    fdct64            650      724 OK  
+18       11       fidentity16      1020    11583 OK    fdct64            180      724 OK  
+
+COLUMN pass: 169 of 193 cells reachable at bd8.
+   reachable kernels: {'fadst16': 30, 'fadst8': 28, 'fdct16': 15, 'fdct32': 11, 'fdct4': 12, 'fdct64': 7, 'fdct8': 14, 'fidentity16': 15, 'fidentity32': 11, 'fidentity4': 12, 'fidentity8': 14}
+   blocked   kernels: {'fadst4': 24}
+
+ROW    pass: 166 of 193 cells reachable at bd8.
+   reachable kernels: {'fadst16': 30, 'fadst8': 28, 'fdct16': 15, 'fdct32': 10, 'fdct4': 12, 'fdct64': 5, 'fdct8': 14, 'fidentity16': 15, 'fidentity32': 11, 'fidentity4': 12, 'fidentity8': 14}
+   blocked   kernels: {'fadst4': 24, 'fdct32': 1, 'fdct64': 2}

@@ -63,6 +63,10 @@ on:
         description: "Interleaved rounds (each = 1 invocation of each of 5 arms = 2 warm-up + 7 timed encodes)"
         required: true
         default: "12"
+      arms:
+        description: "kbperf2 = the 5-arm 3a/3 file split (KB-PERF-2 only). prepost = base_sha vs HEAD, for ANY landing."
+        required: false
+        default: "kbperf2"
 
 jobs:
   winperf:
@@ -119,7 +123,32 @@ jobs:
       # is identical in every arm by construction. Lever 3a lives entirely in
       # crates/aom-dsp/src/transform/simd/mod.rs and changes no signature, which
       # is what makes the two levers separable by file.
+      # `arms: prepost` — the generic shape, for any landing whose two sides are
+      # just two commits. `pre` is a whole-src checkout of base_sha; `l3a` and
+      # `l3` become extra COPIES of that same `pre` binary, so the five-arm
+      # plumbing below (census loop, interleaved timing, byte gate) needs no
+      # change and the run gains a null arm on the PRE side as well as the
+      # post-side `postB`. Read the summary accordingly: in this mode `l3a` and
+      # `l3` are nulls, not levers.
+      - name: Build the pre arm (prepost mode)
+        if: inputs.arms == 'prepost'
+        shell: bash
+        run: |
+          set -x
+          git checkout ${{ inputs.base_sha }} -- crates/aom-dsp/src crates/aom-encode/src
+          cargo build --release -p zenav1-aom-bench --no-default-features \
+            --example winperf --example winperf_alloc
+          cp target/release/examples/winperf.exe       bin/winperf_pre.exe
+          cp target/release/examples/winperf.exe       bin/winperf_l3a.exe
+          cp target/release/examples/winperf.exe       bin/winperf_l3.exe
+          cp target/release/examples/winperf_alloc.exe bin/winperf_alloc_pre.exe
+          cp target/release/examples/winperf_alloc.exe bin/winperf_alloc_l3a.exe
+          cp target/release/examples/winperf_alloc.exe bin/winperf_alloc_l3.exe
+          git checkout HEAD -- crates/aom-dsp/src crates/aom-encode/src
+          git status --porcelain
+
       - name: Build the pre / l3a / l3 arms
+        if: inputs.arms != 'prepost'
         shell: bash
         run: |
           set -x
