@@ -73,6 +73,69 @@ Two gotchas, both verified:
   counts against the port's expected read sequence is itself a strong check — e.g. inter-intra:
   40 allowed blocks ⇒ 40 flag reads, +2 wedge flags +1 wedge index = the 43 C records.
 
+## Coverage queue — the named-but-unmeasured axes, ranked (2026-08-03)
+
+**Why this section exists.** Between 2026-07-30 and 08-03 every closed KB was found by
+measuring an axis nobody had measured, and every one of those landings NAMED the axes it did
+not measure — inside its own KB entry, or in a gate file's doc comment, or in a `Still
+unmeasured` bullet. That list is a work queue with a demonstrated hit rate, and it was
+scattered across ~15 places. This is the consolidated version. **Keep it current: when you
+close an axis, strike it here as well as in the KB entry; when a landing names a new one, add
+it here in the same commit.**
+
+**Ranking basis (two factors, in this order).**
+1. **Reachability** — a REFUSAL or PANIC on a configuration reachable by default or by one CLI
+   flag outranks a byte divergence, which outranks a pinned near-tie. "Reachable" is a
+   measurement, not a guess: state the predicate and the sweep that establishes it (KB-34's
+   reachability note was wrong by four orders of magnitude in area).
+2. **Blast radius** — how much of the encode envelope is wrong when it fires, and how many
+   INDEPENDENT landings named the same axis (a proxy for how load-bearing it is).
+
+### Closed on 2026-08-03 (kept for one cycle so the strike-through is visible)
+- ~~the screen-content palette arm at `--cpu-used` 8/9~~ → KB-35. Was a FALSE refusal on a
+  plain gradient; 22 of 25 measured PANIC rows are byte-identical, 3 are the genuine arm.
+- ~~above 1280x720 at speed >= 1~~ → KB-36. Found an unmodelled `is_1080p_or_larger` arm.
+- ~~the crop axis at 4:2:2/4:4:4/mono, SB128, bd10, and the 480/720 straddle at cpu 0~~ →
+  `s4cov_crop_format_axis.rs`, 58/62 byte-exact; the 4 that are not are KB-27's, proven by
+  SB-exact controls.
+
+### T1 — refusals on reachable configurations
+| axis | reach (measured) | cost to close |
+|---|---|---|
+| **lossless (`--cq-level 0`) at ANY speed** | Refused by the **harness**, not the encoder: `aom-bench/src/lib.rs:1153`, measured PANIC at cpu 0/4/8/9 on a 64x64 cell while cq1 is byte-exact at all four. KB-34's "lossless TX_4X4 arm still refused at cpu 8/9" therefore understates it — the e2e path is closed at every speed, and lossless parity rests on KB-5's own driver, which is `let speed = 0i32`. | harness work first (thread a lossless bootstrap through `port_encode_full`), then the encoder's `block_yrd_lowbd`/`_hbd` TX_4X4 arms |
+| **multi-tile x `--deltaq-mode` 2/3** | Loud refusal (KB-31 residual a). Needs a frame that REQUIRES a tile split (>4096 px wide, or ~9.44 MP) AND a non-default flag, so reachable but not by default. NOT re-measured 2026-08-03. | `pack_tile`'s running qindex base must carry across tiles instead of restarting |
+| **IntraBC blocks > 64x64 (multi-chunk)** | KB-29 residual (a): unreachable from libaom AND from SVT-AV1 (re-checked 2026-08-02, 1,992 streams). A third encoder or a synthetic stream is needed. | unknown; blocked on producing an input |
+
+### T2 — default-reachable axes, no refusal, cheap-to-moderate
+| axis | why it matters | cost |
+|---|---|---|
+| **crops straddling `is_4k_or_larger` (2160)** | KB-28's root at KB-19's boundary; the predicate to check is `default_min_partition_size`'s BLOCK_8X8 arm at e.g. 2154x2160 vs 2160x2160 | ~25-30 min of port encode (KB-19's 2160x2160 speed-0 cell is C ~26 s / port ~195 s) |
+| **1440..2160 at speed >= 1** | KB-36 closed 1080..1440; above 1440 only KB-19's single 2160p **speed-0** cell exists | ~20-30 min |
+| **the >=1080p band at bd10/12, 4:2:2/4:4:4/mono, SB128, and quantizers other than cq24** | KB-36 swept bd8 4:2:0 SB64 cq24 only | ~10-20 min per format |
+| **partial-SB x bd12, and x 4:2:2/mono at high bit depth** | `s4cov_partial_sb_axis.rs` residual; the bd10 arm exists and runs only at cpu {0, 7} | ~2-5 min each, no new machinery |
+| **multi-tile at SB128 / bd10-12 / 4:4:4-4:2:2 / mono** | KB-31 residual (c): that whole file is bd8 4:2:0 SB64 | moderate; large frames |
+| **multi-tile x the crop straddle** | needs its OWN crop pair at tile-forcing size (e.g. 4090x2154 vs 4096x2160) — it cannot be combined with a 714x720 frame | same cost class as the 2160 arm |
+
+### T3 — blocked on harness work
+| axis | blocker |
+|---|---|
+| **`--dist-metric=qm-psnr` x speed >= 4** | Named twice by KB-21. The C shim already takes `cpu_used` and `dist_metric`; the PORT side is `aom-encode/tests/encoder_gate_tune_iq_e2e.rs`, a hand-built pipeline that hardcodes `let speed = 0i32`, builds `SpeedFeatures::set_allintra(0, ..)` framesize-blind, and passes `uv_lp: speed0_allintra()` / `fs_sf: Default::default()`. Threading speed through it means reproducing the winner-mode two-pass and the framesize/qindex passes — i.e. the KB-26 and KB-22 machinery. Estimate 2-4 h, with a real risk of building a harness that diverges for harness reasons. |
+
+### T4 — measured, pinned, unlocalized (byte divergences, no refusal)
+| pin | shape | next step |
+|---|---|---|
+| `HBD_OPEN` / `b10_64` (`s4cov_qm_axis.rs`, `config_permutations.rs`) | bd10 AND bd12, `--cpu-used` 1..6, LUMA-borne, reaches 4:4:4 + mono, qindex-dependent speed reach | `tx_sf.prune_tx_size_level` was the obvious suspect and is **RULED OUT** 2026-08-03 (INTER-only by assertion, tx_search.c:3438) — see KB-36's audit bullet |
+| KB-30 | `cid22_6292444` at cpu6, every quantizer, 1 of 10 real photographs | sibling-C per-block dump (playbook §10); ~half a day |
+| `RD_BAND_OPEN` (`kb34_nonsquare_nonrd_leaf.rs`) | 1272x724 cq24 at cpu 2-5 only | adjacent to KB-28's band at a size no gate covers |
+| the 17 cpu-8 photographic high-q rows | `benchmarks/nonsquare_leaf_reach_2026-08-02.tsv`, cq 32-63, -24..+13 B, not on in-repo content | needs the content in-repo first |
+| `PALETTE_ON_SPEED8_OPEN` (`kb35_nonrd_palette_arm.rs`) | palette ON x cpu8 x screen-detected, 13 rows, -1399..+817 B; the FULL-RD palette leaf, which `rd_close_palette.rs` never crosses (speed 0 throughout) | first-divergent-block on 128x128 cq12 (delta -1) |
+| KB-27 / `MONO_S0_OPEN` | monochrome, base_qindex 96, speed 0; **size-independent** (64x64 through 720x720, SB-exact and partial alike, widened 2026-08-03) | its own localizer is in `s4cov_partial_sb_axis.rs` |
+| KB-P29, KB-13's 2 cpu3-cq63 cells | 2 palette 128<sup>2</sup> near-ties; 2 real-content cells | sibling-C RD dump (KB-3/KB-7 method) |
+
+**Already closed, do not re-open from stale notes:** KB-10/KB-11's noise-cq63 speed-6/7 pairs
+(closed by KB-21 root #2), the whole cpu-4/5 fragile band, and KB-12's estimate-arm residual
+(closed 2026-08-02 — it was `aom_hadamard_lp_8x8`'s missing transpose, not a near-tie).
+
 ## Known Bugs
 
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close

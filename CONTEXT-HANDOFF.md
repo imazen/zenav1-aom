@@ -134,6 +134,29 @@ likely stale. The headlines:
   matched cpu-used. On screen content there is a real gap, and it is a SPEED
   problem: IntraBC is correct now but costs 558x libaom's time for that tool.
 
+## What changed on 2026-08-03 (two more of the same class, and the queue is now in one place)
+
+Working the "still unmeasured / still refused" lists those ten closures left behind found two
+more bugs of exactly the same shape, and neither needed new machinery:
+
+- **KB-35** — the nonrd estimate arm's palette refusal tested `allow_screen_content_tools`
+  alone, **one of four terms** of C's `try_palette`. `--cpu-used 8` therefore refused to encode
+  a plain smooth gradient at every size >= 1024x1024 and every quantizer, on cells where the C
+  oracle passes `--enable-palette=0` and libaom provably never enters the palette search. 22 of
+  25 measured PANIC rows are now byte-identical; the 3 that remain are the genuine arm. An
+  over-broad REFUSAL is exactly as wrong as an over-broad inertness claim — it just fails
+  loudly.
+- **KB-36** — `default_min_partition_size`'s `speed >= 6 && is_1080p_or_larger` arm was
+  unmodelled, so every >= 1080p frame at `--cpu-used 6` searched 4x4 partitions C had stopped
+  at 8x8 (-127 B at 1920x1080, +79 B at 2560x1440, with 1920x1072 byte-exact). The window is
+  **one speed wide** — speed 7 sets the same field framesize-independently — so a speed sweep
+  at any size under 1080 and a size sweep at any speed but 6 are both green with it missing.
+  It is the SECOND arm found on that field; KB-19 modelled the first and its entry said so.
+- **The consolidated queue now lives in `CLAUDE.md` under "Coverage queue"**, ranked by
+  (reachability x blast radius), with a cost estimate per remaining axis. It was scattered
+  across ~15 KB entries and gate-file doc comments, which is why nobody had worked it. Keep it
+  current in the same commit as the landing.
+
 ## Live tracks (each has its own docs; concurrent sessions may be active)
 
 - **Inter decode + encode** ("THE REST"): INTER-ROADMAP.md,
