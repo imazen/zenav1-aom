@@ -7,6 +7,7 @@
 
 pub mod cfl;
 pub mod dir;
+mod dir_simd;
 pub mod edge;
 mod simd;
 mod weights;
