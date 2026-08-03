@@ -203,6 +203,33 @@ workflow so a study picks the one its lever reaches. Full record, including the
 list of mode families the harness *still* cannot see:
 [`winperf_content_census_2026-08-03.md`](winperf_content_census_2026-08-03.md).
 
+**That "still cannot see" list was itself revised the same day**
+([`winperf_family_census_2026-08-03.md`](winperf_family_census_2026-08-03.md)),
+and the revision matters for how any future band off this harness is read. The
+census now names every coding-tool family the encoder can enter — filter-intra,
+palette Y/UV, intraBC, CFL and the per-plane chroma path, leaf size to 4x4,
+rect-vs-square leaves, tx type x size — and the five families the list called
+blind spots turn out to have **three different causes**:
+
+* **filter-intra is a SPEED zero, not a content zero.** At this study's
+  `--cpu-used 6` the port sets `prune_filter_intra_level = 2`, so
+  `rd_pick_filter_intra_sby` is never called and no source can reach it. The
+  same content reads **10.46 %** of leaves at cpu-used 5.
+* **palette and intraBC are KNOB zeros** (`--enable-palette` /
+  `--enable-intrabc`, both default off) plus a header-bit gate real `aomenc`
+  sets from its own screen detection. A fourth content, `winperf:screen`,
+  reaches both once all three gates are open.
+* **CFL is genuinely content-gated** and was never censused at all: 4.59 % of
+  chroma-reference leaves on the photograph and 23.02 % on a CLIC image against
+  **0.00-0.29 %** on all three contents here. A CFL lever read off `detail`,
+  `smooth` or `photo` would be reading a structural zero.
+
+Also relevant to every number on this page: the **chroma path is 28-47 % of
+intra-predictor calls** on these contents and was uncounted before that
+landing, so "intra prediction" totals quoted from the earlier census are
+luma+chroma sums nobody had split. `just census-gate` now pins the whole
+picture.
+
 Two facts from that census that bear directly on the numbers above:
 
 * the two contents' allocator call counts are unchanged and the tables above are

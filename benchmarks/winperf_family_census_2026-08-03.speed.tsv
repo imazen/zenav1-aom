@@ -1,0 +1,7 @@
+# Family reach vs --cpu-used, ONE content (winperf:photo), cq44, ALLINTRA.
+# The point: filter-intra is a SPEED zero, not a content zero.
+speed	leaves	filter_intra_pct	filter_intra_abs	directional_px_pct	nonzero_angle_delta_pct	rect_leaves_pct	leaves_le_8px_pct	fwd_tx_4pt_pct	cfl_pct	coded_bytes
+6	1464	0.00	0	17.92	11.00	6.42	6.42	7.11	0.07	5301
+5	545	10.46	57	56.61	21.47	57.80	0.00	15.03	0.00	4538
+4	1024	8.40	86	56.22	20.12	56.64	0.00	14.47	0.00	4567
+2	1012	8.30	84	68.88	27.87	65.81	0.00	8.74	0.00	4616

@@ -25,7 +25,8 @@
 //!
 //! # Cost
 //!
-//! Four `port_encode`s at the study cell, no C oracle, no fit: a few seconds.
+//! Eight `port_encode`s (four contents, warm-up subtracted), no C oracle, no
+//! fit: ~21 s, of which the screen row's palette + intraBC searches are ~20.
 //! It needs `--features census` (the counters are default-off and a census
 //! build is never a timing build), which is why it is not in the default
 //! `cargo test` tier — `just census-gate` runs it, and CI runs that.
@@ -37,7 +38,8 @@ use aom_bench::{ToggleKnobs, stream_allows_screen_content_tools};
 use aom_dsp::census::{self, Counts};
 
 /// A family's reach on one content, as measured on 2026-08-03 at the study
-/// cell (1024x1024 / cq44 / cpu-used 6 / ALLINTRA / 8-bit 4:2:0).
+/// cell (1024x1024 / cq44 / cpu-used 6 / ALLINTRA / 8-bit 4:2:0) — except the
+/// `Screen` rows, which are at [`winperf::SCREEN_GATE_CELL`] (512x384).
 struct Pin {
     content: Content,
     /// Which knobs the number was measured under. Palette and intraBC are
@@ -77,7 +79,7 @@ fn share(c: &Counts, family: &str) -> f64 {
 
 /// One `port_encode`, warm-up subtracted.
 ///
-/// The screen row runs at [`winperf::SCREEN_GATE_CELL`] (256x256) rather than
+/// The screen row runs at [`winperf::SCREEN_GATE_CELL`] (512x384) rather than
 /// [`winperf::CELL`]: the intraBC displacement search on 1 MP of screen content
 /// runs for minutes, and a gate nobody runs is not a gate. Perf bands still use
 /// the 1 MP cell; this is a coverage assertion.
@@ -130,9 +132,10 @@ const PINS: &[Pin] = &[
     // ---- smooth: the low-work end ---------------------------------------
     Pin { content: Content::Smooth, screen_knobs: false, family: "directional_px", floor: 10.0, ceiling: 17.0 },
     // ---- screen: the ONLY content that reaches the screen tools ----------
-    Pin { content: Content::Screen, screen_knobs: true, family: "palette_y", floor: 1.0, ceiling: 100.1 },
-    Pin { content: Content::Screen, screen_knobs: true, family: "intrabc", floor: 0.5, ceiling: 100.1 },
-    Pin { content: Content::Screen, screen_knobs: true, family: "leaves_le_8px", floor: 5.0, ceiling: 100.1 },
+    // Measured 21.61 / 24.04 / 75.19 at `winperf::SCREEN_GATE_CELL`.
+    Pin { content: Content::Screen, screen_knobs: true, family: "palette_y", floor: 16.0, ceiling: 28.0 },
+    Pin { content: Content::Screen, screen_knobs: true, family: "intrabc", floor: 18.0, ceiling: 30.0 },
+    Pin { content: Content::Screen, screen_knobs: true, family: "leaves_le_8px", floor: 68.0, ceiling: 82.0 },
 ];
 
 /// Every pinned family is still reached, and none has moved so far that the pin

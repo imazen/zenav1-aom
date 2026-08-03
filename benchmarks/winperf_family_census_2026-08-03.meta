@@ -1,0 +1,120 @@
+# Provenance — winperf_family_census_2026-08-03
+
+## What this is
+
+An extension of the content census (`benchmarks/winperf_content_census_2026-08-03.*`)
+to name EVERY coding-tool family the encoder can enter — filter-intra, palette
+(luma and UV), intra block copy, CFL and the whole chroma path, leaf size down
+to 4x4, rectangular vs square leaves, tx type x size — plus a census of the
+full available corpus against them, one new harness content
+(`winperf::Content::Screen`), and a committed gate.
+
+## Box
+
+    host        mac (Apple M4 Pro, 12 cores), darwin-arm64
+    kernel      Darwin 25.5.0 (xnu-12377.121.10~1, RELEASE_ARM64_T6041)
+    commit      1f366a9 (base) — this work is the commit that follows it
+    rustc       stable-aarch64-apple-darwin
+    load        3-10 (three agents active on the box; every number below is an
+                exact COUNT, not a timing, so load is irrelevant to the data —
+                it is quoted only for the wall-clock cost notes)
+
+Every number in the `.md` and the `.tsv`s is an exact counter value from
+`aom_dsp::census`, not a measurement with a distribution. The only timings
+quoted are per-source census wall clocks, which are informational.
+
+## Build
+
+    cargo build --release -p zenav1-aom-bench --features census,c-oracle \
+        --example content_census
+    cargo build --release -p zenav1-aom-bench --features census,c-oracle \
+        --example content_fit
+    cargo build --release -p zenav1-aom-bench --features census,c-oracle \
+        --example winperf_bootstrap_gen
+
+`census` is DEFAULT OFF and a census build is never a timing build (it puts
+thread-local counters on the intra predictor, the CFL predictor, the forward
+transform and the leaf writer). A default build contains none of them:
+`census::enabled()` is a `const fn` over `cfg!(feature = "census")`, so every
+hook body and the `Leaf` construction in `pack::pack_leaf` fold away.
+
+## Commands
+
+Corpus census, photographic sources, DEFAULT knobs, cpu-used 6:
+
+    AOM_CONFORMANCE_DIR=<repo>/conformance/data \
+    ./target/release/examples/content_census \
+        yuv:$S/ph_study_1024.yuv:1024x1024 winperf:photo winperf:detail \
+        winperf:smooth yuv:$S/ph_crop_1024.yuv:1024x1024 \
+        yuv:$S/ph_clic_0280.yuv:1024x1024 yuv:$S/ph_cid22_1025469.yuv:512x512
+
+Corpus census, screen sources, SCREEN bootstrap + both screen knobs:
+
+    ./target/release/examples/content_census --knobs palette,intrabc \
+        scr:$S/sc512_<name>.yuv:512x384 ...
+
+The differential corpus (`EncodeCell::real_content`, KB-13's cells), at that
+harness's own cell (cq32, cpu-used 0):
+
+    AOM_CONFORMANCE_DIR=<repo>/conformance/data \
+    ./target/release/examples/content_census --speed 0 --cq 32 \
+        real:av1-1-b8-01-size-64x64 \
+        real:av1-1-b8-00-quantizer-00:128x128+64+64 \
+        real:av1-1-b8-01-size-196x196
+
+Speed sweep (same content, four speeds):
+
+    for sp in 6 5 4 2; do
+      ./target/release/examples/content_census --speed $sp winperf:photo
+    done
+
+Screen content fit (three passes, 56 candidates, 512x384):
+
+    ./target/release/examples/content_fit --screen \
+        --target 20.66,16.12,0.00,8.55,47.07 512 384 <1|2|3>
+
+Bootstrap fixtures (one content at a time, so the others' committed bytes are
+untouched):
+
+    ./target/release/examples/winperf_bootstrap_gen screen
+
+Gate:
+
+    cargo test --release -p zenav1-aom-bench --no-default-features \
+        --features census --test content_family_census     # = just census-gate
+
+## Sources
+
+| label | provenance |
+|---|---|
+| `ph_study_1024` | the dev box's study photograph, `~/tmp/xb/src/photo_1024.yuv` (1024x1024 8-bit I420). Not committable (1.5 MB); the same file every earlier winperf record calls "the photograph". |
+| `ph_crop_1024` | `~/tmp/xb/src/photocrop_1024.yuv` — a NATIVE centre crop of the same photograph (no resampling). |
+| `ph_clic_0280` | `codec-corpus/clic2025/final-test/02809272b4ca…png`, 1024x1024 native centre crop via `benchmarks/xbench/xtool prep crop:1024x1024`. |
+| `ph_cid22_1025469` | `codec-corpus/CID22/CID22-512/validation/1025469.png`, 512x512 native centre crop. |
+| `sc512_*` | the ten `codec-corpus/gb82-sc` screenshots, 512x384 NATIVE centre crops (`xtool prep crop:512x384` — no resampling: Lanczos on screen content destroys the bounded-colour property the palette tool needs, so `square:N` is the wrong mode here). |
+| `sc_codec_wiki` (1 MP) | the same source at `crop:1024x1024`, the one 1 MP screen row. |
+| `real:*` | conformance vectors decoded back to pixels by `EncodeCell::real_content` — literally the cells `aom_bench::encode_cells()` builds, i.e. KB-13's byte-parity corpus. |
+| `winperf:*` | the committed generators, no external file. |
+
+`gb82-sc/windows95` and `gb82-sc/graph` are smaller than 1024 in one dimension
+(640x480, 796x481) and cannot supply a 1024 crop; that is why the screen table
+is taken at 512x384, which every source can supply natively.
+
+## Not measured
+
+* **One quantizer.** cq44 for the winperf/screen tables, cq32 for the
+  differential-corpus row (that harness's own value). No q sweep.
+* **Darwin only.** The counts are byte-for-byte deterministic given identical
+  source bytes and a deterministic single-threaded search, and the previous
+  study measured the allocator census equal on all three targets, but this
+  census was not re-run on Windows.
+* **8-bit 4:2:0 only.** No 4:2:2 / 4:4:4 / 10-bit / monochrome row, so nothing
+  here says which families a non-4:2:0 configuration reaches.
+* **KEY frames only.** `leaf_inter` is 0 everywhere by construction; the inter
+  path has no row in this census.
+* **`gb82-sc/imac_dark` has no completed screen row.** Its intraBC displacement
+  search does not terminate in a workable time at either size (>20 min at
+  1024x1024, >10 min at 512x384, against `codec_wiki`'s 47 s / 2.8 s on the
+  same binary). That is recorded as a finding in the `.md`, not worked around.
+* **No BD-rate, no timing band, no lever.** This is a coverage instrument. It
+  says which code the harness runs, and nothing about how fast it is.

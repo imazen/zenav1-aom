@@ -163,15 +163,22 @@ pub const BOOTSTRAP_SCREEN_HEX: &str =
 ///
 /// Not [`CELL`]: the intraBC displacement search is superlinear in frame area
 /// on screen content, and a 1 MP palette+intraBC encode runs for minutes —
-/// which is not a gate anyone will keep running. 256x256 is 1/16 the area, the
-/// same generator, and real `aomenc` still signals `allow_screen_content_tools`
-/// on it (asserted when the fixture is generated). Perf BANDS still use
-/// [`CELL`]; this exists so the coverage assertion is cheap.
-pub const SCREEN_GATE_CELL: (usize, usize, i32, i32) = (256, 256, 44, 6);
+/// which is not a gate anyone will keep running. Perf BANDS still use [`CELL`];
+/// this exists so the coverage assertion is cheap.
+///
+/// **512x384 rather than something smaller, and that is a measurement.** At
+/// 256x256 this generator reaches palette and intraBC **exactly zero times**
+/// (the gate caught it, which is what a gate is for): both tools need enough
+/// already-reconstructed frame to be worth coding against, and the same
+/// content at 512x384 reaches 21.6 % / 24.0 % of leaves. The corpus census
+/// shows the same shape on real sources — `gb82-sc/codec_wiki`'s intraBC share
+/// goes 0.25 % at 512x384 to 6.5 % at 1 MP. **A screen-tool share is a
+/// statement about a frame SIZE as well as about content.**
+pub const SCREEN_GATE_CELL: (usize, usize, i32, i32) = (512, 384, 44, 6);
 
 /// [`BOOTSTRAP_SCREEN_HEX`] at [`SCREEN_GATE_CELL`].
-pub const BOOTSTRAP_SCREEN_256_HEX: &str =
-    include_str!("../fixtures/winperf_bootstrap_256x256_cq44_s6_screen.hex");
+pub const BOOTSTRAP_SCREEN_GATE_HEX: &str =
+    include_str!("../fixtures/winperf_bootstrap_512x384_cq44_s6_screen.hex");
 
 /// The committed bootstrap for `content` at [`CELL`], decoded. Panics on any
 /// non-hex byte — the fixture is checked in, so a failure here is a corrupted
@@ -187,7 +194,7 @@ pub fn bootstrap(content: Content) -> Vec<u8> {
 
 /// [`bootstrap`] for [`Content::Screen`] at [`SCREEN_GATE_CELL`].
 pub fn bootstrap_screen_gate() -> Vec<u8> {
-    bootstrap_hex(BOOTSTRAP_SCREEN_256_HEX)
+    bootstrap_hex(BOOTSTRAP_SCREEN_GATE_HEX)
 }
 
 fn bootstrap_hex(hex: &str) -> Vec<u8> {
@@ -603,9 +610,9 @@ pub struct ScreenParams {
 /// before the sweep ran, and not any lever's delta. Provenance, grid, reference
 /// and the runner-up rows: `benchmarks/winperf_family_census_2026-08-03.md`.
 pub const SCREEN: ScreenParams = ScreenParams {
-    n_levels: 6,
-    glyph_px: 8,
-    n_glyphs: 24,
+    n_levels: 24,
+    glyph_px: 16,
+    n_glyphs: 8,
     panel_px: 128,
     text_q8: 154,
     ink_q8: 96,
@@ -804,7 +811,7 @@ mod tests {
             // chroma is FLAT PER PANEL rather than the shared noise plane — the
             // property the UV palette needs, and the reason its u/v sums differ
             // from the other three.
-            (Content::Screen, (129_117_104, 34_996_224, 32_636_928), 40, 200),
+            (Content::Screen, (125_351_887, 34_996_224, 32_636_928), 40, 200),
         ] {
             let buf = synth_i420(w, h, content);
             let (cw, ch) = (w / 2, h / 2);

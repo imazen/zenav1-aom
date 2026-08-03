@@ -3973,6 +3973,50 @@ read `prepost` bands with **`scripts/winperf_prepost_stats.py`** (pools the
 copies on each side) and difference against a control content, not with
 `--vs pre`.
 
+**KB-PERF-HARNESS-2 (2026-08-03, same day): the census now names EVERY tool
+family, the corpus was censused against it, and the "cannot see" list had three
+different causes conflated.** Record
+**`benchmarks/winperf_family_census_2026-08-03.md`** + `.meta` + 4 data files.
+`aom_dsp::census` gained `Leaf` (filter-intra, palette Y+UV, intraBC, UV mode
+⇒ CFL, tx_size, both angle deltas, skip/inter/chroma-ref — all at the
+bitstream writer), `note_plane_intra_pred` (the per-plane split of
+`predict_intra_high`, annotated at the 8 ENCODER call sites since the DSP entry
+point gains no argument; **`plane_total() == intra_total_calls()` is asserted**,
+which is what proves no site was missed) and `note_cfl_predict`.
+`Counts::since` destructures with **no `..`** so a new counter breaks the build.
+The three causes:
+- **SPEED-gated:** filter-intra is 0.00 on EVERY source at cpu-used 6
+  (`prune_filter_intra_level = 2` ⇒ `rd_pick_filter_intra_sby` never called);
+  same content reads **10.46 %** of leaves at cpu-used 5. Also measured on that
+  sweep: the photograph's much-quoted **20.78 % directional is a speed-6
+  number** — 56.61 % at cpu-used 5 on identical content (`intra_pruning_with_hog
+  = 4`), so quote directional shares WITH the speed.
+- **KNOB+HEADER-gated:** palette / intraBC need `--enable-palette` /
+  `--enable-intrabc` (default off) AND `allow_screen_content_tools`, which real
+  aomenc sets from its own detection. New content **`Content::Screen`** (flat
+  few-colour panels + a repeating glyph alphabet + an `image_q8` share of
+  photographic panels; integer-only) reaches both; `gb82-sc` corpus reaches
+  palette **6-33 %** and intraBC **0.25-59 %** of leaves. intraBC's share GROWS
+  with frame area (0.25 % at 512x384 → 6.5 % at 1 MP, same source).
+- **CONTENT-gated:** CFL is **0.00-0.29 %** of chroma-ref leaves on all three
+  old contents, **4.59 %** on the photograph, **23.02 %** on a CLIC image — no
+  knob involved. Chroma is **28-47 % of intra-predictor calls** and was
+  previously uncounted, so earlier `intra_calls` totals are luma+chroma sums.
+**The differential corpus was never blind**: `EncodeCell::real_content`
+(KB-13's cells, cq32/cpu-used 0) reaches filter-intra **21-31 %** of leaves,
+directional **51-54 %** of px, rect leaves **74-82 %**, 4-pt tx **67-75 %**.
+Check `real:`/`yuv:` before generating content. **GATE:
+`just census-gate`** (`crates/aom-bench/tests/content_family_census.rs`, no
+oracle, **6.1 s**, wired into CI `portability`) pins each family's share with a
+floor AND a ceiling, pins the known zeros WITH their stated cause, and pins the
+screen source's two structural properties (≤ 8 colours per 16x16 block, ≥ 20 %
+exactly-repeated 8x8 blocks) on the SOURCE PIXELS with the photographic
+contents measured as comparators. Open observation: the port's **intraBC DV
+search is ~200-400x content-dependent** — `gb82-sc/imac_dark` does not finish a
+census in workable time (>10 min at 512x384) where `codec_wiki` takes 2.8 s;
+that is why the gate's screen row runs at 256x256
+(`winperf::SCREEN_GATE_CELL`).
+
 **MEASURED, 1024×1024 photo / cq44 / cpu-used 6, 5 arms interleaved over 12
 rounds** (`scripts/eprof_ab.sh` + `scripts/eprof_ab_stats.py`, NEW — the N-arm
 form of `eprof_control.sh`, since a perf landing has to compare four port

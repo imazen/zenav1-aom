@@ -256,14 +256,44 @@ about the code differs; only the **price per call** does.
 - **The census is committed; run it, do not reason about it.**
   `cargo run -p zenav1-aom-bench --features census --example content_census --
   winperf:<name> …` reports intra mode family x transform size, forward
-  transform type x size, and coded leaf size for any harness content or raw
-  `.yuv`, against a reference. `benchmarks/winperf_content_census_2026-08-03.md`
-  is the committed table for all three winperf contents plus the study
-  photograph, **including a list of what the harness still cannot see**
-  (filter-intra, palette, intraBC, CFL/chroma, 8x8 leaves — all at or near zero
-  on every source). Before quoting a winperf band for a lever scoped to a mode
-  family, look your family up in that table; if it is on the cannot-see list,
-  the harness owes you a content before it owes you a number.
+  transform type x size, coded leaf size, **and (since 2026-08-03) every other
+  coding-tool family the encoder can enter**: filter-intra, palette Y and UV,
+  intraBC, the UV mode distribution (so CFL is a count), the per-plane split of
+  the intra predictor, the CFL predictor itself, rect-vs-square leaves, small
+  leaves and angle deltas. Sources may be a harness content, a raw `.yuv`, a
+  raw `.yuv` bootstrapped through the SCREEN config (`scr:`, so the frame
+  header can carry `allow_screen_content_tools`), or a conformance vector
+  decoded back to pixels (`real:`, i.e. literally the differential corpus).
+  `benchmarks/winperf_family_census_2026-08-03.md` is the committed corpus x
+  family table; `benchmarks/winperf_content_census_2026-08-03.md` is the
+  earlier mode-distribution one. Before quoting a band for a lever scoped to a
+  family, look your family up; a `0.00` there means the code under test does
+  not run and any null you measure is structural.
+- **"Unreachable" has three different causes and they need different fixes.**
+  The 2026-08-03 family census separated them, and only ONE of the three is a
+  content problem:
+  * **speed-gated** — filter-intra is `0.00` on every source at the harness
+    cell, and no content can change that: `--cpu-used 6` sets
+    `prune_filter_intra_level = 2`, i.e. `rd_pick_filter_intra_sby` is never
+    called. On the SAME content it reads 10.46 % of leaves at cpu-used 5. A
+    family in this class needs a different CELL, not a different image.
+  * **knob-gated** — palette and intraBC are `--enable-palette` /
+    `--enable-intrabc`, both default OFF, and additionally need
+    `allow_screen_content_tools` in the frame header, which real `aomenc` sets
+    from its own detection. A band for either is a statement about a
+    non-default encoder and has to say so.
+  * **content-gated** — CFL is the clean example: 0.00-0.29 % of
+    chroma-reference leaves on the three synthetic winperf contents against
+    4.59 % on the study photograph and 23.02 % on a CLIC image. Nothing is
+    gating it; the synthetics simply do not have the luma-chroma correlation.
+    This is the class a new content fixes.
+- **Check whether something ALREADY reaches your family before generating
+  content for it.** The differential corpus (`EncodeCell::real_content`, KB-13's
+  cells, at cq32 / cpu-used 0) reaches filter-intra at **21-31 % of leaves**,
+  directional prediction at 51-54 % of predicted pixels, rectangular leaves at
+  74-82 % and 4-pt transforms at 67-75 %. The byte gates were never blind to
+  those families; only the PERF harness was, and only because of its cell. A
+  `real:`/`yuv:` census is minutes of work and can retire the question.
 - **Fitting content is legitimate; fitting it to the OUTCOME is not.** The fix
   for the above was a third content (`winperf::Content::Photo`) fitted by
   sweeping 467 candidates against **the reference's mode distribution**, with

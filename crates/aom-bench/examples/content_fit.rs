@@ -327,11 +327,6 @@ fn screen_shares(c: &Counts) -> [f64; 5] {
     ]
 }
 
-fn l1_screen(a: &Counts, b: &Counts) -> f64 {
-    let (x, y) = (screen_shares(a), screen_shares(b));
-    (0..SCREEN_CLASS.len()).map(|i| (x[i] - y[i]).abs()).sum()
-}
-
 /// One screen candidate's census: the SCREEN bootstrap (so the frame header can
 /// carry `allow_screen_content_tools`) and both screen knobs on.
 fn screen_census_of(cell: &EncodeCell) -> (Box<Counts>, usize, bool) {
@@ -400,7 +395,7 @@ fn screen_fit(a: &[String]) {
     );
 
     println!(
-        "n_levels\tglyph_px\tn_glyphs\tpanel_px\ttext_q8\tink_q8\taa\tn_chroma\tscdet\t\
+        "n_levels\tglyph_px\tn_glyphs\tpanel_px\ttext_q8\tink_q8\taa\tn_chroma\timage_q8\tscdet\t\
          ibc_pct\tpal_pct\tfi_pct\tdir_pct\tother_pct\tL1_screen\t\
          pal_uv_pct\tcfl_pct\tleaves\tcoded_bytes"
     );
@@ -470,28 +465,33 @@ fn screen_fit(a: &[String]) {
             }
         }
     }
-    // Pass 3 — refinement around pass 2's leader on the two axes that moved it.
+    // Pass 3 — walking the `n_levels` EDGE out.
+    //
+    // Pass 1's winner sat at the LARGEST `n_levels` on its grid (16), and an
+    // optimum on a grid edge is not an optimum
+    // (`benchmarks/winperf_content_census_2026-08-03.md` §3, where the photo
+    // fit needed two extra passes for the same reason). This walks the colour
+    // alphabet past the point where L1 stops improving, at pass 2's leading
+    // `image_q8`.
     if want("3") {
-        for &image_q8 in &[140i32, 154, 166, 179, 192] {
-            for &panel_px in &[64usize, 128, 256] {
-                for &glyph_px in &[8usize, 16] {
-                    screen_row(
-                        &ScreenParams {
-                            n_levels: 6,
-                            glyph_px,
-                            n_glyphs: 24,
-                            panel_px,
-                            text_q8: 154,
-                            ink_q8: 96,
-                            aa: 1,
-                            n_chroma: 4,
-                            image_q8,
-                        },
-                        w,
-                        h,
-                        &target,
-                    );
-                }
+        for &n_levels in &[16usize, 24, 32, 48] {
+            for &image_q8 in &[0i32, 64, 128] {
+                screen_row(
+                    &ScreenParams {
+                        n_levels,
+                        glyph_px: 16,
+                        n_glyphs: 8,
+                        panel_px: 128,
+                        text_q8: 154,
+                        ink_q8: 96,
+                        aa: 1,
+                        n_chroma: 4,
+                        image_q8,
+                    },
+                    w,
+                    h,
+                    &target,
+                );
             }
         }
     }

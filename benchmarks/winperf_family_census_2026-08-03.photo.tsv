@@ -1,0 +1,26 @@
+# Family reach, PHOTOGRAPHIC sources + the three older winperf contents.
+# cpu-used 6, cq44, ALLINTRA, 8-bit 4:2:0, DEFAULT knobs (no palette, no intrabc).
+# Percent of the named denominator. 0.00 = the tool never fires.
+family	denominator	ph_study_1024.1024x1024	winperf:photo	winperf:detail	winperf:smooth	ph_crop_1024.1024x1024	ph_clic_0280.1024x1024	ph_cid22_1025469.512x512
+filter_intra	leaves	0.00	0.00	0.00	0.00	0.00	0.00	0.00
+filter_intra_px	coded_px	0.00	0.00	0.00	0.00	0.00	0.00	0.00
+palette_y	leaves	0.00	0.00	0.00	0.00	0.00	0.00	0.00
+palette_y_px	coded_px	0.00	0.00	0.00	0.00	0.00	0.00	0.00
+palette_uv	leaves	0.00	0.00	0.00	0.00	0.00	0.00	0.00
+intrabc	leaves	0.00	0.00	0.00	0.00	0.00	0.00	0.00
+intrabc_px	coded_px	0.00	0.00	0.00	0.00	0.00	0.00	0.00
+cfl	chroma_ref_leaves	4.59	0.07	0.00	0.29	8.02	23.02	1.77
+cfl_pred_px	pred_px	8.80	8.15	8.59	10.53	10.23	11.57	5.74
+chroma_pred_calls	pred_calls	32.63	36.67	31.07	47.15	32.26	28.63	28.40
+directional_px	pred_px	20.78	17.92	0.15	13.19	21.44	29.76	41.62
+nonzero_angle_delta	leaves	11.91	11.00	0.00	2.54	11.41	15.79	19.49
+rect_leaves	leaves	16.00	6.42	0.00	0.00	6.50	42.20	35.71
+leaves_le_8px	leaves	16.50	6.42	0.00	0.00	6.78	83.62	72.23
+fwd_tx_4pt	fwd_tx	16.65	7.11	0.48	0.00	8.68	57.41	47.36
+fwd_tx_non_dct	fwd_tx	35.37	33.48	44.50	8.27	36.75	39.24	31.38
+filter_intra_leaves_abs	-	0	0	0	0	0	0	0
+palette_y_leaves_abs	-	0	0	0	0	0	0	0
+intrabc_leaves_abs	-	0	0	0	0	0	0	0
+cfl_leaves_abs	-	74	1	0	3	116	1943	30
+allow_screen_content_tools	-	0	0	0	0	0	0	0
+

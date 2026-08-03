@@ -1,0 +1,28 @@
+# Family reach, SCREEN sources (gb82-sc, 512x384 native centre crops).
+# cpu-used 6, cq44, ALLINTRA, 8-bit 4:2:0, SCREEN bootstrap (c_encode_screen)
+# + --enable-palette + --enable-intrabc. Both knobs are DEFAULT OFF.
+# gb82-sc/imac_dark is absent: its intraBC search does not terminate in a
+# workable time (>10 min at this size vs codec_wiki's 2.8 s) — see the .md.
+family	denominator	codec_wiki	gui	terminal	imessage	gmessages	windows	imac_g3	windows95	graph
+filter_intra	leaves	0.00	0.00	0.00	0.00	0.00	0.00	0.00	0.00	0.00
+filter_intra_px	coded_px	0.00	0.00	0.00	0.00	0.00	0.00	0.00	0.00	0.00
+palette_y	leaves	22.73	6.26	16.10	16.15	0.00	21.68	12.80	32.95	9.36
+palette_y_px	coded_px	4.52	2.54	11.78	5.37	0.00	18.55	11.88	28.91	5.34
+palette_uv	leaves	0.25	0.00	0.00	0.00	0.00	0.06	0.00	0.52	0.00
+intrabc	leaves	0.25	5.12	47.08	12.89	0.00	38.55	58.82	28.43	5.86
+intrabc_px	coded_px	0.07	1.29	33.59	3.82	0.00	25.08	42.33	18.36	2.46
+cfl	chroma_ref_leaves	1.79	1.22	6.75	0.00	0.00	6.73	2.96	0.93	5.96
+cfl_pred_px	pred_px	5.96	4.93	5.33	0.96	0.66	7.13	1.97	2.93	4.61
+chroma_pred_calls	pred_calls	28.28	26.91	19.57	21.51	26.18	25.86	15.71	24.96	26.62
+directional_px	pred_px	30.37	30.51	33.93	35.36	33.78	28.98	36.56	24.32	32.35
+nonzero_angle_delta	leaves	1.77	5.92	0.51	6.52	0.00	0.45	0.35	0.00	4.94
+rect_leaves	leaves	19.70	50.51	47.08	40.00	0.00	52.69	36.11	54.93	57.41
+leaves_le_8px	leaves	41.92	71.79	86.28	63.11	0.00	88.75	86.14	90.78	73.46
+fwd_tx_4pt	fwd_tx	49.01	62.03	56.24	50.22	0.00	58.97	58.97	59.35	63.94
+fwd_tx_non_dct	fwd_tx	39.82	45.36	39.42	37.09	0.00	47.90	46.44	52.96	38.08
+filter_intra_leaves_abs	-	0	0	0	0	0	0	0	0	0
+palette_y_leaves_abs	-	90	55	223	109	0	339	217	511	91
+intrabc_leaves_abs	-	1	45	652	87	0	603	997	441	57
+cfl_leaves_abs	-	7	10	89	0	0	99	45	14	57
+allow_screen_content_tools	-	1	1	1	1	0	1	1	1	1
+

@@ -176,7 +176,13 @@ Shipped (`winperf::PHOTO`): `orient_period 128`, `streak_p (96, 24)`,
 * the same allocator and forward-transform axes as before, on `detail`, which
   is unchanged and still the right content for those.
 
-**Still cannot see** — and this list is the point of committing a census:
+**Still cannot see** — and this list is the point of committing a census.
+**REVISED THE SAME DAY**: every item below was re-derived by
+[`winperf_family_census_2026-08-03.md`](winperf_family_census_2026-08-03.md),
+which extended the census to name each family and censused the whole available
+corpus against it. The list was right that the families read zero here; it was
+wrong to imply they were all the same KIND of problem. Corrections inline
+below, marked **[2026-08-03]**.
 
 * **`V` and `H` are over-represented** (3.0 % each against 1.5 / 1.7). The
   orientation field spends time near the axis-aligned directions.
@@ -188,11 +194,29 @@ Shipped (`winperf::PHOTO`): `orient_period 128`, `streak_p (96, 24)`,
   16x8/8x16 occur at a third of the reference's rate.
 * **filter-intra is zero on all four sources**, including the photograph. Any
   filter-intra lever has no content here at all.
+  **[2026-08-03] Wrong diagnosis: it is a SPEED zero, not a content zero.** At
+  `--cpu-used 6` the port sets `prune_filter_intra_level = 2` and
+  `rd_pick_filter_intra_sby` is never called, so no source can reach it here.
+  The same `photo` content reads **10.46 %** of leaves at cpu-used 5, and the
+  differential corpus (cq32 / cpu-used 0) reaches **21-31 %**. Content was never
+  the problem.
 * **palette / intraBC / screen content: nothing.** All four sources are
   photographic-class. A screen-content lever needs a fourth content and this
   study does not provide one.
+  **[2026-08-03] Right, and it now exists** — `winperf::Content::Screen`, fitted
+  to the per-class median of the `gb82-sc` corpus. Both tools are also
+  KNOB-gated (`--enable-palette` / `--enable-intrabc`, default off) and
+  HEADER-gated (`allow_screen_content_tools`, which real `aomenc` sets from its
+  own detection), so a band for either is a statement about a non-default
+  encoder.
 * **CFL and the chroma path** are not censused at all — the counters are on the
   luma predictor, the forward transform and the leaf writer.
+  **[2026-08-03] Now censused, and the gap was bigger than "not counted".** The
+  chroma path is **28-47 % of intra-predictor calls** on these contents, so the
+  `intra_calls` / `intra_px` totals in the tables above are luma+chroma sums.
+  CFL itself is content-gated: **0.00-0.29 %** of chroma-reference leaves on
+  all three contents here, against **4.59 %** on the study photograph and
+  **23.02 %** on a CLIC image.
 * **one cell.** 1024x1024 / cq44 / cpu-used 6. At another speed the partition
   and mode mix moves; nothing here says by how much.
 * the census is taken on **Darwin only**. It is quoted for the runners on the
