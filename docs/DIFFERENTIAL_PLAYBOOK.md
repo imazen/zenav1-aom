@@ -618,6 +618,26 @@ because its mechanism was named exactly (a 4 KiB memset per forward transform at
 every size, against tiered inverse passes in the same file). Same profile, same
 day; the difference is whether the projection was tied to a mechanism or to a row.
 
+**It happened again, one landing later, at 5x.** KB-PERF-3 took the same
+profile's `dsp:transform` row (+19.63 ms) and delivered **−3.84 ms**. Two
+measurements, taken rather than argued, say where the rest was: the row had been
+sampled BEFORE the sibling memset lever took −3.13 ms out of the same two
+functions, and a temporary counter in both pass entry points showed **only
+51.6 % / 55.1 % of forward-transform calls are even eligible** for a 16-lane
+batch (the rest are 8-dim). So the rule generalises past allocation: **when a
+lever cannot reach a whole stage, COUNT what it reaches before quoting the stage
+total.** A call census is cheap — one atomic per call, thrown away afterwards —
+and it converts "why did we only get a fifth of it" from speculation into a
+table.
+
+**And measure the obvious extension rather than reasoning about it.** The same
+landing's follow-up — run the ineligible 8-dim blocks as half-idle 16-lane
+batches — had a clean a-priori argument (equal op counts, a much cheaper
+`half_btf`) and measured **−0.006 % against a +0.08 % null**. It was built in
+full, differentials and all, and reverted. An argument about instruction counts
+is not a measurement of them, and on this hardware the load/store path around a
+kernel routinely eats what the kernel saves.
+
 **And measure the levers separately even when you ship them together.** Here 3a
 alone was −3.128 ms with **zero** allocator-call change (its scratch is a stack
 array and cannot appear in a census — proven by the two censuses being identical

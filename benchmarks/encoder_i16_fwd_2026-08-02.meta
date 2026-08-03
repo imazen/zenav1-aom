@@ -1,0 +1,125 @@
+# encoder_i16_fwd_2026-08-02 — provenance
+# Companion to encoder_i16_fwd_2026-08-02.md, its .ab.tsv, and the audit output
+# i16_fwd_audit_2026-08-02.txt.
+#
+# This is a CHANGE + its before/after measurement, not a profiling session:
+# lever 2 of benchmarks/encoder_hotspot_reprofile_2026-08-02.md ("bd8 i16-lane
+# FORWARD transform", +19.63 ms / 16.6 % of the gap projected). That ceiling is
+# ARITHMETIC ON A MEASURED SELF-COST, not a forecast of a change; this file is
+# what the change actually returned.
+
+date                 2026-08-02
+box                  Apple M4 Pro, 12 cores, 24 GiB, macOS 26.5.2 (Darwin arm64)
+baseline commit      590e5250 (main at session start; the re-profile's scoping banner)
+landing commits      0be3a43 (the i16 forward path), 7976c0f (gate the shift domains)
+worktree             zenav1-aom--i16fwd, detached
+libaom oracle        upstream/ submodule 03087864cf4bea6abb0d28f95cf7843511413d8f (v3.14.1)
+rustc                see `rustc -vV` in the log; stable toolchain
+build flags          --release, NO -C target-cpu=native (runtime SIMD dispatch, what users get)
+threading            single-threaded on every arm
+nice                 every measured run under `nice -n 19`
+
+## Profile cell — unchanged from all three prior encoder studies, for continuity
+
+1024x1024 photo, cq-level 44, cpu-used 6, ALLINTRA (usage 2), 8-bit 4:2:0,
+single tile, single thread. Source $HOME/tmp/xb/src/photo_1024.yuv (the file the
+2026-08-01 cross-encoder study, both encoder profiles and the allocation
+landing used). Every arm emits the same 4472-byte stream at this cell —
+verified by sha, not by byte count alone.
+
+## Arms
+
+Six port arms plus the C oracle, ONE binary each, all built from this one
+worktree by patching the two gate sites and restoring from git
+(~/tmp/i16fwd/build_arms.sh; sha-verified distinct):
+
+  base    590e5250, both gates absent
+  col     the i16 COLUMN pass only (the row gate short-circuited)
+  row     the i16 ROW pass only (the column gate short-circuited)
+  both    7976c0f as it ships
+  bothB   a SECOND COPY of the identical `both` binary — the box's noise floor,
+          measured rather than asserted (docs/DIFFERENTIAL_PLAYBOOK.md §6)
+  baseB   likewise on the PRE side, so the floor is measured at both ends
+  libaom-c  benchmarks/xbench/csrc/drv_libaom.c against the pinned oracle
+
+A second band (.halfbatch.tsv) compares `both` against a `half` arm that also
+runs 8-wide / 8-tall blocks as HALF batches, plus its own null. That extension
+measured NULL and was reverted; see the .md.
+
+The call-routing census in the .md ("(b) Half the forward-transform calls are
+structurally ineligible") came from a TEMPORARY atomic counter in
+try_fwd_col_pass / try_fwd_row_pass plus a throwaway
+crates/aom-bench/examples/fwd_i16_reach.rs, both removed before commit. Neither
+is in the tree; the numbers are one run of the profile cell.
+
+The two levers are measured separately even though they ship together, per
+§14's closing rule: `col` and `row` bite on different passes and there is no
+reason to assume they are additive.
+
+## Exact commands
+
+  git worktree add --detach ~/work/zen/zenav1-aom--i16fwd origin/main
+  git -C ~/work/zen/zenav1-aom--i16fwd submodule update --init
+
+  # the C oracle driver (the prebuilt libaom.a comes from the submodule build)
+  nice -n 19 cc -O2 -o benchmarks/xbench/target/drv_libaom \
+      benchmarks/xbench/csrc/drv_libaom.c -Iupstream -Iupstream/build \
+      -Lupstream/build -laom -lm -lc++
+
+  bash ~/tmp/i16fwd/build_arms.sh          # the port arms (base/col/row/both)
+  cp ~/tmp/i16fwd/drv-base ~/tmp/i16fwd/drv-baseB   # the two null arms
+  cp ~/tmp/i16fwd/drv-both ~/tmp/i16fwd/drv-bothB
+
+  nice -n 19 bash scripts/eprof_ab.sh 24 <out.tsv> \
+      base=~/tmp/i16fwd/drv-base baseB=~/tmp/i16fwd/drv-baseB \
+      col=~/tmp/i16fwd/drv-col row=~/tmp/i16fwd/drv-row \
+      both=~/tmp/i16fwd/drv-both bothB=~/tmp/i16fwd/drv-bothB \
+      libaom-c=~/tmp/i16fwd/drv-libaom-c
+  python3 scripts/eprof_ab_stats.py <out.tsv> --ref libaom-c --vs base
+
+## The audit
+
+  just audit-i16-fwd            # = python3 xtask/audit_i16_fwd.py --cells
+  just gen-txfm1d               # regenerates fwd1d_v3_i16_gen.rs (reproduces byte-identically)
+
+`xtask/audit_i16_fwd.py` is deterministic and needs nothing but the in-tree
+kernel sources, so every number in the .md's audit table is re-derivable by
+re-running it. `reference/extracted/` is gitignored; the six forward kernel
+bodies are re-extractable from `upstream/av1/encoder/av1_fwd_txfm1d.c` (the
+scalar regeneration was diffed against the committed `txfm1d_gen.rs` and
+differs only in the two `use` paths, which is the check that the extraction is
+the same one the committed kernels came from).
+
+## Byte-identity gate
+
+  AOM_CONFORMANCE_DIR=<primary checkout>/conformance/data \
+    cargo nextest run --cargo-profile test-fast -j 4 --workspace \
+      --no-fail-fast --run-ignored all                     # SIMD dispatch live
+  AOM_FORCE_SCALAR=1 <same>                                # scalar-pinned
+  cargo check --target x86_64-apple-darwin --workspace --all-targets
+
+`--run-ignored all` is included deliberately (the KB-PERF-1 session found two
+stale pins that way). The conformance corpus must be present or ~40 tests
+fail-loud with "conformance vector missing" — that is the fail-loud design
+working, not a regression; this worktree borrows the primary checkout's
+gitignored `conformance/data` READ-ONLY via `AOM_CONFORMANCE_DIR`.
+
+## Known gaps
+
+* ONE cell, one image, one content class. cpu-used 3/4/5/9 are not measured
+  here — the re-profile records that 9 (5.64x) and 4 (7.76x) are worse cells
+  and were never decomposed.
+* 8-bit 4:2:0 only. The i16 path's gate is a runtime bound so bd10/bd12 blocks
+  simply decline it, but that decline is not measured for cost.
+* Wall clock only. No instruction count (no valgrind on Apple Silicon), so
+  "half the lane width" and "less time" are two different measurements and only
+  the second is what the ratio moved on.
+* No multi-threaded measurement; neither arm is threaded.
+* x86-64: see the .md's own section. `cargo check --target x86_64-apple-darwin`
+  proves the AVX2 tier COMPILES; it is not a timing.
+
+## Committed data files
+
+  .ab.tsv         the 24-round interleaved band, 7 arms x 24 rounds
+  .halfbatch.tsv  the 24-round band for the rejected half-batch extension
+  i16_fwd_audit_2026-08-02.txt   `just audit-i16-fwd` output (M* + bd8 reach)

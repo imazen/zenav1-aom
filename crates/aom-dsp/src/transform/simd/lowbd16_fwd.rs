@@ -1095,6 +1095,22 @@ mod reach {
         }
     }
 
+    /// The two shift domains `try_fwd_col_pass` / `try_fwd_row_pass` gate on
+    /// are the WHOLE of `FWD_SHIFT` today, so those gate conditions are inert
+    /// — which is exactly why they are cheap insurance rather than a cost. If
+    /// a future shift table leaves these ranges this test says so, and the
+    /// affected cells route to the i32 pass instead of walking off the
+    /// `v+v; d+d` (== `<< 2`) and `rshift_mul` (== `round_shift`, bit 1..=4)
+    /// proofs.
+    #[test]
+    fn the_shift_table_stays_inside_the_gated_domains() {
+        for (ts, sh) in FWD_SHIFT.iter().enumerate() {
+            assert!(sh[0] == 0 || sh[0] == 2, "tx_size {ts}: shift[0] = {}", sh[0]);
+            assert!((0..=4).contains(&-(sh[1] as i32)), "tx_size {ts}: shift[1] = {}", sh[1]);
+            assert!((0..=4).contains(&-(sh[2] as i32)), "tx_size {ts}: shift[2] = {}", sh[2]);
+        }
+    }
+
     #[test]
     fn the_gate_fires_across_the_bd8_grid() {
         let mut rng = Rng(0x_0802_2026_7eac);

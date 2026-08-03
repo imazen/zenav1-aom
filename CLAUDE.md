@@ -3878,6 +3878,99 @@ different day, so the deltas are read against a live control.
   per transform block into `TxbEncode`, and the memset bytes themselves.
   Attacking it further means changing what the encoder *stores*, not where.
 
+### KB-PERF-3 — Encoder: the forward transform ran at HALF libaom's lane width — LANDED ✅ 2026-08-02, and the projection was 5x optimistic
+
+Lever **2** of `benchmarks/encoder_hotspot_reprofile_2026-08-02.md`
+(+19.63 ms / 16.6 % of the gap projected), and the **cross-platform** half of
+the bd8 lane-width programme — i16 lanes help NEON and AVX2 alike, unlike that
+ranking's ARM-only rank 1. Record:
+**`benchmarks/encoder_i16_fwd_2026-08-02.md`** (+ `.meta`, `.ab.tsv`,
+`.halfbatch.tsv`, `i16_fwd_audit_2026-08-02.txt`).
+
+**The defect, read from source rather than the profiler:** libaom's
+`fdct*/fadst*_neon` take `const int16x8_t *`
+(`upstream/av1/encoder/arm/av1_fwd_txfm2d_neon.c:401-1476`) while the port's
+`fwd_col_pass`/`fwd_row_pass` were `i32x8` and `widen16()`d on load — half the
+lane width for the same work — and `lowbd16.rs` had INVERSE kernels only.
+
+**MEASURED, 1024x1024 photo / cq 44 / cpu-used 6, 7 arms interleaved over 24
+rounds** (`scripts/eprof_ab.sh`, nulls on BOTH sides): base **154.474 ms** →
+**150.630 ms** vs libaom-c 47.187 ms; **3.2737x → 3.1922x**, −3.843 ms
+(paired-median −2.56 %). Nulls −0.06 % (`baseB`) / +0.16 % (`bothB`); the
+paired per-round ratios do not overlap (base 3.244-3.305, both 3.172-3.221).
+Column pass alone −1.700 ms, row pass alone −1.665 ms, and they compose
+**super-additively** to −3.843 (+0.48 ms, 3x the floor, unexplained).
+
+- **THE AUDIT IS THE WORK, and it is a different question from the inverse
+  one.** The inverse kernels `clamp_value` at every stage, so
+  `audit_i16_safety.py` asks a DOMAIN question. The forward kernels carry **no
+  clamp at all**, so nothing bounds a value except the input, and the new
+  `xtask/audit_i16_fwd.py` asks a BOUND question: it propagates each value's
+  EXACT linear form (`sum c_i*input_i + e`, coefficients as exact `Fraction`s)
+  and reports `M*`, the largest `|input|` keeping every value inside i16.
+  **Tight, not triangle-inequality** — the sign vertex attains `M*sum|c_i|`,
+  and the loose bound is 1.5-2x larger and would REJECT fdct32's column pass,
+  which is provably safe. `sum|c|` comes out at exactly `N*sqrt(2)/2` for the
+  whole fdct family, so `M*(fdctN) = floor(46340/N)`; that closed form was not
+  put in, it came out, and it is a check on the propagator.
+- **11 of 12 kernels have an i16 form.** M* (min over cos_bit 10..13): fdct4
+  11583, fdct8 5791, fdct16 2895, fdct32 1447, fdct64 723, fadst8 6419,
+  fadst16 3214, fidentity4/8/16/32 23167/16383/11583/8191. **REJECTED:
+  fadst4** — it works in a PRE-SHIFT domain (stage-1 values are `sinpi[j]*x`
+  held UNSHIFTED), `sum|c|` peaks at 21901 and `M*` is 1-11. No bound was
+  widened to admit it.
+- **The gate is taken at RUNTIME on the actual block** (`max|input| << shift0
+  <= M*` / `max|buf| <= M*`), so the path is sound for any caller of the public
+  `av1_fwd_txfm2d`, not only bd8 — out of range it declines and the i32 pass
+  runs. `try_fwd_col_pass`/`try_fwd_row_pass` additionally gate on the SHIFT
+  domains the two shift recipes are proved on (`shift0 in {0,2}` because the
+  input scale is written `v+v; d+d`; `shift1/2_bit in 0..=4` because that is
+  `rshift_mul`'s proof range), so a future `FWD_SHIFT` table cannot walk off
+  either proof — pinned inert by `the_shift_table_stays_inside_the_gated_domains`.
+- **THE CEILING WAS 5x OPTIMISTIC, and the mechanism says why** (playbook §14
+  again, one landing after KB-PERF-2's 18x). Two measurements, not an argument:
+  (a) the +19.63 ms row was taken BEFORE lever 3a, which already took −3.13 ms
+  out of these same two functions; (b) a temporary counter in both pass entry
+  points shows **only 51.6 % of column-pass calls and 55.1 % of row-pass calls
+  are even eligible** — 39 816 of 82 203 column calls are 8-wide and 33 671 of
+  74 938 row calls are 8-tall, which a 16-lane batch cannot fill. The honest
+  form of the lever is "half the vector width plus a cheaper `half_btf`, on the
+  half of the calls whose vectorized dimension is >= 16", and named that way it
+  is a ~2.5 % lever.
+- **The half-batch extension was BUILT, measured NULL, and reverted.** Running
+  the 8-dim blocks as half-idle 16-lane batches is not a silly idea — an
+  `i16x16` and an `i32x8` are both 256 bits, so the op count is equal while
+  `fbtf16` (widening madd, stays in i32) is much cheaper than `prims::hb`
+  (widens to i64 and back). Full implementation, differentials extended,
+  reach 81 → 129 column cells: **`half` vs `both` = −0.009 ms (−0.006 %)
+  against a same-binary null of +0.08 %.** Reverted — added surface and risk on
+  well-tested cells for zero measured benefit. Preserved at
+  `~/tmp/i16fwd/lowbd16_fwd_halfbatch.rs`; re-test it on x86 before believing
+  the null generalises.
+- **Gates: 957/957 with `--run-ignored all`, 0 skipped, in BOTH dispatch modes**
+  + `cargo check --target x86_64-apple-darwin --workspace --all-targets`.
+  Gate 2 keeps **zero pinned cells** across cpu-used 0..9; the three
+  `config_perm_*` evidence sweeps regenerate identical apart from the timing
+  column. Every arm (5 port builds + the C oracle) emits the same `.obu` **by
+  sha**.
+- **Non-vacuity, both directions.** `gate_bite::the_bound_is_load_bearing`
+  pins that every kernel genuinely DIVERGES outside `M*` (observed first
+  divergence 1.06x-2.97x M* — `M*` is sound but not attained, since `E` is a
+  worst case no single input realises), and
+  `reach::the_gate_fires_across_the_bd8_grid` pins that it FIRES on the real
+  domain (81/81 shape-eligible column cells, 70/73 row; the 3 declines are
+  TX_64X64 / TX_32X64 / TX_64X32 DCT_DCT, exactly what the audit predicts).
+  `txfm2d_simd_perm_diff` needed a **new bd8 residual arm**: its existing
+  forward arm is full-range i16, which is over `M*` for every kernel, so
+  without it the integration test could not reach this code at all (playbook
+  §1).
+- **x86-64 is NOT measured.** `cargo check --target x86_64-apple-darwin` proves
+  the AVX2 tier compiles; that is all. Since "cross-platform" is the whole
+  reason this lever outranks the CNN, that claim is currently an ARGUMENT.
+  `.github/workflows/winperf.yml` gained a generic **`arms: prepost`** mode in
+  this landing (base_sha vs HEAD + nulls on both sides, any landing) so the
+  number is one dispatch away against base_sha `590e5250` — not yet run.
+
 
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 
