@@ -360,6 +360,95 @@ pub fn ref_quantize_lp(
     (qcoeff, dqcoeff, eob)
 }
 
+// aom_dsp/fwd_txfm.c — the TX_4X4 forward DCTs `av1_block_yrd`'s `default:`
+// arm runs (nonrd_opt.c:246-263), i.e. the CODED-LOSSLESS estimate path
+// (`select_tx_mode` -> ONLY_4X4, rdopt_utils.h:392). `_lp` is the lowbd
+// (int16) sibling, the unsuffixed one the hbd (`tran_low_t`) one.
+//
+// Both are specialised `neon sse2` (aom_dsp_rtcd_defs.pl:680-684), and on
+// aarch64 the binding is at COMPILE time: `nm -go libaom.a` shows
+// `nonrd_opt.c.o: U _aom_fdct4x4_neon` / `U _aom_fdct4x4_lp_neon`, so
+// `av1_block_yrd` calls the NEON tier directly (LIBAOM_UPSTREAM_NOTES A5).
+// The `_lp` tiers agree with `_c` over the 9-bit lowbd residual; the hbd ones
+// do NOT (int16 registers vs `tran_high_t`) — the differentials measure both.
+unsafe extern "C" {
+    pub fn aom_fdct4x4_c(input: *const i16, output: *mut i32, stride: i32);
+    pub fn aom_fdct4x4_lp_c(input: *const i16, output: *mut i16, stride: i32);
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" {
+    pub fn aom_fdct4x4_neon(input: *const i16, output: *mut i32, stride: i32);
+    pub fn aom_fdct4x4_lp_neon(input: *const i16, output: *mut i16, stride: i32);
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe extern "C" {
+    pub fn aom_fdct4x4_sse2(input: *const i16, output: *mut i32, stride: i32);
+    pub fn aom_fdct4x4_lp_sse2(input: *const i16, output: *mut i16, stride: i32);
+}
+
+/// Reference `aom_fdct4x4_lp_c` — 16 int16 coefficients in the NORMAL
+/// (non-transposed) order `av1_scan_orders[TX_4X4][DCT_DCT]` expects.
+pub fn ref_fdct4x4_lp(input: &[i16], stride: usize) -> Vec<i16> {
+    let mut out = vec![0i16; 16];
+    unsafe { aom_fdct4x4_lp_c(input.as_ptr(), out.as_mut_ptr(), stride as i32) }
+    out
+}
+
+/// The specialised tier of `aom_fdct4x4_lp` where one exists, else `_c`.
+pub fn ref_fdct4x4_lp_simd(input: &[i16], stride: usize) -> Vec<i16> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut out = vec![0i16; 16];
+        unsafe { aom_fdct4x4_lp_neon(input.as_ptr(), out.as_mut_ptr(), stride as i32) }
+        out
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut out = vec![0i16; 16];
+        unsafe { aom_fdct4x4_lp_sse2(input.as_ptr(), out.as_mut_ptr(), stride as i32) }
+        out
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        ref_fdct4x4_lp(input, stride)
+    }
+}
+
+/// Reference `aom_fdct4x4_c` — 16 `tran_low_t` (int32) coefficients.
+pub fn ref_fdct4x4(input: &[i16], stride: usize) -> Vec<i32> {
+    let mut out = vec![0i32; 16];
+    unsafe { aom_fdct4x4_c(input.as_ptr(), out.as_mut_ptr(), stride as i32) }
+    out
+}
+
+/// The specialised tier of `aom_fdct4x4` where one exists, else `_c` — i.e.
+/// **what `av1_block_yrd`'s hbd TX_4X4 arm actually calls** on this target.
+pub fn ref_fdct4x4_simd(input: &[i16], stride: usize) -> Vec<i32> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut out = vec![0i32; 16];
+        unsafe { aom_fdct4x4_neon(input.as_ptr(), out.as_mut_ptr(), stride as i32) }
+        out
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut out = vec![0i32; 16];
+        unsafe { aom_fdct4x4_sse2(input.as_ptr(), out.as_mut_ptr(), stride as i32) }
+        out
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        ref_fdct4x4(input, stride)
+    }
+}
+
+/// True when [`ref_fdct4x4_simd`] / [`ref_fdct4x4_lp_simd`] are genuinely a
+/// different kernel from `_c` on this target (non-vacuity, playbook §2).
+pub const REF_FDCT4X4_SIMD_IS_DISTINCT: bool =
+    cfg!(any(target_arch = "aarch64", target_arch = "x86_64"));
+
 /// Reference `aom_avg_4x4_c` (lowbd): `src` must hold 4 rows of 4 samples at
 /// `stride`; returns `(sum + 8) >> 4`. The variance-based partitioner's
 /// KEY-frame 4x4 downsampling kernel (var_based_part.c

@@ -340,8 +340,39 @@ pub fn hadamard_lp_16x16(src_diff: &[i16], src_stride: usize, coeff: &mut [i16])
     }
 }
 
-/// `aom_fdct4x4_lp_c` (aom_dsp/fwd_txfm.c:85). Reachable only at lossless
-/// (TX_4X4) — outside the canon envelope, ported for completeness.
+/// `aom_fdct4x4_lp_c` (aom_dsp/fwd_txfm.c:85-146). The lowbd `av1_block_yrd`
+/// TX_4X4 kernel, reached when `cm->features.coded_lossless` forces
+/// `select_tx_mode` to `ONLY_4X4` (rdopt_utils.h:392) — see
+/// [`nonrd_leaf_tx_size`].
+///
+/// ## Why this is `_c` and NOT ISA-conditional (unlike [`fdct4x4_dispatched`])
+/// `aom_fdct4x4_lp` specializes `neon sse2` (aom_dsp_rtcd_defs.pl:683-684) and
+/// both tiers compute the whole transform in `int16` registers, where `_c`
+/// carries `int32 in_high[]` / `int32 step[]`. The tiers therefore agree with
+/// `_c` only while every intermediate fits `int16` — and on THIS call path they
+/// always do, because the lowbd arm's residual is 9-bit:
+///
+/// * pass 0: `|in_high| <= 255 * 16 + 1 = 4081`, `|step| <= 8162`, so
+///   `|(step0+step1) * cospi_16_64| <= 16324 * 11585` and the `>> 14` leaves
+///   `|temp| <= 11544`;
+/// * pass 1: `|in_high| <= 11544`, `|step| <= 23088`, and the largest term is
+///   `(step0+step1) * cospi_16_64= 46176 * 11585` whose `>> 14` is **32654** —
+///   under `i16::MAX`. (libaom asserts the same bound in prose: "output is 16
+///   bit".)
+///
+/// so `_mm_packs_epi32` (saturating, fwd_txfm_impl_sse2.h:144/181) never
+/// saturates, `vrshrn_n_s32` (truncating narrow, fwd_txfm_neon.c:56-71) never
+/// truncates, and `_mm_slli_epi16` / `vshl_n_s16` (fwd_txfm_impl_sse2.h:83-84,
+/// fwd_txfm_neon.c:24-27) never wrap. The hbd sibling has no such bound, which
+/// is exactly why it needs a dispatched model.
+///
+/// VERIFIED 2026-08-03 (was a `// HANDOFF:` below): `aom_fdct4x4_lp_c` DOES
+/// carry the trailing `(output[j + i * 4] + 1) >> 2` loop, at fwd_txfm.c:143-146
+/// — byte-for-byte the same loop `aom_fdct4x4_c` has at :78-81. Both SIMD tiers
+/// fold it into the second pass's shift (`DCT_CONST_ROUNDING2` /
+/// `DCT_CONST_BITS2` at fwd_txfm_impl_sse2.h:66-68, the `vshrq_n_s16(vaddq_s16
+/// (out, one), 2)` at fwd_txfm_neon.c:108-113), which is the same integer:
+/// `floor((floor(x / 2^14) + 1) / 4) == floor((x + 2^14) / 2^16)`.
 pub fn fdct4x4_lp(input: &[i16], output: &mut [i16], stride: usize) {
     // cospi constants (aom_dsp/txfm_common.h).
     const COSPI_16_64: i32 = 11585;
@@ -391,11 +422,8 @@ pub fn fdct4x4_lp(input: &[i16], output: &mut [i16], stride: usize) {
             }
         }
     }
-    // C post-pass: output[j] = (output[j] + 1) >> 2 (fwd_txfm.c:150-ish).
-    // HANDOFF: verify the final rounding loop of aom_fdct4x4_lp_c —
-    // read past line 145; the fdct4x4 (non-lp) does
-    // `(out + 1) >> 2`; confirm the lp variant matches before ANY lossless
-    // speed-8 use. (Unreachable on the canon grid.)
+    // C post-pass (fwd_txfm.c:143-146, VERIFIED — see the doc comment):
+    //   for (i) for (j) output[j + i * 4] = (output[j + i * 4] + 1) >> 2;
     for v in output[..16].iter_mut() {
         *v = (*v + 1) >> 2;
     }
@@ -611,13 +639,36 @@ pub fn block_yrd_lowbd(
                     )
                 }
                 _ => {
-                    // TX_4X4: aom_fdct4x4_lp + the NORMAL default 4x4 scan
-                    // (av1_scan_orders[TX_4X4][DCT_DCT] — no transpose,
-                    // nonrd_opt.c:252 comment). Lossless-only.
-                    // HANDOFF: wire av1_scan_orders[TX_4X4][DCT_DCT].scan from
-                    // aom-entropy's scan tables (default_scan_4x4) if a
-                    // lossless speed-8 envelope ever opens.
-                    unimplemented!("TX_4X4 block_yrd (lossless) — out of canon envelope")
+                    // TX_4X4 — C's `default:` arm, `assert(tx_size == TX_4X4)`
+                    // (nonrd_opt.c:246-247), lowbd half at :258-263.
+                    //
+                    // The scan is `scan_order->scan` where `scan_order =
+                    // &av1_scan_orders[tx_size][DCT_DCT]` (nonrd_opt.c:185),
+                    // i.e. `av1_scan_orders[TX_4X4][DCT_DCT]` =
+                    // `{ default_scan_4x4, av1_default_iscan_4x4 }`
+                    // (scan.c:1669). NOT one of the transposed scans the 8x8 /
+                    // 16x16 arms use, and C says why at :248-250: "In
+                    // tx_size=4x4 case, aom_fdct4x4 and aom_fdct4x4_lp generate
+                    // normal coefficients order, so we don't need to change the
+                    // scan order here."
+                    //
+                    // NOTE the transform is the **DCT**, at lossless too:
+                    // `av1_block_yrd` is the nonrd RD *estimate* and dispatches
+                    // on `tx_size` alone — it never reads `xd->lossless[]` and
+                    // never calls `av1_fwht4x4`. (The WHT belongs to the recon /
+                    // coding path, `av1_quick_txfm` -> `hybrid_fwd_txfm.c:83-86`;
+                    // KB-5 wired that separately.) Do not "fix" this to a WHT.
+                    fdct4x4_lp(src_diff, &mut coeff, diff_stride);
+                    quantize_lp(
+                        &coeff,
+                        16,
+                        round_fp,
+                        quant_fp,
+                        &mut qcoeff,
+                        &mut dqcoeff,
+                        dequant,
+                        aom_dsp::txb::scan(0, 0),
+                    )
                 }
             };
             // update_yrd_loop_vars (nonrd_opt.c:43).
@@ -751,6 +802,288 @@ pub fn hadamard_16x16_models(src: &[i16], src_stride: usize) -> ([i32; 256], [i3
     (
         aom_dsp::dist::hadamard::hadamard_16x16(src, src_stride),
         hadamard_16x16_dispatched(src, src_stride),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// aom_fdct4x4 AS DISPATCHED — the hbd lossless TX_4X4 kernel, ISA-conditional
+// for the same reason `aom_hadamard_16x16` is (KB-20 root #4's shape).
+// ---------------------------------------------------------------------------
+
+/// cospi constants shared by every `aom_fdct4x4*` model
+/// (aom_dsp/txfm_common.h:115/123/131 + `DCT_CONST_BITS` :18).
+const COSPI_8_64: i32 = 15137;
+const COSPI_16_64: i32 = 11585;
+const COSPI_24_64: i32 = 6270;
+const DCT_CONST_BITS: u32 = 14;
+
+/// `aom_fdct4x4_c` (aom_dsp/fwd_txfm.c:16-82) — `tran_high_t` (int64)
+/// butterflies, `tran_low_t` (int32) intermediates and output.
+fn fdct4x4_c_model(input: &[i16], stride: usize) -> [i32; 16] {
+    #[inline]
+    fn fdct_round_shift(v: i64) -> i64 {
+        // ROUND_POWER_OF_TWO(input, DCT_CONST_BITS) (txfm_common.h:150-152).
+        (v + (1 << (DCT_CONST_BITS - 1))) >> DCT_CONST_BITS
+    }
+    let mut intermediate = [0i32; 16];
+    let mut output = [0i32; 16];
+    for pass in 0..2 {
+        for i in 0..4 {
+            let mut in_high = [0i64; 4];
+            if pass == 0 {
+                // `in_high[k] = input[k * stride] * 16` with `input` advanced
+                // once per column (C :31-38).
+                for (k, slot) in in_high.iter_mut().enumerate() {
+                    *slot = i64::from(input[k * stride + i]) * 16;
+                }
+                if i == 0 && in_high[0] != 0 {
+                    in_high[0] += 1;
+                }
+            } else {
+                for (k, slot) in in_high.iter_mut().enumerate() {
+                    *slot = i64::from(intermediate[k * 4 + i]);
+                }
+            }
+            let step = [
+                in_high[0] + in_high[3],
+                in_high[1] + in_high[2],
+                in_high[1] - in_high[2],
+                in_high[0] - in_high[3],
+            ];
+            let mut temp = [0i32; 4];
+            temp[0] = fdct_round_shift((step[0] + step[1]) * i64::from(COSPI_16_64)) as i32;
+            temp[2] = fdct_round_shift((step[0] - step[1]) * i64::from(COSPI_16_64)) as i32;
+            temp[1] = fdct_round_shift(
+                step[2] * i64::from(COSPI_24_64) + step[3] * i64::from(COSPI_8_64),
+            ) as i32;
+            temp[3] = fdct_round_shift(
+                -step[2] * i64::from(COSPI_8_64) + step[3] * i64::from(COSPI_24_64),
+            ) as i32;
+            for k in 0..4 {
+                if pass == 0 {
+                    intermediate[i * 4 + k] = temp[k];
+                } else {
+                    output[k * 4 + i] = temp[k];
+                }
+            }
+        }
+    }
+    // C :77-81.
+    for v in output.iter_mut() {
+        *v = (*v + 1) >> 2;
+    }
+    output
+}
+
+/// `aom_fdct4x4_neon` (aom_dsp/arm/fwd_txfm_neon.c:85-99) + its
+/// `aom_fdct4x4_helper` (:21-83): **every** stage lives in `int16` registers.
+///
+/// Register `r[j]` is a `int16x4_t` holding ROW `j` (`vld1_s16(input + j *
+/// stride)`), lane = column. `vshl_n_s16(.., 4)` is the ×16 and it WRAPS;
+/// `vrshrn_n_s32(v, 14)` is a rounding shift with a **truncating** narrow;
+/// `vaddq_s16`/`vsubq_s16` wrap. The butterfly sums that feed the multiplies
+/// are widened first (`vaddl_s16`/`vsubl_s16`/`vmull_n_s16`/`vmlal_n_s16`), so
+/// only the register-resident values are 16-bit.
+#[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
+fn fdct4x4_neon_model(input: &[i16], stride: usize) -> [i32; 16] {
+    #[inline]
+    fn vrshrn_n_s32_14(v: i32) -> i16 {
+        // Rounding shift right by 14, then a NON-saturating narrow to int16.
+        ((v + (1 << (DCT_CONST_BITS - 1))) >> DCT_CONST_BITS) as i16
+    }
+    let mut r = [[0i16; 4]; 4];
+    for (j, row) in r.iter_mut().enumerate() {
+        for (lane, slot) in row.iter_mut().enumerate() {
+            *slot = input[j * stride + lane].wrapping_mul(16);
+        }
+    }
+    // "If the very first value != 0, then add 1" (:28-32) — the `one` vector is
+    // `vdup_n_s64(1)` reinterpreted as int16 lanes, i.e. {1, 0, 0, 0}, so only
+    // element (row 0, column 0) moves. The predicate reads the UNSHIFTED input.
+    if input[0] != 0 {
+        r[0][0] = r[0][0].wrapping_add(1);
+    }
+    for pass in 0..2 {
+        let mut o = [[0i16; 4]; 4];
+        for lane in 0..4 {
+            // s_0 = vget_low_s16(s_01)  = input_0 + input_3   (step[0])
+            // s_1 = vget_high_s16(s_01) = input_1 + input_2   (step[1])
+            // s_2 = vget_high_s16(s_32) = input_1 - input_2   (step[2])
+            // s_3 = vget_low_s16(s_32)  = input_0 - input_3   (step[3])
+            let s0 = r[0][lane].wrapping_add(r[3][lane]);
+            let s1 = r[1][lane].wrapping_add(r[2][lane]);
+            let s2 = r[1][lane].wrapping_sub(r[2][lane]);
+            let s3 = r[0][lane].wrapping_sub(r[3][lane]);
+            let (s0, s1, s2, s3) = (i32::from(s0), i32::from(s1), i32::from(s2), i32::from(s3));
+            o[0][lane] = vrshrn_n_s32_14((s0 + s1) * COSPI_16_64);
+            o[2][lane] = vrshrn_n_s32_14((s0 - s1) * COSPI_16_64);
+            // vmlal_n_s16(vmull_n_s16(s_3, cospi_8_64), s_2, cospi_24_64)
+            o[1][lane] = vrshrn_n_s32_14(s3 * COSPI_8_64 + s2 * COSPI_24_64);
+            // vmlsl_n_s16(vmull_n_s16(s_3, cospi_24_64), s_2, cospi_8_64)
+            o[3][lane] = vrshrn_n_s32_14(s3 * COSPI_24_64 - s2 * COSPI_8_64);
+        }
+        if pass == 0 {
+            // transpose_elems_inplace_s16_4x4 (:74): new row j = old column j.
+            for (j, row) in r.iter_mut().enumerate() {
+                for (lane, slot) in row.iter_mut().enumerate() {
+                    *slot = o[lane][j];
+                }
+            }
+        } else {
+            r = o;
+        }
+    }
+    // "Not quite a rounding shift. Only add 1 despite shifting by 2." (:90-96),
+    // then store_s16q_to_tran_low sign-extends. Register j lands at
+    // final_output[j * 4 ..], which is `_c`'s `output[k * 4 + i]` layout.
+    let mut out = [0i32; 16];
+    for j in 0..4 {
+        for lane in 0..4 {
+            out[j * 4 + lane] = i32::from((r[j][lane].wrapping_add(1)) >> 2);
+        }
+    }
+    out
+}
+
+/// `aom_fdct4x4_sse2` (aom_dsp/x86/fwd_txfm_sse2.c:23 -> the
+/// `FDCT4x4_2D_HELPER` / `FDCT4x4_2D` bodies in
+/// aom_dsp/x86/fwd_txfm_impl_sse2.h:34-203, built with
+/// `DCT_HIGH_BIT_DEPTH 0` so `ADD_EPI16`/`SUB_EPI16` are the **wrapping**
+/// `_mm_add_epi16`/`_mm_sub_epi16`).
+///
+/// Same int16-register structure as the NEON tier, with three differences that
+/// are only visible outside `int16`:
+/// * the stage boundaries narrow with `_mm_packs_epi32` — **saturating** where
+///   NEON's `vrshrn_n_s32` truncates (:144-145, :180-181);
+/// * the second pass fuses the trailing `(v + 1) >> 2` into its rounding shift
+///   (`DCT_CONST_ROUNDING2` = `R + 2R`, `DCT_CONST_BITS2` = 16, :66-68 and the
+///   comment at :171-174 saying it exists "to maintain bit-accurate
+///   compatibility with the c version ... which has two rounding steps in a
+///   row"), so there is no int16 truncation between them;
+/// * the nonzero bias is computed as a compare-mask against
+///   `k__nonzero_bias_a = {0,1,1,1,1,1,1,1}` on the ALREADY-shifted values
+///   (:88-98) rather than on the raw input.
+///
+/// The bias difference is inert on every reachable input: lanes 1..7 compare
+/// against 1 and a value that has been `<< 4` is `≡ 0 (mod 16)` even after
+/// wrapping, so it can never equal 1 (libaom argues this itself at :89-92); and
+/// lane 0's `(x << 4) == 0` differs from NEON's `x != 0` only when
+/// `x ≡ 0 (mod 4096)` with `x != 0`, i.e. `|x| >= 4096`, which no residual
+/// reaches (the widest is bd12's `[-4095, 4095]`).
+///
+/// **NOT locally measurable on an aarch64 box** — this arm rests on the C
+/// source above plus the x86 CI leg of the lossless byte gate, exactly like
+/// [`hadamard_16x16_dispatched`]'s.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn fdct4x4_sse2_model(input: &[i16], stride: usize) -> [i32; 16] {
+    #[inline]
+    fn packs_epi32(v: i32) -> i16 {
+        v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+    }
+    let mut r = [[0i16; 4]; 4];
+    for (j, row) in r.iter_mut().enumerate() {
+        for (lane, slot) in row.iter_mut().enumerate() {
+            // _mm_slli_epi16(in, 4) — wraps.
+            *slot = input[j * stride + lane].wrapping_mul(16);
+        }
+    }
+    if r[0][0] == 0 {
+        // mask = -1, v = v - 1 + 1 = v (:94-97).
+    } else {
+        r[0][0] = r[0][0].wrapping_add(1);
+    }
+    // Pass 0 (:100-152): `_mm_madd_epi16` does the two products and their sum
+    // in int32, so only the butterfly ADDS are 16-bit; `_mm_packs_epi32`
+    // saturates on the way out.
+    let mut mid = [[0i16; 4]; 4];
+    for col in 0..4 {
+        let s0 = r[0][col].wrapping_add(r[3][col]);
+        let s1 = r[1][col].wrapping_add(r[2][col]);
+        let s2 = r[1][col].wrapping_sub(r[2][col]);
+        let s3 = r[0][col].wrapping_sub(r[3][col]);
+        let (s0, s1, s2, s3) = (i32::from(s0), i32::from(s1), i32::from(s2), i32::from(s3));
+        let rnd = 1 << (DCT_CONST_BITS - 1);
+        mid[0][col] = packs_epi32((s0 * COSPI_16_64 + s1 * COSPI_16_64 + rnd) >> DCT_CONST_BITS);
+        mid[2][col] = packs_epi32((s0 * COSPI_16_64 - s1 * COSPI_16_64 + rnd) >> DCT_CONST_BITS);
+        mid[1][col] = packs_epi32((s3 * COSPI_8_64 + s2 * COSPI_24_64 + rnd) >> DCT_CONST_BITS);
+        mid[3][col] = packs_epi32((s3 * COSPI_24_64 - s2 * COSPI_8_64 + rnd) >> DCT_CONST_BITS);
+    }
+    // Pass 1 (:154-186), with the `(v + 1) >> 2` fused into the shift.
+    let rnd2 = (1i32 << (DCT_CONST_BITS - 1)) + (1i32 << DCT_CONST_BITS);
+    const DCT_CONST_BITS2: u32 = DCT_CONST_BITS + 2;
+    let mut out = [0i32; 16];
+    for row in 0..4 {
+        let s0 = mid[row][0].wrapping_add(mid[row][3]);
+        let s1 = mid[row][1].wrapping_add(mid[row][2]);
+        let s2 = mid[row][1].wrapping_sub(mid[row][2]);
+        let s3 = mid[row][0].wrapping_sub(mid[row][3]);
+        let (s0, s1, s2, s3) = (i32::from(s0), i32::from(s1), i32::from(s2), i32::from(s3));
+        out[row] = i32::from(packs_epi32(
+            (s0 * COSPI_16_64 + s1 * COSPI_16_64 + rnd2) >> DCT_CONST_BITS2,
+        ));
+        out[2 * 4 + row] = i32::from(packs_epi32(
+            (s0 * COSPI_16_64 - s1 * COSPI_16_64 + rnd2) >> DCT_CONST_BITS2,
+        ));
+        out[4 + row] = i32::from(packs_epi32(
+            (s3 * COSPI_8_64 + s2 * COSPI_24_64 + rnd2) >> DCT_CONST_BITS2,
+        ));
+        out[3 * 4 + row] = i32::from(packs_epi32(
+            (s3 * COSPI_24_64 - s2 * COSPI_8_64 + rnd2) >> DCT_CONST_BITS2,
+        ));
+    }
+    out
+}
+
+/// `aom_fdct4x4` **as the reference build actually dispatches it**
+/// (`specialize qw/aom_fdct4x4 neon sse2/`, aom_dsp_rtcd_defs.pl:680-681).
+///
+/// ## Why this is ISA-conditional and [`fdct4x4_lp`] is not
+/// The two tiers keep every intermediate in `int16` while `aom_fdct4x4_c`
+/// carries `tran_high_t` (int64) butterflies into `tran_low_t` (int32) stores.
+/// On the lowbd call path the 9-bit residual keeps every value inside `int16`
+/// (see [`fdct4x4_lp`]'s bound), so the split is invisible. **This** function
+/// is called only from the hbd arm of `av1_block_yrd` (nonrd_opt.c:251-257),
+/// where the residual is 11- or 13-bit and the split is real:
+///
+/// * bd10 (`|residual| <= 1023`): pass 0's `|step| <= 32738` still fits, but
+///   `((step0+step1) * cospi_16_64) >> 14` reaches **46296** — NEON's
+///   `vrshrn_n_s32` wraps it to a negative int16, SSE2's `_mm_packs_epi32`
+///   clamps it to 32767, and `_c` keeps 46296;
+/// * bd12 (`|residual| <= 4095`): the `<< 4` itself wraps (`4095 * 16 = 65520`
+///   is `-16` in int16), so all three tiers part company in the first stage.
+///
+/// This is the same shape as [`hadamard_16x16_dispatched`] and
+/// [`quantize_fp_dispatched`]: libaom's own encoder is ISA-conditional here, so
+/// a bit-exact port must be too.
+#[inline]
+fn fdct4x4_dispatched(input: &[i16], stride: usize) -> [i32; 16] {
+    #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
+    {
+        fdct4x4_neon_model(input, stride)
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        fdct4x4_sse2_model(input, stride)
+    }
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "x86",
+        target_arch = "x86_64"
+    )))]
+    {
+        // No SIMD tier for this ISA in libaom -> aom_fdct4x4_c semantics.
+        fdct4x4_c_model(input, stride)
+    }
+}
+
+/// Test hook: the `_c` model of `aom_fdct4x4` and the as-dispatched one, side
+/// by side — the [`hadamard_16x16_models`] pattern, for the same reason.
+#[doc(hidden)]
+pub fn fdct4x4_models(input: &[i16], stride: usize) -> ([i32; 16], [i32; 16]) {
+    (
+        fdct4x4_c_model(input, stride),
+        fdct4x4_dispatched(input, stride),
     )
 }
 
@@ -1029,11 +1362,24 @@ pub fn block_yrd_hbd(
                     )
                 }
                 _ => {
-                    // TX_4X4: aom_fdct4x4 + av1_quantize_fp over the NORMAL
-                    // av1_scan_orders[TX_4X4][DCT_DCT] pair (no transpose,
-                    // nonrd_opt.c:250). Lossless-only — the same envelope hole
-                    // the lowbd arm has.
-                    unimplemented!("TX_4X4 block_yrd hbd (lossless) — out of canon envelope")
+                    // TX_4X4, hbd half of C's `default:` arm
+                    // (nonrd_opt.c:246-257): `aom_fdct4x4` + `av1_quantize_fp`
+                    // over `scan_order->{scan,iscan}` =
+                    // `av1_scan_orders[TX_4X4][DCT_DCT]` (:185, scan.c:1669) —
+                    // the NORMAL 4x4 pair, no transpose, for the reason C gives
+                    // at :248-250. Reached when coded_lossless forces ONLY_4X4
+                    // (rdopt_utils.h:392); see [`nonrd_leaf_tx_size`].
+                    coeff[..16].copy_from_slice(&fdct4x4_dispatched(src_diff, diff_stride));
+                    quantize_fp_dispatched(
+                        &coeff[..16],
+                        &r2,
+                        &q2,
+                        &d2,
+                        aom_dsp::txb::scan(0, 0),
+                        aom_dsp::txb::iscan(0, 0),
+                        &mut qcoeff[..16],
+                        &mut dqcoeff[..16],
+                    )
                 }
             };
             // update_yrd_loop_vars_hbd (nonrd_opt.c:92).
@@ -1200,12 +1546,24 @@ pub fn nonrd_palette_arm_is_live(
     try_palette
 }
 
-pub fn nonrd_leaf_tx_size(bsize: usize) -> usize {
+pub fn nonrd_leaf_tx_size(bsize: usize, lossless: bool) -> usize {
+    // `AOMMIN(max_txsize_lookup[bsize], tx_mode_to_biggest_tx_size[
+    // txfm_params->tx_mode_search_type])` (nonrd_pickmode.c:1591-1593).
+    //
+    // The second operand is NOT a constant: `set_tx_size_search_method`
+    // (rdopt_utils.h:493-494) fills `tx_mode_search_type` from
+    // `select_tx_mode(cm, ..)`, whose FIRST line is
+    // `if (cm->features.coded_lossless) return ONLY_4X4;` (rdopt_utils.h:392),
+    // and `tx_mode_to_biggest_tx_size[ONLY_4X4] = TX_4X4` (common_data.h:368-372).
+    // So at coded-lossless every leaf signals TX_4X4 — which is what C's own
+    // `assert(IMPLIES(xd->lossless[mi->segment_id], mi->tx_size == TX_4X4))`
+    // (nonrd_pickmode.c:1594) states. Off lossless the type is TX_MODE_SELECT
+    // (or TX_MODE_LARGEST, same value here), i.e. TX_64X64.
+    let biggest = if lossless { 0 } else { 4 };
     // `max_txsize_lookup[]` verbatim (common_data.h:105-124), BLOCK_SIZES_ALL
     // order — the square tx of the SHORT side, so it is smaller than the block
-    // for every non-square `bsize`. `AOMMIN(.., tx_mode_to_biggest_tx_size[
-    // TX_MODE_SELECT] = TX_64X64)` is the identity on this table (its maximum
-    // IS TX_64X64), so no cap is applied.
+    // for every non-square `bsize`. `AOMMIN(.., TX_64X64)` is the identity on
+    // this table (its maximum IS TX_64X64), so no cap is applied off lossless.
     const MAX_TXSIZE_LOOKUP: [usize; 22] = [
         0, // 4X4                         TX_4X4
         0, 0, 1, // 4X8,     8X4,     8X8      TX_4X4,   TX_4X4,   TX_8X8
@@ -1217,7 +1575,7 @@ pub fn nonrd_leaf_tx_size(bsize: usize) -> usize {
         0, 0, 1, // 4X16,    16X4,    8X32     TX_4X4,   TX_4X4,   TX_8X8
         1, 2, 2, // 32X8,    16X64,   64X16    TX_8X8,   TX_16X16, TX_16X16
     ];
-    MAX_TXSIZE_LOOKUP[bsize]
+    MAX_TXSIZE_LOOKUP[bsize].min(biggest)
 }
 
 /// `txsize_to_bsize[]` (common_data.h:280-284) for the five SQUARE tx sizes —
@@ -1404,7 +1762,7 @@ pub fn nonrd_pick_intra_mode(
     let mi_h = MI_H[bsize];
     let bw = mi_w * 4;
     let bh = mi_h * 4;
-    let tx_size_full = nonrd_leaf_tx_size(bsize); // mi->tx_size (signalled)
+    let tx_size_full = nonrd_leaf_tx_size(bsize, env.lossless); // mi->tx_size (signalled)
     let tx_clamped = tx_size_full.min(2); // AOMMIN(tx_size, TX_16X16) for block_yrd
     // `tx_bsize = txsize_to_bsize[mi->tx_size]` (nonrd_pickmode.c:1594) — the
     // per-visit block C hands `av1_block_yrd` as `bsize_tx`.
@@ -1470,15 +1828,18 @@ pub fn nonrd_pick_intra_mode(
     let allow_skip_nondc = true; // flat_blocks_screen is REALTIME+SCREEN only → const true (ALLINTRA)
 
     // The txb visit list, `av1_foreach_transformed_block_in_plane` (encodemb.c:
-    // 536-585) evaluated once — it does not depend on the mode. 4 is the true
-    // maximum over BLOCK_SIZES_ALL (`max_txsize_lookup` is never more than one
-    // "step" below the block on either axis); the array is 8 with an assert so
-    // an unexpected shape fails loudly instead of truncating.
-    let mut visits = [(0usize, 0usize); 8];
-    let mut n_visits = 0usize;
+    // 536-585) evaluated once — it does not depend on the mode.
+    //
+    // The count is `(walk_blocks_wide / tx_w4) * (walk_blocks_high / tx_h4)`
+    // rounded up per mu-chunk. Off lossless it is at most 4 (`max_txsize_lookup`
+    // is never more than one "step" below the block on either axis) and this was
+    // a `[_; 8]` stack array. At coded-lossless `nonrd_leaf_tx_size` returns
+    // TX_4X4 for EVERY bsize, so a 128x128 leaf walks 32x32 = 1024 txbs and the
+    // fixed array would have tripped its own assert. Sized from the walk instead.
+    let mut visits: Vec<(usize, usize)> =
+        Vec::with_capacity(if single_txb { 1 } else { mi_w * mi_h });
     if single_txb {
-        visits[0] = (0, 0);
-        n_visits = 1;
+        visits.push((0, 0));
     } else {
         let mut chunk_r = 0usize;
         while chunk_r < walk_blocks_high {
@@ -1490,14 +1851,7 @@ pub fn nonrd_pick_intra_mode(
                 while blk_row < unit_h {
                     let mut blk_col = chunk_c;
                     while blk_col < unit_w {
-                        assert!(
-                            n_visits < visits.len(),
-                            "nonrd estimate arm: bsize {bsize} / tx_size {tx_size_full} needs \
-                             more than {} txb visits — widen `visits`",
-                            visits.len()
-                        );
-                        visits[n_visits] = (blk_row, blk_col);
-                        n_visits += 1;
+                        visits.push((blk_row, blk_col));
                         blk_col += tx_w4;
                     }
                     blk_row += tx_h4;
@@ -1507,9 +1861,12 @@ pub fn nonrd_pick_intra_mode(
             chunk_r += mu_h;
         }
         // encodemb.c:584 `assert(i >= 1)`.
-        assert!(n_visits >= 1, "the txb walk visited nothing at bsize {bsize}");
+        assert!(
+            !visits.is_empty(),
+            "the txb walk visited nothing at bsize {bsize}"
+        );
     }
-    let visits = &visits[..n_visits];
+    let visits = &visits[..];
 
     let mut diff = vec![0i16; tx_bw * tx_bh];
     let mut pred = vec![0u16; tx_bw * tx_bh];
@@ -2107,7 +2464,7 @@ mod tests {
     fn nonrd_leaf_tx_size_is_the_largest_square_tx_that_fits() {
         for bsize in 0..22usize {
             let (w, h) = (MI_W[bsize] * 4, MI_H[bsize] * 4);
-            let tx = nonrd_leaf_tx_size(bsize);
+            let tx = nonrd_leaf_tx_size(bsize, false);
             let side = 4usize << tx;
             assert!(
                 side <= w && side <= h,
@@ -2146,7 +2503,7 @@ mod tests {
     #[test]
     fn kb34_key_rect_leaves_are_two_txbs_each() {
         for bsize in [4usize, 5, 7, 8] {
-            let tx_b = TXSIZE_TO_BSIZE[nonrd_leaf_tx_size(bsize)];
+            let tx_b = TXSIZE_TO_BSIZE[nonrd_leaf_tx_size(bsize, false)];
             let n = (MI_W[bsize] / MI_W[tx_b]) * (MI_H[bsize] / MI_H[tx_b]);
             assert_eq!(n, 2, "bsize {bsize} splits into {n} txbs, expected 2");
         }

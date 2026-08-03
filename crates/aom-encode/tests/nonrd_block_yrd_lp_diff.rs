@@ -42,7 +42,7 @@
 
 use aom_encode::nonrd_pickmode::{
     DEFAULT_SCAN_8X8_TRANSPOSE, DEFAULT_SCAN_LP_16X16_TRANSPOSE, block_error_lp, block_yrd_lowbd,
-    hadamard_lp_8x8, hadamard_lp_16x16, quantize_lp, satd_lp,
+    fdct4x4_lp, hadamard_lp_8x8, hadamard_lp_16x16, quantize_lp, satd_lp,
 };
 use aom_sys_ref as c;
 
@@ -91,9 +91,22 @@ fn get_msb(n: u32) -> i32 {
 /// (`(void)iscan`, av1_quantize.c:219) but the C signature demands a pointer.
 fn lp_scan(tx_size: usize) -> &'static [i16] {
     match tx_size {
+        // TX_4X4 (the coded-lossless arm) takes the NORMAL scan
+        // `av1_scan_orders[TX_4X4][DCT_DCT]` — nonrd_opt.c:185 + :248-250.
+        0 => aom_dsp::txb::scan(0, 0),
         1 => &DEFAULT_SCAN_8X8_TRANSPOSE,
         2 => &DEFAULT_SCAN_LP_16X16_TRANSPOSE,
-        _ => unreachable!("clamped to TX_8X8 / TX_16X16 on the square-leaf grid"),
+        _ => unreachable!("clamped to TX_4X4 / TX_8X8 / TX_16X16"),
+    }
+}
+
+/// The lowbd forward transform `av1_block_yrd` runs for a clamped tx size —
+/// `aom_hadamard_lp_{8x8,16x16}` at TX_8X8/TX_16X16, and `aom_fdct4x4_lp` at
+/// TX_4X4 (nonrd_opt.c:258-263). REAL exported C symbols throughout.
+fn c_lp_forward(tx_size: usize, src: &[i16], stride: usize) -> Vec<i16> {
+    match tx_size {
+        0 => c::ref_fdct4x4_lp(src, stride),
+        n => c::ref_hadamard_lp(1 << (n + 2), src, stride),
     }
 }
 
@@ -205,6 +218,95 @@ fn lp_hadamard_tiers_agree_over_the_reachable_range() {
     );
 }
 
+/// **`aom_fdct4x4_lp`, port vs the exported `_c`** — the TX_4X4 forward
+/// transform `av1_block_yrd`'s `default:` arm runs, reached only when
+/// `cm->features.coded_lossless` forces `select_tx_mode` to `ONLY_4X4`
+/// (rdopt_utils.h:392). Until 2026-08-03 that arm was an `unimplemented!()` and
+/// this kernel had never been executed by anything.
+///
+/// The port's transcription carried a `// HANDOFF: verify the final rounding
+/// loop of aom_fdct4x4_lp_c`. It is verified — fwd_txfm.c:143-146 — and this
+/// test is what makes that a measurement rather than a re-reading: the loop is
+/// `(v + 1) >> 2`, so dropping it scales every coefficient by 4.
+#[test]
+fn fdct4x4_lp_matches_c() {
+    c::ref_init();
+    let mut rng = Rng(0x_4b12_0000_0006);
+    let (mut checked, mut peak) = (0usize, 0i32);
+    for iter in 0..2_000 {
+        // Include the extreme corners: the +-255 checkerboard maximises the
+        // second pass (where the C range comment's 16-bit bound is tightest),
+        // and an all-zero block exercises the `if (i == 0 && in_high[0])`
+        // nonzero-bias branch from the other side.
+        let src: Vec<i16> = match iter {
+            0 => (0..16).map(|i| if (i / 4 + i % 4) % 2 == 0 { 255 } else { -255 }).collect(),
+            1 => vec![0i16; 16],
+            2 => vec![255i16; 16],
+            3 => vec![-255i16; 16],
+            n if n % 2 == 0 => (0..16).map(|_| rng.residual()).collect(),
+            _ => correlated_residual(&mut rng, 4, 4, 40),
+        };
+        let want = c::ref_fdct4x4_lp(&src, 4);
+        let mut got = [0i16; 16];
+        fdct4x4_lp(&src, &mut got, 4);
+        assert_eq!(
+            got.to_vec(),
+            want,
+            "aom_fdct4x4_lp iter {iter}: the port's coefficients differ from the \
+             exported C kernel's (src {src:?})"
+        );
+        peak = peak.max(want.iter().map(|v| i32::from(*v).abs()).max().unwrap());
+        checked += 1;
+    }
+    assert!(checked >= 2_000, "only {checked} blocks compared");
+    // The bd8 bound this kernel's ISA-independence argument rests on: the
+    // second pass tops out at 32654, inside int16. Assert the grid got near it
+    // rather than assuming the argument was exercised (playbook §2).
+    assert!(
+        (8_000..=32_767).contains(&peak),
+        "peak |coeff| was {peak}: the grid either never loaded the transform or \
+         left the int16 range the lowbd arm is supposed to be bounded to"
+    );
+}
+
+/// **`aom_fdct4x4_lp` is NOT ISA-conditional over its reachable domain.** The
+/// NEON/SSE2 tiers hold every intermediate in int16 where `_c` uses int32
+/// `in_high[]`/`step[]`, so they agree with `_c` only inside int16 — which the
+/// 9-bit lowbd residual guarantees (see `fdct4x4_lp`'s doc comment for the
+/// arithmetic). This measures that on the tier this build actually has, and is
+/// the reason the lowbd TX_4X4 arm calls the `_c` transcription directly while
+/// its hbd twin needs `fdct4x4_dispatched`.
+#[test]
+fn fdct4x4_lp_tiers_agree_over_the_reachable_range() {
+    c::ref_init();
+    let mut rng = Rng(0x_4b12_0000_0007);
+    let mut peak = 0i32;
+    for iter in 0..2_000 {
+        let src: Vec<i16> = match iter {
+            0 => (0..16).map(|i| if (i / 4 + i % 4) % 2 == 0 { 255 } else { -255 }).collect(),
+            1 => vec![255i16; 16],
+            2 => vec![-255i16; 16],
+            n if n % 2 == 0 => (0..16).map(|_| rng.residual()).collect(),
+            _ => correlated_residual(&mut rng, 4, 4, 200),
+        };
+        let want = c::ref_fdct4x4_lp(&src, 4);
+        let simd = c::ref_fdct4x4_lp_simd(&src, 4);
+        assert_eq!(
+            want, simd,
+            "aom_fdct4x4_lp iter {iter}: the SIMD tier and _c disagree over the \
+             bd8 residual domain — the lowbd TX_4X4 arm would then need the \
+             cfg-dispatched treatment its hbd twin has"
+        );
+        peak = peak.max(want.iter().map(|v| i32::from(*v).abs()).max().unwrap());
+    }
+    assert!(peak >= 8_000, "the grid never loaded the transform (peak {peak})");
+    assert_eq!(
+        c::REF_FDCT4X4_SIMD_IS_DISTINCT,
+        cfg!(any(target_arch = "aarch64", target_arch = "x86_64")),
+        "the aom_fdct4x4 tier availability model disagrees with the target"
+    );
+}
+
 /// `av1_quantize_lp`, `aom_satd_lp` and `av1_block_error_lp` against their
 /// exported C symbols, on real quantizer rows across the qindex range.
 #[test]
@@ -214,12 +316,13 @@ fn lp_quantize_satd_block_error_match_c() {
     let mut nonzero_eobs = 0usize;
     for &qindex in &[20usize, 60, 128, 200, 255] {
         let (round_fp, quant_fp, dequant) = q_rows(qindex);
-        for &tx in &[1usize, 2] {
+        // tx 0 is the coded-lossless TX_4X4 arm (nonrd_opt.c:246-263).
+        for &tx in &[0usize, 1, 2] {
             let n = 1usize << (2 * (tx + 2));
             let scan = lp_scan(tx);
             for iter in 0..200 {
                 let src = correlated_residual(&mut rng, 1 << (tx + 2), 1 << (tx + 2), 60);
-                let coeff = c::ref_hadamard_lp(1 << (tx + 2), &src, 1 << (tx + 2));
+                let coeff = c_lp_forward(tx, &src, 1 << (tx + 2));
 
                 let (wq, wdq, weob) =
                     c::ref_quantize_lp(&coeff, &round_fp, &quant_fp, &dequant, scan, scan);
@@ -285,7 +388,7 @@ fn c_block_yrd_lowbd(
         let mut cc = 0usize;
         while cc < max_blocks_wide {
             let src = &diff[(r * diff_stride + cc) * 4..];
-            let coeff = c::ref_hadamard_lp(1 << (tx_size + 2), src, diff_stride);
+            let coeff = c_lp_forward(tx_size, src, diff_stride);
             let (qcoeff, dqcoeff, eob) =
                 c::ref_quantize_lp(&coeff, round_fp, quant_fp, dequant, scan, scan);
             let ncoeffs = eob as usize;
@@ -311,7 +414,21 @@ fn c_block_yrd_lowbd(
 /// The square leaf shapes the KEY VBP tree stamps, as
 /// `(num_4x4_w, num_4x4_h, clamped tx_size)`: BLOCK_8X8 -> TX_8X8;
 /// 16X16 / 32X32 / 64X64 -> TX_16X16 after `AOMMIN(mi->tx_size, TX_16X16)`.
-const SHAPES: &[(usize, usize, usize)] = &[(2, 2, 1), (4, 4, 2), (8, 8, 2), (16, 16, 2)];
+/// The square leaf shapes the KEY VBP tree stamps, as
+/// `(num_4x4_w, num_4x4_h, clamped tx_size)`. The `tx 0` rows are the
+/// CODED-LOSSLESS ones: `select_tx_mode` returns `ONLY_4X4` there
+/// (rdopt_utils.h:392), so `mi->tx_size` is TX_4X4 at every bsize and a
+/// 64x64 leaf walks 16x16 = 256 txbs.
+const SHAPES: &[(usize, usize, usize)] = &[
+    (2, 2, 1),
+    (4, 4, 2),
+    (8, 8, 2),
+    (16, 16, 2),
+    (1, 1, 0),
+    (2, 2, 0),
+    (4, 4, 0),
+    (16, 16, 0),
+];
 
 #[test]
 fn block_yrd_lowbd_matches_c_walk() {

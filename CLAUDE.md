@@ -101,11 +101,16 @@ it here in the same commit.**
 - ~~the crop axis at 4:2:2/4:4:4/mono, SB128, bd10, and the 480/720 straddle at cpu 0~~ →
   `s4cov_crop_format_axis.rs`, 58/62 byte-exact; the 4 that are not are KB-27's, proven by
   SB-exact controls.
+- ~~lossless (`--cq-level 0`) at ANY speed~~ → KB-5's speed axis. TWO roots, both closed:
+  the harness's missing two-pass `coded_lossless` probe (which forced the
+  `assert!(base_qindex > 0)` refusal) and the encoder's two `unimplemented!()` TX_4X4
+  `block_yrd` arms — different failing cell sets when reverted ALONE (52/52 vs 12/52), so
+  genuinely two roots. 52/52 lossless cells byte-identical across cpu-used 0..9 x
+  {4:2:0, mono} x {bd8, bd10, bd12}; `kb5_lossless_speed_axis.rs`.
 
 ### T1 — refusals on reachable configurations
 | axis | reach (measured) | cost to close |
 |---|---|---|
-| **lossless (`--cq-level 0`) at ANY speed** | Refused by the **harness**, not the encoder: `aom-bench/src/lib.rs:1153`, measured PANIC at cpu 0/4/8/9 on a 64x64 cell while cq1 is byte-exact at all four. KB-34's "lossless TX_4X4 arm still refused at cpu 8/9" therefore understates it — the e2e path is closed at every speed, and lossless parity rests on KB-5's own driver, which is `let speed = 0i32`. | harness work first (thread a lossless bootstrap through `port_encode_full`), then the encoder's `block_yrd_lowbd`/`_hbd` TX_4X4 arms |
 | **multi-tile x `--deltaq-mode` 2/3** | Loud refusal (KB-31 residual a). Needs a frame that REQUIRES a tile split (>4096 px wide, or ~9.44 MP) AND a non-default flag, so reachable but not by default. NOT re-measured 2026-08-03. | `pack_tile`'s running qindex base must carry across tiles instead of restarting |
 | **IntraBC blocks > 64x64 (multi-chunk)** | KB-29 residual (a): unreachable from libaom AND from SVT-AV1 (re-checked 2026-08-02, 1,992 streams). A third encoder or a synthetic stream is needed. | unknown; blocked on producing an input |
 
@@ -471,6 +476,57 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   min_rd−1/min_rd/min_rd+1. **Gate:** `encoder_gate_lossless_cq0_e2e_kb5_repro` hard-asserts BOTH
   mono AND 420 byte-match (promotion from `assert_open_divergence` per its designed contract).
   The full lossless envelope (coded-lossless cq0 KEY, mono + 4:2:0) is byte-exact; #32 closed.
+- **SPEED AXIS CLOSED 2026-08-03 — and it was TWO roots, one of them in the harness.**
+  The 2026-07-16 closure above was proven only by drivers that hardcode `let speed = 0i32`;
+  the e2e path was shut at EVERY speed. Roots, each with its own bite proof (playbook §1 —
+  reverting either alone fails a *different* cell set):
+  1. **Harness (`aom-bench/src/lib.rs`, `port_encode_full`).** It parsed the frame header
+     ONCE, with `cfg.coded_lossless = false`, then refused with
+     `assert!(p.quant.base_qindex > 0, "lossless cells are out of this harness's scope")`.
+     It had to: `read_uncompressed_header` gates its loop-filter / CDEF / restoration /
+     tx-mode tail reads on `cfg.coded_lossless`, so at qindex 0 a single pass mis-reads the
+     tail. Fixed by mirroring the decoder's two-pass probe (the same one
+     `encoder_gate_chroma_ss_e2e::run_case` has carried since 2026-07-16) and dropping the
+     refusal. `derived_lf` now also mirrors `is_loopfilter_used` (encoder.h:4419): C never
+     runs `av1_pick_filter_level` at coded-lossless, and the writer skips the whole block.
+     *Bite:* with root 2 reverted, speeds 0..7 MATCH and only cpu 8/9 panic.
+  2. **Encoder — the two `unimplemented!()` TX_4X4 `block_yrd` arms** (nonrd_pickmode.rs).
+     They are the CODED-LOSSLESS arms: `select_tx_mode` returns `ONLY_4X4` when
+     `cm->features.coded_lossless` (rdopt_utils.h:392) and
+     `tx_mode_to_biggest_tx_size[ONLY_4X4] = TX_4X4` (common_data.h:368-372), so
+     `mi->tx_size` is TX_4X4 at every leaf — C asserts exactly this at nonrd_pickmode.c:1594.
+     `nonrd_leaf_tx_size` had modelled the second `AOMMIN` operand as the constant TX_64X64.
+     Ported per nonrd_opt.c:246-263: **`aom_fdct4x4_lp` + `av1_quantize_lp`** (lowbd) and
+     **`aom_fdct4x4` + `av1_quantize_fp`** (hbd), both over the NORMAL
+     `av1_scan_orders[TX_4X4][DCT_DCT]` pair (scan.c:1669) — *not* a transposed scan, for
+     the reason C states at :248-250. **The transform is the DCT at lossless too**:
+     `av1_block_yrd` is the RD *estimate*, dispatches on `tx_size` alone, never reads
+     `xd->lossless[]` and never calls `av1_fwht4x4` (that is the recon path, KB-5 root #2
+     above). Also: the txb visit list was a `[_; 8]` stack array, which a lossless 128x128
+     leaf (32x32 = 1024 txbs) would have overrun its own assert on — now sized from the walk.
+  **`aom_fdct4x4` is ISA-CONDITIONAL and `aom_fdct4x4_lp` is not** (new
+  LIBAOM_UPSTREAM_NOTES **A6**): both SIMD tiers hold every intermediate in int16 where `_c`
+  uses `tran_high_t`, which is invisible at a 9-bit residual (peak 32654) and real above it
+  (bd10's first pass reaches 46296; bd12's `<< 4` wraps outright). So the hbd arm models the
+  DISPATCHED kernel — `fdct4x4_dispatched`, the `hadamard_16x16_dispatched` pattern — and
+  the lowbd arm calls the `_c`-shaped transcription. `nm -go libaom.a` confirms the premise:
+  `nonrd_opt.c.o: U _aom_fdct4x4_neon`. Substituting `_c` at the hbd site diverges 4 of 8
+  hbd estimate-arm cells e2e.
+  **Gates:** `aom-bench/tests/kb5_lossless_speed_axis.rs` — cpu-used 0..9 x
+  {4:2:0, mono} x {textured 64x64, smooth gradient 128x128} at bd8 (40 cells) plus
+  bd10/bd12 x {0, 8, 9} (12 cells) = **52 lossless cells, ALL byte-identical**, plus 10 cq1
+  controls. `multi_txb_leaf_counts()` asserts the estimate arm's
+  TX_4X4 walk was actually reached at cpu8 (256 leaves) and cpu9 (64-256) — a textured-only
+  grid reports 0 at cpu8, because `hybrid_use_rdopt` sends every sub-16x16 leaf to the
+  full-RD path there. A cq1 grid at the same speeds is the negative control. Kernel locks
+  against the REAL exported symbols: `nonrd_block_yrd_lp_diff` (`aom_fdct4x4_lp_c`, tier
+  agreement, + tx0 rows in the composition walk) and `nonrd_block_yrd_hbd_diff`
+  (`aom_fdct4x4_c` AND the specialised tier, 6,000 blocks each over bd8/10/12).
+  **Known gate-strength gap, measured:** perturbing the TX_4X4 scan to `mrow_scan_4x4` fails
+  the composition differential but leaves all 62 e2e cells byte-identical — `av1_quantize_lp`
+  writes qcoeff/dqcoeff at RAW positions and the scan only orders the eob, so this is KB-12's
+  order-invariance lesson repeating. The differential, not the byte gate, is what guards the
+  scan choice.
 
 ### KB-6 — Encoder: REAL-content RD divergence at bd8 4:2:0 (PRIMARY config) — FIXED ✅ (all roots landed; real-content map 30/30)
 - **FIX #1 LANDED 2026-07-15 (ca2826f) — luma re-encode intra edge filter.** The luma analogue of

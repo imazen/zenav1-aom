@@ -6,6 +6,27 @@
 
 ### Added
 
+- **Lossless (`--cq-level 0`) now encodes byte-identically at every
+  `--cpu-used` 0..9 — the last T1 refusal on a default-reachable configuration.**
+  Two independent roots. (1) The e2e harness (`aom-bench`) parsed the frame
+  header once with `coded_lossless = false` and refused qindex 0 outright, so
+  KB-5's 2026-07-16 parity rested entirely on drivers that hardcode
+  `speed = 0`; it now mirrors the decoder's two-pass `coded_lossless` probe and
+  models `is_loopfilter_used` (encoder.h:4419). (2) The nonrd estimate arm's two
+  TX_4X4 `block_yrd` arms were `unimplemented!()` — they are the CODED-LOSSLESS
+  arms, because `select_tx_mode` returns `ONLY_4X4` there (rdopt_utils.h:392),
+  which `nonrd_leaf_tx_size` had modelled as a constant TX_64X64. Ported from
+  `nonrd_opt.c:246-263`: `aom_fdct4x4_lp` + `av1_quantize_lp` (lowbd),
+  `aom_fdct4x4` + `av1_quantize_fp` (hbd), both over the normal
+  `av1_scan_orders[TX_4X4][DCT_DCT]` pair. **`aom_fdct4x4` turns out to be
+  ISA-conditional** — both SIMD tiers are int16-only where `_c` uses
+  `tran_high_t`, invisible at a 9-bit residual and real at bd10/bd12 (new
+  `docs/LIBAOM_UPSTREAM_NOTES.md` **A6**) — so the hbd arm models the dispatched
+  kernel; substituting `_c` diverges 4 of 8 hbd cells. New gates:
+  `aom-bench/tests/kb5_lossless_speed_axis.rs` (52 lossless cells, 0 divergences,
+  + 10 cq1 controls, with estimate-arm reach asserted) and `aom_fdct4x4{,_lp}` locks against the real
+  exported C symbols in both `nonrd_block_yrd_{lp,hbd}_diff.rs`.
+
 - **A committed content census, and a third `winperf` content fitted to what it
   measures
   ([`benchmarks/winperf_content_census_2026-08-03.md`](benchmarks/winperf_content_census_2026-08-03.md)).**

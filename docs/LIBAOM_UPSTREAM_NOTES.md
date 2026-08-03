@@ -294,6 +294,53 @@ against the AVX2 kernel is therefore inexpressible on ARM, which is a fact about
 the contract, not a defect to fix. (It is also dropped on x86 under
 `CONFIG_EXCLUDE_SIMD_MISMATCH=1`, `av1/av1.cmake:384`.)
 
+### A6. `aom_fdct4x4`'s SIMD tiers are int16-only, so they diverge from `_c` at every bit depth above 8 — while `aom_fdct4x4_lp`'s do not
+
+`aom_fdct4x4_c` (`aom_dsp/fwd_txfm.c:16-82`) carries `tran_high_t` (int64)
+butterflies into `tran_low_t` (int32) intermediates and output. Both specialised
+tiers (`specialize qw/aom_fdct4x4 neon sse2/`,
+`aom_dsp/aom_dsp_rtcd_defs.pl:680-681`) hold **every** value in int16 registers:
+
+- `aom_fdct4x4_neon` (`aom_dsp/arm/fwd_txfm_neon.c:85-99`) shares
+  `aom_fdct4x4_helper` (`:21-83`) with the `_lp` variant — `vshl_n_s16(.., 4)`
+  for the ×16 (wraps), `vrshrn_n_s32(.., 14)` for `fdct_round_shift` (a
+  **truncating** narrow), `vaddq_s16`/`vsubq_s16` butterflies (wrap);
+- `aom_fdct4x4_sse2` (`aom_dsp/x86/fwd_txfm_sse2.c:23` →
+  `aom_dsp/x86/fwd_txfm_impl_sse2.h:34-203`) uses `_mm_slli_epi16` for the ×16
+  (wraps), `_mm_add_epi16`/`_mm_sub_epi16` (`DCT_HIGH_BIT_DEPTH 0`, so wrapping)
+  and `_mm_packs_epi32` at each stage boundary — a **saturating** narrow.
+
+So the three implementations agree only while every intermediate fits int16.
+That bound holds for a 9-bit (lowbd) residual — pass 1's largest term is
+`((step0+step1) * cospi_16_64) >> 14 <= 32654` — and **not** above it:
+
+| residual | first-pass peak | `_c` | NEON | SSE2 |
+|---|---|---|---|---|
+| bd8, ±255 | 32654 | 32654 | 32654 | 32654 |
+| bd10, ±1023 | 46296 | 46296 | wraps negative | clamps to 32767 |
+| bd12, ±4095 | the `<< 4` itself wraps (`4095 * 16 = 65520` → `-16`) | — | — | — |
+
+The call site that matters is `av1_block_yrd`'s TX_4X4 arm
+(`av1/encoder/nonrd_opt.c:246-263`), reached whenever `cm->features.coded_lossless`
+forces `select_tx_mode` to `ONLY_4X4` (`av1/encoder/rdopt_utils.h:392`). Its hbd
+half calls `aom_fdct4x4`; its lowbd half calls `aom_fdct4x4_lp`, whose tiers are
+therefore **not** ISA-conditional over their reachable domain.
+
+Same shape as A1, and the same evidence: on aarch64 the binding is at compile
+time (A5), and `nm -go upstream/build/libaom.a` reports
+`nonrd_opt.c.o: U _aom_fdct4x4_neon` — `av1_block_yrd` is linked directly
+against the NEON tier, so `_c` is not the function real aomenc runs.
+
+**Port model:** `nonrd_pickmode::fdct4x4_dispatched` (cfg-selected NEON / SSE2 /
+`_c` models) for the hbd arm; `nonrd_pickmode::fdct4x4_lp` (`_c`-shaped) for the
+lowbd one. **MEASURED** — `nonrd_block_yrd_hbd_diff::fdct4x4_dispatched_matches_
+the_real_specialised_symbol` (6,000 blocks vs the exported tier, bd8/10/12),
+`..._dispatch_is_inert_at_bd8_and_load_bearing_above_it`, and
+`nonrd_block_yrd_lp_diff::fdct4x4_lp_tiers_agree_over_the_reachable_range`.
+Substituting `_c` for the dispatched model at the hbd call site diverges
+**4 of 8** hbd lossless estimate-arm cells end-to-end
+(`kb5_lossless_speed_axis`, teeth run 2026-08-03).
+
 ---
 
 ## Category B — undefined behaviour in libaom

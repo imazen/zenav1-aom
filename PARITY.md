@@ -62,6 +62,7 @@ Byte-identity gates landed and green on origin/main. Any regression here is a sh
 | bd10/bd12 full-frame mono+4:2:0 | `encoder_gate_bd10_diff` | 20f1e70, 800e6fc |
 | 4:2:2 / 4:4:4 bd8 full-frame | `encoder_gate_chroma_ss_e2e` | 2ee900d, 0eb42eb (#26) |
 | Coded-lossless cq0 **mono + 4:2:0** bd8 (both hard-asserted; KB-5 closed / #32) | `encoder_gate_lossless_cq0_e2e_kb5_repro` | ba560eb (mono) + KB-5 420 fix |
+| Coded-lossless cq0 across **`--cpu-used` 0..9** x {4:2:0, mono} x {textured 64², smooth 128²} bd8, **plus bd10/bd12** x {0, 8, 9} — 52 lossless cells + 10 cq1 controls, estimate-arm TX_4X4 reach asserted | `kb5_lossless_speed_axis` | (this landing) |
 | QM-on forward-quant (`--enable-qm`, 40 cells bd8+bd10) | `qm_encode_witness` | 5b512bf (parts 624e91d/a066cf8/abb68d9) |
 | Multi-tile encode (2×1/1×2/2×2, 4:4:4 128²) | `encoder_gate_multitile_e2e` | f6e6319 |
 | **C8 partition-control disable arms** (`--enable-rect-partitions=0`, `--enable-ab-partitions=0`, `--enable-1to4-partitions=0`, `--min-partition-size=16`, `--max-partition-size=32`, square-only 8..32 band) × real-content 64²(cq32/63)+128²(cq12), each knob anti-vacuity-witnessed (must change the C stream) | `toggles_rd_close::toggles_c8_*` (hard `bit_identical` pins) | (this landing) |
@@ -521,7 +522,14 @@ deltaq_mode=6 (VARIANCE_BOOST)`; IQ adds `enable_adaptive_sharpness=1`.
   fixed by routing the leaf `cfl_allowed` through
   `aom_entropy::partition::is_cfl_allowed(bsize, lossless, ss_x, ss_y)` (C allows CfL at lossless
   when the partition size == the transform size). See CLAUDE.md KB-5.
-- **Remaining (follow-up, S):** highbd lossless (bd10/12) — the mono+420 byte-exact envelope is bd8.
+- **DONE 2026-08-03 — the SPEED and BIT-DEPTH axes.** The above was proven only at
+  `speed = 0` and bd8: the e2e harness refused qindex 0 at every speed (a single-pass
+  header parse + `assert!(base_qindex > 0)`), and behind it the nonrd estimate arm's two
+  TX_4X4 `block_yrd` arms were `unimplemented!()`. Both closed; 52 lossless cells byte-identical
+  across cpu-used 0..9 and bd8/bd10/bd12 (`kb5_lossless_speed_axis`). `aom_fdct4x4` is
+  ISA-conditional at hbd — LIBAOM_UPSTREAM_NOTES A6. See CLAUDE.md KB-5.
+- **Remaining (follow-up, S):** lossless x 4:2:2 / 4:4:4, and lossless x SB128 — the axes
+  above are 4:2:0 + mono at SB64.
 
 ### C13 — Speed levels 6–9 — DONE (→ Section A) — Gate-2 (cpu 0–9) byte-complete
 - **DONE (KB-10 / KB-11 / KB-12):** speeds 6, 7, 8, 9 all landed byte-identical on the synthetic

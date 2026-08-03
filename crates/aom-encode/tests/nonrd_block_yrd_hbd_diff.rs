@@ -46,7 +46,7 @@
 use aom_encode::nonrd_pickmode::{
     AV1_DEFAULT_ISCAN_8X8_TRANSPOSE, AV1_DEFAULT_ISCAN_FP_16X16_TRANSPOSE,
     DEFAULT_SCAN_8X8_TRANSPOSE, DEFAULT_SCAN_FP_16X16_TRANSPOSE, DEFAULT_SCAN_LP_16X16_TRANSPOSE,
-    block_yrd_hbd, quantize_fp_dispatched,
+    block_yrd_hbd, fdct4x4_models, quantize_fp_dispatched,
 };
 use aom_sys_ref as c;
 
@@ -75,6 +75,10 @@ fn get_msb(n: u32) -> i32 {
 /// The scan/iscan pair `av1_block_yrd`'s hbd arm selects for a clamped tx size.
 fn hbd_scans(tx_size: usize) -> (&'static [i16], &'static [i16]) {
     match tx_size {
+        // TX_4X4 (coded-lossless, `select_tx_mode` -> ONLY_4X4): the NORMAL
+        // `av1_scan_orders[TX_4X4][DCT_DCT]` pair, no transpose — nonrd_opt.c:185
+        // + the :248-250 comment.
+        0 => (aom_dsp::txb::scan(0, 0), aom_dsp::txb::iscan(0, 0)),
         1 => (
             &DEFAULT_SCAN_8X8_TRANSPOSE,
             &AV1_DEFAULT_ISCAN_8X8_TRANSPOSE,
@@ -83,7 +87,20 @@ fn hbd_scans(tx_size: usize) -> (&'static [i16], &'static [i16]) {
             &DEFAULT_SCAN_FP_16X16_TRANSPOSE,
             &AV1_DEFAULT_ISCAN_FP_16X16_TRANSPOSE,
         ),
-        _ => unreachable!("clamped to TX_8X8 / TX_16X16"),
+        _ => unreachable!("clamped to TX_4X4 / TX_8X8 / TX_16X16"),
+    }
+}
+
+/// The hbd forward transform `av1_block_yrd` runs for a clamped tx size, AS
+/// DISPATCHED: `aom_hadamard_{8x8,16x16}` at TX_8X8/TX_16X16 and
+/// `aom_fdct4x4` at TX_4X4 (nonrd_opt.c:249-257). The 4x4 arm deliberately
+/// calls the SPECIALISED tier, because that is literally the symbol
+/// `av1_block_yrd` is linked against — `nm -go libaom.a` reports
+/// `nonrd_opt.c.o: U _aom_fdct4x4_neon` on this target.
+fn c_hbd_forward(tx_size: usize, src: &[i16], stride: usize) -> Vec<i32> {
+    match tx_size {
+        0 => c::ref_fdct4x4_simd(src, stride),
+        n => c::ref_hadamard(1 << (n + 2), src, stride),
     }
 }
 
@@ -129,7 +146,7 @@ fn c_block_yrd_hbd(
         let mut cc = 0usize;
         while cc < max_blocks_wide {
             let src = &diff[(r * diff_stride + cc) * 4..];
-            let coeff = c::ref_hadamard(1 << (tx_size + 2), src, diff_stride);
+            let coeff = c_hbd_forward(tx_size, src, diff_stride);
             let (qcoeff, dqcoeff, eob) = c::ref_quantize_fp(0, &coeff, &r2, &q2, &d2, scan);
             max_coeff = max_coeff.max(coeff.iter().map(|v| v.abs()).max().unwrap());
             max_dq = max_dq.max(dqcoeff.iter().map(|v| v.abs()).max().unwrap());
@@ -154,7 +171,18 @@ fn c_block_yrd_hbd(
 /// The square leaf shapes the KEY VBP tree can stamp, as
 /// `(num_4x4_w, num_4x4_h, clamped tx_size)`: BLOCK_8X8 -> TX_8X8;
 /// 16X16 / 32X32 / 64X64 -> TX_16X16 after `AOMMIN(mi->tx_size, TX_16X16)`.
-const SHAPES: &[(usize, usize, usize)] = &[(2, 2, 1), (4, 4, 2), (8, 8, 2), (16, 16, 2)];
+/// The `tx 0` rows are the CODED-LOSSLESS ones (`select_tx_mode` returns
+/// `ONLY_4X4`, rdopt_utils.h:392), where a 64x64 leaf walks 16x16 = 256 txbs.
+const SHAPES: &[(usize, usize, usize)] = &[
+    (2, 2, 1),
+    (4, 4, 2),
+    (8, 8, 2),
+    (16, 16, 2),
+    (1, 1, 0),
+    (2, 2, 0),
+    (4, 4, 0),
+    (16, 16, 0),
+];
 
 #[test]
 fn block_yrd_hbd_matches_c_walk() {
@@ -175,7 +203,7 @@ fn block_yrd_hbd_matches_c_walk() {
                 // Frame-edge clamps: full extent most of the time, a clipped
                 // right/bottom edge otherwise (`max_blocks_*` is what the C
                 // `mb_to_*_edge >> 5` arithmetic produces).
-                let (mbw, mbh) = if iter % 4 == 3 && bw4 > 2 {
+                let (mbw, mbh) = if iter % 4 == 3 && bw4 > (1 << tx) {
                     (bw4 - (1 << tx), bh4 - (1 << tx))
                 } else {
                     (bw4, bh4)
@@ -205,13 +233,175 @@ fn block_yrd_hbd_matches_c_walk() {
             }
         }
     }
-    assert!(checked >= 4_800, "the hbd block_yrd grid shrank: {checked}");
+    assert!(checked >= 9_600, "the hbd block_yrd grid shrank: {checked}");
     // Anti-vacuity: both the all-zero-eob and the coded regimes must occur, or
     // the walk's rate/eob_cost accumulation was never exercised.
     assert!(
         skippable_seen > 100 && coded_seen > 100,
         "degenerate grid: {skippable_seen} skippable / {coded_seen} coded cells"
     );
+}
+
+// ---------------------------------------------------------------------------
+// aom_fdct4x4 — the coded-lossless TX_4X4 kernel, locked against BOTH exported
+// C symbols (`_c` and the specialised tier).
+// ---------------------------------------------------------------------------
+
+/// The full hbd residual domain for a bit depth: `[-(2^bd - 1), 2^bd - 1]`,
+/// which is what `aom_highbd_subtract_block` can produce.
+fn hbd_grid(rng: &mut Rng, bd: u32, iter: usize) -> Vec<i16> {
+    let m = ((1i32 << bd) - 1) as i16;
+    match iter {
+        0 => (0..16)
+            .map(|i| if (i / 4 + i % 4) % 2 == 0 { m } else { -m })
+            .collect(),
+        1 => vec![0i16; 16],
+        2 => vec![m; 16],
+        3 => vec![-m; 16],
+        4 => {
+            // DC-only: the branch where `in_high[0]` is the sole nonzero, i.e.
+            // where the `if (i == 0 && in_high[0]) ++in_high[0]` bias is the
+            // whole difference between the tiers' predicates.
+            let mut v = vec![0i16; 16];
+            v[0] = m;
+            v
+        }
+        _ => (0..16).map(|_| rng.diff(bd)).collect(),
+    }
+}
+
+/// **`fdct4x4_dispatched` vs the REAL specialised `aom_fdct4x4` symbol**, over
+/// the FULL bd10/bd12 residual range.
+///
+/// This is the lock that matters: `av1_block_yrd`'s hbd TX_4X4 arm is linked
+/// against `aom_fdct4x4_neon` / `aom_fdct4x4_sse2` (compile-time bound —
+/// `nm -go libaom.a` shows `nonrd_opt.c.o: U _aom_fdct4x4_neon` here), and
+/// those tiers hold every intermediate in `int16` where `aom_fdct4x4_c` uses
+/// `tran_high_t`. Modelling `_c` at this call site would be a silent bitstream
+/// defect at every hbd lossless cell, exactly as it was for
+/// `aom_hadamard_16x16` (KB-20 root #4).
+///
+/// **Two explicitly-stated contracts, not one with a skip** (playbook §5).
+/// `ref_fdct4x4_simd` can only call a specialised tier where one is baseline —
+/// aarch64 (NEON) and x86-64 (SSE2); on any other oracle-capable target it *is*
+/// `_c`, and comparing an SSE2-shaped model against it above bd8 would assert a
+/// falsehood. So:
+///
+/// * where the tier exists: the port's dispatched model == the tier, over
+///   bd8 **and** bd10 **and** bd12 — the strong contract, and the one every CI
+///   leg that builds the C oracle runs (i686 is build-only, `ci.yml:292-308`);
+/// * where it does not: the port's dispatched model == `_c` over **bd8 only**,
+///   which is the whole of what can be claimed without a tier symbol to
+///   compare against. The `REF_FDCT4X4_SIMD_IS_DISTINCT` assertion at the end
+///   states which of the two ran.
+#[test]
+fn fdct4x4_dispatched_matches_the_real_specialised_symbol() {
+    c::ref_init();
+    let mut rng = Rng(0x_4b05_0f0f_0f0f_0001);
+    let mut checked = 0usize;
+    let depths: &[u32] = if c::REF_FDCT4X4_SIMD_IS_DISTINCT {
+        &[8, 10, 12]
+    } else {
+        &[8]
+    };
+    for &bd in depths {
+        for iter in 0..2_000 {
+            let src = hbd_grid(&mut rng, bd, iter);
+            let want = c::ref_fdct4x4_simd(&src, 4);
+            let (_c_model, got) = fdct4x4_models(&src, 4);
+            assert_eq!(
+                got.to_vec(),
+                want,
+                "aom_fdct4x4 (dispatched) bd{bd} iter {iter}: the port's model \
+                 differs from the tier libaom links av1_block_yrd against \
+                 (src {src:?})"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= if c::REF_FDCT4X4_SIMD_IS_DISTINCT { 6_000 } else { 2_000 },
+        "only {checked} blocks compared"
+    );
+    assert_eq!(
+        c::REF_FDCT4X4_SIMD_IS_DISTINCT,
+        cfg!(any(target_arch = "aarch64", target_arch = "x86_64")),
+        "the aom_fdct4x4 tier availability model disagrees with the target"
+    );
+}
+
+/// The `_c` model, locked against `aom_fdct4x4_c`. Kept because it is the
+/// no-SIMD-tier arm of `fdct4x4_dispatched` AND the control the teeth below
+/// measure against.
+#[test]
+fn fdct4x4_c_model_matches_c() {
+    c::ref_init();
+    let mut rng = Rng(0x_4b05_0f0f_0f0f_0002);
+    for &bd in &[8u32, 10, 12] {
+        for iter in 0..2_000 {
+            let src = hbd_grid(&mut rng, bd, iter);
+            let want = c::ref_fdct4x4(&src, 4);
+            let (got, _dispatched) = fdct4x4_models(&src, 4);
+            assert_eq!(
+                got.to_vec(),
+                want,
+                "aom_fdct4x4_c bd{bd} iter {iter} (src {src:?})"
+            );
+        }
+    }
+}
+
+/// **TEETH for the dispatch's existence.** At bd8 residual magnitude the two
+/// models are the same function; at bd10/bd12 they are not, on a large fraction
+/// of blocks. Both halves are asserted, because either one alone is compatible
+/// with a broken model:
+///
+/// * agreement at bd8 is what licenses the LOWBD arm to call the `_c`-shaped
+///   [`aom_encode::nonrd_pickmode::fdct4x4_lp`] directly;
+/// * disagreement at bd10/bd12 is what makes the dispatch load-bearing rather
+///   than decorative. `_c` reaches 46296 after the first pass at bd10, which no
+///   `int16` register can hold.
+#[test]
+fn fdct4x4_dispatch_is_inert_at_bd8_and_load_bearing_above_it() {
+    c::ref_init();
+    let mut rng = Rng(0x_4b05_0f0f_0f0f_0003);
+    for iter in 0..3_000 {
+        let src = hbd_grid(&mut rng, 8, iter);
+        let (cm, disp) = fdct4x4_models(&src, 4);
+        assert_eq!(
+            cm, disp,
+            "bd8 iter {iter}: the tiers must agree over the 9-bit residual \
+             domain — this is the premise `fdct4x4_lp` rests on"
+        );
+    }
+    if !c::REF_FDCT4X4_SIMD_IS_DISTINCT {
+        // No specialised tier on this target: `fdct4x4_dispatched` IS the `_c`
+        // model, so the second half below is inexpressible here. Say so rather
+        // than assert a falsehood or silently skip.
+        println!(
+            "no aom_fdct4x4 tier on this target — the dispatched model is `_c`, so only \
+             the bd8 agreement half of this contract exists"
+        );
+        return;
+    }
+    for &bd in &[10u32, 12] {
+        let (mut differed, trials) = (0usize, 3_000usize);
+        for iter in 0..trials {
+            let src = hbd_grid(&mut rng, bd, iter);
+            let (cm, disp) = fdct4x4_models(&src, 4);
+            if cm != disp {
+                differed += 1;
+            }
+        }
+        assert!(
+            differed * 2 > trials,
+            "bd{bd}: the dispatched model agreed with aom_fdct4x4_c on {} of \
+             {trials} blocks — if that is genuinely true on this ISA then the \
+             hbd TX_4X4 arm does not need a dispatched kernel and this file \
+             should say so",
+            trials - differed
+        );
+    }
 }
 
 /// `quantize_fp_dispatched` must reduce EXACTLY to `av1_quantize_fp_c` while

@@ -112,6 +112,23 @@ pub fn corpus_dir() -> std::path::PathBuf {
 /// Panics on a stream without both OBUs — every caller passes an encoder
 /// output, so that is a bug rather than a runtime condition.
 pub fn stream_allows_screen_content_tools(stream: &[u8]) -> bool {
+    stream_frame_header(stream).allow_screen_content_tools
+}
+
+/// `base_qindex` from a reference stream's uncompressed frame header — the
+/// artefact-side witness that a `--cq-level 0` cell really did come back
+/// CODED-LOSSLESS (`kb5_lossless_speed_axis`'s reach assertion; playbook §2).
+///
+/// A single-pass parse is exact for this field: `read_uncompressed_header` reads
+/// quantization_params BEFORE any of the reads it gates on `cfg.coded_lossless`,
+/// which is the same argument `port_encode_full`'s two-pass probe rests on.
+pub fn stream_base_qindex(stream: &[u8]) -> i32 {
+    stream_frame_header(stream).quant.base_qindex
+}
+
+/// The uncompressed frame header of a reference stream's `OBU_FRAME`, parsed
+/// against the config its own sequence header implies.
+pub fn stream_frame_header(stream: &[u8]) -> FrameHeaderObu {
     let mut pos = 0usize;
     let (mut seqp, mut framep): (Option<&[u8]>, Option<&[u8]>) = (None, None);
     while pos < stream.len() {
@@ -174,7 +191,6 @@ pub fn stream_allows_screen_content_tools(stream: &[u8]) -> bool {
         ..Default::default()
     };
     read_uncompressed_header(&mut ReadBitBuffer::new(framep.expect("frame OBU")), &cfg)
-        .allow_screen_content_tools
 }
 
 /// IVF header frame dimensions.
@@ -1204,8 +1220,47 @@ impl EncodeCell {
             ..Default::default()
         };
 
-        let mut rb = ReadBitBuffer::new(frame_payload);
-        let mut p = read_uncompressed_header(&mut rb, &cfg);
+        // Two-pass header parse for coded-lossless, mirroring the decoder
+        // (aom-decode/src/frame.rs:466-490) and `encoder_gate_chroma_ss_e2e::
+        // run_case`. `read_uncompressed_header` gates its loop-filter / CDEF /
+        // restoration / tx-mode tail reads on `cfg.coded_lossless` /
+        // `cfg.all_lossless` — a writer-mirror INPUT — but quant and
+        // segmentation precede every gated read, so a probe pass with
+        // `coded_lossless = false` yields exact quant regardless of the (then
+        // mis-read) tail. Recompute `coded_lossless` from the probe's quant and,
+        // when the stream IS coded-lossless (`--cq-level 0` / `--lossless=1`),
+        // re-parse with the correct gating.
+        //
+        // This harness encodes segmentation-off KEY frames, so
+        // `frame_coded_lossless` reduces to `base_qindex == 0` with all five
+        // plane q-deltas 0; no superres here, so `all_lossless ==
+        // coded_lossless`. Until 2026-08-03 the probe was missing and the whole
+        // e2e lossless path was closed by an `assert!(base_qindex > 0)` — at
+        // EVERY speed, which is what made the coverage queue's T1 entry a
+        // harness bug rather than an encoder one.
+        let mut probe_rb = ReadBitBuffer::new(frame_payload);
+        let probe = read_uncompressed_header(&mut probe_rb, &cfg);
+        let coded_lossless = !probe.prefix.show_existing_frame
+            && probe.prefix.frame_type == 0
+            && probe.prefix.show_frame
+            && probe.quant.base_qindex == 0
+            && probe.quant.y_dc_delta_q == 0
+            && probe.quant.u_dc_delta_q == 0
+            && probe.quant.u_ac_delta_q == 0
+            && probe.quant.v_dc_delta_q == 0
+            && probe.quant.v_ac_delta_q == 0;
+        let mut p = if coded_lossless {
+            let mut cfg2 = cfg.clone();
+            cfg2.coded_lossless = true;
+            cfg2.all_lossless = true;
+            let mut rb2 = ReadBitBuffer::new(frame_payload);
+            let mut p2 = read_uncompressed_header(&mut rb2, &cfg2);
+            p2.coded_lossless = true;
+            p2.all_lossless = true;
+            p2
+        } else {
+            probe
+        };
         assert!(!p.prefix.show_existing_frame);
         assert_eq!(p.prefix.frame_type, 0, "frame_type must be KEY");
         if let Some(grain) = film_grain {
@@ -1227,10 +1282,6 @@ impl EncodeCell {
             p.film_grain = g;
             p.film_grain_params_present = true;
         }
-        assert!(
-            p.quant.base_qindex > 0,
-            "lossless cells are out of this harness's scope"
-        );
         // MULTI-TILE (KB-31). `av1_get_tile_limits` (tile_common.c) makes more
         // than one tile MANDATORY once either
         //   * `sb_cols > MAX_TILE_WIDTH >> sb_size_log2` (a frame wider than
@@ -2046,7 +2097,26 @@ impl EncodeCell {
         // has carried this arm since the speed-6 landing
         // (`encoder_gate_e2e_byte_match.rs`, `pick_filter_level_from_q`,
         // oracle-validated by `speed6_prep_lf_from_q_matches_real_aomenc`).
-        let derived_lf = if allintra && speed >= 6 {
+        //
+        // `loopfilter_frame` (encoder.c:2875-2886) calls `av1_pick_filter_level`
+        // only when `is_loopfilter_used(cm)` — `!coded_lossless &&
+        // !tiles.large_scale` (encoder.h:4419-4421) — so at coded-lossless the
+        // search never runs and `cm->lf` keeps its zeroed levels. The frame
+        // header writer skips the whole loop-filter block there anyway
+        // (`if (!all_lossless) { if (!coded_lossless) encode_loopfilter(..) }`,
+        // aom-dsp header.rs:1536-1538), so this is byte-inert — but running a
+        // full-image deblock search whose result C never computes is both a
+        // waste and a lie about what the port models.
+        let derived_lf = if p.coded_lossless {
+            // `cm->lf` is zero-initialised and never touched at
+            // coded-lossless (encoder.c:2884).
+            aom_encode::lf_search::LoopFilterLevels {
+                filter_level: [0, 0],
+                filter_level_u: 0,
+                filter_level_v: 0,
+                sharpness: 0,
+            }
+        } else if allintra && speed >= 6 {
             pick_filter_level_from_q(qindex, bd, allintra, 0)
         } else {
             pick_filter_level(&lf_frame, allintra, 0, allintra && speed >= 4)
