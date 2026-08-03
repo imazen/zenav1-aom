@@ -59,7 +59,7 @@ and it is what every other number below has to clear.
 | `post` | 110.187 ms (1.32 %) | 252.850 ms (1.42 %) | 245.141 ms (9.60 %) |
 | **null, paired** | **+0.02 %** | **−0.06 %** | **−0.18 %** |
 
-The hosted runners are **2.3–2.4x slower** than the dev box at this cell, and
+The hosted runners are **2.2–2.4x slower** than the dev box at this cell, and
 `windows-latest` is much the noisiest of the three (up to 16 % spread on
 `smooth`). The paired-median column is the load-robust statistic and is what the
 deltas below quote; the raw medians are in the table above so the reader can see
@@ -142,11 +142,13 @@ appear in a census) and `l3` and `post` agree to the digit. All four arms emit
 They remove different things, and the two platforms price those things
 differently:
 
-* **3a removes `memset` bytes** — a 4 KiB zero-fill per forward transform. That
-  is memory-bandwidth work, and the M4 Pro is where it is proportionally most
-  expensive (−2.02 % there against −0.50 % / −0.77 % on the hosted runners,
-  whose absolute encode is 2.4x longer, so the same absolute work is a smaller
-  share).
+* **3a removes `memset` bytes** — a 4 KiB zero-fill per forward transform, i.e.
+  memory-bandwidth work. On `windows-latest` it saves **−4.280 ms against
+  Darwin's −4.007 ms — essentially the same absolute work**, and reads as a
+  smaller *share* (−0.77 % vs −2.02 %) only because the denominator is 2.4x
+  longer. `windows-11-arm` is the odd one out: **−1.941 ms**, less than half the
+  absolute saving, which the denominator does not explain and this study does
+  not either. Recorded as an open observation, not glossed.
 * **3 removes 346 888 malloc/free pairs** — and Microsoft's heap charges
   materially more per call than Apple's. On Darwin that buys −0.49 %; on Windows
   −2.38 % / −2.54 %.
@@ -196,7 +198,7 @@ averaged. Measured on the dev box, same day, same box, `.darwin_photo_control.ts
 
 | lever 3 on Darwin | paired-median |
 |---|---:|
-| study photograph, 2026-08-02 landing (load 30–41) | −0.84 % |
+| study photograph, 2026-08-02 landing (load 30–41) | −1.03 % |
 | study photograph, re-measured today (load ~2) | −1.26 % |
 | `detail` synthetic | −0.49 % |
 | `smooth` synthetic | +0.31 % |
@@ -225,10 +227,12 @@ because §6 says a single row proves nothing.
   on any platform.
 * **Two synthetic contents plus one photograph, and the photograph only on
   Darwin.** Nothing here says what lever 3 is worth on a *photograph* on
-  Windows; the platform ratio is measured on `detail`, where Darwin's own value
-  (−0.49 %) is the smallest of the three contents it was measured on. If
-  anything that makes the 4.9x/5.2x ratio a *lower* bound, but that is an
-  inference and is not claimed as a measurement.
+  Windows. The platform ratio is measured on `detail`, where Darwin's own value
+  (−0.49 %) is less than half the photograph's (−1.26 %) — so if the Windows
+  boxes track Darwin's content ordering, the ratio on a photograph would be
+  *smaller* than 4.9x/5.2x, not larger. That is an inference from one box's
+  content ordering and is not claimed as a measurement; the only defensible
+  statement is the one made above, which is a `detail`-content statement.
 * **Hosted CI VMs, shared and unspecified.** The runner CPU model is not
   recorded (`wmic` is gone from these images and `systeminfo` does not name the
   part). Absolute milliseconds on those boxes are worth nothing on their own;
