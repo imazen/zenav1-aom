@@ -4550,7 +4550,9 @@ split turned out to be the whole story.
   the row is NOT an eligibility loss — it is the loads, the per-row splats and
   the 32-byte stores into a `u16` plane (twice libaom's `u8` bytes) that the
   lane width does not touch.
-- **Gates**: 972/972 with `--run-ignored all` in BOTH dispatch modes, gate 2
+- **Gates**: **986/986** with `--run-ignored all` in BOTH dispatch modes on the
+  pushed tree (972/972 on the pre-rebase tree it was measured on; the profile
+  cell encodes to the same 4472-byte stream by sha256 across the rebase), gate 2
   zero pinned cells, `cargo check` for `x86_64-apple-darwin` and
   `wasm32-unknown-unknown`. **The bite proofs are what prove the INTEGRATION
   differentials reach the new code**, and the asymmetry is the result: the

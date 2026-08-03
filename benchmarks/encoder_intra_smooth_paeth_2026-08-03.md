@@ -444,8 +444,11 @@ touched.
 
 * **Full workspace, `--run-ignored all`, in BOTH dispatch modes** (SIMD live and
   `AOM_FORCE_SCALAR=1`) plus `cargo check --target x86_64-apple-darwin --workspace
-  --all-targets` and `cargo check --target wasm32-unknown-unknown`. Counts in the
-  `.meta`.
+  --all-targets` and `cargo check --target wasm32-unknown-unknown`.
+  **972/972 both modes on the measured tree, 986/986 both modes after the rebase
+  onto `5884f49`** (main moved during the session; the count differs because
+  other landings added tests, and the profile cell still encodes to the same
+  4472-byte stream by sha256 across the rebase).
 * **Gate 2 keeps zero pinned cells**: `config_permutations`, every `--cpu-used`
   0..9 cell byte-exact against real aomenc. The three
   `benchmarks/config_perm_*_2026-07-30.tsv` evidence sweeps regenerate identical

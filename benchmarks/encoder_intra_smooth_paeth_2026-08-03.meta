@@ -176,6 +176,11 @@ This worktree borrows the primary checkout's gitignored conformance/data
 READ-ONLY via AOM_CONFORMANCE_DIR; without it ~40 tests fail-loud with
 "conformance vector missing", which is the fail-loud design working.
 
+RESULTS: 972/972 passed, 0 skipped, in BOTH dispatch modes on the tree the bands
+were taken on (769 s SIMD-live, 893 s scalar-pinned), and 986/986 in BOTH modes
+after the rebase onto 5884f49 (928 s / 1129 s).  The count grew because other
+landings added tests, not because anything here did.
+
 Gate 2 (`config_permutations`, every --cpu-used 0..9 cell byte-exact against
 real aomenc) is inside `--run-ignored all` and was also run on its own.
 
