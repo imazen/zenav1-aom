@@ -3808,6 +3808,32 @@ lever 3 by more than 2x on ONE box** (−1.26 % photo / −0.49 % `detail` /
 (−4.51 ms vs the recorded −4.641 ms), so background load is not the variable.
 Linux is still unmeasured.
 
+**KB-PERF-HARNESS (2026-08-03): winperf's contents are fitted per AXIS, there
+are now THREE, and the workflow takes a `contents` input.** Record
+**`benchmarks/winperf_content_census_2026-08-03.md`** + `.meta` + 7 data files.
+`detail`/`smooth` were fitted on ALLOCATOR CALL COUNT and are right for
+KB-PERF-2/3; they are structurally blind to coding-mode levers (`detail`:
+directional intra = **0.15 %** of predicted pixels, no 4x4 forward transform, no
+rectangular leaf; `smooth`: **never splits below 32x32**, 1024 leaves = four per
+SB). **`aom_dsp::census`** (DEFAULT-OFF `census` feature, hooks on
+`predict_intra_high` / `av1_fwd_txfm2d_into` / `pack_leaf`) +
+`examples/content_census.rs` make that a committed table instead of an argument;
+`examples/content_fit.rs` fitted a third content, **`Content::Photo`**, to the
+photograph's MODE distribution over 467 candidates (objective declared first:
+L1 over the intra-class pixel-share vector — no lever's delta entered it).
+Intra-class L1 to the photograph: `detail` 47.43 pp / `smooth` 15.18 →
+**`photo` 5.72**; directional pixels 0.15 % → **17.92 %** (reference 20.78);
+leaf-size L1 54.10 → 20.16. **`photo` does NOT replace `detail`** — its
+allocator traffic fell to 73 % of the reference where `detail`'s is 95 %; run
+the content whose census reaches your lever. Runner floors, n=24, measured:
+`windows-11-arm` **MDE 0.07-0.18 %**, `windows-latest` x86-64 **0.50-0.86 %**
+(its round-to-round sd is 7-12x worse; it could not resolve a 0.2 % effect at
+any content). `windows-11-arm` also has a within-round POSITION drift of
++0.19/+0.28 % between successive IDENTICAL arms — `pre` is always first — so
+read `prepost` bands with **`scripts/winperf_prepost_stats.py`** (pools the
+copies on each side) and difference against a control content, not with
+`--vs pre`.
+
 **MEASURED, 1024×1024 photo / cq44 / cpu-used 6, 5 arms interleaved over 12
 rounds** (`scripts/eprof_ab.sh` + `scripts/eprof_ab_stats.py`, NEW — the N-arm
 form of `eprof_control.sh`, since a perf landing has to compare four port
@@ -4073,8 +4099,25 @@ and those are untouched — the named follow-up.
   `dir_simd_diff` + `dir_highbd_diff` (vs the real C symbol) + `intra_lowbd_diff`
   while `intra_simd_diff`, `highbd_diff` and `build_nd_diff` stay green.
   Gate 2 keeps **zero pinned cells**.
-- **WINDOWS: MEASURED, NOT RESOLVED — and the harness is why, which is the
-  durable finding.** `winperf.yml` `arms: prepost` (run 30792984795, 16 rounds,
+- **WINDOWS: RESOLVED 2026-08-03 ON `windows-11-arm`, ONCE THE HARNESS HAD
+  CONTENT THAT REACHES IT — and still NOT resolvable on `windows-latest`.**
+  Re-measured on the new oriented content (run 30798500036, 24 rounds, `photo`
+  AND `detail` in the same job on the same VM, pooled-copy statistic):
+  **`photo` −0.332 % vs `detail` +0.167 %, difference −0.499 pp**, against
+  Darwin's **−0.356 / +0.131, difference −0.487 pp** on the same two binaries
+  the same day — **agreement to 0.012 pp**, exactly as §6b predicts for a lever
+  whose mechanism is integer lane arithmetic rather than a platform call. Sign
+  test on `windows-11-arm` `photo`: 19/24 rounds faster, p = 0.0066, with
+  `detail` significantly the OTHER way. `windows-latest` x86-64 stays
+  unresolvable and now has a number for why: MDE 0.50-0.86 % at n=24 against a
+  0.4 % effect. **Also isolated for the first time: the lever COSTS ~+0.15 % on
+  content its kernel never reaches** (+0.167 % arm / +0.131 % Darwin, same sign
+  and size on two CPUs) — the runtime gate's decline cost, which the landing had
+  folded into the reported win. Record:
+  `benchmarks/winperf_content_census_2026-08-03.md` §5. Superseded below is the
+  2026-08-03 morning reading:
+- **WINDOWS (first attempt): MEASURED, NOT RESOLVED — and the harness was why,
+  which is the durable finding.** `winperf.yml` `arms: prepost` (run 30792984795, 16 rounds,
   both runners, three nulls per band): every `post − pre` is at or under that
   band's own same-binary nulls (paired medians: `windows-11-arm` +0.35 %
   `detail` / +0.05 % `smooth` against nulls of 0.00-0.22 %; `windows-latest`
@@ -4087,11 +4130,13 @@ and those are untouched — the named follow-up.
   (`winperf.rs:63-71`), not its MODE DISTRIBUTION**, which made them right for
   KB-PERF-2/3 (both touch every block regardless of mode) and structurally
   vacuous here. **Any future lever scoped to a mode family (directional intra,
-  palette, filter-intra, CFL) must run this census on `detail`/`smooth` BEFORE
-  reading a winperf band, or it will read a structural zero as a platform
-  result.** The cross-platform claim here rests on the mechanism (integer lane
-  arithmetic, no platform call — playbook §6b) and on the AVX2 tier passing its
-  differential, NOT on a Windows timing.
+  palette, filter-intra, CFL) must run this census BEFORE reading a winperf
+  band, or it will read a structural zero as a platform result.** The census is
+  now committed and the census-driven content exists — see KB-PERF-HARNESS
+  above; the cross-platform claim, which at the time rested on the mechanism
+  (integer lane arithmetic, no platform call — playbook §6b) and on the AVX2
+  tier passing its differential rather than on a Windows timing, has since been
+  measured directly.
 - **Untouched and named**: the lowbd `u8` twins (so the DECODER's bd8 path gets
   nothing — this is an encoder lever, and the encoder holds planes as `u16` at
   every bit depth), z2's left half, `up==1` runs, `w==4` blocks, and the

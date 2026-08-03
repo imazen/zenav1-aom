@@ -1,0 +1,167 @@
+# winperf_content_census_2026-08-03 — provenance
+# Companion to winperf_content_census_2026-08-03.md, .census.txt and .fit.tsv.
+#
+# This is a HARNESS fix, not a code landing. It measures what winperf's contents
+# make the encoder do, adds a content fitted to the axis the old two miss, and
+# then measures whether that lets the Windows job resolve a lever it previously
+# could not (benchmarks/encoder_intra_dir_i16_2026-08-03.md §7).
+
+date                 2026-08-03
+box                  Apple M4 Pro, 12 cores, 24 GiB, macOS 26.5.2 (Darwin arm64)
+baseline commit      5cb6928a14e6aa89a0bc12b174ed4b5d74c5ad66 (main at session start)
+worktree             zenav1-aom--wincontent (sibling; removed at the end of the session)
+libaom oracle        upstream/ submodule 03087864cf4bea6abb0d28f95cf7843511413d8f (v3.14.1)
+rustc                stable toolchain; no -C target-cpu=native
+threading            single-threaded on every encode
+nice                 every run under `nice -n 19`, `-j 4`
+
+## Cell — unchanged from every prior encoder study, for continuity
+
+1024x1024, cq-level 44, cpu-used 6, ALLINTRA (usage 2), 8-bit 4:2:0, single
+tile, single thread. Reference source $HOME/tmp/xb/src/photo_1024.yuv — the
+photograph the cross-encoder study, both encoder profiles, the allocation
+landing, the i16 forward-transform landing and the intra-predictor landing all
+used. It is 1.5 MB and cannot be committed, which is why winperf synthesises
+its source at all.
+
+## The census instrumentation
+
+`crates/aom-dsp/src/census.rs`, behind the DEFAULT-OFF `census` cargo feature
+(forwarded by zenav1-aom-encode and zenav1-aom-bench). Thread-local counters,
+`#[inline(always)]` no-op bodies when the feature is off, so the timing
+binaries `.github/workflows/winperf.yml` builds contain no counter.
+
+Three hooks:
+  aom-dsp/src/intra/mod.rs        predict_intra_high  — class x tx_size, calls + pixels
+  aom-dsp/src/transform/txfm2d.rs av1_fwd_txfm2d_into — tx_type x tx_size
+  aom-encode/src/pack.rs          pack_leaf           — coded leaf bsize + winning mode
+
+`av1_fwd_txfm2d` delegates to `_into`, so the one hook covers both entry points.
+The leaf hook is at the bitstream WRITER, so it counts the partition decision
+rather than a search visit.
+
+This supersedes the throwaway instrumentation the intra-predictor landing used
+(a patch kept at ~/tmp/intra8/census_instrumentation.patch, outside the tree).
+Cross-check: the committed census reproduces that patch's published numbers to
+the digit — photograph directional share 20.78 % / 32.79 %, winperf `detail`
+0.15 %, winperf `smooth` 13.19 % / 10.29 %
+(benchmarks/encoder_intra_dir_i16_2026-08-03.census_winperf.txt).
+
+## Commands
+
+  # the census (four sources, one table)
+  cargo build --release -j 4 -p zenav1-aom-bench --features census \
+      --example content_census
+  ./target/release/examples/content_census \
+      yuv:$HOME/tmp/xb/src/photo_1024.yuv:1024x1024 \
+      winperf:detail winperf:smooth winperf:photo    > .census.txt
+
+  # the fit (four passes; 1-2 in one invocation, then 3, then 4)
+  cargo build --release -j 4 -p zenav1-aom-bench --features census \
+      --example content_fit
+  ./target/release/examples/content_fit $HOME/tmp/xb/src/photo_1024.yuv 1024 1024 all
+
+  # the bootstrap fixture for the new content
+  cargo run --release -j 4 -p zenav1-aom-bench --example winperf_bootstrap_gen
+
+  # the allocator census (no oracle needed)
+  cargo build --release -j 4 -p zenav1-aom-bench --no-default-features \
+      --example winperf --example winperf_alloc
+  ./target/release/examples/winperf_alloc {detail,smooth,photo}
+
+The `.fit.tsv` committed here is passes 1-2 (208 rows), 3 (243) and 4 (16)
+concatenated with a leading `pass` column, in the order they were run. Passes 3
+and 4 were WRITTEN AFTER passes 1-2 were read — they exist because the pass-2
+winner sat on a grid edge — and are in the committed tool so `... all`
+reproduces the whole thing.
+
+## The objective, and what was NOT optimised
+
+Declared before the sweep: L1 distance in percentage points between the
+candidate's and the reference's INTRA-CLASS predicted-pixel share vector
+(filter / non-dir / z1 / z2 / z3 / V / H). Lower is better.
+
+`L1_bsize` (coded leaf size) and `L1_tx` (transform type x size) are printed by
+the same tool and are NOT part of the objective. They are reported so the record
+can state what the winner still gets wrong; the winner is the argmin of the
+declared objective and the runner-up's better secondary distances did not change
+the pick.
+
+No lever's before/after delta entered the fit at any point. That is the whole
+discipline: the content is fitted to the reference DISTRIBUTION, then a lever is
+measured against it ONCE.
+
+## Byte-identity / gates
+
+The census hooks compile to nothing with the feature off and have no side
+effects with it on, so no coded byte moves. Verified:
+
+  AOM_CONFORMANCE_DIR=<primary checkout>/conformance/data \
+    cargo nextest run --cargo-profile test-fast -j 4 --workspace --no-fail-fast
+
+RESULT: 940 passed, 0 failed, 28 skipped, 456 s; and with `--run-ignored all`
+(included deliberately — the KB-PERF-1 session found two stale pins that way)
+968 passed, 0 failed, 0 skipped, 731 s.
+
+The worktree borrows the primary checkout's
+gitignored conformance/data READ-ONLY via AOM_CONFORMANCE_DIR; without it ~40
+tests fail-loud with "conformance vector missing", which is the fail-loud design
+working.
+
+The two pre-existing bootstrap fixtures regenerate BYTE-IDENTICAL
+(`git diff` empty on detail/smooth after `winperf_bootstrap_gen`), which is the
+check that adding a content did not perturb the existing ones.
+
+## Windows
+
+  gh workflow run winperf.yml \
+      -f base_sha=0279544522a77a7d6be81a66b02a53a1abdabed8 \
+      -f rounds=24 -f arms=prepost -f contents="photo detail"
+
+Run 30798500036, both runners green. 15m01s / 16m13s. Bands committed as
+.win_<runner>_<content>.tsv.
+
+The matching Darwin band was taken the same day from the SAME two source trees:
+`pre` = a whole-src checkout of 0279544 into this worktree, `post` = the
+committed tree, both built --no-default-features, SHA-verified distinct, then
+
+  for c in photo detail; do
+    nice -n 19 python3 scripts/winperf_ab.py 24 $c ~/tmp/wc_darwin_$c.tsv \
+        pre=.../pre preB=.../preB post=.../post postB=.../postB
+  done
+
+(24 rounds, 4 arms = a null on each side; `uptime` load 1.4-2.5 of 12). Committed
+as .darwin_<content>.tsv. The worktree was restored with
+`git checkout HEAD -- crates/aom-dsp/src crates/aom-encode/src` and verified
+clean afterwards.
+
+Both are read with scripts/winperf_prepost_stats.py (new, committed here), which
+pools the identical copies on each side instead of reading everything against
+one arm. That matters: `windows-11-arm` has a within-round POSITION drift of
++0.19/+0.28 % between successive identical arms, `pre` is always first, and a
+`--vs pre` reading charges the whole of it to the change. The pre-side arms track
+each other across the two contents to <= 0.09 pp, which is the evidence that the
+drift is content-independent and therefore cancels in `photo - detail`.
+
+`arms: prepost` builds `pre` from a whole-src checkout of base_sha and `post`
+from the dispatched ref, with `l3a` and `l3` as extra COPIES of `pre` — so each
+band carries THREE nulls (two pre-side, one post-side). Both runners
+(windows-11-arm, windows-latest x86-64) x each content, never averaged.
+
+The timing arms are built WITHOUT the `census` feature. The `pre` arm's
+crates/aom-{dsp,encode}/src come from base_sha and therefore contain no census
+hooks at all, while `post`'s contain three no-op ones; with the feature off
+those are empty `#[inline(always)]` bodies, so the arms differ by the lever and
+nothing else.
+
+## Known gaps
+
+* One cell, one reference image. §4 of the .md lists the mode families the
+  harness still cannot see (filter-intra, palette, intraBC, CFL/chroma, 8x8
+  leaves) and the two axes where `photo` is measurably off (directional CALL
+  share, V/H over-representation).
+* The census is taken on Darwin only; see the .md §4 for the argument that
+  licenses quoting it for the runners, and the byte gate that backs it.
+* Wall clock and exact counts are two independent measurements, as in every
+  prior study here; neither derives the other.
+* No Linux.

@@ -244,18 +244,43 @@ about the code differs; only the **price per call** does.
   contents. Bracket the content or say which one the number belongs to.
 - **A synthetic harness source is only representative of the axis it was tuned
   on — check before reading a band from it.** `winperf`'s `detail` / `smooth`
-  were tuned so their **allocator call count** brackets the study photograph's
-  (`crates/aom-bench/src/winperf.rs:63-71`), which made them the right harness
-  for KB-PERF-2 (allocation) and KB-PERF-3 (the forward transform) — both touch
-  every block regardless of coding mode. They are **not** representative of MODE
-  DISTRIBUTION: measured 2026-08-03, directional intra prediction is **20.8 %**
-  of predicted pixels on the photograph, **13.2 %** on `smooth` and **0.15 %**
-  on `detail`, where `z1` fires six times in a whole 1 MP frame. KB-PERF-4's
-  Windows band was therefore reading a structural zero, not a platform result.
-  **Before quoting a winperf band for a lever scoped to a mode family**
-  (directional intra, palette, filter-intra, CFL, screen tools), **census the
-  harness content for that family first.** A null you cannot distinguish from
-  "the code never runs" is not a measurement.
+  were tuned so their **allocator call count** brackets the study photograph's,
+  which made them the right harness for KB-PERF-2 (allocation) and KB-PERF-3
+  (the forward transform) — both touch every block regardless of coding mode.
+  They are **not** representative of MODE DISTRIBUTION: measured 2026-08-03,
+  directional intra prediction is **20.8 %** of predicted pixels on the
+  photograph, **13.2 %** on `smooth` and **0.15 %** on `detail`, where `z1`
+  fires six times in a whole 1 MP frame. KB-PERF-4's Windows band was therefore
+  reading a structural zero, not a platform result. A null you cannot
+  distinguish from "the code never runs" is not a measurement.
+- **The census is committed; run it, do not reason about it.**
+  `cargo run -p zenav1-aom-bench --features census --example content_census --
+  winperf:<name> …` reports intra mode family x transform size, forward
+  transform type x size, and coded leaf size for any harness content or raw
+  `.yuv`, against a reference. `benchmarks/winperf_content_census_2026-08-03.md`
+  is the committed table for all three winperf contents plus the study
+  photograph, **including a list of what the harness still cannot see**
+  (filter-intra, palette, intraBC, CFL/chroma, 8x8 leaves — all at or near zero
+  on every source). Before quoting a winperf band for a lever scoped to a mode
+  family, look your family up in that table; if it is on the cannot-see list,
+  the harness owes you a content before it owes you a number.
+- **Fitting content is legitimate; fitting it to the OUTCOME is not.** The fix
+  for the above was a third content (`winperf::Content::Photo`) fitted by
+  sweeping 467 candidates against **the reference's mode distribution**, with
+  the objective (L1 over the intra-class pixel-share vector) declared before the
+  sweep ran and the lever's delta measured exactly once afterwards
+  (`crates/aom-bench/examples/content_fit.rs`). Turning the knob until a lever's
+  number looks good produces a harness that measures the knob — that is §14
+  wearing a content costume. Two consequences worth carrying: an optimum sitting
+  on a grid EDGE is not an optimum (two extra passes here), and when the
+  landscape plateaus, take the argmin of the DECLARED objective rather than
+  quietly re-ranking on a secondary one.
+- **A content fitted on one axis will drift on the others — keep both, do not
+  replace.** `photo` matches the photograph's mode mix (L1 5.7 pp against
+  `detail`'s 47.4) but its allocator traffic fell to **73 %** of the reference
+  where `detail`'s is **95 %**. Neither content dominates; the harness runs the
+  one whose census reaches the lever's mechanism, which is now a
+  `contents:` input on the workflow rather than a fixed pair.
 
 ## 7. Config-permutation gates: collapse, don't enumerate
 

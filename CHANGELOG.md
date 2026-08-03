@@ -6,6 +6,29 @@
 
 ### Added
 
+- **A committed content census, and a third `winperf` content fitted to what it
+  measures
+  ([`benchmarks/winperf_content_census_2026-08-03.md`](benchmarks/winperf_content_census_2026-08-03.md)).**
+  `winperf`'s two synthetic sources were fitted on *allocator call count* and
+  were then quoted for a lever inside the directional intra predictors, where
+  `detail` reaches `z1` six times in a whole 1 MP frame — so the Windows band
+  was reading a structural zero. `aom_dsp::census` (new, behind a **default-off**
+  `census` feature, so timing builds carry no counter) plus
+  `crates/aom-bench/examples/content_census.rs` report intra mode family x
+  transform size, forward transform type x size, and coded leaf size for any
+  content against a reference. `examples/content_fit.rs` used that to fit a new
+  `winperf::Content::Photo` over 467 candidates on a pre-declared objective:
+  intra-class L1 to the study photograph falls from **47.4 pp** (`detail`) to
+  **5.7 pp**, and directional predicted pixels from **0.15 %** to **17.9 %**
+  (reference 20.8 %). It does **not** replace `detail` — its allocator traffic
+  is 73 % of the reference where `detail`'s is 95 % — so
+  `.github/workflows/winperf.yml` gains a `contents` input instead of a fixed
+  pair, and `scripts/winperf_prepost_stats.py` (new) reads a `prepost` band with
+  the identical copies on each side pooled. With the new content the KB-PERF-4
+  lever resolves on `windows-11-arm` at **−0.50 pp against a `detail` control**,
+  matching Darwin's −0.49 pp on the same binaries; `windows-latest` x86-64 stays
+  unresolvable and now has a measured floor (MDE 0.50-0.86 % at n=24) saying
+  why. No coded byte moves; gates 968/968 green.
 - **The encoder has been profiled for the first time
   ([`benchmarks/encoder_hotspot_profile_2026-08-02.md`](benchmarks/encoder_hotspot_profile_2026-08-02.md)).**
   Every prior profiling artifact in `benchmarks/` was decode-side. The 10.8x

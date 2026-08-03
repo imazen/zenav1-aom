@@ -184,6 +184,35 @@ attached to lever 3 was scoped to a box nobody ships on.
 
 ---
 
+## Content — SUPERSEDED IN PART, 2026-08-03
+
+Everything below this heading is what was measured on 2026-08-02 and stands.
+What has changed since is the **scope** the two contents can be quoted for.
+
+`detail` and `smooth` were fitted on **allocator call count**, and this study is
+an allocation study, so they are the right harness for it. They are not the
+right harness for anything else, and on 2026-08-03 a directional-intra lever was
+read against them and came back "not resolved" because the code under test
+essentially never ran: directional predicted-pixel share is **20.8 %** on the
+photograph, **13.2 %** on `smooth` and **0.15 %** on `detail`.
+
+The harness now carries a **census** (`aom_dsp::census` +
+`examples/content_census.rs`) and a **third content**, `photo`, fitted to the
+photograph's intra mode distribution instead — plus a `contents:` input on the
+workflow so a study picks the one its lever reaches. Full record, including the
+list of mode families the harness *still* cannot see:
+[`winperf_content_census_2026-08-03.md`](winperf_content_census_2026-08-03.md).
+
+Two facts from that census that bear directly on the numbers above:
+
+* the two contents' allocator call counts are unchanged and the tables above are
+  unaffected — `photo` is an addition, not a replacement;
+* `photo`'s own allocator traffic is **374 603 calls, 73 %** of the
+  photograph's, against `detail`'s **95 %**. So `photo` is a *worse* harness for
+  an allocation lever than `detail` is, exactly as `detail` is a worse harness
+  for a mode-scoped one. The harness needs both, and which to quote is now a
+  table lookup.
+
 ## Content, and the honest bit about it
 
 The harness cannot ship the dev box's 1.5 MB photograph, so it generates its
@@ -225,6 +254,11 @@ because §6 says a single row proves nothing.
   one-line matrix addition to the same workflow.
 * **One cell.** 1024x1024 / cq44 / cpu-used 6. No size, quality or speed sweep,
   on any platform.
+* **Anything that is not an allocation lever.** The two contents here are fitted
+  on allocator call count and on nothing else; a lever scoped to a coding-mode
+  family is unmeasurable on them (see the 2026-08-03 note above). This was not
+  known when the study was written and is the one respect in which its harness
+  claims were too broad.
 * **Two synthetic contents plus one photograph, and the photograph only on
   Darwin.** Nothing here says what lever 3 is worth on a *photograph* on
   Windows. The platform ratio is measured on `detail`, where Darwin's own value
