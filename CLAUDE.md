@@ -3766,6 +3766,29 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   same 4x7 grid, two cells divergent, the 8-px-shorter twin byte-exact.
 - **VERIFIED.** `-p zenav1-aom-encode -p zenav1-aom-bench` **489 passed / 0 failed / 31 ignored**
   in both dispatch modes. Gate 2 unaffected and still has zero pinned cells.
+- **THE WHOLE FUNCTION WAS THEN AUDITED, arm by arm, and the other two survivors are comment
+  bugs rather than code bugs — corrected in place (playbook §9).** Every framesize-conditioned
+  assignment in `set_allintra_speed_feature_framesize_dependent` (speed_features.c:166-345) was
+  enumerated against the port. All are modelled or provably dead **except** two whose in-tree
+  inertness note gave a REASON that does not survive, while the conclusion does:
+  * **`tx_sf.prune_tx_size_level`** (:184 / :263 / :265 / :289, four assignments across three
+    framesize tiers) was dismissed as *"gated on `use_hbd`, false here"*. `use_hbd` is
+    `cpi->oxcf.use_highbitdepth` — **TRUE on every bd10/bd12 encode**. Worse, the field's shape
+    (a LUMA tx-SIZE prune, hbd-only, framesize-conditioned, live from speed 2) is a near-perfect
+    fit for the long-pinned `b10_64` / `HBD_OPEN` band (bd10/bd12, speeds 1..6, LUMA-borne,
+    reaching 4:4:4 + mono + bd12), so the wrong reason reads like a lead. It is not one: the
+    field's ONLY consumer is `select_tx_block` (tx_search.c:2629-2635), reached solely from
+    `select_tx_size_and_type`, which opens `assert(is_inter_block(xd->mi[0]))` (:3438). INTER-only
+    **by assertion**, at every bit depth and framesize. So `HBD_OPEN` stays open and this is
+    ruled out as its root.
+  * **`part_sf.max_intra_bsize`** (:285) was dismissed as *"only `init_mode_skip_mask`'s INTER
+    ref-frame mask, rdopt.c:4217"*. It has **three** consumers, not one — that plus
+    `skip_intra_modes_in_interframe` (rdopt.c:6000) and `av1_nonrd_pick_inter_mode_sb`'s
+    intra-check gate (nonrd_opt.c:795). All three are inter paths, so the conclusion holds; the
+    citation was one-third complete and is now enumerated.
+  Both notes are rewritten at their sites. The lesson is the one KB-32 and KB-34 already paid
+  for, in a milder form: a conclusion can be right while its stated reason is wrong, and the
+  wrong reason costs the next session the same audit.
 - **Still unmeasured on this axis:** above 1440p at speed >= 1 other than KB-19's single 2160p
   speed-0 cell (a 2160p cpu-1 cell is ~250 s per pair, so the band 1440..2160 at speeds 1-5 is
   ~20-30 min); the >=1080p band at bit depths above 8, at 4:2:2/4:4:4/mono, and at SB128; and

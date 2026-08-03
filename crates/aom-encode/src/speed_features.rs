@@ -610,8 +610,21 @@ impl SpeedFeatures {
         //   port's envelope: `use_square_partition_only_threshold = BLOCK_32X32`
         //   for <480p is UNCHANGED from speed 1 (KB-3); `partition_search_breakout_
         //   {dist,rate}_thr` is INTER-only (partition_search.c:4260 gates on
-        //   `!frame_is_intra_only`); `prune_tx_type_using_stats` needs >=480p and
-        //   `prune_tx_size_level` needs use_hbd (both false here).
+        //   `!frame_is_intra_only`); `prune_tx_type_using_stats` needs >=480p
+        //   (false on the <480p cells this line is about).
+        //   **`prune_tx_size_level` (:263/:265) — REASON CORRECTED 2026-08-03.**
+        //   This used to read "needs use_hbd (both false here)". `use_hbd` is
+        //   `cpi->oxcf.use_highbitdepth`, which is TRUE on every bd10/bd12
+        //   encode, so that reason does not survive — and the field's shape
+        //   (a LUMA tx-SIZE prune, hbd-only, framesize-conditioned, live from
+        //   speed 2) is a near-perfect fit for the pinned `b10_64` / `HBD_OPEN`
+        //   band, which is exactly why a wrong reason here is worth deleting
+        //   rather than leaving: it reads like a lead and is not one. The
+        //   CONCLUSION still holds, for a stronger reason — the field's only
+        //   consumer is `select_tx_block` (tx_search.c:2629-2635), reached
+        //   solely from `select_tx_size_and_type`, which opens
+        //   `assert(is_inter_block(xd->mi[0]))` (tx_search.c:3438). INTER-only
+        //   by assertion, at every bit depth and every framesize.
         //   framesize-INDEPENDENT block (speed_features.c:424-437): the intra-still
         //   relevant deltas are `disable_smooth_intra=1` (:429), `intra_pruning_
         //   with_hog=2` (:430), `prune_filter_intra_level=1` (:431), and
@@ -644,9 +657,15 @@ impl SpeedFeatures {
         //   blocks and is a byte no-op on this grid (empirically verified). Inert
         //   here: `ml_early_term_after_part_split_level = 0` (:270, both consumers
         //   `!frame_is_intra_only` — partition_search.c:4322/4335), `max_intra_bsize
-        //   = BLOCK_32X32` (:285, only `init_mode_skip_mask`'s INTER ref-frame mask,
-        //   rdopt.c:4217), `partition_search_breakout_{dist,rate}_thr` (:286-287,
-        //   INTER), `prune_tx_size_level = 3` (:289, gated on `use_hbd`, false here).
+        //   = BLOCK_32X32` (:285 — it has THREE consumers, not the one this comment
+        //   used to name, and all three are inter paths: `init_mode_skip_mask`'s
+        //   ref-frame mask rdopt.c:4217, `skip_intra_modes_in_interframe`
+        //   rdopt.c:6000, and `av1_nonrd_pick_inter_mode_sb`'s intra-check gate
+        //   nonrd_opt.c:795; enumerated 2026-08-03),
+        //   `partition_search_breakout_{dist,rate}_thr` (:286-287, INTER),
+        //   `prune_tx_size_level = 3` (:289 — see the speed-2 note above: the
+        //   `use_hbd` reason is WRONG, the field is INTER-only by assertion at
+        //   tx_search.c:3438).
         //   framesize-INDEPENDENT block (speed_features.c:439-469): the intra-still
         //   relevant deltas are `less_rectangular_check_level = 2` (:444),
         //   `chroma_intra_pruning_with_hog = 2` (:454) and `intra_pruning_with_hog
