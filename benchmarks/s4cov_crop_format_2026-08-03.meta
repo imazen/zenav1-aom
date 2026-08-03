@@ -1,0 +1,50 @@
+# Provenance for s4cov_crop_format_2026-08-03.tsv
+# (KB-28's crop axis at the formats its residual named as unmeasured.)
+
+base commit      : 1f366a9 (origin/main) + this session's KB-35 fix
+host             : Darwin arm64 / Apple M4 Pro
+profile          : test-fast (opt-level 3, debug-assertions + overflow-checks ON)
+dispatch         : default (archmage SIMD tokens live)
+conformance dir  : AOM_CONFORMANCE_DIR=<primary checkout>/conformance/data
+wall             : 377 s for the four arms (60 encode PAIRS)
+
+command          : cargo test --profile test-fast -p zenav1-aom-bench \
+                     --test s4cov_crop_format_axis -- --ignored --nocapture --test-threads=1
+
+THE TWO CROPS (both from `kb28_crop_dims::CELLS`)
+  474x480  mi-aligned 480x480 — crop min-dim 474 < 480 <= mi min-dim 480
+  714x720  mi-aligned 720x720 — crop min-dim 714 < 720 <= mi min-dim 720
+  `av1_get_MBs` (alloccommon.c:30-33) aligns to 8 px, so the gap is up to 7 px.
+
+RESULT BY ARM
+  chroma formats (mono / 4:4:4 / 4:2:2 x 2 crops x cpu 1..6)   36/36 MATCH
+  SB128        (--sb-size=128 x 2 crops x cpu 1..6)            12/12 MATCH
+  bd10         (2 crops + 2 SB-exact controls x cpu {0, 7})     8/8  MATCH
+  cpu 0        (4:2:0 x 2 crops)                                2/2  MATCH
+  cpu 0        (monochrome x 2 crops + 2 SB-exact controls)     0/4  DIVERGE
+
+THE MONOCHROME cpu-0 ROWS ARE NOT THIS AXIS'S FINDING
+  They are `s4cov_partial_sb_axis::MONO_S0_OPEN` — the pre-existing
+  (monochrome, base_qindex 96, speed 0) near-tie, whose own localizer
+  (`mono_speed0_size_qindex_localize`) reduces it to a SINGLE 64x64
+  superblock, i.e. to a frame with no straddle at all. Measured here, not
+  argued: the SB-exact monochrome controls at the crops' own mi-aligned
+  extents (480x480 -211 B, 720x720 +105 B) diverge too, where KB-28's fix
+  is a literal no-op. What this run DOES add is the shape: the class was
+  pinned at 132x132 / 192x192 / 196x196 / 256x256 and now also reaches
+  474x480 / 480x480 / 714x720 / 720x720, i.e. it is size-independent.
+
+A PREDICATE THAT WAS WRONG, AND WAS REFUTED BY THE FIRST RUN
+  The SB128 arm originally asserted 474x480 would be byte-identical to its
+  SB64 encode, from `av1_select_sb_size`'s `AOMMIN(w,h) <= 480 -> BLOCK_64X64`
+  rule (the rule KB-34's entry quotes). That rule lives in the
+  AOM_SUPERBLOCK_SIZE_DYNAMIC branch; an explicit --sb-size=128 returns
+  BLOCK_128X128 from the top of the function (encoder_utils.c:961-963). Both
+  crops are genuine SB128, and the C stream changes on 12/12 rows.
+
+STILL NOT COVERED (with costs) — see the tail of the gate file
+  bd12 x the straddle           ~2 min, same four cells as the bd10 arm
+  crops straddling 2160         ~25-30 min of port encode (KB-19's 2160x2160
+                                speed-0 cell is C ~26 s / port ~195 s)
+  multi-tile x the straddle     same cost class; needs its own crop pair at
+                                >4096 px or ~9.44 MP (e.g. 4090x2154 vs 4096x2160)

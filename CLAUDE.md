@@ -2690,6 +2690,14 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   24, 0)` with `mono = true` and the chroma planes cleared. Pinned in
   `partial_sb_speed_axis_chroma_formats_byte_match::MONO_S0_OPEN` plus the localizer, both
   directions.
+- **SHAPE WIDENED 2026-08-03** by `s4cov_crop_format_axis::crop_straddle_speed0_byte_matches`:
+  the class also reaches **474×480 (−150 B), 480×480 (−211), 714×720 (+160) and 720×720 (+105)**,
+  all monochrome cq24 cpu0, all with byte-exact 4:2:0 twins. So it is **size-independent**
+  (which the 64×64 localizer already implied and nothing had confirmed above 256²), and it does
+  NOT depend on a partial superblock — 480×480 and 720×720 are SB-exact. That pair is also what
+  ACQUITS KB-28's crop root for these rows: the SB-exact controls sit at the crops' own
+  mi-aligned extents, where KB-28's fix is a literal no-op, and they diverge by MORE than the
+  crops do. Pinned in the new file too, with the controls as the attribution.
 
 ### KB-28 — Encoder: the framesize predicates read the mi-aligned extent, not `cm->width`/`cm->height` — an EXACTLY 1280×720 frame REFUSED to encode at `--cpu-used` 7, 8 AND 9 — FIXED ✅ 2026-08-02
 - **Found 2026-08-01, fixed 2026-08-02.** `pack.rs` needed `cm->width * cm->height` to select
@@ -2772,6 +2780,32 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
 - **Still unmeasured:** the crop axis at bd10/12, 4:2:2/4:4:4, monochrome, SB128 and multi-tile;
   crops straddling the `is_4k_or_larger` (2160) predicate; and the 480/720 straddle at
   `--cpu-used 0` (where `use_square_partition_only_threshold`'s base tier still moves).
+- **MEASURED 2026-08-03** — `aom-bench/tests/s4cov_crop_format_axis.rs`, 62 rows, record
+  `benchmarks/s4cov_crop_format_2026-08-03.tsv` + `.meta`. **Four of those seven are now swept,
+  and the crop read holds on every one of them:**
+  * **chroma formats 36/36 byte-exact** — monochrome, 4:4:4 and 4:2:2 at both crops across
+    KB-28's own `--cpu-used 1..6` band;
+  * **SB128 12/12 byte-exact**, with the C stream verified CHANGED vs `--sb-size=64` on 12/12
+    rows. A predicate written into that arm was FALSE and the first run refuted it: it asserted
+    474×480 would be downgraded to SB64 by `av1_select_sb_size`'s `AOMMIN(w,h) <= 480` rule —
+    the rule KB-34's entry quotes — but that rule is in the `AOM_SUPERBLOCK_SIZE_DYNAMIC` branch
+    and an **explicit** `--sb-size=128` returns `BLOCK_128X128` from the top of the function
+    (encoder_utils.c:961-963). Both crops are genuine SB128;
+  * **bd10 8/8 byte-exact** at `--cpu-used` {0, 7} — the only speeds where bd10 is byte-exact on
+    SB-exact content (the pinned `b10_64` band owns 1..6), each crop run beside an SB-exact
+    control at **its own mi-aligned extent**, which is the sharpest available A/B: same tier
+    under the mi reading, different tier under the crop reading;
+  * **`--cpu-used 0` 2/2 byte-exact at 4:2:0** — the named gap where
+    `use_square_partition_only_threshold`'s base tier moves. The monochrome rows at cpu0 DIVERGE,
+    and that is **KB-27's class, not this root**: measured, not argued — the SB-exact monochrome
+    controls at 480×480 / 720×720 diverge too (see KB-27's widened shape).
+  Still unmeasured, with costs, at the tail of the gate file: **bd12** (~2 min, the same four
+  cells as the bd10 arm), **crops straddling 2160** (~25-30 min of port encode — KB-19's
+  2160×2160 speed-0 cell is C ~26 s / port ~195 s; the predicate to check is
+  `default_min_partition_size`'s `BLOCK_8X8` arm at e.g. 2154×2160 vs 2160×2160), and
+  **multi-tile × the straddle** (same cost class; it needs its own crop pair at >4096 px or
+  ~9.44 MP, e.g. 4090×2154 vs 4096×2160, because a tile split cannot coexist with a 714×720
+  frame).
 
 ### KB-29 — Encoder: the IntraBC-armed encode produced a NON-CONFORMANT bitstream (`Invalid intrabc dv`) — FIXED ✅ 2026-08-01 (5 roots), + the general decode-side gate it was missing
 - **Found 2026-08-01** by the cross-encoder still-picture benchmark
@@ -3557,6 +3591,111 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   — all 136 remaining PANIC rows in the sweep, fired by libaom's own screen-content detection on
   the synthetic gradient and on low-q real content. Also unchanged: the lossless TX_4X4 arm
   (`block_yrd_lowbd`/`_hbd`'s `unimplemented!`) and the HBD estimate arm's own gaps.
+  **CORRECTED 2026-08-03 — those 136 rows were NOT the palette arm.** The guard tested
+  `allow_screen_content_tools`, one of the four terms of C's `try_palette`, and the C oracle on
+  every one of those cells passes `--enable-palette=0`, so libaom provably never entered the
+  palette search there. See KB-35: the refusal is now C's predicate, 22 of the 25 measured
+  PANIC rows are byte-identical, and the 3 that remain are the genuine arm. The lossless TX_4X4
+  and HBD sentences stand.
+
+### KB-35 — Encoder: the nonrd estimate arm's palette refusal fired on the FRAME FLAG, one of four terms of C's `try_palette` — `--cpu-used 8` REFUSED a plain gradient at every size >= 1024x1024 and every quantizer — FIXED ✅ 2026-08-03
+- **Found 2026-08-03** by working the "still unmeasured / still refused" queue KB-34 left behind
+  (its closing bullet: *"Still refused at `--cpu-used` 8/9, unchanged and pre-existing: the
+  screen-content palette arm ... all 136 remaining PANIC rows in the sweep"*). Those 136 rows
+  were not a residual of KB-34's landing; they were their own bug, and a bigger one.
+- **Symptom.** `crates/aom-encode/src/nonrd_pickmode.rs:1602` (pre-fix line) refused every
+  estimate-arm leaf whenever the frame carried `allow_screen_content_tools`:
+  *"HANDOFF: av1_search_palette_mode_luma (palette.c) not ported — required before any
+  screen-content (allow_screen_content_tools=1) speed-8 cell"*. Measured reach: **136 of the
+  2,012 rows of `benchmarks/nonsquare_leaf_reach_2026-08-02.tsv`** — `EncodeCell::synthetic_diag`,
+  a SMOOTH GRADIENT, at `--cpu-used 8`, at 1024x1024 / 1272x724 / 1280x720 / 2176x2176, at
+  every quantizer from cq2 to cq63.
+- **C's `try_palette` (nonrd_pickmode.c:1698-1710) is a conjunction of FOUR terms and the guard
+  tested one.** The others are `cpi->oxcf.tool_cfg.enable_palette`, the ordinal size bounds of
+  `av1_allow_palette` (blockd.h:1503-1510), and — at `prune_palette_search_nonrd > 0`, which is
+  **1 at every speed that dispatches this arm** (speed_features.c:582) — `bsize <= BLOCK_16X16
+  && source_variance > 200` plus a SAD term. **The C oracle's own `shim_encode_av1_kf` passes
+  `--enable-palette=0`** (`dec_shim.c:614`), so on every one of those 136 cells term 1 is FALSE
+  and libaom provably never enters the palette search at all. The port refused where C does
+  nothing. This is playbook §9's shape with a twist worth naming: not a comment claiming
+  inertness, but a GUARD claiming a superset — an over-broad refusal is exactly as wrong as an
+  over-broad inertness claim, it just fails loudly instead of silently.
+- **Why it looked like a speed axis and was not** (the part that would have misdirected a
+  size/speed-shaped hypothesis, as in KB-34): speed 9 never refused, so the map read "speed 8
+  only". The reason has nothing to do with palette — `av1_set_screen_content_options`
+  (encoder.c:2466-2470) turns screen-content DETECTION off entirely when
+  `use_nonrd_pick_mode && !hybrid_intra_pickmode`, which is speed 9's combination
+  (`hybrid_intra_pickmode = 0`) but not speed 8's (`= 2`). At speed 9 the frame flag is 0, so
+  the old guard was vacuously satisfied.
+- **FIX.** `nonrd_palette_arm_is_live(enable_palette, allow_screen_content_tools, bsize,
+  prune_palette_search_nonrd, prune_mode_based_on_sad, best_sad_norm, source_variance)` — C's
+  predicate term for term — and the refusal fires on it. Two new `NonrdIntraLeafCtx` fields
+  carry the missing inputs: `enable_palette` (from `cfg.palette_costs.is_some()`, the same term
+  `PickFrameCfg` already models for the full-RD arm) and `prune_palette_search_nonrd`. **The
+  refusal was also STRENGTHENED, not relaxed**: it was a `debug_assert!`, so a release build
+  would have silently coded a non-palette winner where C searches palette; it is now a hard
+  `assert!`. Both `bsize` comparisons are ORDINAL on the `BLOCK_SIZES_ALL` index, matching C —
+  `BLOCK_4X16`/`BLOCK_16X4` satisfy `>= BLOCK_8X8` despite a 4-px side, and are excluded by
+  `<= BLOCK_16X16` instead (the zenavif/zenrav1e ordinal-vs-dimensional trap, avoided here by
+  construction).
+- **MEASURED, both arms, 102 rows** (`benchmarks/kb35_palette_arm_2026-08-03.tsv` + `.meta`;
+  the `pristine` arm is this tree with the two hunks `git stash push`-ed):
+
+  | class | rows | pristine | fixed |
+  |---|---|---|---|
+  | smooth gradient >= 1024x1024, cpu8, screen flag ON, palette OFF | 8 | PANIC | **MATCH** |
+  | screen content, cpu8, palette OFF both sides | 9 | PANIC | **MATCH** |
+  | smooth gradient <= 512x512, cpu8 (flag off) — the control | 8 | MATCH | MATCH |
+  | every cell at cpu9 — the control | 16 | MATCH | MATCH |
+  | screen content, cpu8, palette ON both sides | 9 + 4 | PANIC | **DIVERGE** (pinned) |
+  | screen content 1024x1024, cq >= 60, cpu8, palette ON | 3 | PANIC | PANIC (**genuine**) |
+
+  **25 pristine PANIC rows -> 3, and all 22 that closed are byte-identical.**
+- **THE NARROWING HAS TEETH — the refusal is still reachable, and it was found by measurement,
+  not argued.** Screen content at **1024x1024, cq >= 60, cpu8, `--enable-palette=1`** refuses
+  with the new message at `bsize == BLOCK_16X16, source_variance = 3140`. The predicate: the
+  estimate arm only ever sees `bsize >= BLOCK_16X16` at speed 8 (`hybrid_use_rdopt` sends
+  everything smaller to the full-RD leaf), and C's prune caps it at `<= BLOCK_16X16`, so the
+  live set is **exactly `bsize == BLOCK_16X16` with `source_variance > 200`**; and what makes
+  the QUANTIZER the axis is that `set_vbp_thresholds` scales with qindex, so only at a high
+  quantizer does a 16x16 that textured survive the variance split undivided. cq58 on the same
+  content at the same size reaches ZERO such leaves — that asymmetry is the gate's control.
+- **FOUND WHILE HERE, NOT THIS LANDING'S — `PALETTE_ON_SPEED8_OPEN`, a divergence class the
+  over-broad refusal was HIDING.** With `--enable-palette=1` on both sides, screen-detected
+  content at cpu8 diverges at every size and quantizer tried (13 rows, -1399..+817 B; the
+  -1399 and +817 are cq63/cq40 at 512x512 and 1024x1024). It is **not** this arm: the new
+  `palette_gate_reach()[2]` instrument reads **0** on every one of those cells, so no
+  estimate-arm leaf satisfies `try_palette` there. That leaves the FULL-RD palette leaf at
+  speed 8 (`hybrid_use_rdopt` dispatches `av1_rd_pick_palette_intra_sby` for every
+  `bsize < BLOCK_16X16` with `source_variance >= 101`) — a speed crossing of the palette search
+  that no gate covers, because `rd_close_palette.rs` is `speed: 0` throughout. Pinned
+  self-promoting; its speed-9 twin MATCHes, which is the control that isolates it to the
+  speed-8 crossing. Per playbook §10 the next step is the sibling-C per-block dump on the
+  smallest divergent cell (128x128 cq12, delta -1), NOT reasoning from the deltas.
+- **Gates.** `aom-bench/tests/kb35_nonrd_palette_arm.rs` (3 tests, `--ignored`, 3.1 s total):
+  `speed8_screen_detected_cells_byte_match` (26 cells; the screen flag is read out of the REAL
+  stream header per row and the grid must straddle it),
+  `estimate_arm_palette_refusal_is_reachable_and_loud` (the teeth; asserts the refusing set is
+  exactly `{cq60, cq62, cq63}` and that the reach counter and the predicate AGREE on every
+  row), `palette_on_speed8_screen_content_is_pinned` (the open class + its speed-9 controls).
+  Unit locks in `nonrd_pickmode::tests`: `palette_arm_liveness_is_c_try_palette` (each of the
+  four terms varied alone, incl. the ordinal-vs-dimensional rows and the SAD threshold's
+  `> 1 ? 100 : 20` level dependence) and `b_log2_matches_c_lookup_tables` (against C's literal
+  `b_width_log2_lookup`/`b_height_log2_lookup`, nonrd_opt.h:114-119). Instrument:
+  `nonrd_pickmode::palette_gate_reach()` / `reset_palette_gate_reach()`, thread-local for the
+  same reason as `multi_txb_leaf_counts`.
+- **BITE PROOFS.** (1) Stubbing `nonrd_palette_arm_is_live` back to the frame flag alone fails
+  the unit lock with *"bsize 0 is < BLOCK_8X8"* while the rest of the suite stays green.
+  (2) Stashing the two hunks makes 25 of the gate's rows PANIC with the OLD message, while
+  the 23 control rows (<= 512x512 gradient, and every cpu9 row) still MATCH — the fix is not
+  "everything passes now".
+- **VERIFIED.** `-p zenav1-aom-encode -p zenav1-aom-bench` **489 passed / 0 failed / 31 ignored**
+  in both dispatch modes (default and `AOM_FORCE_SCALAR=1`). Gate 2 is unaffected and still has
+  zero pinned cells.
+- **Still refused at `--cpu-used` 8/9, unchanged:** the genuine palette arm above
+  (`av1_search_palette_mode_luma` is not ported for the estimate arm — the RD-path
+  `palette_search::rd_pick_palette_intra_sby` is what it needs to be wired to), the lossless
+  TX_4X4 arm (`block_yrd_lowbd`/`_hbd`'s `unimplemented!`), and the HBD estimate arm's own gaps.
 
 ### KB-PERF-1 — Encoder: the intra-mode CNN is recomputed ~10x per superblock (C computes it ONCE and caches) — FIXED ✅ 2026-08-02
 
