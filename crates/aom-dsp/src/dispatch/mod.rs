@@ -19,7 +19,7 @@
 //! Every dispatch entry point (the ONE `#[arcane]`/`incant!` boundary per hot
 //! loop) must call [`scalar_forced`] before its first dispatch:
 //!
-//! ```ignore
+//! ```text
 //! pub fn kernel(args...) {
 //!     let _ = crate::dispatch::scalar_forced(); // one-time env pin (~1ns after init)
 //!     incant!(kernel_impl(args...))

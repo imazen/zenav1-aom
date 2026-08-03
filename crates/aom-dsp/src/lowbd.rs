@@ -22,7 +22,7 @@
 //! kernel FAMILY exposes a `*_u8` lowbd entry point next to its highbd one, and
 //! the caller picks the entry by `bit_depth`:
 //!
-//! ```ignore
+//! ```text
 //! if bit_depth == 8 {
 //!     aom_dsp::recon::reconstruct_txb_u8_into(dst_u8, .., scratch);   // lowbd
 //! } else {
