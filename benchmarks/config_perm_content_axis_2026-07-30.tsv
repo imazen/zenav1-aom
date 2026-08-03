@@ -1,4 +1,4 @@
-# generated at commit 5e29589. If that differs from `git rev-parse --short HEAD`,
+# generated at commit c8aba69. If that differs from `git rev-parse --short HEAD`,
 # treat every divergence below as possibly-already-fixed and re-run the sweep.
 # Content-axis sensitivity of the 21 config-permutation knob axes.
 # Every data row is ONE singleton axis level on ONE content at ONE

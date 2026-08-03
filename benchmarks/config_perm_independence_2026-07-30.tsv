@@ -1,4 +1,4 @@
-# generated at commit 5e29589. If that differs from `git rev-parse --short HEAD`,
+# generated at commit fb8d2a3. If that differs from `git rev-parse --short HEAD`,
 # treat every divergence below as possibly-already-fixed and re-run the sweep.
 axis_a	axis_b	verdict	a_moves_stream_b0	a_moves_stream_b1	b_moves_stream_a0	b_moves_stream_a1	fp_a_b0	fp_a_b1	fp_a_equal	fp_b_a0	fp_b_a1	fp_b_equal
 rect	ab	INERT-B	true	true	true	false	145	143	false	39	0	false
