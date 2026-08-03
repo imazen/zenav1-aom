@@ -4186,6 +4186,13 @@ base **159.594 ms** (spread 3.51 %) → **154.953 ms** (3.04 %) vs libaom-c
 −3.05 %), paired final/C ratios 3.126-3.284. All arms emit the same 4472 bytes.
 The base arm reproduces the re-profile's published 3.343x to 0.1 % on a
 different day, so the deltas are read against a live control.
+**RE-TAKEN 2026-08-03 WITH THE ARM ORDER ROTATED — SURVIVES**
+(`benchmarks/encoder_rotate_reverify_2026-08-03.md` §2): that band was FIXED
+order, which confounds arm with position (§6), and `ROTATE=1` did not exist
+yet. Rebuilt from `578653f` → `99a10ab` at 5 arms × **50 rotated rounds** with
+nulls both sides: paired-median **−2.986 % / −3.004 %** against −3.05 %
+(0.06 pp), the two post copies agreeing to 0.018 pp, 46/50 and 45/50 faster,
+p < 0.0001, null −0.050 %; ratio 3.3537x → 3.2517x/3.2522x.
 
 - **Allocator census: 854 053 → 512 557 calls (−40.0 %), 448.8 MB → 267.5 MB,
   3 336 → 2 002 per superblock, peak live UNCHANGED at 27 705 399 B** — it was
@@ -4269,6 +4276,16 @@ rounds** (`scripts/eprof_ab.sh`, nulls on BOTH sides): base **154.474 ms** →
 paired per-round ratios do not overlap (base 3.244-3.305, both 3.172-3.221).
 Column pass alone −1.700 ms, row pass alone −1.665 ms, and they compose
 **super-additively** to −3.843 (+0.48 ms, 3x the floor, unexplained).
+**RE-TAKEN 2026-08-03 WITH THE ARM ORDER ROTATED — LEVER SURVIVES, MAGNITUDE
+MOVES ~0.5 pp** (`benchmarks/encoder_rotate_reverify_2026-08-03.md` §3): that
+band was FIXED order (§6) and `ROTATE=1` did not exist yet. Rebuilt from
+`590e525` → `7976c0f` at 5 arms × **50 rotated rounds**: paired-median
+**−1.893 % / −2.163 %** (mean of the two copies −2.03 %) against −2.56 %;
+47/50 and 48/50 faster, p < 0.0001, null −0.086 %, MDE95 0.403. **How much of
+the 0.5 pp is protocol is NOT established** — the two copies of the same post
+binary differ 0.27 pp inside that band, and its fixed-order twin read
+−2.541/−2.344. The ratio moves least: 3.2232x → 3.1604x/3.1517x. Quote
+−2.56 % as the fixed-order reading, −2.0 to −2.2 % as the rotated one.
 
 - **THE AUDIT IS THE WORK, and it is a different question from the inverse
   one.** The inverse kernels `clamp_value` at every stage, so
@@ -4407,6 +4424,21 @@ and those are untouched — the named follow-up.
   z1+z3 −0.20 % / z2 −0.45 % — roughly equal halves, NOT separately resolvable
   against that band's −0.17 % null (which is why the 36-round band was run).
   All arms emit the same 4472-byte `.obu` by sha.
+- **RE-TAKEN 2026-08-03 WITH THE ARM ORDER ROTATED — SIGN SURVIVES, the
+  −0.75 % MAGNITUDE IS NOT RE-VERIFIED**
+  (`benchmarks/encoder_rotate_reverify_2026-08-03.md` §4). Both published bands
+  were FIXED order (§6) and `ROTATE=1` did not exist yet — and the position
+  drift it corrects is worth **45 % of this lever's whole effect**, which is why
+  this lever was re-taken first. Rebuilt from `0279544` → `71c924a` at 5 arms ×
+  50 then × **150 rotated rounds**. n=150: paired-median **−0.648 % /
+  −0.623 %** (the two post copies agreeing to 0.025 pp) against a null of
+  **+0.095 %**; **115/150 and 108/150 rounds faster, p < 0.0001**, null 71/150
+  p = 0.57; ratio 3.1785x → 3.1592x/3.1588x (−0.020 vs the published −0.024).
+  **BUT the box was heavily contended (raw spreads to 212 %) and NEITHER band
+  met the pre-registered gate — MDE95 1.155 and 1.475 pp against a required
+  0.375**, so the magnitude is unmeasured to that precision, not refuted. Six
+  independent post-vs-base comparisons across three bands are all negative.
+  **Open, ~20 min: one 150-round rotated band on an idle box.**
 - **13x optimistic against the ranked row; 2.1x against the sub-lever's own
   addressable cost.** Both numbers are in the record because the first is what a
   ranking table produces and the second is what a named mechanism produces.

@@ -172,6 +172,26 @@ overlap at the extremes (base 3.183-3.249, all 3.151-3.222) — this is a 0.75 %
 effect on a box whose raw spread is 2.6-3.3 %, and it is resolvable only
 because the arms are interleaved and the nulls are measured.
 
+> **RE-VERIFIED UNDER ROTATION 2026-08-03 — the SIGN survives, the MAGNITUDE
+> −0.75 % is NOT RE-VERIFIED
+> ([`encoder_rotate_reverify_2026-08-03.md`](encoder_rotate_reverify_2026-08-03.md)
+> §4).** This band was taken with a FIXED arm order, which confounds arm with
+> position (playbook §6), and `ROTATE=1` did not exist yet — the drift that
+> motivated it is worth **45 % of this lever's whole effect**. Re-taken from the
+> same two commits (`0279544` → `71c924a`, rebuilt, sha-verified) at 5 arms ×
+> 50 and then × **150 rotated rounds**. The n=150 band: paired-median
+> **−0.648 % / −0.623 %** for the two post-side copies (agreeing to 0.025 pp)
+> against a null of **+0.095 %**, with **115/150 and 108/150 rounds faster,
+> p < 0.0001** while the null sits at 71/150, p = 0.57. Ratio 3.1785x →
+> 3.1592x/3.1588x (−0.020) against the −0.024 here. **BUT both rotated bands
+> ran against a heavily loaded box (raw spreads to 212 %) and neither met the
+> pre-registered resolution gate — MDE95 1.155 and 1.475 pp against a required
+> 0.375.** So the effect is real and reproducible in sign across six independent
+> post-vs-base comparisons, and the best available rotated reading is
+> **−0.62 to −0.65 %**, but that is a non-resolving band and must not be quoted
+> as a correction to the −0.75 % below. **One 150-round rotated band on an idle
+> box (~20 minutes) would settle it.**
+
 ### The two halves, measured separately (§14's closing rule)
 
 An earlier 24-round **7-arm** band (`.ab_split.tsv`) ran `z1z3` (z2's gate

@@ -22,8 +22,9 @@ YUV=${YUV:-$HOME/tmp/xb/src/photo_1024.yuv}
 W=${W:-1024}; H=${H:-1024}; Q=${Q:-44}; S=${S:-6}
 WARM=${WARM:-2}; REPS=${REPS:-7}
 
-# ROTATE=1 rotates the arm order by one position each round, so that over N
-# rounds every arm spends 1/k of them in each of the k positions.  This matters:
+# ROTATE=1 (THE DEFAULT since 2026-08-03) rotates the arm order by one position
+# each round, so that over N rounds every arm spends 1/k of them in each of the k
+# positions.  This matters:
 # on 2026-08-03 a 44-round fixed-order band put TWO COPIES OF ONE BINARY at
 # positions 5 and 6 and they came out 0.34 pp apart, while the copies at
 # positions 1 and 2 agreed to 0.11 pp -- i.e. the position an arm occupies
@@ -33,17 +34,40 @@ WARM=${WARM:-2}; REPS=${REPS:-7}
 # sec 5, where it is handled by pooling instead).  Rotating makes it cancel by
 # construction rather than by a correction, and costs nothing.
 #
-# Default OFF so previously recorded bands stay reproducible command-for-command.
+# DEFAULT ON since 2026-08-03 (benchmarks/encoder_rotate_reverify_2026-08-03.md
+# §5).  The rotation is `ARMS[(j + i - 1) % K]` -- DETERMINISTIC, not shuffled --
+# so a rotated band is reproducible command-for-command exactly like a fixed one;
+# "rotation costs a reproducible ordering" was the argument for default-off and it
+# does not hold.  What default-off did cost is that every band was confounded by
+# default AND the confound was unreadable: a fixed-order band cannot even
+# ESTIMATE the position effect (arm and position are perfectly aliased), so no
+# reviewer can tell whether it mattered.  Measured on this box 2026-08-03, the
+# pooled position gradient ran 0.35-1.31 pp across five rotated bands -- the same
+# order as KB-PERF-4's entire published effect.
+#
+# Pass ROTATE=0 to reproduce a pre-2026-08-03 band command-for-command.
 N=$1; shift
 OUT=$1; shift
 ARMS=("$@")
 K=${#ARMS[@]}
 
+# Rotation only balances when N is a multiple of k; otherwise some arm spends an
+# extra round in a favourable position and the confound returns PARTIALLY and
+# SILENTLY.  Warn loudly rather than refuse: an unbalanced rotated band still
+# beats a fixed one, and the `occupancy` column of eprof_ab_position.py lets the
+# reader check what actually happened.
+if [ "${ROTATE:-1}" = "1" ] && [ $((N % K)) -ne 0 ]; then
+  printf 'WARNING: %d rounds over %d arms does not divide -- occupancy will be UNEQUAL\n' "$N" "$K" >&2
+  printf 'WARNING: each arm wants N %% k == 0; nearest are %d and %d rounds\n' \
+      $((N - N % K)) $((N - N % K + K)) >&2
+  printf 'WARNING: proceeding; check the occupancy column of eprof_ab_position.py\n' >&2
+fi
+
 printf 'arm\tround\tposition\tmedian_ns\tsamples_ns\tbytes\n' > "$OUT"
 for i in $(seq 1 "$N"); do
   ORDER=()
   for j in $(seq 0 $((K - 1))); do
-    if [ "${ROTATE:-0}" = "1" ]; then
+    if [ "${ROTATE:-1}" = "1" ]; then
       ORDER+=("${ARMS[$(( (j + i - 1) % K ))]}")
     else
       ORDER+=("${ARMS[$j]}")

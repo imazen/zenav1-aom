@@ -66,6 +66,23 @@ oracle produce the same `.obu` **by sha**, not merely the same length.
 per-round ratios do not overlap: `base` spans 3.244-3.305 and `both` spans
 3.172-3.221 across all 24 rounds.
 
+> **RE-VERIFIED UNDER ROTATION 2026-08-03 — the LEVER survives, the MAGNITUDE
+> MOVES about 0.5 pp
+> ([`encoder_rotate_reverify_2026-08-03.md`](encoder_rotate_reverify_2026-08-03.md)
+> §3).** This band was taken with a FIXED arm order, which confounds arm with
+> position (playbook §6), and `ROTATE=1` did not exist yet. Re-taken from the
+> same two commits (`590e525` → `7976c0f`, rebuilt, sha-verified) at 5 arms ×
+> **50 rotated rounds**: paired-median **−1.893 % / −2.163 %** for the two
+> post-side copies (mean of the two **−2.03 %**) against the **−2.56 %** here.
+> The effect itself is not in doubt — 47/50 and 48/50 rounds faster,
+> p < 0.0001, against a null of −0.086 %, and MDE95 0.403 pp. **How much of the
+> 0.5 pp is the protocol is NOT established**: the two copies of the *same*
+> post binary differ by 0.27 pp inside that band, and the fixed-order twin taken
+> 11 minutes later read −2.541 / −2.344. The drift-robust ratio statistic moves
+> least: 3.2232x → 3.1604x/3.1517x (−0.063/−0.072) against the −0.082 here.
+> **Read this band's −2.56 % as the fixed-order reading and −2.0 to −2.2 % as
+> the rotated one.**
+
 **The two passes are measured separately even though they ship together**
 (playbook §14's closing rule). They are close to equal — −1.70 ms and
 −1.67 ms — and they compose to **more** than their sum: 1.700 + 1.665 = 3.365

@@ -214,11 +214,35 @@ rounding, not a second observation.)*
   the gradient across a round is **1.7 %**. The same drift is on record for
   `windows-11-arm` (`winperf_content_census_2026-08-03.md` §5), where it is
   corrected for by *pooling* the copies on each side after the fact.
-  `scripts/eprof_ab.sh` now takes **`ROTATE=1`** (default off, adds a `position`
-  column; `eprof_ab_stats.py` reads both TSV shapes), which rotates the arm
-  order one step per round so every arm spends `N/k` rounds in each position and
-  the drift cancels by construction instead of by a correction. **Use it for new
-  bands**; a null arm that disagrees with its own twin is the symptom.
+  `scripts/eprof_ab.sh` takes **`ROTATE`** (adds a `position` column;
+  `eprof_ab_stats.py` reads both TSV shapes), which rotates the arm order one
+  step per round so every arm spends `N/k` rounds in each position and the drift
+  cancels by construction instead of by a correction. A null arm that disagrees
+  with its own twin is the symptom.
+- **`ROTATE` DEFAULTS ON since 2026-08-03**, and the reason is not that it
+  shrinks the null — measured, it does not reliably do that at achievable `n`.
+  It is that **a fixed-order band cannot ESTIMATE the position effect at all**:
+  arm and position are perfectly aliased, so the drift sits inside every arm's
+  number with no residual, and no reviewer can tell whether it mattered. Under
+  rotation `scripts/eprof_ab_position.py` prints a `POOLED` row that measures it
+  directly. Measured on this box 2026-08-03 across five rotated bands, the
+  pooled gradient ran **0.35–1.31 pp**, tracking load — the same order as
+  KB-PERF-4's entire published effect. The old argument for default-off
+  ("rotation costs a reproducible ordering") does **not** hold: the rotation is
+  `ARMS[(j + i - 1) % K]`, deterministic and seedless, so a rotated band is
+  reproducible command-for-command exactly like a fixed one. Pass `ROTATE=0` to
+  reproduce a pre-2026-08-03 band. **Rotation only balances when `N % k == 0`**
+  — otherwise an arm gets an extra round in a favourable position and the
+  confound returns partially and silently; the script now warns loudly and the
+  `occupancy` column is the check. Record:
+  `benchmarks/encoder_rotate_reverify_2026-08-03.md`, which also re-takes
+  KB-PERF-2/3/4 under rotation (survives / moves ~0.5 pp / sign-only).
+- **A same-binary null can only be read against its own band's MDE.** The three
+  re-verification bands whose box was contended came back with MDE95 of
+  1.1–2.0 pp on the paired mean, i.e. larger than two of the three effects they
+  were measuring, while the *sign test* on the same rounds sat at p < 0.0001.
+  On a heavy-tailed band the parametric interval and the sign test disagree, and
+  the honest report gives both plus the load — not whichever one is kinder.
 - **A same-binary null arm beats an argument about noise.** Run the winning
   build twice, under two labels, from two copies of the identical executable,
   interleaved with everything else. Its delta IS the box's noise floor, measured

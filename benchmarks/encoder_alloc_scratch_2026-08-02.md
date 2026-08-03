@@ -62,6 +62,18 @@ against a quoted number.
 
 **Total: −4.641 ms, −2.91 % (paired-median −3.05 %), 3.3457x → 3.2484x.**
 
+> **RE-VERIFIED UNDER ROTATION 2026-08-03 — this number SURVIVES
+> ([`encoder_rotate_reverify_2026-08-03.md`](encoder_rotate_reverify_2026-08-03.md)
+> §2).** This band was taken with a FIXED arm order, which confounds arm with
+> position (playbook §6), and `ROTATE=1` did not exist yet. Re-taken from the
+> same two commits (`578653f` → `99a10ab`, rebuilt, sha-verified) at 5 arms ×
+> **50 rotated rounds** with same-binary nulls on both sides: paired-median
+> **−2.986 % / −3.004 %** for the two post-side copies against **−3.05 %** here
+> — agreement to 0.06 pp, and the two copies agree with each other to 0.018 pp;
+> 46/50 and 45/50 rounds faster, p < 0.0001; null −0.050 %. Ratio 3.3537x →
+> 3.2517x/3.2522x (−0.102) against this band's −0.097. **Nothing below needs
+> correcting.**
+
 `scripts/eprof_ab.sh` + `scripts/eprof_ab_stats.py` are new here.
 `eprof_control.sh` interleaves exactly two fixed arms; a perf landing needs to
 compare four port builds, and comparing separately-taken medians on this box is

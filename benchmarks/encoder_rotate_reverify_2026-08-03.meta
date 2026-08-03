@@ -1,0 +1,122 @@
+# encoder_rotate_reverify_2026-08-03 — provenance
+# Companion to encoder_rotate_reverify_2026-08-03.md and its data files.
+#
+# This measures NOTHING NEW about the encoder. It re-takes three already-published
+# Darwin headlines under a protocol change, because all three were taken with a
+# FIXED-ORDER interleave and a fixed-order interleave confounds ARM with POSITION
+# (docs/DIFFERENTIAL_PLAYBOOK.md §6). No encoder source was modified in this
+# session; every arm is a build of an already-landed commit.
+
+date                 2026-08-03
+box                  Apple M4 Pro, 12 cores, 24 GiB, macOS 26.5.2 (Darwin arm64)
+worktree             zenav1-aom--reverify2, detached (removed at the end of the session)
+libaom oracle        upstream/ submodule 03087864cf4bea6abb0d28f95cf7843511413d8f (v3.14.1),
+                     prebuilt libaom.a copied in from the primary checkout (same submodule sha)
+rustc                stable toolchain; NO -C target-cpu=native (runtime SIMD dispatch)
+threading            single-threaded on every arm
+nice                 every measured run under `nice -n 19` (eprof_ab.sh does it per invocation)
+box load             NOT quiet. Two other agents were building and running test
+                     suites on the same box throughout; `uptime` is stamped
+                     before and after every band in the committed `<band>.env`
+                     files, and one burst (a neighbour's `config_permutations`
+                     test at ~960 % CPU) inflated encode times from ~150 ms to
+                     ~250 ms inside the KB-PERF-4 rotated band. That is reported
+                     rather than excluded — see the .md.
+
+## The arms are REBUILT LANDED COMMITS, not patched trees
+
+Each lever's `base` and `post` binaries are `benchmarks/xbench/drv-aom` built
+`--release` from the two commits the original record names, in ONE worktree
+checked out at each in turn (~/tmp/reverify2/build_arm.sh) and copied out:
+
+  lever      base commit                                post commit
+  KB-PERF-2  578653ff30b4116e29453b414c4da0702959ed63   99a10ab
+  KB-PERF-3  590e525f89185a15b201a8a77316db7e7e6d3940   7976c0f
+  KB-PERF-4  0279544522a77a7d6be81a66b02a53a1abdabed8   71c924a72a4221a42aee903386b6b5388a8c1fba
+
+sha256 of the six executables (KB-PERF-3's post and KB-PERF-4's base are the
+SAME BINARY to the byte — every commit between 7976c0f and 0279544 is docs,
+bench or CI, so the compiler agreed; that is a free reproducibility check):
+
+  p2base  83e48df3e085d5ca5aed5dadd47cc740137989dff1873ec46a79af1b2f1f0616
+  p2post  5cc869bff1c34805f2474c7150dcf2c3a3dddd34182b9793dc45f9e37d44edc4
+  p3base  4b768a228cc13823724eeebe04c4a1c16c4886aec419a65c4b0559e937e8a4f1
+  p3post  3f2152558176490640e522f379963420d309093dd6a54fb601863e4e81e9585e
+  p4base  3f2152558176490640e522f379963420d309093dd6a54fb601863e4e81e9585e
+  p4post  b6cc2ab46087d4aefe2c76f7ca9f403b0ce9918fb737ecaa77d9b679df915023
+  libaom-c e38ddada243b4e0b3aa568bab14358db6c1d2c44b934bfd454ca2f35e15739dd
+
+Every null arm is a `cp` of its partner, so `base`/`baseB` are two FILES with
+one sha, which is what "a same-binary null" has to mean.
+
+## THE STALE-BINARY TRAP, and how it was avoided here
+
+The build script leaves the worktree detached at whatever commit it built last,
+so `scripts/eprof_ab.sh` read out of that worktree is NOT necessarily main's.
+The first control band of this session was launched with the worktree still at
+7976c0f and silently ran the PRE-ROTATE script: it completed, wrote a TSV with
+no `position` column, and would have been read as a rotated band. It was caught
+by the missing column and discarded, and the worktree was checked back out at
+main (5d468f8) before any band was kept. Every kept band was run from a
+worktree at 5d468f8 — `grep -c ROTATE scripts/eprof_ab.sh` = 2.
+
+## Profile cell — unchanged from all five prior encoder studies
+
+1024x1024 photo, cq-level 44, cpu-used 6, ALLINTRA (usage 2), 8-bit 4:2:0,
+single tile, single thread. Source $HOME/tmp/xb/src/photo_1024.yuv. Every arm in
+every band emits the same 4472-byte stream, and all seven executables were
+verified to produce the same `.obu` BY SHA256 before the first band ran.
+
+## Exact commands
+
+  git worktree add --detach ~/work/zen/zenav1-aom--reverify2 main
+  git -C ~/work/zen/zenav1-aom--reverify2 submodule update --init
+  cp -R ../zenav1-aom/upstream/build upstream/build      # same submodule sha
+
+  # one drv-aom per named commit, copied out to ~/tmp/reverify2/bin/
+  ~/tmp/reverify2/build_arm.sh <commit> <armname>
+  nice -n 19 cc -O2 -o ~/tmp/reverify2/bin/libaom-c \
+      benchmarks/xbench/csrc/drv_libaom.c -Iupstream -Iupstream/build \
+      -Lupstream/build -laom -lm -lc++
+
+  # every band (ROT=1 rotated, ROT=0 fixed order); ~/tmp/reverify2/run_band.sh
+  # stamps `uptime` into <out>.env before and after
+  ROTATE=$ROT nice -n 19 bash scripts/eprof_ab.sh $N <out.tsv> <arm=path>...
+  python3 scripts/eprof_ab_position.py <out.tsv> --ref libaom-c --vs POST:PRE ...
+
+## Bands
+
+  control_rot.tsv     / control_fixed.tsv     6 copies of ONE binary,  36 rounds each
+  control_rot120.tsv  / control_fixed120.tsv  6 copies of ONE binary, 120 rounds each
+  p4_rot.tsv / p4_fixed.tsv   base/baseB/all/allB/libaom-c,     50 rounds each
+  p3_rot.tsv / p3_fixed.tsv   base/baseB/both/bothB/libaom-c,   50 rounds each
+  p2_rot.tsv / p2_fixed.tsv   base/baseB/final/finalB/libaom-c, 50 rounds each
+
+Originals for comparison: KB-PERF-2 n=12 (5 arms, no null), KB-PERF-3 n=24
+(7 arms, nulls both sides), KB-PERF-4 n=36 (6 arms, nulls both sides) — all
+fixed order. Every band here MATCHES OR EXCEEDS its original's rounds.
+
+The all-null control bands carry SIX copies of one binary rather than two, so
+the position effect is estimated over the whole round rather than at one pair of
+positions.
+
+## The reading rule was pre-registered
+
+~/tmp/reverify2/PREREGISTERED.md, written while the first lever band was at
+round 17 of 50 and before any lever result was read; reproduced verbatim in the
+.md §0. It fixes the resolution requirement (paired-mean MDE95 <= half the
+published headline) and the escalation (more ROUNDS only — never a different
+content, cell, arm set or statistic).
+
+## What is NOT measured here
+
+* Only Darwin. The Windows re-measurements of these levers
+  (winperf_windows_2026-08-02.md, winperf_content_census_2026-08-03.md) were
+  taken with their own harness and their own pooled-copy position correction and
+  are NOT re-run here; nothing in this file changes them.
+* Only the composed post-vs-base delta per lever. The per-half arms of the
+  originals (`l3a`/`l3`, `col`/`row`, `z1z3`/`z2`) are not re-taken — a rotated
+  re-measurement of a half needs its own band and its own nulls, and the halves
+  were never the published headline.
+* No new profile, no census, no instruction counts. This session changed no
+  encoder source; `git diff` against main over crates/ is empty.
