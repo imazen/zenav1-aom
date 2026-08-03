@@ -1,0 +1,42 @@
+########## detail
+class	calls	pixels	pct_calls	pct_px
+non-dir	62210	19161024	99.58	99.77
+z1	6	1152	0.01	0.01
+z2	70	12032	0.11	0.06
+z3	100	16128	0.16	0.08
+V(90)	6	1152	0.01	0.01
+H(180)	81	14656	0.13	0.08
+
+nd_mode	calls	pixels
+DC	35332	9437952
+V	6	1152
+H	81	14656
+SMOOTH	22417	7822912
+PAETH	4461	1900160
+
+bd	calls
+8	62473
+
+TOTAL calls 62473 pixels 19206144
+per 64x64 SB: 244.0 calls, 75024 px
+########## smooth
+class	calls	pixels	pct_calls	pct_px
+non-dir	18715	11582464	84.18	80.17
+z1	528	449280	2.37	3.11
+z2	893	733184	4.02	5.07
+z3	867	722688	3.90	5.00
+V(90)	385	295936	1.73	2.05
+H(180)	845	664064	3.80	4.60
+
+nd_mode	calls	pixels
+DC	12891	6053376
+V	385	295936
+H	845	664064
+SMOOTH	3725	3694592
+PAETH	2099	1834496
+
+bd	calls
+8	22233
+
+TOTAL calls 22233 pixels 14447616
+per 64x64 SB: 86.8 calls, 56436 px

@@ -1,0 +1,193 @@
+# encoder_intra_dir_i16_2026-08-03 — provenance
+# Companion to encoder_intra_dir_i16_2026-08-03.md and its five data files.
+#
+# This is a RE-MEASUREMENT of a ranked profile row, followed by a CHANGE and its
+# before/after band. Lever 4 of benchmarks/encoder_hotspot_reprofile_2026-08-02.md
+# ("bd8 lowbd intra predictors", +14.54 ms / 12.3 % of the gap PROJECTED). That
+# ceiling is arithmetic on a measured self-cost taken at a baseline three
+# landings ago; this file is what the row is worth now and what the change
+# actually returned.
+
+date                 2026-08-03
+box                  Apple M4 Pro, 12 cores, 24 GiB, macOS 26.5.2 (Darwin arm64)
+baseline commit      0279544522a77a7d6be81a66b02a53a1abdabed8 (main at session start)
+landing commit       71c924a72a4221a42aee903386b6b5388a8c1fba
+worktree             zenav1-aom--intra8, detached (removed at the end of the session)
+libaom oracle        upstream/ submodule 03087864cf4bea6abb0d28f95cf7843511413d8f (v3.14.1)
+rustc                stable toolchain; no -C target-cpu=native (runtime SIMD dispatch, what users get)
+threading            single-threaded on every arm
+nice                 every measured run under `nice -n 19`
+box load             1.3-2.7 of 12 cores (`uptime` before each band; recorded in the .md)
+
+## Profile cell — unchanged from all four prior encoder studies, for continuity
+
+1024x1024 photo, cq-level 44, cpu-used 6, ALLINTRA (usage 2), 8-bit 4:2:0,
+single tile, single thread. Source $HOME/tmp/xb/src/photo_1024.yuv (the file the
+2026-08-01 cross-encoder study, both encoder profiles, the allocation landing
+and the i16 forward-transform landing used). Every arm emits the same 4472-byte
+stream — verified by SHA, not by byte count alone.
+
+## Part 1 — the re-profile of the row (no change in the tree)
+
+Method unchanged from encoder_hotspot_reprofile_2026-08-02.meta so the two are
+comparable: /usr/bin/sample, 1 ms, 60 s window started 5 s in;
+self(node) = count - sum(children) summed over every call site; symbols
+classified by name with the unmatched residual printed. The port arm was
+sampled TWICE (the first run is the stability control, the second is the one
+the table uses), libaom-c once.
+
+  (cd benchmarks/xbench && nice -n 19 cargo build --release -j 4 -p drv-aom)
+  nice -n 19 cc -O2 -o benchmarks/xbench/target/drv_libaom \
+      benchmarks/xbench/csrc/drv_libaom.c \
+      -I<primary>/upstream -I<primary>/upstream/build \
+      -L<primary>/upstream/build -laom -lm -lc++
+  (cd benchmarks/xbench && CARGO_TARGET_DIR=$HOME/tmp/intra8-dbg-target \
+      CARGO_PROFILE_RELEASE_DEBUG=2 nice -n 19 cargo build --release -j 4 -p drv-aom)
+  dsymutil $HOME/tmp/intra8-dbg-target/release/drv-aom
+
+  nice -n 19 bash scripts/eprof_control.sh 9 ~/tmp/intra8/control_base.tsv
+  PORT_DBG=$HOME/tmp/intra8-dbg-target/release/drv-aom \
+    nice -n 19 bash scripts/eprof_sample.sh port-dbg   600 60 ~/tmp/intra8/port.sample.txt  5
+  nice -n 19 bash scripts/eprof_sample.sh libaom-c    1600 60 ~/tmp/intra8/libaomc.sample.txt 5
+  PORT_DBG=$HOME/tmp/intra8-dbg-target/release/drv-aom \
+    nice -n 19 bash scripts/eprof_sample.sh port-dbg   600 60 ~/tmp/intra8/port2.sample.txt 5
+  python3 scripts/eprof_rollup.py ~/tmp/intra8/port2.sample.txt   --arm port     --rules rust --tsv ~/tmp/intra8/port2.tsv
+  python3 scripts/eprof_rollup.py ~/tmp/intra8/libaomc.sample.txt --arm libaom-c --rules c    --tsv ~/tmp/intra8/c.tsv
+  python3 scripts/eprof_align.py --port ~/tmp/intra8/port2.tsv --port-ms 150.539 \
+                                 --c    ~/tmp/intra8/c.tsv     --c-ms     45.602
+
+The LIKE-FOR-LIKE class table in the .md (§1, §1b) is NOT the stage rollup — the
+stage rules file the port's `aom_dsp::intra::cfl` under `dsp:intra-pred` and
+libaom's `cfl_*` under `intra-mode-rd`, and libaom's `av1_predict_intra_block`
+under `intra-mode-rd` while the port's equivalent is `dsp:intra-pred`. The class
+sums in the .md were computed by symbol regex over the two `.tsv` rollups
+(published as .stage.tsv) and RECONCILE to the combined stage gap:
+7.58 (predictors) + 6.30 (RD drivers) + 1.52 (cfl) = 15.40 vs 15.39.
+
+Denominators used: port 150.539 ms (median of the 600 timed reps taken DURING
+port sample run 2), libaom-c 45.602 ms (median of its 1600).
+
+## Part 2 — the call census
+
+TEMPORARY atomic counters in `predict_intra_high` (class x tx_size x bd) and in
+`dir::z1_high`/`z2_high`/`z3_high` (per-branch pixel counts), plus a throwaway
+crates/aom-bench/examples/intra_census.rs. All removed before the commit —
+neither is in the tree. Both are preserved for re-running at
+  ~/tmp/intra8/census_instrumentation.patch     (the aom-dsp counters)
+  ~/tmp/intra8/intra_census.rs                  (the example)
+and the raw output is committed as .census.txt. One encode of the profile cell;
+counts are exact (one relaxed atomic per call, single-threaded).
+
+## Part 3 — the arms and the bands
+
+Six port arms plus the C oracle, ONE binary each, all built from this one
+worktree by patching the three `*_vec_applies` gate predicates and restoring
+from git (~/tmp/intra8/build_arms.sh; SHA-verified distinct):
+
+  base      0279544, no dir_simd at all
+  baseB     a SECOND COPY of the identical `base` binary — the box's noise floor
+            on the PRE side, measured rather than asserted (playbook §6)
+  z1z3      only z1/z3 vectorized (z2's gate forced false)
+  z2        only z2's above-half vectorized (z1's and z3's gates forced false)
+  all       71c924a as it ships
+  allB      a SECOND COPY of `all` — the noise floor on the POST side
+  allC      `all` with the kernel's per-lane store loop replaced by
+            bitcast_u16x16 + copy_from_slice. MEASURED WORSE (0.15 pp) and
+            NOT SHIPPED; see the .md §5.
+  libaom-c  benchmarks/xbench/csrc/drv_libaom.c against the pinned oracle
+
+  nice -n 19 bash scripts/eprof_ab.sh 24 <ab_split.tsv> \
+      base=... baseB=... z1z3=... z2=... all=... allB=... libaom-c=...
+  nice -n 19 bash scripts/eprof_ab.sh 36 <ab.tsv> \
+      base=... baseB=... all=... allB=... allC=... libaom-c=...
+  python3 scripts/eprof_ab_stats.py <tsv> --ref libaom-c --vs base
+
+The 36-round band is the headline (its nulls are -0.01 % / -0.06 %); the
+24-round band is BOTH an independent replication of the headline and the
+per-half split, and its nulls are -0.17 % / +0.07 pp, which is why the second
+band was run. Neither band is averaged into the other.
+
+The two halves are measured separately even though they ship together, per
+playbook §14's closing rule.
+
+## Byte-identity gate
+
+  AOM_CONFORMANCE_DIR=<primary checkout>/conformance/data \
+    cargo nextest run --cargo-profile test-fast -j 4 --workspace \
+      --no-fail-fast --run-ignored all                     # SIMD dispatch live
+  AOM_FORCE_SCALAR=1 <same>                                # scalar-pinned
+  cargo check --target x86_64-apple-darwin --workspace --all-targets
+
+`--run-ignored all` is included deliberately (the KB-PERF-1 session found two
+stale pins that way). This worktree borrows the primary checkout's gitignored
+conformance/data READ-ONLY via AOM_CONFORMANCE_DIR; without it ~40 tests
+fail-loud with "conformance vector missing", which is the fail-loud design
+working, not a regression.
+
+Gate 2 (`config_permutations`, every --cpu-used 0..9 cell byte-exact against
+real aomenc) was ALSO run on its own before the commit: 87 passed / 0 failed /
+3 ignored.
+
+RESULTS: SIMD-live 964/964 passed, 0 skipped, 730 s. The scalar-pinned leg
+failed ONCE, on `intra::dir_simd::tests::the_tap_bound_is_load_bearing` — a
+defect in the TEST, not in the code (under AOM_FORCE_SCALAR=1 the dispatch entry
+routes to the scalar core, so it cannot diverge from itself). Fixed by
+conditioning the divergence half on `dispatch::scalar_forced()` and keeping the
+gate's own 1024-rejects/1023-accepts half unconditional; nothing was relaxed.
+Both modes then pass. The three benchmarks/config_perm_*_2026-07-30.tsv evidence
+sweeps regenerate identical apart from the commit stamp and the `ms` timing
+column (diffed column-wise: 0 non-timing differing data rows in all three), so
+they are left as committed.
+
+## x86-64 / Windows
+
+  gh workflow run winperf.yml -f base_sha=0279544522a77a7d6be81a66b02a53a1abdabed8 \
+                              -f rounds=16 -f arms=prepost
+
+`arms: prepost` builds `pre` from a whole-src checkout of base_sha and `post`
+from the dispatched ref, with `l3a` and `l3` as extra COPIES of `pre` — so each
+band carries THREE nulls (two pre-side, one post-side). Two runners
+(windows-11-arm, windows-latest x86-64) x two contents (`detail`, `smooth`),
+never averaged. Bands committed as .win_<runner>_<content>.tsv.
+
+Run 30792984795. RESULT: NOT RESOLVED on either runner — every post-vs-pre
+figure is at or under that band's own same-binary nulls (see the .md §7).
+
+The winperf CONTENT caveat is much stronger for this lever than it was for the
+i16-forward one, and it was CHECKED rather than assumed: the same census was
+re-run on winperf's `detail` and `smooth` (committed as .census_winperf.txt,
+produced by the same temporary counters plus a `detail`/`smooth` mode added to
+the throwaway example). Directional predicted pixels: photograph 20.8 %,
+winperf `smooth` 13.2 %, winperf `detail` **0.15 %**. winperf's sources were
+tuned to bracket the photograph's ALLOCATOR CALL COUNT, not its mode
+distribution, so `detail` is a structurally vacuous cell for a directional-intra
+lever. Any future lever scoped to a mode family must run this census before
+reading a winperf band.
+
+## Known gaps
+
+* ONE cell, one image, one content class. cpu-used 3/4/5/9 are not measured;
+  the re-profile records 9 (5.64x) and 4 (7.76x) as worse cells, neither
+  decomposed. The census is likewise one cell — at a preset that picks
+  different block sizes and angles the 68.4 % addressable share moves.
+* 8-bit 4:2:0 only. The gate is a runtime bound so bd12 blocks decline; the
+  cost of that decline is folded into the reported win rather than isolated
+  (no arm was built with the scan present and the vector path disabled).
+* Wall clock only. No instruction count (no valgrind on Apple Silicon).
+* Single-threaded, one frame.
+* The rest of the intra predictor class (+4.45 ms: smooth/paeth, the edge
+  filter, the DC/V/H fills) is untouched and nothing here measures what it
+  would return.
+* Linux is unmeasured.
+* x86-64 is compiled (`cargo check --target x86_64-apple-darwin`) and
+  differentially tested (the v3/AVX2 tier is in the 25 token permutations
+  `dir_simd_diff` runs), but NOT usefully timed anywhere — see §7.
+
+## Committed data files
+
+  .ab.tsv         the 36-round headline band, 6 arms x 36 rounds
+  .ab_split.tsv   the 24-round band, 7 arms, per-half split + replication
+  .control.tsv    the session-opening 2-arm control (9 interleaved invocations)
+  .stage.tsv      the like-for-like intra symbol table, both arms, self ms
+  .census.txt     the intra call census (raw tool output)
+  .win_<runner>_<content>.tsv   the Windows bands

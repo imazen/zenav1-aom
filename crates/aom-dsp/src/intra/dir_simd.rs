@@ -229,18 +229,35 @@ mod tests {
     /// Playbook §2 — the bound must BITE. One tap over `I16_TAP_MAX` and the
     /// i16 lanes must genuinely diverge from the scalar reference, else the
     /// gate is decorative.
+    ///
+    /// The divergence half is necessarily conditional on a VECTOR tier actually
+    /// dispatching: under `AOM_FORCE_SCALAR=1` `two_tap_run` routes to
+    /// `two_tap_run_scalar`, so it cannot diverge from itself, and asserting
+    /// otherwise fails the scalar-pinned CI leg (it did, on the first run). The
+    /// gate's own rejection is asserted UNconditionally — that half is pure
+    /// arithmetic on the span and has no tier.
     #[test]
     fn the_tap_bound_is_load_bearing() {
         let n = 16;
         let mut edge = vec![I16_TAP_MAX; 64];
-        // At exactly the bound, every shift agrees.
+        // At exactly the bound, every shift agrees. True at every tier.
         for shift in 0..32i32 {
             let (mut got, mut want) = (vec![0u16; n], vec![0u16; n]);
             two_tap_run(&mut got, &edge, 0, shift, n);
             two_tap_run_scalar(&mut want, &edge, 0, shift, n);
             assert_eq!(got, want, "at the bound, shift={shift}");
         }
-        // One over it, and the vector path is wrong for at least one shift.
+        // The gate rejects one over the bound, and accepts the bound itself.
+        edge[3] = I16_TAP_MAX + 1;
+        assert!(!span_fits_i16(&edge, 0, 16), "1024 must be rejected");
+        edge[3] = I16_TAP_MAX;
+        assert!(span_fits_i16(&edge, 0, 16), "1023 must be accepted");
+
+        if crate::dispatch::scalar_forced() {
+            return; // no vector tier to diverge; the half above still ran
+        }
+        // One over the bound, and the vector path is wrong for at least one
+        // shift — else the gate guards nothing.
         edge[3] = I16_TAP_MAX + 1;
         let mut diverged = false;
         for shift in 0..32i32 {
@@ -255,9 +272,5 @@ mod tests {
             diverged,
             "the i16 tap bound never bites — the gate would be decorative"
         );
-        // ... and the gate itself rejects that span.
-        assert!(!span_fits_i16(&edge, 0, 16));
-        edge[3] = I16_TAP_MAX;
-        assert!(span_fits_i16(&edge, 0, 16));
     }
 }

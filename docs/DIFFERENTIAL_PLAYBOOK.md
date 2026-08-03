@@ -242,6 +242,20 @@ about the code differs; only the **price per call** does.
 - **And content can move the same lever as much as the platform can.** On one
   box in one afternoon, lever 3 measured −1.26 % / −0.49 % / +0.31 % on three
   contents. Bracket the content or say which one the number belongs to.
+- **A synthetic harness source is only representative of the axis it was tuned
+  on — check before reading a band from it.** `winperf`'s `detail` / `smooth`
+  were tuned so their **allocator call count** brackets the study photograph's
+  (`crates/aom-bench/src/winperf.rs:63-71`), which made them the right harness
+  for KB-PERF-2 (allocation) and KB-PERF-3 (the forward transform) — both touch
+  every block regardless of coding mode. They are **not** representative of MODE
+  DISTRIBUTION: measured 2026-08-03, directional intra prediction is **20.8 %**
+  of predicted pixels on the photograph, **13.2 %** on `smooth` and **0.15 %**
+  on `detail`, where `z1` fires six times in a whole 1 MP frame. KB-PERF-4's
+  Windows band was therefore reading a structural zero, not a platform result.
+  **Before quoting a winperf band for a lever scoped to a mode family**
+  (directional intra, palette, filter-intra, CFL, screen tools), **census the
+  harness content for that family first.** A null you cannot distinguish from
+  "the code never runs" is not a measurement.
 
 ## 7. Config-permutation gates: collapse, don't enumerate
 

@@ -3981,6 +3981,122 @@ Column pass alone −1.700 ms, row pass alone −1.665 ms, and they compose
   platform and content are confounded — the cross-platform ORDERING is sound,
   the 3x ARM-vs-Darwin RATIO is not.
 
+### KB-PERF-4 — Encoder: the DIRECTIONAL intra predictors had no vector path at any bit depth — LANDED ✅ 2026-08-03, and the ranked row was re-scoped BEFORE the work
+
+Lever **4** of `benchmarks/encoder_hotspot_reprofile_2026-08-02.md`
+("bd8 lowbd intra predictors", **+14.54 ms / 12.3 %** of the gap projected).
+Record: **`benchmarks/encoder_intra_dir_i16_2026-08-03.md`** (+ `.meta`,
+`.ab.tsv`, `.ab_split.tsv`, `.control.tsv`, `.stage.tsv`, `.census.txt`).
+
+**THE RANKED ROW WAS RE-MEASURED FIRST, AND THAT IS THE MAIN RESULT.** Playbook
+§14 fired twice in a row (KB-PERF-2 at 18x, KB-PERF-3 at 5x), so this session
+re-profiled before writing a line. Total gap **118.37 → 104.94 ms** since that
+profile. Three readings of the SAME row, which reconcile
+(7.58 + 6.30 + 1.52 = 15.40 vs 15.39):
+
+| reading | port | C | ratio | gap | % of gap |
+|---|---:|---:|---:|---:|---:|
+| the ranked row (`dsp:intra-pred` + `intra-mode-rd` combined, as the re-profile instructs) | 19.75 | 4.36 | 4.53x | +15.39 | **14.7 %** |
+| — the encoder's intra **RD drivers** (`intra_rd`/`rd_pick`/`intra_uv_rd`/`encode_intra`) | 8.12 | 1.82 | 4.46x | +6.30 | 6.0 % |
+| **the intra PREDICTOR class, like for like** | **9.91** | **2.33** | **4.25x** | **+7.58** | **7.2 %** |
+| CFL (the two arms file it in different stages) | 1.72 | 0.21 | 8.34x | +1.52 | 1.4 % |
+
+**As a STAGE the row has GROWN (12.3 → 14.7 %) because the denominator fell; as
+a LEVER it is half that, 7.2 %.** Inside the predictor class: directional
+z1/z2/z3 **+3.13 ms (9.6x)**, smooth+paeth +2.63 (8.7x), edge filter +0.74,
+DC/V/H fills +0.71, and **edge assembly + mode routing at 1.26x — near parity**,
+so there is no per-block plumbing overhead to remove; the gap is all kernels.
+
+**The brief's framing was half wrong and the profile says so.** For the
+directional predictors there is no highbd-vs-lowbd choice to make: `dir.rs`'s
+`z1_high`/`z2_high`/`z3_high` **and** their lowbd `z1`/`z2`/`z3` twins were
+**pure scalar**, while libaom dispatches `av1_dr_prediction_z{1,2,3}_neon`
+(`aom_dsp/arm/intrapred_neon.c:1290-1482`) / `_avx2` / `_sse4_1`. For
+smooth/paeth the lane-width framing IS right (port `i32x8` vs libaom `u8`/`u16`)
+and those are untouched — the named follow-up.
+
+- **THE FIX** is `crates/aom-dsp/src/intra/dir_simd.rs`, ONE
+  `#[magetypes(define(i16x16, u16x16), v3, neon, -scalar)]` body (NEON and AVX2
+  from one source — the cross-platform half of the programme), computing
+  libaom's re-association `a0*(32-s) + a1*s == (a0<<5) + (a1-a0)*s` in i16 lanes.
+- **THE AUDIT IS ONE TIGHT BOUND.** With `shift ∈ [0,31]` every intermediate is
+  inside i16 **iff every tap `<= 1023`** (`32M + 16 <= 32767`); at `M = 1024`,
+  `a0 << 5` is exactly `-32768`. Taken at RUNTIME over the `O(bw+bh)` edge span
+  (against `O(bw·bh)` of work), so it is a per-block scan. It admits **bd8 AND
+  bd10**, declines bd12 — the gate is on the DATA, not on `bd`. No bound widened.
+- **REACH, COUNTED (census committed).** 85 423 predictor calls / 19 151 632
+  predicted px per frame = **18.3x the frame's pixels**, **100 % bd8** (no
+  bit-depth loss, unlike KB-PERF-3's 51.6 %). Only contiguous runs vectorize:
+  z1 `up==0` 87.4 %, z2 above-half 49.8 % (its left half is a true gather —
+  `base_y` is not affine in `c`), z3 `up==0` 85.1 %. Pixel-weighted **68.4 % of
+  directional px addressable → 2.39 ms of the 3.50**.
+- **MEASURED**, 1024×1024 photo / cq 44 / cpu-used 6, 36 rounds × 6 interleaved
+  arms with nulls on BOTH sides: base **149.188 ms → 148.062 ms** vs libaom-c
+  46.455; **3.2115x → 3.1872x**, −1.126 ms, paired-median **−0.75 %**. Nulls
+  −0.01 % (`baseB`) / −0.01 pp (`allB`). **Independently replicated** by an
+  earlier 24-round 7-arm band (−0.58 %, paired −0.81 %) whose per-half split was
+  z1+z3 −0.20 % / z2 −0.45 % — roughly equal halves, NOT separately resolvable
+  against that band's −0.17 % null (which is why the 36-round band was run).
+  All arms emit the same 4472-byte `.obu` by sha.
+- **13x optimistic against the ranked row; 2.1x against the sub-lever's own
+  addressable cost.** Both numbers are in the record because the first is what a
+  ranking table produces and the second is what a named mechanism produces.
+- **The 8-wide half-batch is worth it HERE and was not in KB-PERF-3 — same
+  shape, opposite verdict, because the baseline differs.** There a half-idle
+  `i16x16` competed against a full `i32x8` and measured −0.006 %; here it
+  competes against a scalar loop, so 8 live lanes is still 8x.
+- **A micro-variant was built, measured and REJECTED**: replacing the kernel's
+  per-lane store loop with `bitcast_u16x16` + `copy_from_slice` (one memcpy, the
+  a-priori better shape) measured **0.15 pp WORSE** against a 0.01-0.06 pp null.
+  Reverted; why it loses is not established.
+- **Gates.** `dir_simd_diff` — dispatch vs the never-dispatched `*_scalar` cores
+  at every token permutation (25 run), full TX grid, every signalled angle
+  through the real `dr_intra_derivative` table, bd 8/10/12, tight + padded
+  stride. **`upsample` is DERIVED via `edge::use_upsample`, not swept** —
+  sweeping it freely walks the 160-entry edge buffers off their ends **in the
+  SCALAR kernel too**, which is how that was caught. Probes are asymmetric on
+  purpose: a FLAT edge makes `a1-a0 == 0` and is invariant under exactly the new
+  term (KB-12's lesson). In-crate `dir::reach` pins **16/19 shapes admitted for
+  z1 and z3** (the `bw==4` / `bh==4` ones decline on the run-length floor),
+  **19/19 for z2**, `up==1` never, 1023 admitted / **1024 declined**, bd12
+  declined everywhere. `the_tap_bound_is_load_bearing` pins that the bound
+  genuinely bites — and it **failed the scalar-pinned leg on its first full
+  run**, correctly: under `AOM_FORCE_SCALAR=1` the dispatch entry IS the scalar
+  core, so it cannot diverge from itself. Its divergence half is now conditioned
+  on `dispatch::scalar_forced()` while the gate's own 1024-rejects /
+  1023-accepts half stays UNconditional. Nothing relaxed — an implicit
+  precondition made explicit, which is the mirror of playbook §1: **a test that
+  cannot pass in one dispatch mode is as much a defect as one that cannot
+  fail.** Run BOTH modes before believing a new gate.
+  **Bite proofs with the asymmetry**: dropping the `* shift`
+  fails the kernel differential alone; transposing z3's scatter fails
+  `dir_simd_diff` + `dir_highbd_diff` (vs the real C symbol) + `intra_lowbd_diff`
+  while `intra_simd_diff`, `highbd_diff` and `build_nd_diff` stay green.
+  Gate 2 keeps **zero pinned cells**.
+- **WINDOWS: MEASURED, NOT RESOLVED — and the harness is why, which is the
+  durable finding.** `winperf.yml` `arms: prepost` (run 30792984795, 16 rounds,
+  both runners, three nulls per band): every `post − pre` is at or under that
+  band's own same-binary nulls (paired medians: `windows-11-arm` +0.35 %
+  `detail` / +0.05 % `smooth` against nulls of 0.00-0.22 %; `windows-latest`
+  unusable at raw spreads 3.2-31.4 %). The effect is 3-10x smaller than KB-PERF-3's,
+  which DID clear these runners. **But the bigger reason was checked, not
+  assumed**: the same census re-run on winperf's own sources gives directional
+  predicted-pixel share **photograph 20.8 %, `smooth` 13.2 %, `detail` 0.15 %**
+  — on `detail`, z1 fires SIX TIMES in the whole frame. **`winperf`'s two
+  synthetic sources were tuned to bracket the photograph's ALLOCATOR CALL COUNT
+  (`winperf.rs:63-71`), not its MODE DISTRIBUTION**, which made them right for
+  KB-PERF-2/3 (both touch every block regardless of mode) and structurally
+  vacuous here. **Any future lever scoped to a mode family (directional intra,
+  palette, filter-intra, CFL) must run this census on `detail`/`smooth` BEFORE
+  reading a winperf band, or it will read a structural zero as a platform
+  result.** The cross-platform claim here rests on the mechanism (integer lane
+  arithmetic, no platform call — playbook §6b) and on the AVX2 tier passing its
+  differential, NOT on a Windows timing.
+- **Untouched and named**: the lowbd `u8` twins (so the DECODER's bd8 path gets
+  nothing — this is an encoder lever, and the encoder holds planes as `u16` at
+  every bit depth), z2's left half, `up==1` runs, `w==4` blocks, and the
+  +4.45 ms of non-directional predictor class.
+
 
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 

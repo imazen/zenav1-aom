@@ -481,9 +481,35 @@ baseline (control-band equivalent 3.343x).
 | **2** | **bd8 i16-lane FORWARD transform** | **+19.63 ms (16.6 %)** | −19.6 ms | → **2.33x** | large, structural; precedent exists |
 | **3** | **Per-txb scratch reuse (kill the 854 k allocs)** | **+24.76 ms (20.9 %)** | −24.8 ms | → **1.81x** | mechanical; decoder has the pattern |
 | 3a | *(sub-lever)* tier the two forward-pass scratch arrays | +5.30 ms (4.5 %) | −5.3 ms | −0.11x on its own | **low** — same change already made 3x in the file |
-| **4** | **bd8 lowbd intra predictors** | **+14.54 ms (12.3 %)** | −14.5 ms | → **1.50x** | large, structural; same programme as 2 |
+| **4** | **bd8 lowbd intra predictors** | **+14.54 ms (12.3 %)** *(→ see the correction below: the LEVER is +7.58 ms)* | −14.5 ms | → **1.50x** | large, structural; same programme as 2 |
 | 5 | widen the landed i16 inverse path (79 % still wide) | +6.15 ms (5.2 %) | −6.2 ms | → 1.37x | audit machinery exists (iadst/identity are the gap) |
 | 6 | the tail — entropy/rate 5.80, tx-search 5.56, dist 5.07, quant 1.98, driver 1.69, partition 0.91, hog 0.85 | +21.86 ms total | −21.9 ms | → **0.91x** | diffuse; nothing above 4.9 % of the gap |
+
+> **CORRECTION to row 4, added 2026-08-03 after re-measuring it**
+> (`encoder_intra_dir_i16_2026-08-03.md` §1). Row 4 is the COMBINED
+> `dsp:intra-pred` + `intra-mode-rd` reading this file prescribes under its main
+> table — and **41 % of it is the encoder's own intra RD drivers**
+> (`aom_encode::{intra_rd,rd_pick,intra_uv_rd,encode_intra}`: mode loops, RD
+> bookkeeping, tx-block walks, +6.30 ms) and **10 % is CFL** (+1.52 ms), neither
+> of which a predictor port touches. Like for like, the intra PREDICTOR class is
+> **9.91 ms port vs 2.33 ms C = 4.25x, +7.58 ms**. The three reconcile
+> (7.58 + 6.30 + 1.52 = 15.40 vs the row's 15.39 at the newer baseline).
+>
+> This is §14 again in its milder form: the row is not *wrong*, it is a
+> different quantity from the lever named beside it. **Size lever 4 off
+> +7.58 ms, not +14.54.** Inside it: directional z1/z2/z3 +3.13 ms (9.6x,
+> LANDED — KB-PERF-4, delivered −1.13 ms), smooth+paeth +2.63 (8.7x, the real
+> lane-width target and still open), edge filter +0.74, DC/V/H fills +0.71, and
+> edge assembly + mode routing at **1.26x — near parity**, so there is no
+> per-block plumbing overhead in the port's intra path to remove.
+>
+> One factual correction to Finding 3's prose while we are here: for the
+> DIRECTIONAL predictors "the port runs the highbd path where libaom runs
+> lowbd_*_neon" is not the defect — `dir.rs`'s `z1_high`/`z2_high`/`z3_high`
+> **and** their lowbd `u8` twins were both **pure scalar**. There was no
+> lane-width choice to make there, only a missing vector kernel. The framing is
+> correct for `smooth`/`paeth`, which are `i32x8` in the port against libaom's
+> `u8`/`u16`.
 
 Read the bottom of that column with suspicion. Closing every *positive* gap does
 not land at 1.00x but at **0.91x**, because the port already beats libaom on
