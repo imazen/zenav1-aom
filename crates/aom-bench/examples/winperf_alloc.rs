@@ -9,7 +9,7 @@
 //! Darwin's directly.
 //!
 //! ```text
-//! winperf_alloc
+//! winperf_alloc <detail|smooth>
 //! ```
 //!
 //! Counters are `Relaxed` atomics and the encode is single-threaded, so the
@@ -95,9 +95,15 @@ fn snap() -> Snap {
 }
 
 fn main() {
+    let a: Vec<String> = std::env::args().collect();
+    if a.len() != 2 {
+        eprintln!("usage: winperf_alloc <detail|smooth>");
+        std::process::exit(2);
+    }
+    let content = winperf::Content::parse(&a[1]);
     let (w, h, q, s) = winperf::CELL;
-    let cell = winperf::cell(w, h, q, s);
-    let bootstrap = winperf::bootstrap();
+    let cell = winperf::cell(w, h, q, s, content);
+    let bootstrap = winperf::bootstrap(content);
 
     // Warm once so lazily-built statics/caches are not charged to the measured
     // encode — identical to `eprof_alloc`, so the counts are comparable.
@@ -108,7 +114,7 @@ fn main() {
 
     let calls = (s1.alloc - s0.alloc) + (s1.zeroed - s0.zeroed) + (s1.realloc - s0.realloc);
     let sb = w.div_ceil(64) * h.div_ceil(64);
-    println!("cell\t{w}x{h}_cq{q}_s{s}");
+    println!("cell\t{w}x{h}_cq{q}_s{s}_{}", content.label());
     println!("alloc\t{}", s1.alloc - s0.alloc);
     println!("alloc_zeroed\t{}", s1.zeroed - s0.zeroed);
     println!("realloc\t{}", s1.realloc - s0.realloc);

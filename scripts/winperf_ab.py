@@ -8,7 +8,7 @@ same protocol in stdlib Python so it runs identically on Windows, macOS and
 Linux, and it writes the SAME TSV columns so `scripts/eprof_ab_stats.py` reads
 its output unchanged.
 
-  winperf_ab.py <rounds> <out.tsv> label=/path/to/winperf ...
+  winperf_ab.py <rounds> <detail|smooth> <out.tsv> label=/path/to/winperf ...
 
 One invocation of EVERY arm per round, round after round, so runner drift lands
 on all arms equally (docs/DIFFERENTIAL_PLAYBOOK.md §6 — comparing medians taken
@@ -29,12 +29,15 @@ import sys
 
 
 def main():
-    if len(sys.argv) < 4:
+    if len(sys.argv) < 5:
         sys.exit(__doc__)
     rounds = int(sys.argv[1])
-    out = sys.argv[2]
+    content = sys.argv[2]
+    if content not in ("detail", "smooth"):
+        sys.exit(f"content must be detail|smooth, got {content!r}")
+    out = sys.argv[3]
     arms = []
-    for spec in sys.argv[3:]:
+    for spec in sys.argv[4:]:
         label, _, path = spec.partition("=")
         if not path:
             sys.exit(f"bad arm spec {spec!r}; want label=/path/to/winperf")
@@ -49,7 +52,7 @@ def main():
         for r in range(1, rounds + 1):
             for label, path in arms:
                 res = subprocess.run(
-                    [path, warm, reps],
+                    [path, content, warm, reps],
                     capture_output=True,
                     text=True,
                     check=True,

@@ -18,32 +18,35 @@ use aom_bench::winperf;
 
 fn main() {
     let (w, h, q, s) = winperf::CELL;
-    let cell = winperf::cell(w, h, q, s);
-    let boot = cell.c_encode_defaults();
-    assert!(!boot.is_empty(), "C bootstrap encode failed");
-    let path = format!(
-        "crates/aom-bench/fixtures/winperf_bootstrap_{w}x{h}_cq{q}_s{s}.hex"
-    );
-    let mut out = String::new();
-    for (i, b) in boot.iter().enumerate() {
-        if i > 0 && i % 32 == 0 {
-            out.push('\n');
+    for content in [winperf::Content::Detail, winperf::Content::Smooth] {
+        let cell = winperf::cell(w, h, q, s, content);
+        let boot = cell.c_encode_defaults();
+        assert!(!boot.is_empty(), "C bootstrap encode failed");
+        let path = format!(
+            "crates/aom-bench/fixtures/winperf_bootstrap_{w}x{h}_cq{q}_s{s}_{}.hex",
+            content.label()
+        );
+        let mut out = String::new();
+        for (i, b) in boot.iter().enumerate() {
+            if i > 0 && i % 32 == 0 {
+                out.push('\n');
+            }
+            out.push_str(&format!("{b:02x}"));
         }
-        out.push_str(&format!("{b:02x}"));
-    }
-    out.push('\n');
-    std::fs::write(&path, &out).unwrap_or_else(|e| panic!("write {path}: {e}"));
-    println!("wrote {path}: {} bootstrap bytes -> {} chars", boot.len(), out.len());
+        out.push('\n');
+        std::fs::write(&path, &out).unwrap_or_else(|e| panic!("write {path}: {e}"));
+        println!("wrote {path}: {} bootstrap bytes -> {} chars", boot.len(), out.len());
 
-    // Also print the source-plane checksums the winperf unit test pins, so a
-    // regeneration and a re-pin are one step rather than two.
-    let buf = winperf::synth_i420(w, h);
-    let (cw, ch) = (w / 2, h / 2);
-    let sum = |x: &[u8]| x.iter().map(|&b| u64::from(b)).sum::<u64>();
-    println!(
-        "synth_i420({w},{h}) plane sums: y={} u={} v={}",
-        sum(&buf[..w * h]),
-        sum(&buf[w * h..w * h + cw * ch]),
-        sum(&buf[w * h + cw * ch..])
-    );
+        // Also print the source-plane checksums the winperf unit test pins, so
+        // a regeneration and a re-pin are one step rather than two.
+        let buf = winperf::synth_i420(w, h, content);
+        let (cw, ch) = (w / 2, h / 2);
+        let sum = |x: &[u8]| x.iter().map(|&b| u64::from(b)).sum::<u64>();
+        println!(
+            "  synth_i420({w},{h},{content:?}) plane sums: y={} u={} v={}",
+            sum(&buf[..w * h]),
+            sum(&buf[w * h..w * h + cw * ch]),
+            sum(&buf[w * h + cw * ch..])
+        );
+    }
 }

@@ -6,7 +6,7 @@
 //! minus the live C bootstrap (it is a committed fixture):
 //!
 //! ```text
-//! winperf <warmup> <reps> [out.obu]
+//! winperf <detail|smooth> <warmup> <reps> [out.obu]
 //! stdout: `NS=<n> NS=<n> ... BYTES=<m> FRAMEBYTES=<m>`
 //! ```
 //!
@@ -91,16 +91,17 @@ fn reassemble(bootstrap: &[u8], frame_payload: &[u8]) -> Vec<u8> {
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    if a.len() < 3 || a.len() > 4 {
-        eprintln!("usage: winperf <warmup> <reps> [out.obu]");
+    if a.len() < 4 || a.len() > 5 {
+        eprintln!("usage: winperf <detail|smooth> <warmup> <reps> [out.obu]");
         std::process::exit(2);
     }
-    let warmup: usize = a[1].parse().expect("warmup");
-    let reps: usize = a[2].parse().expect("reps");
+    let content = winperf::Content::parse(&a[1]);
+    let warmup: usize = a[2].parse().expect("warmup");
+    let reps: usize = a[3].parse().expect("reps");
 
     let (w, h, q, s) = winperf::CELL;
-    let cell = winperf::cell(w, h, q, s);
-    let bootstrap = winperf::bootstrap();
+    let cell = winperf::cell(w, h, q, s, content);
+    let bootstrap = winperf::bootstrap(content);
 
     for _ in 0..warmup {
         let _ = cell.port_encode(&bootstrap);
@@ -115,7 +116,7 @@ fn main() {
     }
 
     let stream = reassemble(&bootstrap, &last);
-    if let Some(p) = a.get(3) {
+    if let Some(p) = a.get(4) {
         std::fs::write(p, &stream).unwrap_or_else(|e| panic!("write {p}: {e}"));
     }
     let mut line = String::new();
