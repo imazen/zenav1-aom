@@ -1,5 +1,18 @@
 # Allocation levers 3a + 3 — landed, and worth a third of what the profile projected (2026-08-02)
 
+> **PLATFORM SCOPING, added 2026-08-02 —
+> [`winperf_windows_2026-08-02.md`](winperf_windows_2026-08-02.md). Every
+> millisecond in this file is an APPLE M4 PRO millisecond, measured against
+> APPLE'S ALLOCATOR.** Re-measured on Windows at the same cell with the same
+> harness, the ranking of the two levers **inverts**: lever 3 (the allocator
+> lever) is worth −2.38 % on `windows-11-arm` and −2.54 % on `windows-latest`
+> against **−0.49 %** on the dev box — **~5x more**, and **86–99 % of the
+> combined landing** instead of Darwin's 21 %. The allocator call counts are
+> byte-identical on all three platforms, so the difference is entirely **cost
+> per call**: Microsoft's heap charges more for one than Apple's does. The
+> "−1.34 ms" below is not the value of the change; it is the value of the change
+> on one allocator. Read every number here as Darwin-scoped.
+
 **3.346x → 3.248x. 854 053 allocator calls → 512 557 (−40.0 %), 448.8 MB → 267.5 MB,
 3 336 → 2 002 per superblock. Not one byte moved, in either dispatch mode,
 including the `--run-ignored all` tier.**
@@ -13,7 +26,9 @@ ranked these two levers at **+5.30 ms** (3a) and **+24.76 ms** (3) of the
 lever's "allocation" class is a **leaf class matched by name**, and most of its
 mass is `memset`/`memcpy`, not allocator bookkeeping. Removing 341 496
 malloc/free pairs does not remove the bytes those buffers still have to be
-zeroed with.
+zeroed with. *(And the two halves of that class turn out to have different
+prices on different heaps, which is why this ranking is Darwin's and not the
+world's — see the scoping note above.)*
 
 Provenance, box, load, exact commands, and the honest list of what is not
 measured: [`encoder_alloc_scratch_2026-08-02.meta`](encoder_alloc_scratch_2026-08-02.meta).
@@ -266,11 +281,27 @@ The next ranking that quotes `alloc/libc` should split the allocator symbols
 from `_platform_memset`/`_platform_memmove` before crediting anything with the
 total, because a fix aimed at one of those two halves cannot collect the other.
 
+**And a second lesson, added when this was re-measured on Windows: the two
+halves are also priced differently per platform, so a one-box number for either
+does not generalise.** The table just above ranks the residual allocation work
+at 16.4 % of the port/C gap; that share, and the −1.34 ms it is anchored to,
+are Darwin's. On Windows the same lever returned 86–99 % of this landing rather
+than 21 %. See [`winperf_windows_2026-08-02.md`](winperf_windows_2026-08-02.md).
+
 ## What is NOT measured here
 
 * **One cell, one image, one content class.** cpu-used 3/4/5/9 were not
   measured; the re-profile records 9 (5.64x) and 4 (7.76x) as worse cells that
   nobody has decomposed.
+* **One PLATFORM — and it turned out to matter more than anything else here.**
+  Everything below is an Apple M4 Pro against Apple's allocator. Closed for
+  Windows on 2026-08-02 (`winperf_windows_2026-08-02.md`: lever 3 is worth ~5x
+  more there); Linux is still unmeasured.
+* **One CONTENT — and content moves lever 3 by more than a factor of two.**
+  Re-measured on this box the same afternoon at load ~2: −1.26 % on this
+  photograph (the combined landing reproduces at −4.51 ms / −2.81 %, so load is
+  not the variable), −0.49 % on a synthetic matched to it within 5 % on
+  allocator calls, +0.31 % on a smoother one.
 * **Wall clock only.** No instruction count (no valgrind on Apple Silicon), so
   "341 496 fewer allocator calls" and "4.64 ms less wall" are two independent
   measurements and neither derives the other.

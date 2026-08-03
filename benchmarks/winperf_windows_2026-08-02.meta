@@ -1,0 +1,156 @@
+# winperf_windows_2026-08-02 — provenance
+# Companion to winperf_windows_2026-08-02.md and its eight TSVs.
+#
+# This is a PLATFORM SCOPING of an already-landed change, not a new change:
+# levers 3a and 3 of benchmarks/encoder_alloc_scratch_2026-08-02.md were
+# measured only on an Apple M4 Pro, and the crates ship on Windows. No encoder
+# source was touched.
+
+date                 2026-08-02 (dev box local) / 2026-08-03 UTC (CI)
+harness commit       5b5a4c5 (crates/aom-bench winperf + .github/workflows/winperf.yml)
+pre arm              578653ff30b4116e29453b414c4da0702959ed63 (the re-profile)
+post arm             99a10abb27ad5519a930f58ac4a8d7e74b133453 sources, as carried on main
+                     (only crates/aom-{dsp,encode}/src differ between arms; 99a10ab
+                     touched nothing else that compiles into these examples)
+C oracle             NONE. Every arm is `--no-default-features` = no aom-sys-ref,
+                     no cmake, no nasm, no `upstream/` submodule.
+
+## The three boxes
+
+darwin-arm64   Apple M4 Pro, 12 cores, 24 GiB, macOS 26.5.2 (Darwin arm64)
+               rustc 1.97.1 (8bab26f4f 2026-07-14), aarch64-apple-darwin
+               load average 1.3-2.1 of 12 cores throughout (contrast the landing,
+               which ran at 30-41 — see the .md's photo control: the landing
+               reproduces at load 2, so load is NOT the variable)
+               every measured run under `nice -n 19`
+
+win11arm       GitHub hosted `windows-11-arm`
+               runner image win11-arm64/20260727.122
+               rustc 1.97.1, aarch64-pc-windows-msvc, LLVM 22.1.6
+               MINGW64_NT-10.0-26200-ARM64 (host name runnervmvtop4)
+
+winx64         GitHub hosted `windows-latest`
+               runner image win25-vs2026/20260728.188
+               rustc 1.97.1, x86_64-pc-windows-msvc, LLVM 22.1.6
+               MINGW64_NT-10.0-26100 (host name runnervmhisb5)
+
+CPU MODEL IS NOT RECORDED for either runner: `wmic` is absent from these images
+and `systeminfo` does not name the part. Absolute milliseconds from the runners
+are therefore not portable numbers; only the within-run, interleaved,
+null-referenced deltas are used, which is why every arm is built and timed
+inside ONE job.
+
+## Profile cell — unchanged from both encoder profiles and the landing
+
+1024x1024, cq-level 44, cpu-used 6, ALLINTRA (usage 2), 8-bit 4:2:0, single
+tile, single thread.
+
+Source is GENERATED, not read: aom_bench::winperf::synth_i420, integer-only
+(no float anywhere), so it is bit-identical on aarch64-apple-darwin,
+aarch64-pc-windows-msvc and x86_64-pc-windows-msvc. The .census.tsv is the proof
+— all three platforms report identical allocator call counts and byte totals.
+Two contents:
+
+  detail  835 638 -> 488 750 calls (-41.5 %), 8 734 coded bytes
+          TUNED against the study photograph's 854 053 -> 512 557 (-40.0 %) and
+          154.95 ms: it lands at 95 % of the calls and 102 % of the wall time.
+          It does NOT match the photo's 4 472 coded bytes and is not meant to.
+  smooth  291 704 -> 222 464 calls (-23.7 %), 2 302 coded bytes
+          The low-work end of the bracket. Nothing is resolvable on it, on any
+          platform, and the .md says so rather than quoting a number.
+
+The sequence-header bootstrap is a COMMITTED FIXTURE (crates/aom-bench/fixtures/
+winperf_bootstrap_1024x1024_cq44_s6_{detail,smooth}.hex) — real
+`aomenc --allintra` output for these exact sources, produced once on the dev box
+by examples/winperf_bootstrap_gen (which does need the oracle). That is the only
+thing the C encoder is used for anywhere in this study, and it is not in any
+timed region.
+
+## Exact commands
+
+Dev box (all four arms, both contents):
+
+  git worktree add --detach ~/work/zen/zenav1-aom--winalloc main
+  git -C ~/work/zen/zenav1-aom--winalloc submodule update --init
+
+  # post
+  cargo build --release -j 4 -p zenav1-aom-bench --no-default-features \
+      --example winperf --example winperf_alloc
+  # l3  = post except 3a's file
+  git checkout 578653f -- crates/aom-dsp/src/transform/simd/mod.rs && <build>
+  # l3a = pre except 3a's file
+  git checkout 578653f -- crates/aom-dsp/src crates/aom-encode/src
+  git checkout HEAD    -- crates/aom-dsp/src/transform/simd/mod.rs && <build>
+  # pre
+  git checkout 578653f -- crates/aom-dsp/src crates/aom-encode/src && <build>
+  git checkout HEAD    -- crates/aom-dsp/src crates/aom-encode/src
+
+  nice -n 19 python3 scripts/winperf_ab.py 24 detail out.tsv \
+      pre=.. l3a=.. l3=.. post=.. postB=..          # postB is a COPY of post
+  python3 scripts/eprof_ab_stats.py out.tsv --vs pre     # deltas
+  python3 scripts/eprof_ab_stats.py out.tsv --vs post    # the null
+
+Windows (both targets, one dispatch each):
+
+  gh workflow run winperf.yml --ref main \
+      -f base_sha=578653ff30b4116e29453b414c4da0702959ed63 -f rounds=16
+
+  run 30779168799  n=16, both contents      <- quoted in the .md
+  run 30778499397  n=12, detail only        <- .replication_run1.tsv
+
+Photo control (the landing's own binaries, re-run today on the idle box):
+
+  nice -n 19 bash scripts/eprof_ab.sh 12 out.tsv \
+      base=~/tmp/allocbin/drv-aom.BASE l3a=..L3a l3=..L3ONLY \
+      final=..FINAL finalB=..FINAL-copy
+  # YUV=$HOME/tmp/xb/src/photo_1024.yuv, the file both encoder profiles used
+
+## Method
+
+INTERLEAVED, five arms, one invocation of each per round, each invocation 2
+warm-up + 7 timed encodes contributing its own median — identical to
+scripts/eprof_ab.sh, which is what the landing used. Two separate CI runs are
+two different VMs, so both arms MUST be built and timed inside one job; the
+workflow does four builds in one job for exactly that reason.
+
+`postB` is a byte-copy of the `post` binary run under a second label. Its delta
+is the runner's noise floor. Reported first, in every table, on every platform.
+Nulls came in at +0.08 % / -0.20 % / -0.05 % (detail) and +0.02 % / -0.06 % /
+-0.18 % (smooth).
+
+## Byte-identity
+
+Not at risk — no encoder source changed. What IS asserted, fail-loud, on every
+arm on both Windows targets: framebytes == 8734 (detail) and 2302 (smooth), the
+same values the dev box produces. The workflow fails if any arm disagrees, since
+a coding-decision divergence on Windows would be worth more than the timing.
+
+The harness change itself was gated with:
+  cargo check --workspace --all-targets                       # default features
+  cargo check --target x86_64-apple-darwin --workspace --all-targets
+  cargo test -p zenav1-aom-bench --no-default-features --lib
+
+## Committed data files
+
+  .darwin_detail.tsv         n=24, 5 arms, dev box
+  .darwin_smooth.tsv         n=24, 5 arms, dev box
+  .win11arm_detail.tsv       n=16, 5 arms, run 30779168799
+  .win11arm_smooth.tsv       n=16, 5 arms, run 30779168799
+  .winx64_detail.tsv         n=16, 5 arms, run 30779168799
+  .winx64_smooth.tsv         n=16, 5 arms, run 30779168799
+  .replication_run1.tsv      n=12, detail only, run 30778499397, both targets
+  .census.tsv                exact allocator census, 3 platforms x 2 contents x 4 arms
+  .darwin_photo_control.tsv  n=12, the landing's own binaries on the study photo,
+                             re-run today at load ~2
+
+## Known gaps (the .md carries the full list)
+
+* Linux is NOT measured. Third shipping tier, third allocator, one matrix line.
+* ONE cell. No size / quality / speed sweep on any platform.
+* The photograph is measured only on Darwin — the 4.9x/5.2x platform ratio is a
+  `detail`-content number.
+* Single-threaded. Windows' heap is worst under contention and this encode has
+  none, so the multi-threaded gap is unmeasured and presumably larger.
+* No instruction counts (no valgrind on Apple Silicon, none attempted on
+  Windows). Wall clock and allocator-call counts are independent measurements.
+* Runner CPU models unknown; hosted VMs are shared and unspecified.

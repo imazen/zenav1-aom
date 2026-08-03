@@ -3780,6 +3780,34 @@ Levers **3a** and **3** of `benchmarks/encoder_hotspot_reprofile_2026-08-02.md`.
 Record: **`benchmarks/encoder_alloc_scratch_2026-08-02.md`** (+ `.meta`,
 `.ab.tsv`, `.alloc.tsv`, `.callers.tsv`).
 
+**⚠ EVERY MILLISECOND BELOW IS AN APPLE M4 PRO MILLISECOND against APPLE'S
+allocator, and lever 3's rank does NOT survive the platform change.** Measured
+2026-08-02 on both Windows targets — the first time this encoder was ever RUN on
+Windows, since `ci.yml`'s `windows-11-arm` job is `portability` and executes
+nothing — same cell, same harness, five interleaved arms including a
+same-binary null (record: **`benchmarks/winperf_windows_2026-08-02.md`** + `.meta`
++ 8 TSVs; job: **`.github/workflows/winperf.yml`**, `workflow_dispatch`-only):
+
+| lever 3 alone, paired-median | value | share of the combined landing |
+|---|---:|---:|
+| Darwin M4 Pro, n=24 | −0.49 % | 21 % |
+| `windows-11-arm`, n=16 | **−2.38 %** | **86 %** |
+| `windows-latest` x86-64, n=16 | **−2.54 %** | **99 %** |
+
+nulls +0.08 % / −0.20 % / −0.05 %; replicated in a second dispatch at n=12.
+**The allocator CALL COUNTS are byte-identical on all three platforms**
+(835 638 → 488 750, and the same bytes and per-SB figures), so the platforms do
+identical work and the whole difference is **cost per call** — Microsoft's heap
+charges more for one than Apple's. Lever **3a** goes the other way (−2.02 % on
+Darwin vs −0.50 %/−0.77 % on the runners): it removes `memset` bytes, not calls.
+**So: on Darwin the memset lever is senior and allocation is a 16.4 % residual;
+on Windows the allocator lever is essentially the entire win.** Any future
+ranking of allocation work must carry a platform. Also measured: **content moves
+lever 3 by more than 2x on ONE box** (−1.26 % photo / −0.49 % `detail` /
++0.31 % `smooth`), and the landing's photo numbers REPRODUCE at load ~2
+(−4.51 ms vs the recorded −4.641 ms), so background load is not the variable.
+Linux is still unmeasured.
+
 **MEASURED, 1024×1024 photo / cq44 / cpu-used 6, 5 arms interleaved over 12
 rounds** (`scripts/eprof_ab.sh` + `scripts/eprof_ab_stats.py`, NEW — the N-arm
 form of `eprof_control.sh`, since a perf landing has to compare four port
@@ -3802,7 +3830,9 @@ different day, so the deltas are read against a live control.
   Removing 341 496 malloc/free pairs does not remove the bytes those buffers
   still have to be zeroed with. **Split the allocator symbols from
   `_platform_memset`/`_platform_memmove` before crediting any future lever with
-  that stage total.** (The re-profile flags this in "Attribution limits" item 4
+  that stage total — and split them per PLATFORM, because the two halves are
+  priced differently by different heaps** (the Windows measurement above is that
+  same split arriving from the other side). (The re-profile flags this in "Attribution limits" item 4
   and its ranked table contradicts it — read the limits, not the table.)
 - **Per-lever bite proof, and the two levers bite on DIFFERENT axes** (§1):
   3a alone **−3.128 ms / 0 allocator calls** (its scratch is a stack array, so

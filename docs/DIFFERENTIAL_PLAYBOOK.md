@@ -206,6 +206,42 @@ rounding, not a second observation.)*
   `docs/SIMD_REACH_AUDIT_2026-07-28.md:83`).
 - Commit `benchmarks/<thing>_<YYYY-MM-DD>.{md,tsv,meta}` with git commit, host,
   command line, and `uptime` load.
+- **A same-binary null arm beats an argument about noise.** Run the winning
+  build twice, under two labels, from two copies of the identical executable,
+  interleaved with everything else. Its delta IS the box's noise floor, measured
+  rather than asserted, and it is the only thing a real delta can honestly be
+  read against on hardware you do not own (`scripts/winperf_ab.py`; nulls came
+  in at 0.02–0.20 % on three boxes where raw spreads ran to 16 %).
+
+## 6b. A performance number is scoped to the platform it was taken on
+
+**The failure it prevents:** KB-PERF-2's headline. `−1.34 ms` for the
+per-txb scratch-reuse lever was recorded as *the* value of the change. It was
+the value on an Apple M4 Pro against Apple's allocator. Re-measured on Windows
+(`benchmarks/winperf_windows_2026-08-02.md`) the same lever is worth **~5x more**
+— **−2.38 % / −2.54 %** against Darwin's **−0.49 %** — and it goes from **21 %
+of the landing to 86–99 %** of it, swapping rank with its sibling lever. The
+allocator *call counts* are byte-identical on all three platforms, so nothing
+about the code differs; only the **price per call** does.
+
+- **Levers whose mechanism is a call into the platform** — allocator traffic,
+  syscalls, TLS, atomics, unwinding — have a per-platform price and their
+  one-box numbers do not generalise. Levers whose mechanism is arithmetic or
+  memory bandwidth (here: the sibling `memset` lever, −2.02 % on Darwin against
+  −0.50 % on a runner) travel much better. Name the mechanism, then decide
+  whether one box is enough.
+- **"Not measured on platform X" is not "measured and the same."** Before this
+  study, `windows-11-arm` CI *built* the crates and ran nothing, so every
+  Windows performance statement about this encoder was vacuous. A build job is
+  not a measurement job.
+- **Take the platform comparison on ONE harness, not by quoting two studies.**
+  The comparison here is the same generated content, the same fixture, the same
+  five arms, on all three boxes — never "Windows synthetic vs Darwin
+  photograph". An integer-only source generator is what makes that possible;
+  the identical censuses across three targets are the proof it worked.
+- **And content can move the same lever as much as the platform can.** On one
+  box in one afternoon, lever 3 measured −1.26 % / −0.49 % / +0.31 % on three
+  contents. Bracket the content or say which one the number belongs to.
 
 ## 7. Config-permutation gates: collapse, don't enumerate
 
@@ -459,6 +495,18 @@ wrong.
   three agents in one session mistook that for their own baseline.)
 - `git worktree remove` refuses on worktrees containing submodules — use
   `--force`, after pushing.
+- **`zenav1-aom-bench` has a default-ON `c-oracle` feature.** With it off the
+  crate still compiles — `EncodeCell` + `port_encode*` + `aom_bench::winperf` —
+  with NO C toolchain, no cmake, no nasm and no `upstream/` submodule, which is
+  how the encoder runs on the Windows CI runners. Everything else in that crate
+  requires the feature (all ~40 differential tests, the bench, `gate3_profile`,
+  every C-comparing example, and `zensim`). `--no-default-features` is supported
+  for `--lib` and the `winperf*` examples only; the tests are NOT gated, so
+  build those with default features as CI does.
+- **The encoder CAN be run on Windows now** — `.github/workflows/winperf.yml`,
+  `workflow_dispatch`-only, both `windows-11-arm` and `windows-latest`, ~9 min
+  per dispatch. Before 2026-08-02 the only Windows job was `portability`, which
+  builds and executes nothing.
 - The repo is **not** rustfmt-clean (419 diffs in aom-dsp alone — **NOT
   ESTABLISHED**: checked 2026-07-31, this count has no second record in the
   repo; re-run `cargo fmt -p aom-dsp --check` before quoting it). Do **not** run
