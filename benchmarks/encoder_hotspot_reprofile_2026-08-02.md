@@ -455,6 +455,28 @@ baseline (control-band equivalent 3.343x).
 
 | # | lever | measured gap | ceiling | resulting ratio | byte-identity risk |
 |---|---|---:|---:|---:|---|
+> **CROSS-PLATFORM SCOPING, added 2026-08-02 after the Windows study**
+> (`benchmarks/winperf_windows_2026-08-02.md`). **This ranking is Darwin-only, and
+> ordering by its shares is wrong for a cross-platform product.** Two corrections:
+>
+> 1. **Lever 1 is architecture-specific.** "NEON the CNN convolution" does nothing
+>    on `windows-latest` x86-64 — where most Windows users are. It is the top
+>    lever by Darwin share and NOT the top cross-platform lever. An AVX2 twin
+>    would be separate work with its own byte-risk gate.
+> 2. **Allocation is worth ~5x more on Windows and its rank inverts.** Lever 3
+>    measured −0.49 % on Darwin vs **−2.38 %** (`windows-11-arm`) and **−2.54 %**
+>    (`windows-latest`), i.e. 21 % of the combined landing on Darwin against
+>    **86–99 %** on Windows. The allocator call COUNTS are identical on all three
+>    platforms (835,638 → 488,750), so the platforms do identical work and the
+>    entire difference is cost per call. The "16.4 % residual, not worth chasing"
+>    verdict below is a Darwin verdict; on Windows that residual is likely the
+>    largest remaining lever.
+>
+> The levers that are genuinely cross-platform are the **bd8/lowbd lane-width
+> programme** (2, 4, 5 — i16 lanes help NEON and AVX2 alike; the re-profile puts
+> the combined programme at **34.1 %**, larger than the CNN ever was) and any
+> further **allocation** work. Rank by those for shipping decisions.
+
 | **1** | **NEON the CNN convolution** | **+35.56 ms (30.0 %)** | −35.6 ms | 3.48x → **2.74x** | **REAL** — see below |
 | **2** | **bd8 i16-lane FORWARD transform** | **+19.63 ms (16.6 %)** | −19.6 ms | → **2.33x** | large, structural; precedent exists |
 | **3** | **Per-txb scratch reuse (kill the 854 k allocs)** | **+24.76 ms (20.9 %)** | −24.8 ms | → **1.81x** | mechanical; decoder has the pattern |
