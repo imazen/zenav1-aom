@@ -33,10 +33,14 @@ def main():
     byround = {}
     bytecounts = {}
     with open(path) as f:
-        hdr = f.readline()
-        assert hdr.split("\t")[0] == "arm", hdr
+        hdr = f.readline().rstrip("\n").split("\t")
+        assert hdr[0] == "arm", hdr
+        # `eprof_ab.sh` gained a `position` column when it gained ROTATE mode;
+        # bands recorded before that have five columns and must still parse.
+        cols = {name: i for i, name in enumerate(hdr)}
         for line in f:
-            arm, rnd, m, _ns, by = line.rstrip("\n").split("\t")
+            f_ = line.rstrip("\n").split("\t")
+            arm, rnd, m, by = f_[cols["arm"]], f_[cols["round"]], f_[cols["median_ns"]], f_[cols["bytes"]]
             arms.setdefault(arm, []).append(int(m) / 1e6)
             byround.setdefault(arm, {})[int(rnd)] = int(m) / 1e6
             bytecounts.setdefault(arm, set()).add(int(by))

@@ -1,0 +1,23 @@
+# audit_nd16_lanes — 16-bit-lane bounds for the non-directional
+# intra predictors, by exhaustive enumeration.
+
+kernel       lane       M*  binding intermediate at M*
+SMOOTH       u16       255  +128 before >>8 = 65408
+SMOOTH_V/H   u16       255  +128 before >>8 = 65408
+PAETH        i16     16383  min signed = -32766
+
+# Tightness: the first intermediate to leave the lane at M*+1.
+SMOOTH       at M*+1 = 256: (256-w)*b = 65536 leaves u16
+SMOOTH_V/H   at M*+1 = 256: (256-w)*b = 65536 leaves u16
+PAETH        at M*+1 = 16384: max signed = 32768 leaves i16
+
+# What the bound admits, in bit-depth terms (max sample = 2^bd - 1):
+SMOOTH       M* =   255  ->  bd [8]
+SMOOTH_V/H   M* =   255  ->  bd [8]
+PAETH        M* = 16383  ->  bd [8, 10, 12]
+
+# SMOOTH halving-add identity, swept over every reachable A+B (0..130560):
+  TRUNCATING halving add: EXACT over all 130561 sums
+  ROUNDING halving add (vrhaddq_u16): first WRONG at A+B=255 (want 0, got 1) — this is why the kernel must use the truncating form
+
+RESULT: OK

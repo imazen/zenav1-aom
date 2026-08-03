@@ -193,6 +193,15 @@ pub struct Counts {
     pub nd_mode_calls: [u64; N_MODE],
     /// Non-directional (plus exactly-`V` / exactly-`H`) pixels by AV1 mode.
     pub nd_mode_px: [u64; N_MODE],
+    /// `[mode][tx_size]` calls — the same set [`Counts::nd_mode_calls`] counts,
+    /// additionally split by block shape. A column-vectorized predictor kernel
+    /// is priced by the block WIDTH (how much of a lane vector it can fill), so
+    /// "SMOOTH is 41 % of predicted pixels" is not on its own enough to size a
+    /// lever: 41 % spread over `bw == 4` blocks and 41 % over `bw == 32` blocks
+    /// are different levers. Added 2026-08-03 for KB-PERF-5.
+    pub nd_mode_tx_calls: [[u64; N_TX_SIZE]; N_MODE],
+    /// `[mode][tx_size]` predicted pixels — see [`Counts::nd_mode_tx_calls`].
+    pub nd_mode_tx_px: [[u64; N_TX_SIZE]; N_MODE],
     /// `[tx_type][tx_size]` forward 2-D transforms.
     pub fwd_tx: [[u64; N_TX_SIZE]; N_TX_TYPE],
     /// Coded leaves by `bsize`, counted at the bitstream writer.
@@ -272,6 +281,8 @@ impl Counts {
             intra_px: [[0; N_TX_SIZE]; 7],
             nd_mode_calls: [0; N_MODE],
             nd_mode_px: [0; N_MODE],
+            nd_mode_tx_calls: [[0; N_TX_SIZE]; N_MODE],
+            nd_mode_tx_px: [[0; N_TX_SIZE]; N_MODE],
             fwd_tx: [[0; N_TX_SIZE]; N_TX_TYPE],
             leaf_bsize: [0; N_BSIZE],
             leaf_mode: [0; N_MODE],
@@ -313,6 +324,8 @@ impl Counts {
             intra_px,
             nd_mode_calls,
             nd_mode_px,
+            nd_mode_tx_calls,
+            nd_mode_tx_px,
             fwd_tx,
             leaf_bsize,
             leaf_mode,
@@ -342,6 +355,8 @@ impl Counts {
             intra_px: sub2(intra_px, &base.intra_px),
             nd_mode_calls: sub(nd_mode_calls, &base.nd_mode_calls),
             nd_mode_px: sub(nd_mode_px, &base.nd_mode_px),
+            nd_mode_tx_calls: sub2(nd_mode_tx_calls, &base.nd_mode_tx_calls),
+            nd_mode_tx_px: sub2(nd_mode_tx_px, &base.nd_mode_tx_px),
             fwd_tx: sub2(fwd_tx, &base.fwd_tx),
             leaf_bsize: sub(leaf_bsize, &base.leaf_bsize),
             leaf_mode: sub(leaf_mode, &base.leaf_mode),
@@ -567,6 +582,8 @@ fn note_intra_pred_impl(mode: usize, angle_delta: i32, use_filter_intra: bool, t
         if let Some(m) = nd {
             c.nd_mode_calls[m] += 1;
             c.nd_mode_px[m] += px;
+            c.nd_mode_tx_calls[m][tx_size] += 1;
+            c.nd_mode_tx_px[m][tx_size] += px;
         }
     });
 }

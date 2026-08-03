@@ -367,6 +367,52 @@ fn print_source(r: &Row) {
         }
     }
     println!();
+    // Non-directional mode x block shape. A column-vectorized predictor kernel
+    // fills a lane vector by block WIDTH, so this is the table that says what
+    // share of a mode's pixels a 16-lane kernel can actually fill.
+    println!("nd_mode_x_tx\tcalls\tpixels\tpct_px_of_mode");
+    for m in 0..N_MODE {
+        if c.nd_mode_calls[m] == 0 {
+            continue;
+        }
+        for t in 0..N_TX_SIZE {
+            let n = c.nd_mode_tx_calls[m][t];
+            if n > 0 {
+                println!(
+                    "{}:{}\t{n}\t{}\t{:.2}",
+                    MODE_NAME[m],
+                    TX_SIZE_NAME[t],
+                    c.nd_mode_tx_px[m][t],
+                    100.0 * c.nd_mode_tx_px[m][t] as f64 / c.nd_mode_px[m] as f64
+                );
+            }
+        }
+    }
+    println!();
+    // The same table collapsed onto the axis a column kernel is priced by.
+    println!("nd_mode_x_width\tcalls\tpixels\tpct_px_of_mode");
+    for m in 0..N_MODE {
+        if c.nd_mode_calls[m] == 0 {
+            continue;
+        }
+        for &w in &[4usize, 8, 16, 32, 64] {
+            let (mut n, mut p) = (0u64, 0u64);
+            for t in 0..N_TX_SIZE {
+                if aom_dsp::census::TX_SIZE_W[t] == w {
+                    n += c.nd_mode_tx_calls[m][t];
+                    p += c.nd_mode_tx_px[m][t];
+                }
+            }
+            if n > 0 {
+                println!(
+                    "{}:w{w}\t{n}\t{p}\t{:.2}",
+                    MODE_NAME[m],
+                    100.0 * p as f64 / c.nd_mode_px[m] as f64
+                );
+            }
+        }
+    }
+    println!();
     let fwd_total: u64 = c.fwd_tx.iter().flatten().sum();
     println!("fwd_tx_type\tcount\tpct");
     for ty in 0..N_TX_TYPE {

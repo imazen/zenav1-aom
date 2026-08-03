@@ -10,6 +10,7 @@ pub mod dir;
 mod dir_simd;
 pub mod edge;
 mod simd;
+mod simd16;
 mod weights;
 use archmage::autoversion;
 use weights::{SMOOTH_WEIGHTS, SMOOTH_WEIGHT_LOG2_SCALE};

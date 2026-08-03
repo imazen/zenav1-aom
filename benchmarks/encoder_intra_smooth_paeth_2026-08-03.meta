@@ -1,0 +1,261 @@
+# encoder_intra_smooth_paeth_2026-08-03 — provenance
+# Companion to encoder_intra_smooth_paeth_2026-08-03.md and its data files.
+#
+# The named follow-up of KB-PERF-4 (benchmarks/encoder_intra_dir_i16_2026-08-03.md
+# §1b / §8): "smooth + paeth, +2.63 ms, already i32x8 where libaom is u8/u16".
+# Unlike the directional sub-lever, this one IS the bd8 lane-width programme —
+# there is a real lane-width choice to make here and the port was on the wide
+# side of it.
+#
+# Order of work, which is the point of the exercise (DIFFERENTIAL_PLAYBOOK §14):
+#   1. re-profile the row at the CURRENT baseline;
+#   2. census what a column kernel can reach, by MODE and by BLOCK WIDTH;
+#   3. derive the lane bound and check it exhaustively, before writing a kernel;
+#   4. write the kernel, gate it on the bound at runtime, prove the gate bites
+#      AND fires, prove the integration differential reaches it;
+#   5. measure, with nulls on both sides, EACH HALF SEPARATELY;
+#   6. revert the half that measured nothing.
+
+date                 2026-08-03
+box                  Apple M4 Pro, 12 cores, 24 GiB, macOS 26.5.2 (Darwin arm64)
+baseline commit      1f366a9 (main at session start) — every band's `base` arm
+                     is built from this tree with the gates forced false
+landing commit       see the git log entry that carries this file. It was
+                     REBASED onto 5884f49 before pushing (main moved during the
+                     session: a census extension, a screen-content content, and
+                     KB-36's >=1080p default_min_partition_size fix). Verified
+                     after the rebase: the profile cell still encodes to the
+                     same 4472-byte stream by sha256, and KB-36's arm is
+                     >=1080p so this 1024x1024 cell cannot reach it. The bands
+                     were taken pre-rebase and are NOT re-taken; that is the one
+                     place where the measured tree and the pushed tree differ,
+                     and the byte check is the evidence they agree where it
+                     matters.
+worktree             zenav1-aom--smooth, detached (removed at the end of the session)
+libaom oracle        upstream/ submodule 03087864cf4bea6abb0d28f95cf7843511413d8f (v3.14.1)
+                     libaom.a borrowed READ-ONLY from the primary checkout's
+                     upstream/build (this worktree's submodule is a fresh clone
+                     with no build tree; nothing in the primary was written)
+rustc                stable toolchain; no -C target-cpu=native (runtime SIMD dispatch)
+threading            single-threaded on every arm
+nice                 every measured run under `nice -n 19`, `-j 4`
+box load             SHARED with two other agents for part of the session; every
+                     `uptime` is recorded beside the band it belongs to in the .md.
+                     The bands were taken in the quietest window available and
+                     the raw spreads are reported rather than smoothed.
+
+## Profile cell — unchanged from all five prior encoder studies, for continuity
+
+1024x1024 photo, cq-level 44, cpu-used 6, ALLINTRA (usage 2), 8-bit 4:2:0,
+single tile, single thread. Source $HOME/tmp/xb/src/photo_1024.yuv. Every arm
+emits the same 4472-byte stream — verified by SHA, not by byte count.
+
+## Part 1 — the re-profile of the row (no change in the tree)
+
+Method identical to encoder_intra_dir_i16_2026-08-03.meta so the two compare:
+/usr/bin/sample, 1 ms, 60 s window started 5 s in; self(node) = count -
+sum(children); symbols classified by name. Port sampled TWICE (run 1 is the
+stability control, run 2 is the one the table uses), libaom-c once.
+
+  (cd benchmarks/xbench && nice -n 19 cargo build --release -j 4 -p drv-aom)
+  nice -n 19 cc -O2 -o benchmarks/xbench/target/drv_libaom \
+      benchmarks/xbench/csrc/drv_libaom.c \
+      -I<primary>/upstream -I<primary>/upstream/build \
+      -L<primary>/upstream/build -laom -lm -lc++
+  (cd benchmarks/xbench && CARGO_TARGET_DIR=$HOME/tmp/smooth-dbg-target \
+      CARGO_PROFILE_RELEASE_DEBUG=2 nice -n 19 cargo build --release -j 4 -p drv-aom)
+  dsymutil $HOME/tmp/smooth-dbg-target/release/drv-aom
+
+  nice -n 19 bash scripts/eprof_control.sh 9 ~/tmp/smooth/control_base.tsv
+  PORT_DBG=$HOME/tmp/smooth-dbg-target/release/drv-aom \
+    nice -n 19 bash scripts/eprof_sample.sh port-dbg 600 60 ~/tmp/smooth/port1.sample.txt 5
+  nice -n 19 bash scripts/eprof_sample.sh libaom-c 1600 60 ~/tmp/smooth/libaomc.sample.txt 5
+  PORT_DBG=... nice -n 19 bash scripts/eprof_sample.sh port-dbg 600 60 ~/tmp/smooth/port2.sample.txt 5
+  python3 scripts/eprof_rollup.py ~/tmp/smooth/port2.sample.txt   --arm port     --rules rust --tsv ~/tmp/smooth/port2.tsv
+  python3 scripts/eprof_rollup.py ~/tmp/smooth/libaomc.sample.txt --arm libaom-c --rules c    --tsv ~/tmp/smooth/c.tsv
+
+Denominators are the medians of the timed reps taken DURING the sample runs
+(port 155.101 ms of 600, libaom-c 47.202 ms of 1600). `sample` suspends the
+target and inflates the port arm, which is why the clean interleaved control
+band (§3) is reported separately and is the number the ratio is quoted at.
+
+The like-for-like class table (.stage.tsv) is a symbol regex over the two
+rollups, NOT the stage rollup — the stage rules file the port's cfl under
+`dsp:intra-pred` and libaom's under `intra-mode-rd`. Regexes are in the .md.
+
+## Part 2 — the census
+
+NOT throwaway this time. `aom_dsp::census` (feature `census`, default off)
+gained `Counts::nd_mode_tx_calls` / `nd_mode_tx_px` — the non-directional mode
+axis split by transform shape — and `examples/content_census.rs` gained the
+`nd_mode_x_tx` and `nd_mode_x_width` tables. A column-vectorized predictor is
+priced by BLOCK WIDTH (how much of a lane vector it fills), and the previous
+census could not report that. Both are committed.
+
+  cargo build --release -j 4 -p zenav1-aom-bench --features census,c-oracle \
+      --example content_census
+  ./target/release/examples/content_census \
+      yuv:$HOME/tmp/xb/src/photo_1024.yuv:1024x1024 \
+      winperf:photo winperf:detail winperf:smooth      > .census.txt
+
+## Part 3 — the audit
+
+  python3 xtask/audit_nd16_lanes.py        (committed; output in .audit.txt)
+
+Exhaustive enumeration, not an inequality: every intermediate is a function of
+at most four small scalars. It reports M* per kernel, the binding intermediate,
+the witness at M*+1 that shows the bound is tight, and a COMPLETE sweep of the
+halving-add identity over every reachable A+B (0..130560). No bound was widened.
+
+## Part 4 — the arms and the FIVE bands
+
+Arms are separate release binaries built from this worktree by forcing some of
+`intra::simd16`'s gate predicates to `false` and restoring from a pristine copy
+(`scripts/smooth_build_arms.sh`, committed; SHA-verified distinct). While PAETH was still in
+the tree the set was seven:
+
+  base        all gates false — the pre-lever baseline INCLUDING the absence of
+              the gate's per-block scan
+  baseB       a SECOND COPY of the identical `base` binary — the box's noise
+              floor on the PRE side, measured rather than asserted (§6)
+  smoothonly  the SMOOTH-family gates live, PAETH's forced false.  THIS IS THE
+              FUNCTIONAL EQUIVALENT OF WHAT SHIPPED (PAETH's kernel is
+              dead-code-eliminated behind a literal `false`), and it is the arm
+              the headline number comes from.
+  paethonly   PAETH's gate live, the three SMOOTH gates forced false
+  all         SMOOTH + PAETH composed
+  allB        a SECOND COPY of `all` — the noise floor on the POST side
+  libaom-c    benchmarks/xbench/csrc/drv_libaom.c against the pinned oracle
+
+  nice -n 19 bash scripts/eprof_ab.sh <N> <out.tsv> base=... baseB=... \
+      smoothonly=... paethonly=... all=... allB=... libaom-c=...
+  ROTATE=1 nice -n 19 bash scripts/eprof_ab.sh <N> <out.tsv> ...     # band 4, F
+  python3 scripts/eprof_ab_stats.py <tsv> --ref libaom-c --vs base
+
+Five bands, none averaged into another:
+
+  .ab.tsv               band 1, 7 arms x 44 rounds, fixed order, CONTENDED
+                        (raw spreads 10.6-13.6 %)
+  .ab_paethstore.tsv    band 2, 7 arms x 36 rounds, fixed order — the PAETH
+                        store-shape A/B (`paethA` per-lane loop vs `paethB`
+                        bitcast_u16x16 + copy_from_slice)
+  .ab_fixedorder.tsv    band 3, 7 arms x 44 rounds, fixed order, QUIET box
+                        (raw spreads 1.6-2.2 %) — THE HEADLINE BAND
+  .ab_rotated.tsv       band 4, 7 arms x 49 rounds, ROTATE=1, contended — the
+                        position-balanced band that convicts PAETH
+  (not committed)       band F, 5 arms x 45 rounds, ROTATE=1, on the literal
+                        shipped binary: landed in a 65-80 % spread window and is
+                        NOT quoted.  Raw TSV kept at ~/tmp/smooth/abF_contended.tsv.
+
+The two halves are measured separately even though they were built together
+(§14's closing rule) — and that is what caused PAETH to be reverted.
+
+## Part 4b — the harness change this session forced
+
+`scripts/eprof_ab.sh` gained **`ROTATE=1`** (default off) plus a `position`
+column in its TSV, and `scripts/eprof_ab_stats.py` was made tolerant of both TSV
+shapes so previously recorded bands still parse.
+
+Reason, measured: in band 3 the two copies of ONE identical binary at round
+positions 5 and 6 came out **0.34 pp apart** while the copies at positions 1 and
+2 agreed to 0.11 pp. In a fixed-order interleave the position an arm occupies is
+worth as much as the effect being measured. With rotation the drift becomes a
+property of the round rather than of any arm and is directly measurable: pooled
+over all arms in band 4, position 1 runs 162.45 ms and position 6 runs
+159.67 ms, a 1.7 % gradient.
+
+## Byte-identity gate
+
+  AOM_CONFORMANCE_DIR=<primary checkout>/conformance/data \
+    cargo nextest run --cargo-profile test-fast -j 4 --workspace \
+      --no-fail-fast --run-ignored all                     # SIMD dispatch live
+  AOM_FORCE_SCALAR=1 <same>                                # scalar-pinned
+  cargo check --target x86_64-apple-darwin --workspace --all-targets
+
+This worktree borrows the primary checkout's gitignored conformance/data
+READ-ONLY via AOM_CONFORMANCE_DIR; without it ~40 tests fail-loud with
+"conformance vector missing", which is the fail-loud design working.
+
+Gate 2 (`config_permutations`, every --cpu-used 0..9 cell byte-exact against
+real aomenc) is inside `--run-ignored all` and was also run on its own.
+
+## Bite proofs — and they are what proves the differentials REACH the new code
+
+Two perturbations, each applied alone, `--no-fail-fast` so every binary runs:
+
+  A. SMOOTH's truncating halving add -> the ROUNDING one
+     `(a & b) + ((a ^ b) >> 1)`  ->  `(a | b) - ((a ^ b) >> 1)`
+     (i.e. floor((A+B)/2) -> ceil((A+B)/2), the exact thing the audit's sweep
+     distinguishes, first wrong at A+B = 255)
+     FAILS: simd16::every_kernel_matches_the_scalar_core, build_nd_diff,
+            intra_lowbd_diff, intra_simd_diff, predict_intra_diff
+     GREEN: highbd_diff (bd10/12 ONLY — the SMOOTH gate declines there, so it
+            MUST stay green), intra_diff (the u8 `predict` path, untouched),
+            simd16::paeth_*, dir_simd_diff
+
+  B. PAETH's tie order  `p_top.simd_le(p_tl)` -> `.simd_lt(p_tl)`
+     FAILS: simd16::paeth_matches_the_scalar_core_across_every_bit_depth,
+            build_nd_diff, highbd_diff (PAETH's bound admits bd10/12, so it is
+            reached there too), intra_lowbd_diff, intra_simd_diff,
+            predict_intra_diff
+     GREEN: simd16::every_kernel_matches_the_scalar_core (the SMOOTH half),
+            intra_diff, dir_simd_diff + dir_highbd_diff (the directional family
+            must not see a non-directional defect)
+
+  B was taken while the PAETH kernel was still in the tree.  It is kept in the
+  record because it is the evidence that highbd_diff flips with the BOUND
+  (PAETH's admitted bd10/12, SMOOTH's does not) rather than with the kernel.
+
+The asymmetry is the point: A and B hit disjoint sets of the in-crate
+differentials, the bd10/12 integration test flips with the bound rather than
+with the kernel, and the u8 and directional suites stay green through both.
+
+## x86-64 / Windows
+
+  gh workflow run winperf.yml -f base_sha=<baseline> -f rounds=<n> \
+      -f arms=prepost -f contents="detail photo"
+
+Content chosen from the census, not by habit: smooth+paeth is 50.6 % of
+predicted pixels on `detail`, 39.1 % on `photo`, 38.3 % on `smooth`, against the
+study photograph's 43.6 %. Every winperf content reaches this lever — the
+opposite of KB-PERF-4, where `detail` was a structural zero. Bands committed as
+.win_<runner>_<content>.tsv; read with scripts/winperf_prepost_stats.py, which
+handles the within-round position drift.
+
+Known runner floors (benchmarks/winperf_content_census_2026-08-03.md §5): the
+smallest effect resolvable at 95 %, n=24, is 0.07 % on Darwin, 0.07-0.18 % on
+windows-11-arm and 0.50-0.86 % on windows-latest x86-64.
+
+## Known gaps
+
+* ONE cell, one image, one content class, one preset. cpu-used 0/3/4/9 are not
+  measured.
+* 8-bit 4:2:0 only. The SMOOTH gate declines bd10/bd12 by construction, so the
+  narrow SMOOTH path is UNMEASURED at those depths (it never runs); PAETH's
+  admits them but no bd10/12 timing was taken.
+* SMOOTH_V and SMOOTH_H are shipped with a correctness gate and NO timing
+  evidence: the census says the encoder picks them ZERO times at this cell on
+  all four sources. They are in the landing because they are the same three
+  lines and the same bound, not because anything measured them.
+* The cost of the gate's DECLINE (one O(bw+bh) scan that then takes the i32x8
+  path) is folded into the reported win, not isolated — no arm was built with
+  the scan present and the vector path disabled. KB-PERF-4 measured that cost
+  for its own gate at about +0.15 % on content its kernel never reaches.
+* Wall clock only. No instruction count (no valgrind on Apple Silicon).
+* Single-threaded, one frame.
+* The lowbd `u8` predictors (`intra::predict`, the decoder's bd8 path) are
+  untouched — this is an encoder lever and the encoder holds planes as u16.
+* Linux is unmeasured.
+
+## Committed data files
+
+  .md            the writeup
+  .census.txt    the mode x transform-shape census, four sources (raw output)
+  .audit.txt     xtask/audit_nd16_lanes.py output
+  .control.tsv   the session-opening 2-arm control band
+  .stage.tsv     the like-for-like intra symbol table, both arms, self ms
+  .ab.tsv               band 1 (contended)
+  .ab_paethstore.tsv    band 2 (the PAETH store-shape A/B)
+  .ab_fixedorder.tsv    band 3 (quiet — the headline)
+  .ab_rotated.tsv       band 4 (ROTATE=1, position-balanced)
+  .win_<runner>_<content>.tsv   the Windows bands

@@ -92,6 +92,12 @@ pub(crate) fn smooth(
     sw_h: &[u8],
 ) {
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    // The 16-bit-lane path when the block's samples are inside its bound
+    // (`crate::intra::simd16`); otherwise the i32x8 body below, unchanged.
+    if super::simd16::smooth_applies(bw, bh, above_row, left) {
+        super::simd16::smooth(dst, stride, bw, bh, above_row, left, sw_w, sw_h);
+        return;
+    }
     incant!(
         smooth_impl(dst, stride, bw, bh, above_row, left, sw_w, sw_h),
         [v3, neon, wasm128, scalar]
@@ -215,6 +221,10 @@ pub(crate) fn smooth_v(
     sw_h: &[u8],
 ) {
     let _ = crate::dispatch::scalar_forced();
+    if super::simd16::smooth_v_applies(bw, above_row, below) {
+        super::simd16::smooth_v(dst, stride, bw, bh, above_row, below, sw_h);
+        return;
+    }
     incant!(
         smooth_v_impl(dst, stride, bw, bh, above_row, below, sw_h),
         [v3, neon, wasm128, scalar]
@@ -310,6 +320,10 @@ pub(crate) fn smooth_h(
     sw_w: &[u8],
 ) {
     let _ = crate::dispatch::scalar_forced();
+    if super::simd16::smooth_h_applies(bh, left, right) {
+        super::simd16::smooth_h(dst, stride, bw, bh, left, right, sw_w);
+        return;
+    }
     incant!(
         smooth_h_impl(dst, stride, bw, bh, left, right, sw_w),
         [v3, neon, wasm128, scalar]
