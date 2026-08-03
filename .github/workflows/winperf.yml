@@ -1,0 +1,213 @@
+name: winperf (Windows encoder A/B)
+
+# MANUAL ONLY — zero cost per push.
+#
+# The regular CI matrix stays what it is; this is a measurement job, and a
+# measurement job that runs on every push is both expensive and useless (nobody
+# reads 300 noisy medians). Dispatch it when an encoder perf change lands, or
+# when you want to re-confirm a recorded Windows number.
+#
+# WHY IT EXISTS
+#
+# benchmarks/encoder_alloc_scratch_2026-08-02.md measured the KB-PERF-2
+# allocation levers at -4.641 ms total / -1.34 ms for lever 3 alone. That was an
+# Apple M4 Pro against Apple's allocator. The encoder ships on Windows, whose
+# default heap is a different implementation with a different cost per call, so
+# a -40 % reduction in allocator traffic may be worth a different amount there —
+# and the repo's only Windows job (`ci.yml`'s `portability`) *builds* the
+# published crates and runs no tests and no benches, so the encoder had never
+# been EXECUTED on Windows at all. This job executes it.
+#
+# WHAT IT DOES
+#
+# Builds the SAME harness (crates/aom-bench examples `winperf` + `winperf_alloc`,
+# pure Rust, `--no-default-features` = no C oracle, no cmake, no nasm) FOUR times
+# in ONE job, swapping crates/aom-dsp/src and crates/aom-encode/src between
+# builds. Two separate CI runs are two different VMs and are not comparable, so
+# every arm has to be built and interleaved inside a single runner.
+#
+# FIVE arms are timed, the same five the dev-box study used:
+#
+#   pre    578653f  — before both levers
+#   l3a    +3a only — tiered forward-pass scratch (a memset lever; its scratch
+#                     is a stack array, so it moves ZERO allocator calls)
+#   l3     +3 only  — per-txb scratch reuse (the allocator lever, -41 % calls)
+#   post   both
+#   postB  both, again, from a SECOND COPY of the identical binary
+#
+# `l3a` and `l3` are why the two are separable: the question this job exists for
+# is what the ALLOCATOR lever is worth on Windows, and `post - pre` alone cannot
+# answer it because it also contains a memset lever that Darwin credited with
+# two thirds of the combined win. `postB` vs `post` is the runner's NOISE FLOOR
+# — the only honest thing to read a real delta against on a shared cloud VM you
+# do not own. If an effect does not clear it, the honest report is "not
+# resolvable", not a number.
+#
+# It also runs the allocator CENSUS on every arm. Call counts are exact and
+# noise-free where milliseconds on a hosted runner are not, so they are the part
+# of this job that is always trustworthy — and the census is what proves the
+# arms are the arms they claim to be (pre and l3a must agree to the digit, l3
+# and post likewise).
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: "Commit whose crates/aom-{dsp,encode}/src form the `pre` arm"
+        required: true
+        default: "578653ff30b4116e29453b414c4da0702959ed63"
+      rounds:
+        description: "Interleaved rounds (each = 1 invocation of each of 5 arms = 2 warm-up + 7 timed encodes)"
+        required: true
+        default: "12"
+
+jobs:
+  winperf:
+    name: winperf ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The org-bar mandated ARM runner. Never previously ran this encoder.
+          - name: windows-11-arm
+            os: windows-11-arm
+          # Where most Windows users actually are. Different CPU AND different
+          # allocator tuning from the ARM image, so the two are reported
+          # separately and never merged.
+          - name: windows-x86-64
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      # Full history: the `pre` arm is a source checkout of an older commit.
+      # No submodules — the pure-Rust surface never touches upstream/, which is
+      # the whole reason this can run here.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Record the box
+        shell: bash
+        run: |
+          set -x
+          rustc -vV
+          cargo -V
+          uname -a || true
+          systeminfo | head -20 || true
+          wmic cpu get name,numberofcores,numberoflogicalprocessors /format:list || true
+
+      # ---- post arm (the checked-out commit) --------------------------------
+      - name: Build the post arm
+        shell: bash
+        run: |
+          cargo build --release -p zenav1-aom-bench --no-default-features \
+            --example winperf --example winperf_alloc
+          mkdir -p bin
+          cp target/release/examples/winperf.exe       bin/winperf_post.exe
+          cp target/release/examples/winperf.exe       bin/winperf_postB.exe
+          cp target/release/examples/winperf_alloc.exe bin/winperf_alloc_post.exe
+
+      # ---- the three older arms --------------------------------------------
+      # Only crates/aom-{dsp,encode}/src are ever swapped: 99a10ab touched
+      # nothing else that is compiled into these examples, so the harness itself
+      # is identical in every arm by construction. Lever 3a lives entirely in
+      # crates/aom-dsp/src/transform/simd/mod.rs and changes no signature, which
+      # is what makes the two levers separable by file.
+      - name: Build the pre / l3a / l3 arms
+        shell: bash
+        run: |
+          set -x
+          # l3 = everything post EXCEPT 3a's file.
+          git checkout ${{ inputs.base_sha }} -- crates/aom-dsp/src/transform/simd/mod.rs
+          cargo build --release -p zenav1-aom-bench --no-default-features \
+            --example winperf --example winperf_alloc
+          cp target/release/examples/winperf.exe       bin/winperf_l3.exe
+          cp target/release/examples/winperf_alloc.exe bin/winperf_alloc_l3.exe
+          git checkout HEAD -- crates/aom-dsp/src/transform/simd/mod.rs
+
+          # l3a = everything pre EXCEPT 3a's file.
+          git checkout ${{ inputs.base_sha }} -- crates/aom-dsp/src crates/aom-encode/src
+          git checkout HEAD -- crates/aom-dsp/src/transform/simd/mod.rs
+          cargo build --release -p zenav1-aom-bench --no-default-features \
+            --example winperf --example winperf_alloc
+          cp target/release/examples/winperf.exe       bin/winperf_l3a.exe
+          cp target/release/examples/winperf_alloc.exe bin/winperf_alloc_l3a.exe
+
+          # pre = everything pre.
+          git checkout ${{ inputs.base_sha }} -- crates/aom-dsp/src crates/aom-encode/src
+          cargo build --release -p zenav1-aom-bench --no-default-features \
+            --example winperf --example winperf_alloc
+          cp target/release/examples/winperf.exe       bin/winperf_pre.exe
+          cp target/release/examples/winperf_alloc.exe bin/winperf_alloc_pre.exe
+
+          git checkout HEAD -- crates/aom-dsp/src crates/aom-encode/src
+          git status --porcelain
+
+      # ---- allocator census: exact, noise-free, the trustworthy half --------
+      - name: Allocation census, every arm
+        shell: bash
+        run: |
+          for a in pre l3a l3 post; do
+            echo "--- $a ---"
+            ./bin/winperf_alloc_$a.exe | tee census_$a.tsv
+            echo
+          done
+
+      # ---- interleaved timing, five arms including the null ----------------
+      - name: Interleaved timing band
+        shell: bash
+        run: |
+          python scripts/winperf_ab.py ${{ inputs.rounds }} winperf_${{ matrix.name }}.tsv \
+            pre=./bin/winperf_pre.exe \
+            l3a=./bin/winperf_l3a.exe \
+            l3=./bin/winperf_l3.exe \
+            post=./bin/winperf_post.exe \
+            postB=./bin/winperf_postB.exe
+
+      - name: Summarise (control band FIRST, then the delta)
+        shell: bash
+        run: |
+          {
+            echo '## winperf ${{ matrix.name }}'
+            echo
+            echo '```'
+            python scripts/eprof_ab_stats.py winperf_${{ matrix.name }}.tsv --vs pre
+            echo '```'
+            echo
+            echo '### null arm — read this before any delta'
+            echo
+            echo '```'
+            python scripts/eprof_ab_stats.py winperf_${{ matrix.name }}.tsv --vs post
+            echo '```'
+            echo
+            echo '### allocator census (exact)'
+            echo
+            echo '```'
+            for a in pre l3a l3 post; do echo "--- $a ---"; cat census_$a.tsv; done
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # A coding-decision change would move FRAMEBYTES. Both arms must agree,
+      # and both Windows targets must agree with Darwin's 8734 — the harness's
+      # source is integer-only precisely so that holds. This is a fail-loud
+      # check, not a warning: a divergence here is a portability bug worth
+      # more than the timing this job came for.
+      - name: Every arm must encode the same bytes
+        shell: bash
+        run: |
+          for a in pre l3a l3 post; do
+            n=$(awk -F'\t' '$1=="framebytes"{print $2}' census_$a.tsv)
+            echo "$a framebytes=$n (expected 8734)"
+            test "$n" = "8734"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: winperf-${{ matrix.name }}
+          path: |
+            winperf_${{ matrix.name }}.tsv
+            census_*.tsv

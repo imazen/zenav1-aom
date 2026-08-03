@@ -31,7 +31,14 @@
 #![forbid(unsafe_code)]
 
 pub mod config_perm;
+// Pure-Rust (no C oracle) encode harness for the Windows allocation A/B.
+pub mod winperf;
+// Both of these are C-differential harnesses end to end (inter_localize
+// consumes `aom_sys_ref::RefDecodedFrame`; rd_close scores port-vs-C
+// reconstructions with zensim), so neither exists without the oracle.
+#[cfg(feature = "c-oracle")]
 pub mod inter_localize;
+#[cfg(feature = "c-oracle")]
 pub mod rd_close;
 
 use aom_encode::encode_intra::TrellisOptType;
@@ -65,6 +72,7 @@ use aom_dsp::quant::{
     Dequants, Quants, aom_get_qmlevel_allintra, av1_build_quantizer, av1_dc_quant_qtx, set_q_index,
 };
 use aom_dsp::restore::pick::{LrPlanePixels, LrSearchInput, LrSearchSf, pick_filter_restoration};
+#[cfg(feature = "c-oracle")]
 use aom_sys_ref as c;
 use aom_dsp::txb::cost_tokens_from_cdf;
 
@@ -221,6 +229,7 @@ impl DecodeCell {
     }
 
     /// C-oracle decode (init + decode + plane copy + destroy).
+    #[cfg(feature = "c-oracle")]
     pub fn c_decode(&self) -> c::RefDecodedFrame {
         c::ref_decode_av1_kf(&self.tu, self.w, self.h)
     }
@@ -232,6 +241,7 @@ impl DecodeCell {
     }
 
     /// Setup-time validation: the port's planes are byte-identical to C's.
+    #[cfg(feature = "c-oracle")]
     pub fn assert_byte_exact(&self) {
         c::ref_init();
         let cref = self.c_decode();
@@ -524,6 +534,7 @@ impl ToggleKnobs {
     /// The `(ctrl_id, value)` pairs for the C side — only knobs that differ
     /// from the aomenc default are emitted (a default-knobs cell reproduces
     /// `EncodeCell::c_encode` exactly).
+    #[cfg(feature = "c-oracle")]
     pub fn c_ctrls(&self) -> Vec<(i32, i32)> {
         use c::cx_ctrl::*;
         let d = ToggleKnobs::default();
@@ -678,6 +689,7 @@ impl EncodeCell {
     /// via the C oracle and (optionally) crop an SB-aligned window —
     /// exactly the KB-6 real-image gate's recipe, so byte-exactness of the
     /// port on these cells is already a landed CI gate at speed 0.
+    #[cfg(feature = "c-oracle")]
     pub fn real_content(
         label: &str,
         vector: &str,
@@ -793,6 +805,7 @@ impl EncodeCell {
     /// The C oracle's full KEY encode (the aomenc path: codec init + encode +
     /// destroy), producing the reference bitstream. Also the untimed setup
     /// step that produces the header-bootstrap bytes for [`Self::port_encode`].
+    #[cfg(feature = "c-oracle")]
     pub fn c_encode(&self) -> Vec<u8> {
         c::ref_encode_av1_kf(
             &self.y,
@@ -818,6 +831,7 @@ impl EncodeCell {
     /// (`--enable-palette` / `--enable-intrabc`, the
     /// `shim_encode_av1_kf_screen_content` path — otherwise identical to
     /// [`Self::c_encode`]).
+    #[cfg(feature = "c-oracle")]
     pub fn c_encode_screen(&self, enable_palette: bool, enable_intrabc: bool) -> Vec<u8> {
         c::ref_encode_av1_kf_screen_content(
             &self.y,
@@ -846,6 +860,7 @@ impl EncodeCell {
     /// otherwise identical to [`Self::c_encode`], INCLUDING `--cpu-used =
     /// self.speed`. The port counterpart is
     /// `port_encode_with(.., ToggleKnobs { qm: Some((qm_min, qm_max)), .. })`.
+    #[cfg(feature = "c-oracle")]
     pub fn c_encode_qm(&self, qm_min: i32, qm_max: i32) -> Vec<u8> {
         c::ref_encode_av1_kf_qm(
             &self.y,
@@ -872,6 +887,7 @@ impl EncodeCell {
     /// [`Self::c_encode`] plus extra `(ctrl_id, value)` control pairs
     /// ([`c::cx_ctrl`]) — the toggle-sweep C side. `&[]` reproduces
     /// `c_encode` exactly (same base config, no extra controls).
+    #[cfg(feature = "c-oracle")]
     pub fn c_encode_ctrls(&self, ctrls: &[(i32, i32)]) -> Vec<u8> {
         c::ref_encode_av1_kf_ctrls(
             &self.y,
@@ -893,6 +909,7 @@ impl EncodeCell {
     /// [`Self::c_encode`] with `--enable-restoration=1`
     /// (`AV1E_SET_ENABLE_RESTORATION`) — the reference stream for the
     /// loop-restoration-search parity gate.
+    #[cfg(feature = "c-oracle")]
     pub fn c_encode_lr(&self) -> Vec<u8> {
         c::ref_encode_av1_kf(
             &self.y,
@@ -919,6 +936,7 @@ impl EncodeCell {
     /// OFF). This is the true-default stream a drop-in replacement must match;
     /// the reference for the default-parity gate. (Contrast [`Self::c_encode`],
     /// which forces `--enable-restoration=0` — a NON-default config.)
+    #[cfg(feature = "c-oracle")]
     pub fn c_encode_defaults(&self) -> Vec<u8> {
         c::ref_encode_av1_kf_defaults(
             &self.y,
@@ -2198,6 +2216,7 @@ impl EncodeCell {
     /// Setup-time validation: the port's assembled frame OBU payload is
     /// byte-identical to the C reference stream's. Returns the reference
     /// stream for reuse as the bench-loop bootstrap.
+    #[cfg(feature = "c-oracle")]
     pub fn assert_byte_exact(&self) -> Vec<u8> {
         c::ref_init();
         let bootstrap = self.c_encode();
@@ -2304,6 +2323,7 @@ impl MultiFrameEncodeCell {
     /// ref-frame-mvs all disabled. `enable_cdef` / `enable_restoration` select
     /// the faithful GOOD-quality defaults (`true`/`true`) or a smaller decoder
     /// envelope (`false`/`false`). Returns the concatenated 2-frame stream.
+    #[cfg(feature = "c-oracle")]
     pub fn c_encode_inter(&self, enable_cdef: bool, enable_restoration: bool) -> Vec<u8> {
         assert_eq!(
             self.frames.len(),
@@ -3005,6 +3025,7 @@ pub fn lr_search_sf_good(
     sf
 }
 
+#[cfg(feature = "c-oracle")]
 pub fn encode_cells() -> Vec<EncodeCell> {
     let mut cells = Vec::new();
     for &(size_label, vector, crop) in &[

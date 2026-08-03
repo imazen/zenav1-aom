@@ -1350,6 +1350,7 @@ mod tests {
     #[test]
     fn default_row_is_the_stock_config() {
         assert_eq!(knobs_of(&DEFAULT_ROW), ToggleKnobs::default());
+        #[cfg(feature = "c-oracle")]
         assert!(knobs_of(&DEFAULT_ROW).c_ctrls().is_empty());
     }
 

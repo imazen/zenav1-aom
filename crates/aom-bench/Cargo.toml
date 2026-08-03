@@ -25,11 +25,28 @@ zenav1-aom-dsp = { path = "../aom-dsp" }
 # bench-only (publish = false), so depending on the FFI oracle here mirrors the
 # dev-dependency isolation the shipping crates use: all unsafe stays inside
 # aom-sys-ref, and nothing here ships.
-zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
+zenav1-aom-sys-ref = { path = "../aom-sys-ref", optional = true }
 # RD-closeness scoring for the stills-parity bulk-port harness (rd_close):
 # perceptual quality of port-vs-C reconstructions against the source.
 # Latest on lib.rs verified 2026-07-16.
-zensim = "0.2.7"
+zensim = { version = "0.2.7", optional = true }
+
+[features]
+# DEFAULT ON, and every existing target (tests, benches, the profile bins, all
+# the C-comparing examples) requires it: without the oracle there is nothing to
+# be differential against, which is this crate's whole job.
+default = ["c-oracle"]
+# Turning it OFF leaves exactly the PURE-RUST half of this crate compilable —
+# `EncodeCell` + `port_encode*` + the `winperf` harness — on a runner with no C
+# toolchain, no cmake, no nasm and no `upstream/` submodule. That is what the
+# Windows encoder A/B (`.github/workflows/winperf.yml`) builds: `windows-11-arm`
+# and `windows-latest` have never built libaom here, and the port's own
+# before/after delta does not need a C reference to be measured.
+#
+# `--no-default-features` is supported for `--lib` and the `winperf*` examples
+# ONLY; the ~40 integration tests are all differential and are not gated
+# (build them with default features, as CI does).
+c-oracle = ["dep:zenav1-aom-sys-ref", "dep:zensim"]
 
 [dev-dependencies]
 zenbench = "0.1.9"
@@ -37,3 +54,46 @@ zenbench = "0.1.9"
 [[bench]]
 name = "gate3"
 harness = false
+required-features = ["c-oracle"]
+
+# Every example below compares against, or bootstraps from, the C oracle. Only
+# `winperf` / `winperf_alloc` (the pure-Rust Windows A/B harness) build without
+# it, which is why they are absent from this list.
+[[example]]
+name = "dump_inter_stream"
+required-features = ["c-oracle"]
+
+[[example]]
+name = "eprof_alloc"
+required-features = ["c-oracle"]
+
+[[example]]
+name = "eprof_cnn_bench"
+required-features = ["c-oracle"]
+
+[[example]]
+name = "eprof_cnn_verify"
+required-features = ["c-oracle"]
+
+[[example]]
+name = "nonsquare_leaf_bite"
+required-features = ["c-oracle"]
+
+[[example]]
+name = "nonsquare_leaf_reach"
+required-features = ["c-oracle"]
+
+[[example]]
+name = "svt_interop_probe"
+required-features = ["c-oracle"]
+
+# Regenerates the `winperf` bootstrap fixture by running a real aomenc encode,
+# so it is the one winperf* target that DOES need the oracle. It runs once, on
+# a box that can build libaom, and commits its output.
+[[example]]
+name = "winperf_bootstrap_gen"
+required-features = ["c-oracle"]
+
+[[bin]]
+name = "gate3_profile"
+required-features = ["c-oracle"]
