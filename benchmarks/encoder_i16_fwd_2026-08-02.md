@@ -133,6 +133,12 @@ passes, differentials extended to `col_n`/`row_n` = 8, all green, reach 81 →
 | `half` (+ half batches) | 150.212 ms | −2.53 % | 3.2043x |
 | `halfB` (null) | 150.332 ms | −2.45 % | 3.2069x |
 
+That band is also an **independent replication of the headline**: its own
+`base` → `both` pair, taken later, on a different arm set, in a different time
+window, is **−2.53 %** against the 24-round band's **−2.49 %**. Two bands, one
+number — which is the check playbook §6 asks for and which the first 12-round
+band failed.
+
 **`half` vs `both` is −0.009 ms (−0.006 %)** against a same-binary null of
 **+0.08 %**. That is a null, not a small win, and it is a null on a change that
 moves 48 % of the column calls and 45 % of the row calls onto a different code
