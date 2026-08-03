@@ -455,6 +455,24 @@ baseline (control-band equivalent 3.343x).
 
 | # | lever | measured gap | ceiling | resulting ratio | byte-identity risk |
 |---|---|---:|---:|---:|---|
+> **SPEED SCOPING, added 2026-08-03 after the family census** (`8dc29f1`,
+> `benchmarks/winperf_family_census_2026-08-03.md`). **Every share below is a
+> cpu-used 6 number and does not transfer across presets.** Measured on identical
+> content: directional intra is **20.78 % of predicted pixels at cpu-used 6 and
+> 56.61 % at cpu-used 5**; filter-intra is **0.00 % at 6 and 10.46 % of leaves at
+> 5**, because speed 6 sets `prune_filter_intra_level = 2`. A lever sized here can
+> be several times larger or entirely absent one preset away.
+>
+> This matters because the port's ratio vs libaom is WORST at the presets this
+> profile does not cover: **cpu-used 9 is 5.64x** and **cpu-used 4 is 7.76x**
+> against 3.19x here, and **neither is profiled**. Do not carry this ranking to
+> them.
+>
+> Three scoping dimensions are now known to move these shares — **platform**
+> (below), **content** (the family census: the same lever reads 20.8 % on the
+> photograph and 0.15 % on `detail`), and **speed** (here). A share is a
+> measurement of one cell, not a property of the encoder.
+
 > **CROSS-PLATFORM SCOPING, added 2026-08-02 after the Windows study**
 > (`benchmarks/winperf_windows_2026-08-02.md`). **This ranking is Darwin-only, and
 > ordering by its shares is wrong for a cross-platform product.** Two corrections:
