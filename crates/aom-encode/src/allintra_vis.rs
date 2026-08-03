@@ -933,6 +933,11 @@ fn wiener_block_residual_dct(
         0,
         false,
     );
+    // Census plane tag (`aom_dsp::census`, no-op without the feature):
+    // `predict_intra_high` has no `plane` argument and gains none, so the
+    // plane split is annotated where the caller knows it. `plane_total()`
+    // must equal `intra_total_calls()`; the census tool asserts it.
+    aom_dsp::census::note_plane_intra_pred(0, TX_8X8);
     aom_dsp::intra::predict_intra_high(
         src_y,
         src_off,

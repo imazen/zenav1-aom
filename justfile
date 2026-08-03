@@ -63,6 +63,25 @@ test-slowest:
 test-simd:
     cargo test --profile test-fast -p zenav1-aom-dsp --test txfm2d_simd_perm_diff --test quantize_fp_simd_diff --test cdef_filter_simd_diff --test sad_simd --test hbd_variance_simd_diff --test txb_init_levels_simd_diff --test intra_simd_diff --test lpf_simd_diff --test wiener_simd_diff --test convolve_diff --no-fail-fast
 
+# CONTENT-FAMILY COVERAGE GATE. Censuses the four committed `winperf` contents
+# through the port and asserts every coding-tool family (directional intra,
+# CFL/chroma, rect + small leaves, 4-pt transforms, palette, intraBC) is still
+# reached above a pinned share — so a content, encoder or speed-feature change
+# that silently stops exercising a family fails loudly instead of turning a
+# future band into a structural zero (benchmarks/winperf_family_census_2026-08-03.md).
+#
+# Needs `--features census` (default-off: a census build is not a timing build)
+# and does NOT need the C oracle, so it runs on any box in ~6 s.
+census-gate:
+    cargo test --release -p zenav1-aom-bench --no-default-features --features census --test content_family_census
+
+# The census TOOL. `just census-corpus` prints the family table for the four
+# harness contents; add `yuv:<path>:<w>x<h>`, `scr:<path>:<w>x<h>` (screen
+# bootstrap) or `real:<vector>` sources, `--speed N`, `--cq N` and
+# `--knobs palette,intrabc` by editing the line or calling cargo directly.
+census-corpus:
+    cargo run --release -p zenav1-aom-bench --features census --example content_census -- winperf:photo winperf:detail winperf:smooth winperf:screen
+
 # Gate-3 paired benchmark, port vs C oracle (zenbench interleaved rounds).
 # QUIET BOX ONLY — the resource gate flags noisy rounds; a loaded box makes
 # the numbers worthless. Results: commit to benchmarks/ per CLAUDE.md.

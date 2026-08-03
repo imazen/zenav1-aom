@@ -1571,6 +1571,11 @@ pub fn nonrd_pick_intra_mode(
                 0,     // angle_delta * ANGLE_STEP
                 false, // use_filter_intra
             );
+            // Census plane tag (`aom_dsp::census`, no-op without the feature):
+            // `predict_intra_high` has no `plane` argument and gains none, so the
+            // plane split is annotated where the caller knows it. `plane_total()`
+            // must equal `intra_total_calls()`; the census tool asserts it.
+            aom_dsp::census::note_plane_intra_pred(0, tx_size_full);
             predict_intra_high(
                 recon_y,
                 txb_off,

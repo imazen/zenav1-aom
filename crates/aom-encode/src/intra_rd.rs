@@ -139,6 +139,11 @@ pub fn intra_mode_rd_eval(
 
     // Predict into a tight w-stride buffer (av1_predict_intra_block).
     let mut pred = vec![0u16; w * h];
+    // Census plane tag (`aom_dsp::census`, no-op without the feature):
+    // `predict_intra_high` has no `plane` argument and gains none, so the
+    // plane split is annotated where the caller knows it. `plane_total()`
+    // must equal `intra_total_calls()`; the census tool asserts it.
+    aom_dsp::census::note_plane_intra_pred(0, env.tx_size);
     predict_intra_high(
         env.recon,
         env.ref_off,

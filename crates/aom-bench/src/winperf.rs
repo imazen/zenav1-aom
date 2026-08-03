@@ -82,6 +82,18 @@ pub enum Content {
     /// variant exists so a lever scoped to a mode family has content that
     /// reaches it.
     Photo,
+    /// **Screen content**: flat few-colour UI panels and a repeating glyph
+    /// alphabet. The only variant that can reach the PALETTE and INTRA BLOCK
+    /// COPY tools at all — see [`ScreenParams`] for why the other three
+    /// provably cannot, and
+    /// `benchmarks/winperf_family_census_2026-08-03.md` for the fit.
+    ///
+    /// Both tools are **knob-gated as well as content-gated**: they need
+    /// `--enable-palette` / `--enable-intrabc` on the port side AND
+    /// `allow_screen_content_tools` in the frame header, which real `aomenc`
+    /// signals from its own screen detection. This content is fitted so that
+    /// detection fires; the fixture asserts it did.
+    Screen,
 }
 
 impl Content {
@@ -91,7 +103,10 @@ impl Content {
             "detail" => Content::Detail,
             "smooth" => Content::Smooth,
             "photo" => Content::Photo,
-            _ => panic!("unknown winperf content {s:?}; want `detail`, `smooth` or `photo`"),
+            "screen" => Content::Screen,
+            _ => panic!(
+                "unknown winperf content {s:?}; want `detail`, `smooth`, `photo` or `screen`"
+            ),
         }
     }
 
@@ -101,11 +116,13 @@ impl Content {
             Content::Detail => "detail",
             Content::Smooth => "smooth",
             Content::Photo => "photo",
+            Content::Screen => "screen",
         }
     }
 
     /// Every content, in the order the census and the workflow list them.
-    pub const ALL: [Content; 3] = [Content::Detail, Content::Smooth, Content::Photo];
+    pub const ALL: [Content; 4] =
+        [Content::Detail, Content::Smooth, Content::Photo, Content::Screen];
 }
 
 /// The sequence-header bootstrap for [`CELL`] at [`Content::Detail`], as hex.
@@ -132,15 +149,48 @@ pub const BOOTSTRAP_SMOOTH_HEX: &str =
 pub const BOOTSTRAP_PHOTO_HEX: &str =
     include_str!("../fixtures/winperf_bootstrap_1024x1024_cq44_s6_photo.hex");
 
-/// The committed bootstrap for `content`, decoded. Panics on any non-hex byte —
-/// the fixture is checked in, so a failure here is a corrupted tree, not a
-/// runtime condition.
+/// [`BOOTSTRAP_DETAIL_HEX`]'s twin for [`Content::Screen`].
+///
+/// Produced by `EncodeCell::c_encode_screen(true, true)` rather than
+/// `c_encode_defaults`, so the frame header it carries is one where real
+/// `aomenc` **signalled `allow_screen_content_tools`**. Without that bit the
+/// port's palette and intraBC searches decline exactly as C's do, and the
+/// content would be unmeasurable no matter what the knobs said.
+pub const BOOTSTRAP_SCREEN_HEX: &str =
+    include_str!("../fixtures/winperf_bootstrap_1024x1024_cq44_s6_screen.hex");
+
+/// The cell the CONTENT-FAMILY GATE runs its screen row at.
+///
+/// Not [`CELL`]: the intraBC displacement search is superlinear in frame area
+/// on screen content, and a 1 MP palette+intraBC encode runs for minutes —
+/// which is not a gate anyone will keep running. 256x256 is 1/16 the area, the
+/// same generator, and real `aomenc` still signals `allow_screen_content_tools`
+/// on it (asserted when the fixture is generated). Perf BANDS still use
+/// [`CELL`]; this exists so the coverage assertion is cheap.
+pub const SCREEN_GATE_CELL: (usize, usize, i32, i32) = (256, 256, 44, 6);
+
+/// [`BOOTSTRAP_SCREEN_HEX`] at [`SCREEN_GATE_CELL`].
+pub const BOOTSTRAP_SCREEN_256_HEX: &str =
+    include_str!("../fixtures/winperf_bootstrap_256x256_cq44_s6_screen.hex");
+
+/// The committed bootstrap for `content` at [`CELL`], decoded. Panics on any
+/// non-hex byte — the fixture is checked in, so a failure here is a corrupted
+/// tree, not a runtime condition.
 pub fn bootstrap(content: Content) -> Vec<u8> {
-    let hex = match content {
+    bootstrap_hex(match content {
         Content::Detail => BOOTSTRAP_DETAIL_HEX,
         Content::Smooth => BOOTSTRAP_SMOOTH_HEX,
         Content::Photo => BOOTSTRAP_PHOTO_HEX,
-    };
+        Content::Screen => BOOTSTRAP_SCREEN_HEX,
+    })
+}
+
+/// [`bootstrap`] for [`Content::Screen`] at [`SCREEN_GATE_CELL`].
+pub fn bootstrap_screen_gate() -> Vec<u8> {
+    bootstrap_hex(BOOTSTRAP_SCREEN_256_HEX)
+}
+
+fn bootstrap_hex(hex: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(hex.len() / 2);
     let mut hi: Option<u8> = None;
     for c in hex.bytes() {
@@ -367,6 +417,9 @@ pub fn synth_i420(w: usize, h: usize, content: Content) -> Vec<u8> {
     if content == Content::Photo {
         return synth_i420_photo(w, h, &PHOTO);
     }
+    if content == Content::Screen {
+        return synth_i420_screen(w, h, &SCREEN);
+    }
     assert!(w % 2 == 0 && h % 2 == 0, "even dimensions only");
     let (cw, ch) = (w / 2, h / 2);
     let mut out = vec![0u8; w * h + 2 * cw * ch];
@@ -405,7 +458,7 @@ pub fn synth_i420(w: usize, h: usize, content: Content) -> Vec<u8> {
                     acc += octave(x, y, 8, 6);
                     ((acc / 63) * 3 / 4 + 16 + ramp).clamp(0, 255) as u8
                 }
-                Content::Photo => unreachable!("handled above"),
+                Content::Photo | Content::Screen => unreachable!("handled above"),
             };
         }
     }
@@ -468,6 +521,238 @@ pub fn synth_i420_photo(w: usize, h: usize, p: &PhotoParams) -> Vec<u8> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Screen content
+// ---------------------------------------------------------------------------
+
+/// Knobs for [`synth_i420_screen`], the screen-content generator.
+///
+/// # Why the other three contents provably cannot reach these tools
+///
+/// This is the same shape of argument as `Photo`'s: `Detail` / `Smooth` /
+/// `Photo` are value noise, and no parameter of a value-noise generator can
+/// produce either property the screen tools require.
+///
+/// * **Palette** codes a block as an index map over at most 8 colours, so it
+///   can only win where a block CONTAINS at most a few distinct values. A
+///   32x32 block of value noise contains up to 1 024 distinct luma values and
+///   in practice several hundred; the palette's colour-cache and index-map
+///   rate then exceeds a transform's at every quantizer. Here every pixel is
+///   drawn from an `n_levels`-entry ladder and every block spans at most a
+///   glyph foreground, a glyph background and the antialiasing steps between
+///   them — **bounded by construction, independent of block size**.
+/// * **Intra block copy** codes a block as a displacement into the already-
+///   reconstructed part of the SAME frame, so it can only win where an earlier
+///   region is a (near-)exact copy. Independent value noise repeats an 8x8
+///   block with probability ~0. Here a `glyph_px` alphabet of `n_glyphs`
+///   bitmaps is laid on a grid, and each (glyph, foreground, background) triple
+///   recurs many times within a panel at integral multiples of `glyph_px` —
+///   so an exact causal displacement EXISTS, by construction, for a large
+///   share of glyph cells.
+///
+/// Integer-only throughout, like the rest of this module, so the source bytes
+/// are identical on every target and the cross-platform census argument holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenParams {
+    /// How many distinct luma levels the whole frame draws from. AV1's palette
+    /// carries at most 8 colours per block; this is the FRAME alphabet, from
+    /// which each panel picks a foreground/background pair.
+    pub n_levels: usize,
+    /// Glyph cell size in pixels. The intraBC repeat granularity: an exact
+    /// causal displacement exists for blocks up to this size.
+    pub glyph_px: usize,
+    /// Size of the glyph alphabet. Smaller = each glyph recurs more often =
+    /// more exact repeats for the DV search to find.
+    pub n_glyphs: usize,
+    /// Side of the UI panel grid, in pixels. A panel has one background level,
+    /// one foreground level and one chroma pair throughout, so a block inside
+    /// it is few-coloured however large it is.
+    pub panel_px: usize,
+    /// Q8 share of panels that carry text rather than being flat fill.
+    pub text_q8: i32,
+    /// Q8 glyph ink coverage — the share of pixels inside a text cell that take
+    /// the foreground level.
+    pub ink_q8: i32,
+    /// Antialiasing steps at a glyph edge (0 = hard edges). Real UI text is
+    /// antialiased and libaom's screen detection is explicitly
+    /// ANTIALIASING_AWARE, so this is a realism knob rather than a cheat; it
+    /// adds at most `aa` extra levels to a block and preserves exact repetition
+    /// (the same glyph with the same pair antialiases the same way).
+    pub aa: i32,
+    /// Distinct chroma pairs the panels draw from. 1 = grey UI.
+    pub n_chroma: usize,
+    /// Q8 share of panels that are IMAGE panels — filled with the oriented
+    /// photographic field ([`synth_photo_luma`] at [`PHOTO`]) instead of UI.
+    ///
+    /// Real screenshots are not wall-to-wall flat text: they carry photos,
+    /// icons, gradients and antialiased artwork, and those regions code as
+    /// ordinary intra blocks. Without this axis the generator saturates —
+    /// pass 1 of the fit put every candidate's non-screen-tool leaf share at
+    /// **6-11 %** against the corpus median's **47 %**, i.e. the grid could not
+    /// reach the target at all, whatever its other knobs did. That is an
+    /// optimum outside the grid, which is the same objection as an optimum ON
+    /// a grid edge (`benchmarks/winperf_content_census_2026-08-03.md` §3), and
+    /// the fix is the missing degree of freedom rather than a nicer target.
+    pub image_q8: i32,
+}
+
+/// The FITTED parameters [`Content::Screen`] ships.
+///
+/// Chosen by `examples/content_fit.rs --screen` as the grid point minimising L1
+/// distance to the reference's SCREEN-TOOL leaf-class share vector — declared
+/// before the sweep ran, and not any lever's delta. Provenance, grid, reference
+/// and the runner-up rows: `benchmarks/winperf_family_census_2026-08-03.md`.
+pub const SCREEN: ScreenParams = ScreenParams {
+    n_levels: 6,
+    glyph_px: 8,
+    n_glyphs: 24,
+    panel_px: 128,
+    text_q8: 154,
+    ink_q8: 96,
+    aa: 1,
+    n_chroma: 4,
+    image_q8: 0,
+};
+
+/// The `n_levels` luma ladder, spread over the 8-bit range with the ends kept
+/// off 0/255 (a real UI is rarely clipped, and pinning the extremes would make
+/// the antialiasing steps asymmetric).
+fn screen_level(i: usize, n: usize) -> i32 {
+    debug_assert!(n >= 2);
+    24 + (i as i32) * 200 / (n as i32 - 1)
+}
+
+/// Whether glyph `g`'s bitmap has ink at `(i, j)` within a `gp x gp` cell, and
+/// how close that pixel is to an edge (for the antialiasing step).
+///
+/// The bitmap is a pure function of `(g, i, j)`, so the same glyph is
+/// byte-identical everywhere it occurs — which is the whole point (see
+/// [`ScreenParams`]).
+fn glyph_ink(g: u32, i: usize, j: usize, gp: usize, ink_q8: i32) -> bool {
+    // Two-scale: a coarse 2x2 quadrant mask (so glyphs have connected strokes
+    // rather than salt-and-pepper) AND a per-pixel mask inside a lit quadrant.
+    let qx = (i * 2 / gp) as u32;
+    let qy = (j * 2 / gp) as u32;
+    let coarse = hash32(g.wrapping_mul(0x9e37_79b9) ^ (qy * 2 + qx).wrapping_mul(0x85eb_ca6b));
+    if (coarse >> 24) as i32 >= 150 {
+        return false;
+    }
+    let fine = hash32(
+        g.wrapping_mul(0xc2b2_ae35) ^ ((j * gp + i) as u32).wrapping_mul(0x27d4_eb2f) ^ 0x5bf0_3635,
+    );
+    ((fine >> 24) as i32) < ink_q8
+}
+
+/// A deterministic, bit-identical-on-every-target screen-content I420 image.
+///
+/// Layout: a `panel_px` grid of UI panels. Each panel draws a background level,
+/// a foreground level and a chroma pair from the frame alphabet by hashing its
+/// grid position, and is either FLAT (background everywhere) or TEXT (a
+/// `glyph_px` grid of glyphs from the alphabet). Antialiasing, when enabled,
+/// pulls the pixels of an ink run's boundary one step toward the background.
+pub fn synth_i420_screen(w: usize, h: usize, p: &ScreenParams) -> Vec<u8> {
+    assert!(w % 2 == 0 && h % 2 == 0, "even dimensions only");
+    assert!(p.n_levels >= 2 && p.glyph_px >= 2 && p.panel_px >= p.glyph_px);
+    let (cw, ch) = (w / 2, h / 2);
+    let mut out = vec![0u8; w * h + 2 * cw * ch];
+    let gp = p.glyph_px;
+
+    // Per-panel state, computed once so the inner loop is a lookup.
+    let panel_of = |x: usize, y: usize| -> (u32, u32) {
+        ((x / p.panel_px) as u32, (y / p.panel_px) as u32)
+    };
+    let panel_hash = |px: u32, py: u32| -> u32 {
+        hash32(px.wrapping_mul(0x9e37_79b9) ^ py.wrapping_mul(0x85eb_ca6b) ^ 0x1234_5678)
+    };
+
+    for y in 0..h {
+        for x in 0..w {
+            let (px, py) = panel_of(x, y);
+            let ph = panel_hash(px, py);
+            let bg_i = (ph >> 4) as usize % p.n_levels;
+            // Foreground is a DIFFERENT level, so a text panel always has the
+            // two-colour structure palette exists for.
+            let fg_i = (bg_i + 1 + (ph >> 12) as usize % (p.n_levels - 1)) % p.n_levels;
+            let bg = screen_level(bg_i, p.n_levels);
+            let fg = screen_level(fg_i, p.n_levels);
+            // Panel kind. IMAGE first: it consumes its share of panels before
+            // the text/flat split, so `text_q8` stays a share of the UI panels
+            // and the two axes do not fight.
+            // `<`, not `<=`, so `image_q8 == 0` means EXACTLY no image panels
+            // — with `<=` the hash byte 0 would still qualify one panel in 256
+            // and `Content::Screen` would silently change when this axis was
+            // added. (`text_q8` keeps `<=`: it is never 0 and the pass-1 fit
+            // rows were taken against that form.)
+            let is_image = (((ph >> 24) & 255) as i32) < p.image_q8;
+            let is_text = ((ph >> 20) & 255) as i32 <= p.text_q8;
+            let v = if is_image {
+                synth_photo_luma(x, y, &PHOTO)
+            } else if !is_text {
+                bg
+            } else {
+                let (gx, gy) = (x / gp, y / gp);
+                let g = hash32(
+                    (gx as u32).wrapping_mul(0x2545_f491)
+                        ^ (gy as u32).wrapping_mul(0x9e37_79b9)
+                        ^ ph,
+                ) % p.n_glyphs as u32;
+                let (i, j) = (x % gp, y % gp);
+                if glyph_ink(g, i, j, gp, p.ink_q8) {
+                    fg
+                } else if p.aa > 0
+                    && ((i > 0 && glyph_ink(g, i - 1, j, gp, p.ink_q8))
+                        || (i + 1 < gp && glyph_ink(g, i + 1, j, gp, p.ink_q8))
+                        || (j > 0 && glyph_ink(g, i, j - 1, gp, p.ink_q8))
+                        || (j + 1 < gp && glyph_ink(g, i, j + 1, gp, p.ink_q8)))
+                {
+                    // One antialiasing step toward the foreground.
+                    bg + (fg - bg) / (p.aa + 1)
+                } else {
+                    bg
+                }
+            };
+            out[y * w + x] = v.clamp(0, 255) as u8;
+        }
+    }
+    // Chroma: FLAT per panel, drawn from `n_chroma` pairs. Flat chroma is what
+    // makes the UV palette and the chroma-DC path reachable; a noise chroma
+    // plane (which the other three contents share) cannot be palette-coded for
+    // the same reason the luma cannot.
+    for y in 0..ch {
+        for x in 0..cw {
+            let (px, py) = panel_of(x * 2, y * 2);
+            let ph = panel_hash(px, py);
+            let c = (ph >> 28) as usize % p.n_chroma.max(1);
+            let (u, v) = if (((ph >> 24) & 255) as i32) < p.image_q8 {
+                // An image panel's chroma is the shared noise plane, matching
+                // its luma: a flat chroma over photographic luma would be a
+                // shape no real source has.
+                let mut au = 0i32;
+                au += 32 * octave(x, y, 128, 11);
+                au += 16 * octave(x, y, 64, 12);
+                au += 8 * octave(x, y, 32, 13);
+                au += 4 * octave(x, y, 16, 14);
+                let mut av = 0i32;
+                av += 32 * octave(x, y, 128, 21);
+                av += 16 * octave(x, y, 64, 22);
+                av += 8 * octave(x, y, 32, 23);
+                av += 4 * octave(x, y, 16, 24);
+                (128 + (au / 60 - 128) / 3, 128 + (av / 60 - 128) / 3)
+            } else if p.n_chroma <= 1 {
+                (128, 128)
+            } else {
+                (
+                    128 + (c as i32 - (p.n_chroma as i32 - 1) / 2) * 22,
+                    128 - (c as i32 - (p.n_chroma as i32 - 1) / 2) * 14,
+                )
+            };
+            out[w * h + y * cw + x] = u.clamp(0, 255) as u8;
+            out[w * h + cw * ch + y * cw + x] = v.clamp(0, 255) as u8;
+        }
+    }
+    out
+}
+
 /// The [`EncodeCell`] for `(w, h, cq, speed)` over [`synth_i420`].
 pub fn cell(w: usize, h: usize, cq: i32, speed: i32, content: Content) -> EncodeCell {
     let buf = synth_i420(w, h, content);
@@ -515,6 +800,11 @@ mod tests {
             // isotropic variant, because the streak field adds long coherent
             // ramps on top of the noise rather than averaging into it.
             (Content::Photo, (146_304_204, 34_350_299, 33_351_188), 70, 235),
+            // Screen draws from a 6-level ladder spanning 24..=224, and its
+            // chroma is FLAT PER PANEL rather than the shared noise plane — the
+            // property the UV palette needs, and the reason its u/v sums differ
+            // from the other three.
+            (Content::Screen, (129_117_104, 34_996_224, 32_636_928), 40, 200),
         ] {
             let buf = synth_i420(w, h, content);
             let (cw, ch) = (w / 2, h / 2);
@@ -546,12 +836,10 @@ mod tests {
         }
         // The variants must actually be different content, or the bracket is
         // one point several times.
-        for (a, b) in [
-            (Content::Detail, Content::Smooth),
-            (Content::Detail, Content::Photo),
-            (Content::Smooth, Content::Photo),
-        ] {
-            assert_ne!(synth_i420(64, 64, a), synth_i420(64, 64, b), "{a:?} == {b:?}");
+        for (i, a) in Content::ALL.iter().enumerate() {
+            for b in &Content::ALL[i + 1..] {
+                assert_ne!(synth_i420(64, 64, *a), synth_i420(64, 64, *b), "{a:?} == {b:?}");
+            }
         }
     }
 

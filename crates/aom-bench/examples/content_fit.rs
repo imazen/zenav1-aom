@@ -46,13 +46,45 @@
 //!     --example content_fit -- <reference.yuv> <w> <h> [1|2|3|all]
 //! ```
 
-use aom_bench::{EncodeCell, winperf};
-use aom_bench::winperf::PhotoParams;
+//! # The SCREEN fit (`--screen`), added 2026-08-03
+//!
+//! Same discipline, different objective, because the families it exists to
+//! reach are different ones.
+//!
+//! **`L1_screen`, declared before the sweep ran**: the L1 distance, in
+//! percentage points, between the candidate's and the reference's **coded-leaf
+//! screen-tool class share** vector. The classes partition coded leaves — each
+//! leaf falls in exactly one, tested in this fixed order —
+//! `[intrabc, palette_y, filter_intra, directional_y, other]`.
+//!
+//! It is a LEAF distribution rather than the photo fit's predicted-pixel one
+//! because palette and intraBC leaves issue no intra prediction at all: a
+//! pixel-share objective would be blind to precisely the two tools this content
+//! exists to reach. `L1_bsize`, `L1_class`, the UV-palette share and the CFL
+//! share are reported alongside and are NOT part of the objective.
+//!
+//! Both tools need `allow_screen_content_tools` in the frame header, which real
+//! `aomenc` signals from its OWN screen detection. Every candidate is
+//! bootstrapped through `c_encode_screen(true, true)` and the `scdet` column
+//! reports whether detection fired; a candidate where it did not is not a
+//! candidate at all, however good its other columns look.
+//!
+//! ```text
+//! cargo run --release -p zenav1-aom-bench --features census,c-oracle \
+//!     --example content_fit -- --screen <reference.yuv> <w> <h> [1|2|all]
+//! ```
+
+use aom_bench::winperf::{PhotoParams, ScreenParams};
+use aom_bench::{EncodeCell, ToggleKnobs, winperf};
 use aom_dsp::census::{self, Counts, INTRA_CLASS, N_BSIZE, N_TX_SIZE, N_TX_TYPE};
 
 fn main() {
     assert!(census::enabled(), "built without --features census");
-    let a: Vec<String> = std::env::args().skip(1).collect();
+    let mut a: Vec<String> = std::env::args().skip(1).collect();
+    if a.first().map(String::as_str) == Some("--screen") {
+        a.remove(0);
+        return screen_fit(&a);
+    }
     assert!((3..=4).contains(&a.len()), "usage: content_fit <reference.yuv> <w> <h> [1|2|3|all]");
     let (w, h): (usize, usize) = (a[1].parse().unwrap(), a[2].parse().unwrap());
     let pass = a.get(3).map_or("all", |s| s.as_str());
@@ -264,4 +296,237 @@ fn yuv_cell(path: &str, w: usize, h: usize) -> EncodeCell {
 
 fn photo_cell(p: &PhotoParams, w: usize, h: usize) -> EncodeCell {
     cell_from("photo-candidate".to_string(), w, h, &winperf::synth_i420_photo(w, h, p))
+}
+
+// ---------------------------------------------------------------------------
+// The screen fit
+// ---------------------------------------------------------------------------
+
+/// Screen-tool leaf classes, in the priority order a leaf is tested against.
+/// They partition coded leaves, so the share vector is a distribution and its
+/// L1 is bounded by 200 pp like the photo fit's.
+const SCREEN_CLASS: [&str; 5] = ["intrabc", "palette_y", "filter_intra", "dir_y", "other"];
+
+fn screen_shares(c: &Counts) -> [f64; 5] {
+    let leaves = c.leaves();
+    let ibc = c.leaf_intrabc;
+    let pal = c.palette_y_leaves();
+    let fi = c.filter_intra_leaves();
+    // Directional LUMA leaves that are none of the above. `leaf_angle_delta_y`
+    // is only incremented for a directional leaf that is not palette / intraBC
+    // / filter-intra (see `census::note_coded_leaf_impl`), so its total is
+    // exactly the disjoint directional class.
+    let dir = c.leaf_angle_delta_y.iter().sum::<u64>();
+    let other = leaves.saturating_sub(ibc + pal + fi + dir);
+    [
+        pct(ibc, leaves),
+        pct(pal, leaves),
+        pct(fi, leaves),
+        pct(dir, leaves),
+        pct(other, leaves),
+    ]
+}
+
+fn l1_screen(a: &Counts, b: &Counts) -> f64 {
+    let (x, y) = (screen_shares(a), screen_shares(b));
+    (0..SCREEN_CLASS.len()).map(|i| (x[i] - y[i]).abs()).sum()
+}
+
+/// One screen candidate's census: the SCREEN bootstrap (so the frame header can
+/// carry `allow_screen_content_tools`) and both screen knobs on.
+fn screen_census_of(cell: &EncodeCell) -> (Box<Counts>, usize, bool) {
+    let boot = cell.c_encode_screen(true, true);
+    assert!(!boot.is_empty(), "the C screen bootstrap encode produced nothing");
+    let scdet = aom_bench::stream_allows_screen_content_tools(&boot);
+    let knobs =
+        ToggleKnobs { enable_palette: true, enable_intrabc: true, ..Default::default() };
+    census::reset();
+    let _ = cell.port_encode_with(&boot, &knobs);
+    let base = census::snapshot();
+    let out = cell.port_encode_with(&boot, &knobs);
+    let c = census::snapshot().since(&base);
+    assert!(!c.is_empty(), "empty census — is the `census` feature on?");
+    (c, out.len(), scdet)
+}
+
+fn screen_cell(p: &ScreenParams, w: usize, h: usize) -> EncodeCell {
+    cell_from("screen-candidate".to_string(), w, h, &winperf::synth_i420_screen(w, h, p))
+}
+
+fn screen_fit(a: &[String]) {
+    // The reference is a VECTOR, not an image. `--target ibc,pal,fi,dir,other`
+    // takes it directly, which is how the shipped fit is run: a single screen
+    // screenshot is a poor target (`gb82-sc/imac_dark` at 512x512 censuses at
+    // 69.2 % intraBC / 4.7 % directional, a profile dominated by large flat
+    // black regions), so the DECLARED objective is the per-class MEDIAN over
+    // the screen corpus. Stating the rule rather than the image is what stops
+    // the reference itself from being a choice made after seeing the answer.
+    // A raw `.yuv` reference is still accepted, and is what produced the
+    // corpus rows the median is taken over.
+    let (target, label, w, h, pass) = if a[0] == "--target" {
+        let v: Vec<f64> = a[1].split(',').map(|x| x.parse().expect("f64")).collect();
+        assert_eq!(v.len(), 5, "--target wants 5 comma-separated percentages");
+        let mut t = [0.0f64; 5];
+        t.copy_from_slice(&v);
+        (
+            t,
+            format!("target:{}", a[1]),
+            a[2].parse::<usize>().unwrap(),
+            a[3].parse::<usize>().unwrap(),
+            a.get(4).map_or("all", |s| s.as_str()).to_string(),
+        )
+    } else {
+        let (w, h): (usize, usize) = (a[1].parse().unwrap(), a[2].parse().unwrap());
+        let (refc, refb, refs) = screen_census_of(&yuv_cell(&a[0], w, h));
+        assert!(
+            refs,
+            "{}: the REFERENCE is not detected as screen content — palette and \
+             intraBC are unreachable on it and it cannot be a screen reference",
+            a[0]
+        );
+        eprintln!("reference {} coded {refb}", a[0]);
+        (
+            screen_shares(&refc),
+            a[0].clone(),
+            w,
+            h,
+            a.get(3).map_or("all", |s| s.as_str()).to_string(),
+        )
+    };
+    let want = |n: &str| pass == "all" || pass == n;
+    eprintln!(
+        "reference {label}: ibc {:.2} % pal {:.2} % fi {:.2} % dir {:.2} % other {:.2} %",
+        target[0], target[1], target[2], target[3], target[4],
+    );
+
+    println!(
+        "n_levels\tglyph_px\tn_glyphs\tpanel_px\ttext_q8\tink_q8\taa\tn_chroma\tscdet\t\
+         ibc_pct\tpal_pct\tfi_pct\tdir_pct\tother_pct\tL1_screen\t\
+         pal_uv_pct\tcfl_pct\tleaves\tcoded_bytes"
+    );
+
+    // Pass 1 — the two axes that decide whether the tools fire AT ALL: the
+    // colour alphabet (palette's precondition) and the glyph alphabet size
+    // (intraBC's). Everything else coarse.
+    if want("1") {
+        for &n_levels in &[4usize, 6, 10, 16] {
+            for &n_glyphs in &[8usize, 24, 64] {
+                for &glyph_px in &[8usize, 16] {
+                    screen_row(
+                        &ScreenParams {
+                            n_levels,
+                            glyph_px,
+                            n_glyphs,
+                            panel_px: 128,
+                            text_q8: 154,
+                            ink_q8: 96,
+                            aa: 1,
+                            n_chroma: 4,
+                            image_q8: 0,
+                        },
+                        w,
+                        h,
+                        &target,
+                    );
+                }
+            }
+        }
+    }
+    // Pass 2 — the axis pass 1 did not have.
+    //
+    // Every pass-1 candidate came back with 6-11 % of leaves in the `other`
+    // class against the target's 47.07 %, and 1-2 % directional against 8.55 %:
+    // the grid could not reach the target from ANY point, because a frame that
+    // is wall-to-wall flat UI and glyphs has no ordinary intra blocks in it.
+    // Real screenshots carry photos, icons and gradients. `image_q8` is that
+    // missing degree of freedom (a share of panels filled with the oriented
+    // photographic field), and it is swept here against the layout knobs.
+    //
+    // An optimum outside the grid is the same objection as an optimum on a grid
+    // EDGE; the fix is to widen the generator, not to pick a friendlier target.
+    if want("2") {
+        for &image_q8 in &[64i32, 102, 128, 154, 179] {
+            for &text_q8 in &[102i32, 154] {
+                for &n_levels in &[10usize, 16] {
+                    for &aa in &[1i32] {
+                        screen_row(
+                            &ScreenParams {
+                                n_levels,
+                                glyph_px: 16,
+                                n_glyphs: 24,
+                                panel_px: 128,
+                                text_q8,
+                                ink_q8: 96,
+                                aa,
+                                n_chroma: 4,
+                                image_q8,
+                            },
+                            w,
+                            h,
+                            &target,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    // Pass 3 — refinement around pass 2's leader on the two axes that moved it.
+    if want("3") {
+        for &image_q8 in &[140i32, 154, 166, 179, 192] {
+            for &panel_px in &[64usize, 128, 256] {
+                for &glyph_px in &[8usize, 16] {
+                    screen_row(
+                        &ScreenParams {
+                            n_levels: 6,
+                            glyph_px,
+                            n_glyphs: 24,
+                            panel_px,
+                            text_q8: 154,
+                            ink_q8: 96,
+                            aa: 1,
+                            n_chroma: 4,
+                            image_q8,
+                        },
+                        w,
+                        h,
+                        &target,
+                    );
+                }
+            }
+        }
+    }
+    println!(
+        "# columns: the 8 ScreenParams fields, scdet, the 5 declared classes, \
+         L1_screen (the OBJECTIVE), then reported-but-not-optimised columns"
+    );
+}
+
+fn screen_row(p: &ScreenParams, w: usize, h: usize, target: &[f64; 5]) {
+    let (c, bytes, scdet) = screen_census_of(&screen_cell(p, w, h));
+    let s = screen_shares(c.as_ref());
+    let l1_screen: f64 = (0..SCREEN_CLASS.len()).map(|i| (s[i] - target[i]).abs()).sum();
+    println!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t\
+         {:.2}\t{:.2}\t{}\t{}",
+        p.n_levels,
+        p.glyph_px,
+        p.n_glyphs,
+        p.panel_px,
+        p.text_q8,
+        p.ink_q8,
+        p.aa,
+        p.n_chroma,
+        p.image_q8,
+        u8::from(scdet),
+        s[0],
+        s[1],
+        s[2],
+        s[3],
+        s[4],
+        l1_screen,
+        pct(c.palette_uv_leaves(), c.leaves()),
+        pct(c.cfl_leaves(), c.leaf_chroma_ref),
+        c.leaves(),
+        bytes,
+    );
 }

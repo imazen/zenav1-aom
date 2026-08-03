@@ -100,6 +100,83 @@ pub fn corpus_dir() -> std::path::PathBuf {
         .join("data")
 }
 
+/// `allow_screen_content_tools`, parsed out of a stream's own sequence +
+/// uncompressed frame headers.
+///
+/// The port's palette and intraBC searches are gated on this bit exactly as C's
+/// are, so a harness that does not read it cannot tell "this content has no
+/// palette in it" from "the tool was never legal here". Real `aomenc` sets it
+/// from its own screen-content detection; nothing in this repo forces it, and
+/// forcing it would make every source look palette-capable.
+///
+/// Panics on a stream without both OBUs — every caller passes an encoder
+/// output, so that is a bug rather than a runtime condition.
+pub fn stream_allows_screen_content_tools(stream: &[u8]) -> bool {
+    let mut pos = 0usize;
+    let (mut seqp, mut framep): (Option<&[u8]>, Option<&[u8]>) = (None, None);
+    while pos < stream.len() {
+        let hdr = aom_dsp::entropy::obu::read_obu_header(&stream[pos..]).expect("obu header");
+        let after = pos + hdr.header_len;
+        let (size, nb) = aom_dsp::entropy::leb128::uleb_decode(&stream[after..]).expect("leb128");
+        let (start, end) = (after + nb, after + nb + size as usize);
+        match hdr.obu_type {
+            t if t == OBU_SEQUENCE_HEADER => seqp = Some(&stream[start..end]),
+            t if t == OBU_FRAME => framep = Some(&stream[start..end]),
+            _ => {}
+        }
+        pos = end;
+    }
+    let seq = read_sequence_header_obu(&mut ReadBitBuffer::new(seqp.expect("seq OBU")));
+    let s = &seq.seq_header;
+    let cc = &seq.color_config;
+    let cfg = FrameHeaderObu {
+        prefix: FrameHeaderPrefix {
+            reduced_still_picture_hdr: seq.reduced_still_picture_hdr,
+            decoder_model_info_present_flag: seq.decoder_model_info_present_flag,
+            equal_picture_interval: seq.timing_info.equal_picture_interval,
+            frame_presentation_time_length: seq.decoder_model_info.frame_presentation_time_length
+                as u32,
+            frame_id_numbers_present_flag: s.frame_id_numbers_present_flag,
+            frame_id_length: s.frame_id_length as u32,
+            force_screen_content_tools: s.force_screen_content_tools,
+            force_integer_mv: s.force_integer_mv,
+            max_frame_width: s.max_frame_width,
+            max_frame_height: s.max_frame_height,
+            enable_order_hint: s.enable_order_hint,
+            order_hint_bits_minus_1: s.order_hint_bits_minus_1,
+            operating_points_cnt_minus_1: seq.operating_points_cnt_minus_1,
+            operating_point_idc: seq.operating_point_idc,
+            op_decoder_model_param_present: seq.op_decoder_model_param_present,
+            buffer_removal_time_length: seq.decoder_model_info.buffer_removal_time_length as u32,
+            temporal_layer_id: 0,
+            spatial_layer_id: 0,
+            ..Default::default()
+        },
+        frame_size: FrameSizeHeader {
+            num_bits_width: s.num_bits_width,
+            num_bits_height: s.num_bits_height,
+            superres_upscaled_width: s.max_frame_width,
+            superres_upscaled_height: s.max_frame_height,
+            enable_superres: s.enable_superres,
+            ..Default::default()
+        },
+        num_planes: if cc.monochrome { 1 } else { 3 },
+        separate_uv_delta_q: cc.separate_uv_delta_q,
+        cdef: CdefHeader { enable_cdef: s.enable_cdef, ..Default::default() },
+        restoration: RestorationHeader {
+            enable_restoration: s.enable_restoration,
+            sb_size_128: s.sb_size_128,
+            subsampling_x: cc.subsampling_x,
+            subsampling_y: cc.subsampling_y,
+            ..Default::default()
+        },
+        film_grain_params_present: seq.film_grain_params_present,
+        ..Default::default()
+    };
+    read_uncompressed_header(&mut ReadBitBuffer::new(framep.expect("frame OBU")), &cfg)
+        .allow_screen_content_tools
+}
+
 /// IVF header frame dimensions.
 pub fn ivf_hdr_dims(data: &[u8]) -> (usize, usize) {
     (

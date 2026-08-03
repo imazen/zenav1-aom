@@ -278,6 +278,13 @@ jobs:
         run: cargo build -p zenav1-aom --no-default-features --features decode
       - name: Test the oracle-free facade
         run: cargo test -p zenav1-aom
+      # The content-family coverage gate. Needs neither libaom nor the
+      # conformance corpus, runs in seconds, and fails if the harness stops
+      # exercising a coding-tool family (which is how a future perf band ends
+      # up reading a structural zero — see
+      # benchmarks/winperf_family_census_2026-08-03.md).
+      - name: Content-family coverage gate (census)
+        run: cargo test --release -p zenav1-aom-bench --no-default-features --features census --test content_family_census
 
   # i686 is a primary target (32-bit correctness for WASM compatibility + catching
   # pointer-width bugs, per CLAUDE.md). Built via `cross` (Docker) — same pure-Rust,

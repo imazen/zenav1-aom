@@ -397,6 +397,11 @@ pub fn encode_intra_block_plane_y(
                     env.angle_delta * 3, // ANGLE_STEP
                     env.use_filter_intra,
                 );
+                // Census plane tag (`aom_dsp::census`, no-op without the feature):
+                // `predict_intra_high` has no `plane` argument and gains none, so the
+                // plane split is annotated where the caller knows it. `plane_total()`
+                // must equal `intra_total_calls()`; the census tool asserts it.
+                aom_dsp::census::note_plane_intra_pred(0, tx_size);
                 predict_intra_high(
                     recon,
                     txb_off,

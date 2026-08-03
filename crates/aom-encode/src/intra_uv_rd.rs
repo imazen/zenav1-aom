@@ -393,6 +393,11 @@ pub(crate) fn predict_uv_txb(
             // Caller-owned (see `tx_search::TxWalkScratch`); same contents.
             pred.clear();
             pred.resize(txw * txh, 0);
+            // Census plane tag (`aom_dsp::census`, no-op without the feature):
+            // `predict_intra_high` has no `plane` argument and gains none, so the
+            // plane split is annotated where the caller knows it. `plane_total()`
+            // must equal `intra_total_calls()`; the census tool asserts it.
+            aom_dsp::census::note_plane_intra_pred(plane, tx_size);
             predict_intra_high(
                 recon,
                 txb_off,
@@ -465,6 +470,11 @@ pub(crate) fn predict_uv_txb(
         );
         pred.clear();
         pred.resize(txw * txh, 0);
+        // Census plane tag (`aom_dsp::census`, no-op without the feature):
+        // `predict_intra_high` has no `plane` argument and gains none, so the
+        // plane split is annotated where the caller knows it. `plane_total()`
+        // must equal `intra_total_calls()`; the census tool asserts it.
+        aom_dsp::census::note_plane_intra_pred(plane, tx_size);
         predict_intra_high(
             recon,
             txb_off,

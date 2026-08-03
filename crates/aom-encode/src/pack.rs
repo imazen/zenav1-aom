@@ -324,13 +324,36 @@ pub fn pack_leaf(
     inter_cdfs: Option<&mut crate::inter_costs::InterFrameCdfs>,
 ) {
     let bsize = winner.bsize;
-    // Content census (`aom_dsp::census`) — no-op without the `census` feature.
-    // Taken HERE, at the writer, so it is the partition DECISION rather than a
-    // search visit: `rd_pick_partition_real` visits many shapes per leaf.
-    aom_dsp::census::note_coded_leaf(bsize, winner.mode);
     let mi_w = MI_SIZE_WIDE_B[bsize];
     let mi_h = MI_SIZE_HIGH_B[bsize];
     let is_chroma_ref = is_chroma_reference(mi_row, mi_col, bsize, env.ss_x, env.ss_y);
+    // Content census (`aom_dsp::census`) — no-op without the `census` feature,
+    // and the whole block folds away with it (`census::enabled()` is a `const
+    // fn` over `cfg!`), so a shipped build constructs no `Leaf`.
+    //
+    // Taken HERE, at the writer, so every field is the coding DECISION rather
+    // than a search visit: `rd_pick_partition_real` visits many shapes per
+    // leaf. This is where filter-intra, both palettes, intraBC and the UV mode
+    // (hence CFL) become countable at all — see `aom_dsp::census` for why
+    // whole tool families were invisible before.
+    if aom_dsp::census::enabled() {
+        aom_dsp::census::note_coded_leaf(&aom_dsp::census::Leaf {
+            bsize,
+            y_mode: winner.mode,
+            angle_delta_y: winner.angle_delta_y,
+            uv_mode: winner.uv_mode,
+            angle_delta_uv: winner.angle_delta_uv,
+            tx_size: winner.tx_size,
+            use_filter_intra: winner.use_filter_intra,
+            filter_intra_mode: winner.filter_intra_mode,
+            palette_y_size: winner.palette_y.as_ref().map_or(0, |p| p.size),
+            palette_uv_size: winner.palette_uv.as_ref().map_or(0, |p| p.size),
+            use_intrabc: winner.use_intrabc,
+            skip_txfm: winner.skip_txfm,
+            is_inter: winner.is_inter,
+            chroma_ref: is_chroma_ref,
+        });
+    }
     let cfl_allowed = is_cfl_allowed(bsize, env.lossless, env.ss_x, env.ss_y);
     let has_above = mi_row > env.tile_row_start;
     let has_left = mi_col > env.tile_col_start;

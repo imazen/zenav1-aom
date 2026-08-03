@@ -472,6 +472,11 @@ pub fn cfl_predict_block(
     cfl_joint_sign: i32,
     bd: i32,
 ) {
+    // Content census (`crate::census`) — a no-op unless the `census` feature is
+    // on. CFL does NOT route through `predict_intra_high`, so no intra-predictor
+    // count can ever include it; before this hook the whole chroma-from-luma
+    // path was uncounted (`benchmarks/winperf_content_census_2026-08-03.md` §4).
+    crate::census::note_cfl_predict(tx_size);
     if !cfl.are_parameters_computed {
         cfl.compute_parameters(tx_size);
     }

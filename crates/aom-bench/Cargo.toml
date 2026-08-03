@@ -63,6 +63,19 @@ name = "gate3"
 harness = false
 required-features = ["c-oracle"]
 
+# The content-family coverage GATE. Unlike every other test here it is NOT
+# differential: it censuses the four committed `winperf` contents through the
+# port alone and asserts each coding-tool family is still reached above a pinned
+# share. So it needs `census` and does NOT need the oracle, and the cheap way to
+# run it is
+#   cargo test --release -p zenav1-aom-bench --no-default-features \
+#       --features census --test content_family_census
+# which builds no libaom and none of the ~40 differential tests. `just
+# census-gate` is that line.
+[[test]]
+name = "content_family_census"
+required-features = ["census"]
+
 # Every example below compares against, or bootstraps from, the C oracle. Only
 # `winperf` / `winperf_alloc` (the pure-Rust Windows A/B harness) build without
 # it, which is why they are absent from this list.
