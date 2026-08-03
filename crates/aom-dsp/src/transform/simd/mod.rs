@@ -81,6 +81,13 @@ mod inv1d_v3_gen;
 // `prims16` docs) supplied per tier by `prims16`.
 mod inv1d_v3_i16_gen;
 mod lowbd16;
+// The FORWARD half of the same lane-width programme. It is gated differently —
+// the forward kernels carry no `clamp_value`, so nothing bounds their values
+// except the input, and the contract is a per-kernel input BOUND proved by
+// `xtask/audit_i16_fwd.py` and checked at runtime rather than a static domain
+// statement. See `lowbd16_fwd`'s module docs.
+mod fwd1d_v3_i16_gen;
+mod lowbd16_fwd;
 pub(crate) mod prims;
 mod prims16;
 mod txfm1d_v3_gen;
@@ -558,6 +565,31 @@ pub(crate) fn try_fwd_col_pass(
         return false;
     }
     let _ = crate::dispatch::scalar_forced();
+    // The i16-lane forward column pass — 16 columns per vector. Unlike the
+    // inverse's bd8 gate (which is a static property of the stage_range /
+    // clamp constants), the forward gate is a RUNTIME bound on the actual
+    // block: `max|input| << shift0 <= M*`, the largest input for which
+    // `xtask/audit_i16_fwd.py` proves every value of that kernel stays inside
+    // i16. Sound for any caller of the public `av1_fwd_txfm2d`, and it
+    // declines BEFORE touching `buf`. `col_n % 16` because a 4- or 8-wide
+    // block would run the same kernel instruction count as the i32x8 pass plus
+    // the narrowing overhead.
+    if col_n % 16 == 0 {
+        if let Some(k16) = lowbd16_fwd::fwd_kernel_i16(txfm_type_col) {
+            debug_assert_eq!(lowbd16_fwd::fwd_kernel_i16_n(k16), row_n);
+            if lowbd16_fwd::fwd_col_i16_applies(k16, input, stride, col_n, row_n, shift0)
+                && incant!(
+                    lowbd16_fwd::fwd_col_pass_i16(
+                        k16, input, buf, stride, col_n, row_n, shift0, shift1_bit, cos_bit_col,
+                        ud_flip, lr_flip
+                    ),
+                    [v3, neon, scalar]
+                )
+            {
+                return true;
+            }
+        }
+    }
     let Some(kernel) = fwd_kernel(txfm_type_col) else {
         return false;
     };
@@ -722,6 +754,25 @@ pub(crate) fn try_fwd_row_pass(
         return false;
     }
     let _ = crate::dispatch::scalar_forced();
+    // The i16-lane forward ROW pass — 16 rows per vector, gated the same way
+    // as the column pass above: a runtime bound on the actual `buf`, so the
+    // i32 column pass having produced it (or the caller having passed
+    // anything at all) is irrelevant to soundness.
+    if row_n % 16 == 0 && col_n % 8 == 0 {
+        if let Some(k16) = lowbd16_fwd::fwd_kernel_i16(txfm_type_row) {
+            debug_assert_eq!(lowbd16_fwd::fwd_kernel_i16_n(k16), col_n);
+            if lowbd16_fwd::fwd_row_i16_applies(k16, buf, col_n, row_n)
+                && incant!(
+                    lowbd16_fwd::fwd_row_pass_i16(
+                        k16, buf, output, col_n, row_n, shift2_bit, cos_bit_row, rect1
+                    ),
+                    [v3, neon, scalar]
+                )
+            {
+                return true;
+            }
+        }
+    }
     let Some(kernel) = fwd_kernel(txfm_type_row) else {
         return false;
     };

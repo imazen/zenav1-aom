@@ -31,7 +31,7 @@ pub(crate) static TX_SIZE_HIGH: [usize; TX_SIZES_ALL] =
 
 // av1_fwd_txfm_shift_ls[tx_size][0..3]
 #[rustfmt::skip]
-static FWD_SHIFT: [[i8; 3]; TX_SIZES_ALL] = [
+pub(crate) static FWD_SHIFT: [[i8; 3]; TX_SIZES_ALL] = [
     [2, 0, 0], [2, -1, 0], [2, -2, 0], [2, -4, 0], [0, -2, -2],
     [2, -1, 0], [2, -1, 0], [2, -2, 0], [2, -2, 0], [2, -4, 0],
     [2, -4, 0], [0, -2, -2], [2, -4, -2], [2, -1, 0], [2, -1, 0],
@@ -40,12 +40,12 @@ static FWD_SHIFT: [[i8; 3]; TX_SIZES_ALL] = [
 
 // av1_fwd_cos_bit_col / _row [txw_idx][txh_idx]
 #[rustfmt::skip]
-static COS_BIT_COL: [[i8; 5]; 5] = [
+pub(crate) static COS_BIT_COL: [[i8; 5]; 5] = [
     [13, 13, 13, 0, 0], [13, 13, 13, 12, 0], [13, 13, 13, 12, 13],
     [0, 13, 13, 12, 13], [0, 0, 13, 12, 13],
 ];
 #[rustfmt::skip]
-static COS_BIT_ROW: [[i8; 5]; 5] = [
+pub(crate) static COS_BIT_ROW: [[i8; 5]; 5] = [
     [13, 13, 12, 0, 0], [13, 13, 13, 12, 0], [13, 13, 12, 13, 12],
     [0, 12, 13, 12, 11], [0, 0, 12, 11, 10],
 ];

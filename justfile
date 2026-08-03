@@ -93,6 +93,14 @@ gen-txfm1d:
     python3 xtask/transpile_txfm1d.py --inv --lanes reference/extracted/idct4.c reference/extracted/idct8.c reference/extracted/idct16.c reference/extracted/idct32.c reference/extracted/idct64.c reference/extracted/iadst8.c reference/extracted/iadst16.c > crates/aom-dsp/src/transform/simd/inv1d_v3_gen.rs
     python3 xtask/transpile_txfm1d.py --lanes reference/extracted/fdct8.c reference/extracted/fdct16.c reference/extracted/fdct32.c reference/extracted/fdct64.c reference/extracted/fadst8.c reference/extracted/fadst16.c > crates/aom-dsp/src/transform/simd/txfm1d_v3_gen.rs
     python3 xtask/transpile_txfm1d.py --inv --lanes16 reference/extracted/idct4.c reference/extracted/idct8.c reference/extracted/idct16.c reference/extracted/idct32.c reference/extracted/idct64.c > crates/aom-dsp/src/transform/simd/inv1d_v3_i16_gen.rs
+    python3 xtask/transpile_txfm1d.py --lanes16f reference/extracted/fdct8.c reference/extracted/fdct16.c reference/extracted/fdct32.c reference/extracted/fdct64.c reference/extracted/fadst8.c reference/extracted/fadst16.c > crates/aom-dsp/src/transform/simd/fwd1d_v3_i16_gen.rs
+
+# The forward i16 lane-narrowing audit: prints M* per (kernel, cos_bit) and the
+# bd8 reach per (tx_size, tx_type). The M* table in
+# `transform/simd/lowbd16_fwd.rs` is the MINIMUM over cos_bit of what this
+# prints; re-run it if any kernel or the cospi table changes.
+audit-i16-fwd:
+    python3 xtask/audit_i16_fwd.py --cells
 
 # ARMED-TOOL DECODE GATE (KB-29). Byte-identity gates prove conformance only
 # where a reference stream exists and is asserted equal; every `ToggleKnobs` arm

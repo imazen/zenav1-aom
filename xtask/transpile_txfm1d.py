@@ -24,6 +24,7 @@ ARGS = sys.argv[1:]
 INV = '--inv' in ARGS
 LANES = '--lanes' in ARGS
 LANES16 = '--lanes16' in ARGS
+LANES16F = '--lanes16f' in ARGS
 FUNCS = [a for a in ARGS if not a.startswith('--')]  # list of extracted .c files
 
 def translate_operand(tok, m):
@@ -329,8 +330,170 @@ def transpile16(path):
         hdr.append(f'    let mut step = [i16x16::zero(t); {size}];')
     return '\n'.join(hdr + body + ['}'])
 
+
+def transpile16f(path):
+    """--lanes16f: emit a 16-lane i16 (`i16x16`) twin of a FORWARD 1D kernel.
+
+    Unlike the inverse `--lanes16` mode there is only ONE domain. The forward
+    kernels carry no `clamp_value` at all, so `xtask/audit_i16_fwd.py` proves
+    the narrowing differently: it propagates each value's EXACT linear form and
+    reports `M*`, the largest |input| at which every value of the kernel stays
+    inside i16. The driver gates on `M*` at runtime, and on that domain
+
+      * every lane add/sub is exact in i16 (the true value fits, so the i16
+        wrap and the scalar i32 wrap agree — neither wraps);
+      * every `half_btf` is a WIDENING multiply-accumulate into i32
+        (|w| <= 2^13, |in| <= 2^15 -> |product| <= 2^28, pair sum <= 2^29),
+        rounded and narrowed back to i16 by `fbtf16` — and the narrow is exact
+        because `M*` bounds the result inside i16 too.
+
+    Op mapping:
+      A + B                        -> a + b            (wrapping i16 lane add)
+      -A + B                       -> b - a            (exact in two's complement)
+      A / -A                       -> a / negv16(t, a)
+      half_btf(w0,A,w1,B,cos_bit)  -> fbtf16(t, unpk16(t,a,b), w0, w1, cos_bit)
+
+    `unpk16` is memoized on a VERSIONED operand key so the two butterflies of a
+    rotation pair share one interleave (free on NEON, one `vpunpck` pair on
+    AVX2) without ever reusing a stale pairing.
+    """
+    src = open(path).read()
+    src = re.sub(r'//[^\n]*', '', src)
+    name = re.search(r'void (av1_\w+)\(', src).group(1)
+    size = int(re.search(r'const int32_t size = (\d+);', src).group(1))
+    m = {'output': 'out', 'step': 'step', 'input': 'input'}
+    ptr = {}
+    body = []
+    vid = {}
+    nextvid = [0]
+    memo_upk = {}
+    counters = {'u': 0}
+    step_used = [False]
+
+    def key(arr, idx):
+        return (arr, idx, vid.get((arr, idx), -1))
+
+    def wrote(arr, idx):
+        nextvid[0] += 1
+        vid[(arr, idx)] = nextvid[0]
+        if arr == 'step':
+            step_used[0] = True
+
+    def operand(tok, mm):
+        r = re.match(r'^(\w+)\[(\d+)\]$', tok)
+        assert r, tok
+        return mm.get(r.group(1), r.group(1)), int(r.group(2))
+
+    def wexpr(tok, mm):
+        neg = tok.startswith('-')
+        t2 = tok[1:] if neg else tok
+        r = re.match(r'^cospi\[(\d+)\]$', t2)
+        assert r, f'weight: {tok}'
+        return f'-cospi[{r.group(1)}]' if neg else f'cospi[{r.group(1)}]'
+
+    text = re.sub(r'\n\s+', ' ', src)
+    for stmt in text.split(';'):
+        stmt = stmt.strip().strip('}').strip('{').strip()
+        if not stmt or stmt.startswith('//'):
+            continue
+        if stmt == 'stage++':
+            continue
+        if re.match(r'(void |const int32_t |int32_t |int8_t |int \b|int stage|stage\b|'
+                    r'assert\(|av1_range_check_buf\(|\(void\)|cospi = cospi_arr)', stmt):
+            pa = re.match(r'^(bf[01]) = (output|step|input)$', stmt)
+            if pa:
+                ptr[pa.group(1)] = m[pa.group(2)]
+            continue
+        pa = re.match(r'^(bf[01]) = (output|step|input)$', stmt)
+        if pa:
+            ptr[pa.group(1)] = m[pa.group(2)]
+            continue
+        asn = re.match(r'^(bf[01])\[(\d+)\] = (.*)$', stmt, re.S)
+        assert asn, f'unhandled stmt in {name}: {stmt!r}'
+        dst_arr = ptr[asn.group(1)]
+        dst_idx = int(asn.group(2))
+        rhs = asn.group(3).strip()
+        mm = dict(m)
+        mm['bf0'] = ptr.get('bf0')
+        mm['bf1'] = ptr.get('bf1')
+
+        hb_m = re.match(r'^half_btf\((.*)\)$', rhs)
+        bm = re.match(r'^(-?)(\w+\[\d+\])\s*([+-])\s*(\w+\[\d+\])$', rhs)
+        um = re.fullmatch(r'(-?)(\w+\[\d+\])', rhs)
+        if hb_m:
+            args = [a.strip() for a in hb_m.group(1).split(',')]
+            assert len(args) == 5, args
+            w0, in0, w1, in1, _ = args
+            assert not in0.startswith('-') and not in1.startswith('-')
+            (xa, xi), (ya, yi) = operand(in0, mm), operand(in1, mm)
+            k = (key(xa, xi), key(ya, yi))
+            if k not in memo_upk:
+                u = f'u{counters["u"]}'
+                counters['u'] += 1
+                body.append(f'    let {u} = unpk16(t, {xa}[{xi}], {ya}[{yi}]);')
+                memo_upk[k] = u
+            body.append(f'    {dst_arr}[{dst_idx}] = fbtf16(t, {memo_upk[k]}, '
+                        f'{wexpr(w0, mm)}, {wexpr(w1, mm)}, cos_bit);')
+        elif bm:
+            lneg, ltok, op, rtok = bm.group(1) == '-', bm.group(2), bm.group(3), bm.group(4)
+            (la, li), (ra, ri) = operand(ltok, mm), operand(rtok, mm)
+            if lneg:
+                assert op == '+', f'{name}: -a - b never emitted'
+                body.append(f'    {dst_arr}[{dst_idx}] = {ra}[{ri}] - {la}[{li}];')
+            else:
+                body.append(f'    {dst_arr}[{dst_idx}] = {la}[{li}] {op} {ra}[{ri}];')
+        elif um:
+            sa, si = operand(um.group(2), mm)
+            if um.group(1) == '-':
+                body.append(f'    {dst_arr}[{dst_idx}] = negv16(t, {sa}[{si}]);')
+            else:
+                body.append(f'    {dst_arr}[{dst_idx}] = {sa}[{si}];')
+        else:
+            raise AssertionError(f'{name}: op not i16-mappable: {rhs!r} — leave on i32 path')
+        wrote(dst_arr, dst_idx)
+
+    hdr = [f'/// 16-lane i16 twin of [`crate::transform::{name}`] (transpiled).',
+           '/// Contract: |input lane| <= the `M*` reported for this kernel by',
+           '/// `xtask/audit_i16_fwd.py`, which the driver enforces at runtime. On that',
+           '/// domain this is per-lane bit-identical to the scalar kernel — pinned by the',
+           '/// `lowbd16_fwd::tests` differential at every token permutation.',
+           '#[magetypes(define(i16x16), v3, neon, -scalar)]',
+           '#[allow(unused_variables)]',
+           f'pub(crate) fn {name}_i16_impl(t: Token, input: &[I16x16<Token>], '
+           'out: &mut [I16x16<Token>], cos_bit: i32) {',
+           '    let cospi = cospi_arr(cos_bit);']
+    if step_used[0]:
+        hdr.append(f'    let mut step = [i16x16::zero(t); {size}];')
+    return '\n'.join(hdr + body + ['}'])
+
+
 kind = 'inverse' if INV else 'forward'
-if LANES16:
+if LANES16F:
+    bodies = [transpile16f(f) for f in FUNCS]
+    all_text = '\n'.join(bodies)
+    helpers = [h for h in ('fbtf16', 'negv16', 'unpk16') if f'{h}(' in all_text]
+    print('//! GENERATED by xtask/transpile_txfm1d.py --lanes16f — do not edit by hand.')
+    print('//! 16-lane i16 twins of the scalar 1D FORWARD transform kernels: per-lane')
+    print('//! bit-identical to the scalar transcription for every input inside the')
+    print('//! per-kernel bound `M*` that `xtask/audit_i16_fwd.py` proves and')
+    print('//! [`super::lowbd16_fwd::FWD_I16_MAX_IN`] enforces at runtime. `#[magetypes]`')
+    print('//! emits one variant per SIMD tier (`_v3` on x86-64, `_neon` on aarch64) from')
+    print('//! this single body; the arch-specific helpers it calls are `#[rite(<tier>)]`')
+    print('//! in `super::prims16`, cfg-selected there under one unsuffixed name, so this')
+    print('//! file needs no cfg and no tier suffixes. Exactness contract: see')
+    print('//! [`super::lowbd16_fwd`]. fadst4 is NOT emitted: its stage-1 values are')
+    print('//! `sinpi[j] * x` held unshifted (~2^13 x the input), so it has no i16 form.')
+    print('#![allow(clippy::needless_range_loop)]')
+    print('use archmage::prelude::*;')
+    print('use magetypes::simd::generic::i16x16 as I16x16;')
+    print('use crate::transform::cospi::cospi_arr;')
+    if helpers:
+        print(f'use super::prims16::{{{", ".join(helpers)}}};')
+    print()
+    for b in bodies:
+        print(b)
+        print()
+elif LANES16:
     bodies = [transpile16(f) for f in FUNCS]
     print('//! GENERATED by xtask/transpile_txfm1d.py --lanes16 — do not edit by hand.')
     print('//! bd8-only 16-lane i16 row/column-pass twins of the scalar 1D inverse DCT')

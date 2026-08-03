@@ -65,7 +65,44 @@
 //! Pinned by [`super::lowbd16::tests`] at every token permutation, on both
 //! architectures.
 
+use magetypes::simd::backends::I16x16Backend;
 use magetypes::simd::generic::{i16x16, i32x8};
+
+// ---------------------------------------------------------------------------
+// Pattern B — one generic body, every tier (pure magetypes ops).
+// ---------------------------------------------------------------------------
+
+/// `wrapping_neg` on i16 lanes (`0 - v` wraps identically). Used only by the
+/// FORWARD i16 kernels, where the audit bound `M* < 2^15` makes the negation
+/// exact (`i16::MIN` — the one value whose negation wraps — is unreachable).
+#[inline(always)]
+pub(crate) fn negv16<T: I16x16Backend>(t: T, v: i16x16<T>) -> i16x16<T> {
+    i16x16::zero(t) - v
+}
+
+/// Max |lane| of an i16 block, as the FORWARD column pass's runtime gate.
+/// `unsigned_abs` maps `i16::MIN` to 32768, which is above every `M*`, so the
+/// one value whose negation would wrap can never pass the gate.
+#[inline]
+pub(crate) fn max_abs_i16_strided(input: &[i16], stride: usize, col_n: usize, row_n: usize) -> u32 {
+    let mut m = 0u16;
+    for r in 0..row_n {
+        for &v in &input[r * stride..r * stride + col_n] {
+            m = m.max(v.unsigned_abs());
+        }
+    }
+    m as u32
+}
+
+/// Max |lane| of an i32 block, as the FORWARD row pass's runtime gate.
+#[inline]
+pub(crate) fn max_abs_i32(buf: &[i32]) -> u32 {
+    let mut m = 0u32;
+    for &v in buf {
+        m = m.max(v.unsigned_abs());
+    }
+    m
+}
 
 // ---------------------------------------------------------------------------
 // Pattern C — x86-64 / AVX2 tier.
@@ -141,6 +178,37 @@ mod x86 {
                 _mm256_srai_epi32::<12>(_mm256_add_epi32(_mm256_madd_epi16(u.hi, cw), rnd)),
             ),
         }
+    }
+
+    /// FORWARD `half_btf(w0, x, w1, y, cos_bit)` on 16 i16 lanes, narrowed back
+    /// to i16 — the forward twin of [`btf16`], differing in two ways:
+    ///
+    /// * `cos_bit` is a RUNTIME value (10..=13; the forward config table picks
+    ///   per tx_size, unlike the inverse's fixed 12), so the shift is
+    ///   `_mm256_sra_epi32` with a `__m128i` count instead of a const shift;
+    /// * the result is packed straight back to i16, because the forward audit
+    ///   (`xtask/audit_i16_fwd.py`) bounds EVERY value of the kernel inside
+    ///   i16 — there is no 17-bit transient domain to carry.
+    ///
+    /// EXACT on that domain: `madd` computes `w0*x + w1*y` per i32 slot with
+    /// |w| <= 2^13 and |x|,|y| <= 2^15, so each product is <= 2^28 (no i32
+    /// wrap — identical to the scalar port's `wrapping_mul`, which also cannot
+    /// wrap here) and the pair sum <= 2^29; adding `2^(bit-1) <= 2^12` cannot
+    /// overflow, and the arithmetic shift equals the scalar's i64 shift because
+    /// the value fits i32. `packs_epi32`'s saturation is unreachable at `M*`
+    /// and simultaneously restores natural lane order (pack inverts unpack
+    /// within each 128-bit lane).
+    #[rite(v3)]
+    pub(crate) fn fbtf16(t: X64V3Token, u: Upk, w0: i32, w1: i32, bit: i32) -> V16 {
+        use core::arch::x86_64::*;
+        debug_assert!(w0.unsigned_abs() < (1 << 15) && w1.unsigned_abs() < (1 << 15));
+        debug_assert!((1..=13).contains(&bit));
+        let cw = _mm256_set1_epi32((((w1 as u32) & 0xffff) << 16 | ((w0 as u32) & 0xffff)) as i32);
+        let rnd = _mm256_set1_epi32(1 << (bit - 1));
+        let cnt = _mm_cvtsi32_si128(bit);
+        let lo = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(u.lo, cw), rnd), cnt);
+        let hi = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(u.hi, cw), rnd), cnt);
+        i16x16::from_m256i(t, _mm256_packs_epi32(lo, hi))
     }
 
     /// `clamp_value(v, 16)` + narrow of an unpack-order i32 pair: per-128-lane
@@ -332,6 +400,36 @@ mod neon {
         P32([a[0], a[1], b[0], b[1]])
     }
 
+    /// FORWARD `half_btf(w0, x, w1, y, cos_bit)` on 16 i16 lanes, narrowed back
+    /// to i16 — the forward twin of [`btf16`]. Two differences: `cos_bit` is a
+    /// RUNTIME value (10..=13; the forward config picks per tx_size, unlike the
+    /// inverse's fixed 12), and the result packs straight back to i16 because
+    /// the forward audit (`xtask/audit_i16_fwd.py`) bounds EVERY value of the
+    /// kernel inside i16 — there is no 17-bit transient domain to carry.
+    ///
+    /// EXACT on that domain. `vmull_n_s16` / `vmlal_n_s16` are widening
+    /// 16x16->32 multiply(-accumulate): with |w| <= 2^13 and |x|,|y| <= 2^15
+    /// each product is <= 2^28 and the sum <= 2^29, so nothing wraps and the
+    /// exact products agree with the scalar port's `wrapping_mul`.
+    /// `vrshlq_s32` by a NEGATIVE count is ARM's rounding shift right, i.e.
+    /// `(acc + 2^(bit-1)) >> bit` — exactly the scalar `round_shift(_, bit)` —
+    /// and it absorbs the runtime `cos_bit` without a const generic (the same
+    /// device `prims::hb` uses at i64 width). `vqmovn_s32`'s saturation is
+    /// unreachable at `M*`.
+    #[rite(neon)]
+    pub(crate) fn fbtf16(t: NeonToken, u: Upk, w0: i32, w1: i32, bit: i32) -> V16 {
+        debug_assert!(w0.unsigned_abs() < (1 << 15) && w1.unsigned_abs() < (1 << 15));
+        debug_assert!((1..=13).contains(&bit));
+        let (c0, c1) = (w0 as i16, w1 as i16);
+        let sh = vdupq_n_s32(-bit);
+        let half = |x: int16x8_t, y: int16x8_t| -> int16x8_t {
+            let lo = vmlal_n_s16(vmull_n_s16(vget_low_s16(x), c0), vget_low_s16(y), c1);
+            let hi = vmlal_high_n_s16(vmull_high_n_s16(x, c0), y, c1);
+            vqmovn_high_s32(vqmovn_s32(vrshlq_s32(lo, sh)), vrshlq_s32(hi, sh))
+        };
+        i16x16::from_repr(t, [half(u.x[0], u.y[0]), half(u.x[1], u.y[1])])
+    }
+
     /// `clamp_value(v, 16)` + narrow of a natural-order i32 quad:
     /// `vqmovn_s32`'s SATURATING narrow is exactly "clamp to [-2^15, 2^15-1]
     /// then truncate" == `clamp_value(_, 16)`, and the lane order is already
@@ -470,11 +568,11 @@ mod neon {
 // `btf16(t, ..)` with no cfg and no suffix at the call site.
 #[cfg(target_arch = "x86_64")]
 pub(crate) use x86::{
-    add_store_u8, btf16, ext16, mulhrs16, pack16, pack_clamp16, padd32, psub32, rev16, sadd16,
-    ssub16, unpk16, widen_hi, widen_lo,
+    add_store_u8, btf16, ext16, fbtf16, mulhrs16, pack16, pack_clamp16, padd32, psub32, rev16,
+    sadd16, ssub16, unpk16, widen_hi, widen_lo,
 };
 #[cfg(target_arch = "aarch64")]
 pub(crate) use neon::{
-    add_store_u8, btf16, ext16, mulhrs16, pack16, pack_clamp16, padd32, psub32, rev16, sadd16,
-    ssub16, unpk16, widen_hi, widen_lo,
+    add_store_u8, btf16, ext16, fbtf16, mulhrs16, pack16, pack_clamp16, padd32, psub32, rev16,
+    sadd16, ssub16, unpk16, widen_hi, widen_lo,
 };

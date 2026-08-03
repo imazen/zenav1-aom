@@ -63,6 +63,15 @@ impl Rng {
     fn residual(&mut self) -> i16 {
         self.next() as i16
     }
+    /// bd8 forward residual: `src - pred` over u8, i.e. [-255, 255]. This is
+    /// the ONLY range the i16-lane forward passes accept, so without this arm
+    /// the forward half of this test would exercise the i32 path exclusively
+    /// (the full-range arm above is over `M*` for every kernel and every one
+    /// of its blocks declines). Playbook 1: a test that cannot reach the code
+    /// it is supposed to guard is not a test of it.
+    fn residual_bd8(&mut self) -> i16 {
+        (self.next() % 511) as i16 - 255
+    }
     fn pixel(&mut self, bd: i32) -> u16 {
         (self.next() % (1u64 << bd)) as u16
     }
@@ -104,6 +113,30 @@ fn inv_spike(k: usize, i: usize, len: usize) -> i32 {
             }
         } // last-coeff spike
         _ => B - 1,                                         // ±(2^19 - 1), the exact hi bound
+    }
+}
+
+/// bd8-range spike patterns for the forward residual buffer — the
+/// coefficient-sum sign vertices at the exact ±255 bd8 extreme, which is where
+/// the i16-lane forward passes are closest to their proven bound.
+fn fwd_spike_bd8(k: usize, i: usize) -> i16 {
+    match k {
+        0 => 255,
+        1 => -255,
+        2 => {
+            if i % 2 == 0 {
+                255
+            } else {
+                -255
+            }
+        }
+        _ => {
+            if (i * 7 + i / 5) % 3 == 0 {
+                -255
+            } else {
+                255
+            }
+        }
     }
 }
 
@@ -198,6 +231,15 @@ fn all_outputs() -> Vec<(String, Vec<i64>)> {
             for k in 0..FWD_SPIKES {
                 let input: Vec<i16> = (0..w * h).map(|i| fwd_spike(k, i)).collect();
                 push_fwd(format!("fwd sz{tx_size} ty{tx_type} spike{k}"), &input);
+            }
+            // bd8 arm — the domain the i16-lane forward passes accept.
+            for rep in 0..RAND_REPS {
+                let input: Vec<i16> = (0..w * h).map(|_| rng.residual_bd8()).collect();
+                push_fwd(format!("fwd sz{tx_size} ty{tx_type} bd8rand{rep}"), &input);
+            }
+            for k in 0..FWD_SPIKES {
+                let input: Vec<i16> = (0..w * h).map(|i| fwd_spike_bd8(k, i)).collect();
+                push_fwd(format!("fwd sz{tx_size} ty{tx_type} bd8spike{k}"), &input);
             }
         }
     }
