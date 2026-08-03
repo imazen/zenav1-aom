@@ -1,0 +1,45 @@
+# Provenance for kb36_above_720p_2026-08-03.tsv
+# (KB-36 — `speed >= 6 && is_1080p_or_larger -> default_min_partition_size =
+#  BLOCK_8X8`, speed_features.c:311-313, was unmodelled.)
+
+base commit      : e6f0e64 (origin/main after this session's first two landings)
+host             : Darwin arm64 / Apple M4 Pro
+profile          : test-fast (opt-level 3, debug-assertions + overflow-checks ON)
+dispatch         : default (archmage SIMD tokens live); the change is a scalar
+                   speed-feature assignment, and the same suite was run
+                   AOM_FORCE_SCALAR=1
+conformance dir  : AOM_CONFORMANCE_DIR=<primary checkout>/conformance/data
+
+pristine arm     : an example binary over the same size x speed grid, run before
+                   the one-hunk fix landed in
+                   crates/aom-encode/src/speed_features.rs (8.5 min)
+fixed arm        : the same binary after (8.5 min), plus the speed-8/9 rows from
+                   cargo test --profile test-fast -p zenav1-aom-bench \
+                     --test kb36_above_720p_speed_axis -- --ignored --nocapture
+
+CONTENT
+  mirror-tiled frame 0 of the conformance vector av1-1-b8-00-quantizer-00 (the
+  kb22 / kb28 / kb31 / kb32 recipe), bd8 4:2:0, cq24 throughout.
+
+THE FOUR SIZES
+  1280x720   the ceiling `s4cov_hd_speed_axis.rs` reached and stopped at
+  1920x1072  min dim 1072 — EIGHT pixels below `is_1080p_or_larger`
+  1920x1080  min dim 1080 — ON it
+  2560x1440  well above it
+
+RESULT
+  pristine  56 MATCH / 2 DIVERGE:
+              1920x1080 cpu6  -127 B
+              2560x1440 cpu6   +79 B
+            Every other cell in the grid — including 1920x1072 at cpu6, the
+            same content eight pixels shorter — is byte-exact. The window is
+            exactly one speed wide: `set_allintra` sets the same field
+            framesize-independently from speed 7 (speed_features.c:570), and
+            below speed 6 the enclosing block does not run.
+  fixed     32/32 MATCH, incl. speeds 8 and 9 at both >= 1080p sizes.
+
+WHY NOTHING CAUGHT IT
+  A speed sweep at any size below 1080 is green; a size sweep at any speed
+  other than 6 is green. It needs the crossing. This is the SECOND arm on
+  `default_min_partition_size`: KB-19 modelled `is_4k_or_larger` and its entry
+  said the new method held "currently just the is_4k_or_larger one".

@@ -1007,6 +1007,15 @@ impl SpeedFeatures {
     ///   speed inside that function, so it also applies below speed 7 (which
     ///   sets the same value framesize-independently at :570). KB-19: the port
     ///   previously left the field at `BLOCK_4X4` for every frame size.
+    /// - **`speed >= 6 && is_1080p_or_larger` (`min(w, h) >= 1080`) →
+    ///   `default_min_partition_size = BLOCK_8X8`** (speed_features.c:311-313).
+    ///   The SAME field as the 4k arm above, at a second boundary and inside a
+    ///   speed block. KB-36: it was unmodelled, and it is byte-LIVE at exactly
+    ///   `--cpu-used 6` — speed 7 sets the same value framesize-independently
+    ///   at :570, so 7, 8 and 9 are unaffected, and below 6 the block does not
+    ///   run. Measured: 1920x1080 -127 B and 2560x1440 +79 B at cpu6 against
+    ///   real aomenc, with 1920x1072 (eight pixels shorter, the same content)
+    ///   byte-exact.
     /// - **`speed >= 8 && is_720p_or_larger` (`min(w, h) >= 720`) →
     ///   `rt_sf.force_large_partition_blocks_intra = 1`**
     ///   (speed_features.c:326-328). KB-32 root #1. Its only consumer is
@@ -1034,6 +1043,16 @@ impl SpeedFeatures {
         // is_4k_or_larger = AOMMIN(cm->width, cm->height) >= 2160
         // (speed_features.c:172). BLOCK_8X8 == 3 in the BLOCK_SIZE enum.
         if min_dim >= 2160 {
+            self.default_min_partition_size = 3;
+        }
+        // if (speed >= 6) { ... if (is_1080p_or_larger)
+        //   default_min_partition_size = BLOCK_8X8; ... }
+        // (speed_features.c:304-316). The two sibling arms in that block are
+        // already accounted for: `auto_max_partition_based_on_simple_motion`
+        // is dead on the all-intra KEY envelope (see the doc comment), and
+        // `use_square_partition_only_threshold = BLOCK_16X16` carries no
+        // framesize predicate and is applied by its own consumer.
+        if speed >= 6 && min_dim >= 1080 {
             self.default_min_partition_size = 3;
         }
         // if (speed >= 8) { if (is_720p_or_larger) force_large... = 1; }
@@ -1806,11 +1825,27 @@ mod tests {
             // the 3840x2160-is-not-4k-by-this-test case (min(w,h) == 2160
             // IS >= 2160, so 3840x2160 DOES take the arm; 3840x2159 does
             // not — the predicate is on the SHORT side).
-            for &(w, h) in &[(64, 64), (1920, 1080), (4096, 2159), (2159, 4096)] {
+            //
+            // `1920x1080` was in this list until 2026-08-03 and had to leave
+            // it: KB-36 found a SECOND arm on this same field
+            // (`speed >= 6 && is_1080p_or_larger`, speed_features.c:311-313),
+            // so 1080p legitimately moves the field from speed 6 up and the
+            // row could no longer isolate the 4k one. `1920x1079` keeps the
+            // row's intent — a large frame that is not 4k — and sharpens it
+            // to one pixel below the other arm's boundary.
+            // `framesize_dependent_min_partition_size_1080p_arm` locks that
+            // arm on its own.
+            // The two 2159-short-side rows are >= 1080, so from speed 6 they
+            // take KB-36's arm and land on BLOCK_8X8 for a reason that is not
+            // the 4k one. Their expectation therefore folds that in, and they
+            // only DISTINGUISH the 4k arm at speeds 0..5 — the two rows that
+            // distinguish it at every speed are `64x64` and `1920x1079`.
+            for &(w, h) in &[(64, 64), (1920, 1079), (4096, 2159), (2159, 4096)] {
                 let mut sf = base;
                 sf.apply_allintra_framesize_dependent(w, h, speed);
+                let want = if speed >= 6 && w.min(h) >= 1080 { 3 } else { expect_base };
                 assert_eq!(
-                    sf.default_min_partition_size, expect_base,
+                    sf.default_min_partition_size, want,
                     "speed {speed} {w}x{h} must not take the 4k arm"
                 );
             }
@@ -1834,6 +1869,56 @@ mod tests {
             expect.default_min_partition_size = 3;
             expect.force_large_partition_blocks_intra = i32::from(speed >= 8);
             assert_eq!(sf, expect, "speed {speed}: the 4k arm moved another field");
+        }
+    }
+
+    /// **KB-36 — `speed >= 6 && is_1080p_or_larger` →
+    /// `default_min_partition_size = BLOCK_8X8`** (speed_features.c:311-313).
+    ///
+    /// The same field as the 4k arm above, at a second boundary, inside a
+    /// speed block — and unmodelled until 2026-08-03, which made every
+    /// >= 1080p frame at `--cpu-used 6` search 4x4 partitions C had already
+    /// stopped at 8x8. It is live at exactly speed 6: speed 7 sets the same
+    /// value framesize-independently (:570), so 7, 8 and 9 cannot show it, and
+    /// below 6 the enclosing block does not run. That is a ONE-SPEED window,
+    /// which is why a speed sweep at any size below 1080 and a size sweep at
+    /// any speed other than 6 could both be green with it missing.
+    #[test]
+    fn framesize_dependent_min_partition_size_1080p_arm() {
+        for speed in 0..=9 {
+            let base = SpeedFeatures::set_allintra(speed, false, false);
+            let expect_base = if speed >= 7 { 3 } else { 0 };
+            // Below 1080 on the SHORT side: unchanged at every speed. 1920x1079
+            // is the razor — one pixel under, and it is the shape of the e2e
+            // pair (1920x1072 vs 1920x1080) that measured the bug.
+            for &(w, h) in &[(64, 64), (1280, 720), (1920, 1079), (1079, 4096)] {
+                let mut sf = base;
+                sf.apply_allintra_framesize_dependent(w, h, speed);
+                assert_eq!(
+                    sf.default_min_partition_size, expect_base,
+                    "speed {speed} {w}x{h}: min(w,h) < 1080 must not take the 1080p arm"
+                );
+            }
+            // At or above 1080 on BOTH sides: BLOCK_8X8 from speed 6 up.
+            let want = if speed >= 6 { 3 } else { 0 };
+            for &(w, h) in &[(1080, 1080), (1920, 1080), (2560, 1440), (4096, 1080)] {
+                let mut sf = base;
+                sf.apply_allintra_framesize_dependent(w, h, speed);
+                assert_eq!(
+                    sf.default_min_partition_size, want,
+                    "speed {speed} {w}x{h}: expected default_min_partition_size = {want}"
+                );
+            }
+            // The arm touches nothing else. 1920x1080 is >= 720 on both sides,
+            // so at speed >= 8 KB-32's `force_large_partition_blocks_intra`
+            // arm fires too — expected, and locked in isolation by
+            // `kb32_force_large_partition_blocks_intra_arm`.
+            let mut sf = base;
+            sf.apply_allintra_framesize_dependent(1920, 1080, speed);
+            let mut expect = base;
+            expect.default_min_partition_size = want;
+            expect.force_large_partition_blocks_intra = i32::from(speed >= 8);
+            assert_eq!(sf, expect, "speed {speed}: the 1080p arm moved another field");
         }
     }
 
@@ -1890,10 +1975,14 @@ mod tests {
                     "speed {speed} {w}x{h}: expected force_large = {want}"
                 );
             }
-            // Nothing else moves (the 4k arm is deliberately kept out of the
-            // comparison by staying below 2160).
+            // Nothing else moves. BOTH other arms on `default_min_partition
+            // _size` are deliberately kept out of the comparison by the size:
+            // 1024 is below 2160 (the 4k arm) and below 1080 (KB-36's
+            // `speed >= 6` arm, which is why this size dropped from 1280x1280
+            // to 1024x1024 on 2026-08-03), while still being >= 720 on both
+            // sides, which is this arm's own premise.
             let mut sf = base;
-            sf.apply_allintra_framesize_dependent(1280, 1280, speed);
+            sf.apply_allintra_framesize_dependent(1024, 1024, speed);
             let mut expect = base;
             expect.force_large_partition_blocks_intra = want;
             assert_eq!(

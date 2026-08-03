@@ -3596,7 +3596,16 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   every one of those cells passes `--enable-palette=0`, so libaom provably never entered the
   palette search there. See KB-35: the refusal is now C's predicate, 22 of the 25 measured
   PANIC rows are byte-identical, and the 3 that remain are the genuine arm. The lossless TX_4X4
-  and HBD sentences stand.
+  and HBD sentences stand — **with one measured correction to how the lossless one reads**:
+  `--cq-level 0` never reaches the encoder's `block_yrd_lowbd`/`_hbd` `unimplemented!` through
+  this harness at all, because `EncodeCell::port_encode_full` refuses it one layer earlier
+  (`crates/aom-bench/src/lib.rs:1153`, *"lossless cells are out of this harness's scope"*).
+  Measured 2026-08-03 on a 64x64 real-content cell: cq0 PANICs with the HARNESS message at
+  `--cpu-used` 0, 4, 8 AND 9, while cq1 is byte-exact at all four. So the lossless gap is not
+  a speed-8/9 property — the e2e path is closed at every speed, and lossless byte-parity is
+  proven only by KB-5's own driver (`aom-encode/tests/kb5_lossless_localize.rs`), which runs
+  `let speed = 0i32`. Reaching the lossless x nonrd crossing means extending the harness, not
+  just the encoder.
 
 ### KB-35 — Encoder: the nonrd estimate arm's palette refusal fired on the FRAME FLAG, one of four terms of C's `try_palette` — `--cpu-used 8` REFUSED a plain gradient at every size >= 1024x1024 and every quantizer — FIXED ✅ 2026-08-03
 - **Found 2026-08-03** by working the "still unmeasured / still refused" queue KB-34 left behind
@@ -3696,6 +3705,71 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   (`av1_search_palette_mode_luma` is not ported for the estimate arm — the RD-path
   `palette_search::rd_pick_palette_intra_sby` is what it needs to be wired to), the lossless
   TX_4X4 arm (`block_yrd_lowbd`/`_hbd`'s `unimplemented!`), and the HBD estimate arm's own gaps.
+
+### KB-36 — Encoder: `default_min_partition_size`'s >=1080p arm was UNMODELLED — every >=1080p frame at `--cpu-used 6` searched 4x4 partitions C had stopped at 8x8 — FIXED ✅ 2026-08-03
+- **Found 2026-08-03** by working the axis `s4cov_hd_speed_axis.rs` names in its own first
+  paragraph and then does not cross: it raised the "RD speeds above 640x640" ceiling to
+  **1280x720** and stopped. Between 1280x720 and KB-19's 2160p cell sits `is_1080p_or_larger`
+  (`AOMMIN(cm->width, cm->height) >= 1080`, speed_features.c:171), and nothing in the tree had
+  ever encoded a frame in that band at ANY speed other than 0.
+- **The arm.** Inside `set_allintra_speed_feature_framesize_dependent`'s `if (speed >= 6)` block:
+  `if (is_1080p_or_larger) sf->part_sf.default_min_partition_size = BLOCK_8X8;`
+  (speed_features.c:311-313). The port's `apply_allintra_framesize_dependent` carried the
+  `is_4k_or_larger` arm on the SAME field (KB-19) and the `speed >= 8 && is_720p_or_larger`
+  force-large arm (KB-32), and not this one — so `ToggleKnobs::min_partition_bsize`'s
+  `AOMMAX(default_min_partition_size, dim_to_size(--min-partition-size))`
+  (`set_max_min_partition_size`, partition_strategy.h:224-226) resolved BLOCK_4X4 where C
+  resolves BLOCK_8X8.
+- **MEASURED, both arms, 60 rows** (`benchmarks/kb36_above_720p_2026-08-03.tsv` + `.meta`;
+  4 sizes x `--cpu-used` 1..7 each arm, plus the fixed tree's speed-8/9 rows):
+
+  | cell | pristine | fixed |
+  |---|---|---|
+  | **1920x1080 cq24 cpu6** | **DIVERGE -127 B** | MATCH |
+  | **2560x1440 cq24 cpu6** | **DIVERGE +79 B** | MATCH |
+  | 1920x1072 cq24 cpu6 (8 px shorter, same content) | MATCH | MATCH |
+  | every other cell of the 4x7 grid, and speeds 8/9 | MATCH | MATCH |
+
+- **THE WINDOW IS ONE SPEED WIDE, and that is the whole reason nothing caught it.** Speed 7 sets
+  the same field framesize-INdependently (`speed_features.c:570`), so speeds 7, 8 and 9 cannot
+  show it; below speed 6 the enclosing block does not run. **A speed sweep at any size under
+  1080 is green, and a size sweep at any speed other than 6 is green** — it needs the crossing,
+  which is the same shape KB-19, KB-22, KB-26 and KB-28 all had. The 1920x1072-vs-1920x1080
+  pair is eight pixels of the same mirror-tiled content.
+- **This is the SECOND arm found on `default_min_partition_size`**, and KB-19's entry named the
+  queue without meaning to: its fix introduced `apply_allintra_framesize_dependent` holding
+  *"the modelled arms of `set_allintra_speed_feature_framesize_dependent`, currently just the
+  `is_4k_or_larger` one"*. Accurate as written; read as coverage it was not. Two of the three
+  arms that function now carries were found by later sweeps (KB-32's, then this one).
+- **FIX:** four lines in `SpeedFeatures::apply_allintra_framesize_dependent`. No other consumer
+  changes — `ToggleKnobs::min_partition_bsize` already AOMMAXes with the field (KB-19 half 2).
+- **Gates.** `aom-bench/tests/kb36_above_720p_speed_axis.rs` (2 tests, `--ignored`, 343 s):
+  `is_1080p_arm_straddle_byte_matches` (the 1072/1080 razor at speeds **5, 6, 7** — 5 and 7 are
+  what prove the window, so a wrongly-gated fix that fired at every speed would fail here where
+  a speed-6-only gate would pass) and `above_720p_speed_axis_byte_matches` (1920x1080 +
+  2560x1440 x `--cpu-used` 1..9, 18/18 — the band the old ceiling was hiding, incl. speeds 8/9
+  which cross KB-32's force-large arm at a size no gate had used). Unit lock:
+  `speed_features::tests::framesize_dependent_min_partition_size_1080p_arm` (speeds 0..9 x both
+  sides of 1080 incl. the 1-px row 1920x1079, plus a whole-struct equality check that the arm
+  moves no other field).
+- **TWO PRE-EXISTING UNIT LOCKS HAD TO BE RE-SCOPED, and neither was weakened.**
+  `framesize_dependent_min_partition_size_4k_arm` asserted `1920x1080` "must not take the 4k
+  arm" — true of the 4k arm, and now false of the FIELD, so that row became `1920x1079` (one px
+  under the other boundary) and the two 2159-short-side rows fold the 1080p expectation in and
+  are noted as distinguishing the 4k arm only at speeds 0..5.
+  `kb32_force_large_partition_blocks_intra_arm`'s whole-struct isolation size moved
+  `1280x1280 -> 1024x1024`, still >= 720 on both sides (its own premise) and now below 1080 as
+  well as below 2160, so it isolates its field again.
+- **BITE PROOFS.** (1) `if false && speed >= 6 && ...` fails the new unit lock with
+  *"speed 6 1080x1080: expected default_min_partition_size = 3"* AND the re-scoped 4k lock,
+  while the other 77 unit tests stay green. (2) The e2e bite is the pristine arm of the TSV: the
+  same 4x7 grid, two cells divergent, the 8-px-shorter twin byte-exact.
+- **VERIFIED.** `-p zenav1-aom-encode -p zenav1-aom-bench` **489 passed / 0 failed / 31 ignored**
+  in both dispatch modes. Gate 2 unaffected and still has zero pinned cells.
+- **Still unmeasured on this axis:** above 1440p at speed >= 1 other than KB-19's single 2160p
+  speed-0 cell (a 2160p cpu-1 cell is ~250 s per pair, so the band 1440..2160 at speeds 1-5 is
+  ~20-30 min); the >=1080p band at bit depths above 8, at 4:2:2/4:4:4/mono, and at SB128; and
+  any quantizer other than cq24 in this band.
 
 ### KB-PERF-1 — Encoder: the intra-mode CNN is recomputed ~10x per superblock (C computes it ONCE and caches) — FIXED ✅ 2026-08-02
 

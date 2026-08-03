@@ -26,6 +26,14 @@
 //! of 128 — so a divergence that is really a framesize arm is separable from
 //! one that is really a speed arm.
 //!
+//! **THIS FILE'S CEILING IS 1280x720, and above it was a real bug (2026-08-03).**
+//! Between 1280x720 and KB-19's 2160p cell sits `is_1080p_or_larger`
+//! (speed_features.c:171), whose one all-intra arm —
+//! `speed >= 6 -> default_min_partition_size = BLOCK_8X8` (:311-313) — was
+//! unmodelled, costing -127 B at 1920x1080 and +79 B at 2560x1440 at
+//! `--cpu-used 6`. See KB-36 and `kb36_above_720p_speed_axis.rs`, which owns
+//! everything above this file's ceiling. Read the ceiling as a queue.
+//!
 //! Run:
 //! ```text
 //! cargo test --profile test-fast -p zenav1-aom-bench --test s4cov_hd_speed_axis -- --ignored --nocapture
