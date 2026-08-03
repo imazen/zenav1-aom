@@ -596,6 +596,18 @@ wrong.
   ESTABLISHED**: checked 2026-07-31, this count has no second record in the
   repo; re-run `cargo fmt -p aom-dsp --check` before quoting it). Do **not** run
   `cargo fmt`; it buries the change.
+- **`crates/aom-dsp/tests/interintra_diff.rs` SIGSEGVs INTERMITTENTLY on the
+  `macos-14-arm64` CI runner (signal 11, before any test prints), and it is a
+  FLAKE rather than a regression** — observed 2026-08-03 failing on `c8aba69`
+  and `1b03198` and passing on `5884f49` and `b1a7222`, where the last two
+  bracket the first in code. It passes locally on Apple Silicon under both
+  dispatch modes, 5/5 consecutive runs, and its subject
+  (`inter::interintra`'s blend / wedge mask) is unrelated to anything the
+  failing commits touched. **Do not attribute an `aarch64 differential
+  (workspace, default dispatch)` failure to your landing until you have checked
+  whether the same job passed on an adjacent commit** — re-run the job first.
+  Root cause is unknown and unowned; it is recorded here so the next session
+  does not spend the afternoon bisecting it.
 - CI runs `--profile test-fast`, not debug (`.github/workflows/ci.yml:83`,
   `:121`, `:235`). The debug profile put the x86-64 leg at 5h47m and then 6h00m
   — GitHub's hard cap, reported as "cancelled" (recorded at
