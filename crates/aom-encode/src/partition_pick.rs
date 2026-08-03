@@ -5257,6 +5257,13 @@ fn nonrd_leaf_pick_and_encode(
         enable_intra_mode_pruning_using_neighbors: cfg.speed >= 9,
         prune_intra_mode_using_best_sad_so_far: cfg.speed >= 9,
         allow_screen_content_tools: cfg.allow_screen_content_tools,
+        // `cpi->oxcf.tool_cfg.enable_palette` — the same term `PickFrameCfg::
+        // palette_costs` models for the full-RD arm (`Some` == enabled).
+        enable_palette: cfg.palette_costs.is_some(),
+        // `sf.rt_sf.prune_palette_search_nonrd = 1` at allintra speed >= 8
+        // (speed_features.c:582), and this arm has no dispatch below 8
+        // (pack.rs's `allintra && speed >= 8`), so the level is 1 here.
+        prune_palette_search_nonrd: i32::from(cfg.speed >= 8),
         luma_edge_filter_type,
     };
     let pick = crate::nonrd_pickmode::nonrd_pick_intra_mode(

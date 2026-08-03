@@ -1,0 +1,50 @@
+# Provenance for kb35_palette_arm_2026-08-03.tsv
+# (KB-35 — the nonrd estimate arm's palette refusal fired on the FRAME flag,
+#  one of the four terms of C's `try_palette`, nonrd_pickmode.c:1698-1710.)
+
+base commit      : 1f366a9  (origin/main; the `pristine` arm is this tree with the
+                   two fix hunks `git stash push`-ed:
+                   crates/aom-encode/src/{nonrd_pickmode.rs,partition_pick.rs})
+host             : Darwin arm64 / Apple M4 Pro
+profile          : test-fast (opt-level 3, debug-assertions + overflow-checks ON)
+dispatch         : default (archmage SIMD tokens live); the change is scalar
+                   control flow, and the same suite was run AOM_FORCE_SCALAR=1
+conformance dir  : AOM_CONFORMANCE_DIR=<primary checkout>/conformance/data
+
+fixed arm        : cargo test --profile test-fast -p zenav1-aom-bench \
+                     --test kb35_nonrd_palette_arm -- --ignored --nocapture --test-threads=1
+pristine arm     : the same three cell lists driven from an example binary on the
+                   stashed tree (the gate cannot run there — every cell aborts)
+
+CONTENT CLASSES
+  diag    EncodeCell::synthetic_diag — a smooth 8-bit gradient, NOT screen content
+          by any human reading of it. libaom's own detector flags it at 1024x1024
+          and 1280x720 and not at 256x256 / 512x512, which is the size split the
+          `screen flag` column records.
+  screen  the `rd_close_palette.rs` text/UI recipe (period-8 glyph rows + flat
+          few-colour chroma panels), reproduced verbatim in the gate file.
+
+COLUMNS
+  enable_palette   the C-side `--enable-palette`. `off` is `shim_encode_av1_kf`
+                   (dec_shim.c:614) and `shim_encode_av1_kf_screen_content(0,..)`;
+                   `on` is `..._screen_content(1, 0)` + ToggleKnobs::enable_palette.
+  arm              pristine | fixed (see base commit above).
+  verdict          MATCH = byte-identical frame OBU payload to real aomenc;
+                   DIVERGE = encoded, different bytes; PANIC = the port refused.
+  delta            port bytes - C bytes (0 on PANIC and on MATCH).
+  reach_*          aom_encode::nonrd_pickmode::palette_gate_reach(), thread-local,
+                   reset before each port encode:
+                     [0] estimate-arm leaves where `enable_palette &&
+                         av1_allow_palette(..)` both held;
+                     [1] .. of those, ordinal `bsize <= BLOCK_16X16`;
+                     [2] .. of those, ALSO `source_variance > 200` (= try_palette
+                         modulo the SAD term, which can only subtract).
+                   `-` on the pristine arm: the counter does not exist there.
+
+HEADLINE
+  25 pristine PANIC rows -> 3. The 22 that closed are byte-identical (MATCH); the
+  3 that remain are the GENUINE arm (screen content 1024x1024 cq>=60 cpu8 with
+  palette ON: bsize BLOCK_16X16, source_variance 3140, reach [3,3,1]).
+  11 fixed DIVERGE rows are the class the overbroad refusal was hiding — palette
+  ON x cpu8, every one with reach_try_palette == 0, i.e. NOT this arm. Pinned as
+  PALETTE_ON_SPEED8_OPEN in the gate file.

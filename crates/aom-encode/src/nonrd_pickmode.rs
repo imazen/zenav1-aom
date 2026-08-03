@@ -1084,9 +1084,17 @@ pub struct NonrdIntraLeafCtx<'a> {
     pub prune_h_pred_using_best_mode_so_far: bool,
     pub enable_intra_mode_pruning_using_neighbors: bool,
     pub prune_intra_mode_using_best_sad_so_far: bool,
-    /// `prune_palette_search_nonrd` level (1 at speed>=8) + the palette
-    /// enable inputs — used ONLY to assert the palette arm stays dead.
+    /// `cm->features.allow_screen_content_tools` — one of the FOUR inputs to
+    /// C's `try_palette` (nonrd_pickmode.c:1701-1710), not the whole of it.
+    /// See [`nonrd_palette_arm_is_live`].
     pub allow_screen_content_tools: bool,
+    /// `cpi->oxcf.tool_cfg.enable_palette` (`--enable-palette`, C default 1).
+    /// The C oracle's `shim_encode_av1_kf` passes **0**, which is why every
+    /// canon cell has the palette arm dead by this term alone.
+    pub enable_palette: bool,
+    /// `cpi->sf.rt_sf.prune_palette_search_nonrd` — 1 at allintra speed >= 8
+    /// (speed_features.c:582), and the estimate arm has no other dispatch.
+    pub prune_palette_search_nonrd: i32,
     /// Edge filter type for directional prediction (V/H are directional):
     /// `get_intra_edge_filter_type(xd, 0)` — smooth above/left neighbour.
     pub luma_edge_filter_type: i32,
@@ -1114,6 +1122,72 @@ pub struct NonrdIntraPick {
 /// (av1/encoder/encodeframe_utils/rdopt_utils select_tx_mode); if it were
 /// TX_MODE_LARGEST the biggest is TX_64X64 anyway, same value — only
 /// ONLY_4X4/lossless differs and that's out of envelope).
+/// `b_width_log2_lookup[bsize]` / `b_height_log2_lookup[bsize]`
+/// (nonrd_opt.h:114-119) = `log2(dimension) - 2`. Derived from the dimension
+/// rather than re-typed, per the KB-34 lesson about re-typing tables; the two
+/// agree on every one of the 16 `BLOCK_SIZES` entries C's table covers (it is
+/// `BLOCK_SIZES`, not `BLOCK_SIZES_ALL` — C would read past its end on an
+/// extended shape, which this form cannot).
+fn b_log2(dim: usize) -> u32 {
+    debug_assert!(dim.is_power_of_two() && dim >= 4);
+    dim.trailing_zeros() - 2
+}
+
+/// C's `try_palette` for the nonrd estimate arm, verbatim
+/// (nonrd_pickmode.c:1698-1710 + `av1_allow_palette`, blockd.h:1503-1510).
+///
+/// **Why this is a function and not an inline frame-level test.** Until
+/// 2026-08-03 the port refused the whole leaf on `allow_screen_content_tools`
+/// alone — one of the four terms — which is the KB-34 failure exactly: a
+/// refusal that is *correct but overbroad*. It made `--cpu-used 8` refuse to
+/// encode a plain smooth gradient at every size and every quantizer (136 of the
+/// 2,012 rows of `benchmarks/nonsquare_leaf_reach_2026-08-02.tsv`), on cells
+/// where `cpi->oxcf.tool_cfg.enable_palette` is **0** — i.e. where C provably
+/// never enters the palette search at all. Speed 9 was unaffected for an
+/// unrelated reason (`av1_set_screen_content_options`, encoder.c:2466-2470,
+/// turns screen-content detection OFF when
+/// `use_nonrd_pick_mode && !hybrid_intra_pickmode`, which is the speed-9
+/// combination but not the speed-8 one), so the shape looked like a speed axis
+/// and was not.
+///
+/// The four terms, in C's order:
+/// 1. `cpi->oxcf.tool_cfg.enable_palette` (`--enable-palette`);
+/// 2. `av1_allow_palette(allow_screen_content_tools, bsize)` — the frame flag
+///    AND `block_size_wide <= 64` AND `block_size_high <= 64` AND
+///    **ordinal** `bsize >= BLOCK_8X8` (an ordinal compare on the
+///    `BLOCK_SIZES_ALL` index, so the extended 4:1 shapes at indices 16..21
+///    satisfy it regardless of having a 4-px side);
+/// 3. with `prune_palette_search_nonrd > 0` (1 at every speed that dispatches
+///    this arm): **ordinal** `bsize <= BLOCK_16X16` and `source_variance > 200`;
+/// 4. and, when the per-mode SAD prune ran, `best_sad_norm > thresh_sad`.
+#[allow(clippy::too_many_arguments)]
+pub fn nonrd_palette_arm_is_live(
+    enable_palette: bool,
+    allow_screen_content_tools: bool,
+    bsize: usize,
+    prune_palette_search_nonrd: i32,
+    prune_mode_based_on_sad: bool,
+    best_sad_norm: u32,
+    source_variance: u32,
+) -> bool {
+    // av1_allow_palette (blockd.h:1503-1510). MAX_PALETTE_BLOCK_{WIDTH,HEIGHT}
+    // are both 64 (blockd.h). BLOCK_8X8 is ordinal index 3.
+    let allow_palette = allow_screen_content_tools
+        && MI_W[bsize] * 4 <= 64
+        && MI_H[bsize] * 4 <= 64
+        && bsize >= 3;
+    let mut try_palette = enable_palette && allow_palette;
+    if prune_palette_search_nonrd > 0 {
+        let thresh_sad = if prune_palette_search_nonrd > 1 { 100 } else { 20 };
+        // BLOCK_16X16 is ordinal index 6.
+        let prune = (!prune_mode_based_on_sad || best_sad_norm > thresh_sad)
+            && bsize <= 6
+            && source_variance > 200;
+        try_palette &= prune;
+    }
+    try_palette
+}
+
 pub fn nonrd_leaf_tx_size(bsize: usize) -> usize {
     // `max_txsize_lookup[]` verbatim (common_data.h:105-124), BLOCK_SIZES_ALL
     // order — the square tx of the SHORT side, so it is smaller than the block
@@ -1184,6 +1258,59 @@ pub fn multi_txb_leaf_counts() -> [u64; 22] {
 /// Zero this thread's [`multi_txb_leaf_counts`] counters. Test instrumentation.
 pub fn reset_multi_txb_leaf_counts() {
     MULTI_TXB_LEAVES.with(|c| c.set([0; 22]));
+}
+
+// ---------------------------------------------------------------------------
+// Test instrumentation: how close the estimate arm gets to C's palette arm.
+// ---------------------------------------------------------------------------
+//
+// The refusal below fires on C's `try_palette`, which is a conjunction of four
+// terms. A gate asserting "the port did not refuse" is vacuous if the FIRST
+// term (`--enable-palette`) is off, and every canon cell has it off — so a
+// three-number breakdown is recorded per leaf instead of a bare pass/fail:
+//
+//   [0] leaves where `enable_palette && av1_allow_palette(..)` both held, i.e.
+//       the speed prune (term 3/4) is the only thing left;
+//   [1] of those, how many had ordinal `bsize <= BLOCK_16X16`;
+//   [2] of those, how many ALSO had `source_variance > 200` (= `try_palette`,
+//       modulo the SAD term — which is the one that can only ever subtract).
+//
+// Thread-local for the same reason as `MULTI_TXB_LEAVES` above.
+thread_local! {
+    static PALETTE_GATE_REACH: std::cell::Cell<[u64; 3]> = const {
+        std::cell::Cell::new([0; 3])
+    };
+}
+
+/// `[allow_palette_held, .. and bsize <= BLOCK_16X16, .. and variance > 200]`
+/// over the estimate-arm leaves coded since the last
+/// [`reset_palette_gate_reach`] **on this thread**. Test instrumentation; see
+/// [`nonrd_palette_arm_is_live`].
+pub fn palette_gate_reach() -> [u64; 3] {
+    PALETTE_GATE_REACH.with(std::cell::Cell::get)
+}
+
+/// Zero this thread's [`palette_gate_reach`] counters. Test instrumentation.
+pub fn reset_palette_gate_reach() {
+    PALETTE_GATE_REACH.with(|c| c.set([0; 3]));
+}
+
+#[inline]
+fn note_palette_gate_reach(allow_palette: bool, bsize: usize, source_variance: u32) {
+    if !allow_palette {
+        return;
+    }
+    PALETTE_GATE_REACH.with(|c| {
+        let mut v = c.get();
+        v[0] += 1;
+        if bsize <= 6 {
+            v[1] += 1;
+            if source_variance > 200 {
+                v[2] += 1;
+            }
+        }
+        c.set(v);
+    });
 }
 
 #[inline]
@@ -1595,13 +1722,33 @@ pub fn nonrd_pick_intra_mode(
         // (cpi->oxcf.mode == REALTIME gate, :1620-1623).
     }
 
-    // Palette arm (:1698-1731): requires enable_palette &&
-    // av1_allow_palette(allow_screen_content_tools, bsize) — the canon grid
-    // encodes with allow_screen_content_tools = 0 → dead. Guarded:
-    debug_assert!(
-        !lctx.allow_screen_content_tools,
-        "HANDOFF: av1_search_palette_mode_luma (palette.c) not ported — required \
-         before any screen-content (allow_screen_content_tools=1) speed-8 cell"
+    // Palette arm (nonrd_pickmode.c:1698-1731). `av1_search_palette_mode_luma`
+    // is not ported for this arm, so the port REFUSES rather than silently
+    // coding a different winner — but it must refuse on C's own predicate, not
+    // on a superset of it. See [`nonrd_palette_arm_is_live`] for the four
+    // terms and for what the old frame-level form got wrong.
+    let best_sad_norm = best_sad >> (b_log2(bw) + b_log2(bh));
+    note_palette_gate_reach(
+        lctx.enable_palette && lctx.allow_screen_content_tools && bw <= 64 && bh <= 64 && bsize >= 3,
+        bsize,
+        lctx.source_variance,
+    );
+    assert!(
+        !nonrd_palette_arm_is_live(
+            lctx.enable_palette,
+            lctx.allow_screen_content_tools,
+            bsize,
+            lctx.prune_palette_search_nonrd,
+            prune_mode_based_on_sad,
+            best_sad_norm,
+            lctx.source_variance,
+        ),
+        "HANDOFF: av1_search_palette_mode_luma (intra_mode_search.c:1122) is not ported for \
+         the nonrd estimate arm, and C's try_palette is TRUE at bsize {bsize} \
+         (source_variance {}, best_sad_norm {best_sad_norm}) — the palette RD search would \
+         run here and can win the leaf. Wire it through `palette_search::\
+         rd_pick_palette_intra_sby` before encoding this configuration.",
+        lctx.source_variance,
     );
 
     // mi->mode = best_mode; mi->uv_mode = UV_DC_PRED (:1734-1735) — the
@@ -1833,5 +1980,66 @@ mod tests {
         assert!(!hybrid_use_rdopt(2, 9, 5000));
         // speed 9: hybrid=0 → never.
         assert!(!hybrid_use_rdopt(0, 3, 5000));
+    }
+
+    /// **KB-35 unit lock — the nonrd palette refusal is C's `try_palette`,
+    /// term for term, not the frame flag alone.**
+    ///
+    /// Until 2026-08-03 the guard read `!allow_screen_content_tools`, one of
+    /// the four terms, and refused the whole leaf on it. The rows below are
+    /// the ones that separates the two forms: every `enable_palette = false`
+    /// row is a cell the old guard refused and C provably never searches
+    /// (`shim_encode_av1_kf` passes `--enable-palette=0`), and every
+    /// `bsize`/variance row is a cell the frame flag alone cannot classify.
+    #[test]
+    fn palette_arm_liveness_is_c_try_palette() {
+        // sad terms held constant and INERT here (prune off) so the other
+        // three vary alone.
+        let live = |ep, asct, bsize, var| {
+            nonrd_palette_arm_is_live(ep, asct, bsize, 1, false, u32::MAX, var)
+        };
+        // Term 1 — `--enable-palette=0` kills it even with the frame flag on,
+        // a 16x16 leaf and a high variance. This is the whole KB-35 class.
+        assert!(!live(false, true, 6, 5000));
+        assert!(live(true, true, 6, 5000));
+        // Term 2 — `av1_allow_palette`: the frame flag, then the size bounds.
+        assert!(!live(true, false, 6, 5000));
+        // BLOCK_4X4 (0), BLOCK_4X8 (1), BLOCK_8X4 (2) are all < BLOCK_8X8 (3).
+        for bsize in 0..3 {
+            assert!(!live(true, true, bsize, 5000), "bsize {bsize} is < BLOCK_8X8");
+        }
+        assert!(live(true, true, 3, 5000), "BLOCK_8X8 is allowed");
+        // ORDINAL, not dimensional: BLOCK_4X16 (16) and BLOCK_16X4 (17) have a
+        // 4-px side and still satisfy C's `sb_type >= BLOCK_8X8` — they die on
+        // the `bsize <= BLOCK_16X16` prune instead, which is also ordinal.
+        assert!(!live(true, true, 16, 5000));
+        assert!(!live(true, true, 17, 5000));
+        // Term 3 — the speed prune's two halves, each alone.
+        assert!(!live(true, true, 7, 5000), "BLOCK_16X32 is > BLOCK_16X16");
+        assert!(!live(true, true, 6, 200), "variance must be STRICTLY > 200");
+        assert!(live(true, true, 6, 201));
+        // ... and the prune only applies at `prune_palette_search_nonrd > 0`.
+        assert!(nonrd_palette_arm_is_live(true, true, 9, 0, false, u32::MAX, 0));
+        assert!(!nonrd_palette_arm_is_live(true, true, 9, 1, false, u32::MAX, 0));
+        // Term 4 — the SAD term, and its threshold's level dependence
+        // (`> 1 ? 100 : 20`). Only bites when the per-mode SAD prune ran.
+        assert!(!nonrd_palette_arm_is_live(true, true, 6, 1, true, 20, 5000));
+        assert!(nonrd_palette_arm_is_live(true, true, 6, 1, true, 21, 5000));
+        assert!(!nonrd_palette_arm_is_live(true, true, 6, 2, true, 100, 5000));
+        assert!(nonrd_palette_arm_is_live(true, true, 6, 2, true, 101, 5000));
+    }
+
+    /// `b_log2` must reproduce `b_width_log2_lookup` / `b_height_log2_lookup`
+    /// (nonrd_opt.h:114-119) on every one of the 16 `BLOCK_SIZES` entries —
+    /// derived from the dimension rather than re-typed, so the check is
+    /// against C's literal table.
+    #[test]
+    fn b_log2_matches_c_lookup_tables() {
+        const B_WIDTH_LOG2: [u32; 16] = [0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5];
+        const B_HEIGHT_LOG2: [u32; 16] = [0, 1, 0, 1, 2, 1, 2, 3, 2, 3, 4, 3, 4, 5, 4, 5];
+        for bsize in 0..16usize {
+            assert_eq!(b_log2(MI_W[bsize] * 4), B_WIDTH_LOG2[bsize], "width {bsize}");
+            assert_eq!(b_log2(MI_H[bsize] * 4), B_HEIGHT_LOG2[bsize], "height {bsize}");
+        }
     }
 }
