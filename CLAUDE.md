@@ -3969,7 +3969,7 @@ Column pass alone −1.700 ms, row pass alone −1.665 ms, and they compose
   reason this lever outranks the CNN, that claim is currently an ARGUMENT.
   `.github/workflows/winperf.yml` gained a generic **`arms: prepost`** mode in
   this landing (base_sha vs HEAD + nulls on both sides, any landing) so the
-  number is one dispatch away against base_sha `590e5250` — not yet run.
+  number is one dispatch away against base_sha `590e525f89185a15b201a8a77316db7e7e6d3940` — not yet run.
 
 
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)

@@ -276,7 +276,7 @@ an `i16x16` and an `i32x8` are each one 256-bit register exactly as on NEON they
 are each two 128-bit registers. `.github/workflows/winperf.yml` gained an
 `arms: prepost` mode in this landing so the number can be taken on
 `windows-latest` and `windows-11-arm` by dispatch, against `base_sha`
-`590e5250`; it has not been run.
+`590e525f89185a15b201a8a77316db7e7e6d3940`; it has not been run.
 
 ---
 

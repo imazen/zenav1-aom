@@ -10,7 +10,7 @@
 
 date                 2026-08-02
 box                  Apple M4 Pro, 12 cores, 24 GiB, macOS 26.5.2 (Darwin arm64)
-baseline commit      590e5250 (main at session start; the re-profile's scoping banner)
+baseline commit      590e525f89185a15b201a8a77316db7e7e6d3940 (main at session start; the re-profile's scoping banner)
 landing commits      0be3a43 (the i16 forward path), 7976c0f (gate the shift domains)
 worktree             zenav1-aom--i16fwd, detached
 libaom oracle        upstream/ submodule 03087864cf4bea6abb0d28f95cf7843511413d8f (v3.14.1)
@@ -33,7 +33,7 @@ Six port arms plus the C oracle, ONE binary each, all built from this one
 worktree by patching the two gate sites and restoring from git
 (~/tmp/i16fwd/build_arms.sh; sha-verified distinct):
 
-  base    590e5250, both gates absent
+  base    590e525f89185a15b201a8a77316db7e7e6d3940, both gates absent
   col     the i16 COLUMN pass only (the row gate short-circuited)
   row     the i16 ROW pass only (the column gate short-circuited)
   both    7976c0f as it ships
