@@ -212,8 +212,19 @@ with the kernel, and the u8 and directional suites stay green through both.
 
 ## x86-64 / Windows
 
-  gh workflow run winperf.yml -f base_sha=<baseline> -f rounds=<n> \
-      -f arms=prepost -f contents="detail photo"
+  gh workflow run winperf.yml -f base_sha=5884f4942b5bb6ca0706276b3bcb15fce3ef550d \
+      -f rounds=24 -f arms=prepost -f contents="detail photo"
+
+`base_sha` is the commit IMMEDIATELY BEFORE this landing, not the session's
+profiling baseline (1f366a9): main moved during the session, and `post - pre`
+has to isolate THIS lever rather than everything that landed alongside it.
+
+Run 30819647374. RESULT: RESOLVED on `windows-11-arm` on both contents
+(-0.961 % `detail` at 2.66x its floor, -0.512 % `photo` at 1.70x, 22/24 rounds
+each, p < 0.0001); NOT resolvable on `windows-latest` x86-64 (`detail` -0.058 %
+at 0.14x floor; `photo` +0.362 % at 0.85x floor -- wrong sign, under the floor,
+named as the open item in the .md sec 8). Allocator censuses identical to the
+digit on every arm on both runners.
 
 Content chosen from the census, not by habit: smooth+paeth is 50.6 % of
 predicted pixels on `detail`, 39.1 % on `photo`, 38.3 % on `smooth`, against the

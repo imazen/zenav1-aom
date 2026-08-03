@@ -456,7 +456,77 @@ touched.
 
 ## 8. x86-64 and Windows
 
-<!--WINDOWS-->
+**RESOLVED on `windows-11-arm`, on BOTH contents, at 1.7x and 2.7x that band's
+own noise floor — and the effect ORDERS with the census share, which is the
+census making a prediction and the band confirming it.** Not resolvable on
+`windows-latest` x86-64, which is a statement about the runner and is quantified
+as such.
+
+`winperf.yml` `arms: prepost` (`base_sha` = `5884f49`, the commit immediately
+before this landing, so `post − pre` is exactly this lever and nothing else;
+`l3a` and `l3` become extra COPIES of `pre`, so each band carries **three**
+nulls). Run [30819647374](https://github.com/imazen/zenav1-aom/actions/runs/30819647374),
+24 rounds, two runners x two contents, read with
+`scripts/winperf_prepost_stats.py` (which pools the copies on each side —
+the position correction §4 discusses). Bands committed as
+`.win_<runner>_<content>.tsv`.
+
+**Contents chosen from the census (§2), not from habit.** SMOOTH+PAETH is
+**50.6 %** of predicted pixels on `detail` and **39.1 %** on `photo`, so
+`detail` — the content that was a structural zero for KB-PERF-4 — is the
+RICHEST content for this lever, and `photo` is the leaner control.
+
+| | `windows-11-arm` `detail` | `windows-11-arm` `photo` | `windows-latest` `detail` | `windows-latest` `photo` |
+|---|---:|---:|---:|---:|
+| SMOOTH+PAETH share of predicted px | **50.6 %** | 39.1 % | 50.6 % | 39.1 % |
+| worst null of identical copies (pre side) | +0.224 % | +0.302 % | +0.293 % | +0.282 % |
+| worst null of identical copies (post side) | +0.361 % | +0.168 % | +0.415 % | +0.425 % |
+| **`post` vs `pre` (this landing)** | **−0.961 %** | **−0.512 %** | −0.058 % | **+0.362 %** |
+| effect / noise floor | **2.66x** | **1.70x** | 0.14x | 0.85x |
+| sign test, rounds post-side faster | **22/24, p < 0.0001** | **22/24, p < 0.0001** | 14/24, p = 0.54 | 4/24, p = 0.0015 |
+
+**On `windows-11-arm` the richer content gives the bigger effect** — −0.961 % on
+`detail` (50.6 % of predicted pixels in the lever's mode family) against
+−0.512 % on `photo` (39.1 %), measured on the same VM in the same job minutes
+apart. That is the census's own prediction, taken before the run, coming back
+confirmed. Darwin's −0.38 % on the study photograph (43.6 %) sits between them,
+on a different CPU, so only the ORDERING within the ARM runner is a controlled
+comparison; the cross-platform magnitudes are not.
+
+**The allocator census is identical to the digit on every arm on both runners**
+(488 750 calls / 296 669 580 bytes on `detail`, 374 603 / 252 359 139 on
+`photo`), with `peak_live` differing by **one or two bytes out of 17.4 MB** —
+proof that this moves arithmetic and not allocation, and that the arms are the
+arms they claim to be. Every arm on every target codes the same frame
+(8 734 bytes on `detail`, 5 301 on `photo`).
+
+### `windows-latest` x86-64: not resolvable, and one figure that needs naming
+
+`detail` — the content with MORE of the lever's mode family — comes back a flat
+**−0.058 % at 14/24 rounds (p = 0.54)**, i.e. nothing, at 0.14x its own floor.
+On the same runner in the same job, `photo` comes back **+0.362 %** with
+**4/24 rounds faster (p = 0.0015)** — the wrong sign, significant by the sign
+test, but **at 0.85x that band's own noise floor** and comfortably under the
+0.50-0.86 % MDE this runner was measured at
+([`winperf_content_census_2026-08-03.md`](winperf_content_census_2026-08-03.md)
+§5).
+
+**Reported rather than buried, and read as follows.** If the AVX2 tier were
+genuinely slower, the effect would have to be *larger* on `detail`, which has
+30 % more of the mode family — and `detail` is a flat null. Two contents on one
+VM disagreeing in sign, with the richer one showing nothing, is the signature of
+the runner rather than of the kernel. But this is an argument, not a
+measurement: **the honest statement is that `windows-latest` cannot resolve a
+0.4 %-class effect at n=24, that its `photo` band leans the wrong way inside its
+own floor, and that a re-run at higher `rounds` on that runner is the open
+item.** The AVX2 tier is otherwise compiled (`cargo check --target
+x86_64-apple-darwin`) and differentially tested (the `v3` tier is in the token
+permutations `simd16`'s differential runs).
+
+This is the first lever in the sequence whose mode family the winperf harness
+could see on BOTH of its established contents — KB-PERF-4's could not be seen on
+`detail` at all — and §2 shows that was checked before the run rather than
+discovered afterwards.
 
 ---
 
@@ -488,6 +558,8 @@ touched.
   bd8 path gets nothing from this change — it is an encoder lever, and the encoder
   holds its planes as `u16` at every bit depth.
 * **Linux is unmeasured.**
+* **`windows-latest` x86-64 is measured and NOT resolved**, and its `photo` band
+  leans +0.36 % — inside its own floor, but the wrong sign. §8.
 * **The rest of the predictor class is untouched**: PAETH (+0.87 ms, §4), the edge
   filter (+0.81), the DC/V/H fills (+0.74), CFL (+1.40). The DC/V/H fills are
   already memset/memcpy slice ops, so that row is a *dispatch and call* cost

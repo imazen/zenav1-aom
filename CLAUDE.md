@@ -4485,6 +4485,102 @@ and those are untouched — the named follow-up.
   every bit depth), z2's left half, `up==1` runs, `w==4` blocks, and the
   +4.45 ms of non-directional predictor class.
 
+### KB-PERF-5 — Encoder: SMOOTH ran at HALF libaom's lane width — LANDED ✅ 2026-08-03; PAETH's half built, measured NULL four times, REVERTED
+
+KB-PERF-4's named follow-up ("smooth + paeth, +2.63 ms, already `i32x8` where
+libaom is `u8`/`u16`"). Record:
+**`benchmarks/encoder_intra_smooth_paeth_2026-08-03.md`** (+ `.meta`, `.audit.txt`,
+`.census.txt`, `.control.tsv`, `.stage.tsv`, and FIVE band TSVs).
+
+**THE PROJECTION HELD — the first one in this sequence that did.** Re-measured
+first, per §14: **+2.63 ms projected, +2.852 ms measured** (8 % apart) against
+KB-PERF-2's 18x, KB-PERF-3's 5x and KB-PERF-4's 13x. **The difference is that
+this projection came from a NAMED MECHANISM measured like-for-like, not from a
+profiler's ranked stage** — two port symbols against ten C ones, nothing else in
+the row. Split: **SMOOTH +1.986 ms (11.5x), PAETH +0.865 ms (7.3x)**, and that
+split turned out to be the whole story.
+
+- **THE FIX** is `crates/aom-dsp/src/intra/simd16.rs`, three
+  `#[magetypes(define(u16x16), v3, neon, wasm128, -scalar)]` bodies gated at
+  runtime; `super::simd`'s `i32x8` kernels stay as the decline path.
+  **`wasm128` is in the tier list deliberately** — the kernels it shadows carry
+  it, and omitting it would have silently DE-VECTORIZED WASM for every bd8
+  block, a regression no gate in the repo can see.
+- **MEASURED: −0.38 %, 3.1613x → 3.150x**, 60 rounds, **arm order ROTATED**,
+  **51/60 and 52/60 rounds faster on two copies of the shipped binary
+  (p < 0.0001 each, paired means agreeing to 0.005 pp)** against a same-binary
+  null of −0.009 % at 30/60 (p = 1.00). Three earlier bands replicate at
+  −0.28 / −0.31 / −0.36 %. ~200 interleaved rounds in total.
+- **THE AUDIT IS EXHAUSTIVE ENUMERATION, not an inequality** (`xtask/audit_nd16_lanes.py`):
+  every intermediate is a function of ≤ 4 small scalars, so the whole product
+  space is swept. **`M* = 255`, TIGHT** (`(256-w)*b` is exactly 65536 at
+  M = 256), on the DATA not on `bd`, so bd10/bd12 decline. SMOOTH's numerator
+  does NOT fit `u16`, so the halves combine through libaom's **TRUNCATING**
+  halving add; `((A+B)>>1 + 128)>>8 == (A+B+256)>>9` is verified over **every
+  reachable sum (0..130560)** and the ROUNDING form is shown wrong at A+B=255.
+  No bound widened.
+- **PAETH: BUILT IN FULL, MEASURED NULL IN FOUR BANDS, REVERTED.** Own bound
+  (`M* = 16383`, admitting bd8/10/12 — wider reach than the shipped half), full
+  differential, reach + bite pins. Paired medians **+0.08 / −0.01 / +0.09 /
+  +0.04 %**, sign-test **p = 0.65 / 1.00 / 0.29 / 0.39**, across two store
+  shapes. In the **position-balanced** band the composed binary and the
+  smooth-only binary are indistinguishable (−0.007 %, 25/49, p = 1.00).
+  **Mechanism: PAETH is STORE-bound, not arithmetic-bound** (6 vector ops per
+  chunk against the same 2-bytes-per-pixel store into a `u16` plane), which the
+  store-shape A/B corroborates — `bitcast_u16x16` + `copy_from_slice` measured
+  +0.14 % against the lane loop, p = 0.13. Preserved at
+  `~/tmp/smooth/simd16.withpaeth.rs`; its bound is still derived by the audit.
+- **HARNESS: a fixed-order interleave CONFOUNDS ARM WITH POSITION, and it is
+  worth as much as the effect.** Two copies of ONE binary at round positions 5
+  and 6 came out **0.34 pp apart** while the copies at positions 1 and 2 agreed
+  to 0.11 pp. `scripts/eprof_ab.sh` gains **`ROTATE=1`** (default off) + a
+  `position` column; `eprof_ab_stats.py` parses both TSV shapes. Pooled over all
+  arms the drift is **1.7 % across a round**, and it vanishes under rotation
+  (positions 1-5 within 0.1 % on the headline band). The same drift is on record
+  for `windows-11-arm`, where it is handled by pooling after the fact — rotation
+  removes it by construction. **Use `ROTATE=1` for every new band.**
+- **CENSUS RUN BEFORE THE BAND, and this time it said GO.** `aom_dsp::census`
+  gains `nd_mode_tx_calls` / `nd_mode_tx_px` and `content_census.rs` the
+  `nd_mode_x_tx` / `nd_mode_x_width` tables — **a column-vectorized predictor is
+  priced by BLOCK WIDTH** and the committed census could not report that.
+  SMOOTH+PAETH is **43.6 %** of predicted px on the study photograph, **50.6 %
+  on winperf `detail`**, 39.1 % on `photo`, 38.3 % on `smooth` — every content
+  reaches this lever, the opposite of KB-PERF-4. Eligible fraction **~100 %**
+  (100 % bd8; `bw >= 16` is 92.8 % of SMOOTH's pixels), so the delivered 27 % of
+  the row is NOT an eligibility loss — it is the loads, the per-row splats and
+  the 32-byte stores into a `u16` plane (twice libaom's `u8` bytes) that the
+  lane width does not touch.
+- **Gates**: 972/972 with `--run-ignored all` in BOTH dispatch modes, gate 2
+  zero pinned cells, `cargo check` for `x86_64-apple-darwin` and
+  `wasm32-unknown-unknown`. **The bite proofs are what prove the INTEGRATION
+  differentials reach the new code**, and the asymmetry is the result: the
+  rounding-halving-add perturbation fails `intra_simd_diff` / `build_nd_diff` /
+  `intra_lowbd_diff` / `predict_intra_diff` while **`highbd_diff` (bd10/12 only,
+  where the gate declines) stays green**, and the `u8` and directional suites
+  stay green through both perturbations.
+- **WINDOWS: RESOLVED on `windows-11-arm` on BOTH contents, and the effect ORDERS
+  WITH THE CENSUS SHARE** — run 30819647374, `arms: prepost`, `base_sha` =
+  the immediately-preceding commit, 24 rounds:
+  **`detail` −0.961 % at 2.66x that band's own noise floor, `photo` −0.512 % at
+  1.70x, 22/24 rounds each, p < 0.0001.** `detail` carries 50.6 % of the lever's
+  mode family and `photo` 39.1 %, measured on the same VM in the same job — the
+  census's prediction, made before the run, confirmed by it. Darwin's −0.38 %
+  (photograph, 43.6 %) sits between them on a different CPU. **Allocator
+  censuses identical to the digit on every arm on both runners** (`peak_live`
+  differs by 1-2 bytes of 17.4 MB) — arithmetic, not allocation.
+  **`windows-latest` x86-64 NOT resolvable**: `detail` −0.058 % (14/24,
+  p = 0.54) at 0.14x floor, but `photo` **+0.362 %** (4/24 faster, p = 0.0015)
+  at 0.85x floor — the wrong sign, under the floor. Named rather than buried:
+  if the AVX2 tier were slower the RICHER content would show it and `detail` is
+  a flat null, so this reads as the runner — but that is an argument, and a
+  higher-`rounds` re-run on that runner is the open item.
+- **Untouched and named**: PAETH (+0.87 ms), the edge filter (+0.81), the
+  DC/V/H fills (+0.74 — already memset/memcpy slice ops, so that row is a
+  DISPATCH-AND-CALL cost and needs a different lever), CFL (+1.40), and the
+  lowbd `u8` `intra::predict` path. **SMOOTH_V / SMOOTH_H ship with a
+  correctness gate and NO timing evidence** — the census says the encoder picks
+  them ZERO times at this cell on all four sources.
+
 
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)
 

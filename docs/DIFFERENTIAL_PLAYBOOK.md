@@ -206,6 +206,19 @@ rounding, not a second observation.)*
   `docs/SIMD_REACH_AUDIT_2026-07-28.md:83`).
 - Commit `benchmarks/<thing>_<YYYY-MM-DD>.{md,tsv,meta}` with git commit, host,
   command line, and `uptime` load.
+- **A fixed-order interleave confounds ARM with POSITION, and on this box the
+  position is worth as much as the effect.** Measured 2026-08-03
+  (`benchmarks/encoder_intra_smooth_paeth_2026-08-03.md` §4): two copies of ONE
+  identical binary sitting at round positions 5 and 6 came out **0.34 pp apart**
+  while the copies at positions 1 and 2 agreed to 0.11 pp; pooled over all arms
+  the gradient across a round is **1.7 %**. The same drift is on record for
+  `windows-11-arm` (`winperf_content_census_2026-08-03.md` §5), where it is
+  corrected for by *pooling* the copies on each side after the fact.
+  `scripts/eprof_ab.sh` now takes **`ROTATE=1`** (default off, adds a `position`
+  column; `eprof_ab_stats.py` reads both TSV shapes), which rotates the arm
+  order one step per round so every arm spends `N/k` rounds in each position and
+  the drift cancels by construction instead of by a correction. **Use it for new
+  bands**; a null arm that disagrees with its own twin is the symptom.
 - **A same-binary null arm beats an argument about noise.** Run the winning
   build twice, under two labels, from two copies of the identical executable,
   interleaved with everything else. Its delta IS the box's noise floor, measured
