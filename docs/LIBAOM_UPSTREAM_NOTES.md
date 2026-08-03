@@ -519,3 +519,68 @@ at any speed, or to the port's own screen path — only libaom-C at cpu-used 1 o
 screen content was measured. Our `encode_rgb8_with_target` work should not assume
 it is libaom-specific without checking.
 
+
+### C7. `aom_once` performs no synchronisation in our oracle build, and two of the tables it guards are cleared before they are published
+
+**Why it matters:** it makes every lazily-initialised libaom table a data race
+under the concurrency libtest gives us for free, and the observable failure is a
+bare SIGSEGV with no attribution. It cost an afternoon of bisection and a false
+"runner flake" conclusion (`docs/DIFFERENTIAL_PLAYBOOK.md` §11).
+
+**SOURCE.** `upstream/aom_ports/aom_once.h:41-81` has three implementations. We
+build the oracle `-DCONFIG_MULTITHREAD=0` (`crates/aom-sys-ref/build.rs:263`,
+deliberate — it is the determinism definition), so neither the Win32 `INIT_ONCE`
+arm nor the `pthread_once` arm compiles; we get the fallback at `:70-80`, whose
+own comment says *"Default version that performs no synchronization"*:
+
+```c
+static void aom_once(void (*func)(void)) {
+  static volatile int done;
+  if (!done) { func(); done = 1; }
+}
+```
+
+`done` is set **after** `func()` returns, so N threads can be inside `func()` at
+once. That is harmless for an idempotent fill of *distinct* storage, and is
+presumably why libaom ships it — single-threaded builds do not race, and
+libaom's own multithreaded builds get the real once.
+
+**It is not harmless for two of the seven**, because they publish through
+storage they first clear:
+
+- `av1_init_wedge_masks` (`upstream/av1/common/reconinter.c:600`) →
+  `init_wedge_masks` (`:494-519`) opens with
+  `memset(wedge_masks, 0, sizeof(wedge_masks))`. For the whole duration of the
+  init, every `av1_wedge_params_lookup[bsize].masks[sign][index]` is NULL, and
+  `av1_get_contiguous_soft_mask` (`reconinter.h:456-460`) hands that pointer to
+  the caller with no check. A second thread's `memset` re-NULLs entries the
+  first thread already published;
+- `av1_init_intra_predictors` (`upstream/av1/common/reconintra.c:1894`) has the
+  same shape over a **function-pointer** table — the same fault, one indirection
+  worse.
+
+The other five (`av1_rtcd`, `aom_dsp_rtcd`, `aom_scale_rtcd`,
+`av1_init_me_luts`, `av1_rc_init_minq_luts`) fill their tables without a
+clearing pass, so a double entry is benign there.
+
+**libaom's own tests do not catch it** because libaom never runs in this
+configuration: `CONFIG_MULTITHREAD=0` is a single-threaded build, and their test
+suite's threading is inside the encoder/decoder, not across two independent
+first-touch call sites. We are the ones who put a single-threaded-configured
+libaom under a multi-threaded test harness.
+
+**MEASURED** (Apple Silicon, `--profile test-fast`, 2026-08-03):
+`crates/aom-dsp/tests/interintra_diff.rs` faulted **16/400 (4.0%)** —
+`EXC_BAD_ACCESS ... at 0x0` in `_platform_memmove` ← `shim_ii_wedge_mask`; the
+isolating harness `crates/aom-sys-ref/tests/wedge_init_race.rs` (8 threads
+released together) faulted **133/200 (66.5%)**. Both are 0 after the fix
+(0/1000 and 0/300).
+
+**How we handle it:** `aom_sys_ref::ref_init` forces **all seven** initialisers
+under one Rust `Once`, so every `done` flag is set before a second thread can
+reach C; `shim_ii_wedge_mask` additionally returns `-1` on a NULL table so a
+regression names itself instead of faulting. **Any new shim entry point that can
+reach a lazy libaom table must call `ref_init()` first** — including anything
+that runs a real encoder, since `av1_initialize_enc`
+(`upstream/av1/encoder/encoder.c:305-315`) calls six of the seven and is itself
+unguarded.

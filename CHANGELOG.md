@@ -61,6 +61,24 @@
 
 ### Fixed
 
+- **The differential oracle raced on libaom's lazy tables, which is what
+  SIGSEGV'd `interintra_diff` on the aarch64 runner.** It was recorded as an
+  unowned "runner flake"; it was a data race, and it predated every commit that
+  was bisected for it. The oracle is built `CONFIG_MULTITHREAD=0`, which selects
+  libaom's no-synchronisation `aom_once` (`upstream/aom_ports/aom_once.h:70-80`),
+  and `av1_init_wedge_masks` publishes through a table it first `memset`s to
+  zero — so a second libtest thread re-NULLs entries the first already published
+  and the shim `memcpy`s from NULL. `aom_sys_ref::ref_init` now forces all seven
+  of libaom's `aom_once`-guarded initialisers under one Rust `Once`, and the
+  nine wrappers that run a real encoder (`av1_initialize_enc` calls six of the
+  seven, unguarded) funnel through it. MEASURED on Apple Silicon: 16/400 (4.0%)
+  SIGSEGV before, **0/1000 after**; the isolating gate
+  `crates/aom-sys-ref/tests/wedge_init_race.rs` went 133/200 (66.5%) → 0/300.
+  `shim_ii_wedge_mask` also returns `-1` on a NULL table so any future
+  regression panics with a name instead of faulting — with the funnel removed
+  but the guard in place, 121/200 and 17/300 failures were **all** named panics
+  and none were signal 11. No coded byte moves. `docs/DIFFERENTIAL_PLAYBOOK.md`
+  §11 + `docs/LIBAOM_UPSTREAM_NOTES.md` C7.
 - **Encoder: `--cpu-used 9` refused to encode ordinary images — the nonrd
   estimate arm could not code a NON-SQUARE leaf (KB-34).** Since KB-32,
   `nonrd_pickmode::nonrd_leaf_tx_size` panicked with a named HANDOFF whenever

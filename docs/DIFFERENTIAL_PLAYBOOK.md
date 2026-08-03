@@ -596,18 +596,76 @@ wrong.
   ESTABLISHED**: checked 2026-07-31, this count has no second record in the
   repo; re-run `cargo fmt -p aom-dsp --check` before quoting it). Do **not** run
   `cargo fmt`; it buries the change.
-- **`crates/aom-dsp/tests/interintra_diff.rs` SIGSEGVs INTERMITTENTLY on the
-  `macos-14-arm64` CI runner (signal 11, before any test prints), and it is a
-  FLAKE rather than a regression** — observed 2026-08-03 failing on `c8aba69`
-  and `1b03198` and passing on `5884f49` and `b1a7222`, where the last two
-  bracket the first in code. It passes locally on Apple Silicon under both
-  dispatch modes, 5/5 consecutive runs, and its subject
-  (`inter::interintra`'s blend / wedge mask) is unrelated to anything the
-  failing commits touched. **Do not attribute an `aarch64 differential
-  (workspace, default dispatch)` failure to your landing until you have checked
-  whether the same job passed on an adjacent commit** — re-run the job first.
-  Root cause is unknown and unowned; it is recorded here so the next session
-  does not spend the afternoon bisecting it.
+- **`interintra_diff`'s intermittent aarch64 SIGSEGV was a REAL DATA RACE in the
+  oracle, not a runner flake — root-caused and FIXED 2026-08-03.** The earlier
+  entry here called it "a FLAKE rather than a regression … root cause unknown
+  and unowned", on the evidence that it failed on `c8aba69`/`1b03198`, passed on
+  `5884f49`/`b1a7222` (which bracket the first in code), and "passes locally
+  5/5". Both halves of that reasoning were sound and both conclusions were
+  wrong, which is the transferable lesson:
+  - "not a regression from any commit" was correct **and** did not imply "not a
+    bug". A defect that predates every commit under test is invisible to
+    bisection by construction;
+  - **5/5 is not a measurement.** MEASURED on Apple Silicon at `a5e0572`: the
+    unmodified binary faults **16 of 400 runs (4.0%)**. Five consecutive passes
+    have a ~81% chance at that rate, so the "passes locally" observation was
+    consistent with the bug the whole time. Loop until the expected count is
+    >5, or say "did not reproduce in N" with N attached.
+
+  **Root:** the oracle is built `-DCONFIG_MULTITHREAD=0`
+  (`crates/aom-sys-ref/build.rs:263`, deliberate — it is the determinism
+  definition), which selects libaom's **no-synchronisation** `aom_once`
+  (`upstream/aom_ports/aom_once.h:70-80` — `static volatile int done; if
+  (!done) { func(); done = 1; }`, `done` set only *after* `func` returns).
+  `av1_init_wedge_masks` (`upstream/av1/common/reconinter.c:600`) is guarded by
+  it and **publishes through storage it first clears**: its body opens with
+  `memset(wedge_masks, 0, sizeof(wedge_masks))` (`:497`), so mid-init every
+  `av1_wedge_params_lookup[].masks[][]` entry reads NULL, and
+  `av1_get_contiguous_soft_mask` (`reconinter.h:456-460`) returns that pointer
+  straight to the shim's `memcpy` (`crates/aom-sys-ref/shim/interintra_shim.c:48`). libtest runs a
+  binary's tests concurrently; `interintra_diff` has **two** that reach the
+  wedge table, and both call `ref_init()` first — whose Rust `Once` releases the
+  loser exactly when the winner finishes, maximising the overlap. macOS crash
+  report: `EXC_BAD_ACCESS (SIGSEGV) KERN_INVALID_ADDRESS at 0x0` in
+  `_platform_memmove` ← `shim_ii_wedge_mask` ← `ref_ii_wedge_mask`.
+
+  **Fix** (`crates/aom-sys-ref/src/lib.rs`, `ref_init`): force **all seven** of
+  libaom's `aom_once`-guarded initialisers from the single-threaded Rust `Once`
+  funnel — the three rtcd tables that were already there plus
+  `av1_init_intra_predictors` / `av1_init_me_luts` / `av1_rc_init_minq_luts` /
+  `av1_init_wedge_masks`. Every `done` flag is then already set before any
+  second thread reaches C. The same nine wrappers that run a real encoder
+  through `aom_codec_enc_init` gained the funnel too, because
+  `av1_initialize_enc` (`upstream/av1/encoder/encoder.c:305-315`) calls six of
+  the seven and is itself unguarded — `av1_init_intra_predictors` has the
+  identical shape over a *function-pointer* table, so that was the same latent
+  fault waiting on a binary with two concurrent encoder tests.
+
+  **Teeth** (all on Apple Silicon, `--profile test-fast`):
+
+  | build | `wedge_init_race` (8 threads) | `interintra_diff` |
+  |---|---|---|
+  | at `a5e0572`, unmodified | 133/200 SIGSEGV (66.5%) | 16/400 SIGSEGV (4.0%) |
+  | attribution guard only, funnel removed | 121/200 **named panic**, 0 SIGSEGV | 17/300 **named panic**, 0 SIGSEGV |
+  | fixed | 0/300 | 0/1000 (+200 under `AOM_FORCE_SCALAR=1`) |
+
+  The middle row is the load-bearing one twice over: it proves the funnel (not
+  a rebuild or a timing accident) is what removes the fault, and it proves the
+  guard converts **100%** of the faults into an attributable failure.
+  `crates/aom-sys-ref/tests/wedge_init_race.rs` is the regression gate; it is
+  16× more sensitive than the test that found the bug, which is the only honest
+  claim to make for it — it is not asymmetric with the existing suite (`§1`),
+  because the existing suite was catching this too, just at 4%.
+
+  **The rule this generalises to:** `CONFIG_MULTITHREAD=0` means *no*
+  `aom_once` in the oracle synchronises. Any new shim entry point that can
+  reach a lazily-initialised libaom table must call `ref_init()` first. See
+  `docs/LIBAOM_UPSTREAM_NOTES.md` C7 for the enumeration.
+
+  **Attribution from here on:** a red `interintra_diff` can no longer be
+  signal 11 from this cause — it fails with a panic naming the table, the
+  bsize/index, and the funnel it wants. A bare SIGSEGV there is now a *new*
+  finding, not this one.
 - CI runs `--profile test-fast`, not debug (`.github/workflows/ci.yml:83`,
   `:121`, `:235`). The debug profile put the x86-64 leg at 5h47m and then 6h00m
   — GitHub's hard cap, reported as "cancelled" (recorded at

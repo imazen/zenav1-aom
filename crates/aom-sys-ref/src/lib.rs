@@ -14,6 +14,14 @@ extern "C" {
     fn av1_rtcd();
     fn aom_dsp_rtcd();
     fn aom_scale_rtcd();
+
+    // The remaining four `aom_once`-guarded lazy initialisers libaom exports.
+    // They are forced from `ref_init` for the reason documented there; do NOT
+    // call them anywhere else.
+    fn av1_init_intra_predictors();
+    fn av1_init_me_luts();
+    fn av1_rc_init_minq_luts();
+    fn av1_init_wedge_masks();
 }
 
 // Entropy-coder shim (shim/entropy_shim.c) — opaque od_ec_enc / od_ec_dec.
@@ -6233,7 +6241,47 @@ pub fn ref_ec_decode(buf: &[u8], ops: &[EcOp]) -> Vec<i32> {
     }
 }
 
-/// Initialize the reference library's dispatch tables exactly once.
+/// Initialize the reference library's dispatch tables and every one of its
+/// `aom_once`-guarded lazy tables, exactly once, from a single thread.
+///
+/// **Why the last four calls are here and not left lazy.** The oracle is built
+/// `-DCONFIG_MULTITHREAD=0` (`build.rs`, deliberate — it is the determinism
+/// definition against which bit-exactness is measured). That selects the
+/// **no-synchronisation** `aom_once` (`upstream/aom_ports/aom_once.h:70-80`):
+///
+/// ```c
+/// static void aom_once(void (*func)(void)) {
+///   static volatile int done;
+///   if (!done) { func(); done = 1; }
+/// }
+/// ```
+///
+/// `done` is set only *after* `func()` returns, so two threads can both enter
+/// `func()`. That is not benign for these tables, because their initialisers
+/// **publish through storage they first clear**: `init_wedge_masks` opens with
+/// `memset(wedge_masks, 0, sizeof(wedge_masks))`
+/// (`upstream/av1/common/reconinter.c:497`), and
+/// `av1_get_contiguous_soft_mask` (`upstream/av1/common/reconinter.h:456-460`)
+/// returns whatever pointer is in that table right now. A second thread's
+/// `memset` re-NULLs entries the first thread already published, and the first
+/// thread then `memcpy`s from NULL. That is exactly the SIGSEGV
+/// `crates/aom-dsp/tests/interintra_diff.rs` hit intermittently on the aarch64
+/// runner — MEASURED 16/400 = 4.0% locally on Apple Silicon before this fix,
+/// 0/400 after; the isolating harness (`tests/wedge_init_race.rs`) ran 133/200
+/// = 66.5%. `av1_init_intra_predictors` has the same shape over a *function
+/// pointer* table, which is the same class of fault.
+///
+/// Forcing all seven here — under a Rust `Once`, from whichever thread arrives
+/// first while the others block — leaves every `done` flag already set by the
+/// time any second thread reaches C. Every one of these is a deterministic,
+/// idempotent table fill that libaom would run anyway on first use, so nothing
+/// observable changes; only the *ordering* does.
+///
+/// **Consequence for new shims:** any shim entry point that can reach a
+/// lazily-initialised libaom table must call `ref_init()` first. libaom's
+/// `av1_initialize_enc` (`upstream/av1/encoder/encoder.c:305-315`) calls six of
+/// these seven and is itself unguarded, so every wrapper that runs a real
+/// encoder through `aom_codec_enc_init` needs the funnel too.
 pub fn ref_init() {
     use std::sync::Once;
     static INIT: Once = Once::new();
@@ -6241,6 +6289,12 @@ pub fn ref_init() {
         av1_rtcd();
         aom_dsp_rtcd();
         aom_scale_rtcd();
+        // Order matters only in that the rtcd tables must exist first:
+        // `init_wedge_masks` copies through `aom_convolve_copy`, an rtcd pointer.
+        av1_init_intra_predictors();
+        av1_init_me_luts();
+        av1_rc_init_minq_luts();
+        av1_init_wedge_masks();
     });
 }
 
@@ -8969,6 +9023,9 @@ pub const DUMP_KF_FC_LEN: usize = 7061;
 /// `base_qindex` as a flat u16 buffer mirroring `KfFrameContext`'s field order.
 pub fn ref_dump_default_kf_fc(base_qindex: i32) -> Vec<u16> {
     let mut out = vec![0u16; DUMP_KF_FC_LEN];
+    // aom_once funnel: this runs a real encoder (av1_initialize_enc), which reaches
+    // libaom's unsynchronised lazy tables. See ref_init.
+    ref_init();
     let rc = unsafe { shim_dump_default_kf_fc(base_qindex, out.as_mut_ptr()) };
     assert_eq!(rc, 0, "shim_dump_default_kf_fc failed ({rc})");
     out
@@ -9297,6 +9354,9 @@ pub fn ref_encode_av1_kf_disable_cdf(
     assert_eq!(y.len(), w * h);
     assert!(mono || (u.len() == cw * ch && v.len() == cw * ch));
     let mut out = vec![0u8; w * h * 8 + 65536];
+    // aom_once funnel: this runs a real encoder (av1_initialize_enc), which reaches
+    // libaom's unsynchronised lazy tables. See ref_init.
+    ref_init();
     let n = unsafe {
         shim_encode_av1_kf_disable_cdf(
             y.as_ptr(),
@@ -9531,6 +9591,9 @@ pub fn ref_encode_av1_inter_2frame(
         );
     }
     let mut out = vec![0u8; w * h * 8 + 65536];
+    // aom_once funnel: this runs a real encoder (av1_initialize_enc), which reaches
+    // libaom's unsynchronised lazy tables. See ref_init.
+    ref_init();
     let n = unsafe {
         shim_encode_av1_inter_2frame(
             f0.0.as_ptr(),
@@ -12348,6 +12411,9 @@ pub fn ref_encode_av1_kf_superres_mode(
     assert_eq!(y.len(), w * h);
     assert!(mono || (u.len() == cw * ch && v.len() == cw * ch));
     let mut out = vec![0u8; w * h * 8 + 65536];
+    // aom_once funnel: this runs a real encoder (av1_initialize_enc), which reaches
+    // libaom's unsynchronised lazy tables. See ref_init.
+    ref_init();
     let n = unsafe {
         shim_encode_av1_kf_superres_mode(
             y.as_ptr(),
@@ -12916,6 +12982,9 @@ pub fn ref_encode_av1_kf_film_grain(
     assert_eq!(y.len(), w * h);
     assert!(mono || (u.len() == cw * ch && v.len() == cw * ch));
     let mut out = vec![0u8; w * h * 8 + 65536];
+    // aom_once funnel: this runs a real encoder (av1_initialize_enc), which reaches
+    // libaom's unsynchronised lazy tables. See ref_init.
+    ref_init();
     let n = unsafe {
         shim_encode_av1_kf_film_grain(
             y.as_ptr(),
@@ -13014,6 +13083,9 @@ pub fn ref_encode_av1_kf_film_grain_table(
     let cpath = std::ffi::CString::new(table_path.as_os_str().to_str().expect("utf8 path"))
         .expect("path has interior NUL");
     let mut out = vec![0u8; w * h * 8 + 65536];
+    // aom_once funnel: this runs a real encoder (av1_initialize_enc), which reaches
+    // libaom's unsynchronised lazy tables. See ref_init.
+    ref_init();
     let n = unsafe {
         shim_encode_av1_kf_film_grain_table(
             y.as_ptr(),
@@ -13094,6 +13166,9 @@ pub fn ref_encode_av1_kf_defaults(
     assert_eq!(y.len(), w * h);
     assert!(mono || (u.len() == cw * ch && v.len() == cw * ch));
     let mut out = vec![0u8; w * h * 8 + 65536];
+    // aom_once funnel: this runs a real encoder (av1_initialize_enc), which reaches
+    // libaom's unsynchronised lazy tables. See ref_init.
+    ref_init();
     let n = unsafe {
         shim_encode_av1_kf_defaults(
             y.as_ptr(),
@@ -13228,6 +13303,9 @@ pub fn ref_flat_block_finder_run(
     let nbw = w.div_ceil(block_size);
     let nbh = h.div_ceil(block_size);
     let mut out = vec![0u8; nbw * nbh];
+    // aom_once funnel: this runs a real encoder (av1_initialize_enc), which reaches
+    // libaom's unsynchronised lazy tables. See ref_init.
+    ref_init();
     let num_flat = unsafe {
         shim_flat_block_finder_run(
             pixels.as_ptr(),
@@ -14025,6 +14103,9 @@ pub fn ref_encode_av1_kf_tune(
     knobs: &RefTuneKnobs,
 ) -> Vec<u8> {
     let mut out = vec![0u8; (w * h * 8).max(1 << 20)];
+    // aom_once funnel: this runs a real encoder (av1_initialize_enc), which reaches
+    // libaom's unsynchronised lazy tables. See ref_init.
+    ref_init();
     let n = unsafe {
         shim_encode_av1_kf_tune(
             y.as_ptr(),
@@ -15156,10 +15237,23 @@ pub fn ref_blend_a64_mask(
 /// Reference libaom baked wedge mask `av1_wedge_params_lookup[bsize].masks[0][index]`
 /// (`av1_get_contiguous_soft_mask`, sign 0), a `bw*bh` contiguous buffer. `None`
 /// when the bsize has no wedge types.
+///
+/// Panics (rather than faulting) if the C wedge table reads back unpublished —
+/// see the attribution guard in `shim/interintra_shim.c` and the `aom_once`
+/// discussion on [`ref_init`]. `ref_init` above is what makes that impossible;
+/// the panic exists so that a future regression is self-naming instead of a
+/// bare signal 11.
 pub fn ref_ii_wedge_mask(bsize: usize, index: usize, bw: usize, bh: usize) -> Option<Vec<u8>> {
     ref_init();
     let mut out = vec![0u8; bw * bh];
     let ok = unsafe { shim_ii_wedge_mask(bsize as i32, index as i32, out.as_mut_ptr()) };
+    assert!(
+        ok >= 0,
+        "libaom's wedge mask table read back NULL for bsize={bsize} index={index}: \
+         av1_init_wedge_masks was still in flight on another thread. The oracle is built \
+         CONFIG_MULTITHREAD=0, so aom_once does not synchronise — every caller must funnel \
+         through aom_sys_ref::ref_init() first (see its docs)."
+    );
     if ok != 0 {
         Some(out)
     } else {

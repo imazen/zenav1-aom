@@ -22,12 +22,27 @@ void shim_blend_a64_mask(uint8_t *dst, uint32_t ds, const uint8_t *s0,
 
 // Init the compound wedge codebook and copy the baked mask masks[0][index]
 // (block_size_wide[bsize] * block_size_high[bsize] bytes, stride bw) into out.
-// Returns 0 if the bsize has no wedge types.
+// Returns 0 if the bsize has no wedge types, -1 if the wedge table is not yet
+// published (see below).
+//
+// ATTRIBUTION GUARD (the -1 return). The oracle is built CONFIG_MULTITHREAD=0
+// (build.rs, deliberate — it is the determinism definition), which selects the
+// NO-SYNCHRONISATION aom_once (upstream/aom_ports/aom_once.h:70-80). The body
+// av1_init_wedge_masks() guards opens with `memset(wedge_masks, 0, ...)`
+// (upstream/av1/common/reconinter.c:497), so while an init is in flight EVERY
+// av1_wedge_params_lookup[].masks[][] entry reads back NULL, and
+// av1_get_contiguous_soft_mask hands that NULL straight to the memcpy below.
+// Two libtest threads entering the unsynchronised once therefore produced a
+// bare SIGSEGV in memmove with no attribution at all. The init is now forced
+// from ref_init()'s Rust Once (single-threaded funnel) so this cannot happen;
+// the check stays so that if it ever does, the failure NAMES itself instead of
+// costing another afternoon.
 int shim_ii_wedge_mask(int bsize, int index, uint8_t *out) {
   av1_init_wedge_masks();
   if (av1_wedge_params_lookup[bsize].wedge_types == 0) return 0;
   const uint8_t *m = av1_get_contiguous_soft_mask((int8_t)index, 0,
                                                   (BLOCK_SIZE)bsize);
+  if (m == NULL) return -1;
   int bw = block_size_wide[bsize];
   int bh = block_size_high[bsize];
   memcpy(out, m, (size_t)bw * (size_t)bh);
