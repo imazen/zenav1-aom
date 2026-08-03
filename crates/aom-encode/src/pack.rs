@@ -1957,6 +1957,13 @@ pub fn pack_tile_lr(
                         sb_size,
                         &mut visits,
                         &mut last_source_variance,
+                        // `x->color_palette_thresh = 64` — the per-SUPERBLOCK
+                        // reset in `encode_sb_row` (encodeframe.c:1297), taken
+                        // fresh here for the same reason C takes it there: the
+                        // nonrd estimate arm's palette gate lowers it to 32
+                        // per leaf and never restores it, so the scope of the
+                        // carry is exactly one superblock.
+                        &mut 64i32,
                     )
                 } else {
                     let (tree, _stats) = crate::partition_pick::rd_use_partition_real(

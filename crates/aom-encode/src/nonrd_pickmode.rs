@@ -1110,6 +1110,18 @@ pub struct NonrdIntraPick {
     /// the max square tx for the leaf (TX_64X64 cap).
     pub tx_size: usize,
     pub rd: PartRdStats,
+    /// C's `try_palette` (nonrd_pickmode.c:1701-1710) for THIS leaf — see
+    /// [`nonrd_palette_arm_is_live`]. When true the caller must run
+    /// [`search_palette_mode_luma`] (the `if (try_palette)` block at
+    /// nonrd_pickmode.c:1711-1731); the mode/tx/rd above are then only the
+    /// pre-palette best, exactly as `best_rdc`/`best_mode` are in C at that
+    /// point.
+    pub palette_arm_live: bool,
+    /// `args.best_sad >> (b_width_log2_lookup[bsize] +
+    /// b_height_log2_lookup[bsize])` (nonrd_pickmode.c:1695-1697) — the
+    /// caller needs it for `x->color_palette_thresh = (best_sad_norm < 500)
+    /// ? 32 : 64` (:1713).
+    pub best_sad_norm: u32,
 }
 
 /// `mi->tx_size` for an estimate-arm leaf: `AOMMIN(max_txsize_lookup[bsize],
@@ -1727,32 +1739,27 @@ pub fn nonrd_pick_intra_mode(
         // (cpi->oxcf.mode == REALTIME gate, :1620-1623).
     }
 
-    // Palette arm (nonrd_pickmode.c:1698-1731). `av1_search_palette_mode_luma`
-    // is not ported for this arm, so the port REFUSES rather than silently
-    // coding a different winner — but it must refuse on C's own predicate, not
-    // on a superset of it. See [`nonrd_palette_arm_is_live`] for the four
-    // terms and for what the old frame-level form got wrong.
+    // Palette arm gate (nonrd_pickmode.c:1693-1710). The SEARCH itself
+    // (`av1_search_palette_mode_luma`) is run by the caller — see
+    // [`search_palette_mode_luma`] and [`NonrdIntraPick::palette_arm_live`] —
+    // because it needs the full-RD leaf state (`TxfmYrdEnv`, the palette cost
+    // tables, the neighbour palette projections) that this arm's
+    // [`NonrdIntraLeafCtx`] deliberately does not carry. C's own split is the
+    // same shape: the gate is inline here, the search is a call into
+    // intra_mode_search.c.
     let best_sad_norm = best_sad >> (b_log2(bw) + b_log2(bh));
     note_palette_gate_reach(
         lctx.enable_palette && lctx.allow_screen_content_tools && bw <= 64 && bh <= 64 && bsize >= 3,
         bsize,
         lctx.source_variance,
     );
-    assert!(
-        !nonrd_palette_arm_is_live(
-            lctx.enable_palette,
-            lctx.allow_screen_content_tools,
-            bsize,
-            lctx.prune_palette_search_nonrd,
-            prune_mode_based_on_sad,
-            best_sad_norm,
-            lctx.source_variance,
-        ),
-        "HANDOFF: av1_search_palette_mode_luma (intra_mode_search.c:1122) is not ported for \
-         the nonrd estimate arm, and C's try_palette is TRUE at bsize {bsize} \
-         (source_variance {}, best_sad_norm {best_sad_norm}) — the palette RD search would \
-         run here and can win the leaf. Wire it through `palette_search::\
-         rd_pick_palette_intra_sby` before encoding this configuration.",
+    let palette_arm_live = nonrd_palette_arm_is_live(
+        lctx.enable_palette,
+        lctx.allow_screen_content_tools,
+        bsize,
+        lctx.prune_palette_search_nonrd,
+        prune_mode_based_on_sad,
+        best_sad_norm,
         lctx.source_variance,
     );
 
@@ -1763,7 +1770,176 @@ pub fn nonrd_pick_intra_mode(
         mode: best_mode,
         tx_size: tx_size_full,
         rd: best_rdc,
+        palette_arm_live,
+        best_sad_norm,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Test instrumentation: what the estimate arm's palette search actually did.
+// ---------------------------------------------------------------------------
+//
+// `palette_gate_reach` says how many leaves C's `try_palette` selected. It does
+// NOT say whether the search that follows ever produced a palette, nor whether
+// the `color_palette_thresh` branch was exercised on both sides. A gate that
+// only reads the reach counters can be green on a cell where every search
+// returns `None`, which would prove nothing about the port of
+// `av1_search_palette_mode_luma` itself.
+//
+//   [0] searches entered (== `try_palette` true, one per leaf);
+//   [1] searches that returned a palette winner (`rd_stats_y.rate != INT_MAX`
+//       and `palette_size[0] != 0`, intra_mode_search.c:1155);
+//   [2] searches entered with `color_palette_thresh == 32`, i.e.
+//       `best_sad_norm < 500` (nonrd_pickmode.c:1713) — the other side is
+//       `[0] - [2]`.
+thread_local! {
+    static PALETTE_SEARCH_STATS: std::cell::Cell<[u64; 3]> = const {
+        std::cell::Cell::new([0; 3])
+    };
+}
+
+/// `[searches, winners, thresh32_searches]` since the last
+/// [`reset_nonrd_palette_search_stats`] **on this thread**. Test
+/// instrumentation.
+pub fn nonrd_palette_search_stats() -> [u64; 3] {
+    PALETTE_SEARCH_STATS.with(std::cell::Cell::get)
+}
+
+/// Zero this thread's [`nonrd_palette_search_stats`]. Test instrumentation.
+pub fn reset_nonrd_palette_search_stats() {
+    PALETTE_SEARCH_STATS.with(|c| c.set([0; 3]));
+}
+
+#[inline]
+fn note_palette_search(won: bool, color_palette_thresh: i32) {
+    PALETTE_SEARCH_STATS.with(|c| {
+        let mut v = c.get();
+        v[0] += 1;
+        v[1] += u64::from(won);
+        v[2] += u64::from(color_palette_thresh == 32);
+        c.set(v);
+    });
+}
+
+/// `x->color_palette_thresh = (best_sad_norm < 500) ? 32 : 64`
+/// (nonrd_pickmode.c:1713) — set INSIDE `if (try_palette)`, immediately before
+/// the search, and never restored (see
+/// [`crate::palette_search::PaletteSearchArgs::color_palette_thresh`]).
+pub fn nonrd_color_palette_thresh(best_sad_norm: u32) -> i32 {
+    if best_sad_norm < 500 { 32 } else { 64 }
+}
+
+/// The winner [`search_palette_mode_luma`] hands back — the fields
+/// `*mbmi = *best_mbmi` (palette.c:759) leaves live on the block, plus the
+/// RD triple `this_rd_cost` carries.
+pub struct NonrdPaletteWin {
+    /// `this_rd_cost->rate` — the post-fold rate (see the fold in
+    /// [`search_palette_mode_luma`]).
+    pub rate: i32,
+    /// `this_rd_cost->dist`.
+    pub dist: i64,
+    /// `this_rd_cost->rdcost`.
+    pub rdcost: i64,
+    /// `*best_mbmi` (palette.c:759) — `tx_size`, `palette_y` and the per-txb
+    /// tx-type `winners` the caller needs to build the leaf's `tx_type_map`.
+    /// `mode` is DC_PRED and `angle_delta` 0 by construction.
+    pub best: crate::intra_rd::IntraSbyBest,
+}
+
+/// `av1_search_palette_mode_luma` (intra_mode_search.c:1122) — the LUMA-only
+/// palette entry the **nonrd** estimate arm calls (nonrd_pickmode.c:1716).
+///
+/// It is a thin shell over the SAME `av1_rd_pick_palette_intra_sby` the
+/// full-RD intra search uses ([`crate::palette_search::rd_pick_palette_intra_sby`]),
+/// which is why nothing in the search machinery itself is duplicated here.
+/// What the shell adds, and what differs from the full-RD caller, is:
+///
+/// * **`dc_mode_cost` comes from a different table.** C: `const int *const
+///   intra_mode_cost = mode_costs->mbmode_cost[size_group_lookup[bsize]]`
+///   (:1136-1137), then `intra_mode_cost[DC_PRED]` (:1152). That is the
+///   INTER-frame `y_mode_cdf`-derived table (rd.c:109-110), not the KEY
+///   `y_mode_costs[above_ctx][left_ctx]` row `av1_rd_pick_intra_sby_mode`
+///   selects. On a KEY frame `y_mode_cdf` is at its default and never adapts,
+///   so this is a well-defined but neighbour-INdependent cost. Term for term;
+///   the caller supplies it on [`crate::palette_search::PaletteSearchArgs::dc_mode_cost`].
+/// * **the rate fold** (:1163-1175): `ref_frame_cost` (0 from the nonrd
+///   caller, :1712) then the skip-txfm flag, with the skip arm CLOBBERING the
+///   accumulated rate rather than adding to it — `rd_stats_y.rate =
+///   ref_frame_cost + skip_txfm_cost[ctx][1]` (:1167-1169), the same
+///   assignment-not-addition shape the estimate arm's own skip fold has
+///   (:1678).
+/// * **the two failure exits** (:1155-1158): `rate == INT_MAX` (no candidate
+///   beat `best_rd`) or `palette_size[0] == 0` (no candidate produced a
+///   palette at all) both mean "no palette", C signalling it as
+///   `rdcost = INT64_MAX` which the caller's `<` comparison then loses. Both
+///   collapse to `None` here: the port's search returns `won` exactly when a
+///   candidate updated `best`, and `*mbmi = *best_mbmi` (palette.c:759)
+///   restores `palette_size[0] == 0` when it did not.
+///
+/// `best_rd` is the caller's `best_rdc.rdcost` (:1717), so the palette search
+/// starts with the estimate arm's own best as its budget — a palette that
+/// cannot beat it never becomes a winner inside the search either.
+pub fn search_palette_mode_luma(
+    y_env: &mut crate::tx_search::TxfmYrdEnv,
+    recon: &mut [u16],
+    args: &crate::palette_search::PaletteSearchArgs,
+    ref_frame_cost: i32,
+    best_rd: i64,
+) -> Option<NonrdPaletteWin> {
+    // mbmi->mode = DC_PRED / uv_mode = UV_DC_PRED / ref_frame = {INTRA, NONE}
+    // / av1_zero(pmi->palette_size) (:1141-1145). The first is the only one
+    // the port's search reads (it sets `env.mode = 0` per candidate anyway);
+    // the others are mbmi bookkeeping the caller re-establishes on the
+    // LeafWinner.
+    y_env.mode = 0;
+    y_env.angle_delta = 0;
+    y_env.use_filter_intra = false;
+
+    // av1_invalid_rd_stats(&rd_stats_y) + av1_rd_pick_palette_intra_sby
+    // (:1147-1154). `best_rd_palette = best_rd` (:1126).
+    let mut best_rd_palette = best_rd;
+    let mut best: Option<crate::intra_rd::IntraSbyBest> = None;
+    let mut winner_stats: Vec<crate::intra_rd::WinnerModeEntry> = Vec::new();
+    let won = crate::palette_search::rd_pick_palette_intra_sby(
+        y_env,
+        recon,
+        args,
+        &mut best_rd_palette,
+        &mut best,
+        &mut winner_stats,
+    );
+    // `if (rd_stats_y.rate == INT_MAX || pmi->palette_size[0] == 0)` (:1155).
+    note_palette_search(won, args.color_palette_thresh);
+    if !won {
+        return None;
+    }
+    let best = best.expect("rd_pick_palette_intra_sby reported a winner");
+    // `pmi->palette_size[0] == 0` (:1155) — the second failure exit. The port
+    // records `palette_y` on exactly the candidates that set a palette size,
+    // so `won && palette_y.is_none()` is not representable; assert rather
+    // than silently coding a non-palette DC winner as a palette one.
+    assert!(
+        best.palette_y.is_some(),
+        "rd_pick_palette_intra_sby reported a winner with no palette — C's \
+         `pmi->palette_size[0] == 0` exit (intra_mode_search.c:1155) and the port's \
+         `won` flag have diverged"
+    );
+
+    // rd_stats_y.rate += ref_frame_cost (:1163), then the skip fold
+    // (:1165-1172). NOTE the skip arm ASSIGNS.
+    let mut rate = best.rate.wrapping_add(ref_frame_cost);
+    if best.skippable {
+        rate = ref_frame_cost + y_env.skip_costs[y_env.skip_ctx][1];
+    } else {
+        rate = rate.wrapping_add(y_env.skip_costs[y_env.skip_ctx][0]);
+    }
+    let rdcost = crate::rd::rdcost(y_env.rdmult, rate, best.dist);
+    Some(NonrdPaletteWin {
+        rate,
+        dist: best.dist,
+        rdcost,
+        best,
+    })
 }
 
 /// `hybrid_intra_mode_search` (partition_search.c:755): the speed-8 dispatch.

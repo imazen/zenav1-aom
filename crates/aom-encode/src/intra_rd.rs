@@ -866,6 +866,13 @@ pub struct PaletteModeCfg<'a> {
     /// sf `intra_sf.prune_luma_palette_size_search_level` (allintra: 1 at
     /// speed 0, 2 at speed>=1).
     pub prune_luma_palette_size_search_level: i32,
+    /// `x->color_palette_thresh` — see
+    /// [`crate::palette_search::PaletteSearchArgs::color_palette_thresh`]. 64
+    /// on every RD-path leaf (the per-SB reset, encodeframe.c:1297, and
+    /// nothing on the RD walk writes it); a speed-8 full-RD leaf reached
+    /// through the NONRD walk can see 32, because an earlier estimate leaf of
+    /// the same superblock lowered it (nonrd_pickmode.c:1713).
+    pub color_palette_thresh: i32,
 }
 
 /// The winner-mode two-pass configuration (KB-8, speed>=4 all-intra): the
@@ -1266,8 +1273,18 @@ pub fn rd_pick_intra_sby_mode_y(
     if cfg.try_palette {
         if let Some(pal_cfg) = &cfg.palette {
             let args = crate::palette_search::PaletteSearchArgs {
+                // `av1_rd_pick_intra_sby_mode` (intra_mode_search.c:1497):
+                // on a KEY frame `bmode_costs` IS `y_mode_costs[A][L]`.
                 dc_mode_cost: bmode_costs[0],
-                cfg,
+                mode_costs: cfg.mode_costs,
+                try_palette: cfg.try_palette,
+                palette_bsize_ctx: cfg.palette_bsize_ctx,
+                palette_mode_ctx: cfg.palette_mode_ctx,
+                enable_filter_intra: cfg.enable_filter_intra,
+                allow_intrabc: cfg.allow_intrabc,
+                enable_tx64: cfg.enable_tx64,
+                enable_rect_tx: cfg.enable_rect_tx,
+                winner_mode: cfg.winner_mode,
                 pass_pol,
                 pass_method,
                 palette_costs: pal_cfg.costs,
@@ -1277,6 +1294,7 @@ pub fn rd_pick_intra_sby_mode_y(
                 prune_luma_palette_size_search_level: pal_cfg.prune_luma_palette_size_search_level,
                 discount_color_cost: false,
                 source_variance: cfg.source_variance,
+                color_palette_thresh: pal_cfg.color_palette_thresh,
             };
             crate::palette_search::rd_pick_palette_intra_sby(
                 env,

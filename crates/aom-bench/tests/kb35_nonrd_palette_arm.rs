@@ -359,69 +359,66 @@ fn speed8_screen_detected_cells_byte_match() {
 // 2. The refusal that is REAL, and still loud.
 // ---------------------------------------------------------------------------
 
-/// **Teeth on the narrowing (playbook §1): the refusal must still fire where
-/// C's `try_palette` is genuinely true.** A narrowed guard that can never fire
-/// is a deleted guard.
+/// **The refusal is GONE — `av1_search_palette_mode_luma` is ported (KB-37) —
+/// so what this test now pins is the REACHING SET plus what happens there.**
 ///
-/// The reaching configuration was found by measurement, not argued: screen
-/// content at **1024x1024, `--cq-level >= 60`, `--cpu-used 8`, palette ON**.
-/// The predicate is `bsize == BLOCK_16X16 && source_variance > 200` (the arm
-/// only ever sees `bsize >= BLOCK_16X16` at speed 8, because
-/// `hybrid_use_rdopt` sends everything smaller to the full-RD leaf, and C's
-/// prune caps it at `<= BLOCK_16X16`) — and *what makes cq the axis* is that
-/// `set_vbp_thresholds` scales with qindex, so only at a high quantizer does a
-/// 16x16 with `source_variance = 3140` survive the variance split undivided.
-/// At cq58 the same content at the same size reaches zero such leaves; that is
-/// this test's negative control, and it is what proves the assertion below is
-/// about the quantizer-dependent leaf shape and not about the cell.
+/// KB-35's own closing sentence said: *"If `av1_search_palette_mode_luma` has
+/// been PORTED for this arm, delete this test and promote the cells to byte
+/// gates"*. Only half of that is possible, and the half that is not is worth
+/// keeping visible.
+///
+/// * **Promoted**: the estimate arm's palette search is byte-identical to
+///   aomenc on a 27-cell grid where the full-RD arm is provably unreachable —
+///   `kb37_nonrd_palette_search.rs`. That is where the port is gated.
+/// * **NOT promoted**: these cells. At `--cpu-used 8` the same frame reaches
+///   BOTH palette searches, and the full-RD one at speed 8 is the open
+///   divergence class `PALETTE_ON_SPEED8_OPEN` pinned below. A byte delta here
+///   cannot be attributed to either arm, so promoting them would be pinning
+///   someone else's bug to this arm's name.
+///
+/// What is still asserted, because it is what KB-35 established and it must
+/// not silently move: the reaching set is **exactly `{cq60, cq62, cq63}`** at
+/// 1024x1024 screen content (`set_vbp_thresholds` scales with qindex, so only
+/// at a high quantizer does a 16x16 with `source_variance = 3140` survive the
+/// variance split undivided — cq58 on the same content reaches ZERO such
+/// leaves), the reach counter and the predicate agree on every row, and NO row
+/// refuses any more.
 #[test]
 #[ignore = "8 encode pairs at 1024x1024; nightly / on-demand tier"]
-fn estimate_arm_palette_refusal_is_reachable_and_loud() {
+fn estimate_arm_palette_search_reaching_set_is_pinned() {
     c::ref_init();
     let knobs = ToggleKnobs {
         enable_palette: true,
         ..Default::default()
     };
-    let mut refused: Vec<i32> = Vec::new();
+    let mut reaching: Vec<i32> = Vec::new();
     for cq in [40, 50, 55, 58, 60, 62, 63] {
         let cell = screen_cell("scr1024", 1024, 1024, cq, 8);
         let c_tu = cell.c_encode_screen(true, false);
         let (v, d, note, reach) = measure(&cell, &c_tu, &knobs);
         println!("  scr 1024x1024 cq{cq} cpu8 palette-ON: {v:?} {d:+} reach {reach:?}");
+        assert_ne!(
+            v,
+            Verdict::Panic,
+            "cq{cq} REFUSED. `av1_search_palette_mode_luma` is ported (KB-37), so a \
+             refusal here is a NEW handoff, not this one: {note}"
+        );
         assert!(
             reach[0] > 0,
             "cq{cq}: no estimate-arm leaf even reached `av1_allow_palette` — the frame's \
              screen-content flag is off or the arm was not dispatched, so this row says \
              nothing about the palette gate"
         );
-        if v == Verdict::Panic {
-            assert!(
-                note.contains("try_palette is TRUE"),
-                "cq{cq} panicked for a DIFFERENT reason than the palette arm: {note}"
-            );
-            assert!(
-                reach[2] > 0,
-                "cq{cq} refused with the palette message while the reach counter says no leaf \
-                 had `bsize <= BLOCK_16X16 && source_variance > 200`. The counter and the \
-                 predicate must agree — one of them is wrong"
-            );
-            refused.push(cq);
-        } else {
-            assert_eq!(
-                reach[2], 0,
-                "cq{cq} did NOT refuse while a leaf satisfied the predicate — the guard is \
-                 no longer firing on C's `try_palette`"
-            );
+        if reach[2] > 0 {
+            reaching.push(cq);
         }
     }
     assert_eq!(
-        refused,
+        reaching,
         vec![60, 62, 63],
-        "the reaching set moved. FEWER entries with the arm still unported means the guard \
-         has been narrowed past C's predicate (or the VBP thresholds moved); MORE means the \
-         reaching set widened, which is worth knowing before anything else changes. If \
-         `av1_search_palette_mode_luma` has been PORTED for this arm, delete this test and \
-         promote the cells to byte gates"
+        "the reaching set moved. FEWER entries means `nonrd_palette_arm_is_live` has been \
+         narrowed past C's predicate (or the VBP thresholds moved); MORE means it widened. \
+         Either way the KB-37 byte gate's coverage claim needs re-checking"
     );
 }
 
@@ -441,6 +438,33 @@ fn estimate_arm_palette_refusal_is_reachable_and_loud() {
 /// every `bsize < BLOCK_16X16` with `source_variance >= 101` at speed 8) as
 /// the location — a speed-8 crossing of the palette search that no gate in
 /// the tree covers (`rd_close_palette.rs` is speed 0 throughout).
+///
+/// **NARROWED 2026-08-03 by KB-37, with a positive control rather than an
+/// absence.** The attribution above was "reach[2] reads 0, so not the estimate
+/// arm" — an argument from a counter reading zero. `kb37_nonrd_palette_search.rs`
+/// now encodes THE SAME text/UI content, at the same three sizes, with palette
+/// on and the screen flag on, at `--cpu-used 9`, where `hybrid_intra_pickmode
+/// = 0` makes the full-RD arm structurally unreachable — and it is
+/// BYTE-IDENTICAL on all 15 of those rows.
+///
+/// **What that RULES OUT as a cause of the deltas below** — the durable result,
+/// rather than "the class did not move":
+///
+/// * the CONTENT: the same pixels encode byte-exactly;
+/// * the SHARED `palette_search` machinery: the same
+///   `av1_rd_pick_palette_intra_sby`, the same colour cache / k-means / cost
+///   tables, on the same blocks;
+/// * the nonrd ESTIMATE arm's palette search: at speed 9 it is the only
+///   palette producer there is;
+/// * the screen-content frame flag and everything gated on it: it is ON in
+///   both arms of the comparison.
+///
+/// What is left is the one thing `--cpu-used 8` adds over 9: the full-RD leaf
+/// (`hybrid_use_rdopt` -> `av1_rd_pick_intra_mode_sb`) and its own palette
+/// search. Caveat kept explicit: speed 9 needs `--tune-content=screen` to hold
+/// the flag on, which also sets `allow_intrabc`, so the two configs are not
+/// bit-for-bit matched. This narrows the suspect list; it does not identify
+/// the line.
 ///
 /// Pinned self-promoting in both directions. Localizing it is NOT this
 /// landing's; per playbook §10 the next step is the sibling-C per-block dump

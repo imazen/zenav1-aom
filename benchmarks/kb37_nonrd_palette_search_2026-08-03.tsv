@@ -1,0 +1,42 @@
+# kb37_nonrd_palette_search — av1_search_palette_mode_luma (intra_mode_search.c:1122) ported for the nonrd ESTIMATE arm.
+# Every row is --cpu-used 9 + --tune-content=screen + --enable-palette=1, where hybrid_intra_pickmode == 0 makes the
+# FULL-RD arm (and its own palette search) structurally unreachable: arms_full_rd is 0 on every row, asserted not assumed.
+# reach_* = nonrd_pickmode::palette_gate_reach(); stats_* = nonrd_pickmode::nonrd_palette_search_stats();
+# arms_*  = partition_pick::nonrd_leaf_arms(). All thread-local, reset before each port encode.
+family	cell	cq_label	verdict	delta	reach_allow	reach_le16x16	reach_try_palette	arms_full_rd	arms_estimate	searches	winners	thresh32
+scr	128x128	cq12	MATCH	+0	256	256	216	0	256	216	216	24
+scr	128x128	cq32	MATCH	+0	256	256	216	0	256	216	216	24
+scr	128x128	cq50	MATCH	+0	256	256	216	0	256	216	216	24
+scr	128x128	cq60	MATCH	+0	172	172	152	0	172	152	152	20
+scr	128x128	cq63	MATCH	+0	112	112	100	0	112	100	80	8
+scr	256x256	cq12	MATCH	+0	1024	1024	864	0	1024	864	864	96
+scr	256x256	cq32	MATCH	+0	1024	1024	864	0	1024	864	864	96
+scr	256x256	cq50	MATCH	+0	1024	1024	864	0	1024	864	864	96
+scr	256x256	cq60	MATCH	+0	688	688	616	0	688	616	616	80
+scr	256x256	cq63	MATCH	+0	472	472	424	0	472	424	352	32
+scr	512x512	cq12	MATCH	+0	4096	4096	3488	0	4096	3488	3488	400
+scr	512x512	cq32	MATCH	+0	4096	4096	3488	0	4096	3488	3488	400
+scr	512x512	cq50	MATCH	+0	4096	4096	3488	0	4096	3488	3488	400
+scr	512x512	cq60	MATCH	+0	2800	2800	2512	0	2800	2512	2512	304
+scr	512x512	cq63	MATCH	+0	1888	1888	1696	0	1888	1696	1408	112
+mc256	n20	cq12	MATCH	+0	871	871	461	0	871	461	404	458
+mc256	n20	cq40	MATCH	+0	871	871	461	0	871	461	3	458
+mc256	n20	cq63	MATCH	+0	256	256	256	0	256	256	0	246
+mc256	n34	cq12	MATCH	+0	706	706	346	0	706	346	113	246
+mc256	n34	cq40	MATCH	+0	706	706	346	0	706	346	85	246
+mc256	n34	cq63	MATCH	+0	706	706	346	0	706	346	0	248
+mc256	n48	cq12	MATCH	+0	571	571	320	0	571	320	76	244
+mc256	n48	cq40	MATCH	+0	571	571	320	0	571	320	76	244
+mc256	n48	cq63	MATCH	+0	571	571	320	0	571	320	0	244
+mc256	n60	cq12	MATCH	+0	511	511	307	0	511	307	64	243
+mc256	n60	cq40	MATCH	+0	511	511	307	0	511	307	64	243
+mc256	n60	cq63	MATCH	+0	511	511	307	0	511	307	1	210
+fc256	n40	cq12	MATCH	+0	871	871	871	0	871	871	464	701
+fc256	n40	cq40	DIVERGE	-1	871	871	871	0	871	871	265	786
+fc256	n40	cq63	MATCH	+0	256	256	256	0	256	256	0	99
+fc256	n56	cq12	MATCH	+0	916	916	916	0	916	916	306	610
+fc256	n56	cq40	MATCH	+0	478	478	478	0	478	478	120	292
+fc256	n56	cq63	MATCH	+0	478	478	478	0	478	478	0	217
+fc256	n64	cq12	MATCH	+0	448	448	448	0	448	448	256	192
+fc256	n64	cq40	MATCH	+0	448	448	448	0	448	448	256	192
+fc256	n64	cq63	MATCH	+0	448	448	448	0	448	448	0	192

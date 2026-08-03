@@ -500,3 +500,84 @@ fn armed_tools_round_trip_through_the_c_decoder() {
          some arm silently did not run"
     );
 }
+
+/// **The nonrd ESTIMATE arm's palette output (KB-37) must round-trip too.**
+///
+/// `arms()` above covers the palette knob only on the RD path (`CELLS` runs
+/// `--cpu-used` 0/2/6). The estimate arm's palette search
+/// (`av1_search_palette_mode_luma`, intra_mode_search.c:1122) is a *different*
+/// producer of palette blocks — different rate fold, different tx-size winner,
+/// different `tx_type_map` writeback — and it is reachable only at
+/// `--cpu-used` 8/9. KB-29's lesson is exactly this: byte-identity to a
+/// reference proves conformance only where a reference exists AND is asserted
+/// equal, so a newly-armed producer needs its own decode leg even when a byte
+/// gate covers it (and here the byte gate covers speed 9 while this leg also
+/// exercises speed 8, where `PALETTE_ON_SPEED8_OPEN` means no byte gate can).
+///
+/// `--tune-content=screen` is what makes speed 9 reach the arm at all —
+/// `av1_set_screen_content_options` (encoder.c:2448-2454) takes the
+/// AOM_CONTENT_SCREEN arm before the `use_nonrd_pick_mode &&
+/// !hybrid_intra_pickmode` arm that would otherwise turn screen-content
+/// detection off.
+#[test]
+fn nonrd_estimate_arm_palette_round_trips_through_the_c_decoder() {
+    /// `AV1E_SET_TUNE_CONTENT` = `AOM_CONTENT_SCREEN`.
+    const TUNE_CONTENT_SCREEN: (i32, i32) = (43, 1);
+    /// `AV1E_SET_ENABLE_PALETTE` = 1 (overrides the shim's base 0 — extra
+    /// ctrls are applied after the base set, dec_shim.c:419-424).
+    const PALETTE_ON: (i32, i32) = (aom_sys_ref::cx_ctrl::AV1E_SET_ENABLE_PALETTE, 1);
+
+    let knobs = ToggleKnobs {
+        enable_palette: true,
+        ..ToggleKnobs::default()
+    };
+    let mut ran = 0usize;
+    let mut palette_leaves = 0u64;
+    for &(cq, speed) in &[(12i32, 9i32), (40, 9), (60, 9), (40, 8)] {
+        let label = format!("scc196_cq{cq}_s{speed}");
+        let cell = EncodeCell::real_content(&label, SCREEN_VEC, Some((196, 196, 480, 180)), cq, speed);
+        let bootstrap = cell.c_encode_ctrls(&[TUNE_CONTENT_SCREEN, PALETTE_ON]);
+        assert!(!bootstrap.is_empty(), "{label}: C bootstrap encode failed");
+
+        aom_encode::nonrd_pickmode::reset_nonrd_palette_search_stats();
+        let frame = cell.port_encode_with(&bootstrap, &knobs);
+        let stats = aom_encode::nonrd_pickmode::nonrd_palette_search_stats();
+        palette_leaves += stats[1];
+        let stream = reassemble(&bootstrap, &frame);
+
+        let c_dec = std::panic::catch_unwind(|| {
+            aom_sys_ref::ref_decode_av1_kf(&stream, cell.w, cell.h)
+        })
+        .unwrap_or_else(|_| {
+            panic!(
+                "{label}: the REAL C decoder REJECTED the port's nonrd-palette stream \
+                 ({} B frame payload, {} palette leaves). The estimate arm's palette \
+                 writeback produced a non-conformant bitstream — the KB-29 class.",
+                frame.len(),
+                stats[1]
+            )
+        });
+        let p_dec = aom_decode::frame::decode_frame_obus(&stream).unwrap_or_else(|e| {
+            panic!("{label}: the C decoder accepted the stream but the PORT decoder rejected it: {e}")
+        });
+        assert!(
+            p_dec.y == c_dec.y && p_dec.u == c_dec.u && p_dec.v == c_dec.v,
+            "{label}: the C decoder and the port decoder disagree on the pixels of a \
+             nonrd-palette stream"
+        );
+        eprintln!(
+            "  {label}/nonrd_estimate_palette   {} B  {} palette leaves  OK",
+            frame.len(),
+            stats[1]
+        );
+        ran += 1;
+    }
+    assert_eq!(ran, 4, "the nonrd palette decode leg did not run every cell");
+    // Non-vacuity: a clean decode of a stream with NO palette block in it would
+    // say nothing about the palette writeback.
+    assert!(
+        palette_leaves > 0,
+        "not one leaf in the whole leg was won by the estimate arm's palette search, so \
+         the decoded streams contain no palette block from this producer"
+    );
+}

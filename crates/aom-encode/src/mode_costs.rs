@@ -12,6 +12,13 @@ use aom_dsp::txb::cost_tokens_from_cdf;
 pub const KF_MODE_CONTEXTS: usize = 5;
 /// `BLOCK_SIZE_GROUPS` (entropymode.h).
 pub const BLOCK_SIZE_GROUPS: usize = 4;
+/// `size_group_lookup[BLOCK_SIZES_ALL]` (common_data.h:60-62) verbatim — the
+/// row selector of [`IntraModeCosts::mbmode_cost`]. Covers the six extended
+/// 4:1 shapes at indices 16..21, which is why it is transcribed rather than
+/// derived (`av1_search_palette_mode_luma` indexes it at BLOCK_4X16/16X4).
+pub const SIZE_GROUP_LOOKUP: [usize; 22] = [
+    0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 0, 0, 1, 1, 2, 2,
+];
 /// `INTRA_MODES` (enums.h).
 pub const INTRA_MODES: usize = 13;
 /// `UV_INTRA_MODES` (enums.h) — includes `UV_CFL_PRED`.

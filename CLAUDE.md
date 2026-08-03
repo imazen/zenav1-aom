@@ -95,6 +95,9 @@ it here in the same commit.**
 - ~~the screen-content palette arm at `--cpu-used` 8/9~~ → KB-35. Was a FALSE refusal on a
   plain gradient; 22 of 25 measured PANIC rows are byte-identical, 3 are the genuine arm.
 - ~~above 1280x720 at speed >= 1~~ → KB-36. Found an unmodelled `is_1080p_or_larger` arm.
+- ~~the estimate arm's palette SEARCH (`av1_search_palette_mode_luma`)~~ → KB-37. The last
+  KB-35 handoff; 27/27 byte-identical at `--cpu-used 9` where the full-RD arm is provably
+  unreachable. It found `PALETTE_MANY_COLORS_OPEN` (below), which is NOT that arm.
 - ~~the crop axis at 4:2:2/4:4:4/mono, SB128, bd10, and the 480/720 straddle at cpu 0~~ →
   `s4cov_crop_format_axis.rs`, 58/62 byte-exact; the 4 that are not are KB-27's, proven by
   SB-exact controls.
@@ -128,9 +131,10 @@ it here in the same commit.**
 | KB-30 | `cid22_6292444` at cpu6, every quantizer, 1 of 10 real photographs | sibling-C per-block dump (playbook §10); ~half a day |
 | `RD_BAND_OPEN` (`kb34_nonsquare_nonrd_leaf.rs`) | 1272x724 cq24 at cpu 2-5 only | adjacent to KB-28's band at a size no gate covers |
 | the 17 cpu-8 photographic high-q rows | `benchmarks/nonsquare_leaf_reach_2026-08-02.tsv`, cq 32-63, -24..+13 B, not on in-repo content | needs the content in-repo first |
-| `PALETTE_ON_SPEED8_OPEN` (`kb35_nonrd_palette_arm.rs`) | palette ON x cpu8 x screen-detected, 13 rows, -1399..+817 B; the FULL-RD palette leaf, which `rd_close_palette.rs` never crosses (speed 0 throughout) | first-divergent-block on 128x128 cq12 (delta -1) |
+| `PALETTE_ON_SPEED8_OPEN` (`kb35_nonrd_palette_arm.rs`) | palette ON x cpu8 x screen-detected, 13 rows, -1399..+817 B; the FULL-RD palette leaf, which `rd_close_palette.rs` never crosses (speed 0 throughout). **NARROWED 2026-08-03 (KB-37) with a positive control, not a zero counter**: the same content at the same sizes, palette on, screen flag on, at `--cpu-used 9` (full-RD arm structurally unreachable) is BYTE-EXACT on 15/15 rows — so content, shared palette machinery and the estimate arm are all exonerated | first-divergent-block on 128x128 cq12 (delta -1) |
 | KB-27 / `MONO_S0_OPEN` | monochrome, base_qindex 96, speed 0; **size-independent** (64x64 through 720x720, SB-exact and partial alike, widened 2026-08-03) | its own localizer is in `s4cov_partial_sb_axis.rs` |
 | KB-P29, KB-13's 2 cpu3-cq63 cells | 2 palette 128<sup>2</sup> near-ties; 2 real-content cells | sibling-C RD dump (KB-3/KB-7 method) |
+| `PALETTE_MANY_COLORS_OPEN` (`kb37_nonrd_palette_search.rs`) | palette blocks with **more than `PALETTE_MAX_SIZE` distinct colours** (33..64 in a 16x16). SHARED `palette_search` machinery, not an arm: reproduces on the FULL-RD path at `--cpu-used` 0/2/6 with `nonrd_leaf_arms() == [0, 0]` (asserted inside the test). 48 of 75 cells in the 38..42-colour band; 1 of 9 in the shipped fine-colour set. Nothing had ever encoded such a block — `rd_close_palette.rs`'s content has <= 8 colours and takes the `colors == PALETTE_MIN_SIZE` / `max_n == colors` shortcuts | sibling-C per-candidate RD dump of `av1_rd_pick_palette_intra_sby` on 64x64 n40 cq40 at `--cpu-used 0` (the k-means + descending-order arms are what only this content reaches) |
 
 **Already closed, do not re-open from stale notes:** KB-10/KB-11's noise-cq63 speed-6/7 pairs
 (closed by KB-21 root #2), the whole cpu-4/5 fragile band, and KB-12's estimate-arm residual
@@ -3856,6 +3860,132 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   speed-0 cell (a 2160p cpu-1 cell is ~250 s per pair, so the band 1440..2160 at speeds 1-5 is
   ~20-30 min); the >=1080p band at bit depths above 8, at 4:2:2/4:4:4/mono, and at SB128; and
   any quantizer other than cq24 in this band.
+
+
+### KB-37 — Encoder: `av1_search_palette_mode_luma` is PORTED for the nonrd estimate arm — `--cpu-used 8/9` screen content can now take the palette winner C takes — DONE ✅ 2026-08-03
+- **The last KB-35 handoff.** KB-35 narrowed the estimate arm's palette refusal from the frame
+  flag to C's own four-term `try_palette` (nonrd_pickmode.c:1698-1710) and left the SEARCH
+  unported: 3 measured rows (screen content 1024x1024, cq >= 60, `--cpu-used 8`,
+  `--enable-palette=1`, `bsize == BLOCK_16X16`, `source_variance = 3140`) still refused. They
+  no longer do.
+- **The C call tree, translated, not swept.** `av1_search_palette_mode_luma`
+  (intra_mode_search.c:1122-1177) is a thin shell over the SAME
+  `av1_rd_pick_palette_intra_sby` (palette.c:540) the full-RD intra search uses — which this
+  port already had, C-faithful, in `palette_search.rs` (KB-P29). **Nothing in the search
+  machinery was rewritten.** What the shell adds, and what the nonrd caller
+  (nonrd_pickmode.c:1693-1731) differs in, is all of the new code:
+  * **a different `dc_mode_cost` table**: `mbmode_cost[size_group_lookup[bsize]][DC_PRED]`
+    (:1136-1137 + :1150) — the INTER-frame `y_mode_cdf`-costed table (rd.c:109-110), NOT the
+    KEY `y_mode_costs[above_ctx][left_ctx]` row `av1_rd_pick_intra_sby_mode` selects. On a KEY
+    frame `y_mode_cdf` is at its default and never adapts;
+  * **the rate fold** (:1163-1172): `+ ref_frame_cost` (0 from the nonrd caller, :1712) then
+    the skip flag, with the skip arm **assigning** rather than adding — the same
+    assignment-not-addition shape the estimate arm's own skip fold has (:1678);
+  * **the two failure exits** (:1155-1158), both collapsing to `None`;
+  * **`x->color_palette_thresh = (best_sad_norm < 500) ? 32 : 64`** (:1713) — set INSIDE the
+    gate, never restored. `encode_sb_row` resets it to 64 **once per superblock**
+    (encodeframe.c:1297), so an estimate leaf that lowers it to 32 is still in force for every
+    LATER leaf of that superblock, including a full-RD (`hybrid_use_rdopt`) one. Threaded as a
+    `&mut i32` through the nonrd walk rather than hardcoded (`rd_pick_palette_intra_sby` had
+    `let color_thresh_palette = 64i32;`);
+  * **DEFAULT_EVAL**, not MODE_EVAL: `pick_sb_modes_nonrd` never calls `set_mode_eval_params`;
+    `av1_nonrd_use_partition` sets DEFAULT_EVAL once per superblock (partition_search.c:2996)
+    and a full-RD leaf's own tail restores it (rdopt.c:3659);
+  * the winner writeback — `mi->mode = DC_PRED`, `mbmi->tx_size` from the palette tx search
+    (`*mbmi = *best_mbmi`, palette.c:759), `mi->uv_mode = UV_DC_PRED` (:1735), and the
+    `if (xd->tx_type_map[0] != DCT_DCT)` copy gate (:1727).
+  Mechanical: `PaletteSearchArgs` no longer borrows an `IntraSbySearchCfg` (it carries the 9
+  fields the search actually read), so the nonrd caller can build it without the full-RD
+  leaf's whole cfg.
+- **The two new C control constants are HEADER-VERIFIED, not hardcoded-and-hoped.**
+  `AV1E_SET_ENABLE_PALETTE = 104` / `AV1E_SET_ENABLE_INTRABC = 105` were added to `cx_ctrl`
+  AND to `shim_cx_ctrl_id_by_probe` (probes 25/26, append-only), so `dec_shim_smoke`'s
+  existing cross-check asserts them against the pinned v3.14.1 `aome_enc_control_id` enum on
+  every run (5/5 pass). A raw enum value that happens to be right today is exactly what rots
+  silently at the next submodule bump — the probe is what stops that being a wrong-control
+  encode nobody notices.
+- **THE ISOLATION IS THE FINDING, and it is asserted, not argued.** At `--cpu-used 8` the
+  palette search is reachable from BOTH arms, and the full-RD one at speed 8 is the open class
+  `PALETTE_ON_SPEED8_OPEN` — so a speed-8 palette cell can attribute a byte delta to neither.
+  **`--cpu-used 9` removes the ambiguity structurally**: `hybrid_intra_pickmode = 0`
+  (speed_features.c:1795) makes `hybrid_use_rdopt` false for every leaf. What normally makes
+  speed 9 useless for palette is that `av1_set_screen_content_options` (encoder.c:2466-2470)
+  turns screen-content DETECTION off under `use_nonrd_pick_mode && !hybrid_intra_pickmode` —
+  but that arm is reached only AFTER the `tune_cfg.content == AOM_CONTENT_SCREEN` arm above it
+  (encoder.c:2448-2454), which sets the flag and returns. So
+  `--tune-content=screen --cpu-used 9` gives screen flag ON + palette ON + every leaf on the
+  estimate arm. Speed 9 additionally turns on `prune_intra_mode_using_best_sad_so_far`
+  (:1799), which is what makes `try_palette`'s FOURTH term live — it is dead at speed 8.
+  New instrument `partition_pick::nonrd_leaf_arms()` (`[full_rd, estimate]`) is what lets the
+  gate assert `arms[0] == 0` per row instead of assuming it.
+- **MEASURED** (`benchmarks/kb37_nonrd_palette_search_2026-08-03.tsv` + `.meta`): **27 of 27**
+  few-colour / coarse-many-colour cells byte-identical to real aomenc, over **23,301 palette
+  searches, 15,146 of them producing a winner**, both sides of `color_palette_thresh`
+  exercised, and aomenc's own `--enable-palette` moving the reference bytes on 12 of 12
+  many-colour cells (so the match is a statement about the palette search, not about a
+  palette-free stream).
+- **FOUND WHILE HERE, NOT THIS LANDING'S — `PALETTE_MANY_COLORS_OPEN`.** Content with 33..64
+  distinct colours in a 16x16 leaf (`fine_color_cell`) diverges: 1 of the 9 shipped
+  fine-colour cells, 48 of a 75-cell band sweep. It is **not this arm** — the SAME content
+  diverges on the FULL-RD path at `--cpu-used` 0, 2 and 6, where `nonrd_leaf_arms()` reads
+  `[0, 0]` and `search_palette_mode_luma` is unreachable; the control is inside the pinned
+  test and the test FAILS if the control ever goes clean while the speed-9 rows still diverge.
+  Root class: blocks with more than `PALETTE_MAX_SIZE` colours, where
+  `av1_rd_pick_palette_intra_sby`'s k-means and descending-order re-search arms do real work.
+  Nothing in the tree had ever encoded one — `rd_close_palette.rs`'s text/UI content has <= 8
+  colours and takes the `colors == PALETTE_MIN_SIZE` / `max_n == colors` shortcuts.
+- **PALETTE_ON_SPEED8_OPEN did NOT move, and this landing NARROWS it — the durable part is
+  what the narrowing RULES OUT.** KB-35 attributed the class from a counter reading zero
+  (`palette_gate_reach()[2] == 0`), which is an argument from absence. KB-37's grid supplies
+  a POSITIVE control: the same text/UI content, at the same three sizes, palette ON and the
+  screen flag ON, at `--cpu-used 9` — where `hybrid_intra_pickmode = 0` makes the full-RD arm
+  structurally unreachable — is **byte-exact 15/15**. One measurement therefore RULES OUT, as
+  causes of the speed-8 deltas:
+  * **the content** (the same pixels encode byte-exactly);
+  * **the shared `palette_search` machinery** (the same `av1_rd_pick_palette_intra_sby`, the
+    same colour cache / k-means / cost tables, run on the same blocks);
+  * **the nonrd estimate arm's palette search** (it is the ONLY palette producer at speed 9);
+  * **the screen-content frame flag itself** and everything gated on it, since it is on in
+    both arms of the comparison.
+  What remains is the one thing speed 8 adds over speed 9: the full-RD leaf
+  (`hybrid_use_rdopt` -> `av1_rd_pick_intra_mode_sb`) and its own palette search. Caveat kept
+  honest: speed 9 needs `--tune-content=screen` to hold the flag on, which also sets
+  `allow_intrabc`, so the two configs are not bit-for-bit matched — this narrows the suspect
+  list, it does not identify the line. The class itself is unchanged: all 9 pinned deltas are
+  byte-for-byte what KB-35 recorded. The 3 genuine speed-8 rows now ENCODE instead of
+  refusing, and land inside that same class (cq60 +20, cq62 -7, cq63 -3998) — recorded, not
+  promoted to a byte gate, because attributing them would be pinning someone else's bug to
+  this arm's name.
+- **Gates.** `aom-bench/tests/kb37_nonrd_palette_search.rs` (3 tests, `--ignored`):
+  `nonrd_estimate_arm_palette_search_is_byte_identical` (the 27-cell byte gate + the four
+  non-vacuity assertions), `many_colour_palette_blocks_are_pinned_and_are_not_this_arm` (the
+  open class WITH its full-RD control), `color_palette_thresh_band_divergence_count_is_pinned`
+  (the 75-cell band count). KB-35's `estimate_arm_palette_refusal_is_reachable_and_loud`
+  became `estimate_arm_palette_search_reaching_set_is_pinned` — the refusal is gone; the
+  reaching set `{cq60, cq62, cq63}` is what still must not move.
+  Decode side: `armed_tools_decode_gate.rs ::
+  nonrd_estimate_arm_palette_round_trips_through_the_c_decoder` — real screen content at
+  cq{12,40,60} s9 + cq40 s8, real `aom_codec_av1_dx` + the port decoder, identical pixels,
+  448 palette leaves (asserted > 0).
+- **BITE PROOFS, including the two that did NOT bite** (full table in the `.meta`):
+  restoring the KB-35 refusal FAILS the gate (so the cells genuinely reach the arm);
+  MODE_EVAL instead of DEFAULT_EVAL FAILS on 12 of 27 cells (-40..+44 B). **Two are recorded
+  as unprotected**: the `mbmode_cost`-vs-`y_mode_costs` table choice and the
+  `tx_type_map[0] != DCT_DCT` copy gate are both C source lines that leave the whole gate
+  green when swapped — an in-source HONESTY NOTE says so at each site.
+  `color_palette_thresh` is discriminated only by the 75-cell band table (C's formula 48
+  divergences, hardcoded-32 58, hardcoded-64 66), because the band where it is
+  decision-bearing IS `PALETTE_MANY_COLORS_OPEN`'s band.
+- **VERIFIED**, rebased onto `origin/main` 2881f17 and re-run end to end in BOTH dispatch
+  modes: `-p zenav1-aom-encode -p zenav1-aom-bench -- --include-ignored` = **144 test
+  binaries, 531 passed, 0 failed, 0 ignored** on default dispatch; the `AOM_FORCE_SCALAR=1`
+  re-run exits **0 under `--no-fail-fast`** with zero failure markers (its per-binary line
+  counts are unusable — `-j 2` interleaved the binaries' stdout — so the exit code is the
+  authoritative signal there, and all 9 landing-relevant gates are individually confirmed
+  `... ok` in its log). Gate 2 is unaffected and still has zero pinned cells; KB-P29's
+  full-RD palette gates (`palette_y_rd_close_gate`, `decode_diff_palette_close_cells`) pass,
+  so the `PaletteSearchArgs` refactor and the `color_palette_thresh` threading are byte-inert
+  on the pre-existing palette path.
 
 ### KB-PERF-1 — Encoder: the intra-mode CNN is recomputed ~10x per superblock (C computes it ONCE and caches) — FIXED ✅ 2026-08-02
 

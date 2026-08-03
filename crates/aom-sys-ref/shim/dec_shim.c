@@ -821,6 +821,8 @@ int shim_cx_ctrl_id_by_probe(int probe) {
     case 22: return AV1E_SET_COEFF_COST_UPD_FREQ;
     case 23: return AV1E_SET_MODE_COST_UPD_FREQ;
     case 24: return AV1E_SET_DV_COST_UPD_FREQ;
+    case 25: return AV1E_SET_ENABLE_PALETTE;
+    case 26: return AV1E_SET_ENABLE_INTRABC;
     default: return -1;
   }
 }

@@ -191,7 +191,7 @@ use crate::mode_costs::TxSizeCosts;
 use crate::mode_costs::{CflCosts, IntraModeCosts};
 use crate::partition::{PartRdStats, rd_cost_update, rd_stats_subtraction, split_subsize};
 use crate::rd_pick::{RdPickUvArgs, RdPickUvOutcome, ReencodeParams, rd_pick_intra_mode_sb};
-use crate::speed_features::{MODE_EVAL, SpeedFeatures, WINNER_MODE_EVAL};
+use crate::speed_features::{DEFAULT_EVAL, MODE_EVAL, SpeedFeatures, WINNER_MODE_EVAL};
 use crate::tx_search::{MI_SIZE_HIGH_B, MI_SIZE_WIDE_B, TxTypeSearchPolicy, TxfmYrdEnv};
 use aom_dsp::dist::highbd_variance;
 use aom_dsp::entropy::partition::{
@@ -775,6 +775,13 @@ fn leaf_pick_sb_modes(
     // the AB-stage forced-mode constraint; `None` on every non-AB path.
     ab_mode_cache: Option<(usize, bool, usize)>,
     best_remain: &PartRdStats,
+    // `x->color_palette_thresh` (encodeframe.c:1297 resets it to 64 once per
+    // superblock; nonrd_pickmode.c:1713 lowers it to 32 per leaf and never
+    // restores it). Every RD-walk call site passes 64 — nothing on the RD walk
+    // writes the field. The NONRD walk passes its live per-superblock value,
+    // which an earlier estimate leaf of the same superblock may have lowered.
+    // See `palette_search::PaletteSearchArgs::color_palette_thresh`.
+    color_palette_thresh: i32,
 ) -> (PartRdStats, Option<LeafWinner>, u32) {
     // av1_rd_cost_update(x->rdmult, &best_rd) on entry (pick_sb_modes:927).
     let mut best_rd = *best_remain;
@@ -1090,6 +1097,7 @@ fn leaf_pick_sb_modes(
             left: palette_left,
             prune_palette_search_level: prune_search,
             prune_luma_palette_size_search_level: prune_size_search,
+            color_palette_thresh,
         }
     });
     let sby_cfg = IntraSbySearchCfg {
@@ -1921,6 +1929,7 @@ fn rd_pick_rect_partition(
         partition_type,
         ab_mode_cache,
         &best_remain,
+        64,
     );
     visits.push(LeafVisit {
         mi_row,
@@ -2977,6 +2986,7 @@ pub fn rd_pick_partition_real(
             0,
             None,
             &best_remain,
+            64,
         );
         *last_source_variance = source_variance;
         // `pc_tree->none` mode capture for the AB-stage mode cache
@@ -3127,7 +3137,7 @@ pub fn rd_pick_partition_real(
                 Some(&mut split_part_rect_win[idx]),
                 visits,
                 last_source_variance,
-            );
+                );
             split_child_nonone[idx] =
                 matches!(&child_tree, Some(t) if !matches!(t, SbTree::Leaf(_)));
             if !child_found {
@@ -3865,7 +3875,7 @@ pub fn rd_pick_partition_real(
                 &best_rdc,
                 visits,
                 last_source_variance,
-            );
+                );
             if let Some(w) = winners {
                 best_rdc = sum_rdc;
                 found = true;
@@ -4375,6 +4385,7 @@ pub fn rd_use_partition_real(
                 env, cfg, tile, grid, recon_y, recon_u, recon_v, cfl, mi_row, mi_col, bsize, 0,
                 None,
                 &invalid,
+                64,
             );
             *last_source_variance = sv;
             visits.push(LeafVisit {
@@ -4408,6 +4419,7 @@ pub fn rd_use_partition_real(
                 partition as usize,
                 None,
                 &invalid,
+                64,
             );
             *last_source_variance = sv;
             visits.push(LeafVisit {
@@ -4477,6 +4489,7 @@ pub fn rd_use_partition_real(
                     partition as usize,
                     None,
                     &invalid,
+                    64,
                 );
                 *last_source_variance = sv1;
                 visits.push(LeafVisit {
@@ -4584,7 +4597,7 @@ pub fn rd_use_partition_real(
                     /*do_recon=*/ i != 3,
                     visits,
                     last_source_variance,
-                );
+                    );
                 kids[i] = child_tree;
                 if tmp_rdc.rate == i32::MAX || tmp_rdc.dist == i64::MAX {
                     last_part_rdc = PartRdStats::invalid();
@@ -4968,6 +4981,13 @@ pub fn nonrd_use_partition_real(
     bsize: usize,
     visits: &mut Vec<LeafVisit>,
     last_source_variance: &mut u32,
+    // `x->color_palette_thresh` for THIS superblock: 64 at the superblock's
+    // first leaf (`encode_sb_row`, encodeframe.c:1297) and lowered to 32 by
+    // any estimate leaf whose palette gate fires with `best_sad_norm < 500`
+    // (nonrd_pickmode.c:1713). It is never restored, so the value carries
+    // forward across the rest of the superblock's leaves — including full-RD
+    // (`hybrid_use_rdopt`) ones, which re-enter the same palette search.
+    color_palette_thresh: &mut i32,
 ) -> SbTree {
     debug_assert!(mi_row < env.mi_rows && mi_col < env.mi_cols);
     debug_assert!(bsize >= 3, "only square blocks 8x8..128x128 (:2971)");
@@ -5002,7 +5022,8 @@ pub fn nonrd_use_partition_real(
                 0,
                 visits,
                 last_source_variance,
-            );
+                    color_palette_thresh,
+                );
             SbTree::Leaf(w)
         }
         // PARTITION_HORZ (:3055) / PARTITION_VERT (:3031) — pick+encode strip
@@ -5024,7 +5045,8 @@ pub fn nonrd_use_partition_real(
                 partition as usize,
                 visits,
                 last_source_variance,
-            );
+                    color_palette_thresh,
+                );
             let sub1_in_frame = if is_horz {
                 mi_row + hbs < env.mi_rows
             } else {
@@ -5052,7 +5074,8 @@ pub fn nonrd_use_partition_real(
                     partition as usize,
                     visits,
                     last_source_variance,
-                );
+                        color_palette_thresh,
+                    );
                 if is_horz {
                     SbTree::Horz(Box::new([w0, w1]))
                 } else {
@@ -5134,12 +5157,55 @@ pub fn nonrd_use_partition_real(
                     subsize,
                     visits,
                     last_source_variance,
-                );
+                        color_palette_thresh,
+                    );
             }
             SbTree::Split(Box::new(kids))
         }
         other => unreachable!("av1_nonrd_use_partition: extended partition {other} (:3119-3125)"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Test instrumentation: which ARM each nonrd leaf took.
+// ---------------------------------------------------------------------------
+//
+// `hybrid_intra_mode_search` (partition_search.c:756) sends a leaf either to
+// the full-RD intra search or to the estimate arm, and BOTH can run a palette
+// search — the full-RD one through `av1_rd_pick_intra_sby_mode`, the estimate
+// one through `av1_search_palette_mode_luma`. A byte gate for the estimate
+// arm's palette is therefore only isolating if the cell reaches ZERO full-RD
+// leaves; otherwise a divergence could belong to either. This counter is what
+// lets a gate assert that, rather than assume it.
+//
+//   [0] leaves dispatched to the full-RD arm (`hybrid_use_rdopt` true);
+//   [1] leaves dispatched to the estimate arm.
+//
+// Thread-local for the same reason as `nonrd_pickmode`'s own instruments.
+thread_local! {
+    static NONRD_LEAF_ARMS: std::cell::Cell<[u64; 2]> = const {
+        std::cell::Cell::new([0; 2])
+    };
+}
+
+/// `[full_rd_leaves, estimate_leaves]` over the nonrd leaves coded since the
+/// last [`reset_nonrd_leaf_arms`] **on this thread**. Test instrumentation.
+pub fn nonrd_leaf_arms() -> [u64; 2] {
+    NONRD_LEAF_ARMS.with(std::cell::Cell::get)
+}
+
+/// Zero this thread's [`nonrd_leaf_arms`] counters. Test instrumentation.
+pub fn reset_nonrd_leaf_arms() {
+    NONRD_LEAF_ARMS.with(|c| c.set([0; 2]));
+}
+
+#[inline]
+fn note_nonrd_leaf_arm(full_rd: bool) {
+    NONRD_LEAF_ARMS.with(|c| {
+        let mut v = c.get();
+        v[usize::from(!full_rd)] += 1;
+        c.set(v);
+    });
 }
 
 /// One nonrd leaf: `pick_sb_modes_nonrd` (partition_search.c:2254 —
@@ -5161,6 +5227,7 @@ fn nonrd_leaf_pick_and_encode(
     partition: usize,
     visits: &mut Vec<LeafVisit>,
     last_source_variance: &mut u32,
+    color_palette_thresh: &mut i32,
 ) -> LeafWinner {
     // x->source_variance: pick_sb_modes_nonrd:2306-2311 recomputes per leaf
     // (bsize < sb_size, or the SB-level value is the identical
@@ -5173,7 +5240,9 @@ fn nonrd_leaf_pick_and_encode(
     // (speed_features.c:578 / :598).
     let hybrid = if cfg.speed >= 9 { 0 } else { 2 };
 
-    if crate::nonrd_pickmode::hybrid_use_rdopt(hybrid, bsize, source_variance) {
+    let use_rdopt = crate::nonrd_pickmode::hybrid_use_rdopt(hybrid, bsize, source_variance);
+    note_nonrd_leaf_arm(use_rdopt);
+    if use_rdopt {
         // Full-RD arm: av1_rd_pick_intra_mode_sb with INT64_MAX budget
         // (partition_search.c:769) — the EXISTING leaf machinery.
         let invalid = PartRdStats::invalid();
@@ -5181,6 +5250,7 @@ fn nonrd_leaf_pick_and_encode(
             env, cfg, tile, grid, recon_y, recon_u, recon_v, cfl, mi_row, mi_col, bsize, partition,
             None,
             &invalid,
+            *color_palette_thresh,
         );
         visits.push(LeafVisit {
             mi_row,
@@ -5269,22 +5339,262 @@ fn nonrd_leaf_pick_and_encode(
     let pick = crate::nonrd_pickmode::nonrd_pick_intra_mode(
         env, &lctx, recon_y, mi_row, mi_col, bsize, env.rdmult,
     );
+
+    let mi_w = MI_SIZE_WIDE_B[bsize];
+    let mi_h = MI_SIZE_HIGH_B[bsize];
+
+    // ---------------------------------------------------------------------
+    // The palette arm: `if (try_palette) { ... }` (nonrd_pickmode.c:1711-1731).
+    // ---------------------------------------------------------------------
+    // `pick.palette_arm_live` IS C's `try_palette` (see
+    // `nonrd_palette_arm_is_live`). The search itself is
+    // `av1_search_palette_mode_luma`, which needs the full-RD leaf state the
+    // estimate arm's own `NonrdIntraLeafCtx` does not carry — so it is built
+    // here, from the same reads `leaf_pick_sb_modes` makes for the full-RD
+    // arm a few lines up.
+    let mut best_mode = pick.mode;
+    let mut best_rdc = pick.rd;
+    let mut best_tx_size = pick.tx_size;
+    let mut palette_y: Option<crate::palette_search::PaletteYInfo> = None;
+    let mut tx_type_map = vec![0u8; mi_w * mi_h];
+    if pick.palette_arm_live {
+        // `x->color_palette_thresh = (best_sad_norm < 500) ? 32 : 64` (:1713)
+        // — inside the gate, before the search, and never restored.
+        *color_palette_thresh =
+            crate::nonrd_pickmode::nonrd_color_palette_thresh(pick.best_sad_norm);
+        let palette_costs = cfg
+            .palette_costs
+            .expect("try_palette's `enable_palette` term IS `palette_costs.is_some()`");
+
+        // `xd->above_mbmi` / `left_mbmi` palette projections + the mode ctx —
+        // the same grid reads `leaf_pick_sb_modes` makes.
+        let palette_above = if up_available {
+            grid.palette_nbr_at(mi_row - 1, mi_col)
+        } else {
+            None
+        };
+        let palette_left = if left_available {
+            grid.palette_nbr_at(mi_row, mi_col - 1)
+        } else {
+            None
+        };
+        // `av1_get_skip_txfm_context(xd)` and `get_tx_size_context(xd)` —
+        // both read the committed neighbour state, identically to the
+        // full-RD leaf. (The estimate arm's OWN skip cost uses the hardcoded
+        // ctx 0 KEY-intra invariant; these are the palette search's, which
+        // runs the real tx search and pays the real skip/tx-size symbols.)
+        let a0 = mi_col as usize;
+        let l0 = (mi_row & 31) as usize;
+        let skip_ctx = (if up_available {
+            usize::from(grid.dv_at(mi_row - 1, mi_col).skip_txfm)
+        } else {
+            0
+        }) + (if left_available {
+            usize::from(grid.dv_at(mi_row, mi_col - 1).skip_txfm)
+        } else {
+            0
+        });
+        let is_inter_nbr = |d: &crate::intrabc_search::DvCell| d.use_intrabc || d.ref_frame0 > 0;
+        let above_inter_bsize = up_available
+            .then(|| grid.dv_at(mi_row - 1, mi_col))
+            .filter(is_inter_nbr)
+            .map(|d| d.bsize as usize);
+        let left_inter_bsize = left_available
+            .then(|| grid.dv_at(mi_row, mi_col - 1))
+            .filter(is_inter_nbr)
+            .map(|d| d.bsize as usize);
+        let tx_size_ctx = get_tx_size_context(
+            bsize,
+            tile.above_tctx[a0],
+            tile.left_tctx[l0],
+            up_available,
+            left_available,
+            above_inter_bsize,
+            left_inter_bsize,
+        );
+        let above_y: Vec<i8> = tile.above_ectx[0][a0..a0 + mi_w].to_vec();
+        let left_y: Vec<i8> = tile.left_ectx[0][l0..l0 + mi_h].to_vec();
+        let mut y_env = TxfmYrdEnv {
+            sb_size: env.sb_size,
+            bsize,
+            mi_row,
+            mi_col,
+            up_available,
+            left_available,
+            tile_col_end: env.tile_col_end,
+            tile_row_end: env.tile_row_end,
+            partition,
+            mi_cols: env.mi_cols,
+            mi_rows: env.mi_rows,
+            ref_off: ref_off_y,
+            ref_stride: env.stride,
+            src: env.src_y,
+            src_off: ref_off_y,
+            src_stride: env.stride,
+            disable_edge_filter: env.disable_edge_filter,
+            filter_type: luma_edge_filter_type,
+            mode: 0,
+            angle_delta: 0,
+            use_filter_intra: false,
+            filter_intra_mode: 0,
+            lossless: env.lossless,
+            reduced_tx_set_used: env.reduced_tx_set_used,
+            bd: env.bd,
+            rows: env.rows_y,
+            qindex: cfg.qindex,
+            rdmult: env.rdmult,
+            coeff_costs: env.coeff_costs_y,
+            tx_type_costs: cfg.tx_type_costs_y,
+            skip_costs: cfg.skip_costs,
+            skip_ctx,
+            tx_size_costs: cfg.tx_size_costs,
+            tx_size_ctx,
+            tx_mode_is_select: !env.lossless && cfg.pol.enable_tx_size_search,
+            above_ctx: &above_y,
+            left_ctx: &left_y,
+            qm_levels: cfg.qm_levels,
+        };
+
+        // The stage params. `pick_sb_modes_nonrd` never calls
+        // `set_mode_eval_params`; `av1_nonrd_use_partition` sets
+        // **DEFAULT_EVAL** once per superblock (partition_search.c:2996) and
+        // the only thing that can move it afterwards is a full-RD leaf, whose
+        // own tail restores DEFAULT_EVAL (rdopt.c:3659). So the estimate
+        // arm's palette search always runs DEFAULT_EVAL — NOT the
+        // MODE_EVAL/WINNER_MODE_EVAL two-pass the speed>=4 full-RD intra
+        // search uses.
+        let sf =
+            SpeedFeatures::set_allintra(cfg.speed, cfg.allow_screen_content_tools, env.bd > 8);
+        let mut default_pol = sf.tx_type_search_policy_for_stage(
+            DEFAULT_EVAL,
+            cfg.pol.skip_trellis,
+            cfg.pol.sharpness,
+        );
+        default_pol.carry_frame_level_tx_sf(cfg.pol);
+        let default_pol = default_pol.with_tune_knobs(crate::TuneKnobs {
+            use_qm_dist_metric: cfg.pol.use_qm_dist_metric,
+            iq_tuning: cfg.pol.iq_tuning,
+        });
+        let pass_method = sf.tx_size_search_method_for_stage(DEFAULT_EVAL);
+
+        let args = crate::palette_search::PaletteSearchArgs {
+            // `mode_costs->mbmode_cost[size_group_lookup[bsize]][DC_PRED]`
+            // (intra_mode_search.c:1136-1137 + :1150) — the INTER-frame
+            // y_mode table, NOT the KEY `y_mode_costs[A][L]` row the full-RD
+            // caller uses. See `PaletteSearchArgs::dc_mode_cost`.
+            //
+            // HONESTY NOTE (measured 2026-08-03, bite proof 2 of
+            // `benchmarks/kb37_nonrd_palette_search_2026-08-03.meta`): swapping
+            // this for `bmode_costs[0]` — the KEY row — leaves the whole 27-cell
+            // byte gate GREEN. The two tables differ (they are costed from
+            // `kf_y_cdf` and `y_mode_cdf` respectively, rd.c:104-110), but the
+            // constant they contribute to every palette candidate's rate never
+            // flips a winner on that grid. The line below is the C source line,
+            // not a gate-protected value; do not read the inertness as licence
+            // to simplify it.
+            dc_mode_cost: cfg.mode_costs.mbmode_cost
+                [crate::mode_costs::SIZE_GROUP_LOOKUP[bsize]][0],
+            mode_costs: cfg.mode_costs,
+            try_palette: allow_palette(cfg.allow_screen_content_tools, bsize),
+            palette_bsize_ctx: palette_bsize_ctx(bsize) as usize,
+            palette_mode_ctx: palette_mode_ctx(
+                up_available,
+                palette_above
+                    .as_ref()
+                    .map_or(0, |p| i32::from(p.size[0] > 0)),
+                left_available,
+                palette_left
+                    .as_ref()
+                    .map_or(0, |p| i32::from(p.size[0] > 0)),
+            ) as usize,
+            enable_filter_intra: cfg.enable_filter_intra,
+            allow_intrabc: cfg.intrabc.is_some(),
+            enable_tx64: cfg.enable_tx64,
+            enable_rect_tx: cfg.enable_rect_tx,
+            // MULTI_WINNER_MODE_OFF: the nonrd walk has no winner-mode
+            // second pass at all (nothing stores or replays winner stats on
+            // this path), so `store_winner_mode_stats` is a hard no-op.
+            winner_mode: None,
+            pass_pol: &default_pol,
+            pass_method,
+            palette_costs,
+            palette_above: palette_above.as_ref(),
+            palette_left: palette_left.as_ref(),
+            prune_palette_search_level: sf.prune_palette_search_level,
+            prune_luma_palette_size_search_level: sf.prune_luma_palette_size_search_level,
+            // `rt_sf.discount_color_cost` — 0 for ALLINTRA at every speed
+            // (speed_features.c:373 sets it, and nothing on the allintra path
+            // reassigns it; the `= 1` at :2165 is a REALTIME screen arm).
+            discount_color_cost: false,
+            source_variance,
+            color_palette_thresh: *color_palette_thresh,
+        };
+        // `av1_search_palette_mode_luma(cpi, x, bsize, /*ref_frame_cost=*/0,
+        // ctx, &this_rdc, best_rdc.rdcost)` (:1712-1717).
+        let win = crate::nonrd_pickmode::search_palette_mode_luma(
+            &mut y_env,
+            recon_y,
+            &args,
+            /*ref_frame_cost=*/ 0,
+            best_rdc.rdcost,
+        );
+        // `if (this_rdc.rdcost < best_rdc.rdcost)` (:1719-1730).
+        if let Some(win) = win {
+            if win.rdcost < best_rdc.rdcost {
+                best_mode = 0; // DC_PRED (:1720)
+                best_rdc = PartRdStats {
+                    rate: win.rate,
+                    dist: win.dist,
+                    rdcost: win.rdcost,
+                };
+                best_tx_size = win.best.tx_size;
+                // `if (xd->tx_type_map[0] != DCT_DCT)
+                //    av1_copy_array(ctx->tx_type_map, xd->tx_type_map, ...)`
+                // (:1727-1728). `xd->tx_type_map` holds the palette winner's
+                // map at this point (intra_mode_search.c:1160). When its
+                // first entry IS DCT_DCT the copy is SKIPPED and
+                // `ctx->tx_type_map` keeps whatever the context held — which
+                // on this walk is all-DCT_DCT, the same standing model the
+                // estimate arm's own leaves ship under (nothing on the nonrd
+                // path ever writes `ctx->tx_type_map`, and the speed-8/9
+                // canon cells byte-match with it).
+                //
+                // HONESTY NOTE (bite proof 5): replacing the whole gate with an
+                // unconditional copy leaves the 27-cell byte gate unchanged, so
+                // the gate is translated from C but is NOT gate-protected.
+                let map = crate::rd_pick::winner_tx_type_map(
+                    bsize,
+                    mi_row,
+                    mi_col,
+                    env.mi_cols,
+                    env.mi_rows,
+                    &win.best,
+                );
+                if map[0] != 0 {
+                    tx_type_map = map;
+                }
+                palette_y = win.best.palette_y;
+            }
+            // else: `av1_zero(mi->palette_mode_info)` (:1730) — palette_y
+            // stays None.
+        }
+    }
+
     visits.push(LeafVisit {
         mi_row,
         mi_col,
         bsize,
         budget: i64::MAX,
-        rate: pick.rd.rate,
-        dist: pick.rd.dist,
-        rdcost: pick.rd.rdcost,
+        rate: best_rdc.rate,
+        dist: best_rdc.dist,
+        rdcost: best_rdc.rdcost,
     });
 
     // ctx->mic snapshot → LeafWinner (store_coding_context_nonrd +
     // init_mbmi_nonrd fields): uv = DC (the chroma answer), angle 0,
-    // filter_intra off, palette zero, tx_type_map all DCT_DCT, skip_txfm
-    // false (encode_b_nonrd forces mi->skip_txfm = 0 for intra, :2120).
-    let mi_w = MI_SIZE_WIDE_B[bsize];
-    let mi_h = MI_SIZE_HIGH_B[bsize];
+    // filter_intra off, tx_type_map all DCT_DCT unless the palette arm won,
+    // skip_txfm false (encode_b_nonrd forces mi->skip_txfm = 0 for intra,
+    // :2120).
     // Chroma edge filter type for the encode (leaf_pick_sb_modes' chroma
     // pattern) — DC-only uv makes it decision-inert, recomputed for fidelity.
     let base_row = mi_row - (mi_row & env.ss_y as i32);
@@ -5313,18 +5623,24 @@ fn nonrd_leaf_pick_and_encode(
 
     let mut w = LeafWinner {
         bsize,
-        mode: pick.mode,
+        // `mi->mode = best_mode` (:1734) — DC_PRED when the palette arm won.
+        mode: best_mode,
         angle_delta_y: 0,
         use_filter_intra: false,
         filter_intra_mode: 0,
-        tx_size: pick.tx_size,
+        // `mbmi->tx_size`: the estimate arm's max-square size, or the palette
+        // tx search's uniform winner (`*mbmi = *best_mbmi`, palette.c:759).
+        tx_size: best_tx_size,
         luma_edge_filter_type,
         uv_mode: 0, // UV_DC_PRED — nonrd_pickmode.c:1735
         angle_delta_uv: 0,
         cfl_alpha_idx: 0,
         cfl_alpha_signs: 0,
         uv_edge_filter_type,
-        tx_type_map: vec![0; mi_w * mi_h], // DCT_DCT
+        // ctx->tx_type_map: all DCT_DCT on the estimate arm, the palette
+        // winner's map when the palette arm won AND its first entry is not
+        // DCT_DCT (:1727 — see the copy gate above).
+        tx_type_map,
         skip_txfm: false,
         use_intrabc: false,
         inter_tx_size: [0; 16],
@@ -5343,11 +5659,12 @@ fn nonrd_leaf_pick_and_encode(
         mv_col: 0,
         inter_mode_context: 0,
         interp_filter: 0,
-        raw_rdstats: pick.rd,
-        // Palette is guarded dead on the nonrd estimate arm (init_mbmi_nonrd
-        // zeroes palette sizes; the palette search arm needs
-        // allow_screen_content_tools=1, dead on the canon grid).
-        palette_y: None,
+        raw_rdstats: best_rdc,
+        // `mi->palette_mode_info`: the winner when the palette arm won,
+        // `av1_zero`-ed otherwise (:1730). The UV half is never searched on
+        // this arm — `av1_search_palette_mode_luma` is LUMA-only and the
+        // chroma answer is a hard UV_DC_PRED (:1735).
+        palette_y,
         palette_uv: None,
     };
     // output_enabled = true (OUTPUT_ENABLED) — see the full-RD arm above.

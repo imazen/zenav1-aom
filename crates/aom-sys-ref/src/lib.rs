@@ -9213,6 +9213,15 @@ pub mod cx_ctrl {
     /// `--dv-cost-upd-freq` — DV costs are intrabc-only: INERT on this
     /// envelope (intrabc off); the ctrl exists for completeness.
     pub const AV1E_SET_DV_COST_UPD_FREQ: i32 = 142;
+    /// `--enable-palette` (default 1; `shim_encode_av1_kf*` hardcodes 0).
+    /// The generic-ctrl path applies extra pairs AFTER the base set
+    /// (dec_shim.c:419-424), so passing this through
+    /// [`crate::ref_encode_av1_kf_ctrls`] OVERRIDES the base 0 — which is how
+    /// a palette cell can also carry `--min-partition-size`, a combination
+    /// `shim_encode_av1_kf_screen_content` has no argument for.
+    pub const AV1E_SET_ENABLE_PALETTE: i32 = 104;
+    /// `--enable-intrabc` (default 1; `shim_encode_av1_kf*` hardcodes 0).
+    pub const AV1E_SET_ENABLE_INTRABC: i32 = 105;
 
     /// `--sb-size=64|128` (`AV1E_SET_SUPERBLOCK_SIZE`, aomcx.h:664, verified
     /// value 56). The argument is an `aom_superblock_size_t`
@@ -9228,7 +9237,7 @@ pub mod cx_ctrl {
 
     /// `(probe_index, constant)` table for the header cross-check test —
     /// probe order matches `shim_cx_ctrl_id_by_probe` (dec_shim.c).
-    pub const PROBE_TABLE: [(i32, i32); 25] = [
+    pub const PROBE_TABLE: [(i32, i32); 27] = [
         (0, AV1E_SET_CDF_UPDATE_MODE),
         (1, AV1E_SET_ENABLE_RECT_PARTITIONS),
         (2, AV1E_SET_ENABLE_AB_PARTITIONS),
@@ -9254,6 +9263,8 @@ pub mod cx_ctrl {
         (22, AV1E_SET_COEFF_COST_UPD_FREQ),
         (23, AV1E_SET_MODE_COST_UPD_FREQ),
         (24, AV1E_SET_DV_COST_UPD_FREQ),
+        (25, AV1E_SET_ENABLE_PALETTE),
+        (26, AV1E_SET_ENABLE_INTRABC),
     ];
 }
 

@@ -23,7 +23,7 @@
 //!   [`crate::intra_uv_rd`]'s orbit but shares this module's machinery
 //!   (dim-2 k-means, colour cost, map cost).
 
-use crate::intra_rd::{IntraSbyBest, IntraSbySearchCfg, WinnerModeEntry, store_winner_mode_stats};
+use crate::intra_rd::{IntraSbyBest, WinnerModeEntry, store_winner_mode_stats};
 use crate::mode_costs::{
     PaletteCosts, block_signals_txsize, intra_mode_info_cost_y, tx_size_cost, write_uniform_cost,
 };
@@ -565,10 +565,41 @@ pub struct PaletteYInfo {
 /// Everything [`rd_pick_palette_intra_sby`] needs beyond the yrd `env`.
 pub struct PaletteSearchArgs<'a> {
     /// `bmode_costs[DC_PRED]`.
+    ///
+    /// The two callers select it from DIFFERENT tables and that is C, not an
+    /// inconsistency: `av1_rd_pick_intra_sby_mode` (intra_mode_search.c:1497)
+    /// uses the KEY-frame `y_mode_costs[above_ctx][left_ctx]` row on an intra
+    /// frame, while `av1_search_palette_mode_luma` (intra_mode_search.c:1136-1137)
+    /// unconditionally uses `mbmode_cost[size_group_lookup[bsize]]` — the
+    /// INTER-frame `y_mode_cdf`-derived table, which on a KEY frame is at its
+    /// default and never adapts. Term for term; see
+    /// [`crate::nonrd_pickmode::search_palette_mode_luma`].
     pub dc_mode_cost: i32,
-    /// The `IntraSbySearchCfg` the enclosing sby search runs under (mode
-    /// costs, palette contexts, winner-mode config...).
-    pub cfg: &'a IntraSbySearchCfg<'a>,
+    /// `x->mode_costs` — the mode-info signalling tables
+    /// `intra_mode_info_cost_y` reads (`palette_y_mode_cost`,
+    /// `filter_intra_cost`, `intrabc_cost`, ...).
+    pub mode_costs: &'a crate::mode_costs::IntraModeCosts,
+    /// `av1_allow_palette(allow_screen_content_tools, bsize)` — the
+    /// palette-flag-cost gate of `intra_mode_info_cost_y`
+    /// (intra_mode_search_utils.h:517). Always true where the search runs
+    /// (both callers gate on it), carried explicitly because the cost helper
+    /// takes it.
+    pub try_palette: bool,
+    /// `av1_get_palette_bsize_ctx(bsize)` / `av1_get_palette_mode_ctx(xd)`.
+    pub palette_bsize_ctx: usize,
+    pub palette_mode_ctx: usize,
+    /// `oxcf.intra_mode_cfg.enable_filter_intra` — the filter-intra flag bit
+    /// `intra_mode_info_cost_y` costs on eligible bsizes.
+    pub enable_filter_intra: bool,
+    /// `av1_allow_intrabc(cm)` — the `intrabc_cost[0]` tail term.
+    pub allow_intrabc: bool,
+    /// `oxcf.txfm_cfg.enable_tx64` / `enable_rect_tx` (the tx-size sweep's
+    /// candidate gates).
+    pub enable_tx64: bool,
+    pub enable_rect_tx: bool,
+    /// The winner-mode two-pass bundle, for `store_winner_mode_stats`
+    /// (palette.c:306). `None` = MULTI_WINNER_MODE_OFF / single-pass.
+    pub winner_mode: Option<&'a crate::intra_rd::WinnerModeCfg<'a>>,
     /// The first-pass tx policy/method (MODE_EVAL under winner-mode).
     pub pass_pol: &'a TxTypeSearchPolicy,
     pub pass_method: usize,
@@ -589,6 +620,17 @@ pub struct PaletteSearchArgs<'a> {
     /// `x->source_variance` — the same live value the enclosing mode loop
     /// used (the intra tx-size depth sweep's low-contrast prune reads it).
     pub source_variance: u32,
+    /// `x->color_palette_thresh` — the `colors_threshold <= thresh` gate of
+    /// `av1_rd_pick_palette_intra_sby` (palette.c:576). Reset to **64** once
+    /// per superblock (encodeframe.c:1297, in `encode_sb_row`) and then
+    /// OVERWRITTEN per leaf by the nonrd estimate arm's palette gate to
+    /// `(best_sad_norm < 500) ? 32 : 64` (nonrd_pickmode.c:1713). The
+    /// assignment is not restored, so within one superblock an estimate leaf
+    /// that lowers it to 32 is still in force for every LATER leaf of that
+    /// superblock — including a full-RD (`hybrid_use_rdopt`) leaf, which
+    /// re-enters this same search. Carried as a value rather than hardcoded
+    /// for exactly that reason.
+    pub color_palette_thresh: i32,
 }
 
 /// The palette-use extra rate of `intra_mode_info_cost_y` (its
@@ -709,7 +751,7 @@ fn palette_rd_y(
     // The palette-use mode-info rate (intra_mode_info_cost_y's use_palette
     // branch): size + first-index uniform + colour signalling + map tokens.
     let palette_extra = {
-        let bctx = args.cfg.palette_bsize_ctx;
+        let bctx = args.palette_bsize_ctx;
         let mut extra = args.palette_costs.palette_y_size_cost[bctx]
             [num_unique_colors - PALETTE_MIN_SIZE]
             + write_uniform_cost(num_unique_colors as i32, i32::from(color_map[0]));
@@ -727,7 +769,7 @@ fn palette_rd_y(
         extra
     };
     let palette_mode_rate = intra_mode_info_cost_y(
-        args.cfg.mode_costs,
+        args.mode_costs,
         args.dc_mode_cost,
         0, // DC_PRED
         bsize,
@@ -735,11 +777,11 @@ fn palette_rd_y(
         false,
         0,
         false,
-        args.cfg.try_palette,
-        args.cfg.palette_bsize_ctx,
-        args.cfg.palette_mode_ctx,
-        args.cfg.enable_filter_intra,
-        args.cfg.allow_intrabc,
+        args.try_palette,
+        args.palette_bsize_ctx,
+        args.palette_mode_ctx,
+        args.enable_filter_intra,
+        args.allow_intrabc,
         true, // use_palette
         palette_extra,
     );
@@ -773,8 +815,8 @@ fn palette_rd_y(
             st.best_rd,
             args.pass_pol,
             args.source_variance,
-            args.cfg.enable_tx64,
-            args.cfg.enable_rect_tx,
+            args.enable_tx64,
+            args.enable_rect_tx,
             args.pass_method,
             Some(&pal),
             &mut st.txs,
@@ -790,8 +832,8 @@ fn palette_rd_y(
             st.best_rd,
             args.pass_pol,
             args.source_variance,
-            args.cfg.enable_tx64,
-            args.cfg.enable_rect_tx,
+            args.enable_tx64,
+            args.enable_rect_tx,
             args.pass_method,
             Some(&pal),
             &mut st.txs,
@@ -819,7 +861,7 @@ fn palette_rd_y(
 
     // store_winner_mode_stats (palette.c:306): palette candidates feed the
     // multi-winner list too (no-op below speed 4).
-    if let Some(wm) = args.cfg.winner_mode {
+    if let Some(wm) = args.winner_mode {
         store_winner_mode_stats(
             st.winner_stats,
             wm.max_winner_count,
@@ -1050,8 +1092,15 @@ pub fn rd_pick_palette_intra_sby(
         c
     };
 
-    // x->color_palette_thresh (block.h init: 64; rt-only adjustments off).
-    let color_thresh_palette = 64i32;
+    // `x->color_palette_thresh` (palette.c:576). Reset to 64 per superblock
+    // (encodeframe.c:1297) and lowered to 32 per leaf by the nonrd estimate
+    // arm's palette gate (nonrd_pickmode.c:1713) — carried on the args, see
+    // `PaletteSearchArgs::color_palette_thresh`. The `increase_color_thresh_
+    // palette` +20 adjustment above it (palette.c:580-591) is realtime-only
+    // (`rt_sf.increase_color_thresh_palette` is 0 for ALLINTRA,
+    // speed_features.c:2618, and never assigned on the allintra path) AND
+    // additionally gated on `cpi->rc.high_source_sad`, so it is dead here.
+    let color_thresh_palette = args.color_palette_thresh;
 
     let mut st = PaletteRdState {
         best_rd: *best_rd,
