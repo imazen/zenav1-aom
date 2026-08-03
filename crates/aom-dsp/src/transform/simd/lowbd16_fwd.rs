@@ -290,6 +290,8 @@ pub(crate) fn fwd_col_pass_i16(
     lr_flip: bool,
 ) -> bool {
     debug_assert!(row_n <= 64 && col_n % 16 == 0);
+    debug_assert!(shift0 == 0 || shift0 == 2);
+    debug_assert!((0..=4).contains(&shift1_bit));
     if row_n <= 8 {
         let mut tin = [i16x16::zero(t); 8];
         let mut tout = [i16x16::zero(t); 8];
@@ -422,6 +424,7 @@ pub(crate) fn fwd_row_pass_i16(
     rect1: bool,
 ) -> bool {
     debug_assert!(col_n <= 64 && row_n % 16 == 0 && col_n % 8 == 0);
+    debug_assert!((0..=4).contains(&shift2_bit));
     if col_n <= 8 {
         let mut tin = [i16x16::zero(t); 8];
         let mut tout = [i16x16::zero(t); 8];

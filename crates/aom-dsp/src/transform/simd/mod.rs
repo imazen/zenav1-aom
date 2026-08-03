@@ -574,7 +574,13 @@ pub(crate) fn try_fwd_col_pass(
     // declines BEFORE touching `buf`. `col_n % 16` because a 4- or 8-wide
     // block would run the same kernel instruction count as the i32x8 pass plus
     // the narrowing overhead.
-    if col_n % 16 == 0 {
+    // `shift0 in {0, 2}` and `shift1_bit in 0..=4` are the whole of
+    // `FWD_SHIFT`'s column column today, and they are exactly the domains the
+    // i16 pass's two shift recipes are proved on (`v+v; d+d` == `<< 2`, and
+    // `rshift_mul` == `round_shift(_, bit)` for bit in 1..=4). Gating on them
+    // rather than assuming them means a future shift table cannot silently
+    // walk off either proof.
+    if col_n % 16 == 0 && (shift0 == 0 || shift0 == 2) && (0..=4).contains(&shift1_bit) {
         if let Some(k16) = lowbd16_fwd::fwd_kernel_i16(txfm_type_col) {
             debug_assert_eq!(lowbd16_fwd::fwd_kernel_i16_n(k16), row_n);
             if lowbd16_fwd::fwd_col_i16_applies(k16, input, stride, col_n, row_n, shift0)
@@ -758,7 +764,7 @@ pub(crate) fn try_fwd_row_pass(
     // as the column pass above: a runtime bound on the actual `buf`, so the
     // i32 column pass having produced it (or the caller having passed
     // anything at all) is irrelevant to soundness.
-    if row_n % 16 == 0 && col_n % 8 == 0 {
+    if row_n % 16 == 0 && col_n % 8 == 0 && (0..=4).contains(&shift2_bit) {
         if let Some(k16) = lowbd16_fwd::fwd_kernel_i16(txfm_type_row) {
             debug_assert_eq!(lowbd16_fwd::fwd_kernel_i16_n(k16), col_n);
             if lowbd16_fwd::fwd_row_i16_applies(k16, buf, col_n, row_n)
