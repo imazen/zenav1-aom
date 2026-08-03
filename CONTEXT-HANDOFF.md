@@ -1,7 +1,7 @@
-# zenav1-aom — project handoff (2026-08-01)
+# zenav1-aom — project handoff (2026-08-03)
 
 Current, verified state of the port for a new developer and/or a new machine.
-Everything below was checked against `origin/main` on 2026-08-01; where a claim
+Everything below was checked against `origin/main` on 2026-08-03; where a claim
 has a proof artifact, it is cited. Older handoff snapshots are superseded by
 this file. Deep technical state lives in [`STATUS.md`](STATUS.md) (module log,
 newest first), [`PARITY.md`](PARITY.md) (stills-parity ledger),
@@ -89,7 +89,11 @@ python3 xtask/conformance.py --fetch --scope intra   # decode-conformance vector
   When you touch anything under `transform/simd`, check BOTH targets
   (`cargo check --target x86_64-apple-darwin` catches tier-list errors the host
   build cannot).
-- **Gate 3 — performance: the user-set ≤1.5× bar is met at the 4K headline
+- **Gate 3 — performance.** DECODER: see below, ≤1.5× met at 4K only. ENCODER (new,
+  2026-08-02/03): **10.66× → 3.15× vs libaom** across five byte-identical levers — see "The
+  ENCODER performance programme" section for the levers, the three scoping dimensions, and the
+  rotation caveat on three of the headlines.
+- **Gate 3 (decoder) — the user-set ≤1.5× bar is met at the 4K headline
   cells** — 4K decode wall ≈1.22× C (cq20) / ≈1.19× (cq40) after the bd8 lowbd
   u8 pipeline, the i16 transform column+row narrowing, and the
   deblock/wiener/CDEF filter work. 2K and small-frame cells still exceed the
@@ -157,6 +161,52 @@ more bugs of exactly the same shape, and neither needed new machinery:
   across ~15 KB entries and gate-file doc comments, which is why nobody had worked it. Keep it
   current in the same commit as the landing.
 
+## The ENCODER performance programme (2026-08-02/03) — 10.66x -> 3.15x, all byte-identical
+
+Gate 2 finished with zero pinned cells, so the encoder's remaining gap was speed. It had
+**never been profiled** (every profiling artefact in `benchmarks/` was decode-side). Five
+levers landed, each byte-identical to libaom — Gate 2 kept zero pinned cells throughout:
+
+| | vs libaom (Darwin, 1 MP photo, cq44, cpu-used 6) |
+|---|---|
+| start | **10.66x** |
+| KB-PERF-1 cache the intra-mode CNN per 64x64 (C does; the port re-ran it at every node) | 3.36x |
+| KB-PERF-2 per-txb scratch reuse + tiered forward-pass scratch | 3.25x |
+| KB-PERF-3 i16-lane bd8 forward transform | 3.19x |
+| KB-PERF-4 vector directional intra predictors | 3.187x |
+| KB-PERF-5 u16-lane SMOOTH kernels | **3.150x** |
+
+**Read `benchmarks/encoder_hotspot_reprofile_2026-08-02.md` before picking the next lever, and
+read its two scoping banners first.** The single most reusable finding of this programme is that
+a profiler's ranked share is scoped three ways and none of them are obvious:
+
+- **platform** — allocation is worth ~5x more on Windows than Darwin (identical call counts on
+  both, so the whole difference is cost per call), and the top-ranked lever is ARM-only and does
+  nothing on x86-64;
+- **content** — the same lever reads 20.8 % on the study photograph and 0.15 % on `detail`;
+- **speed** — directional intra is 20.78 % of predicted pixels at cpu-used 6 and **56.61 % at
+  cpu-used 5** on identical content.
+
+So a share is a measurement of one cell, not a property of the encoder. Relatedly: **the port's
+ratio is WORST where nothing is profiled** — 5.64x at cpu-used 9 and 7.76x at cpu-used 4 against
+3.15x at the profiled cell.
+
+Three projections overshot badly (18x, 5x, 13x) and one landed within 8 %. The difference is
+recorded as playbook §14: a ceiling tied to a **named mechanism** holds; one tied to a
+profiler's ranked *stage* does not, because the stage is a symbol-name leaf class that may be
+mostly `memset`.
+
+Supporting machinery, all reusable: `scripts/eprof_ab.sh` (+ `ROTATE=1`, and
+`eprof_ab_position.py` for the position table), `.github/workflows/winperf.yml`
+(`workflow_dispatch`, real Windows numbers on two targets), and `aom_dsp::census` behind a
+default-off `census` feature with `just census-gate` pinning per-family floors AND ceilings.
+
+**Caveat you must carry:** KB-PERF-2/3/4's Darwin headlines were measured with a fixed-order
+interleave, and a fixed order confounds arm with position by up to 0.34 pp (two copies of ONE
+binary, positions 5 and 6). That is ~12 % of the allocation lever but **~45 % of the directional
+lever**. Re-verification under `ROTATE=1` was in flight at the time of writing — check whether
+it landed before quoting those three numbers.
+
 ## Live tracks (each has its own docs; concurrent sessions may be active)
 
 - **Inter decode + encode** ("THE REST"): INTER-ROADMAP.md,
@@ -167,14 +217,34 @@ more bugs of exactly the same shape, and neither needed new machinery:
   fixed, witness pinned at first-diff 1120 (an mi(40,28) partition near-tie).
 - **Decoder robustness/fuzz**: fuzz harness landed, campaign notes in STATUS;
   keep the no-panic property as features land.
-- **Encoder near-tie residuals** (shrunk sharply 2026-07-30/31): KB-13 is at
-  50/60, KB-12's 4 speed-8 diag estimate-arm cells stand, 2 palette 128²
-  (KB-P29) and 1 toggle cell (HANDOFF-TOGGLES.md holds its localization notes).
-  **KB-10/KB-11's noise-cq63 speed-6/7 pairs are CLOSED** (by KB-21 root #2), as
-  is the whole cpu-4/5 "fragile band" on bd8 — KB-21 is closed and the RD-search
-  speeds 0..7 now have NO open singleton in the speed axis; the only two left are
-  nonrd (speed 8). All remaining cells are pinned self-promoting; the sibling-C
-  RD-dump method (KB-3/KB-7) is the standard close.
+- **Encoder near-tie residuals — nearly all closed as of 2026-08-03.** KB-13 is at
+  **58/60** (both remaining are `cpu3 cq63`; speed 4 is 12/12 on every cell).
+  **KB-12 is CLOSED** — its "leaf-mode near-tie" was never a near-tie but a
+  dropped transpose in `aom_hadamard_lp_8x8` (libaom's `_c` ends with one,
+  *"Extra transpose to match SSE2 behavior"*, `avg.c:232-236`); Gate 2 went to
+  **zero pinned cells** and `SPEED_OPEN_SINGLETONS`/`_COMBINATIONS` are both
+  empty at every speed 0..9. **KB-10/KB-11's noise-cq63 pairs and the whole
+  cpu-4/5 "fragile band" are CLOSED** (KB-21 root #2). What is left: 2 palette
+  128² (KB-P29), 1 toggle cell, and the pins listed in the Coverage queue's T4
+  tier. The sibling-C RD-dump method (KB-3/KB-7) is the standard close.
+
+  **A lesson worth carrying from KB-12:** those five lowbd estimate kernels were
+  the only hand-transcribed kernels in the tree with **no differential**, and the
+  two unit tests that existed fed FLAT blocks — structurally transpose-blind,
+  since flat input puts all energy at coefficient 0. Tests existed; they could
+  not have caught it. Every consumer of those coefficients except the EOB is
+  order-invariant, which is why a transposed kernel produced *correct* rate and
+  distortion and wore a near-tie's clothes for weeks.
+- **A red `interintra_diff` on aarch64 is now attributable.** It used to SIGSEGV
+  intermittently and was recorded as a runner flake; it was a **real data race in
+  the oracle** (`CONFIG_MULTITHREAD=0` selects the unsynchronised `aom_once`, and
+  `av1_init_wedge_masks` opens by memsetting its own table, so every mask pointer
+  reads NULL for the duration of the init). Fixed 2026-08-03 by funnelling all
+  four `aom_once`-guarded initialisers through `ref_init`'s Rust `Once`; playbook
+  §11 carries the full derivation. **Its regression gate is committed as an
+  unproven probe, not a teeth-tested gate** — reverting the fix does not make it
+  fail on the dev box, so establishing that it bites is an open item for CI's
+  aarch64 runner, where the crash actually reproduces.
 
 ## Conventions that keep multi-agent work safe here
 
