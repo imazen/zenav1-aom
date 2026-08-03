@@ -3964,12 +3964,22 @@ Column pass alone −1.700 ms, row pass alone −1.665 ms, and they compose
   forward arm is full-range i16, which is over `M*` for every kernel, so
   without it the integration test could not reach this code at all (playbook
   §1).
-- **x86-64 is NOT measured.** `cargo check --target x86_64-apple-darwin` proves
-  the AVX2 tier compiles; that is all. Since "cross-platform" is the whole
-  reason this lever outranks the CNN, that claim is currently an ARGUMENT.
-  `.github/workflows/winperf.yml` gained a generic **`arms: prepost`** mode in
-  this landing (base_sha vs HEAD + nulls on both sides, any landing) so the
-  number is one dispatch away against base_sha `590e525f89185a15b201a8a77316db7e7e6d3940` — not yet run.
+- **THE CROSS-PLATFORM CLAIM IS MEASURED, and the lever is worth MORE on
+  Windows than on Darwin** — the opposite of KB-PERF-2's allocation lever
+  needing a platform caveat, and for the reason playbook §6b gives (this one's
+  mechanism is arithmetic, not a call into the platform). `winperf.yml` gained
+  a generic **`arms: prepost`** mode for it (base_sha vs HEAD, nulls on BOTH
+  sides, usable by any landing); run 30788058276, 16 rounds x 2 contents x 2
+  runners, bands committed as `.win_<runner>_<content>.tsv`:
+  **`windows-11-arm` −7.43 % `detail` / −7.22 % `smooth`** (nulls +0.08..+0.34 %),
+  **`windows-latest` x86-64 −2.75 % / −4.32 %** (nulls −0.80..+0.55 %, but raw
+  spreads 5.9-8.0 %, so read it as "−2.8 to −4.3 % on a noisy runner"), against
+  Darwin's −2.49 %. **The allocator census is identical to the digit on every
+  arm on both runners** except `peak_live` by ONE byte out of 17.4 MB — proof
+  this moves arithmetic and not allocation. CAVEAT: winperf's sources are
+  integer-generated `detail`/`smooth` (it cannot ship the study photograph), so
+  platform and content are confounded — the cross-platform ORDERING is sound,
+  the 3x ARM-vs-Darwin RATIO is not.
 
 
 ## Encoder single-frame primary envelope (VERIFIED against reference/libaom)

@@ -115,11 +115,19 @@ gitignored `conformance/data` READ-ONLY via `AOM_CONFORMANCE_DIR`.
   "half the lane width" and "less time" are two different measurements and only
   the second is what the ratio moved on.
 * No multi-threaded measurement; neither arm is threaded.
-* x86-64: see the .md's own section. `cargo check --target x86_64-apple-darwin`
-  proves the AVX2 tier COMPILES; it is not a timing.
+* x86-64 / Windows IS measured — see the .md. GitHub Actions run 30788058276,
+  `.github/workflows/winperf.yml` with `arms: prepost`, `base_sha`
+  590e525f89185a15b201a8a77316db7e7e6d3940, `rounds: 16`; the four bands are
+  committed as `.win_<runner>_<content>.tsv`. What is NOT measured there is
+  this box's photograph: winperf generates its sources with integer-only
+  arithmetic (so the census is bit-identical across targets) and cannot ship
+  the 1.5 MB study image, so the platform comparison is confounded with content
+  and only its ordering is claimed.
+* Linux is unmeasured on both the audit and the timing.
 
 ## Committed data files
 
   .ab.tsv         the 24-round interleaved band, 7 arms x 24 rounds
   .halfbatch.tsv  the 24-round band for the rejected half-batch extension
+  .win_<runner>_<content>.tsv   the four Windows bands (16 rounds, 5 arms)
   i16_fwd_audit_2026-08-02.txt   `just audit-i16-fwd` output (M* + bd8 reach)

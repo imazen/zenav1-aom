@@ -260,23 +260,66 @@ it rather than silently costing the lever.
 
 ---
 
-## x86-64: NOT MEASURED
+## x86-64 and Windows: MEASURED, and the lever is worth MORE there
 
-`cargo check --target x86_64-apple-darwin --workspace --all-targets` passes, so
-the AVX2 tier of `fbtf16` and of the ~1 700 generated i16 kernel lines
-**compiles**. That is all it says. **No x86-64 timing was taken**, and this box
-cannot take one.
+The whole reason this lever was picked over the re-profile's rank 1 is that it
+is cross-platform, so "it helps on AVX2 too" is the load-bearing claim. It was
+taken rather than argued, on both Windows runners, in one dispatch of
+`.github/workflows/winperf.yml` (which gained a generic **`arms: prepost`** mode
+for this: `pre` = a whole-src checkout of `base_sha`, `post` = the dispatched
+ref, plus a same-binary null on each side). 16 interleaved rounds per arm, two
+contents, never averaged. Run
+[30788058276](https://github.com/imazen/zenav1-aom/actions/runs/30788058276);
+bands committed as `.win_<runner>_<content>.tsv`.
 
-This matters more than usual here, because the whole reason this lever was
-picked over the re-profile's rank 1 is that it is cross-platform — so "it helps
-on AVX2 too" is the load-bearing claim and it is currently an argument, not a
-measurement. The argument: the mechanism is lane width plus the replacement of
-an i64 round trip with `vpmaddwd`, and both are architecture-neutral; on AVX2
-an `i16x16` and an `i32x8` are each one 256-bit register exactly as on NEON they
-are each two 128-bit registers. `.github/workflows/winperf.yml` gained an
-`arms: prepost` mode in this landing so the number can be taken on
-`windows-latest` and `windows-11-arm` by dispatch, against `base_sha`
-`590e525f89185a15b201a8a77316db7e7e6d3940`; it has not been run.
+**In `prepost` mode the `l3a` and `l3` arms are additional COPIES of `pre`**, so
+each band carries THREE nulls — two on the pre side and one (`postB`) on the
+post side. Read them first:
+
+| `detail`, 1024x1024 / cq 44 / cpu-used 6 | `windows-11-arm` | `windows-latest` x86-64 | Darwin M4 Pro |
+|---|---:|---:|---:|
+| null — `l3a` vs `pre` (copy of pre) | +0.20 % | +0.55 % | — |
+| null — `l3` vs `pre` (copy of pre) | +0.08 % | −0.17 % | — |
+| null — `postB` vs `post` (copy of post) | +0.34 % | −0.80 % | +0.15 % |
+| **`post` vs `pre` (this landing)** | **−7.43 %** (paired −7.47 %) | **−2.75 %** (paired −3.15 %) | −2.49 % |
+| raw medians (pre → post) | 394.36 → 365.04 ms | 415.19 → 403.78 ms | 154.47 → 150.63 ms |
+| band spread | 0.5-1.2 % | **5.9-8.0 %** | 1.2-1.7 % |
+
+| `smooth` | `windows-11-arm` | `windows-latest` x86-64 |
+|---|---:|---:|
+| nulls | +0.14 % / −0.15 % | −0.39 % / −0.39 % |
+| **`post` vs `pre`** | **−7.22 %** (paired −7.29 %) | **−4.32 %** (paired −4.19 %) |
+| raw medians | 253.34 → 235.05 ms | 246.06 → 235.44 ms |
+
+**Both Windows targets win, and both win by more than Darwin.** The claim is no
+longer an argument. Three qualifications, stated rather than glossed:
+
+* **`windows-latest` is noisy** — 5.9-8.0 % raw spread on `detail` and up to
+  24 % on `smooth`, against 0.5-1.4 % on `windows-11-arm`. Its −2.75 % clears a
+  ±0.8 % null but not by the margin the ARM runner's −7.4 % clears its ±0.3 %.
+  The honest x86-64 statement is **"−2.8 % to −4.3 % depending on content, on a
+  runner whose noise floor is ~0.8 %"** — a real win, not a precise one.
+* **`windows-11-arm`'s −7.4 % is 3x Darwin's −2.5 %, on the same architecture**,
+  which no mechanism in this change explains. Both are aarch64 running the same
+  NEON kernels. The likely confounder is the harness content: winperf uses the
+  integer-generated `detail`/`smooth` sources (its runners cannot ship the study
+  photograph), and KB-PERF-2 already measured content moving a lever's value by
+  more than 2x on ONE box. Cross-platform *ordering* here is sound; the
+  cross-platform *ratio* is not, because platform and content are confounded.
+* **This is not an allocation lever, and the census proves it.** Every arm's
+  allocator census is identical to the digit on both runners apart from
+  `peak_live`, which differs by **1 byte** out of 17.4 MB. That is the
+  KB-PERF-2 comparison exactly inverted: that lever moved 346 888 calls and no
+  arithmetic; this one moves no calls and only arithmetic. It is also why this
+  one travels — playbook §6b: levers whose mechanism is a call into the platform
+  have a per-platform price, levers whose mechanism is arithmetic do not.
+
+All four arms encode 8748 / 2316 bytes on both runners, asserted fail-loud in
+the job.
+
+`cargo check --target x86_64-apple-darwin --workspace --all-targets` also
+passes, but that only ever proved the AVX2 tier compiles; the numbers above are
+what makes the claim.
 
 ---
 
@@ -295,6 +338,10 @@ are each two 128-bit registers. `.github/workflows/winperf.yml` gained an
   is what the ratio moved on. The +0.48 ms super-additivity of the two passes is
   unexplained for the same reason.
 * **Single-threaded, one frame.**
+* **The Windows runs use synthetic content, the Darwin runs a photograph**, so
+  the platform comparison in the x86-64 section is confounded with content and
+  only its ORDERING should be read. `winperf` cannot ship the 1.5 MB study
+  photograph; that is a property of the harness, not of the encoder.
 * **The gate's own cost is not isolated.** Each pass pre-scans its input for
   `max|lane|` before deciding, and no arm was built with the scan present and
   the i16 path disabled, so the scan's cost is folded into the reported win
