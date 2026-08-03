@@ -8,7 +8,7 @@ same protocol in stdlib Python so it runs identically on Windows, macOS and
 Linux, and it writes the SAME TSV columns so `scripts/eprof_ab_stats.py` reads
 its output unchanged.
 
-  winperf_ab.py <rounds> <detail|smooth> <out.tsv> label=/path/to/winperf ...
+  winperf_ab.py <rounds> <detail|smooth|photo> <out.tsv> label=/path/to/winperf ...
 
 One invocation of EVERY arm per round, round after round, so runner drift lands
 on all arms equally (docs/DIFFERENTIAL_PLAYBOOK.md §6 — comparing medians taken
@@ -33,8 +33,12 @@ def main():
         sys.exit(__doc__)
     rounds = int(sys.argv[1])
     content = sys.argv[2]
-    if content not in ("detail", "smooth"):
-        sys.exit(f"content must be detail|smooth, got {content!r}")
+    # `photo` is the ORIENTED content (winperf::Content::Photo), fitted to the
+    # study photograph's intra MODE distribution rather than to its allocator
+    # call count — the axis `detail`/`smooth` get wrong. See
+    # benchmarks/winperf_content_census_2026-08-03.md.
+    if content not in ("detail", "smooth", "photo"):
+        sys.exit(f"content must be detail|smooth|photo, got {content!r}")
     out = sys.argv[3]
     arms = []
     for spec in sys.argv[4:]:

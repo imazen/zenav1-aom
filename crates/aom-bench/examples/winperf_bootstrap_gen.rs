@@ -18,7 +18,7 @@ use aom_bench::winperf;
 
 fn main() {
     let (w, h, q, s) = winperf::CELL;
-    for content in [winperf::Content::Detail, winperf::Content::Smooth] {
+    for content in winperf::Content::ALL {
         let cell = winperf::cell(w, h, q, s, content);
         let boot = cell.c_encode_defaults();
         assert!(!boot.is_empty(), "C bootstrap encode failed");

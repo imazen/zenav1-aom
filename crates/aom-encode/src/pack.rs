@@ -324,6 +324,10 @@ pub fn pack_leaf(
     inter_cdfs: Option<&mut crate::inter_costs::InterFrameCdfs>,
 ) {
     let bsize = winner.bsize;
+    // Content census (`aom_dsp::census`) — no-op without the `census` feature.
+    // Taken HERE, at the writer, so it is the partition DECISION rather than a
+    // search visit: `rd_pick_partition_real` visits many shapes per leaf.
+    aom_dsp::census::note_coded_leaf(bsize, winner.mode);
     let mi_w = MI_SIZE_WIDE_B[bsize];
     let mi_h = MI_SIZE_HIGH_B[bsize];
     let is_chroma_ref = is_chroma_reference(mi_row, mi_col, bsize, env.ss_x, env.ss_y);

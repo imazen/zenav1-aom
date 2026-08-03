@@ -1103,6 +1103,10 @@ pub fn predict_intra_high(
     bd: i32,
 ) {
     let is_dr = (1..=8).contains(&mode); // V_PRED..=D67_PRED
+    // Content census (`crate::census`) — a no-op unless the `census` feature is
+    // on, and the timing binaries are never built with it. See that module for
+    // why it exists: winperf's `detail` reaches `z1` six times in a 1 MP frame.
+    crate::census::note_intra_pred(mode, angle_delta, use_filter_intra, tx_size);
     if use_filter_intra {
         build_filter_intra_high(
             recon,

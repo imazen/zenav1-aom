@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cdef;
+pub mod census;
 pub mod convolve;
 pub mod dispatch;
 pub mod dist;

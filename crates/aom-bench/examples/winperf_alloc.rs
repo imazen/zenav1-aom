@@ -9,7 +9,7 @@
 //! Darwin's directly.
 //!
 //! ```text
-//! winperf_alloc <detail|smooth>
+//! winperf_alloc <detail|smooth|photo>
 //! ```
 //!
 //! Counters are `Relaxed` atomics and the encode is single-threaded, so the
@@ -97,7 +97,7 @@ fn snap() -> Snap {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() != 2 {
-        eprintln!("usage: winperf_alloc <detail|smooth>");
+        eprintln!("usage: winperf_alloc <detail|smooth|photo>");
         std::process::exit(2);
     }
     let content = winperf::Content::parse(&a[1]);

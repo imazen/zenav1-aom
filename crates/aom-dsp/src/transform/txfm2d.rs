@@ -330,6 +330,8 @@ pub fn av1_fwd_txfm2d_into(
     tx_size: usize,
     scratch: &mut FwdTxfmScratch,
 ) {
+    // Content census (`crate::census`) — no-op without the `census` feature.
+    crate::census::note_fwd_txfm(tx_type, tx_size);
     let cfg = get_fwd_txfm_cfg(tx_type, tx_size);
     assert!(cfg.valid, "unsupported (tx_type={tx_type}, tx_size={tx_size})");
     fwd_txfm2d_core(input, output, stride, &cfg, scratch);

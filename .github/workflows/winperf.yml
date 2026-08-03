@@ -28,8 +28,30 @@ name: winperf (Windows encoder A/B)
 #
 # FIVE arms are timed, the same five the dev-box study used:
 #
-# Each arm is timed on TWO contents (`detail` and `smooth`, see
+# Each arm is timed on EVERY content in the `contents` input (see
 # `aom_bench::winperf::Content`), reported separately and never averaged.
+#
+# CONTENT IS PART OF THE MEASUREMENT, NOT A DETAIL OF IT.
+#
+#   detail  isotropic fractal noise, tuned so its ALLOCATOR CALL COUNT matches
+#           the dev box's study photograph (95 %). Right for a lever that
+#           touches every block regardless of how it is coded — allocation
+#           (KB-PERF-2), the forward transform (KB-PERF-3).
+#   smooth  the same generator, halving ladder: the low-work end of the bracket.
+#   photo   ORIENTED content, fitted to the photograph's INTRA MODE
+#           DISTRIBUTION instead. It exists because `detail` and `smooth` are
+#           isotropic, so the encoder's DIRECTIONAL intra modes essentially
+#           never win on them: measured 2026-08-03, directional predicted-pixel
+#           share is 20.8 % on the photograph, 13.2 % on `smooth` and 0.15 % on
+#           `detail`, where `z1` fires SIX TIMES in a whole 1 MP frame. KB-PERF-4
+#           read a winperf band for a directional-intra lever off `detail` and
+#           got a structural zero, not a platform result
+#           (benchmarks/encoder_intra_dir_i16_2026-08-03.md §7,
+#           docs/DIFFERENTIAL_PLAYBOOK.md §6b).
+#
+# So: dispatch with the content whose census reaches your lever. The census is
+# `cargo run -p zenav1-aom-bench --features census --example content_census`,
+# and benchmarks/winperf_content_census_2026-08-03.md is the committed table.
 #
 #   pre    578653f  — before both levers
 #   l3a    +3a only — tiered forward-pass scratch (a memset lever; its scratch
@@ -67,6 +89,10 @@ on:
         description: "kbperf2 = the 5-arm 3a/3 file split (KB-PERF-2 only). prepost = base_sha vs HEAD, for ANY landing."
         required: false
         default: "kbperf2"
+      contents:
+        description: "Space-separated winperf contents. `photo` is the one whose intra mode mix matches the study photograph; `detail`/`smooth` match its allocator traffic. Roughly 4-5 min of runner time each at rounds=16."
+        required: false
+        default: "detail smooth photo"
 
 jobs:
   winperf:
@@ -179,10 +205,10 @@ jobs:
           git status --porcelain
 
       # ---- allocator census: exact, noise-free, the trustworthy half --------
-      - name: Allocation census, every arm x both contents
+      - name: Allocation census, every arm x every content
         shell: bash
         run: |
-          for c in detail smooth; do
+          for c in ${{ inputs.contents }}; do
             for a in pre l3a l3 post; do
               echo "--- $c/$a ---"
               ./bin/winperf_alloc_$a.exe $c | tee census_${c}_$a.tsv
@@ -192,16 +218,16 @@ jobs:
 
       # ---- interleaved timing, five arms including the null ----------------
       #
-      # TWO bands, one per content, never averaged together. On the dev box
-      # lever 3's SIGN depends on the content (-2.21 ms on the study photograph,
-      # +2.49 ms on `detail`), so a platform claim taken from a single image
-      # would be a claim about that image. `detail` and `smooth` bracket the
-      # photograph: 835,638 / 291,704 pre-arm allocator calls against its
-      # 854,053.
+      # ONE band per content, never averaged together. On the dev box lever 3's
+      # SIGN depends on the content (-2.21 ms on the study photograph, +2.49 ms
+      # on `detail`), so a platform claim taken from a single image would be a
+      # claim about that image. `detail` and `smooth` bracket the photograph's
+      # allocator traffic (835,638 / 291,704 pre-arm calls against its 854,053);
+      # `photo` brackets its intra mode mix, which those two do not.
       - name: Interleaved timing bands
         shell: bash
         run: |
-          for c in detail smooth; do
+          for c in ${{ inputs.contents }}; do
             python scripts/winperf_ab.py ${{ inputs.rounds }} $c winperf_${{ matrix.name }}_$c.tsv \
               pre=./bin/winperf_pre.exe \
               l3a=./bin/winperf_l3a.exe \
@@ -215,7 +241,7 @@ jobs:
         run: |
           {
             echo '## winperf ${{ matrix.name }}'
-            for c in detail smooth; do
+            for c in ${{ inputs.contents }}; do
               echo
               echo "### $c — control band + deltas vs pre"
               echo
@@ -237,21 +263,39 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-      # A coding-decision change would move FRAMEBYTES. Both arms must agree,
-      # and both Windows targets must agree with Darwin's 8734 — the harness's
-      # source is integer-only precisely so that holds. This is a fail-loud
-      # check, not a warning: a divergence here is a portability bug worth
-      # more than the timing this job came for.
+      # A coding-decision change would move FRAMEBYTES. Every arm must agree,
+      # and both Windows targets must agree with the Darwin value — the
+      # harness's source is integer-only precisely so that holds. This is a
+      # fail-loud check, not a warning: a divergence here is a portability bug
+      # worth more than the timing this job came for.
+      #
+      # It is ALSO what lets the content census be taken once, on Darwin, and
+      # quoted for these runners: identical source bytes plus identical coded
+      # bytes out of a deterministic single-threaded search means identical
+      # coding decisions, hence an identical mode/partition census. (The
+      # allocator census is measured on all three targets and is byte-for-byte
+      # equal, which is the same argument with the evidence attached.)
+      #
+      # The expected values are Darwin's, pinned in
+      # `aom_bench::winperf`'s `synth_source_is_pinned_and_not_blank` /
+      # `benchmarks/winperf_content_census_2026-08-03.md`. A content whose
+      # generator changes must change here in the same commit.
       - name: Every arm must encode the same bytes
         shell: bash
         run: |
           set -e
-          for a in pre l3a l3 post; do
-            d=$(awk -F'\t' '$1=="framebytes"{print $2}' census_detail_$a.tsv)
-            s=$(awk -F'\t' '$1=="framebytes"{print $2}' census_smooth_$a.tsv)
-            echo "$a framebytes detail=$d smooth=$s (expected 8734 / 2302)"
-            test "$d" = "8734"
-            test "$s" = "2302"
+          for c in ${{ inputs.contents }}; do
+            case $c in
+              detail) want=8734 ;;
+              smooth) want=2302 ;;
+              photo)  want=5301 ;;
+              *) echo "no pinned framebytes for content $c"; exit 1 ;;
+            esac
+            for a in pre l3a l3 post; do
+              got=$(awk -F'\t' '$1=="framebytes"{print $2}' census_${c}_$a.tsv)
+              echo "$a framebytes $c=$got (expected $want)"
+              test "$got" = "$want"
+            done
           done
 
       - uses: actions/upload-artifact@v4

@@ -47,6 +47,13 @@ default = ["c-oracle"]
 # ONLY; the ~40 integration tests are all differential and are not gated
 # (build them with default features, as CI does).
 c-oracle = ["dep:zenav1-aom-sys-ref", "dep:zensim"]
+# The content census (`aom_dsp::census`), for `examples/content_census.rs`.
+# DEFAULT OFF and never combined with a timing run: it puts thread-local
+# counters on the intra predictor and the forward transform, so a census build
+# is slower than a shipped one by construction. `winperf` / `winperf_alloc` are
+# built WITHOUT it, which `content_census` asserts by failing loud on an empty
+# census.
+census = ["zenav1-aom-encode/census", "zenav1-aom-dsp/census"]
 
 [dev-dependencies]
 zenbench = "0.1.9"
@@ -59,6 +66,19 @@ required-features = ["c-oracle"]
 # Every example below compares against, or bootstraps from, the C oracle. Only
 # `winperf` / `winperf_alloc` (the pure-Rust Windows A/B harness) build without
 # it, which is why they are absent from this list.
+# The content census. Needs `census` (else every counter is a no-op); does NOT
+# need the oracle for the `winperf:` sources, only for a raw `yuv:` one.
+[[example]]
+name = "content_census"
+required-features = ["census"]
+
+# The fit that PICKED `winperf::PHOTO`. Needs the oracle (it bootstraps every
+# candidate with a real aomenc encode rather than a committed fixture) and the
+# census (it is scored on the census).
+[[example]]
+name = "content_fit"
+required-features = ["census", "c-oracle"]
+
 [[example]]
 name = "dump_inter_stream"
 required-features = ["c-oracle"]

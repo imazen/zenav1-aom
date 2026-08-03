@@ -6,7 +6,7 @@
 //! minus the live C bootstrap (it is a committed fixture):
 //!
 //! ```text
-//! winperf <detail|smooth> <warmup> <reps> [out.obu]
+//! winperf <detail|smooth|photo> <warmup> <reps> [out.obu]
 //! stdout: `NS=<n> NS=<n> ... BYTES=<m> FRAMEBYTES=<m>`
 //! ```
 //!
@@ -92,7 +92,7 @@ fn reassemble(bootstrap: &[u8], frame_payload: &[u8]) -> Vec<u8> {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 4 || a.len() > 5 {
-        eprintln!("usage: winperf <detail|smooth> <warmup> <reps> [out.obu]");
+        eprintln!("usage: winperf <detail|smooth|photo> <warmup> <reps> [out.obu]");
         std::process::exit(2);
     }
     let content = winperf::Content::parse(&a[1]);

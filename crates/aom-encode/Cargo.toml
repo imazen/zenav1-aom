@@ -17,6 +17,12 @@ name = "aom_encode"
 # still apply — those kernels are now aom_dsp::{convolve,loopfilter,cdef}.
 zenav1-aom-dsp = { path = "../aom-dsp" }
 
+[features]
+# Forwards `aom_dsp/census` and adds this crate's own hook (the coded-leaf
+# counter in `pack::pack_leaf`). DEFAULT OFF: a census build is not a timing
+# build. See `aom_dsp::census`.
+census = ["zenav1-aom-dsp/census"]
+
 [dev-dependencies]
 zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
 # Read-only use for decode-diff diagnostics only (see

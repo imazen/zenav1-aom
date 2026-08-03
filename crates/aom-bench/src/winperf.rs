@@ -69,15 +69,29 @@ pub enum Content {
     /// contrast — markedly smoother than a photograph, and the low-work end of
     /// the bracket.
     Smooth,
+    /// **Oriented** content: value noise summed with a *streak* field whose
+    /// orientation rotates smoothly across the frame, fitted to the study
+    /// photograph's INTRA MODE DISTRIBUTION rather than to its allocator call
+    /// count. See [`PHOTO`] for the fitted parameters and
+    /// `benchmarks/winperf_content_census_2026-08-03.md` for the fit.
+    ///
+    /// [`Detail`](Content::Detail) and [`Smooth`](Content::Smooth) are
+    /// *isotropic* — fractional-Brownian value noise has no preferred direction
+    /// at any scale — so the encoder's directional intra modes essentially never
+    /// win on them (`detail`: `z1` fires **six times** in a 1 MP frame). This
+    /// variant exists so a lever scoped to a mode family has content that
+    /// reaches it.
+    Photo,
 }
 
 impl Content {
-    /// `"detail"` / `"smooth"`, for a command line.
+    /// `"detail"` / `"smooth"` / `"photo"`, for a command line.
     pub fn parse(s: &str) -> Self {
         match s {
             "detail" => Content::Detail,
             "smooth" => Content::Smooth,
-            _ => panic!("unknown winperf content {s:?}; want `detail` or `smooth`"),
+            "photo" => Content::Photo,
+            _ => panic!("unknown winperf content {s:?}; want `detail`, `smooth` or `photo`"),
         }
     }
 
@@ -86,8 +100,12 @@ impl Content {
         match self {
             Content::Detail => "detail",
             Content::Smooth => "smooth",
+            Content::Photo => "photo",
         }
     }
+
+    /// Every content, in the order the census and the workflow list them.
+    pub const ALL: [Content; 3] = [Content::Detail, Content::Smooth, Content::Photo];
 }
 
 /// The sequence-header bootstrap for [`CELL`] at [`Content::Detail`], as hex.
@@ -110,6 +128,10 @@ pub const BOOTSTRAP_DETAIL_HEX: &str =
 pub const BOOTSTRAP_SMOOTH_HEX: &str =
     include_str!("../fixtures/winperf_bootstrap_1024x1024_cq44_s6_smooth.hex");
 
+/// [`BOOTSTRAP_DETAIL_HEX`]'s twin for [`Content::Photo`].
+pub const BOOTSTRAP_PHOTO_HEX: &str =
+    include_str!("../fixtures/winperf_bootstrap_1024x1024_cq44_s6_photo.hex");
+
 /// The committed bootstrap for `content`, decoded. Panics on any non-hex byte —
 /// the fixture is checked in, so a failure here is a corrupted tree, not a
 /// runtime condition.
@@ -117,6 +139,7 @@ pub fn bootstrap(content: Content) -> Vec<u8> {
     let hex = match content {
         Content::Detail => BOOTSTRAP_DETAIL_HEX,
         Content::Smooth => BOOTSTRAP_SMOOTH_HEX,
+        Content::Photo => BOOTSTRAP_PHOTO_HEX,
     };
     let mut out = Vec::with_capacity(hex.len() / 2);
     let mut hi: Option<u8> = None;
@@ -187,6 +210,132 @@ fn octave(x: usize, y: usize, period: usize, seed: u32) -> i32 {
     ((a * (256 - ty) + b * ty) >> 16).clamp(0, 255)
 }
 
+/// One round of 1-D integer value noise: lattice point `i` for octave `seed`.
+fn lattice1(i: i32, seed: u32) -> i32 {
+    (hash32((i as u32).wrapping_mul(0x9e37_79b9) ^ seed.wrapping_mul(0xc2b2_ae35)) >> 24) as i32
+}
+
+/// One octave of 1-D smooth-interpolated value noise at `period`, 0..=255.
+///
+/// `u` may be negative (it is a projection onto a direction with a negative
+/// component), which is why this uses `div_euclid`/`rem_euclid` rather than `/`
+/// and `%`: truncating division would mirror the lattice about the origin and
+/// put a visible seam down the frame.
+fn octave1(u: i32, period: i32, seed: u32) -> i32 {
+    let i = u.div_euclid(period);
+    let f = u.rem_euclid(period);
+    let t = smooth_q8(f * 256 / period);
+    let a = lattice1(i, seed);
+    let b = lattice1(i + 1, seed);
+    ((a * (256 - t) + b * t) >> 8).clamp(0, 255)
+}
+
+/// The eight streak directions, as Q8 `(cos, sin)` at `k * 22.5°`. Together
+/// they span a half-turn, so index 7 (157.5°) wraps continuously into index 0
+/// (180° ≡ 0°) and the orientation field below has no discontinuity.
+const DIR_Q8: [(i32, i32); 8] = [
+    (256, 0),
+    (237, 98),
+    (181, 181),
+    (98, 237),
+    (0, 256),
+    (-98, 237),
+    (-181, 181),
+    (-237, 98),
+];
+
+/// Knobs for [`synth_photo_luma`], the oriented generator.
+///
+/// Public and `Copy` because the fit is a **sweep over this struct**
+/// (`crates/aom-bench/examples/content_fit.rs`) and the shipped content
+/// ([`PHOTO`]) is one point of it — so the parameter choice is re-derivable
+/// rather than a set of magic numbers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhotoParams {
+    /// Period of the low-frequency field that selects the local streak
+    /// ORIENTATION. Larger = orientation turns more slowly = longer coherent
+    /// edges = more directional-mode wins.
+    pub orient_period: usize,
+    /// Coarse and fine 1-D noise periods ALONG the local gradient direction.
+    pub streak_p: (i32, i32),
+    /// Their amplitudes.
+    pub streak_a: (i32, i32),
+    /// Isotropic value-noise ladder over periods 128/64/32/16/8/4 — the part
+    /// that keeps DC / SMOOTH / PAETH alive and supplies the small-transform
+    /// mass.
+    pub iso_a: [i32; 6],
+    /// Mixture weights: streak field vs isotropic field. Their ratio is the
+    /// single knob that moves the directional share monotonically.
+    pub mix: (i32, i32),
+    /// Q8 contrast about mid-grey, applied to the mixture.
+    pub contrast: i32,
+}
+
+/// The FITTED parameters `Content::Photo` ships.
+///
+/// Chosen by `examples/content_fit.rs` as the grid point minimising L1 distance
+/// to the study photograph's intra-class share vector — **not** by looking at
+/// any lever's delta. Provenance, grid and the runner-up rows:
+/// `benchmarks/winperf_content_census_2026-08-03.md`.
+pub const PHOTO: PhotoParams = PhotoParams {
+    orient_period: 128,
+    streak_p: (96, 24),
+    streak_a: (40, 4),
+    iso_a: [26, 22, 18, 15, 12, 10], // `Detail`'s ladder, which already matches the work level
+    mix: (12, 8),
+    contrast: 208,
+};
+
+/// Luma sample at `(x, y)` for the oriented generator, 0..=255 before the
+/// illumination ramp.
+///
+/// **The mechanism, and why the isotropic generators cannot do this.** Value
+/// noise summed over octaves is isotropic at every scale: its expected
+/// structure is the same in all directions, so a block's best intra predictor
+/// is almost always DC / SMOOTH / PAETH and the directional predictors never
+/// win. Here a *streak* field is added: 1-D noise evaluated on the projection
+/// of `(x, y)` onto a direction, which makes it **exactly constant along the
+/// perpendicular** — the structure a directional predictor exists to extrapolate.
+/// A low-frequency field selects that direction and blends the two nearest of
+/// the eight, so orientation rotates smoothly across the frame and all of `z1`,
+/// `z2`, `z3`, `V` and `H` get regions where they are the right answer.
+///
+/// Two 1-D octaves along the direction (coarse + fine) rather than one, so a
+/// block sees both a long ramp (which a 32x32 directional predictor wins) and
+/// pixel-scale detail (which keeps the small transforms and the residual alive).
+pub fn synth_photo_luma(x: usize, y: usize, p: &PhotoParams) -> i32 {
+    // Orientation field: 0..255 mapped onto the eight directions, with a smooth
+    // blend between the two nearest so there is no seam where it crosses.
+    let sel = octave(x, y, p.orient_period, 401);
+    let kq = sel * 8;
+    let k = ((kq >> 8) as usize).min(7);
+    let k1 = (k + 1) & 7;
+    let t = smooth_q8(kq & 255);
+
+    let proj = |d: usize| -> i32 {
+        let (cx, cy) = DIR_Q8[d];
+        (x as i32 * cx + y as i32 * cy) >> 8
+    };
+    let streak_at = |d: usize| -> i32 {
+        let u = proj(d);
+        (p.streak_a.0 * octave1(u, p.streak_p.0, 300 + d as u32)
+            + p.streak_a.1 * octave1(u, p.streak_p.1, 320 + d as u32))
+            / (p.streak_a.0 + p.streak_a.1)
+    };
+    let streak = (streak_at(k) * (256 - t) + streak_at(k1) * t) >> 8;
+
+    let mut acc = 0i32;
+    let mut den = 0i32;
+    for (i, &a) in p.iso_a.iter().enumerate() {
+        acc += a * octave(x, y, 128 >> i, 1 + i as u32);
+        den += a;
+    }
+    let iso = acc / den;
+
+    let mix = (p.mix.0 * streak + p.mix.1 * iso) / (p.mix.0 + p.mix.1);
+    (((mix - 128) * p.contrast) >> 8) + 128
+}
+
 /// A deterministic, bit-identical-on-every-target I420 test image.
 ///
 /// **What it is:** eight octaves of integer value noise (periods 256 down to 2)
@@ -215,6 +364,9 @@ fn octave(x: usize, y: usize, period: usize, seed: u32) -> i32 {
 /// there is no room for an x87/FMA/rounding difference to hand two targets
 /// different pixels and therefore different encoder work.
 pub fn synth_i420(w: usize, h: usize, content: Content) -> Vec<u8> {
+    if content == Content::Photo {
+        return synth_i420_photo(w, h, &PHOTO);
+    }
     assert!(w % 2 == 0 && h % 2 == 0, "even dimensions only");
     let (cw, ch) = (w / 2, h / 2);
     let mut out = vec![0u8; w * h + 2 * cw * ch];
@@ -253,7 +405,46 @@ pub fn synth_i420(w: usize, h: usize, content: Content) -> Vec<u8> {
                     acc += octave(x, y, 8, 6);
                     ((acc / 63) * 3 / 4 + 16 + ramp).clamp(0, 255) as u8
                 }
+                Content::Photo => unreachable!("handled above"),
             };
+        }
+    }
+    for y in 0..ch {
+        for x in 0..cw {
+            let mut au = 0i32;
+            au += 32 * octave(x, y, 128, 11);
+            au += 16 * octave(x, y, 64, 12);
+            au += 8 * octave(x, y, 32, 13);
+            au += 4 * octave(x, y, 16, 14);
+            let u = au / 60;
+            let mut av = 0i32;
+            av += 32 * octave(x, y, 128, 21);
+            av += 16 * octave(x, y, 64, 22);
+            av += 8 * octave(x, y, 32, 23);
+            av += 4 * octave(x, y, 16, 24);
+            let v = av / 60;
+            out[w * h + y * cw + x] = (128 + (u - 128) / 3).clamp(0, 255) as u8;
+            out[w * h + cw * ch + y * cw + x] = (128 + (v - 128) / 3).clamp(0, 255) as u8;
+        }
+    }
+    out
+}
+
+/// [`synth_i420`] for [`Content::Photo`], with the parameters spelled out — the
+/// entry point `examples/content_fit.rs` sweeps. `synth_i420(w, h, Photo)` is
+/// exactly this called with [`PHOTO`].
+///
+/// The chroma planes are the SAME generator the isotropic variants use, on
+/// purpose: the axis under study is luma structure, and holding chroma fixed
+/// across all three contents keeps the census comparison one-dimensional.
+pub fn synth_i420_photo(w: usize, h: usize, p: &PhotoParams) -> Vec<u8> {
+    assert!(w % 2 == 0 && h % 2 == 0, "even dimensions only");
+    let (cw, ch) = (w / 2, h / 2);
+    let mut out = vec![0u8; w * h + 2 * cw * ch];
+    for y in 0..h {
+        for x in 0..w {
+            let ramp = (x * 40 / w + y * 40 / h) as i32;
+            out[y * w + x] = (synth_photo_luma(x, y, p) + ramp - 20).clamp(0, 255) as u8;
         }
     }
     for y in 0..ch {
@@ -320,6 +511,10 @@ mod tests {
             // and the two variants share a chroma generator by design — the
             // content axis under test is luma detail.
             (Content::Smooth, (167_367_154, 34_350_299, 33_351_188), 100, 190),
+            // Photo's observed luma range is 56..=251 — wider than either
+            // isotropic variant, because the streak field adds long coherent
+            // ramps on top of the noise rather than averaging into it.
+            (Content::Photo, (146_304_204, 34_350_299, 33_351_188), 70, 235),
         ] {
             let buf = synth_i420(w, h, content);
             let (cw, ch) = (w / 2, h / 2);
@@ -349,21 +544,110 @@ mod tests {
             assert!(buf[..w * h].iter().any(|&b| b < lo_below));
             assert!(buf[..w * h].iter().any(|&b| b > hi_above));
         }
-        // The two variants must actually be different content, or the bracket
-        // is one point twice.
-        assert_ne!(synth_i420(64, 64, Content::Detail), synth_i420(64, 64, Content::Smooth));
+        // The variants must actually be different content, or the bracket is
+        // one point several times.
+        for (a, b) in [
+            (Content::Detail, Content::Smooth),
+            (Content::Detail, Content::Photo),
+            (Content::Smooth, Content::Photo),
+        ] {
+            assert_ne!(synth_i420(64, 64, a), synth_i420(64, 64, b), "{a:?} == {b:?}");
+        }
     }
 
-    /// Both committed bootstraps are real section-5 streams for the study cell.
+    /// Mean absolute luma difference at radius 4 in each of eight directions,
+    /// over one `bs x bs` block. The census's own statistic, computed without
+    /// the encoder.
+    fn block_dir_grad(y: &[u8], w: usize, h: usize, bx: usize, by: usize, bs: usize) -> [f64; 8] {
+        const DIRS: [(i32, i32); 8] =
+            [(4, 0), (4, 2), (3, 3), (2, 4), (0, 4), (-2, 4), (-3, 3), (-4, 2)];
+        let mut g = [0.0; 8];
+        for (i, (dx, dy)) in DIRS.iter().enumerate() {
+            let (mut acc, mut n) = (0u64, 0u64);
+            for yy in by * bs + 4..by * bs + bs + 4 {
+                for xx in bx * bs + 4..bx * bs + bs + 4 {
+                    if yy + 4 >= h || xx + 4 >= w {
+                        continue;
+                    }
+                    let a = i64::from(y[yy * w + xx]);
+                    let b = i64::from(y[((yy as i32 + dy) as usize) * w + (xx as i32 + dx) as usize]);
+                    acc += (a - b).unsigned_abs();
+                    n += 1;
+                }
+            }
+            g[i] = acc as f64 / n.max(1) as f64;
+        }
+        g
+    }
+
+    /// **`Photo` is ORIENTED and `Detail` is not** — the one property `Photo`
+    /// exists for, pinned without needing an encoder.
+    ///
+    /// Isotropic value noise has, by construction, the same expected structure
+    /// in every direction, so within any block its eight directional gradients
+    /// are near-equal and their max/min ratio sits just above 1. `Photo`'s
+    /// streak field makes one direction locally dominant, which is exactly what
+    /// gives the directional intra predictors something to win on.
+    ///
+    /// Non-vacuity (playbook §2): `Detail` is measured in the SAME test and is
+    /// the comparator, so this cannot pass by measuring nothing — if the streak
+    /// field were dropped, `Photo` would collapse onto `Detail`'s value and the
+    /// ratio assertion would fail. The gradient-magnitude floor separately
+    /// rejects a degenerate "oriented because it is nearly flat" source, which
+    /// is how `Smooth` scores a high ratio on near-zero gradients.
+    #[test]
+    fn photo_is_locally_oriented_and_detail_is_not() {
+        let (w, h, _, _) = CELL;
+        let bs = 32;
+        let stat = |c: Content| -> (f64, f64) {
+            let buf = synth_i420(w, h, c);
+            let y = &buf[..w * h];
+            let mut ratios = Vec::new();
+            let mut gsum = 0.0;
+            for by in 0..(h - 8) / bs {
+                for bx in 0..(w - 8) / bs {
+                    let g = block_dir_grad(y, w, h, bx, by, bs);
+                    let lo = g.iter().cloned().fold(f64::MAX, f64::min).max(0.01);
+                    let hi = g.iter().cloned().fold(0.0, f64::max);
+                    ratios.push(hi / lo);
+                    gsum += g.iter().sum::<f64>() / 8.0;
+                }
+            }
+            let n = ratios.len();
+            ratios.sort_by(|a, b| a.partial_cmp(b).expect("no NaN"));
+            (ratios[n / 2], gsum / n as f64)
+        };
+        let (aniso_photo, grad_photo) = stat(Content::Photo);
+        let (aniso_detail, grad_detail) = stat(Content::Detail);
+        assert!(
+            aniso_photo > 1.4 * aniso_detail,
+            "Photo's local direction anisotropy ({aniso_photo:.3}) is not \
+             materially above Detail's ({aniso_detail:.3}) — the streak field \
+             is not doing anything, and the content is back to isotropic"
+        );
+        assert!(
+            grad_photo > 3.0 && grad_detail > 3.0,
+            "gradient magnitudes too low (photo {grad_photo:.3}, detail \
+             {grad_detail:.3}) — an oriented but nearly FLAT source scores a \
+             high ratio while giving the encoder nothing to predict"
+        );
+    }
+
+    /// Every committed bootstrap is a real section-5 stream for the study cell,
+    /// and they are all different.
     #[test]
     fn bootstrap_fixtures_decode_and_are_streams() {
-        for c in [Content::Detail, Content::Smooth] {
+        for c in Content::ALL {
             let b = bootstrap(c);
             assert!(b.len() > 64, "{c:?} bootstrap fixture is {} bytes", b.len());
             // First OBU must be a temporal delimiter (type 2) with obu_has_size.
             assert_eq!((b[0] >> 3) & 0xf, 2, "{c:?}: first OBU is not a TD");
             assert_eq!((b[0] >> 1) & 1, 1, "{c:?}: obu_has_size_field not set");
         }
-        assert_ne!(bootstrap(Content::Detail), bootstrap(Content::Smooth));
+        for (i, a) in Content::ALL.iter().enumerate() {
+            for b in &Content::ALL[i + 1..] {
+                assert_ne!(bootstrap(*a), bootstrap(*b), "{a:?} == {b:?}");
+            }
+        }
     }
 }

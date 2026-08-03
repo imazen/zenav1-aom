@@ -22,6 +22,12 @@ magetypes = "0.9.27"
 # the binary stays portable; disable to cut compile time on non-x86.
 default = ["avx512"]
 avx512 = ["archmage/avx512", "magetypes/avx512"]
+# Content census (`src/census.rs`): thread-local counters on the intra
+# predictor, the forward transform and the bitstream leaf writer, so a harness
+# source can be checked against a reference distribution instead of assumed.
+# DEFAULT OFF and it must stay that way — a census build is NOT a timing build,
+# and `.github/workflows/winperf.yml` compiles its timing arms without it.
+census = []
 
 [dev-dependencies]
 zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
