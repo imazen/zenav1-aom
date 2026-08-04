@@ -85,9 +85,14 @@ BITE PROOFS (playbook §1 — asymmetry, not just failure)
   Both reverted; `git diff` clean on the perturbed file before commit.
 
 DISPATCH MODES
-  Default dispatch: every arm above. `AOM_FORCE_SCALAR=1`: the whole
-  `s4cov_hd_format_axis` file re-run with `--include-ignored` (see the
-  scalar-leg note in the landing commit).
+  Default dispatch: every arm above.
+  AOM_FORCE_SCALAR=1: the whole `s4cov_hd_format_axis` file re-run with
+  `--include-ignored` — 6/6 passed, 0 failed, 1,896 s; pinned divergent set
+  identical. Every byte-exact row is byte-exact in both modes. Of the
+  divergent rows, bd8 (-726) and bd10 (+408, and -8 at cq32) carry the SAME
+  delta in both modes; `bd12 1920x1080 cq24 cpu0` does NOT (+181 default,
+  +55 scalar) and is the only row in the grid whose delta moves with the
+  dispatch tier. See KB-38's dispatch-mode clue.
 
 STILL NOT COVERED (with costs)
   the >=1080p band x hbd at cpu 1..6   blocked on HBD_OPEN / b10_64

@@ -137,6 +137,7 @@ it here in the same commit.**
 | ~~**the >=1080p band at bd10/12, 4:2:2/4:4:4/mono, SB128, and quantizers other than cq24**~~ | **CLOSED 2026-08-04, and it found KB-38.** `s4cov_hd_format_axis.rs`: 4:4:4 / 4:2:2 / mono / SB128 / cq5 / cq40 / cq63, each at 1920x1072 AND 1920x1080 at `--cpu-used 6` (the only speed KB-36's arm is observable at) — **14/14 byte-exact**; bd10 + bd12 at the same razor at cpu {0, 7} — **6/8**, the two open rows being **KB-38's** new speed-0 >=1080p band (which reaches bd8 too, so it is not an hbd finding). | measured **~10 min** |
 | ~~**partial-SB x bd12, and x 4:2:2/mono at high bit depth**~~ | **CLOSED 2026-08-04.** 7 formats (b10 {mono,4:4:4,4:2:2} + b12 {4:2:0,mono,4:4:4,4:2:2}) x KB-23's four sizes x cpu {0, 7} — **56/56 byte-exact**, `s4cov_partial_sb_axis::partial_sb_high_bitdepth_formats_byte_match`. | measured **53 s** |
 | **KB-38's remaining root(s)** | NEW 2026-08-04. The `is_1080p_or_larger && base_qindex <= 108` arm is ported and moved both cq24 cells without closing either, and `bd10 1920x1080 cq32` diverges outside its predicate. Pinned by `speed0_1080p_band_map_is_pinned` | playbook §10 decode-both on 1920x1080 cq24 cpu0 bd8; ~85 s per port encode |
+| **the bd12 dispatch-tier disagreement at `1920x1080 cq24 cpu0`** | NEW 2026-08-04, from KB-38's scalar leg. That cell's delta is **+181 B on default dispatch and +55 B under `AOM_FORCE_SCALAR=1`** — the port's own scalar and vector tiers produce different bytes there, which they do nowhere else in the grid. A kernel whose tiers disagree is a differential hole (playbook §1) and is its own defect, not just a symptom of KB-38 | bisect the bd12 kernels live on that cell against their exported C symbols; the two encodes are ~55 s each |
 | **crops straddling 2160 at bd10/12, 4:2:2/4:4:4/mono, SB128** | the cheap follow-on the closed 2160 arm opens — same razor, one format at a time | ~35 s per format, no new machinery |
 | **1440..2160 at formats other than bd8 4:2:0 SB64 cq24** | same shape as the >=1080p format arm, one tier up | ~7 min per format |
 | **multi-tile at SB128 / bd10-12 / 4:4:4-4:2:2 / mono** | KB-31 residual (c): that whole file is bd8 4:2:0 SB64 | moderate; large frames |
@@ -4185,16 +4186,21 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
      single mechanism.
   So: 9 of 12 rows match, and the 3 that do not are all `1920x1080 --cpu-used 0`.
 - **A DISPATCH-MODE CLUE, free from the scalar leg and worth taking to the next probe.**
-  Every byte-exact row of the >=1080p high-bit-depth arm
-  (`above_1080p_high_bitdepth_byte_matches_where_interpretable`, 6 rows) is byte-exact under
-  `AOM_FORCE_SCALAR=1` as well, so the port's scalar and vector tiers agree wherever the port
-  is correct there. But its two *divergent* rows do NOT carry the same delta in the two
-  modes: `bd12 1920x1080 cq24 cpu0` is **+181 B
-  on default dispatch and +55 B under `AOM_FORCE_SCALAR=1`** (bd10 is +408 in both). The
-  pinned SET is identical, which is what the gate asserts — but a delta that moves with the
-  dispatch tier says the remaining root is in a path whose result depends on which kernel
-  tier runs, i.e. a kernel the port dispatches, not a pure speed-feature derivation. That
-  narrows the search away from another missing `sf` arm.
+  The whole `s4cov_hd_format_axis` file re-runs **6/6 green under `AOM_FORCE_SCALAR=1`**
+  (1,896 s) with the pinned divergent SET identical, so every byte-exact row is byte-exact in
+  both dispatch modes. The *deltas* on the divergent rows are the interesting part, and they
+  split:
+  * `bd8 1920x1080 cq24 cpu0` **-726 B in both modes**;
+  * `bd10 1920x1080 cq24 cpu0` **+408 B in both**, and `bd10 ... cq32` **-8 B in both**;
+  * `bd12 1920x1080 cq24 cpu0` **+181 B on default dispatch, +55 B under
+    `AOM_FORCE_SCALAR=1`** — the only row in the grid whose delta moves.
+  So the residual is dispatch-INVARIANT at bd8 and bd10 and dispatch-DEPENDENT at bd12. Read
+  with the exclusions above, that says at least two things are in play: a bit-depth-blind
+  mechanism carrying the bd8/bd10 deltas, and a **bd12-specific dispatched kernel whose own
+  tiers disagree** on this cell (the port's scalar and vector paths produce different bytes
+  there, which they do nowhere else in the grid). The second is independently a defect worth
+  its own probe — a kernel whose tiers disagree is a differential hole (playbook §1), not
+  merely a symptom of the first.
 - **NEXT PROBE, named not attempted:** playbook §10 decode-both first-divergent-block on
   `1920x1080 cq24 --cpu-used 0` at **bd8** — the cheaper side to read (no hbd path in the
   way) and the larger delta. ~85 s per port encode. Take the dispatch-mode clue above with
