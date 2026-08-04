@@ -43,6 +43,31 @@
   outside its predicate — so the 12-cell map is recorded as a self-promoting
   pin (`speed0_1080p_band_map_is_pinned`), not as a fix. Unit lock:
   `speed_features::tests::qindex_dependent_speed0_1080p_q108_subarm`. (f085be4)
+- **`--deltaq-mode` 2/3 (and the `--delta-lf-mode=1` that rides on them) now
+  encode on MULTI-TILE frames — the last T1 refusal reachable by flags (the one
+  remaining is blocked on producing an input no encoder emits).** The harness
+  refused the combination outright (*"multi-tile x per-SB delta-q is unmodelled
+  … — see KB-31"*), and the queue's recorded fix was backwards: C re-seeds
+  `xd->current_base_qindex` from the frame `base_qindex` at the top of **every
+  tile**, on all three sides (`encode_sb_row`, encodeframe.c:1232-1239;
+  `write_modes`, bitstream.c:1745-1751; `decodeframe.c:2948`/`:3023`), so
+  `pack_tile`'s per-tile restart was already right and the harness's own
+  frame-raster replays — which DERIVE `delta_q_present` and the per-SB delta-lf
+  rather than reading them off the bootstrap — were not. One root, replaced by a
+  tile-ordered `replay_sb_qindex_tile_order`. Also corrects the queue's
+  reachability note: `AV1E_SET_TILE_COLUMNS`/`_ROWS` reach the axis at ANY frame
+  size, no 4033 px needed. New gate
+  `aom-bench/tests/kb31_deltaq_multitile.rs`: 53 byte-identical cells (the
+  size-forced 4096x64 split with both a single-tile and a deltaq-0 control; the
+  {1x1, 2x1, 1x2, 2x2} grid matrix x {deltaq 0, 3, 2}; the same grids with
+  `--delta-lf-mode=1`) plus 6 port-decoder round-trips and an `--ignored`
+  9.55 MP area-forced ROW split. **Honest bound:** no byte-level bite was found
+  for the reordering — the pre-fix replay still passes all 53 cells — so this is
+  a C-fidelity alignment plus the removal of a refusal, not a demonstrated byte
+  fix; the bite is at unit level
+  (`replay_resets_the_running_base_at_every_tile`). Two residuals recorded:
+  delta-q diverges at `--cpu-used >= 1` **single-tile too** on some content
+  (`DELTAQ_SPEED_OPEN`, T4), and asserts at `--cpu-used >= 8` (T2). See KB-39.
 
 - **Lossless (`--cq-level 0`) now encodes byte-identically at every
   `--cpu-used` 0..9 — the last T1 refusal on a default-reachable configuration.**

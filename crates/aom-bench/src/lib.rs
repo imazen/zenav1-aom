@@ -246,6 +246,70 @@ fn tile_log2(blk_size: i32, target: i32) -> i32 {
     k
 }
 
+/// Replay C's per-superblock delta-q derivation across the whole frame in the
+/// order — and with the state resets — the real encoder uses, returning the
+/// per-SB adjusted qindex in **frame SB raster** plus `deltaq_used`.
+///
+/// **The running base restarts at every TILE, not once per frame.** Both sides
+/// of libaom do it, unconditionally:
+///
+/// * search — `encode_sb_row`, *"Reset delta for quantizer and loof [sic]
+///   filters at the beginning of every tile"*, `av1/encoder/encodeframe.c:1232-1239`:
+///   `if (mi_row == tile_info->mi_row_start || row_mt_enabled) { if
+///   (delta_q_present_flag) xd->current_base_qindex = base_qindex; ... }`. The
+///   `|| row_mt_enabled` arm — which would reset at every SB ROW instead — is
+///   DEAD against this harness's oracle: `mt_info->row_mt_enabled` is only set
+///   when `oxcf->row_mt && num_workers > 1` (`encodeframe.c:2410-2415`) and the
+///   reference shim pins `cfg.g_threads = 1` (`aom-sys-ref/shim/dec_shim.c:498`),
+///   so `num_workers == 1`. It is ported as the tile reset alone; a threaded
+///   oracle would need the row arm too;
+/// * pack — `write_modes`, `av1/encoder/bitstream.c:1745-1751`, the same
+///   assignment at the top of every tile's payload (plus
+///   `av1_reset_loop_filter_delta`);
+/// * decode — the mirror reset, `av1/decoder/decodeframe.c:2948` (serial tile
+///   loop) and `:3023` (`tile_worker_hook_init`).
+///
+/// The base then advances one SB at a time, in tile raster, by
+/// `xd->current_base_qindex = mbmi->current_qindex` (`partition_search.c:1476`
+/// on the search side, `bitstream.c:979` on the write side) — which is what
+/// makes the SB's *own* qindex order-dependent, via
+/// `av1_adjust_q_from_delta_q_res(res, prev, curr)`'s deadzone rounding
+/// against `prev` (`av1/encoder/rd.c:494-505`). [`aom_encode::pack::pack_tile`]
+/// already models both resets (its `search_base_qindex` init and its fresh
+/// per-call `KfBlockState`); this replay exists so the harness can DERIVE
+/// `delta_q_present` (`td->deltaq_used |= (x->delta_qindex != 0)`,
+/// `encodeframe.c:375`, OR-reduced over tiles at `:1593`, and folded into the
+/// header at `bitstream.c:4286-4289`) and the per-SB delta-lf without reading
+/// either off the bootstrap — so it has to walk the same order the pack does.
+///
+/// `sb_qindex(mi_row, mi_col, running_base) -> adjusted qindex` is the mode's
+/// own per-SB derivation (`setup_delta_q`, `encodeframe.c:297`).
+fn replay_sb_qindex_tile_order(
+    tile_grid: &[(i32, i32, i32, i32, i32, i32)],
+    n_sb_x: i32,
+    sb_mi: i32,
+    base_qindex: i32,
+    mut sb_qindex: impl FnMut(i32, i32, i32) -> i32,
+) -> (Vec<i32>, bool) {
+    let n_sb = tile_grid.iter().map(|t| (t.4 * t.5) as usize).sum::<usize>();
+    let mut per_sb = vec![base_qindex; n_sb];
+    let mut used = false;
+    for &(mi_row_start, mi_col_start, _, _, n_sb_rows, n_sb_cols) in tile_grid {
+        // encodeframe.c:1235 / bitstream.c:1746 — per-TILE reset.
+        let mut running = base_qindex;
+        let (sb_row0, sb_col0) = (mi_row_start / sb_mi, mi_col_start / sb_mi);
+        for r in 0..n_sb_rows {
+            for c in 0..n_sb_cols {
+                let adj = sb_qindex(mi_row_start + r * sb_mi, mi_col_start + c * sb_mi, running);
+                used |= adj != base_qindex;
+                running = adj;
+                per_sb[((sb_row0 + r) * n_sb_x + sb_col0 + c) as usize] = adj;
+            }
+        }
+    }
+    (per_sb, used)
+}
+
 fn tile_limits(mi_cols: i32, mi_rows: i32, mib_size_log2: u32) -> TileInfoHeader {
     const MAX_TILE_WIDTH: i32 = 4096;
     const MAX_TILE_AREA: i32 = 4096 * 2304;
@@ -1468,6 +1532,40 @@ impl EncodeCell {
             extend_plane(&mut src_v_strided, cw, ch);
         }
 
+        // Tile geometry, raster (tile-row-major) order: each entry is
+        // `(mi_row_start, mi_col_start, mi_row_end, mi_col_end, n_sb_rows,
+        // n_sb_cols)`. The mi ENDS are clamped to the frame exactly like C's
+        // `av1_tile_set_row`/`_col` (`tile->mi_row_end = AOMMIN(..., mi_rows)`,
+        // av1/common/tile_common.c). Single tile => one entry covering the frame,
+        // which is what every pre-existing gate encodes.
+        //
+        // Derived HERE, ahead of the delta-q replays below, because those replays
+        // have to walk in tile order (see `replay_sb_qindex_tile_order`).
+        let tile_grid: Vec<(i32, i32, i32, i32, i32, i32)> = (0..n_tile_rows)
+            .flat_map(|trow| {
+                (0..n_tile_cols).map(move |tcol| {
+                    let r0 = row_start_sb[trow] << mib_size_log2;
+                    let r1 = (row_start_sb[trow + 1] << mib_size_log2).min(mi_rows);
+                    let c0 = col_start_sb[tcol] << mib_size_log2;
+                    let c1 = (col_start_sb[tcol + 1] << mib_size_log2).min(mi_cols);
+                    (
+                        r0,
+                        c0,
+                        r1,
+                        c1,
+                        row_start_sb[trow + 1] - row_start_sb[trow],
+                        col_start_sb[tcol + 1] - col_start_sb[tcol],
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(
+            tile_grid.iter().map(|t| (t.4 * t.5) as usize).sum::<usize>(),
+            (n_sb_x * n_sb_y) as usize,
+            "{}: the tile grid must partition every superblock exactly once",
+            self.label
+        );
+
         // --deltaq-mode=3 (DELTA_Q_PERCEPTUAL_AI, family C5): build the wiener
         // map + derive the per-SB qindex and the delta_q header fields entirely
         // port-side (the map is never copied from the bootstrap; the header
@@ -1488,32 +1586,25 @@ impl EncodeCell {
                 !knobs.enable_intra_edge_filter,
             )
         });
-        let (dq3_present, dq3_res) = if let Some(map) = &weber_map {
+        let (dq3_sb_qindex, dq3_present, dq3_res) = if let Some(map) = &weber_map {
             // delta_q_present = (any SB produced a nonzero delta) && qindex > 0
             // (bitstream.c:4287 resets it when deltaq_used == 0). Replays the
             // per-SB derivation to compute `deltaq_used` (delta_qindex != 0).
             let res = aom_encode::allintra_vis::DELTA_Q_RES_PERCEPTUAL;
-            let mut running = qindex;
-            let mut used = false;
-            for r in 0..n_sb_y {
-                for c in 0..n_sb_x {
-                    let adj = aom_encode::allintra_vis::setup_delta_q_perceptual_ai(
-                        map,
-                        qindex,
-                        bd,
-                        res,
-                        sb_mi,
-                        r * sb_mi,
-                        c * sb_mi,
-                        running,
-                    );
-                    used |= adj != qindex;
-                    running = adj;
-                }
-            }
-            (used && qindex > 0, res)
+            let (per_sb, used) = replay_sb_qindex_tile_order(
+                &tile_grid,
+                n_sb_x,
+                sb_mi,
+                qindex,
+                |mi_row, mi_col, running| {
+                    aom_encode::allintra_vis::setup_delta_q_perceptual_ai(
+                        map, qindex, bd, res, sb_mi, mi_row, mi_col, running,
+                    )
+                },
+            );
+            (per_sb, used && qindex > 0, res)
         } else {
-            (false, 0)
+            (Vec::new(), false, 0)
         };
         if knobs.deltaq_mode3 {
             // Cross-check the port-derived header fields against the real
@@ -1542,16 +1633,18 @@ impl EncodeCell {
         // `allow_screen_content_tools` on this (photographic, non-screen)
         // envelope; a mismatch would perturb the qindex and fail the byte gate.
         let dq2_screen = p.allow_screen_content_tools;
-        let (dq2_present, dq2_res) = if knobs.deltaq_mode2 {
+        let (dq2_sb_qindex, dq2_present, dq2_res) = if knobs.deltaq_mode2 {
             let res = aom_encode::allintra_vis::DELTA_Q_RES_PERCEPTUAL;
             // SB pixel extent (64 or 128 for sb128); num_pels_log2 = log2(sb_px²).
             let num_pels_log2 = (sb_px * sb_px).trailing_zeros();
-            let mut running = qindex;
-            let mut used = false;
-            for r in 0..n_sb_y {
-                for c in 0..n_sb_x {
-                    let sb_off = (r * sb_mi) as usize * 4 * stride + (c * sb_mi) as usize * 4;
-                    let adj = aom_encode::allintra_vis::setup_delta_q_perceptual(
+            let (per_sb, used) = replay_sb_qindex_tile_order(
+                &tile_grid,
+                n_sb_x,
+                sb_mi,
+                qindex,
+                |mi_row, mi_col, running| {
+                    let sb_off = mi_row as usize * 4 * stride + mi_col as usize * 4;
+                    aom_encode::allintra_vis::setup_delta_q_perceptual(
                         &src_y_strided,
                         sb_off,
                         stride,
@@ -1563,14 +1656,12 @@ impl EncodeCell {
                         num_pels_log2,
                         res,
                         running,
-                    );
-                    used |= adj != qindex;
-                    running = adj;
-                }
-            }
-            (used && qindex > 0, res)
+                    )
+                },
+            );
+            (per_sb, used && qindex > 0, res)
         } else {
-            (false, 0)
+            (Vec::new(), false, 0)
         };
         if knobs.deltaq_mode2 {
             assert_eq!(
@@ -1618,22 +1709,6 @@ impl EncodeCell {
             p.delta_q.delta_lf_present = dlf_present;
         }
 
-        // Multi-tile x per-SB delta-q is NOT modelled and is refused rather than
-        // silently mis-coded: `pack_tile`'s `av1_adjust_q_from_delta_q_res`
-        // running base restarts at every `pack_tile` call (i.e. per tile), while
-        // the frame-raster replay loops above (`dq3_present`/`dq2_present` and
-        // `stamp_lf_delta_lf` below) carry ONE running base across the whole
-        // frame. Those two agree only at a single tile. No `--deltaq-mode` gate
-        // encodes a frame large enough to need tiles, so this arm is unreached
-        // today; it exists so the day one does, it fails loudly.
-        assert!(
-            tiles_log2 == 0 || !(dq3_present || dq2_present),
-            "{}: multi-tile x per-SB delta-q is unmodelled (the running qindex \
-             base resets per tile in pack_tile but not in this harness's \
-             frame-raster replay) — see KB-31",
-            self.label
-        );
-
         let speed = self.speed;
         let mut sf = SpeedFeatures::set_allintra(speed, p.allow_screen_content_tools, false);
         // The modelled arms of set_allintra_speed_feature_framesize_dependent
@@ -1668,37 +1743,6 @@ impl EncodeCell {
             } else {
                 0
             };
-        // Tile geometry, raster (tile-row-major) order: each entry is
-        // `(mi_row_start, mi_col_start, mi_row_end, mi_col_end, n_sb_rows,
-        // n_sb_cols)`. The mi ENDS are clamped to the frame exactly like C's
-        // `av1_tile_set_row`/`_col` (`tile->mi_row_end = AOMMIN(..., mi_rows)`,
-        // av1/common/tile_common.c). Single tile => one entry covering the frame,
-        // which is what every pre-existing gate encodes.
-        let tile_grid: Vec<(i32, i32, i32, i32, i32, i32)> = (0..n_tile_rows)
-            .flat_map(|trow| {
-                (0..n_tile_cols).map(move |tcol| {
-                    let r0 = row_start_sb[trow] << mib_size_log2;
-                    let r1 = (row_start_sb[trow + 1] << mib_size_log2).min(mi_rows);
-                    let c0 = col_start_sb[tcol] << mib_size_log2;
-                    let c1 = (col_start_sb[tcol + 1] << mib_size_log2).min(mi_cols);
-                    (
-                        r0,
-                        c0,
-                        r1,
-                        c1,
-                        row_start_sb[trow + 1] - row_start_sb[trow],
-                        col_start_sb[tcol + 1] - col_start_sb[tcol],
-                    )
-                })
-            })
-            .collect();
-        assert_eq!(
-            tile_grid.iter().map(|t| (t.4 * t.5) as usize).sum::<usize>(),
-            (n_sb_x * n_sb_y) as usize,
-            "{}: the tile grid must partition every superblock exactly once",
-            self.label
-        );
-
         let mut env = SbEncodeEnv {
             ref_frame: None,
             sb_size: sb_block,
@@ -2012,52 +2056,34 @@ impl EncodeCell {
         // speed 0..=3 and NON_DUAL for speed >= 4 (speed_features.c:496).
         let mut mi_grid = build_lf_mi_grid(&trees, mi_rows, mi_cols, n_sb_x, sb_mi, sb_block);
         // --delta-lf-mode=1: the LF trial deblock (and thus the derived
-        // filter_level) reads per-SB delta_lf via get_filter_level. Re-derive
-        // the exact per-SB qindex the pack used (same running-base chain) → the
-        // per-SB delta_lf → stamp the grid. This mirrors pack_leaf's per-SB
-        // delta_lf compute so the LF grid == the coded tile's delta_lf.
+        // filter_level) reads per-SB delta_lf via get_filter_level. The per-SB
+        // qindex the pack used was already replayed above, in TILE order with the
+        // per-tile base reset (`replay_sb_qindex_tile_order`), and indexed by
+        // FRAME SB raster — which is exactly what `stamp_lf_delta_lf` indexes by.
+        // Deriving delta_lf from that shared vector (rather than a second,
+        // independently-ordered walk) is what keeps the LF grid == the coded
+        // tile's delta_lf once there is more than one tile.
         if dlf_present {
-            let sb_px = (sb_mi * 4) as usize;
-            let npl = (sb_px * sb_px).trailing_zeros();
-            let mut running = qindex;
-            let mut dlf_per_sb = Vec::with_capacity((n_sb_x * n_sb_y) as usize);
-            for r in 0..n_sb_y {
-                for c in 0..n_sb_x {
-                    let adj = if dq3_present {
-                        aom_encode::allintra_vis::setup_delta_q_perceptual_ai(
-                            weber_map.as_ref().unwrap(),
-                            qindex,
-                            bd,
-                            dq3_res,
-                            sb_mi,
-                            r * sb_mi,
-                            c * sb_mi,
-                            running,
-                        )
-                    } else {
-                        let sb_off = (r * sb_mi) as usize * 4 * stride + (c * sb_mi) as usize * 4;
-                        aom_encode::allintra_vis::setup_delta_q_perceptual(
-                            &src_y_strided,
-                            sb_off,
-                            stride,
-                            bd,
-                            qindex,
-                            dq2_screen,
-                            sb_px,
-                            sb_px,
-                            npl,
-                            dq2_res,
-                            running,
-                        )
-                    };
-                    running = adj;
+            let sb_qindex = if dq3_present {
+                &dq3_sb_qindex
+            } else {
+                &dq2_sb_qindex
+            };
+            assert_eq!(
+                sb_qindex.len(),
+                (n_sb_x * n_sb_y) as usize,
+                "{}: the per-SB delta-q replay must cover every superblock",
+                self.label
+            );
+            let dlf_per_sb: Vec<i32> = sb_qindex
+                .iter()
+                .map(|&adj| {
                     // delta_lf_from_base = ((delta_qindex/4 + res/2) & ~(res-1)),
                     // res = DEFAULT_DELTA_LF_RES = 2, clamped (encodeframe.c:380).
                     let delta_qindex = adj - qindex;
-                    let dlf = ((delta_qindex / 4 + 1) & !1).clamp(-63, 63);
-                    dlf_per_sb.push(dlf);
-                }
-            }
+                    ((delta_qindex / 4 + 1) & !1).clamp(-63, 63)
+                })
+                .collect();
             aom_encode::lf_search::stamp_lf_delta_lf(
                 &mut mi_grid,
                 &dlf_per_sb,
@@ -3202,4 +3228,104 @@ pub fn encode_cells() -> Vec<EncodeCell> {
         4,
     ));
     cells
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replay_sb_qindex_tile_order;
+
+    /// The per-TILE reset of the delta-q running base, pinned at the level the
+    /// fix lives at. The probe `|_, _, running| running + 4` makes the running
+    /// base directly observable: under C's per-tile reset
+    /// (`encodeframe.c:1232-1239` search side, `bitstream.c:1745-1751` pack
+    /// side) every tile's chain restarts at `base_qindex`, so a 4x2-SB frame
+    /// split into two 2x2-SB tile COLUMNS produces `base+4, base+8` twice —
+    /// once per tile — laid back out in FRAME SB raster.
+    ///
+    /// **Bite proof, MEASURED:** replacing the per-tile `running` with one
+    /// frame-level base (the pre-fix walk) fails exactly this test —
+    /// `left: [104, 108, 120, 124, 112, 116, 128, 132]` — while the other 12
+    /// `-p zenav1-aom-bench --lib` tests stay green.
+    #[test]
+    fn replay_resets_the_running_base_at_every_tile() {
+        const SB_MI: i32 = 16; // 64px superblock
+        const BASE: i32 = 100;
+        // 4 SB columns x 2 SB rows, split into two 2x2 tile COLUMNS.
+        // (mi_row_start, mi_col_start, mi_row_end, mi_col_end, n_sb_rows, n_sb_cols)
+        let two_cols = [
+            (0, 0, 2 * SB_MI, 2 * SB_MI, 2, 2),
+            (0, 2 * SB_MI, 2 * SB_MI, 4 * SB_MI, 2, 2),
+        ];
+        let (per_sb, used) =
+            replay_sb_qindex_tile_order(&two_cols, 4, SB_MI, BASE, |_, _, running| running + 4);
+        // Frame SB raster: row 0 = [tile0 c0, tile0 c1, tile1 c0, tile1 c1].
+        assert_eq!(
+            per_sb,
+            vec![104, 108, 104, 108, 112, 116, 112, 116],
+            "each tile must restart the running base at base_qindex"
+        );
+        assert!(used, "every SB moved off the base here");
+
+        // The same frame split into two tile ROWS instead: the reset lands at
+        // (mi_row = 2 SBs, mi_col = 0), a position a column split never produces.
+        let two_rows = [
+            (0, 0, SB_MI, 4 * SB_MI, 1, 4),
+            (SB_MI, 0, 2 * SB_MI, 4 * SB_MI, 1, 4),
+        ];
+        let (per_sb, _) =
+            replay_sb_qindex_tile_order(&two_rows, 4, SB_MI, BASE, |_, _, running| running + 4);
+        assert_eq!(per_sb, vec![104, 108, 112, 116, 104, 108, 112, 116]);
+
+        // Single tile: the reset is an identity, so the whole frame is one chain
+        // — the pre-existing single-tile behaviour, unchanged.
+        let one = [(0, 0, 2 * SB_MI, 4 * SB_MI, 2, 4)];
+        let (per_sb, _) =
+            replay_sb_qindex_tile_order(&one, 4, SB_MI, BASE, |_, _, running| running + 4);
+        assert_eq!(per_sb, vec![104, 108, 112, 116, 120, 124, 128, 132]);
+
+        // `deltaq_used` is the OR over tiles of "this SB left the frame base"
+        // (`td->deltaq_used |= (x->delta_qindex != 0)`, encodeframe.c:375,
+        // OR-reduced at :1593): a probe that never moves off the base reports
+        // false, which is what clears `delta_q_present` (bitstream.c:4286-4289).
+        let (per_sb, used) =
+            replay_sb_qindex_tile_order(&two_cols, 4, SB_MI, BASE, |_, _, _| BASE);
+        assert_eq!(per_sb, vec![BASE; 8]);
+        assert!(!used);
+    }
+
+    /// The per-SB callback must receive FRAME-absolute mi coordinates (the delta-q
+    /// modes index a frame-level wiener map / the frame source by them), while the
+    /// result lands at the frame SB raster slot — the two indexings a tile-local
+    /// walk is easiest to get wrong in opposite directions.
+    #[test]
+    fn replay_passes_frame_absolute_mi_and_indexes_frame_raster() {
+        const SB_MI: i32 = 16;
+        let two_cols = [
+            (0, 0, 2 * SB_MI, 2 * SB_MI, 2, 2),
+            (0, 2 * SB_MI, 2 * SB_MI, 4 * SB_MI, 2, 2),
+        ];
+        let mut seen: Vec<(i32, i32)> = Vec::new();
+        let (per_sb, _) = replay_sb_qindex_tile_order(&two_cols, 4, SB_MI, 100, |r, c, _| {
+            seen.push((r, c));
+            r * 1000 + c
+        });
+        assert_eq!(
+            seen,
+            vec![
+                (0, 0),
+                (0, 16),
+                (16, 0),
+                (16, 16), // tile 0, in tile raster
+                (0, 32),
+                (0, 48),
+                (16, 32),
+                (16, 48), // tile 1
+            ]
+        );
+        assert_eq!(
+            per_sb,
+            vec![0, 16, 32, 48, 16000, 16016, 16032, 16048],
+            "results must be laid out in FRAME SB raster, not tile order"
+        );
+    }
 }

@@ -105,6 +105,13 @@ it here in the same commit.**
   The two open rows are **KB-38**, a genuinely new unmodelled arm that is NOT hbd-specific.
 - ~~bd12 x the 480/720 crop straddle~~ → `s4cov_crop_format_axis::crop_straddle_bd12
   _byte_matches_where_interpretable`, **8/8 byte-exact** in 53 s.
+- ~~multi-tile x `--deltaq-mode` 2/3~~ → KB-39. **The queue's own "cost to close" was wrong** —
+  it said `pack_tile`'s base "must carry across tiles instead of restarting"; C restarts per
+  tile on all three sides (`encodeframe.c:1232-1239`, `bitstream.c:1745-1751`,
+  `decodeframe.c:2948`), so `pack_tile` was right and the harness's frame-raster replays were
+  the defect. The reach note was also too narrow: `AV1E_SET_TILE_COLUMNS` reaches the refusal at
+  any frame size. Two new residuals fell out (`DELTAQ_SPEED_OPEN` in T4, cpu>=8 in T2) — both
+  about delta-q at speed, neither about tiles.
 
 ### Closed on 2026-08-03 (kept for one cycle so the strike-through is visible)
 - ~~the screen-content palette arm at `--cpu-used` 8/9~~ → KB-35. Was a FALSE refusal on a
@@ -126,7 +133,7 @@ it here in the same commit.**
 ### T1 — refusals on reachable configurations
 | axis | reach (measured) | cost to close |
 |---|---|---|
-| **multi-tile x `--deltaq-mode` 2/3** | Loud refusal (KB-31 residual a). Needs a frame that REQUIRES a tile split (>4096 px wide, or ~9.44 MP) AND a non-default flag, so reachable but not by default. NOT re-measured 2026-08-03. | `pack_tile`'s running qindex base must carry across tiles instead of restarting |
+| ~~**multi-tile x `--deltaq-mode` 2/3**~~ | CLOSED 2026-08-04 → KB-39. The queue's stated fix was **wrong**: C restarts the delta-q base per tile on every side, so `pack_tile` was already right and the harness's frame-raster replays were not. Also found the axis is reachable with NO size at all, via `AV1E_SET_TILE_COLUMNS`/`_ROWS`. | done |
 | **IntraBC blocks > 64x64 (multi-chunk)** | KB-29 residual (a): unreachable from libaom AND from SVT-AV1 (re-checked 2026-08-02, 1,992 streams). A third encoder or a synthetic stream is needed. | unknown; blocked on producing an input |
 
 ### T2 — default-reachable axes, no refusal, cheap-to-moderate
@@ -140,7 +147,8 @@ it here in the same commit.**
 | **the bd12 dispatch-tier disagreement at `1920x1080 cq24 cpu0`** | NEW 2026-08-04, from KB-38's scalar leg. That cell's delta is **+181 B on default dispatch and +55 B under `AOM_FORCE_SCALAR=1`** — the port's own scalar and vector tiers produce different bytes there, which they do nowhere else in the grid. A kernel whose tiers disagree is a differential hole (playbook §1) and is its own defect, not just a symptom of KB-38 | bisect the bd12 kernels live on that cell against their exported C symbols; the two encodes are ~55 s each |
 | **crops straddling 2160 at bd10/12, 4:2:2/4:4:4/mono, SB128** | the cheap follow-on the closed 2160 arm opens — same razor, one format at a time | ~35 s per format, no new machinery |
 | **1440..2160 at formats other than bd8 4:2:0 SB64 cq24** | same shape as the >=1080p format arm, one tier up | ~7 min per format |
-| **multi-tile at SB128 / bd10-12 / 4:4:4-4:2:2 / mono** | KB-31 residual (c): that whole file is bd8 4:2:0 SB64 | moderate; large frames |
+| **multi-tile at SB128 / bd10-12 / 4:4:4-4:2:2 / mono** | KB-31 residual (c): that whole file is bd8 4:2:0 SB64 — and so is `kb31_deltaq_multitile.rs` (KB-39) | moderate; large frames |
+| **`--deltaq-mode` 2/3 x `--cpu-used` >= 8** | KB-39 residual (b): `port_encode_with` ASSERTS (*"derived delta_q_present must match the real --deltaq-mode=3 header, left: false right: true"*) — a refusal-shaped hole one tier down from the one just closed. C routes nonrd speeds through `setup_delta_q_nonrd` (encodeframe.c:594-599), which models only `DELTA_Q_VARIANCE_BOOST`; the port models neither that routing nor whatever keeps the real header's flag set | unknown; start by reading which of C's two `setup_delta_q*` call sites a speed-8 allintra KEY frame actually takes |
 | **multi-tile x the crop straddle** | needs its OWN crop pair at tile-forcing size (e.g. 4090x2154 vs 4096x2160) — it cannot be combined with a 714x720 frame | same cost class as the 2160 arm |
 | ~~**bd12 x the 480/720 crop straddle**~~ | **CLOSED 2026-08-04.** 474x480 + 714x720 + their mi-aligned SB-exact controls x cpu {0, 7} — **8/8 byte-exact**, `s4cov_crop_format_axis::crop_straddle_bd12_byte_matches_where_interpretable`. | measured **53 s** |
 
@@ -159,6 +167,7 @@ it here in the same commit.**
 | `PALETTE_ON_SPEED8_OPEN` (`kb35_nonrd_palette_arm.rs`) | palette ON x cpu8 x screen-detected, 13 rows, -1399..+817 B; the FULL-RD palette leaf, which `rd_close_palette.rs` never crosses (speed 0 throughout). **NARROWED 2026-08-03 (KB-37) with a positive control, not a zero counter**: the same content at the same sizes, palette on, screen flag on, at `--cpu-used 9` (full-RD arm structurally unreachable) is BYTE-EXACT on 15/15 rows — so content, shared palette machinery and the estimate arm are all exonerated | first-divergent-block on 128x128 cq12 (delta -1) |
 | KB-27 / `MONO_S0_OPEN` | monochrome, base_qindex 96, speed 0; **size-independent** (64x64 through 720x720, SB-exact and partial alike, widened 2026-08-03) | its own localizer is in `s4cov_partial_sb_axis.rs` |
 | KB-P29, KB-13's 2 cpu3-cq63 cells | 2 palette 128<sup>2</sup> near-ties; 2 real-content cells | sibling-C RD dump (KB-3/KB-7 method) |
+| `DELTAQ_SPEED_OPEN` (KB-39 residual a, no gate — the delta-q gates are all speed 0) | `--deltaq-mode` 2/3 at `--cpu-used` >= 1, **SINGLE tile as well as multi**, content-dependent. Measured 2026-08-04 on `av1-1-b8-00-quantizer-00` crops: mode 2 diverges at 1x1 tiles at every speed 1..7 (192x192 cq32); mode 3 is clean 1..6 at 192x192 cq32 but diverges at 1x1 from speed 1 at 256x256, and at cq63 from speed 3. Delta-q rides the whole RD chain (per-SB rdmult + quantizer rows), so this is a *speed-feature* divergence conditioned on a non-flat qindex map, not a tile bug — the tile axis is byte-clean at speed 0 across 53 cells and the deltaq-OFF tile controls are clean at speeds 0/2/6 (15/15) | first-divergent-block on 256x256 cq32 `--cpu-used 1` mode 3, single tile (playbook §10); the small-frame single-tile shape makes it the cheapest RD-decision dump in the queue |
 | `PALETTE_MANY_COLORS_OPEN` (`kb37_nonrd_palette_search.rs`) | palette blocks with **more than `PALETTE_MAX_SIZE` distinct colours** (33..64 in a 16x16). SHARED `palette_search` machinery, not an arm: reproduces on the FULL-RD path at `--cpu-used` 0/2/6 with `nonrd_leaf_arms() == [0, 0]` (asserted inside the test). 48 of 75 cells in the 38..42-colour band; 1 of 9 in the shipped fine-colour set. Nothing had ever encoded such a block — `rd_close_palette.rs`'s content has <= 8 colours and takes the `colors == PALETTE_MIN_SIZE` / `max_n == colors` shortcuts | sibling-C per-candidate RD dump of `av1_rd_pick_palette_intra_sby` on 64x64 n40 cq40 at `--cpu-used 0` (the k-means + descending-order arms are what only this content reaches) |
 
 **Already closed, do not re-open from stale notes:** KB-10/KB-11's noise-cq63 speed-6/7 pairs
@@ -3280,11 +3289,14 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   `min_log2 == 0`. Playbook §7 and §12 together: two individually-green rows (the tile machinery,
   the frame driver) with nothing crossing them, and a green unit differential that licenses a
   kernel and not its caller.
-- **RESIDUAL, stated plainly.** (a) Multi-tile x per-SB delta-q (`--deltaq-mode` 2/3) is REFUSED
+- **RESIDUAL, stated plainly.** (a) ~~Multi-tile x per-SB delta-q (`--deltaq-mode` 2/3) is REFUSED
   with a loud assert, not modelled: `pack_tile`'s running qindex base restarts per tile while the
   harness's frame-raster replay loops (`dq3_present`, `stamp_lf_delta_lf`) carry one base across
   the frame; no delta-q gate encodes a frame large enough to need tiles, so the arm is unreached
-  today. (b) `av1_calculate_tile_cols` also re-derives `max_height_sb` from the widest tile
+  today.~~ **CLOSED 2026-08-04 — KB-39.** Note this residual's own diagnosis was backwards about
+  which walk was wrong (C restarts per tile too, so `pack_tile` was correct and the replays were
+  not) and about reachability (`AV1E_SET_TILE_COLUMNS` reaches it at any size, no 4033 px needed).
+  (b) `av1_calculate_tile_cols` also re-derives `max_height_sb` from the widest tile
   (`tile_common.c:82-95`); that is deliberately NOT modelled and the caller's value is still used,
   because it is read only by the NON-uniform row read and libaom emits non-uniform spacing only
   under `--tile-width`/`--tile-height`, so there is no real-stream gate to prove a change against.
@@ -4217,6 +4229,137 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   both directions (1920x1079 / 1079x1920 / q109 / cq32 / 1280x720 must not fire; q108,
   q96, 1080x1920, 7680x4320 must), the five fields, a whole-struct isolation check, and
   that the intra-live ones reach the derived tx policy.
+
+### KB-39 — Encoder: multi-tile x `--deltaq-mode` 2/3 was REFUSED with a loud assert — FIXED ✅ 2026-08-04 (the refusal's own diagnosis was backwards; ONE root, harness-side)
+
+- **The refusal**, `crates/aom-bench/src/lib.rs:1629` (pre-fix), fired for any frame with
+  `tiles_log2 > 0` once a delta-q mode was firing:
+  *`multi-tile x per-SB delta-q is unmodelled (the running qindex base resets per tile in
+  pack_tile but not in this harness's frame-raster replay) — see KB-31`*.
+  It was KB-31's residual (a), and the coverage queue carried its proposed fix verbatim:
+  *"`pack_tile`'s running qindex base must carry across tiles instead of restarting"*.
+- **That fix would have been WRONG. C restarts the base at every tile, on every side.**
+  Read, not guessed:
+  * search — `encode_sb_row`, comment and all: *"Reset delta for quantizer and loof filters at
+    the beginning of every tile"*, `av1/encoder/encodeframe.c:1232-1239`:
+    `if (mi_row == tile_info->mi_row_start || row_mt_enabled) { if (delta_q_present_flag)
+    xd->current_base_qindex = cm->quant_params.base_qindex; if (delta_lf_present_flag)
+    av1_reset_loop_filter_delta(...); }`;
+  * pack — `write_modes`, `av1/encoder/bitstream.c:1745-1751`, the same two assignments at the
+    top of every tile's payload;
+  * decode — `decodeframe.c:2948` (serial tile loop) and `:3023` (`tile_worker_hook_init`), plus
+    `av1_reset_loop_filter_delta` per tile at `:2785`/`:3258`.
+  The base then advances one SB at a time in TILE raster —
+  `xd->current_base_qindex = mbmi->current_qindex` at `partition_search.c:1476` (search) and
+  `bitstream.c:979` (write), both gated on `(bsize != sb_size || !skip_txfm) &&
+  super_block_upper_left`. Order is load-bearing, not cosmetic: each SB's own qindex is
+  `av1_adjust_q_from_delta_q_res(res, prev, curr)` — a deadzone rounding **against `prev`**
+  (`av1/encoder/rd.c:494-505`). So `pack_tile` (fresh `search_base_qindex` + fresh
+  `KfBlockState` per call) was already C-faithful; the harness's own **frame-raster** replays
+  were the ones carrying one base across the frame.
+- **Every branch of the C read, including the ones argued dead.**
+  * `encode_sb_row`'s `|| row_mt_enabled` arm would reset at every SB ROW instead of every tile.
+    **Dead against this oracle, cited**: `mt_info->row_mt_enabled` is set only when
+    `oxcf->row_mt && mt_info->num_workers > 1` (`encodeframe.c:2410-2415`) and every reference
+    shim pins `cfg.g_threads = 1` (`crates/aom-sys-ref/shim/dec_shim.c:498`). A threaded oracle
+    would need the row arm as well — noted at the port site, not silently dropped.
+  * `setup_delta_q`'s eight mode arms (`encodeframe.c:316-356`): ducky-encode, external RC,
+    PERCEPTUAL (mode 2), OBJECTIVE, PERCEPTUAL_AI (mode 3), USER_RATING_BASED, HDR,
+    VARIANCE_BOOST. Only 2 and 3 are in scope; all eight feed the SAME
+    `av1_adjust_q_from_delta_q_res` + `td->deltaq_used |= (x->delta_qindex != 0)` tail
+    (`:358-375`), so the tile ordering is mode-independent by construction.
+  * `av1_get_sbq_perceptual_ai` (`allintra_vis.c`) and `av1_block_wavelet_energy_level` /
+    `av1_compute_q_from_energy_level_deltaq_mode` read only frame-level state
+    (`cpi->mb_wiener_variance`, `norm_wiener_variance`, the SB source) — no tile input, so the
+    per-SB derivations needed no change, only the walk around them.
+  * `cpi->deltaq_used` is per-tile-zeroed and OR-reduced (`encodeframe.c:1580`/`:1593`,
+    `ethread.c:1535`), and folded into the header at `bitstream.c:4286-4289` /
+    `encodeframe.c:2450` — an OR, hence order-insensitive except through the base chain.
+  * `update_delta_lf_for_row_mt` (`ethread.c:71-100`) is the row-mt-only delta-lf stamp and
+    walks `for (tile_row) for (tile_col)` with the same `mi_row == tile_info->mi_row_start`
+    reset — corroborating evidence for the tile scope, and dead here for the same
+    `num_workers == 1` reason.
+- **ROOT (one, harness-side): the three frame-raster replays in `EncodeCell::port_encode_impl`.**
+  Replaced by `replay_sb_qindex_tile_order` (`crates/aom-bench/src/lib.rs`), which walks
+  `tile_grid` in raster order, re-seeds `running = base_qindex` at each tile, calls the mode's
+  per-SB derivation with FRAME-absolute mi coordinates, and writes the result back at the FRAME
+  SB raster slot. The mode-3 and mode-2 `delta_q_present` derivations now share it, and the
+  delta-lf stamp reads its output instead of running a third, independently-ordered walk.
+  `pack_tile` is UNTOUCHED — it was already right.
+- **No decoder-side counterpart** (contrast KB-31 root #2, which was a decoder bug found while
+  fixing an encoder refusal — the shape this task was told to look for). `aom-decode`'s
+  `start_tile` already re-seeds `current_base_qindex` and zeroes `xd_delta_lf*` per tile
+  (`crates/aom-decode/src/lib.rs:2153-2157`), mirroring `decodeframe.c:2948`. It had never been
+  *exercised* with delta-q on a multi-tile stream, which the new
+  `multi_tile_deltaq_round_trips` leg now does (6 streams, 2x1/1x2/2x2 x modes 2/3).
+- **Reachability — the queue's entry was too narrow.** It said "needs a frame that REQUIRES a
+  tile split". True for the size-forced path (`width >= 4033 px` via `set_tile_info`'s `<=`
+  column loop, `av1/encoder/encoder.c:385-390`; or `> 2304 SB64s` ~ 9.44 MP via
+  `av1_get_tile_limits`, `tile_common.c:31-50`), but `AV1E_SET_TILE_COLUMNS` / `_ROWS` reach the
+  same refusal at **any** size — a 192x192 thumbnail with `--tile-columns=1` hit it. So: two
+  non-default flags, no size requirement.
+- **Verified — `crates/aom-bench/tests/kb31_deltaq_multitile.rs`, 5 default-tier tests.**
+  * `deltaq_multitile_byte_identical` — the refusal's own cells: 4096x64 (2x1 tiles, 0.26 MP,
+    the smallest size-forced split) at `--deltaq-mode` 3 and 2, its 4032x64 SINGLE-tile control
+    at the same modes, and a 4096x64 deltaq-0 MULTI-tile control. 5/5 byte-identical to real
+    aomenc; the two controls are what make the tile axis and the deltaq axis separable.
+  * `deltaq_tile_grid_matrix_byte_identical` — 192x192 x {1x1, 2x1, 1x2, 2x2} x {deltaq 0, 3, 2}
+    x cq {12, 32}: 24/24. The 2 tile columns over 3 SB columns is an UNEVEN 2+1 split; the 1x2
+    rows are the only reset at `(mi_row > 0, mi_col == 0)`.
+  * `delta_lf_multitile_byte_identical` — the same grids with `--delta-lf-mode=1` at cq
+    {12, 32, 48}: 24/24. This is the only leg where the replay's output CAN reach the BYTES
+    (through `stamp_lf_delta_lf` -> the LF grid -> the picked filter level); `delta_q_present`
+    is a single bit the harness cross-checks against the real header, so a mis-ordered replay
+    fails loudly there rather than mis-coding.
+  * `multi_tile_deltaq_round_trips` — the port DECODER on 6 multi-tile delta-q + delta-lf
+    streams.
+  * `deltaq_multitile_axis_is_reachable` — the reachability predicate, asked of the REFERENCE
+    encoder (so it passes before the fix as well as after).
+  * `--ignored` tier: `deltaq_area_forced_row_split_byte_identical` — 4032x2368 (63 SB columns,
+    2,368 SB64s, so the AREA predicate forces a 1x2 ROW split at 9.55 MP, the only delta-q cell
+    where `min_log2 > 0`) x {deltaq 0, 3, 2} at speed 0 — 3/3 byte-identical, 1,005,925 /
+    1,018,101 / 1,739,509 B, 701.6 s for the test (~225 s per port encode).
+- **Teeth.** The refusal is its own positive control: pre-fix, `deltaq_multitile_byte_identical`
+  panics with the exact text quoted above at `dq3_4096x64`, while
+  `deltaq_multitile_axis_is_reachable` still passes (it asks aomenc, not the port). For the
+  replay itself the bite is at unit level — `replay_resets_the_running_base_at_every_tile`
+  (`aom-bench/src/lib.rs` `#[cfg(test)]`): swapping the per-tile `running` for one frame-level
+  base yields `[104, 108, 120, 124, 112, 116, 128, 132]` where the per-tile reset gives
+  `[104, 108, 104, 108, 112, 116, 112, 116]`, and the other 12 `--lib` tests stay green.
+- **HONEST NEGATIVE, stated because it bounds the claim: no BYTE-level bite was found for the
+  reordering.** With the refusal removed but the pre-fix frame-raster replay restored, all 53
+  default-tier byte cells above still pass, as do `delta_lf_mode_e2e` (7/7), `deltaq_mode2_e2e` (7/7) and
+  `deltaq_mode3_e2e` (16/16). A further search — 4096x64 / 4032x64 / 512x512 / 1024x256 with
+  `--delta-lf-mode=1` at cq {12, 20, 32, 48} x modes {2, 3} — found no divergence in the cells
+  it reached before being cut short. So the replay's ORDER is byte-inert on everything measured:
+  its two consumers are a fail-loud cross-check and an LF-search input that the picked filter
+  level absorbs. The change is a C-fidelity alignment plus the removal of a refusal, NOT a
+  demonstrated byte fix, and it should be described that way.
+- **Suites, both dispatch modes (aarch64-apple-darwin, `test-fast`, nextest), ON THE REBASED
+  TREE (i.e. composed with KB-38's landing).** Default dispatch `--workspace`: **964 run, 964
+  passed, 0 failed** (509.1 s). `-p zenav1-aom-bench --run-ignored all` — Gate 2's whole
+  on-demand tier plus the new area-forced cells: **245 run, 245 passed, 0 skipped** (1426.5 s).
+  `AOM_FORCE_SCALAR=1 -p zenav1-aom-bench -p zenav1-aom-encode`: **504 run, 504 passed**
+  (340.3 s). **Gate 2 keeps zero pinned cells across `--cpu-used` 0-9.** (Pre-rebase the same
+  three legs were 963/963, 237/237 and — on the full scalar workspace — 963 run with 4
+  `config_permutations` tests aborted by an EXTERNAL SIGTERM at 5-7 s where they take 9-13 s;
+  all 4 PASS on a clean scalar re-run, and the post-rebase scalar leg is green.)
+- **RESIDUALS.** (a) **`DELTAQ_SPEED_OPEN`** — sweeping speed while measuring the tile axis found
+  `--deltaq-mode` 2/3 diverging from real aomenc at `--cpu-used >= 1` **with one tile as well as
+  many**: mode 2 fails at 1x1 at every speed 1..7 on 192x192 cq32, mode 3 is clean 1..6 there but
+  fails at 1x1 from speed 1 on 256x256 and from speed 3 at cq63. The deltaq-OFF tile controls are
+  clean at speeds 0/2/6 (15/15) and the whole tile axis is clean at speed 0 (53/53), so this is a
+  speed-feature divergence conditioned on a non-flat qindex map, not a tile bug. It is why every
+  cell in this file is speed 0 — the three pre-existing delta-q gates are speed-0-only too, so
+  nothing had ever measured it. Queued in T4. (b) `--deltaq-mode` x `--cpu-used >= 8` ASSERTS
+  (*"derived delta_q_present must match the real --deltaq-mode=3 header, left: false right:
+  true"*) — a refusal-shaped hole one tier down; C routes nonrd speeds through
+  `setup_delta_q_nonrd` (`encodeframe.c:594-599`) which models only `DELTA_Q_VARIANCE_BOOST`.
+  Queued in T2. (c) Everything here is bd8 4:2:0 SB64 at cq {12, 30, 32, 48}, KB-31 residual
+  (c)'s scope note applied to this file too. (d) asking for `log2_cols = 2` (4 tile columns) on a
+  3-SB-wide frame makes libaom clamp to a 3x3 grid, which the harness's uniform-spacing check rejects
+  (*"uniform-spacing tile grid must be 2^log2_cols x 2^log2_rows, left: 9 right: 16"*) — a
+  pre-existing, delta-q-independent limit, noted here because it is what bounds the grid list.
 
 ### KB-PERF-1 — Encoder: the intra-mode CNN is recomputed ~10x per superblock (C computes it ONCE and caches) — FIXED ✅ 2026-08-02
 
