@@ -118,9 +118,11 @@ def main():
         print("## POSITION TABLE — each arm's mean by round position, as % of that arm's own mean")
         print(f"{'arm':<12} " + " ".join(f"{'p' + str(p):>8}" for p in positions) + f" {'occupancy':>28}")
         pooled = {p: [] for p in positions}
+        pooled_med = {p: [] for p in positions}
         for arm, xs in arms.items():
             ms = [m for _, _, m in xs]
             mu = sum(ms) / len(ms)
+            md = med(ms)
             cells, occ = [], []
             for p in positions:
                 v = [m for _, pp, m in xs if pp == p]
@@ -129,13 +131,26 @@ def main():
                     rel = 100 * (sum(v) / len(v) - mu) / mu
                     cells.append(f"{rel:>+8.3f}")
                     pooled[p].append(rel)
+                    pooled_med[p].append(100 * (med(v) - md) / md)
                 else:
                     cells.append(f"{'-':>8}")
             print(f"{arm:<12} " + " ".join(cells) + "   " + "/".join(str(o) for o in occ))
         print()
         vals = [sum(pooled[p]) / len(pooled[p]) if pooled[p] else 0.0 for p in positions]
         print("POOLED       " + " ".join(f"{v:>+8.3f}" for v in vals))
-        print(f"  pooled position gradient (max-min) = {max(vals) - min(vals):.3f} pp")
+        print(f"  pooled position gradient (max-min) = {max(vals) - min(vals):.3f} pp   [MEANS]")
+        # The mean-based row is what a Gaussian reader wants, and it is unusable on a
+        # contended band: ONE 300 ms round out of 20 at a position moves that cell by
+        # several pp, so the "gradient" it reports is an outlier count, not a drift.
+        # Measured 2026-08-03 over six rotated bands: the mean gradient read 0.35-1.31 pp
+        # and the median gradient over the SAME invocations read 0.17-0.59 pp. Worst
+        # disagreement was the contended KB-PERF-4 n=150 band, 1.309 vs 0.166 -- 7.9x on
+        # one dataset; the quiet 720-invocation control_rot120 read 1.206 vs 0.383, 3.1x.
+        # Quote the MEDIAN row as the position effect and the mean row only as a tail
+        # indicator; when they disagree by more than ~3x the band had outliers, not drift.
+        vmed = [med(pooled_med[p]) if pooled_med[p] else 0.0 for p in positions]
+        print("POOLED-med   " + " ".join(f"{v:>+8.3f}" for v in vmed))
+        print(f"  pooled position gradient (max-min) = {max(vmed) - min(vmed):.3f} pp   [MEDIANS — quote this one]")
 
     if ref and ref in arms:
         print()

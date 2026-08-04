@@ -41,3 +41,25 @@
 # band /Users/lilith/tmp/reverify2/data/p4_fixed150.tsv rotate=0 rounds=150
 # start 2026-08-03T21:33:07Z  15:33  up 9 days, 12:52, 3 users, load averages: 11.58 7.42 6.60
 
+# --- bands added after the first commit (the queue finished, then the box went idle) ---
+
+# band /Users/lilith/tmp/reverify2/data/p4_fixed150.tsv rotate=0 rounds=150
+# start 2026-08-03T21:33:07Z  15:33  up 9 days, 12:52, 3 users, load averages: 11.58 7.42 6.60
+# end   2026-08-03T21:49:39Z  15:49  up 9 days, 13:08, 3 users, load averages: 2.32 3.54 5.24
+
+# band /Users/lilith/tmp/reverify2/data/control_rot120.tsv rotate=1 rounds=120
+# start 2026-08-03T21:49:39Z  15:49  up 9 days, 13:08, 3 users, load averages: 2.32 3.54 5.24
+# end   2026-08-03T22:06:59Z  16:06  up 9 days, 13:26, 3 users, load averages: 4.61 3.01 3.47
+
+# band /Users/lilith/tmp/reverify2/data/control_fixed120.tsv rotate=0 rounds=120
+# start 2026-08-03T22:06:59Z  16:06  up 9 days, 13:26, 3 users, load averages: 4.61 3.01 3.47
+# end   2026-08-03T22:24:14Z  16:24  up 9 days, 13:43, 3 users, load averages: 5.15 2.87 2.81
+
+# band /Users/lilith/tmp/reverify2/data/idle_p4_rot150.tsv rotate=1 rounds=150
+# start 2026-08-04T04:49:41Z  22:49  up 9 days, 20:08, 4 users, load averages: 3.55 2.25 1.73
+# end   2026-08-04T05:05:07Z  23:05  up 9 days, 20:24, 4 users, load averages: 3.39 2.57 2.12
+
+# band /Users/lilith/tmp/reverify2/data/idle_control_rot150.tsv rotate=1 rounds=150
+# start 2026-08-04T05:05:07Z  23:05  up 9 days, 20:24, 4 users, load averages: 3.39 2.57 2.12
+# end   2026-08-04T05:26:47Z  23:26  up 9 days, 20:45, 4 users, load averages: 3.62 2.95 2.53
+

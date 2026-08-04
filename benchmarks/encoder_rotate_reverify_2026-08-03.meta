@@ -7,7 +7,7 @@
 # (docs/DIFFERENTIAL_PLAYBOOK.md §6). No encoder source was modified in this
 # session; every arm is a build of an already-landed commit.
 
-date                 2026-08-03
+date                 2026-08-03, extended 2026-08-04 (the idle-box bands, .md sec 7)
 box                  Apple M4 Pro, 12 cores, 24 GiB, macOS 26.5.2 (Darwin arm64)
 worktree             zenav1-aom--reverify2, detached (removed at the end of the session)
 libaom oracle        upstream/ submodule 03087864cf4bea6abb0d28f95cf7843511413d8f (v3.14.1),
@@ -91,6 +91,23 @@ verified to produce the same `.obu` BY SHA256 before the first band ran.
   p4_rot.tsv / p4_fixed.tsv   base/baseB/all/allB/libaom-c,     50 rounds each
   p3_rot.tsv / p3_fixed.tsv   base/baseB/both/bothB/libaom-c,   50 rounds each
   p2_rot.tsv / p2_fixed.tsv   base/baseB/final/finalB/libaom-c, 50 rounds each
+  p4_rot150.tsv / p4_fixed150.tsv   the KB-PERF-4 escalation, 150 rounds each
+
+  --- 2026-08-04, box idle (load ~2, both neighbouring agents finished) ---
+  idle_p4_rot150.tsv          base/baseB/all/allB/libaom-c, 150 rotated rounds.
+                              THE band that settles KB-PERF-4: MDE95 0.080 pp
+                              against the pre-registered 0.375. See .md sec 7a.
+  idle_control_rot150.tsv     6 copies of ONE binary, 150 rotated rounds. The
+                              clean position-gradient measurement (0.055 pp by
+                              means / 0.172 pp by medians) and the control that
+                              shows the 0.27 pp twin gap needs a HETEROGENEOUS
+                              band. See .md sec 7b/7c.
+
+The 2026-08-04 arms were REBUILT from the same two commits and came out
+byte-identical by sha256 to the 2026-08-03 builds (p4base 3f215255..., p4post
+b6cc2ab4...), which is both a toolchain-reproducibility check and proof that the
+two landings that reached main in between (b6cee22 nonrd palette, 3ae19b2
+lossless TX_4X4) are not in these binaries.
 
 Originals for comparison: KB-PERF-2 n=12 (5 arms, no null), KB-PERF-3 n=24
 (7 arms, nulls both sides), KB-PERF-4 n=36 (6 arms, nulls both sides) — all

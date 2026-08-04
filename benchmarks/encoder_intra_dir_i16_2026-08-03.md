@@ -172,6 +172,24 @@ overlap at the extremes (base 3.183-3.249, all 3.151-3.222) — this is a 0.75 %
 effect on a box whose raw spread is 2.6-3.3 %, and it is resolvable only
 because the arms are interleaved and the nulls are measured.
 
+> **SETTLED 2026-08-04 ON AN IDLE BOX: the rotated value is −0.64 %, about 15 %
+> smaller than the −0.75 % below, and the lever is certain.**
+> ([`encoder_rotate_reverify_2026-08-03.md`](encoder_rotate_reverify_2026-08-03.md)
+> §7.) 150 rotated rounds, arms rebuilt from `0279544` / `71c924a` and
+> **byte-identical by sha256** to the originals, raw spread 7.7–10.7 %:
+> pre-side null **−0.002 %** (76/150, p = 0.94), `all` **−0.527 %** (133/150),
+> its same-binary twin **−0.754 %** (145/150), both p < 0.0001, **MDE95 0.080 pp
+> against the 0.375 the re-verification pre-registered — the gate is met.**
+> Ratio **3.1889x → 3.1660x** (mean of the two copies) = **−0.023 against the
+> −0.024 recorded below**, reproducing it to 4 %. The headline is quoted as the
+> **mean of two copies** because those two byte-identical copies disagree by
+> **0.270 pp at p < 0.0001** — a harness systematic that rotation cannot remove
+> (it fixes each arm's predecessor), replicated independently in the KB-PERF-3
+> band and absent when every arm is the same binary. **So: −0.64 % ± 0.14 pp
+> copy systematic; the −0.75 % below sits inside that bracket at its optimistic
+> edge.** The 2026-08-03 reading that follows is superseded and kept for the
+> record:
+>
 > **RE-VERIFIED UNDER ROTATION 2026-08-03 — the SIGN survives, the MAGNITUDE
 > −0.75 % is NOT RE-VERIFIED
 > ([`encoder_rotate_reverify_2026-08-03.md`](encoder_rotate_reverify_2026-08-03.md)

@@ -18,14 +18,32 @@ Provenance, binary sha256s, exact commands, what is NOT measured:
 |---|---:|---:|---|
 | **KB-PERF-2** allocation | −3.05 % paired-median, n=12 | **−2.99 % / −3.00 %**, n=50 | **SURVIVES** — to 0.06 pp |
 | **KB-PERF-3** i16 fwd transform | −2.56 % paired-median, n=24 | **−1.89 % / −2.16 %**, n=50 | **MOVES ~0.5 pp, conclusion holds** |
-| **KB-PERF-4** directional intra | −0.75 % paired-median, n=36 | **−0.65 % / −0.62 %**, n=150 | **SIGN survives; MAGNITUDE NOT re-verified** |
+| **KB-PERF-4** directional intra | −0.75 % paired-median, n=36 | **−0.64 %**, n=150 on an IDLE box | **SETTLED — ~15 % smaller** |
 
-**And the control does not reproduce the 0.34 pp that prompted this.** Six
-copies of one binary, 36 rounds each way, agree to **0.22 pp rotated** and
-**0.17 pp fixed** — both inside their own MDE, so on this box in these windows
-the position penalty is not resolvable at n=36 either way. What rotation
-unambiguously buys is that the position effect becomes **measurable** (§1)
-instead of sitting invisibly inside each arm's number.
+**KB-PERF-4 was re-taken a third time on 2026-08-04 once the box went idle, and
+that band SETTLES it — see §7, which supersedes §4.** The pre-registered
+resolution gate is met with room to spare (MDE95 **0.080 pp** against the
+required 0.375), the pre-side null is **−0.002 %** (76/150, p = 0.94), and both
+post-side copies clear p < 0.0001. §4 is kept unedited as the record of what the
+contended bands could and could not say.
+
+**And the control does not reproduce the 0.34 pp that prompted this — on an idle
+box it is not close.** Six copies of ONE binary over **150** rotated rounds
+(§7b, the quietest band of the session at 3.0–3.4 % raw spread) give a position
+gradient of **0.055 pp by means / 0.172 pp by medians**, with **no arm
+significantly different from any other** (every p ≥ 0.16 at MDE95 0.06–0.07).
+**The 0.34 pp figure and the "1.7 % pooled gradient" were contended-box
+artifacts, not properties of the harness.**
+
+**But rotation does not make a same-binary twin pair agree.** In the idle
+KB-PERF-4 band, two byte-identical copies of the post binary came out
+**0.270 pp apart at p < 0.0001** (111/150) — and the *same* 0.269 pp gap sits
+between the same two cycle slots in the independent KB-PERF-3 band. It does
+**not** appear when every arm is the same binary (§7b), so it is a property of
+bands whose arms have *different speeds*, and cyclic rotation cannot remove it
+because rotation fixes each arm's predecessor (§7c). **A single arm's systematic
+floor is therefore ~0.27 pp even rotated, well above its statistical MDE** —
+which is why §7 quotes the mean of two copies rather than either one.
 
 > **BOX CAVEAT, before any number.** The box was shared with two other agents
 > for the whole session and their load is bursty: `uptime` ran 2.9–13.0 and one
@@ -62,9 +80,12 @@ fitted to an outcome (§14). Verbatim:
 > the sign test beside it... The originals published paired **medians**, so both
 > are reported side by side.
 
-It fired once, on KB-PERF-4, and §4 is what it produced — including the part
-where the escalation **still did not clear the gate**, which is reported as a
-failure to re-verify rather than quietly re-scored on a friendlier statistic.
+It fired once, on KB-PERF-4. §4 is what it produced on the contended box —
+including the part where the escalation to n=150 **still did not clear the
+gate**, reported as a failure to re-verify rather than quietly re-scored on a
+friendlier statistic. **§7 is the band that finally cleared it**, taken the
+next day on an idle box under the same unchanged rule: more rounds and a
+quieter box, nothing else touched.
 
 ---
 
@@ -117,7 +138,10 @@ to its own mean, so arm effects cancel):
 | KB-PERF-4 | 50 × 5 | 1.276 pp |
 | KB-PERF-4 | 150 × 5 | **1.309 pp** |
 
-**0.35–1.31 pp**, tracking load, against the 1.7 % recorded on a heavily
+**0.35–1.31 pp**, tracking load — **and all five of these numbers are
+contended-box readings that §7b supersedes**: on an idle box the same
+measurement, over 150 rounds and six identical binaries, reads **0.055 pp
+(means) / 0.172 pp (medians)**. Read against the 1.7 % recorded on a heavily
 contended band and 0.1 % on a quiet one in
 [`encoder_intra_smooth_paeth_2026-08-03.md`](encoder_intra_smooth_paeth_2026-08-03.md)
 §4. So the concern that motivated this re-verification was **well founded** —
@@ -196,7 +220,7 @@ their protocols named, rather than the fixed-order number alone.
 
 ---
 
-## 4. KB-PERF-4 (directional intra) — the rule fired, and the escalation did not clear it either
+## 4. KB-PERF-4 on the CONTENDED bands — the rule fired (SUPERSEDED by §7)
 
 Base `0279544` → post `71c924a`. Published: 6 arms × **36** fixed-order rounds,
 nulls both sides (−0.01 % / −0.01 pp), `base` 149.188 → `all` 148.062 ms,
@@ -286,7 +310,123 @@ pre-2026-08-03 band command-for-command.
 
 ---
 
-## 6. What this file does NOT establish
+## 7. THE IDLE-BOX BAND (2026-08-04) — KB-PERF-4 settled, and a harness finding
+
+Both concurrent agents finished and the box went to load ~2. The arms were
+**rebuilt from the same two commits** (`0279544` → `71c924a`) and came out
+**byte-identical to the 2026-08-03 builds by sha256** — so the toolchain is
+reproducible and the two landings that reached `main` in between
+(`b6cee22` nonrd palette, `3ae19b2` lossless TX_4X4) are provably not in these
+binaries. Data: `.idle_p4_rot150.tsv`, `.idle_control_rot150.tsv`.
+
+### 7a. KB-PERF-4, 150 rotated rounds, idle — the gate is MET
+
+Raw per-arm spreads **7.7–10.7 %**, against 106–212 % on the contended band.
+
+| arm | median | spread | paired-median | paired-mean | sd | MDE95 | faster | p (sign) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `base` | 153.381 ms | 8.85 % | — | — | — | — | — | — |
+| **`baseB` (null)** | 153.388 ms | 7.70 % | **−0.002** | **+0.002** | 0.527 | **0.084** | 76/150 | **0.94** |
+| **`all`** | 152.709 ms | 8.21 % | **−0.527** | **−0.497** | 0.498 | **0.080** | **133/150** | **<0.0001** |
+| **`allB` (null of `all`)** | 152.122 ms | 8.69 % | **−0.754** | **−0.757** | 0.499 | **0.080** | **145/150** | **<0.0001** |
+| `libaom-c` | 48.224 ms | 10.65 % | — | — | — | — | — | — |
+
+**Both pre-registered conditions hold**: MDE95 **0.080 pp ≤ 0.375**, and the
+null's |paired mean| (0.002) is far below the effect. The pre-side null is a
+textbook zero — 76 of 150 rounds, p = 0.94.
+
+**The settled number is −0.64 %**, the mean of the two post-side copies
+(medians −0.527 / −0.754; means −0.497 / −0.757), **with a ±0.14 pp copy
+systematic** (§7c). Against the published **−0.75 %**: the lever is real,
+certain in sign, and **about 15 % smaller than recorded**, with the published
+value sitting inside the copy bracket at its optimistic edge.
+
+**The ratio statistic agrees and is the strongest cross-check**, because it is
+paired against the C oracle inside each round: **3.1889x → 3.1694x / 3.1625x**,
+mean of copies **3.1660x**, i.e. **−0.023 on the ratio against the published
+−0.024** — reproducing the original to 4 %.
+
+### 7b. The position gradient, measured cleanly at last
+
+Six copies of ONE binary, 150 rotated rounds, occupancy exactly 25 per position
+per arm. This is the quietest band of the whole session (raw spread 3.0–3.4 %).
+
+```
+POOLED         -0.012   +0.019   +0.024   -0.014   -0.031   +0.014
+  pooled position gradient (max-min) = 0.055 pp   [MEANS]
+POOLED-med     -0.001   +0.115   +0.098   +0.007   -0.057   +0.043
+  pooled position gradient (max-min) = 0.172 pp   [MEDIANS]
+```
+
+Every arm against `n1`: **+0.046, +0.019, +0.081, +0.023, −0.028** paired-median
+— **max pairwise spread 0.109 pp**, and **not one is significant** (p = 0.16 to
+0.68 at MDE95 0.062–0.072).
+
+**So the position effect on an idle box is ≤ 0.2 pp.** The 0.34 pp twin gap and
+the 1.7 % pooled gradient that motivated this whole exercise are **load
+artifacts**. `DIFFERENTIAL_PLAYBOOK.md` §6 has been corrected accordingly — that
+was its weakest-supported claim and it is now measured rather than inherited.
+
+*(The `POOLED-med` row is new here. The mean-based row is unusable on a
+contended band — one 300 ms round out of 25 moves a cell by several pp — so
+`eprof_ab_position.py` now prints both. Across six rotated bands the means read
+0.35–1.31 pp where the medians read 0.17–0.59 pp on the same invocations; worst
+disagreement 7.9x.)*
+
+### 7c. The finding that outlives this file: rotation fixes POSITION, not the PREDECESSOR
+
+**Two byte-identical copies of the post binary disagreed by −0.270 % paired-median
+/ −0.261 % paired-mean, 111 of 150 rounds, p < 0.0001, MDE95 0.079.** Not noise:
+3.4x its own interval.
+
+It replicates. Measured `postB − post` across every rotated band, alongside
+whether that band could resolve it:
+
+| band | box | MDE95 | `postB − post` | p (sign) |
+|---|---|---:|---:|---:|
+| `p2_rot` | contended | 0.846 | −0.035 | 0.67 (unresolvable) |
+| **`p3_rot`** | moderate | **0.290** | **−0.269** | **0.015** |
+| `p4_rot` | very contended | 2.356 | +0.079 | 0.20 (unresolvable) |
+| `p4_rot150` | very contended | 1.371 | +0.007 | 0.94 (unresolvable) |
+| **`idle_p4_rot150`** | **idle** | **0.079** | **−0.270** | **<0.0001** |
+
+**The two bands with MDE small enough to see it read −0.269 and −0.270** — from
+different binaries, different levers, different times of day. The three that
+"disagree" simply have MDEs 5–30x the effect.
+
+**The mechanism is structural.** Cyclic rotation balances position — occupancy is
+exactly N/k — but it **preserves cyclic adjacency**, so each arm always has the
+same predecessor. Verified by counting:
+
+```
+base      predecessor: {libaom-c: 120, START-of-round: 30}
+baseB     predecessor: {base: 120,     START-of-round: 30}
+all       predecessor: {baseB: 120,    START-of-round: 30}
+allB      predecessor: {all: 120,      START-of-round: 30}
+libaom-c  predecessor: {allB: 120,     START-of-round: 30}
+```
+
+`all` always follows a *slow* base arm; `allB` always follows a *fast* post arm.
+And the effect **vanishes when every arm is the same binary** (§7b: 0.109 pp
+max, nothing significant) — i.e. it needs a band with heterogeneous arm speeds,
+which is exactly what a lever band is.
+
+**Consequences, and they are not small:**
+
+* **Quote the mean of two same-binary copies, not one arm.** A single arm carries
+  a ~0.27 pp systematic that its MDE does not see. Both KB-PERF-4 (−0.64 %) and
+  the KB-PERF-3 reading in §3 are stated that way for this reason.
+* **KB-PERF-3's "0.5 pp move" is partly this.** Its twin gap is 0.269 pp — most
+  of the apparent shift from −2.56 % to −2.03 %. §3 already declined to credit
+  the protocol for it; this is why that restraint was right.
+* **The fix is not more rounds** — n=150 on an idle box has MDE 0.08 and still
+  shows it. It is either a randomised (not cyclic) order, which breaks the fixed
+  predecessor, or accepting ±0.27 pp as the floor and reporting copy means.
+  **Not attempted here; this session was measuring, not tuning the harness.**
+
+---
+
+## 8. What this file does NOT establish
 
 * **Nothing about Windows.** The Windows re-measurements of these levers
   (`winperf_windows_2026-08-02.md`, `winperf_content_census_2026-08-03.md`) use

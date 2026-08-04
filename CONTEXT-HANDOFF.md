@@ -201,11 +201,25 @@ Supporting machinery, all reusable: `scripts/eprof_ab.sh` (+ `ROTATE=1`, and
 (`workflow_dispatch`, real Windows numbers on two targets), and `aom_dsp::census` behind a
 default-off `census` feature with `just census-gate` pinning per-family floors AND ceilings.
 
-**Caveat you must carry:** KB-PERF-2/3/4's Darwin headlines were measured with a fixed-order
-interleave, and a fixed order confounds arm with position by up to 0.34 pp (two copies of ONE
-binary, positions 5 and 6). That is ~12 % of the allocation lever but **~45 % of the directional
-lever**. Re-verification under `ROTATE=1` was in flight at the time of writing — check whether
-it landed before quoting those three numbers.
+**Re-verified 2026-08-03/04 — the answer, not the warning.** KB-PERF-2/3/4's Darwin headlines
+were all taken with a fixed-order interleave, which confounds arm with position. All three were
+re-taken under `ROTATE=1` from rebuilt, sha-verified binaries; record
+**`benchmarks/encoder_rotate_reverify_2026-08-03.md`**:
+
+| lever | published | rotated | verdict |
+|---|---:|---:|---|
+| KB-PERF-2 allocation | −3.05 % (n=12) | −2.99/−3.00 % (n=50) | **survives**, to 0.06 pp |
+| KB-PERF-3 i16 fwd txfm | −2.56 % (n=24) | −1.89/−2.16 % (n=50) | **moves ~0.5 pp**, conclusion holds |
+| KB-PERF-4 directional intra | −0.75 % (n=36) | **−0.64 %** (n=150, idle box) | **settled**, ~15 % smaller |
+
+Quote those rotated numbers. Two things the re-verification established about the *harness*,
+which bind any future band: (1) the 0.34 pp position confound and the "1.7 % gradient" were
+**contended-box artifacts** — on an idle box, six copies of ONE binary over 150 rotated rounds
+give a position gradient of **0.055 pp (means) / 0.172 pp (medians)** with no arm significantly
+different from any other; (2) but in a band whose arms have *different* speeds, two copies of one
+binary still disagreed by **0.270 pp at p < 0.0001, replicated in two independent bands** — so a
+single arm's systematic floor is ~0.27 pp even rotated, well above its statistical MDE.
+**`ROTATE` now defaults ON.**
 
 ## Live tracks (each has its own docs; concurrent sessions may be active)
 

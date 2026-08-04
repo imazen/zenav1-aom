@@ -4610,6 +4610,20 @@ and those are untouched — the named follow-up.
   z1+z3 −0.20 % / z2 −0.45 % — roughly equal halves, NOT separately resolvable
   against that band's −0.17 % null (which is why the 36-round band was run).
   All arms emit the same 4472-byte `.obu` by sha.
+- **SETTLED 2026-08-04 ON AN IDLE BOX — the rotated value is −0.64 %, ~15 %
+  smaller than −0.75 %, and the lever is certain**
+  (`benchmarks/encoder_rotate_reverify_2026-08-03.md` §7). 150 rotated rounds,
+  arms rebuilt from `0279544`/`71c924a` and **byte-identical by sha256** to the
+  originals; raw spread 7.7-10.7 %. Pre-side null **−0.002 %** (76/150,
+  p = 0.94); `all` **−0.527 %** (133/150) and its same-binary twin **−0.754 %**
+  (145/150), both p < 0.0001; **MDE95 0.080 pp against the pre-registered
+  0.375 — the gate is MET.** Ratio **3.1889x → 3.1660x** = −0.023 against the
+  published −0.024. Quoted as the mean of two copies because **those two
+  byte-identical copies disagree by 0.270 pp at p < 0.0001** — a harness
+  systematic rotation cannot remove (cyclic rotation fixes each arm's
+  PREDECESSOR), replicated in the KB-PERF-3 band and absent when every arm is
+  the same binary. **−0.64 % ± 0.14 pp copy systematic.** The contended-box
+  reading below is superseded, kept for the record:
 - **RE-TAKEN 2026-08-03 WITH THE ARM ORDER ROTATED — SIGN SURVIVES, the
   −0.75 % MAGNITUDE IS NOT RE-VERIFIED**
   (`benchmarks/encoder_rotate_reverify_2026-08-03.md` §4). Both published bands

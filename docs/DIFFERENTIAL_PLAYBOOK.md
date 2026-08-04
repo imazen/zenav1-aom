@@ -219,15 +219,41 @@ rounding, not a second observation.)*
   step per round so every arm spends `N/k` rounds in each position and the drift
   cancels by construction instead of by a correction. A null arm that disagrees
   with its own twin is the symptom.
+- **THE POSITION EFFECT IS A LOAD ARTIFACT, and the 0.34 pp / 1.7 % figures
+  above are contended-box readings — MEASURED 2026-08-04.** Six copies of ONE
+  binary, **150 rotated rounds on an idle box** (raw spread 3.0–3.4 %,
+  occupancy exactly 25 per position per arm): pooled position gradient
+  **0.055 pp by means, 0.172 pp by medians**, every arm within **0.109 pp** of
+  every other and **not one difference significant** (p = 0.16–0.68 at MDE95
+  0.062–0.072). Under contention the same measurement on the same harness reads
+  0.35–1.31 pp. So: **on a quiet box the position confound is ≤ 0.2 pp; the
+  1.7 % gradient and the 0.34 pp twin gap were the neighbours' load, not the
+  round structure.** Record: `benchmarks/encoder_rotate_reverify_2026-08-03.md`
+  §7b. *(This bullet replaces an inherited claim that had been quoted from a
+  single observation for weeks — it is now measured.)*
+- **ROTATION FIXES POSITION BUT NOT THE PREDECESSOR, and that residual is
+  0.27 pp.** On the idle box, two **byte-identical** copies of one binary inside
+  a lever band came out **0.270 % apart, 111/150 rounds, p < 0.0001, MDE95
+  0.079** — 3.4x its own interval. The same 0.269 pp gap sits between the same
+  two cycle slots in an independent band (KB-PERF-3), and it **vanishes when
+  every arm is the same binary**, so it needs a band whose arms have *different
+  speeds* — i.e. every lever band. The cause is structural: cyclic rotation
+  balances occupancy but **preserves cyclic adjacency**, so each arm always has
+  the same predecessor (verified by counting: 120 of 150 rounds, the other 30
+  being round-starts). **Consequences: quote the MEAN of two same-binary copies,
+  never one arm; treat ~0.27 pp as the systematic floor of a single arm
+  regardless of its MDE; and do not read a sub-0.3 pp difference between two
+  arms as an effect.** More rounds do not help — n=150 at MDE 0.08 still shows
+  it. A randomised (not cyclic) order would break it; not attempted yet.
 - **`ROTATE` DEFAULTS ON since 2026-08-03**, and the reason is not that it
   shrinks the null — measured, it does not reliably do that at achievable `n`.
   It is that **a fixed-order band cannot ESTIMATE the position effect at all**:
   arm and position are perfectly aliased, so the drift sits inside every arm's
   number with no residual, and no reviewer can tell whether it mattered. Under
   rotation `scripts/eprof_ab_position.py` prints a `POOLED` row that measures it
-  directly. Measured on this box 2026-08-03 across five rotated bands, the
-  pooled gradient ran **0.35–1.31 pp**, tracking load — the same order as
-  KB-PERF-4's entire published effect. The old argument for default-off
+  directly (and a `POOLED-med` row: on a contended band the mean-based gradient
+  is an outlier count, reading up to **7.9x** the median-based one on the same
+  invocations — quote the median row). The old argument for default-off
   ("rotation costs a reproducible ordering") does **not** hold: the rotation is
   `ARMS[(j + i - 1) % K]`, deterministic and seedless, so a rotated band is
   reproducible command-for-command exactly like a fixed one. Pass `ROTATE=0` to
