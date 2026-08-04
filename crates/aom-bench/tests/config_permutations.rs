@@ -1289,8 +1289,7 @@ fn independence_evidence_sweep() {
     }
     let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../benchmarks/config_perm_independence_2026-07-30.tsv");
-    std::fs::write(&out, format!("{}{tsv}", evidence_provenance()))
-        .expect("write independence TSV");
+    write_evidence_if_changed(&out, &tsv);
     println!("\n=== independence sweep (ctx {} , C oracle) ===", ctx.tag);
     for (k, n) in &counts {
         println!("  {k:<18} {n}");
@@ -2081,8 +2080,7 @@ fn content_axis_evidence_sweep() {
     }
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../benchmarks/config_perm_content_axis_2026-07-30.tsv");
-    std::fs::write(&path, format!("{}{tsv}", evidence_provenance()))
-        .expect("write content-axis evidence TSV");
+    write_evidence_if_changed(&path, &tsv);
     println!("wrote {}", path.display());
 }
 
@@ -3168,6 +3166,48 @@ use aom_bench::config_perm::{ALL_SPEEDS, axis_level_dead_at_speed, speed_sf_clas
 /// Stamping the commit makes staleness self-evident: if this line does not match
 /// `git rev-parse --short HEAD`, the rows below may already be closed. Same
 /// principle as the `build_commit` rule for generated data.
+/// Write an evidence TSV **only if its DATA changed**.
+///
+/// The three sweeps below regenerate on every `--ignored` run, and two parts of
+/// the output move even when nothing was learned: the provenance stamp (it
+/// records the current HEAD) and any `ms` timing column. Writing unconditionally
+/// therefore dirtied a tracked file on every run, and three separate sessions
+/// each independently hit it, verified the data was identical, and stashed the
+/// churn — the same 20 minutes spent three times.
+///
+/// Comparing the data first keeps the stamp meaning what it is supposed to mean
+/// (the commit the DATA was generated at, not the last commit someone ran the
+/// suite from) and leaves the working tree clean when a re-run reproduces the
+/// committed result — which is the overwhelmingly common case and is exactly the
+/// outcome that should be silent.
+///
+/// `data` is everything below the provenance header. A real change still
+/// rewrites the file, stamp and all.
+fn write_evidence_if_changed(path: &std::path::Path, data: &str) {
+    let strip = |s: &str| -> String {
+        s.lines()
+            .filter(|l| !l.starts_with("# generated at commit "))
+            .filter(|l| !l.starts_with("# treat every divergence below"))
+            .map(|l| match l.find("\tms=") {
+                Some(i) => l[..i].to_string(),
+                None => l.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    if let Ok(existing) = std::fs::read_to_string(path) {
+        if strip(&existing) == strip(data) {
+            println!(
+                "  [evidence] {} unchanged (data identical; stamp/timing not rewritten)",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
+            return;
+        }
+    }
+    std::fs::write(path, format!("{}{data}", evidence_provenance()))
+        .expect("write evidence TSV");
+}
+
 fn evidence_provenance() -> String {
     let head = std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -4592,7 +4632,6 @@ fn speed_axis_evidence_sweep() {
          contexts' stock + divergent rows\n{tsv}",
         "2026-07-30"
     );
-    std::fs::write(&path, format!("{}{out}", evidence_provenance()))
-        .expect("write the speed-axis evidence TSV");
+    write_evidence_if_changed(&path, &out);
     println!("wrote {}", path.display());
 }
