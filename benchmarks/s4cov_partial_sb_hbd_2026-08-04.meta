@@ -5,7 +5,8 @@
 base commit      : 38b79ee (origin/main)
 host             : Darwin 26.5.2 arm64 / Apple M-series
 profile          : test-fast (opt-level 3, debug-assertions + overflow-checks ON)
-dispatch         : default (archmage SIMD tokens live)
+dispatch         : default (archmage SIMD tokens live) AND `AOM_FORCE_SCALAR=1`
+                   — 56/56 byte-exact in both
 conformance dir  : conformance/data (copy of the primary checkout's fetched corpus)
 wall             : 52.6 s for 56 encode PAIRS
 

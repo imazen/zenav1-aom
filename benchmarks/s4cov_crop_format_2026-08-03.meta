@@ -42,9 +42,21 @@ A PREDICATE THAT WAS WRONG, AND WAS REFUTED BY THE FIRST RUN
   BLOCK_128X128 from the top of the function (encoder_utils.c:961-963). Both
   crops are genuine SB128, and the C stream changes on 12/12 rows.
 
+APPENDED 2026-08-04 — the bd12 arm (rows at the tail of the TSV)
+  8/8 byte-exact in 53 s: 474x480 and 714x720 plus their SB-exact controls at
+  their own mi-aligned extents (480x480, 720x720), at cpu {0, 7}. Re-run
+  byte-exact under AOM_FORCE_SCALAR=1. Bite proof: making
+  `SbEncodeEnv::frame_min_dim()` return the MI extent (KB-28's root) fails it
+  on `b12crop 474x480 cpu0` (+7 B) with all four controls byte-exact — a
+  narrow bite (1 of 4 crop rows), stated as narrow rather than dressed up.
+
 STILL NOT COVERED (with costs) — see the tail of the gate file
-  bd12 x the straddle           ~2 min, same four cells as the bd10 arm
-  crops straddling 2160         ~25-30 min of port encode (KB-19's 2160x2160
-                                speed-0 cell is C ~26 s / port ~195 s)
+  crops straddling 2160         DONE 2026-08-04 in
+                                `s4cov_hd_format_axis::crop_straddling_4k_arm
+                                _byte_matches` — 2/2 byte-exact in **35 s**,
+                                not the 25-30 min this file estimated. The
+                                estimate costed the arm at KB-19's speed 0;
+                                `is_4k_or_larger` is speed-unconditional, so
+                                speed 5 observes it for 20 s + 15 s.
   multi-tile x the straddle     same cost class; needs its own crop pair at
                                 >4096 px or ~9.44 MP (e.g. 4090x2154 vs 4096x2160)

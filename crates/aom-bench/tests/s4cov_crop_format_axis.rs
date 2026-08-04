@@ -502,16 +502,81 @@ fn crop_straddle_high_bitdepth_byte_matches_where_interpretable() {
     assert!(bad.is_empty(), "{KB28_HINT}: {bad:?}");
 }
 
+/// **The bd12 arm — the same four cells as the bd10 one, one bit depth up.**
+///
+/// `s4cov_qm_axis.rs` shows the `b10_64` band reaches 12-bit identically, so
+/// the interpretable speeds are the same {0, 7} and the SB-exact controls play
+/// the same role. The bd12 source is BIT-REPLICATED from the genuine 10-bit
+/// one (`v << 2 | v >> 8`), not left-shifted: a plain shift leaves the low two
+/// bits zero, which is the regime KB-4 calls out as the easy one — it never
+/// produces a coefficient whose low bits matter.
+///
+/// **MEASURED 2026-08-04: 8/8 byte-exact** (53 s), and re-run byte-exact under
+/// `AOM_FORCE_SCALAR=1`.
+///
+/// **BITE PROOF.** Making `SbEncodeEnv::frame_min_dim()` return the MI extent
+/// (`((w+7)&!7).min((h+7)&!7)`) — KB-28's root — fails this test on
+/// **`b12crop 474x480 cpu0` (+7 B) with all four SB-exact controls byte-exact**.
+/// The bite is narrow (1 of the 4 crop rows; at 714x720 and at cpu 7 the
+/// affected predicates do not change a decision on this content at bd12), and
+/// it is stated that way rather than dressed up — what it establishes is that
+/// the crop read is genuinely live on this arm's cells and that the controls
+/// are insensitive to it, which is the asymmetry the arm is for.
+#[test]
+#[ignore = "8 bd12 encode pairs up to 720x720 (~2 min); nightly / on-demand tier"]
+fn crop_straddle_bd12_byte_matches_where_interpretable() {
+    let b10 = base_b10();
+    assert_eq!(b10.bd, 10);
+    // `to_bd`, inline: widen by bit replication.
+    let widen = |v: &u16| -> u16 { (v << 2) | (v >> 8) };
+    let b12 = EncodeCell {
+        label: "s4cropbase12".to_string(),
+        bd: 12,
+        y: b10.y.iter().map(widen).collect(),
+        u: b10.u.iter().map(widen).collect(),
+        v: b10.v.iter().map(widen).collect(),
+        ..b10.clone()
+    };
+    // Non-vacuity (playbook §2): a "bd12" cell whose samples all fit in 10 bits
+    // is a bd10 cell wearing a bd12 label.
+    assert!(
+        b12.y.iter().any(|&s| s > 1023) && b12.y.iter().any(|&s| s & 3 != 0),
+        "the bd12 cell must use the extra two bits"
+    );
+    let mut crop_rows = Vec::new();
+    let mut ctl_rows = Vec::new();
+    for speed in [0, 7] {
+        for &(w, h) in &CROPS {
+            let cell = mirror_tile(&b12, &format!("b12_{w}x{h}_s{speed}"), w, h, speed);
+            assert_eq!(cell.bd, 12, "the mirror-tile must preserve the bit depth");
+            let (row, _) = measure(&cell, &[], "b12crop");
+            crop_rows.push(row);
+            // The SB-exact control at the crop's own mi-aligned extent — same
+            // tier under the mi reading, different tier under the crop reading.
+            let (cw, ch) = (mi_aligned(w), mi_aligned(h));
+            let ctl = mirror_tile(&b12, &format!("b12ctl_{cw}x{ch}_s{speed}"), cw, ch, speed);
+            let (row, _) = measure(&ctl, &[], "b12ctl ");
+            ctl_rows.push(row);
+        }
+    }
+    let ctl_bad = report(&ctl_rows);
+    assert!(
+        ctl_bad.is_empty(),
+        "the bd12 SB-EXACT control diverged at speed 0 or 7. Those are the only speeds where \
+         high bit depth is byte-exact on SB-exact content, and they are what make the crop \
+         rows interpretable — so this is a bd12 regression (or a spread of the pinned \
+         speed-1..6 band), not a crop-axis result: {ctl_bad:?}"
+    );
+    let bad = report(&crop_rows);
+    assert!(bad.is_empty(), "{KB28_HINT}: {bad:?}");
+}
+
 // ---------------------------------------------------------------------------
 // What this file does NOT cover, and what each would cost.
 // ---------------------------------------------------------------------------
 //
-// * **bd12 x the straddle.** Same shape as arm 4; `s4cov_qm_axis.rs` shows the
-//   `b10_64` band reaches 12-bit identically, so the interpretable speeds are
-//   the same {0, 7} and the cells are the same four. ~2 min, no new machinery
-//   — it is omitted only because arm 4's bd10 result already answers the
-//   question the residual asked (does the crop read hold above 8 bits) and a
-//   second bit depth adds a row, not an axis.
+// * **~~bd12 x the straddle~~** — DONE 2026-08-04,
+//   `crop_straddle_bd12_byte_matches_where_interpretable`, 8/8 byte-exact.
 // * **Crops straddling `is_4k_or_larger` (2160)** — KB-19's arm. **DONE
 //   2026-08-04**, in `s4cov_hd_format_axis::crop_straddling_4k_arm_byte_matches`:
 //   2154x2160 vs 2160x2160, **2/2 byte-exact in 35 s**. The predicate is the

@@ -66,6 +66,29 @@ KB-38 — WHAT THE SPEED-0 LOCALIZER FOUND, AND WHAT IT DID NOT CLOSE
   least one further root sits at (speed 0, >= 1080p). Recorded as a
   self-promoting pin (`speed0_1080p_band_map_is_pinned`), NOT as a closure.
 
+BITE PROOFS (playbook §1 — asymmetry, not just failure)
+  format axis + band     stub KB-36's arm (`if false && speed >= 6 &&
+                         min_dim >= 1080`). Format axis: 6/7 >=1080p rows
+                         diverge (+97/-254/+382/+249/-638/+10 B) and ALL 7
+                         <1080p twins stay byte-exact. Band: EXACTLY the two
+                         --cpu-used 6 rows diverge (-17 / +167 B), all 16
+                         other speed rows byte-exact. The 7th format row
+                         (cq63) is inert on both sides — at base_qindex 252
+                         the search never descends to 4x4, so the field has
+                         nothing to clamp; kept as quantizer coverage, not a
+                         bite cell.
+  2160 crop straddle     make the arm read the MI extent instead of the crop
+                         (KB-28's root at this boundary): 2154x2160 diverges
+                         -2270 B while 2160x2160 stays byte-exact. A pair
+                         that both diverged would prove nothing about the
+                         crop read.
+  Both reverted; `git diff` clean on the perturbed file before commit.
+
+DISPATCH MODES
+  Default dispatch: every arm above. `AOM_FORCE_SCALAR=1`: the whole
+  `s4cov_hd_format_axis` file re-run with `--include-ignored` (see the
+  scalar-leg note in the landing commit).
+
 STILL NOT COVERED (with costs)
   the >=1080p band x hbd at cpu 1..6   blocked on HBD_OPEN / b10_64
   the >=1080p band x multi-tile        needs >4096 px or ~9.44 MP (KB-31 residual)

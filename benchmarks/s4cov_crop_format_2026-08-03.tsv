@@ -65,3 +65,15 @@ crop_straddle_speed0_byte_matches	420	474x480	0	MATCH	+0
 crop_straddle_speed0_byte_matches	mono	474x480	0	DIVERGE	-150
 crop_straddle_speed0_byte_matches	420	714x720	0	MATCH	+0
 crop_straddle_speed0_byte_matches	mono	714x720	0	DIVERGE	+160
+# --- appended 2026-08-04: the bd12 arm, the last cheap residual this file named.
+# Source is the genuine 10-bit vector bit-REPLICATED to 12 (v<<2 | v>>8), not shifted.
+# Speeds {0, 7} for the same reason as the bd10 arm: the pinned b10_64 / HBD_OPEN
+# band owns 1..6 at every bit depth, so a crop row inside it is unreadable.
+crop_straddle_bd12_byte_matches_where_interpretable	bd12-control	480x480	0	MATCH	+0
+crop_straddle_bd12_byte_matches_where_interpretable	bd12-control	720x720	0	MATCH	+0
+crop_straddle_bd12_byte_matches_where_interpretable	bd12-control	480x480	7	MATCH	+0
+crop_straddle_bd12_byte_matches_where_interpretable	bd12-control	720x720	7	MATCH	+0
+crop_straddle_bd12_byte_matches_where_interpretable	bd12-crop	474x480	0	MATCH	+0
+crop_straddle_bd12_byte_matches_where_interpretable	bd12-crop	714x720	0	MATCH	+0
+crop_straddle_bd12_byte_matches_where_interpretable	bd12-crop	474x480	7	MATCH	+0
+crop_straddle_bd12_byte_matches_where_interpretable	bd12-crop	714x720	7	MATCH	+0

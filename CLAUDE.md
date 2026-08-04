@@ -103,6 +103,8 @@ it here in the same commit.**
 - ~~the >=1080p band at bd10/12, 4:2:2/4:4:4/mono, SB128, and quantizers other than cq24~~ →
   `s4cov_hd_format_axis`, **14/14** on the format+quantizer arm and **6/8** on the hbd arm.
   The two open rows are **KB-38**, a genuinely new unmodelled arm that is NOT hbd-specific.
+- ~~bd12 x the 480/720 crop straddle~~ → `s4cov_crop_format_axis::crop_straddle_bd12
+  _byte_matches_where_interpretable`, **8/8 byte-exact** in 53 s.
 
 ### Closed on 2026-08-03 (kept for one cycle so the strike-through is visible)
 - ~~the screen-content palette arm at `--cpu-used` 8/9~~ → KB-35. Was a FALSE refusal on a
@@ -139,7 +141,7 @@ it here in the same commit.**
 | **1440..2160 at formats other than bd8 4:2:0 SB64 cq24** | same shape as the >=1080p format arm, one tier up | ~7 min per format |
 | **multi-tile at SB128 / bd10-12 / 4:4:4-4:2:2 / mono** | KB-31 residual (c): that whole file is bd8 4:2:0 SB64 | moderate; large frames |
 | **multi-tile x the crop straddle** | needs its OWN crop pair at tile-forcing size (e.g. 4090x2154 vs 4096x2160) — it cannot be combined with a 714x720 frame | same cost class as the 2160 arm |
-| **bd12 x the 480/720 crop straddle** | `s4cov_crop_format_axis.rs`'s own residual; same four cells as its bd10 arm | ~2 min, no new machinery |
+| ~~**bd12 x the 480/720 crop straddle**~~ | **CLOSED 2026-08-04.** 474x480 + 714x720 + their mi-aligned SB-exact controls x cpu {0, 7} — **8/8 byte-exact**, `s4cov_crop_format_axis::crop_straddle_bd12_byte_matches_where_interpretable`. | measured **53 s** |
 
 ### T3 — blocked on harness work
 | axis | blocker |
@@ -2966,10 +2968,10 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
     `use_square_partition_only_threshold`'s base tier moves. The monochrome rows at cpu0 DIVERGE,
     and that is **KB-27's class, not this root**: measured, not argued — the SB-exact monochrome
     controls at 480×480 / 720×720 diverge too (see KB-27's widened shape).
-  Still unmeasured, with costs, at the tail of the gate file: **bd12** (~2 min, the same four
-  cells as the bd10 arm) and **multi-tile × the straddle** (it needs its own crop pair at
+  Still unmeasured, with costs, at the tail of the gate file: **multi-tile × the straddle** (it needs its own crop pair at
   >4096 px or ~9.44 MP, e.g. 4090×2154 vs 4096×2160, because a tile split cannot coexist with
-  a 714×720 frame).
+  a 714×720 frame). **bd12 × the straddle is DONE 2026-08-04** —
+  `crop_straddle_bd12_byte_matches_where_interpretable`, 8/8 byte-exact in 53 s.
 - **~~Crops straddling 2160~~ — CLOSED 2026-08-04, and the cost estimate was ~50× high.**
   `s4cov_hd_format_axis::crop_straddling_4k_arm_byte_matches`: **2154×2160 vs 2160×2160,
   2/2 byte-exact in 35 s** (20 s + 15 s of encode). 2154 mi-aligns UP to 2160
@@ -4163,11 +4165,28 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
 
 - **STATE IT PLAINLY: the arm is real and load-bearing, and it does NOT close the cells.**
   Porting it moved both cq24 deltas and closed neither, and the `bd10 cq32 -8 B` row is
-  outside its predicate entirely (its bd8 twin matches, so it is hbd-borne). **There is at
-  least one further root at `(speed 0, min(w,h) >= 1080)`.** The nine matching rows are what
-  make that the shape rather than "large frames at speed 0" (1920x1072 is eight pixels of
-  the same mirror-tiled content and is byte-exact) or "high bit depth at speed 0"
-  (bd8 diverges too).
+  outside its predicate entirely. **There is at least one further root at
+  `(speed 0, min(w,h) >= 1080)`.**
+- **THE SHAPE IS `(speed 0, >= 1080p)`, AND IT IS ESTABLISHED BY TWO EXCLUSIONS — both
+  measured, each with the rows that carry it. Do not re-derive these.**
+  1. **NOT "large frames at speed 0."** `1920x1072` is byte-exact at **both bit depths and
+     both quantizers** (4 rows), and it is *eight pixels* of the same mirror-tiled content at
+     the same speed and quantizer as the divergent `1920x1080`. `1280x720` is byte-exact on
+     all 4 of its rows as well. A frame-size or frame-area explanation has to account for
+     1920x1072 (2.06 MP) matching while 1920x1080 (2.07 MP) does not, and for KB-19's
+     2160x2160 cq32 speed-0 cell (4.67 MP) being byte-exact — it cannot.
+  2. **NOT "high bit depth at speed 0."** `bd8 1920x1080 cq24` diverges **-726 B**, the
+     LARGEST delta in the map, so the band is not hbd-borne. (The finding entered through the
+     bd10/bd12 arm only because that arm is the one that runs `--cpu-used 0` at this size;
+     the bd8 row was added by the localizer and diverged immediately.) The *converse* holds
+     for exactly one row and is worth keeping separate: `1920x1080 cq32` diverges at bd10
+     (-8 B) and MATCHES at bd8, so **that one row is hbd-borne and is outside the ported
+     arm's predicate** (`base_qindex` 128 > 108) — evidence that the remaining root is not a
+     single mechanism.
+  So: 9 of 12 rows match, and the 3 that do not are all `1920x1080 --cpu-used 0`.
+- **NEXT PROBE, named not attempted:** playbook §10 decode-both first-divergent-block on
+  `1920x1080 cq24 --cpu-used 0` at **bd8** — the cheaper side to read (no hbd path in the
+  way) and the larger delta. ~85 s per port encode.
 - **The port is kept** because it is a faithful translation of C code that was missing and
   it cannot regress any green cell: nothing in the tree reaches
   `speed 0 && >= 1080p && qindex <= 108` — which is why it was missing in the first place —
@@ -4180,9 +4199,6 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   both directions (1920x1079 / 1079x1920 / q109 / cq32 / 1280x720 must not fire; q108,
   q96, 1080x1920, 7680x4320 must), the five fields, a whole-struct isolation check, and
   that the intra-live ones reach the derived tx policy.
-- **NEXT STEP** (playbook §10): decode-both first-divergent-block on `1920x1080 cq24
-  --cpu-used 0` at bd8 — the bd8 arm is the cheaper one to read and carries the larger
-  delta. ~85 s per port encode.
 
 ### KB-PERF-1 — Encoder: the intra-mode CNN is recomputed ~10x per superblock (C computes it ONCE and caches) — FIXED ✅ 2026-08-02
 

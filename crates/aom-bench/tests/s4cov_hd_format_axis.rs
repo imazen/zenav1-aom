@@ -223,6 +223,17 @@ const HINT: &str = "an above-1080p cell stopped byte-matching real aomenc. If th
 /// | cq5 / cq40 / cq63 | `default_min_partition_size` interacts with the qindex-dependent speed pass (KB-22's arm), which KB-36 held fixed at base_qindex 96 |
 ///
 /// **MEASURED 2026-08-04: 14/14 byte-exact** (26 s).
+///
+/// **BITE PROOF, and the asymmetry is the whole point (playbook §1).** Stubbing
+/// KB-36's arm out (`if false && speed >= 6 && min_dim >= 1080`) fails this test
+/// with **6 of the 7 `>=1080p` rows divergent (+97 / -254 / +382 / +249 / -638 /
+/// +10 B for 4:4:4 / 4:2:2 / mono / SB128 / cq5 / cq40) and ALL SEVEN `<1080p`
+/// twins byte-exact.** So every format arm here genuinely reaches the arm, and
+/// the razor — not the frame size — is what the rows are keyed on.
+/// The seventh row is informative rather than a hole: **cq63 stays byte-exact on
+/// both sides**, because at `base_qindex` 252 the partition search does not
+/// descend to 4x4 anyway, so `default_min_partition_size` has nothing to clamp.
+/// It is kept as quantizer-axis coverage, not as a bite cell.
 #[test]
 #[ignore = "14 encode pairs at 1920x1072/1080 (~30 s); nightly / on-demand tier"]
 fn above_1080p_format_axis_byte_matches() {
@@ -556,6 +567,13 @@ fn speed0_1080p_band_map_is_pinned() {
 /// "either side".
 ///
 /// **MEASURED 2026-08-04: 18/18 byte-exact** (431 s).
+///
+/// **BITE PROOF.** The same `if false && speed >= 6 && min_dim >= 1080` stub
+/// fails this test on **exactly the two `--cpu-used 6` rows (1920x1920 -17 B,
+/// 2560x1600 +167 B) with all sixteen other speed rows byte-exact.** That is
+/// the sharpest available bite for a band gate: it shows the grid can see a
+/// ONE-SPEED-WIDE arm anywhere inside the band, which is precisely the failure
+/// mode (KB-36's own) that a size sweep at a single speed cannot catch.
 #[test]
 #[ignore = "18 encode pairs at up to 4.1 MP (~7 min); nightly / on-demand tier"]
 fn band_1440_to_2160_speed_axis_byte_matches() {
@@ -623,6 +641,13 @@ fn band_1440_to_2160_speed_axis_byte_matches() {
 /// the arm is distinguishable only at speeds 0..5, and speed 5 is the cheapest
 /// of those by a wide margin (KB-19's speed-0 2160² cell is C ~26 s / port
 /// ~195 s).
+///
+/// **BITE PROOF — the crop-vs-mi razor, proven in the direction that matters.**
+/// Making this arm read the MI extent instead of the crop
+/// (`((w+7)&!7).min((h+7)&!7) >= 2160`, i.e. re-introducing KB-28's root at this
+/// boundary) fails the test with **2154x2160 divergent by -2270 B while
+/// 2160x2160 stays byte-exact**. A pair that both diverged would have proven
+/// nothing about the crop read; this one isolates it.
 ///
 /// **MEASURED 2026-08-04: 2/2 byte-exact, in 35 s** — and that number is itself a
 /// finding. The coverage queue costed this arm at *25-30 minutes of port encode*

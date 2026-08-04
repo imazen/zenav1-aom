@@ -24,6 +24,11 @@
   `benchmarks/s4cov_hd_format_2026-08-04.{tsv,meta}` +
   `benchmarks/s4cov_partial_sb_hbd_2026-08-04.{tsv,meta}`. (f99ac44, f085be4)
 
+- **bd12 x the 480/720 crop straddle — the last cheap residual of KB-28's
+  format axis.** 474x480 and 714x720 plus their SB-exact controls at their own
+  mi-aligned extents, at `--cpu-used` {0, 7}, **8/8 byte-exact** in 53 s
+  (`s4cov_crop_format_axis::crop_straddle_bd12_byte_matches_where_interpretable`).
+
 - **KB-38 — `av1_set_speed_features_qindex_dependent`'s
   `is_1080p_or_larger && base_qindex <= 108` sub-block (speed_features.c:2926-2935)
   is now modelled.** It was omitted under a comment claiming the whole block was
