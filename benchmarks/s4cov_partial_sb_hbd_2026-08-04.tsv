@@ -1,0 +1,65 @@
+# s4cov_partial_sb_hbd — KB-23's partial-SB (frame-edge) axis at bd12 and at the
+# non-4:2:0 chroma formats AT high bit depth, the residual `s4cov_partial_sb_axis.rs`
+# named (its bd10 arm is 4:2:0 only and runs at cpu {0, 7}).
+# Content: mirror-tiled av1-1-b10-00-quantizer-00 (genuine 10-bit) at cq24; the bd12
+# arms are bit-REPLICATED from it (v<<2 | v>>8), not left-shifted.
+# Speeds {0, 7} only: bd10/bd12 diverge on SB-EXACT content at cpu 1..6 already
+# (the pinned b10_64 / HBD_OPEN band), so a partial-SB row inside that band cannot
+# answer the KB-23 question — both explanations predict a divergence there.
+format	size	speed	class	delta	verdict
+b10 mono	132x132	0	PARTIAL-SB	+0	MATCH
+b10 mono	132x132	7	PARTIAL-SB	+0	MATCH
+b10 mono	192x192	0	SB-exact	+0	MATCH
+b10 mono	192x192	7	SB-exact	+0	MATCH
+b10 mono	196x196	0	PARTIAL-SB	+0	MATCH
+b10 mono	196x196	7	PARTIAL-SB	+0	MATCH
+b10 mono	256x256	0	SB-exact	+0	MATCH
+b10 mono	256x256	7	SB-exact	+0	MATCH
+b10 444	132x132	0	PARTIAL-SB	+0	MATCH
+b10 444	132x132	7	PARTIAL-SB	+0	MATCH
+b10 444	192x192	0	SB-exact	+0	MATCH
+b10 444	192x192	7	SB-exact	+0	MATCH
+b10 444	196x196	0	PARTIAL-SB	+0	MATCH
+b10 444	196x196	7	PARTIAL-SB	+0	MATCH
+b10 444	256x256	0	SB-exact	+0	MATCH
+b10 444	256x256	7	SB-exact	+0	MATCH
+b10 422	132x132	0	PARTIAL-SB	+0	MATCH
+b10 422	132x132	7	PARTIAL-SB	+0	MATCH
+b10 422	192x192	0	SB-exact	+0	MATCH
+b10 422	192x192	7	SB-exact	+0	MATCH
+b10 422	196x196	0	PARTIAL-SB	+0	MATCH
+b10 422	196x196	7	PARTIAL-SB	+0	MATCH
+b10 422	256x256	0	SB-exact	+0	MATCH
+b10 422	256x256	7	SB-exact	+0	MATCH
+b12 420	132x132	0	PARTIAL-SB	+0	MATCH
+b12 420	132x132	7	PARTIAL-SB	+0	MATCH
+b12 420	192x192	0	SB-exact	+0	MATCH
+b12 420	192x192	7	SB-exact	+0	MATCH
+b12 420	196x196	0	PARTIAL-SB	+0	MATCH
+b12 420	196x196	7	PARTIAL-SB	+0	MATCH
+b12 420	256x256	0	SB-exact	+0	MATCH
+b12 420	256x256	7	SB-exact	+0	MATCH
+b12 mono	132x132	0	PARTIAL-SB	+0	MATCH
+b12 mono	132x132	7	PARTIAL-SB	+0	MATCH
+b12 mono	192x192	0	SB-exact	+0	MATCH
+b12 mono	192x192	7	SB-exact	+0	MATCH
+b12 mono	196x196	0	PARTIAL-SB	+0	MATCH
+b12 mono	196x196	7	PARTIAL-SB	+0	MATCH
+b12 mono	256x256	0	SB-exact	+0	MATCH
+b12 mono	256x256	7	SB-exact	+0	MATCH
+b12 444	132x132	0	PARTIAL-SB	+0	MATCH
+b12 444	132x132	7	PARTIAL-SB	+0	MATCH
+b12 444	192x192	0	SB-exact	+0	MATCH
+b12 444	192x192	7	SB-exact	+0	MATCH
+b12 444	196x196	0	PARTIAL-SB	+0	MATCH
+b12 444	196x196	7	PARTIAL-SB	+0	MATCH
+b12 444	256x256	0	SB-exact	+0	MATCH
+b12 444	256x256	7	SB-exact	+0	MATCH
+b12 422	132x132	0	PARTIAL-SB	+0	MATCH
+b12 422	132x132	7	PARTIAL-SB	+0	MATCH
+b12 422	192x192	0	SB-exact	+0	MATCH
+b12 422	192x192	7	SB-exact	+0	MATCH
+b12 422	196x196	0	PARTIAL-SB	+0	MATCH
+b12 422	196x196	7	PARTIAL-SB	+0	MATCH
+b12 422	256x256	0	SB-exact	+0	MATCH
+b12 422	256x256	7	SB-exact	+0	MATCH

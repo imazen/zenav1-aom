@@ -105,6 +105,28 @@ fn to_mono(base: &EncodeCell, label: &str) -> EncodeCell {
     }
 }
 
+/// Re-render a cell at a higher bit depth by BIT REPLICATION, not by a plain
+/// left shift: `v << k | v >> (bits - k)`. Verbatim recipe from
+/// `s4cov_qm_axis.rs::to_bd`, and for its reason: a plain shift leaves the low
+/// `k` bits zero, which is the "byte-identical samples encode at bd10/bd12"
+/// regime KB-4 calls out as the EASY one — it never produces a coefficient
+/// whose low bits matter. Replication fills the dynamic range, which is the
+/// regime KB-4's sweep had to reproduce before the bd12 divergence appeared.
+fn to_bd(base: &EncodeCell, label: &str, bd: u8) -> EncodeCell {
+    assert!(bd > base.bd, "{label}: to_bd only widens");
+    let k = u32::from(bd - base.bd);
+    let src_bits = u32::from(base.bd);
+    let widen = |v: &u16| -> u16 { (v << k) | (v >> (src_bits - k)) };
+    EncodeCell {
+        label: label.to_string(),
+        bd,
+        y: base.y.iter().map(widen).collect(),
+        u: base.u.iter().map(widen).collect(),
+        v: base.v.iter().map(widen).collect(),
+        ..base.clone()
+    }
+}
+
 /// Re-render a 4:2:0 cell at `(ss_x, ss_y)` by nearest-neighbour chroma
 /// upsampling — see `s4cov_qm_axis.rs::to_ss` for why nearest-neighbour.
 fn to_ss(base: &EncodeCell, label: &str, ss_x: usize, ss_y: usize) -> EncodeCell {
@@ -543,5 +565,145 @@ fn partial_sb_high_bitdepth_byte_matches_where_interpretable() {
         pd, 0,
         "a bd10 PARTIAL-SB frame diverged while its SB-exact control at the same speed \
          matched — KB-23's shape at a bit depth it was never measured at"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4. Partial-SB x speed x (bit depth ABOVE 10) x (chroma format at high bit
+//    depth) — the residual the test above names.
+// ---------------------------------------------------------------------------
+
+/// **The rest of the bit-depth arm: bd12, and the non-4:2:0 chroma formats AT
+/// high bit depth.**
+///
+/// The test above closes bd10 4:2:0 only, and the coverage queue carries the
+/// remainder as *"partial-SB x bd12, and x 4:2:2/mono at high bit depth"*. The
+/// two axes are one grid because the machinery they cross is the same: the
+/// frame-edge entropy-stamp tail-zero (`av1_set_entropy_contexts`,
+/// `blockd.c:29`) clips a CHROMA footprint whose size depends on
+/// `ss_x`/`ss_y`, and every high-bit-depth path reaches it through a different
+/// (hbd) transform/quantizer tier. Neither had ever been asked at a frame edge.
+///
+/// **Speeds {0, 7} only, and that restriction is load-bearing rather than a
+/// budget cut** — same argument as the bd10 test above. `b10_64`
+/// (`config_permutations.rs::speed_envelope_stock_map_is_pinned`) pins bd10
+/// SB-EXACT 64x64 content as divergent at `--cpu-used` 1..6, and
+/// `s4cov_qm_axis.rs` widened that band to bd12, to monochrome and to 4:4:4.
+/// A partial-SB cell inside that band cannot answer the KB-23 question, because
+/// both explanations predict a divergence. Speeds 0 and 7 are the two where the
+/// SB-exact control is clean, so they are where the question is well-posed —
+/// and speed 7 is the load-bearing one, since `intra_cnn_based_part_prune_level`
+/// is nonzero from speed 1 and zero at speed 0.
+///
+/// Each format's SB-exact rows (192², 256²) are its OWN control, at its own bit
+/// depth and subsampling, so no row's verdict rests on another file's
+/// measurement.
+///
+/// **MEASURED 2026-08-04** — see the `HBD_FORMAT_OPEN` note for the result.
+#[test]
+#[ignore = "56 high-bit-depth encode pairs (7 formats x 4 sizes x 2 speeds); nightly / on-demand tier"]
+fn partial_sb_high_bitdepth_formats_byte_match() {
+    let b10 = base_b10();
+    assert_eq!(b10.bd, 10, "bd10 source");
+    const SIZES: &[(usize, usize)] = &[(132, 132), (192, 192), (196, 196), (256, 256)];
+
+    // Seven formats. bd10 4:2:0 is NOT repeated — that is the test above.
+    let formats: Vec<(&str, EncodeCell)> = vec![
+        ("b10 mono", to_mono(&b10, "b10mono")),
+        ("b10 444 ", to_ss(&b10, "b10_444", 0, 0)),
+        ("b10 422 ", to_ss(&b10, "b10_422", 1, 0)),
+        ("b12 420 ", to_bd(&b10, "b12_420", 12)),
+        ("b12 mono", to_bd(&to_mono(&b10, "x"), "b12mono", 12)),
+        ("b12 444 ", to_bd(&to_ss(&b10, "x", 0, 0), "b12_444", 12)),
+        ("b12 422 ", to_bd(&to_ss(&b10, "x", 1, 0), "b12_422", 12)),
+    ];
+
+    // Non-vacuity (playbook §2): a bd12 cell whose samples all fit in 10 bits
+    // is a bd10 cell wearing a bd12 label, and a "4:2:2" cell whose chroma
+    // plane is the 4:2:0 one is a 4:2:0 cell wearing a 4:2:2 label. Both are
+    // checked from the DERIVED PIXELS, not from the constructor call.
+    for (tag, src) in &formats {
+        if src.bd == 12 {
+            assert!(
+                src.y.iter().any(|&s| s > 1023) && src.y.iter().any(|&s| s & 3 != 0),
+                "{tag}: bd12 cell must use the extra two bits (bit-replicated, not shifted)"
+            );
+        }
+        if !src.mono {
+            let cw = (src.w + src.ss_x) >> src.ss_x;
+            let ch = (src.h + src.ss_y) >> src.ss_y;
+            assert_eq!(src.u.len(), cw * ch, "{tag}: chroma plane must match (ss_x, ss_y)");
+            assert!(src.u.iter().any(|&s| s != src.u[0]), "{tag}: chroma must carry texture");
+        }
+    }
+
+    /// Divergent `(format, w, h, speed)` rows, pinned in BOTH directions.
+    ///
+    /// **Empty as measured 2026-08-04** — 56/56 byte-exact. Kept as an
+    /// explicit constant rather than an `assert!(observed.is_empty())` so that
+    /// a future divergence is recorded with its shape here, in the same place
+    /// the bd8 grid records `MONO_S0_OPEN`.
+    const HBD_FORMAT_OPEN: &[(&str, usize, usize, i32)] = &[];
+
+    let mut observed: Vec<(String, usize, usize, i32)> = Vec::new();
+    let mut panicked: Vec<String> = Vec::new();
+    // (format -> partial-not-ok, exact-not-ok), so the SB-exact control per
+    // format can be read off directly.
+    let mut per_format: Vec<(String, usize, usize)> = Vec::new();
+    for (tag, src) in &formats {
+        let mut rows = Vec::new();
+        for &(w, h) in SIZES {
+            for speed in [0, 7] {
+                let cell = mirror_tile(src, &format!("{tag}_{w}x{h}_s{speed}"), w, h, speed);
+                assert_eq!(
+                    (cell.bd, cell.mono, cell.ss_x, cell.ss_y),
+                    (src.bd, src.mono, src.ss_x, src.ss_y),
+                    "the mirror-tile must preserve the bit depth and chroma format"
+                );
+                let (row, _) = measure(&cell, &[], w % 64 != 0 || h % 64 != 0);
+                if row.verdict == Verdict::Panic {
+                    panicked.push(format!("{} {w}x{h} cpu{speed}: {}", tag.trim(), row.note));
+                }
+                if !row.ok() {
+                    observed.push((tag.trim().to_string(), w, h, speed));
+                }
+                rows.push(row);
+            }
+        }
+        let (pd, ed) = summarise(tag.trim(), &rows);
+        per_format.push((tag.trim().to_string(), pd, ed));
+    }
+    // A PANIC is never pinnable — an unported arm that aborts the encode is a
+    // hard failure for a drop-in replacement whatever its byte verdict.
+    assert!(
+        panicked.is_empty(),
+        "the port PANICKED instead of encoding a high-bit-depth frame-edge cell. That is an \
+         unported hbd arm (KB-20's shape), not a near-tie: {panicked:?}"
+    );
+    // The interpretability premise, per format: if a format's own SB-EXACT
+    // control diverged at speed 0 or 7, its partial-SB rows say nothing about
+    // KB-23 and this grid is measuring the pinned hbd speed band instead.
+    let spread: Vec<String> = per_format
+        .iter()
+        .filter(|(_, _, ed)| *ed != 0)
+        .map(|(t, _, ed)| format!("{t}: {ed} SB-exact rows not ok"))
+        .collect();
+    assert!(
+        spread.is_empty(),
+        "a high-bit-depth SB-EXACT control diverged at speed 0 or 7. Those are the only speeds \
+         where high-bit-depth content is byte-exact on SB-exact content (the pinned b10_64 / \
+         HBD_OPEN band owns 1..6), and they are what make the partial-SB rows readable — so \
+         this is an hbd regression, or a spread of that band, not a partial-SB result: {spread:?}"
+    );
+    let pinned: Vec<(String, usize, usize, i32)> = HBD_FORMAT_OPEN
+        .iter()
+        .map(|(t, w, h, s)| ((*t).to_string(), *w, *h, *s))
+        .collect();
+    assert_eq!(
+        observed, pinned,
+        "the high-bit-depth partial-SB map moved. A PARTIAL-SB-only change is KB-23's shape at \
+         a (bit depth, subsampling) pair it was never measured at — `cnn_root_whole_in_frame` \
+         must key off the containing 64x64, and the frame-edge chroma tail-zero \
+         (`av1_set_entropy_contexts`, blockd.c:29) must clip an ss-correct footprint"
     );
 }

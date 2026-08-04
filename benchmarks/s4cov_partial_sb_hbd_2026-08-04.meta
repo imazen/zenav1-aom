@@ -1,0 +1,72 @@
+# Provenance for s4cov_partial_sb_hbd_2026-08-04.tsv
+# (KB-23's partial-SB axis at the bit depth / chroma-format corner its own
+#  residual named: "partial-SB x bd12, and x 4:2:2/mono at high bit depth".)
+
+base commit      : 38b79ee (origin/main)
+host             : Darwin 26.5.2 arm64 / Apple M-series
+profile          : test-fast (opt-level 3, debug-assertions + overflow-checks ON)
+dispatch         : default (archmage SIMD tokens live)
+conformance dir  : conformance/data (copy of the primary checkout's fetched corpus)
+wall             : 52.6 s for 56 encode PAIRS
+
+command          : cargo test --profile test-fast -p zenav1-aom-bench \
+                     --test s4cov_partial_sb_axis -- --ignored --nocapture \
+                     partial_sb_high_bitdepth_formats_byte_match
+
+THE GRID
+  7 formats  b10 {mono, 4:4:4, 4:2:2} + b12 {4:2:0, mono, 4:4:4, 4:2:2}
+             (b10 4:2:0 is NOT repeated — that is the pre-existing
+             `partial_sb_high_bitdepth_byte_matches_where_interpretable`)
+  4 sizes    132x132 / 196x196 PARTIAL-SB, 192x192 / 256x256 SB-exact
+             (KB-23's own four, so the rows are comparable to its bd8 grid)
+  2 speeds   {0, 7}
+
+RESULT
+  56/56 byte-exact. Every format's SB-exact rows are its own control, at its
+  own bit depth and subsampling, so no row's verdict rests on another file's
+  measurement — and all 28 of those controls are clean, which is the premise
+  that makes the 28 partial-SB rows readable.
+
+WHY SPEEDS {0, 7} AND NOT 0..7 — a measured constraint, not a budget cut
+  bd10/bd12 content diverges from real aomenc at `--cpu-used` 1..6 on
+  SB-EXACT 64x64 content already: the pinned `b10_64` band of
+  `config_permutations.rs::speed_envelope_stock_map_is_pinned`, widened to
+  bd12, monochrome and 4:4:4 by `s4cov_qm_axis.rs`. A partial-SB cell inside
+  that band cannot answer "does a frame edge add a divergence at high bit
+  depth?", because both explanations predict a divergence. Speeds 0 and 7 are
+  where the SB-exact control is clean, so they are where the question is
+  well-posed. Speed 7 is the load-bearing one: `intra_cnn_based_part_prune_level`
+  is nonzero from speed 1 and zero at speed 0, so speed 7 is the only one of
+  the two where KB-23's own mechanism (the CNN prune) exists at all.
+
+BITE PROOFS — two, and the asymmetry is the point (playbook §1)
+  A. `max_block_units` (tx_search.rs:453) `mb_to_right >> (3 + ss_x)` -> `>> 3`
+     — the frame-edge CHROMA clip, dropping the subsampling term. Fires on 2
+     of 56 rows: `b12 420 132x132 cpu0` and `b12 420 196x196 cpu0`, both
+     PARTIAL-SB, both PANIC ("index out of bounds: the len is 0 but the index
+     is 0"). Every SB-exact row and every 4:4:4 row (ss_x = 0) and every mono
+     row (no chroma) stays green — i.e. the perturbation lands exactly where
+     its own predicate says it should. Test fails with:
+       "the port PANICKED instead of encoding a high-bit-depth frame-edge
+        cell. That is an unported hbd arm (KB-20's shape), not a near-tie"
+  B. `av1_compute_rd_mult_based_on_qindex`'s bd12 arm (rd.rs:220)
+     `round_power_of_two_i64(rdmult, 8)` -> `..., 7)`. Fires on **32/32 bd12
+     rows and 0/24 bd10 rows** — deltas -185..-1375 B, partial-SB and
+     SB-exact alike. That is the byte comparison biting, and biting
+     bit-depth-selectively: no bd8 or bd10 row moves anywhere in the suite.
+     Test fails with:
+       "a high-bit-depth SB-EXACT control diverged at speed 0 or 7 ... so this
+        is an hbd regression, or a spread of that band, not a partial-SB
+        result: [\"b12 420: 4 SB-exact rows not ok\", ...]"
+  Both reverted; `git diff` clean on the perturbed files before commit.
+
+STILL NOT COVERED ON THIS AXIS (with costs)
+  partial-SB x hbd at cpu 1..6      blocked on `HBD_OPEN` / `b10_64` closing —
+                                    not a coverage gap this file can close, and
+                                    running it would gate a known divergence
+  partial-SB x SB128 at hbd         ~2 min (the SB128 arm of this file is bd8);
+                                    the same interpretable-speed restriction
+                                    applies, so it is speeds {0, 7} again
+  partial-SB x multi-tile           needs a tile-forcing frame (>4096 px or
+                                    ~9.44 MP) with a partial superblock —
+                                    same cost class as the KB-31 residual
