@@ -1,0 +1,78 @@
+# Provenance for s4cov_hd_format_2026-08-04.tsv
+# (KB-36's >=1080p band at the format axes it did not sweep; the band
+#  1440..2160 at speed >= 1; the crop straddle at `is_4k_or_larger`; and the
+#  speed-0 >=1080p localizer that found KB-38.)
+
+base commit      : 38b79ee (origin/main) + this session's partial-SB hbd gate
+host             : Darwin 26.5.2 arm64 / Apple M-series
+profile          : test-fast (opt-level 3, debug-assertions + overflow-checks ON)
+dispatch         : default (archmage SIMD tokens live)
+conformance dir  : conformance/data (copy of the primary checkout's fetched corpus)
+wall             : 26 s + 119 s + 431 s + 35 s + 648 s + 629 s = ~31 min
+
+command          : cargo test --profile test-fast -p zenav1-aom-bench \
+                     --test s4cov_hd_format_axis -- --ignored --nocapture --test-threads=1
+
+WHY THIS FILE EXISTS
+  KB-36 closed the `is_1080p_or_larger` arm of `default_min_partition_size`
+  on a grid that is ONE CELL WIDE in format — bd8 4:2:0 SB64 cq24 — and its
+  own note says so. KB-36 is also the precedent for why that matters: its arm
+  is one SPEED wide, so a speed sweep at any size under 1080 and a size sweep
+  at any speed but 6 were both green with the arm missing.
+
+RESULT BY ARM
+  above_1080p_format_axis   14/14 MATCH  4:4:4 / 4:2:2 / mono / SB128 / cq5 /
+                                         cq40 / cq63, each at 1920x1072 AND
+                                         1920x1080, at cpu 6 (the ONLY speed
+                                         where KB-36's arm is observable)
+  above_1080p_hbd            6/8  MATCH  bd10 + bd12 at 1920x1072/1080, cpu 7
+                                         all match; the two cpu-0 rows at 1080
+                                         diverge and are KB-38's band (which
+                                         reaches bd8 — see below), not an
+                                         hbd-specific finding
+  band_1440_2160            18/18 MATCH  1920x1920 + 2560x1600 x cpu 1..9 —
+                                         strictly between KB-36's 1440 ceiling
+                                         and the 2160 `is_4k_or_larger` arm
+  crop_straddle_4k           2/2  MATCH  2154x2160 vs 2160x2160 at cpu 5
+  speed0_1080p_PRE           9/12 MATCH  the localizer, BEFORE KB-38's arm
+  speed0_1080p_POST          9/12 MATCH  ... and after it (deltas move, the
+                                         cells do not close — see KB-38)
+
+THE 2160 STRADDLE COST 35 SECONDS, NOT 25-30 MINUTES
+  The coverage queue and `s4cov_crop_format_axis.rs`'s own residual note both
+  costed this arm from KB-19's speed-0 cell (C ~26 s / port ~195 s). Measured
+  here: 20 s and 15 s for the two encodes, ~50x cheaper. The reason is that
+  `is_4k_or_larger` is speed-UNconditional (KB-19), so it is observable at any
+  speed 0..5 — from speed 6 the `is_1080p_or_larger` arm sets the same field to
+  the same value for a frame this large (KB-36), and from speed 7
+  `set_allintra` sets it framesize-independently (:570). The estimate assumed
+  the speed the arm was FOUND at rather than the cheapest speed it is
+  OBSERVABLE at. Same razor as KB-28's: 2154 mi-aligns UP to 2160, so the pair
+  agrees under the mi reading and disagrees under the crop reading.
+
+KB-38 — WHAT THE SPEED-0 LOCALIZER FOUND, AND WHAT IT DID NOT CLOSE
+  Predicate (stated before the run, falsifiable on one cell):
+    speed == 0 && AOMMIN(w,h) >= 1080 && base_qindex <= 108
+  Nine of twelve rows obey it exactly. `1920x1072` (eight pixels of the same
+  content) is byte-exact at both bit depths and both quantizers; `1280x720` is
+  byte-exact at both; `1920x1080 cq32` is byte-exact at bd8.
+  The arm (speed_features.c:2926-2935, nested inside KB-22's own >=720p arm)
+  sets five fields the port carries and four of which are INTRA-live. It was
+  omitted under a comment reading "all inter-only, and the port carries no
+  field for them" — both halves false (playbook §9).
+  Porting it MOVED the two cq24 cells (bd8 -536 -> -726 B, bd10 +483 -> +408)
+  and closed NEITHER, and a twelfth row diverges that the predicate does not
+  explain at all: bd10 1920x1080 cq32, -8 B, whose bd8 twin matches. So at
+  least one further root sits at (speed 0, >= 1080p). Recorded as a
+  self-promoting pin (`speed0_1080p_band_map_is_pinned`), NOT as a closure.
+
+STILL NOT COVERED (with costs)
+  the >=1080p band x hbd at cpu 1..6   blocked on HBD_OPEN / b10_64
+  the >=1080p band x multi-tile        needs >4096 px or ~9.44 MP (KB-31 residual)
+  crops straddling 2160 at bd10/12,
+    4:2:2/4:4:4/mono, SB128            ~35 s per format, no new machinery — the
+                                       cheap follow-on this file's arm 4 opens
+  1440..2160 at formats other than
+    bd8 4:2:0 SB64 cq24                ~7 min per format
+  KB-38's remaining root(s)            playbook §10 decode-both localization on
+                                       1920x1080 cq24 cpu0 (~85 s per encode)

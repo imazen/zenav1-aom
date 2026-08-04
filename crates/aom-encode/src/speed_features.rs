@@ -1131,12 +1131,33 @@ impl SpeedFeatures {
     ///   (tx_search.c:3563), which asserts `is_inter_block` — byte-inert on
     ///   this envelope, modelled for faithfulness only.
     ///
+    /// - **`is_1080p_or_larger && base_qindex <= 108` (:2926)**, nested inside
+    ///   the arm above → `tx_domain_dist_level = boosted ? 1 : 2` (:2928, and
+    ///   KEY is always boosted so it is 1), `tx_domain_dist_thres_level = 1`
+    ///   (:2929), `ml_tx_split_thresh = 4000` (:2931),
+    ///   `prune_2d_txfm_mode = TX_TYPE_PRUNE_2` (:2933) and
+    ///   `skip_tx_search = 1` (:2934). **KB-38**: unmodelled until 2026-08-04
+    ///   under a comment that called the whole sub-block "all inter-only, and
+    ///   the port carries no field for them" — both halves false. This struct
+    ///   carries every one of those five fields (the `speed >= 1` block sets
+    ///   the same five to the same values), and four of them are INTRA-live:
+    ///   `tx_domain_dist_level`/`_thres_level` feed
+    ///   [`Self::tx_type_search_policy_for_stage`], `prune_2d_txfm_mode` feeds
+    ///   the tx-type ML prune, and `skip_tx_search` is read by `search_tx_type`
+    ///   itself (tx_search.c:2362, inside the tx-type loop both intra and inter
+    ///   enter). Only `ml_tx_split_thresh` is genuinely inter-only — its single
+    ///   consumer is `select_tx_block` (tx_search.c:2675), which opens
+    ///   `assert(is_inter_block(...))` at :3438 — and it is set anyway, for
+    ///   faithfulness. The window is three terms wide
+    ///   (`speed == 0` x `min(w,h) >= 1080` x `base_qindex <= 108`), which is
+    ///   why every pre-existing gate missed it: KB-36's >=1080p grid runs
+    ///   `--cpu-used` 1..9, and KB-19/KB-22's speed-0 2160p cell runs cq32
+    ///   (`base_qindex` 128 — inside KB-22's own 128, above this 108).
+    ///
     /// Deliberately NOT modelled: `simple_motion_search_*`, `selective_ref
-    /// _frame`, `tx_domain_dist_*`, `ml_tx_split_thresh`, `cb_pred_filter
-    /// _search`, `prune_2d_txfm_mode`, `skip_tx_search` and
-    /// `inter_tx_size_search_init_depth_*` (the `is_1080p_or_larger &&
-    /// base_qindex <= 108` sub-block, :2926-2935) — all inter-only, and the
-    /// port carries no field for them; `zero_low_cdef_strengths` (:2889, CDEF
+    /// _frame`, `cb_pred_filter_search` and
+    /// `inter_tx_size_search_init_depth_*` — inter-only, and the port carries
+    /// no field for them; `zero_low_cdef_strengths` (:2889, CDEF
     /// pick, not a search knob); `min_lr_unit_size`/`max_lr_unit_size`
     /// (:3080-3108, the loop-restoration unit-size search) — this struct carries
     /// no field for them because the port's LR search takes its whole
@@ -1178,6 +1199,16 @@ impl SpeedFeatures {
             self.perform_coeff_opt = 2 + i32::from(is_1080p_or_larger);
             self.intra_tx_size_search_init_depth_rect = 1;
             self.model_based_prune_tx_search_level = 0;
+
+            // The NESTED sub-block (:2926-2935). `boosted` is true on every
+            // KEY frame, so `tx_domain_dist_level` takes the 1 branch.
+            if is_1080p_or_larger && base_qindex <= 108 {
+                self.tx_domain_dist_level = 1; // boosted ? 1 : 2 (:2928)
+                self.tx_domain_dist_thres_level = 1; // :2929
+                self.tx_ml_tx_split_thresh = 4000; // :2931
+                self.prune_2d_txfm_mode = TX_TYPE_PRUNE_2; // :2933
+                self.skip_tx_search = true; // :2934
+            }
         }
     }
 
@@ -2137,6 +2168,113 @@ mod tests {
         assert_eq!(base.tx_type_search_policy(false, 0).coeff_opt_dist_threshold, 3200);
         assert_eq!(sf.tx_type_search_policy(false, 0).coeff_opt_dist_threshold, 864);
         assert_eq!(sf.tx_type_search_policy(false, 0).intra_tx_size_init_depth_rect, 1);
+    }
+
+    /// KB-38 — the sub-block NESTED inside KB-22's arm:
+    /// `is_1080p_or_larger && base_qindex <= 108` (speed_features.c:2926-2935).
+    ///
+    /// Three terms wide (`speed == 0` x `min(w, h) >= 1080` x
+    /// `base_qindex <= 108`), which is why no gate crossed it: KB-36's >=1080p
+    /// grid runs `--cpu-used` 1..9, and KB-19/KB-22's speed-0 2160p cell runs
+    /// cq32 (`base_qindex` 128 — inside KB-22's own 128, above this 108).
+    ///
+    /// Locks all three terms in both directions, the five fields the port
+    /// carries, the whole-struct isolation, and the fact that the four
+    /// intra-live ones reach the derived tx policy.
+    #[test]
+    fn qindex_dependent_speed0_1080p_q108_subarm() {
+        for speed in 0..=9 {
+            let base = SpeedFeatures::set_allintra(speed, false, false);
+            // MUST NOT fire — one term off in each direction. Every row here is
+            // >= 720 on the short side and <= 128, so the OUTER arm still fires
+            // at speed 0 and only the nested one is being isolated.
+            for &(w, h, q) in &[
+                (1920, 1079, 96),  // 1 px under 1080 on the short side
+                (1079, 1920, 96),  // ... the other way round
+                (1920, 1080, 109), // 1 qindex over 108
+                (2160, 2160, 128), // KB-19/KB-22's own cell — cq32
+                (1280, 720, 0),    // >=720p, far under 108, but under 1080
+            ] {
+                let mut sf = base;
+                sf.apply_allintra_qindex_dependent(w, h, q, speed);
+                assert_eq!(
+                    (
+                        sf.tx_domain_dist_level,
+                        sf.tx_domain_dist_thres_level,
+                        sf.tx_ml_tx_split_thresh,
+                        sf.prune_2d_txfm_mode,
+                        sf.skip_tx_search,
+                    ),
+                    (
+                        base.tx_domain_dist_level,
+                        base.tx_domain_dist_thres_level,
+                        base.tx_ml_tx_split_thresh,
+                        base.prune_2d_txfm_mode,
+                        base.skip_tx_search,
+                    ),
+                    "speed {speed} {w}x{h} q{q} must not take the >=1080p q<=108 sub-arm"
+                );
+            }
+            // MUST fire — at speed 0 only.
+            for &(w, h, q) in &[
+                (1920, 1080, 108), // exactly on the qindex boundary
+                (1920, 1080, 96),  // the measured cell (cq24)
+                (1080, 1920, 0),
+                (7680, 4320, 108),
+            ] {
+                let mut sf = base;
+                sf.apply_allintra_qindex_dependent(w, h, q, speed);
+                if speed == 0 {
+                    assert_eq!(
+                        (
+                            sf.tx_domain_dist_level,
+                            sf.tx_domain_dist_thres_level,
+                            sf.tx_ml_tx_split_thresh,
+                            sf.prune_2d_txfm_mode,
+                            sf.skip_tx_search,
+                        ),
+                        (1, 1, 4000, TX_TYPE_PRUNE_2, true),
+                        "speed 0 {w}x{h} q{q} must take the >=1080p q<=108 sub-arm"
+                    );
+                } else {
+                    assert_eq!(
+                        sf, base,
+                        "speed {speed} {w}x{h} q{q}: the qindex pass is speed-0-only"
+                    );
+                }
+            }
+        }
+
+        // Whole-struct isolation at the measured cell: the outer arm's three
+        // fields plus the sub-arm's five, and nothing else.
+        let base = SpeedFeatures::set_allintra(0, false, false);
+        let mut sf = base;
+        sf.apply_allintra_qindex_dependent(1920, 1080, 96, 0);
+        let mut expect = base;
+        expect.perform_coeff_opt = 3;
+        expect.intra_tx_size_search_init_depth_rect = 1;
+        expect.model_based_prune_tx_search_level = 0;
+        expect.tx_domain_dist_level = 1;
+        expect.tx_domain_dist_thres_level = 1;
+        expect.tx_ml_tx_split_thresh = 4000;
+        expect.prune_2d_txfm_mode = TX_TYPE_PRUNE_2;
+        expect.skip_tx_search = true;
+        assert_eq!(sf, expect, "the >=1080p q<=108 sub-arm moved another field");
+
+        // The four intra-live fields reach the derived tx policy. Without the
+        // sub-arm `use_transform_domain_distortion` is 0 and `skip_tx_search`
+        // is false at speed 0; with it, `tx_domain_dist_level = 1` selects the
+        // TX_DOMAIN_DIST_LEVELS row and `tx_domain_dist_thres_level = 1` its
+        // threshold.
+        let off = base.tx_type_search_policy(false, 0);
+        let on = sf.tx_type_search_policy(false, 0);
+        assert_eq!(off.use_transform_domain_distortion, 0);
+        assert!(!off.skip_tx_search);
+        assert!(
+            on.use_transform_domain_distortion != 0 || on.tx_domain_dist_threshold != off.tx_domain_dist_threshold,
+            "the sub-arm's tx-domain-distortion fields must reach the derived policy"
+        );
+        assert!(on.skip_tx_search, "the sub-arm's skip_tx_search must reach the derived policy");
     }
 
     /// KB-8 chunk 2a: the stage-aware [`SpeedFeatures::tx_type_search_policy_for_stage`]

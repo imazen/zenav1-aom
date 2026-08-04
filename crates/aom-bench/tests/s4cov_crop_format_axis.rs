@@ -512,14 +512,19 @@ fn crop_straddle_high_bitdepth_byte_matches_where_interpretable() {
 //   — it is omitted only because arm 4's bd10 result already answers the
 //   question the residual asked (does the crop read hold above 8 bits) and a
 //   second bit depth adds a row, not an axis.
-// * **Crops straddling `is_4k_or_larger` (2160)** — KB-19's arm. Needs
-//   2154x2160-class cells; KB-19's own 2160x2160 speed-0 cell measured **C
-//   ~26 s / port ~195 s**, so a 2-crop x 2-control x 2-speed grid is roughly
-//   **25-30 minutes of port encode** plus the C side. That is the only reason
-//   it is not here. The predicate to check is the same one arm 4 uses: at
-//   2154x2160 the crop min-dim is below 2160 and the mi min-dim is 2160, so
+// * **Crops straddling `is_4k_or_larger` (2160)** — KB-19's arm. **DONE
+//   2026-08-04**, in `s4cov_hd_format_axis::crop_straddling_4k_arm_byte_matches`:
+//   2154x2160 vs 2160x2160, **2/2 byte-exact in 35 s**. The predicate is the
+//   same one arm 4 uses — 2154 mi-aligns UP to 2160, so
 //   `default_min_partition_size`'s `BLOCK_8X8` arm (speed_features.c:187-189)
-//   fires under the mi reading and must NOT under the crop reading.
+//   fires under the mi reading and must not under the crop reading.
+//   The **25-30 minute** estimate this comment used to carry was ~50x high, and
+//   the reason is worth keeping: it costed the arm from KB-19's **speed-0** cell
+//   (C ~26 s / port ~195 s), but `is_4k_or_larger` is speed-UNconditional, so
+//   the arm is observable at every speed 0..5 — at 6 KB-36's `is_1080p_or_larger`
+//   arm sets the same field to the same value for a frame this large, and from 7
+//   `set_allintra` sets it framesize-independently (:570). Cost a razor at the
+//   cheapest speed the predicate is OBSERVABLE at, not the speed it was FOUND at.
 // * **Multi-tile x the straddle.** KB-31's file is bd8 4:2:0 SB64 throughout
 //   and its own residual (c) says so. A frame big enough to REQUIRE a tile
 //   split is >4096 px wide or ~9.44 MP, so it cannot be combined with a

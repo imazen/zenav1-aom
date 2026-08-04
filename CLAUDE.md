@@ -91,6 +91,19 @@ it here in the same commit.**
 2. **Blast radius** — how much of the encode envelope is wrong when it fires, and how many
    INDEPENDENT landings named the same axis (a proxy for how load-bearing it is).
 
+### Closed on 2026-08-04 (kept for one cycle so the strike-through is visible)
+- ~~partial-SB x bd12, and x 4:2:2/mono at high bit depth~~ → `s4cov_partial_sb_axis::
+  partial_sb_high_bitdepth_formats_byte_match`, **56/56 byte-exact** in 53 s.
+- ~~1440..2160 at speed >= 1~~ → `s4cov_hd_format_axis::band_1440_to_2160_speed_axis_byte
+  _matches`, **18/18** in 7 min.
+- ~~crops straddling `is_4k_or_larger` (2160)~~ → `s4cov_hd_format_axis::crop_straddling_4k
+  _arm_byte_matches`, **2/2 in 35 s**. The queue's 25-30 min estimate was ~50x high because
+  it costed the arm at the speed it was FOUND at (0) rather than the cheapest speed it is
+  OBSERVABLE at (5).
+- ~~the >=1080p band at bd10/12, 4:2:2/4:4:4/mono, SB128, and quantizers other than cq24~~ →
+  `s4cov_hd_format_axis`, **14/14** on the format+quantizer arm and **6/8** on the hbd arm.
+  The two open rows are **KB-38**, a genuinely new unmodelled arm that is NOT hbd-specific.
+
 ### Closed on 2026-08-03 (kept for one cycle so the strike-through is visible)
 - ~~the screen-content palette arm at `--cpu-used` 8/9~~ → KB-35. Was a FALSE refusal on a
   plain gradient; 22 of 25 measured PANIC rows are byte-identical, 3 are the genuine arm.
@@ -117,12 +130,16 @@ it here in the same commit.**
 ### T2 — default-reachable axes, no refusal, cheap-to-moderate
 | axis | why it matters | cost |
 |---|---|---|
-| **crops straddling `is_4k_or_larger` (2160)** | KB-28's root at KB-19's boundary; the predicate to check is `default_min_partition_size`'s BLOCK_8X8 arm at e.g. 2154x2160 vs 2160x2160 | ~25-30 min of port encode (KB-19's 2160x2160 speed-0 cell is C ~26 s / port ~195 s) |
-| **1440..2160 at speed >= 1** | KB-36 closed 1080..1440; above 1440 only KB-19's single 2160p **speed-0** cell exists | ~20-30 min |
-| **the >=1080p band at bd10/12, 4:2:2/4:4:4/mono, SB128, and quantizers other than cq24** | KB-36 swept bd8 4:2:0 SB64 cq24 only | ~10-20 min per format |
-| **partial-SB x bd12, and x 4:2:2/mono at high bit depth** | `s4cov_partial_sb_axis.rs` residual; the bd10 arm exists and runs only at cpu {0, 7} | ~2-5 min each, no new machinery |
+| ~~**crops straddling `is_4k_or_larger` (2160)**~~ | **CLOSED 2026-08-04.** 2154x2160 vs 2160x2160 at `--cpu-used 5`, **2/2 byte-exact**, `s4cov_hd_format_axis::crop_straddling_4k_arm_byte_matches`. 2154 mi-aligns UP to 2160, so the pair agrees under the mi reading and disagrees under the crop reading — KB-28's razor at KB-19's boundary. **The 25-30 min estimate was ~50x high**: it costed the arm from KB-19's speed-0 cell, but `is_4k_or_larger` is speed-UNconditional, so speeds 0..5 all observe it (from 6 KB-36's arm sets the same field, from 7 `set_allintra` does) — at speed 5 the two encodes are **20 s and 15 s**. | measured **35 s** |
+| ~~**1440..2160 at speed >= 1**~~ | **CLOSED 2026-08-04.** 1920x1920 + 2560x1600 (both strictly inside the gap on the short side) x `--cpu-used` 1..9, **18/18 byte-exact**, `s4cov_hd_format_axis::band_1440_to_2160_speed_axis_byte_matches`. | measured **7 min** |
+| ~~**the >=1080p band at bd10/12, 4:2:2/4:4:4/mono, SB128, and quantizers other than cq24**~~ | **CLOSED 2026-08-04, and it found KB-38.** `s4cov_hd_format_axis.rs`: 4:4:4 / 4:2:2 / mono / SB128 / cq5 / cq40 / cq63, each at 1920x1072 AND 1920x1080 at `--cpu-used 6` (the only speed KB-36's arm is observable at) — **14/14 byte-exact**; bd10 + bd12 at the same razor at cpu {0, 7} — **6/8**, the two open rows being **KB-38's** new speed-0 >=1080p band (which reaches bd8 too, so it is not an hbd finding). | measured **~10 min** |
+| ~~**partial-SB x bd12, and x 4:2:2/mono at high bit depth**~~ | **CLOSED 2026-08-04.** 7 formats (b10 {mono,4:4:4,4:2:2} + b12 {4:2:0,mono,4:4:4,4:2:2}) x KB-23's four sizes x cpu {0, 7} — **56/56 byte-exact**, `s4cov_partial_sb_axis::partial_sb_high_bitdepth_formats_byte_match`. | measured **53 s** |
+| **KB-38's remaining root(s)** | NEW 2026-08-04. The `is_1080p_or_larger && base_qindex <= 108` arm is ported and moved both cq24 cells without closing either, and `bd10 1920x1080 cq32` diverges outside its predicate. Pinned by `speed0_1080p_band_map_is_pinned` | playbook §10 decode-both on 1920x1080 cq24 cpu0 bd8; ~85 s per port encode |
+| **crops straddling 2160 at bd10/12, 4:2:2/4:4:4/mono, SB128** | the cheap follow-on the closed 2160 arm opens — same razor, one format at a time | ~35 s per format, no new machinery |
+| **1440..2160 at formats other than bd8 4:2:0 SB64 cq24** | same shape as the >=1080p format arm, one tier up | ~7 min per format |
 | **multi-tile at SB128 / bd10-12 / 4:4:4-4:2:2 / mono** | KB-31 residual (c): that whole file is bd8 4:2:0 SB64 | moderate; large frames |
 | **multi-tile x the crop straddle** | needs its OWN crop pair at tile-forcing size (e.g. 4090x2154 vs 4096x2160) — it cannot be combined with a 714x720 frame | same cost class as the 2160 arm |
+| **bd12 x the 480/720 crop straddle** | `s4cov_crop_format_axis.rs`'s own residual; same four cells as its bd10 arm | ~2 min, no new machinery |
 
 ### T3 — blocked on harness work
 | axis | blocker |
@@ -2950,12 +2967,21 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
     and that is **KB-27's class, not this root**: measured, not argued — the SB-exact monochrome
     controls at 480×480 / 720×720 diverge too (see KB-27's widened shape).
   Still unmeasured, with costs, at the tail of the gate file: **bd12** (~2 min, the same four
-  cells as the bd10 arm), **crops straddling 2160** (~25-30 min of port encode — KB-19's
-  2160×2160 speed-0 cell is C ~26 s / port ~195 s; the predicate to check is
-  `default_min_partition_size`'s `BLOCK_8X8` arm at e.g. 2154×2160 vs 2160×2160), and
-  **multi-tile × the straddle** (same cost class; it needs its own crop pair at >4096 px or
-  ~9.44 MP, e.g. 4090×2154 vs 4096×2160, because a tile split cannot coexist with a 714×720
-  frame).
+  cells as the bd10 arm) and **multi-tile × the straddle** (it needs its own crop pair at
+  >4096 px or ~9.44 MP, e.g. 4090×2154 vs 4096×2160, because a tile split cannot coexist with
+  a 714×720 frame).
+- **~~Crops straddling 2160~~ — CLOSED 2026-08-04, and the cost estimate was ~50× high.**
+  `s4cov_hd_format_axis::crop_straddling_4k_arm_byte_matches`: **2154×2160 vs 2160×2160,
+  2/2 byte-exact in 35 s** (20 s + 15 s of encode). 2154 mi-aligns UP to 2160
+  (`ALIGN_POWER_OF_TWO(2154, 3)`), so the pair AGREES under the mi reading and DISAGREES
+  under the crop reading — the sharpest available A/B for this root, and the same shape as
+  the file's own 474×480 / 714×720 pairs one boundary down. The 25-30 min figure came from
+  costing the arm at KB-19's **speed 0**; `is_4k_or_larger` is speed-UNconditional, so speeds
+  0..5 all observe it (at speed 6 KB-36's `is_1080p_or_larger` arm sets the same field to the
+  same value for a frame this large, and from speed 7 `set_allintra` sets it
+  framesize-independently at :570), and **speed 5 is the cheapest speed the arm is observable
+  at**. The general lesson: cost a razor at the cheapest speed the predicate is OBSERVABLE at,
+  not the speed it was FOUND at.
 
 ### KB-29 — Encoder: the IntraBC-armed encode produced a NON-CONFORMANT bitstream (`Invalid intrabc dv`) — FIXED ✅ 2026-08-01 (5 roots), + the general decode-side gate it was missing
 - **Found 2026-08-01** by the cross-encoder still-picture benchmark
@@ -3939,10 +3965,22 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   Both notes are rewritten at their sites. The lesson is the one KB-32 and KB-34 already paid
   for, in a milder form: a conclusion can be right while its stated reason is wrong, and the
   wrong reason costs the next session the same audit.
-- **Still unmeasured on this axis:** above 1440p at speed >= 1 other than KB-19's single 2160p
-  speed-0 cell (a 2160p cpu-1 cell is ~250 s per pair, so the band 1440..2160 at speeds 1-5 is
-  ~20-30 min); the >=1080p band at bit depths above 8, at 4:2:2/4:4:4/mono, and at SB128; and
-  any quantizer other than cq24 in this band.
+- **~~Still unmeasured on this axis~~ — ALL FOUR SWEPT 2026-08-04**
+  (`aom-bench/tests/s4cov_hd_format_axis.rs`, record
+  `benchmarks/s4cov_hd_format_2026-08-04.{tsv,meta}`):
+  * **the band 1440..2160 at speed >= 1** — 1920x1920 + 2560x1600 x `--cpu-used` 1..9,
+    **18/18 byte-exact** (7 min, not the estimated 20-30);
+  * **the >=1080p band at 4:2:2 / 4:4:4 / monochrome / SB128** and **at cq5 / cq40 / cq63** —
+    each format run at BOTH 1920x1072 and 1920x1080 at `--cpu-used 6` (the arm's only
+    observable speed), **14/14 byte-exact**, so the arm is format- and quantizer-independent
+    as its C source says;
+  * **the >=1080p band at bd10 / bd12** — **6/8**, and the two open rows are a NEW finding
+    rather than this arm's: `1920x1080 --cpu-used 0` diverges, which is **KB-38** (an
+    unmodelled `is_1080p_or_larger && base_qindex <= 108` sub-block in the *qindex*-dependent
+    pass) and reaches **bd8** as well, so it is not a high-bit-depth result at all.
+  What remains here is one tier up: 1440..2160 at formats other than bd8 4:2:0 SB64 cq24
+  (~7 min per format), and the >=1080p band at hbd x `--cpu-used` 1..6, which is blocked on
+  `HBD_OPEN` / `b10_64` rather than on measurement.
 
 
 ### KB-37 — Encoder: `av1_search_palette_mode_luma` is PORTED for the nonrd estimate arm — `--cpu-used 8/9` screen content can now take the palette winner C takes — DONE ✅ 2026-08-03
@@ -4069,6 +4107,82 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   full-RD palette gates (`palette_y_rd_close_gate`, `decode_diff_palette_close_cells`) pass,
   so the `PaletteSearchArgs` refactor and the `color_palette_thresh` threading are byte-inert
   on the pre-existing palette path.
+
+### KB-38 — Encoder: `av1_set_speed_features_qindex_dependent`'s `is_1080p_or_larger && base_qindex <= 108` sub-block was UNMODELLED — PORTED ✅ 2026-08-04, and the cells it moves are NOT closed (self-promoting pin)
+- **Found 2026-08-04** by the format axis of KB-36's band: `s4cov_hd_format_axis.rs`'s
+  high-bit-depth arm ran 1920x1080 at `--cpu-used` {0, 7} — the only speeds where hbd is
+  readable — and speed 0 diverged at bd10 (**+483 B**) and bd12 (**+181 B**) while every
+  speed-7 row matched.
+- **The arm** (speed_features.c:2926-2935), NESTED inside KB-22's own `is_720p_or_larger &&
+  base_qindex <= 128` arm:
+  ```c
+  if (is_1080p_or_larger && cm->quant_params.base_qindex <= 108) {
+    sf->inter_sf.selective_ref_frame          = 2;
+    sf->rd_sf.tx_domain_dist_level            = boosted ? 1 : 2;   // KEY ⇒ 1
+    sf->rd_sf.tx_domain_dist_thres_level      = 1;
+    sf->part_sf.simple_motion_search_early_term_none = 1;
+    sf->tx_sf.tx_type_search.ml_tx_split_thresh      = 4000;
+    sf->interp_sf.cb_pred_filter_search              = 0;
+    sf->tx_sf.tx_type_search.prune_2d_txfm_mode      = TX_TYPE_PRUNE_2;
+    sf->tx_sf.tx_type_search.skip_tx_search          = 1;
+  }
+  ```
+- **It was omitted under a comment that was wrong in both halves** — playbook §9, the
+  strongest form (a correct C citation with a false conclusion). The comment at
+  `speed_features.rs`'s `apply_allintra_qindex_dependent` read *"Deliberately NOT modelled:
+  ... `tx_domain_dist_*`, `ml_tx_split_thresh`, ... `prune_2d_txfm_mode`, `skip_tx_search`
+  ... (the `is_1080p_or_larger && base_qindex <= 108` sub-block, :2926-2935) — all
+  inter-only, and the port carries no field for them"*. **The port carries every one of
+  those five fields** — the `speed >= 1` block sets the same five to the same values
+  (`speed_features.rs:606-612`) — and **four are intra-live**:
+  `tx_domain_dist_level`/`_thres_level` feed `tx_type_search_policy_for_stage`,
+  `prune_2d_txfm_mode` feeds the tx-type ML prune, and `skip_tx_search` is read by
+  `search_tx_type` itself (tx_search.c:2362, inside the tx-type loop both intra and inter
+  enter). Only `ml_tx_split_thresh` is genuinely inter-only (`select_tx_block`,
+  tx_search.c:2675, whose caller asserts `is_inter_block` at :3438) — and it is set anyway,
+  for faithfulness. The three fields the port carries no field for
+  (`selective_ref_frame`, `simple_motion_search_early_term_none`, `cb_pred_filter_search`)
+  are the only genuinely-omitted ones and are now named as such.
+- **THE WINDOW IS THREE TERMS WIDE**, which is exactly why every gate missed it:
+  `speed == 0` x `AOMMIN(w, h) >= 1080` x `base_qindex <= 108`. KB-36's >=1080p grid runs
+  `--cpu-used` **1..9** (this whole block is `speed == 0`); KB-19/KB-22's speed-0 2160p cell
+  runs **cq32**, whose `base_qindex` 128 is inside KB-22's own 128 but ABOVE this 108. Two
+  independent >=1080p gates, each missing one different term.
+- **MEASURED, 12 rows, both before and after the port**
+  (`benchmarks/s4cov_hd_format_2026-08-04.tsv`, arms `speed0_1080p_PRE/POST_kb38_arm`;
+  3 sizes x 2 bit depths x cq{24,32}, all at `--cpu-used 0`):
+
+  | cell | pre-port | post-port |
+  |---|---|---|
+  | **bd8 1920x1080 cq24** | **DIVERGE -536 B** | **DIVERGE -726 B** |
+  | **bd10 1920x1080 cq24** | **DIVERGE +483 B** | **DIVERGE +408 B** |
+  | **bd10 1920x1080 cq32** | **DIVERGE -8 B** | **DIVERGE -8 B** (arm does not fire) |
+  | bd8 1920x1080 cq32 | MATCH | MATCH |
+  | 1920x1072 (both bd, both cq) | MATCH | MATCH |
+  | 1280x720 (both bd, both cq) | MATCH | MATCH |
+
+- **STATE IT PLAINLY: the arm is real and load-bearing, and it does NOT close the cells.**
+  Porting it moved both cq24 deltas and closed neither, and the `bd10 cq32 -8 B` row is
+  outside its predicate entirely (its bd8 twin matches, so it is hbd-borne). **There is at
+  least one further root at `(speed 0, min(w,h) >= 1080)`.** The nine matching rows are what
+  make that the shape rather than "large frames at speed 0" (1920x1072 is eight pixels of
+  the same mirror-tiled content and is byte-exact) or "high bit depth at speed 0"
+  (bd8 diverges too).
+- **The port is kept** because it is a faithful translation of C code that was missing and
+  it cannot regress any green cell: nothing in the tree reaches
+  `speed 0 && >= 1080p && qindex <= 108` — which is why it was missing in the first place —
+  and the full default-tier suite is green with it in.
+- **Gates.** `aom-bench/tests/s4cov_hd_format_axis.rs`:
+  `speed0_1080p_band_map_is_pinned` (the 12-cell grid as a self-promoting pin, playbook §5 —
+  fails on a new divergent row AND on a row that starts matching) plus
+  `speed0_1080p_qindex_arm_localize` (the same grid as a printing diagnostic). Unit lock:
+  `speed_features::tests::qindex_dependent_speed0_1080p_q108_subarm` — all three terms in
+  both directions (1920x1079 / 1079x1920 / q109 / cq32 / 1280x720 must not fire; q108,
+  q96, 1080x1920, 7680x4320 must), the five fields, a whole-struct isolation check, and
+  that the intra-live ones reach the derived tx policy.
+- **NEXT STEP** (playbook §10): decode-both first-divergent-block on `1920x1080 cq24
+  --cpu-used 0` at bd8 — the bd8 arm is the cheaper one to read and carries the larger
+  delta. ~85 s per port encode.
 
 ### KB-PERF-1 — Encoder: the intra-mode CNN is recomputed ~10x per superblock (C computes it ONCE and caches) — FIXED ✅ 2026-08-02
 
