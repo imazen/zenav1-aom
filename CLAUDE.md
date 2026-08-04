@@ -4184,9 +4184,21 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
      arm's predicate** (`base_qindex` 128 > 108) — evidence that the remaining root is not a
      single mechanism.
   So: 9 of 12 rows match, and the 3 that do not are all `1920x1080 --cpu-used 0`.
+- **A DISPATCH-MODE CLUE, free from the scalar leg and worth taking to the next probe.**
+  Every byte-exact row of the >=1080p high-bit-depth arm
+  (`above_1080p_high_bitdepth_byte_matches_where_interpretable`, 6 rows) is byte-exact under
+  `AOM_FORCE_SCALAR=1` as well, so the port's scalar and vector tiers agree wherever the port
+  is correct there. But its two *divergent* rows do NOT carry the same delta in the two
+  modes: `bd12 1920x1080 cq24 cpu0` is **+181 B
+  on default dispatch and +55 B under `AOM_FORCE_SCALAR=1`** (bd10 is +408 in both). The
+  pinned SET is identical, which is what the gate asserts — but a delta that moves with the
+  dispatch tier says the remaining root is in a path whose result depends on which kernel
+  tier runs, i.e. a kernel the port dispatches, not a pure speed-feature derivation. That
+  narrows the search away from another missing `sf` arm.
 - **NEXT PROBE, named not attempted:** playbook §10 decode-both first-divergent-block on
   `1920x1080 cq24 --cpu-used 0` at **bd8** — the cheaper side to read (no hbd path in the
-  way) and the larger delta. ~85 s per port encode.
+  way) and the larger delta. ~85 s per port encode. Take the dispatch-mode clue above with
+  it: run the probe in both modes and diff where the two ports' own decisions part.
 - **The port is kept** because it is a faithful translation of C code that was missing and
   it cannot regress any green cell: nothing in the tree reaches
   `speed 0 && >= 1080p && qindex <= 108` — which is why it was missing in the first place —
