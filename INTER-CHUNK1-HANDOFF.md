@@ -1,5 +1,34 @@
 # Inter-decode Chunk 1 (walking skeleton) — HANDOFF
 
+> ## SUPERSEDED HANDOFF — banner added 2026-08-03
+>
+> A 2026-07-19 chunk handoff, appended to through chunk 4. Its ✅-COMPLETE records are
+> accurate history; its forward-looking and "what exists today" sections are not:
+>
+> - *"**No RefFrame pool / multi-frame state exists anywhere**"* — false. `RefFrame` is
+>   `crates/aom-decode/src/lib.rs:832`; `decode_frames` is `crates/aom-decode/src/frame.rs:954`.
+> - *"All inter symbol readers EXIST + are C-tested but **DORMANT** (no decode caller)"* —
+>   false; they are on the live decode path.
+> - *"`av1-1-b8-00-quantizer-63` frame 1 is OUT of single-ref translational scope … reaching
+>   q63 needs Chunks 8 (OBMC) + 11 (local warp) + 13 (interintra)"* — those chunks landed and
+>   q63 frame 1 is now a **hard byte gate** (`crates/aom-decode/tests/inter_real_frame.rs`).
+> - The `aom-recon` crate this file records as created (and imports at
+>   `aom-decode/src/lib.rs:160`) no longer exists — absorbed into `crates/aom-dsp/src/recon/`.
+> - The chunk-6 16x66 mi(0,0) mode-info desync recorded at the end is **UNVERIFIED here**: I
+>   did not establish whether it was closed. Treat it as a lead, not as a known-open bug.
+>
+> The durable content is the root-cause narratives (`might_allow_warped_motion` never set;
+> the missing inter-intra flag read) and the golden MD5s.
+>
+> ### Path-rot warning that applies to EVERY `crates/…` reference below
+> The 2026-07 consolidation collapsed the 13 DSP/entropy kernel crates into one
+> `zenav1-aom-dsp`. **Every `crates/aom-{entropy,txb,quant,transform,intra,cdef,loopfilter,
+> restore,inter,dist,recon,convolve}/…` path in this file is dead.** Live homes:
+> `crates/aom-dsp/src/<module>/` and the `aom_dsp::<module>` namespace; the differentials
+> are under `crates/aom-dsp/tests/`. Line numbers in `crates/aom-encode/…` and
+> `crates/aom-decode/…` citations have drifted substantially too — **match by function
+> name, never by line.**
+
 **STATUS: ✅ COMPLETE — the frame-1 byte-exact gate is MET** (`av1-1-b8-01-size-64x64` frame 1
 decodes to golden md5 `0c189b10dfe6b033c548901ab82dedef`; frame 0 KEY unchanged). See
 "Honest fraction" at the bottom for exactly what landed + ratchet limitations. The sections

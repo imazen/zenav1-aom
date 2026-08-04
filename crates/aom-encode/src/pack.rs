@@ -42,17 +42,28 @@
 //!
 //! # Scope
 //!
-//! Matches [`crate::partition_pick::rd_pick_partition_real`]'s envelope:
-//! `NONE`/`SPLIT`/`HORZ`/`VERT` (4 of 10 partition types), KEY intra,
-//! interior SBs, `sb_size <= 64`, no segmentation, no delta-q/delta-lf, no
-//! palette, `allow_intrabc = false`, uniform (`TX_MODE_SELECT`) luma tx
-//! size. `cdef_bits = 0` models `enable_cdef = 0` (the CDEF-strength literal
-//! is zero-width, so `write_literal` is a no-op regardless of the value
-//! passed — matches the frame-header `cdef_bits` derivation when the search
-//! never finds more than one strength, which is what "off" collapses to).
-//! MISSING (mechanical extensions once needed): AB/4-way partition shapes,
-//! segmentation-driven per-block qindex, delta-q/delta-lf signaling,
-//! palette, intrabc, SB128, multi-tile.
+//! Matches [`crate::partition_pick::rd_pick_partition_real`]'s envelope. `cdef_bits
+//! = 0` models `enable_cdef = 0` (the CDEF-strength literal is zero-width, so
+//! `write_literal` is a no-op regardless of the value passed — matches the
+//! frame-header `cdef_bits` derivation when the search never finds more than one
+//! strength, which is what "off" collapses to).
+//!
+//! **ENVELOPE NOTE, corrected 2026-08-03.** This paragraph used to end:
+//! *"`NONE`/`SPLIT`/`HORZ`/`VERT` (4 of 10 partition types), KEY intra, interior SBs,
+//! `sb_size <= 64`, no segmentation, no delta-q/delta-lf, no palette,
+//! `allow_intrabc = false` … MISSING (mechanical extensions once needed): AB/4-way
+//! partition shapes, segmentation-driven per-block qindex, delta-q/delta-lf
+//! signaling, palette, intrabc, SB128, multi-tile."* **Most of that MISSING list has
+//! landed and is byte-gated** — all 10 partition types incl. AB and 4-way
+//! (`PARTITION_HORZ_A` at `:98` and friends), frame-edge/partial SBs (KB-13, KB-23),
+//! per-SB delta-q ([`PackCfg::delta_q_present`]) and delta-lf, palette, IntraBC
+//! (`use_intrabc` + DV diff), SB128 (`crates/aom-bench/tests/sb128_e2e.rs`) and
+//! multi-tile (`encoder_gate_multitile`, KB-31). See PARITY.md section A for the
+//! gate per feature. What this module genuinely does NOT do is INTER-frame mode
+//! info — that is [`crate::inter_pack`], an early skeleton.
+//!
+//! The lesson is playbook §9's: a MISSING list is a snapshot of one envelope, and
+//! this one outlived its envelope by weeks. If you extend it, date it.
 
 use crate::encode_intra::TxbEncode;
 use crate::encode_sb::{LeafWinner, SbEncodeEnv, SbTree, TileCtxState, encode_b_intra_dry};

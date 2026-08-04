@@ -225,6 +225,12 @@
   bar is met at the 4K headline cells (2K/small cells 1.66–2.4×, levers
   ranked). Two agreeing runs + measurement caveats:
   `benchmarks/gate3_peak_wall_2026-07-25.{md,meta}`.
+- **`zenav1-aom-dsp-bench`** — a seventh workspace member (`publish = false`):
+  port-only DSP kernel benchmarks that time the port's own dispatch entry points
+  with **no** libaom C-oracle dependency, so they run on every target including
+  ones where the oracle cannot be built. (4b92e2b; changelog entry added
+  2026-08-03 — the crate had landed with no record here, which is why
+  `docs/ARCHITECTURE.md` still said "Six packages".)
 - **`CONTEXT-HANDOFF.md` rewritten as the current project handoff** (fresh-box
   setup incl. the mirror-backed submodule and mosaic-vector regeneration, the
   four gates' verified state, live tracks, open pinned cells, jj/marker

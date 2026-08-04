@@ -1,5 +1,29 @@
 # QM-on forward-quant: RD-search threading (STAGED design)
 
+> ## SUPERSEDED — this staged design was APPLIED. Do not apply it again.
+>
+> **Banner added 2026-08-03.** Written 2026-07-15 as "a design to apply … when that work
+> quiesces". It has been applied, essentially verbatim:
+>
+> - §4a's `QmCtx { qm_level, plane }` is `crates/aom-encode/src/lib.rs:137`;
+>   `QuantParams::qm_ctx` is `:172`; the `with_qm(qm_level, plane)` builder is `:251`.
+> - §4d's "FORBIDDEN for the QM track" call sites are wired: `tx_search.rs:755` and
+>   `tx_search.rs:1534` both call `.with_qm(level, inp.plane)`.
+> - A field the design did NOT stage also exists: `with_qm_dist_metric` (`lib.rs:267`),
+>   used at `tx_search.rs:1538` — that is the `--dist-metric=qm-psnr` path.
+>
+> **Two things the reader needs that this document cannot tell them.** (1) §7's proposed
+> gate `aom-encode/tests/encoder_gate_qm_on_diff.rs` was **never created under that name**;
+> the QM gates that exist are `crates/aom-encode/tests/{qm_encode_witness.rs,
+> qm_forward_block_diff.rs, kb21_qm_satd_arm_lock.rs}` and
+> `crates/aom-bench/tests/{kb21_qm_speed4.rs, s4cov_qm_axis.rs}`. (2) The QM axis is **not
+> closed**: `s4cov_qm_axis.rs` carries the `HBD_OPEN` / `b10_64` pin (bd10 AND bd12,
+> `--cpu-used` 1..6, luma-borne), and `--dist-metric=qm-psnr` x speed >= 4 is a T3 entry in
+> CLAUDE.md's coverage queue, blocked on harness work. See that queue, not this file.
+>
+> **Dead paths below:** every `aom-quant/…`, `aom-txb/…` and `aom_quant::` reference — the
+> 2026-07 consolidation moved them to `crates/aom-dsp/src/{quant,txb}/` and `aom_dsp::`.
+
 **Task #23 — QM-on allintra KEY-frame encode.** This document stages the *one
 remaining* piece of #23: threading the per-block quantization-matrix (QM) context
 through the encoder's RD search. It is written as a **design to apply**, not a

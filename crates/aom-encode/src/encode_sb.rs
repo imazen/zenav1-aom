@@ -78,6 +78,15 @@
 //! recording, cb offsets — the pack stage, documented per step above);
 //! frame-edge clipped walks (the rect arms carry the C's sub-1 frame-bound
 //! guards but interior fixtures never take them); SB128.
+//!
+//! > **SCOPE NOTE, added 2026-08-03.** That MISSING list is a landing-time
+//! > snapshot of the FIXTURES this module was first exercised on, not of the
+//! > encoder. AB/4-way trees, frame-edge/partial superblocks (KB-13, KB-23,
+//! > KB-25), SB128 (`aom-bench/tests/sb128_e2e.rs`) and coded-lossless (KB-5,
+//! > 52/52 cells) are all byte-gated against real `aomenc` today. The
+//! > OUTPUT_ENABLED half genuinely does live in [`crate::pack`] — that part of
+//! > the sentence is a module boundary, not a gap. If you extend this list, date
+//! > it (playbook §9).
 
 use crate::encode_intra::{
     EncodeIntraPlaneOutcome, EncodeIntraYEnv, TrellisOptType, UvEncodeParams, UvWinner,

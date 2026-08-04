@@ -1,5 +1,33 @@
 # aom-rs — Inter-Frame ENCODE Roadmap
 
+> ## STALE PLAN — banner added 2026-08-03
+>
+> Written 2026-07-19 and never updated. Its §"What is NOT present at all (encode side)"
+> 14-item list is substantially landed: `crates/aom-encode/src/{inter_me,inter_rd,inter_pack,
+> inter_costs,inter_frame,interp_rd}.rs` all exist, the subpel search
+> (`av1_find_best_sub_pixel_tree`) is `inter_me.rs`, and §5 #C (the `derive_real_costs`
+> inter-ext-tx zero-row stub) is DONE — `crates/aom-encode/src/real_costs.rs:163-174`
+> sources `kf.inter_ext_tx` for real.
+>
+> **The claim most likely to mislead** is §"KEY FINDING" — *"the port inter decoder does not
+> yet reconstruct arbitrary-content CHROMA inter byte-exact — a decoder-track gap"*. That was
+> true on 2026-07-19 and is not now: `crates/aom-decode/tests/inter_real_frame.rs` gates a
+> 352x288 conformance P-frame using the full single-ref toolset as byte-identical, and
+> `INTER_DECODE_ENVELOPE.md` records 8/8 tracks and 40/40 shown frames byte-exact.
+>
+> Inter ENCODE genuinely remains an early skeleton (the single-ref translational zero-MV P,
+> KB-16). The live per-pin status is in `crates/aom-bench/tests/inter_e2e_search.rs`, not
+> here.
+>
+> ### Path-rot warning that applies to EVERY `crates/…` reference below
+> The 2026-07 consolidation collapsed the 13 DSP/entropy kernel crates into one
+> `zenav1-aom-dsp`. **Every `crates/aom-{entropy,txb,quant,transform,intra,cdef,loopfilter,
+> restore,inter,dist,recon,convolve}/…` path in this file is dead.** Live homes:
+> `crates/aom-dsp/src/<module>/` and the `aom_dsp::<module>` namespace; the differentials
+> are under `crates/aom-dsp/tests/`. Line numbers in `crates/aom-encode/…` and
+> `crates/aom-decode/…` citations have drifted substantially too — **match by function
+> name, never by line.**
+
 Scope: the **inter-frame ENCODER** — byte-exact bitstream vs `aomenc` for inter (P/B)
 frames, the Gate-2 analog for "the rest". Single-frame KEY/intra ENCODE is byte-complete
 across `--cpu-used 0..9` (Gate-2 for intra; KB-6 real content 30/30, QM/CDEF/LR done). This

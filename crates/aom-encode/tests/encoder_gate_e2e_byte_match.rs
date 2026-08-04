@@ -3394,9 +3394,15 @@ fn ivf_temporal_units(data: &[u8]) -> Vec<Vec<u8>> {
 /// reproduces that speed-0 encode on real separate-U/V content); (2) the 24
 /// `byte_exact` cells MUST byte-match (regression guard); (3) every OTHER cell is
 /// a PINNED near-tie and MUST diverge (self-promoting, KB-P29/KB-12 pattern).
-/// The map is **50/60** as of 2026-07-31 (24 at the landing commit, 41 after the
-/// AB mode-cache root, 45 after the partial-SB harness fix, 47 after KB-21
-/// root #1, 50 after KB-21 root #2). The pinned DIFFs are interior
+/// The map is **58/60** (corrected 2026-08-03: this line read `50/60 as of
+/// 2026-07-31`, which was already behind its own `byte_exact` list below — the
+/// KB-23 promotions landed on 07-31 without re-reading it. Count the list: it
+/// has 58 entries). Trajectory: 24 at the landing commit, 41 after the AB
+/// mode-cache root, 45 after the partial-SB harness fix, 47 after KB-21 root #1,
+/// 50 after KB-21 root #2, 56 after KB-23 (the six 196² cpu1-3 cq12/cq32 cells),
+/// 58 after KB-21 root #3 (the last two 196² cells).
+/// **The 2 that remain are BOTH `cpu3 cq63`; speed 4 is 12/12 on every cell.**
+/// The pinned DIFFs are interior
 /// BLOCK_16X16/8X8 partition RD near-ties
 /// (KB-13: the port over-picks AB/SPLIT where C picks simpler) — genuine, not a
 /// shared root (the AB prune is C-faithful for allintra). When a fix closes a

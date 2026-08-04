@@ -1,9 +1,15 @@
 //! **KB-35 — the nonrd estimate arm's palette refusal was the FRAME flag, not
 //! C's `try_palette`, so `--cpu-used 8` refused ordinary images.**
 //!
-//! `av1_search_palette_mode_luma` (intra_mode_search.c:1122) is not ported for
-//! the nonrd estimate arm, so the port refuses rather than silently coding a
-//! different winner. Until 2026-08-03 it refused on
+//! > **Header correction 2026-08-03.** This paragraph opened *"`av1_search_palette_mode_luma`
+//! > (intra_mode_search.c:1122) is not ported for the nonrd estimate arm, so the port refuses
+//! > rather than silently coding a different winner."* **KB-37 ported it the same day** —
+//! > there is no refusal on this arm any more, and this file's own §2
+//! > (`nonrd_palette_arm_reaching_set`) says so. What KB-35 fixed is described below and is
+//! > still accurate; only the "not ported / refuses" framing was overtaken. The live
+//! > residual is a byte divergence, `PALETTE_ON_SPEED8_OPEN`, not a refusal.
+//!
+//! Historically: the refusal (when it existed) fired on
 //! `cm->features.allow_screen_content_tools` alone — **one of four terms** of
 //! C's `try_palette` (nonrd_pickmode.c:1698-1710). The other three are
 //! `cpi->oxcf.tool_cfg.enable_palette`, the ordinal size bounds of

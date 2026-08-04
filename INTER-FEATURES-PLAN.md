@@ -1,5 +1,32 @@
 # Inter-decode feature ladder — chunk-4 plan (STEP-0 census)
 
+> ## STALE STATUS LEDGER — banner added 2026-08-03
+>
+> Written 2026-07-19. Its census sections are a legitimate dated record and are still useful;
+> its **status and "next chunk" claims are overtaken**:
+>
+> - The §"Next: chunk 5 = WARP" framing, the 16x34 "currently PINNED" gate, and the named
+>   16x34 blocker — *"the OBMC block mi(0,2) needs the chroma-left OBMC blend (chunk 4+:
+>   chroma left-OBMC not yet handled)"* — are superseded: `obmc_left_blend` is implemented at
+>   `crates/aom-decode/src/lib.rs:2822` and called at `:4235`.
+> - §"Conclusion: neither `05-mv` nor any `-00-quantizer` frame 1 is a minimal next step" is
+>   historical — `crates/aom-decode/tests/inter_real_frame.rs` now gates
+>   `av1-1-b8-00-quantizer-63` frame 1 as byte-identical.
+> - *"the decoder inter/MC path is currently lowbd-only"* is contradicted by
+>   `INTER_DECODE_ENVELOPE.md`, which records a **12-bit 4:2:2** track byte-exact.
+>
+> The block-level censuses (per-vector motion_mode / ref / block counts, the warp `wmmat`
+> values) were measured and are worth keeping; read them as measurements, not as a plan.
+>
+> ### Path-rot warning that applies to EVERY `crates/…` reference below
+> The 2026-07 consolidation collapsed the 13 DSP/entropy kernel crates into one
+> `zenav1-aom-dsp`. **Every `crates/aom-{entropy,txb,quant,transform,intra,cdef,loopfilter,
+> restore,inter,dist,recon,convolve}/…` path in this file is dead.** Live homes:
+> `crates/aom-dsp/src/<module>/` and the `aom_dsp::<module>` namespace; the differentials
+> are under `crates/aom-dsp/tests/`. Line numbers in `crates/aom-encode/…` and
+> `crates/aom-decode/…` citations have drifted substantially too — **match by function
+> name, never by line.**
+
 **✅ CHUNK 4 (OBMC) DONE** — `av1-1-b8-01-size-16x18` frame 1 byte-exact (md5
 `08db98983320105666c9496dc1dba209`), gated by
 `inter_ratchet.rs::inter_ratchet_16x18_obmc_frame1_byte_identical`. See

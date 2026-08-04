@@ -1,5 +1,14 @@
 # SIMD reach audit — does every tier list actually EXECUTE on aarch64? (2026-07-28)
 
+> **DATED AUDIT — the METHOD and the verdict stand; the KERNEL COUNT does not.** (Header
+> added 2026-08-03.) This was a read-only audit at sha `101784b`. Its finding — that the
+> transform's dead-`neon`-tier failure mode does not repeat anywhere in `aom-dsp`, 27/27
+> `#[magetypes]` bodies observed executing on `NeonToken` — was true of the 27 kernels that
+> existed then. **`aom-dsp` has gained vectorised kernels since** (KB-PERF-3's i16-lane
+> forward transform, KB-PERF-4's directional intra predictors, KB-PERF-5's u16-lane SMOOTH),
+> so "27/27" is not a standing claim about the tree — re-run the audit before quoting a
+> count. Do not rewrite the numbers below; re-measure and write a new dated file.
+
 **Audited at repo sha `101784b`** on `aarch64-apple-darwin` (Apple M4 Pro, 12 cores).
 Read-only audit: no kernel, test, or CI file was changed. All instrumentation used to
 gather evidence was reverted before commit.

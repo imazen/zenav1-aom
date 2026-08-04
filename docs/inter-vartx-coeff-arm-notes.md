@@ -50,7 +50,24 @@ MAX_VARTX_DEPTH=2 (enums.h:56). init_depth=0 (sub-720p spd0).
     differential-locked vs independent C transcription (var_tx_recursion_diff.rs), depth-2 splits.
     [prunes gated OFF on both sides.]
 0.  DONE (44bc51c) — derive_real_costs inter ext-tx cost fill (§5 #C).
---- REMAINING (prunes gated off in var_tx.rs today -> recursion over-searches vs C on the witness) ---
+--- [CORRECTED 2026-08-03] This header read "REMAINING (prunes gated off in var_tx.rs today ->
+    recursion over-searches vs C on the witness)". **Items 1b, 1c, 1d, 2 and 3 have all LANDED.**
+    That stale header is the source of the same false blocker claim in INTER-CHUNK2-HANDOFF.md
+    ("the ONLY byte-exact-achievable P-frame today is a SKIP-ONLY P"), corrected there too.
+      1b DONE — `ml_predict_tx_split` is crates/aom-encode/src/var_tx.rs:528, wired at :1032;
+         weights crates/aom-encode/src/tx_split_nn_weights.rs; gate tx_split_nn_diff.rs.
+      1c DONE — crates/aom-encode/src/prune_tx_2d.rs (+ prune_tx_2d_nn_weights.rs), called from
+         var_tx.rs:302; gate prune_tx_2d_diff.rs.
+      1d CLOSED BY SOURCE PROOF, no port needed — see the "PROVABLY INERT for intrabc" section
+         below (rd_pick_intrabc_mode_sb passes ref_best_rd = INT64_MAX hardcoded, rdopt.c:3611).
+      2 + 3 DONE — the coeff arm is wired end to end (CLAUDE.md KB-15, the 2026-07-19 PROGRESS
+         entries).
+    **KB-15 itself is still OPEN**, but for a different and much narrower reason: the witness is
+    port 1886 B vs C 1891 B with the first differing byte at 1120, and the residual is localized
+    to the block's PACK symbol coding (the DV diff / `use_intrabc` flag / `write_tx_size_vartx`
+    txfm-partition split-flag context) — NOT the search, NOT the coeff re-encode, NOT the prunes.
+    Do not re-chase anything on this list. ---
+--- ORIGINAL LIST (historical) ---
 1b. ml_predict_tx_split NN + real-C diff. weights: reference/libaom/av1/encoder/tx_prune_model
     _weights.h av1_tx_split_nnconfig_{4x8,8x8,8x16,16x16,32x32,64x64,4x16,16x32,32x64,8x32,...}.
     get_mean_dev_features EXISTS (tx_search.rs). Wire: select_tx_block try_split gate (var_tx.rs,

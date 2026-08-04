@@ -1,5 +1,50 @@
 # KB-5 completion spec — lossless (cq0) forward WHT + harness two-pass
 
+> ## SUPERSEDED — do NOT apply this spec. KB-5 is CLOSED.
+>
+> **Banner added 2026-08-03.** This file was written 2026-07-15 as a *ready-to-apply*
+> staged design. Every step in it has since landed, and one of its own open questions
+> was answered the other way. Applying it now would be re-doing finished work against
+> a tree that has moved.
+>
+> **What closed it, in order:**
+>
+> - **2026-07-16 — §1 (forward WHT), §2 (routing) and §3 (harness two-pass) all landed.**
+>   `av1_fwht4x4` lives at `crates/aom-dsp/src/transform/inv_txfm2d.rs:707`, gated by
+>   `crates/aom-encode/tests/fwht4x4_diff.rs` against the real `av1_fwht4x4_c`.
+>   `QuantParams` gained its `lossless` flag and `xform_quant` branches on it. Mono 64²
+>   cq0 byte-matched real `aomenc` the same day (`ba560eb`), 4:2:0 in the landing after.
+> - **A THIRD root this spec did not predict** was the actual byte divergence: the
+>   written `txb_skip_ctx`/`dc_sign_ctx` must derive from the real above/left neighbour
+>   entropy context **always**, not only when the trellis is on (C's write path,
+>   `av1_write_coeffs_txb`, encodetxb.c:596-598, is never gated on the trellis; only its
+>   trellis-local `ta`/`tl` fill is, encodemb.c:817-819). Coded-lossless runs trellis-OFF,
+>   so the port wrote ctx 1/0 where the real context was 3/1.
+> - **A FOURTH**: CfL had to be banned at coded-lossless in the SEARCH, not just at the
+>   leaf — C's `is_cfl_allowed` permits CfL at lossless whenever the partition size equals
+>   the transform size.
+> - **2026-08-03 (`3ae19b2`) — the SPEED axis closed.** Lossless was still refused at every
+>   `--cpu-used` for two further, independent roots: the aom-bench harness's own missing
+>   two-pass probe (an `assert!(base_qindex > 0)` refusal), and the encoder's two
+>   `unimplemented!()` TX_4X4 `block_yrd` arms in `nonrd_pickmode.rs`, which are exactly the
+>   coded-lossless arms (`select_tx_mode` returns `ONLY_4X4` at `coded_lossless`).
+>   **52/52 lossless cells are byte-identical across `--cpu-used` 0..9 × {4:2:0, mono} ×
+>   {bd8, bd10, bd12}**, gated by `crates/aom-bench/tests/kb5_lossless_speed_axis.rs`.
+>
+> **Where §2.3's open question landed:** it asked whether the RD search runs at
+> coded-lossless, hoping the fix could stay out of `tx_search.rs`. It could not — the
+> `lossless` flag is threaded through `QuantParams` to every recon site (`encode_intra`,
+> `tx_search`, `intra_uv_rd`) via `av1_inverse_transform_add(.., eob, lossless)`.
+> **§2.3's other instruction still holds and is still live:** do NOT branch the SATD fast
+> model at `intra_uv_rd.rs`. C's `av1_quick_txfm` sets `txfm_param.lossless = 0`
+> unconditionally, so a WHT branch there would diverge. That warning is repeated in
+> CLAUDE.md's KB-5 entry for the same reason.
+>
+> **Live record:** CLAUDE.md § "KB-5". Two file paths below are dead — the `aom-transform`
+> crate no longer exists (transforms live in `crates/aom-dsp/src/transform/`), and
+> `crates/aom-encode/src/lib.rs`'s line numbers have moved. The C-side analysis (§1.1,
+> §1.2, §2.3's `av1_quick_txfm` reasoning) is still correct and is why the body is kept.
+
 Ready-to-apply spec for closing **KB-5** (lossless/cq0 encode divergence, surfaced by
 the real-image e2e gate) and its two sub-tasks: **#33** (forward 4×4 Walsh–Hadamard
 transform, currently missing on the encode side) and **#32** (encoder e2e harness

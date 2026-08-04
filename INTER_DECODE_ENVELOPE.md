@@ -1,5 +1,14 @@
 # Animated-AVIF inter-decode envelope — status ledger
 
+> **DATED RECORD, 2026-07-23/24 — not a plan and not a running status.** This file is the
+> measured completion record for the animated-AVIF multi-frame decode envelope (8/8 corpus
+> tracks, 40/40 shown frames byte-exact). Do not rewrite its numbers to a later date; it is
+> the evidence for that landing. What has happened since: the single-reference conformance
+> ladder went further — `crates/aom-decode/tests/inter_real_frame.rs` gates a 352x288
+> conformance P-frame with the full toolset (SIMPLE + OBMC + WARPED_CAUSAL + interintra +
+> intra-in-inter + var-tx) as byte-identical. The one forward-looking item here that is
+> still open as far as this file knows is highbd SUB-pel MC, which stays fail-loud-guarded.
+
 Mission: decode zenavif's animated test vectors (libavif `colors-animated-*.avif`)
 byte-identically to rav1d-safe / aomdec, per shown frame, on the pure-Rust decoder.
 

@@ -1,5 +1,29 @@
 # `--cpu-used` 0..9 allintra speed-feature sweep — per-level porting worklist (task #10, Gate 2)
 
+> ## SUPERSEDED — the worklist is DONE. Its per-row "modeled? ✗" marks are no longer true.
+>
+> **Banner added 2026-08-03.** Written 2026-07-15 against a port that modelled **speed 0 and
+> speed 1 only** (its own §Provenance says so). `crates/aom-encode/src/speed_features.rs` now
+> has a real `if speed >= N` block for every N in 1..=9, plus the framesize-dependent arms
+> (`speed >= 6 && min_dim >= 1080`, `speed >= 8 && min_dim >= 720`). All three "structural
+> walls" this document names are through: winner-mode @4 (`intra_rd.rs`), VAR_BASED_PARTITION
+> @7 (`var_part.rs`), nonrd PICKMODE @8/9 (`nonrd_pickmode.rs`). **Gate 2 is byte-identical to
+> real `aomenc` at every `--cpu-used` 0..9 with zero pinned cells** (both open-cell lists in
+> `crates/aom-bench/tests/config_permutations.rs` empty since 2026-08-02).
+>
+> So the "**≈ 67 field-deltas**" total and every `✗` in the eight per-level tables are a
+> 2026-07-15 snapshot, not a work queue. Read them as the historical inventory they are.
+>
+> **Two rows are worth knowing became real bugs**, which is the argument for having written
+> this file: `default_min_partition_size {1080p+}` became **KB-36** (every >=1080p frame at
+> `--cpu-used 6` searched 4x4 partitions C had stopped at 8x8), and `prune_tx_type_using_stats
+> {480p+}` is the KB-26 framesize-derived-sf class. A later audit (`fb8d2a3`, "audit every
+> framesize arm — two inertness notes gave reasons that do not survive") re-derived this
+> file's inertness classifications and found two of them unsound.
+>
+> **The live queue is CLAUDE.md's "Coverage queue"** — the named-but-unmeasured axes, ranked,
+> with a cost per row. That is what replaced this document.
+
 **Scope.** Source-verified worklist of every `SPEED_FEATURES` field the C reference
 changes at each `if (speed >= N)` boundary on the **all-intra KEY-frame** path, for
 `speed = 2..9`. The port (`crates/aom-encode/src/speed_features.rs`,

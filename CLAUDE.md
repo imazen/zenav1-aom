@@ -1135,11 +1135,21 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   dead on the 8-bit canon grid (nonrd_pickmode.rs:594/460/784); required before any high-bit-depth
   or screen-content speed-8/9 cell.
 
-### KB-13 — Encoder: REAL-content byte-parity at speed >= 1 — ROOT FOUND (**50/60 byte-exact** as of 2026-07-31; AB mode-cache landed 2026-07-19)
+### KB-13 — Encoder: REAL-content byte-parity at speed >= 1 — ROOT FOUND (**58/60 byte-exact**; the 2 still open are BOTH `cpu3 cq63`, and speed 4 is 12/12)
 
 > Headline count corrected 2026-07-31: this line read `41/60` while the entry's own
 > body recorded the map at 45 -> 47 (KB-21 root #1) -> **50/60** (KB-21 root #2).
 > The map is the source of truth; the headline had simply not been re-read.
+>
+> **Corrected AGAIN 2026-08-03 — the same failure, one cycle later.** The headline
+> read `50/60 as of 2026-07-31` and the MAP bullet below still read `45/60`, while the
+> gate's own `byte_exact` list had reached **58** entries on 2026-07-31 (KB-23 promoted
+> the six 196² cpu1-3 cq12/cq32 cells; KB-21 root #3 promoted the last two). The gate is
+> the source of truth and is trivially countable —
+> `grep -c '"av1-' ` the list in `encoder_gate_real_content_speed1to4_e2e`
+> (`crates/aom-encode/tests/encoder_gate_e2e_byte_match.rs`). The identical stale count in
+> that test's own doc header was corrected in the same change. The MAP bullet below is
+> kept as the 2026-07-24 snapshot it is, and is now labelled as one.
 
 - **ROOT FOUND + FIXED 2026-07-19 — `part_sf.reuse_best_prediction_for_part_ab` (the AB
   MODE CACHE) was unmodelled. 24/60 → 41/60 byte-exact (17 cells promoted, 0 regressions).**
@@ -1176,7 +1186,9 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   incl. off-frame overhang). The port ENCODER was correct all along — KB-6 proves the same
   `pack_tile` 30/30 byte-exact on 196² at speed 0. After the fix the 196² cq63 cells byte-match
   and the map went 41/60 → **45/60**.
-- **MAP (45/60 byte-exact vs real aomenc, gate `encoder_gate_real_content_speed1to4_e2e`):**
+- **MAP — SNAPSHOT 2026-07-24 (45/60), superseded by the 58/60 headline above. Kept because
+  the per-cell shape is the useful part; do NOT read the counts as current. The live map is
+  the `byte_exact` list in the gate.**
   - `01-size-64x64` (1-SB, aligned): **12/12 MATCH**.
   - `00-quantizer-00` 64² crop: **11/12** (open: cpu4 cq32).
   - `00-quantizer-00` 128² crop: **8/12** (open: cpu3 cq63, cpu4 cq12/cq32/cq63).
@@ -1184,10 +1196,15 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   - `01-size-196x196` (PARTIAL-SB, multi-SB): **4/12** — cpu1-4 **cq63 MATCH** (promoted into
     `byte_exact`); cpu1-4 cq12/cq32 are ordinary valid-stream near-ties (first-diff at real tile
     bytes 437/830/852 or a ±1 LF level, NOT short-tile rejects).
-- **Remaining 15 DIFF cells (all pinned self-promoting):** the 196² cq12/cq32 cluster (8) + 7
-  interior near-ties concentrated at cpu3/cpu4 (5 of 7 at cq63/cq32 high-speed corners). Next:
-  the interior localizer on the survivors + a sibling-C dump of the first divergent node per the
-  KB-3/KB-7 method.
+- **[SNAPSHOT 2026-07-24 — superseded, see the two-cell status below] Remaining 15 DIFF cells
+  (all pinned self-promoting):** the 196² cq12/cq32 cluster (8) + 7 interior near-ties
+  concentrated at cpu3/cpu4 (5 of 7 at cq63/cq32 high-speed corners).
+- **REMAINING, current 2026-08-03: TWO cells, both `cpu3 cq63`** —
+  `00-quantizer-00 420 128x128@64,64 cpu3 cq63` and `23-film_grain-50 420 64x64@96,64 cpu3
+  cq63`. The 196² cluster closed entirely (KB-23 + KB-21 root #3) and **speed 4 is 12/12 on
+  every cell**, so the "concentrated at cpu3/cpu4" characterization no longer holds: what is
+  left is a cpu3-only, cq63-only pair. Next: a sibling-C dump of the first divergent node per
+  the KB-3/KB-7 method — the standard close for this class.
 
 ### KB-14 — Decoder: superres single-SB-column coded frame decoded flat — FIXED ✅ (header coded-lossless false-positive; NOT the upscale)
 - **FIXED 2026-07-18.** Root cause is the HEADER PARSE, **not** the normative upscale (the original
@@ -1225,7 +1242,17 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   every cell to the flat-128 mismatch. The existing `superres_diff` denoms 9/12/16 arms + the full
   Gate-1 conformance corpus + `real_bitstream` (incl. sb128/multi-tile) stay green.
 
-### KB-15 — Encoder: IntraBC (screen content) — SEARCH + skip-arm + wiring LANDED; PINNED on the inter var-tx COEFF ARM
+### KB-15 — Encoder: IntraBC (screen content) — SEARCH + skip-arm + COEFF ARM all LANDED; the witness is PINNED on a PACK-SYMBOL residual (first-diff 1120)
+
+> **Header corrected 2026-08-03.** It read "PINNED on the inter var-tx COEFF ARM", which the
+> entry's own last bullet contradicts: the coeff arm is wired end to end, its three NN prunes
+> are ported (`prune_tx_2d.rs`, `var_tx.rs:528`) or closed by source proof, and a port PACK
+> re-encode dump showed the re-encoded VERT-sub0 intrabc block matching C's coded tree
+> exactly. The residual is in the block's remaining PACK symbol coding (DV diff /
+> `use_intrabc` / `write_tx_size_vartx` split-flag context), port 1886 B vs C 1891 B. Reading
+> the old header sent at least one downstream doc
+> (`docs/inter-vartx-coeff-arm-notes.md`, and via it `INTER-CHUNK2-HANDOFF.md`) into telling
+> readers the prunes were still gated off.
 - **Status (2026-07-18):** `rd_pick_intrabc_mode_sb` (`aom-encode/src/intrabc_search.rs`) is WIRED
   (rd_pick.rs step 6 → real, `PickFrameCfg::intrabc` gated on `p.allow_intrabc`) and runs the full
   DV search under the screen-content gate. LANDED: the source-frame hash (chunk 3a) + the **NSTEP

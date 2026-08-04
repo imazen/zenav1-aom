@@ -914,8 +914,13 @@ pub struct TxTypeSearchPolicy {
     /// [DEFAULT_EVAL][0] = 3200` (enable_winner_mode_for_coeff_opt = 0).
     pub coeff_opt_dist_threshold: u32,
     /// `coeff_opt_thresholds[1]` (SATD gate) — speed 0: `UINT_MAX`, which
-    /// short-circuits `skip_trellis_opt_based_on_satd` before any SATD work
-    /// (the SATD body is unported; reaching it panics).
+    /// short-circuits `skip_trellis_opt_based_on_satd` before any SATD work.
+    /// (Corrected 2026-08-03: this said "the SATD body is unported; reaching it
+    /// panics". The body landed with the KB-8 chunk series — it is
+    /// `skip_trellis_opt_based_on_satd` at this file's `:652`, called at
+    /// `:1596`, differential-locked against real C at `:3179`, and it is LIVE at
+    /// speed >= 4 where `perform_coeff_opt = 5` gives a finite threshold of 97.
+    /// Nothing panics.)
     pub coeff_opt_satd_threshold: u32,
     /// `txfm_params->use_transform_domain_distortion` — speed 0:
     /// `tx_domain_dist_types[tx_domain_dist_level=0][DEFAULT_EVAL] = 0`

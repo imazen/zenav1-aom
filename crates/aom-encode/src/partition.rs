@@ -101,14 +101,24 @@
 //! [`rd_pick_partition_none_split`] = stages 1 (none/split fields) + 8 + 9 +
 //! the found/best threading, for INTERIOR square blocks with leaf evaluation
 //! supplied by the caller — the recursion/cost/threshold CONTROL FLOW.
-//! **MISSING (fractions): 2 of 10 partition types are searched (NONE,
-//! SPLIT); RECT/AB/4-way stages (live at speed 0) are not ported; the
-//! winner dry-run encode_sb (sibling pixel/context propagation) is not
-//! ported — it needs the all-planes re-encode + tokenize-context layer;
-//! edge-block cost override + must-find retry + save/restore context
-//! threading are not ported.** The differential constrains the C side to
-//! the same 2-type search, validating control flow, not the full partition
-//! decision.
+//! **MISSING (fractions), AS OF THIS MODULE'S OWN SLICE — read the note below
+//! before treating any of it as the port's state: 2 of 10 partition types are
+//! searched (NONE, SPLIT); RECT/AB/4-way stages (live at speed 0) are not ported;
+//! the winner dry-run encode_sb (sibling pixel/context propagation) is not ported
+//! — it needs the all-planes re-encode + tokenize-context layer; edge-block cost
+//! override + must-find retry + save/restore context threading are not ported.**
+//! The differential constrains the C side to the same 2-type search, validating
+//! control flow, not the full partition decision.
+//!
+//! > **SCOPE NOTE, added 2026-08-03.** That MISSING list describes THIS module's
+//! > early skeleton, and it has been superseded by
+//! > [`crate::partition_pick`], which is the real partition search the encoder
+//! > runs. All 10 partition types are searched there (`rd_pick_ab_part` at
+//! > `partition_pick.rs:2297`, the 4-way arms at `:1987`), the winner dry-run
+//! > [`crate::encode_sb`] propagation exists, and frame-edge superblocks are
+//! > coded and byte-gated (KB-13, KB-23, KB-25). Nothing on this list is a live
+//! > gap in the ENCODER; it is a description of this file's slice. Do not read
+//! > it as project status.
 
 use crate::rd::{rdcost, rdcost_neg_r};
 

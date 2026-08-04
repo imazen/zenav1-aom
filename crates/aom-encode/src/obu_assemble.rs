@@ -29,9 +29,14 @@
 //! to: frame-header bits, one byte-align, then the raw tile bytes verbatim
 //! -- the sole/last tile carries no `tile_size_bytes`-byte length prefix
 //! (matching the decoder's `split_tiles`: only tiles BEFORE the last one are
-//! length-prefixed). Multi-tile (`tiles_log2 > 0`, length-prefixed non-last
-//! tiles) is NOT implemented -- the natural next lift once the envelope
-//! needs more than one tile.
+//! length-prefixed). [Corrected 2026-08-03: this said *"Multi-tile
+//! (`tiles_log2 > 0`, length-prefixed non-last tiles) is NOT implemented — the
+//! natural next lift once the envelope needs more than one tile."* It IS
+//! implemented, in this same module: [`assemble_multitile_frame_obu_payload`] and
+//! [`assemble_multitile_frame_obu_payload_derived`]. What stays single-tile-only is
+//! [`assemble_frame_obu_payload_single_tile`] specifically, which asserts
+//! `tiles_log2 == 0` on purpose. Gates: `encoder_gate_multitile`, and
+//! `aom-bench/tests/kb31_mandatory_tiles.rs` for frames that REQUIRE a tile split.]
 
 use aom_dsp::entropy::header::{FrameHeaderObu, write_frame_header_obu, write_tile_group_header};
 use aom_dsp::entropy::leb128::uleb_encode;

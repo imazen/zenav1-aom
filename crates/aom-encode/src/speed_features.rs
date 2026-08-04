@@ -370,19 +370,31 @@ pub struct SpeedFeatures {
     /// (the first pass evaluates only the intra mode's default tx type);
     /// `is_winner_mode_processing_enabled` also returns 1 whenever this is nonzero
     /// (unless `use_intra_dct_only`/`use_intra_default_tx_only`), enabling the
-    /// WINNER_MODE_EVAL re-eval. Not yet SET in `set_allintra` (KB-8 chunk 2d).
+    /// WINNER_MODE_EVAL re-eval. SET by [`Self::set_allintra`] in the `speed >= 4`
+    /// block (KB-8 chunk 2d-iv). See the audit note on `winner_mode_tx_type_pruning`.
     pub fast_intra_tx_type_search: i32,
     /// `tx_sf.tx_type_search.winner_mode_tx_type_pruning` — default 0
     /// (init_tx_sf:2466); allintra speed>=4 -> 2 (speed_features.c:488). Selects
     /// the per-stage `prune_2d_txfm_mode` row (`set_tx_type_prune`, rdopt_utils.h:
-    /// 498): row `winner_mode_tx_type_pruning-1`, col `is_winner_mode`. Not yet
-    /// SET in `set_allintra` (KB-8 chunk 2d).
+    /// 498): row `winner_mode_tx_type_pruning-1`, col `is_winner_mode`. SET by
+    /// [`Self::set_allintra`] in the `speed >= 4` block (KB-8 chunk 2d-iv).
+    ///
+    /// **AUDIT 2026-08-03.** This field and the six below it (`fast_intra_tx_type_search`,
+    /// `prune_tx_type_est_rd`, `enable_winner_mode_for_coeff_opt`,
+    /// `enable_winner_mode_for_use_tx_domain_dist`, `enable_winner_mode_for_tx_size_srch`,
+    /// `multi_winner_mode_type`) each carried the line *"Not yet SET in `set_allintra`
+    /// (KB-8 chunk 2d)"*. All seven ARE set — the KB-8 chunk-2d-iv flip assigns them in the
+    /// `speed >= 4` block of [`Self::set_allintra`], and the unit test
+    /// `speed4_allintra_deltas_match_source` asserts every one. The doc had not been
+    /// re-read since the flip landed. `prune_tx_type_using_stats` below is the one field
+    /// `set_allintra` genuinely leaves at 0, and its doc says so correctly (it is
+    /// framesize-dependent and wired by `port_encode_full`).
     pub winner_mode_tx_type_pruning: i32,
     /// `tx_sf.tx_type_search.prune_tx_type_est_rd` — default 0
     /// (init_tx_sf:2465); allintra speed>=4 -> 1 (speed_features.c:491). Gates
     /// the est-rd tx-type prune + txk_map reorder in `get_tx_mask`'s multi-type
-    /// arm (LIVE on intra in the WINNER pass — no inter gate). Not yet SET in
-    /// `set_allintra` (KB-8 chunk 2d-iv).
+    /// arm (LIVE on intra in the WINNER pass — no inter gate). SET by
+    /// [`Self::set_allintra`] in the `speed >= 4` block (KB-8 chunk 2d-iv).
     pub prune_tx_type_est_rd: bool,
     /// `tx_sf.tx_type_search.prune_tx_type_using_stats` (0/1/2) — the KF-frame-
     /// probability luma tx-type prune. It is framesize-DEPENDENT (needs
@@ -397,19 +409,20 @@ pub struct SpeedFeatures {
     /// `winner_mode_sf.enable_winner_mode_for_coeff_opt` — default 0
     /// (init:2511); allintra speed>=4 -> 1 (speed_features.c:502). When 1, the
     /// coeff-opt threshold is stage-selected: MODE_EVAL uses the MODE_EVAL
-    /// column, WINNER_MODE_EVAL the WINNER column (rd.h:317-339). Not yet SET
-    /// in `set_allintra` (KB-8 chunk 2d).
+    /// column, WINNER_MODE_EVAL the WINNER column (rd.h:317-339). SET by
+    /// [`Self::set_allintra`] in the `speed >= 4` block (KB-8 chunk 2d-iv).
     pub enable_winner_mode_for_coeff_opt: bool,
     /// `winner_mode_sf.enable_winner_mode_for_use_tx_domain_dist` — default 0
     /// (init:2513); allintra speed>=4 -> 1 (speed_features.c:503). Stage-selects
     /// the tx-domain distortion type/threshold columns (rdopt_utils.h:516-544).
-    /// Not yet SET in `set_allintra` (KB-8 chunk 2d).
+    /// SET by [`Self::set_allintra`] in the `speed >= 4` block (KB-8 chunk 2d-iv).
     pub enable_winner_mode_for_use_tx_domain_dist: bool,
     /// `winner_mode_sf.enable_winner_mode_for_tx_size_srch` — default 0
     /// (init:2512); allintra speed>=4 -> 1 (speed_features.c:505). Stage-selects
     /// the tx-size search method (rdopt_utils.h:478-493): MODE_EVAL uses the
     /// MODE_EVAL column of `tx_size_search_methods[tx_size_search_level]`,
-    /// WINNER the WINNER column. Not yet SET in `set_allintra` (KB-8 chunk 2d).
+    /// WINNER the WINNER column. SET by [`Self::set_allintra`] in the `speed >= 4`
+    /// block (KB-8 chunk 2d-iv).
     pub enable_winner_mode_for_tx_size_srch: bool,
     /// `winner_mode_sf.multi_winner_mode_type` — default 0 = MULTI_WINNER_MODE_OFF
     /// (init:2514); allintra speed>=4 -> MULTI_WINNER_MODE_DEFAULT (**=2**,
@@ -417,8 +430,8 @@ pub struct SpeedFeatures {
     /// MULTI_WINNER_MODE_FAST (**=1**, speed_features.h:226). Indexes
     /// `winner_mode_count_allowed[]` = `{1, 2, 3}` for OFF/FAST/DEFAULT
     /// (rdopt_utils.h:236): the number of top modes stored by
-    /// `store_winner_mode_stats` and re-evaluated. Not yet SET in
-    /// `set_allintra` (KB-8 chunk 2d-iv).
+    /// `store_winner_mode_stats` and re-evaluated. SET by [`Self::set_allintra`]
+    /// in the `speed >= 4` block (KB-8 chunk 2d-iv).
     pub multi_winner_mode_type: i32,
     /// `winner_mode_sf.tx_size_search_level` — default 0 (init:2510). Indexes
     /// the row of `tx_size_search_methods[4][MODE_EVAL_TYPES]`. Stays 0 on the
@@ -736,8 +749,10 @@ impl SpeedFeatures {
         //       single-pass (intra_rd.rs:888). Governs the mono cells that diverge.
         //     - `perform_coeff_opt = 5` (:493): its DEFAULT_EVAL column is
         //       `[864, 97]` — the satd threshold 97 (< UINT_MAX) requires the SATD
-        //       trellis-skip body, which is unimplemented (tx_search.rs:664). Feeds
-        //       both the winner-mode luma passes AND the DEFAULT_EVAL chroma search.
+        //       trellis-skip body [PORTED: `skip_trellis_opt_based_on_satd`,
+        //       tx_search.rs:652; the "unimplemented (tx_search.rs:664)" note here was
+        //       stale and is corrected 2026-08-03]. Feeds both the winner-mode luma
+        //       passes AND the DEFAULT_EVAL chroma search.
         //     - `tx_domain_dist_thres_level = 3` (:494) — chroma/winner tx-domain
         //       dist threshold; part of the same eval-param set.
         //     - tx-type: `fast_intra_tx_type_search = 2` (:489, MODE_EVAL uses the
@@ -1446,11 +1461,17 @@ mod tests {
         assert_eq!(pol.coeff_opt_satd_threshold, u32::MAX);
     }
 
-    /// The speed-4 all-intra deltas THIS PARTIAL PORT models (see the module doc
-    /// + the `if speed >= 4` block for the full LIVE/inert/unported breakdown).
-    /// Only `prune_chroma_modes_using_luma_winner` is carried as an sf struct
-    /// field (the NON_DUAL loop-filter delta lives in `lf_search`, and the
-    /// winner-mode two-pass / coeff-opt-5 / tx-type deltas are unported KB-8).
+    /// The speed-4 all-intra deltas this port models (see the module doc + the
+    /// `if speed >= 4` block for the full LIVE/inert breakdown). The NON_DUAL
+    /// loop-filter delta lives in `lf_search` rather than on this struct.
+    ///
+    /// Corrected 2026-08-03: this doc said *"Only
+    /// `prune_chroma_modes_using_luma_winner` is carried as an sf struct field …
+    /// the winner-mode two-pass / coeff-opt-5 / tx-type deltas are unported
+    /// KB-8"*. The KB-8 chunk-2d-iv flip landed them; the assertions in this very
+    /// test cover `perform_coeff_opt == 5`, `winner_mode_tx_type_pruning == 2`,
+    /// `prune_tx_type_est_rd`, `multi_winner_mode_type` and the three
+    /// `enable_winner_mode_for_*` flags.
     #[test]
     fn speed4_allintra_deltas_match_source() {
         let sf = SpeedFeatures::set_allintra(4, false, false);

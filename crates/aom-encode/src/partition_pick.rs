@@ -165,6 +165,17 @@
 //!
 //! # Scope
 //!
+//! > **SCOPE NOTE, added 2026-08-03 — the paragraph below is a LANDING-TIME
+//! > snapshot and is now wrong in its headline.** All 10 partition types are
+//! > searched here: `rd_pick_ab_part` (`:2297`) covers `PARTITION_HORZ_A/HORZ_B/
+//! > VERT_A/VERT_B` and the 4-way arms are at `:1987`, both gated by their NN
+//! > prunes (`ab_nn_prune.rs`, `part4_prune.rs`). Frame-edge / partial superblocks
+//! > are coded and byte-gated (KB-13, KB-23, KB-25), SB128 is byte-gated
+//! > (`aom-bench/tests/sb128_e2e.rs`), and per-SB delta-q is live. The rest of the
+//! > paragraph (sub-8x8 rect at min_partition 4x4, the SB-level must-find retry,
+//! > the `intra_sb_rdmult_modifier` fold) has NOT been re-verified in this pass and
+//! > is UNVERIFIED either way — check the source before relying on it.
+//!
 //! NONE + SPLIT + HORZ + VERT (4 of 10 partition types), KEY intra,
 //! interior SBs, sb_size <= 64, no segmentation, min_partition >= 8x8
 //! (every rect leaf >= 16x8 is a chroma reference; 8x8 nodes have rect
@@ -4944,7 +4955,14 @@ mod edge_partition_cost_tests {
 
 // ===========================================================================
 // KB-12 — speed >= 8: av1_nonrd_use_partition (partition_search.c:2960).
-// HANDOFF: written under kill-order, NEVER COMPILED — see HANDOFF-SPEED89.md.
+// [Corrected 2026-08-03. This read: "HANDOFF: written under kill-order, NEVER
+// COMPILED — see HANDOFF-SPEED89.md." Both halves are dead. The code compiles and
+// is on the hot path for every `--cpu-used` 8/9 encode: speeds 8 and 9 are 64/64
+// canon byte-identical to real aomenc, and it is exercised by
+// aom-bench/tests/{kb34_nonsquare_nonrd_leaf,kb35_nonrd_palette_arm,
+// kb37_nonrd_palette_search}.rs. HANDOFF-SPEED89.md was the WIP capture (d862208)
+// and was deleted when KB-12 landed (9b57803); `git show d862208:HANDOFF-SPEED89.md`
+// if you need it.]
 // ===========================================================================
 
 /// `av1_nonrd_use_partition` (partition_search.c:2960) for the allintra KEY

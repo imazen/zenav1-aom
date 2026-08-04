@@ -1,5 +1,27 @@
 # Winner-mode two-pass mode/tx evaluation — porting design (task #10, the speed-4 wall)
 
+> ## SUPERSEDED — this plan was EXECUTED. Do not apply it.
+>
+> **Banner added 2026-08-03.** Written 2026-07-15 as a 6-chunk design to apply. Every chunk
+> landed (the KB-8 chunk series), and Gate 2 has since gone to **zero pinned cells across
+> `--cpu-used 0..9`**. Applying this now would re-do finished work.
+>
+> **Where it landed:** `store_winner_mode_stats` — which §"Correctly absent" in the review
+> pass lists as not yet present — is `crates/aom-encode/src/intra_rd.rs:960`. The
+> `USE_LARGESTALL` tx-search arm is `crate::tx_search::USE_LARGESTALL`, consumed at
+> `intra_rd.rs:1093/1097/1356`. The two-pass loop is `intra_rd.rs:840` (MODE_EVAL) →
+> `:1337` (WINNER_MODE_EVAL). The four activation flags this document calls "a package"
+> are set together in `speed_features.rs`'s `if speed >= 4` block and asserted by
+> `speed4_allintra_deltas_match_source`.
+>
+> **What is still worth reading:** §1 (the C mechanism), §2 (the tables), and §5 (the eight
+> risks — the tie-break `>` vs `>=`, the `best_rd` carry, pass-2 mutation) are the durable
+> part, and §5's risks were live during the landing. **Every port `file:line` in §3/§5 has
+> drifted** — the document says so itself at the end, and the drift is now far larger than
+> the "+19…+24 lines" it recorded. Match by function name, not by line.
+>
+> **Live record:** CLAUDE.md KB-8, KB-21 and KB-26; `PARITY.md` section A.
+
 **Scope.** The `--cpu-used` sweep worklist (`docs/cpu_used_allintra_sweep_plan.md`)
 flags the **winner-mode subsystem** as the "MAJOR structural chunk / first wall": at
 `speed >= 4` on the all-intra KEY path, libaom switches luma intra-mode + tx search from

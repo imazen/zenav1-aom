@@ -2,13 +2,13 @@
 //! (nonrd_pickmode.c:1582) + its `av1_block_yrd` Hadamard estimator
 //! (nonrd_opt.c:126) + the LP kernel set they stand on.
 //!
-//! STATUS (2026-07-17): LANDED — compiled + gated. Speed 9 byte-matches real
-//! `aomenc --cpu-used=9` 64/64 (canon) + noise; speed 8 60/64 (canon) + noise,
-//! with 4 `diag` estimate-arm V/H near-ties pinned open (KB-12 in CLAUDE.md).
-//! Every function carries its exact C provenance; the remaining `// HANDOFF:`
-//! marks are genuine out-of-envelope work (lossless TX_4X4, screen-content
-//! palette). See CLAUDE.md KB-12 for the full state, gate names, and the pinned
-//! near-tie's next step.
+//! STATUS (2026-07-17) — **SUPERSEDED, kept for the history; read the 2026-08-03
+//! stanza at the bottom of this list for the current state.** As written: LANDED —
+//! compiled + gated. Speed 9 byte-matches real `aomenc --cpu-used=9` 64/64 (canon)
+//! + noise; speed 8 60/64 (canon) + noise, with 4 `diag` estimate-arm V/H near-ties
+//! pinned open (KB-12). Every function carries its exact C provenance; the
+//! remaining `// HANDOFF:` marks were then genuine out-of-envelope work (lossless
+//! TX_4X4, screen-content palette) — **both of those have since closed.**
 //!
 //! STATUS (2026-07-30, KB-20): the HBD estimate arm is ported — bd10/bd12 x
 //! `--cpu-used` {8,9} are byte-identical to real aomenc (24 cells,
@@ -171,11 +171,29 @@
 //! the cost tables, `rdmult`), which is the same shape the deltaq-mode-3
 //! landing found for `av1_set_mb_wiener_variance` (PARITY.md section A).
 //!
-//! Still out of envelope at every bit depth: lossless TX_4X4 (both arms) and
-//! the screen-content palette arm — which is now the ONLY refusal a bd8
-//! `--cpu-used` 8/9 encode can hit, and it accounts for all 136 refusing rows
-//! of KB-34's 1,264-cell sweep (libaom's own screen-content detection firing on
-//! a smooth synthetic gradient and on low-quantizer real content).
+//! STATUS (2026-08-03, KB-35 + KB-37 + KB-5): **this module no longer refuses
+//! anything.** The paragraph here previously read *"Still out of envelope at every
+//! bit depth: lossless TX_4X4 (both arms) and the screen-content palette arm —
+//! which is now the ONLY refusal a bd8 `--cpu-used` 8/9 encode can hit, and it
+//! accounts for all 136 refusing rows of KB-34's 1,264-cell sweep"*. Both closed:
+//!
+//! - **Palette.** KB-35 found the refusal tested `allow_screen_content_tools`
+//!   alone — one of the FOUR terms of C's `try_palette` — so it fired on plain
+//!   gradients libaom never enters the palette search on. KB-37 then PORTED the
+//!   search itself: [`search_palette_mode_luma`] (`av1_search_palette_mode_luma`,
+//!   intra_mode_search.c:1122) below, with [`NonrdIntraPick::palette_arm_live`]
+//!   carrying C's real four-term predicate. Gates:
+//!   `aom-bench/tests/kb35_nonrd_palette_arm.rs`, `kb37_nonrd_palette_search.rs`.
+//! - **Lossless TX_4X4.** The two `unimplemented!()` `block_yrd` arms were the
+//!   CODED-LOSSLESS arms (`select_tx_mode` returns `ONLY_4X4` at
+//!   `coded_lossless`, rdopt_utils.h:392). Ported 2026-08-03; 52/52 lossless
+//!   cells byte-identical across `--cpu-used` 0..9 (KB-5,
+//!   `aom-bench/tests/kb5_lossless_speed_axis.rs`).
+//!
+//! There are no `unimplemented!()` / `panic!()` refusals left in this file. What
+//! remains OPEN is a byte divergence, not a refusal: `PALETTE_ON_SPEED8_OPEN`
+//! (palette ON x cpu8 x screen-detected, 13 rows) — see CLAUDE.md's coverage
+//! queue, T4.
 
 use crate::encode_sb::SbEncodeEnv;
 use crate::partition::PartRdStats;
@@ -1634,7 +1652,13 @@ pub fn reset_multi_txb_leaf_counts() {
 // Test instrumentation: how close the estimate arm gets to C's palette arm.
 // ---------------------------------------------------------------------------
 //
-// The refusal below fires on C's `try_palette`, which is a conjunction of four
+// [Corrected 2026-08-03: this opened "The refusal below fires on C's
+// `try_palette`". There is no refusal any more — KB-37 ported
+// `av1_search_palette_mode_luma` and the four-term predicate now GATES THE ARM
+// (`nonrd_palette_arm_is_live`) instead of rejecting the encode. The census below
+// is unchanged and is still the anti-vacuity instrument it always was.]
+//
+// The palette ARM is gated on C's `try_palette`, which is a conjunction of four
 // terms. A gate asserting "the port did not refuse" is vacuous if the FIRST
 // term (`--enable-palette`) is off, and every canon cell has it off — so a
 // three-number breakdown is recorded per leaf instead of a bare pass/fail:

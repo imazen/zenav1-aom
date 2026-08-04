@@ -1,5 +1,24 @@
 # Config-permutation gate — design, evidence, and honest coverage arithmetic
 
+> **DATED RECORD, 2026-07-30 — the DESIGN is live, the OPEN-CELL findings are not.**
+> (Header added 2026-08-03; the body is deliberately not rewritten — it is the evidence for
+> the landing, and the reasoning behind the collapse engine is why the gate is shaped as it
+> is.) Two things have since changed:
+>
+> - **§"Root cause of the `dtxo` class divergence (found 2026-07-30, NOT fixed)" IS NOW
+>   FIXED** — that is KB-17 (`use_screen_content_tools` hardcoded `false`), closed the same
+>   day. `mono_vector_open_divergences_pinned` has been inverted from an open-divergence pin
+>   into the **KB-17 regression gate**: all `dtxo` cells are byte-identical and asserted so.
+>   `dtxo` is no longer content-sensitive.
+> - **The gate has ZERO pinned cells since 2026-08-02.** Both `SPEED_OPEN_SINGLETONS` and
+>   `SPEED_OPEN_COMBINATIONS` in `crates/aom-bench/tests/config_permutations.rs` are empty:
+>   every single-axis perturbation and every covering-array combination is byte-identical to
+>   real `aomenc` at every speed 0..9. The specific "2 of 93 covering-array cells" and the
+>   speed-4/speed-8 combination rows quoted below closed via KB-21 (three roots) and KB-12
+>   (`aom_hadamard_lp_8x8`'s dropped trailing transpose).
+>
+> The gate file's own doc comments are the live status. This document is the design record.
+
 **Landed 2026-07-30.** Code: `crates/aom-bench/src/config_perm.rs` (collapse
 engine) + `crates/aom-bench/tests/config_permutations.rs` (the gate).
 Evidence: `benchmarks/config_perm_independence_2026-07-30.tsv`.

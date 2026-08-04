@@ -1,5 +1,36 @@
 # aom-rs — Inter-Frame DECODE Roadmap
 
+> ## STALE PLAN — read the status here first (banner added 2026-08-03)
+>
+> Written 2026-07-18 and **never updated**. Large parts of its gap map are now wrong, and
+> its "genuinely missing" list is mostly landed. Concretely, against the tree at `4d341c7`:
+>
+> - **Chunk 0's `reconstruct_txb` relocation** happened and was then re-absorbed: it is
+>   `crates/aom-dsp/src/recon/mod.rs:37`. There is no `aom-recon` crate and no
+>   `use aom_encode::` line in `crates/aom-decode/src/lib.rs`.
+> - **"No reference-frame buffer pool / multi-frame decode loop exists"** is false:
+>   `RefFrame` is `crates/aom-decode/src/lib.rs:832`, `decode_frames` is
+>   `crates/aom-decode/src/frame.rs:954`, `decode_block_inter` is `lib.rs:2988`.
+> - **The document's own recommended first target** — `av1-1-b8-00-quantizer-63` frame 1 —
+>   is a **passing hard gate**: `crates/aom-decode/tests/inter_real_frame.rs` (352x288, 79
+>   inter blocks, SIMPLE + OBMC + WARPED_CAUSAL + interintra + intra-in-inter + var-tx, all
+>   byte-identical to the golden MD5s).
+> - **`aom-convolve` "NOT wired into decode or encode"** is false: `build_inter_predictor`
+>   (`crates/aom-dsp/src/inter/mod.rs:448`) consumes it and both codecs use it.
+>
+> What is still useful: the C call-tree survey, the conformance-vector inventory, and the
+> Gate-1-inter definition of done. What is NOT: the chunk list as a work queue. The live
+> record is `INTER_DECODE_ENVELOPE.md` (the measured multi-frame envelope) plus the
+> `inter_*` gates in `crates/aom-decode/tests/`.
+> ### Path-rot warning that applies to EVERY `crates/…` reference below
+> The 2026-07 consolidation collapsed the 13 DSP/entropy kernel crates into one
+> `zenav1-aom-dsp`. **Every `crates/aom-{entropy,txb,quant,transform,intra,cdef,
+> loopfilter,restore,inter,dist,recon,convolve}/…` path in this file is dead.** Live homes:
+> `crates/aom-dsp/src/<module>/` and the `aom_dsp::<module>` namespace; the differential
+> tests are all under `crates/aom-dsp/tests/`. Line numbers in `crates/aom-encode/…` and
+> `crates/aom-decode/…` citations have drifted substantially too — **match by function
+> name, never by line.**
+
 Scope: DECODER first (bit-exact-verifiable against the AV1 conformance corpus; the
 foundation the inter *encoder* will later mirror). Single-frame KEY/intra decode is
 DONE and Gate-1-clean; this document maps the gap to **inter-frame decode** and

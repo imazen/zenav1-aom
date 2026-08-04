@@ -1,5 +1,42 @@
 # INTER-ENCODE Chunk 2 — Handoff (encode skeleton)
 
+> ## SUPERSEDED HANDOFF, and one claim in it is FALSE — banner added 2026-08-03
+>
+> A running 2026-07-19→07-23 session log. It **overturns itself in places by design** (later
+> sections retract earlier ones), which makes it unusually easy to read a dead claim as live.
+> The one that matters:
+>
+> - §"1. CRITICAL — the inter var-tx COEFF arm is NOT byte-exact yet (KB-15 blocker) … the
+>   three NN prunes are gated OFF … ⇒ the ONLY byte-exact-achievable P-frame today is a
+>   SKIP-ONLY P". **The three prunes are landed.** `prune_tx_2D` is
+>   `crates/aom-encode/src/prune_tx_2d.rs`, called from `var_tx.rs:302`;
+>   `ml_predict_tx_split` is `var_tx.rs:528`, wired at `:1032`; `model_based_tx_search_prune`
+>   was closed by SOURCE PROOF (it can never fire on the intrabc path — `ref_best_rd` is
+>   hardcoded `INT64_MAX` at rdopt.c:3611). The same stale claim is propagated by
+>   `docs/inter-vartx-coeff-arm-notes.md`, corrected there in the same change.
+> - §"PRECISE 2f BUILD PLAN" and §"Next work — the 2a–2g INTEGRATION MAP" are **plans that
+>   were executed**. Their targets exist: `inter_rd.rs:252`, `inter_pack.rs:102`,
+>   `interp_rd.rs:95/:158`.
+> - §Coordination's "Symlink `reference/libaom` + `conformance/data` from `/root/aom-rs/`" is
+>   obsolete AND was an active hazard — see CONTEXT-HANDOFF.md on the tracked self-referential
+>   symlink that gave every fresh worktree ~10 phantom conformance failures. Use the
+>   `upstream/` submodule and `python3 xtask/conformance.py --fetch --scope intra`.
+>
+> Pins that are still LIVE (verified in tree): `good_usage_key_frame0_pinned_divergent` and
+> `zero_mv_p_low_cq_term_none_prune_pinned_divergent`, both
+> `crates/aom-bench/tests/inter_e2e_search.rs`. Pins that PROMOTED:
+> `zero_mv_p_own_search_64x128_cropped_sb128_*` (now `_byte_exact`) and the two-superblock
+> tile pin (gone; tombstone at `crates/aom-bench/tests/inter_pack_tile_diff.rs:548`).
+>
+> ### Path-rot warning that applies to EVERY `crates/…` reference below
+> The 2026-07 consolidation collapsed the 13 DSP/entropy kernel crates into one
+> `zenav1-aom-dsp`. **Every `crates/aom-{entropy,txb,quant,transform,intra,cdef,loopfilter,
+> restore,inter,dist,recon,convolve}/…` path in this file is dead.** Live homes:
+> `crates/aom-dsp/src/<module>/` and the `aom_dsp::<module>` namespace; the differentials
+> are under `crates/aom-dsp/tests/`. Line numbers in `crates/aom-encode/…` and
+> `crates/aom-decode/…` citations have drifted substantially too — **match by function
+> name, never by line.**
+
 Status snapshot for the inter-encode walking skeleton (INTER-ENCODE-ROADMAP.md §"chunk 2",
 sub-steps 2a–2g). Goal: encode ONE single-ref translational P-frame **byte-exact** vs `aomenc`,
 verified by decode-both.

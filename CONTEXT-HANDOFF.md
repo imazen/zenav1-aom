@@ -227,8 +227,15 @@ single arm's systematic floor is ~0.27 pp even rotated, well above its statistic
   INTER-ENCODE-ROADMAP.md, INTER-FEATURES-PLAN.md, INTER_DECODE_ENVELOPE.md,
   INTER-CHUNK{1,2}-HANDOFF.md. Encoder is at the single-ref translational
   P-frame skeleton stage (KB-16 in STATUS).
-- **KB-15 intrabc coeff arm** (screen content): CLAUDE.md KB-15 — six roots
-  fixed, witness pinned at first-diff 1120 (an mi(40,28) partition near-tie).
+- **KB-15 intrabc** (screen content): CLAUDE.md KB-15 — six roots fixed, witness
+  pinned at first-diff 1120. **Corrected 2026-08-03: this line called the residual
+  "an mi(40,28) partition near-tie" and titled the track "coeff arm"; both are the
+  pre-root-3 description.** Root 3 made the intrabc leaf RD equal C to the unit and
+  mi(40,28) now picks VERT matching C; the coeff arm is wired end to end and its
+  re-encoded txbs match C's coded tree. What is left is the block's PACK **symbol**
+  coding (the DV diff / `use_intrabc` flag / `write_tx_size_vartx` txfm-partition
+  split-flag context) at port 1886 B vs C 1891 B. Do not re-chase the DV search, the
+  NN prunes, or the coeff re-encode.
 - **Decoder robustness/fuzz**: fuzz harness landed, campaign notes in STATUS;
   keep the no-panic property as features land.
 - **Encoder near-tie residuals — nearly all closed as of 2026-08-03.** KB-13 is at

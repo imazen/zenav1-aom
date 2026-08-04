@@ -26,8 +26,10 @@ debugging time:
 
 ## Crate decomposition
 
-Six packages. The 2026-07 consolidation collapsed an earlier 17-crate split — fine-grained
-crates aided parallel porting, but a public release wants a small surface.
+**Seven packages** (corrected 2026-08-03: this said "Six" and omitted `zenav1-aom-dsp-bench`).
+The 2026-07 consolidation collapsed the 13 DSP/entropy kernel crates into one — fine-grained
+crates aided parallel porting, but a public release wants a small surface. Four are
+publishable; three are `publish = false`.
 
 | crate | mirrors (libaom) | bit-exact oracle |
 |-------|------------------|------------------|
@@ -36,19 +38,26 @@ crates aided parallel porting, but a public release wants a small surface.
 | `zenav1-aom-decode` | `av1/decoder/*` | full-frame decode |
 | `zenav1-aom-encode` | `av1/encoder/*` | full bitstream |
 | `zenav1-aom-sys-ref` | FFI to the pinned C libaom (oracle only, **dev-dep**) | — |
-| `zenav1-aom-bench` | Gate-3 performance harness (bench-only, never published) | — |
+| `zenav1-aom-bench` | Gate-3 harness + every whole-frame encoder gate (bench-only) | — |
+| `zenav1-aom-dsp-bench` | port-only DSP kernel benchmarks, no C oracle (bench-only) | — |
 
-`zenav1-aom-dsp` is the shared kernel crate, organised by libaom module:
+`zenav1-aom-dsp` is the shared kernel crate, organised by libaom module. **LOC re-measured
+2026-08-03** (`find crates/aom-dsp/src/<module> -name '*.rs' | xargs wc -l`); the previous
+figures were the 2026-07-19 snapshot and several had nearly doubled — `transform` read 8,155
+against 15,140, `intra` 2,672 against 4,631, `cdef` 1,556 against 2,561. Treat any number in
+this table as decaying from its measurement date, not as a property of the tree.
 
 | module | LOC | module | LOC |
 |---|---|---|---|
-| `entropy` | 15,602 | `cdef` | 1,556 |
-| `quant` | 10,653 | `loopfilter` | 1,543 |
-| `transform` | 8,155 | `dist` | 847 |
-| `txb` | 4,727 | `convolve` | 160 |
-| `restore` | 3,333 | `dispatch` | 153 |
-| `intra` | 2,672 | `recon` | 51 |
-| `inter` | 1,747 | | |
+| `entropy` | 16,565 | `cdef` | 2,561 |
+| `transform` | 15,140 | `loopfilter` | 2,116 |
+| `quant` | 10,659 | `inter` | 1,769 |
+| `txb` | 4,787 | `census.rs` | 1,060 |
+| `intra` | 4,631 | `dist` | 847 |
+| `restore` | 3,450 | `dispatch` | 206 |
+| | | `convolve` | 160 |
+| | | `recon` | 134 |
+| | | `lowbd.rs` | 112 |
 
 ### Two invariants worth protecting
 
@@ -79,28 +88,38 @@ The exact oracle build config lives in `reference/BUILD_CONFIG.md`.
 
 ## The four gates, made mechanical
 
-1. **Decoder correctness** — `crates/aom-decode/tests/` (11 files as of 2026-07-19,
-   `conformance_corpus.rs` and `real_bitstream.rs` being the broad ones). The corpus is the
+1. **Decoder correctness** — `crates/aom-decode/tests/` (16 files as of 2026-08-03 — this
+   read "11 files as of 2026-07-19"; `conformance_corpus.rs` and `real_bitstream.rs` are the
+   broad ones, and `config_permutations_decode.rs` covers the crossings the conformance corpus
+   does not contain). The corpus is the
    official AV1 decode-conformance set; `xtask/conformance.py` parses libaom's own
    `upstream/test/test-data.sha1` manifest, fetches the vectors, and categorises them by
    bit-depth and feature. Each vector ships a companion `.md5` holding one MD5 per decoded
    frame — that per-frame list is the golden answer libaom's own tests assert against, and
    it is ours. CI scope: `xtask/conformance.py --fetch --scope intra`.
 
-2. **Encoder correctness** — `crates/aom-encode/tests/` (95 files) plus the e2e gates in
-   `crates/aom-bench/tests/` (17). The contract is byte-identity of the emitted bitstream
-   vs real `aomenc` across `--cpu-used 0..9`. Gates are named `encoder_gate_*` and assert
-   full byte-identity, not a tolerance.
+2. **Encoder correctness** — `crates/aom-encode/tests/` (99 files as of 2026-08-03) plus the
+   whole-frame gates in `crates/aom-bench/tests/` (39 — this read 17). The contract is
+   byte-identity of the emitted bitstream vs real `aomenc` across `--cpu-used 0..9`. Gates are
+   named `encoder_gate_*` / `kb*` / `s4cov_*` and assert full byte-identity, not a tolerance.
+   As of 2026-08-02 the configuration-permutation grid (`config_permutations.rs`, 10 speeds x
+   26 axis levels) has **zero pinned cells**.
 
    Several gates are **self-promoting**: they pin a *known* divergence by asserting it is
    still present, so the test fails the moment the port becomes byte-exact — at which point
    you promote the cell into the byte-exact list. This keeps a known gap honest instead of
    letting it rot as a silent skip.
 
-3. **Performance** — `crates/aom-bench`, using **zenbench 0.1.9** paired/interleaved
-   benchmarks against the real C oracle in-process via `aom-sys-ref`, plus a callgrind
-   profile driver. Target is ≤ 1.20× C. Results are committed under `benchmarks/` with a
-   companion `.meta` recording commit, host, and the exact command.
+3. **Performance** — `crates/aom-bench`, using **zenbench** paired/interleaved benchmarks
+   against the real C oracle in-process via `aom-sys-ref`, plus a callgrind profile driver.
+   **The acceptance bar is ≤ 1.5× C** (the 2026-07-20 user directive); ≤ 1.20× is retained as
+   the stretch target. (Corrected 2026-08-03: this line said "Target is ≤ 1.20× C", which
+   contradicted CLAUDE.md's Gate 3 and CHANGELOG.md.) Decode meets the bar at the 4K headline
+   cells only; the encoder was first profiled on 2026-08-02 and is at 3.15× on the study cell.
+   Results are committed under `benchmarks/` with a companion `.meta` recording commit, host,
+   and the exact command. The encoder A/B harness is `scripts/eprof_ab.sh`, and `ROTATE=1`
+   (rotating the arm order so position cannot confound) is now its default — see
+   `docs/DIFFERENTIAL_PLAYBOOK.md` §6.
 
 4. **Coverage** — `xtask/coverage.py` auto-derives the feature checklist from libaom's live
    CLI (`aomenc --help` / `aomdec --help`) and the control-enum surface, then cross-references
