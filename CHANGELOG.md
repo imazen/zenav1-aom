@@ -6,6 +6,39 @@
 
 ### Added
 
+- **Four coverage axes swept, three closed byte-exact, and one new unmodelled
+  speed-feature arm found (KB-38).** All four were named-but-unmeasured entries
+  in the coverage queue. (1) *partial-SB x high bit depth beyond bd10 4:2:0* —
+  7 formats (bd10 {mono, 4:4:4, 4:2:2}, bd12 {4:2:0, mono, 4:4:4, 4:2:2}) x
+  KB-23's four sizes x `--cpu-used` {0, 7}, **56/56 byte-exact**
+  (`s4cov_partial_sb_axis::partial_sb_high_bitdepth_formats_byte_match`).
+  (2) *the >=1080p band at every format KB-36 did not sweep* — 4:4:4 / 4:2:2 /
+  monochrome / SB128 / cq5 / cq40 / cq63, each at both 1920x1072 and 1920x1080
+  at `--cpu-used 6`, **14/14 byte-exact**. (3) *1440..2160 at speed >= 1* —
+  1920x1920 + 2560x1600 x `--cpu-used` 1..9, **18/18 byte-exact**. (4) *crops
+  straddling `is_4k_or_larger`* — 2154x2160 vs 2160x2160, **2/2 byte-exact in
+  35 s** rather than the queue's estimated 25-30 min, because
+  `is_4k_or_larger` is speed-unconditional and speed 5 observes it (the
+  estimate had costed the arm at the speed it was *found* at). New gate file
+  `aom-bench/tests/s4cov_hd_format_axis.rs`; record
+  `benchmarks/s4cov_hd_format_2026-08-04.{tsv,meta}` +
+  `benchmarks/s4cov_partial_sb_hbd_2026-08-04.{tsv,meta}`. (f99ac44, f085be4)
+
+- **KB-38 — `av1_set_speed_features_qindex_dependent`'s
+  `is_1080p_or_larger && base_qindex <= 108` sub-block (speed_features.c:2926-2935)
+  is now modelled.** It was omitted under a comment claiming the whole block was
+  "all inter-only, and the port carries no field for them" — both halves false:
+  the port carries all five fields and four are intra-live, including
+  `skip_tx_search`, which `search_tx_type` reads directly (tx_search.c:2362).
+  The window is three terms wide (`speed == 0` x `min(w,h) >= 1080` x
+  `base_qindex <= 108`), so KB-36's >=1080p grid (`--cpu-used` 1..9) and
+  KB-19/KB-22's speed-0 2160p cell (cq32 = qindex 128) each missed a different
+  term. **The cells it moves are not closed** — porting it took bd8 1920x1080
+  cq24 from -536 B to -726 B without closing it, and a twelfth row diverges
+  outside its predicate — so the 12-cell map is recorded as a self-promoting
+  pin (`speed0_1080p_band_map_is_pinned`), not as a fix. Unit lock:
+  `speed_features::tests::qindex_dependent_speed0_1080p_q108_subarm`. (f085be4)
+
 - **Lossless (`--cq-level 0`) now encodes byte-identically at every
   `--cpu-used` 0..9 — the last T1 refusal on a default-reachable configuration.**
   Two independent roots. (1) The e2e harness (`aom-bench`) parsed the frame

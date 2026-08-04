@@ -73,9 +73,9 @@ Two gotchas, both verified:
   counts against the port's expected read sequence is itself a strong check — e.g. inter-intra:
   40 allowed blocks ⇒ 40 flag reads, +2 wedge flags +1 wedge index = the 43 C records.
 
-## Coverage queue — the named-but-unmeasured axes, ranked (2026-08-03)
+## Coverage queue — the named-but-unmeasured axes, ranked (2026-08-04)
 
-**Why this section exists.** Between 2026-07-30 and 08-03 every closed KB was found by
+**Why this section exists.** Between 2026-07-30 and 08-04 every closed KB was found by
 measuring an axis nobody had measured, and every one of those landings NAMED the axes it did
 not measure — inside its own KB entry, or in a gate file's doc comment, or in a `Still
 unmeasured` bullet. That list is a work queue with a demonstrated hit rate, and it was
