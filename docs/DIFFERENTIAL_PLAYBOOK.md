@@ -847,3 +847,31 @@ to the digit), while lever 3 alone was −1.339 ms with −341,496 calls. Summed
 4.467 vs 4.641 measured. Had they been shipped as one change, the 18x-optimistic
 projection would have been quietly absorbed by the honest one.
 
+## 15. Cost an axis at the cheapest configuration that OBSERVES it, not the one you found it at
+
+**The failure it prevents:** the coverage queue costed "crops straddling
+`is_4k_or_larger` (2160)" at **25-30 minutes** of port encode, because KB-19 had
+found that arm at `--cpu-used 0`, where a 2160² cell runs ~195 s port-side. That
+estimate deterred the work for a day. The arm is **speed-unconditional**, so
+speed 5 observes it just as well: the axis closed in **35 seconds**, ~50x cheaper
+than its own queue entry claimed.
+
+**The rule:** before costing an axis, ask which of its terms are load-bearing for
+*observing* the behaviour versus which were merely the conditions it was
+discovered under. A framesize predicate that is speed-unconditional can be
+observed at the cheapest speed. A quantizer-conditioned arm can be observed at
+the cheapest frame size that still satisfies the size term. Discovery conditions
+and observation conditions are different sets, and the second is usually much
+cheaper.
+
+**Corollary — the reverse error is worse.** Trimming a term that IS load-bearing
+produces a green sweep that proves nothing. KB-38's window is three terms wide
+(`speed == 0` x `min(w,h) >= 1080` x `qindex <= 108`), and two earlier sweeps
+each missed it by relaxing a different one: KB-36's >=1080p grid ran cpu 1..9 and
+KB-19/KB-22's speed-0 cell ran at qindex 128. So the cheapening is only sound
+once you have read which terms the C predicate actually conjoins — from source,
+not from the cell that happened to fail.
+
+Both halves are the same discipline as §14: cost and coverage both follow from
+the *mechanism*, never from the stage or the cell it was found in.
+
