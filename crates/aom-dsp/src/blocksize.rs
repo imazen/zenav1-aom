@@ -211,6 +211,62 @@ pub const TXSIZE_SQR_MAP: [u8; TX_SIZES_ALL] = {
     out
 };
 
+/// The `TX_SIZE` with exactly these dimensions, or a compile-time panic. Every
+/// `TX_SIZE` shape is distinct (`tests::every_size_is_a_distinct_shape`), so the
+/// answer is unique.
+const fn tx_of(w: u16, h: u16) -> u8 {
+    let mut t = 0;
+    while t < TX_SIZES_ALL {
+        if TX_DIMS[t].0 == w && TX_DIMS[t].1 == h {
+            return t as u8;
+        }
+        t += 1;
+    }
+    panic!("no TX_SIZE with these dimensions");
+}
+
+/// `max_txsize_rect_lookup[BLOCK_SIZES_ALL]`: the largest transform that fits
+/// the block — its own shape, with each side capped at the 64-px transform
+/// maximum (so the three 128-px blocks all take `TX_64X64`).
+pub const MAX_TXSIZE_RECT_LOOKUP: [u8; BLOCK_SIZES_ALL] = {
+    let mut out = [0u8; BLOCK_SIZES_ALL];
+    let mut b = 0;
+    while b < BLOCK_SIZES_ALL {
+        let (w, h) = BLOCK_DIMS[b];
+        out[b] = tx_of(if w > 64 { 64 } else { w }, if h > 64 { 64 } else { h });
+        b += 1;
+    }
+    out
+};
+
+/// `sub_tx_size_map[TX_SIZES_ALL]`: one split level down — a square transform
+/// halves BOTH sides, a rectangular one halves only its LONGER side, and 4 px
+/// is the floor (so `TX_4X4` maps to itself).
+///
+/// The 4:1 tail is the entry people get wrong: `sub_tx_size_map[TX_4X16]` is
+/// `TX_4X8`, not `TX_4X4` — halving the long side of a 4:1 transform leaves a
+/// 2:1 one, it does not collapse to the square. A copy in
+/// `aom-encode/tests/pack_tile_roundtrip.rs` had `txsize_sqr_map`'s tail here
+/// (found 2026-08-06 by the duplication audit that produced this module).
+pub const SUB_TX_SIZE_MAP: [u8; TX_SIZES_ALL] = {
+    let mut out = [0u8; TX_SIZES_ALL];
+    let mut t = 0;
+    while t < TX_SIZES_ALL {
+        let (w, h) = TX_DIMS[t];
+        let half_w = if w / 2 < 4 { 4 } else { w / 2 };
+        let half_h = if h / 2 < 4 { 4 } else { h / 2 };
+        out[t] = if w == h {
+            tx_of(half_w, half_h)
+        } else if w > h {
+            tx_of(half_w, h)
+        } else {
+            tx_of(w, half_h)
+        };
+        t += 1;
+    }
+    out
+};
+
 /// Assert that local transcriptions of `common_data.h` geometry agree,
 /// entry-for-entry, with this module's derivation.
 ///
@@ -348,6 +404,60 @@ mod tests {
             assert_eq!(down.0, w.min(h), "sqr_map[{t}] side");
             assert_eq!(up.0, w.max(h), "sqr_up_map[{t}] side");
             assert_eq!(down == up, w == h, "bracket collapses iff square, at {t}");
+        }
+    }
+
+    /// `max_txsize_rect_lookup` must fit inside its block and lose nothing it
+    /// could have kept: same shape as the block on both axes unless the block
+    /// exceeds the 64-px transform maximum, in which case exactly that axis is
+    /// clamped to 64.
+    #[test]
+    fn max_rect_tx_is_the_block_shape_capped_at_64() {
+        let mut capped = 0usize;
+        for b in 0..BLOCK_SIZES_ALL {
+            let (bw, bh) = BLOCK_DIMS[b];
+            let (tw, th) = TX_DIMS[MAX_TXSIZE_RECT_LOOKUP[b] as usize];
+            assert!(tw <= bw && th <= bh, "block {b}: tx exceeds the block");
+            assert_eq!(tw, bw.min(64), "block {b}: width");
+            assert_eq!(th, bh.min(64), "block {b}: height");
+            if bw > 64 || bh > 64 {
+                capped += 1;
+            }
+        }
+        // BLOCK_64X128, BLOCK_128X64, BLOCK_128X128 are the only capped blocks.
+        assert_eq!(capped, 3, "expected exactly three 128-px blocks");
+    }
+
+    /// `sub_tx_size_map` must halve area by exactly 2 (rect) or 4 (square), stay
+    /// on the same side of squareness, and be a fixed point only at `TX_4X4`.
+    /// The last clause is what catches the classic error of pasting
+    /// `txsize_sqr_map`'s tail here: that would make five more entries collapse
+    /// to a square and shrink `TX_4X16` by 4x instead of 2x.
+    #[test]
+    fn sub_tx_size_halves_the_longer_side() {
+        for t in 0..TX_SIZES_ALL {
+            let (w, h) = TX_DIMS[t];
+            let (sw, sh) = TX_DIMS[SUB_TX_SIZE_MAP[t] as usize];
+            if t == 0 {
+                assert_eq!((sw, sh), (4, 4), "TX_4X4 must be its own sub-size");
+                continue;
+            }
+            assert_ne!(
+                SUB_TX_SIZE_MAP[t] as usize, t,
+                "tx {t} must shrink, only TX_4X4 is a fixed point"
+            );
+            if w == h {
+                assert_eq!((sw, sh), (w / 2, h / 2), "square tx {t} halves both");
+            } else {
+                let long_halved = if w > h { (w / 2, h) } else { (w, h / 2) };
+                assert_eq!((sw, sh), long_halved, "rect tx {t} halves the long side");
+            }
+            assert!(sw >= 4 && sh >= 4, "tx {t}: sub-size below the 4px floor");
+        }
+        // The 4:1 transforms must land on 2:1 transforms, NOT on squares.
+        for t in 13..TX_SIZES_ALL {
+            let (sw, sh) = TX_DIMS[SUB_TX_SIZE_MAP[t] as usize];
+            assert_ne!(sw, sh, "4:1 tx {t} must not collapse to a square");
         }
     }
 
