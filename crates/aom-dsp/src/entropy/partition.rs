@@ -7515,3 +7515,32 @@ pub fn intra_avail(
     let n_bottomleft_px = if have_bl > 0 { txhpx.min(yd) } else { have_bl };
     (n_top_px, n_topright_px, n_left_px, n_bottomleft_px)
 }
+
+#[cfg(test)]
+mod geometry_agreement {
+    //! These `common_data.h` geometry tables are hand transcriptions that also
+    //! exist in other modules of this port (block_size_wide alone has 6 copies). A single wrong entry does
+    //! not crash and does not fail a build — it silently produces a wrong-sized
+    //! block, transform or context in THIS module's code paths only. Pin the
+    //! copy to the port's one derivation, `aom_dsp::blocksize`, which is itself
+    //! structurally checked against the `enums.h` construction rule.
+
+    #[test]
+    fn matches_the_ports_single_derivation() {
+        crate::assert_geometry_agrees!(
+            super::BLOCK_SIZE_WIDE => crate::blocksize::BLOCK_SIZE_WIDE,
+            super::BLOCK_SIZE_HIGH => crate::blocksize::BLOCK_SIZE_HIGH,
+            super::MI_SIZE_WIDE => crate::blocksize::MI_SIZE_WIDE,
+            super::MI_SIZE_HIGH => crate::blocksize::MI_SIZE_HIGH,
+            super::MI_SIZE_WIDE_LOG2 => crate::blocksize::MI_SIZE_WIDE_LOG2,
+            super::MI_SIZE_HIGH_LOG2 => crate::blocksize::MI_SIZE_HIGH_LOG2,
+            super::TX_SIZE_WIDE => crate::blocksize::TX_SIZE_WIDE,
+            super::TX_SIZE_HIGH => crate::blocksize::TX_SIZE_HIGH,
+            super::TX_SIZE_WIDE_UNIT => crate::blocksize::TX_SIZE_WIDE_UNIT,
+            super::TX_SIZE_HIGH_UNIT => crate::blocksize::TX_SIZE_HIGH_UNIT,
+            super::TXSIZE_TO_BSIZE => crate::blocksize::TXSIZE_TO_BSIZE,
+            super::TXSIZE_SQR_UP_MAP => crate::blocksize::TXSIZE_SQR_UP_MAP,
+            super::TXSIZE_SQR_MAP => crate::blocksize::TXSIZE_SQR_MAP,
+        );
+    }
+}

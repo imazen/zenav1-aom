@@ -1541,3 +1541,22 @@ pub fn txfm_uvrd_inter(env: &InterUvEnv, ref_best_rd: i64) -> Option<InterUvResu
         v,
     })
 }
+
+#[cfg(test)]
+mod geometry_agreement {
+    //! These `common_data.h` geometry tables are hand transcriptions that also
+    //! exist in other modules of this port (txsize_sqr_up_map has 3 copies). A single wrong entry does
+    //! not crash and does not fail a build — it silently produces a wrong-sized
+    //! block, transform or context in THIS module's code paths only. Pin the
+    //! copy to the port's one derivation, `aom_dsp::blocksize`, which is itself
+    //! structurally checked against the `enums.h` construction rule.
+
+    #[test]
+    fn matches_the_ports_single_derivation() {
+        aom_dsp::assert_geometry_agrees!(
+            super::TXSIZE_SQR_UP_MAP => aom_dsp::blocksize::TXSIZE_SQR_UP_MAP,
+            super::TX_SIZE_WIDE_UNIT => aom_dsp::blocksize::TX_SIZE_WIDE_UNIT,
+            super::TX_SIZE_HIGH_UNIT => aom_dsp::blocksize::TX_SIZE_HIGH_UNIT,
+        );
+    }
+}

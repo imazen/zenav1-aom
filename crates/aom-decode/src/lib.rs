@@ -6783,3 +6783,27 @@ fn clamp_mv_umv_border_px(
     let rq4 = (mv_row * sy).clamp(row_min, row_max);
     (rq4 / sy, cq4 / sx)
 }
+
+#[cfg(test)]
+mod geometry_agreement {
+    //! These `common_data.h` geometry tables are hand transcriptions that also
+    //! exist in other modules of this port (block_size_wide alone has 6 copies). A single wrong entry does
+    //! not crash and does not fail a build — it silently produces a wrong-sized
+    //! block, transform or context in THIS module's code paths only. Pin the
+    //! copy to the port's one derivation, `aom_dsp::blocksize`, which is itself
+    //! structurally checked against the `enums.h` construction rule.
+
+    #[test]
+    fn matches_the_ports_single_derivation() {
+        aom_dsp::assert_geometry_agrees!(
+            super::BLOCK_SIZE_WIDE => aom_dsp::blocksize::BLOCK_SIZE_WIDE,
+            super::BLOCK_SIZE_HIGH => aom_dsp::blocksize::BLOCK_SIZE_HIGH,
+            super::MI_SIZE_WIDE => aom_dsp::blocksize::MI_SIZE_WIDE,
+            super::MI_SIZE_HIGH => aom_dsp::blocksize::MI_SIZE_HIGH,
+            super::TX_SIZE_WIDE => aom_dsp::blocksize::TX_SIZE_WIDE,
+            super::TX_SIZE_HIGH => aom_dsp::blocksize::TX_SIZE_HIGH,
+            super::TX_SIZE_WIDE_UNIT => aom_dsp::blocksize::TX_SIZE_WIDE_UNIT,
+            super::TX_SIZE_HIGH_UNIT => aom_dsp::blocksize::TX_SIZE_HIGH_UNIT,
+        );
+    }
+}
