@@ -1,4 +1,4 @@
-//! SIMD dispatch for the hot quantizers (Gate 3) — bit-identical to the
+//! SIMD dispatch for the hot quantizers — bit-identical to the
 //! scalar port at every tier, by construction AND by differential test
 //! (`tests/quantize_fp_simd_diff.rs`).
 //!

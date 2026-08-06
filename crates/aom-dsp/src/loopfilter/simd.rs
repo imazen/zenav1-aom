@@ -1,4 +1,4 @@
-//! SIMD deblock loop-filter kernels (Gate 3) — bit-identical to the highbd
+//! SIMD deblock loop-filter kernels — bit-identical to the highbd
 //! scalar core, at every dispatch tier (`tests/lpf_simd_diff.rs`).
 //!
 //! Same aom-rs SIMD pattern as `crate::cdef` / `crate::txb`: ONE magetypes generic

@@ -1,7 +1,7 @@
 //! Daala range *decoder* (`od_ec_dec`), bit-exact port of libaom v3.14.1
 //! `aom_dsp/entdec.c`.
 //!
-//! PERF (Gate 3, task #37): the window is widened from C's 32-bit
+//! PERF: the window is widened from C's 32-bit
 //! `od_ec_window` to **64 bits**, refilled with a single 8-byte big-endian
 //! load (the dav1d/rav1d msac `ctx_refill` technique — see rav1d-safe
 //! `src/msac.rs`). This is *decision-invariant* with respect to the 32-bit
@@ -99,7 +99,7 @@ impl<'a> OdEcDec<'a> {
 
     /// `od_ec_dec_refill`
     ///
-    /// PERF (Gate 3, task #37): `#[cold]` + never-inline, the rav1d msac
+    /// PERF: `#[cold]` + never-inline, the rav1d msac
     /// `ctx_refill` structure. Refill count is bounded by the STREAM BYTES
     /// (~len/2.5 calls per tile), not by symbol count, so it is inherently
     /// rare next to the symbol functions. Inlined, LLVM auto-vectorized this

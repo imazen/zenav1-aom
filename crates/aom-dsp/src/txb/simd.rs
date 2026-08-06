@@ -1,4 +1,4 @@
-//! SIMD column kernel for `txb_init_levels` (Gate 3) — bit-identical to the
+//! SIMD column kernel for `txb_init_levels` — bit-identical to the
 //! scalar port on the FULL i32 domain, at every dispatch tier.
 //!
 //! Same aom-rs SIMD pattern as `crate::quant::simd` / `crate::cdef::simd`: the

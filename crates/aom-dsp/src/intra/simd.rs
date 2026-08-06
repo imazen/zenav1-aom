@@ -1,4 +1,4 @@
-//! SIMD row kernels for the non-directional highbd intra predictors (Gate 3)
+//! SIMD row kernels for the non-directional highbd intra predictors
 //! — bit-identical to the scalar core at every dispatch tier
 //! (`tests/intra_simd_diff.rs`).
 //!
