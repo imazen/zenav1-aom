@@ -1,7 +1,39 @@
-//! Partition-symbol CDF primitives (libaom `av1/common/av1_common_int.h`) — the
-//! per-block-size partition CDF length and the edge-block CDF "gather" transforms
-//! that reduce the full partition CDF to a 2-way split-vs-not distribution when a
-//! superblock is clipped by the frame boundary. Byte-identical to C.
+//! The mode-info SYMBOL LAYER: every compressed-header symbol a block writes or
+//! reads, plus the frame-context and tile-walk plumbing around them.
+//!
+//! The module name is historical. It began as the partition-CDF primitives
+//! (which are still here, and still byte-identical to C: [`partition_cdf_length`]
+//! and the edge-block "gather" transforms that reduce the full partition CDF to
+//! a split-vs-not distribution when a superblock is clipped by the frame
+//! boundary) and then accreted the rest of `av1/{encoder/bitstream.c,
+//! decoder/decodemv.c}`. At 7.5k lines it is worth a map before you go looking.
+//!
+//! # Sections, in file order
+//!
+//! 1. **Partition CDF primitives** (top of file, and [`read_partition`] /
+//!    [`write_partition`]): CDF length per block size + the edge gathers.
+//! 2. **Symbol WRITERS** — skip, delta-q, delta-LF, CfL, intra mode, inter
+//!    mode, MV, palette, segment id, intraBC, tx size, interintra, compound
+//!    type, reference frames.
+//! 3. **Symbol READERS** — the same list, mirrored.
+//! 4. **KEY-frame block struct model** (banner `===== KEY-frame block struct
+//!    model =====`): `MbModeInfoKf`, `PaletteNbrKf`, `KfCdfs`, `KfBlockState`.
+//! 5. **`FRAME_CONTEXT` context selection** (banner `===== FRAME_CONTEXT
+//!    context selection =====`): `MiNbrKf`, `KfFrameContext`, the `*_fc`
+//!    drivers PRODUCTION uses.
+//! 6. **Tile-content dispatch** (banner `===== tile-content dispatch =====`):
+//!    the `write_modes_b` / `read_modes_b` recursion.
+//! 7. **Neighbour availability** (end of file): [`has_top_right`],
+//!    `has_bottom_left`, [`intra_avail`].
+//!
+//! # Which driver is live
+//!
+//! The `_fc` variants (`read_mb_modes_kf_fc` / `write_mb_modes_kf_fc`) are what
+//! the decoder (`aom_decode`'s `TileKf::decode_partition`) and the encoder
+//! (`aom_encode::pack`) call. The non-`_fc` `write_modes_*` / `read_modes_*`
+//! family is a parallel driver whose only non-self callers are
+//! `aom-dsp/tests/partition_diff.rs`; it exists to produce genuine bitstreams
+//! for that differential.
 
 /// `CDF_PROB_TOP` (`aom_dsp/prob.h`): `1 << CDF_PROB_BITS`, `CDF_PROB_BITS = 15`.
 const CDF_PROB_TOP: i32 = 1 << 15;

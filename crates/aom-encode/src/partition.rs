@@ -1,6 +1,13 @@
-//! `av1_rd_pick_partition` (av1/encoder/partition_search.c:5653) — the
-//! partition RDO layer: the speed-0 GOOD KEY-frame SURVEY (source-cited) and
-//! the first landed slice, the NONE-vs-SPLIT recursion skeleton.
+//! `av1_rd_pick_partition` (av1/encoder/partition_search.c:5653) — the speed-0
+//! GOOD KEY-frame SURVEY (source-cited) plus an early NONE-vs-SPLIT recursion
+//! skeleton that is NO LONGER the encoder's partition search.
+//!
+//! **Read the SCOPE NOTE at the end of this doc before using anything here as
+//! project status.** [`crate::partition_pick`] is the live search. What real
+//! callers still import from this module is [`PartRdStats`] and
+//! [`split_subsize`]; [`rd_pick_partition_none_split`] and its `LeafEval` /
+//! `NodeParamsFn` / [`PartTree`] scaffolding are reached only by
+//! `tests/partition_none_split_diff.rs`.
 //!
 //! # Survey: the speed-0 GOOD KEY-frame partition search shape
 //!

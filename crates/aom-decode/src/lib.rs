@@ -25,7 +25,20 @@
 //!
 //! # Scope (honest limits of this cut)
 //!
-//! - **KEY frame, intra only.** No inter path, no motion compensation.
+//! - **KEY frames AND inter frames.** (This bullet used to read "KEY frame,
+//!   intra only. No inter path, no motion compensation." — it was left behind
+//!   by the inter landing and is corrected here, 2026-08-06.) The inter path
+//!   lives in this file: [`decode_frame_tiles_inter`], [`InterFrameCfg`],
+//!   [`RefFrame`], `TileKf::decode_block_inter`, the OBMC blends, interintra,
+//!   and the warp helpers. Measured envelope, per `INTER_DECODE_ENVELOPE.md`
+//!   and `tests/{animated_avif,inter_real_frame}.rs`: 8/8 animated-AVIF corpus
+//!   tracks / 40/40 shown frames byte-exact, plus a 352x288 conformance P-frame
+//!   with SIMPLE + OBMC + WARPED_CAUSAL + interintra + intra-in-inter + var-tx.
+//!   **Still refused, fail-loud rather than wrong**: sub-pel motion
+//!   compensation above 8-bit (the sub-pel filter chain runs on a u8 scratch),
+//!   so a 10/12-bit frame with a nonzero MV errors out.
+//!   The `Kf` in `TileKf` / [`KfTileConfig`] / [`KfFrameContext`] and their
+//!   siblings is likewise historical: those types serve both frame kinds.
 //! - **All three planes reconstructed.** `monochrome = true` decodes luma only
 //!   (a complete real configuration); otherwise the U/V planes are fully
 //!   reconstructed at 4:4:4, 4:2:2, or 4:2:0 ([`KfTileConfig::subsampling_x`]/
@@ -120,12 +133,20 @@
 //!   symbol reader ([`aom_dsp::entropy::read_symbol`]) leaves every CDF at its
 //!   loaded/initial value for the whole tile (no post-decode adaptation); the
 //!   flag-off path adapts unconditionally and stays byte-identical.
-//! - **Off / fixed in this cut**: intra block copy,
-//!   quantization matrices (flat dequant), and no in-tile loop filters (this driver returns the
-//!   PRE-FILTER reconstruction, like C's tile decode; `frame.rs` applies
-//!   deblocking frame-wide afterwards — CDEF/restoration stay unapplied;
-//!   CDEF *strengths* are entropy-decoded, and delta-LF levels are carried
-//!   as documented above).
+//! - **Intra block copy and quantization matrices are IMPLEMENTED.** (This
+//!   bullet used to list both as "Off / fixed in this cut"; corrected
+//!   2026-08-06.) IntraBC: [`KfTileConfig::allow_intrabc`], the DV grids
+//!   (`MiDvGrid` / `DvGrid`) and `intrabc_chroma_predict`. QM:
+//!   `frame_qm_levels` / `block_qm_level` select a per-block inverse matrix
+//!   through [`crate::qm::iqmatrix`], folded into the dequant at every txb
+//!   site — flat dequant only when the frame signals no matrix.
+//! - **No in-tile loop filters**: this driver returns the PRE-FILTER
+//!   reconstruction, like C's tile decode. The whole post-filter pipeline runs
+//!   frame-wide afterwards in `frame.rs` — `frame::run_post_filters`
+//!   applies deblocking, CDEF, superres and loop restoration in libaom's order.
+//!   (The old text said "CDEF/restoration stay unapplied"; that stopped being
+//!   true when `run_post_filters` landed.) CDEF *strengths* are entropy-decoded
+//!   here, and delta-LF levels are carried as documented above.
 //! - Frame dimensions are whole mode-info (4px) units; non-multiple-of-SB sizes
 //!   are supported (partition edge gathers + `max_block_wide/high` txb clipping
 //!   + `av1_set_entropy_contexts` edge zeroing).
@@ -618,8 +639,11 @@ pub struct KfTileConfig {
     pub delta_q_res: i32,
     /// `delta_q_info.delta_lf_present_flag` / `delta_lf_multi` /
     /// `delta_lf_res` (1/2/4/8). Only codable when `delta_q_present` (the C
-    /// frame header nests it there). Decoded + carried per block; no
-    /// reconstruction effect (loop filters are not applied in this cut).
+    /// frame header nests it there). Decoded and carried per block; no
+    /// reconstruction effect INSIDE the tile decoder (which returns the
+    /// pre-filter reconstruction, like C's). `frame.rs`'s deblock stage does
+    /// read the per-block `delta_lf_from_base` / `delta_lf[]` carries when it
+    /// filters the frame — see the crate-doc delta-LF bullet.
     pub delta_lf_present: bool,
     pub delta_lf_multi: bool,
     pub delta_lf_res: i32,
