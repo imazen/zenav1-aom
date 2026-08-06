@@ -248,7 +248,9 @@ pub(crate) fn lpf_scalar(width: u32, buf: &mut [u8], center: usize, ts: isize, s
         6 => lpf_6(buf, c, ts, step, blimit, limit, thresh),
         8 => lpf_8(buf, c, ts, step, blimit, limit, thresh),
         14 => lpf_14(buf, c, ts, step, blimit, limit, thresh),
-        _ => panic!("bad width"),
+        // `filter_length` comes from tx_dim_to_filter_length (av1_loopfilter.c:220)
+        // for luma and {4, 6} for chroma — never another value.
+        _ => panic!("lpf_scalar: unsupported filter width {width} — 4/6/8/14 only"),
     }
 }
 

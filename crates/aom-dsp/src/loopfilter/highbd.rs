@@ -236,7 +236,9 @@ pub(crate) fn lpf_scalar(width: u32, buf: &mut [u16], center: usize, ts: isize, 
         6 => lpf_6(buf, c, ts, step, bl, li, th, bd),
         8 => lpf_8(buf, c, ts, step, bl, li, th, bd),
         14 => lpf_14(buf, c, ts, step, bl, li, th, bd),
-        _ => panic!("bad width"),
+        // Same alphabet as the lowbd dispatch: tx_dim_to_filter_length
+        // (av1_loopfilter.c:220) for luma, {4, 6} for chroma.
+        _ => panic!("highbd lpf_scalar: unsupported filter width {width} — 4/6/8/14 only"),
     }
 }
 

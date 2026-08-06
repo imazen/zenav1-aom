@@ -150,6 +150,9 @@ struct Reach {
 /// misclassification only makes the floor HARDER to meet, never easier.
 fn is_deep_err(msg: &str) -> bool {
     msg.contains("corrupt frame")
+        // A frame-header rejection means the OBU layer and the sequence header
+        // both parsed — the input was frame-shaped, not header-parse noise.
+        || msg.contains("frame header")
         || msg.contains("tile")
         || msg.contains("partition")
         || msg.contains("segment")
