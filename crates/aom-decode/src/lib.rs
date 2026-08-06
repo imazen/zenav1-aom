@@ -6828,6 +6828,8 @@ mod geometry_agreement {
             super::TX_SIZE_HIGH => aom_dsp::blocksize::TX_SIZE_HIGH,
             super::TX_SIZE_WIDE_UNIT => aom_dsp::blocksize::TX_SIZE_WIDE_UNIT,
             super::TX_SIZE_HIGH_UNIT => aom_dsp::blocksize::TX_SIZE_HIGH_UNIT,
+            super::MAX_TXSIZE_RECT_LOOKUP => aom_dsp::blocksize::MAX_TXSIZE_RECT_LOOKUP,
+            super::SUB_TX_SIZE_MAP => aom_dsp::blocksize::SUB_TX_SIZE_MAP,
         );
     }
 }

@@ -7573,6 +7573,7 @@ mod geometry_agreement {
             super::TXSIZE_TO_BSIZE => crate::blocksize::TXSIZE_TO_BSIZE,
             super::TXSIZE_SQR_UP_MAP => crate::blocksize::TXSIZE_SQR_UP_MAP,
             super::TXSIZE_SQR_MAP => crate::blocksize::TXSIZE_SQR_MAP,
+            super::SUB_TX_SIZE_MAP => crate::blocksize::SUB_TX_SIZE_MAP,
         );
     }
 }
