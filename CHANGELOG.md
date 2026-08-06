@@ -6,6 +6,30 @@
 
 ### Fixed
 
+- **A `cancel()` on a 4K decode waited up to 115 ms — the whole post-filter
+  pipeline was un-pollable.** `DecodeConfig::with_stop` was documented as
+  "polled at SB-row / tile / frame boundaries", which was true and also the
+  problem: the last SB-row poll of the last tile is followed by deblock, CDEF,
+  superres, loop restoration, crop and film grain, none of which took the
+  token. Measured first, on real `aomenc` photographic KEY frames with CDEF on
+  (`crates/aom-bench/tests/cancel_latency.rs`, 15 cancel points x 7 reps per
+  size): worst `cancel()`→return **115.4 ms at 4096x4096** and 6.8 ms at
+  1024x1024, against a 20 ms bar; 44-77 of ~100 cancels per size were not
+  observed at all and the decode ran to completion. The deterministic poll-gap
+  arm localized it exactly — **118.9 ms of a 192 ms decode came after the final
+  poll**, decomposing (once stage-boundary polls were added) into deblock 26.9
+  ms + CDEF 87.9 ms + crop 1.6 ms. Fixed by polling at every post-filter stage
+  boundary *and* inside the three whole-frame stages: new additive
+  `loop_filter_frame_stop` / `loop_filter_frame_u8_stop` (per 32-mi strip),
+  `cdef_frame_stop` / `cdef_frame_u8_stop` (per 64-px filter-block row) and
+  `loop_restoration_filter_frame_stop` (per plane and per unit row) in
+  `aom-dsp`; the historical entries delegate with `None` and are unchanged.
+  After: worst **2.70 ms at 4096x4096**, 0.379 / 0.085 / 0.028 ms at 1024 /
+  256 / 64, every cancel observed (0 ran to completion), worst inter-poll gap
+  2.02 ms. No throughput cost measured (median natural decode 188.2 → 186.1 ms
+  at 4096). Record: `benchmarks/decode_cancel_latency_2026-08-06.{tsv,meta}`
+  plus the poll-gap TSVs.
+
 - **Two decoder panics that libaom treats as corrupt-frame REJECTIONS, plus the
   two `debug_assert`s that hid the same failure in release builds
   (`harden/decoder-panic-surface`).** `av1_ss_size_lookup` has no valid chroma
