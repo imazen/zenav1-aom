@@ -213,29 +213,6 @@ pub fn split_subsize(bsize: usize) -> usize {
     }
 }
 
-/// The per-node inputs of the NONE-vs-SPLIT slice: geometry + the
-/// `partition_cost[pl_ctx_idx]` row for THIS node (the caller resolves
-/// `partition_plane_context` — aom-entropy owns the ported facade) + the
-/// stage-gate flags `init_partition_search_state_params` derives (with the
-/// pre-search prunes already applied by the caller; all no-ops at GOOD
-/// speed-0 KEY interior — module docs #5).
-pub struct PartNodeParams<'a> {
-    pub bsize: usize,
-    pub mi_row: i32,
-    pub mi_col: i32,
-    /// Frame mi dims (`has_rows/cols` + out-of-frame child skips).
-    pub mi_rows: i32,
-    pub mi_cols: i32,
-    /// `partition_cost[pl_ctx_idx]` — `[NONE, HORZ, VERT, SPLIT, ..]`; this
-    /// slice reads indices 0 and 3.
-    pub partition_cost: &'a [i32],
-    /// `partition_none_allowed` (init: `has_rows && has_cols`).
-    pub partition_none_allowed: bool,
-    /// `do_square_split` (init: `bsize_at_least_8x8`, then max/min-bsize
-    /// prunes).
-    pub do_square_split: bool,
-}
-
 /// One leaf (PARTITION_NONE) evaluation — `pick_sb_modes` as a callback:
 /// `(mi_row, mi_col, bsize, best_remain) -> PartRdStats` (the
 /// `rd_cost` out-state incl. the `rate == INT_MAX -> rdcost = INT64_MAX`
