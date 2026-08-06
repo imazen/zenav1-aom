@@ -12,7 +12,9 @@
   `tx_size_wide`/`_high`(+`_unit`), `txsize_to_bsize`, `txsize_sqr_map`,
   `txsize_sqr_up_map`, `max_txsize_rect_lookup` and `sub_tx_size_map` were
   transcribed by hand into whichever module needed them, at whichever element
-  type was convenient — 50+ copies across 12 files in the shipping crates, with
+  type was convenient — **56 copies across 12 files** in the shipping crates
+  (counted after the fact by grepping the landed agreement blocks; the
+  40f9fc4 commit message's "44" was the earlier, narrower audit count), with
   nothing checking that they agreed. The new module states the geometry once as
   the `(width, height)` pairs the enum names spell and derives the rest by each
   table's `common_data.h` definition; eight unit tests pin the pair lists to the
