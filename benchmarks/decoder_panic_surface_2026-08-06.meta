@@ -64,19 +64,27 @@ histogram on any box).
 ## Verification suite
 
     nice -n 19 env RUSTC_WRAPPER=sccache cargo test --profile test-fast \
-      -p zenav1-aom-decode -p zenav1-aom-dsp -j 4 --no-fail-fast
+      -p zenav1-aom-decode -p zenav1-aom-dsp -j 4 --no-fail-fast   # 459 / 0
+    nice -n 19 env RUSTC_WRAPPER=sccache cargo test --profile test-fast \
+      --workspace -j 4 --no-fail-fast                              # 973 / 0
+    AOM_FORCE_SCALAR=1 <the first command>                         # 460 / 0
+    nice -n 19 env RUSTC_WRAPPER=sccache cargo check \
+      -p zenav1-aom-decode --features whereat --all-targets -j 4   # clean
 
-459 passed / 0 failed. `tests/real_bitstream.rs` links the in-process libaom
-v3.14.1 oracle (`aom-sys-ref`) and asserts byte identity, so "behaviour-
-preserving on valid input" is an oracle result, not an inspection.
+`tests/real_bitstream.rs` links the in-process libaom v3.14.1 oracle
+(`aom-sys-ref`) and asserts byte identity, so "behaviour-preserving on valid
+input" is an oracle result, not an inspection. The scalar count is 460 rather
+than 459 because `inv_txfm_decodable_pairs.rs` is new in `aom-dsp`.
 
 ## What is NOT measured here
 
 * No timing, throughput, or instruction-count claim of any kind (see the QoS
   note above).
-* No `AOM_FORCE_SCALAR=1` leg. The changes are on the scalar control path
-  (guards and panic messages) and touch no SIMD kernel, so the dispatch tier is
-  irrelevant to them; the scalar-pin gate was not re-run for this work.
+* Nothing about SIMD-vs-scalar divergence. The scalar-pin leg WAS re-run
+  (`AOM_FORCE_SCALAR=1 cargo test --profile test-fast -p zenav1-aom-decode
+  -p zenav1-aom-dsp` => 460 passed / 0 failed), but that is a
+  behaviour-preservation check, not a claim about dispatch: these changes are
+  on the scalar control path (guards and panic messages) and touch no kernel.
 * No encoder-side sweep. `aom-encode`'s panic sites were reviewed for
   bitstream reachability and left alone.
 * No coverage instrumentation. "Deep reach" is measured by classifying the

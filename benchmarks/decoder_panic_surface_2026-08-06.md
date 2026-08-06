@@ -61,32 +61,41 @@ And, because "no panic" over inputs the OBU parser rejected is not evidence
 about the decoder, `probe()` now classifies every input as decoded / deep-err /
 shallow-err, prints the histogram, and **fails** below `MIN_DEEP_REACH_PPM`.
 
-Measured reach on the current corpus + mutator (seed 101, 500 000 iterations):
+Measured reach in the configuration **CI actually runs** — default seed,
+60 000 iterations, final tree:
 
 | outcome | count | share |
 |---|---:|---:|
-| decoded a full frame | 50 208 | 10.0 % |
-| rejected at frame/tile level | 201 149 | 40.2 % |
-| rejected at/before the header parse | 248 643 | 49.7 % |
+| decoded a full frame | 5 934 | 9.9 % |
+| rejected at frame/tile level | 24 118 | 40.2 % |
+| rejected at/before the header parse | 29 948 | 49.9 % |
 
-**50.3 % deep reach**, one input in ten decoding a whole frame. The floor is
+**50.09 % deep reach**, one input in ten decoding a whole frame. The floor is
 pinned at 10 % — five times under the measurement, so ordinary corpus churn
 cannot trip it, but a mutator or seed change that collapses the sweep into a
-header-parser test will. (The run is deterministic in `(seed, iterations)`: the
-PRNG is seeded and the decoder is bit-exact, so the histogram reproduces on any
-box.)
+header-parser test will. The run is deterministic in `(seed, iterations)` — the
+PRNG is seeded and the decoder is bit-exact — so the histogram reproduces on any
+box, which is what makes a hard floor safe here rather than flaky. The 500 000-
+iteration seed-101 run on the final tree measures **50.35 %** (50 208 decoded /
+201 534 deep / 248 258 shallow), so the CI-sized sample is not flattering the
+number.
 
 ## 3. What the sweep found: nothing
 
 | mutator | code under test | seeds | iterations | distinct panics |
 |---|---|---|---:|---:|
-| pre-existing | pre-conversion | 1, 2, 3, 7, 11 | 5 × 250 000 | 0 |
-| widened | pre-conversion | 7, 101, 101 | 30 000 + 20 000 + 500 000 | 0 |
-| widened | post-conversion | 101 | 500 000 | 0 |
+| pre-existing | pre-conversion | 1, 2, 3, 7, 11 | 1 250 000 | 0 |
+| widened | pre-conversion | 7, 101, 101 | 550 000 | 0 |
+| widened | post-conversion | default, 101, 202 | 1 060 000 | 0 |
 
-Under `--profile test-fast`, which keeps `debug-assertions` and
-`overflow-checks` ON — so those runs also cover debug-only arithmetic-overflow
-panics, not just explicit ones.
+Every run under `--profile test-fast`, which keeps `debug-assertions` and
+`overflow-checks` ON — so these also cover debug-only arithmetic-overflow
+panics, not just explicit ones. **2.86 M mutated inputs, no panic.**
+
+A side result worth keeping: the seed-101 500 000-iteration run decoded
+**exactly 50 208 full frames before the conversions and exactly 50 208 after**.
+The guards changed which failures are reported and how, and moved nothing that
+decodes. Seed 202 on the final tree: 49 906 decoded, 50.17 % deep, 0 panics.
 
 The mutation-reachable panic surface is clean. That is a real result, and it
 bounds what fuzzing can still contribute here: the remaining sites need
@@ -124,9 +133,9 @@ Converted (see the commit for detail):
 The two `debug_assert`s are the more insidious shape: **compiled out in
 release**, where the same input then died as a bare `MAX_TXSIZE_RECT_LOOKUP`
 "index out of bounds" — a panic either way, with the diagnostic removed exactly
-in the build that ships. Those two stay panics (their callers own the
-contract), but they are now *named* panics that say what the caller did wrong,
-at the cost of the bounds check that was already there.
+in the build that ships. Those two stay panics — their callers own the contract
+— but they are now *named* panics that say what the caller did wrong, and they
+cost nothing: the array bounds check they route through was already being paid.
 
 **Byte-inert on conformant streams.** `decode_partition` already turns the only
 reachable case away one frame up, and the new
@@ -161,13 +170,17 @@ measured live, not asserted: 180 of 182 prefixes of a decoding seed report
 Behaviour-preservation is proven by the suite, not by inspection:
 
 ```
-cargo test --profile test-fast -p zenav1-aom-decode -p zenav1-aom-dsp -j 4
-  => 459 passed / 0 failed
+cargo test --profile test-fast -p zenav1-aom-decode -p zenav1-aom-dsp   459 passed / 0 failed
+cargo test --profile test-fast --workspace                              973 passed / 0 failed
+AOM_FORCE_SCALAR=1  (decode + dsp, +1 new test)                         460 passed / 0 failed
+cargo check -p zenav1-aom-decode --features whereat --all-targets       clean
 ```
 
-including `tests/real_bitstream.rs` (the **live C-oracle differential** — 15
-tests, byte-identity against in-process libaom v3.14.1 across 4:2:0 / 4:4:4 /
-4:2:2 / monochrome at 8, 10 and 12 bits) and `tests/conformance_corpus.rs`.
+The workspace run includes `tests/real_bitstream.rs` — the **live C-oracle
+differential**, 15 tests asserting byte identity against in-process libaom
+v3.14.1 across 4:2:0 / 4:4:4 / 4:2:2 / monochrome at 8, 10 and 12 bits — plus
+`tests/conformance_corpus.rs` and the encoder's e2e byte gates (which consume
+the changed `aom-dsp`).
 
 One more reachability question got an exhaustive answer rather than an
 argument. `av1_inv_txfm2d_add_{into,u8_into}` assert on `(tx_type, tx_size)`
