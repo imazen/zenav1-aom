@@ -377,3 +377,24 @@ pub fn rd_pick_partition_none_split(
         (PartTree::NotFound, best_rdc, false)
     }
 }
+
+#[cfg(test)]
+mod geometry_agreement {
+    //! These `common_data.h` geometry tables are hand transcriptions that also
+    //! exist in other modules of this port (mi_size_wide alone has 7 copies). A single wrong entry does
+    //! not crash and does not fail a build — it silently produces a wrong-sized
+    //! block, transform or context in THIS module's code paths only. Pin the
+    //! copy to the port's one derivation, `aom_dsp::blocksize`, which is itself
+    //! structurally checked against the `enums.h` construction rule.
+    //!
+    //! `MI_SIZE_WIDE_SQ` is `mi_size_wide` under a local name — the doc says
+    //! "for the square sizes used here", but the table is the full 22-entry
+    //! `BLOCK_SIZES_ALL` row and is indexed by whatever bsize arrives.
+
+    #[test]
+    fn matches_the_ports_single_derivation() {
+        aom_dsp::assert_geometry_agrees!(
+            super::MI_SIZE_WIDE_SQ => aom_dsp::blocksize::MI_SIZE_WIDE,
+        );
+    }
+}

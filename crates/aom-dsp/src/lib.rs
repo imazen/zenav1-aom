@@ -14,6 +14,7 @@
 //! at a time, so the differential gates stay green through every step.
 #![forbid(unsafe_code)]
 
+pub mod blocksize;
 pub mod cdef;
 pub mod census;
 pub mod convolve;

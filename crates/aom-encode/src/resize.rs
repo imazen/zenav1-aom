@@ -38,9 +38,17 @@ fn clip_pixel(val: i32) -> u8 {
     val.clamp(0, 255) as u8
 }
 
+/// `ROUND_POWER_OF_TWO(value, n)` from `aom_ports/mem.h` — bit-exact.
+///
+/// Spelled `(1 << n) >> 1`, not `1 << (n - 1)`: the two agree for every `n >= 1`
+/// but only this one is defined at `n == 0` (yielding `value`, as the C macro
+/// does). Every call site here passes `FILTER_BITS`, so the shorter form was
+/// never wrong — it just meant the SAME NAME had two different bodies across
+/// the port (six definitions, two behaviours), which is a trap for the next
+/// caller that passes a variable shift.
 #[inline]
 fn round_power_of_two(value: i32, n: i32) -> i32 {
-    (value + (1 << (n - 1))) >> n
+    (value + ((1 << n) >> 1)) >> n
 }
 
 /// `choose_interp_filter` (resize.c:219). Selects the 0.5/0.625/0.75/0.875/1.0
