@@ -57,6 +57,10 @@ census = ["zenav1-aom-encode/census", "zenav1-aom-dsp/census"]
 
 [dev-dependencies]
 zenbench = "0.1.9"
+# The cooperative-cancellation trait the decoder's `DecodeConfig::with_stop`
+# takes. Pinned to the same version aom-decode depends on so the `dyn Stop`
+# vtable is the same trait (a mismatched major would not even type-check).
+enough = "0.4.4"
 
 [[bench]]
 name = "gate3"
