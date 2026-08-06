@@ -1,6 +1,9 @@
-import re, sys
+import os, re, sys
 
-src = open('/root/aom-rs/reference/libaom/av1/common/quant_common.c').read()
+# Repo-relative: this script lives in <repo>/xtask/.
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+src = open(os.path.join(REPO, 'reference/libaom/av1/common/quant_common.c')).read()
 
 QM_TOTAL_SIZE = 3344
 LEVELS = 15  # NUM_QM_LEVELS - 1
@@ -74,13 +77,13 @@ def emit(vals, rust_name, c_name, human, out_path):
     print(f"wrote {out_path}", file=sys.stderr)
 
 
+# Both bases live in aom-dsp's quant module (one copy, shared by the encoder's
+# forward/inverse quantize sites and — via `aom_decode::qm` — the dequantizer).
 TARGETS = {
     'iwt': ('iwt_matrix_ref', 'IWT_MATRIX_REF', 'inverse',
-            '/root/aom-rs/crates/aom-decode/src/qm_tables.rs'),
-    # forward table out-path is provisional (pending crate-placement decision);
-    # override with argv[2].
+            os.path.join(REPO, 'crates/aom-dsp/src/quant/qm_inv_tables.rs')),
     'wt': ('wt_matrix_ref', 'WT_MATRIX_REF', 'forward',
-           '/root/aom-rs/crates/aom-quant/src/qm_fwd_tables.rs'),
+           os.path.join(REPO, 'crates/aom-dsp/src/quant/qm_fwd_tables.rs')),
 }
 
 which = sys.argv[1] if len(sys.argv) > 1 else 'iwt'
