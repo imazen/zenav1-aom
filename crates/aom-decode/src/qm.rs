@@ -7,33 +7,17 @@
 //! [`aom_dsp::txb::dequant_txb`] via `get_dqv`). This module supplies the `iqmatrix`
 //! slice for a given (qm level, plane, tx size, tx type).
 //!
-//! The inverse-QM bases `iwt_matrix_ref[NUM_QM_LEVELS-1][2][QM_TOTAL_SIZE]` are
-//! ported verbatim from libaom (generated into [`qm_tables`]); `av1_qm_init`
-//! packs each tx size's matrix contiguously in the 3344-entry array in
-//! `TX_SIZES_ALL` order, reusing the `av1_get_adjusted_tx_size` matrix for the
-//! 64-point sizes. The per-tx offsets [`QM_OFFSET`] reproduce that packing.
-
-use crate::qm_tables::IWT_MATRIX_REF;
+//! The selector and the ported `iwt_matrix_ref` bases both live in
+//! [`aom_dsp::quant`] — the encoder needs the identical inverse matrices at
+//! every quantize site, so keeping ONE copy is what makes encoder recon and
+//! decoder dequant provably the same weights rather than two tables that happen
+//! to agree. That copy is swept cell-by-cell against the real C `av1_qm_init`
+//! packing in `aom-dsp/tests/qm_inv_select_diff.rs` (855 matrices + 57 flat
+//! cells); this module is the decode-side name for it.
 
 /// `NUM_QM_LEVELS` (`quant_common.h`): 16 QM sets. Level `NUM_QM_LEVELS - 1`
 /// (15) is the flat/no-op matrix and is signalled as "no matrix" (`None`).
-pub(crate) const NUM_QM_LEVELS: usize = 16;
-
-/// `IDTX` (`enums.h`): the identity 2-D transform. `is_2d_transform(tx_type)`
-/// is `tx_type < IDTX`; 1-D and identity transforms take the flat matrix.
-const IDTX: usize = 9;
-
-/// Byte offset into an `iwt_matrix_ref[q][c]` row (`QM_TOTAL_SIZE` = 3344) of
-/// each `TX_SIZE`'s matrix, indexed by the RAW tx size. Reproduces
-/// `av1_qm_init`'s packing: iterate `TX_SIZES_ALL` in enum order, appending
-/// `tx_size_2d[t]` bytes only for the canonical sizes (`t ==
-/// av1_get_adjusted_tx_size(t)`); the 64-point sizes reuse their adjusted
-/// (32-capped) matrix's offset. Verified to accumulate to exactly 3344.
-#[rustfmt::skip]
-const QM_OFFSET: [usize; 19] = [
-    0, 16, 80, 336, 336, 1360, 1392, 1424, 1552, 1680, 2192, 336, 336, 2704,
-    2768, 2832, 3088, 1680, 2192,
-];
+pub(crate) const NUM_QM_LEVELS: usize = aom_dsp::quant::NUM_QM_LEVELS;
 
 /// `av1_get_iqmatrix` (`quant_common.c`): the inverse quantization matrix for a
 /// coefficient block, or `None` for the flat (no-weighting) case.
@@ -45,27 +29,14 @@ const QM_OFFSET: [usize; 19] = [
 /// adjusted tx size)`, laid out in raster order over the adjusted transform
 /// block — exactly what [`aom_dsp::txb::dequant_txb`] indexes by coefficient
 /// position.
-// `pub` (via the doc-hidden `pub mod qm`) so the encoder's forward-QM quantizer
-// can select the inverse-QM weights from the same `iwt_matrix_ref` bases,
-// avoiding a duplicate table. See the module declaration in `lib.rs`.
+#[inline]
 pub fn iqmatrix(
     qm_level: usize,
     plane: usize,
     tx_size: usize,
     tx_type: usize,
 ) -> Option<&'static [u8]> {
-    // Flat matrix (i.e. no weighting) for the top level and for 1-D / Identity
-    // transforms (av1_get_iqmatrix: giqmatrix[NUM_QM_LEVELS-1][0][.] == NULL).
-    if qm_level >= NUM_QM_LEVELS - 1 || tx_type >= IDTX {
-        return None;
-    }
-    // Plane group: luma (0) vs chroma (both U and V share the c>=1 bases).
-    let c = usize::from(plane >= 1);
-    let off = QM_OFFSET[tx_size];
-    // Length == tx_size_2d[av1_get_adjusted_tx_size(tx_size)] — the coded
-    // region the inverse transform reads (txb_wide/txb_high are adjusted).
-    let len = aom_dsp::txb::txb_wide(tx_size) * aom_dsp::txb::txb_high(tx_size);
-    Some(&IWT_MATRIX_REF[qm_level][c][off..off + len])
+    aom_dsp::quant::iqmatrix(qm_level, plane, tx_size, tx_type)
 }
 
 #[cfg(test)]
@@ -80,6 +51,7 @@ mod tests {
     const TX_64X64: usize = 4;
     // TX_TYPE indices (enums.h order).
     const DCT_DCT: usize = 0;
+    const IDTX: usize = 9;
     const V_DCT: usize = 11; // a 1-D transform (>= IDTX)
 
     /// The ported table anchors to the exact C `iwt_matrix_ref` bytes: level 0
@@ -97,8 +69,7 @@ mod tests {
                 "DC weight must be flat (32) at level {lvl}"
             );
         }
-        // The flat top level (15) selects no matrix, as does level 14+? No —
-        // only 15 is flat; 14 is a real (near-flat) matrix.
+        // Only level 15 is flat; 14 is a real (near-flat) matrix.
         assert!(iqmatrix(14, 0, TX_16X16, DCT_DCT).is_some());
     }
 
@@ -106,6 +77,7 @@ mod tests {
     /// transforms take no matrix (`None`).
     #[test]
     fn flat_cases_select_none() {
+        assert_eq!(NUM_QM_LEVELS, 16);
         // Level NUM_QM_LEVELS-1 (15) is the flat no-op.
         assert!(iqmatrix(15, 0, TX_16X16, DCT_DCT).is_none());
         assert!(iqmatrix(15, 1, TX_8X8_ANY, DCT_DCT).is_none());
@@ -137,6 +109,53 @@ mod tests {
         let chroma_v = iqmatrix(0, 2, TX_16X16, DCT_DCT).unwrap();
         assert_eq!(chroma_u, chroma_v, "U and V share the c>=1 base");
         assert_ne!(luma, chroma_u, "luma and chroma bases must differ");
+    }
+
+    /// The decode-side selector must hand the dequantizer the SAME bytes the
+    /// encoder quantized and reconstructed with. Until this module delegated,
+    /// the two were independent transcriptions of one C table (byte-identical
+    /// files, separate statics) and a drift in either would have desynced
+    /// encoder recon from decode with nothing failing. Sweep the whole
+    /// (level, plane, tx size, tx type) grid and require the same STORAGE, not
+    /// merely equal bytes — so a future re-transcription cannot pass this.
+    #[test]
+    fn decode_side_selection_is_the_encoder_side_selection() {
+        let mut some_cells = 0usize;
+        let mut none_cells = 0usize;
+        for q in 0..NUM_QM_LEVELS {
+            for plane in 0..3usize {
+                for t in 0..19usize {
+                    for tt in 0..16usize {
+                        let mine = iqmatrix(q, plane, t, tt);
+                        let theirs = aom_dsp::quant::iqmatrix(q, plane, t, tt);
+                        match (mine, theirs) {
+                            (Some(a), Some(b)) => {
+                                assert!(
+                                    core::ptr::eq(a, b),
+                                    "decode/encode iqmatrix differ at \
+                                     (level={q}, plane={plane}, tx={t}, tx_type={tt})"
+                                );
+                                some_cells += 1;
+                            }
+                            (None, None) => none_cells += 1,
+                            (a, b) => panic!(
+                                "None/Some disagreement at (level={q}, plane={plane}, \
+                                 tx={t}, tx_type={tt}): {:?} vs {:?}",
+                                a.map(<[u8]>::len),
+                                b.map(<[u8]>::len)
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+        // 15 non-flat levels x 3 planes x 19 tx sizes x 9 two-D tx types.
+        assert_eq!(
+            some_cells,
+            15 * 3 * 19 * 9,
+            "expected 7695 real-matrix cells"
+        );
+        assert_eq!(none_cells, 16 * 3 * 19 * 16 - some_cells);
     }
 
     /// The effectful proof underpinning the byte-identity gate: for every

@@ -165,14 +165,13 @@ pub mod superres;
 
 pub use plane::ReconPlane;
 
-// `pub` (doc-hidden) so the encoder's forward-QM path can REUSE the inverse-QM
-// selector + `iwt_matrix_ref` bases instead of committing a duplicate ~459KB
-// table. Interim internal-crate coupling: at release both QM tables (fwd
-// `wt_matrix_ref` in aom-quant + inv `iwt_matrix_ref` here) consolidate into one
-// shared crate. Only `iqmatrix` is exposed; the rest of the module stays private.
+// `pub` (doc-hidden) so the encode-side differential tests can name the
+// decode-side selector. Both QM tables now live in ONE place — `aom_dsp::quant`
+// owns the forward `wt_matrix_ref` and inverse `iwt_matrix_ref` bases and the
+// `av1_qm_init` packing — and this module is a thin decode-side alias for the
+// inverse half. Only `iqmatrix` is exposed.
 #[doc(hidden)]
 pub mod qm;
-mod qm_tables;
 
 use aom_dsp::entropy::cdf::read_symbol;
 use aom_dsp::recon::{ReconScratch, reconstruct_txb_into};

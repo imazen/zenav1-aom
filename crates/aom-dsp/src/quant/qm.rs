@@ -44,10 +44,10 @@ const QM_OFFSET: [usize; 19] = [
 
 /// Matrix length per RAW tx size == `tx_size_2d[av1_get_adjusted_tx_size(t)]`
 /// (`txb_wide(t) * txb_high(t)`): the coded region the forward transform writes,
-/// with 64-point sizes capped to their 32-point adjusted area. Inlined (rather
-/// than depending on `aom-txb`) to keep this quant-kernel crate pure-Rust and
-/// dependency-free; the differential test against C `av1_qm_init` validates
-/// every entry, and [`QM_OFFSET`] + `QM_LEN` tile the 3344-entry row exactly.
+/// with 64-point sizes capped to their 32-point adjusted area. Written out as a
+/// literal rather than computed from [`crate::txb`] so the selector stays a
+/// table lookup; `qm_len_equals_adjusted_txb_area` pins it to that derivation
+/// entry-for-entry, and `qm_offsets_tile_the_row_exactly` pins the packing.
 #[rustfmt::skip]
 const QM_LEN: [usize; 19] = [
     16, 64, 256, 1024, 1024, 32, 32, 128, 128, 512, 512, 1024, 1024, 64, 64,
@@ -219,5 +219,64 @@ mod tests {
         let luma = qmatrix(0, 0, TX_16X16, DCT_DCT).unwrap();
         let chroma = qmatrix(0, 1, TX_16X16, DCT_DCT).unwrap();
         assert_ne!(luma, chroma, "luma and chroma bases must differ");
+    }
+
+    /// [`QM_LEN`] is a hand-written literal standing in for
+    /// `tx_size_2d[av1_get_adjusted_tx_size(t)]`. Pin it to the derivation the
+    /// rest of the port uses (`txb_wide * txb_high`, which routes through
+    /// [`crate::txb::adjusted_tx_size`]) for every raw `TX_SIZES_ALL` index.
+    ///
+    /// A wrong entry here is silent: the selector still returns a plausible
+    /// in-bounds slice, just the wrong LENGTH — the quantizer then weights part
+    /// of a neighbouring tx size's matrix (short) or runs off the end of its own
+    /// (long), which shows up as wrong pixels, not a panic. The C differential
+    /// (`tests/qm_{fwd,inv}_select_diff.rs`) catches it too, but only where the
+    /// libaom oracle is built; this holds on any box.
+    #[test]
+    fn qm_len_equals_adjusted_txb_area() {
+        for t in 0..19usize {
+            assert_eq!(
+                QM_LEN[t],
+                crate::txb::txb_wide(t) * crate::txb::txb_high(t),
+                "QM_LEN[{t}] must equal the adjusted txb area"
+            );
+        }
+    }
+
+    /// `av1_qm_init` packs each CANONICAL tx size's matrix back-to-back into one
+    /// 3344-entry row, and the five 64-point sizes alias their 32-capped
+    /// canonical entry rather than getting their own bytes. Prove exactly that:
+    /// the canonical `(offset, len)` spans tile `[0, 3344)` with no gap and no
+    /// overlap, and every non-canonical size's span is byte-identical to the
+    /// span of the size it adjusts to.
+    ///
+    /// A shifted offset is the silent failure this guards: the slice is still
+    /// in bounds and still the right length, it just holds another transform's
+    /// weights.
+    #[test]
+    fn qm_offsets_tile_the_row_exactly() {
+        const QM_TOTAL_SIZE: usize = 3344;
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        for t in 0..19usize {
+            let adj = crate::txb::adjusted_tx_size(t);
+            if adj == t {
+                spans.push((QM_OFFSET[t], QM_LEN[t]));
+            } else {
+                // A 64-point size reuses its adjusted size's matrix verbatim.
+                assert_eq!(
+                    (QM_OFFSET[t], QM_LEN[t]),
+                    (QM_OFFSET[adj], QM_LEN[adj]),
+                    "tx_size {t} must alias its adjusted size {adj}"
+                );
+            }
+        }
+        assert_eq!(spans.len(), 14, "TX_SIZES_ALL has 14 canonical sizes");
+        spans.sort_unstable();
+        let mut cursor = 0usize;
+        for (off, len) in spans {
+            assert_eq!(off, cursor, "gap or overlap in the av1_qm_init packing");
+            cursor += len;
+        }
+        assert_eq!(cursor, QM_TOTAL_SIZE, "packing must fill QM_TOTAL_SIZE");
     }
 }
