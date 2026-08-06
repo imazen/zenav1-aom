@@ -253,33 +253,10 @@ pub fn av1_quantize_fp(
     av1_quantize_fp_no_qmatrix(quant, dequant, round, 0, scan, coeff, qcoeff, dqcoeff)
 }
 
-/// `av1_quantize_fp_32x32` (log_scale 1).
-#[allow(clippy::too_many_arguments)]
-pub fn av1_quantize_fp_32x32(
-    coeff: &[i32],
-    round: &[i16; 2],
-    quant: &[i16; 2],
-    dequant: &[i16; 2],
-    qcoeff: &mut [i32],
-    dqcoeff: &mut [i32],
-    scan: &[i16],
-) -> u16 {
-    av1_quantize_fp_no_qmatrix(quant, dequant, round, 1, scan, coeff, qcoeff, dqcoeff)
-}
-
-/// `av1_quantize_fp_64x64` (log_scale 2).
-#[allow(clippy::too_many_arguments)]
-pub fn av1_quantize_fp_64x64(
-    coeff: &[i32],
-    round: &[i16; 2],
-    quant: &[i16; 2],
-    dequant: &[i16; 2],
-    qcoeff: &mut [i32],
-    dqcoeff: &mut [i32],
-    scan: &[i16],
-) -> u16 {
-    av1_quantize_fp_no_qmatrix(quant, dequant, round, 2, scan, coeff, qcoeff, dqcoeff)
-}
+// The C's `av1_quantize_fp_32x32` / `av1_quantize_fp_64x64` are the same helper
+// at log_scale 1 / 2. Call [`av1_quantize_fp_no_qmatrix`] with the log_scale
+// directly — that is the entry `tests/quantize_fp_diff.rs` sweeps against C for
+// all three scales; named wrappers for 1 and 2 had no callers.
 
 /// Bit-exact port of `highbd_quantize_fp_helper_c` (`av1/encoder/av1_quantize.c`)
 /// for the no-quant-matrix path. Highbd (10/12-bit) FP quantizer: like the lowbd

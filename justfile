@@ -132,6 +132,14 @@ audit-i16-fwd:
 gate-armed-decode:
     AOM_DAV1D_BIN="$(command -v dav1d || true)" cargo test --profile test-fast -p zenav1-aom-bench --test armed_tools_decode_gate -- --nocapture
 
+# LOCATED-ERROR ENTRIES (`whereat` feature, default-off). `decode_frame_obus_at`
+# and `decode_frames_at` are `#[cfg(feature = "whereat")]`, so no workspace test
+# run compiles them — the feature could be broken indefinitely and nothing would
+# say so. This is the only invocation that builds it; also wired as a CI step on
+# the pure-Rust portability job.
+test-whereat:
+    cargo test -p zenav1-aom-decode --features whereat --test whereat_entries
+
 # CROSS-ENCODER INTRABC DECODE GATE (GitHub #5). The armed gate above decodes
 # streams from THIS port's encoder, and the conformance corpus is entirely
 # libaom-encoded — so neither covers "a conformant IntraBC stream from a
