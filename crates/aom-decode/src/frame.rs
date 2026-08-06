@@ -690,8 +690,20 @@ fn parse_frame_header_ext(
     // streams (aom_internal_error); surface it as a clean Err instead of
     // decoding a corrupt header. Byte-inert on valid input — the reader never
     // overruns a conformant header, and every syntax value stays in range.
+    //
+    // The two causes are DIFFERENT failures for a consumer — a short file vs a
+    // corrupt one — and map to different `DecodeError` categories, so report
+    // them apart instead of hedging in one message. `syntax_error` names the
+    // offending field; a bare overread reports how far the parse got.
     if rb.error {
-        return Err("corrupt frame header (bit-reader error / out-of-range syntax value)".into());
+        return Err(match rb.syntax_error {
+            Some(field) => {
+                DecodeError::Malformed(format!("frame header syntax out of range: {field}").into())
+            }
+            None => DecodeError::Truncated(
+                "frame header: bit reader ran past the end of the OBU payload",
+            ),
+        });
     }
 
     // Film-grain scaling points must have strictly-increasing point_x per plane.

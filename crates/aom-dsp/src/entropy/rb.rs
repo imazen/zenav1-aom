@@ -9,8 +9,18 @@
 pub struct ReadBitBuffer<'a> {
     buf: &'a [u8],
     bit_offset: usize,
-    /// Set once a read runs past the end of the buffer.
+    /// Set once a read runs past the end of the buffer, OR once a caller
+    /// reports an out-of-spec-range syntax value via
+    /// [`ReadBitBuffer::mark_syntax_error`]. Check [`ReadBitBuffer::syntax_error`]
+    /// to tell the two apart — they are different failures for a consumer
+    /// (short input vs corrupt input) and the decoder maps them to different
+    /// error categories.
     pub error: bool,
+    /// `Some(field)` when a header parser rejected a syntax value that was
+    /// readable but outside its spec range (e.g. a film-grain point count
+    /// above the array bound). `None` while `error` is set means a plain
+    /// overread — the input ended mid-header.
+    pub syntax_error: Option<&'static str>,
 }
 
 impl<'a> ReadBitBuffer<'a> {
@@ -19,7 +29,26 @@ impl<'a> ReadBitBuffer<'a> {
             buf,
             bit_offset: 0,
             error: false,
+            syntax_error: None,
         }
+    }
+
+    /// Flag a syntax value that parsed but is outside its spec range, naming
+    /// the field so the failure says WHICH value was bad rather than only that
+    /// something was. libaom rejects these with `aom_internal_error`; the port
+    /// records the reason and lets the header parse unwind to an `Err`. First
+    /// reason wins — later reads on a poisoned buffer are meaningless.
+    pub fn mark_syntax_error(&mut self, field: &'static str) {
+        self.error = true;
+        if self.syntax_error.is_none() {
+            self.syntax_error = Some(field);
+        }
+    }
+
+    /// Total bits in the underlying buffer — pairs with
+    /// [`ReadBitBuffer::bit_position`] to report how far a truncated header got.
+    pub fn bit_len(&self) -> usize {
+        self.buf.len() * 8
     }
 
     /// `aom_rb_read_bit`: one bit at the current MSB-first position.
