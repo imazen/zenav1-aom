@@ -35,7 +35,7 @@
 //!    stages the reference encoder actually put in the stream, and it never
 //!    emits film grain, so the grain pass is invisible to them while still
 //!    being a whole-frame pass on the decode's critical path. Timed directly
-//!    (72.4 ms at 4096x4096 — over the bar on its own) and gated on its
+//!    (73.8 ms at 4096x4096 — over the bar on its own) and gated on its
 //!    internal poll spacing.
 //!
 //! # Why the streams are what they are
@@ -559,7 +559,7 @@ fn grain_params() -> aom_dsp::entropy::header::FilmGrainParams {
 /// [`cancel_latency_by_size`] cannot answer this: the reference encoder puts no
 /// grain in those streams, so `finish_and_grain`'s grain branch never runs and
 /// its cost is absent from the poll-gap map. It is still a whole-frame pass on
-/// the decode's critical path. **MEASURED: 72.4 ms at 4096x4096** — 3.6x the
+/// the decode's critical path. **MEASURED: 73.8 ms at 4096x4096** — 3.7x the
 /// bar on its own, which is why `add_film_grain_stop` exists.
 ///
 /// Reports the stage cost per size (so a future session sees the shape) and

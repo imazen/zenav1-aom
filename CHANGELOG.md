@@ -24,11 +24,20 @@
   `cdef_frame_stop` / `cdef_frame_u8_stop` (per 64-px filter-block row) and
   `loop_restoration_filter_frame_stop` (per plane and per unit row) in
   `aom-dsp`; the historical entries delegate with `None` and are unchanged.
-  After: worst **2.70 ms at 4096x4096**, 0.379 / 0.085 / 0.028 ms at 1024 /
-  256 / 64, every cancel observed (0 ran to completion), worst inter-poll gap
-  2.02 ms. No throughput cost measured (median natural decode 188.2 → 186.1 ms
-  at 4096). Record: `benchmarks/decode_cancel_latency_2026-08-06.{tsv,meta}`
-  plus the poll-gap TSVs.
+  A fourth stage, **film grain, needed timing separately** — the reference
+  encoder emits none, so it is invisible to any stream-driven sweep — and came
+  in at **73.8 ms at 4096x4096**, 3.7x the bar as one call; it gets
+  `add_film_grain_stop` (poll per 32-luma-row grain subblock row). After, on
+  the committed record: worst `cancel()`→return **2.744 ms at 4096x4096** and
+  0.401 / 0.153 / 0.066 ms at 1024 / 256 / 64, every cancel observed (0 ran to
+  completion), worst inter-poll gap 2.065 ms, worst blind window inside film
+  grain 1.630 ms. No throughput cost measured (median natural decode 188.2 →
+  189.0 ms at 4096, 11.49 → 11.41 at 1024 — noise in both directions; the
+  added work is one predictable branch per polled row, 230 of them on a 189 ms
+  frame). Byte-identity re-verified 977/977 workspace tests under BOTH default
+  and `AOM_FORCE_SCALAR=1` dispatch, including the C-differential film-grain
+  gates and the intra conformance corpus. Record:
+  `benchmarks/decode_cancel_latency_2026-08-06.{tsv,pollgap.tsv,meta}`.
 
 - **Two decoder panics that libaom treats as corrupt-frame REJECTIONS, plus the
   two `debug_assert`s that hid the same failure in release builds

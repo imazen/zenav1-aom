@@ -106,8 +106,10 @@ it here in the same commit.**
   **BREACHED**: worst `cancel()`→return **115.4 ms at 4096x4096**, because the whole
   post-filter pipeline ran after the last SB-row poll (**118.9 ms of a 192 ms decode**
   = deblock 26.9 + CDEF 87.9 + crop 1.6). Closed by per-row polls inside deblock/CDEF/LR
-  (additive `*_stop` entries in aom-dsp) → worst **2.70 ms at 4096**, 0.379/0.085/0.028
-  at 1024/256/64, 0 cancels missed, no throughput cost. **Newly named and NOT closed:**
+  (additive `*_stop` entries in aom-dsp) plus film grain, which had to be timed
+  DIRECTLY because no reference stream carries grain (73.8 ms at 4096, 3.7x the bar)
+  → worst **2.744 ms at 4096**, 0.401/0.153/0.066 at 1024/256/64, 0 cancels missed,
+  no throughput cost, 977/977 byte-identity under both dispatch modes. **Newly named and NOT closed:**
   (a) the loop-restoration stage is made pollable but its cost is UNMEASURED — every
   stream in the record coded `frame_restoration_type = RESTORE_NONE`, so LR never ran;
   (b) the ENCODER takes no stop token at all (`aom-encode` has no cancellation surface);

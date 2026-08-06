@@ -1118,7 +1118,7 @@ pub fn add_film_grain(
 /// grain subblock row (plus once around each of the two whole-frame copies).
 ///
 /// The last whole-frame pass of a decode, and — like deblock and CDEF — one
-/// un-interruptible call without this. **MEASURED at 72.4 ms on a 4096x4096
+/// un-interruptible call without this. **MEASURED at 73.8 ms on a 4096x4096
 /// 4:2:0 frame** (lag-3 AR template, overlap on, chroma grain present;
 /// `cancel_latency::film_grain_stage_cost`), i.e. 3.6x the 20 ms cancellation
 /// bar on its own. It is invisible to the cancellation sweep because the
