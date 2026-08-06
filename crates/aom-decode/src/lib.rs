@@ -4629,7 +4629,7 @@ impl<'c> TileKf<'c> {
         // invariant, so the port must reject too rather than panic. This was an
         // `assert_ne!` justified by "the roundtrip never produces them" — what
         // our own encoder emits says nothing about what a crafted bitstream can
-        // reach, and a panic here is a denial of service on the AVIF decode
+        // reach, and a panic here aborts a caller that cannot catch the unwind
         // path. Byte-inert on every conformant stream: `av1_ss_size_lookup` is
         // BLOCK_INVALID only at ss=(0,1) (4:4:0 — the sequence header cannot
         // code it) and ss=(1,0) (4:2:2), and `decode_partition` already turns
@@ -5770,7 +5770,7 @@ impl<'c> TileKf<'c> {
                     // BLOCK_4X8 at 4:2:2 IS chroma-reference at odd mi_col yet has
                     // no valid chroma size. `mark_corrupt`, not `assert_ne!` —
                     // reachable only from a crafted bitstream, where a panic is a
-                    // decoder DoS. Byte-inert on conformant streams.
+                    // a decoder panic. Byte-inert on conformant streams.
                     if plane_bsize == 255 {
                         self.mark_corrupt(format!(
                             "corrupt frame: invalid chroma block size — luma bsize {bsize} \

@@ -471,7 +471,7 @@ fn parse_frame_header_ext(
     let mi_cols = mi_dim(s.max_frame_width);
     let mi_rows = mi_dim(s.max_frame_height);
 
-    // Robustness (DoS guard): reject frames whose declared dimensions exceed
+    // Robustness (allocation ceiling): reject frames whose declared dimensions exceed
     // the caller's limits (or the default pixel ceiling) BEFORE any
     // width*height-scaled buffer is allocated (the recon / mi / seg grids in
     // `TileKf::new`). Both the single-frame and multi-frame paths call this, so

@@ -21,7 +21,7 @@
 //!      (bit flips, truncation, length-field corruption, header splicing, insert /
 //!      delete, HOSTILE TILE PAYLOAD, payload extension) and asserts no entry
 //!      panics. Self-contained (mutates only committed seeds — no external
-//!      corpus), so it always runs in CI. The frame-dimension DoS ceiling
+//!      corpus), so it always runs in CI. The frame-dimension ceiling
 //!      (`frame.rs`) keeps a mutated giant-dimension header from OOMing this
 //!      in-process sweep.
 //!
