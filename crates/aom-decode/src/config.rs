@@ -1,5 +1,6 @@
-//! Caller-supplied decode configuration — resource limits (and, in later
-//! chunks, the allocation mode and stop token) threaded through the
+//! Caller-supplied decode configuration — resource limits
+//! ([`DecodeLimits`]), the allocation mode ([`AllocMode`]) and the cooperative
+//! stop token ([`DecodeConfig::stop`]), threaded through the
 //! config-carrying decode entries (`CLAUDE.md` §1). The bare entries
 //! (`decode_frame_obus`, `decode_frames`, `decode_frame_obus_prefilter`) apply
 //! [`DecodeConfig::default`], which preserves the historical behavior: the
@@ -119,9 +120,35 @@ pub enum AllocMode {
 pub struct DecodeConfig<'a> {
     /// Resource limits to enforce (default: the hardcoded pixel ceiling only).
     pub limits: DecodeLimits,
-    /// Optional cooperative stop token ([`enough::Stop`]), polled at SB-row /
-    /// tile / frame boundaries. `None` (the default) never cancels — the decode
-    /// runs to completion. Attach one with [`DecodeConfig::with_stop`].
+    /// Optional cooperative stop token ([`enough::Stop`]). `None` (the
+    /// default) never cancels — the decode runs to completion. Attach one with
+    /// [`DecodeConfig::with_stop`].
+    ///
+    /// # Where it is polled, and how long a cancel takes
+    ///
+    /// Polled at every tile boundary, every superblock ROW of the tile decode,
+    /// every post-filter stage boundary, and — inside the three whole-frame
+    /// post-filter stages — once per 32-mi deblock strip, once per 64-pixel
+    /// CDEF filter-block row, and once per loop-restoration unit row. Plus
+    /// once before the crop and once before film grain.
+    ///
+    /// **MEASURED** (`crates/aom-bench/tests/cancel_latency.rs`, record
+    /// `benchmarks/decode_cancel_latency_2026-08-06.{tsv,meta}`; Apple M-series,
+    /// 12 cores, real `aomenc` photographic KEY frames with CDEF on). Worst
+    /// observed `cancel()` → decode returns, over 15 cancel points x 7 reps
+    /// per size:
+    ///
+    /// | frame | natural decode | p50 | p99 | max |
+    /// |---|---|---|---|---|
+    /// | 64x64 | 0.05 ms | 0.006 | 0.022 | 0.028 ms |
+    /// | 256x256 | 0.70 ms | 0.038 | 0.085 | 0.085 ms |
+    /// | 1024x1024 | 11.3 ms | 0.192 | 0.379 | 0.379 ms |
+    /// | 4096x4096 | 186 ms | 0.978 | 2.697 | 2.697 ms |
+    ///
+    /// against a 20 ms acceptance bar. The post-filter polls are what make the
+    /// 4096 row hold: before they existed the same measurement read **115 ms**
+    /// max there, because deblock (26.9 ms) and CDEF (87.9 ms) each ran as one
+    /// un-interruptible call after the last tile poll.
     pub stop: Option<&'a dyn Stop>,
     /// How frame-sized buffers are allocated ([`AllocMode`]). Default
     /// [`AllocMode::Fallible`]: a pre-flight reservation gates the decode and
@@ -141,8 +168,9 @@ impl<'a> DecodeConfig<'a> {
         self
     }
 
-    /// Attach a cooperative stop token (builder style). The decode polls it at
-    /// coarse boundaries and returns [`DecodeError::Cancelled`] when it fires.
+    /// Attach a cooperative stop token (builder style). The decode returns
+    /// [`DecodeError::Cancelled`] when it fires; see [`DecodeConfig::stop`]
+    /// for the poll sites and the measured latency.
     pub fn with_stop(mut self, stop: &'a dyn Stop) -> Self {
         self.stop = Some(stop);
         self
