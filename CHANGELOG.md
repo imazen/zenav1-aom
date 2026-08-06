@@ -119,7 +119,8 @@
   `assert_ne!`d instead, justified in a comment by "the roundtrip never
   produces them" — a warrant about our own ENCODER, which says nothing about
   what a crafted bitstream can reach, on a decoder that ships into zenavif's
-  untrusted AVIF path where a panic is a denial of service. `decode_block` and
+  untrusted AVIF path, where a panic aborts a caller that cannot catch the
+  unwind. `decode_block` and
   the chroma txb loop now `mark_corrupt` and unwind (the deeper one also covers
   the sub-8x8 shapes C's `bsize >= BLOCK_8X8` gate exempts but which still
   index `MAX_TXSIZE_RECT_LOOKUP`: `BLOCK_4X8` at 4:2:2 IS chroma-reference at
@@ -527,7 +528,7 @@
   - `AllocMode` fallible-alloc pre-flight (`try_reserve` probe → `AllocFailed`)
     + `max_memory_bytes` enforcement — a byte-preserving allocation ceiling
     against attacker-controlled dimensions. (70b50c6)
-  - Malformed-input hardening: frame-dimension DoS ceiling (reject >2^28 px
+  - Malformed-input hardening: frame-dimension allocation ceiling (reject >2^28 px
     before recon alloc) + panic→`Err` conversions found by a structured-random
     fuzz sweep + a stable-toolchain fuzz regression harness. (1b65d61, 88b4de3,
     606813d, 5922c47, bbd7bc4)
