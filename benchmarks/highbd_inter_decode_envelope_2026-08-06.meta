@@ -1,0 +1,81 @@
+# Provenance for highbd_inter_decode_envelope_2026-08-06.tsv
+# (GitHub issue #8: "12bpc inter-frame decode diverges from rav1d-safe".
+#  Port vs the REAL C libaom decoder — not vs a stored md5, not vs rav1d-safe.)
+
+base commit      : b53b9f2 (origin/main)
+branch           : fix/issue-8-highbd-inter-envelope
+host             : Darwin 25.5.0 arm64 / Apple M-series, 12 cores
+profile          : test-fast (opt-level 3, debug-assertions + overflow-checks ON)
+oracle           : libaom v3.14.1 (submodule 03087864), in-process via aom-sys-ref
+dispatch         : BOTH — default (archmage SIMD tokens live) and AOM_FORCE_SCALAR=1
+wall             : 1.7 s per full run (the streams are 64x64 / 150x150 and tiny)
+
+command          : cargo test --profile test-fast -p zenav1-aom-bench \
+                     --test highbd_inter_decode_envelope -- --nocapture --test-threads 1
+                   AOM_FORCE_SCALAR=1 <same>
+
+WHY THIS FILE EXISTS
+  Issue #8 reported that frame 1 of `colors-animated-12bpc-keyframes-0-2-3.avif`
+  decodes to different RGBA than rav1d-safe, with structured deltas, under both
+  dispatch modes. This repo already gated that vector — but against md5 STRINGS
+  captured on 2026-07-23 (`crates/aom-decode/tests/data/animated/*.md5`), which
+  is a golden, not an oracle: it cannot tell you whether the port is still equal
+  to C *today*, and it cannot localize a divergence. The new gate
+  (`crates/aom-bench/tests/highbd_inter_decode_envelope.rs`) decodes the same
+  bytes through `aom_codec_av1_dx` in the same process and diffs sample by
+  sample, and extends the 8-bit-only `inter_harness_chunk0` envelope map onto
+  the bit-depth and chroma-subsampling axes it never covered.
+
+BITSTREAM PROVENANCE (checked, not assumed)
+  The committed fixture was re-extracted from the CURRENT vector in the zenavif
+  checkout (`tests/vectors/libavif/colors-animated-12bpc-keyframes-0-2-3.avif`)
+  with `tools/avif-extract`, and both tracks compare **byte-identical** to
+  `crates/aom-decode/tests/data/animated/colors-animated-12bpc-keyframes-0-2-3.
+  {color,alpha}.obu`. The port and rav1d-safe are therefore decoding the same
+  bytes; the fixture is not stale.
+
+CODED PROPERTIES OF THE ISSUE-#8 VECTOR (measured, `examples/inspect_headers`)
+  color track  profile=2, 64x64, bd=12, ss=(1,0) => 4:2:2, sb128=1, mono=0
+               frames: KEY, INTER(primary_ref=6), KEY, KEY, INTER — matching the
+               issue's "keyframes are 0, 2, 3"; frame 1 is the reported one
+               CICP as coded: mc=2 (UNSPECIFIED) cp=2 tc=2 full_range=false csp=0
+  alpha track  profile=2, 64x64, bd=12, monochrome, sb128=1
+               frames: KEY, INTER, KEY, KEY, KEY; full_range=true
+
+RESULT BY ARM
+  animated_track     8/8 tracks, 40/40 shown frames BYTE-EXACT vs aom_codec_av1_dx,
+                     including the issue-#8 12-bit 4:2:2 color track (5/5, frame 1
+                     included) and its 12-bit monochrome alpha track (5/5). C's
+                     shown-frame count is derived independently (probe until the
+                     shim reports "fewer frames") and equals the port's on every
+                     track. C also confirms the port's coded dims: the shim
+                     returns rc 4 on a geometry mismatch and the dims are pinned
+                     literals in the test table, not taken from the port.
+  key_p_zero_mv      24/24 cells byte-exact on BOTH frames = 48/48 frames, over
+                     bd {8, 10, 12} x {4:2:0, 4:2:2, 4:4:4, mono} x cq {20, 60}.
+                     Real `aomenc` [KEY, P] clips (GOOD usage, cpu-used 0,
+                     lag 0, obmc/warp/gm/interintra/masked/diff-wtd/dual-filter/
+                     ref-frame-mvs off, cdef+lr off), zero-MV P.
+                     => 12-bit INTRA is byte-exact (12/12 KEY cells) and 12-bit
+                        zero-MV INTER is byte-exact (12/12 P cells).
+  nonzero_mv         4/4 bd8 cells byte-exact; 8/8 bd10+bd12 cells REFUSED with
+                     `inter: sub/nonzero-pel MC above bd8 not yet supported`.
+                     0/12 wrong-pixel cells. Outside the ported envelope the
+                     decoder fails loud, it does not guess.
+
+DISPATCH MODES
+  Every number above is identical under default dispatch and AOM_FORCE_SCALAR=1
+  (3/3 tests pass in both; the printed grids compare equal line for line).
+  Logs: the run this file records was captured to ~/tmp and is reproducible in
+  1.7 s by the command above.
+
+WHAT THIS DOES *NOT* ESTABLISH
+  - rav1d-safe was NOT run here (out of scope for this repo, and it is under
+    concurrent edit). The conclusion is one-sided by construction: zenav1-aom ==
+    C libaom on this bitstream. Which of rav1d-safe or the zenavif RGB glue
+    accounts for the reported RGBA delta is unmeasured HERE.
+  - 12-bit inter is only proven for the ZERO-MV arm plus the two real inter
+    frames in the vector. Nonzero-MV highbd inter is refused, not verified.
+  - No 4:2:2 or 12-bit vector exists in the AV1 intra conformance corpus
+    (README), so the 12/12 KEY cells above are port-generated coverage, not
+    conformance-corpus coverage.

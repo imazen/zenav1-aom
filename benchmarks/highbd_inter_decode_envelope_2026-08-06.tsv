@@ -1,0 +1,69 @@
+arm	cell	bd	chroma	cq	frame	frame_type	verdict
+animated_track	colors-animated-8bpc.color	8	420	-	0..4	KEY,2xhiddenINTER,INTER,SHOW_EXISTING,INTER,INTER	byte-exact
+animated_track	colors-animated-8bpc-audio.color	8	420	-	0..4	KEY,2xhiddenINTER,INTER,SHOW_EXISTING,INTER,INTER	byte-exact
+animated_track	colors-animated-8bpc-alpha-exif-xmp.color	8	420	-	0..4	KEY,INTER,INTER,INTER,INTER	byte-exact
+animated_track	colors-animated-8bpc-alpha-exif-xmp.alpha	8	mono	-	0..4	KEY,INTER,INTER,INTER,INTER	byte-exact
+animated_track	colors-animated-8bpc-depth-exif-xmp.color	8	420	-	0..4	KEY,INTER,INTER,INTER,INTER	byte-exact
+animated_track	colors-animated-8bpc-depth-exif-xmp.alpha	8	mono	-	0..4	KEY,INTER,INTER,INTER,INTER	byte-exact
+animated_track	colors-animated-12bpc-keyframes-0-2-3.color	12	422	-	0..4	KEY,INTER,KEY,KEY,INTER	byte-exact
+animated_track	colors-animated-12bpc-keyframes-0-2-3.alpha	12	mono	-	0..4	KEY,INTER,KEY,KEY,KEY	byte-exact
+key_p_zero_mv	hbd8_420_cq20	8	420	20	0	KEY	byte-exact
+key_p_zero_mv	hbd8_420_cq20	8	420	20	1	P	byte-exact
+key_p_zero_mv	hbd8_420_cq60	8	420	60	0	KEY	byte-exact
+key_p_zero_mv	hbd8_420_cq60	8	420	60	1	P	byte-exact
+key_p_zero_mv	hbd8_422_cq20	8	422	20	0	KEY	byte-exact
+key_p_zero_mv	hbd8_422_cq20	8	422	20	1	P	byte-exact
+key_p_zero_mv	hbd8_422_cq60	8	422	60	0	KEY	byte-exact
+key_p_zero_mv	hbd8_422_cq60	8	422	60	1	P	byte-exact
+key_p_zero_mv	hbd8_444_cq20	8	444	20	0	KEY	byte-exact
+key_p_zero_mv	hbd8_444_cq20	8	444	20	1	P	byte-exact
+key_p_zero_mv	hbd8_444_cq60	8	444	60	0	KEY	byte-exact
+key_p_zero_mv	hbd8_444_cq60	8	444	60	1	P	byte-exact
+key_p_zero_mv	hbd8_mono_cq20	8	mono	20	0	KEY	byte-exact
+key_p_zero_mv	hbd8_mono_cq20	8	mono	20	1	P	byte-exact
+key_p_zero_mv	hbd8_mono_cq60	8	mono	60	0	KEY	byte-exact
+key_p_zero_mv	hbd8_mono_cq60	8	mono	60	1	P	byte-exact
+key_p_zero_mv	hbd10_420_cq20	10	420	20	0	KEY	byte-exact
+key_p_zero_mv	hbd10_420_cq20	10	420	20	1	P	byte-exact
+key_p_zero_mv	hbd10_420_cq60	10	420	60	0	KEY	byte-exact
+key_p_zero_mv	hbd10_420_cq60	10	420	60	1	P	byte-exact
+key_p_zero_mv	hbd10_422_cq20	10	422	20	0	KEY	byte-exact
+key_p_zero_mv	hbd10_422_cq20	10	422	20	1	P	byte-exact
+key_p_zero_mv	hbd10_422_cq60	10	422	60	0	KEY	byte-exact
+key_p_zero_mv	hbd10_422_cq60	10	422	60	1	P	byte-exact
+key_p_zero_mv	hbd10_444_cq20	10	444	20	0	KEY	byte-exact
+key_p_zero_mv	hbd10_444_cq20	10	444	20	1	P	byte-exact
+key_p_zero_mv	hbd10_444_cq60	10	444	60	0	KEY	byte-exact
+key_p_zero_mv	hbd10_444_cq60	10	444	60	1	P	byte-exact
+key_p_zero_mv	hbd10_mono_cq20	10	mono	20	0	KEY	byte-exact
+key_p_zero_mv	hbd10_mono_cq20	10	mono	20	1	P	byte-exact
+key_p_zero_mv	hbd10_mono_cq60	10	mono	60	0	KEY	byte-exact
+key_p_zero_mv	hbd10_mono_cq60	10	mono	60	1	P	byte-exact
+key_p_zero_mv	hbd12_420_cq20	12	420	20	0	KEY	byte-exact
+key_p_zero_mv	hbd12_420_cq20	12	420	20	1	P	byte-exact
+key_p_zero_mv	hbd12_420_cq60	12	420	60	0	KEY	byte-exact
+key_p_zero_mv	hbd12_420_cq60	12	420	60	1	P	byte-exact
+key_p_zero_mv	hbd12_422_cq20	12	422	20	0	KEY	byte-exact
+key_p_zero_mv	hbd12_422_cq20	12	422	20	1	P	byte-exact
+key_p_zero_mv	hbd12_422_cq60	12	422	60	0	KEY	byte-exact
+key_p_zero_mv	hbd12_422_cq60	12	422	60	1	P	byte-exact
+key_p_zero_mv	hbd12_444_cq20	12	444	20	0	KEY	byte-exact
+key_p_zero_mv	hbd12_444_cq20	12	444	20	1	P	byte-exact
+key_p_zero_mv	hbd12_444_cq60	12	444	60	0	KEY	byte-exact
+key_p_zero_mv	hbd12_444_cq60	12	444	60	1	P	byte-exact
+key_p_zero_mv	hbd12_mono_cq20	12	mono	20	0	KEY	byte-exact
+key_p_zero_mv	hbd12_mono_cq20	12	mono	20	1	P	byte-exact
+key_p_zero_mv	hbd12_mono_cq60	12	mono	60	0	KEY	byte-exact
+key_p_zero_mv	hbd12_mono_cq60	12	mono	60	1	P	byte-exact
+nonzero_mv	mv3_8_420	8	420	60	1	P	byte-exact
+nonzero_mv	mv3_8_422	8	422	60	1	P	byte-exact
+nonzero_mv	mv3_8_444	8	444	60	1	P	byte-exact
+nonzero_mv	mv3_8_mono	8	mono	60	1	P	byte-exact
+nonzero_mv	mv3_10_420	10	420	60	1	P	refused mv(0,-8)
+nonzero_mv	mv3_10_422	10	422	60	1	P	refused mv(0,-8)
+nonzero_mv	mv3_10_444	10	444	60	1	P	refused mv(-12,-16)
+nonzero_mv	mv3_10_mono	10	mono	60	1	P	refused mv(0,-8)
+nonzero_mv	mv3_12_420	12	420	60	1	P	refused mv(-14,-16)
+nonzero_mv	mv3_12_422	12	422	60	1	P	refused mv(-12,-16)
+nonzero_mv	mv3_12_444	12	444	60	1	P	refused mv(-14,-16)
+nonzero_mv	mv3_12_mono	12	mono	60	1	P	refused mv(-14,-16)

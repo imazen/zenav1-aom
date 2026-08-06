@@ -6,6 +6,29 @@
 
 ### Added
 
+- **The high-bit-depth INTER decode envelope is now gated against the live C
+  decoder, and GitHub #8 does not reproduce (KB-40).** #8 reported that
+  `colors-animated-12bpc-keyframes-0-2-3.avif` frame 1 — an inter frame —
+  decodes to different RGBA than rav1d-safe. New gate
+  `aom-bench/tests/highbd_inter_decode_envelope.rs` diffs the port's
+  `decode_frames` against **`aom_codec_av1_dx` in-process** rather than against
+  the md5 goldens committed beside the animated fixtures: **8/8 tracks, 40/40
+  shown frames byte-exact**, including that vector's 12-bit 4:2:2 color track
+  (frame 1 included) and its 12-bit monochrome alpha track. The sweep arm
+  extends `inter_harness_chunk0`'s bd8-4:2:0-only envelope map onto the axes it
+  never covered — real `aomenc` `[KEY, P]` clips at bd {8, 10, 12} x {4:2:0,
+  4:2:2, 4:4:4, mono} x cq {20, 60}: **24/24 cells, 48/48 frames byte-exact**,
+  so 12-bit intra AND 12-bit zero-MV inter are both inside the byte-exact
+  envelope. The third arm pins the honest boundary: nonzero-MV inter above bd8
+  is **refused** (`sub/nonzero-pel MC above bd8 not yet supported`), 8/8 cells,
+  **0 wrong-pixel cells**. Every number identical under `AOM_FORCE_SCALAR=1`.
+  The fixture was re-extracted from the live zenavif vector first and compares
+  byte-identical, so a stale fixture is ruled out. Record:
+  `benchmarks/highbd_inter_decode_envelope_2026-08-06.{md,tsv,meta}`.
+  Additive oracle helper `aom_sys_ref::ref_decode_av1_stream_frame_opt` (returns
+  `None` on "fewer shown frames" instead of panicking) so C's shown-frame COUNT
+  is derived independently of the port's.
+
 - **Four coverage axes swept, three closed byte-exact, and one new unmodelled
   speed-feature arm found (KB-38).** All four were named-but-unmeasured entries
   in the coverage queue. (1) *partial-SB x high bit depth beyond bd10 4:2:0* —

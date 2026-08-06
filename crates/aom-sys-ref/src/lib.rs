@@ -9768,6 +9768,56 @@ pub fn ref_decode_av1_stream_frame(
     RefDecodedFrame { y, u, v, info }
 }
 
+/// [`ref_decode_av1_stream_frame`], but `None` instead of a panic when the
+/// stream has FEWER shown frames than `frame_index + 1` (shim rc 3). Every
+/// other shim error still panics — in particular rc 4, the geometry mismatch,
+/// so a caller that passes the PORT's dims as `expect_w/h` gets C's
+/// independent confirmation of them for free. Probing upward from 0 until
+/// `None` yields C's shown-frame COUNT, which the port's count must match.
+/// Append-only; [`ref_decode_av1_stream_frame`] untouched.
+pub fn ref_decode_av1_stream_frame_opt(
+    data: &[u8],
+    frame_index: usize,
+    expect_w: usize,
+    expect_h: usize,
+) -> Option<RefDecodedFrame> {
+    let mut y = vec![0u16; expect_w * expect_h];
+    let mut u = vec![0u16; expect_w * expect_h];
+    let mut v = vec![0u16; expect_w * expect_h];
+    let mut info = [0i32; 6];
+    let rc = unsafe {
+        shim_decode_av1_stream_frame(
+            data.as_ptr(),
+            data.len(),
+            frame_index as i32,
+            expect_w as i32,
+            expect_h as i32,
+            y.as_mut_ptr(),
+            u.as_mut_ptr(),
+            v.as_mut_ptr(),
+            info.as_mut_ptr(),
+        )
+    };
+    if rc == 3 {
+        return None;
+    }
+    assert_eq!(
+        rc, 0,
+        "shim_decode_av1_stream_frame(frame {frame_index}) failed ({rc})"
+    );
+    let (mono, ss_x, ss_y) = (info[1] != 0, info[2] as usize, info[3] as usize);
+    if mono {
+        u.clear();
+        v.clear();
+    } else {
+        let cw = (expect_w + ss_x) >> ss_x;
+        let ch = (expect_h + ss_y) >> ss_y;
+        u.truncate(cw * ch);
+        v.truncate(cw * ch);
+    }
+    Some(RefDecodedFrame { y, u, v, info })
+}
+
 // Loop-filter application oracles (dec_shim.c section 4): facades over the
 // REAL exported av1_loop_filter_frame_init + av1_filter_block_plane_vert/horz
 // driven in the exact single-threaded loop_filter_rows order.
