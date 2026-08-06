@@ -69,20 +69,28 @@ Measured reach on the current corpus + mutator (seed 101, 500 000 iterations):
 | rejected at frame/tile level | 201 149 | 40.2 % |
 | rejected at/before the header parse | 248 643 | 49.7 % |
 
-**50.3 % deep reach.** The floor is pinned at 10 % — five times under the
-measurement, so ordinary corpus churn cannot trip it, but a mutator or seed
-change that collapses the sweep into a header-parser test will.
+**50.3 % deep reach**, one input in ten decoding a whole frame. The floor is
+pinned at 10 % — five times under the measurement, so ordinary corpus churn
+cannot trip it, but a mutator or seed change that collapses the sweep into a
+header-parser test will. (The run is deterministic in `(seed, iterations)`: the
+PRNG is seeded and the decoder is bit-exact, so the histogram reproduces on any
+box.)
 
 ## 3. What the sweep found: nothing
 
-| mutator | seeds | iterations | distinct panics |
-|---|---:|---:|---:|
-| pre-existing | 1, 2, 3, 7, 11 | 5 × 250 000 | 0 |
-| widened | 7, 101 (+ the run below) | see §5 | 0 |
+| mutator | code under test | seeds | iterations | distinct panics |
+|---|---|---|---:|---:|
+| pre-existing | pre-conversion | 1, 2, 3, 7, 11 | 5 × 250 000 | 0 |
+| widened | pre-conversion | 7, 101, 101 | 30 000 + 20 000 + 500 000 | 0 |
+| widened | post-conversion | 101 | 500 000 | 0 |
 
-The mutation-reachable panic surface is clean. That is a real result and it
-bounds what fuzzing can still contribute here — the remaining sites need
-reasoning, not iterations.
+Under `--profile test-fast`, which keeps `debug-assertions` and
+`overflow-checks` ON — so those runs also cover debug-only arithmetic-overflow
+panics, not just explicit ones.
+
+The mutation-reachable panic surface is clean. That is a real result, and it
+bounds what fuzzing can still contribute here: the remaining sites need
+reasoning, not iterations. The next two sections are that reasoning.
 
 ## 4. What reasoning found: the chroma `BLOCK_INVALID` asserts
 
@@ -158,11 +166,63 @@ cargo test --profile test-fast -p zenav1-aom-decode -p zenav1-aom-dsp -j 4
 ```
 
 including `tests/real_bitstream.rs` (the **live C-oracle differential** — 15
-tests, ~200 s, byte-identity against in-process libaom v3.14.1 across 4:2:0 /
-4:4:4 / 4:2:2 / monochrome at 8, 10 and 12 bits) and
-`tests/conformance_corpus.rs`.
+tests, byte-identity against in-process libaom v3.14.1 across 4:2:0 / 4:4:4 /
+4:2:2 / monochrome at 8, 10 and 12 bits) and `tests/conformance_corpus.rs`.
 
-## 7. What this does NOT establish
+One more reachability question got an exhaustive answer rather than an
+argument. `av1_inv_txfm2d_add_{into,u8_into}` assert on `(tx_type, tx_size)`
+pairs with no kernel — `TXFM_TYPE_LS` has holes because only DCT is defined at
+64 points — and the decoder feeds both arguments from the bitstream. The new
+`aom-dsp/tests/inv_txfm_decodable_pairs.rs` enumerates every `(tx_size,
+is_inter, reduced)` state the decoder can be in, takes every `tx_type` that
+state's ext-tx set marks decodable, and requires a kernel for each:
+
+```
+314 decodable (tx_size, tx_type, is_inter, reduced) selections, all with kernels;
+111 of the 304 (tx_size, tx_type) pairs have NO kernel and none is selectable
+```
+
+So that assert is unreachable from a bitstream — and the 111 kernel-less pairs
+make the constraint bite, so the test is not passing vacuously. It is left as
+an `assert!` (a provable invariant, named) with the proof now executable.
+
+## 7. One thing this audit got wrong, and how
+
+Mid-audit I concluded the port **over-rejects** 4:2:2: `decode_partition`'s
+guard fires on any `subsize` whose chroma size is `BLOCK_INVALID`, whereas the
+`decode_mbmi_block` check quoted in §4 is gated on `bsize >= BLOCK_8X8` — so a
+conformant 4:2:2 stream with a `BLOCK_4X8` block (`PARTITION_VERT` on an 8x8)
+would be rejected by us and accepted by libaom. That reasoning was sound and
+the conclusion was false, because libaom has a **second** check I had not read.
+`decodeframe.c:1359-1371`, in `decode_partition`, verbatim:
+
+```c
+  // Check the bitstream is conformant: if there is subsampling on the
+  // chroma planes, subsize must subsample to a valid block size.
+  const struct macroblockd_plane *const pd_u = &xd->plane[1];
+  if (get_plane_block_size(subsize, pd_u->subsampling_x, pd_u->subsampling_y) ==
+      BLOCK_INVALID) {
+    aom_internal_error(xd->error_info, AOM_CODEC_CORRUPT_FRAME,
+                       "Block size %dx%d invalid with this subsampling mode", ...);
+  }
+```
+
+Ungated on size, on `subsize`, in the same place as the port's. **The port
+matches C; there is no over-rejection.** libaom makes the `BLOCK_INVALID` call
+in three separate places — invalid `subsize`, invalid chroma `subsize` (both in
+`decode_partition`), and invalid chroma `bsize` at `>= BLOCK_8X8` (in
+`decode_mbmi_block`). The port already had the first two as rejections; this
+work converts the third from an `assert_ne!`, and adds the deeper txb-loop
+guard as defence in depth.
+
+Recorded because the near-miss is the point: reasoning from *one* citation in
+the C reference produced a confident, wrong conclusion about a conformance
+divergence, and the only thing that caught it was going back and reading the
+surrounding function. The oracle is the whole file, not the line you found
+first — which is also why every claim in §6 is a suite result rather than an
+argument.
+
+## 8. What this does NOT establish
 
 * **The encoder's panic surface is untouched.** 126 sites in `aom-encode`,
   reviewed only far enough to confirm none is bitstream-reachable
@@ -172,13 +232,5 @@ tests, ~200 s, byte-identity against in-process libaom v3.14.1 across 4:2:0 /
   measurable: no panic escapes the two public decode entry points over the
   iteration counts in §3, at the deep-reach fraction in §2, and the four sites
   in §4 no longer panic on the condition the C oracle calls corrupt.
-* **A separate finding, not fixed here.** `decode_partition`'s 4:2:2 guard
-  fires on *any* subsize whose chroma size is `BLOCK_INVALID`, while C gates
-  its equivalent check on `bsize >= BLOCK_8X8`. A conformant 4:2:2 stream
-  containing a `BLOCK_4X8` luma block (`PARTITION_VERT` on an 8x8) would
-  therefore be **rejected by the port and accepted by libaom**. That is an
-  over-rejection, not a panic or a corruption, and the conformance corpus has
-  no 4:2:2 vector that reaches it — so it is recorded here rather than changed
-  on inspection. Fixing it means moving the check to `decode_block` with C's
-  size gate and proving the widened acceptance decodes byte-identical to the
-  oracle, which needs a 4:2:2 sub-8x8 stream the corpus does not have.
+* **No timing claim of any kind.** Everything ran under `nice -n 19`, which on
+  Darwin is background QoS; see the `.meta`.

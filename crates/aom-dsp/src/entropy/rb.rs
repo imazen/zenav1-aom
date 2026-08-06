@@ -45,11 +45,6 @@ impl<'a> ReadBitBuffer<'a> {
         }
     }
 
-    /// Total bits in the underlying buffer — pairs with
-    /// [`ReadBitBuffer::bit_position`] to report how far a truncated header got.
-    pub fn bit_len(&self) -> usize {
-        self.buf.len() * 8
-    }
 
     /// `aom_rb_read_bit`: one bit at the current MSB-first position.
     pub fn read_bit(&mut self) -> u32 {

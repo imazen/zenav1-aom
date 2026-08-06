@@ -694,7 +694,7 @@ fn parse_frame_header_ext(
     // The two causes are DIFFERENT failures for a consumer — a short file vs a
     // corrupt one — and map to different `DecodeError` categories, so report
     // them apart instead of hedging in one message. `syntax_error` names the
-    // offending field; a bare overread reports how far the parse got.
+    // offending field; its absence means a plain overread.
     if rb.error {
         return Err(match rb.syntax_error {
             Some(field) => {
