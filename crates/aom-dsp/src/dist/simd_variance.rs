@@ -1,4 +1,4 @@
-//! SIMD kernel for `highbd_variance64` (Gate 3) — bit-identical to the scalar
+//! SIMD kernel for `highbd_variance64` — bit-identical to the scalar
 //! port on the pixel domain, at every dispatch tier
 //! (`tests/hbd_variance_simd_diff.rs`).
 //!

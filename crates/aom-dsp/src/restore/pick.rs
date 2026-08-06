@@ -8,6 +8,23 @@
 //! All pixel buffers are `u16` planes (the port-wide convention); the lowbd
 //! (bd 8) arithmetic matches C's `uint8_t` paths exactly because every value
 //! fits in the u8 range and the accumulator widths below are C's.
+//!
+//! # NOT WIRED INTO THE ENCODER (as of 2026-08-06)
+//!
+//! Nothing in `aom-encode` calls this module. Its only consumers workspace-wide
+//! are `aom-dsp/tests/pick_diff.rs`, `aom-dsp/tests/pick_search.rs`, and the
+//! dev-only `aom-bench`. The encoder's loop-restoration code is the PACK side
+//! (`aom_encode::pack`), which writes a decision it is handed, and
+//! `aom_encode::speed_features` records "loop-restoration search disabled (the
+//! current e2e harness envelope)".
+//!
+//! Two consequences worth knowing before you edit here: a change to this module
+//! cannot move any encoder byte gate (nothing on the encode path reads it), and
+//! these 2k lines compile into decode-only builds too, since the facade always
+//! pulls `aom-dsp` — a `restore-search` cargo feature would fix that and is the
+//! obvious follow-up, gated on the two test targets and `aom-bench` declaring
+//! it. Neither has been done; this note exists so the module's status is not
+//! inferred from its size.
 
 use crate::restore::sgr::SGR_PARAMS;
 use crate::entropy::lr::{WIENER_HALFWIN, WIENER_WIN};
