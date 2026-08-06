@@ -599,6 +599,29 @@ pub fn loop_filter_frame(
     plane_start: usize,
     plane_end: usize,
 ) {
+    // A `None` token is never polled, so this cannot fail; discarding the
+    // `Ok(())` keeps the historical signature panic-free.
+    let _ = loop_filter_frame_stop(buf, grid, p, plane_start, plane_end, None);
+}
+
+/// [`loop_filter_frame`] with a cooperative stop token polled once per 32-mi
+/// (128-pixel) superblock-row strip — the outermost loop of the walk, so the
+/// poll costs one predictable branch per strip and cannot touch a pixel.
+///
+/// Exists because deblocking a whole frame is a single un-interruptible call
+/// on the decoder's critical path: **26.9 ms** on a 4096x4096 frame, over the
+/// 20 ms cancellation bar all by itself
+/// (`benchmarks/decode_cancel_latency_2026-08-06.*`). Returns
+/// `Err(StopReason)` with the frame left PARTIALLY filtered — the caller must
+/// discard the reconstruction, which is what a cancelled decode does anyway.
+pub fn loop_filter_frame_stop(
+    buf: &mut LfFrameBuf,
+    grid: &LfMiGrid,
+    p: &LfParams,
+    plane_start: usize,
+    plane_end: usize,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
     // check_planes_to_loop_filter / set_planes_to_loop_filter.
     let planes_to_lf = [
         (p.filter_level[0] != 0 || p.filter_level[1] != 0) && plane_start == 0 && 0 < plane_end,
@@ -608,10 +631,10 @@ pub fn loop_filter_frame(
     // "If the luma plane is purposely not filtered, neither are the chroma
     // planes."
     if !planes_to_lf[0] && plane_start == 0 && 0 < plane_end {
-        return;
+        return Ok(());
     }
     if !planes_to_lf[0] && !planes_to_lf[1] && !planes_to_lf[2] {
-        return;
+        return Ok(());
     }
 
     let lfi = lf_frame_init(p, plane_start, plane_end);
@@ -621,6 +644,9 @@ pub fn loop_filter_frame(
 
     let mut mi_row = 0usize;
     while (mi_row as i32) < grid.mi_rows {
+        if let Some(s) = stop {
+            s.check()?;
+        }
         #[allow(clippy::needless_range_loop)]
         for plane in 0..3 {
             if !planes_to_lf[plane] {
@@ -645,6 +671,7 @@ pub fn loop_filter_frame(
         }
         mi_row += MAX_MIB_SIZE;
     }
+    Ok(())
 }
 
 // ---- lowbd (bd8, u8 pixel) whole-frame entry -----------------------------------
@@ -757,16 +784,30 @@ pub fn loop_filter_frame_u8(
     plane_start: usize,
     plane_end: usize,
 ) {
+    let _ = loop_filter_frame_u8_stop(buf, grid, p, plane_start, plane_end, None);
+}
+
+/// [`loop_filter_frame_u8`] with a cooperative stop token polled once per
+/// 32-mi strip — the lowbd twin of [`loop_filter_frame_stop`], and the one the
+/// bd8 decode path (every 8-bit stream) actually takes.
+pub fn loop_filter_frame_u8_stop(
+    buf: &mut LfFrameBufU8,
+    grid: &LfMiGrid,
+    p: &LfParams,
+    plane_start: usize,
+    plane_end: usize,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
     let planes_to_lf = [
         (p.filter_level[0] != 0 || p.filter_level[1] != 0) && plane_start == 0 && 0 < plane_end,
         p.filter_level_u != 0 && plane_start <= 1 && 1 < plane_end,
         p.filter_level_v != 0 && plane_start <= 2 && 2 < plane_end,
     ];
     if !planes_to_lf[0] && plane_start == 0 && 0 < plane_end {
-        return;
+        return Ok(());
     }
     if !planes_to_lf[0] && !planes_to_lf[1] && !planes_to_lf[2] {
-        return;
+        return Ok(());
     }
 
     let lfi = lf_frame_init(p, plane_start, plane_end);
@@ -776,6 +817,9 @@ pub fn loop_filter_frame_u8(
 
     let mut mi_row = 0usize;
     while (mi_row as i32) < grid.mi_rows {
+        if let Some(s) = stop {
+            s.check()?;
+        }
         #[allow(clippy::needless_range_loop)]
         for plane in 0..3 {
             if !planes_to_lf[plane] {
@@ -799,4 +843,5 @@ pub fn loop_filter_frame_u8(
         }
         mi_row += MAX_MIB_SIZE;
     }
+    Ok(())
 }
