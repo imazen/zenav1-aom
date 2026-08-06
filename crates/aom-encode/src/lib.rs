@@ -1,16 +1,30 @@
-//! Encoder composition layer: `av1_xform_quant` (libaom `av1/encoder/encodemb.c`).
+//! The AV1 ENCODER (port of libaom v3.14.1) — mode and partition search, rate
+//! control, bitstream packing, and the pre/post-processing around them.
 //!
-//! The per-block encoder workhorse = `av1_xform` (forward 2-D transform) +
-//! `av1_quant` (quantize + entropy-context write). Every sub-step is already
-//! bit-exact against C in its own crate:
-//! - forward transform: [`aom_dsp::transform::txfm2d::av1_fwd_txfm2d`]
-//! - quantizers: [`aom_dsp::quant`] (fp/b, flat/QM — lowbd 8-bit here)
-//! - neighbour context: [`aom_dsp::txb::txb_entropy_context`]
+//! The crate doc used to describe only `av1_xform_quant`, which was this
+//! crate's first slice; it is now 46 modules. A rough map:
 //!
-//! This crate wires them in the exact order/params libaom uses, so a residual
-//! block maps to byte-identical (qcoeff, dqcoeff, eob, txb_entropy_ctx). The
-//! forward transform is bd=8 (lowbd); highbd composition follows once the highbd
-//! forward transform lands.
+//! - **Search / RDO**: [`partition_pick`] (the real `av1_rd_pick_partition`;
+//!   [`partition`] is its superseded NONE-vs-SPLIT skeleton), [`rd_pick`],
+//!   [`intra_rd`], [`intra_uv_rd`], [`tx_search`], [`var_tx`], [`var_part`],
+//!   [`palette_search`], [`intrabc_search`], [`nonrd_pickmode`], and the
+//!   inter arms ([`inter_me`], [`inter_rd`], [`interp_rd`], [`inter_frame`]).
+//! - **NN prunes** (libaom's ported models + weights): [`cnn_partition`],
+//!   [`ab_nn_prune`], [`part4_prune`], [`prune_tx_2d`], [`hog`].
+//! - **Costs**: [`mode_costs`], [`inter_costs`], [`real_costs`], [`rd`],
+//!   [`curvfit_tables`].
+//! - **Post-recon search**: [`pickcdef`], [`lf_search`], [`superres_select`].
+//! - **Bitstream**: [`pack`], [`inter_pack`], [`obu_assemble`].
+//! - **Frame-level**: [`rc`], [`speed_features`], [`resize`], [`allintra_vis`],
+//!   [`noise_model`]/[`noise_fft`]/[`denoise`]/[`grain_table`].
+//!
+//! The per-block workhorse the original doc named is still here: `av1_xform`
+//! (forward 2-D transform) + `av1_quant` (quantize + entropy-context write),
+//! composed from pieces that are each bit-exact against C on their own —
+//! [`aom_dsp::transform::txfm2d::av1_fwd_txfm2d`], [`aom_dsp::quant`] (fp/b,
+//! flat/QM), [`aom_dsp::txb::txb_entropy_context`] — wired in the exact
+//! order/params libaom uses, so a residual block maps to byte-identical
+//! `(qcoeff, dqcoeff, eob, txb_entropy_ctx)`.
 #![forbid(unsafe_code)]
 
 pub mod allintra_vis;

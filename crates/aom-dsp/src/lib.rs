@@ -3,15 +3,16 @@
 //!
 //! Each former per-kernel crate is a module here: [`transform`], [`quant`],
 //! [`txb`], [`cdef`], [`restore`], [`intra`], [`loopfilter`], [`dist`],
-//! [`inter`], [`convolve`], [`recon`], [`dispatch`], and the MSAC range coder
-//! [`entropy`]. Consolidating them into one publishable crate keeps the
+//! [`inter`], [`convolve`], [`recon`], [`lowbd`], [`dispatch`], the entropy
+//! coder and the syntax layers on it ([`entropy`]), the default-off content
+//! census ([`census`]), and the shared `BLOCK_SIZE`/`TX_SIZE` geometry
+//! ([`blocksize`]). Consolidating them into one publishable crate keeps the
 //! release surface small (a single `cargo publish` / version bump) while
 //! preserving the exact kernel byte-for-byte — the module paths are the only
 //! thing that changed (`aom_transform::X` → `aom_dsp::transform::X`).
 //!
-//! During the consolidation the sub-crates are re-exported below via
-//! `pub use aom_X as X` and then physically absorbed into `src/X/`, one family
-//! at a time, so the differential gates stay green through every step.
+//! The consolidation is DONE: every former sub-crate is physically absorbed
+//! into `src/<family>/` and there are no `pub use aom_X as X` shims left.
 #![forbid(unsafe_code)]
 
 pub mod blocksize;
