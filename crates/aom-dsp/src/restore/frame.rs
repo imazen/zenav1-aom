@@ -66,12 +66,41 @@ pub fn loop_restoration_filter_frame(
     bit_depth: i32,
     optimized_lr: bool,
 ) {
+    // A `None` token is never polled, so this cannot fail; discarding the
+    // `Ok(())` keeps the historical signature panic-free.
+    let _ =
+        loop_restoration_filter_frame_stop(planes, lr, ss_x, ss_y, bit_depth, optimized_lr, None);
+}
+
+/// [`loop_restoration_filter_frame`] with a cooperative stop token polled at
+/// each plane and once per restoration-unit ROW within a plane.
+///
+/// The third whole-frame pass of the post-filter pipeline, and — like deblock
+/// and CDEF — one un-interruptible call without this. **Not size-calibrated
+/// here:** the streams the cancellation record was measured on
+/// (`benchmarks/decode_cancel_latency_2026-08-06.*`) all coded
+/// `frame_restoration_type = RESTORE_NONE`, so this stage never ran and its
+/// cost at 4096x4096 is UNMEASURED. It is made pollable on the same reasoning
+/// as the other two, not on a measurement of its own.
+pub fn loop_restoration_filter_frame_stop(
+    planes: &mut [LrPlaneInput<'_>],
+    lr: &LrFrameConfig,
+    ss_x: usize,
+    ss_y: usize,
+    bit_depth: i32,
+    optimized_lr: bool,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
     for (plane, p) in planes.iter_mut().enumerate() {
         if lr.frame_restoration_type[plane] == RESTORE_NONE {
             continue;
         }
-        filter_plane(p, lr, plane, ss_x, ss_y, bit_depth, optimized_lr);
+        if let Some(s) = stop {
+            s.check()?;
+        }
+        filter_plane(p, lr, plane, ss_x, ss_y, bit_depth, optimized_lr, stop)?;
     }
+    Ok(())
 }
 
 pub(crate) struct StripeBoundaries {
@@ -229,6 +258,7 @@ pub(crate) fn extend_frame(buf: &mut [u16], w: usize, h: usize, w_stride: usize)
 
 /// One plane: stage into the padded working buffer, build boundaries, run
 /// the unit walk into a padded dst, copy the crop back.
+#[allow(clippy::too_many_arguments)]
 fn filter_plane(
     p: &mut LrPlaneInput<'_>,
     lr: &LrFrameConfig,
@@ -237,7 +267,8 @@ fn filter_plane(
     ss_y: usize,
     bit_depth: i32,
     optimized_lr: bool,
-) {
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
     let (pw, ph) = lr.plane_size(plane, ss_x, ss_y);
     let (pw, ph) = (pw as usize, ph as usize);
     let (sx, sy) = if plane > 0 { (ss_x, ss_y) } else { (0, 0) };
@@ -279,6 +310,11 @@ fn filter_plane(
     let mut y0 = 0i32;
     let mut row_number = 0i32;
     while y0 < ph as i32 {
+        // Cooperative cancellation: one poll per restoration-unit row (the
+        // `av1_foreach_rest_unit_in_row` granularity). Cannot alter a pixel.
+        if let Some(s) = stop {
+            s.check()?;
+        }
         let remaining_h = ph as i32 - y0;
         let h = if remaining_h < ext_size {
             remaining_h
@@ -332,6 +368,7 @@ fn filter_plane(
             &dst[at(w_stride, r as isize, 0)..at(w_stride, r as isize, pw as isize)],
         );
     }
+    Ok(())
 }
 
 /// `av1_loop_restoration_filter_unit`: the per-unit stripe loop with boundary
