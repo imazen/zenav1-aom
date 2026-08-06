@@ -4,7 +4,106 @@
 
 ### [Unreleased]
 
+### Fixed
+
+- **Two decoder panics that libaom treats as corrupt-frame REJECTIONS, plus the
+  two `debug_assert`s that hid the same failure in release builds
+  (`harden/decoder-panic-surface`).** `av1_ss_size_lookup` has no valid chroma
+  plane size for some luma shapes; libaom's `decode_mbmi_block`
+  (decodeframe.c:393-401) returns `AOM_CODEC_CORRUPT_FRAME` there. The port
+  `assert_ne!`d instead, justified in a comment by "the roundtrip never
+  produces them" — a warrant about our own ENCODER, which says nothing about
+  what a crafted bitstream can reach, on a decoder that ships into zenavif's
+  untrusted AVIF path where a panic is a denial of service. `decode_block` and
+  the chroma txb loop now `mark_corrupt` and unwind (the deeper one also covers
+  the sub-8x8 shapes C's `bsize >= BLOCK_8X8` gate exempts but which still
+  index `MAX_TXSIZE_RECT_LOOKUP`: `BLOCK_4X8` at 4:2:2 IS chroma-reference at
+  odd `mi_col`). Both `max_uv_txsize`s (aom-decode + the aom-dsp loop filter)
+  had a `debug_assert_ne!` that vanished in release, leaving an anonymous
+  "index out of bounds" — same bounds check, now a named panic with a
+  `# Panics` section. Byte-inert on conformant streams: `decode_partition`
+  already turns the only reachable (4:2:2) case away a frame up, and a new test
+  pins why — of 88 (bsize, ss) combinations, the 16 `BLOCK_INVALID` entries are
+  all in the ss=(1,0)/(0,1) columns. Record:
+  `benchmarks/decoder_panic_surface_2026-08-06.{md,meta}`.
+
+- **`corrupt frame header (bit-reader error / out-of-range syntax value)` was
+  one message and one category for two different failures.** A short file and a
+  corrupt file are not the same thing to a consumer, and `DecodeError` already
+  distinguishes `Truncated` from `Malformed`. `ReadBitBuffer` gains
+  `mark_syntax_error(field)` beside the overread flag; the three film-grain
+  point-count rejections name their field; the frame-header site returns
+  `Truncated(..)` for an overread and `Malformed("frame header syntax out of
+  range: <field>")` otherwise. Measured live, not asserted: 180 of 182 prefixes
+  of a decoding seed report `truncated`, and the committed film-grain POC
+  reports `malformed` naming `num_y_points`.
+
+### Changed
+
+- **Panic messages that named no value, no bound and no contract, named**
+  (`convolve` "bad filter type", lowbd + highbd `lpf_scalar` "bad width", the
+  three bare `unreachable!()` in the intra predictors, two bare `assert!` on
+  the Wiener restoration-unit width, six bare precondition asserts in
+  `cdef_frame`). Message-only — each arm is reached solely to panic.
+
 ### Added
+
+- **The stable decoder fuzz sweep was green for the wrong reason, and now
+  measures its own reach.** Its mutation ops (bit flips, truncation,
+  length-field corruption, splices, insert/delete) leave a mostly-valid
+  arithmetic stream, so the symbol decoder stays near the states a real encoder
+  produced. Two ops added: a HOSTILE TILE PAYLOAD (keep the headers, replace
+  the tail with PRNG bytes, so `OdEcDec` walks arbitrary symbol sequences) and
+  PAYLOAD EXTENSION (append PRNG bytes so the range decoder keeps reading past
+  the real tile end). `probe()` now classifies every input as decoded /
+  deep-err / shallow-err, prints the histogram, and FAILS below
+  `MIN_DEEP_REACH_PPM` — a no-panic result over inputs the OBU parser rejected
+  is not evidence about the decoder. Measured: 47.8 % deep reach, 10.0 % fully
+  decoded (50 208 decoded / 188 550 deep / 261 242 shallow of 500 000), floor
+  pinned 5x under that. **0 panics** over the runs recorded in the `.md`.
+
+- **Four hostile-input contract tests** (`tests/fuzz_regression.rs`), all
+  anti-vacuous: no committed POC may reach `DecodeError::Internal` (that
+  variant means decoder bug, so an attacker-reachable one is a defect — 11 POCs
+  checked); the 4:2:2 POC must be a typed `malformed` naming the chroma
+  condition; the `BLOCK_INVALID` table shape the new guards' reasoning rests on;
+  and `max_uv_txsize`'s named panic.
+
+- **`aom-dsp/tests/inv_txfm_decodable_pairs.rs` — the inverse transform's
+  `assert!(cfg.valid, ..)` is proven unreachable from a bitstream, exhaustively
+  rather than by argument.** `TXFM_TYPE_LS` has holes (only DCT is defined at
+  64 points) and the decoder feeds both `tx_type` and `tx_size` straight from
+  the stream, so "can a crafted file reach that assert?" is a real question
+  about the untrusted surface. The test enumerates every `(tx_size, is_inter,
+  reduced)` state the decoder can be in, takes every `tx_type` that state's
+  ext-tx set marks decodable, and requires a kernel: **314 decodable selections,
+  all with kernels; 111 of the 304 `(tx_size, tx_type)` pairs have no kernel and
+  none is selectable.** The 111 make the constraint bite, so this cannot pass
+  vacuously — and a table edit that opens a hole now fails here instead of as a
+  decoder panic on a crafted file.
+
+- **The high-bit-depth INTER decode envelope is now gated against the live C
+  decoder, and GitHub #8 does not reproduce (KB-40).** #8 reported that
+  `colors-animated-12bpc-keyframes-0-2-3.avif` frame 1 — an inter frame —
+  decodes to different RGBA than rav1d-safe. New gate
+  `aom-bench/tests/highbd_inter_decode_envelope.rs` diffs the port's
+  `decode_frames` against **`aom_codec_av1_dx` in-process** rather than against
+  the md5 goldens committed beside the animated fixtures: **8/8 tracks, 40/40
+  shown frames byte-exact**, including that vector's 12-bit 4:2:2 color track
+  (frame 1 included) and its 12-bit monochrome alpha track. The sweep arm
+  extends `inter_harness_chunk0`'s bd8-4:2:0-only envelope map onto the axes it
+  never covered — real `aomenc` `[KEY, P]` clips at bd {8, 10, 12} x {4:2:0,
+  4:2:2, 4:4:4, mono} x cq {20, 60}: **24/24 cells, 48/48 frames byte-exact**,
+  so 12-bit intra AND 12-bit zero-MV inter are both inside the byte-exact
+  envelope. The third arm pins the honest boundary: nonzero-MV inter above bd8
+  is **refused** (`sub/nonzero-pel MC above bd8 not yet supported`), 8/8 cells,
+  **0 wrong-pixel cells**. Every number identical under `AOM_FORCE_SCALAR=1`.
+  The fixture was re-extracted from the live zenavif vector first and compares
+  byte-identical, so a stale fixture is ruled out. Record:
+  `benchmarks/highbd_inter_decode_envelope_2026-08-06.{md,tsv,meta}`.
+  Additive oracle helper `aom_sys_ref::ref_decode_av1_stream_frame_opt` (returns
+  `None` on "fewer shown frames" instead of panicking) so C's shown-frame COUNT
+  is derived independently of the port's.
 
 - **Four coverage axes swept, three closed byte-exact, and one new unmodelled
   speed-feature arm found (KB-38).** All four were named-but-unmeasured entries

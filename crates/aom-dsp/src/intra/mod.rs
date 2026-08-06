@@ -179,7 +179,13 @@ pub fn predict(
                 }
             }
         }
-        _ => unreachable!(),
+        // The non-directional predictor set: DC/DC_TOP/DC_LEFT/DC_128/V/H/
+        // PAETH/SMOOTH/SMOOTH_V/SMOOTH_H. Directional modes (D45..D67) go to
+        // the dr_predictor family and never reach here; the decoder selects
+        // the family from the mode before calling.
+        _ => unreachable!(
+            "predict: mode {mode} is not a non-directional intra predictor"
+        ),
     }
 }
 
@@ -295,7 +301,13 @@ pub fn predict_highbd(
             let sw_w = &SMOOTH_WEIGHTS[bw - 4..];
             simd::smooth_h(dst, stride, bw, bh, left, right, sw_w);
         }
-        _ => unreachable!(),
+        // The non-directional predictor set: DC/DC_TOP/DC_LEFT/DC_128/V/H/
+        // PAETH/SMOOTH/SMOOTH_V/SMOOTH_H. Directional modes (D45..D67) go to
+        // the dr_predictor family and never reach here; the decoder selects
+        // the family from the mode before calling.
+        _ => unreachable!(
+            "predict_highbd: mode {mode} is not a non-directional intra predictor"
+        ),
     }
 }
 
@@ -417,7 +429,13 @@ pub fn predict_highbd_scalar(
                 }
             }
         }
-        _ => unreachable!(),
+        // The non-directional predictor set: DC/DC_TOP/DC_LEFT/DC_128/V/H/
+        // PAETH/SMOOTH/SMOOTH_V/SMOOTH_H. Directional modes (D45..D67) go to
+        // the dr_predictor family and never reach here; the decoder selects
+        // the family from the mode before calling.
+        _ => unreachable!(
+            "predict_highbd_scalar: mode {mode} is not a non-directional intra predictor"
+        ),
     }
 }
 

@@ -2621,7 +2621,7 @@ pub fn read_film_grain_params(
     // (aom_internal_error). Mark the reader corrupt and bail so the frame
     // header parse returns Err rather than indexing out of bounds.
     if p.num_y_points as usize > p.scaling_points_y.len() {
-        rb.error = true;
+        rb.mark_syntax_error("film_grain num_y_points exceeds 14 (scaling_points_y bound)");
         return p;
     }
     for i in 0..p.num_y_points as usize {
@@ -2638,7 +2638,7 @@ pub fn read_film_grain_params(
         // Spec: num_cb_points <= 10 (scaling_points_cb length); libaom rejects
         // a larger value.
         if p.num_cb_points as usize > p.scaling_points_cb.len() {
-            rb.error = true;
+            rb.mark_syntax_error("film_grain num_cb_points exceeds 10 (scaling_points_cb bound)");
             return p;
         }
         for i in 0..p.num_cb_points as usize {
@@ -2648,7 +2648,7 @@ pub fn read_film_grain_params(
         // Spec: num_cr_points <= 10 (scaling_points_cr length); libaom rejects
         // a larger value.
         if p.num_cr_points as usize > p.scaling_points_cr.len() {
-            rb.error = true;
+            rb.mark_syntax_error("film_grain num_cr_points exceeds 10 (scaling_points_cr bound)");
             return p;
         }
         for i in 0..p.num_cr_points as usize {

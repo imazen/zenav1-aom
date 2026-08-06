@@ -91,6 +91,16 @@ it here in the same commit.**
 2. **Blast radius** — how much of the encode envelope is wrong when it fires, and how many
    INDEPENDENT landings named the same axis (a proxy for how load-bearing it is).
 
+### Closed on 2026-08-06 (kept for one cycle so the strike-through is visible)
+- ~~decoder: high bit depth x chroma subsampling on the INTER path (the
+  `inter_harness_chunk0` envelope map is bd8 4:2:0 only)~~ → KB-40 /
+  `highbd_inter_decode_envelope::highbd_key_p_envelope_vs_c`, **24/24 cells (48/48 frames)
+  byte-exact** vs the C decoder across bd {8,10,12} x {4:2:0, 4:2:2, 4:4:4, mono} x cq {20,60},
+  in 1.7 s. Also closes GitHub #8 on this side: the animated corpus is now diffed against the
+  live C decoder (**40/40 shown frames**), not against its stored md5s. **Newly named and NOT
+  closed:** nonzero-MV inter above bd8 (refused by design, 8/8 cells), and the bd x speed grid
+  (only cpu-used 0 swept).
+
 ### Closed on 2026-08-04 (kept for one cycle so the strike-through is visible)
 - ~~partial-SB x bd12, and x 4:2:2/mono at high bit depth~~ → `s4cov_partial_sb_axis::
   partial_sb_high_bitdepth_formats_byte_match`, **56/56 byte-exact** in 53 s.
@@ -4360,6 +4370,54 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   3-SB-wide frame makes libaom clamp to a 3x3 grid, which the harness's uniform-spacing check rejects
   (*"uniform-spacing tile grid must be 2^log2_cols x 2^log2_rows, left: 9 right: 16"*) — a
   pre-existing, delta-q-independent limit, noted here because it is what bounds the grid list.
+
+### KB-40 — Decoder: reported 12bpc inter divergence (GitHub #8) — NOT REPRODUCIBLE against the C oracle; the highbd inter envelope is now gated ✅ 2026-08-06
+
+- **What was reported (imazen/zenav1-aom#8):** `colors-animated-12bpc-keyframes-0-2-3.avif`
+  frame 1 (INTER; the file's keyframes are 0, 2, 3) decodes to different RGBA through
+  zenavif's aom backend than through rav1d-safe. 328 of the first 32768 output bytes differ,
+  every differing index `idx % 4 == 0`, deltas `{1: 60, 16: 76, 32: 132, 224: 60}`. Both
+  dispatch modes. Filed as a plausible highbd-inter gap, since the README scopes this port
+  ALLINTRA and the intra conformance corpus contains **no 12-bit and no 4:2:2 vector at all**.
+- **Measured verdict: the port's planes are byte-identical to libaom v3.14.1 on that exact
+  bitstream, on every shown frame of both its tracks.** New gate
+  `crates/aom-bench/tests/highbd_inter_decode_envelope.rs` (three tests) diffs
+  `decode_frames` against **`aom_codec_av1_dx` in-process**, not against the md5 goldens
+  committed beside the fixtures (a golden cannot tell you whether the port still equals C
+  *today*, and cannot localize). Result: **8/8 animated tracks, 40/40 shown frames byte-exact**;
+  **24/24 `[KEY, P]` cells (48/48 frames) byte-exact** across bd {8, 10, 12} × {4:2:0, 4:2:2,
+  4:4:4, mono} × cq {20, 60}; **0/12 wrong-pixel cells** on the nonzero-MV arm. Identical
+  under `AOM_FORCE_SCALAR=1`. **0 of 100 cells diverge.**
+- **The fixture is not stale** — re-extracted from the live zenavif vector with
+  `tools/avif-extract`: byte-identical on both tracks. Coded properties re-measured with
+  `examples/inspect_headers` rather than inherited from the 2026-07-23 census: profile 2,
+  64×64, bd 12, **4:2:2** (ss 1,0), SB128, frames `KEY, INTER, KEY, KEY, INTER`,
+  `mc=2 cp=2 tc=2 full_range=false`.
+- **No stage bisect was possible or needed:** the comparison is at the final cropped,
+  post-filter reconstruction — downstream of prediction, inverse transform, reconstruction and
+  the whole deblock/CDEF/LR chain — and it is sample-identical.
+- **Where the reported delta most likely comes from (INFERENCE, zenavif read-only, not run
+  here).** The vector has an alpha track and codes 12 bits, so zenavif's buffer is
+  `Rgba<u16>` — 8 bytes/px, and `64 × 64 × 8 = 32768` is exactly the issue's sample window.
+  Under that layout `idx % 4 == 0` is the **low bytes of R and B**, not "the R channel"; and
+  since `scale_pixels_to_u16` puts adjacent 12-bit codes ~16 apart, byte deltas 16/32/224 are
+  **±1/±2 codes at 12 bits** in the two chroma-driven channels (G, which mixes both with
+  smaller coefficients, rounds to no change). Both backends call the SAME kernel
+  (`yuv_convert::yuv16_to_rgbx_strip::<Rgba<u16>>`) with the same arguments, and frame 0 of the
+  same track agrees — so the difference is in the decoded PLANES, and this port's planes equal
+  C's. Remaining suspect: rav1d-safe's 12-bit inter reconstruction. **Not measured here** —
+  rav1d-safe was not run.
+- **Handoff, one command:** hash rav1d-safe's planes for that track in the golden layout
+  (Y,U,V; cropped dims; LE u16) and compare with
+  `crates/aom-decode/tests/data/animated/colors-animated-12bpc-keyframes-0-2-3.color.md5`
+  line 2 = `9f2291bf3f75dd440bc1d64ae26e0ac8` (frame 1). This run re-proved that file equal to
+  the live C decoder, so it is oracle-backed.
+- **Still open (honest):** nonzero-MV inter above bd8 is REFUSED, not verified —
+  `aom-decode/src/lib.rs` fail-loud-guards it ("sub/nonzero-pel MC above bd8 not yet
+  supported") because the sub-pel filter chain still runs on a u8 scratch; all 8 bd10/bd12
+  cells hit the guard. The 12-bit / 4:2:2 KEY coverage above is port-generated, not
+  conformance-corpus breadth. Only cpu-used 0 on the `[KEY, P]` grid; bd × speed unmeasured.
+- Record: `benchmarks/highbd_inter_decode_envelope_2026-08-06.{md,tsv,meta}`.
 
 ### KB-PERF-1 — Encoder: the intra-mode CNN is recomputed ~10x per superblock (C computes it ONCE and caches) — FIXED ✅ 2026-08-02
 

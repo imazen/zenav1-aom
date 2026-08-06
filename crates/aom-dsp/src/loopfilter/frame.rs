@@ -157,11 +157,29 @@ fn get_plane_block_size(bsize: usize, ss_x: usize, ss_y: usize) -> u8 {
 }
 
 /// `av1_get_max_uv_txsize` (blockd.h:1377).
+///
+/// # Panics
+///
+/// Panics when `(bsize, ss_x, ss_y)` maps to `BLOCK_INVALID` — the 4:2:2 (and
+/// unreachable 4:4:0) holes in `av1_ss_size_lookup`. That is a CORRUPT-FRAME
+/// condition libaom rejects in `decode_mbmi_block` (decodeframe.c:393-401), so
+/// a caller driving this from an untrusted bitstream must reject it first. The
+/// `debug_assert_ne!` this replaces was compiled out in release builds, where
+/// the same input then failed as a bare `MAX_TXSIZE_RECT_LOOKUP` index-out-of-
+/// bounds with no indication of what the caller did wrong. Same bounds check,
+/// named.
 #[inline(always)]
 fn max_uv_txsize(bsize: usize, ss_x: usize, ss_y: usize) -> usize {
     let plane_bsize = get_plane_block_size(bsize, ss_x, ss_y);
-    debug_assert_ne!(plane_bsize, BLOCK_INVALID, "invalid chroma block size");
-    adjusted_tx_size(MAX_TXSIZE_RECT_LOOKUP[plane_bsize as usize] as usize)
+    let max_rect = match MAX_TXSIZE_RECT_LOOKUP.get(plane_bsize as usize) {
+        Some(&t) => t,
+        None => panic!(
+            "loopfilter max_uv_txsize: luma bsize {bsize} has no valid chroma plane size at \
+             subsampling ({ss_x},{ss_y}) — a corrupt-frame condition the caller must reject \
+             before filtering"
+        ),
+    };
+    adjusted_tx_size(max_rect as usize)
 }
 
 // ---- inputs ---------------------------------------------------------------------

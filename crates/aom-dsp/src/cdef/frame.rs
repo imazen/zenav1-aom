@@ -832,15 +832,50 @@ fn cdef_frame_generic<P: CdefPixel>(
     let nhfb = (p.mi_cols + MI_SIZE_64X64 - 1) / MI_SIZE_64X64;
     let luma_stride = align16(p.mi_cols << MI_SIZE_LOG2);
 
-    assert!(p.num_planes == 1 || p.num_planes == 3);
-    assert_eq!(p.skip_txfm.len(), uz(p.mi_rows * p.mi_cols));
-    assert_eq!(p.unit_strength.len(), uz(nvfb * nhfb));
-    assert!(y_stride >= uz(luma_stride));
-    assert!(y.len() >= y_stride * uz(p.mi_rows << MI_SIZE_LOG2));
+    // Caller-contract preconditions. Named, because a bare `assert!` here
+    // reports "assertion failed: y.len() >= y_stride * ..." with no indication
+    // of which of the caller's five sizing inputs is wrong.
+    assert!(
+        p.num_planes == 1 || p.num_planes == 3,
+        "cdef_frame: num_planes must be 1 (monochrome) or 3, got {}",
+        p.num_planes
+    );
+    assert_eq!(
+        p.skip_txfm.len(),
+        uz(p.mi_rows * p.mi_cols),
+        "cdef_frame: skip_txfm must have one entry per mi cell ({} x {})",
+        p.mi_rows,
+        p.mi_cols
+    );
+    assert_eq!(
+        p.unit_strength.len(),
+        uz(nvfb * nhfb),
+        "cdef_frame: unit_strength must have one entry per 64x64 filter block ({nvfb} x {nhfb})"
+    );
+    assert!(
+        y_stride >= uz(luma_stride),
+        "cdef_frame: y_stride {y_stride} is narrower than the 16-aligned luma row          ({luma_stride}) this frame needs"
+    );
+    assert!(
+        y.len() >= y_stride * uz(p.mi_rows << MI_SIZE_LOG2),
+        "cdef_frame: luma plane is {} samples, needs y_stride {y_stride} x {} rows",
+        y.len(),
+        uz(p.mi_rows << MI_SIZE_LOG2)
+    );
     if p.num_planes > 1 {
-        assert!(uv_stride >= uz(luma_stride >> p.ss_x));
+        assert!(
+            uv_stride >= uz(luma_stride >> p.ss_x),
+            "cdef_frame: uv_stride {uv_stride} is narrower than the subsampled row ({})              at ss_x {}",
+            uz(luma_stride >> p.ss_x),
+            p.ss_x
+        );
         let uv_rows = uz(p.mi_rows << MI_SIZE_LOG2) >> p.ss_y;
-        assert!(u.len() >= uv_stride * uv_rows && v.len() >= uv_stride * uv_rows);
+        assert!(
+            u.len() >= uv_stride * uv_rows && v.len() >= uv_stride * uv_rows,
+            "cdef_frame: chroma planes are {} / {} samples, each needs uv_stride              {uv_stride} x {uv_rows} rows",
+            u.len(),
+            v.len()
+        );
     }
 
     let mut planes = Planes {

@@ -1,0 +1,92 @@
+# Provenance — decoder_panic_surface_2026-08-06
+
+## What this is
+
+The audit + conversion of panics reachable from a crafted bitstream on the
+DECODE path (`aom-decode` and the `aom-dsp` modules it reaches), the widening
+of the stable fuzz sweep that was used to hunt for more, and the reach
+measurement that says how much the sweep's green actually covers.
+
+## Box
+
+    host        mac (Apple M4 Pro, 12 cores), darwin-arm64
+    kernel      Darwin 25.5.0
+    macOS       26.5.2
+    rustc       1.97.1 (8bab26f4f 2026-07-14), stable-aarch64-apple-darwin
+    commit      020d3ef (sweep widening), 1787310 (panic conversions);
+                branch harden/decoder-panic-surface off f1d5bc6-era main
+    load        ANOTHER HEAVY JOB WAS RUNNING on this box for the whole session
+
+## nice / QoS
+
+Everything here ran under `nice -n 19` and every cargo invocation used `-j 4`
+with `RUSTC_WRAPPER=sccache`, per the shared-box rule.
+
+**No number in the `.md` is a timing.** On Darwin, `nice -n 19` maps to
+background QoS (E-cores) and has been measured at ~40x wall-clock penalty
+versus `nice -n 5` in this repo, so a `nice -n 19` run is worthless for
+performance claims. Every figure reported is an exact COUNT — iterations,
+inputs classified, table entries, tests passed — which the scheduler cannot
+change. Wall-clock figures that do appear (e.g. "~200 s for
+`real_bitstream.rs`") are informational only and must not be quoted as
+performance data.
+
+## Static inventory
+
+    python3 ~/tmp/panics/scan2.py
+
+Counts `unwrap( expect( panic! unreachable! todo! unimplemented! assert!
+assert_eq! assert_ne!` outside `#[cfg(test)]` blocks and outside `//` comment
+lines, over `crates/{aom-decode,aom-dsp,aom-encode,zenav1-aom}/src/**.rs`;
+`debug_assert*` is excluded by a prefix check. The `#[cfg(test)]` stripper is a
+brace matcher, so a `#[cfg(test)]` block with unbalanced braces inside a string
+literal would be miscounted — none exist in this tree. Treat the table in §1 of
+the `.md` as an ORDER OF MAGNITUDE, not an exact census: it is a lexical scan,
+not a semantic one.
+
+## Fuzz sweep
+
+    FUZZ_SMOKE_ITERS=<n> FUZZ_SMOKE_SEED=<s> FUZZ_CRASH_DIR=~/tmp/panics/... \
+      nice -n 19 env RUSTC_WRAPPER=sccache cargo test --profile test-fast \
+      -p zenav1-aom-decode --test fuzz_sweep -j 4 -- --nocapture
+
+`test-fast` is opt-level 3 WITH `debug-assertions` and `overflow-checks` on, so
+the sweep still catches debug-only arithmetic-overflow panics — that is why it
+is the right profile for this and why a release-profile sweep would be weaker.
+
+The pre-existing-mutator baseline (5 x 250 000, seeds 1/2/3/7/11) was run
+against commit f1d5bc6-era code BEFORE the mutator change; the widened runs are
+against 020d3ef and later. Iteration counts and per-seed reach histograms are
+in `~/tmp/panics/discover*.log` and `~/tmp/panics/sweep*_s*.log` (scratch, not
+committed — the committed evidence is the test itself, which reproduces the
+histogram on any box).
+
+## Verification suite
+
+    nice -n 19 env RUSTC_WRAPPER=sccache cargo test --profile test-fast \
+      -p zenav1-aom-decode -p zenav1-aom-dsp -j 4 --no-fail-fast   # 459 / 0
+    nice -n 19 env RUSTC_WRAPPER=sccache cargo test --profile test-fast \
+      --workspace -j 4 --no-fail-fast                              # 973 / 0
+    AOM_FORCE_SCALAR=1 <the first command>                         # 460 / 0
+    nice -n 19 env RUSTC_WRAPPER=sccache cargo check \
+      -p zenav1-aom-decode --features whereat --all-targets -j 4   # clean
+
+`tests/real_bitstream.rs` links the in-process libaom v3.14.1 oracle
+(`aom-sys-ref`) and asserts byte identity, so "behaviour-preserving on valid
+input" is an oracle result, not an inspection. The scalar count is 460 rather
+than 459 because `inv_txfm_decodable_pairs.rs` is new in `aom-dsp`.
+
+## What is NOT measured here
+
+* No timing, throughput, or instruction-count claim of any kind (see the QoS
+  note above).
+* Nothing about SIMD-vs-scalar divergence. The scalar-pin leg WAS re-run
+  (`AOM_FORCE_SCALAR=1 cargo test --profile test-fast -p zenav1-aom-decode
+  -p zenav1-aom-dsp` => 460 passed / 0 failed), but that is a
+  behaviour-preservation check, not a claim about dispatch: these changes are
+  on the scalar control path (guards and panic messages) and touch no kernel.
+* No encoder-side sweep. `aom-encode`'s panic sites were reviewed for
+  bitstream reachability and left alone.
+* No coverage instrumentation. "Deep reach" is measured by classifying the
+  decoder's own error text, not by line coverage, so it is a lower bound on
+  what the sweep executes, not a coverage figure.

@@ -210,7 +210,11 @@ fn wiener_impl(
     bd: i32,
     temp: &mut [u16],
 ) {
-    assert!(w >= 8 && w <= MAX_SB_SIZE);
+    assert!(
+        w >= 8 && w <= MAX_SB_SIZE,
+        "wiener: restoration-unit width {w} outside 8..={MAX_SB_SIZE} — the SIMD path \
+         loads 8 lanes at a time and `temp` is strided by MAX_SB_SIZE"
+    );
     let (round_0, round_1) = conv_params_wiener(bd);
     let intermediate_height = h + SUBPEL_TAPS - 1;
     debug_assert_eq!(temp.len(), intermediate_height * MAX_SB_SIZE);
@@ -348,7 +352,11 @@ fn wiener_scalar_into(
     bd: i32,
     temp: &mut [u16],
 ) {
-    assert!(w <= MAX_SB_SIZE);
+    assert!(
+        w <= MAX_SB_SIZE,
+        "wiener: restoration-unit width {w} exceeds MAX_SB_SIZE ({MAX_SB_SIZE}) — \
+         `temp` is strided by MAX_SB_SIZE, so a wider unit would alias rows"
+    );
     let (round_0, round_1) = conv_params_wiener(bd);
     let intermediate_height = h + SUBPEL_TAPS - 1;
     debug_assert_eq!(temp.len(), intermediate_height * MAX_SB_SIZE);

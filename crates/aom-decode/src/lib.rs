@@ -444,10 +444,31 @@ pub fn adjusted_tx_size(tx_size: usize) -> usize {
 /// `av1_get_max_uv_txsize` (blockd.h): the chroma transform size — the largest
 /// rectangular transform of the chroma plane block size, 64-clamped. This is
 /// the whole-block chroma `tx_size` (`av1_get_tx_size(plane > 0)`, lossless off).
+///
+/// # Panics
+///
+/// `(bsize, ss_x, ss_y)` must have a valid chroma plane size — not the
+/// `BLOCK_INVALID` (255) hole in `av1_ss_size_lookup`, which exists only for
+/// 4:2:2 (and the unreachable 4:4:0). That is a CORRUPT-FRAME condition, not an
+/// internal invariant: `decode_mbmi_block` (decodeframe.c:393-401) rejects it
+/// with `AOM_CODEC_CORRUPT_FRAME` and this decoder rejects it in
+/// `decode_partition` / `decode_block`, so callers driving this from an
+/// untrusted bitstream must reject it too. The `debug_assert_ne!` this replaces
+/// was compiled out in release builds, leaving an anonymous "index out of
+/// bounds" as the only diagnostic; this is the same bounds check, named.
 pub fn max_uv_txsize(bsize: usize, ss_x: usize, ss_y: usize) -> usize {
     let plane_bsize = get_plane_block_size(bsize, ss_x, ss_y);
-    debug_assert_ne!(plane_bsize, 255, "invalid chroma block size");
-    adjusted_tx_size(MAX_TXSIZE_RECT_LOOKUP[plane_bsize])
+    let max_rect = MAX_TXSIZE_RECT_LOOKUP
+        .get(plane_bsize)
+        .copied()
+        .unwrap_or_else(|| {
+            panic!(
+                "max_uv_txsize: luma bsize {bsize} has no valid chroma plane size at \
+                 subsampling ({ss_x},{ss_y}) — a corrupt-frame condition the caller must \
+                 reject before reconstruction"
+            )
+        });
+    adjusted_tx_size(max_rect)
 }
 
 /// `scale_chroma_bsize` (reconintra.c): the block size the chroma availability
@@ -4569,16 +4590,38 @@ impl<'c> TileKf<'c> {
         let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
         // xd->is_chroma_ref (set_mi_row_col): does this block carry the (merged)
         // chroma information? Gates the UV mode-info symbols and the chroma
-        // plane loop. The C decode_mbmi_block also rejects >=8x8 blocks whose
-        // chroma plane size is invalid ("Invalid block size", e.g. tall shapes
-        // in 4:2:2) — asserted here (the roundtrip never produces them).
+        // plane loop.
         let chroma_ref = is_chroma_reference(mi_row, mi_col, bsize, ss_x, ss_y);
-        if !cfg.monochrome && bsize >= BLOCK_8X8 && (ss_x != 0 || ss_y != 0) {
-            assert_ne!(
-                get_plane_block_size(bsize, ss_x, ss_y),
-                255,
-                "invalid chroma block size (non-conformant partition for this subsampling)"
-            );
+        // decode_mbmi_block (decodeframe.c:393-401) rejects a >=8x8 block whose
+        // chroma plane size is BLOCK_INVALID with AOM_CODEC_CORRUPT_FRAME
+        // ("Invalid block size."):
+        //
+        //   if (bsize >= BLOCK_8X8 && (ss_x || ss_y)) {
+        //     const BLOCK_SIZE uv_subsize = av1_ss_size_lookup[bsize][ss_x][ss_y];
+        //     if (uv_subsize == BLOCK_INVALID)
+        //       aom_internal_error(.., AOM_CODEC_CORRUPT_FRAME, "Invalid block size.");
+        //   }
+        //
+        // The C oracle treats this as UNTRUSTED-INPUT rejection, not as an
+        // invariant, so the port must reject too rather than panic. This was an
+        // `assert_ne!` justified by "the roundtrip never produces them" — what
+        // our own encoder emits says nothing about what a crafted bitstream can
+        // reach, and a panic here is a denial of service on the AVIF decode
+        // path. Byte-inert on every conformant stream: `av1_ss_size_lookup` is
+        // BLOCK_INVALID only at ss=(0,1) (4:4:0 — the sequence header cannot
+        // code it) and ss=(1,0) (4:2:2), and `decode_partition` already turns
+        // the 4:2:2 case away one frame up. Making the check here, where C makes
+        // it, means a gap in that guard degrades to an error, not a crash.
+        if !cfg.monochrome
+            && bsize >= BLOCK_8X8
+            && (ss_x != 0 || ss_y != 0)
+            && get_plane_block_size(bsize, ss_x, ss_y) == 255
+        {
+            self.mark_corrupt(format!(
+                "corrupt frame: invalid chroma block size — luma bsize {bsize} has no valid \
+                 chroma plane size at subsampling ({ss_x},{ss_y})"
+            ));
+            return;
         }
         // is_cfl_allowed narrows to BLOCK_4X4 when the block is lossless (uniform
         // across the frame in this envelope — mixed is rejected upstream).
@@ -5696,7 +5739,22 @@ impl<'c> TileKf<'c> {
                 // the merged area from the adjusted plane origin. ---
                 if !cfg.monochrome && chroma_ref {
                     let plane_bsize = get_plane_block_size(bsize, ss_x, ss_y);
-                    assert_ne!(plane_bsize, 255, "invalid chroma block size");
+                    // Second (deeper) guard on the same corrupt-frame condition
+                    // `decode_mbmi_block` rejects — see the AOM_CODEC_CORRUPT_FRAME
+                    // note in `decode_block`. This one also covers the sub-8x8
+                    // shapes C's `bsize >= BLOCK_8X8` gate exempts but which still
+                    // index MAX_TXSIZE_RECT_LOOKUP / the chroma tiling below:
+                    // BLOCK_4X8 at 4:2:2 IS chroma-reference at odd mi_col yet has
+                    // no valid chroma size. `mark_corrupt`, not `assert_ne!` —
+                    // reachable only from a crafted bitstream, where a panic is a
+                    // decoder DoS. Byte-inert on conformant streams.
+                    if plane_bsize == 255 {
+                        self.mark_corrupt(format!(
+                            "corrupt frame: invalid chroma block size — luma bsize {bsize} \
+                             has no valid chroma plane size at subsampling ({ss_x},{ss_y})"
+                        ));
+                        return;
+                    }
                     // av1_get_tx_size(plane > 0): lossless forces TX_4X4 (the chroma txb
                     // loop tiles + reads coeffs at 4x4), else the max rect uv tx size.
                     let uv_tx = if self.st.coded_lossless {

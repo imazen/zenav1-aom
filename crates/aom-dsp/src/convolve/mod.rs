@@ -53,7 +53,12 @@ fn kernel(ftype: usize, subpel: usize) -> &'static [i16; 8] {
         0 => &SUB_PEL_FILTERS_8,
         1 => &SUB_PEL_FILTERS_8SMOOTH,
         2 => &SUB_PEL_FILTERS_8SHARP,
-        _ => panic!("bad filter type"),
+        // InterpFilter is 0..=2 here: BILINEAR (3) and SWITCHABLE (4) are
+        // resolved away before the kernel lookup, and the decoder rejects an
+        // out-of-envelope resolved filter as a corrupt frame.
+        _ => panic!(
+            "convolve: unsupported InterpFilter {ftype} — REGULAR(0)/SMOOTH(1)/SHARP(2) only"
+        ),
     };
     &table[subpel & 15]
 }
