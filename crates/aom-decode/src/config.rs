@@ -140,10 +140,10 @@ pub struct DecodeConfig<'a> {
     ///
     /// | frame | natural decode | p50 | p99 | max |
     /// |---|---|---|---|---|
-    /// | 64x64 | 0.05 ms | 0.006 | 0.022 | 0.028 ms |
-    /// | 256x256 | 0.70 ms | 0.038 | 0.085 | 0.085 ms |
-    /// | 1024x1024 | 11.3 ms | 0.192 | 0.379 | 0.379 ms |
-    /// | 4096x4096 | 186 ms | 0.978 | 2.697 | 2.697 ms |
+    /// | 64x64 | 0.35 ms | 0.014 | 0.066 | 0.066 ms |
+    /// | 256x256 | 1.46 ms | 0.084 | 0.153 | 0.153 ms |
+    /// | 1024x1024 | 11.4 ms | 0.195 | 0.401 | 0.401 ms |
+    /// | 4096x4096 | 189 ms | 1.017 | 2.744 | 2.744 ms |
     ///
     /// against a 20 ms acceptance bar. The post-filter polls are what make the
     /// 4096 row hold: before they existed the same measurement read **115 ms**
