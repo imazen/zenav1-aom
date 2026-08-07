@@ -7,7 +7,8 @@
 //! straight from the bitstream (`read_tx_type` on a CDF, `tx_size` from the
 //! tx-size read), so "can a crafted stream reach the assert?" is a real
 //! question about the untrusted-input surface, not a style question. A panic
-//! there is a denial of service on the AVIF decode path.
+//! there aborts a caller that cannot catch the unwind. A typed error is the
+//! correct outcome; this is a robustness bug, not a memory-safety one.
 //!
 //! The answer is supposed to be no, by construction: `av1_get_ext_tx_set_type`
 //! picks the tx-set from `tx_size` alone (plus `is_inter` / `reduced_tx_set`,

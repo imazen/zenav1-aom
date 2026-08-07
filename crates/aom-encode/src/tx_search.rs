@@ -3451,3 +3451,27 @@ mod kb26_frame_level_sf_tests {
         assert_eq!(stage.prune_tx_type_using_stats, 2);
     }
 }
+
+#[cfg(test)]
+mod geometry_agreement {
+    //! These `common_data.h` geometry tables are hand transcriptions that also
+    //! exist in other modules of this port (mi_size_wide alone has 7 copies). A single wrong entry does
+    //! not crash and does not fail a build — it silently produces a wrong-sized
+    //! block, transform or context in THIS module's code paths only. Pin the
+    //! copy to the port's one derivation, `aom_dsp::blocksize`, which is itself
+    //! structurally checked against the `enums.h` construction rule.
+    //!
+    //! `MI_SIZE_WIDE_B` / `MI_SIZE_HIGH_B` are `mi_size_wide` /
+    //! `mi_size_high` under a local name.
+
+    #[test]
+    fn matches_the_ports_single_derivation() {
+        aom_dsp::assert_geometry_agrees!(
+            super::MI_SIZE_WIDE_B => aom_dsp::blocksize::MI_SIZE_WIDE,
+            super::MI_SIZE_HIGH_B => aom_dsp::blocksize::MI_SIZE_HIGH,
+            super::TXSIZE_SQR_UP_MAP => aom_dsp::blocksize::TXSIZE_SQR_UP_MAP,
+            super::MAX_TXSIZE_RECT_LOOKUP => aom_dsp::blocksize::MAX_TXSIZE_RECT_LOOKUP,
+            super::SUB_TX_SIZE_MAP => aom_dsp::blocksize::SUB_TX_SIZE_MAP,
+        );
+    }
+}

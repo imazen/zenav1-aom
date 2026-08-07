@@ -290,6 +290,12 @@ jobs:
       # benchmarks/winperf_family_census_2026-08-03.md).
       - name: Content-family coverage gate (census)
         run: cargo test --release -p zenav1-aom-bench --no-default-features --features census --test content_family_census
+      # The default-off `whereat` feature adds two located-error decode entries.
+      # Nothing in `cargo test --workspace` enables it, so without this step the
+      # feature is never even COMPILED and could rot unnoticed. Pure Rust
+      # (whereat is a no_std, zero-dep crate), so it belongs on this runner.
+      - name: Located-error entries (whereat feature)
+        run: cargo test -p zenav1-aom-decode --features whereat --test whereat_entries
 
   # i686 is a primary target (32-bit correctness for WASM compatibility + catching
   # pointer-width bugs, per CLAUDE.md). Built via `cross` (Docker) — same pure-Rust,

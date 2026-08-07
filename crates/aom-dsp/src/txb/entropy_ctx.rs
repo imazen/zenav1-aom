@@ -130,3 +130,20 @@ pub fn txb_entropy_context(qcoeff: &[i32], tx_size: usize, tx_type: usize, eob: 
     }
     cul_level as u8
 }
+
+#[cfg(test)]
+mod geometry_agreement {
+    //! These `common_data.h` geometry tables are hand transcriptions that also
+    //! exist in other modules of this port (txsize_to_bsize has 2 copies). A single wrong entry does
+    //! not crash and does not fail a build — it silently produces a wrong-sized
+    //! block, transform or context in THIS module's code paths only. Pin the
+    //! copy to the port's one derivation, `aom_dsp::blocksize`, which is itself
+    //! structurally checked against the `enums.h` construction rule.
+
+    #[test]
+    fn matches_the_ports_single_derivation() {
+        crate::assert_geometry_agrees!(
+            super::TXSIZE_TO_BSIZE => crate::blocksize::TXSIZE_TO_BSIZE,
+        );
+    }
+}

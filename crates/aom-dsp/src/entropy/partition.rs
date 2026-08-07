@@ -1,7 +1,39 @@
-//! Partition-symbol CDF primitives (libaom `av1/common/av1_common_int.h`) — the
-//! per-block-size partition CDF length and the edge-block CDF "gather" transforms
-//! that reduce the full partition CDF to a 2-way split-vs-not distribution when a
-//! superblock is clipped by the frame boundary. Byte-identical to C.
+//! The mode-info SYMBOL LAYER: every compressed-header symbol a block writes or
+//! reads, plus the frame-context and tile-walk plumbing around them.
+//!
+//! The module name is historical. It began as the partition-CDF primitives
+//! (which are still here, and still byte-identical to C: [`partition_cdf_length`]
+//! and the edge-block "gather" transforms that reduce the full partition CDF to
+//! a split-vs-not distribution when a superblock is clipped by the frame
+//! boundary) and then accreted the rest of `av1/{encoder/bitstream.c,
+//! decoder/decodemv.c}`. At 7.5k lines it is worth a map before you go looking.
+//!
+//! # Sections, in file order
+//!
+//! 1. **Partition CDF primitives** (top of file, and [`read_partition`] /
+//!    [`write_partition`]): CDF length per block size + the edge gathers.
+//! 2. **Symbol WRITERS** — skip, delta-q, delta-LF, CfL, intra mode, inter
+//!    mode, MV, palette, segment id, intraBC, tx size, interintra, compound
+//!    type, reference frames.
+//! 3. **Symbol READERS** — the same list, mirrored.
+//! 4. **KEY-frame block struct model** (banner `===== KEY-frame block struct
+//!    model =====`): `MbModeInfoKf`, `PaletteNbrKf`, `KfCdfs`, `KfBlockState`.
+//! 5. **`FRAME_CONTEXT` context selection** (banner `===== FRAME_CONTEXT
+//!    context selection =====`): `MiNbrKf`, `KfFrameContext`, the `*_fc`
+//!    drivers PRODUCTION uses.
+//! 6. **Tile-content dispatch** (banner `===== tile-content dispatch =====`):
+//!    the `write_modes_b` / `read_modes_b` recursion.
+//! 7. **Neighbour availability** (end of file): [`has_top_right`],
+//!    `has_bottom_left`, [`intra_avail`].
+//!
+//! # Which driver is live
+//!
+//! The `_fc` variants (`read_mb_modes_kf_fc` / `write_mb_modes_kf_fc`) are what
+//! the decoder (`aom_decode`'s `TileKf::decode_partition`) and the encoder
+//! (`aom_encode::pack`) call. The non-`_fc` `write_modes_*` / `read_modes_*`
+//! family is a parallel driver whose only non-self callers are
+//! `aom-dsp/tests/partition_diff.rs`; it exists to produce genuine bitstreams
+//! for that differential.
 
 /// `CDF_PROB_TOP` (`aom_dsp/prob.h`): `1 << CDF_PROB_BITS`, `CDF_PROB_BITS = 15`.
 const CDF_PROB_TOP: i32 = 1 << 15;
@@ -4939,44 +4971,6 @@ pub fn read_palette_mode_info_flags(
     (n_y, n_uv)
 }
 
-/// `read_partition_node` — inverse of [`write_partition_node`] (the per-node partition
-/// decode with frame-edge gating): when the block signals a partition (`bsize >=
-/// BLOCK_8X8`) read it on the `partition_plane_context`-selected CDF (with the has-rows/
-/// has-cols edge form), then update the neighbour partition context for the sub-blocks.
-/// Returns the decoded partition (`PARTITION_NONE` for a non-signalling block).
-#[allow(clippy::too_many_arguments)]
-pub fn read_partition_node(
-    dec: &mut OdEcDec,
-    above: &mut [i8],
-    left: &mut [i8],
-    mi_row: i32,
-    mi_col: i32,
-    bsize: usize,
-    mi_rows: i32,
-    mi_cols: i32,
-    partition_cdf_arena: &mut [[u16; 11]; 20],
-) -> i32 {
-    let mut partition = 0; // PARTITION_NONE
-    if bsize >= BLOCK_8X8 {
-        let hbs = MI_SIZE_WIDE[bsize] / 2;
-        let has_rows = (mi_row + hbs) < mi_rows;
-        let has_cols = (mi_col + hbs) < mi_cols;
-        let ctx =
-            partition_plane_context(above, left, mi_row as usize, mi_col as usize, bsize) as usize;
-        partition = read_partition(
-            dec,
-            &mut partition_cdf_arena[ctx],
-            partition_cdf_length(bsize),
-            has_rows,
-            has_cols,
-            bsize,
-        );
-    }
-    let subsize = get_partition_subsize(bsize, partition) as usize;
-    update_ext_partition_context(above, left, mi_row, mi_col, subsize, bsize, partition);
-    partition
-}
-
 #[allow(clippy::too_many_arguments)]
 fn read_modes_sb_recurse(
     dec: &mut OdEcDec,
@@ -5020,22 +5014,6 @@ fn read_modes_sb_recurse(
         );
     }
     update_ext_partition_context(above, left, mi_row, mi_col, subsize, bsize, p);
-}
-
-/// `read_modes_sb` — inverse of [`write_modes_sb`]: decode one superblock's partition
-/// tree (pre-order), returning the reconstructed partition sequence.
-pub fn read_modes_sb(
-    dec: &mut OdEcDec,
-    above: &mut [i8],
-    left: &mut [i8],
-    arena: &mut [[u16; 11]; 20],
-    mi_row: i32,
-    mi_col: i32,
-    bsize: usize,
-) -> Vec<i8> {
-    let mut out = Vec::new();
-    read_modes_sb_recurse(dec, above, left, arena, &mut out, mi_row, mi_col, bsize);
-    out
 }
 
 /// `read_modes_tile` — inverse of [`write_modes_tile`]: the tile superblock loop. Zeroes
@@ -7568,4 +7546,34 @@ pub fn intra_avail(
     let n_topright_px = if have_tr > 0 { txwpx.min(xr) } else { have_tr };
     let n_bottomleft_px = if have_bl > 0 { txhpx.min(yd) } else { have_bl };
     (n_top_px, n_topright_px, n_left_px, n_bottomleft_px)
+}
+
+#[cfg(test)]
+mod geometry_agreement {
+    //! These `common_data.h` geometry tables are hand transcriptions that also
+    //! exist in other modules of this port (block_size_wide alone has 6 copies). A single wrong entry does
+    //! not crash and does not fail a build — it silently produces a wrong-sized
+    //! block, transform or context in THIS module's code paths only. Pin the
+    //! copy to the port's one derivation, `aom_dsp::blocksize`, which is itself
+    //! structurally checked against the `enums.h` construction rule.
+
+    #[test]
+    fn matches_the_ports_single_derivation() {
+        crate::assert_geometry_agrees!(
+            super::BLOCK_SIZE_WIDE => crate::blocksize::BLOCK_SIZE_WIDE,
+            super::BLOCK_SIZE_HIGH => crate::blocksize::BLOCK_SIZE_HIGH,
+            super::MI_SIZE_WIDE => crate::blocksize::MI_SIZE_WIDE,
+            super::MI_SIZE_HIGH => crate::blocksize::MI_SIZE_HIGH,
+            super::MI_SIZE_WIDE_LOG2 => crate::blocksize::MI_SIZE_WIDE_LOG2,
+            super::MI_SIZE_HIGH_LOG2 => crate::blocksize::MI_SIZE_HIGH_LOG2,
+            super::TX_SIZE_WIDE => crate::blocksize::TX_SIZE_WIDE,
+            super::TX_SIZE_HIGH => crate::blocksize::TX_SIZE_HIGH,
+            super::TX_SIZE_WIDE_UNIT => crate::blocksize::TX_SIZE_WIDE_UNIT,
+            super::TX_SIZE_HIGH_UNIT => crate::blocksize::TX_SIZE_HIGH_UNIT,
+            super::TXSIZE_TO_BSIZE => crate::blocksize::TXSIZE_TO_BSIZE,
+            super::TXSIZE_SQR_UP_MAP => crate::blocksize::TXSIZE_SQR_UP_MAP,
+            super::TXSIZE_SQR_MAP => crate::blocksize::TXSIZE_SQR_MAP,
+            super::SUB_TX_SIZE_MAP => crate::blocksize::SUB_TX_SIZE_MAP,
+        );
+    }
 }

@@ -25,7 +25,20 @@
 //!
 //! # Scope (honest limits of this cut)
 //!
-//! - **KEY frame, intra only.** No inter path, no motion compensation.
+//! - **KEY frames AND inter frames.** (This bullet used to read "KEY frame,
+//!   intra only. No inter path, no motion compensation." — it was left behind
+//!   by the inter landing and is corrected here, 2026-08-06.) The inter path
+//!   lives in this file: [`decode_frame_tiles_inter`], [`InterFrameCfg`],
+//!   [`RefFrame`], `TileKf::decode_block_inter`, the OBMC blends, interintra,
+//!   and the warp helpers. Measured envelope, per `INTER_DECODE_ENVELOPE.md`
+//!   and `tests/{animated_avif,inter_real_frame}.rs`: 8/8 animated-AVIF corpus
+//!   tracks / 40/40 shown frames byte-exact, plus a 352x288 conformance P-frame
+//!   with SIMPLE + OBMC + WARPED_CAUSAL + interintra + intra-in-inter + var-tx.
+//!   **Still refused, fail-loud rather than wrong**: sub-pel motion
+//!   compensation above 8-bit (the sub-pel filter chain runs on a u8 scratch),
+//!   so a 10/12-bit frame with a nonzero MV errors out.
+//!   The `Kf` in `TileKf` / [`KfTileConfig`] / [`KfFrameContext`] and their
+//!   siblings is likewise historical: those types serve both frame kinds.
 //! - **All three planes reconstructed.** `monochrome = true` decodes luma only
 //!   (a complete real configuration); otherwise the U/V planes are fully
 //!   reconstructed at 4:4:4, 4:2:2, or 4:2:0 ([`KfTileConfig::subsampling_x`]/
@@ -120,12 +133,20 @@
 //!   symbol reader ([`aom_dsp::entropy::read_symbol`]) leaves every CDF at its
 //!   loaded/initial value for the whole tile (no post-decode adaptation); the
 //!   flag-off path adapts unconditionally and stays byte-identical.
-//! - **Off / fixed in this cut**: intra block copy,
-//!   quantization matrices (flat dequant), and no in-tile loop filters (this driver returns the
-//!   PRE-FILTER reconstruction, like C's tile decode; `frame.rs` applies
-//!   deblocking frame-wide afterwards — CDEF/restoration stay unapplied;
-//!   CDEF *strengths* are entropy-decoded, and delta-LF levels are carried
-//!   as documented above).
+//! - **Intra block copy and quantization matrices are IMPLEMENTED.** (This
+//!   bullet used to list both as "Off / fixed in this cut"; corrected
+//!   2026-08-06.) IntraBC: [`KfTileConfig::allow_intrabc`], the DV grids
+//!   (`MiDvGrid` / `DvGrid`) and `intrabc_chroma_predict`. QM:
+//!   `frame_qm_levels` / `block_qm_level` select a per-block inverse matrix
+//!   through [`crate::qm::iqmatrix`], folded into the dequant at every txb
+//!   site — flat dequant only when the frame signals no matrix.
+//! - **No in-tile loop filters**: this driver returns the PRE-FILTER
+//!   reconstruction, like C's tile decode. The whole post-filter pipeline runs
+//!   frame-wide afterwards in `frame.rs` — `frame::run_post_filters`
+//!   applies deblocking, CDEF, superres and loop restoration in libaom's order.
+//!   (The old text said "CDEF/restoration stay unapplied"; that stopped being
+//!   true when `run_post_filters` landed.) CDEF *strengths* are entropy-decoded
+//!   here, and delta-LF levels are carried as documented above.
 //! - Frame dimensions are whole mode-info (4px) units; non-multiple-of-SB sizes
 //!   are supported (partition edge gathers + `max_block_wide/high` txb clipping
 //!   + `av1_set_entropy_contexts` edge zeroing).
@@ -165,14 +186,13 @@ pub mod superres;
 
 pub use plane::ReconPlane;
 
-// `pub` (doc-hidden) so the encoder's forward-QM path can REUSE the inverse-QM
-// selector + `iwt_matrix_ref` bases instead of committing a duplicate ~459KB
-// table. Interim internal-crate coupling: at release both QM tables (fwd
-// `wt_matrix_ref` in aom-quant + inv `iwt_matrix_ref` here) consolidate into one
-// shared crate. Only `iqmatrix` is exposed; the rest of the module stays private.
+// `pub` (doc-hidden) so the encode-side differential tests can name the
+// decode-side selector. Both QM tables now live in ONE place — `aom_dsp::quant`
+// owns the forward `wt_matrix_ref` and inverse `iwt_matrix_ref` bases and the
+// `av1_qm_init` packing — and this module is a thin decode-side alias for the
+// inverse half. Only `iqmatrix` is exposed.
 #[doc(hidden)]
 pub mod qm;
-mod qm_tables;
 
 use aom_dsp::entropy::cdf::read_symbol;
 use aom_dsp::recon::{ReconScratch, reconstruct_txb_into};
@@ -619,8 +639,11 @@ pub struct KfTileConfig {
     pub delta_q_res: i32,
     /// `delta_q_info.delta_lf_present_flag` / `delta_lf_multi` /
     /// `delta_lf_res` (1/2/4/8). Only codable when `delta_q_present` (the C
-    /// frame header nests it there). Decoded + carried per block; no
-    /// reconstruction effect (loop filters are not applied in this cut).
+    /// frame header nests it there). Decoded and carried per block; no
+    /// reconstruction effect INSIDE the tile decoder (which returns the
+    /// pre-filter reconstruction, like C's). `frame.rs`'s deblock stage does
+    /// read the per-block `delta_lf_from_base` / `delta_lf[]` carries when it
+    /// filters the frame — see the crate-doc delta-LF bullet.
     pub delta_lf_present: bool,
     pub delta_lf_multi: bool,
     pub delta_lf_res: i32,
@@ -4606,7 +4629,7 @@ impl<'c> TileKf<'c> {
         // invariant, so the port must reject too rather than panic. This was an
         // `assert_ne!` justified by "the roundtrip never produces them" — what
         // our own encoder emits says nothing about what a crafted bitstream can
-        // reach, and a panic here is a denial of service on the AVIF decode
+        // reach, and a panic here aborts a caller that cannot catch the unwind
         // path. Byte-inert on every conformant stream: `av1_ss_size_lookup` is
         // BLOCK_INVALID only at ss=(0,1) (4:4:0 — the sequence header cannot
         // code it) and ss=(1,0) (4:2:2), and `decode_partition` already turns
@@ -5747,7 +5770,7 @@ impl<'c> TileKf<'c> {
                     // BLOCK_4X8 at 4:2:2 IS chroma-reference at odd mi_col yet has
                     // no valid chroma size. `mark_corrupt`, not `assert_ne!` —
                     // reachable only from a crafted bitstream, where a panic is a
-                    // decoder DoS. Byte-inert on conformant streams.
+                    // a decoder panic. Byte-inert on conformant streams.
                     if plane_bsize == 255 {
                         self.mark_corrupt(format!(
                             "corrupt frame: invalid chroma block size — luma bsize {bsize} \
@@ -6783,4 +6806,30 @@ fn clamp_mv_umv_border_px(
     let cq4 = (mv_col * sx).clamp(col_min, col_max);
     let rq4 = (mv_row * sy).clamp(row_min, row_max);
     (rq4 / sy, cq4 / sx)
+}
+
+#[cfg(test)]
+mod geometry_agreement {
+    //! These `common_data.h` geometry tables are hand transcriptions that also
+    //! exist in other modules of this port (block_size_wide alone has 6 copies). A single wrong entry does
+    //! not crash and does not fail a build — it silently produces a wrong-sized
+    //! block, transform or context in THIS module's code paths only. Pin the
+    //! copy to the port's one derivation, `aom_dsp::blocksize`, which is itself
+    //! structurally checked against the `enums.h` construction rule.
+
+    #[test]
+    fn matches_the_ports_single_derivation() {
+        aom_dsp::assert_geometry_agrees!(
+            super::BLOCK_SIZE_WIDE => aom_dsp::blocksize::BLOCK_SIZE_WIDE,
+            super::BLOCK_SIZE_HIGH => aom_dsp::blocksize::BLOCK_SIZE_HIGH,
+            super::MI_SIZE_WIDE => aom_dsp::blocksize::MI_SIZE_WIDE,
+            super::MI_SIZE_HIGH => aom_dsp::blocksize::MI_SIZE_HIGH,
+            super::TX_SIZE_WIDE => aom_dsp::blocksize::TX_SIZE_WIDE,
+            super::TX_SIZE_HIGH => aom_dsp::blocksize::TX_SIZE_HIGH,
+            super::TX_SIZE_WIDE_UNIT => aom_dsp::blocksize::TX_SIZE_WIDE_UNIT,
+            super::TX_SIZE_HIGH_UNIT => aom_dsp::blocksize::TX_SIZE_HIGH_UNIT,
+            super::MAX_TXSIZE_RECT_LOOKUP => aom_dsp::blocksize::MAX_TXSIZE_RECT_LOOKUP,
+            super::SUB_TX_SIZE_MAP => aom_dsp::blocksize::SUB_TX_SIZE_MAP,
+        );
+    }
 }

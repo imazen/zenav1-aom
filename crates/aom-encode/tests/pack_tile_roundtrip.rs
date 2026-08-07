@@ -361,14 +361,20 @@ fn read_leaf(
 /// envelope: walk `SUB_TX_SIZE_MAP` from the block's max rect tx `depth`
 /// times (mirrors `tx_size_to_depth`'s own loop, run forward instead of
 /// counted).
+///
+/// Uses the PRODUCTION tables rather than a local transcription. The local
+/// `SUB_TX_SIZE_MAP` that used to live here was WRONG for the six 4:1
+/// transforms: its tail read `0, 0, 1, 1, 2, 2` (that is `txsize_sqr_map`)
+/// where `sub_tx_size_map` is `5, 6, 7, 8, 9, 10` — `sub_tx_size_map[TX_4X16]`
+/// is `TX_4X8`, not `TX_4X4`. Every other copy in the workspace (5 of them) had
+/// it right. A 4:1 block decoding depth >= 1 would have taken the wrong tx size
+/// here, stamped the wrong txfm context and read coefficients at the wrong
+/// size — a decoder-side desync inside the test itself, silent until the
+/// stream happened to contain that case.
 fn depth_to_tx_size(bsize: usize, depth: i32) -> usize {
-    const MAX_TXSIZE_RECT_LOOKUP: [usize; 22] = [
-        0, 5, 6, 1, 7, 8, 2, 9, 10, 3, 11, 12, 4, 4, 4, 4, 13, 14, 15, 16, 17, 18,
-    ];
-    const SUB_TX_SIZE_MAP: [usize; 19] = [0, 0, 1, 2, 3, 0, 0, 1, 1, 2, 2, 3, 3, 0, 0, 1, 1, 2, 2];
-    let mut tx = MAX_TXSIZE_RECT_LOOKUP[bsize];
+    let mut tx = aom_encode::tx_search::MAX_TXSIZE_RECT_LOOKUP[bsize];
     for _ in 0..depth {
-        tx = SUB_TX_SIZE_MAP[tx];
+        tx = aom_encode::tx_search::SUB_TX_SIZE_MAP[tx];
     }
     tx
 }

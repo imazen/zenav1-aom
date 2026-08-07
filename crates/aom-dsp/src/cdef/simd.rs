@@ -1,4 +1,4 @@
-//! SIMD row kernel for `cdef_filter_block_16` (Gate 3) — bit-identical to the
+//! SIMD row kernel for `cdef_filter_block_16` — bit-identical to the
 //! scalar core on the structural CDEF domain, at every dispatch tier
 //! (`tests/cdef_filter_simd_diff.rs`).
 //!

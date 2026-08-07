@@ -4,7 +4,79 @@
 
 ### [Unreleased]
 
+### Added
+
+- **`aom_dsp::blocksize` — one derivation of the `common_data.h` block/transform
+  geometry, and a test pinning every hand-copy to it.**
+  `block_size_wide`/`_high`, `mi_size_wide`/`_high`(+`_log2`),
+  `tx_size_wide`/`_high`(+`_unit`), `txsize_to_bsize`, `txsize_sqr_map`,
+  `txsize_sqr_up_map`, `max_txsize_rect_lookup` and `sub_tx_size_map` were
+  transcribed by hand into whichever module needed them, at whichever element
+  type was convenient — **56 copies across 12 files** in the shipping crates
+  (counted after the fact by grepping the landed agreement blocks; the
+  40f9fc4 commit message's "44" was the earlier, narrower audit count), with
+  nothing checking that they agreed. The new module states the geometry once as
+  the `(width, height)` pairs the enum names spell and derives the rest by each
+  table's `common_data.h` definition; eight unit tests pin the pair lists to the
+  `enums.h` construction rule and the derived tables to their defining property;
+  a `#[cfg(test)] mod geometry_agreement` beside each copy diffs it entry-for-
+  entry via the new `aom_dsp::assert_geometry_agrees!`. Liveness proven by
+  mutation, both directions (a flipped copy entry and a flipped canonical pair
+  each fail loudly). No production code path changed (40f9fc4).
+- **`crates/aom-decode/tests/whereat_entries.rs`** — the default-off `whereat`
+  feature's `decode_frame_obus_at` / `decode_frames_at` had never been compiled
+  by any test, CI job or bench. Now covered (each `_at` entry vs its non-`_at`
+  sibling on a real 5-frame stream, both envelopes, and the located error's
+  payload + trace) and wired to run as `just test-whereat` plus a CI step on the
+  pure-Rust portability job (bea5619).
+
+### Changed
+
+- **The inverse-QM table exists once, not twice.**
+  `crates/aom-decode/src/qm_tables.rs` was byte-identical to
+  `crates/aom-dsp/src/quant/qm_inv_tables.rs` — 4,301 lines and 100,320 static
+  bytes duplicated because the aom-dsp copy is `pub(crate)`. `aom_decode::qm::
+  iqmatrix` now delegates to `aom_dsp::quant::iqmatrix`, so encoder recon and
+  decoder dequant provably index the same bytes, and the decode side inherits
+  the selector that is swept cell-by-cell against the real C `av1_qm_init`
+  (ea41be2).
+- Six module/crate doc headers that described an earlier codebase were corrected
+  against current source: aom-decode's "KEY frame, intra only / no inter path",
+  its "intra block copy and quantization matrices off" and "CDEF/restoration
+  stay unapplied" bullets; `aom_dsp::entropy::partition`'s "partition CDF
+  primitives" (it is the whole mode-info symbol layer, 7.5k lines);
+  `aom_dsp::entropy`'s "Daala range coder"; `aom_dsp`'s finished-migration text;
+  and `aom_encode`'s "composition layer: av1_xform_quant" for a 46-module
+  crate. `aom_dsp::restore::pick` now records that no encoder path calls it
+  (d7b68d9, 4ee0677).
+
+### Removed
+
+- Five provably dead symbols (grep-verified zero references):
+  `aom_dsp::entropy::partition::{read_partition_node, read_modes_sb}`,
+  `aom_encode::partition::PartNodeParams`, and
+  `aom_dsp::quant::{av1_quantize_fp_32x32, av1_quantize_fp_64x64}` (name-only
+  wrappers over `av1_quantize_fp_no_qmatrix`, which is the C-diffed entry at all
+  three log scales) (bea5619).
+
 ### Fixed
+
+- **`aom-encode/tests/pack_tile_roundtrip.rs` carried a wrong
+  `sub_tx_size_map`** — its tail read `0, 0, 1, 1, 2, 2` (that is
+  `txsize_sqr_map`) where the correct values are `5, 6, 7, 8, 9, 10`;
+  `sub_tx_size_map[TX_4X16]` is `TX_4X8`, not `TX_4X4`. Five other copies in the
+  workspace had it right. In the test's `depth_to_tx_size`, a 4:1 block decoding
+  depth >= 1 would have taken the wrong tx size, stamped the wrong txfm context
+  and read coefficients at the wrong size — a desync inside the test itself,
+  silent until a stream contained that case. The helper now calls the production
+  tables instead of transcribing them. Found by the duplication audit above.
+
+- `round_power_of_two` had two different bodies under one name:
+  `aom-decode/src/superres.rs` and `aom-encode/src/resize.rs` used
+  `(v + (1 << (n - 1))) >> n`, which shifts by -1 at `n == 0`, while the other
+  four definitions use libaom's total `(v + ((1 << n) >> 1)) >> n`. Not a live
+  defect (all five call sites pass the constant `FILTER_BITS`); unified anyway,
+  and the C-oracle superres/resize differentials re-run clean (40f9fc4).
 
 - **A `cancel()` on a 4K decode waited up to 115 ms — the whole post-filter
   pipeline was un-pollable.** `DecodeConfig::with_stop` was documented as
@@ -73,7 +145,8 @@
   `assert_ne!`d instead, justified in a comment by "the roundtrip never
   produces them" — a warrant about our own ENCODER, which says nothing about
   what a crafted bitstream can reach, on a decoder that ships into zenavif's
-  untrusted AVIF path where a panic is a denial of service. `decode_block` and
+  untrusted AVIF path, where a panic aborts a caller that cannot catch the
+  unwind. `decode_block` and
   the chroma txb loop now `mark_corrupt` and unwind (the deeper one also covers
   the sub-8x8 shapes C's `bsize >= BLOCK_8X8` gate exempts but which still
   index `MAX_TXSIZE_RECT_LOOKUP`: `BLOCK_4X8` at 4:2:2 IS chroma-reference at
@@ -481,7 +554,7 @@
   - `AllocMode` fallible-alloc pre-flight (`try_reserve` probe → `AllocFailed`)
     + `max_memory_bytes` enforcement — a byte-preserving allocation ceiling
     against attacker-controlled dimensions. (70b50c6)
-  - Malformed-input hardening: frame-dimension DoS ceiling (reject >2^28 px
+  - Malformed-input hardening: frame-dimension allocation ceiling (reject >2^28 px
     before recon alloc) + panic→`Err` conversions found by a structured-random
     fuzz sweep + a stable-toolchain fuzz regression harness. (1b65d61, 88b4de3,
     606813d, 5922c47, bbd7bc4)

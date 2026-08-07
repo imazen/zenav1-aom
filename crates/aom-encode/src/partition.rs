@@ -1,6 +1,13 @@
-//! `av1_rd_pick_partition` (av1/encoder/partition_search.c:5653) — the
-//! partition RDO layer: the speed-0 GOOD KEY-frame SURVEY (source-cited) and
-//! the first landed slice, the NONE-vs-SPLIT recursion skeleton.
+//! `av1_rd_pick_partition` (av1/encoder/partition_search.c:5653) — the speed-0
+//! GOOD KEY-frame SURVEY (source-cited) plus an early NONE-vs-SPLIT recursion
+//! skeleton that is NO LONGER the encoder's partition search.
+//!
+//! **Read the SCOPE NOTE at the end of this doc before using anything here as
+//! project status.** [`crate::partition_pick`] is the live search. What real
+//! callers still import from this module is [`PartRdStats`] and
+//! [`split_subsize`]; [`rd_pick_partition_none_split`] and its `LeafEval` /
+//! `NodeParamsFn` / [`PartTree`] scaffolding are reached only by
+//! `tests/partition_none_split_diff.rs`.
 //!
 //! # Survey: the speed-0 GOOD KEY-frame partition search shape
 //!
@@ -213,29 +220,6 @@ pub fn split_subsize(bsize: usize) -> usize {
     }
 }
 
-/// The per-node inputs of the NONE-vs-SPLIT slice: geometry + the
-/// `partition_cost[pl_ctx_idx]` row for THIS node (the caller resolves
-/// `partition_plane_context` — aom-entropy owns the ported facade) + the
-/// stage-gate flags `init_partition_search_state_params` derives (with the
-/// pre-search prunes already applied by the caller; all no-ops at GOOD
-/// speed-0 KEY interior — module docs #5).
-pub struct PartNodeParams<'a> {
-    pub bsize: usize,
-    pub mi_row: i32,
-    pub mi_col: i32,
-    /// Frame mi dims (`has_rows/cols` + out-of-frame child skips).
-    pub mi_rows: i32,
-    pub mi_cols: i32,
-    /// `partition_cost[pl_ctx_idx]` — `[NONE, HORZ, VERT, SPLIT, ..]`; this
-    /// slice reads indices 0 and 3.
-    pub partition_cost: &'a [i32],
-    /// `partition_none_allowed` (init: `has_rows && has_cols`).
-    pub partition_none_allowed: bool,
-    /// `do_square_split` (init: `bsize_at_least_8x8`, then max/min-bsize
-    /// prunes).
-    pub do_square_split: bool,
-}
-
 /// One leaf (PARTITION_NONE) evaluation — `pick_sb_modes` as a callback:
 /// `(mi_row, mi_col, bsize, best_remain) -> PartRdStats` (the
 /// `rd_cost` out-state incl. the `rate == INT_MAX -> rdcost = INT64_MAX`
@@ -398,5 +382,26 @@ pub fn rd_pick_partition_none_split(
         // The C returns found=false; rd_cost keeps the incoming budget's
         // stats semantics (the caller only consumes it when found).
         (PartTree::NotFound, best_rdc, false)
+    }
+}
+
+#[cfg(test)]
+mod geometry_agreement {
+    //! These `common_data.h` geometry tables are hand transcriptions that also
+    //! exist in other modules of this port (mi_size_wide alone has 7 copies). A single wrong entry does
+    //! not crash and does not fail a build — it silently produces a wrong-sized
+    //! block, transform or context in THIS module's code paths only. Pin the
+    //! copy to the port's one derivation, `aom_dsp::blocksize`, which is itself
+    //! structurally checked against the `enums.h` construction rule.
+    //!
+    //! `MI_SIZE_WIDE_SQ` is `mi_size_wide` under a local name — the doc says
+    //! "for the square sizes used here", but the table is the full 22-entry
+    //! `BLOCK_SIZES_ALL` row and is indexed by whatever bsize arrives.
+
+    #[test]
+    fn matches_the_ports_single_derivation() {
+        aom_dsp::assert_geometry_agrees!(
+            super::MI_SIZE_WIDE_SQ => aom_dsp::blocksize::MI_SIZE_WIDE,
+        );
     }
 }

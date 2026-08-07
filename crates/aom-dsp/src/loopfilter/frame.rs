@@ -845,3 +845,25 @@ pub fn loop_filter_frame_u8_stop(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod geometry_agreement {
+    //! These `common_data.h` geometry tables are hand transcriptions that also
+    //! exist in other modules of this port (tx_size_wide alone has 5 copies). A single wrong entry does
+    //! not crash and does not fail a build — it silently produces a wrong-sized
+    //! block, transform or context in THIS module's code paths only. Pin the
+    //! copy to the port's one derivation, `aom_dsp::blocksize`, which is itself
+    //! structurally checked against the `enums.h` construction rule.
+
+    #[test]
+    fn matches_the_ports_single_derivation() {
+        crate::assert_geometry_agrees!(
+            super::BLOCK_SIZE_WIDE => crate::blocksize::BLOCK_SIZE_WIDE,
+            super::BLOCK_SIZE_HIGH => crate::blocksize::BLOCK_SIZE_HIGH,
+            super::TX_SIZE_WIDE => crate::blocksize::TX_SIZE_WIDE,
+            super::TX_SIZE_HIGH => crate::blocksize::TX_SIZE_HIGH,
+            super::TX_SIZE_WIDE_UNIT => crate::blocksize::TX_SIZE_WIDE_UNIT,
+            super::TX_SIZE_HIGH_UNIT => crate::blocksize::TX_SIZE_HIGH_UNIT,
+        );
+    }
+}
