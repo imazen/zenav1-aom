@@ -676,6 +676,7 @@ dependencies = [
 name = "zenav1-aom-bench"
 version = "0.0.1"
 dependencies = [
+ "enough",
  "zenav1-aom-decode",
  "zenav1-aom-dsp",
  "zenav1-aom-encode",
@@ -700,6 +701,7 @@ name = "zenav1-aom-dsp"
 version = "0.0.1"
 dependencies = [
  "archmage",
+ "enough",
  "magetypes",
  "zenav1-aom-sys-ref",
 ]

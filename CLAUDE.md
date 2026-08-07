@@ -100,6 +100,21 @@ it here in the same commit.**
   live C decoder (**40/40 shown frames**), not against its stored md5s. **Newly named and NOT
   closed:** nonzero-MV inter above bd8 (refused by design, 8/8 cells), and the bd x speed grid
   (only cpu-used 0 swept).
+- ~~decoder: cancellation LATENCY (the stop token was plumbed and tested for
+  plumbing, never timed)~~ → `cancel_latency::{cancel_latency_by_size, poll_gap_map}`,
+  record `benchmarks/decode_cancel_latency_2026-08-06.{tsv,meta}`. The bar (20 ms) was
+  **BREACHED**: worst `cancel()`→return **115.4 ms at 4096x4096**, because the whole
+  post-filter pipeline ran after the last SB-row poll (**118.9 ms of a 192 ms decode**
+  = deblock 26.9 + CDEF 87.9 + crop 1.6). Closed by per-row polls inside deblock/CDEF/LR
+  (additive `*_stop` entries in aom-dsp) plus film grain, which had to be timed
+  DIRECTLY because no reference stream carries grain (73.8 ms at 4096, 3.7x the bar)
+  → worst **2.744 ms at 4096**, 0.401/0.153/0.066 at 1024/256/64, 0 cancels missed,
+  no throughput cost, 977/977 byte-identity under both dispatch modes. **Newly named and NOT closed:**
+  (a) the loop-restoration stage is made pollable but its cost is UNMEASURED — every
+  stream in the record coded `frame_restoration_type = RESTORE_NONE`, so LR never ran;
+  (b) the ENCODER takes no stop token at all (`aom-encode` has no cancellation surface);
+  (c) only bd8 4:2:0 single-tile KEY frames were timed — the multi-tile and inter paths
+  poll at the same sites but their latency is not measured; (d) one machine, one OS.
 
 ### Closed on 2026-08-04 (kept for one cycle so the strike-through is visible)
 - ~~partial-SB x bd12, and x 4:2:2/mono at high bit depth~~ → `s4cov_partial_sb_axis::
