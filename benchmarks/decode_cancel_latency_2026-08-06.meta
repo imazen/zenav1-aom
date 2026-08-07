@@ -181,3 +181,92 @@ WHAT THIS DOES *NOT* ESTABLISH
     re-timed — it changes kernel speed, not poll placement).
   - Superres is polled at its stage boundary only, and no stream here is
     superres-scaled, so its cost is also unmeasured.
+
+===============================================================================
+AMENDMENT 2026-08-07 — the GATE was reformulated (the measurements above stand)
+===============================================================================
+
+Nothing in the decoder changed and no number above was re-measured. What changed
+is which property `cancel_latency.rs` ASSERTS, because the original arm-1
+assertion — `max(cancel() -> return) <= 20 ms` — failed on three CI legs while
+the same commit passed here:
+
+  large 4096x4096: max 23.425 ms > 20 ms bar
+                   (n=77 p50 3.441 p90 5.647 p99 23.425, natural 381.864 ms)
+
+Read the shape: p50 3.4 ms, p90 5.6 ms, p99 = max 23.4 ms. The median is fine
+and the tail is 7x it, on a runner whose natural decode (381.9 ms) is only ~2x
+this host's 189 ms. A 2x-slower box does not produce a 9x-worse tail; a shared
+2-vCPU runner descheduling the worker between the cancel and the return does —
+and the harness makes that likely, since `spin_until` burns one of those two
+vCPUs while the worker decodes.
+
+End-to-end latency = (A) cross-thread visibility + descheduling
+                   + (B) wait for the decoder's next poll
+                   + (C) unwind: the refusing poll -> the call returning.
+
+(B) and (C) are the decoder's; (A) is the runner's. So:
+
+  GATED — the decoder's own two terms:
+    * (B) `poll_gap_map`, at the full 20 ms bar on the WORST observed value:
+      max(worst inter-poll gap, tail), measured from inside the decode by a
+      non-firing tracing token — no thread, no cancel in flight, nothing the
+      scheduler can add. Now the MINIMUM over 3 traced runs
+      (a deschedule can only ADD to a gap, so the minimum is the closest
+      estimate of the decoder's own spacing, and a stage that stopped polling
+      inflates every run).
+    * (C) arm 1's `unwind`, at the 20 ms bar on p90 and against the same
+      machine-scaled tripwire on the worst observed value (which IS the flat
+      20 ms on every cell whose decode is under 160 ms). Both instants are
+      taken on the worker thread: the token
+      records when its `check()` first returned Err, the worker records the
+      return. Measured here over two clean runs: 4096x4096 p90 1.374-1.390 ms,
+      max 1.473-1.505 ms (it is real work — the recon buffers are freed on the
+      way out); 1024x1024 p90 0.068-0.072, max 0.070-0.080 ms; 64x64 max
+      0.0013-0.0028 ms. This quantity was NOT gated before; it is new coverage.
+  GATED, on end-to-end, at the 20 ms bar: p90 (5.647 ms on the runner that
+      failed = 3.5x under the bar).
+  GATED, on end-to-end max: max <= 12.5 % of that machine's own natural decode,
+      applied only where that beats the flat bar (natural > 160 ms). The
+      regression it must catch is 62 % of the decode (or 46 % for CDEF alone,
+      14 % for deblock — the LOCALIZATION table above); the noise it must
+      tolerate was 23.4/381.9 = 6.1 %. It sits ~2x above the noise and ~4x
+      below the smallest regression.
+  REPORTED, never gated: end-to-end max against the flat bar, and the (A)+(B)
+      wait split.
+
+LIVENESS (mandatory — a gate that cannot fail is worse than no gate)
+  Deleting ONE poll — the per-filter-block-row `s.check()?` in
+  `aom_dsp::cdef::frame::cdef_frame_generic` — fails all three of the gates
+  above, on this host, at this commit:
+    poll_gap_map          worst un-pollable 89.275 ms > 20 ms bar
+                          (per-run [89.358 89.333 89.275]; localised to
+                          trailing gap #164, neighbours still 0.8 ms)
+    cancel_latency p90    66.848 ms > 20 ms bar
+    cancel_latency max    91.589 ms > 24.931 ms tripwire
+  Restoring the poll returns all three to green (two consecutive clean runs).
+
+HARNESS CHANGES IN THE SAME COMMIT
+  * The three timing arms now take a process-wide lock, so `cargo test`'s
+    default intra-binary parallelism cannot run a 4096x4096 film-grain pass
+    (arm 3) and a traced 4096x4096 decode (arm 2) while arm 1 times a thread
+    wakeup. The record above was taken with `--test-threads 1`; the default run
+    now matches the methodology it is compared against. The lock ignores
+    poisoning on purpose — otherwise one arm's gate failure replaces the other
+    arms' verdicts with `PoisonError` and destroys the localisation (observed
+    during the liveness run).
+  * `AOM_CANCEL_TSV` gained two columns, `wait_ms` and `unwind_ms`, between
+    `latency_ms` and `outcome`. The committed
+    `decode_cancel_latency_2026-08-06.tsv` predates them and keeps the 11-column
+    header; a fresh dump has 13.
+  * Re-measured here after the change, decoder untouched (2 runs): 4096x4096
+    end-to-end p50 0.90-1.02, p90 2.48, p99/max 2.71-2.74 ms; worst inter-poll
+    gap 2.061-2.071 ms, tail 0.000; film grain 73.3-73.9 ms. All within noise of
+    the AFTER table above (2.744 / 2.065 / 73.751), i.e. the reformulation moved
+    the assertions, not the measurements.
+
+  Note for whoever re-runs this: the timed arms must NOT be run under
+  `nice -n 19` on Darwin — it maps to background QoS and inflates every wall
+  clock here by roughly an order of magnitude, which trips the absolute 20 ms
+  bar for a reason that has nothing to do with the decoder. Build under nice 19
+  if you like; run the timing at normal (or nice 5, as the record above did).

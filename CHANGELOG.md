@@ -39,6 +39,32 @@
   gates and the intra conformance corpus. Record:
   `benchmarks/decode_cancel_latency_2026-08-06.{tsv,pollgap.tsv,meta}`.
 
+- **The cancellation gate asserted a quantity the decoder does not control, and
+  three CI legs failed for scheduler noise.** `cancel_latency_by_size` gated the
+  *maximum* end-to-end `cancel()`→return time, which contains thread wakeup and
+  descheduling; on shared 2-vCPU runners that reported `max 23.425 ms > 20 ms`
+  with `p50 3.441 / p90 5.647` on the same 77 samples — a median that is fine
+  and a tail 7x it, on a box only ~2x slower than the reference host. The bar is
+  unchanged and nothing is `#[ignore]`d; what moved is which term of
+  `latency = (A) scheduling + (B) wait-for-next-poll + (C) unwind` each
+  assertion owns. (B) is gated at the full 20 ms by `poll_gap_map`, now the
+  minimum over 3 traced runs (a deschedule can only *add* to a gap, so the
+  minimum estimates the decoder's own spacing while a stage that stopped polling
+  inflates every run). (C) — the refusing poll → the call returning, both
+  instants taken on the worker thread — is measured and gated for the first
+  time (1.39 ms p90 at 4096x4096). End-to-end keeps the 20 ms bar at `p90`, plus
+  a machine-scaled tripwire on the max (12.5 % of that host's own natural decode,
+  where that beats the flat bar): the regression it must catch is 62 % of the
+  decode, the noise it must tolerate was 6.1 %. The three timing arms also take a
+  process-wide lock, so `cargo test`'s default parallelism no longer runs a
+  4096x4096 film-grain pass while another arm times a thread wakeup. Liveness
+  verified — deleting one `s.check()?` (the per-filter-block-row poll in
+  `cdef_frame_generic`) fails all three gates (poll gap 89.275 ms, p90 66.848 ms,
+  max 91.589 ms vs a 24.931 ms tripwire) and restoring it returns them to green.
+  Local numbers unmoved: p99/max 2.71-2.74 ms end-to-end at 4096x4096, worst
+  inter-poll gap 2.061-2.071 ms, 0.000 ms tail. Record + reasoning:
+  `benchmarks/decode_cancel_latency_2026-08-06.meta` (AMENDMENT 2026-08-07).
+
 - **Two decoder panics that libaom treats as corrupt-frame REJECTIONS, plus the
   two `debug_assert`s that hid the same failure in release builds
   (`harden/decoder-panic-surface`).** `av1_ss_size_lookup` has no valid chroma
