@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual trigger. GitHub's pull_request event delivery stalls occasionally —
+  # observed here 2026-08-06 (PR #13 produced no run at all) and in
+  # imazen/zenavif on 2026-07-23. Without a dispatch trigger the only recovery
+  # is closing and reopening the PR, which loses review state. One line.
+  workflow_dispatch:
 
 # No cancel-in-progress: during a multi-agent wave every commit is a real
 # correctness change we want independently verified, so let each run complete
