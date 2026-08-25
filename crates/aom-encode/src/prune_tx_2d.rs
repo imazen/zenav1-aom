@@ -44,7 +44,12 @@ fn prec_reduce(x: f32) -> f32 {
 /// `+ ((127<<23) - 60801)`, reinterpret bits as f32.
 #[inline]
 fn approx_exp(y: f32) -> f32 {
-    let a = (1i32 << 23) as f32 / 0.693_147_180_56_f32;
+    // C writes the divisor as the literal `0.69314718056f`
+    // (`aom_dsp/mathutils.h:130`, `#define A ((1 << 23) / 0.69314718056f)`).
+    // That literal and `f32::consts::LN_2` round to the SAME f32 (both
+    // 0x3f317218 = 0.693_147_18), so this is the identical division — verified,
+    // not assumed.
+    let a = (1i32 << 23) as f32 / core::f32::consts::LN_2;
     let bits = ((y * a) as i32).wrapping_add((127i32 << 23) - 60801);
     f32::from_bits(bits as u32)
 }
