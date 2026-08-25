@@ -580,7 +580,8 @@ fn add_film_grain_run(
     ss_y: i32,
     ss_x: i32,
     mc_identity: bool,
-) {
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
     let mut scaling_lut = ScalingLut {
         y: [0; 256],
         cb: [0; 256],
@@ -687,6 +688,13 @@ fn add_film_grain_run(
 
     let mut y = 0i32;
     while y < height / 2 {
+        // Cooperative cancellation: one poll per 32-luma-row subblock row.
+        // The RNG is re-seeded from `y` at the top of every iteration
+        // (`init_random_generator` below), so the walk carries no state across
+        // rows that a poll could disturb.
+        if let Some(s) = stop {
+            s.check()?;
+        }
         init_random_generator(&mut rng, y * 2, p.random_seed as u16);
 
         let mut x = 0i32;
@@ -1071,6 +1079,7 @@ fn add_film_grain_run(
         }
         y += LUMA_SUBBLOCK_SIZE_Y >> 1;
     }
+    Ok(())
 }
 
 /// Apply film grain to a decoded frame's planes, byte-exact to the C reference
@@ -1091,6 +1100,45 @@ pub fn add_film_grain(
     src_u: &[u16],
     src_v: &[u16],
 ) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+    match add_film_grain_stop(
+        p, bit_depth, mono, ss_x, ss_y, mc_identity, d_w, d_h, src_y, src_u, src_v, None,
+    ) {
+        Ok(planes) => planes,
+        // Unreachable: the token is the `None` literal one line above, and
+        // `Err` is returned only from a poll of a `Some` token. Panicking is
+        // deliberate over any fallback — the only values this arm could
+        // otherwise return are empty or partially-grained planes, i.e. silent
+        // pixel corruption. Not reachable from a bitstream: no decode input
+        // reaches this arm, because no decode input chooses the token.
+        Err(r) => unreachable!("add_film_grain_stop stopped without a stop token: {r:?}"),
+    }
+}
+
+/// [`add_film_grain`] with a cooperative stop token polled once per 32-luma-row
+/// grain subblock row (plus once around each of the two whole-frame copies).
+///
+/// The last whole-frame pass of a decode, and — like deblock and CDEF — one
+/// un-interruptible call without this. **MEASURED at 73.8 ms on a 4096x4096
+/// 4:2:0 frame** (lag-3 AR template, overlap on, chroma grain present;
+/// `cancel_latency::film_grain_stage_cost`), i.e. 3.6x the 20 ms cancellation
+/// bar on its own. It is invisible to the cancellation sweep because the
+/// reference encoder puts no grain in those streams — this is why the stage is
+/// timed directly instead of inferred from the poll-gap map.
+#[allow(clippy::too_many_arguments)]
+pub fn add_film_grain_stop(
+    p: &FilmGrainParams,
+    bit_depth: i32,
+    mono: bool,
+    ss_x: i32,
+    ss_y: i32,
+    mc_identity: bool,
+    d_w: usize,
+    d_h: usize,
+    src_y: &[u16],
+    src_u: &[u16],
+    src_v: &[u16],
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(Vec<u16>, Vec<u16>, Vec<u16>), enough::StopReason> {
     // av1_add_film_grain rounds the working dims up to even.
     let width = if d_w % 2 == 1 { d_w + 1 } else { d_w };
     let height = if d_h % 2 == 1 { d_h + 1 } else { d_h };
@@ -1151,8 +1199,12 @@ pub fn add_film_grain(
         css_y,
         css_x,
         mc_identity,
-    );
+        stop,
+    )?;
 
+    if let Some(s) = stop {
+        s.check()?;
+    }
     // Crop back to the coded dims.
     let mut out_y = vec![0u16; d_w * d_h];
     for r in 0..d_h {
@@ -1173,5 +1225,5 @@ pub fn add_film_grain(
         }
     }
 
-    (out_y, out_u, out_v)
+    Ok((out_y, out_u, out_v))
 }

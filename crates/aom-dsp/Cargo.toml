@@ -16,6 +16,11 @@ name = "aom_dsp"
 # dispatch module's AOM_FORCE_SCALAR process-wide pin reaches every kernel.
 archmage = "0.9.27"
 magetypes = "0.9.27"
+# Cooperative cancellation (`no_std`, zero-dependency). Only the `*_stop`
+# frame-walk entries touch it; the historical entries delegate with `None` and
+# are byte-identical. Same version aom-decode depends on, so the `dyn Stop`
+# vtable is shared across the crate boundary.
+enough = "0.4.4"
 
 [features]
 # AVX-512 tiers (X64V4Token codegen). Default-on: runtime dispatch decides, so

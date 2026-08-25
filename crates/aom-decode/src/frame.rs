@@ -896,8 +896,8 @@ pub fn decode_frame_obus_with(
     config: &DecodeConfig,
 ) -> Result<FrameDecode, DecodeError> {
     let (mut t, cfg, header) = decode_frame_obus_prefilter_with(data, config)?;
-    run_post_filters(&mut t, &cfg, &header);
-    Ok(finish_and_grain(t, &cfg, &header))
+    run_post_filters(&mut t, &cfg, &header, config.stop)?;
+    Ok(finish_and_grain(t, &cfg, &header, config.stop)?)
 }
 
 /// [`decode_frame_obus_with`], returning a source-located error
@@ -928,8 +928,23 @@ pub fn decode_frames_at(
 /// Crop the filtered reconstruction to the display planes and apply film grain
 /// (the final post-reconstruction output stage). Shared by [`decode_frame_obus`]
 /// and the multi-frame [`decode_frames`] path.
-fn finish_and_grain(t: KfTileDecode, cfg: &KfTileConfig, header: &FrameHeaderObu) -> FrameDecode {
+///
+/// Polls the caller's stop token before the crop and again before film grain —
+/// both are whole-frame passes that run after the last post-filter poll (see
+/// [`run_post_filters`]).
+fn finish_and_grain(
+    t: KfTileDecode,
+    cfg: &KfTileConfig,
+    header: &FrameHeaderObu,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<FrameDecode, enough::StopReason> {
+    if let Some(s) = stop {
+        s.check()?;
+    }
     let mut fd = finish_frame(t, cfg, header);
+    if let Some(s) = stop {
+        s.check()?;
+    }
     // Film grain is applied at the decoder as the final post-reconstruction
     // output stage (av1_add_film_grain), on the cropped display planes, exactly
     // as `aom_codec_get_frame` does. Byte-identical to C (film_grain_diff.rs).
@@ -937,7 +952,7 @@ fn finish_and_grain(t: KfTileDecode, cfg: &KfTileConfig, header: &FrameHeaderObu
         // AOM_CICP_MC_IDENTITY (0) selects the luma legal range for chroma
         // under clip_to_restricted_range.
         let mc_identity = cfg.matrix_coefficients == 0;
-        let (gy, gu, gv) = crate::film_grain::add_film_grain(
+        let (gy, gu, gv) = crate::film_grain::add_film_grain_stop(
             &header.film_grain,
             fd.bit_depth,
             fd.monochrome,
@@ -949,12 +964,13 @@ fn finish_and_grain(t: KfTileDecode, cfg: &KfTileConfig, header: &FrameHeaderObu
             &fd.y,
             &fd.u,
             &fd.v,
-        );
+            stop,
+        )?;
         fd.y = gy;
         fd.u = gu;
         fd.v = gv;
     }
-    fd
+    Ok(fd)
 }
 
 /// Decode an AV1 bitstream that may contain INTER frames after the KEY frame,
@@ -1445,7 +1461,7 @@ fn decode_frame_and_install(
     } else {
         decode_tile_payload(sh, header, tile_data, config.stop)?
     };
-    run_post_filters(&mut t, &cfg, &hdr);
+    run_post_filters(&mut t, &cfg, &hdr, config.stop)?;
 
     let refresh = hdr.prefix.refresh_frame_flags;
     // End-of-frame saved entropy context (`REFRESH_FRAME_CONTEXT_BACKWARD`):
@@ -1488,7 +1504,7 @@ fn decode_frame_and_install(
     } else {
         (None, Vec::new())
     };
-    let output = finish_and_grain(t, &cfg, &hdr);
+    let output = finish_and_grain(t, &cfg, &hdr, config.stop)?;
     if refresh != 0 {
         // `cur_frame->ref_order_hints`: the order hints of THIS frame's own
         // refs, for later frames' temporal motion-field projection.
@@ -1640,7 +1656,21 @@ pub fn apply_restoration(
     pre_cdef: Option<&(Vec<u16>, Vec<u16>, Vec<u16>)>,
     optimized_lr: bool,
 ) {
-    use aom_dsp::restore::frame::{LrPlaneInput, loop_restoration_filter_frame};
+    // A `None` token is never polled, so this cannot fail.
+    let _ = apply_restoration_stop(t, cfg, pre_cdef, optimized_lr, None);
+}
+
+/// [`apply_restoration`] with the caller's cooperative stop token, polled per
+/// plane and per restoration-unit row inside the frame walk
+/// (`loop_restoration_filter_frame_stop`).
+fn apply_restoration_stop(
+    t: &mut KfTileDecode,
+    cfg: &KfTileConfig,
+    pre_cdef: Option<&(Vec<u16>, Vec<u16>, Vec<u16>)>,
+    optimized_lr: bool,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
+    use aom_dsp::restore::frame::{LrPlaneInput, loop_restoration_filter_frame_stop};
     let empty: (Vec<u16>, Vec<u16>, Vec<u16>) = (Vec::new(), Vec::new(), Vec::new());
     let (dy, du, dv) = pre_cdef.unwrap_or(&empty);
     // Phase A: run the (unchanged) highbd LR stage on widened working planes;
@@ -1669,17 +1699,21 @@ pub fn apply_restoration(
             units: &t.lr_units[2],
         });
     }
-    loop_restoration_filter_frame(
+    let r = loop_restoration_filter_frame_stop(
         &mut planes,
         &cfg.lr,
         cfg.subsampling_x,
         cfg.subsampling_y,
         cfg.bd,
         optimized_lr,
+        stop,
     );
+    // `planes` borrows the working planes; drop it before putting them back.
+    drop(planes);
     t.recon.put_wide(wy);
     t.recon_u.put_wide(wu);
     t.recon_v.put_wide(wv);
+    r
 }
 
 /// Upscale a downscaled `(y, u, v)` plane triplet horizontally to the full
@@ -1827,9 +1861,29 @@ pub fn apply_superres(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderO
 /// pre-film-grain). Shared by [`decode_frame_obus`] (single KEY frame) and the
 /// multi-frame [`crate::inter::decode_frames`] path (where the filtered result
 /// also becomes a reference frame).
-pub(crate) fn run_post_filters(t: &mut KfTileDecode, cfg: &KfTileConfig, header: &FrameHeaderObu) {
+///
+/// **Cancellation.** Every stage here runs AFTER the tile decode's last
+/// SB-row poll, so without polling of its own the whole pipeline is a region
+/// in which a `cancel()` cannot be observed at all — measured at 118.9 ms of
+/// a 192 ms 4096x4096 decode before this was wired
+/// (`benchmarks/decode_cancel_latency_2026-08-06.*`). The token is polled at
+/// every stage boundary AND inside the two stages that are individually over
+/// the 20 ms bar at 4096x4096 (deblock and CDEF poll per SB row; LR polls per
+/// unit row). Returns `Err(StopReason)` the first time the caller's token
+/// asks to stop, leaving `t` in a partially filtered state that the caller
+/// must discard (both callers do — they propagate the error instead of
+/// producing a frame).
+pub(crate) fn run_post_filters(
+    t: &mut KfTileDecode,
+    cfg: &KfTileConfig,
+    header: &FrameHeaderObu,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
+    if let Some(s) = stop {
+        s.check()?;
+    }
     if header.loopfilter.filter_level != [0, 0] {
-        apply_deblock(t, cfg, header);
+        apply_deblock_stop(t, cfg, header, stop)?;
     }
     // The C decoder's do_cdef gate (decodeframe.c:5417): !skip_loop_filter
     // (a decoder option, always off here) && !coded_lossless (rejected
@@ -1846,10 +1900,13 @@ pub(crate) fn run_post_filters(t: &mut KfTileDecode, cfg: &KfTileConfig, header:
     // rows are the context). Superres ALWAYS takes the non-optimized arm (even
     // with CDEF off) because the boundary rows must be upscaled.
     let optimized_lr = !do_cdef && !do_superres;
+    if let Some(s) = stop {
+        s.check()?;
+    }
     let mut pre_cdef = (do_lr && !optimized_lr)
         .then(|| (t.recon.to_u16(), t.recon_u.to_u16(), t.recon_v.to_u16()));
     if do_cdef {
-        apply_cdef(t, cfg, header);
+        apply_cdef_stop(t, cfg, header, stop)?;
     }
     // Superres upscale (decodeframe.c:5451 `superres_post_decode`): AFTER CDEF,
     // BEFORE loop restoration. Horizontal-only; widens the coded (downscaled)
@@ -1858,6 +1915,9 @@ pub(crate) fn run_post_filters(t: &mut KfTileDecode, cfg: &KfTileConfig, header:
     // `save_deblock_boundary_lines`, which runs `av1_upscale_normative_rows` on
     // those boundary rows — so LR runs entirely in the upscaled domain.
     if do_superres {
+        if let Some(s) = stop {
+            s.check()?;
+        }
         let (ds_stride, ds_stride_uv) = (t.stride, t.stride_uv);
         apply_superres(t, cfg, header);
         if let Some((dy, du, dv)) = pre_cdef.take() {
@@ -1867,8 +1927,12 @@ pub(crate) fn run_post_filters(t: &mut KfTileDecode, cfg: &KfTileConfig, header:
         }
     }
     if do_lr {
-        apply_restoration(t, cfg, pre_cdef.as_ref(), optimized_lr);
+        if let Some(s) = stop {
+            s.check()?;
+        }
+        apply_restoration_stop(t, cfg, pre_cdef.as_ref(), optimized_lr, stop)?;
     }
+    Ok(())
 }
 
 /// Everything [`decode_frame_obus`] does up to (but not including) the loop
@@ -2274,8 +2338,21 @@ pub fn build_lf_inputs(
 /// harnesses recompose the filter pipeline stage by stage.
 #[doc(hidden)]
 pub fn apply_deblock(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) {
+    // A `None` token is never polled, so this cannot fail.
+    let _ = apply_deblock_stop(t, cfg, p, None);
+}
+
+/// [`apply_deblock`] with the caller's cooperative stop token, polled once per
+/// 32-mi strip inside the frame walk (`loop_filter_frame_stop`). See
+/// [`run_post_filters`] for why a stage-BOUNDARY poll is not enough here.
+fn apply_deblock_stop(
+    t: &mut KfTileDecode,
+    cfg: &KfTileConfig,
+    p: &FrameHeaderObu,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
     use aom_dsp::loopfilter::frame::{
-        LfFrameBuf, LfFrameBufU8, LfMiGrid, loop_filter_frame, loop_filter_frame_u8,
+        LfFrameBuf, LfFrameBufU8, LfMiGrid, loop_filter_frame_stop, loop_filter_frame_u8_stop,
     };
 
     let (mi, params) = build_lf_inputs(t, cfg, p);
@@ -2313,7 +2390,7 @@ pub fn apply_deblock(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderOb
                 ss_x: cfg.subsampling_x,
                 ss_y: cfg.subsampling_y,
             };
-            loop_filter_frame_u8(&mut buf, &grid, &params, 0, num_planes);
+            loop_filter_frame_u8_stop(&mut buf, &grid, &params, 0, num_planes, stop)?;
         }
         // bd10/12: the u16 walk (take_wide is a zero-copy move for HighBd).
         // A mixed-variant triple is structurally impossible (one routing flag
@@ -2335,12 +2412,17 @@ pub fn apply_deblock(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderOb
                 ss_y: cfg.subsampling_y,
                 bd: cfg.bd,
             };
-            loop_filter_frame(&mut buf, &grid, &params, 0, num_planes);
+            // Put the (possibly partially filtered) planes back BEFORE
+            // propagating a cancellation, so `t` is never left with its recon
+            // planes taken out — a cancelled decode still drops `t` normally.
+            let r = loop_filter_frame_stop(&mut buf, &grid, &params, 0, num_planes, stop);
             y_p.put_wide(wy);
             u_p.put_wide(wu);
             v_p.put_wide(wv);
+            r?;
         }
     }
+    Ok(())
 }
 
 /// Run [`aom_dsp::cdef::frame::cdef_frame`] over the (mi-aligned, deblocked)
@@ -2357,7 +2439,21 @@ pub fn apply_deblock(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderOb
 ///   behavior. Hidden: harness entry.
 #[doc(hidden)]
 pub fn apply_cdef(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) {
-    use aom_dsp::cdef::frame::{CdefFrameParams, cdef_frame};
+    // A `None` token is never polled, so this cannot fail.
+    let _ = apply_cdef_stop(t, cfg, p, None);
+}
+
+/// [`apply_cdef`] with the caller's cooperative stop token, polled once per
+/// 64-pixel filter-block row inside the frame walk (`cdef_frame_stop`). CDEF
+/// is the largest single un-interruptible stage of a decode — see
+/// [`run_post_filters`].
+fn apply_cdef_stop(
+    t: &mut KfTileDecode,
+    cfg: &KfTileConfig,
+    p: &FrameHeaderObu,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
+    use aom_dsp::cdef::frame::{CdefFrameParams, cdef_frame_stop};
 
     let mi_rows = cfg.mi_rows as usize;
     let mi_cols = cfg.mi_cols as usize;
@@ -2409,10 +2505,21 @@ pub fn apply_cdef(t: &mut KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) 
     let mut wy = t.recon.take_wide();
     let mut wu = t.recon_u.take_wide();
     let mut wv = t.recon_v.take_wide();
-    cdef_frame(&mut wy, t.stride, &mut wu, &mut wv, t.stride_uv, &params);
+    // Put the (possibly partially filtered) planes back BEFORE propagating a
+    // cancellation, so `t` never survives with its recon planes taken out.
+    let r = cdef_frame_stop(
+        &mut wy,
+        t.stride,
+        &mut wu,
+        &mut wv,
+        t.stride_uv,
+        &params,
+        stop,
+    );
     t.recon.put_wide(wy);
     t.recon_u.put_wide(wu);
     t.recon_v.put_wide(wv);
+    r
 }
 
 #[cfg(all(test, feature = "whereat"))]

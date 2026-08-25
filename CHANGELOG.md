@@ -6,6 +6,65 @@
 
 ### Fixed
 
+- **A `cancel()` on a 4K decode waited up to 115 ms — the whole post-filter
+  pipeline was un-pollable.** `DecodeConfig::with_stop` was documented as
+  "polled at SB-row / tile / frame boundaries", which was true and also the
+  problem: the last SB-row poll of the last tile is followed by deblock, CDEF,
+  superres, loop restoration, crop and film grain, none of which took the
+  token. Measured first, on real `aomenc` photographic KEY frames with CDEF on
+  (`crates/aom-bench/tests/cancel_latency.rs`, 15 cancel points x 7 reps per
+  size): worst `cancel()`→return **115.4 ms at 4096x4096** and 6.8 ms at
+  1024x1024, against a 20 ms bar; 44-77 of ~100 cancels per size were not
+  observed at all and the decode ran to completion. The deterministic poll-gap
+  arm localized it exactly — **118.9 ms of a 192 ms decode came after the final
+  poll**, decomposing (once stage-boundary polls were added) into deblock 26.9
+  ms + CDEF 87.9 ms + crop 1.6 ms. Fixed by polling at every post-filter stage
+  boundary *and* inside the three whole-frame stages: new additive
+  `loop_filter_frame_stop` / `loop_filter_frame_u8_stop` (per 32-mi strip),
+  `cdef_frame_stop` / `cdef_frame_u8_stop` (per 64-px filter-block row) and
+  `loop_restoration_filter_frame_stop` (per plane and per unit row) in
+  `aom-dsp`; the historical entries delegate with `None` and are unchanged.
+  A fourth stage, **film grain, needed timing separately** — the reference
+  encoder emits none, so it is invisible to any stream-driven sweep — and came
+  in at **73.8 ms at 4096x4096**, 3.7x the bar as one call; it gets
+  `add_film_grain_stop` (poll per 32-luma-row grain subblock row). After, on
+  the committed record: worst `cancel()`→return **2.744 ms at 4096x4096** and
+  0.401 / 0.153 / 0.066 ms at 1024 / 256 / 64, every cancel observed (0 ran to
+  completion), worst inter-poll gap 2.065 ms, worst blind window inside film
+  grain 1.630 ms. No throughput cost measured (median natural decode 188.2 →
+  189.0 ms at 4096, 11.49 → 11.41 at 1024 — noise in both directions; the
+  added work is one predictable branch per polled row, 230 of them on a 189 ms
+  frame). Byte-identity re-verified 977/977 workspace tests under BOTH default
+  and `AOM_FORCE_SCALAR=1` dispatch, including the C-differential film-grain
+  gates and the intra conformance corpus. Record:
+  `benchmarks/decode_cancel_latency_2026-08-06.{tsv,pollgap.tsv,meta}`.
+
+- **The cancellation gate asserted a quantity the decoder does not control, and
+  three CI legs failed for scheduler noise.** `cancel_latency_by_size` gated the
+  *maximum* end-to-end `cancel()`→return time, which contains thread wakeup and
+  descheduling; on shared 2-vCPU runners that reported `max 23.425 ms > 20 ms`
+  with `p50 3.441 / p90 5.647` on the same 77 samples — a median that is fine
+  and a tail 7x it, on a box only ~2x slower than the reference host. The bar is
+  unchanged and nothing is `#[ignore]`d; what moved is which term of
+  `latency = (A) scheduling + (B) wait-for-next-poll + (C) unwind` each
+  assertion owns. (B) is gated at the full 20 ms by `poll_gap_map`, now the
+  minimum over 3 traced runs (a deschedule can only *add* to a gap, so the
+  minimum estimates the decoder's own spacing while a stage that stopped polling
+  inflates every run). (C) — the refusing poll → the call returning, both
+  instants taken on the worker thread — is measured and gated for the first
+  time (1.39 ms p90 at 4096x4096). End-to-end keeps the 20 ms bar at `p90`, plus
+  a machine-scaled tripwire on the max (12.5 % of that host's own natural decode,
+  where that beats the flat bar): the regression it must catch is 62 % of the
+  decode, the noise it must tolerate was 6.1 %. The three timing arms also take a
+  process-wide lock, so `cargo test`'s default parallelism no longer runs a
+  4096x4096 film-grain pass while another arm times a thread wakeup. Liveness
+  verified — deleting one `s.check()?` (the per-filter-block-row poll in
+  `cdef_frame_generic`) fails all three gates (poll gap 89.275 ms, p90 66.848 ms,
+  max 91.589 ms vs a 24.931 ms tripwire) and restoring it returns them to green.
+  Local numbers unmoved: p99/max 2.71-2.74 ms end-to-end at 4096x4096, worst
+  inter-poll gap 2.061-2.071 ms, 0.000 ms tail. Record + reasoning:
+  `benchmarks/decode_cancel_latency_2026-08-06.meta` (AMENDMENT 2026-08-07).
+
 - **Two decoder panics that libaom treats as corrupt-frame REJECTIONS, plus the
   two `debug_assert`s that hid the same failure in release builds
   (`harden/decoder-panic-surface`).** `av1_ss_size_lookup` has no valid chroma

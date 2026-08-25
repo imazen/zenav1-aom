@@ -778,7 +778,29 @@ pub fn cdef_frame(
     uv_stride: usize,
     p: &CdefFrameParams,
 ) {
-    cdef_frame_generic(y, y_stride, u, v, uv_stride, p);
+    // A `None` token is never polled, so this cannot fail; discarding the
+    // `Ok(())` keeps the historical signature panic-free.
+    let _ = cdef_frame_generic(y, y_stride, u, v, uv_stride, p, None);
+}
+
+/// [`cdef_frame`] with a cooperative stop token polled once per 64-pixel
+/// filter-block row.
+///
+/// CDEF is the single most expensive un-interruptible call in the decoder's
+/// post-filter pipeline: **87.9 ms** on one 4096x4096 frame, 4.4x the 20 ms
+/// cancellation bar (`benchmarks/decode_cancel_latency_2026-08-06.*`). Returns
+/// `Err(StopReason)` with the planes PARTIALLY filtered — for a cancelled
+/// decode, which discards the reconstruction.
+pub fn cdef_frame_stop(
+    y: &mut [u16],
+    y_stride: usize,
+    u: &mut [u16],
+    v: &mut [u16],
+    uv_stride: usize,
+    p: &CdefFrameParams,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
+    cdef_frame_generic(y, y_stride, u, v, uv_stride, p, stop)
 }
 
 /// bd8 LOWBD (`u8`) counterpart of [`cdef_frame`]. The recon planes are `u8`
@@ -815,7 +837,23 @@ pub fn cdef_frame_u8(
     p: &CdefFrameParams,
 ) {
     debug_assert_eq!(p.bit_depth, 8, "cdef_frame_u8 is the bd8 lowbd path");
-    cdef_frame_generic(y, y_stride, u, v, uv_stride, p);
+    let _ = cdef_frame_generic(y, y_stride, u, v, uv_stride, p, None);
+}
+
+/// [`cdef_frame_u8`] with a cooperative stop token polled once per 64-pixel
+/// filter-block row — the lowbd twin of [`cdef_frame_stop`], and the one every
+/// 8-bit decode takes.
+pub fn cdef_frame_u8_stop(
+    y: &mut [u8],
+    y_stride: usize,
+    u: &mut [u8],
+    v: &mut [u8],
+    uv_stride: usize,
+    p: &CdefFrameParams,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
+    debug_assert_eq!(p.bit_depth, 8, "cdef_frame_u8_stop is the bd8 lowbd path");
+    cdef_frame_generic(y, y_stride, u, v, uv_stride, p, stop)
 }
 
 /// The pixel-type-generic CDEF frame walk backing both [`cdef_frame`] (`u16`,
@@ -827,7 +865,8 @@ fn cdef_frame_generic<P: CdefPixel>(
     v: &mut [P],
     uv_stride: usize,
     p: &CdefFrameParams,
-) {
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
     let nvfb = (p.mi_rows + MI_SIZE_64X64 - 1) / MI_SIZE_64X64;
     let nhfb = (p.mi_cols + MI_SIZE_64X64 - 1) / MI_SIZE_64X64;
     let luma_stride = align16(p.mi_cols << MI_SIZE_LOG2);
@@ -912,6 +951,13 @@ fn cdef_frame_generic<P: CdefPixel>(
     };
 
     for fbr in 0..nvfb {
+        // Cooperative cancellation: one poll per 64-pixel filter-block ROW,
+        // the coarsest unit of this walk that carries no cross-iteration
+        // state a caller could observe. Placed here (not inside `fb_col`) so
+        // the cost is `nvfb` predictable branches per frame, not `nvfb*nhfb`.
+        if let Some(s) = stop {
+            s.check()?;
+        }
         // av1_cdef_fb_row: cdef_left starts TRUE each row (the fbc==0 colbuf
         // restore it triggers is then fully overwritten by the LEFT edge fill).
         let mut cdef_left = [true; 3];
@@ -945,4 +991,5 @@ fn cdef_frame_generic<P: CdefPixel>(
             );
         }
     }
+    Ok(())
 }
