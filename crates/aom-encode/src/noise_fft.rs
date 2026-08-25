@@ -33,7 +33,25 @@ fn mul(a: f32, b: f32) -> f32 {
     a * b
 }
 
-#[allow(clippy::needless_range_loop, clippy::identity_op)]
+// `noise_fft_gen.rs` is a MECHANICAL transcription of `fft_common.h`'s
+// GEN_FFT_*/GEN_IFFT_* macros, and it must stay one: it is bit-exact against
+// the C AND the RTCD SSE2/AVX2 oracle (`tests/noise_fft_diff.rs`), and the
+// generator that writes it does not know Rust idiom.
+//
+// * `identity_op` / `erasing_op` — the macros index `input[0 * stride]` and
+//   `input[1 * stride]`; the multiplications are how the C reads, and folding
+//   them away would desync the file from its generator for no gain.
+// * `approx_constant` — the twiddles are libaom's own 6-digit literals
+//   (`0.707107f`, `0.382683f`, `0.980785f`, ...). Clippy's suggestion to swap
+//   `0.707107f32` for `f32::consts::FRAC_1_SQRT_2` would CHANGE the value:
+//   0.707_107_0 vs 0.707_106_77, a difference of ~2.4e-7 that is far above
+//   f32 epsilon here and would break the bit-exactness this module asserts.
+#[allow(
+    clippy::needless_range_loop,
+    clippy::identity_op,
+    clippy::erasing_op,
+    clippy::approx_constant
+)]
 mod bfly {
     include!("noise_fft_gen.rs");
 }
