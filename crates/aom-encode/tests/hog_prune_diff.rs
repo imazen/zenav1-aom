@@ -322,8 +322,16 @@ fn hog_nn_predict_agrees_with_dispatch_within_one_prec_quantum() {
     );
 
     // (1) PRUNE-MASK PARITY — the property that actually steers the encode.
+    //
+    // `MAX_MASK_FLIPS` is currently 0, so clippy sees `<= 0` on a `usize` and
+    // suggests `==`. Keep the `<=`: the bound is documented as raisable by a
+    // deliberate, measured decision (see its doc comment and CLAUDE.md
+    // KB-ARM-FLOAT), and `==` would turn a raised bound into an assertion that
+    // the divergence must be EXACTLY that large.
+    #[allow(clippy::absurd_extreme_comparisons)]
+    let mask_parity_holds = mask_flip_total <= MAX_MASK_FLIPS;
     assert!(
-        mask_flip_total <= MAX_MASK_FLIPS,
+        mask_parity_holds,
         "prune-mask parity broke: {mask_flip_total} flips (pinned max {MAX_MASK_FLIPS}) \
          across {lanes} lanes x {} production thresholds. Samples:\n  {}",
         PRODUCTION_THRESHOLDS.len(),
