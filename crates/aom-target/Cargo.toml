@@ -10,3 +10,12 @@ description = "Dependency-injected zensim-quality (Zq) target search over any AV
 [dev-dependencies]
 zensim = { path = "../../../zensim/zensim", features = ["feature-regime-v2", "custom-profiles"] }
 png = "0.18.1"
+
+# Standalone workspace root: never absorbed into the parent workspace, even if
+# the `exclude` entry there is ever dropped. This is load-bearing, not tidiness
+# — the `zensim` dev-dep above is a path into a SIBLING REPOSITORY, and cargo
+# loads every workspace member's manifest for any workspace command, so being a
+# member makes the entire workspace unresolvable on any checkout that lacks that
+# sibling (i.e. every CI runner). Build/test this crate from its own directory
+# on a machine that has `../../../zensim`.
+[workspace]
