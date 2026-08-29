@@ -8,6 +8,7 @@ members = [
     "crates/aom-sys-ref",
     "crates/aom-bench",
     "crates/aom-dsp-bench",
+    "crates/aom-target",
 ]
 
 [workspace.package]

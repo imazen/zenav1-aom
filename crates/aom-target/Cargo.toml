@@ -1,0 +1,12 @@
+[package]
+name = "zenav1-aom-target"
+version = "0.0.1"
+edition = "2021"
+publish = false
+description = "Dependency-injected zensim-quality (Zq) target search over any AV1 qindex encoder"
+
+[dependencies]
+
+[dev-dependencies]
+zensim = { path = "../../../zensim/zensim", features = ["feature-regime-v2", "custom-profiles"] }
+png = "0.18.1"
