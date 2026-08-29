@@ -4,6 +4,27 @@
 
 ### [Unreleased]
 
+### Changed
+
+- **Third-party lockfile refreshed within the existing requirements**
+  (`c8a8dfb`). `Cargo.lock` only — no manifest requirement moved. 16 packages
+  advanced: `libc` 0.2.186 → 0.2.189, `thiserror`/`-impl` 2.0.18 → 2.0.20,
+  `serde`/`serde_core`/`serde_derive` 1.0.228 → 1.0.229, `serde_json` 1.0.150 →
+  1.0.151, `clap` 4.6.2 → 4.6.6 (plus `clap_builder`, `clap_derive` 4.6.1 →
+  4.6.4), `bytemuck` 1.25.1 → 1.25.2, `imgref` 1.12.2 → 1.12.3, `either`
+  1.16.0 → 1.18.0, `proc-macro2` 1.0.106 → 1.0.107, `quote` 1.0.46 → 1.0.47 and
+  `syn` 2.0.118 → 2.0.119. Nothing entered or left the graph. Every zen-family
+  package was held byte-identical (`archmage`/`magetypes` 0.9.27, `enough`
+  0.4.4, `whereat` 0.1.5, `zensim`, `zenbench`, and the `zenavif-serialize` git
+  rev pin). Afterwards `cargo update --dry-run` reports **0 packages behind**,
+  so no manifest requirement is blocking anything and no bump is needed.
+  Gated on aarch64-apple-darwin with CI's differential command
+  (`cargo test --profile test-fast --workspace --no-fail-fast`): **978 passed,
+  0 failed, 53 ignored across 281 test binaries**, including the 64
+  byte-identical / identical-to-C assertions against the C libaom oracle.
+  CI additionally runs the `AOM_FORCE_SCALAR` forced-scalar-pin leg, which was
+  not reproduced locally.
+
 ### Fixed
 
 - **Two decoder panics that libaom treats as corrupt-frame REJECTIONS, plus the
