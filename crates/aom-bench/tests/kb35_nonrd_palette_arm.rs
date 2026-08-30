@@ -484,17 +484,13 @@ fn palette_on_speed8_screen_content_is_pinned() {
     c::ref_init();
     // (w, h, cq) -> byte delta. Measured 2026-08-03, aarch64-apple-darwin,
     // --profile test-fast.
-    const PALETTE_ON_SPEED8_OPEN: &[(usize, usize, i32, i64)] = &[
-        (128, 128, 12, -1),
-        (128, 128, 32, 3),
-        (128, 128, 50, 1),
-        (256, 256, 12, 0),
-        (256, 256, 32, 3),
-        (256, 256, 50, -5),
-        (512, 512, 12, 34),
-        (512, 512, 32, 0),
-        (512, 512, 50, -17),
-    ];
+    // KB-41 (2026-08-30): CLOSED. The nine rows pinned here (128²/256²/512² x
+    // cq12/32/50 at cpu8, -17..+34 B) all went byte-identical once the palette
+    // size / colour-index cost tables followed the per-SB mode-cost refresh and
+    // the UV palette flag cost was filled (`real_costs.rs` / `pack.rs`). The
+    // class was never a speed-8 leaf: it was frame-init palette costs read
+    // mid-frame. Pinned EMPTY so a regression re-opens it loudly.
+    const PALETTE_ON_SPEED8_OPEN: &[(usize, usize, i32, i64)] = &[];
     let knobs = ToggleKnobs {
         enable_palette: true,
         ..Default::default()
@@ -548,8 +544,8 @@ fn palette_on_speed8_screen_content_is_pinned() {
     assert_eq!(
         observed,
         PALETTE_ON_SPEED8_OPEN.to_vec(),
-        "the palette x speed-8 open map moved. FEWER/smaller entries => something closed it \
-         (re-pin, and say which KB). MORE => a regression. Either way this is the FULL-RD \
+        "the palette x speed-8 map moved off EMPTY (closed by KB-41, 2026-08-30): a \
+         regression in the palette cost tables / their per-SB refresh — this is the FULL-RD \
          palette leaf at speed 8, not the nonrd estimate arm (reach[2] is asserted 0 above)"
     );
 }

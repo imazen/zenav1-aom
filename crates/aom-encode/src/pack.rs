@@ -1880,6 +1880,12 @@ pub fn pack_tile_lr(
             let sb_pick_cfg = match &sb_real {
                 Some(sb_real) => PickFrameCfg {
                     mode_costs: &sb_real.mode_costs,
+                    // KB-41: the palette size / colour-index tables follow the
+                    // same refresh as every other mode cost (rd.c fills them in
+                    // av1_fill_mode_rates); before, the searches read the
+                    // FRAME-INIT tables for the whole frame. `None` stays None
+                    // (the --enable-palette knob gate).
+                    palette_costs: pick_cfg.palette_costs.map(|_| &sb_real.palette_costs),
                     tx_size_costs: &sb_real.tx_size_costs,
                     skip_costs: &sb_real.skip_costs,
                     tx_type_costs_y: &sb_real.tx_type_costs_y,

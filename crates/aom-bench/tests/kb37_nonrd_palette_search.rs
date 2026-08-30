@@ -414,12 +414,17 @@ fn many_colour_palette_blocks_are_pinned_and_are_not_this_arm() {
             }
         }
     }
-    assert!(
-        full_rd_diverged > 0,
-        "the full-RD control went CLEAN on many-colour palette blocks ({full_rd_total} \
-         cells). If the shared palette machinery is now exact there, any remaining \
-         speed-9 divergence below belongs to `search_palette_mode_luma` after all — \
-         re-attribute it and promote those cells into the byte gate"
+    // KB-41 (2026-08-30): the full-RD control IS clean now — 9/9 many-colour
+    // cells byte-identical at speeds 0/2/6 once the palette cost tables followed
+    // the per-SB refresh (+ the UV palette flag cost). The "shared palette
+    // machinery is inexact in the (32, 64] band" reading was those stale costs.
+    // Pinned as a hard byte gate; any remaining speed-9 divergence below is
+    // therefore attributable to the speed-9 path itself.
+    assert_eq!(
+        full_rd_diverged, 0,
+        "the full-RD many-colour palette control REGRESSED ({full_rd_diverged} of \
+         {full_rd_total} cells diverge; KB-41 closed all 9) — the palette cost tables \
+         stopped following the per-SB refresh, or the UV palette flag cost is gone"
     );
 
     // (b) the speed-9 rows of the same family, pinned.

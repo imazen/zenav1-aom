@@ -150,6 +150,12 @@ pub fn derive_real_costs(kf: &KfFrameContext, enable_filter_intra: bool) -> Real
         enable_filter_intra,
     );
 
+    // The palette-UV flag slice (rd.c:141-142, `palette_uv_mode_cost[ctx]`):
+    // KB-41 — never filled before, so every UV_DC candidate on a
+    // screen-content frame read a zero flag cost (C: 23 for "no palette", 2592
+    // for "palette" at the default CDF, and it adapts).
+    let palette_uv_mode_cdf: Vec<u16> = kf.palette_uv_mode.iter().flatten().copied().collect();
+    crate::mode_costs::fill_palette_uv_mode_costs(&mut mode_costs, &palette_uv_mode_cdf);
     let mut cfl_costs = CflCosts::zeroed();
     let cfl_alpha_cdf: Vec<u16> = kf.cfl_alpha.iter().flatten().copied().collect();
     fill_cfl_costs(&mut cfl_costs, &kf.cfl_sign, &cfl_alpha_cdf);

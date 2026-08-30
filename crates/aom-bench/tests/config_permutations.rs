@@ -1803,8 +1803,12 @@ fn content_sensitivity_screen_ibc_b8() {
 /// `minp16`, `smth0`, `diag0`, `flip0`, `cdf0`. The 29-byte gap is far outside
 /// the KB-10/KB-12 near-tie signature, so this is a real second defect on the
 /// screen tx-type path and is tracked as such rather than dismissed.
-const SCREEN_ARRAY_OPEN_ROWS: &[&str] =
-    &["scr_ibc_b8cq32_p140-minp16-maxp64-smth0-diag0-flip0-dtxo1-txss0-cdf0"];
+// KB-41 (2026-08-30): the last open screen row
+// (`scr_ibc_b8cq32_p140-minp16-maxp64-smth0-diag0-flip0-dtxo1-txss0-cdf0`)
+// closed when the palette cost tables started following the per-SB mode-cost
+// refresh and the UV palette flag cost was filled. Pinned EMPTY: any entry
+// here is a regression.
+const SCREEN_ARRAY_OPEN_ROWS: &[&str] = &[];
 
 /// Replay a covering array on one CONTENT probe, at FULL axis strength.
 ///

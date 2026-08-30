@@ -174,12 +174,12 @@ it here in the same commit.**
 | KB-30 | `cid22_6292444` at cpu6, every quantizer, 1 of 10 real photographs | sibling-C per-block dump (playbook §10); ~half a day |
 | `RD_BAND_OPEN` (`kb34_nonsquare_nonrd_leaf.rs`) | 1272x724 cq24 at cpu 2-5 only | adjacent to KB-28's band at a size no gate covers |
 | the 17 cpu-8 photographic high-q rows | `benchmarks/nonsquare_leaf_reach_2026-08-02.tsv`, cq 32-63, -24..+13 B, not on in-repo content | needs the content in-repo first |
-| `PALETTE_ON_SPEED8_OPEN` (`kb35_nonrd_palette_arm.rs`) | palette ON x cpu8 x screen-detected, 13 rows, -1399..+817 B; the FULL-RD palette leaf, which `rd_close_palette.rs` never crosses (speed 0 throughout). **NARROWED 2026-08-03 (KB-37) with a positive control, not a zero counter**: the same content at the same sizes, palette on, screen flag on, at `--cpu-used 9` (full-RD arm structurally unreachable) is BYTE-EXACT on 15/15 rows — so content, shared palette machinery and the estimate arm are all exonerated | first-divergent-block on 128x128 cq12 (delta -1) |
+| ~~`PALETTE_ON_SPEED8_OPEN`~~ CLOSED 2026-08-30 by KB-41 (palette cost tables now follow the per-SB refresh + the UV palette flag is costed); pinned EMPTY in `kb35_nonrd_palette_arm.rs` | palette ON x cpu8 x screen-detected, 13 rows, -1399..+817 B; the FULL-RD palette leaf, which `rd_close_palette.rs` never crosses (speed 0 throughout). **NARROWED 2026-08-03 (KB-37) with a positive control, not a zero counter**: the same content at the same sizes, palette on, screen flag on, at `--cpu-used 9` (full-RD arm structurally unreachable) is BYTE-EXACT on 15/15 rows — so content, shared palette machinery and the estimate arm are all exonerated | first-divergent-block on 128x128 cq12 (delta -1) |
 | KB-27 / `MONO_S0_OPEN` | monochrome, base_qindex 96, speed 0; **size-independent** (64x64 through 720x720, SB-exact and partial alike, widened 2026-08-03) | its own localizer is in `s4cov_partial_sb_axis.rs` |
 | KB-P29, KB-13's 2 cpu3-cq63 cells | 2 palette 128<sup>2</sup> near-ties; 2 real-content cells | sibling-C RD dump (KB-3/KB-7 method) |
 | `DELTAQ_SPEED_OPEN` (KB-39 residual a, no gate — the delta-q gates are all speed 0) | `--deltaq-mode` 2/3 at `--cpu-used` >= 1, **SINGLE tile as well as multi**, content-dependent. Measured 2026-08-04 on `av1-1-b8-00-quantizer-00` crops: mode 2 diverges at 1x1 tiles at every speed 1..7 (192x192 cq32); mode 3 is clean 1..6 at 192x192 cq32 but diverges at 1x1 from speed 1 at 256x256, and at cq63 from speed 3. Delta-q rides the whole RD chain (per-SB rdmult + quantizer rows), so this is a *speed-feature* divergence conditioned on a non-flat qindex map, not a tile bug — the tile axis is byte-clean at speed 0 across 53 cells and the deltaq-OFF tile controls are clean at speeds 0/2/6 (15/15) | first-divergent-block on 256x256 cq32 `--cpu-used 1` mode 3, single tile (playbook §10); the small-frame single-tile shape makes it the cheapest RD-decision dump in the queue |
 | KB-41 residual (`kb41_screen_detected_defaults.rs`, on-demand planes) | screen-detected real content with palette+IntraBC ON, cpu 6/8: 85x128 cq57 (267 B, equal-length byte diff, recon first differs at luma (0,87)), 128x80 cq6 s6 -4 B, 1024x745 +6..-32 B, 1280x800 -2 kB, 1920x1080 -9..-20 kB | decode-side per-block syntax dump on both streams → first differing block → decision compare |
-| `PALETTE_MANY_COLORS_OPEN` (`kb37_nonrd_palette_search.rs`) | palette blocks with **more than `PALETTE_MAX_SIZE` distinct colours** (33..64 in a 16x16). SHARED `palette_search` machinery, not an arm: reproduces on the FULL-RD path at `--cpu-used` 0/2/6 with `nonrd_leaf_arms() == [0, 0]` (asserted inside the test). 48 of 75 cells in the 38..42-colour band; 1 of 9 in the shipped fine-colour set. Nothing had ever encoded such a block — `rd_close_palette.rs`'s content has <= 8 colours and takes the `colors == PALETTE_MIN_SIZE` / `max_n == colors` shortcuts | sibling-C per-candidate RD dump of `av1_rd_pick_palette_intra_sby` on 64x64 n40 cq40 at `--cpu-used 0` (the k-means + descending-order arms are what only this content reaches) |
+| `PALETTE_MANY_COLORS_OPEN` (`kb37_nonrd_palette_search.rs`) — **NARROWED 2026-08-30 by KB-41**: the full-RD control (9 cells, speeds 0/2/6) is clean; only the speed-9 row `fc256 n40 cq40 −1 B` remains | palette blocks with **more than `PALETTE_MAX_SIZE` distinct colours** (33..64 in a 16x16). SHARED `palette_search` machinery, not an arm: reproduces on the FULL-RD path at `--cpu-used` 0/2/6 with `nonrd_leaf_arms() == [0, 0]` (asserted inside the test). 48 of 75 cells in the 38..42-colour band; 1 of 9 in the shipped fine-colour set. Nothing had ever encoded such a block — `rd_close_palette.rs`'s content has <= 8 colours and takes the `colors == PALETTE_MIN_SIZE` / `max_n == colors` shortcuts | sibling-C per-candidate RD dump of `av1_rd_pick_palette_intra_sby` on 64x64 n40 cq40 at `--cpu-used 0` (the k-means + descending-order arms are what only this content reaches) |
 
 **Already closed, do not re-open from stale notes:** KB-10/KB-11's noise-cq63 speed-6/7 pairs
 (closed by KB-21 root #2), the whole cpu-4/5 fragile band, and KB-12's estimate-arm residual
@@ -4395,9 +4395,36 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   The residual is the port's palette/IntraBC search fidelity on real screen-detected
   content — KB-15 / KB-P29 / `PALETTE_MANY_COLORS_OPEN` territory — with 85x128 cq57 cpu6
   (267 B both sides) as the smallest reproducer.
-- **Next (T4 row):** decode-side per-block syntax dump on BOTH streams (the port decoder
-  parses every symbol; no libaom instrumentation needed) → first block whose mode /
-  palette / IntraBC / tx syntax differs → decision-level compare, KB-3/KB-7 method.
+- **ROOT FOUND + FIXED (same day, playbook §10 to the decision).** The syntax dump (now in
+  the localizer: `ZENAV1_SYNTAX_DIFF=1`, the port decoder's `DecodedBlockKf` on both
+  streams) put the first divergent block of `85x128 cq32 cpu8` at mi(22,6): the port took
+  a 3-colour UV palette where C kept SMOOTH. A sibling-C per-block dump (instrumented
+  `av1_rd_pick_intra_sbuv_mode` / `av1_rd_pick_palette_intra_sbuv` /
+  `intra_mode_info_cost_uv`, `~/tmp/libaom-instr`) against a port dump agreed on every
+  tokenonly rate/dist and disagreed only on the palette HEADER rate — TWO cost-table
+  plumbing roots, both in the encoder, neither in the kernels:
+  1. **`IntraModeCosts::palette_uv_mode_cost` was never filled.** `fill_palette_uv_mode_costs`
+     existed and had a unit differential (`uv_cost_mask_diff.rs`) but ZERO callers in `src/`;
+     `derive_real_costs` skipped it, so every UV_DC candidate on a screen-content frame read a
+     0 flag cost where C reads 23 ("no palette") / 2592 ("palette") at the default CDF.
+     Fix: `real_costs.rs` fills it from `kf.palette_uv_mode`.
+  2. **The palette size / colour-index cost tables were frame-init for the whole frame.**
+     `pack.rs` re-derives every other mode cost per SB / SB-row (`INTERNAL_COST_UPD_*`) but
+     `PickFrameCfg.palette_costs` came once from the harness's frame-start `RealCosts`; C
+     fills them in the same `av1_fill_mode_rates` pass, so they adapt with the rest
+     (979 vs 864 = default-CDF cost vs adapted). Fix: `pack.rs` routes
+     `sb_real.palette_costs` into the per-SB `PickFrameCfg` (None stays None — the knob gate).
+  Excluded first: the port's `calc_indices` / `k_means` vs the DISPATCHED oracle kernels
+  (`palette_shim.c` + `palette_kmeans_diff.rs`, 1050 cases incl. tie-rich ranges) — bit-identical.
+- **What closed (self-promoting pins fired, all re-pinned):** `85x128 cq32 cpu8` byte-identical;
+  `rd_close_palette`: `text_420_128_cq20` (pinned since the palette landing as a "genuine
+  near-tie") is BYTE-EXACT — promoted into `BYTE_EXACT_CELLS`, `ui_420_128_cq32` still open;
+  `kb35` **`PALETTE_ON_SPEED8_OPEN` CLOSED** (all 9 rows byte-identical; pinned empty);
+  `kb37` **the full-RD half of `PALETTE_MANY_COLORS_OPEN` is CLEAN** (9/9 cells, speeds 0/2/6;
+  the (32, 64]-colour "shared machinery" reading was these costs) — the single speed-9 row
+  `fc256 n40 cq40 −1 B` remains and is now the speed-9 path's own;
+  `config_permutations` **`SCREEN_ARRAY_OPEN_ROWS` CLOSED** (the last screen/IntraBC row,
+  pinned empty). Core gates unchanged (`encoder_gate_e2e_byte_match` 32/32).
 
 ### KB-40 — Decoder: reported 12bpc inter divergence (GitHub #8) — NOT REPRODUCIBLE against the C oracle; the highbd inter envelope is now gated ✅ 2026-08-06
 
