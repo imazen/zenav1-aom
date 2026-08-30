@@ -171,7 +171,7 @@ it here in the same commit.**
 | pin | shape | next step |
 |---|---|---|
 | `HBD_OPEN` / `b10_64` (`s4cov_qm_axis.rs`, `config_permutations.rs`) | bd10 AND bd12, `--cpu-used` 1..6, LUMA-borne, reaches 4:4:4 + mono, qindex-dependent speed reach | `tx_sf.prune_tx_size_level` was the obvious suspect and is **RULED OUT** 2026-08-03 (INTER-only by assertion, tx_search.c:3438) — see KB-36's audit bullet |
-| KB-30 | `cid22_6292444` at cpu6, every quantizer, 1 of 10 real photographs | sibling-C per-block dump (playbook §10); ~half a day |
+| ~~KB-30~~ CLOSED 2026-08-30 — `cid22_6292444` is a SCREEN-DETECTED frame (the oracle's ALLINTRA defaults turn palette + IntraBC on for it); the 2026-08-01 xbench arm drove the port with `ToggleKnobs::default()` (both off), i.e. the "screen 0/42" class the entry itself set aside. With the tools mirrored (`kb41_screen_detected_defaults` on the executor's dumped planes) it is byte-exact at every quantizer tried: cq 1/6/13/19/25/32/38/44/50/57/60 at cpu 6 (11/11) | — | — |
 | `RD_BAND_OPEN` (`kb34_nonsquare_nonrd_leaf.rs`) | 1272x724 cq24 at cpu 2-5 only | adjacent to KB-28's band at a size no gate covers |
 | the 17 cpu-8 photographic high-q rows | `benchmarks/nonsquare_leaf_reach_2026-08-02.tsv`, cq 32-63, -24..+13 B, not on in-repo content | needs the content in-repo first |
 | ~~`PALETTE_ON_SPEED8_OPEN`~~ CLOSED 2026-08-30 by KB-41 (palette cost tables now follow the per-SB refresh + the UV palette flag is costed); pinned EMPTY in `kb35_nonrd_palette_arm.rs` | palette ON x cpu8 x screen-detected, 13 rows, -1399..+817 B; the FULL-RD palette leaf, which `rd_close_palette.rs` never crosses (speed 0 throughout). **NARROWED 2026-08-03 (KB-37) with a positive control, not a zero counter**: the same content at the same sizes, palette on, screen flag on, at `--cpu-used 9` (full-RD arm structurally unreachable) is BYTE-EXACT on 15/15 rows — so content, shared palette machinery and the estimate arm are all exonerated | first-divergent-block on 128x128 cq12 (delta -1) |
@@ -3152,7 +3152,17 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   with the exact issue-#5 message (`corrupt frame: intrabc DV failed validity
   (non-conformant stream)`), with the DV code untouched. See KB-33.
 
-### KB-30 — Encoder: `cid22_6292444` at `--cpu-used=6` diverges at EVERY quantizer (1 of 10 real photographs) — OPEN, not localized
+### KB-30 — Encoder: `cid22_6292444` at `--cpu-used=6` diverges at EVERY quantizer (1 of 10 real photographs) — CLOSED 2026-08-30 (it is screen-detected content; the arm had the tools off)
+- **Closed 2026-08-30 (after KB-41 roots #3-#13).** The frame is SCREEN-DETECTED by libaom's
+  antialiasing-aware estimator (`allow_screen_content_tools = 1` in the oracle header), so the
+  ALLINTRA defaults code it with palette + IntraBC, while the xbench `drv-aom` arm ran the port
+  with `ToggleKnobs::default()` (both off) — the same class the entry filed under "screen 0/42"
+  for the screenshots. Replayed through the executor's own plane dump
+  (`ZEN_AOMRS_DUMP_PLANES`) + `kb41_screen_detected_defaults`: **11/11 byte-identical** at cpu 6
+  (cq 1/6/13/19/25/32/38/44/50/57/60); the `default` (tools-off) arm reproduces the old
+  −0.25..−3.7 % byte deltas exactly. Nothing to localize — no per-block dump was needed.
+  Encode+verify time for the 512² cell: 0.12 s / 0.38 s / 3.2 s at cpu 8 / 6 / 4.
+- *(Original 2026-08-01 record follows, kept for the measurement it holds.)*
 - **Found 2026-08-01** by the libaom-C arm of the cross-encoder benchmark
   (`benchmarks/xbench_2026-08-01.md`, "The same control for the aom port"). The measurement is a
   whole-stream sha256 of `drv-aom` against `drv_libaom` over the RD corpus at MATCHED
