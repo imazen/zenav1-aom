@@ -1986,6 +1986,8 @@ pub struct IntrabcVarTxKnobs {
     /// `tx_sf.tx_type_search.prune_tx_type_using_stats` (framesize-dependent 1/2):
     /// KF-probability pruning of the luma multi-type mask (tx_search.c:1887).
     pub prune_tx_type_using_stats: u8,
+    /// `tx_sf.tx_type_search.prune_tx_type_est_rd` (speed 4/5): KB-41 root #16.
+    pub prune_tx_type_est_rd: bool,
 }
 
 /// The intrabc winner (mirrors `best_mbmi` + rd_stats of rdopt.c:3494-3646).
@@ -2434,6 +2436,7 @@ pub fn rd_pick_intrabc_mode_sb(
                 prune_2d_txfm_mode: a.vartx.prune_2d_txfm_mode,
                 skip_tx_search: a.vartx.skip_tx_search,
                 prune_tx_type_using_stats: a.vartx.prune_tx_type_using_stats,
+                prune_tx_type_est_rd: a.vartx.prune_tx_type_est_rd,
             };
             let r = crate::var_tx::pick_recursive_tx_size_type_yrd(&env, i64::MAX);
             // `if (rd_stats_y->rate == INT_MAX) return 0` (tx_search.c:3834).
@@ -2560,6 +2563,7 @@ pub fn rd_pick_intrabc_mode_sb(
                 prune_2d_txfm_mode: a.vartx.prune_2d_txfm_mode,
                 skip_tx_search: a.vartx.skip_tx_search,
                 prune_tx_type_using_stats: a.vartx.prune_tx_type_using_stats,
+                prune_tx_type_est_rd: a.vartx.prune_tx_type_est_rd,
                 qm_level: [a.qm_levels.map(|q| q[1]), a.qm_levels.map(|q| q[2])],
             };
             match crate::var_tx::txfm_uvrd_inter(&uenv, i64::MAX) {

@@ -179,6 +179,7 @@ fn c_try_no_split(
         prune_2d_txfm_mode: 1,
         skip_tx_search: false,
         prune_tx_type_using_stats: 0,
+        prune_tx_type_est_rd: false,
         // Luma recursion differential: the multi-type inter mask arm.
         forced_uv_tx_type: None,
         residual: &residual,
@@ -493,6 +494,7 @@ fn pick_recursive_tx_size_type_matches_c_recursion() {
                 prune_2d_txfm_mode: 1,
                 skip_tx_search: false,
                 prune_tx_type_using_stats: 0,
+                prune_tx_type_est_rd: false,
                 bsize,
                 max_blocks_wide: max_bw,
                 max_blocks_high: max_bh,

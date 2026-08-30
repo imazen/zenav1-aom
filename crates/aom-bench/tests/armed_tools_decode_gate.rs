@@ -323,6 +323,7 @@ fn single_knob_arms_are_exhaustive() {
         disable_tx_stats_prune: _,
         delta_lf_mode: _,
         enable_intrabc: _,
+        tune_content_screen: _,
         qm: _,
         deltaq_mode2: _,
         deltaq_mode3: _,

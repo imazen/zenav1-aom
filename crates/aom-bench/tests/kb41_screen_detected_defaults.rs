@@ -149,6 +149,11 @@ fn kb41_screen_detected_cells_match_with_screen_tools_on() {
         let real = EncodeCell::frame_obu_payload(&oracle);
         let port_default = cell.port_encode(&oracle);
         let port_screen = cell.port_encode_with(&oracle, &screen);
+        if let Some(dir) = std::env::var_os("ZENAV1_DUMP_ORACLE_DIR") {
+            // The port's screen-arm TU next to the oracle's, for header/byte diffs.
+            let path = std::path::Path::new(&dir).join(format!("{stem}.port.obu"));
+            std::fs::write(&path, splice_frame_obu(&oracle, &port_screen)).expect("write port dump");
+        }
         let d_ok = port_default == real;
         let s_ok = port_screen == real;
         // Where does the screen-knobs encode first differ — in the bytes and in

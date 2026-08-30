@@ -494,10 +494,14 @@ fn speed0_1080p_band_map_is_pinned() {
     let b10 = base_b10();
     // (bit-depth tag, w, h, cq) — the CURRENT divergent set, measured
     // 2026-08-04 WITH KB-38's arm ported.
+    // 2026-08-30 re-pin (KB-41 roots #7-#13, zenav1-aom `38a92657`): the
+    // `bd10 1920x1080 cq32` row (-8 B — the one the KB-38 predicate did not
+    // explain: base_qindex 128 is above the sub-block's 108) started MATCHING;
+    // the two cq24 rows are unchanged at -726 / +406, so KB-38's own residual
+    // is still open. Measured on the full 12-cell grid (11 min).
     const SPEED0_1080P_OPEN: &[(&str, usize, usize, i32)] = &[
         ("bd8 ", 1920, 1080, 24),
         ("bd10", 1920, 1080, 24),
-        ("bd10", 1920, 1080, 32),
     ];
     let mut observed: Vec<(String, usize, usize, i32)> = Vec::new();
     let mut fired_side = 0usize;

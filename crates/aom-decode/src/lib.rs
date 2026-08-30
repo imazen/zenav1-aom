@@ -6340,14 +6340,15 @@ impl<'c> TileKf<'c> {
                 mi_col as usize,
                 bsize,
             ) as usize;
-            read_partition(
+            let pr = read_partition(
                 dec,
                 &mut cdfs.partition[ctx],
                 partition_cdf_length(bsize),
                 has_rows,
                 has_cols,
                 bsize,
-            ) as usize
+            ) as usize;
+            pr
         };
         self.tree.push(p as i8);
         let subsize = get_partition_subsize(bsize, p as i32) as usize;

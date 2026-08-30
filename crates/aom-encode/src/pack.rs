@@ -389,6 +389,8 @@ pub fn pack_leaf(
     let cfl_allowed = is_cfl_allowed(bsize, env.lossless, env.ss_x, env.ss_y);
     let has_above = mi_row > env.tile_row_start;
     let has_left = mi_col > env.tile_col_start;
+    // reference the SEARCH coded the delta against? A mismatch means the
+    // decoder reconstructs a different DV than the winner's.
 
     // ---- 1. write_mbmi_b: mode-info (write_mb_modes_kf_fc). ----
     let above_nbr = nbr.above[mi_col as usize];

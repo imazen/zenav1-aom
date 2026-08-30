@@ -697,11 +697,15 @@ fn round_power_of_two_i64(value: i64, n: i32) -> i64 {
 /// `prune_2d_txfm_mode` (TX_TYPE_PRUNE_0..4), scale 1000. (PRUNE_5 never
 /// coexists with `prune_tx_type_est_rd` on a multi-type intra mask: at
 /// speed>=6 it is the MODE_EVAL value, whose mask is single-type.)
-const PRUNE_FACTORS: [i64; 5] = [200, 200, 120, 80, 40];
+pub(crate) const PRUNE_FACTORS: [i64; 5] = [200, 200, 120, 80, 40];
+/// `mul_factors[prune_2d_txfm_mode]` (tx_search.c:1072, scale 100) — the
+/// `num_sel = (num_allowed * mf + 50) / 100` candidate count of the inter
+/// `prune_txk_type_separ` arm (num_allowed > 7).
+pub(crate) const MUL_FACTORS: [i64; 5] = [80, 80, 70, 50, 30];
 
 /// `sort_rd` (tx_search.c:1076): C's exact stable insertion sort of the
 /// (est-rd, tx-type) pairs, ascending by rd.
-fn sort_rd(rds: &mut [i64], txk: &mut [usize], len: usize) {
+pub(crate) fn sort_rd(rds: &mut [i64], txk: &mut [usize], len: usize) {
     for i in 1..len {
         for j in 0..i {
             if rds[j] > rds[i] {

@@ -2123,7 +2123,8 @@ impl EncodeCell {
                 let sb_c = sb_col0 + i as i32 % n_sb_cols;
                 frame_trees[(sb_r * n_sb_x + sb_c) as usize] = Some(tree);
             }
-            tile_payloads.push(enc.done().to_vec());
+            let done_bytes = enc.done().to_vec();
+            tile_payloads.push(done_bytes);
         }
         // KB-41 root #7 (the other direction): C writes allow_intrabc=1 only if a
         // block used IntraBC. If the port's search chose IntraBC where the oracle's
@@ -2273,7 +2274,17 @@ impl EncodeCell {
         // restoration syntax, matching a plain `aomenc --allintra`. Restoration-
         // off bootstraps (every `--enable-restoration=0` gate) derive `false` —
         // unchanged.
-        let lr_stage = lr_stage || (s.enable_restoration && !p.coded_lossless);
+        // KB-41 root #14 (2026-08-30, 1280x800 screen cq25 cpu4): `allow_intrabc`
+        // disables EVERY post-filter stage in C — `if (!cm->features.allow_intrabc)
+        // loopfilter_frame(cpi, cm);` (encoder.c:3780) wraps the deblock pick,
+        // the CDEF search AND `av1_pick_filter_restoration`, so the frame keeps
+        // `set_postproc_filter_default_params` (all off) and the header codes no
+        // lr_params (the reader sets RESTORE_NONE). The port ran the restoration
+        // search anyway, its re-pack wrote 54 LR units into the tile data that
+        // the header never announced, and the stream was non-conformant (both
+        // libaom and the port decoder rejected it; the wave's byte gate refused
+        // the cell). Gate the whole LR stage on the final allow_intrabc.
+        let lr_stage = (lr_stage || (s.enable_restoration && !p.coded_lossless)) && !p.allow_intrabc;
         if lr_stage {
             assert!(
                 s.enable_restoration,
@@ -2460,7 +2471,8 @@ impl EncodeCell {
                         "{}: LR repack must walk every SB of tile {t}",
                         self.label
                     );
-                    tile_payloads[t] = enc2.done().to_vec();
+                    let done2 = enc2.done().to_vec();
+                    tile_payloads[t] = done2;
                 }
             }
         }

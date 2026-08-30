@@ -1552,6 +1552,7 @@ fn leaf_pick_sb_modes(
                 prune_2d_txfm_mode: cfg.pol.prune_2d_txfm_mode,
                 skip_tx_search: cfg.pol.skip_tx_search,
                 prune_tx_type_using_stats: cfg.pol.prune_tx_type_using_stats,
+                prune_tx_type_est_rd: cfg.pol.prune_tx_type_est_rd,
             },
         }
     });

@@ -220,6 +220,10 @@ pub struct InterLeafInputs<'a> {
     pub prune_2d_txfm_mode: i32,
     pub skip_tx_search: bool,
     pub prune_tx_type_using_stats: u8,
+    /// `tx_sf.tx_type_search.prune_tx_type_est_rd` (allintra speed 4/5): the
+    /// est-rd tx-type prune (`prune_txk_type` / `_separ`, tx_search.c:1911-1928)
+    /// REPLACES the 2D-NN prune when more than 2 types are allowed. KB-41 root #16.
+    pub prune_tx_type_est_rd: bool,
     /// `predict_dc_only_block`'s skip-arm rate: `txb_skip_cost[ctx][1]` for the
     /// BLOCK-ORIGIN ctx of the PERSISTENT (pre-walk) entropy arrays at this
     /// leaf's tx_size (tx_search.c:2055-2063) — the same quirk the intra walks
@@ -404,10 +408,12 @@ pub fn search_tx_type_inter(
         && !dc_only_blk;
     let mut calc_pixel_domain_distortion_final =
         inp.use_transform_domain_distortion == 1 && use_txd;
-    if calc_pixel_domain_distortion_final && (txk_allowed.is_some() || allowed_tx_mask == 0x0001) {
-        calc_pixel_domain_distortion_final = false;
-        use_txd = false;
-    }
+    // The single-type downgrade of this flag (tx_search.c:2182-2184) reads the
+    // FINAL `allowed_tx_mask` — C computes it after `get_tx_mask` (:2143),
+    // i.e. after the stats / est-rd / 2D prunes — so it is applied below the
+    // prune stage, not here (KB-41 root #17: an 8x8 IntraBC block whose mask
+    // pruned to DCT-only kept the pixel-domain re-measure in the port, dist
+    // 9344 vs C's tx-domain 13503, and won the block C gave to SMOOTH).
     // Search order: the natural 0..16 unless prune_tx_2D reorders it.
     let mut txk_map: [usize; TX_TYPES] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
     // prune_tx_type_using_stats (tx_search.c:1887-1903) on the LUMA multi-type
@@ -441,10 +447,40 @@ pub fn search_tx_type_inter(
     // the kept types); `prune_2d_txfm_mode` picks the aggressiveness row. The
     // speed-4/5 `prune_tx_type_est_rd` arm (:1911-1928) is NOT ported.
     let allowed_tx_count = if inp.prune_2d_txfm_mode >= 4 { 1 } else { 5 };
-    if inp.prune_2d
+    let num_allowed = allowed_tx_mask.count_ones() as i64;
+    if txk_allowed.is_none()
+        && inp.forced_uv_tx_type.is_none()
+        && num_allowed > 2
+        && inp.prune_tx_type_est_rd
+    {
+        // Est-rd tx-type prune (tx_search.c:1912-1928) — the speed-4/5 arm
+        // that takes the place of the 2D-NN prune: `prune_txk_type` when
+        // <= 7 types are allowed, else the separable H/V estimate
+        // `prune_txk_type_separ` keeping `(num_allowed * mf + 50) / 100`
+        // candidates. KB-41 root #16 (1280x800 screen cq25 cpu4, mi(12,216)
+        // 16x4 IntraBC: C's mask {V_DCT, H_DCT}, the port's NN mask {DCT_ADST,
+        // ADST_ADST}).
+        let pf = crate::tx_search::PRUNE_FACTORS[inp.prune_2d_txfm_mode as usize];
+        let mf = crate::tx_search::MUL_FACTORS[inp.prune_2d_txfm_mode as usize];
+        let prune = if num_allowed <= 7 {
+            prune_txk_type_inter(inp, tx_size, allowed_tx_mask, pf, &mut txk_map)
+        } else {
+            let num_sel = (num_allowed * mf + 50) / 100;
+            prune_txk_type_separ_inter(
+                inp,
+                tx_size,
+                allowed_tx_mask,
+                pf,
+                &mut txk_map,
+                ref_best_rd,
+                num_sel as usize,
+            )
+        };
+        allowed_tx_mask &= !prune;
+    } else if inp.prune_2d
         && inp.prune_2d_txfm_mode >= 1
         && txk_allowed.is_none()
-        && allowed_tx_mask.count_ones() > allowed_tx_count
+        && allowed_tx_mask.count_ones() > allowed_tx_count as u32
     {
         let set = ext_tx_set_type(tx_size, true, inp.reduced_tx_set_used);
         if let Some(r) = crate::prune_tx_2d::prune_tx_2d(
@@ -494,6 +530,11 @@ pub fn search_tx_type_inter(
     let mut best_rd = i64::MAX;
     let mut evaluated_mask = 0u16;
 
+    // tx_search.c:2182-2184 on the post-prune mask (see the note above).
+    if calc_pixel_domain_distortion_final && (txk_allowed.is_some() || allowed_tx_mask == 0x0001) {
+        calc_pixel_domain_distortion_final = false;
+        use_txd = false;
+    }
     for idx in 0..TX_TYPES {
         let tx_type = txk_map[idx];
         // prune_tx_2D pads the reordered txk_map with TX_TYPE_INVALID (255).
@@ -898,6 +939,10 @@ pub struct VarTxEnv<'a> {
     pub prune_2d_txfm_mode: i32,
     pub skip_tx_search: bool,
     pub prune_tx_type_using_stats: u8,
+    /// `tx_sf.tx_type_search.prune_tx_type_est_rd` (allintra speed 4/5): the
+    /// est-rd tx-type prune (`prune_txk_type` / `_separ`, tx_search.c:1911-1928)
+    /// REPLACES the 2D-NN prune when more than 2 types are allowed. KB-41 root #16.
+    pub prune_tx_type_est_rd: bool,
 }
 
 /// Result of the whole-block var-tx search.
@@ -1015,6 +1060,7 @@ fn try_tx_block_no_split(
         prune_2d_txfm_mode: env.prune_2d_txfm_mode,
         skip_tx_search: env.skip_tx_search,
         prune_tx_type_using_stats: env.prune_tx_type_using_stats,
+        prune_tx_type_est_rd: env.prune_tx_type_est_rd,
         predict_skip_zero_blk_rate,
         residual: &residual,
         pred: &pred,
@@ -1118,11 +1164,233 @@ fn try_tx_block_no_split(
     )
 }
 
+/// `prune_txk_type` (tx_search.c:1317) for the INTER (IntraBC) multi-type arm:
+/// quantize (QUANT_B, no trellis) every allowed type, estimate its rate with the
+/// Laplacian coefficient model (+ the inter tx-type cost past eob 0), take the
+/// tx-domain distortion, sort by RDCOST and keep the types within
+/// `prune_factor`/1000 of the best. Fills `txk_map` in sorted order with the
+/// disallowed types at the tail (the search's iteration order).
+#[allow(clippy::too_many_arguments)]
+fn prune_txk_type_inter(
+    inp: &InterLeafInputs,
+    tx_size: usize,
+    allowed_tx_mask: u16,
+    prune_factor: i64,
+    txk_map: &mut [usize; TX_TYPES],
+) -> u16 {
+    let mut qp_b = QuantParams::from_plane_rows(inp.rows, QuantKind::B, inp.bd, inp.lossless);
+    if let Some(level) = inp.qm_level {
+        qp_b = qp_b.with_qm(level, inp.bctx.plane);
+    }
+    let (txb_skip_ctx, _dc_sign_ctx) =
+        get_txb_ctx(inp.bctx.plane_bsize, tx_size, inp.bctx.plane, inp.bctx.above, inp.bctx.left);
+    let mut rds = [0i64; TX_TYPES];
+    let mut num_cand = 0usize;
+    let mut last = TX_TYPES - 1;
+    for tx_type in 0..TX_TYPES {
+        if allowed_tx_mask & (1 << tx_type) == 0 {
+            txk_map[last] = tx_type;
+            last = last.wrapping_sub(1);
+            continue;
+        }
+        let rd = est_rd_one_type(inp, &qp_b, tx_size, tx_type, txb_skip_ctx as usize);
+        txk_map[num_cand] = tx_type;
+        rds[num_cand] = rd;
+        num_cand += 1;
+    }
+    if num_cand == 0 {
+        return 0xFFFF;
+    }
+    crate::tx_search::sort_rd(&mut rds, txk_map, num_cand);
+    let mut prune: u16 = !(1u16 << txk_map[0]);
+    for idx in 1..num_cand {
+        let factor = 1000 * (rds[idx] - rds[0]) / rds[0];
+        if factor < prune_factor {
+            prune &= !(1u16 << txk_map[idx]);
+        } else {
+            break;
+        }
+    }
+    prune
+}
+
+/// One est-rd probe (`av1_xform_quant` QUANT_B + `av1_cost_coeffs_txb_laplacian`
+/// + `dist_block_tx_domain`, tx_search.c:1338-1352); `0` rds become `1`.
+fn est_rd_one_type(
+    inp: &InterLeafInputs,
+    qp_b: &QuantParams,
+    tx_size: usize,
+    tx_type: usize,
+    txb_skip_ctx: usize,
+) -> i64 {
+    let xq = xform_quant(inp.residual, tx_size, tx_type, QuantKind::B, qp_b, false);
+    let mut rate_cost =
+        aom_dsp::txb::cost_coeffs_txb_laplacian(&xq.qcoeff, xq.eob as usize, tx_size, tx_type, txb_skip_ctx, inp.coeff_costs);
+    if xq.eob > 0 {
+        rate_cost += get_tx_type_cost(
+            inp.tx_type_costs,
+            inp.bctx.plane,
+            tx_size,
+            tx_type,
+            true,
+            inp.reduced_tx_set_used,
+            inp.lossless,
+            false,
+            0,
+            0,
+        );
+    }
+    let (dist, _sse) = crate::dist_block_tx_domain_qm(
+        &xq.coeff,
+        &xq.dqcoeff,
+        tx_size,
+        inp.bd,
+        dist_qmatrix(qp_b, tx_size, tx_type),
+        scan(tx_size, tx_type),
+        false,
+    );
+    let rd = rdcost(inp.rdmult, rate_cost, dist);
+    if rd == 0 { 1 } else { rd }
+}
+
+/// `prune_txk_type_separ` (tx_search.c:1173) — the > 7-type arm: estimate the
+/// four horizontal 1-D choices with a vertical DCT, keep the best, then the
+/// four vertical choices with that horizontal, combine the two rankings into
+/// the 16 2-D types, sort, and keep at most `num_sel` within
+/// `prune_factor`/1800 of the best. Returns the prune mask (types to drop).
+#[allow(clippy::too_many_arguments)]
+fn prune_txk_type_separ_inter(
+    inp: &InterLeafInputs,
+    tx_size: usize,
+    allowed_tx_mask: u16,
+    prune_factor: i64,
+    txk_map: &mut [usize; TX_TYPES],
+    ref_best_rd: i64,
+    num_sel: usize,
+) -> u16 {
+    // idx_map (tx_search.c:1187): row = vertical 1-D (DCT/ADST/FLIPADST/IDTX-ish),
+    // col = horizontal.
+    const IDX_MAP: [usize; 16] = [0, 2, 5, 10, 1, 3, 7, 12, 4, 8, 6, 14, 11, 13, 15, 9];
+    const SEL_PATTERN_V: [usize; 16] = [0, 0, 1, 1, 0, 2, 1, 2, 2, 0, 3, 1, 3, 2, 3, 3];
+    const SEL_PATTERN_H: [usize; 16] = [0, 1, 0, 1, 2, 0, 2, 1, 2, 3, 0, 3, 1, 3, 2, 3];
+    let mut qp_b = QuantParams::from_plane_rows(inp.rows, QuantKind::B, inp.bd, inp.lossless);
+    if let Some(level) = inp.qm_level {
+        qp_b = qp_b.with_qm(level, inp.bctx.plane);
+    }
+    let (txb_skip_ctx, _dc_sign_ctx) =
+        get_txb_ctx(inp.bctx.plane_bsize, tx_size, inp.bctx.plane, inp.bctx.above, inp.bctx.left);
+    let ctx = txb_skip_ctx as usize;
+    let mut rds_v = [0i64; 4];
+    let mut rds_h = [0i64; 4];
+    let mut idx_v: [usize; 4] = [0, 1, 2, 3];
+    let mut idx_h: [usize; 4] = [0, 1, 2, 3];
+    let mut skip_v = [false; 4];
+    let mut skip_h = [false; 4];
+    // Horizontal with a vertical DCT (row 0 of idx_map). `rds == 0` is NOT
+    // promoted to 1 here (C only does that in the combined table).
+    for idx in 0..4 {
+        let tx_type = IDX_MAP[idx];
+        let rd = est_rd_raw(inp, &qp_b, tx_size, tx_type, ctx);
+        rds_h[idx] = rd;
+        if (rd - (rd >> 2)) > ref_best_rd {
+            skip_h[idx] = true;
+        }
+    }
+    crate::tx_search::sort_rd(&mut rds_h, &mut idx_h, 4);
+    for idx in 1..4 {
+        if rds_h[idx] as f64 > rds_h[0] as f64 * 1.2 {
+            skip_h[idx_h[idx]] = true;
+        }
+    }
+    if skip_h[idx_h[0]] {
+        return 0xFFFF;
+    }
+    // Vertical with the best horizontal (column idx_h[0] of idx_map).
+    rds_v[0] = rds_h[0];
+    for idx in 1..4 {
+        let tx_type = IDX_MAP[idx_h[0] + idx_v[idx] * 4];
+        let rd = est_rd_raw(inp, &qp_b, tx_size, tx_type, ctx);
+        rds_v[idx] = rd;
+        if (rd - (rd >> 2)) > ref_best_rd {
+            skip_v[idx] = true;
+        }
+    }
+    crate::tx_search::sort_rd(&mut rds_v, &mut idx_v, 4);
+    for idx in 1..4 {
+        if rds_v[idx] as f64 > rds_v[0] as f64 * 1.2 {
+            skip_v[idx_v[idx]] = true;
+        }
+    }
+    // Combine rd_h and rd_v.
+    let mut rds = [0i64; 16];
+    let mut num_cand = 0usize;
+    let mut last = TX_TYPES - 1;
+    for i in 0..16 {
+        let i_v = SEL_PATTERN_V[i];
+        let i_h = SEL_PATTERN_H[i];
+        let tx_type = IDX_MAP[idx_v[i_v] * 4 + idx_h[i_h]];
+        if allowed_tx_mask & (1 << tx_type) == 0 || skip_h[idx_h[i_h]] || skip_v[idx_v[i_v]] {
+            txk_map[last] = tx_type;
+            last = last.wrapping_sub(1);
+        } else {
+            txk_map[num_cand] = tx_type;
+            rds[num_cand] = rds_v[i_v] + rds_h[i_h];
+            if rds[num_cand] == 0 {
+                rds[num_cand] = 1;
+            }
+            num_cand += 1;
+        }
+    }
+    crate::tx_search::sort_rd(&mut rds, txk_map, num_cand);
+    let mut prune: u16 = !(1u16 << txk_map[0]);
+    let num_sel = num_sel.min(num_cand);
+    for i in 1..num_sel {
+        let factor = 1800 * (rds[i] - rds[0]) / rds[0];
+        if factor < prune_factor {
+            prune &= !(1u16 << txk_map[i]);
+        } else {
+            break;
+        }
+    }
+    prune
+}
+
+/// The separable arm's probe: identical to [`est_rd_one_type`] minus the
+/// `0 -> 1` promotion (tx_search.c:1224-1235 / 1257-1268 store the raw RDCOST).
+fn est_rd_raw(inp: &InterLeafInputs, qp_b: &QuantParams, tx_size: usize, tx_type: usize, ctx: usize) -> i64 {
+    let xq = xform_quant(inp.residual, tx_size, tx_type, QuantKind::B, qp_b, false);
+    let mut rate_cost =
+        aom_dsp::txb::cost_coeffs_txb_laplacian(&xq.qcoeff, xq.eob as usize, tx_size, tx_type, ctx, inp.coeff_costs);
+    if xq.eob > 0 {
+        rate_cost += get_tx_type_cost(
+            inp.tx_type_costs,
+            inp.bctx.plane,
+            tx_size,
+            tx_type,
+            true,
+            inp.reduced_tx_set_used,
+            inp.lossless,
+            false,
+            0,
+            0,
+        );
+    }
+    let (dist, _sse) = crate::dist_block_tx_domain_qm(
+        &xq.coeff,
+        &xq.dqcoeff,
+        tx_size,
+        inp.bd,
+        dist_qmatrix(qp_b, tx_size, tx_type),
+        scan(tx_size, tx_type),
+        false,
+    );
+    rdcost(inp.rdmult, rate_cost, dist)
+}
+
 /// `try_tx_block_split` (tx_search.c:2454): split `tx_size` into `sub_tx_size_map`
 /// children and recurse. Returns `(split_rd_stats, valid, leaves, split_rdcost)`.
 /// Mutates the context arrays as the children commit (backtracked by the caller
 /// if no-split wins).
-#[allow(clippy::too_many_arguments)]
 fn try_tx_block_split(
     env: &VarTxEnv,
     blk_row: usize,
@@ -1146,7 +1414,16 @@ fn try_tx_block_split(
 
     let mut split = RdStats::init();
     split.rate = env.txfm_partition_cost[txfm_partition_ctx][1];
-    let mut split_rdcost = rd_of(env.rdmult, split.rate, split.dist);
+    // KB-41 root #15: C sets the partition-flag rate on the av1_init_rd_stats'd
+    // stats WITHOUT recomputing `rdcost`, which stays 0 until the first child
+    // is merged (tx_search.c try_tx_block_split: `split_rd_stats->rate = ..;`
+    // then `select_tx_block(.., ref_best_rd - split_rd_stats->rdcost, ..)`).
+    // So the FIRST child's ref_best is `ref_best_rd - 0`, not `ref_best_rd -
+    // RDCOST(flag)`; the tighter bound made the port's child bail through the
+    // `no_split.rd - (no_split.rd >> (1 + level)) > ref_best_rd` prune where C's
+    // did not (1280x800 screen cq25 cpu4, mi(12,216) 16x4 IntraBC: C split
+    // 1153434 < no-split 1155359, the port returned split = INVALID).
+    let mut split_rdcost: i64 = 0;
     let mut leaves: Vec<VarTxLeaf> = Vec::new();
 
     let mut r = 0usize;
@@ -1167,11 +1444,9 @@ fn try_tx_block_split(
             } else {
                 i64::MAX
             };
-            let child_ref = if ref_best_rd == i64::MAX {
-                i64::MAX
-            } else {
-                ref_best_rd - split_rdcost
-            };
+            // `ref_best_rd - split_rd_stats->rdcost` verbatim (an INT64_MAX
+            // ref_best minus a finite running rdcost is what C passes too).
+            let child_ref = ref_best_rd - split_rdcost;
             let (child_stats, child_valid, child_leaves) = select_tx_block(
                 env, offsetr, offsetc, sub_txs, depth + 1, ta, tl, tx_above, tx_left, child_prev,
                 child_ref,
@@ -1560,6 +1835,10 @@ pub struct InterUvEnv<'a> {
     pub prune_2d_txfm_mode: i32,
     pub skip_tx_search: bool,
     pub prune_tx_type_using_stats: u8,
+    /// `tx_sf.tx_type_search.prune_tx_type_est_rd` (allintra speed 4/5): the
+    /// est-rd tx-type prune (`prune_txk_type` / `_separ`, tx_search.c:1911-1928)
+    /// REPLACES the 2D-NN prune when more than 2 types are allowed. KB-41 root #16.
+    pub prune_tx_type_est_rd: bool,
 }
 
 /// The chroma RD outcome (`rd_stats_uv`) plus the per-plane coded txbs.
@@ -1702,6 +1981,7 @@ pub fn txfm_uvrd_inter(env: &InterUvEnv, ref_best_rd: i64) -> Option<InterUvResu
                     prune_2d_txfm_mode: env.prune_2d_txfm_mode,
                     skip_tx_search: env.skip_tx_search,
                     prune_tx_type_using_stats: env.prune_tx_type_using_stats,
+        prune_tx_type_est_rd: env.prune_tx_type_est_rd,
                     predict_skip_zero_blk_rate,
                     residual: &residual,
                     pred: &pred_txb,
