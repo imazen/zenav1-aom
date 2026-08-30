@@ -221,10 +221,20 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
 - **Where to start.** Roots #3-#6 touched `speed_features.rs` (+219 lines), `var_tx.rs`
   (+284), `intrabc_search.rs` (+381), `encode_sb.rs`, `partition_pick.rs`, `tx_search.rs`.
   The failing gates are overwhelmingly NON-screen (bd10/bd12, 4:4:4/4:2:2, QM, tune-IQ,
-  speed 0-4 real content), so the IntraBC half is the least likely carrier; the `var_tx` /
-  `speed_features` / `tx_search` deltas are the candidates. Cheapest discriminator: revert
-  `var_tx.rs` alone to `735a0a6d^` and re-run `encoder_gate_e2e_low_qindex_speed0` (speed 0,
-  4:2:0, screen tools off, ~20 s).
+  speed 0-4 real content), so the IntraBC half is the least likely carrier.
+  **Narrowed by reading that commit's diff (2026-08-30, no run):** `speed_features.rs`'s +219
+  lines are ENTIRELY `mv_sf.*` (search_method / intrabc_search_level / hash / downsampled_sad /
+  exhaustive thresh) plus `inter_tx_size_search_init_depth_{rect,sqr}` — inter/IntraBC-only, so
+  inert on a non-screen KEY intra frame; and `encode_sb.rs`'s new all-txb-eob-0 skip
+  re-derivation (which WOULD be broad, since it rewrites `skip_txfm` + the txfm-context stamp)
+  sits inside `encode_b_intrabc_coeff`, so it is intrabc-only too. That leaves **`var_tx.rs`
+  (+284) and `partition_pick.rs`'s policy plumbing** — the block that stopped hardcoding
+  `ml_tx_split_thresh` / `prune_2d` / `init_depth` and started reading
+  `cfg.pol.{use_transform_domain_distortion, tx_domain_dist_threshold, predict_dc_level,
+  prune_2d_txfm_mode, skip_tx_search, prune_tx_type_using_stats}` — as the carriers to check
+  first. Confirm the first-bad attribution itself by building `735a0a6d^` in a scratch
+  worktree and running `encoder_gate_e2e_low_qindex_speed0` (speed 0, 4:2:0, screen tools off,
+  ~20 s once built); the current attribution is CI history, not a bisect.
 - **Do not close by excluding a test.** Per the header rule, only a landed fix verified on
   `origin/main` closes this.
 
