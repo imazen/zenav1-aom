@@ -168,7 +168,17 @@ fn nn_predict_dispatched_matches_dispatched_c() {
         cases.push((num_in, vec![h0, h1], rng.range(1, 4)));
     }
 
+    // Which variant does the port claim to reproduce on THIS host? Mirrors
+    // `nn::host_dispatches_avx2` (kept private); libaom's RTCD picks avx2 over
+    // sse3 wherever both exist, and aarch64 has neither.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    let avx2 = std::arch::is_x86_feature_detected!("avx2");
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    let avx2 = false;
+
     let mut mismatches = Vec::new();
+    let mut dispatched_differs_from_c = 0usize;
+    let total = cases.len() * 2;
     for (num_in, hidden, num_out) in cases {
         let mut weights_flat = Vec::new();
         let mut bias_flat = Vec::new();
@@ -196,27 +206,61 @@ fn nn_predict_dispatched_matches_dispatched_c() {
             bo += w[1];
         }
 
-        let mut got = vec![0.0f32; num_out];
-        nn_predict_dispatched(&features, &hidden, &wsl, &bsl, num_out, true, &mut got);
         let hidden_i32: Vec<i32> = hidden.iter().map(|&h| h as i32).collect();
-        let want = c::ref_nn_predict_dispatched(
-            &features,
-            num_in,
-            num_out,
-            &hidden_i32,
-            &weights_flat,
-            &bias_flat,
-            true,
-        );
-        if got != want {
-            mismatches.push(format!(
-                "in={num_in} hidden={hidden:?} out={num_out}: port {got:?} vs dispatched C {want:?}"
-            ));
+        // BOTH `reduce_prec` settings. With it ON the 1/512 quantisation hides
+        // the reassociation almost everywhere — which is the whole reason root
+        // #26 went unnoticed — so a sweep that only ran the quantised form
+        // would pass without testing the add tree at all. OFF exposes it.
+        for reduce_prec in [true, false] {
+            let mut got = vec![0.0f32; num_out];
+            nn_predict_dispatched(
+                &features, &hidden, &wsl, &bsl, num_out, reduce_prec, &mut got,
+            );
+            let want = c::ref_nn_predict_dispatched(
+                &features,
+                num_in,
+                num_out,
+                &hidden_i32,
+                &weights_flat,
+                &bias_flat,
+                reduce_prec,
+            );
+            let want_c = c::ref_nn_predict(
+                &features,
+                num_in,
+                num_out,
+                &hidden_i32,
+                &weights_flat,
+                &bias_flat,
+                reduce_prec,
+            );
+            if want != want_c {
+                dispatched_differs_from_c += 1;
+            }
+            // What the port CLAIMS on THIS host is what is asserted — no skip.
+            let expect = if avx2 { &want } else { &want_c };
+            if &got != expect {
+                mismatches.push(format!(
+                    "in={num_in} hidden={hidden:?} out={num_out} reduce_prec={reduce_prec}: \
+                     port {got:?} vs {} {expect:?}",
+                    if avx2 { "dispatched C" } else { "av1_nn_predict_c" }
+                ));
+            }
         }
     }
+    // The un-ported half of root #26, MEASURED rather than hidden: on a host
+    // whose libaom dispatches a variant this port does not model (aarch64 NEON,
+    // pre-AVX2 x86 SSE3) the port keeps the `_c` order, so the gate above pins
+    // it to `_c` and this counter states how far that is from what the local C
+    // encoder actually computes.
+    eprintln!(
+        "nn_predict: host_dispatches_avx2={avx2}; dispatched C differs from av1_nn_predict_c on \
+         {dispatched_differs_from_c} of {total} cases"
+    );
     assert!(
         mismatches.is_empty(),
-        "{} of the sweep disagree with the DISPATCHED av1_nn_predict:\n  {}",
+        "{} of the sweep disagree with the variant this host claims to model \
+         (avx2={avx2}):\n  {}",
         mismatches.len(),
         mismatches.join("\n  ")
     );
