@@ -27,6 +27,17 @@
 
 ### Fixed
 
+- **CI green again after six red runs — three test-side roots, no library change**
+  (`c80b40d1`, `cb76cda9`; KB-42). The published crates' encoder is untouched: all
+  three roots were in the differential harnesses and the coverage census. (1) 19 of 19
+  `PackCfg` construction sites passed the placeholder `search_tx_mode_is_select: false`
+  added in `38a92657`, freezing the SEARCH's tx-size cost table at its frame-init
+  snapshot and breaking 23 byte/RD gates; now derived from C's `select_tx_mode`.
+  (2) `content_family_census`'s IntraBC row was re-pinned (both floors raised) for the
+  reachability gain `735a0a6d` legitimately produced. (3) the nonrd-palette decode gate
+  bootstrapped with `--tune-content=screen` without declaring it to the port. Run
+  `33325340898` is green on all seven legs.
+
 - **Two decoder panics that libaom treats as corrupt-frame REJECTIONS, plus the
   two `debug_assert`s that hid the same failure in release builds
   (`harden/decoder-panic-surface`).** `av1_ss_size_lookup` has no valid chroma

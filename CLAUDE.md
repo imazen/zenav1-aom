@@ -214,7 +214,7 @@ it here in the same commit.**
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
-### KB-42 — CI red since `735a0a6d`: THREE independent roots, all localized and FIXED 2026-08-30 (`c80b40d1` + follow-up)
+### KB-42 — CI red since `735a0a6d`: THREE independent roots, all localized and FIXED 2026-08-30 — **CLOSED, run `33325340898` green on all 7 legs**
 - **The original entry's single-carrier premise was WRONG and is corrected here.**
   Reading the per-JOB conclusions (not the run conclusions) splits the redness up:
   run `33302025668` (`735a0a6d`, roots #3-#6) has **all four differential legs GREEN**
@@ -287,8 +287,22 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
   package's INTEGRATION byte gates never ran, and no landing ran the census gate at
   all. The documented gate list now names both (see "MANDATORY per-landing gate list" above and
   PARITY.md rule 6); `just gate-encode` runs them.
+- **VERIFIED GREEN.** `c80b40d1` (roots A + B) took CI from 23 failing tests to
+  exactly one — run `33324886960`: both `linux differential` legs and both `aarch64
+  differential` legs report `nonrd_estimate_arm_palette_round_trips_through_the_c_decoder`
+  and nothing else, and all three `portability` legs pass. `cb76cda9` (root C) closes
+  that one: **run `33325340898` is `completed success` on all seven legs** — linux
+  x86-64, linux forced-scalar, aarch64 default dispatch, aarch64 forced-scalar,
+  `windows-11-arm`, `macos-15-intel`, `i686-unknown-linux-gnu`.
+  Local verification on the same tree: `zenav1-aom-encode` + `zenav1-aom-bench` under
+  CI's own `--profile test-fast` **513 passed / 0 failed / 54 ignored**, and
+  **identical under `AOM_FORCE_SCALAR=1`**; `content_family_census` 4/4; and the KB-41
+  plane-dir census re-run end to end at **104/104 `screen=OK (+0)`** across all 14 dirs
+  with `unexplained: []` in every one (`~/tmp/kb42/kb41_census_run.log`).
 - **Do not close by excluding a test.** Per the header rule, only a landed fix
-  verified on `origin/main` closes this.
+  verified on `origin/main` closes this. Nothing here was closed by excluding,
+  ignoring or relaxing a test: the only pin that moved is the coverage census's, both
+  of whose floors RISE, and the named root explains the move.
 
 ### KB-1 — Decoder: recon divergence at base_qindex ≥ 249 (quantizer-62/-63) — REAL CORRUPTION, CI-quarantined
 - **Symptom:** decoded RECON diverges from the C oracle at `base_qindex >= 249` — the
