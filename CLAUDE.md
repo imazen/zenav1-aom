@@ -178,6 +178,7 @@ it here in the same commit.**
 | KB-27 / `MONO_S0_OPEN` | monochrome, base_qindex 96, speed 0; **size-independent** (64x64 through 720x720, SB-exact and partial alike, widened 2026-08-03) | its own localizer is in `s4cov_partial_sb_axis.rs` |
 | KB-P29, KB-13's 2 cpu3-cq63 cells | 2 palette 128<sup>2</sup> near-ties; 2 real-content cells | sibling-C RD dump (KB-3/KB-7 method) |
 | `DELTAQ_SPEED_OPEN` (KB-39 residual a, no gate — the delta-q gates are all speed 0) | `--deltaq-mode` 2/3 at `--cpu-used` >= 1, **SINGLE tile as well as multi**, content-dependent. Measured 2026-08-04 on `av1-1-b8-00-quantizer-00` crops: mode 2 diverges at 1x1 tiles at every speed 1..7 (192x192 cq32); mode 3 is clean 1..6 at 192x192 cq32 but diverges at 1x1 from speed 1 at 256x256, and at cq63 from speed 3. Delta-q rides the whole RD chain (per-SB rdmult + quantizer rows), so this is a *speed-feature* divergence conditioned on a non-flat qindex map, not a tile bug — the tile axis is byte-clean at speed 0 across 53 cells and the deltaq-OFF tile controls are clean at speeds 0/2/6 (15/15) | first-divergent-block on 256x256 cq32 `--cpu-used 1` mode 3, single tile (playbook §10); the small-frame single-tile shape makes it the cheapest RD-decision dump in the queue |
+| KB-41 residual (`kb41_screen_detected_defaults.rs`, on-demand planes) | screen-detected real content with palette+IntraBC ON, cpu 6/8: 85x128 cq57 (267 B, equal-length byte diff, recon first differs at luma (0,87)), 128x80 cq6 s6 -4 B, 1024x745 +6..-32 B, 1280x800 -2 kB, 1920x1080 -9..-20 kB | decode-side per-block syntax dump on both streams → first differing block → decision compare |
 | `PALETTE_MANY_COLORS_OPEN` (`kb37_nonrd_palette_search.rs`) | palette blocks with **more than `PALETTE_MAX_SIZE` distinct colours** (33..64 in a 16x16). SHARED `palette_search` machinery, not an arm: reproduces on the FULL-RD path at `--cpu-used` 0/2/6 with `nonrd_leaf_arms() == [0, 0]` (asserted inside the test). 48 of 75 cells in the 38..42-colour band; 1 of 9 in the shipped fine-colour set. Nothing had ever encoded such a block — `rd_close_palette.rs`'s content has <= 8 colours and takes the `colors == PALETTE_MIN_SIZE` / `max_n == colors` shortcuts | sibling-C per-candidate RD dump of `av1_rd_pick_palette_intra_sby` on 64x64 n40 cq40 at `--cpu-used 0` (the k-means + descending-order arms are what only this content reaches) |
 
 **Already closed, do not re-open from stale notes:** KB-10/KB-11's noise-cq63 speed-6/7 pairs
@@ -4370,6 +4371,33 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   3-SB-wide frame makes libaom clamp to a 3x3 grid, which the harness's uniform-spacing check rejects
   (*"uniform-spacing tile grid must be 2^log2_cols x 2^log2_rows, left: 9 right: 16"*) — a
   pre-existing, delta-q-independent limit, noted here because it is what bounds the grid list.
+
+### KB-41 — Encoder: the datagen arm's refused real-content cells are ALL screen-detected frames; harness mismatch (tools off vs libaom's ALLINTRA defaults on) CLOSED, the port's screen-tools search residual OPEN with tiny reproducers (2026-08-30)
+- **Found 2026-08-30** by zensim's byte-verified `aom-rs` datagen arm (zenmetrics
+  `sweep/encode.rs::encode_avif_aom_rs`: `c_encode_defaults` bootstrap + `port_encode`,
+  refuse on any payload mismatch) over the imazen-26 train renditions at `--cpu-used` 4/6/8 —
+  67 of the first 266 fleet cells refused (GitHub #14). The first read — "a 720p framesize
+  band" — was WRONG (playbook §10: never infer the mechanism from the delta's shape).
+- **ROOT of the refusals: content, not size.** `kb41_screen_detected_defaults.rs` (on-demand,
+  `ZENAV1_PLANES_DIR` = the exact u8 4:2:0 planes the arm fed both encoders) reads the
+  oracle stream's own `allow_screen_content_tools`: **30/30 refused cells have it set** —
+  web screenshots (1920x1080, 1280x800, 128x80), product shots on flat white (128x128,
+  85x128) AND a dark sunset photo (1024x745) the anti-aliasing-aware detector flags. The
+  arm drove `port_encode` with `ToggleKnobs::default()` (palette + IntraBC OFF) against
+  `c_encode_defaults` (libaom ALLINTRA: both ON) — the KB-30 "screen 0/42" mismatch in a
+  new coat. FIX (harness, zenmetrics `a90eb727`): mirror the header bit into
+  `ToggleKnobs{enable_palette, enable_intrabc}`.
+- **What the mirror closes and what it leaves (cpu 6/8, cq {6,32,57}):** 128x128 6/6 and
+  128x80 5/6 byte-identical; 85x128 1/6 (the other five: EQUAL payload length, different
+  bytes — first byte diff at 150..613, recon first diverges at luma (0,87)/(17,61)/(48,32)
+  per `ZENAV1_DECODE_BOTH=1`); 1024x745 +6/+8/-32 B; 1280x800 -2040/-1837/-3360 B;
+  1920x1080 -19,627/-10,369/-8,887 B (from +231,071/+114,148/+32,303 with tools off).
+  The residual is the port's palette/IntraBC search fidelity on real screen-detected
+  content — KB-15 / KB-P29 / `PALETTE_MANY_COLORS_OPEN` territory — with 85x128 cq57 cpu6
+  (267 B both sides) as the smallest reproducer.
+- **Next (T4 row):** decode-side per-block syntax dump on BOTH streams (the port decoder
+  parses every symbol; no libaom instrumentation needed) → first block whose mode /
+  palette / IntraBC / tx syntax differs → decision-level compare, KB-3/KB-7 method.
 
 ### KB-40 — Decoder: reported 12bpc inter divergence (GitHub #8) — NOT REPRODUCIBLE against the C oracle; the highbd inter envelope is now gated ✅ 2026-08-06
 
