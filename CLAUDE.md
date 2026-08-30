@@ -214,12 +214,13 @@ it here in the same commit.**
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
-### KB-42 — CI red since `735a0a6d`: TWO independent roots, both localized 2026-08-30 — the byte-gate half is FIXED, one screen-detector cell remains
+### KB-42 — CI red since `735a0a6d`: THREE independent roots, all localized and FIXED 2026-08-30 (`c80b40d1` + follow-up)
 - **The original entry's single-carrier premise was WRONG and is corrected here.**
-  Reading the per-JOB conclusions (not the run conclusions) splits the redness in two:
+  Reading the per-JOB conclusions (not the run conclusions) splits the redness up:
   run `33302025668` (`735a0a6d`, roots #3-#6) has **all four differential legs GREEN**
   and fails only the two `portability` legs; the 23 byte/RD gates start one commit
-  later. Two roots, not one.
+  later. Three roots, not one — and none of them is `var_tx.rs` or `partition_pick.rs`'s
+  tx-policy plumbing, the two the earlier read-only narrowing named.
 - **Root A — `content_family_census` (portability legs only), from `735a0a6d`. FIXED
   (re-pinned).** `every_pinned_family_is_still_reached` fired its CEILING half:
   `Screen+screen-knobs intrabc` **33.63 %** against a pinned `[18, 30)`. That is the
@@ -265,11 +266,22 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
   why the final header mode must NOT be used here. Result: `zenav1-aom-encode`
   **316 passed / 0 failed** (was 300/16); `encoder_gate_cdef_*_rd_close` and
   `encoder_gate_superres_*` green.
-- **STILL OPEN (1 test):** `nonrd_estimate_arm_palette_round_trips_through_the_c_decoder`
-  (`aom-bench/src/lib.rs:1914`) — the ported screen-content decision says `false`
-  where the oracle header says `true` on the 196x196 cell. This is a genuine port
-  gap that `38a92657` added the assertion for: `av1_determine_sc_tools_with_encoding`
-  (`encoder.c:3312`) is NOT ported. See the KB-42 continuation below / PARITY.md C3.
+- **Root C — `nonrd_estimate_arm_palette_round_trips_through_the_c_decoder`, from
+  `38a92657`. FIXED (the test lied to the port about its own config).** The cell
+  bootstraps with `AV1E_SET_TUNE_CONTENT = AOM_CONTENT_SCREEN`
+  (`armed_tools_decode_gate.rs:526,540`) but drove `port_encode_with` with knobs that
+  never declared `tune_content_screen`, so root #13's ported
+  `av1_set_screen_content_options` fell through to the
+  `use_nonrd_pick_mode && !hybrid_intra_pickmode` arm (`encoder.c:2466-2470`, allintra
+  speed 9) and decided screen tools OFF where C had taken the AOM_CONTENT_SCREEN arm
+  at `:2449-2455` — which is the arm ORDER the test's own doc comment says it exists
+  to check. `38a92657` added both the knob and the assertion (`aom-bench/src/lib.rs:1914`)
+  and that assertion names this as one of its two candidate causes; it was the right
+  one. Declaring `tune_content_screen: true` makes it 4/4. The assertion's OTHER
+  candidate — `av1_determine_sc_tools_with_encoding` (`encoder.c:3312` /
+  `encoder_utils.c:1214`) being unported — is still genuinely open for the tiny-cell
+  class (PARITY.md C3, reproducer `59x128_cq44_s4` / `59x128_cq50_s6`); it is NOT
+  what this test hit.
 - **Process hole (the reason this cost six commits).** Roots #3-#6, #7-#13, #14-#17
   and #18-#21 all ran `-p zenav1-aom-encode --lib` plus named diff tests, so the
   package's INTEGRATION byte gates never ran, and no landing ran the census gate at

@@ -530,6 +530,14 @@ fn nonrd_estimate_arm_palette_round_trips_through_the_c_decoder() {
 
     let knobs = ToggleKnobs {
         enable_palette: true,
+        // KB-42: the bootstrap below passes `AV1E_SET_TUNE_CONTENT =
+        // AOM_CONTENT_SCREEN`, so the port must take the SAME arm of
+        // `av1_set_screen_content_options` the C encoder took
+        // (encoder.c:2449-2455) — which is the whole point of this test, per its
+        // doc comment. Without the declaration the port falls through to the
+        // `use_nonrd_pick_mode && !hybrid_intra_pickmode` arm (:2466-2470, allintra
+        // speed 9) and decides screen tools OFF where the oracle header says ON.
+        tune_content_screen: true,
         ..ToggleKnobs::default()
     };
     let mut ran = 0usize;
