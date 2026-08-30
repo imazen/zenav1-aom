@@ -2026,7 +2026,7 @@ fn rd_pick_4partition(
     best_rdc: &PartRdStats,
     visits: &mut Vec<LeafVisit>,
     last_source_variance: &mut u32,
-) -> (PartRdStats, Option<Box<[LeafWinner; 4]>>) {
+) -> (PartRdStats, Option<Box<[Option<LeafWinner>; 4]>>) {
     // set_4_part_ctx_and_rdcost (:3898-3916).
     let mut sum_rdc = PartRdStats::init();
     sum_rdc.rate = partition_cost[partition_type];
@@ -2041,14 +2041,13 @@ fn rd_pick_4partition(
         } else {
             (mi_row, mi_col + (i as i32) * quarter_step)
         };
-        debug_assert!(
-            if is_horz4 {
-                r < env.mi_rows
-            } else {
-                c < env.mi_cols
-            },
-            "caller must only invoke rd_pick_4partition when all 4 strips fit (module docs)"
-        );
+        // `if (i > 0 && mi_pos[i][part4_idx] >= mi_pos_check[part4_idx]) break;`
+        // (:3948): strips past the frame edge are simply not coded — the
+        // partition still competes with however many strips fit. Strip 0
+        // always fits (the block's own origin is in-frame).
+        if i > 0 && if is_horz4 { r >= env.mi_rows } else { c >= env.mi_cols } {
+            break;
+        }
         let (_rd_i, winner, source_variance) = rd_pick_rect_partition(
             env,
             cfg,
@@ -2113,9 +2112,9 @@ fn rd_pick_4partition(
     if sum_rdc.rdcost >= best_rdc.rdcost {
         return (PartRdStats::invalid(), None);
     }
-    let arr: [LeafWinner; 4] =
-        w.map(|x| x.expect("interior 4-way envelope: all 4 subblocks present on a win"));
-    (sum_rdc, Some(Box::new(arr)))
+    // Absent slots (frame-edge strips) stay `None`; every consumer walks the
+    // strips with the same frame-bound break and never reads them.
+    (sum_rdc, Some(Box::new(w)))
 }
 
 /// `part_sf.ext_partition_eval_thresh` resolved for the **allintra KEY**
@@ -3745,23 +3744,19 @@ pub fn rd_pick_partition_real(
     let prune_part4_search = if cfg.allintra && cfg.speed >= 6 { 3 } else { 2 };
     let width_ok = BLK_1D[bsize] >= (BLK_1D[cfg.min_partition_size] << prune_part4_search);
     let mut part4_allowed = [false, false]; // [HORZ4, VERT4]
-    // Interior-envelope simplification (module docs on rd_pick_4partition):
-    // this port only attempts a 4-way type when ALL 4 quarter-strips are
-    // guaranteed in-frame, not just the half-block `has_rows`/`has_cols`
-    // extent the C itself checks -- the C's own per-i frame-bound trim
-    // (coding fewer than 4 strips at a frame edge) is out of scope, same
-    // boundary as the existing interior-only HORZ/VERT scope.
-    let quarter_step_mi = (MI_SIZE_WIDE_B[bsize] / 4) as i32;
-    let all_4_rows_fit = mi_row + 3 * quarter_step_mi < env.mi_rows;
-    let all_4_cols_fit = mi_col + 3 * quarter_step_mi < env.mi_cols;
+    // Frame-edge 4-way (KB-41 root #11, cell 85x128 cq19 s4): the C gate is
+    // ONLY `av1_blk_has_rows_and_cols` (partition_search.c:4148, the
+    // half-block extent, folded into `partition4_allowed_base` above) — a
+    // HORZ_4/VERT_4 whose 3rd/4th strip falls past the frame edge is still
+    // evaluated, coding fewer than 4 strips (`rd_pick_4partition` :3948 breaks
+    // at the first out-of-frame strip; the writer/decoder loops break the same
+    // way). The earlier all-4-strips-in-frame envelope guard is gone.
     if partition4_allowed_base && width_ok {
         let horz4_subsize = get_partition_subsize(bsize, 8) as usize; // PARTITION_HORZ_4
         let vert4_subsize = get_partition_subsize(bsize, 9) as usize; // PARTITION_VERT_4
         part4_allowed[0] = partition_rect_allowed[0]
-            && all_4_rows_fit
             && get_plane_block_size(horz4_subsize, env.ss_x, env.ss_y) != 255;
         part4_allowed[1] = partition_rect_allowed[1]
-            && all_4_cols_fit
             && get_plane_block_size(vert4_subsize, env.ss_x, env.ss_y) != 255;
 
         // av1_ml_prune_4_partition (LIVE at speed 0 -- module docs on
@@ -3840,14 +3835,8 @@ pub fn rd_pick_partition_real(
                 part4_allowed[0],
                 part4_allowed[1],
             );
-            // Re-AND the interior-envelope frame-fit guard (all 4 strips
-            // in-frame — see the module docs on rd_pick_4partition's edge
-            // scope): inert for interior blocks; keeps a level-3 OVERWRITE
-            // from resurrecting a 4-way at a frame-edge node this port's
-            // 4-way walk does not model. (C itself codes fewer strips at an
-            // edge; that whole shape is out of the current envelope.)
-            part4_allowed[0] = h4 && all_4_rows_fit;
-            part4_allowed[1] = v4 && all_4_cols_fit;
+            part4_allowed[0] = h4;
+            part4_allowed[1] = v4;
         }
 
         // prune_4_partition_using_split_info (partition_search.c:4023):
@@ -3879,7 +3868,7 @@ pub fn rd_pick_partition_real(
     }
 
     if !terminate_partition_search {
-        let quarter_step = quarter_step_mi;
+        let quarter_step = (MI_SIZE_WIDE_B[bsize] / 4) as i32;
         #[allow(clippy::needless_range_loop)]
         // i selects HORZ4(0)/VERT4(1) throughout, not a simple iterate
         for i in 0..2usize {
@@ -4094,6 +4083,9 @@ pub(crate) fn stamp_grid_from_tree(
                 if i > 0 && this_mi_row >= mi_rows {
                     break;
                 }
+                // A strip past the frame edge is absent (`rd_pick_4partition` broke
+                // out before it, C partition_search.c:3948); every in-frame strip won.
+                let w = w.as_ref().expect("in-frame 4-way strip carries a winner");
                 grid.stamp(
                     this_mi_row,
                     mi_col,
@@ -4118,6 +4110,9 @@ pub(crate) fn stamp_grid_from_tree(
                 if i > 0 && this_mi_col >= mi_cols {
                     break;
                 }
+                // A strip past the frame edge is absent (`rd_pick_4partition` broke
+                // out before it, C partition_search.c:3948); every in-frame strip won.
+                let w = w.as_ref().expect("in-frame 4-way strip carries a winner");
                 grid.stamp(
                     mi_row,
                     this_mi_col,

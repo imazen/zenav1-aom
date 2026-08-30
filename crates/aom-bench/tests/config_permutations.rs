@@ -3955,8 +3955,11 @@ fn speed_class_inventory_is_pinned() {
             vec![4],
             vec![5],
             vec![6],
-            vec![7, 9],
-            vec![8]
+            vec![7],
+            vec![8],
+            // KB-41 root #10 (2026-08-30): `rt_sf.use_nonrd_pick_mode` (C :579,
+            // speed >= 8) is modelled now, so 9 no longer collapses onto 7.
+            vec![9]
         ],
         "the ALLINTRA speed-feature class partition moved — a speed step \
          started (or stopped) changing the resolved SpeedFeatures. Re-read \
@@ -4186,14 +4189,18 @@ fn speed_axis_teeth_are_real() {
         let b = aom_encode::speed_features::SpeedFeatures::set_allintra(speed, false, false);
         assert_ne!(a, b, "cpu-used={} and {speed} resolve identically", speed - 1);
     }
-    assert_eq!(
-        aom_encode::speed_features::SpeedFeatures::set_allintra(7, false, false),
-        aom_encode::speed_features::SpeedFeatures::set_allintra(9, false, false),
-        "cpu-used 7 and 9 now resolve DIFFERENTLY — the pinned {{7,9}} class \
-         split; re-pin speed_class_inventory_is_pinned. (They are equal only \
-         because every OTHER speed-8/9 setting is modelled at its consumer \
-         rather than in this struct — see SPEED_SF_EQUALITY_IS_NOT_A_COLLAPSE.)"
+    // KB-41 root #10 (2026-08-30): `rt_sf.use_nonrd_pick_mode` (C :579, speed
+    // >= 8) is in the struct now — it gates the frame-wide IntraBC search
+    // (rdopt.c:3432-3434) — so 7 and 9 no longer resolve identically; the old
+    // {7, 9} class is gone from speed_class_inventory_is_pinned. Pin the
+    // field that split them so the split cannot rot into a silent collapse.
+    let s7 = aom_encode::speed_features::SpeedFeatures::set_allintra(7, false, false);
+    let s9 = aom_encode::speed_features::SpeedFeatures::set_allintra(9, false, false);
+    assert!(
+        !s7.use_nonrd_pick_mode && s9.use_nonrd_pick_mode,
+        "rt_sf.use_nonrd_pick_mode must be 0 at cpu-used 7 and 1 at 9 (speed_features.c:579)"
     );
+    assert_ne!(s7, s9, "cpu-used 7 and 9 collapsed back onto one SpeedFeatures class");
 }
 
 /// BUDGET ACCOUNTING for the speed axis — no encoding, just the arithmetic that

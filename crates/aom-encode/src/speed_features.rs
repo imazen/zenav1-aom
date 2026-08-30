@@ -168,6 +168,12 @@ pub struct MvSpeedFeatures {
     /// SADs skip every other row for blocks with `bh >= 16` (mcomp.c:127),
     /// with the quality re-check of `av1_full_pixel_search` (:1847).
     pub use_downsampled_sad: i32,
+    /// `mv_sf.use_intrabc` — 1 (`init_mv_sf`, speed_features.c:2353). The
+    /// allintra ladder never clears it (the `= 0` at :1303 is the GOOD-quality
+    /// speed ladder; `= 1` at :1524 is the IQ/SSIMULACRA2 tuning override).
+    /// Gate #3 of `rd_pick_intrabc_mode_sb` (rdopt.c:3433): no DV search
+    /// anywhere in the frame when clear.
+    pub use_intrabc: bool,
 }
 
 impl MvSpeedFeatures {
@@ -184,6 +190,7 @@ impl MvSpeedFeatures {
             exhaustive_searches_thresh: if allow_screen_content_tools { 1 << 20 } else { 1 << 25 },
             mesh_speed: speed.clamp(0, 5) as usize,
             use_downsampled_sad: 0,
+            use_intrabc: true,
         }
     }
 }
@@ -319,6 +326,30 @@ pub struct SpeedFeatures {
     /// unmodelled, and the `var_part` module doc asserted it "is 0 on this
     /// path" from an envelope that stopped at 640 px.
     pub force_large_partition_blocks_intra: i32,
+
+    /// `rt_sf.use_nonrd_pick_mode` — default 0 (`init_rt_sf`,
+    /// speed_features.c:2554); allintra speed>=8 -> 1 (:579). The nonrd
+    /// PICKMODE flip itself is modelled at its consumers (`nonrd_pickmode` /
+    /// `pack`), but the flag has one more byte-live consumer of its own:
+    /// `rd_pick_intrabc_mode_sb` (rdopt.c:3432-3434) returns INT64_MAX when it
+    /// is set — even for the small blocks `hybrid_intra_mode_search` still
+    /// routes through the RD intra pick — so from speed 8 up NO block is ever
+    /// IntraBC-searched, `cpi->intrabc_used` stays 0, and the frame header's
+    /// `allow_intrabc` (initially the detector's 1) is flipped back to 0 after
+    /// the tiles (encodeframe.c:2443). KB-41 root #10 (1920x1080 cq32 s8: the
+    /// port searched + used IntraBC in 6857 blocks, the oracle in none).
+    pub use_nonrd_pick_mode: bool,
+
+    /// `rt_sf.hybrid_intra_pickmode` — default 0 (`init_rt_sf`,
+    /// speed_features.c:2564); allintra speed>=8 -> 2 (:578), speed>=9 -> 0
+    /// (:597). The nonrd walk's small-block RD/nonrd routing is modelled at
+    /// its consumers; the flag's frame-level consumer is
+    /// `av1_set_screen_content_options` (encoder.c:2466-2470): with
+    /// `use_nonrd_pick_mode && !hybrid_intra_pickmode` (= allintra speed 9)
+    /// screen-content DETECTION is skipped outright —
+    /// `allow_screen_content_tools = allow_intrabc = 0` before any detector
+    /// runs. KB-41 root #13 (kb35's speed-9 control).
+    pub hybrid_intra_pickmode: i32,
 
     // ---- intra_sf --------------------------------------------------------
     /// `intra_sf.intra_pruning_with_hog` — allintra base 1
@@ -589,6 +620,10 @@ pub struct SpeedFeatures {
     pub allow_screen_content_tools: bool,
     /// The intrabc-facing `mv_sf` fields (see [`MvSpeedFeatures`]).
     pub mv_sf: MvSpeedFeatures,
+    /// `hl_sf.screen_detection_mode2_fast_detection` — default 0 (init_hl_sf:2246);
+    /// allintra speed >= 3 -> 1 (:442). The anti-aliasing-aware screen detector's
+    /// checkerboard-skip mode (`screen_detect`), KB-41 root #7.
+    pub screen_detection_mode2_fast_detection: bool,
 }
 
 impl SpeedFeatures {
@@ -606,6 +641,7 @@ impl SpeedFeatures {
         //      over the init_*_sf defaults. ----
         let mut sf = SpeedFeatures {
             mv_sf: MvSpeedFeatures::allintra_base(speed, allow_screen_content_tools),
+            screen_detection_mode2_fast_detection: false, // init_hl_sf:2246
             // part_sf
             less_rectangular_check_level: 1, // allintra base (speed_features.c:352)
             intra_cnn_based_part_prune_level: 0, // init_part_sf:2311
@@ -623,6 +659,8 @@ impl SpeedFeatures {
             // rt_sf
             var_part_split_threshold_shift: 5, // init_rt_sf:2085
             force_large_partition_blocks_intra: 0, // init_rt_sf:2579
+            use_nonrd_pick_mode: false, // init_rt_sf:2554
+            hybrid_intra_pickmode: 0, // init_rt_sf:2564
             // intra_sf
             intra_pruning_with_hog: 1, // allintra base (speed_features.c:360)
             chroma_intra_pruning_with_hog: 0, // init_intra_sf default (off)
@@ -792,6 +830,8 @@ impl SpeedFeatures {
         if speed >= 3 {
             // mv_sf (:449) — LIVE on screen-detected intrabc frames (KB-41).
             sf.mv_sf.search_method = MvSearchMethod::Diamond;
+            // hl_sf (:442) — the screen detector's fast (checkerboard) mode.
+            sf.screen_detection_mode2_fast_detection = true;
             // part_sf (framesize-independent, :444)
             sf.less_rectangular_check_level = 2;
             // part_sf (framesize-dependent, :271) — see the level-3 note above.
@@ -1100,9 +1140,12 @@ impl SpeedFeatures {
         //      0 at speed 9. That is why the two speeds have DIFFERENT
         //      >=720p behaviour on the same frame (KB-32).
         if speed >= 8 {
+            sf.hybrid_intra_pickmode = 2; // :578
+            sf.use_nonrd_pick_mode = true; // :579
             sf.var_part_split_threshold_shift = 8; // :581
         }
         if speed >= 9 {
+            sf.hybrid_intra_pickmode = 0; // :597
             // "intentionally lower than speed 8's" (the comment at :598-600).
             sf.var_part_split_threshold_shift = 7; // :601
         }
@@ -2073,6 +2116,8 @@ mod tests {
             let mut expect = base;
             expect.default_min_partition_size = 3;
             expect.force_large_partition_blocks_intra = i32::from(speed >= 8);
+            expect.use_nonrd_pick_mode = speed >= 8;
+            expect.hybrid_intra_pickmode = if speed == 8 { 2 } else { 0 };
             expect.mv_sf.use_downsampled_sad = 2; // >= 720p (:203-207), KB-41
             assert_eq!(sf, expect, "speed {speed}: the 4k arm moved another field");
         }
@@ -2124,6 +2169,8 @@ mod tests {
             let mut expect = base;
             expect.default_min_partition_size = want;
             expect.force_large_partition_blocks_intra = i32::from(speed >= 8);
+            expect.use_nonrd_pick_mode = speed >= 8;
+            expect.hybrid_intra_pickmode = if speed == 8 { 2 } else { 0 };
             expect.mv_sf.use_downsampled_sad = 2; // >= 720p (:203-207), KB-41
             assert_eq!(sf, expect, "speed {speed}: the 1080p arm moved another field");
         }

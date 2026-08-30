@@ -83,7 +83,7 @@ fn kb4_txb2_real_c_leaf_probe() {
 
     // REAL frame costs — identical to the encode (same kf@qindex32).
     let kf = KfFrameContext::default_for_qindex(qindex as i32);
-    let real = derive_real_costs(&kf, true);
+    let real = derive_real_costs(&kf, true, None);
     let ct = real.coeff_costs_y.tables(tx_size);
     let intra_cdf = repack_intra_ext_tx_cdf(&kf);
     let inter_cdf = vec![0u16; 4 * 4 * 17];

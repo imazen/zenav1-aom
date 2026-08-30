@@ -560,7 +560,7 @@ pub struct ToggleKnobs {
     /// `--coeff-cost-upd-freq` / `--mode-cost-upd-freq` (default 0 =
     /// COST_UPD_SB; 1 SBROW / 2 TILE / 3 OFF).
     /// HANDOFF: C ctrls emitted below; the PORT-side gate is NOT wired yet —
-    /// pack.rs's per-SB `derive_real_costs(kf, ..)` rebuild (the sb_real
+    /// pack.rs's per-SB `derive_real_costs(kf, .., None)` rebuild (the sb_real
     /// block) must split per table set and gate: SB = rebuild every SB
     /// (current behavior); SBROW = rebuild only at `c == 0` in pack_tile's
     /// SB loop (skip_cost_update's mi_col-at-tile-start arm); TILE/OFF =
@@ -610,6 +610,12 @@ pub struct ToggleKnobs {
     /// whether the port RUNS the DV search (so `false` gives the all-intra
     /// witness against `true`). Default OFF.
     pub enable_intrabc: bool,
+    /// `--tune-content=screen` (`AV1E_SET_TUNE_CONTENT = AOM_CONTENT_SCREEN`):
+    /// `av1_set_screen_content_options`' second arm (encoder.c:2449-2455) —
+    /// screen tools + the search-time `allow_intrabc` ON without running the
+    /// detector. The port cannot read this from the stream (the header only
+    /// carries the outcome), so the cell declares it. KB-41 root #13.
+    pub tune_content_screen: bool,
     /// `--enable-qm=1 --qm-min=<min> --qm-max=<max>` (quantization matrices).
     /// `Some((qm_min, qm_max))` makes the port derive the frame
     /// `qmatrix_level_{y,u,v}` per `av1_set_quantizer`'s allintra arm
@@ -656,6 +662,7 @@ impl Default for ToggleKnobs {
             disable_tx_stats_prune: false,
             delta_lf_mode: false,
             enable_intrabc: false,
+            tune_content_screen: false,
             qm: None,
         }
     }
@@ -1477,7 +1484,7 @@ impl EncodeCell {
         };
 
         let kf_write = KfFrameContext::default_for_qindex(qindex);
-        let real = derive_real_costs(&kf_write, knobs.enable_filter_intra);
+        let real = derive_real_costs(&kf_write, knobs.enable_filter_intra, None);
         let rdmult = av1_compute_rd_mult_based_on_qindex(
             bd,
             FrameUpdateType::Kf,
@@ -1868,7 +1875,70 @@ impl EncodeCell {
         // Witness note: when the header codes allow_intrabc but the knob is off
         // (PORT-off anti-vacuous case), the search doesn't run yet the pack still
         // writes use_intrabc=0 flags (via `PackCfg::allow_intrabc`).
-        let ibc_hash = (p.allow_intrabc && knobs.enable_intrabc).then(|| {
+        // KB-41 root #7: C decides `allow_intrabc` BEFORE the search from the
+        // anti-aliasing-aware screen census (encoder.c:2416) and only FLIPS the
+        // header bit to 0 after the frame when no block used IntraBC
+        // (encodeframe.c:2442) — the search still paid `intrabc_cost[0]` on every
+        // intra candidate and ran the DV search. The oracle header carries that
+        // FINAL bit, so the search-time decision is re-derived by the ported
+        // detector; its screen-tools half must agree with the header (a
+        // differential gate on the detector port), and a header that codes
+        // allow_intrabc=1 implies the search-time decision was 1.
+        // av1_set_screen_content_options (encoder.c:2440-2480): the shim's
+        // screen encodes set only the palette/intrabc knobs (no
+        // `--tune-content=screen`, seq force = SELECT), so the decision is the
+        // detector's — except under `use_nonrd_pick_mode && !hybrid_intra_pickmode`
+        // (allintra speed 9), where detection is skipped and both flags are 0
+        // (KB-41 root #13; kb35's speed-9 control).
+        let sct = if s.force_screen_content_tools != 2 {
+            // seq-forced arm (:2443-2447): the forced bit is the decision.
+            aom_encode::screen_detect::ScreenContentDecision::forced(
+                s.force_screen_content_tools != 0,
+            )
+        } else if knobs.tune_content_screen {
+            // `--tune-content=screen` arm (:2449-2455).
+            aom_encode::screen_detect::ScreenContentDecision::tuned_screen()
+        } else if sf.use_nonrd_pick_mode && sf.hybrid_intra_pickmode == 0 {
+            aom_encode::screen_detect::ScreenContentDecision::detection_disabled()
+        } else {
+            aom_encode::screen_detect::estimate_screen_content_antialiasing_aware(
+                &src_y_strided,
+                0,
+                stride,
+                w,
+                h,
+                bd as u8,
+                sf.screen_detection_mode2_fast_detection,
+            )
+        };
+        assert_eq!(
+            sct.allow_screen_content_tools, p.allow_screen_content_tools,
+            "{w}x{h}: the ported screen-content decision disagrees with the oracle header's \
+             allow_screen_content_tools (palette={} intrabc={} photo={} fast={}). If the \
+             detector said 0 and the header says 1, the remaining C arm is \
+             av1_determine_sc_tools_with_encoding's two-pass trial encode (encoder.c:3312, \
+             live on allintra below speed 8) — NOT ported; or the cell was encoded with \
+             --tune-content=screen without declaring `ToggleKnobs::tune_content_screen`",
+            sct.count_palette, sct.count_intrabc, sct.count_photo,
+            sf.screen_detection_mode2_fast_detection
+        );
+        assert!(
+            !p.allow_intrabc || sct.allow_intrabc,
+            "{w}x{h}: the oracle header codes allow_intrabc=1 but the ported detector's \
+             search-time decision is 0 (palette={} intrabc={} photo={})",
+            sct.count_palette, sct.count_intrabc, sct.count_photo
+        );
+        let search_allow_intrabc = sct.allow_intrabc;
+        // rd_pick_intrabc_mode_sb's frame-wide gates (rdopt.c:3432-3434):
+        // `!av1_allow_intrabc || !enable_intrabc || !mv_sf.use_intrabc ||
+        // rt_sf.use_nonrd_pick_mode` -> no DV search for any block. The search
+        // flag stays `search_allow_intrabc` (the search-ctx CDF still adapts,
+        // root #8); only the search itself is off. KB-41 root #10.
+        let run_intrabc_search = search_allow_intrabc
+            && knobs.enable_intrabc
+            && sf.mv_sf.use_intrabc
+            && !sf.use_nonrd_pick_mode;
+        let ibc_hash = run_intrabc_search.then(|| {
             aom_encode::intrabc_search::build_intrabc_hash_table(
                 &src_y_strided,
                 0,
@@ -1992,6 +2062,11 @@ impl EncodeCell {
             },
             allow_screen_content_tools: p.allow_screen_content_tools,
             allow_intrabc: p.allow_intrabc,
+            search_allow_intrabc,
+            // KB-41 root #12: update_stats' tx-size gate is the SEARCH-time
+            // DEFAULT_EVAL tx mode (rdopt_utils.h:494), not the final header.
+            search_tx_mode_is_select: !coded_lossless
+                && (knobs.enable_tx_size_search || sf.use_nonrd_pick_mode),
         };
 
         let mut recon_y = src_y_strided.clone();
@@ -2009,6 +2084,7 @@ impl EncodeCell {
         // loop-filter grid below (which indexes trees by FRAME SB raster) is
         // tile-layout-independent.
         let mut frame_trees: Vec<Option<SbTree>> = vec![None; (n_sb_x * n_sb_y) as usize];
+        let mut port_intrabc_used = false;
         for (t, &(mi_row_start, mi_col_start, mi_row_end, mi_col_end, n_sb_rows, n_sb_cols)) in
             tile_grid.iter().enumerate()
         {
@@ -2034,6 +2110,7 @@ impl EncodeCell {
                 sb_mi,
                 sb_block,
             );
+            port_intrabc_used |= trees.iter().any(SbTree::any_intrabc);
             assert_eq!(
                 trees.len(),
                 (n_sb_rows * n_sb_cols) as usize,
@@ -2047,6 +2124,19 @@ impl EncodeCell {
                 frame_trees[(sb_r * n_sb_x + sb_c) as usize] = Some(tree);
             }
             tile_payloads.push(enc.done().to_vec());
+        }
+        // KB-41 root #7 (the other direction): C writes allow_intrabc=1 only if a
+        // block used IntraBC. If the port's search chose IntraBC where the oracle's
+        // did not (or vice versa) the streams cannot match — fail loud with the
+        // actionable half instead of a bare byte mismatch. Only meaningful when the
+        // port actually searched IntraBC (the PORT-off witness leaves it off).
+        if knobs.enable_intrabc && search_allow_intrabc {
+            assert_eq!(
+                port_intrabc_used, p.allow_intrabc,
+                "{w}x{h}: IntraBC usage differs — port used it: {port_intrabc_used}, \
+                 oracle header allow_intrabc: {}",
+                p.allow_intrabc
+            );
         }
         let trees: Vec<SbTree> = frame_trees
             .into_iter()
@@ -2656,7 +2746,7 @@ impl MultiFrameEncodeCell {
         let rows_v = set_q_index(&quants, &deq, qindex as usize, 2);
         let mut kf_write = KfFrameContext::default_for_qindex(qindex);
         let enable_filter_intra = r.enable_filter_intra;
-        let frame_real = derive_real_costs(&kf_write, enable_filter_intra);
+        let frame_real = derive_real_costs(&kf_write, enable_filter_intra, None);
         let rdmult = av1_compute_rd_mult_based_on_qindex(
             bd,
             FrameUpdateType::Lf,
@@ -2776,6 +2866,8 @@ impl MultiFrameEncodeCell {
             delta_q_res: 0,
             allow_screen_content_tools: false,
             allow_intrabc: false,
+            search_allow_intrabc: false,
+            search_tx_mode_is_select: false,
         };
 
         let mut recon_y = src_y_strided.clone();

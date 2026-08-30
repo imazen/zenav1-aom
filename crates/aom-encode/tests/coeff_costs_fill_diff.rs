@@ -36,7 +36,7 @@ fn fill_coeff_costs_matches_real_c() {
     c::ref_init();
     for &qindex in &[12i32, 40, 100, 128, 200, 255] {
         let kf = KfFrameContext::default_for_qindex(qindex);
-        let real = derive_real_costs(&kf, true);
+        let real = derive_real_costs(&kf, true, None);
         for (plane, set) in [
             (0usize, &real.coeff_costs_y),
             (1usize, &real.coeff_costs_uv),

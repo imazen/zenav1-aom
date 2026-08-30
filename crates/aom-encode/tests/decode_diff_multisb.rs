@@ -16,7 +16,7 @@
 //! the `INTERNAL_COST_UPD_SB` per-superblock mode-cost update that C applies at
 //! every SB, so on adapted later superblocks the RD rate for the directional
 //! modes was over-charged and DC won a near-tie it should have lost. Fixed by a
-//! per-SB `derive_real_costs(kf, ..)` in `pack_tile` (which now re-derives the
+//! per-SB `derive_real_costs(kf, .., None)` in `pack_tile` (which now re-derives the
 //! coeff AND mode tables together); all 16 multi-SB cells byte-match.
 //!
 //! DIAGNOSTIC (not a hard byte-match gate -- that role is the scale gate's): it
@@ -337,7 +337,7 @@ fn localize(w: usize, h: usize, cq_level: i32, content: impl Fn(usize, usize) ->
     let rows_v = set_q_index(&quants, &deq, qindex as usize, 2);
 
     let mut kf_write = KfFrameContext::default_for_qindex(qindex);
-    let real = derive_real_costs(&kf_write, s.enable_filter_intra);
+    let real = derive_real_costs(&kf_write, s.enable_filter_intra, None);
 
     let allintra = usage == 2;
     let rdmult = av1_compute_rd_mult_based_on_qindex(
@@ -451,6 +451,8 @@ fn localize(w: usize, h: usize, cq_level: i32, content: impl Fn(usize, usize) ->
         delta_q_res: 0,
         allow_screen_content_tools: p.allow_screen_content_tools,
         allow_intrabc: false,
+        search_allow_intrabc: false,
+        search_tx_mode_is_select: false,
     };
 
     let mut recon_y = src_y_strided.clone();

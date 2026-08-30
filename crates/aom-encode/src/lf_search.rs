@@ -709,6 +709,9 @@ fn stamp_lf_tree(
                 if i > 0 && this_mi_row >= mi_rows {
                     break;
                 }
+                // A strip past the frame edge is absent (`rd_pick_4partition` broke
+                // out before it, C partition_search.c:3948); every in-frame strip won.
+                let w = w.as_ref().expect("in-frame 4-way strip carries a winner");
                 stamp_lf(mi, stride, this_mi_row, mi_col, sub, w, mi_rows, mi_cols);
             }
         }
@@ -721,6 +724,9 @@ fn stamp_lf_tree(
                 if i > 0 && this_mi_col >= mi_cols {
                     break;
                 }
+                // A strip past the frame edge is absent (`rd_pick_4partition` broke
+                // out before it, C partition_search.c:3948); every in-frame strip won.
+                let w = w.as_ref().expect("in-frame 4-way strip carries a winner");
                 stamp_lf(mi, stride, mi_row, this_mi_col, sub, w, mi_rows, mi_cols);
             }
         }

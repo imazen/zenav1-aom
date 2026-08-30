@@ -546,7 +546,7 @@ fn attempt_case_content_uv_sep(
     let rows_v = set_q_index(&quants, &deq, qindex as usize, 2);
 
     let mut kf_write = KfFrameContext::default_for_qindex(qindex);
-    let real = derive_real_costs(&kf_write, s.enable_filter_intra);
+    let real = derive_real_costs(&kf_write, s.enable_filter_intra, None);
 
     let rdmult = av1_compute_rd_mult_based_on_qindex(
         bd,
@@ -724,6 +724,8 @@ fn attempt_case_content_uv_sep(
         delta_q_res: 0,
         allow_screen_content_tools: p.allow_screen_content_tools,
         allow_intrabc: false,
+        search_allow_intrabc: false,
+        search_tx_mode_is_select: false,
     };
 
     let mut recon_y = src_y_strided.clone();
@@ -1665,7 +1667,7 @@ fn encoder_gate_e2e_nonzero_lf_chroma_sweep() {
 /// libaom re-derives BOTH the coefficient cost tables (`av1_fill_coeff_costs`)
 /// AND the mode-rate tables (`av1_fill_mode_rates`) from the adapting tile CDF
 /// at the start of every SB; the port now does the same via a per-SB
-/// `derive_real_costs(kf, ..)` in `pack_tile`. On the later superblocks of
+/// `derive_real_costs(kf, .., None)` in `pack_tile`. On the later superblocks of
 /// steep content -- whose CDFs have adapted enough to move the tables -- the
 /// stale frame-init costs had flipped near-tie coefficient (code-vs-skip) and
 /// intra-mode (DC vs directional/PAETH) RD decisions; the per-SB update tracks
@@ -1701,7 +1703,7 @@ fn encoder_gate_e2e_multi_sb_scale() {
     // `INTERNAL_COST_UPD_SB` per-superblock cost update was ported for BOTH the
     // coefficient tables (`av1_fill_coeff_costs`) AND the mode-rate tables
     // (`av1_fill_mode_rates`) -- see `pack_tile`'s per-SB `derive_real_costs(kf,
-    // ..)` and `decode_diff_multisb.rs`. On steep diagonal/gradient content the
+    // .., None)` and `decode_diff_multisb.rs`. On steep diagonal/gradient content the
     // stale frame-init tables had flipped near-tie coefficient (code-vs-skip) and
     // intra-mode (DC vs directional/PAETH) decisions on the later superblocks,
     // whose adapting CDFs the per-SB update tracks.

@@ -162,6 +162,27 @@ pub struct PackCfg {
     /// codes a `use_intrabc` flag (and its DV when set), exactly as the decoder
     /// reads it. MUST equal the value the real frame header carries.
     pub allow_intrabc: bool,
+    /// The SEARCH-time `allow_intrabc` (the screen detector's decision,
+    /// `screen_detect`). KB-41 root #8: C's `update_stats` adapts
+    /// `fc->intrabc_cdf` for every block of the encode pass whenever
+    /// `av1_allow_intrabc(cm)` held DURING the search — and the per-SB cost
+    /// refresh reads that adapted tile ctx — even when the frame header is
+    /// later flipped to 0 (no block used IntraBC) and the bitstream writer
+    /// never codes the flag. So when `allow_intrabc` (final) is false but this
+    /// is true, the pack adapts `kf.intrabc` with the `use_intrabc = 0` symbol
+    /// it did NOT write, keeping the search costs on C's trajectory
+    /// (`intrabc_cost[0]` 51 → 9 by the second SB row on 128x128 cq19 cpu4).
+    pub search_allow_intrabc: bool,
+    /// KB-41 root #12: the SEARCH-time `tx_mode_search_type == TX_MODE_SELECT`
+    /// gate of `update_stats`' tx-size adaptation (partition_search.c:510) —
+    /// `select_tx_mode(tx_size_search_methods[level][DEFAULT_EVAL])`:
+    /// `!coded_lossless && (enable_tx_size_search || rt_sf.use_nonrd_pick_mode)`
+    /// (level 3 = USE_LARGESTALL only under `--enable-tx-size-search=0` on a
+    /// non-nonrd frame, speed_features.c:2726-2729). Independent of
+    /// `tx_mode_is_select`, which is the FINAL header mode after the
+    /// `txb_split_count == 0` flip (encodeframe.c:2797). Drives
+    /// `TileCtxState::search_tx_size`.
+    pub search_tx_mode_is_select: bool,
 }
 
 /// Per-64x64-unit CDEF signalling inputs for a CDEF-enabled pack walk —
@@ -570,6 +591,50 @@ pub fn pack_leaf(
         above_pal,
         left_pal,
     );
+    // KB-41 root #9 (see `TileCtxState::search_palette_y_mode`): C's
+    // update_stats adapts the Y-palette flag/size CDFs of the SEARCH ctx only
+    // for chroma-reference blocks (av1_sum_intra_stats' early return); the
+    // writer above adapted `kf` for every DC block. Mirror update_palette_cdf
+    // (encodeframe_utils.c:398-418) into the search shadow.
+    // IntraBC winners carry mode == DC too, but C's is_inter_block() routes
+    // them past av1_sum_intra_stats entirely, so they never touch the shadow.
+    // All three search-ctx shadows below sit behind C's `if
+    // (tile_data->allow_update_cdf) update_stats(..)` (partition_search.c:1520
+    // / :2164): with `--cdf-update-mode=0` nothing adapts on either side.
+    if cfg.allow_update_cdf
+        && is_chroma_ref
+        && winner.mode == 0
+        && !winner.use_intrabc
+        && aom_dsp::entropy::partition::allow_palette(cfg.allow_screen_content_tools, bsize)
+    {
+        let bsize_ctx = aom_dsp::entropy::partition::palette_bsize_ctx(bsize) as usize;
+        let mode_ctx = aom_dsp::entropy::partition::palette_mode_ctx(
+            above_nbr.is_some(),
+            above_pal.map_or(0, |p| p.size[0]),
+            left_nbr.is_some(),
+            left_pal.map_or(0, |p| p.size[0]),
+        ) as usize;
+        let n = winner.palette_y.as_ref().map_or(0, |p| p.size as i32);
+        aom_dsp::entropy::cdf::update_cdf(
+            &mut tile.search_palette_y_mode[bsize_ctx][mode_ctx],
+            i32::from(n > 0),
+            2,
+        );
+        if n > 0 {
+            aom_dsp::entropy::cdf::update_cdf(
+                &mut tile.search_palette_y_size[bsize_ctx],
+                n - aom_dsp::entropy::partition::PALETTE_MIN_SIZE,
+                aom_dsp::entropy::partition::PALETTE_SIZES,
+            );
+        }
+    }
+    // KB-41 root #8 (see `PackCfg::search_allow_intrabc`): the search-time
+    // `use_intrabc` adaptation C's update_stats performs even when the final
+    // header dropped the flag (the writer above coded nothing for it).
+    if cfg.allow_update_cdf && !cfg.allow_intrabc && cfg.search_allow_intrabc {
+        debug_assert!(!winner.use_intrabc, "an IntraBC winner under a final allow_intrabc=0 header");
+        aom_dsp::entropy::cdf::update_cdf(&mut kf.intrabc, i32::from(winner.use_intrabc), 2);
+    }
 
     // ---- 1b. palette colour-map tokens (write_modes_b's palette loop,
     //      bitstream.c:1520-1533: after the mode info, before tx_size) —
@@ -708,7 +773,11 @@ pub fn pack_leaf(
         tile.left_tctx[l0..l0 + mi_h].fill(TXS_H[ts] as u8);
     }
 
-    if cfg.tx_mode_is_select && bsize > 0 && !env.lossless && !winner.use_intrabc {
+    if (cfg.tx_mode_is_select || cfg.search_tx_mode_is_select)
+        && bsize > 0
+        && !env.lossless
+        && !winner.use_intrabc
+    {
         let a0 = mi_col as usize;
         let l0 = (mi_row & 31) as usize;
         // get_tx_size_context's INTER-neighbour override (blockd.h): an
@@ -737,7 +806,19 @@ pub fn pack_leaf(
         let cat = bsize_to_tx_size_cat(bsize) as usize;
         let depth = tx_size_to_depth(winner.tx_size, bsize);
         let max_depths = bsize_to_max_depth(bsize);
-        write_selected_tx_size(enc, &mut kf.tx_size[cat][ctx], bsize, depth, max_depths);
+        if cfg.tx_mode_is_select {
+            write_selected_tx_size(enc, &mut kf.tx_size[cat][ctx], bsize, depth, max_depths);
+        }
+        // update_stats' search-ctx adaptation (partition_search.c:510-527):
+        // gated on the SEARCH-time tx mode, not on whether the writer coded
+        // the symbol (KB-41 root #12, `PackCfg::search_tx_mode_is_select`).
+        if cfg.search_tx_mode_is_select && cfg.allow_update_cdf {
+            aom_dsp::entropy::cdf::update_cdf(
+                &mut tile.search_tx_size[cat][ctx],
+                depth as i32,
+                max_depths + 1,
+            );
+        }
     }
 
     // ---- 3. residual/coefficient recompute (reuses the validated dry-run
@@ -1292,6 +1373,9 @@ pub fn pack_sb(
                 if i > 0 && this_mi_row >= env.mi_rows {
                     break;
                 }
+                // A strip past the frame edge is absent (`rd_pick_4partition` broke
+                // out before it, C partition_search.c:3948); every in-frame strip won.
+                let s = s.as_mut().expect("in-frame 4-way strip carries a winner");
                 pack_leaf(
                     enc,
                     env,
@@ -1323,6 +1407,9 @@ pub fn pack_sb(
                 if i > 0 && this_mi_col >= env.mi_cols {
                     break;
                 }
+                // A strip past the frame edge is absent (`rd_pick_4partition` broke
+                // out before it, C partition_search.c:3948); every in-frame strip won.
+                let s = s.as_mut().expect("in-frame 4-way strip carries a winner");
                 pack_leaf(
                     enc,
                     env,
@@ -1563,7 +1650,9 @@ pub fn pack_tile_lr(
 
     let mi_cols = env.mi_cols as usize;
     let mut search_tile = TileCtxState::zeroed(mi_cols);
+    search_tile.seed_search_palette(kf);
     let mut pack_tile_ctx = TileCtxState::zeroed(mi_cols);
+    pack_tile_ctx.seed_search_palette(kf);
     let mut grid = ModeGrid::dc_screen(
         env.mi_rows as usize,
         mi_cols,
@@ -1813,7 +1902,7 @@ pub fn pack_tile_lr(
             // superblock; the search + encode of this SB then use those costs, so as the
             // CDFs adapt over the frame the RD rate tracks them. `kf` adapted through
             // every prior SB's `pack_sb` (the search doesn't touch it), so a full
-            // `derive_real_costs(kf, ..)` here reproduces both updates in one shot. Static
+            // `derive_real_costs(kf, .., None)` here reproduces both updates in one shot. Static
             // frame-init costs diverge on steep content, which codes enough symbols to
             // move the CDFs and flip near-tie mode decisions (e.g. DC vs a directional
             // mode on a steep diagonal ramp); SB 0 / single-SB frames read the frame-init
@@ -1839,6 +1928,7 @@ pub fn pack_tile_lr(
                 row_real = Some(crate::real_costs::derive_real_costs(
                     kf,
                     pick_cfg.enable_filter_intra,
+                    Some((&pack_tile_ctx.search_palette_y_mode, &pack_tile_ctx.search_palette_y_size, &pack_tile_ctx.search_tx_size)),
                 ));
             }
             let sb_real: Option<&crate::real_costs::RealCosts> = row_real.as_ref();
@@ -2159,6 +2249,7 @@ pub fn pack_tile_from_trees(
     );
     let mi_cols = env.mi_cols as usize;
     let mut pack_tile_ctx = TileCtxState::zeroed(mi_cols);
+    pack_tile_ctx.seed_search_palette(kf);
     let mut nbr = MiNbrGrid::zeroed(mi_cols);
     let mut kfs = kf_block_state(pack_cfg, env, sb_mi);
     if let Some(c) = cdef {
@@ -2308,6 +2399,7 @@ pub fn pack_tile_from_trees(
                 row_real = Some(crate::real_costs::derive_real_costs(
                     kf,
                     pick_cfg.enable_filter_intra,
+                    Some((&pack_tile_ctx.search_palette_y_mode, &pack_tile_ctx.search_palette_y_size, &pack_tile_ctx.search_tx_size)),
                 ));
             }
             let sb_real: Option<&crate::real_costs::RealCosts> = row_real.as_ref();

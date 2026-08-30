@@ -98,7 +98,7 @@ use crate::intra_uv_rd::{
 use crate::partition::PartRdStats;
 use crate::encode_intra::TxbEncode;
 use crate::tx_search::{MI_SIZE_HIGH_B, MI_SIZE_WIDE_B, TXS_H, TXS_W, max_block_units};
-use aom_dsp::entropy::partition::{get_plane_block_size, update_ext_partition_context};
+use aom_dsp::entropy::partition::{PALATTE_BSIZE_CTXS, PALETTE_Y_MODE_CONTEXTS, get_plane_block_size, update_ext_partition_context};
 use aom_dsp::intra::cfl::CflCtx;
 use aom_dsp::txb::{CoeffCostSet, get_txb_ctx, txb_entropy_context};
 
@@ -124,6 +124,33 @@ pub fn store_cfl_required(monochrome: bool, is_chroma_ref: bool, uv_mode: usize)
 /// `mi_row & MAX_MIB_MASK` (`>> ss_y` for chroma entropy).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TileCtxState {
+    /// KB-41 root #9 — the SEARCH-side copies of `palette_y_mode_cdf` /
+    /// `palette_y_size_cdf`. C's search costs are refilled per SB from
+    /// `xd->tile_ctx`, which the ENCODE pass adapts through `update_stats`;
+    /// `av1_sum_intra_stats` returns before its palette update for a block
+    /// that is not a chroma reference (`if (!xd->is_chroma_ref) return`,
+    /// encodeframe_utils.c:490), so the 16x4/4x16/4x8/8x4/4x4 DC blocks whose
+    /// Y-palette flag the bitstream writer DOES code never touch the search
+    /// ctx. The pack's `kf` is the writer/decoder ctx (adapted for every coded
+    /// flag); these shadows follow update_stats' chroma-ref gate and feed the
+    /// per-SB `derive_real_costs` instead. Seeded from the tile's frame-init
+    /// `kf` (`seed_search_palette`).
+    pub search_palette_y_mode: [[[u16; 3]; PALETTE_Y_MODE_CONTEXTS]; PALATTE_BSIZE_CTXS],
+    pub search_palette_y_size: [[u16; 8]; PALATTE_BSIZE_CTXS],
+    /// KB-41 root #12 — the SEARCH-side copy of `tx_size_cdf`. C's search
+    /// runs every allintra frame at `TX_MODE_SELECT` (`tx_size_search_methods
+    /// [level 0][DEFAULT_EVAL]` = USE_FULL_RD; `av1_rd_pick_intra_mode_sb`
+    /// resets to DEFAULT_EVAL before `encode_b`), so `update_stats` adapts
+    /// `tile_ctx->tx_size_cdf` for EVERY coded intra block that signals a tx
+    /// size (partition_search.c:510-527) — and only AFTER the tiles, when no
+    /// block split its transform (`txb_split_count == 0`), does the frame's
+    /// `tx_mode` flip to TX_MODE_LARGEST (encodeframe.c:2797-2799), which is
+    /// what the writer/decoder ctx `kf` sees: no symbol coded, no adaptation.
+    /// The per-SB `derive_real_costs` reads THIS table so the search's
+    /// tx-size costs (live in the winner-mode re-eval, `intra_block_yrd`)
+    /// drift exactly as C's do. Seeded from `kf` (`seed_search_palette`).
+    pub search_tx_size: [[[u16; 4]; aom_dsp::entropy::partition::TX_SIZE_CONTEXTS];
+        aom_dsp::entropy::partition::MAX_TX_CATS],
     pub above_ectx: [Vec<i8>; 3],
     pub left_ectx: [[i8; 32]; 3],
     pub above_pctx: Vec<i8>,
@@ -148,6 +175,14 @@ pub fn aligned_mi_cols(mi_cols: usize) -> usize {
 }
 
 impl TileCtxState {
+    /// Seed the search-side palette CDF shadows from the tile's frame-init
+    /// context (they equal `kf`'s tables until the first non-chroma-ref DC
+    /// block is coded; see the field docs).
+    pub fn seed_search_palette(&mut self, kf: &aom_dsp::entropy::partition::KfFrameContext) {
+        self.search_palette_y_mode = kf.palette_y_mode;
+        self.search_palette_y_size = kf.palette_y_size;
+        self.search_tx_size = kf.tx_size;
+    }
     /// Zeroed contexts for a tile of `mi_cols` (the av1_zero tile init). The
     /// ABOVE arrays are sized to [`aligned_mi_cols`] (a whole-SB multiple), NOT
     /// bare `mi_cols`, matching `av1_alloc_above_context_buffers`
@@ -157,6 +192,10 @@ impl TileCtxState {
     pub fn zeroed(mi_cols: usize) -> Self {
         let aligned = aligned_mi_cols(mi_cols);
         TileCtxState {
+            search_palette_y_mode: [[[0; 3]; PALETTE_Y_MODE_CONTEXTS]; PALATTE_BSIZE_CTXS],
+            search_palette_y_size: [[0; 8]; PALATTE_BSIZE_CTXS],
+            search_tx_size: [[[0; 4]; aom_dsp::entropy::partition::TX_SIZE_CONTEXTS];
+                aom_dsp::entropy::partition::MAX_TX_CATS],
             above_ectx: [vec![0; aligned], vec![0; aligned], vec![0; aligned]],
             left_ectx: [[0; 32]; 3],
             above_pctx: vec![0; aligned],
@@ -590,10 +629,10 @@ pub enum SbTree {
     /// Interior envelope: all 4 present (a frame-edge HORZ_4 with fewer
     /// than 4 coded strips is out of envelope, matching the existing
     /// Horz/Vert interior-only scope).
-    Horz4(Box<[LeafWinner; 4]>),
+    Horz4(Box<[Option<LeafWinner>; 4]>),
     /// PARTITION_VERT_4 — `pc_tree->vertical4[4]`: 4 equal-width vertical
     /// strips in left-to-right order.
-    Vert4(Box<[LeafWinner; 4]>),
+    Vert4(Box<[Option<LeafWinner>; 4]>),
     /// PARTITION_HORZ_A — `pc_tree->horizontala[3]`: top-left quarter,
     /// top-right quarter (both `bsize2` = SPLIT subsize), then the full-width
     /// bottom half (`subsize` = HORZ subsize) — `ab_subsize[HORZ_A]`/
@@ -626,6 +665,27 @@ pub enum SbTree {
     /// it. It exists only so `Split`'s `[SbTree; 4]` can hold a placeholder for
     /// the trimmed quadrant instead of a bogus leaf.
     Absent,
+}
+
+impl SbTree {
+    /// `cpi->intrabc_used` for this SB: did any leaf choose IntraBC? (KB-41
+    /// root #7: C flips the frame's `allow_intrabc` header bit to 0 after the
+    /// search when this is false frame-wide, encodeframe.c:2442.)
+    pub fn any_intrabc(&self) -> bool {
+        match self {
+            SbTree::Absent => false,
+            SbTree::Leaf(w) => w.use_intrabc,
+            SbTree::Split(k) => k.iter().any(SbTree::any_intrabc),
+            SbTree::Horz(ws) => ws.iter().any(|w| w.use_intrabc),
+            SbTree::Vert(ws) => ws.iter().any(|w| w.use_intrabc),
+            SbTree::Horz4(ws) => ws.iter().flatten().any(|w| w.use_intrabc),
+            SbTree::Vert4(ws) => ws.iter().flatten().any(|w| w.use_intrabc),
+            SbTree::HorzA(ws) => ws.iter().any(|w| w.use_intrabc),
+            SbTree::HorzB(ws) => ws.iter().any(|w| w.use_intrabc),
+            SbTree::VertA(ws) => ws.iter().any(|w| w.use_intrabc),
+            SbTree::VertB(ws) => ws.iter().any(|w| w.use_intrabc),
+        }
+    }
 }
 
 /// `PARTITION_NONE` / `PARTITION_HORZ` / `PARTITION_VERT` /
@@ -1636,6 +1696,9 @@ pub fn encode_sb_dry(
                 if i > 0 && this_mi_row >= env.mi_rows {
                     break;
                 }
+                // A strip past the frame edge is absent (`rd_pick_4partition` broke
+                // out before it, C partition_search.c:3948); every in-frame strip won.
+                let s = s.as_mut().expect("in-frame 4-way strip carries a winner");
                 debug_assert_eq!(s.bsize, subsize, "horz4 winner bsize == subsize");
                 let out = encode_b_intra_dry(
                     env,
@@ -1662,6 +1725,9 @@ pub fn encode_sb_dry(
                 if i > 0 && this_mi_col >= env.mi_cols {
                     break;
                 }
+                // A strip past the frame edge is absent (`rd_pick_4partition` broke
+                // out before it, C partition_search.c:3948); every in-frame strip won.
+                let s = s.as_mut().expect("in-frame 4-way strip carries a winner");
                 debug_assert_eq!(s.bsize, subsize, "vert4 winner bsize == subsize");
                 let out = encode_b_intra_dry(
                     env,

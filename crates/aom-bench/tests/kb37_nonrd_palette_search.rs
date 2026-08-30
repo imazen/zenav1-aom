@@ -210,6 +210,9 @@ fn measure(label: &str, cell: &EncodeCell, c_tu: &[u8]) -> Row {
     let real = EncodeCell::frame_obu_payload(c_tu);
     let knobs = ToggleKnobs {
         enable_palette: true,
+        // The reference is `--tune-content=screen` (see `c_ref`):
+        // the port's screen-content decision must take that arm, not the detector.
+        tune_content_screen: true,
         ..Default::default()
     };
     reset_palette_gate_reach();
@@ -384,6 +387,9 @@ fn many_colour_palette_blocks_are_pinned_and_are_not_this_arm() {
     c::ref_init();
     let knobs = ToggleKnobs {
         enable_palette: true,
+        // The reference is `--tune-content=screen` (see `c_ref`):
+        // the port's screen-content decision must take that arm, not the detector.
+        tune_content_screen: true,
         ..Default::default()
     };
 
@@ -491,6 +497,9 @@ fn color_palette_thresh_band_divergence_count_is_pinned() {
     c::ref_init();
     let knobs = ToggleKnobs {
         enable_palette: true,
+        // The reference is `--tune-content=screen` (see `c_ref`):
+        // the port's screen-content decision must take that arm, not the detector.
+        tune_content_screen: true,
         ..Default::default()
     };
     let mut diverged = 0usize;

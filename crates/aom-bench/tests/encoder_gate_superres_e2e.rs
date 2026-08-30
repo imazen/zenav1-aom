@@ -393,7 +393,7 @@ fn port_encode_superres(cell: &EncodeCell, denom: i32, bootstrap: &[u8]) -> Vec<
 
     let real = {
         let kf_probe = KfFrameContext::default_for_qindex(qindex);
-        derive_real_costs(&kf_probe, s.enable_filter_intra)
+        derive_real_costs(&kf_probe, s.enable_filter_intra, None)
     };
     let rdmult = av1_compute_rd_mult_based_on_qindex(
         bd,
@@ -543,6 +543,8 @@ fn port_encode_superres(cell: &EncodeCell, denom: i32, bootstrap: &[u8]) -> Vec<
         base_qindex: qindex,
         allow_screen_content_tools: p.allow_screen_content_tools,
         allow_intrabc: false,
+        search_allow_intrabc: false,
+        search_tx_mode_is_select: false,
         delta_q_present: false,
         delta_q_res: 0,
     };

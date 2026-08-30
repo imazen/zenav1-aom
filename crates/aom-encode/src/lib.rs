@@ -52,6 +52,7 @@ pub mod rd_pick;
 pub mod real_costs;
 pub mod resize;
 pub mod speed_features;
+pub mod screen_detect;
 pub mod superres_select;
 pub mod tx_search;
 pub mod var_part;

@@ -338,7 +338,7 @@ fn localize_mono(
     let rows_v = set_q_index(&quants, &deq, qindex as usize, 2);
 
     let mut kf_write = KfFrameContext::default_for_qindex(qindex);
-    let real = derive_real_costs(&kf_write, s.enable_filter_intra);
+    let real = derive_real_costs(&kf_write, s.enable_filter_intra, None);
 
     let allintra = usage == 2;
     // EXACT config parity with the byte-exact bd10 gate
@@ -462,6 +462,8 @@ fn localize_mono(
         delta_q_res: 0,
         allow_screen_content_tools: p.allow_screen_content_tools,
         allow_intrabc: false,
+        search_allow_intrabc: false,
+        search_tx_mode_is_select: false,
     };
 
     let mut recon_y = src_y_strided.clone();

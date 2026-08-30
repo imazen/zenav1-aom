@@ -121,18 +121,26 @@ fn repack_intra_ext_tx_cdf(kf: &KfFrameContext) -> Vec<u16> {
 /// `enable_filter_intra` must equal the sequence header flag the search's
 /// `PickFrameCfg::enable_filter_intra` / `filter_intra_allowed_bsize` gate
 /// uses (same value threaded to both).
-pub fn derive_real_costs(kf: &KfFrameContext, enable_filter_intra: bool) -> RealCosts {
+/// `search_palette`: the SEARCH-side `(palette_y_mode_cdf, palette_y_size_cdf)`
+/// shadows (`TileCtxState::search_palette_*`, KB-41 root #9) — when given they
+/// replace `kf`'s writer-adapted tables for the palette-Y flag/size costs.
+pub fn derive_real_costs(
+    kf: &KfFrameContext,
+    enable_filter_intra: bool,
+    search_palette: Option<(
+        &[[[u16; 3]; aom_dsp::entropy::partition::PALETTE_Y_MODE_CONTEXTS]; aom_dsp::entropy::partition::PALATTE_BSIZE_CTXS],
+        &[[u16; 8]; aom_dsp::entropy::partition::PALATTE_BSIZE_CTXS],
+        &[[[u16; 4]; aom_dsp::entropy::partition::TX_SIZE_CONTEXTS]; aom_dsp::entropy::partition::MAX_TX_CATS],
+    )>,
+) -> RealCosts {
     let mut mode_costs = IntraModeCosts::zeroed();
     let kf_y_cdf: Vec<u16> = kf.kf_y.iter().flatten().flatten().copied().collect();
     let uv_mode_cdf: Vec<u16> = kf.uv_mode.iter().flatten().flatten().copied().collect();
     let filter_intra_cdfs: Vec<u16> = kf.filter_intra.iter().flatten().copied().collect();
-    let palette_y_mode_cdf: Vec<u16> = kf
-        .palette_y_mode
-        .iter()
-        .flatten()
-        .flatten()
-        .copied()
-        .collect();
+    let palette_y_mode_src = search_palette.map_or(&kf.palette_y_mode, |(m, _, _)| m);
+    let palette_y_size_src = search_palette.map_or(&kf.palette_y_size, |(_, z, _)| z);
+    let palette_y_mode_cdf: Vec<u16> =
+        palette_y_mode_src.iter().flatten().flatten().copied().collect();
     let angle_delta_cdf: Vec<u16> = kf.angle_delta.iter().flatten().copied().collect();
     // mbmode_cost (non-KEY intra Y mode) has no KfFrameContext CDF and is
     // unread by the KEY-frame search (see module docs) -- degenerate filler.
@@ -161,7 +169,11 @@ pub fn derive_real_costs(kf: &KfFrameContext, enable_filter_intra: bool) -> Real
     fill_cfl_costs(&mut cfl_costs, &kf.cfl_sign, &cfl_alpha_cdf);
 
     let mut tx_size_costs = TxSizeCosts::zeroed();
-    let tx_size_cdf: Vec<u16> = kf.tx_size.iter().flatten().flatten().copied().collect();
+    // KB-41 root #12: the search's tx-size costs come from the SEARCH ctx
+    // (`TileCtxState::search_tx_size`), which adapts for every coded intra
+    // block even on a frame whose header ends TX_MODE_LARGEST.
+    let tx_size_src = search_palette.map_or(&kf.tx_size, |(_, _, t)| t);
+    let tx_size_cdf: Vec<u16> = tx_size_src.iter().flatten().flatten().copied().collect();
     fill_tx_size_costs(&mut tx_size_costs, &tx_size_cdf);
 
     let mut tx_type_costs_y = TxTypeCosts::zeroed();
@@ -210,7 +222,7 @@ pub fn derive_real_costs(kf: &KfFrameContext, enable_filter_intra: bool) -> Real
     let mut palette_costs = PaletteCosts::zeroed();
     fill_palette_costs(
         &mut palette_costs,
-        &kf.palette_y_size,
+        palette_y_size_src,
         &kf.palette_uv_size,
         &kf.palette_y_color_index,
         &kf.palette_uv_color_index,

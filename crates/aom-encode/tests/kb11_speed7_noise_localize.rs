@@ -363,7 +363,7 @@ fn run_and_localize(cq_level: i32, mono: bool) -> bool {
     let rows_v = set_q_index(&quants, &deq, qindex as usize, 2);
 
     let mut kf_write = KfFrameContext::default_for_qindex(qindex);
-    let real = derive_real_costs(&kf_write, s.enable_filter_intra);
+    let real = derive_real_costs(&kf_write, s.enable_filter_intra, None);
     let allintra = usage == 2;
     let rdmult = av1_compute_rd_mult_based_on_qindex(
         bd,
@@ -473,6 +473,8 @@ fn run_and_localize(cq_level: i32, mono: bool) -> bool {
         base_qindex: qindex,
         allow_screen_content_tools: p.allow_screen_content_tools,
         allow_intrabc: false,
+        search_allow_intrabc: false,
+        search_tx_mode_is_select: false,
         delta_q_present: false,
         delta_q_res: 0,
     };

@@ -1708,8 +1708,8 @@ pub fn tx_partition_set_contexts(
 
 // --- palette signalling: contexts + flag/size symbols (av1/encoder/bitstream.c) ---
 
-const PALETTE_MIN_SIZE: i32 = 2;
-const PALETTE_SIZES: usize = 7;
+pub const PALETTE_MIN_SIZE: i32 = 2;
+pub const PALETTE_SIZES: usize = 7;
 /// `PALETTE_COLOR_INDEX_CONTEXTS` (`entropymode.h`): the colour-index map token's
 /// context alphabet (see [`PALETTE_COLOR_INDEX_CONTEXT_LOOKUP`]).
 const PALETTE_COLOR_INDEX_CONTEXTS: usize = 5;
@@ -5980,13 +5980,13 @@ const SKIP_CONTEXTS: usize = 3;
 /// `SPATIAL_PREDICTION_PROBS` (seg_common.h).
 const SPATIAL_PREDICTION_PROBS: usize = 3;
 /// `PALATTE_BSIZE_CTXS` (entropymode.h — libaom's spelling).
-const PALATTE_BSIZE_CTXS: usize = 7;
+pub const PALATTE_BSIZE_CTXS: usize = 7;
 /// `PALETTE_Y_MODE_CONTEXTS` / `PALETTE_UV_MODE_CONTEXTS` (entropymode.h).
-const PALETTE_Y_MODE_CONTEXTS: usize = 3;
+pub const PALETTE_Y_MODE_CONTEXTS: usize = 3;
 const PALETTE_UV_MODE_CONTEXTS: usize = 2;
 /// `MAX_TX_CATS` (blockd.h) / `TX_SIZE_CONTEXTS` (enums.h).
-const MAX_TX_CATS: usize = 4;
-const TX_SIZE_CONTEXTS: usize = 3;
+pub const MAX_TX_CATS: usize = 4;
+pub const TX_SIZE_CONTEXTS: usize = 3;
 /// `EXT_TX_SIZES` (enums.h): square tx-size classes indexing the ext-tx CDFs.
 const EXT_TX_SIZES: usize = 4;
 /// `EXT_TX_SETS_INTER` (enums.h): inter (and intrabc) ext-tx selection sets.

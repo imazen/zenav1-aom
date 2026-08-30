@@ -49,7 +49,7 @@ fn kb4_txb_tie_probe_bd10_cq12() {
 
     // Real cost tables at this qindex (NOT random).
     let kf = KfFrameContext::default_for_qindex(qindex as i32);
-    let real = derive_real_costs(&kf, true);
+    let real = derive_real_costs(&kf, true, None);
     let coeff_tables = real.coeff_costs_y.tables(tx_size);
 
     // Neighbour ctx: find above[0]/left[0] that reproduce C's (txb_skip_ctx=2,

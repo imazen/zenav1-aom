@@ -138,6 +138,13 @@ fn kb41_screen_detected_cells_match_with_screen_tools_on() {
         let cell = load(dir, stem);
         let oracle = cell.c_encode_defaults();
         assert!(!oracle.is_empty(), "{stem}: oracle encode failed");
+        // Differential aid: `ZENAV1_DUMP_ORACLE_DIR=<dir>` writes each cell's
+        // oracle TU as `<stem>.obu` so it can be cmp'd against a sibling
+        // instrumented-libaom encode of the same planes (KB-41 playbook).
+        if let Some(dir) = std::env::var_os("ZENAV1_DUMP_ORACLE_DIR") {
+            let path = std::path::Path::new(&dir).join(format!("{stem}.obu"));
+            std::fs::write(&path, &oracle).expect("write oracle dump");
+        }
         let sct = stream_allows_screen_content_tools(&oracle);
         let real = EncodeCell::frame_obu_payload(&oracle);
         let port_default = cell.port_encode(&oracle);

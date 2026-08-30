@@ -322,10 +322,9 @@ fn palette_y_rd_close_gate() {
     // Section A): these 4 screen cells + the real-content control are
     // byte-identical to real aomenc and MUST stay so — a regression to
     // merely-RD-close now FAILS loudly instead of passing on the RD band.
-    // `ui_420_128_cq32` stays PINNED as a palette-induced AB/4-way partition
-    // near-tie (see `decode_diff_palette_close_cells` + PARITY.md C3 / the
-    // KB-P palette near-tie note): RD-close only. Its former twin
-    // `text_420_128_cq20` graduated with KB-41 (below).
+    // The two 128² cells that were once PINNED as palette-induced AB/4-way
+    // partition near-ties (`decode_diff_palette_close_cells` + PARITY.md C3 /
+    // the KB-P palette near-tie note) both graduated with KB-41 (below).
     const BYTE_EXACT_CELLS: &[&str] = &[
         "text_mono_64_cq32",
         "text_420_64_cq12",
@@ -338,6 +337,12 @@ fn palette_y_rd_close_gate() {
         // frame-init / zero before). The near-tie reading was the symptom of
         // wrong costs, not a genuine tie.
         "text_420_128_cq20",
+        // KB-41 roots #7-#12 (2026-08-30): the last PINNED near-tie graduated
+        // once the search-ctx shadows (intrabc / palette-Y / tx-size CDFs)
+        // followed C's update_stats instead of the writer ctx and the frame-edge
+        // 4-way strips were coded. `decode_diff_palette_close_cells` now guards
+        // both 128² cells as byte-exact.
+        "ui_420_128_cq32",
     ];
     for r in &results {
         if BYTE_EXACT_CELLS.contains(&r.label.as_str()) {
@@ -670,18 +675,21 @@ fn decode_diff_palette_close_cells() {
         text_luma,
         ui_chroma,
     ));
-    // KB-41 re-pin (2026-08-30): `text_420_128_cq20` is byte-exact now that the
-    // palette costs refresh per SB and the UV palette flag is costed; `ui`
-    // still diverges. Both directions stay asserted so the next cost fix that
-    // closes `ui` fires this pin too.
+    // KB-41 re-pins (2026-08-30): `text_420_128_cq20` became byte-exact when
+    // the palette costs refreshed per SB and the UV palette flag was costed;
+    // `ui_420_128_cq32` followed once the search-ctx CDF shadows (roots #8/#9/
+    // #12) and the frame-edge 4-way strips (root #11) landed. Neither was a
+    // genuine near-tie — both readings were symptoms of search costs that did
+    // not track C's `xd->tile_ctx`. Both stay asserted byte-exact.
     assert!(
         text_exact,
         "text_420_128_cq20 REGRESSED from byte-exact (KB-41 promotion) — a palette cost \
          table stopped following the per-SB refresh, or the UV palette flag cost is gone"
     );
     assert!(
-        !ui_exact,
-        "the PINNED palette near-tie ui_420_128_cq32 became byte-exact — promote it into \
-         BYTE_EXACT_CELLS in palette_y_rd_close_gate and retire this pin"
+        ui_exact,
+        "ui_420_128_cq32 REGRESSED from byte-exact (KB-41 roots #7-#12) — a search-ctx \
+         shadow (intrabc / palette-Y / tx-size CDF) stopped following update_stats, or a \
+         frame-edge 4-way strip is no longer coded"
     );
 }

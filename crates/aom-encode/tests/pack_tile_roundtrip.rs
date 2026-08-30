@@ -784,6 +784,8 @@ fn run_pack_roundtrip_case(ss_x: usize, ss_y: usize, allintra: bool, qindex: usi
             // `encoder_gate_e2e_byte_match`'s real-stream cases.
             allow_screen_content_tools: false,
             allow_intrabc: false,
+            search_allow_intrabc: false,
+            search_tx_mode_is_select: false,
         };
 
         // ---- pack ----
@@ -1161,7 +1163,7 @@ fn pack_tile_roundtrips_with_real_costs() {
         // tables, both planes) -- SbEncodeEnv selects the real per-tx_size
         // view at each txb via `CoeffCostSet::tables`.
         let mut kf_write = KfFrameContext::default_for_qindex(qindex as i32);
-        let real = derive_real_costs(&kf_write, true);
+        let real = derive_real_costs(&kf_write, true, None);
 
         let pol = if allintra {
             TxTypeSearchPolicy::speed0_allintra()
@@ -1263,6 +1265,8 @@ fn pack_tile_roundtrips_with_real_costs() {
             // `encoder_gate_e2e_byte_match`'s real-stream cases.
             allow_screen_content_tools: false,
             allow_intrabc: false,
+            search_allow_intrabc: false,
+            search_tx_mode_is_select: false,
         };
 
         // ---- pack ----
