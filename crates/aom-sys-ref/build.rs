@@ -67,6 +67,7 @@ const SHIMS: &[&str] = &[
     "superres_shim",
     "prune_tx_shim",
     "inter_shim",
+    "palette_shim",
     "warp_shim",
     "obmc_shim",
     "me_shim",

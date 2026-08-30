@@ -17,6 +17,7 @@
 //! train set), so this runs on demand; the pinned in-repo gate follows once the
 //! mechanism is known.
 use aom_bench::rd_close::{port_decode_tu, splice_frame_obu};
+use aom_decode::frame::decode_frame_obus_prefilter;
 use aom_bench::{EncodeCell, ToggleKnobs, stream_allows_screen_content_tools};
 use aom_sys_ref as c;
 use std::path::Path;
@@ -24,6 +25,39 @@ use std::path::Path;
 /// First differing byte between two payloads, or None when equal.
 fn first_diff(a: &[u8], b: &[u8]) -> Option<usize> {
     a.iter().zip(b).position(|(x, y)| x != y).or_else(|| (a.len() != b.len()).then_some(a.len().min(b.len())))
+}
+
+/// Syntax-level diff (playbook §10, "drive to the first divergent block"): the
+/// port decoder keeps every decoded block's mode info (`KfTileDecode::blocks`),
+/// so both streams' coding decisions can be compared block for block with no
+/// libaom instrumentation. Reports the first block whose geometry or mode info
+/// differs, with both sides' fields.
+fn first_syntax_diff(oracle_tu: &[u8], port_tu: &[u8]) -> String {
+    let (a, _, _) = decode_frame_obus_prefilter(oracle_tu).expect("oracle stream decodes");
+    let (b, _, _) = decode_frame_obus_prefilter(port_tu).expect("port stream decodes");
+    let describe = |blk: &aom_decode::DecodedBlockKf| {
+        let i = &blk.info;
+        format!(
+            "mi({},{}) bsize={} part={} tx={} skip={} y_mode={} ad_y={} uv_mode={} ad_uv={} cfl=({},{}) fi=({},{}) pal=({},{}) ibc={} dv=({},{}) seg={} q={}",
+            blk.mi_row, blk.mi_col, blk.bsize, blk.partition, blk.tx_size, i.skip, i.y_mode, i.angle_delta_y,
+            i.uv_mode, i.angle_delta_uv, i.cfl_alpha_idx, i.cfl_joint_sign, i.use_filter_intra, i.filter_intra_mode,
+            i.palette_size[0], i.palette_size[1], i.use_intrabc, i.dv_row, i.dv_col, i.segment_id, i.current_qindex
+        )
+    };
+    let key = |blk: &aom_decode::DecodedBlockKf| describe(blk);
+    for (n, (x, y)) in a.blocks.iter().zip(&b.blocks).enumerate() {
+        let (kx, ky) = (key(x), key(y));
+        if kx != ky || x.info.palette_colors != y.info.palette_colors || x.txbs != y.txbs {
+            let pal = if x.info.palette_colors != y.info.palette_colors { " palette_colors DIFFER" } else { "" };
+            let txb = if x.txbs != y.txbs { " txbs DIFFER" } else { "" };
+            return format!(
+                "first syntax diff at block #{n} of {}/{}:{pal}{txb}\n      oracle: {kx}\n      port:   {ky}",
+                a.blocks.len(),
+                b.blocks.len()
+            );
+        }
+    }
+    format!("syntax IDENTICAL over {} blocks (port {} blocks)", a.blocks.len(), b.blocks.len())
 }
 
 /// Decode both temporal units with the port's decoder and report the first
@@ -118,7 +152,12 @@ fn kb41_screen_detected_cells_match_with_screen_tools_on() {
             let fd = first_diff(&port_screen, &real).unwrap();
             let recon = if std::env::var_os("ZENAV1_DECODE_BOTH").is_some() {
                 let port_tu = splice_frame_obu(&oracle, &port_screen);
-                first_recon_diff(&oracle, &port_tu).unwrap_or_else(|| "recon IDENTICAL".into())
+                let r = first_recon_diff(&oracle, &port_tu).unwrap_or_else(|| "recon IDENTICAL".into());
+                if std::env::var_os("ZENAV1_SYNTAX_DIFF").is_some() {
+                    format!("{r}\n    {}", first_syntax_diff(&oracle, &port_tu))
+                } else {
+                    r
+                }
             } else {
                 "(set ZENAV1_DECODE_BOTH=1 for recon diff)".into()
             };

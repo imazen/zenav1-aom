@@ -15439,3 +15439,49 @@ pub fn ref_dump_default_intra_in_inter_cdfs(base_qindex: i32) -> Vec<u16> {
     assert_eq!(rc, 0, "shim_dump_default_intra_in_inter_cdfs failed ({rc})");
     out
 }
+
+// ── palette k-means kernels (palette_shim.c) — the DISPATCHED rtcd entries ──
+extern "C" {
+    fn shim_calc_indices(
+        data: *const i16,
+        centroids: *const i16,
+        indices: *mut u8,
+        n: i32,
+        k: i32,
+        dim: i32,
+    ) -> i64;
+    fn shim_k_means(
+        data: *const i16,
+        centroids: *mut i16,
+        indices: *mut u8,
+        n: i32,
+        k: i32,
+        dim: i32,
+        max_itr: i32,
+    );
+}
+
+/// `av1_calc_indices_dim{1,2}` as real aomenc dispatches it (sse2/avx2/neon
+/// specialisations — NOT the `_c` template): nearest-centroid index per point
+/// plus the summed squared distance. `data` holds `n * dim` values,
+/// `centroids` `k * dim`. Requires [`ref_init`].
+pub fn ref_calc_indices(data: &[i16], centroids: &[i16], indices: &mut [u8], k: usize, dim: usize) -> i64 {
+    let n = data.len() / dim;
+    assert!(dim == 1 || dim == 2);
+    assert!(centroids.len() >= k * dim && indices.len() >= n);
+    unsafe {
+        shim_calc_indices(data.as_ptr(), centroids.as_ptr(), indices.as_mut_ptr(), n as i32, k as i32, dim as i32)
+    }
+}
+
+/// `av1_k_means_dim{1,2}` (k_means_template.h, over the dispatched
+/// `av1_calc_indices`): refines `centroids` in place and writes the final
+/// `indices`. Requires [`ref_init`].
+pub fn ref_k_means(data: &[i16], centroids: &mut [i16], indices: &mut [u8], k: usize, dim: usize, max_itr: usize) {
+    let n = data.len() / dim;
+    assert!(dim == 1 || dim == 2);
+    assert!(centroids.len() >= k * dim && indices.len() >= n);
+    unsafe {
+        shim_k_means(data.as_ptr(), centroids.as_mut_ptr(), indices.as_mut_ptr(), n as i32, k as i32, dim as i32, max_itr as i32)
+    }
+}
