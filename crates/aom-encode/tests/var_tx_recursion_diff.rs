@@ -223,7 +223,11 @@ fn c_try_no_split(
         rd.rate =
             ((rd.rate as i64) + c.txfm_partition_cost[part_ctx][0] as i64).min(i32::MAX as i64) as i32;
     }
-    let txb_ctx = if pick_skip { 0 } else { leaf.best_txb_ctx };
+    // C keeps the SEARCHED context for the siblings: `no_split->txb_entropy_ctx =
+    // p->txb_entropy_ctx[block]` (tx_search.c:2447) — pick_skip_txfm zeroes only
+    // `p->eobs[block]` + the tx type. This facade used to model it as 0 (KB-41
+    // root #21 corrected the port, and this model with it).
+    let txb_ctx = leaf.best_txb_ctx;
     let no_rd = rd_of(c.rdmult, rd.rate, rd.dist);
     (rd, no_rd, txb_ctx, eob)
 }

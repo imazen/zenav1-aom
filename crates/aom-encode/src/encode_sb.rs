@@ -2583,10 +2583,19 @@ fn encode_b_intrabc_coeff(
         // in pixels (the skip convention the skip arm already uses).
         state.above_tctx[a0..a0 + mi_w].fill((mi_w * 4) as u8);
         state.left_tctx[l0..l0 + mi_h].fill((mi_h * 4) as u8);
-    } else if !output_enabled {
-        // txfm-partition contexts: C stamps them HERE only on a DRY run
-        // (partition_search.c:559-562 `if (dry_run) tx_partition_set_contexts`);
-        // on the OUTPUT path the pack's `write_tx_size_vartx` does it instead.
+    } else {
+        // txfm-partition contexts (the SEARCH-side arrays, which the SB rows
+        // below read for their txfm_partition ctx): C stamps the var-tx leaf
+        // sizes on BOTH runs — a DRY run via `tx_partition_set_contexts`
+        // (partition_search.c:559-562) and the OUTPUT run via
+        // `tx_partition_count_update` -> `update_txfm_count` ->
+        // `txfm_partition_update` (partition_search.c:511-516, encodeframe
+        // _utils.c). The pack keeps its OWN tctx (`write_tx_size_vartx`), so
+        // skipping the output-run stamp here left the search arrays holding
+        // the value restored at SB start — the row-ABOVE SB's stamp — and the
+        // next SB row costed its tx split against ctx 18 where C had 19
+        // (KB-41 root #19: 1080p cq57 s4, mi(32,90) under the IntraBC 8x8 at
+        // mi(30,90) with leaf TX_4X4 eobs [0,0,5,0]).
         aom_dsp::entropy::partition::tx_partition_set_contexts(
             bsize,
             &winner.inter_tx_size,

@@ -2297,13 +2297,26 @@ pub fn rd_pick_intrabc_mode_sb(
         }
 
         // Residual SSE (luma + chroma), and the luma residual for predict_skip.
+        // The residual covers the FULL block (av1_subtract_plane; predict_skip's
+        // forward transforms read the off-frame rows too), but the SSE that
+        // predict_skip_flag thresholds and set_skip_txfm reports as dist/sse is
+        // `pixel_diff_dist(x, 0, 0, 0, bsize, bsize, NULL)` — summed over the
+        // VISIBLE block only (get_txb_dimensions clips by mb_to_bottom/right
+        // _edge, tx_search.c:194-214). Summing the whole block inflated a
+        // frame-bottom 64x64's skip candidate by its 8 off-frame rows (847872
+        // vs C's 716800) and dropped IntraBC for PAETH (KB-41 root #20: 1080p
+        // cq57 s4, mi(256,16), dv (-512,0)).
+        let vis_bw = bw.min(((a.mi_cols - a.mi_col).max(0) as usize) * 4);
+        let vis_bh = bh.min(((a.mi_rows - a.mi_row).max(0) as usize) * 4);
         let mut luma_resid = vec![0i16; bw * bh];
         let mut luma_sse: i64 = 0;
         for r in 0..bh {
             for c in 0..bw {
                 let d = i32::from(a.src_y[a.off_y + r * a.stride + c]) - i32::from(pred_y[r * bw + c]);
                 luma_resid[r * bw + c] = d as i16;
-                luma_sse += i64::from(d) * i64::from(d);
+                if r < vis_bh && c < vis_bw {
+                    luma_sse += i64::from(d) * i64::from(d);
+                }
             }
         }
         let mut chroma_sse: i64 = 0;

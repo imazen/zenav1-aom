@@ -3196,8 +3196,17 @@ pub fn rd_pick_partition_real(
             // unconditionally true for that same child. AB itself never
             // reads this state at a bsize<=8x8 parent anyway
             // (allow_ab_partition_search requires bsize > BLOCK_8X8).
+            // "Neither palette mode nor cfl predicted" (partition_search.c:
+            // 4611-4617): a child whose Y OR UV palette is set is NOT reusable
+            // — the AB sub-block at that position gets the mode-cache restricted
+            // re-search instead (which can FAIL under the AB budget and drop the
+            // whole AB candidate). KB-41 root #18 (1280x800 screen cq44 cpu4,
+            // mi(12,244): the port copied a palette child's stats into HORZ_A
+            // and won a 16x16 that C's restricted re-search could not).
             if idx <= 1
                 && let Some(SbTree::Leaf(w)) = child_tree.as_ref()
+                && w.palette_y.is_none()
+                && w.palette_uv.is_none()
                 && w.uv_mode != UV_CFL_PRED
             {
                 is_split_ctx_is_ready[idx] = true;

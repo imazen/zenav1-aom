@@ -1148,7 +1148,16 @@ fn try_tx_block_no_split(
             .min(i32::MAX as i64) as i32;
     }
 
-    let txb_ctx = if pick_skip_txfm { 0 } else { leaf.best_txb_ctx };
+    // The entropy context this txb hands its siblings during the SEARCH is the
+    // searched winner's (`no_split->txb_entropy_ctx = p->txb_entropy_ctx[block]`,
+    // tx_search.c:2447 — NOT reset by pick_skip_txfm, which zeroes only eobs +
+    // the tx type). The encode pass later re-derives 0 for a skipped txb
+    // (encode_block's `is_blk_skip` arm), but a sibling searched before that
+    // sees the nonzero value: zeroing it here gave the (1,1) child of an 8x8
+    // IntraBC txb_skip_ctx 3 where C had 5 (KB-41 root #21: 1080p cq6 s4,
+    // mi(20,154), dv (-368,-824) — the (0,1) child searched eob 13, then
+    // pick_skip'd).
+    let txb_ctx = leaf.best_txb_ctx;
     let rd = rd_of(env.rdmult, rd_stats.rate, rd_stats.dist);
     (
         rd_stats,
