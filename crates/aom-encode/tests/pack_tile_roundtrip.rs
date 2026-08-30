@@ -785,7 +785,10 @@ fn run_pack_roundtrip_case(ss_x: usize, ss_y: usize, allintra: bool, qindex: usi
             allow_screen_content_tools: false,
             allow_intrabc: false,
             search_allow_intrabc: false,
-            search_tx_mode_is_select: false,
+            // KB-42: the SEARCH-time `select_tx_mode` (rdopt_utils.h:390-400) —
+            // non-lossless with tx-size search on, so TX_MODE_SELECT, same as
+            // the header mode this synthetic cell writes.
+            search_tx_mode_is_select: true,
         };
 
         // ---- pack ----
@@ -1266,7 +1269,10 @@ fn pack_tile_roundtrips_with_real_costs() {
             allow_screen_content_tools: false,
             allow_intrabc: false,
             search_allow_intrabc: false,
-            search_tx_mode_is_select: false,
+            // KB-42: the SEARCH-time `select_tx_mode` (rdopt_utils.h:390-400) —
+            // non-lossless with tx-size search on, so TX_MODE_SELECT, same as
+            // the header mode this synthetic cell writes.
+            search_tx_mode_is_select: true,
         };
 
         // ---- pack ----

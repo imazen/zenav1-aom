@@ -347,7 +347,12 @@ fn attempt_multitile_case(
         allow_screen_content_tools: p.allow_screen_content_tools,
         allow_intrabc: false,
         search_allow_intrabc: false,
-        search_tx_mode_is_select: false,
+        // KB-42: `select_tx_mode(cm, tx_size_search_method)` (rdopt_utils.h:390-400)
+        // is the SEARCH-time tx mode, NOT the final header mode. No cell here
+        // passes `--enable-tx-size-search=0`, so `coded_lossless` is the only
+        // gate; the header can still end TX_MODE_LARGEST via the
+        // `txb_split_count == 0` flip (encodeframe.c:2797).
+        search_tx_mode_is_select: !p.coded_lossless,
     };
 
     // Shared full-frame reconstruction buffers -- each tile writes only its own

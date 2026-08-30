@@ -2879,7 +2879,10 @@ impl MultiFrameEncodeCell {
             allow_screen_content_tools: false,
             allow_intrabc: false,
             search_allow_intrabc: false,
-            search_tx_mode_is_select: false,
+            // KB-42: `select_tx_mode` (rdopt_utils.h:390-400) reads the SEARCH-time
+            // `tx_size_search_method`, so a header that ends TX_MODE_LARGEST via the
+            // `txb_split_count == 0` flip (encodeframe.c:2797) still searched SELECT.
+            search_tx_mode_is_select: !real.coded_lossless,
         };
 
         let mut recon_y = src_y_strided.clone();

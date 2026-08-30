@@ -132,10 +132,22 @@ const PINS: &[Pin] = &[
     // ---- smooth: the low-work end ---------------------------------------
     Pin { content: Content::Smooth, screen_knobs: false, family: "directional_px", floor: 10.0, ceiling: 17.0 },
     // ---- screen: the ONLY content that reaches the screen tools ----------
-    // Measured 21.61 / 24.04 / 75.19 at `winperf::SCREEN_GATE_CELL`.
+    // Measured 21.61 / 24.04 / 75.19 at `winperf::SCREEN_GATE_CELL` on
+    // 2026-08-03; RE-PINNED 2026-08-30 (KB-42) to 22.75 / 33.63 / 80.84 after
+    // KB-41 roots #3-#6 ported the speed-dependent IntraBC search
+    // (`intrabc_search_level` / hash-8x8 cap / DIAMOND site configs, `735a0a6d`,
+    // 30/30 datagen cells byte-identical against the C oracle). More leaves win
+    // IntraBC, and IntraBC winners are small, so `intrabc` and `leaves_le_8px`
+    // both rose — the ceiling half of the gate firing is exactly the "became
+    // MORE reachable" news it exists to report, and the named root explains it.
+    // Both FLOORS rise (18 -> 25, 68 -> 73): this is a tightening, not a
+    // relaxation. Each band keeps its own historic relative shape
+    // (intrabc 0.75x/1.25x, leaves_le_8px 0.90x/1.09x of the measurement).
+    // `palette_y` moved 21.61 -> 22.75, still well inside its band, so its
+    // bounds are left alone and only the measurement is recorded.
     Pin { content: Content::Screen, screen_knobs: true, family: "palette_y", floor: 16.0, ceiling: 28.0 },
-    Pin { content: Content::Screen, screen_knobs: true, family: "intrabc", floor: 18.0, ceiling: 30.0 },
-    Pin { content: Content::Screen, screen_knobs: true, family: "leaves_le_8px", floor: 68.0, ceiling: 82.0 },
+    Pin { content: Content::Screen, screen_knobs: true, family: "intrabc", floor: 25.0, ceiling: 42.0 },
+    Pin { content: Content::Screen, screen_knobs: true, family: "leaves_le_8px", floor: 73.0, ceiling: 88.0 },
 ];
 
 /// Every pinned family is still reached, and none has moved so far that the pin

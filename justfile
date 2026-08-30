@@ -75,6 +75,17 @@ test-simd:
 census-gate:
     cargo test --release -p zenav1-aom-bench --no-default-features --features census --test content_family_census
 
+# THE ENCODER LANDING GATE (added 2026-08-30, KB-42). `-p <crate> --lib` runs NONE
+# of the byte-identity gates — they all live in `tests/` integration targets, and
+# the coverage census lives behind a non-default feature. KB-42 is what that costs:
+# four landings gated on `--lib` + named diff tests, 23 byte/RD gates and the census
+# broken across six red CI runs before anyone looked. Run this before pushing any
+# encoder change; it is the subset of CI that an encoder edit can break.
+gate-encode:
+    cargo test --profile test-fast -p zenav1-aom-encode --no-fail-fast
+    cargo test --profile test-fast -p zenav1-aom-bench --no-fail-fast
+    just census-gate
+
 # The census TOOL. `just census-corpus` prints the family table for the four
 # harness contents; add `yuv:<path>:<w>x<h>`, `scr:<path>:<w>x<h>` (screen
 # bootstrap) or `real:<vector>` sources, `--speed N`, `--cq N` and

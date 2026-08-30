@@ -38,6 +38,29 @@ transcribed oracles can carry shared bugs).
   ranked remaining levers. The original ≤ 1.20× figure is retained as the stretch target.
 - **Gate 4 — Coverage checklist** (+ a zenavif integration gate).
 
+### MANDATORY per-landing gate list (added 2026-08-30 after KB-42)
+
+**`-p <crate> --lib` IS NOT A GATE.** Every byte-identity gate in this repo lives in a
+`tests/` INTEGRATION target, and the census gate lives behind a non-default feature —
+so a landing that reports "311/311 aom-encode unit tests" has run none of them. That is
+literally how KB-42 happened: four consecutive landings gated on `--lib` plus named diff
+tests, and 23 byte/RD gates plus the coverage census stayed broken across six red CI runs.
+
+Before pushing any encoder change, run **all** of:
+
+```
+just gate-encode        # aom-encode + aom-bench INTEGRATION targets + the census gate
+just test-fast          # or `just test-next` — the whole workspace, both dispatch modes
+just test-fast-scalar   # AOM_FORCE_SCALAR: the transcribed-C path
+```
+
+and, for screen-content / IntraBC / palette work, the KB-41 plane-dir census
+(`crates/aom-bench/tests/kb41_screen_detected_defaults.rs` with `ZENAV1_PLANES_DIR`
+over the 14 plane dirs — 104/104 byte-identical).
+
+A landing's own gate list in the commit message must name the integration targets it
+ran, not just the unit-test count.
+
 Primary configuration: ALLINTRA (usage=2), speed-0 KEY frame. **Single-frame (KEY-frame)
 work must reach byte-exactness across BOTH tracks before inter-frame ("the rest") starts.**
 
@@ -191,52 +214,69 @@ it here in the same commit.**
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
-### KB-42 — Encoder: 16 `zenav1-aom-encode` byte-parity gates (+ ~7 in `aom-bench`) REGRESSED; `main` CI red since `735a0a6d` (KB-41 roots #3-#6) — FOUND 2026-08-30, NOT LOCALIZED
-- **Symptom.** `cargo test --release -p zenav1-aom-encode --no-fail-fast` on `main` is
-  **300 passed / 16 failed** (x86-64, measured 2026-08-30). Failing:
-  `avif_parity_roundtrip_and_decode`, `encoder_gate_444_bd8_chroma_edge_filter_witness`,
-  `encoder_gate_bd10_bd12_multisize`, `encoder_gate_bd10_non420_e2e_kb4_repro`,
-  `encoder_gate_bd_plumbing_8_10_12`, `encoder_gate_e2e_low_qindex_speed0`,
-  `encoder_gate_e2e_multi_sb_scale`, `encoder_gate_e2e_rich_content_strong_lf`,
-  `encoder_gate_qm_on_e2e`, `encoder_gate_qm_psnr_dist_e2e`,
-  `encoder_gate_real_content_speed1to4_e2e`, `encoder_gate_real_image_e2e_kb6_repro`,
-  `encoder_gate_speed1_rect_and_4way_25`, `encoder_gate_tune_composite_full_e2e`,
-  `encoder_gate_tune_qm_stack_e2e`, `kb6_characterize_196_partial_sb`. CI's aarch64 legs fail
-  the same set plus `aom-bench`'s `encoder_gate_cdef_{real_content,synthetic_axes}_rd_close`,
-  `encoder_gate_superres_{fixed_mono,fixed_real_content,fixed_highbd}_rd_close`,
-  `encoder_gate_superres_random_e2e` and
-  `nonrd_estimate_arm_palette_round_trips_through_the_c_decoder`.
-- **First bad commit (CI history, not bisected):** `735a0a6d` *"fix(KB-41 roots #3-#6)"*.
-  Run `33298437350` (its parent, `4e310c3`) is the last GREEN CI run; `33302025668` (roots
-  #3-#6) and **every run since** are red — 6 consecutive, across four landings. That commit's
-  own message reports "311/311 aom-encode unit tests", which is the LIB only: the integration
-  byte gates in the same package were never run by it or by roots #7-#13 / #14-#17 / #18-#21
-  (their gate lists are `-p zenav1-aom-encode --lib` plus named diff tests).
-- **NOT caused by KB-41 roots #22/#23** (measured 2026-08-30): with `partition_pick.rs` and
-  `real_costs.rs` reverted to `main`, `encoder_gate_e2e_byte_match` /
-  `encoder_gate_bd10_diff` / `kb6_real_rd_localize` fail the SAME 8 tests with the SAME
-  per-target counts (5/2/1), and `avif_parity_roundtrip_and_decode` produces a
-  byte-identical frame OBU either way (port 84 B vs real 82 B on
-  `diag+vbars16+ripple 256x256 420 allintra cq63`).
-- **Where to start.** Roots #3-#6 touched `speed_features.rs` (+219 lines), `var_tx.rs`
-  (+284), `intrabc_search.rs` (+381), `encode_sb.rs`, `partition_pick.rs`, `tx_search.rs`.
-  The failing gates are overwhelmingly NON-screen (bd10/bd12, 4:4:4/4:2:2, QM, tune-IQ,
-  speed 0-4 real content), so the IntraBC half is the least likely carrier.
-  **Narrowed by reading that commit's diff (2026-08-30, no run):** `speed_features.rs`'s +219
-  lines are ENTIRELY `mv_sf.*` (search_method / intrabc_search_level / hash / downsampled_sad /
-  exhaustive thresh) plus `inter_tx_size_search_init_depth_{rect,sqr}` — inter/IntraBC-only, so
-  inert on a non-screen KEY intra frame; and `encode_sb.rs`'s new all-txb-eob-0 skip
-  re-derivation (which WOULD be broad, since it rewrites `skip_txfm` + the txfm-context stamp)
-  sits inside `encode_b_intrabc_coeff`, so it is intrabc-only too. That leaves **`var_tx.rs`
-  (+284) and `partition_pick.rs`'s policy plumbing** — the block that stopped hardcoding
-  `ml_tx_split_thresh` / `prune_2d` / `init_depth` and started reading
-  `cfg.pol.{use_transform_domain_distortion, tx_domain_dist_threshold, predict_dc_level,
-  prune_2d_txfm_mode, skip_tx_search, prune_tx_type_using_stats}` — as the carriers to check
-  first. Confirm the first-bad attribution itself by building `735a0a6d^` in a scratch
-  worktree and running `encoder_gate_e2e_low_qindex_speed0` (speed 0, 4:2:0, screen tools off,
-  ~20 s once built); the current attribution is CI history, not a bisect.
-- **Do not close by excluding a test.** Per the header rule, only a landed fix verified on
-  `origin/main` closes this.
+### KB-42 — CI red since `735a0a6d`: TWO independent roots, both localized 2026-08-30 — the byte-gate half is FIXED, one screen-detector cell remains
+- **The original entry's single-carrier premise was WRONG and is corrected here.**
+  Reading the per-JOB conclusions (not the run conclusions) splits the redness in two:
+  run `33302025668` (`735a0a6d`, roots #3-#6) has **all four differential legs GREEN**
+  and fails only the two `portability` legs; the 23 byte/RD gates start one commit
+  later. Two roots, not one.
+- **Root A — `content_family_census` (portability legs only), from `735a0a6d`. FIXED
+  (re-pinned).** `every_pinned_family_is_still_reached` fired its CEILING half:
+  `Screen+screen-knobs intrabc` **33.63 %** against a pinned `[18, 30)`. That is the
+  gate reporting news, not a regression — roots #3-#6 ported the speed-dependent
+  IntraBC search (byte-identical on 30/30 datagen cells), so the port now finds
+  matches it used to miss, and since IntraBC winners are small, `leaves_le_8px` rose
+  with it (75.19 -> **80.84**, which was passing on a 1.16-point margin). Both rows
+  re-pinned keeping their own relative shape — intrabc `[25, 42)`, leaves≤8px
+  `[73, 88)`; **both FLOORS rise**, so this is a tightening. `palette_y` (21.61 ->
+  22.75) still describes reality and is unchanged. Record updated:
+  `benchmarks/winperf_family_census_2026-08-03.md`. This gate runs ONLY on the two
+  `portability` legs (`--no-default-features --features census`), which is why it
+  went unnoticed for six commits.
+- **Root B — 23 byte/RD gates, from `38a92657` (roots #7-#13). BISECTED, then FIXED.**
+  `encoder_gate_e2e_low_qindex_speed0` PASSES at `735a0a6d` and FAILS at `38a92657`
+  with the same 5-cell mismatch signature `main` has (`~/tmp/kb42/probe_*.log`;
+  `cargo test --release -p zenav1-aom-encode`). The three runs between them
+  (`33306162027` / `33306500855` / `33306826877`, ~2.5 min each) are **compile**
+  failures — `aom-bench/tests/armed_tools_decode_gate.rs` E0027, a pattern missing
+  the new `ToggleKnobs::tune_content_screen` — so no test ran again until `4e0229e`.
+- **Root B mechanism.** `38a92657` added `PackCfg::search_tx_mode_is_select` (root
+  #12 = C's `select_tx_mode(cm, tx_size_search_method)`, `rdopt_utils.h:390-400`,
+  consumed by `update_stats` at `partition_search.c:509-527`) and switched
+  `derive_real_costs` from `kf.tx_size` to the search shadow
+  `TileCtxState::search_tx_size` for the per-SB-row tx-size cost table
+  (`real_costs.rs:188`). The shadow is seeded from `kf` at tile start
+  (`seed_search_palette`) and thereafter adapts **only** when
+  `search_tx_mode_is_select` is set (`pack.rs:817`). **All 19 call sites were given
+  the placeholder `false`** — every `zenav1-aom-encode` integration harness plus
+  `aom-bench`'s CDEF, superres and inter-P harnesses — so on every non-lossless
+  TX_MODE_SELECT frame the SEARCH's tx-size costs froze at their frame-init snapshot
+  instead of tracking the writer's adapting CDF, flipping near-tie tx-size decisions.
+  It bites hardest at low qindex (the failing cells are cq8/cq16; cq24+ mostly still
+  matched). Only `aom_bench::EncodeCell::port_encode` (`lib.rs:2068`) derived it
+  correctly — which is exactly why the KB-41 census stayed 104/104 and the wave's own
+  gates never saw it.
+- **Root B fix.** Derive it at every site. No harness passes
+  `--enable-tx-size-search=0`, so `select_tx_mode` reduces to the lossless gate:
+  `search_tx_mode_is_select: !p.coded_lossless` (the synthetic
+  `pack_tile_roundtrip` cells are non-lossless -> `true`). The header's own
+  TX_MODE_LARGEST can still come from the `txb_split_count == 0` flip
+  (`encodeframe.c:2797`) — that is precisely the case root #12 exists for, and is
+  why the final header mode must NOT be used here. Result: `zenav1-aom-encode`
+  **316 passed / 0 failed** (was 300/16); `encoder_gate_cdef_*_rd_close` and
+  `encoder_gate_superres_*` green.
+- **STILL OPEN (1 test):** `nonrd_estimate_arm_palette_round_trips_through_the_c_decoder`
+  (`aom-bench/src/lib.rs:1914`) — the ported screen-content decision says `false`
+  where the oracle header says `true` on the 196x196 cell. This is a genuine port
+  gap that `38a92657` added the assertion for: `av1_determine_sc_tools_with_encoding`
+  (`encoder.c:3312`) is NOT ported. See the KB-42 continuation below / PARITY.md C3.
+- **Process hole (the reason this cost six commits).** Roots #3-#6, #7-#13, #14-#17
+  and #18-#21 all ran `-p zenav1-aom-encode --lib` plus named diff tests, so the
+  package's INTEGRATION byte gates never ran, and no landing ran the census gate at
+  all. The documented gate list now names both (see "MANDATORY per-landing gate list" above and
+  PARITY.md rule 6); `just gate-encode` runs them.
+- **Do not close by excluding a test.** Per the header rule, only a landed fix
+  verified on `origin/main` closes this.
 
 ### KB-1 — Decoder: recon divergence at base_qindex ≥ 249 (quantizer-62/-63) — REAL CORRUPTION, CI-quarantined
 - **Symptom:** decoded RECON diverges from the C oracle at `base_qindex >= 249` — the

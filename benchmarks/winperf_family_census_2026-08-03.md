@@ -341,7 +341,22 @@ Three honest caveats:
 At the gate cell (512x384, both knobs, screen bootstrap): **palette 21.61 %,
 intraBC 24.04 %, leaves ≤ 8 px 75.19 %** of coded leaves — all three inside the
 corpus's own range (`.screen.tsv`: palette 6.26-32.95, intraBC 0.25-58.82,
-small leaves 41.92-90.78). **UV palette and CFL are 0.00 on it**, which the
+small leaves 41.92-90.78).
+
+> **RE-MEASURED 2026-08-30 (KB-42), same cell: palette 22.75 %, intraBC
+> 33.63 %, leaves ≤ 8 px 80.84 %.** The two large moves are the ceiling half of
+> the gate doing its job: `735a0a6d` (KB-41 roots #3-#6) ported libaom's
+> speed-dependent IntraBC search — `intrabc_search_level`, the hash-8x8
+> block-count cap, the 64-candidate hash prune, the DIAMOND / CLAMPED_DIAMOND
+> site configs and the ≥ 720p skip-row SAD — verified byte-identical against
+> the C oracle on 30/30 datagen cells. The port therefore *finds* IntraBC
+> matches libaom finds and it previously missed, and because IntraBC winners
+> are overwhelmingly small blocks, `leaves_le_8px` rose with it. All three
+> stay inside the corpus range above. `content_family_census.rs` is re-pinned
+> to intraBC `[25.0, 42.0)` and leaves ≤ 8 px `[73.0, 88.0)` — both **floors
+> rise** — keeping each row's original relative shape; `palette_y` keeps
+> `[16.0, 28.0)`. This gate ran only on the two `portability` CI legs, so the
+> re-pin was six commits late; see CLAUDE.md KB-42. **UV palette and CFL are 0.00 on it**, which the
 corpus also mostly is (UV palette 0.00-0.52 %); neither is reachable through
 this content and that is on the unreachable list in §6.
 
