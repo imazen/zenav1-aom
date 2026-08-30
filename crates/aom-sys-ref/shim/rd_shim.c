@@ -1686,6 +1686,36 @@ void shim_nn_predict(const float *features, int num_inputs, int num_outputs,
   av1_nn_predict_c(features, &cfg, reduce_prec, output);
 }
 
+/* The DISPATCHED `av1_nn_predict` (RTCD picks sse3/avx2/neon) — what a real
+ * aomenc encode actually runs, as opposed to the `_c` transcription target
+ * above. KB-41 root #26: the two disagree in the last ulps, and the intra-CNN
+ * prune's 1/512 output quantisation does NOT always hide that. */
+void shim_nn_predict_dispatched(const float *features, int num_inputs,
+                                int num_outputs, int num_hidden_layers,
+                                const int *hidden_nodes,
+                                const float *weights_flat,
+                                const float *bias_flat, int reduce_prec,
+                                float *output) {
+  NN_CONFIG cfg;
+  cfg.num_inputs = num_inputs;
+  cfg.num_outputs = num_outputs;
+  cfg.num_hidden_layers = num_hidden_layers;
+  const float *wp = weights_flat;
+  const float *bp = bias_flat;
+  int in = num_inputs;
+  for (int l = 0; l < num_hidden_layers; l++) {
+    cfg.num_hidden_nodes[l] = hidden_nodes[l];
+    cfg.weights[l] = wp;
+    wp += (size_t)in * hidden_nodes[l];
+    cfg.bias[l] = bp;
+    bp += hidden_nodes[l];
+    in = hidden_nodes[l];
+  }
+  cfg.weights[num_hidden_layers] = wp;
+  cfg.bias[num_hidden_layers] = bp;
+  av1_nn_predict(features, &cfg, reduce_prec, output);
+}
+
 /* Runs av1_cnn_predict_img_multi_out on the 65x65 luma window `win` (stride 65)
  * with the intra-CNN config, and copies the raw multi-out buffer (CNN_OUT_BUF_
  * SIZE floats: branch_0[20] | branch_1[16] | branch_2[320] | branch_3[1280]) to

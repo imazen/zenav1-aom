@@ -2045,6 +2045,12 @@ impl EncodeCell {
             qm_levels,
             palette_costs: knobs.enable_palette.then_some(&real.palette_costs),
             intrabc: ibc_frame,
+            // `av1_allow_intrabc(cm)` during the TILE encode — the detector's
+            // decision masked with the CLI knob (encodeframe.c:2182). NOT
+            // `ibc_frame.is_some()`: the DV search is off at speed >= 8 while
+            // this flag stays 1, and every intra luma candidate still pays
+            // `intrabc_cost[0]` (KB-41 root #25).
+            search_allow_intrabc: search_allow_intrabc && knobs.enable_intrabc,
         };
         let pack_cfg = aom_encode::pack::PackCfg {
             enable_filter_intra: knobs.enable_filter_intra,
@@ -2867,6 +2873,7 @@ impl MultiFrameEncodeCell {
             qm_levels: None,
             palette_costs: None,
             intrabc: None,
+            search_allow_intrabc: false,
         };
         let pack_cfg = aom_encode::pack::PackCfg {
             enable_filter_intra,

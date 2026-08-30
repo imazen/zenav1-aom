@@ -660,6 +660,7 @@ fn attempt_case_content_uv_sep(
             fs_sf: Default::default(),
             inter: None,
         intrabc: None,
+            search_allow_intrabc: false,
         intra_tools: Default::default(),
         mode_costs: &real.mode_costs,
         tx_size_costs: &real.tx_size_costs,

@@ -431,6 +431,19 @@ fn finish_decision(
     let (w0, b0, w1, b1, wl, bl) = branch_dnn(bsize_idx);
     let mut logits = [0.0f32; 4];
     // num_outputs = BRANCH_*_NUM_LOGITS = 1; reduce_prec = 1 (as C calls it).
+    //
+    // **Deliberately the `_c` order, NOT [`nn::nn_predict_dispatched`]** —
+    // KB-41 roots #26/#27. `av1_nn_predict` IS RTCD-specialized, so a real
+    // encode runs its AVX2 order here (#26, ported + gated against the
+    // dispatched C), but so is the CNN's own
+    // `av1_cnn_convolve_no_maxpool_padding_valid`, whose `_c` variant this
+    // module's `cnn::cnn_predict` transcribes (#27, NOT ported; the oracle is
+    // pinned scalar by `shim/cnn_cscalar.c`). Pairing a SCALAR CNN with an
+    // AVX2 DNN models neither chain: it stops matching the pinned scalar
+    // oracle (`cnn_partition_decision_diff::predict_decision_matches_c`, which
+    // is exactly what it broke) without matching the real dispatched one
+    // either, because the branch features are already wrong upstream. The
+    // switch to `nn_predict_dispatched` lands WITH root #27, not before.
     nn::nn_predict(
         features,
         &[16, 24],

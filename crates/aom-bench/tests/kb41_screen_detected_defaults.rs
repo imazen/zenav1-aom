@@ -150,20 +150,29 @@ fn kb41_screen_detected_cells_match_with_screen_tools_on() {
         let port_default = cell.port_encode(&oracle);
         let port_screen = cell.port_encode_with(&oracle, &screen);
         if let Some(dir) = std::env::var_os("ZENAV1_DUMP_ORACLE_DIR") {
-            // The port's screen-arm TU next to the oracle's, for header/byte diffs.
+            // The port's TU for the arm the cell's own `sct` predicts, next to
+            // the oracle's, for header/byte diffs.
+            let pick = if sct { &port_screen } else { &port_default };
             let path = std::path::Path::new(&dir).join(format!("{stem}.port.obu"));
-            std::fs::write(&path, splice_frame_obu(&oracle, &port_screen)).expect("write port dump");
+            std::fs::write(&path, splice_frame_obu(&oracle, pick)).expect("write port dump");
         }
         let d_ok = port_default == real;
         let s_ok = port_screen == real;
-        // Where does the screen-knobs encode first differ — in the bytes and in
-        // the reconstruction (decode-both, playbook §10)?
-        let detail = if s_ok {
+        // Diff the arm the hypothesis PREDICTS should match, not always the
+        // screen arm: on an `sct=0` (photo) cell the screen knobs are simply
+        // the wrong config, so its byte/recon/syntax diff describes nothing.
+        // The datagen arm drives sct=0 cells with the default knobs, so that is
+        // the encode whose first divergence localizes a photo-class root.
+        let (arm, port_arm, arm_ok) =
+            if sct { ("screen", &port_screen, s_ok) } else { ("default", &port_default, d_ok) };
+        // Where does the predicted arm first differ — in the bytes and in the
+        // reconstruction (decode-both, playbook §10)?
+        let detail = if arm_ok {
             String::new()
         } else {
-            let fd = first_diff(&port_screen, &real).unwrap();
+            let fd = first_diff(port_arm, &real).unwrap();
             let recon = if std::env::var_os("ZENAV1_DECODE_BOTH").is_some() {
-                let port_tu = splice_frame_obu(&oracle, &port_screen);
+                let port_tu = splice_frame_obu(&oracle, port_arm);
                 let r = first_recon_diff(&oracle, &port_tu).unwrap_or_else(|| "recon IDENTICAL".into());
                 if std::env::var_os("ZENAV1_SYNTAX_DIFF").is_some() {
                     format!("{r}\n    {}", first_syntax_diff(&oracle, &port_tu))
@@ -173,7 +182,7 @@ fn kb41_screen_detected_cells_match_with_screen_tools_on() {
             } else {
                 "(set ZENAV1_DECODE_BOTH=1 for recon diff)".into()
             };
-            format!("  first_byte_diff={fd}  {recon}")
+            format!("  arm={arm}  first_byte_diff={fd}  {recon}")
         };
         rows.push(format!(
             "{stem:>22}  sct={}  default={}({:+})  screen={}({:+})  oracle={}B{detail}",

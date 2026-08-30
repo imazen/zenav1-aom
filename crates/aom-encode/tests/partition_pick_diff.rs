@@ -1469,6 +1469,7 @@ fn rd_pick_partition_real_matches_c_recursion() {
             fs_sf: Default::default(),
             inter: None,
             intrabc: None,
+            search_allow_intrabc: false,
             intra_tools: Default::default(),
             mode_costs: &mode_costs,
             tx_size_costs: &tx_size_costs,

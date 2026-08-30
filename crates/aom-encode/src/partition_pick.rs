@@ -635,6 +635,26 @@ pub struct PickFrameCfg<'a> {
     /// arm needs. `None` = every non-screen envelope, byte-stable by
     /// construction (the step-6 arm never runs).
     pub intrabc: Option<IntrabcFrameCfg<'a>>,
+    /// `av1_allow_intrabc(cm)` AS THE TILE ENCODE SEES IT — the frame flag the
+    /// intra COST path reads, which is NOT "the DV search runs".
+    ///
+    /// C sets `features->allow_intrabc` from the screen detector
+    /// (encoder.c:2417) and masks in the CLI knob (encodeframe.c:2182); the
+    /// flag then stays 1 for the whole tile encode and is zeroed only
+    /// afterwards when no block used IntraBC (encodeframe.c:2444, KB-41 root
+    /// #7). The DV SEARCH is gated separately and one tier down, inside
+    /// `rd_pick_intrabc_mode_sb` (`!mv_sf.use_intrabc ||
+    /// rt_sf.use_nonrd_pick_mode`, rdopt.c:3432-3434, root #10) — so at speed
+    /// >= 8 C searches nothing yet still charges every intra luma candidate
+    /// `intrabc_cost[0]` in `intra_mode_info_cost_y` (:563-564).
+    ///
+    /// [`Self::intrabc`] models only the SEARCH. Deriving the cost gate from
+    /// `intrabc.is_some()` conflates the two and under-costs the whole intra
+    /// side by exactly `intrabc_cost[0]` per candidate wherever the search is
+    /// off but the frame flag is on (KB-41 root #25). Set it to
+    /// `av1_allow_intrabc(cm)`; `false` is correct for every non-screen
+    /// envelope, where `intrabc` is `None` anyway.
+    pub search_allow_intrabc: bool,
     /// The INTER leaf-search frame state (INTER-ENCODE chunk 2) — `Some` on a
     /// P/B frame, making every leaf run the step-6 inter RD arm
     /// ([`crate::inter_rd::rd_pick_inter_mode_sb`]) against the intra winner.
@@ -1182,7 +1202,7 @@ fn leaf_pick_sb_modes(
         // gate, so the two can only disagree in a port-only toggle
         // configuration that no real C encode produces. `None` (every
         // non-screen envelope) keeps the term at 0 — byte-inert.
-        allow_intrabc: cfg.intrabc.is_some(),
+        allow_intrabc: cfg.search_allow_intrabc,
         pol: cfg.pol,
         source_variance,
         enable_tx64: cfg.enable_tx64,
@@ -5566,7 +5586,7 @@ fn nonrd_leaf_pick_and_encode(
                     .map_or(0, |p| i32::from(p.size[0] > 0)),
             ) as usize,
             enable_filter_intra: cfg.enable_filter_intra,
-            allow_intrabc: cfg.intrabc.is_some(),
+            allow_intrabc: cfg.search_allow_intrabc,
             enable_tx64: cfg.enable_tx64,
             enable_rect_tx: cfg.enable_rect_tx,
             // MULTI_WINNER_MODE_OFF: the nonrd walk has no winner-mode

@@ -364,6 +364,7 @@ fn port_encode_cdef(cell: &EncodeCell, bootstrap: &[u8]) -> Vec<u8> {
             fs_sf: Default::default(),
             inter: None,
         intrabc: None,
+            search_allow_intrabc: false,
         intra_tools: Default::default(),
         mode_costs: &real.mode_costs,
         tx_size_costs: &real.tx_size_costs,

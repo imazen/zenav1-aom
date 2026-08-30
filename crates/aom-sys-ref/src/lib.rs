@@ -10198,6 +10198,17 @@ extern "C" {
         reduce_prec: i32,
         output: *mut f32,
     );
+    fn shim_nn_predict_dispatched(
+        features: *const f32,
+        num_inputs: i32,
+        num_outputs: i32,
+        num_hidden_layers: i32,
+        hidden_nodes: *const i32,
+        weights_flat: *const f32,
+        bias_flat: *const f32,
+        reduce_prec: i32,
+        output: *mut f32,
+    );
     fn shim_intra_cnn_run(win: *const u8, force_cscalar: i32, out_cnn_buffer: *mut f32);
 }
 
@@ -10267,6 +10278,36 @@ pub fn ref_prune_tx_2d(
         );
     }
     (out_mask, txk)
+}
+
+/// The DISPATCHED `av1_nn_predict` (RTCD: sse3/avx2/neon) — what a real
+/// aomenc encode runs. [`ref_nn_predict`] is the `_c` variant. KB-41 root #26.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_nn_predict_dispatched(
+    features: &[f32],
+    num_inputs: usize,
+    num_outputs: usize,
+    hidden_nodes: &[i32],
+    weights_flat: &[f32],
+    bias_flat: &[f32],
+    reduce_prec: bool,
+) -> Vec<f32> {
+    assert!(features.len() >= num_inputs);
+    let mut out = vec![0.0f32; num_outputs];
+    unsafe {
+        shim_nn_predict_dispatched(
+            features.as_ptr(),
+            num_inputs as i32,
+            num_outputs as i32,
+            hidden_nodes.len() as i32,
+            hidden_nodes.as_ptr(),
+            weights_flat.as_ptr(),
+            bias_flat.as_ptr(),
+            i32::from(reduce_prec),
+            out.as_mut_ptr(),
+        );
+    }
+    out
 }
 
 #[allow(clippy::too_many_arguments)]

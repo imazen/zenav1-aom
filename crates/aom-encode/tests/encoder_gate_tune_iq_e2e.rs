@@ -598,6 +598,7 @@ fn run_tune_case(
         partition_cdfs: &real.partition_cdf,
         palette_costs: None,
         intrabc: None,
+            search_allow_intrabc: false,
         intra_tools: Default::default(),
         allintra,
         speed,

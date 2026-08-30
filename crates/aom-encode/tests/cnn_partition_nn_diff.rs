@@ -7,7 +7,7 @@
 //! Includes the four ACTUAL intra-CNN branch DNN shapes (features 37/25/25/41,
 //! hidden 16→24, 1 logit) so the exact model geometry is exercised.
 
-use aom_encode::cnn_partition::nn::nn_predict;
+use aom_encode::cnn_partition::nn::{nn_predict, nn_predict_dispatched};
 use aom_sys_ref as c;
 
 struct XorShift(u64);
@@ -132,4 +132,92 @@ fn nn_predict_matches_c_intra_cnn_branch_shapes() {
         }
     }
     eprintln!("nn_predict_matches_c_intra_cnn_branch_shapes: {n} configs bit-identical");
+}
+
+
+// ---------------------------------------------------------------------------
+// KB-41 root #26 — the DISPATCHED variant
+// ---------------------------------------------------------------------------
+
+/// `av1_nn_predict` is RTCD-specialized (`av1_rtcd_defs.pl:467`), so a real
+/// encode runs `av1_nn_predict_avx2` on any AVX2 host, NOT the `_c` function
+/// the test above pins. Those reassociate the dot product, and the intra-CNN
+/// prune's 1/512 output quantisation does not always hide the difference: on
+/// `2765x4096 cq6 --cpu-used 6` mi(0,352) the two land on adjacent quanta
+/// either side of `no_split_thresh`, flipping `do_square_split`.
+///
+/// So the SHIPPING entry point (`nn_predict_dispatched`, what
+/// `finish_decision` calls) is gated against the DISPATCHED C here — the same
+/// four real intra-CNN branch geometries plus randomised shapes.
+#[test]
+fn nn_predict_dispatched_matches_dispatched_c() {
+    // `av1_nn_predict` is an RTCD pointer — it is NULL until the tables are set
+    // up (`palette_shim.c`'s note: "Requires ref_init() (rtcd)").
+    c::ref_init();
+    let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
+    // The four real intra-CNN branch DNN shapes + a randomised sweep.
+    let real_shapes: [usize; 4] = [37, 25, 25, 41];
+    let mut cases: Vec<(usize, Vec<usize>, usize)> = real_shapes
+        .iter()
+        .map(|&n| (n, vec![16usize, 24usize], 1usize))
+        .collect();
+    for _ in 0..200 {
+        let num_in = rng.range(1, 48);
+        let h0 = rng.range(1, 32);
+        let h1 = rng.range(1, 32);
+        cases.push((num_in, vec![h0, h1], rng.range(1, 4)));
+    }
+
+    let mut mismatches = Vec::new();
+    for (num_in, hidden, num_out) in cases {
+        let mut weights_flat = Vec::new();
+        let mut bias_flat = Vec::new();
+        let mut sizes = vec![num_in];
+        sizes.extend(hidden.iter().copied());
+        sizes.push(num_out);
+        for w in sizes.windows(2) {
+            for _ in 0..w[0] * w[1] {
+                weights_flat.push(rng.f(0.5));
+            }
+            for _ in 0..w[1] {
+                bias_flat.push(rng.f(0.5));
+            }
+        }
+        let features: Vec<f32> = (0..num_in).map(|_| rng.f(2.0)).collect();
+
+        // Slice the flat tables the way the port's API wants them.
+        let mut wsl: Vec<&[f32]> = Vec::new();
+        let mut bsl: Vec<&[f32]> = Vec::new();
+        let (mut wo, mut bo) = (0usize, 0usize);
+        for w in sizes.windows(2) {
+            wsl.push(&weights_flat[wo..wo + w[0] * w[1]]);
+            bsl.push(&bias_flat[bo..bo + w[1]]);
+            wo += w[0] * w[1];
+            bo += w[1];
+        }
+
+        let mut got = vec![0.0f32; num_out];
+        nn_predict_dispatched(&features, &hidden, &wsl, &bsl, num_out, true, &mut got);
+        let hidden_i32: Vec<i32> = hidden.iter().map(|&h| h as i32).collect();
+        let want = c::ref_nn_predict_dispatched(
+            &features,
+            num_in,
+            num_out,
+            &hidden_i32,
+            &weights_flat,
+            &bias_flat,
+            true,
+        );
+        if got != want {
+            mismatches.push(format!(
+                "in={num_in} hidden={hidden:?} out={num_out}: port {got:?} vs dispatched C {want:?}"
+            ));
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "{} of the sweep disagree with the DISPATCHED av1_nn_predict:\n  {}",
+        mismatches.len(),
+        mismatches.join("\n  ")
+    );
 }

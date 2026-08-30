@@ -370,7 +370,7 @@ pub fn search_tx_type_inter(
     block_sse *= 16;
 
     // The allowed tx-type set (get_tx_mask inter arm; chroma pins one type).
-    let (mut allowed_tx_mask, txk_allowed) = match inp.forced_uv_tx_type {
+    let (mut allowed_tx_mask, mut txk_allowed) = match inp.forced_uv_tx_type {
         Some(uv) => {
             let (m, t) = get_tx_mask_inter_uv(
                 tx_size,
@@ -494,6 +494,36 @@ pub fn search_tx_type_inter(
             allowed_tx_mask = r.allowed_tx_mask;
             txk_map = r.txk_map;
         }
+    }
+
+    // `get_tx_mask`'s TAIL (tx_search.c:1948-1952) — *"Need to have at least
+    // one transform type allowed"*:
+    //
+    //     if (allowed_tx_mask == 0) {
+    //       txk_allowed = (plane ? uv_tx_type : DCT_DCT);
+    //       allowed_tx_mask = (1 << txk_allowed);
+    //     }
+    //
+    // NOT decoration: both prune arms above can legitimately clear the mask
+    // outright. `prune_txk_type_separ` returns `0xFFFF` when its best
+    // horizontal candidate is skipped (:1875), and — the case that bit — its
+    // combine loop can end with `num_cand == 0`, after which
+    // `prune = ~(1 << txk_map[0])` reads the tail slot the skip loop last
+    // wrote, a type that need not be in `allowed_tx_mask` at all (:1918-1934).
+    // Both leave `allowed_tx_mask &= ~prune` at zero, and C then pins DCT_DCT.
+    //
+    // Without this the type loop evaluates nothing, `search_tx_type_inter`
+    // returns None, and the CALLER treats that as "no valid transform": an
+    // IntraBC candidate is dropped whole (`rd_pick_intrabc_mode_sb` skips it),
+    // or a var-tx txb reports rate INT_MAX and invalidates the block. KB-41
+    // root #24: `256x256_cq47_s4` mi(48,60), TX_16X16, mask 0x0fff, C's
+    // `PSEP-F num_cand=0 map=13,…` ⇒ `~(1 << H_ADST)` ⇒ mask 0 ⇒ DCT_DCT;
+    // the port dropped the 16x16 IntraBC winner (C rd 38,375,433 vs the
+    // PAETH intra it fell back to at 131,342,197) and split the block.
+    if allowed_tx_mask == 0 {
+        let t = inp.forced_uv_tx_type.unwrap_or(0 /* DCT_DCT */);
+        txk_allowed = Some(t);
+        allowed_tx_mask = 1 << t;
     }
 
     // Trellis gating: block-MSE / qstep^2 threshold (perform_block_coeff_opt).
