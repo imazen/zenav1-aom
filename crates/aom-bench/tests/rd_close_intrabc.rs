@@ -70,8 +70,10 @@ fn intrabc_dv_search_pinned() {
         .collect();
 
     // A cell whose C encode is byte-matched by the port (would fail the pin →
-    // promote). Empty until the intrabc coeff arm lands.
-    const BYTE_EXACT_CELLS: &[&str] = &[];
+    // promote). `scc_480x180_196_cq48` promoted 2026-08-30 by KB-41's
+    // speed-feature port of the intrabc search + coeff arm (the KB-15 residual
+    // — its "3-rate-unit tx-size-cost gap" — closed with it): 1891 B, byte-exact.
+    const BYTE_EXACT_CELLS: &[&str] = &["scc_480x180_196_cq48"];
 
     let mut any_intrabc = false;
     eprintln!("=== intrabc DV-search census (C, --enable-intrabc=1) ===");

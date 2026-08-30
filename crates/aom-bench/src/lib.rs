@@ -1897,6 +1897,7 @@ impl EncodeCell {
                 error_per_bit: (rdmult >> 6).max(1),
                 sad_per_bit: av1_set_sad_per_bit(qindex, bd),
                 mv_step_param: init_search_range(w.max(h) as i32),
+                mv_sf: sf.mv_sf,
             }),
             _ => None,
         };

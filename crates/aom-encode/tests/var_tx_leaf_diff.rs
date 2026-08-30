@@ -203,6 +203,15 @@ fn search_tx_type_inter_matches_c_chain() {
 
             // ---- Rust side (the inter leaf) ----
             let inp = InterLeafInputs {
+                // speed-0 DEFAULT_EVAL: pixel-domain distortion, no predict-dc,
+                // PRUNE_1, no skip_tx_search, no stats prune.
+                use_transform_domain_distortion: 0,
+                tx_domain_dist_threshold: u32::MAX,
+                predict_dc_level: 0,
+                predict_skip_zero_blk_rate: 0,
+                prune_2d_txfm_mode: 1,
+                skip_tx_search: false,
+                prune_tx_type_using_stats: 0,
                 // Luma leaf differential: the multi-type inter mask arm.
                 forced_uv_tx_type: None,
                 residual: &residual,

@@ -2488,10 +2488,39 @@ fn encode_b_intrabc_coeff(
         }
     }
 
-    // txfm-partition contexts: C stamps them HERE only on a DRY run
-    // (partition_search.c:559-562 `if (dry_run) tx_partition_set_contexts`);
-    // on the OUTPUT path the pack's `write_tx_size_vartx` does it instead.
-    if !output_enabled {
+    // av1_encode_sb (encodemb.c:648-660): for an INTER block `mbmi->skip_txfm`
+    // is re-derived from the ENCODE-time coefficients — init 1, cleared by any
+    // txb with eob > 0 (encode_block, :430). The search decided "no skip" on
+    // its own quantization (its MSE gate may have skipped trellis); the encode
+    // pass trellises every txb (`is_trellis_used`, FULL_TRELLIS_OPT), so a block
+    // the search coded can land all-zero here — and C then codes it as skip=1:
+    // no coeffs, entropy ctx 0 (av1_tokenize_sb_vartx → av1_reset_entropy_context),
+    // `tx_size = tx_size_from_tx_mode(bsize)` and `set_txfm_ctxs(.., skip=1)`
+    // (encode_superblock, partition_search.c:534-565, NOT dry-run gated). The
+    // mutation lands on the winner the pack later writes (KB-41: 1080p cq57 s6
+    // mi(18,78) — search skip=0 y_rate 193, encode all-zero → C skip=1).
+    let all_zero = y_txbs.iter().all(|t| t.eob == 0)
+        && u_out.as_ref().is_none_or(|o| o.txbs.iter().all(|t| t.eob == 0))
+        && v_out.as_ref().is_none_or(|o| o.txbs.iter().all(|t| t.eob == 0));
+    if all_zero {
+        winner.skip_txfm = true;
+        // tx_size_from_tx_mode(bsize, TX_MODE_SELECT) = max_txsize_rect_lookup
+        // (TX_4X4 when lossless) — the decoder's read_tx_size skip arm.
+        let tx = if env.lossless {
+            0
+        } else {
+            crate::tx_search::MAX_TXSIZE_RECT_LOOKUP[bsize]
+        };
+        winner.tx_size = tx;
+        winner.inter_tx_size = [tx; 16];
+        // set_txfm_ctxs(tx, w, h, skip && is_inter): ctx = block width/height
+        // in pixels (the skip convention the skip arm already uses).
+        state.above_tctx[a0..a0 + mi_w].fill((mi_w * 4) as u8);
+        state.left_tctx[l0..l0 + mi_h].fill((mi_h * 4) as u8);
+    } else if !output_enabled {
+        // txfm-partition contexts: C stamps them HERE only on a DRY run
+        // (partition_search.c:559-562 `if (dry_run) tx_partition_set_contexts`);
+        // on the OUTPUT path the pack's `write_tx_size_vartx` does it instead.
         aom_dsp::entropy::partition::tx_partition_set_contexts(
             bsize,
             &winner.inter_tx_size,

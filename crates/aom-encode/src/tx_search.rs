@@ -489,7 +489,7 @@ pub fn av1_pixel_diff_dist(
 /// `dc_coeff_scale[TX_SIZES_ALL]` (encodemb.h:168): 12-bit fixed-point
 /// DCT_DCT forward-transform normalization per tx size — sqrt(2) for 1:2/2:1,
 /// 2 for 1:4/4:1, an extra 2 for <=8x8; 64-point sizes unsupported (0).
-const DC_COEFF_SCALE: [u16; 19] = [
+pub(crate) const DC_COEFF_SCALE: [u16; 19] = [
     1024, 2048, 4096, 4096, 0, 1448, 1448, 2896, 2896, 2896, 2896, 0, 0, 2048, 2048, 4096, 4096, 0,
     0,
 ];
@@ -503,7 +503,7 @@ const DC_COEFF_SCALE: [u16; 19] = [
 /// gates, so it must be this form, not the integer one). `per_px_mean` is
 /// the transform-domain (<<7) signed mean; `block_var = sse - norm*sum²`
 /// (double-truncated).
-fn pixel_diff_stats(
+pub(crate) fn pixel_diff_stats(
     diff: &[i16],
     diff_stride: usize,
     visible_cols: usize,
@@ -1036,12 +1036,23 @@ pub struct TxTypeSearchPolicy {
     /// trellis `rshift = 7` (vs 5) arm in [`trellis_rdmult_intra`]
     /// (txb_rdopt.c:378-386). Default false (PSNR-family tunes).
     pub iq_tuning: bool,
+    /// `tx_sf.inter_tx_size_search_init_depth_rect` / `_sqr` — the inter arm of
+    /// `get_search_init_depth` (tx_search.c:374-377), read by the intrabc coeff
+    /// arm's var-tx recursion (KB-41; 0 at speed 0, 1 at allintra speed >= 1).
+    pub inter_tx_size_init_depth_rect: i32,
+    pub inter_tx_size_init_depth_sqr: i32,
+    /// `tx_sf.tx_type_search.ml_tx_split_thresh` (8500 default; 4000 at allintra
+    /// speed >= 1 and on the 1080p low-q qindex band) — the var-tx split NN gate.
+    pub ml_tx_split_thresh: i32,
 }
 
 impl TxTypeSearchPolicy {
     /// Speed-0 all-intra defaults (provenance per field above).
     pub fn speed0_allintra() -> Self {
         TxTypeSearchPolicy {
+            inter_tx_size_init_depth_rect: 0,
+            inter_tx_size_init_depth_sqr: 0,
+            ml_tx_split_thresh: 8500,
             skip_trellis: false,
             coeff_opt_dist_threshold: 3200,
             coeff_opt_satd_threshold: u32::MAX,
@@ -1126,6 +1137,9 @@ impl TxTypeSearchPolicy {
     /// (never set on the GOOD path — default 0, speed_features.c:2474).
     pub fn speed0_good() -> Self {
         TxTypeSearchPolicy {
+            inter_tx_size_init_depth_rect: 0,
+            inter_tx_size_init_depth_sqr: 0,
+            ml_tx_split_thresh: 8500,
             use_chroma_trellis_rd_mult: false,
             ..Self::speed0_allintra()
         }

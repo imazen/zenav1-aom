@@ -917,9 +917,10 @@ mod tests {
             full_ref_col: 0,
             error_per_bit: 1,
             sad_per_bit: 1,
+            skip_rows: false,
         };
         // start at (0,0); the exact match is at fullmv (row=-16, col=0).
-        let (sme, r, c) = full_pixel_diamond(&sr, 0, 0, 4, false);
+        let (sme, r, c) = full_pixel_diamond(&sr, 0, 0, 4, SiteCfg::Nstep);
         assert_eq!((r, c), (-16, 0), "diamond must land on the exact-repeat MV");
         // variance at the match is 0 (+ mv cost, which is 0 with zero tables).
         assert_eq!(sme, 0);
@@ -1222,9 +1223,124 @@ fn nstep_stage_sites(radius: i32, eight_pt: bool) -> ([(i32, i32); 13], usize) {
     (s, pts)
 }
 
+/// Full-pel search-site configurations (`search_site_config`,
+/// mcomp.c:396-633; `encoder.c:2507` builds NSTEP_8PT / CLAMPED_DIAMOND at
+/// `level 1`, the rest at `level 0`). Indexed by stage: `radii()[step]` is
+/// stage `step`'s radius, `stage_sites(radius)` its (center + candidates,
+/// `searches_per_step`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SiteCfg {
+    /// `init_motion_compensation_nstep`, level 0: 15 stages, 8/12 points.
+    Nstep,
+    /// `init_motion_compensation_nstep`, level 1: 16 stages, always 8 points.
+    Nstep8Pt,
+    /// `init_dsmotion_compensation`, level 0: `MAX_FIRST_STEP = 1024` halving
+    /// to 1 — 11 stages, 8 points.
+    Diamond,
+    /// `init_dsmotion_compensation`, level 1: `MAX_FIRST_STEP / 4 = 256` held
+    /// while `stage_index >= 9`, then halving — 11 stages, 8 points.
+    ClampedDiamond,
+}
+
+const DIAMOND_RADII: [i32; 11] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
+const CLAMPED_DIAMOND_RADII: [i32; 11] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 256, 256];
+
+impl SiteCfg {
+    fn radii(self) -> &'static [i32] {
+        match self {
+            SiteCfg::Nstep => &NSTEP_RADII,
+            SiteCfg::Nstep8Pt => &NSTEP_8PT_RADII,
+            SiteCfg::Diamond => &DIAMOND_RADII,
+            SiteCfg::ClampedDiamond => &CLAMPED_DIAMOND_RADII,
+        }
+    }
+    fn stage_sites(self, radius: i32) -> ([(i32, i32); 13], usize) {
+        match self {
+            SiteCfg::Nstep => nstep_stage_sites(radius, false),
+            SiteCfg::Nstep8Pt => nstep_stage_sites(radius, true),
+            // `search_site_mvs[13]` of init_dsmotion_compensation (mcomp.c:405):
+            // center, 4 axis, 4 diagonals — 8 points at every radius.
+            SiteCfg::Diamond | SiteCfg::ClampedDiamond => {
+                let r = radius;
+                (
+                    [
+                        (0, 0),
+                        (-r, 0),
+                        (r, 0),
+                        (0, -r),
+                        (0, r),
+                        (-r, -r),
+                        (r, r),
+                        (-r, r),
+                        (r, -r),
+                        (0, 0),
+                        (0, 0),
+                        (0, 0),
+                        (0, 0),
+                    ],
+                    8,
+                )
+            }
+        }
+    }
+    /// The mesh follow-on of `av1_full_pixel_search` is NSTEP-only
+    /// (mcomp.c:1828 `search_method == NSTEP || search_method == NSTEP_8PT`).
+    fn allows_mesh(self) -> bool {
+        matches!(self, SiteCfg::Nstep | SiteCfg::Nstep8Pt)
+    }
+    fn from_method(m: crate::speed_features::MvSearchMethod) -> Self {
+        use crate::speed_features::MvSearchMethod as M;
+        match m {
+            M::Nstep => SiteCfg::Nstep,
+            M::Nstep8Pt => SiteCfg::Nstep8Pt,
+            M::Diamond => SiteCfg::Diamond,
+            M::ClampedDiamond => SiteCfg::ClampedDiamond,
+        }
+    }
+}
+
+/// `av1_get_default_mv_search_method` (motion_search_facade.h:118) for the
+/// intrabc DV search: `mv_sf.search_method`, made one step faster
+/// (`av1_get_faster_search_method`, :103: NSTEP/NSTEP_8PT → DIAMOND,
+/// DIAMOND/CLAMPED_DIAMOND → BIGDIA) when `use_bsize_dependent_search_method`
+/// is 1..=3 and `min(bw, bh) >= {128, 64, 32}[m - 1]`. Method 4 needs the
+/// nonrd `source_sad_nonrd` state and never arises on the all-intra path.
+fn intrabc_search_cfg(mv_sf: &crate::speed_features::MvSpeedFeatures, bw: usize, bh: usize) -> SiteCfg {
+    use crate::speed_features::MvSearchMethod as M;
+    let m = mv_sf.use_bsize_dependent_search_method;
+    let faster = (1..=3).contains(&m) && bw.min(bh) >= [128usize, 64, 32][(m - 1) as usize];
+    let method = if faster {
+        match mv_sf.search_method {
+            M::Nstep | M::Nstep8Pt => M::Diamond,
+            M::Diamond | M::ClampedDiamond => unreachable!(
+                "BIGDIA (pattern_search) is unported: the all-intra ladder sets \
+                 use_bsize_dependent_search_method = 3 only at speed >= 6, where \
+                 intrabc_search_level 1 caps the DV search at 16x16 (< the 32-px bar); \
+                 got {}x{} with {:?}",
+                bw, bh, mv_sf.search_method
+            ),
+        }
+    } else {
+        mv_sf.search_method
+    };
+    SiteCfg::from_method(method)
+}
+
+/// `intrabc_mesh_patterns[MAX_MESH_SPEED + 1][MAX_MESH_STEP]`
+/// (speed_features.c:38), `(range, interval)` per step, row = `mesh_speed`.
+const INTRABC_MESH_PATTERNS: [[(i32, i32); 4]; 6] = [
+    [(256, 1), (256, 1), (0, 0), (0, 0)],
+    [(256, 1), (256, 1), (0, 0), (0, 0)],
+    [(64, 1), (64, 1), (0, 0), (0, 0)],
+    [(64, 1), (64, 1), (0, 0), (0, 0)],
+    [(64, 4), (16, 1), (0, 0), (0, 0)],
+    [(64, 4), (16, 1), (0, 0), (0, 0)],
+];
+
 /// The frame-invariant inputs of one full-pel search direction (`src`, `ref =
 /// recon`, the DV cost tables, the mv limits). Offsets are block-origin; a
 /// full-pel MV `(row, col)` addresses `recon[ref_off + row*stride + col]`.
+#[derive(Clone, Copy)]
 struct FullPelSearch<'a> {
     src: &'a [u16],
     src_off: usize,
@@ -1246,6 +1362,9 @@ struct FullPelSearch<'a> {
     full_ref_col: i32,
     error_per_bit: i32,
     sad_per_bit: i32,
+    /// `use_downsampled_sad == 2` (mcomp.c:127): the search SADs (`sdf` /
+    /// `sdx4df`) are the skip-row kind — `2 * SAD(even rows)`.
+    skip_rows: bool,
 }
 
 impl FullPelSearch<'_> {
@@ -1267,8 +1386,29 @@ impl FullPelSearch<'_> {
     fn ref_at(&self, r: i32, c: i32) -> usize {
         (self.ref_off as i64 + i64::from(r) * self.ref_stride as i64 + i64::from(c)) as usize
     }
+    /// `ms_params->sdf`: the full SAD, or — when `skip_rows` — the skip-row
+    /// SAD (`aom_sad_skip_WxH` = `2 * sad(src, 2*stride, ref, 2*stride, w,
+    /// h/2)`, aom_dsp/sad.c:54; the highbd form :263 is identical).
     #[inline]
     fn sad(&self, r: i32, c: i32) -> u32 {
+        if self.skip_rows {
+            2 * sad_wxh(
+                self.src,
+                self.src_off,
+                2 * self.src_stride,
+                self.refb,
+                self.ref_at(r, c),
+                2 * self.ref_stride,
+                self.w,
+                self.h / 2,
+            )
+        } else {
+            self.sad_full(r, c)
+        }
+    }
+    /// `vfp->sdf`: the full SAD regardless of `skip_rows`.
+    #[inline]
+    fn sad_full(&self, r: i32, c: i32) -> u32 {
         sad_wxh(
             self.src,
             self.src_off,
@@ -1321,9 +1461,9 @@ fn diamond_search_sad(
     start_col: i32,
     start_sad: u32,
     search_step: usize,
-    eight_pt: bool,
+    cfg: SiteCfg,
 ) -> (u32, i32, i32, i32) {
-    let radii = nstep_radii(eight_pt);
+    let radii = cfg.radii();
     let tot_steps = radii.len() - search_step;
     let mut best_row = start_row;
     let mut best_col = start_col;
@@ -1334,7 +1474,7 @@ fn diamond_search_sad(
     let mut step = tot_steps as i32 - 1;
     while step >= 0 {
         let radius = radii[step as usize];
-        let (site, num_searches) = nstep_stage_sites(radius, eight_pt);
+        let (site, num_searches) = cfg.stage_sites(radius);
         let mut best_site = 0usize;
 
         // Trap: whole ±radius cross inside limits (mcomp.c:1400-1405) — then the
@@ -1389,21 +1529,21 @@ fn full_pixel_diamond(
     start_row: i32,
     start_col: i32,
     step_param: usize,
-    eight_pt: bool,
+    cfg: SiteCfg,
 ) -> (i64, i32, i32) {
     let (start_row, start_col) = s.clamp(start_row, start_col);
     let start_sad = s.sad_mv_cost(start_row, start_col) + s.sad(start_row, start_col);
 
     let (_sad0, mut best_row, mut best_col, n0) =
-        diamond_search_sad(s, start_row, start_col, start_sad, step_param, eight_pt);
+        diamond_search_sad(s, start_row, start_col, start_sad, step_param, cfg);
     let mut bestsme = s.var_cost(best_row, best_col);
 
-    let further_steps = nstep_radii(eight_pt).len() as i32 - 1 - step_param as i32;
+    let further_steps = cfg.radii().len() as i32 - 1 - step_param as i32;
     let mut n = n0;
     while n < further_steps {
         n += 1;
         let (_sad, tr, tc, num00) =
-            diamond_search_sad(s, start_row, start_col, start_sad, step_param + n as usize, eight_pt);
+            diamond_search_sad(s, start_row, start_col, start_sad, step_param + n as usize, cfg);
         let thissme = s.var_cost(tr, tc);
         if thissme < bestsme {
             bestsme = thissme;
@@ -1465,15 +1605,22 @@ fn exhaustive_mesh_search(
     (best_sad, best_row, best_col)
 }
 
-/// `full_pixel_exhaustive` (mcomp.c:1615) for the intrabc mesh pattern
-/// (`{range:256, interval:1}` at speed 0, `fine_search_interval == 0`): a
-/// single range-256 interval-1 pass; returns the variance cost + MV.
-fn full_pixel_exhaustive(s: &FullPelSearch, start_row: i32, start_col: i32) -> (i64, i32, i32) {
+/// `full_pixel_exhaustive` (mcomp.c:1615) on an `intrabc_mesh_patterns` row:
+/// step 0 = `(range, interval)` with the range widened to `5/4 * max(|mv|)`
+/// (capped 256) and the interval rescaled by the baseline divisor
+/// (`fine_search_interval == 0` for intrabc → no interval clamp); when the
+/// resolved interval is > 1 (and range > 7) the later steps refine until an
+/// interval-1 step runs. Returns the variance cost + MV.
+fn full_pixel_exhaustive(
+    s: &FullPelSearch,
+    start_row: i32,
+    start_col: i32,
+    patterns: &[(i32, i32); 4],
+) -> (i64, i32, i32) {
     const K_MIN_RANGE: i32 = 7;
     const K_MAX_RANGE: i32 = 256;
     const K_MIN_INTERVAL: i32 = 1;
-    let interval = 1i32;
-    let mut range = 256i32;
+    let (mut range, interval) = patterns[0];
     let mut best_row = start_row;
     let mut best_col = start_col;
     if range < K_MIN_RANGE || range > K_MAX_RANGE || interval < K_MIN_INTERVAL || interval > range {
@@ -1483,17 +1630,74 @@ fn full_pixel_exhaustive(s: &FullPelSearch, start_row: i32, start_col: i32) -> (
     range = range.max((5 * best_row.abs().max(best_col.abs())) / 4);
     range = range.min(K_MAX_RANGE);
     let interval = interval.max(range / baseline_interval_divisor);
-    // fine_search_interval == 0 → no interval clamp.
-    let (best_sad, r, c) = exhaustive_mesh_search(s, best_row, best_col, range, interval);
+    let (mut best_sad, r, c) = exhaustive_mesh_search(s, best_row, best_col, range, interval);
     best_row = r;
     best_col = c;
-    // interval == 1 → the progressive-search loop is skipped (single pass).
+    if interval > K_MIN_INTERVAL && range > K_MIN_RANGE {
+        for &(rg, iv) in &patterns[1..] {
+            let (bs, r2, c2) = exhaustive_mesh_search(s, best_row, best_col, rg, iv);
+            best_sad = bs;
+            best_row = r2;
+            best_col = c2;
+            if iv == 1 {
+                break;
+            }
+        }
+    }
     let bestsme = if best_sad < u32::MAX {
         s.var_cost(best_row, best_col)
     } else {
         i64::MAX
     };
     (bestsme, best_row, best_col)
+}
+
+/// `av1_full_pixel_search` (mcomp.c:1768) for the intrabc DV search (no
+/// compound, `is_intra_mode`): the method dispatch (NSTEP / NSTEP_8PT /
+/// DIAMOND / CLAMPED_DIAMOND all run `full_pixel_diamond` on their own site
+/// config), the NSTEP-only mesh follow-on (`exhaustive_searches_thresh >>
+/// (10 - log2(mi_w * mi_h))` on the variance cost, `intrabc_mesh_patterns`),
+/// and the skip-row SAD quality re-check (:1847-1880): when the search ran on
+/// skip-row SADs and the winner's skip-row SAD is off by >= 90% of its full
+/// SAD (past `1 << log2(mi_w * mi_h)`), the WHOLE search re-runs with full
+/// SADs and that result is returned. `prune_mesh_search` is
+/// `!is_intra_mode`-gated (:1839) and never applies here.
+#[allow(clippy::too_many_arguments)]
+fn full_pixel_search_intrabc(
+    s: &FullPelSearch,
+    start_row: i32,
+    start_col: i32,
+    step_param: usize,
+    cfg: SiteCfg,
+    mi_w: usize,
+    mi_h: usize,
+    mesh_thresh: i64,
+    mesh_patterns: &[(i32, i32); 4],
+) -> (i64, i32, i32) {
+    let (mut var, mut best_row, mut best_col) =
+        full_pixel_diamond(s, start_row, start_col, step_param, cfg);
+    let log2_mi = (mi_w.trailing_zeros() + mi_h.trailing_zeros()) as i64;
+    let run_mesh = cfg.allows_mesh() && var > (mesh_thresh >> (10 - log2_mi));
+    if s.skip_rows {
+        let sad = i64::from(s.sad_full(best_row, best_col));
+        let skip_sad = i64::from(s.sad(best_row, best_col));
+        let k_sad_thresh = 1i64 << log2_mi;
+        if sad > k_sad_thresh && (skip_sad - sad).abs() * 10 >= sad.max(1) * 9 {
+            let full = FullPelSearch { skip_rows: false, ..*s };
+            return full_pixel_search_intrabc(
+                &full, start_row, start_col, step_param, cfg, mi_w, mi_h, mesh_thresh, mesh_patterns,
+            );
+        }
+    }
+    if run_mesh {
+        let (var_ex, mr, mc) = full_pixel_exhaustive(s, best_row, best_col, mesh_patterns);
+        if var_ex < var {
+            var = var_ex;
+            best_row = mr;
+            best_col = mc;
+        }
+    }
+    (var, best_row, best_col)
 }
 
 /// `GET_MV_RAWPEL` / `get_fullmv_from_mv` (mv.h:28,79): round a 1/8-pel subpel
@@ -1559,8 +1763,9 @@ pub fn full_pixel_search_inter(
         full_ref_col,
         error_per_bit,
         sad_per_bit,
+        skip_rows: false,
     };
-    full_pixel_diamond(&s, full_ref_row, full_ref_col, step_param, false)
+    full_pixel_diamond(&s, full_ref_row, full_ref_col, step_param, SiteCfg::Nstep)
 }
 
 // ---------------------------------------------------------------------------
@@ -1702,6 +1907,8 @@ pub struct IntrabcLeafArgs<'a> {
     /// `cpi->mv_search_params.mv_step_param` (`av1_init_search_range(max(w,h))`)
     /// — the NSTEP diamond's coarsest stage.
     pub mv_step_param: usize,
+    /// The frame's intrabc-facing `MV_SPEED_FEATURES` (`IntrabcFrameCfg::mv_sf`).
+    pub mv_sf: crate::speed_features::MvSpeedFeatures,
     pub intrabc_cost: &'a [i32; 2],
     pub skip_costs: &'a [[i32; 2]; 3],
     /// `av1_get_skip_txfm_context(xd)` from the DvCell grid's above/left skip
@@ -1762,6 +1969,23 @@ pub struct IntrabcVarTxKnobs {
     /// `get_search_init_depth` for inter (`inter_tx_size_search_init_depth_rect
     /// /_sqr`) — 0 at speed 0 sub-720p.
     pub init_depth: i32,
+    /// DEFAULT_EVAL `txfm_params->use_transform_domain_distortion`
+    /// (`tx_domain_dist_types[tx_domain_dist_level][0]`).
+    pub use_transform_domain_distortion: u8,
+    /// DEFAULT_EVAL `txfm_params->tx_domain_dist_threshold`.
+    pub tx_domain_dist_threshold: u32,
+    /// DEFAULT_EVAL `txfm_params->predict_dc_level` (1 at allintra speed >= 6).
+    pub predict_dc_level: u32,
+    /// `txfm_params->prune_2d_txfm_mode` at DEFAULT_EVAL (the raw sf: PRUNE_1
+    /// default, PRUNE_2 at allintra speed >= 1, PRUNE_3 at speed >= 4) — the
+    /// `prune_tx_2D` aggressiveness row + `allowed_tx_count` (tx_search.c:1931).
+    pub prune_2d_txfm_mode: i32,
+    /// `tx_sf.tx_type_search.skip_tx_search` (allintra speed >= 1): end the
+    /// tx-type loop once the best is all-zero (tx_search.c:2362).
+    pub skip_tx_search: bool,
+    /// `tx_sf.tx_type_search.prune_tx_type_using_stats` (framesize-dependent 1/2):
+    /// KF-probability pruning of the luma multi-type mask (tx_search.c:1887).
+    pub prune_tx_type_using_stats: u8,
 }
 
 /// The intrabc winner (mirrors `best_mbmi` + rd_stats of rdopt.c:3494-3646).
@@ -1831,7 +2055,15 @@ pub fn rd_pick_intrabc_mode_sb(
     // when block_width != block_height, mcomp.c:1918); the full-pel pixel
     // search runs for every bsize. (Non-square intrabc IS common — real screen
     // content codes many 4x8 / 8x4 / 16x4 intrabc blocks via the diamond.)
-    let hash_eligible = bw == bh;
+    // rdopt.c:3435: at intrabc_search_level >= 1 only 4x4 / 8x8 / 16x16 blocks
+    // get a DV search at all.
+    if a.mv_sf.intrabc_search_level >= 1 && !matches!(a.bsize, 0 | 3 | 6) {
+        return None;
+    }
+    // av1_intrabc_hash_search needs a square block (mcomp.c:1918); at
+    // `hash_max_8x8_intrabc_blocks` (speed >= 4) it runs only for
+    // `bsize <= BLOCK_8X8` (rdopt.c:3562).
+    let hash_eligible = bw == bh && (!a.mv_sf.hash_max_8x8_intrabc_blocks || a.bsize <= 3);
 
     // --- dv_ref (rdopt.c:3453-3478) ---
     // find_dv_ref_mvs returns (nearest_row, nearest_col, near_row, near_col)
@@ -1882,9 +2114,10 @@ pub fn rd_pick_intrabc_mode_sb(
     let mut best: Option<IntrabcBest> = None;
     let mut best_rd = best_rd_in;
 
-    // IBC_MOTION_ABOVE=0, IBC_MOTION_LEFT=1; intrabc_search_level=0 (speed 0)
-    // searches BOTH (rdopt.c:3510-3512).
-    for dir in 0..2 {
+    // IBC_MOTION_ABOVE=0, IBC_MOTION_LEFT=1; intrabc_search_level 0 searches
+    // BOTH, level >= 1 only ABOVE (rdopt.c:3510-3512 `max_dir`).
+    let max_dir = if a.mv_sf.intrabc_search_level >= 1 { 1 } else { 2 };
+    for dir in 0..max_dir {
         let mut lim = if dir == 0 {
             FullMvLimits {
                 col_min: (a.tile.mi_col_start - a.mi_col) * MI_SIZE,
@@ -1908,7 +2141,7 @@ pub fn rd_pick_intrabc_mode_sb(
 
         // --- av1_intrabc_hash_search (mcomp.c:1908) ---
         // bestsme starts INT_MAX; the hash sets it (or leaves it) then the
-        // pixel search ALWAYS runs at intrabc_search_level 0 (rdopt.c:3570).
+        // pixel search follows at intrabc_search_level 0, and at level 1 only when the hash found nothing (rdopt.c:3570).
         let mut bestsme: i64 = i64::MAX;
         let mut best_mv: Option<(i32, i32)> = None; // full-pel (row, col)
         // Square blocks only (mcomp.c:1918) query the source-frame hash.
@@ -1922,7 +2155,15 @@ pub fn rd_pick_intrabc_mode_sb(
                 let x_pos = a.mi_col * MI_SIZE;
                 let y_pos = a.mi_row * MI_SIZE;
                 let mut best_hash_cost = i64::MAX;
-                for cand in bucket.iter() {
+                // `prune_intrabc_candidate_block_hash_search` (speed >= 1):
+                // `count = AOMMIN(64, count)` (mcomp.c:1944) — the FIRST 64
+                // entries in insertion order, after the `count <= 1` bail.
+                let count = if a.mv_sf.prune_intrabc_candidate_block_hash_search {
+                    bucket.len().min(64)
+                } else {
+                    bucket.len()
+                };
+                for cand in bucket.iter().take(count) {
                     if cand.hash_value2 != h2 {
                         continue;
                     }
@@ -1969,44 +2210,45 @@ pub fn rd_pick_intrabc_mode_sb(
             }
         }
 
-        // --- av1_full_pixel_search (NSTEP diamond + mesh), ALWAYS at level 0.
-        // The search REFERENCE is the SOURCE frame (see the hash-arm note
-        // above): C's ms_buffers.ref comes from `xd->cur_buf = cpi->source`.
-        let s = FullPelSearch {
-            src: a.src_y,
-            src_off: a.off_y,
-            refb: a.src_y,
-            ref_off: a.off_y,
-            src_stride: a.stride,
-            ref_stride: a.stride,
-            w: bw,
-            h: bh,
-            limits: lim,
-            dv: a.dv_costs,
-            ref_row_sub: ref_r,
-            ref_col_sub: ref_c,
-            full_ref_row: ref_r >> 3,
-            full_ref_col: ref_c >> 3,
-            error_per_bit: a.error_per_bit,
-            sad_per_bit: a.sad_per_bit,
-        };
-        {
-            let (mut sme, mut pr, mut pc) =
-                full_pixel_diamond(&s, ref_r >> 3, ref_c >> 3, a.mv_step_param, true);
-            // Mesh gate (mcomp.c:1827): `var > (force_mesh_thresh >> (10 -
-            // (w_log2 + h_log2)))`. force_mesh_thresh = exhaustive_searches_thresh
-            // = 1<<20 (screen content). is_intra_mode ⇒ no prune gate.
-            let w_log2 = (crate::tx_search::MI_SIZE_WIDE_B[a.bsize]).trailing_zeros() as i32;
-            let h_log2 = (crate::tx_search::MI_SIZE_HIGH_B[a.bsize]).trailing_zeros() as i32;
-            let exhaustive_thr: i64 = (1i64 << 20) >> (10 - (w_log2 + h_log2));
-            if sme > exhaustive_thr {
-                let (msme, mr, mc) = full_pixel_exhaustive(&s, pr, pc);
-                if msme < sme {
-                    sme = msme;
-                    pr = mr;
-                    pc = mc;
-                }
-            }
+        // --- av1_full_pixel_search (mcomp.c:1768) --- ALWAYS follows the hash
+        // search at intrabc_search_level 0; at level 1 only when the hash found
+        // nothing (rdopt.c:3570 `bestsme == INT_MAX || intrabc_search_level ==
+        // 0`). The pixel winner replaces the hash winner only when cheaper
+        // (rdopt.c:3575 `pixelsme < bestsme`).
+        if bestsme == i64::MAX || a.mv_sf.intrabc_search_level == 0 {
+            let cfg = intrabc_search_cfg(&a.mv_sf, bw, bh);
+            let s = FullPelSearch {
+                src: a.src_y,
+                src_off: a.off_y,
+                refb: a.src_y,
+                ref_off: a.off_y,
+                src_stride: a.stride,
+                ref_stride: a.stride,
+                w: bw,
+                h: bh,
+                limits: lim,
+                dv: a.dv_costs,
+                ref_row_sub: ref_r,
+                ref_col_sub: ref_c,
+                full_ref_row: ref_r >> 3,
+                full_ref_col: ref_c >> 3,
+                error_per_bit: a.error_per_bit,
+                sad_per_bit: a.sad_per_bit,
+                // `use_downsampled_sad == 2 && block_size_high[bsize] >= 16`
+                // (mcomp.c:127).
+                skip_rows: a.mv_sf.use_downsampled_sad == 2 && bh >= 16,
+            };
+            let (sme, pr, pc) = full_pixel_search_intrabc(
+                &s,
+                ref_r >> 3,
+                ref_c >> 3,
+                a.mv_step_param,
+                cfg,
+                mi_w,
+                mi_h,
+                a.mv_sf.exhaustive_searches_thresh,
+                &INTRABC_MESH_PATTERNS[a.mv_sf.mesh_speed],
+            );
             if sme < bestsme {
                 bestsme = sme;
                 best_mv = Some((pr, pc));
@@ -2017,7 +2259,8 @@ pub fn rd_pick_intrabc_mode_sb(
             continue; // bestsme == INT_MAX
         };
         // Re-validate (rdopt.c:3582-3587): in-range + dv-valid.
-        if !s.in_range(fm_r, fm_c) {
+        // av1_is_fullmv_in_range(&fullms_params.mv_limits, ..) (rdopt.c:3583).
+        if fm_c < lim.col_min || fm_c > lim.col_max || fm_r < lim.row_min || fm_r > lim.row_max {
             continue;
         }
         let dv_r = fm_r * 8;
@@ -2185,6 +2428,12 @@ pub fn rd_pick_intrabc_mode_sb(
                 ml_tx_split_thresh: a.vartx.ml_tx_split_thresh,
                 prune_2d: a.vartx.prune_2d,
                 init_depth: a.vartx.init_depth,
+                use_transform_domain_distortion: a.vartx.use_transform_domain_distortion,
+                tx_domain_dist_threshold: a.vartx.tx_domain_dist_threshold,
+                predict_dc_level: a.vartx.predict_dc_level,
+                prune_2d_txfm_mode: a.vartx.prune_2d_txfm_mode,
+                skip_tx_search: a.vartx.skip_tx_search,
+                prune_tx_type_using_stats: a.vartx.prune_tx_type_using_stats,
             };
             let r = crate::var_tx::pick_recursive_tx_size_type_yrd(&env, i64::MAX);
             // `if (rd_stats_y->rate == INT_MAX) return 0` (tx_search.c:3834).
@@ -2305,6 +2554,12 @@ pub fn rd_pick_intrabc_mode_sb(
                 iq_tuning: a.vartx.iq_tuning,
                 coeff_opt_dist_threshold: a.vartx.coeff_opt_dist_threshold,
                 adaptive_txb_search_level: a.vartx.adaptive_txb_search_level,
+                use_transform_domain_distortion: a.vartx.use_transform_domain_distortion,
+                tx_domain_dist_threshold: a.vartx.tx_domain_dist_threshold,
+                predict_dc_level: a.vartx.predict_dc_level,
+                prune_2d_txfm_mode: a.vartx.prune_2d_txfm_mode,
+                skip_tx_search: a.vartx.skip_tx_search,
+                prune_tx_type_using_stats: a.vartx.prune_tx_type_using_stats,
                 qm_level: [a.qm_levels.map(|q| q[1]), a.qm_levels.map(|q| q[2])],
             };
             match crate::var_tx::txfm_uvrd_inter(&uenv, i64::MAX) {

@@ -112,6 +112,82 @@ pub const CDEF_FAST_SEARCH_LVL1: i32 = 1;
 /// luma modes carried from model-RD to full RD.
 pub const TOP_INTRA_MODEL_COUNT: i32 = 4;
 
+/// `SEARCH_METHODS` (mcomp.h) — the full-pel search methods the intrabc DV
+/// search resolves to on the all-intra path. BIGDIA (`pattern_search`) is not
+/// ported: the ladder enables the bsize-dependent "faster" step
+/// (`use_bsize_dependent_search_method = 3`, `min_dim >= 32`) only at speed
+/// >= 6, where `intrabc_search_level 1` caps the DV search at 16x16, so it is
+/// structurally unreachable there (asserted at the selection site).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MvSearchMethod {
+    /// `init_motion_compensation_nstep` level 0: 15 stages, 8/12 points.
+    Nstep,
+    /// `init_motion_compensation_nstep` level 1: 16 stages, always 8 points.
+    Nstep8Pt,
+    /// `init_dsmotion_compensation` level 0: 11 stages, radius `2^step`.
+    Diamond,
+    /// `init_dsmotion_compensation` level 1: 11 stages, top radius 256 held
+    /// for three stages.
+    ClampedDiamond,
+}
+
+/// The `MV_SPEED_FEATURES` fields the intrabc DV search reads
+/// (`rd_pick_intrabc_mode_sb`, rdopt.c:3427 +
+/// `av1_make_default_fullpel_ms_params`, mcomp.c:76). Every one is speed-,
+/// size- or qindex-dependent on the all-intra ladder, and all of them are
+/// LIVE the moment a screen-detected frame codes `allow_intrabc` (KB-41: the
+/// port ran the speed-0 search at every speed and lost the C IntraBC winners
+/// on 1080p/1280x800 screenshots at cpu 6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MvSpeedFeatures {
+    /// `mv_sf.search_method` — NSTEP (`init_mv_sf`, speed_features.c:2338),
+    /// DIAMOND at speed >= 3 (:449), then the speed <= 2 resolution + qindex
+    /// bands of `av1_set_speed_features_qindex_dependent` (:2986-3027).
+    pub search_method: MvSearchMethod,
+    /// `mv_sf.use_bsize_dependent_search_method` — 0, then 3 at speed >= 6 (:548).
+    pub use_bsize_dependent_search_method: i32,
+    /// `mv_sf.intrabc_search_level` — 0, then 1 at speed >= 6 (:549): the DV
+    /// search runs only at 4x4/8x8/16x16 (rdopt.c:3435), only in the ABOVE
+    /// direction (:3510), and its pixel search only when the hash search
+    /// found nothing (:3570).
+    pub intrabc_search_level: i32,
+    /// `mv_sf.hash_max_8x8_intrabc_blocks` — speed >= 4 (:500): the hash
+    /// search only for `bsize <= BLOCK_8X8` (rdopt.c:3562).
+    pub hash_max_8x8_intrabc_blocks: bool,
+    /// `mv_sf.prune_intrabc_candidate_block_hash_search` — speed >= 1 (:400):
+    /// at most the first 64 hash candidates (mcomp.c:1944).
+    pub prune_intrabc_candidate_block_hash_search: bool,
+    /// `mv_sf.exhaustive_searches_thresh` — `1 << 20` on a screen-content
+    /// frame, else `1 << 25` (:377-381), doubled at speed >= 1 (:399). Gates
+    /// the NSTEP-only mesh follow-on (mcomp.c:1827).
+    pub exhaustive_searches_thresh: i64,
+    /// `AOMMIN(speed, MAX_MESH_SPEED)` (:2760): the `intrabc_mesh_patterns` row.
+    pub mesh_speed: usize,
+    /// `mv_sf.use_downsampled_sad` — 2 for `min(w, h) >= 720` at EVERY
+    /// all-intra speed (framesize-dependent, :203-207): the full-pel search
+    /// SADs skip every other row for blocks with `bh >= 16` (mcomp.c:127),
+    /// with the quality re-check of `av1_full_pixel_search` (:1847).
+    pub use_downsampled_sad: i32,
+}
+
+impl MvSpeedFeatures {
+    /// `init_mv_sf` (:2325-2356) + the allintra base block (:377-381), before
+    /// the speed ladder, the framesize pass and the qindex pass.
+    pub fn allintra_base(speed: i32, allow_screen_content_tools: bool) -> Self {
+        Self {
+            search_method: MvSearchMethod::Nstep,
+            use_bsize_dependent_search_method: 0,
+            intrabc_search_level: 0,
+            hash_max_8x8_intrabc_blocks: false,
+            prune_intrabc_candidate_block_hash_search: false,
+            // `cpi->use_screen_content_tools` is the frame's screen detection.
+            exhaustive_searches_thresh: if allow_screen_content_tools { 1 << 20 } else { 1 << 25 },
+            mesh_speed: speed.clamp(0, 5) as usize,
+            use_downsampled_sad: 0,
+        }
+    }
+}
+
 /// The intra-still-relevant subset of libaom's `SPEED_FEATURES`, resolved for
 /// one speed level on the **all-intra KEY** path. Field names mirror the C
 /// `sf->group.field` (the group prefix is dropped; see the doc on each field).
@@ -332,6 +408,13 @@ pub struct SpeedFeatures {
     /// `tx_sf.intra_tx_size_search_init_depth_sqr` — allintra base 1
     /// (speed_features.c:367); unchanged through speed 1.
     pub intra_tx_size_search_init_depth_sqr: i32,
+    /// `tx_sf.inter_tx_size_search_init_depth_rect` — default 0 (init_tx_sf:2452);
+    /// allintra speed>=1 -> 1 (:407). Inter-only in C, LIVE for the intrabc
+    /// coeff arm (`get_search_init_depth(is_inter=1)`, tx_search.c:374) — KB-41.
+    pub inter_tx_size_search_init_depth_rect: i32,
+    /// `tx_sf.inter_tx_size_search_init_depth_sqr` — default 0 (:2451); allintra
+    /// speed>=1 -> 1 (:408). Same intrabc consumer as the rect one.
+    pub inter_tx_size_search_init_depth_sqr: i32,
     /// `tx_sf.model_based_prune_tx_search_level` — allintra base 1
     /// (speed_features.c:368); speed>=1 -> 0 (speed_features.c:410). NOTE the
     /// 1->0 reversal: speed 1 *disables* model-based tx-search pruning.
@@ -504,6 +587,8 @@ pub struct SpeedFeatures {
     /// hard-set to 2 at encoder.c:598/607. So the parsed frame header's
     /// `allow_screen_content_tools` is a faithful source for this flag.
     pub allow_screen_content_tools: bool,
+    /// The intrabc-facing `mv_sf` fields (see [`MvSpeedFeatures`]).
+    pub mv_sf: MvSpeedFeatures,
 }
 
 impl SpeedFeatures {
@@ -520,6 +605,7 @@ impl SpeedFeatures {
         // ---- base (speed-0) values = allintra base block overrides layered
         //      over the init_*_sf defaults. ----
         let mut sf = SpeedFeatures {
+            mv_sf: MvSpeedFeatures::allintra_base(speed, allow_screen_content_tools),
             // part_sf
             less_rectangular_check_level: 1, // allintra base (speed_features.c:352)
             intra_cnn_based_part_prune_level: 0, // init_part_sf:2311
@@ -554,6 +640,8 @@ impl SpeedFeatures {
             adaptive_txb_search_level: 1, // allintra base (:366)
             intra_tx_size_search_init_depth_rect: 0, // init_tx_sf:2453
             intra_tx_size_search_init_depth_sqr: 1, // allintra base (:367)
+            inter_tx_size_search_init_depth_rect: 0, // init_tx_sf:2452
+            inter_tx_size_search_init_depth_sqr: 0, // init_tx_sf:2451
             model_based_prune_tx_search_level: 1, // allintra base (:368)
             use_chroma_trellis_rd_mult: true, // allintra base (:370)
             use_rd_based_breakout_for_intra_tx_search: false, // init_tx_sf:2472 (see field doc — speed>=3 flip deferred to KB-8 2d-iv)
@@ -590,6 +678,9 @@ impl SpeedFeatures {
         // ---- if (speed >= 1) { ... } (speed_features.c:386-422 independent,
         //      :209-234 dependent) — the intra-still-relevant deltas. ----
         if speed >= 1 {
+            // mv_sf (:399-400) — LIVE on screen-detected intrabc frames (KB-41).
+            sf.mv_sf.exhaustive_searches_thresh <<= 1;
+            sf.mv_sf.prune_intrabc_candidate_block_hash_search = true;
             // part_sf (independent + dependent)
             sf.intra_cnn_based_part_prune_level = if allow_screen_content_tools { 0 } else { 2 };
             sf.reuse_best_prediction_for_part_ab = 1;
@@ -601,6 +692,8 @@ impl SpeedFeatures {
             // tx_sf
             sf.adaptive_txb_search_level = 2;
             sf.intra_tx_size_search_init_depth_rect = 1;
+            sf.inter_tx_size_search_init_depth_rect = 1; // :407 (intrabc coeff arm, KB-41)
+            sf.inter_tx_size_search_init_depth_sqr = 1; // :408
             sf.model_based_prune_tx_search_level = 0;
             // tx_sf.tx_type_search
             sf.tx_ml_tx_split_thresh = 4000;
@@ -697,6 +790,8 @@ impl SpeedFeatures {
         //   intra tx path does not consume) and `use_rd_based_breakout_for_intra_tx
         //   _search` (:460, intra tx-size-search early-exit — byte no-op on this grid).
         if speed >= 3 {
+            // mv_sf (:449) — LIVE on screen-detected intrabc frames (KB-41).
+            sf.mv_sf.search_method = MvSearchMethod::Diamond;
             // part_sf (framesize-independent, :444)
             sf.less_rectangular_check_level = 2;
             // part_sf (framesize-dependent, :271) — see the level-3 note above.
@@ -774,8 +869,9 @@ impl SpeedFeatures {
         //     - Motion/MV (`subpel_search_method`, `simple_motion_search_prune_agg
         //       = LVL4`, `simple_motion_search_reduce_search_steps`,
         //       `simple_motion_subpel_force_stop`, `reduce_search_range`,
-        //       `hash_max_8x8_intrabc_blocks`) — inter/motion/intrabc, none run on
-        //       the all-intra KEY path.
+        //       `hash_max_8x8_intrabc_blocks`) — inter/motion; the intrabc one
+        //       IS live on screen-detected frames and is carried in `mv_sf`
+        //       (KB-41); the rest never run on the all-intra KEY path.
         //     - TPL (`prune_starting_mv`, `subpel_force_stop`, `search_method`) — no
         //       TPL stage for a single all-intra KEY frame.
         //     - `cdef_pick_method = CDEF_FAST_SEARCH_LVL3` (:497) — CDEF off in the
@@ -784,6 +880,8 @@ impl SpeedFeatures {
         //       (INTER), `prune_tx_type_using_stats = 2` (needs is_480p_or_larger —
         //       false on the {64,128}^2 grid).
         if speed >= 4 {
+            // mv_sf (:500) — LIVE on screen-detected intrabc frames (KB-41).
+            sf.mv_sf.hash_max_8x8_intrabc_blocks = true;
             // part_sf (:477) — LIVE, consumer wired in `rd_pick_partition_real`
             // (KB-21). NOT inert: see the field doc.
             sf.early_term_after_none_split = Self::early_term_after_none_split_allintra(speed);
@@ -845,9 +943,9 @@ impl SpeedFeatures {
         //     - `disable_wiener_filter` / `disable_sgr_filter = true`
         //       (:519-520) — loop-restoration search is OFF in the allintra
         //       envelope (CLAUDE.md primary-envelope note).
-        //     - `prune_mesh_search = PRUNE_MESH_SEARCH_LVL_2` (:522) — mesh
-        //       search is motion/intrabc-only (intrabc mesh runs only on
-        //       screen-content intra frames; no intrabc in this envelope).
+        //     - `prune_mesh_search = PRUNE_MESH_SEARCH_LVL_2` (:522) — the
+        //       mesh prune is `!is_intra_mode`-gated (mcomp.c:1839), so it
+        //       never touches the intrabc DV search; inert here.
         //     - qindex-dependent `speed == 5` `winner_mode_tx_type_pruning = 3`
         //       (:3059-3068) — gated `!(frame_is_intra_only || screen)`, never
         //       on an allintra KEY frame (stays 2).
@@ -902,10 +1000,10 @@ impl SpeedFeatures {
         //       DEFAULT/MODE_EVAL tx-type searches).
         //
         //   INERT on this path (verified against source):
-        //     - `mv_sf.use_bsize_dependent_search_method = 3` (:548) — motion
-        //       search method select; no motion search on all-intra KEY.
-        //     - `mv_sf.intrabc_search_level = 1` (:549) — intrabc hash search;
-        //       intrabc is screen-content-only and outside this envelope.
+        //     - (`mv_sf.use_bsize_dependent_search_method = 3` (:548) and
+        //       `mv_sf.intrabc_search_level = 1` (:549) were listed here as
+        //       inert; they are LIVE on screen-detected intrabc frames and
+        //       are set above — KB-41.)
         //     - `lpf_sf.cdef_pick_method = CDEF_FAST_SEARCH_LVL4` (:558) —
         //       CDEF off in the allintra default envelope (carried for
         //       provenance like the earlier cdef levels).
@@ -914,6 +1012,9 @@ impl SpeedFeatures {
         //     - qindex-dep speed>=5 screen sub-8x8 re-zero (:3070) — screen
         //       arm only; the non-screen value stands.
         if speed >= 6 {
+            // mv_sf (:548-549) — LIVE on screen-detected intrabc frames (KB-41).
+            sf.mv_sf.use_bsize_dependent_search_method = 3;
+            sf.mv_sf.intrabc_search_level = 1;
             // intra_sf (:528-535)
             sf.prune_smooth_intra_mode_for_chroma = true;
             sf.prune_filter_intra_level = 2;
@@ -1074,6 +1175,11 @@ impl SpeedFeatures {
         speed: i32,
     ) {
         let min_dim = width.min(height);
+        // `if (is_720p_or_larger) sf->mv_sf.use_downsampled_sad = 2` (:203-207),
+        // outside every speed guard — LIVE on screen-detected intrabc frames.
+        if min_dim >= 720 {
+            self.mv_sf.use_downsampled_sad = 2;
+        }
         // is_4k_or_larger = AOMMIN(cm->width, cm->height) >= 2160
         // (speed_features.c:172). BLOCK_8X8 == 3 in the BLOCK_SIZE enum.
         if min_dim >= 2160 {
@@ -1185,11 +1291,36 @@ impl SpeedFeatures {
         base_qindex: i32,
         speed: i32,
     ) {
+        let min_dim = width.min(height);
+        let is_720p_or_larger = min_dim >= 720;
+        // `if (speed <= 2)` (speed_features.c:2986-3027): the full-pel search
+        // method by resolution + qindex band (`aggr = speed`). Top-level in
+        // the C function, so it applies to ALLINTRA; a KEY frame is never
+        // `is_stat_generation_stage`. Only the `mv_sf` column is carried (the
+        // `tpl_sf` column has no TPL stage on a single all-intra KEY).
+        if speed <= 2 {
+            let aggr = speed.clamp(0, 2) as usize;
+            if !is_720p_or_larger {
+                const MS_QINDEX_THRESH: [[i32; 2]; 3] = [[200, 70], [170, 50], [170, 40]];
+                if base_qindex > MS_QINDEX_THRESH[aggr][0] {
+                    self.mv_sf.search_method = MvSearchMethod::ClampedDiamond;
+                } else if base_qindex > MS_QINDEX_THRESH[aggr][1] {
+                    self.mv_sf.search_method = MvSearchMethod::Nstep8Pt;
+                }
+            } else {
+                const MAXQ: i32 = 255;
+                const MS_QINDEX_THRESH: [[i32; 2]; 3] = [[MAXQ, 200], [MAXQ, -1], [200, -1]];
+                if base_qindex > MS_QINDEX_THRESH[aggr][0] {
+                    self.mv_sf.search_method = MvSearchMethod::Diamond;
+                } else if base_qindex > MS_QINDEX_THRESH[aggr][1] {
+                    // motion_search_method[aggr][0] == NSTEP_8PT for every aggr.
+                    self.mv_sf.search_method = MvSearchMethod::Nstep8Pt;
+                }
+            }
+        }
         if speed != 0 {
             return;
         }
-        let min_dim = width.min(height);
-        let is_720p_or_larger = min_dim >= 720;
         let is_1080p_or_larger = min_dim >= 1080;
         // qindex_thresh = boosted ? 70 : ... ; KEY is always boosted.
         if !is_720p_or_larger && base_qindex <= 70 {
@@ -1272,6 +1403,9 @@ impl SpeedFeatures {
         // on the allintra envelope).
         let use_default_intra_tx_type = stage == MODE_EVAL && self.fast_intra_tx_type_search == 2;
         TxTypeSearchPolicy {
+            inter_tx_size_init_depth_rect: self.inter_tx_size_search_init_depth_rect,
+            inter_tx_size_init_depth_sqr: self.inter_tx_size_search_init_depth_sqr,
+            ml_tx_split_thresh: self.tx_ml_tx_split_thresh,
             skip_trellis,
             coeff_opt_dist_threshold: coeff_row[0],
             coeff_opt_satd_threshold: coeff_row[1],
@@ -1939,6 +2073,7 @@ mod tests {
             let mut expect = base;
             expect.default_min_partition_size = 3;
             expect.force_large_partition_blocks_intra = i32::from(speed >= 8);
+            expect.mv_sf.use_downsampled_sad = 2; // >= 720p (:203-207), KB-41
             assert_eq!(sf, expect, "speed {speed}: the 4k arm moved another field");
         }
     }
@@ -1989,6 +2124,7 @@ mod tests {
             let mut expect = base;
             expect.default_min_partition_size = want;
             expect.force_large_partition_blocks_intra = i32::from(speed >= 8);
+            expect.mv_sf.use_downsampled_sad = 2; // >= 720p (:203-207), KB-41
             assert_eq!(sf, expect, "speed {speed}: the 1080p arm moved another field");
         }
     }
@@ -2056,6 +2192,7 @@ mod tests {
             sf.apply_allintra_framesize_dependent(1024, 1024, speed);
             let mut expect = base;
             expect.force_large_partition_blocks_intra = want;
+            expect.mv_sf.use_downsampled_sad = 2; // 1024x1024 is >= 720p (:203-207), KB-41
             assert_eq!(
                 sf, expect,
                 "speed {speed}: the >=720p arm moved another field"
@@ -2077,6 +2214,39 @@ mod tests {
     /// `base_qindex <= 128`; the 1080p step in `perform_coeff_opt`; the sub-720p
     /// `boosted` threshold of 70; and the whole-struct check that nothing else
     /// moves.
+    /// The speed<=2 full-pel search-method bands of
+    /// `av1_set_speed_features_qindex_dependent` (speed_features.c:2986-3027,
+    /// modelled by KB-41): the ONE qindex-dependent effect that is not
+    /// speed-0-only. Mirrors the C tables so the pins below can state the
+    /// expected `mv_sf.search_method` per (size, qindex, speed).
+    fn with_qindex_search_method(
+        mut sf: SpeedFeatures,
+        w: usize,
+        h: usize,
+        q: i32,
+        speed: i32,
+    ) -> SpeedFeatures {
+        if speed <= 2 {
+            let aggr = speed as usize;
+            if w.min(h) < 720 {
+                const T: [[i32; 2]; 3] = [[200, 70], [170, 50], [170, 40]];
+                if q > T[aggr][0] {
+                    sf.mv_sf.search_method = MvSearchMethod::ClampedDiamond;
+                } else if q > T[aggr][1] {
+                    sf.mv_sf.search_method = MvSearchMethod::Nstep8Pt;
+                }
+            } else {
+                const T: [[i32; 2]; 3] = [[255, 200], [255, -1], [200, -1]];
+                if q > T[aggr][0] {
+                    sf.mv_sf.search_method = MvSearchMethod::Diamond;
+                } else if q > T[aggr][1] {
+                    sf.mv_sf.search_method = MvSearchMethod::Nstep8Pt;
+                }
+            }
+        }
+        sf
+    }
+
     #[test]
     fn qindex_dependent_speed0_hd_arm() {
         // Threshold-boundary pairs on the SHORT side: 719 is sub-720p, 720 is
@@ -2130,8 +2300,10 @@ mod tests {
                     );
                 } else {
                     assert_eq!(
-                        sf, base,
-                        "speed {speed} {w}x{h} q{q}: the qindex pass is speed-0-only"
+                        sf,
+                        with_qindex_search_method(base, w, h, q, speed),
+                        "speed {speed} {w}x{h} q{q}: the qindex pass is speed-0-only \
+                         apart from the speed<=2 search-method bands"
                     );
                 }
             }
@@ -2142,13 +2314,22 @@ mod tests {
             lo.apply_allintra_qindex_dependent(640, 640, 70, speed);
             let mut hi = base;
             hi.apply_allintra_qindex_dependent(640, 640, 71, speed);
-            assert_eq!(hi, base, "speed {speed}: q71 is above the boosted threshold");
+            assert_eq!(
+                hi,
+                with_qindex_search_method(base, 640, 640, 71, speed),
+                "speed {speed}: q71 is above the boosted threshold"
+            );
             if speed == 0 {
-                let mut expect = base;
+                let mut expect = with_qindex_search_method(base, 640, 640, 70, speed);
                 expect.model_based_prune_tx_search_level = 0;
                 assert_eq!(lo, expect, "speed 0: sub-720p q<=70 zeroes only that field");
             } else {
-                assert_eq!(lo, base, "speed {speed}: the qindex pass is speed-0-only");
+                assert_eq!(
+                    lo,
+                    with_qindex_search_method(base, 640, 640, 70, speed),
+                    "speed {speed}: the qindex pass is speed-0-only apart from the \
+                     speed<=2 search-method bands"
+                );
             }
         }
 
@@ -2238,8 +2419,10 @@ mod tests {
                     );
                 } else {
                     assert_eq!(
-                        sf, base,
-                        "speed {speed} {w}x{h} q{q}: the qindex pass is speed-0-only"
+                        sf,
+                        with_qindex_search_method(base, w, h, q, speed),
+                        "speed {speed} {w}x{h} q{q}: the qindex pass is speed-0-only \
+                         apart from the speed<=2 search-method bands"
                     );
                 }
             }

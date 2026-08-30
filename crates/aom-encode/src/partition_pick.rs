@@ -702,6 +702,9 @@ pub struct IntrabcFrameCfg<'a> {
     pub sad_per_bit: i32,
     /// `cpi->mv_search_params.mv_step_param` (`av1_init_search_range(max(w,h))`).
     pub mv_step_param: usize,
+    /// The frame's intrabc-facing `MV_SPEED_FEATURES` (speed + size + qindex
+    /// resolved by the speed-feature passes).
+    pub mv_sf: crate::speed_features::MvSpeedFeatures,
 }
 
 /// `oxcf.intra_mode_cfg` LUMA candidate-loop tool toggles (av1_cx_iface.c
@@ -1480,6 +1483,7 @@ fn leaf_pick_sb_modes(
             error_per_bit: crate::rd::av1_set_error_per_bit(env.rdmult),
             sad_per_bit: ibc.sad_per_bit,
             mv_step_param: ibc.mv_step_param,
+            mv_sf: ibc.mv_sf,
             intrabc_cost: &cfg.mode_costs.intrabc_cost,
             skip_costs: cfg.skip_costs,
             skip_ctx,
@@ -1517,17 +1521,37 @@ fn leaf_pick_sb_modes(
                 // init_tx_sf (speed_features.c:2456-2458): txb_split_cap 1,
                 // ml_tx_split_thresh 8500, prune_2d_txfm_mode TX_TYPE_PRUNE_1.
                 txb_split_cap: true,
-                ml_tx_split_thresh: 8500,
+                // DEFAULT_EVAL `ml_tx_split_thresh` (8500; 4000 at speed >= 1 /
+                // the 1080p low-q band) — KB-41.
+                ml_tx_split_thresh: cfg.pol.ml_tx_split_thresh,
                 // `prune_2d_txfm_mode >= TX_TYPE_PRUNE_1` holds at EVERY speed
                 // (init_tx_sf sets PRUNE_1; allintra speed >= 4 raises it to
                 // PRUNE_3). NOTE the ported driver implements the PRUNE_1
                 // behaviour only (see crate::prune_tx_2d module docs) — intrabc
                 // is speed-0-scoped today, so the higher levels are unreached.
-                prune_2d: true,
-                // get_search_init_depth (tx_search.c:363-383) for INTER:
-                // inter_tx_size_search_init_depth_{rect,sqr} are 0 at speed 0
-                // (speed_features.c init_tx_sf; raised only at speed >= 1/2).
-                init_depth: 0,
+                // `prune_2d_txfm_mode >= TX_TYPE_PRUNE_1` holds at EVERY speed
+                // (init_tx_sf sets PRUNE_1; allintra speed >= 1/4 raise it to
+                // PRUNE_2/3); the mode itself selects the prune_tx_2D row — KB-41.
+                prune_2d: cfg.pol.prune_2d_txfm_mode >= 1,
+                // get_search_init_depth (tx_search.c:363-383) for INTER: MAX_VARTX_DEPTH
+                // (2) under USE_LARGESTALL (`--enable-tx-size-search=0`), else the
+                // rect/sqr `inter_tx_size_search_init_depth` (0 at speed 0, 1 at
+                // allintra speed >= 1) — KB-41.
+                init_depth: if !cfg.pol.enable_tx_size_search {
+                    2
+                } else if mi_w != mi_h {
+                    cfg.pol.inter_tx_size_init_depth_rect
+                } else {
+                    cfg.pol.inter_tx_size_init_depth_sqr
+                },
+                // DEFAULT_EVAL columns (`cfg.pol` is the DEFAULT_EVAL policy):
+                // rdopt_utils.h:560-567 `set_mode_eval_params(DEFAULT_EVAL)`.
+                use_transform_domain_distortion: cfg.pol.use_transform_domain_distortion,
+                tx_domain_dist_threshold: cfg.pol.tx_domain_dist_threshold,
+                predict_dc_level: cfg.pol.predict_dc_level,
+                prune_2d_txfm_mode: cfg.pol.prune_2d_txfm_mode,
+                skip_tx_search: cfg.pol.skip_tx_search,
+                prune_tx_type_using_stats: cfg.pol.prune_tx_type_using_stats,
             },
         }
     });

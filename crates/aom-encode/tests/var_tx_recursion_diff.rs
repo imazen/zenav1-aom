@@ -170,6 +170,15 @@ fn c_try_no_split(
     let zero_blk_rate = c.coeff_costs.tables(tx_size).txb_skip[skip_ctx as usize * 2 + 1];
 
     let inp = InterLeafInputs {
+        // speed-0 DEFAULT_EVAL: pixel-domain distortion, no predict-dc, PRUNE_1,
+        // no skip_tx_search, no stats prune.
+        use_transform_domain_distortion: 0,
+        tx_domain_dist_threshold: u32::MAX,
+        predict_dc_level: 0,
+        predict_skip_zero_blk_rate: 0,
+        prune_2d_txfm_mode: 1,
+        skip_tx_search: false,
+        prune_tx_type_using_stats: 0,
         // Luma recursion differential: the multi-type inter mask arm.
         forced_uv_tx_type: None,
         residual: &residual,
@@ -478,6 +487,12 @@ fn pick_recursive_tx_size_type_matches_c_recursion() {
 
             // ---- Port side ----
             let env = VarTxEnv {
+                use_transform_domain_distortion: 0,
+                tx_domain_dist_threshold: u32::MAX,
+                predict_dc_level: 0,
+                prune_2d_txfm_mode: 1,
+                skip_tx_search: false,
+                prune_tx_type_using_stats: 0,
                 bsize,
                 max_blocks_wide: max_bw,
                 max_blocks_high: max_bh,

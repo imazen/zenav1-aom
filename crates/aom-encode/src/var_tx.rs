@@ -205,6 +205,26 @@ pub struct InterLeafInputs<'a> {
     /// (witness config: true). When true and the multi-type inter arm has >5
     /// candidates, the NN prunes + reorders the tx-type search order.
     pub prune_2d: bool,
+    /// `txfm_params->use_transform_domain_distortion` at DEFAULT_EVAL
+    /// (`tx_domain_dist_types[tx_domain_dist_level][0]`: 0 at speed 0, 1 at
+    /// speed 1..=5, 2 at speed >= 6 on the allintra ladder).
+    pub use_transform_domain_distortion: u8,
+    /// `txfm_params->tx_domain_dist_threshold` at DEFAULT_EVAL
+    /// (`tx_domain_dist_thresholds[tx_domain_dist_thres_level][0]`).
+    pub tx_domain_dist_threshold: u32,
+    /// `txfm_params->predict_dc_level` at DEFAULT_EVAL
+    /// (`predict_dc_levels[dc_blk_pred_level][0]`: 1 at allintra speed >= 6).
+    pub predict_dc_level: u32,
+    /// DEFAULT_EVAL `prune_2d_txfm_mode` / `skip_tx_search` /
+    /// `prune_tx_type_using_stats` (see `IntrabcVarTxKnobs`).
+    pub prune_2d_txfm_mode: i32,
+    pub skip_tx_search: bool,
+    pub prune_tx_type_using_stats: u8,
+    /// `predict_dc_only_block`'s skip-arm rate: `txb_skip_cost[ctx][1]` for the
+    /// BLOCK-ORIGIN ctx of the PERSISTENT (pre-walk) entropy arrays at this
+    /// leaf's tx_size (tx_search.c:2055-2063) — the same quirk the intra walks
+    /// carry (`TxTypeSearchInputs::predict_skip_zero_blk_rate`). 0 when unused.
+    pub predict_skip_zero_blk_rate: i32,
 }
 
 /// The winner of one inter leaf's tx-type search (`search_tx_type`, inter arm).
@@ -237,8 +257,9 @@ pub struct InterLeafResult {
 /// ONLY in: the mask ([`get_tx_mask_inter`] + `prune_tx_2D`), `is_inter = true`
 /// tx-type cost, and the trellis rd-mult ([`trellis_rdmult_inter_y`]). No
 /// `recon_intra` feedback (inter residual is fixed); `predict_dc_level = 0`,
-/// palette / filter-intra absent, `use_transform_domain_distortion = 0` and
-/// `skip_tx_search = 0` at this config.
+/// palette / filter-intra absent, `skip_tx_search = 0` at this config; the
+/// DEFAULT_EVAL tx-domain-distortion type/threshold and `predict_dc_level`
+/// arrive through `InterLeafInputs` (KB-41: live at speed >= 1 / >= 6).
 ///
 /// `adaptive_txb_search_level` (=1 at the witness config) drives the in-loop
 /// early break (`best_rd - (best_rd >> level) > ref_best_rd`).
@@ -258,8 +279,82 @@ pub fn search_tx_type_inter(
     let qstep = (i32::from(inp.rows.dequant[1]) >> dequant_shift) as u32;
 
     // block_sse / block_mse over the visible txb (== full for interior txbs).
-    let (mut block_sse_u, mut block_mse_q8) =
-        av1_pixel_diff_dist(inp.residual, w, 0, 0, inp.visible_cols, inp.visible_rows);
+    // `predict_dc_block` (tx_search.c:2115): with `predict_dc_level >= 1`
+    // (DEFAULT_EVAL `predict_dc_levels[dc_blk_pred_level][0]`, allintra speed
+    // >= 6) and no 64-wide/high side, `predict_dc_only_block` (:2011-2076)
+    // computes the stats in DOUBLE form and may short-circuit the whole
+    // tx-type search with the predicted-skip result; at level > 1 it may pin
+    // the block to DCT_DCT (`dc_only_blk`).
+    let predict_dc_block =
+        inp.predict_dc_level >= 1 && w != 64 && crate::tx_search::TXS_H[tx_size] != 64;
+    let mut dc_only_blk = false;
+    let (mut block_sse_u, mut block_mse_q8);
+    if predict_dc_block {
+        let (sse, mse, per_px_mean, raw_var) = crate::tx_search::pixel_diff_stats(
+            inp.residual,
+            w,
+            inp.visible_cols,
+            inp.visible_rows,
+        );
+        debug_assert_ne!(mse, u32::MAX, "predict path needs a visible txb (C :2028 assert)");
+        block_sse_u = sse;
+        block_mse_q8 = mse;
+        let var_threshold = (1.8f64 * f64::from(qstep) * f64::from(qstep)) as u64;
+        let block_var = if hbd {
+            let sh = 2 * (i32::from(inp.bd) - 8);
+            (raw_var + ((1u64 << sh) >> 1)) >> sh
+        } else {
+            raw_var
+        };
+        if block_var < var_threshold {
+            // NOTE the dc qstep uses a FIXED >>3 (C :2024), not the
+            // bd-dependent dequant_shift the AC lane above uses.
+            let dc_qstep = i32::from(inp.rows.dequant[0]) >> 3;
+            if per_px_mean.abs() * i64::from(crate::tx_search::DC_COEFF_SCALE[tx_size])
+                < (i64::from(dc_qstep) << 12)
+            {
+                // The skip fast path (:2039-2070): eob 0, DCT_DCT, entropy
+                // ctx 0, dist = sse<<4 (sse bd-rounded FIRST), rate = the
+                // block-origin zero_blk_rate, rdcost = RDCOST(rate, sse).
+                let mut sse_s = sse as i64;
+                if hbd {
+                    sse_s = round_power_of_two_i64(sse_s, 2 * (i32::from(inp.bd) - 8));
+                }
+                let dist = sse_s << 4;
+                let rate = inp.predict_skip_zero_blk_rate;
+                let full = w * crate::tx_search::TXS_H[tx_size];
+                let (txb_skip_ctx, dc_sign_ctx) = get_txb_ctx(
+                    inp.bctx.plane_bsize,
+                    tx_size,
+                    inp.bctx.plane,
+                    inp.bctx.above,
+                    inp.bctx.left,
+                );
+                return Some(InterLeafResult {
+                    best_tx_type: 0, // DCT_DCT (:2115)
+                    best_eob: 0,
+                    best_txb_ctx: 0, // txb_entropy_ctx[block] = 0 (:2069)
+                    txb_skip_ctx: txb_skip_ctx as usize,
+                    dc_sign_ctx: dc_sign_ctx as usize,
+                    rate,
+                    dist,
+                    sse: dist,
+                    rd: rdcost(inp.rdmult, rate, dist),
+                    skip_txfm: true,
+                    qcoeff: vec![0; full],
+                    dqcoeff: vec![0; full],
+                    evaluated_mask: 0,
+                });
+            } else if inp.predict_dc_level > 1 {
+                // Type 2 (:2072-2073): DC-only prediction — luma always,
+                // chroma for inter blocks (the intrabc arm IS inter here).
+                dc_only_blk = true;
+            }
+        }
+    } else {
+        (block_sse_u, block_mse_q8) =
+            av1_pixel_diff_dist(inp.residual, w, 0, 0, inp.visible_cols, inp.visible_rows);
+    }
     let mut block_sse = block_sse_u as i64;
     if hbd {
         let s = 2 * (inp.bd as i32 - 8);
@@ -291,16 +386,75 @@ pub fn search_tx_type_inter(
             inp.use_inter_dct_only,
         ),
     };
+    // `dc_only_blk` → `tx_mask = 1 << DCT_DCT` (:2136-2137).
+    if dc_only_blk {
+        allowed_tx_mask = 1;
+    }
+    // tx_search.c:2167-2184 — transform-domain distortion during the type
+    // iteration (accurate for higher residuals): enabled by the stage's
+    // `use_transform_domain_distortion` (> 0) when the residual MSE clears
+    // `tx_domain_dist_threshold`, never for a 64-pt side (only half the
+    // coefficients survive) and never for a DC-only block. Type 1 adds a
+    // final pixel-domain re-measure of the winner (`rd_model` is FULL_TXFM_RD
+    // on this path), dropped when the type set is pinned to one type.
+    let is_tx64_side = w == 64 || crate::tx_search::TXS_H[tx_size] == 64;
+    let mut use_txd = inp.use_transform_domain_distortion > 0
+        && block_mse_q8 >= inp.tx_domain_dist_threshold
+        && !is_tx64_side
+        && !dc_only_blk;
+    let mut calc_pixel_domain_distortion_final =
+        inp.use_transform_domain_distortion == 1 && use_txd;
+    if calc_pixel_domain_distortion_final && (txk_allowed.is_some() || allowed_tx_mask == 0x0001) {
+        calc_pixel_domain_distortion_final = false;
+        use_txd = false;
+    }
     // Search order: the natural 0..16 unless prune_tx_2D reorders it.
     let mut txk_map: [usize; TX_TYPES] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-    // `prune_tx_2D` (tx_search.c:1934): the multi-type inter arm, when the set has
-    // more than `allowed_tx_count` (5 at PRUNE_1) candidates — the NN prunes the
-    // mask + reorders `txk_map` (with TX_TYPE_INVALID padding after the kept types).
-    if inp.prune_2d && txk_allowed.is_none() && allowed_tx_mask.count_ones() > 5 {
+    // prune_tx_type_using_stats (tx_search.c:1887-1903) on the LUMA multi-type
+    // arm (inter blocks included): drop tx types whose KF frame probability is
+    // below `thresh_arr[level-1][KF_UPDATE]`, never the max-prob allowed type.
+    if txk_allowed.is_none() && inp.forced_uv_tx_type.is_none() && inp.prune_tx_type_using_stats != 0
+    {
+        let probs = &crate::tx_search::DEFAULT_TX_TYPE_PROBS_KF[tx_size];
+        let thresh =
+            crate::tx_search::TX_TYPE_STATS_THRESH[(inp.prune_tx_type_using_stats - 1) as usize][0];
+        let mut prune: u16 = 0;
+        let mut max_prob: i32 = -1;
+        let mut max_idx: usize = 0;
+        for i in 0..TX_TYPES {
+            if probs[i] > max_prob && (allowed_tx_mask & (1 << i)) != 0 {
+                max_prob = probs[i];
+                max_idx = i;
+            }
+            if probs[i] < thresh {
+                prune |= 1 << i;
+            }
+        }
+        if (prune >> max_idx) & 1 != 0 {
+            prune &= !(1 << max_idx);
+        }
+        allowed_tx_mask &= !prune;
+    }
+    // `prune_tx_2D` (tx_search.c:1931-1936): the multi-type inter arm, when the
+    // set has more than `allowed_tx_count` (1 at PRUNE_4+, else 5) candidates —
+    // the NN prunes the mask + reorders `txk_map` (TX_TYPE_INVALID padding after
+    // the kept types); `prune_2d_txfm_mode` picks the aggressiveness row. The
+    // speed-4/5 `prune_tx_type_est_rd` arm (:1911-1928) is NOT ported.
+    let allowed_tx_count = if inp.prune_2d_txfm_mode >= 4 { 1 } else { 5 };
+    if inp.prune_2d
+        && inp.prune_2d_txfm_mode >= 1
+        && txk_allowed.is_none()
+        && allowed_tx_mask.count_ones() > allowed_tx_count
+    {
         let set = ext_tx_set_type(tx_size, true, inp.reduced_tx_set_used);
-        if let Some(r) =
-            crate::prune_tx_2d::prune_tx_2d(inp.residual, w, tx_size, set, 1, allowed_tx_mask)
-        {
+        if let Some(r) = crate::prune_tx_2d::prune_tx_2d(
+            inp.residual,
+            w,
+            tx_size,
+            set,
+            inp.prune_2d_txfm_mode as usize,
+            allowed_tx_mask,
+        ) {
             allowed_tx_mask = r.allowed_tx_mask;
             txk_map = r.txk_map;
         }
@@ -425,13 +579,32 @@ pub fn search_tx_type_inter(
             continue;
         }
 
-        // Distortion: at this config `use_transform_domain_distortion = 0`, so
-        // the pixel-domain / high-energy-tx-domain hybrid (the eob==0 shortcut,
-        // and for tx64 / high-energy the tx-domain fallback).
+        // Distortion (tx_search.c:2238-2290): eob 0 → the block SSE; a DC-only
+        // block → pixel domain; `use_txd` → transform domain; otherwise the
+        // pixel-domain / high-energy-tx-domain hybrid (for tx64 / high-energy
+        // the tx-domain fallback).
         let dqm = dist_qmatrix(&qp, tx_size, tx_type);
         let dscan = scan(tx_size, tx_type);
         let (dist, sse): (i64, i64) = if res.eob == 0 {
             (block_sse, block_sse)
+        } else if dc_only_blk {
+            let d = dist_block_px_domain(
+                &res.dqcoeff,
+                tx_size,
+                tx_type,
+                inp.pred,
+                inp.src,
+                inp.src_off,
+                inp.src_stride,
+                inp.bd,
+                inp.visible_cols,
+                inp.visible_rows,
+                res.eob as usize,
+                inp.lossless,
+            );
+            (d, block_sse)
+        } else if use_txd {
+            dist_block_tx_domain_qm(&res.coeff, &res.dqcoeff, tx_size, inp.bd, dqm, dscan, false)
         } else {
             let high_energy_thresh = 128i64 * 128 * TX_SIZE_2D_TBL[tx_size];
             let is_high_energy = block_sse >= high_energy_thresh;
@@ -497,10 +670,34 @@ pub fn search_tx_type_inter(
         {
             break;
         }
-        // skip_tx_search == 0 at this config (no all-zero-quant break).
+        // `skip_tx_search` (tx_search.c:2362): stop once the best is all-zero.
+        if inp.skip_tx_search && best.as_ref().map_or(0, |b| b.best_eob) == 0 {
+            break;
+        }
     }
 
     best.map(|mut b| {
+        // tx_search.c:2376-2381: with `calc_pixel_domain_distortion_final` the
+        // winner's distortion is re-measured in the pixel domain (rate and the
+        // search-side rdcost are NOT recomputed — the callers rebuild rd from
+        // rate + dist).
+        if calc_pixel_domain_distortion_final && b.best_eob > 0 {
+            b.dist = dist_block_px_domain(
+                &b.dqcoeff,
+                tx_size,
+                b.best_tx_type,
+                inp.pred,
+                inp.src,
+                inp.src_off,
+                inp.src_stride,
+                inp.bd,
+                inp.visible_cols,
+                inp.visible_rows,
+                b.best_eob as usize,
+                inp.lossless,
+            );
+            b.sse = block_sse;
+        }
         b.skip_txfm = b.best_eob == 0;
         b.evaluated_mask = evaluated_mask;
         b
@@ -691,6 +888,16 @@ pub struct VarTxEnv<'a> {
     pub prune_2d: bool,
     /// The var-tx quadtree init depth (`get_search_init_depth`; 0 at speed-0 sub-720p).
     pub init_depth: i32,
+    /// DEFAULT_EVAL `use_transform_domain_distortion` / `tx_domain_dist_threshold`
+    /// / `predict_dc_level` (see `InterLeafInputs`).
+    pub use_transform_domain_distortion: u8,
+    pub tx_domain_dist_threshold: u32,
+    pub predict_dc_level: u32,
+    /// DEFAULT_EVAL `prune_2d_txfm_mode` / `skip_tx_search` /
+    /// `prune_tx_type_using_stats` (see `IntrabcVarTxKnobs`).
+    pub prune_2d_txfm_mode: i32,
+    pub skip_tx_search: bool,
+    pub prune_tx_type_using_stats: u8,
 }
 
 /// Result of the whole-block var-tx search.
@@ -790,9 +997,25 @@ fn try_tx_block_no_split(
     let tables = env.coeff_costs.tables(tx_size);
     let zero_blk_rate = tables.txb_skip[txb_skip_ctx as usize * 2 + 1];
 
+    // predict_dc_only_block's zero_blk_rate ctx (tx_search.c:2055-2063): the
+    // BLOCK-ORIGIN skip ctx from the PERSISTENT (pre-walk) entropy arrays at
+    // THIS leaf's tx_size — not the walk-updated `ta`/`tl` at the txb.
+    let predict_skip_zero_blk_rate = if env.predict_dc_level >= 1 {
+        let (origin_skip_ctx, _) = get_txb_ctx(env.bsize, tx_size, 0, env.above_ctx, env.left_ctx);
+        tables.txb_skip[origin_skip_ctx as usize * 2 + 1]
+    } else {
+        0
+    };
     let leaf_inputs = InterLeafInputs {
         // Luma var-tx leaf: the multi-type inter arm (chroma pins a type instead).
         forced_uv_tx_type: None,
+        use_transform_domain_distortion: env.use_transform_domain_distortion,
+        tx_domain_dist_threshold: env.tx_domain_dist_threshold,
+        predict_dc_level: env.predict_dc_level,
+        prune_2d_txfm_mode: env.prune_2d_txfm_mode,
+        skip_tx_search: env.skip_tx_search,
+        prune_tx_type_using_stats: env.prune_tx_type_using_stats,
+        predict_skip_zero_blk_rate,
         residual: &residual,
         pred: &pred,
         src: env.src,
@@ -1327,6 +1550,16 @@ pub struct InterUvEnv<'a> {
     pub adaptive_txb_search_level: i32,
     /// Per-plane QM levels (U, V).
     pub qm_level: [Option<usize>; 2],
+    /// DEFAULT_EVAL `use_transform_domain_distortion` / `tx_domain_dist_threshold`
+    /// / `predict_dc_level` (see `InterLeafInputs`).
+    pub use_transform_domain_distortion: u8,
+    pub tx_domain_dist_threshold: u32,
+    pub predict_dc_level: u32,
+    /// DEFAULT_EVAL `prune_2d_txfm_mode` / `skip_tx_search` /
+    /// `prune_tx_type_using_stats` (see `IntrabcVarTxKnobs`).
+    pub prune_2d_txfm_mode: i32,
+    pub skip_tx_search: bool,
+    pub prune_tx_type_using_stats: u8,
 }
 
 /// The chroma RD outcome (`rd_stats_uv`) plus the per-plane coded txbs.
@@ -1447,8 +1680,29 @@ pub fn txfm_uvrd_inter(env: &InterUvEnv, ref_best_rd: i64) -> Option<InterUvResu
                     plane_bsize: env.plane_bsize,
                 };
                 let tables = env.coeff_costs.tables(tx_size);
+                // Block-origin zero_blk_rate for predict_dc_only_block (see the
+                // luma leaf) from the PERSISTENT chroma entropy arrays.
+                let predict_skip_zero_blk_rate = if env.predict_dc_level >= 1 {
+                    let (origin_skip_ctx, _) = get_txb_ctx(
+                        env.plane_bsize,
+                        tx_size,
+                        plane,
+                        env.above_ctx[plane_ix],
+                        env.left_ctx[plane_ix],
+                    );
+                    tables.txb_skip[origin_skip_ctx as usize * 2 + 1]
+                } else {
+                    0
+                };
                 let inp = InterLeafInputs {
                     forced_uv_tx_type: Some(uv_tt),
+                    use_transform_domain_distortion: env.use_transform_domain_distortion,
+                    tx_domain_dist_threshold: env.tx_domain_dist_threshold,
+                    predict_dc_level: env.predict_dc_level,
+                    prune_2d_txfm_mode: env.prune_2d_txfm_mode,
+                    skip_tx_search: env.skip_tx_search,
+                    prune_tx_type_using_stats: env.prune_tx_type_using_stats,
+                    predict_skip_zero_blk_rate,
                     residual: &residual,
                     pred: &pred_txb,
                     src: env.src[plane_ix],

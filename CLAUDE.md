@@ -178,7 +178,7 @@ it here in the same commit.**
 | KB-27 / `MONO_S0_OPEN` | monochrome, base_qindex 96, speed 0; **size-independent** (64x64 through 720x720, SB-exact and partial alike, widened 2026-08-03) | its own localizer is in `s4cov_partial_sb_axis.rs` |
 | KB-P29, KB-13's 2 cpu3-cq63 cells | 2 palette 128<sup>2</sup> near-ties; 2 real-content cells | sibling-C RD dump (KB-3/KB-7 method) |
 | `DELTAQ_SPEED_OPEN` (KB-39 residual a, no gate — the delta-q gates are all speed 0) | `--deltaq-mode` 2/3 at `--cpu-used` >= 1, **SINGLE tile as well as multi**, content-dependent. Measured 2026-08-04 on `av1-1-b8-00-quantizer-00` crops: mode 2 diverges at 1x1 tiles at every speed 1..7 (192x192 cq32); mode 3 is clean 1..6 at 192x192 cq32 but diverges at 1x1 from speed 1 at 256x256, and at cq63 from speed 3. Delta-q rides the whole RD chain (per-SB rdmult + quantizer rows), so this is a *speed-feature* divergence conditioned on a non-flat qindex map, not a tile bug — the tile axis is byte-clean at speed 0 across 53 cells and the deltaq-OFF tile controls are clean at speeds 0/2/6 (15/15) | first-divergent-block on 256x256 cq32 `--cpu-used 1` mode 3, single tile (playbook §10); the small-frame single-tile shape makes it the cheapest RD-decision dump in the queue |
-| KB-41 residual (`kb41_screen_detected_defaults.rs`, on-demand planes) | screen-detected real content with palette+IntraBC ON, cpu 6/8: 85x128 cq57 (267 B, equal-length byte diff, recon first differs at luma (0,87)), 128x80 cq6 s6 -4 B, 1024x745 +6..-32 B, 1280x800 -2 kB, 1920x1080 -9..-20 kB | decode-side per-block syntax dump on both streams → first differing block → decision compare |
+| ~~KB-41 residual (`kb41_screen_detected_defaults.rs`)~~ CLOSED 2026-08-30 — 30/30 datagen cells byte-identical after the speed-dependent IntraBC search / DEFAULT_EVAL tx-domain distortion / inter var-tx knobs / encode-time skip re-derivation (KB-41 roots #3-#6); the KB-15 cell `scc_480x180_196_cq48` closed with it | — | — |
 | `PALETTE_MANY_COLORS_OPEN` (`kb37_nonrd_palette_search.rs`) — **NARROWED 2026-08-30 by KB-41**: the full-RD control (9 cells, speeds 0/2/6) is clean; only the speed-9 row `fc256 n40 cq40 −1 B` remains | palette blocks with **more than `PALETTE_MAX_SIZE` distinct colours** (33..64 in a 16x16). SHARED `palette_search` machinery, not an arm: reproduces on the FULL-RD path at `--cpu-used` 0/2/6 with `nonrd_leaf_arms() == [0, 0]` (asserted inside the test). 48 of 75 cells in the 38..42-colour band; 1 of 9 in the shipped fine-colour set. Nothing had ever encoded such a block — `rd_close_palette.rs`'s content has <= 8 colours and takes the `colors == PALETTE_MIN_SIZE` / `max_n == colors` shortcuts | sibling-C per-candidate RD dump of `av1_rd_pick_palette_intra_sby` on 64x64 n40 cq40 at `--cpu-used 0` (the k-means + descending-order arms are what only this content reaches) |
 
 **Already closed, do not re-open from stale notes:** KB-10/KB-11's noise-cq63 speed-6/7 pairs
@@ -4429,8 +4429,62 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   (was 12) — every tiny cell at cpu 6/8, 1024x745 3/3, and **1920x1080 3/3 at cpu8**. The six
   still open are ALL cpu6 on the two larger screenshots: 1920x1080 −10,586/−8,750/−19,304 B
   (cq32/57/6) and 1280x800 −1,998/−1,899/−3,425 B (cq25/44/6) — same content and knobs match at
-  cpu8 → a speed-6-specific arm on screen-detected content (localizer running with the syntax
-  diff; `~/tmp/aomplanes_s6res`).
+  cpu8 → a speed-6-specific arm on screen-detected content.
+- **ROOT #3-#6 (same day, the cpu6 residual — four unported speed features on the IntraBC
+  path, each localized by the sibling-C + port dumps to one decision, fixed, re-measured):**
+  1. **The port ran libaom's speed-0 IntraBC DV search at every speed.** `speed_features.rs`
+     had listed `intrabc_search_level = 1`, `hash_max_8x8_intrabc_blocks`,
+     `use_bsize_dependent_search_method = 3` as *inert* ("intrabc is outside the envelope") —
+     no longer true once KB-41's mirror turned the screen tools on. C at speed >= 6
+     (`rd_pick_intrabc_mode_sb`, rdopt.c:3435/3510/3570): DV search only at 4x4/8x8/16x16,
+     ABOVE direction only, pixel search only when the hash search misses; speed >= 4: hash
+     only for `bsize <= BLOCK_8X8`; speed >= 1: `AOMMIN(64, count)` hash candidates,
+     `exhaustive_searches_thresh <<= 1`; speed >= 3: `search_method = DIAMOND`
+     (`init_dsmotion_compensation`, no mesh — the mesh follow-on is NSTEP-only, mcomp.c:1828);
+     speed <= 2: the `av1_set_speed_features_qindex_dependent` resolution × qindex bands
+     (NSTEP / NSTEP_8PT / CLAMPED_DIAMOND / DIAMOND, :2986-3027); and, at EVERY speed for
+     `min(w,h) >= 720`, `use_downsampled_sad = 2` (skip-row SADs for `bh >= 16` + the
+     `av1_full_pixel_search` quality re-check, mcomp.c:127/1847). The witness: 1920x1080 cq57 s6
+     mi(0,90) 8x8 — the port's level-0 pixel search overrode the hash match with a lower-cost
+     point that then failed DV validity and DROPPED the candidate; C (level 1) kept the hash
+     match and coded IntraBC at rd 71.66M vs the port's intra 91.72M. New `MvSpeedFeatures`
+     (`mv_sf` on `SpeedFeatures`, plumbed `IntrabcFrameCfg` → `IntrabcLeafArgs`),
+     `SiteCfg::{Nstep, Nstep8Pt, Diamond, ClampedDiamond}`, `full_pixel_search_intrabc`.
+     BIGDIA (`pattern_search`) is not ported — unreachable on the allintra ladder (asserted).
+  2. **The intrabc COEFF arm computed pixel-domain distortion at every speed.** DEFAULT_EVAL
+     `use_transform_domain_distortion = tx_domain_dist_types[level][0]` is 1 at speed 1..=5
+     and 2 at speed >= 6 (threshold `tx_domain_dist_thresholds[thres_level][0]`, 0 at speed >=
+     4), plus `predict_dc_level = predict_dc_levels[dc_blk_pred_level][0]` = 1 at speed >= 6
+     (`predict_dc_only_block`'s predicted-skip short-circuit with the BLOCK-ORIGIN
+     zero_blk_rate quirk). Same DV, same rate 28453, dist 146,932 vs C 146,546 — the
+     transform-domain integrand. `search_tx_type_inter` now carries the tx_search.c:2167-2184
+     selection + the type-1 pixel-domain final re-measure + the dc-only pin.
+  3. **The intrabc var-tx knobs were the speed-0 constants.** `inter_tx_size_search_init_depth
+     _{rect,sqr}` = 1 at speed >= 1 (the port hardcoded 0 → it searched 8x8 where C started
+     at 4x4: mi(4,90) port dist 109,460 vs C 316,178 at a LOWER port rate, flipping the winner),
+     `ml_tx_split_thresh` 4000, `prune_2d_txfm_mode` PRUNE_2/3 (the port passed PRUNE_1's row),
+     `skip_tx_search` (end the type loop once the best is all-zero, tx_search.c:2362) and the
+     framesize-dependent `prune_tx_type_using_stats` on the luma multi-type mask. All read from
+     the DEFAULT_EVAL `TxTypeSearchPolicy` now (new `inter_tx_size_init_depth_*` /
+     `ml_tx_split_thresh` fields). The speed-4/5 `prune_tx_type_est_rd` arm (`prune_txk_type`,
+     :1911-1928) is NOT ported — no speed-4 screen cell above the datagen cap has been
+     measured yet.
+  4. **An IntraBC coeff block's skip flag is re-derived at ENCODE time in C.** `av1_encode_sb`
+     (encodemb.c:648) inits `skip_txfm = 1` and only an encode-time txb with `eob > 0` clears
+     it; the search decided "no skip" on its own quantization (its MSE gate can skip trellis)
+     while the encode pass trellises every txb, so mi(18,78) went all-zero and C coded
+     `skip=1` (no coeffs, ctx 0, `tx_size = tx_size_from_tx_mode`, `set_txfm_ctxs(skip)`)
+     where the port wrote skip=0 + coefficients. `encode_b_intrabc_coeff` now re-derives
+     `winner.skip_txfm` from the re-encoded eobs (dry AND output passes) and stamps the skip
+     convention.
+- **Final census: 30/30 datagen cells byte-identical** (every cq × cpu 6/8 of the five sources
+  incl. 1920x1080 cq6/32/57 s6 and 1280x800 cq6/25/44 s6). Gates: `rd_close_palette`,
+  `kb35_nonrd_palette_arm`, `kb37_nonrd_palette_search`, `config_permutations`,
+  `kb36_above_720p_speed_axis`, `kb22_hd_arms`, `toggles_rd_close` 88/88; aom-encode unit
+  tests 311/311. **Bonus: `rd_close_intrabc`'s self-promoting pin fired — the KB-15 cell
+  `scc_480x180_196_cq48` (1891 B) is now byte-exact and is promoted into `BYTE_EXACT_CELLS`**
+  (its "3-rate-unit tx-size-cost gap" was this class). `cargo clippy --all-targets` is red on
+  `noise_fft_gen.rs` / `pickcdef.rs:1175` / `prune_tx_2d.rs:47` — pre-existing, untouched here.
 - **Perf (Gate 3, screen content):** with IntraBC on, the port's DV search takes ~80 s per
   1080p screenshot at cpu6 and a cpu4 cell had not finished after 40 min (oracle ≈ 1 s). The
   zensim datagen arm defers screen-detected frames above 0.25 MP until this is fast.

@@ -202,6 +202,9 @@ fn search_tx_type_intra_matches_c_chain() {
             // search_tx_type chain must still match under the restricted set.
             let use_default = iter % 4 == 0;
             let pol = TxTypeSearchPolicy {
+                inter_tx_size_init_depth_rect: 0,
+                inter_tx_size_init_depth_sqr: 0,
+                ml_tx_split_thresh: 8500,
                 use_default_intra_tx_type: use_default,
                 ..TxTypeSearchPolicy::speed0_allintra()
             };
