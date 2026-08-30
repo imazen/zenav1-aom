@@ -13,10 +13,39 @@
 //!      x86-64 and left this comparison silently NEON-backed on aarch64
 //!      (CLAUDE.md KB-ARM-FLOAT root #2).
 //!   2. vs the **dispatched** (AVX2) engine (`force_cscalar = false`, what the
-//!      encoder runs) — reported as a max-abs gap. It need not be bit-exact
-//!      (libaom's own C-vs-SIMD tolerance is 1e-6); it only has to stay far
-//!      inside the DNN prec-reduce bucket so the downstream split/no-split
-//!      FLAGS agree (that flag-parity is asserted in the full-model diff).
+//!      encoder runs) — reported as a max-abs gap, and NOT bit-exact.
+//!
+//! **The rationale this file used to give for (2) was wrong, and is now
+//! measured wrong — KB-41 root #27.** It said the gap "only has to stay far
+//! inside the DNN prec-reduce bucket so the downstream split/no-split FLAGS
+//! agree (that flag-parity is asserted in the full-model diff)". Neither half
+//! holds:
+//!
+//!   * A gap does not have to approach the bucket WIDTH to change the bucket.
+//!     `av1_nn_output_prec_reduce` rounds the branch logit to 1/512, so an
+//!     arbitrarily small gap moves the quantum whenever the logit sits near a
+//!     boundary — and the prune compares exactly that quantum against
+//!     `no_split_thresh` (`partition_strategy.c:341`). MEASURED on
+//!     `2765x4096 cq6 --cpu-used 6`, mi(0,352): the port's branch features
+//!     match this oracle under `force_cscalar` to the bit and differ from the
+//!     DISPATCHED oracle in the 7th digit; raw logits −3.86037111 vs
+//!     −3.8603348731994629 land on the ADJACENT quanta −3.859375 and
+//!     −3.857421875, either side of `no_split_thresh = −3.858222961`. C splits
+//!     the 32x32; the port codes it NONE.
+//!   * `cnn_partition_decision_diff` asserts flag parity against the C-SCALAR
+//!     oracle ("flag mismatch vs C-scalar"), never against the dispatched one —
+//!     so no gate has ever covered the claim.
+//!
+//! This test's own printed number is the corroboration: over its 205 windows
+//! the worst `|rust − AVX2|` is **7.87e-6**, i.e. the 7th digit — the same
+//! magnitude by which the branch features differ at mi(0,352). The gap is
+//! genuinely tiny AND it flips partitions; those are not in tension, because
+//! what matters is the boundary, not the width.
+//!
+//! The assertion below is kept (it is a real ceiling on the convolve gap) but
+//! it pins ONLY that: it is not, and cannot be, evidence of flag parity with a
+//! real encoder. Closing that requires porting the dispatched convolve — root
+//! #27, queued in CLAUDE.md's coverage table.
 
 use aom_encode::cnn_partition::cnn::{CNN_OUT_BUF_SIZE, cnn_predict};
 use aom_sys_ref as c;
@@ -97,10 +126,14 @@ fn cnn_predict_matches_c_scalar_bit_exact_and_reports_avx2_gap() {
         "cnn_predict: {} windows BIT-EXACT vs C-scalar; worst |rust - AVX2| = {worst_avx2_gap:e}",
         windows.len()
     );
-    // The AVX2 gap must be far below the DNN prec-reduce bucket (1/512 ≈ 2e-3)
-    // so downstream flags never flip. (libaom's own CNN C-vs-SIMD MSE tol 1e-6.)
+    // A CEILING on the convolve gap, and nothing more (see the module docs):
+    // any nonzero gap can still move a branch logit across a 1/512 prec-reduce
+    // boundary and flip `do_square_split`, which is KB-41 root #27. Kept at the
+    // value it has always had so a REGRESSION in the transcription still trips
+    // it. (libaom's own CNN C-vs-SIMD MSE tolerance is 1e-6.)
     assert!(
         worst_avx2_gap < 1e-2,
-        "AVX2 gap {worst_avx2_gap:e} unexpectedly large — flag parity at risk"
+        "AVX2 gap {worst_avx2_gap:e} unexpectedly large — the convolve \
+         transcription regressed (this bound does NOT imply flag parity)"
     );
 }
