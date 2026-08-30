@@ -388,7 +388,16 @@ fn partial_superblocks_are_what_reaches_it_not_frame_size() {
 /// 714x720 at cpu 1..6, 12/12) but at a size neither that gate nor
 /// `hd_speed_axis_byte_matches` covers — a new cell for an old band. Pinned
 /// self-promoting in both directions.
-const RD_BAND_OPEN: &[(i32, i64)] = &[(2, -14), (3, -104), (4, -167), (5, -189)];
+///
+/// **CLOSED 2026-08-30 by KB-41 roots #7-#13 (zenav1-aom `38a92657`)**: the
+/// former open set `[(2, -14), (3, -104), (4, -167), (5, -189)]` is empty —
+/// all eight RD speeds byte-exact. The reach matches root #11 (frame-edge
+/// HORZ_4/VERT_4 coded with fewer than 4 strips — 1272x724 has a partial
+/// superblock on both edges, and the 4-way types are searched at exactly the
+/// speeds 2..5 that were open; `prune_part4_search` 3 kills them from 6 up),
+/// with the search-ctx CDF shadows (#9/#12) as the other candidates; not
+/// bite-proved by per-root revert.
+const RD_BAND_OPEN: &[(i32, i64)] = &[];
 
 /// **No RD speed reaches the estimate arm** — measured, not argued.
 /// `nonrd_pick_intra_mode` has exactly one dispatch site, `pack_tile`'s
