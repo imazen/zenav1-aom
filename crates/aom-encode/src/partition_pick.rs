@@ -144,8 +144,9 @@
 //!    VERT_A/VERT_B) -> `av1_rd_cost_update` -> accumulate (rate INT_MAX ->
 //!    sum rdcost MAX); records `rect_part_rd[i][0]` (an AB-stage input).
 //! 4. If `sum < best && is_not_edge` (has_rows for HORZ / has_cols VERT):
-//!    `is_rect_ctx_is_ready[i]` bookkeeping (:3605-3612: palette-free —
-//!    always in this envelope — and `uv_mode != UV_CFL_PRED`; the AB
+//!    `is_rect_ctx_is_ready[i]` bookkeeping (:3613-3619: palette-free —
+//!    Y AND UV, load-bearing on screen content, KB-41 root #22 — and
+//!    `uv_mode != UV_CFL_PRED`; the AB
 //!    stage's reuse input), then `av1_update_state +
 //!    encode_superblock(DRY_RUN_NORMAL)` of sub 0 — the MID-STAGE
 //!    propagation (sub 1 reads sub 0's winner pixels, entropy/txfm
@@ -3378,9 +3379,19 @@ pub fn rd_pick_partition_real(
         let mut w1: Option<LeafWinner> = None;
         if sum_rdc.rdcost < best_rdc.rdcost && is_not_edge_block {
             let w0 = w0.as_mut().expect("valid rect sum implies a sub-0 winner");
-            // is_rect_ctx_is_ready (:3605-3612): palette-free (envelope:
-            // try_palette off) and uv_mode != UV_CFL_PRED.
-            if w0.uv_mode != UV_CFL_PRED {
+            // is_rect_ctx_is_ready (:3613-3619): "Neither palette mode nor
+            // cfl predicted" — `pmi->palette_size[Y] == 0 &&
+            // pmi->palette_size[UV] == 0`, THEN `uv_mode != UV_CFL_PRED`.
+            // The palette half is the RECT-stage twin of the SPLIT-stage gate
+            // at :4611-4617 (KB-41 root #18); it used to be omitted here under
+            // an "envelope: try_palette off" note that is false on every
+            // screen-detected frame. KB-41 root #22 (2091x3072 screen cq62
+            // cpu4, mi(124,328)): the rect HORZ sub-0 16x8 won with a 4-colour
+            // luma palette, the port reused it as HORZ_B's sub-block 0 (sum
+            // 427,208,793) where C re-searches under the mode cache (sum
+            // 494,626,860) — C's HORZ_B then ran out of budget on sub-block 2
+            // and was dropped, while the port's HORZ_B won the 16x16.
+            if w0.palette_y.is_none() && w0.palette_uv.is_none() && w0.uv_mode != UV_CFL_PRED {
                 is_rect_ctx_is_ready[i] = true;
                 rect_sub0_for_reuse[i] = Some(w0.clone());
             }

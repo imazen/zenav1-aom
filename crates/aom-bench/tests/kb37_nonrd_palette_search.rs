@@ -378,11 +378,24 @@ fn nonrd_estimate_arm_palette_search_is_byte_identical() {
 /// ever goes clean while the speed-9 rows still diverge, because then the class
 /// WOULD be this arm's.
 ///
-/// Per playbook §10 the next step is a sibling-C dump of
+/// **CLOSED 2026-08-30 by KB-41 root #23 — the doc above is the history, not the
+/// current state.** The class was never in the k-means/descending-order arms: it was
+/// the DC_PRED term of every nonrd palette candidate's header. `mbmode_cost` was
+/// filled from an all-zero placeholder CDF in `real_costs.rs`, so
+/// `av1_search_palette_mode_luma`'s `mbmode_cost[size_group_lookup[bsize]][DC_PRED]`
+/// (intra_mode_search.c:1139-1140, :1152) read 3 where C reads 375 at BLOCK_16X16 —
+/// a 372/512-bit constant on every candidate, which is the size of these near-ties.
+/// `fc->y_mode_cdf` is `default_if_y_mode_cdf` and never adapts on an intra frame, so
+/// the KEY value is exactly that default table. The full-RD control (a) and the
+/// speed-9 rows (b) are now BOTH byte-identical, so this is a hard byte gate.
+///
+/// Per playbook §10 the next step WOULD have been a sibling-C dump of
 /// `av1_rd_pick_palette_intra_sby`'s per-candidate RD on the smallest divergent
-/// cell (64x64 n40 cq40 at `--cpu-used 0`), NOT reasoning from the byte deltas.
+/// cell (64x64 n40 cq40 at `--cpu-used 0`); the actual localization went through the
+/// paired C/port `intra_mode_info_cost_y` breakdown instead, which showed every term
+/// but `mode_cost` matching to the unit.
 #[test]
-#[ignore = "24 encode pairs; pins an open divergence class in the shared palette search"]
+#[ignore = "24 encode pairs; a hard byte gate since KB-41 root #23 closed this class"]
 fn many_colour_palette_blocks_are_pinned_and_are_not_this_arm() {
     c::ref_init();
     let knobs = ToggleKnobs {
@@ -459,12 +472,19 @@ fn many_colour_palette_blocks_are_pinned_and_are_not_this_arm() {
             }
         }
     }
-    // Measured 2026-08-03, aarch64-apple-darwin, --profile test-fast.
+    // Measured 2026-08-03 as `["fc256 n40 cq40 (-1)"]`; **CLOSED 2026-08-30 by KB-41
+    // root #23** — `mbmode_cost` was filled from an all-zero placeholder CDF, so the
+    // DC_PRED term every nonrd palette candidate's header carries
+    // (`av1_search_palette_mode_luma` -> `mbmode_cost[size_group_lookup[bsize]][DC_PRED]`,
+    // intra_mode_search.c:1139-1140) was ~2 orders of magnitude cheap, which is exactly
+    // the near-tie that flipped this cell. Now pinned EMPTY: this whole family is
+    // byte-identical at speed 9, so `PALETTE_MANY_COLORS_OPEN` is closed.
     assert_eq!(
         diverged,
-        vec!["fc256 n40 cq40 (-1)".to_string()],
-        "the pinned many-colour set moved. FEWER means the shared palette search got \
-         more exact (good — re-pin); MORE means something regressed"
+        Vec::<String>::new(),
+        "the pinned many-colour set moved. It was closed by KB-41 root #23 (mbmode_cost \
+         now carries default_if_y_mode_cdf, not a zeroed placeholder); ANY entry here is \
+         a regression of that root or of the shared palette search"
     );
 }
 
@@ -474,23 +494,28 @@ fn many_colour_palette_blocks_are_pinned_and_are_not_this_arm() {
 /// `x->color_palette_thresh = (best_sad_norm < 500) ? 32 : 64`
 /// (nonrd_pickmode.c:1713) can only change an encode when a block's colour
 /// count lands in `(32, 64]` — and that is exactly the
-/// `PALETTE_MANY_COLORS_OPEN` band above, where the shared palette search is
-/// already inexact. So the byte gate cannot witness the formula.
+/// `PALETTE_MANY_COLORS_OPEN` band above, which used to be inexact, so the byte
+/// gate could not witness the formula. **That changed 2026-08-30 (KB-41 root #23):
+/// the band is byte-exact on the shipped formula (0 of 75), so this IS now a byte
+/// gate on it.**
 ///
 /// What CAN be measured, and is: over a 75-cell grid in that band, the C
 /// formula diverges on strictly FEWER cells than either constant. That is
 /// evidence for the formula without pretending it is proof.
 ///
-/// | `color_palette_thresh` | divergent cells of 75 |
+/// | `color_palette_thresh` | divergent cells of 75 (2026-08-03, pre-root-#23) |
 /// |---|---|
 /// | `(best_sad_norm < 500) ? 32 : 64` (C) | **48** |
 /// | hardcoded 32 | 58 |
 /// | hardcoded 64 | 66 |
 ///
 /// Measured 2026-08-03 by replacing the field at its construction site in
-/// `partition_pick.rs` and re-running the grid below. The gate here re-runs
-/// only the shipped arm and pins its count, so a change to the formula (or to
-/// the shared machinery) shows up as a moved number.
+/// `partition_pick.rs` and re-running the grid below. **The shipped-formula row is
+/// now 0 of 75 (KB-41 root #23); the two hardcoded-constant rows have NOT been
+/// re-measured on the corrected costs, so treat the ordering above as the
+/// pre-#23 evidence it was.** The gate here re-runs only the shipped arm and pins
+/// its count, so a change to the formula (or to the shared machinery) shows up as a
+/// moved number.
 #[test]
 #[ignore = "75 encode pairs at 64x64..256x256; the color_palette_thresh evidence"]
 fn color_palette_thresh_band_divergence_count_is_pinned() {
@@ -528,12 +553,16 @@ fn color_palette_thresh_band_divergence_count_is_pinned() {
         "the band no longer exercises both sides of `color_palette_thresh` \
          ({t32} of {searched} at 32)"
     );
+    // Measured 2026-08-03 as (48, 75); **(0, 75) since 2026-08-30, KB-41 root #23** —
+    // the band's divergences were all `PALETTE_MANY_COLORS_OPEN`, and that class closed
+    // when `mbmode_cost` stopped being a zeroed placeholder (see the test above). The
+    // band still exercises both sides of `color_palette_thresh` (asserted above), so it
+    // remains a live gate on the formula — now as a hard byte gate.
     assert_eq!(
         (diverged, total),
-        (48, 75),
-        "the `color_palette_thresh` band moved. This count is dominated by \
-         `PALETTE_MANY_COLORS_OPEN` (see the test above), so a DROP most likely \
-         means the shared palette search improved — re-pin it. A RISE with that \
-         class unchanged points at `nonrd_color_palette_thresh`"
+        (0, 75),
+        "the `color_palette_thresh` band moved. It was closed by KB-41 root #23; ANY \
+         divergence here is a regression of that root, of the shared palette search, or \
+         of `nonrd_color_palette_thresh` itself"
     );
 }

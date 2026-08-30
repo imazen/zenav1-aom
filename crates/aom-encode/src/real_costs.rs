@@ -24,12 +24,15 @@
 //!
 //! `av1_fill_mode_rates`'s inter-only slices (comp_ref/single_ref/newmv/...,
 //! gated `if (!frame_is_intra_only(cm))` in the C) are out of scope for this
-//! KEY-frame-only encoder envelope. `mbmode_cost` (`y_mode_cdf`, the non-KEY
-//! intra-in-inter-frame Y mode) has no `KfFrameContext` field and is
-//! confirmed dead in the current KEY-frame search (`y_mode_costs` is what
-//! `rd_pick_intra_sby_mode_y` actually reads) -- filled from a degenerate
-//! all-zero placeholder CDF. Likewise `TxTypeCosts::inter` has no consumer
-//! in this intra-only pipeline.
+//! KEY-frame-only encoder envelope. `mbmode_cost` (`y_mode_cdf`) has no
+//! `KfFrameContext` field because that CDF never adapts on an intra frame --
+//! but it is READ there: the nonrd (speed >= 8) palette shell
+//! `av1_search_palette_mode_luma` costs DC_PRED off
+//! `mbmode_cost[size_group_lookup[bsize]]` (intra_mode_search.c:1139-1140).
+//! So it is filled from `DEFAULT_Y_MODE` (`default_if_y_mode_cdf`, the value
+//! `av1_setup_past_independence` leaves in `fc->y_mode_cdf`), NOT from a
+//! placeholder -- KB-41 root #23. Likewise `TxTypeCosts::inter` has no
+//! consumer in this intra-only pipeline.
 
 use crate::mode_costs::{
     CflCosts, EXT_PARTITION_TYPES, IntraModeCosts, PARTITION_CONTEXTS, PaletteCosts, SKIP_CONTEXTS,
@@ -142,9 +145,21 @@ pub fn derive_real_costs(
     let palette_y_mode_cdf: Vec<u16> =
         palette_y_mode_src.iter().flatten().flatten().copied().collect();
     let angle_delta_cdf: Vec<u16> = kf.angle_delta.iter().flatten().copied().collect();
-    // mbmode_cost (non-KEY intra Y mode) has no KfFrameContext CDF and is
-    // unread by the KEY-frame search (see module docs) -- degenerate filler.
-    let y_mode_cdf = zero_cdf_row(4 * (INTRA_MODES + 1));
+    // mbmode_cost: `fc->y_mode_cdf`, which `av1_setup_past_independence` seeds
+    // from `default_if_y_mode_cdf` (entropymode.c:1006) and which NEVER adapts on
+    // an intra frame (`update_cdf` for the Y mode runs on `kf_y_cdf` there). So
+    // the KEY-frame value is exactly the default table — a frame constant, not a
+    // dead slot. KB-41 root #23: it used to be a zeroed placeholder under a
+    // "confirmed dead in the KEY-frame search" note that is false at speed >= 8 —
+    // `av1_search_palette_mode_luma` (intra_mode_search.c:1139-1140, :1152) costs
+    // its DC_PRED with `mbmode_cost[size_group_lookup[bsize]][DC_PRED]`, so every
+    // nonrd palette candidate on a screen frame was 372 (1/512-bit units) cheap at
+    // BLOCK_16X16 (3 from the degenerate row vs C's 375).
+    let y_mode_cdf: Vec<u16> = aom_dsp::entropy::default_cdfs::DEFAULT_Y_MODE
+        .iter()
+        .flatten()
+        .copied()
+        .collect();
     fill_intra_mode_costs(
         &mut mode_costs,
         &kf_y_cdf,
