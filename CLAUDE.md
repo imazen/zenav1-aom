@@ -4425,6 +4425,15 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   `fc256 n40 cq40 −1 B` remains and is now the speed-9 path's own;
   `config_permutations` **`SCREEN_ARRAY_OPEN_ROWS` CLOSED** (the last screen/IntraBC row,
   pinned empty). Core gates unchanged (`encoder_gate_e2e_byte_match` 32/32).
+- **Census after the fix (the 30 datagen cells, screen knobs mirrored): 24 byte-identical**
+  (was 12) — every tiny cell at cpu 6/8, 1024x745 3/3, and **1920x1080 3/3 at cpu8**. The six
+  still open are ALL cpu6 on the two larger screenshots: 1920x1080 −10,586/−8,750/−19,304 B
+  (cq32/57/6) and 1280x800 −1,998/−1,899/−3,425 B (cq25/44/6) — same content and knobs match at
+  cpu8 → a speed-6-specific arm on screen-detected content (localizer running with the syntax
+  diff; `~/tmp/aomplanes_s6res`).
+- **Perf (Gate 3, screen content):** with IntraBC on, the port's DV search takes ~80 s per
+  1080p screenshot at cpu6 and a cpu4 cell had not finished after 40 min (oracle ≈ 1 s). The
+  zensim datagen arm defers screen-detected frames above 0.25 MP until this is fast.
 
 ### KB-40 — Decoder: reported 12bpc inter divergence (GitHub #8) — NOT REPRODUCIBLE against the C oracle; the highbd inter envelope is now gated ✅ 2026-08-06
 
