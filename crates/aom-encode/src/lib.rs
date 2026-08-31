@@ -29,6 +29,7 @@ pub mod intrabc_search;
 pub mod curvfit_tables;
 pub mod inter_costs;
 pub mod inter_frame;
+pub mod inter_fullpel;
 pub mod inter_rd;
 pub mod interp_rd;
 pub mod inter_me;

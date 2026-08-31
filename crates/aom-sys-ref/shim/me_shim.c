@@ -567,3 +567,74 @@ int shim_find_best_sub_pixel_tree_variant(
   free(xd); free(mbmi); free(cb); free(sf); free(cm); free(tmp_pred);
   return besterr;
 }
+
+/* ---- shim_refining_search_8p -----------------------------------------
+ * Drives the REAL exported av1_refining_search_8p_c (mcomp.c:1696) on the
+ * single-reference SAD path (no second_pred, no mask). Only the fields that
+ * function reads are populated: vfp (for ms.sdf), the src/ref buf_2d pair,
+ * the full-pel MV limits, and the MV cost params.
+ */
+int shim_refining_search_8p(const uint8_t *src, int src_stride,
+                            const uint8_t *ref_at_origin, int ref_stride, int w,
+                            int h, int start_row, int start_col,
+                            int full_ref_row, int full_ref_col,
+                            const int *mvjcost, const int *mvcost0,
+                            const int *mvcost1, int sad_per_bit, int row_min,
+                            int row_max, int col_min, int col_max,
+                            int *out_best_row, int *out_best_col) {
+  aom_variance_fn_ptr_t fnptr;
+  if (!shim_fill_fnptr(&fnptr, w, h)) return -1;
+  const BLOCK_SIZE bsize = shim_pick_bsize(w, h);
+  if (bsize == BLOCK_INVALID) return -1;
+
+  struct buf_2d src_buf;
+  memset(&src_buf, 0, sizeof(src_buf));
+  src_buf.buf = (uint8_t *)src;
+  src_buf.stride = src_stride;
+  struct buf_2d ref_buf;
+  memset(&ref_buf, 0, sizeof(ref_buf));
+  ref_buf.buf = (uint8_t *)ref_at_origin;
+  ref_buf.stride = ref_stride;
+
+  MV ref_mv = { (int16_t)(full_ref_row * 8), (int16_t)(full_ref_col * 8) };
+
+  FULLPEL_MOTION_SEARCH_PARAMS ms;
+  memset(&ms, 0, sizeof(ms));
+  ms.bsize = bsize;
+  ms.vfp = &fnptr;
+  ms.ms_buffers.src = &src_buf;
+  ms.ms_buffers.ref = &ref_buf;
+  ms.ms_buffers.second_pred = NULL;
+  ms.ms_buffers.mask = NULL;
+  ms.mv_limits.row_min = row_min;
+  ms.mv_limits.row_max = row_max;
+  ms.mv_limits.col_min = col_min;
+  ms.mv_limits.col_max = col_max;
+  ms.mv_cost_params.ref_mv = &ref_mv;
+  ms.mv_cost_params.full_ref_mv.row = (int16_t)full_ref_row;
+  ms.mv_cost_params.full_ref_mv.col = (int16_t)full_ref_col;
+  ms.mv_cost_params.mv_cost_type = MV_COST_ENTROPY;
+  ms.mv_cost_params.mvjcost = mvjcost;
+  ms.mv_cost_params.mvcost[0] = (int *)mvcost0;
+  ms.mv_cost_params.mvcost[1] = (int *)mvcost1;
+  ms.mv_cost_params.error_per_bit = 0;
+  ms.mv_cost_params.sad_per_bit = sad_per_bit;
+  ms.sdf = fnptr.sdf;
+  ms.sdx4df = fnptr.sdx4df;
+  ms.sdx3df = fnptr.sdx3df;
+
+  FULLPEL_MV start = { (int16_t)start_row, (int16_t)start_col };
+  FULLPEL_MV best;
+  int sad = av1_refining_search_8p_c(&ms, start, &best);
+  *out_best_row = best.row;
+  *out_best_col = best.col;
+  return sad;
+}
+
+/* ---- shim_vector_match — the REAL av1_vector_match (mcomp.c:2276). */
+int shim_vector_match(const int16_t *ref, const int16_t *src, int bwl,
+                      int search_size_top, int search_size_bottom,
+                      int full_search, int *out_sad) {
+  return av1_vector_match(ref, src, bwl, search_size_top, search_size_bottom,
+                          full_search, out_sad);
+}
