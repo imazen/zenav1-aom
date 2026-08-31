@@ -358,8 +358,20 @@ fn compile_shims(manifest: &Path, upstream: &Path, build_dir: &Path) -> PathBuf 
     for name in SHIMS {
         let shim_c = shim_dir.join(format!("{name}.c"));
         let obj = out_dir.join(format!("{name}.o"));
+        // `-DNDEBUG` is REQUIRED for ABI agreement, not just to silence asserts.
+        // The oracle archive is built `CMAKE_BUILD_TYPE=Release`, i.e. with
+        // NDEBUG, and `av1/encoder/block.h:1404` puts a `SetOffsetsLoc
+        // last_set_offsets_loc` member inside `MACROBLOCK` under
+        // `#ifndef NDEBUG`. Without this flag a shim's `MACROBLOCK` is LARGER
+        // than libaom's, so every field of any struct that embeds one — most
+        // importantly `AV1_COMP` — sits at a different offset in the shim than
+        // in the archive. Measured 2026-08-31: a shim that filled
+        // `cpi->common.seq_params` and called `av1_rc_bits_per_mb` segfaulted,
+        // because libaom read `cpi->common` from the wrong offset. Shims that
+        // only touch `MACROBLOCKD` (blockd.h, which has no NDEBUG-conditional
+        // members) were unaffected, which is why this went unnoticed.
         let status = Command::new(cc)
-            .args(["-O2", ORACLE_FP_CFLAGS, "-c"])
+            .args(["-O2", "-DNDEBUG", ORACLE_FP_CFLAGS, "-c"])
             .args(extra_shim_cflags(name))
             .arg(&shim_c)
             .arg("-o")
