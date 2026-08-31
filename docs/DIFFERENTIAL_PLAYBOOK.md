@@ -143,6 +143,57 @@ cross target. To verify a shim change on the other target, generate that
 target's libaom config and compile the TU against it, then check `nm` for the
 symbols you expect and, crucially, the ones you expect to be *absent*.
 
+### 3a. Three shim contracts that are invisible on aarch64
+
+Measured 2026-08-31 while porting the inter-encode surface. Each of these makes
+a shim pass on ARM and segfault (or silently read the wrong data) on x86. Before
+writing a new shim, grep the existing ones for the entry closest to yours — each
+of these was already solved and commented somewhere.
+
+**(a) `-DNDEBUG` is an ABI flag, not an assert switch.** The oracle archive is
+built `CMAKE_BUILD_TYPE=Release`. `av1/encoder/block.h:1404` puts a
+`SetOffsetsLoc last_set_offsets_loc` member inside `MACROBLOCK` under
+`#ifndef NDEBUG`. A shim compiled without `-DNDEBUG` therefore has a LARGER
+`MACROBLOCK` than libaom's, and every field of any struct that embeds one —
+`AV1_COMP` above all — sits at a different offset in the shim than in the
+archive. Symptom: a shim that filled `cpi->common.seq_params` and called
+`av1_rc_bits_per_mb` segfaulted, while its own reads of the same field returned
+the right value. `build.rs` now passes `-DNDEBUG` to every shim. This was
+latent for a long time because every earlier shim built a `MACROBLOCKD`
+(`av1/common/blockd.h` has zero NDEBUG-conditional members), and the one that
+touched a `MACROBLOCK` only wrote `mb->plane[0]`, which precedes the guarded
+member.
+
+**(b) A `T` symbol can still dereference a NULL RTCD pointer one frame down.**
+`nm -g` on the archive splits the kernels an inter shim reaches into two sets.
+`aom_sad32x32`, `av1_warp_affine`, `aom_vector_var`, `aom_variance16x16`,
+`aom_sad16x16` are `C` (common) symbols — real `RTCD_EXTERN` pointers, NULL
+until `aom_dsp_rtcd()` / `av1_rtcd()` run. `aom_upsampled_pred`,
+`aom_comp_mask_pred`, `aom_convolve_copy`, `aom_highbd_upsampled_pred` and the
+whole `aom_obmc_*` family are **absent entirely**: `config/aom_dsp_rtcd.h`
+`#define`s them straight to their NEON implementations on this build, so no
+pointer exists and a missing init cannot fault. On x86 all of them are
+pointers. Checking `nm` on the function you call is not enough — check one
+level below it. One real segfault came from this
+(`av1_vector_match` -> `aom_vector_var`).
+Because that reasoning cannot be validated on an ISA where the failure mode is
+compiled away, the rule is structural: **every `ref_*` wrapper calls
+`ref_init()` unconditionally**, whether or not its call tree is believed to
+dispatch. `crates/aom-encode/tests/oracle_contract.rs` + `rtcd_probe_shim.c`
+print, per name, whether it is a pointer in this build and whether it is
+non-null — making the blind spot machine-readable rather than implicit.
+
+**(c) Hand C the alignment the encoder does.** libaom's callers pass
+`DECLARE_ALIGNED(16, ...)` locals (mcomp.c:2923/2933/2944) or `aom_memalign`'d
+buffers — `x->upsample_pred`, which becomes `xd->tmp_upsample_pred`, is
+`aom_memalign(16, (1 + is_hbd) * ((MAX_SB_SIZE + 16) + 16) * MAX_SB_SIZE)`
+(encoder.c:981). A Rust `Vec` is 1-byte aligned. NEON kernels use unaligned
+accesses, so passing a `Vec` pointer straight through is invisible here; an x86
+AVX aligned store faults. Bounce every buffer a dispatched kernel reads or
+writes through 64-byte `aom_memalign` scratch (64 covers AVX-512 — stronger
+than the encoder's 16, never weaker), and match the SIZE too, not just the
+alignment.
+
 ## 4. When you cannot run the other target, predict it
 
 The strongest available substitute for executing on a target you lack: derive a
