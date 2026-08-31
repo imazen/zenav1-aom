@@ -154,3 +154,17 @@ gate-armed-decode:
 # corpus with scripts/svt_interop/.
 gate-svt-interop:
     AOM_DAV1D_BIN="$(command -v dav1d || true)" cargo test --profile test-fast -p zenav1-aom-bench --test svt_interop_decode_gate -- --nocapture
+
+# ZENSIM-QUALITY (Zq) TARGET CENSUS — the phase-A harness for the
+# dependency-injected target loop (`zenav1-aom-target`). The crate's LIBRARY
+# has zero dependencies (encoder, decoder and judge all live behind the
+# caller's `trial(qindex)` closure), so the judge is bolted on here: the
+# `census` feature pulls the git-pinned zensim + png that only this example
+# needs, which is why a default `cargo test --workspace` never builds either.
+#
+# Needs `aomenc` / `aomdec` on PATH (the injected encoder/decoder) and a
+# zensim bake at $ZQ_BAKE. Args: <corpus.tsv: path\tname\tclass> <targets,csv>
+# <max_encodes k> <out.tsv>. Cells + methodology:
+# benchmarks/zensim_zq_target_wave_2026-08-29.md
+zq-census corpus targets k out:
+    cargo run --release -p zenav1-aom-target --features census --example zq_census -- {{corpus}} {{targets}} {{k}} {{out}}

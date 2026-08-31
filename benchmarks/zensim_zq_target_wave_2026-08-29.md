@@ -69,8 +69,8 @@ is what gates the zensim judge (git-pinned to zensim `main`
 `feature-regime-v2`; no published zensim exposes either) and `png`:
 
 ```
-cargo run --release -p zenav1-aom-target --features census --example zq_census -- \
-    <corpus.tsv> <targets,csv> <max_encodes> <out.tsv>
+just zq-census <corpus.tsv> <targets,csv> <max_encodes> <out.tsv>
+# = cargo run --release -p zenav1-aom-target --features census --example zq_census -- ...
 ```
 
 It additionally needs `aomenc` / `aomdec` on `PATH` and a zensim bake at
