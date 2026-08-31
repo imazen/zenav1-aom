@@ -16408,3 +16408,134 @@ pub fn ref_highbd_convolve_2d_sr(
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// me_shim.c (cont.) — the PRUNED subpel searches and the two degenerate
+// "return the limit corner" searches. Drives the REAL exported C.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_find_best_sub_pixel_tree_variant(
+        which: i32,
+        src: *const u8,
+        src_stride: i32,
+        ref_at_origin: *const u8,
+        ref_stride: i32,
+        w: i32,
+        h: i32,
+        start_row: i32,
+        start_col: i32,
+        ref_mv_row: i32,
+        ref_mv_col: i32,
+        mvjcost: *const i32,
+        mvcost0: *const i32,
+        mvcost1: *const i32,
+        error_per_bit: i32,
+        allow_hp: i32,
+        forced_stop: i32,
+        iters_per_step: i32,
+        row_min: i32,
+        row_max: i32,
+        col_min: i32,
+        col_max: i32,
+        has_cost_list: i32,
+        cost_list_in: *const i32,
+        out_best_row: *mut i32,
+        out_best_col: *mut i32,
+        out_distortion: *mut i32,
+        out_sse: *mut u32,
+    ) -> i32;
+}
+
+/// Which exported C subpel search [`ref_find_best_sub_pixel_tree_variant`] runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RefSubpelVariant {
+    /// `av1_find_best_sub_pixel_tree_pruned` (mcomp.c:3120)
+    Pruned = 0,
+    /// `av1_find_best_sub_pixel_tree_pruned_more` (mcomp.c:3026)
+    PrunedMore = 1,
+    /// `av1_return_min_sub_pixel_mv`
+    ReturnMin = 2,
+    /// `av1_return_max_sub_pixel_mv`
+    ReturnMax = 3,
+}
+
+/// Reference libaom pruned subpel search, lowbd, unscaled, single-ref.
+///
+/// Same buffer conventions as [`ref_find_best_sub_pixel_tree`]. `cost_list` is
+/// `ms_params->cost_list`: `None` is C's NULL (which forces the two-level
+/// fallback), `Some` a 5-point centre+cardinal list. The pruned searches score
+/// with the BILINEAR `aom_sub_pixel_variance{W}x{H}_c`, so the shim installs
+/// `vfp->svf` as well as `vfp->vf`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_find_best_sub_pixel_tree_variant(
+    variant: RefSubpelVariant,
+    src: &[u8],
+    src_stride: usize,
+    refb: &[u8],
+    ref_origin: usize,
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+    start_mv: (i32, i32),
+    ref_mv: (i32, i32),
+    mvjcost: &[i32; 4],
+    mvcost0_full: &[i32],
+    mvcost1_full: &[i32],
+    error_per_bit: i32,
+    allow_hp: bool,
+    forced_stop: i32,
+    iters_per_step: i32,
+    limits: (i32, i32, i32, i32),
+    cost_list: Option<&[i32; 5]>,
+) -> RefSubpelResult {
+    ref_init();
+    const MV_MAX: usize = (1 << 14) - 1;
+    let (mut br, mut bc, mut dist, mut sse) = (0i32, 0i32, 0i32, 0u32);
+    let empty = [0i32; 5];
+    let cl = cost_list.unwrap_or(&empty);
+    let besterr = unsafe {
+        shim_find_best_sub_pixel_tree_variant(
+            variant as i32,
+            src.as_ptr(),
+            src_stride as i32,
+            refb.as_ptr().add(ref_origin),
+            ref_stride as i32,
+            w as i32,
+            h as i32,
+            start_mv.0,
+            start_mv.1,
+            ref_mv.0,
+            ref_mv.1,
+            mvjcost.as_ptr(),
+            mvcost0_full.as_ptr().add(MV_MAX),
+            mvcost1_full.as_ptr().add(MV_MAX),
+            error_per_bit,
+            allow_hp as i32,
+            forced_stop,
+            iters_per_step,
+            limits.0,
+            limits.1,
+            limits.2,
+            limits.3,
+            i32::from(cost_list.is_some()),
+            cl.as_ptr(),
+            &mut br,
+            &mut bc,
+            &mut dist,
+            &mut sse,
+        )
+    };
+    assert!(
+        besterr != -2,
+        "no aom_variance/aom_sub_pixel_variance C kernel for {w}x{h}: the shim's \
+         size table does not cover this block shape"
+    );
+    RefSubpelResult {
+        best_mv: (br, bc),
+        distortion: dist,
+        sse,
+        besterr: besterr as u32,
+    }
+}

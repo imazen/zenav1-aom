@@ -412,3 +412,158 @@ int shim_build_nmv_cost_table(const uint16_t *joints_cdf, const uint16_t *comp0,
   free(cost1);
   return 0;
 }
+
+/* ---- shim_find_best_sub_pixel_tree_variant ---------------------------
+ * Drives the REAL exported PRUNED subpel searches:
+ *   which == 0 -> av1_find_best_sub_pixel_tree_pruned      (mcomp.c:3120)
+ *   which == 1 -> av1_find_best_sub_pixel_tree_pruned_more (mcomp.c:3026)
+ *   which == 2 -> av1_return_min_sub_pixel_mv
+ *   which == 3 -> av1_return_max_sub_pixel_mv
+ *
+ * Same minimal MACROBLOCKD / AV1_COMMON / SUBPEL_MOTION_SEARCH_PARAMS
+ * construction as shim_find_best_sub_pixel_tree, with two additions the pruned
+ * path needs:
+ *   - vfp->svf must be the real aom_sub_pixel_variance{W}x{H}_c, because the
+ *     pruned trees score with `estimated_pref_error` (bilinear) rather than by
+ *     building the upsampled predictor;
+ *   - ms.cost_list is the caller's 5-point list, or NULL when `has_cost_list`
+ *     is 0 (C's "no list" case, which forces the two-level fallback).
+ * start_mv_stats and last_mv_search_list stay NULL, as in the un-pruned shim.
+ */
+
+extern unsigned int aom_sub_pixel_variance4x4_c(const uint8_t *, int, int, int, const uint8_t *, int, unsigned int *);
+extern unsigned int aom_sub_pixel_variance4x8_c(const uint8_t *, int, int, int, const uint8_t *, int, unsigned int *);
+extern unsigned int aom_sub_pixel_variance8x4_c(const uint8_t *, int, int, int, const uint8_t *, int, unsigned int *);
+extern unsigned int aom_sub_pixel_variance8x8_c(const uint8_t *, int, int, int, const uint8_t *, int, unsigned int *);
+extern unsigned int aom_sub_pixel_variance8x16_c(const uint8_t *, int, int, int, const uint8_t *, int, unsigned int *);
+extern unsigned int aom_sub_pixel_variance16x8_c(const uint8_t *, int, int, int, const uint8_t *, int, unsigned int *);
+extern unsigned int aom_sub_pixel_variance16x16_c(const uint8_t *, int, int, int, const uint8_t *, int, unsigned int *);
+extern unsigned int aom_sub_pixel_variance16x32_c(const uint8_t *, int, int, int, const uint8_t *, int, unsigned int *);
+extern unsigned int aom_sub_pixel_variance16x64_c(const uint8_t *, int, int, int, const uint8_t *, int, unsigned int *);
+extern unsigned int aom_sub_pixel_variance32x16_c(const uint8_t *, int, int, int, const uint8_t *, int, unsigned int *);
+extern unsigned int aom_sub_pixel_variance32x32_c(const uint8_t *, int, int, int, const uint8_t *, int, unsigned int *);
+extern unsigned int aom_sub_pixel_variance64x16_c(const uint8_t *, int, int, int, const uint8_t *, int, unsigned int *);
+extern unsigned int aom_sub_pixel_variance64x64_c(const uint8_t *, int, int, int, const uint8_t *, int, unsigned int *);
+
+static aom_subpixvariance_fn_t shim_pick_svf(int w, int h) {
+#define PICK_SVF(W, H) \
+  if (w == W && h == H) return aom_sub_pixel_variance##W##x##H##_c;
+  PICK_SVF(4, 4) PICK_SVF(4, 8) PICK_SVF(8, 4) PICK_SVF(8, 8) PICK_SVF(8, 16)
+  PICK_SVF(16, 8) PICK_SVF(16, 16) PICK_SVF(16, 32) PICK_SVF(16, 64)
+  PICK_SVF(32, 16) PICK_SVF(32, 32) PICK_SVF(64, 16) PICK_SVF(64, 64)
+#undef PICK_SVF
+  return NULL;
+}
+
+int shim_find_best_sub_pixel_tree_variant(
+    int which, const uint8_t *src, int src_stride,
+    const uint8_t *ref_at_origin, int ref_stride, int w, int h, int start_row,
+    int start_col, int ref_mv_row, int ref_mv_col, const int *mvjcost,
+    const int *mvcost0, const int *mvcost1, int error_per_bit, int allow_hp,
+    int forced_stop, int iters_per_step, int row_min, int row_max, int col_min,
+    int col_max, int has_cost_list, const int *cost_list_in, int *out_best_row,
+    int *out_best_col, int *out_distortion, unsigned int *out_sse) {
+  MACROBLOCKD *xd = (MACROBLOCKD *)calloc(1, sizeof(MACROBLOCKD));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(MB_MODE_INFO));
+  YV12_BUFFER_CONFIG *cb = (YV12_BUFFER_CONFIG *)calloc(1, sizeof(YV12_BUFFER_CONFIG));
+  struct scale_factors *sf = (struct scale_factors *)calloc(1, sizeof(struct scale_factors));
+  AV1_COMMON *cm = (AV1_COMMON *)calloc(1, sizeof(AV1_COMMON));
+  uint8_t *tmp_pred = (uint8_t *)calloc((size_t)MAX_SB_SIZE * MAX_SB_SIZE, 1);
+  if (!xd || !mbmi || !cb || !sf || !cm || !tmp_pred) {
+    free(xd); free(mbmi); free(cb); free(sf); free(cm); free(tmp_pred);
+    return -1;
+  }
+
+  MB_MODE_INFO *mi_ptr = mbmi;
+  xd->mi = &mi_ptr;
+  cb->flags = 0;
+  xd->cur_buf = cb;
+  xd->bd = 8;
+  xd->mi_row = 0;
+  xd->mi_col = 0;
+  sf->x_scale_fp = REF_NO_SCALE;
+  sf->y_scale_fp = REF_NO_SCALE;
+  sf->x_step_q4 = 16;
+  sf->y_step_q4 = 16;
+  xd->block_ref_scale_factors[0] = sf;
+  xd->block_ref_scale_factors[1] = sf;
+  xd->tmp_upsample_pred = tmp_pred;
+
+  struct buf_2d src_buf;
+  memset(&src_buf, 0, sizeof(src_buf));
+  src_buf.buf = (uint8_t *)src;
+  src_buf.stride = src_stride;
+  struct buf_2d ref_buf;
+  memset(&ref_buf, 0, sizeof(ref_buf));
+  ref_buf.buf = (uint8_t *)ref_at_origin;
+  ref_buf.stride = ref_stride;
+
+  aom_variance_fn_ptr_t vfp;
+  memset(&vfp, 0, sizeof(vfp));
+  vfp.vf = shim_pick_vf(w, h);
+  vfp.svf = shim_pick_svf(w, h);
+  if (!vfp.vf || !vfp.svf) {
+    free(xd); free(mbmi); free(cb); free(sf); free(cm); free(tmp_pred);
+    return -2;
+  }
+
+  MV ref_mv = { (int16_t)ref_mv_row, (int16_t)ref_mv_col };
+
+  SUBPEL_MOTION_SEARCH_PARAMS ms;
+  memset(&ms, 0, sizeof(ms));
+  ms.allow_hp = allow_hp;
+  ms.cost_list = has_cost_list ? cost_list_in : NULL;
+  ms.forced_stop = (SUBPEL_FORCE_STOP)forced_stop;
+  ms.iters_per_step = iters_per_step;
+  ms.mv_limits.row_min = row_min;
+  ms.mv_limits.row_max = row_max;
+  ms.mv_limits.col_min = col_min;
+  ms.mv_limits.col_max = col_max;
+  ms.mv_cost_params.ref_mv = &ref_mv;
+  ms.mv_cost_params.mv_cost_type = MV_COST_ENTROPY;
+  ms.mv_cost_params.mvjcost = mvjcost;
+  ms.mv_cost_params.mvcost[0] = (int *)mvcost0;
+  ms.mv_cost_params.mvcost[1] = (int *)mvcost1;
+  ms.mv_cost_params.error_per_bit = error_per_bit;
+  ms.mv_cost_params.sad_per_bit = 0;
+  ms.var_params.vfp = &vfp;
+  ms.var_params.subpel_search_type = USE_8_TAPS;
+  ms.var_params.ms_buffers.src = &src_buf;
+  ms.var_params.ms_buffers.ref = &ref_buf;
+  ms.var_params.ms_buffers.second_pred = NULL;
+  ms.var_params.ms_buffers.mask = NULL;
+  ms.var_params.w = w;
+  ms.var_params.h = h;
+
+  MV start = { (int16_t)start_row, (int16_t)start_col };
+  MV best;
+  int distortion = 0;
+  unsigned int sse = 0;
+  int besterr;
+  switch (which) {
+    case 0:
+      besterr = av1_find_best_sub_pixel_tree_pruned(
+          xd, cm, &ms, start, NULL, &best, &distortion, &sse, NULL);
+      break;
+    case 1:
+      besterr = av1_find_best_sub_pixel_tree_pruned_more(
+          xd, cm, &ms, start, NULL, &best, &distortion, &sse, NULL);
+      break;
+    case 2:
+      besterr = av1_return_min_sub_pixel_mv(xd, cm, &ms, start, NULL, &best,
+                                            &distortion, &sse, NULL);
+      break;
+    default:
+      besterr = av1_return_max_sub_pixel_mv(xd, cm, &ms, start, NULL, &best,
+                                            &distortion, &sse, NULL);
+      break;
+  }
+
+  *out_best_row = best.row;
+  *out_best_col = best.col;
+  *out_distortion = distortion;
+  *out_sse = sse;
+
+  free(xd); free(mbmi); free(cb); free(sf); free(cm); free(tmp_pred);
+  return besterr;
+}

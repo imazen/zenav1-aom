@@ -436,6 +436,379 @@ pub fn find_best_sub_pixel_tree(p: &SubpelSearchParams) -> SubpelResult {
     }
 }
 
+// ===================================================================
+// The "fast" (bilinear-estimated) subpel search family — mcomp.c
+//
+// `av1_find_best_sub_pixel_tree` above scores each candidate by BUILDING the
+// upsampled 8-tap predictor and taking its plain variance. The pruned variants
+// below are what speeds 1+ actually run: they score with the bilinear
+// sub-pixel variance kernel instead (`vfp->svf`, i.e. no predictor is built),
+// which is cheaper and gives different — not merely noisier — decisions. The
+// two families therefore share the tree shape and NOTHING of the cost.
+// ===================================================================
+
+impl Search<'_> {
+    /// `estimated_pref_error` (mcomp.c:2561), unscaled, `second_pred == NULL`:
+    /// `vfp->svf(ref_at_mv, ref_stride, subpel_x_q3, subpel_y_q3, src,
+    /// src_stride, &sse)` — the BILINEAR sub-pixel variance, not an upsampled
+    /// predictor. Returns `(variance, sse)`.
+    fn est_pref_error(&self, mv: (i32, i32)) -> (u32, u32) {
+        let sx = (mv.1 & 7) as usize;
+        let sy = (mv.0 & 7) as usize;
+        let ref_ptr = (self.p.ref_origin as isize
+            + (mv.0 >> 3) as isize * self.p.ref_stride as isize
+            + (mv.1 >> 3) as isize) as usize;
+        // The kernel reads one extra column and row past the block for the
+        // bilinear taps, which the caller's border must cover.
+        let ref8: Vec<u8> = {
+            let mut v = vec![0u8; (self.p.h + 1) * (self.p.w + 1)];
+            for y in 0..=self.p.h {
+                for x in 0..=self.p.w {
+                    v[y * (self.p.w + 1) + x] =
+                        self.p.refb[ref_ptr + y * self.p.ref_stride + x] as u8;
+                }
+            }
+            v
+        };
+        aom_dsp::dist::sub_pixel_variance(
+            &ref8,
+            self.p.w + 1,
+            sx,
+            sy,
+            &self.src8,
+            self.p.w,
+            self.p.w,
+            self.p.h,
+        )
+    }
+
+    /// `check_better_fast` (mcomp.c:2615), unscaled arm. Same accept/reject as
+    /// [`Search::check_better`] but scored with [`Search::est_pref_error`].
+    fn check_better_fast(&mut self, this_mv: (i32, i32)) -> (u32, bool) {
+        if self.in_range(this_mv) {
+            let (var, sse) = self.est_pref_error(this_mv);
+            let cost = (self.mv_err_cost(this_mv) as u32).wrapping_add(var);
+            let mut improved = false;
+            if cost < self.besterr {
+                self.besterr = cost;
+                self.best_mv = this_mv;
+                self.distortion = var as i32;
+                self.sse = sse;
+                improved = true;
+            }
+            (cost, improved)
+        } else {
+            (SUBPEL_INT_MAX, false)
+        }
+    }
+
+    /// `first_level_check_fast` (mcomp.c:2688): four cardinal probes plus the
+    /// best diagonal. Returns `diag_step`.
+    fn first_level_check_fast(&mut self, this_mv: (i32, i32), hstep: i32) -> (i32, i32) {
+        let (left, _) = self.check_better_fast((this_mv.0, this_mv.1 - hstep));
+        let (right, _) = self.check_better_fast((this_mv.0, this_mv.1 + hstep));
+        let (up, _) = self.check_better_fast((this_mv.0 - hstep, this_mv.1));
+        let (down, _) = self.check_better_fast((this_mv.0 + hstep, this_mv.1));
+        // get_best_diag_step (mcomp.c:2672).
+        let diag_step = (
+            if up <= down { -hstep } else { hstep },
+            if left <= right { -hstep } else { hstep },
+        );
+        self.check_better_fast((this_mv.0 + diag_step.0, this_mv.1 + diag_step.1));
+        diag_step
+    }
+
+    /// `second_level_check_fast` (mcomp.c:2743) — the three-way refinement
+    /// keyed on WHICH coordinate moved. Note this is a different shape from
+    /// `second_level_check_v2` used by the upsampled tree: it continues in the
+    /// winning direction with `hstep`-long probes and adds a reverse probe,
+    /// rather than filling the winning quadrant.
+    fn second_level_check_fast(
+        &mut self,
+        this_mv: (i32, i32),
+        diag_step: (i32, i32),
+        hstep: i32,
+    ) {
+        let (tr, tc) = this_mv;
+        let (br, bc) = self.best_mv;
+        if tr != br && tc != bc {
+            self.check_better_fast((br, bc + diag_step.1));
+            self.check_better_fast((br + diag_step.0, bc));
+        } else if tr == br && tc != bc {
+            self.check_better_fast((br + hstep, bc + diag_step.1));
+            self.check_better_fast((br - hstep, bc + diag_step.1));
+            self.check_better_fast((br - diag_step.0, bc));
+        } else if tr != br && tc == bc {
+            self.check_better_fast((br + diag_step.0, bc + hstep));
+            self.check_better_fast((br + diag_step.0, bc - hstep));
+            self.check_better_fast((br, bc - diag_step.1));
+        }
+    }
+
+    /// `two_level_checks_fast` (mcomp.c:2795).
+    fn two_level_checks_fast(&mut self, this_mv: (i32, i32), hstep: i32, iters: i32) {
+        let diag_step = self.first_level_check_fast(this_mv, hstep);
+        if iters > 1 {
+            self.second_level_check_fast(this_mv, diag_step, hstep);
+        }
+    }
+
+    /// `setup_center_error` (mcomp.c:2900), unscaled, `second_pred == NULL`:
+    /// the plain variance of the reference at the **full-pel-truncated**
+    /// position (`get_buf_from_mv` drops the sub-pel part) against the source.
+    /// This is the pruned trees' start error, and it differs from the upsampled
+    /// tree's `upsampled_setup_center_error`, which builds the predictor.
+    fn setup_center_error(&mut self) {
+        let mv = self.best_mv;
+        let ref_ptr = (self.p.ref_origin as isize
+            + (mv.0 >> 3) as isize * self.p.ref_stride as isize
+            + (mv.1 >> 3) as isize) as usize;
+        let mut y8 = vec![0u8; self.p.h * self.p.w];
+        for r in 0..self.p.h {
+            for c in 0..self.p.w {
+                y8[r * self.p.w + c] = self.p.refb[ref_ptr + r * self.p.ref_stride + c] as u8;
+            }
+        }
+        let (var, sse) =
+            aom_dsp::dist::variance(&y8, self.p.w, &self.src8, self.p.w, self.p.w, self.p.h);
+        self.distortion = var as i32;
+        self.sse = sse;
+        self.besterr = (var as i64 + self.mv_err_cost(mv) as i64) as u32;
+    }
+
+    fn result(&self) -> SubpelResult {
+        SubpelResult {
+            best_mv: self.best_mv,
+            distortion: self.distortion,
+            sse: self.sse,
+            besterr: self.besterr,
+        }
+    }
+}
+
+/// `divide_and_round` (mcomp.c:2972) — C's round-half-away-from-zero integer
+/// divide, sign-corrected. NOT `(n + d/2) / d`: the sign test is on
+/// `(n < 0) ^ (d < 0)`, so a negative quotient rounds the other way.
+#[inline]
+fn divide_and_round(n: i32, d: i32) -> i32 {
+    if (n < 0) ^ (d < 0) {
+        (n - d / 2) / d
+    } else {
+        (n + d / 2) / d
+    }
+}
+
+/// `is_cost_list_wellbehaved` (mcomp.c:2976): the centre is strictly cheaper
+/// than all four neighbours, so the quadratic surface fit has a minimum.
+#[inline]
+fn is_cost_list_wellbehaved(cost_list: &[i32; 5]) -> bool {
+    cost_list[0] < cost_list[1]
+        && cost_list[0] < cost_list[2]
+        && cost_list[0] < cost_list[3]
+        && cost_list[0] < cost_list[4]
+}
+
+/// `get_cost_surf_min` (mcomp.c:2988) at `bits = 1`: fit a separable quadratic
+/// to the 5-point cost list and return its minimum as `(ir, ic)` steps.
+#[inline]
+fn get_cost_surf_min(cost_list: &[i32; 5], bits: i32) -> (i32, i32) {
+    let ic = divide_and_round(
+        (cost_list[1] - cost_list[3]) * (1 << (bits - 1)),
+        cost_list[1] - 2 * cost_list[0] + cost_list[3],
+    );
+    let ir = divide_and_round(
+        (cost_list[4] - cost_list[2]) * (1 << (bits - 1)),
+        cost_list[4] - 2 * cost_list[0] + cost_list[2],
+    );
+    (ir, ic)
+}
+
+/// A 5-point `cost_list` is usable only when every entry is finite. C spells
+/// this `cost_list && cost_list[i] != INT_MAX for i in 0..5`.
+#[inline]
+fn cost_list_usable(cost_list: Option<&[i32; 5]>) -> Option<&[i32; 5]> {
+    let cl = cost_list?;
+    if cl.contains(&i32::MAX) {
+        None
+    } else {
+        Some(cl)
+    }
+}
+
+/// `av1_find_best_sub_pixel_tree_pruned_more` (mcomp.c:3026) — the most
+/// aggressive subpel search, used at the fastest GOOD speeds.
+///
+/// Half-pel step: if the caller's 5-point `cost_list` is finite AND
+/// well-behaved, jump straight to the quadratic-fit minimum with ONE probe;
+/// otherwise fall back to a two-level check. Quarter- and eighth-pel steps are
+/// always two-level checks.
+///
+/// `cost_list` is `ms_params->cost_list` — the centre + 4 cardinal SADs the
+/// full-pel search leaves behind. Pass `None` for C's NULL.
+///
+/// Scoring is the bilinear `estimated_pref_error`, not the upsampled predictor
+/// [`find_best_sub_pixel_tree`] uses.
+///
+/// Not modelled (C passes them NULL in the differential): `start_mv_stats`
+/// (which would seed `besterr` from the full-pel search instead of recomputing
+/// the centre error) and `last_mv_search_list` (the repeat guard, whose only
+/// effect is an early `INT_MAX` return).
+///
+/// Differentially locked vs the REAL exported C in `tests/subpel_tree_diff.rs`.
+#[must_use]
+pub fn find_best_sub_pixel_tree_pruned_more(
+    p: &SubpelSearchParams,
+    cost_list: Option<&[i32; 5]>,
+) -> SubpelResult {
+    let mut hstep = INIT_SUBPEL_STEP_SIZE;
+    let mut s = Search::new(p);
+    s.setup_center_error();
+
+    if p.forced_stop == FULL_PEL {
+        return s.result();
+    }
+
+    let start_mv = p.start_mv;
+    match cost_list_usable(cost_list) {
+        Some(cl) if is_cost_list_wellbehaved(cl) => {
+            let (ir, ic) = get_cost_surf_min(cl, 1);
+            if ir != 0 || ic != 0 {
+                s.check_better_fast((start_mv.0 + ir * hstep, start_mv.1 + ic * hstep));
+            }
+        }
+        _ => s.two_level_checks_fast(start_mv, hstep, p.iters_per_step),
+    }
+
+    // HALF_PEL == 2 in SUBPEL_FORCE_STOP order (EIGHTH=0, QUARTER=1, HALF=2,
+    // FULL=3), so `forced_stop < HALF_PEL` means "go finer than half-pel".
+    if p.forced_stop < 2 {
+        hstep >>= 1;
+        let c = s.best_mv;
+        s.two_level_checks_fast(c, hstep, p.iters_per_step);
+    }
+
+    if p.allow_hp && p.forced_stop == 0 {
+        hstep >>= 1;
+        let c = s.best_mv;
+        s.two_level_checks_fast(c, hstep, p.iters_per_step);
+    }
+
+    s.result()
+}
+
+/// `av1_find_best_sub_pixel_tree_pruned` (mcomp.c:3120) — the middle-speed
+/// subpel search.
+///
+/// Half-pel step: if the `cost_list` is finite, probe only the three points of
+/// the quadrant the list points at (`whichdir`); otherwise a two-level check.
+/// Note this variant does **not** require the cost list to be well-behaved —
+/// unlike `_pruned_more`, which does.
+///
+/// C explicitly discards `start_mv_stats` here (`(void)start_mv_stats`) even
+/// though `_pruned_more` honours it; that asymmetry is upstream's, not a
+/// simplification of this port.
+///
+/// Differentially locked vs the REAL exported C in `tests/subpel_tree_diff.rs`.
+#[must_use]
+pub fn find_best_sub_pixel_tree_pruned(
+    p: &SubpelSearchParams,
+    cost_list: Option<&[i32; 5]>,
+) -> SubpelResult {
+    let mut hstep = INIT_SUBPEL_STEP_SIZE;
+    let mut s = Search::new(p);
+    s.setup_center_error();
+
+    if p.forced_stop == FULL_PEL {
+        return s.result();
+    }
+
+    let sm = p.start_mv;
+    match cost_list_usable(cost_list) {
+        Some(cl) => {
+            // whichdir: bit 0 = right beats left, bit 1 = bottom beats top.
+            let whichdir = usize::from(cl[1] >= cl[3]) + 2 * usize::from(cl[2] >= cl[4]);
+            let left = (sm.0, sm.1 - hstep);
+            let right = (sm.0, sm.1 + hstep);
+            let bottom = (sm.0 + hstep, sm.1);
+            let top = (sm.0 - hstep, sm.1);
+            match whichdir {
+                0 => {
+                    s.check_better_fast(left);
+                    s.check_better_fast(bottom);
+                    s.check_better_fast((sm.0 + hstep, sm.1 - hstep));
+                }
+                1 => {
+                    s.check_better_fast(right);
+                    s.check_better_fast(bottom);
+                    s.check_better_fast((sm.0 + hstep, sm.1 + hstep));
+                }
+                2 => {
+                    s.check_better_fast(left);
+                    s.check_better_fast(top);
+                    s.check_better_fast((sm.0 - hstep, sm.1 - hstep));
+                }
+                _ => {
+                    s.check_better_fast(right);
+                    s.check_better_fast(top);
+                    s.check_better_fast((sm.0 - hstep, sm.1 + hstep));
+                }
+            }
+        }
+        None => s.two_level_checks_fast(sm, hstep, p.iters_per_step),
+    }
+
+    if p.forced_stop < 2 {
+        hstep >>= 1;
+        let c = s.best_mv;
+        s.two_level_checks_fast(c, hstep, p.iters_per_step);
+    }
+
+    if p.allow_hp && p.forced_stop == 0 {
+        hstep >>= 1;
+        let c = s.best_mv;
+        s.two_level_checks_fast(c, hstep, p.iters_per_step);
+    }
+
+    s.result()
+}
+
+/// `lower_mv_precision(mv, allow_hp, is_integer = 0)` (mvref_common.h:88):
+/// when high precision is off, drag an odd component one step **toward zero**.
+#[inline]
+fn lower_mv_precision(mv: (i32, i32), allow_hp: bool) -> (i32, i32) {
+    if allow_hp {
+        return mv;
+    }
+    let fix = |v: i32| {
+        if v & 1 != 0 {
+            v + if v > 0 { -1 } else { 1 }
+        } else {
+            v
+        }
+    };
+    (fix(mv.0), fix(mv.1))
+}
+
+/// `av1_return_max_sub_pixel_mv` (mcomp.c) — the degenerate "search" the
+/// encoder installs when the subpel stage is disabled: take the MV limit
+/// corner, drop it to the allowed precision, and report zero error.
+///
+/// It ignores `start_mv` entirely, so its result depends only on
+/// `limits` + `allow_hp`.
+#[must_use]
+pub fn return_max_sub_pixel_mv(p: &SubpelSearchParams) -> SubpelResult {
+    let mv = lower_mv_precision((p.limits.row_max, p.limits.col_max), p.allow_hp);
+    SubpelResult { best_mv: mv, distortion: 0, sse: 0, besterr: 0 }
+}
+
+/// `av1_return_min_sub_pixel_mv` (mcomp.c) — the minimum-corner twin of
+/// [`return_max_sub_pixel_mv`].
+#[must_use]
+pub fn return_min_sub_pixel_mv(p: &SubpelSearchParams) -> SubpelResult {
+    let mv = lower_mv_precision((p.limits.row_min, p.limits.col_min), p.allow_hp);
+    SubpelResult { best_mv: mv, distortion: 0, sse: 0, besterr: 0 }
+}
+
 /// `av1_get_mvpred_sse` (mcomp.c:3963): the score `av1_single_motion_search`
 /// assigns a full-pel search result — the plain (non-upsampled) predictor SSE at
 /// `best_full_mv` plus the coded-MV rate cost. `pre`/`pre_origin` locate the
