@@ -17321,3 +17321,183 @@ pub fn ref_highbd_segmented_frame_error(
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// obmc_shim.c (cont.) — the OBMC distortion kernels.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_obmc_variance(
+        pre: *const u8,
+        pre_stride: i32,
+        wsrc: *const i32,
+        mask: *const i32,
+        w: i32,
+        h: i32,
+        out_sse: *mut u32,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_obmc_sub_pixel_variance(
+        pre: *const u8,
+        pre_stride: i32,
+        xoffset: i32,
+        yoffset: i32,
+        wsrc: *const i32,
+        mask: *const i32,
+        w: i32,
+        h: i32,
+        out_sse: *mut u32,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_highbd_obmc_variance(
+        pre: *const u16,
+        pre_stride: i32,
+        wsrc: *const i32,
+        mask: *const i32,
+        w: i32,
+        h: i32,
+        bd: i32,
+        out_sse: *mut u32,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_highbd_obmc_sub_pixel_variance(
+        pre: *const u16,
+        pre_stride: i32,
+        xoffset: i32,
+        yoffset: i32,
+        wsrc: *const i32,
+        mask: *const i32,
+        w: i32,
+        h: i32,
+        bd: i32,
+        out_sse: *mut u32,
+    ) -> i64;
+}
+
+#[inline]
+fn obmc_result(rc: i64, sse: u32, w: usize, h: usize, what: &str) -> (u32, u32) {
+    assert!(
+        rc >= 0,
+        "no C {what} kernel for {w}x{h}: the shim's size table does not cover \
+         this block shape"
+    );
+    (rc as u32, sse)
+}
+
+/// Reference libaom `aom_obmc_variance{W}x{H}_c` (aom_dsp/variance.c:794).
+/// Returns `(variance, sse)`.
+pub fn ref_obmc_variance(
+    pre: &[u8],
+    pre_off: usize,
+    pre_stride: usize,
+    wsrc: &[i32],
+    mask: &[i32],
+    w: usize,
+    h: usize,
+) -> (u32, u32) {
+    let mut sse = 0u32;
+    let rc = unsafe {
+        shim_obmc_variance(
+            pre.as_ptr().add(pre_off),
+            pre_stride as i32,
+            wsrc.as_ptr(),
+            mask.as_ptr(),
+            w as i32,
+            h as i32,
+            &mut sse,
+        )
+    };
+    obmc_result(rc, sse, w, h, "aom_obmc_variance")
+}
+
+/// Reference libaom `aom_obmc_sub_pixel_variance{W}x{H}_c` (variance.c:803).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_obmc_sub_pixel_variance(
+    pre: &[u8],
+    pre_off: usize,
+    pre_stride: usize,
+    xoffset: usize,
+    yoffset: usize,
+    wsrc: &[i32],
+    mask: &[i32],
+    w: usize,
+    h: usize,
+) -> (u32, u32) {
+    let mut sse = 0u32;
+    let rc = unsafe {
+        shim_obmc_sub_pixel_variance(
+            pre.as_ptr().add(pre_off),
+            pre_stride as i32,
+            xoffset as i32,
+            yoffset as i32,
+            wsrc.as_ptr(),
+            mask.as_ptr(),
+            w as i32,
+            h as i32,
+            &mut sse,
+        )
+    };
+    obmc_result(rc, sse, w, h, "aom_obmc_sub_pixel_variance")
+}
+
+/// Reference libaom `aom_highbd_{8,10,12}_obmc_variance{W}x{H}_c` (variance.c:937).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_obmc_variance(
+    pre: &[u16],
+    pre_off: usize,
+    pre_stride: usize,
+    wsrc: &[i32],
+    mask: &[i32],
+    w: usize,
+    h: usize,
+    bd: u32,
+) -> (u32, u32) {
+    let mut sse = 0u32;
+    let rc = unsafe {
+        shim_highbd_obmc_variance(
+            pre.as_ptr().add(pre_off),
+            pre_stride as i32,
+            wsrc.as_ptr(),
+            mask.as_ptr(),
+            w as i32,
+            h as i32,
+            bd as i32,
+            &mut sse,
+        )
+    };
+    obmc_result(rc, sse, w, h, "aom_highbd_obmc_variance")
+}
+
+/// Reference libaom `aom_highbd_{8,10,12}_obmc_sub_pixel_variance{W}x{H}_c`
+/// (variance.c:966).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_obmc_sub_pixel_variance(
+    pre: &[u16],
+    pre_off: usize,
+    pre_stride: usize,
+    xoffset: usize,
+    yoffset: usize,
+    wsrc: &[i32],
+    mask: &[i32],
+    w: usize,
+    h: usize,
+    bd: u32,
+) -> (u32, u32) {
+    let mut sse = 0u32;
+    let rc = unsafe {
+        shim_highbd_obmc_sub_pixel_variance(
+            pre.as_ptr().add(pre_off),
+            pre_stride as i32,
+            xoffset as i32,
+            yoffset as i32,
+            wsrc.as_ptr(),
+            mask.as_ptr(),
+            w as i32,
+            h as i32,
+            bd as i32,
+            &mut sse,
+        )
+    };
+    obmc_result(rc, sse, w, h, "aom_highbd_obmc_sub_pixel_variance")
+}

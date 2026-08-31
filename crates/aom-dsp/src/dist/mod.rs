@@ -6,6 +6,7 @@
 pub mod simd;
 mod simd_variance;
 pub mod hadamard;
+pub mod obmc;
 
 const FILTER_BITS: i32 = 7;
 
