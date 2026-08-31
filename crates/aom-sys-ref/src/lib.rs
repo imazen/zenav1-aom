@@ -17597,3 +17597,112 @@ pub fn ref_obmc_full_pixel_search(
     );
     (r, (br, bc))
 }
+
+// ---------------------------------------------------------------------------
+// me_shim.c (cont.) — av1_find_best_obmc_sub_pixel_tree_up.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_find_best_obmc_sub_pixel_tree_up(
+        ref_at_origin: *const u8,
+        ref_stride: i32,
+        w: i32,
+        h: i32,
+        wsrc: *const i32,
+        obmc_mask: *const i32,
+        start_row: i32,
+        start_col: i32,
+        ref_mv_row: i32,
+        ref_mv_col: i32,
+        mvjcost: *const i32,
+        mvcost0: *const i32,
+        mvcost1: *const i32,
+        error_per_bit: i32,
+        allow_hp: i32,
+        forced_stop: i32,
+        iters_per_step: i32,
+        use_2_taps_orig: i32,
+        row_min: i32,
+        row_max: i32,
+        col_min: i32,
+        col_max: i32,
+        out_best_row: *mut i32,
+        out_best_col: *mut i32,
+        out_distortion: *mut i32,
+        out_sse: *mut u32,
+    ) -> i32;
+}
+
+/// Reference libaom `av1_find_best_obmc_sub_pixel_tree_up` (mcomp.c:3838),
+/// lowbd, unscaled, single reference.
+///
+/// `use_2_taps_orig` picks `USE_2_TAPS_ORIG` (bilinear
+/// `aom_obmc_sub_pixel_variance` + `estimate_obmc_mvcost`) over `USE_8_TAPS`
+/// (upsampled predictor + `aom_obmc_variance` + `mv_err_cost_`).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_find_best_obmc_sub_pixel_tree_up(
+    refb: &[u8],
+    ref_origin: usize,
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+    wsrc: &[i32],
+    obmc_mask: &[i32],
+    start_mv: (i32, i32),
+    ref_mv: (i32, i32),
+    mvjcost: &[i32; 4],
+    mvcost0_full: &[i32],
+    mvcost1_full: &[i32],
+    error_per_bit: i32,
+    allow_hp: bool,
+    forced_stop: i32,
+    iters_per_step: i32,
+    use_2_taps_orig: bool,
+    limits: (i32, i32, i32, i32),
+) -> RefSubpelResult {
+    ref_init();
+    const MV_MAX: usize = (1 << 14) - 1;
+    let (mut br, mut bc, mut dist, mut sse) = (0i32, 0i32, 0i32, 0u32);
+    let besterr = unsafe {
+        shim_find_best_obmc_sub_pixel_tree_up(
+            refb.as_ptr().add(ref_origin),
+            ref_stride as i32,
+            w as i32,
+            h as i32,
+            wsrc.as_ptr(),
+            obmc_mask.as_ptr(),
+            start_mv.0,
+            start_mv.1,
+            ref_mv.0,
+            ref_mv.1,
+            mvjcost.as_ptr(),
+            mvcost0_full.as_ptr().add(MV_MAX),
+            mvcost1_full.as_ptr().add(MV_MAX),
+            error_per_bit,
+            allow_hp as i32,
+            forced_stop,
+            iters_per_step,
+            use_2_taps_orig as i32,
+            limits.0,
+            limits.1,
+            limits.2,
+            limits.3,
+            &mut br,
+            &mut bc,
+            &mut dist,
+            &mut sse,
+        )
+    };
+    assert!(
+        besterr != -2,
+        "no C aom_obmc_variance/aom_obmc_sub_pixel_variance kernel for {w}x{h}: \
+         the shim's size table does not cover this block shape"
+    );
+    RefSubpelResult {
+        best_mv: (br, bc),
+        distortion: dist,
+        sse,
+        besterr: besterr as u32,
+    }
+}

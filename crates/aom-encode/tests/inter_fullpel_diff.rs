@@ -639,3 +639,187 @@ fn get_obmc_mvpred_var_is_the_reported_score() {
     let (sme, mv) = obmc_full_pixel_search(&p, (0, 0), 4, false);
     assert_eq!(sme, get_obmc_mvpred_var(&p, mv));
 }
+
+// ===================================================================
+// The OBMC sub-pel motion search.
+// ===================================================================
+
+use aom_encode::inter_fullpel::{
+    ObmcSubpelParams, ObmcSubpelSearchType, find_best_obmc_sub_pixel_tree_up,
+};
+use aom_encode::inter_me::SubpelMvLimits;
+use aom_sys_ref::ref_find_best_obmc_sub_pixel_tree_up;
+
+#[test]
+fn obmc_sub_pixel_tree_up_matches_c() {
+    let mut rng = Rng::new(0x5A5A_C3C3_9696_0F0F);
+    let mut moved = false;
+    for &(w, h) in &OBMC_SIZES {
+        for &use_2_taps_orig in &[false, true] {
+            for &(allow_hp, forced_stop, iters) in &[
+                (true, 0, 2),
+                (false, 0, 2),
+                (true, 1, 2),
+                (true, 2, 2),
+                (true, 3, 2),
+                (true, 0, 1),
+            ] {
+                for &start in &[(0i32, 0i32), (8, 0), (0, 8), (8, 8), (-8, -8)] {
+                    let stride = w + 2 * BORDER;
+                    let rows = h + 2 * BORDER;
+                    let mut refb = vec![0u8; stride * rows];
+                    for b in refb.iter_mut() {
+                        *b = rng.byte();
+                    }
+                    let ref_origin = BORDER * stride + BORDER;
+                    let planted = (start.0 >> 3, start.1 >> 3);
+                    let (wsrc, mask) =
+                        obmc_wsrc_mask(&mut rng, &refb, ref_origin, stride, w, h, planted);
+
+                    let mvjcost = [0i32, 240, 240, 480];
+                    let mvcost0 = mvcost_table(48);
+                    let mvcost1 = mvcost_table(64);
+                    let dv = DvCosts {
+                        joint_mv: mvjcost,
+                        dv_costs: [mvcost0.clone(), mvcost1.clone()],
+                    };
+                    let limits = (-256i32, 256i32, -256i32, 256i32);
+                    let refb16: Vec<u16> = refb.iter().map(|&b| u16::from(b)).collect();
+
+                    let p = ObmcSubpelParams {
+                        refb: &refb16,
+                        ref_origin,
+                        ref_stride: stride,
+                        w,
+                        h,
+                        wsrc: &wsrc,
+                        obmc_mask: &mask,
+                        start_mv: start,
+                        ref_mv: start,
+                        dv: &dv,
+                        error_per_bit: 256,
+                        allow_hp,
+                        forced_stop,
+                        iters_per_step: iters,
+                        limits: SubpelMvLimits {
+                            row_min: limits.0,
+                            row_max: limits.1,
+                            col_min: limits.2,
+                            col_max: limits.3,
+                        },
+                        search_type: if use_2_taps_orig {
+                            ObmcSubpelSearchType::Use2TapsOrig
+                        } else {
+                            ObmcSubpelSearchType::Upsampled
+                        },
+                    };
+                    let got = find_best_obmc_sub_pixel_tree_up(&p);
+                    let want = ref_find_best_obmc_sub_pixel_tree_up(
+                        &refb,
+                        ref_origin,
+                        stride,
+                        w,
+                        h,
+                        &wsrc,
+                        &mask,
+                        start,
+                        start,
+                        &mvjcost,
+                        &mvcost0,
+                        &mvcost1,
+                        256,
+                        allow_hp,
+                        forced_stop,
+                        iters,
+                        use_2_taps_orig,
+                        limits,
+                    );
+                    let label = format!(
+                        "{w}x{h} 2taps={use_2_taps_orig} hp={allow_hp} stop={forced_stop} \
+                         iters={iters} start={start:?}"
+                    );
+                    assert_eq!(got.best_mv, want.best_mv, "best_mv: {label}");
+                    assert_eq!(got.distortion, want.distortion, "distortion: {label}");
+                    assert_eq!(got.sse, want.sse, "sse: {label}");
+                    assert_eq!(got.besterr, want.besterr, "besterr: {label}");
+                    if got.best_mv != start {
+                        moved = true;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        moved,
+        "the OBMC subpel tree never refined away from its start MV — the \
+         cardinal/diagonal walk is untested"
+    );
+}
+
+#[test]
+fn obmc_subpel_search_types_differ() {
+    // USE_2_TAPS_ORIG and the upsampled arm use different predictors AND
+    // different MV-rate formulas (`estimate_obmc_mvcost` shifts by 13 with a
+    // spurious x8 on the diff, `mv_err_cost_` by 14 without it). If they ever
+    // agreed everywhere, the `use_2_taps_orig = true` half of the sweep above
+    // would be a duplicate.
+    let mut rng = Rng::new(0x0F1E_2D3C_4B5A_6978);
+    let (w, h) = (16usize, 16usize);
+    let mut differed = false;
+    for _ in 0..40 {
+        let stride = w + 2 * BORDER;
+        let rows = h + 2 * BORDER;
+        let mut refb = vec![0u8; stride * rows];
+        for b in refb.iter_mut() {
+            *b = rng.byte();
+        }
+        let ref_origin = BORDER * stride + BORDER;
+        // A NON-ZERO start MV is required here: at start (0, 0) the two arms'
+        // centre errors coincide, because `setup_obmc_center_error`'s
+        // origin-instead-of-MV read (upstream's own acknowledged bug) happens
+        // to be the same window the upsampled arm builds. That degeneracy is
+        // exactly what this test exists to rule out.
+        let start = (16i32, -8i32);
+        let (wsrc, mask) = obmc_wsrc_mask(&mut rng, &refb, ref_origin, stride, w, h, (2, -1));
+        let mvjcost = [0i32, 240, 240, 480];
+        let dv = DvCosts {
+            joint_mv: mvjcost,
+            dv_costs: [mvcost_table(48), mvcost_table(64)],
+        };
+        let refb16: Vec<u16> = refb.iter().map(|&b| u16::from(b)).collect();
+        let mk = |t| ObmcSubpelParams {
+            refb: &refb16,
+            ref_origin,
+            ref_stride: stride,
+            w,
+            h,
+            wsrc: &wsrc,
+            obmc_mask: &mask,
+            start_mv: start,
+            ref_mv: start,
+            dv: &dv,
+            error_per_bit: 256,
+            allow_hp: true,
+            forced_stop: 0,
+            iters_per_step: 2,
+            limits: SubpelMvLimits {
+                row_min: -256,
+                row_max: 256,
+                col_min: -256,
+                col_max: 256,
+            },
+            search_type: t,
+        };
+        let a = find_best_obmc_sub_pixel_tree_up(&mk(ObmcSubpelSearchType::Upsampled));
+        let b = find_best_obmc_sub_pixel_tree_up(&mk(ObmcSubpelSearchType::Use2TapsOrig));
+        if a != b {
+            differed = true;
+            break;
+        }
+    }
+    assert!(
+        differed,
+        "the two OBMC subpel search types agreed on every trial — one of them \
+         is not being distinguished"
+    );
+}

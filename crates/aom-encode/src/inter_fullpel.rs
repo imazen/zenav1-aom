@@ -1,14 +1,18 @@
-//! Full-pel inter motion-search kernels that live outside the diamond/mesh
-//! core — port of libaom v3.14.1 `av1/encoder/mcomp.c`.
+//! Inter motion-search kernels that live outside the single-reference
+//! diamond/mesh core — port of libaom v3.14.1 `av1/encoder/mcomp.c`.
 //!
-//! The NSTEP diamond and the mesh (`av1_full_pixel_search`) already live in
-//! [`crate::intrabc_search`], retargeted from the current frame to a reference.
-//! This module adds the two exported full-pel kernels that sit beside them:
+//! The single-reference NSTEP diamond and the mesh (`av1_full_pixel_search`)
+//! already live in [`crate::intrabc_search`], retargeted from the current frame
+//! to a reference. This module adds the exported kernels that sit beside them,
+//! plus the whole OBMC motion search — which is a **separate** search, not the
+//! single-reference one with a different metric:
 //!
 //! | Rust | C |
 //! |---|---|
 //! | [`refining_search_8p`] | `av1_refining_search_8p_c` (mcomp.c:1696) |
 //! | [`vector_match`] | `av1_vector_match` (mcomp.c:2276) |
+//! | [`obmc_full_pixel_search`] | `av1_obmc_full_pixel_search` (mcomp.c:2202) |
+//! | [`find_best_obmc_sub_pixel_tree_up`] | `av1_find_best_obmc_sub_pixel_tree_up` (mcomp.c:3838) |
 //!
 //! # Differential coverage
 //! `tests/inter_fullpel_diff.rs`, tier 1 against the real exported C.
@@ -535,5 +539,292 @@ pub fn obmc_full_pixel_search(
             i32::MAX
         };
         (thissme, best_mv)
+    }
+}
+
+// ===================================================================
+// The OBMC sub-pel motion search — av1_find_best_obmc_sub_pixel_tree_up
+// (mcomp.c:3838) and its helper chain.
+// ===================================================================
+
+/// `INIT_SUBPEL_STEP_SIZE` (mcomp.c:2466): the half-pel starting step (4/8).
+const INIT_SUBPEL_STEP_SIZE: i32 = 4;
+/// `FULL_PEL` (`SUBPEL_FORCE_STOP`, mcomp.h:280).
+const FULL_PEL: i32 = 3;
+/// The `INT_MAX` sentinel C uses for an unsigned `besterr` — the SIGNED one.
+const OBMC_INT_MAX: u32 = i32::MAX as u32;
+
+/// `SUBPEL_SEARCH_TYPE` (mcomp.h), reduced to the distinction the OBMC subpel
+/// tree branches on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ObmcSubpelSearchType {
+    /// `USE_2_TAPS_ORIG` — score with the bilinear
+    /// `aom_obmc_sub_pixel_variance` and the `estimate_obmc_mvcost` rate.
+    Use2TapsOrig,
+    /// Anything else (`USE_2_TAPS` / `USE_4_TAPS` / `USE_8_TAPS`) — build the
+    /// upsampled predictor and score it with `aom_obmc_variance` and the
+    /// ordinary `mv_err_cost_` rate.
+    Upsampled,
+}
+
+/// Inputs to [`find_best_obmc_sub_pixel_tree_up`].
+pub struct ObmcSubpelParams<'a> {
+    /// Border-extended reference plane, `u16` bd8.
+    pub refb: &'a [u16],
+    /// Index in `refb` of the zero-MV block origin.
+    pub ref_origin: usize,
+    pub ref_stride: usize,
+    pub w: usize,
+    pub h: usize,
+    /// `ms_buffers->wsrc`
+    pub wsrc: &'a [i32],
+    /// `ms_buffers->obmc_mask`
+    pub obmc_mask: &'a [i32],
+    /// Full-pel search result promoted to 1/8-pel.
+    pub start_mv: (i32, i32),
+    /// The predicted MV, in 1/8-pel, the rate is measured against.
+    pub ref_mv: (i32, i32),
+    pub dv: &'a DvCosts,
+    pub error_per_bit: i32,
+    pub allow_hp: bool,
+    /// `SUBPEL_FORCE_STOP`: 0 = EIGHTH_PEL .. 3 = FULL_PEL.
+    pub forced_stop: i32,
+    pub iters_per_step: i32,
+    pub limits: crate::inter_me::SubpelMvLimits,
+    pub search_type: ObmcSubpelSearchType,
+}
+
+struct ObmcSubpel<'a> {
+    p: &'a ObmcSubpelParams<'a>,
+    best_mv: (i32, i32),
+    besterr: u32,
+    distortion: i32,
+    sse: u32,
+}
+
+impl ObmcSubpel<'_> {
+    /// `mv_err_cost_` at `MV_COST_ENTROPY`.
+    fn mv_err_cost(&self, mv: (i32, i32)) -> i32 {
+        crate::intrabc_search::mv_err_cost(
+            mv.0 - self.p.ref_mv.0,
+            mv.1 - self.p.ref_mv.1,
+            self.p.dv,
+            self.p.error_per_bit,
+        )
+    }
+
+    /// `estimate_obmc_mvcost` (mcomp.c:3714).
+    ///
+    /// Upstream's own comment says this "does not match the cost in mv_cost_",
+    /// and it does not: the shift is 13 with a `+4096` bias rather than 14 with
+    /// `+8192`, **and** it applies `GET_MV_SUBPEL` (a x8 multiply) to a
+    /// difference that is already in 1/8-pel units. This port reproduces both,
+    /// because the encoder's decisions depend on the value libaom actually
+    /// computes, not on the one it meant to.
+    fn estimate_obmc_mvcost(&self, mv: (i32, i32)) -> i32 {
+        let dr = (mv.0 - self.p.ref_mv.0) * 8;
+        let dc = (mv.1 - self.p.ref_mv.1) * 8;
+        let c = i64::from(crate::intrabc_search::mv_cost(dr, dc, self.p.dv));
+        ((c * i64::from(self.p.error_per_bit) + 4096) >> 13) as i32
+    }
+
+    /// `estimate_obmc_pref_error` (mcomp.c:3693): the bilinear OBMC sub-pixel
+    /// variance at `mv`. Returns `(variance, sse)`.
+    fn estimate_pref_error(&self, mv: (i32, i32)) -> (u32, u32) {
+        let sx = (mv.1 & 7) as usize;
+        let sy = (mv.0 & 7) as usize;
+        let off = (self.p.ref_origin as isize
+            + (mv.0 >> 3) as isize * self.p.ref_stride as isize
+            + (mv.1 >> 3) as isize) as usize;
+        // The bilinear kernel reads one extra column and row.
+        let mut win = vec![0u8; (self.p.h + 1) * (self.p.w + 1)];
+        for r in 0..=self.p.h {
+            for c in 0..=self.p.w {
+                win[r * (self.p.w + 1) + c] = self.p.refb[off + r * self.p.ref_stride + c] as u8;
+            }
+        }
+        aom_dsp::dist::obmc::obmc_sub_pixel_variance(
+            &win,
+            0,
+            self.p.w + 1,
+            sx,
+            sy,
+            self.p.wsrc,
+            self.p.obmc_mask,
+            self.p.w,
+            self.p.h,
+        )
+    }
+
+    /// `upsampled_obmc_pref_error` (mcomp.c:3636): build the upsampled 8-tap
+    /// predictor at `mv` and score it with the OBMC variance.
+    fn upsampled_pref_error(&self, mv: (i32, i32)) -> (u32, u32) {
+        let sx = (mv.1 & 7) as usize;
+        let sy = (mv.0 & 7) as usize;
+        let off = (self.p.ref_origin as isize
+            + (mv.0 >> 3) as isize * self.p.ref_stride as isize
+            + (mv.1 >> 3) as isize) as usize;
+        let pred = crate::inter_me::upsampled_pred(
+            self.p.refb,
+            off,
+            self.p.ref_stride,
+            self.p.w,
+            self.p.h,
+            sx,
+            sy,
+        );
+        let pred8: Vec<u8> = pred.iter().map(|&v| v as u8).collect();
+        aom_dsp::dist::obmc::obmc_variance(
+            &pred8,
+            0,
+            self.p.w,
+            self.p.wsrc,
+            self.p.obmc_mask,
+            self.p.w,
+            self.p.h,
+        )
+    }
+
+    fn in_range(&self, mv: (i32, i32)) -> bool {
+        mv.1 >= self.p.limits.col_min
+            && mv.1 <= self.p.limits.col_max
+            && mv.0 >= self.p.limits.row_min
+            && mv.0 <= self.p.limits.row_max
+    }
+
+    /// `obmc_check_better` (mcomp.c:3771) / `obmc_check_better_fast` (:3742),
+    /// selected by the search type. Returns `(cost, improved)`.
+    fn check_better(&mut self, mv: (i32, i32)) -> (u32, bool) {
+        if !self.in_range(mv) {
+            return (OBMC_INT_MAX, false);
+        }
+        let (var, sse, cost) = match self.p.search_type {
+            ObmcSubpelSearchType::Use2TapsOrig => {
+                let (var, sse) = self.estimate_pref_error(mv);
+                (var, sse, self.estimate_obmc_mvcost(mv) as u32)
+            }
+            ObmcSubpelSearchType::Upsampled => {
+                let (var, sse) = self.upsampled_pref_error(mv);
+                (var, sse, self.mv_err_cost(mv) as u32)
+            }
+        };
+        let cost = cost.wrapping_add(var);
+        let mut improved = false;
+        if cost < self.besterr {
+            self.besterr = cost;
+            self.best_mv = mv;
+            self.distortion = var as i32;
+            self.sse = sse;
+            improved = true;
+        }
+        (cost, improved)
+    }
+
+    /// `obmc_first_level_check` (mcomp.c:3800): four cardinal probes plus the
+    /// best diagonal. Returns `diag_step`.
+    fn first_level_check(&mut self, this_mv: (i32, i32), hstep: i32) -> (i32, i32) {
+        let (left, _) = self.check_better((this_mv.0, this_mv.1 - hstep));
+        let (right, _) = self.check_better((this_mv.0, this_mv.1 + hstep));
+        let (up, _) = self.check_better((this_mv.0 - hstep, this_mv.1));
+        let (down, _) = self.check_better((this_mv.0 + hstep, this_mv.1));
+        let diag_step = (
+            if up <= down { -hstep } else { hstep },
+            if left <= right { -hstep } else { hstep },
+        );
+        self.check_better((this_mv.0 + diag_step.0, this_mv.1 + diag_step.1));
+        diag_step
+    }
+
+    /// `obmc_second_level_check_v2` (mcomp.c:3866).
+    fn second_level_check_v2(&mut self, this_mv: (i32, i32), mut diag_step: (i32, i32)) {
+        if this_mv == self.best_mv {
+            return;
+        } else if this_mv.0 == self.best_mv.0 {
+            diag_step.0 = -diag_step.0;
+        } else if this_mv.1 == self.best_mv.1 {
+            diag_step.1 = -diag_step.1;
+        }
+        let bm = self.best_mv;
+        let (_, i1) = self.check_better((bm.0 + diag_step.0, bm.1));
+        let (_, i2) = self.check_better((bm.0, bm.1 + diag_step.1));
+        if i1 || i2 {
+            self.check_better((bm.0 + diag_step.0, bm.1 + diag_step.1));
+        }
+    }
+}
+
+/// Output of [`find_best_obmc_sub_pixel_tree_up`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObmcSubpelResult {
+    pub best_mv: (i32, i32),
+    pub distortion: i32,
+    pub sse: u32,
+    /// C's return value.
+    pub besterr: u32,
+}
+
+/// `av1_find_best_obmc_sub_pixel_tree_up` (mcomp.c:3838).
+///
+/// One upstream quirk is reproduced verbatim and is worth naming: the
+/// `USE_2_TAPS_ORIG` centre error (`setup_obmc_center_error`, mcomp.c:3683)
+/// scores the reference at its **buffer origin**, ignoring `start_mv`
+/// entirely — libaom's own comment there says "There might be a bug here where
+/// we didn't use get_buf_from_mv". The upsampled centre error does use the MV.
+/// Both are ported as written.
+///
+/// `start_mv_stats` and `last_mv_search_list` are not modelled; C discards both
+/// in this function (`(void)` on each).
+#[must_use]
+pub fn find_best_obmc_sub_pixel_tree_up(p: &ObmcSubpelParams) -> ObmcSubpelResult {
+    let mut hstep = INIT_SUBPEL_STEP_SIZE;
+    let round = (FULL_PEL - p.forced_stop).min(3 - i32::from(!p.allow_hp));
+
+    let mut s = ObmcSubpel {
+        p,
+        best_mv: p.start_mv,
+        besterr: OBMC_INT_MAX,
+        distortion: 0,
+        sse: 0,
+    };
+
+    match p.search_type {
+        ObmcSubpelSearchType::Upsampled => {
+            // upsampled_setup_obmc_center_error (mcomp.c:3702).
+            let (var, sse) = s.upsampled_pref_error(p.start_mv);
+            s.distortion = var as i32;
+            s.sse = sse;
+            s.besterr = (var as i64 + i64::from(s.mv_err_cost(p.start_mv))) as u32;
+        }
+        ObmcSubpelSearchType::Use2TapsOrig => {
+            // setup_obmc_center_error (mcomp.c:3683) — scores the reference at
+            // the buffer ORIGIN, not at start_mv. See the doc note.
+            let mut win = vec![0u8; p.w * p.h];
+            for r in 0..p.h {
+                for c in 0..p.w {
+                    win[r * p.w + c] = p.refb[p.ref_origin + r * p.ref_stride + c] as u8;
+                }
+            }
+            let (var, sse) =
+                aom_dsp::dist::obmc::obmc_variance(&win, 0, p.w, p.wsrc, p.obmc_mask, p.w, p.h);
+            s.distortion = var as i32;
+            s.sse = sse;
+            s.besterr = (var as i64 + i64::from(s.mv_err_cost(p.start_mv))) as u32;
+        }
+    }
+
+    for _ in 0..round {
+        let iter_center = s.best_mv;
+        let diag = s.first_level_check(iter_center, hstep);
+        if iter_center != s.best_mv && p.iters_per_step > 1 {
+            s.second_level_check_v2(iter_center, diag);
+        }
+        hstep >>= 1;
+    }
+
+    ObmcSubpelResult {
+        best_mv: s.best_mv,
+        distortion: s.distortion,
+        sse: s.sse,
+        besterr: s.besterr,
     }
 }
