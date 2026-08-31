@@ -17706,3 +17706,107 @@ pub fn ref_find_best_obmc_sub_pixel_tree_up(
         besterr: besterr as u32,
     }
 }
+
+// ---------------------------------------------------------------------------
+// gm_shim.c (cont.) — av1_refine_integerized_param, the only exported entry
+// that reaches global_motion.c's file-static add_param_offset / force_wmtype /
+// warp_error / get_warp_error.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_refine_integerized_param(
+        wmmat: *mut i32,
+        wmtype: i32,
+        refp: *const u8,
+        r_width: i32,
+        r_height: i32,
+        r_stride: i32,
+        dst: *mut u8,
+        d_width: i32,
+        d_height: i32,
+        d_stride: i32,
+        n_refinements: i32,
+        ref_frame_error: i64,
+        segment_map: *mut u8,
+        segment_map_stride: i32,
+        gm_erroradv_tr: f64,
+        out_wmtype: *mut i32,
+        out_shear: *mut i16,
+        out_invalid: *mut i32,
+    ) -> i64;
+}
+
+/// What the reference `av1_refine_integerized_param` produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RefRefinedModel {
+    /// The refined `wm->wmmat`.
+    pub wmmat: [i32; 6],
+    /// `wm->wmtype` after refinement.
+    pub wmtype: i32,
+    /// `(alpha, beta, gamma, delta)` as `av1_get_shear_params` left them.
+    pub shear: [i16; 4],
+    /// `wm->invalid`.
+    pub invalid: i32,
+    /// The function's return value.
+    pub best_error: i64,
+}
+
+/// Reference libaom `av1_refine_integerized_param` (encoder/global_motion.c:364),
+/// lowbd. `dst` and `segment_map` are copied so the oracle cannot mutate the
+/// caller's slices (C takes them non-const but only reads them).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_refine_integerized_param(
+    wmmat: &[i32; 6],
+    wmtype: i32,
+    refp: &[u8],
+    r_width: usize,
+    r_height: usize,
+    r_stride: usize,
+    dst: &[u8],
+    d_width: usize,
+    d_height: usize,
+    d_stride: usize,
+    n_refinements: i32,
+    ref_frame_error: i64,
+    segment_map: &[u8],
+    segment_map_stride: usize,
+    gm_erroradv_tr: f64,
+) -> RefRefinedModel {
+    ref_init();
+    let mut m = *wmmat;
+    let mut dst_copy = dst.to_vec();
+    let mut map_copy = segment_map.to_vec();
+    let mut out_wmtype = 0i32;
+    let mut out_shear = [0i16; 4];
+    let mut out_invalid = 0i32;
+    let best_error = unsafe {
+        shim_refine_integerized_param(
+            m.as_mut_ptr(),
+            wmtype,
+            refp.as_ptr(),
+            r_width as i32,
+            r_height as i32,
+            r_stride as i32,
+            dst_copy.as_mut_ptr(),
+            d_width as i32,
+            d_height as i32,
+            d_stride as i32,
+            n_refinements,
+            ref_frame_error,
+            map_copy.as_mut_ptr(),
+            segment_map_stride as i32,
+            gm_erroradv_tr,
+            &mut out_wmtype,
+            out_shear.as_mut_ptr(),
+            &mut out_invalid,
+        )
+    };
+    RefRefinedModel {
+        wmmat: m,
+        wmtype: out_wmtype,
+        shear: out_shear,
+        invalid: out_invalid,
+        best_error,
+    }
+}

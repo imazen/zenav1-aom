@@ -76,3 +76,42 @@ int64_t shim_segmented_frame_error(int use_hbd, int bd, const void *ref,
                                    (uint8_t *)dst, dst_stride, p_width,
                                    p_height, segment_map, segment_map_stride);
 }
+
+/* ---- shim_refine_integerized_param -----------------------------------
+ * Drives the REAL exported av1_refine_integerized_param (global_motion.c:364)
+ * on the lowbd path. This is the only entry point that reaches the file-static
+ * add_param_offset / force_wmtype / warp_error / get_warp_error, so it is what
+ * gates them.
+ *
+ * `wmmat` is in/out: the caller's starting model goes in and the refined model
+ * comes back. `alpha/beta/gamma/delta` come back too, since
+ * av1_get_shear_params writes them.
+ */
+#include "av1/encoder/encoder.h"
+
+int64_t shim_refine_integerized_param(
+    int32_t *wmmat, int wmtype, const uint8_t *ref, int r_width, int r_height,
+    int r_stride, uint8_t *dst, int d_width, int d_height, int d_stride,
+    int n_refinements, int64_t ref_frame_error, uint8_t *segment_map,
+    int segment_map_stride, double gm_erroradv_tr, int *out_wmtype,
+    int16_t *out_shear, int *out_invalid) {
+  WarpedMotionParams wm;
+  memset(&wm, 0, sizeof(wm));
+  memcpy(wm.wmmat, wmmat, 6 * sizeof(int32_t));
+  wm.wmtype = (TransformationType)wmtype;
+
+  int64_t err = av1_refine_integerized_param(
+      &wm, (TransformationType)wmtype, /*use_hbd=*/0, /*bd=*/8, (uint8_t *)ref,
+      r_width, r_height, r_stride, dst, d_width, d_height, d_stride,
+      n_refinements, ref_frame_error, segment_map, segment_map_stride,
+      gm_erroradv_tr);
+
+  memcpy(wmmat, wm.wmmat, 6 * sizeof(int32_t));
+  *out_wmtype = (int)wm.wmtype;
+  out_shear[0] = wm.alpha;
+  out_shear[1] = wm.beta;
+  out_shear[2] = wm.gamma;
+  out_shear[3] = wm.delta;
+  *out_invalid = (int)wm.invalid;
+  return err;
+}

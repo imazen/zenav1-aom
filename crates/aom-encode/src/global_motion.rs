@@ -17,19 +17,19 @@
 //! | [`compute_feature_segmentation_map`] | `av1_compute_feature_segmentation_map` (:483) |
 //! | [`segmented_frame_error`] / [`highbd_segmented_frame_error`] | `av1_segmented_frame_error` (:321) |
 //!
-//! **Tier note.** The four `av1_*` entries above are exported and are gated at
-//! tier 1. `add_param_offset` and `force_wmtype` are `static` in C with no
-//! linkable symbol and are reachable only through
-//! `av1_refine_integerized_param`; they are ported here but are **ungated
-//! transcriptions** until that loop lands. No test in this crate claims to
-//! verify them.
+//! | [`warp_error`] | `warp_error` (:276) |
+//! | [`get_warp_error`] | `get_warp_error` (:341) |
+//! | [`refine_integerized_param`] | `av1_refine_integerized_param` (:364) |
 //!
-//! **NOT here yet:** `av1_refine_integerized_param` (:364) and the
-//! `warp_error` / `get_warp_error` pair it drives — those need the warp
-//! predictor wired into an error loop, which is the next chunk. The parameter
-//! stepping they walk on ([`add_param_offset`] + [`force_wmtype`]) is landed
-//! and gated here, so that chunk is the loop plus the warp call, not the
-//! arithmetic.
+//! **Tier note.** Everything above is gated at tier 1: the exported entries
+//! against their own C symbol, and the `static` helpers (`add_param_offset`,
+//! `force_wmtype`, `warp_error`, `get_warp_error`) through the exported
+//! `av1_refine_integerized_param`, which drives all four.
+//!
+//! **NOT here:** the high-bit-depth error path (`highbd_warp_error`,
+//! `highbd_segmented_frame_error` is present but `highbd_warp_error` is not),
+//! and the `global_motion_facade.c` driver that decides WHICH models to try.
+//! [`refine_integerized_param`] is lowbd-only and says so at its signature.
 //!
 //! # Differential coverage
 //! `tests/global_motion_diff.rs`, tier 1 against the real exported C.
@@ -164,10 +164,10 @@ pub fn convert_model_to_params(params: &[f64; 6]) -> WarpedMotionParams {
 /// the parameter is one-centered (`== 2 || == 5`). Those are two *different*
 /// predicates over the same index and are easy to conflate.
 ///
-/// **This function is `static` in C and has no exported symbol**, so it is not
-/// tier-1 gated: it is reachable only through `av1_refine_integerized_param`,
-/// which this module does not port yet. Treat it as an ungated transcription
-/// until that loop lands and drives it through the real C entry point.
+/// This function is `static` in C with no exported symbol; it is gated at
+/// tier 1 indirectly, through [`refine_integerized_param`]'s differential
+/// against the exported `av1_refine_integerized_param`, which is the only
+/// caller.
 #[must_use]
 pub fn add_param_offset(param_index: usize, param_value: i32, offset: i32) -> i32 {
     let scale_vals = [GM_TRANS_PREC_DIFF, GM_ALPHA_PREC_DIFF];
@@ -191,9 +191,8 @@ pub fn add_param_offset(param_index: usize, param_value: i32, offset: i32) -> i3
 /// does not fall through, so this port spells the cascade out; writing it as
 /// four independent arms would leave `IDENTITY` with a stale `wmmat[2..6]`.
 ///
-/// Like [`add_param_offset`], this is `static` in C with no exported symbol and
-/// is therefore **not tier-1 gated here** — it becomes reachable when
-/// `av1_refine_integerized_param` lands.
+/// Like [`add_param_offset`], this is `static` in C with no exported symbol;
+/// it is gated indirectly through [`refine_integerized_param`].
 pub fn force_wmtype(wm: &mut WarpedMotionParams, wmtype: u8) {
     let one = 1 << WARPEDMODEL_PREC_BITS;
     if wmtype == IDENTITY {
@@ -374,4 +373,273 @@ pub fn highbd_segmented_frame_error(
         i += WARP_ERROR_BLOCK;
     }
     sum_error
+}
+
+// ===================================================================
+// The warp-error metric and the parameter refinement loop.
+// ===================================================================
+
+/// `erroradv_early_tr` (encoder/global_motion.h:92) — the looser threshold the
+/// refinement's FIRST error computation is allowed, before any stepping.
+const ERRORADV_EARLY_TR: f64 = 0.70;
+/// `ERRORADV_BORDER` (global_motion.c:31).
+const ERRORADV_BORDER: usize = 0;
+
+/// The frame geometry [`warp_error`] and [`refine_integerized_param`] walk.
+/// Planes are `u16` bd8 (`0..=255`), matching the rest of the port.
+pub struct WarpErrorParams<'a> {
+    /// The reference plane, edge-clamped internally by the warp filter.
+    pub refp: &'a [u16],
+    pub ref_width: usize,
+    pub ref_height: usize,
+    pub ref_stride: usize,
+    /// The frame being coded.
+    pub dst: &'a [u16],
+    pub dst_stride: usize,
+    pub subsampling_x: usize,
+    pub subsampling_y: usize,
+    /// The inlier segmentation map from [`compute_feature_segmentation_map`].
+    pub segment_map: &'a [u8],
+    pub segment_map_stride: usize,
+}
+
+/// `warp_error` (global_motion.c:276), lowbd: warp the reference through `wm`
+/// one `WARP_ERROR_BLOCK` cell at a time and accumulate the SAD against `dst`,
+/// skipping cells the segmentation map clears.
+///
+/// Two details the differential pins:
+/// * the per-cell warp extent is clipped against **`ref_width`/`ref_height`**
+///   (`p_col + ref_width - j`), not against `p_width`/`p_height` — which is
+///   the opposite of what the sibling [`segmented_frame_error`] does;
+/// * the accumulator short-circuits to `i64::MAX` as soon as it exceeds
+///   `best_error`, so a caller that passes a tight bound gets a sentinel rather
+///   than a total. That early exit is load-bearing: it is how the refinement
+///   rejects a model.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn warp_error(
+    wm: &WarpedMotionParams,
+    p: &WarpErrorParams,
+    p_col: usize,
+    p_row: usize,
+    p_width: usize,
+    p_height: usize,
+    best_error: i64,
+) -> i64 {
+    let error_bsize_w = p_width.min(WARP_ERROR_BLOCK);
+    let error_bsize_h = p_height.min(WARP_ERROR_BLOCK);
+    let mut gm_sumerr = 0i64;
+    let mut tmp = vec![0u16; WARP_ERROR_BLOCK * WARP_ERROR_BLOCK];
+
+    let mut i = p_row;
+    while i < p_row + p_height {
+        let mut j = p_col;
+        while j < p_col + p_width {
+            let seg_x = j >> WARP_ERROR_BLOCK_LOG;
+            let seg_y = i >> WARP_ERROR_BLOCK_LOG;
+            if p.segment_map[seg_y * p.segment_map_stride + seg_x] == 0 {
+                j += WARP_ERROR_BLOCK;
+                continue;
+            }
+            // C computes these in `int`, so a cell that starts past the
+            // reference's right/bottom edge yields a NEGATIVE extent. Both the
+            // warp and the SAD are `for (x = start; x < start + extent; ...)`
+            // loops, so a negative extent makes each of them empty and the cell
+            // contributes zero — it is not skipped by the segment map, it is
+            // walked and adds nothing. The port reproduces that outcome
+            // explicitly rather than underflowing a `usize`.
+            let warp_w_i = (error_bsize_w as i64).min(p_col as i64 + p.ref_width as i64 - j as i64);
+            let warp_h_i =
+                (error_bsize_h as i64).min(p_row as i64 + p.ref_height as i64 - i as i64);
+            if warp_w_i <= 0 || warp_h_i <= 0 {
+                j += WARP_ERROR_BLOCK;
+                continue;
+            }
+            let warp_w = warp_w_i as usize;
+            let warp_h = warp_h_i as usize;
+            aom_dsp::inter::warp::warp_affine(
+                &wm.wmmat,
+                p.refp,
+                p.ref_width,
+                p.ref_height,
+                p.ref_stride,
+                &mut tmp,
+                0,
+                WARP_ERROR_BLOCK,
+                j as i32,
+                i as i32,
+                warp_w,
+                warp_h,
+                p.subsampling_x,
+                p.subsampling_y,
+                wm.alpha,
+                wm.beta,
+                wm.gamma,
+                wm.delta,
+            );
+            gm_sumerr += i64::from(generic_sad(
+                &tmp,
+                0,
+                WARP_ERROR_BLOCK,
+                p.dst,
+                j + i * p.dst_stride,
+                p.dst_stride,
+                warp_w,
+                warp_h,
+            ));
+            if gm_sumerr > best_error {
+                return i64::MAX;
+            }
+            j += WARP_ERROR_BLOCK;
+        }
+        i += WARP_ERROR_BLOCK;
+    }
+    gm_sumerr
+}
+
+/// `get_warp_error` (global_motion.c:341), lowbd: recompute the model's shear
+/// parameters and, if they are representable, take the warp error.
+///
+/// `av1_get_shear_params` **mutates** `wm` (it writes `alpha`/`beta`/`gamma`/
+/// `delta` and can set `invalid`), so this takes `&mut`. A model whose shear
+/// params do not resolve scores `i64::MAX`.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn get_warp_error(
+    wm: &mut WarpedMotionParams,
+    p: &WarpErrorParams,
+    p_col: usize,
+    p_row: usize,
+    p_width: usize,
+    p_height: usize,
+    best_error: i64,
+) -> i64 {
+    if !aom_dsp::inter::warp::get_shear_params(wm) {
+        return i64::MAX;
+    }
+    warp_error(wm, p, p_col, p_row, p_width, p_height, best_error)
+}
+
+/// `av1_refine_integerized_param` (global_motion.c:364), lowbd.
+///
+/// Coordinate descent over the model parameters: `n_refinements` rounds, each
+/// halving the step, and within a round each of the `wmtype`'s coded parameters
+/// is probed left, then right, then repeatedly in whichever direction won until
+/// the error stops falling.
+///
+/// `n_refinements == 0` is a distinct early path: it scores the model ONCE
+/// against a threshold derived from `gm_erroradv_tr`, and never steps.
+/// With refinement, the initial score uses the looser `erroradv_early_tr`
+/// (0.70) instead, and a model that fails it is rejected outright with
+/// `i64::MAX` — those are two different thresholds and swapping them changes
+/// which models survive.
+///
+/// `wm` is updated in place with the refined model. Returns the best error, or
+/// `i64::MAX` for a rejected model.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn refine_integerized_param(
+    wm: &mut WarpedMotionParams,
+    wmtype: u8,
+    p: &WarpErrorParams,
+    d_width: usize,
+    d_height: usize,
+    n_refinements: i32,
+    ref_frame_error: i64,
+    gm_erroradv_tr: f64,
+) -> i64 {
+    let border = ERRORADV_BORDER;
+    let n_params = MAX_TRANS_MODEL_PARAMS[wmtype as usize];
+    let p_width = d_width - 2 * border;
+    let p_height = d_height - 2 * border;
+
+    force_wmtype(wm, wmtype);
+    wm.wmtype = get_wmtype(wm);
+
+    if n_refinements == 0 {
+        // C: (int64_t)lrint(ref_frame_error * gm_erroradv_tr). `lrint` rounds
+        // half to EVEN under the default rounding mode, which is neither
+        // `f64::round` nor a truncation.
+        let selection_threshold =
+            (ref_frame_error as f64 * gm_erroradv_tr).round_ties_even() as i64;
+        return get_warp_error(
+            wm,
+            p,
+            border,
+            border,
+            p_width,
+            p_height,
+            selection_threshold,
+        );
+    }
+
+    let selection_threshold = (ref_frame_error as f64 * ERRORADV_EARLY_TR).round_ties_even() as i64;
+    let mut best_error = get_warp_error(
+        wm,
+        p,
+        border,
+        border,
+        p_width,
+        p_height,
+        selection_threshold,
+    );
+    if best_error > selection_threshold {
+        return i64::MAX;
+    }
+
+    let mut step = 1i32 << (n_refinements - 1);
+    for _ in 0..n_refinements {
+        for prm in 0..n_params {
+            let mut step_dir = 0i32;
+            let curr_param = wm.wmmat[prm];
+            let mut best_param = curr_param;
+
+            // Left.
+            wm.wmmat[prm] = add_param_offset(prm, curr_param, -step);
+            force_wmtype(wm, wmtype);
+            let step_error = get_warp_error(wm, p, border, border, p_width, p_height, best_error);
+            if step_error < best_error {
+                best_error = step_error;
+                best_param = wm.wmmat[prm];
+                step_dir = -1;
+            }
+
+            // Right.
+            wm.wmmat[prm] = add_param_offset(prm, curr_param, step);
+            force_wmtype(wm, wmtype);
+            let step_error = get_warp_error(wm, p, border, border, p_width, p_height, best_error);
+            if step_error < best_error {
+                best_error = step_error;
+                best_param = wm.wmmat[prm];
+                step_dir = 1;
+            }
+
+            // Keep going in the winning direction while it keeps improving.
+            // Note the offset is applied to `best_param`, not to the running
+            // value, so the step is always measured from the current best.
+            while step_dir != 0 {
+                wm.wmmat[prm] = add_param_offset(prm, best_param, step * step_dir);
+                force_wmtype(wm, wmtype);
+                let step_error =
+                    get_warp_error(wm, p, border, border, p_width, p_height, best_error);
+                if step_error < best_error {
+                    best_error = step_error;
+                    best_param = wm.wmmat[prm];
+                } else {
+                    step_dir = 0;
+                }
+            }
+
+            wm.wmmat[prm] = best_param;
+            force_wmtype(wm, wmtype);
+        }
+        step >>= 1;
+    }
+
+    wm.wmtype = get_wmtype(wm);
+    // C asserts av1_get_shear_params succeeds here; the port recomputes and
+    // leaves `invalid` set rather than aborting, since only warp-able models
+    // reach this point.
+    let _ = aom_dsp::inter::warp::get_shear_params(wm);
+    best_error
 }

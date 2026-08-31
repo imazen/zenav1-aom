@@ -297,3 +297,227 @@ fn highbd_segmented_frame_error_matches_c() {
         }
     }
 }
+
+// ===================================================================
+// The warp-error metric and the refinement loop.
+//
+// `av1_refine_integerized_param` is the ONLY exported entry that reaches
+// global_motion.c's file-static `add_param_offset`, `force_wmtype`,
+// `warp_error` and `get_warp_error`, so this differential is what gates all
+// four of them.
+// ===================================================================
+
+use aom_dsp::inter::warp::WarpedMotionParams;
+use aom_encode::global_motion::{
+    AFFINE, ROTZOOM, TRANSLATION, WarpErrorParams, refine_integerized_param,
+};
+use aom_sys_ref::ref_refine_integerized_param;
+
+const ONE_WM: i32 = 1 << 16;
+
+/// A frame pair: `ref` is random content, `dst` is `ref` shifted by a small
+/// translation plus noise, so a translational/affine model genuinely reduces
+/// the error and the coordinate descent has somewhere to walk.
+fn warp_frames(rng: &mut Rng, w: usize, h: usize, shift: (i32, i32)) -> (Vec<u8>, Vec<u8>, usize) {
+    let stride = w;
+    let refp: Vec<u8> = (0..stride * h).map(|_| rng.below(256) as u8).collect();
+    let mut dst = vec![0u8; stride * h];
+    for y in 0..h {
+        for x in 0..w {
+            let sy = (y as i32 + shift.0).clamp(0, h as i32 - 1) as usize;
+            let sx = (x as i32 + shift.1).clamp(0, w as i32 - 1) as usize;
+            let v = i32::from(refp[sy * stride + sx]) + rng.below(7) as i32 - 3;
+            dst[y * stride + x] = v.clamp(0, 255) as u8;
+        }
+    }
+    (refp, dst, stride)
+}
+
+#[test]
+fn refine_integerized_param_matches_c() {
+    let mut rng = Rng::new(0x4D31_7E92_C0B5_A18F);
+    let mut saw_refined = false;
+    let mut saw_rejected = false;
+    let mut saw_zero_refinements = false;
+
+    for &(w, h) in &[(64usize, 64usize), (96, 64), (128, 96)] {
+        let cells_w = w.div_ceil(32);
+        let cells_h = h.div_ceil(32);
+        for &shift in &[(0i32, 0i32), (1, 2), (-2, 1)] {
+            let (refp, dst, stride) = warp_frames(&mut rng, w, h, shift);
+            let refp16: Vec<u16> = refp.iter().map(|&v| u16::from(v)).collect();
+            let dst16: Vec<u16> = dst.iter().map(|&v| u16::from(v)).collect();
+            // All-ones map, plus a mixed one so the cell-skipping arm is live.
+            let maps: [(Vec<u8>, usize); 2] = [
+                (vec![1u8; cells_w * cells_h], cells_w),
+                (
+                    (0..cells_w * cells_h)
+                        .map(|i| u8::from(i % 3 != 0))
+                        .collect(),
+                    cells_w,
+                ),
+            ];
+            for (map, mstride) in &maps {
+                for &wmtype in &[TRANSLATION, ROTZOOM, AFFINE] {
+                    for &n_ref in &[0i32, 1, 3, 5] {
+                        // Start models: identity-ish plus a small perturbation,
+                        // which is the shape av1_convert_model_to_params emits.
+                        let start: [i32; 6] = [
+                            (rng.below(512) as i32 - 256) * 1024,
+                            (rng.below(512) as i32 - 256) * 1024,
+                            ONE_WM + (rng.below(64) as i32 - 32) * 2,
+                            (rng.below(64) as i32 - 32) * 2,
+                            (rng.below(64) as i32 - 32) * 2,
+                            ONE_WM + (rng.below(64) as i32 - 32) * 2,
+                        ];
+                        // A reference error big enough that the model is not
+                        // rejected outright on every cell, and small enough
+                        // that it sometimes is.
+                        for &rfe in &[0i64, 1 << 14, 1 << 20] {
+                            let mut wm = WarpedMotionParams {
+                                wmmat: start,
+                                wmtype,
+                                ..Default::default()
+                            };
+                            let p = WarpErrorParams {
+                                refp: &refp16,
+                                ref_width: w,
+                                ref_height: h,
+                                ref_stride: stride,
+                                dst: &dst16,
+                                dst_stride: stride,
+                                subsampling_x: 0,
+                                subsampling_y: 0,
+                                segment_map: map,
+                                segment_map_stride: *mstride,
+                            };
+                            let got = refine_integerized_param(
+                                &mut wm, wmtype, &p, w, h, n_ref, rfe, 0.65,
+                            );
+                            let want = ref_refine_integerized_param(
+                                &start,
+                                i32::from(wmtype),
+                                &refp,
+                                w,
+                                h,
+                                stride,
+                                &dst,
+                                w,
+                                h,
+                                stride,
+                                n_ref,
+                                rfe,
+                                map,
+                                *mstride,
+                                0.65,
+                            );
+                            let label = format!(
+                                "{w}x{h} shift={shift:?} wmtype={wmtype} n_ref={n_ref} \
+                                 rfe={rfe} start={start:?}"
+                            );
+                            assert_eq!(got, want.best_error, "best_error: {label}");
+                            assert_eq!(wm.wmmat, want.wmmat, "wmmat: {label}");
+                            assert_eq!(i32::from(wm.wmtype), want.wmtype, "wmtype: {label}");
+                            assert_eq!(
+                                [wm.alpha, wm.beta, wm.gamma, wm.delta],
+                                want.shear,
+                                "shear: {label}"
+                            );
+
+                            if n_ref == 0 {
+                                saw_zero_refinements = true;
+                            } else if got == i64::MAX {
+                                saw_rejected = true;
+                            } else if wm.wmmat != start {
+                                saw_refined = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Without these, the sweep could be all early-rejections and never touch
+    // the coordinate descent that `add_param_offset` and `force_wmtype` live in.
+    assert!(
+        saw_zero_refinements,
+        "the n_refinements == 0 early path never ran"
+    );
+    assert!(
+        saw_rejected,
+        "no model was rejected by the erroradv_early_tr gate — that branch is untested"
+    );
+    assert!(
+        saw_refined,
+        "the coordinate descent never changed a parameter, so add_param_offset \
+         and force_wmtype are still ungated"
+    );
+}
+
+#[test]
+fn warp_error_clips_against_the_reference_size() {
+    // `warp_error` clips each cell's warp extent against `ref_width`/
+    // `ref_height`, NOT against the `p_width`/`p_height` it is walking. With a
+    // reference the same size as the frame the two are identical, so the sweep
+    // above cannot tell them apart (a mutation swapping them passes it). This
+    // cell makes the reference SMALLER than the frame, where they differ.
+    let mut rng = Rng::new(0x1F2E_3D4C_5B6A_7988);
+    let (w, h) = (128usize, 96usize);
+    let (r_width, r_height) = (w - 40, h - 24);
+    let cells_w = w.div_ceil(32);
+    let cells_h = h.div_ceil(32);
+    assert!(
+        r_width % 32 != 0,
+        "the reference width must not land on a WARP_ERROR_BLOCK boundary, or \
+         the clipped and unclipped extents coincide again"
+    );
+
+    let (refp, dst, stride) = warp_frames(&mut rng, w, h, (1, 2));
+    let refp16: Vec<u16> = refp.iter().map(|&v| u16::from(v)).collect();
+    let dst16: Vec<u16> = dst.iter().map(|&v| u16::from(v)).collect();
+    let map = vec![1u8; cells_w * cells_h];
+
+    for &wmtype in &[TRANSLATION, ROTZOOM, AFFINE] {
+        for &n_ref in &[0i32, 2] {
+            let start: [i32; 6] = [4096, -2048, ONE_WM + 8, 4, -4, ONE_WM - 8];
+            let mut wm = WarpedMotionParams {
+                wmmat: start,
+                wmtype,
+                ..Default::default()
+            };
+            let p = WarpErrorParams {
+                refp: &refp16,
+                ref_width: r_width,
+                ref_height: r_height,
+                ref_stride: stride,
+                dst: &dst16,
+                dst_stride: stride,
+                subsampling_x: 0,
+                subsampling_y: 0,
+                segment_map: &map,
+                segment_map_stride: cells_w,
+            };
+            let got = refine_integerized_param(&mut wm, wmtype, &p, w, h, n_ref, 1 << 22, 0.65);
+            let want = ref_refine_integerized_param(
+                &start,
+                i32::from(wmtype),
+                &refp,
+                r_width,
+                r_height,
+                stride,
+                &dst,
+                w,
+                h,
+                stride,
+                n_ref,
+                1 << 22,
+                &map,
+                cells_w,
+                0.65,
+            );
+            assert_eq!(got, want.best_error, "wmtype={wmtype} n_ref={n_ref}");
+            assert_eq!(wm.wmmat, want.wmmat, "wmtype={wmtype} n_ref={n_ref}");
+        }
+    }
+}
