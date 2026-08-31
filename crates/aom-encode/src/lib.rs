@@ -27,6 +27,7 @@ pub mod intra_tx_nn_weights;
 pub mod intra_uv_rd;
 pub mod intrabc_search;
 pub mod curvfit_tables;
+pub mod enc_misc;
 pub mod global_motion;
 pub mod inter_costs;
 pub mod inter_frame;

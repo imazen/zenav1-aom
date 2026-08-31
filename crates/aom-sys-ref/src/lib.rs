@@ -18232,3 +18232,110 @@ pub fn ref_highbd_convolve_2d_scale(
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// enc_misc_shim.c — small exported encoder helpers.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn shim_get_intra_cost_penalty(qindex: i32, qdelta: i32, bit_depth: i32) -> i32;
+    fn shim_hash_is_horizontal_perfect(
+        plane: *const u16,
+        stride: i32,
+        block_size: i32,
+        x_start: i32,
+        y_start: i32,
+        highbd: i32,
+    ) -> i32;
+    fn shim_hash_is_vertical_perfect(
+        plane: *const u16,
+        stride: i32,
+        block_size: i32,
+        x_start: i32,
+        y_start: i32,
+        highbd: i32,
+    ) -> i32;
+    fn shim_dropout_qcoeff_num(
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        eob: i32,
+        tx_size: i32,
+        tx_type: i32,
+        dropout_num_before: i32,
+        dropout_num_after: i32,
+    ) -> i32;
+}
+
+/// Reference libaom `av1_get_intra_cost_penalty` (encoder/rd.c).
+pub fn ref_get_intra_cost_penalty(qindex: i32, qdelta: i32, bit_depth: u8) -> i32 {
+    unsafe { shim_get_intra_cost_penalty(qindex, qdelta, i32::from(bit_depth)) }
+}
+
+/// Reference libaom `av1_hash_is_horizontal_perfect` (encoder/hash_motion.c),
+/// driven through the high-bit-depth arm so the port's `u16` planes map
+/// directly.
+pub fn ref_hash_is_horizontal_perfect(
+    plane: &[u16],
+    stride: usize,
+    block_size: usize,
+    x_start: usize,
+    y_start: usize,
+) -> bool {
+    unsafe {
+        shim_hash_is_horizontal_perfect(
+            plane.as_ptr(),
+            stride as i32,
+            block_size as i32,
+            x_start as i32,
+            y_start as i32,
+            1,
+        ) != 0
+    }
+}
+
+/// Reference libaom `av1_hash_is_vertical_perfect` (hash_motion.c), highbd arm.
+pub fn ref_hash_is_vertical_perfect(
+    plane: &[u16],
+    stride: usize,
+    block_size: usize,
+    x_start: usize,
+    y_start: usize,
+) -> bool {
+    unsafe {
+        shim_hash_is_vertical_perfect(
+            plane.as_ptr(),
+            stride as i32,
+            block_size as i32,
+            x_start as i32,
+            y_start as i32,
+            1,
+        ) != 0
+    }
+}
+
+/// Reference libaom `av1_dropout_qcoeff_num` (encoder/encodemb.c:168).
+/// Edits `qcoeff` / `dqcoeff` in place and returns the new eob.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_dropout_qcoeff_num(
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+    eob: usize,
+    tx_size: usize,
+    tx_type: usize,
+    dropout_num_before: i32,
+    dropout_num_after: i32,
+) -> usize {
+    let out = unsafe {
+        shim_dropout_qcoeff_num(
+            qcoeff.as_mut_ptr(),
+            dqcoeff.as_mut_ptr(),
+            eob as i32,
+            tx_size as i32,
+            tx_type as i32,
+            dropout_num_before,
+            dropout_num_after,
+        )
+    };
+    assert!(out >= 0, "shim_dropout_qcoeff_num allocation failed");
+    out as usize
+}
