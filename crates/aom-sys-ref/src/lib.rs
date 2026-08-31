@@ -18045,3 +18045,190 @@ pub fn ref_highbd_warp_affine(
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// compound_convolve_shim.c (cont.) — the SCALED-reference convolves. These take
+// the FULL 16-row kernel table, because C re-selects a row per output sample.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_convolve_2d_scale(
+        src: *const u8,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        w: i32,
+        h: i32,
+        x_filter: *const i16,
+        y_filter: *const i16,
+        taps: i32,
+        subpel_x_qn: i32,
+        x_step_qn: i32,
+        subpel_y_qn: i32,
+        y_step_qn: i32,
+        round_0: i32,
+        round_1: i32,
+        is_compound: i32,
+        do_average: i32,
+        use_dist_wtd: i32,
+        fwd: i32,
+        bck: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_highbd_convolve_2d_scale(
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        w: i32,
+        h: i32,
+        x_filter: *const i16,
+        y_filter: *const i16,
+        taps: i32,
+        subpel_x_qn: i32,
+        x_step_qn: i32,
+        subpel_y_qn: i32,
+        y_step_qn: i32,
+        round_0: i32,
+        round_1: i32,
+        is_compound: i32,
+        do_average: i32,
+        use_dist_wtd: i32,
+        fwd: i32,
+        bck: i32,
+        bd: i32,
+    );
+}
+
+/// The scaled convolve's step/phase arguments, grouped so the wrappers do not
+/// each carry four loose ints.
+#[derive(Clone, Copy, Debug)]
+pub struct RefScaleSteps {
+    /// `subpel_x_qn`
+    pub subpel_x_qn: i32,
+    /// `x_step_qn`
+    pub x_step_qn: i32,
+    /// `subpel_y_qn`
+    pub subpel_y_qn: i32,
+    /// `y_step_qn`
+    pub y_step_qn: i32,
+}
+
+/// The `ConvolveParams` fields the scaled convolves read.
+#[derive(Clone, Copy, Debug)]
+pub struct RefScaleConvParams {
+    /// `conv_params->round_0`
+    pub round_0: i32,
+    /// `conv_params->round_1`
+    pub round_1: i32,
+    /// `conv_params->is_compound`
+    pub is_compound: bool,
+    /// `conv_params->do_average`
+    pub do_average: bool,
+    /// `conv_params->use_dist_wtd_comp_avg`
+    pub use_dist_wtd_comp_avg: bool,
+    /// `conv_params->fwd_offset`
+    pub fwd_offset: i32,
+    /// `conv_params->bck_offset`
+    pub bck_offset: i32,
+}
+
+/// Reference libaom `av1_convolve_2d_scale_c` (common/convolve.c:494).
+/// `x_filter`/`y_filter` are the full 16-row kernel tables.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_convolve_2d_scale(
+    src: &[u8],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    dst16: &mut [u16],
+    dst16_stride: usize,
+    w: usize,
+    h: usize,
+    x_filter: &[[i16; 8]; 16],
+    y_filter: &[[i16; 8]; 16],
+    taps: usize,
+    steps: &RefScaleSteps,
+    cp: &RefScaleConvParams,
+) {
+    unsafe {
+        shim_convolve_2d_scale(
+            src.as_ptr().add(src_off),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            dst16.as_mut_ptr(),
+            dst16_stride as i32,
+            w as i32,
+            h as i32,
+            x_filter.as_ptr().cast(),
+            y_filter.as_ptr().cast(),
+            taps as i32,
+            steps.subpel_x_qn,
+            steps.x_step_qn,
+            steps.subpel_y_qn,
+            steps.y_step_qn,
+            cp.round_0,
+            cp.round_1,
+            cp.is_compound as i32,
+            cp.do_average as i32,
+            cp.use_dist_wtd_comp_avg as i32,
+            cp.fwd_offset,
+            cp.bck_offset,
+        )
+    }
+}
+
+/// Reference libaom `av1_highbd_convolve_2d_scale_c`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_convolve_2d_scale(
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    dst16: &mut [u16],
+    dst16_stride: usize,
+    w: usize,
+    h: usize,
+    x_filter: &[[i16; 8]; 16],
+    y_filter: &[[i16; 8]; 16],
+    taps: usize,
+    steps: &RefScaleSteps,
+    cp: &RefScaleConvParams,
+    bd: u32,
+) {
+    unsafe {
+        shim_highbd_convolve_2d_scale(
+            src.as_ptr().add(src_off),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            dst16.as_mut_ptr(),
+            dst16_stride as i32,
+            w as i32,
+            h as i32,
+            x_filter.as_ptr().cast(),
+            y_filter.as_ptr().cast(),
+            taps as i32,
+            steps.subpel_x_qn,
+            steps.x_step_qn,
+            steps.subpel_y_qn,
+            steps.y_step_qn,
+            cp.round_0,
+            cp.round_1,
+            cp.is_compound as i32,
+            cp.do_average as i32,
+            cp.use_dist_wtd_comp_avg as i32,
+            cp.fwd_offset,
+            cp.bck_offset,
+            bd as i32,
+        )
+    }
+}

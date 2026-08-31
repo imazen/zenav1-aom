@@ -9,6 +9,7 @@
 
 pub mod compound;
 pub mod highbd;
+pub mod scaled;
 
 const FILTER_BITS: i32 = 7;
 const ROUND0_BITS: i32 = 3;

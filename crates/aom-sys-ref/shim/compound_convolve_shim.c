@@ -206,3 +206,49 @@ void shim_highbd_convolve_2d_sr(const uint16_t *src, int src_stride,
   av1_highbd_convolve_2d_sr_c(src, src_stride, dst, dst_stride, w, h, &fx, &fy,
                               0, 0, &cp, bd);
 }
+
+/* ---- av1_convolve_2d_scale_c / av1_highbd_convolve_2d_scale_c --------
+ * The SCALED-reference convolves. Unlike the fixed-phase kernels above, these
+ * re-select a filter row per output sample, so the shim hands C the FULL 16-row
+ * kernel table and the caller's subpel/step values, not a one-row table.
+ */
+void shim_convolve_2d_scale(const uint8_t *src, int src_stride, uint8_t *dst,
+                            int dst_stride, uint16_t *dst16, int dst16_stride,
+                            int w, int h, const int16_t *x_filter,
+                            const int16_t *y_filter, int taps, int subpel_x_qn,
+                            int x_step_qn, int subpel_y_qn, int y_step_qn,
+                            int round_0, int round_1, int is_compound,
+                            int do_average, int use_dist_wtd, int fwd,
+                            int bck) {
+  InterpFilterParams fx, fy;
+  shim_fill_filter(&fx, x_filter, taps);
+  shim_fill_filter(&fy, y_filter, taps);
+  ConvolveParams cp;
+  shim_fill_conv_params(&cp, dst16, dst16_stride, round_0, round_1, do_average,
+                        use_dist_wtd, fwd, bck);
+  cp.is_compound = is_compound;
+  av1_convolve_2d_scale_c(src, src_stride, dst, dst_stride, w, h, &fx, &fy,
+                          subpel_x_qn, x_step_qn, subpel_y_qn, y_step_qn, &cp);
+}
+
+void shim_highbd_convolve_2d_scale(const uint16_t *src, int src_stride,
+                                   uint16_t *dst, int dst_stride,
+                                   uint16_t *dst16, int dst16_stride, int w,
+                                   int h, const int16_t *x_filter,
+                                   const int16_t *y_filter, int taps,
+                                   int subpel_x_qn, int x_step_qn,
+                                   int subpel_y_qn, int y_step_qn, int round_0,
+                                   int round_1, int is_compound,
+                                   int do_average, int use_dist_wtd, int fwd,
+                                   int bck, int bd) {
+  InterpFilterParams fx, fy;
+  shim_fill_filter(&fx, x_filter, taps);
+  shim_fill_filter(&fy, y_filter, taps);
+  ConvolveParams cp;
+  shim_fill_conv_params(&cp, dst16, dst16_stride, round_0, round_1, do_average,
+                        use_dist_wtd, fwd, bck);
+  cp.is_compound = is_compound;
+  av1_highbd_convolve_2d_scale_c(src, src_stride, dst, dst_stride, w, h, &fx,
+                                 &fy, subpel_x_qn, x_step_qn, subpel_y_qn,
+                                 y_step_qn, &cp, bd);
+}
