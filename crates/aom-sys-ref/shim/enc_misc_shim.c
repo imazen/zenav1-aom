@@ -81,3 +81,63 @@ int shim_dropout_qcoeff_num(int32_t *qcoeff, int32_t *dqcoeff, int eob,
   free(mb); free(eobs); free(ectx);
   return out;
 }
+
+/* ---- av1/encoder/ratectrl.c: the rate model -------------------------
+ * Drives the REAL exported av1_convert_qindex_to_q / av1_find_qindex /
+ * av1_compute_qdelta / av1_rc_bits_per_mb / av1_rc_get_default_min_gf_interval.
+ *
+ * The two that take AV1_COMP / RATE_CONTROL get a calloc'd one with ONLY the
+ * fields they read populated, and — for av1_rc_bits_per_mb — with
+ * `oxcf.rc_cfg.mode` set to AOM_Q so both CBR-only enumerator overrides are
+ * provably not taken. Driving it with a zeroed mode would silently pick
+ * AOM_VBR (0) instead, which happens to take the same arm today but is not the
+ * arm the port claims to implement.
+ */
+#include "av1/encoder/ratectrl.h"
+#include "av1/encoder/encoder.h"
+
+double shim_convert_qindex_to_q(int qindex, int bit_depth) {
+  return av1_convert_qindex_to_q(qindex, (aom_bit_depth_t)bit_depth);
+}
+
+int shim_find_qindex(double desired_q, int bit_depth, int best_qindex,
+                     int worst_qindex) {
+  return av1_find_qindex(desired_q, (aom_bit_depth_t)bit_depth, best_qindex,
+                         worst_qindex);
+}
+
+int shim_compute_qdelta(double qstart, double qtarget, int bit_depth,
+                        int best_quality, int worst_quality) {
+  RATE_CONTROL rc;
+  memset(&rc, 0, sizeof(rc));
+  rc.best_quality = best_quality;
+  rc.worst_quality = worst_quality;
+  return av1_compute_qdelta(&rc, qstart, qtarget, (aom_bit_depth_t)bit_depth);
+}
+
+int shim_rc_bits_per_mb(int is_key_frame, int is_screen_content_type,
+                        int qindex, double correction_factor, int bit_depth) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(AV1_COMP));
+  SequenceHeader *seq = (SequenceHeader *)calloc(1, sizeof(SequenceHeader));
+  if (!cpi || !seq) {
+    free(cpi);
+    free(seq);
+    return -1;
+  }
+  seq->bit_depth = (aom_bit_depth_t)bit_depth;
+  cpi->common.seq_params = seq;
+  cpi->is_screen_content_type = is_screen_content_type;
+  /* AOM_Q: neither CBR override can be taken. */
+  cpi->oxcf.rc_cfg.mode = AOM_Q;
+  const int r = av1_rc_bits_per_mb(
+      cpi, is_key_frame ? KEY_FRAME : INTER_FRAME, qindex, correction_factor,
+      /*accurate_estimate=*/0);
+  free(cpi);
+  free(seq);
+  return r;
+}
+
+int shim_rc_get_default_min_gf_interval(int width, int height,
+                                        double framerate) {
+  return av1_rc_get_default_min_gf_interval(width, height, framerate);
+}

@@ -18339,3 +18339,88 @@ pub fn ref_dropout_qcoeff_num(
     assert!(out >= 0, "shim_dropout_qcoeff_num allocation failed");
     out as usize
 }
+
+// ---------------------------------------------------------------------------
+// enc_misc_shim.c (cont.) — the ratectrl.c rate model.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn shim_convert_qindex_to_q(qindex: i32, bit_depth: i32) -> f64;
+    fn shim_find_qindex(
+        desired_q: f64,
+        bit_depth: i32,
+        best_qindex: i32,
+        worst_qindex: i32,
+    ) -> i32;
+    fn shim_compute_qdelta(
+        qstart: f64,
+        qtarget: f64,
+        bit_depth: i32,
+        best_quality: i32,
+        worst_quality: i32,
+    ) -> i32;
+    fn shim_rc_bits_per_mb(
+        is_key_frame: i32,
+        is_screen_content_type: i32,
+        qindex: i32,
+        correction_factor: f64,
+        bit_depth: i32,
+    ) -> i32;
+    fn shim_rc_get_default_min_gf_interval(width: i32, height: i32, framerate: f64) -> i32;
+}
+
+/// Reference libaom `av1_convert_qindex_to_q` (encoder/ratectrl.c:199).
+pub fn ref_convert_qindex_to_q(qindex: i32, bit_depth: u8) -> f64 {
+    unsafe { shim_convert_qindex_to_q(qindex, i32::from(bit_depth)) }
+}
+
+/// Reference libaom `av1_find_qindex` (ratectrl.c:2619).
+pub fn ref_find_qindex(desired_q: f64, bit_depth: u8, best_qindex: i32, worst_qindex: i32) -> i32 {
+    unsafe { shim_find_qindex(desired_q, i32::from(bit_depth), best_qindex, worst_qindex) }
+}
+
+/// Reference libaom `av1_compute_qdelta` (ratectrl.c:2638).
+pub fn ref_compute_qdelta(
+    qstart: f64,
+    qtarget: f64,
+    bit_depth: u8,
+    best_quality: i32,
+    worst_quality: i32,
+) -> i32 {
+    unsafe {
+        shim_compute_qdelta(
+            qstart,
+            qtarget,
+            i32::from(bit_depth),
+            best_quality,
+            worst_quality,
+        )
+    }
+}
+
+/// Reference libaom `av1_rc_bits_per_mb` (ratectrl.c:273), driven with
+/// `rc_cfg.mode = AOM_Q` so neither CBR-only enumerator override is taken.
+pub fn ref_rc_bits_per_mb(
+    is_key_frame: bool,
+    is_screen_content_type: bool,
+    qindex: i32,
+    correction_factor: f64,
+    bit_depth: u8,
+) -> i32 {
+    let r = unsafe {
+        shim_rc_bits_per_mb(
+            is_key_frame as i32,
+            is_screen_content_type as i32,
+            qindex,
+            correction_factor,
+            i32::from(bit_depth),
+        )
+    };
+    assert!(r >= 0, "shim_rc_bits_per_mb allocation failed");
+    r
+}
+
+/// Reference libaom `av1_rc_get_default_min_gf_interval` (ratectrl.c).
+pub fn ref_rc_get_default_min_gf_interval(width: i32, height: i32, framerate: f64) -> i32 {
+    unsafe { shim_rc_get_default_min_gf_interval(width, height, framerate) }
+}
