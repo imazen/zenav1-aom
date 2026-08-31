@@ -1,12 +1,12 @@
 scope: inter-encode   (43 C files)
-C functions found: 1491   name-matched in the Rust tree: 594   no match: 897   (39.8% matched)
-of the 897 unmatched, 229 have an exported symbol in libaom.a (tier-1 differential possible)
+C functions found: 1491   name-matched in the Rust tree: 605   no match: 886   (40.6% matched)
+of the 886 unmatched, 219 have an exported symbol in libaom.a (tier-1 differential possible)
 NAME-matched, and the regex only sees single-line column-0 definitions: these totals are a LOWER BOUND and a work queue, not a coverage claim.
 
 file                                      total  matched   gap
 encoder/rdopt.c                             105       17    88
 encoder/pass2_strategy.c                     87        2    85
-encoder/ratectrl.c                           87       22    65
+encoder/ratectrl.c                           87       23    64
 encoder/tpl_model.c                          63        1    62
 encoder/nonrd_pickmode.c                     55        6    49
 encoder/firstpass.c                          45        2    43
@@ -19,29 +19,29 @@ encoder/temporal_filter.c                    28        1    27
 encoder/mcomp.c                              89       63    26
 encoder/partition_strategy.c                 40       15    25
 encoder/encode_strategy.c                    25        2    23
-common/convolve.c                            42       21    21
 encoder/tx_search.c                          67       47    20
+common/convolve.c                            42       23    19
 encoder/encoder_utils.c                      23        4    19
-encoder/rd.c                                 40       23    17
 encoder/gop_structure.c                      17        0    17
 encoder/var_based_part.c                     36       20    16
 encoder/reconinter_enc.c                     23       10    13
+encoder/rd.c                                 40       27    13
 encoder/global_motion_facade.c               11        0    11
 encoder/motion_search_facade.c               11        1    10
-common/reconinter.c                          39       29    10
 encoder/context_tree.c                       10        0    10
 encoder/mv_prec.c                            10        1     9
-encoder/hash_motion.c                        16        7     9
+common/reconinter.c                          39       30     9
 encoder/interp_search.c                      14        6     8
 encoder/lookahead.c                           9        1     8
+encoder/hash_motion.c                        16        9     7
 encoder/nonrd_opt.c                          11        5     6
 common/pred_common.c                         26       20     6
 encoder/tokenize.c                            9        4     5
 encoder/segmentation.c                        5        0     5
 encoder/encodemv.c                           10        6     4
-encoder/encodemb.c                           22       18     4
 encoder/encodetxb.c                          16       12     4
 common/mvref_common.c                        25       22     3
+encoder/encodemb.c                           22       19     3
 common/warped_motion.c                       16       14     2
 encoder/txb_rdopt.c                          13       11     2
 

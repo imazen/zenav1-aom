@@ -124,8 +124,8 @@ encoder/hash_motion.c	av1_generate_block_2x2_hash_value	ported	Y
 encoder/hash_motion.c	av1_generate_block_hash_value	ported	Y
 encoder/hash_motion.c	av1_get_block_hash_value	ported	Y
 encoder/hash_motion.c	av1_hash_get_first_iterator	MISSING	Y
-encoder/hash_motion.c	av1_hash_is_horizontal_perfect	MISSING	Y
-encoder/hash_motion.c	av1_hash_is_vertical_perfect	MISSING	Y
+encoder/hash_motion.c	av1_hash_is_horizontal_perfect	ported	Y
+encoder/hash_motion.c	av1_hash_is_vertical_perfect	ported	Y
 encoder/hash_motion.c	av1_hash_table_count	MISSING	Y
 encoder/hash_motion.c	av1_hash_table_create	MISSING	Y
 encoder/hash_motion.c	av1_hash_table_destroy	MISSING	Y
@@ -431,7 +431,7 @@ common/reconinter.c	av1_get_obmc_mask	ported	Y
 common/reconinter.c	av1_init_warp_params	ported	Y
 common/reconinter.c	av1_init_wedge_masks	ported	Y
 common/reconinter.c	av1_make_inter_predictor	ported	Y
-common/reconinter.c	av1_make_masked_inter_predictor	MISSING	Y
+common/reconinter.c	av1_make_masked_inter_predictor	ported	Y
 common/reconinter.c	av1_setup_build_prediction_by_above_pred	ported	Y
 common/reconinter.c	av1_setup_build_prediction_by_left_pred	MISSING	Y
 common/reconinter.c	av1_setup_dst_planes	ported	Y
@@ -472,7 +472,7 @@ common/warped_motion.c	resolve_divisor_64	ported	n
 common/warped_motion.c	resolve_multiplier_64	MISSING	n
 common/warped_motion.c	warp_plane	ported	Y
 common/convolve.c	av1_convolve_2d_facade	ported	Y
-common/convolve.c	av1_convolve_2d_scale_c	MISSING	Y
+common/convolve.c	av1_convolve_2d_scale_c	ported	Y
 common/convolve.c	av1_convolve_2d_sr_c	ported	Y
 common/convolve.c	av1_convolve_2d_sr_intrabc_c	MISSING	Y
 common/convolve.c	av1_convolve_horiz_rs_c	MISSING	Y
@@ -485,7 +485,7 @@ common/convolve.c	av1_dist_wtd_convolve_2d_copy_c	ported	Y
 common/convolve.c	av1_dist_wtd_convolve_x_c	ported	Y
 common/convolve.c	av1_dist_wtd_convolve_y_c	ported	Y
 common/convolve.c	av1_highbd_convolve_2d_facade	MISSING	Y
-common/convolve.c	av1_highbd_convolve_2d_scale_c	MISSING	Y
+common/convolve.c	av1_highbd_convolve_2d_scale_c	ported	Y
 common/convolve.c	av1_highbd_convolve_2d_sr_c	ported	Y
 common/convolve.c	av1_highbd_convolve_2d_sr_intrabc_c	MISSING	Y
 common/convolve.c	av1_highbd_convolve_horiz_rs_c	MISSING	Y
@@ -662,7 +662,7 @@ encoder/tx_search.c	uniform_txfm_yrd	ported	n
 encoder/tx_search.c	unset_bit_mask	ported	n
 encoder/tx_search.c	update_txb_coeff_cost	MISSING	n
 encoder/encodemb.c	av1_dropout_qcoeff	ported	Y
-encoder/encodemb.c	av1_dropout_qcoeff_num	MISSING	Y
+encoder/encodemb.c	av1_dropout_qcoeff_num	ported	Y
 encoder/encodemb.c	av1_encode_intra_block_plane	ported	Y
 encoder/encodemb.c	av1_encode_sb	ported	Y
 encoder/encodemb.c	av1_encode_sby_pass1	MISSING	Y
@@ -957,7 +957,7 @@ encoder/rd.c	av1_fill_mv_costs	MISSING	Y
 encoder/rd.c	av1_get_adaptive_rdmult	MISSING	Y
 encoder/rd.c	av1_get_deltaq_offset	ported	Y
 encoder/rd.c	av1_get_entropy_contexts	ported	Y
-encoder/rd.c	av1_get_intra_cost_penalty	MISSING	Y
+encoder/rd.c	av1_get_intra_cost_penalty	ported	Y
 encoder/rd.c	av1_get_scaled_ref_frame	MISSING	Y
 encoder/rd.c	av1_get_switchable_rate	ported	Y
 encoder/rd.c	av1_init_me_luts	ported	Y
@@ -965,10 +965,10 @@ encoder/rd.c	av1_initialize_rd_consts	MISSING	Y
 encoder/rd.c	av1_model_rd_curvfit	ported	Y
 encoder/rd.c	av1_model_rd_from_var_lapndz	ported	Y
 encoder/rd.c	av1_mv_pred	MISSING	Y
-encoder/rd.c	av1_set_rd_speed_thresholds	MISSING	Y
+encoder/rd.c	av1_set_rd_speed_thresholds	ported	Y
 encoder/rd.c	av1_set_sad_per_bit	ported	Y
 encoder/rd.c	av1_setup_pred_block	MISSING	Y
-encoder/rd.c	av1_update_rd_thresh_fact	MISSING	Y
+encoder/rd.c	av1_update_rd_thresh_fact	ported	Y
 encoder/rd.c	compute_rd_thresh_factor	MISSING	n
 encoder/rd.c	def_arf_rd_multiplier	ported	n
 encoder/rd.c	def_inter_rd_multiplier	ported	n
@@ -985,7 +985,7 @@ encoder/rd.c	populate_unified_cost_update_freq	MISSING	n
 encoder/rd.c	set_block_thresholds	MISSING	n
 encoder/rd.c	should_force_mode_cost_update	ported	n
 encoder/rd.c	sse_norm_curvfit_model_cat_lookup	ported	n
-encoder/rd.c	update_thr_fact	MISSING	n
+encoder/rd.c	update_thr_fact	ported	n
 encoder/segmentation.c	av1_clear_segdata	MISSING	Y
 encoder/segmentation.c	av1_disable_segfeature	MISSING	Y
 encoder/segmentation.c	av1_disable_segmentation	MISSING	Y
@@ -1054,7 +1054,7 @@ encoder/ratectrl.c	av1_primary_rc_init	MISSING	Y
 encoder/ratectrl.c	av1_rc_bits_per_mb	ported	Y
 encoder/ratectrl.c	av1_rc_compute_frame_size_bounds	MISSING	Y
 encoder/ratectrl.c	av1_rc_drop_frame	MISSING	Y
-encoder/ratectrl.c	av1_rc_get_default_min_gf_interval	MISSING	Y
+encoder/ratectrl.c	av1_rc_get_default_min_gf_interval	ported	Y
 encoder/ratectrl.c	av1_rc_init	ported	Y
 encoder/ratectrl.c	av1_rc_init_minq_luts	ported	Y
 encoder/ratectrl.c	av1_rc_pick_q_and_bounds	ported	Y

@@ -160,7 +160,7 @@ so tier-1 requires driving `av1_rd_pick_inter_mode_sb` itself. Named heads:
 
 ## 3. Landed against this map
 
-**53 exported C functions and ~24 of their file-static helpers**, all gated at
+**68 exported C functions and ~30 of their file-static helpers**, all gated at
 tier 1 against the real C symbol (the statics through the exported caller that
 is their only entry point). Ordered by the commit that landed them.
 
@@ -177,24 +177,44 @@ is their only entry point). Ordered by the commit that landed them.
 | W3 | `av1_obmc_full_pixel_search` (+ `obmc_full_pixel_diamond`, `obmc_diamond_search_sad`, `obmc_refining_search_sad`, `get_obmc_mvpred_var`) | `aom-encode/tests/inter_fullpel_diff.rs` |
 | W3 | `av1_find_best_obmc_sub_pixel_tree_up` (+ `upsampled_obmc_pref_error`, `setup_obmc_center_error`, `upsampled_setup_obmc_center_error`, `estimate_obmc_mvcost`, `estimate_obmc_pref_error`, `obmc_check_better` / `_fast`, `obmc_first_level_check`, `obmc_second_level_check_v2`) | `aom-encode/tests/inter_fullpel_diff.rs` |
 | W9 | `av1_refine_integerized_param` (+ `warp_error`, `get_warp_error`, `add_param_offset`, `force_wmtype`) | `aom-encode/tests/global_motion_diff.rs` |
+| W1 | `aom_lowbd_blend_a64_d16_mask_c`, `aom_highbd_blend_a64_d16_mask_c` | `aom-dsp/tests/compound_diff.rs` |
+| — | `av1_highbd_warp_affine_c` (the general warp filter: any bd, compound + single) | `aom-dsp/tests/warp_highbd_diff.rs` |
+| — | `av1_convolve_2d_scale_c`, `av1_highbd_convolve_2d_scale_c` | `aom-dsp/tests/convolve_scale_diff.rs` |
+| — | `av1_dropout_qcoeff_num`, `av1_get_intra_cost_penalty`, `av1_hash_is_horizontal_perfect`, `av1_hash_is_vertical_perfect` | `aom-encode/tests/enc_misc_diff.rs` |
+| W8 | `av1_convert_qindex_to_q`, `av1_find_qindex`, `av1_compute_qdelta`, `av1_rc_bits_per_mb` (non-CBR arm), `av1_rc_get_default_min_gf_interval`, `get_bpmb_enumerator` | `aom-encode/tests/rate_model_diff.rs` |
+| W6 | the `THR_MODES` enum (169 entries), `av1_set_rd_speed_thresholds`, `av1_update_rd_thresh_fact`, `update_thr_fact` | `aom-encode/tests/rd_thresh_diff.rs` |
 
 **None of it is wired into the encoder yet.** These are the kernels and searches
 the inter RD brain (W6) will call; the brain itself, reference/frame management
 (W7) and multi-frame rate control (W8) are still entirely absent.
 
+### Verified on two ISAs, and what CI shows
+
+Every differential above passes on **both** `aarch64-apple-darwin` and
+`x86_64-apple-darwin` (the latter via the target-aware `build.rs` plus Rosetta;
+see `docs/DIFFERENTIAL_PLAYBOOK.md` §3). That second ISA earned its keep
+immediately: it found two shim defects that had been green on aarch64 for a day
+(§"Findings" below), and one of them is the SAME defect CI's x86-64 job was
+failing on. Every CI run between the `comp_pred_shim` commit and the
+`make the oracle cross-buildable` fix fails x86-64 with a single
+`inter_pred_enc_diff` SIGABRT — one cause, not a run of independent failures.
+CI is roughly two hours backlogged and has not yet reached the fix commit, so
+that confirmation is still pending; the fix is verified locally on both ISAs.
+
 ### What the re-run inventory says, and why it overstates
 
 Re-running `tools/c_surface_inventory.py` after all of the above reports
-**594 name-matched (up from 517), 897 unmatched (down from 974), 229 of those
+**605 name-matched (up from 517), 886 unmatched (down from 974), 219 of those
 with an exported symbol (down from 268)**.
 
 Read that delta with the tool's own caveat in mind: it matches a NAME anywhere
 in the Rust tree, **including doc comments**. Every port above cites its C
 source function by name in a doc comment, and so do several functions that are
-only *mentioned* — so `+77 matched` is an upper bound on what actually landed,
-against 53 exported functions genuinely ported and gated. The `-39` on the
-exported-symbol column is the more honest signal, and even that counts a few
-names that appear only in a "NOT ported" note.
+only *mentioned* — so `+88 matched` is an upper bound on what actually landed,
+against **68 exported C functions** genuinely ported and gated (plus ~30 of
+their file-static helpers, each gated through its exported caller). The `-49`
+on the exported-symbol column is the more honest signal, and even that counts a
+few names that appear only in a "NOT ported" note.
 
 ### Findings worth carrying forward
 
@@ -213,3 +233,16 @@ Three C behaviours found while porting that a later reader is likely to
    reference edge gets a negative extent that makes both its loops empty, so it
    contributes zero rather than being skipped. A `usize` transcription
    underflows there.
+4. **`av1_dropout_qcoeff_num` is undefined at `dropout_num_after == 0`** — C
+   indexes `scan[-1]` there. Its only caller never passes less than 32. The
+   port asserts the contract rather than reproducing the UB.
+5. **`estimate_obmc_mvcost` and `setup_obmc_center_error` both carry upstream
+   TODO-flagged bugs** (a mismatched cost shift with a spurious `GET_MV_SUBPEL`,
+   and a centre error read at the buffer origin instead of at `start_mv`).
+   Both are reproduced verbatim and both fail the differential if "fixed".
+
+Three more live in `docs/DIFFERENTIAL_PLAYBOOK.md` §3a rather than here,
+because they are properties of the ORACLE rather than of any ported kernel:
+the `-DNDEBUG` ABI requirement, RTCD pointers that are null one frame below a
+`T` symbol, and the alignment+size contract for buffers a dispatched kernel
+writes.
