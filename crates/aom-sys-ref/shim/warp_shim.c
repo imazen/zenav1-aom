@@ -169,3 +169,36 @@ int shim_select_samples(int mv_row, int mv_col, int32_t *pts, int32_t *pts_inref
   }
   return ret;
 }
+
+/* ---- shim_highbd_warp_affine ---------------------------------------
+ * Drives the REAL exported av1_highbd_warp_affine_c — the general affine warp
+ * filter, at any bit depth and in both the single-reference and compound arms.
+ * The ConvolveParams is built field-by-field from the caller's scalars rather
+ * than from get_conv_params_no_round, so the compound arm's do_average /
+ * dist-weighted offsets can be swept.
+ */
+#include <stdint.h>
+
+void shim_highbd_warp_affine(const int32_t *mat, const uint16_t *ref, int width,
+                             int height, int stride, uint16_t *pred, int p_col,
+                             int p_row, int p_width, int p_height, int p_stride,
+                             int subsampling_x, int subsampling_y, int bd,
+                             uint16_t *dst16, int dst16_stride, int round_0,
+                             int round_1, int is_compound, int do_average,
+                             int use_dist_wtd, int fwd, int bck, int16_t alpha,
+                             int16_t beta, int16_t gamma, int16_t delta) {
+  ConvolveParams cp;
+  memset(&cp, 0, sizeof(cp));
+  cp.dst = dst16;
+  cp.dst_stride = dst16_stride;
+  cp.round_0 = round_0;
+  cp.round_1 = round_1;
+  cp.is_compound = is_compound;
+  cp.do_average = do_average;
+  cp.use_dist_wtd_comp_avg = use_dist_wtd;
+  cp.fwd_offset = fwd;
+  cp.bck_offset = bck;
+  av1_highbd_warp_affine_c(mat, ref, width, height, stride, pred, p_col, p_row,
+                           p_width, p_height, p_stride, subsampling_x,
+                           subsampling_y, bd, &cp, alpha, beta, gamma, delta);
+}

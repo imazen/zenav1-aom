@@ -677,3 +677,212 @@ static DIV_LUT: [u16; 257] = [
     8560, 8542, 8525, 8508, 8490, 8473, 8456, 8439, 8422, 8405, 8389, 8372, 8355, 8339, 8322, 8306,
     8289, 8273, 8257, 8240, 8224, 8208, 8192,
 ];
+
+// ===================================================================
+// av1_highbd_warp_affine_c — the general warp filter
+// ===================================================================
+
+/// `DIST_PRECISION_BITS` (`av1/common/enums.h:76`).
+const DIST_PRECISION_BITS: i32 = 4;
+
+/// The `ConvolveParams` fields [`highbd_warp_affine`] reads. `dst` /
+/// `dst_stride` (the 16-bit compound intermediate) are passed alongside rather
+/// than inside, because Rust cannot hold a `&mut` in a `Copy` struct.
+#[derive(Clone, Copy, Debug)]
+pub struct WarpConvolveParams {
+    /// `conv_params->round_0`
+    pub round_0: i32,
+    /// `conv_params->round_1`
+    pub round_1: i32,
+    /// `conv_params->is_compound` — when false, `dst16` is untouched and the
+    /// vertical reduction is the fixed `2 * FILTER_BITS - round_0`.
+    pub is_compound: bool,
+    /// `conv_params->do_average`
+    pub do_average: bool,
+    /// `conv_params->use_dist_wtd_comp_avg`
+    pub use_dist_wtd_comp_avg: bool,
+    /// `conv_params->fwd_offset`
+    pub fwd_offset: i32,
+    /// `conv_params->bck_offset`
+    pub bck_offset: i32,
+}
+
+#[inline]
+fn clip_pixel_highbd(v: i32, bd: u32) -> u16 {
+    v.clamp(0, (1i32 << bd) - 1) as u16
+}
+
+/// `av1_highbd_warp_affine_c` (`av1/common/warped_motion.c`): the general
+/// affine warp filter — any bit depth, and both the single-reference and the
+/// compound arms.
+///
+/// [`warp_affine`] above is the bd-8, **non-compound** specialization the
+/// decoder's translational-plus-warp path uses. This is the full function, and
+/// the two differ in more than a widened pixel type:
+///
+/// * `reduce_bits_vert` is `round_1` when compounding and
+///   `2 * FILTER_BITS - round_0` otherwise, so the vertical rounding is not the
+///   same shift;
+/// * the compound arm writes the unrounded 16-bit intermediate to `dst16` on
+///   the first reference and only produces pixels on the second, exactly like
+///   [`crate::convolve::compound`]'s `dist_wtd_convolve_*`;
+/// * `offset_bits_horiz`, `offset_bits_vert` and the final
+///   `-(1 << (bd - 1)) - (1 << bd)` de-biasing all scale with `bd`, so the
+///   bd-10/12 intermediates are not the bd-8 ones widened.
+///
+/// `ref_plane`/`width`/`height`/`stride` describe the reference (edge-clamped
+/// internally, so no pre-bordering); `pred`/`p_stride` the destination, written
+/// block-relative. `p_col`/`p_row` are the block's pixel position in the
+/// (sub-sampled) plane.
+///
+/// # Differential coverage
+/// `tests/warp_highbd_diff.rs`, tier 1 against the real exported C.
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+pub fn highbd_warp_affine(
+    mat: &[i32; 6],
+    ref_plane: &[u16],
+    width: usize,
+    height: usize,
+    stride: usize,
+    pred: &mut [u16],
+    p_stride: usize,
+    dst16: &mut [u16],
+    dst16_stride: usize,
+    p_col: i32,
+    p_row: i32,
+    p_width: usize,
+    p_height: usize,
+    subsampling_x: usize,
+    subsampling_y: usize,
+    bd: u32,
+    cp: &WarpConvolveParams,
+    alpha: i16,
+    beta: i16,
+    gamma: i16,
+    delta: i16,
+) {
+    let reduce_bits_horiz = cp.round_0;
+    let reduce_bits_vert = if cp.is_compound {
+        cp.round_1
+    } else {
+        2 * FILTER_BITS - reduce_bits_horiz
+    };
+    let offset_bits_horiz = bd as i32 + FILTER_BITS - 1;
+    let offset_bits_vert = bd as i32 + 2 * FILTER_BITS - reduce_bits_horiz;
+    let round_bits = 2 * FILTER_BITS - cp.round_0 - cp.round_1;
+    let offset_bits = bd as i32 + 2 * FILTER_BITS - cp.round_0;
+
+    let ssx = subsampling_x as i32;
+    let ssy = subsampling_y as i32;
+    let w = width as i32;
+    let h = height as i32;
+    let pw = p_width as i32;
+    let ph = p_height as i32;
+    let alpha = i32::from(alpha);
+    let beta = i32::from(beta);
+    let gamma = i32::from(gamma);
+    let delta = i32::from(delta);
+
+    let mut tmp = [0i32; 15 * 8];
+
+    let mut i = p_row;
+    while i < p_row + ph {
+        let mut j = p_col;
+        while j < p_col + pw {
+            let src_x = (j + 4) << ssx;
+            let src_y = (i + 4) << ssy;
+            let dst_x = i64::from(mat[2]) * i64::from(src_x)
+                + i64::from(mat[3]) * i64::from(src_y)
+                + i64::from(mat[0]);
+            let dst_y = i64::from(mat[4]) * i64::from(src_x)
+                + i64::from(mat[5]) * i64::from(src_y)
+                + i64::from(mat[1]);
+            let x4 = dst_x >> ssx;
+            let y4 = dst_y >> ssy;
+
+            let ix4 = (x4 >> WARPEDMODEL_PREC_BITS) as i32;
+            let mut sx4 = (x4 & ((1i64 << WARPEDMODEL_PREC_BITS) - 1)) as i32;
+            let iy4 = (y4 >> WARPEDMODEL_PREC_BITS) as i32;
+            let mut sy4 = (y4 & ((1i64 << WARPEDMODEL_PREC_BITS) - 1)) as i32;
+
+            sx4 += alpha * -4 + beta * -4;
+            sy4 += gamma * -4 + delta * -4;
+            sx4 &= !((1 << WARP_PARAM_REDUCE_BITS) - 1);
+            sy4 &= !((1 << WARP_PARAM_REDUCE_BITS) - 1);
+
+            // Horizontal filter.
+            for k in -7i32..8 {
+                let iy = clamp_i32(iy4 + k, 0, h - 1);
+                let mut sx = sx4 + beta * (k + 4);
+                for l in -4i32..4 {
+                    let ix = ix4 + l - 3;
+                    let offs = (round_power_of_two(sx, WARPEDDIFF_PREC_BITS)
+                        + WARPEDPIXEL_PREC_SHIFTS) as usize;
+                    let coeffs = &AV1_WARPED_FILTER[offs];
+                    let mut sum = 1i32 << offset_bits_horiz;
+                    for m in 0..8usize {
+                        let sample_x = clamp_i32(ix + m as i32, 0, w - 1);
+                        sum += i32::from(ref_plane[iy as usize * stride + sample_x as usize])
+                            * i32::from(coeffs[m]);
+                    }
+                    tmp[((k + 7) * 8 + (l + 4)) as usize] =
+                        round_power_of_two(sum, reduce_bits_horiz);
+                    sx += alpha;
+                }
+            }
+
+            // Vertical filter.
+            let k_end = 4.min(p_row + ph - i - 4);
+            let l_end = 4.min(p_col + pw - j - 4);
+            let mut k = -4i32;
+            while k < k_end {
+                let mut sy = sy4 + delta * (k + 4);
+                let mut l = -4i32;
+                while l < l_end {
+                    let offs = (round_power_of_two(sy, WARPEDDIFF_PREC_BITS)
+                        + WARPEDPIXEL_PREC_SHIFTS) as usize;
+                    let coeffs = &AV1_WARPED_FILTER[offs];
+                    let mut sum = 1i32 << offset_bits_vert;
+                    for m in 0..8usize {
+                        sum += tmp[((k + m as i32 + 4) * 8 + (l + 4)) as usize]
+                            * i32::from(coeffs[m]);
+                    }
+                    let out_row = (i - p_row + k + 4) as usize;
+                    let out_col = (j - p_col + l + 4) as usize;
+                    if cp.is_compound {
+                        let sum = round_power_of_two(sum, reduce_bits_vert);
+                        let idx = out_row * dst16_stride + out_col;
+                        if cp.do_average {
+                            let mut tmp32 = i32::from(dst16[idx]);
+                            if cp.use_dist_wtd_comp_avg {
+                                tmp32 = tmp32 * cp.fwd_offset + sum * cp.bck_offset;
+                                tmp32 >>= DIST_PRECISION_BITS;
+                            } else {
+                                tmp32 += sum;
+                                tmp32 >>= 1;
+                            }
+                            tmp32 = tmp32
+                                - (1 << (offset_bits - cp.round_1))
+                                - (1 << (offset_bits - cp.round_1 - 1));
+                            pred[out_row * p_stride + out_col] =
+                                clip_pixel_highbd(round_power_of_two(tmp32, round_bits), bd);
+                        } else {
+                            dst16[idx] = sum as u16;
+                        }
+                    } else {
+                        let sum = round_power_of_two(sum, reduce_bits_vert);
+                        pred[out_row * p_stride + out_col] = clip_pixel_highbd(
+                            sum - (1 << (bd - 1)) - (1 << bd),
+                            bd,
+                        );
+                    }
+                    sy += gamma;
+                    l += 1;
+                }
+                k += 1;
+            }
+            j += 8;
+        }
+        i += 8;
+    }
+}

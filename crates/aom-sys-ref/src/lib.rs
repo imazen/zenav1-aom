@@ -17931,3 +17931,117 @@ pub fn ref_highbd_blend_a64_d16_mask(
     }
     dst
 }
+
+// ---------------------------------------------------------------------------
+// warp_shim.c (cont.) — av1_highbd_warp_affine_c, the general warp filter.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_highbd_warp_affine(
+        mat: *const i32,
+        refp: *const u16,
+        width: i32,
+        height: i32,
+        stride: i32,
+        pred: *mut u16,
+        p_col: i32,
+        p_row: i32,
+        p_width: i32,
+        p_height: i32,
+        p_stride: i32,
+        subsampling_x: i32,
+        subsampling_y: i32,
+        bd: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        round_0: i32,
+        round_1: i32,
+        is_compound: i32,
+        do_average: i32,
+        use_dist_wtd: i32,
+        fwd: i32,
+        bck: i32,
+        alpha: i16,
+        beta: i16,
+        gamma: i16,
+        delta: i16,
+    );
+}
+
+/// The `ConvolveParams` fields [`ref_highbd_warp_affine`] takes.
+#[derive(Clone, Copy, Debug)]
+pub struct RefWarpConvParams {
+    /// `conv_params->round_0`
+    pub round_0: i32,
+    /// `conv_params->round_1`
+    pub round_1: i32,
+    /// `conv_params->is_compound`
+    pub is_compound: bool,
+    /// `conv_params->do_average`
+    pub do_average: bool,
+    /// `conv_params->use_dist_wtd_comp_avg`
+    pub use_dist_wtd_comp_avg: bool,
+    /// `conv_params->fwd_offset`
+    pub fwd_offset: i32,
+    /// `conv_params->bck_offset`
+    pub bck_offset: i32,
+}
+
+/// Reference libaom `av1_highbd_warp_affine_c` (av1/common/warped_motion.c) —
+/// the general affine warp filter, both arms, any bit depth.
+///
+/// `pred` and `dst16` are updated in place, exactly as C writes them.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_warp_affine(
+    mat: &[i32; 6],
+    refp: &[u16],
+    width: usize,
+    height: usize,
+    stride: usize,
+    pred: &mut [u16],
+    p_stride: usize,
+    dst16: &mut [u16],
+    dst16_stride: usize,
+    p_col: i32,
+    p_row: i32,
+    p_width: usize,
+    p_height: usize,
+    subsampling_x: usize,
+    subsampling_y: usize,
+    bd: u32,
+    cp: &RefWarpConvParams,
+    shear: (i16, i16, i16, i16),
+) {
+    unsafe {
+        shim_highbd_warp_affine(
+            mat.as_ptr(),
+            refp.as_ptr(),
+            width as i32,
+            height as i32,
+            stride as i32,
+            pred.as_mut_ptr(),
+            p_col,
+            p_row,
+            p_width as i32,
+            p_height as i32,
+            p_stride as i32,
+            subsampling_x as i32,
+            subsampling_y as i32,
+            bd as i32,
+            dst16.as_mut_ptr(),
+            dst16_stride as i32,
+            cp.round_0,
+            cp.round_1,
+            cp.is_compound as i32,
+            cp.do_average as i32,
+            cp.use_dist_wtd_comp_avg as i32,
+            cp.fwd_offset,
+            cp.bck_offset,
+            shear.0,
+            shear.1,
+            shear.2,
+            shear.3,
+        )
+    }
+}
