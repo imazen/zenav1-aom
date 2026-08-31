@@ -252,3 +252,288 @@ pub fn vector_match(
 
     (center - search_size_top, best_sad)
 }
+
+// ===================================================================
+// The OBMC full-pel motion search — mcomp.c
+//
+// OBMC scores a candidate against a per-pixel WEIGHTED target (`wsrc`) with a
+// per-pixel `mask`, not against the source block, so it needs its own copy of
+// the diamond search rather than a mode flag on the existing one. The two
+// copies also differ structurally — see `obmc_full_pixel_diamond`.
+// ===================================================================
+
+use crate::intrabc_search::SiteCfg;
+
+/// Inputs to the OBMC full-pel search. Planes are `u16` bd8 (`0..=255`) to
+/// match the rest of the port; `wsrc` and `mask` are the tight `w*h` buffers
+/// `calc_target_weighted_pred` produces, both at 1/4096 precision.
+pub struct ObmcFullPelParams<'a> {
+    /// Border-extended reference plane.
+    pub refb: &'a [u16],
+    /// Index in `refb` of the zero-MV block origin.
+    pub ref_origin: usize,
+    pub ref_stride: usize,
+    pub w: usize,
+    pub h: usize,
+    /// `ms_buffers->wsrc`
+    pub wsrc: &'a [i32],
+    /// `ms_buffers->obmc_mask`
+    pub obmc_mask: &'a [i32],
+    pub limits: FullMvLimits,
+    /// MV entropy cost tables.
+    pub dv: &'a DvCosts,
+    /// `mv_cost_params->full_ref_mv`.
+    pub full_ref_mv: (i32, i32),
+    /// `mv_cost_params->sad_per_bit`.
+    pub sad_per_bit: i32,
+    /// `mv_cost_params->error_per_bit`.
+    pub error_per_bit: i32,
+}
+
+impl ObmcFullPelParams<'_> {
+    /// A tight `w*h` u8 copy of the reference window at `mv`, which is what the
+    /// OBMC kernels take.
+    fn window(&self, mv: (i32, i32)) -> Vec<u8> {
+        let off = (self.ref_origin as isize
+            + mv.0 as isize * self.ref_stride as isize
+            + mv.1 as isize) as usize;
+        let mut v = vec![0u8; self.w * self.h];
+        for r in 0..self.h {
+            for c in 0..self.w {
+                v[r * self.w + c] = self.refb[off + r * self.ref_stride + c] as u8;
+            }
+        }
+        v
+    }
+
+    /// `fn_ptr->osdf` — `aom_obmc_sad{W}x{H}`.
+    fn osdf(&self, mv: (i32, i32)) -> u32 {
+        let win = self.window(mv);
+        aom_dsp::dist::obmc_sad(&win, self.w, self.wsrc, self.obmc_mask, self.w, self.h)
+    }
+
+    /// `vfp->ovf` — `aom_obmc_variance{W}x{H}`.
+    fn ovf(&self, mv: (i32, i32)) -> u32 {
+        let win = self.window(mv);
+        aom_dsp::dist::obmc::obmc_variance(
+            &win,
+            0,
+            self.w,
+            self.wsrc,
+            self.obmc_mask,
+            self.w,
+            self.h,
+        )
+        .0
+    }
+
+    /// `mvsad_err_cost_` at `MV_COST_ENTROPY`.
+    fn sad_cost(&self, mv: (i32, i32)) -> i32 {
+        mvsad_err_cost(
+            mv.0 - self.full_ref_mv.0,
+            mv.1 - self.full_ref_mv.1,
+            self.dv,
+            self.sad_per_bit,
+        )
+    }
+
+    /// `mv_err_cost_` at `MV_COST_ENTROPY`, on the full-pel MV promoted to
+    /// 1/8-pel (`get_mv_from_fullmv`).
+    fn var_cost(&self, mv: (i32, i32)) -> i32 {
+        crate::intrabc_search::mv_err_cost(
+            mv.0 * 8 - self.full_ref_mv.0 * 8,
+            mv.1 * 8 - self.full_ref_mv.1 * 8,
+            self.dv,
+            self.error_per_bit,
+        )
+    }
+
+    fn in_range(&self, mv: (i32, i32)) -> bool {
+        mv.1 >= self.limits.col_min
+            && mv.1 <= self.limits.col_max
+            && mv.0 >= self.limits.row_min
+            && mv.0 <= self.limits.row_max
+    }
+
+    fn clamp(&self, mv: (i32, i32)) -> (i32, i32) {
+        (
+            mv.0.clamp(self.limits.row_min, self.limits.row_max),
+            mv.1.clamp(self.limits.col_min, self.limits.col_max),
+        )
+    }
+}
+
+/// `get_obmc_mvpred_var` (mcomp.c:756): the OBMC variance at `mv` plus the
+/// subpel-metric MV cost. C's return type is `int`.
+#[must_use]
+pub fn get_obmc_mvpred_var(p: &ObmcFullPelParams, mv: (i32, i32)) -> i32 {
+    (p.ovf(mv) as i32).wrapping_add(p.var_cost(mv))
+}
+
+/// `obmc_diamond_search_sad` (mcomp.c:2103): one diamond pass on the OBMC SAD
+/// metric. Returns `(best_sad, best_mv, num00)`.
+///
+/// This is **not** the single-reference `diamond_search_sad` with a different
+/// metric. It has no all-sites-in-range fast path, no radius-repeat step
+/// skipping, and its `num00` counts the leading steps during which the search
+/// never left the start position (C spells that `best_address == init_ref`,
+/// which is the same predicate because the site offset is
+/// `row * stride + col`, a bijection over the reachable window).
+fn obmc_diamond_search_sad(
+    p: &ObmcFullPelParams,
+    start_mv: (i32, i32),
+    search_step: usize,
+    cfg: SiteCfg,
+) -> (u32, (i32, i32), i32) {
+    let radii = cfg.radii();
+    let tot_steps = radii.len() - search_step;
+    let start_mv = p.clamp(start_mv);
+    let mut best_mv = start_mv;
+    let mut num00 = 0i32;
+    let mut best_sad = p.osdf(start_mv).wrapping_add(p.sad_cost(start_mv) as u32);
+
+    for step in (0..tot_steps).rev() {
+        let radius = radii[step];
+        let (site, num_searches) = cfg.stage_sites(radius);
+        let mut best_site = 0usize;
+        // Indexed rather than iterated: `best_site` is the winning INDEX, which
+        // the step update then reads back out of `site`.
+        #[allow(clippy::needless_range_loop)]
+        for idx in 1..=num_searches {
+            let (dr, dc) = site[idx];
+            let mv = (best_mv.0 + dr, best_mv.1 + dc);
+            if p.in_range(mv) {
+                let sad = p.osdf(mv);
+                if sad < best_sad {
+                    let sad = sad.wrapping_add(p.sad_cost(mv) as u32);
+                    if sad < best_sad {
+                        best_sad = sad;
+                        best_site = idx;
+                    }
+                }
+            }
+        }
+        if best_site != 0 {
+            best_mv = (best_mv.0 + site[best_site].0, best_mv.1 + site[best_site].1);
+        } else if best_mv == start_mv {
+            num00 += 1;
+        }
+    }
+    (best_sad, best_mv, num00)
+}
+
+/// `obmc_full_pixel_diamond` (mcomp.c:2160).
+///
+/// The step loop differs from the single-reference `full_pixel_diamond`: `n` is
+/// seeded from the FIRST diamond's `num00` output, and inside the loop a
+/// separate `num00` counter *skips* iterations rather than advancing `n`. This
+/// port keeps C's shape.
+///
+/// **Not verified by the differential.** A mutation replacing this loop with
+/// the single-reference shape (advance `n` by `num00`, search every iteration)
+/// left `tests/inter_fullpel_diff.rs` green. That is consistent with the skip
+/// being a speed heuristic in the regime the sweep reaches — `num00` counts
+/// leading steps at which the diamond never left the start, and re-running
+/// those step sizes from the same start finds the same MV — but it is not a
+/// proof of equivalence, so the difference is recorded as untested rather than
+/// claimed. The `num00` predicate itself IS pinned: counting every non-move
+/// instead of only the leading ones fails the differential.
+fn obmc_full_pixel_diamond(
+    p: &ObmcFullPelParams,
+    start_mv: (i32, i32),
+    step_param: usize,
+    cfg: SiteCfg,
+) -> (i32, (i32, i32)) {
+    let (sad0, tmp_mv, mut n) = obmc_diamond_search_sad(p, start_mv, step_param, cfg);
+    let mut bestsme = if sad0 < u32::MAX {
+        get_obmc_mvpred_var(p, tmp_mv)
+    } else {
+        i32::MAX
+    };
+    let mut best_mv = tmp_mv;
+
+    let further_steps = cfg.radii().len() as i32 - 1 - step_param as i32;
+    let mut num00 = 0i32;
+    while n < further_steps {
+        n += 1;
+        if num00 != 0 {
+            num00 -= 1;
+        } else {
+            let (thissad, tmp_mv, n00) =
+                obmc_diamond_search_sad(p, start_mv, step_param + n as usize, cfg);
+            num00 = n00;
+            let thissme = if thissad < u32::MAX {
+                get_obmc_mvpred_var(p, tmp_mv)
+            } else {
+                i32::MAX
+            };
+            if thissme < bestsme {
+                bestsme = thissme;
+                best_mv = tmp_mv;
+            }
+        }
+    }
+    (bestsme, best_mv)
+}
+
+/// `obmc_refining_search_sad` (mcomp.c:2064): up to 8 rounds of 4-neighbour
+/// refinement on the OBMC SAD metric. Returns `(best_sad, best_mv)`.
+fn obmc_refining_search_sad(p: &ObmcFullPelParams, start_mv: (i32, i32)) -> (u32, (i32, i32)) {
+    const NEIGHBORS: [(i32, i32); 4] = [(-1, 0), (0, -1), (0, 1), (1, 0)];
+    const K_SEARCH_RANGE: usize = 8;
+    let mut best_mv = start_mv;
+    let mut best_sad = p.osdf(best_mv).wrapping_add(p.sad_cost(best_mv) as u32);
+    for _ in 0..K_SEARCH_RANGE {
+        let mut best_site: Option<usize> = None;
+        for (j, &(dr, dc)) in NEIGHBORS.iter().enumerate() {
+            let mv = (best_mv.0 + dr, best_mv.1 + dc);
+            if p.in_range(mv) {
+                let sad = p.osdf(mv);
+                if sad < best_sad {
+                    let sad = sad.wrapping_add(p.sad_cost(mv) as u32);
+                    if sad < best_sad {
+                        best_sad = sad;
+                        best_site = Some(j);
+                    }
+                }
+            }
+        }
+        match best_site {
+            None => break,
+            Some(j) => best_mv = (best_mv.0 + NEIGHBORS[j].0, best_mv.1 + NEIGHBORS[j].1),
+        }
+    }
+    (best_sad, best_mv)
+}
+
+/// `av1_obmc_full_pixel_search` (mcomp.c:2202).
+///
+/// `fast_obmc_search` picks between the diamond (false) and a clamped
+/// 4-neighbour refinement whose SAD result is then **re-scored** with the
+/// variance metric (true). The two arms therefore return values on different
+/// metrics unless the refinement runs, which is why C re-scores.
+///
+/// The search-site configuration is NSTEP, which is what
+/// `av1_set_mv_search_method` installs for the OBMC search on the GOOD ladder.
+/// Returns `(bestsme, best_mv)`.
+#[must_use]
+pub fn obmc_full_pixel_search(
+    p: &ObmcFullPelParams,
+    start_mv: (i32, i32),
+    step_param: usize,
+    fast_obmc_search: bool,
+) -> (i32, (i32, i32)) {
+    let cfg = SiteCfg::Nstep;
+    if !fast_obmc_search {
+        obmc_full_pixel_diamond(p, start_mv, step_param, cfg)
+    } else {
+        let best_mv = p.clamp(start_mv);
+        let (thissme, best_mv) = obmc_refining_search_sad(p, best_mv);
+        let thissme = if thissme < u32::MAX {
+            get_obmc_mvpred_var(p, best_mv)
+        } else {
+            i32::MAX
+        };
+        (thissme, best_mv)
+    }
+}

@@ -389,3 +389,253 @@ fn refining_search_8p_breaks_ties_like_c() {
         assert_eq!(got.best_sad, want_sad, "spb={sad_per_bit}");
     }
 }
+
+// ===================================================================
+// The OBMC full-pel motion search.
+// ===================================================================
+
+use aom_encode::inter_fullpel::{ObmcFullPelParams, get_obmc_mvpred_var, obmc_full_pixel_search};
+use aom_sys_ref::ref_obmc_full_pixel_search;
+
+/// `(wsrc, mask)` shaped like `calc_target_weighted_pred`'s output: the mask is
+/// an A64 weight raised to 1/4096 and `wsrc` is a target weighted by it, built
+/// from a planted reference window so a real minimum exists.
+fn obmc_wsrc_mask(
+    rng: &mut Rng,
+    refb: &[u8],
+    ref_origin: usize,
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+    planted: (i32, i32),
+) -> (Vec<i32>, Vec<i32>) {
+    let base = (ref_origin as isize + planted.0 as isize * ref_stride as isize + planted.1 as isize)
+        as usize;
+    let n = w * h;
+    let mut mask = vec![0i32; n];
+    let mut wsrc = vec![0i32; n];
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            let a64 = (rng.next_u64() % 65) as i32;
+            mask[i] = a64 * 64;
+            // Target = the planted window plus a little noise, weighted.
+            let t = i32::from(refb[base + y * ref_stride + x]) + (rng.next_u64() % 9) as i32 - 4;
+            wsrc[i] = t.clamp(0, 255) * mask[i];
+        }
+    }
+    (wsrc, mask)
+}
+
+/// The block shapes the shim has both an `aom_obmc_sad` and an
+/// `aom_obmc_variance` kernel for.
+const OBMC_SIZES: [(usize, usize); 9] = [
+    (4, 4),
+    (8, 8),
+    (8, 16),
+    (16, 8),
+    (16, 16),
+    (16, 32),
+    (32, 16),
+    (32, 32),
+    (64, 64),
+];
+
+#[test]
+fn obmc_full_pixel_search_matches_c() {
+    let mut rng = Rng::new(0x0B3C_1D2E_3F40_5162);
+    let mut moved = false;
+    for &(w, h) in &OBMC_SIZES {
+        for &fast in &[false, true] {
+            for &step_param in &[0usize, 2, 4, 6] {
+                for &start in &[(0i32, 0i32), (3, -2), (-6, 5)] {
+                    let stride = w + 2 * BORDER;
+                    let rows = h + 2 * BORDER;
+                    let mut refb = vec![0u8; stride * rows];
+                    for b in refb.iter_mut() {
+                        *b = rng.byte();
+                    }
+                    let ref_origin = BORDER * stride + BORDER;
+                    let planted = (
+                        start.0 + (rng.next_u64() % 7) as i32 - 3,
+                        start.1 + (rng.next_u64() % 7) as i32 - 3,
+                    );
+                    let (wsrc, mask) =
+                        obmc_wsrc_mask(&mut rng, &refb, ref_origin, stride, w, h, planted);
+
+                    let mvjcost = [0i32, 240, 240, 480];
+                    let mvcost0 = mvcost_table(48);
+                    let mvcost1 = mvcost_table(64);
+                    let dv = DvCosts {
+                        joint_mv: mvjcost,
+                        dv_costs: [mvcost0.clone(), mvcost1.clone()],
+                    };
+                    let limits = (-16i32, 16i32, -16i32, 16i32);
+                    let refb16: Vec<u16> = refb.iter().map(|&b| u16::from(b)).collect();
+
+                    let p = ObmcFullPelParams {
+                        refb: &refb16,
+                        ref_origin,
+                        ref_stride: stride,
+                        w,
+                        h,
+                        wsrc: &wsrc,
+                        obmc_mask: &mask,
+                        limits: FullMvLimits {
+                            col_min: limits.2,
+                            col_max: limits.3,
+                            row_min: limits.0,
+                            row_max: limits.1,
+                        },
+                        dv: &dv,
+                        full_ref_mv: (0, 0),
+                        sad_per_bit: 64,
+                        error_per_bit: 256,
+                    };
+                    let got = obmc_full_pixel_search(&p, start, step_param, fast);
+                    let want = ref_obmc_full_pixel_search(
+                        &refb,
+                        ref_origin,
+                        stride,
+                        w,
+                        h,
+                        &wsrc,
+                        &mask,
+                        start,
+                        (0, 0),
+                        &mvjcost,
+                        &mvcost0,
+                        &mvcost1,
+                        256,
+                        64,
+                        step_param,
+                        fast,
+                        limits,
+                    );
+                    let label = format!(
+                        "{w}x{h} fast={fast} step={step_param} start={start:?} \
+                         planted={planted:?}"
+                    );
+                    assert_eq!(got.1, want.1, "best_mv: {label}");
+                    assert_eq!(got.0, want.0, "bestsme: {label}");
+                    if got.1 != start {
+                        moved = true;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        moved,
+        "the OBMC search never left its start MV — neither the diamond walk nor \
+         the refinement is actually exercised"
+    );
+}
+
+#[test]
+fn obmc_fast_and_diamond_arms_differ() {
+    // `fast_obmc_search` selects two structurally different searches (a diamond
+    // vs a clamped 4-neighbour refinement re-scored on the variance metric).
+    // If they agreed everywhere, the `fast = true` half of the sweep above
+    // would be a duplicate of the `fast = false` half.
+    let mut rng = Rng::new(0x7788_99AA_BBCC_DDEE);
+    let (w, h) = (16usize, 16usize);
+    let mut differed = false;
+    for _ in 0..40 {
+        let stride = w + 2 * BORDER;
+        let rows = h + 2 * BORDER;
+        let mut refb = vec![0u8; stride * rows];
+        for b in refb.iter_mut() {
+            *b = rng.byte();
+        }
+        let ref_origin = BORDER * stride + BORDER;
+        let planted = (
+            (rng.next_u64() % 13) as i32 - 6,
+            (rng.next_u64() % 13) as i32 - 6,
+        );
+        let (wsrc, mask) = obmc_wsrc_mask(&mut rng, &refb, ref_origin, stride, w, h, planted);
+        let mvjcost = [0i32, 240, 240, 480];
+        let mvcost0 = mvcost_table(48);
+        let mvcost1 = mvcost_table(64);
+        let dv = DvCosts {
+            joint_mv: mvjcost,
+            dv_costs: [mvcost0, mvcost1],
+        };
+        let refb16: Vec<u16> = refb.iter().map(|&b| u16::from(b)).collect();
+        let p = ObmcFullPelParams {
+            refb: &refb16,
+            ref_origin,
+            ref_stride: stride,
+            w,
+            h,
+            wsrc: &wsrc,
+            obmc_mask: &mask,
+            limits: FullMvLimits {
+                col_min: -16,
+                col_max: 16,
+                row_min: -16,
+                row_max: 16,
+            },
+            dv: &dv,
+            full_ref_mv: (0, 0),
+            sad_per_bit: 64,
+            error_per_bit: 256,
+        };
+        if obmc_full_pixel_search(&p, (0, 0), 4, false)
+            != obmc_full_pixel_search(&p, (0, 0), 4, true)
+        {
+            differed = true;
+            break;
+        }
+    }
+    assert!(
+        differed,
+        "the diamond and fast-refinement arms agreed on every trial — one of \
+         them is not being distinguished"
+    );
+}
+
+#[test]
+fn get_obmc_mvpred_var_is_the_reported_score() {
+    // The search returns `get_obmc_mvpred_var(best_mv)` on the diamond arm, so
+    // the two must agree; this pins the scorer independently of the walk.
+    let mut rng = Rng::new(0x3141_5926_5358_9793);
+    let (w, h) = (16usize, 16usize);
+    let stride = w + 2 * BORDER;
+    let rows = h + 2 * BORDER;
+    let mut refb = vec![0u8; stride * rows];
+    for b in refb.iter_mut() {
+        *b = rng.byte();
+    }
+    let ref_origin = BORDER * stride + BORDER;
+    let (wsrc, mask) = obmc_wsrc_mask(&mut rng, &refb, ref_origin, stride, w, h, (2, -1));
+    let mvjcost = [0i32, 240, 240, 480];
+    let mvcost0 = mvcost_table(48);
+    let mvcost1 = mvcost_table(64);
+    let dv = DvCosts {
+        joint_mv: mvjcost,
+        dv_costs: [mvcost0, mvcost1],
+    };
+    let refb16: Vec<u16> = refb.iter().map(|&b| u16::from(b)).collect();
+    let p = ObmcFullPelParams {
+        refb: &refb16,
+        ref_origin,
+        ref_stride: stride,
+        w,
+        h,
+        wsrc: &wsrc,
+        obmc_mask: &mask,
+        limits: FullMvLimits {
+            col_min: -16,
+            col_max: 16,
+            row_min: -16,
+            row_max: 16,
+        },
+        dv: &dv,
+        full_ref_mv: (0, 0),
+        sad_per_bit: 64,
+        error_per_bit: 256,
+    };
+    let (sme, mv) = obmc_full_pixel_search(&p, (0, 0), 4, false);
+    assert_eq!(sme, get_obmc_mvpred_var(&p, mv));
+}

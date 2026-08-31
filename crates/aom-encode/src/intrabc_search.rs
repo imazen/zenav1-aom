@@ -1229,7 +1229,7 @@ fn nstep_stage_sites(radius: i32, eight_pt: bool) -> ([(i32, i32); 13], usize) {
 /// stage `step`'s radius, `stage_sites(radius)` its (center + candidates,
 /// `searches_per_step`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SiteCfg {
+pub(crate) enum SiteCfg {
     /// `init_motion_compensation_nstep`, level 0: 15 stages, 8/12 points.
     Nstep,
     /// `init_motion_compensation_nstep`, level 1: 16 stages, always 8 points.
@@ -1246,7 +1246,7 @@ const DIAMOND_RADII: [i32; 11] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
 const CLAMPED_DIAMOND_RADII: [i32; 11] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 256, 256];
 
 impl SiteCfg {
-    fn radii(self) -> &'static [i32] {
+    pub(crate) fn radii(self) -> &'static [i32] {
         match self {
             SiteCfg::Nstep => &NSTEP_RADII,
             SiteCfg::Nstep8Pt => &NSTEP_8PT_RADII,
@@ -1254,7 +1254,7 @@ impl SiteCfg {
             SiteCfg::ClampedDiamond => &CLAMPED_DIAMOND_RADII,
         }
     }
-    fn stage_sites(self, radius: i32) -> ([(i32, i32); 13], usize) {
+    pub(crate) fn stage_sites(self, radius: i32) -> ([(i32, i32); 13], usize) {
         match self {
             SiteCfg::Nstep => nstep_stage_sites(radius, false),
             SiteCfg::Nstep8Pt => nstep_stage_sites(radius, true),

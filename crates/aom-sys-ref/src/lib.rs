@@ -17501,3 +17501,99 @@ pub fn ref_highbd_obmc_sub_pixel_variance(
     };
     obmc_result(rc, sse, w, h, "aom_highbd_obmc_sub_pixel_variance")
 }
+
+// ---------------------------------------------------------------------------
+// me_shim.c (cont.) — av1_obmc_full_pixel_search.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_obmc_full_pixel_search(
+        ref_at_origin: *const u8,
+        ref_stride: i32,
+        w: i32,
+        h: i32,
+        wsrc: *const i32,
+        obmc_mask: *const i32,
+        start_row: i32,
+        start_col: i32,
+        full_ref_row: i32,
+        full_ref_col: i32,
+        mvjcost: *const i32,
+        mvcost0: *const i32,
+        mvcost1: *const i32,
+        error_per_bit: i32,
+        sad_per_bit: i32,
+        step_param: i32,
+        fast_obmc_search: i32,
+        row_min: i32,
+        row_max: i32,
+        col_min: i32,
+        col_max: i32,
+        out_best_row: *mut i32,
+        out_best_col: *mut i32,
+    ) -> i32;
+}
+
+/// Reference libaom `av1_obmc_full_pixel_search` (mcomp.c:2202) on the NSTEP
+/// site config. Returns `(bestsme, (best_row, best_col))`.
+///
+/// `mvcost{0,1}_full` are the FULL per-component tables (value `v` at index
+/// `MV_MAX + v`); the wrapper centres them.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_obmc_full_pixel_search(
+    refb: &[u8],
+    ref_origin: usize,
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+    wsrc: &[i32],
+    obmc_mask: &[i32],
+    start_mv: (i32, i32),
+    full_ref_mv: (i32, i32),
+    mvjcost: &[i32; 4],
+    mvcost0_full: &[i32],
+    mvcost1_full: &[i32],
+    error_per_bit: i32,
+    sad_per_bit: i32,
+    step_param: usize,
+    fast_obmc_search: bool,
+    limits: (i32, i32, i32, i32),
+) -> (i32, (i32, i32)) {
+    ref_init();
+    const MV_MAX: usize = (1 << 14) - 1;
+    let (mut br, mut bc) = (0i32, 0i32);
+    let r = unsafe {
+        shim_obmc_full_pixel_search(
+            refb.as_ptr().add(ref_origin),
+            ref_stride as i32,
+            w as i32,
+            h as i32,
+            wsrc.as_ptr(),
+            obmc_mask.as_ptr(),
+            start_mv.0,
+            start_mv.1,
+            full_ref_mv.0,
+            full_ref_mv.1,
+            mvjcost.as_ptr(),
+            mvcost0_full.as_ptr().add(MV_MAX),
+            mvcost1_full.as_ptr().add(MV_MAX),
+            error_per_bit,
+            sad_per_bit,
+            step_param as i32,
+            fast_obmc_search as i32,
+            limits.0,
+            limits.1,
+            limits.2,
+            limits.3,
+            &mut br,
+            &mut bc,
+        )
+    };
+    assert!(
+        r != i32::MIN,
+        "no C aom_obmc_sad/aom_obmc_variance kernel for {w}x{h}: the shim's \
+         size table does not cover this block shape"
+    );
+    (r, (br, bc))
+}

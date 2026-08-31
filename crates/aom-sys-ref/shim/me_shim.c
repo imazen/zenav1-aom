@@ -638,3 +638,112 @@ int shim_vector_match(const int16_t *ref, const int16_t *src, int bwl,
   return av1_vector_match(ref, src, bwl, search_size_top, search_size_bottom,
                           full_search, out_sad);
 }
+
+/* ---- shim_obmc_full_pixel_search -------------------------------------
+ * Drives the REAL exported av1_obmc_full_pixel_search (mcomp.c:2202) on the
+ * NSTEP site config, both the diamond arm (fast_obmc_search = 0) and the
+ * clamped-refinement arm (= 1).
+ *
+ * Beyond shim_full_pixel_search's construction this additionally fills
+ * vfp->osdf (aom_obmc_sad{W}x{H}_c) and vfp->ovf (aom_obmc_variance{W}x{H}_c),
+ * which are the two metrics the OBMC search scores with, and points
+ * ms_buffers.wsrc / .obmc_mask at the caller's weighted target and mask.
+ */
+extern unsigned int aom_obmc_sad4x4_c(const uint8_t *, int, const int32_t *, const int32_t *);
+extern unsigned int aom_obmc_sad8x8_c(const uint8_t *, int, const int32_t *, const int32_t *);
+extern unsigned int aom_obmc_sad8x16_c(const uint8_t *, int, const int32_t *, const int32_t *);
+extern unsigned int aom_obmc_sad16x8_c(const uint8_t *, int, const int32_t *, const int32_t *);
+extern unsigned int aom_obmc_sad16x16_c(const uint8_t *, int, const int32_t *, const int32_t *);
+extern unsigned int aom_obmc_sad16x32_c(const uint8_t *, int, const int32_t *, const int32_t *);
+extern unsigned int aom_obmc_sad32x16_c(const uint8_t *, int, const int32_t *, const int32_t *);
+extern unsigned int aom_obmc_sad32x32_c(const uint8_t *, int, const int32_t *, const int32_t *);
+extern unsigned int aom_obmc_sad64x64_c(const uint8_t *, int, const int32_t *, const int32_t *);
+extern unsigned int aom_obmc_variance4x4_c(const uint8_t *, int, const int32_t *, const int32_t *, unsigned int *);
+extern unsigned int aom_obmc_variance8x8_c(const uint8_t *, int, const int32_t *, const int32_t *, unsigned int *);
+extern unsigned int aom_obmc_variance8x16_c(const uint8_t *, int, const int32_t *, const int32_t *, unsigned int *);
+extern unsigned int aom_obmc_variance16x8_c(const uint8_t *, int, const int32_t *, const int32_t *, unsigned int *);
+extern unsigned int aom_obmc_variance16x16_c(const uint8_t *, int, const int32_t *, const int32_t *, unsigned int *);
+extern unsigned int aom_obmc_variance16x32_c(const uint8_t *, int, const int32_t *, const int32_t *, unsigned int *);
+extern unsigned int aom_obmc_variance32x16_c(const uint8_t *, int, const int32_t *, const int32_t *, unsigned int *);
+extern unsigned int aom_obmc_variance32x32_c(const uint8_t *, int, const int32_t *, const int32_t *, unsigned int *);
+extern unsigned int aom_obmc_variance64x64_c(const uint8_t *, int, const int32_t *, const int32_t *, unsigned int *);
+
+static int shim_fill_obmc_fnptr(aom_variance_fn_ptr_t *f, int w, int h) {
+#define SET_OBMC(W, H)                            \
+  if (w == W && h == H) {                         \
+    f->osdf = aom_obmc_sad##W##x##H##_c;          \
+    f->ovf = aom_obmc_variance##W##x##H##_c;      \
+    return 1;                                     \
+  }
+  SET_OBMC(4, 4) SET_OBMC(8, 8) SET_OBMC(8, 16) SET_OBMC(16, 8)
+  SET_OBMC(16, 16) SET_OBMC(16, 32) SET_OBMC(32, 16) SET_OBMC(32, 32)
+  SET_OBMC(64, 64)
+#undef SET_OBMC
+  return 0;
+}
+
+int shim_obmc_full_pixel_search(const uint8_t *ref_at_origin, int ref_stride,
+                                int w, int h, const int32_t *wsrc,
+                                const int32_t *obmc_mask, int start_row,
+                                int start_col, int full_ref_row,
+                                int full_ref_col, const int *mvjcost,
+                                const int *mvcost0, const int *mvcost1,
+                                int error_per_bit, int sad_per_bit,
+                                int step_param, int fast_obmc_search,
+                                int row_min, int row_max, int col_min,
+                                int col_max, int *out_best_row,
+                                int *out_best_col) {
+  aom_variance_fn_ptr_t fnptr;
+  if (!shim_fill_fnptr(&fnptr, w, h)) return INT_MIN;
+  if (!shim_fill_obmc_fnptr(&fnptr, w, h)) return INT_MIN;
+  const BLOCK_SIZE bsize = shim_pick_bsize(w, h);
+  if (bsize == BLOCK_INVALID) return INT_MIN;
+
+  search_site_config *ss = (search_site_config *)calloc(
+      NUM_DISTINCT_SEARCH_METHODS, sizeof(search_site_config));
+  if (!ss) return INT_MIN;
+  const int ssidx = search_method_lookup[NSTEP];
+  av1_init_motion_compensation[ssidx](&ss[ssidx], ref_stride, 0);
+
+  struct buf_2d ref_buf;
+  memset(&ref_buf, 0, sizeof(ref_buf));
+  ref_buf.buf = (uint8_t *)ref_at_origin;
+  ref_buf.stride = ref_stride;
+
+  MV ref_mv = { (int16_t)(full_ref_row * 8), (int16_t)(full_ref_col * 8) };
+
+  FULLPEL_MOTION_SEARCH_PARAMS ms;
+  memset(&ms, 0, sizeof(ms));
+  ms.bsize = bsize;
+  ms.vfp = &fnptr;
+  ms.ms_buffers.ref = &ref_buf;
+  ms.ms_buffers.src = &ref_buf; /* unused on the OBMC path */
+  ms.ms_buffers.wsrc = wsrc;
+  ms.ms_buffers.obmc_mask = obmc_mask;
+  av1_set_mv_search_method(&ms, ss, NSTEP);
+  ms.mv_limits.row_min = row_min;
+  ms.mv_limits.row_max = row_max;
+  ms.mv_limits.col_min = col_min;
+  ms.mv_limits.col_max = col_max;
+  ms.fast_obmc_search = fast_obmc_search;
+  ms.mv_cost_params.ref_mv = &ref_mv;
+  ms.mv_cost_params.full_ref_mv.row = (int16_t)full_ref_row;
+  ms.mv_cost_params.full_ref_mv.col = (int16_t)full_ref_col;
+  ms.mv_cost_params.mv_cost_type = MV_COST_ENTROPY;
+  ms.mv_cost_params.mvjcost = mvjcost;
+  ms.mv_cost_params.mvcost[0] = (int *)mvcost0;
+  ms.mv_cost_params.mvcost[1] = (int *)mvcost1;
+  ms.mv_cost_params.error_per_bit = error_per_bit;
+  ms.mv_cost_params.sad_per_bit = sad_per_bit;
+  ms.sdf = fnptr.sdf;
+  ms.sdx4df = fnptr.sdx4df;
+  ms.sdx3df = fnptr.sdx3df;
+
+  FULLPEL_MV start = { (int16_t)start_row, (int16_t)start_col };
+  FULLPEL_MV best;
+  int r = av1_obmc_full_pixel_search(start, &ms, step_param, &best);
+  *out_best_row = best.row;
+  *out_best_col = best.col;
+  free(ss);
+  return r;
+}
