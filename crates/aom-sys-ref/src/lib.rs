@@ -18511,3 +18511,72 @@ pub fn ref_rtcd_probe(index: usize) -> (bool, bool) {
     assert!(non_null >= 0, "shim_rtcd_probe index out of range");
     (is_ptr != 0, non_null != 0)
 }
+
+// ---------------------------------------------------------------------------
+// enc_misc_shim.c (cont.) — the rd.c mode-threshold machinery.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn shim_set_rd_speed_thresholds(out: *mut i32, out_len: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_update_rd_thresh_fact(
+        sb_size: i32,
+        factor_buf: *mut i32,
+        use_adaptive_rd_thresh: i32,
+        bsize: i32,
+        best_mode_index: i32,
+        inter_mode_start: i32,
+        inter_mode_end: i32,
+        intra_mode_start: i32,
+        intra_mode_end: i32,
+    ) -> i32;
+}
+
+/// Reference libaom `av1_set_rd_speed_thresholds` (encoder/rd.c). Returns the
+/// whole `rd.thresh_mult` array, whose LENGTH is C's `MAX_MODES` — so a port
+/// whose enum has a different size fails on the length before the values.
+pub fn ref_set_rd_speed_thresholds() -> Vec<i32> {
+    ref_init();
+    // Ask with a generous buffer; a short buffer returns -MAX_MODES so the
+    // caller learns the required length instead of reading garbage.
+    let mut out = vec![0i32; 1024];
+    let n = unsafe { shim_set_rd_speed_thresholds(out.as_mut_ptr(), out.len() as i32) };
+    assert!(
+        n > 0,
+        "C MAX_MODES is {} — larger than the probe buffer",
+        -n
+    );
+    out.truncate(n as usize);
+    out
+}
+
+/// Reference libaom `av1_update_rd_thresh_fact` (rd.c:1468). `factor_buf` is a
+/// flattened `[BLOCK_SIZES_ALL][MAX_MODES]` buffer, edited in place.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_update_rd_thresh_fact(
+    sb_size: i32,
+    factor_buf: &mut [i32],
+    use_adaptive_rd_thresh: i32,
+    bsize: i32,
+    best_mode_index: i32,
+    inter_mode_start: i32,
+    inter_mode_end: i32,
+    intra_mode_start: i32,
+    intra_mode_end: i32,
+) {
+    ref_init();
+    let rc = unsafe {
+        shim_update_rd_thresh_fact(
+            sb_size,
+            factor_buf.as_mut_ptr(),
+            use_adaptive_rd_thresh,
+            bsize,
+            best_mode_index,
+            inter_mode_start,
+            inter_mode_end,
+            intra_mode_start,
+            intra_mode_end,
+        )
+    };
+    assert_eq!(rc, 0, "shim_update_rd_thresh_fact allocation failed");
+}

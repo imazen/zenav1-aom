@@ -141,3 +141,49 @@ int shim_rc_get_default_min_gf_interval(int width, int height,
                                         double framerate) {
   return av1_rc_get_default_min_gf_interval(width, height, framerate);
 }
+
+/* ---- av1/encoder/rd.c: the RD mode-threshold machinery ---------------
+ * `av1_set_rd_speed_thresholds` writes `cpi->rd.thresh_mult[MAX_MODES]`; the
+ * shim returns the whole array plus MAX_MODES, so one comparison covers both
+ * the THR_MODES ordering and the ~169 constants (a wrong index puts a right
+ * value in a wrong slot).
+ *
+ * `av1_update_rd_thresh_fact` reads only `cm->seq_params->sb_size` out of
+ * AV1_COMMON, and edits the caller's [BLOCK_SIZES_ALL][MAX_MODES] buffer.
+ */
+int shim_set_rd_speed_thresholds(int32_t *out, int out_len) {
+  if (out_len < MAX_MODES) return -MAX_MODES;
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(AV1_COMP));
+  if (!cpi) return -1;
+  av1_set_rd_speed_thresholds(cpi);
+  for (int i = 0; i < MAX_MODES; ++i) out[i] = cpi->rd.thresh_mult[i];
+  free(cpi);
+  return MAX_MODES;
+}
+
+int shim_update_rd_thresh_fact(int sb_size, int32_t *factor_buf,
+                               int use_adaptive_rd_thresh, int bsize,
+                               int best_mode_index, int inter_mode_start,
+                               int inter_mode_end, int intra_mode_start,
+                               int intra_mode_end) {
+  AV1_COMMON *cm = (AV1_COMMON *)calloc(1, sizeof(AV1_COMMON));
+  SequenceHeader *seq = (SequenceHeader *)calloc(1, sizeof(SequenceHeader));
+  if (!cm || !seq) {
+    free(cm);
+    free(seq);
+    return -1;
+  }
+  seq->sb_size = (BLOCK_SIZE)sb_size;
+  cm->seq_params = seq;
+
+  av1_update_rd_thresh_fact(cm, (int(*)[MAX_MODES])factor_buf,
+                            use_adaptive_rd_thresh, (BLOCK_SIZE)bsize,
+                            (THR_MODES)best_mode_index,
+                            (THR_MODES)inter_mode_start,
+                            (THR_MODES)inter_mode_end,
+                            (THR_MODES)intra_mode_start,
+                            (THR_MODES)intra_mode_end);
+  free(cm);
+  free(seq);
+  return 0;
+}
