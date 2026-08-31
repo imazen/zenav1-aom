@@ -16664,3 +16664,410 @@ pub fn ref_vector_match(
     };
     (off, sad)
 }
+
+// ---------------------------------------------------------------------------
+// comp_pred_shim.c — the encoder-side compound / high-bit-depth predictor
+// construction. Every entry drives the REAL exported C function.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn shim_comp_avg_pred(
+        comp_pred: *mut u8,
+        pred: *const u8,
+        width: i32,
+        height: i32,
+        refb: *const u8,
+        ref_stride: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_comp_mask_pred(
+        comp_pred: *mut u8,
+        pred: *const u8,
+        width: i32,
+        height: i32,
+        refb: *const u8,
+        ref_stride: i32,
+        mask: *const u8,
+        mask_stride: i32,
+        invert_mask: i32,
+    );
+    fn shim_highbd_comp_avg_pred(
+        comp_pred: *mut u16,
+        pred: *const u16,
+        width: i32,
+        height: i32,
+        refb: *const u16,
+        ref_stride: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_highbd_comp_mask_pred(
+        comp_pred: *mut u16,
+        pred: *const u16,
+        width: i32,
+        height: i32,
+        refb: *const u16,
+        ref_stride: i32,
+        mask: *const u8,
+        mask_stride: i32,
+        invert_mask: i32,
+    );
+    fn shim_comp_avg_upsampled_pred(
+        comp_pred: *mut u8,
+        pred: *const u8,
+        width: i32,
+        height: i32,
+        subpel_x_q3: i32,
+        subpel_y_q3: i32,
+        refb: *const u8,
+        ref_stride: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_comp_mask_upsampled_pred(
+        comp_pred: *mut u8,
+        pred: *const u8,
+        width: i32,
+        height: i32,
+        subpel_x_q3: i32,
+        subpel_y_q3: i32,
+        refb: *const u8,
+        ref_stride: i32,
+        mask: *const u8,
+        mask_stride: i32,
+        invert_mask: i32,
+    );
+    fn shim_highbd_upsampled_pred(
+        comp_pred: *mut u16,
+        width: i32,
+        height: i32,
+        subpel_x_q3: i32,
+        subpel_y_q3: i32,
+        refb: *const u16,
+        ref_stride: i32,
+        bd: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_highbd_comp_avg_upsampled_pred(
+        comp_pred: *mut u16,
+        pred: *const u16,
+        width: i32,
+        height: i32,
+        subpel_x_q3: i32,
+        subpel_y_q3: i32,
+        refb: *const u16,
+        ref_stride: i32,
+        bd: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_highbd_comp_mask_upsampled_pred(
+        comp_pred: *mut u16,
+        pred: *const u16,
+        width: i32,
+        height: i32,
+        subpel_x_q3: i32,
+        subpel_y_q3: i32,
+        refb: *const u16,
+        ref_stride: i32,
+        mask: *const u8,
+        mask_stride: i32,
+        invert_mask: i32,
+        bd: i32,
+    );
+}
+
+/// Reference libaom `aom_comp_avg_pred_c` (aom_dsp/variance.c).
+pub fn ref_comp_avg_pred(
+    pred: &[u8],
+    refb: &[u8],
+    ref_off: usize,
+    ref_stride: usize,
+    width: usize,
+    height: usize,
+) -> Vec<u8> {
+    // Several of these entries reach RTCD-dispatched symbols
+    // (aom_comp_mask_pred, aom_upsampled_pred, aom_highbd_upsampled_pred);
+    // without ref_init() the pointer is still NULL and the oracle segfaults.
+    ref_init();
+    let mut comp = vec![0u8; width * height];
+    unsafe {
+        shim_comp_avg_pred(
+            comp.as_mut_ptr(),
+            pred.as_ptr(),
+            width as i32,
+            height as i32,
+            refb.as_ptr().add(ref_off),
+            ref_stride as i32,
+        )
+    }
+    comp
+}
+
+/// Reference libaom `aom_comp_mask_pred_c` (variance.c).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_comp_mask_pred(
+    pred: &[u8],
+    refb: &[u8],
+    ref_off: usize,
+    ref_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    invert_mask: bool,
+    width: usize,
+    height: usize,
+) -> Vec<u8> {
+    // Several of these entries reach RTCD-dispatched symbols
+    // (aom_comp_mask_pred, aom_upsampled_pred, aom_highbd_upsampled_pred);
+    // without ref_init() the pointer is still NULL and the oracle segfaults.
+    ref_init();
+    let mut comp = vec![0u8; width * height];
+    unsafe {
+        shim_comp_mask_pred(
+            comp.as_mut_ptr(),
+            pred.as_ptr(),
+            width as i32,
+            height as i32,
+            refb.as_ptr().add(ref_off),
+            ref_stride as i32,
+            mask.as_ptr(),
+            mask_stride as i32,
+            invert_mask as i32,
+        )
+    }
+    comp
+}
+
+/// Reference libaom `aom_highbd_comp_avg_pred_c` (variance.c).
+pub fn ref_highbd_comp_avg_pred(
+    pred: &[u16],
+    refb: &[u16],
+    ref_off: usize,
+    ref_stride: usize,
+    width: usize,
+    height: usize,
+) -> Vec<u16> {
+    // Several of these entries reach RTCD-dispatched symbols
+    // (aom_comp_mask_pred, aom_upsampled_pred, aom_highbd_upsampled_pred);
+    // without ref_init() the pointer is still NULL and the oracle segfaults.
+    ref_init();
+    let mut comp = vec![0u16; width * height];
+    unsafe {
+        shim_highbd_comp_avg_pred(
+            comp.as_mut_ptr(),
+            pred.as_ptr(),
+            width as i32,
+            height as i32,
+            refb.as_ptr().add(ref_off),
+            ref_stride as i32,
+        )
+    }
+    comp
+}
+
+/// Reference libaom `aom_highbd_comp_mask_pred_c` (variance.c).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_comp_mask_pred(
+    pred: &[u16],
+    refb: &[u16],
+    ref_off: usize,
+    ref_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    invert_mask: bool,
+    width: usize,
+    height: usize,
+) -> Vec<u16> {
+    // Several of these entries reach RTCD-dispatched symbols
+    // (aom_comp_mask_pred, aom_upsampled_pred, aom_highbd_upsampled_pred);
+    // without ref_init() the pointer is still NULL and the oracle segfaults.
+    ref_init();
+    let mut comp = vec![0u16; width * height];
+    unsafe {
+        shim_highbd_comp_mask_pred(
+            comp.as_mut_ptr(),
+            pred.as_ptr(),
+            width as i32,
+            height as i32,
+            refb.as_ptr().add(ref_off),
+            ref_stride as i32,
+            mask.as_ptr(),
+            mask_stride as i32,
+            invert_mask as i32,
+        )
+    }
+    comp
+}
+
+/// Reference libaom `aom_comp_avg_upsampled_pred_c` (reconinter_enc.c).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_comp_avg_upsampled_pred(
+    pred: &[u8],
+    refb: &[u8],
+    ref_off: usize,
+    ref_stride: usize,
+    width: usize,
+    height: usize,
+    subpel_x_q3: usize,
+    subpel_y_q3: usize,
+) -> Vec<u8> {
+    // Several of these entries reach RTCD-dispatched symbols
+    // (aom_comp_mask_pred, aom_upsampled_pred, aom_highbd_upsampled_pred);
+    // without ref_init() the pointer is still NULL and the oracle segfaults.
+    ref_init();
+    let mut comp = vec![0u8; width * height];
+    unsafe {
+        shim_comp_avg_upsampled_pred(
+            comp.as_mut_ptr(),
+            pred.as_ptr(),
+            width as i32,
+            height as i32,
+            subpel_x_q3 as i32,
+            subpel_y_q3 as i32,
+            refb.as_ptr().add(ref_off),
+            ref_stride as i32,
+        )
+    }
+    comp
+}
+
+/// Reference libaom `aom_comp_mask_upsampled_pred` (reconinter_enc.c).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_comp_mask_upsampled_pred(
+    pred: &[u8],
+    refb: &[u8],
+    ref_off: usize,
+    ref_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    invert_mask: bool,
+    width: usize,
+    height: usize,
+    subpel_x_q3: usize,
+    subpel_y_q3: usize,
+) -> Vec<u8> {
+    // Several of these entries reach RTCD-dispatched symbols
+    // (aom_comp_mask_pred, aom_upsampled_pred, aom_highbd_upsampled_pred);
+    // without ref_init() the pointer is still NULL and the oracle segfaults.
+    ref_init();
+    let mut comp = vec![0u8; width * height];
+    unsafe {
+        shim_comp_mask_upsampled_pred(
+            comp.as_mut_ptr(),
+            pred.as_ptr(),
+            width as i32,
+            height as i32,
+            subpel_x_q3 as i32,
+            subpel_y_q3 as i32,
+            refb.as_ptr().add(ref_off),
+            ref_stride as i32,
+            mask.as_ptr(),
+            mask_stride as i32,
+            invert_mask as i32,
+        )
+    }
+    comp
+}
+
+/// Reference libaom `aom_highbd_upsampled_pred_c` (reconinter_enc.c).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_upsampled_pred(
+    refb: &[u16],
+    ref_off: usize,
+    ref_stride: usize,
+    width: usize,
+    height: usize,
+    subpel_x_q3: usize,
+    subpel_y_q3: usize,
+    bd: u32,
+) -> Vec<u16> {
+    // Several of these entries reach RTCD-dispatched symbols
+    // (aom_comp_mask_pred, aom_upsampled_pred, aom_highbd_upsampled_pred);
+    // without ref_init() the pointer is still NULL and the oracle segfaults.
+    ref_init();
+    let mut comp = vec![0u16; width * height];
+    unsafe {
+        shim_highbd_upsampled_pred(
+            comp.as_mut_ptr(),
+            width as i32,
+            height as i32,
+            subpel_x_q3 as i32,
+            subpel_y_q3 as i32,
+            refb.as_ptr().add(ref_off),
+            ref_stride as i32,
+            bd as i32,
+        )
+    }
+    comp
+}
+
+/// Reference libaom `aom_highbd_comp_avg_upsampled_pred_c` (reconinter_enc.c).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_comp_avg_upsampled_pred(
+    pred: &[u16],
+    refb: &[u16],
+    ref_off: usize,
+    ref_stride: usize,
+    width: usize,
+    height: usize,
+    subpel_x_q3: usize,
+    subpel_y_q3: usize,
+    bd: u32,
+) -> Vec<u16> {
+    // Several of these entries reach RTCD-dispatched symbols
+    // (aom_comp_mask_pred, aom_upsampled_pred, aom_highbd_upsampled_pred);
+    // without ref_init() the pointer is still NULL and the oracle segfaults.
+    ref_init();
+    let mut comp = vec![0u16; width * height];
+    unsafe {
+        shim_highbd_comp_avg_upsampled_pred(
+            comp.as_mut_ptr(),
+            pred.as_ptr(),
+            width as i32,
+            height as i32,
+            subpel_x_q3 as i32,
+            subpel_y_q3 as i32,
+            refb.as_ptr().add(ref_off),
+            ref_stride as i32,
+            bd as i32,
+        )
+    }
+    comp
+}
+
+/// Reference libaom `aom_highbd_comp_mask_upsampled_pred` (reconinter_enc.c).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_comp_mask_upsampled_pred(
+    pred: &[u16],
+    refb: &[u16],
+    ref_off: usize,
+    ref_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    invert_mask: bool,
+    width: usize,
+    height: usize,
+    subpel_x_q3: usize,
+    subpel_y_q3: usize,
+    bd: u32,
+) -> Vec<u16> {
+    // Several of these entries reach RTCD-dispatched symbols
+    // (aom_comp_mask_pred, aom_upsampled_pred, aom_highbd_upsampled_pred);
+    // without ref_init() the pointer is still NULL and the oracle segfaults.
+    ref_init();
+    let mut comp = vec![0u16; width * height];
+    unsafe {
+        shim_highbd_comp_mask_upsampled_pred(
+            comp.as_mut_ptr(),
+            pred.as_ptr(),
+            width as i32,
+            height as i32,
+            subpel_x_q3 as i32,
+            subpel_y_q3 as i32,
+            refb.as_ptr().add(ref_off),
+            ref_stride as i32,
+            mask.as_ptr(),
+            mask_stride as i32,
+            invert_mask as i32,
+            bd as i32,
+        )
+    }
+    comp
+}

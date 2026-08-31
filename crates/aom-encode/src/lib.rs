@@ -34,6 +34,7 @@ pub mod inter_rd;
 pub mod interp_rd;
 pub mod inter_me;
 pub mod inter_pack;
+pub mod inter_pred_enc;
 pub mod lf_search;
 pub mod mode_costs;
 pub mod noise_fft;
