@@ -1,7 +1,14 @@
 //! aom-convolve — bit-exact AV1 inter-prediction convolution (port of libaom
 //! v3.14.1 `av1/common/convolve.c`), lowbd single-reference. Encoder critical
 //! path (motion compensation). Starts with x/y separable EIGHTTAP_REGULAR.
+//!
+//! Two submodules carry the rest of the family:
+//! [`compound`] — the `av1_dist_wtd_convolve_*` kernels the second reference of
+//! a compound block goes through (lowbd + highbd), and [`highbd`] — the
+//! `av1_highbd_convolve_*_sr_c` single-reference kernels for 10/12-bit.
 
+pub mod compound;
+pub mod highbd;
 
 const FILTER_BITS: i32 = 7;
 const ROUND0_BITS: i32 = 3;

@@ -579,7 +579,7 @@ pub fn ref_cdef_filter16(
 extern "C" {
     fn shim_sad(idx: i32, s: *const u8, ss: i32, r: *const u8, rs: i32) -> u32;
     fn shim_variance(idx: i32, a: *const u8, as_: i32, b: *const u8, bs: i32, sse: *mut u32)
-        -> u32;
+    -> u32;
     fn shim_subpel_var(
         idx: i32,
         a: *const u8,
@@ -5158,11 +5158,7 @@ pub fn ref_uleb_decode(buffer: &[u8]) -> Option<(u64, usize)> {
     let mut value = 0u64;
     let mut length = 0usize;
     let rc = unsafe { aom_uleb_decode(buffer.as_ptr(), buffer.len(), &mut value, &mut length) };
-    if rc == 0 {
-        Some((value, length))
-    } else {
-        None
-    }
+    if rc == 0 { Some((value, length)) } else { None }
 }
 
 /// Reference `aom_write_bit_buffer`: apply a sequence of literal ops (kind 0 =
@@ -15445,11 +15441,7 @@ pub fn ref_ii_wedge_mask(bsize: usize, index: usize, bw: usize, bh: usize) -> Op
          CONFIG_MULTITHREAD=0, so aom_once does not synchronise — every caller must funnel \
          through aom_sys_ref::ref_init() first (see its docs)."
     );
-    if ok != 0 {
-        Some(out)
-    } else {
-        None
-    }
+    if ok != 0 { Some(out) } else { None }
 }
 
 // ---------------------------------------------------------------------------
@@ -15506,24 +15498,52 @@ extern "C" {
 /// specialisations — NOT the `_c` template): nearest-centroid index per point
 /// plus the summed squared distance. `data` holds `n * dim` values,
 /// `centroids` `k * dim`. Requires [`ref_init`].
-pub fn ref_calc_indices(data: &[i16], centroids: &[i16], indices: &mut [u8], k: usize, dim: usize) -> i64 {
+pub fn ref_calc_indices(
+    data: &[i16],
+    centroids: &[i16],
+    indices: &mut [u8],
+    k: usize,
+    dim: usize,
+) -> i64 {
     let n = data.len() / dim;
     assert!(dim == 1 || dim == 2);
     assert!(centroids.len() >= k * dim && indices.len() >= n);
     unsafe {
-        shim_calc_indices(data.as_ptr(), centroids.as_ptr(), indices.as_mut_ptr(), n as i32, k as i32, dim as i32)
+        shim_calc_indices(
+            data.as_ptr(),
+            centroids.as_ptr(),
+            indices.as_mut_ptr(),
+            n as i32,
+            k as i32,
+            dim as i32,
+        )
     }
 }
 
 /// `av1_k_means_dim{1,2}` (k_means_template.h, over the dispatched
 /// `av1_calc_indices`): refines `centroids` in place and writes the final
 /// `indices`. Requires [`ref_init`].
-pub fn ref_k_means(data: &[i16], centroids: &mut [i16], indices: &mut [u8], k: usize, dim: usize, max_itr: usize) {
+pub fn ref_k_means(
+    data: &[i16],
+    centroids: &mut [i16],
+    indices: &mut [u8],
+    k: usize,
+    dim: usize,
+    max_itr: usize,
+) {
     let n = data.len() / dim;
     assert!(dim == 1 || dim == 2);
     assert!(centroids.len() >= k * dim && indices.len() >= n);
     unsafe {
-        shim_k_means(data.as_ptr(), centroids.as_mut_ptr(), indices.as_mut_ptr(), n as i32, k as i32, dim as i32, max_itr as i32)
+        shim_k_means(
+            data.as_ptr(),
+            centroids.as_mut_ptr(),
+            indices.as_mut_ptr(),
+            n as i32,
+            k as i32,
+            dim as i32,
+            max_itr as i32,
+        )
     }
 }
 
@@ -15534,18 +15554,8 @@ pub fn ref_k_means(data: &[i16], centroids: &mut [i16], indices: &mut [u8], k: u
 // ---------------------------------------------------------------------------
 
 extern "C" {
-    fn shim_wedge_sse_from_residuals(
-        r1: *const i16,
-        d: *const i16,
-        m: *const u8,
-        n: i32,
-    ) -> u64;
-    fn shim_wedge_sign_from_residuals(
-        ds: *const i16,
-        m: *const u8,
-        n: i32,
-        limit: i64,
-    ) -> i32;
+    fn shim_wedge_sse_from_residuals(r1: *const i16, d: *const i16, m: *const u8, n: i32) -> u64;
+    fn shim_wedge_sign_from_residuals(ds: *const i16, m: *const u8, n: i32, limit: i64) -> i32;
     fn shim_wedge_compute_delta_squares(d: *mut i16, a: *const i16, b: *const i16, n: i32);
     #[allow(clippy::too_many_arguments)]
     fn shim_build_compound_diffwtd_mask(
@@ -15736,11 +15746,7 @@ pub fn ref_get_compound_type_mask_wedge(
             out.as_mut_ptr(),
         )
     };
-    if ok == 0 {
-        Some(out)
-    } else {
-        None
-    }
+    if ok == 0 { Some(out) } else { None }
 }
 
 /// Reference libaom `av1_dist_wtd_comp_weight_assign` (reconinter.c:669).
@@ -15781,4 +15787,624 @@ pub fn ref_dist_wtd_comp_weight_assign(
     };
     assert_eq!(rc, 0, "shim_dist_wtd_comp_weight_assign allocation failed");
     (fwd, bck, used != 0)
+}
+
+// ---------------------------------------------------------------------------
+// compound_convolve_shim.c — the av1_dist_wtd_convolve_* family (lowbd +
+// highbd) and the highbd single-reference av1_highbd_convolve_*_sr_c kernels.
+// Every entry drives the REAL exported C kernel.
+//
+// `x_filter` / `y_filter` are the already-subpel-selected kernel rows; the shim
+// hands C a one-row filter table and subpel 0, which makes C's internal
+// `filter_ptr + taps*subpel` lookup the identity so both sides convolve with
+// the same coefficients.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn shim_dist_wtd_convolve_2d(
+        src: *const u8,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        w: i32,
+        h: i32,
+        x_filter: *const i16,
+        taps_x: i32,
+        y_filter: *const i16,
+        taps_y: i32,
+        round_0: i32,
+        round_1: i32,
+        do_average: i32,
+        use_dist_wtd: i32,
+        fwd: i32,
+        bck: i32,
+    );
+    fn shim_dist_wtd_convolve_x(
+        src: *const u8,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        w: i32,
+        h: i32,
+        x_filter: *const i16,
+        taps_x: i32,
+        round_0: i32,
+        round_1: i32,
+        do_average: i32,
+        use_dist_wtd: i32,
+        fwd: i32,
+        bck: i32,
+    );
+    fn shim_dist_wtd_convolve_y(
+        src: *const u8,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        w: i32,
+        h: i32,
+        y_filter: *const i16,
+        taps_y: i32,
+        round_0: i32,
+        round_1: i32,
+        do_average: i32,
+        use_dist_wtd: i32,
+        fwd: i32,
+        bck: i32,
+    );
+    fn shim_dist_wtd_convolve_2d_copy(
+        src: *const u8,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        w: i32,
+        h: i32,
+        round_0: i32,
+        round_1: i32,
+        do_average: i32,
+        use_dist_wtd: i32,
+        fwd: i32,
+        bck: i32,
+    );
+    fn shim_highbd_dist_wtd_convolve_2d(
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        w: i32,
+        h: i32,
+        x_filter: *const i16,
+        taps_x: i32,
+        y_filter: *const i16,
+        taps_y: i32,
+        round_0: i32,
+        round_1: i32,
+        do_average: i32,
+        use_dist_wtd: i32,
+        fwd: i32,
+        bck: i32,
+        bd: i32,
+    );
+    fn shim_highbd_dist_wtd_convolve_x(
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        w: i32,
+        h: i32,
+        x_filter: *const i16,
+        taps_x: i32,
+        round_0: i32,
+        round_1: i32,
+        do_average: i32,
+        use_dist_wtd: i32,
+        fwd: i32,
+        bck: i32,
+        bd: i32,
+    );
+    fn shim_highbd_dist_wtd_convolve_y(
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        w: i32,
+        h: i32,
+        y_filter: *const i16,
+        taps_y: i32,
+        round_0: i32,
+        round_1: i32,
+        do_average: i32,
+        use_dist_wtd: i32,
+        fwd: i32,
+        bck: i32,
+        bd: i32,
+    );
+    fn shim_highbd_dist_wtd_convolve_2d_copy(
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        w: i32,
+        h: i32,
+        round_0: i32,
+        round_1: i32,
+        do_average: i32,
+        use_dist_wtd: i32,
+        fwd: i32,
+        bck: i32,
+        bd: i32,
+    );
+    fn shim_highbd_convolve_x_sr(
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        w: i32,
+        h: i32,
+        x_filter: *const i16,
+        taps_x: i32,
+        round_0: i32,
+        round_1: i32,
+        bd: i32,
+    );
+    fn shim_highbd_convolve_y_sr(
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        w: i32,
+        h: i32,
+        y_filter: *const i16,
+        taps_y: i32,
+        bd: i32,
+    );
+    fn shim_highbd_convolve_2d_sr(
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        w: i32,
+        h: i32,
+        x_filter: *const i16,
+        taps_x: i32,
+        y_filter: *const i16,
+        taps_y: i32,
+        round_0: i32,
+        round_1: i32,
+        bd: i32,
+    );
+}
+
+/// The `ConvolveParams` fields the compound convolve oracles take, so the
+/// wrappers below do not each carry six loose ints.
+#[derive(Clone, Copy, Debug)]
+pub struct RefCompoundConvParams {
+    /// `conv_params->round_0`
+    pub round_0: i32,
+    /// `conv_params->round_1`
+    pub round_1: i32,
+    /// `conv_params->do_average`
+    pub do_average: bool,
+    /// `conv_params->use_dist_wtd_comp_avg`
+    pub use_dist_wtd_comp_avg: bool,
+    /// `conv_params->fwd_offset`
+    pub fwd_offset: i32,
+    /// `conv_params->bck_offset`
+    pub bck_offset: i32,
+}
+
+/// Reference libaom `av1_dist_wtd_convolve_2d_c` (common/convolve.c:293).
+/// `src_off` is the interior origin index into `src`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_dist_wtd_convolve_2d(
+    src: &[u8],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    dst16: &mut [u16],
+    dst16_stride: usize,
+    w: usize,
+    h: usize,
+    x_filter: &[i16],
+    y_filter: &[i16],
+    cp: &RefCompoundConvParams,
+) {
+    unsafe {
+        shim_dist_wtd_convolve_2d(
+            src.as_ptr().add(src_off),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            dst16.as_mut_ptr(),
+            dst16_stride as i32,
+            w as i32,
+            h as i32,
+            x_filter.as_ptr(),
+            x_filter.len() as i32,
+            y_filter.as_ptr(),
+            y_filter.len() as i32,
+            cp.round_0,
+            cp.round_1,
+            cp.do_average as i32,
+            cp.use_dist_wtd_comp_avg as i32,
+            cp.fwd_offset,
+            cp.bck_offset,
+        )
+    }
+}
+
+/// Reference libaom `av1_dist_wtd_convolve_x_c` (convolve.c:408).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_dist_wtd_convolve_x(
+    src: &[u8],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    dst16: &mut [u16],
+    dst16_stride: usize,
+    w: usize,
+    h: usize,
+    x_filter: &[i16],
+    cp: &RefCompoundConvParams,
+) {
+    unsafe {
+        shim_dist_wtd_convolve_x(
+            src.as_ptr().add(src_off),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            dst16.as_mut_ptr(),
+            dst16_stride as i32,
+            w as i32,
+            h as i32,
+            x_filter.as_ptr(),
+            x_filter.len() as i32,
+            cp.round_0,
+            cp.round_1,
+            cp.do_average as i32,
+            cp.use_dist_wtd_comp_avg as i32,
+            cp.fwd_offset,
+            cp.bck_offset,
+        )
+    }
+}
+
+/// Reference libaom `av1_dist_wtd_convolve_y_c` (convolve.c:361).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_dist_wtd_convolve_y(
+    src: &[u8],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    dst16: &mut [u16],
+    dst16_stride: usize,
+    w: usize,
+    h: usize,
+    y_filter: &[i16],
+    cp: &RefCompoundConvParams,
+) {
+    unsafe {
+        shim_dist_wtd_convolve_y(
+            src.as_ptr().add(src_off),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            dst16.as_mut_ptr(),
+            dst16_stride as i32,
+            w as i32,
+            h as i32,
+            y_filter.as_ptr(),
+            y_filter.len() as i32,
+            cp.round_0,
+            cp.round_1,
+            cp.do_average as i32,
+            cp.use_dist_wtd_comp_avg as i32,
+            cp.fwd_offset,
+            cp.bck_offset,
+        )
+    }
+}
+
+/// Reference libaom `av1_dist_wtd_convolve_2d_copy_c` (convolve.c:455).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_dist_wtd_convolve_2d_copy(
+    src: &[u8],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    dst16: &mut [u16],
+    dst16_stride: usize,
+    w: usize,
+    h: usize,
+    cp: &RefCompoundConvParams,
+) {
+    unsafe {
+        shim_dist_wtd_convolve_2d_copy(
+            src.as_ptr().add(src_off),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            dst16.as_mut_ptr(),
+            dst16_stride as i32,
+            w as i32,
+            h as i32,
+            cp.round_0,
+            cp.round_1,
+            cp.do_average as i32,
+            cp.use_dist_wtd_comp_avg as i32,
+            cp.fwd_offset,
+            cp.bck_offset,
+        )
+    }
+}
+
+/// Reference libaom `av1_highbd_dist_wtd_convolve_2d_c` (convolve.c:906).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_dist_wtd_convolve_2d(
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    dst16: &mut [u16],
+    dst16_stride: usize,
+    w: usize,
+    h: usize,
+    x_filter: &[i16],
+    y_filter: &[i16],
+    cp: &RefCompoundConvParams,
+    bd: u32,
+) {
+    unsafe {
+        shim_highbd_dist_wtd_convolve_2d(
+            src.as_ptr().add(src_off),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            dst16.as_mut_ptr(),
+            dst16_stride as i32,
+            w as i32,
+            h as i32,
+            x_filter.as_ptr(),
+            x_filter.len() as i32,
+            y_filter.as_ptr(),
+            y_filter.len() as i32,
+            cp.round_0,
+            cp.round_1,
+            cp.do_average as i32,
+            cp.use_dist_wtd_comp_avg as i32,
+            cp.fwd_offset,
+            cp.bck_offset,
+            bd as i32,
+        )
+    }
+}
+
+/// Reference libaom `av1_highbd_dist_wtd_convolve_x_c` (convolve.c:975).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_dist_wtd_convolve_x(
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    dst16: &mut [u16],
+    dst16_stride: usize,
+    w: usize,
+    h: usize,
+    x_filter: &[i16],
+    cp: &RefCompoundConvParams,
+    bd: u32,
+) {
+    unsafe {
+        shim_highbd_dist_wtd_convolve_x(
+            src.as_ptr().add(src_off),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            dst16.as_mut_ptr(),
+            dst16_stride as i32,
+            w as i32,
+            h as i32,
+            x_filter.as_ptr(),
+            x_filter.len() as i32,
+            cp.round_0,
+            cp.round_1,
+            cp.do_average as i32,
+            cp.use_dist_wtd_comp_avg as i32,
+            cp.fwd_offset,
+            cp.bck_offset,
+            bd as i32,
+        )
+    }
+}
+
+/// Reference libaom `av1_highbd_dist_wtd_convolve_y_c` (convolve.c:1023).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_dist_wtd_convolve_y(
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    dst16: &mut [u16],
+    dst16_stride: usize,
+    w: usize,
+    h: usize,
+    y_filter: &[i16],
+    cp: &RefCompoundConvParams,
+    bd: u32,
+) {
+    unsafe {
+        shim_highbd_dist_wtd_convolve_y(
+            src.as_ptr().add(src_off),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            dst16.as_mut_ptr(),
+            dst16_stride as i32,
+            w as i32,
+            h as i32,
+            y_filter.as_ptr(),
+            y_filter.len() as i32,
+            cp.round_0,
+            cp.round_1,
+            cp.do_average as i32,
+            cp.use_dist_wtd_comp_avg as i32,
+            cp.fwd_offset,
+            cp.bck_offset,
+            bd as i32,
+        )
+    }
+}
+
+/// Reference libaom `av1_highbd_dist_wtd_convolve_2d_copy_c` (convolve.c:1071).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_dist_wtd_convolve_2d_copy(
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    dst16: &mut [u16],
+    dst16_stride: usize,
+    w: usize,
+    h: usize,
+    cp: &RefCompoundConvParams,
+    bd: u32,
+) {
+    unsafe {
+        shim_highbd_dist_wtd_convolve_2d_copy(
+            src.as_ptr().add(src_off),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            dst16.as_mut_ptr(),
+            dst16_stride as i32,
+            w as i32,
+            h as i32,
+            cp.round_0,
+            cp.round_1,
+            cp.do_average as i32,
+            cp.use_dist_wtd_comp_avg as i32,
+            cp.fwd_offset,
+            cp.bck_offset,
+            bd as i32,
+        )
+    }
+}
+
+/// Reference libaom `av1_highbd_convolve_x_sr_c` (convolve.c:689).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_convolve_x_sr(
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    x_filter: &[i16],
+    round_0: i32,
+    round_1: i32,
+    bd: u32,
+) {
+    unsafe {
+        shim_highbd_convolve_x_sr(
+            src.as_ptr().add(src_off),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            w as i32,
+            h as i32,
+            x_filter.as_ptr(),
+            x_filter.len() as i32,
+            round_0,
+            round_1,
+            bd as i32,
+        )
+    }
+}
+
+/// Reference libaom `av1_highbd_convolve_y_sr_c` (convolve.c:717). Takes no
+/// `ConvolveParams` — the C rounding is the fixed `FILTER_BITS`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_convolve_y_sr(
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    y_filter: &[i16],
+    bd: u32,
+) {
+    unsafe {
+        shim_highbd_convolve_y_sr(
+            src.as_ptr().add(src_off),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            w as i32,
+            h as i32,
+            y_filter.as_ptr(),
+            y_filter.len() as i32,
+            bd as i32,
+        )
+    }
+}
+
+/// Reference libaom `av1_highbd_convolve_2d_sr_c` (convolve.c:737).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_convolve_2d_sr(
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    x_filter: &[i16],
+    y_filter: &[i16],
+    round_0: i32,
+    round_1: i32,
+    bd: u32,
+) {
+    unsafe {
+        shim_highbd_convolve_2d_sr(
+            src.as_ptr().add(src_off),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            w as i32,
+            h as i32,
+            x_filter.as_ptr(),
+            x_filter.len() as i32,
+            y_filter.as_ptr(),
+            y_filter.len() as i32,
+            round_0,
+            round_1,
+            bd as i32,
+        )
+    }
 }
