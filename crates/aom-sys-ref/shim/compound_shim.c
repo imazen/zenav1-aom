@@ -146,3 +146,63 @@ int shim_dist_wtd_comp_weight_assign(int enable_order_hint,
   free(cm); free(seq); free(cur); free(bck); free(fwd); free(mbmi);
   return 0;
 }
+
+/* ---- av1/common/scale.c --------------------------------------------
+ * The scale-factor setup and MV scaling. `av1_setup_scale_factors_for_frame`
+ * and `av1_scale_mv` are exported; `av1_scaled_x`/`av1_scaled_y` are static
+ * inlines in scale.h, so the shim exposes them by calling them directly out of
+ * this translation unit (which is the same source, compiled with the same
+ * flags, not a re-implementation).
+ */
+#include "av1/common/scale.h"
+
+void shim_setup_scale_factors_for_frame(int other_w, int other_h, int this_w,
+                                        int this_h, int *out_x_scale_fp,
+                                        int *out_y_scale_fp, int *out_x_step_q4,
+                                        int *out_y_step_q4) {
+  struct scale_factors sf;
+  memset(&sf, 0, sizeof(sf));
+  av1_setup_scale_factors_for_frame(&sf, other_w, other_h, this_w, this_h);
+  *out_x_scale_fp = sf.x_scale_fp;
+  *out_y_scale_fp = sf.y_scale_fp;
+  *out_x_step_q4 = sf.x_step_q4;
+  *out_y_step_q4 = sf.y_step_q4;
+}
+
+void shim_scale_mv(int mv_row, int mv_col, int x, int y, int x_scale_fp,
+                   int y_scale_fp, int *out_row, int *out_col) {
+  struct scale_factors sf;
+  memset(&sf, 0, sizeof(sf));
+  sf.x_scale_fp = x_scale_fp;
+  sf.y_scale_fp = y_scale_fp;
+  MV mv = { (int16_t)mv_row, (int16_t)mv_col };
+  MV32 res = av1_scale_mv(&mv, x, y, &sf);
+  *out_row = res.row;
+  *out_col = res.col;
+}
+
+int shim_scaled_x(int val, int x_scale_fp) {
+  struct scale_factors sf;
+  memset(&sf, 0, sizeof(sf));
+  sf.x_scale_fp = x_scale_fp;
+  return av1_scaled_x(val, &sf);
+}
+
+int shim_scaled_y(int val, int y_scale_fp) {
+  struct scale_factors sf;
+  memset(&sf, 0, sizeof(sf));
+  sf.y_scale_fp = y_scale_fp;
+  return av1_scaled_y(val, &sf);
+}
+
+int shim_valid_ref_frame_size(int ref_w, int ref_h, int this_w, int this_h) {
+  return valid_ref_frame_size(ref_w, ref_h, this_w, this_h);
+}
+
+int shim_is_scaled(int x_scale_fp, int y_scale_fp) {
+  struct scale_factors sf;
+  memset(&sf, 0, sizeof(sf));
+  sf.x_scale_fp = x_scale_fp;
+  sf.y_scale_fp = y_scale_fp;
+  return av1_is_scaled(&sf);
+}

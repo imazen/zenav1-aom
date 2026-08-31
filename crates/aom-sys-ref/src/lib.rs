@@ -17071,3 +17071,94 @@ pub fn ref_highbd_comp_mask_upsampled_pred(
     }
     comp
 }
+
+// ---------------------------------------------------------------------------
+// compound_shim.c (cont.) — av1/common/scale.c.
+//
+// `av1_setup_scale_factors_for_frame` and `av1_scale_mv` are the real exported
+// C functions. `av1_scaled_x` / `av1_scaled_y` / `valid_ref_frame_size` /
+// `av1_is_scaled` are static inlines in scale.h; the shim calls them from a
+// translation unit that includes the same header under the same oracle flags,
+// so they are still the C definition, not a re-implementation.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn shim_setup_scale_factors_for_frame(
+        other_w: i32,
+        other_h: i32,
+        this_w: i32,
+        this_h: i32,
+        out_x_scale_fp: *mut i32,
+        out_y_scale_fp: *mut i32,
+        out_x_step_q4: *mut i32,
+        out_y_step_q4: *mut i32,
+    );
+    fn shim_scale_mv(
+        mv_row: i32,
+        mv_col: i32,
+        x: i32,
+        y: i32,
+        x_scale_fp: i32,
+        y_scale_fp: i32,
+        out_row: *mut i32,
+        out_col: *mut i32,
+    );
+    fn shim_scaled_x(val: i32, x_scale_fp: i32) -> i32;
+    fn shim_scaled_y(val: i32, y_scale_fp: i32) -> i32;
+    fn shim_valid_ref_frame_size(ref_w: i32, ref_h: i32, this_w: i32, this_h: i32) -> i32;
+    fn shim_is_scaled(x_scale_fp: i32, y_scale_fp: i32) -> i32;
+}
+
+/// Reference libaom `av1_setup_scale_factors_for_frame` (common/scale.c:44).
+/// Returns `(x_scale_fp, y_scale_fp, x_step_q4, y_step_q4)`.
+///
+/// On an invalid size ratio C returns early after writing the two scale fields,
+/// leaving the step fields at whatever the struct held; the shim zeroes the
+/// struct first, so the step fields read back as 0 in that case.
+pub fn ref_setup_scale_factors_for_frame(
+    other_w: i32,
+    other_h: i32,
+    this_w: i32,
+    this_h: i32,
+) -> (i32, i32, i32, i32) {
+    let (mut xs, mut ys, mut xst, mut yst) = (0i32, 0i32, 0i32, 0i32);
+    unsafe {
+        shim_setup_scale_factors_for_frame(
+            other_w, other_h, this_w, this_h, &mut xs, &mut ys, &mut xst, &mut yst,
+        )
+    }
+    (xs, ys, xst, yst)
+}
+
+/// Reference libaom `av1_scale_mv` (scale.c:33). Returns `(row, col)`.
+pub fn ref_scale_mv(
+    mv: (i32, i32),
+    x: i32,
+    y: i32,
+    x_scale_fp: i32,
+    y_scale_fp: i32,
+) -> (i32, i32) {
+    let (mut r, mut c) = (0i32, 0i32);
+    unsafe { shim_scale_mv(mv.0, mv.1, x, y, x_scale_fp, y_scale_fp, &mut r, &mut c) }
+    (r, c)
+}
+
+/// Reference libaom `av1_scaled_x` (scale.h:36).
+pub fn ref_scaled_x(val: i32, x_scale_fp: i32) -> i32 {
+    unsafe { shim_scaled_x(val, x_scale_fp) }
+}
+
+/// Reference libaom `av1_scaled_y` (scale.h:45).
+pub fn ref_scaled_y(val: i32, y_scale_fp: i32) -> i32 {
+    unsafe { shim_scaled_y(val, y_scale_fp) }
+}
+
+/// Reference libaom `valid_ref_frame_size` (scale.h:77).
+pub fn ref_valid_ref_frame_size(ref_w: i32, ref_h: i32, this_w: i32, this_h: i32) -> bool {
+    unsafe { shim_valid_ref_frame_size(ref_w, ref_h, this_w, this_h) != 0 }
+}
+
+/// Reference libaom `av1_is_scaled` (scale.h:70).
+pub fn ref_is_scaled(x_scale_fp: i32, y_scale_fp: i32) -> bool {
+    unsafe { shim_is_scaled(x_scale_fp, y_scale_fp) != 0 }
+}

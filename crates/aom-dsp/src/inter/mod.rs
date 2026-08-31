@@ -52,6 +52,7 @@
 
 
 pub mod compound;
+pub mod scale;
 pub mod interintra;
 pub mod warp;
 
