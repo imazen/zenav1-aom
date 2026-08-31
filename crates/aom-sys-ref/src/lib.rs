@@ -17810,3 +17810,124 @@ pub fn ref_refine_integerized_param(
         best_error,
     }
 }
+
+// ---------------------------------------------------------------------------
+// compound_shim.c (cont.) — aom_dsp/blend_a64_mask.c's D16 mask blend.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_lowbd_blend_a64_d16_mask(
+        dst: *mut u8,
+        dst_stride: u32,
+        src0: *const u16,
+        src0_stride: u32,
+        src1: *const u16,
+        src1_stride: u32,
+        mask: *const u8,
+        mask_stride: u32,
+        w: i32,
+        h: i32,
+        subw: i32,
+        subh: i32,
+        round_0: i32,
+        round_1: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_highbd_blend_a64_d16_mask(
+        dst: *mut u16,
+        dst_stride: u32,
+        src0: *const u16,
+        src0_stride: u32,
+        src1: *const u16,
+        src1_stride: u32,
+        mask: *const u8,
+        mask_stride: u32,
+        w: i32,
+        h: i32,
+        subw: i32,
+        subh: i32,
+        round_0: i32,
+        round_1: i32,
+        bd: i32,
+    );
+}
+
+/// Reference libaom `aom_lowbd_blend_a64_d16_mask_c` (aom_dsp/blend_a64_mask.c:36).
+/// Returns the `h*w` blended block at stride `w`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_lowbd_blend_a64_d16_mask(
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    w: usize,
+    h: usize,
+    subw: bool,
+    subh: bool,
+    round_0: i32,
+    round_1: i32,
+) -> Vec<u8> {
+    let mut dst = vec![0u8; w * h];
+    unsafe {
+        shim_lowbd_blend_a64_d16_mask(
+            dst.as_mut_ptr(),
+            w as u32,
+            src0.as_ptr(),
+            src0_stride as u32,
+            src1.as_ptr(),
+            src1_stride as u32,
+            mask.as_ptr(),
+            mask_stride as u32,
+            w as i32,
+            h as i32,
+            subw as i32,
+            subh as i32,
+            round_0,
+            round_1,
+        )
+    }
+    dst
+}
+
+/// Reference libaom `aom_highbd_blend_a64_d16_mask_c` (blend_a64_mask.c:124).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_blend_a64_d16_mask(
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    w: usize,
+    h: usize,
+    subw: bool,
+    subh: bool,
+    round_0: i32,
+    round_1: i32,
+    bd: u32,
+) -> Vec<u16> {
+    let mut dst = vec![0u16; w * h];
+    unsafe {
+        shim_highbd_blend_a64_d16_mask(
+            dst.as_mut_ptr(),
+            w as u32,
+            src0.as_ptr(),
+            src0_stride as u32,
+            src1.as_ptr(),
+            src1_stride as u32,
+            mask.as_ptr(),
+            mask_stride as u32,
+            w as i32,
+            h as i32,
+            subw as i32,
+            subh as i32,
+            round_0,
+            round_1,
+            bd as i32,
+        )
+    }
+    dst
+}

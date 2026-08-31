@@ -394,3 +394,180 @@ fn dist_wtd_comp_weight_assign_matches_c() {
         "no cell reached the distance-weighted arm: the table walk is untested"
     );
 }
+
+// ===================================================================
+// The D16 (convolve-buffer domain) mask blend.
+// ===================================================================
+
+use aom_dsp::inter::compound::{highbd_blend_a64_d16_mask, lowbd_blend_a64_d16_mask};
+use aom_sys_ref::{ref_highbd_blend_a64_d16_mask, ref_lowbd_blend_a64_d16_mask};
+
+/// The four `(subw, subh)` mask-subsampling cases C unrolls into four loops.
+const SUBSAMPLINGS: [(bool, bool); 4] =
+    [(false, false), (true, true), (true, false), (false, true)];
+
+#[test]
+fn lowbd_blend_a64_d16_mask_matches_c() {
+    let mut rng = Rng(0x77AA_33CC_11EE_55DD);
+    // libaom asserts w, h >= 4 and both powers of two on this entry point.
+    for &(w, h) in &[
+        (4usize, 4usize),
+        (8, 8),
+        (16, 8),
+        (8, 16),
+        (32, 32),
+        (64, 64),
+        (128, 32),
+    ] {
+        for &(subw, subh) in &SUBSAMPLINGS {
+            let s0 = w + 7;
+            let s1 = w + 3;
+            let mask_stride = 2 * w + 5;
+            let src0: Vec<u16> = (0..h * s0).map(|_| rng.below(1 << 14) as u16).collect();
+            let src1: Vec<u16> = (0..h * s1).map(|_| rng.below(1 << 14) as u16).collect();
+            let mask: Vec<u8> = (0..(2 * h + 2) * mask_stride)
+                .map(|_| rng.below(65) as u8)
+                .collect();
+            let (r0, r1) = (3i32, 7i32);
+            let mut got = vec![0u8; w * h];
+            lowbd_blend_a64_d16_mask(
+                &mut got,
+                w,
+                &src0,
+                s0,
+                &src1,
+                s1,
+                &mask,
+                mask_stride,
+                w,
+                h,
+                subw,
+                subh,
+                r0,
+                r1,
+            );
+            let want = ref_lowbd_blend_a64_d16_mask(
+                &src0,
+                s0,
+                &src1,
+                s1,
+                &mask,
+                mask_stride,
+                w,
+                h,
+                subw,
+                subh,
+                r0,
+                r1,
+            );
+            assert_eq!(got, want, "{w}x{h} subw={subw} subh={subh}");
+        }
+    }
+}
+
+#[test]
+fn highbd_blend_a64_d16_mask_matches_c() {
+    let mut rng = Rng(0x2244_6688_AACC_EE00);
+    for &bd in &[8u32, 10, 12] {
+        let (r0, r1) = if bd == 12 { (5i32, 7i32) } else { (3i32, 7i32) };
+        for &(w, h) in &[
+            (4usize, 4usize),
+            (8, 8),
+            (16, 8),
+            (8, 16),
+            (32, 32),
+            (64, 64),
+        ] {
+            for &(subw, subh) in &SUBSAMPLINGS {
+                let s0 = w + 5;
+                let s1 = w + 11;
+                let mask_stride = 2 * w + 3;
+                let src0: Vec<u16> = (0..h * s0).map(|_| rng.below(1 << 15) as u16).collect();
+                let src1: Vec<u16> = (0..h * s1).map(|_| rng.below(1 << 15) as u16).collect();
+                let mask: Vec<u8> = (0..(2 * h + 2) * mask_stride)
+                    .map(|_| rng.below(65) as u8)
+                    .collect();
+                let mut got = vec![0u16; w * h];
+                highbd_blend_a64_d16_mask(
+                    &mut got,
+                    w,
+                    &src0,
+                    s0,
+                    &src1,
+                    s1,
+                    &mask,
+                    mask_stride,
+                    w,
+                    h,
+                    subw,
+                    subh,
+                    r0,
+                    r1,
+                    bd,
+                );
+                let want = ref_highbd_blend_a64_d16_mask(
+                    &src0,
+                    s0,
+                    &src1,
+                    s1,
+                    &mask,
+                    mask_stride,
+                    w,
+                    h,
+                    subw,
+                    subh,
+                    r0,
+                    r1,
+                    bd,
+                );
+                assert_eq!(got, want, "bd={bd} {w}x{h} subw={subw} subh={subh}");
+            }
+        }
+    }
+}
+
+#[test]
+fn d16_mask_subsamplings_are_four_distinct_cases() {
+    // C unrolls the blend into four loops that read the mask differently. If
+    // they ever produced the same output the sweeps above would be one test
+    // repeated four times, and a port that collapsed the 2x2 average into two
+    // nested pairwise averages (a different rounding) could pass.
+    let mut rng = Rng(0x9F8E_7D6C_5B4A_3928);
+    let (w, h) = (16usize, 16usize);
+    let s = w;
+    let mask_stride = 2 * w;
+    let src0: Vec<u16> = (0..h * s).map(|_| rng.below(1 << 14) as u16).collect();
+    let src1: Vec<u16> = (0..h * s).map(|_| rng.below(1 << 14) as u16).collect();
+    let mask: Vec<u8> = (0..2 * h * mask_stride)
+        .map(|_| rng.below(65) as u8)
+        .collect();
+    let mut outs = Vec::new();
+    for &(subw, subh) in &SUBSAMPLINGS {
+        let mut got = vec![0u8; w * h];
+        lowbd_blend_a64_d16_mask(
+            &mut got,
+            w,
+            &src0,
+            s,
+            &src1,
+            s,
+            &mask,
+            mask_stride,
+            w,
+            h,
+            subw,
+            subh,
+            3,
+            7,
+        );
+        outs.push(got);
+    }
+    for a in 0..outs.len() {
+        for b in (a + 1)..outs.len() {
+            assert_ne!(
+                outs[a], outs[b],
+                "subsampling cases {a} and {b} produced identical output"
+            );
+        }
+    }
+}

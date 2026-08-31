@@ -206,3 +206,36 @@ int shim_is_scaled(int x_scale_fp, int y_scale_fp) {
   sf.y_scale_fp = y_scale_fp;
   return av1_is_scaled(&sf);
 }
+
+/* ---- aom_dsp/blend_a64_mask.c — the D16 mask blend ------------------ */
+#include "aom_dsp/blend.h"
+
+void shim_lowbd_blend_a64_d16_mask(uint8_t *dst, uint32_t dst_stride,
+                                   const uint16_t *src0, uint32_t src0_stride,
+                                   const uint16_t *src1, uint32_t src1_stride,
+                                   const uint8_t *mask, uint32_t mask_stride,
+                                   int w, int h, int subw, int subh,
+                                   int round_0, int round_1) {
+  ConvolveParams cp;
+  memset(&cp, 0, sizeof(cp));
+  cp.round_0 = round_0;
+  cp.round_1 = round_1;
+  aom_lowbd_blend_a64_d16_mask_c(dst, dst_stride, src0, src0_stride, src1,
+                                 src1_stride, mask, mask_stride, w, h, subw,
+                                 subh, &cp);
+}
+
+void shim_highbd_blend_a64_d16_mask(uint16_t *dst, uint32_t dst_stride,
+                                    const uint16_t *src0, uint32_t src0_stride,
+                                    const uint16_t *src1, uint32_t src1_stride,
+                                    const uint8_t *mask, uint32_t mask_stride,
+                                    int w, int h, int subw, int subh,
+                                    int round_0, int round_1, int bd) {
+  ConvolveParams cp;
+  memset(&cp, 0, sizeof(cp));
+  cp.round_0 = round_0;
+  cp.round_1 = round_1;
+  aom_highbd_blend_a64_d16_mask_c(CONVERT_TO_BYTEPTR(dst), dst_stride, src0,
+                                  src0_stride, src1, src1_stride, mask,
+                                  mask_stride, w, h, subw, subh, &cp, bd);
+}

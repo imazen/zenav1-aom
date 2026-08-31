@@ -423,3 +423,137 @@ pub fn dist_wtd_comp_weight_assign(
         use_dist_wtd_comp_avg: true,
     }
 }
+
+// ===================================================================
+// aom_dsp/blend_a64_mask.c — the D16 (convolve-buffer domain) mask blend
+// ===================================================================
+
+/// `AOM_BLEND_A64_ROUND_BITS` (`aom_dsp/blend.h:23`).
+const AOM_BLEND_A64_ROUND_BITS: i32 = 6;
+/// `AOM_BLEND_AVG(v0, v1)` (`blend.h:40`).
+#[inline]
+fn blend_avg(v0: i32, v1: i32) -> i32 {
+    round_pow2_i32(v0 + v1, 1)
+}
+
+/// Read the blend mask for output pixel `(i, j)` under the `(subw, subh)`
+/// sub-sampling C's four unrolled branches encode.
+///
+/// `subw`/`subh` are **mask** sub-sampling, i.e. how many mask samples cover one
+/// output pixel in each direction — so `subw == 1` averages a horizontal PAIR.
+/// The 2x2 case averages four with a single `round(sum, 2)`, which is not the
+/// same as two nested `AOM_BLEND_AVG` roundings.
+#[inline]
+fn d16_mask_at(mask: &[u8], mask_stride: usize, i: usize, j: usize, subw: bool, subh: bool) -> i32 {
+    match (subw, subh) {
+        (false, false) => i32::from(mask[i * mask_stride + j]),
+        (true, true) => round_pow2_i32(
+            i32::from(mask[(2 * i) * mask_stride + 2 * j])
+                + i32::from(mask[(2 * i + 1) * mask_stride + 2 * j])
+                + i32::from(mask[(2 * i) * mask_stride + 2 * j + 1])
+                + i32::from(mask[(2 * i + 1) * mask_stride + 2 * j + 1]),
+            2,
+        ),
+        (true, false) => blend_avg(
+            i32::from(mask[i * mask_stride + 2 * j]),
+            i32::from(mask[i * mask_stride + 2 * j + 1]),
+        ),
+        (false, true) => blend_avg(
+            i32::from(mask[(2 * i) * mask_stride + j]),
+            i32::from(mask[(2 * i + 1) * mask_stride + j]),
+        ),
+    }
+}
+
+/// `aom_lowbd_blend_a64_d16_mask_c` (`aom_dsp/blend_a64_mask.c:36`): blend the
+/// two 16-bit convolve intermediates with the A64 mask and bring the result
+/// back to the pixel domain.
+///
+/// This is the final step of `av1_make_masked_inter_predictor` — the blend that
+/// turns two `dist_wtd_convolve` outputs into a masked compound predictor.
+/// Unlike [`super::interintra::blend_a64_mask`], which blends pixels, this one
+/// blends the pre-rounding intermediates and therefore has to subtract the
+/// convolve's `round_offset` before the final rounding.
+///
+/// `mask` weights `src0`; `64 - mask` weights `src1`.
+#[allow(clippy::too_many_arguments)]
+pub fn lowbd_blend_a64_d16_mask(
+    dst: &mut [u8],
+    dst_stride: usize,
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    w: usize,
+    h: usize,
+    subw: bool,
+    subh: bool,
+    round_0: i32,
+    round_1: i32,
+) {
+    const BD: i32 = 8;
+    let offset_bits = BD + 2 * FILTER_BITS - round_0;
+    let round_offset = (1i32 << (offset_bits - round_1)) + (1i32 << (offset_bits - round_1 - 1));
+    let round_bits = 2 * FILTER_BITS - round_0 - round_1;
+
+    for i in 0..h {
+        for j in 0..w {
+            let m = d16_mask_at(mask, mask_stride, i, j, subw, subh);
+            let s0 = i32::from(src0[i * src0_stride + j]);
+            let s1 = i32::from(src1[i * src1_stride + j]);
+            let res = (m * s0 + (AOM_BLEND_A64_MAX_ALPHA - m) * s1) >> AOM_BLEND_A64_ROUND_BITS;
+            let res = res - round_offset;
+            dst[i * dst_stride + j] = round_pow2_i32(res, round_bits).clamp(0, 255) as u8;
+        }
+    }
+}
+
+/// `aom_highbd_blend_a64_d16_mask_c` (`blend_a64_mask.c:124`).
+///
+/// Same arithmetic as the lowbd twin with a `bd`-dependent saturation. C spells
+/// the clamp as `negative_to_zero(..)` then `AOMMIN(v, saturation_value)`
+/// rather than `clip_pixel_highbd`; the two agree, and the port writes the C
+/// form so the equivalence stays visible.
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_blend_a64_d16_mask(
+    dst: &mut [u16],
+    dst_stride: usize,
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    w: usize,
+    h: usize,
+    subw: bool,
+    subh: bool,
+    round_0: i32,
+    round_1: i32,
+    bd: u32,
+) {
+    let offset_bits = bd as i32 + 2 * FILTER_BITS - round_0;
+    let round_offset = (1i32 << (offset_bits - round_1)) + (1i32 << (offset_bits - round_1 - 1));
+    let round_bits = 2 * FILTER_BITS - round_0 - round_1;
+    // C's `switch (bd)` defaults to 255 for anything that is not 10 or 12,
+    // which is not the same as `(1 << bd) - 1` for an out-of-spec bd.
+    let saturation_value: i32 = match bd {
+        10 => 1023,
+        12 => 4095,
+        _ => 255,
+    };
+
+    for i in 0..h {
+        for j in 0..w {
+            let m = d16_mask_at(mask, mask_stride, i, j, subw, subh);
+            let s0 = i32::from(src0[i * src0_stride + j]);
+            let s1 = i32::from(src1[i * src1_stride + j]);
+            let res = (m * s0 + (AOM_BLEND_A64_MAX_ALPHA - m) * s1) >> AOM_BLEND_A64_ROUND_BITS;
+            let res = res - round_offset;
+            let v = round_pow2_i32(res, round_bits).max(0);
+            dst[i * dst_stride + j] = v.min(saturation_value) as u16;
+        }
+    }
+}
