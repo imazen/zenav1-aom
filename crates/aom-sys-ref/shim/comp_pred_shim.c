@@ -40,6 +40,24 @@ static void *shim_align_in(const void *src, size_t bytes) {
   return p;
 }
 
+/* The DESTINATION buffer of `aom_upsampled_pred` / `aom_highbd_upsampled_pred`
+ * must be sized as the encoder sizes it, not as `width * height`.
+ *
+ * Their x86 SIMD implementations use `comp_pred8` ITSELF as the horizontal
+ * intermediate for the 2-D sub-pel case, writing `intermediate_height` rows at
+ * stride MAX_SB_SIZE (reconinter_enc_sse2.c: `temp = CONVERT_TO_SHORTPTR(comp_pred8)`,
+ * `temp_start_vert = temp + MAX_SB_SIZE * ((taps >> 1) - 1)`). A `w * h`
+ * allocation is scribbled far past its end. libaom's own buffer is
+ *   aom_memalign(16, (1 + is_hbd) * ((MAX_SB_SIZE + 16) + 16) * MAX_SB_SIZE)
+ * (encoder.c:981) for exactly this reason.
+ *
+ * Measured 2026-08-31 on `x86_64-apple-darwin` under Rosetta: with a `w * h`
+ * scratch, `comp_mask_upsampled_pred`, `highbd_comp_mask_upsampled_pred` and
+ * `highbd_comp_avg_upsampled_pred` all diverged at sub-pel phase (3,5). On
+ * aarch64 the NEON kernels use their own scratch, so the undersize is
+ * invisible — the alignment fix alone did not catch this. */
+#define SHIM_UPSAMPLE_DST_BYTES   ((size_t)2 * ((MAX_SB_SIZE + 16) + 16) * MAX_SB_SIZE)
+
 /* ---- aom_dsp/variance.c: the two compound blends ------------------- */
 
 void shim_comp_avg_pred(uint8_t *comp_pred, const uint8_t *pred, int width,
@@ -52,7 +70,7 @@ void shim_comp_mask_pred(uint8_t *comp_pred, const uint8_t *pred, int width,
                          const uint8_t *mask, int mask_stride,
                          int invert_mask) {
   const size_t n = (size_t)width * height;
-  uint8_t *acomp = (uint8_t *)shim_align_in(NULL, n);
+  uint8_t *acomp = (uint8_t *)shim_align_in(NULL, SHIM_UPSAMPLE_DST_BYTES);
   uint8_t *apred = (uint8_t *)shim_align_in(pred, n);
   if (!acomp || !apred) {
     aom_free(acomp);
@@ -92,7 +110,7 @@ void shim_comp_avg_upsampled_pred(uint8_t *comp_pred, const uint8_t *pred,
                                   int ref_stride) {
   MV mv = { 0, 0 };
   const size_t n = (size_t)width * height;
-  uint8_t *acomp = (uint8_t *)shim_align_in(NULL, n);
+  uint8_t *acomp = (uint8_t *)shim_align_in(NULL, SHIM_UPSAMPLE_DST_BYTES);
   uint8_t *apred = (uint8_t *)shim_align_in(pred, n);
   if (!acomp || !apred) {
     aom_free(acomp);
@@ -114,7 +132,7 @@ void shim_comp_mask_upsampled_pred(uint8_t *comp_pred, const uint8_t *pred,
                                    int mask_stride, int invert_mask) {
   MV mv = { 0, 0 };
   const size_t n = (size_t)width * height;
-  uint8_t *acomp = (uint8_t *)shim_align_in(NULL, n);
+  uint8_t *acomp = (uint8_t *)shim_align_in(NULL, SHIM_UPSAMPLE_DST_BYTES);
   uint8_t *apred = (uint8_t *)shim_align_in(pred, n);
   if (!acomp || !apred) {
     aom_free(acomp);
@@ -135,7 +153,7 @@ void shim_highbd_upsampled_pred(uint16_t *comp_pred, int width, int height,
                                 const uint16_t *ref, int ref_stride, int bd) {
   MV mv = { 0, 0 };
   const size_t n = (size_t)width * height;
-  uint16_t *acomp = (uint16_t *)shim_align_in(NULL, n * sizeof(uint16_t));
+  uint16_t *acomp = (uint16_t *)shim_align_in(NULL, SHIM_UPSAMPLE_DST_BYTES);
   if (!acomp) return;
   aom_highbd_upsampled_pred_c(NULL, NULL, 0, 0, &mv,
                               CONVERT_TO_BYTEPTR(acomp), width, height,
@@ -152,7 +170,7 @@ void shim_highbd_comp_avg_upsampled_pred(uint16_t *comp_pred,
                                          int ref_stride, int bd) {
   MV mv = { 0, 0 };
   const size_t n = (size_t)width * height;
-  uint16_t *acomp = (uint16_t *)shim_align_in(NULL, n * sizeof(uint16_t));
+  uint16_t *acomp = (uint16_t *)shim_align_in(NULL, SHIM_UPSAMPLE_DST_BYTES);
   uint16_t *apred = (uint16_t *)shim_align_in(pred, n * sizeof(uint16_t));
   if (!acomp || !apred) {
     aom_free(acomp);
@@ -177,7 +195,7 @@ void shim_highbd_comp_mask_upsampled_pred(uint16_t *comp_pred,
                                           int bd) {
   MV mv = { 0, 0 };
   const size_t n = (size_t)width * height;
-  uint16_t *acomp = (uint16_t *)shim_align_in(NULL, n * sizeof(uint16_t));
+  uint16_t *acomp = (uint16_t *)shim_align_in(NULL, SHIM_UPSAMPLE_DST_BYTES);
   uint16_t *apred = (uint16_t *)shim_align_in(pred, n * sizeof(uint16_t));
   if (!acomp || !apred) {
     aom_free(acomp);

@@ -228,10 +228,54 @@ fn ensure_submodule(workspace_root: &Path, upstream: &Path) {
     }
 }
 
+/// The cargo TARGET triple, and whether it differs from the HOST triple.
+///
+/// Cross-target builds exist so a differential can be executed on a SECOND ISA,
+/// which is the only way to observe the shim contracts that are compiled away
+/// on the host — see `docs/DIFFERENTIAL_PLAYBOOK.md` §3a. On an Apple Silicon
+/// box `--target x86_64-apple-darwin` builds an x86 oracle and Rosetta runs it.
+fn target_triple() -> (String, bool) {
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let host = std::env::var("HOST").unwrap_or_default();
+    let cross = !target.is_empty() && !host.is_empty() && target != host;
+    (target, cross)
+}
+
+/// The libaom cmake toolchain file for a cross target, if the pinned tree ships
+/// one. Returns `None` for the host target (cmake needs no toolchain then) and
+/// for targets libaom has no toolchain for, which then fail loudly in cmake
+/// rather than silently configuring for the host arch.
+///
+/// Measured 2026-08-31: passing only `-DCMAKE_OSX_ARCHITECTURES=x86_64` is NOT
+/// enough — libaom derives `AOM_TARGET_CPU` itself and happily generated NEON
+/// rtcd headers for an "x86_64" configure. The toolchain file is what actually
+/// switches the arch.
+fn cmake_toolchain_for(upstream: &Path, target: &str) -> Option<PathBuf> {
+    let name = match target {
+        "x86_64-apple-darwin" => "x86_64-macos.cmake",
+        "aarch64-apple-darwin" => "arm64-macos.cmake",
+        "i686-unknown-linux-gnu" => "x86-linux.cmake",
+        _ => return None,
+    };
+    let p = upstream.join("cmake").join("toolchains").join(name);
+    p.exists().then_some(p)
+}
+
 /// Build libaom once, cached on the checked-out submodule SHA. Returns the build
-/// directory (upstream/build) that holds libaom.a + the generated config headers.
+/// directory that holds libaom.a + the generated config headers.
+///
+/// The HOST target keeps the historical `upstream/build` path so an existing
+/// cached oracle is reused unchanged; any other target gets its own
+/// `upstream/build-<triple>` so a cross build cannot clobber it (the SHA stamp
+/// alone would not notice, and linking aarch64 objects into an x86 binary fails
+/// with an unrelated-looking error).
 fn build_libaom(upstream: &Path) -> PathBuf {
-    let build_dir = upstream.join("build");
+    let (target, cross) = target_triple();
+    let build_dir = if cross {
+        upstream.join(format!("build-{target}"))
+    } else {
+        upstream.join("build")
+    };
     let lib = build_dir.join("libaom.a");
     let stamp = build_dir.join(".aom-oracle-sha");
     // The stamp keys on the submodule SHA *and* the pinned FP flags, so a build
@@ -255,7 +299,36 @@ fn build_libaom(upstream: &Path) -> PathBuf {
     // CONFIG_MULTITHREAD=0 => deterministic encoder output target; this is the
     // definition against which aom-rs bit-exactness is measured. DO NOT change
     // these flags without updating BUILD_CONFIG.md and the CI cache salt.
-    let configure = Command::new("cmake")
+    // The Apple toolchain files carry the arch in `CMAKE_C_FLAGS_INIT`, and a
+    // command-line `-DCMAKE_C_FLAGS=` OVERRIDES `_INIT` — so passing
+    // ORACLE_FP_CFLAGS on its own silently drops `-arch x86_64` from the COMPILE
+    // step while the linker flags keep it, and cmake's compiler probe fails with
+    // "found architecture 'arm64', required architecture 'x86_64'". Append the
+    // arch here instead of losing it. (Measured 2026-08-31.)
+    let arch_flag = if cross && target.ends_with("-apple-darwin") {
+        match target.split('-').next() {
+            Some("x86_64") => " -arch x86_64",
+            Some("aarch64") => " -arch arm64",
+            _ => "",
+        }
+    } else {
+        ""
+    };
+    let c_flags = format!("{ORACLE_FP_CFLAGS}{arch_flag}");
+
+    let mut configure_cmd = Command::new("cmake");
+    if cross {
+        let tc = cmake_toolchain_for(upstream, &target).unwrap_or_else(|| {
+            panic!(
+                "aom-sys-ref: no libaom cmake toolchain file for target `{target}`. \
+                 A cross oracle build needs one — configuring without it silently \
+                 produces HOST rtcd headers (measured). Add the mapping in \
+                 `cmake_toolchain_for`."
+            )
+        });
+        configure_cmd.arg(format!("-DCMAKE_TOOLCHAIN_FILE={}", tc.display()));
+    }
+    let configure = configure_cmd
         .arg("-S")
         .arg(upstream)
         .arg("-B")
@@ -264,7 +337,7 @@ fn build_libaom(upstream: &Path) -> PathBuf {
         // CMAKE_C_FLAGS_RELEASE), and cmake emits ${CMAKE_C_FLAGS} before
         // ${CMAKE_C_FLAGS_<CONFIG>}; libaom never sets -ffp-contract itself, so
         // this survives to every TU. See ORACLE_FP_CFLAGS.
-        .arg(format!("-DCMAKE_C_FLAGS={ORACLE_FP_CFLAGS}"))
+        .arg(format!("-DCMAKE_C_FLAGS={c_flags}"))
         .args([
             "-DCMAKE_BUILD_TYPE=Release",
             "-DCONFIG_MULTITHREAD=0",
@@ -371,7 +444,15 @@ fn compile_shims(manifest: &Path, upstream: &Path, build_dir: &Path) -> PathBuf 
         // because libaom read `cpi->common` from the wrong offset. Shims that
         // only touch `MACROBLOCKD` (blockd.h, which has no NDEBUG-conditional
         // members) were unaffected, which is why this went unnoticed.
-        let status = Command::new(cc)
+        // A cross build must compile the shim TU for the TARGET, not the host —
+        // otherwise the objects are the wrong arch and the link fails late with
+        // an error that names the symbol rather than the cause.
+        let (target, cross) = target_triple();
+        let mut cmd = Command::new(cc);
+        if cross {
+            cmd.arg(format!("--target={target}"));
+        }
+        let status = cmd
             .args(["-O2", "-DNDEBUG", ORACLE_FP_CFLAGS, "-c"])
             .args(extra_shim_cflags(name))
             .arg(&shim_c)

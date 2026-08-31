@@ -68,6 +68,35 @@ const SHAPES: [(usize, usize); 10] = [
     (16, 64),
 ];
 
+/// Shapes for the MASKED variants. Width 4 is excluded, and the reason is a
+/// contract, not a convenience.
+///
+/// `aom_comp_mask_pred` and `aom_highbd_comp_mask_pred` are RTCD-dispatched. On
+/// x86 their SSE2/SSSE3/AVX2 implementations branch on `width == 8`,
+/// `width == 16`, else a 32-wide loop — **width 4 falls off the end of the
+/// chain and nothing is written**, leaving the caller's buffer holding the
+/// unblended prediction. That is not a libaom bug: masked compound (wedge and
+/// DIFFWTD) is undefined below BLOCK_8X8 — `av1_is_wedge_used` has no codebook
+/// there, and `WEDGE_BSIZES` in `aom-dsp/tests/compound_diff.rs` starts at 8x8
+/// for the same reason. So a width-4 masked call is a size the encoder never
+/// makes.
+///
+/// Measured 2026-08-31 by running this file on `x86_64-apple-darwin` under
+/// Rosetta: `highbd_comp_mask_upsampled_pred_matches_c` failed at
+/// `bd=8 4x4 phase=(0,0)` with the first row matching and the rest not — the
+/// signature of a blend that never ran. On aarch64 the same names are
+/// `#define`d to NEON kernels that do handle width 4, so the whole thing is
+/// invisible there.
+const MASKED_SHAPES: [(usize, usize); 7] = [
+    (8, 8),
+    (8, 16),
+    (16, 8),
+    (16, 16),
+    (32, 32),
+    (64, 64),
+    (16, 64),
+];
+
 /// The subpel phase pairs swept: full-pel, x-only, y-only and both, which are
 /// the four dispatch arms of `aom_upsampled_pred`.
 const PHASES: [(usize, usize); 6] = [(0, 0), (3, 0), (0, 5), (3, 5), (7, 7), (1, 2)];
@@ -117,7 +146,7 @@ fn comp_avg_pred_matches_c() {
 #[test]
 fn comp_mask_pred_matches_c() {
     let mut rng = Rng::new(0x55EE_66FF_7788_99AA);
-    for &(w, h) in &SHAPES {
+    for &(w, h) in &MASKED_SHAPES {
         for &invert in &[false, true] {
             let (refb, off, stride) = plane_u8(&mut rng, w, h);
             let pred: Vec<u8> = (0..w * h).map(|_| rng.below(256) as u8).collect();
@@ -147,7 +176,7 @@ fn highbd_comp_avg_pred_matches_c() {
 fn highbd_comp_mask_pred_matches_c() {
     let mut rng = Rng::new(0x0F0E_0D0C_0B0A_0908);
     for &bd in &[8u32, 10, 12] {
-        for &(w, h) in &SHAPES {
+        for &(w, h) in &MASKED_SHAPES {
             for &invert in &[false, true] {
                 let (refb, off, stride) = plane_u16(&mut rng, w, h, bd);
                 let pred: Vec<u16> = (0..w * h).map(|_| rng.below(1 << bd) as u16).collect();
@@ -183,7 +212,7 @@ fn comp_avg_upsampled_pred_matches_c() {
 #[test]
 fn comp_mask_upsampled_pred_matches_c() {
     let mut rng = Rng::new(0x6070_8090_A0B0_C0D0);
-    for &(w, h) in &SHAPES {
+    for &(w, h) in &MASKED_SHAPES {
         for &(sx, sy) in &PHASES {
             for &invert in &[false, true] {
                 let (refb, off, stride) = plane_u8(&mut rng, w, h);
@@ -241,7 +270,7 @@ fn highbd_comp_avg_upsampled_pred_matches_c() {
 fn highbd_comp_mask_upsampled_pred_matches_c() {
     let mut rng = Rng::new(0x99AA_BBCC_DDEE_FF00);
     for &bd in &[8u32, 10, 12] {
-        for &(w, h) in &SHAPES {
+        for &(w, h) in &MASKED_SHAPES {
             for &(sx, sy) in &PHASES {
                 for &invert in &[false, true] {
                     let (refb, off, stride) = plane_u16(&mut rng, w, h, bd);
