@@ -327,11 +327,26 @@ fn wedge_obl() -> &'static Vec<Vec<Vec<u8>>> {
     OBL.get_or_init(build_wedge_mask_obl)
 }
 
-/// `av1_get_contiguous_soft_mask(index, sign=0, bsize)` = the baked wedge mask —
-/// a contiguous `bw*bh` buffer (stride `bw`), values 0..64. Matches
-/// `av1_wedge_params_lookup[bsize].masks[0][index]` (reconinter.c:494 init).
-/// Returns `None` for a bsize with no wedge types.
+/// `av1_get_contiguous_soft_mask(index, sign = 0, bsize)` — the interintra
+/// spelling, where the sign is fixed at 0. See [`wedge_mask_signed`].
 pub fn wedge_mask(bsize: usize, index: usize) -> Option<Vec<u8>> {
+    wedge_mask_signed(bsize, index, 0)
+}
+
+/// `av1_get_contiguous_soft_mask(index, sign, bsize)` = the baked wedge mask —
+/// a contiguous `bw*bh` buffer (stride `bw`), values 0..64. Matches
+/// `av1_wedge_params_lookup[bsize].masks[sign][index]` (reconinter.c:494 init),
+/// which is `get_wedge_mask_inplace(index, neg = sign, bsize)` cropped to the
+/// block.
+///
+/// **`sign` is not a no-op index.** It is XORed with the codebook's per-entry
+/// `signflip` to pick which of the two master mask planes to read, so the two
+/// signs are genuinely different masks, not one negated at the call site.
+/// Interintra always passes 0; inter-inter `COMPOUND_WEDGE` passes the coded
+/// `wedge_sign`.
+///
+/// Returns `None` for a bsize with no wedge types.
+pub fn wedge_mask_signed(bsize: usize, index: usize, sign: usize) -> Option<Vec<u8>> {
     let cb = wedge_codebook(bsize)?;
     let (direction, x_off, y_off) = cb[index];
     let bw = BLOCK_SIZE_WIDE[bsize];
@@ -340,7 +355,7 @@ pub fn wedge_mask(bsize: usize, index: usize) -> Option<Vec<u8>> {
     let woff = ((x_off * bw as i32) >> 3) as usize;
     let hoff = ((y_off * bh as i32) >> 3) as usize;
     let obl = wedge_obl();
-    let plane = wsignflip; // neg = 0 for interintra
+    let plane = wsignflip ^ (sign & 1);
     let base_row = MASK_MASTER_SIZE / 2 - hoff;
     let base_col = MASK_MASTER_SIZE / 2 - woff;
     let src = &obl[plane][direction];

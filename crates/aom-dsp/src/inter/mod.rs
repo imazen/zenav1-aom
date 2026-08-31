@@ -51,6 +51,7 @@
 //! gate (chunk 1f), while everything downstream of it is differentially locked here.
 
 
+pub mod compound;
 pub mod interintra;
 pub mod warp;
 

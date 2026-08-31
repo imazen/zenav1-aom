@@ -15526,3 +15526,259 @@ pub fn ref_k_means(data: &[i16], centroids: &mut [i16], indices: &mut [u8], k: u
         shim_k_means(data.as_ptr(), centroids.as_mut_ptr(), indices.as_mut_ptr(), n as i32, k as i32, dim as i32, max_itr as i32)
     }
 }
+
+// ---------------------------------------------------------------------------
+// compound_shim.c — the compound (two-reference) inter-prediction DSP.
+// Every entry drives the REAL exported C function; the shims only flatten
+// pointer/struct arguments.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn shim_wedge_sse_from_residuals(
+        r1: *const i16,
+        d: *const i16,
+        m: *const u8,
+        n: i32,
+    ) -> u64;
+    fn shim_wedge_sign_from_residuals(
+        ds: *const i16,
+        m: *const u8,
+        n: i32,
+        limit: i64,
+    ) -> i32;
+    fn shim_wedge_compute_delta_squares(d: *mut i16, a: *const i16, b: *const i16, n: i32);
+    #[allow(clippy::too_many_arguments)]
+    fn shim_build_compound_diffwtd_mask(
+        mask: *mut u8,
+        mask_type: i32,
+        src0: *const u8,
+        src0_stride: i32,
+        src1: *const u8,
+        src1_stride: i32,
+        h: i32,
+        w: i32,
+    );
+    fn shim_build_compound_diffwtd_mask_d16(
+        mask: *mut u8,
+        mask_type: i32,
+        src0: *const u16,
+        src0_stride: i32,
+        src1: *const u16,
+        src1_stride: i32,
+        h: i32,
+        w: i32,
+        round_0: i32,
+        round_1: i32,
+        bd: i32,
+    );
+    fn shim_build_compound_diffwtd_mask_highbd(
+        mask: *mut u8,
+        mask_type: i32,
+        src0: *const u16,
+        src0_stride: i32,
+        src1: *const u16,
+        src1_stride: i32,
+        h: i32,
+        w: i32,
+        bd: i32,
+    );
+    fn shim_get_compound_type_mask_wedge(
+        bsize: i32,
+        wedge_index: i32,
+        wedge_sign: i32,
+        out: *mut u8,
+    ) -> i32;
+    fn shim_dist_wtd_comp_weight_assign(
+        enable_order_hint: i32,
+        order_hint_bits_minus_1: i32,
+        cur_order_hint: i32,
+        fwd_order_hint: i32,
+        bck_order_hint: i32,
+        have_fwd: i32,
+        have_bck: i32,
+        compound_idx: i32,
+        is_compound: i32,
+        out_fwd: *mut i32,
+        out_bck: *mut i32,
+        out_use: *mut i32,
+    ) -> i32;
+}
+
+/// Reference libaom `av1_wedge_sse_from_residuals_c` (encoder/wedge_utils.c:52).
+pub fn ref_wedge_sse_from_residuals(r1: &[i16], d: &[i16], m: &[u8], n: usize) -> u64 {
+    assert!(r1.len() >= n && d.len() >= n && m.len() >= n);
+    unsafe { shim_wedge_sse_from_residuals(r1.as_ptr(), d.as_ptr(), m.as_ptr(), n as i32) }
+}
+
+/// Reference libaom `av1_wedge_sign_from_residuals_c` (wedge_utils.c:101).
+/// C's `int8_t` 0/1 return, as a bool.
+pub fn ref_wedge_sign_from_residuals(ds: &[i16], m: &[u8], n: usize, limit: i64) -> bool {
+    assert!(n > 0, "the C body is a do-while: N >= 1");
+    assert!(ds.len() >= n && m.len() >= n);
+    unsafe { shim_wedge_sign_from_residuals(ds.as_ptr(), m.as_ptr(), n as i32, limit) != 0 }
+}
+
+/// Reference libaom `av1_wedge_compute_delta_squares_c` (wedge_utils.c:123).
+pub fn ref_wedge_compute_delta_squares(a: &[i16], b: &[i16], n: usize) -> Vec<i16> {
+    assert!(a.len() >= n && b.len() >= n);
+    let mut d = vec![0i16; n];
+    unsafe { shim_wedge_compute_delta_squares(d.as_mut_ptr(), a.as_ptr(), b.as_ptr(), n as i32) }
+    d
+}
+
+/// Reference libaom `av1_build_compound_diffwtd_mask_c` (common/reconinter.c:351).
+/// Returns the `h*w` mask at stride `w`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_build_compound_diffwtd_mask(
+    mask_type: i32,
+    src0: &[u8],
+    src0_stride: usize,
+    src1: &[u8],
+    src1_stride: usize,
+    h: usize,
+    w: usize,
+) -> Vec<u8> {
+    let mut mask = vec![0u8; h * w];
+    unsafe {
+        shim_build_compound_diffwtd_mask(
+            mask.as_mut_ptr(),
+            mask_type,
+            src0.as_ptr(),
+            src0_stride as i32,
+            src1.as_ptr(),
+            src1_stride as i32,
+            h as i32,
+            w as i32,
+        )
+    }
+    mask
+}
+
+/// Reference libaom `av1_build_compound_diffwtd_mask_d16_c` (reconinter.c:319).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_build_compound_diffwtd_mask_d16(
+    mask_type: i32,
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    h: usize,
+    w: usize,
+    round_0: i32,
+    round_1: i32,
+    bd: i32,
+) -> Vec<u8> {
+    let mut mask = vec![0u8; h * w];
+    unsafe {
+        shim_build_compound_diffwtd_mask_d16(
+            mask.as_mut_ptr(),
+            mask_type,
+            src0.as_ptr(),
+            src0_stride as i32,
+            src1.as_ptr(),
+            src1_stride as i32,
+            h as i32,
+            w as i32,
+            round_0,
+            round_1,
+            bd,
+        )
+    }
+    mask
+}
+
+/// Reference libaom `av1_build_compound_diffwtd_mask_highbd_c` (reconinter.c:431).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_build_compound_diffwtd_mask_highbd(
+    mask_type: i32,
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    h: usize,
+    w: usize,
+    bd: i32,
+) -> Vec<u8> {
+    let mut mask = vec![0u8; h * w];
+    unsafe {
+        shim_build_compound_diffwtd_mask_highbd(
+            mask.as_mut_ptr(),
+            mask_type,
+            src0.as_ptr(),
+            src0_stride as i32,
+            src1.as_ptr(),
+            src1_stride as i32,
+            h as i32,
+            w as i32,
+            bd,
+        )
+    }
+    mask
+}
+
+/// Reference libaom `av1_get_compound_type_mask` (reconinter.c:290), COMPOUND_WEDGE
+/// arm: the `bw*bh` wedge mask for `(wedge_index, wedge_sign)`. Requires [`ref_init`]
+/// for the same reason [`ref_ii_wedge_mask`] does.
+pub fn ref_get_compound_type_mask_wedge(
+    bsize: usize,
+    wedge_index: usize,
+    wedge_sign: usize,
+    bw: usize,
+    bh: usize,
+) -> Option<Vec<u8>> {
+    ref_init();
+    let mut out = vec![0u8; bw * bh];
+    let ok = unsafe {
+        shim_get_compound_type_mask_wedge(
+            bsize as i32,
+            wedge_index as i32,
+            wedge_sign as i32,
+            out.as_mut_ptr(),
+        )
+    };
+    if ok == 0 {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+/// Reference libaom `av1_dist_wtd_comp_weight_assign` (reconinter.c:669).
+/// Returns `(fwd_offset, bck_offset, use_dist_wtd_comp_avg)`.
+///
+/// `bck_order_hint` is `mbmi->ref_frame[0]`'s buffer order hint and
+/// `fwd_order_hint` is `mbmi->ref_frame[1]`'s — C names the FIRST ref `bck_buf`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_dist_wtd_comp_weight_assign(
+    enable_order_hint: bool,
+    order_hint_bits_minus_1: i32,
+    cur_order_hint: i32,
+    fwd_order_hint: i32,
+    bck_order_hint: i32,
+    have_fwd: bool,
+    have_bck: bool,
+    compound_idx: bool,
+    is_compound: bool,
+) -> (i32, i32, bool) {
+    let mut fwd = 0i32;
+    let mut bck = 0i32;
+    let mut used = 0i32;
+    let rc = unsafe {
+        shim_dist_wtd_comp_weight_assign(
+            enable_order_hint as i32,
+            order_hint_bits_minus_1,
+            cur_order_hint,
+            fwd_order_hint,
+            bck_order_hint,
+            have_fwd as i32,
+            have_bck as i32,
+            compound_idx as i32,
+            is_compound as i32,
+            &mut fwd,
+            &mut bck,
+            &mut used,
+        )
+    };
+    assert_eq!(rc, 0, "shim_dist_wtd_comp_weight_assign allocation failed");
+    (fwd, bck, used != 0)
+}
