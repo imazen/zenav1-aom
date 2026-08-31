@@ -145,6 +145,26 @@ mod tests {
     #[test]
     fn disable_sweep_kills_summon_and_reenables() {
         let _lock = archmage::testing::lock_token_testing();
+        // Is THIS process pinned scalar? Read it FIRST, and note that reading
+        // it also APPLIES the pin if it has not been applied yet — which is
+        // the point. `scalar_forced()` disables every token process-wide on
+        // its first call and memoises the answer, so under `AOM_FORCE_SCALAR`
+        // whether the pin is already in force when this test starts depends on
+        // which other test in this binary reached a dispatch entry point
+        // first. That is a scheduling race, and it is what used to make the
+        // round-trip assertion at the end of this test flaky: with the pin
+        // already applied, `had_v3` snapshots FALSE, the test then re-enables
+        // every token, and the final `assert_eq!(summon().is_some(), had_v3)`
+        // compares `true` against `false`. MEASURED red on CI's
+        // `linux differential (forced-scalar pin)` leg (run 33337577763, a
+        // DOCS-ONLY commit whose identical code was green in run 33336000116)
+        // and reproduced once locally under load; it passes in isolation and
+        // 5/5 in its own binary, which is the signature of exactly this race.
+        //
+        // Calling it here also fixes the quieter half: the blanket re-enable
+        // below used to leave a pinned process with SIMD ON for every test
+        // scheduled after this one.
+        let forced = scalar_forced();
         // Only meaningful where a SIMD tier exists at runtime (x86-64/aarch64 CI).
         let had_v3 = archmage::X64V3Token::summon().is_some();
         let had_neon = archmage::NeonToken::summon().is_some();
@@ -171,6 +191,22 @@ mod tests {
              the compile-time-guaranteed neon baseline); if this fails, that \
              feature was dropped from dev-dependencies"
         );
+        // Undo. In a SCALAR-PINNED process the correct undo is the PIN, not
+        // "everything on" — restoring the pin is both what the leg is testing
+        // and the only race-free postcondition (a snapshot taken before
+        // another thread applies the pin describes nothing).
+        if forced {
+            disable_all_simd_tokens();
+            assert!(
+                archmage::X64V3Token::summon().is_none(),
+                "AOM_FORCE_SCALAR: the pin must still hold when this test returns"
+            );
+            assert!(
+                archmage::NeonToken::summon().is_none(),
+                "AOM_FORCE_SCALAR: the pin must still hold when this test returns"
+            );
+            return;
+        }
         // Re-enable (undo — other tests in this process must see real tiers).
         use archmage as a;
         let _ = a::X64V2Token::dangerously_disable_token_process_wide(false);
