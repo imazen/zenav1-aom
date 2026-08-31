@@ -1,21 +1,53 @@
 [package]
 name = "zenav1-aom-target"
-version = "0.0.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Dependency-injected zensim-quality (Zq) target search over any AV1 qindex encoder. Dev/measurement crate, never published."
+# Dev / measurement harness only — the loop is exercised from the census
+# example and from other zen backends' harnesses, never shipped.
 publish = false
-description = "Dependency-injected zensim-quality (Zq) target search over any AV1 qindex encoder"
 
+# The LIBRARY has zero dependencies, on purpose (user directive 2026-08-29):
+# the whole encode->decode->judge cycle is the caller's `trial(qindex)`
+# closure, so no codec, FFI or metric crate belongs here.
 [dependencies]
+# Judge + PNG reader for the `zq_census` example ONLY, both optional and
+# BOTH OFF BY DEFAULT (see the `census` feature). Same shape as
+# zenav1-aom-bench's optional `zensim` / `zenav1-aom-sys-ref`: a default
+# `cargo check`/`cargo test --workspace` never compiles either one.
+#
+# zensim is git-pinned rather than taken from the registry because the
+# census needs `custom-profiles` (the `ZensimProfile::Custom` +
+# `ProfileParams::builder` surface that loads the frozen north-anchor bake)
+# and `feature-regime-v2` (`compute_folded720_append2_features`, the
+# folded-944 extraction). VERIFIED 2026-08-31 against the crates.io index:
+# every published zensim through 0.2.7 exposes only `avx512`,
+# `classification` and `training` — neither feature exists there, and the
+# two APIs above landed in the unpublished 0.3.0. The rev below is
+# zensim `main` as of 2026-08-31; same source and the same two features as
+# zenavif's `two-pass-zensim` harness, pinned to an explicit rev here so the
+# census is reproducible. Bump it deliberately: the judge bake and the
+# extraction regime are what the census numbers are measured against.
+zensim = { git = "https://github.com/imazen/zensim", rev = "f70511133d3056099de2ddc73a064ce417f4f593", features = [
+    "feature-regime-v2",
+    "custom-profiles",
+], optional = true }
+png = { version = "0.18.1", optional = true }
 
-[dev-dependencies]
-zensim = { path = "../../../zensim/zensim", features = ["feature-regime-v2", "custom-profiles"] }
-png = "0.18.1"
+[features]
+# DEFAULT OFF, and it must stay that way. Turning `census` on pulls the
+# zensim judge (a git dependency) and png into the build; leaving it off is
+# what lets this crate be a plain workspace member that resolves and
+# compiles on any checkout, CI runners included. The library and its unit
+# tests need neither.
+default = []
+census = ["dep:zensim", "dep:png"]
 
-# Standalone workspace root: never absorbed into the parent workspace, even if
-# the `exclude` entry there is ever dropped. This is load-bearing, not tidiness
-# — the `zensim` dev-dep above is a path into a SIBLING REPOSITORY, and cargo
-# loads every workspace member's manifest for any workspace command, so being a
-# member makes the entire workspace unresolvable on any checkout that lacks that
-# sibling (i.e. every CI runner). Build/test this crate from its own directory
-# on a machine that has `../../../zensim`.
-[workspace]
+# The registered phase-A census harness. Also needs the `aomenc` / `aomdec`
+# CLIs on PATH and a zensim bake at `$ZQ_BAKE`; see
+# `benchmarks/zensim_zq_target_wave_2026-08-29.md`.
+[[example]]
+name = "zq_census"
+required-features = ["census"]

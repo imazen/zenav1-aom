@@ -8,17 +8,8 @@ members = [
     "crates/aom-sys-ref",
     "crates/aom-bench",
     "crates/aom-dsp-bench",
+    "crates/aom-target",
 ]
-# `crates/aom-target` is deliberately NOT a member. Its dev-dependency is a
-# path dep on the sibling repo `../../../zensim/zensim` (for the
-# `feature-regime-v2` + `custom-profiles` features, which the published
-# zensim 0.2.7 does not expose). Cargo loads every member's manifest for any
-# workspace command, so while it was a member, a checkout without that
-# sibling — which is every CI runner — failed at manifest load before
-# compiling anything, taking all seven CI jobs down. Excluding it keeps the
-# harness working where the sibling exists (build it from its own directory)
-# without making the whole workspace unresolvable everywhere else.
-exclude = ["crates/aom-target"]
 
 [workspace.package]
 version = "0.0.1"

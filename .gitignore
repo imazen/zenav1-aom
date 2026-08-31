@@ -29,9 +29,3 @@ tools/avif-extract/Cargo.lock
 
 # xbench cross-encoder benchmark harness build output (own cargo workspace)
 benchmarks/xbench/target/
-
-# aom-target is its own cargo workspace (excluded from the root one because its
-# zensim dev-dep is a path into a sibling repo), so it generates its own build
-# output and lockfile. Same treatment as tools/avif-extract above.
-crates/aom-target/target/
-crates/aom-target/Cargo.lock

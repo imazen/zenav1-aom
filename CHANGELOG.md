@@ -6,6 +6,26 @@
 
 ### Changed
 
+- **`zenav1-aom-target` is a workspace member again — the sibling-repo path
+  dep is gone.** The Zq target-search crate landed 2026-08-29 with
+  `zensim = { path = "../../../zensim/zensim" }`, a path into a SIBLING
+  REPOSITORY. Cargo loads every member manifest for any workspace command, so
+  as a member it made the whole workspace unresolvable on any checkout lacking
+  that sibling — every CI runner — and it was excluded (with a bare
+  `[workspace]` table of its own) as a stopgap. Fixed properly: `zensim` is now
+  git-pinned to `main` rev `f7051113` (VERIFIED to expose both
+  `custom-profiles` and `feature-regime-v2` and all four APIs the census uses;
+  the crates.io index confirms **no published zensim through 0.2.7 has either
+  feature**, so a registry dep cannot work), and it plus `png` are **optional
+  and default-off** behind a new `census` feature that also gates the
+  `zq_census` example. The library itself keeps its zero-dependency
+  dependency-injection contract, so `cargo check`/`cargo test --workspace`
+  compile it and its 4 unit tests without pulling the judge in at all. The
+  `exclude` entry, the crate's own `[workspace]` table, and the two
+  `crates/aom-target/{target,Cargo.lock}` `.gitignore` lines that existed only
+  because it was a separate workspace are all removed. Resolution verified with
+  the sibling `zensim` checkout invisible.
+
 - **Third-party lockfile refreshed within the existing requirements**
   (`c8a8dfb`). `Cargo.lock` only — no manifest requirement moved. 16 packages
   advanced: `libc` 0.2.186 → 0.2.189, `thiserror`/`-impl` 2.0.18 → 2.0.20,

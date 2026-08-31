@@ -21,10 +21,14 @@ building blocks, publishable on their own for consumers who want a narrower slic
 | **`zenav1-aom-decode`** | The AV1 decoder: partition walk, per-leaf mode-info/coeff decode, intra predict, inverse transform, and the post-filter (deblock/CDEF/restoration) frame walk. |
 | **`zenav1-aom-encode`** | The AV1 encoder: RD partition/mode/tx search, forward transform + quantize + entropy coding, and bitstream pack. |
 
-Three more crates are dev-only (`publish = false`) and never ship: `zenav1-aom-sys-ref`
+Four more crates are dev-only (`publish = false`) and never ship: `zenav1-aom-sys-ref`
 (the C-libaom FFI oracle the differential harnesses diff against), `zenav1-aom-bench`
-(the Gate-3 port-vs-C performance harness plus the whole-frame stills-parity gates), and
-`zenav1-aom-dsp-bench` (port-only DSP kernel benchmarks, no C oracle).
+(the Gate-3 port-vs-C performance harness plus the whole-frame stills-parity gates),
+`zenav1-aom-dsp-bench` (port-only DSP kernel benchmarks, no C oracle), and
+`zenav1-aom-target` (the dependency-injected zensim-quality target search — a
+zero-dependency bisection over qindex whose encode/decode/judge cycle is entirely the
+caller's closure; its `zq_census` harness is behind the non-default `census` feature,
+which is what keeps the zensim judge out of a default workspace build).
 
 ### Install
 

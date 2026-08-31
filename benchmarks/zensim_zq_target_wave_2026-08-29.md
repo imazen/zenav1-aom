@@ -16,10 +16,11 @@ pure-Rust encode entry exists yet).
   composing {injected encode} + {injected decode} + {injected judge}. The
   crate holds ZERO codec, ffi, or metric dependencies — when the in-repo
   pure-Rust whole-frame encoder matures it swaps in with no loop change.
-- **Census harness `examples/zq_census.rs`** injects: encode = `aomenc`
-  CLI (libaom 3.13.1, still AVIF-class keyframe: `--end-usage=q
-  --cq-level=<q/4 mapping? no — qindex via --min-q/--max-q pin>`, y4m
-  C444 full-range in, IVF out); decode = `aomdec` CLI (y4m out, same
+- **Census harness `crates/aom-target/examples/zq_census.rs`** injects:
+  encode = `aomenc` CLI (libaom 3.13.1, still AVIF-class keyframe:
+  `--end-usage=q --cq-level=<q>` — the drafted `--min-q`/`--max-q` pin is
+  NOT what shipped, see the operating-point note under the phase-A result;
+  y4m C444 full-range in, IVF out); decode = `aomdec` CLI (y4m out, same
   matrix pair both directions — an in-harness lossless-roundtrip GATE
   fails loud on any matrix drift); judge = zensim **Profile C**
   (folded-944 + `score_features_with_profile`, the frozen north-anchor
@@ -55,3 +56,32 @@ census's judge family; numbers comparable). Cells:
 domain (0-63, midpoint 31) makes the blind seed far less catastrophic
 than svt's qp staircase was (17.6 k2); the fitted-seed phase B registers
 next with the family bar (≥25% k2 improvement, hits not regressed).
+
+## Building and running the harness (updated 2026-08-31)
+
+`crates/aom-target` is a normal member of the root workspace. The library
+carries no dependencies at all, so `cargo check --workspace` / `cargo test
+--workspace` build it (and its 4 unit tests) with nothing extra pulled in.
+
+The census harness is behind the crate's non-default `census` feature, which
+is what gates the zensim judge (git-pinned to zensim `main`
+`f70511133d3056099de2ddc73a064ce417f4f593` for `custom-profiles` +
+`feature-regime-v2`; no published zensim exposes either) and `png`:
+
+```
+cargo run --release -p zenav1-aom-target --features census --example zq_census -- \
+    <corpus.tsv> <targets,csv> <max_encodes> <out.tsv>
+```
+
+It additionally needs `aomenc` / `aomdec` on `PATH` and a zensim bake at
+`$ZQ_BAKE` (default:
+`/mnt/v/output/zensim/bakes/sdr-pure-2026-08-28/W10L9PH_s4004_packed.bin`);
+`$ZQ_TMP` (default `/home/lilith/tmp/aomzq`) holds the per-trial y4m/IVF scratch.
+
+HISTORY: as landed on 2026-08-29 the crate was EXCLUDED from the workspace
+with a `[workspace]` table of its own, because its zensim dev-dependency was
+a `path` into the sibling `zensim` checkout — cargo loads every member
+manifest for any workspace command, so as a member it made the whole
+workspace unresolvable on any checkout without that sibling, i.e. every CI
+runner. The git pin plus the default-off `census` feature removes both
+halves of that problem, and the exclusion is gone.
