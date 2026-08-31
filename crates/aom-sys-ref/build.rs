@@ -75,6 +75,7 @@ const SHIMS: &[&str] = &[
     "compound_shim",
     "compound_convolve_shim",
     "comp_pred_shim",
+    "gm_shim",
     "cnn_cscalar",
 ];
 

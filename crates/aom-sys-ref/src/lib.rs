@@ -17162,3 +17162,162 @@ pub fn ref_valid_ref_frame_size(ref_w: i32, ref_h: i32, this_w: i32, this_h: i32
 pub fn ref_is_scaled(x_scale_fp: i32, y_scale_fp: i32) -> bool {
     unsafe { shim_is_scaled(x_scale_fp, y_scale_fp) != 0 }
 }
+
+// ---------------------------------------------------------------------------
+// gm_shim.c — the self-contained half of av1/encoder/global_motion.c.
+//
+// `add_param_offset` and `force_wmtype` are deliberately absent: they are
+// file-static in C with no linkable symbol, reachable only through
+// av1_refine_integerized_param. Nothing here pretends to gate them.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn shim_is_enough_erroradvantage(
+        best_erroradvantage: f64,
+        params_cost: i32,
+        gm_erroradv_tr: f64,
+    ) -> i32;
+    fn shim_convert_model_to_params(
+        params: *const f64,
+        out_wmmat: *mut i32,
+        out_wmtype: *mut i32,
+        out_invalid: *mut i32,
+    );
+    fn shim_get_wmtype(wmmat: *const i32) -> i32;
+    fn shim_compute_feature_segmentation_map(
+        segment_map: *mut u8,
+        width: i32,
+        height: i32,
+        inliers: *const i32,
+        num_inliers: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_segmented_frame_error(
+        use_hbd: i32,
+        bd: i32,
+        refp: *const core::ffi::c_void,
+        ref_stride: i32,
+        dst: *mut core::ffi::c_void,
+        dst_stride: i32,
+        p_width: i32,
+        p_height: i32,
+        segment_map: *mut u8,
+        segment_map_stride: i32,
+    ) -> i64;
+}
+
+/// Reference libaom `av1_is_enough_erroradvantage` (encoder/global_motion.c:33).
+pub fn ref_is_enough_erroradvantage(
+    best_erroradvantage: f64,
+    params_cost: i32,
+    gm_erroradv_tr: f64,
+) -> bool {
+    unsafe { shim_is_enough_erroradvantage(best_erroradvantage, params_cost, gm_erroradv_tr) != 0 }
+}
+
+/// Reference libaom `av1_convert_model_to_params` (global_motion.c:57).
+/// Returns `(wmmat, wmtype, invalid)`.
+pub fn ref_convert_model_to_params(params: &[f64; 6]) -> ([i32; 6], i32, i32) {
+    let mut wmmat = [0i32; 6];
+    let mut wmtype = 0i32;
+    let mut invalid = 0i32;
+    unsafe {
+        shim_convert_model_to_params(
+            params.as_ptr(),
+            wmmat.as_mut_ptr(),
+            &mut wmtype,
+            &mut invalid,
+        )
+    }
+    (wmmat, wmtype, invalid)
+}
+
+/// Reference libaom `get_wmtype` (av1/common/mv.h:299) — a static inline,
+/// called from the shim translation unit under the oracle's own flags.
+pub fn ref_get_wmtype(wmmat: &[i32; 6]) -> i32 {
+    unsafe { shim_get_wmtype(wmmat.as_ptr()) }
+}
+
+/// Reference libaom `av1_compute_feature_segmentation_map` (global_motion.c:483).
+/// `inliers` is a flat `[x, y, ...]` pixel-coordinate list.
+pub fn ref_compute_feature_segmentation_map(
+    width: usize,
+    height: usize,
+    inliers: &[i32],
+    num_inliers: usize,
+) -> Vec<u8> {
+    let mut map = vec![0u8; width * height];
+    unsafe {
+        shim_compute_feature_segmentation_map(
+            map.as_mut_ptr(),
+            width as i32,
+            height as i32,
+            inliers.as_ptr(),
+            num_inliers as i32,
+        )
+    }
+    map
+}
+
+/// Reference libaom `av1_segmented_frame_error` (global_motion.c:321), lowbd.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_segmented_frame_error(
+    refp: &[u8],
+    ref_stride: usize,
+    dst: &[u8],
+    dst_stride: usize,
+    p_width: usize,
+    p_height: usize,
+    segment_map: &[u8],
+    segment_map_stride: usize,
+) -> i64 {
+    ref_init();
+    let mut dst_copy = dst.to_vec();
+    let mut map_copy = segment_map.to_vec();
+    unsafe {
+        shim_segmented_frame_error(
+            0,
+            8,
+            refp.as_ptr() as *const core::ffi::c_void,
+            ref_stride as i32,
+            dst_copy.as_mut_ptr() as *mut core::ffi::c_void,
+            dst_stride as i32,
+            p_width as i32,
+            p_height as i32,
+            map_copy.as_mut_ptr(),
+            segment_map_stride as i32,
+        )
+    }
+}
+
+/// Reference libaom `av1_segmented_frame_error` (global_motion.c:321), highbd.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_segmented_frame_error(
+    refp: &[u16],
+    ref_stride: usize,
+    dst: &[u16],
+    dst_stride: usize,
+    p_width: usize,
+    p_height: usize,
+    bd: i32,
+    segment_map: &[u8],
+    segment_map_stride: usize,
+) -> i64 {
+    ref_init();
+    let mut dst_copy = dst.to_vec();
+    let mut map_copy = segment_map.to_vec();
+    unsafe {
+        shim_segmented_frame_error(
+            1,
+            bd,
+            refp.as_ptr() as *const core::ffi::c_void,
+            ref_stride as i32,
+            dst_copy.as_mut_ptr() as *mut core::ffi::c_void,
+            dst_stride as i32,
+            p_width as i32,
+            p_height as i32,
+            map_copy.as_mut_ptr(),
+            segment_map_stride as i32,
+        )
+    }
+}
