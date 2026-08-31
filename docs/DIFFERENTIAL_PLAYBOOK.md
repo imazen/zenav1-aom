@@ -163,6 +163,25 @@ silently dropping `-arch x86_64` from the compile step while the link keeps it.
 The first x86 run of the inter-encode differentials found two defects that had
 passed on aarch64 for a day — both listed in §3a.
 
+**Scope: Rosetta is a second ISA for the C-ORACLE differentials, not for the
+port's own SIMD-parity tests.** Rosetta reports no usable vector features, so
+archmage runs zero vector permutations and every
+`*_bit_identical_to_scalar_at_every_tier` guard fires — correctly, since a pass
+with zero vector permutations would be comparing scalar against scalar. libaom's
+RTCD detects the same thing and selects its SSE2-level kernels, which is exactly
+where both §3a defects lived. So:
+
+```sh
+# the useful sweep: oracle differentials only, SIMD-parity tests excluded
+ARGS=$(ls crates/aom-dsp/tests/*.rs | sed 's|.*/||;s|\.rs$||' \
+       | grep -v simd | sed 's/^/--test /' | tr '\n' ' ')
+eval "cargo test -j 3 --target x86_64-apple-darwin -p zenav1-aom-dsp $ARGS"
+```
+
+Measured 2026-08-31: 97 aom-dsp oracle-differential binaries pass under Rosetta,
+zero failures. AVX2/AVX-512 kernels stay unexercised — only real x86 hardware or
+CI reaches those.
+
 ### 3a. Three shim contracts that are invisible on aarch64
 
 Measured 2026-08-31 while porting the inter-encode surface. Each of these makes
