@@ -143,6 +143,26 @@ cross target. To verify a shim change on the other target, generate that
 target's libaom config and compile the TU against it, then check `nm` for the
 symbols you expect and, crucially, the ones you expect to be *absent*.
 
+**On an Apple Silicon box you can do better than inspect — you can RUN.**
+`build.rs` is target-aware as of 2026-08-31, so
+
+```sh
+cargo test --target x86_64-apple-darwin -p zenav1-aom-dsp --test <name>
+```
+
+builds an x86_64 libaom into `upstream/build-x86_64-apple-darwin` (the host's
+`upstream/build` is untouched and still cached), compiles the shim TUs for
+x86_64, and Rosetta executes the differential. The libaom build takes a few
+minutes once. This is the cheapest real evidence available and it beats waiting
+on CI. Two cmake facts it cost time to learn, both now handled in `build.rs`:
+`-DCMAKE_OSX_ARCHITECTURES=x86_64` alone does NOT switch the arch (libaom
+derives `AOM_TARGET_CPU` itself and will happily emit NEON rtcd headers), and a
+command-line `-DCMAKE_C_FLAGS=` overrides the toolchain's `CMAKE_C_FLAGS_INIT`,
+silently dropping `-arch x86_64` from the compile step while the link keeps it.
+
+The first x86 run of the inter-encode differentials found two defects that had
+passed on aarch64 for a day — both listed in §3a.
+
 ### 3a. Three shim contracts that are invisible on aarch64
 
 Measured 2026-08-31 while porting the inter-encode surface. Each of these makes
@@ -183,7 +203,7 @@ dispatch. `crates/aom-encode/tests/oracle_contract.rs` + `rtcd_probe_shim.c`
 print, per name, whether it is a pointer in this build and whether it is
 non-null — making the blind spot machine-readable rather than implicit.
 
-**(c) Hand C the alignment the encoder does.** libaom's callers pass
+**(c) Hand C the alignment AND THE SIZE the encoder does.** libaom's callers pass
 `DECLARE_ALIGNED(16, ...)` locals (mcomp.c:2923/2933/2944) or `aom_memalign`'d
 buffers — `x->upsample_pred`, which becomes `xd->tmp_upsample_pred`, is
 `aom_memalign(16, (1 + is_hbd) * ((MAX_SB_SIZE + 16) + 16) * MAX_SB_SIZE)`
@@ -191,8 +211,29 @@ buffers — `x->upsample_pred`, which becomes `xd->tmp_upsample_pred`, is
 accesses, so passing a `Vec` pointer straight through is invisible here; an x86
 AVX aligned store faults. Bounce every buffer a dispatched kernel reads or
 writes through 64-byte `aom_memalign` scratch (64 covers AVX-512 — stronger
-than the encoder's 16, never weaker), and match the SIZE too, not just the
-alignment.
+than the encoder's 16, never weaker).
+
+**Size is the other half, and it is the half the alignment fix missed.** The
+x86 SIMD `aom_upsampled_pred` / `aom_highbd_upsampled_pred` use the DESTINATION
+buffer itself as their horizontal intermediate for the 2-D sub-pel case,
+writing `intermediate_height` rows at stride `MAX_SB_SIZE`
+(reconinter_enc_sse2.c) — which is why libaom's own buffer is that
+160x128 allocation and not `w * h`. A `w * h` shim scratch is scribbled past
+its end: measured on x86 as `comp_mask_upsampled_pred`,
+`highbd_comp_mask_upsampled_pred` and `highbd_comp_avg_upsampled_pred`
+diverging at sub-pel phase (3,5), with the aligned-but-undersized buffer
+passing on aarch64. **Copy the encoder's allocation expression, not the block
+dimensions.**
+
+**(d) Do not feed a size the encoder never produces.** `aom_comp_mask_pred` and
+`aom_highbd_comp_mask_pred`'s x86 kernels branch on `width == 8`,
+`width == 16`, else a 32-wide loop — at width 4 they write NOTHING and the
+caller keeps its input. That is correct upstream: masked compound is undefined
+below BLOCK_8X8 (`av1_is_wedge_used` has no codebook there). A sweep that
+includes 4x4 for a masked variant is testing a call the encoder cannot make,
+and it fails on x86 while passing on aarch64, where the NEON kernel happens to
+handle it. Bound each sweep by the C function's real contract, and say in the
+test where the bound comes from.
 
 ## 4. When you cannot run the other target, predict it
 
