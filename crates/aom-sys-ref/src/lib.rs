@@ -15616,6 +15616,7 @@ extern "C" {
 
 /// Reference libaom `av1_wedge_sse_from_residuals_c` (encoder/wedge_utils.c:52).
 pub fn ref_wedge_sse_from_residuals(r1: &[i16], d: &[i16], m: &[u8], n: usize) -> u64 {
+    ref_init();
     assert!(r1.len() >= n && d.len() >= n && m.len() >= n);
     unsafe { shim_wedge_sse_from_residuals(r1.as_ptr(), d.as_ptr(), m.as_ptr(), n as i32) }
 }
@@ -15623,6 +15624,7 @@ pub fn ref_wedge_sse_from_residuals(r1: &[i16], d: &[i16], m: &[u8], n: usize) -
 /// Reference libaom `av1_wedge_sign_from_residuals_c` (wedge_utils.c:101).
 /// C's `int8_t` 0/1 return, as a bool.
 pub fn ref_wedge_sign_from_residuals(ds: &[i16], m: &[u8], n: usize, limit: i64) -> bool {
+    ref_init();
     assert!(n > 0, "the C body is a do-while: N >= 1");
     assert!(ds.len() >= n && m.len() >= n);
     unsafe { shim_wedge_sign_from_residuals(ds.as_ptr(), m.as_ptr(), n as i32, limit) != 0 }
@@ -15630,6 +15632,7 @@ pub fn ref_wedge_sign_from_residuals(ds: &[i16], m: &[u8], n: usize, limit: i64)
 
 /// Reference libaom `av1_wedge_compute_delta_squares_c` (wedge_utils.c:123).
 pub fn ref_wedge_compute_delta_squares(a: &[i16], b: &[i16], n: usize) -> Vec<i16> {
+    ref_init();
     assert!(a.len() >= n && b.len() >= n);
     let mut d = vec![0i16; n];
     unsafe { shim_wedge_compute_delta_squares(d.as_mut_ptr(), a.as_ptr(), b.as_ptr(), n as i32) }
@@ -15648,6 +15651,7 @@ pub fn ref_build_compound_diffwtd_mask(
     h: usize,
     w: usize,
 ) -> Vec<u8> {
+    ref_init();
     let mut mask = vec![0u8; h * w];
     unsafe {
         shim_build_compound_diffwtd_mask(
@@ -15678,6 +15682,7 @@ pub fn ref_build_compound_diffwtd_mask_d16(
     round_1: i32,
     bd: i32,
 ) -> Vec<u8> {
+    ref_init();
     let mut mask = vec![0u8; h * w];
     unsafe {
         shim_build_compound_diffwtd_mask_d16(
@@ -15709,6 +15714,7 @@ pub fn ref_build_compound_diffwtd_mask_highbd(
     w: usize,
     bd: i32,
 ) -> Vec<u8> {
+    ref_init();
     let mut mask = vec![0u8; h * w];
     unsafe {
         shim_build_compound_diffwtd_mask_highbd(
@@ -15766,6 +15772,7 @@ pub fn ref_dist_wtd_comp_weight_assign(
     compound_idx: bool,
     is_compound: bool,
 ) -> (i32, i32, bool) {
+    ref_init();
     let mut fwd = 0i32;
     let mut bck = 0i32;
     let mut used = 0i32;
@@ -16025,6 +16032,7 @@ pub fn ref_dist_wtd_convolve_2d(
     y_filter: &[i16],
     cp: &RefCompoundConvParams,
 ) {
+    ref_init();
     unsafe {
         shim_dist_wtd_convolve_2d(
             src.as_ptr().add(src_off),
@@ -16064,6 +16072,7 @@ pub fn ref_dist_wtd_convolve_x(
     x_filter: &[i16],
     cp: &RefCompoundConvParams,
 ) {
+    ref_init();
     unsafe {
         shim_dist_wtd_convolve_x(
             src.as_ptr().add(src_off),
@@ -16101,6 +16110,7 @@ pub fn ref_dist_wtd_convolve_y(
     y_filter: &[i16],
     cp: &RefCompoundConvParams,
 ) {
+    ref_init();
     unsafe {
         shim_dist_wtd_convolve_y(
             src.as_ptr().add(src_off),
@@ -16137,6 +16147,7 @@ pub fn ref_dist_wtd_convolve_2d_copy(
     h: usize,
     cp: &RefCompoundConvParams,
 ) {
+    ref_init();
     unsafe {
         shim_dist_wtd_convolve_2d_copy(
             src.as_ptr().add(src_off),
@@ -16174,6 +16185,7 @@ pub fn ref_highbd_dist_wtd_convolve_2d(
     cp: &RefCompoundConvParams,
     bd: u32,
 ) {
+    ref_init();
     unsafe {
         shim_highbd_dist_wtd_convolve_2d(
             src.as_ptr().add(src_off),
@@ -16215,6 +16227,7 @@ pub fn ref_highbd_dist_wtd_convolve_x(
     cp: &RefCompoundConvParams,
     bd: u32,
 ) {
+    ref_init();
     unsafe {
         shim_highbd_dist_wtd_convolve_x(
             src.as_ptr().add(src_off),
@@ -16254,6 +16267,7 @@ pub fn ref_highbd_dist_wtd_convolve_y(
     cp: &RefCompoundConvParams,
     bd: u32,
 ) {
+    ref_init();
     unsafe {
         shim_highbd_dist_wtd_convolve_y(
             src.as_ptr().add(src_off),
@@ -16292,6 +16306,7 @@ pub fn ref_highbd_dist_wtd_convolve_2d_copy(
     cp: &RefCompoundConvParams,
     bd: u32,
 ) {
+    ref_init();
     unsafe {
         shim_highbd_dist_wtd_convolve_2d_copy(
             src.as_ptr().add(src_off),
@@ -16328,6 +16343,7 @@ pub fn ref_highbd_convolve_x_sr(
     round_1: i32,
     bd: u32,
 ) {
+    ref_init();
     unsafe {
         shim_highbd_convolve_x_sr(
             src.as_ptr().add(src_off),
@@ -16359,6 +16375,7 @@ pub fn ref_highbd_convolve_y_sr(
     y_filter: &[i16],
     bd: u32,
 ) {
+    ref_init();
     unsafe {
         shim_highbd_convolve_y_sr(
             src.as_ptr().add(src_off),
@@ -16390,6 +16407,7 @@ pub fn ref_highbd_convolve_2d_sr(
     round_1: i32,
     bd: u32,
 ) {
+    ref_init();
     unsafe {
         shim_highbd_convolve_2d_sr(
             src.as_ptr().add(src_off),
@@ -17121,6 +17139,7 @@ pub fn ref_setup_scale_factors_for_frame(
     this_w: i32,
     this_h: i32,
 ) -> (i32, i32, i32, i32) {
+    ref_init();
     let (mut xs, mut ys, mut xst, mut yst) = (0i32, 0i32, 0i32, 0i32);
     unsafe {
         shim_setup_scale_factors_for_frame(
@@ -17138,6 +17157,7 @@ pub fn ref_scale_mv(
     x_scale_fp: i32,
     y_scale_fp: i32,
 ) -> (i32, i32) {
+    ref_init();
     let (mut r, mut c) = (0i32, 0i32);
     unsafe { shim_scale_mv(mv.0, mv.1, x, y, x_scale_fp, y_scale_fp, &mut r, &mut c) }
     (r, c)
@@ -17145,21 +17165,25 @@ pub fn ref_scale_mv(
 
 /// Reference libaom `av1_scaled_x` (scale.h:36).
 pub fn ref_scaled_x(val: i32, x_scale_fp: i32) -> i32 {
+    ref_init();
     unsafe { shim_scaled_x(val, x_scale_fp) }
 }
 
 /// Reference libaom `av1_scaled_y` (scale.h:45).
 pub fn ref_scaled_y(val: i32, y_scale_fp: i32) -> i32 {
+    ref_init();
     unsafe { shim_scaled_y(val, y_scale_fp) }
 }
 
 /// Reference libaom `valid_ref_frame_size` (scale.h:77).
 pub fn ref_valid_ref_frame_size(ref_w: i32, ref_h: i32, this_w: i32, this_h: i32) -> bool {
+    ref_init();
     unsafe { shim_valid_ref_frame_size(ref_w, ref_h, this_w, this_h) != 0 }
 }
 
 /// Reference libaom `av1_is_scaled` (scale.h:70).
 pub fn ref_is_scaled(x_scale_fp: i32, y_scale_fp: i32) -> bool {
+    ref_init();
     unsafe { shim_is_scaled(x_scale_fp, y_scale_fp) != 0 }
 }
 
@@ -17212,12 +17236,14 @@ pub fn ref_is_enough_erroradvantage(
     params_cost: i32,
     gm_erroradv_tr: f64,
 ) -> bool {
+    ref_init();
     unsafe { shim_is_enough_erroradvantage(best_erroradvantage, params_cost, gm_erroradv_tr) != 0 }
 }
 
 /// Reference libaom `av1_convert_model_to_params` (global_motion.c:57).
 /// Returns `(wmmat, wmtype, invalid)`.
 pub fn ref_convert_model_to_params(params: &[f64; 6]) -> ([i32; 6], i32, i32) {
+    ref_init();
     let mut wmmat = [0i32; 6];
     let mut wmtype = 0i32;
     let mut invalid = 0i32;
@@ -17235,6 +17261,7 @@ pub fn ref_convert_model_to_params(params: &[f64; 6]) -> ([i32; 6], i32, i32) {
 /// Reference libaom `get_wmtype` (av1/common/mv.h:299) — a static inline,
 /// called from the shim translation unit under the oracle's own flags.
 pub fn ref_get_wmtype(wmmat: &[i32; 6]) -> i32 {
+    ref_init();
     unsafe { shim_get_wmtype(wmmat.as_ptr()) }
 }
 
@@ -17246,6 +17273,7 @@ pub fn ref_compute_feature_segmentation_map(
     inliers: &[i32],
     num_inliers: usize,
 ) -> Vec<u8> {
+    ref_init();
     let mut map = vec![0u8; width * height];
     unsafe {
         shim_compute_feature_segmentation_map(
@@ -17396,6 +17424,7 @@ pub fn ref_obmc_variance(
     w: usize,
     h: usize,
 ) -> (u32, u32) {
+    ref_init();
     let mut sse = 0u32;
     let rc = unsafe {
         shim_obmc_variance(
@@ -17424,6 +17453,7 @@ pub fn ref_obmc_sub_pixel_variance(
     w: usize,
     h: usize,
 ) -> (u32, u32) {
+    ref_init();
     let mut sse = 0u32;
     let rc = unsafe {
         shim_obmc_sub_pixel_variance(
@@ -17453,6 +17483,7 @@ pub fn ref_highbd_obmc_variance(
     h: usize,
     bd: u32,
 ) -> (u32, u32) {
+    ref_init();
     let mut sse = 0u32;
     let rc = unsafe {
         shim_highbd_obmc_variance(
@@ -17484,6 +17515,7 @@ pub fn ref_highbd_obmc_sub_pixel_variance(
     h: usize,
     bd: u32,
 ) -> (u32, u32) {
+    ref_init();
     let mut sse = 0u32;
     let rc = unsafe {
         shim_highbd_obmc_sub_pixel_variance(
@@ -18013,6 +18045,7 @@ pub fn ref_highbd_warp_affine(
     cp: &RefWarpConvParams,
     shear: (i16, i16, i16, i16),
 ) {
+    ref_init();
     unsafe {
         shim_highbd_warp_affine(
             mat.as_ptr(),
@@ -18157,6 +18190,7 @@ pub fn ref_convolve_2d_scale(
     steps: &RefScaleSteps,
     cp: &RefScaleConvParams,
 ) {
+    ref_init();
     unsafe {
         shim_convolve_2d_scale(
             src.as_ptr().add(src_off),
@@ -18204,6 +18238,7 @@ pub fn ref_highbd_convolve_2d_scale(
     cp: &RefScaleConvParams,
     bd: u32,
 ) {
+    ref_init();
     unsafe {
         shim_highbd_convolve_2d_scale(
             src.as_ptr().add(src_off),
@@ -18268,6 +18303,7 @@ extern "C" {
 
 /// Reference libaom `av1_get_intra_cost_penalty` (encoder/rd.c).
 pub fn ref_get_intra_cost_penalty(qindex: i32, qdelta: i32, bit_depth: u8) -> i32 {
+    ref_init();
     unsafe { shim_get_intra_cost_penalty(qindex, qdelta, i32::from(bit_depth)) }
 }
 
@@ -18281,6 +18317,7 @@ pub fn ref_hash_is_horizontal_perfect(
     x_start: usize,
     y_start: usize,
 ) -> bool {
+    ref_init();
     unsafe {
         shim_hash_is_horizontal_perfect(
             plane.as_ptr(),
@@ -18301,6 +18338,7 @@ pub fn ref_hash_is_vertical_perfect(
     x_start: usize,
     y_start: usize,
 ) -> bool {
+    ref_init();
     unsafe {
         shim_hash_is_vertical_perfect(
             plane.as_ptr(),
@@ -18325,6 +18363,7 @@ pub fn ref_dropout_qcoeff_num(
     dropout_num_before: i32,
     dropout_num_after: i32,
 ) -> usize {
+    ref_init();
     let out = unsafe {
         shim_dropout_qcoeff_num(
             qcoeff.as_mut_ptr(),
@@ -18371,11 +18410,13 @@ extern "C" {
 
 /// Reference libaom `av1_convert_qindex_to_q` (encoder/ratectrl.c:199).
 pub fn ref_convert_qindex_to_q(qindex: i32, bit_depth: u8) -> f64 {
+    ref_init();
     unsafe { shim_convert_qindex_to_q(qindex, i32::from(bit_depth)) }
 }
 
 /// Reference libaom `av1_find_qindex` (ratectrl.c:2619).
 pub fn ref_find_qindex(desired_q: f64, bit_depth: u8, best_qindex: i32, worst_qindex: i32) -> i32 {
+    ref_init();
     unsafe { shim_find_qindex(desired_q, i32::from(bit_depth), best_qindex, worst_qindex) }
 }
 
@@ -18387,6 +18428,7 @@ pub fn ref_compute_qdelta(
     best_quality: i32,
     worst_quality: i32,
 ) -> i32 {
+    ref_init();
     unsafe {
         shim_compute_qdelta(
             qstart,
@@ -18407,6 +18449,7 @@ pub fn ref_rc_bits_per_mb(
     correction_factor: f64,
     bit_depth: u8,
 ) -> i32 {
+    ref_init();
     let r = unsafe {
         shim_rc_bits_per_mb(
             is_key_frame as i32,
@@ -18422,5 +18465,49 @@ pub fn ref_rc_bits_per_mb(
 
 /// Reference libaom `av1_rc_get_default_min_gf_interval` (ratectrl.c).
 pub fn ref_rc_get_default_min_gf_interval(width: i32, height: i32, framerate: f64) -> i32 {
+    ref_init();
     unsafe { shim_rc_get_default_min_gf_interval(width, height, framerate) }
+}
+
+// ---------------------------------------------------------------------------
+// rtcd_probe_shim.c — lets a test observe the oracle's own RTCD dispatch state.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn shim_rtcd_probe(which: i32, out_is_pointer: *mut i32) -> i32;
+}
+
+/// The dispatched kernels this repo's inter-encode shims reach one level below
+/// the entry point they call, in `shim_rtcd_probe` index order.
+pub const RTCD_PROBE_NAMES: [&str; 9] = [
+    "aom_sad32x32",
+    "av1_warp_affine",
+    "aom_vector_var",
+    "aom_variance16x16",
+    "aom_sad16x16",
+    // The four below are `#define`d to a NEON implementation on aarch64 and are
+    // real dispatch pointers on x86 — the ones the comp-pred / OBMC / wedge
+    // shims reach, and the ones this host cannot observe.
+    "aom_upsampled_pred",
+    "aom_comp_mask_pred",
+    "aom_convolve_copy",
+    "aom_highbd_upsampled_pred",
+];
+
+/// Observe the oracle's RTCD state for one of [`RTCD_PROBE_NAMES`].
+///
+/// Returns `(is_function_pointer_in_this_build, is_non_null_now)`. On aarch64
+/// most of these names are `#define`d straight to their NEON implementations,
+/// so `is_function_pointer_in_this_build` is false and there is nothing that
+/// could be null; on x86 they are real `RTCD_EXTERN` pointers and are NULL
+/// until [`ref_init`] runs.
+///
+/// This is the runtime half of the `nm`-based audit: `nm -g` on the archive
+/// shows the same split statically (`C` common symbols vs absent names).
+pub fn ref_rtcd_probe(index: usize) -> (bool, bool) {
+    assert!(index < RTCD_PROBE_NAMES.len());
+    let mut is_ptr = 0i32;
+    let non_null = unsafe { shim_rtcd_probe(index as i32, &mut is_ptr) };
+    assert!(non_null >= 0, "shim_rtcd_probe index out of range");
+    (is_ptr != 0, non_null != 0)
 }

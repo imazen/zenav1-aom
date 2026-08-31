@@ -20,6 +20,7 @@
 #include "av1/common/mv.h"
 #include "av1/common/warped_motion.h"
 #include "av1/encoder/global_motion.h"
+#include "aom_mem/aom_mem.h"
 
 int shim_is_enough_erroradvantage(double best_erroradvantage, int params_cost,
                                   double gm_erroradv_tr) {
@@ -61,6 +62,19 @@ void shim_compute_feature_segmentation_map(uint8_t *segment_map, int width,
   free(tmp);
 }
 
+/* libaom's frame buffers come from `aom_memalign` and every RTCD kernel that
+ * reads them (`aom_sad32x32`, `av1_warp_affine`, both real function pointers in
+ * this build) assumes that. A Rust `Vec` is 1-byte aligned, and on aarch64 the
+ * NEON kernels do not care — so the misalignment is invisible here and would
+ * only surface on x86. Bounce both planes through 64-byte-aligned scratch. */
+static void *shim_gm_align(const void *src, size_t bytes) {
+  void *p = aom_memalign(64, bytes ? bytes : 64);
+  if (!p) return NULL;
+  if (src) memcpy(p, src, bytes);
+  else memset(p, 0, bytes);
+  return p;
+}
+
 int64_t shim_segmented_frame_error(int use_hbd, int bd, const void *ref,
                                    int ref_stride, void *dst, int dst_stride,
                                    int p_width, int p_height,
@@ -100,11 +114,23 @@ int64_t shim_refine_integerized_param(
   memcpy(wm.wmmat, wmmat, 6 * sizeof(int32_t));
   wm.wmtype = (TransformationType)wmtype;
 
+  /* `av1_warp_affine` and `aom_sad32x32` are RTCD pointers; hand them
+   * aom_memalign'd planes, as the encoder does. */
+  uint8_t *aref = (uint8_t *)shim_gm_align(ref, (size_t)r_stride * r_height);
+  uint8_t *adst = (uint8_t *)shim_gm_align(dst, (size_t)d_stride * d_height);
+  if (!aref || !adst) {
+    aom_free(aref);
+    aom_free(adst);
+    return INT64_MAX;
+  }
+
   int64_t err = av1_refine_integerized_param(
-      &wm, (TransformationType)wmtype, /*use_hbd=*/0, /*bd=*/8, (uint8_t *)ref,
-      r_width, r_height, r_stride, dst, d_width, d_height, d_stride,
+      &wm, (TransformationType)wmtype, /*use_hbd=*/0, /*bd=*/8, aref,
+      r_width, r_height, r_stride, adst, d_width, d_height, d_stride,
       n_refinements, ref_frame_error, segment_map, segment_map_stride,
       gm_erroradv_tr);
+  aom_free(aref);
+  aom_free(adst);
 
   memcpy(wmmat, wm.wmmat, 6 * sizeof(int32_t));
   *out_wmtype = (int)wm.wmtype;

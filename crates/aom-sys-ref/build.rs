@@ -77,6 +77,7 @@ const SHIMS: &[&str] = &[
     "comp_pred_shim",
     "gm_shim",
     "enc_misc_shim",
+    "rtcd_probe_shim",
     "cnn_cscalar",
 ];
 

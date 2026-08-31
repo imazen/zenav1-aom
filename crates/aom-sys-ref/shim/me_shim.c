@@ -27,6 +27,7 @@
 #include "av1/encoder/reconinter_enc.h"
 #include "av1/common/scale.h"
 #include "aom_dsp/variance.h"
+#include "aom_mem/aom_mem.h"
 
 void shim_upsampled_pred(const uint8_t *ref, int ref_stride, int width,
                          int height, int subpel_x_q3, int subpel_y_q3,
@@ -90,9 +91,21 @@ int shim_find_best_sub_pixel_tree(
   YV12_BUFFER_CONFIG *cb = (YV12_BUFFER_CONFIG *)calloc(1, sizeof(YV12_BUFFER_CONFIG));
   struct scale_factors *sf = (struct scale_factors *)calloc(1, sizeof(struct scale_factors));
   AV1_COMMON *cm = (AV1_COMMON *)calloc(1, sizeof(AV1_COMMON));
-  uint8_t *tmp_pred = (uint8_t *)calloc((size_t)MAX_SB_SIZE * MAX_SB_SIZE, 1);
+  /* `xd->tmp_upsample_pred` is written by `aom_upsampled_pred`, which is
+   * RTCD-dispatched and on x86 resolves to a SIMD kernel that may use
+   * ALIGNED stores. libaom allocates it as
+   *   aom_memalign(16, (1 + is_hbd) * ((MAX_SB_SIZE + 16) + 16) * MAX_SB_SIZE)
+   * (encoder.c:981). A `calloc` of the block size satisfies neither the
+   * alignment nor the size contract; it happened to work here only
+   * because this build is aarch64, where the NEON kernels use unaligned
+   * accesses. Match the encoder, over-aligned to 64 so AVX-512 is covered
+   * too. */
+  const size_t tmp_pred_sz =
+      (size_t)2 * ((MAX_SB_SIZE + 16) + 16) * MAX_SB_SIZE;
+  uint8_t *tmp_pred = (uint8_t *)aom_memalign(64, tmp_pred_sz);
+  if (tmp_pred) memset(tmp_pred, 0, tmp_pred_sz);
   if (!xd || !mbmi || !cb || !sf || !cm || !tmp_pred) {
-    free(xd); free(mbmi); free(cb); free(sf); free(cm); free(tmp_pred);
+    free(xd); free(mbmi); free(cb); free(sf); free(cm); aom_free(tmp_pred);
     return -1;
   }
 
@@ -164,7 +177,7 @@ int shim_find_best_sub_pixel_tree(
   *out_distortion = distortion;
   *out_sse = sse;
 
-  free(xd); free(mbmi); free(cb); free(sf); free(cm); free(tmp_pred);
+  free(xd); free(mbmi); free(cb); free(sf); free(cm); aom_free(tmp_pred);
   return besterr;
 }
 
@@ -468,9 +481,21 @@ int shim_find_best_sub_pixel_tree_variant(
   YV12_BUFFER_CONFIG *cb = (YV12_BUFFER_CONFIG *)calloc(1, sizeof(YV12_BUFFER_CONFIG));
   struct scale_factors *sf = (struct scale_factors *)calloc(1, sizeof(struct scale_factors));
   AV1_COMMON *cm = (AV1_COMMON *)calloc(1, sizeof(AV1_COMMON));
-  uint8_t *tmp_pred = (uint8_t *)calloc((size_t)MAX_SB_SIZE * MAX_SB_SIZE, 1);
+  /* `xd->tmp_upsample_pred` is written by `aom_upsampled_pred`, which is
+   * RTCD-dispatched and on x86 resolves to a SIMD kernel that may use
+   * ALIGNED stores. libaom allocates it as
+   *   aom_memalign(16, (1 + is_hbd) * ((MAX_SB_SIZE + 16) + 16) * MAX_SB_SIZE)
+   * (encoder.c:981). A `calloc` of the block size satisfies neither the
+   * alignment nor the size contract; it happened to work here only
+   * because this build is aarch64, where the NEON kernels use unaligned
+   * accesses. Match the encoder, over-aligned to 64 so AVX-512 is covered
+   * too. */
+  const size_t tmp_pred_sz =
+      (size_t)2 * ((MAX_SB_SIZE + 16) + 16) * MAX_SB_SIZE;
+  uint8_t *tmp_pred = (uint8_t *)aom_memalign(64, tmp_pred_sz);
+  if (tmp_pred) memset(tmp_pred, 0, tmp_pred_sz);
   if (!xd || !mbmi || !cb || !sf || !cm || !tmp_pred) {
-    free(xd); free(mbmi); free(cb); free(sf); free(cm); free(tmp_pred);
+    free(xd); free(mbmi); free(cb); free(sf); free(cm); aom_free(tmp_pred);
     return -1;
   }
 
@@ -503,7 +528,7 @@ int shim_find_best_sub_pixel_tree_variant(
   vfp.vf = shim_pick_vf(w, h);
   vfp.svf = shim_pick_svf(w, h);
   if (!vfp.vf || !vfp.svf) {
-    free(xd); free(mbmi); free(cb); free(sf); free(cm); free(tmp_pred);
+    free(xd); free(mbmi); free(cb); free(sf); free(cm); aom_free(tmp_pred);
     return -2;
   }
 
@@ -564,7 +589,7 @@ int shim_find_best_sub_pixel_tree_variant(
   *out_distortion = distortion;
   *out_sse = sse;
 
-  free(xd); free(mbmi); free(cb); free(sf); free(cm); free(tmp_pred);
+  free(xd); free(mbmi); free(cb); free(sf); free(cm); aom_free(tmp_pred);
   return besterr;
 }
 
@@ -793,9 +818,21 @@ int shim_find_best_obmc_sub_pixel_tree_up(
   YV12_BUFFER_CONFIG *cb = (YV12_BUFFER_CONFIG *)calloc(1, sizeof(YV12_BUFFER_CONFIG));
   struct scale_factors *sf = (struct scale_factors *)calloc(1, sizeof(struct scale_factors));
   AV1_COMMON *cm = (AV1_COMMON *)calloc(1, sizeof(AV1_COMMON));
-  uint8_t *tmp_pred = (uint8_t *)calloc((size_t)MAX_SB_SIZE * MAX_SB_SIZE, 1);
+  /* `xd->tmp_upsample_pred` is written by `aom_upsampled_pred`, which is
+   * RTCD-dispatched and on x86 resolves to a SIMD kernel that may use
+   * ALIGNED stores. libaom allocates it as
+   *   aom_memalign(16, (1 + is_hbd) * ((MAX_SB_SIZE + 16) + 16) * MAX_SB_SIZE)
+   * (encoder.c:981). A `calloc` of the block size satisfies neither the
+   * alignment nor the size contract; it happened to work here only
+   * because this build is aarch64, where the NEON kernels use unaligned
+   * accesses. Match the encoder, over-aligned to 64 so AVX-512 is covered
+   * too. */
+  const size_t tmp_pred_sz =
+      (size_t)2 * ((MAX_SB_SIZE + 16) + 16) * MAX_SB_SIZE;
+  uint8_t *tmp_pred = (uint8_t *)aom_memalign(64, tmp_pred_sz);
+  if (tmp_pred) memset(tmp_pred, 0, tmp_pred_sz);
   if (!xd || !mbmi || !cb || !sf || !cm || !tmp_pred) {
-    free(xd); free(mbmi); free(cb); free(sf); free(cm); free(tmp_pred);
+    free(xd); free(mbmi); free(cb); free(sf); free(cm); aom_free(tmp_pred);
     return -1;
   }
 
@@ -824,7 +861,7 @@ int shim_find_best_obmc_sub_pixel_tree_up(
   vfp.vf = shim_pick_vf(w, h);
   if (!shim_fill_obmc_fnptr(&vfp, w, h) ||
       !shim_fill_obmc_subpel_fnptr(&vfp, w, h)) {
-    free(xd); free(mbmi); free(cb); free(sf); free(cm); free(tmp_pred);
+    free(xd); free(mbmi); free(cb); free(sf); free(cm); aom_free(tmp_pred);
     return -2;
   }
 
@@ -869,6 +906,6 @@ int shim_find_best_obmc_sub_pixel_tree_up(
   *out_distortion = distortion;
   *out_sse = sse;
 
-  free(xd); free(mbmi); free(cb); free(sf); free(cm); free(tmp_pred);
+  free(xd); free(mbmi); free(cb); free(sf); free(cm); aom_free(tmp_pred);
   return besterr;
 }
