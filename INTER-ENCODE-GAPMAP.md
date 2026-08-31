@@ -160,8 +160,56 @@ so tier-1 requires driving `av1_rd_pick_inter_mode_sb` itself. Named heads:
 
 ## 3. Landed against this map
 
-Each entry names the wave, the C function, the tier of its gate, and the test.
+**53 exported C functions and ~24 of their file-static helpers**, all gated at
+tier 1 against the real C symbol (the statics through the exported caller that
+is their only entry point). Ordered by the commit that landed them.
 
-| wave | C function | tier | gate |
-|---|---|---|---|
-| — | *(updated as work lands)* | | |
+| wave | C functions | gate |
+|---|---|---|
+| W1 | `av1_wedge_sse_from_residuals_c`, `av1_wedge_sign_from_residuals_c`, `av1_wedge_compute_delta_squares_c`, `av1_build_compound_diffwtd_mask_c` / `_d16_c` / `_highbd_c`, `av1_get_compound_type_mask`, `av1_dist_wtd_comp_weight_assign` (+ `av1_get_contiguous_soft_mask` generalized to a signed wedge) | `aom-dsp/tests/compound_diff.rs` |
+| W1 | `av1_dist_wtd_convolve_2d_c` / `_x_c` / `_y_c` / `_2d_copy_c`, the four `av1_highbd_dist_wtd_convolve_*_c`, `av1_highbd_convolve_2d_sr_c` / `_x_sr_c` / `_y_sr_c` | `aom-dsp/tests/compound_convolve_diff.rs` |
+| W3 | `av1_find_best_sub_pixel_tree_pruned`, `_pruned_more`, `av1_return_min_sub_pixel_mv`, `av1_return_max_sub_pixel_mv` (+ 8 statics: `estimated_pref_error`, `check_better_fast`, `first_level_check_fast`, `second_level_check_fast`, `two_level_checks_fast`, `setup_center_error`, `divide_and_round`, `is_cost_list_wellbehaved`, `get_cost_surf_min`) | `aom-encode/tests/subpel_tree_diff.rs` |
+| W3 | `av1_refining_search_8p_c`, `av1_vector_match` | `aom-encode/tests/inter_fullpel_diff.rs` |
+| W2 | `aom_comp_avg_pred_c`, `aom_comp_mask_pred_c`, `aom_highbd_comp_avg_pred_c`, `aom_highbd_comp_mask_pred_c`, `aom_comp_avg_upsampled_pred_c`, `aom_comp_mask_upsampled_pred`, `aom_highbd_upsampled_pred_c`, `aom_highbd_comp_avg_upsampled_pred_c`, `aom_highbd_comp_mask_upsampled_pred` | `aom-encode/tests/inter_pred_enc_diff.rs` |
+| W5 | `av1_setup_scale_factors_for_frame`, `av1_scale_mv`, `av1_scaled_x`, `av1_scaled_y`, `av1_is_scaled`, `valid_ref_frame_size` | `aom-dsp/tests/scale_diff.rs` |
+| W9 | `av1_is_enough_erroradvantage`, `av1_convert_model_to_params`, `get_wmtype`, `av1_compute_feature_segmentation_map`, `av1_segmented_frame_error` (lowbd + highbd) | `aom-encode/tests/global_motion_diff.rs` |
+| — | the `aom_obmc_variance` / `aom_obmc_sub_pixel_variance` families, lowbd + the three highbd bit-depth arms | `aom-dsp/tests/obmc_dist_diff.rs` |
+| W3 | `av1_obmc_full_pixel_search` (+ `obmc_full_pixel_diamond`, `obmc_diamond_search_sad`, `obmc_refining_search_sad`, `get_obmc_mvpred_var`) | `aom-encode/tests/inter_fullpel_diff.rs` |
+| W3 | `av1_find_best_obmc_sub_pixel_tree_up` (+ `upsampled_obmc_pref_error`, `setup_obmc_center_error`, `upsampled_setup_obmc_center_error`, `estimate_obmc_mvcost`, `estimate_obmc_pref_error`, `obmc_check_better` / `_fast`, `obmc_first_level_check`, `obmc_second_level_check_v2`) | `aom-encode/tests/inter_fullpel_diff.rs` |
+| W9 | `av1_refine_integerized_param` (+ `warp_error`, `get_warp_error`, `add_param_offset`, `force_wmtype`) | `aom-encode/tests/global_motion_diff.rs` |
+
+**None of it is wired into the encoder yet.** These are the kernels and searches
+the inter RD brain (W6) will call; the brain itself, reference/frame management
+(W7) and multi-frame rate control (W8) are still entirely absent.
+
+### What the re-run inventory says, and why it overstates
+
+Re-running `tools/c_surface_inventory.py` after all of the above reports
+**594 name-matched (up from 517), 897 unmatched (down from 974), 229 of those
+with an exported symbol (down from 268)**.
+
+Read that delta with the tool's own caveat in mind: it matches a NAME anywhere
+in the Rust tree, **including doc comments**. Every port above cites its C
+source function by name in a doc comment, and so do several functions that are
+only *mentioned* — so `+77 matched` is an upper bound on what actually landed,
+against 53 exported functions genuinely ported and gated. The `-39` on the
+exported-symbol column is the more honest signal, and even that counts a few
+names that appear only in a "NOT ported" note.
+
+### Findings worth carrying forward
+
+Three C behaviours found while porting that a later reader is likely to
+"correct" back:
+
+1. **`estimate_obmc_mvcost` (mcomp.c:3714) does not agree with `mv_err_cost_`.**
+   It shifts by 13 with a `+4096` bias instead of 14 with `+8192`, and applies
+   `GET_MV_SUBPEL` (a x8 multiply) to a difference already in 1/8-pel units.
+   libaom's own TODO flags it. Rewriting it fails the differential.
+2. **`setup_obmc_center_error` (mcomp.c:3683) scores the reference at its
+   buffer ORIGIN, ignoring `start_mv`.** libaom's own TODO flags this too.
+   "Fixing" it fails the differential.
+3. **`warp_error` (global_motion.c:276) clips each cell against the REFERENCE
+   size, not the walked extent**, and computes it in `int` — a cell past the
+   reference edge gets a negative extent that makes both its loops empty, so it
+   contributes zero rather than being skipped. A `usize` transcription
+   underflows there.
