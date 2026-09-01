@@ -19896,3 +19896,355 @@ pub fn ref_rdopt_update_mode_start_end_index(
     }
     (s, e)
 }
+
+// --- rdopt.c: the single-reference state table + small initialisers -------
+
+/// `SINGLE_INTER_MODE_NUM` (`enums.h:359`) — NEARESTMV..NEWMV.
+pub const SINGLE_INTER_MODE_NUM: usize = 4;
+/// `FWD_REFS`.
+pub const FWD_REFS: usize = 4;
+/// `MB_MODE_COUNT`.
+pub const C_MB_MODE_COUNT: usize = 25;
+
+/// The single-reference half of `InterModeSearchState` (rdopt.c:311), flat.
+/// Mirrors `ShimSingleStates` in `shim/rdopt_shim.c` field for field.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SingleStatesFlat {
+    /// `single_state[dir][mode][i].rd`.
+    pub ss_rd: [[[i64; FWD_REFS]; SINGLE_INTER_MODE_NUM]; 2],
+    /// `single_state[dir][mode][i].ref_frame`.
+    pub ss_ref: [[[i32; FWD_REFS]; SINGLE_INTER_MODE_NUM]; 2],
+    /// `single_state[dir][mode][i].valid`.
+    pub ss_valid: [[[i32; FWD_REFS]; SINGLE_INTER_MODE_NUM]; 2],
+    /// `single_state_cnt[dir][mode]`.
+    pub ss_cnt: [[i32; SINGLE_INTER_MODE_NUM]; 2],
+    /// `single_state_modelled[dir][mode][i].rd`.
+    pub sm_rd: [[[i64; FWD_REFS]; SINGLE_INTER_MODE_NUM]; 2],
+    /// `single_state_modelled[dir][mode][i].ref_frame`.
+    pub sm_ref: [[[i32; FWD_REFS]; SINGLE_INTER_MODE_NUM]; 2],
+    /// `single_state_modelled[dir][mode][i].valid`.
+    pub sm_valid: [[[i32; FWD_REFS]; SINGLE_INTER_MODE_NUM]; 2],
+    /// `single_state_modelled_cnt[dir][mode]`.
+    pub sm_cnt: [[i32; SINGLE_INTER_MODE_NUM]; 2],
+    /// `single_rd_order[dir][mode][i]`.
+    pub order: [[[i32; FWD_REFS]; SINGLE_INTER_MODE_NUM]; 2],
+}
+
+impl Default for SingleStatesFlat {
+    fn default() -> Self {
+        Self {
+            ss_rd: [[[0; FWD_REFS]; SINGLE_INTER_MODE_NUM]; 2],
+            ss_ref: [[[0; FWD_REFS]; SINGLE_INTER_MODE_NUM]; 2],
+            ss_valid: [[[0; FWD_REFS]; SINGLE_INTER_MODE_NUM]; 2],
+            ss_cnt: [[0; SINGLE_INTER_MODE_NUM]; 2],
+            sm_rd: [[[0; FWD_REFS]; SINGLE_INTER_MODE_NUM]; 2],
+            sm_ref: [[[0; FWD_REFS]; SINGLE_INTER_MODE_NUM]; 2],
+            sm_valid: [[[0; FWD_REFS]; SINGLE_INTER_MODE_NUM]; 2],
+            sm_cnt: [[0; SINGLE_INTER_MODE_NUM]; 2],
+            order: [[[0; FWD_REFS]; SINGLE_INTER_MODE_NUM]; 2],
+        }
+    }
+}
+
+unsafe extern "C" {
+    fn shim_rdopt_init_single_inter_mode_search_state(s: *mut SingleStatesFlat);
+    fn shim_rdopt_collect_single_states(
+        s: *mut SingleStatesFlat,
+        this_mode: i32,
+        ref_frame: i32,
+        ref_mv_count: i32,
+        simple_rd: *const i64,
+        modelled_rd: *const i64,
+    );
+    fn shim_rdopt_analyze_single_states(s: *mut SingleStatesFlat, prune_level: i32);
+    fn shim_rdopt_compound_skip_get_candidates(
+        s: *const SingleStatesFlat,
+        prune_level: i32,
+        dir: i32,
+        mode: i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_compound_skip_by_single_states(
+        s: *const SingleStatesFlat,
+        prune_level: i32,
+        this_mode: i32,
+        rf0: i32,
+        rf1: i32,
+        ref_mv_count: i32,
+        stack_this: *const i16,
+        stack_comp: *const i16,
+        global_mvs: *const i16,
+        single0_ref_mv_count: i32,
+        single0_stack: *const i16,
+        single1_ref_mv_count: i32,
+        single1_stack: *const i16,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_skip_repeated_mv(
+        this_mode: i32,
+        rf0: i32,
+        rf1: i32,
+        ref_mv_count: i32,
+        gm_wmtype: i32,
+        mode_context: i32,
+        newmv_cost: *const i32,
+        zeromv_cost: *const i32,
+        refmv_cost: *const i32,
+        modelled_rd: *mut i64,
+    ) -> i32;
+    fn shim_rdopt_init_comp_avg_est_rd(level: i32, out: *mut i64);
+    fn shim_rdopt_top_comp_avg_est_rd_count() -> i32;
+    fn shim_rdopt_init_top_tx_no_split_rd(
+        level: i32,
+        out: *mut i64,
+        n_blocks: i32,
+        n_top: i32,
+    );
+    fn shim_rdopt_max_tx_blocks_in_max_sb() -> i32;
+    fn shim_rdopt_top_inter_tx_no_split_count() -> i32;
+    fn shim_rdopt_inter_modes_info_push(
+        num_in: i32,
+        mode_rate: i32,
+        sse: i64,
+        rd: i64,
+        num_out: *mut i32,
+        mode_rate_out: *mut i32,
+        sse_out: *mut i64,
+        est_rd_out: *mut i64,
+    );
+    fn shim_rdopt_increase_motion_mode_rd(
+        best_motion_mode: i32,
+        this_motion_mode: i32,
+        best_scaled_rd: *mut i64,
+        this_scaled_rd: *mut i64,
+        rd_warp_bias_scale_pct: i32,
+        rd_obmc_bias_scale_pct: f32,
+    );
+    fn shim_rdopt_skip_interp_filter_search(
+        encoding_mode: i32,
+        reference_mode: i32,
+        sf_skip_interp_filter_search: i32,
+        winner_mode_ifs: i32,
+        is_single_pred: i32,
+    ) -> i32;
+}
+
+/// Reference `init_single_inter_mode_search_state` (rdopt.c:4465). The shim
+/// poisons the whole search state with `0x33` first, so a field the function
+/// forgets shows up as `0x3333333333333333`.
+pub fn ref_rdopt_init_single_inter_mode_search_state() -> SingleStatesFlat {
+    ref_init();
+    let mut s = SingleStatesFlat::default();
+    unsafe { shim_rdopt_init_single_inter_mode_search_state(&mut s) };
+    s
+}
+
+/// Reference `collect_single_states` (rdopt.c:4813). `simple_rd` /
+/// `modelled_rd` are the `MAX_REF_MV_SEARCH` entries for `(this_mode, *,
+/// ref_frame)`.
+pub fn ref_rdopt_collect_single_states(
+    s: &mut SingleStatesFlat,
+    this_mode: i32,
+    ref_frame: i32,
+    ref_mv_count: i32,
+    simple_rd: &[i64; MAX_REF_MV_SEARCH],
+    modelled_rd: &[i64; MAX_REF_MV_SEARCH],
+) {
+    ref_init();
+    unsafe {
+        shim_rdopt_collect_single_states(
+            s,
+            this_mode,
+            ref_frame,
+            ref_mv_count,
+            simple_rd.as_ptr(),
+            modelled_rd.as_ptr(),
+        )
+    }
+}
+
+/// Reference `analyze_single_states` (rdopt.c:4859).
+pub fn ref_rdopt_analyze_single_states(s: &mut SingleStatesFlat, prune_level: i32) {
+    ref_init();
+    unsafe { shim_rdopt_analyze_single_states(s, prune_level) }
+}
+
+/// Reference `compound_skip_get_candidates` (rdopt.c:4948).
+pub fn ref_rdopt_compound_skip_get_candidates(
+    s: &SingleStatesFlat,
+    prune_level: i32,
+    dir: i32,
+    mode: i32,
+) -> i32 {
+    ref_init();
+    unsafe { shim_rdopt_compound_skip_get_candidates(s, prune_level, dir, mode) }
+}
+
+/// Reference `compound_skip_by_single_states` (rdopt.c:4982). Three `mbmi_ext`
+/// rows are read: the compound pair's and both single references'.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_compound_skip_by_single_states(
+    s: &SingleStatesFlat,
+    prune_level: i32,
+    this_mode: i32,
+    rf: (i32, i32),
+    comp_row: &RefMvRow,
+    single0: &RefMvRow,
+    single1: &RefMvRow,
+) -> bool {
+    ref_init();
+    let (t, c, g) = (
+        comp_row.flat_this(),
+        comp_row.flat_comp(),
+        comp_row.flat_global(),
+    );
+    let s0 = single0.flat_this();
+    let s1 = single1.flat_this();
+    unsafe {
+        shim_rdopt_compound_skip_by_single_states(
+            s,
+            prune_level,
+            this_mode,
+            rf.0,
+            rf.1,
+            comp_row.count,
+            t.as_ptr(),
+            c.as_ptr(),
+            g.as_ptr(),
+            single0.count,
+            s0.as_ptr(),
+            single1.count,
+            s1.as_ptr(),
+        ) != 0
+    }
+}
+
+/// Reference `skip_repeated_mv` (rdopt.c:1238). `modelled_rd` is the
+/// `[MB_MODE_COUNT]` column for `(*, 0, ref_frame[0])`, in/out.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_skip_repeated_mv(
+    this_mode: i32,
+    rf: (i32, i32),
+    ref_mv_count: i32,
+    gm_wmtype: i32,
+    mode_context: i32,
+    newmv_cost: &[[i32; 2]],
+    zeromv_cost: &[[i32; 2]],
+    refmv_cost: &[[i32; 2]],
+    modelled_rd: &mut [i64; C_MB_MODE_COUNT],
+) -> bool {
+    ref_init();
+    let nf: Vec<i32> = newmv_cost.iter().flatten().copied().collect();
+    let zf: Vec<i32> = zeromv_cost.iter().flatten().copied().collect();
+    let rf_: Vec<i32> = refmv_cost.iter().flatten().copied().collect();
+    unsafe {
+        shim_rdopt_skip_repeated_mv(
+            this_mode,
+            rf.0,
+            rf.1,
+            ref_mv_count,
+            gm_wmtype,
+            mode_context,
+            nf.as_ptr(),
+            zf.as_ptr(),
+            rf_.as_ptr(),
+            modelled_rd.as_mut_ptr(),
+        ) != 0
+    }
+}
+
+/// `TOP_COMP_AVG_EST_RD_COUNT` as the C oracle sees it.
+pub fn ref_top_comp_avg_est_rd_count() -> usize {
+    ref_init();
+    unsafe { shim_rdopt_top_comp_avg_est_rd_count() as usize }
+}
+
+/// Reference `init_comp_avg_est_rd` (rdopt.c:516) — in/out, because the
+/// function is a no-op at level 0 and must leave the buffer alone.
+pub fn ref_rdopt_init_comp_avg_est_rd(level: i32, buf: &mut [i64]) {
+    ref_init();
+    assert_eq!(buf.len(), ref_top_comp_avg_est_rd_count());
+    unsafe { shim_rdopt_init_comp_avg_est_rd(level, buf.as_mut_ptr()) }
+}
+
+/// `MAX_TX_BLOCKS_IN_MAX_SB` / `TOP_INTER_TX_NO_SPLIT_COUNT` as the C oracle
+/// sees them.
+pub fn ref_top_inter_tx_no_split_dims() -> (usize, usize) {
+    ref_init();
+    unsafe {
+        (
+            shim_rdopt_max_tx_blocks_in_max_sb() as usize,
+            shim_rdopt_top_inter_tx_no_split_count() as usize,
+        )
+    }
+}
+
+/// Reference `init_top_tx_no_split_rd_for_inter_modes` (rdopt.c:5940).
+pub fn ref_rdopt_init_top_tx_no_split_rd(level: i32, buf: &mut [i64]) {
+    ref_init();
+    let (n_blocks, n_top) = ref_top_inter_tx_no_split_dims();
+    assert_eq!(buf.len(), n_blocks * n_top);
+    unsafe {
+        shim_rdopt_init_top_tx_no_split_rd(level, buf.as_mut_ptr(), n_blocks as i32, n_top as i32)
+    }
+}
+
+/// Reference `inter_modes_info_push` (rdopt.c:468) — returns
+/// `(num, mode_rate, sse, est_rd)` at the pushed slot.
+pub fn ref_rdopt_inter_modes_info_push(
+    num_in: i32,
+    mode_rate: i32,
+    sse: i64,
+    rd: i64,
+) -> (i32, i32, i64, i64) {
+    ref_init();
+    let (mut n, mut mr, mut s, mut e) = (0i32, 0i32, 0i64, 0i64);
+    unsafe {
+        shim_rdopt_inter_modes_info_push(num_in, mode_rate, sse, rd, &mut n, &mut mr, &mut s, &mut e)
+    };
+    (n, mr, s, e)
+}
+
+/// Reference `increase_motion_mode_rd` (rdopt.c:1442) — both RDs in/out.
+pub fn ref_rdopt_increase_motion_mode_rd(
+    best_motion_mode: i32,
+    this_motion_mode: i32,
+    best_scaled_rd: &mut i64,
+    this_scaled_rd: &mut i64,
+    rd_warp_bias_scale_pct: i32,
+    rd_obmc_bias_scale_pct: f32,
+) {
+    ref_init();
+    unsafe {
+        shim_rdopt_increase_motion_mode_rd(
+            best_motion_mode,
+            this_motion_mode,
+            best_scaled_rd,
+            this_scaled_rd,
+            rd_warp_bias_scale_pct,
+            rd_obmc_bias_scale_pct,
+        )
+    }
+}
+
+/// Reference `skip_interp_filter_search` (rdopt.c:6060). `encoding_mode` is
+/// `MODE` (`enc_enums.h:270`): GOOD 0, REALTIME 1, ALLINTRA 2.
+pub fn ref_rdopt_skip_interp_filter_search(
+    encoding_mode: i32,
+    reference_mode: i32,
+    sf_skip_interp_filter_search: i32,
+    winner_mode_ifs: i32,
+    is_single_pred: bool,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_rdopt_skip_interp_filter_search(
+            encoding_mode,
+            reference_mode,
+            sf_skip_interp_filter_search,
+            winner_mode_ifs,
+            i32::from(is_single_pred),
+        ) != 0
+    }
+}

@@ -975,3 +975,277 @@ void shim_rdopt_update_mode_start_end_index(int motion_mode_for_winner_cand,
   free(mbmi);
   free(cpi);
 }
+
+/* ======================================================================== *
+ * 11. The SINGLE-REFERENCE STATE table (rdopt.c:4465, :4813-:5046).
+ *
+ * `InterModeSearchState` is declared inside rdopt.c, so it exists in this TU
+ * and nowhere a normal shim could reach it. Only the single-state half of it
+ * is exchanged, flattened into `ShimSingleStates`, which the Rust side
+ * mirrors as a `#[repr(C)]` struct of the same shape.
+ * ======================================================================== */
+
+typedef struct {
+  int64_t ss_rd[2][SINGLE_INTER_MODE_NUM][FWD_REFS];
+  int32_t ss_ref[2][SINGLE_INTER_MODE_NUM][FWD_REFS];
+  int32_t ss_valid[2][SINGLE_INTER_MODE_NUM][FWD_REFS];
+  int32_t ss_cnt[2][SINGLE_INTER_MODE_NUM];
+  int64_t sm_rd[2][SINGLE_INTER_MODE_NUM][FWD_REFS];
+  int32_t sm_ref[2][SINGLE_INTER_MODE_NUM][FWD_REFS];
+  int32_t sm_valid[2][SINGLE_INTER_MODE_NUM][FWD_REFS];
+  int32_t sm_cnt[2][SINGLE_INTER_MODE_NUM];
+  int32_t order[2][SINGLE_INTER_MODE_NUM][FWD_REFS];
+} ShimSingleStates;
+
+static void shim_ss_in(InterModeSearchState *st, const ShimSingleStates *s) {
+  for (int d = 0; d < 2; ++d)
+    for (int m = 0; m < SINGLE_INTER_MODE_NUM; ++m) {
+      st->single_state_cnt[d][m] = s->ss_cnt[d][m];
+      st->single_state_modelled_cnt[d][m] = s->sm_cnt[d][m];
+      for (int r = 0; r < FWD_REFS; ++r) {
+        st->single_state[d][m][r].rd = s->ss_rd[d][m][r];
+        st->single_state[d][m][r].ref_frame = (MV_REFERENCE_FRAME)s->ss_ref[d][m][r];
+        st->single_state[d][m][r].valid = s->ss_valid[d][m][r];
+        st->single_state_modelled[d][m][r].rd = s->sm_rd[d][m][r];
+        st->single_state_modelled[d][m][r].ref_frame =
+            (MV_REFERENCE_FRAME)s->sm_ref[d][m][r];
+        st->single_state_modelled[d][m][r].valid = s->sm_valid[d][m][r];
+        st->single_rd_order[d][m][r] = (MV_REFERENCE_FRAME)s->order[d][m][r];
+      }
+    }
+}
+
+static void shim_ss_out(const InterModeSearchState *st, ShimSingleStates *s) {
+  for (int d = 0; d < 2; ++d)
+    for (int m = 0; m < SINGLE_INTER_MODE_NUM; ++m) {
+      s->ss_cnt[d][m] = st->single_state_cnt[d][m];
+      s->sm_cnt[d][m] = st->single_state_modelled_cnt[d][m];
+      for (int r = 0; r < FWD_REFS; ++r) {
+        s->ss_rd[d][m][r] = st->single_state[d][m][r].rd;
+        s->ss_ref[d][m][r] = st->single_state[d][m][r].ref_frame;
+        s->ss_valid[d][m][r] = st->single_state[d][m][r].valid;
+        s->sm_rd[d][m][r] = st->single_state_modelled[d][m][r].rd;
+        s->sm_ref[d][m][r] = st->single_state_modelled[d][m][r].ref_frame;
+        s->sm_valid[d][m][r] = st->single_state_modelled[d][m][r].valid;
+        s->order[d][m][r] = st->single_rd_order[d][m][r];
+      }
+    }
+}
+
+void shim_rdopt_init_single_inter_mode_search_state(ShimSingleStates *s) {
+  InterModeSearchState *st =
+      (InterModeSearchState *)calloc(1, sizeof(*st));
+  /* Poison so a field the function fails to reset is visible. */
+  memset(st, 0x33, sizeof(*st));
+  init_single_inter_mode_search_state(st);
+  shim_ss_out(st, s);
+  free(st);
+}
+
+/* `collect_single_states` also reads `simple_rd[mode][idx][ref]` and
+ * `modelled_rd[mode][idx][ref]` for the ref_mv indices this mode allows;
+ * only those `MAX_REF_MV_SEARCH` values are exchanged. */
+void shim_rdopt_collect_single_states(ShimSingleStates *s, int this_mode,
+                                      int ref_frame, int ref_mv_count,
+                                      const int64_t *simple_rd,
+                                      const int64_t *modelled_rd) {
+  InterModeSearchState *st = (InterModeSearchState *)calloc(1, sizeof(*st));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  shim_ss_in(st, s);
+  mbmi->ref_frame[0] = (MV_REFERENCE_FRAME)ref_frame;
+  mbmi->ref_frame[1] = NONE_FRAME;
+  mbmi->mode = (PREDICTION_MODE)this_mode;
+  x->mbmi_ext.ref_mv_count[ref_frame] = (uint8_t)ref_mv_count;
+  for (int i = 0; i < MAX_REF_MV_SEARCH; ++i) {
+    st->simple_rd[this_mode][i][ref_frame] = simple_rd[i];
+    st->modelled_rd[this_mode][i][ref_frame] = modelled_rd[i];
+  }
+  collect_single_states(x, st, mbmi);
+  shim_ss_out(st, s);
+  free(mbmi);
+  free(x);
+  free(st);
+}
+
+void shim_rdopt_analyze_single_states(ShimSingleStates *s, int prune_level) {
+  InterModeSearchState *st = (InterModeSearchState *)calloc(1, sizeof(*st));
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  shim_ss_in(st, s);
+  cpi->sf.inter_sf.prune_comp_search_by_single_result = prune_level;
+  analyze_single_states(cpi, st);
+  shim_ss_out(st, s);
+  free(cpi);
+  free(st);
+}
+
+int shim_rdopt_compound_skip_get_candidates(const ShimSingleStates *s,
+                                            int prune_level, int dir,
+                                            int mode) {
+  InterModeSearchState *st = (InterModeSearchState *)calloc(1, sizeof(*st));
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  shim_ss_in(st, s);
+  cpi->sf.inter_sf.prune_comp_search_by_single_result = prune_level;
+  const int r = compound_skip_get_candidates(cpi, st, dir,
+                                             (PREDICTION_MODE)mode);
+  free(cpi);
+  free(st);
+  return r;
+}
+
+int shim_rdopt_compound_skip_by_single_states(
+    const ShimSingleStates *s, int prune_level, int this_mode, int rf0, int rf1,
+    int ref_mv_count, const int16_t *stack_this, const int16_t *stack_comp,
+    const int16_t *global_mvs, int single0_ref_mv_count,
+    const int16_t *single0_stack, int single1_ref_mv_count,
+    const int16_t *single1_stack) {
+  InterModeSearchState *st = (InterModeSearchState *)calloc(1, sizeof(*st));
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  shim_ss_in(st, s);
+  cpi->sf.inter_sf.prune_comp_search_by_single_result = prune_level;
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  /* This function reads THREE mbmi_ext rows: the compound pair's, and the two
+   * single-reference rows the `single_refs` lookups inside it use. */
+  shim_rd_fill_ext_row(&x->mbmi_ext, av1_ref_frame_type(rf), ref_mv_count,
+                       stack_this, stack_comp, NULL);
+  shim_rd_fill_ext_row(&x->mbmi_ext, (int8_t)rf0, single0_ref_mv_count,
+                       single0_stack, NULL, NULL);
+  shim_rd_fill_ext_row(&x->mbmi_ext, (int8_t)rf1, single1_ref_mv_count,
+                       single1_stack, NULL, NULL);
+  shim_rd_fill_global_mvs(&x->mbmi_ext, global_mvs);
+  const int r = compound_skip_by_single_states(
+      cpi, st, (PREDICTION_MODE)this_mode, (MV_REFERENCE_FRAME)rf0,
+      (MV_REFERENCE_FRAME)rf1, x);
+  free(x);
+  free(cpi);
+  free(st);
+  return r;
+}
+
+/* `skip_repeated_mv` (rdopt.c:1238) reads and WRITES search_state->modelled_rd,
+ * so the three-entry row it touches is in/out. */
+int shim_rdopt_skip_repeated_mv(int this_mode, int rf0, int rf1,
+                                int ref_mv_count, int gm_wmtype,
+                                int mode_context, const int *newmv_cost,
+                                const int *zeromv_cost, const int *refmv_cost,
+                                int64_t *modelled_rd /* MB_MODE_COUNT */) {
+  InterModeSearchState *st = (InterModeSearchState *)calloc(1, sizeof(*st));
+  AV1_COMMON *cm = (AV1_COMMON *)calloc(1, sizeof(*cm));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  x->mbmi_ext.ref_mv_count[av1_ref_frame_type(rf)] = (uint8_t)ref_mv_count;
+  x->mbmi_ext.mode_context[av1_ref_frame_type(rf)] = (int16_t)mode_context;
+  cm->global_motion[rf0].wmtype = (TransformationType)gm_wmtype;
+  for (int i = 0; i < NEWMV_MODE_CONTEXTS; ++i) {
+    x->mode_costs.newmv_mode_cost[i][0] = newmv_cost[2 * i];
+    x->mode_costs.newmv_mode_cost[i][1] = newmv_cost[2 * i + 1];
+  }
+  for (int i = 0; i < GLOBALMV_MODE_CONTEXTS; ++i) {
+    x->mode_costs.zeromv_mode_cost[i][0] = zeromv_cost[2 * i];
+    x->mode_costs.zeromv_mode_cost[i][1] = zeromv_cost[2 * i + 1];
+  }
+  for (int i = 0; i < REFMV_MODE_CONTEXTS; ++i) {
+    x->mode_costs.refmv_mode_cost[i][0] = refmv_cost[2 * i];
+    x->mode_costs.refmv_mode_cost[i][1] = refmv_cost[2 * i + 1];
+  }
+  for (int m = 0; m < MB_MODE_COUNT; ++m)
+    st->modelled_rd[m][0][rf0] = modelled_rd[m];
+  const int r = skip_repeated_mv(cm, x, (PREDICTION_MODE)this_mode, rf, st);
+  for (int m = 0; m < MB_MODE_COUNT; ++m)
+    modelled_rd[m] = st->modelled_rd[m][0][rf0];
+  free(x);
+  free(cm);
+  free(st);
+  return r;
+}
+
+/* ======================================================================== *
+ * 12. Small initialisers and the winner-candidate push.
+ * ======================================================================== */
+
+void shim_rdopt_init_comp_avg_est_rd(int level, int64_t *out) {
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  for (int j = 0; j < TOP_COMP_AVG_EST_RD_COUNT; ++j)
+    x->top_comp_avg_est_rd[j] = out[j];
+  init_comp_avg_est_rd(x, level);
+  for (int j = 0; j < TOP_COMP_AVG_EST_RD_COUNT; ++j)
+    out[j] = x->top_comp_avg_est_rd[j];
+  free(x);
+}
+
+int shim_rdopt_top_comp_avg_est_rd_count(void) {
+  return TOP_COMP_AVG_EST_RD_COUNT;
+}
+
+void shim_rdopt_init_top_tx_no_split_rd(int level, int64_t *out, int n_blocks,
+                                        int n_top) {
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  for (int i = 0; i < n_blocks; ++i)
+    for (int j = 0; j < n_top; ++j)
+      x->top_inter_tx_no_split_rd[i][j] = out[i * n_top + j];
+  init_top_tx_no_split_rd_for_inter_modes(x, level);
+  for (int i = 0; i < n_blocks; ++i)
+    for (int j = 0; j < n_top; ++j)
+      out[i * n_top + j] = x->top_inter_tx_no_split_rd[i][j];
+  free(x);
+}
+
+int shim_rdopt_max_tx_blocks_in_max_sb(void) { return MAX_TX_BLOCKS_IN_MAX_SB; }
+int shim_rdopt_top_inter_tx_no_split_count(void) {
+  return TOP_INTER_TX_NO_SPLIT_COUNT;
+}
+
+/* `inter_modes_info_push` appends one candidate; the differential checks the
+ * scalar columns and `num`, which are the ones a port must reproduce (the
+ * mbmi / RD_STATS copies are memcpys of structs the port models differently). */
+void shim_rdopt_inter_modes_info_push(int num_in, int mode_rate, int64_t sse,
+                                      int64_t rd, int *num_out,
+                                      int *mode_rate_out, int64_t *sse_out,
+                                      int64_t *est_rd_out) {
+  InterModesInfo *info = (InterModesInfo *)calloc(1, sizeof(*info));
+  MB_MODE_INFO mbmi;
+  RD_STATS c, cy, cuv;
+  memset(&mbmi, 0, sizeof(mbmi));
+  memset(&c, 0, sizeof(c));
+  memset(&cy, 0, sizeof(cy));
+  memset(&cuv, 0, sizeof(cuv));
+  info->num = num_in;
+  inter_modes_info_push(info, mode_rate, sse, rd, &c, &cy, &cuv, &mbmi);
+  *num_out = info->num;
+  *mode_rate_out = info->mode_rate_arr[num_in];
+  *sse_out = info->sse_arr[num_in];
+  *est_rd_out = info->est_rd_arr[num_in];
+  free(info);
+}
+
+void shim_rdopt_increase_motion_mode_rd(int best_motion_mode,
+                                        int this_motion_mode,
+                                        int64_t *best_scaled_rd,
+                                        int64_t *this_scaled_rd,
+                                        int rd_warp_bias_scale_pct,
+                                        float rd_obmc_bias_scale_pct) {
+  MB_MODE_INFO best, cur;
+  memset(&best, 0, sizeof(best));
+  memset(&cur, 0, sizeof(cur));
+  best.motion_mode = (MOTION_MODE)best_motion_mode;
+  cur.motion_mode = (MOTION_MODE)this_motion_mode;
+  increase_motion_mode_rd(&best, &cur, best_scaled_rd, this_scaled_rd,
+                          rd_warp_bias_scale_pct, rd_obmc_bias_scale_pct);
+}
+
+int shim_rdopt_skip_interp_filter_search(int encoding_mode, int reference_mode,
+                                         int sf_skip_interp_filter_search,
+                                         int winner_mode_ifs,
+                                         int is_single_pred) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  cpi->oxcf.mode = (MODE)encoding_mode;
+  cpi->common.current_frame.reference_mode = (REFERENCE_MODE)reference_mode;
+  cpi->sf.interp_sf.skip_interp_filter_search = sf_skip_interp_filter_search;
+  cpi->sf.winner_mode_sf.winner_mode_ifs = winner_mode_ifs;
+  const int r = (int)skip_interp_filter_search(cpi, is_single_pred);
+  free(cpi);
+  return r;
+}
