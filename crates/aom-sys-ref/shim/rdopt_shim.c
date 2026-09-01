@@ -638,3 +638,340 @@ void shim_rdopt_inter_modes_info_sort(int num, const int64_t *est_rd,
 int shim_rdopt_compare_int64(int64_t a, int64_t b) {
   return compare_int64(&a, &b);
 }
+
+/* ======================================================================== *
+ * 8. The inter-mode RD MODEL (rdopt.c:353-467).
+ *
+ * `av1_inter_mode_data_init` and `av1_inter_mode_data_fit` are two of
+ * rdopt.c's ten EXPORTED symbols, so these two are tier 1 proper: the
+ * `#undef`s below reach the ARCHIVE's copies rather than this TU's, and the
+ * prototypes are restated because the header's were rewritten by the renames
+ * at the top of this file. `get_est_rate_dist` and `inter_mode_data_push` are
+ * static and come from this TU.
+ *
+ * The model crosses the boundary as a flat `double[13]` plus `ready`/`num`,
+ * in InterModeRdModel declaration order (encoder.h:1248).
+ * ======================================================================== */
+
+#undef av1_inter_mode_data_init
+#undef av1_inter_mode_data_fit
+void av1_inter_mode_data_init(TileDataEnc *tile_data);
+void av1_inter_mode_data_fit(TileDataEnc *tile_data, int rdmult);
+
+enum { SHIM_RD_MODEL_DOUBLES = 12 };
+
+static void shim_rd_model_out(const InterModeRdModel *md, int *ready, int *num,
+                              double *d) {
+  *ready = md->ready;
+  *num = md->num;
+  d[0] = md->a;
+  d[1] = md->b;
+  d[2] = md->dist_mean;
+  d[3] = md->ld_mean;
+  d[4] = md->sse_mean;
+  d[5] = md->sse_sse_mean;
+  d[6] = md->sse_ld_mean;
+  d[7] = md->dist_sum;
+  d[8] = md->ld_sum;
+  d[9] = md->sse_sum;
+  d[10] = md->sse_sse_sum;
+  d[11] = md->sse_ld_sum;
+}
+
+static void shim_rd_model_in(InterModeRdModel *md, int ready, int num,
+                             const double *d) {
+  md->ready = ready;
+  md->num = num;
+  md->a = d[0];
+  md->b = d[1];
+  md->dist_mean = d[2];
+  md->ld_mean = d[3];
+  md->sse_mean = d[4];
+  md->sse_sse_mean = d[5];
+  md->sse_ld_mean = d[6];
+  md->dist_sum = d[7];
+  md->ld_sum = d[8];
+  md->sse_sum = d[9];
+  md->sse_sse_sum = d[10];
+  md->sse_ld_sum = d[11];
+}
+
+/* Real exported `av1_inter_mode_data_init`, driven at one bsize.
+ *
+ * IN/OUT rather than OUT: `av1_inter_mode_data_init` resets only seven of the
+ * fourteen fields (ready, num, dist_sum, ld_sum, sse_sum, sse_sse_sum,
+ * sse_ld_sum) and leaves the five means plus `a` and `b` at whatever the
+ * caller's allocation held. That is not an oversight to "fix" in the port — a
+ * model with `ready == 0` never reads them — but it does mean the differential
+ * has to start both sides from the SAME values to compare all fourteen. */
+void shim_rdopt_inter_mode_data_init(int bsize, int *ready, int *num,
+                                     double *inout) {
+  TileDataEnc *td = (TileDataEnc *)calloc(1, sizeof(*td));
+  shim_rd_model_in(&td->inter_mode_rd_models[bsize], *ready, *num, inout);
+  av1_inter_mode_data_init(td);
+  shim_rd_model_out(&td->inter_mode_rd_models[bsize], ready, num, inout);
+  free(td);
+}
+
+/* Real exported `av1_inter_mode_data_fit`, driven at one bsize. */
+void shim_rdopt_inter_mode_data_fit(int bsize, int rdmult, int *ready, int *num,
+                                    double *inout) {
+  TileDataEnc *td = (TileDataEnc *)calloc(1, sizeof(*td));
+  shim_rd_model_in(&td->inter_mode_rd_models[bsize], *ready, *num, inout);
+  av1_inter_mode_data_fit(td, rdmult);
+  shim_rd_model_out(&td->inter_mode_rd_models[bsize], ready, num, inout);
+  free(td);
+}
+
+int shim_rdopt_get_est_rate_dist(int bsize, int ready, int num,
+                                 const double *model, int64_t sse,
+                                 int *est_residue_cost, int64_t *est_dist) {
+  TileDataEnc *td = (TileDataEnc *)calloc(1, sizeof(*td));
+  shim_rd_model_in(&td->inter_mode_rd_models[bsize], ready, num, model);
+  const int r = get_est_rate_dist(td, (BLOCK_SIZE)bsize, sse, est_residue_cost,
+                                  est_dist);
+  free(td);
+  return r;
+}
+
+void shim_rdopt_inter_mode_data_push(int bsize, int64_t sse, int64_t dist,
+                                     int residue_cost, int *ready, int *num,
+                                     double *inout) {
+  TileDataEnc *td = (TileDataEnc *)calloc(1, sizeof(*td));
+  shim_rd_model_in(&td->inter_mode_rd_models[bsize], *ready, *num, inout);
+  inter_mode_data_push(td, (BLOCK_SIZE)bsize, sse, dist, residue_cost);
+  shim_rd_model_out(&td->inter_mode_rd_models[bsize], ready, num, inout);
+  free(td);
+}
+
+int shim_rdopt_inter_mode_data_block_idx(int bsize) {
+  return inter_mode_data_block_idx((BLOCK_SIZE)bsize);
+}
+
+/* ======================================================================== *
+ * 9. NEWMV assembly (rdopt.c:1308-1420) and the two encodemv.c accessors it
+ *    is built on (both EXPORTED, so those two are tier 1 proper).
+ * ======================================================================== */
+
+void shim_rdopt_clamp_mv_in_range(int16_t *mv, int ref_idx, int this_mode,
+                                  int rf0, int rf1, int ref_mv_idx,
+                                  int ref_mv_count, const int16_t *stack_this,
+                                  const int16_t *stack_comp,
+                                  const int16_t *global_mvs,
+                                  const int *fullmv_limits) {
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  mbmi->ref_frame[0] = (MV_REFERENCE_FRAME)rf0;
+  mbmi->ref_frame[1] = (MV_REFERENCE_FRAME)rf1;
+  mbmi->ref_mv_idx = (uint8_t)ref_mv_idx;
+  mbmi->mode = (PREDICTION_MODE)this_mode;
+  x->e_mbd.mi = &mbmi;
+  x->mv_limits.col_min = fullmv_limits[0];
+  x->mv_limits.col_max = fullmv_limits[1];
+  x->mv_limits.row_min = fullmv_limits[2];
+  x->mv_limits.row_max = fullmv_limits[3];
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  shim_rd_fill_ext_row(&x->mbmi_ext, av1_ref_frame_type(rf), ref_mv_count,
+                       stack_this, stack_comp, NULL);
+  shim_rd_fill_global_mvs(&x->mbmi_ext, global_mvs);
+  int_mv m;
+  m.as_mv.row = mv[0];
+  m.as_mv.col = mv[1];
+  clamp_mv_in_range(x, &m, ref_idx);
+  mv[0] = m.as_mv.row;
+  mv[1] = m.as_mv.col;
+  free(mbmi);
+  free(x);
+}
+
+/* `av1_get_ref_mv_from_stack` (encodemv.c:302) — real exported symbol.
+ * NOTE its single-reference arm falls back to `global_mvs[ref_frame_type]`,
+ * which is indexed by the ROW, not by the reference frame. For a single
+ * reference those coincide (`av1_ref_frame_type` returns rf[0]); for a
+ * compound row they would not, but that arm is unreachable there. */
+void shim_rdopt_get_ref_mv_from_stack(int ref_idx, int rf0, int rf1,
+                                      int ref_mv_idx, int ref_mv_count,
+                                      const int16_t *stack_this,
+                                      const int16_t *stack_comp,
+                                      const int16_t *global_mvs,
+                                      int16_t *out_mv) {
+  MB_MODE_INFO_EXT *ext = (MB_MODE_INFO_EXT *)calloc(1, sizeof(*ext));
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  shim_rd_fill_ext_row(ext, av1_ref_frame_type(rf), ref_mv_count, stack_this,
+                       stack_comp, NULL);
+  shim_rd_fill_global_mvs(ext, global_mvs);
+  const int_mv m = av1_get_ref_mv_from_stack(ref_idx, rf, ref_mv_idx, ext);
+  out_mv[0] = m.as_mv.row;
+  out_mv[1] = m.as_mv.col;
+  free(ext);
+}
+
+/* `av1_get_ref_mv` (encodemv.c:322) — real exported symbol. Adds the NEAR_NEWMV
+ * / NEW_NEARMV `ref_mv_idx + 1` shift on top of the stack accessor. */
+void shim_rdopt_get_ref_mv(int ref_idx, int this_mode, int rf0, int rf1,
+                           int ref_mv_idx, int ref_mv_count,
+                           const int16_t *stack_this, const int16_t *stack_comp,
+                           const int16_t *global_mvs, int16_t *out_mv) {
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  mbmi->ref_frame[0] = (MV_REFERENCE_FRAME)rf0;
+  mbmi->ref_frame[1] = (MV_REFERENCE_FRAME)rf1;
+  mbmi->ref_mv_idx = (uint8_t)ref_mv_idx;
+  mbmi->mode = (PREDICTION_MODE)this_mode;
+  x->e_mbd.mi = &mbmi;
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  shim_rd_fill_ext_row(&x->mbmi_ext, av1_ref_frame_type(rf), ref_mv_count,
+                       stack_this, stack_comp, NULL);
+  shim_rd_fill_global_mvs(&x->mbmi_ext, global_mvs);
+  const int_mv m = av1_get_ref_mv(x, ref_idx);
+  out_mv[0] = m.as_mv.row;
+  out_mv[1] = m.as_mv.col;
+  free(mbmi);
+  free(x);
+}
+
+int shim_rdopt_prune_ref_mv_idx_search(int ref_mv_idx, int best_ref_mv_idx,
+                                       int16_t *save_mv /* [2][2][2] */,
+                                       int rf0, int rf1, const int16_t *mbmi_mv,
+                                       int pruning_factor) {
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  mbmi->ref_frame[0] = (MV_REFERENCE_FRAME)rf0;
+  mbmi->ref_frame[1] = (MV_REFERENCE_FRAME)rf1;
+  mbmi->mv[0].as_mv.row = mbmi_mv[0];
+  mbmi->mv[0].as_mv.col = mbmi_mv[1];
+  mbmi->mv[1].as_mv.row = mbmi_mv[2];
+  mbmi->mv[1].as_mv.col = mbmi_mv[3];
+  int_mv save[MAX_REF_MV_SEARCH - 1][2];
+  for (int i = 0; i < MAX_REF_MV_SEARCH - 1; ++i)
+    for (int j = 0; j < 2; ++j) {
+      save[i][j].as_mv.row = save_mv[(i * 2 + j) * 2];
+      save[i][j].as_mv.col = save_mv[(i * 2 + j) * 2 + 1];
+    }
+  const int r = prune_ref_mv_idx_search(ref_mv_idx, best_ref_mv_idx, save, mbmi,
+                                        pruning_factor);
+  for (int i = 0; i < MAX_REF_MV_SEARCH - 1; ++i)
+    for (int j = 0; j < 2; ++j) {
+      save_mv[(i * 2 + j) * 2] = save[i][j].as_mv.row;
+      save_mv[(i * 2 + j) * 2 + 1] = save[i][j].as_mv.col;
+    }
+  free(mbmi);
+  return r;
+}
+
+/* ======================================================================== *
+ * 10. `handle_newmv` (rdopt.c:1317), COMPOUND arm.
+ *
+ * The single-reference arm calls `av1_single_motion_search`, which needs a
+ * whole AV1_COMP plus a source and a reference frame; the compound arm needs
+ * none of that and does not read `cpi` at all, so this driver passes NULL for
+ * it deliberately (and only ever calls with a compound mode, which is what
+ * keeps the single arm unreachable). `mode_info` is likewise single-arm-only.
+ *
+ * `mvjcost` is MV_JOINTS ints; `mvcost0` / `mvcost1` are MV_VALS ints each,
+ * indexed from the START of the allocation (C centres them at MV_MAX with the
+ * `nmv_cost_hp` pointers, and this driver reproduces that centring).
+ * ======================================================================== */
+
+int shim_rdopt_handle_newmv_compound(
+    int16_t *cur_mv /* 4: {mv0.row, mv0.col, mv1.row, mv1.col}, in/out */,
+    int *rate_mv, int this_mode, int rf0, int rf1, int ref_mv_idx,
+    int ref_mv_count, const int16_t *stack_this, const int16_t *stack_comp,
+    const int16_t *global_mvs, const int16_t *single_newmv /* [3][8][2] */,
+    const uint8_t *single_newmv_valid /* [3][8] */, const int *fullmv_limits,
+    const int *mvjcost, const int *mvcost0, const int *mvcost1) {
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  MvCosts *mv_costs = (MvCosts *)calloc(1, sizeof(*mv_costs));
+  HandleInterModeArgs *args = (HandleInterModeArgs *)calloc(1, sizeof(*args));
+  int_mv (*snmv)[REF_FRAMES] =
+      (int_mv (*)[REF_FRAMES])calloc(MAX_REF_MV_SEARCH, sizeof(*snmv));
+  int (*snmv_valid)[REF_FRAMES] =
+      (int (*)[REF_FRAMES])calloc(MAX_REF_MV_SEARCH, sizeof(*snmv_valid));
+  int (*snmv_rate)[REF_FRAMES] =
+      (int (*)[REF_FRAMES])calloc(MAX_REF_MV_SEARCH, sizeof(*snmv_rate));
+
+  for (int j = 0; j < MV_JOINTS; ++j) mv_costs->nmv_joint_cost[j] = mvjcost[j];
+  for (int v = 0; v < MV_VALS; ++v) {
+    mv_costs->nmv_cost_hp_alloc[0][v] = mvcost0[v];
+    mv_costs->nmv_cost_hp_alloc[1][v] = mvcost1[v];
+  }
+  mv_costs->nmv_cost_hp[0] = &mv_costs->nmv_cost_hp_alloc[0][MV_MAX];
+  mv_costs->nmv_cost_hp[1] = &mv_costs->nmv_cost_hp_alloc[1][MV_MAX];
+  mv_costs->mv_cost_stack = mv_costs->nmv_cost_hp;
+  x->mv_costs = mv_costs;
+
+  mbmi->ref_frame[0] = (MV_REFERENCE_FRAME)rf0;
+  mbmi->ref_frame[1] = (MV_REFERENCE_FRAME)rf1;
+  mbmi->ref_mv_idx = (uint8_t)ref_mv_idx;
+  mbmi->mode = (PREDICTION_MODE)this_mode;
+  x->e_mbd.mi = &mbmi;
+  x->mv_limits.col_min = fullmv_limits[0];
+  x->mv_limits.col_max = fullmv_limits[1];
+  x->mv_limits.row_min = fullmv_limits[2];
+  x->mv_limits.row_max = fullmv_limits[3];
+
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  shim_rd_fill_ext_row(&x->mbmi_ext, av1_ref_frame_type(rf), ref_mv_count,
+                       stack_this, stack_comp, NULL);
+  shim_rd_fill_global_mvs(&x->mbmi_ext, global_mvs);
+
+  for (int i = 0; i < MAX_REF_MV_SEARCH; ++i) {
+    for (int r = 0; r < REF_FRAMES; ++r) {
+      snmv[i][r].as_mv.row = single_newmv[(i * REF_FRAMES + r) * 2];
+      snmv[i][r].as_mv.col = single_newmv[(i * REF_FRAMES + r) * 2 + 1];
+      snmv_valid[i][r] = single_newmv_valid[i * REF_FRAMES + r];
+      snmv_rate[i][r] = 0;
+    }
+  }
+  args->single_newmv = snmv;
+  args->single_newmv_valid = snmv_valid;
+  args->single_newmv_rate = snmv_rate;
+
+  int_mv mv[2];
+  mv[0].as_mv.row = cur_mv[0];
+  mv[0].as_mv.col = cur_mv[1];
+  mv[1].as_mv.row = cur_mv[2];
+  mv[1].as_mv.col = cur_mv[3];
+
+  *rate_mv = 0;
+  const int64_t r = handle_newmv(NULL, x, BLOCK_16X16, mv, rate_mv, args, NULL);
+
+  cur_mv[0] = mv[0].as_mv.row;
+  cur_mv[1] = mv[0].as_mv.col;
+  cur_mv[2] = mv[1].as_mv.row;
+  cur_mv[3] = mv[1].as_mv.col;
+
+  free(snmv_rate);
+  free(snmv_valid);
+  free(snmv);
+  free(args);
+  free(mv_costs);
+  free(mbmi);
+  free(x);
+  return (int)r;
+}
+
+int shim_rdopt_mv_vals(void) { return MV_VALS; }
+int shim_rdopt_mv_max(void) { return MV_MAX; }
+
+void shim_rdopt_update_mode_start_end_index(int motion_mode_for_winner_cand,
+                                            int extra_prune_warped, int bsize,
+                                            int last_motion_mode_allowed,
+                                            int interintra_allowed,
+                                            int eval_motion_mode, int *start,
+                                            int *end) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  cpi->sf.winner_mode_sf.motion_mode_for_winner_cand =
+      motion_mode_for_winner_cand;
+  cpi->sf.inter_sf.extra_prune_warped = extra_prune_warped;
+  mbmi->bsize = (BLOCK_SIZE)bsize;
+  update_mode_start_end_index(cpi, mbmi, start, end, last_motion_mode_allowed,
+                              interintra_allowed, eval_motion_mode);
+  free(mbmi);
+  free(cpi);
+}

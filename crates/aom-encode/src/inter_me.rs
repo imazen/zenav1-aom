@@ -955,7 +955,7 @@ pub struct SingleMotionResult {
 /// `av1_set_subpel_mv_search_range` (mcomp.h:341): intersect the block full-pel
 /// limits (promoted to 1/8-pel) with the ±`GET_MV_SUBPEL(MAX_FULL_PEL_VAL)`
 /// window around `ref_mv`, clamped to `MV_LOW+1 .. MV_UPP-1`.
-fn subpel_mv_search_range(
+pub fn subpel_mv_search_range(
     full: crate::intrabc_search::FullMvLimits,
     ref_mv: (i32, i32),
 ) -> SubpelMvLimits {

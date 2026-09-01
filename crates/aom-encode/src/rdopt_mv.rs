@@ -397,23 +397,14 @@ pub const fn get_mv_rawpel(v: i16) -> i32 {
 }
 
 /// `FullMvLimits` (`av1/common/mv.h`) — `x->mv_limits`, in FULL-pel units.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FullMvLimits {
-    /// `col_min`.
-    pub col_min: i32,
-    /// `col_max`.
-    pub col_max: i32,
-    /// `row_min`.
-    pub row_min: i32,
-    /// `row_max`.
-    pub row_max: i32,
-}
+///
+/// This is [`crate::intrabc_search::FullMvLimits`], not a second copy of it:
+/// the intrabc DV search and the inter MV search read the same C field.
+pub use crate::intrabc_search::FullMvLimits;
 
-impl FullMvLimits {
-    /// `av1_is_fullmv_in_range` (`mcomp.h:268`).
-    pub const fn contains(&self, row: i32, col: i32) -> bool {
-        col >= self.col_min && col <= self.col_max && row >= self.row_min && row <= self.row_max
-    }
+/// `av1_is_fullmv_in_range` (`mcomp.h:268`).
+pub const fn is_fullmv_in_range(limits: &FullMvLimits, row: i32, col: i32) -> bool {
+    col >= limits.col_min && col <= limits.col_max && row >= limits.row_min && row <= limits.row_max
 }
 
 /// `clamp_mv2` (rdopt.c:1227): clamp a subpel MV into the block's own extended
@@ -499,7 +490,7 @@ pub fn clamp_and_check_mv(
 ) -> (Mv, bool) {
     let lowered = lower_mv_precision(in_mv, allow_high_precision_mv, cur_frame_force_integer_mv);
     let out = clamp_mv2(lowered, edges);
-    let ok = limits.contains(get_mv_rawpel(out.row), get_mv_rawpel(out.col));
+    let ok = is_fullmv_in_range(&limits, get_mv_rawpel(out.row), get_mv_rawpel(out.col));
     (out, ok)
 }
 
@@ -810,4 +801,286 @@ impl IdxMask {
     pub const fn get(self, index: usize) -> bool {
         (self.0 >> index) & 1 != 0
     }
+}
+
+// ===========================================================================
+// NEWMV assembly (rdopt.c:1308-1420) and the two `encodemv.c` ref-MV
+// accessors it is built on.
+// ===========================================================================
+
+/// `av1_get_ref_mv_from_stack` (`encodemv.c:302`): the predictor a NEWMV is
+/// coded RELATIVE to.
+///
+/// Lives in encodemv.c rather than rdopt.c, and is ported here because
+/// [`handle_newmv_compound`] and [`clamp_mv_in_range`] cannot exist without
+/// it. It IS an exported C symbol, so its gate is tier 1 proper.
+///
+/// `global_mv` is C's `mbmi_ext->global_mvs[ref_frame_type]` — note the index
+/// is the ROW, not the reference frame. For a single reference the two
+/// coincide (`av1_ref_frame_type` returns `rf[0]`), and the fallback arm is
+/// unreachable for a compound pair, so the distinction never bites; it is
+/// called out because it looks like a bug.
+pub fn get_ref_mv_from_stack(
+    ref_idx: usize,
+    rf: [i32; 2],
+    ref_mv_idx: usize,
+    row: &RefMvRow,
+    global_mv_at_row: Mv,
+) -> Mv {
+    if rf[1] > INTRA_FRAME {
+        debug_assert!(ref_idx < 2);
+        return row.stack_mv(ref_idx, ref_mv_idx);
+    }
+    debug_assert_eq!(ref_idx, 0);
+    if ref_mv_idx < row.count {
+        row.this_mv[ref_mv_idx]
+    } else {
+        global_mv_at_row
+    }
+}
+
+/// `av1_get_ref_mv` (`encodemv.c:322`): [`get_ref_mv_from_stack`] with the
+/// `NEAR_NEWMV` / `NEW_NEARMV` index shift — those two modes code their NEWMV
+/// half against the NEXT stack entry, because the NEAR half consumed this one.
+pub fn get_ref_mv(
+    ref_idx: usize,
+    mode: PredMode,
+    rf: [i32; 2],
+    ref_mv_idx: usize,
+    row: &RefMvRow,
+    global_mv_at_row: Mv,
+) -> Mv {
+    let shifted = if matches!(mode, PredMode::NearNewMv | PredMode::NewNearMv) {
+        debug_assert!(rf[1] > INTRA_FRAME);
+        ref_mv_idx + 1
+    } else {
+        ref_mv_idx
+    };
+    get_ref_mv_from_stack(ref_idx, rf, shifted, row, global_mv_at_row)
+}
+
+/// `clamp_mv_in_range` (rdopt.c:1308): pull a single-reference NEWMV back into
+/// the valid range before reusing it for a compound mode.
+///
+/// C's comment records why this exists at all: without it "encoder would
+/// generate out of range mv, and this is seen in 8k encoding".
+#[allow(clippy::too_many_arguments)]
+pub fn clamp_mv_in_range(
+    mv: Mv,
+    ref_idx: usize,
+    mode: PredMode,
+    rf: [i32; 2],
+    ref_mv_idx: usize,
+    row: &RefMvRow,
+    global_mv_at_row: Mv,
+    limits: FullMvLimits,
+) -> Mv {
+    let ref_mv = get_ref_mv(ref_idx, mode, rf, ref_mv_idx, row, global_mv_at_row);
+    let sub = crate::inter_me::subpel_mv_search_range(
+        limits,
+        (i32::from(ref_mv.row), i32::from(ref_mv.col)),
+    );
+    Mv {
+        row: i32::from(mv.row).clamp(sub.row_min, sub.row_max) as i16,
+        col: i32::from(mv.col).clamp(sub.col_min, sub.col_max) as i16,
+    }
+}
+
+/// What [`handle_newmv_compound`] needs out of `HandleInterModeArgs` for the
+/// DRL index under test: the per-reference single-NEWMV results.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SingleNewMvRow {
+    /// `args->single_newmv[ref_mv_idx][ref]`.
+    pub mv: [Mv; REF_FRAMES],
+    /// `args->single_newmv_valid[ref_mv_idx][ref]`.
+    pub valid: [bool; REF_FRAMES],
+}
+
+/// `handle_newmv` (rdopt.c:1317), COMPOUND arm only: seed each NEWMV half from
+/// the single-reference search that already ran for that reference, and charge
+/// the coded-MV rate.
+///
+/// The single-reference arm is not here because it is not a decision — it is a
+/// call to `av1_single_motion_search` plus bookkeeping; see
+/// [`newmv_reduced_search_range`] for the one piece of it that IS logic.
+///
+/// `cur_mv` is in/out: C only overwrites the halves whose single search was
+/// valid, and the rate is charged against whatever ends up there.
+/// `global_mv_at_row` is `mbmi_ext->global_mvs[av1_ref_frame_type(rf)]`.
+#[allow(clippy::too_many_arguments)]
+pub fn handle_newmv_compound(
+    cur_mv: &mut [Mv; 2],
+    mode: PredMode,
+    rf: [i32; 2],
+    ref_mv_idx: usize,
+    single: &SingleNewMvRow,
+    row: &RefMvRow,
+    global_mv_at_row: Mv,
+    limits: FullMvLimits,
+    mv_cost: impl Fn(Mv, Mv) -> i32,
+) -> i32 {
+    debug_assert!(mode.is_inter_compound());
+    // C: `refs[1] = mbmi->ref_frame[1] < 0 ? 0 : mbmi->ref_frame[1]` — an
+    // absent second reference reads slot 0 of the single-NEWMV table rather
+    // than index [-1]. Unreachable on the compound arm, but reproduced so the
+    // index can never go negative.
+    let refs = [rf[0].max(0) as usize, rf[1].max(0) as usize];
+
+    // Which halves are seeded from the single search, and which reference
+    // slots are charged a rate. NEW_NEWMV does both halves; the mixed modes do
+    // exactly the one that carries NEWMV.
+    let (seed, charge): (&[usize], &[usize]) = match mode {
+        PredMode::NewNewMv => (&[0, 1], &[0, 1]),
+        PredMode::NearestNewMv | PredMode::NearNewMv => (&[1], &[1]),
+        // C asserts NEW_NEARESTMV || NEW_NEARMV here.
+        _ => (&[0], &[0]),
+    };
+
+    for &i in seed {
+        if single.valid[refs[i]] {
+            cur_mv[i] = single.mv[refs[i]];
+            cur_mv[i] = clamp_mv_in_range(
+                cur_mv[i],
+                i,
+                mode,
+                rf,
+                ref_mv_idx,
+                row,
+                global_mv_at_row,
+                limits,
+            );
+        }
+    }
+
+    charge
+        .iter()
+        .map(|&i| {
+            let ref_mv = get_ref_mv(i, mode, rf, ref_mv_idx, row, global_mv_at_row);
+            mv_cost(cur_mv[i], ref_mv)
+        })
+        .sum()
+}
+
+/// `handle_newmv`'s `sf.mv_sf.reduce_search_range` block (rdopt.c:1372-1403):
+/// bound the full-pel search radius by how close this DRL index's predictor is
+/// to one already searched.
+///
+/// `None` is C's `search_range = INT_MAX` — no reduction. C reaches that both
+/// when the speed feature is off and when no previous index was close enough.
+pub fn newmv_reduced_search_range(
+    rf: [i32; 2],
+    ref_mv_idx: usize,
+    row: &RefMvRow,
+    global_mv_at_row: Mv,
+    single: &[SingleNewMvRow],
+    ref_mv: Mv,
+) -> Option<i32> {
+    if ref_mv_idx == 0 {
+        return None;
+    }
+    let ref0 = rf[0].max(0) as usize;
+    // The previously-searched index whose predictor is closest to this one,
+    // measured as the larger of the two component distances.
+    let (best_match, min_mv_diff) = (0..ref_mv_idx)
+        .map(|idx| {
+            let prev = get_ref_mv_from_stack(0, rf, idx, row, global_mv_at_row);
+            let d = (i32::from(ref_mv.row) - i32::from(prev.row))
+                .abs()
+                .max((i32::from(ref_mv.col) - i32::from(prev.col)).abs());
+            (idx, d)
+        })
+        // `min_by_key` keeps the FIRST minimum, which is what C's
+        // strictly-greater-than update does.
+        .min_by_key(|&(_, d)| d)?;
+
+    if min_mv_diff >= (16 << 3) {
+        return None;
+    }
+    if !single[best_match].valid[ref0] {
+        return None;
+    }
+    let prev = get_ref_mv_from_stack(0, rf, best_match, row, global_mv_at_row);
+    let found = single[best_match].mv[ref0];
+    let range = min_mv_diff
+        + (i32::from(found.row) - i32::from(prev.row))
+            .abs()
+            .max((i32::from(found.col) - i32::from(prev.col)).abs());
+    // Full-pel, rounded like C's `(range + 4) >> 3`.
+    Some((range + 4) >> 3)
+}
+
+/// `prune_ref_mv_idx_search` (rdopt.c:2755): skip a DRL index whose motion
+/// vectors are within a threshold of one already evaluated, unless one of them
+/// is currently the best.
+///
+/// `save_mv` is in/out — C both reads the earlier indices out of it and writes
+/// this index's MVs into it, and it is the caller's array across the whole DRL
+/// loop. `INVALID_MV` marks an unwritten slot.
+pub fn prune_ref_mv_idx_search(
+    ref_mv_idx: usize,
+    best_ref_mv_idx: i32,
+    save_mv: &mut [[Mv; 2]; MAX_REF_MV_SEARCH - 1],
+    is_comp_pred: bool,
+    mv: [Mv; 2],
+    pruning_factor: i32,
+) -> bool {
+    let n_refs = usize::from(is_comp_pred) + 1;
+    let thr = (1 + i32::from(is_comp_pred)) << (pruning_factor + 1);
+
+    for saved in save_mv.iter().take(ref_mv_idx) {
+        if saved[0] == Mv::INVALID {
+            continue;
+        }
+        let mv_diff: i32 = (0..n_refs)
+            .map(|i| {
+                (i32::from(saved[i].row) - i32::from(mv[i].row)).abs()
+                    + (i32::from(saved[i].col) - i32::from(mv[i].col)).abs()
+            })
+            .sum();
+        // Only prune while no index has won yet: once `best_ref_mv_idx` is
+        // set, a near-duplicate is still worth evaluating.
+        if best_ref_mv_idx == -1 && mv_diff <= thr {
+            return true;
+        }
+    }
+
+    if ref_mv_idx < MAX_REF_MV_SEARCH - 1 {
+        save_mv[ref_mv_idx][..n_refs].copy_from_slice(&mv[..n_refs]);
+    }
+    false
+}
+
+/// `update_mode_start_end_index` (rdopt.c:1422): the half-open range of motion
+/// modes the RD loop evaluates for one candidate.
+///
+/// Returned as a Rust range rather than C's two out-parameters; C's `end` is
+/// INCLUSIVE, so the returned range is `start..=end` flattened to `start..end + 1`
+/// only where the caller iterates — here the pair is reported verbatim.
+///
+/// `bsize_gt_16x16` is C's `mbmi->bsize > BLOCK_16X16`, and `BLOCK_16X16` is
+/// index **6** (`enums.h:106`) — not 8, which is `BLOCK_32X16`.
+pub fn update_mode_start_end_index(
+    motion_mode_for_winner_cand: bool,
+    extra_prune_warped: bool,
+    bsize_gt_16x16: bool,
+    last_motion_mode_allowed: i32,
+    interintra_allowed: i32,
+    eval_motion_mode: bool,
+) -> (i32, i32) {
+    /// `SIMPLE_TRANSLATION` (`enums.h:398`).
+    const SIMPLE_TRANSLATION: i32 = 0;
+    let mut start = SIMPLE_TRANSLATION;
+    let mut end = last_motion_mode_allowed + interintra_allowed;
+    if motion_mode_for_winner_cand {
+        if eval_motion_mode {
+            // Simple translation was already evaluated in the first pass.
+            start = 1;
+        } else {
+            end = SIMPLE_TRANSLATION;
+        }
+    }
+    if extra_prune_warped && bsize_gt_16x16 {
+        end = SIMPLE_TRANSLATION;
+    }
+    (start, end)
 }

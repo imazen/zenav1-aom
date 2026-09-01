@@ -19457,3 +19457,442 @@ pub fn ref_rdopt_compare_int64(a: i64, b: i64) -> i32 {
     ref_init();
     unsafe { shim_rdopt_compare_int64(a, b) }
 }
+
+// --- rdopt.c: the inter-mode RD model + NEWMV assembly --------------------
+
+/// The 12 `double` members of `InterModeRdModel` (`encoder.h:1248`) in
+/// declaration order: a, b, dist_mean, ld_mean, sse_mean, sse_sse_mean,
+/// sse_ld_mean, dist_sum, ld_sum, sse_sum, sse_sse_sum, sse_ld_sum.
+pub const RD_MODEL_DOUBLES: usize = 12;
+
+/// `InterModeRdModel` (`encoder.h:1248`) flattened for the FFI.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct InterModeRdModelFlat {
+    /// `ready`.
+    pub ready: i32,
+    /// `num`.
+    pub num: i32,
+    /// The 12 doubles, in declaration order.
+    pub d: [f64; RD_MODEL_DOUBLES],
+}
+
+unsafe extern "C" {
+    fn shim_rdopt_inter_mode_data_init(bsize: i32, ready: *mut i32, num: *mut i32, inout: *mut f64);
+    fn shim_rdopt_inter_mode_data_fit(
+        bsize: i32,
+        rdmult: i32,
+        ready: *mut i32,
+        num: *mut i32,
+        inout: *mut f64,
+    );
+    fn shim_rdopt_get_est_rate_dist(
+        bsize: i32,
+        ready: i32,
+        num: i32,
+        model: *const f64,
+        sse: i64,
+        est_residue_cost: *mut i32,
+        est_dist: *mut i64,
+    ) -> i32;
+    fn shim_rdopt_inter_mode_data_push(
+        bsize: i32,
+        sse: i64,
+        dist: i64,
+        residue_cost: i32,
+        ready: *mut i32,
+        num: *mut i32,
+        inout: *mut f64,
+    );
+    fn shim_rdopt_inter_mode_data_block_idx(bsize: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_clamp_mv_in_range(
+        mv: *mut i16,
+        ref_idx: i32,
+        this_mode: i32,
+        rf0: i32,
+        rf1: i32,
+        ref_mv_idx: i32,
+        ref_mv_count: i32,
+        stack_this: *const i16,
+        stack_comp: *const i16,
+        global_mvs: *const i16,
+        fullmv_limits: *const i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_get_ref_mv_from_stack(
+        ref_idx: i32,
+        rf0: i32,
+        rf1: i32,
+        ref_mv_idx: i32,
+        ref_mv_count: i32,
+        stack_this: *const i16,
+        stack_comp: *const i16,
+        global_mvs: *const i16,
+        out_mv: *mut i16,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_get_ref_mv(
+        ref_idx: i32,
+        this_mode: i32,
+        rf0: i32,
+        rf1: i32,
+        ref_mv_idx: i32,
+        ref_mv_count: i32,
+        stack_this: *const i16,
+        stack_comp: *const i16,
+        global_mvs: *const i16,
+        out_mv: *mut i16,
+    );
+    fn shim_rdopt_prune_ref_mv_idx_search(
+        ref_mv_idx: i32,
+        best_ref_mv_idx: i32,
+        save_mv: *mut i16,
+        rf0: i32,
+        rf1: i32,
+        mbmi_mv: *const i16,
+        pruning_factor: i32,
+    ) -> i32;
+}
+
+/// Reference `av1_inter_mode_data_init` (rdopt.c:353) — the REAL exported
+/// symbol (tier 1), driven at one `bsize`. In/out: the function resets only
+/// seven of the fourteen fields, so both sides must start from the same
+/// values for a full comparison to mean anything.
+pub fn ref_rdopt_inter_mode_data_init(bsize: i32, m: &mut InterModeRdModelFlat) {
+    ref_init();
+    unsafe {
+        shim_rdopt_inter_mode_data_init(bsize, &mut m.ready, &mut m.num, m.d.as_mut_ptr());
+    }
+}
+
+/// Reference `av1_inter_mode_data_fit` (rdopt.c:400) — the REAL exported
+/// symbol (tier 1).
+pub fn ref_rdopt_inter_mode_data_fit(bsize: i32, rdmult: i32, m: &mut InterModeRdModelFlat) {
+    ref_init();
+    unsafe {
+        shim_rdopt_inter_mode_data_fit(bsize, rdmult, &mut m.ready, &mut m.num, m.d.as_mut_ptr());
+    }
+}
+
+/// Reference `get_est_rate_dist` (rdopt.c:366). `None` is C's `return 0` — the
+/// model is not ready and the caller must do a real transform search.
+pub fn ref_rdopt_get_est_rate_dist(
+    bsize: i32,
+    m: &InterModeRdModelFlat,
+    sse: i64,
+) -> Option<(i32, i64)> {
+    ref_init();
+    let mut cost = 0i32;
+    let mut dist = 0i64;
+    let ok = unsafe {
+        shim_rdopt_get_est_rate_dist(
+            bsize,
+            m.ready,
+            m.num,
+            m.d.as_ptr(),
+            sse,
+            &mut cost,
+            &mut dist,
+        )
+    };
+    (ok != 0).then_some((cost, dist))
+}
+
+/// Reference `inter_mode_data_push` (rdopt.c:450).
+pub fn ref_rdopt_inter_mode_data_push(
+    bsize: i32,
+    sse: i64,
+    dist: i64,
+    residue_cost: i32,
+    m: &mut InterModeRdModelFlat,
+) {
+    ref_init();
+    unsafe {
+        shim_rdopt_inter_mode_data_push(
+            bsize,
+            sse,
+            dist,
+            residue_cost,
+            &mut m.ready,
+            &mut m.num,
+            m.d.as_mut_ptr(),
+        );
+    }
+}
+
+/// Reference `inter_mode_data_block_idx` (`rdopt_utils.h:298`).
+pub fn ref_rdopt_inter_mode_data_block_idx(bsize: i32) -> i32 {
+    ref_init();
+    unsafe { shim_rdopt_inter_mode_data_block_idx(bsize) }
+}
+
+/// Reference `clamp_mv_in_range` (rdopt.c:1308).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_clamp_mv_in_range(
+    mv: (i16, i16),
+    ref_idx: i32,
+    this_mode: i32,
+    rf: (i32, i32),
+    ref_mv_idx: i32,
+    row: &RefMvRow,
+    fullmv_limits: [i32; 4],
+) -> (i16, i16) {
+    ref_init();
+    let (t, c, g) = (row.flat_this(), row.flat_comp(), row.flat_global());
+    let mut m = [mv.0, mv.1];
+    unsafe {
+        shim_rdopt_clamp_mv_in_range(
+            m.as_mut_ptr(),
+            ref_idx,
+            this_mode,
+            rf.0,
+            rf.1,
+            ref_mv_idx,
+            row.count,
+            t.as_ptr(),
+            c.as_ptr(),
+            g.as_ptr(),
+            fullmv_limits.as_ptr(),
+        );
+    }
+    (m[0], m[1])
+}
+
+/// Reference `av1_get_ref_mv_from_stack` (`encodemv.c:302`) — the REAL
+/// exported symbol (tier 1).
+pub fn ref_rdopt_get_ref_mv_from_stack(
+    ref_idx: i32,
+    rf: (i32, i32),
+    ref_mv_idx: i32,
+    row: &RefMvRow,
+) -> (i16, i16) {
+    ref_init();
+    let (t, c, g) = (row.flat_this(), row.flat_comp(), row.flat_global());
+    let mut out = [0i16; 2];
+    unsafe {
+        shim_rdopt_get_ref_mv_from_stack(
+            ref_idx,
+            rf.0,
+            rf.1,
+            ref_mv_idx,
+            row.count,
+            t.as_ptr(),
+            c.as_ptr(),
+            g.as_ptr(),
+            out.as_mut_ptr(),
+        );
+    }
+    (out[0], out[1])
+}
+
+/// Reference `av1_get_ref_mv` (`encodemv.c:322`) — the REAL exported symbol
+/// (tier 1).
+pub fn ref_rdopt_get_ref_mv(
+    ref_idx: i32,
+    this_mode: i32,
+    rf: (i32, i32),
+    ref_mv_idx: i32,
+    row: &RefMvRow,
+) -> (i16, i16) {
+    ref_init();
+    let (t, c, g) = (row.flat_this(), row.flat_comp(), row.flat_global());
+    let mut out = [0i16; 2];
+    unsafe {
+        shim_rdopt_get_ref_mv(
+            ref_idx,
+            this_mode,
+            rf.0,
+            rf.1,
+            ref_mv_idx,
+            row.count,
+            t.as_ptr(),
+            c.as_ptr(),
+            g.as_ptr(),
+            out.as_mut_ptr(),
+        );
+    }
+    (out[0], out[1])
+}
+
+/// Reference `prune_ref_mv_idx_search` (rdopt.c:2755). `save_mv` is
+/// `[MAX_REF_MV_SEARCH - 1][2]` MVs, in/out.
+pub fn ref_rdopt_prune_ref_mv_idx_search(
+    ref_mv_idx: i32,
+    best_ref_mv_idx: i32,
+    save_mv: &mut [(i16, i16); 4],
+    rf: (i32, i32),
+    mbmi_mv: [(i16, i16); 2],
+    pruning_factor: i32,
+) -> bool {
+    ref_init();
+    let mut flat = [0i16; 8];
+    for (i, &(r, c)) in save_mv.iter().enumerate() {
+        flat[2 * i] = r;
+        flat[2 * i + 1] = c;
+    }
+    let mv = [mbmi_mv[0].0, mbmi_mv[0].1, mbmi_mv[1].0, mbmi_mv[1].1];
+    let r = unsafe {
+        shim_rdopt_prune_ref_mv_idx_search(
+            ref_mv_idx,
+            best_ref_mv_idx,
+            flat.as_mut_ptr(),
+            rf.0,
+            rf.1,
+            mv.as_ptr(),
+            pruning_factor,
+        )
+    };
+    for (i, slot) in save_mv.iter_mut().enumerate() {
+        *slot = (flat[2 * i], flat[2 * i + 1]);
+    }
+    r != 0
+}
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_handle_newmv_compound(
+        cur_mv: *mut i16,
+        rate_mv: *mut i32,
+        this_mode: i32,
+        rf0: i32,
+        rf1: i32,
+        ref_mv_idx: i32,
+        ref_mv_count: i32,
+        stack_this: *const i16,
+        stack_comp: *const i16,
+        global_mvs: *const i16,
+        single_newmv: *const i16,
+        single_newmv_valid: *const u8,
+        fullmv_limits: *const i32,
+        mvjcost: *const i32,
+        mvcost0: *const i32,
+        mvcost1: *const i32,
+    ) -> i32;
+    fn shim_rdopt_mv_vals() -> i32;
+    fn shim_rdopt_mv_max() -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_update_mode_start_end_index(
+        motion_mode_for_winner_cand: i32,
+        extra_prune_warped: i32,
+        bsize: i32,
+        last_motion_mode_allowed: i32,
+        interintra_allowed: i32,
+        eval_motion_mode: i32,
+        start: *mut i32,
+        end: *mut i32,
+    );
+}
+
+/// `MV_VALS` (`entropymv.h:72`) as the C oracle sees it — the length of one
+/// `nmv_cost` table.
+pub fn ref_mv_vals() -> usize {
+    ref_init();
+    unsafe { shim_rdopt_mv_vals() as usize }
+}
+
+/// `MV_MAX` (`entropymv.h:71`) — the index the cost tables are centred at.
+pub fn ref_mv_max() -> usize {
+    ref_init();
+    unsafe { shim_rdopt_mv_max() as usize }
+}
+
+/// The per-DRL-index single-NEWMV table `handle_newmv`'s compound arm reads:
+/// `args->single_newmv[MAX_REF_MV_SEARCH][REF_FRAMES]` plus its validity flags.
+#[derive(Clone, Debug)]
+pub struct SingleNewMvTable {
+    /// `single_newmv[idx][ref]` as `(row, col)`.
+    pub mv: [[(i16, i16); C_REF_FRAMES]; MAX_REF_MV_SEARCH],
+    /// `single_newmv_valid[idx][ref]`.
+    pub valid: [[bool; C_REF_FRAMES]; MAX_REF_MV_SEARCH],
+}
+
+impl Default for SingleNewMvTable {
+    fn default() -> Self {
+        Self {
+            mv: [[(0, 0); C_REF_FRAMES]; MAX_REF_MV_SEARCH],
+            valid: [[false; C_REF_FRAMES]; MAX_REF_MV_SEARCH],
+        }
+    }
+}
+
+/// Reference `handle_newmv` (rdopt.c:1317), COMPOUND arm. Returns
+/// `(cur_mv, rate_mv, ret)`; `ret` is C's `int64_t` return truncated to the
+/// two values the compound arm can produce (0), so a non-zero here means the
+/// single arm was somehow reached.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_handle_newmv_compound(
+    cur_mv: &mut [(i16, i16); 2],
+    this_mode: i32,
+    rf: (i32, i32),
+    ref_mv_idx: i32,
+    row: &RefMvRow,
+    single: &SingleNewMvTable,
+    fullmv_limits: [i32; 4],
+    mvjcost: &[i32; 4],
+    mvcost0: &[i32],
+    mvcost1: &[i32],
+) -> (i32, i32) {
+    ref_init();
+    let (t, c, g) = (row.flat_this(), row.flat_comp(), row.flat_global());
+    let mut flat = [cur_mv[0].0, cur_mv[0].1, cur_mv[1].0, cur_mv[1].1];
+    let mut snmv = vec![0i16; MAX_REF_MV_SEARCH * C_REF_FRAMES * 2];
+    let mut svalid = vec![0u8; MAX_REF_MV_SEARCH * C_REF_FRAMES];
+    for i in 0..MAX_REF_MV_SEARCH {
+        for r in 0..C_REF_FRAMES {
+            snmv[(i * C_REF_FRAMES + r) * 2] = single.mv[i][r].0;
+            snmv[(i * C_REF_FRAMES + r) * 2 + 1] = single.mv[i][r].1;
+            svalid[i * C_REF_FRAMES + r] = u8::from(single.valid[i][r]);
+        }
+    }
+    let mut rate_mv = 0i32;
+    let ret = unsafe {
+        shim_rdopt_handle_newmv_compound(
+            flat.as_mut_ptr(),
+            &mut rate_mv,
+            this_mode,
+            rf.0,
+            rf.1,
+            ref_mv_idx,
+            row.count,
+            t.as_ptr(),
+            c.as_ptr(),
+            g.as_ptr(),
+            snmv.as_ptr(),
+            svalid.as_ptr(),
+            fullmv_limits.as_ptr(),
+            mvjcost.as_ptr(),
+            mvcost0.as_ptr(),
+            mvcost1.as_ptr(),
+        )
+    };
+    cur_mv[0] = (flat[0], flat[1]);
+    cur_mv[1] = (flat[2], flat[3]);
+    (rate_mv, ret)
+}
+
+/// Reference `update_mode_start_end_index` (rdopt.c:1422). Returns
+/// `(mode_index_start, mode_index_end)`.
+pub fn ref_rdopt_update_mode_start_end_index(
+    motion_mode_for_winner_cand: i32,
+    extra_prune_warped: i32,
+    bsize: i32,
+    last_motion_mode_allowed: i32,
+    interintra_allowed: i32,
+    eval_motion_mode: bool,
+) -> (i32, i32) {
+    ref_init();
+    let (mut s, mut e) = (0i32, 0i32);
+    unsafe {
+        shim_rdopt_update_mode_start_end_index(
+            motion_mode_for_winner_cand,
+            extra_prune_warped,
+            bsize,
+            last_motion_mode_allowed,
+            interintra_allowed,
+            i32::from(eval_motion_mode),
+            &mut s,
+            &mut e,
+        );
+    }
+    (s, e)
+}
