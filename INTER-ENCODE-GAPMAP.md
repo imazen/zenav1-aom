@@ -455,8 +455,28 @@ named in §4.2.
 | `encoder/pass2_strategy.c` | 87 | 2 | 85 | 2 | 41 | 42 |
 | **total** | **217** | **11** | **206** | **34** | **88** | **84** |
 
-`encoder/var_based_part.c` is COMPLETE: all 36 in-scope definitions are ported
-and gated. Two of them (`set_force_zeromv_skip_for_sb`,
+`encoder/var_based_part.c` is **NOT complete, and the row above overstates it**
+— corrected 2026-08-31 after the claim was checked rather than inherited.
+
+The "0 missing" rests on the 20 in the "ported earlier" column, which this
+document already says are "NOT independently verified here". They came from the
+PRE-WAVE inventory, whose matcher credited any mention of a name anywhere in
+the tree — including a name written down in order to say it was NOT ported.
+Measured: `tune_thresh_based_on_qindex`, `tune_thresh_based_on_resolution` and
+`tune_base_thresh_content` (var_based_part.c:437, :562, :628 — the entire inter
+threshold producer behind `set_vbp_thresholds`) occur in port source exactly
+three times, all of them `//!` doc-comment lines in
+`crates/aom-bench/tests/kb28_crop_dims.rs:40-41`. There is no Rust
+implementation of any of the three. They are not in the §4.2 out-of-scope
+table, so they are in scope and they are missing.
+
+The honest reading is that §4.3 below already knew this tool cuts both ways and
+documents a false positive in the very next paragraph — the skepticism simply
+was not applied to the column this conclusion was drawn from. Treat every
+"ported earlier" count in this table as unverified until re-measured with the
+strict matcher, and do not conclude COMPLETE from it.
+
+The rest of the paragraph stands: Two of them (`set_force_zeromv_skip_for_sb`,
 `set_ref_frame_for_partition`) mix their decision with buffer plumbing the port
 replaces rather than translates; what is ported is the decision, the shim runs
 the plumbing too, and only the decision outputs are compared. That is stated
