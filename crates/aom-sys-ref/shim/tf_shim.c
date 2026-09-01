@@ -45,6 +45,7 @@
  * (firstpass.h) from its own TU's include order; pull them first. */
 #include "av1/encoder/lookahead.h"
 #include "av1/encoder/firstpass.h"
+#include "av1/encoder/encoder.h"
 #include "av1/encoder/temporal_filter.h"
 
 double shim_tf_estimate_noise_lowbd(const uint8_t *src, int height, int width,
@@ -165,4 +166,37 @@ void shim_tf_apply_temporal_filter(
   free(buf);
   free(xd);
   free(err);
+}
+
+/* ---- av1_check_show_filtered_frame / av1_is_temporal_filter_on -------------
+ * Both exported, both taking a struct, so both wrapped. TIER 1: these call
+ * the ARCHIVE's copies. `tf_static_shim.c` exposes the same two functions as
+ * compiled into ITS TU, and the test compares the pair — that is what keeps
+ * the tier-1c shim's second compilation honest.
+ */
+int shim_tf_check_show_archive(int y_crop_width, int y_crop_height,
+                               int64_t diff_sum, int64_t diff_sse, int q_index,
+                               int bit_depth, int enable_overlay,
+                               int is_second_arf) {
+  YV12_BUFFER_CONFIG buf;
+  FRAME_DIFF fd;
+  memset(&buf, 0, sizeof(buf));
+  buf.y_crop_width = y_crop_width;
+  buf.y_crop_height = y_crop_height;
+  fd.sum = diff_sum;
+  fd.sse = diff_sse;
+  return av1_check_show_filtered_frame(&buf, &fd, q_index,
+                                       (aom_bit_depth_t)bit_depth,
+                                       enable_overlay, is_second_arf);
+}
+
+int shim_tf_is_temporal_filter_on_archive(int arnr_max_frames,
+                                          int lag_in_frames) {
+  AV1EncoderConfig *oxcf = (AV1EncoderConfig *)calloc(1, sizeof(*oxcf));
+  if (!oxcf) return -1;
+  oxcf->algo_cfg.arnr_max_frames = arnr_max_frames;
+  oxcf->gf_cfg.lag_in_frames = lag_in_frames;
+  const int r = av1_is_temporal_filter_on(oxcf);
+  free(oxcf);
+  return r;
 }

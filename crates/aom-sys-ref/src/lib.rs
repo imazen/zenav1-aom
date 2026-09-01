@@ -23308,3 +23308,351 @@ pub fn ref_rdopt_prune_zero_mv_with_sse(
         ) != 0
     }
 }
+
+// ===========================================================================
+// av1/encoder/temporal_filter.c file-statics — TIER 1c.
+//
+// `shim/tf_static_shim.c` compiles libaom's own temporal_filter.c verbatim and
+// wraps its file-static helpers, which have no exported address. Read that
+// file's header for the argument; `ref_tfs_tu_*` below exist so a test can
+// prove the second compilation still agrees with the archive.
+// ===========================================================================
+
+unsafe extern "C" {
+    fn shim_tfs_determine_block_partition(
+        block_mv_row: i16,
+        block_mv_col: i16,
+        block_mse: i32,
+        midblock_mvs: *const i16,
+        midblock_mses: *const i32,
+        subblock_mvs: *mut i16,
+        subblock_mses: *mut i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tfs_apply_temporal_filter_self(
+        y: *const core::ffi::c_void,
+        u: *const core::ffi::c_void,
+        v: *const core::ffi::c_void,
+        y_stride: i32,
+        uv_stride: i32,
+        highbd: i32,
+        block_size: i32,
+        mb_row: i32,
+        mb_col: i32,
+        num_planes: i32,
+        subsampling_x: *const i32,
+        subsampling_y: *const i32,
+        bd: i32,
+        accum: *mut u32,
+        count: *mut u16,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tfs_normalize_filtered_frame(
+        y: *mut core::ffi::c_void,
+        u: *mut core::ffi::c_void,
+        v: *mut core::ffi::c_void,
+        y_stride: i32,
+        uv_stride: i32,
+        highbd: i32,
+        block_size: i32,
+        mb_row: i32,
+        mb_col: i32,
+        num_planes: i32,
+        subsampling_x: *const i32,
+        subsampling_y: *const i32,
+        bd: i32,
+        accum: *const u32,
+        count: *const u16,
+    );
+    fn shim_tfs_is_frame_high_bitdepth(flags: i32) -> i32;
+    fn shim_tfs_tu_estimate_noise(
+        src: *const u8,
+        height: i32,
+        width: i32,
+        stride: i32,
+        edge_thresh: i32,
+    ) -> f64;
+    fn shim_tfs_tu_is_temporal_filter_on(arnr_max_frames: i32, lag_in_frames: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tfs_check_show(
+        y_crop_width: i32,
+        y_crop_height: i32,
+        diff_sum: i64,
+        diff_sse: i64,
+        q_index: i32,
+        bit_depth: i32,
+        enable_overlay: i32,
+        is_second_arf: i32,
+    ) -> i32;
+}
+
+/// Reference `tf_determine_block_partition` (temporal_filter.c:465), tier 1c.
+/// `subblock_mvs` / `subblock_mses` are in/out.
+pub fn ref_tfs_determine_block_partition(
+    block_mv: (i16, i16),
+    block_mse: i32,
+    midblock_mvs: &[(i16, i16); 4],
+    midblock_mses: &[i32; 4],
+    subblock_mvs: &mut [(i16, i16); 16],
+    subblock_mses: &mut [i32; 16],
+) {
+    ref_init();
+    let mid: Vec<i16> = midblock_mvs.iter().flat_map(|&(r, c)| [r, c]).collect();
+    let mut sub: Vec<i16> = subblock_mvs.iter().flat_map(|&(r, c)| [r, c]).collect();
+    unsafe {
+        shim_tfs_determine_block_partition(
+            block_mv.0,
+            block_mv.1,
+            block_mse,
+            mid.as_ptr(),
+            midblock_mses.as_ptr(),
+            sub.as_mut_ptr(),
+            subblock_mses.as_mut_ptr(),
+        );
+    }
+    for (out, pair) in subblock_mvs.iter_mut().zip(sub.chunks_exact(2)) {
+        *out = (pair[0], pair[1]);
+    }
+}
+
+/// Reference `tf_apply_temporal_filter_self` (temporal_filter.c:641), tier 1c.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_tfs_apply_temporal_filter_self_lowbd(
+    planes: [TfRefPlane<'_, u8>; 3],
+    params: &TfRefParams,
+    accum: &mut [u32],
+    count: &mut [u16],
+) {
+    ref_init();
+    unsafe {
+        shim_tfs_apply_temporal_filter_self(
+            planes[0].data.as_ptr().cast(),
+            planes[1].data.as_ptr().cast(),
+            planes[2].data.as_ptr().cast(),
+            planes[0].stride as i32,
+            planes[1].stride as i32,
+            0,
+            params.block_size,
+            params.mb_row,
+            params.mb_col,
+            params.num_planes,
+            params.subsampling_x.as_ptr(),
+            params.subsampling_y.as_ptr(),
+            params.bd,
+            accum.as_mut_ptr(),
+            count.as_mut_ptr(),
+        );
+    }
+}
+
+/// High-bit-depth twin of [`ref_tfs_apply_temporal_filter_self_lowbd`].
+pub fn ref_tfs_apply_temporal_filter_self_highbd(
+    planes: [TfRefPlane<'_, u16>; 3],
+    params: &TfRefParams,
+    accum: &mut [u32],
+    count: &mut [u16],
+) {
+    ref_init();
+    unsafe {
+        shim_tfs_apply_temporal_filter_self(
+            planes[0].data.as_ptr().cast(),
+            planes[1].data.as_ptr().cast(),
+            planes[2].data.as_ptr().cast(),
+            planes[0].stride as i32,
+            planes[1].stride as i32,
+            1,
+            params.block_size,
+            params.mb_row,
+            params.mb_col,
+            params.num_planes,
+            params.subsampling_x.as_ptr(),
+            params.subsampling_y.as_ptr(),
+            params.bd,
+            accum.as_mut_ptr(),
+            count.as_mut_ptr(),
+        );
+    }
+}
+
+/// Reference `tf_normalize_filtered_frame` (temporal_filter.c:995), tier 1c.
+/// The three planes are written IN PLACE at the block's frame offset.
+pub fn ref_tfs_normalize_filtered_frame_lowbd(
+    planes: [&mut [u8]; 3],
+    strides: [usize; 2],
+    params: &TfRefParams,
+    accum: &[u32],
+    count: &[u16],
+) {
+    ref_init();
+    let [y, u, v] = planes;
+    unsafe {
+        shim_tfs_normalize_filtered_frame(
+            y.as_mut_ptr().cast(),
+            u.as_mut_ptr().cast(),
+            v.as_mut_ptr().cast(),
+            strides[0] as i32,
+            strides[1] as i32,
+            0,
+            params.block_size,
+            params.mb_row,
+            params.mb_col,
+            params.num_planes,
+            params.subsampling_x.as_ptr(),
+            params.subsampling_y.as_ptr(),
+            params.bd,
+            accum.as_ptr(),
+            count.as_ptr(),
+        );
+    }
+}
+
+/// High-bit-depth twin of [`ref_tfs_normalize_filtered_frame_lowbd`].
+pub fn ref_tfs_normalize_filtered_frame_highbd(
+    planes: [&mut [u16]; 3],
+    strides: [usize; 2],
+    params: &TfRefParams,
+    accum: &[u32],
+    count: &[u16],
+) {
+    ref_init();
+    let [y, u, v] = planes;
+    unsafe {
+        shim_tfs_normalize_filtered_frame(
+            y.as_mut_ptr().cast(),
+            u.as_mut_ptr().cast(),
+            v.as_mut_ptr().cast(),
+            strides[0] as i32,
+            strides[1] as i32,
+            1,
+            params.block_size,
+            params.mb_row,
+            params.mb_col,
+            params.num_planes,
+            params.subsampling_x.as_ptr(),
+            params.subsampling_y.as_ptr(),
+            params.bd,
+            accum.as_ptr(),
+            count.as_ptr(),
+        );
+    }
+}
+
+/// Reference `is_frame_high_bitdepth` (temporal_filter.c:520), tier 1c.
+#[must_use]
+pub fn ref_tfs_is_frame_high_bitdepth(flags: i32) -> bool {
+    ref_init();
+    unsafe { shim_tfs_is_frame_high_bitdepth(flags) != 0 }
+}
+
+/// Reference `av1_check_show_filtered_frame` (temporal_filter.c:1591) as
+/// compiled INTO `tf_static_shim.c`'s TU. Compare against
+/// [`ref_tfs_check_show_archive`] to keep the tier-1c second compilation honest.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_tfs_check_show_filtered_frame(
+    frame_width: i32,
+    frame_height: i32,
+    diff_sum: i64,
+    diff_sse: i64,
+    q_index: i32,
+    bit_depth: i32,
+    enable_overlay: bool,
+    is_second_arf: bool,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_tfs_check_show(
+            frame_width,
+            frame_height,
+            diff_sum,
+            diff_sse,
+            q_index,
+            bit_depth,
+            i32::from(enable_overlay),
+            i32::from(is_second_arf),
+        ) != 0
+    }
+}
+
+/// `av1_estimate_noise_from_single_plane_c` as compiled into
+/// `tf_static_shim.c`'s TU — the tier-1c-vs-archive gate's left-hand side.
+/// Its right-hand side is [`ref_tf_estimate_noise_lowbd`], which is the
+/// archive's copy.
+#[must_use]
+pub fn ref_tfs_tu_estimate_noise(
+    src: &[u8],
+    height: usize,
+    width: usize,
+    stride: usize,
+    edge_thresh: i32,
+) -> f64 {
+    ref_init();
+    unsafe {
+        shim_tfs_tu_estimate_noise(
+            src.as_ptr(),
+            height as i32,
+            width as i32,
+            stride as i32,
+            edge_thresh,
+        )
+    }
+}
+
+/// `av1_is_temporal_filter_on` as compiled into `tf_static_shim.c`'s TU.
+#[must_use]
+pub fn ref_tfs_tu_is_temporal_filter_on(arnr_max_frames: i32, lag_in_frames: i32) -> bool {
+    ref_init();
+    unsafe { shim_tfs_tu_is_temporal_filter_on(arnr_max_frames, lag_in_frames) != 0 }
+}
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tf_check_show_archive(
+        y_crop_width: i32,
+        y_crop_height: i32,
+        diff_sum: i64,
+        diff_sse: i64,
+        q_index: i32,
+        bit_depth: i32,
+        enable_overlay: i32,
+        is_second_arf: i32,
+    ) -> i32;
+    fn shim_tf_is_temporal_filter_on_archive(arnr_max_frames: i32, lag_in_frames: i32) -> i32;
+}
+
+/// Reference `av1_check_show_filtered_frame` (temporal_filter.c:1591) —
+/// the ARCHIVE's copy. **Tier 1.**
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_tfs_check_show_archive(
+    frame_width: i32,
+    frame_height: i32,
+    diff_sum: i64,
+    diff_sse: i64,
+    q_index: i32,
+    bit_depth: i32,
+    enable_overlay: bool,
+    is_second_arf: bool,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_tf_check_show_archive(
+            frame_width,
+            frame_height,
+            diff_sum,
+            diff_sse,
+            q_index,
+            bit_depth,
+            i32::from(enable_overlay),
+            i32::from(is_second_arf),
+        ) != 0
+    }
+}
+
+/// Reference `av1_is_temporal_filter_on` (temporal_filter.c:1654) — the
+/// ARCHIVE's copy. **Tier 1.**
+#[must_use]
+pub fn ref_tf_is_temporal_filter_on(arnr_max_frames: i32, lag_in_frames: i32) -> bool {
+    ref_init();
+    unsafe { shim_tf_is_temporal_filter_on_archive(arnr_max_frames, lag_in_frames) != 0 }
+}

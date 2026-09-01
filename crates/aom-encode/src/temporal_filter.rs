@@ -520,3 +520,252 @@ pub fn apply_temporal_filter<P: TfPixel>(
         plane_offset += h * w;
     }
 }
+
+// ===========================================================================
+// The rest of the per-block chain: the self filter, the normalizer, the
+// partition decision, and the two exported predicates around them.
+// ===========================================================================
+
+/// `TF_BLOCK_SIZE` is `BLOCK_64X64`, so the block the filter walks is always
+/// 64x64 and `NUM_16X16` is `(64/16)^2`. Kept as a named constant because
+/// `tf_determine_block_partition`'s 4-and-4 loop structure only makes sense
+/// against it.
+pub const TF_BLOCK_DIM: usize = 64;
+
+/// `tf_determine_block_partition` (temporal_filter.c:465).
+///
+/// Decides, per 32x32 mid-block and then for the 64x64 block as a whole,
+/// whether the four 16x16 motion searches beat the coarser one. Where they do
+/// not, the coarser MV and MSE overwrite the finer ones — so `subblock_mvs`
+/// and `subblock_mses` are IN/OUT, exactly as in C.
+///
+/// The two-stage structure is C's: each of the four 32x32 quadrants is
+/// collapsed first, and only then is the collapsed set of 16 tested against
+/// the whole-block search. That ordering matters — the second test reads the
+/// values the first one may have just rewritten.
+pub fn tf_determine_block_partition(
+    block_mv: (i16, i16),
+    block_mse: i32,
+    midblock_mvs: &[(i16, i16); 4],
+    midblock_mses: &[i32; 4],
+    subblock_mvs: &mut [(i16, i16); NUM_16X16],
+    subblock_mses: &mut [i32; NUM_16X16],
+) {
+    // Go through the four 32x32 blocks.
+    for idx in 0..4 {
+        let sub_idx = idx * 4;
+        let quad = &subblock_mses[sub_idx..sub_idx + 4];
+        // C accumulates the sum in an int64_t and the min/max in ints.
+        let sum: i64 = quad.iter().map(|&m| i64::from(m)).sum();
+        let min = *quad.iter().min().expect("4 entries");
+        let max = *quad.iter().max().expect("4 entries");
+
+        let mid = midblock_mses[idx];
+        // C's `midblock_mses[idx] * 15 <= sum_subblock_mse * 4` is
+        // int * int compared against int64_t * int, so the left side is
+        // computed in `int` and only then widened. It cannot overflow: an MSE
+        // is at most (2^12 - 1)^2 and 15 * that is well inside i32.
+        let no_split = (i64::from(mid * 15) <= sum * 4 && max - min < 48)
+            || (i64::from(mid * 14) <= sum * 4 && max - min < 24);
+        if no_split {
+            for i in sub_idx..sub_idx + 4 {
+                subblock_mvs[i] = midblock_mvs[idx];
+                subblock_mses[i] = midblock_mses[idx];
+            }
+        }
+    }
+
+    // Then the whole 64x64 block against the (possibly rewritten) sixteen.
+    let sum: i64 = subblock_mses.iter().map(|&m| i64::from(m)).sum();
+    let min = *subblock_mses.iter().min().expect("16 entries");
+    let max = *subblock_mses.iter().max().expect("16 entries");
+    let no_split = (i64::from(block_mse * 15) <= sum && i64::from((max - min) * 16) < sum * 3)
+        || (i64::from(block_mse * 14) <= sum && i64::from((max - min) * 8) < sum);
+    if no_split {
+        subblock_mvs.fill(block_mv);
+        subblock_mses.fill(block_mse);
+    }
+}
+
+/// `tf_apply_temporal_filter_self` (temporal_filter.c:641).
+///
+/// The frame being filtered contributes itself at a fixed weight of
+/// [`TF_WEIGHT_SCALE`], with no window, no decay and no motion. `accum` and
+/// `count` are accumulated into, like [`apply_temporal_filter`]'s.
+///
+/// `planes[p]` is sliced from the plane ORIGIN; the block offset is derived
+/// here the same way C derives `frame_offset`.
+pub fn tf_apply_temporal_filter_self<P: TfPixel>(
+    planes: &[TfPlane<'_, P>],
+    block_width: usize,
+    block_height: usize,
+    mb_row: usize,
+    mb_col: usize,
+    subsampling_x: &[u32; 3],
+    subsampling_y: &[u32; 3],
+    accum: &mut [u32],
+    count: &mut [u16],
+) {
+    let mut plane_offset = 0usize;
+    for (plane, frame) in planes.iter().enumerate() {
+        let h = block_height >> subsampling_y[plane];
+        let w = block_width >> subsampling_x[plane];
+        let frame_offset = mb_row * h * frame.stride + mb_col * w;
+        for i in 0..h {
+            let src = &frame.data[frame_offset + i * frame.stride..][..w];
+            let acc = &mut accum[plane_offset + i * w..][..w];
+            let cnt = &mut count[plane_offset + i * w..][..w];
+            for ((a, c), &p) in acc.iter_mut().zip(cnt.iter_mut()).zip(src) {
+                *a = a.wrapping_add(TF_WEIGHT_SCALE as u32 * p.value());
+                *c = c.wrapping_add(TF_WEIGHT_SCALE as u16);
+            }
+        }
+        plane_offset += h * w;
+    }
+}
+
+/// `OD_DIVU(x, d)` (`aom_dsp/odintrin.h:41`) — unsigned division, which for
+/// `d < 1024` C performs through a reciprocal-multiply table
+/// (`OD_DIVU_SMALL_CONSTS`) rather than a divide.
+///
+/// The table is built so the multiply reproduces the quotient exactly for
+/// every `uint32_t` numerator, so the port is a plain division. That is a
+/// CLAIM about libaom's table, and it is measured rather than asserted:
+/// `tf_normalize_matches_c` drives the real C `tf_normalize_filtered_frame`
+/// across the whole `count` range this function sees.
+///
+/// # Panics
+/// If `d == 0`. C's macro would index `OD_DIVU_SMALL_CONSTS[-1]`, which is
+/// undefined; the caller cannot reach it because
+/// [`tf_apply_temporal_filter_self`] contributes `TF_WEIGHT_SCALE` to every
+/// count before the normalizer runs. The port asserts the contract rather
+/// than reproducing the UB (the `av1_dropout_qcoeff_num` precedent).
+#[inline]
+#[must_use]
+pub fn od_divu(x: u32, d: u16) -> u32 {
+    assert!(
+        d != 0,
+        "OD_DIVU is undefined at d == 0; count is never 0 here"
+    );
+    x / u32::from(d)
+}
+
+/// `tf_normalize_filtered_frame` (temporal_filter.c:995).
+///
+/// Turns the accumulator/counter pair into pixels, rounding to nearest, and
+/// writes them back into `result` at the block's frame offset. `result[p]` is
+/// the whole plane, as C's `result_buffer->buffers[plane]` is.
+///
+/// # Panics
+/// If any `count` entry in the block is zero — see [`od_divu`].
+pub fn tf_normalize_filtered_frame<P: TfPixelMut>(
+    result: &mut [TfPlaneMut<'_, P>],
+    block_width: usize,
+    block_height: usize,
+    mb_row: usize,
+    mb_col: usize,
+    subsampling_x: &[u32; 3],
+    subsampling_y: &[u32; 3],
+    accum: &[u32],
+    count: &[u16],
+) {
+    let mut plane_offset = 0usize;
+    for (plane, out) in result.iter_mut().enumerate() {
+        let plane_h = block_height >> subsampling_y[plane];
+        let plane_w = block_width >> subsampling_x[plane];
+        let frame_offset = mb_row * plane_h * out.stride + mb_col * plane_w;
+        for i in 0..plane_h {
+            let row = &mut out.data[frame_offset + i * out.stride..][..plane_w];
+            for (j, cell) in row.iter_mut().enumerate() {
+                let idx = plane_offset + i * plane_w + j;
+                let rounding = count[idx] >> 1;
+                *cell = P::from_value(od_divu(accum[idx] + u32::from(rounding), count[idx]));
+            }
+        }
+        plane_offset += plane_h * plane_w;
+    }
+}
+
+/// A writable pixel of either bit depth, for [`tf_normalize_filtered_frame`].
+///
+/// C's `(uint8_t)` / `(uint16_t)` casts on the `OD_DIVU` result are truncating,
+/// not clamping — that is reproduced here rather than "fixed", because a
+/// count-weighted average of in-range pixels cannot exceed the range anyway
+/// and a clamp would silently paper over an arithmetic error if it ever did.
+pub trait TfPixelMut: Copy {
+    /// C's narrowing cast of the normalized value.
+    fn from_value(v: u32) -> Self;
+}
+
+impl TfPixelMut for u8 {
+    #[inline]
+    fn from_value(v: u32) -> Self {
+        v as u8
+    }
+}
+
+impl TfPixelMut for u16 {
+    #[inline]
+    fn from_value(v: u32) -> Self {
+        v as u16
+    }
+}
+
+/// A writable plane, the output half of [`TfPlane`].
+#[derive(Debug)]
+pub struct TfPlaneMut<'a, P> {
+    /// Pixels, from the plane origin.
+    pub data: &'a mut [P],
+    /// `result_buffer->strides[plane != 0]`.
+    pub stride: usize,
+}
+
+/// `av1_is_temporal_filter_on` (temporal_filter.c:1654).
+#[must_use]
+pub fn is_temporal_filter_on(arnr_max_frames: i32, lag_in_frames: i32) -> bool {
+    arnr_max_frames > 0 && lag_in_frames > 1
+}
+
+/// `get_num_blocks` (`av1/encoder/encoder.h:4120`) — blocks along one axis.
+#[inline]
+#[must_use]
+pub fn get_num_blocks(frame_length: i32, mb_length: i32) -> i32 {
+    (frame_length + mb_length - 1) / mb_length
+}
+
+/// `av1_check_show_filtered_frame` (temporal_filter.c:1591).
+///
+/// Decides whether the filtered ARF is close enough to its source that the
+/// overlay frame can be shown from it directly.
+///
+/// The float arithmetic is C's, at C's widths: `mean` and `std` are `float`
+/// (not `double`), and `std` is `sqrt` of a `float` expression widened to
+/// `double` by the call and narrowed again by the assignment. The comparison
+/// `std < mean * 1.2` promotes both sides to `double` because `1.2` is a
+/// double literal. All three are reproduced exactly.
+#[must_use]
+pub fn check_show_filtered_frame(
+    frame_width: i32,
+    frame_height: i32,
+    diff_sum: i64,
+    diff_sse: i64,
+    q_index: i32,
+    bit_depth: u8,
+    enable_overlay: bool,
+    is_second_arf: bool,
+) -> bool {
+    if !enable_overlay || is_second_arf {
+        return true;
+    }
+    let block_dim = TF_BLOCK_DIM as i32;
+    let mb_rows = get_num_blocks(frame_height, block_dim);
+    let mb_cols = get_num_blocks(frame_width, block_dim);
+    let num_mbs = (mb_rows * mb_cols).max(1);
+    let mean = diff_sum as f32 / num_mbs as f32;
+    let std = f64::from(diff_sse as f32 / num_mbs as f32 - mean * mean).sqrt() as f32;
+
+    let ac_q_step = i32::from(aom_dsp::quant::av1_ac_quant_qtx(q_index, 0, bit_depth));
+    let threshold = 0.7f32 * ac_q_step as f32 * ac_q_step as f32;
+
+    mean < threshold && f64::from(std) < f64::from(mean) * 1.2
+}

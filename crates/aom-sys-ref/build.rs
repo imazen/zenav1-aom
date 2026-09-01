@@ -83,6 +83,7 @@ const SHIMS: &[&str] = &[
     "compound_type_shim",
     "refgop_shim",
     "tf_shim",
+    "tf_static_shim",
     "tpl_shim",
     "ratectrl_shim",
     "tpl_c_shim",
@@ -122,6 +123,11 @@ fn extra_shim_cflags(name: &str) -> &'static [&'static str] {
         // and the backward-propagation core is entirely in that half. Same
         // source, so it is built the same way.
         "tpl_c_shim" => &["-O3", "-DNDEBUG"],
+        // tf_static_shim pulls av1/encoder/temporal_filter.c in for the same
+        // reason: its per-block filter body, normalizer, partition decision and
+        // self filter are all file-static. Same source, so it is built the same
+        // way. See shim/tf_static_shim.c's header.
+        "tf_static_shim" => &["-O3", "-DNDEBUG"],
         _ => &[],
     }
 }
