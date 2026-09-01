@@ -1495,3 +1495,390 @@ fn populate_reuse_comp_type_data_matches_c() {
     }
     assert!(applied > 0 && applied < n, "vacuous: {applied}/{n} reused");
 }
+
+// ===================================================================
+// The transform-search gate (compound_type.c:1069 + rdopt_utils.h:347, :778
+// + model_rd.h:69).
+//
+// | test | C function |
+// |---|---|
+// | `get_txfm_rd_gate_level_matches_c` | `get_txfm_rd_gate_level` (rdopt_utils.h:778) |
+// | `check_txfm_eval_matches_c` | `check_txfm_eval` (rdopt_utils.h:347) |
+// | `compute_sse_plane_matches_c` | `compute_sse_plane` (model_rd.h:69) + `calculate_sse` (:49) |
+// | `prune_mode_by_skip_rd_matches_c` | `prune_mode_by_skip_rd` (compound_type.c:1069) |
+// ===================================================================
+
+use aom_encode::compound_type::{
+    MAX_TX_RD_GATE_LEVEL, TX_SEARCH_CASES, TxSearchCase, check_txfm_eval, compute_sse_plane,
+    get_txfm_rd_gate_level, prune_mode_by_skip_rd,
+};
+use aom_encode::tx_search::get_txb_visible_dimensions;
+
+#[test]
+fn tx_gate_constants_match_the_shim() {
+    let (cases, max_level) = cref::ref_ct_tx_gate_constants();
+    assert_eq!(cases as usize, TX_SEARCH_CASES);
+    assert_eq!(max_level as usize, MAX_TX_RD_GATE_LEVEL);
+}
+
+#[test]
+fn get_txfm_rd_gate_level_matches_c() {
+    let mut rng = Rng(0x5EED_0C30);
+    let mut distinct = std::collections::BTreeSet::new();
+    for bsize in 0..BLOCK_SIZES_ALL {
+        for case in [
+            TxSearchCase::Default,
+            TxSearchCase::MotionMode,
+            TxSearchCase::CompTypeMode,
+        ] {
+            for masked in [false, true] {
+                for eval_mm in [false, true] {
+                    // Distinct level per slot, so returning the wrong slot is
+                    // visible rather than a coincidence.
+                    let levels = [rng.range(0, 6), rng.range(0, 6), rng.range(0, 6)];
+                    let got = get_txfm_rd_gate_level(masked, levels, bsize, case, eval_mm);
+                    let want = cref::ref_ct_get_txfm_rd_gate_level(
+                        masked,
+                        &levels,
+                        bsize as i32,
+                        case as i32,
+                        eval_mm,
+                    );
+                    assert_eq!(
+                        got, want,
+                        "get_txfm_rd_gate_level(bsize={bsize}, case={case:?}, \
+                         masked={masked}, eval_mm={eval_mm})"
+                    );
+                    distinct.insert((case as u8, got == levels[case as usize]));
+                }
+            }
+        }
+    }
+    // The MOTION_MODE case must have been seen taking BOTH its own slot and
+    // falling through to DEFAULT (the `num_pels_log2 > 8` size gate).
+    assert!(distinct.contains(&(TxSearchCase::MotionMode as u8, true)));
+    assert!(distinct.contains(&(TxSearchCase::CompTypeMode as u8, true)));
+}
+
+#[test]
+fn check_txfm_eval_matches_c() {
+    let mut rng = Rng(0x5EED_0C31);
+    let (mut trues, mut n) = (0usize, 0usize);
+    for level in 1..=MAX_TX_RD_GATE_LEVEL {
+        for is_luma_only in [false, true] {
+            for _ in 0..400 {
+                let bsize = rng.range(0, BLOCK_SIZES_ALL as i32) as usize;
+                let source_variance = (rng.next() % (1 << 16)) as u32;
+                let qindex = rng.range(0, 256);
+                // One in eight uses the INT64_MAX sentinel, which is the
+                // "no best skip RD yet" arm and skips the threshold entirely.
+                let best_skip_rd = if rng.next() % 8 == 0 {
+                    i64::MAX
+                } else {
+                    i64::from(rng.range(0, 1 << 24)) << (rng.next() % 20)
+                };
+                let skip_rd = i64::from(rng.range(0, 1 << 24)) << (rng.next() % 20);
+                let got = check_txfm_eval(
+                    source_variance,
+                    qindex,
+                    bsize,
+                    best_skip_rd,
+                    skip_rd,
+                    level,
+                    is_luma_only,
+                );
+                let want = cref::ref_ct_check_txfm_eval(
+                    source_variance,
+                    qindex,
+                    bsize as i32,
+                    best_skip_rd,
+                    skip_rd,
+                    level as i32,
+                    is_luma_only,
+                );
+                assert_eq!(
+                    got, want,
+                    "check_txfm_eval(level={level}, luma_only={is_luma_only}, \
+                     var={source_variance}, q={qindex}, bsize={bsize}, \
+                     best={best_skip_rd}, skip={skip_rd})"
+                );
+                trues += usize::from(want);
+                n += 1;
+            }
+        }
+    }
+    assert!(trues > 0 && trues < n, "vacuous: {trues}/{n} evaluated");
+
+    // The verdict is `skip_rd > rd_thresh`, a STRICT comparison, and a random
+    // sweep never lands on `skip_rd == rd_thresh` — a `>=` transcription
+    // passes it. So find the boundary with the ORACLE (binary search for the
+    // largest `skip_rd` C still evaluates) and check the port on both sides.
+    // The threshold is never recomputed here, so this stays a differential
+    // rather than a re-derivation of C's formula.
+    let mut boundaries = 0usize;
+    for level in 1..=MAX_TX_RD_GATE_LEVEL {
+        for is_luma_only in [false, true] {
+            for _ in 0..40 {
+                let bsize = rng.range(0, BLOCK_SIZES_ALL as i32) as usize;
+                let source_variance = (rng.next() % (1 << 16)) as u32;
+                let qindex = rng.range(0, 256);
+                let best_skip_rd = i64::from(rng.range(1, 1 << 24)) << (rng.next() % 16);
+                let probe = |skip: i64| {
+                    cref::ref_ct_check_txfm_eval(
+                        source_variance,
+                        qindex,
+                        bsize as i32,
+                        best_skip_rd,
+                        skip,
+                        level as i32,
+                        is_luma_only,
+                    )
+                };
+                if !probe(0) {
+                    continue; // the gate rejects everything at this cell
+                }
+                let (mut lo, mut hi) = (0i64, i64::MAX / 4);
+                if probe(hi) {
+                    continue; // it accepts everything; no boundary to find
+                }
+                while lo + 1 < hi {
+                    let mid = lo + (hi - lo) / 2;
+                    if probe(mid) { lo = mid } else { hi = mid }
+                }
+                // `lo` is the last accepted value, `hi == lo + 1` the first
+                // rejected one — exactly the pair `<=` vs `<` disagree on.
+                for skip in [lo, hi] {
+                    let got = check_txfm_eval(
+                        source_variance,
+                        qindex,
+                        bsize,
+                        best_skip_rd,
+                        skip,
+                        level,
+                        is_luma_only,
+                    );
+                    assert_eq!(
+                        got,
+                        probe(skip),
+                        "check_txfm_eval at the boundary (level={level}, \
+                         luma_only={is_luma_only}, skip={skip}, best={best_skip_rd})"
+                    );
+                }
+                boundaries += 1;
+            }
+        }
+    }
+    assert!(
+        boundaries > 0,
+        "no cell had a findable accept/reject boundary"
+    );
+}
+
+/// Both the visible extent (a block clipped by the frame edge) and the full
+/// one, since `compute_sse_plane` measures only what is visible.
+#[test]
+fn compute_sse_plane_matches_c() {
+    let mut rng = Rng(0x5EED_0C32);
+    let mut clipped = 0usize;
+    for bsize in 0..BLOCK_SIZES_ALL {
+        for bd in [8u8, 10, 12] {
+            // LUMA only. `prune_mode_by_skip_rd` — this file's one caller —
+            // passes `PLANE_TYPE_Y`, and that matters for more than coverage:
+            // a subsampled plane's visible width can be an ODD multiple of 2
+            // (the edge is a multiple of `MI_SIZE * 8` and chroma shifts it by
+            // 4, not 3), and `aom_sse_neon`'s width-2 path reads FOUR columns
+            // (`sse_wxh_neon`, aom_dsp/arm/sse_neon.c:57-67, takes the
+            // `sse_4x2_neon` remainder branch). Luma visible widths are always
+            // multiples of 4, which every `aom_sse` tier handles.
+            for (ss_x, ss_y) in [(0usize, 0usize)] {
+                let plane_bsize =
+                    aom_dsp::entropy::partition::get_plane_block_size(bsize, ss_x, ss_y);
+                if plane_bsize >= BLOCK_SIZES_ALL {
+                    continue;
+                }
+                let (pw, ph) = (BLK_W[plane_bsize], BLK_H[plane_bsize]);
+                // `mb_to_*_edge` are in 1/8-pel LUMA units and negative when
+                // the block overhangs the frame. The encoder only ever
+                // produces MULTIPLES OF `MI_SIZE * 8 == 32` there, because the
+                // edge is `(mi_cols - mi_col - bw_mi) * MI_SIZE * 8`. That
+                // matters: a free choice reaches a visible width of 3, and
+                // `aom_sse`'s dispatched kernels are written for the widths
+                // the encoder can produce (measured: SIGBUS at 3x3).
+                for k in [0i32, 1, 2] {
+                    let mb_to_right_edge = -32 * k;
+                    let mb_to_bottom_edge = -32 * k;
+                    let (vw, vh) = get_txb_visible_dimensions(
+                        pw,
+                        ph,
+                        pw,
+                        ph,
+                        0,
+                        0,
+                        mb_to_right_edge,
+                        mb_to_bottom_edge,
+                        ss_x as u32,
+                        ss_y as u32,
+                    );
+                    if vw == 0 || vh == 0 {
+                        continue; // the block would be entirely off-frame
+                    }
+                    let src_stride = pw + 8;
+                    let dst_stride = pw + 4;
+                    let rows = ph + 2;
+                    let src = Plane::random(&mut rng, src_stride * rows, bd);
+                    let dst = Plane::random(&mut rng, dst_stride * rows, bd);
+                    let got = compute_sse_plane(
+                        src.port(),
+                        src_stride,
+                        dst.port(),
+                        dst_stride,
+                        bd,
+                        vw,
+                        vh,
+                    );
+                    let want = cref::ref_ct_compute_sse_plane(
+                        i32::from(bd),
+                        bsize as i32,
+                        ss_x as i32,
+                        ss_y as i32,
+                        mb_to_right_edge,
+                        mb_to_bottom_edge,
+                        src.cref(),
+                        src_stride as i32,
+                        dst.cref(),
+                        dst_stride as i32,
+                        rows as i32,
+                    );
+                    assert_eq!(
+                        got, want,
+                        "compute_sse_plane(bsize={bsize}, bd={bd}, ss=({ss_x},{ss_y}), \
+                         k={k}, visible={vw}x{vh})"
+                    );
+                    if vw < pw || vh < ph {
+                        clipped += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(clipped > 0, "no frame-edge-clipped cell was reached");
+}
+
+#[test]
+fn prune_mode_by_skip_rd_matches_c() {
+    let mut rng = Rng(0x5EED_0C33);
+    let (mut trues, mut n, mut gated_off) = (0usize, 0usize, 0usize);
+    for bsize in 0..BLOCK_SIZES_ALL {
+        for bd in [8u8, 10, 12] {
+            for masked in [false, true] {
+                for _ in 0..4 {
+                    // level 0 in some slots so the "gate disabled" early-out is
+                    // reached as well as the live gate.
+                    let levels = [rng.range(0, 6), rng.range(0, 6), rng.range(0, 6)];
+                    let (pw, ph) = (BLK_W[bsize], BLK_H[bsize]);
+                    let src_stride = pw + 8;
+                    let dst_stride = pw + 4;
+                    let rows = ph + 2;
+                    let src = Plane::random(&mut rng, src_stride * rows, bd);
+                    let dst = Plane::random(&mut rng, dst_stride * rows, bd);
+                    let source_variance = (rng.next() % (1 << 16)) as u32;
+                    let qindex = rng.range(0, 256);
+                    let rdmult = rng.range(1, 1 << 14);
+                    let ref_skip_rd = if rng.next() % 8 == 0 {
+                        i64::MAX
+                    } else {
+                        i64::from(rng.range(0, 1 << 24)) << (rng.next() % 16)
+                    };
+                    let mode_rate = rng.range(0, 1 << 16);
+                    // A MULTIPLE of `MI_SIZE * 8 == 32`, as the encoder's
+                    // `(mi_cols - mi_col - bw_mi) * MI_SIZE * 8` always is.
+                    // A free choice reaches a visible width of 3, which the
+                    // `aom_sse` tiers handle differently per ISA — measured on
+                    // x86 (Rosetta) after this test passed on aarch64.
+                    let mb_to_right_edge = -32 * i32::from(rng.next() % 2 == 0);
+                    let mb_to_bottom_edge = 0;
+                    let (vw, vh) = get_txb_visible_dimensions(
+                        pw,
+                        ph,
+                        pw,
+                        ph,
+                        0,
+                        0,
+                        mb_to_right_edge,
+                        mb_to_bottom_edge,
+                        0,
+                        0,
+                    );
+                    if vw == 0 || vh == 0 {
+                        // Entirely off-frame — a block the encoder never codes,
+                        // and `aom_sse`'s do-while loops still read one
+                        // iteration at width 0.
+                        continue;
+                    }
+
+                    let got = prune_mode_by_skip_rd(
+                        masked,
+                        levels,
+                        bsize,
+                        source_variance,
+                        qindex,
+                        rdmult,
+                        ref_skip_rd,
+                        mode_rate,
+                        || {
+                            compute_sse_plane(
+                                src.port(),
+                                src_stride,
+                                dst.port(),
+                                dst_stride,
+                                bd,
+                                vw,
+                                vh,
+                            )
+                        },
+                    );
+                    let want = cref::ref_ct_prune_mode_by_skip_rd(
+                        i32::from(bd),
+                        bsize as i32,
+                        masked,
+                        &levels,
+                        source_variance,
+                        qindex,
+                        rdmult,
+                        mb_to_right_edge,
+                        mb_to_bottom_edge,
+                        src.cref(),
+                        src_stride as i32,
+                        dst.cref(),
+                        dst_stride as i32,
+                        rows as i32,
+                        ref_skip_rd,
+                        mode_rate,
+                    );
+                    assert_eq!(
+                        got, want,
+                        "prune_mode_by_skip_rd(bsize={bsize}, bd={bd}, masked={masked}, \
+                         levels={levels:?})"
+                    );
+                    if get_txfm_rd_gate_level(
+                        masked,
+                        levels,
+                        bsize,
+                        TxSearchCase::CompTypeMode,
+                        false,
+                    ) == 0
+                    {
+                        gated_off += 1;
+                    }
+                    trues += usize::from(want);
+                    n += 1;
+                }
+            }
+        }
+    }
+    assert!(trues > 0 && trues < n, "vacuous: {trues}/{n} evaluated");
+    assert!(
+        gated_off > 0,
+        "the gate-disabled early-out was never reached"
+    );
+}

@@ -981,3 +981,132 @@ int shim_ct_populate_reuse_comp_type_data(
 }
 
 int shim_ct_max_comp_rd_stats(void) { return MAX_COMP_RD_STATS; }
+
+/* ======================================================================== *
+ * 11. The transform-search gate (compound_type.c:1069 + rdopt_utils.h:347,
+ *     :778 + model_rd.h:69).
+ *
+ * `prune_mode_by_skip_rd` reads the prediction through
+ * `x->plane[0].src` / `xd->plane[0].dst`, so the wrapper hands it two real
+ * planes; the visible extent comes from `xd->mb_to_{right,bottom}_edge`,
+ * which the caller sets so the frame-edge clip is exercised rather than
+ * assumed away.
+ * ======================================================================== */
+
+int shim_ct_get_txfm_rd_gate_level(int is_masked_compound_enabled,
+                                   const int *levels /* [TX_SEARCH_CASES] */,
+                                   int bsize, int tx_search_case,
+                                   int eval_motion_mode) {
+  int lv[TX_SEARCH_CASES];
+  for (int i = 0; i < TX_SEARCH_CASES; ++i) lv[i] = levels[i];
+  return get_txfm_rd_gate_level(is_masked_compound_enabled, lv,
+                                (BLOCK_SIZE)bsize,
+                                (TX_SEARCH_CASE)tx_search_case,
+                                eval_motion_mode);
+}
+
+int shim_ct_check_txfm_eval(unsigned int source_variance, int qindex,
+                            int bsize, int64_t best_skip_rd, int64_t skip_rd,
+                            int level, int is_luma_only) {
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  if (!x) return 0;
+  x->source_variance = source_variance;
+  x->qindex = qindex;
+  const int r = check_txfm_eval(x, (BLOCK_SIZE)bsize, best_skip_rd, skip_rd,
+                                level, is_luma_only);
+  free(x);
+  return r;
+}
+
+int64_t shim_ct_compute_sse_plane(int hbd, int bd, int bsize, int ss_x,
+                                  int ss_y, int mb_to_right_edge,
+                                  int mb_to_bottom_edge, const void *src,
+                                  int src_stride, const void *dst,
+                                  int dst_stride, int rows) {
+  const size_t px = hbd ? sizeof(uint16_t) : sizeof(uint8_t);
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  YV12_BUFFER_CONFIG *cb =
+      (YV12_BUFFER_CONFIG *)calloc(1, sizeof(YV12_BUFFER_CONFIG));
+  void *asrc = shim_ct_align(src, (size_t)src_stride * rows * px);
+  void *adst = shim_ct_align(dst, (size_t)dst_stride * rows * px);
+  if (!x || !cb || !asrc || !adst) {
+    aom_free(adst); aom_free(asrc); free(cb); free(x);
+    return 0;
+  }
+  cb->flags = hbd ? YV12_FLAG_HIGHBITDEPTH : 0;
+  x->e_mbd.cur_buf = cb;
+  x->e_mbd.bd = bd;
+  x->e_mbd.mb_to_right_edge = mb_to_right_edge;
+  x->e_mbd.mb_to_bottom_edge = mb_to_bottom_edge;
+  x->e_mbd.plane[0].subsampling_x = ss_x;
+  x->e_mbd.plane[0].subsampling_y = ss_y;
+  x->plane[0].src.buf =
+      hbd ? (uint8_t *)CONVERT_TO_BYTEPTR((uint16_t *)asrc) : (uint8_t *)asrc;
+  x->plane[0].src.stride = src_stride;
+  x->e_mbd.plane[0].dst.buf =
+      hbd ? (uint8_t *)CONVERT_TO_BYTEPTR((uint16_t *)adst) : (uint8_t *)adst;
+  x->e_mbd.plane[0].dst.stride = dst_stride;
+
+  const int64_t r =
+      compute_sse_plane(x, &x->e_mbd, AOM_PLANE_Y, (BLOCK_SIZE)bsize);
+
+  aom_free(adst);
+  aom_free(asrc);
+  free(cb);
+  free(x);
+  return r;
+}
+
+int shim_ct_prune_mode_by_skip_rd(int hbd, int bd, int bsize,
+                                  int is_masked_compound_enabled,
+                                  const int *levels, unsigned int source_variance,
+                                  int qindex, int rdmult, int mb_to_right_edge,
+                                  int mb_to_bottom_edge, const void *src,
+                                  int src_stride, const void *dst,
+                                  int dst_stride, int rows, int64_t ref_skip_rd,
+                                  int mode_rate) {
+  const size_t px = hbd ? sizeof(uint16_t) : sizeof(uint8_t);
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  SequenceHeader *seq = (SequenceHeader *)calloc(1, sizeof(*seq));
+  YV12_BUFFER_CONFIG *cb =
+      (YV12_BUFFER_CONFIG *)calloc(1, sizeof(YV12_BUFFER_CONFIG));
+  void *asrc = shim_ct_align(src, (size_t)src_stride * rows * px);
+  void *adst = shim_ct_align(dst, (size_t)dst_stride * rows * px);
+  if (!x || !cpi || !seq || !cb || !asrc || !adst) {
+    aom_free(adst); aom_free(asrc); free(cb); free(seq); free(cpi); free(x);
+    return 0;
+  }
+  seq->enable_masked_compound = is_masked_compound_enabled;
+  cpi->common.seq_params = seq;
+  for (int i = 0; i < TX_SEARCH_CASES; ++i)
+    cpi->sf.inter_sf.txfm_rd_gate_level[i] = levels[i];
+
+  cb->flags = hbd ? YV12_FLAG_HIGHBITDEPTH : 0;
+  x->e_mbd.cur_buf = cb;
+  x->e_mbd.bd = bd;
+  x->rdmult = rdmult;
+  x->source_variance = source_variance;
+  x->qindex = qindex;
+  x->e_mbd.mb_to_right_edge = mb_to_right_edge;
+  x->e_mbd.mb_to_bottom_edge = mb_to_bottom_edge;
+  x->plane[0].src.buf =
+      hbd ? (uint8_t *)CONVERT_TO_BYTEPTR((uint16_t *)asrc) : (uint8_t *)asrc;
+  x->plane[0].src.stride = src_stride;
+  x->e_mbd.plane[0].dst.buf =
+      hbd ? (uint8_t *)CONVERT_TO_BYTEPTR((uint16_t *)adst) : (uint8_t *)adst;
+  x->e_mbd.plane[0].dst.stride = dst_stride;
+
+  const int r = prune_mode_by_skip_rd(cpi, x, &x->e_mbd, (BLOCK_SIZE)bsize,
+                                      ref_skip_rd, mode_rate);
+  aom_free(adst);
+  aom_free(asrc);
+  free(cb);
+  free(seq);
+  free(cpi);
+  free(x);
+  return r;
+}
+
+int shim_ct_tx_search_cases(void) { return TX_SEARCH_CASES; }
+int shim_ct_max_tx_rd_gate_level(void) { return MAX_TX_RD_GATE_LEVEL; }

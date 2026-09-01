@@ -8,9 +8,9 @@
 //! them, plus the interintra (inter + intra blend) mode search that shares the
 //! same wedge machinery.
 //!
-//! # Coverage — 24 of the 34 functions in `compound_type.c`
+//! # Coverage — 25 of the 34 functions in `compound_type.c`
 //!
-//! **MISSING (10), all of them orchestration over encoder state this port does
+//! **MISSING (9), all of them orchestration over encoder state this port does
 //! not have yet:**
 //!
 //! | C function | what it needs first |
@@ -24,9 +24,8 @@
 //! | `compute_best_interintra_mode` | `av1_build_intra_predictors_for_interintra` + `av1_combine_interintra` |
 //! | `compute_best_wedge_interintra` | the same |
 //! | `estimate_yrd_for_sb` | `av1_estimate_txfm_yrd` (tx_search.c) |
-//! | `prune_mode_by_skip_rd` | `compute_sse_plane` + `check_txfm_eval` (rdopt_utils.h) |
 //!
-//! **Ported (24):**
+//! **Ported (25):**
 //!
 //! | Rust | C (`compound_type.c`) |
 //! |---|---|
@@ -54,10 +53,13 @@
 //! | [`BestCompTypeStats::update`] | `update_best_info` |
 //! | [`update_mask_best_mv`] | `update_mask_best_mv` |
 //! | [`populate_reuse_comp_type_data`] | `populate_reuse_comp_type_data` |
+//! | [`prune_mode_by_skip_rd`] | `prune_mode_by_skip_rd` |
 //!
-//! Two helpers from neighbouring headers come along because nothing else in
+//! Five helpers from neighbouring headers come along because nothing else in
 //! the port had needed them: [`is_interinter_compound_used`]
-//! (`reconinter.h:299`) and [`is_global_mv_block`] (`blockd.h:421`).
+//! (`reconinter.h:299`), [`is_global_mv_block`] (`blockd.h:421`),
+//! [`get_txfm_rd_gate_level`] and [`check_txfm_eval`] (`rdopt_utils.h:778`,
+//! `:347`) and [`compute_sse_plane`] (`model_rd.h:69`).
 //!
 //! # Differential coverage
 //! `tests/compound_type_diff.rs`, **tier 1c** — the oracle is libaom's own
@@ -1392,4 +1394,211 @@ pub fn populate_reuse_comp_type_data(
             rd,
         }),
     }
+}
+
+// ===================================================================
+// The transform-search gate — compound_type.c:1069 plus the three helpers it
+// is built out of (`rdopt_utils.h`, `model_rd.h`).
+//
+// Every compound candidate would otherwise pay for a transform search. The
+// gate estimates what that search could possibly win, from the prediction's
+// own SSE, and skips it when the answer is "not enough".
+// ===================================================================
+
+use aom_dsp::dist::{highbd_sse, sse as lowbd_sse};
+
+/// `TX_SEARCH_CASE` (`speed_features.h:244-254`) — which of the three
+/// transform searches a gate level is being asked for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum TxSearchCase {
+    /// `TX_SEARCH_DEFAULT` — best-inter-candidate and winner-mode evaluation.
+    Default = 0,
+    /// `TX_SEARCH_MOTION_MODE` — motion-mode RD in the MODE_EVAL stage.
+    MotionMode = 1,
+    /// `TX_SEARCH_COMP_TYPE_MODE` — compound-type RD in the MODE_EVAL stage.
+    CompTypeMode = 2,
+}
+
+/// `TX_SEARCH_CASES` (`speed_features.h:254`).
+pub const TX_SEARCH_CASES: usize = 3;
+/// `MAX_TX_RD_GATE_LEVEL` (`rdopt_utils.h:26`).
+pub const MAX_TX_RD_GATE_LEVEL: usize = 5;
+/// `MAXQ` (`quant_common.h:26`).
+const MAXQ: i32 = 255;
+/// `QINDEX_BITS` (`quant_common.h:28`).
+const QINDEX_BITS: i32 = 8;
+/// `RDDIV_BITS` (`rd.h:29`).
+const RDDIV_BITS: i32 = 7;
+
+/// `num_pels_log2_lookup[BLOCK_SIZES_ALL]` (`common_data.h`).
+const NUM_PELS_LOG2_LOOKUP: [i32; 22] = [
+    4, 5, 5, 6, 7, 7, 8, 9, 9, 10, 11, 11, 12, 13, 13, 14, 6, 6, 8, 8, 10, 10,
+];
+
+/// `get_txfm_rd_gate_level` (`rdopt_utils.h:778`): which of the three
+/// `txfm_rd_gate_level` entries applies here.
+///
+/// The `MOTION_MODE` arm additionally requires the block to be LARGER than 256
+/// pixels (`num_pels_log2_lookup[bsize] > 8`); at or below that it falls
+/// through to `TX_SEARCH_DEFAULT`, which is a different level, not a disabled
+/// gate.
+pub fn get_txfm_rd_gate_level(
+    is_masked_compound_enabled: bool,
+    txfm_rd_gate_level: [i32; TX_SEARCH_CASES],
+    bsize: usize,
+    tx_search_case: TxSearchCase,
+    eval_motion_mode: bool,
+) -> i32 {
+    if tx_search_case == TxSearchCase::MotionMode
+        && !eval_motion_mode
+        && NUM_PELS_LOG2_LOOKUP[bsize] > 8
+    {
+        txfm_rd_gate_level[TxSearchCase::MotionMode as usize]
+    } else if tx_search_case == TxSearchCase::CompTypeMode && is_masked_compound_enabled {
+        txfm_rd_gate_level[TxSearchCase::CompTypeMode as usize]
+    } else {
+        txfm_rd_gate_level[TxSearchCase::Default as usize]
+    }
+}
+
+/// `check_txfm_eval` (`rdopt_utils.h:347`): is this candidate close enough to
+/// the best-so-far skip RD to be worth a transform search?
+///
+/// `level` is the gate level from [`get_txfm_rd_gate_level`]; `level == 0`
+/// means the gate is off and the caller does not reach here. `is_luma_only`
+/// selects the compound-type-RD calibration (C's comment at :373-376 explains
+/// why it is more conservative: the compound arm's `skip_rd` is measured on an
+/// 8-bit blended prediction, before the interpolation-filter search).
+///
+/// The `best_skip_rd * aggr_factor * mul_factor` product is C's, in `int64_t`,
+/// and can overflow for a large `best_skip_rd`; the `INT64_MAX` case is
+/// special-cased out above it and the rest are bounded by real RD costs. The
+/// port multiplies with wrapping semantics so an out-of-contract input has a
+/// defined answer instead of a panic.
+pub fn check_txfm_eval(
+    source_variance: u32,
+    qindex: i32,
+    bsize: usize,
+    best_skip_rd: i64,
+    skip_rd: i64,
+    level: usize,
+    is_luma_only: bool,
+) -> bool {
+    /// `scale[MAX_TX_RD_GATE_LEVEL + 1]` (:354).
+    const SCALE: [i64; MAX_TX_RD_GATE_LEVEL + 1] = [i32::MAX as i64, 4, 3, 2, 2, 1];
+    /// `level_to_qindex_map[MAX_TX_RD_GATE_LEVEL + 1]` (:356).
+    const LEVEL_TO_QINDEX_MAP: [i32; MAX_TX_RD_GATE_LEVEL + 1] = [0, 0, 0, 80, 100, 140];
+    /// `luma_mul[MAX_TX_RD_GATE_LEVEL + 1]` (:378).
+    const LUMA_MUL: [i64; MAX_TX_RD_GATE_LEVEL + 1] = [i32::MAX as i64, 32, 29, 17, 17, 17];
+
+    assert!(level <= MAX_TX_RD_GATE_LEVEL, "check_txfm_eval: level > 5");
+    let qslope = 2 * i32::from(!is_luma_only);
+    let mut aggr_factor: i64 = 4;
+    let pred_qindex_thresh = LEVEL_TO_QINDEX_MAP[level];
+    if !is_luma_only && level <= 2 {
+        let rounded = ((MAXQ - qindex) * qslope + ((1 << QINDEX_BITS) >> 1)) >> QINDEX_BITS;
+        aggr_factor = 4 * i64::from(rounded.max(1));
+    }
+    // `x->source_variance << (num_pels_log2_lookup[bsize] + RDDIV_BITS)`.
+    //
+    // **`source_variance` is an `unsigned int`, and the shift happens BEFORE
+    // the widening.** The shift is up to 14 + 7 = 21 bits, so any variance
+    // above 2^11 wraps modulo 2^32 and the comparison against `best_skip_rd`
+    // sees the wrapped value. Computing it in 64 bits "fixes" an overflow the
+    // gate's calibration depends on and flips the branch. (Measured: level 1,
+    // variance 38376, BLOCK_32X64 — 38376 << 18 is 10_059_644_928, which wraps
+    // to 1_469_710_336, and `best_skip_rd` of 5_703_895_552 is above the
+    // wrapped value but below the true one. C evaluated the transform; a
+    // 64-bit port did not.)
+    let var_term = i64::from(source_variance << (NUM_PELS_LOG2_LOOKUP[bsize] + RDDIV_BITS) as u32);
+    if best_skip_rd > var_term && qindex >= pred_qindex_thresh {
+        aggr_factor *= SCALE[level];
+    } else if level <= 1 && !is_luma_only {
+        aggr_factor = (aggr_factor >> 2) * 6;
+    }
+
+    let mul_factor: i64 = if is_luma_only { LUMA_MUL[level] } else { 16 };
+    let rd_thresh = if best_skip_rd == i64::MAX {
+        best_skip_rd
+    } else {
+        best_skip_rd
+            .wrapping_mul(aggr_factor)
+            .wrapping_mul(mul_factor)
+            >> 6
+    };
+    skip_rd <= rd_thresh
+}
+
+/// `calculate_sse` (`model_rd.h:49`) + `compute_sse_plane` (`model_rd.h:69`):
+/// the prediction error of one plane over its VISIBLE extent.
+///
+/// C derives `bw`/`bh` from `get_txb_dimensions(..., plane_bsize, ...)` with
+/// the *visible* out-parameters, i.e. the block clipped to the frame edge —
+/// not the padded plane block size. `src` and `dst` carry their own strides.
+///
+/// The `>> 2 * (bd - 8)` normalisation is applied for EVERY bit depth,
+/// including 8 where it is a no-op, because `shift` is `xd->bd - 8`.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_sse_plane(
+    src: Pixels<'_>,
+    src_stride: usize,
+    dst: Pixels<'_>,
+    dst_stride: usize,
+    bd: u8,
+    visible_w: usize,
+    visible_h: usize,
+) -> i64 {
+    let raw = match (src, dst) {
+        (Pixels::Low(s), Pixels::Low(d)) => {
+            lowbd_sse(s, src_stride, d, dst_stride, visible_w, visible_h)
+        }
+        (Pixels::High(s), Pixels::High(d)) => {
+            highbd_sse(s, src_stride, d, dst_stride, visible_w, visible_h)
+        }
+        _ => panic!("compute_sse_plane: mixed 8-bit and 16-bit buffers"),
+    };
+    let shift = 2 * (u32::from(bd) - 8);
+    ((raw as u64 + ((1u64 << shift) >> 1)) >> shift) as i64
+}
+
+/// `prune_mode_by_skip_rd` (compound_type.c:1069): should this compound
+/// candidate get a transform search at all?
+///
+/// Returns C's `eval_txfm`. When the gate level is 0 the answer is
+/// unconditionally `true` and no SSE is computed — which is why `sse_y` is a
+/// closure rather than a value: at level 0 the encoder never touches the
+/// prediction, and neither does this.
+#[allow(clippy::too_many_arguments)]
+pub fn prune_mode_by_skip_rd(
+    is_masked_compound_enabled: bool,
+    txfm_rd_gate_level: [i32; TX_SEARCH_CASES],
+    bsize: usize,
+    source_variance: u32,
+    qindex: i32,
+    rdmult: i32,
+    ref_skip_rd: i64,
+    mode_rate: i32,
+    sse_y: impl FnOnce() -> i64,
+) -> bool {
+    let level = get_txfm_rd_gate_level(
+        is_masked_compound_enabled,
+        txfm_rd_gate_level,
+        bsize,
+        TxSearchCase::CompTypeMode,
+        false,
+    );
+    if level == 0 {
+        return true;
+    }
+    let skip_rd = crate::rd::rdcost(rdmult, mode_rate, sse_y() << 4);
+    check_txfm_eval(
+        source_variance,
+        qindex,
+        bsize,
+        ref_skip_rd,
+        skip_rd,
+        level as usize,
+        true,
+    )
 }

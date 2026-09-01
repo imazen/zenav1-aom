@@ -25554,3 +25554,195 @@ pub fn ref_fpi_static_buf_size() -> usize {
     ref_init();
     unsafe { shim_fpi_static_buf_size() as usize }
 }
+
+// --- compound_type.c: the transform-search gate (:1069 + rdopt_utils.h) ----
+
+extern "C" {
+    fn shim_ct_get_txfm_rd_gate_level(
+        is_masked_compound_enabled: i32,
+        levels: *const i32,
+        bsize: i32,
+        tx_search_case: i32,
+        eval_motion_mode: i32,
+    ) -> i32;
+    fn shim_ct_check_txfm_eval(
+        source_variance: u32,
+        qindex: i32,
+        bsize: i32,
+        best_skip_rd: i64,
+        skip_rd: i64,
+        level: i32,
+        is_luma_only: i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_compute_sse_plane(
+        hbd: i32,
+        bd: i32,
+        bsize: i32,
+        ss_x: i32,
+        ss_y: i32,
+        mb_to_right_edge: i32,
+        mb_to_bottom_edge: i32,
+        src: *const core::ffi::c_void,
+        src_stride: i32,
+        dst: *const core::ffi::c_void,
+        dst_stride: i32,
+        rows: i32,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_prune_mode_by_skip_rd(
+        hbd: i32,
+        bd: i32,
+        bsize: i32,
+        is_masked_compound_enabled: i32,
+        levels: *const i32,
+        source_variance: u32,
+        qindex: i32,
+        rdmult: i32,
+        mb_to_right_edge: i32,
+        mb_to_bottom_edge: i32,
+        src: *const core::ffi::c_void,
+        src_stride: i32,
+        dst: *const core::ffi::c_void,
+        dst_stride: i32,
+        rows: i32,
+        ref_skip_rd: i64,
+        mode_rate: i32,
+    ) -> i32;
+    fn shim_ct_tx_search_cases() -> i32;
+    fn shim_ct_max_tx_rd_gate_level() -> i32;
+}
+
+/// Reference `get_txfm_rd_gate_level` (`rdopt_utils.h:778`).
+pub fn ref_ct_get_txfm_rd_gate_level(
+    is_masked_compound_enabled: bool,
+    levels: &[i32; 3],
+    bsize: i32,
+    tx_search_case: i32,
+    eval_motion_mode: bool,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_ct_get_txfm_rd_gate_level(
+            i32::from(is_masked_compound_enabled),
+            levels.as_ptr(),
+            bsize,
+            tx_search_case,
+            i32::from(eval_motion_mode),
+        )
+    }
+}
+
+/// Reference `check_txfm_eval` (`rdopt_utils.h:347`).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_ct_check_txfm_eval(
+    source_variance: u32,
+    qindex: i32,
+    bsize: i32,
+    best_skip_rd: i64,
+    skip_rd: i64,
+    level: i32,
+    is_luma_only: bool,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_ct_check_txfm_eval(
+            source_variance,
+            qindex,
+            bsize,
+            best_skip_rd,
+            skip_rd,
+            level,
+            i32::from(is_luma_only),
+        ) != 0
+    }
+}
+
+/// Reference `compute_sse_plane` (`model_rd.h:69`) for plane 0.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_ct_compute_sse_plane(
+    bd: i32,
+    bsize: i32,
+    ss_x: i32,
+    ss_y: i32,
+    mb_to_right_edge: i32,
+    mb_to_bottom_edge: i32,
+    src: RefPixels<'_>,
+    src_stride: i32,
+    dst: RefPixels<'_>,
+    dst_stride: i32,
+    rows: i32,
+) -> i64 {
+    ref_init();
+    unsafe {
+        shim_ct_compute_sse_plane(
+            i32::from(src.is_hbd()),
+            bd,
+            bsize,
+            ss_x,
+            ss_y,
+            mb_to_right_edge,
+            mb_to_bottom_edge,
+            src.as_ptr(),
+            src_stride,
+            dst.as_ptr(),
+            dst_stride,
+            rows,
+        )
+    }
+}
+
+/// Reference `prune_mode_by_skip_rd` (compound_type.c:1069).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_ct_prune_mode_by_skip_rd(
+    bd: i32,
+    bsize: i32,
+    is_masked_compound_enabled: bool,
+    levels: &[i32; 3],
+    source_variance: u32,
+    qindex: i32,
+    rdmult: i32,
+    mb_to_right_edge: i32,
+    mb_to_bottom_edge: i32,
+    src: RefPixels<'_>,
+    src_stride: i32,
+    dst: RefPixels<'_>,
+    dst_stride: i32,
+    rows: i32,
+    ref_skip_rd: i64,
+    mode_rate: i32,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_ct_prune_mode_by_skip_rd(
+            i32::from(src.is_hbd()),
+            bd,
+            bsize,
+            i32::from(is_masked_compound_enabled),
+            levels.as_ptr(),
+            source_variance,
+            qindex,
+            rdmult,
+            mb_to_right_edge,
+            mb_to_bottom_edge,
+            src.as_ptr(),
+            src_stride,
+            dst.as_ptr(),
+            dst_stride,
+            rows,
+            ref_skip_rd,
+            mode_rate,
+        ) != 0
+    }
+}
+
+/// `TX_SEARCH_CASES` and `MAX_TX_RD_GATE_LEVEL` as the oracle TU sees them.
+pub fn ref_ct_tx_gate_constants() -> (i32, i32) {
+    ref_init();
+    unsafe {
+        (
+            shim_ct_tx_search_cases(),
+            shim_ct_max_tx_rd_gate_level(),
+        )
+    }
+}
