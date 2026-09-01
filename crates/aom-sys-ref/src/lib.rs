@@ -27848,3 +27848,291 @@ pub fn ref_interp_filter_dims() -> (i32, i32) {
     ref_init();
     unsafe { (shim_ifp_subpel_shifts(), shim_ifp_subpel_taps()) }
 }
+
+// --- nonrd_pickmode.c's tx-size / subpel / MV-bias cluster (tier 1c) -------
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_nrp_subpel_select(
+        avg_frame_low_motion: i32,
+        reduce_mv_pel_precision_highmotion: i32,
+        reduce_mv_pel_precision_lowcomplex: i32,
+        subpel_force_stop: i32,
+        cm_width: i32,
+        cm_height: i32,
+        bsize: i32,
+        mv_row: i16,
+        mv_col: i16,
+        ref_mv_row: i16,
+        ref_mv_col: i16,
+        start_mv_row: i16,
+        start_mv_col: i16,
+        qindex: i32,
+        source_sad_nonrd: i32,
+        source_variance: i32,
+        fullpel_performed_well: i32,
+    ) -> i32;
+    fn shim_nrp_use_aggressive_subpel_search_method(
+        qindex: i32,
+        source_sad_nonrd: i32,
+        source_variance: i32,
+        use_adaptive: i32,
+        fullpel_performed_well: i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_nrp_set_force_skip_flag(
+        tx_mode_search_type: i32,
+        tx_size_level_based_on_qstep: i32,
+        dequant_ac: i32,
+        bd: i32,
+        sse: u32,
+        source_variance: i32,
+        color_sens_u: i32,
+        color_sens_v: i32,
+        force_skip_in: i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_nrp_calculate_tx_size(
+        tx_mode_search_type: i32,
+        tx_size_level_based_on_qstep: i32,
+        aq_mode: i32,
+        segment_id: i32,
+        bsize: i32,
+        qindex: i32,
+        dequant_ac: i32,
+        bd: i32,
+        var: u32,
+        sse: u32,
+        source_variance: i32,
+        color_sens_u: i32,
+        color_sens_v: i32,
+        force_skip_io: *mut i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_nrp_newmv_diff_bias(
+        this_mode: i32,
+        rdcost_in: i64,
+        bsize: i32,
+        mv_row: i32,
+        mv_col: i32,
+        speed: i32,
+        spatial_variance: u32,
+        source_sad_nonrd: i32,
+        above_valid: i32,
+        above_mv_as_int: u32,
+        left_valid: i32,
+        left_mv_as_int: u32,
+    ) -> i64;
+    fn shim_nrp_thresh_freq_fact_dims(bsizes: *mut i32, modes: *mut i32) -> i32;
+    fn shim_nrp_update_thresh_freq_fact(
+        adaptive_rd_thresh: i32,
+        bsize: i32,
+        ref_frame: i32,
+        best_mode_idx: i32,
+        mode: i32,
+        freq_fact_flat: *mut i32,
+    ) -> i32;
+}
+
+/// Reference `subpel_select` (nonrd_pickmode.c:99), tier 1c. Returns C's raw
+/// `SUBPEL_FORCE_STOP`.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_nrp_subpel_select(
+    avg_frame_low_motion: i32,
+    reduce_highmotion: i32,
+    reduce_lowcomplex: i32,
+    subpel_force_stop: i32,
+    frame_size: (i32, i32),
+    bsize: i32,
+    mv: (i16, i16),
+    ref_mv: (i16, i16),
+    start_mv: (i16, i16),
+    qindex: i32,
+    source_sad_nonrd: i32,
+    source_variance: i32,
+    fullpel_performed_well: bool,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_nrp_subpel_select(
+            avg_frame_low_motion,
+            reduce_highmotion,
+            reduce_lowcomplex,
+            subpel_force_stop,
+            frame_size.0,
+            frame_size.1,
+            bsize,
+            mv.0,
+            mv.1,
+            ref_mv.0,
+            ref_mv.1,
+            start_mv.0,
+            start_mv.1,
+            qindex,
+            source_sad_nonrd,
+            source_variance,
+            i32::from(fullpel_performed_well),
+        )
+    }
+}
+
+/// Reference `use_aggressive_subpel_search_method` (:155), tier 1c.
+#[must_use]
+pub fn ref_nrp_use_aggressive_subpel_search_method(
+    qindex: i32,
+    source_sad_nonrd: i32,
+    source_variance: i32,
+    use_adaptive: bool,
+    fullpel_performed_well: bool,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_nrp_use_aggressive_subpel_search_method(
+            qindex,
+            source_sad_nonrd,
+            source_variance,
+            i32::from(use_adaptive),
+            i32::from(fullpel_performed_well),
+        ) != 0
+    }
+}
+
+/// Reference `set_force_skip_flag` (:423), tier 1c. Returns the in/out flag.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_nrp_set_force_skip_flag(
+    tx_mode_search_type: i32,
+    tx_size_level_based_on_qstep: i32,
+    dequant_ac: i32,
+    bd: i32,
+    sse: u32,
+    source_variance: i32,
+    color_sens: (i32, i32),
+    force_skip_in: bool,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_nrp_set_force_skip_flag(
+            tx_mode_search_type,
+            tx_size_level_based_on_qstep,
+            dequant_ac,
+            bd,
+            sse,
+            source_variance,
+            color_sens.0,
+            color_sens.1,
+            i32::from(force_skip_in),
+        ) != 0
+    }
+}
+
+/// Reference `calculate_tx_size` (:447), tier 1c. Returns
+/// `(tx_size, force_skip)`.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_nrp_calculate_tx_size(
+    tx_mode_search_type: i32,
+    tx_size_level_based_on_qstep: i32,
+    aq_mode: i32,
+    segment_id: i32,
+    bsize: i32,
+    qindex: i32,
+    dequant_ac: i32,
+    bd: i32,
+    var: u32,
+    sse: u32,
+    source_variance: i32,
+    color_sens: (i32, i32),
+    force_skip_in: bool,
+) -> (i32, bool) {
+    ref_init();
+    let mut force_skip = i32::from(force_skip_in);
+    let tx = unsafe {
+        shim_nrp_calculate_tx_size(
+            tx_mode_search_type,
+            tx_size_level_based_on_qstep,
+            aq_mode,
+            segment_id,
+            bsize,
+            qindex,
+            dequant_ac,
+            bd,
+            var,
+            sse,
+            source_variance,
+            color_sens.0,
+            color_sens.1,
+            &mut force_skip,
+        )
+    };
+    (tx, force_skip != 0)
+}
+
+/// Reference `newmv_diff_bias` (:988), tier 1c. Returns the adjusted rdcost.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_nrp_newmv_diff_bias(
+    this_mode: i32,
+    rdcost: i64,
+    bsize: i32,
+    mv: (i32, i32),
+    speed: i32,
+    spatial_variance: u32,
+    source_sad_nonrd: i32,
+    above: Option<u32>,
+    left: Option<u32>,
+) -> i64 {
+    ref_init();
+    unsafe {
+        shim_nrp_newmv_diff_bias(
+            this_mode,
+            rdcost,
+            bsize,
+            mv.0,
+            mv.1,
+            speed,
+            spatial_variance,
+            source_sad_nonrd,
+            i32::from(above.is_some()),
+            above.unwrap_or(0),
+            i32::from(left.is_some()),
+            left.unwrap_or(0),
+        )
+    }
+}
+
+/// `thresh_freq_fact`'s dimensions in the oracle TU: `(BLOCK_SIZES_ALL, MAX_MODES)`.
+#[must_use]
+pub fn ref_nrp_thresh_freq_fact_dims() -> (usize, usize) {
+    ref_init();
+    let (mut b, mut m) = (0i32, 0i32);
+    unsafe { shim_nrp_thresh_freq_fact_dims(&mut b, &mut m) };
+    (b as usize, m as usize)
+}
+
+/// Reference `update_thresh_freq_fact` (:1045), tier 1c. `freq_fact_flat` is
+/// `[BLOCK_SIZES_ALL][MAX_MODES]` row-major, in/out.
+pub fn ref_nrp_update_thresh_freq_fact(
+    adaptive_rd_thresh: i32,
+    bsize: i32,
+    ref_frame: i32,
+    best_mode_idx: i32,
+    mode: i32,
+    freq_fact_flat: &mut [i32],
+) {
+    ref_init();
+    let (b, m) = ref_nrp_thresh_freq_fact_dims();
+    assert_eq!(freq_fact_flat.len(), b * m);
+    let rc = unsafe {
+        shim_nrp_update_thresh_freq_fact(
+            adaptive_rd_thresh,
+            bsize,
+            ref_frame,
+            best_mode_idx,
+            mode,
+            freq_fact_flat.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, 0, "the thresh_freq_fact shim failed to allocate");
+}

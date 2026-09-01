@@ -573,3 +573,587 @@ fn previous_mode_performed_poorly_uses_c_float_width() {
         "no cell produced the f32-only verdict; the construction no longer separates the widths"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The tx-size / subpel-precision / MV-bias cluster.
+// ---------------------------------------------------------------------------
+
+use aom_encode::nonrd_inter::{
+    MAX_MODES as NRD_MAX_MODES, SubpelForceStop, SubpelSelectCtx, TxSizeCtx, calculate_tx_size,
+    is_same_gf_and_last_scale, newmv_diff_bias, pack_mv, set_force_skip_flag, subpel_select,
+    update_thresh_freq_fact, use_aggressive_subpel_search_method,
+};
+use aom_sys_ref::{
+    ref_nrp_calculate_tx_size, ref_nrp_newmv_diff_bias, ref_nrp_set_force_skip_flag,
+    ref_nrp_subpel_select, ref_nrp_thresh_freq_fact_dims, ref_nrp_update_thresh_freq_fact,
+    ref_nrp_use_aggressive_subpel_search_method,
+};
+
+/// The block sizes these helpers are called at, plus the extremes.
+const BSIZES: [usize; 8] = [0, 3, 6, 7, 9, 11, 12, 15];
+
+/// `TX_MODE_SELECT` as C's raw `TX_MODE`.
+const TX_MODE_SELECT_RAW: i32 = 2;
+
+#[test]
+fn subpel_select_matches_c() {
+    let mut rng = Rng::new(0x5B_9001);
+    let mut seen = [0usize; 4];
+    for _ in 0..8000 {
+        let ctx = SubpelSelectCtx {
+            // avg_frame_low_motion straddles the (0, 40) window.
+            avg_frame_low_motion: match rng.below(4) {
+                0 => 0,
+                1 => rng.below(40) as i32,
+                2 => 40,
+                _ => 40 + rng.below(60) as i32,
+            },
+            reduce_mv_pel_precision_highmotion: rng.below(5) as i32,
+            reduce_mv_pel_precision_lowcomplex: rng.below(4) as i32,
+            subpel_force_stop: SubpelForceStop::from_i32(rng.below(4) as i32).unwrap(),
+            // Straddle the 320x240 low-resolution test.
+            frame_width: [176i32, 320, 321, 1920][rng.below(4) as usize],
+            frame_height: [144i32, 240, 241, 1080][rng.below(4) as usize],
+            qindex: rng.below(256) as i32,
+            source_sad_nonrd: [
+                SourceSad::Zero,
+                SourceSad::VeryLow,
+                SourceSad::Low,
+                SourceSad::Med,
+                SourceSad::High,
+            ][rng.below(5) as usize],
+            // Straddle the 500 and 5000 variance thresholds.
+            source_variance: match rng.below(4) {
+                0 => rng.below(500) as i32,
+                1 => 500 + rng.below(4500) as i32,
+                2 => 5000,
+                _ => 5000 + rng.below(20000) as i32,
+            },
+        };
+        let bsize = BSIZES[rng.below(BSIZES.len() as u32) as usize];
+        // MVs around the thresholds (2, 4, 6, 8, 10, 12 and their doubles).
+        let draw_mv = |rng: &mut Rng| -> i16 {
+            let m = rng.below(30) as i16 - 4;
+            if rng.below(2) == 0 { m } else { -m }
+        };
+        let mv = (draw_mv(&mut rng), draw_mv(&mut rng));
+        let ref_mv = if rng.below(2) == 0 {
+            (0i16, 0i16)
+        } else {
+            (draw_mv(&mut rng), draw_mv(&mut rng))
+        };
+        let start_mv = if rng.below(2) == 0 {
+            (0i16, 0i16)
+        } else {
+            (draw_mv(&mut rng), draw_mv(&mut rng))
+        };
+        let fpw = rng.below(2) == 0;
+
+        let want = ref_nrp_subpel_select(
+            ctx.avg_frame_low_motion,
+            ctx.reduce_mv_pel_precision_highmotion,
+            ctx.reduce_mv_pel_precision_lowcomplex,
+            ctx.subpel_force_stop.to_i32(),
+            (ctx.frame_width, ctx.frame_height),
+            bsize as i32,
+            mv,
+            ref_mv,
+            start_mv,
+            ctx.qindex,
+            ctx.source_sad_nonrd as i32,
+            ctx.source_variance,
+            fpw,
+        );
+        let got = subpel_select(&ctx, bsize, mv, ref_mv, start_mv, fpw);
+        assert_eq!(
+            got.to_i32(),
+            want,
+            "bsize {bsize} mv {mv:?} ref {ref_mv:?} start {start_mv:?} ctx {ctx:?} fpw {fpw}"
+        );
+        seen[want as usize] += 1;
+    }
+    // Every SUBPEL_FORCE_STOP must be reachable, or a whole arm is untested.
+    for (i, &n) in seen.iter().enumerate() {
+        assert!(n > 50, "SUBPEL_FORCE_STOP {i} was returned only {n} times");
+    }
+}
+
+#[test]
+fn use_aggressive_subpel_search_method_matches_c() {
+    for qindex in [0i32, 63, 64, 127, 128, 191, 192, 255] {
+        for sad in [
+            SourceSad::Zero,
+            SourceSad::VeryLow,
+            SourceSad::Low,
+            SourceSad::Med,
+            SourceSad::High,
+        ] {
+            for &var in &[0i32, 99, 100, 101, 10000] {
+                for &adaptive in &[false, true] {
+                    for &fpw in &[false, true] {
+                        assert_eq!(
+                            use_aggressive_subpel_search_method(qindex, sad, var, adaptive, fpw),
+                            ref_nrp_use_aggressive_subpel_search_method(
+                                qindex, sad as i32, var, adaptive, fpw
+                            ),
+                            "q {qindex} sad {sad:?} var {var} adaptive {adaptive} fpw {fpw}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn set_force_skip_flag_matches_c() {
+    let mut rng = Rng::new(0x5F5F_9002);
+    let (mut set, mut clear) = (0usize, 0usize);
+    for _ in 0..6000 {
+        // dequant_ac is a real AC quantizer step; bd picks the shift.
+        let bd = [8i32, 10, 12][rng.below(3) as usize];
+        let dequant_ac = 4 + rng.below(2000) as i32;
+        let qstep = dequant_ac >> (bd - 5);
+        let qstep_sq = (qstep * qstep) as u32;
+        // sse and source_variance straddle qstep_sq, which is the whole test.
+        let sse = match rng.below(3) {
+            0 => rng.below(qstep_sq.max(1)),
+            1 => qstep_sq,
+            _ => qstep_sq + rng.below(1 << 16),
+        };
+        let source_variance = match rng.below(3) {
+            0 => rng.below(qstep_sq.max(1)) as i32,
+            1 => qstep_sq as i32,
+            _ => (qstep_sq + rng.below(1 << 16)) as i32,
+        };
+        let ctx = TxSizeCtx {
+            tx_mode_search_type: rng.below(3) as i32,
+            tx_size_level_based_on_qstep: rng.below(4) as i32,
+            aq_mode: 0,
+            segment_id: 0,
+            qindex: 0,
+            dequant_ac,
+            bd: bd as u32,
+            source_variance,
+            color_sensitivity_u: rng.below(2) as u8,
+            color_sensitivity_v: rng.below(2) as u8,
+        };
+        for &force_in in &[false, true] {
+            let want = ref_nrp_set_force_skip_flag(
+                ctx.tx_mode_search_type,
+                ctx.tx_size_level_based_on_qstep,
+                ctx.dequant_ac,
+                bd,
+                sse,
+                ctx.source_variance,
+                (
+                    i32::from(ctx.color_sensitivity_u),
+                    i32::from(ctx.color_sensitivity_v),
+                ),
+                force_in,
+            );
+            let got = set_force_skip_flag(&ctx, sse, force_in);
+            assert_eq!(got, want, "ctx {ctx:?} sse {sse} force_in {force_in}");
+            if want {
+                set += 1;
+            } else {
+                clear += 1;
+            }
+        }
+    }
+    assert!(
+        set > 200 && clear > 200,
+        "one arm never fired: {set}/{clear}"
+    );
+}
+
+#[test]
+fn calculate_tx_size_matches_c() {
+    let mut rng = Rng::new(0x7C_9003);
+    let mut seen = [0usize; 5];
+    let mut forced = 0usize;
+    for _ in 0..12000 {
+        let bd = [8i32, 10, 12][rng.below(3) as usize];
+        let dequant_ac = 4 + rng.below(2000) as i32;
+        let qstep = dequant_ac >> (bd - 5);
+        let qstep_sq = (qstep * qstep) as u32;
+        // The force_skip write-back needs a five-way conjunction
+        // (TX_MODE_SELECT, level >= 2, sse and source_variance both under
+        // qstep_sq, and neither chroma plane sensitive). A uniform draw over
+        // each field reaches it a handful of times in twelve thousand, so the
+        // three cheap terms are biased toward it and the two value terms are
+        // left straddling.
+        let ctx = TxSizeCtx {
+            tx_mode_search_type: if rng.below(4) == 0 {
+                rng.below(3) as i32
+            } else {
+                TX_MODE_SELECT_RAW
+            },
+            tx_size_level_based_on_qstep: if rng.below(4) == 0 {
+                rng.below(4) as i32
+            } else {
+                2 + rng.below(2) as i32
+            },
+            // Both the CYCLIC_REFRESH_AQ arm and the others.
+            aq_mode: rng.below(4) as i32,
+            // Both boosted segment ids and the ones that are not.
+            segment_id: rng.below(4) as i32,
+            qindex: rng.below(256) as i32,
+            dequant_ac,
+            bd: bd as u32,
+            source_variance: match rng.below(3) {
+                0 => rng.below(qstep_sq.max(1)) as i32,
+                _ => (qstep_sq + rng.below(1 << 16)) as i32,
+            },
+            color_sensitivity_u: u8::from(rng.below(4) == 0),
+            color_sensitivity_v: u8::from(rng.below(4) == 0),
+        };
+        // var and sse straddle both `sse > (var * multiplier) >> 2` and
+        // `var < var_thresh` (= 2 * qstep_sq).
+        let var = match rng.below(4) {
+            0 => 0u32,
+            1 => rng.below(2 * qstep_sq.max(1)),
+            2 => 2 * qstep_sq,
+            _ => rng.below(1 << 20),
+        };
+        let sse = match rng.below(4) {
+            0 => (var * 2) >> 2,
+            1 => ((var * 8) >> 2) + 1,
+            2 => rng.below(qstep_sq.max(1)),
+            _ => rng.below(1 << 22),
+        };
+        let bsize = BSIZES[rng.below(BSIZES.len() as u32) as usize];
+        for &force_in in &[false, true] {
+            let want = ref_nrp_calculate_tx_size(
+                ctx.tx_mode_search_type,
+                ctx.tx_size_level_based_on_qstep,
+                ctx.aq_mode,
+                ctx.segment_id,
+                bsize as i32,
+                ctx.qindex,
+                ctx.dequant_ac,
+                bd,
+                var,
+                sse,
+                ctx.source_variance,
+                (
+                    i32::from(ctx.color_sensitivity_u),
+                    i32::from(ctx.color_sensitivity_v),
+                ),
+                force_in,
+            );
+            let got = calculate_tx_size(&ctx, bsize, var, sse, force_in);
+            assert_eq!(
+                (got.0 as i32, got.1),
+                want,
+                "ctx {ctx:?} bsize {bsize} var {var} sse {sse} force_in {force_in}"
+            );
+            seen[got.0] += 1;
+            if got.1 && !force_in {
+                forced += 1;
+            }
+        }
+    }
+    // TX_4X4, TX_8X8 and TX_16X16 must all be reachable; the final AOMMIN caps
+    // at TX_16X16, so 3 and 4 never are.
+    assert!(
+        seen[0] > 100 && seen[1] > 100 && seen[2] > 100,
+        "sizes seen: {seen:?}"
+    );
+    assert_eq!(
+        seen[3], 0,
+        "TX_32X32 must be unreachable through the final cap"
+    );
+    assert_eq!(
+        seen[4], 0,
+        "TX_64X64 must be unreachable through the final cap"
+    );
+    assert!(
+        forced > 50,
+        "the force_skip write-back never fired ({forced})"
+    );
+}
+
+#[test]
+fn newmv_diff_bias_matches_c() {
+    let mut rng = Rng::new(0xB1A5_9004);
+    let mut distinct = std::collections::BTreeSet::new();
+    for _ in 0..12000 {
+        let (mode, raw_mode) = if rng.below(2) == 0 {
+            (PredMode::NewMv, 16i32)
+        } else {
+            RTC_MODE_SET[rng.below(4) as usize]
+        };
+        let rdcost = match rng.below(4) {
+            0 => 0i64,
+            1 => 1,
+            _ => i64::from(rng.below(1 << 28)),
+        };
+        let bsize = BSIZES[rng.below(BSIZES.len() as u32) as usize];
+        // MVs around the 16, 64 and 80 thresholds the three arms use.
+        let draw = |rng: &mut Rng| -> i32 {
+            let v = rng.below(200) as i32 - 100;
+            if rng.below(4) == 0 { v * 2 } else { v }
+        };
+        let mv = (draw(&mut rng), draw(&mut rng));
+        let speed = rng.below(11) as i32;
+        // Straddle the 150 and 300 spatial-variance thresholds.
+        let spatial_variance = match rng.below(4) {
+            0 => rng.below(150),
+            1 => rng.below(300),
+            2 => 300,
+            _ => rng.below(1 << 16),
+        };
+        let sad = [
+            SourceSad::Zero,
+            SourceSad::VeryLow,
+            SourceSad::Low,
+            SourceSad::Med,
+            SourceSad::High,
+        ][rng.below(5) as usize];
+        // A neighbour that is absent, present with a valid MV, or present with
+        // C's INVALID_MV -- all three take different paths.
+        let draw_nb = |rng: &mut Rng| -> Option<(i16, i16)> {
+            match rng.below(3) {
+                0 => None,
+                1 => Some((-32768i16, -32768i16)), // packs to INVALID_MV
+                _ => Some((rng.below(400) as i16 - 200, rng.below(400) as i16 - 200)),
+            }
+        };
+        let above = draw_nb(&mut rng);
+        let left = draw_nb(&mut rng);
+
+        let want = ref_nrp_newmv_diff_bias(
+            raw_mode,
+            rdcost,
+            bsize as i32,
+            mv,
+            speed,
+            spatial_variance,
+            sad as i32,
+            above.map(|(r, c)| pack_mv(r, c)),
+            left.map(|(r, c)| pack_mv(r, c)),
+        );
+        let got = newmv_diff_bias(
+            mode,
+            rdcost,
+            bsize,
+            mv.0,
+            mv.1,
+            speed,
+            spatial_variance,
+            sad,
+            above,
+            left,
+        );
+        assert_eq!(
+            got, want,
+            "mode {raw_mode} rd {rdcost} bsize {bsize} mv {mv:?} speed {speed} var {spatial_variance} sad {sad:?} above {above:?} left {left:?}"
+        );
+        if rdcost > 1000 {
+            // Which of the four multipliers fired.
+            distinct.insert(if got == rdcost {
+                0
+            } else if got == rdcost << 2 {
+                1
+            } else if got == rdcost << 1 {
+                2
+            } else {
+                3
+            });
+        }
+    }
+    assert_eq!(
+        distinct.len(),
+        4,
+        "only {} of the four rdcost multipliers fired: {distinct:?}",
+        distinct.len()
+    );
+
+    // Two boundaries the random sweep reaches only by accident, because each
+    // needs a four- or five-way conjunction to be observable.
+    //
+    // (a) the FIRST arm's `|mv| > 16`, which needs bsize >= BLOCK_64X64, a
+    //     non-High source SAD and spatial_variance < 300 as well.
+    for &(mv_row, mv_col) in &[(16i32, 0i32), (17, 0), (0, 16), (0, 17), (-16, 0), (-17, 0)] {
+        let want = ref_nrp_newmv_diff_bias(
+            16,
+            1_000_000,
+            12,
+            (mv_row, mv_col),
+            0,
+            299,
+            SourceSad::Low as i32,
+            None,
+            None,
+        );
+        let got = newmv_diff_bias(
+            PredMode::NewMv,
+            1_000_000,
+            12,
+            mv_row,
+            mv_col,
+            0,
+            299,
+            SourceSad::Low,
+            None,
+            None,
+        );
+        assert_eq!(got, want, "first-arm mv boundary ({mv_row},{mv_col})");
+    }
+
+    // (b) the neighbour average's `+ 1` rounding, which is only observable
+    //     when `above + left` is ODD and the resulting row_diff lands exactly
+    //     on the +/-80 boundary. Constructed for both signs.
+    for &(above_row, left_row, mv_row) in &[
+        (81i32, 80i32, 0i32),
+        (-81, -80, 0),
+        (161, 160, 80),
+        (-161, -160, -80),
+    ] {
+        let above = Some((above_row as i16, 0i16));
+        let left = Some((left_row as i16, 0i16));
+        let want = ref_nrp_newmv_diff_bias(
+            16,
+            1_000_000,
+            9,
+            (mv_row, 0),
+            0,
+            10_000,
+            SourceSad::High as i32,
+            above.map(|(r, c)| pack_mv(r, c)),
+            left.map(|(r, c)| pack_mv(r, c)),
+        );
+        let got = newmv_diff_bias(
+            PredMode::NewMv,
+            1_000_000,
+            9,
+            mv_row,
+            0,
+            0,
+            10_000,
+            SourceSad::High,
+            above,
+            left,
+        );
+        assert_eq!(
+            got, want,
+            "neighbour-average rounding ({above_row},{left_row}) vs mv {mv_row}"
+        );
+    }
+}
+
+#[test]
+fn update_thresh_freq_fact_matches_c() {
+    let mut rng = Rng::new(0x7F_9005);
+    let (nb, nm) = ref_nrp_thresh_freq_fact_dims();
+    assert_eq!(nm, NRD_MAX_MODES, "MAX_MODES drifted");
+    let (mut decayed, mut raised) = (0usize, 0usize);
+    for _ in 0..2000 {
+        let flat: Vec<i32> = (0..nb * nm).map(|_| rng.below(1 << 12) as i32).collect();
+        let bsize = BSIZES[rng.below(BSIZES.len() as u32) as usize];
+        let ref_frame = 1 + rng.below(7) as usize;
+        let mode_offset = rng.below(4) as usize;
+        let best_mode_idx = rng.below(NRD_MAX_MODES as u32) as usize;
+        // adaptive_rd_thresh caps the raised value; the encoder uses 0..4.
+        let adaptive_rd_thresh = rng.below(5) as i32;
+
+        let mut want = flat.clone();
+        ref_nrp_update_thresh_freq_fact(
+            adaptive_rd_thresh,
+            bsize as i32,
+            ref_frame as i32,
+            best_mode_idx as i32,
+            // C takes a PREDICTION_MODE and applies mode_offset() itself;
+            // NEARESTMV is 13 and mode_offset subtracts it.
+            13 + mode_offset as i32,
+            &mut want,
+        );
+
+        let mut got: Vec<[i32; NRD_MAX_MODES]> = flat
+            .chunks_exact(nm)
+            .map(|c| {
+                let mut a = [0i32; NRD_MAX_MODES];
+                a.copy_from_slice(c);
+                a
+            })
+            .collect();
+        update_thresh_freq_fact(
+            adaptive_rd_thresh,
+            &mut got,
+            bsize,
+            ref_frame,
+            best_mode_idx,
+            mode_offset,
+        );
+        let got_flat: Vec<i32> = got.iter().flatten().copied().collect();
+        assert_eq!(
+            got_flat, want,
+            "bsize {bsize} ref {ref_frame} best {best_mode_idx} mode_off {mode_offset} thresh {adaptive_rd_thresh}"
+        );
+        if MODE_IDX[ref_frame][mode_offset] == best_mode_idx {
+            decayed += 1;
+        } else {
+            raised += 1;
+        }
+    }
+    assert!(raised > 100, "the raise arm never fired");
+    // The decay arm needs the best mode to BE this one, which a uniform draw
+    // over 169 modes almost never produces -- so it is forced.
+    let _ = decayed;
+    for ref_frame in 1..8usize {
+        for mode_offset in 0..4usize {
+            let best_mode_idx = MODE_IDX[ref_frame][mode_offset];
+            let flat: Vec<i32> = (0..nb * nm).map(|i| (i % 4096) as i32).collect();
+            let mut want = flat.clone();
+            ref_nrp_update_thresh_freq_fact(
+                4,
+                9,
+                ref_frame as i32,
+                best_mode_idx as i32,
+                13 + mode_offset as i32,
+                &mut want,
+            );
+            let mut got: Vec<[i32; NRD_MAX_MODES]> = flat
+                .chunks_exact(nm)
+                .map(|c| {
+                    let mut a = [0i32; NRD_MAX_MODES];
+                    a.copy_from_slice(c);
+                    a
+                })
+                .collect();
+            update_thresh_freq_fact(4, &mut got, 9, ref_frame, best_mode_idx, mode_offset);
+            let got_flat: Vec<i32> = got.iter().flatten().copied().collect();
+            assert_eq!(
+                got_flat, want,
+                "decay arm, ref {ref_frame} off {mode_offset}"
+            );
+            assert_ne!(got_flat, flat, "the decay arm changed nothing");
+        }
+    }
+}
+
+#[test]
+fn is_same_gf_and_last_scale_compares_both_axes() {
+    // A one-line predicate; the point of pinning it is that it compares the
+    // SCALE FACTORS on both axes, not the frame sizes.
+    assert!(is_same_gf_and_last_scale(
+        1 << 14,
+        1 << 14,
+        1 << 14,
+        1 << 14
+    ));
+    assert!(!is_same_gf_and_last_scale(
+        1 << 14,
+        1 << 14,
+        1 << 13,
+        1 << 14
+    ));
+    assert!(!is_same_gf_and_last_scale(
+        1 << 14,
+        1 << 14,
+        1 << 14,
+        1 << 13
+    ));
+    assert!(!is_same_gf_and_last_scale(0, 0, 1, 1));
+}

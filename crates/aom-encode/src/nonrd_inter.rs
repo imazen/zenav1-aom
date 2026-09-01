@@ -388,3 +388,531 @@ pub fn calculate_variance(
     }
     (var_o, sse_o, sum_o)
 }
+
+// ===========================================================================
+// The tx-size / subpel-precision / MV-bias cluster of nonrd_pickmode.c.
+//
+// | Rust | C |
+// |---|---|
+// | [`subpel_select`] | `subpel_select` (:99) |
+// | [`use_aggressive_subpel_search_method`] | `use_aggressive_subpel_search_method` (:155) |
+// | [`set_force_skip_flag`] | `set_force_skip_flag` (:423) |
+// | [`calculate_tx_size`] | `calculate_tx_size` (:447) |
+// | [`newmv_diff_bias`] | `newmv_diff_bias` (:988) |
+// | [`update_thresh_freq_fact`] | `update_thresh_freq_fact` (:1045) |
+// | [`is_same_gf_and_last_scale`] | `is_same_gf_and_last_scale` (:1752) |
+// ===========================================================================
+
+use crate::intra_rd::MAX_TXSIZE_LOOKUP;
+
+/// `SUBPEL_FORCE_STOP` (`av1/encoder/mcomp.h`) — how far the subpel search is
+/// allowed to refine.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(i32)]
+pub enum SubpelForceStop {
+    /// `EIGHTH_PEL` — no forced stop.
+    EighthPel = 0,
+    /// `QUARTER_PEL`.
+    QuarterPel = 1,
+    /// `HALF_PEL`.
+    HalfPel = 2,
+    /// `FULL_PEL` — do not refine at all.
+    FullPel = 3,
+}
+
+impl SubpelForceStop {
+    /// C's raw value.
+    #[must_use]
+    pub fn to_i32(self) -> i32 {
+        self as i32
+    }
+    /// From C's raw value; `None` outside `0..=3`.
+    #[must_use]
+    pub fn from_i32(v: i32) -> Option<Self> {
+        match v {
+            0 => Some(Self::EighthPel),
+            1 => Some(Self::QuarterPel),
+            2 => Some(Self::HalfPel),
+            3 => Some(Self::FullPel),
+            _ => None,
+        }
+    }
+}
+
+/// `QINDEX_BITS` (`av1/common/enums.h`) — `qindex >> (QINDEX_BITS - 2)` is the
+/// two-bit "qband" several of these helpers switch on.
+pub const QINDEX_BITS: u32 = 8;
+
+/// `x->qindex >> (QINDEX_BITS - 2)`, the qband. C asserts it is below 4, which
+/// holds for any qindex in `0..=255`.
+#[inline]
+#[must_use]
+pub fn qband(qindex: i32) -> usize {
+    let b = (qindex >> (QINDEX_BITS - 2)) as usize;
+    debug_assert!(b < 4, "qindex {qindex} is outside 0..=255");
+    b
+}
+
+/// The speed features and block state `subpel_select` reads.
+#[derive(Clone, Copy, Debug)]
+pub struct SubpelSelectCtx {
+    /// `cpi->rc.avg_frame_low_motion`.
+    pub avg_frame_low_motion: i32,
+    /// `sf.rt_sf.reduce_mv_pel_precision_highmotion`.
+    pub reduce_mv_pel_precision_highmotion: i32,
+    /// `sf.rt_sf.reduce_mv_pel_precision_lowcomplex`.
+    pub reduce_mv_pel_precision_lowcomplex: i32,
+    /// `sf.mv_sf.subpel_force_stop` — the value returned when nothing fires.
+    pub subpel_force_stop: SubpelForceStop,
+    /// `cm->width`.
+    pub frame_width: i32,
+    /// `cm->height`.
+    pub frame_height: i32,
+    /// `x->qindex`.
+    pub qindex: i32,
+    /// `x->content_state_sb.source_sad_nonrd`.
+    pub source_sad_nonrd: SourceSad,
+    /// `x->source_variance`.
+    pub source_variance: i32,
+}
+
+/// `subpel_select` (nonrd_pickmode.c:99) — how precise a subpel refinement
+/// this block gets.
+///
+/// The `>= 3` arm computes `mv_thresh = 4` and then IMMEDIATELY overwrites it
+/// from the block size; the initial 4 is dead. Reproduced as dead rather than
+/// dropped, because a reader diffing the two files should see the same lines.
+///
+/// Both `reduce_mv_pel_precision_*` cascades can fall through, in which case
+/// the speed feature's own `subpel_force_stop` is returned unchanged.
+#[must_use]
+pub fn subpel_select(
+    ctx: &SubpelSelectCtx,
+    bsize: usize,
+    mv: (i16, i16),
+    ref_mv: (i16, i16),
+    start_mv: (i16, i16),
+    fullpel_performed_well: bool,
+) -> SubpelForceStop {
+    /// `BLOCK_16X16`.
+    const BLOCK_16X16: usize = 6;
+    /// `BLOCK_32X32`.
+    const BLOCK_32X32: usize = 9;
+
+    let (mv_row, mv_col) = (i32::from(mv.0), i32::from(mv.1));
+
+    if ctx.reduce_mv_pel_precision_highmotion >= 3 {
+        let is_low_resoln = ctx.frame_width * ctx.frame_height <= 320 * 240;
+        // C's `int mv_thresh = 4;` here is overwritten on the next line.
+        let mut mv_thresh = if bsize > BLOCK_32X32 {
+            2
+        } else if bsize > BLOCK_16X16 {
+            4
+        } else {
+            6
+        };
+        if ctx.avg_frame_low_motion > 0 && ctx.avg_frame_low_motion < 40 {
+            mv_thresh = 12;
+        }
+        if is_low_resoln {
+            mv_thresh >>= 1;
+        }
+        if mv_row.abs() >= mv_thresh || mv_col.abs() >= mv_thresh {
+            return SubpelForceStop::HalfPel;
+        }
+    } else if ctx.reduce_mv_pel_precision_highmotion >= 1 {
+        const TH_VALS: [[i32; 3]; 2] = [[4, 8, 10], [4, 6, 8]];
+        let th_idx = (ctx.reduce_mv_pel_precision_highmotion - 1) as usize;
+        debug_assert!(th_idx < 2);
+        let mv_thresh = if ctx.avg_frame_low_motion > 0 && ctx.avg_frame_low_motion < 40 {
+            12
+        } else if bsize >= BLOCK_32X32 {
+            TH_VALS[th_idx][0]
+        } else if bsize >= BLOCK_16X16 {
+            TH_VALS[th_idx][1]
+        } else {
+            TH_VALS[th_idx][2]
+        };
+        if mv_row.abs() >= (mv_thresh << 1) || mv_col.abs() >= (mv_thresh << 1) {
+            return SubpelForceStop::FullPel;
+        } else if mv_row.abs() >= mv_thresh || mv_col.abs() >= mv_thresh {
+            return SubpelForceStop::HalfPel;
+        }
+    }
+
+    // Relatively static, low-complexity large areas get less precision.
+    if ctx.reduce_mv_pel_precision_lowcomplex >= 2 {
+        if ctx.source_sad_nonrd <= SourceSad::VeryLow
+            && bsize > BLOCK_16X16
+            && qband(ctx.qindex) != 0
+        {
+            if ctx.source_variance < 500 {
+                return SubpelForceStop::FullPel;
+            } else if ctx.source_variance < 5000 {
+                return SubpelForceStop::HalfPel;
+            }
+        }
+    } else if ctx.reduce_mv_pel_precision_lowcomplex >= 1
+        && fullpel_performed_well
+        && ref_mv == (0, 0)
+        && start_mv == (0, 0)
+    {
+        return SubpelForceStop::HalfPel;
+    }
+    ctx.subpel_force_stop
+}
+
+/// `use_aggressive_subpel_search_method` (nonrd_pickmode.c:155).
+///
+/// Note it is gated on `qband > 0`, i.e. it never fires at the lowest quarter
+/// of the qindex range no matter how well full-pel did.
+#[must_use]
+pub fn use_aggressive_subpel_search_method(
+    qindex: i32,
+    source_sad_nonrd: SourceSad,
+    source_variance: i32,
+    use_adaptive_subpel_search: bool,
+    fullpel_performed_well: bool,
+) -> bool {
+    if !use_adaptive_subpel_search {
+        return false;
+    }
+    qband(qindex) > 0
+        && (fullpel_performed_well || source_sad_nonrd <= SourceSad::Low || source_variance < 100)
+}
+
+/// `TX_MODE` (`av1/common/enums.h`).
+pub const ONLY_4X4: i32 = 0;
+/// `TX_MODE_LARGEST`.
+pub const TX_MODE_LARGEST: i32 = 1;
+/// `TX_MODE_SELECT`.
+pub const TX_MODE_SELECT: i32 = 2;
+
+/// `tx_mode_to_biggest_tx_size` (`common_data.h:368`).
+const TX_MODE_TO_BIGGEST_TX_SIZE: [usize; 3] = [
+    0, // ONLY_4X4      -> TX_4X4
+    4, // TX_MODE_LARGEST -> TX_64X64
+    4, // TX_MODE_SELECT  -> TX_64X64
+];
+
+/// `TX_8X8`.
+const TX_8X8: usize = 1;
+/// `TX_16X16`.
+const TX_16X16: usize = 2;
+
+/// `CR_SEGMENT_ID_BOOST1` / `_BOOST2` (`aq_cyclicrefresh.h`).
+const CR_SEGMENT_ID_BOOST1: i32 = 1;
+/// See [`CR_SEGMENT_ID_BOOST1`].
+const CR_SEGMENT_ID_BOOST2: i32 = 2;
+
+/// `cyclic_refresh_segment_id_boosted` (`aq_cyclicrefresh.h:312`).
+#[inline]
+#[must_use]
+pub fn cyclic_refresh_segment_id_boosted(segment_id: i32) -> bool {
+    segment_id == CR_SEGMENT_ID_BOOST1 || segment_id == CR_SEGMENT_ID_BOOST2
+}
+
+/// `CYCLIC_REFRESH_AQ` (`aom/aomcx.h`'s `AQ_MODE`).
+pub const CYCLIC_REFRESH_AQ: i32 = 3;
+
+/// Everything `calculate_tx_size` and `set_force_skip_flag` read out of `cpi`
+/// and `x` besides the per-call variance and sse.
+#[derive(Clone, Copy, Debug)]
+pub struct TxSizeCtx {
+    /// `x->txfm_search_params.tx_mode_search_type`.
+    pub tx_mode_search_type: i32,
+    /// `sf.rt_sf.tx_size_level_based_on_qstep`.
+    pub tx_size_level_based_on_qstep: i32,
+    /// `cpi->oxcf.q_cfg.aq_mode`.
+    pub aq_mode: i32,
+    /// `xd->mi[0]->segment_id`.
+    pub segment_id: i32,
+    /// `x->qindex`.
+    pub qindex: i32,
+    /// `x->plane[AOM_PLANE_Y].dequant_QTX[1]` — the AC quantizer step.
+    pub dequant_ac: i32,
+    /// `xd->bd`.
+    pub bd: u32,
+    /// `x->source_variance`.
+    pub source_variance: i32,
+    /// `x->color_sensitivity[COLOR_SENS_IDX(AOM_PLANE_U)]`.
+    pub color_sensitivity_u: u8,
+    /// `x->color_sensitivity[COLOR_SENS_IDX(AOM_PLANE_V)]`.
+    pub color_sensitivity_v: u8,
+}
+
+impl TxSizeCtx {
+    /// `qstep = dequant_QTX[1] >> (bd - 5)`, and its square, as C computes
+    /// them — `qstep * qstep` in `int` then read as `unsigned int`.
+    fn qstep_sq(&self) -> u32 {
+        let qstep = self.dequant_ac >> (self.bd - 5);
+        (qstep * qstep) as u32
+    }
+}
+
+/// `set_force_skip_flag` (nonrd_pickmode.c:423).
+///
+/// Marks a block transform-skip when both its sse and its source variance are
+/// under the squared AC quantizer step AND neither chroma plane is
+/// colour-sensitive. Only reachable at
+/// `tx_size_level_based_on_qstep >= 2`; C tests `!= 0` and `>= 2` on the same
+/// value, so the first test is redundant and is kept.
+#[must_use]
+pub fn set_force_skip_flag(ctx: &TxSizeCtx, sse: u32, force_skip_in: bool) -> bool {
+    if ctx.tx_mode_search_type == TX_MODE_SELECT
+        && ctx.tx_size_level_based_on_qstep != 0
+        && ctx.tx_size_level_based_on_qstep >= 2
+    {
+        let qstep_sq = ctx.qstep_sq();
+        if sse < qstep_sq
+            && (ctx.source_variance as u32) < qstep_sq
+            && ctx.color_sensitivity_u == 0
+            && ctx.color_sensitivity_v == 0
+        {
+            return true;
+        }
+    }
+    force_skip_in
+}
+
+/// `calculate_tx_size` (nonrd_pickmode.c:447).
+///
+/// Returns `(tx_size, force_skip)`; `force_skip` is C's in/out parameter.
+///
+/// The final `AOMMIN(tx_size, TX_16X16)` makes several of the branches above
+/// it unobservable on their own — the port keeps them because the branch
+/// STRUCTURE is what a later change would perturb.
+///
+/// `CAP_TX_SIZE_FOR_BSIZE_GT32` (:443) forces TX_16X16 for any block above
+/// 32x32 unless the mode is ONLY_4X4, and it applies to BOTH arms of the
+/// `TX_MODE_SELECT` test.
+#[must_use]
+pub fn calculate_tx_size(
+    ctx: &TxSizeCtx,
+    bsize: usize,
+    var: u32,
+    sse: u32,
+    force_skip_in: bool,
+) -> (usize, bool) {
+    /// `BLOCK_32X32`.
+    const BLOCK_32X32: usize = 9;
+
+    let mut force_skip = force_skip_in;
+    let mut tx_size;
+    let biggest = TX_MODE_TO_BIGGEST_TX_SIZE[ctx.tx_mode_search_type as usize];
+
+    if ctx.tx_mode_search_type == TX_MODE_SELECT {
+        let mut multiplier = 8u32;
+        let mut var_thresh = 0u32;
+        let mut is_high_var = true;
+        if ctx.tx_size_level_based_on_qstep != 0 {
+            const MULT: [u32; 4] = [8, 7, 6, 5];
+            multiplier = MULT[qband(ctx.qindex)];
+            let qstep_sq = ctx.qstep_sq();
+            var_thresh = qstep_sq * 2;
+            if ctx.tx_size_level_based_on_qstep >= 2 {
+                if sse < qstep_sq
+                    && (ctx.source_variance as u32) < qstep_sq
+                    && ctx.color_sensitivity_u == 0
+                    && ctx.color_sensitivity_v == 0
+                {
+                    force_skip = true;
+                }
+                // Lower the transform size further only if the residual
+                // variance is high.
+                is_high_var = var >= var_thresh;
+            }
+        }
+        // A larger transform where the DC dominates or the AC is low.
+        if sse > ((var * multiplier) >> 2) || var < var_thresh {
+            tx_size = MAX_TXSIZE_LOOKUP[bsize].min(biggest);
+        } else {
+            tx_size = TX_8X8;
+        }
+
+        if ctx.aq_mode == CYCLIC_REFRESH_AQ
+            && cyclic_refresh_segment_id_boosted(ctx.segment_id)
+            && is_high_var
+        {
+            tx_size = TX_8X8;
+        } else if tx_size > TX_16X16 {
+            tx_size = TX_16X16;
+        }
+    } else {
+        tx_size = MAX_TXSIZE_LOOKUP[bsize].min(biggest);
+    }
+
+    // CAP_TX_SIZE_FOR_BSIZE_GT32 (:443).
+    if ctx.tx_mode_search_type != ONLY_4X4 && bsize > BLOCK_32X32 {
+        tx_size = TX_16X16;
+    }
+    (tx_size.min(TX_16X16), force_skip)
+}
+
+/// `INVALID_MV` (`av1/common/mv.h:26`) as the packed `as_int`.
+pub const INVALID_MV: u32 = 0x8000_8000;
+
+/// `newmv_diff_bias` (nonrd_pickmode.c:988) — penalise a NEWMV whose vector
+/// disagrees with its neighbours.
+///
+/// Returns the adjusted `rdcost`. Three separate multipliers, and the first
+/// one RETURNS EARLY, so a large-block low-variance outlier gets `<< 2` and
+/// never reaches the neighbour comparison.
+///
+/// The neighbour average is `(above + left + 1) >> 1` when both are valid, one
+/// of them when only one is, and ZERO when neither — which biases against any
+/// non-zero MV at a block with no coded neighbours.
+///
+/// The `else` branch (a non-NEWMV mode) has its own, unrelated bias at
+/// speed >= 8.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn newmv_diff_bias(
+    this_mode: PredMode,
+    rdcost: i64,
+    bsize: usize,
+    mv_row: i32,
+    mv_col: i32,
+    speed: i32,
+    spatial_variance: u32,
+    source_sad_nonrd: SourceSad,
+    above: Option<(i16, i16)>,
+    left: Option<(i16, i16)>,
+) -> i64 {
+    /// `BLOCK_32X32`.
+    const BLOCK_32X32: usize = 9;
+    /// `BLOCK_64X64`.
+    const BLOCK_64X64: usize = 12;
+
+    if this_mode != PredMode::NewMv {
+        // Bias for speed >= 8 at low spatial variance.
+        if speed >= 8
+            && spatial_variance < 150
+            && (mv_row > 64 || mv_row < -64 || mv_col > 64 || mv_col < -64)
+        {
+            return 5 * rdcost >> 2;
+        }
+        return rdcost;
+    }
+
+    if bsize >= BLOCK_64X64
+        && source_sad_nonrd != SourceSad::High
+        && spatial_variance < 300
+        && (mv_row > 16 || mv_row < -16 || mv_col > 16 || mv_col < -16)
+    {
+        return rdcost << 2;
+    }
+
+    // C reads `above_mbmi->mv[0]` even when the MV is INVALID_MV; only the
+    // VALIDITY flag comes from the as_int test, and the row/col are taken
+    // unconditionally. A neighbour that exists with an invalid MV therefore
+    // contributes nothing, and one that does not exist at all is the same.
+    let (above_valid, above_row, above_col) = match above {
+        Some((r, c)) => (pack_mv(r, c) != INVALID_MV, i32::from(r), i32::from(c)),
+        None => (
+            false,
+            i32::from(INVALID_MV_ROW_COL),
+            i32::from(INVALID_MV_ROW_COL),
+        ),
+    };
+    let (left_valid, left_row, left_col) = match left {
+        Some((r, c)) => (pack_mv(r, c) != INVALID_MV, i32::from(r), i32::from(c)),
+        None => (
+            false,
+            i32::from(INVALID_MV_ROW_COL),
+            i32::from(INVALID_MV_ROW_COL),
+        ),
+    };
+
+    let (al_row, al_col) = if above_valid && left_valid {
+        (
+            (above_row + left_row + 1) >> 1,
+            (above_col + left_col + 1) >> 1,
+        )
+    } else if above_valid {
+        (above_row, above_col)
+    } else if left_valid {
+        (left_row, left_col)
+    } else {
+        (0, 0)
+    };
+
+    let row_diff = al_row - mv_row;
+    let col_diff = al_col - mv_col;
+    if row_diff > 80 || row_diff < -80 || col_diff > 80 || col_diff < -80 {
+        if bsize >= BLOCK_32X32 {
+            return rdcost << 1;
+        }
+        return 5 * rdcost >> 2;
+    }
+    rdcost
+}
+
+/// `INVALID_MV_ROW_COL` (`av1/common/mv.h:27`).
+pub const INVALID_MV_ROW_COL: i16 = -32768;
+
+/// `int_mv`'s `as_int` view of a `(row, col)` pair: row in the LOW half.
+#[inline]
+#[must_use]
+pub fn pack_mv(row: i16, col: i16) -> u32 {
+    (u32::from(col as u16) << 16) | u32::from(row as u16)
+}
+
+/// `RD_THRESH_INC` (`av1/encoder/rd.h:55`).
+pub const RD_THRESH_INC: i32 = 1;
+/// `RD_THRESH_MAX_FACT` (`rd.h:53`) — `RD_THRESH_FAC_FRAC_VAL << 1`.
+pub const RD_THRESH_MAX_FACT: i32 = 64;
+
+/// `update_thresh_freq_fact` (nonrd_pickmode.c:1045) — decay the RD threshold
+/// factor for the mode that won and raise it for the ones that did not.
+///
+/// The `for (bs = min_size; bs <= max_size; bs += 3)` walk steps by THREE
+/// through `BLOCK_SIZE`, which visits the square sizes and their two
+/// rectangular siblings in turn; `min_size` and `max_size` are `bsize - 3` and
+/// `bsize + 6` clamped to the enum's ends. `freq_fact` is indexed
+/// `[block size][THR_MODES]` and is in/out.
+pub fn update_thresh_freq_fact(
+    adaptive_rd_thresh: i32,
+    freq_fact: &mut [[i32; MAX_MODES]],
+    bsize: usize,
+    ref_frame: usize,
+    best_mode_idx: usize,
+    mode_offset: usize,
+) {
+    /// `BLOCK_4X4`.
+    const BLOCK_4X4: usize = 0;
+    /// `BLOCK_128X128`.
+    const BLOCK_128X128: usize = 15;
+
+    let thr_mode_idx = MODE_IDX[ref_frame][mode_offset];
+    let min_size = bsize.saturating_sub(3).max(BLOCK_4X4);
+    let max_size = (bsize + 6).min(BLOCK_128X128);
+    let mut bs = min_size;
+    while bs <= max_size {
+        let cell = &mut freq_fact[bs][thr_mode_idx];
+        if thr_mode_idx == best_mode_idx {
+            *cell -= *cell >> 4;
+        } else {
+            *cell = (*cell + RD_THRESH_INC).min(adaptive_rd_thresh * RD_THRESH_MAX_FACT);
+        }
+        bs += 3;
+    }
+}
+
+/// `MAX_MODES` (`av1/encoder/enc_enums.h`) — the width of `thresh_freq_fact`.
+pub const MAX_MODES: usize = 169;
+
+/// `is_same_gf_and_last_scale` (nonrd_pickmode.c:1752).
+///
+/// Compares the two references' scale factors, not their sizes: a golden frame
+/// that happens to be the same size but is reached through a different scale
+/// still reads as different.
+#[must_use]
+pub fn is_same_gf_and_last_scale(
+    last_x_scale_fp: i32,
+    last_y_scale_fp: i32,
+    golden_x_scale_fp: i32,
+    golden_y_scale_fp: i32,
+) -> bool {
+    last_x_scale_fp == golden_x_scale_fp && last_y_scale_fp == golden_y_scale_fp
+}
