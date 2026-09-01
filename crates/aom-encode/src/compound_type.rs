@@ -8,9 +8,9 @@
 //! them, plus the interintra (inter + intra blend) mode search that shares the
 //! same wedge machinery.
 //!
-//! # Coverage — 26 of the 34 functions in `compound_type.c`
+//! # Coverage — 27 of the 34 functions in `compound_type.c`
 //!
-//! **MISSING (8), all of them orchestration over encoder state this port does
+//! **MISSING (7), all of them orchestration over encoder state this port does
 //! not have yet:**
 //!
 //! | C function | what it needs first |
@@ -21,10 +21,9 @@
 //! | `av1_handle_inter_intra_mode` | the two handlers below |
 //! | `handle_smooth_inter_intra_mode` | `av1_build_intra_predictors_for_interintra` + `model_rd_for_sb` + `estimate_yrd_for_sb` |
 //! | `handle_wedge_inter_intra_mode` | the same, plus `av1_compound_single_motion_search` |
-//! | `compute_best_interintra_mode` | `av1_build_intra_predictors_for_interintra` + `av1_combine_interintra` |
 //! | `estimate_yrd_for_sb` | `av1_estimate_txfm_yrd` (tx_search.c) |
 //!
-//! **Ported (26):**
+//! **Ported (27):**
 //!
 //! | Rust | C (`compound_type.c`) |
 //! |---|---|
@@ -54,12 +53,14 @@
 //! | [`populate_reuse_comp_type_data`] | `populate_reuse_comp_type_data` |
 //! | [`prune_mode_by_skip_rd`] | `prune_mode_by_skip_rd` |
 //! | [`compute_best_wedge_interintra`] | `compute_best_wedge_interintra` |
+//! | [`compute_best_interintra_mode`] | `compute_best_interintra_mode` |
 //!
 //! Five helpers from neighbouring headers come along because nothing else in
 //! the port had needed them: [`is_interinter_compound_used`]
 //! (`reconinter.h:299`), [`is_global_mv_block`] (`blockd.h:421`),
 //! [`get_txfm_rd_gate_level`] and [`check_txfm_eval`] (`rdopt_utils.h:778`,
-//! `:347`) and [`compute_sse_plane`] (`model_rd.h:69`).
+//! `:347`), [`compute_sse_plane`] (`model_rd.h:69`) and
+//! [`model_rd_for_sb_plane0_curvfit`] (`model_rd.h:212`).
 //!
 //! # Differential coverage
 //! `tests/compound_type_diff.rs`, **tier 1c** — the oracle is libaom's own
@@ -1673,4 +1674,105 @@ pub fn compute_best_wedge_interintra(
         }
     }
     best
+}
+
+/// `model_rd_for_sb_with_curvfit` (`model_rd.h:212`) restricted to plane 0 —
+/// the only form either interintra caller uses (`plane_from == plane_to == 0`).
+///
+/// Two differences from its `model_rd_for_sb` sibling that a reader merging
+/// the two would lose: the extent is the **visible** one from
+/// `get_txb_dimensions`, not the padded plane block size, and `rate_sum` is
+/// **not** clamped to `INT_MAX` here (the legacy variant clamps).
+///
+/// Returns `(rate, dist)`.
+#[allow(clippy::too_many_arguments)]
+pub fn model_rd_for_sb_plane0_curvfit(
+    plane_bsize: usize,
+    src: Pixels<'_>,
+    src_stride: usize,
+    dst: Pixels<'_>,
+    dst_stride: usize,
+    bd: u8,
+    visible_w: usize,
+    visible_h: usize,
+    dequant_ac: i32,
+    rdmult: i32,
+) -> (i32, i64) {
+    let sse = compute_sse_plane(src, src_stride, dst, dst_stride, bd, visible_w, visible_h);
+    crate::interp_rd::model_rd_with_curvfit(
+        plane_bsize,
+        sse,
+        (visible_w * visible_h) as i32,
+        dequant_ac,
+        bd,
+        rdmult,
+    )
+}
+
+/// `compute_best_interintra_mode` (compound_type.c:459): score ONE interintra
+/// mode and keep it if it beats the running best.
+///
+/// C's shape is preserved — the caller loops the modes and this updates
+/// `best_interintra_mode` / `best_interintra_rd` in place — because the loop
+/// is not always over all four modes (`handle_smooth_inter_intra_mode` skips
+/// `II_SMOOTH_PRED` when smooth intra is disabled) and because the side effect
+/// on `dst` is load-bearing: on return it holds the COMBINED predictor for the
+/// mode just scored, which is what the caller then measures or overwrites.
+///
+/// `intra_pred` is the mode's intra predictor, built by the caller with
+/// `av1_build_intra_predictors_for_interintra` (`common/reconinter.c:1115`,
+/// not ported here). Lowbd; the encoder's interintra scratch buffers are
+/// `uint8_t` (`compound_type.c:945`) and only reach 16 bits through
+/// `get_buf_by_bd`.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_best_interintra_mode(
+    ctx: &MaskSearchCtx<'_>,
+    interintra_mode_cost: &[i32; INTERINTRA_MODES],
+    mode: usize,
+    use_wedge_interintra: bool,
+    wedge_index: usize,
+    src: &[u8],
+    src_stride: usize,
+    inter_pred: &[u8],
+    intra_pred: &[u8],
+    dst: &mut [u8],
+    dst_stride: usize,
+    visible_w: usize,
+    visible_h: usize,
+    best_interintra_mode: &mut usize,
+    best_interintra_rd: &mut i64,
+) {
+    let bw = BLOCK_SIZE_WIDE[ctx.bsize];
+    let plane_bsize = ctx.bsize; // plane 0 of a 4:4:4-or-luma block
+    aom_dsp::inter::interintra::combine_interintra_lowbd(
+        mode,
+        use_wedge_interintra,
+        wedge_index,
+        ctx.bsize,
+        plane_bsize,
+        dst,
+        dst_stride,
+        inter_pred,
+        bw,
+        intra_pred,
+        bw,
+    );
+    let (rate, dist) = model_rd_for_sb_plane0_curvfit(
+        plane_bsize,
+        Pixels::Low(src),
+        src_stride,
+        Pixels::Low(dst),
+        dst_stride,
+        ctx.bd,
+        visible_w,
+        visible_h,
+        ctx.dequant_ac,
+        ctx.rdmult,
+    );
+    let rmode = interintra_mode_cost[mode];
+    let rd = crate::rd::rdcost(ctx.rdmult, rate + rmode, dist);
+    if rd < *best_interintra_rd {
+        *best_interintra_rd = rd;
+        *best_interintra_mode = mode;
+    }
 }

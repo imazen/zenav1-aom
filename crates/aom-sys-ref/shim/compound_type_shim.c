@@ -1234,3 +1234,116 @@ int64_t shim_ct_compute_best_wedge_interintra(
 }
 
 int shim_ct_interintra_modes(void) { return INTERINTRA_MODES; }
+
+/* ======================================================================== *
+ * 13. compute_best_interintra_mode (compound_type.c:459).
+ *
+ * Same MACROBLOCKD standing-up as section 12, plus a destination plane: the
+ * function COMBINES into `xd->plane[0].dst` and then measures src against it,
+ * so the buffer's contents on return are part of what is under test.
+ *
+ * The four intra predictors C builds from this neighbour context are reported
+ * (as in section 12) so the Rust port can be driven from them rather than
+ * from a second intra prediction.
+ * ======================================================================== */
+
+int64_t shim_ct_compute_best_interintra_mode(
+    int bsize, int rdmult, int dequant_ac,
+    const int *interintra_mode_cost /* [INTERINTRA_MODES] */, int mode,
+    int use_wedge_interintra, int wedge_index, const uint8_t *src,
+    int src_stride, const uint8_t *inter_pred, const uint8_t *ctx_plane,
+    int ctx_stride, int ctx_rows, int ctx_origin, int mi_row, int mi_col,
+    int mb_to_right_edge, int mb_to_bottom_edge, int64_t best_rd_in,
+    int best_mode_in, int *out_best_mode, uint8_t *out_dst, int dst_stride,
+    int dst_rows, uint8_t *out_intrapred /* INTERINTRA_MODES * bw * bh */) {
+  const int bw = block_size_wide[bsize], bh = block_size_high[bsize];
+  const int n = bw * bh;
+  shim_ct_env e;
+  if (!shim_ct_env_init(&e, bsize, /*hbd=*/0, /*bd=*/8, rdmult, dequant_ac,
+                        NULL))
+    return 0;
+
+  SequenceHeader *seq = (SequenceHeader *)calloc(1, sizeof(*seq));
+  uint8_t *actx = (uint8_t *)shim_ct_align(ctx_plane, (size_t)ctx_stride * ctx_rows);
+  uint8_t *asrc = (uint8_t *)shim_ct_align(src, (size_t)src_stride * bh);
+  uint8_t *ainter = (uint8_t *)shim_ct_align(inter_pred, (size_t)n);
+  uint8_t *aintra = (uint8_t *)shim_ct_align(NULL, (size_t)n);
+  uint8_t *adst = (uint8_t *)shim_ct_align(out_dst, (size_t)dst_stride * dst_rows);
+  if (!seq || !actx || !asrc || !ainter || !aintra || !adst) {
+    aom_free(adst); aom_free(aintra); aom_free(ainter); aom_free(asrc);
+    aom_free(actx); free(seq);
+    shim_ct_env_free(&e);
+    return 0;
+  }
+
+  seq->sb_size = BLOCK_64X64;
+  seq->enable_intra_edge_filter = 1;
+  e.cpi->common.seq_params = seq;
+
+  MACROBLOCKD *xd = &e.x->e_mbd;
+  xd->mi_row = mi_row;
+  xd->mi_col = mi_col;
+  xd->up_available = 1;
+  xd->left_available = 1;
+  xd->chroma_up_available = 1;
+  xd->chroma_left_available = 1;
+  xd->is_chroma_ref = 1;
+  xd->mb_to_right_edge = mb_to_right_edge;
+  xd->mb_to_bottom_edge = mb_to_bottom_edge;
+  xd->mb_to_left_edge = -(mi_col * MI_SIZE * 8);
+  xd->mb_to_top_edge = -(mi_row * MI_SIZE * 8);
+  xd->plane[0].width = bw;
+  xd->plane[0].height = bh;
+  xd->plane[0].subsampling_x = 0;
+  xd->plane[0].subsampling_y = 0;
+  xd->plane[0].dst.buf = adst;
+  xd->plane[0].dst.stride = dst_stride;
+  e.mbmi->partition = PARTITION_NONE;
+  e.mbmi->angle_delta[PLANE_TYPE_Y] = 0;
+  e.mbmi->angle_delta[PLANE_TYPE_UV] = 0;
+  e.mbmi->filter_intra_mode_info.use_filter_intra = 0;
+  e.mbmi->use_intrabc = 0;
+  e.mbmi->ref_frame[0] = LAST_FRAME;
+  e.mbmi->ref_frame[1] = INTRA_FRAME;
+  e.mbmi->use_wedge_interintra = use_wedge_interintra;
+  e.mbmi->interintra_wedge_index = (int8_t)wedge_index;
+  e.x->plane[0].src.buf = asrc;
+  e.x->plane[0].src.stride = src_stride;
+
+  BUFFER_SET ctx_set;
+  memset(&ctx_set, 0, sizeof(ctx_set));
+  ctx_set.plane[0] = actx + ctx_origin;
+  ctx_set.stride[0] = ctx_stride;
+
+  for (int m = 0; m < INTERINTRA_MODES; ++m) {
+    e.mbmi->interintra_mode = (INTERINTRA_MODE)m;
+    av1_build_intra_predictors_for_interintra(&e.cpi->common, xd,
+                                              (BLOCK_SIZE)bsize, 0, &ctx_set,
+                                              aintra, bw);
+    memcpy(out_intrapred + (size_t)m * n, aintra, (size_t)n);
+  }
+
+  for (int i = 0; i < INTERINTRA_MODES; ++i)
+    e.x->mode_costs.interintra_mode_cost[size_group_lookup[bsize]][i] =
+        interintra_mode_cost[i];
+
+  INTERINTRA_MODE best_mode = (INTERINTRA_MODE)best_mode_in;
+  int64_t best_rd = best_rd_in;
+  compute_best_interintra_mode(
+      e.cpi, e.mbmi, xd, e.x,
+      e.x->mode_costs.interintra_mode_cost[size_group_lookup[bsize]], &ctx_set,
+      aintra, ainter, &best_mode, &best_rd, (INTERINTRA_MODE)mode,
+      (BLOCK_SIZE)bsize);
+
+  *out_best_mode = (int)best_mode;
+  memcpy(out_dst, adst, (size_t)dst_stride * dst_rows);
+
+  aom_free(adst);
+  aom_free(aintra);
+  aom_free(ainter);
+  aom_free(asrc);
+  aom_free(actx);
+  free(seq);
+  shim_ct_env_free(&e);
+  return best_rd;
+}

@@ -290,9 +290,9 @@ const WEDGE_SIGNFLIP: [[u8; 16]; 22] = [
 /// when the bsize has no wedge types).
 fn wedge_codebook(bsize: usize) -> Option<&'static [WedgeCode; 16]> {
     match bsize {
-        3 | 6 | 9 => Some(&WEDGE_CODEBOOK_16_HEQW),       // 8X8, 16X16, 32X32 (h==w)
-        4 | 7 | 18 => Some(&WEDGE_CODEBOOK_16_HGTW),      // 8X16, 16X32, 8X32 (h>w)
-        5 | 8 | 19 => Some(&WEDGE_CODEBOOK_16_HLTW),      // 16X8, 32X16, 32X8 (h<w)
+        3 | 6 | 9 => Some(&WEDGE_CODEBOOK_16_HEQW), // 8X8, 16X16, 32X32 (h==w)
+        4 | 7 | 18 => Some(&WEDGE_CODEBOOK_16_HGTW), // 8X16, 16X32, 8X32 (h>w)
+        5 | 8 | 19 => Some(&WEDGE_CODEBOOK_16_HLTW), // 16X8, 32X16, 32X8 (h<w)
         _ => None,
     }
 }
@@ -425,6 +425,67 @@ pub fn wedge_mask_signed(bsize: usize, index: usize, sign: usize) -> Option<Vec<
 // ===================================================================
 // combine_interintra (reconinter.c:1059).
 // ===================================================================
+
+/// `combine_interintra` (reconinter.c:1059) — the **8-bit** twin of
+/// [`combine_interintra`], for the encoder's `uint8_t` interintra scratch
+/// buffers (`compound_type.c:945` allocates `tmp_buf_` / `intrapred_` as
+/// bytes and only compresses them to 16-bit through `get_buf_by_bd`).
+///
+/// Identical arithmetic and identical mask selection; only the pixel width
+/// differs. See [`blend_a64_mask_lowbd`] for why that needs its own function.
+#[allow(clippy::too_many_arguments)]
+pub fn combine_interintra_lowbd(
+    mode: usize,
+    use_wedge_interintra: bool,
+    wedge_index: usize,
+    bsize: usize,
+    plane_bsize: usize,
+    comp: &mut [u8],
+    comp_stride: usize,
+    inter_pred: &[u8],
+    inter_stride: usize,
+    intra_pred: &[u8],
+    intra_stride: usize,
+) {
+    let bw = BLOCK_SIZE_WIDE[plane_bsize];
+    let bh = BLOCK_SIZE_HIGH[plane_bsize];
+    let (mask, mask_stride, subw, subh) = if use_wedge_interintra {
+        match wedge_mask(bsize, wedge_index) {
+            // C returns without writing anything when the block size has no
+            // wedge codebook (the `if (mask)` guard); reproduced.
+            None => return,
+            Some(m) => (
+                m,
+                BLOCK_SIZE_WIDE[bsize],
+                2 * MI_SIZE_WIDE[bsize] == bw,
+                2 * MI_SIZE_HIGH[bsize] == bh,
+            ),
+        }
+    } else {
+        // Smooth path: the mask is prebuilt at PLANE resolution and blended
+        // 1:1, so no box-average.
+        (
+            build_smooth_interintra_mask(mode, plane_bsize),
+            bw,
+            false,
+            false,
+        )
+    };
+    blend_a64_mask_lowbd(
+        comp,
+        comp_stride,
+        intra_pred,
+        intra_stride,
+        inter_pred,
+        inter_stride,
+        &mask,
+        mask_stride,
+        bw,
+        bh,
+        subw,
+        subh,
+    );
+}
 
 /// `combine_interintra` (reconinter.c:1059): blend the inter predictor
 /// (`inter_pred`) with the intra predictor (`intra_pred`) into `comp` using the

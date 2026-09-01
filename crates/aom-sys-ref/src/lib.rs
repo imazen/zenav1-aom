@@ -27536,3 +27536,103 @@ pub fn ref_p2_read_frame_stats_in_range(count: i32, cur: i32, offset: i32) -> bo
     ref_init();
     unsafe { shim_p2_read_frame_stats_in_range(count, cur, offset) != 0 }
 }
+
+// --- compound_type.c: compute_best_interintra_mode (:459) -----------------
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_compute_best_interintra_mode(
+        bsize: i32,
+        rdmult: i32,
+        dequant_ac: i32,
+        interintra_mode_cost: *const i32,
+        mode: i32,
+        use_wedge_interintra: i32,
+        wedge_index: i32,
+        src: *const u8,
+        src_stride: i32,
+        inter_pred: *const u8,
+        ctx_plane: *const u8,
+        ctx_stride: i32,
+        ctx_rows: i32,
+        ctx_origin: i32,
+        mi_row: i32,
+        mi_col: i32,
+        mb_to_right_edge: i32,
+        mb_to_bottom_edge: i32,
+        best_rd_in: i64,
+        best_mode_in: i32,
+        out_best_mode: *mut i32,
+        out_dst: *mut u8,
+        dst_stride: i32,
+        dst_rows: i32,
+        out_intrapred: *mut u8,
+    ) -> i64;
+}
+
+/// Reference `compute_best_interintra_mode` (compound_type.c:459), lowbd.
+///
+/// `dst` is in/out: C combines into it. Returns
+/// `(best_rd, best_mode, intra_predictors)`.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn ref_ct_compute_best_interintra_mode(
+    bsize: i32,
+    rdmult: i32,
+    dequant_ac: i32,
+    interintra_mode_cost: &[i32; 4],
+    mode: i32,
+    use_wedge_interintra: bool,
+    wedge_index: i32,
+    src: &[u8],
+    src_stride: i32,
+    inter_pred: &[u8],
+    ctx_plane: &[u8],
+    ctx_stride: i32,
+    ctx_rows: i32,
+    ctx_origin: i32,
+    mi_row: i32,
+    mi_col: i32,
+    mb_to_right_edge: i32,
+    mb_to_bottom_edge: i32,
+    best_rd_in: i64,
+    best_mode_in: i32,
+    dst: &mut [u8],
+    dst_stride: i32,
+    dst_rows: i32,
+    n: usize,
+) -> (i64, i32, Vec<u8>) {
+    ref_init();
+    let modes = unsafe { shim_ct_interintra_modes() } as usize;
+    let mut best_mode = 0i32;
+    let mut intra = vec![0u8; modes * n];
+    let rd = unsafe {
+        shim_ct_compute_best_interintra_mode(
+            bsize,
+            rdmult,
+            dequant_ac,
+            interintra_mode_cost.as_ptr(),
+            mode,
+            i32::from(use_wedge_interintra),
+            wedge_index,
+            src.as_ptr(),
+            src_stride,
+            inter_pred.as_ptr(),
+            ctx_plane.as_ptr(),
+            ctx_stride,
+            ctx_rows,
+            ctx_origin,
+            mi_row,
+            mi_col,
+            mb_to_right_edge,
+            mb_to_bottom_edge,
+            best_rd_in,
+            best_mode_in,
+            &mut best_mode,
+            dst.as_mut_ptr(),
+            dst_stride,
+            dst_rows,
+            intra.as_mut_ptr(),
+        )
+    };
+    (rd, best_mode, intra)
+}

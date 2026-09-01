@@ -2134,3 +2134,269 @@ fn compute_best_wedge_interintra_matches_c() {
     );
     assert!(ties > 0, "the flat-context tie flavour never ran");
 }
+
+// ===================================================================
+// compute_best_interintra_mode (compound_type.c:459).
+//
+// This one has a SIDE EFFECT the caller depends on: it combines the inter and
+// intra predictors into `xd->plane[0].dst` before measuring, and leaves that
+// buffer holding the combination for the mode just scored. The test compares
+// the destination buffer as well as the decision, because a port that scored
+// correctly and left the wrong pixels behind would break
+// `handle_smooth_inter_intra_mode`, which reads them.
+//
+// As with the wedge search, the intra predictors come from C — the shim
+// reports the four it built with `av1_build_intra_predictors_for_interintra`
+// (`common/reconinter.c`, not this file) and the port is driven from those.
+// ===================================================================
+
+use aom_encode::compound_type::compute_best_interintra_mode;
+
+#[test]
+fn compute_best_interintra_mode_matches_c() {
+    let mut rng = Rng(0x5EED_0C50);
+    let mut accepted = 0usize;
+    let mut rejected = 0usize;
+    let mut wedge_cells = 0usize;
+
+    for bsize in WEDGE_BSIZES {
+        let (bw, bh) = (BLK_W[bsize], BLK_H[bsize]);
+        let n = bw * bh;
+        for iter in 0..16 {
+            let ctx_stride = 2 * bw + 64;
+            let ctx_rows = 2 * bh + 16;
+            let ctx_origin = 8 * ctx_stride + 32;
+            let ctx_plane: Vec<u8> = (0..ctx_stride * ctx_rows)
+                .map(|_| (rng.next() % 256) as u8)
+                .collect();
+
+            let src_stride = bw + 8;
+            let src: Vec<u8> = (0..src_stride * bh)
+                .map(|_| (rng.next() % 256) as u8)
+                .collect();
+            let inter: Vec<u8> = (0..n).map(|_| (rng.next() % 256) as u8).collect();
+            let mode = iter % INTERINTRA_MODES;
+            // Both blend shapes: the SMOOTH interintra mask (built per mode at
+            // plane resolution) and the WEDGE one (the baked codebook mask,
+            // read at luma stride). They are different code paths inside
+            // `av1_combine_interintra` and only one of them depends on `mode`.
+            let use_wedge = iter % 4 == 3;
+            let wedge_index = (rng.next() % 16) as usize;
+            let mode_costs = [rng.cost(), rng.cost(), rng.cost(), rng.cost()];
+            let rdmult = rng.range(1, 1 << 14);
+            let dequant_ac = rng.range(4, 1 << 11);
+            let dst_stride = bw + 12;
+            let dst_rows = bh + 2;
+            // The running best the caller threads in: sometimes INT64_MAX (the
+            // first mode of a loop), sometimes a value this mode may or may not
+            // beat, so both arms of the accept test are reached.
+            let (best_rd_in, best_mode_in) = if rng.next() % 3 == 0 {
+                (i64::MAX, INTERINTRA_MODES as i32)
+            } else {
+                (i64::from(rng.range(1, 1 << 30)) << (rng.next() % 8), 0)
+            };
+
+            let mut c_dst: Vec<u8> = (0..dst_stride * dst_rows)
+                .map(|_| (rng.next() % 256) as u8)
+                .collect();
+            let mut port_dst = c_dst.clone();
+
+            let (want_rd, want_mode, intra_flat) = cref::ref_ct_compute_best_interintra_mode(
+                bsize as i32,
+                rdmult,
+                dequant_ac,
+                &mode_costs,
+                mode as i32,
+                use_wedge,
+                wedge_index as i32,
+                &src,
+                src_stride as i32,
+                &inter,
+                &ctx_plane,
+                ctx_stride as i32,
+                ctx_rows as i32,
+                ctx_origin as i32,
+                8,
+                8,
+                32 * 8,
+                32 * 8,
+                best_rd_in,
+                best_mode_in,
+                &mut c_dst,
+                dst_stride as i32,
+                dst_rows as i32,
+                n,
+            );
+
+            // The block is well inside the frame here, so the visible extent
+            // IS the plane block — `get_txb_dimensions` clamps nothing.
+            let ctx = ctx_for(bsize, 8, rdmult, dequant_ac, &[0i32; MAX_WEDGE_TYPES]);
+            let mut got_mode = best_mode_in as usize;
+            let mut got_rd = best_rd_in;
+            compute_best_interintra_mode(
+                &ctx,
+                &mode_costs,
+                mode,
+                use_wedge,
+                wedge_index,
+                &src,
+                src_stride,
+                &inter,
+                &intra_flat[mode * n..(mode + 1) * n],
+                &mut port_dst,
+                dst_stride,
+                bw,
+                bh,
+                &mut got_mode,
+                &mut got_rd,
+            );
+
+            assert_eq!(
+                (got_rd, got_mode as i32),
+                (want_rd, want_mode),
+                "compute_best_interintra_mode(bsize={bsize}, mode={mode}, \
+                 wedge={use_wedge}, best_rd_in={best_rd_in})"
+            );
+            assert_eq!(
+                port_dst, c_dst,
+                "the COMBINED destination (bsize={bsize}, mode={mode}, wedge={use_wedge})"
+            );
+
+            if want_rd != best_rd_in {
+                accepted += 1;
+            } else {
+                rejected += 1;
+            }
+            if use_wedge {
+                wedge_cells += 1;
+            }
+        }
+    }
+    // The accept test is a STRICT `<`, and no random `best_rd_in` lands on the
+    // rd this mode produces — a `<=` transcription passes the sweep above
+    // (measured). So run each cell twice: once to learn the rd from the
+    // ORACLE, then again with `best_rd_in` set to exactly that. C must decline
+    // and keep the incoming mode; a `<=` port accepts.
+    let mut ties = 0usize;
+    for bsize in WEDGE_BSIZES {
+        let (bw, bh) = (BLK_W[bsize], BLK_H[bsize]);
+        let n = bw * bh;
+        for mode in 0..INTERINTRA_MODES {
+            let ctx_stride = 2 * bw + 64;
+            let ctx_rows = 2 * bh + 16;
+            let ctx_origin = 8 * ctx_stride + 32;
+            let ctx_plane: Vec<u8> = (0..ctx_stride * ctx_rows)
+                .map(|_| (rng.next() % 256) as u8)
+                .collect();
+            let src_stride = bw + 8;
+            let src: Vec<u8> = (0..src_stride * bh)
+                .map(|_| (rng.next() % 256) as u8)
+                .collect();
+            let inter: Vec<u8> = (0..n).map(|_| (rng.next() % 256) as u8).collect();
+            let mode_costs = [rng.cost(), rng.cost(), rng.cost(), rng.cost()];
+            let rdmult = rng.range(1, 1 << 14);
+            let dequant_ac = rng.range(4, 1 << 11);
+            let dst_stride = bw + 12;
+            let dst_rows = bh + 2;
+            let seed_dst: Vec<u8> = (0..dst_stride * dst_rows)
+                .map(|_| (rng.next() % 256) as u8)
+                .collect();
+
+            let mut probe_dst = seed_dst.clone();
+            let (rd_here, _, _) = cref::ref_ct_compute_best_interintra_mode(
+                bsize as i32,
+                rdmult,
+                dequant_ac,
+                &mode_costs,
+                mode as i32,
+                false,
+                0,
+                &src,
+                src_stride as i32,
+                &inter,
+                &ctx_plane,
+                ctx_stride as i32,
+                ctx_rows as i32,
+                ctx_origin as i32,
+                8,
+                8,
+                32 * 8,
+                32 * 8,
+                i64::MAX,
+                INTERINTRA_MODES as i32,
+                &mut probe_dst,
+                dst_stride as i32,
+                dst_rows as i32,
+                n,
+            );
+
+            // Feed that rd back in as the running best, under a DIFFERENT
+            // incoming mode so the two verdicts are distinguishable.
+            let incoming = (mode + 1) % INTERINTRA_MODES;
+            let mut c_dst = seed_dst.clone();
+            let mut port_dst = seed_dst.clone();
+            let (want_rd, want_mode, intra_flat) = cref::ref_ct_compute_best_interintra_mode(
+                bsize as i32,
+                rdmult,
+                dequant_ac,
+                &mode_costs,
+                mode as i32,
+                false,
+                0,
+                &src,
+                src_stride as i32,
+                &inter,
+                &ctx_plane,
+                ctx_stride as i32,
+                ctx_rows as i32,
+                ctx_origin as i32,
+                8,
+                8,
+                32 * 8,
+                32 * 8,
+                rd_here,
+                incoming as i32,
+                &mut c_dst,
+                dst_stride as i32,
+                dst_rows as i32,
+                n,
+            );
+            let ctx = ctx_for(bsize, 8, rdmult, dequant_ac, &[0i32; MAX_WEDGE_TYPES]);
+            let mut got_mode = incoming;
+            let mut got_rd = rd_here;
+            compute_best_interintra_mode(
+                &ctx,
+                &mode_costs,
+                mode,
+                false,
+                0,
+                &src,
+                src_stride,
+                &inter,
+                &intra_flat[mode * n..(mode + 1) * n],
+                &mut port_dst,
+                dst_stride,
+                bw,
+                bh,
+                &mut got_mode,
+                &mut got_rd,
+            );
+            assert_eq!(
+                (got_rd, got_mode as i32),
+                (want_rd, want_mode),
+                "compute_best_interintra_mode at an exact tie (bsize={bsize}, mode={mode})"
+            );
+            assert_eq!(port_dst, c_dst, "the combined destination at a tie");
+            assert_eq!(want_mode, incoming as i32, "C must DECLINE an exact tie");
+            ties += 1;
+        }
+    }
+    assert!(ties > 0, "the exact-tie pass never ran");
+
+    // Both arms of the accept test, and both mask shapes, must have run — a
+    // port that never accepted (or never combined) would otherwise agree
+    // wherever C also declined.
+    assert!(accepted > 0, "the candidate was never accepted");
+    assert!(rejected > 0, "the candidate was never rejected");
+    assert!(wedge_cells > 0, "the wedge mask shape was never used");
+}
