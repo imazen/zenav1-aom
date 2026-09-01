@@ -26757,3 +26757,351 @@ pub fn ref_rcc_probe_rc_pick_q_and_bounds(p: &RefRcPickParams) -> (i32, i32, i32
     assert_eq!(r, 0, "shim_rcc_probe_rc_pick_q_and_bounds alloc failed");
     (out[0], out[1], out[2], out[3])
 }
+
+// ===========================================================================
+// av1/encoder/pass2_strategy.c's error/boost model — TIER 1c through
+// `shim/pass2_shim.c`, which compiles pass2_strategy.c verbatim. Seven of that
+// file's 87 definitions are exported; none of these is among them.
+//
+// FIRSTPASS_STATS crosses as its 29 `double` members in declaration order plus
+// `is_flash`; the shim assigns them by name.
+// ===========================================================================
+
+unsafe extern "C" {
+    fn shim_p2_firstpass_stats_doubles() -> i32;
+    fn shim_p2_firstpass_stats_size() -> usize;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_p2_calculate_active_area(
+        frame_width: i32,
+        frame_height: i32,
+        mb_rows: i32,
+        mb_cols: i32,
+        num_mbs: i32,
+        bit_depth: i32,
+        stats: *const f64,
+        is_flash: i64,
+    ) -> f64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_p2_calculate_modified_err_new(
+        frame_width: i32,
+        frame_height: i32,
+        mb_rows: i32,
+        mb_cols: i32,
+        num_mbs: i32,
+        bit_depth: i32,
+        have_total: i32,
+        total_stats: *const f64,
+        this_stats: *const f64,
+        vbrbias: i32,
+        err_min: f64,
+        err_max: f64,
+    ) -> f64;
+    fn shim_p2_frame_max_bits(
+        avg_frame_bandwidth: i64,
+        max_frame_bandwidth: i64,
+        vbrmax_section: i32,
+    ) -> i32;
+    fn shim_p2_calc_correction_factor(err_per_mb: f64, q: i32) -> f64;
+    fn shim_p2_qbpm_enumerator(rate_err_tol: i32) -> i32;
+    fn shim_p2_tu_qbpm_enumerator(rate_err_tol: i32) -> i32;
+    fn shim_p2_get_sr_decay_rate(stats: *const f64) -> f64;
+    fn shim_p2_get_zero_motion_factor(stats: *const f64) -> f64;
+    fn shim_p2_get_prediction_decay_rate(stats: *const f64) -> f64;
+    fn shim_p2_baseline_err_per_mb(frame_width: i32, frame_height: i32) -> f64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_p2_calc_frame_boost(
+        avg_frame_qindex_inter: i32,
+        frame_width: i32,
+        frame_height: i32,
+        mb_rows: i32,
+        mb_cols: i32,
+        num_mbs: i32,
+        bit_depth: i32,
+        stats: *const f64,
+        this_frame_mv_in_out: f64,
+        max_boost: f64,
+        scale_max_boost: i32,
+    ) -> f64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_p2_calc_kf_frame_boost(
+        avg_frame_qindex_inter: i32,
+        frame_width: i32,
+        frame_height: i32,
+        mb_rows: i32,
+        mb_cols: i32,
+        num_mbs: i32,
+        bit_depth: i32,
+        stats: *const f64,
+        sr_accumulator: *mut f64,
+        max_boost: f64,
+    ) -> f64;
+    fn shim_p2_calculate_boost_bits(
+        frame_count: i32,
+        boost: i32,
+        total_group_bits: i64,
+    ) -> i32;
+    fn shim_p2_calculate_boost_factor(
+        frame_count: i32,
+        bits: i32,
+        total_group_bits: i64,
+    ) -> i32;
+    fn shim_p2_get_projected_gfu_boost(
+        baseline_gf_interval: i32,
+        gfu_boost: i32,
+        frames_to_project: i32,
+        num_stats_used_for_gfu_boost: i32,
+    ) -> i32;
+    fn shim_p2_is_almost_static(
+        gf_zero_motion: f64,
+        kf_zero_motion: i32,
+        is_lap_enabled: i32,
+    ) -> i32;
+}
+
+/// The `FRAME_INFO` fields the pass-2 boost model reads.
+#[derive(Clone, Copy, Debug)]
+pub struct P2FrameInfo {
+    /// Frame width in pixels.
+    pub frame_width: i32,
+    /// Frame height in pixels.
+    pub frame_height: i32,
+    /// Macroblock rows.
+    pub mb_rows: i32,
+    /// Macroblock columns.
+    pub mb_cols: i32,
+    /// Total macroblocks.
+    pub num_mbs: i32,
+    /// `aom_bit_depth_t`.
+    pub bit_depth: i32,
+}
+
+/// How many `double` members `FIRSTPASS_STATS` has, as the oracle TU sees it.
+#[must_use]
+pub fn ref_p2_firstpass_stats_doubles() -> usize {
+    ref_init();
+    unsafe { shim_p2_firstpass_stats_doubles() as usize }
+}
+
+/// `sizeof(FIRSTPASS_STATS)` in the oracle TU.
+#[must_use]
+pub fn ref_p2_firstpass_stats_size() -> usize {
+    ref_init();
+    unsafe { shim_p2_firstpass_stats_size() }
+}
+
+/// Reference `calculate_active_area` (pass2_strategy.c:61), tier 1c.
+#[must_use]
+pub fn ref_p2_calculate_active_area(fi: &P2FrameInfo, stats: &[f64; 29], is_flash: i64) -> f64 {
+    ref_init();
+    unsafe {
+        shim_p2_calculate_active_area(
+            fi.frame_width,
+            fi.frame_height,
+            fi.mb_rows,
+            fi.mb_cols,
+            fi.num_mbs,
+            fi.bit_depth,
+            stats.as_ptr(),
+            is_flash,
+        )
+    }
+}
+
+/// Reference `calculate_modified_err_new` (:73), tier 1c. `total_stats` of
+/// `None` is C's `NULL`.
+#[must_use]
+pub fn ref_p2_calculate_modified_err_new(
+    fi: &P2FrameInfo,
+    total_stats: Option<&[f64; 29]>,
+    this_stats: &[f64; 29],
+    vbrbias: i32,
+    err_min: f64,
+    err_max: f64,
+) -> f64 {
+    ref_init();
+    let zeros = [0.0f64; 29];
+    let (have, total) = match total_stats {
+        Some(t) => (1, t),
+        None => (0, &zeros),
+    };
+    unsafe {
+        shim_p2_calculate_modified_err_new(
+            fi.frame_width,
+            fi.frame_height,
+            fi.mb_rows,
+            fi.mb_cols,
+            fi.num_mbs,
+            fi.bit_depth,
+            have,
+            total.as_ptr(),
+            this_stats.as_ptr(),
+            vbrbias,
+            err_min,
+            err_max,
+        )
+    }
+}
+
+/// Reference `frame_max_bits` (:154), tier 1c.
+#[must_use]
+pub fn ref_p2_frame_max_bits(
+    avg_frame_bandwidth: i64,
+    max_frame_bandwidth: i64,
+    vbrmax_section: i32,
+) -> i32 {
+    ref_init();
+    unsafe { shim_p2_frame_max_bits(avg_frame_bandwidth, max_frame_bandwidth, vbrmax_section) }
+}
+
+/// Reference `calc_correction_factor` (:171), tier 1c.
+#[must_use]
+pub fn ref_p2_calc_correction_factor(err_per_mb: f64, q: i32) -> f64 {
+    ref_init();
+    unsafe { shim_p2_calc_correction_factor(err_per_mb, q) }
+}
+
+/// Reference `qbpm_enumerator` (:288), tier 1c.
+#[must_use]
+pub fn ref_p2_qbpm_enumerator(rate_err_tol: i32) -> i32 {
+    ref_init();
+    unsafe { shim_p2_qbpm_enumerator(rate_err_tol) }
+}
+
+/// `qbpm_enumerator` through a second entry point in the same TU — the
+/// TU-consistency probe.
+#[must_use]
+pub fn ref_p2_tu_qbpm_enumerator(rate_err_tol: i32) -> i32 {
+    ref_init();
+    unsafe { shim_p2_tu_qbpm_enumerator(rate_err_tol) }
+}
+
+/// Reference `get_sr_decay_rate` (:392), tier 1c.
+#[must_use]
+pub fn ref_p2_get_sr_decay_rate(stats: &[f64; 29]) -> f64 {
+    ref_init();
+    unsafe { shim_p2_get_sr_decay_rate(stats.as_ptr()) }
+}
+
+/// Reference `get_zero_motion_factor` (:415), tier 1c.
+#[must_use]
+pub fn ref_p2_get_zero_motion_factor(stats: &[f64; 29]) -> f64 {
+    ref_init();
+    unsafe { shim_p2_get_zero_motion_factor(stats.as_ptr()) }
+}
+
+/// Reference `get_prediction_decay_rate` (:422), tier 1c.
+#[must_use]
+pub fn ref_p2_get_prediction_decay_rate(stats: &[f64; 29]) -> f64 {
+    ref_init();
+    unsafe { shim_p2_get_prediction_decay_rate(stats.as_ptr()) }
+}
+
+/// Reference `baseline_err_per_mb` (:574), tier 1c.
+#[must_use]
+pub fn ref_p2_baseline_err_per_mb(frame_width: i32, frame_height: i32) -> f64 {
+    ref_init();
+    unsafe { shim_p2_baseline_err_per_mb(frame_width, frame_height) }
+}
+
+/// Reference `calc_frame_boost` (:590), tier 1c.
+#[must_use]
+pub fn ref_p2_calc_frame_boost(
+    avg_frame_qindex_inter: i32,
+    fi: &P2FrameInfo,
+    stats: &[f64; 29],
+    this_frame_mv_in_out: f64,
+    max_boost: f64,
+    scale_max_boost: bool,
+) -> f64 {
+    ref_init();
+    unsafe {
+        shim_p2_calc_frame_boost(
+            avg_frame_qindex_inter,
+            fi.frame_width,
+            fi.frame_height,
+            fi.mb_rows,
+            fi.mb_cols,
+            fi.num_mbs,
+            fi.bit_depth,
+            stats.as_ptr(),
+            this_frame_mv_in_out,
+            max_boost,
+            i32::from(scale_max_boost),
+        )
+    }
+}
+
+/// Reference `calc_kf_frame_boost` (:622), tier 1c. Returns
+/// `(boost, updated sr_accumulator)`.
+#[must_use]
+pub fn ref_p2_calc_kf_frame_boost(
+    avg_frame_qindex_inter: i32,
+    fi: &P2FrameInfo,
+    stats: &[f64; 29],
+    sr_accumulator: f64,
+    max_boost: f64,
+) -> (f64, f64) {
+    ref_init();
+    let mut sr = sr_accumulator;
+    let boost = unsafe {
+        shim_p2_calc_kf_frame_boost(
+            avg_frame_qindex_inter,
+            fi.frame_width,
+            fi.frame_height,
+            fi.mb_rows,
+            fi.mb_cols,
+            fi.num_mbs,
+            fi.bit_depth,
+            stats.as_ptr(),
+            &mut sr,
+            max_boost,
+        )
+    };
+    (boost, sr)
+}
+
+/// Reference `calculate_boost_bits` (:836), tier 1c.
+#[must_use]
+pub fn ref_p2_calculate_boost_bits(frame_count: i32, boost: i32, total_group_bits: i64) -> i32 {
+    ref_init();
+    unsafe { shim_p2_calculate_boost_bits(frame_count, boost, total_group_bits) }
+}
+
+/// Reference `calculate_boost_factor` (:861), tier 1c.
+#[must_use]
+pub fn ref_p2_calculate_boost_factor(frame_count: i32, bits: i32, total_group_bits: i64) -> i32 {
+    ref_init();
+    unsafe { shim_p2_calculate_boost_factor(frame_count, bits, total_group_bits) }
+}
+
+/// Reference `get_projected_gfu_boost` (:653), tier 1c.
+#[must_use]
+pub fn ref_p2_get_projected_gfu_boost(
+    baseline_gf_interval: i32,
+    gfu_boost: i32,
+    frames_to_project: i32,
+    num_stats_used_for_gfu_boost: i32,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_p2_get_projected_gfu_boost(
+            baseline_gf_interval,
+            gfu_boost,
+            frames_to_project,
+            num_stats_used_for_gfu_boost,
+        )
+    }
+}
+
+/// Reference `is_almost_static` (:999), tier 1c.
+#[must_use]
+pub fn ref_p2_is_almost_static(
+    gf_zero_motion: f64,
+    kf_zero_motion: i32,
+    is_lap_enabled: bool,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_p2_is_almost_static(gf_zero_motion, kf_zero_motion, i32::from(is_lap_enabled)) != 0
+    }
+}

@@ -48,6 +48,7 @@ pub mod nonrd_inter;
 pub mod nonrd_pickmode;
 pub mod obu_assemble;
 pub mod pack;
+pub mod pass2_model;
 pub mod palette_search;
 pub mod part4_nn_weights;
 pub mod part4_prune;

@@ -88,6 +88,7 @@ const SHIMS: &[&str] = &[
     "vbp_static_shim",
     "nonrd_idtx_shim",
     "nonrd_pick_shim",
+    "pass2_shim",
     "tpl_shim",
     "ratectrl_shim",
     "tpl_c_shim",
@@ -155,6 +156,12 @@ fn extra_shim_cflags(name: &str) -> &'static [&'static str] {
         // helper of the speed 8/9 inter search is in the static half. Same
         // source, so it is built the same way. See that shim's header.
         "nonrd_pick_shim" => &["-O3", "-DNDEBUG"],
+        // pass2_shim pulls av1/encoder/pass2_strategy.c in for the same
+        // reason: seven of its 87 definitions are exported and the whole
+        // error/boost model is in the static half. Same source, so it is built
+        // the same way. See shim/pass2_shim.c's header on why -ffp-contract=off
+        // matters more here than for the integer shims.
+        "pass2_shim" => &["-O3", "-DNDEBUG"],
         _ => &[],
     }
 }
