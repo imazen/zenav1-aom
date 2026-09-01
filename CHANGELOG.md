@@ -100,6 +100,36 @@
 
 ### Added
 
+- **`av1/encoder/rdopt.c`'s decision layer — the inter RD brain — is ported:
+  67 of its 105 functions, in seven modules, all gated against libaom**
+  (`9163133`, `fc27f88`, `1f71285`, `9e55561`, `e184722`, `2003403`,
+  `4f86e6a`). New: `aom_encode::rdopt_{mv,skip,model,single_state,obmc,var_rd,gate}`
+  plus `crates/aom-sys-ref/shim/rdopt_shim.c` and seven differential harnesses
+  (64 tests, green on aarch64 AND x86_64). Covers the ref-MV/DRL layer, the
+  mode/reference skip mask and its master gate, the inter-mode RD model, the
+  single-reference state table and compound-skip gate, the OBMC target
+  (`calc_target_weighted_pred` + both visitors), the variance-based RD
+  adjustment, and the NEWMV compound assembly. **None of it is wired into the
+  encoder yet** — it is the decision layer the top-level driver will call.
+  The 29 functions NOT ported are named individually with a reason in
+  `docs/RDOPT_C_COVERAGE_2026-09-01.md`; do not read a re-run of
+  `tools/c_surface_inventory.py` as coverage, because every module cites its C
+  function by name in a doc comment and the tool matches names.
+
+- **A new oracle technique for file-`static` C: "tier 1c"** (`9163133`).
+  `nm -g upstream/build/libaom.a` reports TEN exported symbols for the whole of
+  rdopt.c, so none of its decision helpers has an address a differential could
+  take. `shim/rdopt_shim.c` therefore compiles libaom's OWN rdopt.c into the
+  shim archive — its ten exports renamed out of the way, built with libaom's
+  Release flags — and exposes flat wrappers around the statics. The bodies
+  under test are libaom's source, not a transcription of it; same technique and
+  justification as the pre-existing `shim/cnn_cscalar.c`. The one gap versus
+  tier 1 (that it is a SECOND COMPILATION) is closed by measurement:
+  `rdopt_mv_diff::rdopt_shim_tu_agrees_with_archive` drives the shim TU's
+  `av1_block_error_c` and `av1_get_horver_correlation_full_c` against the
+  ARCHIVE's exported symbols and asserts bit equality, so the tier claim fails
+  loudly if it ever stops holding.
+
 - **The stable decoder fuzz sweep was green for the wrong reason, and now
   measures its own reach.** Its mutation ops (bit flips, truncation,
   length-field corruption, splices, insert/delete) leave a mostly-valid
