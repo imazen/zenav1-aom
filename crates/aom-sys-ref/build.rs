@@ -80,6 +80,7 @@ const SHIMS: &[&str] = &[
     "rtcd_probe_shim",
     "cnn_cscalar",
     "rdopt_shim",
+    "compound_type_shim",
 ];
 
 /// Shims that need compile flags beyond the default `-O2 ORACLE_FP_CFLAGS`.
@@ -99,6 +100,11 @@ fn extra_shim_cflags(name: &str) -> &'static [&'static str] {
         // Release flags: it is the same source, so it should be built the same
         // way. See shim/rdopt_shim.c's header for the evidence-tier argument.
         "rdopt_shim" => &["-O3", "-DNDEBUG"],
+        // compound_type_shim pulls av1/encoder/compound_type.c in for the same
+        // reason: 32 of its 34 definitions are file-static (only
+        // `av1_compound_type_rd` and `av1_handle_inter_intra_mode` are
+        // exported). Same source, so it is built the same way.
+        "compound_type_shim" => &["-O3", "-DNDEBUG"],
         _ => &[],
     }
 }

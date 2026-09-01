@@ -20354,3 +20354,241 @@ pub fn ref_rdopt_calc_target_weighted_pred(
     assert_eq!(n as usize, bw * bh);
     (wsrc, mask)
 }
+
+// ===================================================================
+// av1/encoder/compound_type.c — the compound / interintra mask RD search.
+//
+// Tier 1c: the oracle is libaom's own compound_type.c compiled verbatim into
+// `shim/compound_type_shim.c` (only two of its 34 definitions are exported, so
+// there is nothing else to take an address of). See that file's header for the
+// evidence argument.
+// ===================================================================
+
+extern "C" {
+    fn shim_ct_enable_wedge_search(source_variance: u32, disable_wedge_var_thresh: u32) -> i32;
+    fn shim_ct_enable_wedge_interinter_search(
+        source_variance: u32,
+        disable_wedge_var_thresh: u32,
+        enable_interinter_wedge: i32,
+    ) -> i32;
+    fn shim_ct_enable_wedge_interintra_search(
+        source_variance: u32,
+        disable_wedge_var_thresh: u32,
+        enable_interintra_wedge: i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_compute_valid_comp_types(
+        bsize: i32,
+        masked_compound_used: i32,
+        mode_search_mask: i32,
+        source_variance: u32,
+        disable_wedge_var_thresh: u32,
+        enable_interinter_wedge: i32,
+        enable_dist_wtd_comp: i32,
+        use_dist_wtd_comp_flag: i32,
+        enable_diff_wtd_comp: i32,
+        out_types: *mut i32,
+    ) -> i32;
+    fn shim_ct_calc_masked_type_cost(
+        comp_group_idx_cost: *const i32,
+        comp_idx_cost: *const i32,
+        compound_type_cost: *const i32,
+        masked_compound_used: i32,
+        out_cost: *mut i32,
+    );
+    fn shim_ct_update_mbmi_for_compound_type(
+        cur_type: i32,
+        out_type: *mut i32,
+        out_comp_group_idx: *mut i32,
+        out_compound_idx: *mut i32,
+    );
+    fn shim_ct_get_interinter_compound_mask_rate(
+        comp_type: i32,
+        bsize: i32,
+        wedge_index: i32,
+        wedge_idx_cost: *const i32,
+    ) -> i32;
+    fn shim_ct_save_mask_search_results(this_mode: i32, reuse_level: i32) -> i32;
+    fn shim_ct_push_comp_avg_est_rd(top: *mut i64, tmp_rd: i64, level: i32);
+    fn shim_ct_prune_comp_eval_using_comp_avg_est_rd(
+        top: *const i64,
+        tmp_rd: i64,
+        ref_best_rd: i64,
+        level: i32,
+    ) -> i32;
+    fn shim_ct_compute_rd_thresh(rdmult: i32, total_mode_rate: i32, ref_best_rd: i64) -> i64;
+    fn shim_ct_top_comp_avg_est_rd_count() -> i32;
+    fn shim_ct_compound_types() -> i32;
+    fn shim_ct_max_wedge_types() -> i32;
+}
+
+/// Reference `enable_wedge_search` (compound_type.c:103).
+pub fn ref_ct_enable_wedge_search(source_variance: u32, disable_wedge_var_thresh: u32) -> bool {
+    ref_init();
+    unsafe { shim_ct_enable_wedge_search(source_variance, disable_wedge_var_thresh) != 0 }
+}
+
+/// Reference `enable_wedge_interinter_search` (compound_type.c:110).
+pub fn ref_ct_enable_wedge_interinter_search(
+    source_variance: u32,
+    disable_wedge_var_thresh: u32,
+    enable_interinter_wedge: bool,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_ct_enable_wedge_interinter_search(
+            source_variance,
+            disable_wedge_var_thresh,
+            i32::from(enable_interinter_wedge),
+        ) != 0
+    }
+}
+
+/// Reference `enable_wedge_interintra_search` (compound_type.c:116).
+pub fn ref_ct_enable_wedge_interintra_search(
+    source_variance: u32,
+    disable_wedge_var_thresh: u32,
+    enable_interintra_wedge: bool,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_ct_enable_wedge_interintra_search(
+            source_variance,
+            disable_wedge_var_thresh,
+            i32::from(enable_interintra_wedge),
+        ) != 0
+    }
+}
+
+/// Reference `compute_valid_comp_types` (compound_type.c:868). Returns the
+/// valid types in C's evaluation order (the meaningful prefix of its output
+/// array).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_ct_compute_valid_comp_types(
+    bsize: i32,
+    masked_compound_used: bool,
+    mode_search_mask: i32,
+    source_variance: u32,
+    disable_wedge_var_thresh: u32,
+    enable_interinter_wedge: bool,
+    enable_dist_wtd_comp: i32,
+    use_dist_wtd_comp_flag: i32,
+    enable_diff_wtd_comp: bool,
+) -> Vec<i32> {
+    ref_init();
+    let mut out = [0i32; 4];
+    let n = unsafe {
+        shim_ct_compute_valid_comp_types(
+            bsize,
+            i32::from(masked_compound_used),
+            mode_search_mask,
+            source_variance,
+            disable_wedge_var_thresh,
+            i32::from(enable_interinter_wedge),
+            enable_dist_wtd_comp,
+            use_dist_wtd_comp_flag,
+            i32::from(enable_diff_wtd_comp),
+            out.as_mut_ptr(),
+        )
+    };
+    out[..n as usize].to_vec()
+}
+
+/// Reference `calc_masked_type_cost` (compound_type.c:906).
+pub fn ref_ct_calc_masked_type_cost(
+    comp_group_idx_cost: [i32; 2],
+    comp_idx_cost: [i32; 2],
+    compound_type_cost: [i32; 2],
+    masked_compound_used: bool,
+) -> [i32; 4] {
+    ref_init();
+    let mut out = [0i32; 4];
+    unsafe {
+        shim_ct_calc_masked_type_cost(
+            comp_group_idx_cost.as_ptr(),
+            comp_idx_cost.as_ptr(),
+            compound_type_cost.as_ptr(),
+            i32::from(masked_compound_used),
+            out.as_mut_ptr(),
+        );
+    }
+    out
+}
+
+/// Reference `update_mbmi_for_compound_type` (compound_type.c:945). Returns
+/// `(interinter_comp.type, comp_group_idx, compound_idx)`.
+pub fn ref_ct_update_mbmi_for_compound_type(cur_type: i32) -> (i32, i32, i32) {
+    ref_init();
+    let (mut t, mut g, mut c) = (0i32, 0i32, 0i32);
+    unsafe { shim_ct_update_mbmi_for_compound_type(cur_type, &mut t, &mut g, &mut c) };
+    (t, g, c)
+}
+
+/// Reference `get_interinter_compound_mask_rate` (compound_type.c:1026).
+/// `wedge_idx_cost` is `mode_costs->wedge_idx_cost[bsize]`, `MAX_WEDGE_TYPES`
+/// entries.
+pub fn ref_ct_get_interinter_compound_mask_rate(
+    comp_type: i32,
+    bsize: i32,
+    wedge_index: i32,
+    wedge_idx_cost: &[i32],
+) -> i32 {
+    ref_init();
+    assert_eq!(
+        wedge_idx_cost.len(),
+        unsafe { shim_ct_max_wedge_types() } as usize,
+        "wedge_idx_cost must be MAX_WEDGE_TYPES long"
+    );
+    unsafe {
+        shim_ct_get_interinter_compound_mask_rate(
+            comp_type,
+            bsize,
+            wedge_index,
+            wedge_idx_cost.as_ptr(),
+        )
+    }
+}
+
+/// Reference `save_mask_search_results` (compound_type.c:1058).
+pub fn ref_ct_save_mask_search_results(this_mode: i32, reuse_level: bool) -> bool {
+    ref_init();
+    unsafe { shim_ct_save_mask_search_results(this_mode, i32::from(reuse_level)) != 0 }
+}
+
+/// Reference `push_comp_avg_est_rd` (compound_type.c:737), in place.
+pub fn ref_ct_push_comp_avg_est_rd(top: &mut [i64; 5], tmp_rd: i64, level: i32) {
+    ref_init();
+    unsafe { shim_ct_push_comp_avg_est_rd(top.as_mut_ptr(), tmp_rd, level) };
+}
+
+/// Reference `prune_comp_eval_using_comp_avg_est_rd` (compound_type.c:761).
+pub fn ref_ct_prune_comp_eval_using_comp_avg_est_rd(
+    top: &[i64; 5],
+    tmp_rd: i64,
+    ref_best_rd: i64,
+    level: i32,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_ct_prune_comp_eval_using_comp_avg_est_rd(top.as_ptr(), tmp_rd, ref_best_rd, level) != 0
+    }
+}
+
+/// Reference `compute_rd_thresh` (compound_type.c:504).
+pub fn ref_ct_compute_rd_thresh(rdmult: i32, total_mode_rate: i32, ref_best_rd: i64) -> i64 {
+    ref_init();
+    unsafe { shim_ct_compute_rd_thresh(rdmult, total_mode_rate, ref_best_rd) }
+}
+
+/// `TOP_COMP_AVG_EST_RD_COUNT`, `COMPOUND_TYPES` and `MAX_WEDGE_TYPES` as the
+/// oracle TU sees them — so the port's copies are checked, not assumed.
+pub fn ref_ct_constants() -> (i32, i32, i32) {
+    ref_init();
+    unsafe {
+        (
+            shim_ct_top_comp_avg_est_rd_count(),
+            shim_ct_compound_types(),
+            shim_ct_max_wedge_types(),
+        )
+    }
+}
