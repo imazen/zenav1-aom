@@ -54,6 +54,7 @@ pub mod rate_model;
 pub mod rc;
 pub mod rd;
 pub mod rd_thresh;
+pub mod rdopt_mv;
 pub mod rd_pick;
 pub mod real_costs;
 pub mod resize;

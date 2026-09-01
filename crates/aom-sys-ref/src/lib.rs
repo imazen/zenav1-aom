@@ -18580,3 +18580,526 @@ pub fn ref_update_rd_thresh_fact(
     };
     assert_eq!(rc, 0, "shim_update_rd_thresh_fact allocation failed");
 }
+
+// =============================================================================
+// av1/encoder/rdopt.c — the inter RD brain (shim/rdopt_shim.c)
+// =============================================================================
+//
+// rdopt.c exports exactly ten symbols out of 105 definitions; everything the
+// inter mode search actually decides with is `static`. `shim/rdopt_shim.c`
+// therefore compiles libaom's own rdopt.c into the shim archive (its ten
+// exports renamed out of the way) and exposes flat wrappers around the
+// statics — libaom's source, not a transcription of it. Read that file's
+// header for the evidence-tier argument and the wrapper conventions.
+
+/// `MAX_REF_MV_STACK_SIZE` (`av1/common/enums.h:510`).
+pub const REF_MV_STACK: usize = 8;
+/// `MAX_REF_MV_SEARCH` (`av1/encoder/rdopt_utils.h:25`).
+pub const MAX_REF_MV_SEARCH: usize = 3;
+/// `DRL_MODE_CONTEXTS` (`av1/common/enums.h`).
+pub const DRL_MODE_CONTEXTS: usize = 3;
+/// `REF_FRAMES` (`av1/common/blockd.h`).
+pub const C_REF_FRAMES: usize = 8;
+
+unsafe extern "C" {
+    fn shim_rdopt_get_single_mode(this_mode: i32, ref_idx: i32) -> i32;
+    fn shim_rdopt_conditional_skipintra(mode: i32, best_intra_mode: i32) -> i32;
+    fn shim_rdopt_prune_ref_mv_idx_using_qindex(
+        reduce_inter_modes: i32,
+        qindex: i32,
+        ref_mv_idx: i32,
+    ) -> i32;
+    fn shim_rdopt_mask_set_bit(mask: i32, index: i32) -> i32;
+    fn shim_rdopt_mask_check_bit(mask: i32, index: i32) -> i32;
+    fn shim_rdopt_ref_frame_type(rf0: i32, rf1: i32) -> i32;
+    fn shim_rdopt_check_repeat_ref_mv(
+        rf0: i32,
+        rf1: i32,
+        ref_idx: i32,
+        single_mode: i32,
+        ref_mv_count: i32,
+        stack_this: *const i16,
+        stack_comp: *const i16,
+        global_mvs: *const i16,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_get_this_mv(
+        this_mode: i32,
+        ref_idx: i32,
+        ref_mv_idx: i32,
+        skip_repeated_ref_mv: i32,
+        rf0: i32,
+        rf1: i32,
+        ref_mv_count: i32,
+        stack_this: *const i16,
+        stack_comp: *const i16,
+        global_mvs: *const i16,
+        out_mv: *mut i16,
+    ) -> i32;
+    fn shim_rdopt_get_drl_cost(
+        mode: i32,
+        ref_mv_idx: i32,
+        rf0: i32,
+        rf1: i32,
+        ref_mv_count: i32,
+        weight: *const u16,
+        drl_mode_cost0: *const i32,
+    ) -> i32;
+    fn shim_rdopt_get_drl_refmv_count(rf0: i32, rf1: i32, mode: i32, ref_mv_count: i32) -> i32;
+    fn shim_rdopt_is_single_newmv_valid(
+        this_mode: i32,
+        rf0: i32,
+        rf1: i32,
+        ref_mv_idx: i32,
+        single_newmv_valid: *const u8,
+    ) -> i32;
+    fn shim_rdopt_skip_nearest_near_mv_using_refmv_weight(
+        this_mode: i32,
+        ref_frame_type: i32,
+        best_mode: i32,
+        left_available: i32,
+        up_available: i32,
+        ref_mv_count: i32,
+        weight: *const u16,
+    ) -> i32;
+    fn shim_rdopt_clamp_mv2(
+        mv: *mut i16,
+        mb_to_left_edge: i32,
+        mb_to_right_edge: i32,
+        mb_to_top_edge: i32,
+        mb_to_bottom_edge: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_clamp_and_check_mv(
+        in_mv: *const i16,
+        out_mv: *mut i16,
+        allow_high_precision_mv: i32,
+        cur_frame_force_integer_mv: i32,
+        mb_to_left_edge: i32,
+        mb_to_right_edge: i32,
+        mb_to_top_edge: i32,
+        mb_to_bottom_edge: i32,
+        fullmv_limits: *const i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_build_cur_mv(
+        out_mv: *mut i16,
+        this_mode: i32,
+        rf0: i32,
+        rf1: i32,
+        ref_mv_idx: i32,
+        skip_repeated_ref_mv: i32,
+        ref_mv_count: i32,
+        stack_this: *const i16,
+        stack_comp: *const i16,
+        global_mvs: *const i16,
+        allow_high_precision_mv: i32,
+        cur_frame_force_integer_mv: i32,
+        mb_to_left_edge: i32,
+        mb_to_right_edge: i32,
+        mb_to_top_edge: i32,
+        mb_to_bottom_edge: i32,
+        fullmv_limits: *const i32,
+    ) -> i32;
+    fn shim_rdc_block_error_via_tu(
+        coeff: *const i32,
+        dqcoeff: *const i32,
+        block_size: isize,
+        ssz: *mut i64,
+    ) -> i64;
+    fn shim_rdc_horver_via_tu(
+        diff: *const i16,
+        stride: i32,
+        w: i32,
+        h: i32,
+        hcorr: *mut f32,
+        vcorr: *mut f32,
+    );
+}
+
+/// The one `mbmi_ext` row an rdopt ref-MV helper reads, in the shape the shims
+/// take it: the row index is derived from the reference pair by
+/// `av1_ref_frame_type`, exactly as C does, so callers pass the pair.
+#[derive(Clone, Debug)]
+pub struct RefMvRow {
+    /// `mbmi_ext->ref_mv_count[ref_frame_type]`.
+    pub count: i32,
+    /// `ref_mv_stack[..][i].this_mv`, `(row, col)` in 1/8-pel units.
+    pub this_mv: [(i16, i16); REF_MV_STACK],
+    /// `ref_mv_stack[..][i].comp_mv`.
+    pub comp_mv: [(i16, i16); REF_MV_STACK],
+    /// `mbmi_ext->weight[ref_frame_type][i]`.
+    pub weight: [u16; REF_MV_STACK],
+    /// `mbmi_ext->global_mvs[ref]` for each of the eight reference slots.
+    pub global_mvs: [(i16, i16); C_REF_FRAMES],
+}
+
+impl Default for RefMvRow {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            this_mv: [(0, 0); REF_MV_STACK],
+            comp_mv: [(0, 0); REF_MV_STACK],
+            weight: [0; REF_MV_STACK],
+            global_mvs: [(0, 0); C_REF_FRAMES],
+        }
+    }
+}
+
+impl RefMvRow {
+    fn flat_this(&self) -> [i16; REF_MV_STACK * 2] {
+        let mut o = [0i16; REF_MV_STACK * 2];
+        for (i, &(r, c)) in self.this_mv.iter().enumerate() {
+            o[2 * i] = r;
+            o[2 * i + 1] = c;
+        }
+        o
+    }
+    fn flat_comp(&self) -> [i16; REF_MV_STACK * 2] {
+        let mut o = [0i16; REF_MV_STACK * 2];
+        for (i, &(r, c)) in self.comp_mv.iter().enumerate() {
+            o[2 * i] = r;
+            o[2 * i + 1] = c;
+        }
+        o
+    }
+    fn flat_global(&self) -> [i16; C_REF_FRAMES * 2] {
+        let mut o = [0i16; C_REF_FRAMES * 2];
+        for (i, &(r, c)) in self.global_mvs.iter().enumerate() {
+            o[2 * i] = r;
+            o[2 * i + 1] = c;
+        }
+        o
+    }
+}
+
+/// The block-edge distances `clamp_mv2` reads out of `MACROBLOCKD`
+/// (`mb_to_{left,right,top,bottom}_edge`, 1/8-pel).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BlockEdges {
+    pub left: i32,
+    pub right: i32,
+    pub top: i32,
+    pub bottom: i32,
+}
+
+/// Reference `get_single_mode` (rdopt.c:989).
+pub fn ref_rdopt_get_single_mode(this_mode: i32, ref_idx: i32) -> i32 {
+    ref_init();
+    unsafe { shim_rdopt_get_single_mode(this_mode, ref_idx) }
+}
+
+/// Reference `conditional_skipintra` (rdopt.c:941).
+pub fn ref_rdopt_conditional_skipintra(mode: i32, best_intra_mode: i32) -> bool {
+    ref_init();
+    unsafe { shim_rdopt_conditional_skipintra(mode, best_intra_mode) != 0 }
+}
+
+/// Reference `prune_ref_mv_idx_using_qindex` (rdopt.c:2199).
+pub fn ref_rdopt_prune_ref_mv_idx_using_qindex(
+    reduce_inter_modes: i32,
+    qindex: i32,
+    ref_mv_idx: i32,
+) -> bool {
+    ref_init();
+    unsafe { shim_rdopt_prune_ref_mv_idx_using_qindex(reduce_inter_modes, qindex, ref_mv_idx) != 0 }
+}
+
+/// Reference `mask_set_bit` (rdopt.c:2347) — returns the updated mask.
+pub fn ref_rdopt_mask_set_bit(mask: i32, index: i32) -> i32 {
+    ref_init();
+    unsafe { shim_rdopt_mask_set_bit(mask, index) }
+}
+
+/// Reference `mask_check_bit` (rdopt.c:2349).
+pub fn ref_rdopt_mask_check_bit(mask: i32, index: i32) -> bool {
+    ref_init();
+    unsafe { shim_rdopt_mask_check_bit(mask, index) != 0 }
+}
+
+/// Reference `av1_ref_frame_type` (mvref_common.h:113) — the `mbmi_ext` row a
+/// reference pair selects.
+pub fn ref_rdopt_ref_frame_type(rf0: i32, rf1: i32) -> i32 {
+    ref_init();
+    unsafe { shim_rdopt_ref_frame_type(rf0, rf1) }
+}
+
+/// Reference `check_repeat_ref_mv` (rdopt.c:1993).
+pub fn ref_rdopt_check_repeat_ref_mv(
+    rf: (i32, i32),
+    ref_idx: i32,
+    single_mode: i32,
+    row: &RefMvRow,
+) -> bool {
+    ref_init();
+    let (t, c, g) = (row.flat_this(), row.flat_comp(), row.flat_global());
+    unsafe {
+        shim_rdopt_check_repeat_ref_mv(
+            rf.0,
+            rf.1,
+            ref_idx,
+            single_mode,
+            row.count,
+            t.as_ptr(),
+            c.as_ptr(),
+            g.as_ptr(),
+        ) != 0
+    }
+}
+
+/// Reference `get_this_mv` (rdopt.c:2030). `None` is C's `return 0`; the MV is
+/// the value C left in `*this_mv`, including its `INVALID_MV` NEWMV sentinel
+/// (`(-32768, -32768)`).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_get_this_mv(
+    this_mode: i32,
+    ref_idx: i32,
+    ref_mv_idx: i32,
+    skip_repeated_ref_mv: bool,
+    rf: (i32, i32),
+    row: &RefMvRow,
+) -> Option<(i16, i16)> {
+    ref_init();
+    let (t, c, g) = (row.flat_this(), row.flat_comp(), row.flat_global());
+    let mut out = [0i16; 2];
+    let ok = unsafe {
+        shim_rdopt_get_this_mv(
+            this_mode,
+            ref_idx,
+            ref_mv_idx,
+            i32::from(skip_repeated_ref_mv),
+            rf.0,
+            rf.1,
+            row.count,
+            t.as_ptr(),
+            c.as_ptr(),
+            g.as_ptr(),
+            out.as_mut_ptr(),
+        )
+    };
+    (ok != 0).then_some((out[0], out[1]))
+}
+
+/// Reference `get_drl_cost` (rdopt.c:2139).
+pub fn ref_rdopt_get_drl_cost(
+    mode: i32,
+    ref_mv_idx: i32,
+    rf: (i32, i32),
+    row: &RefMvRow,
+    drl_mode_cost0: &[[i32; 2]; DRL_MODE_CONTEXTS],
+) -> i32 {
+    ref_init();
+    let flat: Vec<i32> = drl_mode_cost0.iter().flatten().copied().collect();
+    unsafe {
+        shim_rdopt_get_drl_cost(
+            mode,
+            ref_mv_idx,
+            rf.0,
+            rf.1,
+            row.count,
+            row.weight.as_ptr(),
+            flat.as_ptr(),
+        )
+    }
+}
+
+/// Reference `get_drl_refmv_count` (rdopt.c:2182).
+pub fn ref_rdopt_get_drl_refmv_count(rf: (i32, i32), mode: i32, ref_mv_count: i32) -> i32 {
+    ref_init();
+    unsafe { shim_rdopt_get_drl_refmv_count(rf.0, rf.1, mode, ref_mv_count) }
+}
+
+/// Reference `is_single_newmv_valid` (rdopt.c:2168). `single_newmv_valid` is
+/// `args->single_newmv_valid[MAX_REF_MV_SEARCH][REF_FRAMES]`.
+pub fn ref_rdopt_is_single_newmv_valid(
+    this_mode: i32,
+    rf: (i32, i32),
+    ref_mv_idx: i32,
+    single_newmv_valid: &[[u8; C_REF_FRAMES]; MAX_REF_MV_SEARCH],
+) -> bool {
+    ref_init();
+    let flat: Vec<u8> = single_newmv_valid.iter().flatten().copied().collect();
+    unsafe {
+        shim_rdopt_is_single_newmv_valid(this_mode, rf.0, rf.1, ref_mv_idx, flat.as_ptr()) != 0
+    }
+}
+
+/// Reference `skip_nearest_near_mv_using_refmv_weight` (rdopt.c:2069).
+pub fn ref_rdopt_skip_nearest_near_mv_using_refmv_weight(
+    this_mode: i32,
+    ref_frame_type: i32,
+    best_mode: i32,
+    left_available: bool,
+    up_available: bool,
+    ref_mv_count: i32,
+    weight: &[u16; REF_MV_STACK],
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_rdopt_skip_nearest_near_mv_using_refmv_weight(
+            this_mode,
+            ref_frame_type,
+            best_mode,
+            i32::from(left_available),
+            i32::from(up_available),
+            ref_mv_count,
+            weight.as_ptr(),
+        ) != 0
+    }
+}
+
+/// Reference `clamp_mv2` (rdopt.c:1227).
+pub fn ref_rdopt_clamp_mv2(mv: (i16, i16), edges: BlockEdges) -> (i16, i16) {
+    ref_init();
+    let mut m = [mv.0, mv.1];
+    unsafe {
+        shim_rdopt_clamp_mv2(
+            m.as_mut_ptr(),
+            edges.left,
+            edges.right,
+            edges.top,
+            edges.bottom,
+        )
+    };
+    (m[0], m[1])
+}
+
+/// Reference `clamp_and_check_mv` (rdopt.c:1293). `fullmv_limits` is
+/// `x->mv_limits` as `[col_min, col_max, row_min, row_max]`.
+pub fn ref_rdopt_clamp_and_check_mv(
+    in_mv: (i16, i16),
+    allow_high_precision_mv: bool,
+    cur_frame_force_integer_mv: bool,
+    edges: BlockEdges,
+    fullmv_limits: [i32; 4],
+) -> ((i16, i16), bool) {
+    ref_init();
+    let inm = [in_mv.0, in_mv.1];
+    let mut out = [0i16; 2];
+    let ok = unsafe {
+        shim_rdopt_clamp_and_check_mv(
+            inm.as_ptr(),
+            out.as_mut_ptr(),
+            i32::from(allow_high_precision_mv),
+            i32::from(cur_frame_force_integer_mv),
+            edges.left,
+            edges.right,
+            edges.top,
+            edges.bottom,
+            fullmv_limits.as_ptr(),
+        )
+    };
+    ((out[0], out[1]), ok != 0)
+}
+
+/// Reference `build_cur_mv` (rdopt.c:2110). `cur_mv` is in/out and carries C's
+/// partial-write semantics on the failing path.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_build_cur_mv(
+    cur_mv: &mut [(i16, i16); 2],
+    this_mode: i32,
+    rf: (i32, i32),
+    ref_mv_idx: i32,
+    skip_repeated_ref_mv: bool,
+    row: &RefMvRow,
+    allow_high_precision_mv: bool,
+    cur_frame_force_integer_mv: bool,
+    edges: BlockEdges,
+    fullmv_limits: [i32; 4],
+) -> bool {
+    ref_init();
+    let (t, c, g) = (row.flat_this(), row.flat_comp(), row.flat_global());
+    let mut flat = [cur_mv[0].0, cur_mv[0].1, cur_mv[1].0, cur_mv[1].1];
+    let ok = unsafe {
+        shim_rdopt_build_cur_mv(
+            flat.as_mut_ptr(),
+            this_mode,
+            rf.0,
+            rf.1,
+            ref_mv_idx,
+            i32::from(skip_repeated_ref_mv),
+            row.count,
+            t.as_ptr(),
+            c.as_ptr(),
+            g.as_ptr(),
+            i32::from(allow_high_precision_mv),
+            i32::from(cur_frame_force_integer_mv),
+            edges.left,
+            edges.right,
+            edges.top,
+            edges.bottom,
+            fullmv_limits.as_ptr(),
+        )
+    };
+    cur_mv[0] = (flat[0], flat[1]);
+    cur_mv[1] = (flat[2], flat[3]);
+    ok != 0
+}
+
+/// `av1_block_error_c` as compiled INSIDE `shim/rdopt_shim.c`'s copy of
+/// rdopt.c. Exists only so a differential can prove that second compilation
+/// agrees with the archive's exported `av1_block_error_c` — see the shim
+/// header's evidence-tier note.
+pub fn ref_rdopt_tu_block_error(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
+    ref_init();
+    assert_eq!(coeff.len(), dqcoeff.len());
+    let mut ssz = 0i64;
+    let e = unsafe {
+        shim_rdc_block_error_via_tu(
+            coeff.as_ptr(),
+            dqcoeff.as_ptr(),
+            coeff.len() as isize,
+            &mut ssz,
+        )
+    };
+    (e, ssz)
+}
+
+/// `av1_get_horver_correlation_full_c` as compiled inside the shim's copy of
+/// rdopt.c. Same purpose as [`ref_rdopt_tu_block_error`].
+pub fn ref_rdopt_tu_horver(diff: &[i16], stride: usize, w: usize, h: usize) -> (f32, f32) {
+    ref_init();
+    let (mut hc, mut vc) = (0f32, 0f32);
+    unsafe {
+        shim_rdc_horver_via_tu(
+            diff.as_ptr(),
+            stride as i32,
+            w as i32,
+            h as i32,
+            &mut hc,
+            &mut vc,
+        )
+    };
+    (hc, vc)
+}
+
+unsafe extern "C" {
+    fn av1_get_horver_correlation_full_c(
+        diff: *const i16,
+        stride: i32,
+        w: i32,
+        h: i32,
+        hcorr: *mut f32,
+        vcorr: *mut f32,
+    );
+}
+
+/// Reference `av1_get_horver_correlation_full_c` (rdopt.c:527) — the ARCHIVE's
+/// exported symbol, as opposed to [`ref_rdopt_tu_horver`], which is the copy
+/// inside the rdopt shim TU. The pair exists so a differential can prove the
+/// two agree.
+pub fn ref_horver_correlation_full(diff: &[i16], stride: usize, w: usize, h: usize) -> (f32, f32) {
+    ref_init();
+    let (mut hc, mut vc) = (0f32, 0f32);
+    unsafe {
+        av1_get_horver_correlation_full_c(
+            diff.as_ptr(),
+            stride as i32,
+            w as i32,
+            h as i32,
+            &mut hc,
+            &mut vc,
+        )
+    };
+    (hc, vc)
+}

@@ -79,6 +79,7 @@ const SHIMS: &[&str] = &[
     "enc_misc_shim",
     "rtcd_probe_shim",
     "cnn_cscalar",
+    "rdopt_shim",
 ];
 
 /// Shims that need compile flags beyond the default `-O2 ORACLE_FP_CFLAGS`.
@@ -92,6 +93,12 @@ const SHIMS: &[&str] = &[
 fn extra_shim_cflags(name: &str) -> &'static [&'static str] {
     match name {
         "cnn_cscalar" => &["-O3", "-DNDEBUG"],
+        // rdopt_shim pulls av1/encoder/rdopt.c into the shim archive to reach
+        // its 95 file-static functions (only ten of rdopt.c's definitions are
+        // exported). Same reason as cnn_cscalar for matching libaom's own
+        // Release flags: it is the same source, so it should be built the same
+        // way. See shim/rdopt_shim.c's header for the evidence-tier argument.
+        "rdopt_shim" => &["-O3", "-DNDEBUG"],
         _ => &[],
     }
 }
