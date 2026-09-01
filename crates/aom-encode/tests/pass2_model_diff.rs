@@ -899,3 +899,461 @@ fn set_baseline_gf_interval_is_the_identity() {
         assert_eq!(set_baseline_gf_interval(n), n);
     }
 }
+
+// ---------------------------------------------------------------------------
+// The region-analysis cluster.
+// ---------------------------------------------------------------------------
+
+use aom_encode::pass2_model::{
+    HALF_FILT_LEN, HALF_WIN, Region, RegionType, analyze_region, cleanup_regions,
+    find_regions_index, find_stable_regions, get_gradient, get_region_stats, insert_region,
+    mark_flashes, remove_region, remove_short_regions, smooth_filter_noise, smooth_filter_stats,
+};
+use aom_sys_ref::{
+    P2Region, ref_p2_analyze_region, ref_p2_cleanup_regions, ref_p2_find_regions_index,
+    ref_p2_find_stable_regions, ref_p2_get_gradient, ref_p2_get_region_stats, ref_p2_half_filt_len,
+    ref_p2_half_win, ref_p2_insert_region, ref_p2_mark_flashes, ref_p2_region_types,
+    ref_p2_remove_region, ref_p2_remove_short_regions, ref_p2_smooth_filter_noise,
+    ref_p2_smooth_filter_stats,
+};
+
+/// A run of `n` first-pass records, with `is_flash` drawn separately (it is an
+/// `int64_t` in C and does not ride in the 29-double array).
+fn draw_run(rng: &mut Rng, n: usize, flash_prob: u32) -> Vec<FirstpassStats> {
+    (0..n)
+        .map(|_| {
+            let mut s = draw_stats(rng, 68);
+            s.is_flash = i64::from(flash_prob > 0 && rng.below(flash_prob) == 0);
+            // cor_coeff and noise_var are read by analyze_region with a 0.001
+            // floor, so both sides of that floor are drawn.
+            s.cor_coeff = if rng.below(4) == 0 { 0.0 } else { rng.unit() };
+            s.noise_var = if rng.below(4) == 0 {
+                0.0
+            } else {
+                rng.range(0.0, 500.0)
+            };
+            s
+        })
+        .collect()
+}
+
+fn run_to_flat(run: &[FirstpassStats]) -> (Vec<f64>, Vec<i8>) {
+    (
+        run.iter().flat_map(|s| s.to_doubles()).collect(),
+        run.iter().map(|s| s.is_flash as i8).collect(),
+    )
+}
+
+fn regions_to_c(r: &[Region]) -> Vec<P2Region> {
+    r.iter()
+        .map(|x| P2Region {
+            start: x.start,
+            last: x.last,
+            kind: x.kind,
+            avgs: [
+                x.avg_noise_var,
+                x.avg_cor_coeff,
+                x.avg_sr_fr_ratio,
+                x.avg_intra_err,
+                x.avg_coded_err,
+            ],
+        })
+        .collect()
+}
+
+fn regions_eq(port: &[Region], c: &[P2Region], n: usize, what: &str) {
+    for k in 0..n {
+        assert_eq!(port[k].start, c[k].start, "{what}: region {k} start");
+        assert_eq!(port[k].last, c[k].last, "{what}: region {k} last");
+        assert_eq!(port[k].kind, c[k].kind, "{what}: region {k} type");
+        for (i, (a, b)) in [
+            port[k].avg_noise_var,
+            port[k].avg_cor_coeff,
+            port[k].avg_sr_fr_ratio,
+            port[k].avg_intra_err,
+            port[k].avg_coded_err,
+        ]
+        .iter()
+        .zip(&c[k].avgs)
+        .enumerate()
+        {
+            assert_eq!(a.to_bits(), b.to_bits(), "{what}: region {k} avg {i}");
+        }
+    }
+}
+
+#[test]
+fn region_constants_match_c() {
+    let (stable, high_var, scenecut, blending) = ref_p2_region_types();
+    assert_eq!(RegionType::Stable as i32, stable);
+    assert_eq!(RegionType::HighVar as i32, high_var);
+    assert_eq!(RegionType::Scenecut as i32, scenecut);
+    assert_eq!(RegionType::Blending as i32, blending);
+    assert_eq!(HALF_WIN, ref_p2_half_win());
+    assert_eq!(HALF_FILT_LEN, ref_p2_half_filt_len());
+}
+
+#[test]
+fn smooth_filter_stats_matches_c() {
+    let mut rng = Rng::new(0x5F17_0100);
+    for n in 1..14usize {
+        for flash_prob in [0u32, 3, 1] {
+            for _ in 0..20 {
+                let run = draw_run(&mut rng, n, flash_prob);
+                let (flat, flash) = run_to_flat(&run);
+                for start_idx in 0..n {
+                    for last_idx in start_idx..n {
+                        // The outputs are ACCUMULATED into, so both sides are
+                        // handed the same non-zero starting contents -- a port
+                        // that ASSIGNED would agree only on a zeroed array.
+                        let seed: Vec<f64> = (0..n).map(|_| rng.range(-1000.0, 1000.0)).collect();
+                        let (mut ci, mut cc) = (seed.clone(), seed.clone());
+                        ref_p2_smooth_filter_stats(
+                            &flat,
+                            &flash,
+                            start_idx as i32,
+                            last_idx as i32,
+                            &mut ci,
+                            &mut cc,
+                        );
+                        let (mut pi, mut pc) = (seed.clone(), seed.clone());
+                        smooth_filter_stats(&run, start_idx, last_idx, &mut pi, &mut pc);
+                        for k in 0..n {
+                            bits_eq(
+                                pi[k],
+                                ci[k],
+                                &format!("intra[{k}] n{n} {start_idx}..{last_idx}"),
+                            );
+                            bits_eq(
+                                pc[k],
+                                cc[k],
+                                &format!("coded[{k}] n{n} {start_idx}..{last_idx}"),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn get_gradient_matches_c() {
+    let mut rng = Rng::new(0x64_0101);
+    for n in 1..16usize {
+        for _ in 0..40 {
+            let values: Vec<f64> = (0..n).map(|_| rng.range(-1.0e6, 1.0e6)).collect();
+            for start in 0..n {
+                for last in start..n {
+                    let mut c = vec![0.0f64; n];
+                    ref_p2_get_gradient(&values, start as i32, last as i32, &mut c);
+                    let mut p = vec![0.0f64; n];
+                    get_gradient(&values, start, last, &mut p);
+                    for k in 0..n {
+                        bits_eq(p[k], c[k], &format!("grad[{k}] n{n} {start}..{last}"));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A region array covering `0..n` split into `k` contiguous pieces.
+fn draw_regions(rng: &mut Rng, n: usize, k: usize, cap: usize) -> (Vec<Region>, i32) {
+    let mut r = vec![Region::default(); cap];
+    let k = k.max(1).min(n.max(1));
+    let mut bounds: Vec<usize> = (0..k).map(|i| i * n / k).collect();
+    bounds.push(n);
+    for i in 0..k {
+        r[i].start = bounds[i] as i32;
+        r[i].last = bounds[i + 1] as i32 - 1;
+        r[i].kind = rng.below(4) as i32;
+        r[i].avg_noise_var = rng.range(0.0, 100.0);
+    }
+    (r, k as i32)
+}
+
+#[test]
+fn analyze_and_get_region_stats_match_c() {
+    let mut rng = Rng::new(0x4E41_0102);
+    let cap = 64usize;
+    for n in 1..14usize {
+        for _ in 0..40 {
+            let run = draw_run(&mut rng, n, 4);
+            let (flat, flash) = run_to_flat(&run);
+            let nk = 1 + rng.below(4) as usize;
+            let (regions, num) = draw_regions(&mut rng, n, nk, cap);
+
+            // analyze_region on each index separately. avg_noise_var is NOT
+            // reset by C, so the seeded value must survive into the result --
+            // which is only visible because draw_regions seeds it non-zero.
+            for k in 0..num as usize {
+                let mut p = regions.clone();
+                let mut c = regions_to_c(&regions);
+                ref_p2_analyze_region(&flat, &flash, k as i32, &mut c);
+                analyze_region(&run, k, &mut p);
+                regions_eq(&p, &c, num as usize, &format!("analyze_region k{k} n{n}"));
+            }
+
+            // And the whole-array pass.
+            let mut p = regions.clone();
+            let mut c = regions_to_c(&regions);
+            ref_p2_get_region_stats(&flat, &flash, num, &mut c);
+            get_region_stats(&run, &mut p, num as usize);
+            regions_eq(&p, &c, num as usize, &format!("get_region_stats n{n}"));
+        }
+    }
+}
+
+#[test]
+fn find_stable_regions_matches_c() {
+    let mut rng = Rng::new(0x5747_0103);
+    let cap = 128usize;
+    let (mut stable_seen, mut high_seen) = (0usize, 0usize);
+    for n in 1..16usize {
+        for flash_prob in [0u32, 3] {
+            for _ in 0..40 {
+                let mut run = draw_run(&mut rng, n, flash_prob);
+                // A stable region needs coded_error well under intra_error and
+                // low variance; a uniform draw is essentially never stable, so
+                // half the runs are made flat.
+                if rng.below(2) == 0 {
+                    let base = rng.range(1000.0, 1.0e5);
+                    for s in run.iter_mut() {
+                        s.intra_error = base * rng.range(0.99, 1.01);
+                        s.coded_error = base * rng.range(0.01, 0.03);
+                    }
+                }
+                let (flat, flash) = run_to_flat(&run);
+                let grad: Vec<f64> = (0..n).map(|_| rng.range(-100.0, 100.0)).collect();
+                for this_start in 0..n {
+                    for this_last in this_start..n {
+                        let mut c = vec![P2Region::default(); cap];
+                        let cn = ref_p2_find_stable_regions(
+                            &flat,
+                            &flash,
+                            &grad,
+                            this_start as i32,
+                            this_last as i32,
+                            &mut c,
+                        );
+                        let mut p = vec![Region::default(); cap];
+                        let pn = find_stable_regions(&run, &grad, this_start, this_last, &mut p);
+                        assert_eq!(pn as i32, cn, "count, n{n} {this_start}..{this_last}");
+                        regions_eq(
+                            &p,
+                            &c,
+                            pn,
+                            &format!("find_stable n{n} {this_start}..{this_last}"),
+                        );
+                        for k in 0..pn {
+                            if p[k].kind == RegionType::Stable as i32 {
+                                stable_seen += 1;
+                            } else {
+                                high_seen += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        stable_seen > 100 && high_seen > 100,
+        "one region type never appeared: {stable_seen} stable / {high_seen} high-var"
+    );
+}
+
+#[test]
+fn remove_region_matches_c() {
+    let mut rng = Rng::new(0x8E4D_0104);
+    let cap = 64usize;
+    for num in 1..10usize {
+        for _ in 0..200 {
+            let (regions, _) = draw_regions(&mut rng, num * 3, num, cap);
+            for merge in 0..3i32 {
+                for k in 0..num {
+                    let mut p = regions.clone();
+                    let mut pn = num as i32;
+                    let mut pk = k as i32;
+                    let mut c = regions_to_c(&regions);
+                    let mut cn = num as i32;
+                    let mut ck = k as i32;
+                    ref_p2_remove_region(merge, &mut c, &mut cn, &mut ck);
+                    remove_region(merge, &mut p, &mut pn, &mut pk);
+                    assert_eq!(pn, cn, "num_regions, merge {merge} k {k} num {num}");
+                    assert_eq!(pk, ck, "next_region, merge {merge} k {k} num {num}");
+                    regions_eq(
+                        &p,
+                        &c,
+                        pn.max(0) as usize,
+                        &format!("remove_region {merge} k{k}"),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn insert_region_matches_c() {
+    let mut rng = Rng::new(0x1E5E_0105);
+    let cap = 64usize;
+    let mut adds = [0usize; 3];
+    for num in 1..8usize {
+        for _ in 0..300 {
+            let n = num * 5;
+            let (regions, _) = draw_regions(&mut rng, n, num, cap);
+            let k = rng.below(num as u32) as usize;
+            let lo = regions[k].start;
+            let hi = regions[k].last;
+            if hi < lo {
+                continue;
+            }
+            // start and last must both be INSIDE region k, per C's contract.
+            let start = lo + rng.below((hi - lo + 1) as u32) as i32;
+            let last = start + rng.below((hi - start + 1) as u32) as i32;
+            let kind = rng.below(4) as i32;
+
+            let mut p = regions.clone();
+            let mut pn = num as i32;
+            let mut pk = k as i32;
+            let mut c = regions_to_c(&regions);
+            let mut cn = num as i32;
+            let mut ck = k as i32;
+            ref_p2_insert_region(start, last, kind, &mut c, &mut cn, &mut ck);
+            insert_region(start, last, kind, &mut p, &mut pn, &mut pk);
+            assert_eq!(pn, cn, "num_regions, insert {start}..{last} at k{k}");
+            assert_eq!(pk, ck, "cur_region_idx, insert {start}..{last} at k{k}");
+            regions_eq(
+                &p,
+                &c,
+                pn as usize,
+                &format!("insert_region {start}..{last} k{k}"),
+            );
+            adds[(pn - num as i32) as usize] += 1;
+        }
+    }
+    // The 0, 1 and 2 growth cases are three different code paths.
+    for (i, &n) in adds.iter().enumerate() {
+        assert!(n > 20, "insert_region grew by {i} only {n} times");
+    }
+}
+
+#[test]
+fn cleanup_and_remove_short_regions_match_c() {
+    let mut rng = Rng::new(0xC1EA_0106);
+    let cap = 64usize;
+    for num in 1..10usize {
+        for _ in 0..300 {
+            let (mut regions, _) = draw_regions(&mut rng, num * 3, num, cap);
+            // Deliberately create the two conditions cleanup_regions looks for:
+            // an adjacent same-type pair, and an EMPTY region (last < start).
+            if num > 1 && rng.below(2) == 0 {
+                let k = 1 + rng.below((num - 1) as u32) as usize;
+                regions[k].kind = regions[k - 1].kind;
+            }
+            if rng.below(3) == 0 {
+                let k = rng.below(num as u32) as usize;
+                regions[k].last = regions[k].start - 1;
+            }
+
+            let mut p = regions.clone();
+            let mut pn = num as i32;
+            let mut c = regions_to_c(&regions);
+            let mut cn = num as i32;
+            ref_p2_cleanup_regions(&mut c, &mut cn);
+            cleanup_regions(&mut p, &mut pn);
+            assert_eq!(pn, cn, "cleanup num_regions, num {num}");
+            regions_eq(&p, &c, pn.max(0) as usize, "cleanup_regions");
+
+            for kind in 0..4i32 {
+                for length in 0..5i32 {
+                    let mut p = regions.clone();
+                    let mut pn = num as i32;
+                    let mut c = regions_to_c(&regions);
+                    let mut cn = num as i32;
+                    ref_p2_remove_short_regions(&mut c, &mut cn, kind, length);
+                    remove_short_regions(&mut p, &mut pn, kind, length);
+                    assert_eq!(pn, cn, "remove_short num_regions, kind {kind} len {length}");
+                    regions_eq(
+                        &p,
+                        &c,
+                        pn.max(0) as usize,
+                        &format!("remove_short_regions kind {kind} len {length}"),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn find_regions_index_matches_c() {
+    let mut rng = Rng::new(0xF14D_0107);
+    let cap = 32usize;
+    for num in 1..8usize {
+        for _ in 0..100 {
+            let (regions, n) = draw_regions(&mut rng, num * 4, num, cap);
+            let c = regions_to_c(&regions);
+            for frame_idx in -2..(num as i32 * 4 + 2) {
+                let want = ref_p2_find_regions_index(&c, n, frame_idx);
+                let got = find_regions_index(&regions, n as usize, frame_idx);
+                assert_eq!(
+                    got.map_or(-1, |k| k as i32),
+                    want,
+                    "num {num} frame {frame_idx}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn mark_flashes_matches_c() {
+    let mut rng = Rng::new(0x41A5_0108);
+    let (mut flashes, mut clears) = (0usize, 0usize);
+    for n in 0..14usize {
+        for _ in 0..80 {
+            let mut run = draw_run(&mut rng, n, 2);
+            // Straddle both of the tests mark_flashes makes.
+            for s in run.iter_mut() {
+                s.pcnt_inter = rng.unit();
+                s.pcnt_second_ref = if rng.below(2) == 0 {
+                    rng.unit()
+                } else {
+                    rng.range(0.45, 0.55)
+                };
+            }
+            let (flat, flash) = run_to_flat(&run);
+            let want = ref_p2_mark_flashes(&flat, &flash);
+            mark_flashes(&mut run);
+            let got: Vec<i8> = run.iter().map(|s| s.is_flash as i8).collect();
+            assert_eq!(got, want, "n {n}");
+            flashes += got.iter().filter(|&&f| f != 0).count();
+            clears += got.iter().filter(|&&f| f == 0).count();
+        }
+    }
+    assert!(
+        flashes > 100 && clears > 100,
+        "one arm never fired: {flashes}/{clears}"
+    );
+}
+
+#[test]
+fn smooth_filter_noise_matches_c() {
+    let mut rng = Rng::new(0x5401_0109);
+    for n in 1..14usize {
+        for flash_prob in [0u32, 3, 1] {
+            for _ in 0..60 {
+                let mut run = draw_run(&mut rng, n, flash_prob);
+                let (flat, flash) = run_to_flat(&run);
+                let want = ref_p2_smooth_filter_noise(&flat, &flash);
+                smooth_filter_noise(&mut run);
+                for (k, s) in run.iter().enumerate() {
+                    bits_eq(s.noise_var, want[k], &format!("noise[{k}] n{n}"));
+                }
+            }
+        }
+    }
+}

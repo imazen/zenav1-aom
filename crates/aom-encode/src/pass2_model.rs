@@ -904,3 +904,465 @@ pub fn detect_flash(stats: &[FirstpassStats], cur: usize, offset: i32) -> bool {
 pub fn set_baseline_gf_interval(arf_position: i32) -> i32 {
     arf_position
 }
+
+// ===========================================================================
+// The region-analysis cluster (pass2_strategy.c:1125-1460, :3677-3730) — how
+// the 2-pass GOP builder segments a shot into stable / high-variance /
+// scenecut / blending regions before it places key frames and GF boundaries.
+//
+// | Rust | C |
+// |---|---|
+// | [`RegionType`] / [`Region`] | `REGION_TYPES` / `REGIONS` (`ratectrl.h:110`) |
+// | [`smooth_filter_stats`] | `smooth_filter_stats` (:1125) |
+// | [`get_gradient`] | `get_gradient` (:1169) |
+// | [`remove_region`] | `remove_region` (:1255) |
+// | [`insert_region`] | `insert_region` (:1293) |
+// | [`analyze_region`] | `analyze_region` (:1324) |
+// | [`get_region_stats`] | `get_region_stats` (:1360) |
+// | [`find_stable_regions`] | `find_stable_regions` (:1368) |
+// | [`cleanup_regions`] | `cleanup_regions` (:1423) |
+// | [`remove_short_regions`] | `remove_short_regions` (:1438) |
+// | [`find_regions_index`] | `find_regions_index` (:1909) |
+// | [`mark_flashes`] | `mark_flashes` (:3677) |
+// | [`smooth_filter_noise`] | `smooth_filter_noise` (:3699) |
+// ===========================================================================
+
+/// `SMOOTH_FILT_LEN` (:1119).
+pub const SMOOTH_FILT_LEN: usize = 7;
+/// `HALF_FILT_LEN` (:1120).
+pub const HALF_FILT_LEN: i32 = (SMOOTH_FILT_LEN / 2) as i32;
+/// `WINDOW_SIZE` (:1121).
+pub const WINDOW_SIZE: usize = 7;
+/// `HALF_WIN` (:1122).
+pub const HALF_WIN: i32 = (WINDOW_SIZE / 2) as i32;
+
+/// The 7-tap gaussian in `smooth_filter_stats` (:1128).
+const SMOOTH_FILT: [f64; SMOOTH_FILT_LEN] = [0.006, 0.061, 0.242, 0.383, 0.242, 0.061, 0.006];
+
+/// `REGION_TYPES` (`av1/encoder/ratectrl.h:110`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(i32)]
+pub enum RegionType {
+    /// `STABLE_REGION`.
+    Stable = 0,
+    /// `HIGH_VAR_REGION`.
+    HighVar = 1,
+    /// `SCENECUT_REGION`.
+    Scenecut = 2,
+    /// `BLENDING_REGION`.
+    Blending = 3,
+}
+
+/// `REGIONS` (`ratectrl.h:119`) — one contiguous run of frames plus its
+/// averaged first-pass statistics.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Region {
+    /// First frame index, inclusive.
+    pub start: i32,
+    /// Last frame index, inclusive.
+    pub last: i32,
+    /// Mean noise variance over the region.
+    pub avg_noise_var: f64,
+    /// Mean correlation coefficient.
+    pub avg_cor_coeff: f64,
+    /// Mean second-reference / frame error ratio.
+    pub avg_sr_fr_ratio: f64,
+    /// Mean intra error.
+    pub avg_intra_err: f64,
+    /// Mean coded error.
+    pub avg_coded_err: f64,
+    /// Which kind of region this is. C's `REGION_TYPES`, kept as its raw
+    /// discriminant because `remove_region` and `insert_region` copy whole
+    /// entries around including types the caller never named.
+    pub kind: i32,
+}
+
+/// `smooth_filter_stats` (pass2_strategy.c:1125) — the 7-tap gaussian over
+/// `intra_error` and `coded_error`.
+///
+/// Two facts the shape hides:
+/// * the output arrays are ACCUMULATED into (`+=`), not written, so C's caller
+///   has to zero them first — the port does the same rather than assigning,
+///   because a caller that pre-seeded them would then differ;
+/// * the two passes have DIFFERENT flash tests. The intra pass skips a tap
+///   whose own frame is a flash; the coded pass also skips one whose PREVIOUS
+///   frame is (C's comment: "Coded error involves idx and idx - 1"), and that
+///   `idx > 0` guard is against the ARRAY's start, not `start_idx`.
+///
+/// When every tap in a window is skipped the filter falls back to the
+/// unfiltered value, using a `total_wt > 0.01` test rather than `!= 0`.
+pub fn smooth_filter_stats(
+    stats: &[FirstpassStats],
+    start_idx: usize,
+    last_idx: usize,
+    filt_intra_err: &mut [f64],
+    filt_coded_err: &mut [f64],
+) {
+    for i in start_idx..=last_idx {
+        let mut total_wt = 0.0;
+        for j in -HALF_FILT_LEN..=HALF_FILT_LEN {
+            let idx = (i as i32 + j).clamp(start_idx as i32, last_idx as i32) as usize;
+            if stats[idx].is_flash != 0 {
+                continue;
+            }
+            let w = SMOOTH_FILT[(j + HALF_FILT_LEN) as usize];
+            filt_intra_err[i] += w * stats[idx].intra_error;
+            total_wt += w;
+        }
+        if total_wt > 0.01 {
+            filt_intra_err[i] /= total_wt;
+        } else {
+            filt_intra_err[i] = stats[i].intra_error;
+        }
+    }
+    for i in start_idx..=last_idx {
+        let mut total_wt = 0.0;
+        for j in -HALF_FILT_LEN..=HALF_FILT_LEN {
+            let idx = (i as i32 + j).clamp(start_idx as i32, last_idx as i32) as usize;
+            // Coded error involves idx and idx - 1.
+            if stats[idx].is_flash != 0 || (idx > 0 && stats[idx - 1].is_flash != 0) {
+                continue;
+            }
+            let w = SMOOTH_FILT[(j + HALF_FILT_LEN) as usize];
+            filt_coded_err[i] += w * stats[idx].coded_error;
+            total_wt += w;
+        }
+        if total_wt > 0.01 {
+            filt_coded_err[i] /= total_wt;
+        } else {
+            filt_coded_err[i] = stats[i].coded_error;
+        }
+    }
+}
+
+/// `get_gradient` (pass2_strategy.c:1169) — a centred difference, clamped at
+/// the ends so the first and last entries are one-sided.
+///
+/// `start == last` writes a single zero and returns; every other length
+/// divides by `next - prev`, which is 1 at the ends and 2 inside.
+pub fn get_gradient(values: &[f64], start: usize, last: usize, grad: &mut [f64]) {
+    if start == last {
+        grad[start] = 0.0;
+        return;
+    }
+    for i in start..=last {
+        let prev = i.saturating_sub(1).max(start);
+        let next = (i + 1).min(last);
+        grad[i] = (values[next] - values[prev]) / (next - prev) as f64;
+    }
+}
+
+/// `remove_region` (pass2_strategy.c:1255) — drop `regions[*next_region]` and
+/// merge its frames into a neighbour.
+///
+/// `merge` is 0 (into the previous), 1 (into the next) or 2 (into both, taking
+/// the previous one's type). C OVERRIDES the caller's choice at the ends: the
+/// first region can only merge forward and the last only backward, which also
+/// turns a `merge == 2` at either end into a single merge.
+///
+/// # Panics
+/// If `*next_region >= *num_regions`, which C asserts.
+pub fn remove_region(
+    merge: i32,
+    regions: &mut [Region],
+    num_regions: &mut i32,
+    next_region: &mut i32,
+) {
+    let k = *next_region;
+    assert!(
+        k < *num_regions,
+        "next_region {k} is past num_regions {}",
+        *num_regions
+    );
+    if *num_regions == 1 {
+        *num_regions = 0;
+        return;
+    }
+    let mut merge = merge;
+    if k == 0 {
+        merge = 1;
+    } else if k == *num_regions - 1 {
+        merge = 0;
+    }
+    let num_merge = if merge == 2 { 2 } else { 1 };
+    match merge {
+        0 => {
+            regions[(k - 1) as usize].last = regions[k as usize].last;
+            *next_region = k;
+        }
+        1 => {
+            regions[(k + 1) as usize].start = regions[k as usize].start;
+            *next_region = k + 1;
+        }
+        2 => {
+            regions[(k - 1) as usize].last = regions[(k + 1) as usize].last;
+            *next_region = k;
+        }
+        _ => unreachable!("C asserts on any other merge value"),
+    }
+    *num_regions -= num_merge;
+    // The shift start is `*next_region - (merge == 1)`, i.e. one lower on the
+    // forward-merge arm because `next_region` was advanced above.
+    let mut k = *next_region - i32::from(merge == 1);
+    while k < *num_regions {
+        regions[k as usize] = regions[(k + num_merge) as usize];
+        k += 1;
+    }
+}
+
+/// `insert_region` (pass2_strategy.c:1293) — split `regions[*cur_region_idx]`
+/// so that `start..=last` becomes its own region of `kind`.
+///
+/// Adds one entry per end that is NOT already a boundary, so the array grows
+/// by 0, 1 or 2. `*cur_region_idx` comes back pointing at the LAST region the
+/// split produced, which is the inserted one when it reaches the original's
+/// end and the trailing remainder otherwise.
+pub fn insert_region(
+    start: i32,
+    last: i32,
+    kind: i32,
+    regions: &mut [Region],
+    num_regions: &mut i32,
+    cur_region_idx: &mut i32,
+) {
+    let mut k = *cur_region_idx;
+    let this_region_type = regions[k as usize].kind;
+    let this_region_last = regions[k as usize].last;
+    let num_add =
+        i32::from(start != regions[k as usize].start) + i32::from(last != regions[k as usize].last);
+    // Move the following regions further back.
+    let mut r = *num_regions - 1;
+    while r > k {
+        regions[(r + num_add) as usize] = regions[r as usize];
+        r -= 1;
+    }
+    *num_regions += num_add;
+    if start > regions[k as usize].start {
+        regions[k as usize].last = start - 1;
+        k += 1;
+        regions[k as usize].start = start;
+    }
+    regions[k as usize].kind = kind;
+    if last < this_region_last {
+        regions[k as usize].last = last;
+        k += 1;
+        regions[k as usize].start = last + 1;
+        regions[k as usize].last = this_region_last;
+        regions[k as usize].kind = this_region_type;
+    } else {
+        regions[k as usize].last = this_region_last;
+    }
+    *cur_region_idx = k;
+}
+
+/// `analyze_region` (pass2_strategy.c:1324) — average one region's stats.
+///
+/// Four of the five averages divide by the region's own length; the
+/// `avg_sr_fr_ratio` divides by a DIFFERENT count (`last - start +
+/// check_first_sr`) and skips the region's first frame unless the region is
+/// not the first one, because the ratio needs a previous frame to compare
+/// against. C reads `stats[i - 1]` there, which is why region 0's first frame
+/// is excluded.
+///
+/// `avg_noise_var` is ACCUMULATED into without being zeroed first, unlike the
+/// other four — so the caller's previous value survives. Reproduced.
+pub fn analyze_region(stats: &[FirstpassStats], k: usize, regions: &mut [Region]) {
+    let r = &mut regions[k];
+    r.avg_cor_coeff = 0.0;
+    r.avg_sr_fr_ratio = 0.0;
+    r.avg_intra_err = 0.0;
+    r.avg_coded_err = 0.0;
+    // NOTE: avg_noise_var is NOT reset here. C leaves it alone.
+
+    let check_first_sr = i32::from(k != 0);
+    let span = f64::from(r.last - r.start + 1);
+
+    for i in r.start..=r.last {
+        let s = &stats[i as usize];
+        if i > r.start || check_first_sr != 0 {
+            let num_frames = f64::from(r.last - r.start + check_first_sr);
+            let prev = &stats[(i - 1) as usize];
+            let max_coded_error = s.coded_error.max(prev.coded_error);
+            let this_ratio = s.sr_coded_error / max_coded_error.max(0.001);
+            r.avg_sr_fr_ratio += this_ratio / num_frames;
+        }
+        r.avg_intra_err += s.intra_error / span;
+        r.avg_coded_err += s.coded_error / span;
+        r.avg_cor_coeff += s.cor_coeff.max(0.001) / span;
+        r.avg_noise_var += s.noise_var.max(0.001) / span;
+    }
+}
+
+/// `get_region_stats` (pass2_strategy.c:1360) — [`analyze_region`] over every
+/// region.
+pub fn get_region_stats(stats: &[FirstpassStats], regions: &mut [Region], num_regions: usize) {
+    for k in 0..num_regions {
+        analyze_region(stats, k, regions);
+    }
+}
+
+/// `find_stable_regions` (pass2_strategy.c:1368) — the first segmentation
+/// pass, marking each frame stable or high-variance from a 7-frame window and
+/// then collapsing runs of the same type into regions.
+///
+/// Returns the number of regions written.
+///
+/// The three stability tests are C's, including the `0.001` seeds on all four
+/// accumulators: `mean_intra` starts at `0.001`, not `0`, so the
+/// variance-over-mean-squared ratios are finite even for an all-skipped
+/// window. The seeds are inside the sums, so they are also divided by `count`.
+#[must_use]
+pub fn find_stable_regions(
+    stats: &[FirstpassStats],
+    grad_coded: &[f64],
+    this_start: usize,
+    this_last: usize,
+    regions: &mut [Region],
+) -> usize {
+    let mut k = 0usize;
+    regions[k].start = this_start as i32;
+    for i in this_start..=this_last {
+        let mut mean_intra = 0.001;
+        let mut var_intra = 0.001;
+        let mut mean_coded = 0.001;
+        let mut var_coded = 0.001;
+        let mut count = 0i32;
+        for j in -HALF_WIN..=HALF_WIN {
+            let idx = (i as i32 + j).clamp(this_start as i32, this_last as i32) as usize;
+            if stats[idx].is_flash != 0 || (idx > 0 && stats[idx - 1].is_flash != 0) {
+                continue;
+            }
+            mean_intra += stats[idx].intra_error;
+            var_intra += stats[idx].intra_error * stats[idx].intra_error;
+            mean_coded += stats[idx].coded_error;
+            var_coded += stats[idx].coded_error * stats[idx].coded_error;
+            count += 1;
+        }
+
+        let cur_type = if count > 0 {
+            let n = f64::from(count);
+            mean_intra /= n;
+            var_intra /= n;
+            mean_coded /= n;
+            var_coded /= n;
+            let is_intra_stable = var_intra / (mean_intra * mean_intra) < 1.03;
+            let is_coded_stable = (var_coded / (mean_coded * mean_coded) < 1.04
+                && grad_coded[i].abs() / mean_coded < 0.05)
+                || mean_coded / mean_intra < 0.05;
+            let is_coded_small = mean_coded < 0.5 * mean_intra;
+            if is_intra_stable && is_coded_stable && is_coded_small {
+                RegionType::Stable as i32
+            } else {
+                RegionType::HighVar as i32
+            }
+        } else {
+            RegionType::HighVar as i32
+        };
+
+        // Mark a new region where the type changes.
+        if i as i32 == regions[k].start {
+            regions[k].kind = cur_type;
+        } else if cur_type != regions[k].kind {
+            regions[k].last = i as i32 - 1;
+            regions[k + 1].start = i as i32;
+            regions[k + 1].kind = cur_type;
+            k += 1;
+        }
+    }
+    regions[k].last = this_last as i32;
+    k + 1
+}
+
+/// `cleanup_regions` (pass2_strategy.c:1423) — merge adjacent regions of the
+/// same type and drop empty ones.
+///
+/// A SCENECUT region is never merged with an identical neighbour, because two
+/// consecutive scenecuts are two events rather than one long one.
+pub fn cleanup_regions(regions: &mut [Region], num_regions: &mut i32) {
+    let mut k = 0i32;
+    while k < *num_regions {
+        let same_as_prev = k > 0
+            && regions[(k - 1) as usize].kind == regions[k as usize].kind
+            && regions[k as usize].kind != RegionType::Scenecut as i32;
+        if same_as_prev || regions[k as usize].last < regions[k as usize].start {
+            remove_region(0, regions, num_regions, &mut k);
+        } else {
+            k += 1;
+        }
+    }
+}
+
+/// `remove_short_regions` (pass2_strategy.c:1438) — drop regions of `kind`
+/// shorter than `length`, merging each into BOTH neighbours, then clean up.
+///
+/// The loop guard is `k < *num_regions && *num_regions > 1`, so the last
+/// surviving region is never removed however short it is.
+pub fn remove_short_regions(regions: &mut [Region], num_regions: &mut i32, kind: i32, length: i32) {
+    let mut k = 0i32;
+    while k < *num_regions && *num_regions > 1 {
+        let r = regions[k as usize];
+        if r.last - r.start + 1 < length && r.kind == kind {
+            remove_region(2, regions, num_regions, &mut k);
+        } else {
+            k += 1;
+        }
+    }
+    cleanup_regions(regions, num_regions);
+}
+
+/// `find_regions_index` (pass2_strategy.c:1909) — which region contains a
+/// frame, or `None` when none does.
+#[must_use]
+pub fn find_regions_index(regions: &[Region], num_regions: usize, frame_idx: i32) -> Option<usize> {
+    (0..num_regions).find(|&k| regions[k].start <= frame_idx && regions[k].last >= frame_idx)
+}
+
+/// `mark_flashes` (pass2_strategy.c:3677) — set each frame's `is_flash` from
+/// the SUCCEEDING frame's second-reference usage.
+///
+/// The flag lands on frame `i` when frame `i + 1` recovers from it, which is
+/// why the walk stops one short and C forces the final frame to 0.
+pub fn mark_flashes(stats: &mut [FirstpassStats]) {
+    let len = stats.len();
+    for i in 0..len.saturating_sub(1) {
+        let next = stats[i + 1];
+        stats[i].is_flash =
+            i64::from(next.pcnt_second_ref > next.pcnt_inter && next.pcnt_second_ref >= 0.5);
+    }
+    // The last one is always treated as not a flash.
+    if len >= 1 {
+        stats[len - 1].is_flash = 0;
+    }
+}
+
+/// `smooth_filter_noise` (pass2_strategy.c:3699) — a 7-tap BOX average over
+/// `noise_var`, skipping flash frames.
+///
+/// Not the gaussian [`smooth_filter_stats`] uses: every surviving tap gets
+/// weight 1.0. libaom's own TODO says a better low-pass filter would be
+/// preferable. The whole array is computed before ANY of it is written back,
+/// so the filter reads unfiltered input throughout.
+pub fn smooth_filter_noise(stats: &mut [FirstpassStats]) {
+    let len = stats.len();
+    let mut smooth_noise = vec![0.0f64; len];
+    for (i, out) in smooth_noise.iter_mut().enumerate() {
+        let mut total_noise = 0.0;
+        let mut total_wt = 0.0;
+        for j in -HALF_FILT_LEN..=HALF_FILT_LEN {
+            let idx = (i as i32 + j).clamp(0, len as i32 - 1) as usize;
+            if stats[idx].is_flash != 0 {
+                continue;
+            }
+            total_noise += stats[idx].noise_var;
+            total_wt += 1.0;
+        }
+        *out = if total_wt > 0.01 {
+            total_noise / total_wt
+        } else {
+            stats[i].noise_var
+        };
+    }
+    for (s, n) in stats.iter_mut().zip(smooth_noise) {
+        s.noise_var = n;
+    }
+}

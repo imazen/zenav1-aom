@@ -28136,3 +28136,462 @@ pub fn ref_nrp_update_thresh_freq_fact(
     };
     assert_eq!(rc, 0, "the thresh_freq_fact shim failed to allocate");
 }
+
+// --- pass2_strategy.c's region-analysis cluster (tier 1c) -----------------
+//
+// REGIONS crosses as four parallel arrays (start / last / type / five doubles
+// each), and a stats RUN as `count` records of 29 doubles plus a separate
+// `is_flash` byte -- that member is an int64_t and cannot ride in the array.
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_p2_smooth_filter_stats(
+        flat: *const f64,
+        is_flash: *const i8,
+        count: i32,
+        start_idx: i32,
+        last_idx: i32,
+        filt_intra: *mut f64,
+        filt_coded: *mut f64,
+    ) -> i32;
+    fn shim_p2_get_gradient(values: *const f64, start: i32, last: i32, grad: *mut f64);
+    #[allow(clippy::too_many_arguments)]
+    fn shim_p2_analyze_region(
+        flat: *const f64,
+        is_flash: *const i8,
+        count: i32,
+        k: i32,
+        cap: i32,
+        starts: *mut i32,
+        lasts: *mut i32,
+        types: *mut i32,
+        dbl: *mut f64,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_p2_get_region_stats(
+        flat: *const f64,
+        is_flash: *const i8,
+        count: i32,
+        num_regions: i32,
+        cap: i32,
+        starts: *mut i32,
+        lasts: *mut i32,
+        types: *mut i32,
+        dbl: *mut f64,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_p2_find_stable_regions(
+        flat: *const f64,
+        is_flash: *const i8,
+        count: i32,
+        grad_coded: *const f64,
+        this_start: i32,
+        this_last: i32,
+        cap: i32,
+        starts: *mut i32,
+        lasts: *mut i32,
+        types: *mut i32,
+        dbl: *mut f64,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_p2_remove_region(
+        merge: i32,
+        cap: i32,
+        starts: *mut i32,
+        lasts: *mut i32,
+        types: *mut i32,
+        dbl: *mut f64,
+        num_regions: *mut i32,
+        next_region: *mut i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_p2_insert_region(
+        start: i32,
+        last: i32,
+        rtype: i32,
+        cap: i32,
+        starts: *mut i32,
+        lasts: *mut i32,
+        types: *mut i32,
+        dbl: *mut f64,
+        num_regions: *mut i32,
+        cur_region_idx: *mut i32,
+    ) -> i32;
+    fn shim_p2_cleanup_regions(
+        cap: i32,
+        starts: *mut i32,
+        lasts: *mut i32,
+        types: *mut i32,
+        dbl: *mut f64,
+        num_regions: *mut i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_p2_remove_short_regions(
+        cap: i32,
+        starts: *mut i32,
+        lasts: *mut i32,
+        types: *mut i32,
+        dbl: *mut f64,
+        num_regions: *mut i32,
+        rtype: i32,
+        length: i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_p2_find_regions_index(
+        cap: i32,
+        starts: *const i32,
+        lasts: *const i32,
+        types: *const i32,
+        dbl: *const f64,
+        num_regions: i32,
+        frame_idx: i32,
+    ) -> i32;
+    fn shim_p2_mark_flashes(
+        flat: *const f64,
+        is_flash_in: *const i8,
+        count: i32,
+        is_flash_out: *mut i8,
+    ) -> i32;
+    fn shim_p2_smooth_filter_noise(
+        flat: *const f64,
+        is_flash: *const i8,
+        count: i32,
+        noise_out: *mut f64,
+    ) -> i32;
+    fn shim_p2_region_types(
+        stable: *mut i32,
+        high_var: *mut i32,
+        scenecut: *mut i32,
+        blending: *mut i32,
+    ) -> i32;
+    fn shim_p2_half_win() -> i32;
+    fn shim_p2_half_filt_len() -> i32;
+}
+
+/// One `REGIONS` entry in the boundary's shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct P2Region {
+    /// `start`.
+    pub start: i32,
+    /// `last`.
+    pub last: i32,
+    /// `type`, as its raw `REGION_TYPES` discriminant.
+    pub kind: i32,
+    /// `avg_noise_var, avg_cor_coeff, avg_sr_fr_ratio, avg_intra_err,
+    /// avg_coded_err` — C's declaration order.
+    pub avgs: [f64; 5],
+}
+
+fn split_regions(r: &[P2Region]) -> (Vec<i32>, Vec<i32>, Vec<i32>, Vec<f64>) {
+    (
+        r.iter().map(|x| x.start).collect(),
+        r.iter().map(|x| x.last).collect(),
+        r.iter().map(|x| x.kind).collect(),
+        r.iter().flat_map(|x| x.avgs).collect(),
+    )
+}
+
+fn join_regions(s: &[i32], l: &[i32], t: &[i32], d: &[f64], out: &mut [P2Region]) {
+    for (k, o) in out.iter_mut().enumerate() {
+        o.start = s[k];
+        o.last = l[k];
+        o.kind = t[k];
+        o.avgs.copy_from_slice(&d[k * 5..k * 5 + 5]);
+    }
+}
+
+/// `(STABLE_REGION, HIGH_VAR_REGION, SCENECUT_REGION, BLENDING_REGION)` as the
+/// oracle TU sees them.
+#[must_use]
+pub fn ref_p2_region_types() -> (i32, i32, i32, i32) {
+    ref_init();
+    let (mut a, mut b, mut c, mut d) = (0i32, 0i32, 0i32, 0i32);
+    unsafe { shim_p2_region_types(&mut a, &mut b, &mut c, &mut d) };
+    (a, b, c, d)
+}
+
+/// `HALF_WIN` as the oracle TU sees it.
+#[must_use]
+pub fn ref_p2_half_win() -> i32 {
+    ref_init();
+    unsafe { shim_p2_half_win() }
+}
+
+/// `HALF_FILT_LEN` as the oracle TU sees it.
+#[must_use]
+pub fn ref_p2_half_filt_len() -> i32 {
+    ref_init();
+    unsafe { shim_p2_half_filt_len() }
+}
+
+/// Reference `smooth_filter_stats` (:1125), tier 1c. The two output arrays are
+/// ACCUMULATED into, so the caller supplies their starting contents.
+pub fn ref_p2_smooth_filter_stats(
+    flat: &[f64],
+    is_flash: &[i8],
+    start_idx: i32,
+    last_idx: i32,
+    filt_intra: &mut [f64],
+    filt_coded: &mut [f64],
+) {
+    ref_init();
+    let count = is_flash.len() as i32;
+    assert_eq!(flat.len(), is_flash.len() * 29);
+    let rc = unsafe {
+        shim_p2_smooth_filter_stats(
+            flat.as_ptr(),
+            is_flash.as_ptr(),
+            count,
+            start_idx,
+            last_idx,
+            filt_intra.as_mut_ptr(),
+            filt_coded.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, 0);
+}
+
+/// Reference `get_gradient` (:1169), tier 1c.
+pub fn ref_p2_get_gradient(values: &[f64], start: i32, last: i32, grad: &mut [f64]) {
+    ref_init();
+    unsafe { shim_p2_get_gradient(values.as_ptr(), start, last, grad.as_mut_ptr()) };
+}
+
+/// Reference `analyze_region` (:1324), tier 1c. `regions` is in/out.
+pub fn ref_p2_analyze_region(
+    flat: &[f64],
+    is_flash: &[i8],
+    k: i32,
+    regions: &mut [P2Region],
+) {
+    ref_init();
+    let (mut s, mut l, mut t, mut d) = split_regions(regions);
+    let rc = unsafe {
+        shim_p2_analyze_region(
+            flat.as_ptr(),
+            is_flash.as_ptr(),
+            is_flash.len() as i32,
+            k,
+            regions.len() as i32,
+            s.as_mut_ptr(),
+            l.as_mut_ptr(),
+            t.as_mut_ptr(),
+            d.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, 0);
+    join_regions(&s, &l, &t, &d, regions);
+}
+
+/// Reference `get_region_stats` (:1360), tier 1c. `regions` is in/out.
+pub fn ref_p2_get_region_stats(
+    flat: &[f64],
+    is_flash: &[i8],
+    num_regions: i32,
+    regions: &mut [P2Region],
+) {
+    ref_init();
+    let (mut s, mut l, mut t, mut d) = split_regions(regions);
+    let rc = unsafe {
+        shim_p2_get_region_stats(
+            flat.as_ptr(),
+            is_flash.as_ptr(),
+            is_flash.len() as i32,
+            num_regions,
+            regions.len() as i32,
+            s.as_mut_ptr(),
+            l.as_mut_ptr(),
+            t.as_mut_ptr(),
+            d.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, 0);
+    join_regions(&s, &l, &t, &d, regions);
+}
+
+/// Reference `find_stable_regions` (:1368), tier 1c. Returns the region count.
+pub fn ref_p2_find_stable_regions(
+    flat: &[f64],
+    is_flash: &[i8],
+    grad_coded: &[f64],
+    this_start: i32,
+    this_last: i32,
+    regions: &mut [P2Region],
+) -> i32 {
+    ref_init();
+    let (mut s, mut l, mut t, mut d) = split_regions(regions);
+    let n = unsafe {
+        shim_p2_find_stable_regions(
+            flat.as_ptr(),
+            is_flash.as_ptr(),
+            is_flash.len() as i32,
+            grad_coded.as_ptr(),
+            this_start,
+            this_last,
+            regions.len() as i32,
+            s.as_mut_ptr(),
+            l.as_mut_ptr(),
+            t.as_mut_ptr(),
+            d.as_mut_ptr(),
+        )
+    };
+    join_regions(&s, &l, &t, &d, regions);
+    n
+}
+
+/// Reference `remove_region` (:1255), tier 1c. All three of `regions`,
+/// `num_regions` and `next_region` are in/out.
+pub fn ref_p2_remove_region(
+    merge: i32,
+    regions: &mut [P2Region],
+    num_regions: &mut i32,
+    next_region: &mut i32,
+) {
+    ref_init();
+    let (mut s, mut l, mut t, mut d) = split_regions(regions);
+    let rc = unsafe {
+        shim_p2_remove_region(
+            merge,
+            regions.len() as i32,
+            s.as_mut_ptr(),
+            l.as_mut_ptr(),
+            t.as_mut_ptr(),
+            d.as_mut_ptr(),
+            num_regions,
+            next_region,
+        )
+    };
+    assert_eq!(rc, 0);
+    join_regions(&s, &l, &t, &d, regions);
+}
+
+/// Reference `insert_region` (:1293), tier 1c.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_p2_insert_region(
+    start: i32,
+    last: i32,
+    kind: i32,
+    regions: &mut [P2Region],
+    num_regions: &mut i32,
+    cur_region_idx: &mut i32,
+) {
+    ref_init();
+    let (mut s, mut l, mut t, mut d) = split_regions(regions);
+    let rc = unsafe {
+        shim_p2_insert_region(
+            start,
+            last,
+            kind,
+            regions.len() as i32,
+            s.as_mut_ptr(),
+            l.as_mut_ptr(),
+            t.as_mut_ptr(),
+            d.as_mut_ptr(),
+            num_regions,
+            cur_region_idx,
+        )
+    };
+    assert_eq!(rc, 0);
+    join_regions(&s, &l, &t, &d, regions);
+}
+
+/// Reference `cleanup_regions` (:1423), tier 1c.
+pub fn ref_p2_cleanup_regions(regions: &mut [P2Region], num_regions: &mut i32) {
+    ref_init();
+    let (mut s, mut l, mut t, mut d) = split_regions(regions);
+    let rc = unsafe {
+        shim_p2_cleanup_regions(
+            regions.len() as i32,
+            s.as_mut_ptr(),
+            l.as_mut_ptr(),
+            t.as_mut_ptr(),
+            d.as_mut_ptr(),
+            num_regions,
+        )
+    };
+    assert_eq!(rc, 0);
+    join_regions(&s, &l, &t, &d, regions);
+}
+
+/// Reference `remove_short_regions` (:1438), tier 1c.
+pub fn ref_p2_remove_short_regions(
+    regions: &mut [P2Region],
+    num_regions: &mut i32,
+    kind: i32,
+    length: i32,
+) {
+    ref_init();
+    let (mut s, mut l, mut t, mut d) = split_regions(regions);
+    let rc = unsafe {
+        shim_p2_remove_short_regions(
+            regions.len() as i32,
+            s.as_mut_ptr(),
+            l.as_mut_ptr(),
+            t.as_mut_ptr(),
+            d.as_mut_ptr(),
+            num_regions,
+            kind,
+            length,
+        )
+    };
+    assert_eq!(rc, 0);
+    join_regions(&s, &l, &t, &d, regions);
+}
+
+/// Reference `find_regions_index` (:1909), tier 1c. `-1` is C's "not found".
+#[must_use]
+pub fn ref_p2_find_regions_index(
+    regions: &[P2Region],
+    num_regions: i32,
+    frame_idx: i32,
+) -> i32 {
+    ref_init();
+    let (s, l, t, d) = split_regions(regions);
+    unsafe {
+        shim_p2_find_regions_index(
+            regions.len() as i32,
+            s.as_ptr(),
+            l.as_ptr(),
+            t.as_ptr(),
+            d.as_ptr(),
+            num_regions,
+            frame_idx,
+        )
+    }
+}
+
+/// Reference `mark_flashes` (:3677), tier 1c. Returns the new `is_flash`
+/// bytes.
+#[must_use]
+pub fn ref_p2_mark_flashes(flat: &[f64], is_flash: &[i8]) -> Vec<i8> {
+    ref_init();
+    let mut out = vec![0i8; is_flash.len()];
+    let rc = unsafe {
+        shim_p2_mark_flashes(
+            flat.as_ptr(),
+            is_flash.as_ptr(),
+            is_flash.len() as i32,
+            out.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, 0);
+    out
+}
+
+/// Reference `smooth_filter_noise` (:3699), tier 1c. Returns the new
+/// `noise_var` values.
+#[must_use]
+pub fn ref_p2_smooth_filter_noise(flat: &[f64], is_flash: &[i8]) -> Vec<f64> {
+    ref_init();
+    let mut out = vec![0.0f64; is_flash.len()];
+    let rc = unsafe {
+        shim_p2_smooth_filter_noise(
+            flat.as_ptr(),
+            is_flash.as_ptr(),
+            is_flash.len() as i32,
+            out.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, 0);
+    out
+}

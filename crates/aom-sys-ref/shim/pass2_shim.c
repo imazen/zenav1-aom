@@ -417,3 +417,216 @@ int shim_p2_read_frame_stats_in_range(int count, int cur, int offset) {
   free(arr);
   return r;
 }
+
+/* ======================================================================== *
+ * The region-analysis cluster (pass2_strategy.c:1125-1460, :3677-3730).
+ *
+ * REGIONS crosses as five doubles + three ints per entry, assigned by name.
+ * A stats RUN crosses as `count` records of 29 doubles, plus a separate
+ * `is_flash` byte per record -- the region code branches on is_flash all over,
+ * and it is an int64_t rather than a double so it cannot ride in the array.
+ * ======================================================================== */
+static FIRSTPASS_STATS *shim_p2_alloc_run(const double *flat,
+                                          const int8_t *is_flash, int count) {
+  FIRSTPASS_STATS *arr =
+      (FIRSTPASS_STATS *)calloc((size_t)(count > 0 ? count : 1),
+                                sizeof(FIRSTPASS_STATS));
+  if (!arr) return NULL;
+  for (int i = 0; i < count; ++i) {
+    shim_p2_fill_stats(&arr[i], flat + i * 29, is_flash ? is_flash[i] : 0);
+  }
+  return arr;
+}
+
+static void shim_p2_load_regions(REGIONS *r, const int *starts, const int *lasts,
+                                 const int *types, const double *dbl,
+                                 int count) {
+  for (int k = 0; k < count; ++k) {
+    r[k].start = starts[k];
+    r[k].last = lasts[k];
+    r[k].type = (REGION_TYPES)types[k];
+    r[k].avg_noise_var = dbl[k * 5 + 0];
+    r[k].avg_cor_coeff = dbl[k * 5 + 1];
+    r[k].avg_sr_fr_ratio = dbl[k * 5 + 2];
+    r[k].avg_intra_err = dbl[k * 5 + 3];
+    r[k].avg_coded_err = dbl[k * 5 + 4];
+  }
+}
+
+static void shim_p2_store_regions(const REGIONS *r, int *starts, int *lasts,
+                                  int *types, double *dbl, int count) {
+  for (int k = 0; k < count; ++k) {
+    starts[k] = r[k].start;
+    lasts[k] = r[k].last;
+    types[k] = (int)r[k].type;
+    dbl[k * 5 + 0] = r[k].avg_noise_var;
+    dbl[k * 5 + 1] = r[k].avg_cor_coeff;
+    dbl[k * 5 + 2] = r[k].avg_sr_fr_ratio;
+    dbl[k * 5 + 3] = r[k].avg_intra_err;
+    dbl[k * 5 + 4] = r[k].avg_coded_err;
+  }
+}
+
+/* The region array libaom sizes as MAX_FIRSTPASS_ANALYSIS_FRAMES; the shim
+ * allocates the caller's capacity, which the tests keep well above it. */
+int shim_p2_smooth_filter_stats(const double *flat, const int8_t *is_flash,
+                                int count, int start_idx, int last_idx,
+                                double *filt_intra, double *filt_coded) {
+  FIRSTPASS_STATS *arr = shim_p2_alloc_run(flat, is_flash, count);
+  if (!arr) return -1;
+  smooth_filter_stats(arr, start_idx, last_idx, filt_intra, filt_coded);
+  free(arr);
+  return 0;
+}
+
+void shim_p2_get_gradient(const double *values, int start, int last,
+                          double *grad) {
+  get_gradient(values, start, last, grad);
+}
+
+int shim_p2_analyze_region(const double *flat, const int8_t *is_flash,
+                           int count, int k, int cap, int *starts, int *lasts,
+                           int *types, double *dbl) {
+  FIRSTPASS_STATS *arr = shim_p2_alloc_run(flat, is_flash, count);
+  REGIONS *r = (REGIONS *)calloc((size_t)cap, sizeof(REGIONS));
+  if (!arr || !r) {
+    free(arr);
+    free(r);
+    return -1;
+  }
+  shim_p2_load_regions(r, starts, lasts, types, dbl, cap);
+  analyze_region(arr, k, r);
+  shim_p2_store_regions(r, starts, lasts, types, dbl, cap);
+  free(arr);
+  free(r);
+  return 0;
+}
+
+int shim_p2_get_region_stats(const double *flat, const int8_t *is_flash,
+                             int count, int num_regions, int cap, int *starts,
+                             int *lasts, int *types, double *dbl) {
+  FIRSTPASS_STATS *arr = shim_p2_alloc_run(flat, is_flash, count);
+  REGIONS *r = (REGIONS *)calloc((size_t)cap, sizeof(REGIONS));
+  if (!arr || !r) {
+    free(arr);
+    free(r);
+    return -1;
+  }
+  shim_p2_load_regions(r, starts, lasts, types, dbl, cap);
+  get_region_stats(arr, r, num_regions);
+  shim_p2_store_regions(r, starts, lasts, types, dbl, cap);
+  free(arr);
+  free(r);
+  return 0;
+}
+
+int shim_p2_find_stable_regions(const double *flat, const int8_t *is_flash,
+                                int count, const double *grad_coded,
+                                int this_start, int this_last, int cap,
+                                int *starts, int *lasts, int *types,
+                                double *dbl) {
+  FIRSTPASS_STATS *arr = shim_p2_alloc_run(flat, is_flash, count);
+  REGIONS *r = (REGIONS *)calloc((size_t)cap, sizeof(REGIONS));
+  if (!arr || !r) {
+    free(arr);
+    free(r);
+    return -1;
+  }
+  const int n = find_stable_regions(arr, grad_coded, this_start, this_last, r);
+  shim_p2_store_regions(r, starts, lasts, types, dbl, cap);
+  free(arr);
+  free(r);
+  return n;
+}
+
+int shim_p2_remove_region(int merge, int cap, int *starts, int *lasts,
+                          int *types, double *dbl, int *num_regions,
+                          int *next_region) {
+  REGIONS *r = (REGIONS *)calloc((size_t)cap, sizeof(REGIONS));
+  if (!r) return -1;
+  shim_p2_load_regions(r, starts, lasts, types, dbl, cap);
+  remove_region(merge, r, num_regions, next_region);
+  shim_p2_store_regions(r, starts, lasts, types, dbl, cap);
+  free(r);
+  return 0;
+}
+
+int shim_p2_insert_region(int start, int last, int type, int cap, int *starts,
+                          int *lasts, int *types, double *dbl,
+                          int *num_regions, int *cur_region_idx) {
+  REGIONS *r = (REGIONS *)calloc((size_t)cap, sizeof(REGIONS));
+  if (!r) return -1;
+  shim_p2_load_regions(r, starts, lasts, types, dbl, cap);
+  insert_region(start, last, (REGION_TYPES)type, r, num_regions,
+                cur_region_idx);
+  shim_p2_store_regions(r, starts, lasts, types, dbl, cap);
+  free(r);
+  return 0;
+}
+
+int shim_p2_cleanup_regions(int cap, int *starts, int *lasts, int *types,
+                            double *dbl, int *num_regions) {
+  REGIONS *r = (REGIONS *)calloc((size_t)cap, sizeof(REGIONS));
+  if (!r) return -1;
+  shim_p2_load_regions(r, starts, lasts, types, dbl, cap);
+  cleanup_regions(r, num_regions);
+  shim_p2_store_regions(r, starts, lasts, types, dbl, cap);
+  free(r);
+  return 0;
+}
+
+int shim_p2_remove_short_regions(int cap, int *starts, int *lasts, int *types,
+                                 double *dbl, int *num_regions, int type,
+                                 int length) {
+  REGIONS *r = (REGIONS *)calloc((size_t)cap, sizeof(REGIONS));
+  if (!r) return -1;
+  shim_p2_load_regions(r, starts, lasts, types, dbl, cap);
+  remove_short_regions(r, num_regions, (REGION_TYPES)type, length);
+  shim_p2_store_regions(r, starts, lasts, types, dbl, cap);
+  free(r);
+  return 0;
+}
+
+int shim_p2_find_regions_index(int cap, const int *starts, const int *lasts,
+                               const int *types, const double *dbl,
+                               int num_regions, int frame_idx) {
+  REGIONS *r = (REGIONS *)calloc((size_t)cap, sizeof(REGIONS));
+  if (!r) return -2;
+  shim_p2_load_regions(r, (int *)starts, (int *)lasts, (int *)types,
+                       (double *)dbl, cap);
+  const int k = find_regions_index(r, num_regions, frame_idx);
+  free(r);
+  return k;
+}
+
+int shim_p2_mark_flashes(const double *flat, const int8_t *is_flash_in,
+                         int count, int8_t *is_flash_out) {
+  FIRSTPASS_STATS *arr = shim_p2_alloc_run(flat, is_flash_in, count);
+  if (!arr) return -1;
+  mark_flashes(arr, arr + count);
+  for (int i = 0; i < count; ++i) is_flash_out[i] = (int8_t)arr[i].is_flash;
+  free(arr);
+  return 0;
+}
+
+int shim_p2_smooth_filter_noise(const double *flat, const int8_t *is_flash,
+                                int count, double *noise_out) {
+  FIRSTPASS_STATS *arr = shim_p2_alloc_run(flat, is_flash, count);
+  if (!arr) return -1;
+  const int r = smooth_filter_noise(arr, arr + count);
+  for (int i = 0; i < count; ++i) noise_out[i] = arr[i].noise_var;
+  free(arr);
+  return r;
+}
+
+int shim_p2_region_types(int *stable, int *high_var, int *scenecut,
+                         int *blending) {
+  *stable = (int)STABLE_REGION;
+  *high_var = (int)HIGH_VAR_REGION;
+  *scenecut = (int)SCENECUT_REGION;
+  *blending = (int)BLENDING_REGION;
+  return 0;
+}
+
+int shim_p2_half_win(void) { return HALF_WIN; }
+int shim_p2_half_filt_len(void) { return HALF_FILT_LEN; }
