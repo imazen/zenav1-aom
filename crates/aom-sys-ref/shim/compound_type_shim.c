@@ -54,6 +54,8 @@
 #include "config/aom_dsp_rtcd.h"
 #include "config/aom_scale_rtcd.h"
 
+#include "aom_mem/aom_mem.h"
+
 /* --- Rename compound_type.c's two exported symbols so this TU links beside
  * libaom.a. */
 #define av1_compound_type_rd shim_ct_compound_type_rd
@@ -249,3 +251,406 @@ int shim_ct_top_comp_avg_est_rd_count(void) {
 }
 int shim_ct_compound_types(void) { return COMPOUND_TYPES; }
 int shim_ct_max_wedge_types(void) { return MAX_WEDGE_TYPES; }
+
+/* ======================================================================== *
+ * 9. The mask picks (compound_type.c:126-428).
+ *
+ * ---- the alignment / sizing contract ----------------------------------
+ * These reach RTCD-DISPATCHED kernels: `aom_subtract_block`,
+ * `av1_wedge_sse_from_residuals`, `av1_wedge_sign_from_residuals`,
+ * `av1_wedge_compute_delta_squares`, `av1_build_compound_diffwtd_mask{,_highbd}`
+ * and (via `estimate_wedge_sign`) `ppi->fn_ptr[].vf`. On this aarch64 oracle
+ * most are `#define`d straight to NEON, which loads unaligned, so a misaligned
+ * buffer is invisible; on x86 they are AVX2/SSE kernels and libaom's own
+ * callers always hand them `DECLARE_ALIGNED(32, ...)` storage
+ * (compound_type.c:210 `residual0`, :396-397 `residual1`/`diff10`). A Rust
+ * `Vec` is 1- or 2-byte aligned. So every buffer that crosses into a
+ * dispatched kernel is bounced through 64-byte-aligned scratch (64 covers
+ * AVX-512, strictly stronger than the encoder's 32 and never weaker), exactly
+ * as shim/comp_pred_shim.c does.
+ *
+ * `xd->seg_mask` is a POINTER (blockd.h:889), NULL in a calloc'd MACROBLOCKD;
+ * `pick_interinter_seg` writes through it on its first iteration. It is
+ * allocated here at the encoder's own size, `2 * MAX_SB_SQUARE`.
+ * ======================================================================== */
+
+static void *shim_ct_align(const void *src, size_t bytes) {
+  void *p = aom_memalign(64, bytes ? bytes : 64);
+  if (!p) return NULL;
+  if (src)
+    memcpy(p, src, bytes);
+  else
+    memset(p, 0, bytes);
+  return p;
+}
+
+/* `cpi->ppi->fn_ptr[bsize].vf` for the ONE quarter-block size
+ * `estimate_wedge_sign` looks up. libaom installs the whole table in
+ * `av1_create_primary_compressor` (encoder.c:1171 `BFP`) / `highbd_set_var_fns`
+ * (encoder.c:865); constructing a real AV1_PRIMARY here would drag in the
+ * entire encoder, so just the one entry under test is installed, from the same
+ * `aom_variance` / `aom_highbd_<bd>_variance` families those macros use.
+ *
+ * These names are RTCD symbols, so `ref_init()` (which runs `aom_dsp_rtcd()`)
+ * must have happened before the pointer is taken — every Rust wrapper below
+ * calls it. */
+static void shim_ct_install_vf(AV1_PRIMARY *ppi, BLOCK_SIZE b, int hbd,
+                               int bd) {
+#define V(BT, W, H)                                                          \
+  case BT:                                                                   \
+    ppi->fn_ptr[BT].vf = hbd ? (bd == 12   ? aom_highbd_12_variance##W##x##H \
+                                : bd == 10 ? aom_highbd_10_variance##W##x##H \
+                                           : aom_highbd_8_variance##W##x##H) \
+                             : aom_variance##W##x##H;                        \
+    break;
+  switch (b) {
+    V(BLOCK_4X4, 4, 4)
+    V(BLOCK_4X8, 4, 8)
+    V(BLOCK_8X4, 8, 4)
+    V(BLOCK_8X8, 8, 8)
+    V(BLOCK_8X16, 8, 16)
+    V(BLOCK_16X8, 16, 8)
+    V(BLOCK_16X16, 16, 16)
+    V(BLOCK_16X32, 16, 32)
+    V(BLOCK_32X16, 32, 16)
+    V(BLOCK_32X32, 32, 32)
+    V(BLOCK_32X64, 32, 64)
+    V(BLOCK_64X32, 64, 32)
+    V(BLOCK_64X64, 64, 64)
+    V(BLOCK_4X16, 4, 16)
+    V(BLOCK_16X4, 16, 4)
+    V(BLOCK_8X32, 8, 32)
+    V(BLOCK_32X8, 32, 8)
+    default: break;
+  }
+#undef V
+}
+
+/* The per-call state every pick needs, built and torn down together so no
+ * wrapper can forget one of the six pieces. */
+typedef struct {
+  MACROBLOCK *x;
+  AV1_COMP *cpi;
+  AV1_PRIMARY *ppi;
+  YV12_BUFFER_CONFIG *cb;
+  MB_MODE_INFO *mbmi;
+  MB_MODE_INFO *mi_ptr;
+  uint8_t *seg_mask;
+  /* `plane[].dequant_QTX` is a `const int16_t *` (block.h:168), so the AC
+   * dequant the model RD divides by needs real backing storage. */
+  int16_t *dq;
+} shim_ct_env;
+
+static int shim_ct_env_init(shim_ct_env *e, int bsize, int hbd, int bd,
+                            int rdmult, int dequant_ac,
+                            const int *wedge_idx_cost) {
+  memset(e, 0, sizeof(*e));
+  e->x = (MACROBLOCK *)calloc(1, sizeof(*e->x));
+  e->cpi = (AV1_COMP *)calloc(1, sizeof(*e->cpi));
+  e->ppi = (AV1_PRIMARY *)calloc(1, sizeof(*e->ppi));
+  e->cb = (YV12_BUFFER_CONFIG *)calloc(1, sizeof(*e->cb));
+  e->mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*e->mbmi));
+  e->seg_mask = (uint8_t *)shim_ct_align(NULL, 2 * MAX_SB_SQUARE);
+  e->dq = (int16_t *)calloc(2, sizeof(int16_t));
+  if (!e->x || !e->cpi || !e->ppi || !e->cb || !e->mbmi || !e->seg_mask ||
+      !e->dq)
+    return 0;
+
+  e->cb->flags = hbd ? YV12_FLAG_HIGHBITDEPTH : 0;
+  e->x->e_mbd.cur_buf = e->cb;
+  e->x->e_mbd.bd = bd;
+  e->x->e_mbd.seg_mask = e->seg_mask;
+  e->mi_ptr = e->mbmi;
+  e->x->e_mbd.mi = &e->mi_ptr;
+  e->mbmi->bsize = (BLOCK_SIZE)bsize;
+  e->x->rdmult = rdmult;
+  e->dq[0] = (int16_t)dequant_ac;
+  e->dq[1] = (int16_t)dequant_ac;
+  e->x->plane[0].dequant_QTX = e->dq;
+  if (wedge_idx_cost)
+    for (int i = 0; i < MAX_WEDGE_TYPES; ++i)
+      e->x->mode_costs.wedge_idx_cost[bsize][i] = wedge_idx_cost[i];
+  e->cpi->ppi = e->ppi;
+  return 1;
+}
+
+static void shim_ct_env_free(shim_ct_env *e) {
+  free(e->dq);
+  aom_free(e->seg_mask);
+  free(e->mbmi);
+  free(e->cb);
+  free(e->ppi);
+  free(e->cpi);
+  free(e->x);
+}
+
+int64_t shim_ct_pick_wedge(int bsize, int hbd, int bd, int rdmult,
+                           int dequant_ac, const int *wedge_idx_cost,
+                           const void *src, int src_stride, const void *p0,
+                           const int16_t *residual1, const int16_t *diff10,
+                           int *out_sign, int *out_index, uint64_t *out_sse) {
+  const int bw = block_size_wide[bsize], bh = block_size_high[bsize];
+  const int n = bw * bh;
+  const size_t px = hbd ? sizeof(uint16_t) : sizeof(uint8_t);
+  shim_ct_env e;
+  if (!shim_ct_env_init(&e, bsize, hbd, bd, rdmult, dequant_ac,
+                        wedge_idx_cost))
+    return 0;
+
+  void *asrc = shim_ct_align(src, (size_t)src_stride * bh * px);
+  void *ap0 = shim_ct_align(p0, (size_t)n * px);
+  int16_t *ar1 = (int16_t *)shim_ct_align(residual1, (size_t)n * 2);
+  int16_t *ad10 = (int16_t *)shim_ct_align(diff10, (size_t)n * 2);
+
+  e.x->plane[0].src.buf =
+      hbd ? (uint8_t *)CONVERT_TO_BYTEPTR((uint16_t *)asrc) : (uint8_t *)asrc;
+  e.x->plane[0].src.stride = src_stride;
+  /* The PREDICTORS go in RAW, at every bit depth: compound_type.c applies
+   * `CONVERT_TO_BYTEPTR` to them itself on the hbd arms (:214 pick_wedge,
+   * :351-354 pick_interinter_seg, :400-405 pick_interintra_wedge, :160-163
+   * estimate_wedge_sign). Only `x->plane[0].src.buf` arrives pre-converted,
+   * because that is how the encoder stores it. Converting here as well
+   * double-shifts the pointer and segfaults — measured at bd=10, the first
+   * cell of pick_interinter_seg_matches_c. */
+  const uint8_t *p0_arg = (const uint8_t *)ap0;
+
+  int8_t sign = 0, index = -1;
+  uint64_t sse = UINT64_MAX;
+  const int64_t rd = pick_wedge(e.cpi, e.x, (BLOCK_SIZE)bsize, p0_arg, ar1,
+                                ad10, &sign, &index, &sse);
+  *out_sign = sign;
+  *out_index = index;
+  *out_sse = sse;
+
+  aom_free(ad10);
+  aom_free(ar1);
+  aom_free(ap0);
+  aom_free(asrc);
+  shim_ct_env_free(&e);
+  return rd;
+}
+
+int64_t shim_ct_pick_wedge_fixed_sign(int bsize, int hbd, int bd, int rdmult,
+                                      int dequant_ac,
+                                      const int *wedge_idx_cost,
+                                      const int16_t *residual1,
+                                      const int16_t *diff10, int wedge_sign,
+                                      int *out_index, uint64_t *out_sse) {
+  const int n = block_size_wide[bsize] * block_size_high[bsize];
+  shim_ct_env e;
+  if (!shim_ct_env_init(&e, bsize, hbd, bd, rdmult, dequant_ac,
+                        wedge_idx_cost))
+    return 0;
+
+  int16_t *ar1 = (int16_t *)shim_ct_align(residual1, (size_t)n * 2);
+  int16_t *ad10 = (int16_t *)shim_ct_align(diff10, (size_t)n * 2);
+
+  int8_t index = -1;
+  uint64_t sse = UINT64_MAX;
+  const int64_t rd =
+      pick_wedge_fixed_sign(e.cpi, e.x, (BLOCK_SIZE)bsize, ar1, ad10,
+                            (int8_t)wedge_sign, &index, &sse);
+  *out_index = index;
+  *out_sse = sse;
+
+  aom_free(ad10);
+  aom_free(ar1);
+  shim_ct_env_free(&e);
+  return rd;
+}
+
+int shim_ct_estimate_wedge_sign(int bsize, int hbd, int bd, const void *src,
+                                int src_stride, const void *pred0, int stride0,
+                                const void *pred1, int stride1) {
+  const int bh = block_size_high[bsize];
+  const size_t px = hbd ? sizeof(uint16_t) : sizeof(uint8_t);
+  shim_ct_env e;
+  if (!shim_ct_env_init(&e, bsize, hbd, bd, 0, 0, NULL)) return 0;
+
+  /* `split_qtr[bsize]` is compound_type.c's own table; the wrapper reproduces
+   * only the lookup, so the ONE vf entry the function will read is installed.
+   * A bsize with no quarter split trips C's assert, which -DNDEBUG removes —
+   * the Rust wrapper refuses those instead. */
+  static const BLOCK_SIZE split_qtr[BLOCK_SIZES_ALL] = {
+    BLOCK_INVALID, BLOCK_INVALID, BLOCK_INVALID, BLOCK_4X4,
+    BLOCK_4X8,     BLOCK_8X4,     BLOCK_8X8,     BLOCK_8X16,
+    BLOCK_16X8,    BLOCK_16X16,   BLOCK_16X32,   BLOCK_32X16,
+    BLOCK_32X32,   BLOCK_32X64,   BLOCK_64X32,   BLOCK_64X64,
+    BLOCK_INVALID, BLOCK_INVALID, BLOCK_4X16,    BLOCK_16X4,
+    BLOCK_8X32,    BLOCK_32X8
+  };
+  shim_ct_install_vf(e.ppi, split_qtr[bsize], hbd, bd);
+
+  void *asrc = shim_ct_align(src, (size_t)src_stride * bh * px);
+  void *ap0 = shim_ct_align(pred0, (size_t)stride0 * bh * px);
+  void *ap1 = shim_ct_align(pred1, (size_t)stride1 * bh * px);
+
+  e.x->plane[0].src.buf =
+      hbd ? (uint8_t *)CONVERT_TO_BYTEPTR((uint16_t *)asrc) : (uint8_t *)asrc;
+  e.x->plane[0].src.stride = src_stride;
+  /* estimate_wedge_sign does its own CONVERT_TO_BYTEPTR on pred0/pred1 when
+   * the block is hbd, so these go in as raw pointers either way. */
+  const int r =
+      estimate_wedge_sign(e.cpi, e.x, (BLOCK_SIZE)bsize, (const uint8_t *)ap0,
+                          stride0, (const uint8_t *)ap1, stride1);
+
+  aom_free(ap1);
+  aom_free(ap0);
+  aom_free(asrc);
+  shim_ct_env_free(&e);
+  return r;
+}
+
+int64_t shim_ct_pick_interinter_wedge(int bsize, int hbd, int bd, int rdmult,
+                                      int dequant_ac,
+                                      const int *wedge_idx_cost,
+                                      int fast_wedge_sign_estimate,
+                                      const void *src, int src_stride,
+                                      const void *p0, const void *p1,
+                                      const int16_t *residual1,
+                                      const int16_t *diff10, int *out_sign,
+                                      int *out_index, uint64_t *out_sse) {
+  const int bw = block_size_wide[bsize], bh = block_size_high[bsize];
+  const int n = bw * bh;
+  const size_t px = hbd ? sizeof(uint16_t) : sizeof(uint8_t);
+  shim_ct_env e;
+  if (!shim_ct_env_init(&e, bsize, hbd, bd, rdmult, dequant_ac,
+                        wedge_idx_cost))
+    return 0;
+
+  static const BLOCK_SIZE split_qtr[BLOCK_SIZES_ALL] = {
+    BLOCK_INVALID, BLOCK_INVALID, BLOCK_INVALID, BLOCK_4X4,
+    BLOCK_4X8,     BLOCK_8X4,     BLOCK_8X8,     BLOCK_8X16,
+    BLOCK_16X8,    BLOCK_16X16,   BLOCK_16X32,   BLOCK_32X16,
+    BLOCK_32X32,   BLOCK_32X64,   BLOCK_64X32,   BLOCK_64X64,
+    BLOCK_INVALID, BLOCK_INVALID, BLOCK_4X16,    BLOCK_16X4,
+    BLOCK_8X32,    BLOCK_32X8
+  };
+  if (split_qtr[bsize] != BLOCK_INVALID)
+    shim_ct_install_vf(e.ppi, split_qtr[bsize], hbd, bd);
+
+  /* `assert(cpi->common.seq_params->enable_masked_compound)` — compiled out
+   * under -DNDEBUG, but seq_params is dereferenced nowhere else here. */
+  e.cpi->sf.inter_sf.fast_wedge_sign_estimate = fast_wedge_sign_estimate;
+
+  void *asrc = shim_ct_align(src, (size_t)src_stride * bh * px);
+  void *ap0 = shim_ct_align(p0, (size_t)n * px);
+  void *ap1 = shim_ct_align(p1, (size_t)n * px);
+  int16_t *ar1 = (int16_t *)shim_ct_align(residual1, (size_t)n * 2);
+  int16_t *ad10 = (int16_t *)shim_ct_align(diff10, (size_t)n * 2);
+
+  e.x->plane[0].src.buf =
+      hbd ? (uint8_t *)CONVERT_TO_BYTEPTR((uint16_t *)asrc) : (uint8_t *)asrc;
+  e.x->plane[0].src.stride = src_stride;
+  /* The PREDICTORS go in RAW, at every bit depth: compound_type.c applies
+   * `CONVERT_TO_BYTEPTR` to them itself on the hbd arms (:214 pick_wedge,
+   * :351-354 pick_interinter_seg, :400-405 pick_interintra_wedge, :160-163
+   * estimate_wedge_sign). Only `x->plane[0].src.buf` arrives pre-converted,
+   * because that is how the encoder stores it. Converting here as well
+   * double-shifts the pointer and segfaults — measured at bd=10, the first
+   * cell of pick_interinter_seg_matches_c. */
+  const uint8_t *p0_arg = (const uint8_t *)ap0;
+  const uint8_t *p1_arg = (const uint8_t *)ap1;
+
+  uint64_t sse = UINT64_MAX;
+  const int64_t rd =
+      pick_interinter_wedge(e.cpi, e.x, (BLOCK_SIZE)bsize, p0_arg, p1_arg, ar1,
+                            ad10, &sse);
+  *out_sign = e.mbmi->interinter_comp.wedge_sign;
+  *out_index = e.mbmi->interinter_comp.wedge_index;
+  *out_sse = sse;
+
+  aom_free(ad10);
+  aom_free(ar1);
+  aom_free(ap1);
+  aom_free(ap0);
+  aom_free(asrc);
+  shim_ct_env_free(&e);
+  return rd;
+}
+
+int64_t shim_ct_pick_interinter_seg(int bsize, int hbd, int bd, int rdmult,
+                                    int dequant_ac, const void *p0,
+                                    const void *p1, const int16_t *residual1,
+                                    const int16_t *diff10, int *out_mask_type,
+                                    uint64_t *out_sse,
+                                    uint8_t *out_seg_mask /* n bytes */) {
+  const int n = block_size_wide[bsize] * block_size_high[bsize];
+  const size_t px = hbd ? sizeof(uint16_t) : sizeof(uint8_t);
+  shim_ct_env e;
+  if (!shim_ct_env_init(&e, bsize, hbd, bd, rdmult, dequant_ac, NULL)) return 0;
+
+  void *ap0 = shim_ct_align(p0, (size_t)n * px);
+  void *ap1 = shim_ct_align(p1, (size_t)n * px);
+  int16_t *ar1 = (int16_t *)shim_ct_align(residual1, (size_t)n * 2);
+  int16_t *ad10 = (int16_t *)shim_ct_align(diff10, (size_t)n * 2);
+
+  /* The PREDICTORS go in RAW, at every bit depth: compound_type.c applies
+   * `CONVERT_TO_BYTEPTR` to them itself on the hbd arms (:214 pick_wedge,
+   * :351-354 pick_interinter_seg, :400-405 pick_interintra_wedge, :160-163
+   * estimate_wedge_sign). Only `x->plane[0].src.buf` arrives pre-converted,
+   * because that is how the encoder stores it. Converting here as well
+   * double-shifts the pointer and segfaults — measured at bd=10, the first
+   * cell of pick_interinter_seg_matches_c. */
+  const uint8_t *p0_arg = (const uint8_t *)ap0;
+  const uint8_t *p1_arg = (const uint8_t *)ap1;
+
+  uint64_t sse = UINT64_MAX;
+  const int64_t rd = pick_interinter_seg(e.cpi, e.x, (BLOCK_SIZE)bsize, p0_arg,
+                                         p1_arg, ar1, ad10, &sse);
+  *out_mask_type = e.mbmi->interinter_comp.mask_type;
+  *out_sse = sse;
+  memcpy(out_seg_mask, e.x->e_mbd.seg_mask, (size_t)n);
+
+  aom_free(ad10);
+  aom_free(ar1);
+  aom_free(ap1);
+  aom_free(ap0);
+  shim_ct_env_free(&e);
+  return rd;
+}
+
+int64_t shim_ct_pick_interintra_wedge(int bsize, int hbd, int bd, int rdmult,
+                                      int dequant_ac,
+                                      const int *wedge_idx_cost,
+                                      const void *src, int src_stride,
+                                      const void *p0, const void *p1,
+                                      int *out_index, uint64_t *out_sse) {
+  const int bw = block_size_wide[bsize], bh = block_size_high[bsize];
+  const int n = bw * bh;
+  const size_t px = hbd ? sizeof(uint16_t) : sizeof(uint8_t);
+  shim_ct_env e;
+  if (!shim_ct_env_init(&e, bsize, hbd, bd, rdmult, dequant_ac,
+                        wedge_idx_cost))
+    return 0;
+
+  void *asrc = shim_ct_align(src, (size_t)src_stride * bh * px);
+  void *ap0 = shim_ct_align(p0, (size_t)n * px);
+  void *ap1 = shim_ct_align(p1, (size_t)n * px);
+
+  e.x->plane[0].src.buf =
+      hbd ? (uint8_t *)CONVERT_TO_BYTEPTR((uint16_t *)asrc) : (uint8_t *)asrc;
+  e.x->plane[0].src.stride = src_stride;
+  /* The PREDICTORS go in RAW, at every bit depth: compound_type.c applies
+   * `CONVERT_TO_BYTEPTR` to them itself on the hbd arms (:214 pick_wedge,
+   * :351-354 pick_interinter_seg, :400-405 pick_interintra_wedge, :160-163
+   * estimate_wedge_sign). Only `x->plane[0].src.buf` arrives pre-converted,
+   * because that is how the encoder stores it. Converting here as well
+   * double-shifts the pointer and segfaults — measured at bd=10, the first
+   * cell of pick_interinter_seg_matches_c. */
+  const uint8_t *p0_arg = (const uint8_t *)ap0;
+  const uint8_t *p1_arg = (const uint8_t *)ap1;
+
+  const int64_t rd = pick_interintra_wedge(e.cpi, e.x, (BLOCK_SIZE)bsize,
+                                           p0_arg, p1_arg);
+  *out_index = e.mbmi->interintra_wedge_index;
+  /* `pick_interintra_wedge` keeps its own `sse` local and does not return it;
+   * the port's shape does, so the value is not compared. Reported as 0. */
+  *out_sse = 0;
+
+  aom_free(ap1);
+  aom_free(ap0);
+  aom_free(asrc);
+  shim_ct_env_free(&e);
+  return rd;
+}

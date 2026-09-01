@@ -450,3 +450,507 @@ pub fn compute_rd_thresh(rdmult: i32, total_mode_rate: i32, ref_best_rd: i64) ->
     let mode_rd = crate::rd::rdcost(rdmult, total_mode_rate, 0);
     rd_thresh - mode_rd
 }
+
+// ===================================================================
+// The mask picks — compound_type.c:126-428.
+//
+// This is the search proper: given the two single-reference predictors and
+// the residuals derived from them, choose the wedge (index + sign) or the
+// difference-weighted mask type that minimises the modelled RD cost.
+// ===================================================================
+
+use aom_dsp::dist::{
+    highbd_subtract_block, highbd_variance, subtract_block, sum_squares_i16, variance,
+};
+use aom_dsp::inter::compound::{
+    DiffwtdMaskType, build_compound_diffwtd_mask, build_compound_diffwtd_mask_highbd,
+    wedge_compute_delta_squares, wedge_sign_from_residuals, wedge_sse_from_residuals,
+};
+use aom_dsp::inter::interintra::wedge_mask_signed;
+
+/// `WEDGE_WEIGHT_BITS` (`reconinter.h:44`).
+const WEDGE_WEIGHT_BITS: i64 = 6;
+/// `MAX_WEDGE_TYPES` (`enums.h`) — every bsize with a codebook has all 16.
+pub const MAX_WEDGE_TYPES: usize = 16;
+
+/// `ROUND_POWER_OF_TWO(value, n)` over `u64`. Written out because `n == 0` is
+/// reachable (the lowbd `bd_round`) and C's macro is `(v + ((1 << n) >> 1)) >> n`,
+/// i.e. it adds nothing rather than shifting by -1.
+#[inline]
+fn round_pow2_u64(value: u64, n: u32) -> u64 {
+    (value + ((1u64 << n) >> 1)) >> n
+}
+
+/// One of the encoder's pixel buffers at the bit depth the block is coded at.
+///
+/// C spells this as a `uint8_t *` that the high-bit-depth arms reinterpret via
+/// `CONVERT_TO_SHORTPTR`, and decides which by `is_cur_buf_hbd(xd)`. Here the
+/// buffer carries its own width, so the two can never disagree — which is the
+/// whole of what `is_cur_buf_hbd` is used for in this file.
+#[derive(Clone, Copy, Debug)]
+pub enum Pixels<'a> {
+    /// 8-bit buffer (`is_cur_buf_hbd(xd) == 0`).
+    Low(&'a [u8]),
+    /// 16-bit buffer (`is_cur_buf_hbd(xd) == 1`), used at every bit depth
+    /// including 8 when the encoder is in high-bit-depth mode.
+    High(&'a [u16]),
+}
+
+impl Pixels<'_> {
+    /// `is_cur_buf_hbd(xd)`.
+    #[inline]
+    pub const fn is_hbd(self) -> bool {
+        matches!(self, Pixels::High(_))
+    }
+}
+
+/// `diff[..] = src - pred`, dispatching `aom_subtract_block` /
+/// `aom_highbd_subtract_block` on the buffer width. Mixing widths is a caller
+/// bug, not a representable encoder state.
+#[allow(clippy::too_many_arguments)]
+fn subtract(
+    rows: usize,
+    cols: usize,
+    diff: &mut [i16],
+    diff_stride: usize,
+    src: Pixels<'_>,
+    src_stride: usize,
+    pred: Pixels<'_>,
+    pred_stride: usize,
+) {
+    match (src, pred) {
+        (Pixels::Low(s), Pixels::Low(p)) => {
+            subtract_block(rows, cols, diff, diff_stride, s, src_stride, p, pred_stride);
+        }
+        (Pixels::High(s), Pixels::High(p)) => {
+            highbd_subtract_block(rows, cols, diff, diff_stride, s, src_stride, p, pred_stride);
+        }
+        _ => panic!("subtract: mixed 8-bit and 16-bit buffers"),
+    }
+}
+
+/// The `x` / `cpi` state every mask pick reads. Grouped rather than passed
+/// loose: `rdmult` and `dequant_ac` are both plain `i32` and transposing them
+/// is silent.
+#[derive(Clone, Copy, Debug)]
+pub struct MaskSearchCtx<'a> {
+    /// The luma `BLOCK_SIZE`. Also the `plane_bsize` the model RD uses, since
+    /// every pick here works on plane 0.
+    pub bsize: usize,
+    /// `xd->bd`.
+    pub bd: u8,
+    /// `x->rdmult`.
+    pub rdmult: i32,
+    /// `x->plane[0].dequant_QTX[1]` — the AC dequant the model RD divides by.
+    pub dequant_ac: i32,
+    /// `x->mode_costs.wedge_idx_cost[bsize]`, `MAX_WEDGE_TYPES` entries.
+    pub wedge_idx_cost: &'a [i32],
+}
+
+impl MaskSearchCtx<'_> {
+    /// `model_rd_sse_fn[MODELRD_TYPE_MASKED_COMPOUND]`, which resolves to
+    /// `model_rd_with_curvfit` (`MODELRD_TYPE_MASKED_COMPOUND == 1 ==
+    /// MODELRD_CURVFIT`, model_rd.h:33 / :259-267).
+    ///
+    /// C selects `dequant_shift` on `is_cur_buf_hbd(xd)`; the port's
+    /// [`crate::interp_rd::model_rd_with_curvfit`] selects on `bd > 8`. Those
+    /// agree because a high-bit-depth buffer at `bd == 8` takes C's `bd - 5`
+    /// arm, which is 3 — the same value the lowbd arm hard-codes.
+    #[inline]
+    fn model_rd(&self, sse: u64, num_samples: usize) -> (i32, i64) {
+        crate::interp_rd::model_rd_with_curvfit(
+            self.bsize,
+            sse as i64,
+            num_samples as i32,
+            self.dequant_ac,
+            self.bd,
+            self.rdmult,
+        )
+    }
+
+    /// `bd_round = hbd ? (xd->bd - 8) * 2 : 0` — the shift that brings a
+    /// high-bit-depth SSE back to the 8-bit scale the RD model is fitted on.
+    #[inline]
+    fn bd_round(&self, hbd: bool) -> u32 {
+        if hbd { (u32::from(self.bd) - 8) * 2 } else { 0 }
+    }
+}
+
+/// What a wedge pick produced. C returns the RD and writes the rest through
+/// out-parameters; the sse out-parameter is `UINT64_MAX` on entry and C
+/// asserts it was overwritten, so it is unconditional here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WedgePick {
+    /// The return value: the best RD **minus** the chosen index's signalling
+    /// cost, which the caller re-adds after deciding the type.
+    pub rd: i64,
+    /// `mbmi->interinter_comp.wedge_index`.
+    pub index: usize,
+    /// `mbmi->interinter_comp.wedge_sign`.
+    pub sign: usize,
+    /// The masked SSE at the winning index, already `bd_round`ed.
+    pub sse: u64,
+}
+
+/// `pick_wedge_fixed_sign` (compound_type.c:257): the best wedge index at a
+/// sign the caller has already decided.
+///
+/// `residual1 = src - pred1` and `diff10 = pred1 - pred0`, both contiguous at
+/// stride `bw`. `hbd` is `is_cur_buf_hbd(xd)`; it reaches only `bd_round`
+/// here, since this arm reads no pixels.
+pub fn pick_wedge_fixed_sign(
+    ctx: &MaskSearchCtx<'_>,
+    hbd: bool,
+    residual1: &[i16],
+    diff10: &[i16],
+    wedge_sign: usize,
+) -> WedgePick {
+    let bw = BLOCK_SIZE_WIDE[ctx.bsize];
+    let bh = BLOCK_SIZE_HIGH[ctx.bsize];
+    let n = bw * bh;
+    assert!(n >= 64, "pick_wedge_fixed_sign: C asserts N >= 64");
+    let bd_round = ctx.bd_round(hbd);
+
+    let mut best = WedgePick {
+        rd: i64::MAX,
+        index: 0,
+        sign: wedge_sign,
+        sse: 0,
+    };
+    for index in 0..MAX_WEDGE_TYPES {
+        let mask = wedge_mask_signed(ctx.bsize, index, wedge_sign)
+            .expect("pick_wedge_fixed_sign called at a bsize with no wedge codebook");
+        let sse = round_pow2_u64(
+            wedge_sse_from_residuals(residual1, diff10, &mask, n),
+            bd_round,
+        );
+        let (rate, dist) = ctx.model_rd(sse, n);
+        let rate = rate + ctx.wedge_idx_cost[index];
+        let rd = crate::rd::rdcost(ctx.rdmult, rate, dist);
+        if rd < best.rd {
+            best = WedgePick {
+                rd,
+                index,
+                sign: wedge_sign,
+                sse,
+            };
+        }
+    }
+    best.rd -= crate::rd::rdcost(ctx.rdmult, ctx.wedge_idx_cost[best.index], 0);
+    best
+}
+
+/// `pick_wedge` (compound_type.c:189): the best wedge index AND sign.
+///
+/// Unlike [`pick_wedge_fixed_sign`] this needs `pred0` and the source, because
+/// the per-index sign is decided by `av1_wedge_sign_from_residuals` against a
+/// limit derived from both residual energies.
+pub fn pick_wedge(
+    ctx: &MaskSearchCtx<'_>,
+    src: Pixels<'_>,
+    src_stride: usize,
+    p0: Pixels<'_>,
+    residual1: &[i16],
+    diff10: &[i16],
+) -> WedgePick {
+    let bw = BLOCK_SIZE_WIDE[ctx.bsize];
+    let bh = BLOCK_SIZE_HIGH[ctx.bsize];
+    let n = bw * bh;
+    assert!(n >= 64, "pick_wedge: C asserts N >= 64");
+    let bd_round = ctx.bd_round(src.is_hbd());
+
+    // residual0 = src - pred0, at stride bw (pred0 is contiguous).
+    let mut residual0 = vec![0i16; n];
+    subtract(bh, bw, &mut residual0, bw, src, src_stride, p0, bw);
+
+    // C casts both `uint64_t` sums to `int64_t` BEFORE subtracting, so the
+    // difference is signed and the `* 64 / 2` that follows truncates toward
+    // zero on a negative value.
+    let sign_limit = ((sum_squares_i16(&residual0[..n]) as i64)
+        - (sum_squares_i16(&residual1[..n]) as i64))
+        * (1 << WEDGE_WEIGHT_BITS)
+        / 2;
+
+    // C reuses `residual0`'s storage as `ds` and passes it as BOTH the
+    // destination and the first source of `av1_wedge_compute_delta_squares`.
+    // The kernel is elementwise (`d[i] = a[i]*a[i] - b[i]*b[i]`), so the
+    // aliasing is benign; Rust cannot spell it, and a separate destination
+    // computes the same values.
+    let mut ds = vec![0i16; n];
+    wedge_compute_delta_squares(&mut ds, &residual0, residual1, n);
+
+    let mut best = WedgePick {
+        rd: i64::MAX,
+        index: 0,
+        sign: 0,
+        sse: 0,
+    };
+    for index in 0..MAX_WEDGE_TYPES {
+        let probe = wedge_mask_signed(ctx.bsize, index, 0)
+            .expect("pick_wedge called at a bsize with no wedge codebook");
+        let sign = usize::from(wedge_sign_from_residuals(&ds, &probe, n, sign_limit));
+
+        let mask = wedge_mask_signed(ctx.bsize, index, sign)
+            .expect("pick_wedge called at a bsize with no wedge codebook");
+        let sse = round_pow2_u64(
+            wedge_sse_from_residuals(residual1, diff10, &mask, n),
+            bd_round,
+        );
+        let (rate, dist) = ctx.model_rd(sse, n);
+        let rate = rate + ctx.wedge_idx_cost[index];
+        let rd = crate::rd::rdcost(ctx.rdmult, rate, dist);
+        if rd < best.rd {
+            best = WedgePick {
+                rd,
+                index,
+                sign,
+                sse,
+            };
+        }
+    }
+    best.rd -= crate::rd::rdcost(ctx.rdmult, ctx.wedge_idx_cost[best.index], 0);
+    best
+}
+
+/// `split_qtr[BLOCK_SIZES_ALL]` (compound_type.c:127-146) — the block size of
+/// one quadrant. `None` where C stores `BLOCK_INVALID`; `estimate_wedge_sign`
+/// asserts it is reached only at a size that has one.
+const SPLIT_QTR: [Option<usize>; 22] = [
+    None,     // 4X4
+    None,     // 4X8
+    None,     // 8X4
+    Some(0),  // 8X8   -> 4X4
+    Some(1),  // 8X16  -> 4X8
+    Some(2),  // 16X8  -> 8X4
+    Some(3),  // 16X16 -> 8X8
+    Some(4),  // 16X32 -> 8X16
+    Some(5),  // 32X16 -> 16X8
+    Some(6),  // 32X32 -> 16X16
+    Some(7),  // 32X64 -> 16X32
+    Some(8),  // 64X32 -> 32X16
+    Some(9),  // 64X64 -> 32X32
+    Some(10), // 64X128 -> 32X64
+    Some(11), // 128X64 -> 64X32
+    Some(12), // 128X128 -> 64X64
+    None,     // 4X16
+    None,     // 16X4
+    Some(16), // 8X32  -> 4X16
+    Some(17), // 32X8  -> 16X4
+    Some(18), // 16X64 -> 8X32
+    Some(19), // 64X16 -> 32X8
+];
+
+/// `estimate_wedge_sign` (compound_type.c:126): guess the wedge sign from the
+/// two predictors' quadrant SSEs instead of searching it.
+///
+/// Returns C's `int8_t` 0/1 as a bool, `true` meaning sign 1.
+///
+/// # Two things a reader will want to "fix"
+/// * The comparison is `tl + br > 0` where `tl` and `br` are built from the
+///   **first** and **fourth** quadrants only. C's own comment explains why:
+///   the second and third quadrants appear with opposite signs in the full sum
+///   and cancel, so they are never computed.
+/// * The fourth `vf` call passes **`stride0`** as `pred1`'s stride, not
+///   `stride1` (compound_type.c:178). At the one call site both are `bw`, so
+///   it is invisible there; it is reproduced rather than corrected because the
+///   differential is against C, and a caller that ever passed different
+///   strides would see C's behaviour, not the intended one.
+#[allow(clippy::too_many_arguments)]
+pub fn estimate_wedge_sign(
+    bsize: usize,
+    bd: u8,
+    src: Pixels<'_>,
+    src_stride: usize,
+    pred0: Pixels<'_>,
+    stride0: usize,
+    pred1: Pixels<'_>,
+    stride1: usize,
+) -> bool {
+    let f_index = SPLIT_QTR[bsize].expect("estimate_wedge_sign: bsize has no quarter split");
+    let (qw, qh) = (BLOCK_SIZE_WIDE[f_index], BLOCK_SIZE_HIGH[f_index]);
+    let bw_by2 = BLOCK_SIZE_WIDE[bsize] >> 1;
+    let bh_by2 = BLOCK_SIZE_HIGH[bsize] >> 1;
+
+    // `cpi->ppi->fn_ptr[f_index].vf(a, a_stride, b, b_stride, &sse)`: the
+    // return value (the variance) is discarded; `esq` receives the SSE.
+    let sse_of = |a: Pixels<'_>,
+                  a_off: usize,
+                  a_stride: usize,
+                  b: Pixels<'_>,
+                  b_off: usize,
+                  b_stride: usize|
+     -> u32 {
+        match (a, b) {
+            (Pixels::Low(x), Pixels::Low(y)) => {
+                variance(&x[a_off..], a_stride, &y[b_off..], b_stride, qw, qh).1
+            }
+            (Pixels::High(x), Pixels::High(y)) => {
+                highbd_variance(&x[a_off..], a_stride, &y[b_off..], b_stride, qw, qh, bd).1
+            }
+            _ => panic!("estimate_wedge_sign: mixed 8-bit and 16-bit buffers"),
+        }
+    };
+
+    let esq00 = sse_of(src, 0, src_stride, pred0, 0, stride0);
+    let esq01 = sse_of(
+        src,
+        bh_by2 * src_stride + bw_by2,
+        src_stride,
+        pred0,
+        bh_by2 * stride0 + bw_by2,
+        stride0,
+    );
+    let esq10 = sse_of(src, 0, src_stride, pred1, 0, stride1);
+    // NOTE the stride: C passes `stride0` here for pred1. See the doc comment.
+    let esq11 = sse_of(
+        src,
+        bh_by2 * src_stride + bw_by2,
+        src_stride,
+        pred1,
+        bh_by2 * stride1 + bw_by2,
+        stride0,
+    );
+
+    let tl = i64::from(esq00) - i64::from(esq10);
+    let br = i64::from(esq11) - i64::from(esq01);
+    tl + br > 0
+}
+
+/// `pick_interinter_wedge` (compound_type.c:299): the inter-inter wedge search.
+///
+/// `fast_wedge_sign_estimate` is `cpi->sf.inter_sf.fast_wedge_sign_estimate`;
+/// when set, the sign comes from [`estimate_wedge_sign`] and only the index is
+/// searched.
+#[allow(clippy::too_many_arguments)]
+pub fn pick_interinter_wedge(
+    ctx: &MaskSearchCtx<'_>,
+    fast_wedge_sign_estimate: bool,
+    src: Pixels<'_>,
+    src_stride: usize,
+    p0: Pixels<'_>,
+    p1: Pixels<'_>,
+    residual1: &[i16],
+    diff10: &[i16],
+) -> WedgePick {
+    assert!(
+        is_interinter_compound_used(CompoundType::Wedge, ctx.bsize),
+        "pick_interinter_wedge: COMPOUND_WEDGE is not usable at this bsize"
+    );
+    let bw = BLOCK_SIZE_WIDE[ctx.bsize];
+    if fast_wedge_sign_estimate {
+        let sign = usize::from(estimate_wedge_sign(
+            ctx.bsize, ctx.bd, src, src_stride, p0, bw, p1, bw,
+        ));
+        pick_wedge_fixed_sign(ctx, src.is_hbd(), residual1, diff10, sign)
+    } else {
+        pick_wedge(ctx, src, src_stride, p0, residual1, diff10)
+    }
+}
+
+/// What [`pick_interinter_seg`] produced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SegPick {
+    /// The best RD (C returns it directly, with no cost subtracted).
+    pub rd: i64,
+    /// `mbmi->interinter_comp.mask_type`.
+    pub mask_type: DiffwtdMaskType,
+    /// The masked SSE at the winning mask type, already `bd_round`ed.
+    pub sse: u64,
+    /// `xd->seg_mask` as the winner leaves it: `bw * bh` entries at stride `bw`.
+    ///
+    /// C builds mask type 0 straight into `xd->seg_mask` and type 1 into a
+    /// stack buffer, then `memcpy`s the stack one back if type 1 won — with a
+    /// length of `2 * N`, of which only the first `N` were ever written or are
+    /// ever read (the blend walks `h` rows at stride `bw`). This returns the
+    /// `N` that mean something.
+    pub seg_mask: Vec<u8>,
+}
+
+/// `pick_interinter_seg` (compound_type.c:332): choose between the two
+/// difference-weighted mask types.
+pub fn pick_interinter_seg(
+    ctx: &MaskSearchCtx<'_>,
+    p0: Pixels<'_>,
+    p1: Pixels<'_>,
+    residual1: &[i16],
+    diff10: &[i16],
+) -> SegPick {
+    let bw = BLOCK_SIZE_WIDE[ctx.bsize];
+    let bh = BLOCK_SIZE_HIGH[ctx.bsize];
+    let n = bw * bh;
+    let bd_round = ctx.bd_round(p0.is_hbd());
+
+    let mut best = SegPick {
+        rd: i64::MAX,
+        mask_type: DiffwtdMaskType::Diffwtd38,
+        sse: 0,
+        seg_mask: vec![0u8; n],
+    };
+    for mask_type in [DiffwtdMaskType::Diffwtd38, DiffwtdMaskType::Diffwtd38Inv] {
+        let mut mask = vec![0u8; n];
+        match (p0, p1) {
+            (Pixels::Low(a), Pixels::Low(b)) => {
+                build_compound_diffwtd_mask(&mut mask, mask_type, a, bw, b, bw, bh, bw);
+            }
+            (Pixels::High(a), Pixels::High(b)) => {
+                build_compound_diffwtd_mask_highbd(
+                    &mut mask,
+                    mask_type,
+                    a,
+                    bw,
+                    b,
+                    bw,
+                    bh,
+                    bw,
+                    u32::from(ctx.bd),
+                );
+            }
+            _ => panic!("pick_interinter_seg: mixed 8-bit and 16-bit buffers"),
+        }
+        let sse = round_pow2_u64(
+            wedge_sse_from_residuals(residual1, diff10, &mask, n),
+            bd_round,
+        );
+        let (rate, dist) = ctx.model_rd(sse, n);
+        let rd = crate::rd::rdcost(ctx.rdmult, rate, dist);
+        if rd < best.rd {
+            best = SegPick {
+                rd,
+                mask_type,
+                sse,
+                seg_mask: mask,
+            };
+        }
+    }
+    best
+}
+
+/// `pick_interintra_wedge` (compound_type.c:394): the interintra wedge search.
+///
+/// `p0` is the intra predictor and `p1` the inter one, both contiguous at
+/// stride `bw`. The residuals C derives here are its own — `residual1 = src -
+/// p1` and `diff10 = p1 - p0` — so unlike the inter-inter picks this one takes
+/// pixels rather than residuals. The sign is fixed at 0: interintra codes no
+/// wedge sign.
+pub fn pick_interintra_wedge(
+    ctx: &MaskSearchCtx<'_>,
+    src: Pixels<'_>,
+    src_stride: usize,
+    p0: Pixels<'_>,
+    p1: Pixels<'_>,
+) -> WedgePick {
+    assert!(
+        is_wedge_used(ctx.bsize),
+        "pick_interintra_wedge: av1_is_wedge_used(bsize) must hold"
+    );
+    let bw = BLOCK_SIZE_WIDE[ctx.bsize];
+    let bh = BLOCK_SIZE_HIGH[ctx.bsize];
+    let n = bw * bh;
+
+    let mut residual1 = vec![0i16; n];
+    let mut diff10 = vec![0i16; n];
+    subtract(bh, bw, &mut residual1, bw, src, src_stride, p1, bw);
+    subtract(bh, bw, &mut diff10, bw, p1, bw, p0, bw);
+
+    pick_wedge_fixed_sign(ctx, src.is_hbd(), &residual1, &diff10, 0)
+}

@@ -21041,3 +21041,343 @@ pub fn ref_rdopt_init_mbmi(curr_mode: i32, rf: (i32, i32), interp_filter: i32) -
     unsafe { shim_rdopt_init_mbmi(curr_mode, rf.0, rf.1, interp_filter, out.as_mut_ptr()) };
     out
 }
+
+// --- compound_type.c: the mask picks (:126-428) ---------------------------
+//
+// Pixel buffers cross as `*const c_void`: the shim reinterprets them as
+// `uint8_t*` or `uint16_t*` on the `hbd` flag, mirroring C's own
+// `CONVERT_TO_BYTEPTR` world. Every buffer is copied into 64-byte-aligned
+// scratch inside the shim before any dispatched kernel sees it — see that
+// file's alignment note.
+
+/// A predictor / source buffer at the bit depth the block is coded at.
+#[derive(Clone, Copy, Debug)]
+pub enum RefPixels<'a> {
+    /// 8-bit (`is_cur_buf_hbd(xd) == 0`).
+    Low(&'a [u8]),
+    /// 16-bit (`is_cur_buf_hbd(xd) == 1`).
+    High(&'a [u16]),
+}
+
+impl RefPixels<'_> {
+    fn is_hbd(self) -> bool {
+        matches!(self, RefPixels::High(_))
+    }
+    fn as_ptr(self) -> *const core::ffi::c_void {
+        match self {
+            RefPixels::Low(b) => b.as_ptr().cast(),
+            RefPixels::High(b) => b.as_ptr().cast(),
+        }
+    }
+}
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_pick_wedge(
+        bsize: i32,
+        hbd: i32,
+        bd: i32,
+        rdmult: i32,
+        dequant_ac: i32,
+        wedge_idx_cost: *const i32,
+        src: *const core::ffi::c_void,
+        src_stride: i32,
+        p0: *const core::ffi::c_void,
+        residual1: *const i16,
+        diff10: *const i16,
+        out_sign: *mut i32,
+        out_index: *mut i32,
+        out_sse: *mut u64,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_pick_wedge_fixed_sign(
+        bsize: i32,
+        hbd: i32,
+        bd: i32,
+        rdmult: i32,
+        dequant_ac: i32,
+        wedge_idx_cost: *const i32,
+        residual1: *const i16,
+        diff10: *const i16,
+        wedge_sign: i32,
+        out_index: *mut i32,
+        out_sse: *mut u64,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_estimate_wedge_sign(
+        bsize: i32,
+        hbd: i32,
+        bd: i32,
+        src: *const core::ffi::c_void,
+        src_stride: i32,
+        pred0: *const core::ffi::c_void,
+        stride0: i32,
+        pred1: *const core::ffi::c_void,
+        stride1: i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_pick_interinter_wedge(
+        bsize: i32,
+        hbd: i32,
+        bd: i32,
+        rdmult: i32,
+        dequant_ac: i32,
+        wedge_idx_cost: *const i32,
+        fast_wedge_sign_estimate: i32,
+        src: *const core::ffi::c_void,
+        src_stride: i32,
+        p0: *const core::ffi::c_void,
+        p1: *const core::ffi::c_void,
+        residual1: *const i16,
+        diff10: *const i16,
+        out_sign: *mut i32,
+        out_index: *mut i32,
+        out_sse: *mut u64,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_pick_interinter_seg(
+        bsize: i32,
+        hbd: i32,
+        bd: i32,
+        rdmult: i32,
+        dequant_ac: i32,
+        p0: *const core::ffi::c_void,
+        p1: *const core::ffi::c_void,
+        residual1: *const i16,
+        diff10: *const i16,
+        out_mask_type: *mut i32,
+        out_sse: *mut u64,
+        out_seg_mask: *mut u8,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_pick_interintra_wedge(
+        bsize: i32,
+        hbd: i32,
+        bd: i32,
+        rdmult: i32,
+        dequant_ac: i32,
+        wedge_idx_cost: *const i32,
+        src: *const core::ffi::c_void,
+        src_stride: i32,
+        p0: *const core::ffi::c_void,
+        p1: *const core::ffi::c_void,
+        out_index: *mut i32,
+        out_sse: *mut u64,
+    ) -> i64;
+}
+
+/// What the wedge picks return: `(rd, sign, index, sse)`.
+pub type RefWedgePick = (i64, i32, i32, u64);
+
+/// Reference `pick_wedge` (compound_type.c:189).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_ct_pick_wedge(
+    bsize: i32,
+    bd: i32,
+    rdmult: i32,
+    dequant_ac: i32,
+    wedge_idx_cost: &[i32],
+    src: RefPixels<'_>,
+    src_stride: i32,
+    p0: RefPixels<'_>,
+    residual1: &[i16],
+    diff10: &[i16],
+) -> RefWedgePick {
+    ref_init();
+    let (mut sign, mut index, mut sse) = (0i32, 0i32, 0u64);
+    let rd = unsafe {
+        shim_ct_pick_wedge(
+            bsize,
+            i32::from(src.is_hbd()),
+            bd,
+            rdmult,
+            dequant_ac,
+            wedge_idx_cost.as_ptr(),
+            src.as_ptr(),
+            src_stride,
+            p0.as_ptr(),
+            residual1.as_ptr(),
+            diff10.as_ptr(),
+            &mut sign,
+            &mut index,
+            &mut sse,
+        )
+    };
+    (rd, sign, index, sse)
+}
+
+/// Reference `pick_wedge_fixed_sign` (compound_type.c:257). Returns
+/// `(rd, index, sse)`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_ct_pick_wedge_fixed_sign(
+    bsize: i32,
+    hbd: bool,
+    bd: i32,
+    rdmult: i32,
+    dequant_ac: i32,
+    wedge_idx_cost: &[i32],
+    residual1: &[i16],
+    diff10: &[i16],
+    wedge_sign: i32,
+) -> (i64, i32, u64) {
+    ref_init();
+    let (mut index, mut sse) = (0i32, 0u64);
+    let rd = unsafe {
+        shim_ct_pick_wedge_fixed_sign(
+            bsize,
+            i32::from(hbd),
+            bd,
+            rdmult,
+            dequant_ac,
+            wedge_idx_cost.as_ptr(),
+            residual1.as_ptr(),
+            diff10.as_ptr(),
+            wedge_sign,
+            &mut index,
+            &mut sse,
+        )
+    };
+    (rd, index, sse)
+}
+
+/// Reference `estimate_wedge_sign` (compound_type.c:126).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_ct_estimate_wedge_sign(
+    bsize: i32,
+    bd: i32,
+    src: RefPixels<'_>,
+    src_stride: i32,
+    pred0: RefPixels<'_>,
+    stride0: i32,
+    pred1: RefPixels<'_>,
+    stride1: i32,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_ct_estimate_wedge_sign(
+            bsize,
+            i32::from(src.is_hbd()),
+            bd,
+            src.as_ptr(),
+            src_stride,
+            pred0.as_ptr(),
+            stride0,
+            pred1.as_ptr(),
+            stride1,
+        ) != 0
+    }
+}
+
+/// Reference `pick_interinter_wedge` (compound_type.c:299).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_ct_pick_interinter_wedge(
+    bsize: i32,
+    bd: i32,
+    rdmult: i32,
+    dequant_ac: i32,
+    wedge_idx_cost: &[i32],
+    fast_wedge_sign_estimate: bool,
+    src: RefPixels<'_>,
+    src_stride: i32,
+    p0: RefPixels<'_>,
+    p1: RefPixels<'_>,
+    residual1: &[i16],
+    diff10: &[i16],
+) -> RefWedgePick {
+    ref_init();
+    let (mut sign, mut index, mut sse) = (0i32, 0i32, 0u64);
+    let rd = unsafe {
+        shim_ct_pick_interinter_wedge(
+            bsize,
+            i32::from(src.is_hbd()),
+            bd,
+            rdmult,
+            dequant_ac,
+            wedge_idx_cost.as_ptr(),
+            i32::from(fast_wedge_sign_estimate),
+            src.as_ptr(),
+            src_stride,
+            p0.as_ptr(),
+            p1.as_ptr(),
+            residual1.as_ptr(),
+            diff10.as_ptr(),
+            &mut sign,
+            &mut index,
+            &mut sse,
+        )
+    };
+    (rd, sign, index, sse)
+}
+
+/// Reference `pick_interinter_seg` (compound_type.c:332). Returns
+/// `(rd, mask_type, sse, seg_mask)` where `seg_mask` is the `bw*bh` prefix of
+/// `xd->seg_mask` the blend actually reads.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_ct_pick_interinter_seg(
+    bsize: i32,
+    bd: i32,
+    rdmult: i32,
+    dequant_ac: i32,
+    p0: RefPixels<'_>,
+    p1: RefPixels<'_>,
+    residual1: &[i16],
+    diff10: &[i16],
+    n: usize,
+) -> (i64, i32, u64, Vec<u8>) {
+    ref_init();
+    let (mut mask_type, mut sse) = (0i32, 0u64);
+    let mut seg = vec![0u8; n];
+    let rd = unsafe {
+        shim_ct_pick_interinter_seg(
+            bsize,
+            i32::from(p0.is_hbd()),
+            bd,
+            rdmult,
+            dequant_ac,
+            p0.as_ptr(),
+            p1.as_ptr(),
+            residual1.as_ptr(),
+            diff10.as_ptr(),
+            &mut mask_type,
+            &mut sse,
+            seg.as_mut_ptr(),
+        )
+    };
+    (rd, mask_type, sse, seg)
+}
+
+/// Reference `pick_interintra_wedge` (compound_type.c:394). Returns
+/// `(rd, wedge_index)`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_ct_pick_interintra_wedge(
+    bsize: i32,
+    bd: i32,
+    rdmult: i32,
+    dequant_ac: i32,
+    wedge_idx_cost: &[i32],
+    src: RefPixels<'_>,
+    src_stride: i32,
+    p0: RefPixels<'_>,
+    p1: RefPixels<'_>,
+) -> (i64, i32) {
+    ref_init();
+    let (mut index, mut sse) = (0i32, 0u64);
+    let rd = unsafe {
+        shim_ct_pick_interintra_wedge(
+            bsize,
+            i32::from(src.is_hbd()),
+            bd,
+            rdmult,
+            dequant_ac,
+            wedge_idx_cost.as_ptr(),
+            src.as_ptr(),
+            src_stride,
+            p0.as_ptr(),
+            p1.as_ptr(),
+            &mut index,
+            &mut sse,
+        )
+    };
+    let _ = sse;
+    (rd, index)
+}
