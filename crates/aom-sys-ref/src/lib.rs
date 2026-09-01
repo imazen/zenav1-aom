@@ -24950,3 +24950,122 @@ pub fn ref_vbps_tu_force_skip_low_temp_var_small_sb(
         shim_vbps_tu_force_skip_low_temp_var_small_sb(variance_low.as_ptr(), mi_row, mi_col, bsize)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Rate-control initialisation: av1_primary_rc_init / av1_rc_init /
+// av1_rc_update_framerate out of the ARCHIVE (tier 1) via rcarchive_shim.c,
+// and the static set_gf_interval_range out of the verbatim copy (tier 1c) via
+// ratectrl_shim.c. Both take the same `RefRcInitCfg`.
+// ---------------------------------------------------------------------------
+
+/// Mirrors the C `ShimRcInitCfg` (shim/rc_state_params.h) field for field.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RefRcInitCfg {
+    /// `oxcf.rc_cfg.mode`.
+    pub rc_mode: i32,
+    /// `oxcf.rc_cfg.best_allowed_q`, a qindex.
+    pub best_allowed_q: i32,
+    /// `oxcf.rc_cfg.worst_allowed_q`, a qindex.
+    pub worst_allowed_q: i32,
+    /// `oxcf.rc_cfg.target_bandwidth`.
+    pub target_bandwidth: i64,
+    /// `oxcf.rc_cfg.vbrmin_section`.
+    pub vbrmin_section: i32,
+    /// `oxcf.rc_cfg.vbrmax_section`.
+    pub vbrmax_section: i32,
+    /// `oxcf.gf_cfg.min_gf_interval`.
+    pub min_gf_interval: i32,
+    /// `oxcf.gf_cfg.max_gf_interval`.
+    pub max_gf_interval: i32,
+    /// `oxcf.kf_cfg.fwd_kf_dist`.
+    pub fwd_kf_dist: i32,
+    /// `oxcf.frm_dim_cfg.width`.
+    pub width: i32,
+    /// `oxcf.frm_dim_cfg.height`.
+    pub height: i32,
+    /// `oxcf.input_cfg.init_framerate`.
+    pub init_framerate: f64,
+    /// `oxcf.tool_cfg.bit_depth`.
+    pub bit_depth: i32,
+    /// `oxcf.pass == AOM_RC_ONE_PASS`.
+    pub one_pass: i32,
+    /// `oxcf.target_seq_level_idx[0]`.
+    pub target_seq_level_idx0: i32,
+    /// `p_rc->starting_buffer_level`.
+    pub starting_buffer_level: i64,
+    /// `cpi->framerate` — the RUNNING frame rate, not `init_framerate`.
+    pub framerate: f64,
+    /// `cpi->ppi->lap_enabled`.
+    pub lap_enabled: i32,
+}
+
+extern "C" {
+    fn shim_rca_primary_rc_init(
+        c: *const RefRcInitCfg,
+        out_i: *mut i32,
+        out_d: *mut f64,
+        out_l: *mut i64,
+    ) -> i32;
+    fn shim_rca_rc_init(c: *const RefRcInitCfg, out: *mut i32) -> i32;
+    fn shim_rca_update_framerate(
+        c: *const RefRcInitCfg,
+        width: i32,
+        height: i32,
+        out: *mut i32,
+    ) -> i32;
+    fn shim_rcc_set_gf_interval_range(c: *const RefRcInitCfg, out: *mut i32) -> i32;
+}
+
+/// Reference libaom `av1_primary_rc_init` (ratectrl.c:460), out of the
+/// archive. Returns `(ints, doubles, longs)` in the layouts documented on the
+/// C wrapper: ints are `[baseline_gf_interval, this_key_frame_forced,
+/// next_key_frame_forced, ni_frames, avg_frame_qindex[KEY],
+/// avg_frame_qindex[INTER], last_q[KEY], last_q[INTER], rolling_target_bits,
+/// rolling_actual_bits]`; doubles are `[tot_q, avg_q,
+/// rate_correction_factors[0..4]]`; longs are `[total_actual_bits,
+/// total_target_bits, buffer_level, bits_off_target]`.
+pub fn ref_primary_rc_init(c: &RefRcInitCfg) -> ([i32; 10], [f64; 6], [i64; 4]) {
+    ref_init();
+    let mut out_i = [0i32; 10];
+    let mut out_d = [0f64; 6];
+    let mut out_l = [0i64; 4];
+    let r = unsafe {
+        shim_rca_primary_rc_init(c, out_i.as_mut_ptr(), out_d.as_mut_ptr(), out_l.as_mut_ptr())
+    };
+    assert_eq!(r, 0, "shim_rca_primary_rc_init allocation failed");
+    (out_i, out_d, out_l)
+}
+
+/// Reference libaom `av1_rc_init` (ratectrl.c:514), out of the archive.
+/// Entries 0..12 are the fields the port returns; 12..20 are the ones it does
+/// not, pre-poisoned to 1 so the test can measure that C zeroes them.
+pub fn ref_rc_init(c: &RefRcInitCfg) -> [i32; 20] {
+    ref_init();
+    let mut out = [0i32; 20];
+    let r = unsafe { shim_rca_rc_init(c, out.as_mut_ptr()) };
+    assert_eq!(r, 0, "shim_rca_rc_init allocation failed");
+    out
+}
+
+/// Reference libaom `av1_rc_update_framerate` (ratectrl.c:2721), out of the
+/// archive. Returns `[avg_frame_bandwidth, min_frame_bandwidth,
+/// max_frame_bandwidth, min_gf_interval, max_gf_interval,
+/// static_scene_max_gf_interval]`.
+pub fn ref_update_framerate(c: &RefRcInitCfg, width: i32, height: i32) -> [i32; 6] {
+    ref_init();
+    let mut out = [0i32; 6];
+    let r = unsafe { shim_rca_update_framerate(c, width, height, out.as_mut_ptr()) };
+    assert_eq!(r, 0, "shim_rca_update_framerate allocation failed");
+    out
+}
+
+/// Reference libaom `set_gf_interval_range` (ratectrl.c:2692, static).
+/// Returns `[min_gf_interval, max_gf_interval, static_scene_max_gf_interval]`.
+pub fn ref_rcc_set_gf_interval_range(c: &RefRcInitCfg) -> [i32; 3] {
+    ref_init();
+    let mut out = [0i32; 3];
+    let r = unsafe { shim_rcc_set_gf_interval_range(c, out.as_mut_ptr()) };
+    assert_eq!(r, 0, "shim_rcc_set_gf_interval_range allocation failed");
+    out
+}

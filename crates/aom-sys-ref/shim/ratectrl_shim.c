@@ -570,3 +570,27 @@ int shim_rcc_probe_regulate_q(const ShimRcStateParams *p,
   shim_rc_free(&s);
   return r;
 }
+
+/* set_gf_interval_range is file-static (tier 1c).
+ * out: 0 min_gf_interval, 1 max_gf_interval, 2 static_scene_max_gf_interval. */
+int shim_rcc_set_gf_interval_range(const ShimRcInitCfg *c, int32_t *out) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(AV1_COMP));
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(AV1_PRIMARY));
+  if (!cpi || !ppi) {
+    free(cpi); free(ppi);
+    return -1;
+  }
+  cpi->ppi = ppi;
+  cpi->oxcf.gf_cfg.min_gf_interval = c->min_gf_interval;
+  cpi->oxcf.gf_cfg.max_gf_interval = c->max_gf_interval;
+  cpi->oxcf.frm_dim_cfg.width = c->width;
+  cpi->oxcf.frm_dim_cfg.height = c->height;
+  cpi->framerate = c->framerate;
+  ppi->lap_enabled = c->lap_enabled;
+  set_gf_interval_range(cpi, &cpi->rc);
+  out[0] = cpi->rc.min_gf_interval;
+  out[1] = cpi->rc.max_gf_interval;
+  out[2] = cpi->rc.static_scene_max_gf_interval;
+  free(cpi); free(ppi);
+  return 0;
+}

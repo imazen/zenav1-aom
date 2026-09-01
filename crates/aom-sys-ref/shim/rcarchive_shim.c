@@ -165,3 +165,141 @@ int shim_rca_set_frame_target(const ShimRcStateParams *p, int target, int width,
   shim_rca_free(&s);
   return 0;
 }
+
+/* ======================================================================== *
+ * av1_primary_rc_init / av1_rc_init / av1_rc_update_framerate, out of the
+ * archive. Each builds the AV1EncoderConfig from ShimRcInitCfg and copies the
+ * written fields out; nothing else in the struct is read, so a field the port
+ * forgot shows up as a mismatch rather than as a silent zero.
+ * ======================================================================== */
+
+static void shim_rca_fill_oxcf(AV1EncoderConfig *oxcf,
+                               const ShimRcInitCfg *c) {
+  memset(oxcf, 0, sizeof(*oxcf));
+  oxcf->rc_cfg.mode = (enum aom_rc_mode)c->rc_mode;
+  oxcf->rc_cfg.best_allowed_q = c->best_allowed_q;
+  oxcf->rc_cfg.worst_allowed_q = c->worst_allowed_q;
+  oxcf->rc_cfg.target_bandwidth = c->target_bandwidth;
+  oxcf->rc_cfg.vbrmin_section = c->vbrmin_section;
+  oxcf->rc_cfg.vbrmax_section = c->vbrmax_section;
+  oxcf->gf_cfg.min_gf_interval = c->min_gf_interval;
+  oxcf->gf_cfg.max_gf_interval = c->max_gf_interval;
+  oxcf->kf_cfg.fwd_kf_dist = c->fwd_kf_dist;
+  oxcf->frm_dim_cfg.width = c->width;
+  oxcf->frm_dim_cfg.height = c->height;
+  oxcf->input_cfg.init_framerate = c->init_framerate;
+  oxcf->tool_cfg.bit_depth = (aom_bit_depth_t)c->bit_depth;
+  oxcf->pass = c->one_pass ? AOM_RC_ONE_PASS : AOM_RC_SECOND_PASS;
+  oxcf->target_seq_level_idx[0] = (AV1_LEVEL)c->target_seq_level_idx0;
+}
+
+/* out_i: 0 baseline_gf_interval, 1 this_key_frame_forced,
+ * 2 next_key_frame_forced, 3 ni_frames, 4 avg_frame_qindex[KEY],
+ * 5 avg_frame_qindex[INTER], 6 last_q[KEY], 7 last_q[INTER],
+ * 8 rolling_target_bits, 9 rolling_actual_bits.
+ * out_d: 0 tot_q, 1 avg_q, 2..5 rate_correction_factors.
+ * out_l: 0 total_actual_bits, 1 total_target_bits, 2 buffer_level,
+ *        3 bits_off_target. */
+int shim_rca_primary_rc_init(const ShimRcInitCfg *c, int32_t *out_i,
+                             double *out_d, int64_t *out_l) {
+  AV1EncoderConfig oxcf;
+  shim_rca_fill_oxcf(&oxcf, c);
+  PRIMARY_RATE_CONTROL *p_rc =
+      (PRIMARY_RATE_CONTROL *)calloc(1, sizeof(PRIMARY_RATE_CONTROL));
+  if (!p_rc) return -1;
+  p_rc->starting_buffer_level = c->starting_buffer_level;
+  av1_primary_rc_init(&oxcf, p_rc);
+  out_i[0] = p_rc->baseline_gf_interval;
+  out_i[1] = p_rc->this_key_frame_forced;
+  out_i[2] = p_rc->next_key_frame_forced;
+  out_i[3] = p_rc->ni_frames;
+  out_i[4] = p_rc->avg_frame_qindex[KEY_FRAME];
+  out_i[5] = p_rc->avg_frame_qindex[INTER_FRAME];
+  out_i[6] = p_rc->last_q[KEY_FRAME];
+  out_i[7] = p_rc->last_q[INTER_FRAME];
+  out_i[8] = p_rc->rolling_target_bits;
+  out_i[9] = p_rc->rolling_actual_bits;
+  out_d[0] = p_rc->tot_q;
+  out_d[1] = p_rc->avg_q;
+  for (int i = 0; i < RATE_FACTOR_LEVELS; ++i)
+    out_d[2 + i] = p_rc->rate_correction_factors[i];
+  out_l[0] = p_rc->total_actual_bits;
+  out_l[1] = p_rc->total_target_bits;
+  out_l[2] = p_rc->buffer_level;
+  out_l[3] = p_rc->bits_off_target;
+  free(p_rc);
+  return 0;
+}
+
+/* out: 0 frames_since_key, 1 frames_to_fwd_kf, 2 frames_till_gf_update_due,
+ * 3 ni_av_qi, 4 ni_tot_qi, 5 min_gf_interval, 6 max_gf_interval,
+ * 7 avg_frame_low_motion, 8 resize_avg_qp, 9 resize_buffer_underflow,
+ * 10 resize_count, 11 frames_since_scene_change, then the fields the port
+ * does NOT return, so the test can assert C leaves them zero:
+ * 12 resize_state, 13 rtc_external_ratectrl, 14 frame_level_fast_extra_bits,
+ * 15 use_external_qp_one_pass, 16 percent_blocks_inactive, 17 force_max_q,
+ * 18 postencode_drop, 19 last_frame_low_source_sad. */
+int shim_rca_rc_init(const ShimRcInitCfg *c, int32_t *out) {
+  AV1EncoderConfig oxcf;
+  shim_rca_fill_oxcf(&oxcf, c);
+  RATE_CONTROL *rc = (RATE_CONTROL *)calloc(1, sizeof(RATE_CONTROL));
+  if (!rc) return -1;
+  /* Pre-poison every field the port claims C zeroes, so "C left it zero" is a
+   * measurement rather than an artefact of the calloc. */
+  rc->resize_state = 1;
+  rc->rtc_external_ratectrl = 1;
+  rc->frame_level_fast_extra_bits = 1;
+  rc->use_external_qp_one_pass = 1;
+  rc->percent_blocks_inactive = 1;
+  rc->force_max_q = 1;
+  rc->postencode_drop = 1;
+  rc->last_frame_low_source_sad = 1;
+  av1_rc_init(&oxcf, rc);
+  out[0] = rc->frames_since_key;
+  out[1] = rc->frames_to_fwd_kf;
+  out[2] = rc->frames_till_gf_update_due;
+  out[3] = rc->ni_av_qi;
+  out[4] = rc->ni_tot_qi;
+  out[5] = rc->min_gf_interval;
+  out[6] = rc->max_gf_interval;
+  out[7] = rc->avg_frame_low_motion;
+  out[8] = rc->resize_avg_qp;
+  out[9] = rc->resize_buffer_underflow;
+  out[10] = rc->resize_count;
+  out[11] = rc->frames_since_scene_change;
+  out[12] = (int32_t)rc->resize_state;
+  out[13] = rc->rtc_external_ratectrl;
+  out[14] = rc->frame_level_fast_extra_bits;
+  out[15] = rc->use_external_qp_one_pass;
+  out[16] = rc->percent_blocks_inactive;
+  out[17] = rc->force_max_q;
+  out[18] = rc->postencode_drop;
+  out[19] = rc->last_frame_low_source_sad;
+  free(rc);
+  return 0;
+}
+
+/* out: 0 avg_frame_bandwidth, 1 min_frame_bandwidth, 2 max_frame_bandwidth,
+ * 3 min_gf_interval, 4 max_gf_interval, 5 static_scene_max_gf_interval. */
+int shim_rca_update_framerate(const ShimRcInitCfg *c, int width, int height,
+                              int32_t *out) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(AV1_COMP));
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(AV1_PRIMARY));
+  if (!cpi || !ppi) {
+    free(cpi); free(ppi);
+    return -1;
+  }
+  cpi->ppi = ppi;
+  shim_rca_fill_oxcf(&cpi->oxcf, c);
+  cpi->framerate = c->framerate;
+  ppi->lap_enabled = c->lap_enabled;
+  av1_rc_update_framerate(cpi, width, height);
+  out[0] = cpi->rc.avg_frame_bandwidth;
+  out[1] = cpi->rc.min_frame_bandwidth;
+  out[2] = cpi->rc.max_frame_bandwidth;
+  out[3] = cpi->rc.min_gf_interval;
+  out[4] = cpi->rc.max_gf_interval;
+  out[5] = cpi->rc.static_scene_max_gf_interval;
+  free(cpi); free(ppi);
+  return 0;
+}
