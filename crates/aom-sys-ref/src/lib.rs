@@ -20248,3 +20248,109 @@ pub fn ref_rdopt_skip_interp_filter_search(
         ) != 0
     }
 }
+
+// --- rdopt.c: the OBMC target --------------------------------------------
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_calc_target_weighted_pred(
+        bsize: i32,
+        mi_row: i32,
+        mi_col: i32,
+        xd_width: i32,
+        xd_height: i32,
+        up_available: i32,
+        left_available: i32,
+        rows: i32,
+        cols: i32,
+        mi_rows: i32,
+        mi_cols: i32,
+        grid_bsize: *const i32,
+        grid_ref0: *const i32,
+        is_hbd: i32,
+        above: *const u16,
+        above_stride: i32,
+        left: *const u16,
+        left_stride: i32,
+        src: *const u16,
+        src_stride: i32,
+        wsrc_out: *mut i32,
+        mask_out: *mut i32,
+    ) -> i32;
+}
+
+/// The mi grid and geometry [`ref_rdopt_calc_target_weighted_pred`] needs.
+pub struct ObmcGrid<'a> {
+    /// Rows and columns of the mi grid the shim builds.
+    pub rows: usize,
+    /// See [`Self::rows`].
+    pub cols: usize,
+    /// `mbmi->bsize` per mi, row-major.
+    pub bsize: &'a [i32],
+    /// `mbmi->ref_frame[0]` per mi (`> 0` makes it inter, i.e. overlappable).
+    pub ref0: &'a [i32],
+}
+
+/// Reference `calc_target_weighted_pred` (rdopt.c:6888) — drives the two
+/// per-neighbour visitors (`:6752`, `:6800`) through libaom's own
+/// `foreach_overlappable_nb_*` walks. Returns `(wsrc, mask)`, `bw * bh` each.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_calc_target_weighted_pred(
+    bsize: i32,
+    mi_row: i32,
+    mi_col: i32,
+    xd_width: i32,
+    xd_height: i32,
+    up_available: bool,
+    left_available: bool,
+    grid: &ObmcGrid<'_>,
+    mi_rows: i32,
+    mi_cols: i32,
+    is_hbd: bool,
+    above: &[u16],
+    above_stride: usize,
+    left: &[u16],
+    left_stride: usize,
+    src: &[u16],
+    src_stride: usize,
+) -> (Vec<i32>, Vec<i32>) {
+    ref_init();
+    let bw = (xd_width << 2) as usize;
+    let bh = (xd_height << 2) as usize;
+    let mut wsrc = vec![0i32; bw * bh];
+    let mut mask = vec![0i32; bw * bh];
+    // The shim narrows to uint8 over `stride * (bh + 64)` bytes for the lowbd
+    // arm, so the buffers must be at least that long.
+    let need = |s: usize| s * (bh + 64);
+    assert!(above.len() >= need(above_stride));
+    assert!(left.len() >= need(left_stride));
+    assert!(src.len() >= need(src_stride));
+    let n = unsafe {
+        shim_rdopt_calc_target_weighted_pred(
+            bsize,
+            mi_row,
+            mi_col,
+            xd_width,
+            xd_height,
+            i32::from(up_available),
+            i32::from(left_available),
+            grid.rows as i32,
+            grid.cols as i32,
+            mi_rows,
+            mi_cols,
+            grid.bsize.as_ptr(),
+            grid.ref0.as_ptr(),
+            i32::from(is_hbd),
+            above.as_ptr(),
+            above_stride as i32,
+            left.as_ptr(),
+            left_stride as i32,
+            src.as_ptr(),
+            src_stride as i32,
+            wsrc.as_mut_ptr(),
+            mask.as_mut_ptr(),
+        )
+    };
+    assert_eq!(n as usize, bw * bh);
+    (wsrc, mask)
+}

@@ -1249,3 +1249,121 @@ int shim_rdopt_skip_interp_filter_search(int encoding_mode, int reference_mode,
   free(cpi);
   return r;
 }
+
+/* ======================================================================== *
+ * 13. `calc_target_weighted_pred` (rdopt.c:6888) — the OBMC TARGET.
+ *
+ * One driver covers all three functions: the two per-neighbour visitors
+ * (`calc_target_weighted_pred_above` :6752, `_left` :6800) are only reachable
+ * through the `foreach_overlappable_nb_{above,left}` walks that this function
+ * runs, so driving it exercises the walks, the visitors and the surrounding
+ * scaling in one differential.
+ *
+ * The mi grid is REAL: `rows * cols` MB_MODE_INFO cells with per-cell bsize
+ * and reference frame, so the walk's `mi_size_wide[bsize]` stepping, its
+ * 4-wide "move to the chroma half of the pair" fixup, and
+ * `is_neighbor_overlappable` all run on C's own code path rather than on an
+ * assumption about it.
+ *
+ * Pixels cross as uint16 for both bit depths; the lowbd arm narrows to uint8
+ * inside, because C reads `uint8_t *` there and `CONVERT_TO_SHORTPTR` in the
+ * hbd arm.
+ * ======================================================================== */
+
+int shim_rdopt_calc_target_weighted_pred(
+    int bsize, int mi_row, int mi_col, int xd_width, int xd_height,
+    int up_available, int left_available, int rows, int cols, int mi_rows,
+    int mi_cols, const int *grid_bsize, const int *grid_ref0, int is_hbd,
+    const uint16_t *above, int above_stride, const uint16_t *left,
+    int left_stride, const uint16_t *src, int src_stride, int32_t *wsrc_out,
+    int32_t *mask_out) {
+  const int bw = xd_width << MI_SIZE_LOG2;
+  const int bh = xd_height << MI_SIZE_LOG2;
+  const int n = rows * cols;
+
+  MB_MODE_INFO *store = (MB_MODE_INFO *)calloc(n, sizeof(*store));
+  MB_MODE_INFO **grid = (MB_MODE_INFO **)calloc(n, sizeof(*grid));
+  for (int i = 0; i < n; ++i) {
+    store[i].bsize = (BLOCK_SIZE)grid_bsize[i];
+    store[i].ref_frame[0] = (MV_REFERENCE_FRAME)grid_ref0[i];
+    store[i].ref_frame[1] = NONE_FRAME;
+    grid[i] = &store[i];
+  }
+  MB_MODE_INFO *cur = (MB_MODE_INFO *)calloc(1, sizeof(*cur));
+  cur->bsize = (BLOCK_SIZE)bsize;
+  const int cur_idx = mi_row * cols + mi_col;
+  grid[cur_idx] = cur;
+
+  AV1_COMMON *cm = (AV1_COMMON *)calloc(1, sizeof(*cm));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  cm->mi_params.mi_rows = mi_rows;
+  cm->mi_params.mi_cols = mi_cols;
+  /* `av1_num_planes(cm)` reads seq_params->monochrome; the walk only passes
+   * that count through to a visitor that ignores it, but it must not
+   * dereference NULL. */
+  SequenceHeader seq;
+  memset(&seq, 0, sizeof(seq));
+  cm->seq_params = &seq;
+
+  MACROBLOCKD *xd = &x->e_mbd;
+  xd->mi = grid + cur_idx;
+  xd->mi_stride = cols;
+  xd->mi_row = mi_row;
+  xd->mi_col = mi_col;
+  xd->width = xd_width;
+  xd->height = xd_height;
+  xd->up_available = up_available;
+  xd->left_available = left_available;
+  xd->plane[0].subsampling_x = 0;
+  xd->plane[0].subsampling_y = 0;
+
+  /* `is_cur_buf_hbd(xd)` reads xd->cur_buf->flags. cur_frame is NULL on a
+   * calloc'd AV1_COMMON, so a standalone YV12 buffer is used instead. */
+  YV12_BUFFER_CONFIG buf;
+  memset(&buf, 0, sizeof(buf));
+  buf.flags = is_hbd ? YV12_FLAG_HIGHBITDEPTH : 0;
+  xd->cur_buf = &buf;
+
+  /* Plane / neighbour buffers. For lowbd C dereferences uint8_t*, so the
+   * uint16 inputs are narrowed into scratch buffers first. */
+  uint8_t *above8 = NULL, *left8 = NULL, *src8 = NULL;
+  const int above_n = above_stride * (bh + 64);
+  const int left_n = left_stride * (bh + 64);
+  const int src_n = src_stride * (bh + 64);
+  if (!is_hbd) {
+    above8 = (uint8_t *)malloc(above_n);
+    left8 = (uint8_t *)malloc(left_n);
+    src8 = (uint8_t *)malloc(src_n);
+    for (int i = 0; i < above_n; ++i) above8[i] = (uint8_t)above[i];
+    for (int i = 0; i < left_n; ++i) left8[i] = (uint8_t)left[i];
+    for (int i = 0; i < src_n; ++i) src8[i] = (uint8_t)src[i];
+    x->plane[0].src.buf = src8;
+  } else {
+    x->plane[0].src.buf = CONVERT_TO_BYTEPTR(src);
+  }
+  x->plane[0].src.stride = src_stride;
+
+  int32_t *wsrc = (int32_t *)calloc(bw * bh, sizeof(*wsrc));
+  int32_t *mask = (int32_t *)calloc(bw * bh, sizeof(*mask));
+  x->obmc_buffer.wsrc = wsrc;
+  x->obmc_buffer.mask = mask;
+
+  calc_target_weighted_pred(
+      cm, x, xd, is_hbd ? CONVERT_TO_BYTEPTR(above) : above8, above_stride,
+      is_hbd ? CONVERT_TO_BYTEPTR(left) : left8, left_stride);
+
+  memcpy(wsrc_out, wsrc, (size_t)bw * bh * sizeof(*wsrc));
+  memcpy(mask_out, mask, (size_t)bw * bh * sizeof(*mask));
+
+  free(mask);
+  free(wsrc);
+  free(src8);
+  free(left8);
+  free(above8);
+  free(x);
+  free(cm);
+  free(cur);
+  free(grid);
+  free(store);
+  return bw * bh;
+}
