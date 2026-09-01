@@ -846,3 +846,189 @@ impl FirstpassInfo {
         }
     }
 }
+
+// ===========================================================================
+// The per-block helpers: block-size selection and the prediction-error MSE.
+// ===========================================================================
+
+/// `get_bsize` (firstpass.c:335, static) — the block size to analyse the
+/// first-pass unit at `(unit_row, unit_col)` with.
+///
+/// A unit whose second half falls outside the frame is analysed at half size
+/// on that axis, so an edge unit measures only real pixels instead of
+/// averaging in the replicated border. Both halves out of frame gives the
+/// quarter-size `PARTITION_SPLIT` subsize.
+///
+/// The test is `unit_width * unit_col + unit_width / 2 >= mi_cols`, i.e. the
+/// unit is "half width" when its **midpoint** is outside — not when its right
+/// edge is. A unit straddling the boundary by one mi is still analysed full
+/// width.
+///
+/// C derives the square-size index from `AOMMAX(block_size_wide,
+/// block_size_high)`, which for a rectangular `fp_block_size` is NOT
+/// `get_sqr_bsize_idx` — the shared
+/// [`aom_dsp::entropy::partition::get_partition_subsize`] would return
+/// `BLOCK_INVALID` there. It cannot happen (`get_fp_block_size`,
+/// firstpass.h:554, returns only `BLOCK_8X8` or `BLOCK_16X16`), but the
+/// mapping is written C's way rather than delegated, so the two do not
+/// silently disagree if a rectangular size ever arrives.
+///
+/// # Panics
+/// If `fp_block_size`'s larger dimension is not one of 4/8/16/32/64/128 —
+/// C's `default:` arm asserts and then falls through with
+/// `square_block_size` left at 0, which would index the wrong table row.
+#[must_use]
+pub fn get_bsize(
+    mi_rows: i32,
+    mi_cols: i32,
+    fp_block_size: i32,
+    unit_row: i32,
+    unit_col: i32,
+) -> i32 {
+    let (w_log2, h_log2) = mi_size_log2(fp_block_size);
+    let unit_width = 1i32 << w_log2;
+    let unit_height = 1i32 << h_log2;
+    let is_half_width = unit_width * unit_col + unit_width / 2 >= mi_cols;
+    let is_half_height = unit_height * unit_row + unit_height / 2 >= mi_rows;
+
+    // `block_size_wide` / `block_size_high` are the mi dimensions times
+    // MI_SIZE, so the max dimension is `4 << max(w_log2, h_log2)`.
+    let max_dimension = MI_SIZE << w_log2.max(h_log2);
+    let square_block_size = match max_dimension {
+        4 => 0,
+        8 => 1,
+        16 => 2,
+        32 => 3,
+        64 => 4,
+        128 => 5,
+        other => panic!("first pass block size {other} is not supported (firstpass.c:356)"),
+    };
+    // PARTITION_HORZ = 1, PARTITION_VERT = 2, PARTITION_SPLIT = 3.
+    // The square-size index is what `get_partition_subsize` derives
+    // internally, so it is fed the square BLOCK_SIZE of that index rather
+    // than `fp_block_size` itself.
+    const SQUARE_BSIZE: [i32; 6] = [0, 3, 6, 9, 12, 15];
+    let sq = SQUARE_BSIZE[square_block_size] as usize;
+    if is_half_width && is_half_height {
+        aom_dsp::entropy::partition::get_partition_subsize(sq, 3)
+    } else if is_half_width {
+        aom_dsp::entropy::partition::get_partition_subsize(sq, 2)
+    } else if is_half_height {
+        aom_dsp::entropy::partition::get_partition_subsize(sq, 1)
+    } else {
+        fp_block_size
+    }
+}
+
+/// The `(width, height)` the MSE kernel for `bsize` measures over —
+/// `get_block_variance_fn` (firstpass.c:198, static) resolved to dimensions
+/// instead of a function pointer.
+///
+/// C returns one of four `aom_mseWxH` kernels and **falls through to 16x16
+/// for every size other than 8x8 / 16x8 / 8x16**, including sizes larger than
+/// 16x16. That default is not a safety net: `get_bsize` can only produce
+/// those four for a `BLOCK_16X16` first pass, but if it ever produced
+/// `BLOCK_4X4` the measurement would silently cover 16x16 pixels. Reproduced
+/// as written.
+#[must_use]
+fn block_variance_dims(bsize: i32) -> (usize, usize) {
+    match bsize {
+        3 => (8, 8),   // BLOCK_8X8
+        5 => (16, 8),  // BLOCK_16X8
+        4 => (8, 16),  // BLOCK_8X16
+        _ => (16, 16), // C's `default: return aom_mse16x16`
+    }
+}
+
+/// `get_prediction_error` (firstpass.c:207, static) — the sum of squared
+/// error between a source block and its prediction, lowbd.
+///
+/// C's `aom_mseWxH` returns the `sse` its `variance()` computed; the mean is
+/// never taken despite the name. `src`/`ref` are `buf_2d`s, i.e. a pointer
+/// plus a stride, so they are slices plus strides here.
+#[must_use]
+pub fn get_prediction_error(
+    bsize: i32,
+    src: &[u8],
+    src_stride: usize,
+    reference: &[u8],
+    ref_stride: usize,
+) -> u32 {
+    let (w, h) = block_variance_dims(bsize);
+    aom_dsp::dist::variance(src, src_stride, reference, ref_stride, w, h).1
+}
+
+/// `highbd_get_prediction_error` (firstpass.c:244, static) — the highbd
+/// counterpart.
+///
+/// The bit depth selects between three kernel families that differ by more
+/// than the input width: `aom_highbd_10_mse*` rounds `sse` down by 4 bits and
+/// `aom_highbd_12_mse*` by 8, so the returned error is in 8-bit units at
+/// every depth. A port that only widened the pixels would be off by 16x or
+/// 256x.
+///
+/// C's `switch (bd)` has `default:` on the **8-bit** arm, so any depth other
+/// than 10 or 12 takes it — including nonsense values. Reproduced.
+///
+/// # Contract: a bd-8 highbd plane holds 8-bit samples
+/// MEASURED on this build: with 16-bit samples in `0..=1023` at `bd == 8`,
+/// C's `aom_highbd_8_mse16x16` returns 2_741_760 where the scalar definition
+/// (and this function) give 42_944_000 — its kernel accumulates in a width
+/// that assumes 8-bit samples. At `bd == 10` and `bd == 12` the same inputs
+/// agree exactly. The encoder cannot reach the divergent input (a highbd
+/// plane at bit depth 8 holds 8-bit values), so this is a contract on the
+/// caller, not a divergence to reconcile — see
+/// `highbd_get_prediction_error_matches_c`, which bounds its sweep by it and
+/// says so.
+#[must_use]
+pub fn highbd_get_prediction_error(
+    bsize: i32,
+    src: &[u16],
+    src_stride: usize,
+    reference: &[u16],
+    ref_stride: usize,
+    bd: u8,
+) -> u32 {
+    let (w, h) = block_variance_dims(bsize);
+    let bd = if bd == 10 || bd == 12 { bd } else { 8 };
+    aom_dsp::dist::highbd_variance(src, src_stride, reference, ref_stride, w, h, bd).1
+}
+
+/// `get_prediction_error_bitdepth` (firstpass.c:618, static) — the dispatch
+/// between the two above.
+///
+/// `is_high_bitdepth` and `bitdepth` are separate arguments in C and this
+/// keeps them separate: a highbd *buffer* at bit depth 8 is a real
+/// configuration (`aom_highbd_8_mse*` exists precisely for it), so the flag
+/// is not derivable from the depth.
+#[must_use]
+pub fn get_prediction_error_bitdepth(
+    bitdepth: u8,
+    bsize: i32,
+    src: HighbdOrLowbd<'_>,
+    reference: HighbdOrLowbd<'_>,
+    src_stride: usize,
+    ref_stride: usize,
+) -> u32 {
+    match (src, reference) {
+        (HighbdOrLowbd::Highbd(s), HighbdOrLowbd::Highbd(r)) => {
+            highbd_get_prediction_error(bsize, s, src_stride, r, ref_stride, bitdepth)
+        }
+        (HighbdOrLowbd::Lowbd(s), HighbdOrLowbd::Lowbd(r)) => {
+            get_prediction_error(bsize, s, src_stride, r, ref_stride)
+        }
+        _ => panic!("source and reference must have the same pixel width"),
+    }
+}
+
+/// A `buf_2d`'s pixels at one of the two widths the encoder uses. C carries
+/// this as a `uint8_t *` plus a flag and casts; the pair is an enum here so
+/// the mismatched case is a compile-time-visible arm rather than a silent
+/// reinterpretation.
+#[derive(Clone, Copy, Debug)]
+pub enum HighbdOrLowbd<'a> {
+    /// An 8-bit plane.
+    Lowbd(&'a [u8]),
+    /// A 10/12-bit plane (also used at bit depth 8 in a highbd build).
+    Highbd(&'a [u16]),
+}

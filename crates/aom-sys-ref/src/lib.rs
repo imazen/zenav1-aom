@@ -27241,3 +27241,133 @@ pub fn ref_new_framerate(framerate: f64) -> f64 {
     assert!(r > 0.0, "shim_new_framerate allocation failed");
     r
 }
+
+// ---------------------------------------------------------------------------
+// fp_shim.c (cont.) — the first pass's per-block helpers. **Tier 1c.**
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn shim_fp_get_prediction_error(
+        bsize: i32,
+        src: *const u8,
+        src_stride: i32,
+        r: *const u8,
+        ref_stride: i32,
+    ) -> u32;
+    fn shim_fp_highbd_get_prediction_error(
+        bsize: i32,
+        src: *const u16,
+        src_stride: i32,
+        r: *const u16,
+        ref_stride: i32,
+        bd: i32,
+    ) -> u32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_fp_get_prediction_error_bitdepth(
+        is_high_bitdepth: i32,
+        bitdepth: i32,
+        bsize: i32,
+        src16: *const u16,
+        src8: *const u8,
+        src_stride: i32,
+        ref16: *const u16,
+        ref8: *const u8,
+        ref_stride: i32,
+    ) -> i32;
+    fn shim_fp_get_bsize2(
+        mi_rows: i32,
+        mi_cols: i32,
+        fp_block_size: i32,
+        unit_row: i32,
+        unit_col: i32,
+    ) -> i32;
+}
+
+/// Reference libaom `get_prediction_error` (firstpass.c:207, static).
+/// **Tier 1c.**
+#[must_use]
+pub fn ref_fp_get_prediction_error(
+    bsize: i32,
+    src: &[u8],
+    src_stride: i32,
+    reference: &[u8],
+    ref_stride: i32,
+) -> u32 {
+    ref_init();
+    unsafe {
+        shim_fp_get_prediction_error(
+            bsize,
+            src.as_ptr(),
+            src_stride,
+            reference.as_ptr(),
+            ref_stride,
+        )
+    }
+}
+
+/// Reference libaom `highbd_get_prediction_error` (firstpass.c:244, static).
+/// **Tier 1c.**
+#[must_use]
+pub fn ref_fp_highbd_get_prediction_error(
+    bsize: i32,
+    src: &[u16],
+    src_stride: i32,
+    reference: &[u16],
+    ref_stride: i32,
+    bd: i32,
+) -> u32 {
+    ref_init();
+    unsafe {
+        shim_fp_highbd_get_prediction_error(
+            bsize,
+            src.as_ptr(),
+            src_stride,
+            reference.as_ptr(),
+            ref_stride,
+            bd,
+        )
+    }
+}
+
+/// Reference libaom `get_prediction_error_bitdepth` (firstpass.c:618,
+/// static). **Tier 1c.** Pass the pair that matches `is_high_bitdepth`.
+#[must_use]
+pub fn ref_fp_get_prediction_error_bitdepth(
+    is_high_bitdepth: bool,
+    bitdepth: i32,
+    bsize: i32,
+    src16: &[u16],
+    src8: &[u8],
+    src_stride: i32,
+    ref16: &[u16],
+    ref8: &[u8],
+    ref_stride: i32,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_fp_get_prediction_error_bitdepth(
+            i32::from(is_high_bitdepth),
+            bitdepth,
+            bsize,
+            src16.as_ptr(),
+            src8.as_ptr(),
+            src_stride,
+            ref16.as_ptr(),
+            ref8.as_ptr(),
+            ref_stride,
+        )
+    }
+}
+
+/// Reference libaom `get_bsize` (firstpass.c:335, static). **Tier 1c.**
+#[must_use]
+pub fn ref_fp_get_bsize(
+    mi_rows: i32,
+    mi_cols: i32,
+    fp_block_size: i32,
+    unit_row: i32,
+    unit_col: i32,
+) -> i32 {
+    ref_init();
+    unsafe { shim_fp_get_bsize2(mi_rows, mi_cols, fp_block_size, unit_row, unit_col) }
+}

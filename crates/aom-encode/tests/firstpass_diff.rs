@@ -993,3 +993,267 @@ fn firstpass_info_move_cur_index_stops_one_short() {
     assert_eq!(info.move_cur_index(), Err(FirstpassInfoError::Failed));
     assert!(info.peek(0).is_some());
 }
+
+// ---------------------------------------------------------------------------
+// 5. The per-block helpers. **Tier 1c.**
+// ---------------------------------------------------------------------------
+
+use aom_encode::firstpass::{
+    HighbdOrLowbd, get_bsize, get_prediction_error, get_prediction_error_bitdepth,
+    highbd_get_prediction_error,
+};
+use aom_sys_ref::{
+    ref_fp_get_bsize, ref_fp_get_prediction_error, ref_fp_get_prediction_error_bitdepth,
+    ref_fp_highbd_get_prediction_error,
+};
+
+#[test]
+fn get_bsize_matches_c() {
+    let mut saw_full = false;
+    let mut saw_half_w = false;
+    let mut saw_half_h = false;
+    let mut saw_split = false;
+    // The two sizes `get_fp_block_size` can return (firstpass.h:554), plus
+    // two more square sizes so the square-index mapping is exercised past the
+    // pair the encoder uses.
+    for &fp_block_size in &[3i32, 6, 9, 12] {
+        for mi_rows in [1i32, 2, 4, 7, 8, 16, 33] {
+            for mi_cols in [1i32, 2, 4, 7, 8, 16, 33] {
+                for unit_row in 0..6i32 {
+                    for unit_col in 0..6i32 {
+                        let got = get_bsize(mi_rows, mi_cols, fp_block_size, unit_row, unit_col);
+                        let want =
+                            ref_fp_get_bsize(mi_rows, mi_cols, fp_block_size, unit_row, unit_col);
+                        assert_eq!(
+                            got, want,
+                            "bsize={fp_block_size} {mi_rows}x{mi_cols} unit=({unit_row},{unit_col})"
+                        );
+                        if got == fp_block_size {
+                            saw_full = true;
+                        }
+                        // PARTITION_VERT halves the width, HORZ the height,
+                        // SPLIT both — identified by comparing against the
+                        // C answer, not by re-deriving the predicate.
+                        let vert = ref_fp_get_bsize(1 << 30, mi_cols, fp_block_size, 0, unit_col);
+                        let horz = ref_fp_get_bsize(mi_rows, 1 << 30, fp_block_size, unit_row, 0);
+                        if want == vert && want != fp_block_size {
+                            saw_half_w = true;
+                        }
+                        if want == horz && want != fp_block_size {
+                            saw_half_h = true;
+                        }
+                        if want != fp_block_size && want != vert && want != horz {
+                            saw_split = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(saw_full, "the full-size arm was never reached");
+    assert!(saw_half_w, "the half-width arm was never reached");
+    assert!(saw_half_h, "the half-height arm was never reached");
+    assert!(saw_split, "the split arm was never reached");
+}
+
+#[test]
+#[should_panic(expected = "is not a BLOCK_SIZE")]
+fn get_bsize_rejects_an_unsupported_block_size() {
+    // Every one of the 22 real BLOCK_SIZEs has a max dimension in
+    // {4, 8, 16, 32, 64, 128}, so C's `default: assert(0)` arm in `get_bsize`
+    // is unreachable from a valid size — the port's guard fires one level
+    // earlier, in `mi_size_log2`, on an index past BLOCK_SIZES_ALL. Under
+    // `-DNDEBUG` C would read past its own tables here.
+    let _ = get_bsize(16, 16, 22, 0, 0);
+}
+
+/// Deterministic 8-bit plane content with a controllable amount of structure,
+/// so the MSE is neither zero nor saturated.
+fn fill_plane(rng: &mut Lcg, n: usize, spread: u32) -> Vec<u8> {
+    (0..n).map(|_| (rng.next_u32() % spread) as u8).collect()
+}
+
+#[test]
+fn get_prediction_error_matches_c() {
+    let mut rng = Lcg(0x5eed_0120);
+    let mut saw_nonzero = false;
+    let mut saw_zero = false;
+    // The four block sizes `get_bsize` can produce for a 16x16 first pass,
+    // plus one that falls into C's 16x16 `default:` arm (BLOCK_4X4 = 0), so
+    // the fall-through is tested rather than assumed.
+    for &bsize in &[3i32, 5, 4, 6, 0] {
+        for &(src_stride, ref_stride) in &[(16usize, 16usize), (32, 24), (17, 64)] {
+            for trial in 0..300 {
+                // 16x16 is the largest kernel; give both planes room for the
+                // stride and a full 16 rows.
+                let src = fill_plane(&mut rng, src_stride * 32 + 64, 256);
+                let reference = if trial % 7 == 0 {
+                    // An identical block, which must give sse == 0.
+                    let mut r = vec![0u8; ref_stride * 32 + 64];
+                    for y in 0..16 {
+                        for x in 0..16 {
+                            r[y * ref_stride + x] = src[y * src_stride + x];
+                        }
+                    }
+                    r
+                } else {
+                    fill_plane(&mut rng, ref_stride * 32 + 64, 256)
+                };
+                let got = get_prediction_error(bsize, &src, src_stride, &reference, ref_stride);
+                let want = ref_fp_get_prediction_error(
+                    bsize,
+                    &src,
+                    src_stride as i32,
+                    &reference,
+                    ref_stride as i32,
+                );
+                assert_eq!(
+                    got, want,
+                    "bsize={bsize} strides=({src_stride},{ref_stride}) trial={trial}"
+                );
+                if got == 0 {
+                    saw_zero = true;
+                } else {
+                    saw_nonzero = true;
+                }
+            }
+        }
+    }
+    assert!(saw_zero, "an identical block never gave sse == 0");
+    assert!(saw_nonzero, "every block gave sse == 0");
+}
+
+#[test]
+fn highbd_get_prediction_error_matches_c() {
+    let mut rng = Lcg(0x5eed_0121);
+    let mut per_bd_saw_difference = false;
+    for &bd in &[8i32, 10, 12] {
+        let max = 1u32 << bd;
+        for &bsize in &[3i32, 5, 4, 6] {
+            for &(src_stride, ref_stride) in &[(16usize, 16usize), (40, 23)] {
+                for _ in 0..200 {
+                    let src: Vec<u16> = (0..src_stride * 32 + 64)
+                        .map(|_| (rng.next_u32() % max) as u16)
+                        .collect();
+                    let reference: Vec<u16> = (0..ref_stride * 32 + 64)
+                        .map(|_| (rng.next_u32() % max) as u16)
+                        .collect();
+                    let got = highbd_get_prediction_error(
+                        bsize, &src, src_stride, &reference, ref_stride, bd as u8,
+                    );
+                    let want = ref_fp_highbd_get_prediction_error(
+                        bsize,
+                        &src,
+                        src_stride as i32,
+                        &reference,
+                        ref_stride as i32,
+                        bd,
+                    );
+                    assert_eq!(
+                        got, want,
+                        "bd={bd} bsize={bsize} strides=({src_stride},{ref_stride})"
+                    );
+                }
+            }
+        }
+    }
+    // The three depths must NOT be the same function: 10 shifts sse down by
+    // 4 bits and 12 by 8. Feed one fixed pair to all three.
+    //
+    // The samples stay in 0..=255, and that bound is the CONTRACT, not
+    // caution. MEASURED on this build: with samples in 0..=1023 at
+    // `bd == 8`, C's `aom_highbd_8_mse16x16` returns 2_741_760 where the
+    // scalar definition (and this port) give 42_944_000 — its kernel
+    // accumulates in a width that assumes 8-bit samples. At `bd == 10` and
+    // `bd == 12` the same inputs agree exactly, which is why the randomized
+    // sweep above (which draws `0..1 << bd`) passes at every depth. A highbd
+    // plane at bit depth 8 holds 8-bit samples, so the encoder cannot reach
+    // the divergent input; feeding it would be testing a call C is not
+    // defined for (DIFFERENTIAL_PLAYBOOK §3a(d)).
+    let src: Vec<u16> = (0..16 * 16).map(|i| ((i * 37) % 256) as u16).collect();
+    let reference: Vec<u16> = (0..16 * 16).map(|i| ((i * 11) % 256) as u16).collect();
+    let a = highbd_get_prediction_error(6, &src, 16, &reference, 16, 8);
+    let b = highbd_get_prediction_error(6, &src, 16, &reference, 16, 10);
+    let c = highbd_get_prediction_error(6, &src, 16, &reference, 16, 12);
+    if a != b || b != c {
+        per_bd_saw_difference = true;
+    }
+    assert!(
+        per_bd_saw_difference,
+        "all three bit depths returned {a} — the sse normalisation is inert"
+    );
+    assert_eq!(
+        a,
+        ref_fp_highbd_get_prediction_error(6, &src, 16, &reference, 16, 8)
+    );
+    assert_eq!(
+        b,
+        ref_fp_highbd_get_prediction_error(6, &src, 16, &reference, 16, 10)
+    );
+    assert_eq!(
+        c,
+        ref_fp_highbd_get_prediction_error(6, &src, 16, &reference, 16, 12)
+    );
+    // C's `switch (bd)` puts `default:` on the 8-bit arm, so an out-of-range
+    // depth is 8-bit, not an error.
+    assert_eq!(
+        highbd_get_prediction_error(6, &src, 16, &reference, 16, 9),
+        ref_fp_highbd_get_prediction_error(6, &src, 16, &reference, 16, 9)
+    );
+}
+
+#[test]
+fn get_prediction_error_bitdepth_matches_c() {
+    let mut rng = Lcg(0x5eed_0122);
+    for &(is_hbd, bd) in &[(false, 8i32), (true, 8), (true, 10), (true, 12)] {
+        for &bsize in &[3i32, 5, 4, 6] {
+            for _ in 0..150 {
+                let stride = 24usize;
+                let max = 1u32 << bd;
+                let src8 = fill_plane(&mut rng, stride * 32 + 64, 256);
+                let ref8 = fill_plane(&mut rng, stride * 32 + 64, 256);
+                let src16: Vec<u16> = (0..stride * 32 + 64)
+                    .map(|_| (rng.next_u32() % max) as u16)
+                    .collect();
+                let ref16: Vec<u16> = (0..stride * 32 + 64)
+                    .map(|_| (rng.next_u32() % max) as u16)
+                    .collect();
+                let got = if is_hbd {
+                    get_prediction_error_bitdepth(
+                        bd as u8,
+                        bsize,
+                        HighbdOrLowbd::Highbd(&src16),
+                        HighbdOrLowbd::Highbd(&ref16),
+                        stride,
+                        stride,
+                    )
+                } else {
+                    get_prediction_error_bitdepth(
+                        bd as u8,
+                        bsize,
+                        HighbdOrLowbd::Lowbd(&src8),
+                        HighbdOrLowbd::Lowbd(&ref8),
+                        stride,
+                        stride,
+                    )
+                };
+                let want = ref_fp_get_prediction_error_bitdepth(
+                    is_hbd,
+                    bd,
+                    bsize,
+                    &src16,
+                    &src8,
+                    stride as i32,
+                    &ref16,
+                    &ref8,
+                    stride as i32,
+                );
+                assert_eq!(
+                    i64::from(got),
+                    i64::from(want),
+                    "is_hbd={is_hbd} bd={bd} bsize={bsize}"
+                );
+            }
+        }
+    }
+}

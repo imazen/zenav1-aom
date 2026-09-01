@@ -230,3 +230,71 @@ void shim_fp_accumulate_mv_stats(int16_t best_mv_row, int16_t best_mv_col,
   last_non_zero_mv[0] = last.row;
   last_non_zero_mv[1] = last.col;
 }
+
+/* ---- get_prediction_error / highbd_get_prediction_error /
+ *      get_prediction_error_bitdepth (firstpass.c:207, :244, :618) ---------
+ * All three take `struct buf_2d`s, which the shim builds over the caller's
+ * plane. The highbd arm goes through CONVERT_TO_BYTEPTR, exactly as the
+ * encoder's buffers do.
+ */
+unsigned int shim_fp_get_prediction_error(int bsize, const uint8_t *src,
+                                          int src_stride, const uint8_t *ref,
+                                          int ref_stride) {
+  struct buf_2d s, r;
+  memset(&s, 0, sizeof(s));
+  memset(&r, 0, sizeof(r));
+  s.buf = (uint8_t *)src;
+  s.stride = src_stride;
+  r.buf = (uint8_t *)ref;
+  r.stride = ref_stride;
+  return get_prediction_error((BLOCK_SIZE)bsize, &s, &r);
+}
+
+unsigned int shim_fp_highbd_get_prediction_error(int bsize,
+                                                 const uint16_t *src,
+                                                 int src_stride,
+                                                 const uint16_t *ref,
+                                                 int ref_stride, int bd) {
+#if CONFIG_AV1_HIGHBITDEPTH
+  struct buf_2d s, r;
+  memset(&s, 0, sizeof(s));
+  memset(&r, 0, sizeof(r));
+  s.buf = CONVERT_TO_BYTEPTR(src);
+  s.stride = src_stride;
+  r.buf = CONVERT_TO_BYTEPTR(ref);
+  r.stride = ref_stride;
+  return highbd_get_prediction_error((BLOCK_SIZE)bsize, &s, &r, bd);
+#else
+  (void)bsize; (void)src; (void)src_stride; (void)ref; (void)ref_stride;
+  (void)bd;
+  return 0;
+#endif
+}
+
+int shim_fp_get_prediction_error_bitdepth(int is_high_bitdepth, int bitdepth,
+                                          int bsize, const uint16_t *src16,
+                                          const uint8_t *src8, int src_stride,
+                                          const uint16_t *ref16,
+                                          const uint8_t *ref8,
+                                          int ref_stride) {
+  struct buf_2d s, r;
+  memset(&s, 0, sizeof(s));
+  memset(&r, 0, sizeof(r));
+  s.buf = is_high_bitdepth ? CONVERT_TO_BYTEPTR(src16) : (uint8_t *)src8;
+  s.stride = src_stride;
+  r.buf = is_high_bitdepth ? CONVERT_TO_BYTEPTR(ref16) : (uint8_t *)ref8;
+  r.stride = ref_stride;
+  return get_prediction_error_bitdepth(is_high_bitdepth, bitdepth,
+                                       (BLOCK_SIZE)bsize, &s, &r);
+}
+
+/* ---- get_bsize (firstpass.c:335) -------------------------------------- */
+int shim_fp_get_bsize2(int mi_rows, int mi_cols, int fp_block_size,
+                       int unit_row, int unit_col) {
+  CommonModeInfoParams mi_params;
+  memset(&mi_params, 0, sizeof(mi_params));
+  mi_params.mi_rows = mi_rows;
+  mi_params.mi_cols = mi_cols;
+  return (int)get_bsize(&mi_params, (BLOCK_SIZE)fp_block_size, unit_row,
+                        unit_col);
+}
