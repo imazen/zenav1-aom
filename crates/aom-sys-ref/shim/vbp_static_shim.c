@@ -241,3 +241,153 @@ int shim_vbps_variance_low_len(void) {
   PartitionSearchInfo p;
   return (int)sizeof(p.variance_low);
 }
+
+/* ======================================================================== *
+ * set_force_zeromv_skip_for_sb (:1563) and set_ref_frame_for_partition
+ * (:1219) -- their DECISION cores.
+ *
+ * Both functions mix a decision with buffer plumbing the port replaces rather
+ * than translates (`set_block_size` writes the mi grid, `aom_free(vt)` frees
+ * the variance tree, `av1_setup_pre_planes` re-points the predictor planes).
+ * The shim drives the REAL C functions and reports only the decision outputs;
+ * the plumbing runs but is not compared, because there is nothing in the port
+ * for it to be compared against.
+ *
+ * For set_force_zeromv_skip_for_sb that means a live mi grid has to exist for
+ * set_block_size to write into, and `vt` has to be a real aom_malloc'd
+ * VP128x128 because C frees it on the exit path.
+ * ======================================================================== */
+int shim_vbps_set_force_zeromv_skip_for_sb(
+    int set_zeromv_skip_based_on_source_sad, int source_sad_nonrd,
+    int increase_source_sad_thresh, int part_early_exit_zeromv,
+    int sb_size, int bsize, unsigned int thresh_exit_part_y_cfg,
+    int mi_row, int mi_col, int tile_mi_row_end, int tile_mi_col_end,
+    unsigned int y_sad, unsigned int uv_sad0, unsigned int uv_sad1,
+    int mi_stride, int mi_rows, int mi_cols, int *force_zeromv_skip_out) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  SequenceHeader *seq = (SequenceHeader *)calloc(1, sizeof(*seq));
+  const int grid_len = mi_stride * (mi_rows + 64);
+  MB_MODE_INFO *pool = (MB_MODE_INFO *)calloc((size_t)grid_len, sizeof(*pool));
+  MB_MODE_INFO **grid =
+      (MB_MODE_INFO **)calloc((size_t)grid_len, sizeof(*grid));
+  VP128x128 *vt = (VP128x128 *)aom_calloc(1, sizeof(*vt));
+  TileInfo tile;
+  unsigned int uv_sad[2];
+  if (!cpi || !x || !seq || !pool || !grid || !vt) {
+    free(cpi); free(x); free(seq); free(pool); free(grid); aom_free(vt);
+    return -1;
+  }
+  for (int i = 0; i < grid_len; ++i) grid[i] = &pool[i];
+
+  memset(&tile, 0, sizeof(tile));
+  tile.mi_row_end = tile_mi_row_end;
+  tile.mi_col_end = tile_mi_col_end;
+
+  seq->sb_size = (BLOCK_SIZE)sb_size;
+  cpi->common.seq_params = seq;
+  cpi->common.mi_params.mi_stride = mi_stride;
+  cpi->common.mi_params.mi_rows = mi_rows;
+  cpi->common.mi_params.mi_cols = mi_cols;
+  cpi->common.mi_params.mi_grid_base = grid;
+  /* set_block_size (:136) writes through mi_alloc via get_alloc_mi_idx, so the
+   * allocation view has to exist too: BLOCK_4X4 units make mi_alloc_stride the
+   * same as mi_stride and the two indices coincide, which keeps the shim's
+   * bookkeeping to one array. */
+  cpi->common.mi_params.mi_alloc = pool;
+  cpi->common.mi_params.mi_alloc_bsize = BLOCK_4X4;
+  cpi->common.mi_params.mi_alloc_stride = mi_stride;
+  cpi->common.mi_params.mi_alloc_size = grid_len;
+  cpi->sf.rt_sf.set_zeromv_skip_based_on_source_sad =
+      set_zeromv_skip_based_on_source_sad;
+  cpi->sf.rt_sf.increase_source_sad_thresh = increase_source_sad_thresh;
+  cpi->sf.rt_sf.part_early_exit_zeromv = part_early_exit_zeromv;
+  cpi->zeromv_skip_thresh_exit_part[bsize] = thresh_exit_part_y_cfg;
+  x->content_state_sb.source_sad_nonrd = (SOURCE_SAD)source_sad_nonrd;
+  x->force_zeromv_skip_for_sb = 0;
+
+  uv_sad[0] = uv_sad0;
+  uv_sad[1] = uv_sad1;
+
+  const int r = set_force_zeromv_skip_for_sb(cpi, x, &tile, vt, uv_sad, mi_row,
+                                             mi_col, y_sad, (BLOCK_SIZE)bsize)
+                    ? 1
+                    : 0;
+  *force_zeromv_skip_out = x->force_zeromv_skip_for_sb;
+
+  /* C frees vt only on the exit path; free it here otherwise. */
+  if (!r) aom_free(vt);
+  free(cpi); free(x); free(seq); free(pool); free(grid);
+  return r;
+}
+
+/* set_ref_frame_for_partition's decision half. av1_setup_pre_planes needs a
+ * real reference buffer and scale factors, which the shim supplies as an
+ * all-zero YV12 -- the call is made for fidelity but only the decision
+ * outputs are reported. */
+int shim_vbps_set_ref_frame_for_partition(
+    int spatial_layer_id, int has_lower_quality_layer,
+    unsigned int y_sad_in, unsigned int y_sad_g, unsigned int y_sad_alt,
+    int nonrd_prune_ref_frame_search_cfg, unsigned int *y_sad_out,
+    int *ref_frame_partition_out, int *prune_out, int *sb_me_out) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mi = (MB_MODE_INFO *)calloc(1, sizeof(*mi));
+  YV12_BUFFER_CONFIG *g = (YV12_BUFFER_CONFIG *)calloc(1, sizeof(*g));
+  YV12_BUFFER_CONFIG *a = (YV12_BUFFER_CONFIG *)calloc(1, sizeof(*a));
+  uint8_t *plane = (uint8_t *)aom_calloc(1, 256 * 256);
+  if (!cpi || !x || !mi || !g || !a || !plane) {
+    free(cpi); free(x); free(mi); free(g); free(a); aom_free(plane);
+    return -1;
+  }
+  for (int p = 0; p < MAX_MB_PLANE; ++p) {
+    g->buffers[p] = plane;
+    a->buffers[p] = plane;
+  }
+  g->strides[0] = g->strides[1] = 256;
+  a->strides[0] = a->strides[1] = 256;
+  g->crop_widths[0] = g->crop_widths[1] = 128;
+  g->crop_heights[0] = g->crop_heights[1] = 128;
+  a->crop_widths[0] = a->crop_widths[1] = 128;
+  a->crop_heights[0] = a->crop_heights[1] = 128;
+
+  /* av1_setup_pre_planes reads xd->mi[0]->bsize, so the mi slot has to be
+   * wired up -- without it the plumbing half faults before the decision half
+   * runs. */
+  MB_MODE_INFO **slot = (MB_MODE_INFO **)calloc(1, sizeof(*slot));
+  if (!slot) {
+    free(cpi); free(x); free(mi); free(g); free(a); aom_free(plane);
+    return -1;
+  }
+  mi->bsize = BLOCK_64X64;
+  slot[0] = mi;
+  x->e_mbd.mi = slot;
+  /* Unscaled references: REF_NO_SCALE with unit steps, which is what
+   * av1_setup_scale_factors_for_frame produces for a same-size reference. */
+  for (int i = 0; i < REF_FRAMES; ++i) {
+    cpi->common.ref_scale_factors[i].x_scale_fp = REF_NO_SCALE;
+    cpi->common.ref_scale_factors[i].y_scale_fp = REF_NO_SCALE;
+    cpi->common.ref_scale_factors[i].x_step_q4 = 16;
+    cpi->common.ref_scale_factors[i].y_step_q4 = 16;
+  }
+
+  cpi->svc.spatial_layer_id = spatial_layer_id;
+  cpi->svc.has_lower_quality_layer = has_lower_quality_layer;
+  cpi->sf.rt_sf.nonrd_prune_ref_frame_search =
+      nonrd_prune_ref_frame_search_cfg;
+  x->nonrd_prune_ref_frame_search = -1;
+  x->sb_me_partition = -1;
+
+  MV_REFERENCE_FRAME ref_frame_partition = NONE_FRAME;
+  unsigned int y_sad = y_sad_in, ysg = y_sad_g, ysa = y_sad_alt;
+  set_ref_frame_for_partition(cpi, x, &x->e_mbd, &ref_frame_partition, mi,
+                              &y_sad, &ysg, &ysa, g, a, 0, 0, 1);
+
+  *y_sad_out = y_sad;
+  *ref_frame_partition_out = (int)ref_frame_partition;
+  *prune_out = x->nonrd_prune_ref_frame_search;
+  *sb_me_out = x->sb_me_partition;
+
+  free(cpi); free(x); free(mi); free(g); free(a); free(slot); aom_free(plane);
+  return 0;
+}

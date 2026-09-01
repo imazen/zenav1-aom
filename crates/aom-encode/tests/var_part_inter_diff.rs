@@ -872,3 +872,160 @@ fn low_temp_var_flags_round_trip_through_the_force_skip_lookups() {
         "the SB64 setter and lookup disagree about the 32x32 slot numbering"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The two remaining INTER decisions. Both C functions also do buffer plumbing
+// the port replaces rather than translates; the shim runs it and reports only
+// the decision outputs, which is what these tests compare.
+// ---------------------------------------------------------------------------
+
+use aom_encode::var_part::{
+    calc_chroma_thresh_for_zeromv_skip, set_force_zeromv_skip_for_sb, set_ref_frame_for_partition,
+};
+use aom_sys_ref::{ref_vbps_set_force_zeromv_skip_for_sb, ref_vbps_set_ref_frame_for_partition};
+
+#[test]
+fn set_force_zeromv_skip_for_sb_matches_c() {
+    let mut rng = Rng::new(0x2E40_4001);
+    let (mut exits, mut twos, mut zeros) = (0usize, 0usize, 0usize);
+    // BLOCK_64X64 is 16 mi wide, BLOCK_128X128 is 32.
+    for &(sb_size, sb_mi) in &[(BLOCK_64X64 as i32, 16i32), (BLOCK_128X128 as i32, 32)] {
+        for _ in 0..3000 {
+            let level = rng.below(5) as i32;
+            let sad_raw = rng.below(5) as i32;
+            let sad = [
+                SourceSad::Zero,
+                SourceSad::VeryLow,
+                SourceSad::Low,
+                SourceSad::Med,
+                SourceSad::High,
+            ][sad_raw as usize];
+            let increase = rng.below(2) == 0;
+            let early_exit = rng.below(4) as i32;
+            // A real zeromv_skip_thresh_exit_part value, and SADs that
+            // straddle it and its three-quarter chroma sibling.
+            let thresh = 1u32 << (6 + rng.below(12));
+            let draw_sad = |rng: &mut Rng| match rng.below(4) {
+                0 => 0u32,
+                1 => thresh / 2,
+                2 => thresh,
+                _ => thresh + rng.below(thresh.max(1)),
+            };
+            let y_sad = draw_sad(&mut rng);
+            let uv_sad = [draw_sad(&mut rng), draw_sad(&mut rng)];
+            let (mi_row, mi_col) = (
+                (rng.below(3) * sb_mi as u32) as i32,
+                (rng.below(3) * sb_mi as u32) as i32,
+            );
+            // Tile ends that sometimes cut the superblock off.
+            let tile_end = (
+                mi_row + sb_mi - rng.below(2) as i32 * (sb_mi / 2),
+                mi_col + sb_mi - rng.below(2) as i32 * (sb_mi / 2),
+            );
+            let mi_dims = (128i32, 128i32, 128i32);
+            let bsize = sb_size;
+
+            let want = ref_vbps_set_force_zeromv_skip_for_sb(
+                level, sad_raw, increase, early_exit, sb_size, bsize, thresh, mi_row, mi_col,
+                tile_end, y_sad, uv_sad, mi_dims,
+            );
+            let got = set_force_zeromv_skip_for_sb(
+                level, sad, increase, early_exit, sb_mi, sb_mi, thresh, mi_row, mi_col, tile_end.0,
+                tile_end.1, y_sad, uv_sad,
+            );
+            assert_eq!(
+                (got.exit_partitioning, got.force_zeromv_skip_for_sb),
+                want,
+                "level {level} sad {sad_raw} inc {increase} exit {early_exit} thresh {thresh} \
+                 y {y_sad} uv {uv_sad:?} at ({mi_row},{mi_col}) tile {tile_end:?}"
+            );
+            match got.force_zeromv_skip_for_sb {
+                1 => exits += 1,
+                2 => twos += 1,
+                _ => zeros += 1,
+            }
+        }
+    }
+    // All three outcomes are separate code paths.
+    assert!(exits > 100, "the exit path fired only {exits} times");
+    assert!(
+        twos > 50,
+        "the force_zeromv_skip_for_sb = 2 arm fired only {twos} times"
+    );
+    assert!(zeros > 100, "the no-op path fired only {zeros} times");
+}
+
+#[test]
+fn chroma_zeromv_threshold_is_three_quarters() {
+    // A one-line macro, pinned because the `>> 2` is easy to mistake for a
+    // `/ 3` and the result feeds two comparisons.
+    for t in [0u32, 1, 3, 4, 100, 1 << 20] {
+        assert_eq!(calc_chroma_thresh_for_zeromv_skip(t), (3 * t) >> 2, "t {t}");
+    }
+}
+
+#[test]
+fn set_ref_frame_for_partition_matches_c() {
+    let mut rng = Rng::new(0x4EF4_4002);
+    let mut picked = [0usize; 3];
+    for _ in 0..8000 {
+        let spatial_layer_id = rng.below(3) as i32;
+        let has_lower = rng.below(2) == 0;
+        // The three SADs are drawn from one band so the 0.9 / 1.0 margin
+        // actually decides; independent wide draws make the comparison
+        // trivial almost every time.
+        let base = 1 + rng.below(1 << 20);
+        let draw = |rng: &mut Rng| -> u32 {
+            let span = base / 4 + 1;
+            base.saturating_sub(span / 2) + rng.below(span)
+        };
+        let y_sad = draw(&mut rng);
+        let y_sad_g = draw(&mut rng);
+        let y_sad_alt = draw(&mut rng);
+        let prune_cfg = rng.below(4) as i32;
+
+        let want = ref_vbps_set_ref_frame_for_partition(
+            spatial_layer_id,
+            has_lower,
+            y_sad,
+            y_sad_g,
+            y_sad_alt,
+            prune_cfg,
+        );
+        let got = set_ref_frame_for_partition(
+            spatial_layer_id,
+            has_lower,
+            y_sad,
+            y_sad_g,
+            y_sad_alt,
+            prune_cfg,
+        );
+        assert_eq!(
+            got.ref_frame_partition, want.0,
+            "ref_frame, sads {y_sad}/{y_sad_g}/{y_sad_alt}"
+        );
+        assert_eq!(
+            got.y_sad, want.1,
+            "y_sad, sads {y_sad}/{y_sad_g}/{y_sad_alt}"
+        );
+        assert_eq!(
+            got.nonrd_prune_ref_frame_search, want.2,
+            "prune, sads {y_sad}/{y_sad_g}/{y_sad_alt}"
+        );
+        // The shim seeds sb_me_partition at -1; C's LAST arm leaves it alone.
+        assert_eq!(
+            got.sb_me_partition.unwrap_or(-1),
+            want.3,
+            "sb_me, sads {y_sad}/{y_sad_g}/{y_sad_alt}"
+        );
+        match got.ref_frame_partition {
+            4 => picked[0] += 1,
+            7 => picked[1] += 1,
+            _ => picked[2] += 1,
+        }
+    }
+    assert!(
+        picked[0] > 100 && picked[1] > 100 && picked[2] > 100,
+        "one reference was never picked: {picked:?}"
+    );
+}

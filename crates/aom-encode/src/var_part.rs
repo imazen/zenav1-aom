@@ -1835,3 +1835,191 @@ pub fn set_low_temp_var_flag(
         );
     }
 }
+
+// ===========================================================================
+// The two remaining INTER decisions of var_based_part.c.
+//
+// Both C functions mix a decision with buffer plumbing the port replaces
+// rather than translates (`set_block_size` writing the mi grid, `aom_free(vt)`
+// freeing the variance tree, `av1_setup_pre_planes` re-pointing the predictor
+// planes). What is ported here is the DECISION; the plumbing has no Rust
+// counterpart to compare against, and the gate says so.
+//
+// | Rust | C |
+// |---|---|
+// | [`ZeromvSkip`] / [`set_force_zeromv_skip_for_sb`] | `set_force_zeromv_skip_for_sb` (:1563) |
+// | [`RefFrameForPartition`] / [`set_ref_frame_for_partition`] | `set_ref_frame_for_partition` (:1219) |
+// ===========================================================================
+
+/// `CALC_CHROMA_THRESH_FOR_ZEROMV_SKIP` (`var_based_part.h:35`).
+#[inline]
+#[must_use]
+pub fn calc_chroma_thresh_for_zeromv_skip(thresh_exit_part: u32) -> u32 {
+    (3 * thresh_exit_part) >> 2
+}
+
+/// What `set_force_zeromv_skip_for_sb` decides.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ZeromvSkip {
+    /// C's return: the whole superblock is stamped at `bsize` and the
+    /// partitioner exits.
+    pub exit_partitioning: bool,
+    /// `x->force_zeromv_skip_for_sb`, which C sets to 1 on the exit path and
+    /// to 2 on a separate, WEAKER condition that does not exit.
+    pub force_zeromv_skip_for_sb: i32,
+}
+
+/// `set_force_zeromv_skip_for_sb` (var_based_part.c:1563) — whether the whole
+/// superblock can be coded as a zero-MV skip.
+///
+/// Three things have to hold together: the source SAD is low enough for the
+/// speed feature's level ([`is_set_force_zeromv_skip_based_on_src_sad`]), the
+/// superblock fits inside the tile, and all three plane SADs are under their
+/// thresholds. The chroma threshold is three-quarters of the luma one, and is
+/// divided by a further EIGHT when the source SAD is at least `VeryLow` and
+/// `part_early_exit_zeromv` is exactly 1 — C's comment says that arm exists to
+/// suppress a visual artefact the level-2 speed feature causes.
+///
+/// The `else if` arm is a genuinely different outcome, not a fallback: a
+/// completely static superblock at `part_early_exit_zeromv >= 2` gets
+/// `force_zeromv_skip_for_sb = 2` WITHOUT exiting the partitioner.
+///
+/// `mi_size_wide` / `mi_size_high` are of the SB size, not of `bsize`.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn set_force_zeromv_skip_for_sb(
+    set_zeromv_skip_based_on_source_sad: i32,
+    source_sad_nonrd: SourceSad,
+    increase_source_sad_thresh: bool,
+    part_early_exit_zeromv: i32,
+    sb_mi_width: i32,
+    sb_mi_height: i32,
+    thresh_exit_part_y_cfg: u32,
+    mi_row: i32,
+    mi_col: i32,
+    tile_mi_row_end: i32,
+    tile_mi_col_end: i32,
+    y_sad: u32,
+    uv_sad: [u32; 2],
+) -> ZeromvSkip {
+    if !is_set_force_zeromv_skip_based_on_src_sad(
+        set_zeromv_skip_based_on_source_sad,
+        source_sad_nonrd,
+    ) {
+        return ZeromvSkip {
+            exit_partitioning: false,
+            force_zeromv_skip_for_sb: 0,
+        };
+    }
+    let shift = u32::from(increase_source_sad_thresh);
+    let thresh_exit_part_y = thresh_exit_part_y_cfg << shift;
+    let mut thresh_exit_part_uv = calc_chroma_thresh_for_zeromv_skip(thresh_exit_part_y) << shift;
+    // Be more aggressive on chroma at source_sad >= VeryLow, to suppress the
+    // artefact set_zeromv_skip_based_on_source_sad = 2 can cause. Only for
+    // part_early_exit_zeromv == 1.
+    if source_sad_nonrd >= SourceSad::VeryLow && part_early_exit_zeromv == 1 {
+        thresh_exit_part_uv >>= 3;
+    }
+    if mi_col + sb_mi_width <= tile_mi_col_end
+        && mi_row + sb_mi_height <= tile_mi_row_end
+        && y_sad < thresh_exit_part_y
+        && uv_sad[0] < thresh_exit_part_uv
+        && uv_sad[1] < thresh_exit_part_uv
+    {
+        // C also stamps the block size into the mi grid and frees the variance
+        // tree here; both are plumbing the port does by other means.
+        return ZeromvSkip {
+            exit_partitioning: true,
+            force_zeromv_skip_for_sb: 1,
+        };
+    }
+    if source_sad_nonrd == SourceSad::Zero && part_early_exit_zeromv >= 2 {
+        return ZeromvSkip {
+            exit_partitioning: false,
+            force_zeromv_skip_for_sb: 2,
+        };
+    }
+    ZeromvSkip {
+        exit_partitioning: false,
+        force_zeromv_skip_for_sb: 0,
+    }
+}
+
+/// What `set_ref_frame_for_partition` decides.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RefFrameForPartition {
+    /// The reference the partitioner will measure against.
+    pub ref_frame_partition: i32,
+    /// The SAD that goes with it.
+    pub y_sad: u32,
+    /// `x->nonrd_prune_ref_frame_search`.
+    pub nonrd_prune_ref_frame_search: i32,
+    /// `x->sb_me_partition`, which the two non-LAST arms clear and the LAST
+    /// arm does NOT touch. `None` means "left as it was".
+    pub sb_me_partition: Option<i32>,
+}
+
+/// `set_ref_frame_for_partition` (var_based_part.c:1219) — pick the reference
+/// the variance partitioner measures against.
+///
+/// GOLDEN or ALTREF wins only by a MARGIN: its SAD has to beat `fac` times
+/// LAST's, where `fac` is 0.9 except on an SVC enhancement layer that has a
+/// lower-quality layer below it, where it is 1.0. Both tests also require
+/// beating the other candidate outright, so the two cannot both fire.
+///
+/// On either non-LAST arm the reference-pruning speed feature is FORCED to 0
+/// and `sb_me_partition` is cleared; on the LAST arm the speed feature's own
+/// value is used and `sb_me_partition` is left alone.
+///
+/// C additionally calls `av1_setup_pre_planes` and writes `mi->ref_frame[0]` /
+/// `mi->mv[0]` on the two non-LAST arms; that is predictor plumbing with no
+/// Rust counterpart here.
+#[must_use]
+pub fn set_ref_frame_for_partition(
+    spatial_layer_id: i32,
+    has_lower_quality_layer: bool,
+    y_sad: u32,
+    y_sad_g: u32,
+    y_sad_alt: u32,
+    nonrd_prune_ref_frame_search_cfg: i32,
+) -> RefFrameForPartition {
+    /// `LAST_FRAME`.
+    const LAST_FRAME: i32 = 1;
+    /// `GOLDEN_FRAME`.
+    const GOLDEN_FRAME: i32 = 4;
+    /// `ALTREF_FRAME`.
+    const ALTREF_FRAME: i32 = 7;
+
+    let fac = if spatial_layer_id > 0 && has_lower_quality_layer {
+        1.0
+    } else {
+        0.9
+    };
+    // C compares `unsigned int < double`, so the left side is converted to
+    // double; the product is not truncated back to an integer first.
+    let is_set_golden = f64::from(y_sad_g) < fac * f64::from(y_sad) && y_sad_g < y_sad_alt;
+    let is_set_altref = f64::from(y_sad_alt) < fac * f64::from(y_sad) && y_sad_alt < y_sad_g;
+
+    if is_set_golden {
+        RefFrameForPartition {
+            ref_frame_partition: GOLDEN_FRAME,
+            y_sad: y_sad_g,
+            nonrd_prune_ref_frame_search: 0,
+            sb_me_partition: Some(0),
+        }
+    } else if is_set_altref {
+        RefFrameForPartition {
+            ref_frame_partition: ALTREF_FRAME,
+            y_sad: y_sad_alt,
+            nonrd_prune_ref_frame_search: 0,
+            sb_me_partition: Some(0),
+        }
+    } else {
+        RefFrameForPartition {
+            ref_frame_partition: LAST_FRAME,
+            y_sad,
+            nonrd_prune_ref_frame_search: nonrd_prune_ref_frame_search_cfg,
+            sb_me_partition: None,
+        }
+    }
+}

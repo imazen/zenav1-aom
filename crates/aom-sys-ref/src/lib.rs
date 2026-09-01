@@ -28798,3 +28798,122 @@ pub fn ref_nrd_model_rd_for_sb_uv(
     assert!(tot_sse >= 0, "the uv model shim failed to allocate");
     RefUvModelRd { rate, dist, skip_txfm: skip != 0, tot_sse }
 }
+
+// --- var_based_part.c's two remaining INTER decisions (tier 1c) ------------
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_vbps_set_force_zeromv_skip_for_sb(
+        set_zeromv_skip_based_on_source_sad: i32,
+        source_sad_nonrd: i32,
+        increase_source_sad_thresh: i32,
+        part_early_exit_zeromv: i32,
+        sb_size: i32,
+        bsize: i32,
+        thresh_exit_part_y_cfg: u32,
+        mi_row: i32,
+        mi_col: i32,
+        tile_mi_row_end: i32,
+        tile_mi_col_end: i32,
+        y_sad: u32,
+        uv_sad0: u32,
+        uv_sad1: u32,
+        mi_stride: i32,
+        mi_rows: i32,
+        mi_cols: i32,
+        force_zeromv_skip_out: *mut i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_vbps_set_ref_frame_for_partition(
+        spatial_layer_id: i32,
+        has_lower_quality_layer: i32,
+        y_sad_in: u32,
+        y_sad_g: u32,
+        y_sad_alt: u32,
+        nonrd_prune_ref_frame_search_cfg: i32,
+        y_sad_out: *mut u32,
+        ref_frame_partition_out: *mut i32,
+        prune_out: *mut i32,
+        sb_me_out: *mut i32,
+    ) -> i32;
+}
+
+/// Reference `set_force_zeromv_skip_for_sb` (var_based_part.c:1563), tier 1c.
+/// Returns `(exit_partitioning, x->force_zeromv_skip_for_sb)`.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_vbps_set_force_zeromv_skip_for_sb(
+    set_zeromv_skip_based_on_source_sad: i32,
+    source_sad_nonrd: i32,
+    increase_source_sad_thresh: bool,
+    part_early_exit_zeromv: i32,
+    sb_size: i32,
+    bsize: i32,
+    thresh_exit_part_y_cfg: u32,
+    mi_row: i32,
+    mi_col: i32,
+    tile_end: (i32, i32),
+    y_sad: u32,
+    uv_sad: [u32; 2],
+    mi_dims: (i32, i32, i32),
+) -> (bool, i32) {
+    ref_init();
+    let mut force = 0i32;
+    let r = unsafe {
+        shim_vbps_set_force_zeromv_skip_for_sb(
+            set_zeromv_skip_based_on_source_sad,
+            source_sad_nonrd,
+            i32::from(increase_source_sad_thresh),
+            part_early_exit_zeromv,
+            sb_size,
+            bsize,
+            thresh_exit_part_y_cfg,
+            mi_row,
+            mi_col,
+            tile_end.0,
+            tile_end.1,
+            y_sad,
+            uv_sad[0],
+            uv_sad[1],
+            mi_dims.0,
+            mi_dims.1,
+            mi_dims.2,
+            &mut force,
+        )
+    };
+    assert!(r >= 0, "the zeromv-skip shim failed to allocate");
+    (r != 0, force)
+}
+
+/// Reference `set_ref_frame_for_partition` (var_based_part.c:1219), tier 1c.
+/// Returns `(ref_frame_partition, y_sad, nonrd_prune_ref_frame_search,
+/// sb_me_partition)`; the last two come back as the shim seeded them (`-1`)
+/// where C left them alone.
+#[must_use]
+pub fn ref_vbps_set_ref_frame_for_partition(
+    spatial_layer_id: i32,
+    has_lower_quality_layer: bool,
+    y_sad: u32,
+    y_sad_g: u32,
+    y_sad_alt: u32,
+    nonrd_prune_ref_frame_search_cfg: i32,
+) -> (i32, u32, i32, i32) {
+    ref_init();
+    let (mut ys, mut rf, mut prune, mut sbme) = (0u32, 0i32, 0i32, 0i32);
+    let r = unsafe {
+        shim_vbps_set_ref_frame_for_partition(
+            spatial_layer_id,
+            i32::from(has_lower_quality_layer),
+            y_sad,
+            y_sad_g,
+            y_sad_alt,
+            nonrd_prune_ref_frame_search_cfg,
+            &mut ys,
+            &mut rf,
+            &mut prune,
+            &mut sbme,
+        )
+    };
+    assert_eq!(r, 0, "the ref-frame shim failed to allocate");
+    (rf, ys, prune, sbme)
+}
