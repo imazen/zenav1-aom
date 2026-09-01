@@ -26003,3 +26003,169 @@ pub fn ref_tpl_init_tpl_txfm_stats() -> (i32, i32, i32, Vec<f64>, Vec<f64>) {
     assert_eq!(r, 0, "shim_tpl_init_tpl_txfm_stats allocation failed");
     (ready, coeff_num, block_count, sum, mean)
 }
+
+// ---------------------------------------------------------------------------
+// av1_rc_update_rate_correction_factors and av1_rc_postencode_update, out of
+// the ARCHIVE (tier 1) via rcarchive_shim.c. The shim copies the whole state
+// in, runs the real C, and copies the whole post-state back over the same
+// struct, so the caller compares every field rather than a chosen subset.
+// ---------------------------------------------------------------------------
+
+/// Mirrors the C `ShimRcUpdateState` (shim/rc_state_params.h) field for field.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RefRcUpdateState {
+    /// C `bytes_used`.
+    pub bytes_used: i64,
+    /// C `base_qindex`.
+    pub base_qindex: i32,
+    /// C `coded_width`.
+    pub coded_width: i32,
+    /// C `coded_height`.
+    pub coded_height: i32,
+    /// C `cfg_width`.
+    pub cfg_width: i32,
+    /// C `cfg_height`.
+    pub cfg_height: i32,
+    /// C `show_frame`.
+    pub show_frame: i32,
+    /// C `frame_type`.
+    pub frame_type: i32,
+    /// C `frame_number`.
+    pub frame_number: i32,
+    /// C `update_type`.
+    pub update_type: i32,
+    /// C `refresh_golden`.
+    pub refresh_golden: i32,
+    /// C `refresh_alt_ref`.
+    pub refresh_alt_ref: i32,
+    /// C `lag_in_frames`.
+    pub lag_in_frames: i32,
+    /// C `enable_auto_arf`.
+    pub enable_auto_arf: i32,
+    /// C `bit_depth`.
+    pub bit_depth: i32,
+    /// C `screen_content`.
+    pub screen_content: i32,
+    /// C `rc_mode`.
+    pub rc_mode: i32,
+    /// C `stat_consumption`.
+    pub stat_consumption: i32,
+    /// C `gf_cbr_boost_pct`.
+    pub gf_cbr_boost_pct: i32,
+    /// C `tune_content_screen`.
+    pub tune_content_screen: i32,
+    /// C `is_encode_stage`.
+    pub is_encode_stage: i32,
+    /// C `projected_frame_size`.
+    pub projected_frame_size: i32,
+    /// C `q_1_frame`.
+    pub q_1_frame: i32,
+    /// C `q_2_frame`.
+    pub q_2_frame: i32,
+    /// C `rc_1_frame`.
+    pub rc_1_frame: i32,
+    /// C `rc_2_frame`.
+    pub rc_2_frame: i32,
+    /// C `this_frame_target`.
+    pub this_frame_target: i32,
+    /// C `avg_frame_bandwidth`.
+    pub avg_frame_bandwidth: i32,
+    /// C `prev_avg_frame_bandwidth`.
+    pub prev_avg_frame_bandwidth: i32,
+    /// C `frames_since_key`.
+    pub frames_since_key: i32,
+    /// C `frames_since_golden`.
+    pub frames_since_golden: i32,
+    /// C `frame_num_last_gf_refresh`.
+    pub frame_num_last_gf_refresh: i32,
+    /// C `frame_source_sad`.
+    pub frame_source_sad: i32,
+    /// C `last_frame_low_source_sad`.
+    pub last_frame_low_source_sad: i32,
+    /// C `frame_number_encoded`.
+    pub frame_number_encoded: i32,
+    /// C `prev_coded_width`.
+    pub prev_coded_width: i32,
+    /// C `prev_coded_height`.
+    pub prev_coded_height: i32,
+    /// C `prev_frame_is_dropped`.
+    pub prev_frame_is_dropped: i32,
+    /// C `drop_count_consec`.
+    pub drop_count_consec: i32,
+    /// C `ni_tot_qi`.
+    pub ni_tot_qi: i32,
+    /// C `ni_av_qi`.
+    pub ni_av_qi: i32,
+    /// C `is_src_frame_alt_ref`.
+    pub is_src_frame_alt_ref: i32,
+    /// C `last_encoded_size_keyframe`.
+    pub last_encoded_size_keyframe: i32,
+    /// C `last_target_size_keyframe`.
+    pub last_target_size_keyframe: i32,
+    /// C `rtc_external_ratectrl`.
+    pub rtc_external_ratectrl: i32,
+    /// C `frames_since_scene_change`.
+    pub frames_since_scene_change: i32,
+    /// C `last_q_key`.
+    pub last_q_key: i32,
+    /// C `last_q_inter`.
+    pub last_q_inter: i32,
+    /// C `avg_frame_qindex_key`.
+    pub avg_frame_qindex_key: i32,
+    /// C `avg_frame_qindex_inter`.
+    pub avg_frame_qindex_inter: i32,
+    /// C `ni_frames`.
+    pub ni_frames: i32,
+    /// C `tot_q`.
+    pub tot_q: f64,
+    /// C `avg_q`.
+    pub avg_q: f64,
+    /// C `last_boosted_qindex`.
+    pub last_boosted_qindex: i32,
+    /// C `last_kf_qindex`.
+    pub last_kf_qindex: i32,
+    /// C `rate_correction_factors`.
+    pub rate_correction_factors: [f64; 4],
+    /// C `bits_off_target`.
+    pub bits_off_target: i64,
+    /// C `buffer_level`.
+    pub buffer_level: i64,
+    /// C `maximum_buffer_size`.
+    pub maximum_buffer_size: i64,
+    /// C `total_actual_bits`.
+    pub total_actual_bits: i64,
+    /// C `total_target_bits`.
+    pub total_target_bits: i64,
+    /// C `rolling_target_bits`.
+    pub rolling_target_bits: i32,
+    /// C `rolling_actual_bits`.
+    pub rolling_actual_bits: i32,
+    /// C `constrained_gf_group`.
+    pub constrained_gf_group: i32,
+}
+
+extern "C" {
+    fn shim_rca_update_rate_correction_factors(u: *mut RefRcUpdateState) -> i32;
+    fn shim_rca_postencode_update(u: *mut RefRcUpdateState) -> i32;
+}
+
+/// Reference libaom `av1_rc_update_rate_correction_factors` (ratectrl.c:940),
+/// out of the archive. Returns the post-state.
+pub fn ref_update_rate_correction_factors(u: &RefRcUpdateState) -> RefRcUpdateState {
+    ref_init();
+    let mut out = *u;
+    let r = unsafe { shim_rca_update_rate_correction_factors(&mut out) };
+    assert_eq!(r, 0, "shim_rca_update_rate_correction_factors alloc failed");
+    out
+}
+
+/// Reference libaom `av1_rc_postencode_update` (ratectrl.c:2444), out of the
+/// archive. Returns the post-state.
+pub fn ref_postencode_update(u: &RefRcUpdateState) -> RefRcUpdateState {
+    ref_init();
+    let mut out = *u;
+    let r = unsafe { shim_rca_postencode_update(&mut out) };
+    assert_eq!(r, 0, "shim_rca_postencode_update alloc failed");
+    out
+}

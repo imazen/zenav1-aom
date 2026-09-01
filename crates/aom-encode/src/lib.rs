@@ -57,6 +57,7 @@ pub mod rate_model;
 pub mod ratectrl;
 pub mod ratectrl_init;
 pub mod ratectrl_rate;
+pub mod ratectrl_update;
 pub mod rc;
 pub mod rd;
 pub mod rd_thresh;

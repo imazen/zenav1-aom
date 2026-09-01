@@ -303,3 +303,174 @@ int shim_rca_update_framerate(const ShimRcInitCfg *c, int width, int height,
   free(cpi); free(ppi);
   return 0;
 }
+
+/* ======================================================================== *
+ * av1_rc_postencode_update and av1_rc_update_rate_correction_factors, out of
+ * the archive. Both mutate a real AV1_COMP; the shim copies ShimRcUpdateState
+ * in, runs the function, and copies the mutated fields back over the same
+ * struct, so the caller compares the whole post-state at once.
+ * ======================================================================== */
+
+static int shim_rcu_build(ShimRca *s, const ShimRcUpdateState *u) {
+  s->cpi = (AV1_COMP *)calloc(1, sizeof(AV1_COMP));
+  s->ppi = (AV1_PRIMARY *)calloc(1, sizeof(AV1_PRIMARY));
+  s->seq = (SequenceHeader *)calloc(1, sizeof(SequenceHeader));
+  if (!s->cpi || !s->ppi || !s->seq) {
+    free(s->cpi); free(s->ppi); free(s->seq);
+    s->cpi = NULL; s->ppi = NULL; s->seq = NULL;
+    return 0;
+  }
+  AV1_COMP *cpi = s->cpi;
+  cpi->ppi = s->ppi;
+  s->seq->bit_depth = (aom_bit_depth_t)u->bit_depth;
+  cpi->common.seq_params = s->seq;
+
+  cpi->common.width = u->coded_width;
+  cpi->common.height = u->coded_height;
+  cpi->common.superres_upscaled_width = u->coded_width;
+  cpi->common.superres_upscaled_height = u->coded_height;
+  cpi->common.render_width = u->coded_width;
+  cpi->common.render_height = u->coded_height;
+  cpi->common.superres_scale_denominator = SCALE_NUMERATOR;
+  cpi->common.show_frame = u->show_frame;
+  cpi->common.current_frame.frame_type = (FRAME_TYPE)u->frame_type;
+  cpi->common.current_frame.frame_number = (unsigned int)u->frame_number;
+  cpi->common.quant_params.base_qindex = u->base_qindex;
+  cpi->common.mi_params.MBs = av1_get_MBs(u->coded_width, u->coded_height);
+
+  cpi->is_screen_content_type = u->screen_content;
+  cpi->refresh_frame.golden_frame = (bool)u->refresh_golden;
+  cpi->refresh_frame.alt_ref_frame = (bool)u->refresh_alt_ref;
+
+  cpi->oxcf.mode = GOOD;
+  cpi->oxcf.pass = u->stat_consumption ? AOM_RC_SECOND_PASS : AOM_RC_ONE_PASS;
+  cpi->oxcf.rc_cfg.mode = (enum aom_rc_mode)u->rc_mode;
+  cpi->oxcf.rc_cfg.gf_cbr_boost_pct = u->gf_cbr_boost_pct;
+  cpi->oxcf.frm_dim_cfg.width = u->cfg_width;
+  cpi->oxcf.frm_dim_cfg.height = u->cfg_height;
+  cpi->oxcf.gf_cfg.lag_in_frames = u->lag_in_frames;
+  cpi->oxcf.gf_cfg.enable_auto_arf = (bool)u->enable_auto_arf;
+  cpi->oxcf.tune_cfg.content =
+      u->tune_content_screen ? AOM_CONTENT_SCREEN : AOM_CONTENT_DEFAULT;
+  cpi->oxcf.q_cfg.aq_mode = NO_AQ;
+  cpi->sf.hl_sf.accurate_bit_estimate = 0;
+
+  cpi->gf_frame_index = SHIM_RCA_GF_INDEX;
+  cpi->ppi->gf_group.update_type[SHIM_RCA_GF_INDEX] =
+      (FRAME_UPDATE_TYPE)u->update_type;
+  cpi->ppi->gf_group.frame_type[SHIM_RCA_GF_INDEX] = (FRAME_TYPE)u->frame_type;
+  cpi->ppi->gf_group.frame_parallel_level[SHIM_RCA_GF_INDEX] = 0;
+
+  RATE_CONTROL *rc = &cpi->rc;
+  rc->projected_frame_size = u->projected_frame_size;
+  rc->q_1_frame = u->q_1_frame;
+  rc->q_2_frame = u->q_2_frame;
+  rc->rc_1_frame = u->rc_1_frame;
+  rc->rc_2_frame = u->rc_2_frame;
+  rc->this_frame_target = u->this_frame_target;
+  rc->avg_frame_bandwidth = u->avg_frame_bandwidth;
+  rc->prev_avg_frame_bandwidth = u->prev_avg_frame_bandwidth;
+  rc->frames_since_key = u->frames_since_key;
+  rc->frames_since_golden = u->frames_since_golden;
+  rc->frame_num_last_gf_refresh = u->frame_num_last_gf_refresh;
+  rc->frame_source_sad = (uint64_t)u->frame_source_sad;
+  rc->last_frame_low_source_sad = (unsigned int)u->last_frame_low_source_sad;
+  rc->frame_number_encoded = (unsigned int)u->frame_number_encoded;
+  rc->prev_coded_width = u->prev_coded_width;
+  rc->prev_coded_height = u->prev_coded_height;
+  rc->prev_frame_is_dropped = u->prev_frame_is_dropped;
+  rc->drop_count_consec = u->drop_count_consec;
+  rc->ni_tot_qi = u->ni_tot_qi;
+  rc->ni_av_qi = u->ni_av_qi;
+  rc->is_src_frame_alt_ref = u->is_src_frame_alt_ref;
+  rc->last_encoded_size_keyframe = u->last_encoded_size_keyframe;
+  rc->last_target_size_keyframe = u->last_target_size_keyframe;
+  rc->rtc_external_ratectrl = u->rtc_external_ratectrl;
+  rc->frames_since_scene_change = u->frames_since_scene_change;
+
+  PRIMARY_RATE_CONTROL *p_rc = &cpi->ppi->p_rc;
+  p_rc->last_q[KEY_FRAME] = u->last_q_key;
+  p_rc->last_q[INTER_FRAME] = u->last_q_inter;
+  p_rc->avg_frame_qindex[KEY_FRAME] = u->avg_frame_qindex_key;
+  p_rc->avg_frame_qindex[INTER_FRAME] = u->avg_frame_qindex_inter;
+  p_rc->ni_frames = u->ni_frames;
+  p_rc->tot_q = u->tot_q;
+  p_rc->avg_q = u->avg_q;
+  p_rc->last_boosted_qindex = u->last_boosted_qindex;
+  p_rc->last_kf_qindex = u->last_kf_qindex;
+  for (int i = 0; i < RATE_FACTOR_LEVELS; ++i)
+    p_rc->rate_correction_factors[i] = u->rate_correction_factors[i];
+  p_rc->bits_off_target = u->bits_off_target;
+  p_rc->buffer_level = u->buffer_level;
+  p_rc->maximum_buffer_size = u->maximum_buffer_size;
+  p_rc->total_actual_bits = u->total_actual_bits;
+  p_rc->total_target_bits = u->total_target_bits;
+  p_rc->rolling_target_bits = u->rolling_target_bits;
+  p_rc->rolling_actual_bits = u->rolling_actual_bits;
+  p_rc->constrained_gf_group = u->constrained_gf_group;
+
+  av1_rc_init_minq_luts();
+  return 1;
+}
+
+static void shim_rcu_read_back(const ShimRca *s, ShimRcUpdateState *u) {
+  const RATE_CONTROL *rc = &s->cpi->rc;
+  const PRIMARY_RATE_CONTROL *p_rc = &s->cpi->ppi->p_rc;
+  u->projected_frame_size = rc->projected_frame_size;
+  u->q_1_frame = rc->q_1_frame;
+  u->q_2_frame = rc->q_2_frame;
+  u->rc_1_frame = rc->rc_1_frame;
+  u->rc_2_frame = rc->rc_2_frame;
+  u->this_frame_target = rc->this_frame_target;
+  u->prev_avg_frame_bandwidth = rc->prev_avg_frame_bandwidth;
+  u->frames_since_key = rc->frames_since_key;
+  u->frames_since_golden = rc->frames_since_golden;
+  u->frame_num_last_gf_refresh = rc->frame_num_last_gf_refresh;
+  u->last_frame_low_source_sad = (int32_t)rc->last_frame_low_source_sad;
+  u->frame_number_encoded = (int32_t)rc->frame_number_encoded;
+  u->prev_coded_width = rc->prev_coded_width;
+  u->prev_coded_height = rc->prev_coded_height;
+  u->prev_frame_is_dropped = rc->prev_frame_is_dropped;
+  u->drop_count_consec = rc->drop_count_consec;
+  u->ni_tot_qi = rc->ni_tot_qi;
+  u->ni_av_qi = rc->ni_av_qi;
+  u->last_encoded_size_keyframe = rc->last_encoded_size_keyframe;
+  u->last_target_size_keyframe = rc->last_target_size_keyframe;
+  u->frames_since_scene_change = rc->frames_since_scene_change;
+  u->last_q_key = p_rc->last_q[KEY_FRAME];
+  u->last_q_inter = p_rc->last_q[INTER_FRAME];
+  u->avg_frame_qindex_key = p_rc->avg_frame_qindex[KEY_FRAME];
+  u->avg_frame_qindex_inter = p_rc->avg_frame_qindex[INTER_FRAME];
+  u->ni_frames = p_rc->ni_frames;
+  u->tot_q = p_rc->tot_q;
+  u->avg_q = p_rc->avg_q;
+  u->last_boosted_qindex = p_rc->last_boosted_qindex;
+  u->last_kf_qindex = p_rc->last_kf_qindex;
+  for (int i = 0; i < RATE_FACTOR_LEVELS; ++i)
+    u->rate_correction_factors[i] = p_rc->rate_correction_factors[i];
+  u->bits_off_target = p_rc->bits_off_target;
+  u->buffer_level = p_rc->buffer_level;
+  u->total_actual_bits = p_rc->total_actual_bits;
+  u->total_target_bits = p_rc->total_target_bits;
+  u->rolling_target_bits = p_rc->rolling_target_bits;
+  u->rolling_actual_bits = p_rc->rolling_actual_bits;
+}
+
+int shim_rca_update_rate_correction_factors(ShimRcUpdateState *u) {
+  ShimRca s;
+  if (!shim_rcu_build(&s, u)) return -1;
+  av1_rc_update_rate_correction_factors(s.cpi, u->is_encode_stage,
+                                        u->coded_width, u->coded_height);
+  shim_rcu_read_back(&s, u);
+  shim_rca_free(&s);
+  return 0;
+}
+
+int shim_rca_postencode_update(ShimRcUpdateState *u) {
+  ShimRca s;
+  if (!shim_rcu_build(&s, u)) return -1;
+  av1_rc_postencode_update(s.cpi, (uint64_t)u->bytes_used);
+  shim_rcu_read_back(&s, u);
+  shim_rca_free(&s);
+  return 0;
+}
