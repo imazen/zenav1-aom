@@ -208,3 +208,75 @@ int shim_get_ref_frames(const int32_t *pairs, int cur_frame_disp,
   shim_enc_free(&e);
   return 0;
 }
+
+/* ---- is_forced_keyframe_pending (encode_strategy.c:304) -------------------
+ * EXPORTED, but it takes a `struct lookahead_ctx *` and walks it with
+ * av1_lookahead_peek. `struct lookahead_ctx` is a PUBLIC type
+ * (lookahead.h:53), so the ring can be built by hand — max_sz, the read
+ * context's valid/sz/read_idx, and a `struct lookahead_entry` array whose
+ * `flags` are the only field either function reads. No frame buffers are
+ * allocated, so this is a tier-1 drive of the real symbol without running
+ * av1_lookahead_init.
+ *
+ * `read_idx` is swept by the caller because the ring WRAPS: peek adds
+ * read_idx and subtracts max_sz, so a non-zero read_idx is a different index
+ * mapping and a port that ignored the wrap would still pass at read_idx 0.
+ */
+#include "av1/encoder/lookahead.h"
+
+int shim_is_forced_keyframe_pending(const int32_t *entry_flags, int n_entries,
+                                    int read_idx, int up_to_index) {
+  if (n_entries < 0 || n_entries > 64) return -2;
+  struct lookahead_ctx *ctx =
+      (struct lookahead_ctx *)calloc(1, sizeof(struct lookahead_ctx));
+  struct lookahead_entry *buf = (struct lookahead_entry *)calloc(
+      (size_t)(n_entries > 0 ? n_entries : 1), sizeof(struct lookahead_entry));
+  if (!ctx || !buf) {
+    free(ctx);
+    free(buf);
+    return -2;
+  }
+  ctx->max_sz = n_entries > 0 ? n_entries : 1;
+  ctx->buf = buf;
+  /* The entries are laid out so that peek index i maps to entry_flags[i]:
+   * peek computes (read_idx + i) mod max_sz. */
+  for (int i = 0; i < n_entries; ++i) {
+    int slot = read_idx + i;
+    if (slot >= ctx->max_sz) slot -= ctx->max_sz;
+    buf[slot].flags = (unsigned int)entry_flags[i];
+  }
+  ctx->read_ctxs[ENCODE_STAGE].valid = 1;
+  ctx->read_ctxs[ENCODE_STAGE].sz = n_entries;
+  ctx->read_ctxs[ENCODE_STAGE].read_idx = read_idx;
+
+  const int r = is_forced_keyframe_pending(ctx, up_to_index, ENCODE_STAGE);
+  free(buf);
+  free(ctx);
+  return r;
+}
+
+/* ---- av1_new_framerate (encoder.c:317) ------------------------------------
+ * Exported. Only its clamp is compared; the tail call to
+ * av1_rc_update_framerate is covered by ratectrl_init_diff. The AV1_COMP is
+ * given a 16x16 frame so that tail call is cheap and cannot fault.
+ */
+double shim_new_framerate(double framerate) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(AV1_COMP));
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(AV1_PRIMARY));
+  if (!cpi || !ppi) {
+    free(cpi);
+    free(ppi);
+    return -1.0;
+  }
+  cpi->ppi = ppi;
+  cpi->common.width = 16;
+  cpi->common.height = 16;
+  cpi->oxcf.frm_dim_cfg.width = 16;
+  cpi->oxcf.frm_dim_cfg.height = 16;
+  cpi->oxcf.rc_cfg.target_bandwidth = 1000000;
+  av1_new_framerate(cpi, framerate);
+  const double out = cpi->framerate;
+  free(cpi);
+  free(ppi);
+  return out;
+}

@@ -27195,3 +27195,49 @@ pub fn ref_ct_interintra_modes() -> i32 {
     ref_init();
     unsafe { shim_ct_interintra_modes() }
 }
+
+// ---------------------------------------------------------------------------
+// refgop_shim.c (cont.) — the two exported frame-source decisions.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn shim_is_forced_keyframe_pending(
+        entry_flags: *const i32,
+        n_entries: i32,
+        read_idx: i32,
+        up_to_index: i32,
+    ) -> i32;
+    fn shim_new_framerate(framerate: f64) -> f64;
+}
+
+/// Reference libaom `is_forced_keyframe_pending` (encode_strategy.c:304).
+///
+/// `entry_flags[i]` is the `flags` of the lookahead entry at PEEK index `i`;
+/// the shim places it in the ring so `av1_lookahead_peek(ctx, i, ..)` finds
+/// it, whatever `read_idx` is. Returns `-1` for "none pending".
+pub fn ref_is_forced_keyframe_pending(
+    entry_flags: &[i32],
+    read_idx: i32,
+    up_to_index: i32,
+) -> i32 {
+    ref_init();
+    let r = unsafe {
+        shim_is_forced_keyframe_pending(
+            entry_flags.as_ptr(),
+            entry_flags.len() as i32,
+            read_idx,
+            up_to_index,
+        )
+    };
+    assert_ne!(r, -2, "shim_is_forced_keyframe_pending rejected the input");
+    r
+}
+
+/// Reference libaom `av1_new_framerate` (encoder.c:317) — returns the
+/// `cpi->framerate` it stored, i.e. the clamp's output.
+pub fn ref_new_framerate(framerate: f64) -> f64 {
+    ref_init();
+    let r = unsafe { shim_new_framerate(framerate) };
+    assert!(r > 0.0, "shim_new_framerate allocation failed");
+    r
+}
