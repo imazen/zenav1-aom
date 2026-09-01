@@ -129,7 +129,18 @@ exported functions the compound `write_ref_frames` cascade needs:
 
 **W6 — the inter RD brain** (`rdopt.c`, 89 unmatched; `compound_type.c`, 33;
 `interp_search.c`, 8; `tx_search.c` inter arm, 20). Almost entirely `static`,
-so tier-1 requires driving `av1_rd_pick_inter_mode_sb` itself. Named heads:
+so tier-1 requires driving `av1_rd_pick_inter_mode_sb` itself.
+
+> **rdopt.c status, 2026-09-01: 67 of its 105 functions ported and gated, 29
+> NOT ported.** The missing ones are named individually with a reason in
+> [`docs/RDOPT_C_COVERAGE_2026-09-01.md`](docs/RDOPT_C_COVERAGE_2026-09-01.md);
+> read that rather than re-running the inventory, which now reports rdopt.c as
+> nearly complete because every ported module cites its C function by name in a
+> doc comment. The oracle for the `static` functions is a new technique —
+> `shim/rdopt_shim.c` compiles libaom's own rdopt.c into the shim archive
+> ("tier 1c"), with a measurement that it agrees with the archive's copy.
+
+Named heads:
 `set_params_rd_pick_inter_mode`, `handle_newmv`, `motion_mode_rd`,
 `build_cur_mv`, `get_drl_cost`, `skip_mode_rd`, `rd_pick_skip_mode`,
 `calc_target_weighted_pred*` (the OBMC target), `av1_compound_type_rd`,
