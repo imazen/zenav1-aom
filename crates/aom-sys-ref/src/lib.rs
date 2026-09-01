@@ -27371,3 +27371,168 @@ pub fn ref_fp_get_bsize(
     ref_init();
     unsafe { shim_fp_get_bsize2(mi_rows, mi_cols, fp_block_size, unit_row, unit_col) }
 }
+
+// --- The GF_GROUP_STATS accumulator cluster (tier 1c) ----------------------
+
+unsafe extern "C" {
+    fn shim_p2_gf_group_stats_doubles() -> i32;
+    fn shim_p2_init_gf_stats(out: *mut f64, nz_count: *mut i32);
+    fn shim_p2_accumulate_frame_motion_stats(
+        stats: *const f64,
+        gf: *mut f64,
+        nz_count: *mut i32,
+        f_w: f64,
+        f_h: f64,
+    );
+    fn shim_p2_accumulate_this_frame_stats(
+        stats: *const f64,
+        mod_frame_err: f64,
+        gf: *mut f64,
+        nz_count: *mut i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_p2_accumulate_next_frame_stats(
+        stats: *const f64,
+        flash_detected: i32,
+        frames_since_key: i32,
+        cur_idx: i32,
+        gf: *mut f64,
+        nz_count: *mut i32,
+        f_w: i32,
+        f_h: i32,
+    );
+    fn shim_p2_average_gf_stats(total_frame: i32, gf: *mut f64, nz_count: *mut i32);
+    fn shim_p2_calculate_section_intra_ratio(
+        stats_flat: *const f64,
+        count: i32,
+        section_length: i32,
+    ) -> i32;
+    fn shim_p2_get_second_ref_usage_thresh(frame_count_so_far: i32) -> f64;
+    fn shim_p2_detect_flash(stats_flat: *const f64, count: i32, cur: i32, offset: i32) -> i32;
+    fn shim_p2_read_frame_stats_in_range(count: i32, cur: i32, offset: i32) -> i32;
+}
+
+/// How many `double` members `GF_GROUP_STATS` has, as the oracle TU sees it.
+#[must_use]
+pub fn ref_p2_gf_group_stats_doubles() -> usize {
+    ref_init();
+    unsafe { shim_p2_gf_group_stats_doubles() as usize }
+}
+
+/// Reference `init_gf_stats` (pass2_strategy.c:2282), tier 1c.
+/// Returns `(the 17 doubles, non_zero_stdev_count)`.
+#[must_use]
+pub fn ref_p2_init_gf_stats() -> ([f64; 17], i32) {
+    ref_init();
+    let mut d = [0.0f64; 17];
+    let mut nz = 0i32;
+    unsafe { shim_p2_init_gf_stats(d.as_mut_ptr(), &mut nz) };
+    (d, nz)
+}
+
+/// Reference `accumulate_frame_motion_stats` (:490), tier 1c. In/out on `gf`.
+pub fn ref_p2_accumulate_frame_motion_stats(
+    stats: &[f64; 29],
+    gf: &mut [f64; 17],
+    nz_count: &mut i32,
+    f_w: f64,
+    f_h: f64,
+) {
+    ref_init();
+    unsafe {
+        shim_p2_accumulate_frame_motion_stats(
+            stats.as_ptr(),
+            gf.as_mut_ptr(),
+            nz_count,
+            f_w,
+            f_h,
+        );
+    }
+}
+
+/// Reference `accumulate_this_frame_stats` (:517), tier 1c. In/out on `gf`.
+pub fn ref_p2_accumulate_this_frame_stats(
+    stats: &[f64; 29],
+    mod_frame_err: f64,
+    gf: &mut [f64; 17],
+    nz_count: &mut i32,
+) {
+    ref_init();
+    unsafe {
+        shim_p2_accumulate_this_frame_stats(
+            stats.as_ptr(),
+            mod_frame_err,
+            gf.as_mut_ptr(),
+            nz_count,
+        );
+    }
+}
+
+/// Reference `accumulate_next_frame_stats` (:528), tier 1c. In/out on `gf`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_p2_accumulate_next_frame_stats(
+    stats: &[f64; 29],
+    flash_detected: bool,
+    frames_since_key: i32,
+    cur_idx: i32,
+    gf: &mut [f64; 17],
+    nz_count: &mut i32,
+    f_w: i32,
+    f_h: i32,
+) {
+    ref_init();
+    unsafe {
+        shim_p2_accumulate_next_frame_stats(
+            stats.as_ptr(),
+            i32::from(flash_detected),
+            frames_since_key,
+            cur_idx,
+            gf.as_mut_ptr(),
+            nz_count,
+            f_w,
+            f_h,
+        );
+    }
+}
+
+/// Reference `average_gf_stats` (:561), tier 1c. In/out on `gf`.
+pub fn ref_p2_average_gf_stats(total_frame: i32, gf: &mut [f64; 17], nz_count: &mut i32) {
+    ref_init();
+    unsafe { shim_p2_average_gf_stats(total_frame, gf.as_mut_ptr(), nz_count) };
+}
+
+/// Reference `calculate_section_intra_ratio` (:776), tier 1c. `stats_flat` is
+/// `count` records of 29 doubles each.
+#[must_use]
+pub fn ref_p2_calculate_section_intra_ratio(
+    stats_flat: &[f64],
+    count: i32,
+    section_length: i32,
+) -> i32 {
+    ref_init();
+    assert_eq!(stats_flat.len(), (count.max(0) as usize) * 29);
+    unsafe { shim_p2_calculate_section_intra_ratio(stats_flat.as_ptr(), count, section_length) }
+}
+
+/// Reference `get_second_ref_usage_thresh` (:2866), tier 1c.
+#[must_use]
+pub fn ref_p2_get_second_ref_usage_thresh(frame_count_so_far: i32) -> f64 {
+    ref_init();
+    unsafe { shim_p2_get_second_ref_usage_thresh(frame_count_so_far) }
+}
+
+/// Reference `detect_flash` (:474), tier 1c.
+#[must_use]
+pub fn ref_p2_detect_flash(stats_flat: &[f64], count: i32, cur: i32, offset: i32) -> bool {
+    ref_init();
+    assert_eq!(stats_flat.len(), (count.max(0) as usize) * 29);
+    unsafe { shim_p2_detect_flash(stats_flat.as_ptr(), count, cur, offset) != 0 }
+}
+
+/// Whether `read_frame_stats` (:139) would return non-NULL — the bounds logic
+/// on its own, without a pointer crossing the boundary.
+#[must_use]
+pub fn ref_p2_read_frame_stats_in_range(count: i32, cur: i32, offset: i32) -> bool {
+    ref_init();
+    unsafe { shim_p2_read_frame_stats_in_range(count, cur, offset) != 0 }
+}

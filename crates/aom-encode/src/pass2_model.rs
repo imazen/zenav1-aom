@@ -559,3 +559,348 @@ pub fn is_almost_static(gf_zero_motion: f64, kf_zero_motion: i32, is_lap_enabled
         gf_zero_motion >= 0.995 && kf_zero_motion >= STATIC_KF_GROUP_THRESH
     }
 }
+
+// ===========================================================================
+// The GF_GROUP_STATS accumulator cluster (pass2_strategy.c:490-570) — what the
+// 2-pass GOP builder folds a group's first-pass records into before it decides
+// the group's length, boost and bit split.
+//
+// | Rust | C |
+// |---|---|
+// | [`GfGroupStats`] | `GF_GROUP_STATS` (`pass2_strategy.h:27`) |
+// | [`GfGroupStats::init`] | `init_gf_stats` (:2282) |
+// | [`accumulate_frame_motion_stats`] | `accumulate_frame_motion_stats` (:490) |
+// | [`accumulate_this_frame_stats`] | `accumulate_this_frame_stats` (:517) |
+// | [`accumulate_next_frame_stats`] | `accumulate_next_frame_stats` (:528) |
+// | [`average_gf_stats`] | `average_gf_stats` (:561) |
+// | [`calculate_section_intra_ratio`] | `calculate_section_intra_ratio` (:776) |
+// | [`get_second_ref_usage_thresh`] | `get_second_ref_usage_thresh` (:2866) |
+// | [`read_frame_stats`] | `read_frame_stats` (:139) |
+// | [`detect_flash`] | `detect_flash` (:474) |
+// | [`set_baseline_gf_interval`] | `set_baseline_gf_interval` (:2277) |
+// ===========================================================================
+
+/// `GF_GROUP_STATS` (`av1/encoder/pass2_strategy.h:27`) — the running totals a
+/// GF group is summarised by.
+///
+/// The field ORDER matters at the oracle boundary, which passes the 17 doubles
+/// flat in declaration order; `non_zero_stdev_count` is an `int` and travels
+/// separately.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GfGroupStats {
+    /// Sum of the group's modified errors.
+    pub gf_group_err: f64,
+    /// Sum of the group's raw coded errors.
+    pub gf_group_raw_error: f64,
+    /// Sum of the group's intra-skip fractions.
+    pub gf_group_skip_pct: f64,
+    /// Sum of the group's inactive (letterbox) MB rows.
+    pub gf_group_inactive_zone_rows: f64,
+    /// How uniform the motion field is, accumulated.
+    pub mv_ratio_accumulator: f64,
+    /// Running product of the per-frame prediction decay rates.
+    pub decay_accumulator: f64,
+    /// Running minimum of the per-frame zero-motion factors.
+    pub zero_motion_accumulator: f64,
+    /// This frame's prediction decay rate.
+    pub loop_decay_rate: f64,
+    /// The previous frame's, kept for the transition-to-still test.
+    pub last_loop_decay_rate: f64,
+    /// This frame's motion in/out of frame.
+    pub this_frame_mv_in_out: f64,
+    /// Signed accumulation of the above.
+    pub mv_in_out_accumulator: f64,
+    /// Absolute accumulation of the above.
+    pub abs_mv_in_out_accumulator: f64,
+    /// Mean second-reference coded error (after [`average_gf_stats`]).
+    pub avg_sr_coded_error: f64,
+    /// Mean second-reference usage.
+    pub avg_pcnt_second_ref: f64,
+    /// Mean new-MV count.
+    pub avg_new_mv_count: f64,
+    /// Mean wavelet energy.
+    pub avg_wavelet_energy: f64,
+    /// Mean raw-error standard deviation, over the frames that had one.
+    pub avg_raw_err_stdev: f64,
+    /// How many frames contributed a non-zero `raw_error_stdev`.
+    pub non_zero_stdev_count: i32,
+}
+
+impl GfGroupStats {
+    /// `init_gf_stats` (pass2_strategy.c:2282).
+    ///
+    /// Note that three fields start at 1.0, not 0.0: `decay_accumulator` and
+    /// `zero_motion_accumulator` because they are a running PRODUCT and a
+    /// running MINIMUM, and the two decay rates because a group with no
+    /// accumulated frame must read as "no decay". This is why the port has an
+    /// explicit `init` rather than deriving `Default`.
+    #[must_use]
+    pub fn init() -> Self {
+        Self {
+            gf_group_err: 0.0,
+            gf_group_raw_error: 0.0,
+            gf_group_skip_pct: 0.0,
+            gf_group_inactive_zone_rows: 0.0,
+            mv_ratio_accumulator: 0.0,
+            decay_accumulator: 1.0,
+            zero_motion_accumulator: 1.0,
+            loop_decay_rate: 1.0,
+            last_loop_decay_rate: 1.0,
+            this_frame_mv_in_out: 0.0,
+            mv_in_out_accumulator: 0.0,
+            abs_mv_in_out_accumulator: 0.0,
+            avg_sr_coded_error: 0.0,
+            avg_pcnt_second_ref: 0.0,
+            avg_new_mv_count: 0.0,
+            avg_wavelet_energy: 0.0,
+            avg_raw_err_stdev: 0.0,
+            non_zero_stdev_count: 0,
+        }
+    }
+
+    /// The 17 `double` members in C's declaration order — the oracle
+    /// boundary's layout. `non_zero_stdev_count` is excluded (it is an `int`).
+    #[must_use]
+    pub fn to_doubles(&self) -> [f64; 17] {
+        [
+            self.gf_group_err,
+            self.gf_group_raw_error,
+            self.gf_group_skip_pct,
+            self.gf_group_inactive_zone_rows,
+            self.mv_ratio_accumulator,
+            self.decay_accumulator,
+            self.zero_motion_accumulator,
+            self.loop_decay_rate,
+            self.last_loop_decay_rate,
+            self.this_frame_mv_in_out,
+            self.mv_in_out_accumulator,
+            self.abs_mv_in_out_accumulator,
+            self.avg_sr_coded_error,
+            self.avg_pcnt_second_ref,
+            self.avg_new_mv_count,
+            self.avg_wavelet_energy,
+            self.avg_raw_err_stdev,
+        ]
+    }
+
+    /// Rebuild from the boundary layout produced by [`Self::to_doubles`].
+    #[must_use]
+    pub fn from_doubles(d: &[f64; 17], non_zero_stdev_count: i32) -> Self {
+        Self {
+            gf_group_err: d[0],
+            gf_group_raw_error: d[1],
+            gf_group_skip_pct: d[2],
+            gf_group_inactive_zone_rows: d[3],
+            mv_ratio_accumulator: d[4],
+            decay_accumulator: d[5],
+            zero_motion_accumulator: d[6],
+            loop_decay_rate: d[7],
+            last_loop_decay_rate: d[8],
+            this_frame_mv_in_out: d[9],
+            mv_in_out_accumulator: d[10],
+            abs_mv_in_out_accumulator: d[11],
+            avg_sr_coded_error: d[12],
+            avg_pcnt_second_ref: d[13],
+            avg_new_mv_count: d[14],
+            avg_wavelet_energy: d[15],
+            avg_raw_err_stdev: d[16],
+            non_zero_stdev_count,
+        }
+    }
+}
+
+/// `accumulate_frame_motion_stats` (pass2_strategy.c:490).
+///
+/// `f_w` / `f_h` are the reciprocals of the frame dimensions the caller passes
+/// (`accumulate_next_frame_stats` hands them straight through from
+/// `accumulate_gop_stats`), so `mvr_abs * f_h` is a normalised motion
+/// magnitude and the `min` below picks the smaller of the ratio and it.
+///
+/// `this_frame_mv_in_out` is OVERWRITTEN, not accumulated — only the two
+/// accumulators below it accumulate.
+pub fn accumulate_frame_motion_stats(
+    stats: &FirstpassStats,
+    gf_stats: &mut GfGroupStats,
+    f_w: f64,
+    f_h: f64,
+) {
+    let pct = stats.pcnt_motion;
+
+    gf_stats.this_frame_mv_in_out = stats.mv_in_out_count * pct;
+    gf_stats.mv_in_out_accumulator += gf_stats.this_frame_mv_in_out;
+    gf_stats.abs_mv_in_out_accumulator += gf_stats.this_frame_mv_in_out.abs();
+
+    // How uniform (conversely, how random) the motion field is: abs(mv) / mv.
+    if pct > 0.05 {
+        let mvr_ratio = stats.mvr_abs.abs() / double_divide_check(stats.mvr.abs());
+        let mvc_ratio = stats.mvc_abs.abs() / double_divide_check(stats.mvc.abs());
+
+        // C writes these as `a < b ? a : b`, which is NOT `f64::min` for a NaN
+        // input (min returns the non-NaN operand; the ternary returns b). The
+        // explicit form is kept for that reason.
+        let r = stats.mvr_abs * f_h;
+        gf_stats.mv_ratio_accumulator += pct * if mvr_ratio < r { mvr_ratio } else { r };
+        let c = stats.mvc_abs * f_w;
+        gf_stats.mv_ratio_accumulator += pct * if mvc_ratio < c { mvc_ratio } else { c };
+    }
+}
+
+/// `accumulate_this_frame_stats` (pass2_strategy.c:517).
+///
+/// `gf_group_raw_error` is under `#if GROUP_ADAPTIVE_MAXQ`, which is `1` in
+/// this build (pass2_strategy.c:49), so the arm is LIVE.
+pub fn accumulate_this_frame_stats(
+    stats: &FirstpassStats,
+    mod_frame_err: f64,
+    gf_stats: &mut GfGroupStats,
+) {
+    gf_stats.gf_group_err += mod_frame_err;
+    gf_stats.gf_group_raw_error += stats.coded_error;
+    gf_stats.gf_group_skip_pct += stats.intra_skip_pct;
+    gf_stats.gf_group_inactive_zone_rows += stats.inactive_zone_rows;
+}
+
+/// `accumulate_next_frame_stats` (pass2_strategy.c:528).
+///
+/// The decay half is skipped entirely on a flash frame — a flash breaks
+/// prediction for one frame and then recovers, so folding its decay rate into
+/// the group would misreport the group as decaying.
+///
+/// The static-section monitor is gated on `(frames_since_key + cur_idx - 1) > 1`,
+/// so the first two frames after a key frame never lower
+/// `zero_motion_accumulator`.
+#[allow(clippy::too_many_arguments)]
+pub fn accumulate_next_frame_stats(
+    stats: &FirstpassStats,
+    flash_detected: bool,
+    frames_since_key: i32,
+    cur_idx: i32,
+    gf_stats: &mut GfGroupStats,
+    f_w: i32,
+    f_h: i32,
+) {
+    accumulate_frame_motion_stats(stats, gf_stats, f64::from(f_w), f64::from(f_h));
+    gf_stats.avg_sr_coded_error += stats.sr_coded_error;
+    gf_stats.avg_pcnt_second_ref += stats.pcnt_second_ref;
+    gf_stats.avg_new_mv_count += stats.new_mv_count;
+    gf_stats.avg_wavelet_energy += stats.frame_avg_wavelet_energy;
+    if stats.raw_error_stdev.abs() > 0.000_001 {
+        gf_stats.non_zero_stdev_count += 1;
+        gf_stats.avg_raw_err_stdev += stats.raw_error_stdev;
+    }
+
+    if !flash_detected {
+        gf_stats.last_loop_decay_rate = gf_stats.loop_decay_rate;
+        gf_stats.loop_decay_rate = get_prediction_decay_rate(stats);
+        gf_stats.decay_accumulator *= gf_stats.loop_decay_rate;
+
+        // Monitor for static sections.
+        if (frames_since_key + cur_idx - 1) > 1 {
+            gf_stats.zero_motion_accumulator = gf_stats
+                .zero_motion_accumulator
+                .min(get_zero_motion_factor(stats));
+        }
+    }
+}
+
+/// `average_gf_stats` (pass2_strategy.c:561).
+///
+/// Two different divisors: the four sums use the frame count, but
+/// `avg_raw_err_stdev` uses only the count of frames that HAD a non-zero
+/// standard deviation. Both divisions are skipped when their divisor is zero.
+pub fn average_gf_stats(total_frame: i32, gf_stats: &mut GfGroupStats) {
+    if total_frame != 0 {
+        let n = f64::from(total_frame);
+        gf_stats.avg_sr_coded_error /= n;
+        gf_stats.avg_pcnt_second_ref /= n;
+        gf_stats.avg_new_mv_count /= n;
+        gf_stats.avg_wavelet_energy /= n;
+    }
+    if gf_stats.non_zero_stdev_count != 0 {
+        gf_stats.avg_raw_err_stdev /= f64::from(gf_stats.non_zero_stdev_count);
+    }
+}
+
+/// `calculate_section_intra_ratio` (pass2_strategy.c:776) — the
+/// intra/coded error ratio over a run of frames, used to cap the loop filter.
+///
+/// C walks `begin..end` and stops at `section_length`, whichever comes first;
+/// the port takes the slice and the length for the same reason.
+#[must_use]
+pub fn calculate_section_intra_ratio(section: &[FirstpassStats], section_length: i32) -> i32 {
+    let mut intra_error = 0.0f64;
+    let mut coded_error = 0.0f64;
+    for s in section.iter().take(section_length.max(0) as usize) {
+        intra_error += s.intra_error;
+        coded_error += s.coded_error;
+    }
+    (intra_error / double_divide_check(coded_error)) as i32
+}
+
+/// `get_second_ref_usage_thresh` (pass2_strategy.c:2866).
+///
+/// High second-reference usage suggests a transient (a flash, an occlusion)
+/// rather than a real scene cut, so the threshold rises with how many frames
+/// this key-frame group already has — up to a cap at 32 frames.
+///
+/// The divisor is `adapt_upto - 1`, not `adapt_upto`, so the ramp reaches its
+/// maximum one frame BEFORE the cap takes over.
+#[must_use]
+pub fn get_second_ref_usage_thresh(frame_count_so_far: i32) -> f64 {
+    const ADAPT_UPTO: i32 = 32;
+    const MIN_SECOND_REF_USAGE_THRESH: f64 = 0.085;
+    const SECOND_REF_USAGE_THRESH_MAX_DELTA: f64 = 0.035;
+    if frame_count_so_far >= ADAPT_UPTO {
+        return MIN_SECOND_REF_USAGE_THRESH + SECOND_REF_USAGE_THRESH_MAX_DELTA;
+    }
+    MIN_SECOND_REF_USAGE_THRESH
+        + (f64::from(frame_count_so_far) / f64::from(ADAPT_UPTO - 1))
+            * SECOND_REF_USAGE_THRESH_MAX_DELTA
+}
+
+/// `read_frame_stats` (pass2_strategy.c:139) — index `cur + offset` into a
+/// stats buffer, or `None` when that leaves the buffer.
+///
+/// C's two bounds tests are written ASYMMETRICALLY — the forward one against
+/// `stats_in_end`, the backward one against `stats_in_start`, each applied
+/// only for its own sign of `offset`. For any `cur` inside the buffer the two
+/// halves coincide with a plain `0 <= idx < len`, and that equivalence was
+/// MEASURED (`read_frame_stats_bounds_match_c` sweeps every `cur` in
+/// `0..=len` against C and a symmetric spelling passes it). C's shape is kept
+/// anyway so a later reader comparing the two files sees the same structure.
+#[must_use]
+pub fn read_frame_stats(len: usize, cur: usize, offset: i32) -> Option<usize> {
+    let idx = cur as i64 + i64::from(offset);
+    if offset >= 0 {
+        if idx >= len as i64 {
+            return None;
+        }
+    } else if idx < 0 {
+        return None;
+    }
+    Some(idx as usize)
+}
+
+/// `detect_flash` (pass2_strategy.c:474).
+///
+/// A flash shows up as the frame AFTER it being well predicted from a
+/// pre-flash reference: high `pcnt_second_ref` relative to `pcnt_inter`. The
+/// caller passes the offset that reaches that following frame.
+#[must_use]
+pub fn detect_flash(stats: &[FirstpassStats], cur: usize, offset: i32) -> bool {
+    let Some(idx) = read_frame_stats(stats.len(), cur, offset) else {
+        return false;
+    };
+    let next = &stats[idx];
+    next.pcnt_second_ref > next.pcnt_inter && next.pcnt_second_ref >= 0.5
+}
+
+/// `set_baseline_gf_interval` (pass2_strategy.c:2277).
+///
+/// A one-line setter in C. The port keeps it as a named function so the call
+/// sites read the same and the (deliberate) absence of any clamping is
+/// documented in one place.
+#[must_use]
+pub fn set_baseline_gf_interval(arf_position: i32) -> i32 {
+    arf_position
+}

@@ -561,3 +561,341 @@ fn is_almost_static_matches_c() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The GF_GROUP_STATS accumulator cluster.
+// ---------------------------------------------------------------------------
+
+use aom_encode::pass2_model::{
+    GfGroupStats, accumulate_frame_motion_stats, accumulate_next_frame_stats,
+    accumulate_this_frame_stats, average_gf_stats, calculate_section_intra_ratio, detect_flash,
+    get_second_ref_usage_thresh, read_frame_stats, set_baseline_gf_interval,
+};
+use aom_sys_ref::{
+    ref_p2_accumulate_frame_motion_stats, ref_p2_accumulate_next_frame_stats,
+    ref_p2_accumulate_this_frame_stats, ref_p2_average_gf_stats,
+    ref_p2_calculate_section_intra_ratio, ref_p2_detect_flash, ref_p2_get_second_ref_usage_thresh,
+    ref_p2_gf_group_stats_doubles, ref_p2_init_gf_stats, ref_p2_read_frame_stats_in_range,
+};
+
+fn gf_bits_eq(port: &GfGroupStats, c_doubles: &[f64; 17], c_nz: i32, what: &str) {
+    let p = port.to_doubles();
+    for (i, (a, b)) in p.iter().zip(c_doubles).enumerate() {
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "{what}: GF_GROUP_STATS double {i}, port {a:?} vs C {b:?}"
+        );
+    }
+    assert_eq!(
+        port.non_zero_stdev_count, c_nz,
+        "{what}: non_zero_stdev_count"
+    );
+}
+
+#[test]
+fn init_gf_stats_matches_c() {
+    assert_eq!(
+        GfGroupStats::init().to_doubles().len(),
+        ref_p2_gf_group_stats_doubles(),
+        "GF_GROUP_STATS double count drifted"
+    );
+    let (c, nz) = ref_p2_init_gf_stats();
+    gf_bits_eq(&GfGroupStats::init(), &c, nz, "init_gf_stats");
+    // Three fields start at 1.0, not 0.0 -- a Default-derived struct would be
+    // wrong in exactly those three and right everywhere else.
+    let init = GfGroupStats::init();
+    assert_eq!(init.decay_accumulator, 1.0);
+    assert_eq!(init.zero_motion_accumulator, 1.0);
+    assert_eq!(init.loop_decay_rate, 1.0);
+    assert_eq!(init.last_loop_decay_rate, 1.0);
+}
+
+#[test]
+fn accumulate_frame_motion_stats_matches_c() {
+    let mut rng = Rng::new(0x40C0_0009);
+    let (mut low_pct, mut high_pct) = (0usize, 0usize);
+    // Drive it as an ACCUMULATION across a group, not one call at a time --
+    // three of the four fields it writes are running totals.
+    for _ in 0..300 {
+        let mut port = GfGroupStats::init();
+        let (mut c, mut c_nz) = ref_p2_init_gf_stats();
+        // f_w / f_h are the reciprocal frame dimensions the caller passes.
+        let (f_w, f_h) = (1.0 / 1920.0, 1.0 / 1080.0);
+        for _ in 0..16 {
+            let mut s = draw_stats(&mut rng, 68);
+            // Straddle the pct > 0.05 guard, which gates the whole mv-ratio
+            // half of the function.
+            s.pcnt_motion = if rng.below(2) == 0 {
+                rng.range(0.0, 0.05)
+            } else {
+                rng.range(0.05, 1.0)
+            };
+            if s.pcnt_motion > 0.05 {
+                high_pct += 1;
+            } else {
+                low_pct += 1;
+            }
+            accumulate_frame_motion_stats(&s, &mut port, f_w, f_h);
+            ref_p2_accumulate_frame_motion_stats(&s.to_doubles(), &mut c, &mut c_nz, f_w, f_h);
+            gf_bits_eq(&port, &c, c_nz, "accumulate_frame_motion_stats");
+        }
+    }
+    assert!(
+        low_pct > 100 && high_pct > 100,
+        "one pct arm never fired: {low_pct}/{high_pct}"
+    );
+
+    // C's guard is a STRICT `>`, and a random draw never lands on 0.05
+    // exactly. Constructed so `>` and `>=` disagree.
+    let mut port = GfGroupStats::init();
+    let (mut c, mut c_nz) = ref_p2_init_gf_stats();
+    let mut s = draw_stats(&mut rng, 68);
+    s.pcnt_motion = 0.05;
+    // Non-zero mv magnitudes, so the mv-ratio half would move the accumulator
+    // if it ran -- otherwise the boundary would be unobservable.
+    s.mvr = 4.0;
+    s.mvr_abs = 40.0;
+    s.mvc = 3.0;
+    s.mvc_abs = 30.0;
+    accumulate_frame_motion_stats(&s, &mut port, 1.0 / 1920.0, 1.0 / 1080.0);
+    ref_p2_accumulate_frame_motion_stats(
+        &s.to_doubles(),
+        &mut c,
+        &mut c_nz,
+        1.0 / 1920.0,
+        1.0 / 1080.0,
+    );
+    gf_bits_eq(&port, &c, c_nz, "pct == 0.05 exactly");
+    assert_eq!(
+        port.mv_ratio_accumulator, 0.0,
+        "pct == 0.05 must NOT enter the mv-ratio arm (C uses a strict >)"
+    );
+}
+
+#[test]
+fn accumulate_this_frame_stats_matches_c() {
+    let mut rng = Rng::new(0x7415_000A);
+    for _ in 0..300 {
+        let mut port = GfGroupStats::init();
+        let (mut c, mut c_nz) = ref_p2_init_gf_stats();
+        for _ in 0..16 {
+            let s = draw_stats(&mut rng, 68);
+            let err = rng.range(0.0, 1.0e6);
+            accumulate_this_frame_stats(&s, err, &mut port);
+            ref_p2_accumulate_this_frame_stats(&s.to_doubles(), err, &mut c, &mut c_nz);
+            gf_bits_eq(&port, &c, c_nz, "accumulate_this_frame_stats");
+        }
+        // GROUP_ADAPTIVE_MAXQ is 1 in this build, so the raw-error arm is LIVE.
+        assert!(port.gf_group_raw_error >= 0.0);
+    }
+}
+
+#[test]
+fn accumulate_next_frame_stats_matches_c() {
+    let mut rng = Rng::new(0x8E37_000B);
+    let (mut flashes, mut normals, mut monitored, mut unmonitored) = (0usize, 0, 0usize, 0usize);
+    for _ in 0..300 {
+        let mut port = GfGroupStats::init();
+        let (mut c, mut c_nz) = ref_p2_init_gf_stats();
+        // frames_since_key near 0 keeps the (frames_since_key + cur_idx - 1) > 1
+        // static-section guard on both sides.
+        let frames_since_key = rng.below(4) as i32;
+        for cur_idx in 0..16i32 {
+            let mut s = draw_stats(&mut rng, 68);
+            // raw_error_stdev straddles the 1e-6 non-zero test, which is what
+            // drives non_zero_stdev_count and therefore average_gf_stats'
+            // second divisor.
+            s.raw_error_stdev = if rng.below(3) == 0 {
+                0.0
+            } else {
+                rng.range(0.0, 1.0e3)
+            };
+            let flash = rng.below(4) == 0;
+            if flash {
+                flashes += 1;
+            } else {
+                normals += 1;
+            }
+            if frames_since_key + cur_idx - 1 > 1 {
+                monitored += 1;
+            } else {
+                unmonitored += 1;
+            }
+            accumulate_next_frame_stats(
+                &s,
+                flash,
+                frames_since_key,
+                cur_idx,
+                &mut port,
+                1920,
+                1080,
+            );
+            ref_p2_accumulate_next_frame_stats(
+                &s.to_doubles(),
+                flash,
+                frames_since_key,
+                cur_idx,
+                &mut c,
+                &mut c_nz,
+                1920,
+                1080,
+            );
+            gf_bits_eq(&port, &c, c_nz, "accumulate_next_frame_stats");
+        }
+        // And the averaging pass over what was accumulated.
+        for &total in &[0i32, 1, 16] {
+            let mut p2 = port;
+            let mut c2 = c;
+            let mut nz2 = c_nz;
+            average_gf_stats(total, &mut p2);
+            ref_p2_average_gf_stats(total, &mut c2, &mut nz2);
+            gf_bits_eq(&p2, &c2, nz2, "average_gf_stats");
+        }
+    }
+    // raw_error_stdev exactly at C's 1e-6 test: a random draw never lands
+    // there, so the threshold's own value is otherwise untested.
+    for &stdev in &[0.0f64, 1e-9, 1e-6, 1.000_000_1e-6, 1e-3] {
+        let mut port = GfGroupStats::init();
+        let (mut c, mut c_nz) = ref_p2_init_gf_stats();
+        let mut s = draw_stats(&mut rng, 68);
+        s.raw_error_stdev = stdev;
+        accumulate_next_frame_stats(&s, false, 0, 0, &mut port, 1920, 1080);
+        ref_p2_accumulate_next_frame_stats(
+            &s.to_doubles(),
+            false,
+            0,
+            0,
+            &mut c,
+            &mut c_nz,
+            1920,
+            1080,
+        );
+        gf_bits_eq(&port, &c, c_nz, &format!("raw_error_stdev {stdev}"));
+    }
+
+    assert!(flashes > 100 && normals > 100, "one flash arm never fired");
+    assert!(
+        monitored > 100 && unmonitored > 100,
+        "the static-section guard never fired both ways: {monitored}/{unmonitored}"
+    );
+}
+
+#[test]
+fn calculate_section_intra_ratio_matches_c() {
+    let mut rng = Rng::new(0x1417_000C);
+    for count in 0..12i32 {
+        for _ in 0..40 {
+            let section: Vec<FirstpassStats> =
+                (0..count).map(|_| draw_stats(&mut rng, 68)).collect();
+            let flat: Vec<f64> = section.iter().flat_map(|s| s.to_doubles()).collect();
+            // section_length below, at and above the buffer length: C stops at
+            // whichever bound comes first.
+            for section_length in 0..(count + 3) {
+                assert_eq!(
+                    calculate_section_intra_ratio(&section, section_length),
+                    ref_p2_calculate_section_intra_ratio(&flat, count, section_length),
+                    "count {count} section_length {section_length}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn get_second_ref_usage_thresh_matches_c() {
+    // Walk the adapt_upto = 32 cap and the (adapt_upto - 1) divisor exactly.
+    for n in -4..=64i32 {
+        bits_eq(
+            get_second_ref_usage_thresh(n),
+            ref_p2_get_second_ref_usage_thresh(n),
+            &format!("frame_count_so_far {n}"),
+        );
+    }
+}
+
+#[test]
+fn read_frame_stats_bounds_match_c() {
+    // C's two bounds tests are asymmetric and each applies only for its own
+    // sign of `offset`. A symmetric `0 <= i < len` is a DIFFERENT function and
+    // this sweep separates them.
+    for count in 0..8i32 {
+        for cur in 0..=count {
+            for offset in -8..=8i32 {
+                let want = ref_p2_read_frame_stats_in_range(count, cur, offset);
+                let got = read_frame_stats(count as usize, cur as usize, offset).is_some();
+                assert_eq!(got, want, "count {count} cur {cur} offset {offset}");
+            }
+        }
+    }
+}
+
+#[test]
+fn detect_flash_matches_c() {
+    let mut rng = Rng::new(0xF1A5_000D);
+    let (mut yes, mut no) = (0usize, 0usize);
+    for count in 1..8i32 {
+        for _ in 0..60 {
+            let stats: Vec<FirstpassStats> = (0..count)
+                .map(|_| {
+                    let mut s = draw_stats(&mut rng, 68);
+                    // Straddle both of C's tests: pcnt_second_ref against
+                    // pcnt_inter, and against the 0.5 floor.
+                    s.pcnt_inter = rng.range(0.0, 1.0);
+                    s.pcnt_second_ref = if rng.below(2) == 0 {
+                        rng.range(0.0, 1.0)
+                    } else {
+                        rng.range(0.45, 0.55)
+                    };
+                    s
+                })
+                .collect();
+            let flat: Vec<f64> = stats.iter().flat_map(|s| s.to_doubles()).collect();
+            for cur in 0..count {
+                for offset in -3..=3i32 {
+                    let want = ref_p2_detect_flash(&flat, count, cur, offset);
+                    let got = detect_flash(&stats, cur as usize, offset);
+                    assert_eq!(got, want, "count {count} cur {cur} offset {offset}");
+                    if want {
+                        yes += 1;
+                    } else {
+                        no += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(yes > 50 && no > 50, "one arm never fired: {yes}/{no}");
+
+    // pcnt_second_ref EXACTLY at C's 0.5 floor, which the random draw never
+    // hits. C's test is `>=`, so this must detect a flash.
+    let mut s = FirstpassStats::default();
+    s.pcnt_inter = 0.25;
+    s.pcnt_second_ref = 0.5;
+    let flat: Vec<f64> = s.to_doubles().to_vec();
+    assert!(
+        ref_p2_detect_flash(&flat, 1, 0, 0),
+        "the construction failed: C did not report a flash at exactly 0.5"
+    );
+    assert_eq!(
+        detect_flash(&[s], 0, 0),
+        ref_p2_detect_flash(&flat, 1, 0, 0)
+    );
+    // And just below it, which must NOT.
+    s.pcnt_second_ref = 0.499_999_999;
+    let flat2: Vec<f64> = s.to_doubles().to_vec();
+    assert!(!ref_p2_detect_flash(&flat2, 1, 0, 0));
+    assert_eq!(
+        detect_flash(&[s], 0, 0),
+        ref_p2_detect_flash(&flat2, 1, 0, 0)
+    );
+}
+
+#[test]
+fn set_baseline_gf_interval_is_the_identity() {
+    // C's setter has no clamping and no validation; recording that here means
+    // a later reader does not have to go look.
+    for n in [-1i32, 0, 1, 16, 32, i32::MAX] {
+        assert_eq!(set_baseline_gf_interval(n), n);
+    }
+}

@@ -250,3 +250,170 @@ int shim_p2_is_almost_static(double gf_zero_motion, int kf_zero_motion,
                              int is_lap_enabled) {
   return is_almost_static(gf_zero_motion, kf_zero_motion, is_lap_enabled);
 }
+
+/* ======================================================================== *
+ * The GF_GROUP_STATS accumulator cluster.
+ *
+ * GF_GROUP_STATS crosses as its 17 `double` members in declaration order plus
+ * `non_zero_stdev_count` as an int, assigned by NAME below for the same
+ * reason FIRSTPASS_STATS is.
+ * ======================================================================== */
+static void shim_p2_load_gf(GF_GROUP_STATS *g, const double *d, int nz_count) {
+  memset(g, 0, sizeof(*g));
+  g->gf_group_err = d[0];
+  g->gf_group_raw_error = d[1];
+  g->gf_group_skip_pct = d[2];
+  g->gf_group_inactive_zone_rows = d[3];
+  g->mv_ratio_accumulator = d[4];
+  g->decay_accumulator = d[5];
+  g->zero_motion_accumulator = d[6];
+  g->loop_decay_rate = d[7];
+  g->last_loop_decay_rate = d[8];
+  g->this_frame_mv_in_out = d[9];
+  g->mv_in_out_accumulator = d[10];
+  g->abs_mv_in_out_accumulator = d[11];
+  g->avg_sr_coded_error = d[12];
+  g->avg_pcnt_second_ref = d[13];
+  g->avg_new_mv_count = d[14];
+  g->avg_wavelet_energy = d[15];
+  g->avg_raw_err_stdev = d[16];
+  g->non_zero_stdev_count = nz_count;
+}
+
+static void shim_p2_store_gf(const GF_GROUP_STATS *g, double *d,
+                             int *nz_count) {
+  d[0] = g->gf_group_err;
+  d[1] = g->gf_group_raw_error;
+  d[2] = g->gf_group_skip_pct;
+  d[3] = g->gf_group_inactive_zone_rows;
+  d[4] = g->mv_ratio_accumulator;
+  d[5] = g->decay_accumulator;
+  d[6] = g->zero_motion_accumulator;
+  d[7] = g->loop_decay_rate;
+  d[8] = g->last_loop_decay_rate;
+  d[9] = g->this_frame_mv_in_out;
+  d[10] = g->mv_in_out_accumulator;
+  d[11] = g->abs_mv_in_out_accumulator;
+  d[12] = g->avg_sr_coded_error;
+  d[13] = g->avg_pcnt_second_ref;
+  d[14] = g->avg_new_mv_count;
+  d[15] = g->avg_wavelet_energy;
+  d[16] = g->avg_raw_err_stdev;
+  *nz_count = g->non_zero_stdev_count;
+}
+
+int shim_p2_gf_group_stats_doubles(void) { return 17; }
+
+void shim_p2_init_gf_stats(double *out, int *nz_count) {
+  GF_GROUP_STATS g;
+  init_gf_stats(&g);
+  shim_p2_store_gf(&g, out, nz_count);
+}
+
+void shim_p2_accumulate_frame_motion_stats(const double *stats, double *gf,
+                                           int *nz_count, double f_w,
+                                           double f_h) {
+  FIRSTPASS_STATS s;
+  GF_GROUP_STATS g;
+  shim_p2_fill_stats(&s, stats, 0);
+  shim_p2_load_gf(&g, gf, *nz_count);
+  accumulate_frame_motion_stats(&s, &g, f_w, f_h);
+  shim_p2_store_gf(&g, gf, nz_count);
+}
+
+void shim_p2_accumulate_this_frame_stats(const double *stats,
+                                         double mod_frame_err, double *gf,
+                                         int *nz_count) {
+  FIRSTPASS_STATS s;
+  GF_GROUP_STATS g;
+  shim_p2_fill_stats(&s, stats, 0);
+  shim_p2_load_gf(&g, gf, *nz_count);
+  accumulate_this_frame_stats(&s, mod_frame_err, &g);
+  shim_p2_store_gf(&g, gf, nz_count);
+}
+
+void shim_p2_accumulate_next_frame_stats(const double *stats,
+                                         int flash_detected,
+                                         int frames_since_key, int cur_idx,
+                                         double *gf, int *nz_count, int f_w,
+                                         int f_h) {
+  FIRSTPASS_STATS s;
+  GF_GROUP_STATS g;
+  shim_p2_fill_stats(&s, stats, 0);
+  shim_p2_load_gf(&g, gf, *nz_count);
+  accumulate_next_frame_stats(&s, flash_detected, frames_since_key, cur_idx, &g,
+                             f_w, f_h);
+  shim_p2_store_gf(&g, gf, nz_count);
+}
+
+void shim_p2_average_gf_stats(int total_frame, double *gf, int *nz_count) {
+  GF_GROUP_STATS g;
+  shim_p2_load_gf(&g, gf, *nz_count);
+  average_gf_stats(total_frame, &g);
+  shim_p2_store_gf(&g, gf, nz_count);
+}
+
+/* calculate_section_intra_ratio walks a run of FIRSTPASS_STATS; the shim
+ * rebuilds that run from `count` flat records. */
+int shim_p2_calculate_section_intra_ratio(const double *stats_flat, int count,
+                                          int section_length) {
+  if (count <= 0) return calculate_section_intra_ratio(NULL, NULL, section_length);
+  FIRSTPASS_STATS *arr =
+      (FIRSTPASS_STATS *)calloc((size_t)count, sizeof(FIRSTPASS_STATS));
+  if (!arr) return -1;
+  for (int i = 0; i < count; ++i) shim_p2_fill_stats(&arr[i], stats_flat + i * 29, 0);
+  const int r = calculate_section_intra_ratio(arr, arr + count, section_length);
+  free(arr);
+  return r;
+}
+
+double shim_p2_get_second_ref_usage_thresh(int frame_count_so_far) {
+  return get_second_ref_usage_thresh(frame_count_so_far);
+}
+
+/* detect_flash reads a stats run through read_frame_stats, which bounds-checks
+ * against the buffer's start and end. The shim builds that run and positions
+ * `stats_in` at `cur`, so `offset` is exercised in both directions. */
+int shim_p2_detect_flash(const double *stats_flat, int count, int cur,
+                         int offset) {
+  TWO_PASS p;
+  TWO_PASS_FRAME pf;
+  STATS_BUFFER_CTX ctx;
+  memset(&p, 0, sizeof(p));
+  memset(&pf, 0, sizeof(pf));
+  memset(&ctx, 0, sizeof(ctx));
+  FIRSTPASS_STATS *arr =
+      (FIRSTPASS_STATS *)calloc((size_t)(count > 0 ? count : 1),
+                                sizeof(FIRSTPASS_STATS));
+  if (!arr) return -1;
+  for (int i = 0; i < count; ++i) shim_p2_fill_stats(&arr[i], stats_flat + i * 29, 0);
+  ctx.stats_in_start = arr;
+  ctx.stats_in_end = arr + count;
+  p.stats_buf_ctx = &ctx;
+  pf.stats_in = arr + cur;
+  const int r = detect_flash(&p, &pf, offset);
+  free(arr);
+  return r;
+}
+
+int shim_p2_read_frame_stats_in_range(int count, int cur, int offset) {
+  /* Returns 1 when read_frame_stats would return non-NULL. Lets the port's
+   * bounds logic be checked without a pointer crossing the boundary. */
+  TWO_PASS p;
+  TWO_PASS_FRAME pf;
+  STATS_BUFFER_CTX ctx;
+  memset(&p, 0, sizeof(p));
+  memset(&pf, 0, sizeof(pf));
+  memset(&ctx, 0, sizeof(ctx));
+  FIRSTPASS_STATS *arr =
+      (FIRSTPASS_STATS *)calloc((size_t)(count > 0 ? count : 1),
+                                sizeof(FIRSTPASS_STATS));
+  if (!arr) return -1;
+  ctx.stats_in_start = arr;
+  ctx.stats_in_end = arr + count;
+  p.stats_buf_ctx = &ctx;
+  pf.stats_in = arr + cur;
+  const int r = read_frame_stats(&p, &pf, offset) != NULL;
+  free(arr);
+  return r;
+}
