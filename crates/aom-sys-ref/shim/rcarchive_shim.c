@@ -474,3 +474,104 @@ int shim_rca_postencode_update(ShimRcUpdateState *u) {
   shim_rca_free(&s);
   return 0;
 }
+
+/* av1_rc_pick_q_and_bounds out of the ARCHIVE (tier 1). Shares
+ * ShimRcPickParams with ratectrl_shim.c, so the two builds are set up
+ * identically and a difference between them is a difference between the
+ * compilations. Duplicated setup rather than shared, because this TU must not
+ * pull ratectrl.c in — that is the whole point of the file.
+ * out[0] = q, out[1] = bottom, out[2] = top, out[3] = p_rc->arf_q after. */
+int shim_rca_rc_pick_q_and_bounds(const ShimRcPickParams *p, int32_t *out) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(AV1_COMP));
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(AV1_PRIMARY));
+  SequenceHeader *seq = (SequenceHeader *)calloc(1, sizeof(SequenceHeader));
+  if (!cpi || !ppi || !seq) {
+    free(cpi); free(ppi); free(seq);
+    return -1;
+  }
+  cpi->ppi = ppi;
+  seq->bit_depth = (aom_bit_depth_t)p->bit_depth;
+  cpi->common.seq_params = seq;
+
+  cpi->common.width = p->coded_width;
+  cpi->common.height = p->coded_height;
+  cpi->common.superres_upscaled_width = p->coded_width;
+  cpi->common.superres_upscaled_height = p->coded_height;
+  cpi->common.render_width = p->coded_width;
+  cpi->common.render_height = p->coded_height;
+  cpi->common.superres_scale_denominator = (uint8_t)p->superres_denom;
+  cpi->common.tiles.large_scale = p->large_scale;
+  cpi->common.current_frame.frame_type = (FRAME_TYPE)p->frame_type;
+  cpi->common.current_frame.frame_number = (unsigned int)p->frame_number;
+  cpi->common.mi_params.MBs = av1_get_MBs(p->coded_width, p->coded_height);
+
+  cpi->superres_mode = (aom_superres_mode)p->superres_mode;
+  cpi->is_screen_content_type = p->screen_content;
+  cpi->refresh_frame.golden_frame = (bool)p->refresh_golden;
+  cpi->refresh_frame.bwd_ref_frame = (bool)p->refresh_bwd_ref;
+  cpi->refresh_frame.alt_ref_frame = (bool)p->refresh_alt_ref;
+
+  cpi->oxcf.mode = p->rtc_mode ? REALTIME : GOOD;
+  cpi->oxcf.pass = p->two_pass ? AOM_RC_SECOND_PASS : AOM_RC_ONE_PASS;
+  ppi->lap_enabled = (!p->has_no_stats_stage && !p->two_pass) ? 1 : 0;
+  cpi->oxcf.rc_cfg.mode = (enum aom_rc_mode)p->rc_mode;
+  cpi->oxcf.rc_cfg.cq_level = p->cq_level;
+  cpi->oxcf.frm_dim_cfg.width = p->cfg_width;
+  cpi->oxcf.frm_dim_cfg.height = p->cfg_height;
+  cpi->oxcf.q_cfg.aq_mode = NO_AQ;
+  cpi->sf.hl_sf.accurate_bit_estimate = 0;
+  cpi->sf.hl_sf.recode_tolerance = 25;
+
+  cpi->rc.active_worst_quality = p->active_worst_quality;
+  cpi->rc.best_quality = p->best_quality;
+  cpi->rc.worst_quality = p->worst_quality;
+  cpi->rc.frames_to_key = p->frames_to_key;
+  cpi->rc.frames_since_key = p->frames_since_key;
+  cpi->rc.is_src_frame_alt_ref = p->is_src_frame_alt_ref;
+  cpi->rc.this_frame_target = p->this_frame_target;
+  cpi->rc.max_frame_bandwidth = p->max_frame_bandwidth;
+
+  PRIMARY_RATE_CONTROL *p_rc = &ppi->p_rc;
+  p_rc->kf_boost = p->kf_boost;
+  p_rc->gfu_boost = p->gfu_boost;
+  p_rc->gfu_boost_average = p->gfu_boost_average;
+  p_rc->arf_boost_factor = p->arf_boost_factor;
+  p_rc->arf_q = p->arf_q;
+  p_rc->avg_frame_qindex[KEY_FRAME] = p->avg_frame_qindex_key;
+  p_rc->avg_frame_qindex[INTER_FRAME] = p->avg_frame_qindex_inter;
+  p_rc->this_key_frame_forced = p->this_key_frame_forced;
+  p_rc->last_boosted_qindex = p->last_boosted_qindex;
+  p_rc->last_kf_qindex = p->last_kf_qindex;
+  p_rc->last_q[KEY_FRAME] = p->last_q_key;
+  p_rc->last_q[INTER_FRAME] = p->last_q_inter;
+  for (int i = 0; i < MAX_ARF_LAYERS; ++i)
+    p_rc->active_best_quality[i] = p->active_best_quality_by_layer[i];
+  p_rc->total_actual_bits = p->total_actual_bits;
+  p_rc->total_target_bits = p->total_target_bits;
+  for (int i = 0; i < RATE_FACTOR_LEVELS; ++i)
+    p_rc->rate_correction_factors[i] = p->rate_correction_factors[i];
+
+  ppi->twopass.kf_zeromotion_pct = p->kf_zeromotion_pct;
+  ppi->twopass.last_kfgroup_zeromotion_pct = p->last_kfgroup_zeromotion_pct;
+  ppi->twopass.extend_minq = p->extend_minq;
+  ppi->twopass.extend_maxq = p->extend_maxq;
+
+  cpi->gf_frame_index = SHIM_RCA_GF_INDEX;
+  ppi->gf_group.update_type[SHIM_RCA_GF_INDEX] =
+      (FRAME_UPDATE_TYPE)p->update_type;
+  ppi->gf_group.layer_depth[SHIM_RCA_GF_INDEX] = p->layer_depth;
+  ppi->gf_group.frame_type[SHIM_RCA_GF_INDEX] =
+      (FRAME_TYPE)p->gf_index_frame_type;
+  ppi->gf_group.frame_parallel_level[SHIM_RCA_GF_INDEX] = 0;
+
+  av1_rc_init_minq_luts();
+
+  int bottom = 0, top = 0;
+  out[0] = av1_rc_pick_q_and_bounds(cpi, p->width, p->height,
+                                    SHIM_RCA_GF_INDEX, &bottom, &top);
+  out[1] = bottom;
+  out[2] = top;
+  out[3] = p_rc->arf_q;
+  free(cpi); free(ppi); free(seq);
+  return 0;
+}

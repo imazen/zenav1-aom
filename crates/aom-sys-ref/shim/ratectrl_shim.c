@@ -594,3 +594,179 @@ int shim_rcc_set_gf_interval_range(const ShimRcInitCfg *c, int32_t *out) {
   free(cpi); free(ppi);
   return 0;
 }
+
+/* ======================================================================== *
+ * 5. The q-and-bounds dispatcher and the statics under it.
+ * ======================================================================== */
+
+#define SHIM_RCP_GF_INDEX 2
+
+static int shim_rcp_alloc(ShimRc *s, const ShimRcPickParams *p) {
+  s->cpi = (AV1_COMP *)calloc(1, sizeof(AV1_COMP));
+  s->ppi = (AV1_PRIMARY *)calloc(1, sizeof(AV1_PRIMARY));
+  s->seq = (SequenceHeader *)calloc(1, sizeof(SequenceHeader));
+  if (!s->cpi || !s->ppi || !s->seq) {
+    free(s->cpi); free(s->ppi); free(s->seq);
+    s->cpi = NULL; s->ppi = NULL; s->seq = NULL;
+    return 0;
+  }
+  AV1_COMP *cpi = s->cpi;
+  cpi->ppi = s->ppi;
+  s->seq->bit_depth = (aom_bit_depth_t)p->bit_depth;
+  cpi->common.seq_params = s->seq;
+
+  cpi->common.width = p->coded_width;
+  cpi->common.height = p->coded_height;
+  cpi->common.superres_upscaled_width = p->coded_width;
+  cpi->common.superres_upscaled_height = p->coded_height;
+  cpi->common.render_width = p->coded_width;
+  cpi->common.render_height = p->coded_height;
+  cpi->common.superres_scale_denominator = (uint8_t)p->superres_denom;
+  cpi->common.tiles.large_scale = p->large_scale;
+  cpi->common.current_frame.frame_type = (FRAME_TYPE)p->frame_type;
+  cpi->common.current_frame.frame_number = (unsigned int)p->frame_number;
+  cpi->common.mi_params.MBs = av1_get_MBs(p->coded_width, p->coded_height);
+
+  cpi->superres_mode = (aom_superres_mode)p->superres_mode;
+  cpi->is_screen_content_type = p->screen_content;
+  cpi->refresh_frame.golden_frame = (bool)p->refresh_golden;
+  cpi->refresh_frame.bwd_ref_frame = (bool)p->refresh_bwd_ref;
+  cpi->refresh_frame.alt_ref_frame = (bool)p->refresh_alt_ref;
+
+  cpi->oxcf.mode = p->rtc_mode ? REALTIME : GOOD;
+  /* has_no_stats_stage is (pass == AOM_RC_ONE_PASS && (!lap || REALTIME));
+   * is_stat_consumption_stage_twopass is (pass >= AOM_RC_SECOND_PASS). The two
+   * are mutually exclusive, so `two_pass` wins when both are asked for. */
+  cpi->oxcf.pass = p->two_pass ? AOM_RC_SECOND_PASS : AOM_RC_ONE_PASS;
+  cpi->ppi->lap_enabled = (!p->has_no_stats_stage && !p->two_pass) ? 1 : 0;
+  cpi->oxcf.rc_cfg.mode = (enum aom_rc_mode)p->rc_mode;
+  cpi->oxcf.rc_cfg.cq_level = p->cq_level;
+  cpi->oxcf.frm_dim_cfg.width = p->cfg_width;
+  cpi->oxcf.frm_dim_cfg.height = p->cfg_height;
+  cpi->oxcf.q_cfg.aq_mode = NO_AQ;
+  cpi->sf.hl_sf.accurate_bit_estimate = 0;
+  cpi->sf.hl_sf.recode_tolerance = 25;
+
+  cpi->rc.active_worst_quality = p->active_worst_quality;
+  cpi->rc.best_quality = p->best_quality;
+  cpi->rc.worst_quality = p->worst_quality;
+  cpi->rc.frames_to_key = p->frames_to_key;
+  cpi->rc.frames_since_key = p->frames_since_key;
+  cpi->rc.is_src_frame_alt_ref = p->is_src_frame_alt_ref;
+  cpi->rc.this_frame_target = p->this_frame_target;
+  cpi->rc.max_frame_bandwidth = p->max_frame_bandwidth;
+
+  PRIMARY_RATE_CONTROL *p_rc = &cpi->ppi->p_rc;
+  p_rc->kf_boost = p->kf_boost;
+  p_rc->gfu_boost = p->gfu_boost;
+  p_rc->gfu_boost_average = p->gfu_boost_average;
+  p_rc->arf_boost_factor = p->arf_boost_factor;
+  p_rc->arf_q = p->arf_q;
+  p_rc->avg_frame_qindex[KEY_FRAME] = p->avg_frame_qindex_key;
+  p_rc->avg_frame_qindex[INTER_FRAME] = p->avg_frame_qindex_inter;
+  p_rc->this_key_frame_forced = p->this_key_frame_forced;
+  p_rc->last_boosted_qindex = p->last_boosted_qindex;
+  p_rc->last_kf_qindex = p->last_kf_qindex;
+  p_rc->last_q[KEY_FRAME] = p->last_q_key;
+  p_rc->last_q[INTER_FRAME] = p->last_q_inter;
+  for (int i = 0; i < MAX_ARF_LAYERS; ++i)
+    p_rc->active_best_quality[i] = p->active_best_quality_by_layer[i];
+  p_rc->total_actual_bits = p->total_actual_bits;
+  p_rc->total_target_bits = p->total_target_bits;
+  for (int i = 0; i < RATE_FACTOR_LEVELS; ++i)
+    p_rc->rate_correction_factors[i] = p->rate_correction_factors[i];
+
+  cpi->ppi->twopass.kf_zeromotion_pct = p->kf_zeromotion_pct;
+  cpi->ppi->twopass.last_kfgroup_zeromotion_pct = p->last_kfgroup_zeromotion_pct;
+  cpi->ppi->twopass.extend_minq = p->extend_minq;
+  cpi->ppi->twopass.extend_maxq = p->extend_maxq;
+
+  cpi->gf_frame_index = SHIM_RCP_GF_INDEX;
+  cpi->ppi->gf_group.update_type[SHIM_RCP_GF_INDEX] =
+      (FRAME_UPDATE_TYPE)p->update_type;
+  cpi->ppi->gf_group.layer_depth[SHIM_RCP_GF_INDEX] = p->layer_depth;
+  cpi->ppi->gf_group.frame_type[SHIM_RCP_GF_INDEX] =
+      (FRAME_TYPE)p->gf_index_frame_type;
+  cpi->ppi->gf_group.frame_parallel_level[SHIM_RCP_GF_INDEX] = 0;
+
+  shim_rcc_rc_init_minq_luts();
+  return 1;
+}
+
+int shim_rcc_calc_active_worst_quality_no_stats_vbr(
+    const ShimRcPickParams *p) {
+  ShimRc s;
+  if (!shim_rcp_alloc(&s, p)) return INT_MIN;
+  const int r = calc_active_worst_quality_no_stats_vbr(s.cpi);
+  shim_rc_free(&s);
+  return r;
+}
+
+/* out[0] = active_best, out[1] = active_worst. */
+int shim_rcc_adjust_active_best_and_worst_quality(const ShimRcPickParams *p,
+                                                  int active_best,
+                                                  int active_worst,
+                                                  int is_intrl_arf_boost,
+                                                  int32_t *out) {
+  ShimRc s;
+  if (!shim_rcp_alloc(&s, p)) return -1;
+  int b = active_best, w = active_worst;
+  adjust_active_best_and_worst_quality(s.cpi, is_intrl_arf_boost, &w, &b);
+  out[0] = b;
+  out[1] = w;
+  shim_rc_free(&s);
+  return 0;
+}
+
+int shim_rcc_get_q(const ShimRcPickParams *p, int active_worst,
+                   int active_best) {
+  ShimRc s;
+  if (!shim_rcp_alloc(&s, p)) return INT_MIN;
+  const int r = get_q(s.cpi, p->width, p->height, active_worst, active_best);
+  shim_rc_free(&s);
+  return r;
+}
+
+/* out[0] = q, out[1] = bottom_index, out[2] = top_index. */
+int shim_rcc_pick_q_and_bounds_no_stats(const ShimRcPickParams *p,
+                                        int32_t *out) {
+  ShimRc s;
+  if (!shim_rcp_alloc(&s, p)) return -1;
+  int bottom = 0, top = 0;
+  out[0] = rc_pick_q_and_bounds_no_stats(s.cpi, p->width, p->height, &bottom,
+                                         &top);
+  out[1] = bottom;
+  out[2] = top;
+  shim_rc_free(&s);
+  return 0;
+}
+
+int shim_rcc_pick_q_and_bounds(const ShimRcPickParams *p, int32_t *out) {
+  ShimRc s;
+  if (!shim_rcp_alloc(&s, p)) return -1;
+  int bottom = 0, top = 0;
+  out[0] = rc_pick_q_and_bounds(s.cpi, p->width, p->height, SHIM_RCP_GF_INDEX,
+                                &bottom, &top);
+  out[1] = bottom;
+  out[2] = top;
+  shim_rc_free(&s);
+  return 0;
+}
+
+/* av1_rc_pick_q_and_bounds is EXPORTED, but this TU's copy is renamed; the
+ * archive's copy is driven from rcarchive_shim.c. Driving it here too lets the
+ * test compare the two compilations on the dispatcher itself.
+ * out[0] = q, out[1] = bottom, out[2] = top, out[3] = p_rc->arf_q after. */
+int shim_rcc_probe_rc_pick_q_and_bounds(const ShimRcPickParams *p,
+                                        int32_t *out) {
+  ShimRc s;
+  if (!shim_rcp_alloc(&s, p)) return -1;
+  int bottom = 0, top = 0;
+  out[0] = shim_rcc_rc_pick_q_and_bounds(s.cpi, p->width, p->height,
+                                         SHIM_RCP_GF_INDEX, &bottom, &top);
+  out[1] = bottom;
+  out[2] = top;
+  out[3] = s.cpi->ppi->p_rc.arf_q;
+  shim_rc_free(&s);
+  return 0;
+}

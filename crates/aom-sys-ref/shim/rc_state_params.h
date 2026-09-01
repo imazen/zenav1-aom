@@ -122,4 +122,50 @@ typedef struct {
   int32_t constrained_gf_group;
 } ShimRcUpdateState;
 
+/* The q-and-bounds dispatcher's read set. It is the union of what
+ * rc_pick_q_and_bounds, rc_pick_q_and_bounds_no_stats, get_q and
+ * adjust_active_best_and_worst_quality read, plus the routing inputs of
+ * av1_rc_pick_q_and_bounds. Keep in lockstep with Rust's `RefRcPickParams`. */
+typedef struct {
+  /* frame / config */
+  int32_t bit_depth;
+  int32_t coded_width, coded_height;
+  int32_t width, height;              /* the width/height arguments */
+  int32_t cfg_width, cfg_height;
+  int32_t rtc_mode;
+  int32_t screen_content;
+  int32_t superres_mode, superres_denom;
+  int32_t large_scale;
+  int32_t refresh_golden, refresh_bwd_ref, refresh_alt_ref;
+  int32_t rc_mode;
+  int32_t cq_level;
+  int32_t frame_type;                 /* cm->current_frame.frame_type */
+  int32_t frame_number;
+  int32_t has_no_stats_stage;         /* drives oxcf.pass / lap_enabled */
+  int32_t two_pass;                   /* is_stat_consumption_stage_twopass */
+  int32_t update_type, layer_depth;
+  int32_t gf_index_frame_type;        /* gf_group->frame_type[gf_index] */
+  /* RATE_CONTROL */
+  int32_t active_worst_quality;
+  int32_t best_quality, worst_quality;
+  int32_t frames_to_key, frames_since_key;
+  int32_t is_src_frame_alt_ref;
+  int32_t this_frame_target;
+  int32_t max_frame_bandwidth;
+  /* PRIMARY_RATE_CONTROL */
+  int32_t kf_boost, gfu_boost, gfu_boost_average;
+  float arf_boost_factor;             /* float_t == float */
+  int32_t arf_q;
+  int32_t avg_frame_qindex_key, avg_frame_qindex_inter;
+  int32_t this_key_frame_forced;
+  int32_t last_boosted_qindex, last_kf_qindex;
+  int32_t last_q_key, last_q_inter;
+  int32_t active_best_quality_by_layer[6];
+  int64_t total_actual_bits, total_target_bits;
+  double rate_correction_factors[4];
+  /* TWO_PASS */
+  int32_t kf_zeromotion_pct, last_kfgroup_zeromotion_pct;
+  int32_t extend_minq, extend_maxq;
+} ShimRcPickParams;
+
 #endif  /* AOM_RS_SHIM_RC_STATE_PARAMS_H_ */

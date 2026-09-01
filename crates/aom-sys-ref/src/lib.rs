@@ -26544,3 +26544,216 @@ pub fn ref_nrp_calculate_variance(
     }
     (var_o, sse_o, sum_o)
 }
+
+// ---------------------------------------------------------------------------
+// The q-and-bounds dispatcher: av1_rc_pick_q_and_bounds out of the ARCHIVE
+// (tier 1) via rcarchive_shim.c, and the four statics under it out of the
+// verbatim copy (tier 1c) via ratectrl_shim.c. The exported dispatcher is
+// driven through BOTH so the two compilations can be compared on it directly.
+// ---------------------------------------------------------------------------
+
+/// Mirrors the C `ShimRcPickParams` (shim/rc_state_params.h) field for field.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RefRcPickParams {
+    /// `cm->seq_params->bit_depth`.
+    pub bit_depth: i32,
+    /// `cm->width`.
+    pub coded_width: i32,
+    /// `cm->height`.
+    pub coded_height: i32,
+    /// the `width` argument.
+    pub width: i32,
+    /// the `height` argument.
+    pub height: i32,
+    /// `oxcf.frm_dim_cfg.width`.
+    pub cfg_width: i32,
+    /// `oxcf.frm_dim_cfg.height`.
+    pub cfg_height: i32,
+    /// `oxcf.mode == REALTIME`.
+    pub rtc_mode: i32,
+    /// `cpi->is_screen_content_type`.
+    pub screen_content: i32,
+    /// `cpi->superres_mode`.
+    pub superres_mode: i32,
+    /// `cm->superres_scale_denominator`.
+    pub superres_denom: i32,
+    /// `cm->tiles.large_scale`.
+    pub large_scale: i32,
+    /// `cpi->refresh_frame.golden_frame`.
+    pub refresh_golden: i32,
+    /// `cpi->refresh_frame.bwd_ref_frame`.
+    pub refresh_bwd_ref: i32,
+    /// `cpi->refresh_frame.alt_ref_frame`.
+    pub refresh_alt_ref: i32,
+    /// `oxcf.rc_cfg.mode`.
+    pub rc_mode: i32,
+    /// `oxcf.rc_cfg.cq_level`.
+    pub cq_level: i32,
+    /// `cm->current_frame.frame_type`.
+    pub frame_type: i32,
+    /// `cm->current_frame.frame_number`.
+    pub frame_number: i32,
+    /// `has_no_stats_stage(cpi)`.
+    pub has_no_stats_stage: i32,
+    /// `is_stat_consumption_stage_twopass(cpi)`.
+    pub two_pass: i32,
+    /// `gf_group->update_type[gf_index]`.
+    pub update_type: i32,
+    /// `gf_group->layer_depth[gf_index]`.
+    pub layer_depth: i32,
+    /// `gf_group->frame_type[gf_index]`.
+    pub gf_index_frame_type: i32,
+    /// `rc->active_worst_quality`.
+    pub active_worst_quality: i32,
+    /// `rc->best_quality`.
+    pub best_quality: i32,
+    /// `rc->worst_quality`.
+    pub worst_quality: i32,
+    /// `rc->frames_to_key`.
+    pub frames_to_key: i32,
+    /// `rc->frames_since_key`.
+    pub frames_since_key: i32,
+    /// `rc->is_src_frame_alt_ref`.
+    pub is_src_frame_alt_ref: i32,
+    /// `rc->this_frame_target`.
+    pub this_frame_target: i32,
+    /// `rc->max_frame_bandwidth`.
+    pub max_frame_bandwidth: i32,
+    /// `p_rc->kf_boost`.
+    pub kf_boost: i32,
+    /// `p_rc->gfu_boost`.
+    pub gfu_boost: i32,
+    /// `p_rc->gfu_boost_average`.
+    pub gfu_boost_average: i32,
+    /// `p_rc->arf_boost_factor` — `float_t` == `float`.
+    pub arf_boost_factor: f32,
+    /// `p_rc->arf_q`.
+    pub arf_q: i32,
+    /// `p_rc->avg_frame_qindex[KEY_FRAME]`.
+    pub avg_frame_qindex_key: i32,
+    /// `p_rc->avg_frame_qindex[INTER_FRAME]`.
+    pub avg_frame_qindex_inter: i32,
+    /// `p_rc->this_key_frame_forced`.
+    pub this_key_frame_forced: i32,
+    /// `p_rc->last_boosted_qindex`.
+    pub last_boosted_qindex: i32,
+    /// `p_rc->last_kf_qindex`.
+    pub last_kf_qindex: i32,
+    /// `p_rc->last_q[KEY_FRAME]`.
+    pub last_q_key: i32,
+    /// `p_rc->last_q[INTER_FRAME]`.
+    pub last_q_inter: i32,
+    /// `p_rc->active_best_quality[MAX_ARF_LAYERS]`.
+    pub active_best_quality_by_layer: [i32; 6],
+    /// `p_rc->total_actual_bits`.
+    pub total_actual_bits: i64,
+    /// `p_rc->total_target_bits`.
+    pub total_target_bits: i64,
+    /// `p_rc->rate_correction_factors`.
+    pub rate_correction_factors: [f64; 4],
+    /// `twopass.kf_zeromotion_pct`.
+    pub kf_zeromotion_pct: i32,
+    /// `twopass.last_kfgroup_zeromotion_pct`.
+    pub last_kfgroup_zeromotion_pct: i32,
+    /// `twopass.extend_minq`.
+    pub extend_minq: i32,
+    /// `twopass.extend_maxq`.
+    pub extend_maxq: i32,
+}
+
+extern "C" {
+    fn shim_rcc_calc_active_worst_quality_no_stats_vbr(p: *const RefRcPickParams) -> i32;
+    fn shim_rcc_adjust_active_best_and_worst_quality(
+        p: *const RefRcPickParams,
+        active_best: i32,
+        active_worst: i32,
+        is_intrl_arf_boost: i32,
+        out: *mut i32,
+    ) -> i32;
+    fn shim_rcc_get_q(p: *const RefRcPickParams, active_worst: i32, active_best: i32) -> i32;
+    fn shim_rcc_pick_q_and_bounds_no_stats(p: *const RefRcPickParams, out: *mut i32) -> i32;
+    fn shim_rcc_pick_q_and_bounds(p: *const RefRcPickParams, out: *mut i32) -> i32;
+    fn shim_rcc_probe_rc_pick_q_and_bounds(p: *const RefRcPickParams, out: *mut i32) -> i32;
+    fn shim_rca_rc_pick_q_and_bounds(p: *const RefRcPickParams, out: *mut i32) -> i32;
+}
+
+/// Reference libaom `calc_active_worst_quality_no_stats_vbr` (ratectrl.c:1225,
+/// static).
+pub fn ref_rcc_active_worst_quality_no_stats_vbr(p: &RefRcPickParams) -> i32 {
+    ref_init();
+    let r = unsafe { shim_rcc_calc_active_worst_quality_no_stats_vbr(p) };
+    assert_ne!(r, i32::MIN, "shim alloc failed");
+    r
+}
+
+/// Reference libaom `adjust_active_best_and_worst_quality` (ratectrl.c:1921,
+/// static). Returns `(active_best, active_worst)`.
+pub fn ref_rcc_adjust_active_best_and_worst_quality(
+    p: &RefRcPickParams,
+    active_best: i32,
+    active_worst: i32,
+    is_intrl_arf_boost: bool,
+) -> (i32, i32) {
+    ref_init();
+    let mut out = [0i32; 2];
+    let r = unsafe {
+        shim_rcc_adjust_active_best_and_worst_quality(
+            p,
+            active_best,
+            active_worst,
+            i32::from(is_intrl_arf_boost),
+            out.as_mut_ptr(),
+        )
+    };
+    assert_eq!(r, 0, "shim alloc failed");
+    (out[0], out[1])
+}
+
+/// Reference libaom `get_q` (ratectrl.c:2005, static).
+pub fn ref_rcc_get_q(p: &RefRcPickParams, active_worst: i32, active_best: i32) -> i32 {
+    ref_init();
+    let r = unsafe { shim_rcc_get_q(p, active_worst, active_best) };
+    assert_ne!(r, i32::MIN, "shim alloc failed");
+    r
+}
+
+/// Reference libaom `rc_pick_q_and_bounds_no_stats` (ratectrl.c:1588, static).
+/// Returns `(q, bottom_index, top_index)`.
+pub fn ref_rcc_pick_q_and_bounds_no_stats(p: &RefRcPickParams) -> (i32, i32, i32) {
+    ref_init();
+    let mut out = [0i32; 3];
+    let r = unsafe { shim_rcc_pick_q_and_bounds_no_stats(p, out.as_mut_ptr()) };
+    assert_eq!(r, 0, "shim alloc failed");
+    (out[0], out[1], out[2])
+}
+
+/// Reference libaom `rc_pick_q_and_bounds` (ratectrl.c:2188, static).
+/// Returns `(q, bottom_index, top_index)`.
+pub fn ref_rcc_pick_q_and_bounds(p: &RefRcPickParams) -> (i32, i32, i32) {
+    ref_init();
+    let mut out = [0i32; 3];
+    let r = unsafe { shim_rcc_pick_q_and_bounds(p, out.as_mut_ptr()) };
+    assert_eq!(r, 0, "shim alloc failed");
+    (out[0], out[1], out[2])
+}
+
+/// Reference libaom `av1_rc_pick_q_and_bounds` (ratectrl.c:2350), **out of the
+/// archive** (tier 1). Returns `(q, bottom_index, top_index, arf_q_after)`.
+pub fn ref_rc_pick_q_and_bounds(p: &RefRcPickParams) -> (i32, i32, i32, i32) {
+    ref_init();
+    let mut out = [0i32; 4];
+    let r = unsafe { shim_rca_rc_pick_q_and_bounds(p, out.as_mut_ptr()) };
+    assert_eq!(r, 0, "shim_rca_rc_pick_q_and_bounds alloc failed");
+    (out[0], out[1], out[2], out[3])
+}
+
+/// The same dispatcher out of ratectrl_shim.c's verbatim-compiled copy — the
+/// tier-1c-vs-tier-1 probe, not an oracle to test against.
+pub fn ref_rcc_probe_rc_pick_q_and_bounds(p: &RefRcPickParams) -> (i32, i32, i32, i32) {
+    ref_init();
+    let mut out = [0i32; 4];
+    let r = unsafe { shim_rcc_probe_rc_pick_q_and_bounds(p, out.as_mut_ptr()) };
+    assert_eq!(r, 0, "shim_rcc_probe_rc_pick_q_and_bounds alloc failed");
+    (out[0], out[1], out[2], out[3])
+}

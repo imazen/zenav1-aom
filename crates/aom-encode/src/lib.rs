@@ -57,6 +57,7 @@ pub mod pickcdef;
 pub mod rate_model;
 pub mod ratectrl;
 pub mod ratectrl_init;
+pub mod ratectrl_pick;
 pub mod ratectrl_rate;
 pub mod ratectrl_update;
 pub mod rc;
