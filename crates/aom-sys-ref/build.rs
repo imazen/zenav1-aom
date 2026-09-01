@@ -84,6 +84,7 @@ const SHIMS: &[&str] = &[
     "refgop_shim",
     "tf_shim",
     "tpl_shim",
+    "ratectrl_shim",
 ];
 
 /// Shims that need compile flags beyond the default `-O2 ORACLE_FP_CFLAGS`.
@@ -108,6 +109,13 @@ fn extra_shim_cflags(name: &str) -> &'static [&'static str] {
         // `av1_compound_type_rd` and `av1_handle_inter_intra_mode` are
         // exported). Same source, so it is built the same way.
         "compound_type_shim" => &["-O3", "-DNDEBUG"],
+        // ratectrl_shim pulls av1/encoder/ratectrl.c in for the same reason:
+        // none of its 31 exported symbols is on the qindex decision path below
+        // av1_rc_pick_q_and_bounds, and the twelve minq lookup TABLES are
+        // file-static too. Same source, so it is built the same way. -DNDEBUG
+        // is doubly required here: rc_pick_q_and_bounds_q_mode ends in three
+        // asserts on the qindex bounds. See shim/ratectrl_shim.c's header.
+        "ratectrl_shim" => &["-O3", "-DNDEBUG"],
         _ => &[],
     }
 }

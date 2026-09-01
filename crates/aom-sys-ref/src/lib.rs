@@ -22484,3 +22484,379 @@ pub fn ref_tf_apply_temporal_filter_highbd(
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// ratectrl_shim.c — the fixed-Q rate controller (TIER 1c: libaom's own
+// ratectrl.c compiled verbatim into the shim TU, because none of its 31
+// exported symbols is on the qindex decision path and the minq lookup tables
+// are file-static). The TU is proved equivalent to the archive's copy by the
+// `ref_rcc_probe_*` functions below.
+// ---------------------------------------------------------------------------
+
+/// Every field `ratectrl_shim.c`'s q-mode wrappers read out of `AV1_COMP`,
+/// `AV1_COMMON`, `RATE_CONTROL`, `PRIMARY_RATE_CONTROL`, `TWO_PASS` and the
+/// GF group. Laid out to match the C `ShimRcQParams` exactly.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RefRcQParams {
+    /// `cm->seq_params->bit_depth`.
+    pub bit_depth: i32,
+    /// `cm->width`.
+    pub coded_width: i32,
+    /// `cm->height`.
+    pub coded_height: i32,
+    /// the `width` argument.
+    pub width: i32,
+    /// the `height` argument.
+    pub height: i32,
+    /// `oxcf.mode == REALTIME`.
+    pub rtc_mode: i32,
+    /// `cpi->is_screen_content_type`.
+    pub screen_content: i32,
+    /// `cpi->superres_mode`.
+    pub superres_mode: i32,
+    /// `cm->superres_scale_denominator`.
+    pub superres_denom: i32,
+    /// `cm->tiles.large_scale`.
+    pub large_scale: i32,
+    /// `cpi->refresh_frame.golden_frame`.
+    pub refresh_golden: i32,
+    /// `cpi->refresh_frame.alt_ref_frame`.
+    pub refresh_alt_ref: i32,
+    /// `oxcf.rc_cfg.mode`.
+    pub rc_mode: i32,
+    /// `oxcf.rc_cfg.cq_level` (already a qindex).
+    pub cq_level: i32,
+    /// `frame_is_intra_only(cm)`.
+    pub intra_only: i32,
+    /// `rc->active_worst_quality`.
+    pub active_worst_in: i32,
+    /// `gf_group->update_type[gf_index]`.
+    pub update_type: i32,
+    /// `gf_group->layer_depth[gf_index]`.
+    pub layer_depth: i32,
+    /// `p_rc->kf_boost`.
+    pub kf_boost: i32,
+    /// `p_rc->gfu_boost`.
+    pub gfu_boost: i32,
+    /// `p_rc->gfu_boost_average`.
+    pub gfu_boost_average: i32,
+    /// `p_rc->arf_boost_factor`. C declares it `float_t` (ratectrl.h:383),
+    /// which is `float` on every target this repo builds for; the shim struct
+    /// field is `float` to match, so the value crosses the boundary at the
+    /// precision C will actually compute with.
+    pub arf_boost_factor: f32,
+    /// `p_rc->arf_q`.
+    pub arf_q: i32,
+    /// `p_rc->avg_frame_qindex[INTER_FRAME]`.
+    pub avg_frame_qindex_inter: i32,
+    /// `p_rc->this_key_frame_forced`.
+    pub this_key_frame_forced: i32,
+    /// `p_rc->last_boosted_qindex`.
+    pub last_boosted_qindex: i32,
+    /// `p_rc->last_kf_qindex`.
+    pub last_kf_qindex: i32,
+    /// `rc->frames_to_key`.
+    pub frames_to_key: i32,
+    /// `rc->frames_since_key`.
+    pub frames_since_key: i32,
+    /// `rc->best_quality`.
+    pub best_quality: i32,
+    /// `rc->worst_quality`.
+    pub worst_quality: i32,
+    /// `twopass.kf_zeromotion_pct`.
+    pub kf_zeromotion_pct: i32,
+    /// `twopass.last_kfgroup_zeromotion_pct`.
+    pub last_kfgroup_zeromotion_pct: i32,
+    /// `is_stat_consumption_stage_twopass(cpi)`, driven through `oxcf.pass`.
+    pub two_pass: i32,
+    /// `p_rc->total_actual_bits`.
+    pub total_actual_bits: i64,
+    /// `p_rc->total_target_bits`.
+    pub total_target_bits: i64,
+}
+
+extern "C" {
+    fn shim_rcc_probe_convert_qindex_to_q(qindex: i32, bit_depth: i32) -> f64;
+    fn shim_rcc_probe_find_qindex(
+        desired_q: f64,
+        bit_depth: i32,
+        best_qindex: i32,
+        worst_qindex: i32,
+    ) -> i32;
+    fn shim_rcc_probe_compute_qdelta(
+        qstart: f64,
+        qtarget: f64,
+        bit_depth: i32,
+        best_quality: i32,
+        worst_quality: i32,
+    ) -> i32;
+    fn shim_rcc_probe_min_gf_interval(width: i32, height: i32, framerate: f64) -> i32;
+    fn shim_rcc_get_minq_index(maxq: f64, x3: f64, x2: f64, x1v: f64, bit_depth: i32) -> i32;
+    fn shim_rcc_minq_lut(
+        which: i32,
+        bit_depth: i32,
+        mode_idx: i32,
+        res_idx: i32,
+        out: *mut i32,
+        out_len: i32,
+    ) -> i32;
+    fn shim_rcc_get_active_quality(
+        q: i32,
+        gfu_boost: i32,
+        low: i32,
+        high: i32,
+        low_motion: *const i32,
+        high_motion: *const i32,
+    ) -> i32;
+    fn shim_rcc_get_kf_active_quality(
+        kf_boost: i32,
+        q: i32,
+        bit_depth: i32,
+        res_idx: i32,
+        rtc_mode: i32,
+    ) -> i32;
+    fn shim_rcc_get_gf_active_quality(
+        gfu_boost: i32,
+        gfu_boost_average: i32,
+        q: i32,
+        bit_depth: i32,
+        res_idx: i32,
+        rtc_mode: i32,
+    ) -> i32;
+    fn shim_rcc_get_gf_high_motion_quality(
+        q: i32,
+        bit_depth: i32,
+        res_idx: i32,
+        rtc_mode: i32,
+    ) -> i32;
+    fn shim_rcc_get_default_max_gf_interval(framerate: f64, min_gf_interval: i32) -> i32;
+    fn shim_rcc_gf_group_pyramid_level(layer_depth: i32) -> i32;
+    fn shim_rcc_get_active_cq_level(p: *const RefRcQParams) -> i32;
+    fn shim_rcc_get_intra_q_and_bounds(
+        p: *const RefRcQParams,
+        cq_level: i32,
+        active_worst_in: i32,
+        out: *mut i32,
+    ) -> i32;
+    fn shim_rcc_get_active_best_quality(
+        p: *const RefRcQParams,
+        active_worst_quality: i32,
+        cq_level: i32,
+    ) -> i32;
+    fn shim_rcc_pick_q_and_bounds_q_mode(p: *const RefRcQParams, out: *mut i32) -> i32;
+}
+
+/// `av1_convert_qindex_to_q` re-exported from the ratectrl_shim TU — a probe
+/// for `ratectrl_shim_tu_matches_archive`, NOT the oracle to test against
+/// (use [`ref_convert_qindex_to_q`], which is the archive's copy).
+pub fn ref_rcc_probe_convert_qindex_to_q(qindex: i32, bit_depth: u8) -> f64 {
+    ref_init();
+    unsafe { shim_rcc_probe_convert_qindex_to_q(qindex, i32::from(bit_depth)) }
+}
+
+/// `av1_find_qindex` re-exported from the ratectrl_shim TU. See
+/// [`ref_rcc_probe_convert_qindex_to_q`].
+pub fn ref_rcc_probe_find_qindex(
+    desired_q: f64,
+    bit_depth: u8,
+    best_qindex: i32,
+    worst_qindex: i32,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_rcc_probe_find_qindex(desired_q, i32::from(bit_depth), best_qindex, worst_qindex)
+    }
+}
+
+/// `av1_compute_qdelta` re-exported from the ratectrl_shim TU.
+pub fn ref_rcc_probe_compute_qdelta(
+    qstart: f64,
+    qtarget: f64,
+    bit_depth: u8,
+    best_quality: i32,
+    worst_quality: i32,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_rcc_probe_compute_qdelta(
+            qstart,
+            qtarget,
+            i32::from(bit_depth),
+            best_quality,
+            worst_quality,
+        )
+    }
+}
+
+/// `av1_rc_get_default_min_gf_interval` re-exported from the ratectrl_shim TU.
+pub fn ref_rcc_probe_min_gf_interval(width: i32, height: i32, framerate: f64) -> i32 {
+    ref_init();
+    unsafe { shim_rcc_probe_min_gf_interval(width, height, framerate) }
+}
+
+/// Reference libaom `get_minq_index` (ratectrl.c:132, static).
+pub fn ref_rcc_get_minq_index(maxq: f64, x3: f64, x2: f64, x1: f64, bit_depth: u8) -> i32 {
+    ref_init();
+    unsafe { shim_rcc_get_minq_index(maxq, x3, x2, x1, i32::from(bit_depth)) }
+}
+
+/// One of libaom's twelve file-static minq lookup tables, after
+/// `av1_rc_init_minq_luts`. `which` is `0 kf_low, 1 kf_high, 2 arfgf_low,
+/// 3 arfgf_high, 4 inter, 5 rtc`; `mode_idx` is `rtc_mode` and `res_idx` is
+/// C's `res_idx > 1` — the two subscripts in the order `ASSIGN_MINQ_TABLE_2`'s
+/// body applies them.
+pub fn ref_rcc_minq_lut(which: i32, bit_depth: u8, mode_idx: i32, res_idx: i32) -> [i32; 256] {
+    ref_init();
+    let mut out = [0i32; 256];
+    let n = unsafe {
+        shim_rcc_minq_lut(
+            which,
+            i32::from(bit_depth),
+            mode_idx,
+            res_idx,
+            out.as_mut_ptr(),
+            out.len() as i32,
+        )
+    };
+    assert_eq!(n, 256, "shim_rcc_minq_lut rejected ({which}, {bit_depth}, {mode_idx}, {res_idx})");
+    out
+}
+
+/// Reference libaom `get_active_quality` (ratectrl.c:1156, static).
+pub fn ref_rcc_get_active_quality(
+    q: i32,
+    gfu_boost: i32,
+    low: i32,
+    high: i32,
+    low_motion: &[i32; 256],
+    high_motion: &[i32; 256],
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_rcc_get_active_quality(
+            q,
+            gfu_boost,
+            low,
+            high,
+            low_motion.as_ptr(),
+            high_motion.as_ptr(),
+        )
+    }
+}
+
+/// Reference libaom `get_kf_active_quality` (ratectrl.c:1173, static).
+pub fn ref_rcc_get_kf_active_quality(
+    kf_boost: i32,
+    q: i32,
+    bit_depth: u8,
+    res_idx: i32,
+    rtc_mode: bool,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_rcc_get_kf_active_quality(
+            kf_boost,
+            q,
+            i32::from(bit_depth),
+            res_idx,
+            i32::from(rtc_mode),
+        )
+    }
+}
+
+/// Reference libaom `get_gf_active_quality` (ratectrl.c:1213, static).
+pub fn ref_rcc_get_gf_active_quality(
+    gfu_boost: i32,
+    gfu_boost_average: i32,
+    q: i32,
+    bit_depth: u8,
+    res_idx: i32,
+    rtc_mode: bool,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_rcc_get_gf_active_quality(
+            gfu_boost,
+            gfu_boost_average,
+            q,
+            i32::from(bit_depth),
+            res_idx,
+            i32::from(rtc_mode),
+        )
+    }
+}
+
+/// Reference libaom `get_gf_high_motion_quality` (ratectrl.c:1219, static).
+pub fn ref_rcc_get_gf_high_motion_quality(
+    q: i32,
+    bit_depth: u8,
+    res_idx: i32,
+    rtc_mode: bool,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_rcc_get_gf_high_motion_quality(q, i32::from(bit_depth), res_idx, i32::from(rtc_mode))
+    }
+}
+
+/// Reference libaom `get_default_max_gf_interval` (ratectrl.c:452, static).
+pub fn ref_rcc_get_default_max_gf_interval(framerate: f64, min_gf_interval: i32) -> i32 {
+    ref_init();
+    unsafe { shim_rcc_get_default_max_gf_interval(framerate, min_gf_interval) }
+}
+
+/// Reference libaom `gf_group_pyramid_level` (ratectrl.c:1535, static).
+pub fn ref_rcc_gf_group_pyramid_level(layer_depth: i32) -> i32 {
+    ref_init();
+    unsafe { shim_rcc_gf_group_pyramid_level(layer_depth) }
+}
+
+/// Reference libaom `get_active_cq_level` (ratectrl.c:1539, static).
+pub fn ref_rcc_get_active_cq_level(p: &RefRcQParams) -> i32 {
+    ref_init();
+    let r = unsafe { shim_rcc_get_active_cq_level(p) };
+    assert_ne!(r, i32::MIN, "shim_rcc_get_active_cq_level allocation failed");
+    r
+}
+
+/// Reference libaom `get_intra_q_and_bounds` (ratectrl.c:1815, static).
+/// Returns `(active_best, active_worst)`.
+pub fn ref_rcc_get_intra_q_and_bounds(
+    p: &RefRcQParams,
+    cq_level: i32,
+    active_worst_in: i32,
+) -> (i32, i32) {
+    ref_init();
+    let mut out = [0i32; 2];
+    let r =
+        unsafe { shim_rcc_get_intra_q_and_bounds(p, cq_level, active_worst_in, out.as_mut_ptr()) };
+    assert_eq!(r, 0, "shim_rcc_get_intra_q_and_bounds allocation failed");
+    (out[0], out[1])
+}
+
+/// Reference libaom `get_active_best_quality` (ratectrl.c:2057, static).
+pub fn ref_rcc_get_active_best_quality(
+    p: &RefRcQParams,
+    active_worst_quality: i32,
+    cq_level: i32,
+) -> i32 {
+    ref_init();
+    let r = unsafe { shim_rcc_get_active_best_quality(p, active_worst_quality, cq_level) };
+    assert_ne!(
+        r,
+        i32::MIN,
+        "shim_rcc_get_active_best_quality allocation failed"
+    );
+    r
+}
+
+/// Reference libaom `rc_pick_q_and_bounds_q_mode` (ratectrl.c:2133, static).
+/// Returns `(q, bottom_index, top_index)`.
+pub fn ref_rcc_pick_q_and_bounds_q_mode(p: &RefRcQParams) -> (i32, i32, i32) {
+    ref_init();
+    let mut out = [0i32; 3];
+    let r = unsafe { shim_rcc_pick_q_and_bounds_q_mode(p, out.as_mut_ptr()) };
+    assert_eq!(r, 0, "shim_rcc_pick_q_and_bounds_q_mode allocation failed");
+    (out[0], out[1], out[2])
+}

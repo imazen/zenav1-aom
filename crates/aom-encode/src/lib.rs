@@ -52,6 +52,7 @@ pub mod partition;
 pub mod partition_pick;
 pub mod pickcdef;
 pub mod rate_model;
+pub mod ratectrl;
 pub mod rc;
 pub mod rd;
 pub mod rd_thresh;
