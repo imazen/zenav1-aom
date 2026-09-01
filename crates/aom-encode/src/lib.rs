@@ -68,6 +68,7 @@ pub mod resize;
 pub mod speed_features;
 pub mod screen_detect;
 pub mod superres_select;
+pub mod tpl_model;
 pub mod tx_search;
 pub mod var_part;
 pub mod var_tx;

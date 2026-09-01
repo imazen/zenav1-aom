@@ -21381,3 +21381,114 @@ pub fn ref_ct_pick_interintra_wedge(
     let _ = sse;
     (rd, index)
 }
+
+// ---------------------------------------------------------------------------
+// tpl_model.c — the temporal dependency model.
+//
+// Every function here is an EXPORTED symbol in `upstream/build/libaom.a`
+// (`nm -g` reports `T _av1_exponential_entropy`, `T _av1_get_overlap_area`,
+// `T _av1_tpl_ptr_pos`, `T _av1_delta_rate_cost`,
+// `T _av1_get_q_index_from_qstep_ratio`, `T _av1_laplace_entropy`,
+// `T _av1_estimate_coeff_entropy`), so these bind straight through with no
+// shim — tier 1 in its strongest form.
+//
+// NOT bound, because they do not exist in this build: `av1_vbr_rc_*`,
+// `av1_laplace_estimate_frame_rate`, `av1_accumulate_tpl_txfm_stats`,
+// `av1_record_tpl_txfm_block` and `av1_tpl_txfm_stats_update_abs_coeff_mean`
+// are inside `#if CONFIG_BITRATE_ACCURACY`, and `av1_read_rd_command` inside
+// `#if CONFIG_RD_COMMAND`; both macros are 0 in
+// `upstream/build/config/aom_config.h`. Binding them would be a link error,
+// not a differential.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn av1_exponential_entropy(q_step: f64, b: f64) -> f64;
+    fn av1_laplace_entropy(q_step: f64, b: f64, zero_bin_ratio: f64) -> f64;
+    fn av1_estimate_coeff_entropy(
+        q_step: f64,
+        b: f64,
+        zero_bin_ratio: f64,
+        qcoeff: i32,
+    ) -> f64;
+    fn av1_get_overlap_area(
+        row_a: i32,
+        col_a: i32,
+        row_b: i32,
+        col_b: i32,
+        width: i32,
+        height: i32,
+    ) -> i32;
+    fn av1_tpl_ptr_pos(mi_row: i32, mi_col: i32, stride: i32, right_shift: u8) -> i32;
+    fn av1_delta_rate_cost(
+        delta_rate: i64,
+        recrf_dist: i64,
+        srcrf_dist: i64,
+        pix_num: i32,
+    ) -> i64;
+    fn av1_get_q_index_from_qstep_ratio(
+        leaf_qindex: i32,
+        qstep_ratio: f64,
+        bit_depth: i32,
+    ) -> i32;
+}
+
+/// Reference libaom `av1_exponential_entropy` (tpl_model.c:2347).
+#[must_use]
+pub fn ref_exponential_entropy(q_step: f64, b: f64) -> f64 {
+    ref_init();
+    unsafe { av1_exponential_entropy(q_step, b) }
+}
+
+/// Reference libaom `av1_laplace_entropy` (tpl_model.c:2353).
+#[must_use]
+pub fn ref_laplace_entropy(q_step: f64, b: f64, zero_bin_ratio: f64) -> f64 {
+    ref_init();
+    unsafe { av1_laplace_entropy(q_step, b, zero_bin_ratio) }
+}
+
+/// Reference libaom `av1_estimate_coeff_entropy` (tpl_model.c:2383).
+#[must_use]
+pub fn ref_estimate_coeff_entropy(q_step: f64, b: f64, zero_bin_ratio: f64, qcoeff: i32) -> f64 {
+    ref_init();
+    unsafe { av1_estimate_coeff_entropy(q_step, b, zero_bin_ratio, qcoeff) }
+}
+
+/// Reference libaom `av1_get_overlap_area` (tpl_model.c:1159).
+#[must_use]
+pub fn ref_get_overlap_area(
+    row_a: i32,
+    col_a: i32,
+    row_b: i32,
+    col_b: i32,
+    width: i32,
+    height: i32,
+) -> i32 {
+    ref_init();
+    unsafe { av1_get_overlap_area(row_a, col_a, row_b, col_b, width, height) }
+}
+
+/// Reference libaom `av1_tpl_ptr_pos` (tpl_model.c:1171).
+#[must_use]
+pub fn ref_tpl_ptr_pos(mi_row: i32, mi_col: i32, stride: i32, right_shift: u8) -> i32 {
+    ref_init();
+    unsafe { av1_tpl_ptr_pos(mi_row, mi_col, stride, right_shift) }
+}
+
+/// Reference libaom `av1_delta_rate_cost` (tpl_model.c:1175).
+#[must_use]
+pub fn ref_delta_rate_cost(
+    delta_rate: i64,
+    recrf_dist: i64,
+    srcrf_dist: i64,
+    pix_num: i32,
+) -> i64 {
+    ref_init();
+    unsafe { av1_delta_rate_cost(delta_rate, recrf_dist, srcrf_dist, pix_num) }
+}
+
+/// Reference libaom `av1_get_q_index_from_qstep_ratio` (tpl_model.c:2427).
+#[must_use]
+pub fn ref_get_q_index_from_qstep_ratio(leaf_qindex: i32, qstep_ratio: f64, bit_depth: u8) -> i32 {
+    ref_init();
+    unsafe { av1_get_q_index_from_qstep_ratio(leaf_qindex, qstep_ratio, i32::from(bit_depth)) }
+}
