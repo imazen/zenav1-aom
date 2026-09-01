@@ -171,9 +171,14 @@ Named heads:
 
 ## 3. Landed against this map
 
-**68 exported C functions and ~30 of their file-static helpers**, all gated at
-tier 1 against the real C symbol (the statics through the exported caller that
-is their only entry point). Ordered by the commit that landed them.
+**68 exported C functions and ~30 of their file-static helpers** through the
+`rd_thresh_diff.rs` row, all gated at tier 1 against the real C symbol (the
+statics through the exported caller that is their only entry point), plus the
+six **tier 1c** rows below them: 25 of `compound_type.c`'s 34 functions and 6
+of `reconinter_enc.c`'s. Tier 1c is libaom's own `.c` compiled verbatim into a
+shim with its exports renamed — the technique `shim/rdopt_shim.c` introduced —
+and it is what a file whose functions are almost all `static` admits.
+Ordered by the commit that landed them.
 
 | wave | C functions | gate |
 |---|---|---|
@@ -194,6 +199,12 @@ is their only entry point). Ordered by the commit that landed them.
 | — | `av1_dropout_qcoeff_num`, `av1_get_intra_cost_penalty`, `av1_hash_is_horizontal_perfect`, `av1_hash_is_vertical_perfect` | `aom-encode/tests/enc_misc_diff.rs` |
 | W8 | `av1_convert_qindex_to_q`, `av1_find_qindex`, `av1_compute_qdelta`, `av1_rc_bits_per_mb` (non-CBR arm), `av1_rc_get_default_min_gf_interval`, `get_bpmb_enumerator` | `aom-encode/tests/rate_model_diff.rs` |
 | W6 | the `THR_MODES` enum (169 entries), `av1_set_rd_speed_thresholds`, `av1_update_rd_thresh_fact`, `update_thr_fact` | `aom-encode/tests/rd_thresh_diff.rs` |
+| W6 | `compound_type.c`'s decision layer: `enable_wedge_search` / `_interinter_` / `_interintra_`, `compute_valid_comp_types`, `calc_masked_type_cost`, `update_mbmi_for_compound_type`, `get_interinter_compound_mask_rate`, `save_mask_search_results`, `push_comp_avg_est_rd`, `prune_comp_eval_using_comp_avg_est_rd`, `compute_rd_thresh` (+ `get_rd_thresh_from_best_rd`, `is_interinter_compound_used`) | `aom-encode/tests/compound_type_diff.rs` (**tier 1c**) |
+| W6 | the mask picks: `estimate_wedge_sign`, `pick_wedge`, `pick_wedge_fixed_sign`, `pick_interinter_wedge`, `pick_interinter_seg`, `pick_interintra_wedge` | `compound_type_diff.rs` (tier 1c) |
+| W6 | the compound-RD reuse cache: `is_comp_rd_match`, `find_comp_rd_in_stats`, `save_comp_rd_search_stat`, `backup_stats`, `update_best_info`, `update_mask_best_mv`, `populate_reuse_comp_type_data` (+ `is_global_mv_block`) | `compound_type_diff.rs` (tier 1c) |
+| W6 | the transform-search gate: `prune_mode_by_skip_rd` (+ `get_txfm_rd_gate_level`, `check_txfm_eval`, `compute_sse_plane` / `calculate_sse`) | `compound_type_diff.rs` (tier 1c) |
+| W2 | the masked-compound assembly: `build_masked_compound` (+ `_highbd`), `build_wedge_inter_predictor_from_buf`, `av1_build_wedge_inter_predictor_from_buf` | `aom-encode/tests/wedge_from_buf_diff.rs` (tier 1c) |
+| W2 | the subpel derivation: `enc_calc_subpel_params`, `init_subpel_params`, the `top`/`left` half of `init_inter_block_params` | `aom-encode/tests/subpel_params_diff.rs` (tier 1c) |
 
 **None of it is wired into the encoder yet.** These are the kernels and searches
 the inter RD brain (W6) will call; the brain itself, reference/frame management
@@ -212,20 +223,34 @@ failing on. Every CI run between the `comp_pred_shim` commit and the
 CI is roughly two hours backlogged and has not yet reached the fix commit, so
 that confirmation is still pending; the fix is verified locally on both ISAs.
 
-### What the re-run inventory says, and why it overstates
+### What the re-run inventory says — and the tool it says it with
 
-Re-running `tools/c_surface_inventory.py` after all of the above reports
-**605 name-matched (up from 517), 886 unmatched (down from 974), 219 of those
-with an exported symbol (down from 268)**.
+`tools/c_surface_inventory.py` matched a C name **anywhere in the concatenated
+Rust tree** until 2026-08-31, doc comments and oracle shims included. That is
+not a small bias: a module whose docs list every function in its C file — the
+ported ones AND the ones explicitly named as gaps — scored as fully ported.
+Measured on `compound_type.c` the day this was found: **34/34 matched, with 9
+of those 34 named in the same file as NOT ported.** `av1_build_prediction_by_above_preds`
+and `_left_preds` were likewise credited, from a doc comment in `aom-decode`
+naming the DECODER's `dec_build_prediction_by_*`.
 
-Read that delta with the tool's own caveat in mind: it matches a NAME anywhere
-in the Rust tree, **including doc comments**. Every port above cites its C
-source function by name in a doc comment, and so do several functions that are
-only *mentioned* — so `+88 matched` is an upper bound on what actually landed,
-against **68 exported C functions** genuinely ported and gated (plus ~30 of
-their file-static helpers, each gated through its exported caller). The `-49`
-on the exported-symbol column is the more honest signal, and even that counts a
-few names that appear only in a "NOT ported" note.
+The tool now matches a Rust `fn <name>` **defined in the port's own source**,
+excluding `crates/aom-sys-ref` (the oracle — every `ref_*` wrapper and
+`extern` block names the C function it drives), `tests/`, `benches/`,
+`examples/`, and every `.c` / `.h` file. It also strips libaom's `_c`
+reference-implementation suffix, since `aom_upsampled_pred_c` is ported as
+`upsampled_pred`.
+
+**Post-fix, the whole inter-encode scope reads 441 matched of 1491, 1050
+unmatched, 296 of those with an exported symbol.** That is a much smaller
+number than the 605 the old matcher reported, and it is the honest one. Read
+it as a floor in the other direction now: a port that RENAMED a function no
+longer matches, and several deliberately did (`backup_stats` is
+`CompTypeCosts::backup`, `update_best_info` is `BestCompTypeStats::update`,
+`update_mbmi_for_compound_type` is `CompoundType::comp_group_idx` /
+`compound_idx`), so `compound_type.c` reads 22/34 where the true count is
+25/34. A MISSING row is a work item to triage, not a proven absence — which
+is what this map always claimed, and now is.
 
 ### Findings worth carrying forward
 

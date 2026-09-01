@@ -20,12 +20,19 @@ WHAT IT COUNTS
   surface.**  A file reported "0 gap" is not proven complete.
 
 WHAT `ported` MEANS
-  The C name (or the name with a leading `av1_` / `aom_` stripped) occurs
-  somewhere as a substring of the concatenated Rust tree — in code, in a doc
-  comment, or in a `// ports av1_foo` provenance note.  Short generic names
-  (`cost`, `get_mv`, `setup`) therefore over-match; long distinctive ones
-  under-match only when the port renamed the function.  Both directions are
-  reported so a human can triage.
+  A Rust `fn` of that name (or of the name with a leading `av1_` / `aom_`
+  stripped) is DEFINED in the port's own source — excluding `crates/aom-sys-ref`
+  (the oracle: its wrappers and `extern` blocks name every C function they
+  drive), `tests/`, `benches/` and `examples/` (a differential names the C
+  function it compares against), and every `.c` / `.h` file (the shims are the
+  oracle too).
+
+  This still MISSES a port that renamed the function — several here did, e.g.
+  `backup_stats` is `CompTypeCosts::backup` — so a MISSING row is a work item
+  to triage, not a proven absence.  It no longer counts a DOC COMMENT: before
+  2026-08-31 this matched the C name anywhere in the concatenated tree, so a
+  module doc that listed a function as *not* ported was scored as a port, and
+  a file with 9 known gaps reported 34/34.
 
 WHAT `sym` MEANS  (the column the SVT tool did not have)
   Whether an exported, linkable symbol of that name exists in the built oracle
@@ -143,15 +150,48 @@ def c_functions(files):
     return out
 
 
-def rust_blob():
-    parts = []
+# A Rust function DEFINITION.  Matching this rather than the bare name is the
+# whole difference between "the port has this function" and "some file in the
+# tree mentions it".
+RUST_FN_RE = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def rust_fn_names():
+    """Every `fn <name>` defined in the port's own Rust source.
+
+    THREE exclusions, each of which was over-counting:
+
+    * **`.c` and `.h` files** — `crates/aom-sys-ref/shim/*.c` is the ORACLE.
+      A shim that wraps `foo` so a differential can call it names `foo`; that
+      is evidence the function is testABLE, not that it is ported.
+    * **`crates/aom-sys-ref/`** — same reason for its Rust side: every
+      `ref_*` wrapper and `extern "C"` block names the C function it drives.
+    * **`tests/`, `benches/` and `examples/`** — a differential names the C
+      function it compares against, in prose and in the test's own name.
+
+    Substring matching over the concatenated tree (what this tool did before)
+    also credited a DOC COMMENT.  Measured 2026-08-31: after a landing whose
+    module docs listed every function in `compound_type.c` — 25 ported and 9
+    explicitly named as NOT ported — the tool reported that file as 34/34
+    matched, i.e. it read "MISSING: av1_compound_type_rd" as a port of
+    `av1_compound_type_rd`.
+    """
+    names = set()
     for base in RSRC:
         for dirpath, dirnames, filenames in os.walk(base):
-            dirnames[:] = [d for d in dirnames if d not in ("target", ".git", "vendor")]
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if d not in ("target", ".git", "vendor", "tests", "benches", "examples")
+            ]
+            if os.sep + "aom-sys-ref" in dirpath + os.sep:
+                continue
             for f in filenames:
-                if f.endswith((".rs", ".c", ".h")):
-                    parts.append(open(os.path.join(dirpath, f), errors="ignore").read())
-    return "\n".join(parts)
+                if not f.endswith(".rs"):
+                    continue
+                text = open(os.path.join(dirpath, f), errors="ignore").read()
+                names.update(RUST_FN_RE.findall(text))
+    return names
 
 
 def exported_symbols():
@@ -188,17 +228,23 @@ def main():
     all_files = "--all" in sys.argv
     files = scope_files(all_files)
     cfns = c_functions(files)
-    blob = rust_blob()
+    fn_names = rust_fn_names()
     syms = exported_symbols()
 
     rows = []
     for path, names in cfns.items():
         for n in sorted(set(names)):
+            # `av1_` / `aom_` prefixes and the `_c` reference-implementation
+            # suffix are libaom's naming, not the port's: `aom_upsampled_pred_c`
+            # is ported as `upsampled_pred`. Strip them in every combination.
             stems = {n}
             for p in ("av1_", "aom_"):
                 if n.startswith(p):
                     stems.add(n[len(p):])
-            hit = any(s in blob for s in stems)
+            for stem in list(stems):
+                if stem.endswith("_c"):
+                    stems.add(stem[:-2])
+            hit = any(s in fn_names for s in stems)
             if syms is None:
                 sym = "?"
             else:
