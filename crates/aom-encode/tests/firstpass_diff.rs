@@ -1161,15 +1161,19 @@ fn highbd_get_prediction_error_matches_c() {
     // 4 bits and 12 by 8. Feed one fixed pair to all three.
     //
     // The samples stay in 0..=255, and that bound is the CONTRACT, not
-    // caution. MEASURED on this build: with samples in 0..=1023 at
-    // `bd == 8`, C's `aom_highbd_8_mse16x16` returns 2_741_760 where the
-    // scalar definition (and this port) give 42_944_000 — its kernel
-    // accumulates in a width that assumes 8-bit samples. At `bd == 10` and
-    // `bd == 12` the same inputs agree exactly, which is why the randomized
-    // sweep above (which draws `0..1 << bd`) passes at every depth. A highbd
-    // plane at bit depth 8 holds 8-bit samples, so the encoder cannot reach
-    // the divergent input; feeding it would be testing a call C is not
-    // defined for (DIFFERENTIAL_PLAYBOOK §3a(d)).
+    // caution: the `aom_highbd_8_mse*` family is for 16-bit buffers carrying
+    // 8-bit values.
+    //
+    // MEASURED on both ISAs. With samples in 0..=1023 at `bd == 8`, C returns
+    // 2_741_760 on aarch64 where the scalar definition (and this port) give
+    // 42_944_000 — the NEON kernel RTCD selects there accumulates in a width
+    // that assumes 8-bit input. The identical run on x86-64 under Rosetta
+    // returns 42_944_000 and agrees. At bd 10 and 12 everything agrees on
+    // both. So the out-of-contract result is ISA-dependent, which means a
+    // sweep that fed it would have been green on x86 and red on ARM — the
+    // exact shape DIFFERENTIAL_PLAYBOOK §3 exists to catch, arrived at from
+    // the other direction. §3a(d) is the rule: bound the sweep by the
+    // function's real contract.
     let src: Vec<u16> = (0..16 * 16).map(|i| ((i * 37) % 256) as u16).collect();
     let reference: Vec<u16> = (0..16 * 16).map(|i| ((i * 11) % 256) as u16).collect();
     let a = highbd_get_prediction_error(6, &src, 16, &reference, 16, 8);

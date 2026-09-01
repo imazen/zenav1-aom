@@ -284,6 +284,35 @@ just the default one.** `cargo test -p <crate> --test <name>` at `-O0` and
 `cargo test --profile test-fast -p <crate> --test <name>` are different
 experiments for any float-heavy kernel.
 
+### 3c. An out-of-contract input can be ISA-dependent — in either direction
+
+Measured 2026-08-31 porting `firstpass.c`. `highbd_get_prediction_error`
+selects one of `aom_highbd_{8,10,12}_mse{8x8,16x8,8x16,16x16}`. The `_8_`
+family is for 16-bit buffers carrying **8-bit** values, and its kernels are
+entitled to accumulate accordingly.
+
+Fed 16-bit samples in `0..=1023` at `bd == 8`:
+
+| ISA | C returns | scalar definition |
+|---|---|---|
+| aarch64 (NEON RTCD) | 2,741,760 | 42,944,000 |
+| x86-64 (SSE2 RTCD, Rosetta) | 42,944,000 | 42,944,000 |
+
+At `bd == 10` and `bd == 12` every input agrees on both ISAs.
+
+Two things fall out, and the second is the one that generalises:
+
+1. The bound is the fix, not a tolerance: a highbd plane at bit depth 8 holds
+   8-bit values, so the encoder cannot produce the divergent input. Bound the
+   sweep by the function's real contract (§3a(d)) and say where the bound
+   comes from.
+2. **§3a's failure mode runs both ways.** Its three entries are all "passes on
+   ARM, breaks on x86". This one is the mirror: a differential that had swept
+   the full `0..1 << bd` range at every depth would have been *green on x86
+   and red on ARM*. So "it passes on the other ISA" is not evidence the input
+   is legitimate — it is evidence that the two kernels disagree there, which
+   is what an out-of-contract input looks like.
+
 ## 4. When you cannot run the other target, predict it
 
 The strongest available substitute for executing on a target you lack: derive a

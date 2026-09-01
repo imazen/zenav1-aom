@@ -975,15 +975,23 @@ pub fn get_prediction_error(
 /// than 10 or 12 takes it — including nonsense values. Reproduced.
 ///
 /// # Contract: a bd-8 highbd plane holds 8-bit samples
-/// MEASURED on this build: with 16-bit samples in `0..=1023` at `bd == 8`,
-/// C's `aom_highbd_8_mse16x16` returns 2_741_760 where the scalar definition
-/// (and this function) give 42_944_000 — its kernel accumulates in a width
-/// that assumes 8-bit samples. At `bd == 10` and `bd == 12` the same inputs
-/// agree exactly. The encoder cannot reach the divergent input (a highbd
-/// plane at bit depth 8 holds 8-bit values), so this is a contract on the
-/// caller, not a divergence to reconcile — see
-/// `highbd_get_prediction_error_matches_c`, which bounds its sweep by it and
-/// says so.
+/// The `aom_highbd_8_mse*` family is for 16-bit buffers carrying **8-bit**
+/// values, and its kernels are entitled to accumulate accordingly.
+///
+/// MEASURED, on both ISAs: with 16-bit samples in `0..=1023` at `bd == 8`,
+/// C returns 2_741_760 on **aarch64** where the scalar definition (and this
+/// function) give 42_944_000 — the NEON kernel RTCD selects there accumulates
+/// in a width that assumes 8-bit input. On **x86-64** (same source, SSE2-level
+/// RTCD, run under Rosetta) C returns 42_944_000 and agrees. At `bd == 10` and
+/// `bd == 12` every input agrees on both ISAs.
+///
+/// So this is an out-of-contract input whose result is ISA-dependent, not a
+/// divergence to reconcile: a highbd plane at bit depth 8 holds 8-bit values,
+/// so the encoder cannot produce it. `highbd_get_prediction_error_matches_c`
+/// bounds its sweep to `0..=255` at `bd == 8` and says so, which is
+/// `DIFFERENTIAL_PLAYBOOK` §3a(d) — and note that a sweep bounded the other
+/// way would have passed on x86 and failed on ARM, i.e. exactly the shape of
+/// bug §3 exists to catch.
 #[must_use]
 pub fn highbd_get_prediction_error(
     bsize: i32,
