@@ -287,6 +287,7 @@ Ordered by the commit that landed them.
 | W6 | the transform-search gate: `prune_mode_by_skip_rd` (+ `get_txfm_rd_gate_level`, `check_txfm_eval`, `compute_sse_plane` / `calculate_sse`) | `compound_type_diff.rs` (tier 1c) |
 | W2 | the masked-compound assembly: `build_masked_compound` (+ `_highbd`), `build_wedge_inter_predictor_from_buf`, `av1_build_wedge_inter_predictor_from_buf` | `aom-encode/tests/wedge_from_buf_diff.rs` (tier 1c) |
 | W2 | the subpel derivation: `enc_calc_subpel_params`, `init_subpel_params`, the `top`/`left` half of `init_inter_block_params` | `aom-encode/tests/subpel_params_diff.rs` (tier 1c) |
+| W6 | the interintra mode search: `compute_best_wedge_interintra`, `compute_best_interintra_mode` (+ `model_rd_for_sb_with_curvfit`'s plane-0 form) | `compound_type_diff.rs` (tier 1c) |
 | W7 | `encode_strategy.c`'s reference/GOP management: `av1_configure_buffer_updates`, `av1_get_refresh_ref_frame_map`, `av1_calc_refresh_idx_for_intnl_arf`, `av1_get_refresh_frame_flags` (default + external-override arms), `av1_get_ref_frames` (default + frame-parallel + `use_ext_ref_frame_map` arms) (+ statics `set_refresh_frame_flags`, `get_free_ref_map_index`, `get_refresh_idx`, `get_new_fb_map_idx_rc`, `is_in_ref_map`, `add_ref_to_slot`, `set_unmapped_ref`, `compare_map_idx_pair_asc`) | `aom-encode/tests/ref_gop_diff.rs` |
 | W7 | tier 4 (C is `static`, only caller is `av1_encode_strategy`): `set_additional_frame_flags`, `update_frame_flags`, `set_ext_overrides`, `choose_primary_ref_frame` | unit tests in `aom-encode/src/ref_gop.rs` |
 | W7 | the lookahead DECISIONS: `is_forced_keyframe_pending`, `av1_new_framerate` (clamp) | `aom-encode/tests/frame_source_diff.rs` |
@@ -296,6 +297,21 @@ Ordered by the commit that landed them.
 | W8 | RC initialisation: `av1_primary_rc_init`, `av1_rc_init`, `av1_rc_update_framerate` (tier 1) + `set_gf_interval_range` (tier 1c) | `aom-encode/tests/ratectrl_init_diff.rs` |
 | W8 | the per-frame state advance: `av1_rc_update_rate_correction_factors`, `av1_rc_postencode_update` (+ `set_rate_correction_factor`, `update_buffer_level`, `update_alt_ref_frame_stats`, `update_golden_frame_stats`), `av1_set_target_rate` (Q/CBR arm) | `aom-encode/tests/ratectrl_update_diff.rs` |
 | W8 | the q-and-bounds dispatcher: `av1_rc_pick_q_and_bounds` (tier 1) + `rc_pick_q_and_bounds`, `rc_pick_q_and_bounds_no_stats`, `adjust_active_best_and_worst_quality`, `get_q`, `calc_active_worst_quality_no_stats_vbr` (tier 1c) | `aom-encode/tests/ratectrl_pick_diff.rs` |
+
+### What `compound_type.c` and `reconinter_enc.c` still need, named
+
+After the six rows above, `compound_type.c` is **27 of 34** and
+`reconinter_enc.c` **6 of the 13** its inter-encode scope names. Nothing that
+remains is untranslatable; each is blocked on a layer that lives in a different
+file and is not ported:
+
+| still missing | blocked on |
+|---|---|
+| `av1_compound_type_rd`, `masked_compound_type_rd`, `get_inter_predictors_masked_compound` (compound_type.c) | `av1_build_inter_predictors_for_planes_single_buf`, below, plus `av1_interinter_compound_motion_search` (motion_search_facade.c) and `estimate_yrd_for_sb` |
+| `av1_handle_inter_intra_mode`, `handle_smooth_inter_intra_mode`, `handle_wedge_inter_intra_mode` (compound_type.c) | `estimate_yrd_for_sb` + `av1_compound_single_motion_search` |
+| `estimate_yrd_for_sb` (compound_type.c) | `av1_estimate_txfm_yrd` (tx_search.c) |
+| `av1_enc_build_one_inter_predictor`, `av1_enc_build_inter_predictor_y`, `_y_nonrd`, `av1_build_inter_predictors_for_planes_single_buf`, `enc_build_inter_predictors` (reconinter_enc.c) | `av1_make_inter_predictor` → `av1_convolve_2d_facade` (common/convolve.c). **The specific gap is the 4-TAP filter family**: `init_interp_filter_params` selects `av1_interp_4tap` whenever the block is ≤ 4 wide or high (filter.h:249-254), which every chroma plane of an 8x8 luma block is, and `aom_dsp`'s convolve only carries the three 8-tap tables (`convolve/mod.rs:59-72` panics on anything else). Every other leaf the facade routes to is already ported and gated. |
+| `av1_build_obmc_inter_predictors_sb`, `build_obmc_prediction`, `setup_address_for_obmc` (reconinter_enc.c) | the same predictor build, plus `av1_setup_pre_planes` / `foreach_overlappable_nb_*` |
 
 **None of it is wired into the encoder yet.** These are the kernels, searches
 and decisions the inter RD brain (W6) will call; the brain itself is still
