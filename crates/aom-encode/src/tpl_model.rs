@@ -1004,3 +1004,279 @@ impl TplParams {
         self.tpl_model_update_b(mi_row, mi_col, shift, frame_idx, 1);
     }
 }
+
+// ===========================================================================
+// Frame-level propagation, the per-superblock rdmult, and the MV entropy.
+// ===========================================================================
+
+/// `BLOCK_16X16`'s mi dimensions — `mi_size_wide[BLOCK_16X16]` and
+/// `mi_size_high[BLOCK_16X16]`, both 4. `av1_tpl_rdmult_setup` and
+/// `av1_tpl_rdmult_setup_sb` pin their aggregation block to 16x16 regardless
+/// of the TPL grid's own decimation, so this is not `1 << block_mis_log2`.
+const RDMULT_BLOCK_MI: i32 = 4;
+
+/// `av1_pixels_to_mi` (encoder/encoder.h:4399) — pixels to mi units,
+/// rounding the width up to a multiple of 8 first.
+///
+/// The `ALIGN_POWER_OF_TWO(pixels, 3)` is not a rounding convenience: it
+/// makes an odd-width frame occupy a whole 8-pixel mi pair, which is what the
+/// chroma planes need at 4:2:0.
+#[must_use]
+pub fn pixels_to_mi(pixels: i32) -> i32 {
+    ((pixels + 7) & !7) >> 2
+}
+
+impl TplParams {
+    /// `mc_flow_synthesizer` (tpl_model.c:1611, static) — run the backward
+    /// propagation over every block of one frame.
+    ///
+    /// Frame 0 is skipped outright (`if (!frame_idx) return;`): it is the
+    /// GOP's own reference, so it has nothing further back to propagate into.
+    ///
+    /// **The walk step comes from `tpl_bsize_1d`, not from
+    /// `tpl_stats_block_mis_log2`.** C converts `tpl_bsize_1d` to a
+    /// `BLOCK_SIZE` and reads `mi_size_wide`/`mi_size_high` off *that*, then
+    /// asserts (under `NDEBUG`, so not at all in the oracle build) that the
+    /// two agree. They do in every libaom build, where both are pinned by
+    /// `set_tpl_stats_block_size`. Reproducing the read C makes rather than
+    /// the one it asserts is the difference the differential can see.
+    ///
+    /// `mi_rows`/`mi_cols` are the *caller's* walk bounds, which
+    /// `av1_tpl_setup_stats` takes from the common frame geometry — not from
+    /// the TPL frame's own `mi_rows`/`mi_cols`.
+    pub fn mc_flow_synthesizer(&mut self, frame_idx: usize, mi_rows: i32, mi_cols: i32) {
+        if frame_idx == 0 {
+            return;
+        }
+        // C: convert_length_to_bsize(tpl_bsize_1d), then mi_size_{high,wide}.
+        // For a square BLOCK_NxN that is N / MI_SIZE; the invalid-length arm
+        // falls back to BLOCK_16X16 exactly as `tpl_block_dims` does.
+        let (_, _, mi_width, mi_height) = tpl_block_dims(match self.tpl_bsize_1d {
+            4 => 0,
+            8 => 1,
+            16 => 2,
+            32 => 3,
+            64 => 4,
+            // C's `default: return BLOCK_16X16`.
+            _ => 2,
+        });
+        let mut mi_row = 0;
+        while mi_row < mi_rows {
+            let mut mi_col = 0;
+            while mi_col < mi_cols {
+                self.tpl_model_update(mi_row, mi_col, frame_idx);
+                mi_col += mi_width;
+            }
+            mi_row += mi_height;
+        }
+    }
+
+    /// `av1_tpl_rdmult_setup` (tpl_model.c:2213) — the per-16x16 RD
+    /// multiplier scaling this frame's TPL stats imply.
+    ///
+    /// For each 16x16 block, `rk` is the ratio of the block's own coding cost
+    /// to that cost plus everything propagated into it. A block that many
+    /// others depend on has a large `mc_dep_cost`, so a small `rk`, so a
+    /// smaller rdmult — it is coded more finely. `cpi->rd.r0` normalizes
+    /// against the frame average, and the `+ 1.2` keeps the factor away from
+    /// zero.
+    ///
+    /// Returns `(num_rows, num_cols, factors)` — `factors` is row-major over
+    /// the 16x16 grid. C writes into `cpi->tpl_rdmult_scaling_factors`, which
+    /// the encoder allocated at exactly this size; returning the buffer keeps
+    /// the sizing rule in one place instead of splitting it between allocator
+    /// and writer.
+    ///
+    /// Returns `None` when the frame has no valid TPL stats, which is C's
+    /// early `return` leaving the previous factors in place.
+    ///
+    /// Two geometry details: the column count comes from the **superres
+    /// upscaled** width (a superres frame is coded narrow but its TPL grid is
+    /// full width), while the row count comes from `mi_params.mi_rows`; and
+    /// the inner accumulation skips mi positions past either bound, so a
+    /// partial 16x16 block at the right or bottom edge averages only the
+    /// cells that exist.
+    ///
+    /// That edge clip is **unreachable at the production grid decimation**.
+    /// The block is fixed at 16x16 (4 mi) but the inner loop steps by
+    /// `1 << tpl_stats_block_mis_log2`, which is also 4 — so there is exactly
+    /// one mi position per block and `(num_rows - 1) * 4 < mi_rows` by the
+    /// definition of `num_rows`. MEASURED: with shift 2 alone, deleting the
+    /// clip left the differential green; it only fires once the differential
+    /// also sweeps shift 0 and 1, which it now does.
+    #[must_use]
+    pub fn tpl_rdmult_setup(
+        &self,
+        gf_frame_index: usize,
+        superres_upscaled_width: i32,
+        mi_rows: i32,
+        r0: f64,
+    ) -> Option<(i32, i32, Vec<f64>)> {
+        let tpl_frame = self.frames.get(gf_frame_index)?;
+        if !tpl_frame.is_valid {
+            return None;
+        }
+        let tpl_stride = tpl_frame.stride;
+        let mi_cols_sr = pixels_to_mi(superres_upscaled_width);
+        let num_cols = (mi_cols_sr + RDMULT_BLOCK_MI - 1) / RDMULT_BLOCK_MI;
+        let num_rows = (mi_rows + RDMULT_BLOCK_MI - 1) / RDMULT_BLOCK_MI;
+        const C: f64 = 1.2;
+        let shift = self.tpl_stats_block_mis_log2;
+        let step = 1i32 << shift;
+
+        let mut factors = vec![0.0f64; (num_rows.max(0) * num_cols.max(0)) as usize];
+        for row in 0..num_rows {
+            for col in 0..num_cols {
+                let mut intra_cost = 0.0f64;
+                let mut mc_dep_cost = 0.0f64;
+                let mut mi_row = row * RDMULT_BLOCK_MI;
+                while mi_row < (row + 1) * RDMULT_BLOCK_MI {
+                    let mut mi_col = col * RDMULT_BLOCK_MI;
+                    while mi_col < (col + 1) * RDMULT_BLOCK_MI {
+                        if mi_row >= mi_rows || mi_col >= mi_cols_sr {
+                            mi_col += step;
+                            continue;
+                        }
+                        let this_stats = &tpl_frame.stats
+                            [tpl_ptr_pos(mi_row, mi_col, tpl_stride, shift) as usize];
+                        let mc_dep_delta = rdcost_i64_rate(
+                            tpl_frame.base_rdmult,
+                            this_stats.mc_dep_rate,
+                            this_stats.mc_dep_dist,
+                        );
+                        let scaled = (this_stats.recrf_dist << RDDIV_BITS) as f64;
+                        intra_cost += scaled;
+                        mc_dep_cost += scaled + mc_dep_delta as f64;
+                        mi_col += step;
+                    }
+                    mi_row += step;
+                }
+                let rk = intra_cost / mc_dep_cost;
+                factors[(row * num_cols + col) as usize] = rk / r0 + C;
+            }
+        }
+        Some((num_rows, num_cols, factors))
+    }
+
+    /// `av1_compute_mv_difference` (tpl_model.c:2639) — the smallest MV
+    /// residual for the cell at `(row, col)`, against its up and left
+    /// neighbours.
+    ///
+    /// This is a *prediction*, so what it returns is a difference when a
+    /// neighbour predicts better than zero, and the raw MV otherwise. The
+    /// comparison is `up_error < left_error && up_error < |current|`, i.e.
+    /// strict on both sides, so a tie between the two neighbours — or with
+    /// coding the MV outright — falls through to the raw MV.
+    ///
+    /// Missing neighbours are represented by `i32::MAX` errors rather than by
+    /// an `Option`, because C compares the two errors against each other and
+    /// the sentinel has to lose both comparisons; an `Option` would need the
+    /// same three-way logic spelled out twice.
+    ///
+    /// The MV read is `mv[ref_frame_index[0]]` — the *first* reference only,
+    /// even for a compound cell.
+    #[must_use]
+    pub fn compute_mv_difference(
+        tpl_frame: &TplDepFrame,
+        row: i32,
+        col: i32,
+        step: i32,
+        tpl_stride: i32,
+        right_shift: u8,
+    ) -> Mv {
+        let cell = |r: i32, c: i32| -> Mv {
+            let s = &tpl_frame.stats[tpl_ptr_pos(r, c, tpl_stride, right_shift) as usize];
+            s.mv[s.ref_frame_index[0] as usize]
+        };
+        let current_mv = cell(row, col);
+        let current_mv_magnitude =
+            i32::from(current_mv.row).abs() + i32::from(current_mv.col).abs();
+
+        let mut up_error = i32::MAX;
+        let mut up_mv_diff = Mv::default();
+        if row - step >= 0 {
+            let up = cell(row - step, col);
+            up_mv_diff = Mv::new(current_mv.row - up.row, current_mv.col - up.col);
+            up_error = i32::from(up_mv_diff.row).abs() + i32::from(up_mv_diff.col).abs();
+        }
+
+        let mut left_error = i32::MAX;
+        let mut left_mv_diff = Mv::default();
+        if col - step >= 0 {
+            let left = cell(row, col - step);
+            left_mv_diff = Mv::new(current_mv.row - left.row, current_mv.col - left.col);
+            left_error = i32::from(left_mv_diff.row).abs() + i32::from(left_mv_diff.col).abs();
+        }
+
+        if up_error < left_error && up_error < current_mv_magnitude {
+            up_mv_diff
+        } else if left_error < up_error && left_error < current_mv_magnitude {
+            left_mv_diff
+        } else {
+            current_mv
+        }
+    }
+
+    /// `av1_tpl_compute_frame_mv_entropy` (tpl_model.c:2682) — the modelled
+    /// bit cost of one frame's motion field.
+    ///
+    /// A first-order entropy over the histogram of MV residuals: build the
+    /// distribution of [`Self::compute_mv_difference`] outputs over the grid,
+    /// then charge `-log2(p)` per occurrence.
+    ///
+    /// # Two upstream behaviours reproduced verbatim
+    /// 1. **`count_col` is indexed by `mv.row`, not `mv.col`.** C writes
+    ///    `count_col[clamp(mv.as_mv.row, 0, 499)] += 1`. The column histogram
+    ///    is therefore a duplicate of the row histogram and the result is
+    ///    exactly `2 * rate_row`. This is a copy-paste bug in libaom v3.14.1;
+    ///    reproducing it is the contract, and "fixing" it fails the
+    ///    differential.
+    /// 2. **Negative residuals all collapse into bin 0**, because the clamp
+    ///    is `[0, 499]` rather than an offset range. Half the motion field is
+    ///    therefore counted as one symbol.
+    ///
+    /// Both are why this function is only reachable under
+    /// `CONFIG_BITRATE_ACCURACY` analysis, never on the byte-exact path.
+    #[must_use]
+    pub fn tpl_compute_frame_mv_entropy(tpl_frame: &TplDepFrame, right_shift: u8) -> f64 {
+        if !tpl_frame.is_valid {
+            return 0.0;
+        }
+        const BINS: usize = 500;
+        let mut count_row = [0i32; BINS];
+        let mut count_col = [0i32; BINS];
+        let mut n = 0i32;
+        let tpl_stride = tpl_frame.stride;
+        let step = 1i32 << right_shift;
+
+        let mut row = 0;
+        while row < tpl_frame.mi_rows {
+            let mut col = 0;
+            while col < tpl_frame.mi_cols {
+                let mv =
+                    Self::compute_mv_difference(tpl_frame, row, col, step, tpl_stride, right_shift);
+                let bin = i32::from(mv.row).clamp(0, 499) as usize;
+                count_row[bin] += 1;
+                // (1) C indexes count_col with .row too. Not a typo here.
+                count_col[bin] += 1;
+                n += 1;
+                col += step;
+            }
+            row += step;
+        }
+
+        let mut rate_row = 0.0f64;
+        let mut rate_col = 0.0f64;
+        for i in 0..BINS {
+            if count_row[i] != 0 {
+                let p = f64::from(count_row[i]) / f64::from(n);
+                rate_row += f64::from(count_row[i]) * -p.log2();
+            }
+            if count_col[i] != 0 {
+                let p = f64::from(count_col[i]) / f64::from(n);
+                rate_col += f64::from(count_col[i]) * -p.log2();
+            }
+        }
+        rate_row + rate_col
+    }
+}

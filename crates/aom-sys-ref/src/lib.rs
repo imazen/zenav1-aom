@@ -23889,3 +23889,246 @@ pub fn ref_rie_max_sb_square() -> i32 {
     ref_init();
     unsafe { shim_rie_max_sb_square() }
 }
+
+// ---------------------------------------------------------------------------
+// tpl_shim.c (cont.) — the MV-entropy pair and the rdmult setup.
+// All three C entry points are exported `T` symbols. **Tier 1.**
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tpl_compute_mv_difference(
+        mi_rows: i32,
+        mi_cols: i32,
+        stride: i32,
+        n_stats: i32,
+        mvs: *const i16,
+        ref_frame_index0: *const i8,
+        row: i32,
+        col: i32,
+        step: i32,
+        tpl_stride: i32,
+        right_shift: i32,
+        out_mv: *mut i16,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tpl_compute_frame_mv_entropy(
+        is_valid: i32,
+        mi_rows: i32,
+        mi_cols: i32,
+        stride: i32,
+        n_stats: i32,
+        mvs: *const i16,
+        ref_frame_index0: *const i8,
+        right_shift: u8,
+        out: *mut f64,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tpl_rdmult_setup(
+        gf_frame_index: i32,
+        gf_group_size: i32,
+        is_valid: i32,
+        superres_upscaled_width: i32,
+        mi_rows: i32,
+        stride: i32,
+        base_rdmult: i32,
+        block_mis_log2: u8,
+        r0: f64,
+        recrf_dist: *const i64,
+        mc_dep_rate: *const i64,
+        mc_dep_dist: *const i64,
+        n_stats: i32,
+        out_factors: *mut f64,
+        out_capacity: i32,
+        out_num_rows: *mut i32,
+        out_num_cols: *mut i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tplc_mc_flow_synthesizer(
+        n_frames: i32,
+        frame_idx: i32,
+        walk_mi_rows: i32,
+        walk_mi_cols: i32,
+        block_mis_log2: u8,
+        tpl_bsize_1d: u8,
+        mi_rows: *const i32,
+        mi_cols: *const i32,
+        strides: *const i32,
+        offsets: *const i32,
+        total_cells: i32,
+        ref_map_index: *const i32,
+        cells_in: *const RefTplDepStats,
+        mc_dep_dist: *mut i64,
+        mc_dep_rate: *mut i64,
+    ) -> i32;
+}
+
+/// A TPL frame carrying only the motion field, for the MV-entropy pair.
+#[derive(Clone, Debug)]
+pub struct RefTplMvFrame {
+    /// `TplDepFrame::is_valid`.
+    pub is_valid: bool,
+    /// `TplDepFrame::mi_rows`.
+    pub mi_rows: i32,
+    /// `TplDepFrame::mi_cols`.
+    pub mi_cols: i32,
+    /// `TplDepFrame::stride`.
+    pub stride: i32,
+    /// Per cell, `INTER_REFS_PER_FRAME` `[row, col]` pairs.
+    pub mvs: Vec<i16>,
+    /// Per cell, `ref_frame_index[0]`.
+    pub ref_frame_index0: Vec<i8>,
+}
+
+/// Reference libaom `av1_compute_mv_difference` (tpl_model.c:2639).
+#[must_use]
+pub fn ref_tpl_compute_mv_difference(
+    frame: &RefTplMvFrame,
+    row: i32,
+    col: i32,
+    step: i32,
+    tpl_stride: i32,
+    right_shift: i32,
+) -> (i16, i16) {
+    ref_init();
+    let mut out = [0i16; 2];
+    let r = unsafe {
+        shim_tpl_compute_mv_difference(
+            frame.mi_rows,
+            frame.mi_cols,
+            frame.stride,
+            i32::try_from(frame.ref_frame_index0.len()).expect("cell count fits in an int"),
+            frame.mvs.as_ptr(),
+            frame.ref_frame_index0.as_ptr(),
+            row,
+            col,
+            step,
+            tpl_stride,
+            right_shift,
+            out.as_mut_ptr(),
+        )
+    };
+    assert_eq!(r, 0, "shim_tpl_compute_mv_difference allocation failed");
+    (out[0], out[1])
+}
+
+/// Reference libaom `av1_tpl_compute_frame_mv_entropy` (tpl_model.c:2682).
+#[must_use]
+pub fn ref_tpl_compute_frame_mv_entropy(frame: &RefTplMvFrame, right_shift: u8) -> f64 {
+    ref_init();
+    let mut out = 0.0f64;
+    let r = unsafe {
+        shim_tpl_compute_frame_mv_entropy(
+            i32::from(frame.is_valid),
+            frame.mi_rows,
+            frame.mi_cols,
+            frame.stride,
+            i32::try_from(frame.ref_frame_index0.len()).expect("cell count fits in an int"),
+            frame.mvs.as_ptr(),
+            frame.ref_frame_index0.as_ptr(),
+            right_shift,
+            &mut out,
+        )
+    };
+    assert_eq!(r, 0, "shim_tpl_compute_frame_mv_entropy allocation failed");
+    out
+}
+
+/// Reference libaom `av1_tpl_rdmult_setup` (tpl_model.c:2213).
+///
+/// Returns `(num_rows, num_cols, factors)`, or `None` when C's early return
+/// fired (no valid TPL stats) and the factor buffer was left untouched.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn ref_tpl_rdmult_setup(
+    gf_frame_index: i32,
+    gf_group_size: i32,
+    is_valid: bool,
+    superres_upscaled_width: i32,
+    mi_rows: i32,
+    stride: i32,
+    base_rdmult: i32,
+    block_mis_log2: u8,
+    r0: f64,
+    cells: &[RefTplCell],
+) -> Option<(i32, i32, Vec<f64>)> {
+    ref_init();
+    let (_src, rec, rate, dist) = ref_tpl_split(cells);
+    let mut factors = vec![f64::NAN; 1 << 16];
+    let capacity = i32::try_from(factors.len()).expect("capacity fits in an int");
+    let mut num_rows = 0i32;
+    let mut num_cols = 0i32;
+    let r = unsafe {
+        shim_tpl_rdmult_setup(
+            gf_frame_index,
+            gf_group_size,
+            i32::from(is_valid),
+            superres_upscaled_width,
+            mi_rows,
+            stride,
+            base_rdmult,
+            block_mis_log2,
+            r0,
+            rec.as_ptr(),
+            rate.as_ptr(),
+            dist.as_ptr(),
+            i32::try_from(cells.len()).expect("cell count fits in an int"),
+            factors.as_mut_ptr(),
+            capacity,
+            &mut num_rows,
+            &mut num_cols,
+        )
+    };
+    assert_eq!(r, 0, "shim_tpl_rdmult_setup rejected the input");
+    if !is_valid {
+        // C returned early; the shim zeroed the buffer before the call, so
+        // report the early return rather than a grid of zeros.
+        return None;
+    }
+    factors.truncate((num_rows * num_cols) as usize);
+    Some((num_rows, num_cols, factors))
+}
+
+/// Reference libaom `mc_flow_synthesizer` (tpl_model.c:1611, static).
+/// **Tier 1c.**
+#[allow(clippy::too_many_arguments)]
+pub fn ref_tpl_mc_flow_synthesizer(
+    frames: &[RefTplFrameGeom],
+    frame_idx: i32,
+    walk_mi_rows: i32,
+    walk_mi_cols: i32,
+    block_mis_log2: u8,
+    tpl_bsize_1d: u8,
+    cells_in: &[RefTplDepStats],
+    mc_dep_dist: &mut [i64],
+    mc_dep_rate: &mut [i64],
+) {
+    ref_init();
+    assert_eq!(mc_dep_dist.len(), mc_dep_rate.len());
+    assert_eq!(cells_in.len(), mc_dep_dist.len());
+    let mi_rows: Vec<i32> = frames.iter().map(|f| f.mi_rows).collect();
+    let mi_cols: Vec<i32> = frames.iter().map(|f| f.mi_cols).collect();
+    let strides: Vec<i32> = frames.iter().map(|f| f.stride).collect();
+    let offsets: Vec<i32> = frames.iter().map(|f| f.offset).collect();
+    let ref_map: Vec<i32> = frames.iter().flat_map(|f| f.ref_map_index).collect();
+    let r = unsafe {
+        shim_tplc_mc_flow_synthesizer(
+            i32::try_from(frames.len()).expect("frame count fits in an int"),
+            frame_idx,
+            walk_mi_rows,
+            walk_mi_cols,
+            block_mis_log2,
+            tpl_bsize_1d,
+            mi_rows.as_ptr(),
+            mi_cols.as_ptr(),
+            strides.as_ptr(),
+            offsets.as_ptr(),
+            i32::try_from(cells_in.len()).expect("cell count fits in an int"),
+            ref_map.as_ptr(),
+            cells_in.as_ptr(),
+            mc_dep_dist.as_mut_ptr(),
+            mc_dep_rate.as_mut_ptr(),
+        )
+    };
+    assert_eq!(r, 0, "shim_tplc_mc_flow_synthesizer rejected the input");
+}

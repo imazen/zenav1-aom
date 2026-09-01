@@ -360,3 +360,60 @@ int64_t shim_tplc_drate_cost(int64_t delta_rate, int64_t recrf_dist,
 int shim_tplc_ptr_pos(int mi_row, int mi_col, int stride, uint8_t rs) {
   return shim_tplc_tpl_ptr_pos(mi_row, mi_col, stride, rs);
 }
+
+/* ======================================================================== *
+ * 5. mc_flow_synthesizer (tpl_model.c:1611) — the frame-level propagation
+ *    driver: tpl_model_update over the whole grid.
+ *
+ * Note the walk step comes from `convert_length_to_bsize(tpl_bsize_1d)`, NOT
+ * from `tpl_stats_block_mis_log2`, so `tpl_bsize_1d` is a separate parameter
+ * here and the differential can tell the two apart.
+ * ======================================================================== */
+int shim_tplc_mc_flow_synthesizer(int n_frames, int frame_idx, int walk_mi_rows,
+                                  int walk_mi_cols, uint8_t block_mis_log2,
+                                  uint8_t tpl_bsize_1d, const int32_t *mi_rows,
+                                  const int32_t *mi_cols,
+                                  const int32_t *strides,
+                                  const int32_t *offsets, int total_cells,
+                                  const int32_t *ref_map_index,
+                                  const ShimTplDepStats *cells_in,
+                                  int64_t *mc_dep_dist, int64_t *mc_dep_rate) {
+  if (n_frames <= 0 || n_frames > MAX_LENGTH_TPL_FRAME_STATS) return -1;
+  if (frame_idx < 0 || frame_idx >= n_frames) return -1;
+  if (total_cells <= 0) return -1;
+
+  TplParams *tpl = (TplParams *)calloc(1, sizeof(*tpl));
+  if (!tpl) return -1;
+  TplDepStats *cells =
+      (TplDepStats *)calloc((size_t)total_cells, sizeof(*cells));
+  if (!cells) {
+    free(tpl);
+    return -1;
+  }
+
+  tpl->tpl_stats_block_mis_log2 = block_mis_log2;
+  tpl->tpl_bsize_1d = tpl_bsize_1d;
+  tpl->tpl_frame = &tpl->tpl_stats_buffer[0];
+  for (int i = 0; i < n_frames; ++i) {
+    TplDepFrame *f = &tpl->tpl_frame[i];
+    f->is_valid = 1;
+    f->mi_rows = mi_rows[i];
+    f->mi_cols = mi_cols[i];
+    f->stride = strides[i];
+    f->tpl_stats_ptr = &cells[offsets[i]];
+    for (int r = 0; r < REF_FRAMES; ++r) {
+      f->ref_map_index[r] = ref_map_index[i * REF_FRAMES + r];
+    }
+  }
+  for (int i = 0; i < total_cells; ++i) shim_tplc_from_flat(&cells[i], &cells_in[i]);
+
+  mc_flow_synthesizer(tpl, frame_idx, walk_mi_rows, walk_mi_cols);
+
+  for (int i = 0; i < total_cells; ++i) {
+    mc_dep_dist[i] = cells[i].mc_dep_dist;
+    mc_dep_rate[i] = cells[i].mc_dep_rate;
+  }
+  free(cells);
+  free(tpl);
+  return 0;
+}

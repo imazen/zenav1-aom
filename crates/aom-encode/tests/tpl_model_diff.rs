@@ -1409,3 +1409,437 @@ fn tpl_model_update_mc_dep_rescale_matches_c_at_large_magnitudes() {
     }
     assert!(saw_propagation, "no trial propagated — the sweep is inert");
 }
+
+// ---------------------------------------------------------------------------
+// Frame-level propagation, the per-16x16 rdmult, and the MV entropy.
+// ---------------------------------------------------------------------------
+
+use aom_encode::tpl_model::pixels_to_mi;
+use aom_sys_ref::{
+    RefTplMvFrame, ref_tpl_compute_frame_mv_entropy, ref_tpl_compute_mv_difference,
+    ref_tpl_mc_flow_synthesizer, ref_tpl_rdmult_setup,
+};
+
+#[test]
+fn mc_flow_synthesizer_matches_c() {
+    let mut rng = Lcg(0x5eed_0040);
+    let mut saw_frame0_skip = false;
+    let mut saw_propagation = false;
+    let mut saw_bsize_mismatch = false;
+    for n_frames in 2..4usize {
+        for &shift in &[2u8, 1, 3] {
+            for &tpl_bsize_1d in &[16u8, 8, 32] {
+                for _ in 0..60 {
+                    let (mut tpl, geoms, mut dist, mut rate) =
+                        build_gop(&mut rng, n_frames, shift, true);
+                    tpl.tpl_bsize_1d = tpl_bsize_1d;
+                    if (MI_SIZE_FOR_TEST << shift) as u8 != tpl_bsize_1d {
+                        saw_bsize_mismatch = true;
+                    }
+                    let frame_idx = (rng.next_u32() as usize) % n_frames;
+                    if frame_idx == 0 {
+                        saw_frame0_skip = true;
+                    }
+                    // The walk bounds are the caller's, not the frame's:
+                    // sweep both a bound that matches the grid and one that
+                    // stops short of it.
+                    let walk_mi_rows = tpl.frames[frame_idx].mi_rows
+                        - ((rng.next_u32() % 3) as i32) * (1 << shift);
+                    let walk_mi_cols = tpl.frames[frame_idx].mi_cols
+                        - ((rng.next_u32() % 3) as i32) * (1 << shift);
+
+                    let cells_in: Vec<RefTplDepStats> = tpl
+                        .frames
+                        .iter()
+                        .flat_map(|f| f.stats.iter().map(to_ref_cell))
+                        .collect();
+                    let before = dist.clone();
+                    ref_tpl_mc_flow_synthesizer(
+                        &geoms,
+                        frame_idx as i32,
+                        walk_mi_rows,
+                        walk_mi_cols,
+                        shift,
+                        tpl_bsize_1d,
+                        &cells_in,
+                        &mut dist,
+                        &mut rate,
+                    );
+                    tpl.mc_flow_synthesizer(frame_idx, walk_mi_rows, walk_mi_cols);
+                    if dist != before {
+                        saw_propagation = true;
+                    }
+                    for (i, g) in geoms.iter().enumerate() {
+                        let off = g.offset as usize;
+                        for (j, cell) in tpl.frames[i].stats.iter().enumerate() {
+                            assert_eq!(
+                                cell.mc_dep_dist,
+                                dist[off + j],
+                                "mc_dep_dist f{i} c{j} (frame_idx={frame_idx} shift={shift} \
+                                 bsize_1d={tpl_bsize_1d} walk={walk_mi_rows}x{walk_mi_cols})"
+                            );
+                            assert_eq!(
+                                cell.mc_dep_rate,
+                                rate[off + j],
+                                "mc_dep_rate f{i} c{j} (frame_idx={frame_idx} shift={shift} \
+                                 bsize_1d={tpl_bsize_1d})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        saw_frame0_skip,
+        "the frame_idx == 0 early return was never hit"
+    );
+    assert!(saw_propagation, "no trial propagated — the walk is inert");
+    assert!(
+        saw_bsize_mismatch,
+        "tpl_bsize_1d always agreed with tpl_stats_block_mis_log2 — the sweep \
+         cannot tell which one the walk step comes from"
+    );
+}
+
+/// `MI_SIZE`, for the bsize/shift-agreement check above.
+const MI_SIZE_FOR_TEST: i32 = 4;
+
+#[test]
+fn pixels_to_mi_matches_c_geometry() {
+    // `av1_pixels_to_mi` is `static inline` in a header, so there is no
+    // symbol; it is one expression and is pinned here against its own
+    // definition (`ALIGN_POWER_OF_TWO(pixels, 3) >> MI_SIZE_LOG2`).
+    // **Tier 4**, but it is also gated indirectly at tier 1 by
+    // `tpl_rdmult_setup_matches_c`, whose column count C derives with it.
+    for pixels in 0..4096i32 {
+        let want = ((pixels + 7) & !7) >> 2;
+        assert_eq!(pixels_to_mi(pixels), want, "pixels={pixels}");
+    }
+    assert_eq!(pixels_to_mi(1), 2);
+    assert_eq!(pixels_to_mi(8), 2);
+    assert_eq!(pixels_to_mi(9), 4);
+    assert_eq!(pixels_to_mi(1920), 480);
+    assert_eq!(pixels_to_mi(3840), 960);
+}
+
+#[test]
+fn tpl_rdmult_setup_matches_c() {
+    let mut rng = Lcg(0x5eed_0041);
+    let mut saw_partial_block = false;
+    let mut saw_invalid = false;
+    // Widths chosen so the 16x16 grid is sometimes ragged: 1920 and 3840 are
+    // exact multiples, 1000 and 66 are not, and 66 also exercises the
+    // ALIGN_POWER_OF_TWO(.,3) in av1_pixels_to_mi.
+    let mut saw_edge_clip = false;
+    for &width in &[66i32, 176, 1000, 1920, 3840] {
+        for &mi_rows_px in &[64i32, 100, 240] {
+            for &is_valid in &[true, false] {
+                for &r0 in &[0.25f64, 1.0, 3.75] {
+                    // The inner accumulation steps by the TPL grid's decimation
+                    // but the block is always 16x16, so the `mi_row >= mi_rows`
+                    // clip is UNREACHABLE at the production shift of 2 — with
+                    // step == 4 there is exactly one mi position per block and
+                    // `(num_rows - 1) * 4 < mi_rows` by construction. MEASURED:
+                    // with shift 2 alone, deleting the clip left this test green.
+                    // Sweeping shift 1 and 0 makes the inner loop take several
+                    // steps inside one block, which is the only way it fires.
+                    for &shift in &[2u8, 1, 0] {
+                        let mi_cols_sr = pixels_to_mi(width);
+                        let mi_rows = mi_rows_px;
+                        let step = 1i32 << shift;
+                        if mi_rows % 4 != 0 || mi_cols_sr % 4 != 0 {
+                            saw_edge_clip = true;
+                        }
+                        let stride = (mi_cols_sr + step - 1) >> shift;
+                        let rows = (mi_rows + step - 1) >> shift;
+                        let n = ((stride + 2) * (rows + 2)).max(1) as usize;
+                        let cells: Vec<RefTplCell> = (0..n)
+                            .map(|_| RefTplCell {
+                                srcrf_dist: i64::from(rng.next_u32() % 20_000_000) + 1,
+                                recrf_dist: i64::from(rng.next_u32() % 20_000_000) + 1,
+                                mc_dep_rate: i64::from(rng.next_u32()) << 4,
+                                mc_dep_dist: i64::from(rng.next_u32() % 100_000_000),
+                            })
+                            .collect();
+                        let stats: Vec<TplDepStats> = cells
+                            .iter()
+                            .map(|c| TplDepStats {
+                                srcrf_dist: c.srcrf_dist,
+                                recrf_dist: c.recrf_dist,
+                                mc_dep_rate: c.mc_dep_rate,
+                                mc_dep_dist: c.mc_dep_dist,
+                                ..TplDepStats::default()
+                            })
+                            .collect();
+                        let base_rdmult = 200 + (rng.next_u32() % 5000) as i32;
+                        let tpl = TplParams {
+                            ready: true,
+                            tpl_stats_block_mis_log2: shift,
+                            tpl_bsize_1d: 16,
+                            frames: vec![TplDepFrame {
+                                is_valid,
+                                stats,
+                                stride,
+                                mi_rows,
+                                mi_cols: mi_cols_sr,
+                                base_rdmult,
+                                ..TplDepFrame::default()
+                            }],
+                            ..TplParams::default()
+                        };
+                        let got = tpl.tpl_rdmult_setup(0, width, mi_rows, r0);
+                        let want = ref_tpl_rdmult_setup(
+                            0,
+                            1,
+                            is_valid,
+                            width,
+                            mi_rows,
+                            stride,
+                            base_rdmult,
+                            shift,
+                            r0,
+                            &cells,
+                        );
+                        match (got, want) {
+                            (None, None) => saw_invalid = true,
+                            (Some((gr, gc, gf)), Some((wr, wc, wf))) => {
+                                assert_eq!((gr, gc), (wr, wc), "grid {width}x{mi_rows}");
+                                assert_eq!(gf.len(), wf.len());
+                                for (i, (a, b)) in gf.iter().zip(wf.iter()).enumerate() {
+                                    assert_eq!(
+                                        a.to_bits(),
+                                        b.to_bits(),
+                                        "factor {i} of {} ({width}x{mi_rows} r0={r0} \
+                                     rdmult={base_rdmult})",
+                                        gf.len()
+                                    );
+                                }
+                                if mi_cols_sr % 4 != 0 || mi_rows % 4 != 0 {
+                                    saw_partial_block = true;
+                                }
+                            }
+                            (g, w) => {
+                                panic!("arm mismatch: got {:?} want {:?}", g.is_some(), w.is_some())
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(saw_invalid, "the !is_valid early return was never reached");
+    assert!(
+        saw_partial_block,
+        "no ragged 16x16 block at a frame edge was exercised"
+    );
+    assert!(
+        saw_edge_clip,
+        "no case where the 16x16 block runs past the frame — the \
+         `mi_row >= mi_rows` clip cannot fire"
+    );
+}
+
+/// Build a motion-field-only TPL frame for the MV entropy pair.
+fn build_mv_frame(
+    rng: &mut Lcg,
+    mi_rows: i32,
+    mi_cols: i32,
+    shift: u8,
+    spread: u32,
+) -> (TplDepFrame, RefTplMvFrame) {
+    let stride = (mi_cols + (1 << shift) - 1) >> shift;
+    let rows = (mi_rows + (1 << shift) - 1) >> shift;
+    let n = (stride.max(1) * rows.max(1)).max(1) as usize;
+    let mut stats = vec![TplDepStats::default(); n];
+    let mut mvs = vec![0i16; n * 7 * 2];
+    let mut idx0 = vec![0i8; n];
+    for i in 0..n {
+        let r = (rng.next_u32() % spread) as i16 - (spread / 2) as i16;
+        let c = (rng.next_u32() % spread) as i16 - (spread / 2) as i16;
+        let which = (rng.next_u32() % 7) as usize;
+        for k in 0..7 {
+            let m = if k == which {
+                Mv::new(r, c)
+            } else {
+                Mv::new(
+                    (rng.next_u32() % spread) as i16 - (spread / 2) as i16,
+                    (rng.next_u32() % spread) as i16 - (spread / 2) as i16,
+                )
+            };
+            stats[i].mv[k] = m;
+            mvs[2 * (i * 7 + k)] = m.row;
+            mvs[2 * (i * 7 + k) + 1] = m.col;
+        }
+        stats[i].ref_frame_index[0] = which as i8;
+        stats[i].ref_frame_index[1] = -1;
+        idx0[i] = which as i8;
+    }
+    let frame = TplDepFrame {
+        is_valid: true,
+        stats,
+        stride,
+        mi_rows,
+        mi_cols,
+        ..TplDepFrame::default()
+    };
+    let rf = RefTplMvFrame {
+        is_valid: true,
+        mi_rows,
+        mi_cols,
+        stride,
+        mvs,
+        ref_frame_index0: idx0,
+    };
+    (frame, rf)
+}
+
+#[test]
+fn compute_mv_difference_matches_c() {
+    let mut rng = Lcg(0x5eed_0042);
+    let mut saw_up = false;
+    let mut saw_left = false;
+    let mut saw_raw = false;
+    for shift in 1u8..=3 {
+        // A small spread makes ties (and therefore the fall-through to the
+        // raw MV) common; a large one makes a genuine winner common.
+        for &spread in &[3u32, 64, 1024] {
+            for _ in 0..300 {
+                let step = 1i32 << shift;
+                let mi_rows = step * (2 + (rng.next_u32() % 5) as i32);
+                let mi_cols = step * (2 + (rng.next_u32() % 5) as i32);
+                let (frame, rf) = build_mv_frame(&mut rng, mi_rows, mi_cols, shift, spread);
+                let mut row = 0;
+                while row < mi_rows {
+                    let mut col = 0;
+                    while col < mi_cols {
+                        let got = TplParams::compute_mv_difference(
+                            &frame,
+                            row,
+                            col,
+                            step,
+                            frame.stride,
+                            shift,
+                        );
+                        let want = ref_tpl_compute_mv_difference(
+                            &rf,
+                            row,
+                            col,
+                            step,
+                            rf.stride,
+                            i32::from(shift),
+                        );
+                        assert_eq!(
+                            (got.row, got.col),
+                            want,
+                            "shift={shift} spread={spread} at ({row},{col})"
+                        );
+                        let raw = {
+                            let s = &frame.stats
+                                [((row >> shift) * frame.stride + (col >> shift)) as usize];
+                            s.mv[s.ref_frame_index[0] as usize]
+                        };
+                        if got == raw {
+                            saw_raw = true;
+                        } else if row > 0 && col == 0 {
+                            saw_up = true;
+                        } else if col > 0 {
+                            saw_left = true;
+                        }
+                        col += step;
+                    }
+                    row += step;
+                }
+            }
+        }
+    }
+    assert!(saw_raw, "the fall-through-to-raw arm was never reached");
+    assert!(saw_up || saw_left, "no neighbour ever won the prediction");
+}
+
+#[test]
+fn tpl_compute_frame_mv_entropy_matches_c() {
+    let mut rng = Lcg(0x5eed_0043);
+    let mut saw_nonzero = false;
+    for shift in 1u8..=3 {
+        for &spread in &[3u32, 64, 1024] {
+            for _ in 0..60 {
+                let step = 1i32 << shift;
+                let mi_rows = step * (2 + (rng.next_u32() % 6) as i32);
+                let mi_cols = step * (2 + (rng.next_u32() % 6) as i32);
+                let (frame, rf) = build_mv_frame(&mut rng, mi_rows, mi_cols, shift, spread);
+                let got = TplParams::tpl_compute_frame_mv_entropy(&frame, shift);
+                let want = ref_tpl_compute_frame_mv_entropy(&rf, shift);
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "shift={shift} spread={spread} {mi_rows}x{mi_cols}: got {got} want {want}"
+                );
+                if got != 0.0 {
+                    saw_nonzero = true;
+                }
+            }
+        }
+    }
+    assert!(saw_nonzero, "every frame scored zero entropy");
+
+    // The !is_valid early return.
+    let (mut frame, mut rf) = build_mv_frame(&mut rng, 16, 16, 2, 64);
+    frame.is_valid = false;
+    rf.is_valid = false;
+    assert_eq!(
+        TplParams::tpl_compute_frame_mv_entropy(&frame, 2),
+        ref_tpl_compute_frame_mv_entropy(&rf, 2)
+    );
+    assert_eq!(TplParams::tpl_compute_frame_mv_entropy(&frame, 2), 0.0);
+}
+
+/// The `count_col[.row]` copy-paste bug in
+/// `av1_tpl_compute_frame_mv_entropy`, pinned so nobody "fixes" it.
+///
+/// libaom v3.14.1 indexes the column histogram with `mv.as_mv.row`
+/// (tpl_model.c:2700), which makes the two histograms identical and the
+/// result exactly `2 * rate_row`. Asserting the doubling directly is a
+/// stronger statement than the bit-equality above: it says WHAT is wrong, so
+/// a future upstream fix shows up as this test failing rather than as a
+/// silent behaviour change.
+#[test]
+fn tpl_frame_mv_entropy_column_histogram_duplicates_the_row_one_upstream_bug() {
+    let mut rng = Lcg(0x5eed_0044);
+    for _ in 0..40 {
+        let (frame, rf) = build_mv_frame(&mut rng, 32, 32, 2, 512);
+        let total = TplParams::tpl_compute_frame_mv_entropy(&frame, 2);
+        assert_eq!(
+            total.to_bits(),
+            ref_tpl_compute_frame_mv_entropy(&rf, 2).to_bits()
+        );
+        // Recompute the row half alone and check the total is exactly twice
+        // it. If upstream ever indexes count_col with `.col`, this fails.
+        let mut counts = [0i32; 500];
+        let mut n = 0i32;
+        let mut row = 0;
+        while row < frame.mi_rows {
+            let mut col = 0;
+            while col < frame.mi_cols {
+                let mv = TplParams::compute_mv_difference(&frame, row, col, 4, frame.stride, 2);
+                counts[i32::from(mv.row).clamp(0, 499) as usize] += 1;
+                n += 1;
+                col += 4;
+            }
+            row += 4;
+        }
+        let mut rate_row = 0.0f64;
+        for &c in &counts {
+            if c != 0 {
+                let p = f64::from(c) / f64::from(n);
+                rate_row += f64::from(c) * -p.log2();
+            }
+        }
+        assert_eq!(
+            total.to_bits(),
+            (rate_row + rate_row).to_bits(),
+            "the column histogram is no longer a duplicate of the row one — \
+             upstream may have fixed tpl_model.c:2700; re-pin this test"
+        );
+    }
+}
