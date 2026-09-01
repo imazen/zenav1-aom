@@ -85,6 +85,7 @@ const SHIMS: &[&str] = &[
     "tf_shim",
     "tpl_shim",
     "ratectrl_shim",
+    "tpl_c_shim",
 ];
 
 /// Shims that need compile flags beyond the default `-O2 ORACLE_FP_CFLAGS`.
@@ -116,6 +117,11 @@ fn extra_shim_cflags(name: &str) -> &'static [&'static str] {
         // is doubly required here: rc_pick_q_and_bounds_q_mode ends in three
         // asserts on the qindex bounds. See shim/ratectrl_shim.c's header.
         "ratectrl_shim" => &["-O3", "-DNDEBUG"],
+        // tpl_c_shim pulls av1/encoder/tpl_model.c in for the same reason:
+        // 42 of its 63 definitions are file-static (only 21 are exported),
+        // and the backward-propagation core is entirely in that half. Same
+        // source, so it is built the same way.
+        "tpl_c_shim" => &["-O3", "-DNDEBUG"],
         _ => &[],
     }
 }

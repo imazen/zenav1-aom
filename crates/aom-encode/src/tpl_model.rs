@@ -391,6 +391,12 @@ pub struct TplDepFrame {
     pub frame_display_index: u32,
     /// When set, SAD replaces SSE in the intra/inter decision.
     pub use_pred_sad: bool,
+    /// `ref_map_index[i]` is the GOP index of the frame in reference slot
+    /// `i`, or `-1` for an empty slot. C stores it as `int[REF_FRAMES]`; the
+    /// negative sentinel is load-bearing (`tpl_model_update_b` returns early
+    /// on it) so it stays an `i32` rather than becoming an `Option<usize>` —
+    /// the array is written wholesale by the GOP setup and read by index.
+    pub ref_map_index: [i32; REF_FRAMES],
 }
 
 /// `TplParams` (tpl_model.h:168) — the GOP-level TPL state, reduced to the
@@ -556,5 +562,445 @@ impl TplParams {
             frame.is_valid = false;
             frame.stats.fill(TplDepStats::default());
         }
+    }
+}
+
+// ===========================================================================
+// The backward-propagation core (all file-static in C; gated at tier 1c
+// through `shim/tpl_c_shim.c`, which compiles tpl_model.c verbatim).
+// ===========================================================================
+
+use crate::rd::FrameUpdateType;
+use aom_dsp::txb::SCAN_ORDERS;
+use std::cmp::Ordering;
+
+/// `MI_SIZE` (`av1/common/enums.h:40`) — mi units are 4 luma pixels.
+const MI_SIZE: i32 = 4;
+
+/// `DCT_DCT` — the only transform type TPL's rate model scans with.
+const DCT_DCT: usize = 0;
+
+/// `get_msb(n)` (`aom_ports/bitops.h`) — `floor(log2(n))`, undefined at 0.
+///
+/// C asserts `n != 0` and computes `31 ^ clz(n)`. The one caller here always
+/// passes `abs_level + 1 >= 1`, so the contract is asserted rather than the
+/// undefined behaviour reproduced.
+#[inline]
+fn get_msb(n: u32) -> u32 {
+    assert!(n != 0, "get_msb is undefined at 0");
+    31 - n.leading_zeros()
+}
+
+/// `rate_estimator` (tpl_model.c:228, static) — TPL's stand-in for a real
+/// entropy coder.
+///
+/// Each of the first `eob` coefficients *in scan order* costs
+/// `msb(|level| + 1) + 1` bits, plus one more if it is non-zero; the running
+/// total starts at 1 and the result is scaled into `AV1_PROB_COST_SHIFT`
+/// units. This is a magnitude-only model — it ignores context, position and
+/// sign entirely, which is the whole reason TPL can afford to run it on every
+/// block of every frame in the GOP.
+///
+/// `qcoeff` is indexed *through* the scan, so it is in raster order; `eob` is
+/// a count of scan positions, not a raster index.
+///
+/// # Panics
+/// If `eob` exceeds the transform's coefficient count, matching C's `assert`.
+#[must_use]
+pub fn rate_estimator(qcoeff: &[i32], eob: usize, tx_size: usize) -> i32 {
+    let scan = SCAN_ORDERS[tx_size][DCT_DCT].0;
+    assert!(
+        eob <= scan.len(),
+        "eob {eob} exceeds the {} coefficients of tx_size {tx_size}",
+        scan.len()
+    );
+    let mut rate_cost: i32 = 1;
+    for &pos in &scan[..eob] {
+        let abs_level = qcoeff[pos as usize].unsigned_abs();
+        rate_cost += get_msb(abs_level + 1) as i32 + 1 + i32::from(abs_level > 0);
+    }
+    rate_cost << AV1_PROB_COST_SHIFT
+}
+
+/// `get_gop_length` (tpl_model.c:1318, static) — the GF group size, clamped
+/// to what the TPL buffer can hold.
+///
+/// The clamp is `MAX_TPL_FRAME_IDX - 1`, one below the bound
+/// [`TplParams::tpl_stats_ready`] uses, so the last representable index is
+/// never handed out as a length.
+#[must_use]
+pub fn get_gop_length(gf_group_size: i32) -> i32 {
+    gf_group_size.min(MAX_TPL_FRAME_IDX - 1)
+}
+
+/// `eval_gop_length`'s verdict (tpl_model.c:1868, static).
+///
+/// C returns a bare `int` in `{0, 1, 2}` whose meaning is documented only in
+/// a comment; the three outcomes are genuinely different actions, so they are
+/// an enum here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GopLengthVerdict {
+    /// Shorten the GF interval (C's 0).
+    Shorten,
+    /// Keep the GF interval (C's 1).
+    Keep,
+    /// Undecided — redo the TPL stats calculation (C's 2).
+    Redo,
+}
+
+impl GopLengthVerdict {
+    /// C's `int` encoding, for the differential.
+    #[must_use]
+    pub fn as_c_int(self) -> i32 {
+        match self {
+            Self::Shorten => 0,
+            Self::Keep => 1,
+            Self::Redo => 2,
+        }
+    }
+}
+
+/// `eval_gop_length` (tpl_model.c:1868, static) — decide whether the GF
+/// interval TPL just evaluated should stand.
+///
+/// `beta[0]` is the base-layer ARF's dependency factor and `beta[1]` the
+/// intermediate ARF's. A larger `gop_eval` means a cheaper, more approximate
+/// evaluation, so the thresholds relax as it rises: mode 1 demands a 0.7
+/// margin *and* `beta[0] > 3.0`, mode 2 has a middle band that refuses to
+/// decide, and mode 3 is a single `beta[0] > 1.1` test. Anything else is
+/// [`GopLengthVerdict::Redo`].
+///
+/// The `>=` in the margin tests and the strict `>` in the level tests are
+/// C's, and they differ between arms (mode 2's shorten arm uses `<=` on the
+/// level but `<` on the margin) — the asymmetry is load-bearing at the
+/// boundaries.
+#[must_use]
+pub fn eval_gop_length(beta: [f64; 2], gop_eval: i32) -> GopLengthVerdict {
+    match gop_eval {
+        1 => {
+            if beta[0] >= beta[1] + 0.7 && beta[0] > 3.0 {
+                GopLengthVerdict::Keep
+            } else {
+                GopLengthVerdict::Shorten
+            }
+        }
+        2 => {
+            if beta[0] >= beta[1] + 0.4 && beta[0] > 1.6 {
+                GopLengthVerdict::Keep
+            } else if beta[0] < beta[1] + 0.1 || beta[0] <= 1.4 {
+                GopLengthVerdict::Shorten
+            } else {
+                GopLengthVerdict::Redo
+            }
+        }
+        3 => {
+            if beta[0] > 1.1 {
+                GopLengthVerdict::Keep
+            } else {
+                GopLengthVerdict::Shorten
+            }
+        }
+        _ => GopLengthVerdict::Redo,
+    }
+}
+
+/// `skip_tpl_for_frame` (tpl_model.c:1908, static) — whether a GOP frame is
+/// skipped by the TPL pass.
+///
+/// Three independent skips: overlay frames never get stats (they code
+/// nothing new); with `approx_gop_eval` the pass is limited to the ARF layers
+/// near the base and to frames inside [`get_gop_length`]; and
+/// `reduce_num_frames` additionally drops leaf frames inside that length.
+///
+/// Note the last two use the gop-length bound in *opposite* directions
+/// (`frame_idx >= gop_length` skips, `frame_idx < gop_length` skips) — they
+/// are not two spellings of one rule.
+#[must_use]
+pub fn skip_tpl_for_frame(
+    gf_group_size: i32,
+    frame_idx: i32,
+    update_type: FrameUpdateType,
+    layer_depth: i32,
+    gop_eval: i32,
+    approx_gop_eval: bool,
+    reduce_num_frames: bool,
+) -> bool {
+    let num_arf_layers = if gop_eval == 2 { 3 } else { 2 };
+    let gop_length = get_gop_length(gf_group_size);
+
+    if matches!(
+        update_type,
+        FrameUpdateType::IntnlOverlay | FrameUpdateType::Overlay
+    ) {
+        return true;
+    }
+    if approx_gop_eval && (layer_depth > num_arf_layers || frame_idx >= gop_length) {
+        return true;
+    }
+    reduce_num_frames && update_type == FrameUpdateType::Lf && frame_idx < gop_length
+}
+
+/// `is_alike_mv` (tpl_model.c:345, static) — whether `candidate` is close
+/// enough to an already-queued search centre to be dropped.
+///
+/// The threshold is picked by `skip_alike_starting_mv` from
+/// `{1, 8 << 3, 16 << 3}` in 1/8-pel units, i.e. "bit-identical", "within 8
+/// full pels", "within 16 full pels". Both components must be strictly inside
+/// the threshold, so at level 0 the test is exact equality.
+///
+/// # Panics
+/// If `skip_alike_starting_mv` is not in `0..=2` — C indexes a 3-entry array
+/// with it and has no bound of its own.
+#[must_use]
+pub fn is_alike_mv(candidate: Mv, centers: &[Mv], skip_alike_starting_mv: usize) -> bool {
+    const MV_DIFF_THR: [i32; 3] = [1, 8 << 3, 16 << 3];
+    let thr = MV_DIFF_THR[skip_alike_starting_mv];
+    centers.iter().any(|c| {
+        (i32::from(c.col) - i32::from(candidate.col)).abs() < thr
+            && (i32::from(c.row) - i32::from(candidate.row)).abs() < thr
+    })
+}
+
+/// `compare_sad` (tpl_model.c:336, static) — the `qsort` comparator that
+/// orders TPL's motion-search start candidates by SAD.
+///
+/// C subtracts the two `int` SADs and returns the sign, which overflows for
+/// SADs more than `INT_MAX` apart; [`Ord::cmp`] on the values themselves
+/// cannot. SADs are non-negative sums bounded by `255 * 16 * 16 * 255`, so
+/// the difference never approaches the overflow, and the two agree on every
+/// input the encoder produces — proven over the full sign matrix in the
+/// differential.
+#[must_use]
+pub fn compare_sad(a: i32, b: i32) -> Ordering {
+    a.cmp(&b)
+}
+
+/// `convert_length_to_bsize` (tpl_model.h:43) resolved to the four block
+/// dimensions `tpl_model_update_b` reads off it.
+///
+/// C converts `MI_SIZE << block_mis_log2` to a `BLOCK_SIZE` and then reads
+/// `mi_size_wide_log2`, `mi_size_wide` and `mi_size_high` back out of it,
+/// which for a square block is exactly the shift it started from. The LUT
+/// round-trip is skipped here, with one exception that has to be kept: for a
+/// length outside `{4, 8, 16, 32, 64}` C's `default:` arm returns
+/// `BLOCK_16X16` (its `assert` is compiled out under `-DNDEBUG`), so the
+/// dimensions stop tracking the shift.
+///
+/// Returns `(bw, bh, mi_width, mi_height)`.
+fn tpl_block_dims(block_mis_log2: u8) -> (i32, i32, i32, i32) {
+    if block_mis_log2 <= 4 {
+        let side = MI_SIZE << block_mis_log2;
+        let mi = 1 << block_mis_log2;
+        (side, side, mi, mi)
+    } else {
+        // C's `default: return BLOCK_16X16`.
+        (16, 16, 4, 4)
+    }
+}
+
+/// `get_fullmv_from_mv` (`av1/common/mv.h:79`) — 1/8-pel to full-pel, via
+/// `GET_MV_RAWPEL(x) = (x + 3 + (x >= 0)) >> 3`.
+///
+/// That is round-half-away-from-zero, not a plain `>> 3`: the `+ (x >= 0)`
+/// term shifts the tie for non-negative inputs so that +4 rounds to 1 while
+/// -4 rounds to 0.
+#[inline]
+fn get_fullmv_from_mv(mv: Mv) -> (i32, i32) {
+    let raw = |x: i32| (x + 3 + i32::from(x >= 0)) >> 3;
+    (raw(i32::from(mv.row)), raw(i32::from(mv.col)))
+}
+
+impl TplParams {
+    /// `tpl_model_store` (tpl_model.c:1290, static) — write one block's TPL
+    /// result into the grid, flooring eleven of its fields at 1.
+    ///
+    /// The floors are why every consumer downstream can divide by
+    /// `recrf_dist` or take `log(recrf_dist)` without a guard — see the
+    /// reachability note on [`Self::get_frame_importance`]. Note which fields
+    /// are *not* floored: `srcrf_dist` is but `intra_dist` is not,
+    /// `recrf_dist` is but `recrf_sse` is not, and `mc_dep_*` are left alone
+    /// because propagation has not run yet.
+    pub fn tpl_model_store(
+        grid: &mut [TplDepStats],
+        mi_row: i32,
+        mi_col: i32,
+        stride: i32,
+        src: &TplDepStats,
+        block_mis_log2: u8,
+    ) {
+        let index = tpl_ptr_pos(mi_row, mi_col, stride, block_mis_log2) as usize;
+        let cell = &mut grid[index];
+        *cell = *src;
+        cell.intra_cost = cell.intra_cost.max(1);
+        cell.inter_cost = cell.inter_cost.max(1);
+        cell.srcrf_dist = cell.srcrf_dist.max(1);
+        cell.srcrf_sse = cell.srcrf_sse.max(1);
+        cell.recrf_dist = cell.recrf_dist.max(1);
+        cell.srcrf_rate = cell.srcrf_rate.max(1);
+        cell.recrf_rate = cell.recrf_rate.max(1);
+        cell.cmp_recrf_dist[0] = cell.cmp_recrf_dist[0].max(1);
+        cell.cmp_recrf_dist[1] = cell.cmp_recrf_dist[1].max(1);
+        cell.cmp_recrf_rate[0] = cell.cmp_recrf_rate[0].max(1);
+        cell.cmp_recrf_rate[1] = cell.cmp_recrf_rate[1].max(1);
+    }
+
+    /// `tpl_model_update_b` (tpl_model.c:1204, static) — push one block's
+    /// dependency cost back into reference `ref_idx`.
+    ///
+    /// This is the propagation TPL is named for. The block at
+    /// `(mi_row, mi_col)` of frame `frame_idx` predicted itself from a
+    /// reference frame at a motion vector; the cost it *saved* by doing so
+    /// (`recrf_dist - srcrf_dist`, plus whatever was already propagated into
+    /// it) is credited back to the reference's grid cells, split by how much
+    /// of each cell the motion-compensated block actually overlapped. Four
+    /// cells at most, because a full-pel MV can straddle two rows and two
+    /// columns of the grid.
+    ///
+    /// Three things C does here that a tidier rewrite silently changes:
+    ///
+    /// 1. **The source cell is located with frame 0's stride**, not
+    ///    `frame_idx`'s: C binds `tpl_frame = tpl_data->tpl_frame` and then
+    ///    indexes `tpl_ptr` (which is `frame_idx`'s grid) with
+    ///    `tpl_frame->stride`. Every TPL frame in a GOP is the same video
+    ///    frame size, so the two are equal in the encoder — but they are two
+    ///    different reads and this reproduces the one C makes.
+    /// 2. **`ref_map_index < 0` is checked AFTER the reference frame's stats
+    ///    pointer has already been loaded from it.** C computes
+    ///    `&tpl_frame[negative]` and dereferences it before the guard, which
+    ///    is undefined behaviour; the guard is hoisted above the load here.
+    ///    The two agree on every input where C is defined at all.
+    /// 3. **`mc_dep_dist` is scaled in `f64` and truncated back to `i64`**,
+    ///    while `cur_dep_dist` beside it stays integral. MEASURED: the
+    ///    obvious integer rewrite,
+    ///    `mc_dep_dist * (recrf_dist - srcrf_dist) / recrf_dist`, agrees with
+    ///    C on effectively every small input — substituting it left the whole
+    ///    2400-trial randomized differential green, because both forms
+    ///    truncate the same real number and disagree only when float rounding
+    ///    crosses an integer boundary. It stops agreeing when the integer
+    ///    product overflows `i64`, which `mc_dep_dist` (a distortion summed
+    ///    over a whole dependency chain, 1e12..1e15 at 4K) against a
+    ///    `recrf_dist` of ~1e7 does. That is gated separately by
+    ///    `tpl_model_update_mc_dep_rescale_matches_c_at_large_magnitudes`.
+    ///
+    /// # The rate shifts, and why they cannot be gated
+    /// `srcrf_rate`/`recrf_rate` are `i32`, and C shifts them by
+    /// `TPL_DEP_COST_SCALE_LOG2` *before* widening to `int64_t`. Writing
+    /// `i64::from(x) << 4` instead would differ only if `x << 4` overflowed
+    /// `int` — where C is undefined, so a differential there would be
+    /// comparing two definitions of nothing. It cannot: every rate in a TPL
+    /// cell comes from [`rate_estimator`], whose output is
+    /// `(1 + eob * (msb(|level| + 1) + 2)) << AV1_PROB_COST_SHIFT` with
+    /// `eob <= 256` for TPL's 16x16 transform, i.e. under 2.5e6, so `<< 4`
+    /// stays under 4e7. C's spelling is kept because it is C's; the
+    /// substitution is recorded here as **provably unobservable** rather than
+    /// left as an untested difference.
+    ///
+    /// The compound arm swaps in `cmp_recrf_*[!ref]` — the *other*
+    /// reference's contribution — as the "source" cost, so each reference is
+    /// charged only for what it added over the other one.
+    pub fn tpl_model_update_b(
+        &mut self,
+        mi_row: i32,
+        mi_col: i32,
+        block_mis_log2: u8,
+        frame_idx: usize,
+        ref_idx: usize,
+    ) {
+        // (1) C's `tpl_frame->stride` — frame 0's, not frame_idx's.
+        let frame0_stride = self.frames[0].stride;
+        let src_index = tpl_ptr_pos(mi_row, mi_col, frame0_stride, block_mis_log2) as usize;
+        let this = self.frames[frame_idx].stats[src_index];
+
+        let is_compound = this.ref_frame_index[1] >= 0;
+        let Ok(ref_frame_index) = usize::try_from(this.ref_frame_index[ref_idx]) else {
+            return; // C: `if (tpl_stats_ptr->ref_frame_index[ref] < 0) return;`
+        };
+        // (2) hoisted above the reference-frame load; C checks it after.
+        let Ok(ref_frame) = usize::try_from(self.frames[frame_idx].ref_map_index[ref_frame_index])
+        else {
+            return;
+        };
+
+        let (full_mv_row, full_mv_col) = get_fullmv_from_mv(this.mv[ref_frame_index]);
+        let ref_pos_row = mi_row * MI_SIZE + full_mv_row;
+        let ref_pos_col = mi_col * MI_SIZE + full_mv_col;
+
+        let (bw, bh, mi_width, mi_height) = tpl_block_dims(block_mis_log2);
+        let pix_num = i64::from(bw) * i64::from(bh);
+
+        let grid_pos_row_base = round_floor(ref_pos_row, bh) * bh;
+        let grid_pos_col_base = round_floor(ref_pos_col, bw) * bw;
+
+        let other = 1 - ref_idx;
+        let srcrf_dist = if is_compound {
+            this.cmp_recrf_dist[other]
+        } else {
+            this.srcrf_dist
+        };
+        // C shifts the i32 rate and only then widens, so the shift can
+        // overflow `int` exactly as it does in C.
+        let srcrf_rate = i64::from(if is_compound {
+            this.cmp_recrf_rate[other] << TPL_DEP_COST_SCALE_LOG2
+        } else {
+            this.srcrf_rate << TPL_DEP_COST_SCALE_LOG2
+        });
+
+        let cur_dep_dist = this.recrf_dist - srcrf_dist;
+        // (3) the fractional scale is taken in f64 and truncated, as C does.
+        let mc_dep_dist = (this.mc_dep_dist as f64
+            * ((this.recrf_dist - srcrf_dist) as f64 / this.recrf_dist as f64))
+            as i64;
+        let delta_rate = i64::from(this.recrf_rate << TPL_DEP_COST_SCALE_LOG2) - srcrf_rate;
+        let mc_dep_rate = delta_rate_cost(
+            this.mc_dep_rate,
+            this.recrf_dist,
+            srcrf_dist,
+            i32::try_from(pix_num).expect("pix_num fits in an int"),
+        );
+
+        let (ref_mi_rows, ref_mi_cols, ref_stride) = {
+            let f = &self.frames[ref_frame];
+            (f.mi_rows, f.mi_cols, f.stride)
+        };
+
+        for block in 0..4 {
+            let grid_pos_row = grid_pos_row_base + bh * (block >> 1);
+            let grid_pos_col = grid_pos_col_base + bw * (block & 1);
+            if grid_pos_row < 0
+                || grid_pos_row >= ref_mi_rows * MI_SIZE
+                || grid_pos_col < 0
+                || grid_pos_col >= ref_mi_cols * MI_SIZE
+            {
+                continue;
+            }
+            let overlap_area = i64::from(get_overlap_area(
+                grid_pos_row,
+                grid_pos_col,
+                ref_pos_row,
+                ref_pos_col,
+                bw,
+                bh,
+            ));
+            let ref_mi_row = round_floor(grid_pos_row, bh) * mi_height;
+            let ref_mi_col = round_floor(grid_pos_col, bw) * mi_width;
+            debug_assert_eq!(1 << block_mis_log2, mi_height);
+            debug_assert_eq!(1 << block_mis_log2, mi_width);
+            let des = tpl_ptr_pos(ref_mi_row, ref_mi_col, ref_stride, block_mis_log2) as usize;
+            let des_stats = &mut self.frames[ref_frame].stats[des];
+            des_stats.mc_dep_dist += ((cur_dep_dist + mc_dep_dist) * overlap_area) / pix_num;
+            des_stats.mc_dep_rate += ((delta_rate + mc_dep_rate) * overlap_area) / pix_num;
+        }
+    }
+
+    /// `tpl_model_update` (tpl_model.c:1280, static) — propagate one block
+    /// into both of its references.
+    ///
+    /// C derives the block size from `tpl_stats_block_mis_log2` on every
+    /// call; that derivation lives in [`tpl_block_dims`] here, so this is
+    /// just the two-reference loop.
+    pub fn tpl_model_update(&mut self, mi_row: i32, mi_col: i32, frame_idx: usize) {
+        let shift = self.tpl_stats_block_mis_log2;
+        self.tpl_model_update_b(mi_row, mi_col, shift, frame_idx, 0);
+        self.tpl_model_update_b(mi_row, mi_col, shift, frame_idx, 1);
     }
 }

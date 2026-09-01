@@ -22860,3 +22860,329 @@ pub fn ref_rcc_pick_q_and_bounds_q_mode(p: &RefRcQParams) -> (i32, i32, i32) {
     assert_eq!(r, 0, "shim_rcc_pick_q_and_bounds_q_mode allocation failed");
     (out[0], out[1], out[2])
 }
+
+// ---------------------------------------------------------------------------
+// tpl_c_shim.c — the FILE-STATIC half of tpl_model.c.
+//
+// **Tier 1c**: the shim TU compiles `av1/encoder/tpl_model.c` verbatim with
+// its 21 exported symbols renamed to `shim_tplc_*`, so the bodies under test
+// are libaom's own source rather than a transcription. The second-compilation
+// gap is closed by `tpl_c_shim_tu_matches_archive`, which compares this TU's
+// copies of four exported functions against the archive's. See the shim's
+// header comment.
+// ---------------------------------------------------------------------------
+
+/// The full `TplDepStats` record, flat, as `tpl_c_shim.c` lays it out.
+///
+/// `mv` is `[row0, col0, row1, col1, ...]` — never a packed `as_int`, so the
+/// Rust side never reproduces C's `int_mv` union layout.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(missing_docs)]
+pub struct RefTplDepStats {
+    pub srcrf_sse: i64,
+    pub srcrf_dist: i64,
+    pub recrf_sse: i64,
+    pub recrf_dist: i64,
+    pub intra_sse: i64,
+    pub intra_dist: i64,
+    pub cmp_recrf_dist: [i64; 2],
+    pub mc_dep_rate: i64,
+    pub mc_dep_dist: i64,
+    pub pred_error: [i64; 7],
+    pub intra_cost: i32,
+    pub inter_cost: i32,
+    pub srcrf_rate: i32,
+    pub recrf_rate: i32,
+    pub intra_rate: i32,
+    pub cmp_recrf_rate: [i32; 2],
+    pub mv: [i16; 14],
+    pub ref_frame_index: [i8; 2],
+}
+
+extern "C" {
+    fn shim_tplc_round_floor(ref_pos: i32, bsize_pix: i32) -> i32;
+    fn shim_tplc_rate_estimator(qcoeff: *const i32, eob: i32, tx_size: i32) -> i32;
+    fn shim_tplc_get_gop_length(gf_group_size: i32) -> i32;
+    fn shim_tplc_eval_gop_length(beta0: f64, beta1: f64, gop_eval: i32) -> i32;
+    fn shim_tplc_skip_tpl_for_frame(
+        gf_group_size: i32,
+        frame_idx: i32,
+        update_type: i32,
+        layer_depth: i32,
+        gop_eval: i32,
+        approx_gop_eval: i32,
+        reduce_num_frames: i32,
+    ) -> i32;
+    fn shim_tplc_is_alike_mv(
+        cand_row: i16,
+        cand_col: i16,
+        center_mvs: *const i16,
+        center_mvs_count: i32,
+        skip_alike_starting_mv: i32,
+    ) -> i32;
+    fn shim_tplc_compare_sad(sad_a: i32, sad_b: i32) -> i32;
+    fn shim_tplc_tpl_model_store(
+        mi_row: i32,
+        mi_col: i32,
+        stride: i32,
+        block_mis_log2: u8,
+        n_stats: i32,
+        src: *const RefTplDepStats,
+        out_cell: *mut RefTplDepStats,
+        out_index: *mut i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tplc_tpl_model_update(
+        n_frames: i32,
+        frame_idx: i32,
+        mi_row: i32,
+        mi_col: i32,
+        block_mis_log2: u8,
+        mi_rows: *const i32,
+        mi_cols: *const i32,
+        strides: *const i32,
+        offsets: *const i32,
+        total_cells: i32,
+        ref_map_index: *const i32,
+        src_cell: *const RefTplDepStats,
+        mc_dep_dist: *mut i64,
+        mc_dep_rate: *mut i64,
+    ) -> i32;
+    // The TU-agreement gate's re-exports.
+    fn shim_tplc_exp_entropy(q_step: f64, b: f64) -> f64;
+    fn shim_tplc_overlap_area(
+        row_a: i32,
+        col_a: i32,
+        row_b: i32,
+        col_b: i32,
+        w: i32,
+        h: i32,
+    ) -> i32;
+    fn shim_tplc_drate_cost(
+        delta_rate: i64,
+        recrf_dist: i64,
+        srcrf_dist: i64,
+        pix_num: i32,
+    ) -> i64;
+    fn shim_tplc_ptr_pos(mi_row: i32, mi_col: i32, stride: i32, rs: u8) -> i32;
+}
+
+/// Reference libaom `round_floor` (tpl_model.c:1149, static). **Tier 1c.**
+#[must_use]
+pub fn ref_tpl_round_floor(ref_pos: i32, bsize_pix: i32) -> i32 {
+    ref_init();
+    unsafe { shim_tplc_round_floor(ref_pos, bsize_pix) }
+}
+
+/// Reference libaom `rate_estimator` (tpl_model.c:228, static). **Tier 1c.**
+#[must_use]
+pub fn ref_tpl_rate_estimator(qcoeff: &[i32], eob: i32, tx_size: i32) -> i32 {
+    ref_init();
+    unsafe { shim_tplc_rate_estimator(qcoeff.as_ptr(), eob, tx_size) }
+}
+
+/// Reference libaom `get_gop_length` (tpl_model.c:1318, static). **Tier 1c.**
+#[must_use]
+pub fn ref_tpl_get_gop_length(gf_group_size: i32) -> i32 {
+    ref_init();
+    let r = unsafe { shim_tplc_get_gop_length(gf_group_size) };
+    assert!(r != i32::MIN, "shim_tplc_get_gop_length allocation failed");
+    r
+}
+
+/// Reference libaom `eval_gop_length` (tpl_model.c:1868, static). **Tier 1c.**
+#[must_use]
+pub fn ref_tpl_eval_gop_length(beta: [f64; 2], gop_eval: i32) -> i32 {
+    ref_init();
+    unsafe { shim_tplc_eval_gop_length(beta[0], beta[1], gop_eval) }
+}
+
+/// Reference libaom `skip_tpl_for_frame` (tpl_model.c:1908, static).
+/// **Tier 1c.**
+#[must_use]
+pub fn ref_tpl_skip_tpl_for_frame(
+    gf_group_size: i32,
+    frame_idx: i32,
+    update_type: i32,
+    layer_depth: i32,
+    gop_eval: i32,
+    approx_gop_eval: bool,
+    reduce_num_frames: bool,
+) -> bool {
+    ref_init();
+    let r = unsafe {
+        shim_tplc_skip_tpl_for_frame(
+            gf_group_size,
+            frame_idx,
+            update_type,
+            layer_depth,
+            gop_eval,
+            i32::from(approx_gop_eval),
+            i32::from(reduce_num_frames),
+        )
+    };
+    assert!(r != i32::MIN, "shim_tplc_skip_tpl_for_frame alloc failed");
+    r != 0
+}
+
+/// Reference libaom `is_alike_mv` (tpl_model.c:345, static). **Tier 1c.**
+/// `centers` is `[row, col]` pairs.
+#[must_use]
+pub fn ref_tpl_is_alike_mv(
+    cand: (i16, i16),
+    centers: &[i16],
+    skip_alike_starting_mv: i32,
+) -> bool {
+    ref_init();
+    assert!(centers.len() % 2 == 0, "centers must be row/col pairs");
+    let r = unsafe {
+        shim_tplc_is_alike_mv(
+            cand.0,
+            cand.1,
+            centers.as_ptr(),
+            i32::try_from(centers.len() / 2).expect("centre count must fit in an int"),
+            skip_alike_starting_mv,
+        )
+    };
+    assert!(r >= 0, "shim_tplc_is_alike_mv allocation failed");
+    r != 0
+}
+
+/// Reference libaom `compare_sad` (tpl_model.c:336, static). **Tier 1c.**
+#[must_use]
+pub fn ref_tpl_compare_sad(sad_a: i32, sad_b: i32) -> i32 {
+    ref_init();
+    unsafe { shim_tplc_compare_sad(sad_a, sad_b) }
+}
+
+/// Reference libaom `tpl_model_store` (tpl_model.c:1290, static).
+/// **Tier 1c.** Returns the stored cell and the index it landed at.
+#[must_use]
+pub fn ref_tpl_model_store(
+    mi_row: i32,
+    mi_col: i32,
+    stride: i32,
+    block_mis_log2: u8,
+    n_stats: i32,
+    src: &RefTplDepStats,
+) -> (RefTplDepStats, i32) {
+    ref_init();
+    let mut out = RefTplDepStats::default();
+    let mut index = 0i32;
+    let r = unsafe {
+        shim_tplc_tpl_model_store(
+            mi_row,
+            mi_col,
+            stride,
+            block_mis_log2,
+            n_stats,
+            src,
+            &mut out,
+            &mut index,
+        )
+    };
+    assert_eq!(r, 0, "shim_tplc_tpl_model_store rejected the input");
+    (out, index)
+}
+
+/// Per-frame geometry for [`ref_tpl_model_update`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RefTplFrameGeom {
+    /// `TplDepFrame::mi_rows`.
+    pub mi_rows: i32,
+    /// `TplDepFrame::mi_cols`.
+    pub mi_cols: i32,
+    /// `TplDepFrame::stride`.
+    pub stride: i32,
+    /// Index of this frame's first cell in the concatenated grid.
+    pub offset: i32,
+    /// `TplDepFrame::ref_map_index`.
+    pub ref_map_index: [i32; 8],
+}
+
+/// Reference libaom `tpl_model_update` (tpl_model.c:1280, static), and
+/// through it `tpl_model_update_b`. **Tier 1c.**
+///
+/// `mc_dep_dist` / `mc_dep_rate` are the concatenated per-frame propagation
+/// state, in and out. The source cell is written where C reads it — frame
+/// `frame_idx`'s grid, indexed with **frame 0's** stride, which is the read
+/// this differential exists to pin.
+pub fn ref_tpl_model_update(
+    frames: &[RefTplFrameGeom],
+    frame_idx: i32,
+    mi_row: i32,
+    mi_col: i32,
+    block_mis_log2: u8,
+    src_cell: &RefTplDepStats,
+    mc_dep_dist: &mut [i64],
+    mc_dep_rate: &mut [i64],
+) {
+    ref_init();
+    assert_eq!(mc_dep_dist.len(), mc_dep_rate.len());
+    let mi_rows: Vec<i32> = frames.iter().map(|f| f.mi_rows).collect();
+    let mi_cols: Vec<i32> = frames.iter().map(|f| f.mi_cols).collect();
+    let strides: Vec<i32> = frames.iter().map(|f| f.stride).collect();
+    let offsets: Vec<i32> = frames.iter().map(|f| f.offset).collect();
+    let ref_map: Vec<i32> = frames.iter().flat_map(|f| f.ref_map_index).collect();
+    let r = unsafe {
+        shim_tplc_tpl_model_update(
+            i32::try_from(frames.len()).expect("frame count must fit in an int"),
+            frame_idx,
+            mi_row,
+            mi_col,
+            block_mis_log2,
+            mi_rows.as_ptr(),
+            mi_cols.as_ptr(),
+            strides.as_ptr(),
+            offsets.as_ptr(),
+            i32::try_from(mc_dep_dist.len()).expect("cell count must fit in an int"),
+            ref_map.as_ptr(),
+            src_cell,
+            mc_dep_dist.as_mut_ptr(),
+            mc_dep_rate.as_mut_ptr(),
+        )
+    };
+    assert_eq!(r, 0, "shim_tplc_tpl_model_update rejected the input");
+}
+
+/// This TU's copy of `av1_exponential_entropy` — for the tier-1c agreement
+/// gate only.
+#[must_use]
+pub fn ref_tplc_tu_exponential_entropy(q_step: f64, b: f64) -> f64 {
+    ref_init();
+    unsafe { shim_tplc_exp_entropy(q_step, b) }
+}
+
+/// This TU's copy of `av1_get_overlap_area` — agreement gate only.
+#[must_use]
+pub fn ref_tplc_tu_get_overlap_area(
+    row_a: i32,
+    col_a: i32,
+    row_b: i32,
+    col_b: i32,
+    width: i32,
+    height: i32,
+) -> i32 {
+    ref_init();
+    unsafe { shim_tplc_overlap_area(row_a, col_a, row_b, col_b, width, height) }
+}
+
+/// This TU's copy of `av1_delta_rate_cost` — agreement gate only.
+#[must_use]
+pub fn ref_tplc_tu_delta_rate_cost(
+    delta_rate: i64,
+    recrf_dist: i64,
+    srcrf_dist: i64,
+    pix_num: i32,
+) -> i64 {
+    ref_init();
+    unsafe { shim_tplc_drate_cost(delta_rate, recrf_dist, srcrf_dist, pix_num) }
+}
+
+/// This TU's copy of `av1_tpl_ptr_pos` — agreement gate only.
+#[must_use]
+pub fn ref_tplc_tu_tpl_ptr_pos(mi_row: i32, mi_col: i32, stride: i32, right_shift: u8) -> i32 {
+    ref_init();
+    unsafe { shim_tplc_ptr_pos(mi_row, mi_col, stride, right_shift) }
+}
