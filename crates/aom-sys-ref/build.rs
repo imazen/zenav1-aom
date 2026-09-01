@@ -96,6 +96,7 @@ const SHIMS: &[&str] = &[
     "rcarchive_shim",
     "fp_shim",
     "fp_info_shim",
+    "interp_params_shim",
 ];
 
 /// Shims that need compile flags beyond the default `-O2 ORACLE_FP_CFLAGS`.

@@ -54,19 +54,132 @@ pub static SUB_PEL_FILTERS_8SHARP: [[i16; 8]; 16] = [
     [-2, 4, -6, 16, 124, -12, 6, -2],    [0, 2, -2, 8, 126, -6, 2, -2],
 ];
 
-/// Select the subpel kernel row for filter `ftype` (0=regular,1=smooth,2=sharp).
+/// `av1_sub_pel_filters_4` (`filter.h:207`) — the kernel the encoder uses on an
+/// axis 4 pixels or shorter, for EIGHTTAP_REGULAR **and** MULTITAP_SHARP.
+///
+/// Despite the name these are 8-TAP rows with zeros at both ends, and
+/// `av1_interp_4tap` declares them with `SUBPEL_TAPS` (`filter.h:240-246`) —
+/// the convolve still runs eight taps and still reads three samples before and
+/// four after. Only the coefficients differ.
+#[rustfmt::skip]
+pub static SUB_PEL_FILTERS_4: [[i16; 8]; 16] = [
+    [0, 0, 0, 128, 0, 0, 0, 0],      [0, 0, -4, 126, 8, -2, 0, 0],
+    [0, 0, -8, 122, 18, -4, 0, 0],   [0, 0, -10, 116, 28, -6, 0, 0],
+    [0, 0, -12, 110, 38, -8, 0, 0],  [0, 0, -12, 102, 48, -10, 0, 0],
+    [0, 0, -14, 94, 58, -10, 0, 0],  [0, 0, -12, 84, 66, -10, 0, 0],
+    [0, 0, -12, 76, 76, -12, 0, 0],  [0, 0, -10, 66, 84, -12, 0, 0],
+    [0, 0, -10, 58, 94, -14, 0, 0],  [0, 0, -10, 48, 102, -12, 0, 0],
+    [0, 0, -8, 38, 110, -12, 0, 0],  [0, 0, -6, 28, 116, -10, 0, 0],
+    [0, 0, -4, 18, 122, -8, 0, 0],   [0, 0, -2, 8, 126, -4, 0, 0],
+];
+
+/// `av1_sub_pel_filters_4smooth` (`filter.h:217`) — the ≤ 4 axis kernel for
+/// EIGHTTAP_SMOOTH. Note it is NOT the same as `SUB_PEL_FILTERS_8SMOOTH`:
+/// rows 1, 7, 8, 9 and 15 differ.
+#[rustfmt::skip]
+pub static SUB_PEL_FILTERS_4SMOOTH: [[i16; 8]; 16] = [
+    [0, 0, 0, 128, 0, 0, 0, 0],    [0, 0, 30, 62, 34, 2, 0, 0],
+    [0, 0, 26, 62, 36, 4, 0, 0],   [0, 0, 22, 62, 40, 4, 0, 0],
+    [0, 0, 20, 60, 42, 6, 0, 0],   [0, 0, 18, 58, 44, 8, 0, 0],
+    [0, 0, 16, 56, 46, 10, 0, 0],  [0, 0, 14, 54, 48, 12, 0, 0],
+    [0, 0, 12, 52, 52, 12, 0, 0],  [0, 0, 12, 48, 54, 14, 0, 0],
+    [0, 0, 10, 46, 56, 16, 0, 0],  [0, 0, 8, 44, 58, 18, 0, 0],
+    [0, 0, 6, 42, 60, 20, 0, 0],   [0, 0, 4, 40, 62, 22, 0, 0],
+    [0, 0, 4, 36, 62, 26, 0, 0],   [0, 0, 2, 34, 62, 30, 0, 0],
+];
+
+/// `av1_bilinear_filters` (`filter.h:113`) — BILINEAR, at every block size.
+#[rustfmt::skip]
+pub static BILINEAR_FILTERS: [[i16; 8]; 16] = [
+    [0, 0, 0, 128, 0, 0, 0, 0],   [0, 0, 0, 120, 8, 0, 0, 0],
+    [0, 0, 0, 112, 16, 0, 0, 0],  [0, 0, 0, 104, 24, 0, 0, 0],
+    [0, 0, 0, 96, 32, 0, 0, 0],   [0, 0, 0, 88, 40, 0, 0, 0],
+    [0, 0, 0, 80, 48, 0, 0, 0],   [0, 0, 0, 72, 56, 0, 0, 0],
+    [0, 0, 0, 64, 64, 0, 0, 0],   [0, 0, 0, 56, 72, 0, 0, 0],
+    [0, 0, 0, 48, 80, 0, 0, 0],   [0, 0, 0, 40, 88, 0, 0, 0],
+    [0, 0, 0, 32, 96, 0, 0, 0],   [0, 0, 0, 24, 104, 0, 0, 0],
+    [0, 0, 0, 16, 112, 0, 0, 0],  [0, 0, 0, 8, 120, 0, 0, 0],
+];
+
+/// The kernel-table id the `ftype` argument of the convolve entry points takes.
+///
+/// Ids 0..=2 are the historical `InterpFilter` values and are unchanged. Ids
+/// 3..=5 name the block-size-specialised tables `init_interp_filter_params`
+/// selects; they are a TABLE choice, not a different convolve — see
+/// [`SUB_PEL_FILTERS_4`].
+pub const FILTER_TABLE_8: usize = 0;
+/// See [`FILTER_TABLE_8`].
+pub const FILTER_TABLE_8SMOOTH: usize = 1;
+/// See [`FILTER_TABLE_8`].
+pub const FILTER_TABLE_8SHARP: usize = 2;
+/// See [`FILTER_TABLE_8`].
+pub const FILTER_TABLE_4: usize = 3;
+/// See [`FILTER_TABLE_8`].
+pub const FILTER_TABLE_4SMOOTH: usize = 4;
+/// See [`FILTER_TABLE_8`].
+pub const FILTER_TABLE_BILINEAR: usize = 5;
+
+/// `av1_get_interp_filter_params_with_block_size` (`filter.h:249`) reduced to
+/// the table id [`kernel`] takes.
+///
+/// `interp_filter` is the coded `InterpFilter` (0 REGULAR, 1 SMOOTH, 2 SHARP,
+/// 3 BILINEAR); `block_size` is the block's extent along the axis being
+/// filtered — its WIDTH for the x kernel and its HEIGHT for the y kernel, both
+/// of which `init_interp_filter_params` passes separately (`reconinter.h:169`).
+///
+/// Two things a reader will want to "simplify" and must not:
+/// * on a ≤ 4 axis, **MULTITAP_SHARP collapses onto the REGULAR 4-tap table**
+///   (`av1_interp_4tap[2]` is `av1_sub_pel_filters_4`, filter.h:243, with C's
+///   own comment saying so) — the sharp table is not narrowed, it is replaced;
+/// * `MULTITAP_SHARP2` (the 12-tap encoder-only filter, id 4) is excluded from
+///   the ≤ 4 rule by the `interp_filter != MULTITAP_SHARP2` guard, and is not
+///   modelled here at all — it is reachable only from temporal filtering,
+///   whose predictor blocks are ≥ 16.
+#[inline]
+pub fn filter_table_id(interp_filter: usize, block_size: usize) -> usize {
+    if block_size <= 4 {
+        match interp_filter {
+            0 | 2 => FILTER_TABLE_4,
+            1 => FILTER_TABLE_4SMOOTH,
+            3 => FILTER_TABLE_BILINEAR,
+            _ => panic!("filter_table_id: unsupported InterpFilter {interp_filter} at w<=4"),
+        }
+    } else {
+        match interp_filter {
+            0 => FILTER_TABLE_8,
+            1 => FILTER_TABLE_8SMOOTH,
+            2 => FILTER_TABLE_8SHARP,
+            3 => FILTER_TABLE_BILINEAR,
+            _ => panic!("filter_table_id: unsupported InterpFilter {interp_filter}"),
+        }
+    }
+}
+
+/// Select the subpel kernel row for kernel table `ftype`. See
+/// [`FILTER_TABLE_8`] for the ids; [`filter_table_id`] derives one from a
+/// coded `InterpFilter` plus the block extent.
+///
+/// Public because the compound and high-bit-depth convolves take a kernel ROW
+/// rather than a table id (`x_filter: &[i16]`), so their callers do this
+/// lookup themselves.
+#[inline]
+pub fn kernel_row(ftype: usize, subpel: usize) -> &'static [i16; 8] {
+    kernel(ftype, subpel)
+}
+
 #[inline]
 fn kernel(ftype: usize, subpel: usize) -> &'static [i16; 8] {
     let table: &[[i16; 8]; 16] = match ftype {
-        0 => &SUB_PEL_FILTERS_8,
-        1 => &SUB_PEL_FILTERS_8SMOOTH,
-        2 => &SUB_PEL_FILTERS_8SHARP,
-        // InterpFilter is 0..=2 here: BILINEAR (3) and SWITCHABLE (4) are
-        // resolved away before the kernel lookup, and the decoder rejects an
-        // out-of-envelope resolved filter as a corrupt frame.
-        _ => panic!(
-            "convolve: unsupported InterpFilter {ftype} — REGULAR(0)/SMOOTH(1)/SHARP(2) only"
-        ),
+        FILTER_TABLE_8 => &SUB_PEL_FILTERS_8,
+        FILTER_TABLE_8SMOOTH => &SUB_PEL_FILTERS_8SMOOTH,
+        FILTER_TABLE_8SHARP => &SUB_PEL_FILTERS_8SHARP,
+        FILTER_TABLE_4 => &SUB_PEL_FILTERS_4,
+        FILTER_TABLE_4SMOOTH => &SUB_PEL_FILTERS_4SMOOTH,
+        FILTER_TABLE_BILINEAR => &BILINEAR_FILTERS,
+        // SWITCHABLE (4) is resolved away before the kernel lookup, and the
+        // decoder rejects an out-of-envelope resolved filter as a corrupt
+        // frame.
+        _ => panic!("convolve: unsupported kernel table {ftype} — see FILTER_TABLE_*"),
     };
     &table[subpel & 15]
 }
@@ -85,8 +198,15 @@ fn clip_pixel(v: i32) -> u8 {
 /// `src` must have >=3 valid samples before and >=4 after in the x direction.
 #[allow(clippy::too_many_arguments)]
 pub fn convolve_x_sr(
-    src: &[u8], src_off: usize, src_stride: usize, dst: &mut [u8], dst_stride: usize,
-    w: usize, h: usize, subpel_x: usize, ftype: usize,
+    src: &[u8],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    subpel_x: usize,
+    ftype: usize,
 ) {
     let fo = 8 / 2 - 1; // 3
     let bits = FILTER_BITS - ROUND0_BITS;
@@ -108,8 +228,16 @@ pub fn convolve_x_sr(
 /// bits=0). `src` needs a border of >=3 (top/left) and >=4 (bottom/right).
 #[allow(clippy::too_many_arguments)]
 pub fn convolve_2d_sr(
-    src: &[u8], src_off: usize, src_stride: usize, dst: &mut [u8], dst_stride: usize,
-    w: usize, h: usize, subpel_x: usize, subpel_y: usize, ftype: usize,
+    src: &[u8],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    subpel_x: usize,
+    subpel_y: usize,
+    ftype: usize,
 ) {
     const BD: i32 = 8;
     const ROUND_1: i32 = 2 * FILTER_BITS - ROUND0_BITS; // 11
@@ -155,8 +283,15 @@ pub fn convolve_2d_sr(
 /// >=4 after the interior origin in the y direction.
 #[allow(clippy::too_many_arguments)]
 pub fn convolve_y_sr(
-    src: &[u8], src_off: usize, src_stride: usize, dst: &mut [u8], dst_stride: usize,
-    w: usize, h: usize, subpel_y: usize, ftype: usize,
+    src: &[u8],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    subpel_y: usize,
+    ftype: usize,
 ) {
     let fo = 8 / 2 - 1; // 3
     let filt = kernel(ftype, subpel_y);
@@ -165,7 +300,8 @@ pub fn convolve_y_sr(
             let base = src_off as isize + ((y as isize - fo) * src_stride as isize) + x as isize;
             let mut res = 0i32;
             for k in 0..8 {
-                res += filt[k] as i32 * src[(base + (k as isize) * src_stride as isize) as usize] as i32;
+                res += filt[k] as i32
+                    * src[(base + (k as isize) * src_stride as isize) as usize] as i32;
             }
             dst[y * dst_stride + x] = clip_pixel(rpo2(res, FILTER_BITS));
         }

@@ -27816,3 +27816,35 @@ pub fn ref_tpl_get_satd_cost(
     assert_eq!(r, 0, "shim_tplc_tpl_get_satd_cost rejected the input");
     out
 }
+
+// --- common/filter.h: the block-size-dependent interp filter selection -----
+
+extern "C" {
+    fn shim_ifp_table(interp_filter: i32, w: i32, out: *mut i16) -> i32;
+    fn shim_ifp_subpel_shifts() -> i32;
+    fn shim_ifp_subpel_taps() -> i32;
+}
+
+/// Reference `av1_get_interp_filter_params_with_block_size` (`filter.h:249`)
+/// plus the table it selects. Returns `(taps, 16 rows of 8 coefficients)`.
+pub fn ref_interp_filter_table(interp_filter: i32, block_size: i32) -> (i32, Vec<[i16; 8]>) {
+    ref_init();
+    let (shifts, taps) = unsafe { (shim_ifp_subpel_shifts(), shim_ifp_subpel_taps()) };
+    let mut flat = vec![0i16; (shifts * taps) as usize];
+    let got_taps = unsafe { shim_ifp_table(interp_filter, block_size, flat.as_mut_ptr()) };
+    let rows = flat
+        .chunks_exact(taps as usize)
+        .map(|c| {
+            let mut r = [0i16; 8];
+            r.copy_from_slice(&c[..8]);
+            r
+        })
+        .collect();
+    (got_taps, rows)
+}
+
+/// `SUBPEL_SHIFTS` and `SUBPEL_TAPS` as the oracle TU sees them.
+pub fn ref_interp_filter_dims() -> (i32, i32) {
+    ref_init();
+    unsafe { (shim_ifp_subpel_shifts(), shim_ifp_subpel_taps()) }
+}
