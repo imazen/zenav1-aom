@@ -654,3 +654,330 @@ int64_t shim_ct_pick_interintra_wedge(int bsize, int hbd, int bd, int rdmult,
   shim_ct_env_free(&e);
   return rd;
 }
+
+/* ======================================================================== *
+ * 10. The compound-RD reuse cache (compound_type.c:32-101, :955-1057).
+ *
+ * `COMP_RD_STATS` crosses the boundary as flat arrays rather than as a struct,
+ * so the Rust side never has to reproduce a C layout that `-DNDEBUG` or a
+ * libaom bump could move under it. Layout, per entry:
+ *   rate[4] model_rate[4] rs2[4]            -> `const int32_t *i32`  (12)
+ *   dist[4] model_dist[4]                   -> `const int64_t *i64`  (8)
+ *   mv[2] as {row,col}                      -> `const int16_t *mv`   (4)
+ *   ref_frames[2], mode, filter, ref_mv_idx,
+ *   is_global[2], wedge_index, wedge_sign,
+ *   mask_type, comp type                    -> `const int32_t *meta` (11)
+ * ======================================================================== */
+
+static void shim_ct_fill_stats(COMP_RD_STATS *st, const int32_t *i32,
+                               const int64_t *i64v, const int16_t *mv,
+                               const int32_t *meta) {
+  for (int i = 0; i < COMPOUND_TYPES; ++i) {
+    st->rate[i] = i32[i];
+    st->model_rate[i] = i32[COMPOUND_TYPES + i];
+    st->comp_rs2[i] = i32[2 * COMPOUND_TYPES + i];
+    st->dist[i] = i64v[i];
+    st->model_dist[i] = i64v[COMPOUND_TYPES + i];
+  }
+  for (int i = 0; i < 2; ++i) {
+    st->mv[i].as_mv.row = mv[2 * i];
+    st->mv[i].as_mv.col = mv[2 * i + 1];
+    st->ref_frames[i] = (MV_REFERENCE_FRAME)meta[i];
+    st->is_global[i] = meta[5 + i];
+  }
+  st->mode = (PREDICTION_MODE)meta[2];
+  st->filter.as_int = (uint32_t)meta[3];
+  st->ref_mv_idx = meta[4];
+  st->interinter_comp.wedge_index = (int8_t)meta[7];
+  st->interinter_comp.wedge_sign = (int8_t)meta[8];
+  st->interinter_comp.mask_type = (DIFFWTD_MASK_TYPE)meta[9];
+  st->interinter_comp.type = (COMPOUND_TYPE)meta[10];
+}
+
+/* `mi_meta`: ref_frames[2], mode, filter, bsize, wmtype[2]. */
+static void shim_ct_fill_mi(MB_MODE_INFO *mi, const int16_t *mi_mv,
+                            const int32_t *mi_meta, WarpedMotionParams *gm) {
+  for (int i = 0; i < 2; ++i) {
+    mi->mv[i].as_mv.row = mi_mv[2 * i];
+    mi->mv[i].as_mv.col = mi_mv[2 * i + 1];
+    mi->ref_frame[i] = (MV_REFERENCE_FRAME)mi_meta[i];
+  }
+  mi->mode = (PREDICTION_MODE)mi_meta[2];
+  mi->interp_filters.as_int = (uint32_t)mi_meta[3];
+  mi->bsize = (BLOCK_SIZE)mi_meta[4];
+  /* `xd->global_motion` is indexed by mi->ref_frame[i], so the two wmtypes go
+   * into the rows those references name. A reference of NONE_FRAME (-1) has
+   * no row; C would read global_motion[-1], which the encoder never does
+   * because a compound block always has two real references. */
+  for (int i = 0; i < 2; ++i) {
+    const int rf = mi_meta[i];
+    if (rf >= 0 && rf < REF_FRAMES) gm[rf].wmtype = (TransformationType)mi_meta[5 + i];
+  }
+}
+
+int shim_ct_is_comp_rd_match(int disable_interinter_wedge_newmv_search,
+                             int enable_fast_compound_mode_search,
+                             const int32_t *st_i32, const int64_t *st_i64,
+                             const int16_t *st_mv, const int32_t *st_meta,
+                             const int16_t *mi_mv, const int32_t *mi_meta,
+                             int32_t *io_i32 /* 12, in/out */,
+                             int64_t *io_i64 /* 8, in/out */) {
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mi = (MB_MODE_INFO *)calloc(1, sizeof(*mi));
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  COMP_RD_STATS *st = (COMP_RD_STATS *)calloc(1, sizeof(*st));
+  /* `xd->global_motion` is a POINTER to the frame's warp models (blockd.h),
+   * NULL in a calloc'd MACROBLOCKD; `is_comp_rd_match` dereferences it once
+   * per reference. */
+  WarpedMotionParams *gm =
+      (WarpedMotionParams *)calloc(REF_FRAMES, sizeof(*gm));
+  if (!x || !mi || !cpi || !st || !gm) {
+    free(gm); free(st); free(cpi); free(mi); free(x);
+    return 0;
+  }
+  x->e_mbd.global_motion = gm;
+  cpi->sf.inter_sf.disable_interinter_wedge_newmv_search =
+      disable_interinter_wedge_newmv_search;
+  cpi->sf.inter_sf.enable_fast_compound_mode_search =
+      enable_fast_compound_mode_search;
+  shim_ct_fill_stats(st, st_i32, st_i64, st_mv, st_meta);
+  shim_ct_fill_mi(mi, mi_mv, mi_meta, gm);
+
+  int32_t comp_rate[COMPOUND_TYPES], comp_model_rate[COMPOUND_TYPES];
+  int comp_rs2[COMPOUND_TYPES];
+  int64_t comp_dist[COMPOUND_TYPES], comp_model_dist[COMPOUND_TYPES];
+  for (int i = 0; i < COMPOUND_TYPES; ++i) {
+    comp_rate[i] = io_i32[i];
+    comp_model_rate[i] = io_i32[COMPOUND_TYPES + i];
+    comp_rs2[i] = io_i32[2 * COMPOUND_TYPES + i];
+    comp_dist[i] = io_i64[i];
+    comp_model_dist[i] = io_i64[COMPOUND_TYPES + i];
+  }
+  const int r = is_comp_rd_match(cpi, x, st, mi, comp_rate, comp_dist,
+                                 comp_model_rate, comp_model_dist, comp_rs2);
+  for (int i = 0; i < COMPOUND_TYPES; ++i) {
+    io_i32[i] = comp_rate[i];
+    io_i32[COMPOUND_TYPES + i] = comp_model_rate[i];
+    io_i32[2 * COMPOUND_TYPES + i] = comp_rs2[i];
+    io_i64[i] = comp_dist[i];
+    io_i64[COMPOUND_TYPES + i] = comp_model_dist[i];
+  }
+  free(gm); free(st); free(cpi); free(mi); free(x);
+  return r;
+}
+
+/* `save_comp_rd_search_stat` writes into `x->comp_rd_stats[x->comp_rd_stats_idx]`.
+ * The wrapper seeds the index, runs the append, and reports the entry it
+ * produced plus the new index — so the cache-full behaviour (silently drop,
+ * never evict) is observable. */
+int shim_ct_save_comp_rd_search_stat(int start_idx, const int32_t *i32,
+                                     const int64_t *i64v, const int16_t *mv,
+                                     const int16_t *mi_mv,
+                                     const int32_t *mi_meta,
+                                     const int32_t *comp_meta /* 4 */,
+                                     int ref_mv_idx, int32_t *out_meta /* 11 */,
+                                     int32_t *out_i32, int64_t *out_i64,
+                                     int16_t *out_mv) {
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mi = (MB_MODE_INFO *)calloc(1, sizeof(*mi));
+  WarpedMotionParams *gm =
+      (WarpedMotionParams *)calloc(REF_FRAMES, sizeof(*gm));
+  if (!x || !mi || !gm) {
+    free(gm); free(mi); free(x);
+    return -1;
+  }
+  x->e_mbd.global_motion = gm;
+  x->comp_rd_stats_idx = start_idx;
+  shim_ct_fill_mi(mi, mi_mv, mi_meta, gm);
+  mi->ref_mv_idx = (uint8_t)ref_mv_idx;
+  mi->interinter_comp.wedge_index = (int8_t)comp_meta[0];
+  mi->interinter_comp.wedge_sign = (int8_t)comp_meta[1];
+  mi->interinter_comp.mask_type = (DIFFWTD_MASK_TYPE)comp_meta[2];
+  mi->interinter_comp.type = (COMPOUND_TYPE)comp_meta[3];
+
+  int32_t comp_rate[COMPOUND_TYPES], comp_model_rate[COMPOUND_TYPES];
+  int comp_rs2[COMPOUND_TYPES];
+  int64_t comp_dist[COMPOUND_TYPES], comp_model_dist[COMPOUND_TYPES];
+  int_mv cur_mv[2];
+  for (int i = 0; i < COMPOUND_TYPES; ++i) {
+    comp_rate[i] = i32[i];
+    comp_model_rate[i] = i32[COMPOUND_TYPES + i];
+    comp_rs2[i] = i32[2 * COMPOUND_TYPES + i];
+    comp_dist[i] = i64v[i];
+    comp_model_dist[i] = i64v[COMPOUND_TYPES + i];
+  }
+  for (int i = 0; i < 2; ++i) {
+    cur_mv[i].as_mv.row = mv[2 * i];
+    cur_mv[i].as_mv.col = mv[2 * i + 1];
+  }
+
+  save_comp_rd_search_stat(x, mi, comp_rate, comp_dist, comp_model_rate,
+                           comp_model_dist, cur_mv, comp_rs2);
+
+  const int new_idx = x->comp_rd_stats_idx;
+  if (new_idx > start_idx) {
+    const COMP_RD_STATS *st = &x->comp_rd_stats[start_idx];
+    for (int i = 0; i < COMPOUND_TYPES; ++i) {
+      out_i32[i] = st->rate[i];
+      out_i32[COMPOUND_TYPES + i] = st->model_rate[i];
+      out_i32[2 * COMPOUND_TYPES + i] = st->comp_rs2[i];
+      out_i64[i] = st->dist[i];
+      out_i64[COMPOUND_TYPES + i] = st->model_dist[i];
+    }
+    for (int i = 0; i < 2; ++i) {
+      out_mv[2 * i] = st->mv[i].as_mv.row;
+      out_mv[2 * i + 1] = st->mv[i].as_mv.col;
+      out_meta[i] = st->ref_frames[i];
+      out_meta[5 + i] = st->is_global[i];
+    }
+    out_meta[2] = st->mode;
+    out_meta[3] = (int32_t)st->filter.as_int;
+    out_meta[4] = st->ref_mv_idx;
+    out_meta[7] = st->interinter_comp.wedge_index;
+    out_meta[8] = st->interinter_comp.wedge_sign;
+    out_meta[9] = st->interinter_comp.mask_type;
+    out_meta[10] = st->interinter_comp.type;
+  }
+  free(gm);
+  free(mi);
+  free(x);
+  return new_idx;
+}
+
+void shim_ct_backup_stats(int cur_type, int32_t *io_i32, int64_t *io_i64,
+                          int rate_sum, int64_t dist_sum, int rd_rate,
+                          int64_t rd_dist, int rs2) {
+  int32_t comp_rate[COMPOUND_TYPES], comp_model_rate[COMPOUND_TYPES];
+  int comp_rs2[COMPOUND_TYPES];
+  int64_t comp_dist[COMPOUND_TYPES], comp_model_dist[COMPOUND_TYPES];
+  for (int i = 0; i < COMPOUND_TYPES; ++i) {
+    comp_rate[i] = io_i32[i];
+    comp_model_rate[i] = io_i32[COMPOUND_TYPES + i];
+    comp_rs2[i] = io_i32[2 * COMPOUND_TYPES + i];
+    comp_dist[i] = io_i64[i];
+    comp_model_dist[i] = io_i64[COMPOUND_TYPES + i];
+  }
+  RD_STATS rd_stats;
+  memset(&rd_stats, 0, sizeof(rd_stats));
+  rd_stats.rate = rd_rate;
+  rd_stats.dist = rd_dist;
+  backup_stats((COMPOUND_TYPE)cur_type, comp_rate, comp_dist, comp_model_rate,
+               comp_model_dist, rate_sum, dist_sum, &rd_stats, comp_rs2, rs2);
+  for (int i = 0; i < COMPOUND_TYPES; ++i) {
+    io_i32[i] = comp_rate[i];
+    io_i32[COMPOUND_TYPES + i] = comp_model_rate[i];
+    io_i32[2 * COMPOUND_TYPES + i] = comp_rs2[i];
+    io_i64[i] = comp_dist[i];
+    io_i64[COMPOUND_TYPES + i] = comp_model_dist[i];
+  }
+}
+
+/* `update_best_info` + `update_mask_best_mv` (compound_type.c:1005, :1016). */
+void shim_ct_update_best_info(const int32_t *comp_meta /* 4 */, int64_t *io_rd,
+                              int64_t *io_model_rd, int32_t *io_comp_meta /* 4 */,
+                              int32_t *io_cost, int64_t best_rd_cur,
+                              int64_t comp_model_rd_cur, int rs2) {
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  BEST_COMP_TYPE_STATS bts;
+  memset(&bts, 0, sizeof(bts));
+  if (!mbmi) return;
+  mbmi->interinter_comp.wedge_index = (int8_t)comp_meta[0];
+  mbmi->interinter_comp.wedge_sign = (int8_t)comp_meta[1];
+  mbmi->interinter_comp.mask_type = (DIFFWTD_MASK_TYPE)comp_meta[2];
+  mbmi->interinter_comp.type = (COMPOUND_TYPE)comp_meta[3];
+  bts.comp_best_model_rd = *io_model_rd;
+  bts.best_compmode_interinter_cost = *io_cost;
+  bts.best_compound_data.wedge_index = (int8_t)io_comp_meta[0];
+  bts.best_compound_data.wedge_sign = (int8_t)io_comp_meta[1];
+  bts.best_compound_data.mask_type = (DIFFWTD_MASK_TYPE)io_comp_meta[2];
+  bts.best_compound_data.type = (COMPOUND_TYPE)io_comp_meta[3];
+
+  update_best_info(mbmi, io_rd, &bts, best_rd_cur, comp_model_rd_cur, rs2);
+
+  *io_model_rd = bts.comp_best_model_rd;
+  *io_cost = bts.best_compmode_interinter_cost;
+  io_comp_meta[0] = bts.best_compound_data.wedge_index;
+  io_comp_meta[1] = bts.best_compound_data.wedge_sign;
+  io_comp_meta[2] = bts.best_compound_data.mask_type;
+  io_comp_meta[3] = bts.best_compound_data.type;
+  free(mbmi);
+}
+
+void shim_ct_update_mask_best_mv(const int16_t *mbmi_mv, int16_t *best_mv,
+                                 int *best_tmp_rate_mv, int tmp_rate_mv) {
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  int_mv bmv[2];
+  if (!mbmi) return;
+  for (int i = 0; i < 2; ++i) {
+    mbmi->mv[i].as_mv.row = mbmi_mv[2 * i];
+    mbmi->mv[i].as_mv.col = mbmi_mv[2 * i + 1];
+    bmv[i].as_mv.row = best_mv[2 * i];
+    bmv[i].as_mv.col = best_mv[2 * i + 1];
+  }
+  update_mask_best_mv(mbmi, bmv, best_tmp_rate_mv, tmp_rate_mv);
+  for (int i = 0; i < 2; ++i) {
+    best_mv[2 * i] = bmv[i].as_mv.row;
+    best_mv[2 * i + 1] = bmv[i].as_mv.col;
+  }
+  free(mbmi);
+}
+
+/* `populate_reuse_comp_type_data` (compound_type.c:962). Returns the
+ * function's own return value; `*io_rd`, the mbmi fields and the winner are
+ * reported through the out-parameters so the "reuse produced nothing" arm is
+ * distinguishable from a successful reuse of a zero-cost type. */
+int shim_ct_populate_reuse_comp_type_data(
+    int rdmult, const int32_t *st_meta, const int32_t *io_i32,
+    const int64_t *io_i64, const int16_t *cur_mv, int rate_mv,
+    int best_compmode_interinter_cost, int64_t *io_rd, int32_t *out_comp_meta,
+    int16_t *out_mv, int32_t *out_flags /* comp_group_idx, compound_idx */) {
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  if (!x || !mbmi) {
+    free(mbmi); free(x);
+    return 0;
+  }
+  x->rdmult = rdmult;
+  /* The matched entry lives at index 0 of the cache for this driver. */
+  x->comp_rd_stats[0].interinter_comp.wedge_index = (int8_t)st_meta[7];
+  x->comp_rd_stats[0].interinter_comp.wedge_sign = (int8_t)st_meta[8];
+  x->comp_rd_stats[0].interinter_comp.mask_type = (DIFFWTD_MASK_TYPE)st_meta[9];
+  x->comp_rd_stats[0].interinter_comp.type = (COMPOUND_TYPE)st_meta[10];
+
+  BEST_COMP_TYPE_STATS bts;
+  memset(&bts, 0, sizeof(bts));
+  bts.best_compmode_interinter_cost = best_compmode_interinter_cost;
+
+  int32_t comp_rate[COMPOUND_TYPES];
+  int comp_rs2[COMPOUND_TYPES];
+  int64_t comp_dist[COMPOUND_TYPES];
+  for (int i = 0; i < COMPOUND_TYPES; ++i) {
+    comp_rate[i] = io_i32[i];
+    comp_rs2[i] = io_i32[2 * COMPOUND_TYPES + i];
+    comp_dist[i] = io_i64[i];
+  }
+  int_mv mv[2];
+  for (int i = 0; i < 2; ++i) {
+    mv[i].as_mv.row = cur_mv[2 * i];
+    mv[i].as_mv.col = cur_mv[2 * i + 1];
+  }
+  int rate_mv_io = rate_mv;
+  const int r = populate_reuse_comp_type_data(x, mbmi, &bts, mv, comp_rate,
+                                              comp_dist, comp_rs2, &rate_mv_io,
+                                              io_rd, /*match_index=*/0);
+  out_comp_meta[0] = mbmi->interinter_comp.wedge_index;
+  out_comp_meta[1] = mbmi->interinter_comp.wedge_sign;
+  out_comp_meta[2] = mbmi->interinter_comp.mask_type;
+  out_comp_meta[3] = mbmi->interinter_comp.type;
+  out_flags[0] = mbmi->comp_group_idx;
+  out_flags[1] = mbmi->compound_idx;
+  for (int i = 0; i < 2; ++i) {
+    out_mv[2 * i] = mbmi->mv[i].as_mv.row;
+    out_mv[2 * i + 1] = mbmi->mv[i].as_mv.col;
+  }
+  free(mbmi);
+  free(x);
+  return r;
+}
+
+int shim_ct_max_comp_rd_stats(void) { return MAX_COMP_RD_STATS; }

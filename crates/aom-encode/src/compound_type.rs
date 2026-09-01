@@ -8,9 +8,25 @@
 //! them, plus the interintra (inter + intra blend) mode search that shares the
 //! same wedge machinery.
 //!
-//! # What is here, and what is not
-//! Ported so far — the decision and cost layer, every function pure over its
-//! inputs:
+//! # Coverage — 24 of the 34 functions in `compound_type.c`
+//!
+//! **MISSING (10), all of them orchestration over encoder state this port does
+//! not have yet:**
+//!
+//! | C function | what it needs first |
+//! |---|---|
+//! | `av1_compound_type_rd` | the whole loop below — the encoder-side predictor build, `av1_interinter_compound_motion_search` and a transform search |
+//! | `masked_compound_type_rd` | `get_inter_predictors_masked_compound` + `av1_build_wedge_inter_predictor_from_buf` + `estimate_yrd_for_sb` |
+//! | `get_inter_predictors_masked_compound` | `av1_build_inter_predictors_for_planes_single_buf` (reconinter_enc.c) |
+//! | `av1_handle_inter_intra_mode` | the two handlers below |
+//! | `handle_smooth_inter_intra_mode` | `av1_build_intra_predictors_for_interintra` + `model_rd_for_sb` + `estimate_yrd_for_sb` |
+//! | `handle_wedge_inter_intra_mode` | the same, plus `av1_compound_single_motion_search` |
+//! | `compute_best_interintra_mode` | `av1_build_intra_predictors_for_interintra` + `av1_combine_interintra` |
+//! | `compute_best_wedge_interintra` | the same |
+//! | `estimate_yrd_for_sb` | `av1_estimate_txfm_yrd` (tx_search.c) |
+//! | `prune_mode_by_skip_rd` | `compute_sse_plane` + `check_txfm_eval` (rdopt_utils.h) |
+//!
+//! **Ported (24):**
 //!
 //! | Rust | C (`compound_type.c`) |
 //! |---|---|
@@ -25,6 +41,23 @@
 //! | [`push_comp_avg_est_rd`] | `push_comp_avg_est_rd` |
 //! | [`prune_comp_eval_using_comp_avg_est_rd`] | `prune_comp_eval_using_comp_avg_est_rd` |
 //! | [`compute_rd_thresh`] | `compute_rd_thresh` |
+//! | [`estimate_wedge_sign`] | `estimate_wedge_sign` |
+//! | [`pick_wedge`] | `pick_wedge` |
+//! | [`pick_wedge_fixed_sign`] | `pick_wedge_fixed_sign` |
+//! | [`pick_interinter_wedge`] | `pick_interinter_wedge` |
+//! | [`pick_interinter_seg`] | `pick_interinter_seg` |
+//! | [`pick_interintra_wedge`] | `pick_interintra_wedge` |
+//! | [`is_comp_rd_match`] | `is_comp_rd_match` |
+//! | [`find_comp_rd_in_stats`] | `find_comp_rd_in_stats` |
+//! | [`save_comp_rd_search_stat`] | `save_comp_rd_search_stat` |
+//! | [`CompTypeCosts::backup`] | `backup_stats` |
+//! | [`BestCompTypeStats::update`] | `update_best_info` |
+//! | [`update_mask_best_mv`] | `update_mask_best_mv` |
+//! | [`populate_reuse_comp_type_data`] | `populate_reuse_comp_type_data` |
+//!
+//! Two helpers from neighbouring headers come along because nothing else in
+//! the port had needed them: [`is_interinter_compound_used`]
+//! (`reconinter.h:299`) and [`is_global_mv_block`] (`blockd.h:421`).
 //!
 //! # Differential coverage
 //! `tests/compound_type_diff.rs`, **tier 1c** — the oracle is libaom's own
@@ -953,4 +986,410 @@ pub fn pick_interintra_wedge(
     subtract(bh, bw, &mut diff10, bw, p1, bw, p0, bw);
 
     pick_wedge_fixed_sign(ctx, src.is_hbd(), &residual1, &diff10, 0)
+}
+
+// ===================================================================
+// The compound-RD reuse cache — compound_type.c:32-101, :955-1057.
+//
+// The inter search re-enters `av1_compound_type_rd` once per ref-MV
+// candidate, and most of those re-entries differ only in something the
+// compound decision does not depend on. `x->comp_rd_stats` is a 64-entry
+// direct-mapped history of finished searches; `is_comp_rd_match` decides
+// whether a stored entry may stand in for the current one, and which of its
+// per-type costs are still valid.
+// ===================================================================
+
+use crate::rdopt_mv::{Mv, PredMode};
+
+/// `MAX_COMP_RD_STATS` (`block.h:298`) — the cache's capacity. C stops
+/// recording past this; it does not evict.
+pub const MAX_COMP_RD_STATS: usize = 64;
+
+/// `TransformationType` (`av1/common/mv.h`) — only the ordering against
+/// `TRANSLATION` matters here.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[repr(u8)]
+pub enum TransformationType {
+    /// `IDENTITY`
+    Identity = 0,
+    /// `TRANSLATION`
+    Translation = 1,
+    /// `ROTZOOM`
+    RotZoom = 2,
+    /// `AFFINE`
+    Affine = 3,
+}
+
+/// `is_global_mv_block` (`blockd.h:421`): whether this block's motion comes
+/// from the frame-level warp model rather than a coded MV.
+///
+/// (Declared in `common/blockd.h`, not `compound_type.c`, but the cache's
+/// match test compares against its result and nothing else in the port had
+/// needed it.)
+#[inline]
+pub fn is_global_mv_block(mode: PredMode, bsize: usize, wmtype: TransformationType) -> bool {
+    let block_size_allowed = BLOCK_SIZE_WIDE[bsize].min(BLOCK_SIZE_HIGH[bsize]) >= 8;
+    matches!(mode, PredMode::GlobalMv | PredMode::GlobalGlobalMv)
+        && wmtype > TransformationType::Translation
+        && block_size_allowed
+}
+
+/// `INTERINTER_COMPOUND_DATA` (`blockd.h:208`) minus its `seg_mask` pointer,
+/// which in this port travels as an owned buffer beside the parameters rather
+/// than as a borrowed pointer inside them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct InterInterComp {
+    /// `wedge_index`
+    pub wedge_index: usize,
+    /// `wedge_sign`
+    pub wedge_sign: usize,
+    /// `mask_type`
+    pub mask_type: DiffwtdMaskType,
+    /// `type`
+    pub ty: CompoundType,
+}
+
+impl Default for InterInterComp {
+    /// What `av1_compound_type_rd` initialises `best_compound_data` to
+    /// (compound_type.c:1245): type `COMPOUND_AVERAGE`, everything else zero.
+    fn default() -> Self {
+        Self {
+            wedge_index: 0,
+            wedge_sign: 0,
+            mask_type: DiffwtdMaskType::Diffwtd38,
+            ty: CompoundType::Average,
+        }
+    }
+}
+
+/// The per-compound-type cost quintuple the search accumulates and the cache
+/// replays. C carries these as five separate `COMPOUND_TYPES`-long arrays
+/// threaded through eight functions; grouping them means `backup_stats` and
+/// the reuse path cannot fill one and forget another.
+///
+/// The "no value" sentinels are C's: `INT_MAX` for the two rates and `rs2`,
+/// `INT64_MAX` for the two distortions. They are load-bearing —
+/// `comp_rate[type] == INT_MAX` is exactly the test `masked_compound_type_rd`
+/// and the average/distwtd arm use to decide between computing and reusing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CompTypeCosts {
+    /// `comp_rate[COMPOUND_TYPES]`
+    pub rate: [i32; COMPOUND_TYPES],
+    /// `comp_dist[COMPOUND_TYPES]`
+    pub dist: [i64; COMPOUND_TYPES],
+    /// `comp_model_rate[COMPOUND_TYPES]`
+    pub model_rate: [i32; COMPOUND_TYPES],
+    /// `comp_model_dist[COMPOUND_TYPES]`
+    pub model_dist: [i64; COMPOUND_TYPES],
+    /// `comp_rs2[COMPOUND_TYPES]`
+    pub rs2: [i32; COMPOUND_TYPES],
+}
+
+impl Default for CompTypeCosts {
+    /// `av1_compound_type_rd`'s initialisers (compound_type.c:1264-1272).
+    fn default() -> Self {
+        Self {
+            rate: [i32::MAX; COMPOUND_TYPES],
+            dist: [i64::MAX; COMPOUND_TYPES],
+            model_rate: [i32::MAX; COMPOUND_TYPES],
+            model_dist: [i64::MAX; COMPOUND_TYPES],
+            rs2: [i32::MAX; COMPOUND_TYPES],
+        }
+    }
+}
+
+impl CompTypeCosts {
+    /// `backup_stats` (compound_type.c:1044): record one finished type's true
+    /// rate/dist, its modelled pair, and the mask-signalling rate.
+    pub fn backup(
+        &mut self,
+        ty: CompoundType,
+        rd_rate: i32,
+        rd_dist: i64,
+        model_rate: i32,
+        model_dist: i64,
+        rs2: i32,
+    ) {
+        let i = ty.index();
+        self.rate[i] = rd_rate;
+        self.dist[i] = rd_dist;
+        self.model_rate[i] = model_rate;
+        self.model_dist[i] = model_dist;
+        self.rs2[i] = rs2;
+    }
+}
+
+/// `COMP_RD_STATS` (`block.h:301`) — one cached compound search.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CompRdStats {
+    /// The five per-type cost arrays.
+    pub costs: CompTypeCosts,
+    /// `mv[2]`.
+    pub mv: [Mv; 2],
+    /// `ref_frames[2]` (`MV_REFERENCE_FRAME`, `NONE_FRAME == -1`).
+    pub ref_frames: [i8; 2],
+    /// `mode`.
+    pub mode: PredMode,
+    /// `filter` — `int_interpfilters::as_int`, compared as a whole word.
+    pub filter: u32,
+    /// `ref_mv_idx`.
+    pub ref_mv_idx: i32,
+    /// `is_global[2]`, as `is_global_mv_block` computed it when stored.
+    pub is_global: [bool; 2],
+    /// `interinter_comp`.
+    pub interinter_comp: InterInterComp,
+}
+
+/// The block state `is_comp_rd_match` compares a cached entry against —
+/// `xd->mi[0]` plus the two references' warp models.
+#[derive(Clone, Copy, Debug)]
+pub struct CompRdBlock {
+    /// `mi->interp_filters.as_int`.
+    pub filter: u32,
+    /// `mi->ref_frame[2]`.
+    pub ref_frames: [i8; 2],
+    /// `mi->mv[2]`.
+    pub mv: [Mv; 2],
+    /// `mi->mode`.
+    pub mode: PredMode,
+    /// `mi->bsize`.
+    pub bsize: usize,
+    /// `xd->global_motion[mi->ref_frame[i]].wmtype`, per reference.
+    pub wmtype: [TransformationType; 2],
+}
+
+/// The two speed-feature flags that widen what the cache may replay.
+#[derive(Clone, Copy, Debug)]
+pub struct CompRdReuseCfg {
+    /// `cpi->sf.inter_sf.disable_interinter_wedge_newmv_search`.
+    pub disable_interinter_wedge_newmv_search: bool,
+    /// `cpi->sf.inter_sf.enable_fast_compound_mode_search`.
+    pub enable_fast_compound_mode_search: bool,
+}
+
+/// `is_comp_rd_match` (compound_type.c:32): does this cached entry describe
+/// the same compound search, and if so which of its per-type costs still hold?
+///
+/// On a match the reusable entries are copied into `out` and `true` is
+/// returned; on a mismatch `out` is untouched, exactly as C leaves the
+/// caller's arrays alone when it returns 0.
+///
+/// # The reuse mask is per compound type, not all-or-nothing
+/// `COMPOUND_AVERAGE` and `COMPOUND_DISTWTD` are always replayable — their
+/// cost does not depend on a mask search. `COMPOUND_WEDGE` and
+/// `COMPOUND_DIFFWTD` are only replayable when no motion re-search would have
+/// happened, which is what the two `have_newmv` tests and the two speed flags
+/// establish. Getting that mask wrong is silent: the search still runs and
+/// still produces a decision, just one derived from another block's numbers.
+pub fn is_comp_rd_match(
+    cfg: &CompRdReuseCfg,
+    st: &CompRdStats,
+    mi: &CompRdBlock,
+    out: &mut CompTypeCosts,
+) -> bool {
+    // The interpolation filter is compared as one packed word, as C does.
+    if st.filter != mi.filter {
+        return false;
+    }
+    for i in 0..2 {
+        if st.ref_frames[i] != mi.ref_frames[i] || st.mv[i] != mi.mv[i] {
+            return false;
+        }
+        if is_global_mv_block(mi.mode, mi.bsize, mi.wmtype[i]) != st.is_global[i] {
+            return false;
+        }
+    }
+
+    let mut reuse = [true, true, false, false];
+    let no_newmv_either_side = !mi.mode.have_newmv() && !st.mode.have_newmv();
+    if no_newmv_either_side || cfg.disable_interinter_wedge_newmv_search {
+        reuse[CompoundType::Wedge.index()] = true;
+    }
+    if cfg.enable_fast_compound_mode_search || no_newmv_either_side {
+        reuse[CompoundType::DiffWtd.index()] = true;
+    }
+
+    for ty in CompoundType::ALL {
+        let i = ty.index();
+        if reuse[i] {
+            out.rate[i] = st.costs.rate[i];
+            out.dist[i] = st.costs.dist[i];
+            out.model_rate[i] = st.costs.model_rate[i];
+            out.model_dist[i] = st.costs.model_dist[i];
+            out.rs2[i] = st.costs.rs2[i];
+        }
+    }
+    true
+}
+
+/// `find_comp_rd_in_stats` (compound_type.c:85): the first cached entry that
+/// matches, if any. C returns a flag plus an out-parameter index; Rust returns
+/// the index directly.
+pub fn find_comp_rd_in_stats(
+    cfg: &CompRdReuseCfg,
+    stats: &[CompRdStats],
+    mi: &CompRdBlock,
+    out: &mut CompTypeCosts,
+) -> Option<usize> {
+    stats
+        .iter()
+        .position(|st| is_comp_rd_match(cfg, st, mi, out))
+}
+
+/// `save_comp_rd_search_stat` (compound_type.c:997): append this search to the
+/// cache, or drop it once the cache is full.
+///
+/// C's guard is `offset < MAX_COMP_RD_STATS` on a counter it increments only
+/// on success, so a full cache silently stops recording rather than evicting.
+/// Returns whether the entry was stored.
+#[allow(clippy::too_many_arguments)]
+pub fn save_comp_rd_search_stat(
+    stats: &mut Vec<CompRdStats>,
+    costs: &CompTypeCosts,
+    mv: [Mv; 2],
+    ref_frames: [i8; 2],
+    mode: PredMode,
+    filter: u32,
+    ref_mv_idx: i32,
+    bsize: usize,
+    wmtype: [TransformationType; 2],
+    interinter_comp: InterInterComp,
+) -> bool {
+    if stats.len() >= MAX_COMP_RD_STATS {
+        return false;
+    }
+    stats.push(CompRdStats {
+        costs: *costs,
+        mv,
+        ref_frames,
+        mode,
+        filter,
+        ref_mv_idx,
+        is_global: [
+            is_global_mv_block(mode, bsize, wmtype[0]),
+            is_global_mv_block(mode, bsize, wmtype[1]),
+        ],
+        interinter_comp,
+    });
+    true
+}
+
+/// What the search tracks about the winning compound type.
+/// `BEST_COMP_TYPE_STATS` (`compound_type.h:23`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct BestCompTypeStats {
+    /// `best_compound_data`.
+    pub best_compound_data: InterInterComp,
+    /// `comp_best_model_rd`.
+    pub comp_best_model_rd: i64,
+    /// `best_compmode_interinter_cost`.
+    pub best_compmode_interinter_cost: i32,
+}
+
+impl Default for BestCompTypeStats {
+    /// `av1_compound_type_rd`'s initialiser (compound_type.c:1245-1248).
+    fn default() -> Self {
+        Self {
+            best_compound_data: InterInterComp::default(),
+            comp_best_model_rd: i64::MAX,
+            best_compmode_interinter_cost: 0,
+        }
+    }
+}
+
+impl BestCompTypeStats {
+    /// `update_best_info` (compound_type.c:1005).
+    pub fn update(
+        &mut self,
+        rd: &mut i64,
+        interinter_comp: InterInterComp,
+        best_rd_cur: i64,
+        comp_model_rd_cur: i64,
+        rs2: i32,
+    ) {
+        *rd = best_rd_cur;
+        self.comp_best_model_rd = comp_model_rd_cur;
+        self.best_compound_data = interinter_comp;
+        self.best_compmode_interinter_cost = rs2;
+    }
+}
+
+/// `update_mask_best_mv` (compound_type.c:1016): remember the MVs a masked
+/// type's own motion search settled on, so the caller can restore them once
+/// the type loop has finished perturbing `mbmi`.
+#[inline]
+pub fn update_mask_best_mv(
+    mbmi_mv: [Mv; 2],
+    best_mv: &mut [Mv; 2],
+    best_tmp_rate_mv: &mut i32,
+    tmp_rate_mv: i32,
+) {
+    *best_tmp_rate_mv = tmp_rate_mv;
+    *best_mv = mbmi_mv;
+}
+
+/// What [`populate_reuse_comp_type_data`] decided.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ReuseDecision {
+    /// The function's return value: the compound-mode signalling cost the
+    /// caller adds to the block's rate.
+    pub compmode_interinter_cost: i32,
+    /// `Some` when the cached entry was usable — the winning type, the
+    /// mask parameters and MVs to write into `mbmi`, and the RD to report.
+    pub applied: Option<ReuseApplied>,
+}
+
+/// The mbmi update a successful reuse implies.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ReuseApplied {
+    /// `mbmi->interinter_comp.type` and the two flags derived from it.
+    pub winner: CompoundType,
+    /// `mbmi->interinter_comp` copied wholesale from the cached entry.
+    pub interinter_comp: InterInterComp,
+    /// `mbmi->mv[2]`, restored from `cur_mv`.
+    pub mv: [Mv; 2],
+    /// `*rd`.
+    pub rd: i64,
+}
+
+/// `populate_reuse_comp_type_data` (compound_type.c:962): replay a matched
+/// cache entry instead of searching.
+///
+/// The early return is the subtle part: if the cached WINNER's rate was never
+/// filled in (`INT_MAX`), C returns `best_type_stats->best_compmode_interinter_cost`
+/// — which at that point is still its initial **0** — and leaves `*rd` at
+/// `INT64_MAX` and `mbmi` untouched. That is a "reuse produced nothing" answer
+/// that looks like a cost of zero, so it is modelled as `applied: None` rather
+/// than silently returning the same integer as a successful reuse of a
+/// zero-cost type.
+pub fn populate_reuse_comp_type_data(
+    rdmult: i32,
+    st: &CompRdStats,
+    costs: &CompTypeCosts,
+    cur_mv: [Mv; 2],
+    rate_mv: i32,
+    best_type_stats: &BestCompTypeStats,
+) -> ReuseDecision {
+    let winner = st.interinter_comp.ty;
+    let i = winner.index();
+    if costs.rate[i] == i32::MAX {
+        return ReuseDecision {
+            compmode_interinter_cost: best_type_stats.best_compmode_interinter_cost,
+            applied: None,
+        };
+    }
+    let rd = crate::rd::rdcost(
+        rdmult,
+        costs.rs2[i] + rate_mv + costs.rate[i],
+        costs.dist[i],
+    );
+    ReuseDecision {
+        compmode_interinter_cost: costs.rs2[i],
+        applied: Some(ReuseApplied {
+            winner,
+            interinter_comp: st.interinter_comp,
+            mv: cur_mv,
+            rd,
+        }),
+    }
 }

@@ -891,3 +891,607 @@ fn pick_interintra_wedge_matches_c() {
         distinct_indices.len()
     );
 }
+
+// ===================================================================
+// The compound-RD reuse cache (compound_type.c:32-101, :955-1057).
+//
+// | test | C function |
+// |---|---|
+// | `is_comp_rd_match_matches_c` | `is_comp_rd_match` `:32` |
+// | `find_comp_rd_in_stats_matches_c` | `find_comp_rd_in_stats` `:85` |
+// | `save_comp_rd_search_stat_matches_c` | `save_comp_rd_search_stat` `:997` |
+// | `backup_stats_matches_c` | `backup_stats` `:1044` |
+// | `update_best_info_matches_c` | `update_best_info` `:1005` |
+// | `update_mask_best_mv_matches_c` | `update_mask_best_mv` `:1016` |
+// | `populate_reuse_comp_type_data_matches_c` | `populate_reuse_comp_type_data` `:962` |
+// ===================================================================
+
+use aom_encode::compound_type::{
+    BestCompTypeStats, CompRdBlock, CompRdReuseCfg, CompRdStats, CompTypeCosts, InterInterComp,
+    MAX_COMP_RD_STATS, TransformationType, find_comp_rd_in_stats, is_comp_rd_match,
+    populate_reuse_comp_type_data, save_comp_rd_search_stat, update_mask_best_mv,
+};
+use aom_encode::rdopt_mv::{Mv, PredMode};
+
+const WMTYPES: [TransformationType; 4] = [
+    TransformationType::Identity,
+    TransformationType::Translation,
+    TransformationType::RotZoom,
+    TransformationType::Affine,
+];
+
+/// Pack a [`CompTypeCosts`] the way the shim expects: `rate ++ model_rate ++
+/// rs2` and `dist ++ model_dist`.
+fn pack_costs(c: &CompTypeCosts) -> ([i32; 12], [i64; 8]) {
+    let mut a = [0i32; 12];
+    let mut b = [0i64; 8];
+    for i in 0..COMPOUND_TYPES {
+        a[i] = c.rate[i];
+        a[COMPOUND_TYPES + i] = c.model_rate[i];
+        a[2 * COMPOUND_TYPES + i] = c.rs2[i];
+        b[i] = c.dist[i];
+        b[COMPOUND_TYPES + i] = c.model_dist[i];
+    }
+    (a, b)
+}
+
+fn unpack_costs(a: &[i32; 12], b: &[i64; 8]) -> CompTypeCosts {
+    let mut c = CompTypeCosts::default();
+    for i in 0..COMPOUND_TYPES {
+        c.rate[i] = a[i];
+        c.model_rate[i] = a[COMPOUND_TYPES + i];
+        c.rs2[i] = a[2 * COMPOUND_TYPES + i];
+        c.dist[i] = b[i];
+        c.model_dist[i] = b[COMPOUND_TYPES + i];
+    }
+    c
+}
+
+/// A cost set with values in every slot (never a sentinel), so a reuse that
+/// copies the wrong slot is visible.
+fn rand_costs(rng: &mut Rng) -> CompTypeCosts {
+    let mut c = CompTypeCosts::default();
+    for i in 0..COMPOUND_TYPES {
+        c.rate[i] = rng.range(0, 1 << 16);
+        c.model_rate[i] = rng.range(0, 1 << 16);
+        c.rs2[i] = rng.range(0, 1 << 14);
+        c.dist[i] = i64::from(rng.range(0, 1 << 20));
+        c.model_dist[i] = i64::from(rng.range(0, 1 << 20));
+    }
+    c
+}
+
+fn rand_mv(rng: &mut Rng) -> Mv {
+    Mv {
+        row: rng.range(-64, 64) as i16,
+        col: rng.range(-64, 64) as i16,
+    }
+}
+
+fn pack_stats(st: &CompRdStats) -> ([i32; 12], [i64; 8], [i16; 4], [i32; 11]) {
+    let (a, b) = pack_costs(&st.costs);
+    let mv = [st.mv[0].row, st.mv[0].col, st.mv[1].row, st.mv[1].col];
+    let meta = [
+        i32::from(st.ref_frames[0]),
+        i32::from(st.ref_frames[1]),
+        st.mode.to_i32(),
+        st.filter as i32,
+        st.ref_mv_idx,
+        i32::from(st.is_global[0]),
+        i32::from(st.is_global[1]),
+        st.interinter_comp.wedge_index as i32,
+        st.interinter_comp.wedge_sign as i32,
+        match st.interinter_comp.mask_type {
+            DiffwtdMaskType::Diffwtd38 => 0,
+            DiffwtdMaskType::Diffwtd38Inv => 1,
+        },
+        st.interinter_comp.ty.index() as i32,
+    ];
+    (a, b, mv, meta)
+}
+
+fn pack_mi(mi: &CompRdBlock) -> ([i16; 4], [i32; 7]) {
+    let mv = [mi.mv[0].row, mi.mv[0].col, mi.mv[1].row, mi.mv[1].col];
+    let meta = [
+        i32::from(mi.ref_frames[0]),
+        i32::from(mi.ref_frames[1]),
+        mi.mode.to_i32(),
+        mi.filter as i32,
+        mi.bsize as i32,
+        mi.wmtype[0] as i32,
+        mi.wmtype[1] as i32,
+    ];
+    (mv, meta)
+}
+
+/// A (cached entry, current block) pair that agrees on `n_agree` of the four
+/// things `is_comp_rd_match` compares, so both the match and every distinct
+/// mismatch are reachable.
+#[allow(clippy::type_complexity)]
+fn rand_pair(rng: &mut Rng) -> (CompRdStats, CompRdBlock) {
+    // Compound blocks always have two real references; bsize is drawn from
+    // both sides of `is_global_mv_block`'s `min(w,h) >= 8` gate.
+    let rf = [rng.range(1, 5) as i8, rng.range(5, 8) as i8];
+    let mv = [rand_mv(rng), rand_mv(rng)];
+    let filter = rng.range(0, 3) as u32;
+    let bsize = rng.range(0, 22) as usize;
+    let mode = PredMode::from_i32(rng.range(13, MB_MODE_COUNT)).expect("inter mode");
+    let wmtype = [
+        WMTYPES[(rng.next() % 4) as usize],
+        WMTYPES[(rng.next() % 4) as usize],
+    ];
+    let mi = CompRdBlock {
+        filter,
+        ref_frames: rf,
+        mv,
+        mode,
+        bsize,
+        wmtype,
+    };
+
+    // The stored entry starts as an exact match and is then perturbed in one
+    // of the five ways the comparison can fail (or not at all).
+    let mut st = CompRdStats {
+        costs: rand_costs(rng),
+        mv,
+        ref_frames: rf,
+        mode: PredMode::from_i32(rng.range(13, MB_MODE_COUNT)).expect("inter mode"),
+        filter,
+        ref_mv_idx: rng.range(0, 3),
+        is_global: [
+            aom_encode::compound_type::is_global_mv_block(mode, bsize, wmtype[0]),
+            aom_encode::compound_type::is_global_mv_block(mode, bsize, wmtype[1]),
+        ],
+        interinter_comp: InterInterComp::default(),
+    };
+    match rng.next() % 6 {
+        0 => st.filter = st.filter.wrapping_add(1),
+        1 => st.ref_frames[0] = st.ref_frames[0].wrapping_add(1),
+        2 => st.mv[1].row = st.mv[1].row.wrapping_add(1),
+        3 => st.is_global[0] = !st.is_global[0],
+        4 => st.is_global[1] = !st.is_global[1],
+        _ => {}
+    }
+    (st, mi)
+}
+
+#[test]
+fn is_comp_rd_match_matches_c() {
+    let mut rng = Rng(0x5EED_0C20);
+    let (mut matches, mut n) = (0usize, 0usize);
+    for _ in 0..4000 {
+        let (st, mi) = rand_pair(&mut rng);
+        for dis_wedge in [false, true] {
+            for fast in [false, true] {
+                let cfg = CompRdReuseCfg {
+                    disable_interinter_wedge_newmv_search: dis_wedge,
+                    enable_fast_compound_mode_search: fast,
+                };
+                // Both sides start from the SAME partly-filled cost arrays, so
+                // a reuse that copies too much or too little shows up.
+                let seed = rand_costs(&mut rng);
+                let mut port_out = seed;
+                let (mut c_i32, mut c_i64) = pack_costs(&seed);
+                let (st_i32, st_i64, st_mv, st_meta) = pack_stats(&st);
+                let (mi_mv, mi_meta) = pack_mi(&mi);
+
+                let got = is_comp_rd_match(&cfg, &st, &mi, &mut port_out);
+                let want = cref::ref_ct_is_comp_rd_match(
+                    dis_wedge, fast, &st_i32, &st_i64, &st_mv, &st_meta, &mi_mv, &mi_meta,
+                    &mut c_i32, &mut c_i64,
+                );
+                assert_eq!(got, want, "is_comp_rd_match verdict");
+                assert_eq!(
+                    port_out,
+                    unpack_costs(&c_i32, &c_i64),
+                    "is_comp_rd_match reuse mask (dis_wedge={dis_wedge}, fast={fast})"
+                );
+                matches += usize::from(want);
+                n += 1;
+            }
+        }
+    }
+    assert!(matches > 0 && matches < n, "vacuous: {matches}/{n} matched");
+}
+
+#[test]
+fn find_comp_rd_in_stats_matches_c() {
+    let mut rng = Rng(0x5EED_0C21);
+    let (mut hits, mut n) = (0usize, 0usize);
+    for _ in 0..600 {
+        let cfg = CompRdReuseCfg {
+            disable_interinter_wedge_newmv_search: rng.next() % 2 == 0,
+            enable_fast_compound_mode_search: rng.next() % 2 == 0,
+        };
+        let (probe_st, mi) = rand_pair(&mut rng);
+        // A short cache with the probe entry somewhere in it, so the FIRST
+        // match rather than any match is what the position test checks.
+        let len = (rng.next() % 5) as usize;
+        let mut stats: Vec<CompRdStats> = (0..len).map(|_| rand_pair(&mut rng).0).collect();
+        let at = if len == 0 {
+            0
+        } else {
+            (rng.next() as usize) % (len + 1)
+        };
+        stats.insert(at.min(stats.len()), probe_st);
+
+        let seed = rand_costs(&mut rng);
+        let mut port_out = seed;
+        let got = find_comp_rd_in_stats(&cfg, &stats, &mi, &mut port_out);
+
+        // The oracle has no whole-cache entry point (`find_comp_rd_in_stats`
+        // walks `x->comp_rd_stats`, which a shim would have to fill entry by
+        // entry anyway), so the reference scan is `is_comp_rd_match` — the
+        // REAL C function — applied in the same order.
+        let mut want: Option<usize> = None;
+        let mut want_costs = seed;
+        for (j, st) in stats.iter().enumerate() {
+            let (a, b) = pack_costs(&want_costs);
+            let (mut c_i32, mut c_i64) = (a, b);
+            let (st_i32, st_i64, st_mv, st_meta) = pack_stats(st);
+            let (mi_mv, mi_meta) = pack_mi(&mi);
+            let m = cref::ref_ct_is_comp_rd_match(
+                cfg.disable_interinter_wedge_newmv_search,
+                cfg.enable_fast_compound_mode_search,
+                &st_i32,
+                &st_i64,
+                &st_mv,
+                &st_meta,
+                &mi_mv,
+                &mi_meta,
+                &mut c_i32,
+                &mut c_i64,
+            );
+            want_costs = unpack_costs(&c_i32, &c_i64);
+            if m {
+                want = Some(j);
+                break;
+            }
+        }
+        assert_eq!(got, want, "find_comp_rd_in_stats index");
+        assert_eq!(port_out, want_costs, "find_comp_rd_in_stats costs");
+        hits += usize::from(want.is_some());
+        n += 1;
+    }
+    assert!(hits > 0 && hits < n, "vacuous: {hits}/{n} found a match");
+}
+
+#[test]
+fn save_comp_rd_search_stat_matches_c() {
+    let mut rng = Rng(0x5EED_0C22);
+    assert_eq!(cref::ref_ct_max_comp_rd_stats() as usize, MAX_COMP_RD_STATS);
+    let mut dropped = 0usize;
+    for start_idx in [0i32, 1, 17, 62, 63, 64, 65] {
+        for _ in 0..40 {
+            let (probe, mi) = rand_pair(&mut rng);
+            let costs = rand_costs(&mut rng);
+            let mv = [rand_mv(&mut rng), rand_mv(&mut rng)];
+            let comp = InterInterComp {
+                wedge_index: (rng.next() % 16) as usize,
+                wedge_sign: (rng.next() % 2) as usize,
+                mask_type: if rng.next() % 2 == 0 {
+                    DiffwtdMaskType::Diffwtd38
+                } else {
+                    DiffwtdMaskType::Diffwtd38Inv
+                },
+                ty: CompoundType::ALL[(rng.next() % 4) as usize],
+            };
+            let ref_mv_idx = rng.range(0, 3);
+            let _ = probe;
+
+            // The port's cache is a Vec whose LENGTH is C's index, so a
+            // `start_idx` past capacity is modelled by a full Vec.
+            let filler = CompRdStats {
+                costs: CompTypeCosts::default(),
+                mv: [Mv { row: 0, col: 0 }; 2],
+                ref_frames: [1, 5],
+                mode: PredMode::NewNewMv,
+                filter: 0,
+                ref_mv_idx: 0,
+                is_global: [false; 2],
+                interinter_comp: InterInterComp::default(),
+            };
+            let mut stats: Vec<CompRdStats> =
+                vec![filler; (start_idx.max(0) as usize).min(MAX_COMP_RD_STATS)];
+            let before = stats.len();
+            let stored = save_comp_rd_search_stat(
+                &mut stats,
+                &costs,
+                mv,
+                mi.ref_frames,
+                mi.mode,
+                mi.filter,
+                ref_mv_idx,
+                mi.bsize,
+                mi.wmtype,
+                comp,
+            );
+
+            let (a, b) = pack_costs(&costs);
+            let mvp = [mv[0].row, mv[0].col, mv[1].row, mv[1].col];
+            let (mi_mv, mi_meta) = pack_mi(&mi);
+            let comp_meta = [
+                comp.wedge_index as i32,
+                comp.wedge_sign as i32,
+                match comp.mask_type {
+                    DiffwtdMaskType::Diffwtd38 => 0,
+                    DiffwtdMaskType::Diffwtd38Inv => 1,
+                },
+                comp.ty.index() as i32,
+            ];
+            let (new_idx, entry) = cref::ref_ct_save_comp_rd_search_stat(
+                start_idx, &a, &b, &mvp, &mi_mv, &mi_meta, &comp_meta, ref_mv_idx,
+            );
+            assert_eq!(
+                stored,
+                entry.is_some(),
+                "save_comp_rd_search_stat stored? (start_idx={start_idx})"
+            );
+            assert_eq!(
+                stats.len() as i32,
+                new_idx
+                    .max(0)
+                    .min(MAX_COMP_RD_STATS as i32 + 1)
+                    .min(if entry.is_some() {
+                        new_idx
+                    } else {
+                        before as i32
+                    }),
+                "cache length tracks C's comp_rd_stats_idx (start_idx={start_idx})"
+            );
+            if let Some((meta, ei32, ei64, emv)) = entry {
+                let got = stats.last().expect("stored entry");
+                let (g32, g64, gmv, gmeta) = pack_stats(got);
+                assert_eq!(
+                    (g32, g64, gmv, gmeta),
+                    (ei32, ei64, emv, meta),
+                    "stored COMP_RD_STATS (start_idx={start_idx})"
+                );
+            } else {
+                dropped += 1;
+            }
+        }
+    }
+    assert!(dropped > 0, "the cache-full arm was never reached");
+}
+
+#[test]
+fn backup_stats_matches_c() {
+    let mut rng = Rng(0x5EED_0C23);
+    for _ in 0..3000 {
+        for ty in CompoundType::ALL {
+            let mut port = rand_costs(&mut rng);
+            let (mut a, mut b) = pack_costs(&port);
+            let rate_sum = rng.range(0, 1 << 16);
+            let dist_sum = i64::from(rng.range(0, 1 << 20));
+            let rd_rate = rng.range(0, 1 << 16);
+            let rd_dist = i64::from(rng.range(0, 1 << 20));
+            let rs2 = rng.range(0, 1 << 14);
+            port.backup(ty, rd_rate, rd_dist, rate_sum, dist_sum, rs2);
+            cref::ref_ct_backup_stats(
+                ty.index() as i32,
+                &mut a,
+                &mut b,
+                rate_sum,
+                dist_sum,
+                rd_rate,
+                rd_dist,
+                rs2,
+            );
+            assert_eq!(port, unpack_costs(&a, &b), "backup_stats({ty:?})");
+        }
+    }
+}
+
+#[test]
+fn update_best_info_matches_c() {
+    let mut rng = Rng(0x5EED_0C24);
+    for _ in 0..3000 {
+        let mbmi_comp = InterInterComp {
+            wedge_index: (rng.next() % 16) as usize,
+            wedge_sign: (rng.next() % 2) as usize,
+            mask_type: if rng.next() % 2 == 0 {
+                DiffwtdMaskType::Diffwtd38
+            } else {
+                DiffwtdMaskType::Diffwtd38Inv
+            },
+            ty: CompoundType::ALL[(rng.next() % 4) as usize],
+        };
+        let mut best = BestCompTypeStats::default();
+        best.comp_best_model_rd = i64::from(rng.range(0, 1 << 20));
+        best.best_compmode_interinter_cost = rng.range(0, 1 << 14);
+        let mut rd = i64::from(rng.range(0, 1 << 24));
+        let best_rd_cur = i64::from(rng.range(0, 1 << 24));
+        let model_rd_cur = i64::from(rng.range(0, 1 << 24));
+        let rs2 = rng.range(0, 1 << 14);
+
+        let mbmi_meta = [
+            mbmi_comp.wedge_index as i32,
+            mbmi_comp.wedge_sign as i32,
+            match mbmi_comp.mask_type {
+                DiffwtdMaskType::Diffwtd38 => 0,
+                DiffwtdMaskType::Diffwtd38Inv => 1,
+            },
+            mbmi_comp.ty.index() as i32,
+        ];
+        let best_meta = [
+            best.best_compound_data.wedge_index as i32,
+            best.best_compound_data.wedge_sign as i32,
+            0,
+            best.best_compound_data.ty.index() as i32,
+        ];
+        let (c_rd, c_model, c_meta, c_cost) = cref::ref_ct_update_best_info(
+            &mbmi_meta,
+            rd,
+            best.comp_best_model_rd,
+            &best_meta,
+            best.best_compmode_interinter_cost,
+            best_rd_cur,
+            model_rd_cur,
+            rs2,
+        );
+        best.update(&mut rd, mbmi_comp, best_rd_cur, model_rd_cur, rs2);
+        let got_meta = [
+            best.best_compound_data.wedge_index as i32,
+            best.best_compound_data.wedge_sign as i32,
+            match best.best_compound_data.mask_type {
+                DiffwtdMaskType::Diffwtd38 => 0,
+                DiffwtdMaskType::Diffwtd38Inv => 1,
+            },
+            best.best_compound_data.ty.index() as i32,
+        ];
+        assert_eq!(
+            (
+                rd,
+                best.comp_best_model_rd,
+                got_meta,
+                best.best_compmode_interinter_cost
+            ),
+            (c_rd, c_model, c_meta, c_cost),
+            "update_best_info"
+        );
+    }
+}
+
+#[test]
+fn update_mask_best_mv_matches_c() {
+    let mut rng = Rng(0x5EED_0C25);
+    for _ in 0..3000 {
+        let mbmi_mv = [rand_mv(&mut rng), rand_mv(&mut rng)];
+        let mut best_mv = [rand_mv(&mut rng), rand_mv(&mut rng)];
+        let mut best_rate = rng.range(0, 1 << 14);
+        let tmp_rate = rng.range(0, 1 << 14);
+
+        let c_in_mv = [
+            best_mv[0].row,
+            best_mv[0].col,
+            best_mv[1].row,
+            best_mv[1].col,
+        ];
+        let (c_mv, c_rate) = cref::ref_ct_update_mask_best_mv(
+            &[
+                mbmi_mv[0].row,
+                mbmi_mv[0].col,
+                mbmi_mv[1].row,
+                mbmi_mv[1].col,
+            ],
+            &c_in_mv,
+            best_rate,
+            tmp_rate,
+        );
+        update_mask_best_mv(mbmi_mv, &mut best_mv, &mut best_rate, tmp_rate);
+        assert_eq!(
+            (
+                [
+                    best_mv[0].row,
+                    best_mv[0].col,
+                    best_mv[1].row,
+                    best_mv[1].col
+                ],
+                best_rate
+            ),
+            (c_mv, c_rate),
+            "update_mask_best_mv"
+        );
+    }
+}
+
+#[test]
+fn populate_reuse_comp_type_data_matches_c() {
+    let mut rng = Rng(0x5EED_0C26);
+    let (mut applied, mut n) = (0usize, 0usize);
+    for _ in 0..4000 {
+        let winner = CompoundType::ALL[(rng.next() % 4) as usize];
+        let mut costs = rand_costs(&mut rng);
+        // One case in three leaves the winner's rate at its INT_MAX sentinel,
+        // which is the "reuse produced nothing" arm.
+        if rng.next() % 3 == 0 {
+            costs.rate[winner.index()] = i32::MAX;
+        }
+        let st = CompRdStats {
+            costs,
+            mv: [rand_mv(&mut rng), rand_mv(&mut rng)],
+            ref_frames: [1, 5],
+            mode: PredMode::NewNewMv,
+            filter: 0,
+            ref_mv_idx: 0,
+            is_global: [false; 2],
+            interinter_comp: InterInterComp {
+                wedge_index: (rng.next() % 16) as usize,
+                wedge_sign: (rng.next() % 2) as usize,
+                mask_type: if rng.next() % 2 == 0 {
+                    DiffwtdMaskType::Diffwtd38
+                } else {
+                    DiffwtdMaskType::Diffwtd38Inv
+                },
+                ty: winner,
+            },
+        };
+        let cur_mv = [rand_mv(&mut rng), rand_mv(&mut rng)];
+        let rate_mv = rng.range(0, 1 << 14);
+        let best = BestCompTypeStats {
+            best_compmode_interinter_cost: rng.range(0, 1 << 14),
+            ..BestCompTypeStats::default()
+        };
+        let rdmult = rng.range(1, 1 << 14);
+
+        let got = populate_reuse_comp_type_data(rdmult, &st, &costs, cur_mv, rate_mv, &best);
+
+        let (_, _, _, st_meta) = pack_stats(&st);
+        let (a, b) = pack_costs(&costs);
+        let cur = [cur_mv[0].row, cur_mv[0].col, cur_mv[1].row, cur_mv[1].col];
+        let (c_ret, c_rd, c_meta, c_mv, c_flags) = cref::ref_ct_populate_reuse_comp_type_data(
+            rdmult,
+            &st_meta,
+            &a,
+            &b,
+            &cur,
+            rate_mv,
+            best.best_compmode_interinter_cost,
+            i64::MAX,
+        );
+        assert_eq!(
+            got.compmode_interinter_cost, c_ret,
+            "populate_reuse_comp_type_data return"
+        );
+        match got.applied {
+            None => {
+                // C leaves *rd and mbmi untouched on this arm.
+                assert_eq!(c_rd, i64::MAX, "the no-reuse arm must not set *rd");
+            }
+            Some(app) => {
+                assert_eq!(app.rd, c_rd, "reused rd");
+                assert_eq!(app.winner.index() as i32, c_meta[3], "winner type");
+                assert_eq!(
+                    [
+                        app.interinter_comp.wedge_index as i32,
+                        app.interinter_comp.wedge_sign as i32,
+                        match app.interinter_comp.mask_type {
+                            DiffwtdMaskType::Diffwtd38 => 0,
+                            DiffwtdMaskType::Diffwtd38Inv => 1,
+                        },
+                        app.interinter_comp.ty.index() as i32,
+                    ],
+                    c_meta,
+                    "mbmi->interinter_comp after reuse"
+                );
+                assert_eq!(
+                    [app.mv[0].row, app.mv[0].col, app.mv[1].row, app.mv[1].col],
+                    c_mv,
+                    "mbmi->mv after reuse"
+                );
+                assert_eq!(
+                    [
+                        i32::from(app.winner.comp_group_idx()),
+                        i32::from(app.winner.compound_idx())
+                    ],
+                    c_flags,
+                    "comp_group_idx / compound_idx after reuse"
+                );
+                applied += 1;
+            }
+        }
+        n += 1;
+    }
+    assert!(applied > 0 && applied < n, "vacuous: {applied}/{n} reused");
+}

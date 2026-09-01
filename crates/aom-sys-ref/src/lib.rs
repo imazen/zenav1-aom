@@ -21881,3 +21881,280 @@ pub fn ref_tpl_get_q_index(
     assert!(r == 0, "shim_tpl_get_q_index allocation failed");
     out
 }
+
+// --- compound_type.c: the compound-RD reuse cache (:32-101, :955-1057) -----
+//
+// `COMP_RD_STATS` crosses as flat arrays so the Rust side never reproduces a
+// C struct layout. Per entry:
+//   `i32[12]`  = rate[4] ++ model_rate[4] ++ comp_rs2[4]
+//   `i64[8]`   = dist[4] ++ model_dist[4]
+//   `mv[4]`    = {mv0.row, mv0.col, mv1.row, mv1.col}
+//   `meta[11]` = ref_frames[2], mode, filter, ref_mv_idx, is_global[2],
+//                wedge_index, wedge_sign, mask_type, comp type
+// and `mi_meta[7]` = ref_frames[2], mode, filter, bsize, wmtype[2].
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_is_comp_rd_match(
+        disable_interinter_wedge_newmv_search: i32,
+        enable_fast_compound_mode_search: i32,
+        st_i32: *const i32,
+        st_i64: *const i64,
+        st_mv: *const i16,
+        st_meta: *const i32,
+        mi_mv: *const i16,
+        mi_meta: *const i32,
+        io_i32: *mut i32,
+        io_i64: *mut i64,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_save_comp_rd_search_stat(
+        start_idx: i32,
+        i32v: *const i32,
+        i64v: *const i64,
+        mv: *const i16,
+        mi_mv: *const i16,
+        mi_meta: *const i32,
+        comp_meta: *const i32,
+        ref_mv_idx: i32,
+        out_meta: *mut i32,
+        out_i32: *mut i32,
+        out_i64: *mut i64,
+        out_mv: *mut i16,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_backup_stats(
+        cur_type: i32,
+        io_i32: *mut i32,
+        io_i64: *mut i64,
+        rate_sum: i32,
+        dist_sum: i64,
+        rd_rate: i32,
+        rd_dist: i64,
+        rs2: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_update_best_info(
+        comp_meta: *const i32,
+        io_rd: *mut i64,
+        io_model_rd: *mut i64,
+        io_comp_meta: *mut i32,
+        io_cost: *mut i32,
+        best_rd_cur: i64,
+        comp_model_rd_cur: i64,
+        rs2: i32,
+    );
+    fn shim_ct_update_mask_best_mv(
+        mbmi_mv: *const i16,
+        best_mv: *mut i16,
+        best_tmp_rate_mv: *mut i32,
+        tmp_rate_mv: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_populate_reuse_comp_type_data(
+        rdmult: i32,
+        st_meta: *const i32,
+        io_i32: *const i32,
+        io_i64: *const i64,
+        cur_mv: *const i16,
+        rate_mv: i32,
+        best_compmode_interinter_cost: i32,
+        io_rd: *mut i64,
+        out_comp_meta: *mut i32,
+        out_mv: *mut i16,
+        out_flags: *mut i32,
+    ) -> i32;
+    fn shim_ct_max_comp_rd_stats() -> i32;
+}
+
+/// Reference `is_comp_rd_match` (compound_type.c:32). `io_i32` / `io_i64` are
+/// the caller's cost arrays, updated in place on a match.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_ct_is_comp_rd_match(
+    disable_interinter_wedge_newmv_search: bool,
+    enable_fast_compound_mode_search: bool,
+    st_i32: &[i32; 12],
+    st_i64: &[i64; 8],
+    st_mv: &[i16; 4],
+    st_meta: &[i32; 11],
+    mi_mv: &[i16; 4],
+    mi_meta: &[i32; 7],
+    io_i32: &mut [i32; 12],
+    io_i64: &mut [i64; 8],
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_ct_is_comp_rd_match(
+            i32::from(disable_interinter_wedge_newmv_search),
+            i32::from(enable_fast_compound_mode_search),
+            st_i32.as_ptr(),
+            st_i64.as_ptr(),
+            st_mv.as_ptr(),
+            st_meta.as_ptr(),
+            mi_mv.as_ptr(),
+            mi_meta.as_ptr(),
+            io_i32.as_mut_ptr(),
+            io_i64.as_mut_ptr(),
+        ) != 0
+    }
+}
+
+/// Reference `save_comp_rd_search_stat` (compound_type.c:997). Returns
+/// `(new_idx, stored_entry)`; `stored_entry` is `None` when the cache was full.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn ref_ct_save_comp_rd_search_stat(
+    start_idx: i32,
+    i32v: &[i32; 12],
+    i64v: &[i64; 8],
+    mv: &[i16; 4],
+    mi_mv: &[i16; 4],
+    mi_meta: &[i32; 7],
+    comp_meta: &[i32; 4],
+    ref_mv_idx: i32,
+) -> (i32, Option<([i32; 11], [i32; 12], [i64; 8], [i16; 4])>) {
+    ref_init();
+    let mut out_meta = [0i32; 11];
+    let mut out_i32 = [0i32; 12];
+    let mut out_i64 = [0i64; 8];
+    let mut out_mv = [0i16; 4];
+    let new_idx = unsafe {
+        shim_ct_save_comp_rd_search_stat(
+            start_idx,
+            i32v.as_ptr(),
+            i64v.as_ptr(),
+            mv.as_ptr(),
+            mi_mv.as_ptr(),
+            mi_meta.as_ptr(),
+            comp_meta.as_ptr(),
+            ref_mv_idx,
+            out_meta.as_mut_ptr(),
+            out_i32.as_mut_ptr(),
+            out_i64.as_mut_ptr(),
+            out_mv.as_mut_ptr(),
+        )
+    };
+    let stored = if new_idx > start_idx {
+        Some((out_meta, out_i32, out_i64, out_mv))
+    } else {
+        None
+    };
+    (new_idx, stored)
+}
+
+/// Reference `backup_stats` (compound_type.c:1044), in place.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_ct_backup_stats(
+    cur_type: i32,
+    io_i32: &mut [i32; 12],
+    io_i64: &mut [i64; 8],
+    rate_sum: i32,
+    dist_sum: i64,
+    rd_rate: i32,
+    rd_dist: i64,
+    rs2: i32,
+) {
+    ref_init();
+    unsafe {
+        shim_ct_backup_stats(
+            cur_type,
+            io_i32.as_mut_ptr(),
+            io_i64.as_mut_ptr(),
+            rate_sum,
+            dist_sum,
+            rd_rate,
+            rd_dist,
+            rs2,
+        );
+    }
+}
+
+/// Reference `update_best_info` (compound_type.c:1005), in place. Returns the
+/// updated `(rd, comp_best_model_rd, best_compound_data, cost)`.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_ct_update_best_info(
+    mbmi_comp_meta: &[i32; 4],
+    rd: i64,
+    model_rd: i64,
+    best_comp_meta: &[i32; 4],
+    cost: i32,
+    best_rd_cur: i64,
+    comp_model_rd_cur: i64,
+    rs2: i32,
+) -> (i64, i64, [i32; 4], i32) {
+    ref_init();
+    let mut rd = rd;
+    let mut model_rd = model_rd;
+    let mut comp_meta = *best_comp_meta;
+    let mut cost = cost;
+    unsafe {
+        shim_ct_update_best_info(
+            mbmi_comp_meta.as_ptr(),
+            &mut rd,
+            &mut model_rd,
+            comp_meta.as_mut_ptr(),
+            &mut cost,
+            best_rd_cur,
+            comp_model_rd_cur,
+            rs2,
+        );
+    }
+    (rd, model_rd, comp_meta, cost)
+}
+
+/// Reference `update_mask_best_mv` (compound_type.c:1016).
+pub fn ref_ct_update_mask_best_mv(
+    mbmi_mv: &[i16; 4],
+    best_mv: &[i16; 4],
+    best_tmp_rate_mv: i32,
+    tmp_rate_mv: i32,
+) -> ([i16; 4], i32) {
+    ref_init();
+    let mut out = *best_mv;
+    let mut rate = best_tmp_rate_mv;
+    unsafe {
+        shim_ct_update_mask_best_mv(mbmi_mv.as_ptr(), out.as_mut_ptr(), &mut rate, tmp_rate_mv);
+    }
+    (out, rate)
+}
+
+/// Reference `populate_reuse_comp_type_data` (compound_type.c:962). Returns
+/// `(return_value, rd, mbmi_comp_meta, mbmi_mv, [comp_group_idx, compound_idx])`.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn ref_ct_populate_reuse_comp_type_data(
+    rdmult: i32,
+    st_meta: &[i32; 11],
+    io_i32: &[i32; 12],
+    io_i64: &[i64; 8],
+    cur_mv: &[i16; 4],
+    rate_mv: i32,
+    best_compmode_interinter_cost: i32,
+    rd_in: i64,
+) -> (i32, i64, [i32; 4], [i16; 4], [i32; 2]) {
+    ref_init();
+    let mut rd = rd_in;
+    let mut comp_meta = [0i32; 4];
+    let mut mv = [0i16; 4];
+    let mut flags = [0i32; 2];
+    let r = unsafe {
+        shim_ct_populate_reuse_comp_type_data(
+            rdmult,
+            st_meta.as_ptr(),
+            io_i32.as_ptr(),
+            io_i64.as_ptr(),
+            cur_mv.as_ptr(),
+            rate_mv,
+            best_compmode_interinter_cost,
+            &mut rd,
+            comp_meta.as_mut_ptr(),
+            mv.as_mut_ptr(),
+            flags.as_mut_ptr(),
+        )
+    };
+    (r, rd, comp_meta, mv, flags)
+}
+
+/// `MAX_COMP_RD_STATS` as the oracle TU sees it.
+pub fn ref_ct_max_comp_rd_stats() -> i32 {
+    ref_init();
+    unsafe { shim_ct_max_comp_rd_stats() }
+}
