@@ -29,6 +29,7 @@ pub mod intrabc_search;
 pub mod compound_type;
 pub mod curvfit_tables;
 pub mod enc_misc;
+pub mod firstpass;
 pub mod global_motion;
 pub mod inter_costs;
 pub mod inter_frame;

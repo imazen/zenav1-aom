@@ -91,6 +91,8 @@ const SHIMS: &[&str] = &[
     "tpl_c_shim",
     "reconinter_enc_shim",
     "rcarchive_shim",
+    "fp_shim",
+    "fp_info_shim",
 ];
 
 /// Shims that need compile flags beyond the default `-O2 ORACLE_FP_CFLAGS`.
@@ -127,6 +129,10 @@ fn extra_shim_cflags(name: &str) -> &'static [&'static str] {
         // and the backward-propagation core is entirely in that half. Same
         // source, so it is built the same way.
         "tpl_c_shim" => &["-O3", "-DNDEBUG"],
+        // fp_shim pulls av1/encoder/firstpass.c in for the same reason: 29 of
+        // its 45 definitions are file-static (only 16 are exported). Same
+        // source, so it is built the same way.
+        "fp_shim" => &["-O3", "-DNDEBUG"],
         // tf_static_shim pulls av1/encoder/temporal_filter.c in for the same
         // reason: its per-block filter body, normalizer, partition decision and
         // self filter are all file-static. Same source, so it is built the same

@@ -25069,3 +25069,488 @@ pub fn ref_rcc_set_gf_interval_range(c: &RefRcInitCfg) -> [i32; 3] {
     assert_eq!(r, 0, "shim_rcc_set_gf_interval_range allocation failed");
     out
 }
+
+// ---------------------------------------------------------------------------
+// firstpass.c — the two-pass first pass.
+//
+// TWO TIERS, in two separate shim TUs, and the split is what keeps them
+// honest. `fp_info_shim.c` does NOT include firstpass.c, so its seven
+// `av1_firstpass_info_*` calls reach the ARCHIVE's symbols — **tier 1**.
+// `fp_shim.c` DOES include firstpass.c (with its 16 exported symbols renamed)
+// to reach the 29 file-statics — **tier 1c**, with a TU-agreement gate.
+// ---------------------------------------------------------------------------
+
+/// `FIRSTPASS_STATS` (firstpass.h:41), laid out exactly as C declares it.
+///
+/// Verified field-by-field against C by
+/// `firstpass_stats_layout_matches_c`, which reads back a per-field ramp the
+/// shim writes through C's own struct.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[allow(missing_docs)]
+pub struct RefFirstpassStats {
+    pub frame: f64,
+    pub weight: f64,
+    pub intra_error: f64,
+    pub frame_avg_wavelet_energy: f64,
+    pub coded_error: f64,
+    pub sr_coded_error: f64,
+    pub lt_coded_error: f64,
+    pub pcnt_inter: f64,
+    pub pcnt_motion: f64,
+    pub pcnt_second_ref: f64,
+    pub pcnt_neutral: f64,
+    pub intra_skip_pct: f64,
+    pub inactive_zone_rows: f64,
+    pub inactive_zone_cols: f64,
+    pub mvr: f64,
+    pub mvr_abs: f64,
+    pub mvc: f64,
+    pub mvc_abs: f64,
+    pub mvrv: f64,
+    pub mvcv: f64,
+    pub mv_in_out_count: f64,
+    pub new_mv_count: f64,
+    pub duration: f64,
+    pub count: f64,
+    pub raw_error_stdev: f64,
+    pub is_flash: i64,
+    pub noise_var: f64,
+    pub cor_coeff: f64,
+    pub log_intra_error: f64,
+    pub log_coded_error: f64,
+}
+
+/// `FRAME_STATS` (firstpass.h:479), laid out exactly as C declares it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[allow(missing_docs)]
+pub struct RefFrameStats {
+    pub intra_error: i64,
+    pub frame_avg_wavelet_energy: i64,
+    pub coded_error: i64,
+    pub sr_coded_error: i64,
+    pub lt_coded_error: i64,
+    pub mv_count: i32,
+    pub inter_count: i32,
+    pub second_ref_count: i32,
+    pub neutral_count: f64,
+    pub intra_skip_count: i32,
+    pub image_data_start_row: i32,
+    pub new_mv_count: i32,
+    pub sum_in_vectors: i32,
+    pub sum_mvr: i32,
+    pub sum_mvc: i32,
+    pub sum_mvr_abs: i32,
+    pub sum_mvc_abs: i32,
+    pub sum_mvrs: i64,
+    pub sum_mvcs: i64,
+    pub intra_factor: f64,
+    pub brightness_factor: f64,
+}
+
+extern "C" {
+    fn shim_fp_stats_size() -> i32;
+    fn shim_fp_frame_stats_size() -> i32;
+    fn shim_fp_stats_layout_probe(s: *mut RefFirstpassStats);
+    fn shim_fp_frame_stats_layout_probe(s: *mut RefFrameStats);
+    fn shim_fp_tu_twopass_zero_stats(s: *mut RefFirstpassStats);
+    fn shim_fp_tu_accumulate_stats(
+        section: *mut RefFirstpassStats,
+        frame: *const RefFirstpassStats,
+    );
+    fn shim_fp_get_unit_rows_in_tile(
+        mi_row_start: i32,
+        mi_row_end: i32,
+        fp_block_size: i32,
+    ) -> i32;
+    fn shim_fp_get_unit_cols_in_tile(
+        mi_col_start: i32,
+        mi_col_end: i32,
+        fp_block_size: i32,
+    ) -> i32;
+    fn shim_fp_get_unit_rows(fp_block_size: i32, mb_rows: i32) -> i32;
+    fn shim_fp_get_unit_cols(fp_block_size: i32, mb_cols: i32) -> i32;
+    fn shim_fp_get_num_mbs(fp_block_size: i32, num_mbs_16x16: i32) -> i32;
+    fn shim_fp_get_search_range(width: i32, height: i32) -> i32;
+    fn shim_fp_find_fp_qindex(bit_depth: i32) -> i32;
+    fn shim_fp_raw_motion_error_stdev(list: *mut i32, count: i32) -> f64;
+    fn shim_fp_normalize_firstpass_stats(
+        fps: *mut RefFirstpassStats,
+        num_mbs_16x16: f64,
+        f_w: f64,
+        f_h: f64,
+    );
+    fn shim_fp_calc_wavelet_energy(deltaq_mode: i32) -> i32;
+    fn shim_fp_accumulate_frame_stats(
+        mb_stats: *mut RefFrameStats,
+        mb_rows: i32,
+        mb_cols: i32,
+        out: *mut RefFrameStats,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_fp_accumulate_mv_stats(
+        best_mv_row: i16,
+        best_mv_col: i16,
+        mv_row: i16,
+        mv_col: i16,
+        mb_row: i32,
+        mb_col: i32,
+        mb_rows: i32,
+        mb_cols: i32,
+        last_non_zero_mv: *mut i16,
+        stats: *mut RefFrameStats,
+    );
+
+    // fp_info_shim.c — tier 1 against the archive.
+    fn shim_fpi_new(
+        use_external: i32,
+        ext_stats: *const RefFirstpassStats,
+        ext_size: i32,
+        out_err: *mut i32,
+    ) -> *mut core::ffi::c_void;
+    fn shim_fpi_free(handle: *mut core::ffi::c_void);
+    fn shim_fpi_push(handle: *mut core::ffi::c_void, stats: *const RefFirstpassStats) -> i32;
+    fn shim_fpi_pop(handle: *mut core::ffi::c_void) -> i32;
+    fn shim_fpi_move_cur_index(handle: *mut core::ffi::c_void) -> i32;
+    fn shim_fpi_move_cur_index_and_pop(handle: *mut core::ffi::c_void) -> i32;
+    fn shim_fpi_peek(
+        handle: *mut core::ffi::c_void,
+        offset_from_cur: i32,
+        out: *mut RefFirstpassStats,
+    ) -> i32;
+    fn shim_fpi_future_count(handle: *mut core::ffi::c_void, offset_from_cur: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_fpi_state(
+        handle: *mut core::ffi::c_void,
+        start_index: *mut i32,
+        stats_count: *mut i32,
+        cur_index: *mut i32,
+        future_stats_count: *mut i32,
+        past_stats_count: *mut i32,
+        stats_buf_size: *mut i32,
+        total_stats: *mut RefFirstpassStats,
+    );
+    fn shim_fpi_codec_ok() -> i32;
+    fn shim_fpi_static_buf_size() -> i32;
+}
+
+/// `sizeof(FIRSTPASS_STATS)` in C.
+#[must_use]
+pub fn ref_fp_stats_size() -> usize {
+    ref_init();
+    unsafe { shim_fp_stats_size() as usize }
+}
+
+/// `sizeof(FRAME_STATS)` in C.
+#[must_use]
+pub fn ref_fp_frame_stats_size() -> usize {
+    ref_init();
+    unsafe { shim_fp_frame_stats_size() as usize }
+}
+
+/// A per-field ramp written through C's own `FIRSTPASS_STATS`.
+#[must_use]
+pub fn ref_fp_stats_layout_probe() -> RefFirstpassStats {
+    ref_init();
+    let mut s = RefFirstpassStats::default();
+    unsafe { shim_fp_stats_layout_probe(&mut s) };
+    s
+}
+
+/// A per-field ramp written through C's own `FRAME_STATS`.
+#[must_use]
+pub fn ref_fp_frame_stats_layout_probe() -> RefFrameStats {
+    ref_init();
+    let mut s = RefFrameStats::default();
+    unsafe { shim_fp_frame_stats_layout_probe(&mut s) };
+    s
+}
+
+/// Reference libaom `av1_twopass_zero_stats` (firstpass.c:91), through
+/// `fp_shim.c`'s copy. Takes the prior value because C does not write every
+/// field.
+#[must_use]
+pub fn ref_fp_twopass_zero_stats(prior: RefFirstpassStats) -> RefFirstpassStats {
+    ref_init();
+    let mut s = prior;
+    unsafe { shim_fp_tu_twopass_zero_stats(&mut s) };
+    s
+}
+
+/// Reference libaom `av1_accumulate_stats` (firstpass.c:123).
+#[must_use]
+pub fn ref_fp_accumulate_stats(
+    section: RefFirstpassStats,
+    frame: &RefFirstpassStats,
+) -> RefFirstpassStats {
+    ref_init();
+    let mut s = section;
+    unsafe { shim_fp_tu_accumulate_stats(&mut s, frame) };
+    s
+}
+
+/// Reference libaom `av1_get_unit_rows_in_tile` (firstpass.c:1105).
+#[must_use]
+pub fn ref_fp_get_unit_rows_in_tile(mi_row_start: i32, mi_row_end: i32, bsize: i32) -> i32 {
+    ref_init();
+    unsafe { shim_fp_get_unit_rows_in_tile(mi_row_start, mi_row_end, bsize) }
+}
+
+/// Reference libaom `av1_get_unit_cols_in_tile` (firstpass.c:1114).
+#[must_use]
+pub fn ref_fp_get_unit_cols_in_tile(mi_col_start: i32, mi_col_end: i32, bsize: i32) -> i32 {
+    ref_init();
+    unsafe { shim_fp_get_unit_cols_in_tile(mi_col_start, mi_col_end, bsize) }
+}
+
+/// Reference libaom `get_unit_rows` (firstpass.c:153, static). **Tier 1c.**
+#[must_use]
+pub fn ref_fp_get_unit_rows(bsize: i32, mb_rows: i32) -> i32 {
+    ref_init();
+    unsafe { shim_fp_get_unit_rows(bsize, mb_rows) }
+}
+
+/// Reference libaom `get_unit_cols` (firstpass.c:163, static). **Tier 1c.**
+#[must_use]
+pub fn ref_fp_get_unit_cols(bsize: i32, mb_cols: i32) -> i32 {
+    ref_init();
+    unsafe { shim_fp_get_unit_cols(bsize, mb_cols) }
+}
+
+/// Reference libaom `get_num_mbs` (firstpass.c:174, static). **Tier 1c.**
+#[must_use]
+pub fn ref_fp_get_num_mbs(bsize: i32, num_mbs_16x16: i32) -> i32 {
+    ref_init();
+    unsafe { shim_fp_get_num_mbs(bsize, num_mbs_16x16) }
+}
+
+/// Reference libaom `get_search_range` (firstpass.c:257, static). **Tier 1c.**
+#[must_use]
+pub fn ref_fp_get_search_range(width: i32, height: i32) -> i32 {
+    ref_init();
+    unsafe { shim_fp_get_search_range(width, height) }
+}
+
+/// Reference libaom `find_fp_qindex` (firstpass.c:368, static). **Tier 1c.**
+#[must_use]
+pub fn ref_fp_find_fp_qindex(bit_depth: u8) -> i32 {
+    ref_init();
+    unsafe { shim_fp_find_fp_qindex(i32::from(bit_depth)) }
+}
+
+/// Reference libaom `raw_motion_error_stdev` (firstpass.c:372, static).
+/// **Tier 1c.**
+#[must_use]
+pub fn ref_fp_raw_motion_error_stdev(list: &[i32]) -> f64 {
+    ref_init();
+    let mut buf = list.to_vec();
+    let n = i32::try_from(buf.len()).expect("list length fits in an int");
+    unsafe { shim_fp_raw_motion_error_stdev(buf.as_mut_ptr(), n) }
+}
+
+/// Reference libaom `normalize_firstpass_stats` (firstpass.c:874, static).
+/// **Tier 1c.**
+#[must_use]
+pub fn ref_fp_normalize_firstpass_stats(
+    fps: RefFirstpassStats,
+    num_mbs_16x16: f64,
+    f_w: f64,
+    f_h: f64,
+) -> RefFirstpassStats {
+    ref_init();
+    let mut s = fps;
+    unsafe { shim_fp_normalize_firstpass_stats(&mut s, num_mbs_16x16, f_w, f_h) };
+    s
+}
+
+/// Reference libaom `calc_wavelet_energy` (firstpass.c:395, static).
+/// **Tier 1c.**
+#[must_use]
+pub fn ref_fp_calc_wavelet_energy(deltaq_mode: i32) -> bool {
+    ref_init();
+    let r = unsafe { shim_fp_calc_wavelet_energy(deltaq_mode) };
+    assert!(r >= 0, "shim_fp_calc_wavelet_energy allocation failed");
+    r != 0
+}
+
+/// Reference libaom `accumulate_frame_stats` (firstpass.c:1043, static).
+/// **Tier 1c.**
+#[must_use]
+pub fn ref_fp_accumulate_frame_stats(
+    mb_stats: &[RefFrameStats],
+    mb_rows: i32,
+    mb_cols: i32,
+) -> RefFrameStats {
+    ref_init();
+    let mut buf = mb_stats.to_vec();
+    let mut out = RefFrameStats::default();
+    unsafe { shim_fp_accumulate_frame_stats(buf.as_mut_ptr(), mb_rows, mb_cols, &mut out) };
+    out
+}
+
+/// Reference libaom `accumulate_mv_stats` (firstpass.c:635, static).
+/// **Tier 1c.** Returns the updated `(stats, last_non_zero_mv)`.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn ref_fp_accumulate_mv_stats(
+    best_mv: (i16, i16),
+    mv: (i16, i16),
+    mb_row: i32,
+    mb_col: i32,
+    mb_rows: i32,
+    mb_cols: i32,
+    last_non_zero_mv: (i16, i16),
+    stats: RefFrameStats,
+) -> (RefFrameStats, (i16, i16)) {
+    ref_init();
+    let mut last = [last_non_zero_mv.0, last_non_zero_mv.1];
+    let mut s = stats;
+    unsafe {
+        shim_fp_accumulate_mv_stats(
+            best_mv.0,
+            best_mv.1,
+            mv.0,
+            mv.1,
+            mb_row,
+            mb_col,
+            mb_rows,
+            mb_cols,
+            last.as_mut_ptr(),
+            &mut s,
+        );
+    }
+    (s, (last[0], last[1]))
+}
+
+/// The cursor state of a `FIRSTPASS_INFO`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(missing_docs)]
+pub struct RefFpiState {
+    pub start_index: i32,
+    pub stats_count: i32,
+    pub cur_index: i32,
+    pub future_stats_count: i32,
+    pub past_stats_count: i32,
+    pub stats_buf_size: i32,
+    pub total_stats: RefFirstpassStats,
+}
+
+/// A live C `FIRSTPASS_INFO`, driven one operation at a time. **Tier 1** —
+/// every method calls the archive's exported `av1_firstpass_info_*`.
+pub struct RefFirstpassInfo {
+    handle: *mut core::ffi::c_void,
+    /// The `aom_codec_err_t` `av1_firstpass_info_init` returned.
+    pub init_err: i32,
+}
+
+impl RefFirstpassInfo {
+    /// `av1_firstpass_info_init(info, NULL, 0)`.
+    #[must_use]
+    pub fn new_internal() -> Self {
+        ref_init();
+        let mut err = 0;
+        let handle = unsafe { shim_fpi_new(0, core::ptr::null(), 0, &mut err) };
+        assert!(!handle.is_null(), "shim_fpi_new allocation failed");
+        Self {
+            handle,
+            init_err: err,
+        }
+    }
+
+    /// `av1_firstpass_info_init(info, ext_stats_buf, ext_stats_buf_size)`.
+    #[must_use]
+    pub fn new_external(ext: &[RefFirstpassStats]) -> Self {
+        ref_init();
+        let mut err = 0;
+        let n = i32::try_from(ext.len()).expect("ext buffer length fits in an int");
+        let handle = unsafe { shim_fpi_new(1, ext.as_ptr(), n, &mut err) };
+        assert!(!handle.is_null(), "shim_fpi_new allocation failed");
+        Self {
+            handle,
+            init_err: err,
+        }
+    }
+
+    /// `av1_firstpass_info_push`.
+    pub fn push(&mut self, stats: &RefFirstpassStats) -> i32 {
+        unsafe { shim_fpi_push(self.handle, stats) }
+    }
+
+    /// `av1_firstpass_info_pop`.
+    pub fn pop(&mut self) -> i32 {
+        unsafe { shim_fpi_pop(self.handle) }
+    }
+
+    /// `av1_firstpass_info_move_cur_index`.
+    pub fn move_cur_index(&mut self) -> i32 {
+        unsafe { shim_fpi_move_cur_index(self.handle) }
+    }
+
+    /// `av1_firstpass_info_move_cur_index_and_pop`.
+    pub fn move_cur_index_and_pop(&mut self) -> i32 {
+        unsafe { shim_fpi_move_cur_index_and_pop(self.handle) }
+    }
+
+    /// `av1_firstpass_info_peek`, as `Option`.
+    #[must_use]
+    pub fn peek(&self, offset_from_cur: i32) -> Option<RefFirstpassStats> {
+        let mut out = RefFirstpassStats::default();
+        let hit = unsafe { shim_fpi_peek(self.handle, offset_from_cur, &mut out) };
+        (hit != 0).then_some(out)
+    }
+
+    /// `av1_firstpass_info_future_count`.
+    #[must_use]
+    pub fn future_count(&self, offset_from_cur: i32) -> i32 {
+        unsafe { shim_fpi_future_count(self.handle, offset_from_cur) }
+    }
+
+    /// The full cursor state.
+    #[must_use]
+    pub fn state(&self) -> RefFpiState {
+        let (mut si, mut sc, mut ci, mut fc, mut pc, mut bs) = (0, 0, 0, 0, 0, 0);
+        let mut total = RefFirstpassStats::default();
+        unsafe {
+            shim_fpi_state(
+                self.handle,
+                &mut si,
+                &mut sc,
+                &mut ci,
+                &mut fc,
+                &mut pc,
+                &mut bs,
+                &mut total,
+            );
+        }
+        RefFpiState {
+            start_index: si,
+            stats_count: sc,
+            cur_index: ci,
+            future_stats_count: fc,
+            past_stats_count: pc,
+            stats_buf_size: bs,
+            total_stats: total,
+        }
+    }
+}
+
+impl Drop for RefFirstpassInfo {
+    fn drop(&mut self) {
+        unsafe { shim_fpi_free(self.handle) };
+    }
+}
+
+/// C's `AOM_CODEC_OK`, read from C rather than hard-coded.
+#[must_use]
+pub fn ref_fpi_codec_ok() -> i32 {
+    ref_init();
+    unsafe { shim_fpi_codec_ok() }
+}
+
+/// C's `FIRSTPASS_INFO_STATIC_BUF_SIZE`, read from C rather than hard-coded.
+#[must_use]
+pub fn ref_fpi_static_buf_size() -> usize {
+    ref_init();
+    unsafe { shim_fpi_static_buf_size() as usize }
+}
