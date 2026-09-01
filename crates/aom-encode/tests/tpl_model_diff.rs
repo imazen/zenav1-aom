@@ -390,3 +390,319 @@ fn get_q_index_from_qstep_ratio_bit_depths_differ() {
     }
     assert!(differed, "all three bit depths returned the same qindex");
 }
+
+// ---------------------------------------------------------------------------
+// The frame-importance -> qstep-ratio -> qindex chain.
+//
+// **Tier 1** through `shim/tpl_shim.c`: all three C entry points are exported
+// `T` symbols, and the shim exists only to build the ~100 KB `TplParams` they
+// take. `get_frame_importance` is file-static and `av1_tpl_get_qstep_ratio` is
+// its only caller, so driving the caller gates the static at tier 1 too.
+// ---------------------------------------------------------------------------
+
+use aom_encode::tpl_model::{TplDepFrame, TplDepStats, TplParams};
+use aom_sys_ref::{
+    RefTplCell, RefTplFrameDesc, ref_tpl_get_q_index, ref_tpl_get_qstep_ratio, ref_tpl_stats_ready,
+};
+
+/// Build the port-side and oracle-side views of the same synthetic TPL frame.
+///
+/// The cell array is indexed exactly as `av1_tpl_ptr_pos` indexes it on both
+/// sides, so this shares the addressing under test with neither implementation
+/// — it just sizes the buffer to cover the whole walk.
+fn build_frame(
+    rng: &mut Lcg,
+    ready: bool,
+    gf_frame_index: i32,
+    is_valid: bool,
+    mi_rows: i32,
+    mi_cols: i32,
+    base_rdmult: i32,
+    block_mis_log2: u8,
+) -> (TplParams, RefTplFrameDesc, Vec<RefTplCell>) {
+    let step = 1i32 << block_mis_log2;
+    let stride = (mi_cols + step - 1) >> block_mis_log2;
+    let rows = (mi_rows + step - 1) >> block_mis_log2;
+    let n = (stride.max(1) * rows.max(1)).max(1) as usize;
+
+    let mut cells = Vec::with_capacity(n);
+    for _ in 0..n {
+        // Bounds come from what the TPL pass can actually produce, not from
+        // the type: `srcrf_dist` / `recrf_dist` are SSE-scale sums over a
+        // 16x16 block (<= 255^2 * 256 ~= 1.7e7 at bd 8, more at bd 12, so 1e9
+        // is generous), `mc_dep_rate` is a sum of `av1_delta_rate_cost`
+        // outputs already scaled by 1 << 13, and `mc_dep_dist` accumulates
+        // distortion down the dependency chain.
+        cells.push(RefTplCell {
+            srcrf_dist: i64::from(rng.next_u32() % 1_000_000_000),
+            recrf_dist: i64::from(rng.next_u32() % 1_000_000_000),
+            mc_dep_rate: i64::from(rng.next_u32()) << 8,
+            mc_dep_dist: i64::from(rng.next_u32()) << 8,
+        });
+    }
+
+    let stats: Vec<TplDepStats> = cells
+        .iter()
+        .map(|c| TplDepStats {
+            srcrf_dist: c.srcrf_dist,
+            recrf_dist: c.recrf_dist,
+            mc_dep_rate: c.mc_dep_rate,
+            mc_dep_dist: c.mc_dep_dist,
+            ..TplDepStats::default()
+        })
+        .collect();
+
+    let mut frames = vec![TplDepFrame::default(); (gf_frame_index.max(0) + 1) as usize];
+    frames[gf_frame_index.max(0) as usize] = TplDepFrame {
+        is_valid,
+        stats,
+        stride,
+        mi_rows,
+        mi_cols,
+        base_rdmult,
+        ..TplDepFrame::default()
+    };
+    let tpl = TplParams {
+        ready,
+        tpl_stats_block_mis_log2: block_mis_log2,
+        tpl_bsize_1d: 16,
+        frames,
+        ..TplParams::default()
+    };
+    let desc = RefTplFrameDesc {
+        ready,
+        gf_frame_index,
+        is_valid,
+        mi_rows,
+        mi_cols,
+        stride,
+        base_rdmult,
+        block_mis_log2,
+    };
+    (tpl, desc, cells)
+}
+
+#[test]
+fn tpl_stats_ready_matches_c() {
+    let mut saw_true = false;
+    let mut saw_index_gate = false;
+    for &ready in &[false, true] {
+        for &is_valid in &[false, true] {
+            // 95 and 96 straddle MAX_TPL_FRAME_IDX (2 * MAX_LAG_BUFFERS = 96),
+            // which is the gate that silently disables TPL for a long sub-GOP.
+            for gf in [0i32, 1, 7, 47, 94, 95, 96, 97, 104] {
+                let got = TplParams {
+                    ready,
+                    frames: {
+                        let mut f = vec![TplDepFrame::default(); (gf + 1) as usize];
+                        f[gf as usize].is_valid = is_valid;
+                        f
+                    },
+                    ..TplParams::default()
+                }
+                .tpl_stats_ready(gf);
+                let want = ref_tpl_stats_ready(ready, gf, is_valid);
+                assert_eq!(got, want, "ready={ready} valid={is_valid} gf={gf}");
+                if got {
+                    saw_true = true;
+                }
+                if ready && is_valid && gf >= 96 && !got {
+                    saw_index_gate = true;
+                }
+            }
+        }
+    }
+    assert!(saw_true, "sweep never produced a ready frame");
+    assert!(
+        saw_index_gate,
+        "sweep never exercised the MAX_TPL_FRAME_IDX gate"
+    );
+}
+
+#[test]
+fn tpl_get_qstep_ratio_matches_c() {
+    let mut rng = Lcg(0x5eed_0010);
+    let mut saw_not_ready = false;
+    let mut saw_computed = false;
+    // 16x16 up to 128x128 mi, i.e. 256x256 up to 2048x2048 luma, plus two
+    // sizes that are not a multiple of the 4-mi decimation so the walk's
+    // partial last step is exercised.
+    for &(mi_rows, mi_cols) in &[
+        (4i32, 4i32),
+        (16, 16),
+        (17, 5),
+        (33, 65),
+        (64, 64),
+        (128, 128),
+    ] {
+        for &ready in &[false, true] {
+            for &is_valid in &[false, true] {
+                for &base_rdmult in &[1i32, 57, 1000, 100_000] {
+                    let (tpl, desc, cells) = build_frame(
+                        &mut rng,
+                        ready,
+                        3,
+                        is_valid,
+                        mi_rows,
+                        mi_cols,
+                        base_rdmult,
+                        2,
+                    );
+                    let got = tpl.tpl_get_qstep_ratio(3);
+                    let want = ref_tpl_get_qstep_ratio(desc, &cells);
+                    assert_eq!(
+                        got.to_bits(),
+                        want.to_bits(),
+                        "{mi_rows}x{mi_cols} ready={ready} valid={is_valid} rdmult={base_rdmult}: \
+                         got {got} want {want}"
+                    );
+                    if ready && is_valid {
+                        saw_computed = true;
+                        assert!(
+                            (got - 1.0).abs() > f64::EPSILON,
+                            "importance was exactly 1 — the walk contributed nothing"
+                        );
+                    } else {
+                        saw_not_ready = true;
+                        assert_eq!(got, 1.0);
+                    }
+                }
+            }
+        }
+    }
+    assert!(saw_not_ready && saw_computed, "one arm was never reached");
+}
+
+#[test]
+fn tpl_get_qstep_ratio_decimation_is_read_from_state() {
+    // `tpl_stats_block_mis_log2` is 2 in every libaom build, so a port that
+    // hard-coded the step would pass every other test here. Sweep it to prove
+    // the walk reads it — and check the port and C agree at each value.
+    let mut rng = Lcg(0x5eed_0011);
+    let mut ratios = Vec::new();
+    for shift in 0u8..=3 {
+        let (tpl, desc, cells) = build_frame(&mut rng, true, 2, true, 32, 32, 300, shift);
+        let got = tpl.tpl_get_qstep_ratio(2);
+        let want = ref_tpl_get_qstep_ratio(desc, &cells);
+        assert_eq!(got.to_bits(), want.to_bits(), "shift={shift}");
+        ratios.push(got);
+    }
+    assert!(
+        ratios.windows(2).any(|w| w[0] != w[1]),
+        "every decimation gave the same ratio — the sweep is inert"
+    );
+}
+
+#[test]
+fn tpl_get_q_index_matches_c() {
+    let mut rng = Lcg(0x5eed_0012);
+    let mut saw_lower = false;
+    let mut saw_higher = false;
+    for &bd in &[8u8, 10, 12] {
+        for &leaf_qindex in &[0i32, 20, 90, 128, 200, 255] {
+            for &(mi_rows, mi_cols) in &[(16i32, 16i32), (33, 65), (64, 64)] {
+                for &base_rdmult in &[1i32, 500, 50_000] {
+                    let (tpl, desc, cells) =
+                        build_frame(&mut rng, true, 5, true, mi_rows, mi_cols, base_rdmult, 2);
+                    let got = tpl.tpl_get_q_index(5, leaf_qindex, bd);
+                    let want = ref_tpl_get_q_index(desc, &cells, leaf_qindex, bd);
+                    assert_eq!(
+                        got, want,
+                        "bd={bd} leaf={leaf_qindex} {mi_rows}x{mi_cols} rdmult={base_rdmult}"
+                    );
+                    if got < leaf_qindex {
+                        saw_lower = true;
+                    }
+                    if got > leaf_qindex {
+                        saw_higher = true;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        saw_lower || saw_higher,
+        "TPL never moved the qindex off the leaf value — the chain is inert"
+    );
+}
+
+/// `get_frame_importance`'s `AOMMAX(dist_scaled, 1)` floor and its
+/// `cbcmp_base = 1` seed, gated at the degenerate inputs that reach them.
+///
+/// **Both are provably inert on encoder-produced state**, measured by
+/// perturbing them: deleting the floor leaves the 6-size x 4-rdmult sweep in
+/// `tpl_get_qstep_ratio_matches_c` green, because `tpl_model_store`
+/// (tpl_model.c:1301) clamps `recrf_dist = AOMMAX(1, recrf_dist)` before the
+/// cell is ever stored, so `dist_scaled = recrf_dist << 7` is at least 128 and
+/// the floor never binds. This test therefore feeds the values the clamp
+/// excludes, which C is perfectly well-defined on — it is pinning the port's
+/// arithmetic against C's, not claiming the encoder can produce them.
+#[test]
+fn get_frame_importance_degenerate_cells_match_c() {
+    for &(srcrf_dist, recrf_dist) in &[
+        (0i64, 0i64),   // both zero: log(1) * 0, and cbcmp_base stays 1
+        (0, 1),         // dist_scaled = 128, weight 0
+        (5, 0),         // the floor binds and the weight does not
+        (0, 0),         // repeated deliberately with a different rdmult below
+        (1_000_000, 0), // large weight on a floored distortion
+    ] {
+        for &base_rdmult in &[0i32, 1, 4096] {
+            for &mc_dep in &[0i64, 1, 1 << 20] {
+                let n = 16usize;
+                let cells = vec![
+                    RefTplCell {
+                        srcrf_dist,
+                        recrf_dist,
+                        mc_dep_rate: mc_dep,
+                        mc_dep_dist: mc_dep,
+                    };
+                    n
+                ];
+                let stats: Vec<TplDepStats> = cells
+                    .iter()
+                    .map(|c| TplDepStats {
+                        srcrf_dist: c.srcrf_dist,
+                        recrf_dist: c.recrf_dist,
+                        mc_dep_rate: c.mc_dep_rate,
+                        mc_dep_dist: c.mc_dep_dist,
+                        ..TplDepStats::default()
+                    })
+                    .collect();
+                let mut frames = vec![TplDepFrame::default(); 1];
+                frames[0] = TplDepFrame {
+                    is_valid: true,
+                    stats,
+                    stride: 4,
+                    mi_rows: 16,
+                    mi_cols: 16,
+                    base_rdmult,
+                    ..TplDepFrame::default()
+                };
+                let tpl = TplParams {
+                    ready: true,
+                    tpl_stats_block_mis_log2: 2,
+                    tpl_bsize_1d: 16,
+                    frames,
+                    ..TplParams::default()
+                };
+                let desc = RefTplFrameDesc {
+                    ready: true,
+                    gf_frame_index: 0,
+                    is_valid: true,
+                    mi_rows: 16,
+                    mi_cols: 16,
+                    stride: 4,
+                    base_rdmult,
+                    block_mis_log2: 2,
+                };
+                let got = tpl.tpl_get_qstep_ratio(0);
+                let want = ref_tpl_get_qstep_ratio(desc, &cells);
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "src={srcrf_dist} rec={recrf_dist} rdmult={base_rdmult} mc_dep={mc_dep}"
+                );
+            }
+        }
+    }
+}

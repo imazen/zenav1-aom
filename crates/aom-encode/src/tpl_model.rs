@@ -268,3 +268,293 @@ pub fn get_q_index_from_qstep_ratio(leaf_qindex: i32, qstep_ratio: f64, bit_dept
         qindex
     }
 }
+
+// ===========================================================================
+// The TPL data model, and the frame-importance -> qindex chain built on it.
+// ===========================================================================
+
+use crate::rdopt_mv::Mv;
+
+/// `INTER_REFS_PER_FRAME` (`av1/common/enums.h`).
+pub const INTER_REFS_PER_FRAME: usize = 7;
+
+/// `REF_FRAMES` (`av1/common/enums.h`).
+pub const REF_FRAMES: usize = 8;
+
+/// `MAX_LAG_BUFFERS` (`encoder/lookahead.h:28`).
+pub const MAX_LAG_BUFFERS: usize = 48;
+
+/// `MAX_TPL_FRAME_IDX` (tpl_model.h:99) — the sub-GOP length past which TPL
+/// switches itself off rather than run out of buffer.
+pub const MAX_TPL_FRAME_IDX: i32 = 2 * MAX_LAG_BUFFERS as i32;
+
+/// `RDDIV_BITS` (encoder/rd.h:29).
+const RDDIV_BITS: u32 = 7;
+
+/// `RDCOST(RM, R, D)` (encoder/rd.h:32) instantiated with an **`int64_t`
+/// rate**, which is how `tpl_model.c` uses it — `TplDepStats::mc_dep_rate` is
+/// `int64_t`, not the `int` that [`crate::rd::rdcost`] takes.
+///
+/// C's macro multiplies `(int64_t)R * RM` and shifts with
+/// `ROUND_POWER_OF_TWO`, then adds `D << RDDIV_BITS`. Both products can
+/// overflow `int64_t` on adversarial inputs, where C is undefined and clang
+/// wraps; the wrapping ops here reproduce that rather than panicking in a
+/// debug build. Real TPL state cannot reach it: `mc_dep_rate` is a sum of
+/// `av1_delta_rate_cost` outputs over one frame and `base_rdmult` is bounded
+/// by `av1_compute_rd_mult`.
+#[inline]
+fn rdcost_i64_rate(rm: i32, rate: i64, dist: i64) -> i64 {
+    let scaled = rate.wrapping_mul(i64::from(rm));
+    let rounded = scaled.wrapping_add(1 << (AV1_PROB_COST_SHIFT - 1)) >> AV1_PROB_COST_SHIFT;
+    rounded.wrapping_add(dist.wrapping_mul(1 << RDDIV_BITS))
+}
+
+/// `TplDepStats` (tpl_model.h:145) — one cell of the TPL grid.
+///
+/// The grid is decimated by `tpl_stats_block_mis_log2` (2, i.e. one cell per
+/// 16x16 luma block); [`tpl_ptr_pos`] maps an mi position to an index here.
+///
+/// Field widths are C's, and the split matters: the `_dist`/`_sse`/`mc_dep_*`
+/// family is `int64_t` because it accumulates squared error over a whole
+/// dependency chain, while the `_cost`/`_rate` family is `int32_t`. Narrowing
+/// the first group or widening the second changes where the arithmetic
+/// saturates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TplDepStats {
+    /// Squared error of the source-reference prediction.
+    pub srcrf_sse: i64,
+    /// Distortion of the source-reference prediction.
+    pub srcrf_dist: i64,
+    /// Squared error of the reconstructed-reference prediction.
+    pub recrf_sse: i64,
+    /// Distortion of the reconstructed-reference prediction.
+    pub recrf_dist: i64,
+    /// Squared error of the intra prediction.
+    pub intra_sse: i64,
+    /// Distortion of the intra prediction.
+    pub intra_dist: i64,
+    /// Per-reference compound reconstruction distortion.
+    pub cmp_recrf_dist: [i64; 2],
+    /// Rate propagated into this block from its dependents.
+    pub mc_dep_rate: i64,
+    /// Distortion propagated into this block from its dependents.
+    pub mc_dep_dist: i64,
+    /// Per-reference prediction error, used to pick the reference pair.
+    pub pred_error: [i64; INTER_REFS_PER_FRAME],
+    /// Intra mode cost.
+    pub intra_cost: i32,
+    /// Inter mode cost.
+    pub inter_cost: i32,
+    /// Rate of the source-reference prediction.
+    pub srcrf_rate: i32,
+    /// Rate of the reconstructed-reference prediction.
+    pub recrf_rate: i32,
+    /// Rate of the intra prediction.
+    pub intra_rate: i32,
+    /// Per-reference compound reconstruction rate.
+    pub cmp_recrf_rate: [i32; 2],
+    /// The chosen motion vector per reference.
+    pub mv: [Mv; INTER_REFS_PER_FRAME],
+    /// The chosen reference pair, as indices into `mv` (`-1` = none).
+    pub ref_frame_index: [i8; 2],
+}
+
+/// `TplDepFrame` (tpl_model.h:147) — the TPL state of one frame in the GOP.
+///
+/// # Not represented, and why
+/// C's `gf_picture` / `rec_picture` are `YV12_BUFFER_CONFIG *` into the
+/// encoder's frame pools, and `ref_map_index` indexes those pools. Frame
+/// ownership is the mechanism this port replaces rather than translates, so
+/// the pixel buffers are passed to the routines that need them instead of
+/// being reachable from here. `width` / `height` (the grid extent in 16x16
+/// units) are kept because the propagation walk reads them.
+#[derive(Clone, Debug, Default)]
+pub struct TplDepFrame {
+    /// Whether this frame's stats were computed (`is_valid` in C, a `uint8_t`
+    /// used only as a flag).
+    pub is_valid: bool,
+    /// The decimated grid, indexed by [`tpl_ptr_pos`].
+    pub stats: Vec<TplDepStats>,
+    /// Row stride of `stats`, in grid cells.
+    pub stride: i32,
+    /// Grid width, in 16x16 blocks.
+    pub width: i32,
+    /// Grid height, in 16x16 blocks.
+    pub height: i32,
+    /// Frame height in mi units — the walk bound, NOT `height << shift`.
+    pub mi_rows: i32,
+    /// Frame width in mi units.
+    pub mi_cols: i32,
+    /// The frame's RD multiplier, used to fold rate into distortion.
+    pub base_rdmult: i32,
+    /// Display order of this frame.
+    pub frame_display_index: u32,
+    /// When set, SAD replaces SSE in the intra/inter decision.
+    pub use_pred_sad: bool,
+}
+
+/// `TplParams` (tpl_model.h:168) — the GOP-level TPL state, reduced to the
+/// fields the ported arithmetic reads.
+///
+/// # Not represented, and why
+/// `tpl_stats_pool`, `tpl_rec_pool`, `txfm_stats_list`, `src_ref_frame`,
+/// `ref_frame`, `prev_gop_arf_src` and `tpl_mt_sync` are allocation and
+/// threading bookkeeping: C's pools exist so `tpl_stats_buffer[i].
+/// tpl_stats_ptr` can be handed out and reclaimed, and `tpl_mt_sync` shards a
+/// row walk this port does in one pass. Rust owns each frame's grid inside
+/// [`TplDepFrame::stats`], so there is no pool to model. C's `tpl_frame` is a
+/// pointer into `tpl_stats_buffer` past the `REF_FRAMES + 1` reserved slots;
+/// [`Self::frames`] is that view directly.
+#[derive(Clone, Debug, Default)]
+pub struct TplParams {
+    /// Whether the GOP's TPL pass ran to completion.
+    pub ready: bool,
+    /// `log2` of the grid decimation in mi units. Always 2 (16x16) — see
+    /// [`Self::set_tpl_stats_block_size`].
+    pub tpl_stats_block_mis_log2: u8,
+    /// The 1-D block size TPL motion search uses. Always 16.
+    pub tpl_bsize_1d: u8,
+    /// Per-frame TPL state, indexed by GOP frame index.
+    pub frames: Vec<TplDepFrame>,
+    /// GOP index of the frame being processed.
+    pub frame_idx: i32,
+    /// Correction applied to `r0` when TPL covered only part of the GOP.
+    pub r0_adjust_factor: f64,
+}
+
+impl TplParams {
+    /// `set_tpl_stats_block_size` (tpl_model.c:142, static) — pins the TPL
+    /// grid to 16x16.
+    ///
+    /// C writes through two out-pointers and asserts `tpl_bsize_1d >= 16`;
+    /// both values are compile-time constants there, so this is a setter, not
+    /// a computation. It is kept as a named function because
+    /// `av1_init_tpl_stats` and `av1_setup_tpl_buffers` both call it and a
+    /// future change to the granularity has to move through one place.
+    pub fn set_tpl_stats_block_size(&mut self) {
+        self.tpl_stats_block_mis_log2 = 2;
+        self.tpl_bsize_1d = 16;
+        debug_assert!(self.tpl_bsize_1d >= 16);
+    }
+
+    /// `av1_tpl_stats_ready` (tpl_model.c:1856) — whether frame
+    /// `gf_frame_index` has usable TPL stats.
+    ///
+    /// Three independent gates, and the middle one is the interesting one:
+    /// when the sub-GOP is longer than the TPL buffer
+    /// ([`MAX_TPL_FRAME_IDX`]) C reports *not ready* rather than growing the
+    /// buffer, which silently disables every TPL-driven decision for the rest
+    /// of that GOP.
+    #[must_use]
+    pub fn tpl_stats_ready(&self, gf_frame_index: i32) -> bool {
+        if !self.ready {
+            return false;
+        }
+        if gf_frame_index >= MAX_TPL_FRAME_IDX {
+            return false;
+        }
+        self.frames
+            .get(usize::try_from(gf_frame_index).expect("gf_frame_index must be non-negative"))
+            .is_some_and(|f| f.is_valid)
+    }
+
+    /// `get_frame_importance` (tpl_model.c:1942, static) — how much the rest
+    /// of the GOP depends on this frame.
+    ///
+    /// The model: for every grid cell, compare `log(recrf_dist)` (what coding
+    /// this block costs on its own) against `log(recrf_dist + mc_dep_delta)`
+    /// (what it costs once everything that references it is charged too),
+    /// weighting each cell by its source distortion `cbcmp`. The exponential
+    /// of the weighted mean difference is the importance; 1.0 means nothing
+    /// depends on this frame.
+    ///
+    /// Three details that a "cleaner" rewrite loses:
+    /// - `cbcmp_base` starts at **1**, not 0, so a frame whose cells all have
+    ///   `srcrf_dist == 0` returns `exp(0) == 1` instead of dividing by zero;
+    /// - `dist_scaled` is floored at 1 *before* the log, so an all-zero
+    ///   distortion cell contributes `log(1) == 0` rather than `-inf`. That
+    ///   floor is **inert on encoder-produced state** (measured: deleting it
+    ///   leaves the randomized differential green), because
+    ///   `tpl_model_store` (tpl_model.c:1301) clamps
+    ///   `recrf_dist = AOMMAX(1, recrf_dist)` before a cell is stored, making
+    ///   `dist_scaled >= 128`. It is kept because C keeps it, and is pinned by
+    ///   `get_frame_importance_degenerate_cells_match_c`;
+    /// - the walk bound is `mi_rows`/`mi_cols` stepping by the decimation,
+    ///   not the grid's own `width`/`height`.
+    #[must_use]
+    fn get_frame_importance(&self, gf_frame_index: i32) -> f64 {
+        let tpl_frame = &self.frames[gf_frame_index as usize];
+        let tpl_stride = tpl_frame.stride;
+        let shift = self.tpl_stats_block_mis_log2;
+        let step = 1 << shift;
+
+        let mut intra_cost_base = 0.0f64;
+        let mut mc_dep_cost_base = 0.0f64;
+        let mut cbcmp_base = 1.0f64;
+
+        let mut row = 0;
+        while row < tpl_frame.mi_rows {
+            let mut col = 0;
+            while col < tpl_frame.mi_cols {
+                let this_stats =
+                    &tpl_frame.stats[tpl_ptr_pos(row, col, tpl_stride, shift) as usize];
+                let cbcmp = this_stats.srcrf_dist as f64;
+                let mc_dep_delta = rdcost_i64_rate(
+                    tpl_frame.base_rdmult,
+                    this_stats.mc_dep_rate,
+                    this_stats.mc_dep_dist,
+                );
+                let dist_scaled = (this_stats.recrf_dist << RDDIV_BITS) as f64;
+                // C's AOMMAX against the integer literal 1, not `f64::max`.
+                let dist_scaled = if dist_scaled > 1.0 { dist_scaled } else { 1.0 };
+                intra_cost_base += dist_scaled.ln() * cbcmp;
+                mc_dep_cost_base += (dist_scaled + mc_dep_delta as f64).ln() * cbcmp;
+                cbcmp_base += cbcmp;
+                col += step;
+            }
+            row += step;
+        }
+        ((mc_dep_cost_base - intra_cost_base) / cbcmp_base).exp()
+    }
+
+    /// `av1_tpl_get_qstep_ratio` (tpl_model.c:2418) — the multiplier applied
+    /// to this frame's quantizer step, from its importance.
+    ///
+    /// `sqrt(1 / importance)`: an important frame (importance > 1) gets a
+    /// *smaller* step, i.e. finer quantization, because the rest of the GOP
+    /// will inherit its errors. When TPL has no stats the ratio is exactly 1
+    /// and the qindex is left alone.
+    #[must_use]
+    pub fn tpl_get_qstep_ratio(&self, gf_frame_index: i32) -> f64 {
+        if !self.tpl_stats_ready(gf_frame_index) {
+            return 1.0;
+        }
+        (1.0 / self.get_frame_importance(gf_frame_index)).sqrt()
+    }
+
+    /// `av1_tpl_get_q_index` (tpl_model.c:2446) — the frame's qindex on the
+    /// CRF path: importance, to a qstep ratio, to a qindex.
+    #[must_use]
+    pub fn tpl_get_q_index(&self, gf_frame_index: i32, leaf_qindex: i32, bit_depth: u8) -> i32 {
+        let qstep_ratio = self.tpl_get_qstep_ratio(gf_frame_index);
+        get_q_index_from_qstep_ratio(leaf_qindex, qstep_ratio, bit_depth)
+    }
+
+    /// `av1_init_tpl_stats` (tpl_model.c:1839) — reset every frame's stats
+    /// before a GOP.
+    ///
+    /// C does three things: clear `ready`, re-pin the block size, and mark all
+    /// `MAX_LENGTH_TPL_FRAME_STATS` frames invalid. Its fourth act — a
+    /// `memset` over each allocated `tpl_stats_pool[i]` — is pool
+    /// bookkeeping: the cells are only ever read after `is_valid` is set
+    /// again, and Rust owns each frame's `stats` vector, so clearing it here
+    /// is equivalent and is done for the frames that exist.
+    pub fn init_tpl_stats(&mut self) {
+        self.ready = false;
+        self.set_tpl_stats_block_size();
+        for frame in &mut self.frames {
+            frame.is_valid = false;
+            frame.stats.fill(TplDepStats::default());
+        }
+    }
+}

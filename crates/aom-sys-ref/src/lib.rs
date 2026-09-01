@@ -21713,3 +21713,171 @@ pub fn ref_get_q_index_from_qstep_ratio(leaf_qindex: i32, qstep_ratio: f64, bit_
     ref_init();
     unsafe { av1_get_q_index_from_qstep_ratio(leaf_qindex, qstep_ratio, i32::from(bit_depth)) }
 }
+
+// ---------------------------------------------------------------------------
+// tpl_shim.c — the frame-importance -> qindex chain.
+//
+// All three C entry points are exported `T` symbols; the shim exists only to
+// build the 100 KB `TplParams` they take. **Tier 1**, and it carries the
+// file-static `get_frame_importance` with it: `av1_tpl_get_qstep_ratio` is
+// that static's only caller.
+// ---------------------------------------------------------------------------
+
+/// One TPL grid cell, reduced to the four `int64_t` fields
+/// `get_frame_importance` reads. Passed as four parallel slices indexed
+/// exactly as `av1_tpl_ptr_pos` indexes the real buffer.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RefTplCell {
+    /// `TplDepStats::srcrf_dist`.
+    pub srcrf_dist: i64,
+    /// `TplDepStats::recrf_dist`.
+    pub recrf_dist: i64,
+    /// `TplDepStats::mc_dep_rate`.
+    pub mc_dep_rate: i64,
+    /// `TplDepStats::mc_dep_dist`.
+    pub mc_dep_dist: i64,
+}
+
+/// The TPL frame geometry the shim needs to populate one `TplDepFrame`.
+#[derive(Clone, Copy, Debug)]
+pub struct RefTplFrameDesc {
+    /// `TplParams::ready`.
+    pub ready: bool,
+    /// The GOP index of the frame under test.
+    pub gf_frame_index: i32,
+    /// `TplDepFrame::is_valid`.
+    pub is_valid: bool,
+    /// `TplDepFrame::mi_rows`.
+    pub mi_rows: i32,
+    /// `TplDepFrame::mi_cols`.
+    pub mi_cols: i32,
+    /// `TplDepFrame::stride`, in grid cells.
+    pub stride: i32,
+    /// `TplDepFrame::base_rdmult`.
+    pub base_rdmult: i32,
+    /// `TplParams::tpl_stats_block_mis_log2`.
+    pub block_mis_log2: u8,
+}
+
+extern "C" {
+    fn shim_tpl_stats_ready(ready: i32, gf_frame_index: i32, is_valid: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tpl_get_qstep_ratio(
+        ready: i32,
+        gf_frame_index: i32,
+        is_valid: i32,
+        mi_rows: i32,
+        mi_cols: i32,
+        stride: i32,
+        base_rdmult: i32,
+        block_mis_log2: u8,
+        srcrf_dist: *const i64,
+        recrf_dist: *const i64,
+        mc_dep_rate: *const i64,
+        mc_dep_dist: *const i64,
+        n_stats: i32,
+        out: *mut f64,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tpl_get_q_index(
+        ready: i32,
+        gf_frame_index: i32,
+        is_valid: i32,
+        mi_rows: i32,
+        mi_cols: i32,
+        stride: i32,
+        base_rdmult: i32,
+        block_mis_log2: u8,
+        srcrf_dist: *const i64,
+        recrf_dist: *const i64,
+        mc_dep_rate: *const i64,
+        mc_dep_dist: *const i64,
+        n_stats: i32,
+        leaf_qindex: i32,
+        bit_depth: i32,
+        out: *mut i32,
+    ) -> i32;
+}
+
+/// Split the cell slice into the four parallel arrays the shim takes.
+fn ref_tpl_split(cells: &[RefTplCell]) -> (Vec<i64>, Vec<i64>, Vec<i64>, Vec<i64>) {
+    (
+        cells.iter().map(|c| c.srcrf_dist).collect(),
+        cells.iter().map(|c| c.recrf_dist).collect(),
+        cells.iter().map(|c| c.mc_dep_rate).collect(),
+        cells.iter().map(|c| c.mc_dep_dist).collect(),
+    )
+}
+
+/// Reference libaom `av1_tpl_stats_ready` (tpl_model.c:1856).
+#[must_use]
+pub fn ref_tpl_stats_ready(ready: bool, gf_frame_index: i32, is_valid: bool) -> bool {
+    ref_init();
+    let r = unsafe { shim_tpl_stats_ready(i32::from(ready), gf_frame_index, i32::from(is_valid)) };
+    assert!(r >= 0, "shim_tpl_stats_ready allocation failed");
+    r != 0
+}
+
+/// Reference libaom `av1_tpl_get_qstep_ratio` (tpl_model.c:2418), and through
+/// it the file-static `get_frame_importance` (tpl_model.c:1942).
+#[must_use]
+pub fn ref_tpl_get_qstep_ratio(desc: RefTplFrameDesc, cells: &[RefTplCell]) -> f64 {
+    ref_init();
+    let (src, rec, rate, dist) = ref_tpl_split(cells);
+    let mut out = 0.0f64;
+    let r = unsafe {
+        shim_tpl_get_qstep_ratio(
+            i32::from(desc.ready),
+            desc.gf_frame_index,
+            i32::from(desc.is_valid),
+            desc.mi_rows,
+            desc.mi_cols,
+            desc.stride,
+            desc.base_rdmult,
+            desc.block_mis_log2,
+            src.as_ptr(),
+            rec.as_ptr(),
+            rate.as_ptr(),
+            dist.as_ptr(),
+            i32::try_from(cells.len()).expect("cell count must fit in an int"),
+            &mut out,
+        )
+    };
+    assert!(r == 0, "shim_tpl_get_qstep_ratio allocation failed");
+    out
+}
+
+/// Reference libaom `av1_tpl_get_q_index` (tpl_model.c:2446).
+#[must_use]
+pub fn ref_tpl_get_q_index(
+    desc: RefTplFrameDesc,
+    cells: &[RefTplCell],
+    leaf_qindex: i32,
+    bit_depth: u8,
+) -> i32 {
+    ref_init();
+    let (src, rec, rate, dist) = ref_tpl_split(cells);
+    let mut out = 0i32;
+    let r = unsafe {
+        shim_tpl_get_q_index(
+            i32::from(desc.ready),
+            desc.gf_frame_index,
+            i32::from(desc.is_valid),
+            desc.mi_rows,
+            desc.mi_cols,
+            desc.stride,
+            desc.base_rdmult,
+            desc.block_mis_log2,
+            src.as_ptr(),
+            rec.as_ptr(),
+            rate.as_ptr(),
+            dist.as_ptr(),
+            i32::try_from(cells.len()).expect("cell count must fit in an int"),
+            leaf_qindex,
+            i32::from(bit_depth),
+            &mut out,
+        )
+    };
+    assert!(r == 0, "shim_tpl_get_q_index allocation failed");
+    out
+}

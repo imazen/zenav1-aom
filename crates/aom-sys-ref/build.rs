@@ -82,6 +82,7 @@ const SHIMS: &[&str] = &[
     "rdopt_shim",
     "compound_type_shim",
     "refgop_shim",
+    "tpl_shim",
 ];
 
 /// Shims that need compile flags beyond the default `-O2 ORACLE_FP_CFLAGS`.
