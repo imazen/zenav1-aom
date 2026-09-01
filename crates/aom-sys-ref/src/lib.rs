@@ -22158,3 +22158,329 @@ pub fn ref_ct_max_comp_rd_stats() -> i32 {
     ref_init();
     unsafe { shim_ct_max_comp_rd_stats() }
 }
+
+// ===========================================================================
+// av1/encoder/temporal_filter.c — the alt-ref temporal filter (tier 1).
+//
+// Every entry drives the REAL exported C symbol; `shim/tf_shim.c` exists only
+// to assemble the YV12_BUFFER_CONFIG / MACROBLOCKD the last three take.
+// ===========================================================================
+
+unsafe extern "C" {
+    fn shim_tf_estimate_noise_lowbd(
+        src: *const u8,
+        height: i32,
+        width: i32,
+        stride: i32,
+        edge_thresh: i32,
+    ) -> f64;
+    fn shim_tf_estimate_noise_highbd(
+        src: *const u16,
+        height: i32,
+        width: i32,
+        stride: i32,
+        bit_depth: i32,
+        edge_thresh: i32,
+    ) -> f64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tf_estimate_noise_level(
+        y: *const core::ffi::c_void,
+        u: *const core::ffi::c_void,
+        v: *const core::ffi::c_void,
+        y_stride: i32,
+        uv_stride: i32,
+        y_w: i32,
+        y_h: i32,
+        uv_w: i32,
+        uv_h: i32,
+        highbd: i32,
+        plane_from: i32,
+        plane_to: i32,
+        bit_depth: i32,
+        edge_thresh: i32,
+        noise_level: *mut f64,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tf_apply_temporal_filter(
+        y: *const core::ffi::c_void,
+        u: *const core::ffi::c_void,
+        v: *const core::ffi::c_void,
+        y_stride: i32,
+        uv_stride: i32,
+        y_crop_w: i32,
+        y_crop_h: i32,
+        uv_crop_w: i32,
+        uv_crop_h: i32,
+        highbd: i32,
+        block_size: i32,
+        mb_row: i32,
+        mb_col: i32,
+        num_planes: i32,
+        subsampling_x: *const i32,
+        subsampling_y: *const i32,
+        bd: i32,
+        noise_levels: *const f64,
+        subblock_mvs: *const i16,
+        subblock_mses: *const i32,
+        q_factor: i32,
+        filter_strength: i32,
+        tf_wgt_calc_lvl: i32,
+        pred: *const core::ffi::c_void,
+        accum: *mut u32,
+        count: *mut u16,
+        use_highbd_entry: i32,
+    );
+}
+
+/// Reference `av1_estimate_noise_from_single_plane_c` (temporal_filter.c:1426).
+/// Returns C's raw `double`, `-1.0` sentinel included.
+#[must_use]
+pub fn ref_tf_estimate_noise_lowbd(
+    src: &[u8],
+    height: usize,
+    width: usize,
+    stride: usize,
+    edge_thresh: i32,
+) -> f64 {
+    ref_init();
+    assert!(src.len() >= height * stride, "plane too short for {height}x{stride}");
+    unsafe {
+        shim_tf_estimate_noise_lowbd(
+            src.as_ptr(),
+            height as i32,
+            width as i32,
+            stride as i32,
+            edge_thresh,
+        )
+    }
+}
+
+/// Reference `av1_highbd_estimate_noise_from_single_plane_c` (:1465).
+#[must_use]
+pub fn ref_tf_estimate_noise_highbd(
+    src: &[u16],
+    height: usize,
+    width: usize,
+    stride: usize,
+    bit_depth: i32,
+    edge_thresh: i32,
+) -> f64 {
+    ref_init();
+    assert!(src.len() >= height * stride, "plane too short for {height}x{stride}");
+    unsafe {
+        shim_tf_estimate_noise_highbd(
+            src.as_ptr(),
+            height as i32,
+            width as i32,
+            stride as i32,
+            bit_depth,
+            edge_thresh,
+        )
+    }
+}
+
+/// One plane handed to the temporal-filter oracle: pointer, stride, crop size.
+/// The pointer's element type is chosen by the caller's `highbd` flag.
+#[derive(Clone, Copy, Debug)]
+pub struct TfRefPlane<'a, P> {
+    /// Plane pixels from the origin.
+    pub data: &'a [P],
+    /// `frame->strides[plane != 0]`.
+    pub stride: usize,
+    /// `frame->crop_widths[plane != 0]`.
+    pub crop_width: usize,
+    /// `frame->crop_heights[plane != 0]`.
+    pub crop_height: usize,
+}
+
+/// Reference `av1_estimate_noise_level` (:1505) over the three planes, filling
+/// `plane_from..=plane_to`. Returns all three slots; untouched ones stay `0.0`,
+/// which is what C's caller sees when it does not ask for them.
+#[must_use]
+pub fn ref_tf_estimate_noise_level_lowbd(
+    planes: [TfRefPlane<'_, u8>; 3],
+    plane_from: i32,
+    plane_to: i32,
+    bit_depth: i32,
+    edge_thresh: i32,
+) -> [f64; 3] {
+    ref_init();
+    let mut out = [0.0f64; 3];
+    unsafe {
+        shim_tf_estimate_noise_level(
+            planes[0].data.as_ptr().cast(),
+            planes[1].data.as_ptr().cast(),
+            planes[2].data.as_ptr().cast(),
+            planes[0].stride as i32,
+            planes[1].stride as i32,
+            planes[0].crop_width as i32,
+            planes[0].crop_height as i32,
+            planes[1].crop_width as i32,
+            planes[1].crop_height as i32,
+            0,
+            plane_from,
+            plane_to,
+            bit_depth,
+            edge_thresh,
+            out.as_mut_ptr(),
+        );
+    }
+    out
+}
+
+/// High-bit-depth twin of [`ref_tf_estimate_noise_level_lowbd`].
+#[must_use]
+pub fn ref_tf_estimate_noise_level_highbd(
+    planes: [TfRefPlane<'_, u16>; 3],
+    plane_from: i32,
+    plane_to: i32,
+    bit_depth: i32,
+    edge_thresh: i32,
+) -> [f64; 3] {
+    ref_init();
+    let mut out = [0.0f64; 3];
+    unsafe {
+        shim_tf_estimate_noise_level(
+            planes[0].data.as_ptr().cast(),
+            planes[1].data.as_ptr().cast(),
+            planes[2].data.as_ptr().cast(),
+            planes[0].stride as i32,
+            planes[1].stride as i32,
+            planes[0].crop_width as i32,
+            planes[0].crop_height as i32,
+            planes[1].crop_width as i32,
+            planes[1].crop_height as i32,
+            1,
+            plane_from,
+            plane_to,
+            bit_depth,
+            edge_thresh,
+            out.as_mut_ptr(),
+        );
+    }
+    out
+}
+
+/// Everything the temporal-filter oracle needs beyond the pixel buffers.
+#[derive(Clone, Debug)]
+pub struct TfRefParams {
+    /// `BLOCK_64X64` for `TF_BLOCK_SIZE`.
+    pub block_size: i32,
+    /// Block position, in block-size units.
+    pub mb_row: i32,
+    /// See [`Self::mb_row`].
+    pub mb_col: i32,
+    /// 1 or 3.
+    pub num_planes: i32,
+    /// `mbd->plane[p].subsampling_x`.
+    pub subsampling_x: [i32; 3],
+    /// `mbd->plane[p].subsampling_y`.
+    pub subsampling_y: [i32; 3],
+    /// `mbd->bd`.
+    pub bd: i32,
+    /// `q`, not `qindex`.
+    pub q_factor: i32,
+    /// `arnr_strength`, in `[0, 6]`.
+    pub filter_strength: i32,
+    /// 0 = libm `exp`, non-zero = `approx_exp`.
+    pub tf_wgt_calc_lvl: i32,
+}
+
+/// Reference `av1_apply_temporal_filter_c` (temporal_filter.c:795).
+///
+/// `subblock_mvs` is 16 `(row, col)` pairs. `accum` and `count` are in/out —
+/// C accumulates into them.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_tf_apply_temporal_filter_lowbd(
+    planes: [TfRefPlane<'_, u8>; 3],
+    params: &TfRefParams,
+    noise_levels: &[f64; 3],
+    subblock_mvs: &[(i16, i16); 16],
+    subblock_mses: &[i32; 16],
+    pred: &[u8],
+    accum: &mut [u32],
+    count: &mut [u16],
+) {
+    ref_init();
+    let mvs: Vec<i16> = subblock_mvs.iter().flat_map(|&(r, c)| [r, c]).collect();
+    unsafe {
+        shim_tf_apply_temporal_filter(
+            planes[0].data.as_ptr().cast(),
+            planes[1].data.as_ptr().cast(),
+            planes[2].data.as_ptr().cast(),
+            planes[0].stride as i32,
+            planes[1].stride as i32,
+            planes[0].crop_width as i32,
+            planes[0].crop_height as i32,
+            planes[1].crop_width as i32,
+            planes[1].crop_height as i32,
+            0,
+            params.block_size,
+            params.mb_row,
+            params.mb_col,
+            params.num_planes,
+            params.subsampling_x.as_ptr(),
+            params.subsampling_y.as_ptr(),
+            params.bd,
+            noise_levels.as_ptr(),
+            mvs.as_ptr(),
+            subblock_mses.as_ptr(),
+            params.q_factor,
+            params.filter_strength,
+            params.tf_wgt_calc_lvl,
+            pred.as_ptr().cast(),
+            accum.as_mut_ptr(),
+            count.as_mut_ptr(),
+            0,
+        );
+    }
+}
+
+/// Reference `av1_highbd_apply_temporal_filter_c` (temporal_filter.c:964).
+/// Selects C's HIGHBD entry point, which forwards to the lowbd one — driving
+/// both is what keeps "it only forwards" a measured fact.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_tf_apply_temporal_filter_highbd(
+    planes: [TfRefPlane<'_, u16>; 3],
+    params: &TfRefParams,
+    noise_levels: &[f64; 3],
+    subblock_mvs: &[(i16, i16); 16],
+    subblock_mses: &[i32; 16],
+    pred: &[u16],
+    accum: &mut [u32],
+    count: &mut [u16],
+) {
+    ref_init();
+    let mvs: Vec<i16> = subblock_mvs.iter().flat_map(|&(r, c)| [r, c]).collect();
+    unsafe {
+        shim_tf_apply_temporal_filter(
+            planes[0].data.as_ptr().cast(),
+            planes[1].data.as_ptr().cast(),
+            planes[2].data.as_ptr().cast(),
+            planes[0].stride as i32,
+            planes[1].stride as i32,
+            planes[0].crop_width as i32,
+            planes[0].crop_height as i32,
+            planes[1].crop_width as i32,
+            planes[1].crop_height as i32,
+            1,
+            params.block_size,
+            params.mb_row,
+            params.mb_col,
+            params.num_planes,
+            params.subsampling_x.as_ptr(),
+            params.subsampling_y.as_ptr(),
+            params.bd,
+            noise_levels.as_ptr(),
+            mvs.as_ptr(),
+            subblock_mses.as_ptr(),
+            params.q_factor,
+            params.filter_strength,
+            params.tf_wgt_calc_lvl,
+            pred.as_ptr().cast(),
+            accum.as_mut_ptr(),
+            count.as_mut_ptr(),
+            1,
+        );
+    }
+}

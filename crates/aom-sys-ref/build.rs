@@ -82,6 +82,7 @@ const SHIMS: &[&str] = &[
     "rdopt_shim",
     "compound_type_shim",
     "refgop_shim",
+    "tf_shim",
     "tpl_shim",
 ];
 
