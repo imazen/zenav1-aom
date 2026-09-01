@@ -253,3 +253,129 @@ pub fn block_yrd_idtx(
         skippable: temp_skippable,
     }
 }
+
+// ===========================================================================
+// av1_model_rd_for_sb_uv (nonrd_opt.c:462) — the nonrd search's CHROMA rate
+// and distortion estimate.
+// ===========================================================================
+
+use crate::rd::{model_rd_from_var_lapndz, rdcost};
+
+/// `num_pels_log2_lookup` (`common_data.h`) — `log2` of a block's pixel count.
+const NUM_PELS_LOG2_LOOKUP: [u32; 22] = [
+    4, 5, 5, 6, 7, 7, 8, 9, 9, 10, 11, 11, 12, 13, 13, 14, 6, 6, 8, 8, 10, 10,
+];
+
+/// One chroma plane as `av1_model_rd_for_sb_uv` reads it.
+#[derive(Clone, Copy, Debug)]
+pub struct UvPlane<'a> {
+    /// `x->plane[p].src`.
+    pub src: &'a [u8],
+    /// `x->plane[p].src.stride`.
+    pub src_stride: usize,
+    /// `xd->plane[p].dst`.
+    pub dst: &'a [u8],
+    /// `xd->plane[p].dst.stride`.
+    pub dst_stride: usize,
+    /// `p->dequant_QTX[0]`.
+    pub dequant_dc: u32,
+    /// `p->dequant_QTX[1]`.
+    pub dequant_ac: u32,
+    /// `x->color_sensitivity[COLOR_SENS_IDX(p)]` — a plane with this clear is
+    /// SKIPPED entirely, contributing neither rate, distortion nor sse.
+    pub color_sensitive: bool,
+}
+
+/// What `av1_model_rd_for_sb_uv` leaves in `RD_STATS`, plus its return value.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct UvModelRd {
+    /// `this_rdc->rate`.
+    pub rate: i32,
+    /// `this_rdc->dist`.
+    pub dist: i64,
+    /// `this_rdc->skip_txfm`.
+    pub skip_txfm: bool,
+    /// The function's return: the summed SSE over the planes it visited.
+    pub tot_sse: i64,
+}
+
+/// `av1_model_rd_for_sb_uv` (nonrd_opt.c:462).
+///
+/// Each plane contributes TWO Laplacian model terms, not one: the DC term uses
+/// `sse - var` with the DC quantizer and is halved (`rate >> 1`, `dist << 3`),
+/// and the AC term uses `var` with the AC quantizer at full weight
+/// (`dist << 4`). C's comment explains the shifts: the transform coefficients
+/// are 8x an orthogonal transform, so the quantizer step is too, which is why
+/// both quantizers are passed `>> 3`.
+///
+/// A plane whose `color_sensitive` is clear is skipped BEFORE its variance is
+/// computed, so it adds nothing to `tot_sse` either.
+///
+/// After the loop, two independent things can set `skip_txfm`: a zero rate,
+/// and the RD comparison against coding the whole thing as sse. The second
+/// also CLOBBERS rate and dist, so a plane's estimate can be discarded after
+/// being computed.
+///
+/// That comparison uses `>=`, not `>`. The two spellings differ only on an
+/// exact RD tie, which needs
+/// `ROUND_POWER_OF_TWO(rate * rdmult, 9) + dist * 128 == tot_sse * 2048`
+/// with a non-zero rate; the model cannot be steered onto it and the
+/// differential does not separate them. Recorded as a measured gap rather than
+/// a covered case: `>=` is what C has and what the port uses.
+///
+/// `planes` is indexed from plane 0; `start_plane..=stop_plane` selects which
+/// are visited, exactly as C's loop bounds do.
+#[must_use]
+pub fn model_rd_for_sb_uv(
+    planes: &[UvPlane<'_>],
+    plane_bsize: usize,
+    start_plane: usize,
+    stop_plane: usize,
+    rdmult: i32,
+    plane_h: usize,
+    plane_w: usize,
+) -> UvModelRd {
+    let mut rate_acc: i32 = 0;
+    let mut dist_acc: i64 = 0;
+    let mut skip_txfm = false;
+    let mut tot_sse: i64 = 0;
+    let n_log2 = NUM_PELS_LOG2_LOOKUP[plane_bsize];
+
+    for plane in start_plane..=stop_plane {
+        let p = &planes[plane];
+        if !p.color_sensitive {
+            continue;
+        }
+        let (var, sse) =
+            aom_dsp::dist::variance(p.src, p.src_stride, p.dst, p.dst_stride, plane_w, plane_h);
+        debug_assert!(sse >= var, "aom_variance's contract");
+        tot_sse += i64::from(sse);
+
+        // The DC half: the energy the mean accounts for, at the DC quantizer.
+        let (rate, dist) =
+            model_rd_from_var_lapndz(i64::from(sse - var), n_log2, p.dequant_dc >> 3);
+        rate_acc += rate >> 1;
+        dist_acc += dist << 3;
+
+        // The AC half: the residual variance, at the AC quantizer.
+        let (rate, dist) = model_rd_from_var_lapndz(i64::from(var), n_log2, p.dequant_ac >> 3);
+        rate_acc += rate;
+        dist_acc += dist << 4;
+    }
+
+    if rate_acc == 0 {
+        skip_txfm = true;
+    }
+    if rdcost(rdmult, rate_acc, dist_acc) >= rdcost(rdmult, 0, tot_sse << 4) {
+        rate_acc = 0;
+        dist_acc = tot_sse << 4;
+        skip_txfm = true;
+    }
+
+    UvModelRd {
+        rate: rate_acc,
+        dist: dist_acc,
+        skip_txfm,
+        tot_sse,
+    }
+}

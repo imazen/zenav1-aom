@@ -28713,3 +28713,88 @@ pub fn ref_p2_estimate_coeff(flat: &[f64], is_flash: &[i8], noise_in: &[f64]) ->
     assert_eq!(rc, 0);
     out
 }
+
+// --- av1_model_rd_for_sb_uv (nonrd_opt.c:462) — TIER 1 --------------------
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_nrd_model_rd_for_sb_uv(
+        plane_bsize: i32,
+        start_plane: i32,
+        stop_plane: i32,
+        rdmult: i32,
+        color_sensitivity: *const i32,
+        dequant_dc: *const i16,
+        dequant_ac: *const i16,
+        src: *const *const u8,
+        src_stride: *const i32,
+        dst: *const *const u8,
+        dst_stride: *const i32,
+        plane_h: i32,
+        rate_out: *mut i32,
+        dist_out: *mut i64,
+        skip_txfm_out: *mut i32,
+    ) -> i64;
+}
+
+/// What `av1_model_rd_for_sb_uv` leaves behind, plus its return.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RefUvModelRd {
+    /// `this_rdc->rate`.
+    pub rate: i32,
+    /// `this_rdc->dist`.
+    pub dist: i64,
+    /// `this_rdc->skip_txfm`.
+    pub skip_txfm: bool,
+    /// The summed SSE the function returns.
+    pub tot_sse: i64,
+}
+
+/// Reference `av1_model_rd_for_sb_uv` (nonrd_opt.c:462). **Tier 1** — the
+/// symbol is exported; the shim only assembles the encoder state it reads and
+/// rebuilds `ppi->fn_ptr[]` from the same exported `aom_variance<W>x<H>`
+/// entry points libaom's own inline BFP() cascade assigns.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_nrd_model_rd_for_sb_uv(
+    plane_bsize: i32,
+    start_plane: i32,
+    stop_plane: i32,
+    rdmult: i32,
+    color_sensitivity: &[i32; 3],
+    dequant_dc: &[i16; 3],
+    dequant_ac: &[i16; 3],
+    src: &[&[u8]; 3],
+    src_stride: &[i32; 3],
+    dst: &[&[u8]; 3],
+    dst_stride: &[i32; 3],
+    plane_h: i32,
+) -> RefUvModelRd {
+    ref_init();
+    let src_ptrs: [*const u8; 3] = [src[0].as_ptr(), src[1].as_ptr(), src[2].as_ptr()];
+    let dst_ptrs: [*const u8; 3] = [dst[0].as_ptr(), dst[1].as_ptr(), dst[2].as_ptr()];
+    let mut rate = 0i32;
+    let mut dist = 0i64;
+    let mut skip = 0i32;
+    let tot_sse = unsafe {
+        shim_nrd_model_rd_for_sb_uv(
+            plane_bsize,
+            start_plane,
+            stop_plane,
+            rdmult,
+            color_sensitivity.as_ptr(),
+            dequant_dc.as_ptr(),
+            dequant_ac.as_ptr(),
+            src_ptrs.as_ptr(),
+            src_stride.as_ptr(),
+            dst_ptrs.as_ptr(),
+            dst_stride.as_ptr(),
+            plane_h,
+            &mut rate,
+            &mut dist,
+            &mut skip,
+        )
+    };
+    assert!(tot_sse >= 0, "the uv model shim failed to allocate");
+    RefUvModelRd { rate, dist, skip_txfm: skip != 0, tot_sse }
+}

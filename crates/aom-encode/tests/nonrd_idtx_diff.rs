@@ -333,3 +333,142 @@ fn block_yrd_idtx_skippable_path_matches_c() {
         assert_eq!(got.rate, want.rate, "rate at sse_in {sse_in}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// av1_model_rd_for_sb_uv — TIER 1, the symbol is exported.
+// ---------------------------------------------------------------------------
+
+use aom_encode::nonrd_idtx::{UvPlane, model_rd_for_sb_uv};
+use aom_sys_ref::ref_nrd_model_rd_for_sb_uv;
+
+/// The (bsize, width, height) triples the chroma model is called at. C indexes
+/// `num_pels_log2_lookup[plane_bsize]` and `fn_ptr[plane_bsize].vf`, so the
+/// dimensions and the enum value have to agree.
+const UV_BSIZES: [(i32, usize, usize); 8] = [
+    (0, 4, 4),      // BLOCK_4X4
+    (3, 8, 8),      // BLOCK_8X8
+    (6, 16, 16),    // BLOCK_16X16
+    (9, 32, 32),    // BLOCK_32X32
+    (12, 64, 64),   // BLOCK_64X64
+    (7, 16, 32),    // BLOCK_16X32
+    (8, 32, 16),    // BLOCK_32X16
+    (15, 128, 128), // BLOCK_128X128
+];
+
+#[test]
+fn model_rd_for_sb_uv_matches_c() {
+    let mut rng = Rng::new(0x0B_5B_0001);
+    let (mut skipped, mut coded, mut clobbered) = (0usize, 0usize, 0usize);
+    let mut checked = 0usize;
+
+    for &(bsize, w, h) in &UV_BSIZES {
+        for _ in 0..24 {
+            let strides = [w + 16, w + 8, w + 24];
+            let mut src_bufs: Vec<Vec<u8>> = Vec::new();
+            let mut dst_bufs: Vec<Vec<u8>> = Vec::new();
+            // The prediction tracks the source, with a spread that sweeps a
+            // near-perfect match through a poor one -- the whole model is a
+            // function of the residual, so an independent draw only ever
+            // exercises the high-variance end.
+            let spread = 1u32 << rng.below(8);
+            for p in 0..3 {
+                let s: Vec<u8> = (0..strides[p] * h).map(|_| rng.below(256) as u8).collect();
+                let d: Vec<u8> = s
+                    .iter()
+                    .map(|&v| {
+                        (i32::from(v) + rng.below(2 * spread + 1) as i32 - spread as i32)
+                            .clamp(0, 255) as u8
+                    })
+                    .collect();
+                src_bufs.push(s);
+                dst_bufs.push(d);
+            }
+
+            // Real quantizer steps, and a colour-sensitivity mask that
+            // includes the all-clear case (where every plane is skipped and
+            // tot_sse stays 0).
+            let mut dq_dc = [0i16; 3];
+            let mut dq_ac = [0i16; 3];
+            let mut cs = [0i32; 3];
+            for p in 0..3 {
+                let q = rng.below(256) as i32;
+                dq_dc[p] = aom_dsp::quant::av1_dc_quant_qtx(q, 0, 8);
+                dq_ac[p] = aom_dsp::quant::av1_ac_quant_qtx(q, 0, 8);
+                cs[p] = i32::from(rng.below(4) != 0);
+            }
+            let rdmult = 1 + rng.below(1 << 14) as i32;
+
+            for &(start, stop) in &[(1i32, 2i32), (1, 1), (2, 2)] {
+                let src_refs: [&[u8]; 3] = [&src_bufs[0], &src_bufs[1], &src_bufs[2]];
+                let dst_refs: [&[u8]; 3] = [&dst_bufs[0], &dst_bufs[1], &dst_bufs[2]];
+                let want = ref_nrd_model_rd_for_sb_uv(
+                    bsize,
+                    start,
+                    stop,
+                    rdmult,
+                    &cs,
+                    &dq_dc,
+                    &dq_ac,
+                    &src_refs,
+                    &[strides[0] as i32, strides[1] as i32, strides[2] as i32],
+                    &dst_refs,
+                    &[strides[0] as i32, strides[1] as i32, strides[2] as i32],
+                    h as i32,
+                );
+
+                let planes: Vec<UvPlane<'_>> = (0..3)
+                    .map(|p| UvPlane {
+                        src: &src_bufs[p],
+                        src_stride: strides[p],
+                        dst: &dst_bufs[p],
+                        dst_stride: strides[p],
+                        dequant_dc: dq_dc[p] as u32,
+                        dequant_ac: dq_ac[p] as u32,
+                        color_sensitive: cs[p] != 0,
+                    })
+                    .collect();
+                let got = model_rd_for_sb_uv(
+                    &planes,
+                    bsize as usize,
+                    start as usize,
+                    stop as usize,
+                    rdmult,
+                    h,
+                    w,
+                );
+
+                assert_eq!(
+                    got.tot_sse, want.tot_sse,
+                    "tot_sse bsize {bsize} {start}..={stop}"
+                );
+                assert_eq!(got.rate, want.rate, "rate bsize {bsize} {start}..={stop}");
+                assert_eq!(got.dist, want.dist, "dist bsize {bsize} {start}..={stop}");
+                assert_eq!(
+                    got.skip_txfm, want.skip_txfm,
+                    "skip_txfm bsize {bsize} {start}..={stop}"
+                );
+                if want.skip_txfm {
+                    skipped += 1;
+                    // The RD clobber is the case where skip is set AND the
+                    // distortion was replaced by the sse -- distinct from the
+                    // zero-rate case.
+                    if want.rate == 0 && want.dist == want.tot_sse << 4 && want.tot_sse != 0 {
+                        clobbered += 1;
+                    }
+                } else {
+                    coded += 1;
+                }
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 500, "only {checked} cells");
+    assert!(
+        skipped > 50 && coded > 50,
+        "one skip_txfm arm never fired: {skipped}/{coded}"
+    );
+    assert!(
+        clobbered > 20,
+        "the RD comparison never clobbered rate and dist ({clobbered}) -- that arm is untested"
+    );
+}

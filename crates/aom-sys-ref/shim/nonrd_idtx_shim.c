@@ -48,6 +48,7 @@
 #include "av1/encoder/encodemv.h"
 #include "av1/encoder/rdopt.h"
 #include "av1/encoder/nonrd_opt.h"
+#include "aom_dsp/variance.h"
 
 /* --- the fast-IDTX scan tables, copied out of nonrd_opt.h's own definitions. */
 void shim_nrd_fast_idtx_scan(int tx_size, int inverse, int16_t *out) {
@@ -126,4 +127,110 @@ int shim_nrd_block_yrd_idtx(const uint8_t *src, int src_stride,
   aom_free(pred_a);
   free(x);
   return skippable;
+}
+
+/* ---- av1_model_rd_for_sb_uv (nonrd_opt.c:462) ----------------------------
+ * EXPORTED, so this is TIER 1: the shim only assembles the AV1_COMP /
+ * MACROBLOCK / MACROBLOCKD it reads.
+ *
+ * `cpi->ppi->fn_ptr[]` is filled with the same exported `aom_variance<W>x<H>`
+ * entry points libaom's own BFP() cascade assigns; that cascade lives inline
+ * inside av1_create_primary_compressor and is not separately callable. Same
+ * technique, and the same justification, as shim/rdopt_shim.c's
+ * `shim_rd_fill_vf` -- see that file's section 17.
+ *
+ * The source and prediction planes are bounced through 64-byte aom_memalign
+ * scratch because the dispatched variance kernels read them with vector loads
+ * (DIFFERENTIAL_PLAYBOOK §3a(c)).
+ */
+static void shim_nrd_fill_vf(aom_variance_fn_ptr_t *t) {
+  memset(t, 0, sizeof(*t) * BLOCK_SIZES_ALL);
+  t[BLOCK_4X4].vf = aom_variance4x4;
+  t[BLOCK_4X8].vf = aom_variance4x8;
+  t[BLOCK_8X4].vf = aom_variance8x4;
+  t[BLOCK_8X8].vf = aom_variance8x8;
+  t[BLOCK_8X16].vf = aom_variance8x16;
+  t[BLOCK_16X8].vf = aom_variance16x8;
+  t[BLOCK_16X16].vf = aom_variance16x16;
+  t[BLOCK_16X32].vf = aom_variance16x32;
+  t[BLOCK_32X16].vf = aom_variance32x16;
+  t[BLOCK_32X32].vf = aom_variance32x32;
+  t[BLOCK_32X64].vf = aom_variance32x64;
+  t[BLOCK_64X32].vf = aom_variance64x32;
+  t[BLOCK_64X64].vf = aom_variance64x64;
+  t[BLOCK_64X128].vf = aom_variance64x128;
+  t[BLOCK_128X64].vf = aom_variance128x64;
+  t[BLOCK_128X128].vf = aom_variance128x128;
+  t[BLOCK_4X16].vf = aom_variance4x16;
+  t[BLOCK_16X4].vf = aom_variance16x4;
+  t[BLOCK_8X32].vf = aom_variance8x32;
+  t[BLOCK_32X8].vf = aom_variance32x8;
+  t[BLOCK_16X64].vf = aom_variance16x64;
+  t[BLOCK_64X16].vf = aom_variance64x16;
+}
+
+int64_t shim_nrd_model_rd_for_sb_uv(int plane_bsize, int start_plane,
+                                    int stop_plane, int rdmult,
+                                    const int *color_sensitivity,
+                                    const int16_t *dequant_dc,
+                                    const int16_t *dequant_ac,
+                                    const uint8_t *const *src,
+                                    const int *src_stride,
+                                    const uint8_t *const *dst,
+                                    const int *dst_stride, int plane_h,
+                                    int32_t *rate_out, int64_t *dist_out,
+                                    int *skip_txfm_out) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(*ppi));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  uint8_t *sbuf[MAX_MB_PLANE] = { NULL, NULL, NULL };
+  uint8_t *dbuf[MAX_MB_PLANE] = { NULL, NULL, NULL };
+  int16_t *dq[MAX_MB_PLANE] = { NULL, NULL, NULL };
+  if (!cpi || !ppi || !x) {
+    free(cpi); free(ppi); free(x);
+    return -1;
+  }
+  cpi->ppi = ppi;
+  shim_nrd_fill_vf(ppi->fn_ptr);
+  x->rdmult = rdmult;
+
+  int ok = 1;
+  for (int p = 0; p < MAX_MB_PLANE; ++p) {
+    const size_t sn = (size_t)src_stride[p] * plane_h + 64;
+    const size_t dn = (size_t)dst_stride[p] * plane_h + 64;
+    sbuf[p] = (uint8_t *)aom_memalign(64, sn);
+    dbuf[p] = (uint8_t *)aom_memalign(64, dn);
+    dq[p] = (int16_t *)aom_memalign(64, 8 * sizeof(int16_t));
+    if (!sbuf[p] || !dbuf[p] || !dq[p]) { ok = 0; break; }
+    memcpy(sbuf[p], src[p], (size_t)src_stride[p] * plane_h);
+    memcpy(dbuf[p], dst[p], (size_t)dst_stride[p] * plane_h);
+    memset(dq[p], 0, 8 * sizeof(int16_t));
+    dq[p][0] = dequant_dc[p];
+    dq[p][1] = dequant_ac[p];
+    x->plane[p].src.buf = sbuf[p];
+    x->plane[p].src.stride = src_stride[p];
+    x->plane[p].dequant_QTX = dq[p];
+    x->e_mbd.plane[p].dst.buf = dbuf[p];
+    x->e_mbd.plane[p].dst.stride = dst_stride[p];
+    x->color_sensitivity[COLOR_SENS_IDX(p)] = (uint8_t)color_sensitivity[p];
+  }
+
+  int64_t tot_sse = -1;
+  if (ok) {
+    RD_STATS rdc;
+    memset(&rdc, 0, sizeof(rdc));
+    tot_sse = av1_model_rd_for_sb_uv(cpi, (BLOCK_SIZE)plane_bsize, x, &x->e_mbd,
+                                     &rdc, start_plane, stop_plane);
+    *rate_out = rdc.rate;
+    *dist_out = rdc.dist;
+    *skip_txfm_out = rdc.skip_txfm;
+  }
+
+  for (int p = 0; p < MAX_MB_PLANE; ++p) {
+    aom_free(sbuf[p]);
+    aom_free(dbuf[p]);
+    aom_free(dq[p]);
+  }
+  free(cpi); free(ppi); free(x);
+  return tot_sse;
 }
