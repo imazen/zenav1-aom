@@ -372,3 +372,269 @@ void shim_rdc_horver_via_tu(const int16_t *diff, int stride, int w, int h,
                             float *hcorr, float *vcorr) {
   shim_rdc_get_horver_correlation_full_c(diff, stride, w, h, hcorr, vcorr);
 }
+
+/* ======================================================================== *
+ * 5. The mode / reference skip mask (rdopt.c:4006-4290).
+ *
+ * `mode_skip_mask_t` crosses the boundary flattened: `pred_modes[REF_FRAMES]`
+ * as uint32 and `ref_combo[REF_FRAMES][REF_FRAMES + 1]` as uint8, because
+ * `bool` has no guaranteed C ABI width worth relying on across the FFI.
+ * ======================================================================== */
+
+static void shim_rd_load_mask(mode_skip_mask_t *mask, const uint32_t *pred_modes,
+                              const uint8_t *ref_combo) {
+  for (int i = 0; i < REF_FRAMES; ++i) {
+    mask->pred_modes[i] = pred_modes[i];
+    for (int j = 0; j < REF_FRAMES + 1; ++j)
+      mask->ref_combo[i][j] = (bool)ref_combo[i * (REF_FRAMES + 1) + j];
+  }
+}
+
+static void shim_rd_store_mask(const mode_skip_mask_t *mask, uint32_t *pred_modes,
+                               uint8_t *ref_combo) {
+  for (int i = 0; i < REF_FRAMES; ++i) {
+    pred_modes[i] = mask->pred_modes[i];
+    for (int j = 0; j < REF_FRAMES + 1; ++j)
+      ref_combo[i * (REF_FRAMES + 1) + j] = (uint8_t)mask->ref_combo[i][j];
+  }
+}
+
+static void shim_rd_load_combo(bool combo[REF_FRAMES][REF_FRAMES + 1],
+                               const uint8_t *ref_combo) {
+  for (int i = 0; i < REF_FRAMES; ++i)
+    for (int j = 0; j < REF_FRAMES + 1; ++j)
+      combo[i][j] = (bool)ref_combo[i * (REF_FRAMES + 1) + j];
+}
+
+static void shim_rd_store_combo(const bool combo[REF_FRAMES][REF_FRAMES + 1],
+                                uint8_t *ref_combo) {
+  for (int i = 0; i < REF_FRAMES; ++i)
+    for (int j = 0; j < REF_FRAMES + 1; ++j)
+      ref_combo[i * (REF_FRAMES + 1) + j] = (uint8_t)combo[i][j];
+}
+
+void shim_rdopt_disable_reference(int ref, uint8_t *ref_combo) {
+  bool combo[REF_FRAMES][REF_FRAMES + 1];
+  shim_rd_load_combo(combo, ref_combo);
+  disable_reference((MV_REFERENCE_FRAME)ref, combo);
+  shim_rd_store_combo(combo, ref_combo);
+}
+
+void shim_rdopt_disable_inter_references_except_altref(uint8_t *ref_combo) {
+  bool combo[REF_FRAMES][REF_FRAMES + 1];
+  shim_rd_load_combo(combo, ref_combo);
+  disable_inter_references_except_altref(combo);
+  shim_rd_store_combo(combo, ref_combo);
+}
+
+void shim_rdopt_default_skip_mask(int ref_set, uint32_t *pred_modes,
+                                  uint8_t *ref_combo) {
+  mode_skip_mask_t mask;
+  /* Deliberately NOT zeroed: default_skip_mask's REF_SET_FULL arm memsets the
+   * whole struct and its other arms memset only pred_modes, so a pre-poisoned
+   * buffer is what proves each arm writes everything it claims to. */
+  memset(&mask, 0xa5, sizeof(mask));
+  default_skip_mask(&mask, (REF_SET)ref_set);
+  shim_rd_store_mask(&mask, pred_modes, ref_combo);
+}
+
+int shim_rdopt_mask_says_skip(const uint32_t *pred_modes,
+                              const uint8_t *ref_combo, int rf0, int rf1,
+                              int this_mode) {
+  mode_skip_mask_t mask;
+  memset(&mask, 0, sizeof(mask));
+  shim_rd_load_mask(&mask, pred_modes, ref_combo);
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  return (int)mask_says_skip(&mask, rf, (PREDICTION_MODE)this_mode);
+}
+
+/* ======================================================================== *
+ * 6. Neighbour reference matching (rdopt.c:2465-2525, :5048-:5090).
+ * ======================================================================== */
+
+int shim_rdopt_match_ref_frame_pair(int mbmi_rf0, int mbmi_rf1, int rf0,
+                                    int rf1) {
+  MB_MODE_INFO mbmi;
+  memset(&mbmi, 0, sizeof(mbmi));
+  mbmi.ref_frame[0] = (MV_REFERENCE_FRAME)mbmi_rf0;
+  mbmi.ref_frame[1] = (MV_REFERENCE_FRAME)mbmi_rf1;
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  return match_ref_frame_pair(&mbmi, rf);
+}
+
+int shim_rdopt_ref_match_found_in_nb_blocks(int cur0, int cur1, int nb0,
+                                            int nb1) {
+  MB_MODE_INFO cur, nb;
+  memset(&cur, 0, sizeof(cur));
+  memset(&nb, 0, sizeof(nb));
+  cur.ref_frame[0] = (MV_REFERENCE_FRAME)cur0;
+  cur.ref_frame[1] = (MV_REFERENCE_FRAME)cur1;
+  nb.ref_frame[0] = (MV_REFERENCE_FRAME)nb0;
+  nb.ref_frame[1] = (MV_REFERENCE_FRAME)nb1;
+  return ref_match_found_in_nb_blocks(&cur, &nb);
+}
+
+void shim_rdopt_match_ref_frame(int mbmi_rf0, int mbmi_rf1, int use_intrabc,
+                                int rf0, int rf1, int *is_ref_match) {
+  MB_MODE_INFO mbmi;
+  memset(&mbmi, 0, sizeof(mbmi));
+  mbmi.ref_frame[0] = (MV_REFERENCE_FRAME)mbmi_rf0;
+  mbmi.ref_frame[1] = (MV_REFERENCE_FRAME)mbmi_rf1;
+  mbmi.use_intrabc = (uint8_t)use_intrabc;
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  match_ref_frame(&mbmi, rf, is_ref_match);
+}
+
+int shim_rdopt_compound_skip_using_neighbor_refs(
+    int this_mode, int rf0, int rf1, int prune_ext_comp_using_neighbors,
+    int left_available, int up_available, const int *left_rf, const int *above_rf,
+    const int *nb_intrabc) {
+  MACROBLOCKD *xd = (MACROBLOCKD *)calloc(1, sizeof(*xd));
+  MB_MODE_INFO *left = (MB_MODE_INFO *)calloc(1, sizeof(*left));
+  MB_MODE_INFO *above = (MB_MODE_INFO *)calloc(1, sizeof(*above));
+  left->ref_frame[0] = (MV_REFERENCE_FRAME)left_rf[0];
+  left->ref_frame[1] = (MV_REFERENCE_FRAME)left_rf[1];
+  left->use_intrabc = (uint8_t)nb_intrabc[0];
+  above->ref_frame[0] = (MV_REFERENCE_FRAME)above_rf[0];
+  above->ref_frame[1] = (MV_REFERENCE_FRAME)above_rf[1];
+  above->use_intrabc = (uint8_t)nb_intrabc[1];
+  xd->left_available = left_available;
+  xd->up_available = up_available;
+  xd->left_mbmi = left;
+  xd->above_mbmi = above;
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  const int r = compound_skip_using_neighbor_refs(
+      xd, (PREDICTION_MODE)this_mode, rf, prune_ext_comp_using_neighbors);
+  free(above);
+  free(left);
+  free(xd);
+  return r;
+}
+
+/* `find_ref_match_in_{above,left}_nbs` walk the mi grid through `xd->mi`,
+ * `xd->mi_stride`, `xd->width` / `xd->height`. The shim builds a real grid of
+ * MB_MODE_INFO pointers so the walk (including its `mi_size_wide[bsize]`
+ * stepping, which is the part a port is most likely to get wrong) is the C
+ * one. `grid_rf` is `rows * cols * 2` reference indices in raster order and
+ * `grid_bsize` the matching per-MI block sizes. */
+int shim_rdopt_find_ref_match_in_nbs(int above, int total_mi, int rows,
+                                     int cols, int mi_row, int mi_col,
+                                     int width, int height, int up_available,
+                                     int left_available, const int *grid_rf,
+                                     const int *grid_bsize, const int *cur_rf) {
+  const int n = rows * cols;
+  MB_MODE_INFO *store = (MB_MODE_INFO *)calloc(n, sizeof(*store));
+  MB_MODE_INFO **grid = (MB_MODE_INFO **)calloc(n, sizeof(*grid));
+  for (int i = 0; i < n; ++i) {
+    store[i].ref_frame[0] = (MV_REFERENCE_FRAME)grid_rf[2 * i];
+    store[i].ref_frame[1] = (MV_REFERENCE_FRAME)grid_rf[2 * i + 1];
+    store[i].bsize = (BLOCK_SIZE)grid_bsize[i];
+    grid[i] = &store[i];
+  }
+  MB_MODE_INFO cur;
+  memset(&cur, 0, sizeof(cur));
+  cur.ref_frame[0] = (MV_REFERENCE_FRAME)cur_rf[0];
+  cur.ref_frame[1] = (MV_REFERENCE_FRAME)cur_rf[1];
+  const int cur_idx = mi_row * cols + mi_col;
+  grid[cur_idx] = &cur;
+  MACROBLOCKD *xd = (MACROBLOCKD *)calloc(1, sizeof(*xd));
+  xd->mi = grid + cur_idx;
+  xd->mi_stride = cols;
+  xd->mi_row = mi_row;
+  xd->mi_col = mi_col;
+  xd->width = width;
+  xd->height = height;
+  xd->up_available = up_available;
+  xd->left_available = left_available;
+  const int r = above ? find_ref_match_in_above_nbs(total_mi, xd)
+                      : find_ref_match_in_left_nbs(total_mi, xd);
+  free(xd);
+  free(grid);
+  free(store);
+  return r;
+}
+
+/* ======================================================================== *
+ * 7. Reference-availability predicates and the RD-order sorts.
+ * ======================================================================== */
+
+int shim_rdopt_is_ref_frame_used_by_compound_ref(int ref_frame,
+                                                 int skip_ref_frame_mask) {
+  return is_ref_frame_used_by_compound_ref(ref_frame, skip_ref_frame_mask);
+}
+
+int shim_rdopt_is_ref_frame_used_in_cache(int ref_frame, int have_cache,
+                                          int cache_rf0, int cache_rf1) {
+  MB_MODE_INFO cache;
+  memset(&cache, 0, sizeof(cache));
+  cache.ref_frame[0] = (MV_REFERENCE_FRAME)cache_rf0;
+  cache.ref_frame[1] = (MV_REFERENCE_FRAME)cache_rf1;
+  return is_ref_frame_used_in_cache((MV_REFERENCE_FRAME)ref_frame,
+                                    have_cache ? &cache : NULL);
+}
+
+int shim_rdopt_fetch_picked_ref_frames_mask(int mi_row, int mi_col, int bsize,
+                                            int mib_size, const int *picked) {
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  x->e_mbd.mi_row = mi_row;
+  x->e_mbd.mi_col = mi_col;
+  for (int i = 0; i < 32 * 32; ++i) x->picked_ref_frames_mask[i] = picked[i];
+  const int r = fetch_picked_ref_frames_mask(x, (BLOCK_SIZE)bsize, mib_size);
+  free(x);
+  return r;
+}
+
+int shim_rdopt_skip_compound_using_best_single_mode_ref(
+    int this_mode, int rf0, int rf1, const int *best_single_mode,
+    int prune_comp_using_best_single_mode_ref) {
+  PREDICTION_MODE best[REF_FRAMES];
+  for (int i = 0; i < REF_FRAMES; ++i)
+    best[i] = (PREDICTION_MODE)best_single_mode[i];
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  return skip_compound_using_best_single_mode_ref(
+      (PREDICTION_MODE)this_mode, rf, best,
+      prune_comp_using_best_single_mode_ref);
+}
+
+/* `find_top_ref` sorts a copy of ref_frame_rd[1..] with qsort/compare_int64 and
+ * writes the 110%-of-best cut-off back into slot 0. Both the sort comparator
+ * and the cut-off arithmetic are under test. */
+void shim_rdopt_find_top_ref(int64_t *ref_frame_rd) {
+  find_top_ref(ref_frame_rd);
+}
+
+int shim_rdopt_in_single_ref_cutoff(const int64_t *ref_frame_rd, int f1,
+                                    int f2) {
+  int64_t copy[REF_FRAMES];
+  memcpy(copy, ref_frame_rd, sizeof(copy));
+  return (int)in_single_ref_cutoff(copy, (MV_REFERENCE_FRAME)f1,
+                                   (MV_REFERENCE_FRAME)f2);
+}
+
+/* `inter_modes_info_sort` + `compare_rd_idx_pair`: the est-rd ranking that
+ * decides which candidates reach the real transform search. The tie-break on
+ * `idx` (aomedia:2928) is the part a port gets wrong, and it is only visible
+ * when equal RDs are present, so the harness feeds duplicates deliberately. */
+void shim_rdopt_inter_modes_info_sort(int num, const int64_t *est_rd,
+                                      int *out_idx, int64_t *out_rd) {
+  InterModesInfo *info = (InterModesInfo *)calloc(1, sizeof(*info));
+  RdIdxPair *pairs = (RdIdxPair *)calloc(MAX_INTER_MODES, sizeof(*pairs));
+  info->num = num;
+  for (int i = 0; i < num; ++i) info->est_rd_arr[i] = est_rd[i];
+  inter_modes_info_sort(info, pairs);
+  for (int i = 0; i < num; ++i) {
+    out_idx[i] = pairs[i].idx;
+    out_rd[i] = pairs[i].rd;
+  }
+  free(pairs);
+  free(info);
+}
+
+int shim_rdopt_compare_int64(int64_t a, int64_t b) {
+  return compare_int64(&a, &b);
+}

@@ -19103,3 +19103,357 @@ pub fn ref_horver_correlation_full(diff: &[i16], stride: usize, w: usize, h: usi
     };
     (hc, vc)
 }
+
+// --- rdopt.c: the mode / reference skip mask + neighbour matching ----------
+
+/// `mode_skip_mask_t` (rdopt.c:4006), flattened for the FFI: `pred_modes` as
+/// `u32` and `ref_combo[i][j + 1]` as `u8` (C `bool` has no ABI width worth
+/// relying on across the boundary).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModeSkipMaskFlat {
+    /// `pred_modes[REF_FRAMES]`.
+    pub pred_modes: [u32; C_REF_FRAMES],
+    /// `ref_combo[REF_FRAMES][REF_FRAMES + 1]`, row-major.
+    pub ref_combo: [u8; C_REF_FRAMES * (C_REF_FRAMES + 1)],
+}
+
+impl Default for ModeSkipMaskFlat {
+    fn default() -> Self {
+        Self {
+            pred_modes: [0; C_REF_FRAMES],
+            ref_combo: [0; C_REF_FRAMES * (C_REF_FRAMES + 1)],
+        }
+    }
+}
+
+unsafe extern "C" {
+    fn shim_rdopt_disable_reference(r: i32, ref_combo: *mut u8);
+    fn shim_rdopt_disable_inter_references_except_altref(ref_combo: *mut u8);
+    fn shim_rdopt_default_skip_mask(ref_set: i32, pred_modes: *mut u32, ref_combo: *mut u8);
+    fn shim_rdopt_mask_says_skip(
+        pred_modes: *const u32,
+        ref_combo: *const u8,
+        rf0: i32,
+        rf1: i32,
+        this_mode: i32,
+    ) -> i32;
+    fn shim_rdopt_match_ref_frame_pair(
+        mbmi_rf0: i32,
+        mbmi_rf1: i32,
+        rf0: i32,
+        rf1: i32,
+    ) -> i32;
+    fn shim_rdopt_ref_match_found_in_nb_blocks(cur0: i32, cur1: i32, nb0: i32, nb1: i32) -> i32;
+    fn shim_rdopt_match_ref_frame(
+        mbmi_rf0: i32,
+        mbmi_rf1: i32,
+        use_intrabc: i32,
+        rf0: i32,
+        rf1: i32,
+        is_ref_match: *mut i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_compound_skip_using_neighbor_refs(
+        this_mode: i32,
+        rf0: i32,
+        rf1: i32,
+        prune_ext_comp_using_neighbors: i32,
+        left_available: i32,
+        up_available: i32,
+        left_rf: *const i32,
+        above_rf: *const i32,
+        nb_intrabc: *const i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_find_ref_match_in_nbs(
+        above: i32,
+        total_mi: i32,
+        rows: i32,
+        cols: i32,
+        mi_row: i32,
+        mi_col: i32,
+        width: i32,
+        height: i32,
+        up_available: i32,
+        left_available: i32,
+        grid_rf: *const i32,
+        grid_bsize: *const i32,
+        cur_rf: *const i32,
+    ) -> i32;
+    fn shim_rdopt_is_ref_frame_used_by_compound_ref(
+        ref_frame: i32,
+        skip_ref_frame_mask: i32,
+    ) -> i32;
+    fn shim_rdopt_is_ref_frame_used_in_cache(
+        ref_frame: i32,
+        have_cache: i32,
+        cache_rf0: i32,
+        cache_rf1: i32,
+    ) -> i32;
+    fn shim_rdopt_fetch_picked_ref_frames_mask(
+        mi_row: i32,
+        mi_col: i32,
+        bsize: i32,
+        mib_size: i32,
+        picked: *const i32,
+    ) -> i32;
+    fn shim_rdopt_skip_compound_using_best_single_mode_ref(
+        this_mode: i32,
+        rf0: i32,
+        rf1: i32,
+        best_single_mode: *const i32,
+        prune_comp_using_best_single_mode_ref: i32,
+    ) -> i32;
+    fn shim_rdopt_find_top_ref(ref_frame_rd: *mut i64);
+    fn shim_rdopt_in_single_ref_cutoff(ref_frame_rd: *const i64, f1: i32, f2: i32) -> i32;
+    fn shim_rdopt_inter_modes_info_sort(
+        num: i32,
+        est_rd: *const i64,
+        out_idx: *mut i32,
+        out_rd: *mut i64,
+    );
+    fn shim_rdopt_compare_int64(a: i64, b: i64) -> i32;
+}
+
+/// Reference `disable_reference` (rdopt.c:4018).
+pub fn ref_rdopt_disable_reference(r: i32, mask: &mut ModeSkipMaskFlat) {
+    ref_init();
+    unsafe { shim_rdopt_disable_reference(r, mask.ref_combo.as_mut_ptr()) }
+}
+
+/// Reference `disable_inter_references_except_altref` (rdopt.c:4026).
+pub fn ref_rdopt_disable_inter_references_except_altref(mask: &mut ModeSkipMaskFlat) {
+    ref_init();
+    unsafe { shim_rdopt_disable_inter_references_except_altref(mask.ref_combo.as_mut_ptr()) }
+}
+
+/// Reference `default_skip_mask` (rdopt.c:4050). The shim poisons the struct
+/// with `0xa5` first, so a `ref_set` arm that fails to write a field shows up
+/// as `0xa5` rather than as a plausible zero.
+pub fn ref_rdopt_default_skip_mask(ref_set: i32) -> ModeSkipMaskFlat {
+    ref_init();
+    let mut m = ModeSkipMaskFlat::default();
+    unsafe {
+        shim_rdopt_default_skip_mask(
+            ref_set,
+            m.pred_modes.as_mut_ptr(),
+            m.ref_combo.as_mut_ptr(),
+        )
+    };
+    m
+}
+
+/// Reference `mask_says_skip` (rdopt.c:4571).
+pub fn ref_rdopt_mask_says_skip(mask: &ModeSkipMaskFlat, rf: (i32, i32), this_mode: i32) -> bool {
+    ref_init();
+    unsafe {
+        shim_rdopt_mask_says_skip(
+            mask.pred_modes.as_ptr(),
+            mask.ref_combo.as_ptr(),
+            rf.0,
+            rf.1,
+            this_mode,
+        ) != 0
+    }
+}
+
+/// Reference `match_ref_frame_pair` (rdopt.c:4634).
+pub fn ref_rdopt_match_ref_frame_pair(mbmi_rf: (i32, i32), rf: (i32, i32)) -> bool {
+    ref_init();
+    unsafe { shim_rdopt_match_ref_frame_pair(mbmi_rf.0, mbmi_rf.1, rf.0, rf.1) != 0 }
+}
+
+/// Reference `ref_match_found_in_nb_blocks` (rdopt.c:2465).
+pub fn ref_rdopt_ref_match_found_in_nb_blocks(cur: (i32, i32), nb: (i32, i32)) -> bool {
+    ref_init();
+    unsafe { shim_rdopt_ref_match_found_in_nb_blocks(cur.0, cur.1, nb.0, nb.1) != 0 }
+}
+
+/// Reference `match_ref_frame` (rdopt.c:5048) — accumulates into
+/// `is_ref_match`, which is in/out.
+pub fn ref_rdopt_match_ref_frame(
+    mbmi_rf: (i32, i32),
+    use_intrabc: bool,
+    rf: (i32, i32),
+    is_ref_match: &mut [i32; 2],
+) {
+    ref_init();
+    unsafe {
+        shim_rdopt_match_ref_frame(
+            mbmi_rf.0,
+            mbmi_rf.1,
+            i32::from(use_intrabc),
+            rf.0,
+            rf.1,
+            is_ref_match.as_mut_ptr(),
+        )
+    }
+}
+
+/// Reference `compound_skip_using_neighbor_refs` (rdopt.c:5062).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_compound_skip_using_neighbor_refs(
+    this_mode: i32,
+    rf: (i32, i32),
+    prune_ext_comp_using_neighbors: i32,
+    left_available: bool,
+    up_available: bool,
+    left_rf: (i32, i32),
+    above_rf: (i32, i32),
+    nb_intrabc: (bool, bool),
+) -> bool {
+    ref_init();
+    let l = [left_rf.0, left_rf.1];
+    let a = [above_rf.0, above_rf.1];
+    let ib = [i32::from(nb_intrabc.0), i32::from(nb_intrabc.1)];
+    unsafe {
+        shim_rdopt_compound_skip_using_neighbor_refs(
+            this_mode,
+            rf.0,
+            rf.1,
+            prune_ext_comp_using_neighbors,
+            i32::from(left_available),
+            i32::from(up_available),
+            l.as_ptr(),
+            a.as_ptr(),
+            ib.as_ptr(),
+        ) != 0
+    }
+}
+
+/// Reference `find_ref_match_in_above_nbs` (rdopt.c:2482) when `above`, else
+/// `find_ref_match_in_left_nbs` (`:2504`). The shim builds a real mi grid so
+/// the `mi_size_wide[bsize]` stepping is C's.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_find_ref_match_in_nbs(
+    above: bool,
+    total_mi: i32,
+    rows: usize,
+    cols: usize,
+    mi_row: usize,
+    mi_col: usize,
+    width: i32,
+    height: i32,
+    up_available: bool,
+    left_available: bool,
+    grid_rf: &[i32],
+    grid_bsize: &[i32],
+    cur_rf: (i32, i32),
+) -> bool {
+    ref_init();
+    assert_eq!(grid_rf.len(), rows * cols * 2);
+    assert_eq!(grid_bsize.len(), rows * cols);
+    let cur = [cur_rf.0, cur_rf.1];
+    unsafe {
+        shim_rdopt_find_ref_match_in_nbs(
+            i32::from(above),
+            total_mi,
+            rows as i32,
+            cols as i32,
+            mi_row as i32,
+            mi_col as i32,
+            width,
+            height,
+            i32::from(up_available),
+            i32::from(left_available),
+            grid_rf.as_ptr(),
+            grid_bsize.as_ptr(),
+            cur.as_ptr(),
+        ) != 0
+    }
+}
+
+/// Reference `is_ref_frame_used_by_compound_ref` (rdopt.c:4300).
+pub fn ref_rdopt_is_ref_frame_used_by_compound_ref(
+    ref_frame: i32,
+    skip_ref_frame_mask: i32,
+) -> bool {
+    ref_init();
+    unsafe { shim_rdopt_is_ref_frame_used_by_compound_ref(ref_frame, skip_ref_frame_mask) != 0 }
+}
+
+/// Reference `is_ref_frame_used_in_cache` (rdopt.c:4313). `cache` is `None`
+/// for C's NULL `mi_cache`.
+pub fn ref_rdopt_is_ref_frame_used_in_cache(ref_frame: i32, cache: Option<(i32, i32)>) -> bool {
+    ref_init();
+    let (have, rf) = match cache {
+        Some(c) => (1, c),
+        None => (0, (0, 0)),
+    };
+    unsafe { shim_rdopt_is_ref_frame_used_in_cache(ref_frame, have, rf.0, rf.1) != 0 }
+}
+
+/// Reference `fetch_picked_ref_frames_mask` (rdopt.c:4613). `picked` is the
+/// `32 * 32` per-MI mask array C reads out of `MACROBLOCK`.
+pub fn ref_rdopt_fetch_picked_ref_frames_mask(
+    mi_row: i32,
+    mi_col: i32,
+    bsize: i32,
+    mib_size: i32,
+    picked: &[i32],
+) -> i32 {
+    ref_init();
+    assert_eq!(picked.len(), 32 * 32);
+    unsafe {
+        shim_rdopt_fetch_picked_ref_frames_mask(mi_row, mi_col, bsize, mib_size, picked.as_ptr())
+    }
+}
+
+/// Reference `skip_compound_using_best_single_mode_ref` (rdopt.c:5102).
+pub fn ref_rdopt_skip_compound_using_best_single_mode_ref(
+    this_mode: i32,
+    rf: (i32, i32),
+    best_single_mode: &[i32; C_REF_FRAMES],
+    prune_level: i32,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_rdopt_skip_compound_using_best_single_mode_ref(
+            this_mode,
+            rf.0,
+            rf.1,
+            best_single_mode.as_ptr(),
+            prune_level,
+        ) != 0
+    }
+}
+
+/// Reference `find_top_ref` (rdopt.c:5180) — edits slot 0 in place.
+pub fn ref_rdopt_find_top_ref(ref_frame_rd: &mut [i64; C_REF_FRAMES]) {
+    ref_init();
+    unsafe { shim_rdopt_find_top_ref(ref_frame_rd.as_mut_ptr()) }
+}
+
+/// Reference `in_single_ref_cutoff` (rdopt.c:5197).
+pub fn ref_rdopt_in_single_ref_cutoff(
+    ref_frame_rd: &[i64; C_REF_FRAMES],
+    f1: i32,
+    f2: i32,
+) -> bool {
+    ref_init();
+    unsafe { shim_rdopt_in_single_ref_cutoff(ref_frame_rd.as_ptr(), f1, f2) != 0 }
+}
+
+/// Reference `inter_modes_info_sort` (rdopt.c:502) + `compare_rd_idx_pair`
+/// (`:485`). Returns the `(idx, rd)` pairs in C's `qsort` order.
+pub fn ref_rdopt_inter_modes_info_sort(est_rd: &[i64]) -> Vec<(i32, i64)> {
+    ref_init();
+    let n = est_rd.len();
+    let mut idx = vec![0i32; n];
+    let mut rd = vec![0i64; n];
+    unsafe {
+        shim_rdopt_inter_modes_info_sort(
+            n as i32,
+            est_rd.as_ptr(),
+            idx.as_mut_ptr(),
+            rd.as_mut_ptr(),
+        )
+    };
+    idx.into_iter().zip(rd).collect()
+}
+
+/// Reference `compare_int64` (rdopt.c:5134).
+pub fn ref_rdopt_compare_int64(a: i64, b: i64) -> i32 {
+    ref_init();
+    unsafe { shim_rdopt_compare_int64(a, b) }
+}

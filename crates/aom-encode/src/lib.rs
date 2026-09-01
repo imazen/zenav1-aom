@@ -55,6 +55,7 @@ pub mod rc;
 pub mod rd;
 pub mod rd_thresh;
 pub mod rdopt_mv;
+pub mod rdopt_skip;
 pub mod rd_pick;
 pub mod real_costs;
 pub mod resize;
