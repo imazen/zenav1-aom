@@ -254,6 +254,36 @@ and it fails on x86 while passing on aarch64, where the NEON kernel happens to
 handle it. Bound each sweep by the C function's real contract, and say in the
 test where the bound comes from.
 
+### 3b. A `to_bits()` assertion on a NaN is a profile-dependent gate
+
+Measured 2026-08-31 in `tpl_model_diff.rs`. `laplace_entropy_matches_c`
+passed under the dev profile and failed under `--profile test-fast` on one
+cell: `(q_step, b, zero_bin_ratio) = (0, 0, 0)`, where the closed form is
+`-0 * -inf`, i.e. NaN. Both sides returned NaN. The assertion compared
+`to_bits()`, so it was comparing **NaN payloads** — `0x7FF8000000000000` from
+the port against a differently-signed quiet NaN from C. IEEE-754 does not
+define the payload beyond "some quiet NaN", so that is an artefact of two
+compilers' instruction selection under different `-O`, not an arithmetic
+difference, and it would have gone red on CI or on x86 at any moment.
+
+Two rules fall out, and they compose:
+
+1. **Bound the generator by what the producer can produce (§5's rule, again).**
+   `av1_laplace_entropy`'s only caller passes `zero_bin_ratio = 2` and a
+   `q_step` of `av1_dc_quant_QTX(.) / 4`, whose smallest table entry is 4 —
+   so `q_step >= 1` and neither degenerate input is reachable. The sweep now
+   stays strictly positive on both, with the bound and its source cited at
+   each site.
+2. **Where a function CAN return NaN, assert NaN-ness, not bits.** The
+   excluded region gets its own test asserting both sides are NaN, plus a
+   bit-comparison at the first value *inside* the bound so the bound is not
+   hiding a real divergence just past it.
+
+Corollary for gate runs: **run the differential under the profile CI uses, not
+just the default one.** `cargo test -p <crate> --test <name>` at `-O0` and
+`cargo test --profile test-fast -p <crate> --test <name>` are different
+experiments for any float-heavy kernel.
+
 ## 4. When you cannot run the other target, predict it
 
 The strongest available substitute for executing on a target you lack: derive a
