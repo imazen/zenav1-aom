@@ -159,6 +159,24 @@ cargo test -p zenav1-aom-encode --test rdopt_var_rd_diff       #  5
 cargo test -p zenav1-aom-encode --test rdopt_gate_diff         #  4
 ```
 
+### 5.1 Verified on two ISAs
+
+All 64 tests above pass on **aarch64-apple-darwin** and on
+**x86_64-apple-darwin** (the target-aware `build.rs` plus Rosetta, per
+`docs/DIFFERENTIAL_PLAYBOOK.md` §3). That matters here for a reason specific to
+this shim: the tier-1c argument rests on the shim's copy of rdopt.c compiling
+to the same behaviour as the archive's, and a second ISA is the cheapest
+independent check of that claim.
+
+```
+cargo test --target x86_64-apple-darwin -p zenav1-aom-encode \
+  --test rdopt_mv_diff --test rdopt_skip_diff --test rdopt_model_diff \
+  --test rdopt_single_state_diff --test rdopt_obmc_diff \
+  --test rdopt_var_rd_diff --test rdopt_gate_diff
+```
+
+Measured 2026-09-01: 64/64 pass, zero failures.
+
 ## 6. C behaviours reproduced deliberately — do not "fix" these
 
 Each was found by the differential and each fails it if corrected.
