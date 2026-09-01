@@ -28917,3 +28917,123 @@ pub fn ref_vbps_set_ref_frame_for_partition(
     assert_eq!(r, 0, "the ref-frame shim failed to allocate");
     (rf, ys, prune, sbme)
 }
+
+// --- evaluate_neighbour_mvs (var_based_part.c:1264) — TIER 1c -------------
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_vbps_evaluate_neighbour_mvs(
+        source_sad_nonrd: i32,
+        est_motion: i32,
+        is_small_sb: i32,
+        block_dim: i32,
+        margin: i32,
+        src: *const u8,
+        src_stride: i32,
+        reference: *const u8,
+        ref_stride: i32,
+        best_mv_row: i16,
+        best_mv_col: i16,
+        up_available: i32,
+        above_mode: i32,
+        above_ref0: i32,
+        above_mv_row: i16,
+        above_mv_col: i16,
+        left_available: i32,
+        left_mode: i32,
+        left_ref0: i32,
+        left_mv_row: i16,
+        left_mv_col: i16,
+        mv_limit_row_min: i32,
+        mv_limit_row_max: i32,
+        mv_limit_col_min: i32,
+        mv_limit_col_max: i32,
+        y_sad_in: u32,
+        y_sad_out: *mut u32,
+        out_mv_row: *mut i16,
+        out_mv_col: *mut i16,
+    ) -> i32;
+    fn shim_vbps_intra_mode_end() -> i32;
+}
+
+/// `INTRA_MODE_END` as the oracle TU sees it.
+#[must_use]
+pub fn ref_vbps_intra_mode_end() -> i32 {
+    ref_init();
+    unsafe { shim_vbps_intra_mode_end() }
+}
+
+/// Everything `evaluate_neighbour_mvs` reads that is not a pixel buffer.
+#[derive(Clone, Copy, Debug)]
+pub struct RefNeighbourMvCtx {
+    /// `x->content_state_sb.source_sad_nonrd`, raw.
+    pub source_sad_nonrd: i32,
+    /// `est_motion`, the caller's speed-feature level.
+    pub est_motion: i32,
+    /// Selects `BLOCK_64X64` (true) or `BLOCK_128X128`.
+    pub is_small_sb: bool,
+    /// `mi->mv[0].as_mv`, in 1/8 pel.
+    pub best_mv: (i16, i16),
+    /// `(available, mode, ref_frame[0], mv)` for the above neighbour.
+    pub above: (bool, i32, i32, (i16, i16)),
+    /// The same for the left neighbour.
+    pub left: (bool, i32, i32, (i16, i16)),
+    /// `x->mv_limits`, in FULL pel.
+    pub mv_limits: (i32, i32, i32, i32),
+    /// `*y_sad` on entry.
+    pub y_sad: u32,
+}
+
+/// Reference `evaluate_neighbour_mvs` (var_based_part.c:1264), tier 1c.
+///
+/// `reference` is a plane with `margin` rows and columns of padding on every
+/// side; the function indexes it by the candidate MV, so a plane sized to the
+/// block alone would be read out of bounds. Returns `(y_sad, mv)`.
+#[must_use]
+pub fn ref_vbps_evaluate_neighbour_mvs(
+    ctx: &RefNeighbourMvCtx,
+    block_dim: i32,
+    margin: i32,
+    src: &[u8],
+    src_stride: i32,
+    reference: &[u8],
+    ref_stride: i32,
+) -> (u32, (i16, i16)) {
+    ref_init();
+    let (mut ys, mut r, mut c) = (0u32, 0i16, 0i16);
+    let rc = unsafe {
+        shim_vbps_evaluate_neighbour_mvs(
+            ctx.source_sad_nonrd,
+            ctx.est_motion,
+            i32::from(ctx.is_small_sb),
+            block_dim,
+            margin,
+            src.as_ptr(),
+            src_stride,
+            reference.as_ptr(),
+            ref_stride,
+            ctx.best_mv.0,
+            ctx.best_mv.1,
+            i32::from(ctx.above.0),
+            ctx.above.1,
+            ctx.above.2,
+            ctx.above.3.0,
+            ctx.above.3.1,
+            i32::from(ctx.left.0),
+            ctx.left.1,
+            ctx.left.2,
+            ctx.left.3.0,
+            ctx.left.3.1,
+            ctx.mv_limits.0,
+            ctx.mv_limits.1,
+            ctx.mv_limits.2,
+            ctx.mv_limits.3,
+            ctx.y_sad,
+            &mut ys,
+            &mut r,
+            &mut c,
+        )
+    };
+    assert_eq!(rc, 0, "the neighbour-mv shim failed to allocate");
+    (ys, (r, c))
+}

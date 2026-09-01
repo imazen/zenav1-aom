@@ -2023,3 +2023,220 @@ pub fn set_ref_frame_for_partition(
         }
     }
 }
+
+// ===========================================================================
+// evaluate_neighbour_mvs (var_based_part.c:1264) — try the above and left
+// neighbours' motion vectors against the block's current best.
+// ===========================================================================
+
+/// `MAX_MVSEARCH_STEPS` (`mcomp_structs.h:19`).
+pub const MAX_MVSEARCH_STEPS: u32 = 11;
+/// `MAX_FULL_PEL_VAL` (`mcomp_structs.h:22`).
+pub const MAX_FULL_PEL_VAL: i32 = (1 << (MAX_MVSEARCH_STEPS - 1)) - 1;
+/// `MV_IN_USE_BITS` (`entropymv.h:74`).
+pub const MV_IN_USE_BITS: u32 = 14;
+/// `MV_UPP` (`entropymv.h:75`).
+pub const MV_UPP: i32 = 1 << MV_IN_USE_BITS;
+/// `MV_LOW` (`entropymv.h:76`).
+pub const MV_LOW: i32 = -(1 << MV_IN_USE_BITS);
+/// `INTRA_MODE_END` (`enums.h:353`) — equal to `NEARESTMV`, so
+/// `mode >= INTRA_MODE_END` is C's "this neighbour was coded inter".
+pub const INTRA_MODE_END: i32 = 13;
+/// `LAST_FRAME` (`enums.h`) — the only reference a neighbour MV is taken from.
+pub const LAST_FRAME_REF: i32 = 1;
+
+/// `GET_MV_SUBPEL(x)` (`mv.h:29`).
+#[inline]
+const fn get_mv_subpel(x: i32) -> i32 {
+    x * 8
+}
+
+/// The full-pel search limits `x->mv_limits` holds.
+#[derive(Clone, Copy, Debug)]
+pub struct FullMvLimits {
+    /// `row_min`.
+    pub row_min: i32,
+    /// `row_max`.
+    pub row_max: i32,
+    /// `col_min`.
+    pub col_min: i32,
+    /// `col_max`.
+    pub col_max: i32,
+}
+
+/// The 1/8-pel limits `av1_set_subpel_mv_search_range` derives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubpelMvLimits {
+    /// `row_min`.
+    pub row_min: i32,
+    /// `row_max`.
+    pub row_max: i32,
+    /// `col_min`.
+    pub col_min: i32,
+    /// `col_max`.
+    pub col_max: i32,
+}
+
+/// `av1_set_subpel_mv_search_range` (`mcomp.h:341`).
+///
+/// The `AOMMAX(minc, maxc)` pair after the intersection is not redundant: an
+/// empty intersection is collapsed onto its lower bound rather than left
+/// inverted, so a later `clamp` still produces a value inside the range.
+#[must_use]
+pub fn set_subpel_mv_search_range(mv_limits: &FullMvLimits, ref_mv: (i32, i32)) -> SubpelMvLimits {
+    let max_mv = get_mv_subpel(MAX_FULL_PEL_VAL);
+    let minc = get_mv_subpel(mv_limits.col_min).max(ref_mv.1 - max_mv);
+    let mut maxc = get_mv_subpel(mv_limits.col_max).min(ref_mv.1 + max_mv);
+    let minr = get_mv_subpel(mv_limits.row_min).max(ref_mv.0 - max_mv);
+    let mut maxr = get_mv_subpel(mv_limits.row_max).min(ref_mv.0 + max_mv);
+    maxc = minc.max(maxc);
+    maxr = minr.max(maxr);
+    SubpelMvLimits {
+        col_min: (MV_LOW + 1).max(minc),
+        col_max: (MV_UPP - 1).min(maxc),
+        row_min: (MV_LOW + 1).max(minr),
+        row_max: (MV_UPP - 1).min(maxr),
+    }
+}
+
+/// `clamp_mv` (`mv.h:323`).
+#[inline]
+#[must_use]
+pub fn clamp_mv(mv: (i32, i32), limits: &SubpelMvLimits) -> (i32, i32) {
+    (
+        mv.0.clamp(limits.row_min, limits.row_max),
+        mv.1.clamp(limits.col_min, limits.col_max),
+    )
+}
+
+/// `get_fullmv_from_mv` (`mv.h`) — 1/8 pel to full pel, rounding to nearest
+/// with a sign-aware bias.
+#[inline]
+#[must_use]
+pub fn get_fullmv_from_mv(mv: (i32, i32)) -> (i32, i32) {
+    let round = |v: i32| (v + if v < 0 { -4 } else { 4 }) / 8;
+    (round(mv.0), round(mv.1))
+}
+
+/// `get_mv_from_fullmv` (`mv.h`) — full pel back to 1/8 pel.
+#[inline]
+#[must_use]
+pub fn get_mv_from_fullmv(mv: (i32, i32)) -> (i32, i32) {
+    (mv.0 * 8, mv.1 * 8)
+}
+
+/// One neighbour as `evaluate_neighbour_mvs` reads it.
+#[derive(Clone, Copy, Debug)]
+pub struct NeighbourMv {
+    /// `mbmi->mode`. Only `>= INTRA_MODE_END` (i.e. an inter mode) is used.
+    pub mode: i32,
+    /// `mbmi->ref_frame[0]`. Only `LAST_FRAME` is used.
+    pub ref_frame0: i32,
+    /// `mbmi->mv[0].as_mv`, in 1/8 pel.
+    pub mv: (i32, i32),
+}
+
+/// The block state `evaluate_neighbour_mvs` reads and updates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NeighbourMvResult {
+    /// `*y_sad`, possibly replaced by a neighbour's.
+    pub y_sad: u32,
+    /// `mi->mv[0].as_mv`, possibly replaced and re-clamped.
+    pub mv: (i32, i32),
+}
+
+/// `evaluate_neighbour_mvs` (var_based_part.c:1264).
+///
+/// `sad_at` computes `fn_ptr[bsize].sdf(src, src_stride, ref + mv, ref_stride)`
+/// for a candidate FULL-PEL MV — the caller supplies it because the reference
+/// buffer is indexed by the MV and the port's plane types differ from C's.
+///
+/// Four things are worth not tidying:
+/// * the early return is `est_motion > 2 && source_sad > kMedSad`, so a high
+///   estimate-motion level DISABLES the whole function on busy content;
+/// * a neighbour is only considered when it was coded INTER (`mode >=
+///   INTRA_MODE_END`) from LAST_FRAME;
+/// * the left candidate is additionally skipped when it equals the ABOVE
+///   candidate, not just when it equals the current best — so a uniform
+///   neighbourhood costs one SAD, not two;
+/// * `multi` is 7 or 8 out of 8, and the acceptance test is
+///   `cand < (multi * y_sad) >> 3` — an integer comparison against a possibly
+///   ALREADY REPLACED `y_sad`, because the above arm runs first and writes it.
+///
+/// The two arms carry mutual-exclusion guards, and they are NOT symmetric in
+/// effect. `above_y_sad < left_y_sad` is load-bearing: dropping it lets the
+/// above candidate win where the left one should have. `left_y_sad <
+/// above_y_sad` is REDUNDANT, and provably so — whenever the left threshold
+/// test can pass, either the guard already holds or the above arm has lowered
+/// `y_sad` to `above_y_sad < left_y_sad`, which makes
+/// `left_y_sad < (multi * above_y_sad) >> 3` false for every `multi <= 8`.
+/// Dropping it passes the differential; it is kept because C has it.
+///
+/// Both `UINT_MAX` seeds matter: a neighbour that is not considered keeps
+/// `UINT_MAX` and so can never win.
+pub fn evaluate_neighbour_mvs<F>(
+    source_sad_nonrd: SourceSad,
+    est_motion: i32,
+    mv_limits: &FullMvLimits,
+    best_mv_subpel: (i32, i32),
+    above: Option<NeighbourMv>,
+    left: Option<NeighbourMv>,
+    y_sad: &mut u32,
+    mut sad_at: F,
+) -> NeighbourMvResult
+where
+    F: FnMut((i32, i32)) -> u32,
+{
+    let mut mv = best_mv_subpel;
+    if est_motion > 2 && source_sad_nonrd > SourceSad::Med {
+        return NeighbourMvResult { y_sad: *y_sad, mv };
+    }
+
+    let mut above_y_sad = u32::MAX;
+    let mut left_y_sad = u32::MAX;
+    let mut above_mv = (0i32, 0i32);
+    let mut left_mv = (0i32, 0i32);
+    let limits = set_subpel_mv_search_range(mv_limits, (0, 0));
+
+    let best_full = get_fullmv_from_mv(mv);
+    let multi = if est_motion > 2 && source_sad_nonrd > SourceSad::Low {
+        7
+    } else {
+        8
+    };
+
+    if let Some(n) = above
+        && n.mode >= INTRA_MODE_END
+        && n.ref_frame0 == LAST_FRAME_REF
+    {
+        above_mv = get_fullmv_from_mv(clamp_mv(n.mv, &limits));
+        if mv_distance_full(best_full, above_mv) > 0 {
+            above_y_sad = sad_at(above_mv);
+        }
+    }
+    if let Some(n) = left
+        && n.mode >= INTRA_MODE_END
+        && n.ref_frame0 == LAST_FRAME_REF
+    {
+        left_mv = get_fullmv_from_mv(clamp_mv(n.mv, &limits));
+        if mv_distance_full(best_full, left_mv) > 0 && mv_distance_full(above_mv, left_mv) > 0 {
+            left_y_sad = sad_at(left_mv);
+        }
+    }
+
+    if above_y_sad < ((multi * u64::from(*y_sad)) >> 3) as u32 && above_y_sad < left_y_sad {
+        *y_sad = above_y_sad;
+        mv = clamp_mv(get_mv_from_fullmv(above_mv), &limits);
+    }
+    if left_y_sad < ((multi * u64::from(*y_sad)) >> 3) as u32 && left_y_sad < above_y_sad {
+        *y_sad = left_y_sad;
+        mv = clamp_mv(get_mv_from_fullmv(left_mv), &limits);
+    }
+    NeighbourMvResult { y_sad: *y_sad, mv }
+}
+
+/// [`mv_distance`] on already-full-pel `(row, col)` pairs.
+#[inline]
+fn mv_distance_full(a: (i32, i32), b: (i32, i32)) -> i32 {
+    (a.0 - b.0).abs() + (a.1 - b.1).abs()
+}

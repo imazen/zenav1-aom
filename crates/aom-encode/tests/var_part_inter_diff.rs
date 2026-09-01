@@ -69,6 +69,10 @@ impl Rng {
     fn below(&mut self, n: u32) -> u32 {
         (self.next_u64() % u64::from(n)) as u32
     }
+    /// A value in `[lo, hi]`.
+    fn range(&mut self, lo: i32, hi: i32) -> i32 {
+        lo + self.below((hi - lo + 1) as u32) as i32
+    }
 }
 
 /// `BLOCK_SIZE` values this file names, in C's enum order (`enums.h:100`).
@@ -1028,4 +1032,361 @@ fn set_ref_frame_for_partition_matches_c() {
         picked[0] > 100 && picked[1] > 100 && picked[2] > 100,
         "one reference was never picked: {picked:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// evaluate_neighbour_mvs — the last in-scope INTER function of
+// var_based_part.c.
+// ---------------------------------------------------------------------------
+
+use aom_encode::var_part::{
+    FullMvLimits, INTRA_MODE_END, NeighbourMv, evaluate_neighbour_mvs, set_subpel_mv_search_range,
+};
+use aom_sys_ref::{RefNeighbourMvCtx, ref_vbps_evaluate_neighbour_mvs, ref_vbps_intra_mode_end};
+
+#[test]
+fn intra_mode_end_matches_c() {
+    assert_eq!(INTRA_MODE_END, ref_vbps_intra_mode_end());
+}
+
+#[test]
+fn evaluate_neighbour_mvs_matches_c() {
+    let mut rng = Rng::new(0x4E16_5001);
+    // A margin large enough for any MV the limits below can produce, so
+    // get_buf_from_fullmv always lands inside the reference plane.
+    const MARGIN: i32 = 40;
+    let (mut took_above, mut took_left, mut took_neither) = (0usize, 0usize, 0usize);
+    let mut early_returns = 0usize;
+
+    for &(is_small_sb, block_dim) in &[(true, 64i32), (false, 128i32)] {
+        let bd = block_dim as usize;
+        let src_stride = bd + 32;
+        let ref_h = bd + 2 * MARGIN as usize;
+        let ref_stride = bd + 2 * MARGIN as usize + 32;
+        for _ in 0..220 {
+            // The reference is the source shifted by a small offset, so a
+            // neighbour MV near that offset genuinely wins -- an independently
+            // drawn reference makes every SAD equally bad and the acceptance
+            // test never fires.
+            let base: Vec<u8> = (0..ref_stride * ref_h)
+                .map(|_| rng.below(256) as u8)
+                .collect();
+            let shift_r = rng.range(-8, 8);
+            let shift_c = rng.range(-8, 8);
+            let mut src = vec![0u8; src_stride * bd];
+            for y in 0..bd {
+                for x in 0..bd {
+                    let ry = (y as i32 + MARGIN + shift_r) as usize;
+                    let rx = (x as i32 + MARGIN + shift_c) as usize;
+                    src[y * src_stride + x] = base[ry * ref_stride + rx];
+                }
+            }
+
+            // 1/8-pel MVs whose full-pel forms land in +/-16. A third of the
+            // draws land EXACTLY on the reference's own shift, because that is
+            // the only way a neighbour candidate's SAD is small enough to beat
+            // the block's -- a uniform draw over a 33x33 full-pel grid hits it
+            // about a tenth of a percent of the time and the acceptance arm
+            // never fires.
+            let draw_mv = |rng: &mut Rng| -> (i16, i16) {
+                if rng.below(3) == 0 {
+                    ((shift_r * 8) as i16, (shift_c * 8) as i16)
+                } else {
+                    (rng.range(-128, 128) as i16, rng.range(-128, 128) as i16)
+                }
+            };
+            // Neighbours that are absent, intra, inter-from-GOLDEN and
+            // inter-from-LAST -- only the last is used.
+            let draw_nb = |rng: &mut Rng| -> (bool, i32, i32, (i16, i16)) {
+                match rng.below(4) {
+                    0 => (false, 0, 0, (0, 0)),
+                    1 => (true, 0, 1, draw_mv(rng)), // DC_PRED: intra
+                    2 => (true, 16, 4, draw_mv(rng)), // NEWMV from GOLDEN
+                    _ => (true, 13 + rng.below(4) as i32, 1, draw_mv(rng)),
+                }
+            };
+            let above = draw_nb(&mut rng);
+            let left = draw_nb(&mut rng);
+            // Half the draws give both neighbours the SAME MV, which is what
+            // makes C's "left also differs from above" guard observable.
+            let left = if rng.below(2) == 0 && above.0 {
+                (left.0, left.1, left.2, above.3)
+            } else {
+                left
+            };
+
+            let ctx = RefNeighbourMvCtx {
+                source_sad_nonrd: rng.below(5) as i32,
+                est_motion: rng.below(5) as i32,
+                is_small_sb,
+                best_mv: draw_mv(&mut rng),
+                above,
+                left,
+                mv_limits: (-24, 24, -24, 24),
+                // A plausible 64x64 / 128x128 SAD rather than a uniform draw
+                // over a huge range: the acceptance test is
+                // `cand < (multi * y_sad) >> 3`, so y_sad has to be in the
+                // same magnitude band as the SADs the closure returns.
+                y_sad: 1 + rng.below(1 << 13) * (block_dim as u32 / 16),
+            };
+
+            let (want_sad, want_mv) = ref_vbps_evaluate_neighbour_mvs(
+                &ctx,
+                block_dim,
+                MARGIN,
+                &src,
+                src_stride as i32,
+                &base,
+                ref_stride as i32,
+            );
+
+            // The port's SAD closure: the reference plane's origin is at
+            // (MARGIN, MARGIN), and the candidate MV indexes from there.
+            let mut sad_at = |mv: (i32, i32)| -> u32 {
+                let off = ((MARGIN + mv.0) as usize) * ref_stride + (MARGIN + mv.1) as usize;
+                aom_dsp::dist::sad(&src, src_stride, &base[off..], ref_stride, bd, bd)
+            };
+            let limits = FullMvLimits {
+                row_min: ctx.mv_limits.0,
+                row_max: ctx.mv_limits.1,
+                col_min: ctx.mv_limits.2,
+                col_max: ctx.mv_limits.3,
+            };
+            let to_nb = |n: (bool, i32, i32, (i16, i16))| -> Option<NeighbourMv> {
+                n.0.then(|| NeighbourMv {
+                    mode: n.1,
+                    ref_frame0: n.2,
+                    mv: (i32::from(n.3.0), i32::from(n.3.1)),
+                })
+            };
+            let mut y_sad = ctx.y_sad;
+            let got = evaluate_neighbour_mvs(
+                [
+                    SourceSad::Zero,
+                    SourceSad::VeryLow,
+                    SourceSad::Low,
+                    SourceSad::Med,
+                    SourceSad::High,
+                ][ctx.source_sad_nonrd as usize],
+                ctx.est_motion,
+                &limits,
+                (i32::from(ctx.best_mv.0), i32::from(ctx.best_mv.1)),
+                to_nb(above),
+                to_nb(left),
+                &mut y_sad,
+                &mut sad_at,
+            );
+
+            assert_eq!(got.y_sad, want_sad, "y_sad, ctx {ctx:?}");
+            assert_eq!(
+                (got.mv.0 as i16, got.mv.1 as i16),
+                want_mv,
+                "mv, ctx {ctx:?}"
+            );
+
+            if ctx.est_motion > 2 && ctx.source_sad_nonrd > 3 {
+                early_returns += 1;
+            } else if got.y_sad != ctx.y_sad {
+                if (got.mv.0 as i16, got.mv.1 as i16) == {
+                    let l = set_subpel_mv_search_range(&limits, (0, 0));
+                    let m = aom_encode::var_part::clamp_mv(
+                        (i32::from(above.3.0), i32::from(above.3.1)),
+                        &l,
+                    );
+                    let f = aom_encode::var_part::get_fullmv_from_mv(m);
+                    let b = aom_encode::var_part::get_mv_from_fullmv(f);
+                    let c = aom_encode::var_part::clamp_mv(b, &l);
+                    (c.0 as i16, c.1 as i16)
+                } {
+                    took_above += 1;
+                } else {
+                    took_left += 1;
+                }
+            } else {
+                took_neither += 1;
+            }
+        }
+    }
+    assert!(
+        early_returns > 5,
+        "the est_motion early return fired only {early_returns} times"
+    );
+    assert!(
+        took_neither > 20,
+        "the block's own MV was never kept ({took_neither})"
+    );
+    // Both acceptance arms are separate code paths and are mutually exclusive
+    // through C's `above_y_sad < left_y_sad` / `left_y_sad < above_y_sad`.
+    assert!(
+        took_above > 10 && took_left > 10,
+        "an acceptance arm never fired ({took_above} above / {took_left} left)"
+    );
+}
+
+#[test]
+fn evaluate_neighbour_mvs_acceptance_boundaries_match_c() {
+    // Three things the random sweep above cannot separate, because each needs
+    // a candidate SAD to land in a narrow window relative to `y_sad`:
+    //
+    //  (a) `multi` is 7 rather than 8 when est_motion > 2 and the source SAD
+    //      is above kLowSad. The two differ only for a candidate in
+    //      `[(7 * y_sad) >> 3, (8 * y_sad) >> 3)`.
+    //  (b) that gate is `> kLowSad`, not `> kMedSad`.
+    //  (c) the two acceptance arms are mutually exclusive through
+    //      `above_y_sad < left_y_sad` / `left_y_sad < above_y_sad`; without
+    //      those guards a candidate that loses to the other one would still
+    //      overwrite.
+    //
+    // The construction measures the two candidates' SADs first and then picks
+    // `y_sad` to place them, rather than sampling and hoping.
+    const MARGIN: i32 = 40;
+    let mut rng = Rng::new(0xACC7_5002);
+    let (block_dim, is_small_sb) = (64i32, true);
+    let bd = block_dim as usize;
+    let src_stride = bd + 32;
+    let ref_h = bd + 2 * MARGIN as usize;
+    let ref_stride = bd + 2 * MARGIN as usize + 32;
+
+    let base: Vec<u8> = (0..ref_stride * ref_h)
+        .map(|_| rng.below(256) as u8)
+        .collect();
+    let (shift_r, shift_c) = (3i32, -2i32);
+    let mut src = vec![0u8; src_stride * bd];
+    for y in 0..bd {
+        for x in 0..bd {
+            let ry = (y as i32 + MARGIN + shift_r) as usize;
+            let rx = (x as i32 + MARGIN + shift_c) as usize;
+            src[y * src_stride + x] = base[ry * ref_stride + rx];
+        }
+    }
+    let sad_of = |mv: (i32, i32)| -> u32 {
+        let off = ((MARGIN + mv.0) as usize) * ref_stride + (MARGIN + mv.1) as usize;
+        aom_dsp::dist::sad(&src, src_stride, &base[off..], ref_stride, bd, bd)
+    };
+
+    // One candidate sits on the shift (a near-zero SAD) and the other is a
+    // pixel off. BOTH orderings are driven, because the two acceptance arms
+    // are guarded by `above_y_sad < left_y_sad` / the reverse and a single
+    // ordering leaves one guard untested.
+    let on_shift = (shift_r, shift_c);
+    let off_shift = (shift_r + 1, shift_c);
+    assert!(
+        sad_of(on_shift) < sad_of(off_shift),
+        "the construction failed: the on-shift SAD is not the smaller one"
+    );
+
+    let mut checked = 0usize;
+    // Candidate PAIRS whose SADs are CLOSE. That is what the multiplier's
+    // exact value and the two mutual-exclusion guards need: whenever the two
+    // SADs are far apart the loser can never win under any multiplier, so the
+    // window `[(6 * y) >> 3, (8 * y) >> 3)` has no observable width and every
+    // variant of the guards agrees. Two one-pixel offsets in different
+    // directions land within a few percent of each other.
+    let near_a = (shift_r + 1, shift_c);
+    let near_b = (shift_r, shift_c + 1);
+    for &(above_full, left_full) in &[
+        (on_shift, off_shift),
+        (off_shift, on_shift),
+        (near_a, near_b),
+        (near_b, near_a),
+    ] {
+        let sad_above = sad_of(above_full);
+        let sad_left = sad_of(left_full);
+        // A 1/8-pel MV that is NOT a multiple of 8, so get_fullmv_from_mv's
+        // sign-aware `+/- 4` rounding is observable -- every MV built from a
+        // full-pel shift alone hides it.
+        let above = (
+            true,
+            16i32,
+            1i32,
+            ((above_full.0 * 8 + 3) as i16, (above_full.1 * 8 - 3) as i16),
+        );
+        let left = (
+            true,
+            16i32,
+            1i32,
+            ((left_full.0 * 8 - 3) as i16, (left_full.1 * 8 + 3) as i16),
+        );
+        // A best MV far from both, so neither candidate is skipped for equality.
+        let best_mv = (16i16 * 8, 16i16 * 8);
+
+        for &(est_motion, sad_raw) in &[
+            (0i32, 4i32), // multi == 8
+            (3, 2),       // est_motion > 2, source_sad == kLowSad -> still 8
+            (3, 3),       // est_motion > 2, source_sad == kMedSad -> multi == 7
+        ] {
+            // Place each candidate against the 6/8, 7/8 and 8/8 thresholds, so
+            // the multiplier's exact value is separated and not just its
+            // presence.
+            for &cand in &[sad_above, sad_left] {
+                for num in [6u64, 7, 8] {
+                    for delta in -2i64..=2 {
+                        let y_sad = (((u64::from(cand) << 3) / num) as i64 + delta).max(1) as u32;
+                        let ctx = RefNeighbourMvCtx {
+                            source_sad_nonrd: sad_raw,
+                            est_motion,
+                            is_small_sb,
+                            best_mv,
+                            above,
+                            left,
+                            mv_limits: (-24, 24, -24, 24),
+                            y_sad,
+                        };
+                        let (want_sad, want_mv) = ref_vbps_evaluate_neighbour_mvs(
+                            &ctx,
+                            block_dim,
+                            MARGIN,
+                            &src,
+                            src_stride as i32,
+                            &base,
+                            ref_stride as i32,
+                        );
+                        let limits = FullMvLimits {
+                            row_min: -24,
+                            row_max: 24,
+                            col_min: -24,
+                            col_max: 24,
+                        };
+                        let mut sad_at = |mv: (i32, i32)| sad_of(mv);
+                        let mut ys = y_sad;
+                        let got = evaluate_neighbour_mvs(
+                            [
+                                SourceSad::Zero,
+                                SourceSad::VeryLow,
+                                SourceSad::Low,
+                                SourceSad::Med,
+                                SourceSad::High,
+                            ][sad_raw as usize],
+                            est_motion,
+                            &limits,
+                            (i32::from(best_mv.0), i32::from(best_mv.1)),
+                            Some(NeighbourMv {
+                                mode: above.1,
+                                ref_frame0: above.2,
+                                mv: (i32::from(above.3.0), i32::from(above.3.1)),
+                            }),
+                            Some(NeighbourMv {
+                                mode: left.1,
+                                ref_frame0: left.2,
+                                mv: (i32::from(left.3.0), i32::from(left.3.1)),
+                            }),
+                            &mut ys,
+                            &mut sad_at,
+                        );
+                        assert_eq!(
+                            got.y_sad, want_sad,
+                            "y_sad at est {est_motion} sad {sad_raw} num {num} d {delta} y_sad {y_sad}"
+                        );
+                        assert_eq!(
+                            (got.mv.0 as i16, got.mv.1 as i16),
+                            want_mv,
+                            "mv at est {est_motion} sad {sad_raw} num {num} d {delta} y_sad {y_sad}"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 4 * 3 * 2 * 3 * 5, "the boundary grid shrank");
 }

@@ -49,6 +49,7 @@
 
 /* --- libaom's own variance-based partitioner, unmodified. --- */
 #include "av1/encoder/var_based_part.c"
+#include "aom_dsp/variance.h"
 
 int shim_vbps_all_blks_inside(int x16_idx, int y16_idx, int pixels_wide,
                               int pixels_high) {
@@ -391,3 +392,102 @@ int shim_vbps_set_ref_frame_for_partition(
   free(cpi); free(x); free(mi); free(g); free(a); free(slot); aom_free(plane);
   return 0;
 }
+
+/* ======================================================================== *
+ * evaluate_neighbour_mvs (:1264) -- try the above and left neighbours' MVs
+ * against the block's current best and take whichever wins by enough.
+ *
+ * This one DOES reach a dispatched kernel (`ppi->fn_ptr[bsize].sdf`), so the
+ * Rust side's unconditional ref_init() is load-bearing, and the source and
+ * reference planes are bounced through 64-byte aom_memalign scratch because
+ * the SAD kernels read them with vector loads (DIFFERENTIAL_PLAYBOOK §3a(c)).
+ *
+ * The reference plane is allocated with a MARGIN on every side and the buffer
+ * pointer is placed at its centre, because get_buf_from_fullmv indexes it by
+ * the candidate MV -- a plane sized to the block alone would be read out of
+ * bounds for any non-zero neighbour MV.
+ *
+ * `sdf` is filled from the same exported aom_sad<W>x<H> entry points libaom's
+ * own inline BFP() cascade assigns, the same situation shim/rdopt_shim.c §17
+ * documents for the variance table.
+ */
+static void shim_vbps_fill_sdf(aom_variance_fn_ptr_t *t) {
+  t[BLOCK_64X64].sdf = aom_sad64x64;
+  t[BLOCK_128X128].sdf = aom_sad128x128;
+}
+
+int shim_vbps_evaluate_neighbour_mvs(
+    int source_sad_nonrd, int est_motion, int is_small_sb, int block_dim,
+    int margin, const uint8_t *src, int src_stride, const uint8_t *ref,
+    int ref_stride, int16_t best_mv_row, int16_t best_mv_col,
+    int up_available, int above_mode, int above_ref0, int16_t above_mv_row,
+    int16_t above_mv_col, int left_available, int left_mode, int left_ref0,
+    int16_t left_mv_row, int16_t left_mv_col, int mv_limit_row_min,
+    int mv_limit_row_max, int mv_limit_col_min, int mv_limit_col_max,
+    unsigned int y_sad_in, unsigned int *y_sad_out, int16_t *out_mv_row,
+    int16_t *out_mv_col) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(*ppi));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mi = (MB_MODE_INFO *)calloc(1, sizeof(*mi));
+  MB_MODE_INFO *above = (MB_MODE_INFO *)calloc(1, sizeof(*above));
+  MB_MODE_INFO *left = (MB_MODE_INFO *)calloc(1, sizeof(*left));
+  MB_MODE_INFO **slot = (MB_MODE_INFO **)calloc(1, sizeof(*slot));
+  const size_t src_sz = (size_t)src_stride * block_dim + 64;
+  const int ref_h = block_dim + 2 * margin;
+  const size_t ref_sz = (size_t)ref_stride * ref_h + 64;
+  uint8_t *src_a = (uint8_t *)aom_memalign(64, src_sz);
+  uint8_t *ref_a = (uint8_t *)aom_memalign(64, ref_sz);
+  if (!cpi || !ppi || !x || !mi || !above || !left || !slot || !src_a ||
+      !ref_a) {
+    free(cpi); free(ppi); free(x); free(mi); free(above); free(left);
+    free(slot); aom_free(src_a); aom_free(ref_a);
+    return -1;
+  }
+  memcpy(src_a, src, (size_t)src_stride * block_dim);
+  memcpy(ref_a, ref, (size_t)ref_stride * ref_h);
+
+  cpi->ppi = ppi;
+  shim_vbps_fill_sdf(ppi->fn_ptr);
+
+  x->content_state_sb.source_sad_nonrd = (SOURCE_SAD)source_sad_nonrd;
+  x->plane[0].src.buf = src_a;
+  x->plane[0].src.stride = src_stride;
+  x->e_mbd.plane[0].pre[0].buf = ref_a + (size_t)margin * ref_stride + margin;
+  x->e_mbd.plane[0].pre[0].stride = ref_stride;
+  x->mv_limits.row_min = mv_limit_row_min;
+  x->mv_limits.row_max = mv_limit_row_max;
+  x->mv_limits.col_min = mv_limit_col_min;
+  x->mv_limits.col_max = mv_limit_col_max;
+
+  mi->mv[0].as_mv.row = best_mv_row;
+  mi->mv[0].as_mv.col = best_mv_col;
+  slot[0] = mi;
+  x->e_mbd.mi = slot;
+
+  above->mode = (PREDICTION_MODE)above_mode;
+  above->ref_frame[0] = (MV_REFERENCE_FRAME)above_ref0;
+  above->mv[0].as_mv.row = above_mv_row;
+  above->mv[0].as_mv.col = above_mv_col;
+  left->mode = (PREDICTION_MODE)left_mode;
+  left->ref_frame[0] = (MV_REFERENCE_FRAME)left_ref0;
+  left->mv[0].as_mv.row = left_mv_row;
+  left->mv[0].as_mv.col = left_mv_col;
+  x->e_mbd.up_available = up_available;
+  x->e_mbd.left_available = left_available;
+  x->e_mbd.above_mbmi = above;
+  x->e_mbd.left_mbmi = left;
+
+  unsigned int y_sad = y_sad_in;
+  evaluate_neighbour_mvs(cpi, x, &y_sad, is_small_sb != 0, est_motion);
+
+  *y_sad_out = y_sad;
+  *out_mv_row = mi->mv[0].as_mv.row;
+  *out_mv_col = mi->mv[0].as_mv.col;
+
+  free(cpi); free(ppi); free(x); free(mi); free(above); free(left);
+  free(slot); aom_free(src_a); aom_free(ref_a);
+  return 0;
+}
+
+int shim_vbps_intra_mode_end(void) { return (int)INTRA_MODE_END; }
