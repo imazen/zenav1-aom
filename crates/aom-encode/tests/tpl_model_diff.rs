@@ -77,9 +77,17 @@ fn exponential_entropy_matches_c() {
             "q_step={q_step:e} b={b:e}: got {got:e} want {want:e}"
         );
     }
-    // The clamp edges: b at and below TPL_EPSILON, and q_step 0.
+    // The clamp edges: b at and below TPL_EPSILON.
+    //
+    // `q_step` stays STRICTLY POSITIVE, and that bound comes from the
+    // producer: the only caller, `av1_laplace_estimate_frame_rate`
+    // (tpl_model.c:2364), passes `av1_dc_quant_QTX(q, 0, 8) / 4.` or the AC
+    // equivalent, whose smallest table entry is 4, so `q_step >= 1`. At
+    // `q_step == 0` the closed form is `inf - NaN`, i.e. NaN, and the two
+    // sides then differ in the NaN PAYLOAD — see
+    // `entropy_functions_are_nan_at_unreachable_degenerate_inputs`.
     for &b in &[0.0, 1e-9, 1e-7, 1e-6, 1.0] {
-        for &q_step in &[0.0, 1e-8, 1.0, 4.0, 1024.0, 1e6] {
+        for &q_step in &[1e-8, 1.0, 4.0, 1024.0, 1e6] {
             let got = exponential_entropy(q_step, b);
             let want = ref_exponential_entropy(q_step, b);
             assert_eq!(got.to_bits(), want.to_bits(), "edge q_step={q_step} b={b}");
@@ -94,8 +102,11 @@ fn laplace_entropy_matches_c() {
         let q_step = rng.next_pos_f64(-20, 12);
         let b = rng.next_pos_f64(-30, 20);
         // 2.0 is what libaom's only caller passes; sweep around it so a port
-        // that hard-coded the constant would fail.
-        let zero_bin_ratio = f64::from(rng.next_u32() % 800) / 100.0;
+        // that hard-coded the constant would fail. Strictly positive: at
+        // exactly 0 the exponent is 0, z is 1, and `-(1 - z) * log2(1 - z)`
+        // is `-0 * -inf`, i.e. NaN — see
+        // `entropy_functions_are_nan_at_unreachable_degenerate_inputs`.
+        let zero_bin_ratio = f64::from(1 + rng.next_u32() % 800) / 100.0;
         let got = laplace_entropy(q_step, b, zero_bin_ratio);
         let want = ref_laplace_entropy(q_step, b, zero_bin_ratio);
         assert_eq!(
@@ -104,9 +115,12 @@ fn laplace_entropy_matches_c() {
             "q_step={q_step:e} b={b:e} zbr={zero_bin_ratio}"
         );
     }
+    // Both `q_step` and `zero_bin_ratio` stay strictly positive; at either
+    // zero the closed form is NaN and only its payload distinguishes the two
+    // sides. The producer passes `zero_bin_ratio = 2` and `q_step >= 1`.
     for &b in &[0.0, 1e-9, 1e-7, 1.0] {
-        for &q_step in &[0.0, 1e-8, 4.0, 1e6] {
-            for &zbr in &[0.0, 2.0, 8.0] {
+        for &q_step in &[1e-8, 4.0, 1e6] {
+            for &zbr in &[0.25, 2.0, 8.0] {
                 let got = laplace_entropy(q_step, b, zbr);
                 let want = ref_laplace_entropy(q_step, b, zbr);
                 assert_eq!(got.to_bits(), want.to_bits(), "edge {q_step} {b} {zbr}");
@@ -2048,5 +2062,53 @@ fn tpl_rdmult_setup_sb_matches_c() {
         saw_partial_window,
         "the superblock window always covered the whole frame — the window \
          clamp is untested"
+    );
+}
+
+/// The degenerate inputs where the entropy closed forms evaluate to NaN, and
+/// where the port and C agree on NaN-ness but **not on the NaN payload**.
+///
+/// MEASURED, and the reason this test exists: `laplace_entropy(0, 0, 0)`
+/// returned `0x7FF8000000000000` from the port and a differently-signed quiet
+/// NaN from C. It passed at `-O0` and failed under the `test-fast` profile —
+/// a NaN payload is not defined by IEEE-754 beyond "some quiet NaN", so it is
+/// an artefact of two compilers' instruction selection, not an arithmetic
+/// difference.
+///
+/// **These inputs are unreachable.** `av1_laplace_entropy` and
+/// `av1_exponential_entropy` are called only from
+/// `av1_laplace_estimate_frame_rate` (tpl_model.c:2364), which is inside
+/// `#if CONFIG_BITRATE_ACCURACY` — 0 in this build — and which would pass
+/// `zero_bin_ratio = 2` and a `q_step` of `av1_dc_quant_QTX(.) / 4 >= 1`. So
+/// the randomized sweeps above are bounded away from here on the producer's
+/// authority, and this test pins what happens outside that bound rather than
+/// leaving it unstated.
+#[test]
+fn entropy_functions_are_nan_at_unreachable_degenerate_inputs() {
+    for &(q_step, b) in &[(0.0f64, 0.0f64), (0.0, 1.0), (0.0, 1e-9)] {
+        assert!(
+            exponential_entropy(q_step, b).is_nan(),
+            "exponential_entropy({q_step}, {b}) should be NaN"
+        );
+        assert!(ref_exponential_entropy(q_step, b).is_nan());
+    }
+    for &(q_step, b, zbr) in &[
+        (0.0f64, 0.0f64, 0.0f64),
+        (0.0, 1.0, 2.0),
+        (4.0, 1.0, 0.0),
+        (1e6, 1e-9, 0.0),
+    ] {
+        assert!(
+            laplace_entropy(q_step, b, zbr).is_nan(),
+            "laplace_entropy({q_step}, {b}, {zbr}) should be NaN"
+        );
+        assert!(ref_laplace_entropy(q_step, b, zbr).is_nan());
+    }
+    // And the first value inside the producer's bound is finite, so the
+    // bound is not hiding a real divergence just past it.
+    assert!(laplace_entropy(1.0, 1.0, 2.0).is_finite());
+    assert_eq!(
+        laplace_entropy(1.0, 1.0, 2.0).to_bits(),
+        ref_laplace_entropy(1.0, 1.0, 2.0).to_bits()
     );
 }
