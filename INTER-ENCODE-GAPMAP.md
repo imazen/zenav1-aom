@@ -449,11 +449,18 @@ named in §4.2.
 | C file | defs | out of scope | in scope | ported earlier | ported here | still missing |
 |---|---|---|---|---|---|---|
 | `encoder/temporal_filter.c` | 28 | 5 | 23 | 0 | 13 | 10 |
-| `encoder/nonrd_opt.c` | 11 | 0 | 11 | 5 | 2 | 4 |
-| `encoder/var_based_part.c` | 36 | 0 | 36 | 20 | 13 | 3 |
+| `encoder/nonrd_opt.c` | 11 | 0 | 11 | 5 | 3 | 3 |
+| `encoder/var_based_part.c` | 36 | 0 | 36 | 20 | 16 | **0** |
 | `encoder/nonrd_pickmode.c` | 55 | 4 | 51 | 7 | 15 | 29 |
-| `encoder/pass2_strategy.c` | 87 | 2 | 85 | 2 | 37 | 46 |
-| **total** | **217** | **11** | **206** | **34** | **80** | **92** |
+| `encoder/pass2_strategy.c` | 87 | 2 | 85 | 2 | 41 | 42 |
+| **total** | **217** | **11** | **206** | **34** | **88** | **84** |
+
+`encoder/var_based_part.c` is COMPLETE: all 36 in-scope definitions are ported
+and gated. Two of them (`set_force_zeromv_skip_for_sb`,
+`set_ref_frame_for_partition`) mix their decision with buffer plumbing the port
+replaces rather than translates; what is ported is the decision, the shim runs
+the plumbing too, and only the decision outputs are compared. That is stated
+per function in `crates/aom-encode/src/var_part.rs`.
 
 The "ported earlier" column is what the pre-wave inventory reported as matched
 and is NOT independently verified here, except for `nonrd_opt.c`'s five, which
