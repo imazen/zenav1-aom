@@ -417,3 +417,39 @@ int shim_tplc_mc_flow_synthesizer(int n_frames, int frame_idx, int walk_mi_rows,
   free(tpl);
   return 0;
 }
+
+/* ======================================================================== *
+ * 6. tpl_get_satd_cost (tpl_model.c:215) — residual, forward DCT, SATD.
+ *
+ * `bd_info` is built the way `get_bit_depth_info(xd)` does: the bit depth
+ * plus whether the planes are 16-bit. `src_diff` and `coeff` are scratch the
+ * caller sizes; the shim allocates them at `bw * bh` because the transform
+ * reads the residual at stride `bw`.
+ * ======================================================================== */
+int shim_tplc_tpl_get_satd_cost(int bit_depth, int use_highbitdepth_buf,
+                                int diff_stride, const uint8_t *src8,
+                                const uint16_t *src16, int src_stride,
+                                const uint8_t *dst8, const uint16_t *dst16,
+                                int dst_stride, int bw, int bh, int tx_size,
+                                int32_t *out) {
+  BitDepthInfo bd_info;
+  bd_info.bit_depth = (aom_bit_depth_t)bit_depth;
+  bd_info.use_highbitdepth_buf = use_highbitdepth_buf;
+  const int n = bw * bh;
+  if (n <= 0 || diff_stride < bw) return -1;
+  int16_t *src_diff = (int16_t *)calloc((size_t)(diff_stride * bh + bw),
+                                        sizeof(*src_diff));
+  tran_low_t *coeff = (tran_low_t *)calloc((size_t)n, sizeof(*coeff));
+  if (!src_diff || !coeff) {
+    free(coeff);
+    free(src_diff);
+    return -1;
+  }
+  const uint8_t *src = use_highbitdepth_buf ? CONVERT_TO_BYTEPTR(src16) : src8;
+  const uint8_t *dst = use_highbitdepth_buf ? CONVERT_TO_BYTEPTR(dst16) : dst8;
+  *out = tpl_get_satd_cost(bd_info, src_diff, diff_stride, src, src_stride,
+                           dst, dst_stride, coeff, bw, bh, (TX_SIZE)tx_size);
+  free(coeff);
+  free(src_diff);
+  return 0;
+}

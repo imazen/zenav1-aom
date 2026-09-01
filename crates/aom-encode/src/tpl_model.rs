@@ -1515,3 +1515,94 @@ impl TplTxfmStats {
         self.abs_coeff_mean.fill(0.0);
     }
 }
+
+/// `tpl_get_satd_cost` (tpl_model.c:215, static) — the SATD of one block's
+/// residual, which is TPL's cheap stand-in for a rate estimate.
+///
+/// Residual, forward DCT, sum of absolute transform differences. No
+/// quantization, so this measures how much *energy* a mode leaves behind
+/// rather than what it would cost to code — which is why `mode_estimation`
+/// uses it to rank candidates and `txfm_quant_rdcost` for the winner.
+///
+/// # `src_diff` is written at `diff_stride` and read at `bw`
+/// C passes `diff_stride` to `av1_subtract_block` and then **`bw`** to
+/// `av1_quick_txfm` (tpl_model.c:222-224). Every in-tree caller passes
+/// `diff_stride == bw`, so the two agree there — and MEASURED, a differential
+/// that only feeds them equal cannot tell the two apart: substituting
+/// `diff_stride` into the transform left the whole suite green until the
+/// sweep added `diff_stride = bw + 4`. Reproducing the pair of reads rather
+/// than collapsing them keeps the port wrong in the same way C would be if a
+/// caller ever passed a padded residual buffer.
+///
+/// `aom_satd` is summed over `bw * bh` coefficients, which is the transform's
+/// coefficient count only because `tx_size` matches the block. C does not
+/// check that.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn tpl_get_satd_cost(
+    src_diff: &mut [i16],
+    diff_stride: usize,
+    src: &[u8],
+    src_stride: usize,
+    dst: &[u8],
+    dst_stride: usize,
+    coeff: &mut [i32],
+    bw: usize,
+    bh: usize,
+    tx_size: usize,
+    scratch: &mut aom_dsp::transform::txfm2d::FwdTxfmScratch,
+) -> i32 {
+    let pix_num = bw * bh;
+    aom_dsp::dist::subtract_block(
+        bh,
+        bw,
+        src_diff,
+        diff_stride,
+        src,
+        src_stride,
+        dst,
+        dst_stride,
+    );
+    // `av1_quick_txfm(use_hadamard = 0, ...)`: a DCT_DCT forward transform,
+    // read at stride `bw` — not `diff_stride`.
+    aom_dsp::transform::txfm2d::av1_fwd_txfm2d_into(src_diff, coeff, bw, 0, tx_size, scratch);
+    aom_dsp::dist::hadamard::satd(&coeff[..pix_num])
+}
+
+/// The highbd arm of [`tpl_get_satd_cost`] — same shape, 16-bit source and
+/// prediction.
+///
+/// C has one function that branches on `bd_info.use_highbitdepth_buf` inside
+/// `av1_subtract_block`; splitting it here is the port's usual lowbd/highbd
+/// separation and changes no arithmetic. The forward transform is the same
+/// call in both arms — `av1_fwd_txfm` dispatches on `bd`, and its `_c` lowbd
+/// and highbd bodies are the same function.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_tpl_get_satd_cost(
+    src_diff: &mut [i16],
+    diff_stride: usize,
+    src: &[u16],
+    src_stride: usize,
+    dst: &[u16],
+    dst_stride: usize,
+    coeff: &mut [i32],
+    bw: usize,
+    bh: usize,
+    tx_size: usize,
+    scratch: &mut aom_dsp::transform::txfm2d::FwdTxfmScratch,
+) -> i32 {
+    let pix_num = bw * bh;
+    aom_dsp::dist::highbd_subtract_block(
+        bh,
+        bw,
+        src_diff,
+        diff_stride,
+        src,
+        src_stride,
+        dst,
+        dst_stride,
+    );
+    aom_dsp::transform::txfm2d::av1_fwd_txfm2d_into(src_diff, coeff, bw, 0, tx_size, scratch);
+    aom_dsp::dist::hadamard::satd(&coeff[..pix_num])
+}

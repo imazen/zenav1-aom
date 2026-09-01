@@ -64,9 +64,9 @@ critical path to the first byte-exact P-frame.
 
 | family | unmatched | gate that makes it reachable |
 |---|---|---|
-| ~~`encoder/firstpass.c`~~ | ~~43~~ **14 left** | 2-pass (`--passes=2`) — see §3.1 |
+| ~~`encoder/firstpass.c`~~ | ~~43~~ **7 left** | 2-pass (`--passes=2`) — see §3.1 |
 | `encoder/pass2_strategy.c` | 85 | 2-pass |
-| ~~`encoder/tpl_model.c`~~ | ~~62~~ **15 left** | `lag>0` + TPL enabled — see §3.1 |
+| ~~`encoder/tpl_model.c`~~ | ~~62~~ **11 left** | `lag>0` + TPL enabled — see §3.1 |
 | `encoder/temporal_filter.c` | 27 | `lag>=ALT_MIN_LAG` + alt-ref |
 | `encoder/gop_structure.c` | 17 | `lag>0` (a `lag=0` GF group is trivial) |
 | `encoder/nonrd_pickmode.c` + `nonrd_opt.c` + `var_based_part.c` | 71 | `--cpu-used 8/9` inter (the nonrd pickmode) |
@@ -171,14 +171,15 @@ Named heads:
 
 ## 3.1 tpl_model.c + firstpass.c — full accounting (wave `wx-tpl`, 2026-08-31)
 
-**51 C functions ported and gated.** Both files were "IN SCOPE, DEFERRED"
+**59 C functions ported and gated.** Both files were "IN SCOPE, DEFERRED"
 above; the owner then asked for a full translation, so this is the accounting
 for them, by NAME rather than by the inventory's count (see the caveat at the
 end of this section).
 
 Ports: `crates/aom-encode/src/tpl_model.rs`, `crates/aom-encode/src/firstpass.rs`.
-Gates: `crates/aom-encode/tests/tpl_model_diff.rs` (36/36),
-`crates/aom-encode/tests/firstpass_diff.rs` (20/20).
+Gates: `crates/aom-encode/tests/tpl_model_diff.rs` (38/38),
+`crates/aom-encode/tests/firstpass_diff.rs` (27/27), both green under the dev
+and `test-fast` profiles.
 Shims: `tpl_shim.c` + `fp_info_shim.c` (tier 1, no libaom `.c` included),
 `tpl_c_shim.c` + `fp_shim.c` (tier 1c, the file's own source compiled verbatim
 with its exported symbols renamed, each with a TU-agreement gate).
@@ -187,10 +188,11 @@ with its exported symbols renamed, each with a TU-agreement gate).
 
 | | count | |
 |---|---|---|
-| ported + gated | **30** | listed below |
+| ported + gated | **31** | listed below |
 | compiled OUT of this build | 14 | `CONFIG_BITRATE_ACCURACY` / `CONFIG_RD_COMMAND` are **0** (`upstream/build/config/aom_config.h:26,62`), confirmed absent from `libaom.a` with `nm -g`: `av1_accumulate_tpl_txfm_stats`, `av1_record_tpl_txfm_block`, `av1_tpl_txfm_stats_update_abs_coeff_mean`, `av1_tpl_store_txfm_stats`, `av1_laplace_estimate_frame_rate`, `av1_read_rd_command`, and the eight `av1_vbr_rc_*`. **No oracle at any tier**, so they are counted out rather than reported missing. |
 | mechanism the port replaces | 4 | `av1_setup_tpl_buffers`, `av1_free_tpl_gop_stats` (allocation), `av1_mc_flow_dispenser_row` (row-worker sharding; the oracle is `CONFIG_MULTITHREAD=0`), `tpl_reset_src_ref_frames` (nulls two pointer arrays the port does not have) |
-| **still missing, in scope** | **15** | named below |
+| external-RC API only | 3 | `init_tpl_stats_before_propagation`, `tpl_store_before_propagation` and `trim_tpl_stats` are each guarded by `av1_use_tpl_for_extrc(&cpi->ext_ratectrl)` (tpl_model.h:420 — `ext_rc->ready && ext_rc->funcs.send_tpl_gop_stats != NULL`), at tpl_model.c:1416, :1573 and :2154. The port has no `ext_ratectrl` surface at all (`grep -rn ext_ratectrl crates/*/src` is empty), so the guard is false everywhere and these are unreachable. Same class as the external-partition hooks in §2.1. |
+| **still missing, in scope** | **11** | named below |
 
 **Ported (30).** `av1_exponential_entropy`, `av1_laplace_entropy`,
 `av1_estimate_coeff_entropy`, `av1_get_overlap_area`, `av1_tpl_ptr_pos`,
@@ -199,57 +201,67 @@ with its exported symbols renamed, each with a TU-agreement gate).
 `av1_init_tpl_stats`, `av1_tpl_rdmult_setup`, `av1_tpl_rdmult_setup_sb`,
 `av1_compute_mv_difference`, `av1_tpl_compute_frame_mv_entropy`,
 `av1_init_tpl_txfm_stats` + the statics `exp_bounded`, `round_floor`,
+`tpl_get_satd_cost`,
 `rate_estimator`, `set_tpl_stats_block_size`, `get_frame_importance`,
 `tpl_model_update_b`, `tpl_model_update`, `tpl_model_store`,
 `mc_flow_synthesizer`, `get_gop_length`, `eval_gop_length`,
 `skip_tpl_for_frame`, `is_alike_mv`, `compare_sad`.
 
-**Still missing (15)**, all `static`, all one connected subsystem — the
-per-block TPL pass and the GOP driver that runs it. They need the encoder's
-frame buffers, motion search and quantizer wired up, which is the next chunk:
-`mode_estimation`, `motion_estimation`, `get_rate_distortion`,
+**Still missing (11)**, all `static` bar one, all one connected subsystem —
+the per-block TPL pass and the GOP driver that runs it. They need the
+encoder's frame buffers, motion search and quantizer wired up, which is the
+next chunk: `mode_estimation`, `motion_estimation`, `get_rate_distortion`,
 `get_inter_cost`, `get_quantize_error`, `txfm_quant_rdcost`,
-`tpl_get_satd_cost`, `init_mc_flow_dispenser`, `mc_flow_dispenser`,
-`init_gop_frames_for_tpl`, `tpl_store_before_propagation`,
-`init_tpl_stats_before_propagation`, `trim_tpl_stats`, `av1_tpl_setup_stats`,
-`av1_tpl_preload_rc_estimate`.
+`init_mc_flow_dispenser`, `mc_flow_dispenser`, `init_gop_frames_for_tpl`,
+`av1_tpl_setup_stats`, `av1_tpl_preload_rc_estimate`.
 
 ### `firstpass.c` — 45 definitions
 
 | | count | |
 |---|---|---|
-| ported + gated | **21** | |
-| mechanism the port replaces | 10 | `output_stats` + `av1_end_first_pass` (packet plumbing), `print_reconstruction_frame` (debug), `setup_firstpass_data` + `av1_free_firstpass_data` (allocation), `av1_first_pass_row` + `first_pass_tile` + `first_pass_tiles` (row/tile sharding), `av1_get_first_pass_search_site_config` (picks a preallocated config out of a table), `copy_rect` (a `memcpy` helper) |
-| **still missing, in scope** | **14** | named below |
+| ported + gated | **28** | |
+| mechanism the port replaces | 10 | `output_stats` + `av1_end_first_pass` (packet plumbing), `print_reconstruction_frame` (debug), `setup_firstpass_data` + `av1_free_firstpass_data` (allocation), `av1_first_pass_row` + `first_pass_tile` + `first_pass_tiles` (row/tile sharding), `av1_get_first_pass_search_site_config` (picks a preallocated config out of a table), `copy_rect` (a `memcpy` helper). The buffer half of `update_firstpass_stats` (:989 onwards) is the same class — it advances `stats_in_end` through a circular-or-linear buffer keyed on `oxcf.pass` / `lap_enabled`, which the port models as `FirstpassInfo`. |
+| **still missing, in scope** | **7** | named below |
 
 **Ported (21).** `av1_twopass_zero_stats`, `av1_accumulate_stats`,
 `av1_get_unit_rows_in_tile`, `av1_get_unit_cols_in_tile`, the seven
 `av1_firstpass_info_*` entry points + the statics `get_unit_rows`,
 `get_unit_cols`, `get_num_mbs`, `get_search_range`, `find_fp_qindex`,
 `raw_motion_error_stdev`, `normalize_firstpass_stats`, `calc_wavelet_energy`,
-`accumulate_frame_stats`, `accumulate_mv_stats`.
+`accumulate_frame_stats`, `accumulate_mv_stats`, `get_bsize`,
+`get_block_variance_fn`, `highbd_get_block_variance_fn`,
+`get_prediction_error`, `highbd_get_prediction_error`,
+`get_prediction_error_bitdepth`, and the arithmetic half of
+`update_firstpass_stats`.
 
-**Still missing (14)** — the per-block first pass itself:
+**Still missing (7)** — the per-block first pass itself:
 `firstpass_intra_prediction`, `firstpass_inter_prediction`,
 `first_pass_motion_search`, `first_pass_intra_pred_and_calc_diff`,
-`first_pass_predict_intra_block_for_luma_plane`, `get_prediction_error`,
-`highbd_get_prediction_error`, `get_prediction_error_bitdepth`,
-`get_block_variance_fn`, `highbd_get_block_variance_fn`, `get_bsize`,
-`update_firstpass_stats`, `av1_first_pass`, `av1_noop_first_pass_frame`.
+`first_pass_predict_intra_block_for_luma_plane`, `av1_first_pass`,
+`av1_noop_first_pass_frame`.
 
 ### The inventory tool misses a renamed port — read its number as a LOWER bound here
 
 `tools/c_surface_inventory.py` matches `fn <name>` in the port's own Rust
 source. After the 2026-08-31 fix that stopped it crediting doc comments and
-shims, it now reports **34 unmatched for tpl_model.c and 33 for firstpass.c**,
-against the 15 and 14 above. The difference is entirely functions ported under
-an idiomatic Rust name: `av1_twopass_zero_stats` is `FirstpassStats::zero`,
-`av1_accumulate_stats` is `FirstpassStats::accumulate`, the seven
-`av1_firstpass_info_*` are `FirstpassInfo::{push, pop, peek, ...}`,
-`normalize_firstpass_stats` is `FirstpassStats::normalize`,
-`av1_init_tpl_txfm_stats` is `TplTxfmStats::init`, and so on. The tool's own
-header says a miss can be a rename; on these two files that is most of the
-misses, so the counts above are the ones to use.
+shims, it reports **33 unmatched for tpl_model.c and 29 for firstpass.c**,
+against the 11 and 7 above. The difference is two things the tool cannot see,
+and neither is a gap:
+
+* **renames.** `av1_twopass_zero_stats` is `FirstpassStats::zero`,
+  `av1_accumulate_stats` is `FirstpassStats::accumulate`, the seven
+  `av1_firstpass_info_*` are `FirstpassInfo::{push, pop, peek, ...}`,
+  `normalize_firstpass_stats` is `FirstpassStats::normalize`,
+  `av1_init_tpl_txfm_stats` is `TplTxfmStats::init`,
+  `get_block_variance_fn` is `block_variance_dims` (C returns a function
+  pointer; the port returns the dimensions those four kernels differ by),
+  `update_firstpass_stats` is `FirstpassStats::from_frame_stats`, and so on.
+* **the four out-of-queue classes** above — compiled-out, mechanism,
+  external-RC-only — which are `MISSING` to a name matcher and are not work.
+
+The tool's own header says a miss can be a rename; on these two files that is
+most of the misses, so the counts above are the ones to use. **Verify a row
+before believing either direction**, which is what §3.1 is.
 
 ## 3. Landed against this map
 

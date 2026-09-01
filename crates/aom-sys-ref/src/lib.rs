@@ -27756,3 +27756,63 @@ pub fn ref_vbps_set_low_temp_var_flag(
     };
     assert_eq!(rc, 0, "the low-temp-var shim failed to allocate");
 }
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tplc_tpl_get_satd_cost(
+        bit_depth: i32,
+        use_highbitdepth_buf: i32,
+        diff_stride: i32,
+        src8: *const u8,
+        src16: *const u16,
+        src_stride: i32,
+        dst8: *const u8,
+        dst16: *const u16,
+        dst_stride: i32,
+        bw: i32,
+        bh: i32,
+        tx_size: i32,
+        out: *mut i32,
+    ) -> i32;
+}
+
+/// Reference libaom `tpl_get_satd_cost` (tpl_model.c:215, static).
+/// **Tier 1c.** Pass whichever of `src8`/`src16` matches `highbd`.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn ref_tpl_get_satd_cost(
+    bit_depth: i32,
+    highbd: bool,
+    diff_stride: i32,
+    src8: &[u8],
+    src16: &[u16],
+    src_stride: i32,
+    dst8: &[u8],
+    dst16: &[u16],
+    dst_stride: i32,
+    bw: i32,
+    bh: i32,
+    tx_size: i32,
+) -> i32 {
+    ref_init();
+    let mut out = 0i32;
+    let r = unsafe {
+        shim_tplc_tpl_get_satd_cost(
+            bit_depth,
+            i32::from(highbd),
+            diff_stride,
+            src8.as_ptr(),
+            src16.as_ptr(),
+            src_stride,
+            dst8.as_ptr(),
+            dst16.as_ptr(),
+            dst_stride,
+            bw,
+            bh,
+            tx_size,
+            &mut out,
+        )
+    };
+    assert_eq!(r, 0, "shim_tplc_tpl_get_satd_cost rejected the input");
+    out
+}

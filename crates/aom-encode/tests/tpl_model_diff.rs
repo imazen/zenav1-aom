@@ -2112,3 +2112,164 @@ fn entropy_functions_are_nan_at_unreachable_degenerate_inputs() {
         ref_laplace_entropy(1.0, 1.0, 2.0).to_bits()
     );
 }
+
+// ---------------------------------------------------------------------------
+// tpl_get_satd_cost — the residual/DCT/SATD leaf of the TPL block cost.
+// **Tier 1c** through tpl_c_shim.c.
+// ---------------------------------------------------------------------------
+
+use aom_encode::tpl_model::{highbd_tpl_get_satd_cost, tpl_get_satd_cost};
+use aom_sys_ref::ref_tpl_get_satd_cost;
+
+#[test]
+fn tpl_get_satd_cost_matches_c() {
+    let mut rng = Lcg(0x5eed_0060);
+    let mut saw_zero_residual = false;
+    let mut saw_large = false;
+    // TPL's block is `tpl_bsize_1d` square, so 16x16 (TX_16X16 = 2) is the
+    // production case; 8x8 (TX_8X8 = 1) and 32x32 (TX_32X32 = 3) are swept
+    // because `convert_length_to_bsize` accepts them and a port that pinned
+    // the transform size would otherwise pass.
+    for &(bw, bh, tx_size) in &[(8usize, 8usize, 1i32), (16, 16, 2), (32, 32, 3)] {
+        for &src_stride in &[bw, bw + 7, 64] {
+            for &dst_stride in &[bw, bw + 3, 80] {
+                // `diff_stride > bw` is what makes C's two different reads of the
+                // residual buffer observable: `av1_subtract_block` writes at
+                // `diff_stride` while `av1_quick_txfm` reads at `bw`
+                // (tpl_model.c:222-224). Every in-tree caller passes them equal, so
+                // a sweep that does the same cannot tell a port that used one for
+                // both — MEASURED: with `diff_stride == bw` everywhere, substituting
+                // `diff_stride` into the transform left all 38 tests green.
+                for &diff_stride in &[bw, bw + 4] {
+                    for trial in 0..40 {
+                        let n_src = src_stride * (bh + 2) + bw;
+                        let n_dst = dst_stride * (bh + 2) + bw;
+                        let src: Vec<u8> =
+                            (0..n_src).map(|_| (rng.next_u32() % 256) as u8).collect();
+                        let dst: Vec<u8> = if trial % 9 == 0 {
+                            // An exact prediction: every residual is 0, so the
+                            // transform output is 0 and the SATD is 0.
+                            let mut d = vec![0u8; n_dst];
+                            for y in 0..bh {
+                                for x in 0..bw {
+                                    d[y * dst_stride + x] = src[y * src_stride + x];
+                                }
+                            }
+                            saw_zero_residual = true;
+                            d
+                        } else {
+                            (0..n_dst).map(|_| (rng.next_u32() % 256) as u8).collect()
+                        };
+
+                        let mut src_diff = vec![0i16; diff_stride * (bh + 1) + bw];
+                        let mut coeff = vec![0i32; bw * bh];
+                        let mut scratch = aom_dsp::transform::txfm2d::FwdTxfmScratch::default();
+                        let got = tpl_get_satd_cost(
+                            &mut src_diff,
+                            diff_stride,
+                            &src,
+                            src_stride,
+                            &dst,
+                            dst_stride,
+                            &mut coeff,
+                            bw,
+                            bh,
+                            tx_size as usize,
+                            &mut scratch,
+                        );
+                        let want = ref_tpl_get_satd_cost(
+                            8,
+                            false,
+                            diff_stride as i32,
+                            &src,
+                            &[],
+                            src_stride as i32,
+                            &dst,
+                            &[],
+                            dst_stride as i32,
+                            bw as i32,
+                            bh as i32,
+                            tx_size,
+                        );
+                        assert_eq!(
+                            got, want,
+                            "{bw}x{bh} tx={tx_size} strides=({src_stride},{dst_stride}) \
+                         trial={trial}"
+                        );
+                        if got == 0 {
+                            // Only the exact-prediction trials should reach 0.
+                            assert!(trial % 9 == 0, "a random residual gave SATD 0");
+                        } else if got > 10_000 {
+                            saw_large = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        saw_zero_residual,
+        "the zero-residual case was never reached"
+    );
+    assert!(saw_large, "every SATD was tiny — the sweep is degenerate");
+}
+
+#[test]
+fn highbd_tpl_get_satd_cost_matches_c() {
+    let mut rng = Lcg(0x5eed_0061);
+    let mut saw_bd_difference = false;
+    let mut prev: Option<i32> = None;
+    for &bd in &[8i32, 10, 12] {
+        let max = 1u32 << bd;
+        for &(bw, bh, tx_size) in &[(8usize, 8usize, 1i32), (16, 16, 2)] {
+            for &src_stride in &[bw, bw + 5] {
+                for _ in 0..40 {
+                    let n = src_stride * (bh + 2) + bw;
+                    let src: Vec<u16> = (0..n).map(|_| (rng.next_u32() % max) as u16).collect();
+                    let dst: Vec<u16> = (0..n).map(|_| (rng.next_u32() % max) as u16).collect();
+                    let mut src_diff = vec![0i16; bw * (bh + 1) + bw];
+                    let mut coeff = vec![0i32; bw * bh];
+                    let mut scratch = aom_dsp::transform::txfm2d::FwdTxfmScratch::default();
+                    let got = highbd_tpl_get_satd_cost(
+                        &mut src_diff,
+                        bw,
+                        &src,
+                        src_stride,
+                        &dst,
+                        src_stride,
+                        &mut coeff,
+                        bw,
+                        bh,
+                        tx_size as usize,
+                        &mut scratch,
+                    );
+                    let want = ref_tpl_get_satd_cost(
+                        bd,
+                        true,
+                        bw as i32,
+                        &[],
+                        &src,
+                        src_stride as i32,
+                        &[],
+                        &dst,
+                        src_stride as i32,
+                        bw as i32,
+                        bh as i32,
+                        tx_size,
+                    );
+                    assert_eq!(got, want, "bd={bd} {bw}x{bh} tx={tx_size}");
+                    if let Some(p) = prev {
+                        if p != got {
+                            saw_bd_difference = true;
+                        }
+                    }
+                    prev = Some(got);
+                }
+            }
+        }
+    }
+    assert!(
+        saw_bd_difference,
+        "every highbd cell returned the same SATD — the sweep is degenerate"
+    );
+}
