@@ -27684,3 +27684,75 @@ extern "C" {
         out: *mut RefFirstpassStats,
     ) -> i32;
 }
+
+// --- var_based_part.c's low-temporal-variance flag setters (tier 1c) -------
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_vbps_set_low_temp_var_flag(
+        is_small_sb: i32,
+        ref_frame_partition: i32,
+        cur_bsize: i32,
+        variances: *const i32,
+        mi_bsize: *const i32,
+        mi_grid_len: i32,
+        mi_stride: i32,
+        mi_rows: i32,
+        mi_cols: i32,
+        mi_row: i32,
+        mi_col: i32,
+        thresholds: *const i64,
+        variance_low_out: *mut u8,
+    ) -> i32;
+    fn shim_vbps_variance_low_len() -> i32;
+}
+
+/// `sizeof(PartitionSearchInfo::variance_low)` in the oracle TU.
+#[must_use]
+pub fn ref_vbps_variance_low_len() -> usize {
+    ref_init();
+    unsafe { shim_vbps_variance_low_len() as usize }
+}
+
+/// Reference `set_low_temp_var_flag` (var_based_part.c:829) and, through it,
+/// `set_low_temp_var_flag_64x64` (:691) / `_128x128` (:744). **Tier 1c.**
+///
+/// `variances` is the 105-value tree layout documented in
+/// `shim/vbp_static_shim.c`; `mi_bsize` is one `BLOCK_SIZE` per mi cell with
+/// `-1` for C's NULL pointer. `variance_low` is in/out.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_vbps_set_low_temp_var_flag(
+    is_small_sb: bool,
+    ref_frame_partition: i32,
+    cur_bsize: i32,
+    variances: &[i32; 105],
+    mi_bsize: &[i32],
+    mi_stride: usize,
+    mi_rows: usize,
+    mi_cols: usize,
+    mi_row: usize,
+    mi_col: usize,
+    thresholds: &[i64; 5],
+    variance_low: &mut [u8],
+) {
+    ref_init();
+    assert_eq!(variance_low.len(), ref_vbps_variance_low_len());
+    let rc = unsafe {
+        shim_vbps_set_low_temp_var_flag(
+            i32::from(is_small_sb),
+            ref_frame_partition,
+            cur_bsize,
+            variances.as_ptr(),
+            mi_bsize.as_ptr(),
+            mi_bsize.len() as i32,
+            mi_stride as i32,
+            mi_rows as i32,
+            mi_cols as i32,
+            mi_row as i32,
+            mi_col as i32,
+            thresholds.as_ptr(),
+            variance_low.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, 0, "the low-temp-var shim failed to allocate");
+}

@@ -584,3 +584,291 @@ fn zeromv_skip_gate_matches_c() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The low-temporal-variance flag setters, and the round trip through the two
+// force-skip lookups they feed.
+// ---------------------------------------------------------------------------
+
+use aom_encode::var_part::{
+    MiGrid, VARIANCE_LOW_LEN, VarianceTree, set_low_temp_var_flag, set_low_temp_var_flag_64x64,
+    set_low_temp_var_flag_128x128,
+};
+use aom_sys_ref::{ref_vbps_set_low_temp_var_flag, ref_vbps_variance_low_len};
+
+/// The 105 tree values in the boundary's layout (see `shim/vbp_static_shim.c`).
+fn tree_to_flat(vt: &VarianceTree) -> [i32; 105] {
+    let mut f = [0i32; 105];
+    f[0..5].copy_from_slice(&vt.l0);
+    for a in 0..4 {
+        f[5 + a * 5..5 + a * 5 + 5].copy_from_slice(&vt.l1[a]);
+    }
+    f[25..41].copy_from_slice(&vt.l2);
+    f[41..105].copy_from_slice(&vt.l3);
+    f
+}
+
+/// Block sizes the RT partitioner can stamp into the mi grid, plus sizes the
+/// setters do NOT name (which must leave the flags alone).
+const GRID_BSIZES: [i32; 9] = [
+    BLOCK_16X16 as i32,
+    BLOCK_16X32 as i32,
+    BLOCK_32X16 as i32,
+    BLOCK_32X32 as i32,
+    BLOCK_32X64 as i32,
+    BLOCK_64X32 as i32,
+    BLOCK_64X64 as i32,
+    BLOCK_128X128 as i32,
+    3, // BLOCK_8X8 -- named by neither setter
+];
+
+#[test]
+fn variance_low_length_matches_c() {
+    assert_eq!(VARIANCE_LOW_LEN, ref_vbps_variance_low_len());
+}
+
+#[test]
+fn set_low_temp_var_flag_matches_c() {
+    let mut rng = Rng::new(0x107E_4A11);
+    let mi_stride = 96usize;
+    let grid_rows = 96usize;
+    let grid_len = mi_stride * grid_rows;
+    let mut set_any = 0usize;
+    let mut set_none = 0usize;
+
+    for &is_small_sb in &[true, false] {
+        for _ in 0..400 {
+            // The tree values straddle the shifted thresholds: `>> 8` makes the
+            // 16x16 threshold tiny, so a wide uniform draw would never fire it.
+            let mut vt = VarianceTree::default();
+            let mut draw = |rng: &mut Rng| match rng.below(4) {
+                0 => rng.below(4) as i32,
+                1 => rng.below(64) as i32,
+                2 => rng.below(1 << 12) as i32,
+                _ => rng.below(1 << 20) as i32,
+            };
+            for v in vt.l0.iter_mut() {
+                *v = draw(&mut rng);
+            }
+            for row in vt.l1.iter_mut() {
+                for v in row.iter_mut() {
+                    *v = draw(&mut rng);
+                }
+            }
+            for v in vt.l2.iter_mut() {
+                *v = draw(&mut rng);
+            }
+            for v in vt.l3.iter_mut() {
+                *v = draw(&mut rng);
+            }
+
+            // Thresholds in the shape set_vbp_thresholds produces: a base and
+            // its divisions. `>> 8` on thresholds[2]/[3] is why the base has
+            // to be large for the 16x16 arm to ever fire.
+            // All five must be DISTINCT: the setters read [0], [1], [2] and
+            // [3] at different levels, and a table with repeats hides a
+            // wrong-index port (thresholds[2] vs [3] in the SB128 16x16 arm was
+            // exactly that -- it survived until these stopped coinciding).
+            let base = 1i64 << (10 + rng.below(12));
+            let thresholds = [base, base * 3, base * 7, base * 13, base * 21];
+
+            // A grid whose cells are mostly present but sometimes NULL, since
+            // both setters check for that before dereferencing.
+            let mi_bsize_i32: Vec<i32> = (0..grid_len)
+                .map(|_| {
+                    if rng.below(8) == 0 {
+                        -1
+                    } else {
+                        GRID_BSIZES[rng.below(GRID_BSIZES.len() as u32) as usize]
+                    }
+                })
+                .collect();
+            let mi_bsize: Vec<Option<usize>> = mi_bsize_i32
+                .iter()
+                .map(|&b| if b < 0 { None } else { Some(b as usize) })
+                .collect();
+
+            // mi_rows / mi_cols sometimes cut through the superblock, which is
+            // what makes the bounds `continue`s reachable.
+            let mi_row = (rng.below(4) * 8) as usize;
+            let mi_col = (rng.below(4) * 8) as usize;
+            let mi_rows = mi_row + 1 + rng.below(40) as usize;
+            let mi_cols = mi_col + 1 + rng.below(40) as usize;
+
+            let grid = MiGrid {
+                bsize: &mi_bsize,
+                mi_stride,
+                mi_rows,
+                mi_cols,
+            };
+
+            for &cur_bsize in &GRID_BSIZES {
+                // Both the LAST_FRAME arm and a reference that must leave the
+                // flags untouched.
+                for &ref_frame in &[1i32, 4] {
+                    let mut want = vec![0u8; VARIANCE_LOW_LEN];
+                    ref_vbps_set_low_temp_var_flag(
+                        is_small_sb,
+                        ref_frame,
+                        cur_bsize,
+                        &tree_to_flat(&vt),
+                        &mi_bsize_i32,
+                        mi_stride,
+                        mi_rows,
+                        mi_cols,
+                        mi_row,
+                        mi_col,
+                        &thresholds,
+                        &mut want,
+                    );
+
+                    // C's caller zeroes variance_low per superblock
+                    // (var_based_part.c:1702), so the port starts from zeros too.
+                    let mut got = [0u8; VARIANCE_LOW_LEN];
+                    set_low_temp_var_flag(
+                        &grid,
+                        &mut got,
+                        cur_bsize as usize,
+                        &vt,
+                        &thresholds,
+                        ref_frame as usize,
+                        mi_col,
+                        mi_row,
+                        is_small_sb,
+                    );
+                    assert_eq!(
+                        &got[..],
+                        &want[..],
+                        "small_sb {is_small_sb} ref {ref_frame} bsize {cur_bsize} at ({mi_row},{mi_col}) mi {mi_rows}x{mi_cols}"
+                    );
+                    if got.iter().any(|&f| f != 0) {
+                        set_any += 1;
+                    } else {
+                        set_none += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        set_any > 500 && set_none > 500,
+        "one arm never fired: {set_any} set / {set_none} clear"
+    );
+}
+
+#[test]
+fn set_low_temp_var_flag_dispatches_on_sb_size() {
+    // The dispatcher's only job is to pick between the two setters and to gate
+    // on LAST_FRAME; this checks it does that rather than duplicating either.
+    let mi_bsize = vec![Some(BLOCK_32X32); 96 * 96];
+    let grid = MiGrid {
+        bsize: &mi_bsize,
+        mi_stride: 96,
+        mi_rows: 96,
+        mi_cols: 96,
+    };
+    let mut vt = VarianceTree::default();
+    // Every node below every threshold, so both setters would set something.
+    vt.l0 = [0; 5];
+    vt.l1 = [[0; 5]; 4];
+    let thresholds = [1i64 << 20; 5];
+
+    for &is_small_sb in &[true, false] {
+        let mut direct = [0u8; VARIANCE_LOW_LEN];
+        if is_small_sb {
+            set_low_temp_var_flag_64x64(&grid, &mut direct, BLOCK_64X64, &vt, &thresholds, 0, 0);
+        } else {
+            set_low_temp_var_flag_128x128(
+                &grid,
+                &mut direct,
+                BLOCK_128X128,
+                &vt,
+                &thresholds,
+                0,
+                0,
+            );
+        }
+        let mut via = [0u8; VARIANCE_LOW_LEN];
+        set_low_temp_var_flag(
+            &grid,
+            &mut via,
+            if is_small_sb {
+                BLOCK_64X64
+            } else {
+                BLOCK_128X128
+            },
+            &vt,
+            &thresholds,
+            1,
+            0,
+            0,
+            is_small_sb,
+        );
+        assert_eq!(
+            direct, via,
+            "the dispatcher must be a pure pick, small_sb {is_small_sb}"
+        );
+        assert!(via.iter().any(|&f| f != 0), "the construction set nothing");
+
+        // A non-LAST reference leaves it untouched.
+        let mut none = [0u8; VARIANCE_LOW_LEN];
+        set_low_temp_var_flag(
+            &grid,
+            &mut none,
+            if is_small_sb {
+                BLOCK_64X64
+            } else {
+                BLOCK_128X128
+            },
+            &vt,
+            &thresholds,
+            4,
+            0,
+            0,
+            is_small_sb,
+        );
+        assert_eq!(
+            none, [0u8; VARIANCE_LOW_LEN],
+            "GOLDEN_FRAME must set nothing"
+        );
+    }
+}
+
+#[test]
+fn low_temp_var_flags_round_trip_through_the_force_skip_lookups() {
+    // The setters and the lookups are two halves of one mechanism: nothing
+    // else writes variance_low and nothing else reads it. This drives the pair
+    // the way the encoder does -- set the flags for a superblock, then ask for
+    // each block inside it -- so a slot-numbering disagreement between the two
+    // halves shows up as a lookup that can never be 1.
+    let mi_bsize = vec![Some(BLOCK_32X32); 96 * 96];
+    let grid = MiGrid {
+        bsize: &mi_bsize,
+        mi_stride: 96,
+        mi_rows: 96,
+        mi_cols: 96,
+    };
+    let vt = VarianceTree::default(); // every variance 0, i.e. below anything
+    let thresholds = [1i64 << 24; 5];
+
+    let mut flags = [0u8; VARIANCE_LOW_LEN];
+    set_low_temp_var_flag_64x64(&grid, &mut flags, BLOCK_32X32, &vt, &thresholds, 0, 0);
+    // A 64x64 superblock of 32x32 leaves sets slots 5..9.
+    assert_eq!(
+        &flags[5..9],
+        &[1, 1, 1, 1],
+        "the 32x32 leaf slots were not set"
+    );
+    let mut reachable = 0usize;
+    for mi_row in (0..16i32).step_by(8) {
+        for mi_col in (0..16i32).step_by(8) {
+            if get_force_skip_low_temp_var_small_sb(&flags, mi_row, mi_col, BLOCK_32X32) != 0 {
+                reachable += 1;
+            }
+        }
+    }
+    assert_eq!(
+        reachable, 4,
+        "the SB64 setter and lookup disagree about the 32x32 slot numbering"
+    );
+}

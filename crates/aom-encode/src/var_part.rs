@@ -1548,3 +1548,290 @@ pub fn is_set_force_zeromv_skip_based_on_src_sad(
         _ => false,
     }
 }
+
+// ===========================================================================
+// The low-temporal-variance flag setters (var_based_part.c:691-846).
+//
+// These WRITE the `variance_low` array that
+// [`get_force_skip_low_temp_var`] / [`get_force_skip_low_temp_var_small_sb`]
+// read back, so the pair only means something once both halves exist. A
+// superblock whose temporal variance is low enough gets its inter search
+// short-circuited at the corresponding block size.
+//
+// | Rust | C |
+// |---|---|
+// | [`VarianceTree`] | the `VP128x128` node fields these read |
+// | [`set_low_temp_var_flag_64x64`] | `set_low_temp_var_flag_64x64` (:691) |
+// | [`set_low_temp_var_flag_128x128`] | `set_low_temp_var_flag_128x128` (:744) |
+// | [`set_low_temp_var_flag`] | `set_low_temp_var_flag` (:829) |
+// ===========================================================================
+
+/// `PartitionSearchInfo::variance_low`'s length (`block.h`).
+pub const VARIANCE_LOW_LEN: usize = 105;
+
+/// The variance-tree node values the low-temp-var setters read, in the layout
+/// the oracle boundary uses.
+///
+/// C walks a live `VP128x128`; only these 105 fields are ever read, so the
+/// port carries exactly them:
+/// * `l0` — the 128x128 node's `none, horz[0], horz[1], vert[0], vert[1]`;
+/// * `l1[i]` — the four 64x64 nodes, same five fields each;
+/// * `l2[i]` — the sixteen 32x32 nodes, `none` only;
+/// * `l3[i]` — the sixty-four 16x16 nodes, `none` only.
+///
+/// On the SB64 path C passes `&vt->split[0]`, so only `l1[0]` and its
+/// descendants (`l2[0..4]`, `l3[0..16]`) are read.
+#[derive(Clone, Copy, Debug)]
+pub struct VarianceTree {
+    /// The 128x128 node: `none, horz[0], horz[1], vert[0], vert[1]`.
+    pub l0: [i32; 5],
+    /// The four 64x64 nodes, same five fields each.
+    pub l1: [[i32; 5]; 4],
+    /// The sixteen 32x32 nodes' `none` variance.
+    pub l2: [i32; 16],
+    /// The sixty-four 16x16 nodes' `none` variance.
+    pub l3: [i32; 64],
+}
+
+impl Default for VarianceTree {
+    fn default() -> Self {
+        Self {
+            l0: [0; 5],
+            l1: [[0; 5]; 4],
+            l2: [0; 16],
+            l3: [0; 64],
+        }
+    }
+}
+
+/// The mi grid the setters consult, as `Option<BLOCK_SIZE>` per cell.
+///
+/// C reads `mi_params->mi_grid_base[idx]`, which is a POINTER and can be
+/// NULL; both setters check for it before dereferencing. `None` is that NULL.
+#[derive(Clone, Debug)]
+pub struct MiGrid<'a> {
+    /// One entry per mi cell, indexed `mi_stride * row + col`.
+    pub bsize: &'a [Option<usize>],
+    /// `mi_params->mi_stride`.
+    pub mi_stride: usize,
+    /// `mi_params->mi_rows`.
+    pub mi_rows: usize,
+    /// `mi_params->mi_cols`.
+    pub mi_cols: usize,
+}
+
+impl MiGrid<'_> {
+    /// `mi_grid_base[mi_stride * row + col]`, or `None` where C would read a
+    /// NULL pointer or index outside the array the caller supplied.
+    fn at(&self, row: usize, col: usize) -> Option<usize> {
+        self.bsize
+            .get(row * self.mi_stride + col)
+            .copied()
+            .flatten()
+    }
+}
+
+/// `set_low_temp_var_flag_64x64` (var_based_part.c:691) — the SB64 arm.
+///
+/// The four `variance_low` regions it can write are disjoint by block size:
+/// slot 0 for a whole 64x64, 1-2 for 64x32, 3-4 for 32x64, and for a split
+/// superblock either 5-8 (a 32x32 leaf) or 9-24 (16x16 leaves inside a 32x32
+/// that itself split). Nothing else is touched, so `variance_low` is in/out.
+///
+/// Three thresholds, three shifts, and they are NOT uniform: `>> 1` for the
+/// whole block, `>> 2` for the halves, `(5 * t) >> 3` for a 32x32 leaf and
+/// `>> 8` for a 16x16 one. Each is C's.
+pub fn set_low_temp_var_flag_64x64(
+    grid: &MiGrid<'_>,
+    variance_low: &mut [u8; VARIANCE_LOW_LEN],
+    cur_bsize: usize,
+    vt: &VarianceTree,
+    thresholds: &[i64; 5],
+    mi_col: usize,
+    mi_row: usize,
+) {
+    // C receives `&vt->split[0]`, so the "64x64 node" here is l1[0] and its
+    // children are l2[0..4] / l3[0..16].
+    let node = &vt.l1[0];
+    if cur_bsize == BLOCK_64X64 {
+        if i64::from(node[0]) < (thresholds[0] >> 1) {
+            variance_low[0] = 1;
+        }
+    } else if cur_bsize == BLOCK_64X32 {
+        for part_idx in 0..2 {
+            if i64::from(node[1 + part_idx]) < (thresholds[0] >> 2) {
+                variance_low[part_idx + 1] = 1;
+            }
+        }
+    } else if cur_bsize == BLOCK_32X64 {
+        for part_idx in 0..2 {
+            if i64::from(node[3 + part_idx]) < (thresholds[0] >> 2) {
+                variance_low[part_idx + 3] = 1;
+            }
+        }
+    } else {
+        const IDX: [(usize, usize); 4] = [(0, 0), (0, 8), (8, 0), (8, 8)];
+        for (lvl1_idx, &(dr, dc)) in IDX.iter().enumerate() {
+            if grid.mi_cols <= mi_col + dc || grid.mi_rows <= mi_row + dr {
+                continue;
+            }
+            let Some(this_bsize) = grid.at(mi_row + dr, mi_col + dc) else {
+                continue;
+            };
+            if this_bsize == BLOCK_32X32 {
+                let threshold_32x32 = (5 * thresholds[1]) >> 3;
+                if i64::from(vt.l2[lvl1_idx]) < threshold_32x32 {
+                    variance_low[lvl1_idx + 5] = 1;
+                }
+            } else if this_bsize == BLOCK_16X16
+                || this_bsize == BLOCK_32X16
+                || this_bsize == BLOCK_16X32
+            {
+                // For 32x16 and 16x32 the flag is set on each 16x16 inside.
+                for lvl2_idx in 0..4 {
+                    if i64::from(vt.l3[lvl1_idx * 4 + lvl2_idx]) < (thresholds[2] >> 8) {
+                        variance_low[(lvl1_idx << 2) + lvl2_idx + 9] = 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `set_low_temp_var_flag_128x128` (var_based_part.c:744) — the SB128 arm.
+///
+/// Same shape one level deeper, and the two NULL/bounds checks are in the
+/// OPPOSITE order to the SB64 arm's: C dereferences `mi_64` for its NULL test
+/// BEFORE the mi_cols/mi_rows bounds test, and the reverse at the 32 level.
+/// That ordering is reproduced — it decides which of the two `continue`s a
+/// cell takes, which is unobservable here but is the sort of thing a later
+/// reader would "tidy".
+pub fn set_low_temp_var_flag_128x128(
+    grid: &MiGrid<'_>,
+    variance_low: &mut [u8; VARIANCE_LOW_LEN],
+    cur_bsize: usize,
+    vt: &VarianceTree,
+    thresholds: &[i64; 5],
+    mi_col: usize,
+    mi_row: usize,
+) {
+    if cur_bsize == BLOCK_128X128 {
+        if i64::from(vt.l0[0]) < (thresholds[0] >> 1) {
+            variance_low[0] = 1;
+        }
+    } else if cur_bsize == BLOCK_128X64 {
+        for part_idx in 0..2 {
+            if i64::from(vt.l0[1 + part_idx]) < (thresholds[0] >> 2) {
+                variance_low[part_idx + 1] = 1;
+            }
+        }
+    } else if cur_bsize == BLOCK_64X128 {
+        for part_idx in 0..2 {
+            if i64::from(vt.l0[3 + part_idx]) < (thresholds[0] >> 2) {
+                variance_low[part_idx + 3] = 1;
+            }
+        }
+    } else {
+        const IDX64: [(usize, usize); 4] = [(0, 0), (0, 16), (16, 0), (16, 16)];
+        const IDX32: [(usize, usize); 4] = [(0, 0), (0, 8), (8, 0), (8, 8)];
+        for (lvl1_idx, &(dr64, dc64)) in IDX64.iter().enumerate() {
+            let Some(bsize_64) = grid.at(mi_row + dr64, mi_col + dc64) else {
+                continue;
+            };
+            if grid.mi_cols <= mi_col + dc64 || grid.mi_rows <= mi_row + dr64 {
+                continue;
+            }
+            let threshold_64x64 = (5 * thresholds[1]) >> 3;
+            let node = &vt.l1[lvl1_idx];
+            if bsize_64 == BLOCK_64X64 {
+                if i64::from(node[0]) < threshold_64x64 {
+                    variance_low[5 + lvl1_idx] = 1;
+                }
+            } else if bsize_64 == BLOCK_64X32 {
+                for part_idx in 0..2 {
+                    if i64::from(node[1 + part_idx]) < (threshold_64x64 >> 1) {
+                        variance_low[9 + (lvl1_idx << 1) + part_idx] = 1;
+                    }
+                }
+            } else if bsize_64 == BLOCK_32X64 {
+                for part_idx in 0..2 {
+                    if i64::from(node[3 + part_idx]) < (threshold_64x64 >> 1) {
+                        variance_low[17 + (lvl1_idx << 1) + part_idx] = 1;
+                    }
+                }
+            } else {
+                for (lvl2_idx, &(dr32, dc32)) in IDX32.iter().enumerate() {
+                    let Some(bsize_32) = grid.at(mi_row + dr64 + dr32, mi_col + dc64 + dc32) else {
+                        continue;
+                    };
+                    if grid.mi_cols <= mi_col + dc64 + dc32 || grid.mi_rows <= mi_row + dr64 + dr32
+                    {
+                        continue;
+                    }
+                    let threshold_32x32 = (5 * thresholds[2]) >> 3;
+                    if bsize_32 == BLOCK_32X32 {
+                        if i64::from(vt.l2[lvl1_idx * 4 + lvl2_idx]) < threshold_32x32 {
+                            variance_low[25 + (lvl1_idx << 2) + lvl2_idx] = 1;
+                        }
+                    } else if bsize_32 == BLOCK_16X16
+                        || bsize_32 == BLOCK_32X16
+                        || bsize_32 == BLOCK_16X32
+                    {
+                        for lvl3_idx in 0..4 {
+                            let v = vt.l3[(lvl1_idx * 16) + (lvl2_idx * 4) + lvl3_idx];
+                            if i64::from(v) < (thresholds[3] >> 8) {
+                                variance_low[41 + (lvl1_idx << 4) + (lvl2_idx << 2) + lvl3_idx] = 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `set_low_temp_var_flag` (var_based_part.c:829) — the dispatcher.
+///
+/// Only LAST_FRAME partitions get temporal-variance flags at all: the check is
+/// against a reference the encoder has actually reconstructed at the same
+/// position, and GOLDEN/ALTREF are too far away for the comparison to mean
+/// anything. Every other reference leaves `variance_low` untouched.
+#[allow(clippy::too_many_arguments)]
+pub fn set_low_temp_var_flag(
+    grid: &MiGrid<'_>,
+    variance_low: &mut [u8; VARIANCE_LOW_LEN],
+    cur_bsize: usize,
+    vt: &VarianceTree,
+    thresholds: &[i64; 5],
+    ref_frame_partition: usize,
+    mi_col: usize,
+    mi_row: usize,
+    is_small_sb: bool,
+) {
+    /// `LAST_FRAME`.
+    const LAST_FRAME: usize = 1;
+    if ref_frame_partition != LAST_FRAME {
+        return;
+    }
+    if is_small_sb {
+        set_low_temp_var_flag_64x64(
+            grid,
+            variance_low,
+            cur_bsize,
+            vt,
+            thresholds,
+            mi_col,
+            mi_row,
+        );
+    } else {
+        set_low_temp_var_flag_128x128(
+            grid,
+            variance_low,
+            cur_bsize,
+            vt,
+            thresholds,
+            mi_col,
+            mi_row,
+        );
+    }
+}
