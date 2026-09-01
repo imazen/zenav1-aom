@@ -56,6 +56,7 @@ pub mod rc;
 pub mod rd;
 pub mod rd_thresh;
 pub mod rdopt_gate;
+pub mod ref_gop;
 pub mod rdopt_model;
 pub mod rdopt_mv;
 pub mod rdopt_obmc;

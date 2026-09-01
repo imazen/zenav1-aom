@@ -81,6 +81,7 @@ const SHIMS: &[&str] = &[
     "cnn_cscalar",
     "rdopt_shim",
     "compound_type_shim",
+    "refgop_shim",
 ];
 
 /// Shims that need compile flags beyond the default `-O2 ORACLE_FP_CFLAGS`.

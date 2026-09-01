@@ -21383,6 +21383,227 @@ pub fn ref_ct_pick_interintra_wedge(
 }
 
 // ---------------------------------------------------------------------------
+// refgop_shim.c — av1/encoder/encode_strategy.c's reference / GOP management.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn shim_get_refresh_ref_frame_map(refresh_frame_flags: i32) -> i32;
+    fn shim_configure_buffer_updates(
+        update_type: i32,
+        refbuf_state: i32,
+        force_refresh_all: i32,
+        ext_pending: i32,
+        ext_golden: i32,
+        ext_bwd: i32,
+        ext_alt: i32,
+    ) -> i32;
+    fn shim_calc_refresh_idx_for_intnl_arf(
+        pairs: *const i32,
+        skip_frame_refresh: *const i32,
+        one_pass_rt: i32,
+        cur_frame_disp: i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_get_refresh_frame_flags(
+        pairs: *const i32,
+        refbuf_state: i32,
+        frame_type: i32,
+        show_existing_frame: i32,
+        update_type: i32,
+        skip_frame_refresh: *const i32,
+        one_pass_rt: i32,
+        cur_disp_order: i32,
+        ext_pending: i32,
+        ext_last: i32,
+        ext_golden: i32,
+        ext_bwd: i32,
+        ext_alt: i32,
+        ext_alt2: i32,
+        remapped_ref_idx: *const i32,
+    ) -> i32;
+    fn shim_get_ref_frames(
+        pairs: *const i32,
+        cur_frame_disp: i32,
+        one_pass_rt: i32,
+        parallel_kind: i32,
+        skip_value: i32,
+        use_ext_ref_frame_map: i32,
+        ref_frame_list: *const i32,
+        out_remapped: *mut i32,
+    ) -> i32;
+}
+
+/// One reference-buffer slot as the oracle takes it: `(pyr_level, disp_order)`,
+/// with `disp_order == -1` for an empty slot.
+pub type RefMapPair = (i32, i32);
+
+fn flatten_pairs(pairs: &[RefMapPair; 8]) -> [i32; 16] {
+    let mut flat = [0i32; 16];
+    for (i, &(pyr_level, disp_order)) in pairs.iter().enumerate() {
+        flat[2 * i] = pyr_level;
+        flat[2 * i + 1] = disp_order;
+    }
+    flat
+}
+
+/// Reference libaom `av1_get_refresh_ref_frame_map` (encode_strategy.c:515).
+/// Returns `INVALID_IDX` (-1) when no bit is set.
+pub fn ref_get_refresh_ref_frame_map(refresh_frame_flags: i32) -> i32 {
+    ref_init();
+    unsafe { shim_get_refresh_ref_frame_map(refresh_frame_flags) }
+}
+
+/// Reference libaom `av1_configure_buffer_updates` (encode_strategy.c:55).
+///
+/// Returns `(golden, bwd, alt, is_src_frame_alt_ref, gf_group_update_type)` —
+/// the last is `gf_group->update_type[gf_frame_index]` after the call, which
+/// the external-override arm rewrites.
+pub fn ref_configure_buffer_updates(
+    update_type: i32,
+    refbuf_state: i32,
+    force_refresh_all: bool,
+    ext: Option<(bool, bool, bool)>,
+) -> (bool, bool, bool, bool, i32) {
+    ref_init();
+    let (pending, g, b, a) = match ext {
+        Some((g, b, a)) => (1, i32::from(g), i32::from(b), i32::from(a)),
+        None => (0, 0, 0, 0),
+    };
+    let r = unsafe {
+        shim_configure_buffer_updates(
+            update_type,
+            refbuf_state,
+            i32::from(force_refresh_all),
+            pending,
+            g,
+            b,
+            a,
+        )
+    };
+    assert!(r >= 0, "shim_configure_buffer_updates allocation failed");
+    (
+        r & 1 != 0,
+        r & 2 != 0,
+        r & 4 != 0,
+        r & 8 != 0,
+        (r >> 8) & 0xFF,
+    )
+}
+
+/// Reference libaom `av1_calc_refresh_idx_for_intnl_arf`
+/// (encode_strategy.c:594).
+pub fn ref_calc_refresh_idx_for_intnl_arf(
+    pairs: &[RefMapPair; 8],
+    skip_frame_refresh: &[i32; 8],
+    one_pass_rt: bool,
+    cur_frame_disp: i32,
+) -> i32 {
+    ref_init();
+    let flat = flatten_pairs(pairs);
+    let r = unsafe {
+        shim_calc_refresh_idx_for_intnl_arf(
+            flat.as_ptr(),
+            skip_frame_refresh.as_ptr(),
+            i32::from(one_pass_rt),
+            cur_frame_disp,
+        )
+    };
+    assert!(r != -2, "shim_calc_refresh_idx_for_intnl_arf alloc failed");
+    r
+}
+
+/// The external refresh-flag overrides driven through
+/// `ref_get_refresh_frame_flags`: `(last, golden, bwd, alt, alt2)` plus the
+/// frame's `remapped_ref_idx`.
+pub type RefExtRefreshFlags = (bool, bool, bool, bool, bool);
+
+/// Reference libaom `av1_get_refresh_frame_flags` (encode_strategy.c:619).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_get_refresh_frame_flags(
+    pairs: &[RefMapPair; 8],
+    refbuf_state: i32,
+    frame_type: i32,
+    show_existing_frame: bool,
+    update_type: i32,
+    skip_frame_refresh: &[i32; 8],
+    one_pass_rt: bool,
+    cur_disp_order: i32,
+    ext: Option<(RefExtRefreshFlags, [i32; 8])>,
+) -> i32 {
+    ref_init();
+    let flat = flatten_pairs(pairs);
+    let (pending, last, golden, bwd, alt, alt2, remapped) = match ext {
+        Some(((l, g, b, a, a2), map)) => (
+            1,
+            i32::from(l),
+            i32::from(g),
+            i32::from(b),
+            i32::from(a),
+            i32::from(a2),
+            map,
+        ),
+        None => (0, 0, 0, 0, 0, 0, [0i32; 8]),
+    };
+    let r = unsafe {
+        shim_get_refresh_frame_flags(
+            flat.as_ptr(),
+            refbuf_state,
+            frame_type,
+            i32::from(show_existing_frame),
+            update_type,
+            skip_frame_refresh.as_ptr(),
+            i32::from(one_pass_rt),
+            cur_disp_order,
+            pending,
+            last,
+            golden,
+            bwd,
+            alt,
+            alt2,
+            remapped.as_ptr(),
+        )
+    };
+    assert!(r != -2, "shim_get_refresh_frame_flags allocation failed");
+    r
+}
+
+/// Reference libaom `av1_get_ref_frames` (encode_strategy.c:1007).
+///
+/// `parallel_kind` is 0 for the common path, 1 for the `is_parallel_encode`
+/// frame-parallel exclusion (skip by map index) and 2 for the display-order
+/// form; `skip_value` carries the index/order the exclusion names.
+pub fn ref_get_ref_frames(
+    pairs: &[RefMapPair; 8],
+    cur_frame_disp: i32,
+    one_pass_rt: bool,
+    parallel_kind: i32,
+    skip_value: i32,
+    ext_ref_frame_list: Option<[i32; 8]>,
+) -> [i32; 8] {
+    ref_init();
+    let flat = flatten_pairs(pairs);
+    let (use_ext, list) = match ext_ref_frame_list {
+        Some(list) => (1, list),
+        None => (0, [-1i32; 8]),
+    };
+    let mut out = [0i32; 8];
+    let r = unsafe {
+        shim_get_ref_frames(
+            flat.as_ptr(),
+            cur_frame_disp,
+            i32::from(one_pass_rt),
+            parallel_kind,
+            skip_value,
+            use_ext,
+            list.as_ptr(),
+            out.as_mut_ptr(),
+        )
+    };
+    assert!(r == 0, "shim_get_ref_frames allocation failed");
+    out
+}
+
+// ---------------------------------------------------------------------------
 // tpl_model.c — the temporal dependency model.
 //
 // Every function here is an EXPORTED symbol in `upstream/build/libaom.a`
