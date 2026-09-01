@@ -218,7 +218,7 @@ const INTRA_MODE_CONTEXT: [usize; 13] = [0, 1, 2, 3, 4, 4, 4, 4, 3, 0, 1, 2, 0];
 const INTRA_MODE_LIST: [usize; 4] = [0, 1, 2, 9];
 
 /// `AV1_PROB_COST_SHIFT` (av1/encoder/cost.h).
-const AV1_PROB_COST_SHIFT: i32 = 9;
+pub(crate) const AV1_PROB_COST_SHIFT: i32 = 9;
 
 // ---------------------------------------------------------------------------
 // LP kernels (aom_dsp/avg.c, aom_dsp/fwd_txfm.c, av1/encoder/av1_quantize.c,
@@ -228,7 +228,7 @@ const AV1_PROB_COST_SHIFT: i32 = 9;
 /// `get_msb` (aom_dsp/bitops.h): index of the highest set bit; UB at 0 in C,
 /// callers always pass `n >= 1`.
 #[inline]
-fn get_msb(n: u32) -> i32 {
+pub(crate) fn get_msb(n: u32) -> i32 {
     debug_assert!(n != 0);
     31 - n.leading_zeros() as i32
 }

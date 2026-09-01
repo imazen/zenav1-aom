@@ -25746,3 +25746,114 @@ pub fn ref_ct_tx_gate_constants() -> (i32, i32) {
         )
     }
 }
+
+// ===========================================================================
+// av1_block_yrd_idtx (nonrd_opt.c:380) + the fast-IDTX scan tables —
+// TIER 1 through `shim/nonrd_idtx_shim.c`.
+// ===========================================================================
+
+unsafe extern "C" {
+    fn shim_nrd_fast_idtx_scan(tx_size: i32, inverse: i32, out: *mut i16);
+    #[allow(clippy::too_many_arguments)]
+    fn shim_nrd_block_yrd_idtx(
+        src: *const u8,
+        src_stride: i32,
+        pred: *const u8,
+        pred_stride: i32,
+        bsize: i32,
+        tx_size: i32,
+        mb_to_right_edge: i32,
+        mb_to_bottom_edge: i32,
+        round_fp: *const i16,
+        quant_fp: *const i16,
+        dequant: *const i16,
+        sse_in: i64,
+        rate_out: *mut i32,
+        dist_out: *mut i64,
+        sse_out: *mut i64,
+        blk_skip_out: *mut u8,
+    ) -> i32;
+}
+
+/// The C encoder's own `av1_fast_idtx_scan_*` / `av1_fast_idtx_iscan_*`
+/// (nonrd_opt.h:355-427). They are `static const` in a header, so this is the
+/// only way to compare against the tables the encoder actually indexes rather
+/// than against a re-transcription of the same file.
+#[must_use]
+pub fn ref_nrd_fast_idtx_scan(tx_size: usize, inverse: bool) -> Vec<i16> {
+    ref_init();
+    let n = match tx_size {
+        0 => 16,
+        1 => 64,
+        _ => 256,
+    };
+    let mut out = vec![0i16; n];
+    unsafe { shim_nrd_fast_idtx_scan(tx_size as i32, i32::from(inverse), out.as_mut_ptr()) };
+    out
+}
+
+/// What `av1_block_yrd_idtx` leaves in `RD_STATS` plus its `skippable` flag
+/// and the `blk_skip` bytes it stamped.
+#[derive(Clone, Debug)]
+pub struct RefIdtxRd {
+    /// `this_rdc->rate`.
+    pub rate: i32,
+    /// `this_rdc->dist`.
+    pub dist: i64,
+    /// `this_rdc->sse`.
+    pub sse: i64,
+    /// `*skippable`.
+    pub skippable: bool,
+    /// `x->txfm_search_info.blk_skip`, `MAX_MIB_SIZE^2` bytes.
+    pub blk_skip: Vec<u8>,
+}
+
+/// Reference `av1_block_yrd_idtx` (nonrd_opt.c:380). **Tier 1.**
+///
+/// `sse_in` is `this_rdc->sse` on ENTRY: C does not zero it and reads it back
+/// on the skippable path.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_nrd_block_yrd_idtx(
+    src: &[u8],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    bsize: i32,
+    tx_size: i32,
+    mb_to_right_edge: i32,
+    mb_to_bottom_edge: i32,
+    round_fp: &[i16; 8],
+    quant_fp: &[i16; 8],
+    dequant: &[i16; 8],
+    sse_in: i64,
+) -> RefIdtxRd {
+    ref_init();
+    let mut rate = 0i32;
+    let mut dist = 0i64;
+    let mut sse = 0i64;
+    // MAX_MIB_SIZE is 32, so blk_skip is 32 * 32.
+    let mut blk_skip = vec![0u8; 32 * 32];
+    let skippable = unsafe {
+        shim_nrd_block_yrd_idtx(
+            src.as_ptr(),
+            src_stride as i32,
+            pred.as_ptr(),
+            pred_stride as i32,
+            bsize,
+            tx_size,
+            mb_to_right_edge,
+            mb_to_bottom_edge,
+            round_fp.as_ptr(),
+            quant_fp.as_ptr(),
+            dequant.as_ptr(),
+            sse_in,
+            &mut rate,
+            &mut dist,
+            &mut sse,
+            blk_skip.as_mut_ptr(),
+        )
+    };
+    assert!(skippable >= 0, "the idtx shim failed to allocate");
+    RefIdtxRd { rate, dist, sse, skippable: skippable != 0, blk_skip }
+}

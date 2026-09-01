@@ -86,6 +86,7 @@ const SHIMS: &[&str] = &[
     "tf_static_shim",
     "vbp_shim",
     "vbp_static_shim",
+    "nonrd_idtx_shim",
     "tpl_shim",
     "ratectrl_shim",
     "tpl_c_shim",
