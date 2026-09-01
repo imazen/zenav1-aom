@@ -309,3 +309,118 @@ fail:
   free(cpi);
   return -1;
 }
+
+/* ---- av1_tpl_rdmult_setup_sb (tpl_model.c:2264) ------------------------- *
+ * The per-superblock rdmult scaling. It reads ~15 scalars off AV1_COMP /
+ * AV1_COMMON / MACROBLOCK, so they are passed individually rather than
+ * reconstructed from a plausible-looking encoder state — a shim that guessed
+ * at the state would be testing the guess.
+ *
+ * `is_stat_consumption` is set through `oxcf.pass` (AOM_RC_SECOND_PASS vs
+ * AOM_RC_ONE_PASS with lap_enabled = 0), which is what
+ * `is_stat_consumption_stage` reads (encoder.h:4137).
+ *
+ * `factors_in` seeds `cpi->tpl_rdmult_scaling_factors` and `factors_out`
+ * receives `cpi->ppi->tpl_sb_rdmult_scaling_factors`; both are num_rows *
+ * num_cols. `factors_out` is pre-filled by the caller with the previous
+ * value, because C only writes the superblock's own window.
+ */
+int shim_tpl_rdmult_setup_sb(
+    int gf_frame_index, int gf_group_size, int is_valid, int update_type,
+    int layer_depth, int gfu_boost, int frame_type, int aq_mode,
+    int superres_scale_denominator, int superres_upscaled_width, int mi_rows,
+    int base_qindex, int y_dc_delta_q, int rdmult_delta_qindex, int bit_depth,
+    int use_fixed_qp_offsets, int is_stat_consumption, int tuning, int mode,
+    int sb_size, int mi_row, int mi_col, const double *factors_in,
+    double *factors_out, int n_factors) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(*ppi));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  SequenceHeader *seq = (SequenceHeader *)calloc(1, sizeof(*seq));
+  double *in = NULL;
+  if (!cpi || !ppi || !x || !seq) goto fail;
+  if (n_factors <= 0) goto fail;
+  in = (double *)calloc((size_t)n_factors, sizeof(*in));
+  if (!in) goto fail;
+  memcpy(in, factors_in, (size_t)n_factors * sizeof(*in));
+
+  cpi->ppi = ppi;
+  cpi->gf_frame_index = gf_frame_index;
+  ppi->gf_group.size = gf_group_size;
+  if (gf_frame_index < 0 || gf_frame_index >= MAX_STATIC_GF_GROUP_LENGTH)
+    goto fail;
+  ppi->gf_group.update_type[gf_frame_index] = (unsigned char)update_type;
+  ppi->gf_group.layer_depth[gf_frame_index] = (unsigned char)layer_depth;
+  ppi->p_rc.gfu_boost = gfu_boost;
+
+  cpi->common.current_frame.frame_type = (FRAME_TYPE)frame_type;
+  cpi->common.superres_scale_denominator = (uint8_t)superres_scale_denominator;
+  cpi->common.superres_upscaled_width = superres_upscaled_width;
+  cpi->common.mi_params.mi_rows = mi_rows;
+  cpi->common.quant_params.base_qindex = base_qindex;
+  cpi->common.quant_params.y_dc_delta_q = y_dc_delta_q;
+  seq->bit_depth = (aom_bit_depth_t)bit_depth;
+  cpi->common.seq_params = seq;
+
+  cpi->oxcf.q_cfg.aq_mode = (AQ_MODE)aq_mode;
+  cpi->oxcf.q_cfg.use_fixed_qp_offsets = use_fixed_qp_offsets;
+  cpi->oxcf.tune_cfg.tuning = (aom_tune_metric)tuning;
+  cpi->oxcf.mode = (MODE)mode;
+  cpi->oxcf.pass = is_stat_consumption ? AOM_RC_SECOND_PASS : AOM_RC_ONE_PASS;
+  cpi->compressor_stage = ENCODE_STAGE;
+  ppi->lap_enabled = 0;
+
+  x->rdmult_delta_qindex = rdmult_delta_qindex;
+
+  TplParams *tpl = &ppi->tpl_data;
+  tpl->tpl_stats_block_mis_log2 = 2;
+  tpl->tpl_bsize_1d = 16;
+  tpl->tpl_frame = &tpl->tpl_stats_buffer[0];
+  tpl->tpl_frame[gf_frame_index].is_valid = (uint8_t)is_valid;
+
+  cpi->tpl_rdmult_scaling_factors = in;
+  ppi->tpl_sb_rdmult_scaling_factors = factors_out;
+
+  av1_tpl_rdmult_setup_sb(cpi, x, (BLOCK_SIZE)sb_size, mi_row, mi_col);
+
+  free(in);
+  free(seq);
+  free(x);
+  free(ppi);
+  free(cpi);
+  return 0;
+
+fail:
+  free(in);
+  free(seq);
+  free(x);
+  free(ppi);
+  free(cpi);
+  return -1;
+}
+
+/* ---- av1_init_tpl_txfm_stats (tpl_model.c:55) -------------------------- */
+int shim_tpl_init_tpl_txfm_stats(int *out_ready, int *out_coeff_num,
+                                 int *out_block_count, double *out_sum,
+                                 double *out_mean, int cap) {
+  if (cap < 256) return -1;
+  TplTxfmStats *s = (TplTxfmStats *)calloc(1, sizeof(*s));
+  if (!s) return -1;
+  /* Poison every field so "it was already zero" cannot pass for "it was
+   * cleared". */
+  s->ready = 7;
+  s->coeff_num = 3;
+  s->txfm_block_count = 9;
+  for (int i = 0; i < 256; ++i) {
+    s->abs_coeff_sum[i] = 1.5 + i;
+    s->abs_coeff_mean[i] = 2.5 + i;
+  }
+  av1_init_tpl_txfm_stats(s);
+  *out_ready = s->ready;
+  *out_coeff_num = s->coeff_num;
+  *out_block_count = s->txfm_block_count;
+  memcpy(out_sum, s->abs_coeff_sum, 256 * sizeof(*out_sum));
+  memcpy(out_mean, s->abs_coeff_mean, 256 * sizeof(*out_mean));
+  free(s);
+  return 0;
+}

@@ -25857,3 +25857,149 @@ pub fn ref_nrd_block_yrd_idtx(
     assert!(skippable >= 0, "the idtx shim failed to allocate");
     RefIdtxRd { rate, dist, sse, skippable: skippable != 0, blk_skip }
 }
+
+// ---------------------------------------------------------------------------
+// tpl_shim.c (cont.) — the per-superblock rdmult and the txfm-stats reset.
+// Both C entry points are exported `T` symbols. **Tier 1.**
+// ---------------------------------------------------------------------------
+
+/// The encoder scalars `av1_tpl_rdmult_setup_sb` reads, as the shim takes
+/// them. Enums cross as their C integer values.
+#[derive(Clone, Copy, Debug)]
+#[allow(missing_docs)]
+pub struct RefTplRdmultSbParams {
+    pub gf_frame_index: i32,
+    pub gf_group_size: i32,
+    pub is_valid: bool,
+    pub update_type: i32,
+    pub layer_depth: i32,
+    pub gfu_boost: i32,
+    pub frame_type: i32,
+    pub aq_mode: i32,
+    pub superres_scale_denominator: i32,
+    pub superres_upscaled_width: i32,
+    pub mi_rows: i32,
+    pub base_qindex: i32,
+    pub y_dc_delta_q: i32,
+    pub rdmult_delta_qindex: i32,
+    pub bit_depth: i32,
+    pub use_fixed_qp_offsets: bool,
+    pub is_stat_consumption: bool,
+    pub tuning: i32,
+    pub mode: i32,
+    pub sb_size: i32,
+    pub mi_row: i32,
+    pub mi_col: i32,
+}
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_tpl_rdmult_setup_sb(
+        gf_frame_index: i32,
+        gf_group_size: i32,
+        is_valid: i32,
+        update_type: i32,
+        layer_depth: i32,
+        gfu_boost: i32,
+        frame_type: i32,
+        aq_mode: i32,
+        superres_scale_denominator: i32,
+        superres_upscaled_width: i32,
+        mi_rows: i32,
+        base_qindex: i32,
+        y_dc_delta_q: i32,
+        rdmult_delta_qindex: i32,
+        bit_depth: i32,
+        use_fixed_qp_offsets: i32,
+        is_stat_consumption: i32,
+        tuning: i32,
+        mode: i32,
+        sb_size: i32,
+        mi_row: i32,
+        mi_col: i32,
+        factors_in: *const f64,
+        factors_out: *mut f64,
+        n_factors: i32,
+    ) -> i32;
+    fn shim_tpl_init_tpl_txfm_stats(
+        out_ready: *mut i32,
+        out_coeff_num: *mut i32,
+        out_block_count: *mut i32,
+        out_sum: *mut f64,
+        out_mean: *mut f64,
+        cap: i32,
+    ) -> i32;
+}
+
+/// Reference libaom `av1_tpl_rdmult_setup_sb` (tpl_model.c:2264).
+///
+/// `factors_in` seeds `cpi->tpl_rdmult_scaling_factors`; the returned vector
+/// is `cpi->ppi->tpl_sb_rdmult_scaling_factors` after the call, pre-filled
+/// with `prev_out` so an untouched entry is distinguishable from a written
+/// one.
+#[must_use]
+pub fn ref_tpl_rdmult_setup_sb(
+    p: RefTplRdmultSbParams,
+    factors_in: &[f64],
+    prev_out: &[f64],
+) -> Vec<f64> {
+    ref_init();
+    assert_eq!(factors_in.len(), prev_out.len());
+    let mut out = prev_out.to_vec();
+    let r = unsafe {
+        shim_tpl_rdmult_setup_sb(
+            p.gf_frame_index,
+            p.gf_group_size,
+            i32::from(p.is_valid),
+            p.update_type,
+            p.layer_depth,
+            p.gfu_boost,
+            p.frame_type,
+            p.aq_mode,
+            p.superres_scale_denominator,
+            p.superres_upscaled_width,
+            p.mi_rows,
+            p.base_qindex,
+            p.y_dc_delta_q,
+            p.rdmult_delta_qindex,
+            p.bit_depth,
+            i32::from(p.use_fixed_qp_offsets),
+            i32::from(p.is_stat_consumption),
+            p.tuning,
+            p.mode,
+            p.sb_size,
+            p.mi_row,
+            p.mi_col,
+            factors_in.as_ptr(),
+            out.as_mut_ptr(),
+            i32::try_from(out.len()).expect("factor count fits in an int"),
+        )
+    };
+    assert_eq!(r, 0, "shim_tpl_rdmult_setup_sb rejected the input");
+    out
+}
+
+/// Reference libaom `av1_init_tpl_txfm_stats` (tpl_model.c:55), applied to a
+/// deliberately poisoned struct so a no-op cannot pass as a clear.
+///
+/// Returns `(ready, coeff_num, txfm_block_count, abs_coeff_sum,
+/// abs_coeff_mean)`.
+#[must_use]
+pub fn ref_tpl_init_tpl_txfm_stats() -> (i32, i32, i32, Vec<f64>, Vec<f64>) {
+    ref_init();
+    let (mut ready, mut coeff_num, mut block_count) = (0, 0, 0);
+    let mut sum = vec![0.0f64; 256];
+    let mut mean = vec![0.0f64; 256];
+    let r = unsafe {
+        shim_tpl_init_tpl_txfm_stats(
+            &mut ready,
+            &mut coeff_num,
+            &mut block_count,
+            sum.as_mut_ptr(),
+            mean.as_mut_ptr(),
+            256,
+        )
+    };
+    assert_eq!(r, 0, "shim_tpl_init_tpl_txfm_stats allocation failed");
+    (ready, coeff_num, block_count, sum, mean)
+}

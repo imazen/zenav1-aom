@@ -1843,3 +1843,210 @@ fn tpl_frame_mv_entropy_column_histogram_duplicates_the_row_one_upstream_bug() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The per-superblock rdmult, and the txfm-stats reset. **Tier 1.**
+// ---------------------------------------------------------------------------
+
+use aom_encode::rd::{EncMode, FrameType, FrameUpdateType as RdFrameUpdateType, TuneMetric};
+use aom_encode::tpl_model::{TplRdmultSbParams, TplTxfmStats, coded_to_superres_mi};
+use aom_sys_ref::{RefTplRdmultSbParams, ref_tpl_init_tpl_txfm_stats, ref_tpl_rdmult_setup_sb};
+
+#[test]
+fn init_tpl_txfm_stats_matches_c() {
+    let (ready, coeff_num, block_count, sum, mean) = ref_tpl_init_tpl_txfm_stats();
+    // Start from a poisoned struct on the Rust side too, so "already zero"
+    // cannot pass for "cleared".
+    let mut got = TplTxfmStats {
+        ready: true,
+        coeff_num: 3,
+        txfm_block_count: 9,
+        abs_coeff_sum: (0..256).map(|i| 1.5 + f64::from(i)).collect(),
+        abs_coeff_mean: (0..256).map(|i| 2.5 + f64::from(i)).collect(),
+    };
+    got.init();
+    assert_eq!(i32::from(got.ready), ready);
+    assert_eq!(got.coeff_num, coeff_num);
+    assert_eq!(got.txfm_block_count, block_count);
+    assert_eq!(got.abs_coeff_sum, sum);
+    assert_eq!(got.abs_coeff_mean, mean);
+    // And the clear really happened: C's poison was 1.5.., not zero.
+    assert!(sum.iter().all(|&v| v == 0.0));
+    assert!(mean.iter().all(|&v| v == 0.0));
+    assert_eq!(coeff_num, 256);
+}
+
+#[test]
+fn coded_to_superres_mi_matches_its_definition() {
+    // `coded_to_superres_mi` is `static inline` in a header, so there is no
+    // symbol — **tier 4** against its own expression (rdopt.h:169). It is
+    // also gated at tier 1 indirectly by `tpl_rdmult_setup_sb_matches_c`,
+    // whose superres sweep goes through it on both sides.
+    for denom in 8..=16i32 {
+        for mi_col in 0..512i32 {
+            assert_eq!(
+                coded_to_superres_mi(mi_col, denom),
+                (mi_col * denom + 4) / 8,
+                "mi_col={mi_col} denom={denom}"
+            );
+        }
+    }
+    assert_eq!(coded_to_superres_mi(0, 8), 0);
+    assert_eq!(coded_to_superres_mi(16, 8), 16);
+    assert_eq!(coded_to_superres_mi(16, 16), 32);
+}
+
+#[test]
+fn tpl_rdmult_setup_sb_matches_c() {
+    let mut rng = Lcg(0x5eed_0050);
+    let mut saw_none = false;
+    let mut saw_written = false;
+    let mut saw_superres = false;
+    let mut saw_partial_window = false;
+
+    // The five early-return gates, plus the arms that pass them.
+    let update_types = [
+        (RdFrameUpdateType::Kf, 0i32),
+        (RdFrameUpdateType::Lf, 1),
+        (RdFrameUpdateType::Gf, 2),
+        (RdFrameUpdateType::Arf, 3),
+        (RdFrameUpdateType::Overlay, 4),
+    ];
+    for &(ut, ut_c) in &update_types {
+        for &aq_mode in &[0i32, 1, 3] {
+            for &is_valid in &[true, false] {
+                for &gf_frame_index in &[0i32, 5, 95, 96] {
+                    for &denom in &[8i32, 11, 16] {
+                        for _ in 0..6 {
+                            let width = [176i32, 640, 1920][(rng.next_u32() % 3) as usize];
+                            let mi_rows = [16i32, 40, 120][(rng.next_u32() % 3) as usize];
+                            let mi_cols_sr = pixels_to_mi(width);
+                            let num_cols = (mi_cols_sr + 3) / 4;
+                            let num_rows = (mi_rows + 3) / 4;
+                            let n = (num_rows * num_cols) as usize;
+                            // Factors are `rk / r0 + 1.2` from
+                            // `tpl_rdmult_setup`, so strictly positive and
+                            // typically 1.2..4 — `log` of them must be
+                            // defined.
+                            let factors_in: Vec<f64> = (0..n)
+                                .map(|_| 1.2 + f64::from(rng.next_u32() % 3000) / 1000.0)
+                                .collect();
+                            let prev_out: Vec<f64> = (0..n).map(|i| -1.0 - i as f64).collect();
+
+                            // BLOCK_64X64 = 12 (16 mi), BLOCK_128X128 = 15 (32 mi).
+                            let (sb_size_c, sb_mi) = if rng.next_u32() % 2 == 0 {
+                                (12i32, 16i32)
+                            } else {
+                                (15, 32)
+                            };
+                            let mi_row = ((rng.next_u32() % 8) as i32) * sb_mi;
+                            let mi_col = ((rng.next_u32() % 8) as i32) * sb_mi;
+
+                            let p = TplRdmultSbParams {
+                                gf_frame_index: gf_frame_index as usize,
+                                update_type: ut,
+                                layer_depth: (rng.next_u32() % 9) as i32,
+                                gfu_boost: (rng.next_u32() % 3000) as i32,
+                                frame_type: if ut_c == 0 {
+                                    FrameType::Key
+                                } else {
+                                    FrameType::NonKey
+                                },
+                                aq_mode,
+                                superres_scale_denominator: denom,
+                                superres_upscaled_width: width,
+                                mi_rows,
+                                base_qindex: (rng.next_u32() % 256) as i32,
+                                y_dc_delta_q: (rng.next_u32() % 31) as i32 - 15,
+                                rdmult_delta_qindex: (rng.next_u32() % 61) as i32 - 30,
+                                bit_depth: [8u8, 10, 12][(rng.next_u32() % 3) as usize],
+                                use_fixed_qp_offsets: rng.next_u32() % 2 == 0,
+                                is_stat_consumption_stage: rng.next_u32() % 2 == 0,
+                                tuning: TuneMetric::Psnr,
+                                mode: EncMode::Good,
+                                sb_mi_width: sb_mi,
+                                sb_mi_height: sb_mi,
+                            };
+                            let mut frames =
+                                vec![TplDepFrame::default(); (gf_frame_index + 1) as usize];
+                            frames[gf_frame_index as usize].is_valid = is_valid;
+                            let tpl = TplParams {
+                                ready: true,
+                                tpl_stats_block_mis_log2: 2,
+                                tpl_bsize_1d: 16,
+                                frames,
+                                ..TplParams::default()
+                            };
+
+                            let got = tpl.tpl_rdmult_setup_sb(p, &factors_in, mi_row, mi_col);
+                            let cp = RefTplRdmultSbParams {
+                                gf_frame_index,
+                                gf_group_size: gf_frame_index + 1,
+                                is_valid,
+                                update_type: ut_c,
+                                layer_depth: p.layer_depth,
+                                gfu_boost: p.gfu_boost,
+                                frame_type: if ut_c == 0 { 0 } else { 1 },
+                                aq_mode,
+                                superres_scale_denominator: denom,
+                                superres_upscaled_width: width,
+                                mi_rows,
+                                base_qindex: p.base_qindex,
+                                y_dc_delta_q: p.y_dc_delta_q,
+                                rdmult_delta_qindex: p.rdmult_delta_qindex,
+                                bit_depth: i32::from(p.bit_depth),
+                                use_fixed_qp_offsets: p.use_fixed_qp_offsets,
+                                is_stat_consumption: p.is_stat_consumption_stage,
+                                tuning: 0,
+                                mode: 1, // GOOD
+                                sb_size: sb_size_c,
+                                mi_row,
+                                mi_col,
+                            };
+                            let want = ref_tpl_rdmult_setup_sb(cp, &factors_in, &prev_out);
+
+                            let mut expect = prev_out.clone();
+                            match got {
+                                None => saw_none = true,
+                                Some(ref writes) => {
+                                    if !writes.is_empty() {
+                                        saw_written = true;
+                                    }
+                                    for &(i, v) in writes {
+                                        expect[i] = v;
+                                    }
+                                    if writes.len() < n {
+                                        saw_partial_window = true;
+                                    }
+                                }
+                            }
+                            for (i, (a, b)) in expect.iter().zip(want.iter()).enumerate() {
+                                assert_eq!(
+                                    a.to_bits(),
+                                    b.to_bits(),
+                                    "factor {i}/{n}: ut={ut:?} aq={aq_mode} valid={is_valid} \
+                                     gf={gf_frame_index} denom={denom} width={width} \
+                                     mi_rows={mi_rows} sb=({mi_row},{mi_col}) sb_mi={sb_mi}"
+                                );
+                            }
+                            if denom != 8 {
+                                saw_superres = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(saw_none, "no early return was ever taken");
+    assert!(saw_written, "the factor window was never written");
+    assert!(
+        saw_superres,
+        "the superres denominator was never non-trivial"
+    );
+    assert!(
+        saw_partial_window,
+        "the superblock window always covered the whole frame — the window \
+         clamp is untested"
+    );
+}

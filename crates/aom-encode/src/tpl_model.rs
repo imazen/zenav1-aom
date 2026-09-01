@@ -1280,3 +1280,238 @@ impl TplParams {
         rate_row + rate_col
     }
 }
+
+/// The encoder scalars `av1_tpl_rdmult_setup_sb` reads, gathered so the
+/// signature stays readable — C reaches into `AV1_COMP`, `AV1_COMMON`,
+/// `MACROBLOCK` and `AV1EncoderConfig` for these one at a time.
+#[derive(Clone, Copy, Debug)]
+pub struct TplRdmultSbParams {
+    /// `cpi->gf_frame_index`.
+    pub gf_frame_index: usize,
+    /// `gf_group->update_type[gf_frame_index]`.
+    pub update_type: FrameUpdateType,
+    /// `gf_group->layer_depth[gf_frame_index]`, before the clamp to 6.
+    pub layer_depth: i32,
+    /// `cpi->ppi->p_rc.gfu_boost`, before the clamp to 15 after /100.
+    pub gfu_boost: i32,
+    /// `cm->current_frame.frame_type`.
+    pub frame_type: crate::rd::FrameType,
+    /// `cpi->oxcf.q_cfg.aq_mode`. Non-zero disables the whole function.
+    pub aq_mode: i32,
+    /// `cm->superres_scale_denominator`.
+    pub superres_scale_denominator: i32,
+    /// `cm->superres_upscaled_width`.
+    pub superres_upscaled_width: i32,
+    /// `cm->mi_params.mi_rows`.
+    pub mi_rows: i32,
+    /// `cm->quant_params.base_qindex`.
+    pub base_qindex: i32,
+    /// `cm->quant_params.y_dc_delta_q`.
+    pub y_dc_delta_q: i32,
+    /// `x->rdmult_delta_qindex`.
+    pub rdmult_delta_qindex: i32,
+    /// `cm->seq_params->bit_depth`.
+    pub bit_depth: u8,
+    /// `cpi->oxcf.q_cfg.use_fixed_qp_offsets`.
+    pub use_fixed_qp_offsets: bool,
+    /// `is_stat_consumption_stage(cpi)` (encoder.h:4137).
+    pub is_stat_consumption_stage: bool,
+    /// `cpi->oxcf.tune_cfg.tuning`.
+    pub tuning: crate::rd::TuneMetric,
+    /// `cpi->oxcf.mode`.
+    pub mode: crate::rd::EncMode,
+    /// `mi_size_wide[sb_size]`.
+    pub sb_mi_width: i32,
+    /// `mi_size_high[sb_size]`.
+    pub sb_mi_height: i32,
+}
+
+/// `coded_to_superres_mi` (`encoder/rdopt.h:169`) — an mi column in coded
+/// space, mapped to superres-upscaled space.
+///
+/// `(mi_col * denom + SCALE_NUMERATOR / 2) / SCALE_NUMERATOR` with
+/// `SCALE_NUMERATOR = 8`, i.e. rounded to nearest. Integer division on a
+/// non-negative numerator, so this is a plain `/`.
+#[must_use]
+pub fn coded_to_superres_mi(mi_col: i32, denom: i32) -> i32 {
+    /// `SCALE_NUMERATOR` (`av1/common/enums.h`).
+    const SCALE_NUMERATOR: i32 = 8;
+    (mi_col * denom + SCALE_NUMERATOR / 2) / SCALE_NUMERATOR
+}
+
+impl TplParams {
+    /// `av1_tpl_rdmult_setup_sb` (tpl_model.c:2264) — turn the frame-level
+    /// TPL factors into the per-superblock ones the RD search actually uses.
+    ///
+    /// The mechanism: over the 16x16 blocks this superblock covers, take the
+    /// geometric mean of [`Self::tpl_rdmult_setup`]'s factors (via
+    /// `log_sum / base_block_count`), and scale it so the superblock's own
+    /// rdmult change — `new_rdmult / orig_rdmult`, the ratio the delta-q
+    /// decision implies — is preserved on average. So the per-block factors
+    /// keep their *relative* spread while their mean tracks the superblock's
+    /// quantizer.
+    ///
+    /// Five early returns, in C's order, and they are not interchangeable:
+    /// past the TPL buffer, no valid stats, a frame type TPL does not model
+    /// (`is_frame_tpl_eligible`: only ARF/GF/KF), or any adaptive-quantization
+    /// mode — because AQ writes the same output buffer.
+    ///
+    /// # The row/column index swap
+    /// C computes the block window as `row` from `mi_row / num_mi_w` and
+    /// `col` from `mi_col_sr / num_mi_h` — **width for the row, height for
+    /// the column**. Both are 4 for the fixed 16x16 aggregation block, so it
+    /// makes no difference and is reproduced as written rather than
+    /// "corrected"; the names are C's, mismatched.
+    ///
+    /// Returns `None` on any early return, meaning the caller's existing
+    /// `tpl_sb_rdmult_scaling_factors` are left alone. On `Some`, the result
+    /// is the list of `(index, factor)` pairs written — a sparse update,
+    /// because C only touches this superblock's window.
+    #[must_use]
+    pub fn tpl_rdmult_setup_sb(
+        &self,
+        p: TplRdmultSbParams,
+        frame_factors: &[f64],
+        mi_row: i32,
+        mi_col: i32,
+    ) -> Option<Vec<(usize, f64)>> {
+        let boost_index = (p.gfu_boost / 100).min(15);
+        let layer_depth = p.layer_depth.min(6);
+
+        if i32::try_from(p.gf_frame_index).ok()? >= MAX_TPL_FRAME_IDX {
+            return None;
+        }
+        if !self.frames.get(p.gf_frame_index)?.is_valid {
+            return None;
+        }
+        // is_frame_tpl_eligible (encoder.h:4378).
+        if !matches!(
+            p.update_type,
+            FrameUpdateType::Arf | FrameUpdateType::Gf | FrameUpdateType::Kf
+        ) {
+            return None;
+        }
+        // NO_AQ == 0.
+        if p.aq_mode != 0 {
+            return None;
+        }
+
+        let mi_col_sr = coded_to_superres_mi(mi_col, p.superres_scale_denominator);
+        let mi_cols_sr = pixels_to_mi(p.superres_upscaled_width);
+        let sb_mi_width_sr = coded_to_superres_mi(p.sb_mi_width, p.superres_scale_denominator);
+
+        let num_mi_w = RDMULT_BLOCK_MI;
+        let num_mi_h = RDMULT_BLOCK_MI;
+        let num_cols = (mi_cols_sr + num_mi_w - 1) / num_mi_w;
+        let num_rows = (p.mi_rows + num_mi_h - 1) / num_mi_h;
+        let num_bcols = (sb_mi_width_sr + num_mi_w - 1) / num_mi_w;
+        let num_brows = (p.sb_mi_height + num_mi_h - 1) / num_mi_h;
+
+        // C's mismatched divisors: width for the row, height for the column.
+        let row_start = mi_row / num_mi_w;
+        let col_start = mi_col_sr / num_mi_h;
+
+        let mut base_block_count = 0.0f64;
+        let mut log_sum = 0.0f64;
+        for row in row_start..num_rows.min(row_start + num_brows) {
+            for col in col_start..num_cols.min(col_start + num_bcols) {
+                log_sum += frame_factors[(row * num_cols + col) as usize].ln();
+                base_block_count += 1.0;
+            }
+        }
+
+        let orig_qindex_rdmult = p.base_qindex + p.y_dc_delta_q;
+        let orig_rdmult = crate::rd::av1_compute_rd_mult(
+            orig_qindex_rdmult,
+            p.bit_depth,
+            p.update_type,
+            layer_depth,
+            boost_index,
+            p.frame_type,
+            p.use_fixed_qp_offsets,
+            p.is_stat_consumption_stage,
+            p.tuning,
+            p.mode,
+        );
+        let new_qindex_rdmult = p.base_qindex + p.rdmult_delta_qindex + p.y_dc_delta_q;
+        let new_rdmult = crate::rd::av1_compute_rd_mult(
+            new_qindex_rdmult,
+            p.bit_depth,
+            p.update_type,
+            layer_depth,
+            boost_index,
+            p.frame_type,
+            p.use_fixed_qp_offsets,
+            p.is_stat_consumption_stage,
+            p.tuning,
+            p.mode,
+        );
+
+        let scaling_factor = f64::from(new_rdmult) / f64::from(orig_rdmult);
+        // `base_block_count` is 0 when the window is empty, which makes
+        // `log_sum / 0` a NaN or an infinity; C does the same division and
+        // `exp_bounded` passes NaN through. Reproduced rather than guarded.
+        let scale_adj = exp_bounded(scaling_factor.ln() - log_sum / base_block_count);
+
+        let mut out = Vec::new();
+        for row in row_start..num_rows.min(row_start + num_brows) {
+            for col in col_start..num_cols.min(col_start + num_bcols) {
+                let index = (row * num_cols + col) as usize;
+                out.push((index, scale_adj * frame_factors[index]));
+            }
+        }
+        Some(out)
+    }
+}
+
+/// `TplTxfmStats` (tpl_model.h:110) — the per-frame transform-coefficient
+/// histogram `CONFIG_BITRATE_ACCURACY` builds.
+///
+/// Only [`Self::init`] is reachable in this build: every function that
+/// *fills* this (`av1_record_tpl_txfm_block`,
+/// `av1_accumulate_tpl_txfm_stats`, `av1_tpl_txfm_stats_update_abs_coeff_mean`)
+/// is inside `#if CONFIG_BITRATE_ACCURACY`, which is 0. The struct is modelled
+/// anyway because `av1_init_tpl_txfm_stats` is exported and IS called
+/// unconditionally.
+#[derive(Clone, Debug)]
+pub struct TplTxfmStats {
+    /// Whether `abs_coeff_mean` has been computed.
+    pub ready: bool,
+    /// Number of coefficients tracked. Always 256 (a 16x16 transform).
+    pub coeff_num: i32,
+    /// Number of transform blocks folded in.
+    pub txfm_block_count: i32,
+    /// Per-coefficient sum of `|level| / LOSSLESS_Q_STEP`.
+    pub abs_coeff_sum: Vec<f64>,
+    /// `abs_coeff_sum / txfm_block_count`.
+    pub abs_coeff_mean: Vec<f64>,
+}
+
+impl Default for TplTxfmStats {
+    fn default() -> Self {
+        Self {
+            ready: false,
+            coeff_num: 256,
+            txfm_block_count: 0,
+            abs_coeff_sum: vec![0.0; 256],
+            abs_coeff_mean: vec![0.0; 256],
+        }
+    }
+}
+
+impl TplTxfmStats {
+    /// `av1_init_tpl_txfm_stats` (tpl_model.c:55) — reset the histogram.
+    ///
+    /// C sets `coeff_num = 256` **before** the two `memset`s and sizes them
+    /// by it, so the clear always covers 256 entries regardless of what
+    /// `coeff_num` was — the assignment order is load-bearing.
+    pub fn init(&mut self) {
+        self.ready = false;
+        self.coeff_num = 256;
+        self.txfm_block_count = 0;
+        self.abs_coeff_sum.resize(256, 0.0);
+        self.abs_coeff_mean.resize(256, 0.0);
+        self.abs_coeff_sum.fill(0.0);
+        self.abs_coeff_mean.fill(0.0);
+    }
+}
