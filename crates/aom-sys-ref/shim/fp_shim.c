@@ -298,3 +298,58 @@ int shim_fp_get_bsize2(int mi_rows, int mi_cols, int fp_block_size,
   return (int)get_bsize(&mi_params, (BLOCK_SIZE)fp_block_size, unit_row,
                         unit_col);
 }
+
+/* ---- update_firstpass_stats (firstpass.c:907) ------------------------- *
+ * Drives the whole static, and returns the FIRSTPASS_STATS it wrote into
+ * `twopass->stats_buf_ctx->stats_in_end`.
+ *
+ * Three shim choices, each of which suppresses a side effect the port does
+ * not model, rather than changing the arithmetic:
+ *   - `lap_enabled = 1` sends the record to av1_firstpass_info_push instead
+ *     of output_stats (which would push an aom_codec_cx_pkt onto a list);
+ *     firstpass_info is left zeroed, so push returns AOM_CODEC_ERROR and
+ *     writes nothing.
+ *   - `total_stats = NULL` skips the av1_accumulate_stats fold.
+ *   - `use_ducky_encode = 1` skips the circular/linear buffer wrap entirely.
+ * `resize_mode` is left RESIZE_NONE so `num_mbs_16X16` comes from
+ * `mi_params->MBs`, which the caller sets directly.
+ */
+int shim_fp_update_firstpass_stats(int num_mbs_16x16, int fp_block_size,
+                                   int frame_number, int64_t ts_duration,
+                                   double raw_err_stdev, int width, int height,
+                                   const FRAME_STATS *stats,
+                                   FIRSTPASS_STATS *out) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(*ppi));
+  FIRSTPASS_STATS *buf = (FIRSTPASS_STATS *)calloc(8, sizeof(*buf));
+  STATS_BUFFER_CTX *ctx = (STATS_BUFFER_CTX *)calloc(1, sizeof(*ctx));
+  if (!cpi || !ppi || !buf || !ctx) {
+    free(ctx);
+    free(buf);
+    free(ppi);
+    free(cpi);
+    return -1;
+  }
+  cpi->ppi = ppi;
+  cpi->common.mi_params.MBs = num_mbs_16x16;
+  cpi->common.width = width;
+  cpi->common.height = height;
+  cpi->oxcf.resize_cfg.resize_mode = RESIZE_NONE;
+  cpi->use_ducky_encode = 1;
+  ppi->lap_enabled = 1;
+  ppi->twopass.stats_buf_ctx = ctx;
+  ctx->stats_in_start = buf;
+  ctx->stats_in_end = buf;
+  ctx->stats_in_buf_end = buf + 8;
+  ctx->total_stats = NULL;
+
+  update_firstpass_stats(cpi, stats, raw_err_stdev, frame_number, ts_duration,
+                         (BLOCK_SIZE)fp_block_size);
+
+  *out = buf[0];
+  free(ctx);
+  free(buf);
+  free(ppi);
+  free(cpi);
+  return 0;
+}

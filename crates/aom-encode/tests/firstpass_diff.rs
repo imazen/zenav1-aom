@@ -1257,3 +1257,135 @@ fn get_prediction_error_bitdepth_matches_c() {
         }
     }
 }
+
+use aom_encode::firstpass::UpdateFirstpassStatsParams;
+use aom_sys_ref::ref_fp_update_firstpass_stats;
+
+#[test]
+fn update_firstpass_stats_matches_c() {
+    let mut rng = Lcg(0x5eed_0130);
+    let mut saw_motion = false;
+    let mut saw_no_motion = false;
+    let mut saw_invalid_start_row = false;
+    // BLOCK_8X8 = 3 and BLOCK_16X16 = 6 are what `get_fp_block_size` returns;
+    // the two counts (num_mbs vs num_mbs_16x16) differ by 4x at BLOCK_8X8,
+    // so a port that used one for both fails on that arm alone.
+    for &fp_block_size in &[6i32, 3] {
+        for &(width, height) in &[(176i32, 144i32), (1920, 1080), (3840, 2160)] {
+            let num_mbs_16x16 = ((width + 15) / 16) * ((height + 15) / 16);
+            for trial in 0..400 {
+                let mut stats = random_frame_stats(&mut rng, 0);
+                // Frame-level sums, not per-block ones: scale them up.
+                stats.coded_error = i64::from(rng.next_u32()) << 8;
+                stats.sr_coded_error = i64::from(rng.next_u32()) << 8;
+                stats.lt_coded_error = i64::from(rng.next_u32()) << 8;
+                stats.intra_error = i64::from(rng.next_u32()) << 8;
+                stats.frame_avg_wavelet_energy = i64::from(rng.next_u32());
+                stats.inter_count = (rng.next_u32() % (num_mbs_16x16 as u32)) as i32;
+                stats.second_ref_count = (rng.next_u32() % 1000) as i32;
+                stats.intra_skip_count = (rng.next_u32() % 1000) as i32;
+                stats.neutral_count = f64::from(rng.next_u32() % 100_000) / 8.0;
+                stats.image_data_start_row = if trial % 5 == 0 {
+                    saw_invalid_start_row = true;
+                    INVALID_ROW
+                } else {
+                    (rng.next_u32() % 200) as i32
+                };
+                // The zero-motion arm has to be reached by construction, not
+                // by luck: it is nine fields wide.
+                if trial % 3 == 0 {
+                    stats.mv_count = 0;
+                    saw_no_motion = true;
+                } else {
+                    stats.mv_count = 1 + (rng.next_u32() % 10_000) as i32;
+                    saw_motion = true;
+                }
+                stats.sum_mvr = (rng.next_u32() % 200_000) as i32 - 100_000;
+                stats.sum_mvc = (rng.next_u32() % 200_000) as i32 - 100_000;
+                stats.sum_mvr_abs = (rng.next_u32() % 200_000) as i32;
+                stats.sum_mvc_abs = (rng.next_u32() % 200_000) as i32;
+                stats.sum_mvrs = i64::from(rng.next_u32());
+                stats.sum_mvcs = i64::from(rng.next_u32());
+                stats.sum_in_vectors = (rng.next_u32() % 20_000) as i32 - 10_000;
+                stats.new_mv_count = (rng.next_u32() % 10_000) as i32;
+                stats.intra_factor = f64::from(rng.next_u32() % 100_000) / 1000.0;
+                stats.brightness_factor = f64::from(rng.next_u32() % 100_000) / 1000.0;
+
+                let p = UpdateFirstpassStatsParams {
+                    num_mbs_16x16,
+                    fp_block_size,
+                    frame_number: (rng.next_u32() % 100_000) as i32,
+                    ts_duration: i64::from(rng.next_u32()) * 1000,
+                    raw_err_stdev: f64::from(rng.next_u32()) / 4096.0,
+                    width,
+                    height,
+                };
+                let got = FirstpassStats::from_frame_stats(&stats, p);
+                let want = ref_fp_update_firstpass_stats(
+                    p.num_mbs_16x16,
+                    p.fp_block_size,
+                    p.frame_number,
+                    p.ts_duration,
+                    p.raw_err_stdev,
+                    p.width,
+                    p.height,
+                    &to_ref_frame_stats(&stats),
+                );
+                assert_eq!(
+                    bits_of(&to_ref(&got)),
+                    bits_of(&want),
+                    "bsize={fp_block_size} {width}x{height} trial={trial} \
+                     mv_count={}",
+                    stats.mv_count
+                );
+            }
+        }
+    }
+    assert!(saw_motion, "the mv_count > 0 arm was never reached");
+    assert!(saw_no_motion, "the mv_count == 0 arm was never reached");
+    assert!(
+        saw_invalid_start_row,
+        "inactive_zone_rows never carried INVALID_ROW"
+    );
+}
+
+#[test]
+fn update_firstpass_stats_uses_both_macroblock_counts() {
+    // The percentages divide by `get_num_mbs(fp_block_size, num_mbs_16x16)`
+    // and `normalize` divides the errors by `num_mbs_16x16`. At BLOCK_8X8
+    // those differ by 4x, so a port that used one for both would be wrong on
+    // one of the two groups. Prove the two block sizes really do give
+    // different answers, or the sweep above is one case repeated.
+    let mut rng = Lcg(0x5eed_0131);
+    let mut stats = random_frame_stats(&mut rng, 3);
+    stats.mv_count = 500;
+    stats.inter_count = 900;
+    stats.coded_error = 1 << 30;
+    let base = UpdateFirstpassStatsParams {
+        num_mbs_16x16: 8160,
+        fp_block_size: 6,
+        frame_number: 7,
+        ts_duration: 33_000,
+        raw_err_stdev: 12.5,
+        width: 1920,
+        height: 1080,
+    };
+    let a = FirstpassStats::from_frame_stats(&stats, base);
+    let b = FirstpassStats::from_frame_stats(
+        &stats,
+        UpdateFirstpassStatsParams {
+            fp_block_size: 3,
+            ..base
+        },
+    );
+    assert_ne!(a.pcnt_inter, b.pcnt_inter, "the percentages did not move");
+    // The errors normalize by num_mbs_16x16, which is the SAME in both, but
+    // min_err is scaled by sqrt(num_mbs), which is not — so they differ too,
+    // and by a different ratio than the percentages.
+    assert_ne!(a.coded_error, b.coded_error);
+    assert_ne!(
+        a.pcnt_inter / b.pcnt_inter,
+        a.coded_error / b.coded_error,
+        "the two denominators moved together — they are not distinguishable"
+    );
+}

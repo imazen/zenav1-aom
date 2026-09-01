@@ -38,17 +38,21 @@
 //!   `search_site_config` out of the encoder's table by stride; the table is
 //!   allocation state, not a computation.
 //!
+//! - The buffer half of `update_firstpass_stats` (:989 onwards): writing the
+//!   record into `twopass->stats_buf_ctx->stats_in_end`, advancing that
+//!   pointer, and the circular-vs-linear wrap it does depending on
+//!   `oxcf.pass` and `lap_enabled`. That is the same stats-buffer plumbing as
+//!   `av1_firstpass_info_*`, which this module models as [`FirstpassInfo`];
+//!   the arithmetic half is [`FirstpassStats::from_frame_stats`].
+//!
 //! **Still missing from this module**, and named rather than glossed: the
 //! per-block first pass itself — `firstpass_intra_prediction`,
 //! `firstpass_inter_prediction`, `first_pass_motion_search`,
 //! `first_pass_intra_pred_and_calc_diff`,
-//! `first_pass_predict_intra_block_for_luma_plane`,
-//! `get_prediction_error` / `highbd_get_prediction_error` /
-//! `get_prediction_error_bitdepth`, `get_block_variance_fn` /
-//! `highbd_get_block_variance_fn`, `get_bsize`, `update_firstpass_stats`,
-//! `av1_first_pass` and `av1_noop_first_pass_frame`. Those need the encoder's
-//! frame buffers and motion search wired up; this module is the arithmetic
-//! layer underneath them.
+//! `first_pass_predict_intra_block_for_luma_plane`, `av1_first_pass` and
+//! `av1_noop_first_pass_frame`. Those need the encoder's frame buffers and
+//! motion search wired up; this module is the arithmetic layer underneath
+//! them.
 //!
 //! # Differential coverage
 //! `crates/aom-encode/tests/firstpass_diff.rs`. The eleven exported entry
@@ -1031,4 +1035,130 @@ pub enum HighbdOrLowbd<'a> {
     Lowbd(&'a [u8]),
     /// A 10/12-bit plane (also used at bit depth 8 in a highbd build).
     Highbd(&'a [u16]),
+}
+
+/// The encoder scalars `update_firstpass_stats` reads besides the
+/// [`FrameStats`] it condenses.
+#[derive(Clone, Copy, Debug)]
+pub struct UpdateFirstpassStatsParams {
+    /// `mi_params->MBs`, or `cpi->initial_mbs` when resize is enabled — the
+    /// 16x16 macroblock count the *bit allocation* is scaled by.
+    pub num_mbs_16x16: i32,
+    /// The first pass's own block size, which may be smaller than 16x16.
+    pub fp_block_size: i32,
+    /// `frame_number`.
+    pub frame_number: i32,
+    /// `ts_duration`.
+    pub ts_duration: i64,
+    /// `raw_err_stdev`, from [`raw_motion_error_stdev`].
+    pub raw_err_stdev: f64,
+    /// `cm->width`.
+    pub width: i32,
+    /// `cm->height`.
+    pub height: i32,
+}
+
+impl FirstpassStats {
+    /// The arithmetic half of `update_firstpass_stats` (firstpass.c:907,
+    /// static) — condense one frame's [`FrameStats`] into the record pass 2
+    /// reads.
+    ///
+    /// # Two different macroblock counts, and they are not interchangeable
+    /// `num_mbs_16x16` is the frame's 16x16 macroblock count; `num_mbs` is
+    /// [`get_num_mbs`] of it, i.e. the count in the first pass's own block
+    /// size, which is smaller at `BLOCK_8X8`. The **percentages divide by
+    /// `num_mbs`** (they are fractions of the units actually analysed) while
+    /// [`Self::normalize`] afterwards **divides the errors by
+    /// `num_mbs_16x16`** (they are per-macroblock energies). Using one for
+    /// both is wrong in one direction or the other by a factor of 4.
+    ///
+    /// # `min_err`
+    /// `200 * sqrt(num_mbs)` is added to all four error terms so a static
+    /// frame still gets some bit allocation. It grows with `sqrt` of the area
+    /// rather than linearly, because the per-macroblock energy of real
+    /// content falls as the format grows.
+    ///
+    /// # The zero-motion arm
+    /// With `mv_count == 0` all nine motion fields are set to 0 rather than
+    /// left as `0/0`. `new_mv_count` and `pcnt_motion` are inside that arm
+    /// too, so a frame with no motion reports zero for both — including
+    /// `new_mv_count`, which C otherwise takes straight from the counter.
+    ///
+    /// Four fields are hard-coded rather than derived: `inactive_zone_cols`
+    /// is 0 ("not currently supported" upstream), `is_flash` 0, `noise_var`
+    /// 0, `cor_coeff` 1 — pass 2 fills those in later. `log_coded_error` and
+    /// `log_intra_error` are zeroed here and then recomputed by
+    /// [`Self::normalize`].
+    #[must_use]
+    pub fn from_frame_stats(stats: &FrameStats, p: UpdateFirstpassStatsParams) -> Self {
+        let num_mbs = get_num_mbs(p.fp_block_size, p.num_mbs_16x16);
+        let min_err = 200.0 * f64::from(num_mbs).sqrt();
+        let n = f64::from(num_mbs);
+
+        let mut fps = Self {
+            weight: stats.intra_factor * stats.brightness_factor,
+            frame: f64::from(p.frame_number),
+            coded_error: (stats.coded_error >> 8) as f64 + min_err,
+            sr_coded_error: (stats.sr_coded_error >> 8) as f64 + min_err,
+            lt_coded_error: (stats.lt_coded_error >> 8) as f64 + min_err,
+            intra_error: (stats.intra_error >> 8) as f64 + min_err,
+            frame_avg_wavelet_energy: stats.frame_avg_wavelet_energy as f64,
+            count: 1.0,
+            pcnt_inter: f64::from(stats.inter_count) / n,
+            pcnt_second_ref: f64::from(stats.second_ref_count) / n,
+            pcnt_neutral: stats.neutral_count / n,
+            intra_skip_pct: f64::from(stats.intra_skip_count) / n,
+            inactive_zone_rows: f64::from(stats.image_data_start_row),
+            inactive_zone_cols: 0.0,
+            raw_error_stdev: p.raw_err_stdev,
+            is_flash: 0,
+            noise_var: 0.0,
+            cor_coeff: 1.0,
+            log_coded_error: 0.0,
+            log_intra_error: 0.0,
+            duration: p.ts_duration as f64,
+            ..Self::default()
+        };
+
+        if stats.mv_count > 0 {
+            let mv_count = f64::from(stats.mv_count);
+            fps.mvr = f64::from(stats.sum_mvr) / mv_count;
+            fps.mvr_abs = f64::from(stats.sum_mvr_abs) / mv_count;
+            fps.mvc = f64::from(stats.sum_mvc) / mv_count;
+            fps.mvc_abs = f64::from(stats.sum_mvc_abs) / mv_count;
+            fps.mvrv = (stats.sum_mvrs as f64
+                - (f64::from(stats.sum_mvr) * f64::from(stats.sum_mvr) / mv_count))
+                / mv_count;
+            fps.mvcv = (stats.sum_mvcs as f64
+                - (f64::from(stats.sum_mvc) * f64::from(stats.sum_mvc) / mv_count))
+                / mv_count;
+            // C's denominator is the INT product `mv_count * 2`, formed
+            // before the conversion to double. Forming it as `mv_count * 2.0`
+            // in f64 instead is PROVABLY unobservable and measured so (the
+            // substitution leaves the whole differential green): the two
+            // differ only if `mv_count * 2` overflows `int`, and `mv_count`
+            // counts moving blocks in one frame, so it is bounded by the
+            // frame's block count. C's spelling is kept because it is C's.
+            fps.mv_in_out_count = f64::from(stats.sum_in_vectors) / f64::from(stats.mv_count * 2);
+            fps.new_mv_count = f64::from(stats.new_mv_count);
+            fps.pcnt_motion = mv_count / n;
+        } else {
+            fps.mvr = 0.0;
+            fps.mvr_abs = 0.0;
+            fps.mvc = 0.0;
+            fps.mvc_abs = 0.0;
+            fps.mvrv = 0.0;
+            fps.mvcv = 0.0;
+            fps.mv_in_out_count = 0.0;
+            fps.new_mv_count = 0.0;
+            fps.pcnt_motion = 0.0;
+        }
+
+        fps.normalize(
+            f64::from(p.num_mbs_16x16),
+            f64::from(p.width),
+            f64::from(p.height),
+        );
+        fps
+    }
 }

@@ -27636,3 +27636,51 @@ pub fn ref_ct_compute_best_interintra_mode(
     };
     (rd, best_mode, intra)
 }
+
+/// Reference libaom `update_firstpass_stats` (firstpass.c:907, static).
+/// **Tier 1c.** Returns the `FIRSTPASS_STATS` C wrote into the stats buffer.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn ref_fp_update_firstpass_stats(
+    num_mbs_16x16: i32,
+    fp_block_size: i32,
+    frame_number: i32,
+    ts_duration: i64,
+    raw_err_stdev: f64,
+    width: i32,
+    height: i32,
+    stats: &RefFrameStats,
+) -> RefFirstpassStats {
+    ref_init();
+    let mut out = RefFirstpassStats::default();
+    let r = unsafe {
+        shim_fp_update_firstpass_stats(
+            num_mbs_16x16,
+            fp_block_size,
+            frame_number,
+            ts_duration,
+            raw_err_stdev,
+            width,
+            height,
+            stats,
+            &mut out,
+        )
+    };
+    assert_eq!(r, 0, "shim_fp_update_firstpass_stats allocation failed");
+    out
+}
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_fp_update_firstpass_stats(
+        num_mbs_16x16: i32,
+        fp_block_size: i32,
+        frame_number: i32,
+        ts_duration: i64,
+        raw_err_stdev: f64,
+        width: i32,
+        height: i32,
+        stats: *const RefFrameStats,
+        out: *mut RefFirstpassStats,
+    ) -> i32;
+}
