@@ -23656,3 +23656,236 @@ pub fn ref_tf_is_temporal_filter_on(arnr_max_frames: i32, lag_in_frames: i32) ->
     ref_init();
     unsafe { shim_tf_is_temporal_filter_on_archive(arnr_max_frames, lag_in_frames) != 0 }
 }
+
+// --- reconinter_enc.c: the masked-compound assembly (:312-:428) -----------
+//
+// Tier 1c: the oracle is libaom's own reconinter_enc.c compiled verbatim into
+// `shim/reconinter_enc_shim.c`. Only `av1_build_wedge_inter_predictor_from_buf`
+// is exported; the two functions that do the work are static.
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rie_build_masked_compound(
+        hbd: i32,
+        bd: i32,
+        sb_type: i32,
+        h: i32,
+        w: i32,
+        src0: *const core::ffi::c_void,
+        src0_stride: i32,
+        src1: *const core::ffi::c_void,
+        src1_stride: i32,
+        mask: *const u8,
+        dst: *mut core::ffi::c_void,
+        dst_stride: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rie_build_wedge_from_buf_plane(
+        hbd: i32,
+        bd: i32,
+        bsize: i32,
+        is_compound: i32,
+        comp_meta: *const i32,
+        plane: i32,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        ext0: *const core::ffi::c_void,
+        ext0_stride: i32,
+        ext1: *const core::ffi::c_void,
+        ext1_stride: i32,
+        dst: *mut core::ffi::c_void,
+        dst_stride: i32,
+        dst_rows: i32,
+        seg_mask: *mut u8,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rie_build_wedge_from_buf(
+        hbd: i32,
+        bd: i32,
+        bsize: i32,
+        is_compound: i32,
+        comp_meta: *const i32,
+        plane_from: i32,
+        plane_to: i32,
+        ss: *const i32,
+        plane_off: *const i32,
+        plane_bytes: *const i32,
+        ext0: *const core::ffi::c_void,
+        ext0_stride: *const i32,
+        ext1: *const core::ffi::c_void,
+        ext1_stride: *const i32,
+        dst: *mut core::ffi::c_void,
+        dst_stride: *const i32,
+        seg_mask: *mut u8,
+    );
+    fn shim_rie_max_sb_square() -> i32;
+}
+
+/// A writable pixel plane at the oracle boundary.
+pub enum RefPixelsMut<'a> {
+    /// 8-bit destination.
+    Low(&'a mut [u8]),
+    /// 16-bit destination.
+    High(&'a mut [u16]),
+}
+
+impl RefPixelsMut<'_> {
+    fn is_hbd(&self) -> bool {
+        matches!(self, RefPixelsMut::High(_))
+    }
+    fn as_mut_ptr(&mut self) -> *mut core::ffi::c_void {
+        match self {
+            RefPixelsMut::Low(b) => b.as_mut_ptr().cast(),
+            RefPixelsMut::High(b) => b.as_mut_ptr().cast(),
+        }
+    }
+}
+
+/// Reference `build_masked_compound` / `build_masked_compound_highbd`
+/// (reconinter_enc.c:312, :330). `mask` is at LUMA stride
+/// `block_size_wide[sb_type]`; `dst` is written in place.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rie_build_masked_compound(
+    bd: i32,
+    sb_type: i32,
+    h: i32,
+    w: i32,
+    src0: RefPixels<'_>,
+    src0_stride: i32,
+    src1: RefPixels<'_>,
+    src1_stride: i32,
+    mask: &[u8],
+    dst: &mut RefPixelsMut<'_>,
+    dst_stride: i32,
+) {
+    ref_init();
+    let hbd = i32::from(dst.is_hbd());
+    let dp = dst.as_mut_ptr();
+    unsafe {
+        shim_rie_build_masked_compound(
+            hbd,
+            bd,
+            sb_type,
+            h,
+            w,
+            src0.as_ptr(),
+            src0_stride,
+            src1.as_ptr(),
+            src1_stride,
+            mask.as_ptr(),
+            dp,
+            dst_stride,
+        );
+    }
+}
+
+/// Reference `build_wedge_inter_predictor_from_buf` (reconinter_enc.c:349),
+/// one plane. `comp_meta` is `{wedge_index, wedge_sign, mask_type, type}`;
+/// `seg_mask` is `2 * MAX_SB_SQUARE` and is updated in place.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rie_build_wedge_from_buf_plane(
+    bd: i32,
+    bsize: i32,
+    is_compound: bool,
+    comp_meta: &[i32; 4],
+    plane: i32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    ext0: RefPixels<'_>,
+    ext0_stride: i32,
+    ext1: RefPixels<'_>,
+    ext1_stride: i32,
+    dst: &mut RefPixelsMut<'_>,
+    dst_stride: i32,
+    dst_rows: i32,
+    seg_mask: &mut [u8],
+) {
+    ref_init();
+    assert_eq!(
+        seg_mask.len(),
+        2 * unsafe { shim_rie_max_sb_square() } as usize,
+        "seg_mask must be 2 * MAX_SB_SQUARE"
+    );
+    let hbd = i32::from(dst.is_hbd());
+    let dp = dst.as_mut_ptr();
+    unsafe {
+        shim_rie_build_wedge_from_buf_plane(
+            hbd,
+            bd,
+            bsize,
+            i32::from(is_compound),
+            comp_meta.as_ptr(),
+            plane,
+            x,
+            y,
+            w,
+            h,
+            ext0.as_ptr(),
+            ext0_stride,
+            ext1.as_ptr(),
+            ext1_stride,
+            dp,
+            dst_stride,
+            dst_rows,
+            seg_mask.as_mut_ptr(),
+        );
+    }
+}
+
+/// Reference `av1_build_wedge_inter_predictor_from_buf` (reconinter_enc.c:407).
+/// The three planes' buffers are packed back to back in one allocation;
+/// `plane_off` / `plane_bytes` are in PIXELS, not bytes.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rie_build_wedge_from_buf(
+    bd: i32,
+    bsize: i32,
+    is_compound: bool,
+    comp_meta: &[i32; 4],
+    plane_from: i32,
+    plane_to: i32,
+    ss: &[i32; 6],
+    plane_off: &[i32; 3],
+    plane_bytes: &[i32; 3],
+    ext0: RefPixels<'_>,
+    ext0_stride: &[i32; 3],
+    ext1: RefPixels<'_>,
+    ext1_stride: &[i32; 3],
+    dst: &mut RefPixelsMut<'_>,
+    dst_stride: &[i32; 3],
+    seg_mask: &mut [u8],
+) {
+    ref_init();
+    let hbd = i32::from(dst.is_hbd());
+    let dp = dst.as_mut_ptr();
+    unsafe {
+        shim_rie_build_wedge_from_buf(
+            hbd,
+            bd,
+            bsize,
+            i32::from(is_compound),
+            comp_meta.as_ptr(),
+            plane_from,
+            plane_to,
+            ss.as_ptr(),
+            plane_off.as_ptr(),
+            plane_bytes.as_ptr(),
+            ext0.as_ptr(),
+            ext0_stride.as_ptr(),
+            ext1.as_ptr(),
+            ext1_stride.as_ptr(),
+            dp,
+            dst_stride.as_ptr(),
+            seg_mask.as_mut_ptr(),
+        );
+    }
+}
+
+/// `MAX_SB_SQUARE` as the oracle TU sees it.
+pub fn ref_rie_max_sb_square() -> i32 {
+    ref_init();
+    unsafe { shim_rie_max_sb_square() }
+}

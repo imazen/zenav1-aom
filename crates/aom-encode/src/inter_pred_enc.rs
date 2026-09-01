@@ -402,3 +402,325 @@ pub fn highbd_comp_mask_upsampled_pred(
     }
     comp
 }
+
+// ===================================================================
+// reconinter_enc.c — assembling a masked compound predictor from the two
+// single-reference predictors the RD search already built.
+//
+// `av1_compound_type_rd`'s wedge and diffwtd arms build each reference's
+// predictor ONCE into a scratch buffer and then, for every candidate mask,
+// blend those two buffers rather than re-running motion compensation. These
+// three functions are that blend.
+//
+// | Rust | C (`av1/encoder/reconinter_enc.c`) |
+// |---|---|
+// | [`build_masked_compound`] | `build_masked_compound` :312 + `build_masked_compound_highbd` :330 |
+// | [`build_wedge_inter_predictor_from_buf`] | `build_wedge_inter_predictor_from_buf` :349 |
+// | [`av1_build_wedge_inter_predictor_from_buf`] | `av1_build_wedge_inter_predictor_from_buf` :407 |
+//
+// Differential coverage: `tests/wedge_from_buf_diff.rs`, tier 1c (the oracle
+// is libaom's own reconinter_enc.c compiled verbatim into
+// `shim/reconinter_enc_shim.c`; three of these four C definitions are
+// file-static).
+// ===================================================================
+
+use crate::compound_type::{CompoundType, InterInterComp, Pixels};
+use aom_dsp::inter::compound::{build_compound_diffwtd_mask, build_compound_diffwtd_mask_highbd};
+use aom_dsp::inter::interintra::{blend_a64_mask, blend_a64_mask_lowbd, wedge_mask_signed};
+
+/// `block_size_wide` / `block_size_high` / `mi_size_wide_log2` /
+/// `mi_size_high_log2` (`common_data.h`).
+const BLK_W: [usize; 22] = [
+    4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
+];
+const BLK_H: [usize; 22] = [
+    4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16,
+];
+const MI_SIZE_WIDE_LOG2: [usize; 22] = [
+    0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 0, 2, 1, 3, 2, 4,
+];
+const MI_SIZE_HIGH_LOG2: [usize; 22] = [
+    0, 1, 0, 1, 2, 1, 2, 3, 2, 3, 4, 3, 4, 5, 4, 5, 2, 0, 3, 1, 4, 2,
+];
+
+/// A writable pixel plane, the destination twin of
+/// [`crate::compound_type::Pixels`].
+pub enum PixelsMut<'a> {
+    /// 8-bit destination.
+    Low(&'a mut [u8]),
+    /// 16-bit destination.
+    High(&'a mut [u16]),
+}
+
+// # Two upstream behaviours a later reader will want to "fix"
+//
+// 1. **The unmasked arm of `build_wedge_inter_predictor_from_buf` faults at
+//    high bit depth.** Its masked arms take `ext_dst0` as a RAW `uint16_t *`
+//    and apply `CONVERT_TO_BYTEPTR` themselves (:359-362, :375); the `else`
+//    arm applies `CONVERT_TO_SHORTPTR` to that same argument (:392), which
+//    shifts a real pointer LEFT and dereferences it. Both call sites enter
+//    this function only for a masked compound type, so the arm is dead
+//    upstream. The port copies — which is what the name says and what the
+//    lowbd arm does — and the differential does not drive C there.
+// 2. **`av1_build_compound_diffwtd_mask_neon` reads src1's second row at
+//    src0's stride** (`av1/common/arm/reconinter_neon.c:162`, the `w == 8`
+//    arm). It agrees with the C reference only when the two predictor strides
+//    are equal, which every call site makes them. The differential therefore
+//    passes equal (but not tight) strides.
+
+/// `build_masked_compound` (reconinter_enc.c:312) and its
+/// `build_masked_compound_highbd` twin (:330).
+///
+/// # `subw` / `subh` are DERIVED, not passed
+/// Both C functions recover the plane's subsampling by comparing the block
+/// dimensions they were handed against the luma block's:
+/// `subh = (2 << mi_size_high_log2[sb_type]) == h`. The comment there
+/// ("May be refactored to pass in subsampling factors directly") is C's own.
+/// The comparison is with `2 << log2`, i.e. **twice** the block's MI extent —
+/// `mi_size_high_log2` counts 4-pixel units, so `2 << log2` is the block's
+/// height in pixels divided by two. So `subh` is true exactly when this plane
+/// is half the luma height.
+///
+/// # The mask is at LUMA stride
+/// `mask_stride` is `block_size_wide[sb_type]` even for a chroma plane; the
+/// blend box-averages it down. Passing the plane's own width instead reads the
+/// wrong rows and is silent.
+#[allow(clippy::too_many_arguments)]
+pub fn build_masked_compound(
+    dst: &mut PixelsMut<'_>,
+    dst_stride: usize,
+    src0: Pixels<'_>,
+    src0_stride: usize,
+    src1: Pixels<'_>,
+    src1_stride: usize,
+    mask: &[u8],
+    sb_type: usize,
+    h: usize,
+    w: usize,
+) {
+    let subh = (2 << MI_SIZE_HIGH_LOG2[sb_type]) == h;
+    let subw = (2 << MI_SIZE_WIDE_LOG2[sb_type]) == w;
+    let mask_stride = BLK_W[sb_type];
+    match (dst, src0, src1) {
+        (PixelsMut::Low(d), Pixels::Low(a), Pixels::Low(b)) => blend_a64_mask_lowbd(
+            d,
+            dst_stride,
+            a,
+            src0_stride,
+            b,
+            src1_stride,
+            mask,
+            mask_stride,
+            w,
+            h,
+            subw,
+            subh,
+        ),
+        (PixelsMut::High(d), Pixels::High(a), Pixels::High(b)) => blend_a64_mask(
+            d,
+            dst_stride,
+            a,
+            src0_stride,
+            b,
+            src1_stride,
+            mask,
+            mask_stride,
+            w,
+            h,
+            subw,
+            subh,
+        ),
+        _ => panic!("build_masked_compound: mixed 8-bit and 16-bit buffers"),
+    }
+}
+
+/// The `xd` state [`build_wedge_inter_predictor_from_buf`] reads.
+#[derive(Clone, Copy, Debug)]
+pub struct WedgeFromBufCtx {
+    /// `mbmi->bsize` — the LUMA block size, which the mask is sized by.
+    pub bsize: usize,
+    /// `has_second_ref(mbmi)`.
+    pub is_compound: bool,
+    /// `mbmi->interinter_comp`.
+    pub comp: InterInterComp,
+    /// `xd->bd`.
+    pub bd: u8,
+}
+
+/// `build_wedge_inter_predictor_from_buf` (reconinter_enc.c:349): blend one
+/// plane of a masked compound block out of the two scratch predictors, or copy
+/// the first one through when the block is not masked.
+///
+/// `seg_mask` is `xd->seg_mask`, `bw * bh` entries at luma stride. It is an
+/// **in/out** parameter: on plane 0 of a `COMPOUND_DIFFWTD` block C REBUILDS
+/// it here from the two scratch predictors, and the chroma planes then read
+/// what luma left. That ordering is load-bearing — calling this for plane 1
+/// before plane 0 blends against a stale mask, silently.
+///
+/// C spells the non-masked arm as `aom_convolve_copy`, which for these
+/// arguments is a plain rectangular copy.
+#[allow(clippy::too_many_arguments)]
+pub fn build_wedge_inter_predictor_from_buf(
+    ctx: &WedgeFromBufCtx,
+    plane: usize,
+    dst: &mut PixelsMut<'_>,
+    dst_offset: usize,
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    ext0: Pixels<'_>,
+    ext0_stride: usize,
+    ext1: Pixels<'_>,
+    ext1_stride: usize,
+    seg_mask: &mut [u8],
+) {
+    let masked = ctx.is_compound && ctx.comp.ty.is_masked();
+    if !masked {
+        copy_rect(dst, dst_offset, dst_stride, ext0, ext0_stride, w, h);
+        return;
+    }
+
+    if plane == 0 && ctx.comp.ty == CompoundType::DiffWtd {
+        match (ext0, ext1) {
+            (Pixels::Low(a), Pixels::Low(b)) => build_compound_diffwtd_mask(
+                seg_mask,
+                ctx.comp.mask_type,
+                a,
+                ext0_stride,
+                b,
+                ext1_stride,
+                h,
+                w,
+            ),
+            (Pixels::High(a), Pixels::High(b)) => build_compound_diffwtd_mask_highbd(
+                seg_mask,
+                ctx.comp.mask_type,
+                a,
+                ext0_stride,
+                b,
+                ext1_stride,
+                h,
+                w,
+                u32::from(ctx.bd),
+            ),
+            _ => panic!("build_wedge_inter_predictor_from_buf: mixed pixel widths"),
+        }
+    }
+
+    // `av1_get_compound_type_mask` (reconinter.c:290): the baked wedge mask for
+    // COMPOUND_WEDGE, `comp_data->seg_mask` for COMPOUND_DIFFWTD.
+    let wedge;
+    let mask: &[u8] = match ctx.comp.ty {
+        CompoundType::Wedge => {
+            wedge = wedge_mask_signed(ctx.bsize, ctx.comp.wedge_index, ctx.comp.wedge_sign)
+                .expect("COMPOUND_WEDGE at a bsize with no wedge codebook");
+            &wedge
+        }
+        _ => seg_mask,
+    };
+
+    // The destination is a sub-rectangle of the plane; the blend writes at
+    // `dst_stride` from `dst_offset`, which is what C's
+    // `dst_buf->buf + dst_buf->stride * y + x` spells.
+    match dst {
+        PixelsMut::Low(d) => build_masked_compound(
+            &mut PixelsMut::Low(&mut d[dst_offset..]),
+            dst_stride,
+            ext0,
+            ext0_stride,
+            ext1,
+            ext1_stride,
+            mask,
+            ctx.bsize,
+            h,
+            w,
+        ),
+        PixelsMut::High(d) => build_masked_compound(
+            &mut PixelsMut::High(&mut d[dst_offset..]),
+            dst_stride,
+            ext0,
+            ext0_stride,
+            ext1,
+            ext1_stride,
+            mask,
+            ctx.bsize,
+            h,
+            w,
+        ),
+    }
+}
+
+/// `aom_convolve_copy` / `aom_highbd_convolve_copy` as this call site uses
+/// them: a `w * h` rectangular copy between two strided planes.
+fn copy_rect(
+    dst: &mut PixelsMut<'_>,
+    dst_offset: usize,
+    dst_stride: usize,
+    src: Pixels<'_>,
+    src_stride: usize,
+    w: usize,
+    h: usize,
+) {
+    match (dst, src) {
+        (PixelsMut::Low(d), Pixels::Low(s)) => {
+            for r in 0..h {
+                let (o, i) = (dst_offset + r * dst_stride, r * src_stride);
+                d[o..o + w].copy_from_slice(&s[i..i + w]);
+            }
+        }
+        (PixelsMut::High(d), Pixels::High(s)) => {
+            for r in 0..h {
+                let (o, i) = (dst_offset + r * dst_stride, r * src_stride);
+                d[o..o + w].copy_from_slice(&s[i..i + w]);
+            }
+        }
+        _ => panic!("copy_rect: mixed 8-bit and 16-bit buffers"),
+    }
+}
+
+/// `get_plane_block_size` (`common_data.h`), reusing the decoder-side table
+/// rather than re-transcribing `ss_size_lookup`.
+#[inline]
+fn plane_block_size(bsize: usize, ss_x: bool, ss_y: bool) -> usize {
+    aom_dsp::entropy::partition::get_plane_block_size(bsize, usize::from(ss_x), usize::from(ss_y))
+}
+
+/// `av1_build_wedge_inter_predictor_from_buf` (reconinter_enc.c:407): the
+/// plane loop around [`build_wedge_inter_predictor_from_buf`].
+///
+/// Each plane is blended over its FULL plane block size (`x == y == 0`,
+/// `w`/`h` from `get_plane_block_size`), which is why the inner function's
+/// `x`/`y` arguments are always zero at this one call site.
+#[allow(clippy::too_many_arguments)]
+pub fn av1_build_wedge_inter_predictor_from_buf(
+    ctx: &WedgeFromBufCtx,
+    plane_from: usize,
+    plane_to: usize,
+    subsampling: &[(bool, bool)],
+    dst: &mut [PixelsMut<'_>],
+    dst_stride: &[usize],
+    ext0: &[Pixels<'_>],
+    ext0_stride: &[usize],
+    ext1: &[Pixels<'_>],
+    ext1_stride: &[usize],
+    seg_mask: &mut [u8],
+) {
+    for plane in plane_from..=plane_to {
+        let (ss_x, ss_y) = subsampling[plane];
+        let plane_bsize = plane_block_size(ctx.bsize, ss_x, ss_y);
+        build_wedge_inter_predictor_from_buf(
+            ctx,
+            plane,
+            &mut dst[plane],
+            0,
+            dst_stride[plane],
+            BLK_W[plane_bsize],
+            BLK_H[plane_bsize],
+            ext0[plane],
+            ext0_stride[plane],
+            ext1[plane],
+            ext1_stride[plane],
+            seg_mask,
+        );
+    }
+}

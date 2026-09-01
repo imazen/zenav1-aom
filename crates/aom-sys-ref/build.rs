@@ -87,6 +87,7 @@ const SHIMS: &[&str] = &[
     "tpl_shim",
     "ratectrl_shim",
     "tpl_c_shim",
+    "reconinter_enc_shim",
 ];
 
 /// Shims that need compile flags beyond the default `-O2 ORACLE_FP_CFLAGS`.
@@ -128,6 +129,11 @@ fn extra_shim_cflags(name: &str) -> &'static [&'static str] {
         // self filter are all file-static. Same source, so it is built the same
         // way. See shim/tf_static_shim.c's header.
         "tf_static_shim" => &["-O3", "-DNDEBUG"],
+        // reconinter_enc_shim pulls av1/encoder/reconinter_enc.c in for the
+        // masked-compound assembly: `av1_build_wedge_inter_predictor_from_buf`
+        // is the file's only exported entry into it, and the two functions
+        // that do the work are static.
+        "reconinter_enc_shim" => &["-O3", "-DNDEBUG"],
         _ => &[],
     }
 }

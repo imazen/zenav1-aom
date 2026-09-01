@@ -55,6 +55,72 @@ fn blend_a64(m: i32, v0: u16, v1: u16) -> u16 {
     ) as u16
 }
 
+/// The mask value one output pixel blends with, box-averaged down from the
+/// luma-resolution mask when the plane is subsampled.
+///
+/// C writes this out four times — once per `(subw, subh)` arm — in each of
+/// `aom_blend_a64_mask_c` (blend_a64_mask.c:229) and
+/// `aom_highbd_blend_a64_mask_c` (:287). The two are the same arithmetic and
+/// the four arms differ only here, so it is written once.
+#[inline]
+fn blend_mask_at(
+    mask: &[u8],
+    mask_stride: usize,
+    i: usize,
+    j: usize,
+    subw: bool,
+    subh: bool,
+) -> i32 {
+    let m_at = |r: usize, c: usize| mask[r * mask_stride + c] as i32;
+    match (subw, subh) {
+        (false, false) => m_at(i, j),
+        (true, true) => round_pow2(
+            m_at(2 * i, 2 * j)
+                + m_at(2 * i + 1, 2 * j)
+                + m_at(2 * i, 2 * j + 1)
+                + m_at(2 * i + 1, 2 * j + 1),
+            2,
+        ),
+        (true, false) => round_pow2(m_at(i, 2 * j) + m_at(i, 2 * j + 1), 1),
+        (false, true) => round_pow2(m_at(2 * i, j) + m_at(2 * i + 1, j), 1),
+    }
+}
+
+/// `aom_blend_a64_mask_c` (aom_dsp/blend_a64_mask.c:229) — the **8-bit** twin
+/// of [`blend_a64_mask`].
+///
+/// C's two versions are the same arithmetic on different pixel widths: the
+/// high-bit-depth one takes a `bd` argument and then `(void)bd`s it
+/// (blend_a64_mask.c:296), because a weighted average of in-range samples is
+/// in range by construction and needs no clamp. Only the storage width
+/// differs, which is why this is a separate function rather than a parameter.
+#[allow(clippy::too_many_arguments)]
+pub fn blend_a64_mask_lowbd(
+    dst: &mut [u8],
+    dst_stride: usize,
+    src0: &[u8],
+    src0_stride: usize,
+    src1: &[u8],
+    src1_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    w: usize,
+    h: usize,
+    subw: bool,
+    subh: bool,
+) {
+    for i in 0..h {
+        for j in 0..w {
+            let m = blend_mask_at(mask, mask_stride, i, j, subw, subh);
+            dst[i * dst_stride + j] = blend_a64(
+                m,
+                u16::from(src0[i * src0_stride + j]),
+                u16::from(src1[i * src1_stride + j]),
+            ) as u8;
+        }
+    }
+}
+
 /// `aom_blend_a64_mask_c` (aom_dsp/blend_a64_mask.c:229). `src0` is weighted by
 /// `mask`, `src1` by `64-mask`. `subw`/`subh` average a luma-resolution mask down
 /// to a subsampled (chroma) block: 2×2, 1×2, or 2×1 box-average of the mask.
@@ -73,21 +139,9 @@ pub fn blend_a64_mask(
     subw: bool,
     subh: bool,
 ) {
-    let m_at = |r: usize, c: usize| mask[r * mask_stride + c] as i32;
     for i in 0..h {
         for j in 0..w {
-            let m = match (subw, subh) {
-                (false, false) => m_at(i, j),
-                (true, true) => round_pow2(
-                    m_at(2 * i, 2 * j)
-                        + m_at(2 * i + 1, 2 * j)
-                        + m_at(2 * i, 2 * j + 1)
-                        + m_at(2 * i + 1, 2 * j + 1),
-                    2,
-                ),
-                (true, false) => round_pow2(m_at(i, 2 * j) + m_at(i, 2 * j + 1), 1),
-                (false, true) => round_pow2(m_at(2 * i, j) + m_at(2 * i + 1, j), 1),
-            };
+            let m = blend_mask_at(mask, mask_stride, i, j, subw, subh);
             dst[i * dst_stride + j] =
                 blend_a64(m, src0[i * src0_stride + j], src1[i * src1_stride + j]);
         }
