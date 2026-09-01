@@ -20863,3 +20863,181 @@ pub fn ref_rdopt_ref_mv_idx_early_breakout(
     };
     (r != 0, out_idx)
 }
+
+// --- rdopt.c: the master mode/reference gate + three helpers --------------
+
+/// The `cpi` / `x` / `search_state` fields
+/// `inter_mode_search_order_independent_skip` reads, in the shim's layout.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ModeSkipCtx {
+    /// `cpi->prune_ref_frame_mask`.
+    pub prune_ref_frame_mask: i32,
+    /// The caller's `skip_ref_frame_mask`.
+    pub skip_ref_frame_mask: i32,
+    /// `x->use_mb_mode_cache`.
+    pub use_mb_mode_cache: i32,
+    /// `x->mb_mode_cache->mode`.
+    pub cache_mode: i32,
+    /// `x->mb_mode_cache->ref_frame[0]`.
+    pub cache_rf0: i32,
+    /// `x->mb_mode_cache->ref_frame[1]`.
+    pub cache_rf1: i32,
+    /// `search_state->best_rd == INT64_MAX`.
+    pub best_rd_is_max: i32,
+    /// `mbmi->partition`.
+    pub partition: i32,
+    /// `x->must_find_valid_partition`.
+    pub must_find_valid_partition: i32,
+    /// `sf->inter_sf.prune_nearmv_using_neighbors`.
+    pub prune_nearmv_using_neighbors: i32,
+    /// `x->qindex`.
+    pub qindex: i32,
+    /// `xd->left_available`.
+    pub left_available: i32,
+    /// `xd->up_available`.
+    pub up_available: i32,
+    /// `xd->left_mbmi->ref_frame[0]`.
+    pub left_rf0: i32,
+    /// `xd->left_mbmi->ref_frame[1]`.
+    pub left_rf1: i32,
+    /// `xd->above_mbmi->ref_frame[0]`.
+    pub above_rf0: i32,
+    /// `xd->above_mbmi->ref_frame[1]`.
+    pub above_rf1: i32,
+    /// `sf->rt_sf.mode_search_skip_flags`.
+    pub mode_search_skip_flags: i32,
+    /// `x->source_variance`.
+    pub source_variance: i32,
+    /// `mbmi_ext->ref_mv_count[ref_type]`.
+    pub ref_mv_count: i32,
+    /// `cm->global_motion[rf0].wmtype`.
+    pub gm_wmtype: i32,
+    /// `mbmi_ext->mode_context[ref_type]`.
+    pub mode_context: i32,
+    /// Whether `x->mb_mode_cache` is a valid POINTER. C reads the FLAG
+    /// `use_mb_mode_cache` for the replay block but the POINTER for
+    /// `is_ref_frame_used_in_cache`, so the two are separate inputs.
+    pub cache_ptr_nonnull: i32,
+}
+
+unsafe extern "C" {
+    fn shim_rdopt_prune_ref_frame(ref_frame: i32, prune_ref_frame_mask: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_inter_mode_search_order_independent_skip(
+        pred_modes: *const u32,
+        ref_combo: *const u8,
+        mode: i32,
+        rf0: i32,
+        rf1: i32,
+        ctx: *const ModeSkipCtx,
+        newmv_cost: *const i32,
+        zeromv_cost: *const i32,
+        refmv_cost: *const i32,
+        modelled_rd: *mut i64,
+    ) -> i32;
+    fn shim_rdopt_record_best_compound(
+        reference_mode: i32,
+        rate: i32,
+        dist: i64,
+        comp_pred: i32,
+        rdmult: i32,
+        compmode_cost: i32,
+        best_pred_rd: *mut i64,
+    );
+    fn shim_rdopt_reference_modes() -> i32;
+    fn shim_rdopt_init_mbmi(
+        curr_mode: i32,
+        rf0: i32,
+        rf1: i32,
+        interp_filter: i32,
+        out: *mut i32,
+    );
+}
+
+/// Reference `prune_ref_frame` (rdopt.c:4284), with
+/// `sf.inter_sf.selective_ref_frame` and `prune_comp_ref_frames` pinned to 0
+/// so its call to `prune_ref_by_selective_ref_frame` (rdopt.h:236 — a
+/// different file, and NOT part of the rdopt.c port) returns 0.
+pub fn ref_rdopt_prune_ref_frame(ref_frame: i32, prune_ref_frame_mask: i32) -> bool {
+    ref_init();
+    unsafe { shim_rdopt_prune_ref_frame(ref_frame, prune_ref_frame_mask) != 0 }
+}
+
+/// Reference `inter_mode_search_order_independent_skip` (rdopt.c:4643).
+/// Returns C's tri-state: 0 keep, 1 skip entirely, 2 skip motion modes only.
+/// `modelled_rd` is `search_state->modelled_rd[*][0][rf0]`, in/out (the
+/// nested `skip_repeated_mv` writes it).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_inter_mode_search_order_independent_skip(
+    mask: &ModeSkipMaskFlat,
+    mode: i32,
+    rf: (i32, i32),
+    ctx: &ModeSkipCtx,
+    newmv_cost: &[[i32; 2]],
+    zeromv_cost: &[[i32; 2]],
+    refmv_cost: &[[i32; 2]],
+    modelled_rd: &mut [i64; C_MB_MODE_COUNT],
+) -> i32 {
+    ref_init();
+    let nf: Vec<i32> = newmv_cost.iter().flatten().copied().collect();
+    let zf: Vec<i32> = zeromv_cost.iter().flatten().copied().collect();
+    let rf_: Vec<i32> = refmv_cost.iter().flatten().copied().collect();
+    unsafe {
+        shim_rdopt_inter_mode_search_order_independent_skip(
+            mask.pred_modes.as_ptr(),
+            mask.ref_combo.as_ptr(),
+            mode,
+            rf.0,
+            rf.1,
+            ctx,
+            nf.as_ptr(),
+            zf.as_ptr(),
+            rf_.as_ptr(),
+            modelled_rd.as_mut_ptr(),
+        )
+    }
+}
+
+/// `REFERENCE_MODES` as the C oracle sees it.
+pub fn ref_reference_modes() -> usize {
+    ref_init();
+    unsafe { shim_rdopt_reference_modes() as usize }
+}
+
+/// Reference `record_best_compound` (rdopt.c:5440). `best_pred_rd` is
+/// `search_state->best_pred_rd[REFERENCE_MODES]`, in/out.
+pub fn ref_rdopt_record_best_compound(
+    reference_mode: i32,
+    rate: i32,
+    dist: i64,
+    comp_pred: bool,
+    rdmult: i32,
+    compmode_cost: i32,
+    best_pred_rd: &mut [i64],
+) {
+    ref_init();
+    assert_eq!(best_pred_rd.len(), ref_reference_modes());
+    unsafe {
+        shim_rdopt_record_best_compound(
+            reference_mode,
+            rate,
+            dist,
+            i32::from(comp_pred),
+            rdmult,
+            compmode_cost,
+            best_pred_rd.as_mut_ptr(),
+        )
+    }
+}
+
+/// Reference `init_mbmi` (rdopt.c:4795). Returns the ten fields it writes, in
+/// C's own order: ref_mv_idx, mode, uv_mode, ref_frame[0], ref_frame[1],
+/// palette_size[0], palette_size[1], use_filter_intra, motion_mode,
+/// interintra_mode. The shim POISONS the struct with `0x5a` first.
+pub fn ref_rdopt_init_mbmi(curr_mode: i32, rf: (i32, i32), interp_filter: i32) -> [i32; 10] {
+    ref_init();
+    let mut out = [0i32; 10];
+    unsafe { shim_rdopt_init_mbmi(curr_mode, rf.0, rf.1, interp_filter, out.as_mut_ptr()) };
+    out
+}

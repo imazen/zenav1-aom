@@ -1601,3 +1601,192 @@ int shim_rdopt_ref_mv_idx_early_breakout(
   free(sf);
   return r;
 }
+
+/* ======================================================================== *
+ * 16. `inter_mode_search_order_independent_skip` (rdopt.c:4643) — the master
+ *     mode/reference gate — plus three small helpers around it.
+ *
+ * The driver pins `sf.inter_sf.selective_ref_frame = 0` and
+ * `prune_comp_ref_frames = 0`, which makes `prune_ref_by_selective_ref_frame`
+ * (rdopt.h:236 — a different file, and not part of this port) return 0. The
+ * `cpi->prune_ref_frame_mask` half of `prune_ref_frame` IS exercised.
+ * ======================================================================== */
+
+int shim_rdopt_prune_ref_frame(int ref_frame, int prune_ref_frame_mask) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(*ppi));
+  cpi->ppi = ppi;
+  cpi->prune_ref_frame_mask = prune_ref_frame_mask;
+  cpi->sf.inter_sf.selective_ref_frame = 0;
+  cpi->sf.inter_sf.prune_comp_ref_frames = 0;
+  RefCntBuffer cur;
+  memset(&cur, 0, sizeof(cur));
+  cpi->common.cur_frame = &cur;
+  const int r = prune_ref_frame(cpi, x, (MV_REFERENCE_FRAME)ref_frame);
+  free(ppi);
+  free(x);
+  free(cpi);
+  return r;
+}
+
+struct ShimModeSkipCtx {
+  int prune_ref_frame_mask;
+  int skip_ref_frame_mask;
+  int use_mb_mode_cache;
+  int cache_mode;
+  int cache_rf0;
+  int cache_rf1;
+  int best_rd_is_max;
+  int partition;
+  int must_find_valid_partition;
+  int prune_nearmv_using_neighbors;
+  int qindex;
+  int left_available;
+  int up_available;
+  int left_rf0;
+  int left_rf1;
+  int above_rf0;
+  int above_rf1;
+  int mode_search_skip_flags;
+  int source_variance;
+  int ref_mv_count;
+  int gm_wmtype;
+  int mode_context;
+  /* Whether `x->mb_mode_cache` is a valid POINTER at all. C reads the flag
+   * `use_mb_mode_cache` for the replay block but the POINTER for
+   * `is_ref_frame_used_in_cache`, and those are two different questions. */
+  int cache_ptr_nonnull;
+};
+
+int shim_rdopt_inter_mode_search_order_independent_skip(
+    const uint32_t *pred_modes, const uint8_t *ref_combo, int mode, int rf0,
+    int rf1, const struct ShimModeSkipCtx *c, const int *newmv_cost,
+    const int *zeromv_cost, const int *refmv_cost, int64_t *modelled_rd) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(*ppi));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  MB_MODE_INFO *cache = (MB_MODE_INFO *)calloc(1, sizeof(*cache));
+  MB_MODE_INFO *left = (MB_MODE_INFO *)calloc(1, sizeof(*left));
+  MB_MODE_INFO *above = (MB_MODE_INFO *)calloc(1, sizeof(*above));
+  InterModeSearchState *st = (InterModeSearchState *)calloc(1, sizeof(*st));
+  mode_skip_mask_t mask;
+  memset(&mask, 0, sizeof(mask));
+  shim_rd_load_mask(&mask, pred_modes, ref_combo);
+
+  cpi->ppi = ppi;
+  cpi->prune_ref_frame_mask = c->prune_ref_frame_mask;
+  cpi->sf.inter_sf.selective_ref_frame = 0;
+  cpi->sf.inter_sf.prune_comp_ref_frames = 0;
+  cpi->sf.rt_sf.use_real_time_ref_set = 0;
+  cpi->oxcf.unit_test_cfg.motion_vector_unit_test = 0;
+  cpi->sf.inter_sf.prune_nearmv_using_neighbors = c->prune_nearmv_using_neighbors;
+  cpi->sf.rt_sf.mode_search_skip_flags = c->mode_search_skip_flags;
+  RefCntBuffer cur;
+  memset(&cur, 0, sizeof(cur));
+  cpi->common.cur_frame = &cur;
+
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  mbmi->mode = (PREDICTION_MODE)mode;
+  mbmi->ref_frame[0] = (MV_REFERENCE_FRAME)rf0;
+  mbmi->ref_frame[1] = (MV_REFERENCE_FRAME)rf1;
+  mbmi->partition = (PARTITION_TYPE)c->partition;
+  x->e_mbd.mi = &mbmi;
+  x->must_find_valid_partition = c->must_find_valid_partition;
+  x->qindex = c->qindex;
+  x->source_variance = c->source_variance;
+  x->e_mbd.left_available = c->left_available;
+  x->e_mbd.up_available = c->up_available;
+  left->ref_frame[0] = (MV_REFERENCE_FRAME)c->left_rf0;
+  left->ref_frame[1] = (MV_REFERENCE_FRAME)c->left_rf1;
+  above->ref_frame[0] = (MV_REFERENCE_FRAME)c->above_rf0;
+  above->ref_frame[1] = (MV_REFERENCE_FRAME)c->above_rf1;
+  x->e_mbd.left_mbmi = left;
+  x->e_mbd.above_mbmi = above;
+  x->use_mb_mode_cache = c->use_mb_mode_cache;
+  cache->mode = (PREDICTION_MODE)c->cache_mode;
+  cache->ref_frame[0] = (MV_REFERENCE_FRAME)c->cache_rf0;
+  cache->ref_frame[1] = (MV_REFERENCE_FRAME)c->cache_rf1;
+  x->mb_mode_cache = c->cache_ptr_nonnull ? cache : NULL;
+
+  const int8_t row = av1_ref_frame_type(rf);
+  x->mbmi_ext.ref_mv_count[row] = (uint8_t)c->ref_mv_count;
+  x->mbmi_ext.mode_context[row] = (int16_t)c->mode_context;
+  cpi->common.global_motion[rf0].wmtype = (TransformationType)c->gm_wmtype;
+  for (int i = 0; i < NEWMV_MODE_CONTEXTS; ++i) {
+    x->mode_costs.newmv_mode_cost[i][0] = newmv_cost[2 * i];
+    x->mode_costs.newmv_mode_cost[i][1] = newmv_cost[2 * i + 1];
+  }
+  for (int i = 0; i < GLOBALMV_MODE_CONTEXTS; ++i) {
+    x->mode_costs.zeromv_mode_cost[i][0] = zeromv_cost[2 * i];
+    x->mode_costs.zeromv_mode_cost[i][1] = zeromv_cost[2 * i + 1];
+  }
+  for (int i = 0; i < REFMV_MODE_CONTEXTS; ++i) {
+    x->mode_costs.refmv_mode_cost[i][0] = refmv_cost[2 * i];
+    x->mode_costs.refmv_mode_cost[i][1] = refmv_cost[2 * i + 1];
+  }
+  st->best_rd = c->best_rd_is_max ? INT64_MAX : 12345;
+  for (int m = 0; m < MB_MODE_COUNT; ++m)
+    st->modelled_rd[m][0][rf0] = modelled_rd[m];
+
+  const int r = inter_mode_search_order_independent_skip(
+      cpi, x, &mask, st, c->skip_ref_frame_mask, (PREDICTION_MODE)mode, rf);
+
+  for (int m = 0; m < MB_MODE_COUNT; ++m)
+    modelled_rd[m] = st->modelled_rd[m][0][rf0];
+
+  free(st);
+  free(above);
+  free(left);
+  free(cache);
+  free(mbmi);
+  free(x);
+  free(ppi);
+  free(cpi);
+  return r;
+}
+
+void shim_rdopt_record_best_compound(int reference_mode, int rate, int64_t dist,
+                                     int comp_pred, int rdmult,
+                                     int compmode_cost, int64_t *best_pred_rd) {
+  InterModeSearchState *st = (InterModeSearchState *)calloc(1, sizeof(*st));
+  RD_STATS rd;
+  av1_init_rd_stats(&rd);
+  rd.rate = rate;
+  rd.dist = dist;
+  for (int i = 0; i < REFERENCE_MODES; ++i) st->best_pred_rd[i] = best_pred_rd[i];
+  record_best_compound((REFERENCE_MODE)reference_mode, &rd, comp_pred, rdmult,
+                       st, compmode_cost);
+  for (int i = 0; i < REFERENCE_MODES; ++i) best_pred_rd[i] = st->best_pred_rd[i];
+  free(st);
+}
+
+int shim_rdopt_reference_modes(void) { return REFERENCE_MODES; }
+
+/* `init_mbmi` (rdopt.c:4795) — the per-candidate MB_MODE_INFO reset. Reports
+ * the eight fields it writes, from a POISONED struct so a field the port
+ * forgets to reset is visible as 0x5a rather than as a plausible zero. */
+void shim_rdopt_init_mbmi(int curr_mode, int rf0, int rf1, int interp_filter,
+                          int *out /* 10 */) {
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  AV1_COMMON *cm = (AV1_COMMON *)calloc(1, sizeof(*cm));
+  memset(mbmi, 0x5a, sizeof(*mbmi));
+  cm->features.interp_filter = (InterpFilter)interp_filter;
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  init_mbmi(mbmi, (PREDICTION_MODE)curr_mode, rf, cm);
+  out[0] = mbmi->ref_mv_idx;
+  out[1] = mbmi->mode;
+  out[2] = mbmi->uv_mode;
+  out[3] = mbmi->ref_frame[0];
+  out[4] = mbmi->ref_frame[1];
+  out[5] = mbmi->palette_mode_info.palette_size[0];
+  out[6] = mbmi->palette_mode_info.palette_size[1];
+  out[7] = mbmi->filter_intra_mode_info.use_filter_intra;
+  out[8] = mbmi->motion_mode;
+  out[9] = mbmi->interintra_mode;
+  free(cm);
+  free(mbmi);
+}
