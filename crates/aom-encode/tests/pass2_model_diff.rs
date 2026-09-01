@@ -1357,3 +1357,185 @@ fn smooth_filter_noise_matches_c() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The scenecut / noise-model helpers.
+// ---------------------------------------------------------------------------
+
+use aom_encode::pass2_model::{
+    ERROR_SPIKE, VERY_LOW_II, estimate_coeff, estimate_noise, find_qindex_by_rate_with_correction,
+    slide_transition,
+};
+use aom_sys_ref::{
+    ref_p2_estimate_coeff, ref_p2_estimate_noise, ref_p2_find_qindex_by_rate_with_correction,
+    ref_p2_scenecut_constants, ref_p2_slide_transition,
+};
+
+#[test]
+fn scenecut_constants_match_c() {
+    let (ii, spike) = ref_p2_scenecut_constants();
+    bits_eq(VERY_LOW_II, ii, "VERY_LOW_II");
+    bits_eq(ERROR_SPIKE, spike, "ERROR_SPIKE");
+}
+
+#[test]
+fn find_qindex_by_rate_with_correction_matches_c() {
+    let mut rng = Rng::new(0xF19D_0200);
+    let mut hit_ends = (0usize, 0usize);
+    for _ in 0..4000 {
+        let bit_depth = [8i32, 10, 12][rng.below(3) as usize];
+        // The bounds are real qindex limits, and best <= worst is C's assert.
+        let best = rng.below(200) as i32;
+        let worst = best + rng.below(256 - best as u32) as i32;
+        // desired_bits_per_mb spans the range the two-pass allocator produces.
+        let desired = match rng.below(4) {
+            0 => 0u64,
+            1 => u64::from(rng.below(1 << 8)),
+            2 => u64::from(rng.below(1 << 16)),
+            _ => u64::from(rng.below(1 << 24)),
+        };
+        let error_per_mb = rng.range(0.0, 5000.0);
+        let group_weight_factor = rng.range(0.1, 4.0);
+        let rate_err_tol = rng.below(120) as i32;
+        let want = ref_p2_find_qindex_by_rate_with_correction(
+            desired,
+            bit_depth,
+            error_per_mb,
+            group_weight_factor,
+            rate_err_tol,
+            best,
+            worst,
+        );
+        let got = find_qindex_by_rate_with_correction(
+            desired,
+            bit_depth as u8,
+            error_per_mb,
+            group_weight_factor,
+            rate_err_tol,
+            best,
+            worst,
+        );
+        assert_eq!(
+            got, want,
+            "bd{bit_depth} desired {desired} err {error_per_mb} gwf {group_weight_factor} tol {rate_err_tol} [{best},{worst}]"
+        );
+        if want == best {
+            hit_ends.0 += 1;
+        }
+        if want == worst {
+            hit_ends.1 += 1;
+        }
+    }
+    // Both ends of the search must be reachable, or the binary search's two
+    // arms are not both exercised at their boundaries.
+    assert!(
+        hit_ends.0 > 50 && hit_ends.1 > 50,
+        "search never converged on an end: {hit_ends:?}"
+    );
+}
+
+#[test]
+fn slide_transition_matches_c() {
+    let mut rng = Rng::new(0x571D_0201);
+    let (mut yes, mut no) = (0usize, 0usize);
+    for _ in 0..6000 {
+        let mut this = draw_stats(&mut rng, 68);
+        let mut last = draw_stats(&mut rng, 68);
+        let mut next = draw_stats(&mut rng, 68);
+        // A uniform draw essentially never satisfies the three-way
+        // conjunction, so half the draws are built to straddle each factor.
+        if rng.below(2) == 0 {
+            this.coded_error = rng.range(1000.0, 1.0e5);
+            this.intra_error = this.coded_error * rng.range(1.0, 2.0);
+            last.coded_error = this.coded_error / rng.range(2.0, 8.0);
+            next.coded_error = this.coded_error / rng.range(2.0, 8.0);
+        }
+        let want =
+            ref_p2_slide_transition(&this.to_doubles(), &last.to_doubles(), &next.to_doubles());
+        let got = slide_transition(&this, &last, &next);
+        assert_eq!(got, want, "this {this:?} last {last:?} next {next:?}");
+        if want {
+            yes += 1;
+        } else {
+            no += 1;
+        }
+    }
+    assert!(yes > 100 && no > 100, "one arm never fired: {yes}/{no}");
+}
+
+#[test]
+fn estimate_noise_matches_c() {
+    let mut rng = Rng::new(0x0157_0202);
+    for n in 0..16usize {
+        for flash_prob in [0u32, 5, 2] {
+            for _ in 0..60 {
+                let mut run = draw_run(&mut rng, n, flash_prob);
+                // The model needs intra_error > coded_error and
+                // intra_error > sr_coded_error for its three products to be
+                // positive; a uniform draw makes them positive about an eighth
+                // of the time, so half the runs are built to satisfy them and
+                // the rest are left to exercise the `continue`.
+                if rng.below(2) == 0 {
+                    for s in run.iter_mut() {
+                        s.intra_error = rng.range(1000.0, 1.0e5);
+                        s.coded_error = s.intra_error * rng.range(0.1, 0.9);
+                        s.sr_coded_error = s.intra_error * rng.range(0.1, 0.95);
+                    }
+                }
+                let (flat, flash) = run_to_flat(&run);
+                let want = ref_p2_estimate_noise(&flat, &flash);
+                estimate_noise(&mut run);
+                for (k, s) in run.iter().enumerate() {
+                    bits_eq(
+                        s.noise_var,
+                        want[k],
+                        &format!("noise[{k}] n{n} fp{flash_prob}"),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn estimate_coeff_matches_c() {
+    let mut rng = Rng::new(0xC0EF_0203);
+    let (mut clamped_low, mut clamped_high, mut interior) = (0usize, 0usize, 0usize);
+    for n in 0..16usize {
+        for _ in 0..120 {
+            let mut run = draw_run(&mut rng, n, 4);
+            // noise_var straddles intra_error, which is what drives the three
+            // 0.001 floors -- above it they all bind and the coefficient
+            // clamps.
+            for s in run.iter_mut() {
+                s.intra_error = rng.range(1000.0, 1.0e5);
+                s.coded_error = s.intra_error * rng.range(0.05, 1.2);
+                s.noise_var = match rng.below(3) {
+                    0 => rng.range(0.0, 10.0),
+                    1 => s.intra_error * rng.range(0.5, 0.99),
+                    _ => s.intra_error * rng.range(1.0, 2.0),
+                };
+            }
+            let (flat, flash) = run_to_flat(&run);
+            let noise: Vec<f64> = run.iter().map(|s| s.noise_var).collect();
+            let want = ref_p2_estimate_coeff(&flat, &flash, &noise);
+            estimate_coeff(&mut run);
+            for (k, s) in run.iter().enumerate() {
+                bits_eq(s.cor_coeff, want[k], &format!("cor_coeff[{k}] n{n}"));
+                if k > 0 {
+                    if s.cor_coeff == 0.0 {
+                        clamped_low += 1;
+                    } else if s.cor_coeff == 1.0 {
+                        clamped_high += 1;
+                    } else {
+                        interior += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        clamped_high > 50 && interior > 50,
+        "the clamp and the interior were not both reached: {clamped_low}/{clamped_high}/{interior}"
+    );
+}

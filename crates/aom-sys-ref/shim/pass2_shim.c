@@ -630,3 +630,65 @@ int shim_p2_region_types(int *stable, int *high_var, int *scenecut,
 
 int shim_p2_half_win(void) { return HALF_WIN; }
 int shim_p2_half_filt_len(void) { return HALF_FILT_LEN; }
+
+/* ======================================================================== *
+ * The scenecut / noise-model helpers.
+ * ======================================================================== */
+int shim_p2_find_qindex_by_rate_with_correction(uint64_t desired_bits_per_mb,
+                                                int bit_depth,
+                                                double error_per_mb,
+                                                double group_weight_factor,
+                                                int rate_err_tol,
+                                                int best_qindex,
+                                                int worst_qindex) {
+  return find_qindex_by_rate_with_correction(
+      desired_bits_per_mb, (aom_bit_depth_t)bit_depth, error_per_mb,
+      group_weight_factor, rate_err_tol, best_qindex, worst_qindex);
+}
+
+int shim_p2_slide_transition(const double *this_flat, const double *last_flat,
+                             const double *next_flat) {
+  FIRSTPASS_STATS a, b, c;
+  shim_p2_fill_stats(&a, this_flat, 0);
+  shim_p2_fill_stats(&b, last_flat, 0);
+  shim_p2_fill_stats(&c, next_flat, 0);
+  return slide_transition(&a, &b, &c);
+}
+
+/* estimate_noise and estimate_coeff both rewrite the run in place; the shim
+ * returns the two fields they touch. estimate_noise's error_info is only
+ * dereferenced when smooth_filter_noise fails to allocate. */
+int shim_p2_estimate_noise(const double *flat, const int8_t *is_flash,
+                           int count, double *noise_out) {
+  FIRSTPASS_STATS *arr = shim_p2_alloc_run(flat, is_flash, count);
+  struct aom_internal_error_info *err =
+      (struct aom_internal_error_info *)calloc(1, sizeof(*err));
+  if (!arr || !err) {
+    free(arr);
+    free(err);
+    return -1;
+  }
+  estimate_noise(arr, arr + count, err);
+  for (int i = 0; i < count; ++i) noise_out[i] = arr[i].noise_var;
+  free(arr);
+  free(err);
+  return 0;
+}
+
+int shim_p2_estimate_coeff(const double *flat, const int8_t *is_flash,
+                           int count, const double *noise_in,
+                           double *cor_out) {
+  FIRSTPASS_STATS *arr = shim_p2_alloc_run(flat, is_flash, count);
+  if (!arr) return -1;
+  /* estimate_coeff reads noise_var, which estimate_noise writes; the caller
+   * supplies it so the two can be driven independently. */
+  for (int i = 0; i < count; ++i) arr[i].noise_var = noise_in[i];
+  estimate_coeff(arr, arr + count);
+  for (int i = 0; i < count; ++i) cor_out[i] = arr[i].cor_coeff;
+  free(arr);
+  return 0;
+}
+
+int shim_p2_very_low_ii_x1000(void) { return (int)(VERY_LOW_II * 1000); }
+double shim_p2_very_low_ii(void) { return VERY_LOW_II; }
+double shim_p2_error_spike(void) { return ERROR_SPIKE; }

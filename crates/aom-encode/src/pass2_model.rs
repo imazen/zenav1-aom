@@ -1366,3 +1366,196 @@ pub fn smooth_filter_noise(stats: &mut [FirstpassStats]) {
         s.noise_var = n;
     }
 }
+
+// ===========================================================================
+// The scenecut / noise-model helpers.
+//
+// | Rust | C |
+// |---|---|
+// | [`find_qindex_by_rate_with_correction`] | `find_qindex_by_rate_with_correction` (:294) |
+// | [`slide_transition`] | `slide_transition` (:2853) |
+// | [`estimate_noise`] | `estimate_noise` (:3732) |
+// | [`estimate_coeff`] | `estimate_coeff` (:3827) |
+// ===========================================================================
+
+/// `VERY_LOW_II` (:2842).
+pub const VERY_LOW_II: f64 = 1.5;
+/// `ERROR_SPIKE` (:2844).
+pub const ERROR_SPIKE: f64 = 5.0;
+
+/// `find_qindex_by_rate_with_correction` (pass2_strategy.c:294) — the qindex
+/// whose modelled bits-per-mb first drops to or below `desired_bits_per_mb`.
+///
+/// A binary search over `[best_qindex, worst_qindex]` that converges on the
+/// LOWEST qindex satisfying the bound, because the `else` arm keeps `mid`
+/// rather than moving past it. The modelled rate is computed in `uint64_t`
+/// from a `double` expression, so it TRUNCATES — and a negative intermediate
+/// would wrap rather than clamp. `group_weight_factor` and the correction
+/// factor are both positive at every call site, so it cannot.
+///
+/// # Panics
+/// If `best_qindex > worst_qindex`, which C asserts.
+#[must_use]
+pub fn find_qindex_by_rate_with_correction(
+    desired_bits_per_mb: u64,
+    bit_depth: u8,
+    error_per_mb: f64,
+    group_weight_factor: f64,
+    rate_err_tol: i32,
+    best_qindex: i32,
+    worst_qindex: i32,
+) -> i32 {
+    assert!(
+        best_qindex <= worst_qindex,
+        "{best_qindex} > {worst_qindex}"
+    );
+    let mut low = best_qindex;
+    let mut high = worst_qindex;
+    while low < high {
+        let mid = (low + high) >> 1;
+        let mid_factor = calc_correction_factor(error_per_mb, mid);
+        let q = convert_qindex_to_q(mid, bit_depth);
+        let enumerator = qbpm_enumerator(rate_err_tol);
+        let mid_bits_per_mb =
+            ((f64::from(enumerator) * mid_factor * group_weight_factor) / q) as u64;
+        if mid_bits_per_mb > desired_bits_per_mb {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    low
+}
+
+/// `slide_transition` (pass2_strategy.c:2853) — a hard cut between slides,
+/// which is a coded-error SPIKE against both neighbours on a frame whose intra
+/// error is much lower than its coded error.
+///
+/// All three tests must hold; the `VERY_LOW_II` one is what distinguishes a
+/// slide change from ordinary motion.
+#[must_use]
+pub fn slide_transition(
+    this_frame: &FirstpassStats,
+    last_frame: &FirstpassStats,
+    next_frame: &FirstpassStats,
+) -> bool {
+    this_frame.intra_error < (this_frame.coded_error * VERY_LOW_II)
+        && this_frame.coded_error > (last_frame.coded_error * ERROR_SPIKE)
+        && this_frame.coded_error > (next_frame.coded_error * ERROR_SPIKE)
+}
+
+/// `estimate_noise` (pass2_strategy.c:3732) — per-frame noise variance from a
+/// three-frame innovation model, followed by three repair passes and the box
+/// filter.
+///
+/// Writes `noise_var` on every frame from index 2 up. The four stages are C's,
+/// in C's order, and none can be folded into another:
+/// 1. the model, skipped for any frame within two of a flash (a flash has
+///    highly correlated innovations) and for any frame whose three
+///    intermediate products are not all positive;
+/// 2. a repair pass that copies a trustworthy neighbour's value into any frame
+///    whose own came out below 1.0, searching FORWARD first and only then
+///    backward;
+/// 3. a second repair pass with the same shape for the flash frames stage 1
+///    skipped. It does NOT test `< 1.0` the way stage 2 does, but that is
+///    unobservable and was MEASURED to be: stage 1 sets every near-flash
+///    frame's `noise_var` to 0.0 before `continue`ing and stage 2 skips them,
+///    so within `2..len` a near-flash frame always arrives here at 0.0.
+///    Adding the missing test passes the whole differential;
+/// 4. copying frame 2's value onto frames 0 and 1, then
+///    [`smooth_filter_noise`].
+///
+/// Stage 4's guard is `(first_stats + 2) < last_stats`, so a run shorter than
+/// three frames leaves frames 0 and 1 untouched.
+pub fn estimate_noise(stats: &mut [FirstpassStats]) {
+    let len = stats.len();
+    let near_flash = |s: &[FirstpassStats], i: usize| {
+        s[i].is_flash != 0 || s[i - 1].is_flash != 0 || s[i - 2].is_flash != 0
+    };
+
+    // 1. The innovation model.
+    for i in 2..len {
+        stats[i].noise_var = 0.0;
+        if near_flash(stats, i) {
+            continue;
+        }
+        let c1 = stats[i - 1].intra_error * (stats[i].intra_error - stats[i].coded_error);
+        let c2 = stats[i - 2].intra_error * (stats[i - 1].intra_error - stats[i - 1].coded_error);
+        let c3 = stats[i - 2].intra_error * (stats[i].intra_error - stats[i].sr_coded_error);
+        if c1 <= 0.0 || c2 <= 0.0 || c3 <= 0.0 {
+            continue;
+        }
+        let noise = stats[i - 1].intra_error - c1.sqrt() * c2.sqrt() / c3.sqrt();
+        stats[i].noise_var = noise.max(0.01);
+    }
+
+    // 2. Copy from a neighbour where the value is not trustworthy.
+    for i in 2..len {
+        if near_flash(stats, i) {
+            continue;
+        }
+        if stats[i].noise_var < 1.0 {
+            let usable =
+                |s: &[FirstpassStats], j: usize| !near_flash(s, j) && s[j].noise_var >= 1.0;
+            if let Some(j) = (i + 1..len).find(|&j| usable(stats, j)) {
+                stats[i].noise_var = stats[j].noise_var;
+                continue;
+            }
+            if let Some(j) = (2..i).rev().find(|&j| usable(stats, j)) {
+                stats[i].noise_var = stats[j].noise_var;
+            }
+        }
+    }
+
+    // 3. Copy into the flash frames. NOTE the missing `< 1.0` test: this pass
+    // overwrites unconditionally for any frame near a flash.
+    for i in 2..len {
+        if !near_flash(stats, i) {
+            continue;
+        }
+        if let Some(j) = (i + 1..len).find(|&j| !near_flash(stats, j)) {
+            stats[i].noise_var = stats[j].noise_var;
+            continue;
+        }
+        if let Some(j) = (2..i).rev().find(|&j| !near_flash(stats, j)) {
+            stats[i].noise_var = stats[j].noise_var;
+        }
+    }
+
+    // 4. The first two frames take frame 2's value, then the box filter.
+    if len > 2 {
+        let v = stats[2].noise_var;
+        stats[0].noise_var = v;
+        stats[1].noise_var = v;
+    }
+    smooth_filter_noise(stats);
+}
+
+/// `estimate_coeff` (pass2_strategy.c:3827) — each frame's correlation
+/// coefficient with its predecessor, from the same innovation model.
+///
+/// Reads `noise_var`, which [`estimate_noise`] writes, so the two are ordered.
+/// Frame 0 is set to 1.0 unconditionally, which C does after the loop; the
+/// position does not matter because the loop starts at 1 and never writes
+/// index 0 (measured — moving the assignment before the loop passes the whole
+/// differential). It is kept where C has it.
+///
+/// Three separate `AOMMAX(_, 0.001)` floors, and they are NOT the same
+/// expression: the first is inside a `sqrt` of a product, the second is the
+/// divisor, and the third and fourth are the two halves of a ratio that is
+/// itself square-rooted. Collapsing any pair changes the result.
+pub fn estimate_coeff(stats: &mut [FirstpassStats]) {
+    for i in 1..stats.len() {
+        let prev_intra = stats[i - 1].intra_error;
+        let c = (prev_intra * (stats[i].intra_error - stats[i].coded_error))
+            .max(0.001)
+            .sqrt();
+        let cor_coeff = c / (prev_intra - stats[i].noise_var).max(0.001);
+        let ratio = (prev_intra - stats[i].noise_var).max(0.001)
+            / (stats[i].intra_error - stats[i].noise_var).max(0.001);
+        stats[i].cor_coeff = fclamp(cor_coeff * ratio.sqrt(), 0.0, 1.0);
+    }
+    if !stats.is_empty() {
+        stats[0].cor_coeff = 1.0;
+    }
+}

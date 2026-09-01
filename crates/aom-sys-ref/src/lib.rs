@@ -28595,3 +28595,121 @@ pub fn ref_p2_smooth_filter_noise(flat: &[f64], is_flash: &[i8]) -> Vec<f64> {
     assert_eq!(rc, 0);
     out
 }
+
+// --- pass2_strategy.c's scenecut / noise-model helpers (tier 1c) ----------
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_p2_find_qindex_by_rate_with_correction(
+        desired_bits_per_mb: u64,
+        bit_depth: i32,
+        error_per_mb: f64,
+        group_weight_factor: f64,
+        rate_err_tol: i32,
+        best_qindex: i32,
+        worst_qindex: i32,
+    ) -> i32;
+    fn shim_p2_slide_transition(
+        this_flat: *const f64,
+        last_flat: *const f64,
+        next_flat: *const f64,
+    ) -> i32;
+    fn shim_p2_estimate_noise(
+        flat: *const f64,
+        is_flash: *const i8,
+        count: i32,
+        noise_out: *mut f64,
+    ) -> i32;
+    fn shim_p2_estimate_coeff(
+        flat: *const f64,
+        is_flash: *const i8,
+        count: i32,
+        noise_in: *const f64,
+        cor_out: *mut f64,
+    ) -> i32;
+    fn shim_p2_very_low_ii() -> f64;
+    fn shim_p2_error_spike() -> f64;
+}
+
+/// `(VERY_LOW_II, ERROR_SPIKE)` as the oracle TU sees them.
+#[must_use]
+pub fn ref_p2_scenecut_constants() -> (f64, f64) {
+    ref_init();
+    unsafe { (shim_p2_very_low_ii(), shim_p2_error_spike()) }
+}
+
+/// Reference `find_qindex_by_rate_with_correction` (:294), tier 1c.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_p2_find_qindex_by_rate_with_correction(
+    desired_bits_per_mb: u64,
+    bit_depth: i32,
+    error_per_mb: f64,
+    group_weight_factor: f64,
+    rate_err_tol: i32,
+    best_qindex: i32,
+    worst_qindex: i32,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_p2_find_qindex_by_rate_with_correction(
+            desired_bits_per_mb,
+            bit_depth,
+            error_per_mb,
+            group_weight_factor,
+            rate_err_tol,
+            best_qindex,
+            worst_qindex,
+        )
+    }
+}
+
+/// Reference `slide_transition` (:2853), tier 1c.
+#[must_use]
+pub fn ref_p2_slide_transition(
+    this_flat: &[f64; 29],
+    last_flat: &[f64; 29],
+    next_flat: &[f64; 29],
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_p2_slide_transition(this_flat.as_ptr(), last_flat.as_ptr(), next_flat.as_ptr()) != 0
+    }
+}
+
+/// Reference `estimate_noise` (:3732), tier 1c. Returns the `noise_var` run.
+#[must_use]
+pub fn ref_p2_estimate_noise(flat: &[f64], is_flash: &[i8]) -> Vec<f64> {
+    ref_init();
+    let mut out = vec![0.0f64; is_flash.len()];
+    let rc = unsafe {
+        shim_p2_estimate_noise(
+            flat.as_ptr(),
+            is_flash.as_ptr(),
+            is_flash.len() as i32,
+            out.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, 0);
+    out
+}
+
+/// Reference `estimate_coeff` (:3827), tier 1c. `noise_in` is what
+/// `estimate_noise` would have left; returns the `cor_coeff` run.
+#[must_use]
+pub fn ref_p2_estimate_coeff(flat: &[f64], is_flash: &[i8], noise_in: &[f64]) -> Vec<f64> {
+    ref_init();
+    assert_eq!(noise_in.len(), is_flash.len());
+    let mut out = vec![0.0f64; is_flash.len()];
+    let rc = unsafe {
+        shim_p2_estimate_coeff(
+            flat.as_ptr(),
+            is_flash.as_ptr(),
+            is_flash.len() as i32,
+            noise_in.as_ptr(),
+            out.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, 0);
+    out
+}
