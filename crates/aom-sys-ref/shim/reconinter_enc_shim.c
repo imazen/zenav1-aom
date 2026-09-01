@@ -272,3 +272,79 @@ done:
 }
 
 int shim_rie_max_sb_square(void) { return MAX_SB_SQUARE; }
+
+/* ======================================================================== *
+ * 4. enc_calc_subpel_params (reconinter_enc.c:32) and, through it,
+ *    init_subpel_params (common/reconinter.h:131).
+ *
+ * Both are `static inline`, so neither has an address; this TU has the real
+ * source of both. The source POINTER crosses back as a signed offset from
+ * `pre_buf->buf0` rather than as a pointer, so the Rust side compares an
+ * arithmetic result instead of an address — and so that the negative offsets
+ * a block predicting into the frame border legitimately produces are visible
+ * rather than being a wild pointer.
+ *
+ * `sf` is built by `av1_setup_scale_factors_for_frame`, the REAL exported
+ * function (already gated by aom-dsp/tests/scale_diff.rs), so the scaled arm
+ * is driven with scale factors the encoder can actually construct.
+ * ======================================================================== */
+
+void shim_rie_enc_calc_subpel_params(int mv_row, int mv_col, int pix_row,
+                                     int pix_col, int ssx, int ssy,
+                                     int ref_w, int ref_h, int this_w,
+                                     int this_h, int pre_width, int pre_height,
+                                     int pre_stride, int *out /* 7 */) {
+  InterPredParams ipp;
+  struct scale_factors sf;
+  SubpelParams sp;
+  uint8_t *pre = NULL;
+  int src_stride = 0;
+  MV mv;
+
+  memset(&ipp, 0, sizeof(ipp));
+  memset(&sp, 0, sizeof(sp));
+  av1_setup_scale_factors_for_frame(&sf, ref_w, ref_h, this_w, this_h);
+
+  /* The `top` / `left` reach limits come from init_inter_block_params
+   * (reconinter.h:211-212); everything else the derivation reads is set
+   * explicitly here. */
+  ipp.pix_row = pix_row;
+  ipp.pix_col = pix_col;
+  ipp.subsampling_x = ssx;
+  ipp.subsampling_y = ssy;
+  ipp.top = -AOM_LEFT_TOP_MARGIN_SCALED(ssy);
+  ipp.left = -AOM_LEFT_TOP_MARGIN_SCALED(ssx);
+  ipp.scale_factors = &sf;
+  ipp.ref_frame_buf.buf0 = NULL;
+  ipp.ref_frame_buf.width = pre_width;
+  ipp.ref_frame_buf.height = pre_height;
+  ipp.ref_frame_buf.stride = pre_stride;
+
+  mv.row = (int16_t)mv_row;
+  mv.col = (int16_t)mv_col;
+  enc_calc_subpel_params(&mv, &ipp, &pre, &sp, &src_stride);
+
+  out[0] = sp.xs;
+  out[1] = sp.ys;
+  out[2] = sp.subpel_x;
+  out[3] = sp.subpel_y;
+  out[4] = sp.pos_x;
+  out[5] = sp.pos_y;
+  /* `buf0` is NULL, so `pre` IS the offset — in bytes, which for a lowbd
+   * plane is the same as in pixels. That is the whole reason this driver
+   * passes NULL rather than a real buffer. */
+  out[6] = (int)(intptr_t)pre;
+  (void)src_stride;
+}
+
+/* The scale factors the same call produced, so the Rust side can build the
+ * identical `ScaleFactors` rather than assuming its own constructor agrees. */
+void shim_rie_scale_factors(int ref_w, int ref_h, int this_w, int this_h,
+                            int *out /* 4 */) {
+  struct scale_factors sf;
+  av1_setup_scale_factors_for_frame(&sf, ref_w, ref_h, this_w, this_h);
+  out[0] = sf.x_scale_fp;
+  out[1] = sf.y_scale_fp;
+  out[2] = sf.x_step_q4;
+  out[3] = sf.y_step_q4;
+}

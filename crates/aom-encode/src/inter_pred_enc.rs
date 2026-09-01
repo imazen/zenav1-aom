@@ -724,3 +724,187 @@ pub fn av1_build_wedge_inter_predictor_from_buf(
         );
     }
 }
+
+// ===================================================================
+// reconinter_enc.c — the subpel-parameter derivation every encoder-side
+// predictor build starts from.
+//
+// `av1_enc_build_one_inter_predictor` is `build_one_inter_predictor`
+// (`common/reconinter_template.inc:23`) with `IS_DEC == 0`, and its first act
+// is `enc_calc_subpel_params`: turn the block's position and MV into a source
+// pointer plus the fractional offsets the convolve is driven with. That step
+// is pure arithmetic and is ported here; the convolve dispatch above it
+// (`av1_make_inter_predictor` / `av1_make_masked_inter_predictor`) still is
+// not.
+//
+// | Rust | C |
+// |---|---|
+// | [`SubpelParams`] | `SubpelParams` (`common/blockd.h`) |
+// | [`init_subpel_params`] | `init_subpel_params` (`common/reconinter.h:131`) |
+// | [`enc_calc_subpel_params`] | `enc_calc_subpel_params` (`reconinter_enc.c:32`) |
+// | [`InterBlockParams::new`] | `init_inter_block_params` (`reconinter.h:194`), the `top`/`left` half |
+//
+// Differential coverage: `tests/subpel_params_diff.rs`, tier 1c.
+// ===================================================================
+
+use aom_dsp::inter::scale::ScaleFactors;
+
+/// `SUBPEL_BITS` (`aom_dsp/aom_filter.h:23`).
+const SUBPEL_BITS: i32 = 4;
+/// `SCALE_SUBPEL_BITS` (`aom_filter.h:28`).
+const SCALE_SUBPEL_BITS: i32 = 10;
+/// `SCALE_SUBPEL_MASK` (`aom_filter.h:30`).
+const SCALE_SUBPEL_MASK: i32 = (1 << SCALE_SUBPEL_BITS) - 1;
+/// `SCALE_EXTRA_BITS` (`aom_filter.h:31`).
+const SCALE_EXTRA_BITS: i32 = SCALE_SUBPEL_BITS - SUBPEL_BITS;
+/// `SCALE_EXTRA_OFF` (`aom_filter.h:32`).
+const SCALE_EXTRA_OFF: i32 = (1 << SCALE_EXTRA_BITS) / 2;
+/// `AOM_INTERP_EXTEND` (`aom_scale/yv12config.h:31`).
+const AOM_INTERP_EXTEND: i32 = 4;
+/// `AOM_BORDER_IN_PIXELS` (`yv12config.h:32`).
+const AOM_BORDER_IN_PIXELS: i32 = 288;
+
+/// `AOM_LEFT_TOP_MARGIN_SCALED(subsampling)` (`reconinter.h:31`) — how far
+/// above/left of the reference plane a prediction may legally reach, in
+/// `SCALE_SUBPEL_BITS` units. `init_inter_block_params` stores it NEGATED as
+/// `inter_pred_params->{top,left}`.
+#[inline]
+const fn left_top_margin_scaled(subsampling: u32) -> i32 {
+    ((AOM_BORDER_IN_PIXELS >> subsampling) - AOM_INTERP_EXTEND) << SCALE_SUBPEL_BITS
+}
+
+/// The slice of `InterPredParams` that [`init_subpel_params`] reads.
+///
+/// C fills a 30-field struct through `av1_init_inter_params`, of which the
+/// subpel derivation touches six. Naming just those six keeps the port honest
+/// about what it does and does not model — everything else in
+/// `InterPredParams` belongs to the convolve, which is not ported yet.
+#[derive(Clone, Copy, Debug)]
+pub struct InterBlockParams {
+    /// `pix_row` — the block's top edge in the PLANE's pixel grid.
+    pub pix_row: i32,
+    /// `pix_col` — the block's left edge in the plane's pixel grid.
+    pub pix_col: i32,
+    /// `subsampling_x`.
+    pub subsampling_x: u32,
+    /// `subsampling_y`.
+    pub subsampling_y: u32,
+    /// `top` = `-AOM_LEFT_TOP_MARGIN_SCALED(subsampling_y)`.
+    pub top: i32,
+    /// `left` = `-AOM_LEFT_TOP_MARGIN_SCALED(subsampling_x)`.
+    pub left: i32,
+}
+
+impl InterBlockParams {
+    /// `init_inter_block_params` (`reconinter.h:194`), restricted to the
+    /// fields the subpel derivation uses. `top` and `left` are DERIVED from
+    /// the subsampling, so they cannot disagree with it.
+    #[inline]
+    pub const fn new(pix_row: i32, pix_col: i32, subsampling_x: u32, subsampling_y: u32) -> Self {
+        Self {
+            pix_row,
+            pix_col,
+            subsampling_x,
+            subsampling_y,
+            top: -left_top_margin_scaled(subsampling_y),
+            left: -left_top_margin_scaled(subsampling_x),
+        }
+    }
+}
+
+/// `SubpelParams` (`common/blockd.h`) — what the convolve is steered with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubpelParams {
+    /// `xs` — the horizontal step, `sf->x_step_q4`.
+    pub xs: i32,
+    /// `ys` — the vertical step, `sf->y_step_q4`.
+    pub ys: i32,
+    /// `subpel_x` — `pos_x & SCALE_SUBPEL_MASK`.
+    pub subpel_x: i32,
+    /// `subpel_y` — `pos_y & SCALE_SUBPEL_MASK`.
+    pub subpel_y: i32,
+    /// `pos_x` — the horizontal source position, clamped.
+    pub pos_x: i32,
+    /// `pos_y` — the vertical source position, clamped.
+    pub pos_y: i32,
+}
+
+/// `init_subpel_params` (`reconinter.h:131`): the block position plus the MV,
+/// mapped through the reference's scale factors and clamped to the legal
+/// reach of the reference plane.
+///
+/// `width` / `height` are the REFERENCE buffer's dimensions
+/// (`pre_buf->width`, `pre_buf->height`), not the block's — they set how far
+/// down and right the prediction may reach.
+///
+/// # The MV is scaled by the plane's subsampling before anything else
+/// `src_mv->row * (1 << (1 - ssy))` doubles a luma MV (ssy == 0) and leaves a
+/// chroma one alone (ssy == 1). An MV arrives in 1/8-pel luma units; the
+/// position it is added to is in `SUBPEL_BITS` (1/16) plane units, so the
+/// doubling is the unit conversion, not a scaling choice.
+pub fn init_subpel_params(
+    src_mv: (i16, i16),
+    params: &InterBlockParams,
+    sf: &ScaleFactors,
+    width: i32,
+    height: i32,
+) -> SubpelParams {
+    let (mv_row, mv_col) = src_mv;
+    let orig_pos_y =
+        (params.pix_row << SUBPEL_BITS) + i32::from(mv_row) * (1 << (1 - params.subsampling_y));
+    let orig_pos_x =
+        (params.pix_col << SUBPEL_BITS) + i32::from(mv_col) * (1 << (1 - params.subsampling_x));
+
+    // `av1_unscaled_value` (scale.h:54) ignores `sf` entirely and is just the
+    // q4 -> q10 shift; the scaled arm additionally applies the ratio.
+    let (mut pos_x, mut pos_y) = if sf.is_scaled() {
+        (sf.scaled_x(orig_pos_x), sf.scaled_y(orig_pos_y))
+    } else {
+        (
+            orig_pos_x * (1 << SCALE_EXTRA_BITS),
+            orig_pos_y * (1 << SCALE_EXTRA_BITS),
+        )
+    };
+    pos_x += SCALE_EXTRA_OFF;
+    pos_y += SCALE_EXTRA_OFF;
+
+    let bottom = (height + AOM_INTERP_EXTEND) << SCALE_SUBPEL_BITS;
+    let right = (width + AOM_INTERP_EXTEND) << SCALE_SUBPEL_BITS;
+    pos_y = pos_y.clamp(params.top, bottom);
+    pos_x = pos_x.clamp(params.left, right);
+
+    SubpelParams {
+        xs: sf.x_step_q4,
+        ys: sf.y_step_q4,
+        subpel_x: pos_x & SCALE_SUBPEL_MASK,
+        subpel_y: pos_y & SCALE_SUBPEL_MASK,
+        pos_x,
+        pos_y,
+    }
+}
+
+/// `enc_calc_subpel_params` (reconinter_enc.c:32): [`init_subpel_params`] plus
+/// the source pointer it implies.
+///
+/// C returns `pre_buf->buf0 + (pos_y >> SCALE_SUBPEL_BITS) * stride +
+/// (pos_x >> SCALE_SUBPEL_BITS)`. Rust returns that as an OFFSET from `buf0`,
+/// which is what the caller needs and what can be checked; note it is a signed
+/// offset — `pos_y` and `pos_x` are clamped to `top`/`left`, which are
+/// NEGATIVE, so a block predicting from above or left of the reference plane
+/// legitimately produces a negative offset into the frame's border.
+///
+/// The `>>` is arithmetic on a signed `int` in C, i.e. it rounds toward
+/// negative infinity, not toward zero.
+pub fn enc_calc_subpel_params(
+    src_mv: (i16, i16),
+    params: &InterBlockParams,
+    sf: &ScaleFactors,
+    ref_width: i32,
+    ref_height: i32,
+    ref_stride: i32,
+) -> (SubpelParams, i32) {
+    let subpel = init_subpel_params(src_mv, params, sf, ref_width, ref_height);
+    let offset =
+        (subpel.pos_y >> SCALE_SUBPEL_BITS) * ref_stride + (subpel.pos_x >> SCALE_SUBPEL_BITS);
+    (subpel, offset)
+}

@@ -26169,3 +26169,88 @@ pub fn ref_postencode_update(u: &RefRcUpdateState) -> RefRcUpdateState {
     assert_eq!(r, 0, "shim_rca_postencode_update alloc failed");
     out
 }
+
+// --- reconinter_enc.c: the subpel-parameter derivation (:32) --------------
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rie_enc_calc_subpel_params(
+        mv_row: i32,
+        mv_col: i32,
+        pix_row: i32,
+        pix_col: i32,
+        ssx: i32,
+        ssy: i32,
+        ref_w: i32,
+        ref_h: i32,
+        this_w: i32,
+        this_h: i32,
+        pre_width: i32,
+        pre_height: i32,
+        pre_stride: i32,
+        out: *mut i32,
+    );
+    fn shim_rie_scale_factors(
+        ref_w: i32,
+        ref_h: i32,
+        this_w: i32,
+        this_h: i32,
+        out: *mut i32,
+    );
+}
+
+/// Reference `enc_calc_subpel_params` (reconinter_enc.c:32) via
+/// `init_subpel_params` (reconinter.h:131). Returns
+/// `(xs, ys, subpel_x, subpel_y, pos_x, pos_y, src_offset)`; the offset is
+/// from `pre_buf->buf0` in pixels and may be negative.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn ref_rie_enc_calc_subpel_params(
+    mv: (i16, i16),
+    pix_row: i32,
+    pix_col: i32,
+    ssx: i32,
+    ssy: i32,
+    ref_size: (i32, i32),
+    this_size: (i32, i32),
+    pre_size: (i32, i32),
+    pre_stride: i32,
+) -> [i32; 7] {
+    ref_init();
+    let mut out = [0i32; 7];
+    unsafe {
+        shim_rie_enc_calc_subpel_params(
+            i32::from(mv.0),
+            i32::from(mv.1),
+            pix_row,
+            pix_col,
+            ssx,
+            ssy,
+            ref_size.0,
+            ref_size.1,
+            this_size.0,
+            this_size.1,
+            pre_size.0,
+            pre_size.1,
+            pre_stride,
+            out.as_mut_ptr(),
+        );
+    }
+    out
+}
+
+/// The `scale_factors` `av1_setup_scale_factors_for_frame` produced for the
+/// same frame sizes: `(x_scale_fp, y_scale_fp, x_step_q4, y_step_q4)`.
+pub fn ref_rie_scale_factors(ref_size: (i32, i32), this_size: (i32, i32)) -> [i32; 4] {
+    ref_init();
+    let mut out = [0i32; 4];
+    unsafe {
+        shim_rie_scale_factors(
+            ref_size.0,
+            ref_size.1,
+            this_size.0,
+            this_size.1,
+            out.as_mut_ptr(),
+        );
+    }
+    out
+}
