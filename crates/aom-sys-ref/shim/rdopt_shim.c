@@ -1790,3 +1790,120 @@ void shim_rdopt_init_mbmi(int curr_mode, int rf0, int rf1, int interp_filter,
   free(cm);
   free(mbmi);
 }
+
+/* ======================================================================== *
+ * 17. The two rdopt.c functions that read the encoder's VARIANCE FUNCTION
+ *     TABLE (`get_sse` :868, `prune_zero_mv_with_sse` :2809).
+ *
+ * libaom fills `ppi->fn_ptr[]` with a BFP() macro cascade inline inside
+ * `av1_create_primary_compressor`, which is not separately callable — so the
+ * table is rebuilt here from the same exported `aom_variance<W>x<H>` entry
+ * points libaom itself assigns. Those are RTCD names: on x86-64 each is a
+ * function POINTER that `ref_init()`'s rtcd call has already populated, and on
+ * aarch64 the generated config binds several of them to their NEON variant at
+ * compile time. Either way this table holds exactly what libaom's own would.
+ * ======================================================================== */
+
+static void shim_rd_fill_vf(aom_variance_fn_ptr_t *t) {
+  memset(t, 0, sizeof(*t) * BLOCK_SIZES_ALL);
+  t[BLOCK_4X4].vf = aom_variance4x4;
+  t[BLOCK_4X8].vf = aom_variance4x8;
+  t[BLOCK_8X4].vf = aom_variance8x4;
+  t[BLOCK_8X8].vf = aom_variance8x8;
+  t[BLOCK_8X16].vf = aom_variance8x16;
+  t[BLOCK_16X8].vf = aom_variance16x8;
+  t[BLOCK_16X16].vf = aom_variance16x16;
+  t[BLOCK_16X32].vf = aom_variance16x32;
+  t[BLOCK_32X16].vf = aom_variance32x16;
+  t[BLOCK_32X32].vf = aom_variance32x32;
+  t[BLOCK_32X64].vf = aom_variance32x64;
+  t[BLOCK_64X32].vf = aom_variance64x32;
+  t[BLOCK_64X64].vf = aom_variance64x64;
+  t[BLOCK_64X128].vf = aom_variance64x128;
+  t[BLOCK_128X64].vf = aom_variance128x64;
+  t[BLOCK_128X128].vf = aom_variance128x128;
+  t[BLOCK_4X16].vf = aom_variance4x16;
+  t[BLOCK_16X4].vf = aom_variance16x4;
+  t[BLOCK_8X32].vf = aom_variance8x32;
+  t[BLOCK_32X8].vf = aom_variance32x8;
+  t[BLOCK_16X64].vf = aom_variance16x64;
+  t[BLOCK_64X16].vf = aom_variance64x16;
+}
+
+/* `get_sse` (rdopt.c:868): sum the per-plane prediction SSE over the block,
+ * scaled by 16. Chroma is included only when `xd->is_chroma_ref`. */
+int64_t shim_rdopt_get_sse(int bsize, int num_planes, int is_chroma_ref,
+                           int ss_x, int ss_y, const uint8_t *const *src,
+                           const int *src_stride, const uint8_t *const *dst,
+                           const int *dst_stride, int64_t *sse_y) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(*ppi));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  SequenceHeader seq;
+  memset(&seq, 0, sizeof(seq));
+  seq.monochrome = (num_planes == 1);
+  cpi->common.seq_params = &seq;
+  cpi->ppi = ppi;
+  shim_rd_fill_vf(ppi->fn_ptr);
+  mbmi->bsize = (BLOCK_SIZE)bsize;
+  x->e_mbd.mi = &mbmi;
+  x->e_mbd.is_chroma_ref = is_chroma_ref;
+  for (int p = 0; p < 3; ++p) {
+    x->plane[p].src.buf = (uint8_t *)src[p];
+    x->plane[p].src.stride = src_stride[p];
+    x->e_mbd.plane[p].dst.buf = (uint8_t *)dst[p];
+    x->e_mbd.plane[p].dst.stride = dst_stride[p];
+    x->e_mbd.plane[p].subsampling_x = p ? ss_x : 0;
+    x->e_mbd.plane[p].subsampling_y = p ? ss_y : 0;
+  }
+  const int64_t r = get_sse(cpi, x, sse_y);
+  free(mbmi);
+  free(x);
+  free(ppi);
+  free(cpi);
+  return r;
+}
+
+int shim_rdopt_prune_zero_mv_with_sse(int bsize, int rf0, int rf1,
+                                      const int *gm_wmtype,
+                                      const unsigned int *best_single_sse,
+                                      const uint8_t *src, int src_stride,
+                                      const uint8_t *ref0, int ref0_stride,
+                                      const uint8_t *ref1, int ref1_stride,
+                                      int level) {
+  aom_variance_fn_ptr_t *fn = (aom_variance_fn_ptr_t *)calloc(
+      BLOCK_SIZES_ALL, sizeof(*fn));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  HandleInterModeArgs *args = (HandleInterModeArgs *)calloc(1, sizeof(*args));
+  shim_rd_fill_vf(fn);
+  mbmi->bsize = (BLOCK_SIZE)bsize;
+  mbmi->ref_frame[0] = (MV_REFERENCE_FRAME)rf0;
+  mbmi->ref_frame[1] = (MV_REFERENCE_FRAME)rf1;
+  mbmi->mv[0].as_int = 0;
+  mbmi->mv[1].as_int = 0;
+  x->e_mbd.mi = &mbmi;
+  /* `xd->global_motion` is a `const WarpedMotionParams *` alias of
+   * `cm->global_motion`, so the table is built here and pointed at. */
+  WarpedMotionParams *gm =
+      (WarpedMotionParams *)calloc(REF_FRAMES, sizeof(*gm));
+  for (int r = 0; r < REF_FRAMES; ++r) {
+    gm[r].wmtype = (TransformationType)gm_wmtype[r];
+    args->best_single_sse_in_refs[r] = best_single_sse[r];
+  }
+  x->e_mbd.global_motion = gm;
+  x->plane[0].src.buf = (uint8_t *)src;
+  x->plane[0].src.stride = src_stride;
+  x->e_mbd.plane[0].pre[0].buf = (uint8_t *)ref0;
+  x->e_mbd.plane[0].pre[0].stride = ref0_stride;
+  x->e_mbd.plane[0].pre[1].buf = (uint8_t *)ref1;
+  x->e_mbd.plane[0].pre[1].stride = ref1_stride;
+  const int r = prune_zero_mv_with_sse(fn, x, (BLOCK_SIZE)bsize, args, level);
+  free(gm);
+  free(args);
+  free(mbmi);
+  free(x);
+  free(fn);
+  return r;
+}

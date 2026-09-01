@@ -62,6 +62,7 @@ pub mod rdopt_model;
 pub mod rdopt_mv;
 pub mod rdopt_obmc;
 pub mod rdopt_single_state;
+pub mod rdopt_sse;
 pub mod rdopt_var_rd;
 pub mod rdopt_skip;
 pub mod rd_pick;

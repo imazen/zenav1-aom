@@ -23186,3 +23186,125 @@ pub fn ref_tplc_tu_tpl_ptr_pos(mi_row: i32, mi_col: i32, stride: i32, right_shif
     ref_init();
     unsafe { shim_tplc_ptr_pos(mi_row, mi_col, stride, right_shift) }
 }
+
+// --- rdopt.c: the two decisions that read the variance function table -----
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_get_sse(
+        bsize: i32,
+        num_planes: i32,
+        is_chroma_ref: i32,
+        ss_x: i32,
+        ss_y: i32,
+        src: *const *const u8,
+        src_stride: *const i32,
+        dst: *const *const u8,
+        dst_stride: *const i32,
+        sse_y: *mut i64,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_prune_zero_mv_with_sse(
+        bsize: i32,
+        rf0: i32,
+        rf1: i32,
+        gm_wmtype: *const i32,
+        best_single_sse: *const u32,
+        src: *const u8,
+        src_stride: i32,
+        ref0: *const u8,
+        ref0_stride: i32,
+        ref1: *const u8,
+        ref1_stride: i32,
+        level: i32,
+    ) -> i32;
+}
+
+/// One plane for [`ref_rdopt_get_sse`].
+pub struct SsePlaneC<'a> {
+    /// `x->plane[p].src`.
+    pub src: &'a [u8],
+    /// Its stride.
+    pub src_stride: i32,
+    /// `xd->plane[p].dst`.
+    pub dst: &'a [u8],
+    /// Its stride.
+    pub dst_stride: i32,
+}
+
+/// Reference `get_sse` (rdopt.c:868). Returns `(total_sse, sse_y)`.
+///
+/// The shim rebuilds `ppi->fn_ptr[]` from the exported `aom_variance<W>x<H>`
+/// entry points, because libaom fills that table with a `BFP()` cascade inline
+/// inside `av1_create_primary_compressor` and exposes no initialiser.
+pub fn ref_rdopt_get_sse(
+    bsize: i32,
+    num_planes: i32,
+    is_chroma_ref: bool,
+    ss: (i32, i32),
+    planes: &[SsePlaneC<'_>; 3],
+) -> (i64, i64) {
+    ref_init();
+    let src: [*const u8; 3] = [
+        planes[0].src.as_ptr(),
+        planes[1].src.as_ptr(),
+        planes[2].src.as_ptr(),
+    ];
+    let dst: [*const u8; 3] = [
+        planes[0].dst.as_ptr(),
+        planes[1].dst.as_ptr(),
+        planes[2].dst.as_ptr(),
+    ];
+    let ss_stride = [planes[0].src_stride, planes[1].src_stride, planes[2].src_stride];
+    let ds_stride = [planes[0].dst_stride, planes[1].dst_stride, planes[2].dst_stride];
+    let mut sse_y = 0i64;
+    let total = unsafe {
+        shim_rdopt_get_sse(
+            bsize,
+            num_planes,
+            i32::from(is_chroma_ref),
+            ss.0,
+            ss.1,
+            src.as_ptr(),
+            ss_stride.as_ptr(),
+            dst.as_ptr(),
+            ds_stride.as_ptr(),
+            &mut sse_y,
+        )
+    };
+    (total, sse_y)
+}
+
+/// Reference `prune_zero_mv_with_sse` (rdopt.c:2809).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_prune_zero_mv_with_sse(
+    bsize: i32,
+    rf: (i32, i32),
+    gm_wmtype: &[i32; C_REF_FRAMES],
+    best_single_sse: &[u32; C_REF_FRAMES],
+    src: &[u8],
+    src_stride: i32,
+    ref0: &[u8],
+    ref0_stride: i32,
+    ref1: &[u8],
+    ref1_stride: i32,
+    level: i32,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_rdopt_prune_zero_mv_with_sse(
+            bsize,
+            rf.0,
+            rf.1,
+            gm_wmtype.as_ptr(),
+            best_single_sse.as_ptr(),
+            src.as_ptr(),
+            src_stride,
+            ref0.as_ptr(),
+            ref0_stride,
+            ref1.as_ptr(),
+            ref1_stride,
+            level,
+        ) != 0
+    }
+}

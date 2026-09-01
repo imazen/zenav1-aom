@@ -12,9 +12,9 @@ re-running it now reports rdopt.c as nearly complete. It is not.
 | | count |
 |---|---|
 | function definitions the inventory sees in rdopt.c | 105 |
-| **NOT ported** | **29** |
+| **NOT ported** | **27** |
 | ported before 2026-09-01 | 9 |
-| ported on 2026-09-01 (this wave) | 67 |
+| ported on 2026-09-01 (this wave) | 69 |
 
 "Ported" below means a Rust function exists that implements the C function's
 behaviour AND is gated against libaom. It does not mean a doc comment mentions
@@ -46,17 +46,22 @@ as done.
 `ref_mv_idx_to_search` (`:2357`) is blocked on `simple_translation_pred_rd`, so
 call it 12.
 
-### 2.2 Blocked on the encoder-side variance function table (3)
+### 2.2 Blocked on the encoder-side variance function table (1 left of 3)
 
 `cpi->ppi->fn_ptr[bs].vf` is filled inline inside libaom's
-`av1_create_primary_compressor` and is not separately callable, so a shim
-cannot populate it without transcribing that table. The three functions that
-read it are:
+`av1_create_primary_compressor` and is not separately callable. Two of the
+three functions that read it are now **ported** (`aom_encode::rdopt_sse`):
+`shim/rdopt_shim.c` rebuilds the table from the same exported
+`aom_variance<W>x<H>` entry points libaom itself assigns, so the oracle
+dispatches exactly as the encoder does. `get_sse` (`:868`) and
+`prune_zero_mv_with_sse` (`:2809`) are gated by `tests/rdopt_sse_diff.rs`.
+Note `get_sse` was one of the rows the inventory mis-marks as "ported" — the
+name collides with an unrelated method in `allintra_vis.rs`.
 
-- `get_sse` (`:868`) — **the inventory calls this "ported"; it is not.** The
-  name collides with an unrelated method in `allintra_vis.rs`.
-- `prune_zero_mv_with_sse` (`:2809`)
+Still blocked:
+
 - `get_block_temp_var` (`:6074`) — also needs `av1_get_force_skip_low_temp_var`
+  (`var_based_part.c`) and a `part_search_info.variance_low` map.
 
 ### 2.3 Deferred by the roadmap: TPL (3)
 
@@ -114,6 +119,7 @@ commit message.
 | `rdopt_obmc.rs` | `calc_target_weighted_pred`, `calc_target_weighted_pred_above`, `calc_target_weighted_pred_left` (+ `foreach_overlappable_nb_above` / `_left`) |
 | `rdopt_var_rd.rs` | `get_variance_stats`, `get_variance_stats_hbd`, `adjust_cost`, `adjust_rdcost`, `inter_mode_compatible_skip`, `ref_mv_idx_early_breakout` |
 | `rdopt_gate.rs` | `inter_mode_search_order_independent_skip`, `prune_ref_frame` (mask half), `record_best_compound`, `init_mbmi`, `get_winner_mode_stats` |
+| `rdopt_sse.rs` | `get_sse`, `prune_zero_mv_with_sse` |
 
 **None of it is wired into the encoder yet.** These are the decision layer the
 top-level driver (§2.4) will call.
@@ -157,11 +163,22 @@ cargo test -p zenav1-aom-encode --test rdopt_single_state_diff # 11
 cargo test -p zenav1-aom-encode --test rdopt_obmc_diff         #  1 (600 blocks)
 cargo test -p zenav1-aom-encode --test rdopt_var_rd_diff       #  5
 cargo test -p zenav1-aom-encode --test rdopt_gate_diff         #  4
+cargo test -p zenav1-aom-encode --test rdopt_sse_diff          #  2
 ```
+
+Two perturbations of `rdopt_sse.rs` are **observationally inert** and are
+recorded rather than papered over: applying `get_sse`'s `<< 4` per plane
+instead of to the total (it is distributive over the sum), and `break` versus
+`continue` on the chroma skip (the condition does not depend on the plane
+beyond `plane != 0`). A third — removing `prune_zero_mv_with_sse`'s `INT32_MAX`
+"invalid data" guard — is inert on the REACHABLE domain, because an SSE is at
+most `255^2 * 128 * 128 < INT32_MAX` so a sum containing the sentinel never
+wraps and the final comparison is false either way. The guard is kept because
+it is C's, not because the test proves it.
 
 ### 5.1 Verified on two ISAs
 
-All 64 tests above pass on **aarch64-apple-darwin** and on
+All 66 tests above pass on **aarch64-apple-darwin** and on
 **x86_64-apple-darwin** (the target-aware `build.rs` plus Rosetta, per
 `docs/DIFFERENTIAL_PLAYBOOK.md` §3). That matters here for a reason specific to
 this shim: the tier-1c argument rests on the shim's copy of rdopt.c compiling
@@ -172,10 +189,10 @@ independent check of that claim.
 cargo test --target x86_64-apple-darwin -p zenav1-aom-encode \
   --test rdopt_mv_diff --test rdopt_skip_diff --test rdopt_model_diff \
   --test rdopt_single_state_diff --test rdopt_obmc_diff \
-  --test rdopt_var_rd_diff --test rdopt_gate_diff
+  --test rdopt_var_rd_diff --test rdopt_gate_diff --test rdopt_sse_diff
 ```
 
-Measured 2026-09-01: 64/64 pass, zero failures.
+Measured 2026-09-01: 66/66 pass, zero failures.
 
 ## 6. C behaviours reproduced deliberately — do not "fix" these
 
