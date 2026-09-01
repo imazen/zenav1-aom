@@ -287,10 +287,47 @@ Ordered by the commit that landed them.
 | W6 | the transform-search gate: `prune_mode_by_skip_rd` (+ `get_txfm_rd_gate_level`, `check_txfm_eval`, `compute_sse_plane` / `calculate_sse`) | `compound_type_diff.rs` (tier 1c) |
 | W2 | the masked-compound assembly: `build_masked_compound` (+ `_highbd`), `build_wedge_inter_predictor_from_buf`, `av1_build_wedge_inter_predictor_from_buf` | `aom-encode/tests/wedge_from_buf_diff.rs` (tier 1c) |
 | W2 | the subpel derivation: `enc_calc_subpel_params`, `init_subpel_params`, the `top`/`left` half of `init_inter_block_params` | `aom-encode/tests/subpel_params_diff.rs` (tier 1c) |
+| W7 | `encode_strategy.c`'s reference/GOP management: `av1_configure_buffer_updates`, `av1_get_refresh_ref_frame_map`, `av1_calc_refresh_idx_for_intnl_arf`, `av1_get_refresh_frame_flags` (default + external-override arms), `av1_get_ref_frames` (default + frame-parallel + `use_ext_ref_frame_map` arms) (+ statics `set_refresh_frame_flags`, `get_free_ref_map_index`, `get_refresh_idx`, `get_new_fb_map_idx_rc`, `is_in_ref_map`, `add_ref_to_slot`, `set_unmapped_ref`, `compare_map_idx_pair_asc`) | `aom-encode/tests/ref_gop_diff.rs` |
+| W7 | tier 4 (C is `static`, only caller is `av1_encode_strategy`): `set_additional_frame_flags`, `update_frame_flags`, `set_ext_overrides`, `choose_primary_ref_frame` | unit tests in `aom-encode/src/ref_gop.rs` |
+| W7 | the lookahead DECISIONS: `is_forced_keyframe_pending`, `av1_new_framerate` (clamp) | `aom-encode/tests/frame_source_diff.rs` |
+| W7 | tier 4: `allow_show_existing`, `adjust_frame_rate` | unit tests in `aom-encode/src/frame_source.rs` |
+| W8 | the fixed-Q qindex chain: `get_minq_index`, `init_minq_luts` / `rc_init_minq_luts` / `av1_rc_init_minq_luts`, `get_active_quality`, `get_kf_active_quality`, `get_gf_active_quality` (+ `_no_rc`), `get_gf_high_motion_quality`, `get_default_max_gf_interval`, `gf_group_pyramid_level`, `get_active_cq_level`, `get_intra_q_and_bounds`, `get_active_best_quality`, `rc_pick_q_and_bounds_q_mode` | `aom-encode/tests/ratectrl_q_diff.rs` (**tier 1c**) |
+| W8 | the rate-search layer: `av1_get_MBs`, `av1_estimate_bits_at_q`, `av1_compute_qdelta_by_rate`, `av1_rc_regulate_q`, `av1_rc_compute_frame_size_bounds`, `av1_rc_set_frame_target` (tier 1) + `resize_rate_factor`, `get_rate_factor_level`, `get_rate_correction_factor`, `get_bits_per_mb`, `find_qindex_by_rate`, `find_closest_qindex_by_rate`, `frame_type_qdelta` (tier 1c) | `aom-encode/tests/ratectrl_rate_diff.rs` |
+| W8 | RC initialisation: `av1_primary_rc_init`, `av1_rc_init`, `av1_rc_update_framerate` (tier 1) + `set_gf_interval_range` (tier 1c) | `aom-encode/tests/ratectrl_init_diff.rs` |
+| W8 | the per-frame state advance: `av1_rc_update_rate_correction_factors`, `av1_rc_postencode_update` (+ `set_rate_correction_factor`, `update_buffer_level`, `update_alt_ref_frame_stats`, `update_golden_frame_stats`), `av1_set_target_rate` (Q/CBR arm) | `aom-encode/tests/ratectrl_update_diff.rs` |
+| W8 | the q-and-bounds dispatcher: `av1_rc_pick_q_and_bounds` (tier 1) + `rc_pick_q_and_bounds`, `rc_pick_q_and_bounds_no_stats`, `adjust_active_best_and_worst_quality`, `get_q`, `calc_active_worst_quality_no_stats_vbr` (tier 1c) | `aom-encode/tests/ratectrl_pick_diff.rs` |
 
-**None of it is wired into the encoder yet.** These are the kernels and searches
-the inter RD brain (W6) will call; the brain itself, reference/frame management
-(W7) and multi-frame rate control (W8) are still entirely absent.
+**None of it is wired into the encoder yet.** These are the kernels, searches
+and decisions the inter RD brain (W6) will call; the brain itself is still
+absent.
+
+**W7 and W8 are now COMPLETE at the function level**, which the sentence above
+used to deny. Measured 2026-08-31 against the two files' full definition lists:
+
+| C file | definitions | ported | out of scope | missing |
+|---|---|---|---|---|
+| `encoder/encode_strategy.c` | 25 | 20 | 5 | **0** |
+| `encoder/ratectrl.c` | 87 | 51 | 36 | **0** |
+
+"Out of scope" is per-function and reasoned, not a bucket: for
+`encode_strategy.c` it is `av1_encode_strategy`, `denoise_and_encode` and
+`choose_frame_source` (pipeline and lookahead-ring orchestration the port
+replaces rather than translates) plus `dump_one_image` /
+`dump_ref_frame_images`, which are behind `#define DUMP_REF_FRAME_IMAGES 0`
+and are not compiled at all. For `ratectrl.c` it is the CBR, VBR, real-time,
+SVC and drop-frame arms — the encode target is `--end-usage=q` — plus three
+functions behind macros that evaluate to 0 in this build
+(`rc_pick_q_and_bounds_no_stats_cq` under `USE_UNRESTRICTED_Q_IN_CQ_MODE`,
+`get_q_passive_strategy` under `RT_PASSIVE_STRATEGY`, and the
+`CONFIG_FPMT_TEST` shadow-state blocks). Every ported row's module names its C
+source and states its evidence tier; every unported one carries a one-line
+reason in the module docs.
+
+Caveat on the count, stated because the tool that produced the denominator
+says so: `tools/c_surface_inventory.py`'s regex only sees single-line,
+column-0 definitions, so 25 and 87 are LOWER BOUNDS on the two files' real
+surface. "0 missing" means "none of the definitions the tool can see", not
+"the file is provably exhausted".
 
 ### Verified on two ISAs, and what CI shows
 

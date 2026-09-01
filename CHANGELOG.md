@@ -100,6 +100,42 @@
 
 ### Added
 
+- **The whole reference/GOP + fixed-Q rate-control surface is ported — 71 of
+  the 112 C functions in `encode_strategy.c` and `ratectrl.c`, with the other
+  41 reasoned out per function and ZERO left unaccounted** (`72f6536`,
+  `6752cd5`, `b0fba02`, `c075208`, `a6afcec`, `006df29`, `8d6de8c`). New:
+  `aom_encode::{ref_gop, frame_source, ratectrl, ratectrl_rate, ratectrl_init,
+  ratectrl_update, ratectrl_pick}` plus
+  `crates/aom-sys-ref/shim/{refgop_shim.c, ratectrl_shim.c, rcarchive_shim.c,
+  rc_state_params.h}` and seven differential harnesses (56 tests, green on
+  aarch64 AND x86_64). Covers: which buffer slots a frame refreshes and which
+  buffer each named reference points at (`av1_get_ref_frames`,
+  `av1_get_refresh_frame_flags`, `av1_configure_buffer_updates` and their
+  statics); the minq lookup tables and the boost-interpolated active-quality
+  curves; the rate model's search layer (`av1_estimate_bits_at_q`,
+  `av1_rc_regulate_q`, both qindex-by-rate searches); RC initialisation
+  (`av1_primary_rc_init`, `av1_rc_init`, `av1_rc_update_framerate`); the
+  per-frame state advance (`av1_rc_postencode_update`,
+  `av1_rc_update_rate_correction_factors`, `update_buffer_level`); and the
+  q-and-bounds dispatcher (`av1_rc_pick_q_and_bounds` and the four statics
+  under it). Evidence is tier 1 wherever an exported symbol exists — a second
+  shim TU, `rcarchive_shim.c`, deliberately does NOT include `ratectrl.c` so
+  those names bind to `libaom.a` — and tier 1c through a verbatim compile of
+  `ratectrl.c` for the ~20 file-statics, with the 1c-vs-1 gap MEASURED on the
+  functions each file actually tests rather than on a proxy. Four functions
+  are tier 4 (C is `static` with no exported caller short of
+  `av1_encode_strategy`) and are labelled as such in their module docs.
+  Three defects were found by the differentials while building it:
+  `p_rc->arf_boost_factor` is `float_t` == **float**, not double, so
+  `get_active_best_quality`'s boost multiply is single precision;
+  `SEQ_LEVELS` is **28**, not 24 (`SEQ_LEVEL_2_0`..`SEQ_LEVEL_8_3`), which
+  moved `av1_primary_rc_init`'s `avg_frame_qindex`; and
+  `rc_pick_q_and_bounds` reads `gf_group->frame_type[gf_index]`, NOT
+  `cm->current_frame.frame_type`, for `frame_type_qdelta`. A fourth finding is
+  recorded rather than fixed: `rc_pick_q_and_bounds_no_stats`'s
+  `delta_rate[FIXED_GF_INTERVAL]` is sixteen long with only EIGHT
+  initialisers, so half of all leaf frames take a rate factor of 0.0.
+
 - **`av1/encoder/rdopt.c`'s decision layer — the inter RD brain — is ported:
   69 of its 105 functions, in eight modules, all gated against libaom**
   (`9163133`, `fc27f88`, `1f71285`, `9e55561`, `e184722`, `2003403`,
