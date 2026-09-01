@@ -44,6 +44,7 @@ pub mod mode_costs;
 pub mod noise_fft;
 pub mod noise_model;
 pub mod nonrd_idtx;
+pub mod nonrd_inter;
 pub mod nonrd_pickmode;
 pub mod obu_assemble;
 pub mod pack;

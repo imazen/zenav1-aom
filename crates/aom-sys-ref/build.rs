@@ -87,6 +87,7 @@ const SHIMS: &[&str] = &[
     "vbp_shim",
     "vbp_static_shim",
     "nonrd_idtx_shim",
+    "nonrd_pick_shim",
     "tpl_shim",
     "ratectrl_shim",
     "tpl_c_shim",
@@ -149,6 +150,11 @@ fn extra_shim_cflags(name: &str) -> &'static [&'static str] {
         // INTER leaf fill is in the static half. Same source, so it is built
         // the same way. See shim/vbp_static_shim.c's header.
         "vbp_static_shim" => &["-O3", "-DNDEBUG"],
+        // nonrd_pick_shim pulls av1/encoder/nonrd_pickmode.c in for the same
+        // reason: only two of its definitions are exported, and every decision
+        // helper of the speed 8/9 inter search is in the static half. Same
+        // source, so it is built the same way. See that shim's header.
+        "nonrd_pick_shim" => &["-O3", "-DNDEBUG"],
         _ => &[],
     }
 }

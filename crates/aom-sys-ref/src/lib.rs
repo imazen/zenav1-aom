@@ -26254,3 +26254,293 @@ pub fn ref_rie_scale_factors(ref_size: (i32, i32), this_size: (i32, i32)) -> [i3
     }
     out
 }
+
+// ===========================================================================
+// av1/encoder/nonrd_pickmode.c file-statics — TIER 1c through
+// `shim/nonrd_pick_shim.c`, which compiles nonrd_pickmode.c verbatim.
+// Only av1_nonrd_pick_intra_mode and av1_nonrd_pick_inter_mode_sb are
+// exported from that file, so tier 1 is not available for any of this.
+// ===========================================================================
+
+unsafe extern "C" {
+    fn shim_nrp_mode_idx(out: *mut i32);
+    fn shim_nrp_rtc_modes() -> i32;
+    fn shim_nrp_rtc_inter_modes() -> i32;
+    fn shim_nrp_ref_frames() -> i32;
+    fn shim_nrp_mb_mode_count() -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_nrp_skip_mode_by_threshold(
+        mode: i32,
+        ref_frame: i32,
+        mv_as_int: u32,
+        frames_since_golden: i32,
+        rd_threshes: *const i32,
+        rd_thresh_freq_fact: *const i32,
+        best_cost: i64,
+        best_skip: i32,
+        extra_shift: i32,
+    ) -> i32;
+    fn shim_nrp_skip_mode_by_low_temp(
+        mode: i32,
+        ref_frame: i32,
+        bsize: i32,
+        source_sad_nonrd: i32,
+        mv_as_int: u32,
+        force_skip_low_temp_var: i32,
+    ) -> i32;
+    fn shim_nrp_skip_mode_by_bsize_and_ref_frame(
+        mode: i32,
+        ref_frame: i32,
+        bsize: i32,
+        extra_prune: i32,
+        sse_zeromv_norm: u32,
+        more_prune: i32,
+        skip_nearmv: i32,
+    ) -> i32;
+    fn shim_nrp_skip_comp_based_on_var(single_vars_flat: *const u32, bsize: i32) -> i32;
+    fn shim_nrp_previous_mode_performed_poorly(
+        mode: i32,
+        ref_frame: i32,
+        vars_flat: *const u32,
+        uv_dist_flat: *const i64,
+    ) -> i32;
+    fn shim_nrp_prune_compoundmode_with_singlemode_var(
+        compound_mode: i32,
+        ref_frame: i32,
+        ref_frame2: i32,
+        frame_mv_flat: *const u32,
+        mode_checked_flat: *const u8,
+        vars_flat: *const u32,
+        uv_dist_flat: *const i64,
+    ) -> i32;
+    fn shim_nrp_ac_thr_factor(speed: i32, width: i32, height: i32, norm_sum: i32) -> i32;
+    fn shim_nrp_calculate_variance(
+        bw: i32,
+        bh: i32,
+        tx_size: i32,
+        sse_i: *const u32,
+        sum_i: *const i32,
+        var_o: *mut u32,
+        sse_o: *mut u32,
+        sum_o: *mut i32,
+    );
+}
+
+/// `RTC_MODES` as the oracle TU sees it.
+#[must_use]
+pub fn ref_nrp_rtc_modes() -> usize {
+    ref_init();
+    unsafe { shim_nrp_rtc_modes() as usize }
+}
+
+/// `RTC_INTER_MODES` as the oracle TU sees it.
+#[must_use]
+pub fn ref_nrp_rtc_inter_modes() -> usize {
+    ref_init();
+    unsafe { shim_nrp_rtc_inter_modes() as usize }
+}
+
+/// `REF_FRAMES` as the oracle TU sees it.
+#[must_use]
+pub fn ref_nrp_ref_frames() -> usize {
+    ref_init();
+    unsafe { shim_nrp_ref_frames() as usize }
+}
+
+/// `MB_MODE_COUNT` as the oracle TU sees it.
+#[must_use]
+pub fn ref_nrp_mb_mode_count() -> usize {
+    ref_init();
+    unsafe { shim_nrp_mb_mode_count() as usize }
+}
+
+/// `mode_idx[REF_FRAMES][RTC_MODES]` (nonrd_opt.h:127), row-major.
+#[must_use]
+pub fn ref_nrp_mode_idx() -> Vec<i32> {
+    ref_init();
+    let n = ref_nrp_ref_frames() * ref_nrp_rtc_modes();
+    let mut out = vec![0i32; n];
+    unsafe { shim_nrp_mode_idx(out.as_mut_ptr()) };
+    out
+}
+
+/// Reference `skip_mode_by_threshold` (nonrd_pickmode.c:1933), tier 1c.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_nrp_skip_mode_by_threshold(
+    mode: i32,
+    ref_frame: i32,
+    mv_as_int: u32,
+    frames_since_golden: i32,
+    rd_threshes: &[i32],
+    rd_thresh_freq_fact: &[i32],
+    best_cost: i64,
+    best_skip: bool,
+    extra_shift: i32,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_nrp_skip_mode_by_threshold(
+            mode,
+            ref_frame,
+            mv_as_int,
+            frames_since_golden,
+            rd_threshes.as_ptr(),
+            rd_thresh_freq_fact.as_ptr(),
+            best_cost,
+            i32::from(best_skip),
+            extra_shift,
+        ) != 0
+    }
+}
+
+/// Reference `skip_mode_by_low_temp` (:1961), tier 1c.
+#[must_use]
+pub fn ref_nrp_skip_mode_by_low_temp(
+    mode: i32,
+    ref_frame: i32,
+    bsize: i32,
+    source_sad_nonrd: i32,
+    mv_as_int: u32,
+    force_skip_low_temp_var: bool,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_nrp_skip_mode_by_low_temp(
+            mode,
+            ref_frame,
+            bsize,
+            source_sad_nonrd,
+            mv_as_int,
+            i32::from(force_skip_low_temp_var),
+        ) != 0
+    }
+}
+
+/// Reference `skip_mode_by_bsize_and_ref_frame` (:1978), tier 1c.
+#[must_use]
+pub fn ref_nrp_skip_mode_by_bsize_and_ref_frame(
+    mode: i32,
+    ref_frame: i32,
+    bsize: i32,
+    extra_prune: i32,
+    sse_zeromv_norm: u32,
+    more_prune: bool,
+    skip_nearmv: bool,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_nrp_skip_mode_by_bsize_and_ref_frame(
+            mode,
+            ref_frame,
+            bsize,
+            extra_prune,
+            sse_zeromv_norm,
+            i32::from(more_prune),
+            i32::from(skip_nearmv),
+        ) != 0
+    }
+}
+
+/// Reference `skip_comp_based_on_var` (:2165), tier 1c. `single_vars` is
+/// `[RTC_INTER_MODES][REF_FRAMES]`, row-major.
+#[must_use]
+pub fn ref_nrp_skip_comp_based_on_var(single_vars: &[u32], bsize: i32) -> bool {
+    ref_init();
+    assert_eq!(single_vars.len(), ref_nrp_rtc_inter_modes() * ref_nrp_ref_frames());
+    unsafe { shim_nrp_skip_comp_based_on_var(single_vars.as_ptr(), bsize) != 0 }
+}
+
+/// Reference `previous_mode_performed_poorly` (:2286), tier 1c.
+#[must_use]
+pub fn ref_nrp_previous_mode_performed_poorly(
+    mode: i32,
+    ref_frame: i32,
+    vars: &[u32],
+    uv_dist: &[i64],
+) -> bool {
+    ref_init();
+    let n = ref_nrp_rtc_inter_modes() * ref_nrp_ref_frames();
+    assert_eq!(vars.len(), n);
+    assert_eq!(uv_dist.len(), n);
+    unsafe {
+        shim_nrp_previous_mode_performed_poorly(mode, ref_frame, vars.as_ptr(), uv_dist.as_ptr())
+            != 0
+    }
+}
+
+/// Reference `prune_compoundmode_with_singlemode_var` (:2306), tier 1c.
+///
+/// `frame_mv` and `mode_checked` are `[MB_MODE_COUNT][REF_FRAMES]`;
+/// `vars` and `uv_dist` are `[RTC_INTER_MODES][REF_FRAMES]`.
+#[must_use]
+pub fn ref_nrp_prune_compoundmode_with_singlemode_var(
+    compound_mode: i32,
+    ref_frame: i32,
+    ref_frame2: i32,
+    frame_mv: &[u32],
+    mode_checked: &[u8],
+    vars: &[u32],
+    uv_dist: &[i64],
+) -> bool {
+    ref_init();
+    let big = ref_nrp_mb_mode_count() * ref_nrp_ref_frames();
+    let small = ref_nrp_rtc_inter_modes() * ref_nrp_ref_frames();
+    assert_eq!(frame_mv.len(), big);
+    assert_eq!(mode_checked.len(), big);
+    assert_eq!(vars.len(), small);
+    assert_eq!(uv_dist.len(), small);
+    unsafe {
+        shim_nrp_prune_compoundmode_with_singlemode_var(
+            compound_mode,
+            ref_frame,
+            ref_frame2,
+            frame_mv.as_ptr(),
+            mode_checked.as_ptr(),
+            vars.as_ptr(),
+            uv_dist.as_ptr(),
+        ) != 0
+    }
+}
+
+/// Reference `ac_thr_factor` (:580), tier 1c.
+#[must_use]
+pub fn ref_nrp_ac_thr_factor(speed: i32, width: i32, height: i32, norm_sum: i32) -> i32 {
+    ref_init();
+    unsafe { shim_nrp_ac_thr_factor(speed, width, height, norm_sum) }
+}
+
+/// Reference `calculate_variance` (:556), tier 1c. Returns
+/// `(var_o, sse_o, sum_o)`.
+#[must_use]
+pub fn ref_nrp_calculate_variance(
+    bw: i32,
+    bh: i32,
+    tx_size: i32,
+    unit_log2: u32,
+    sse_i: &[u32],
+    sum_i: &[i32],
+) -> (Vec<u32>, Vec<u32>, Vec<i32>) {
+    ref_init();
+    let nw = 1usize << (bw as u32 - unit_log2);
+    let nh = 1usize << (bh as u32 - unit_log2);
+    assert_eq!(sse_i.len(), nw * nh);
+    assert_eq!(sum_i.len(), nw * nh);
+    let n_out = (nw / 2) * (nh / 2);
+    let mut var_o = vec![0u32; n_out];
+    let mut sse_o = vec![0u32; n_out];
+    let mut sum_o = vec![0i32; n_out];
+    unsafe {
+        shim_nrp_calculate_variance(
+            bw,
+            bh,
+            tx_size,
+            sse_i.as_ptr(),
+            sum_i.as_ptr(),
+            var_o.as_mut_ptr(),
+            sse_o.as_mut_ptr(),
+            sum_o.as_mut_ptr(),
+        );
+    }
+    (var_o, sse_o, sum_o)
+}
