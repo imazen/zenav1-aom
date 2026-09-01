@@ -20592,3 +20592,274 @@ pub fn ref_ct_constants() -> (i32, i32, i32) {
         )
     }
 }
+
+// --- rdopt.c: variance-based RD adjustment + two more predicates ----------
+
+unsafe extern "C" {
+    fn shim_rdopt_get_variance_stats(
+        bsize: i32,
+        is_hbd: i32,
+        src: *const u16,
+        src_stride: i32,
+        dst: *const u16,
+        dst_stride: i32,
+        src_var: *mut i64,
+        rec_var: *mut i64,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_adjust_cost(
+        rd_cost: i64,
+        is_inter_pred: i32,
+        tuning: i32,
+        sharpness: i32,
+        frame_is_intra: i32,
+        update_type: i32,
+        rdmult: i32,
+        bsize: i32,
+        is_hbd: i32,
+        src: *const u16,
+        src_stride: i32,
+        dst: *const u16,
+        dst_stride: i32,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_adjust_rdcost(
+        rate_dist_rdcost: *mut i64,
+        is_inter_pred: i32,
+        tuning: i32,
+        sharpness: i32,
+        frame_is_intra: i32,
+        update_type: i32,
+        rdmult: i32,
+        bsize: i32,
+        is_hbd: i32,
+        src: *const u16,
+        src_stride: i32,
+        dst: *const u16,
+        dst_stride: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_inter_mode_compatible_skip(
+        bsize: i32,
+        curr_mode: i32,
+        rf0: i32,
+        rf1: i32,
+        ref_frame_flags: i32,
+        frame_is_intra: i32,
+        reference_mode: i32,
+        seg_enabled: i32,
+        seg_ref_active: i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_rdopt_ref_mv_idx_early_breakout(
+        reduce_inter_modes: i32,
+        prune_comp: i32,
+        this_mode: i32,
+        rf0: i32,
+        rf1: i32,
+        ref_mv_idx: i32,
+        qindex: i32,
+        rdmult: i32,
+        ref_best_rd: i64,
+        nearest_past_ref: i32,
+        nearest_future_ref: i32,
+        ref_mv_count: i32,
+        weight: *const u16,
+        drl_mode_cost0: *const i32,
+        ref_frame_cost: i32,
+        single_comp_cost: i32,
+        single_newmv_valid: *const u8,
+        out_ref_mv_idx: *mut i32,
+    ) -> i32;
+}
+
+/// Reference `get_variance_stats` (rdopt.c:709) / `get_variance_stats_hbd`
+/// (`:624`). Returns `(src_var, rec_var)`.
+///
+/// Both planes are passed as `u16`; the lowbd arm narrows inside the shim,
+/// which is where C reads `uint8_t *`. The buffers must be at least
+/// `stride * (block_height + 8)` long — C reads a one-pixel replicated border.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_get_variance_stats(
+    bsize: i32,
+    is_hbd: bool,
+    src: &[u16],
+    src_stride: usize,
+    dst: &[u16],
+    dst_stride: usize,
+) -> (i64, i64) {
+    ref_init();
+    let (mut sv, mut rv) = (0i64, 0i64);
+    unsafe {
+        shim_rdopt_get_variance_stats(
+            bsize,
+            i32::from(is_hbd),
+            src.as_ptr(),
+            src_stride as i32,
+            dst.as_ptr(),
+            dst_stride as i32,
+            &mut sv,
+            &mut rv,
+        )
+    };
+    (sv, rv)
+}
+
+/// The three `cpi` gates `adjust_cost` / `adjust_rdcost` read.
+#[derive(Clone, Copy, Debug)]
+pub struct AdjustGates {
+    /// `cpi->oxcf.tune_cfg.tuning` (`aom_tune_metric`).
+    pub tuning: i32,
+    /// `cpi->oxcf.algo_cfg.sharpness`.
+    pub sharpness: i32,
+    /// `frame_is_intra_only(cm)`.
+    pub frame_is_intra: bool,
+    /// `gf_group->update_type[cpi->gf_frame_index]`.
+    pub update_type: i32,
+    /// `x->rdmult`.
+    pub rdmult: i32,
+}
+
+/// Reference `adjust_cost` (rdopt.c:840).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_adjust_cost(
+    rd_cost: i64,
+    is_inter_pred: bool,
+    gates: AdjustGates,
+    bsize: i32,
+    is_hbd: bool,
+    src: &[u16],
+    src_stride: usize,
+    dst: &[u16],
+    dst_stride: usize,
+) -> i64 {
+    ref_init();
+    unsafe {
+        shim_rdopt_adjust_cost(
+            rd_cost,
+            i32::from(is_inter_pred),
+            gates.tuning,
+            gates.sharpness,
+            i32::from(gates.frame_is_intra),
+            gates.update_type,
+            gates.rdmult,
+            bsize,
+            i32::from(is_hbd),
+            src.as_ptr(),
+            src_stride as i32,
+            dst.as_ptr(),
+            dst_stride as i32,
+        )
+    }
+}
+
+/// Reference `adjust_rdcost` (rdopt.c:796). `rate_dist_rdcost` is
+/// `(rate, dist, rdcost)`, in/out.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_adjust_rdcost(
+    rate_dist_rdcost: &mut [i64; 3],
+    is_inter_pred: bool,
+    gates: AdjustGates,
+    bsize: i32,
+    is_hbd: bool,
+    src: &[u16],
+    src_stride: usize,
+    dst: &[u16],
+    dst_stride: usize,
+) {
+    ref_init();
+    unsafe {
+        shim_rdopt_adjust_rdcost(
+            rate_dist_rdcost.as_mut_ptr(),
+            i32::from(is_inter_pred),
+            gates.tuning,
+            gates.sharpness,
+            i32::from(gates.frame_is_intra),
+            gates.update_type,
+            gates.rdmult,
+            bsize,
+            i32::from(is_hbd),
+            src.as_ptr(),
+            src_stride as i32,
+            dst.as_ptr(),
+            dst_stride as i32,
+        )
+    }
+}
+
+/// Reference `inter_mode_compatible_skip` (rdopt.c:4581).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_inter_mode_compatible_skip(
+    bsize: i32,
+    curr_mode: i32,
+    rf: (i32, i32),
+    ref_frame_flags: i32,
+    frame_is_intra: bool,
+    reference_mode: i32,
+    seg_enabled: bool,
+    seg_ref_active: bool,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_rdopt_inter_mode_compatible_skip(
+            bsize,
+            curr_mode,
+            rf.0,
+            rf.1,
+            ref_frame_flags,
+            i32::from(frame_is_intra),
+            reference_mode,
+            i32::from(seg_enabled),
+            i32::from(seg_ref_active),
+        ) != 0
+    }
+}
+
+/// Reference `ref_mv_idx_early_breakout` (rdopt.c:2216). Returns
+/// `(should_break, mbmi->ref_mv_idx_after)` — the function WRITES
+/// `mbmi->ref_mv_idx` partway through and the caller depends on it.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_rdopt_ref_mv_idx_early_breakout(
+    reduce_inter_modes: i32,
+    this_mode: i32,
+    rf: (i32, i32),
+    ref_mv_idx: i32,
+    qindex: i32,
+    rdmult: i32,
+    ref_best_rd: i64,
+    nearest_past_ref: i32,
+    nearest_future_ref: i32,
+    row: &RefMvRow,
+    drl_mode_cost0: &[[i32; 2]; DRL_MODE_CONTEXTS],
+    ref_frame_cost: i32,
+    single_comp_cost: i32,
+    single_newmv_valid: &[[u8; C_REF_FRAMES]; MAX_REF_MV_SEARCH],
+) -> (bool, i32) {
+    ref_init();
+    let costs: Vec<i32> = drl_mode_cost0.iter().flatten().copied().collect();
+    let valid: Vec<u8> = single_newmv_valid.iter().flatten().copied().collect();
+    let mut out_idx = 0i32;
+    let r = unsafe {
+        shim_rdopt_ref_mv_idx_early_breakout(
+            reduce_inter_modes,
+            0,
+            this_mode,
+            rf.0,
+            rf.1,
+            ref_mv_idx,
+            qindex,
+            rdmult,
+            ref_best_rd,
+            nearest_past_ref,
+            nearest_future_ref,
+            row.count,
+            row.weight.as_ptr(),
+            costs.as_ptr(),
+            ref_frame_cost,
+            single_comp_cost,
+            valid.as_ptr(),
+            &mut out_idx,
+        )
+    };
+    (r != 0, out_idx)
+}

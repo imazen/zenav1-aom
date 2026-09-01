@@ -1367,3 +1367,237 @@ int shim_rdopt_calc_target_weighted_pred(
   free(store);
   return bw * bh;
 }
+
+/* ======================================================================== *
+ * 14. Variance-based RD adjustment (rdopt.c:624-866).
+ *
+ * `get_variance_stats` / `_hbd` read the block's source and its reconstructed
+ * prediction, each through a 1-pixel replicated border, and measure how much
+ * high-frequency energy a 3x3 Gaussian removes. `adjust_cost` / `adjust_rdcost`
+ * turn the difference into an RD penalty.
+ * ======================================================================== */
+
+void shim_rdopt_get_variance_stats(int bsize, int is_hbd, const uint16_t *src,
+                                   int src_stride, const uint16_t *dst,
+                                   int dst_stride, int64_t *src_var,
+                                   int64_t *rec_var) {
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  mbmi->bsize = (BLOCK_SIZE)bsize;
+  x->e_mbd.mi = &mbmi;
+  const int bh = block_size_high[bsize];
+  uint8_t *src8 = NULL, *dst8 = NULL;
+  if (is_hbd) {
+    x->plane[0].src.buf = CONVERT_TO_BYTEPTR(src);
+    x->e_mbd.plane[0].dst.buf = CONVERT_TO_BYTEPTR(dst);
+  } else {
+    src8 = (uint8_t *)malloc((size_t)src_stride * (bh + 8));
+    dst8 = (uint8_t *)malloc((size_t)dst_stride * (bh + 8));
+    for (int i = 0; i < src_stride * (bh + 8); ++i) src8[i] = (uint8_t)src[i];
+    for (int i = 0; i < dst_stride * (bh + 8); ++i) dst8[i] = (uint8_t)dst[i];
+    x->plane[0].src.buf = src8;
+    x->e_mbd.plane[0].dst.buf = dst8;
+  }
+  x->plane[0].src.stride = src_stride;
+  x->e_mbd.plane[0].dst.stride = dst_stride;
+  if (is_hbd)
+    get_variance_stats_hbd(x, src_var, rec_var);
+  else
+    get_variance_stats(x, src_var, rec_var);
+  free(dst8);
+  free(src8);
+  free(mbmi);
+  free(x);
+}
+
+/* `adjust_cost` / `adjust_rdcost` gate on three cpi fields: the tuning mode,
+ * the sharpness level, and `frame_is_kf_gf_arf`. The last reads
+ * `cpi->ppi->gf_group.update_type[cpi->gf_frame_index]` plus
+ * `frame_is_intra_only(cm)`, so both are set explicitly here. */
+static void shim_rd_set_adjust_gates(AV1_COMP *cpi, AV1_PRIMARY *ppi,
+                                     int tuning, int sharpness,
+                                     int frame_is_intra, int update_type) {
+  cpi->ppi = ppi;
+  cpi->oxcf.tune_cfg.tuning = (aom_tune_metric)tuning;
+  cpi->oxcf.algo_cfg.sharpness = sharpness;
+  cpi->common.current_frame.frame_type = frame_is_intra ? KEY_FRAME : INTER_FRAME;
+  cpi->gf_frame_index = 0;
+  ppi->gf_group.update_type[0] = (FRAME_UPDATE_TYPE)update_type;
+}
+
+int64_t shim_rdopt_adjust_cost(int64_t rd_cost, int is_inter_pred, int tuning,
+                               int sharpness, int frame_is_intra,
+                               int update_type, int rdmult, int bsize,
+                               int is_hbd, const uint16_t *src, int src_stride,
+                               const uint16_t *dst, int dst_stride) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(*ppi));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  shim_rd_set_adjust_gates(cpi, ppi, tuning, sharpness, frame_is_intra,
+                           update_type);
+  mbmi->bsize = (BLOCK_SIZE)bsize;
+  x->e_mbd.mi = &mbmi;
+  x->rdmult = rdmult;
+  YV12_BUFFER_CONFIG buf;
+  memset(&buf, 0, sizeof(buf));
+  buf.flags = is_hbd ? YV12_FLAG_HIGHBITDEPTH : 0;
+  x->e_mbd.cur_buf = &buf;
+  const int bh = block_size_high[bsize];
+  uint8_t *src8 = NULL, *dst8 = NULL;
+  if (is_hbd) {
+    x->plane[0].src.buf = CONVERT_TO_BYTEPTR(src);
+    x->e_mbd.plane[0].dst.buf = CONVERT_TO_BYTEPTR(dst);
+  } else {
+    src8 = (uint8_t *)malloc((size_t)src_stride * (bh + 8));
+    dst8 = (uint8_t *)malloc((size_t)dst_stride * (bh + 8));
+    for (int i = 0; i < src_stride * (bh + 8); ++i) src8[i] = (uint8_t)src[i];
+    for (int i = 0; i < dst_stride * (bh + 8); ++i) dst8[i] = (uint8_t)dst[i];
+    x->plane[0].src.buf = src8;
+    x->e_mbd.plane[0].dst.buf = dst8;
+  }
+  x->plane[0].src.stride = src_stride;
+  x->e_mbd.plane[0].dst.stride = dst_stride;
+  adjust_cost(cpi, x, &rd_cost, (bool)is_inter_pred);
+  free(dst8);
+  free(src8);
+  free(mbmi);
+  free(x);
+  free(ppi);
+  free(cpi);
+  return rd_cost;
+}
+
+void shim_rdopt_adjust_rdcost(int64_t *rate_dist_rdcost /* 3 in/out */,
+                              int is_inter_pred, int tuning, int sharpness,
+                              int frame_is_intra, int update_type, int rdmult,
+                              int bsize, int is_hbd, const uint16_t *src,
+                              int src_stride, const uint16_t *dst,
+                              int dst_stride) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(*ppi));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  shim_rd_set_adjust_gates(cpi, ppi, tuning, sharpness, frame_is_intra,
+                           update_type);
+  mbmi->bsize = (BLOCK_SIZE)bsize;
+  x->e_mbd.mi = &mbmi;
+  x->rdmult = rdmult;
+  YV12_BUFFER_CONFIG buf;
+  memset(&buf, 0, sizeof(buf));
+  buf.flags = is_hbd ? YV12_FLAG_HIGHBITDEPTH : 0;
+  x->e_mbd.cur_buf = &buf;
+  const int bh = block_size_high[bsize];
+  uint8_t *src8 = NULL, *dst8 = NULL;
+  if (is_hbd) {
+    x->plane[0].src.buf = CONVERT_TO_BYTEPTR(src);
+    x->e_mbd.plane[0].dst.buf = CONVERT_TO_BYTEPTR(dst);
+  } else {
+    src8 = (uint8_t *)malloc((size_t)src_stride * (bh + 8));
+    dst8 = (uint8_t *)malloc((size_t)dst_stride * (bh + 8));
+    for (int i = 0; i < src_stride * (bh + 8); ++i) src8[i] = (uint8_t)src[i];
+    for (int i = 0; i < dst_stride * (bh + 8); ++i) dst8[i] = (uint8_t)dst[i];
+    x->plane[0].src.buf = src8;
+    x->e_mbd.plane[0].dst.buf = dst8;
+  }
+  x->plane[0].src.stride = src_stride;
+  x->e_mbd.plane[0].dst.stride = dst_stride;
+  RD_STATS rd;
+  av1_init_rd_stats(&rd);
+  rd.rate = (int)rate_dist_rdcost[0];
+  rd.dist = rate_dist_rdcost[1];
+  rd.rdcost = rate_dist_rdcost[2];
+  adjust_rdcost(cpi, x, &rd, (bool)is_inter_pred);
+  rate_dist_rdcost[0] = rd.rate;
+  rate_dist_rdcost[1] = rd.dist;
+  rate_dist_rdcost[2] = rd.rdcost;
+  free(dst8);
+  free(src8);
+  free(mbmi);
+  free(x);
+  free(ppi);
+  free(cpi);
+}
+
+/* ======================================================================== *
+ * 15. Two more search-loop predicates.
+ * ======================================================================== */
+
+int shim_rdopt_inter_mode_compatible_skip(int bsize, int curr_mode, int rf0,
+                                          int rf1, int ref_frame_flags,
+                                          int frame_is_intra, int reference_mode,
+                                          int seg_enabled, int seg_ref_active) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  x->e_mbd.mi = &mbmi;
+  mbmi->segment_id = 0;
+  cpi->ref_frame_flags = ref_frame_flags;
+  cpi->common.current_frame.frame_type = frame_is_intra ? KEY_FRAME : INTER_FRAME;
+  cpi->common.current_frame.reference_mode = (REFERENCE_MODE)reference_mode;
+  cpi->common.seg.enabled = seg_enabled;
+  if (seg_ref_active) cpi->common.seg.feature_mask[0] |= 1 << SEG_LVL_REF_FRAME;
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  const int r = inter_mode_compatible_skip(cpi, x, (BLOCK_SIZE)bsize,
+                                           (PREDICTION_MODE)curr_mode, rf);
+  free(mbmi);
+  free(x);
+  free(cpi);
+  return r;
+}
+
+int shim_rdopt_ref_mv_idx_early_breakout(
+    int reduce_inter_modes, int prune_comp, int this_mode, int rf0, int rf1,
+    int ref_mv_idx, int qindex, int rdmult, int64_t ref_best_rd,
+    int nearest_past_ref, int nearest_future_ref, int ref_mv_count,
+    const uint16_t *weight, const int *drl_mode_cost0, int ref_frame_cost,
+    int single_comp_cost, const uint8_t *single_newmv_valid,
+    int *out_ref_mv_idx) {
+  SPEED_FEATURES *sf = (SPEED_FEATURES *)calloc(1, sizeof(*sf));
+  RefFrameDistanceInfo *dist =
+      (RefFrameDistanceInfo *)calloc(1, sizeof(*dist));
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  HandleInterModeArgs *args = (HandleInterModeArgs *)calloc(1, sizeof(*args));
+  int (*valid)[REF_FRAMES] =
+      (int (*)[REF_FRAMES])calloc(MAX_REF_MV_SEARCH, sizeof(*valid));
+  (void)prune_comp;
+  sf->inter_sf.reduce_inter_modes = reduce_inter_modes;
+  dist->nearest_past_ref = (MV_REFERENCE_FRAME)nearest_past_ref;
+  dist->nearest_future_ref = (MV_REFERENCE_FRAME)nearest_future_ref;
+  mbmi->ref_frame[0] = (MV_REFERENCE_FRAME)rf0;
+  mbmi->ref_frame[1] = (MV_REFERENCE_FRAME)rf1;
+  mbmi->mode = (PREDICTION_MODE)this_mode;
+  x->e_mbd.mi = &mbmi;
+  x->qindex = qindex;
+  x->rdmult = rdmult;
+  const MV_REFERENCE_FRAME rf[2] = { (MV_REFERENCE_FRAME)rf0,
+                                     (MV_REFERENCE_FRAME)rf1 };
+  const int8_t row = av1_ref_frame_type(rf);
+  x->mbmi_ext.ref_mv_count[row] = (uint8_t)ref_mv_count;
+  for (int i = 0; i < MAX_REF_MV_STACK_SIZE; ++i)
+    x->mbmi_ext.weight[row][i] = weight[i];
+  for (int c = 0; c < DRL_MODE_CONTEXTS; ++c) {
+    x->mode_costs.drl_mode_cost0[c][0] = drl_mode_cost0[2 * c];
+    x->mode_costs.drl_mode_cost0[c][1] = drl_mode_cost0[2 * c + 1];
+  }
+  for (int i = 0; i < MAX_REF_MV_SEARCH; ++i)
+    for (int r = 0; r < REF_FRAMES; ++r)
+      valid[i][r] = single_newmv_valid[i * REF_FRAMES + r];
+  args->single_newmv_valid = valid;
+  args->ref_frame_cost = ref_frame_cost;
+  args->single_comp_cost = single_comp_cost;
+  const int r =
+      (int)ref_mv_idx_early_breakout(sf, dist, x, args, ref_best_rd, ref_mv_idx);
+  /* mbmi->ref_mv_idx is WRITTEN by the function partway through, and the
+   * caller relies on that side effect. */
+  *out_ref_mv_idx = mbmi->ref_mv_idx;
+  free(valid);
+  free(args);
+  free(mbmi);
+  free(x);
+  free(dist);
+  free(sf);
+  return r;
+}
