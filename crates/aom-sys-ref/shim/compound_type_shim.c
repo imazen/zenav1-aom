@@ -1110,3 +1110,127 @@ int shim_ct_prune_mode_by_skip_rd(int hbd, int bd, int bsize,
 
 int shim_ct_tx_search_cases(void) { return TX_SEARCH_CASES; }
 int shim_ct_max_tx_rd_gate_level(void) { return MAX_TX_RD_GATE_LEVEL; }
+
+/* ======================================================================== *
+ * 12. compute_best_wedge_interintra (compound_type.c:520).
+ *
+ * The function rebuilds the intra predictor per mode with the REAL exported
+ * `av1_build_intra_predictors_for_interintra`, so this driver cannot hand the
+ * predictors in — it has to stand up enough MACROBLOCKD for intra prediction
+ * to be well defined, and then report the four predictors it built so the
+ * Rust port can be driven from C's own.
+ *
+ * The context plane is a real 2-D buffer with a row above and a column to the
+ * left of the block origin: `ctx->plane[0]` points INTO it, and
+ * `build_intra_predictors` reads `ref - ref_stride` (above, up to
+ * `n_top_px + n_topright_px`) and `ref - 1` (left). The block sits well inside
+ * the buffer so both reaches stay in bounds, and `up_available` /
+ * `left_available` are set so the neighbours are used rather than the
+ * 127/129 defaults — those would make all four modes flat and the mode search
+ * a formality.
+ *
+ * LOWBD ONLY. `pick_interintra_wedge`, which does the work per mode, is
+ * already gated at bd 8/10/12 by section 9; what is new here is the mode loop
+ * and its cost accumulation, which is bit-depth independent.
+ * ======================================================================== */
+
+int64_t shim_ct_compute_best_wedge_interintra(
+    int bsize, int rdmult, int dequant_ac, const int *wedge_idx_cost,
+    const int *interintra_mode_cost /* [INTERINTRA_MODES] */,
+    const uint8_t *src, int src_stride, const uint8_t *inter_pred,
+    const uint8_t *ctx_plane, int ctx_stride, int ctx_rows, int ctx_origin,
+    int mi_row, int mi_col, int mb_to_right_edge, int mb_to_bottom_edge,
+    int *out_mode, int *out_wedge_index,
+    uint8_t *out_intrapred /* INTERINTRA_MODES * bw * bh */) {
+  const int bw = block_size_wide[bsize], bh = block_size_high[bsize];
+  const int n = bw * bh;
+  shim_ct_env e;
+  AV1_COMMON *cm_unused = NULL;
+  (void)cm_unused;
+  if (!shim_ct_env_init(&e, bsize, /*hbd=*/0, /*bd=*/8, rdmult, dequant_ac,
+                        wedge_idx_cost))
+    return 0;
+
+  SequenceHeader *seq = (SequenceHeader *)calloc(1, sizeof(*seq));
+  uint8_t *actx = (uint8_t *)shim_ct_align(ctx_plane, (size_t)ctx_stride * ctx_rows);
+  uint8_t *asrc = (uint8_t *)shim_ct_align(src, (size_t)src_stride * bh);
+  uint8_t *ainter = (uint8_t *)shim_ct_align(inter_pred, (size_t)n);
+  uint8_t *aintra = (uint8_t *)shim_ct_align(NULL, (size_t)n);
+  if (!seq || !actx || !asrc || !ainter || !aintra) {
+    aom_free(aintra); aom_free(ainter); aom_free(asrc); aom_free(actx);
+    free(seq);
+    shim_ct_env_free(&e);
+    return 0;
+  }
+
+  seq->sb_size = BLOCK_64X64;
+  seq->enable_intra_edge_filter = 1;
+  e.cpi->common.seq_params = seq;
+
+  MACROBLOCKD *xd = &e.x->e_mbd;
+  xd->mi_row = mi_row;
+  xd->mi_col = mi_col;
+  xd->up_available = 1;
+  xd->left_available = 1;
+  xd->chroma_up_available = 1;
+  xd->chroma_left_available = 1;
+  xd->mb_to_right_edge = mb_to_right_edge;
+  xd->mb_to_bottom_edge = mb_to_bottom_edge;
+  xd->mb_to_left_edge = -(mi_col * MI_SIZE * 8);
+  xd->mb_to_top_edge = -(mi_row * MI_SIZE * 8);
+  xd->plane[0].width = bw;
+  xd->plane[0].height = bh;
+  xd->plane[0].subsampling_x = 0;
+  xd->plane[0].subsampling_y = 0;
+  e.mbmi->partition = PARTITION_NONE;
+  e.mbmi->angle_delta[PLANE_TYPE_Y] = 0;
+  e.mbmi->angle_delta[PLANE_TYPE_UV] = 0;
+  e.mbmi->filter_intra_mode_info.use_filter_intra = 0;
+  e.mbmi->use_intrabc = 0;
+  e.mbmi->ref_frame[0] = LAST_FRAME;
+  e.mbmi->ref_frame[1] = INTRA_FRAME;
+
+  e.x->plane[0].src.buf = asrc;
+  e.x->plane[0].src.stride = src_stride;
+
+  BUFFER_SET ctx_set;
+  memset(&ctx_set, 0, sizeof(ctx_set));
+  ctx_set.plane[0] = actx + ctx_origin;
+  ctx_set.stride[0] = ctx_stride;
+
+  /* Report the four predictors BEFORE the search runs, so the Rust side is
+   * fed exactly what C will build (the search mutates only
+   * `mbmi->interintra_{mode,wedge_index}`, both restored below). */
+  for (int m = 0; m < INTERINTRA_MODES; ++m) {
+    e.mbmi->interintra_mode = (INTERINTRA_MODE)m;
+    av1_build_intra_predictors_for_interintra(&e.cpi->common, xd,
+                                              (BLOCK_SIZE)bsize, 0, &ctx_set,
+                                              aintra, bw);
+    memcpy(out_intrapred + (size_t)m * n, aintra, (size_t)n);
+  }
+  e.mbmi->interintra_mode = II_DC_PRED;
+  e.mbmi->interintra_wedge_index = 0;
+
+  for (int i = 0; i < INTERINTRA_MODES; ++i)
+    e.x->mode_costs.interintra_mode_cost[size_group_lookup[bsize]][i] =
+        interintra_mode_cost[i];
+
+  int best_mode = 0, best_wedge_index = 0;
+  const int64_t rd = compute_best_wedge_interintra(
+      e.cpi, e.mbmi, xd, e.x,
+      e.x->mode_costs.interintra_mode_cost[size_group_lookup[bsize]], &ctx_set,
+      aintra, (uint8_t *)ainter, &best_mode, &best_wedge_index,
+      (BLOCK_SIZE)bsize);
+  *out_mode = best_mode;
+  *out_wedge_index = best_wedge_index;
+
+  aom_free(aintra);
+  aom_free(ainter);
+  aom_free(asrc);
+  aom_free(actx);
+  free(seq);
+  shim_ct_env_free(&e);
+  return rd;
+}
+
+int shim_ct_interintra_modes(void) { return INTERINTRA_MODES; }

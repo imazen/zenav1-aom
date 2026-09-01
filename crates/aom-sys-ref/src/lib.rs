@@ -27105,3 +27105,93 @@ pub fn ref_p2_is_almost_static(
         shim_p2_is_almost_static(gf_zero_motion, kf_zero_motion, i32::from(is_lap_enabled)) != 0
     }
 }
+
+// --- compound_type.c: the interintra mode search (:520) -------------------
+
+extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_ct_compute_best_wedge_interintra(
+        bsize: i32,
+        rdmult: i32,
+        dequant_ac: i32,
+        wedge_idx_cost: *const i32,
+        interintra_mode_cost: *const i32,
+        src: *const u8,
+        src_stride: i32,
+        inter_pred: *const u8,
+        ctx_plane: *const u8,
+        ctx_stride: i32,
+        ctx_rows: i32,
+        ctx_origin: i32,
+        mi_row: i32,
+        mi_col: i32,
+        mb_to_right_edge: i32,
+        mb_to_bottom_edge: i32,
+        out_mode: *mut i32,
+        out_wedge_index: *mut i32,
+        out_intrapred: *mut u8,
+    ) -> i64;
+    fn shim_ct_interintra_modes() -> i32;
+}
+
+/// Reference `compute_best_wedge_interintra` (compound_type.c:520), lowbd.
+///
+/// Returns `(rd, mode, wedge_index, intra_predictors)` — the last being the
+/// four `bw*bh` predictors C built with the real exported
+/// `av1_build_intra_predictors_for_interintra`, so the port can be driven from
+/// C's own intra prediction rather than from a second one.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn ref_ct_compute_best_wedge_interintra(
+    bsize: i32,
+    rdmult: i32,
+    dequant_ac: i32,
+    wedge_idx_cost: &[i32],
+    interintra_mode_cost: &[i32; 4],
+    src: &[u8],
+    src_stride: i32,
+    inter_pred: &[u8],
+    ctx_plane: &[u8],
+    ctx_stride: i32,
+    ctx_rows: i32,
+    ctx_origin: i32,
+    mi_row: i32,
+    mi_col: i32,
+    mb_to_right_edge: i32,
+    mb_to_bottom_edge: i32,
+    n: usize,
+) -> (i64, i32, i32, Vec<u8>) {
+    ref_init();
+    let modes = unsafe { shim_ct_interintra_modes() } as usize;
+    let (mut mode, mut widx) = (0i32, 0i32);
+    let mut intra = vec![0u8; modes * n];
+    let rd = unsafe {
+        shim_ct_compute_best_wedge_interintra(
+            bsize,
+            rdmult,
+            dequant_ac,
+            wedge_idx_cost.as_ptr(),
+            interintra_mode_cost.as_ptr(),
+            src.as_ptr(),
+            src_stride,
+            inter_pred.as_ptr(),
+            ctx_plane.as_ptr(),
+            ctx_stride,
+            ctx_rows,
+            ctx_origin,
+            mi_row,
+            mi_col,
+            mb_to_right_edge,
+            mb_to_bottom_edge,
+            &mut mode,
+            &mut widx,
+            intra.as_mut_ptr(),
+        )
+    };
+    (rd, mode, widx, intra)
+}
+
+/// `INTERINTRA_MODES` as the oracle TU sees it.
+pub fn ref_ct_interintra_modes() -> i32 {
+    ref_init();
+    unsafe { shim_ct_interintra_modes() }
+}

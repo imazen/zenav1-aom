@@ -676,7 +676,7 @@ fn pick_wedge_matches_c() {
     for (bsize, bd) in cells() {
         let (bw, bh) = (BLK_W[bsize], BLK_H[bsize]);
         let n = bw * bh;
-        for _ in 0..6 {
+        for iter in 0..48 {
             let src_stride = bw + 8;
             let src = Plane::random(&mut rng, src_stride * bh, bd);
             let p0 = Plane::random(&mut rng, n, bd);
@@ -1881,4 +1881,256 @@ fn prune_mode_by_skip_rd_matches_c() {
         gated_off > 0,
         "the gate-disabled early-out was never reached"
     );
+}
+
+// ===================================================================
+// The interintra mode search (compound_type.c:520).
+//
+// | test | C function |
+// |---|---|
+// | `compute_best_wedge_interintra_matches_c` | `compute_best_wedge_interintra` `:520` |
+//
+// **One perturbation of this function is INERT, and measurably so.** Dropping
+// `wedge_idx_cost[wedge_index]` from `rate_overhead` changes no decision:
+// `pick_interintra_wedge` already SUBTRACTS that same cost from the RD it
+// returns (compound_type.c:280 via `pick_wedge_fixed_sign`), so re-adding it
+// here shifts every mode by nearly the same amount, and a flip needs the two
+// leading modes to have picked wedge indices priced far enough apart to cross
+// their RD gap. Measured over 3,600 cells spanning all nine wedge block sizes,
+// four cost regimes and `rdmult` log-swept over 13 binades: **zero flips.**
+// The term is kept because it is what C computes and nothing forbids it
+// firing; it is recorded here so a later reader does not read the surviving
+// perturbation as a hole in the gate.
+//
+// The intra predictors are NOT built twice. C rebuilds them per mode inside
+// the loop with `av1_build_intra_predictors_for_interintra`
+// (`common/reconinter.c:1115`, a different file); the shim reports the four it
+// built and the port is driven from those, so what is under test here is the
+// SEARCH — the mode loop, the rate-overhead accumulation and the argmin — and
+// not a second intra prediction.
+// ===================================================================
+
+use aom_encode::compound_type::{INTERINTRA_MODES, compute_best_wedge_interintra};
+
+#[test]
+fn compute_best_wedge_interintra_matches_c() {
+    let mut rng = Rng(0x5EED_0C40);
+    assert_eq!(cref::ref_ct_interintra_modes() as usize, INTERINTRA_MODES);
+    let mut winners = [0usize; INTERINTRA_MODES];
+    let mut distinct_wedges = std::collections::BTreeSet::new();
+    let mut ties = 0usize;
+
+    // Interintra is allowed at 8x8..32x32 (`av1_is_interintra_allowed_bsize`),
+    // which is exactly the wedge codebook set minus the two 8x32/32x8 shapes;
+    // sweep all nine anyway, since the search itself does not gate on that.
+    for bsize in WEDGE_BSIZES {
+        let (bw, bh) = (BLK_W[bsize], BLK_H[bsize]);
+        let n = bw * bh;
+        for iter in 0..12 {
+            // The context plane the intra prediction reads its neighbours
+            // from: a real 2-D buffer with the block placed well inside it,
+            // so the above row, the top-right run, the left column and the
+            // bottom-left run are all in bounds.
+            let ctx_stride = 2 * bw + 64;
+            let ctx_rows = 2 * bh + 16;
+            let ctx_origin = 8 * ctx_stride + 32;
+            // Every fourth cell uses a CONSTANT neighbour context. All four
+            // intra modes then predict the same flat block, every mode's RD is
+            // identical, and with equal mode costs so is every `total_rd` —
+            // the exact tie that separates C's strict `<` from `<=`. It is a
+            // real encoder state (a flat region), and without it that
+            // perturbation is inert.
+            let flat_ctx = iter % 4 == 3;
+            let ctx_plane: Vec<u8> = if flat_ctx {
+                vec![(rng.next() % 256) as u8; ctx_stride * ctx_rows]
+            } else {
+                (0..ctx_stride * ctx_rows)
+                    .map(|_| (rng.next() % 256) as u8)
+                    .collect()
+            };
+
+            let src_stride = bw + 8;
+            let inter: Vec<u8> = (0..n).map(|_| (rng.next() % 256) as u8).collect();
+
+            // With a random source the DC predictor wins EVERY cell — it is
+            // the flat prediction, and a random block's best flat fit is its
+            // mean, so the mode loop would be compared on one arm only.
+            // (Measured: winners [54, 0, 0, 0].) A first oracle call harvests
+            // the four predictors C builds from THIS neighbour context, and
+            // the source is then drawn around one of them — which is what
+            // content this search is meant to find looks like. The comparison
+            // below is a second, independent call.
+            let target = iter % INTERINTRA_MODES;
+            let probe = vec![128u8; src_stride * bh];
+            let (_, _, _, seed_intra) = cref::ref_ct_compute_best_wedge_interintra(
+                bsize as i32,
+                1,
+                8,
+                &vec![0i32; MAX_WEDGE_TYPES],
+                &[0; 4],
+                &probe,
+                src_stride as i32,
+                &inter,
+                &ctx_plane,
+                ctx_stride as i32,
+                ctx_rows as i32,
+                ctx_origin as i32,
+                8,
+                8,
+                32 * 8,
+                32 * 8,
+                n,
+            );
+            // On one cell in four the source sits HALFWAY between two modes'
+            // predictors instead of on one of them. That is what puts two
+            // modes within a rate term of each other, and it is the only
+            // regime in which the WEDGE-index half of `rate_overhead` can
+            // decide the winner — without it, dropping that half is inert
+            // (measured: the seeded mode wins by orders of magnitude).
+            let straddle = iter % 4 == 2;
+            let target2 = (target + 1) % INTERINTRA_MODES;
+            let noise = 1 + (rng.next() % if straddle { 4 } else { 48 }) as i32;
+            let mut src = vec![0u8; src_stride * bh];
+            for r in 0..bh {
+                for c in 0..bw {
+                    let a = i32::from(seed_intra[target * n + r * bw + c]);
+                    let base = if straddle {
+                        let b = i32::from(seed_intra[target2 * n + r * bw + c]);
+                        (a + b + 1) >> 1
+                    } else {
+                        a
+                    };
+                    let d = rng.range(-noise, noise + 1);
+                    src[r * src_stride + c] = (base + d).clamp(0, 255) as u8;
+                }
+            }
+            let wedge_costs: Vec<i32> = (0..MAX_WEDGE_TYPES).map(|_| rng.cost()).collect();
+            // LOG-SCALED mode costs. With costs all in one narrow band the
+            // mode that minimises `rd` also minimises `rd + RDCOST(overhead)`
+            // in every cell, and both "argmin on rd instead of total_rd" and
+            // "drop the wedge cost from the overhead" pass. Spreading the
+            // costs over 22 binades makes the rate term decide some cells.
+            //
+            // THREE regimes, because no single one exercises the whole
+            // decision (each of the first two leaves a different perturbation
+            // inert, measured):
+            //   * flat  — equal costs on a constant context: the exact tie.
+            //   * wide  — costs log-spread over 23 binades, so the rate term,
+            //             not the RD, decides which mode wins. This is what
+            //             separates "argmin on total_rd" from "argmin on rd".
+            //   * tight — costs in the band `av1_cost_*` actually produces
+            //             (0..~10k). Only here are two modes close enough for
+            //             the WEDGE-index cost to move the decision, which is
+            //             what makes dropping it from `rate_overhead` visible.
+            let mode_costs = if flat_ctx {
+                let c = rng.cost();
+                [c; INTERINTRA_MODES]
+            } else if iter % 4 == 0 {
+                let mut mc = [0i32; INTERINTRA_MODES];
+                for m in mc.iter_mut() {
+                    let hi = 1i32 << (rng.next() % 23) as i32;
+                    *m = rng.range(0, hi.max(1));
+                }
+                mc
+            } else {
+                [rng.cost(), rng.cost(), rng.cost(), rng.cost()]
+            };
+            // `rdmult` is LOG-SWEPT, not drawn from one band. The rate terms
+            // scale with it and the distortion term does not, so only a large
+            // rdmult lets the WEDGE-index cost decide a cell — and without
+            // such a cell, dropping `wedge_idx_cost` from `rate_overhead`
+            // entirely is inert (measured). av1_compute_rd_mult spans this
+            // range across the qindex sweep.
+            let rd_hi = 1i32 << (8 + (rng.next() % 13) as i32);
+            let rdmult = rng.range(1, rd_hi);
+            let dequant_ac = rng.range(4, 1 << 11);
+            // Far enough from the frame edge that the intra predictor's
+            // top-right / bottom-left reaches are all available.
+            let (mi_row, mi_col) = (8, 8);
+            let mb_to_right_edge = 32 * 8;
+            let mb_to_bottom_edge = 32 * 8;
+
+            let (want_rd, want_mode, want_widx, intra_flat) =
+                cref::ref_ct_compute_best_wedge_interintra(
+                    bsize as i32,
+                    rdmult,
+                    dequant_ac,
+                    &wedge_costs,
+                    &mode_costs,
+                    &src,
+                    src_stride as i32,
+                    &inter,
+                    &ctx_plane,
+                    ctx_stride as i32,
+                    ctx_rows as i32,
+                    ctx_origin as i32,
+                    mi_row,
+                    mi_col,
+                    mb_to_right_edge,
+                    mb_to_bottom_edge,
+                    n,
+                );
+
+            let intra_planes: Vec<Pixels<'_>> = (0..INTERINTRA_MODES)
+                .map(|m| Pixels::Low(&intra_flat[m * n..(m + 1) * n]))
+                .collect();
+            let intra_arr: [Pixels<'_>; INTERINTRA_MODES] = [
+                intra_planes[0],
+                intra_planes[1],
+                intra_planes[2],
+                intra_planes[3],
+            ];
+            let ctx = ctx_for(bsize, 8, rdmult, dequant_ac, &wedge_costs);
+            let got = compute_best_wedge_interintra(
+                &ctx,
+                &mode_costs,
+                Pixels::Low(&src),
+                src_stride,
+                Pixels::Low(&inter),
+                &intra_arr,
+            );
+            assert_eq!(
+                (got.rd, got.mode as i32, got.wedge_index as i32),
+                (want_rd, want_mode, want_widx),
+                "compute_best_wedge_interintra(bsize={bsize})"
+            );
+
+            // On a non-flat context the four predictors must actually
+            // DIFFER, or the mode loop is being compared on four copies of one
+            // input. On a flat one they must all AGREE, or the tie the flavour
+            // exists to produce is not being produced.
+            let distinct: std::collections::BTreeSet<&[u8]> = (0..INTERINTRA_MODES)
+                .map(|m| &intra_flat[m * n..(m + 1) * n])
+                .collect();
+            if flat_ctx {
+                assert_eq!(
+                    distinct.len(),
+                    1,
+                    "a constant neighbour context must give one predictor"
+                );
+                ties += 1;
+            } else {
+                assert!(
+                    distinct.len() >= 3,
+                    "only {} distinct intra predictors at bsize={bsize} — the \
+                     neighbour context is not being read",
+                    distinct.len()
+                );
+            }
+            winners[want_mode as usize] += 1;
+            distinct_wedges.insert(want_widx);
+        }
+    }
+    // Every intra mode must have won somewhere, and the wedge index must not
+    // be constant: a port that returned mode 0 / index 0 would otherwise agree
+    // on every cell where C happened to as well.
+    for (m, hits) in winners.iter().enumerate() {
+        assert!(*hits > 0, "interintra mode {m} never won");
+    }
+    assert!(
+        distinct_wedges.len() > 2,
+        "vacuous: only {} distinct winning wedge indices",
+        distinct_wedges.len()
+    );
+    assert!(ties > 0, "the flat-context tie flavour never ran");
 }

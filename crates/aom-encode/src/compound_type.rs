@@ -8,9 +8,9 @@
 //! them, plus the interintra (inter + intra blend) mode search that shares the
 //! same wedge machinery.
 //!
-//! # Coverage — 25 of the 34 functions in `compound_type.c`
+//! # Coverage — 26 of the 34 functions in `compound_type.c`
 //!
-//! **MISSING (9), all of them orchestration over encoder state this port does
+//! **MISSING (8), all of them orchestration over encoder state this port does
 //! not have yet:**
 //!
 //! | C function | what it needs first |
@@ -22,10 +22,9 @@
 //! | `handle_smooth_inter_intra_mode` | `av1_build_intra_predictors_for_interintra` + `model_rd_for_sb` + `estimate_yrd_for_sb` |
 //! | `handle_wedge_inter_intra_mode` | the same, plus `av1_compound_single_motion_search` |
 //! | `compute_best_interintra_mode` | `av1_build_intra_predictors_for_interintra` + `av1_combine_interintra` |
-//! | `compute_best_wedge_interintra` | the same |
 //! | `estimate_yrd_for_sb` | `av1_estimate_txfm_yrd` (tx_search.c) |
 //!
-//! **Ported (25):**
+//! **Ported (26):**
 //!
 //! | Rust | C (`compound_type.c`) |
 //! |---|---|
@@ -54,6 +53,7 @@
 //! | [`update_mask_best_mv`] | `update_mask_best_mv` |
 //! | [`populate_reuse_comp_type_data`] | `populate_reuse_comp_type_data` |
 //! | [`prune_mode_by_skip_rd`] | `prune_mode_by_skip_rd` |
+//! | [`compute_best_wedge_interintra`] | `compute_best_wedge_interintra` |
 //!
 //! Five helpers from neighbouring headers come along because nothing else in
 //! the port had needed them: [`is_interinter_compound_used`]
@@ -1601,4 +1601,76 @@ pub fn prune_mode_by_skip_rd(
         level as usize,
         true,
     )
+}
+
+// ===================================================================
+// The interintra mode search — compound_type.c:520.
+//
+// A block coded INTERINTRA blends its inter predictor with an intra one. The
+// intra side has four modes (DC / V / H / SMOOTH) and, when wedge interintra
+// is on, the blend is a wedge whose index is searched per mode. This is that
+// two-level search.
+// ===================================================================
+
+/// `INTERINTRA_MODES` (`enums.h:403-409`).
+pub const INTERINTRA_MODES: usize = 4;
+
+/// What [`compute_best_wedge_interintra`] chose.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct InterIntraWedgePick {
+    /// C's return value: `best_interintra_rd_wedge`, the winning mode's RD
+    /// **without** its own rate overhead. The caller re-adds that; C tracks
+    /// `best_total_rd` separately and does not return it.
+    pub rd: i64,
+    /// `mbmi->interintra_mode`.
+    pub mode: usize,
+    /// `mbmi->interintra_wedge_index`.
+    pub wedge_index: usize,
+}
+
+/// `compute_best_wedge_interintra` (compound_type.c:520): the exhaustive
+/// interintra search — every intra mode crossed with every wedge index.
+///
+/// `intra_pred` holds one predictor per [`INTERINTRA_MODES`], contiguous at
+/// stride `bw`, in `INTERINTRA_MODE` order. C rebuilds them inside the loop
+/// with `av1_build_intra_predictors_for_interintra` (`common/reconinter.c:1115`,
+/// a different file and not ported here), so they are an input: this function
+/// owns the SEARCH, not the intra prediction.
+///
+/// # The returned RD is not the one the argmin ran on
+/// C compares `total_rd = rd + RDCOST(rdmult, rate_overhead, 0)` but keeps and
+/// returns `rd`. The two orderings differ whenever the mode costs differ, so
+/// returning the minimum `rd` instead of the `rd` of the minimum `total_rd` is
+/// a real behaviour change — and one that looks like a simplification.
+pub fn compute_best_wedge_interintra(
+    ctx: &MaskSearchCtx<'_>,
+    interintra_mode_cost: &[i32; INTERINTRA_MODES],
+    src: Pixels<'_>,
+    src_stride: usize,
+    inter_pred: Pixels<'_>,
+    intra_pred: &[Pixels<'_>; INTERINTRA_MODES],
+) -> InterIntraWedgePick {
+    let mut best_total_rd = i64::MAX;
+    let mut best = InterIntraWedgePick {
+        rd: i64::MAX,
+        mode: 0,
+        wedge_index: 0,
+    };
+    for mode in 0..INTERINTRA_MODES {
+        // `pick_interintra_wedge(cpi, x, bsize, intrapred_, tmp_buf_)`: the
+        // INTRA predictor is p0 and the INTER one p1, so the residuals it
+        // derives are `src - inter` and `inter - intra`.
+        let pick = pick_interintra_wedge(ctx, src, src_stride, intra_pred[mode], inter_pred);
+        let rate_overhead = interintra_mode_cost[mode] + ctx.wedge_idx_cost[pick.index];
+        let total_rd = pick.rd + crate::rd::rdcost(ctx.rdmult, rate_overhead, 0);
+        if total_rd < best_total_rd {
+            best_total_rd = total_rd;
+            best = InterIntraWedgePick {
+                rd: pick.rd,
+                mode,
+                wedge_index: pick.index,
+            };
+        }
+    }
+    best
 }
