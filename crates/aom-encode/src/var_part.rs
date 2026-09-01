@@ -66,8 +66,14 @@ use crate::tx_search::{MI_SIZE_HIGH_B, MI_SIZE_WIDE_B};
 
 const BLOCK_8X8: usize = 3;
 const BLOCK_16X16: usize = 6;
+const BLOCK_16X32: usize = 7;
+const BLOCK_32X16: usize = 8;
 const BLOCK_32X32: usize = 9;
+const BLOCK_32X64: usize = 10;
+const BLOCK_64X32: usize = 11;
 const BLOCK_64X64: usize = 12;
+const BLOCK_64X128: usize = 13;
+const BLOCK_128X64: usize = 14;
 const BLOCK_128X128: usize = 15;
 const BLOCK_INVALID: usize = 255;
 
@@ -287,12 +293,7 @@ impl Default for VbpSf {
 /// speed 8 where the shift is 8 and therefore `shift_steps == 1`; a no-op at
 /// speed 9 where the shift is back to 7) and the `shift_val` override in the
 /// `num_pixels >= RESOLUTION_720P` arm (:552-554, LIVE at BOTH speeds).
-pub fn set_vbp_thresholds_key(
-    qindex: i32,
-    bit_depth: u8,
-    num_pixels: i64,
-    sf: VbpSf,
-) -> [i64; 5] {
+pub fn set_vbp_thresholds_key(qindex: i32, bit_depth: u8, num_pixels: i64, sf: VbpSf) -> [i64; 5] {
     const RESOLUTION_720P: i64 = 1280 * 720;
     let ac_q = av1_ac_quant_qtx(qindex, 0, bit_depth);
     let mut threshold_base: i64 = 120i64 * i64::from(ac_q);
@@ -1174,5 +1175,376 @@ mod tests {
             get_partition_from_stamps(&stamps, 12, 12, 8, 0, BLOCK_32X32),
             1, // PARTITION_HORZ
         );
+    }
+}
+
+// ===========================================================================
+// The INTER arm of var_based_part.c.
+//
+// Everything above is the KEY-frame path, where the "prediction" is a flat 128
+// and no reference exists. On an inter frame the leaf fill is a SOURCE-vs-
+// REFERENCE 8x8 average difference, the partition can be forced by the
+// temporal-variance flags, and the whole superblock can be skipped outright
+// when the source SAD says nothing moved. Those three are here.
+//
+// | Rust | C |
+// |---|---|
+// | [`all_blks_inside`] | `all_blks_inside` (:255) |
+// | [`fill_variance_8x8avg`] | `fill_variance_8x8avg` (:330) + `_lowbd` (:290) / `_highbd` (:267) |
+// | [`compute_minmax_8x8`] | `compute_minmax_8x8` (:349) |
+// | [`scale_part_thresh_content`] | `scale_part_thresh_content` (:425) |
+// | [`mv_distance`] | `mv_distance` (:1259) |
+// | [`get_force_skip_low_temp_var`] | `av1_get_force_skip_low_temp_var` (:901) |
+// | [`get_force_skip_low_temp_var_small_sb`] | `av1_get_force_skip_low_temp_var_small_sb` (:852) |
+// | [`is_set_force_zeromv_skip_based_on_src_sad`] | `is_set_force_zeromv_skip_based_on_src_sad` (:1549) |
+//
+// Differential coverage: `tests/var_part_inter_diff.rs`.
+// ===========================================================================
+
+use aom_dsp::dist::avg::{avg_8x8, avg_8x8_quad, highbd_avg_8x8, highbd_minmax_8x8, minmax_8x8};
+
+/// `SOURCE_SAD` (`av1/encoder/block.h:839`) — how much the source moved.
+///
+/// C compares these with `<=` and `==`, so the discriminants are load-bearing
+/// and the ordering is the enum's own.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[repr(u8)]
+pub enum SourceSad {
+    /// `kZeroSad` — nothing moved at all.
+    Zero = 0,
+    /// `kVeryLowSad`.
+    VeryLow = 1,
+    /// `kLowSad`.
+    Low = 2,
+    /// `kMedSad`.
+    Med = 3,
+    /// `kHighSad`.
+    High = 4,
+}
+
+/// `all_blks_inside` (var_based_part.c:255) — whether all four 8x8 sub-blocks
+/// of the 16x16 at `(x16_idx, y16_idx)` start inside the visible frame.
+///
+/// C tests the sub-block's TOP-LEFT only, not its full extent, so a block that
+/// starts inside and runs off the right edge counts as inside. That is
+/// deliberate — the 8x8 average reads the frame's padded border there — and it
+/// is reproduced rather than tightened.
+#[must_use]
+pub fn all_blks_inside(
+    x16_idx: usize,
+    y16_idx: usize,
+    pixels_wide: usize,
+    pixels_high: usize,
+) -> bool {
+    (0..4).all(|idx| {
+        x16_idx + blk_idx_x(idx, 3) < pixels_wide && y16_idx + blk_idx_y(idx, 3) < pixels_high
+    })
+}
+
+/// One 8x8 leaf record as `fill_variance` writes it: `(sum_square_error,
+/// sum_error)`. `log2_count` is always 0 at this level, so it is not carried.
+pub type Leaf8x8 = (u32, i32);
+
+/// `fill_variance_8x8avg` (var_based_part.c:330) — the INTER leaf fill.
+///
+/// Each of the 16x16 block's four 8x8 sub-blocks contributes
+/// `sum = avg8x8(src) - avg8x8(ref)` and `sse = sum * sum`. A sub-block whose
+/// top-left is outside the visible frame contributes `(0, 0)`.
+///
+/// C returns through a `VP16x16 *`; the port returns the four records, which
+/// is the whole observable — `fill_variance` writes nothing else.
+///
+/// # The two averaging paths are not interchangeable, and C knows it
+/// When every sub-block is inside, C calls the QUAD kernel
+/// (`aom_avg_8x8_quad`) on the whole 16x16; otherwise it calls
+/// `aom_avg_8x8` per sub-block. Both compute the same four averages — the
+/// quad kernel is a SIMD fast path — and the port takes the same branch so a
+/// future divergence between them shows up here rather than being averaged
+/// away.
+///
+/// The highbd arm (`fill_variance_8x8avg_highbd`, :267) has NO quad path at
+/// all: libaom's own TODO notes it. That asymmetry is reproduced.
+#[must_use]
+pub fn fill_variance_8x8avg(
+    src: &[u8],
+    src_stride: usize,
+    dst: &[u8],
+    dst_stride: usize,
+    x16_idx: usize,
+    y16_idx: usize,
+    pixels_wide: usize,
+    pixels_high: usize,
+) -> [Leaf8x8; 4] {
+    let mut out = [(0u32, 0i32); 4];
+    if all_blks_inside(x16_idx, y16_idx, pixels_wide, pixels_high) {
+        let src_avg = avg_8x8_quad(src, src_stride, x16_idx, y16_idx);
+        let dst_avg = avg_8x8_quad(dst, dst_stride, x16_idx, y16_idx);
+        for (o, (&s, &d)) in out.iter_mut().zip(src_avg.iter().zip(&dst_avg)) {
+            let sum = s as i32 - d as i32;
+            *o = ((sum * sum) as u32, sum);
+        }
+    } else {
+        for (idx, o) in out.iter_mut().enumerate() {
+            let x8 = x16_idx + blk_idx_x(idx, 3);
+            let y8 = y16_idx + blk_idx_y(idx, 3);
+            if x8 < pixels_wide && y8 < pixels_high {
+                let s = avg_8x8(&src[y8 * src_stride + x8..], src_stride) as i32;
+                let d = avg_8x8(&dst[y8 * dst_stride + x8..], dst_stride) as i32;
+                let sum = s - d;
+                *o = ((sum * sum) as u32, sum);
+            }
+        }
+    }
+    out
+}
+
+/// `fill_variance_8x8avg_highbd` (var_based_part.c:267) — the 10/12-bit arm.
+///
+/// Per-sub-block only: there is no `aom_highbd_avg_8x8_quad`.
+#[must_use]
+pub fn fill_variance_8x8avg_highbd(
+    src: &[u16],
+    src_stride: usize,
+    dst: &[u16],
+    dst_stride: usize,
+    x16_idx: usize,
+    y16_idx: usize,
+    pixels_wide: usize,
+    pixels_high: usize,
+) -> [Leaf8x8; 4] {
+    let mut out = [(0u32, 0i32); 4];
+    for (idx, o) in out.iter_mut().enumerate() {
+        let x8 = x16_idx + blk_idx_x(idx, 3);
+        let y8 = y16_idx + blk_idx_y(idx, 3);
+        if x8 < pixels_wide && y8 < pixels_high {
+            let s = highbd_avg_8x8(&src[y8 * src_stride + x8..], src_stride) as i32;
+            let d = highbd_avg_8x8(&dst[y8 * dst_stride + x8..], dst_stride) as i32;
+            let sum = s - d;
+            *o = ((sum * sum) as u32, sum);
+        }
+    }
+    out
+}
+
+/// `compute_minmax_8x8` (var_based_part.c:349) — the SPREAD of the four 8x8
+/// source-vs-reference min/max ranges inside one 16x16 block.
+///
+/// C seeds `minmax_max = 0` and `minmax_min = 255` and never resets them, so a
+/// 16x16 with NO in-frame sub-block returns `0 - 255 = -255`, not 0. That is
+/// reproduced: the caller (`fill_variance_tree_leaves`) only reaches this
+/// function for blocks it has already established are at least partly inside,
+/// but the value is C's either way.
+#[must_use]
+pub fn compute_minmax_8x8(
+    src: &[u8],
+    src_stride: usize,
+    dst: &[u8],
+    dst_stride: usize,
+    x16_idx: usize,
+    y16_idx: usize,
+    pixels_wide: usize,
+    pixels_high: usize,
+) -> i32 {
+    let mut minmax_max = 0i32;
+    let mut minmax_min = 255i32;
+    for idx in 0..4 {
+        let x8 = x16_idx + blk_idx_x(idx, 3);
+        let y8 = y16_idx + blk_idx_y(idx, 3);
+        if x8 < pixels_wide && y8 < pixels_high {
+            let (min, max) = minmax_8x8(
+                &src[y8 * src_stride + x8..],
+                src_stride,
+                &dst[y8 * dst_stride + x8..],
+                dst_stride,
+            );
+            minmax_max = minmax_max.max(max - min);
+            minmax_min = minmax_min.min(max - min);
+        }
+    }
+    minmax_max - minmax_min
+}
+
+/// The 10/12-bit arm of [`compute_minmax_8x8`] — C selects it inside the same
+/// function on `highbd_flag & YV12_FLAG_HIGHBITDEPTH`.
+///
+/// Note the seed asymmetry it inherits: `aom_highbd_minmax_8x8_c` seeds its
+/// `min` at 65535 while `minmax_min` here still starts at 255, exactly as in
+/// C. A 16x16 with no in-frame sub-block therefore returns `-255` at both
+/// depths.
+#[must_use]
+pub fn compute_minmax_8x8_highbd(
+    src: &[u16],
+    src_stride: usize,
+    dst: &[u16],
+    dst_stride: usize,
+    x16_idx: usize,
+    y16_idx: usize,
+    pixels_wide: usize,
+    pixels_high: usize,
+) -> i32 {
+    let mut minmax_max = 0i32;
+    let mut minmax_min = 255i32;
+    for idx in 0..4 {
+        let x8 = x16_idx + blk_idx_x(idx, 3);
+        let y8 = y16_idx + blk_idx_y(idx, 3);
+        if x8 < pixels_wide && y8 < pixels_high {
+            let (min, max) = highbd_minmax_8x8(
+                &src[y8 * src_stride + x8..],
+                src_stride,
+                &dst[y8 * dst_stride + x8..],
+                dst_stride,
+            );
+            minmax_max = minmax_max.max(max - min);
+            minmax_min = minmax_min.min(max - min);
+        }
+    }
+    minmax_max - minmax_min
+}
+
+/// `scale_part_thresh_content` (var_based_part.c:425).
+#[must_use]
+pub fn scale_part_thresh_content(
+    threshold_base: i64,
+    speed: i32,
+    non_reference_frame: bool,
+    is_static: bool,
+) -> i64 {
+    let mut threshold = threshold_base;
+    if non_reference_frame && !is_static {
+        threshold = (3 * threshold) >> 1;
+    }
+    if speed >= 8 {
+        return (5 * threshold) >> 2;
+    }
+    threshold
+}
+
+/// `mv_distance` (var_based_part.c:1259) — L1 distance between two full-pel MVs.
+#[inline]
+#[must_use]
+pub fn mv_distance(mv0: (i16, i16), mv1: (i16, i16)) -> i32 {
+    (i32::from(mv0.0) - i32::from(mv1.0)).abs() + (i32::from(mv0.1) - i32::from(mv1.1)).abs()
+}
+
+/// `pos_shift_16x16` (var_based_part.c:848) — where the 16x16 flag for the
+/// `(i, j)` cell of a 64x64 superblock lives in `variance_low`.
+const POS_SHIFT_16X16: [[usize; 4]; 4] = [
+    [9, 10, 13, 14],
+    [11, 12, 15, 16],
+    [17, 18, 21, 22],
+    [19, 20, 23, 24],
+];
+
+/// `av1_get_force_skip_low_temp_var_small_sb` (var_based_part.c:852) — the
+/// SB64 lookup into `PartitionSearchInfo::variance_low`.
+///
+/// C names the two relative indices `mi_x = mi_row & 0xF` and
+/// `mi_y = mi_col & 0xF` — note the SWAP: `mi_x` comes from the ROW. The
+/// swapped names propagate into every branch below, so they are kept rather
+/// than "corrected", and the two 32x32 sub-cases that look transposed
+/// (`mi_y && !mi_x` -> slot 6, `!mi_y && mi_x` -> slot 7) are C's.
+///
+/// Returns 0 for any `bsize` C's `switch` does not name.
+#[must_use]
+pub fn get_force_skip_low_temp_var_small_sb(
+    variance_low: &[u8],
+    mi_row: i32,
+    mi_col: i32,
+    bsize: usize,
+) -> i32 {
+    // Relative indices of the MB inside the superblock.
+    let mi_x = mi_row & 0xF;
+    let mi_y = mi_col & 0xF;
+    // Relative indices of the 16x16 block inside the superblock.
+    let i = (mi_x >> 2) as usize;
+    let j = (mi_y >> 2) as usize;
+    let at = |k: usize| i32::from(variance_low[k]);
+    match bsize {
+        BLOCK_64X64 => at(0),
+        BLOCK_64X32 => match (mi_y == 0, mi_x == 0) {
+            (true, true) => at(1),
+            (true, false) => at(2),
+            _ => 0,
+        },
+        BLOCK_32X64 => match (mi_y == 0, mi_x == 0) {
+            (true, true) => at(3),
+            (false, true) => at(4),
+            _ => 0,
+        },
+        BLOCK_32X32 => match (mi_y == 0, mi_x == 0) {
+            (true, true) => at(5),
+            (false, true) => at(6),
+            (true, false) => at(7),
+            (false, false) => at(8),
+        },
+        BLOCK_32X16 | BLOCK_16X32 | BLOCK_16X16 => at(POS_SHIFT_16X16[i][j]),
+        _ => 0,
+    }
+}
+
+/// `av1_get_force_skip_low_temp_var` (var_based_part.c:901) — the SB128
+/// lookup into the same array.
+///
+/// The three index derivations carry an upstream oddity that libaom's own
+/// commented-out lines document: the intended `(y << 1) + x` was replaced by
+/// `y + x` with the row masks narrowed to `0x17`, `0xB` and `0x5`. Those masks
+/// are not powers of two minus one, so `idx64` / `idx32` / `idx16` are NOT the
+/// raster indices the comments describe. Reproduced verbatim; "fixing" them
+/// changes which flag every 32x32 and 16x16 block reads.
+#[must_use]
+pub fn get_force_skip_low_temp_var(
+    variance_low: &[u8],
+    mi_row: i32,
+    mi_col: i32,
+    bsize: usize,
+) -> i32 {
+    let idx64 = (((mi_row & 0x17) >> 3) + ((mi_col & 0x1F) >> 4)) as usize;
+    let idx32 = (((mi_row & 0xB) >> 2) + ((mi_col & 0xF) >> 3)) as usize;
+    let idx16 = (((mi_row & 0x5) >> 1) + ((mi_col & 0x7) >> 2)) as usize;
+    let at = |k: usize| i32::from(variance_low[k]);
+    match bsize {
+        BLOCK_128X128 => at(0),
+        BLOCK_128X64 => {
+            debug_assert_eq!(mi_col & 0x1F, 0);
+            at(1 + usize::from((mi_row & 0x1F) != 0))
+        }
+        BLOCK_64X128 => {
+            debug_assert_eq!(mi_row & 0x1F, 0);
+            at(3 + usize::from((mi_col & 0x1F) != 0))
+        }
+        BLOCK_64X64 => at(5 + idx64),
+        BLOCK_64X32 => {
+            let x = (mi_col & 0x1F) >> 4;
+            let y = (mi_row & 0x1F) >> 3;
+            let idx64x32 = ((x << 1) + (y % 2) + ((y >> 1) << 2)) as usize;
+            at(9 + idx64x32)
+        }
+        BLOCK_32X64 => {
+            let x = (mi_col & 0x1F) >> 3;
+            let y = (mi_row & 0x1F) >> 4;
+            at(17 + ((y << 2) + x) as usize)
+        }
+        BLOCK_32X32 => at(25 + (idx64 << 2) + idx32),
+        BLOCK_32X16 | BLOCK_16X32 | BLOCK_16X16 => at(41 + (idx64 << 4) + (idx32 << 2) + idx16),
+        _ => 0,
+    }
+}
+
+/// `is_set_force_zeromv_skip_based_on_src_sad` (var_based_part.c:1549) —
+/// whether the source SAD is low enough that the speed feature's level lets
+/// the whole superblock be coded as a zero-MV skip.
+#[must_use]
+pub fn is_set_force_zeromv_skip_based_on_src_sad(
+    set_zeromv_skip_based_on_source_sad: i32,
+    source_sad_nonrd: SourceSad,
+) -> bool {
+    match set_zeromv_skip_based_on_source_sad {
+        0 => false,
+        n if n >= 3 => source_sad_nonrd <= SourceSad::Low,
+        2 => source_sad_nonrd <= SourceSad::VeryLow,
+        1 => source_sad_nonrd == SourceSad::Zero,
+        // C's cascade is `>= 3`, `>= 2`, `>= 1`, else false, so any NEGATIVE
+        // level falls through to false along with 0.
+        _ => false,
     }
 }

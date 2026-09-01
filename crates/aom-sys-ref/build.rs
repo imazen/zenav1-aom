@@ -84,6 +84,8 @@ const SHIMS: &[&str] = &[
     "refgop_shim",
     "tf_shim",
     "tf_static_shim",
+    "vbp_shim",
+    "vbp_static_shim",
     "tpl_shim",
     "ratectrl_shim",
     "tpl_c_shim",
@@ -135,6 +137,11 @@ fn extra_shim_cflags(name: &str) -> &'static [&'static str] {
         // is the file's only exported entry into it, and the two functions
         // that do the work are static.
         "reconinter_enc_shim" => &["-O3", "-DNDEBUG"],
+        // vbp_static_shim pulls av1/encoder/var_based_part.c in for the same
+        // reason: only four of its definitions are exported, and the whole
+        // INTER leaf fill is in the static half. Same source, so it is built
+        // the same way. See shim/vbp_static_shim.c's header.
+        "vbp_static_shim" => &["-O3", "-DNDEBUG"],
         _ => &[],
     }
 }

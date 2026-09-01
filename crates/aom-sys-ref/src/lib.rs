@@ -24507,3 +24507,446 @@ pub fn ref_rcc_frame_type_qdelta(p: &RefRcStateParams, q: i32) -> i32 {
     assert_ne!(r, i32::MIN, "shim_rcc_frame_type_qdelta alloc failed");
     r
 }
+
+// ===========================================================================
+// aom_dsp/avg.c block averages + av1/encoder/var_based_part.c's two exported
+// force-skip lookups — TIER 1 through `shim/vbp_shim.c`.
+// ===========================================================================
+
+unsafe extern "C" {
+    fn shim_vbp_avg_4x4(s: *const u8, p: i32) -> u32;
+    fn shim_vbp_avg_8x8(s: *const u8, p: i32) -> u32;
+    fn shim_vbp_avg_8x8_quad(s: *const u8, p: i32, x16_idx: i32, y16_idx: i32, avg: *mut i32);
+    fn shim_vbp_minmax_8x8(
+        s: *const u8,
+        p: i32,
+        d: *const u8,
+        dp: i32,
+        min: *mut i32,
+        max: *mut i32,
+    );
+    fn shim_vbp_highbd_avg_4x4(s: *const u16, p: i32) -> u32;
+    fn shim_vbp_highbd_avg_8x8(s: *const u16, p: i32) -> u32;
+    fn shim_vbp_highbd_minmax_8x8(
+        s: *const u16,
+        p: i32,
+        d: *const u16,
+        dp: i32,
+        min: *mut i32,
+        max: *mut i32,
+    );
+    fn shim_vbp_force_skip_low_temp_var(
+        variance_low: *const u8,
+        mi_row: i32,
+        mi_col: i32,
+        bsize: i32,
+    ) -> i32;
+    fn shim_vbp_force_skip_low_temp_var_small_sb(
+        variance_low: *const u8,
+        mi_row: i32,
+        mi_col: i32,
+        bsize: i32,
+    ) -> i32;
+}
+
+/// Reference `aom_avg_4x4_c` (aom_dsp/avg.c:32).
+#[must_use]
+pub fn ref_vbp_avg_4x4(src: &[u8], stride: usize) -> u32 {
+    ref_init();
+    assert!(src.len() >= 3 * stride + 4);
+    unsafe { shim_vbp_avg_4x4(src.as_ptr(), stride as i32) }
+}
+
+/// Reference `aom_avg_8x8_c` (avg.c:42).
+#[must_use]
+pub fn ref_vbp_avg_8x8(src: &[u8], stride: usize) -> u32 {
+    ref_init();
+    assert!(src.len() >= 7 * stride + 8);
+    unsafe { shim_vbp_avg_8x8(src.as_ptr(), stride as i32) }
+}
+
+/// Reference `aom_avg_8x8_quad_c` (avg.c:52). `x16_idx` / `y16_idx` are
+/// ABSOLUTE plane coordinates, as C's are.
+#[must_use]
+pub fn ref_vbp_avg_8x8_quad(src: &[u8], stride: usize, x16_idx: usize, y16_idx: usize) -> [i32; 4] {
+    ref_init();
+    let mut avg = [0i32; 4];
+    unsafe {
+        shim_vbp_avg_8x8_quad(
+            src.as_ptr(),
+            stride as i32,
+            x16_idx as i32,
+            y16_idx as i32,
+            avg.as_mut_ptr(),
+        );
+    }
+    avg
+}
+
+/// Reference `aom_minmax_8x8_c` (avg.c:18), as `(min, max)`.
+#[must_use]
+pub fn ref_vbp_minmax_8x8(s: &[u8], s_stride: usize, d: &[u8], d_stride: usize) -> (i32, i32) {
+    ref_init();
+    let (mut min, mut max) = (0i32, 0i32);
+    unsafe {
+        shim_vbp_minmax_8x8(
+            s.as_ptr(),
+            s_stride as i32,
+            d.as_ptr(),
+            d_stride as i32,
+            &mut min,
+            &mut max,
+        );
+    }
+    (min, max)
+}
+
+/// Reference `aom_highbd_avg_4x4_c` (avg.c:74).
+#[must_use]
+pub fn ref_vbp_highbd_avg_4x4(src: &[u16], stride: usize) -> u32 {
+    ref_init();
+    unsafe { shim_vbp_highbd_avg_4x4(src.as_ptr(), stride as i32) }
+}
+
+/// Reference `aom_highbd_avg_8x8_c` (avg.c:63).
+#[must_use]
+pub fn ref_vbp_highbd_avg_8x8(src: &[u16], stride: usize) -> u32 {
+    ref_init();
+    unsafe { shim_vbp_highbd_avg_8x8(src.as_ptr(), stride as i32) }
+}
+
+/// Reference `aom_highbd_minmax_8x8_c` (avg.c:85), as `(min, max)`.
+#[must_use]
+pub fn ref_vbp_highbd_minmax_8x8(
+    s: &[u16],
+    s_stride: usize,
+    d: &[u16],
+    d_stride: usize,
+) -> (i32, i32) {
+    ref_init();
+    let (mut min, mut max) = (0i32, 0i32);
+    unsafe {
+        shim_vbp_highbd_minmax_8x8(
+            s.as_ptr(),
+            s_stride as i32,
+            d.as_ptr(),
+            d_stride as i32,
+            &mut min,
+            &mut max,
+        );
+    }
+    (min, max)
+}
+
+/// Reference `av1_get_force_skip_low_temp_var` (var_based_part.c:901) — the
+/// SB128 lookup. `variance_low` is `PartitionSearchInfo::variance_low`, 105
+/// bytes.
+#[must_use]
+pub fn ref_vbp_force_skip_low_temp_var(
+    variance_low: &[u8],
+    mi_row: i32,
+    mi_col: i32,
+    bsize: i32,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_vbp_force_skip_low_temp_var(variance_low.as_ptr(), mi_row, mi_col, bsize)
+    }
+}
+
+/// Reference `av1_get_force_skip_low_temp_var_small_sb` (:852) — the SB64
+/// lookup over the same array.
+#[must_use]
+pub fn ref_vbp_force_skip_low_temp_var_small_sb(
+    variance_low: &[u8],
+    mi_row: i32,
+    mi_col: i32,
+    bsize: i32,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_vbp_force_skip_low_temp_var_small_sb(variance_low.as_ptr(), mi_row, mi_col, bsize)
+    }
+}
+
+// ===========================================================================
+// av1/encoder/var_based_part.c file-statics — TIER 1c through
+// `shim/vbp_static_shim.c`, which compiles var_based_part.c verbatim.
+// ===========================================================================
+
+unsafe extern "C" {
+    fn shim_vbps_all_blks_inside(
+        x16_idx: i32,
+        y16_idx: i32,
+        pixels_wide: i32,
+        pixels_high: i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn shim_vbps_fill_variance_8x8avg(
+        src: *const core::ffi::c_void,
+        src_stride: i32,
+        dst: *const core::ffi::c_void,
+        dst_stride: i32,
+        x16_idx: i32,
+        y16_idx: i32,
+        highbd: i32,
+        pixels_wide: i32,
+        pixels_high: i32,
+        sse_out: *mut u32,
+        sum_out: *mut i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn shim_vbps_compute_minmax_8x8(
+        src: *const core::ffi::c_void,
+        src_stride: i32,
+        dst: *const core::ffi::c_void,
+        dst_stride: i32,
+        x16_idx: i32,
+        y16_idx: i32,
+        highbd: i32,
+        pixels_wide: i32,
+        pixels_high: i32,
+    ) -> i32;
+    fn shim_vbps_scale_part_thresh_content(
+        threshold_base: i64,
+        speed: i32,
+        non_reference_frame: i32,
+        is_static: i32,
+    ) -> i64;
+    fn shim_vbps_mv_distance(r0: i16, c0: i16, r1: i16, c1: i16) -> i32;
+    fn shim_vbps_is_set_force_zeromv_skip_based_on_src_sad(
+        level: i32,
+        source_sad_nonrd: i32,
+    ) -> i32;
+    fn shim_vbps_tu_force_skip_low_temp_var(
+        variance_low: *const u8,
+        mi_row: i32,
+        mi_col: i32,
+        bsize: i32,
+    ) -> i32;
+    fn shim_vbps_tu_force_skip_low_temp_var_small_sb(
+        variance_low: *const u8,
+        mi_row: i32,
+        mi_col: i32,
+        bsize: i32,
+    ) -> i32;
+}
+
+/// Reference `all_blks_inside` (var_based_part.c:255), tier 1c.
+#[must_use]
+pub fn ref_vbps_all_blks_inside(
+    x16_idx: usize,
+    y16_idx: usize,
+    pixels_wide: usize,
+    pixels_high: usize,
+) -> bool {
+    ref_init();
+    unsafe {
+        shim_vbps_all_blks_inside(
+            x16_idx as i32,
+            y16_idx as i32,
+            pixels_wide as i32,
+            pixels_high as i32,
+        ) != 0
+    }
+}
+
+/// Reference `fill_variance_8x8avg` (var_based_part.c:330), tier 1c.
+/// Returns the four `(sum_square_error, sum_error)` leaf records.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_vbps_fill_variance_8x8avg_lowbd(
+    src: &[u8],
+    src_stride: usize,
+    dst: &[u8],
+    dst_stride: usize,
+    x16_idx: usize,
+    y16_idx: usize,
+    pixels_wide: usize,
+    pixels_high: usize,
+) -> [(u32, i32); 4] {
+    ref_init();
+    let mut sse = [0u32; 4];
+    let mut sum = [0i32; 4];
+    unsafe {
+        shim_vbps_fill_variance_8x8avg(
+            src.as_ptr().cast(),
+            src_stride as i32,
+            dst.as_ptr().cast(),
+            dst_stride as i32,
+            x16_idx as i32,
+            y16_idx as i32,
+            0,
+            pixels_wide as i32,
+            pixels_high as i32,
+            sse.as_mut_ptr(),
+            sum.as_mut_ptr(),
+        );
+    }
+    [
+        (sse[0], sum[0]),
+        (sse[1], sum[1]),
+        (sse[2], sum[2]),
+        (sse[3], sum[3]),
+    ]
+}
+
+/// High-bit-depth twin of [`ref_vbps_fill_variance_8x8avg_lowbd`] — C's
+/// `fill_variance_8x8avg_highbd` (:267), which has no quad fast path.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_vbps_fill_variance_8x8avg_highbd(
+    src: &[u16],
+    src_stride: usize,
+    dst: &[u16],
+    dst_stride: usize,
+    x16_idx: usize,
+    y16_idx: usize,
+    pixels_wide: usize,
+    pixels_high: usize,
+) -> [(u32, i32); 4] {
+    ref_init();
+    let mut sse = [0u32; 4];
+    let mut sum = [0i32; 4];
+    unsafe {
+        shim_vbps_fill_variance_8x8avg(
+            src.as_ptr().cast(),
+            src_stride as i32,
+            dst.as_ptr().cast(),
+            dst_stride as i32,
+            x16_idx as i32,
+            y16_idx as i32,
+            1,
+            pixels_wide as i32,
+            pixels_high as i32,
+            sse.as_mut_ptr(),
+            sum.as_mut_ptr(),
+        );
+    }
+    [
+        (sse[0], sum[0]),
+        (sse[1], sum[1]),
+        (sse[2], sum[2]),
+        (sse[3], sum[3]),
+    ]
+}
+
+/// Reference `compute_minmax_8x8` (var_based_part.c:349), tier 1c.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_vbps_compute_minmax_8x8_lowbd(
+    src: &[u8],
+    src_stride: usize,
+    dst: &[u8],
+    dst_stride: usize,
+    x16_idx: usize,
+    y16_idx: usize,
+    pixels_wide: usize,
+    pixels_high: usize,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_vbps_compute_minmax_8x8(
+            src.as_ptr().cast(),
+            src_stride as i32,
+            dst.as_ptr().cast(),
+            dst_stride as i32,
+            x16_idx as i32,
+            y16_idx as i32,
+            0,
+            pixels_wide as i32,
+            pixels_high as i32,
+        )
+    }
+}
+
+/// High-bit-depth arm of [`ref_vbps_compute_minmax_8x8_lowbd`].
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn ref_vbps_compute_minmax_8x8_highbd(
+    src: &[u16],
+    src_stride: usize,
+    dst: &[u16],
+    dst_stride: usize,
+    x16_idx: usize,
+    y16_idx: usize,
+    pixels_wide: usize,
+    pixels_high: usize,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_vbps_compute_minmax_8x8(
+            src.as_ptr().cast(),
+            src_stride as i32,
+            dst.as_ptr().cast(),
+            dst_stride as i32,
+            x16_idx as i32,
+            y16_idx as i32,
+            1,
+            pixels_wide as i32,
+            pixels_high as i32,
+        )
+    }
+}
+
+/// Reference `scale_part_thresh_content` (var_based_part.c:425), tier 1c.
+#[must_use]
+pub fn ref_vbps_scale_part_thresh_content(
+    threshold_base: i64,
+    speed: i32,
+    non_reference_frame: bool,
+    is_static: bool,
+) -> i64 {
+    ref_init();
+    unsafe {
+        shim_vbps_scale_part_thresh_content(
+            threshold_base,
+            speed,
+            i32::from(non_reference_frame),
+            i32::from(is_static),
+        )
+    }
+}
+
+/// Reference `mv_distance` (var_based_part.c:1259), tier 1c.
+#[must_use]
+pub fn ref_vbps_mv_distance(mv0: (i16, i16), mv1: (i16, i16)) -> i32 {
+    ref_init();
+    unsafe { shim_vbps_mv_distance(mv0.0, mv0.1, mv1.0, mv1.1) }
+}
+
+/// Reference `is_set_force_zeromv_skip_based_on_src_sad` (:1549), tier 1c.
+/// `source_sad_nonrd` is the raw `SOURCE_SAD` discriminant.
+#[must_use]
+pub fn ref_vbps_is_set_force_zeromv_skip(level: i32, source_sad_nonrd: i32) -> bool {
+    ref_init();
+    unsafe { shim_vbps_is_set_force_zeromv_skip_based_on_src_sad(level, source_sad_nonrd) != 0 }
+}
+
+/// `av1_get_force_skip_low_temp_var` as compiled into `vbp_static_shim.c`'s
+/// TU — the tier-1c-vs-archive gate's left-hand side.
+#[must_use]
+pub fn ref_vbps_tu_force_skip_low_temp_var(
+    variance_low: &[u8],
+    mi_row: i32,
+    mi_col: i32,
+    bsize: i32,
+) -> i32 {
+    ref_init();
+    unsafe { shim_vbps_tu_force_skip_low_temp_var(variance_low.as_ptr(), mi_row, mi_col, bsize) }
+}
+
+/// `av1_get_force_skip_low_temp_var_small_sb` as compiled into
+/// `vbp_static_shim.c`'s TU.
+#[must_use]
+pub fn ref_vbps_tu_force_skip_low_temp_var_small_sb(
+    variance_low: &[u8],
+    mi_row: i32,
+    mi_col: i32,
+    bsize: i32,
+) -> i32 {
+    ref_init();
+    unsafe {
+        shim_vbps_tu_force_skip_low_temp_var_small_sb(variance_low.as_ptr(), mi_row, mi_col, bsize)
+    }
+}

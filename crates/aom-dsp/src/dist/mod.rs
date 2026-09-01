@@ -5,6 +5,7 @@
 
 pub mod simd;
 mod simd_variance;
+pub mod avg;
 pub mod hadamard;
 pub mod obmc;
 
