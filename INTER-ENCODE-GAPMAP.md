@@ -429,3 +429,154 @@ because they are properties of the ORACLE rather than of any ported kernel:
 the `-DNDEBUG` ABI requirement, RTCD pointers that are null one frame below a
 `T` symbol, and the alignment+size contract for buffers a dispatched kernel
 writes.
+
+---
+
+## 4. The §2.2 "deferred" families — status after the 2026-08-31 wave
+
+§2.2 listed five families as *in scope but deferred* because the first
+byte-exact target (`--lag-in-frames=0 --end-usage=q`) structurally removes
+alt-ref, TPL, temporal filtering and 2-pass. They are no longer deferred. This
+section records what of them now exists, counted BY HAND — see §4.3 for why the
+inventory tool cannot be used for this.
+
+### 4.1 Coverage, per file
+
+Out-of-scope counts are the allocation / threading / debug / denoiser
+definitions the port replaces by mechanism rather than translating; each is
+named in §4.2.
+
+| C file | defs | out of scope | in scope | ported earlier | ported here | still missing |
+|---|---|---|---|---|---|---|
+| `encoder/temporal_filter.c` | 28 | 5 | 23 | 0 | 13 | 10 |
+| `encoder/nonrd_opt.c` | 11 | 0 | 11 | 5 | 2 | 4 |
+| `encoder/var_based_part.c` | 36 | 0 | 36 | 20 | 13 | 3 |
+| `encoder/nonrd_pickmode.c` | 55 | 4 | 51 | 7 | 15 | 29 |
+| `encoder/pass2_strategy.c` | 87 | 2 | 85 | 2 | 37 | 46 |
+| **total** | **217** | **11** | **206** | **34** | **80** | **92** |
+
+The "ported earlier" column is what the pre-wave inventory reported as matched
+and is NOT independently verified here, except for `nonrd_opt.c`'s five, which
+were read in `nonrd_pickmode.rs`. The "ported here" column is counted from the
+ports written in this wave, one per C function.
+
+`aom_dsp/avg.c`'s seven block-average and min/max kernels are ported alongside
+`var_based_part.c` (its INTER leaf fill is built on them) and are not counted
+above, being outside the five files.
+
+### 4.2 What is counted OUT of scope, and why
+
+| function(s) | reason |
+|---|---|
+| `av1_tf_info_alloc`, `av1_tf_info_free`, `av1_tf_info_reset`, `av1_tf_info_get_filtered_buf` | Frame-buffer allocation and ring bookkeeping over buffers Rust owns by value. No bitstream consequence. |
+| `av1_tf_do_filtering_row` | A row worker. The oracle is `CONFIG_MULTITHREAD=0` and the port is single-threaded by construction; the per-block body it wraps is ported. |
+| `av1_pickmode_ctx_den_update`, `recheck_zeromv_after_denoising` | `CONFIG_AV1_TEMPORAL_DENOISING`, not in the supported config set (§2.1). |
+| `print_stage_time`, `print_time` | `CONFIG_COLLECT_COMPONENT_TIMING` debug output. |
+| `free_firstpass_stats_buffers` | Allocation. |
+| `get_one_pass_rt_lag_params` | One-pass RT, the `--end-usage` arms §2.1 rules out. |
+
+### 4.3 The inventory tool disagrees with this table, in BOTH directions
+
+`tools/c_surface_inventory.py` matches by NAME, and after the wave it reports
+these files as far less covered than they are. Three concrete cases, all
+verified:
+
+* **False negatives from a deliberate rename.** `av1_highbd_apply_temporal_filter_c`
+  reads MISSING; it is ported — C's highbd entry only forwards to the lowbd
+  one, so the port is a single function generic over the pixel type and the
+  differential drives BOTH C entry points to keep "it only forwards" a measured
+  fact. `is_frame_high_bitdepth` reads MISSING; it is a type-level fact
+  (`TfPixel::HIGH_BITDEPTH`) gated by `is_frame_high_bitdepth_matches_c`.
+  `av1_block_yrd`, `av1_estimate_block_intra`, `is_prune_intra_mode` and both
+  `update_yrd_loop_vars` read MISSING; all five were ported by the KB-12 wave
+  under names in `nonrd_pickmode.rs`.
+* **A false positive.** `temporal_filter.c`'s `get_q` reads *ported*. It is
+  not — the two-letter name matches something unrelated in the tree.
+
+Read the tool as a work queue, as its own header says, and count coverage by
+reading the ports.
+
+### 4.4 Landed in this wave
+
+Ten commits, each gated and each verified on **both** `aarch64-apple-darwin`
+and `x86_64-apple-darwin` (the latter under Rosetta; `DIFFERENTIAL_PLAYBOOK`
+§3).
+
+| module | C source | tier | gate |
+|---|---|---|---|
+| `aom-encode/src/temporal_filter.rs` | `temporal_filter.c` kernels + noise estimator | 1 | `temporal_filter_diff.rs` (7) |
+| ditto | its self filter, normalizer, partition decision | 1c + 1 | `temporal_filter_static_diff.rs` (8) |
+| `aom-dsp/src/dist/avg.rs` | `aom_dsp/avg.c` | 1 | `var_part_inter_diff.rs` |
+| `aom-encode/src/var_part.rs` | `var_based_part.c` INTER arm + low-temp-var setters | 1 + 1c | `var_part_inter_diff.rs` (16) |
+| `aom-encode/src/nonrd_idtx.rs` | `av1_block_yrd_idtx` + the fast-IDTX scans | 1 | `nonrd_idtx_diff.rs` (5) |
+| `aom-encode/src/nonrd_inter.rs` | `nonrd_pickmode.c` skip/prune + tx-size/subpel/MV-bias | 1c | `nonrd_inter_diff.rs` (18) |
+| `aom-encode/src/pass2_model.rs` | `pass2_strategy.c` error/boost, GF stats, region analysis | 1c | `pass2_model_diff.rs` (33) |
+
+New oracle shims: `tf_shim.c`, `tf_static_shim.c` (tier 1c),
+`vbp_shim.c`, `vbp_static_shim.c` (1c), `nonrd_idtx_shim.c`,
+`nonrd_pick_shim.c` (1c), `pass2_shim.c` (1c). Each tier-1c shim compiles its
+libaom `.c` verbatim under that file's Release flags and carries a
+TU-vs-archive (or TU-vs-header) gate, so "the second compilation still means
+what the archive means" is measured rather than assumed.
+
+### 4.5 Findings worth carrying forward
+
+Adding to §3's list. Each is a C behaviour a later reader is likely to
+"correct", or a harness trap that let a wrong port pass.
+
+1. **`av1_block_yrd_idtx`'s `this_rdc->sse` is an INPUT.** C zeroes `dist` and
+   `rate` at entry but not `sse`; on the skippable path it returns
+   `(sse << 6) >> 2` AS THE DISTORTION. A port treating `sse` as an output
+   agrees on every non-skippable block and diverges on every skippable one.
+2. **`compute_minmax_8x8` never resets its seeds**, so a 16x16 with no in-frame
+   sub-block returns `0 - 255 = -255`, not 0.
+3. **`aom_highbd_minmax_8x8_c` seeds `min` at 65535 and the lowbd kernel at
+   255.** Invisible to a random 10/12-bit sweep, because the smallest of 64
+   diffs essentially never exceeds 255.
+4. **`av1_get_force_skip_low_temp_var`'s index masks are 0x17 / 0xB / 0x5 with
+   `y + x`**, not the `(y << 1) + x` its own commented-out lines describe. Those
+   masks are not `2^n - 1`, so the indices are not the raster positions the
+   comments claim. Its `_small_sb` twin names `mi_x` from the ROW.
+5. **`av1_check_show_filtered_frame` computes its variance in `float`.**
+   Widening it changes the verdict only at large frames with large per-block
+   SSEs; six such cells are pinned by value in the gate.
+6. **`previous_mode_performed_poorly` compares in `float` too**, and its chroma
+   term is ANDed in only when this mode's `uv_dist` is finite AND is not itself
+   the best — a mode that TIES the best chroma distortion is judged on luma
+   alone.
+7. **`smooth_filter_stats` ACCUMULATES into its outputs**, and its two passes
+   use different flash tests (the coded pass also skips a tap whose PREVIOUS
+   frame is a flash).
+8. **`analyze_region` resets four of its five averages and leaves
+   `avg_noise_var` alone.**
+9. **`DOUBLE_DIVIDE_CHECK` is a bias, not a guard** — it moves every divisor by
+   1e-6 at every magnitude. A zero-test replacement fails three tests.
+10. **`get_projected_gfu_boost` rounds with `rint`**, i.e. half-to-EVEN;
+    `f64::round` differs on every exact `.5`.
+
+### 4.6 Harness traps this wave paid for
+
+Each of these let a WRONG port pass until the generator was fixed. They
+generalise beyond these files.
+
+* **A uniform draw of a MIN over many entries pins the minimum near zero.**
+  `skip_comp_based_on_var` compares `min(32 entries)` against four size-indexed
+  thresholds; drawing each entry independently never separated them. The sweep
+  now draws every entry from ONE band per iteration, with the bands placed on
+  each threshold.
+* **A threshold table with repeated values hides a wrong index.** The
+  low-temp-var setters read `thresholds[0..4]` at four levels; a table with
+  `thresholds[2] == thresholds[3]` let the SB128 16x16 arm read the wrong one.
+* **An exact multiple hides a rounding term.** `tf_normalize_filtered_frame`'s
+  `rounding = count >> 1` cannot change the quotient unless `accum` carries a
+  residual.
+* **A predictor drawn independently of its reference saturates everything.**
+  The temporal filter's `scaled_error` clamps at 7, so an uncorrelated
+  predictor makes every weight 0 or 1 and the comparison degenerates. A
+  motion-compensated predictor IS its reference plus a bounded perturbation.
+* **`float`-vs-`double` spellings are separated only above 2^24**, and only
+  where the comparison is near its boundary. Both such cases here needed cells
+  found by searching the reachable input space and pinned by value.
+* **Exact float boundaries need construction.** `pct > 0.05`,
+  `raw_error_stdev > 1e-6`, `pcnt_second_ref >= 0.5` and `mean < threshold`
+  each survived a random sweep of thousands of draws.
