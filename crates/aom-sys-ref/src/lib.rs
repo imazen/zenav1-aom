@@ -24132,3 +24132,378 @@ pub fn ref_tpl_mc_flow_synthesizer(
     };
     assert_eq!(r, 0, "shim_tplc_mc_flow_synthesizer rejected the input");
 }
+
+// ---------------------------------------------------------------------------
+// The rate-search layer of ratectrl.c, driven two ways:
+//   rcarchive_shim.c  — the EXPORTED functions out of upstream/build/libaom.a
+//                       (TIER 1). That TU does not include ratectrl.c.
+//   ratectrl_shim.c   — the file-statics, out of the verbatim-compiled copy
+//                       (TIER 1c), plus probes of the same exported functions
+//                       so the two compilations can be compared.
+// Both build the same AV1_COMP from `RefRcStateParams` / the C
+// `ShimRcStateParams` in shim/rc_state_params.h.
+// ---------------------------------------------------------------------------
+
+/// Mirrors the C `ShimRcStateParams` (shim/rc_state_params.h) field for field.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RefRcStateParams {
+    /// `cm->seq_params->bit_depth`.
+    pub bit_depth: i32,
+    /// `cm->width`.
+    pub coded_width: i32,
+    /// `cm->height`.
+    pub coded_height: i32,
+    /// `oxcf.frm_dim_cfg.width`.
+    pub cfg_width: i32,
+    /// `oxcf.frm_dim_cfg.height`.
+    pub cfg_height: i32,
+    /// `cm->current_frame.frame_type`.
+    pub frame_type: i32,
+    /// `cpi->is_screen_content_type`.
+    pub screen_content: i32,
+    /// `oxcf.rc_cfg.mode`.
+    pub rc_mode: i32,
+    /// `oxcf.mode == REALTIME`.
+    pub rtc_mode: i32,
+    /// `is_stat_consumption_stage(cpi)`.
+    pub stat_consumption: i32,
+    /// `cpi->refresh_frame.golden_frame`.
+    pub refresh_golden: i32,
+    /// `cpi->refresh_frame.alt_ref_frame`.
+    pub refresh_alt_ref: i32,
+    /// `rc->is_src_frame_alt_ref`.
+    pub is_src_frame_alt_ref: i32,
+    /// `oxcf.rc_cfg.gf_cbr_boost_pct`.
+    pub gf_cbr_boost_pct: i32,
+    /// `gf_group->update_type[gf_index]`.
+    pub update_type: i32,
+    /// `gf_group->layer_depth[gf_index]`.
+    pub layer_depth: i32,
+    /// `rc->best_quality`.
+    pub best_quality: i32,
+    /// `rc->worst_quality`.
+    pub worst_quality: i32,
+    /// `cm->quant_params.base_qindex`.
+    pub base_qindex: i32,
+    /// `rc->max_frame_bandwidth`.
+    pub max_frame_bandwidth: i32,
+    /// `sf.hl_sf.recode_tolerance`.
+    pub recode_tolerance: i32,
+    /// `p_rc->rate_correction_factors`, indexed by `RATE_FACTOR_LEVEL`.
+    pub rate_correction_factors: [f64; 4],
+}
+
+impl Default for RefRcStateParams {
+    fn default() -> Self {
+        Self {
+            bit_depth: 8,
+            coded_width: 352,
+            coded_height: 288,
+            cfg_width: 352,
+            cfg_height: 288,
+            frame_type: 0,
+            screen_content: 0,
+            rc_mode: 3,
+            rtc_mode: 0,
+            stat_consumption: 0,
+            refresh_golden: 0,
+            refresh_alt_ref: 0,
+            is_src_frame_alt_ref: 0,
+            gf_cbr_boost_pct: 0,
+            update_type: 0,
+            layer_depth: 0,
+            best_quality: 0,
+            worst_quality: 255,
+            base_qindex: 128,
+            max_frame_bandwidth: i32::MAX,
+            recode_tolerance: 25,
+            rate_correction_factors: [0.7, 0.7, 0.7, 1.0],
+        }
+    }
+}
+
+extern "C" {
+    // rcarchive_shim.c — the archive's exported symbols (tier 1).
+    fn shim_rca_get_MBs(width: i32, height: i32) -> i32;
+    fn shim_rca_estimate_bits_at_q(
+        p: *const RefRcStateParams,
+        q: i32,
+        correction_factor: f64,
+    ) -> i32;
+    fn shim_rca_compute_qdelta_by_rate(
+        p: *const RefRcStateParams,
+        frame_type: i32,
+        qindex: i32,
+        rate_target_ratio: f64,
+    ) -> i32;
+    fn shim_rca_regulate_q(
+        p: *const RefRcStateParams,
+        target_bits_per_frame: i32,
+        active_best_quality: i32,
+        active_worst_quality: i32,
+        width: i32,
+        height: i32,
+    ) -> i32;
+    fn shim_rca_compute_frame_size_bounds(
+        p: *const RefRcStateParams,
+        frame_target: i32,
+        out: *mut i32,
+    ) -> i32;
+    fn shim_rca_set_frame_target(
+        p: *const RefRcStateParams,
+        target: i32,
+        width: i32,
+        height: i32,
+        out: *mut i32,
+    ) -> i32;
+
+    // ratectrl_shim.c — the file-statics (tier 1c).
+    fn shim_rcc_resize_rate_factor(
+        cfg_width: i32,
+        cfg_height: i32,
+        width: i32,
+        height: i32,
+    ) -> f64;
+    fn shim_rcc_get_rate_factor_level(update_type: i32) -> i32;
+    fn shim_rcc_get_rate_correction_factor(
+        p: *const RefRcStateParams,
+        width: i32,
+        height: i32,
+    ) -> f64;
+    fn shim_rcc_get_bits_per_mb(
+        p: *const RefRcStateParams,
+        correction_factor: f64,
+        q: i32,
+    ) -> i32;
+    fn shim_rcc_find_qindex_by_rate(
+        p: *const RefRcStateParams,
+        desired_bits_per_mb: i32,
+        frame_type: i32,
+        best_qindex: i32,
+        worst_qindex: i32,
+    ) -> i32;
+    fn shim_rcc_find_closest_qindex_by_rate(
+        p: *const RefRcStateParams,
+        desired_bits_per_mb: i32,
+        correction_factor: f64,
+        best_qindex: i32,
+        worst_qindex: i32,
+    ) -> i32;
+    fn shim_rcc_frame_type_qdelta(p: *const RefRcStateParams, q: i32) -> i32;
+    fn shim_rcc_probe_estimate_bits_at_q(
+        p: *const RefRcStateParams,
+        q: i32,
+        correction_factor: f64,
+    ) -> i32;
+    fn shim_rcc_probe_regulate_q(
+        p: *const RefRcStateParams,
+        target_bits_per_frame: i32,
+        active_best_quality: i32,
+        active_worst_quality: i32,
+        width: i32,
+        height: i32,
+    ) -> i32;
+}
+
+/// Reference libaom `av1_get_MBs` (common/alloccommon.c:29), out of the
+/// archive.
+pub fn ref_get_mbs(width: i32, height: i32) -> i32 {
+    ref_init();
+    unsafe { shim_rca_get_MBs(width, height) }
+}
+
+/// Reference libaom `av1_estimate_bits_at_q` (ratectrl.c:303), **out of the
+/// archive** (tier 1).
+pub fn ref_estimate_bits_at_q(p: &RefRcStateParams, q: i32, correction_factor: f64) -> i32 {
+    ref_init();
+    let r = unsafe { shim_rca_estimate_bits_at_q(p, q, correction_factor) };
+    assert_ne!(r, i32::MIN, "shim_rca_estimate_bits_at_q alloc failed");
+    r
+}
+
+/// The same function driven out of ratectrl_shim.c's verbatim-compiled copy —
+/// a probe for the tier-1c-vs-tier-1 comparison, not an oracle to test against.
+pub fn ref_rcc_probe_estimate_bits_at_q(
+    p: &RefRcStateParams,
+    q: i32,
+    correction_factor: f64,
+) -> i32 {
+    ref_init();
+    let r = unsafe { shim_rcc_probe_estimate_bits_at_q(p, q, correction_factor) };
+    assert_ne!(r, i32::MIN, "shim_rcc_probe_estimate_bits_at_q alloc failed");
+    r
+}
+
+/// Reference libaom `av1_compute_qdelta_by_rate` (ratectrl.c:2676), out of the
+/// archive.
+pub fn ref_compute_qdelta_by_rate(
+    p: &RefRcStateParams,
+    frame_type: i32,
+    qindex: i32,
+    rate_target_ratio: f64,
+) -> i32 {
+    ref_init();
+    let r = unsafe { shim_rca_compute_qdelta_by_rate(p, frame_type, qindex, rate_target_ratio) };
+    assert_ne!(r, i32::MIN, "shim_rca_compute_qdelta_by_rate alloc failed");
+    r
+}
+
+/// Reference libaom `av1_rc_regulate_q` (ratectrl.c:1138), out of the archive.
+pub fn ref_regulate_q(
+    p: &RefRcStateParams,
+    target_bits_per_frame: i32,
+    active_best_quality: i32,
+    active_worst_quality: i32,
+    width: i32,
+    height: i32,
+) -> i32 {
+    ref_init();
+    let r = unsafe {
+        shim_rca_regulate_q(
+            p,
+            target_bits_per_frame,
+            active_best_quality,
+            active_worst_quality,
+            width,
+            height,
+        )
+    };
+    assert_ne!(r, i32::MIN, "shim_rca_regulate_q alloc failed");
+    r
+}
+
+/// The same function out of ratectrl_shim.c's copy — the tier-1c probe.
+pub fn ref_rcc_probe_regulate_q(
+    p: &RefRcStateParams,
+    target_bits_per_frame: i32,
+    active_best_quality: i32,
+    active_worst_quality: i32,
+    width: i32,
+    height: i32,
+) -> i32 {
+    ref_init();
+    let r = unsafe {
+        shim_rcc_probe_regulate_q(
+            p,
+            target_bits_per_frame,
+            active_best_quality,
+            active_worst_quality,
+            width,
+            height,
+        )
+    };
+    assert_ne!(r, i32::MIN, "shim_rcc_probe_regulate_q alloc failed");
+    r
+}
+
+/// Reference libaom `av1_rc_compute_frame_size_bounds` (ratectrl.c:2390), out
+/// of the archive. Returns `(under_shoot, over_shoot)`.
+pub fn ref_compute_frame_size_bounds(p: &RefRcStateParams, frame_target: i32) -> (i32, i32) {
+    ref_init();
+    let mut out = [0i32; 2];
+    let r = unsafe { shim_rca_compute_frame_size_bounds(p, frame_target, out.as_mut_ptr()) };
+    assert_eq!(r, 0, "shim_rca_compute_frame_size_bounds alloc failed");
+    (out[0], out[1])
+}
+
+/// Reference libaom `av1_rc_set_frame_target` (ratectrl.c:2408), out of the
+/// archive. Returns `(this_frame_target, sb64_target_rate)`.
+pub fn ref_set_frame_target(
+    p: &RefRcStateParams,
+    target: i32,
+    width: i32,
+    height: i32,
+) -> (i32, i32) {
+    ref_init();
+    let mut out = [0i32; 2];
+    let r = unsafe { shim_rca_set_frame_target(p, target, width, height, out.as_mut_ptr()) };
+    assert_eq!(r, 0, "shim_rca_set_frame_target alloc failed");
+    (out[0], out[1])
+}
+
+/// Reference libaom `resize_rate_factor` (ratectrl.c:124, static).
+pub fn ref_rcc_resize_rate_factor(
+    cfg_width: i32,
+    cfg_height: i32,
+    width: i32,
+    height: i32,
+) -> f64 {
+    ref_init();
+    unsafe { shim_rcc_resize_rate_factor(cfg_width, cfg_height, width, height) }
+}
+
+/// Reference libaom `get_rate_factor_level` (ratectrl.c:818, static).
+pub fn ref_rcc_get_rate_factor_level(update_type: i32) -> i32 {
+    ref_init();
+    unsafe { shim_rcc_get_rate_factor_level(update_type) }
+}
+
+/// Reference libaom `get_rate_correction_factor` (ratectrl.c:838, static).
+pub fn ref_rcc_get_rate_correction_factor(
+    p: &RefRcStateParams,
+    width: i32,
+    height: i32,
+) -> f64 {
+    ref_init();
+    unsafe { shim_rcc_get_rate_correction_factor(p, width, height) }
+}
+
+/// Reference libaom `get_bits_per_mb` (ratectrl.c:1062, static), with
+/// `use_cyclic_refresh == 0`.
+pub fn ref_rcc_get_bits_per_mb(p: &RefRcStateParams, correction_factor: f64, q: i32) -> i32 {
+    ref_init();
+    let r = unsafe { shim_rcc_get_bits_per_mb(p, correction_factor, q) };
+    assert_ne!(r, i32::MIN, "shim_rcc_get_bits_per_mb alloc failed");
+    r
+}
+
+/// Reference libaom `find_qindex_by_rate` (ratectrl.c:2653, static).
+pub fn ref_rcc_find_qindex_by_rate(
+    p: &RefRcStateParams,
+    desired_bits_per_mb: i32,
+    frame_type: i32,
+    best_qindex: i32,
+    worst_qindex: i32,
+) -> i32 {
+    ref_init();
+    let r = unsafe {
+        shim_rcc_find_qindex_by_rate(p, desired_bits_per_mb, frame_type, best_qindex, worst_qindex)
+    };
+    assert_ne!(r, i32::MIN, "shim_rcc_find_qindex_by_rate alloc failed");
+    r
+}
+
+/// Reference libaom `find_closest_qindex_by_rate` (ratectrl.c:1088, static).
+pub fn ref_rcc_find_closest_qindex_by_rate(
+    p: &RefRcStateParams,
+    desired_bits_per_mb: i32,
+    correction_factor: f64,
+    best_qindex: i32,
+    worst_qindex: i32,
+) -> i32 {
+    ref_init();
+    let r = unsafe {
+        shim_rcc_find_closest_qindex_by_rate(
+            p,
+            desired_bits_per_mb,
+            correction_factor,
+            best_qindex,
+            worst_qindex,
+        )
+    };
+    assert_ne!(
+        r,
+        i32::MIN,
+        "shim_rcc_find_closest_qindex_by_rate alloc failed"
+    );
+    r
+}
+
+/// Reference libaom `frame_type_qdelta` (ratectrl.c:1776, static).
+pub fn ref_rcc_frame_type_qdelta(p: &RefRcStateParams, q: i32) -> i32 {
+    ref_init();
+    let r = unsafe { shim_rcc_frame_type_qdelta(p, q) };
+    assert_ne!(r, i32::MIN, "shim_rcc_frame_type_qdelta alloc failed");
+    r
+}

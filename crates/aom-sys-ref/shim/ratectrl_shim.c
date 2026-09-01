@@ -90,6 +90,8 @@
 /* --- libaom's own rate controller, unmodified. --- */
 #include "av1/encoder/ratectrl.c"
 
+#include "rc_state_params.h"
+
 /* ======================================================================== *
  * 0. TU-vs-archive agreement probes (the tier-1c gap closer).
  * ======================================================================== */
@@ -404,4 +406,167 @@ int shim_rcc_pick_q_and_bounds_q_mode(const ShimRcQParams *p, int32_t *out) {
   out[2] = top;
   shim_rc_free(&s);
   return 0;
+}
+
+
+/* ======================================================================== *
+ * 4. The rate-search statics (get_rate_correction_factor and friends).
+ *
+ * The AV1_COMP these build shares `rc_state_params.h` with rcarchive_shim.c,
+ * which drives the same file's EXPORTED functions out of the archive — so the
+ * two TUs are set up identically and a difference between them is a
+ * difference between the compilations.
+ * ======================================================================== */
+
+#define SHIM_RCS_GF_INDEX 2
+
+static int shim_rcs_alloc(ShimRc *s, const ShimRcStateParams *p) {
+  s->cpi = (AV1_COMP *)calloc(1, sizeof(AV1_COMP));
+  s->ppi = (AV1_PRIMARY *)calloc(1, sizeof(AV1_PRIMARY));
+  s->seq = (SequenceHeader *)calloc(1, sizeof(SequenceHeader));
+  if (!s->cpi || !s->ppi || !s->seq) {
+    free(s->cpi); free(s->ppi); free(s->seq);
+    s->cpi = NULL; s->ppi = NULL; s->seq = NULL;
+    return 0;
+  }
+  AV1_COMP *cpi = s->cpi;
+  cpi->ppi = s->ppi;
+  s->seq->bit_depth = (aom_bit_depth_t)p->bit_depth;
+  cpi->common.seq_params = s->seq;
+
+  cpi->common.width = p->coded_width;
+  cpi->common.height = p->coded_height;
+  cpi->common.superres_upscaled_width = p->coded_width;
+  cpi->common.superres_upscaled_height = p->coded_height;
+  cpi->common.render_width = p->coded_width;
+  cpi->common.render_height = p->coded_height;
+  cpi->common.superres_scale_denominator = SCALE_NUMERATOR;
+  cpi->common.current_frame.frame_type = (FRAME_TYPE)p->frame_type;
+  cpi->common.quant_params.base_qindex = p->base_qindex;
+  cpi->common.mi_params.MBs = av1_get_MBs(p->coded_width, p->coded_height);
+
+  cpi->is_screen_content_type = p->screen_content;
+  cpi->refresh_frame.golden_frame = (bool)p->refresh_golden;
+  cpi->refresh_frame.alt_ref_frame = (bool)p->refresh_alt_ref;
+
+  cpi->oxcf.mode = p->rtc_mode ? REALTIME : GOOD;
+  cpi->oxcf.pass = p->stat_consumption ? AOM_RC_SECOND_PASS : AOM_RC_ONE_PASS;
+  cpi->oxcf.rc_cfg.mode = (enum aom_rc_mode)p->rc_mode;
+  cpi->oxcf.rc_cfg.gf_cbr_boost_pct = p->gf_cbr_boost_pct;
+  cpi->oxcf.frm_dim_cfg.width = p->cfg_width;
+  cpi->oxcf.frm_dim_cfg.height = p->cfg_height;
+
+  cpi->sf.hl_sf.recode_tolerance = p->recode_tolerance;
+  cpi->sf.hl_sf.accurate_bit_estimate = 0;
+
+  cpi->rc.is_src_frame_alt_ref = p->is_src_frame_alt_ref;
+  cpi->rc.best_quality = p->best_quality;
+  cpi->rc.worst_quality = p->worst_quality;
+  cpi->rc.max_frame_bandwidth = p->max_frame_bandwidth;
+
+  for (int i = 0; i < RATE_FACTOR_LEVELS; ++i)
+    cpi->ppi->p_rc.rate_correction_factors[i] = p->rate_correction_factors[i];
+
+  cpi->gf_frame_index = SHIM_RCS_GF_INDEX;
+  cpi->ppi->gf_group.update_type[SHIM_RCS_GF_INDEX] =
+      (FRAME_UPDATE_TYPE)p->update_type;
+  cpi->ppi->gf_group.layer_depth[SHIM_RCS_GF_INDEX] = p->layer_depth;
+  cpi->ppi->gf_group.frame_type[SHIM_RCS_GF_INDEX] = (FRAME_TYPE)p->frame_type;
+  cpi->ppi->gf_group.frame_parallel_level[SHIM_RCS_GF_INDEX] = 0;
+
+  shim_rcc_rc_init_minq_luts();
+  return 1;
+}
+
+double shim_rcc_resize_rate_factor(int cfg_width, int cfg_height, int width,
+                                   int height) {
+  FrameDimensionCfg cfg;
+  memset(&cfg, 0, sizeof(cfg));
+  cfg.width = cfg_width;
+  cfg.height = cfg_height;
+  return resize_rate_factor(&cfg, width, height);
+}
+
+int shim_rcc_get_rate_factor_level(int update_type) {
+  GF_GROUP gf;
+  memset(&gf, 0, sizeof(gf));
+  gf.update_type[SHIM_RCS_GF_INDEX] = (FRAME_UPDATE_TYPE)update_type;
+  return (int)get_rate_factor_level(&gf, SHIM_RCS_GF_INDEX);
+}
+
+double shim_rcc_get_rate_correction_factor(const ShimRcStateParams *p,
+                                           int width, int height) {
+  ShimRc s;
+  if (!shim_rcs_alloc(&s, p)) return -1.0;
+  const double r = get_rate_correction_factor(s.cpi, width, height);
+  shim_rc_free(&s);
+  return r;
+}
+
+int shim_rcc_get_bits_per_mb(const ShimRcStateParams *p,
+                             double correction_factor, int q) {
+  ShimRc s;
+  if (!shim_rcs_alloc(&s, p)) return INT_MIN;
+  const int r = get_bits_per_mb(s.cpi, /*use_cyclic_refresh=*/0,
+                                correction_factor, q);
+  shim_rc_free(&s);
+  return r;
+}
+
+int shim_rcc_find_qindex_by_rate(const ShimRcStateParams *p,
+                                 int desired_bits_per_mb, int frame_type,
+                                 int best_qindex, int worst_qindex) {
+  ShimRc s;
+  if (!shim_rcs_alloc(&s, p)) return INT_MIN;
+  const int r = find_qindex_by_rate(s.cpi, desired_bits_per_mb,
+                                    (FRAME_TYPE)frame_type, best_qindex,
+                                    worst_qindex);
+  shim_rc_free(&s);
+  return r;
+}
+
+int shim_rcc_find_closest_qindex_by_rate(const ShimRcStateParams *p,
+                                         int desired_bits_per_mb,
+                                         double correction_factor,
+                                         int best_qindex, int worst_qindex) {
+  ShimRc s;
+  if (!shim_rcs_alloc(&s, p)) return INT_MIN;
+  const int r = find_closest_qindex_by_rate(desired_bits_per_mb, s.cpi,
+                                            correction_factor, best_qindex,
+                                            worst_qindex);
+  shim_rc_free(&s);
+  return r;
+}
+
+int shim_rcc_frame_type_qdelta(const ShimRcStateParams *p, int q) {
+  ShimRc s;
+  if (!shim_rcs_alloc(&s, p)) return INT_MIN;
+  const int r = frame_type_qdelta(s.cpi, q);
+  shim_rc_free(&s);
+  return r;
+}
+
+/* The TU-vs-archive probes for the EXPORTED rate-search functions: the same
+ * four rcarchive_shim.c drives out of the archive, driven here out of this
+ * TU's copy. */
+int shim_rcc_probe_estimate_bits_at_q(const ShimRcStateParams *p, int q,
+                                      double correction_factor) {
+  ShimRc s;
+  if (!shim_rcs_alloc(&s, p)) return INT_MIN;
+  const int r = shim_rcc_estimate_bits_at_q(s.cpi, q, correction_factor);
+  shim_rc_free(&s);
+  return r;
+}
+
+int shim_rcc_probe_regulate_q(const ShimRcStateParams *p,
+                              int target_bits_per_frame,
+                              int active_best_quality, int active_worst_quality,
+                              int width, int height) {
+  ShimRc s;
+  if (!shim_rcs_alloc(&s, p)) return INT_MIN;
+  const int r = shim_rcc_rc_regulate_q(s.cpi, target_bits_per_frame,
+                                       active_best_quality,
+                                       active_worst_quality, width, height);
+  shim_rc_free(&s);
+  return r;
 }
