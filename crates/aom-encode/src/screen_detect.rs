@@ -81,7 +81,11 @@ impl ScreenContentDecision {
     /// `allow_intrabc` (`is_screen_content_type` untouched) before any
     /// detector runs.
     pub fn forced(on: bool) -> Self {
-        Self { allow_screen_content_tools: on, allow_intrabc: on, ..Self::detection_disabled() }
+        Self {
+            allow_screen_content_tools: on,
+            allow_intrabc: on,
+            ..Self::detection_disabled()
+        }
     }
 
     /// `av1_set_screen_content_options`' `--tune-content=screen` arm
@@ -101,7 +105,13 @@ impl ScreenContentDecision {
 /// `av1_count_colors_with_threshold` (intra_mode_search.c:383): counts the
 /// distinct 8-bit values of a block, bailing (returns `(false, thresh + 1)`)
 /// the moment the count exceeds `threshold`.
-fn count_colors_with_threshold(blk: &[u8], stride: usize, rows: usize, cols: usize, threshold: i32) -> (bool, i32) {
+fn count_colors_with_threshold(
+    blk: &[u8],
+    stride: usize,
+    rows: usize,
+    cols: usize,
+    threshold: i32,
+) -> (bool, i32) {
     let mut has = [false; 256];
     let mut n = 0i32;
     for r in 0..rows {
@@ -141,7 +151,14 @@ fn find_dominant_value(blk: &[u8], stride: usize, rows: usize, cols: usize) -> u
 /// `av1_dilate_block` (encoder.c:2152): one round of 8-neighbour dilation of
 /// the dominant value — every source pixel equal to it stamps its 4 sides and
 /// 4 corners in `dilated` (bounds-checked), on top of a plain copy.
-fn dilate_block(src: &[u8], src_stride: usize, dilated: &mut [u8], dilated_stride: usize, rows: usize, cols: usize) {
+fn dilate_block(
+    src: &[u8],
+    src_stride: usize,
+    dilated: &mut [u8],
+    dilated_stride: usize,
+    rows: usize,
+    cols: usize,
+) {
     let dom = find_dominant_value(src, src_stride, rows, cols);
     for r in 0..rows {
         for c in 0..cols {
@@ -183,10 +200,27 @@ fn dilate_block(src: &[u8], src_stride: usize, dilated: &mut [u8], dilated_strid
 }
 
 /// The detector (module doc). `src` is the luma plane (u16 samples, `bd`-bit
-/// range; 8-bit sources carry 8-bit values) at `off` with `stride`; `width` /
-/// `height` are the frame's luma dimensions (`y_width` / `y_height` of the
-/// unfiltered source); `fast_detection` is
-/// `hl_sf.screen_detection_mode2_fast_detection` (allintra speed >= 3).
+/// range; 8-bit sources carry 8-bit values) at `off` with `stride`;
+/// `fast_detection` is `hl_sf.screen_detection_mode2_fast_detection` (allintra
+/// speed >= 3).
+///
+/// # `width` / `height` are `y_width` / `y_height` — NOT the crop
+///
+/// C reads `cpi->unfiltered_source->y_width` / `->y_height`
+/// (`encoder.c`, `estimate_screen_content_antialiasing_aware`), which for a
+/// `YV12_BUFFER_CONFIG` are the **8-ALIGNED** dimensions
+/// (`aom_realloc_frame_buffer`: `y_width = (width + 7) & ~7`), not
+/// `y_crop_width` / `y_crop_height`. Callers must pass `(crop + 7) & !7`.
+///
+/// This is load-bearing twice over: `area` is the denominator of BOTH frame
+/// decisions (`(palette - photo/16) * 256 * 10 > area`), and the 16x16 block
+/// loop bound is `c + 16 <= width`. On a crop that is not 8-aligned the two
+/// readings differ by up to ~3% of area, which flips borderline frames.
+/// MEASURED 2026-09-02 on the bootstrap-free encoder gate: passing the crop
+/// instead of the aligned size made 258x258, 260x260 and 262x262 (textured,
+/// 4:2:0, cq 32) code `allow_screen_content_tools = 1` where real aomenc codes
+/// 0; with the aligned size all three agree and 258/262 become byte-identical
+/// end to end.
 pub fn estimate_screen_content_antialiasing_aware(
     src: &[u16],
     off: usize,
@@ -207,7 +241,11 @@ pub fn estimate_screen_content_antialiasing_aware(
     let mut r = 0usize;
     while r + BLOCK <= height {
         // Alternate skipping in a "checkerboard" pattern under fast detection.
-        let initial_col = if fast_detection && (r / BLOCK) % 2 == 1 { BLOCK } else { 0 };
+        let initial_col = if fast_detection && (r / BLOCK) % 2 == 1 {
+            BLOCK
+        } else {
+            0
+        };
         let mut c = initial_col;
         while c + BLOCK <= width {
             let blk_off = off + r * stride + c;
@@ -219,7 +257,13 @@ pub fn estimate_screen_content_antialiasing_aware(
                     blk8[br * BLOCK + bc] = v as u8;
                 }
             }
-            let (under, n) = count_colors_with_threshold(&blk8, BLOCK, BLOCK, BLOCK, COMPLEX_INITIAL_COLOR_THRESH);
+            let (under, n) = count_colors_with_threshold(
+                &blk8,
+                BLOCK,
+                BLOCK,
+                BLOCK,
+                COMPLEX_INITIAL_COLOR_THRESH,
+            );
             if n > 1 && under {
                 if n <= SIMPLE_COLOR_THRESH {
                     // Simple block: palettizable; IntraBC candidate when textured.
@@ -233,7 +277,13 @@ pub fn estimate_screen_content_antialiasing_aware(
                     // Complex block: dilate with the dominant colour to drop the
                     // anti-aliased pixels from the final palette count.
                     dilate_block(&blk8, BLOCK, &mut dilated, BLOCK, BLOCK, BLOCK);
-                    let (under2, _) = count_colors_with_threshold(&dilated, BLOCK, BLOCK, BLOCK, COMPLEX_FINAL_COLOR_THRESH);
+                    let (under2, _) = count_colors_with_threshold(
+                        &dilated,
+                        BLOCK,
+                        BLOCK,
+                        BLOCK,
+                        COMPLEX_FINAL_COLOR_THRESH,
+                    );
                     if under2 {
                         let var = perpixel_variance_y(src, blk_off, stride, BLOCK_16X16, bd);
                         if var > VAR_THRESH {
@@ -258,7 +308,8 @@ pub fn estimate_screen_content_antialiasing_aware(
         count_photo *= 2;
     }
     let allow_screen_content_tools = (count_palette - count_photo / 16) * BLOCK_AREA * 10 > area;
-    let allow_intrabc = allow_screen_content_tools && (count_intrabc - count_photo / 16) * BLOCK_AREA * 12 > area;
+    let allow_intrabc =
+        allow_screen_content_tools && (count_intrabc - count_photo / 16) * BLOCK_AREA * 12 > area;
     let is_screen_content_type = allow_intrabc
         || (count_palette * BLOCK_AREA * 15 > area * 4 && count_intrabc * BLOCK_AREA * 30 > area);
     ScreenContentDecision {
@@ -302,7 +353,9 @@ mod tests {
             } else {
                 *v = k;
                 k += 1;
-                if k == 9 { k = 13; }
+                if k == 9 {
+                    k = 13;
+                }
             }
         }
         let mut out = [0u8; 16];
@@ -331,7 +384,10 @@ mod tests {
             }
         }
         let d = estimate_screen_content_antialiasing_aware(&src, 0, 64, 64, 64, 8, false);
-        assert_eq!((d.count_palette, d.count_intrabc, d.count_photo), (16, 16, 0));
+        assert_eq!(
+            (d.count_palette, d.count_intrabc, d.count_photo),
+            (16, 16, 0)
+        );
         assert!(d.allow_screen_content_tools && d.allow_intrabc);
         // fast detection: 8 of the 16 blocks visited, each counted twice.
         let f = estimate_screen_content_antialiasing_aware(&src, 0, 64, 64, 64, 8, true);

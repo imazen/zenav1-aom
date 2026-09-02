@@ -1901,12 +1901,17 @@ impl EncodeCell {
         } else if sf.use_nonrd_pick_mode && sf.hybrid_intra_pickmode == 0 {
             aom_encode::screen_detect::ScreenContentDecision::detection_disabled()
         } else {
+            // C reads `unfiltered_source->y_width`/`y_height` — the 8-ALIGNED
+            // dimensions (`y_width = (width + 7) & ~7`), NOT the crop. Both the
+            // `area` denominator and the 16x16 block-loop bound read them, so a
+            // non-8-aligned crop mis-decides borderline frames (measured
+            // 2026-09-02; see `screen_detect`'s docs).
             aom_encode::screen_detect::estimate_screen_content_antialiasing_aware(
                 &src_y_strided,
                 0,
                 stride,
-                w,
-                h,
+                (w + 7) & !7,
+                (h + 7) & !7,
                 bd as u8,
                 sf.screen_detection_mode2_fast_detection,
             )

@@ -940,8 +940,17 @@ pub fn encode_key_frame(
     // decision is the anti-aliasing-aware detector's. speed 0 => the
     // `use_nonrd_pick_mode && !hybrid_intra_pickmode` skip arm is not taken and
     // `screen_detection_mode2_fast_detection` is false.
+    // `width`/`height` are C's `unfiltered_source->y_width`/`y_height` — the
+    // 8-ALIGNED dimensions, not the crop (see the function's docs; passing the
+    // crop mis-decides borderline frames).
     let sct = crate::screen_detect::estimate_screen_content_antialiasing_aware(
-        &src_y, 0, stride, w, h, bd, false,
+        &src_y,
+        0,
+        stride,
+        (w + 7) & !7,
+        (h + 7) & !7,
+        bd,
+        false,
     );
 
     let mut p = derive_frame_header(cfg, &seq, &sct, tile_info);
