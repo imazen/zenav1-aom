@@ -33,8 +33,16 @@
 //! configuration, so the byte comparison is like-for-like. The
 //! `key_frame` module documents the axes that are not wired yet.
 
+use aom_dsp::entropy::header::{
+    FrameHeaderObu, read_sequence_header_obu, read_uncompressed_header,
+};
 use aom_dsp::entropy::obu::read_obu_header;
-use aom_encode::key_frame::{KeyFrameConfig, KeyFrameError, KeyFramePlanes, encode_key_frame};
+use aom_dsp::entropy::rb::ReadBitBuffer;
+use aom_encode::key_frame::{
+    KeyFrameConfig, KeyFrameError, KeyFramePlanes, derive_frame_header, derive_tile_info,
+    encode_key_frame,
+};
+use aom_encode::screen_detect::ScreenContentDecision;
 use aom_sys_ref as c;
 
 const OBU_TEMPORAL_DELIMITER: u32 = 2;
@@ -55,6 +63,67 @@ fn walk_obus(bytes: &[u8]) -> Vec<(u32, std::ops::Range<usize>)> {
         pos = end;
     }
     out
+}
+
+/// Split a stream's `OBU_FRAME` into (parsed frame header, uncompressed-header
+/// bit length, tile-payload bytes). The reader needs a `cfg` whose fields gate
+/// its conditional reads; that cfg is built with the PORT's own
+/// `derive_frame_header` off the stream's own sequence header, so this works on
+/// both the port's stream and real aomenc's.
+fn split_frame_obu(stream: &[u8]) -> (FrameHeaderObu, usize, Vec<u8>) {
+    let obus = walk_obus(stream);
+    let seq_payload = {
+        let span = obus
+            .iter()
+            .find(|(t, _)| *t == OBU_SEQUENCE_HEADER)
+            .map(|(_, s)| s.clone())
+            .expect("stream has a sequence header");
+        // Strip the OBU header + leb128 size to reach the payload.
+        let hdr = read_obu_header(&stream[span.start..]).expect("obu header");
+        let after = span.start + hdr.header_len;
+        let (sz, szb) = aom_dsp::entropy::leb128::uleb_decode(&stream[after..]).expect("leb128");
+        stream[after + szb..after + szb + sz as usize].to_vec()
+    };
+    let seq = read_sequence_header_obu(&mut ReadBitBuffer::new(&seq_payload));
+    let frame_payload = {
+        let span = obus
+            .iter()
+            .find(|(t, _)| *t == OBU_FRAME)
+            .map(|(_, s)| s.clone())
+            .expect("stream has a frame OBU");
+        let hdr = read_obu_header(&stream[span.start..]).expect("obu header");
+        let after = span.start + hdr.header_len;
+        let (sz, szb) = aom_dsp::entropy::leb128::uleb_decode(&stream[after..]).expect("leb128");
+        stream[after + szb..after + szb + sz as usize].to_vec()
+    };
+    let kf_cfg = KeyFrameConfig::allintra_speed0(
+        seq.seq_header.max_frame_width as usize,
+        seq.seq_header.max_frame_height as usize,
+        seq.color_config.bit_depth as u8,
+        seq.color_config.monochrome,
+        seq.color_config.subsampling_x as usize,
+        seq.color_config.subsampling_y as usize,
+        32,
+    );
+    let mi_dim = |px: i32| ((px + 7) & !7) >> 2;
+    let tile_info = derive_tile_info(
+        mi_dim(seq.seq_header.max_frame_width),
+        mi_dim(seq.seq_header.max_frame_height),
+        4,
+        0,
+        0,
+    );
+    let reader_cfg = derive_frame_header(
+        &kf_cfg,
+        &seq,
+        &ScreenContentDecision::detection_disabled(),
+        tile_info,
+    );
+    let mut rb = ReadBitBuffer::new(&frame_payload);
+    let p = read_uncompressed_header(&mut rb, &reader_cfg);
+    let bits = rb.bit_position();
+    let tile_start = bits.div_ceil(8);
+    (p, bits, frame_payload[tile_start..].to_vec())
 }
 
 /// The content classes the sweep covers. Deterministic and cheap so the gate
@@ -772,25 +841,64 @@ fn refuses_configurations_it_has_no_gate_for() {
 /// | cell | measured attribution |
 /// |---|---|
 /// | 132x132, 196x196, 260x260 (4:2:0 bd8 cq32 textured) | EVERY derived header field equals C's — `allow_screen_content_tools`, `base_qindex`, both loop-filter levels, `tx_mode_select`, the tile grid — and the sequence-header OBU payload is byte-identical. The divergence starts 367 / 525 / 1240 bytes INTO the tile payload: a partition/RD near-tie in `pack_tile`'s search, the class PARITY.md Tier-3 already tracks. It is reachable from the bootstrapped harness too. |
-/// | 261x261 (4:2:0 bd8 cq32 textured) | `pick_filter_level` derives `filter_level = [0, 1]` where real aomenc codes `[0, 2]` — an off-by-one in the loop-filter-level search on this frame, visible at frame-payload byte 3. Everything else agrees. |
+/// | 261x261 (4:2:0 bd8 cq32 textured) | BOTH halves differ — the tile payload (2174 vs 2181 bytes) AND the derived loop-filter level (`[0, 1]` vs C's `[0, 2]`). For a KEY frame that is ONE upstream root, not two: `pick_filter_level` runs on the port's OWN phase-1 reconstruction, so an RD divergence that changes the recon moves the level with it. (The 2026-09-02 first attribution called this a pure `pick_filter_level` off-by-one; the `Where` assertion below caught that and is why it is asserted rather than written in prose.) |
 ///
-/// The neighbours bracket both: 130x70, 200x200, 250x130, 258x258, 262x262,
+/// The neighbours bracket them: 130x70, 200x200, 250x130, 258x258, 262x262,
 /// 263x263, 264x264, 256x256 and 320x320 are all byte-exact in
-/// [`sweep_cells`], so neither pin is "the port cannot do partial superblocks".
+/// [`sweep_cells`], so no pin here is "the port cannot do partial superblocks".
+///
+/// All four pins run with CDEF and loop restoration OFF; the post-filter axis
+/// (axis G of the sweep) is 27/27 byte-exact.
 #[test]
 fn open_divergences_are_pinned() {
     c::ref_init();
+    /// Which HALF of the frame OBU a pin's divergence lives in. Asserted per
+    /// cell, so a pin cannot quietly change character (an RD tie growing a
+    /// header defect, say) without going red.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Where {
+        /// Every derived frame-header field agrees with C's; only the
+        /// entropy-coded tile payload differs.
+        TilePayloadOnly,
+        /// The tile payload is byte-identical to C's; only a frame-header
+        /// field differs.
+        #[allow(dead_code)]
+        HeaderOnly,
+        /// The tile payload differs AND a derived header field differs. For a
+        /// KEY frame that is the signature of ONE upstream root, not two: the
+        /// loop-filter levels are derived from the port's own reconstruction
+        /// (`pick_filter_level` on the phase-1 recon), so an RD divergence that
+        /// changes the recon can move them too.
+        TilePayloadAndHeader,
+    }
     let pins = [
         (
             132usize,
             132usize,
-            "tile-payload RD near-tie (headers all agree)",
+            Where::TilePayloadOnly,
+            "tile-payload RD near-tie (every derived header field agrees)",
         ),
-        (196, 196, "tile-payload RD near-tie (headers all agree)"),
-        (260, 260, "tile-payload RD near-tie (headers all agree)"),
-        (261, 261, "pick_filter_level derives [0,1] vs C's [0,2]"),
+        (
+            196,
+            196,
+            Where::TilePayloadOnly,
+            "tile-payload RD near-tie (every derived header field agrees)",
+        ),
+        (
+            260,
+            260,
+            Where::TilePayloadOnly,
+            "tile-payload RD near-tie (every derived header field agrees)",
+        ),
+        (
+            261,
+            261,
+            Where::TilePayloadAndHeader,
+            "an RD near-tie whose different reconstruction ALSO moves the derived \
+             loop-filter level: port [0,1] vs C's [0,2]",
+        ),
     ];
-    for &(w, h, why) in &pins {
+    for &(w, h, expect_where, why) in &pins {
         let cell = Cell::new(
             format!("PIN_{w}x{h}_420_bd8_cq32_tex"),
             w,
@@ -837,6 +945,79 @@ fn open_divergences_are_pinned() {
             w * h,
             "{w}x{h}: the port's pinned stream must decode"
         );
-        eprintln!("PIN {w}x{h}: still divergent ({why}); seq header byte-exact; decodes");
+        // WHICH HALF diverges -- the attribution, asserted rather than left in
+        // prose. The loop-filter levels are a frame-HEADER field that no tile
+        // symbol reads, so a `pick_filter_level` divergence leaves the tile
+        // payload byte-identical; an RD near-tie does the opposite.
+        let (ours_hdr, _, ours_tile) = split_frame_obu(&ours);
+        let (theirs_hdr, _, theirs_tile) = split_frame_obu(&theirs);
+        let header_same = (
+            ours_hdr.loopfilter.filter_level,
+            ours_hdr.loopfilter.filter_level_u,
+            ours_hdr.loopfilter.filter_level_v,
+            ours_hdr.quant.base_qindex,
+            ours_hdr.allow_screen_content_tools,
+            ours_hdr.tx_mode_select,
+        ) == (
+            theirs_hdr.loopfilter.filter_level,
+            theirs_hdr.loopfilter.filter_level_u,
+            theirs_hdr.loopfilter.filter_level_v,
+            theirs_hdr.quant.base_qindex,
+            theirs_hdr.allow_screen_content_tools,
+            theirs_hdr.tx_mode_select,
+        );
+        let got_where = match (ours_tile == theirs_tile, header_same) {
+            (true, false) => Where::HeaderOnly,
+            (false, true) => Where::TilePayloadOnly,
+            (false, false) => Where::TilePayloadAndHeader,
+            (true, true) => panic!(
+                "{w}x{h}: the streams differ but both the tile payload and every checked \
+                 header field agree — the divergence is somewhere this test does not look \
+                 (OBU framing? the sequence header? a header field not in the tuple). \
+                 Investigate before touching this list."
+            ),
+        };
+        assert_eq!(
+            got_where,
+            expect_where,
+            "{w}x{h}: the pin changed character. Expected {expect_where:?} ({why}), measured \
+             {got_where:?}: port LF {:?}/{}/{} vs C {:?}/{}/{}, port ascs={} C ascs={}, \
+             port tx_mode_select={} C={}, port tile {} bytes vs C {} bytes. Re-attribute it \
+             before touching this list.",
+            ours_hdr.loopfilter.filter_level,
+            ours_hdr.loopfilter.filter_level_u,
+            ours_hdr.loopfilter.filter_level_v,
+            theirs_hdr.loopfilter.filter_level,
+            theirs_hdr.loopfilter.filter_level_u,
+            theirs_hdr.loopfilter.filter_level_v,
+            ours_hdr.allow_screen_content_tools,
+            theirs_hdr.allow_screen_content_tools,
+            ours_hdr.tx_mode_select,
+            theirs_hdr.tx_mode_select,
+            ours_tile.len(),
+            theirs_tile.len(),
+        );
+        if expect_where == Where::TilePayloadOnly {
+            // Spell the "every derived header field agrees" half out on its own.
+            assert_eq!(
+                (
+                    ours_hdr.loopfilter.filter_level,
+                    ours_hdr.quant.base_qindex,
+                    ours_hdr.allow_screen_content_tools,
+                    ours_hdr.tx_mode_select,
+                ),
+                (
+                    theirs_hdr.loopfilter.filter_level,
+                    theirs_hdr.quant.base_qindex,
+                    theirs_hdr.allow_screen_content_tools,
+                    theirs_hdr.tx_mode_select,
+                ),
+                "{w}x{h}: a derived header field diverges too -- this pin is no longer a pure \
+                 tile-payload RD tie"
+            );
+        }
+        eprintln!(
+            "PIN {w}x{h}: still divergent, {got_where:?} ({why}); seq header byte-exact; decodes"
+        );
     }
 }

@@ -48,8 +48,12 @@ after the fix (197 passed / 0 failed).
 
 **Open, named, pinned** (`open_divergences_are_pinned`, self-promoting): 132×132,
 196×196 and 260×260 diverge inside the TILE payload with every derived header
-field equal to C's (RD near-ties, the PARITY.md Tier-3 class); 261×261 is a
-`pick_filter_level` off-by-one ([0,1] vs C's [0,2]). **Not wired**: speeds > 0,
+field equal to C's (RD near-ties, the PARITY.md Tier-3 class); 261×261 diverges
+in BOTH halves — the tile payload AND the derived loop-filter level ([0,1] vs
+C's [0,2]) — which is ONE root, not two, because `pick_filter_level` runs on the
+port's own reconstruction. The gate ASSERTS which half each pin diverges in;
+that assertion caught the first (wrong) reading of 261×261 as a pure
+loop-filter off-by-one. **Not wired**: speeds > 0,
 multi-tile, SB128, and `av1_determine_sc_tools_with_encoding`'s trial encode —
 each REFUSED by name via `KeyFrameError` rather than silently mis-encoded.
 
