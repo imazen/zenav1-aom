@@ -187,7 +187,11 @@ impl MvSpeedFeatures {
             hash_max_8x8_intrabc_blocks: false,
             prune_intrabc_candidate_block_hash_search: false,
             // `cpi->use_screen_content_tools` is the frame's screen detection.
-            exhaustive_searches_thresh: if allow_screen_content_tools { 1 << 20 } else { 1 << 25 },
+            exhaustive_searches_thresh: if allow_screen_content_tools {
+                1 << 20
+            } else {
+                1 << 25
+            },
             mesh_speed: speed.clamp(0, 5) as usize,
             use_downsampled_sad: 0,
             use_intrabc: true,
@@ -659,8 +663,8 @@ impl SpeedFeatures {
             // rt_sf
             var_part_split_threshold_shift: 5, // init_rt_sf:2085
             force_large_partition_blocks_intra: 0, // init_rt_sf:2579
-            use_nonrd_pick_mode: false, // init_rt_sf:2554
-            hybrid_intra_pickmode: 0, // init_rt_sf:2564
+            use_nonrd_pick_mode: false,        // init_rt_sf:2554
+            hybrid_intra_pickmode: 0,          // init_rt_sf:2564
             // intra_sf
             intra_pruning_with_hog: 1, // allintra base (speed_features.c:360)
             chroma_intra_pruning_with_hog: 0, // init_intra_sf default (off)
@@ -1211,12 +1215,7 @@ impl SpeedFeatures {
     /// `ml_early_term_after_part_split_level`, `use_downsampled_sad` and
     /// `partition_search_breakout_*` are inter-only or speed-gated dead on the
     /// all-intra KEY envelope.
-    pub fn apply_allintra_framesize_dependent(
-        &mut self,
-        width: usize,
-        height: usize,
-        speed: i32,
-    ) {
+    pub fn apply_allintra_framesize_dependent(&mut self, width: usize, height: usize, speed: i32) {
         let min_dim = width.min(height);
         // `if (is_720p_or_larger) sf->mv_sf.use_downsampled_sad = 2` (:203-207),
         // outside every speed guard — LIVE on screen-detected intrabc frames.
@@ -1556,6 +1555,75 @@ impl SpeedFeatures {
     pub fn winner_mode_count_allowed(&self) -> usize {
         [1usize, 2, 3][self.multi_winner_mode_type as usize]
     }
+}
+
+// ---- loop-restoration search speed features -------------------------------
+
+use aom_dsp::restore::pick::LrSearchSf;
+
+/// The `lpf_sf` loop-restoration slice for the ALLINTRA path:
+/// `set_allintra_speed_features_framesize_independent` (speed_features.c:
+/// dual_sgr/ep-pruning at speed>=1; wiener-src-var + sgr-from-wiener prunes
+/// at speed>=2; reduced window / prune upgrades at speed>=3; full disable at
+/// speed>=5 — moot here because the REAL encoder also clears the seq
+/// `enable_restoration` bit at those speeds) + the qindex-dependent
+/// unit-size-search bounds (`av1_set_speed_features_qindex_dependent`:
+/// full 64..256 descent at speed 0; the single-size rule for allintra
+/// speed>=1: 128 when qindex <= 96 on sub-1440p frames, else 256).
+/// [Moved here 2026-09-02 from `aom-bench`'s `lib.rs` so
+/// `crate::key_frame::encode_key_frame` (which cannot depend on `aom-bench`)
+/// can derive it; `aom_bench::lr_search_sf_allintra` now delegates here, so
+/// every existing caller and gate is unchanged.]
+pub fn lr_search_sf_allintra(
+    speed: i32,
+    qindex: i32,
+    w: usize,
+    h: usize,
+    allow_screen_content_tools: bool,
+) -> LrSearchSf {
+    let mut sf = LrSearchSf::default();
+    if speed >= 1 {
+        sf.dual_sgr_penalty_level = 1;
+        sf.enable_sgr_ep_pruning = 1;
+    }
+    if speed >= 2 {
+        sf.prune_wiener_based_on_src_var = 1;
+        sf.prune_sgr_based_on_wiener = 1;
+    }
+    if speed >= 3 {
+        sf.prune_sgr_based_on_wiener = if allow_screen_content_tools { 1 } else { 2 };
+        sf.disable_loop_restoration_chroma = false;
+        sf.reduce_wiener_window_size = true;
+        sf.prune_wiener_based_on_src_var = 2;
+    }
+    if speed >= 5 {
+        sf.disable_wiener_filter = true;
+        sf.disable_sgr_filter = true;
+    }
+    // Unit-size search bounds (qindex-dependent setter, all modes).
+    sf.min_lr_unit_size = 64; // RESTORATION_PROC_UNIT_SIZE
+    sf.max_lr_unit_size = 256; // RESTORATION_UNITSIZE_MAX
+    let is_1440p_or_larger = w.min(h) >= 1440;
+    let is_720p_or_larger = w.min(h) >= 720;
+    if speed >= 1 {
+        if is_1440p_or_larger {
+            sf.min_lr_unit_size = 256;
+        } else if is_720p_or_larger {
+            sf.min_lr_unit_size = 128;
+        }
+    }
+    // `speed >= 3 || (mode == ALLINTRA && speed >= 1)` — this helper IS the
+    // allintra arm.
+    if speed >= 1 {
+        if qindex <= 96 && !is_1440p_or_larger {
+            sf.min_lr_unit_size = 128;
+            sf.max_lr_unit_size = 128;
+        } else {
+            sf.min_lr_unit_size = 256;
+            sf.max_lr_unit_size = 256;
+        }
+    }
+    sf
 }
 
 #[cfg(test)]
@@ -2067,7 +2135,10 @@ mod tests {
             // BLOCK_8X8 from speed 7 (:570).
             let base = SpeedFeatures::set_allintra(speed, false, false);
             let expect_base = if speed >= 7 { 3 } else { 0 };
-            assert_eq!(base.default_min_partition_size, expect_base, "speed {speed}");
+            assert_eq!(
+                base.default_min_partition_size, expect_base,
+                "speed {speed}"
+            );
 
             // Sub-2160p on the short side leaves the field alone, including
             // the 3840x2160-is-not-4k-by-this-test case (min(w,h) == 2160
@@ -2091,7 +2162,11 @@ mod tests {
             for &(w, h) in &[(64, 64), (1920, 1079), (4096, 2159), (2159, 4096)] {
                 let mut sf = base;
                 sf.apply_allintra_framesize_dependent(w, h, speed);
-                let want = if speed >= 6 && w.min(h) >= 1080 { 3 } else { expect_base };
+                let want = if speed >= 6 && w.min(h) >= 1080 {
+                    3
+                } else {
+                    expect_base
+                };
                 assert_eq!(
                     sf.default_min_partition_size, want,
                     "speed {speed} {w}x{h} must not take the 4k arm"
@@ -2172,7 +2247,10 @@ mod tests {
             expect.use_nonrd_pick_mode = speed >= 8;
             expect.hybrid_intra_pickmode = if speed == 8 { 2 } else { 0 };
             expect.mv_sf.use_downsampled_sad = 2; // >= 720p (:203-207), KB-41
-            assert_eq!(sf, expect, "speed {speed}: the 1080p arm moved another field");
+            assert_eq!(
+                sf, expect,
+                "speed {speed}: the 1080p arm moved another field"
+            );
         }
     }
 
@@ -2320,7 +2398,10 @@ mod tests {
                 let mut sf = base;
                 sf.apply_allintra_qindex_dependent(w, h, q, speed);
                 assert_eq!(
-                    (sf.perform_coeff_opt, sf.intra_tx_size_search_init_depth_rect),
+                    (
+                        sf.perform_coeff_opt,
+                        sf.intra_tx_size_search_init_depth_rect
+                    ),
                     (
                         base.perform_coeff_opt,
                         base.intra_tx_size_search_init_depth_rect
@@ -2341,7 +2422,10 @@ mod tests {
                 sf.apply_allintra_qindex_dependent(w, h, q, speed);
                 if speed == 0 {
                     assert_eq!(
-                        (sf.perform_coeff_opt, sf.intra_tx_size_search_init_depth_rect),
+                        (
+                            sf.perform_coeff_opt,
+                            sf.intra_tx_size_search_init_depth_rect
+                        ),
                         (want_coeff_opt, 1),
                         "speed 0 {w}x{h} q{q} must take the >=720p qindex arm"
                     );
@@ -2393,9 +2477,20 @@ mod tests {
 
         // ... and it reaches the derived tx policy: coeff_opt_thresholds row 1
         // (3200) becomes row 3 (864) at DEFAULT_EVAL.
-        assert_eq!(base.tx_type_search_policy(false, 0).coeff_opt_dist_threshold, 3200);
-        assert_eq!(sf.tx_type_search_policy(false, 0).coeff_opt_dist_threshold, 864);
-        assert_eq!(sf.tx_type_search_policy(false, 0).intra_tx_size_init_depth_rect, 1);
+        assert_eq!(
+            base.tx_type_search_policy(false, 0)
+                .coeff_opt_dist_threshold,
+            3200
+        );
+        assert_eq!(
+            sf.tx_type_search_policy(false, 0).coeff_opt_dist_threshold,
+            864
+        );
+        assert_eq!(
+            sf.tx_type_search_policy(false, 0)
+                .intra_tx_size_init_depth_rect,
+            1
+        );
     }
 
     /// KB-38 — the sub-block NESTED inside KB-22's arm:
@@ -2501,10 +2596,14 @@ mod tests {
         assert_eq!(off.use_transform_domain_distortion, 0);
         assert!(!off.skip_tx_search);
         assert!(
-            on.use_transform_domain_distortion != 0 || on.tx_domain_dist_threshold != off.tx_domain_dist_threshold,
+            on.use_transform_domain_distortion != 0
+                || on.tx_domain_dist_threshold != off.tx_domain_dist_threshold,
             "the sub-arm's tx-domain-distortion fields must reach the derived policy"
         );
-        assert!(on.skip_tx_search, "the sub-arm's skip_tx_search must reach the derived policy");
+        assert!(
+            on.skip_tx_search,
+            "the sub-arm's skip_tx_search must reach the derived policy"
+        );
     }
 
     /// KB-8 chunk 2a: the stage-aware [`SpeedFeatures::tx_type_search_policy_for_stage`]

@@ -117,6 +117,10 @@ struct Cell {
     ss_y: usize,
     cq: i32,
     content: Content,
+    /// `AV1E_SET_ENABLE_CDEF`.
+    cdef: bool,
+    /// `AV1E_SET_ENABLE_RESTORATION`.
+    lr: bool,
 }
 
 impl Cell {
@@ -141,7 +145,17 @@ impl Cell {
             ss_y,
             cq,
             content,
+            cdef: false,
+            lr: false,
         }
+    }
+
+    /// The same cell with the two post-filter knobs set.
+    fn with_postfilter(mut self, cdef: bool, lr: bool) -> Self {
+        self.label = format!("{}_cdef{}_lr{}", self.label, u8::from(cdef), u8::from(lr));
+        self.cdef = cdef;
+        self.lr = lr;
+        self
     }
 }
 
@@ -272,6 +286,47 @@ fn sweep_cells() -> Vec<Cell> {
             Texture,
         ));
     }
+    // G -- the POST-FILTER axis: all four (CDEF, loop restoration) combinations,
+    // including BOTH ON, which is real aomenc's ALLINTRA default and which no
+    // pack entry point covered before `pack::pack_tile_from_trees_lr`. Swept
+    // across the quantizer range, mono / 4:2:0 / 4:4:4, and three sizes,
+    // because the CDEF strength search and the LR unit decision are both
+    // content- and qindex-driven (a single cq exercises one branch of each).
+    for (cdef, lr) in [(true, false), (false, true), (true, true)] {
+        for (w, h, mono, sx, sy, cq) in [
+            (64usize, 64usize, false, 1usize, 1usize, 32i32),
+            (64, 64, true, 1, 1, 32),
+            (64, 64, false, 1, 1, 5),
+            (64, 64, false, 1, 1, 63),
+            (128, 128, false, 1, 1, 12),
+            (128, 128, false, 1, 1, 48),
+            (128, 128, false, 0, 0, 32),
+            (196, 196, false, 1, 1, 20),
+            (256, 256, false, 1, 1, 32),
+        ] {
+            let nm = if mono {
+                "mono"
+            } else if sx == 0 {
+                "444"
+            } else {
+                "420"
+            };
+            v.push(
+                Cell::new(
+                    format!("G_{w}x{h}_{nm}_bd8_cq{cq}_tex"),
+                    w,
+                    h,
+                    8,
+                    mono,
+                    sx,
+                    sy,
+                    cq,
+                    Texture,
+                )
+                .with_postfilter(cdef, lr),
+            );
+        }
+    }
     v
 }
 
@@ -292,6 +347,10 @@ fn decode_cells() -> Vec<Cell> {
         "E_flat_64x64_420_bd8_cq32",
         "E_noise_128x128_420_bd8_cq32",
         "F_cq1_128x128_420_bd8_tex",
+        "G_64x64_420_bd8_cq32_tex_cdef1_lr0",
+        "G_64x64_420_bd8_cq32_tex_cdef0_lr1",
+        "G_64x64_420_bd8_cq32_tex_cdef1_lr1",
+        "G_256x256_420_bd8_cq32_tex_cdef1_lr1",
     ];
     sweep_cells()
         .into_iter()
@@ -323,9 +382,12 @@ fn cell_planes(cell: &Cell) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
 }
 
 fn cell_cfg(cell: &Cell) -> KeyFrameConfig {
-    KeyFrameConfig::allintra_speed0(
+    let mut cfg = KeyFrameConfig::allintra_speed0(
         cell.w, cell.h, cell.bd, cell.mono, cell.ss_x, cell.ss_y, cell.cq,
-    )
+    );
+    cfg.enable_cdef = cell.cdef;
+    cfg.enable_restoration = cell.lr;
+    cfg
 }
 
 /// Run the port's bootstrap-free encoder for a cell.
@@ -348,8 +410,8 @@ fn c_stream(cell: &Cell, y: &[u16], u: &[u16], v: &[u16]) -> Vec<u8> {
         cell.ss_y as i32,
         cell.cq,
         0,
-        false,
-        false,
+        cell.cdef,
+        cell.lr,
         2,
         0,
         false,
@@ -643,19 +705,18 @@ fn refuses_configurations_it_has_no_gate_for() {
         v: &[],
     };
 
-    let mut cdef_on = base;
-    cdef_on.enable_cdef = true;
-    assert!(matches!(
-        encode_key_frame(planes, &cdef_on),
-        Err(KeyFrameError::Unsupported(_))
-    ));
-
-    let mut lr_on = base;
-    lr_on.enable_restoration = true;
-    assert!(matches!(
-        encode_key_frame(planes, &lr_on),
-        Err(KeyFrameError::Unsupported(_))
-    ));
+    // All four post-filter combinations are SUPPORTED (axis G of the sweep) --
+    // asserted here too so this test can never silently become the reason a
+    // regression that re-refuses them goes unnoticed.
+    for (cdef, lr) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut cfg = base;
+        cfg.enable_cdef = cdef;
+        cfg.enable_restoration = lr;
+        assert!(
+            encode_key_frame(planes, &cfg).is_ok(),
+            "cdef={cdef} lr={lr} must encode: all four post-filter combinations are gated"
+        );
+    }
 
     let mut fast = base;
     fast.cpu_used = 5;

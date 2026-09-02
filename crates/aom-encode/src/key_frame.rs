@@ -31,7 +31,9 @@
 //! | tile grid | `av1_get_tile_limits` + `av1_calculate_tile_cols/rows` (`tile_common.c`) |
 //! | loop-filter levels | [`crate::lf_search::pick_filter_level`] on THIS port's own recon |
 //! | `tx_mode` (SELECT vs LARGEST) | the `txb_split_count == 0` flip (`encodeframe.c:2797`), counted off this port's own winner trees |
-//! | tile payload | [`crate::pack::pack_tile`] + [`crate::pack::pack_tile_from_trees`] |
+//! | CDEF damping / bits / per-unit strengths | [`crate::pickcdef::av1_cdef_search`] on the port's own deblocked recon |
+//! | loop-restoration frame types / unit size / per-RU params | `aom_dsp::restore::pick::pick_filter_restoration` on the port's own post-CDEF recon |
+//! | tile payload | [`crate::pack::pack_tile`] + [`crate::pack::pack_tile_from_trees_lr`] |
 //!
 //! # Envelope (asserted, not assumed)
 //!
@@ -39,9 +41,8 @@
 //! mis-encoding whenever the config leaves the envelope this module is gated on:
 //!
 //! * ALL-INTRA usage, `--cpu-used 0`, a single KEY frame, `--end-usage=q`;
-//! * CDEF off and loop-restoration off (the `encoder_gate_e2e_*` bootstrap
-//!   boundary; the CDEF search itself IS ported — `crate::pickcdef` — and is a
-//!   named follow-on, see "Not yet wired" below);
+//! * CDEF and loop restoration in ALL FOUR combinations, including both on —
+//!   real aomenc's ALLINTRA default (`--enable-cdef` / `--enable-restoration`);
 //! * superblock 64, a single tile, no superres, no QM, no film grain, no
 //!   segmentation, no delta-q, palette + IntraBC search off (matching
 //!   `aom-sys-ref`'s `shim_encode_av1_kf`, whose `--enable-palette=0
@@ -49,12 +50,6 @@
 //!
 //! # Not yet wired (named, with the specific entry points)
 //!
-//! * **CDEF on** — [`crate::pickcdef::av1_cdef_search`] + the
-//!   `pack_tile_from_trees(.., cdef: Some(..))` arm are ported and byte-gated
-//!   in `aom-bench/tests/encoder_gate_cdef_e2e.rs`; wiring them here is a
-//!   `derive_frame_header` + phase-2 change, not new algorithm.
-//! * **Loop restoration on** — `aom_dsp::restore::pick` + `pack_tile_lr`'s
-//!   `LrPackParams`, gated by `aom-bench/tests/lr_restoration_gate.rs`.
 //! * **Multi-tile** — [`crate::obu_assemble::assemble_multitile_frame_obu_payload_derived`]
 //!   exists and is gated (`obu_assemble_multitile_diff.rs`); this shell refuses
 //!   `tiles_log2 > 0` rather than emit an untested composition.
@@ -63,9 +58,24 @@
 //!   detector said off. Unported. It returns early when the detector already
 //!   said on, so it only ever matters on detector-negative content; the byte
 //!   gate holds this accountable per cell.
-//! * **Speeds > 0, bit depths beyond what the gate sweeps, SB128** — the
-//!   pipeline pieces exist; the shell simply has no gate for them yet.
+//! * **Speeds > 0 and SB128** — the pipeline pieces exist; the shell has no
+//!   gate for them yet, and refuses `cpu_used != 0` by name.
+//!
+//! # Post-filter composition (the CDEF + loop-restoration default)
+//!
+//! Neither pack entry point covered a frame with CDEF AND restoration on:
+//! `pack_tile_from_trees` carried only the CDEF strength literals and
+//! `pack_tile_lr` only the interleaved per-RU restoration params. That
+//! combination is real aomenc's ALLINTRA DEFAULT, so this landing added
+//! [`crate::pack::pack_tile_from_trees_lr`] (both, additive —
+//! `pack_tile_from_trees` now delegates to it with `lr: None` and is
+//! byte-unchanged) and follows C's `cdef_restoration_frame` order exactly:
+//! deblock → `av1_cdef_search` → `av1_cdef_frame` (apply) →
+//! `av1_pick_filter_restoration` on the POST-CDEF reconstruction. The LR
+//! search sees both frames — `deblocked` and `cur` — because C saves boundary
+//! lines from each (`av1_loop_restoration_save_boundary_lines` calls 0 and 1).
 
+use aom_dsp::cdef::frame::{CdefFrameParams, cdef_frame};
 use aom_dsp::entropy::enc::OdEcEnc;
 use aom_dsp::entropy::header::{
     CdefHeader, ColorConfigParams, DecoderModelInfo, DeltaQParams, FrameHeaderObu,
@@ -74,18 +84,24 @@ use aom_dsp::entropy::header::{
     write_sequence_header_obu,
 };
 use aom_dsp::entropy::leb128::uleb_encode;
+use aom_dsp::entropy::lr::{LrFrameConfig, RESTORE_NONE as LR_RESTORE_NONE};
 use aom_dsp::entropy::obu::write_obu_header;
 use aom_dsp::entropy::partition::{KfFrameContext, tx_size_to_depth};
 use aom_dsp::entropy::wb::WriteBitBuffer;
+use aom_dsp::loopfilter::frame::{LfFrameBuf, LfMiGrid, LfParams, loop_filter_frame};
+use aom_dsp::quant::av1_dc_quant_qtx;
 use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
+use aom_dsp::restore::pick::{LrPlanePixels, LrSearchInput, pick_filter_restoration};
+use aom_dsp::txb::cost_tokens_from_cdf;
 
 use crate::encode_intra::TrellisOptType;
 use crate::encode_sb::{LeafWinner, SbEncodeEnv, SbTree};
 use crate::intra_uv_rd::UvLoopPolicy;
 use crate::lf_search::{LfSearchFrame, build_lf_mi_grid, pick_filter_level};
 use crate::obu_assemble::assemble_obu_frame_single_tile;
-use crate::pack::{PackCfg, pack_tile, pack_tile_from_trees};
+use crate::pack::{CdefPackState, LrPackParams, PackCfg, pack_tile, pack_tile_from_trees_lr};
 use crate::partition_pick::PickFrameCfg;
+use crate::pickcdef::{CdefSearchFrame, av1_cdef_search};
 use crate::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
 use crate::real_costs::derive_real_costs;
 use crate::screen_detect::ScreenContentDecision;
@@ -148,8 +164,11 @@ pub struct KeyFrameConfig {
 }
 
 impl KeyFrameConfig {
-    /// The `shim_encode_av1_kf` default envelope: ALL-INTRA, `--cpu-used 0`,
-    /// CDEF and loop-restoration off.
+    /// The `shim_encode_av1_kf` envelope with CDEF and loop restoration OFF:
+    /// ALL-INTRA, `--cpu-used 0`. Set [`Self::enable_cdef`] /
+    /// [`Self::enable_restoration`] for the other three post-filter
+    /// combinations (all four are gated, including both on — real aomenc's
+    /// ALLINTRA default).
     pub fn allintra_speed0(
         width: usize,
         height: usize,
@@ -837,16 +856,6 @@ pub fn encode_key_frame(
             "cpu_used: only speed 0 is gated",
         ));
     }
-    if cfg.enable_cdef {
-        return Err(KeyFrameError::Unsupported(
-            "enable_cdef: the CDEF search is ported (pickcdef) but not wired into this shell",
-        ));
-    }
-    if cfg.enable_restoration {
-        return Err(KeyFrameError::Unsupported(
-            "enable_restoration: the LR search is ported but not wired into this shell",
-        ));
-    }
     if !matches!(cfg.bit_depth, 8 | 10 | 12) {
         return Err(KeyFrameError::Unsupported("bit_depth: must be 8, 10 or 12"));
     }
@@ -1154,6 +1163,219 @@ pub fn encode_key_frame(
     p.loopfilter.filter_level_u = derived_lf.filter_level_u;
     p.loopfilter.filter_level_v = derived_lf.filter_level_v;
 
+    // ---- post-filter stages: deblock -> CDEF -> loop restoration ----------
+    // C's order (`encoder.c` `loopfilter_frame` -> `cdef_restoration_frame`):
+    // apply the picked deblock levels, then `av1_cdef_search` + `av1_cdef_frame`
+    // on the deblocked recon, then `av1_pick_filter_restoration` on the
+    // POST-CDEF recon. `allow_intrabc` disables the whole block
+    // (`encoder.c:3780` wraps all of `loopfilter_frame`; KB-41 root #14 —
+    // without that gate the LR repack writes units the header never announces
+    // and both decoders reject the stream).
+    let postfilter = !p.allow_intrabc && (cfg.enable_cdef || cfg.enable_restoration);
+    // The deblocked reconstruction, kept separate from the phase-1 recon so the
+    // LR search can see BOTH `deblocked` and the post-CDEF `cur` (C saves
+    // boundary lines from each: `av1_loop_restoration_save_boundary_lines`
+    // calls 0 and 1).
+    let mut deblocked_y = Vec::new();
+    let mut deblocked_u = Vec::new();
+    let mut deblocked_v = Vec::new();
+    if postfilter {
+        deblocked_y = recon_y.clone();
+        deblocked_u = recon_u.clone();
+        deblocked_v = recon_v.clone();
+        // `loop_filter_frame` no-ops per plane on a zero level, exactly like
+        // C's apply site (`encoder.c:2887`).
+        if derived_lf.filter_level[0] != 0 || derived_lf.filter_level[1] != 0 {
+            let params = LfParams {
+                filter_level: derived_lf.filter_level,
+                filter_level_u: derived_lf.filter_level_u,
+                filter_level_v: derived_lf.filter_level_v,
+                sharpness: derived_lf.sharpness,
+                mode_ref_delta_enabled: true,
+                ref_deltas: KF_REF_DELTAS,
+                mode_deltas: KF_MODE_DELTAS,
+                delta_lf_present: false,
+                delta_lf_multi: false,
+                lossless: [false; 8],
+                seg: Default::default(),
+            };
+            let grid = LfMiGrid {
+                mi: &mi_grid,
+                stride: mi_cols as usize,
+                mi_rows,
+                mi_cols,
+            };
+            let mut buf = LfFrameBuf {
+                y: &mut deblocked_y,
+                y_stride: stride,
+                u: &mut deblocked_u,
+                v: &mut deblocked_v,
+                uv_stride: stride,
+                crop_width: w as u32,
+                crop_height: h as u32,
+                ss_x: cfg.ss_x,
+                ss_y: cfg.ss_y,
+                bd: i32::from(bd),
+            };
+            loop_filter_frame(&mut buf, &grid, &params, 0, cfg.num_planes());
+        }
+    }
+
+    // ---- CDEF: search on the deblocked recon, then APPLY it ---------------
+    let mut cur_y = Vec::new();
+    let mut cur_u = Vec::new();
+    let mut cur_v = Vec::new();
+    let cdef_pack = if postfilter && cfg.enable_cdef {
+        let cdef_res = av1_cdef_search(
+            &CdefSearchFrame {
+                recon_y: &deblocked_y,
+                recon_u: &deblocked_u,
+                recon_v: &deblocked_v,
+                src_y: &src_y,
+                src_u: &src_u,
+                src_v: &src_v,
+                stride,
+                mi: &mi_grid,
+                mi_rows,
+                mi_cols,
+                ss_x: cfg.ss_x,
+                ss_y: cfg.ss_y,
+                monochrome: cfg.monochrome,
+                bd,
+                base_qindex: qindex,
+                rdmult,
+            },
+            sf.cdef_pick_method,
+        );
+        p.cdef.cdef_damping = cdef_res.cdef_damping;
+        p.cdef.cdef_bits = cdef_res.cdef_bits;
+        p.cdef.nb_cdef_strengths = cdef_res.nb_cdef_strengths;
+        p.cdef.cdef_strengths = cdef_res.cdef_strengths;
+        p.cdef.cdef_uv_strengths = cdef_res.cdef_uv_strengths;
+        // `av1_cdef_frame` — only needed as the LR search's input; when
+        // restoration is off nothing reads the filtered pixels (phase 2
+        // re-encodes from the source), so the apply is skipped.
+        if cfg.enable_restoration {
+            cur_y = deblocked_y.clone();
+            cur_u = deblocked_u.clone();
+            cur_v = deblocked_v.clone();
+            let skip: Vec<bool> = mi_grid.iter().map(|m| m.skip_txfm).collect();
+            cdef_frame(
+                &mut cur_y,
+                stride,
+                &mut cur_u,
+                &mut cur_v,
+                stride,
+                &CdefFrameParams {
+                    mi_rows,
+                    mi_cols,
+                    num_planes: cfg.num_planes(),
+                    ss_x: cfg.ss_x,
+                    ss_y: cfg.ss_y,
+                    bit_depth: i32::from(bd),
+                    damping: cdef_res.cdef_damping,
+                    cdef_strengths: cdef_res.cdef_strengths,
+                    cdef_uv_strengths: cdef_res.cdef_uv_strengths,
+                    skip_txfm: &skip,
+                    unit_strength: &cdef_res.unit_strength,
+                },
+            );
+        }
+        Some(CdefPackState {
+            cdef_bits: cdef_res.cdef_bits as u32,
+            unit_strength: cdef_res.unit_strength.clone(),
+            nhfb: cdef_res.nhfb,
+        })
+    } else {
+        None
+    };
+
+    // ---- loop restoration: `av1_pick_filter_restoration` ------------------
+    // `is_restoration_used` (`encoder.h:4431`) = `enable_restoration &&
+    // !all_lossless && !large_scale`, plus the `allow_intrabc` gate folded into
+    // `postfilter` above.
+    let lr_stage = postfilter && cfg.enable_restoration && !coded_lossless;
+    let lr_outcome = if lr_stage {
+        // With CDEF off the post-CDEF frame IS the deblocked frame.
+        let (lr_cur_y, lr_cur_u, lr_cur_v) = if cfg.enable_cdef {
+            (&cur_y, &cur_u, &cur_v)
+        } else {
+            (&deblocked_y, &deblocked_u, &deblocked_v)
+        };
+        // Costs come from the FRAME-INIT LR CDFs (nothing adapts them before
+        // the search in C); rdmult is the frame rdmult.
+        let fc0 = KfFrameContext::default_for_qindex(qindex);
+        let mut wiener_cost = [0i32; 2];
+        let mut sgrproj_cost = [0i32; 2];
+        let mut switchable_cost = [0i32; 3];
+        cost_tokens_from_cdf(&mut wiener_cost, &fc0.wiener_restore, None);
+        cost_tokens_from_cdf(&mut sgrproj_cost, &fc0.sgrproj_restore, None);
+        cost_tokens_from_cdf(&mut switchable_cost, &fc0.switchable_restore, None);
+        let planes = if cfg.monochrome {
+            vec![LrPlanePixels {
+                src: &src_y,
+                deblocked: &deblocked_y,
+                cur: lr_cur_y,
+                stride,
+            }]
+        } else {
+            vec![
+                LrPlanePixels {
+                    src: &src_y,
+                    deblocked: &deblocked_y,
+                    cur: lr_cur_y,
+                    stride,
+                },
+                LrPlanePixels {
+                    src: &src_u,
+                    deblocked: &deblocked_u,
+                    cur: lr_cur_u,
+                    stride,
+                },
+                LrPlanePixels {
+                    src: &src_v,
+                    deblocked: &deblocked_v,
+                    cur: lr_cur_v,
+                    stride,
+                },
+            ]
+        };
+        let outcome = pick_filter_restoration(&LrSearchInput {
+            planes,
+            crop_width: w as i32,
+            crop_height: h as i32,
+            ss_x: cfg.ss_x,
+            ss_y: cfg.ss_y,
+            bit_depth: i32::from(bd),
+            highbd: bd > 8,
+            rdmult: i64::from(rdmult),
+            dc_quant_qtx: i32::from(av1_dc_quant_qtx(qindex, 0, bd)),
+            mib_size_log2: mib_size_log2 as i32,
+            mi_rows,
+            mi_cols,
+            // `av1_pick_filter_restoration` walks tiles outer / SBs inner and
+            // resets the per-RU delta-coding references at every tile start.
+            // Single tile (asserted above) => one span per axis.
+            tile_sb_rows: vec![(p.tile_info.row_start_sb[0], p.tile_info.row_start_sb[1])],
+            tile_sb_cols: vec![(p.tile_info.col_start_sb[0], p.tile_info.col_start_sb[1])],
+            wiener_restore_cost: wiener_cost,
+            sgrproj_restore_cost: sgrproj_cost,
+            switchable_restore_cost: switchable_cost,
+            sf: crate::speed_features::lr_search_sf_allintra(
+                0,
+                qindex,
+                w,
+                h,
+                sct.allow_screen_content_tools,
+            ),
+        });
+        p.restoration.frame_restoration_type = outcome.frame_restoration_type;
+        p.restoration.restoration_unit_size = [outcome.unit_size; 3];
+        Some(outcome)
+    } else {
+        None
+    };
+
     // ---- phase 2: the real pack over the already-picked trees -------------
     // `av1_pack_bitstream` seeds a SECOND fresh tile context from `cm->fc` and
     // re-writes every symbol, now with the FINAL `tx_mode`. `search_tx_mode_is
@@ -1168,7 +1390,28 @@ pub fn encode_key_frame(
     let mut recon2_u = src_u.clone();
     let mut recon2_v = src_v.clone();
     let mut enc = OdEcEnc::new();
-    pack_tile_from_trees(
+    let lr_restores = lr_outcome.as_ref().is_some_and(|o| {
+        o.frame_restoration_type
+            .iter()
+            .any(|&t| t != LR_RESTORE_NONE)
+    });
+    // An all-NONE restoration outcome codes no LR symbols at all, so it takes
+    // the same path as restoration-off.
+    let lr_pack = lr_restores.then(|| {
+        let outcome = lr_outcome.as_ref().expect("lr_restores implies an outcome");
+        LrPackParams {
+            cfg: LrFrameConfig {
+                frame_restoration_type: outcome.frame_restoration_type,
+                unit_size: [outcome.unit_size; 3],
+                crop_width: w as i32,
+                crop_height: h as i32,
+                superres_denom: 0,
+            },
+            units: [&outcome.units[0], &outcome.units[1], &outcome.units[2]],
+            num_planes: cfg.num_planes(),
+        }
+    });
+    pack_tile_from_trees_lr(
         &mut enc,
         &env,
         &pick_cfg,
@@ -1184,7 +1427,8 @@ pub fn encode_key_frame(
         n_sb_x,
         sb_mi,
         sb_block,
-        None,
+        cdef_pack,
+        lr_pack.as_ref(),
     );
     let tile_bytes = enc.done().to_vec();
 

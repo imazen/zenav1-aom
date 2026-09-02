@@ -452,7 +452,8 @@ pub fn pack_leaf(
         let above_dv = has_above.then(|| grid.dv_at(mi_row - 1, mi_col));
         let left_dv = has_left.then(|| grid.dv_at(mi_row, mi_col - 1));
         let nbr_is_inter = |d: &Option<crate::intrabc_search::DvCell>| {
-            d.as_ref().is_some_and(|d| d.use_intrabc || d.ref_frame0 > 0)
+            d.as_ref()
+                .is_some_and(|d| d.use_intrabc || d.ref_frame0 > 0)
         };
         let skip_ctx = above_dv.as_ref().map_or(0, |d| usize::from(d.skip_txfm))
             + left_dv.as_ref().map_or(0, |d| usize::from(d.skip_txfm));
@@ -634,7 +635,10 @@ pub fn pack_leaf(
     // `use_intrabc` adaptation C's update_stats performs even when the final
     // header dropped the flag (the writer above coded nothing for it).
     if cfg.allow_update_cdf && !cfg.allow_intrabc && cfg.search_allow_intrabc {
-        debug_assert!(!winner.use_intrabc, "an IntraBC winner under a final allow_intrabc=0 header");
+        debug_assert!(
+            !winner.use_intrabc,
+            "an IntraBC winner under a final allow_intrabc=0 header"
+        );
         aom_dsp::entropy::cdf::update_cdf(&mut kf.intrabc, i32::from(winner.use_intrabc), 2);
     }
 
@@ -698,7 +702,11 @@ pub fn pack_leaf(
     // `write_tx_size_vartx` raster over max_tx_size units, which reads AND
     // updates the txfm-partition contexts itself (no `set_txfm_ctxs` here, and
     // the encode walk deliberately skipped its stamp on the OUTPUT path).
-    if cfg.tx_mode_is_select && bsize > 0 && !env.lossless && winner.use_intrabc && !winner.skip_txfm
+    if cfg.tx_mode_is_select
+        && bsize > 0
+        && !env.lossless
+        && winner.use_intrabc
+        && !winner.skip_txfm
     {
         let max_tx = crate::tx_search::MAX_TXSIZE_RECT_LOOKUP[bsize];
         let txbh = crate::var_tx::TX_SIZE_HIGH_UNIT[max_tx];
@@ -895,12 +903,10 @@ pub fn pack_leaf(
         // `pack_txb_tokens`'s `blk_row >= max_block_high(plane)` early return
         // (equivalent on a raster over a rectangle) and is <= the plane-bsize
         // extent `num_4x4_{w,h}` C clamps to, so it subsumes that bound too.
-        let mu_w_c = MI_SIZE_WIDE_B[aom_dsp::entropy::partition::get_plane_block_size(
-            12, env.ss_x, env.ss_y,
-        )];
-        let mu_h_c = MI_SIZE_HIGH_B[aom_dsp::entropy::partition::get_plane_block_size(
-            12, env.ss_x, env.ss_y,
-        )];
+        let mu_w_c = MI_SIZE_WIDE_B
+            [aom_dsp::entropy::partition::get_plane_block_size(12, env.ss_x, env.ss_y)];
+        let mu_h_c = MI_SIZE_HIGH_B
+            [aom_dsp::entropy::partition::get_plane_block_size(12, env.ss_x, env.ss_y)];
         let mut row = 0usize;
         while row < mi_h {
             let mut col = 0usize;
@@ -913,8 +919,18 @@ pub fn pack_leaf(
                     let mut bc = col;
                     while bc < uw {
                         pack_vartx_txb(
-                            enc, kf, cfg, env, winner, &out.y.txbs, &mut yc, br, bc, max_tx,
-                            max_bw, max_bh,
+                            enc,
+                            kf,
+                            cfg,
+                            env,
+                            winner,
+                            &out.y.txbs,
+                            &mut yc,
+                            br,
+                            bc,
+                            max_tx,
+                            max_bw,
+                            max_bh,
                         );
                         bc += bkw;
                     }
@@ -1010,7 +1026,16 @@ pub fn pack_leaf(
                 while br < uh {
                     let mut bc = col;
                     while bc < uw {
-                        write_one_txb(enc, kf, cfg, env, winner, &out.y.txbs[yc], winner.tx_size, 0);
+                        write_one_txb(
+                            enc,
+                            kf,
+                            cfg,
+                            env,
+                            winner,
+                            &out.y.txbs[yc],
+                            winner.tx_size,
+                            0,
+                        );
                         yc += 1;
                         bc += ytxw_u;
                     }
@@ -1269,7 +1294,21 @@ pub fn pack_sb(
                 let y = mi_row + ((idx as i32) >> 1) * hbs;
                 let x = mi_col + ((idx as i32) & 1) * hbs;
                 pack_sb(
-                    enc, env, cfg, kf, kfs, tile, nbr, grid, recon_y, recon_u, recon_v, cfl, child, y, x,
+                    enc,
+                    env,
+                    cfg,
+                    kf,
+                    kfs,
+                    tile,
+                    nbr,
+                    grid,
+                    recon_y,
+                    recon_u,
+                    recon_v,
+                    cfl,
+                    child,
+                    y,
+                    x,
                     subsize,
                     sb_current_qindex,
                     inter_cdfs.as_deref_mut(),
@@ -1688,7 +1727,8 @@ pub fn pack_tile_lr(
         let min_px = env.frame_min_dim();
         let want_large = pick_cfg.allintra && pick_cfg.speed >= 8 && min_px >= 720;
         assert_eq!(
-            pick_cfg.fs_sf.vbp.force_large_partition_blocks_intra, want_large,
+            pick_cfg.fs_sf.vbp.force_large_partition_blocks_intra,
+            want_large,
             "fs_sf.vbp.force_large_partition_blocks_intra is {} on a {}x{} crop \
              (short side {min_px}) at allintra={} speed={} — resolve it from the \
              frame's real dimensions (speed_features.c:326-328)",
@@ -1797,9 +1837,8 @@ pub fn pack_tile_lr(
                     // the SB source wavelet AC energy → the rate-ratio qindex,
                     // deadzone-quantized against the running base. SB is square
                     // (sb_mi×sb_mi); num_pels_log2 = log2(sb_px²).
-                    let sb_off = env.base_y
-                        + (mi_row as usize * 4) * env.stride
-                        + mi_col as usize * 4;
+                    let sb_off =
+                        env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
                     let sb_px = dq.sb_mi as usize * 4;
                     let num_pels_log2 = (sb_px * sb_px).trailing_zeros();
                     crate::allintra_vis::setup_delta_q_perceptual(
@@ -1816,9 +1855,8 @@ pub fn pack_tile_lr(
                         search_base_qindex,
                     )
                 } else {
-                    let sb_off = env.base_y
-                        + (mi_row as usize * 4) * env.stride
-                        + mi_col as usize * 4;
+                    let sb_off =
+                        env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
                     crate::allintra_vis::setup_delta_q_variance_boost(
                         env.src_y,
                         sb_off,
@@ -1930,7 +1968,11 @@ pub fn pack_tile_lr(
                 row_real = Some(crate::real_costs::derive_real_costs(
                     kf,
                     pick_cfg.enable_filter_intra,
-                    Some((&pack_tile_ctx.search_palette_y_mode, &pack_tile_ctx.search_palette_y_size, &pack_tile_ctx.search_tx_size)),
+                    Some((
+                        &pack_tile_ctx.search_palette_y_mode,
+                        &pack_tile_ctx.search_palette_y_size,
+                        &pack_tile_ctx.search_tx_size,
+                    )),
                 ));
             }
             let sb_real: Option<&crate::real_costs::RealCosts> = row_real.as_ref();
@@ -2240,6 +2282,50 @@ pub fn pack_tile_from_trees(
     sb_size: usize,
     cdef: Option<CdefPackState>,
 ) {
+    pack_tile_from_trees_lr(
+        enc, env, pick_cfg, pack_cfg, kf, recon_y, recon_u, recon_v, trees, mi_row0, mi_col0,
+        n_sb_rows, n_sb_cols, sb_mi, sb_size, cdef, None,
+    )
+}
+
+/// [`pack_tile_from_trees`] plus the interleaved loop-restoration unit writes
+/// [`pack_tile_lr`] performs — i.e. the phase-2 pack for a frame with **CDEF
+/// AND loop restoration both on**, which is real aomenc's ALLINTRA default.
+///
+/// Neither predecessor covered that combination: `pack_tile_from_trees` carried
+/// only the CDEF strength literals and `pack_tile_lr` only the per-RU
+/// restoration params, so a default-config frame had no pack entry point.
+/// `lr = None` is byte-identical to [`pack_tile_from_trees`] (it IS that
+/// function's body), and the LR block below is the same one `pack_tile_lr`
+/// runs, at the same place in the walk (`write_modes_sb`, bitstream.c:1625-1645
+/// — at the superblock root, BEFORE the partition symbol, per plane in
+/// (plane, rrow, rcol) order), sharing the same tile context so the LR CDFs
+/// adapt in step.
+///
+/// `LrRefState` is reset per call, matching C's `av1_reset_loop_restoration`
+/// (called from `write_modes` once per tile) — so the per-RU delta-coding
+/// references are tile-local exactly as in `pack_tile_lr`.
+#[allow(clippy::too_many_arguments)]
+pub fn pack_tile_from_trees_lr(
+    enc: &mut OdEcEnc,
+    env: &SbEncodeEnv,
+    pick_cfg: &PickFrameCfg,
+    pack_cfg: &PackCfg,
+    kf: &mut KfFrameContext,
+    recon_y: &mut [u16],
+    recon_u: &mut [u16],
+    recon_v: &mut [u16],
+    trees: &mut [SbTree],
+    mi_row0: i32,
+    mi_col0: i32,
+    n_sb_rows: i32,
+    n_sb_cols: i32,
+    sb_mi: i32,
+    sb_size: usize,
+    cdef: Option<CdefPackState>,
+    lr: Option<&LrPackParams<'_>>,
+) {
+    let mut lr_refs = LrRefState::default();
     // The two-pass (CDEF/LR) pack is intra-frame machinery today; an inter
     // frame with CDEF/LR signalling is a later rung, so no inter CDF set is
     // threaded here (pack_leaf's inter branch would fail loudly if reached).
@@ -2311,8 +2397,7 @@ pub fn pack_tile_from_trees(
             // `sb_base_rdmult == env.rdmult`, i.e. byte-identical to the prior
             // CDEF-repack behaviour.
             let (sb_current_qindex, dq_rows) = if let Some(dq) = &env.deltaq {
-                let sb_off =
-                    env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+                let sb_off = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
                 let adjusted = crate::allintra_vis::setup_delta_q_variance_boost(
                     env.src_y,
                     sb_off,
@@ -2401,7 +2486,11 @@ pub fn pack_tile_from_trees(
                 row_real = Some(crate::real_costs::derive_real_costs(
                     kf,
                     pick_cfg.enable_filter_intra,
-                    Some((&pack_tile_ctx.search_palette_y_mode, &pack_tile_ctx.search_palette_y_size, &pack_tile_ctx.search_tx_size)),
+                    Some((
+                        &pack_tile_ctx.search_palette_y_mode,
+                        &pack_tile_ctx.search_palette_y_size,
+                        &pack_tile_ctx.search_tx_size,
+                    )),
                 ));
             }
             let sb_real: Option<&crate::real_costs::RealCosts> = row_real.as_ref();
@@ -2428,6 +2517,38 @@ pub fn pack_tile_from_trees(
                     ..*env
                 }
             };
+
+            // The same superblock-root LR interleave `pack_tile_lr` writes
+            // (see this function's docs): every restoration unit whose corner
+            // falls inside this SB, per plane, BEFORE the partition symbol.
+            if let Some(lr) = lr {
+                for plane in 0..lr.num_planes {
+                    if lr.cfg.frame_restoration_type[plane] == LR_RESTORE_NONE {
+                        continue;
+                    }
+                    if let Some((rc0, rc1, rr0, rr1)) = lr_corners_in_sb(
+                        &lr.cfg, plane, env.ss_x, env.ss_y, mi_row, mi_col, sb_mi, sb_mi,
+                    ) {
+                        let (hu, _) = lr.cfg.plane_units(plane, env.ss_x, env.ss_y);
+                        for rr in rr0..rr1 {
+                            for rc in rc0..rc1 {
+                                let runit_idx = (rc + rr * hu) as usize;
+                                write_lr_unit(
+                                    enc,
+                                    &lr.units[plane][runit_idx],
+                                    lr.cfg.frame_restoration_type[plane],
+                                    plane,
+                                    &mut lr_refs,
+                                    &mut kf.switchable_restore,
+                                    &mut kf.wiener_restore,
+                                    &mut kf.sgrproj_restore,
+                                    pack_cfg.allow_update_cdf,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
 
             let mut cfl_pack = CflCtx::new(env.ss_x as i32, env.ss_y as i32);
             let tree = &mut trees[(r * n_sb_cols + c) as usize];

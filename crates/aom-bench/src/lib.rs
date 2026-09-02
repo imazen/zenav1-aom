@@ -3168,15 +3168,12 @@ pub fn parse_restoration_decision(stream: &[u8]) -> ([u8; 3], [i32; 3]) {
     )
 }
 
-/// The `lpf_sf` loop-restoration slice for the ALLINTRA path:
-/// `set_allintra_speed_features_framesize_independent` (speed_features.c:
-/// dual_sgr/ep-pruning at speed>=1; wiener-src-var + sgr-from-wiener prunes
-/// at speed>=2; reduced window / prune upgrades at speed>=3; full disable at
-/// speed>=5 — moot here because the REAL encoder also clears the seq
-/// `enable_restoration` bit at those speeds) + the qindex-dependent
-/// unit-size-search bounds (`av1_set_speed_features_qindex_dependent`:
-/// full 64..256 descent at speed 0; the single-size rule for allintra
-/// speed>=1: 128 when qindex <= 96 on sub-1440p frames, else 256).
+/// The `lpf_sf` loop-restoration slice for the ALLINTRA path.
+///
+/// [Moved 2026-09-02 to [`aom_encode::speed_features::lr_search_sf_allintra`]
+/// so `aom_encode::key_frame`'s bootstrap-free encoder can derive it too —
+/// `aom-encode` cannot depend on `aom-bench`. Kept here as a delegating
+/// re-export so every existing caller and gate is unchanged.]
 pub fn lr_search_sf_allintra(
     speed: i32,
     qindex: i32,
@@ -3184,49 +3181,13 @@ pub fn lr_search_sf_allintra(
     h: usize,
     allow_screen_content_tools: bool,
 ) -> LrSearchSf {
-    let mut sf = LrSearchSf::default();
-    if speed >= 1 {
-        sf.dual_sgr_penalty_level = 1;
-        sf.enable_sgr_ep_pruning = 1;
-    }
-    if speed >= 2 {
-        sf.prune_wiener_based_on_src_var = 1;
-        sf.prune_sgr_based_on_wiener = 1;
-    }
-    if speed >= 3 {
-        sf.prune_sgr_based_on_wiener = if allow_screen_content_tools { 1 } else { 2 };
-        sf.disable_loop_restoration_chroma = false;
-        sf.reduce_wiener_window_size = true;
-        sf.prune_wiener_based_on_src_var = 2;
-    }
-    if speed >= 5 {
-        sf.disable_wiener_filter = true;
-        sf.disable_sgr_filter = true;
-    }
-    // Unit-size search bounds (qindex-dependent setter, all modes).
-    sf.min_lr_unit_size = 64; // RESTORATION_PROC_UNIT_SIZE
-    sf.max_lr_unit_size = 256; // RESTORATION_UNITSIZE_MAX
-    let is_1440p_or_larger = w.min(h) >= 1440;
-    let is_720p_or_larger = w.min(h) >= 720;
-    if speed >= 1 {
-        if is_1440p_or_larger {
-            sf.min_lr_unit_size = 256;
-        } else if is_720p_or_larger {
-            sf.min_lr_unit_size = 128;
-        }
-    }
-    // `speed >= 3 || (mode == ALLINTRA && speed >= 1)` — this helper IS the
-    // allintra arm.
-    if speed >= 1 {
-        if qindex <= 96 && !is_1440p_or_larger {
-            sf.min_lr_unit_size = 128;
-            sf.max_lr_unit_size = 128;
-        } else {
-            sf.min_lr_unit_size = 256;
-            sf.max_lr_unit_size = 256;
-        }
-    }
-    sf
+    aom_encode::speed_features::lr_search_sf_allintra(
+        speed,
+        qindex,
+        w,
+        h,
+        allow_screen_content_tools,
+    )
 }
 
 /// The `lpf_sf` loop-restoration slice for the GOOD path
