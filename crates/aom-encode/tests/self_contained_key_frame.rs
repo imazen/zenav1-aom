@@ -57,135 +57,260 @@ fn walk_obus(bytes: &[u8]) -> Vec<(u32, std::ops::Range<usize>)> {
     out
 }
 
-/// A deterministic content generator: diagonal gradient + vertical bars
-/// (period 16) + a fine ripple. Same shape as
-/// `encoder_gate_e2e_byte_match.rs`'s strong-LF generator, so the loop-filter
-/// levels the port derives are genuinely non-trivial.
-fn diag_vbars16_ripple(r: usize, col: usize) -> u8 {
-    let grad = 32 + (r + col) * 150 / 256;
-    let bar = if (col / 16) % 2 == 0 { 0 } else { 45 };
-    let ripple = if (r + col) % 2 == 0 { 14 } else { -14 };
-    (grad as i32 + bar + ripple).clamp(0, 255) as u8
+/// The content classes the sweep covers. Deterministic and cheap so the gate
+/// is reproducible on any host; no corpus dependency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Content {
+    /// Flat mid-grey — the trivially-lossless control.
+    Flat,
+    /// Diagonal luminance ramp — smooth, DC/near-DC dominated.
+    Gradient,
+    /// Diagonal gradient + vertical bars (period 16) + a fine ripple. Same
+    /// shape as `encoder_gate_e2e_byte_match.rs`'s strong-LF generator, so the
+    /// loop-filter levels the port derives are genuinely non-trivial.
+    Texture,
+    /// Deterministic hash noise — worst case for the transform/trellis.
+    Noise,
+    /// 8x8 black/white checkerboard — a screen-content-ish extreme that
+    /// exercises the palette/IntraBC detector's counters.
+    Checker,
 }
 
-/// Flat mid-grey — the trivially-lossless control.
-fn flat(_r: usize, _c: usize) -> u8 {
-    128
+fn content_sample(kind: Content, r: usize, col: usize) -> i32 {
+    match kind {
+        Content::Flat => 128,
+        Content::Gradient => (32 + (r + col) * 150 / 256) as i32,
+        Content::Texture => {
+            let grad = 32 + (r + col) * 150 / 256;
+            let bar = if (col / 16) % 2 == 0 { 0 } else { 45 };
+            let ripple = if (r + col) % 2 == 0 { 14 } else { -14 };
+            grad as i32 + bar + ripple
+        }
+        Content::Noise => {
+            let mut x = (r as u32)
+                .wrapping_mul(2_654_435_761)
+                .wrapping_add((col as u32).wrapping_mul(40503));
+            x ^= x >> 13;
+            x = x.wrapping_mul(1_274_126_177);
+            x ^= x >> 16;
+            (x & 0xff) as i32
+        }
+        Content::Checker => {
+            if ((r / 8) + (col / 8)) % 2 == 0 {
+                16
+            } else {
+                235
+            }
+        }
+    }
 }
 
 /// One gate cell.
+#[derive(Clone, Debug)]
 struct Cell {
-    label: &'static str,
+    label: String,
     w: usize,
     h: usize,
+    bd: u8,
     mono: bool,
     ss_x: usize,
     ss_y: usize,
     cq: i32,
-    content: fn(usize, usize) -> u8,
+    content: Content,
 }
 
-const CELLS: &[Cell] = &[
-    Cell {
-        label: "flat_mono_64x64_cq32",
-        w: 64,
-        h: 64,
-        mono: true,
-        ss_x: 1,
-        ss_y: 1,
-        cq: 32,
-        content: flat,
-    },
-    Cell {
-        label: "flat_420_64x64_cq32",
-        w: 64,
-        h: 64,
-        mono: false,
-        ss_x: 1,
-        ss_y: 1,
-        cq: 32,
-        content: flat,
-    },
-    Cell {
-        label: "texture_mono_64x64_cq32",
-        w: 64,
-        h: 64,
-        mono: true,
-        ss_x: 1,
-        ss_y: 1,
-        cq: 32,
-        content: diag_vbars16_ripple,
-    },
-    Cell {
-        label: "texture_420_64x64_cq32",
-        w: 64,
-        h: 64,
-        mono: false,
-        ss_x: 1,
-        ss_y: 1,
-        cq: 32,
-        content: diag_vbars16_ripple,
-    },
-    Cell {
-        label: "texture_420_64x64_cq10",
-        w: 64,
-        h: 64,
-        mono: false,
-        ss_x: 1,
-        ss_y: 1,
-        cq: 10,
-        content: diag_vbars16_ripple,
-    },
-    Cell {
-        label: "texture_420_64x64_cq55",
-        w: 64,
-        h: 64,
-        mono: false,
-        ss_x: 1,
-        ss_y: 1,
-        cq: 55,
-        content: diag_vbars16_ripple,
-    },
-    Cell {
-        label: "texture_444_128x96_cq40",
-        w: 128,
-        h: 96,
-        mono: false,
-        ss_x: 0,
-        ss_y: 0,
-        cq: 40,
-        content: diag_vbars16_ripple,
-    },
-    Cell {
-        label: "texture_422_128x64_cq24",
-        w: 128,
-        h: 64,
-        mono: false,
-        ss_x: 1,
-        ss_y: 0,
-        cq: 24,
-        content: diag_vbars16_ripple,
-    },
-    Cell {
-        label: "texture_420_128x128_cq32",
-        w: 128,
-        h: 128,
-        mono: false,
-        ss_x: 1,
-        ss_y: 1,
-        cq: 32,
-        content: diag_vbars16_ripple,
-    },
-];
+impl Cell {
+    fn new(
+        label: String,
+        w: usize,
+        h: usize,
+        bd: u8,
+        mono: bool,
+        ss_x: usize,
+        ss_y: usize,
+        cq: i32,
+        content: Content,
+    ) -> Self {
+        Cell {
+            label,
+            w,
+            h,
+            bd,
+            mono,
+            ss_x,
+            ss_y,
+            cq,
+            content,
+        }
+    }
+}
 
-/// Source planes for a cell (luma from `content`, chroma flat mid-grey — the
-/// same convention `encoder_gate_e2e_byte_match.rs` uses).
+/// The byte-exact sweep. Axes, and why each is here:
+///
+/// * **A — quantizer, cq 0..63 step 5 plus 63.** CLAUDE.md's sweep rule: the
+///   low-q half carries the same density as the high-q half, because that is
+///   where the structural problems hide. cq 0 is the `coded_lossless` arm
+///   (ONLY_4X4 + WHT), cq 63 the degenerate high-q one.
+/// * **B — chroma format x bit depth**, the full 4x3 grid (mono / 4:2:0 /
+///   4:2:2 / 4:4:4 x bd 8/10/12). Profile 0, 1 and 2 are all reached.
+/// * **C — size ladder from tiny to large**, 16x16 up to 512x512. The tiny end
+///   is where the fixed header cost dominates (a 16x16 frame is 39 bytes, of
+///   which ~12 are framing) and the large end is where the per-pixel work does.
+/// * **D — crops and partial superblocks**, including 1x1/4x4/8x8 and sizes
+///   whose mi grid is not a whole number of SB64s. 258x258 and 262x262 are
+///   REGRESSION LOCKS on the 2026-09-02 screen-detector fix (they coded
+///   `allow_screen_content_tools = 1` against C's 0 while the detector was
+///   handed the crop instead of the 8-aligned `y_width`/`y_height`).
+/// * **E — content classes** at two sizes.
+/// * **F — low-q density**, cq 1..19 step 2, where every byte matters.
+fn sweep_cells() -> Vec<Cell> {
+    use Content::*;
+    let mut v = Vec::new();
+    for cq in [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 63] {
+        v.push(Cell::new(
+            format!("A_cq{cq}_64x64_420_bd8_tex"),
+            64,
+            64,
+            8,
+            false,
+            1,
+            1,
+            cq,
+            Texture,
+        ));
+    }
+    for (nm, mono, sx, sy) in [
+        ("mono", true, 1usize, 1usize),
+        ("420", false, 1, 1),
+        ("422", false, 1, 0),
+        ("444", false, 0, 0),
+    ] {
+        for bd in [8u8, 10, 12] {
+            v.push(Cell::new(
+                format!("B_{nm}_bd{bd}_64x64_cq32_tex"),
+                64,
+                64,
+                bd,
+                mono,
+                sx,
+                sy,
+                32,
+                Texture,
+            ));
+        }
+    }
+    for s in [16usize, 32, 48, 64, 96, 128, 192, 256, 320, 384, 512] {
+        v.push(Cell::new(
+            format!("C_{s}x{s}_420_bd8_cq32_tex"),
+            s,
+            s,
+            8,
+            false,
+            1,
+            1,
+            32,
+            Texture,
+        ));
+    }
+    for (w, h) in [
+        (1usize, 1usize),
+        (4, 4),
+        (8, 8),
+        (66, 34),
+        (100, 60),
+        (130, 70),
+        (200, 200),
+        (250, 130),
+        (258, 258),
+        (262, 262),
+        (263, 263),
+        (264, 264),
+    ] {
+        v.push(Cell::new(
+            format!("D_{w}x{h}_420_bd8_cq32_tex"),
+            w,
+            h,
+            8,
+            false,
+            1,
+            1,
+            32,
+            Texture,
+        ));
+    }
+    for (nm, k) in [
+        ("flat", Flat),
+        ("grad", Gradient),
+        ("tex", Texture),
+        ("noise", Noise),
+        ("check", Checker),
+    ] {
+        for s in [64usize, 128] {
+            v.push(Cell::new(
+                format!("E_{nm}_{s}x{s}_420_bd8_cq32"),
+                s,
+                s,
+                8,
+                false,
+                1,
+                1,
+                32,
+                k,
+            ));
+        }
+    }
+    for cq in [1, 3, 5, 7, 9, 11, 13, 15, 17, 19] {
+        v.push(Cell::new(
+            format!("F_cq{cq}_128x128_420_bd8_tex"),
+            128,
+            128,
+            8,
+            false,
+            1,
+            1,
+            cq,
+            Texture,
+        ));
+    }
+    v
+}
+
+/// A smaller spread for the (slower) two-decoder pixel gate: every axis is
+/// represented, so a framing or header regression cannot hide.
+fn decode_cells() -> Vec<Cell> {
+    let keep = [
+        "A_cq0_64x64_420_bd8_tex",
+        "A_cq63_64x64_420_bd8_tex",
+        "B_mono_bd8_64x64_cq32_tex",
+        "B_444_bd12_64x64_cq32_tex",
+        "B_422_bd10_64x64_cq32_tex",
+        "C_16x16_420_bd8_cq32_tex",
+        "C_512x512_420_bd8_cq32_tex",
+        "D_1x1_420_bd8_cq32_tex",
+        "D_100x60_420_bd8_cq32_tex",
+        "D_258x258_420_bd8_cq32_tex",
+        "E_flat_64x64_420_bd8_cq32",
+        "E_noise_128x128_420_bd8_cq32",
+        "F_cq1_128x128_420_bd8_tex",
+    ];
+    sweep_cells()
+        .into_iter()
+        .filter(|c| keep.contains(&c.label.as_str()))
+        .collect()
+}
+
+/// Source planes for a cell: luma from the content generator scaled into the
+/// cell's bit depth, chroma flat mid-grey (the convention
+/// `encoder_gate_e2e_byte_match.rs` uses -- only the luma decision space is
+/// stressed).
 fn cell_planes(cell: &Cell) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let (w, h) = (cell.w, cell.h);
+    let maxv = (1u32 << cell.bd) - 1;
     let mut y = vec![0u16; w * h];
     for r in 0..h {
         for col in 0..w {
-            y[r * w + col] = u16::from((cell.content)(r, col));
+            let v8 = content_sample(cell.content, r, col).clamp(0, 255) as u32;
+            y[r * w + col] = ((v8 * maxv) / 255) as u16;
         }
     }
     let (cw, ch) = if cell.mono {
@@ -193,11 +318,14 @@ fn cell_planes(cell: &Cell) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     } else {
         ((w + cell.ss_x) >> cell.ss_x, (h + cell.ss_y) >> cell.ss_y)
     };
-    (y, vec![128u16; cw * ch], vec![128u16; cw * ch])
+    let mid = (maxv / 2 + 1) as u16;
+    (y, vec![mid; cw * ch], vec![mid; cw * ch])
 }
 
 fn cell_cfg(cell: &Cell) -> KeyFrameConfig {
-    KeyFrameConfig::allintra_speed0(cell.w, cell.h, 8, cell.mono, cell.ss_x, cell.ss_y, cell.cq)
+    KeyFrameConfig::allintra_speed0(
+        cell.w, cell.h, cell.bd, cell.mono, cell.ss_x, cell.ss_y, cell.cq,
+    )
 }
 
 /// Run the port's bootstrap-free encoder for a cell.
@@ -214,7 +342,7 @@ fn c_stream(cell: &Cell, y: &[u16], u: &[u16], v: &[u16]) -> Vec<u8> {
         v,
         cell.w,
         cell.h,
-        8,
+        cell.bd as i32,
         cell.mono,
         cell.ss_x as i32,
         cell.ss_y as i32,
@@ -239,7 +367,17 @@ fn c_stream(cell: &Cell, y: &[u16], u: &[u16], v: &[u16]) -> Vec<u8> {
 #[test]
 fn no_seq_header_stream_is_rejected_by_the_c_decoder() {
     c::ref_init();
-    let cell = &CELLS[0];
+    let cell = &Cell::new(
+        "flat_mono_64x64_cq32".to_string(),
+        64,
+        64,
+        8,
+        true,
+        1,
+        1,
+        32,
+        Content::Flat,
+    );
     let (y, u, v) = cell_planes(cell);
     let full = port_stream(cell, &y, &u, &v);
 
@@ -291,9 +429,10 @@ fn no_seq_header_stream_is_rejected_by_the_c_decoder() {
 #[test]
 fn self_contained_key_frame_byte_matches_real_aomenc() {
     c::ref_init();
+    let cells = sweep_cells();
     let mut exact = 0usize;
     let mut failures = Vec::new();
-    for cell in CELLS {
+    for cell in &cells {
         let (y, u, v) = cell_planes(cell);
         let ours = port_stream(cell, &y, &u, &v);
         let theirs = c_stream(cell, &y, &u, &v);
@@ -327,12 +466,12 @@ fn self_contained_key_frame_byte_matches_real_aomenc() {
         failures.is_empty(),
         "{}/{} cells byte-exact; failures:\n  {}",
         exact,
-        CELLS.len(),
+        cells.len(),
         failures.join("\n  ")
     );
     eprintln!(
         "self_contained_key_frame_byte_matches_real_aomenc: {exact}/{} cells byte-exact",
-        CELLS.len()
+        cells.len()
     );
 }
 
@@ -342,7 +481,12 @@ fn self_contained_key_frame_byte_matches_real_aomenc() {
 #[test]
 fn self_contained_key_frame_decodes_to_the_same_pixels() {
     c::ref_init();
-    for cell in CELLS {
+    let cells = decode_cells();
+    assert!(
+        !cells.is_empty(),
+        "decode_cells() must not silently select nothing"
+    );
+    for cell in &cells {
         let (y, u, v) = cell_planes(cell);
         let ours = port_stream(cell, &y, &u, &v);
         let theirs = c_stream(cell, &y, &u, &v);
@@ -378,7 +522,7 @@ fn self_contained_key_frame_decodes_to_the_same_pixels() {
 
         // The flat cells are trivially reproducible: the decode must return the
         // source exactly.
-        if cell.content as usize == flat as usize {
+        if cell.content == Content::Flat {
             assert_eq!(
                 c_ours.y, y,
                 "{}: flat decode.y must equal the source",
@@ -390,6 +534,10 @@ fn self_contained_key_frame_decodes_to_the_same_pixels() {
             cell.label, cell.w, cell.h
         );
     }
+    eprintln!(
+        "self_contained_key_frame_decodes_to_the_same_pixels: {} cells, both decoders",
+        cells.len()
+    );
 }
 
 /// **Mutation proof.** Perturb ONE field the shell derives — the coded
@@ -405,7 +553,18 @@ fn self_contained_key_frame_decodes_to_the_same_pixels() {
 #[test]
 fn mutated_sequence_header_is_caught() {
     c::ref_init();
-    let cell = &CELLS[3]; // texture_420_64x64_cq32 — a non-trivial reconstruction
+    // A non-trivial reconstruction (textured 4:2:0 at cq 32).
+    let cell = &Cell::new(
+        "texture_420_64x64_cq32".to_string(),
+        64,
+        64,
+        8,
+        false,
+        1,
+        1,
+        32,
+        Content::Texture,
+    );
     let (y, u, v) = cell_planes(cell);
     let truth = port_stream(cell, &y, &u, &v);
     let c_truth = c_stream(cell, &y, &u, &v);
@@ -539,4 +698,84 @@ fn refuses_configurations_it_has_no_gate_for() {
         ),
         Err(KeyFrameError::MultiTileRequired { .. })
     ));
+}
+
+/// **Open divergences, PINNED.** These cells are NOT byte-identical to real
+/// aomenc, and this test asserts the divergence is STILL PRESENT so a fix flips
+/// it red and forces promotion into [`sweep_cells`] (this repo's self-promoting
+/// pin convention — see the PARITY.md Tier-3 rows).
+///
+/// **None of them is a framing or header-derivation defect in the shell.**
+/// Measured 2026-09-02 by parsing both streams' headers:
+///
+/// | cell | measured attribution |
+/// |---|---|
+/// | 132x132, 196x196, 260x260 (4:2:0 bd8 cq32 textured) | EVERY derived header field equals C's — `allow_screen_content_tools`, `base_qindex`, both loop-filter levels, `tx_mode_select`, the tile grid — and the sequence-header OBU payload is byte-identical. The divergence starts 367 / 525 / 1240 bytes INTO the tile payload: a partition/RD near-tie in `pack_tile`'s search, the class PARITY.md Tier-3 already tracks. It is reachable from the bootstrapped harness too. |
+/// | 261x261 (4:2:0 bd8 cq32 textured) | `pick_filter_level` derives `filter_level = [0, 1]` where real aomenc codes `[0, 2]` — an off-by-one in the loop-filter-level search on this frame, visible at frame-payload byte 3. Everything else agrees. |
+///
+/// The neighbours bracket both: 130x70, 200x200, 250x130, 258x258, 262x262,
+/// 263x263, 264x264, 256x256 and 320x320 are all byte-exact in
+/// [`sweep_cells`], so neither pin is "the port cannot do partial superblocks".
+#[test]
+fn open_divergences_are_pinned() {
+    c::ref_init();
+    let pins = [
+        (
+            132usize,
+            132usize,
+            "tile-payload RD near-tie (headers all agree)",
+        ),
+        (196, 196, "tile-payload RD near-tie (headers all agree)"),
+        (260, 260, "tile-payload RD near-tie (headers all agree)"),
+        (261, 261, "pick_filter_level derives [0,1] vs C's [0,2]"),
+    ];
+    for &(w, h, why) in &pins {
+        let cell = Cell::new(
+            format!("PIN_{w}x{h}_420_bd8_cq32_tex"),
+            w,
+            h,
+            8,
+            false,
+            1,
+            1,
+            32,
+            Content::Texture,
+        );
+        let (y, u, v) = cell_planes(&cell);
+        let ours = port_stream(&cell, &y, &u, &v);
+        let theirs = c_stream(&cell, &y, &u, &v);
+        assert_ne!(
+            ours, theirs,
+            "{}x{} is now BYTE-EXACT ({why}). That is good news: delete it from \
+             open_divergences_are_pinned and add it to sweep_cells(), and say in the \
+             commit message what closed it.",
+            w, h
+        );
+        // The divergence must NOT be in the sequence header: the shell's own
+        // derivation is proven correct even on the pinned cells.
+        let ours_seq = walk_obus(&ours)
+            .into_iter()
+            .find(|(t, _)| *t == OBU_SEQUENCE_HEADER)
+            .map(|(_, s)| ours[s].to_vec())
+            .expect("port stream has a sequence header");
+        let theirs_seq = walk_obus(&theirs)
+            .into_iter()
+            .find(|(t, _)| *t == OBU_SEQUENCE_HEADER)
+            .map(|(_, s)| theirs[s].to_vec())
+            .expect("C stream has a sequence header");
+        assert_eq!(
+            ours_seq, theirs_seq,
+            "{w}x{h}: the PORT-AUTHORED sequence-header OBU diverges from C's. That is a \
+             shell defect, not the pinned {why} — fix it rather than widening this pin."
+        );
+        // And both streams must still decode to a real frame: a pinned RD tie is
+        // a different bitstream, never an invalid one.
+        let dec = c::ref_decode_av1_kf(&ours, w, h);
+        assert_eq!(
+            dec.y.len(),
+            w * h,
+            "{w}x{h}: the port's pinned stream must decode"
+        );
+        eprintln!("PIN {w}x{h}: still divergent ({why}); seq header byte-exact; decodes");
+    }
 }
