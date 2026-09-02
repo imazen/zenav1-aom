@@ -19,23 +19,26 @@
   (the ported detector now DRIVES the encode instead of being asserted against
   C's header), the tile grid, the loop-filter levels, and the `tx_mode`
   SELECT→LARGEST flip via a new `key_frame::txb_split_count` over the port's own
-  winner trees. **96/96 cells byte-identical to real aomenc** across cq 0..63
+  winner trees. **186/186 cells byte-identical to real aomenc** across cq 0..63
   (step 5, plus a 1..19 step-2 low-q arm), {mono, 4:2:0, 4:2:2, 4:4:4} × bd
   {8, 10, 12}, 16×16..512×512, 12 crop/partial-SB sizes including 1×1, and 5
   content classes; both the real C decoder and `aom-decode` decode the port's
   own stream to the pixels real aomenc's stream decodes to. All four
-  (CDEF, loop-restoration) combinations are covered, **including both on —
-  real aomenc's ALLINTRA default**; configurations outside the gated envelope
-  (`--cpu-used != 0`, non-ALLINTRA usage, multi-tile) are REFUSED by name via
-  `KeyFrameError`. Total: **96/96 cells byte-identical**.
+  (CDEF, loop-restoration) combinations are covered, and **`--cpu-used` 0..=9**;
+  real aomenc's ALLINTRA default (CDEF **off**, restoration **on** —
+  `av1_cx_iface.c:3067`) is byte-gated at every speed; multi-tile is covered where
+  `av1_get_tile_limits` mandates it; configurations outside the gated envelope
+  (non-ALLINTRA usage, an out-of-range `--cpu-used` or `--cq-level`, a chroma
+  format that is not 4:2:0 / 4:2:2 / 4:4:4, mismatched plane sizes) are REFUSED
+  by name via `KeyFrameError`. Total: **186/186 cells byte-identical**.
   Gate: `aom-encode/tests/self_contained_key_frame.rs` (6 tests, including a
   measured proof that a stream without the sequence header is rejected by the
   real C decoder, and a mutation proof that both the byte gate and the pixel
   gate can go red).
 
 - **`aom_encode::pack::pack_tile_from_trees_lr`** — the phase-2 pack for a frame
-  with CDEF **and** loop restoration on, which is real aomenc's ALLINTRA
-  default and which neither predecessor covered (`pack_tile_from_trees` carried
+  with CDEF **and** loop restoration on (`--enable-cdef=1
+  --enable-restoration=1`), which neither predecessor covered (`pack_tile_from_trees` carried
   only the CDEF strength literals, `pack_tile_lr` only the interleaved per-RU
   restoration params). Additive: `pack_tile_from_trees` now delegates to it
   with `lr: None` and is byte-unchanged, and the LR block is the same one
@@ -51,6 +54,46 @@
   search speed features (`aom-encode` cannot depend on `aom-bench`).
   `aom_bench::lr_search_sf_allintra` delegates to it, so every existing caller
   and gate is unchanged.
+
+- **The encode shell handed the pack a past-the-end tile-bound sentinel.**
+  `SbEncodeEnv::tile_row_end` / `tile_col_end` were `1 << 16` instead of C's
+  `AOMMIN(tile_end, mi_rows/mi_cols)` clamp (`av1_tile_set_row` / `_col`,
+  `tile_common.c`), which changes the search's frame-edge decisions on any
+  frame whose superblock grid overhangs its mi grid. Found while wiring
+  multi-tile (the per-tile loop stamps the real bounds), and bite-proved by
+  reverting the clamp: 131×131, 132×64, 132×128, 132×132, 196×64, 196×196,
+  260×260 and 261×261 (textured 4:2:0 cq32 speed 0) ALL diverge from real
+  aomenc with the sentinel and are ALL byte-identical with the clamp. Four of
+  those eight had been pinned in the gate as "RD near-ties"; they were this,
+  and they are now the regression lock on the fix.
+
+- **The standalone encode's tile-count derivation missed `set_tile_info`'s
+  stricter column minimum.** `encoder.c:386-390` recomputes it with
+  `(max_width_sb << k) <= sb_cols`, one more than `av1_get_tile_limits`' own
+  `tile_log2` (`<`). They differ by exactly one when `sb_cols` is an exact
+  multiple-by-power-of-two of `max_width_sb` — at SB64 that is a frame whose mi
+  width rounds to `sb_cols == 64` (4033..4096 px: two tiles) or `== 128`
+  (8192 px: four tiles) — so a 4096-wide frame coded ONE tile where real aomenc
+  codes two. Bite-proved by weakening the loop back to `<`: 4033×64, 4096×64
+  and 8192×64 diverge, 4032×64 / 4097×64 / 4160×64 / 2048×64 do not. All seven
+  are now sweep cells.
+
+- **Multi-tile in the standalone encode**, in the form `av1_get_tile_limits`
+  MANDATES it (frames wider than `MAX_TILE_WIDTH`, or larger than
+  `MAX_TILE_AREA`). Each tile is packed independently with a fresh frame
+  context — C's `write_modes` per-tile reset — and assembled through
+  `obu_assemble::assemble_multitile_frame_obu_payload_derived`, which fills in
+  `context_update_tile_id` and `tile_size_bytes_minus_1` from the real tile
+  sizes. Byte-gated at speeds 0..6 on 4160×64, 4224×128, 4160×192 (two tiles)
+  and 8320×64 (three tiles).
+
+- **`--cpu-used` 0..=9 in the standalone encode.** Threads the speed through
+  every speed-dependent derivation, including two arms the shell had wrong:
+  the loop-filter pick method (`LPF_PICK_FROM_FULL_IMAGE` dual at speed 0..3,
+  `..._NON_DUAL` at 4/5, the closed-form `LPF_PICK_FROM_Q` at ≥ 6, and no
+  search at all at coded-lossless), and `speed_features.c:2753`, which CLEARS
+  the sequence header's `enable_restoration` bit at allintra speed ≥ 5
+  regardless of `--enable-restoration`.
 
 ### Fixed
 

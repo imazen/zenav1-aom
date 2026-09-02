@@ -21,11 +21,13 @@ SELECT→LARGEST flip (`encodeframe.c:2797`) via a new `key_frame::txb_split_cou
 over the port's own winner trees.
 
 **Gate** (`aom-encode/tests/self_contained_key_frame.rs`, 6 tests, 22 s):
-**96/96 cells byte-identical to real aomenc's whole temporal unit** — cq 0..63
+**186/186 cells byte-identical to real aomenc's whole temporal unit** — cq 0..63
 step 5 plus 63 and a 1..19 step-2 low-q arm, {mono, 4:2:0, 4:2:2, 4:4:4} × bd
 {8, 10, 12} (profiles 0/1/2), 16×16..512×512, 12 crop/partial-SB sizes including
 1×1, 5 content classes, and **all four (CDEF, loop-restoration) combinations
-including both on — real aomenc's ALLINTRA default** (27 post-filter cells). Both the real C decoder and `aom-decode` decode the
+including both on** (27 post-filter cells), and **`--cpu-used` 0..=9**. Real
+aomenc's ALLINTRA default is CDEF OFF with restoration ON
+(`av1_cx_iface.c:3067`), and that default is byte-gated at every speed. Both the real C decoder and `aom-decode` decode the
 PORT's own stream to the pixels real aomenc's stream decodes to. The gap is
 MEASURED, not asserted: stripping the sequence header from the port's own stream
 makes the real C decoder refuse it. Mutation proof: a one-field change
@@ -53,9 +55,36 @@ in BOTH halves — the tile payload AND the derived loop-filter level ([0,1] vs
 C's [0,2]) — which is ONE root, not two, because `pick_filter_level` runs on the
 port's own reconstruction. The gate ASSERTS which half each pin diverges in;
 that assertion caught the first (wrong) reading of 261×261 as a pure
-loop-filter off-by-one. **Not wired**: speeds > 0,
-multi-tile, SB128, and `av1_determine_sc_tools_with_encoding`'s trial encode —
-each REFUSED by name via `KeyFrameError` rather than silently mis-encoded.
+loop-filter off-by-one. **Not wired**: SB128 and
+`av1_determine_sc_tools_with_encoding`'s trial encode. Two regions are pinned
+rather than refused (the streams are valid and decode, they just are not
+byte-identical): `--enable-cdef=1` at speed >= 4 (the FAST search levels —
+PARITY C1's never-e2e-gated fraction, measured divergent in the header's
+`cdef_strengths` set ONLY, with the per-unit indices in the tile payload
+byte-identical) and speed >= 7 above roughly 3x3 superblocks (measured bracket
+at speed 7: 128x128 / 160x160 / 192x192 / 128x192 / 192x128 byte-exact,
+256x256 / 320x320 not; at speed 9, 192x192 not either).
+
+**A real shell bug the pins were hiding.** The pack env carried a past-the-end
+sentinel (`1 << 16`) for `tile_row_end`/`tile_col_end` instead of C's
+`AOMMIN(.., mi_rows/mi_cols)` clamp (`av1_tile_set_row`/`_col`,
+tile_common.c), which changes the search's frame-edge decisions on any frame
+whose superblock grid overhangs its mi grid. Found while wiring multi-tile (the
+per-tile loop stamps the real bounds). Bite-proved by reverting the clamp:
+131x131, 132x64, 132x128, 132x132, 196x64, 196x196, 260x260 and 261x261 all
+diverge with the sentinel and are ALL byte-identical with the clamp. Four of
+those eight had been pinned in the gate as "RD near-ties" — they were this, and
+they are now regression locks on the fix. That is twice the pin machinery has
+corrected an attribution written into it.
+
+**The tile-count boundary.** `set_tile_info` (`encoder.c:386-390`) recomputes
+the column minimum with `(max_width_sb << k) <= sb_cols`, one stricter than
+`av1_get_tile_limits`' own `tile_log2` (`<`). They differ by exactly one when
+`sb_cols` is an exact multiple-by-power-of-two of `max_width_sb` — at SB64, a
+frame whose mi width rounds to `sb_cols == 64` (4033..4096 px, two tiles) or
+`== 128` (8192 px, four tiles). Bite-proved by weakening the loop back to `<`:
+4033×64, 4096×64 and 8192×64 diverge; 4032×64 / 4097×64 / 4160×64 / 2048×64 do
+not. All seven are sweep cells, so the boundary is locked from both sides.
 
 **Post-filter composition, the second half of this landing.** Neither pack entry
 point covered a frame with CDEF AND loop restoration on: `pack_tile_from_trees`
