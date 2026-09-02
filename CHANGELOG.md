@@ -19,17 +19,38 @@
   (the ported detector now DRIVES the encode instead of being asserted against
   C's header), the tile grid, the loop-filter levels, and the `tx_mode`
   SELECT→LARGEST flip via a new `key_frame::txb_split_count` over the port's own
-  winner trees. **69/69 cells byte-identical to real aomenc** across cq 0..63
+  winner trees. **96/96 cells byte-identical to real aomenc** across cq 0..63
   (step 5, plus a 1..19 step-2 low-q arm), {mono, 4:2:0, 4:2:2, 4:4:4} × bd
   {8, 10, 12}, 16×16..512×512, 12 crop/partial-SB sizes including 1×1, and 5
   content classes; both the real C decoder and `aom-decode` decode the port's
-  own stream to the pixels real aomenc's stream decodes to. Configurations
-  outside the gated envelope (CDEF on, loop restoration on, `--cpu-used != 0`,
-  non-ALLINTRA usage, multi-tile) are REFUSED by name via `KeyFrameError`.
+  own stream to the pixels real aomenc's stream decodes to. All four
+  (CDEF, loop-restoration) combinations are covered, **including both on —
+  real aomenc's ALLINTRA default**; configurations outside the gated envelope
+  (`--cpu-used != 0`, non-ALLINTRA usage, multi-tile) are REFUSED by name via
+  `KeyFrameError`. Total: **96/96 cells byte-identical**.
   Gate: `aom-encode/tests/self_contained_key_frame.rs` (6 tests, including a
   measured proof that a stream without the sequence header is rejected by the
   real C decoder, and a mutation proof that both the byte gate and the pixel
   gate can go red).
+
+- **`aom_encode::pack::pack_tile_from_trees_lr`** — the phase-2 pack for a frame
+  with CDEF **and** loop restoration on, which is real aomenc's ALLINTRA
+  default and which neither predecessor covered (`pack_tile_from_trees` carried
+  only the CDEF strength literals, `pack_tile_lr` only the interleaved per-RU
+  restoration params). Additive: `pack_tile_from_trees` now delegates to it
+  with `lr: None` and is byte-unchanged, and the LR block is the same one
+  `pack_tile_lr` writes, at the same point in the walk
+  (`write_modes_sb`, bitstream.c:1625-1645). `encode_key_frame` follows C's
+  `cdef_restoration_frame` order: deblock → `av1_cdef_search` →
+  `av1_cdef_frame` (apply) → `av1_pick_filter_restoration` on the POST-CDEF
+  reconstruction. Gated by the 27 post-filter cells of
+  `self_contained_key_frame.rs` (9 per combination).
+
+- **`aom_encode::speed_features::lr_search_sf_allintra`** — moved out of
+  `aom-bench` so `key_frame::encode_key_frame` can derive the loop-restoration
+  search speed features (`aom-encode` cannot depend on `aom-bench`).
+  `aom_bench::lr_search_sf_allintra` delegates to it, so every existing caller
+  and gate is unchanged.
 
 ### Fixed
 

@@ -20,11 +20,12 @@ levels (`pick_filter_level` on the port's own recon), and the `tx_mode`
 SELECT→LARGEST flip (`encodeframe.c:2797`) via a new `key_frame::txb_split_count`
 over the port's own winner trees.
 
-**Gate** (`aom-encode/tests/self_contained_key_frame.rs`, 6 tests, 15 s):
-**69/69 cells byte-identical to real aomenc's whole temporal unit** — cq 0..63
+**Gate** (`aom-encode/tests/self_contained_key_frame.rs`, 6 tests, 22 s):
+**96/96 cells byte-identical to real aomenc's whole temporal unit** — cq 0..63
 step 5 plus 63 and a 1..19 step-2 low-q arm, {mono, 4:2:0, 4:2:2, 4:4:4} × bd
 {8, 10, 12} (profiles 0/1/2), 16×16..512×512, 12 crop/partial-SB sizes including
-1×1, and 5 content classes. Both the real C decoder and `aom-decode` decode the
+1×1, 5 content classes, and **all four (CDEF, loop-restoration) combinations
+including both on — real aomenc's ALLINTRA default** (27 post-filter cells). Both the real C decoder and `aom-decode` decode the
 PORT's own stream to the pixels real aomenc's stream decodes to. The gap is
 MEASURED, not asserted: stripping the sequence header from the port's own stream
 makes the real C decoder refuse it. Mutation proof: a one-field change
@@ -49,9 +50,20 @@ after the fix (197 passed / 0 failed).
 196×196 and 260×260 diverge inside the TILE payload with every derived header
 field equal to C's (RD near-ties, the PARITY.md Tier-3 class); 261×261 is a
 `pick_filter_level` off-by-one ([0,1] vs C's [0,2]). **Not wired**: speeds > 0,
-CDEF on, loop restoration on, multi-tile, SB128, and
-`av1_determine_sc_tools_with_encoding`'s trial encode — each REFUSED by name via
-`KeyFrameError` rather than silently mis-encoded.
+multi-tile, SB128, and `av1_determine_sc_tools_with_encoding`'s trial encode —
+each REFUSED by name via `KeyFrameError` rather than silently mis-encoded.
+
+**Post-filter composition, the second half of this landing.** Neither pack entry
+point covered a frame with CDEF AND loop restoration on: `pack_tile_from_trees`
+carried only the CDEF strength literals and `pack_tile_lr` only the interleaved
+per-RU restoration params — and that combination is real aomenc's ALLINTRA
+DEFAULT. Added `pack::pack_tile_from_trees_lr` (additive; `pack_tile_from_trees`
+now delegates with `lr: None` and is byte-unchanged), and followed C's
+`cdef_restoration_frame` order exactly: deblock → `av1_cdef_search` →
+`av1_cdef_frame` (apply) → `av1_pick_filter_restoration` on the POST-CDEF
+reconstruction, with the LR search seeing both frames (`deblocked` and `cur`)
+because C saves boundary lines from each. 27/27 post-filter cells byte-exact,
+9 per combination.
 
 ## KB-34 — the fastest preset refused ordinary images; the nonrd estimate arm codes a non-square leaf (2026-08-02)
 

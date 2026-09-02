@@ -482,7 +482,7 @@ those two hardcoded `false` lines and nothing else**.
 > `write_sequence_header_obu` from `crates/aom-encode/src`, so the port DOES author a
 > sequence header, and `encode_key_frame` emits a complete temporal unit (TD +
 > sequence-header OBU + `OBU_FRAME`) with no C bytes in the path — **69/69 cells
-> byte-identical to real aomenc**, gated by
+> byte-identical to real aomenc** (96/96 after the 2026-09-02 post-filter landing), gated by
 > `crates/aom-encode/tests/self_contained_key_frame.rs`. The table row above
 > ("the ENTIRE sequence header ... never authored") is likewise superseded for that
 > entry point. Its envelope is ALLINTRA / `--cpu-used 0` / single tile / SB64 /
