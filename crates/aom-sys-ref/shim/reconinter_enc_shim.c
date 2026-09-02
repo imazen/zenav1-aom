@@ -110,6 +110,33 @@
 #undef aom_highbd_comp_mask_pred
 #define aom_highbd_comp_mask_pred aom_highbd_comp_mask_pred_c
 
+/* KB-43 root #2 (SIGSEGV, x86-64 only, red since 6417d316 on 2026-09-01):
+ * `aom_convolve_copy_avx2`'s `w == 16` arm uses ALIGNED stores
+ * (`_mm_store_si128`, aom_convolve_copy_avx2.c:77) and states the precondition
+ * in an assert at :29-36 — `dst` and `dst_stride` 16-byte aligned. `-DNDEBUG`
+ * (MANDATORY here for ABI agreement, see build.rs) compiles that assert away.
+ * `build_wedge_inter_predictor_from_buf`'s unmasked arm (reconinter_enc.c:396)
+ * calls it, and `wedge_from_buf_diff.rs` deliberately uses a PADDED
+ * `dst_stride = w + 10` (26 at bsize 5/6/7, `26 % 16 != 0`), so the row-1 store
+ * faults. NEON uses unaligned access, which is why every aarch64 leg is green.
+ * The padded stride is the point of the test — it is the only cell that catches
+ * a port substituting `w` for `dst_stride` — so the ORACLE gets pinned, not the
+ * test narrowed (narrowing would bake host-dependence into the oracle, which
+ * reference/BUILD_CONFIG.md forbids by definition).
+ *
+ * `av1_build_compound_diffwtd_mask{,_highbd}` are pinned with them: their
+ * SSE4.1 tier (reconinter_sse4.c:76-87) does `_mm_load_si128` on `src0`/`src1`
+ * at a caller-chosen stride and `_mm_store_si128` on `mask`, the same latent
+ * fault on a non-AVX2 x86 host (the AVX2 tier uses `loadu`). */
+#undef aom_convolve_copy
+#define aom_convolve_copy aom_convolve_copy_c
+#undef aom_highbd_convolve_copy
+#define aom_highbd_convolve_copy aom_highbd_convolve_copy_c
+#undef av1_build_compound_diffwtd_mask
+#define av1_build_compound_diffwtd_mask av1_build_compound_diffwtd_mask_c
+#undef av1_build_compound_diffwtd_mask_highbd
+#define av1_build_compound_diffwtd_mask_highbd av1_build_compound_diffwtd_mask_highbd_c
+
 /* --- libaom's own encoder-side predictor builders, unmodified. --- */
 #include "av1/encoder/reconinter_enc.c"
 

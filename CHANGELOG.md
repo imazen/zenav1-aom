@@ -95,6 +95,22 @@
   the sequence header's `enable_restoration` bit at allintra speed ≥ 5
   regardless of `--enable-restoration`.
 
+- **Two x86-64-only SIGSEGVs in the C oracle shims** (`tpl_model_diff` and
+  `wedge_from_buf_diff` had never passed on x86-64 since they landed on
+  2026-09-01; both aarch64 legs were always green). Same class: libaom x86
+  kernels that use ALIGNED `_mm_store_si128` / `_mm256_store_si256` /
+  `_mm256_load_si256` and state the precondition in an `assert` that `-DNDEBUG`
+  — mandatory here for ABI agreement — compiles away.
+  `aom_convolve_copy_avx2`'s `w == 16` arm needs a 16-byte-aligned
+  `dst_stride`, `aom_subtract_block_avx2` needs `diff_stride` a multiple of 16
+  int16 units, and `shim/tpl_c_shim.c` used `calloc` (16-byte) where libaom
+  allocates the same two transform buffers with `aom_memalign(32, …)`. Fixed by
+  pinning the oracle (`aom_{,highbd_}convolve_copy`,
+  `av1_build_compound_diffwtd_mask{,_highbd}`, and a shim-local `_c`-only
+  `av1_subtract_block`) and matching libaom's own allocation — NOT by narrowing
+  the tests' padded strides, which are the only cells that catch a port
+  substituting the block width for the stride. See CLAUDE.md KB-43.
+
 ### Fixed
 
 - **Screen-content detector was handed the CROP instead of the 8-aligned

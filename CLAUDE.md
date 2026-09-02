@@ -223,7 +223,7 @@ it here in the same commit.**
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
-### KB-43 — CI red on the x86-64 legs since 2026-08-31: THREE roots, ONE fixed 2026-09-02, TWO OPEN
+### KB-43 — CI red on the x86-64 legs since 2026-08-31: THREE roots, all fixed 2026-09-02 (root #1 VERIFIED green on run `33688716692`; #2/#3 await the next x86 run)
 
 `linux differential (x86-64)` and `linux differential (forced-scalar pin)` have been red
 continuously since **`aa27d8b8`** (2026-08-31, "feat(encode): port the compound and
@@ -249,19 +249,41 @@ comp-mask upsampled entries to those copies. Verified at the object level:
 `nm -u comp_pred_shim.o` now shows `shim_rie_{,highbd_}comp_mask_upsampled_pred` and
 `nm -u reconinter_enc_shim.o` shows `aom_{,highbd_}comp_mask_pred_c`.
 
-**Roots #2 and #3 — OPEN.** `-p zenav1-aom-encode --test tpl_model_diff` and
-`--test wedge_from_buf_diff` CRASH (the binary stops mid-run: tests report `ok` one by one
-and then output ends with no `test result:` line and no `FAILED`). Last test to report
-before the stop — bounding, not pinning, since tests run in parallel:
-`tpl_model_diff` after `get_q_index_from_qstep_ratio_bit_depths_differ`,
-`wedge_from_buf_diff` after `build_masked_compound_matches_c`. Both predate the 2026-09-02
-encoder-shell work (present in run `33674592939`, a docs-only commit). Suspect classes, in
-order, both with precedent in this repo: (a) a shim-TU-vs-archive struct-layout mismatch of
-the `-DNDEBUG` / `#ifndef NDEBUG` `MACROBLOCK` kind `crates/aom-sys-ref/build.rs:505`
-documents (measured 2026-08-31, segfaulted the same way); (b) the x86-only
-buffer-overrun/alignment class `shim/comp_pred_shim.c`'s header documents, where an x86 SIMD
-kernel uses its destination as a `MAX_SB_SIZE`-strided intermediate and scribbles past a
-`w * h` allocation. Neither is reproducible on aarch64.
+**Roots #2 and #3 — SIGSEGV, both fixed 2026-09-02, both the SAME CLASS: an x86 SIMD
+alignment precondition that `-DNDEBUG` deletes.** `tpl_model_diff` (red since `acce131e`)
+and `wedge_from_buf_diff` (red since `6417d316`, both 2026-09-01) die with
+`signal: 11, SIGSEGV`, not an assertion — which is why `gh run view --log-failed` shows
+neither. Several libaom x86 kernels use ALIGNED `_mm_store_si128` / `_mm256_store_si256` /
+`_mm256_load_si256` and state the precondition in an `assert` that `-DNDEBUG` compiles
+away — and `-DNDEBUG` is MANDATORY here for ABI agreement (`build.rs:505`). NEON uses
+unaligned access, so the whole class is structurally invisible on aarch64.
+
+* **#2, `wedge_from_buf_diff`:** `aom_convolve_copy_avx2`'s `w == 16` arm
+  (`aom_convolve_copy_avx2.c:29-36,77`) needs `dst`/`dst_stride` 16-byte aligned;
+  `build_wedge_inter_predictor_from_buf`'s unmasked arm (`reconinter_enc.c:396`) calls it,
+  and the test's deliberate `dst_stride = w + 10` (26 at bsize 5/6/7) is not.
+* **#3a, `tpl_model_diff`:** `aom_subtract_block_avx2` (`subtract_avx2.c:24,26,39`) needs
+  `diff_stride` a multiple of 16 int16 units; the test's `diff_stride = bw + 4` is not.
+* **#3b, `tpl_model_diff`:** `shim/tpl_c_shim.c` used `calloc` (16-byte) where libaom
+  allocates the SAME two buffers with `aom_memalign(32, ..)` (`tpl_model.h:457-460`),
+  which the archive's `av1_lowbd_fwd_txfm_avx2` `_mm256_load/store`s.
+
+**FIXED by pinning the oracle, not by narrowing the tests.** The padded strides are the
+POINT of those tests (the only cells that catch a port substituting `bw`/`w` for the
+stride), and narrowing them would bake host-dependence into the oracle, which
+`reference/BUILD_CONFIG.md` forbids by definition. `shim/reconinter_enc_shim.c` now also
+pins `aom_{,highbd_}convolve_copy` and `av1_build_compound_diffwtd_mask{,_highbd}` (the
+latter closes the same latent fault in the SSE4.1 tier on a non-AVX2 host);
+`shim/tpl_c_shim.c` rebinds `av1_subtract_block` to a shim-local `_c`-only copy (the
+archive's body is unreachable by `#define`) and allocates its two transform buffers with
+`aom_memalign(32, ..)` exactly as libaom does.
+
+**Systemic follow-up, NOT done.** The alignment contract `19939b2f` established reached
+only `comp_pred_shim` / `me_shim` / `gm_shim`: of 25 shims only 7 use `aom_memalign` at
+all, and `nonrd_pick_shim.c` (16 raw allocs), `rd_shim.c` (28), `rdopt_shim.c` (119),
+`tf_static_shim.c`, `warp_shim.c` and `compound_shim.c` all feed dispatched kernels from
+unaligned heap. Latent only because their current strides happen to be alignment-friendly.
+Diagnosis credit: a read-only audit agent; every claim re-checked against `upstream/`.
 
 ### KB-42 — CI red since `735a0a6d`: THREE independent roots, all localized and FIXED 2026-08-30 — **CLOSED, run `33325340898` green on all 7 legs**
 - **The original entry's single-carrier premise was WRONG and is corrected here.**

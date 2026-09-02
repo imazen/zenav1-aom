@@ -50,6 +50,8 @@
 #include "config/aom_dsp_rtcd.h"
 #include "config/aom_scale_rtcd.h"
 
+#include "aom_mem/aom_mem.h"
+
 /* --- Rename tpl_model.c's 21 exported symbols so this TU links beside
  * libaom.a. The `shim_tplc_` copies are what the TU-agreement gate compares
  * against the archive. */
@@ -74,6 +76,43 @@
 #define av1_tpl_rdmult_setup_sb shim_tplc_tpl_rdmult_setup_sb
 #define av1_tpl_setup_stats shim_tplc_tpl_setup_stats
 #define av1_tpl_stats_ready shim_tplc_tpl_stats_ready
+
+/* KB-43 root #3a (SIGSEGV, x86-64 only, red since acce131e on 2026-09-01):
+ * `aom_subtract_block_avx2` uses ALIGNED stores — `_mm256_store_si256((__m256i
+ * *)diff_ptr, ..)` then `diff_ptr += diff_stride` (subtract_avx2.c:24,26,39) —
+ * for `cols` 16/32/64/128, so `diff_stride` must be a multiple of 16 int16
+ * units. `tpl_model_diff.rs` deliberately sweeps a PADDED `diff_stride =
+ * bw + 4` (20 / 36 -> 40 / 72-byte rows), which is the only cell that catches a
+ * port substituting `bw` for `diff_stride`, so the oracle gets pinned to `_c`
+ * rather than the test narrowed. NEON uses unaligned access, which is why every
+ * aarch64 leg is green. libaom's own asserts documenting the precondition are
+ * compiled away by `-DNDEBUG`, which build.rs REQUIRES for ABI agreement.
+ *
+ * `#define aom_subtract_block ..` would be inert here: `tpl_get_satd_cost`
+ * calls `av1_subtract_block`, whose body lives in the ARCHIVE
+ * (`av1/encoder/encodemb.c:37`). So the name tpl_model.c actually calls is
+ * rebound to a shim-local copy of that function — a two-way branch on
+ * `bd_info.use_highbitdepth_buf` with NO arithmetic, copied verbatim from
+ * encodemb.c with only the two RTCD names swapped for their `_c` tiers. Every
+ * residual / transform / SATD computation stays libaom's own code, so the
+ * tier-1c claim is intact. */
+static void shim_tplc_subtract_block(BitDepthInfo bd_info, int rows, int cols,
+                                     int16_t *diff, ptrdiff_t diff_stride,
+                                     const uint8_t *src8, ptrdiff_t src_stride,
+                                     const uint8_t *pred8,
+                                     ptrdiff_t pred_stride) {
+#if CONFIG_AV1_HIGHBITDEPTH
+  if (bd_info.use_highbitdepth_buf) {
+    aom_highbd_subtract_block_c(rows, cols, diff, diff_stride, src8, src_stride,
+                                pred8, pred_stride);
+    return;
+  }
+#endif
+  (void)bd_info;
+  aom_subtract_block_c(rows, cols, diff, diff_stride, src8, src_stride, pred8,
+                       pred_stride);
+}
+#define av1_subtract_block shim_tplc_subtract_block
 
 /* --- libaom's own temporal dependency model, unmodified. --- */
 #include "av1/encoder/tpl_model.c"
@@ -437,19 +476,30 @@ int shim_tplc_tpl_get_satd_cost(int bit_depth, int use_highbitdepth_buf,
   bd_info.use_highbitdepth_buf = use_highbitdepth_buf;
   const int n = bw * bh;
   if (n <= 0 || diff_stride < bw) return -1;
-  int16_t *src_diff = (int16_t *)calloc((size_t)(diff_stride * bh + bw),
-                                        sizeof(*src_diff));
-  tran_low_t *coeff = (tran_low_t *)calloc((size_t)n, sizeof(*coeff));
+  /* KB-43 root #3b: libaom allocates THESE EXACT TWO buffers with
+   * `aom_memalign(32, ..)` (`av1/encoder/tpl_model.h:457-460`), because the
+   * archive's `av1_lowbd_fwd_txfm_avx2` does `_mm256_load_si256` on `src_diff`
+   * (txfm_common_avx2.h:83) and `_mm256_store_si256` into `coeff`
+   * (av1_fwd_txfm2d_avx2.c:1439,1450,1768). glibc `calloc` gives 16-byte
+   * alignment, so the 16x16 / 32x32 cells fault on a coin flip even at
+   * `diff_stride == bw`. Matching libaom's own allocation is the fix; the
+   * transform lives in the archive, so no `#define` in this TU can reach it. */
+  const size_t src_diff_bytes = (size_t)(diff_stride * bh + bw) * sizeof(int16_t);
+  const size_t coeff_bytes = (size_t)n * sizeof(tran_low_t);
+  int16_t *src_diff = (int16_t *)aom_memalign(32, src_diff_bytes);
+  tran_low_t *coeff = (tran_low_t *)aom_memalign(32, coeff_bytes);
   if (!src_diff || !coeff) {
-    free(coeff);
-    free(src_diff);
+    aom_free(coeff);
+    aom_free(src_diff);
     return -1;
   }
+  memset(src_diff, 0, src_diff_bytes);
+  memset(coeff, 0, coeff_bytes);
   const uint8_t *src = use_highbitdepth_buf ? CONVERT_TO_BYTEPTR(src16) : src8;
   const uint8_t *dst = use_highbitdepth_buf ? CONVERT_TO_BYTEPTR(dst16) : dst8;
   *out = tpl_get_satd_cost(bd_info, src_diff, diff_stride, src, src_stride,
                            dst, dst_stride, coeff, bw, bh, (TX_SIZE)tx_size);
-  free(coeff);
-  free(src_diff);
+  aom_free(coeff);
+  aom_free(src_diff);
   return 0;
 }
