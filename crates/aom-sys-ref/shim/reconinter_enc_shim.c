@@ -43,8 +43,10 @@
 
 /* --- Rename reconinter_enc.c's exported symbols so this TU links beside
  * libaom.a. The `aom_*_upsampled_pred` family is already gated through
- * shim/comp_pred_shim.c against the ARCHIVE's copies, so these renamed
- * duplicates are unused here — they exist only to keep the link clean. */
+ * shim/comp_pred_shim.c, so most of these renamed duplicates exist only to keep
+ * the link clean. TWO ARE LIVE: comp_pred_shim.c deliberately calls
+ * `shim_rie_{,highbd_}comp_mask_upsampled_pred` (this TU's `_c`-pinned copies)
+ * rather than the archive's RTCD-dispatched ones — see the pin block below. */
 #define aom_upsampled_pred_c shim_rie_upsampled_pred_c
 #define aom_upsampled_pred_scaled shim_rie_upsampled_pred_scaled
 #define aom_comp_avg_upsampled_pred_c shim_rie_comp_avg_upsampled_pred_c
@@ -67,6 +69,46 @@
   shim_rie_build_inter_predictors_for_planes_single_buf
 #define av1_build_wedge_inter_predictor_from_buf \
   shim_rie_build_wedge_inter_predictor_from_buf
+
+/* --- Pin the RTCD-dispatched primitives reconinter_enc.c's upsampled-pred
+ * family calls to their `_c` tiers, so this TU's copies of
+ * `aom_{,highbd_}comp_{avg,mask}_upsampled_pred` are the SCALAR REFERENCE at
+ * every step. Same technique as shim/cnn_cscalar.c: a compile-time rebinding,
+ * uniform on every host (on x86-64 the RTCD name is a function pointer, so the
+ * `#undef` is a no-op and the `#define` rewrites the call site; on aarch64 it is
+ * a compile-time `#define` that gets redirected). NOT a runtime pointer swap,
+ * which would be x86-only.
+ *
+ * Why (measured, CI runs 33437289705..33674592939, x86-64 red for ~63
+ * consecutive runs): `aom_highbd_comp_mask_pred_avx2`'s `width == 8` path
+ * (upstream/aom_dsp/x86/variance_avx2.c:459) loads the ODD row's mask from
+ * `mask + 8` — a hardcoded width — while advancing by `mask_stride << 1`. At
+ * `mask_stride != width` every odd row blends against the wrong mask bytes,
+ * which is exactly the reported signature (rows 0/2/4/6 identical, 1/3/5/7
+ * wrong). Its SSE2 tier, its NEON tier and its own 8-bit twin
+ * (`aom_comp_mask_pred_avx2`, :379, and `comp_mask_pred_8_ssse3`,
+ * masked_variance_intrin_ssse3.h:68) all load the odd row from
+ * `mask + mask_stride` and agree with `_c`; libaom itself never hits the arm
+ * because every production caller and its own test pass `mask_stride == width`.
+ * So the ORACLE, not the port, was wrong: `inter_pred_enc.rs` indexes
+ * `mask[i * mask_stride + j]`, a faithful `aom_highbd_comp_mask_pred_c`
+ * transcription, and the forced-scalar CI leg (which pins only the RUST
+ * dispatch) failed identically — proving the divergence lived on the C side.
+ *
+ * `aom_{,highbd_}upsampled_pred` are pinned for the same reason the sibling
+ * entries in shim/comp_pred_shim.c already call `_c` directly: the oracle's
+ * definition is the scalar reference, and a half-pinned TU would leave the
+ * upsample step host-dependent (reference/BUILD_CONFIG.md's host-independence
+ * rule). Note `aom_{,highbd_}upsampled_pred_c` are themselves renamed above, so
+ * these expand to THIS TU's local copies. */
+#undef aom_upsampled_pred
+#define aom_upsampled_pred aom_upsampled_pred_c
+#undef aom_highbd_upsampled_pred
+#define aom_highbd_upsampled_pred aom_highbd_upsampled_pred_c
+#undef aom_comp_mask_pred
+#define aom_comp_mask_pred aom_comp_mask_pred_c
+#undef aom_highbd_comp_mask_pred
+#define aom_highbd_comp_mask_pred aom_highbd_comp_mask_pred_c
 
 /* --- libaom's own encoder-side predictor builders, unmodified. --- */
 #include "av1/encoder/reconinter_enc.c"

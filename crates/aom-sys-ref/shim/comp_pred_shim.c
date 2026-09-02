@@ -6,6 +6,21 @@
  * tests", reconinter_enc.c:427-428), which is why cm/mi_row/mi_col/mv are
  * unused here — the same construction shim_upsampled_pred already relies on.
  */
+/* Route the two comp-mask upsampled predictors to shim/reconinter_enc_shim.c's
+ * copies, which compile libaom's own `reconinter_enc.c` with the inner
+ * `aom_{,highbd}_comp_mask_pred` / `aom_{,highbd}_upsampled_pred` RTCD names
+ * pinned to their `_c` tiers. The ARCHIVE's copies dispatch, and on x86-64
+ * `aom_highbd_comp_mask_pred_avx2`'s `width == 8` path ignores `mask_stride`
+ * (see the pin block in reconinter_enc_shim.c for the measurement) — which made
+ * `highbd_comp_mask_upsampled_pred_matches_c` red on both x86-64 CI legs for 63
+ * consecutive runs while both aarch64 legs were green.
+ *
+ * These `#define`s MUST precede every include so the headers' declarations are
+ * renamed along with the call sites below. */
+#define aom_comp_mask_upsampled_pred shim_rie_comp_mask_upsampled_pred
+#define aom_highbd_comp_mask_upsampled_pred \
+  shim_rie_highbd_comp_mask_upsampled_pred
+
 #include <stdint.h>
 #include <string.h>
 
