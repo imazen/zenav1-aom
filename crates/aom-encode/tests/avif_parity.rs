@@ -26,6 +26,29 @@
 //! ALLINTRA cq32; the strong-LF textured `diag+vbars16+ripple` 256² cq63):
 //! any parity regression fails the precondition assert here too.
 //!
+//! # NOT AN END-TO-END ENCODER GATE — it runs real C libaom FIRST
+//!
+//! Read plainly: every cell here **starts by encoding the frame with the real C
+//! encoder** (`c::ref_encode_av1_kf`, `produce()`), and the port's stream is then
+//! built ON TOP of that C output:
+//!
+//! * the AV1 elementary stream this harness muxes is `raw_seq_hdr_obu ++
+//!   port_frame_obu` — the **sequence-header OBU is real aomenc's own bytes,
+//!   copied verbatim** (`raw_obu_span(&bytes, OBU_SEQUENCE_HEADER)`), not
+//!   authored by the port;
+//! * the frame header the port re-serializes is `read_uncompressed_header`'s
+//!   parse of **C's** `OBU_FRAME` payload — so `base_qindex`, `tx_mode_select`,
+//!   `allow_screen_content_tools`, `reduced_tx_set_used`, the tile config and
+//!   every seq-derived prefix field are REPLAYED from C, not derived;
+//! * only the tile payload (`pack_tile`) and the loop-filter levels
+//!   (`pick_filter_level`) are the port's own derivations.
+//!
+//! So a green run here means "the port's tile bytes + LF levels agree with C,
+//! and the muxer round-trips" — it is **not** evidence that the port can emit a
+//! decodable AV1 stream on its own. The bootstrap-free path is
+//! [`aom_encode::key_frame::encode_key_frame`], gated by
+//! `aom-encode/tests/self_contained_key_frame.rs`.
+//!
 //! **Envelope:** `enable_cdef=false, enable_restoration=false` (the same
 //! bootstrap boundary the `encoder_gate_e2e_*` gates use — i.e. the
 //! `--enable-restoration=0` config, NOT the plain-default `aomenc --allintra`

@@ -34,14 +34,15 @@
 //! is content- and speed-independent, so the witnesses use the fastest flat
 //! mono encodes.) `tier` is not coded in a reduced header (default main tier 0).
 //!
-//! # Productionization (deferred, one line)
+//! # Productionization — DONE 2026-09-02
 //!
-//! The port lives in this test file rather than `aom-encode/src` because
-//! wiring a new `pub mod seq_level;` requires editing `aom-encode/src/lib.rs`,
-//! which a concurrent `cargo fmt` WIP change is holding; keeping this additive
-//! (new file only) avoids the conflict. Lifting `seq_header_seq_level_idx` /
-//! `does_level_match` into `crates/aom-encode/src/seq_level.rs` + one
-//! `pub mod seq_level;` line is the trivial follow-up once that lands.
+//! `does_level_match` / `inferred_seq_level_from_dims` /
+//! `seq_header_seq_level_idx` now live in
+//! [`aom_encode::seq_level`](../../aom_encode/seq_level/index.html)
+//! (`crates/aom-encode/src/seq_level.rs`) and are CALLED here rather than
+//! duplicated. `aom_encode::key_frame::derive_sequence_header` consumes them,
+//! so this differential now gates the value a real port encode writes, not a
+//! copy that nothing used.
 
 use aom_dsp::entropy::header::read_sequence_header_obu;
 use aom_dsp::entropy::obu::read_obu_header;
@@ -66,92 +67,10 @@ fn walk_obus(bytes: &[u8]) -> Vec<(u32, &[u8])> {
     out
 }
 
-// ---- AV1_LEVEL enum values (av1/common/enums.h) -- only the subset
-//      set_bitstream_level_tier can produce, plus the sentinels. ----
-const SEQ_LEVEL_2_0: i32 = 0;
-const SEQ_LEVEL_2_1: i32 = 1;
-const SEQ_LEVEL_3_0: i32 = 4;
-const SEQ_LEVEL_3_1: i32 = 5;
-const SEQ_LEVEL_4_0: i32 = 8;
-const SEQ_LEVEL_4_1: i32 = 9;
-const SEQ_LEVEL_5_0: i32 = 12;
-const SEQ_LEVEL_5_1: i32 = 13;
-const SEQ_LEVEL_5_2: i32 = 14;
-const SEQ_LEVEL_6_0: i32 = 16;
-const SEQ_LEVEL_6_1: i32 = 17;
-const SEQ_LEVEL_6_2: i32 = 18;
-const SEQ_LEVELS: i32 = 28;
-const SEQ_LEVEL_MAX: i32 = 31;
-
-/// `does_level_match` (`av1/encoder/encoder.c:451`). Pure integer/double
-/// arithmetic on the frame dimensions + framerate vs a level's caps.
-fn does_level_match(
-    width: i32,
-    height: i32,
-    fps: f64,
-    lvl_width: i32,
-    lvl_height: i32,
-    lvl_fps: f64,
-    lvl_dim_mult: i32,
-) -> bool {
-    let lvl_luma_pels = lvl_width as i64 * lvl_height as i64;
-    let lvl_display_sample_rate = lvl_luma_pels as f64 * lvl_fps;
-    let luma_pels = width as i64 * height as i64;
-    let display_sample_rate = luma_pels as f64 * fps;
-    luma_pels <= lvl_luma_pels
-        && display_sample_rate <= lvl_display_sample_rate
-        && width <= lvl_width * lvl_dim_mult
-        && height <= lvl_height * lvl_dim_mult
-}
-
-/// The `set_bitstream_level_tier` level ladder (`encoder.c:472-509`): the
-/// lowest level whose dimension/display-rate caps the frame fits under, else
-/// `SEQ_LEVEL_MAX`. The `CONFIG_CWG_C013` 7.x/8.x arm (encoder.c:512-535) is
-/// gated on `target_seq_level_idx[0]` in `[SEQ_LEVEL_7_0, SEQ_LEVEL_8_3]` and
-/// is therefore unreachable at the default `target == SEQ_LEVEL_MAX`; it is
-/// omitted here (documented, not silently dropped).
-fn inferred_seq_level_from_dims(width: i32, height: i32, fps: f64) -> i32 {
-    if does_level_match(width, height, fps, 512, 288, 30.0, 4) {
-        SEQ_LEVEL_2_0
-    } else if does_level_match(width, height, fps, 704, 396, 30.0, 4) {
-        SEQ_LEVEL_2_1
-    } else if does_level_match(width, height, fps, 1088, 612, 30.0, 4) {
-        SEQ_LEVEL_3_0
-    } else if does_level_match(width, height, fps, 1376, 774, 30.0, 4) {
-        SEQ_LEVEL_3_1
-    } else if does_level_match(width, height, fps, 2048, 1152, 30.0, 3) {
-        SEQ_LEVEL_4_0
-    } else if does_level_match(width, height, fps, 2048, 1152, 60.0, 3) {
-        SEQ_LEVEL_4_1
-    } else if does_level_match(width, height, fps, 4096, 2176, 30.0, 2) {
-        SEQ_LEVEL_5_0
-    } else if does_level_match(width, height, fps, 4096, 2176, 60.0, 2) {
-        SEQ_LEVEL_5_1
-    } else if does_level_match(width, height, fps, 4096, 2176, 120.0, 2) {
-        SEQ_LEVEL_5_2
-    } else if does_level_match(width, height, fps, 8192, 4352, 30.0, 2) {
-        SEQ_LEVEL_6_0
-    } else if does_level_match(width, height, fps, 8192, 4352, 60.0, 2) {
-        SEQ_LEVEL_6_1
-    } else if does_level_match(width, height, fps, 8192, 4352, 120.0, 2) {
-        SEQ_LEVEL_6_2
-    } else {
-        SEQ_LEVEL_MAX
-    }
-}
-
-/// `set_bitstream_level_tier`'s written `seq_level_idx[op]` (encoder.c:541-545):
-/// a higher explicit `target_seq_level_idx[op]` overrides the inferred level;
-/// at the default `target == SEQ_LEVEL_MAX` (>= SEQ_LEVELS) the inferred level
-/// is used unchanged.
-fn seq_header_seq_level_idx(width: i32, height: i32, fps: f64, target_seq_level_idx: i32) -> i32 {
-    let level = inferred_seq_level_from_dims(width, height, fps);
-    if target_seq_level_idx < SEQ_LEVELS && target_seq_level_idx > level {
-        target_seq_level_idx
-    } else {
-        level
-    }
-}
+use aom_encode::seq_level::{
+    SEQ_LEVEL_2_0, SEQ_LEVEL_2_1, SEQ_LEVEL_3_0, SEQ_LEVEL_3_1, SEQ_LEVEL_4_0, SEQ_LEVEL_MAX,
+    inferred_seq_level_from_dims, seq_header_seq_level_idx,
+};
 
 /// The default init framerate for the shim encode: `g_timebase == {1, 30}`
 /// (`av1/av1_cx_iface.c:5265`, ALL_INTRA usage) → `init_framerate =
