@@ -2290,7 +2290,7 @@ pub fn pack_tile_from_trees(
 
 /// [`pack_tile_from_trees`] plus the interleaved loop-restoration unit writes
 /// [`pack_tile_lr`] performs — i.e. the phase-2 pack for a frame with **CDEF
-/// AND loop restoration both on**, which is real aomenc's ALLINTRA default.
+/// AND loop restoration both on** (`--enable-cdef=1 --enable-restoration=1`).
 ///
 /// Neither predecessor covered that combination: `pack_tile_from_trees` carried
 /// only the CDEF strength literals and `pack_tile_lr` only the per-RU

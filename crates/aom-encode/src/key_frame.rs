@@ -28,7 +28,7 @@
 //! | `still_picture` / `reduced_still_picture_hdr` | `init_seq_coding_tools`: a 1-frame encode with no `--full-still-picture-hdr` |
 //! | `base_qindex` | [`crate::rc::base_qindex_from_cq`] (gated by `qindex_from_cq_diff`) |
 //! | `allow_screen_content_tools` / `allow_intrabc` | [`crate::screen_detect`] (`av1_set_screen_content_options`, `encoder.c:2439`) |
-//! | tile grid | `av1_get_tile_limits` + `av1_calculate_tile_cols/rows` (`tile_common.c`) |
+//! | tile grid + per-tile mi bounds | `av1_get_tile_limits` + `av1_calculate_tile_cols/rows` + `av1_tile_set_row`/`_col`'s `AOMMIN` clamp (`tile_common.c`) |
 //! | loop-filter levels | [`crate::lf_search::pick_filter_level`] on THIS port's own recon |
 //! | `tx_mode` (SELECT vs LARGEST) | the `txb_split_count == 0` flip (`encodeframe.c:2797`), counted off this port's own winner trees |
 //! | CDEF damping / bits / per-unit strengths | [`crate::pickcdef::av1_cdef_search`] on the port's own deblocked recon |
@@ -40,33 +40,55 @@
 //! [`encode_key_frame`] returns [`KeyFrameError`] rather than silently
 //! mis-encoding whenever the config leaves the envelope this module is gated on:
 //!
-//! * ALL-INTRA usage, `--cpu-used 0`, a single KEY frame, `--end-usage=q`;
-//! * CDEF and loop restoration in ALL FOUR combinations, including both on —
-//!   real aomenc's ALLINTRA default (`--enable-cdef` / `--enable-restoration`);
-//! * superblock 64, a single tile, no superres, no QM, no film grain, no
+//! * ALL-INTRA usage, one KEY frame, `--end-usage=q`, `--cpu-used` 0..=9
+//!   (values outside that range are refused);
+//! * CDEF and loop restoration in ALL FOUR combinations. NOTE: real aomenc's
+//!   ALLINTRA default is CDEF **off** with loop restoration **on** —
+//!   `av1_cx_iface.c:3067` sets `enable_cdef = 0` for `AOM_USAGE_ALL_INTRA`
+//!   ("CDEF has been found to blur images"). That default is byte-gated at
+//!   every speed 0..=9; `--enable-cdef=1` is byte-gated at speeds 0..3 and
+//!   pinned-divergent at 4..9 (the FAST search levels, see below);
+//! * superblock 64, no superres, no QM, no film grain, no
 //!   segmentation, no delta-q, palette + IntraBC search off (matching
 //!   `aom-sys-ref`'s `shim_encode_av1_kf`, whose `--enable-palette=0
-//!   --enable-intrabc=0` is what the byte gate compares against).
+//!   --enable-intrabc=0` is what the byte gate compares against);
+//! * **multi-tile** in the form `av1_get_tile_limits` MANDATES it (frames wider
+//!   than `MAX_TILE_WIDTH` = 4096 px, or larger than `MAX_TILE_AREA`): each
+//!   tile is packed independently with a fresh frame context — C's
+//!   `write_modes` per-tile reset — and assembled through
+//!   [`crate::obu_assemble::assemble_multitile_frame_obu_payload_derived`].
+//!   Byte-gated at speeds 0..6. Explicit `--tile-columns` / `--tile-rows` are
+//!   not exposed by [`KeyFrameConfig`] yet.
 //!
 //! # Not yet wired (named, with the specific entry points)
 //!
-//! * **Multi-tile** — [`crate::obu_assemble::assemble_multitile_frame_obu_payload_derived`]
-//!   exists and is gated (`obu_assemble_multitile_diff.rs`); this shell refuses
-//!   `tiles_log2 > 0` rather than emit an untested composition.
 //! * **`av1_determine_sc_tools_with_encoding`** (`encoder_utils.c:1214`) — C's
 //!   two-pass trial encode that can turn screen-content tools ON after the
 //!   detector said off. Unported. It returns early when the detector already
 //!   said on, so it only ever matters on detector-negative content; the byte
 //!   gate holds this accountable per cell.
-//! * **Speeds > 0 and SB128** — the pipeline pieces exist; the shell has no
-//!   gate for them yet, and refuses `cpu_used != 0` by name.
+//! * **SB128** — the pipeline pieces exist; the shell has no gate for it.
+//! * **`--cpu-used` >= 7 above roughly 3x3 superblocks** — measured bracket:
+//!   at speed 7, 128x128 / 160x160 / 192x192 / 128x192 / 192x128 are
+//!   byte-exact and 256x256 / 320x320 are not; at speed 9, 192x192 is not
+//!   either. One unlocalized VAR_BASED_PARTITION / nonrd arm, pinned rather
+//!   than refused (the streams are valid and decode).
+//! * **`--enable-cdef=1` at `--cpu-used` >= 4** — `sf.cdef_pick_method` leaves
+//!   `CDEF_FULL_SEARCH` for the FAST levels there, which PARITY.md C1 records
+//!   as ported + table-unit-tested but never e2e-gated. MEASURED 2026-09-02:
+//!   divergent from real aomenc on every cell tried at speeds 4..9, in the
+//!   header's `cdef_strengths` set only (the per-unit indices in the tile
+//!   payload are byte-identical). Not refused — the stream is valid and
+//!   decodes — but pinned in the gate.
 //!
-//! # Post-filter composition (the CDEF + loop-restoration default)
+//! # Post-filter composition (CDEF + loop restoration together)
 //!
 //! Neither pack entry point covered a frame with CDEF AND restoration on:
 //! `pack_tile_from_trees` carried only the CDEF strength literals and
 //! `pack_tile_lr` only the interleaved per-RU restoration params. That
-//! combination is real aomenc's ALLINTRA DEFAULT, so this landing added
+//! combination is reachable with `--enable-cdef=1 --enable-restoration=1`
+//! (it is NOT the ALLINTRA default — see the envelope note above), so this
+//! landing added
 //! [`crate::pack::pack_tile_from_trees_lr`] (both, additive —
 //! `pack_tile_from_trees` now delegates to it with `lr: None` and is
 //! byte-unchanged) and follows C's `cdef_restoration_frame` order exactly:
@@ -97,8 +119,12 @@ use aom_dsp::txb::cost_tokens_from_cdf;
 use crate::encode_intra::TrellisOptType;
 use crate::encode_sb::{LeafWinner, SbEncodeEnv, SbTree};
 use crate::intra_uv_rd::UvLoopPolicy;
-use crate::lf_search::{LfSearchFrame, build_lf_mi_grid, pick_filter_level};
-use crate::obu_assemble::assemble_obu_frame_single_tile;
+use crate::lf_search::{
+    LfSearchFrame, LoopFilterLevels, build_lf_mi_grid, pick_filter_level, pick_filter_level_from_q,
+};
+use crate::obu_assemble::{
+    OBU_FRAME, assemble_multitile_frame_obu_payload_derived, assemble_obu_frame_single_tile,
+};
 use crate::pack::{CdefPackState, LrPackParams, PackCfg, pack_tile, pack_tile_from_trees_lr};
 use crate::partition_pick::PickFrameCfg;
 use crate::pickcdef::{CdefSearchFrame, av1_cdef_search};
@@ -152,14 +178,20 @@ pub struct KeyFrameConfig {
     /// `AOME_SET_CQ_LEVEL` — the 0..=63 quantizer level, mapped to
     /// `base_qindex` by [`crate::rc::base_qindex_from_cq`].
     pub cq_level: i32,
-    /// `AOME_SET_CPUUSED`.
+    /// `AOME_SET_CPUUSED` — 0..=9. Byte-parity with real aomenc holds across
+    /// the whole range with CDEF off (the ALLINTRA default); see the module
+    /// docs for the two pinned regions (`--enable-cdef=1` at >= 4, and >= 7
+    /// above roughly 3x3 superblocks).
     pub cpu_used: i32,
     /// `aom_codec_enc_config_default`'s usage: 2 = `AOM_USAGE_ALL_INTRA`,
     /// 0 = `AOM_USAGE_GOOD_QUALITY`.
     pub usage: u32,
-    /// `AV1E_SET_ENABLE_CDEF`.
+    /// `AV1E_SET_ENABLE_CDEF`. Real aomenc's ALLINTRA default is **0**
+    /// (`av1_cx_iface.c:3067`).
     pub enable_cdef: bool,
-    /// `AV1E_SET_ENABLE_RESTORATION`.
+    /// `AV1E_SET_ENABLE_RESTORATION`. Real aomenc's ALLINTRA default is **1**.
+    /// Note the SEQUENCE-header bit is cleared at speed >= 5 regardless
+    /// (`speed_features.c:2753`), which [`derive_sequence_header`] models.
     pub enable_restoration: bool,
 }
 
@@ -167,8 +199,9 @@ impl KeyFrameConfig {
     /// The `shim_encode_av1_kf` envelope with CDEF and loop restoration OFF:
     /// ALL-INTRA, `--cpu-used 0`. Set [`Self::enable_cdef`] /
     /// [`Self::enable_restoration`] for the other three post-filter
-    /// combinations (all four are gated, including both on — real aomenc's
-    /// ALLINTRA default).
+    /// combinations (all four are gated). Real aomenc's ALLINTRA default is
+    /// CDEF **off** with restoration **on** (`av1_cx_iface.c:3067`).
+    /// [`Self::cpu_used`] accepts 0..=9.
     pub fn allintra_speed0(
         width: usize,
         height: usize,
@@ -261,13 +294,6 @@ pub enum KeyFrameError {
     /// A config field is outside this shell's gated envelope. Carries the
     /// field name and the reason.
     Unsupported(&'static str),
-    /// The derived tile grid needs more than one tile
-    /// (`av1_get_tile_limits`' mandatory split above 4096px wide / ~9.4 MP);
-    /// the multi-tile assembler exists but this shell has no gate for it.
-    MultiTileRequired {
-        /// `log2_cols + log2_rows` the tile limits force.
-        tiles_log2: i32,
-    },
 }
 
 impl core::fmt::Display for KeyFrameError {
@@ -279,13 +305,6 @@ impl core::fmt::Display for KeyFrameError {
                 got,
             } => write!(f, "plane {plane}: expected {expected} samples, got {got}"),
             KeyFrameError::Unsupported(what) => write!(f, "outside the gated envelope: {what}"),
-            KeyFrameError::MultiTileRequired { tiles_log2 } => write!(
-                f,
-                "frame requires {} tiles (tiles_log2={tiles_log2}); the multi-tile \
-                 assembler exists (obu_assemble::assemble_multitile_frame_obu_payload_derived) \
-                 but this shell has no gate for it",
-                1 << tiles_log2
-            ),
         }
     }
 }
@@ -362,8 +381,27 @@ pub fn derive_tile_info(
         max_height_sb: (max_tile_area_sb / max_width_sb.max(1)).max(1),
         ..Default::default()
     };
-    // av1_set_tile_info: log2_cols = clamp(cfg, min, max).
-    t.log2_cols = tile_cols_log2_cfg.max(min_log2_cols).min(max_log2_cols);
+    // `set_tile_info` (`av1/encoder/encoder.c:382-392`), which is STRICTER than
+    // `av1_get_tile_limits`' own `min_log2_cols`:
+    //
+    //   log2_cols = AOMMAX(tile_columns, tiles->min_log2_cols);
+    //   int min_log2_cols = 0;
+    //   for (; (max_width_sb << min_log2_cols) <= sb_cols; ++min_log2_cols) {}
+    //   log2_cols = AOMMAX(log2_cols, min_log2_cols);
+    //   log2_cols = AOMMIN(log2_cols, max_log2_cols);
+    //
+    // Note the `<=`, where `tile_log2` uses `<`. They differ by exactly one
+    // when `sb_cols` is an exact multiple-by-power-of-two of `max_width_sb` —
+    // i.e. at a frame EXACTLY `MAX_TILE_WIDTH` wide (4096 px at SB64: sb_cols
+    // == 64 == max_width_sb, `tile_log2` says 0 tiles-log2 and this loop says
+    // 1). Without it a 4096-wide frame codes ONE tile where real aomenc codes
+    // two.
+    t.log2_cols = tile_cols_log2_cfg.max(min_log2_cols);
+    let mut strict_min_log2_cols = 0i32;
+    while (max_width_sb << strict_min_log2_cols) <= sb_cols {
+        strict_min_log2_cols += 1;
+    }
+    t.log2_cols = t.log2_cols.max(strict_min_log2_cols).min(max_log2_cols);
     // av1_calculate_tile_cols.
     let size_sb_c = ceil_power_of_two(sb_cols, t.log2_cols as u32);
     let mut start_sb = 0;
@@ -484,7 +522,23 @@ pub fn derive_sequence_header(cfg: &KeyFrameConfig) -> SequenceHeaderObu {
             // `--enable-superres` defaults off for a still encode.
             enable_superres: false,
             enable_cdef: cfg.enable_cdef,
-            enable_restoration: cfg.enable_restoration,
+            // `av1_set_speed_features_framesize_independent`'s epilogue
+            // (speed_features.c:2746-2758, `if (!seq_params_locked)`):
+            //   seq->enable_restoration &= (!disable_wiener_filter ||
+            //                               !disable_sgr_filter)
+            // and the ALLINTRA cascade sets BOTH disables at speed >= 5
+            // (`set_allintra_speed_features_framesize_independent`), so the
+            // SEQUENCE-HEADER bit is cleared there regardless of
+            // `--enable-restoration`. (The `num_workers > 1` twin at :2740 is
+            // dead for this oracle: `CONFIG_MULTITHREAD=0` and `g_threads = 1`.)
+            // MEASURED 2026-09-02: without this the standalone encode diverged
+            // from real aomenc on EVERY `--enable-restoration=1` cell at speed
+            // 5..9 and byte-matched at 0..4.
+            //
+            // The same epilogue also clears `enable_dual_filter` and
+            // `enable_interintra_compound`; neither is coded in a reduced
+            // still-picture header, so both are byte-inert here.
+            enable_restoration: cfg.enable_restoration && cfg.cpu_used < 5,
         },
         color_config: ColorConfigParams {
             bit_depth: i32::from(cfg.bit_depth),
@@ -851,10 +905,8 @@ pub fn encode_key_frame(
             "usage: only AOM_USAGE_ALL_INTRA (2) is gated",
         ));
     }
-    if cfg.cpu_used != 0 {
-        return Err(KeyFrameError::Unsupported(
-            "cpu_used: only speed 0 is gated",
-        ));
+    if !(0..=9).contains(&cfg.cpu_used) {
+        return Err(KeyFrameError::Unsupported("cpu_used: must be 0..=9"));
     }
     if !matches!(cfg.bit_depth, 8 | 10 | 12) {
         return Err(KeyFrameError::Unsupported("bit_depth: must be 8, 10 or 12"));
@@ -868,6 +920,13 @@ pub fn encode_key_frame(
     if cfg.monochrome && (cfg.ss_x, cfg.ss_y) != (1, 1) {
         return Err(KeyFrameError::Unsupported(
             "monochrome: ss must be (1, 1) (the AOM_IMG_FMT_I420 a mono image allocates)",
+        ));
+    }
+    // AV1 has three chroma formats; (0, 1) is not one of them
+    // (`aom_img_fmt_t`: I420 = (1,1), I422 = (1,0), I444 = (0,0)).
+    if !matches!((cfg.ss_x, cfg.ss_y), (1, 1) | (1, 0) | (0, 0)) {
+        return Err(KeyFrameError::Unsupported(
+            "ss_x/ss_y: must be (1,1) 4:2:0, (1,0) 4:2:2 or (0,0) 4:4:4",
         ));
     }
     let (w, h) = (cfg.width, cfg.height);
@@ -903,8 +962,15 @@ pub fn encode_key_frame(
     let mi_rows = mi_dim(h as i32);
     let tile_info = derive_tile_info(mi_cols, mi_rows, mib_size_log2, 0, 0);
     let tiles_log2 = tile_info.log2_cols + tile_info.log2_rows;
-    if tiles_log2 != 0 {
-        return Err(KeyFrameError::MultiTileRequired { tiles_log2 });
+    let n_tile_rows = tile_info.rows;
+    let n_tile_cols = tile_info.cols;
+    if n_tile_rows * n_tile_cols != 1usize << tiles_log2 {
+        // `av1_calculate_tile_cols`/`_rows` derive `cols`/`rows` as loop counts;
+        // for a uniform-spacing grid they always equal `1 << log2`. A stream
+        // where they do not is one this shell has never seen.
+        return Err(KeyFrameError::Unsupported(
+            "tile grid: uniform spacing must give rows*cols == 2^(log2_cols+log2_rows)",
+        ));
     }
 
     // ---- source planes: SB-aligned, border-extended (the harness recipe) --
@@ -945,22 +1011,33 @@ pub fn encode_key_frame(
     }
 
     // ---- screen-content decision (av1_set_screen_content_options) ---------
-    // force_screen_content_tools == SELECT and no --tune-content=screen, so the
-    // decision is the anti-aliasing-aware detector's. speed 0 => the
-    // `use_nonrd_pick_mode && !hybrid_intra_pickmode` skip arm is not taken and
-    // `screen_detection_mode2_fast_detection` is false.
+    // `force_screen_content_tools == SELECT` and no `--tune-content=screen`, so
+    // the decision is the detector's — EXCEPT under
+    // `rt_sf.use_nonrd_pick_mode && !rt_sf.hybrid_intra_pickmode` (allintra
+    // speed 9), where C skips both estimators and sets the flags to 0
+    // (encoder.c:2466-2470, KB-41 root #13). The detector needs
+    // `screen_detection_mode2_fast_detection` (allintra speed >= 3), so the
+    // speed features are built first — with `allow_screen_content_tools = false`
+    // for this probe, since none of the three fields read here depends on it.
+    //
     // `width`/`height` are C's `unfiltered_source->y_width`/`y_height` — the
     // 8-ALIGNED dimensions, not the crop (see the function's docs; passing the
     // crop mis-decides borderline frames).
-    let sct = crate::screen_detect::estimate_screen_content_antialiasing_aware(
-        &src_y,
-        0,
-        stride,
-        (w + 7) & !7,
-        (h + 7) & !7,
-        bd,
-        false,
-    );
+    let speed = cfg.cpu_used;
+    let sf_probe = SpeedFeatures::set_allintra(speed, false, bd > 8);
+    let sct = if sf_probe.use_nonrd_pick_mode && sf_probe.hybrid_intra_pickmode == 0 {
+        ScreenContentDecision::detection_disabled()
+    } else {
+        crate::screen_detect::estimate_screen_content_antialiasing_aware(
+            &src_y,
+            0,
+            stride,
+            (w + 7) & !7,
+            (h + 7) & !7,
+            bd,
+            sf_probe.screen_detection_mode2_fast_detection,
+        )
+    };
 
     let mut p = derive_frame_header(cfg, &seq, &sct, tile_info);
     let qindex = p.quant.base_qindex;
@@ -999,15 +1076,29 @@ pub fn encode_key_frame(
     );
 
     // ---- speed features ---------------------------------------------------
-    let mut sf = SpeedFeatures::set_allintra(0, sct.allow_screen_content_tools, bd > 8);
-    sf.apply_allintra_framesize_dependent(w, h, 0);
-    sf.apply_allintra_qindex_dependent(w, h, qindex, 0);
-    // `prune_tx_type_using_stats` is ALLINTRA speed >= 2 only, and only
-    // `is_480p_or_larger` — 0 at speed 0 either way.
-    sf.prune_tx_type_using_stats = 0;
+    let mut sf = SpeedFeatures::set_allintra(speed, sct.allow_screen_content_tools, bd > 8);
+    // The modelled arms of `set_allintra_speed_feature_framesize_dependent`
+    // (speed_features.c:166) and the ALLINTRA-reachable arms of
+    // `av1_set_speed_features_qindex_dependent` (:2872) — C's second and third
+    // passes, both framesize-blind in the `set_allintra` setter itself.
+    sf.apply_allintra_framesize_dependent(w, h, speed);
+    sf.apply_allintra_qindex_dependent(w, h, qindex, speed);
+    // `prune_tx_type_using_stats`: ALLINTRA sets 1 at speed >= 2 and 2 at
+    // speed >= 4, but ONLY `is_480p_or_larger` (speed_features.c:261/299).
+    sf.prune_tx_type_using_stats = if w.min(h) >= 480 {
+        if speed >= 4 {
+            2
+        } else if speed >= 2 {
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    };
 
     let sb_block = SB_BLOCK_64;
-    let env = SbEncodeEnv {
+    let mut env = SbEncodeEnv {
         ref_frame: None,
         sb_size: sb_block,
         mi_rows,
@@ -1015,10 +1106,20 @@ pub fn encode_key_frame(
         // `cm->width` / `cm->height` — the TRUE crop (KB-28).
         frame_width: w as i32,
         frame_height: h as i32,
+        // Placeholders — the real per-tile bounds are stamped in before every
+        // `pack_tile` / `pack_tile_from_trees_lr` call below. They MATTER:
+        // C's `av1_tile_set_row` / `_col` clamp the ends with
+        // `AOMMIN(.., mi_rows/mi_cols)`, and a past-the-end sentinel instead of
+        // that clamp changes the search's frame-edge decisions.
+        // MEASURED 2026-09-02 by reverting to `1 << 16`: 131x131, 132x64,
+        // 132x128, 132x132, 196x64, 196x196, 260x260 and 261x261 (textured
+        // 4:2:0 cq32 speed 0) ALL diverge from real aomenc with the sentinel
+        // and are ALL byte-identical with the clamp. Four of them had been
+        // pinned in the gate as "RD near-ties"; they were this.
         tile_row_start: 0,
         tile_col_start: 0,
-        tile_row_end: 1 << 16,
-        tile_col_end: 1 << 16,
+        tile_row_end: mi_rows,
+        tile_col_end: mi_cols,
         monochrome: cfg.monochrome,
         ss_x: cfg.ss_x,
         ss_y: cfg.ss_y,
@@ -1052,9 +1153,20 @@ pub fn encode_key_frame(
         tune: Default::default(),
         deltaq: None,
     };
-    let pol = sf.tx_type_search_policy(false, 0);
+    let pol = sf.tx_type_search_policy(false, 0); // (skip_trellis, sharpness)
     let pick_cfg = PickFrameCfg {
-        fs_sf: Default::default(),
+        // KB-32: carry the RESOLVED frame-level variance-partition values down
+        // rather than letting the walk re-derive them from mi-ALIGNED dims.
+        // Inert below speed 7 (the VBP path) and below speed 9 (`is_4k_or_larger`).
+        fs_sf: crate::partition_pick::FrameSizeSf {
+            vbp: crate::var_part::VbpSf {
+                force_large_partition_blocks_intra: sf.force_large_partition_blocks_intra != 0,
+                var_part_split_threshold_shift: sf.var_part_split_threshold_shift,
+                allintra: true,
+            },
+            // `is_4k_or_larger` = `AOMMIN(cm->width, cm->height) >= 2160`.
+            is_4k_or_larger: w.min(h) >= 2160,
+        },
         inter: None,
         intrabc: None,
         search_allow_intrabc: false,
@@ -1070,14 +1182,21 @@ pub fn encode_key_frame(
         partition_costs: &real.partition_costs,
         partition_cdfs: &real.partition_cdf,
         allintra: true,
-        speed: 0,
+        speed,
         qindex,
         enable_filter_intra,
         enable_tx64: true,
         enable_rect_tx: true,
         intra_pruning_with_hog: sf.intra_pruning_with_hog != 0,
         enable_rect_partitions: true,
-        less_rectangular_check_level: sf.less_rectangular_check_level,
+        // `av1_set_speed_features_qindex_dependent` runs AFTER the allintra
+        // setters and overrides at speed 3 ONLY (speed_features.c:3032-3034);
+        // its speed <= 2 and speed >= 4 arms equal the allintra values.
+        less_rectangular_check_level: if speed == 3 {
+            if qindex >= 170 { 1 } else { 2 }
+        } else {
+            sf.less_rectangular_check_level
+        },
         // `set_max_min_partition_size` (partition_strategy.h:214/224) with the
         // default `--min-partition-size 4` / `--max-partition-size 128`.
         max_partition_size: sf.default_max_partition_size.min(sb_block),
@@ -1094,6 +1213,9 @@ pub fn encode_key_frame(
     // C's `encode_frame_internal`: adapt a tile context, produce the
     // reconstruction, count `txb_split_count`. The bits go to a throwaway
     // coder; only the trees, the recon and the split count are kept.
+    // KB-41 root #12: `update_stats`' tx-size gate is the SEARCH-time
+    // DEFAULT_EVAL tx mode (rdopt_utils.h:494), not the final header one. The
+    // nonrd speeds still search SELECT.
     let search_tx_mode_is_select = !coded_lossless;
     let phase1_pack_cfg = PackCfg {
         enable_filter_intra,
@@ -1108,28 +1230,81 @@ pub fn encode_key_frame(
         search_allow_intrabc: false,
         search_tx_mode_is_select,
     };
-    let mut kf1 = KfFrameContext::default_for_qindex(qindex);
+    // Tile geometry in raster (tile-row-major) order:
+    // `(mi_row_start, mi_col_start, mi_row_end, mi_col_end, n_sb_rows, n_sb_cols)`.
+    // The mi ENDS are clamped to the frame exactly like C's `av1_tile_set_row` /
+    // `_col` (`tile->mi_row_end = AOMMIN(.., mi_rows)`, tile_common.c). A single
+    // tile is one entry covering the frame.
+    let tile_grid: Vec<(i32, i32, i32, i32, i32, i32)> = (0..n_tile_rows)
+        .flat_map(|trow| {
+            let ti = &p.tile_info;
+            (0..n_tile_cols).map(move |tcol| {
+                let r0 = ti.row_start_sb[trow] << mib_size_log2;
+                let r1 = (ti.row_start_sb[trow + 1] << mib_size_log2).min(mi_rows);
+                let c0 = ti.col_start_sb[tcol] << mib_size_log2;
+                let c1 = (ti.col_start_sb[tcol + 1] << mib_size_log2).min(mi_cols);
+                (
+                    r0,
+                    c0,
+                    r1,
+                    c1,
+                    ti.row_start_sb[trow + 1] - ti.row_start_sb[trow],
+                    ti.col_start_sb[tcol + 1] - ti.col_start_sb[tcol],
+                )
+            })
+        })
+        .collect();
+    debug_assert_eq!(
+        tile_grid
+            .iter()
+            .map(|t| (t.4 * t.5) as usize)
+            .sum::<usize>(),
+        (n_sb_x * n_sb_y) as usize,
+        "the tile grid must partition every superblock exactly once"
+    );
+
     let mut recon_y = src_y.clone();
     let mut recon_u = src_u.clone();
     let mut recon_v = src_v.clone();
-    let mut scratch = OdEcEnc::new();
-    let mut trees = pack_tile(
-        &mut scratch,
-        &env,
-        &pick_cfg,
-        &phase1_pack_cfg,
-        &mut kf1,
-        &mut recon_y,
-        &mut recon_u,
-        &mut recon_v,
-        0,
-        0,
-        n_sb_y,
-        n_sb_x,
-        sb_mi,
-        sb_block,
-    );
-    let _ = scratch.done();
+    // Frame-raster tree slots, filled tile by tile. C's `write_modes` resets the
+    // tile context per tile (`av1_reset_loop_restoration` + a fresh copy of
+    // `cm->fc`), which is why each tile gets its own `KfFrameContext`.
+    let mut frame_trees: Vec<Option<SbTree>> = (0..(n_sb_x * n_sb_y)).map(|_| None).collect();
+    for &(r0, c0, r1, c1, n_tr, n_tc) in &tile_grid {
+        env.tile_row_start = r0;
+        env.tile_col_start = c0;
+        env.tile_row_end = r1;
+        env.tile_col_end = c1;
+        let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
+        let mut scratch = OdEcEnc::new();
+        let t = pack_tile(
+            &mut scratch,
+            &env,
+            &pick_cfg,
+            &phase1_pack_cfg,
+            &mut kf_tile,
+            &mut recon_y,
+            &mut recon_u,
+            &mut recon_v,
+            r0,
+            c0,
+            n_tr,
+            n_tc,
+            sb_mi,
+            sb_block,
+        );
+        let _ = scratch.done();
+        let (sb_r0, sb_c0) = (r0 / sb_mi, c0 / sb_mi);
+        for (i, tree) in t.into_iter().enumerate() {
+            let sb_r = sb_r0 + i as i32 / n_tc;
+            let sb_c = sb_c0 + i as i32 % n_tc;
+            frame_trees[(sb_r * n_sb_x + sb_c) as usize] = Some(tree);
+        }
+    }
+    let trees: Vec<SbTree> = frame_trees
+        .into_iter()
+        .map(|t| t.expect("every superblock belongs to exactly one tile"))
+        .collect();
 
     // `av1_encode_frame` (encodeframe.c:2796-2799): the frame codes
     // TX_MODE_LARGEST when the search ran at TX_MODE_SELECT and NO block split
@@ -1158,7 +1333,28 @@ pub fn encode_key_frame(
         mi_cols,
         delta_lf_present: false,
     };
-    let derived_lf = pick_filter_level(&lf_frame, true, 0, false);
+    // `lpf_sf.lpf_pick`: LPF_PICK_FROM_FULL_IMAGE (DUAL) at allintra speed
+    // 0..=3, ..._NON_DUAL at 4/5 (speed_features.c:496), and the CLOSED-FORM
+    // LPF_PICK_FROM_Q at speed >= 6 (:559) — no search at all, the level is a
+    // fit on the AC quantizer. `loopfilter_frame` (encoder.c:2875-2886) runs
+    // `av1_pick_filter_level` only when `is_loopfilter_used(cm)` =
+    // `!coded_lossless && !large_scale`, so a coded-lossless frame keeps
+    // `cm->lf`'s zeroed levels (byte-inert — the header writer skips the whole
+    // loop-filter block — but running a search C never runs would be a lie
+    // about what this models). The third argument is SHARPNESS
+    // (`--sharpness`, 0 here), not the speed.
+    let derived_lf = if coded_lossless {
+        LoopFilterLevels {
+            filter_level: [0, 0],
+            filter_level_u: 0,
+            filter_level_v: 0,
+            sharpness: 0,
+        }
+    } else if speed >= 6 {
+        pick_filter_level_from_q(qindex, bd, true, 0)
+    } else {
+        pick_filter_level(&lf_frame, true, 0, speed >= 4)
+    };
     p.loopfilter.filter_level = derived_lf.filter_level;
     p.loopfilter.filter_level_u = derived_lf.filter_level_u;
     p.loopfilter.filter_level_v = derived_lf.filter_level_v;
@@ -1171,7 +1367,7 @@ pub fn encode_key_frame(
     // (`encoder.c:3780` wraps all of `loopfilter_frame`; KB-41 root #14 —
     // without that gate the LR repack writes units the header never announces
     // and both decoders reject the stream).
-    let postfilter = !p.allow_intrabc && (cfg.enable_cdef || cfg.enable_restoration);
+    let postfilter = !p.allow_intrabc && (cfg.enable_cdef || seq.seq_header.enable_restoration);
     // The deblocked reconstruction, kept separate from the phase-1 recon so the
     // LR search can see BOTH `deblocked` and the post-CDEF `cur` (C saves
     // boundary lines from each: `av1_loop_restoration_save_boundary_lines`
@@ -1255,7 +1451,7 @@ pub fn encode_key_frame(
         // `av1_cdef_frame` — only needed as the LR search's input; when
         // restoration is off nothing reads the filtered pixels (phase 2
         // re-encodes from the source), so the apply is skipped.
-        if cfg.enable_restoration {
+        if seq.seq_header.enable_restoration {
             cur_y = deblocked_y.clone();
             cur_u = deblocked_u.clone();
             cur_v = deblocked_v.clone();
@@ -1294,7 +1490,9 @@ pub fn encode_key_frame(
     // `is_restoration_used` (`encoder.h:4431`) = `enable_restoration &&
     // !all_lossless && !large_scale`, plus the `allow_intrabc` gate folded into
     // `postfilter` above.
-    let lr_stage = postfilter && cfg.enable_restoration && !coded_lossless;
+    // `is_restoration_used` reads the SEQUENCE bit, which speed >= 5 clears
+    // (see `derive_sequence_header`) — not the raw `--enable-restoration` knob.
+    let lr_stage = postfilter && seq.seq_header.enable_restoration && !coded_lossless;
     let lr_outcome = if lr_stage {
         // With CDEF off the post-CDEF frame IS the deblocked frame.
         let (lr_cur_y, lr_cur_u, lr_cur_v) = if cfg.enable_cdef {
@@ -1356,13 +1554,20 @@ pub fn encode_key_frame(
             // `av1_pick_filter_restoration` walks tiles outer / SBs inner and
             // resets the per-RU delta-coding references at every tile start.
             // Single tile (asserted above) => one span per axis.
-            tile_sb_rows: vec![(p.tile_info.row_start_sb[0], p.tile_info.row_start_sb[1])],
-            tile_sb_cols: vec![(p.tile_info.col_start_sb[0], p.tile_info.col_start_sb[1])],
+            // `av1_pick_filter_restoration` walks tiles outer / SBs inner and
+            // resets the per-RU delta-coding references at every tile start, so
+            // the spans must be the REAL ones.
+            tile_sb_rows: (0..n_tile_rows)
+                .map(|t| (p.tile_info.row_start_sb[t], p.tile_info.row_start_sb[t + 1]))
+                .collect(),
+            tile_sb_cols: (0..n_tile_cols)
+                .map(|t| (p.tile_info.col_start_sb[t], p.tile_info.col_start_sb[t + 1]))
+                .collect(),
             wiener_restore_cost: wiener_cost,
             sgrproj_restore_cost: sgrproj_cost,
             switchable_restore_cost: switchable_cost,
             sf: crate::speed_features::lr_search_sf_allintra(
-                0,
+                speed,
                 qindex,
                 w,
                 h,
@@ -1385,11 +1590,9 @@ pub fn encode_key_frame(
         tx_mode_is_select: p.tx_mode_select,
         ..phase1_pack_cfg
     };
-    let mut kf2 = KfFrameContext::default_for_qindex(qindex);
     let mut recon2_y = src_y.clone();
     let mut recon2_u = src_u.clone();
     let mut recon2_v = src_v.clone();
-    let mut enc = OdEcEnc::new();
     let lr_restores = lr_outcome.as_ref().is_some_and(|o| {
         o.frame_restoration_type
             .iter()
@@ -1411,29 +1614,57 @@ pub fn encode_key_frame(
             num_planes: cfg.num_planes(),
         }
     });
-    pack_tile_from_trees_lr(
-        &mut enc,
-        &env,
-        &pick_cfg,
-        &pack_cfg,
-        &mut kf2,
-        &mut recon2_y,
-        &mut recon2_u,
-        &mut recon2_v,
-        &mut trees,
-        0,
-        0,
-        n_sb_y,
-        n_sb_x,
-        sb_mi,
-        sb_block,
-        cdef_pack,
-        lr_pack.as_ref(),
-    );
-    let tile_bytes = enc.done().to_vec();
+    let mut tile_payloads: Vec<Vec<u8>> = Vec::with_capacity(tile_grid.len());
+    for &(r0, c0, r1, c1, n_tr, n_tc) in &tile_grid {
+        env.tile_row_start = r0;
+        env.tile_col_start = c0;
+        env.tile_row_end = r1;
+        env.tile_col_end = c1;
+        // This tile's slice of the frame-raster trees, in the tile-local raster
+        // order `pack_tile_from_trees_lr` indexes by.
+        let (sb_r0, sb_c0) = (r0 / sb_mi, c0 / sb_mi);
+        let mut tile_trees: Vec<SbTree> = (0..n_tr)
+            .flat_map(|r| (0..n_tc).map(move |c| (r, c)))
+            .map(|(r, c)| trees[((sb_r0 + r) * n_sb_x + sb_c0 + c) as usize].clone())
+            .collect();
+        let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
+        let mut enc = OdEcEnc::new();
+        pack_tile_from_trees_lr(
+            &mut enc,
+            &env,
+            &pick_cfg,
+            &pack_cfg,
+            &mut kf_tile,
+            &mut recon2_y,
+            &mut recon2_u,
+            &mut recon2_v,
+            &mut tile_trees,
+            r0,
+            c0,
+            n_tr,
+            n_tc,
+            sb_mi,
+            sb_block,
+            cdef_pack.clone(),
+            lr_pack.as_ref(),
+        );
+        tile_payloads.push(enc.done().to_vec());
+    }
 
     // ---- temporal unit ----------------------------------------------------
-    let frame_obu = assemble_obu_frame_single_tile(&p, tiles_log2, &tile_bytes, false, 0);
+    let frame_obu = if tile_payloads.len() == 1 {
+        assemble_obu_frame_single_tile(&p, tiles_log2, &tile_payloads[0], false, 0)
+    } else {
+        // Multi-tile, `num_tg == 1`: one `OBU_FRAME` carrying all tiles in a
+        // single tile group, with `context_update_tile_id` and
+        // `tile_size_bytes_minus_1` overwritten from the real tile sizes
+        // (`write_tile_obu_size`, bitstream.c:4053/4068) — the derived form, no
+        // header bytes spliced from anywhere.
+        wrap_obu(
+            OBU_FRAME,
+            &assemble_multitile_frame_obu_payload_derived(&p, &tile_payloads),
+        )
+    };
     let td = temporal_delimiter_obu();
     let seq_obu = sequence_header_obu(&seq);
     let mut out = Vec::with_capacity(td.len() + seq_obu.len() + frame_obu.len());

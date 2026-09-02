@@ -21,17 +21,21 @@
 //! | test | claim |
 //! |---|---|
 //! | [`no_seq_header_stream_is_rejected_by_the_c_decoder`] | the gap is real AND the decode gate can go red: a frame OBU with no sequence header does not decode |
-//! | [`self_contained_key_frame_byte_matches_real_aomenc`] | the port's WHOLE temporal unit is byte-identical to `shim_encode_av1_kf`'s (TD + seq + frame), i.e. every derived header field equals C's |
+//! | [`self_contained_key_frame_byte_matches_real_aomenc`] | the port's WHOLE temporal unit is byte-identical to `shim_encode_av1_kf`'s (TD + seq + frame(s)), i.e. every derived header field equals C's |
 //! | [`self_contained_key_frame_decodes_to_the_same_pixels`] | the real C decoder AND the port decoder both decode the port's own stream, to the same pixels C's own stream decodes to |
 //! | [`mutated_sequence_header_is_caught`] | mutation proof: perturbing ONE derived header field (the coded `base_qindex`) makes the pixel gate fail and the byte gate fail — neither is vacuous |
+//! | [`open_divergences_are_pinned`] | the cells that are NOT byte-identical, each with a MEASURED attribution asserted (which half of the frame OBU diverges), self-promoting so a fix goes red |
 //! | [`refuses_configurations_it_has_no_gate_for`] | the shell returns [`KeyFrameError`] instead of silently mis-encoding outside its envelope |
 //!
 //! # Envelope
 //!
-//! ALL-INTRA, `--cpu-used 0`, CDEF off, loop-restoration off, SB64, single
-//! tile, palette + IntraBC off — exactly `aom_sys_ref::ref_encode_av1_kf`'s
-//! configuration, so the byte comparison is like-for-like. The
-//! `key_frame` module documents the axes that are not wired yet.
+//! ALL-INTRA, `--cpu-used` 0..=9, SB64, palette + IntraBC off — exactly
+//! `aom_sys_ref::ref_encode_av1_kf`'s configuration, so the byte comparison is
+//! like-for-like. All four (CDEF, loop-restoration) combinations are swept, as
+//! are mandatory multi-tile frames. Real aomenc's ALLINTRA default is CDEF
+//! **off** with restoration **on** (`av1_cx_iface.c:3067` sets
+//! `enable_cdef = 0` for `AOM_USAGE_ALL_INTRA`) and is byte-gated at every
+//! speed. The `key_frame` module documents the axes that are not wired yet.
 
 use aom_dsp::entropy::header::{
     FrameHeaderObu, read_sequence_header_obu, read_uncompressed_header,
@@ -190,6 +194,8 @@ struct Cell {
     cdef: bool,
     /// `AV1E_SET_ENABLE_RESTORATION`.
     lr: bool,
+    /// `AOME_SET_CPUUSED`.
+    speed: i32,
 }
 
 impl Cell {
@@ -216,7 +222,15 @@ impl Cell {
             content,
             cdef: false,
             lr: false,
+            speed: 0,
         }
+    }
+
+    /// The same cell at a different `--cpu-used`.
+    fn at_speed(mut self, speed: i32) -> Self {
+        self.label = format!("{}_s{speed}", self.label);
+        self.speed = speed;
+        self
     }
 
     /// The same cell with the two post-filter knobs set.
@@ -308,6 +322,19 @@ fn sweep_cells() -> Vec<Cell> {
         (262, 262),
         (263, 263),
         (264, 264),
+        // These eight were PINNED as "RD near-ties" until 2026-09-02, when the
+        // shell started stamping C's clamped tile bounds
+        // (`AOMMIN(tile_end, mi_rows/mi_cols)`) instead of a past-the-end
+        // sentinel. Reverting the clamp makes all eight diverge again, so they
+        // are also the regression lock on that fix.
+        (131, 131),
+        (132, 132),
+        (132, 64),
+        (132, 128),
+        (196, 196),
+        (196, 64),
+        (260, 260),
+        (261, 261),
     ] {
         v.push(Cell::new(
             format!("D_{w}x{h}_420_bd8_cq32_tex"),
@@ -356,8 +383,10 @@ fn sweep_cells() -> Vec<Cell> {
         ));
     }
     // G -- the POST-FILTER axis: all four (CDEF, loop restoration) combinations,
-    // including BOTH ON, which is real aomenc's ALLINTRA default and which no
-    // pack entry point covered before `pack::pack_tile_from_trees_lr`. Swept
+    // including BOTH ON, which no pack entry point covered before
+    // `pack::pack_tile_from_trees_lr`. (Real aomenc's ALLINTRA default is CDEF
+    // OFF with restoration ON -- `av1_cx_iface.c:3067`; that default is swept
+    // across every speed in axis H.) Swept
     // across the quantizer range, mono / 4:2:0 / 4:4:4, and three sizes,
     // because the CDEF strength search and the LR unit decision are both
     // content- and qindex-driven (a single cq exercises one branch of each).
@@ -396,6 +425,110 @@ fn sweep_cells() -> Vec<Cell> {
             );
         }
     }
+    // H -- the SPEED axis (`--cpu-used`). What is byte-exact, measured
+    // 2026-09-02 and bounded by the pins below:
+    //   * CDEF OFF (the ALLINTRA default -- `av1_cx_iface.c:3067` sets
+    //     `enable_cdef = 0` for usage 2): speeds 0..9, with restoration off or
+    //     on. Note the SEQUENCE bit `enable_restoration` is cleared by C at
+    //     allintra speed >= 5 (`speed_features.c:2753` &&
+    //     `disable_wiener_filter`/`disable_sgr_filter`), which
+    //     `derive_sequence_header` models -- so the `lr = true` cells at speeds
+    //     5..9 code restoration OFF, exactly like real aomenc.
+    //   * CDEF ON: speeds 0..3 only. Speed >= 4 switches
+    //     `sf.cdef_pick_method` to the FAST levels, which PARITY.md C1 records
+    //     as ported + table-unit-tested but never e2e-gated; measured here,
+    //     they diverge on every cell tried (pinned below).
+    for speed in 0..=9 {
+        for (w, h, cq) in [(64usize, 64usize, 32i32), (128, 128, 12), (128, 128, 32)] {
+            for lr in [false, true] {
+                let c = Cell::new(
+                    format!("H_{w}x{h}_420_bd8_cq{cq}_tex_lr{}", u8::from(lr)),
+                    w,
+                    h,
+                    8,
+                    false,
+                    1,
+                    1,
+                    cq,
+                    Texture,
+                );
+                let c = if lr {
+                    c.with_postfilter(false, true)
+                } else {
+                    c
+                };
+                v.push(c.at_speed(speed));
+            }
+        }
+    }
+    for speed in 0..=3 {
+        for (w, h, cq) in [(64usize, 64usize, 32i32), (128, 128, 32)] {
+            v.push(
+                Cell::new(
+                    format!("H_{w}x{h}_420_bd8_cq{cq}_tex"),
+                    w,
+                    h,
+                    8,
+                    false,
+                    1,
+                    1,
+                    cq,
+                    Texture,
+                )
+                .with_postfilter(true, true)
+                .at_speed(speed),
+            );
+        }
+    }
+    // I -- MULTI-TILE, in the form `av1_get_tile_limits` MANDATES it: a frame
+    // wider than MAX_TILE_WIDTH (4096 px) forces `min_log2_cols > 0`, so
+    // libaom's own uniform-spacing default (`--tile-columns=0`) still resolves
+    // to 2 tiles at 4160 px and 3 at 8320. Each tile is packed independently
+    // with a fresh frame context, exactly as C's `write_modes` does, and
+    // assembled through `assemble_multitile_frame_obu_payload_derived`.
+    // Byte-exact at speeds 0..6; speeds 7..9 hit the same unlocalized
+    // VAR_BASED_PARTITION / nonrd arm the 256x256 pin records (they are LARGE
+    // frames, not a tile problem -- 4160x64 is byte-exact at 0..6).
+    for (w, h, cq, speed) in [
+        (4160usize, 64usize, 32i32, 0i32),
+        (4160, 64, 32, 3),
+        (4160, 64, 32, 6),
+        (4160, 64, 12, 0),
+        (4160, 64, 55, 0),
+        (4160, 192, 32, 6),
+        (4224, 128, 40, 0),
+        (8320, 64, 32, 0),
+        (8320, 64, 32, 6),
+        // The EXACT-boundary cells. `set_tile_info` (encoder.c:386-390)
+        // recomputes the column minimum with `(max_width_sb << k) <= sb_cols`,
+        // one stricter than `av1_get_tile_limits`' own `tile_log2` (`<`). They
+        // differ by exactly one when `sb_cols` is an exact
+        // multiple-by-power-of-two of `max_width_sb`: at SB64 that is a frame
+        // whose mi width rounds to `sb_cols == 64` (4033..4096 px, two tiles)
+        // or `== 128` (8192 px, four tiles). Bite-proved 2026-09-02 by
+        // weakening the loop to `<`: 4033x64, 4096x64 and 8192x64 diverge,
+        // 4032x64 / 4097x64 / 4160x64 / 2048x64 do not.
+        (4032, 64, 32, 0),
+        (4033, 64, 32, 0),
+        (4096, 64, 32, 0),
+        (4097, 64, 32, 0),
+        (8192, 64, 32, 0),
+    ] {
+        v.push(
+            Cell::new(
+                format!("I_{w}x{h}_420_bd8_cq{cq}_tex_multitile"),
+                w,
+                h,
+                8,
+                false,
+                1,
+                1,
+                cq,
+                Texture,
+            )
+            .at_speed(speed),
+        );
+    }
     v
 }
 
@@ -420,6 +553,10 @@ fn decode_cells() -> Vec<Cell> {
         "G_64x64_420_bd8_cq32_tex_cdef0_lr1",
         "G_64x64_420_bd8_cq32_tex_cdef1_lr1",
         "G_256x256_420_bd8_cq32_tex_cdef1_lr1",
+        "H_64x64_420_bd8_cq32_tex_lr0_s9",
+        "H_128x128_420_bd8_cq12_tex_lr1_s6",
+        "H_64x64_420_bd8_cq32_tex_cdef1_lr1_s3",
+        "I_4160x64_420_bd8_cq32_tex_multitile_s0",
     ];
     sweep_cells()
         .into_iter()
@@ -456,6 +593,7 @@ fn cell_cfg(cell: &Cell) -> KeyFrameConfig {
     );
     cfg.enable_cdef = cell.cdef;
     cfg.enable_restoration = cell.lr;
+    cfg.cpu_used = cell.speed;
     cfg
 }
 
@@ -478,7 +616,7 @@ fn c_stream(cell: &Cell, y: &[u16], u: &[u16], v: &[u16]) -> Vec<u8> {
         cell.ss_x as i32,
         cell.ss_y as i32,
         cell.cq,
-        0,
+        cell.speed,
         cell.cdef,
         cell.lr,
         2,
@@ -787,10 +925,20 @@ fn refuses_configurations_it_has_no_gate_for() {
         );
     }
 
-    let mut fast = base;
-    fast.cpu_used = 5;
+    // `--cpu-used` 0..=9 are all SUPPORTED (axis H of the sweep); only values
+    // outside the CLI range are refused.
+    for speed in 0..=9 {
+        let mut cfg = base;
+        cfg.cpu_used = speed;
+        assert!(
+            encode_key_frame(planes, &cfg).is_ok(),
+            "cpu_used={speed} must encode: speeds 0..=9 are gated"
+        );
+    }
+    let mut bad_speed = base;
+    bad_speed.cpu_used = 10;
     assert!(matches!(
-        encode_key_frame(planes, &fast),
+        encode_key_frame(planes, &bad_speed),
         Err(KeyFrameError::Unsupported(_))
     ));
 
@@ -812,12 +960,68 @@ fn refuses_configurations_it_has_no_gate_for() {
         Err(KeyFrameError::PlaneSize { plane: 0, .. })
     ));
 
-    // A frame wide enough that `av1_get_tile_limits` MANDATES a tile split is
-    // refused by name rather than mis-assembled (the multi-tile assembler
-    // exists but has no gate through this shell).
+    // (0, 1) is not an AV1 chroma format.
+    let mut bad_ss = base;
+    bad_ss.monochrome = false;
+    bad_ss.ss_x = 0;
+    bad_ss.ss_y = 1;
+    let cy = vec![128u16; 64 * 64];
+    let cuv = vec![128u16; 64 * 32];
+    assert!(matches!(
+        encode_key_frame(
+            KeyFramePlanes {
+                y: &cy,
+                u: &cuv,
+                v: &cuv
+            },
+            &bad_ss
+        ),
+        Err(KeyFrameError::Unsupported(_))
+    ));
+
+    // Odd frame sizes at the nonrd / variance-partition speeds must return a
+    // Result or a stream -- never panic. KB-34 was exactly such a refusal
+    // (`nonrd_pickmode.rs` on a HORZ/VERT leaf), reachable from a 100x100
+    // thumbnail, and a library entry point that unwinds instead of returning
+    // is a defect regardless of who closed the root.
+    for (w, h) in [(100usize, 100usize), (66, 34), (130, 70), (196, 196)] {
+        for speed in [7, 8, 9] {
+            let cfg = KeyFrameConfig::allintra_speed0(w, h, 8, false, 1, 1, 32);
+            let cfg = KeyFrameConfig {
+                cpu_used: speed,
+                ..cfg
+            };
+            let y: Vec<u16> = (0..w * h)
+                .map(|i| ((i * 7 + (i / w) * 13) % 256) as u16)
+                .collect();
+            let uv = vec![128u16; w.div_ceil(2) * h.div_ceil(2)];
+            let r = std::panic::catch_unwind(|| {
+                encode_key_frame(
+                    KeyFramePlanes {
+                        y: &y,
+                        u: &uv,
+                        v: &uv,
+                    },
+                    &cfg,
+                )
+            });
+            assert!(
+                r.is_ok(),
+                "{w}x{h} at --cpu-used {speed} PANICKED; encode_key_frame must return a \
+                 Result, never unwind"
+            );
+            assert!(
+                r.unwrap().is_ok(),
+                "{w}x{h} at --cpu-used {speed} was refused; it is inside the envelope"
+            );
+        }
+    }
+
+    // A frame wide enough that `av1_get_tile_limits` MANDATES a tile split
+    // ENCODES (axis I of the sweep) rather than being refused.
     let wide = KeyFrameConfig::allintra_speed0(4160, 64, 8, true, 1, 1, 32);
     let wide_y = vec![128u16; 4160 * 64];
-    assert!(matches!(
+    assert!(
         encode_key_frame(
             KeyFramePlanes {
                 y: &wide_y,
@@ -825,9 +1029,10 @@ fn refuses_configurations_it_has_no_gate_for() {
                 v: &[]
             },
             &wide
-        ),
-        Err(KeyFrameError::MultiTileRequired { .. })
-    ));
+        )
+        .is_ok(),
+        "a mandatory-tile-split frame must encode"
+    );
 }
 
 /// **Open divergences, PINNED.** These cells are NOT byte-identical to real
@@ -835,20 +1040,36 @@ fn refuses_configurations_it_has_no_gate_for() {
 /// it red and forces promotion into [`sweep_cells`] (this repo's self-promoting
 /// pin convention — see the PARITY.md Tier-3 rows).
 ///
-/// **None of them is a framing or header-derivation defect in the shell.**
-/// Measured 2026-09-02 by parsing both streams' headers:
+/// **None is a framing or header-derivation defect in the shell**, and the
+/// attribution is MEASURED and ASSERTED per cell (which half of the frame OBU
+/// diverges — see `Where` below), not left in prose:
 ///
 /// | cell | measured attribution |
 /// |---|---|
-/// | 132x132, 196x196, 260x260 (4:2:0 bd8 cq32 textured) | EVERY derived header field equals C's — `allow_screen_content_tools`, `base_qindex`, both loop-filter levels, `tx_mode_select`, the tile grid — and the sequence-header OBU payload is byte-identical. The divergence starts 367 / 525 / 1240 bytes INTO the tile payload: a partition/RD near-tie in `pack_tile`'s search, the class PARITY.md Tier-3 already tracks. It is reachable from the bootstrapped harness too. |
-/// | 261x261 (4:2:0 bd8 cq32 textured) | BOTH halves differ — the tile payload (2174 vs 2181 bytes) AND the derived loop-filter level (`[0, 1]` vs C's `[0, 2]`). For a KEY frame that is ONE upstream root, not two: `pick_filter_level` runs on the port's OWN phase-1 reconstruction, so an RD divergence that changes the recon moves the level with it. (The 2026-09-02 first attribution called this a pure `pick_filter_level` off-by-one; the `Where` assertion below caught that and is why it is asserted rather than written in prose.) |
+/// | `--enable-cdef=1` at `--cpu-used` >= 4 (64x64 4:2:0 cq32) | `HeaderOnly`. `sf.cdef_pick_method` leaves `CDEF_FULL_SEARCH` for the FAST levels at speed >= 4; PARITY.md C1 records those as ported + table-unit-tested but NEVER e2e-gated. Divergent on every cell tried at speeds 4..9 (5 sizes x 6 speeds), and ONLY in the header's `cdef_strengths` set — the per-unit strength indices in the tile payload are byte-identical. Speeds 0..3 are byte-exact and ARE in the sweep. |
+/// | `--cpu-used` >= 7 above roughly 3x3 superblocks (256x256 cq32 s7) | `TilePayloadOnly`. One unlocalized VAR_BASED_PARTITION / nonrd arm. Bracket at speed 7: 128x128, 160x160, 192x192, 128x192 and 192x128 are byte-exact, 256x256 and 320x320 are not; at speed 9, 192x192 is not either. |
+/// | the same arm through a MANDATORY two-tile frame (4160x64 cq32 s9) | `TilePayloadOnly`. Pinned separately so a tile-assembly regression cannot hide inside the large-frame one: 4160x64 is byte-exact at speeds 0..6 in the sweep, which is what proves the tile assembly is not the problem. |
 ///
-/// The neighbours bracket them: 130x70, 200x200, 250x130, 258x258, 262x262,
-/// 263x263, 264x264, 256x256 and 320x320 are all byte-exact in
-/// [`sweep_cells`], so no pin here is "the port cannot do partial superblocks".
+/// # What used to be here
 ///
-/// All four pins run with CDEF and loop restoration OFF; the post-filter axis
-/// (axis G of the sweep) is 27/27 byte-exact.
+/// 132x132, 196x196, 260x260 and 261x261 were pinned as "tile-payload RD
+/// near-ties". **They were a bug in this shell, not the port's RD**: the pack
+/// env carried a past-the-end sentinel for `tile_row_end` / `tile_col_end`
+/// instead of C's `AOMMIN(.., mi_rows/mi_cols)` clamp
+/// (`av1_tile_set_row` / `_col`). Bite-proved by reverting the clamp — those
+/// four plus 131x131, 132x64, 132x128 and 196x64 all diverge with the sentinel
+/// and are all byte-identical with it. All eight are now sweep cells and the
+/// regression lock on that fix.
+///
+/// The lesson worth keeping: the *measurement* ("the divergence is in the tile
+/// payload, every header field agrees") was right both times; the *inference*
+/// ("therefore an RD near-tie") was wrong. `Where` records the measurement;
+/// the prose next to it is the part that can be wrong.
+///
+/// The neighbours bracket the remaining pins: 130x70, 200x200, 250x130,
+/// 258x258, 262x262, 263x263, 264x264, 256x256 and 320x320 are byte-exact in
+/// [`sweep_cells`], the whole post-filter axis is 27/27, and multi-tile is
+/// byte-exact at speeds 0..6.
 #[test]
 fn open_divergences_are_pinned() {
     c::ref_init();
@@ -871,48 +1092,77 @@ fn open_divergences_are_pinned() {
         /// changes the recon can move them too.
         TilePayloadAndHeader,
     }
-    let pins = [
+    let pins: Vec<(Cell, Where, &str)> = vec![
         (
-            132usize,
-            132usize,
-            Where::TilePayloadOnly,
-            "tile-payload RD near-tie (every derived header field agrees)",
+            Cell::new(
+                "PIN_cdef_speed4".into(),
+                64,
+                64,
+                8,
+                false,
+                1,
+                1,
+                32,
+                Content::Texture,
+            )
+            .with_postfilter(true, false)
+            .at_speed(4),
+            Where::HeaderOnly,
+            "CDEF FAST search levels: at allintra speed >= 4 `sf.cdef_pick_method` leaves \
+             CDEF_FULL_SEARCH, and PARITY.md C1 records the FAST levels as ported + \
+             table-unit-tested but NEVER e2e-gated. Measured 2026-09-02: divergent on \
+             every `--enable-cdef=1` cell tried at speeds 4..9 (5/5 sizes x 6 speeds), and \
+             the divergence is ONLY in the header's `cdef_strengths` set -- the per-unit \
+             strength indices in the tile payload are byte-identical. Speeds 0..3 are \
+             byte-exact and ARE in the sweep",
         ),
         (
-            196,
-            196,
+            Cell::new(
+                "PIN_4160x64_multitile_speed9".into(),
+                4160,
+                64,
+                8,
+                false,
+                1,
+                1,
+                32,
+                Content::Texture,
+            )
+            .at_speed(9),
             Where::TilePayloadOnly,
-            "tile-payload RD near-tie (every derived header field agrees)",
+            "the same speed >= 7 arm as the 256x256 pin, reached through a MANDATORY \
+             two-tile frame: 4160x64 is byte-exact at speeds 0..6 (in the sweep), so this \
+             is the large-frame nonrd arm and not a tile-assembly defect",
         ),
         (
-            260,
-            260,
+            Cell::new(
+                "PIN_256x256_speed7".into(),
+                256,
+                256,
+                8,
+                false,
+                1,
+                1,
+                32,
+                Content::Texture,
+            )
+            .at_speed(7),
             Where::TilePayloadOnly,
-            "tile-payload RD near-tie (every derived header field agrees)",
-        ),
-        (
-            261,
-            261,
-            Where::TilePayloadAndHeader,
-            "an RD near-tie whose different reconstruction ALSO moves the derived \
-             loop-filter level: port [0,1] vs C's [0,2]",
+            "one unlocalized VAR_BASED_PARTITION / nonrd arm above roughly 3x3 \
+             superblocks. MEASURED bracket at speed 7: 128x128, 160x160, 192x192, \
+             128x192 and 192x128 are BYTE-EXACT, 256x256 and 320x320 are not; at speed \
+             9, 192x192 is not either. So it is size- AND speed-conditional, and the \
+             nonrd path itself is not unported -- 64x64 and 128x128 are byte-exact at \
+             7, 8 and 9, and multi-tile 4160x64 is byte-exact at 0..6",
         ),
     ];
-    for &(w, h, expect_where, why) in &pins {
-        let cell = Cell::new(
-            format!("PIN_{w}x{h}_420_bd8_cq32_tex"),
-            w,
-            h,
-            8,
-            false,
-            1,
-            1,
-            32,
-            Content::Texture,
-        );
-        let (y, u, v) = cell_planes(&cell);
-        let ours = port_stream(&cell, &y, &u, &v);
-        let theirs = c_stream(&cell, &y, &u, &v);
+
+    for (cell, expect_where, why) in &pins {
+        let (expect_where, why) = (*expect_where, *why);
+        let (w, h) = (cell.w, cell.h);
+        let (y, u, v) = cell_planes(cell);
+        let ours = port_stream(cell, &y, &u, &v);
+        let theirs = c_stream(cell, &y, &u, &v);
         assert_ne!(
             ours, theirs,
             "{}x{} is now BYTE-EXACT ({why}). That is good news: delete it from \
@@ -951,30 +1201,46 @@ fn open_divergences_are_pinned() {
         // payload byte-identical; an RD near-tie does the opposite.
         let (ours_hdr, _, ours_tile) = split_frame_obu(&ours);
         let (theirs_hdr, _, theirs_tile) = split_frame_obu(&theirs);
-        let header_same = (
-            ours_hdr.loopfilter.filter_level,
-            ours_hdr.loopfilter.filter_level_u,
-            ours_hdr.loopfilter.filter_level_v,
-            ours_hdr.quant.base_qindex,
-            ours_hdr.allow_screen_content_tools,
-            ours_hdr.tx_mode_select,
-        ) == (
-            theirs_hdr.loopfilter.filter_level,
-            theirs_hdr.loopfilter.filter_level_u,
-            theirs_hdr.loopfilter.filter_level_v,
-            theirs_hdr.quant.base_qindex,
-            theirs_hdr.allow_screen_content_tools,
-            theirs_hdr.tx_mode_select,
-        );
+        // Every DERIVED frame-header field, so "HeaderOnly" cannot hide a
+        // divergence in a field nobody thought to compare. (Reached exactly
+        // that way: the CDEF FAST-level pin diverges ONLY in
+        // `cdef.cdef_strengths`, with the per-unit indices in the tile payload
+        // identical, and an earlier tuple without the CDEF block classified it
+        // as "neither half differs".)
+        let hdr_key = |p: &FrameHeaderObu| {
+            (
+                (
+                    p.loopfilter.filter_level,
+                    p.loopfilter.filter_level_u,
+                    p.loopfilter.filter_level_v,
+                    p.quant.base_qindex,
+                    p.allow_screen_content_tools,
+                    p.tx_mode_select,
+                ),
+                (
+                    p.cdef.cdef_damping,
+                    p.cdef.cdef_bits,
+                    p.cdef.nb_cdef_strengths,
+                    p.cdef.cdef_strengths,
+                    p.cdef.cdef_uv_strengths,
+                ),
+                (
+                    p.restoration.frame_restoration_type,
+                    p.restoration.restoration_unit_size,
+                ),
+            )
+        };
+        let header_same = hdr_key(&ours_hdr) == hdr_key(&theirs_hdr);
         let got_where = match (ours_tile == theirs_tile, header_same) {
             (true, false) => Where::HeaderOnly,
             (false, true) => Where::TilePayloadOnly,
             (false, false) => Where::TilePayloadAndHeader,
             (true, true) => panic!(
-                "{w}x{h}: the streams differ but both the tile payload and every checked \
-                 header field agree — the divergence is somewhere this test does not look \
-                 (OBU framing? the sequence header? a header field not in the tuple). \
-                 Investigate before touching this list."
+                "{}: the streams differ but both the tile payload and every checked header \
+                 field agree — the divergence is somewhere this test does not look (OBU \
+                 framing? a header field not in `hdr_key`?). Investigate before touching \
+                 this list.",
+                cell.label
             ),
         };
         assert_eq!(

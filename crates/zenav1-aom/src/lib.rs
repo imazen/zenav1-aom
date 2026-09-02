@@ -6,6 +6,11 @@
 //! - [`dsp`] — the DSP / transform / quant / entropy kernels (always present).
 //! - [`decode`] — the AV1 decoder (feature `decode`, enabled by default).
 //! - [`encode`] — the AV1 encoder (feature `encode`, enabled by default).
+//!   Its self-contained still-image entry point is
+//!   `encode::key_frame::encode_key_frame(planes, cfg)`, which returns a
+//!   complete AV1 temporal unit (temporal delimiter + sequence header +
+//!   `OBU_FRAME`) with no C libaom anywhere in the path. See that module's
+//!   docs for the gated envelope and the axes that are not wired yet.
 //!
 //! Size-sensitive consumers can build a decode-only stack with
 //! `default-features = false, features = ["decode"]` — the encoder crate is then
