@@ -1095,7 +1095,9 @@ in `checklist.json` (transform/quant/entropy/intra/loopfilter/dist all green).
 - **CDEF direction search** (`av1/common/cdef_block.c`), both tracks:
   `cdef_find_dir` (8x8 partial-sum direction cost search) over bd 8/10/12.
   Harness: `aom-cdef/tests/cdef_diff.rs` — 600k comparisons (dir+var),
-  byte-identical to C. (cdef_filter_block + full CDEF path: TODO.)
+  byte-identical to C. (cdef_filter_block + the full CDEF frame walk: DONE —
+  see the "CDEF filter block" bullet below and the "CDEF applied" milestone.
+  [Corrected 2026-09-02: read "TODO", stale since the CDEF-apply landing.])
 
 - **Inter-pred convolution (SR, EIGHTTAP_REGULAR)** (`av1/common/convolve.c`),
   both tracks / encoder critical path: `av1_convolve_x_sr` + `av1_convolve_y_sr`
@@ -2909,7 +2911,7 @@ palette flag was the single measured C-vs-port divergence at the node. The
 ours=HORZ cases is untouched and independent (that was a variance-factor recon
 term; this is a mode-info rate term). The other e2e gates stay green.
 
-## Gate posture (honest)
+## Gate posture (honest) — as of 2026-07-15 (HISTORICAL; the live posture is PARITY.md sections A/B/C)
 
 Real, verified, ratcheting progress across BOTH tracks — but still a fraction of
 the whole. Green so far: full transform subsystem, the *entire* scalar quantizer
@@ -2927,9 +2929,16 @@ asserted on-real-recon gate reproducing real's coded nonzero levels
 `[8,8]`/`[8,3]`/`[7,16]`/`[8,8]` EXACTLY — see the "Loop-filter-LEVEL
 derivation PROVEN bit-exact" milestone; the AB-probe's one remaining e2e
 mismatch is a separate partition-RD node, not an LF bug).
-CDEF-strength search and the qindex-from-cq-level mapping remain
-bootstrapped from the real parse; sharpness/ref-deltas/mode-deltas stay
-bootstrapped too but are provably frame-constant/correct in this envelope.
+The CDEF-strength search and the qindex-from-cq-level mapping are this port's
+own derivations too as of 2026-07-17 (`aom-encode/src/pickcdef.rs`
+`av1_cdef_search` — 14/14 `--enable-cdef=1` cells byte-identical to real
+aomenc at speed-0 `CDEF_FULL_SEARCH`, `aom-bench/tests/encoder_gate_cdef_e2e.rs`;
+and `aom-encode/tests/qindex_from_cq_diff.rs` — PARITY.md section A rows).
+[Corrected 2026-09-02: this said *"CDEF-strength search and the
+qindex-from-cq-level mapping remain bootstrapped from the real parse"*, which
+contradicted PARITY.md C1 and PARITY.md section A and had been stale since
+2026-07-17.] Sharpness/ref-deltas/mode-deltas stay bootstrapped but are
+provably frame-constant/correct in this envelope.
 Every coded byte of the tile-group payload is this port's own derivation.
 **10 of 10 `PARTITION_*` types are now structurally ported**
 (NONE/SPLIT/HORZ/VERT/HORZ_4/VERT_4/HORZ_A/HORZ_B/VERT_A/VERT_B — see the
