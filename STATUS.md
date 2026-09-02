@@ -1,3 +1,58 @@
+## Self-contained KEY-frame encode — the port authors its own sequence header; 69/69 byte-exact (2026-09-02)
+
+`aom_encode::key_frame::encode_key_frame(planes, cfg)` emits a complete AV1
+temporal unit — temporal-delimiter OBU + a **port-authored** sequence-header OBU
++ `OBU_FRAME` — with **no C bytes anywhere in the path**. Until this landing the
+repo had no such path: `aom-bench`'s `port_encode(bootstrap: &[u8])` takes a real
+libaom stream BY SIGNATURE and parses its sequence and frame headers, and
+`aom-encode/tests/avif_parity.rs` splices C's sequence-header OBU bytes verbatim
+in front of the port's frame OBU. `write_sequence_header_obu` was byte-exact and
+had **zero call sites in any `crates/*/src`**. The search / transform / entropy /
+pack layers were never the gap; the outer shell was.
+
+**Derived, not replayed** — `seq_level_idx`/`tier` (`set_bitstream_level_tier`,
+new `aom_encode::seq_level`), profile / bit depth / subsampling / `num_bits_*` /
+the reduced-still-picture framing (`init_seq_coding_tools`), `base_qindex`
+(`rc::base_qindex_from_cq`), `allow_screen_content_tools` (the ported detector
+now DRIVES the encode instead of being asserted against C's header), the tile
+grid (`av1_get_tile_limits` + `av1_calculate_tile_cols/rows`), the loop-filter
+levels (`pick_filter_level` on the port's own recon), and the `tx_mode`
+SELECT→LARGEST flip (`encodeframe.c:2797`) via a new `key_frame::txb_split_count`
+over the port's own winner trees.
+
+**Gate** (`aom-encode/tests/self_contained_key_frame.rs`, 6 tests, 15 s):
+**69/69 cells byte-identical to real aomenc's whole temporal unit** — cq 0..63
+step 5 plus 63 and a 1..19 step-2 low-q arm, {mono, 4:2:0, 4:2:2, 4:4:4} × bd
+{8, 10, 12} (profiles 0/1/2), 16×16..512×512, 12 crop/partial-SB sizes including
+1×1, and 5 content classes. Both the real C decoder and `aom-decode` decode the
+PORT's own stream to the pixels real aomenc's stream decodes to. The gap is
+MEASURED, not asserted: stripping the sequence header from the port's own stream
+makes the real C decoder refuse it. Mutation proof: a one-field change
+(cq 32 → 52 spliced behind the unmutated sequence header) turns BOTH the byte
+gate and the pixel gate red.
+
+**Corrects the coverage audit.** `coverage-audit/COVERAGE.md` row 1.4 named
+`av1_get_seq_level_idx` as "the ONE true missing header ALGORITHM". Wrong target:
+that function computes the *achieved* level from accumulated `AV1LevelInfo` stats
+and runs only under `keep_level_stats` (0 by default). The written header's level
+comes from `set_bitstream_level_tier` (`encoder.c:464`).
+
+**Found and fixed a real detector bug on the way.** C's
+`estimate_screen_content_antialiasing_aware` reads
+`unfiltered_source->y_width`/`y_height` — the **8-ALIGNED** dimensions, not the
+crop. Both callers passed the crop. 258×258 / 260×260 / 262×262 coded
+`allow_screen_content_tools = 1` against C's 0; with the aligned size all three
+agree and two became byte-identical end to end. Full `aom-bench` suite unchanged
+after the fix (197 passed / 0 failed).
+
+**Open, named, pinned** (`open_divergences_are_pinned`, self-promoting): 132×132,
+196×196 and 260×260 diverge inside the TILE payload with every derived header
+field equal to C's (RD near-ties, the PARITY.md Tier-3 class); 261×261 is a
+`pick_filter_level` off-by-one ([0,1] vs C's [0,2]). **Not wired**: speeds > 0,
+CDEF on, loop restoration on, multi-tile, SB128, and
+`av1_determine_sc_tools_with_encoding`'s trial encode — each REFUSED by name via
+`KeyFrameError` rather than silently mis-encoded.
+
 ## KB-34 — the fastest preset refused ordinary images; the nonrd estimate arm codes a non-square leaf (2026-08-02)
 
 `--cpu-used 9` could not encode a frame on which the KEY variance partitioner

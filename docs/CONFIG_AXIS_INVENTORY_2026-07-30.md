@@ -474,7 +474,21 @@ those two hardcoded `false` lines and nothing else**.
 | `tile_start_and_end_present_flag` | `0` | `crates/aom-encode/src/obu_assemble.rs:150-152` |
 | `temporal_layer_id` / `spatial_layer_id` | `0` / `0` | `crates/aom-bench/src/lib.rs:1019-1020` |
 
-### 3.6a THE PORT NEVER AUTHORS A SEQUENCE HEADER
+### 3.6a THE PORT NEVER AUTHORS A SEQUENCE HEADER — **SUPERSEDED 2026-09-02**
+
+> **Update 2026-09-02.** This section was true when written and is now true only of
+> `aom-bench`'s `port_encode*`. `aom_encode::key_frame::derive_sequence_header` /
+> `sequence_header_obu` (`crates/aom-encode/src/key_frame.rs`) call
+> `write_sequence_header_obu` from `crates/aom-encode/src`, so the port DOES author a
+> sequence header, and `encode_key_frame` emits a complete temporal unit (TD +
+> sequence-header OBU + `OBU_FRAME`) with no C bytes in the path — **69/69 cells
+> byte-identical to real aomenc**, gated by
+> `crates/aom-encode/tests/self_contained_key_frame.rs`. The table row above
+> ("the ENTIRE sequence header ... never authored") is likewise superseded for that
+> entry point. Its envelope is ALLINTRA / `--cpu-used 0` / single tile / SB64 /
+> CDEF off / LR off; everything else is refused by name (`KeyFrameError`). The text
+> below is retained unedited as the 2026-07-30 record.
+
 
 `write_sequence_header_obu` (`crates/aom-dsp/src/entropy/header.rs:1046`) has **zero call sites in
 any `crates/*/src`**. `grep -rn --include='*.rs' 'write_sequence_header_obu' crates/ xtask/`

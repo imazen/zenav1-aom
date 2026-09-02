@@ -4,6 +4,71 @@
 
 ### [Unreleased]
 
+### Added
+
+- **Self-contained KEY-frame encode — no C bootstrap anywhere in the path.**
+  `aom_encode::key_frame::encode_key_frame(planes, cfg)` returns a complete AV1
+  temporal unit (temporal-delimiter OBU + a PORT-AUTHORED sequence-header OBU +
+  `OBU_FRAME`). Until now every encoder path in the repo ran real libaom first
+  and parsed its headers (`aom-bench`'s `port_encode(bootstrap: &[u8])`) or
+  spliced C's sequence-header bytes verbatim (`avif_parity.rs`), and
+  `write_sequence_header_obu` had zero call sites in any `crates/*/src`.
+  Everything is derived: `seq_level_idx`/`tier` (`set_bitstream_level_tier`,
+  new `aom_encode::seq_level`), profile / bit depth / subsampling / the
+  reduced-still-picture framing, `base_qindex`, `allow_screen_content_tools`
+  (the ported detector now DRIVES the encode instead of being asserted against
+  C's header), the tile grid, the loop-filter levels, and the `tx_mode`
+  SELECT→LARGEST flip via a new `key_frame::txb_split_count` over the port's own
+  winner trees. **69/69 cells byte-identical to real aomenc** across cq 0..63
+  (step 5, plus a 1..19 step-2 low-q arm), {mono, 4:2:0, 4:2:2, 4:4:4} × bd
+  {8, 10, 12}, 16×16..512×512, 12 crop/partial-SB sizes including 1×1, and 5
+  content classes; both the real C decoder and `aom-decode` decode the port's
+  own stream to the pixels real aomenc's stream decodes to. Configurations
+  outside the gated envelope (CDEF on, loop restoration on, `--cpu-used != 0`,
+  non-ALLINTRA usage, multi-tile) are REFUSED by name via `KeyFrameError`.
+  Gate: `aom-encode/tests/self_contained_key_frame.rs` (6 tests, including a
+  measured proof that a stream without the sequence header is rejected by the
+  real C decoder, and a mutation proof that both the byte gate and the pixel
+  gate can go red).
+
+### Fixed
+
+- **Screen-content detector was handed the CROP instead of the 8-aligned
+  `y_width`/`y_height`.** C's
+  `estimate_screen_content_antialiasing_aware` reads
+  `cpi->unfiltered_source->y_width` / `->y_height`, which for a
+  `YV12_BUFFER_CONFIG` are `(dim + 7) & ~7`, not `y_crop_*`. Both readings feed
+  the `area` denominator of the two frame decisions and the 16×16 block-loop
+  bound, so on a non-8-aligned crop they differ by up to ~3% of area and flip
+  borderline frames. Measured on the new bootstrap-free gate: 258×258, 260×260
+  and 262×262 (textured 4:2:0 cq 32) coded `allow_screen_content_tools = 1`
+  where real aomenc codes 0; with the aligned size all three agree and 258/262
+  became byte-identical end to end. Fixed in both callers
+  (`aom-encode/src/key_frame.rs`, `aom-bench/src/lib.rs`) and documented on the
+  function; the full `aom-bench` suite is unchanged at 197 passed / 0 failed.
+
+- **The C oracle for `aom_{,highbd_}comp_mask_upsampled_pred` reached a
+  broken libaom AVX2 tier** — `linux differential (x86-64)` and
+  `linux differential (forced-scalar pin)` had been red on
+  `inter_pred_enc_diff::highbd_comp_mask_upsampled_pred_matches_c` for ~63
+  consecutive CI runs (first red `aa27d8b8`, 2026-08-31, the commit that added
+  the test), while both aarch64 legs were green.
+  `aom_highbd_comp_mask_pred_avx2`'s `width == 8` path
+  (`upstream/aom_dsp/x86/variance_avx2.c:459`) loads the ODD row's mask from
+  `mask + 8` — a hardcoded width — while advancing by `mask_stride << 1`, so at
+  `mask_stride != width` every odd row blends against the wrong mask bytes
+  (exactly the reported rows-0/2/4/6-identical signature). Its SSE2 tier, its
+  NEON tier and its own 8-bit twin all use `mask + mask_stride` and agree with
+  `_c`; libaom never hits the arm because every production caller and its own
+  test pass `mask_stride == width`. The PORT was correct — it transcribes
+  `aom_highbd_comp_mask_pred_c` and the forced-scalar leg (which pins only the
+  Rust dispatch) failed identically. Fixed by pinning the oracle:
+  `shim/reconinter_enc_shim.c` now compiles libaom's own `reconinter_enc.c`
+  with `aom_{,highbd_}upsampled_pred` and `aom_{,highbd_}comp_mask_pred`
+  rebound to their `_c` tiers (the `shim/cnn_cscalar.c` technique), and
+  `shim/comp_pred_shim.c` routes the two comp-mask upsampled entries to those
+  copies instead of the archive's RTCD-dispatched ones.
+
 ### Changed
 
 - **`zenav1-aom-target` is a workspace member again — the sibling-repo path
