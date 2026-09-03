@@ -202,6 +202,10 @@ struct Cell {
     /// value switches `c_stream` to `ref_encode_av1_kf_tiles`.
     tile_cols_log2: i32,
     tile_rows_log2: i32,
+    /// `AV1E_SET_SUPERBLOCK_SIZE` (128 when true). Switches `c_stream` to
+    /// `ref_encode_av1_kf_sb128` (or `ref_encode_av1_kf_tiles` with its own
+    /// `sb_size_128` param, if a tile request is ALSO set).
+    sb128: bool,
 }
 
 impl Cell {
@@ -231,6 +235,7 @@ impl Cell {
             speed: 0,
             tile_cols_log2: 0,
             tile_rows_log2: 0,
+            sb128: false,
         }
     }
 
@@ -255,6 +260,13 @@ impl Cell {
         self.label = format!("{}_tc{cols_log2}tr{rows_log2}", self.label);
         self.tile_cols_log2 = cols_log2;
         self.tile_rows_log2 = rows_log2;
+        self
+    }
+
+    /// The same cell with `--sb-size=128`.
+    fn with_sb128(mut self) -> Self {
+        self.label = format!("{}_sb128", self.label);
+        self.sb128 = true;
         self
     }
 }
@@ -750,6 +762,70 @@ fn sweep_cells() -> Vec<Cell> {
                 .with_tile_log2(cols_log2, rows_log2),
         );
     }
+    // M -- SB128 (`--sb-size=128`). The single-cell probe that used to stand
+    // here (128x128, one whole SB128, speed 0) was BYTE-EXACT on the first
+    // try, confirming the underlying search/pack machinery genuinely was
+    // already bsize-generic (`SbEncodeEnv::sb_size`, `rd_pick_partition_
+    // real`'s `bsize` param, `BLOCK_128X128` already used throughout
+    // `aom_dsp::entropy::partition`) and only the shell's three hardcoded
+    // constants (`mib_size_log2`, `sb_mi`, `sb_block`) plus the sequence-
+    // header bit were missing. This is the follow-up matrix: multiple
+    // superblocks (256x256 = 2x2, 384x384 = 3x3), a size that is NOT a
+    // multiple of 128 (200x150, forcing a partial superblock at the
+    // frame edge), speeds spanning the range, CDEF+LR both on (their unit
+    // sizing is independently derived from mi geometry, not sb_block, but
+    // untested at sb128 until now), bd10, and SB128 composed with an
+    // explicit multi-tile request on a frame large enough to mandate tiles
+    // regardless of superblock size.
+    for (label, w, h, bd, cq, speed, cdef, lr) in [
+        (
+            "M_128x128",
+            128usize,
+            128usize,
+            8u8,
+            32i32,
+            0i32,
+            false,
+            false,
+        ),
+        ("M_256x256", 256, 256, 8, 32, 0, false, false),
+        ("M_256x256", 256, 256, 8, 32, 6, false, false),
+        ("M_384x384", 384, 384, 8, 32, 3, false, false),
+        ("M_200x150_partial", 200, 150, 8, 32, 0, false, false),
+        ("M_256x256", 256, 256, 8, 32, 0, true, true),
+        ("M_128x128_bd10", 128, 128, 10, 32, 0, false, false),
+        ("M_128x128", 128, 128, 8, 32, 9, false, false),
+        ("M_128x128_cq0", 128, 128, 8, 0, 0, false, false),
+        ("M_128x128_cq63", 128, 128, 8, 63, 0, false, false),
+    ] {
+        v.push(
+            Cell::new(label.to_string(), w, h, bd, false, 1, 1, cq, Texture)
+                .at_speed(speed)
+                .with_postfilter(cdef, lr)
+                .with_sb128(),
+        );
+    }
+    // SB128 composed with an EXPLICIT multi-tile request (4224x128 mandates
+    // >= 2 tile columns regardless of superblock size at SB64; check the
+    // mandatory-tile derivation is consistent when sb_block is 128 too, and
+    // that a request ABOVE the sb128 mandatory minimum still clamps/derives
+    // correctly through `ref_encode_av1_kf_tiles`'s own sb_size_128 param).
+    v.push(
+        Cell::new(
+            "M_4224x128_sb128_tiles".to_string(),
+            4224,
+            128,
+            8,
+            false,
+            1,
+            1,
+            32,
+            Texture,
+        )
+        .at_speed(0)
+        .with_tile_log2(2, 0)
+        .with_sb128(),
+    );
     v
 }
 
@@ -778,6 +854,10 @@ fn decode_cells() -> Vec<Cell> {
         "H_128x128_420_bd8_cq12_tex_lr1_s6",
         "H_64x64_420_bd8_cq32_tex_cdef1_lr1_s3",
         "I_4160x64_420_bd8_cq32_tex_multitile_s0",
+        "L_force4cols4rows_256x256_s3_tc2tr2",
+        "M_256x256_s0_cdef1_lr1_sb128",
+        "M_200x150_partial_s0_cdef0_lr0_sb128",
+        "M_4224x128_sb128_tiles_s0_tc2tr0_sb128",
     ];
     sweep_cells()
         .into_iter()
@@ -817,6 +897,7 @@ fn cell_cfg(cell: &Cell) -> KeyFrameConfig {
     cfg.cpu_used = cell.speed;
     cfg.tile_columns_log2 = cell.tile_cols_log2;
     cfg.tile_rows_log2 = cell.tile_rows_log2;
+    cfg.sb_size_128 = cell.sb128;
     cfg
 }
 
@@ -826,9 +907,11 @@ fn port_stream(cell: &Cell, y: &[u16], u: &[u16], v: &[u16]) -> Vec<u8> {
         .unwrap_or_else(|e| panic!("{}: encode_key_frame refused: {e}", cell.label))
 }
 
-/// Real aomenc's stream for the same cell + config. Cells with an explicit
-/// tile-columns/rows request (`Cell::with_tile_log2`) go through
-/// `ref_encode_av1_kf_tiles`; every other cell keeps the plain
+/// Real aomenc's stream for the same cell + config. A cell with an explicit
+/// tile-columns/rows request (`Cell::with_tile_log2`) goes through
+/// `ref_encode_av1_kf_tiles` (which also carries `sb_size_128`, so it
+/// composes with `Cell::with_sb128`); SB128-only goes through
+/// `ref_encode_av1_kf_sb128`; every other cell keeps the plain
 /// `ref_encode_av1_kf` path unchanged.
 fn c_stream(cell: &Cell, y: &[u16], u: &[u16], v: &[u16]) -> Vec<u8> {
     let bytes = if cell.tile_cols_log2 != 0 || cell.tile_rows_log2 != 0 {
@@ -849,9 +932,29 @@ fn c_stream(cell: &Cell, y: &[u16], u: &[u16], v: &[u16]) -> Vec<u8> {
             2,
             0,
             false,
-            false, // sb_size_128
+            cell.sb128,
             cell.tile_cols_log2,
             cell.tile_rows_log2,
+        )
+    } else if cell.sb128 {
+        c::ref_encode_av1_kf_sb128(
+            y,
+            u,
+            v,
+            cell.w,
+            cell.h,
+            cell.bd as i32,
+            cell.mono,
+            cell.ss_x as i32,
+            cell.ss_y as i32,
+            cell.cq,
+            cell.speed,
+            cell.cdef,
+            cell.lr,
+            2,
+            0,
+            false,
+            true,
         )
     } else {
         c::ref_encode_av1_kf(

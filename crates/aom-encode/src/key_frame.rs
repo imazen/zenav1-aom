@@ -48,7 +48,15 @@
 //!   ("CDEF has been found to blur images"). That default is byte-gated at
 //!   every speed 0..=9; `--enable-cdef=1` is byte-gated at speeds 0..3 and
 //!   pinned-divergent at 4..9 (the FAST search levels, see below);
-//! * superblock 64, no superres, no QM, no film grain, no
+//! * superblock **64 or 128** ([`KeyFrameConfig::sb_size_128`] — 2026-09-03:
+//!   the search/pack layers were already bsize-generic
+//!   (`SbEncodeEnv::sb_size`, `rd_pick_partition_real`'s `bsize` param,
+//!   `BLOCK_128X128` already used throughout `aom_dsp::entropy::partition`);
+//!   the shell only had three hardcoded SB64 constants and the sequence
+//!   header's `sb_size_128` bit. Byte-gated: multiple superblocks (up to
+//!   3x3), a non-multiple-of-128 size (a partial edge superblock), CDEF+LR
+//!   both on, bd10, speed 0 through 9, cq 0 and 63, and composed with an
+//!   explicit multi-tile request), no superres, no QM, no film grain, no
 //!   segmentation, no delta-q, palette + IntraBC search off (matching
 //!   `aom-sys-ref`'s `shim_encode_av1_kf`, whose `--enable-palette=0
 //!   --enable-intrabc=0` is what the byte gate compares against);
@@ -57,8 +65,14 @@
 //!   tile is packed independently with a fresh frame context — C's
 //!   `write_modes` per-tile reset — and assembled through
 //!   [`crate::obu_assemble::assemble_multitile_frame_obu_payload_derived`].
-//!   Byte-gated at speeds 0..6. Explicit `--tile-columns` / `--tile-rows` are
-//!   not exposed by [`KeyFrameConfig`] yet.
+//!   Byte-gated at speeds 0..6. **Explicit `--tile-columns` / `--tile-rows`**
+//!   ([`KeyFrameConfig::tile_columns_log2`] / [`KeyFrameConfig::tile_rows_log2`],
+//!   2026-09-03) are now exposed too — `derive_tile_info` already implemented
+//!   C's `set_tile_info` clamp (`AOMMAX(tile_columns_cfg, min_log2_cols)`)
+//!   correctly, it just always received `0, 0`. Byte-gated: forcing more
+//!   tiles than the uniform-spacing default, requesting above a mandatory
+//!   frame's minimum, and requesting BELOW a mandatory minimum (must clamp
+//!   up — verified byte-identical to the same frame's un-requested cell).
 //!
 //! # Not yet wired (named, with the specific entry points)
 //!
@@ -66,8 +80,14 @@
 //!   two-pass trial encode that can turn screen-content tools ON after the
 //!   detector said off. Unported. It returns early when the detector already
 //!   said on, so it only ever matters on detector-negative content; the byte
-//!   gate holds this accountable per cell.
-//! * **SB128** — the pipeline pieces exist; the shell has no gate for it.
+//!   gate holds this accountable per cell, and (2026-09-03) two adversarial
+//!   differential probes designed specifically to find a counterexample —
+//!   including one that brackets the base detector's own threshold crossover
+//!   from both sides — found none in 105 cells (`self_contained_key_frame.rs`'s
+//!   `probe_sc_tools_trial_gap_*` tests). Still unported; the port cost is
+//!   independently scoped at PARITY.md C3 ("(M)", "NOT a one-sitting port" —
+//!   a fixed-32x32-partition trial-encode driver + PSNR-based decisioning
+//!   this shell does not have).
 //! * **`--cpu-used` >= 7 above roughly 3x3 superblocks** — measured bracket:
 //!   at speed 7, 128x128 / 160x160 / 192x192 / 128x192 / 192x128 are
 //!   byte-exact and 256x256 / 320x320 are not; at speed 9, 192x192 is not
@@ -143,6 +163,10 @@ pub const OBU_SEQUENCE_HEADER: u32 = 1;
 const SB_BLOCK_64: usize = 12;
 /// 64px / 4 — the mi units in one SB64 side.
 const SB_MI_64: i32 = 16;
+/// `BLOCK_128X128` in the port's block-size enum (`aom_dsp::entropy::partition`).
+const SB_BLOCK_128: usize = 15;
+/// 128px / 4 — the mi units in one SB128 side.
+const SB_MI_128: i32 = 32;
 
 /// `av1_set_default_ref_deltas` for a KEY frame (`loopfilter.c`) — the deltas a
 /// frame with no primary ref starts from, and therefore the `last_*` the header
@@ -204,6 +228,11 @@ pub struct KeyFrameConfig {
     pub tile_columns_log2: i32,
     /// `AV1E_SET_TILE_ROWS`. See [`Self::tile_columns_log2`].
     pub tile_rows_log2: i32,
+    /// `AV1E_SET_SUPERBLOCK_SIZE` (`AOM_SUPERBLOCK_SIZE_128X128` when true,
+    /// the `_64X64` default otherwise). `false` (the
+    /// [`Self::allintra_speed0`] default) matches every other gate in this
+    /// file.
+    pub sb_size_128: bool,
 }
 
 impl KeyFrameConfig {
@@ -236,6 +265,7 @@ impl KeyFrameConfig {
             enable_restoration: false,
             tile_columns_log2: 0,
             tile_rows_log2: 0,
+            sb_size_128: false,
         }
     }
 
@@ -512,7 +542,7 @@ pub fn derive_sequence_header(cfg: &KeyFrameConfig) -> SequenceHeaderObu {
             // still-picture header.
             delta_frame_id_length: 14,
             frame_id_length: 15,
-            sb_size_128: false,
+            sb_size_128: cfg.sb_size_128,
             // `--enable-filter-intra` / `--enable-intra-edge-filter` default on
             // (`av1_cx_iface` extra_cfg defaults).
             enable_filter_intra: true,
@@ -970,7 +1000,7 @@ pub fn encode_key_frame(
 
     // ---- headers ---------------------------------------------------------
     let seq = derive_sequence_header(cfg);
-    let mib_size_log2 = 4u32; // SB64
+    let mib_size_log2 = if cfg.sb_size_128 { 5u32 } else { 4u32 }; // SB128 / SB64
     let mi_cols = mi_dim(w as i32);
     let mi_rows = mi_dim(h as i32);
     let tile_info = derive_tile_info(
@@ -994,7 +1024,7 @@ pub fn encode_key_frame(
 
     // ---- source planes: SB-aligned, border-extended (the harness recipe) --
     let bd = cfg.bit_depth;
-    let sb_mi = SB_MI_64;
+    let sb_mi = if cfg.sb_size_128 { SB_MI_128 } else { SB_MI_64 };
     let sb_px = (sb_mi * 4) as usize;
     let n_sb_x = ((mi_cols + sb_mi - 1) / sb_mi).max(1);
     let n_sb_y = ((mi_rows + sb_mi - 1) / sb_mi).max(1);
@@ -1116,7 +1146,11 @@ pub fn encode_key_frame(
         0
     };
 
-    let sb_block = SB_BLOCK_64;
+    let sb_block = if cfg.sb_size_128 {
+        SB_BLOCK_128
+    } else {
+        SB_BLOCK_64
+    };
     let mut env = SbEncodeEnv {
         ref_frame: None,
         sb_size: sb_block,
