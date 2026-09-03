@@ -1,3 +1,65 @@
+## Standalone gate extended 186->225; HBD x tile-count pins measured; SCM-trial gap adversarially probed, 0 found (2026-09-03, issue #15)
+
+Follow-up to the two entries below (69/69 then 186/186). Three additions to
+`self_contained_key_frame.rs` (commit `65ffb75d`), closing out the remaining
+open items in issue #15's DoD as far as they can be closed without a
+multi-session port:
+
+**HBD x speed x tile-count (axis J/J2).** Axis B (bit depth) was only run at
+speed 0/single-tile; axis I (multi-tile) only at bd8 — the cross product was
+untested, and it is exactly the reach of the pre-existing `HBD_OPEN`/`b10_64`
+pin in the bootstrap-driven harnesses (bd10/12, speed 1..6, LUMA-borne).
+MEASURED: this shell diverges too, but in a narrower, tile-count-dependent
+band, not that pin's flat shape — bd10 single-tile fails ONLY speed 4-5
+(passes 1,2,3,6); bd10 multi-tile fails speed 1-5 (passes 6 only, the
+opposite band); bd12 single-tile fails speed 1-3 (passes 4,5,6, the MIRROR of
+bd10's band); bd12 multi-tile fails EVERY speed 1-6, no passing speed at all.
+Single-tile divergences are `TilePayloadAndHeader` (the loop-filter level
+moves too, via `pick_filter_level` on the port's own recon); multi-tile
+divergences are `TilePayloadOnly` (every header field agrees, only the
+entropy-coded tile payload differs) — a clean, reproducible split in WHERE
+the divergence lands, not just in which speeds fail. Registered as 4 new pins
+in `open_divergences_are_pinned()` (3 -> 7 total), each with the measured
+band in its `why` string; the passing combinations extend `sweep_cells()`
+(186 -> 225, +39 with the two probes below).
+
+**Historical poison-geometry regression (axis K/K2).** The pre-`encode_key_frame`
+`port_encode` pipeline panicked on `8468.scale59x128.png` (an odd-width,
+narrow, tall source) at nearly every quantizer tried, speeds 4 and 6
+(PARITY.md C3, zenmetrics `avifaom_round3_2026-08-30_open.tsv`, the "14 tiny"
+class attributed to `av1_determine_sc_tools_with_encoding`). Source pixels
+weren't preserved, so this reproduces the GEOMETRY (59x128/78x128/115x128)
+with this file's own generators on `encode_key_frame`'s code path, across the
+two poisoned speeds + a control, two content classes, and the full cq ladder
+on the worst-hit dimension. 25/25 byte-exact — this shell does not inherit
+that panic class. A negative result, now regression-gated instead of assumed.
+
+**`av1_determine_sc_tools_with_encoding` adversarial probes.** PARITY.md C3
+scopes the full port at "(M)", not one-sitting (a FIXED_PARTITION trial-encode
+driver + PSNR-based decisioning this shell doesn't have) — genuinely out of
+proportion to issue #15, whose DoD offers "port it, or refuse the
+configurations that reach it by name" as the two closing moves. Rather than
+leave the existing "the byte gate holds this accountable per cell" claim
+untested against content designed to find a counterexample, two new
+differential probes tried exactly that: three synthetic patterns designed to
+be palette-friendly (sparse dots / thin lines / a posterized gradient) all
+turned out to already cross the base detector's OWN threshold at every speed
+tried (informative on its own — `screen_detect.rs`'s formula makes the
+threshold easy to cross on typical frame sizes); a small 64x64 mostly-noisy
+frame with a checker-textured patch swept from 0px to the whole frame
+BRACKETS the detector's crossover from both sides (patch>=16px at speed 3/6,
+>=32px at speed 0) — exactly where a second-opinion trial encode would most
+plausibly disagree with the block-counting heuristic. 105 cells, 0
+divergences, on either side of the boundary. Kept as permanent regression
+probes; this narrows but does not close the PARITY.md C3 bullet.
+
+`cargo test --profile test-fast -p zenav1-aom-encode --test
+self_contained_key_frame`: 8/8 passed, ~33s. Full docs (every measured band,
+byte count, and the formula reasoning behind the probe content design) live
+in the test file's own doc comments on axes J/J2/K/K2 and the two
+`probe_sc_tools_trial_gap_*` functions — this entry summarizes, it is not the
+source of record.
+
 ## Self-contained KEY-frame encode — the port authors its own sequence header; 69/69 byte-exact (2026-09-02)
 
 `aom_encode::key_frame::encode_key_frame(planes, cfg)` emits a complete AV1

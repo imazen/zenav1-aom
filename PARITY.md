@@ -267,6 +267,25 @@ points are libaom v3.14.1 (`reference/libaom`). Defaults verified in
   Cost is dominated by items 1 and 3 (a fixed-partition encode + pack that the port has never
   driven), not by the arithmetic — this is NOT a one-sitting port, which is why roots #22/#23
   landed without it.
+  **NEW EVIDENCE 2026-09-03 (issue #15, `self_contained_key_frame.rs`, commit `65ffb75d`):**
+  the reproducer geometry above (`8468.scale59x128.png`'s 59x128, plus 78x128/115x128) does
+  NOT panic on `encode_key_frame` — the standalone shell this session's landing built, which
+  did not exist when the 14-tiny poison class was discovered (that class ran through the
+  bootstrap-driven `port_encode` path). 25/25 byte-exact on the same GEOMETRIES (source pixels
+  weren't preserved in the poison dump, so this is a geometry-class regression probe, not a
+  literal replay) across the two poisoned speeds (4, 6) + a control, texture and checker
+  content, and the full cq ladder on the worst-hit dimension. Separately, TWO adversarial
+  differential probes (`probe_sc_tools_trial_gap_on_detector_negative_content`,
+  `probe_sc_tools_trial_gap_flat_patch_on_small_noisy_frame`; 105 cells total) tried
+  purpose-built content designed to sit near or below the base detector's own threshold while
+  still being genuinely palette-friendly, including a checker-patch size sweep that BRACKETS
+  the detector's threshold crossover from both sides on a small (64x64) frame — exactly where
+  a second-opinion trial encode would most plausibly disagree with the block-counting
+  heuristic. Zero divergences found, on either side of the boundary. This does not close this
+  bullet or shrink the port estimate above — it is evidence that `encode_key_frame`'s specific
+  ALLINTRA/single-KEY-frame envelope has not yet been shown to need it, tested with content
+  designed to find a counterexample rather than content designed to avoid one. Kept as
+  permanent regression probes in that file.
 - `--tune-content` screen/film forcing (gates the above). (S)
 
 ### C4 — tune=IQ / tune=SSIMULACRA2 family — **PORTED, BIT-IDENTICAL → section A** (2026-07-17)
