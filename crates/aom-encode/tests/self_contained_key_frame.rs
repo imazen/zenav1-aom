@@ -196,6 +196,12 @@ struct Cell {
     lr: bool,
     /// `AOME_SET_CPUUSED`.
     speed: i32,
+    /// `AV1E_SET_TILE_COLUMNS`/`_ROWS` (the log2 value). `(0, 0)` (the
+    /// default) means "no explicit request" and keeps `c_stream` on the
+    /// plain `ref_encode_av1_kf` path, matching every cell above; a nonzero
+    /// value switches `c_stream` to `ref_encode_av1_kf_tiles`.
+    tile_cols_log2: i32,
+    tile_rows_log2: i32,
 }
 
 impl Cell {
@@ -223,6 +229,8 @@ impl Cell {
             cdef: false,
             lr: false,
             speed: 0,
+            tile_cols_log2: 0,
+            tile_rows_log2: 0,
         }
     }
 
@@ -238,6 +246,15 @@ impl Cell {
         self.label = format!("{}_cdef{}_lr{}", self.label, u8::from(cdef), u8::from(lr));
         self.cdef = cdef;
         self.lr = lr;
+        self
+    }
+
+    /// The same cell with an EXPLICIT `--tile-columns`/`--tile-rows` request
+    /// (log2 values). Switches `c_stream` to `ref_encode_av1_kf_tiles`.
+    fn with_tile_log2(mut self, cols_log2: i32, rows_log2: i32) -> Self {
+        self.label = format!("{}_tc{cols_log2}tr{rows_log2}", self.label);
+        self.tile_cols_log2 = cols_log2;
+        self.tile_rows_log2 = rows_log2;
         self
     }
 }
@@ -691,6 +708,48 @@ fn sweep_cells() -> Vec<Cell> {
             .at_speed(4),
         );
     }
+    // L -- EXPLICIT `--tile-columns`/`--tile-rows` (`derive_tile_info`'s
+    // `tile_cols_log2_cfg`/`tile_rows_log2_cfg` params, previously always
+    // called with `0, 0`; the C-side reference (`shim_encode_av1_kf_tiles`,
+    // `ref_encode_av1_kf_tiles`) already existed, unwired, from an earlier
+    // decoder-track multi-tile landing). Three shapes:
+    //   * FORCE more tiles than the uniform-spacing default on a frame that
+    //     would otherwise be single-tile (256x256 -> 2 columns / 2 rows).
+    //   * REQUEST columns on a frame that is ALREADY mandatory multi-tile
+    //     (4160x64 mandates >= 2 columns at SB64) -- above the minimum, to
+    //     prove the explicit request composes with the mandatory floor
+    //     rather than being overridden by it.
+    //   * REQUEST fewer columns (log2=1, "2 columns") than the mandatory
+    //     minimum on a large frame (8320x64, whose UNREQUESTED mandatory
+    //     grid is already >= 3 columns per axis I's own comment) -- must
+    //     CLAMP UP to the true minimum, exactly as C's `set_tile_info` does
+    //     (`log2_cols = AOMMAX(tile_columns, min_log2_cols)`), not silently
+    //     under-tile. Using a NONZERO-but-insufficient request (rather than
+    //     0) exercises `ref_encode_av1_kf_tiles` on both sides, so the test
+    //     is checking the clamp path itself, not merely re-running the
+    //     already-covered "no explicit request" cell through a different
+    //     C shim.
+    for (label, w, h, cq, speed, cols_log2, rows_log2) in [
+        (
+            "L_force2cols_256x256",
+            256usize,
+            256usize,
+            32i32,
+            0i32,
+            1i32,
+            0i32,
+        ),
+        ("L_force2rows_256x256", 256, 256, 32, 0, 0, 1),
+        ("L_force4cols4rows_256x256", 256, 256, 32, 3, 2, 2),
+        ("L_above_min_4160x64", 4160, 64, 32, 0, 2, 0),
+        ("L_below_min_clamped_8320x64", 8320, 64, 32, 0, 1, 0),
+    ] {
+        v.push(
+            Cell::new(label.to_string(), w, h, 8, false, 1, 1, cq, Texture)
+                .at_speed(speed)
+                .with_tile_log2(cols_log2, rows_log2),
+        );
+    }
     v
 }
 
@@ -756,6 +815,8 @@ fn cell_cfg(cell: &Cell) -> KeyFrameConfig {
     cfg.enable_cdef = cell.cdef;
     cfg.enable_restoration = cell.lr;
     cfg.cpu_used = cell.speed;
+    cfg.tile_columns_log2 = cell.tile_cols_log2;
+    cfg.tile_rows_log2 = cell.tile_rows_log2;
     cfg
 }
 
@@ -765,26 +826,53 @@ fn port_stream(cell: &Cell, y: &[u16], u: &[u16], v: &[u16]) -> Vec<u8> {
         .unwrap_or_else(|e| panic!("{}: encode_key_frame refused: {e}", cell.label))
 }
 
-/// Real aomenc's stream for the same cell + config.
+/// Real aomenc's stream for the same cell + config. Cells with an explicit
+/// tile-columns/rows request (`Cell::with_tile_log2`) go through
+/// `ref_encode_av1_kf_tiles`; every other cell keeps the plain
+/// `ref_encode_av1_kf` path unchanged.
 fn c_stream(cell: &Cell, y: &[u16], u: &[u16], v: &[u16]) -> Vec<u8> {
-    let bytes = c::ref_encode_av1_kf(
-        y,
-        u,
-        v,
-        cell.w,
-        cell.h,
-        cell.bd as i32,
-        cell.mono,
-        cell.ss_x as i32,
-        cell.ss_y as i32,
-        cell.cq,
-        cell.speed,
-        cell.cdef,
-        cell.lr,
-        2,
-        0,
-        false,
-    );
+    let bytes = if cell.tile_cols_log2 != 0 || cell.tile_rows_log2 != 0 {
+        c::ref_encode_av1_kf_tiles(
+            y,
+            u,
+            v,
+            cell.w,
+            cell.h,
+            cell.bd as i32,
+            cell.mono,
+            cell.ss_x as i32,
+            cell.ss_y as i32,
+            cell.cq,
+            cell.speed,
+            cell.cdef,
+            cell.lr,
+            2,
+            0,
+            false,
+            false, // sb_size_128
+            cell.tile_cols_log2,
+            cell.tile_rows_log2,
+        )
+    } else {
+        c::ref_encode_av1_kf(
+            y,
+            u,
+            v,
+            cell.w,
+            cell.h,
+            cell.bd as i32,
+            cell.mono,
+            cell.ss_x as i32,
+            cell.ss_y as i32,
+            cell.cq,
+            cell.speed,
+            cell.cdef,
+            cell.lr,
+            2,
+            0,
+            false,
+        )
+    };
     assert!(!bytes.is_empty(), "{}: C encode failed", cell.label);
     bytes
 }

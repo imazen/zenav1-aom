@@ -193,6 +193,17 @@ pub struct KeyFrameConfig {
     /// Note the SEQUENCE-header bit is cleared at speed >= 5 regardless
     /// (`speed_features.c:2753`), which [`derive_sequence_header`] models.
     pub enable_restoration: bool,
+    /// `AV1E_SET_TILE_COLUMNS` — the requested tile-column count is
+    /// `2^tile_columns_log2` (`--tile-columns=N` on the aomenc CLI IS the
+    /// log2 value already). `0` (the [`Self::allintra_speed0`] default)
+    /// matches every existing gate: uniform spacing with no explicit
+    /// request, so the MANDATORY minimum from `av1_get_tile_limits` /
+    /// `set_tile_info` is what actually governs (see [`derive_tile_info`]).
+    /// A request below that minimum is clamped up, exactly as C clamps it —
+    /// this field cannot force FEWER tiles than a large frame requires.
+    pub tile_columns_log2: i32,
+    /// `AV1E_SET_TILE_ROWS`. See [`Self::tile_columns_log2`].
+    pub tile_rows_log2: i32,
 }
 
 impl KeyFrameConfig {
@@ -223,6 +234,8 @@ impl KeyFrameConfig {
             usage: 2,
             enable_cdef: false,
             enable_restoration: false,
+            tile_columns_log2: 0,
+            tile_rows_log2: 0,
         }
     }
 
@@ -960,7 +973,13 @@ pub fn encode_key_frame(
     let mib_size_log2 = 4u32; // SB64
     let mi_cols = mi_dim(w as i32);
     let mi_rows = mi_dim(h as i32);
-    let tile_info = derive_tile_info(mi_cols, mi_rows, mib_size_log2, 0, 0);
+    let tile_info = derive_tile_info(
+        mi_cols,
+        mi_rows,
+        mib_size_log2,
+        cfg.tile_columns_log2,
+        cfg.tile_rows_log2,
+    );
     let tiles_log2 = tile_info.log2_cols + tile_info.log2_rows;
     let n_tile_rows = tile_info.rows;
     let n_tile_cols = tile_info.cols;
