@@ -40,3 +40,14 @@ zenav1-aom-decode = { path = "../aom-decode" }
 # the zenavif codec crate consumes (imazen/zenavif consumes it via this exact
 # rev in its [patch.crates-io]; zenavif-serialize 0.2.0 is unpublished).
 zenavif-serialize = { git = "https://github.com/imazen/zenavif-serialize", rev = "4c90d4dd02ef1684fa2230c6aaa2b5ef51e6a926" }
+# AVIF container PARSER -- used ONLY by the `standalone_avif_parse_readback`
+# test (issue #15's DoD: "validated by its own decode plus a zenavif-parse
+# read-back"). Independent of `avif_parity`'s hand-rolled `extract_mdat_
+# payload` box walker on purpose -- the read-back needs a genuinely separate
+# parser so it cannot share blind spots with the muxer it is checking.
+# Dev-dependency only; never linked into the aom-encode library. `tools/
+# avif-extract` isolates this same crate into its own workspace/lockfile for
+# a DIFFERENT reason (a standalone multi-purpose extraction CLI, not a test
+# dependency) -- `zenavif-serialize` above is the precedent for taking a
+# zenavif-family crate as a direct dev-dependency here.
+zenavif-parse = "0.6.2"

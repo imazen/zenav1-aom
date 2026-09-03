@@ -1,3 +1,79 @@
+## SB128 wired + zenavif-parse container read-back; issue #15's DoD met except the SCM-trial port (2026-09-03, issue #15)
+
+Follow-up to the entry immediately below (this same day). Two more landings
+after the 225-cell one, taking the gate to 241 and adding the DoD's second
+validation leg:
+
+**SB128** (`abe20559`). The module doc used to say "the pipeline pieces
+exist; the shell has no gate for it," which turned out to be exactly right
+and narrower than it sounds: `SbEncodeEnv::sb_size` was already a threaded
+field (not a constant), `rd_pick_partition_real` already took `bsize` as a
+parameter and was called with the *variable* `sb_size` at its root (not a
+hardcoded `BLOCK_64X64`), and `BLOCK_128X128` was already used throughout
+`aom_dsp::entropy::partition`'s subsize/context tables. Only
+`encode_key_frame` itself hardcoded SB64, in exactly three spots
+(`mib_size_log2`, `sb_mi`, `sb_block`) plus the sequence header's
+`sb_size_128` bit. Wired a new `KeyFrameConfig::sb_size_128: bool` (default
+false) threading all four. The single probe cell (128x128, one whole SB128,
+speed 0) was **byte-exact on the first try** — real confirmation the
+underlying layers were correctly generic, not coincidentally close. Followed
+by an 11-cell matrix (multiple superblocks up to 3x3, a non-multiple-of-128
+partial-superblock size, CDEF+LR both on, bd10, speed 0/3/6/9, cq 0 and 63,
+and SB128 composed with an EXPLICIT multi-tile request) — all 12 SB128 cells
+byte-exact.
+
+**Explicit `--tile-columns`/`--tile-rows`** (`bda14f3d`, landed just before
+SB128 the same day). Same shape: `derive_tile_info` already implemented C's
+`set_tile_info` clamp (`AOMMAX(tile_columns_cfg, min_log2_cols)`) correctly,
+it just always received `(0, 0)`. Wired `KeyFrameConfig::tile_columns_log2`/
+`tile_rows_log2`. Gated by 5 cells: forcing more tiles than the
+uniform-spacing default, requesting above a mandatory frame's minimum, and
+requesting BELOW a mandatory minimum — which clamps up to, and reproduces
+byte-for-byte, the same frame's un-requested cell (950 bytes both ways on
+8320x64). Both this and SB128 reused C-side reference shims
+(`shim_encode_av1_kf_tiles` / `_sb128`) that an EARLIER decoder-track landing
+had already added, append-only, and never wired to an encoder differential
+test — the C-side half of both gaps was sitting there unused.
+
+**`zenavif-parse` read-back** (new `tests/standalone_avif_parse_readback.rs`,
+`zenavif-parse = "0.6.2"` added as a dev-dependency alongside the existing
+`zenavif-serialize` dev-dependency). Closes the SECOND half of the DoD
+("validated by its own decode plus a zenavif-parse read-back") that the
+186/225/241-cell byte gate never touched: 19 cells (the full format x bit
+depth cross, several sizes incl. a partial superblock, cq extremes, and both
+new SB128 cells) are muxed into a real AVIF still via `Aviffy` and read back
+through `zenavif-parse`'s `AvifParser` — an INDEPENDENTLY-maintained parser
+(fork of Mozilla's MP4 parser), deliberately NOT `avif_parity.rs`'s
+hand-rolled `extract_mdat_payload` box walker, which shares lineage with the
+muxer it checks. All 19: `primary_data()` byte-exact against the
+`seq_header++frame_obu` handed to the muxer, and `primary_metadata()`
+(width/height/bit_depth/monochrome/chroma_subsampling, its own re-parse of
+the SEQUENCE header) agrees with the config. **Found, not fixed, could not
+be filed**: `zenavif-parse`'s convenience FRAME-header re-parse
+(`base_q_idx`/`lossless`) has a genuine bug for `reduced_still_picture_header`
+streams — `parse_frame_header_quantization` nests its `disable_cdf_update`/
+`allow_screen_content_tools` reads inside the "not reduced-still-picture"
+branch, but AV1 spec 5.9.2 reads them UNCONDITIONALLY right after that
+branch (confirmed against this repo's OWN writer,
+`aom_dsp::entropy::header::write_frame_header_prefix`, proven bit-for-bit
+against real aomenc across hundreds of gate cells: both bits are written
+OUTSIDE the `reduced_still_picture_hdr` guard). `encode_key_frame` always
+sets `reduced_still_picture_hdr = true`, so every cell hit it: the SAME
+cq=32 config read back `base_q_idx` 48/64/0/72 depending on frame size
+(expected 128 every time) — stable per size, drifting with it, consistent
+with a fixed few-bit misalignment compounding differently through the
+size-dependent `tile_info()` bit length. `gh issue create --repo
+imazen/zenavif-parse` refused: "Repository was archived so is read-only."
+Left as a code comment + this entry since it could not be filed upstream.
+Does not affect the container-level extraction this landing actually
+depends on (`primary_data()`), which is unaffected and asserted byte-exact.
+
+Net for the day: sweep 186 -> 241 across the three landings; 19 new
+container round-trip cells; the DoD's own text now holds except one item
+("port [the SCM trial] arm, or refuse the configurations that reach it by
+name" — neither happened; adversarially probed instead, see the entry
+below, and PARITY.md C3 for why a full port is its own multi-session item).
+
 ## Standalone gate extended 186->225; HBD x tile-count pins measured; SCM-trial gap adversarially probed, 0 found (2026-09-03, issue #15)
 
 Follow-up to the two entries below (69/69 then 186/186). Three additions to
