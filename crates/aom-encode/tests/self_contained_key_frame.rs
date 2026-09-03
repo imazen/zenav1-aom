@@ -529,6 +529,168 @@ fn sweep_cells() -> Vec<Cell> {
             .at_speed(speed),
         );
     }
+    // J -- HIGH BIT DEPTH x SPEED x TILE COUNT. Axis B (bit depth) above is
+    // only exercised at speed 0 / single-tile 64x64; axis I (multi-tile) is
+    // only exercised at bd8. Neither crosses bd10/12 with a non-zero speed,
+    // which is EXACTLY the reach of the pre-existing `HBD_OPEN` / `b10_64`
+    // pin recorded elsewhere in this repo (`CLAUDE.md` coverage queue,
+    // `s4cov_qm_axis.rs` / `config_permutations.rs`): "bd10 AND bd12,
+    // `--cpu-used` 1..6, LUMA-borne, reaches 4:4:4 + mono". This shell is a
+    // SEPARATE code path from those harnesses (no bootstrap, self-derived
+    // headers), so whether it inherits the same divergence is a measured
+    // question, not an assumption -- and per the PREREQ-AOM-STANDALONE issue
+    // (#15) admission note, the T4 HBD_OPEN pin is exactly why the standalone
+    // path needs its own gate rather than inheriting the harness's C compare.
+    // J1: bd x speed x tile-count at 4:2:0, isolating the speed reach.
+    //
+    // MEASURED 2026-09-03 (the full 2..6 x {single,multi} grid was run before
+    // this list was pruned to the passing subset -- see `open_divergences_
+    // are_pinned` for the failing half, pinned there with the same data):
+    //   * bd10 single-tile 128x128: byte-exact at s1,s2,s3,s6; diverges s4,s5.
+    //   * bd10 multi-tile 4160x64:  byte-exact at s6 ONLY; diverges s1..s5.
+    //   * bd12 single-tile 128x128: byte-exact at s4,s5,s6; diverges s1,s2,s3.
+    //   * bd12 multi-tile 4160x64:  diverges at EVERY speed 1..6.
+    // So the divergence is not "bd10/12 x speed 1..6" as a block (the
+    // pre-existing HBD_OPEN pin's own description) -- tile count measurably
+    // widens or narrows the reach, and bd10 vs bd12 move in OPPOSITE
+    // directions on the single-tile axis (bd10 fails in the middle of the
+    // range, bd12 fails at the start of it).
+    for (bd, speed) in [(10u8, 1i32), (10, 2), (10, 3), (10, 6)] {
+        v.push(
+            Cell::new(
+                format!("J_bd{bd}_128x128_420_cq32_tex"),
+                128,
+                128,
+                bd,
+                false,
+                1,
+                1,
+                32,
+                Texture,
+            )
+            .at_speed(speed),
+        );
+    }
+    v.push(
+        Cell::new(
+            "J_bd10_4160x64_420_cq32_tex".into(),
+            4160,
+            64,
+            10,
+            false,
+            1,
+            1,
+            32,
+            Texture,
+        )
+        .at_speed(6),
+    );
+    for speed in [4i32, 5, 6] {
+        v.push(
+            Cell::new(
+                "J_bd12_128x128_420_cq32_tex".to_string(),
+                128,
+                128,
+                12,
+                false,
+                1,
+                1,
+                32,
+                Texture,
+            )
+            .at_speed(speed),
+        );
+    }
+    // bd12 multi-tile 4160x64 has NO passing speed in 1..6 -- entirely pin
+    // material, see `open_divergences_are_pinned`.
+    //
+    // J2: bd x chroma format at a speed EACH bd is measured byte-exact at
+    // (single-tile) -- "LUMA-borne, reaches 4:4:4 + mono" from the same pin
+    // description, at a speed that is not itself part of the divergence.
+    for (nm, mono, sx, sy) in [
+        ("mono", true, 1usize, 1usize),
+        ("422", false, 1, 0),
+        ("444", false, 0, 0),
+    ] {
+        v.push(
+            Cell::new(
+                format!("J2_bd10_{nm}_128x128_cq32_tex"),
+                128,
+                128,
+                10,
+                mono,
+                sx,
+                sy,
+                32,
+                Texture,
+            )
+            .at_speed(6),
+        );
+        v.push(
+            Cell::new(
+                format!("J2_bd12_{nm}_128x128_cq32_tex"),
+                128,
+                128,
+                12,
+                mono,
+                sx,
+                sy,
+                32,
+                Texture,
+            )
+            .at_speed(6),
+        );
+    }
+    // K -- TINY / ODD / NARROW-TALL GEOMETRIES matching the historical
+    // "14 tiny" poison class from the pre-`encode_key_frame` `port_encode`
+    // differential fleet run (`avifaom-enc-20260830`, PARITY.md C3,
+    // zenmetrics `benchmarks/avifaom_round3_2026-08-30_open.tsv`): a single
+    // ODD-WIDTH, narrow, tall source (59x128) panicked the OLD bootstrap-
+    // driven port at nearly every quantizer tried, at speeds 4 and 6. The
+    // exact source pixels are not preserved (only larger poison cells' planes
+    // were staged), so this reproduces the GEOMETRY class -- odd width, one
+    // SB64 column or less, several SB64 rows -- with this file's own content
+    // generators, on THIS shell's code path (which never existed at the time
+    // of that run), across the two poisoned speeds plus a speed-0 control.
+    for (w, h) in [(59usize, 128usize), (78, 128), (115, 128)] {
+        for speed in [0i32, 4, 6] {
+            for (nm, k) in [("tex", Texture), ("check", Checker)] {
+                v.push(
+                    Cell::new(
+                        format!("K_{w}x{h}_420_bd8_cq32_{nm}"),
+                        w,
+                        h,
+                        8,
+                        false,
+                        1,
+                        1,
+                        32,
+                        k,
+                    )
+                    .at_speed(speed),
+                );
+            }
+        }
+    }
+    // K2: the worst-hit historical dimension (59x128) across the quantizer
+    // ladder at its poisoned speed -- the original class hit nearly every cq
+    // tried, so this checks it is not a narrow single-cq coincidence.
+    for cq in [0, 10, 20, 30, 40, 50, 63] {
+        v.push(
+            Cell::new(
+                format!("K2_cq{cq}_59x128_420_bd8_tex"),
+                59,
+                128,
+                8,
+                false,
+                1,
+                1,
+                cq,
+                Texture,
+            )
+            .at_speed(4),
+        );
+    }
     v
 }
 
@@ -1155,6 +1317,111 @@ fn open_divergences_are_pinned() {
              nonrd path itself is not unported -- 64x64 and 128x128 are byte-exact at \
              7, 8 and 9, and multi-tile 4160x64 is byte-exact at 0..6",
         ),
+        // The four HBD x speed x tile-count pins below are the failing half of
+        // axis J (`sweep_cells()`), MEASURED 2026-09-03 -- see that axis's own
+        // comment for the full bracket. Same PORT-SIDE code path as everything
+        // above (no bootstrap, self-derived headers); this is a SEPARATE
+        // divergence class from the pre-existing `HBD_OPEN` / `b10_64` pin in
+        // the bootstrap-driven harnesses (`s4cov_qm_axis.rs` /
+        // `config_permutations.rs`), reached through this shell instead, and
+        // measurably NOT the same flat "bd10/12 x speed 1..6" shape that pin
+        // describes -- tile count moves the reach in a bd-dependent direction.
+        (
+            Cell::new(
+                "PIN_bd10_128x128_speed4".into(),
+                128,
+                128,
+                10,
+                false,
+                1,
+                1,
+                32,
+                Content::Texture,
+            )
+            .at_speed(4),
+            Where::TilePayloadAndHeader,
+            "bd10, single-tile, MID-band speed failure: byte-exact at s1,s2,s3,s6, \
+             diverges at s4,s5. Same shape as `HBD_OPEN`/`b10_64` (bd10/12 x speed 1..6, \
+             LUMA-borne -- J2's mono/422/444 cells at bd10 s4 diverge identically to \
+             4:2:0), reached through the standalone shell instead of a bootstrap-driven \
+             harness -- registered as its own pin rather than folded into that one \
+             because the two have never been proven to share a root cause, and this \
+             shell's speed BAND (s4,s5 only, not the full 1..6) is a new, narrower datum. \
+             MEASURED: a derived header field (the loop-filter level) diverges here TOO, \
+             unlike both multi-tile HBD pins below where every header field agrees and \
+             only the tile payload differs -- single- vs multi-tile is a real split in \
+             this family, not just in WHICH speeds fail but in WHERE the divergence \
+             lands. `pick_filter_level` runs on the port's own reconstruction, so an \
+             RD/coefficient difference at single-tile can cascade into the loop-filter \
+             level the same way the 261x261 pin's does; the multi-tile pins' identical \
+             LF suggests the per-tile fresh-context reset masks that cascade there",
+        ),
+        (
+            Cell::new(
+                "PIN_bd10_4160x64_multitile_speed1".into(),
+                4160,
+                64,
+                10,
+                false,
+                1,
+                1,
+                32,
+                Content::Texture,
+            )
+            .at_speed(1),
+            Where::TilePayloadOnly,
+            "bd10, MANDATORY multi-tile (2 tiles), LOW-band speed failure: byte-exact at \
+             s6 ONLY, diverges s1..s5 -- the OPPOSITE band from the single-tile 128x128 \
+             pin above (which fails s4,s5 and passes s1,s2,s3,s6) at the SAME bit depth. \
+             Tile count is therefore a real axis in this divergence, not a confound: \
+             going from one tile to two both widens the failing band (1..5 vs 4..5) and \
+             flips which end of it is safe",
+        ),
+        (
+            Cell::new(
+                "PIN_bd12_128x128_speed1".into(),
+                128,
+                128,
+                12,
+                false,
+                1,
+                1,
+                32,
+                Content::Texture,
+            )
+            .at_speed(1),
+            Where::TilePayloadAndHeader,
+            "bd12, single-tile, LOW-band speed failure: byte-exact at s4,s5,s6, diverges \
+             s1,s2,s3 -- the MIRROR of the bd10 single-tile pin's band (which fails \
+             s4,s5 and passes s1,s2,s3,s6). Same speed_features/bit-depth interaction \
+             family as `HBD_OPEN`, opposite band per bit depth. Also TilePayloadAndHeader \
+             like the bd10 single-tile pin (not TilePayloadOnly like both multi-tile \
+             pins) -- the single-vs-multi-tile split in WHERE the divergence lands holds \
+             at both bit depths",
+        ),
+        (
+            Cell::new(
+                "PIN_bd12_4160x64_multitile_speed1".into(),
+                4160,
+                64,
+                12,
+                false,
+                1,
+                1,
+                32,
+                Content::Texture,
+            )
+            .at_speed(1),
+            Where::TilePayloadOnly,
+            "bd12, MANDATORY multi-tile (2 tiles): diverges at EVERY speed 1..6 tried -- \
+             no passing speed at all, unlike every other HBD pin here. The most severe \
+             cell in this family; representative of the full band rather than a \
+             boundary, so there is no adjacent passing speed to bracket it against. Like \
+             the bd10 multi-tile pin, every derived header field (including the \
+             loop-filter levels) agrees with C's -- ONLY the tile payload differs, which \
+             narrows this family further: at multi-tile, HBD does not perturb header \
+             derivation at all, only the coefficient/RD arm",
+        ),
     ];
 
     for (cell, expect_where, why) in &pins {
@@ -1286,4 +1553,225 @@ fn open_divergences_are_pinned() {
             "PIN {w}x{h}: still divergent, {got_where:?} ({why}); seq header byte-exact; decodes"
         );
     }
+}
+
+/// **Probe for the `av1_determine_sc_tools_with_encoding` gap** (issue #15's
+/// SCM-promotion bullet; `encoder_utils.c:1214`, PARITY.md C3). The shell's
+/// screen-content decision is the base detector's ONLY -- C additionally runs
+/// a two-pass trial encode (forced q >= 244, fixed 32x32 partition) whenever
+/// the base decision is OFF and speed features allow it, and can flip the
+/// decision ON if screen-content tools would buy >0.9dB PSNR
+/// (`STRICT_PSNR_DIFF_THRESH`). That trial is unported here.
+///
+/// This is NOT a byte-exactness gate -- it targets the ONE bit the trial can
+/// change (`allow_screen_content_tools`) with content chosen to be
+/// detector-negative (few high-contrast 16x16-block transitions, so the
+/// block-counting heuristic in `screen_detect.rs` stays under its own
+/// threshold) but genuinely palette-friendly (few EXACT colours, so the
+/// trial's PSNR-at-heavy-quantization comparison has a real gap to find):
+/// sparse single-pixel dots, thin single-pixel-wide lines, and a posterized
+/// (4-level) gradient. Run across every speed the trial's own C guard does
+/// not statically exclude (`cpi->sf.rt_sf.use_nonrd_pick_mode` -- NOT the
+/// same gate as the base detector's own `detection_disabled` cutoff, so this
+/// covers a speed or two the detector-disabled cutoff does not).
+///
+/// This is deliberately NOT a hard-fail assertion: a real divergence here is
+/// exactly the kind of finding the DoD (#15) asks be turned into a NAMED
+/// refusal or a registered pin, not discovered as a red gate on an unrelated
+/// commit. Divergences are printed and returned so the caller (a human, or a
+/// future landing) can act on them; a lack of divergence is itself the
+/// evidence this file's own doc comment claims ("the byte gate holds this
+/// accountable per cell") without ever having tried adversarial content.
+#[test]
+fn probe_sc_tools_trial_gap_on_detector_negative_content() {
+    c::ref_init();
+
+    #[derive(Clone, Copy)]
+    enum Probe {
+        /// One in every 64 pixels flips colour; everything else is flat.
+        SparseDots,
+        /// Every 32nd COLUMN is a different colour; everything else flat.
+        ThinLines,
+        /// A diagonal ramp quantized to 4 exact levels (posterized).
+        Posterized4,
+    }
+    fn sample(p: Probe, r: usize, col: usize) -> i32 {
+        match p {
+            Probe::SparseDots => {
+                if (r * 131 + col * 197) % 64 == 0 {
+                    40
+                } else {
+                    200
+                }
+            }
+            Probe::ThinLines => {
+                if col % 32 == 0 {
+                    60
+                } else {
+                    180
+                }
+            }
+            Probe::Posterized4 => {
+                let level = ((r + col) / 24) % 4;
+                32 + (level as i32) * 64
+            }
+        }
+    }
+
+    let w = 128usize;
+    let h = 128usize;
+    let mut findings = Vec::new();
+    let mut cells_tried = 0usize;
+    for (nm, p) in [
+        ("sparse_dots", Probe::SparseDots),
+        ("thin_lines", Probe::ThinLines),
+        ("posterized4", Probe::Posterized4),
+    ] {
+        let mut y = vec![0u16; w * h];
+        for r in 0..h {
+            for col in 0..w {
+                y[r * w + col] = sample(p, r, col).clamp(0, 255) as u16;
+            }
+        }
+        let cw = (w + 1) >> 1;
+        let ch = (h + 1) >> 1;
+        let u = vec![128u16; cw * ch];
+        let v = vec![128u16; cw * ch];
+        for speed in 0..=8 {
+            cells_tried += 1;
+            let cell = Cell::new(format!("SCM_{nm}"), w, h, 8, false, 1, 1, 32, Content::Flat)
+                .at_speed(speed);
+            let ours = port_stream(&cell, &y, &u, &v);
+            let theirs = c_stream(&cell, &y, &u, &v);
+            let (ours_hdr, _, _) = split_frame_obu(&ours);
+            let (theirs_hdr, _, _) = split_frame_obu(&theirs);
+            if ours_hdr.allow_screen_content_tools != theirs_hdr.allow_screen_content_tools {
+                findings.push(format!(
+                    "{nm} s{speed}: port allow_screen_content_tools={} vs C={} -- the trial \
+                     flipped it (or the port's shortcut disagrees for some other reason)",
+                    ours_hdr.allow_screen_content_tools, theirs_hdr.allow_screen_content_tools
+                ));
+            }
+            eprintln!(
+                "{nm} s{speed}: port ascs={} C ascs={} ({} bytes / {} bytes)",
+                ours_hdr.allow_screen_content_tools,
+                theirs_hdr.allow_screen_content_tools,
+                ours.len(),
+                theirs.len()
+            );
+        }
+    }
+    eprintln!(
+        "probe_sc_tools_trial_gap_on_detector_negative_content: {cells_tried} cells, {} \
+         allow_screen_content_tools divergences",
+        findings.len()
+    );
+    assert!(
+        findings.is_empty(),
+        "the SCM trial gap is REAL on this content -- {} of {cells_tried} cells disagree with \
+         C on allow_screen_content_tools:\n  {}\nThis is the un-ported `av1_determine_sc_tools_\
+         with_encoding` arm (encoder_utils.c:1214, PARITY.md C3) actually mattering within \
+         encode_key_frame's envelope. Per issue #15's DoD, turn this into either a targeted \
+         KeyFrameError refusal for the discovered condition, or a registered pin with the \
+         measured attribution -- do not silently leave it failing here.",
+        findings.len(),
+        findings.join("\n  ")
+    );
+}
+
+/// **A second, size-driven attempt at the same probe.** The first probe's
+/// content all crossed the base detector's OWN threshold (every cell came
+/// back `ascs=true` on both sides -- the trial never runs when the base
+/// decision is already on, per the module doc, so that content never reached
+/// the un-ported arm either). Reading `screen_detect.rs`'s formula --
+/// `(palette - photo/16) * 256 * 10 > area` -- explains why: the multiplier
+/// (2560) is large relative to a typical frame's block count, so crossing the
+/// threshold takes only a HANDFUL of net "simple" blocks out of the total,
+/// and the historical "14 tiny" poison cells (PARITY.md C3, the geometry axis
+/// K/K2 above reproduces the SIZES but not this) are all SMALL frames -- where
+/// `area` itself is small, so the crossover needs even FEWER blocks. This
+/// probe targets that directly: a small, mostly-noisy frame with ONE
+/// checker-textured patch (few EXACT colours WITH internal structure -- a
+/// flat patch was tried first and NEVER crossed the detector at any size up
+/// to the whole 64x64 frame, consistent with `screen_detect.rs`'s block
+/// classification wanting variance alongside a low colour count, not a
+/// perfectly flat DC region: ordinary photo content is full of flat DC
+/// blocks and must not read as screen-like) whose size is swept from small
+/// to large, searching for the crossover from BOTH sides -- does the base
+/// detector's own threshold and C's actual (trial-augmented) decision move
+/// together, or does C's trial flip the bit at a SMALLER patch than the base
+/// detector alone would?
+#[test]
+fn probe_sc_tools_trial_gap_flat_patch_on_small_noisy_frame() {
+    c::ref_init();
+    let w = 64usize;
+    let h = 64usize;
+    let mut findings = Vec::new();
+    let mut cells_tried = 0usize;
+    // Patch sizes from a single 8x8 corner up to half the frame, so the
+    // sweep brackets the detector's own crossover from both sides.
+    for patch in [0usize, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64] {
+        let mut y = vec![0u16; w * h];
+        for r in 0..h {
+            for col in 0..w {
+                let v = if r < patch && col < patch {
+                    content_sample(Content::Checker, r, col) // few colours, WITH structure
+                } else {
+                    content_sample(Content::Noise, r, col)
+                };
+                y[r * w + col] = v.clamp(0, 255) as u16;
+            }
+        }
+        let cw = (w + 1) >> 1;
+        let ch = (h + 1) >> 1;
+        let u = vec![128u16; cw * ch];
+        let v = vec![128u16; cw * ch];
+        for speed in [0i32, 3, 6] {
+            cells_tried += 1;
+            let cell = Cell::new(
+                format!("SCM_patch{patch}"),
+                w,
+                h,
+                8,
+                false,
+                1,
+                1,
+                32,
+                Content::Flat,
+            )
+            .at_speed(speed);
+            let ours = port_stream(&cell, &y, &u, &v);
+            let theirs = c_stream(&cell, &y, &u, &v);
+            let (ours_hdr, _, _) = split_frame_obu(&ours);
+            let (theirs_hdr, _, _) = split_frame_obu(&theirs);
+            if ours_hdr.allow_screen_content_tools != theirs_hdr.allow_screen_content_tools {
+                findings.push(format!(
+                    "patch{patch} s{speed}: port ascs={} vs C ascs={}",
+                    ours_hdr.allow_screen_content_tools, theirs_hdr.allow_screen_content_tools
+                ));
+            }
+            eprintln!(
+                "patch{patch} s{speed}: port ascs={} C ascs={} ({} / {} bytes)",
+                ours_hdr.allow_screen_content_tools,
+                theirs_hdr.allow_screen_content_tools,
+                ours.len(),
+                theirs.len()
+            );
+        }
+    }
+    eprintln!(
+        "probe_sc_tools_trial_gap_flat_patch_on_small_noisy_frame: {cells_tried} cells, {} \
+         allow_screen_content_tools divergences",
+        findings.len()
+    );
+    assert!(
+        findings.is_empty(),
+        "the SCM trial gap is REAL on a size-swept flat-patch-on-noise probe -- {} of \
+         {cells_tried} cells disagree with C on allow_screen_content_tools:\n  {}\nSame \
+         un-ported `av1_determine_sc_tools_with_encoding` arm as the sibling probe above; \
+         act on it the same way (targeted refusal or a registered, measured pin) rather than \
+         leaving this failing.",
+        findings.len(),
+        findings.join("\n  ")
+    );
 }
