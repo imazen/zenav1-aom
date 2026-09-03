@@ -31,9 +31,9 @@
 //!    depth, monochrome, and chroma subsampling — all SEQUENCE-header
 //!    fields. `base_q_idx` / `lossless` (FRAME-header fields, read by a
 //!    separate code path in `zenavif-parse`) are measured and printed but
-//!    deliberately NOT asserted: see the comment at their call site for a
-//!    genuine upstream bit-alignment bug this run uncovered, which could not
-//!    be filed (`imazen/zenavif-parse` is archived).
+//!    not yet asserted: this run uncovered a bit-alignment bug in that code
+//!    path, since FILED and FIXED as imazen/zenavif#46 — see the comment at
+//!    their call site for why the assertion waits on a release.
 //!
 //! Both extracted payloads are also decoded via this repo's own
 //! `aom_decode::frame::decode_frame_obus`, closing the loop container ->
@@ -215,10 +215,22 @@ fn run_cell(
     // (expected 128 in every case -- stable per size, drifting with it,
     // consistent with the tile_info() bit-length, which depends on frame
     // size, compounding a fixed few-bit misalignment differently per size).
-    // zenavif-parse's repo is archived (imazen/zenavif-parse, confirmed via
-    // `gh issue create` refusing with "Repository was archived so is
-    // read-only" 2026-09-03), so this could not be filed upstream; left here
-    // instead as the durable record. Container-level extraction
+    // FILED AND FIXED (2026-09-03): imazen/zenavif#46, fixed in `6dfdf6f` on
+    // imazen/zenavif's main. `zenavif-parse` develops THERE (as
+    // `zenavif-parse/`, full history) since 2026-07-16, which is exactly why
+    // `gh issue create --repo imazen/zenavif-parse` refused with "Repository
+    // was archived so is read-only": that repo is now an archived pointer.
+    // The fix covers four more bit-walk errors in the same walk. NOT an
+    // upstream bug: kornelski/avif-parse parses only the sequence header and
+    // has no frame-header code at all, so there is nothing to report there.
+    //
+    // These two fields stay informational until a `zenavif-parse` RELEASE
+    // carries that fix -- the dev-dependency above is `0.6.2` from crates.io,
+    // which still has the bug. Verified 2026-09-03 with the fixed parser
+    // patched in by path: all 19 cells assert exactly, every cq=32 cell
+    // reading back 128 (was 48/64/0/72 by size). Promote the eprintln to
+    // `assert_eq!(meta.base_q_idx.map(i32::from), Some(base_qindex_from_cq(cq)))`
+    // when the version is bumped. Container-level extraction
     // (`primary_data()`, asserted above) is UNAFFECTED -- this bug is scoped
     // to the bonus frame-header fields only.
     eprintln!(

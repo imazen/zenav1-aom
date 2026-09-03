@@ -1,3 +1,56 @@
+## The zenavif-parse frame-header bug is FILED AND FIXED; 19/19 cells now assert base_q_idx (2026-09-03, imazen/zenavif#46)
+
+Closes the "found, not fixed, could not be filed" item from the entry below,
+the same day. Three corrections to that entry's framing, all measured:
+
+**It could be filed after all — at the right repo.** `zenavif-parse`'s
+development moved into the **imazen/zenavif** cargo workspace (as
+`zenavif-parse/`, full history imported) on 2026-07-16; `imazen/zenavif-parse`
+is an archived pointer, which is why `gh issue create` there refused. Filed as
+**imazen/zenavif#46** and fixed in `6dfdf6f` on that repo's `main`.
+
+**The mechanism was exactly as diagnosed here**, and the diagnosis held up
+against the spec text: `read_uncompressed_header_until_tiles` returned early for
+`reduced_still_picture_header`, consuming **zero** bits, on the premise that
+spec 5.9.2's reduced branch implies every field. It only infers the fields
+*inside* the branch; `disable_cdf_update`, `allow_screen_content_tools` (plus
+the `force_integer_mv` / `allow_intrabc` bits it gates), `superres_params()`'s
+`use_superres` and `render_size()`'s `render_and_frame_size_different` are all
+still coded — 3 unconsumed bits for a typical still, landing on a different
+`base_q_idx` byte per frame size through the size-dependent `tile_info()`.
+This repo's writer (`write_frame_header_prefix`) was the correct reference.
+
+**Four more bit-walk errors sat in the same fork-added probe** and were fixed
+with it: `error_resilient_mode` + `refresh_frame_flags` are inferred (not coded)
+for a shown `KEY_FRAME` — a 9-bit over-read on the *non*-reduced still path
+this repo never exercises; `disable_frame_end_update_cdf` was never read;
+`allow_intrabc` missed its `UpscaledWidth == FrameWidth` gate; and
+`quantization_params()` skipped the `diff_uv_delta` bit while reading
+`using_qmatrix` only when chroma was present.
+
+**Upstream is NOT affected — the bug is fork-only.** Current
+`kornelski/avif-parse` `src/obu.rs` (`main` @ 2026-03-28) has five functions and
+parses only the sequence header: no `parse_frame_header_quantization`, no
+`base_q_idx`, no `quantization_params`, no frame-header OBU handling at all. The
+whole walk is the zenavif fork's own addition. Nothing was reported upstream,
+and nothing should be — that parser is the battle-tested foundation both this
+round-trip and the fork rely on.
+
+**Re-measured against this file's own gate.** With the fixed parser patched in
+by path and `meta.base_q_idx` promoted from informational to **asserted**, all
+**19/19** cells pass: every `cq=32` cell reads back **128** (the port's own
+`base_qindex_from_cq(32)`) where it previously read 48/64/0/72 by size, `cq=0`
+reads 0 and `cq=63` reads 255. The `primary_data()` byte-equality and
+`primary_metadata()` sequence-header assertions were unaffected throughout, as
+this file always claimed.
+
+The dev patch was reverted rather than committed: the fix is unreleased, and
+this repo's dev-dependency is `zenavif-parse = "0.6.2"` from crates.io, which
+still carries the bug. **The `base_q_idx` / `lossless` assertion can be promoted
+from informational to asserted once a `zenavif-parse` release carrying
+imazen/zenavif#46 is published** — that is the one remaining step, and it is a
+one-line change plus a version bump.
+
 ## SB128 wired + zenavif-parse container read-back; issue #15's DoD met except the SCM-trial port (2026-09-03, issue #15)
 
 Follow-up to the entry immediately below (this same day). Two more landings
