@@ -9,6 +9,13 @@ authored on the 186-cell gate and rebased onto the concurrent session's
 independent of the gate's cell count and are unchanged.
 Host `mac` (aarch64-apple-darwin), rustc 1.98.0, `--profile test-fast`
 (inherits `release`, keeps `debug-assertions = true`).
+Also run in full on `i265` (Intel Core Ultra 7 265K, x86-64, Ubuntu 26.04,
+rustc 1.98.1) against the landed `496d249`: `cargo test --profile test-fast
+--workspace --no-fail-fast` after a cargo-driven oracle build and
+`xtask/conformance.py --fetch --scope intra` -- 326 test-result lines, 0 failed,
+all seven crates through doc-tests, 19 min wall (2026-09-04 08:01-08:20 UTC).
+CI run 33847826484 on the same commit: all 7 legs green, including both linux
+differential legs (x86-64 and forced-scalar pin).
 Oracle: `aom_sys_ref::ref_encode_av1_kf` / `ref_decode_av1_kf` — the REAL
 exported libaom v3.14.1 encoder and decoder, same source planes on both sides.
 Port side: `aom_encode::key_frame::encode_key_frame` (bootstrap-free; no C bytes
