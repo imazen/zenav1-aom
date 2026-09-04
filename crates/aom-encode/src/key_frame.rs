@@ -128,7 +128,7 @@ use aom_dsp::entropy::header::{
 use aom_dsp::entropy::leb128::uleb_encode;
 use aom_dsp::entropy::lr::{LrFrameConfig, RESTORE_NONE as LR_RESTORE_NONE};
 use aom_dsp::entropy::obu::write_obu_header;
-use aom_dsp::entropy::partition::{KfFrameContext, tx_size_to_depth};
+use aom_dsp::entropy::partition::KfFrameContext;
 use aom_dsp::entropy::wb::WriteBitBuffer;
 use aom_dsp::loopfilter::frame::{LfFrameBuf, LfMiGrid, LfParams, loop_filter_frame};
 use aom_dsp::quant::av1_dc_quant_qtx;
@@ -801,9 +801,11 @@ pub fn derive_frame_header(
 /// or rect sub-block whose origin is off-frame is never coded by C's
 /// `encode_sb` (`partition_search.c:1583`) and therefore never contributes.
 /// Counting one is not merely a miscount — those tree slots hold placeholder
-/// winners whose `tx_size` is not on `bsize`'s `sub_tx_size_map` chain at all,
-/// which trips `tx_size_to_depth`'s own `depth <= MAX_TX_DEPTH` assert. (Found
-/// exactly that way on the first partial-superblock cell, `128x96 4:4:4`.)
+/// winners whose `tx_size` is unrelated to their `bsize`. (Found on the first
+/// partial-superblock cell, `128x96 4:4:4`, when [`count_leaf`] still went
+/// through `tx_size_to_depth`, whose `depth <= MAX_TX_DEPTH` assert those
+/// placeholders tripped; the guards are still required for the count to be
+/// C's, they just no longer have an assert announcing their absence.)
 pub fn txb_split_count(
     trees: &[SbTree],
     mi_rows: i32,
@@ -830,10 +832,27 @@ pub fn txb_split_count(
 }
 
 /// One coded leaf's contribution: `mbmi->tx_size != max_txsize_rect_lookup
-/// [bsize]`, expressed as `tx_size_to_depth(..) != 0` (the depth is exactly the
-/// number of `sub_tx_size_map` steps from that max, so zero ⟺ equal).
+/// [bsize]` — **the inequality itself**, which is what BOTH of C's intra
+/// increment sites write (`partition_search.c:516-517` in the
+/// `tx_mode_search_type == TX_MODE_SELECT && !lossless && bsize > BLOCK_4X4`
+/// arm, and `partition_search.c:554-555` in the `else` arm that covers every
+/// other case). Neither site calls `tx_size_to_depth`.
+///
+/// **This used to be written as `tx_size_to_depth(..) != 0`, and that paraphrase
+/// is not equivalent** (fixed 2026-09-03, zenavif#45). `tx_size_to_depth`
+/// (`av1/encoder/block.h:1505`) walks `sub_tx_size_map` from
+/// `max_txsize_rect_lookup[bsize]` down to `tx_size` and carries C's own
+/// `assert(depth <= MAX_TX_DEPTH)` (`enums.h:180`, MAX_TX_DEPTH == 2). It is
+/// only callable where the coded tx-size *symbol* exists — i.e. under
+/// `TX_MODE_SELECT` on a non-lossless block, which is exactly the arm C guards
+/// it with. A **coded-lossless** frame (`--cq-level 0` → `base_qindex == 0`)
+/// has `tx_mode == ONLY_4X4` (`select_tx_mode`, `rdopt_utils.h:391-393`:
+/// `if (cm->features.coded_lossless) return ONLY_4X4;`), so every winner is
+/// `TX_4X4` while `max_txsize_rect_lookup[BLOCK_32X32] == TX_32X32` and
+/// `[BLOCK_64X64] == TX_64X64` — depths 3 and 4, which trip the assert. C
+/// never sees that pair because C takes the `else` arm and never walks.
 fn count_leaf(n: &mut u32, w: &LeafWinner) {
-    if tx_size_to_depth(w.tx_size, w.bsize) != 0 {
+    if w.tx_size != crate::tx_search::MAX_TXSIZE_RECT_LOOKUP[w.bsize] {
         *n += 1;
     }
 }

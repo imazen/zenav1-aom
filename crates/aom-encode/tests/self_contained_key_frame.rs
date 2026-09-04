@@ -26,6 +26,7 @@
 //! | [`mutated_sequence_header_is_caught`] | mutation proof: perturbing ONE derived header field (the coded `base_qindex`) makes the pixel gate fail and the byte gate fail — neither is vacuous |
 //! | [`open_divergences_are_pinned`] | the cells that are NOT byte-identical, each with a MEASURED attribution asserted (which half of the frame OBU diverges), self-promoting so a fix goes red |
 //! | [`refuses_configurations_it_has_no_gate_for`] | the shell returns [`KeyFrameError`] instead of silently mis-encoding outside its envelope |
+//! | [`coded_lossless_reconstructs_the_source_exactly`] | at `--cq-level 0` the frame is `coded_lossless`, so BOTH decoders must return the encoder's own input on every plane — the property C cannot arbitrate inside the `HBD_OPEN` band |
 //!
 //! # Envelope
 //!
@@ -117,12 +118,36 @@ fn split_frame_obu(stream: &[u8]) -> (FrameHeaderObu, usize, Vec<u8>) {
         0,
         0,
     );
-    let reader_cfg = derive_frame_header(
+    let mut reader_cfg = derive_frame_header(
         &kf_cfg,
         &seq,
         &ScreenContentDecision::detection_disabled(),
         tile_info,
     );
+    // `read_uncompressed_header` takes `coded_lossless` / `all_lossless` from
+    // the CALLER (`header.rs:3138-3159`) rather than recomputing them from the
+    // qindex it just read, and those two flags gate the loop-filter, CDEF,
+    // loop-restoration and `tx_mode` reads. The cfg above is built at a
+    // hardcoded cq 32, so a **coded-lossless (cq 0)** stream would be read
+    // against `coded_lossless = false` and EVERY field after
+    // `quantization_params` -- the loop-filter levels included -- would be
+    // garbage, silently mis-attributing any cq-0 divergence. `base_qindex` is
+    // read before all of them, so one probe pass is enough to learn the
+    // stream's own quantizer and re-read with the flags it implies. (Found
+    // 2026-09-03 by the first cq-0 pin, which classified as
+    // `TilePayloadAndHeader` off LF levels [0, 27] on a frame whose loop-filter
+    // syntax is not even present.)
+    let probe = read_uncompressed_header(&mut ReadBitBuffer::new(&frame_payload), &reader_cfg);
+    let q = &probe.quant;
+    let lossless = q.base_qindex == 0
+        && q.y_dc_delta_q == 0
+        && q.u_dc_delta_q == 0
+        && q.u_ac_delta_q == 0
+        && q.v_dc_delta_q == 0
+        && q.v_ac_delta_q == 0;
+    reader_cfg.coded_lossless = lossless;
+    // No superres in this envelope, so AllLossless == CodedLossless.
+    reader_cfg.all_lossless = lossless;
     let mut rb = ReadBitBuffer::new(&frame_payload);
     let p = read_uncompressed_header(&mut rb, &reader_cfg);
     let bits = rb.bit_position();
@@ -289,6 +314,20 @@ impl Cell {
 ///   handed the crop instead of the 8-aligned `y_width`/`y_height`).
 /// * **E — content classes** at two sizes.
 /// * **F — low-q density**, cq 1..19 step 2, where every byte matters.
+/// * **N — the CODED-LOSSLESS arm (`--cq-level 0`) in depth**, added
+///   2026-09-03 with the zenavif#45 fix. `base_qindex == 0` with no deltas
+///   makes the frame `coded_lossless`, and `select_tx_mode`
+///   (`rdopt_utils.h:391-393`) then forces `ONLY_4X4` — a structurally
+///   different encode from every other cell in this file (WHT instead of the
+///   DCT family, no coded tx-size symbol, loop filter forced off). Axis A had
+///   exactly ONE cq-0 cell (64x64 4:2:0 bd8 Texture at speed 0), and the arm
+///   that broke was reachable at every other coordinate: J sweeps cq 0 over
+///   {mono, 4:2:0, 4:2:2, 4:4:4} x bd {8, 10, 12} x all five content classes x
+///   `--cpu-used` {0, 9}, plus bd8 at the intermediate speeds {3, 6} and a
+///   13-point size ladder from 1x1 to 258x258. bd10/bd12 at `--cpu-used` 1..6
+///   is the PRE-EXISTING `HBD_OPEN` band (CLAUDE.md T4) and is pinned in
+///   [`open_divergences_are_pinned`], not swept — measured 2026-09-03 to be the
+///   same band at cq 32, so it is not a lossless finding.
 fn sweep_cells() -> Vec<Cell> {
     use Content::*;
     let mut v = Vec::new();
@@ -826,6 +865,93 @@ fn sweep_cells() -> Vec<Cell> {
         .with_tile_log2(2, 0)
         .with_sb128(),
     );
+    // N -- the CODED-LOSSLESS arm, `--cq-level 0`. `base_qindex == 0` with no
+    // segment/delta-q makes the frame `coded_lossless` (`is_coded_lossless`,
+    // encodeframe.c:2275), and `select_tx_mode` (rdopt_utils.h:391-393) then
+    // returns ONLY_4X4 rather than TX_MODE_SELECT -- so no block codes a
+    // tx-size symbol, every transform is the 4x4 WHT, and
+    // `pick_filter_level` is skipped. Axis A carried a single cq-0 cell; the
+    // arm that broke (zenavif#45) needed a lossless block at BLOCK_32X32 or
+    // larger, which only appears once the partition search stops splitting --
+    // i.e. at a speed and on content axis A never reached.
+    //
+    // MEASURED 2026-09-03 (`benchmarks/cq0_lossless_axis_2026-09-03.md`): every
+    // cell below is byte-identical to real aomenc. bd10/bd12 at `--cpu-used`
+    // 1..6 is NOT, and is the pre-existing `HBD_OPEN` band (bd10 AND bd12,
+    // speeds 1..6, luma-borne) -- the SAME band at cq 32, so it is not a
+    // lossless finding; it is pinned in `open_divergences_are_pinned`.
+    for (nm, mono, sx, sy) in [
+        ("mono", true, 1usize, 1usize),
+        ("420", false, 1, 1),
+        ("422", false, 1, 0),
+        ("444", false, 0, 0),
+    ] {
+        for bd in [8u8, 10, 12] {
+            for (cnm, content) in [
+                ("flat", Flat),
+                ("grad", Gradient),
+                ("tex", Texture),
+                ("noise", Noise),
+                ("chk", Checker),
+            ] {
+                // Speeds 0 and 9 bracket the whole `--cpu-used` range at every
+                // depth; the intermediate speeds are bd8-only because 1..6 at
+                // bd10/bd12 is HBD_OPEN.
+                let speeds: &[i32] = if bd == 8 { &[0, 3, 6, 9] } else { &[0, 9] };
+                for &speed in speeds {
+                    v.push(
+                        Cell::new(
+                            format!("N_{nm}_bd{bd}_{cnm}_64x64_cq0"),
+                            64,
+                            64,
+                            bd,
+                            mono,
+                            sx,
+                            sy,
+                            0,
+                            content,
+                        )
+                        .at_speed(speed),
+                    );
+                }
+            }
+        }
+    }
+    // J size ladder at cq 0: the fixed header cost dominates a 1x1 lossless
+    // frame and the partition walk dominates 258x258 (a partial superblock),
+    // and both are structurally different from the 64x64 cells above.
+    for (w, h) in [
+        (1usize, 1usize),
+        (4, 4),
+        (8, 8),
+        (16, 16),
+        (32, 32),
+        (48, 48),
+        (96, 96),
+        (100, 60),
+        (128, 128),
+        (130, 70),
+        (192, 192),
+        (256, 256),
+        (258, 258),
+    ] {
+        for (cnm, content) in [("grad", Gradient), ("tex", Texture)] {
+            v.push(
+                Cell::new(
+                    format!("N_{w}x{h}_420_bd8_{cnm}_cq0"),
+                    w,
+                    h,
+                    8,
+                    false,
+                    1,
+                    1,
+                    0,
+                    content,
+                )
+                .at_speed(0),
+            );
+        }
+    }
     v
 }
 
@@ -858,6 +984,13 @@ fn decode_cells() -> Vec<Cell> {
         "M_256x256_s0_cdef1_lr1_sb128",
         "M_200x150_partial_s0_cdef0_lr0_sb128",
         "M_4224x128_sb128_tiles_s0_tc2tr0_sb128",
+        // The coded-lossless arm, one cell per structural axis it changes
+        // (ONLY_4X4 + WHT, no tx-size symbol, loop filter off).
+        "N_420_bd8_flat_64x64_cq0_s0",
+        "N_420_bd8_tex_64x64_cq0_s6",
+        "N_444_bd12_noise_64x64_cq0_s0",
+        "N_mono_bd10_chk_64x64_cq0_s9",
+        "N_258x258_420_bd8_tex_cq0_s0",
     ];
     sweep_cells()
         .into_iter()
@@ -1402,6 +1535,7 @@ fn refuses_configurations_it_has_no_gate_for() {
 /// | `--enable-cdef=1` at `--cpu-used` >= 4 (64x64 4:2:0 cq32) | `HeaderOnly`. `sf.cdef_pick_method` leaves `CDEF_FULL_SEARCH` for the FAST levels at speed >= 4; PARITY.md C1 records those as ported + table-unit-tested but NEVER e2e-gated. Divergent on every cell tried at speeds 4..9 (5 sizes x 6 speeds), and ONLY in the header's `cdef_strengths` set — the per-unit strength indices in the tile payload are byte-identical. Speeds 0..3 are byte-exact and ARE in the sweep. |
 /// | `--cpu-used` >= 7 above roughly 3x3 superblocks (256x256 cq32 s7) | `TilePayloadOnly`. One unlocalized VAR_BASED_PARTITION / nonrd arm. Bracket at speed 7: 128x128, 160x160, 192x192, 128x192 and 192x128 are byte-exact, 256x256 and 320x320 are not; at speed 9, 192x192 is not either. |
 /// | the same arm through a MANDATORY two-tile frame (4160x64 cq32 s9) | `TilePayloadOnly`. Pinned separately so a tile-assembly regression cannot hide inside the large-frame one: 4160x64 is byte-exact at speeds 0..6 in the sweep, which is what proves the tile assembly is not the problem. |
+/// | cq 0 at bd10 `--cpu-used` 6, and at bd12 `--cpu-used` 3 (64x64 4:2:0) | `TilePayloadOnly`. The pre-existing `HBD_OPEN` band (CLAUDE.md T4), observed on the coded-lossless arm (axis N). MEASURED 2026-09-03 over 720 cells x 2 quantizers: the divergent set is exactly bd {10, 12} x `--cpu-used` 1..6 at BOTH cq 0 and cq 32; bd8 is byte-exact at cq 0 across all four formats, five contents and speeds 0/3/6/9, and every depth is byte-exact at speeds 0, 7, 8, 9. So it is not a lossless finding. |
 ///
 /// # What used to be here
 ///
@@ -1612,6 +1746,48 @@ fn open_divergences_are_pinned() {
              loop-filter levels) agrees with C's -- ONLY the tile payload differs, which \
              narrows this family further: at multi-tile, HBD does not perturb header \
              derivation at all, only the coefficient/RD arm",
+        ),
+        (
+            Cell::new(
+                "PIN_cq0_bd10_grad".into(),
+                64,
+                64,
+                10,
+                false,
+                1,
+                1,
+                0,
+                Content::Gradient,
+            )
+            .at_speed(6),
+            Where::TilePayloadOnly,
+            "the pre-existing HBD_OPEN band (CLAUDE.md T4: bd10 AND bd12, `--cpu-used` \
+             1..6, LUMA-borne, reaches 4:4:4 + mono, qindex-dependent speed reach), \
+             observed at cq 0. This is the EXACT coordinate zenavif#45 reported the \
+             `tx_size_to_depth` assert at; the assert is fixed (`count_leaf` now writes \
+             C's own inequality) and what remains is HBD_OPEN, not a lossless defect. \
+             MEASURED 2026-09-03 over 720 cells x 2 quantizers: at cq 0 AND at cq 32 the \
+             divergent set is exactly bd {10, 12} x `--cpu-used` 1..6 -- bd8 is 240/240 \
+             byte-exact at cq 0 including speeds 3 and 6, and speeds 0, 7, 8 and 9 are \
+             byte-exact at every depth (all in the N arm of `sweep_cells`). A lossless \
+             root would not be bit-depth- or speed-conditional",
+        ),
+        (
+            Cell::new(
+                "PIN_cq0_bd12_tex".into(),
+                64,
+                64,
+                12,
+                false,
+                1,
+                1,
+                0,
+                Content::Texture,
+            )
+            .at_speed(3),
+            Where::TilePayloadOnly,
+            "the same HBD_OPEN band one depth and three speeds over, pinned separately \
+             so bd12 cannot close silently behind bd10. Its cq-32 twin diverges too",
         ),
     ];
 
@@ -1964,5 +2140,138 @@ fn probe_sc_tools_trial_gap_flat_patch_on_small_noisy_frame() {
          leaving this failing.",
         findings.len(),
         findings.join("\n  ")
+    );
+}
+
+/// **The coded-lossless arm actually reconstructs the source, bit for bit.**
+///
+/// Byte-parity against real aomenc is the primary gate, but it cannot speak for
+/// the cells inside the pre-existing `HBD_OPEN` band, where the port's
+/// bitstream legitimately differs from C's. `--cq-level 0` has a property that
+/// is independent of C: `base_qindex == 0` with no deltas makes the frame
+/// `coded_lossless` (`is_coded_lossless`, `encodeframe.c:2275`), so a
+/// conforming decode of a conforming stream must return the ENCODER'S INPUT
+/// exactly, on every plane. This test asserts that with the real libaom
+/// decoder and with this repo's own decoder, over the whole grid the byte gate
+/// can only half-cover — HBD_OPEN cells included.
+///
+/// It is also the direct regression lock on zenavif#45: `encode_key_frame` at
+/// cq 0 must return a `Result` at every coordinate, never unwind. The reported
+/// panic was `tx_size_to_depth`'s `depth <= MAX_TX_DEPTH` `debug_assert`
+/// reached through `txb_split_count` -> `count_leaf`, and it fired only where
+/// a lossless leaf is `BLOCK_32X32` or bigger (depth 3) — i.e. on content and
+/// speeds the single cq-0 cell in axis A never produced. Note the profile:
+/// `[profile.test-fast]` inherits `release` but keeps `debug-assertions = true`
+/// (workspace `Cargo.toml`), which is why the assert is live here.
+#[test]
+fn coded_lossless_reconstructs_the_source_exactly() {
+    use Content::*;
+    c::ref_init();
+    let mut cells: Vec<Cell> = Vec::new();
+    for (nm, mono, sx, sy) in [
+        ("mono", true, 1usize, 1usize),
+        ("420", false, 1, 1),
+        ("422", false, 1, 0),
+        ("444", false, 0, 0),
+    ] {
+        for bd in [8u8, 10, 12] {
+            for (cnm, content) in [
+                ("flat", Flat),
+                ("grad", Gradient),
+                ("tex", Texture),
+                ("noise", Noise),
+                ("chk", Checker),
+            ] {
+                for speed in [0i32, 3, 6, 9] {
+                    cells.push(
+                        Cell::new(
+                            format!("LL_{nm}_bd{bd}_{cnm}_64x64_cq0"),
+                            64,
+                            64,
+                            bd,
+                            mono,
+                            sx,
+                            sy,
+                            0,
+                            content,
+                        )
+                        .at_speed(speed),
+                    );
+                }
+            }
+        }
+    }
+    // Partial superblocks and the tiny end, where the block walk differs.
+    for (w, h) in [(1usize, 1usize), (100, 60), (130, 70), (258, 258)] {
+        for speed in [0i32, 6] {
+            cells.push(
+                Cell::new(
+                    format!("LL_{w}x{h}_420_bd8_tex_cq0"),
+                    w,
+                    h,
+                    8,
+                    false,
+                    1,
+                    1,
+                    0,
+                    Texture,
+                )
+                .at_speed(speed),
+            );
+        }
+    }
+    assert!(
+        cells.len() >= 240,
+        "the lossless grid shrank to {} cells — it must stay dense enough to \
+         reach a BLOCK_32X32-or-larger lossless leaf at every depth",
+        cells.len()
+    );
+
+    let mut checked = 0usize;
+    for cell in &cells {
+        let (y, u, v) = cell_planes(cell);
+        // zenavif#45's own shape: a panic out of a library entry point is a
+        // defect regardless of the bytes it would have produced.
+        let encoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            encode_key_frame(
+                KeyFramePlanes {
+                    y: &y,
+                    u: &u,
+                    v: &v,
+                },
+                &cell_cfg(cell),
+            )
+        }))
+        .unwrap_or_else(|_| {
+            panic!(
+                "{}: encode_key_frame PANICKED at --cq-level 0. It must return a \
+                 Result, never unwind (zenavif#45)",
+                cell.label
+            )
+        })
+        .unwrap_or_else(|e| panic!("{}: encode_key_frame refused: {e}", cell.label));
+
+        let dec = c::ref_decode_av1_kf(&encoded, cell.w, cell.h);
+        assert_eq!(
+            (&dec.y, &dec.u, &dec.v),
+            (&y, &u, &v),
+            "{}: --cq-level 0 is coded-lossless, so real-C-decode(port stream) must \
+             return the encoder's own input on every plane",
+            cell.label
+        );
+        let p_dec = aom_decode::frame::decode_frame_obus(&encoded)
+            .unwrap_or_else(|e| panic!("{}: port decode failed: {e}", cell.label));
+        assert_eq!(
+            (&p_dec.y, &p_dec.u, &p_dec.v),
+            (&y, &u, &v),
+            "{}: port-decode(port stream) is not lossless",
+            cell.label
+        );
+        checked += 1;
+    }
+    eprintln!(
+        "coded_lossless_reconstructs_the_source_exactly: {checked}/{} cells decode to the \
+         source exactly, on both decoders",
+        cells.len()
     );
 }

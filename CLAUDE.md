@@ -30,7 +30,8 @@ transcribed oracles can carry shared bugs).
   of `aom-bench`'s `port_encode*`. `aom_encode::key_frame::encode_key_frame`
   (`crates/aom-encode/src/key_frame.rs`) AUTHORS the sequence header and the frame header
   from config, and emits a complete temporal unit (TD + seq + `OBU_FRAME`) with no C bytes in
-  the path — **69/69 cells byte-identical to real aomenc**, both decoders agreeing on the
+  the path — **372/372 cells byte-identical to real aomenc** (69/69 when this caveat was
+  written; 186/186 on 2026-09-02; +186 coded-lossless cells on 2026-09-03, KB-44), both decoders agreeing on the
   pixels (`aom-encode/tests/self_contained_key_frame.rs`). Its envelope is ALLINTRA,
   `--cpu-used 0`, single tile, SB64, CDEF and loop-restoration off; everything outside that is
   REFUSED by name (`KeyFrameError`), and `port_encode*`'s replay caveat still applies to every
@@ -120,6 +121,14 @@ it here in the same commit.**
    reachability note was wrong by four orders of magnitude in area).
 2. **Blast radius** — how much of the encode envelope is wrong when it fires, and how many
    INDEPENDENT landings named the same axis (a proxy for how load-bearing it is).
+
+### Closed on 2026-09-03 (kept for one cycle so the strike-through is visible)
+- ~~the coded-lossless (`--cq-level 0`) arm outside its single 64x64 4:2:0 bd8 speed-0 cell~~ →
+  KB-44 / `self_contained_key_frame`. **372/372** byte-identical (was 186/186) and
+  **248/248** lossless-reconstruction cells on both decoders. Closes PARITY C12's
+  "lossless x 4:2:2 / 4:4:4" follow-up. **Newly named and NOT closed:** cq 32 x bd8 x
+  `--cpu-used` 9 x **100x60** (8 cells, {tex, noise} x 4 formats) — the sweep's speed arm is
+  64x64/128x128 only; and lossless x SB128, which the standalone shell refuses by name.
 
 ### Closed on 2026-08-06 (kept for one cycle so the strike-through is visible)
 - ~~decoder: high bit depth x chroma subsampling on the INTER path (the
@@ -222,6 +231,98 @@ it here in the same commit.**
 
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
+
+### KB-44 — Encoder: `--cq-level 0` (coded-lossless) tripped `tx_size_to_depth`'s `depth <= MAX_TX_DEPTH` assert — FIXED ✅ 2026-09-03 (zenavif#45); the report's "release also fails" and "infinite loop" readings are BOTH corrected by measurement
+
+**Reported** (https://github.com/imazen/zenavif/issues/45): `Av1Backend::Zenav1Aom` at zenavif
+quality 100 maps to `--cq-level 0` and panicked in
+`aom_dsp::entropy::partition::tx_size_to_depth`, content-dependently, at 64x64 / `--cpu-used` 6
+/ 4:2:0. Reproduced at `c3e1b4a` (`--profile test-fast`), and it is broader than reported: with
+the pre-fix code a **64x64 flat mono frame at `--cpu-used` 0** panics too.
+
+**Two corrections to the report, both MEASURED.**
+
+1. It is a `debug_assert!`, not an `assert!` — and `[profile.test-fast]` (workspace
+   `Cargo.toml`) inherits `release` **with `debug-assertions = true`**, which is how it was
+   seen. Built at a genuine `--profile release` the same nine repro configurations neither
+   panic nor hang: they return streams of 24 / 426 / 1417 B (bd8) and so on, **the same
+   lengths the fixed build produces**.
+2. So it was never a wrong-value bug either. `tx_size_to_depth(TX_4X4, BLOCK_64X64)` walks
+   `sub_tx_size_map` four steps and returns 4; the only caller compares that against 0, and
+   `4 != 0` is the answer C reaches by a different route. Nothing downstream consumed the 4.
+   (A non-terminating walk IS structurally possible — `sub_tx_size_map[TX_4X4] == TX_4X4`, so
+   an *off-chain* `tx_size` spins forever once `NDEBUG` deletes C's own assert — but
+   coded-lossless is not that case, because `TX_4X4` is on every chain. Hardened anyway; see
+   below.)
+
+**Root, ONE, in this repo.** `aom_encode::key_frame::count_leaf` (`key_frame.rs:790-812`)
+implemented C's `txb_split_count` increment predicate as
+`tx_size_to_depth(w.tx_size, w.bsize) != 0`. C writes the INEQUALITY, at both of its intra
+increment sites and at neither one via a depth walk:
+
+* `partition_search.c:516-517` — `if (mbmi->tx_size != max_txsize_rect_lookup[bsize]) ++x->txfm_search_info.txb_split_count;`, inside the arm gated on
+  `txfm_params->tx_mode_search_type == TX_MODE_SELECT && !xd->lossless[..] && mbmi->bsize > BLOCK_4X4` (`:508-510`).
+* `partition_search.c:554-555` — `if (intra_tx_size != max_txsize_rect_lookup[bsize]) ++..;`, the `else` arm, which is the one a lossless frame takes.
+
+`tx_size_to_depth` (`av1/encoder/block.h:1505`) carries C's own
+`assert(depth <= MAX_TX_DEPTH)` (`enums.h:180`, MAX_TX_DEPTH == 2) and is callable only where
+the tx-size SYMBOL exists — exactly the first arm. At `--cq-level 0`, `base_qindex == 0` makes
+the frame `coded_lossless` (`is_coded_lossless`, `encodeframe.c:2275`) and `select_tx_mode`
+(`rdopt_utils.h:391-393`) returns **ONLY_4X4**, so C takes the `else` arm and never walks —
+while the port walked from `max_txsize_rect_lookup[BLOCK_32X32] = TX_32X32` (depth 3) or
+`[BLOCK_64X64] = TX_64X64` (depth 4) down to the lossless `TX_4X4`. Content- and
+speed-dependent precisely because it needs a lossless leaf at `BLOCK_32X32` or larger, i.e. a
+partition search that stopped splitting.
+
+**Fix.** `count_leaf` now writes C's inequality against
+`crate::tx_search::MAX_TXSIZE_RECT_LOOKUP`. Output bytes are UNCHANGED (verified: the
+pre-fix release build and the post-fix build emit identical stream lengths on all nine repro
+cells) — the walk's only effect was the assert. Separately, `tx_size_to_depth` now refuses an
+off-chain pair instead of spinning at the `TX_4X4` fixpoint; the check fires strictly inside
+the set where C's own loop does not terminate, so it cannot change parity, and **C's
+`debug_assert` is kept verbatim** (the state was repaired, not the assert deleted).
+
+**Two things the fix also exposed, both fixed in the same landing:**
+
+* `self_contained_key_frame.rs`'s `split_frame_obu` built its reader cfg at a **hardcoded
+  cq 32**, and `read_uncompressed_header` takes `coded_lossless` / `all_lossless` from the
+  CALLER (`header.rs:3138-3159`) rather than recomputing them. So every cq-0 stream was parsed
+  against `coded_lossless = false` and every field after `quantization_params` was garbage —
+  the first cq-0 pin classified as `TilePayloadAndHeader` off loop-filter levels `[0, 27]` on a
+  frame whose loop-filter syntax is not present. Now a probe pass reads `base_qindex` (which
+  precedes all the lossless-gated reads) and re-parses with the flags the stream implies.
+* The gate had exactly ONE cq-0 cell (`A_cq0_64x64_420_bd8_tex`, `--cpu-used` 0). Everything
+  else about the coded-lossless arm was unmeasured.
+
+**Coverage now** (`benchmarks/cq0_lossless_axis_2026-09-03.md`):
+
+* `self_contained_key_frame_byte_matches_real_aomenc`: **186 -> 372/372 byte-identical**.
+  The J arm is cq 0 x {mono, 4:2:0, 4:2:2, 4:4:4} x bd {8, 10, 12} x 5 contents x
+  `--cpu-used` {0, 9} (+ bd8 at {3, 6}), plus a 13-point size ladder 1x1..258x258.
+* `coded_lossless_reconstructs_the_source_exactly`: **248/248** — real-C-decode AND
+  `aom-decode` of the port's own cq-0 stream both return the encoder's input exactly, on
+  every plane. This covers the `HBD_OPEN` cells the byte gate cannot.
+* Two self-promoting pins, `PIN_cq0_bd10_grad` (`--cpu-used` 6) and `PIN_cq0_bd12_tex`
+  (`--cpu-used` 3), both measured `TilePayloadOnly`.
+
+**The residual is NOT a lossless finding.** Measured over 720 cells x 2 quantizers plus a
+full `--cpu-used` 0..9 sweep: the cq-0 divergent set is **exactly bd {10, 12} x `--cpu-used`
+1..6**, which is the same band at cq 32 — i.e. `HBD_OPEN` (T4: *"bd10 AND bd12, `--cpu-used`
+1..6, LUMA-borne, reaches 4:4:4 + mono, qindex-dependent speed reach"*). bd8 is 240/240
+byte-exact at cq 0 INCLUDING speeds 3 and 6, and every depth is byte-exact at speeds 0, 7, 8
+and 9. A lossless/WHT root would be neither bit-depth- nor speed-conditional.
+
+**Mutation proof.** Reverting `count_leaf` to the pre-fix paraphrase turns 4 of the file's 7
+tests red (first cell `LL_mono_bd8_flat_64x64_cq0_s0`, `assertion failed: depth <=
+MAX_VARTX_DEPTH`); forcing `coded_lossless = false` takes the byte gate to **185/372**, i.e.
+exactly the 187 cq-0 cells and nothing else. Both reverted, sha256 restored byte-identically,
+372/372 + 248/248 green again.
+
+**NEWLY MEASURED, NOT CLOSED** (added to the coverage queue): at **cq 32**, bd8 `--cpu-used` 9
+at **100x60** diverges on {texture, noise} x all four chroma formats (8 cells) while 64x64 and
+128x128 are byte-exact at the same speed — the sweep's speed arm is 64x64/128x128 only, so
+100x60 x speed 9 is an uncovered coordinate in the same `--cpu-used` >= 7 nonrd family
+`PIN_256x256_speed7` records. Unrelated to cq 0.
 
 ### KB-43 — CI red on the x86-64 legs since 2026-08-31: THREE roots, all fixed 2026-09-02 (root #1 VERIFIED green on run `33688716692`; #2/#3 await the next x86 run)
 

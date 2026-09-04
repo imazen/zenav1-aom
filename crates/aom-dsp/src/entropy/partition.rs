@@ -663,15 +663,46 @@ pub fn depth_to_tx_size(depth: i32, bsize: usize) -> usize {
     tx_size
 }
 
-/// `tx_size_to_depth` (`av1/encoder/block.h`): the number of `sub_tx_size_map`
-/// steps from `max_txsize_rect_lookup[bsize]` down to `tx_size` — the coded
-/// depth symbol on the write side.
+/// `tx_size_to_depth` (`av1/encoder/block.h:1505`): the number of
+/// `sub_tx_size_map` steps from `max_txsize_rect_lookup[bsize]` down to
+/// `tx_size` — the coded depth symbol on the write side.
+///
+/// **Callable only where the tx-size symbol exists**, i.e. under
+/// `TX_MODE_SELECT` on a non-lossless block above `BLOCK_4X4` — the arm C
+/// guards every one of its own call sites with (`partition_search.c:508-510`,
+/// `bitstream.c`'s `write_selected_tx_size`, `tx_search.h`'s `tx_size_cost`).
+/// Outside it the `(tx_size, bsize)` pair need not lie on the chain at all.
+///
+/// # Termination
+///
+/// C's loop has **no termination guard**: `sub_tx_size_map[TX_4X4] == TX_4X4`,
+/// so a `tx_size` that is not on `bsize`'s chain walks to `TX_4X4` and then
+/// spins there forever. C only survives that because of its `assert`, which
+/// `-DNDEBUG` deletes from every release libaom build — so the C release
+/// behaviour on an off-chain pair is an infinite loop, not a diagnostic. This
+/// port refuses instead: the chain is strictly decreasing until `TX_4X4`, so
+/// reaching the `TX_4X4` fixpoint without a match proves the pair is off-chain,
+/// and that can only be a caller-guard bug. **Every input on which C's loop
+/// terminates returns the identical depth here** — the added check fires
+/// strictly inside the set where C would hang, so it cannot change parity.
+///
+/// The `depth <= MAX_TX_DEPTH` `debug_assert` is C's own (`enums.h:180`,
+/// `MAX_TX_DEPTH == 2`) and is kept verbatim. It is NOT the termination
+/// condition: legal chains reach depth 4 (`TX_64X64` → `TX_4X4`), which is
+/// exactly what a coded-lossless block hits when a caller forgets the guard
+/// (zenavif#45 — see `aom_encode::key_frame::count_leaf`).
 pub fn tx_size_to_depth(tx_size: usize, bsize: usize) -> i32 {
     let mut ctx_size = MAX_TXSIZE_RECT_LOOKUP[bsize];
     let mut depth = 0;
     while tx_size != ctx_size {
+        let next = SUB_TX_SIZE_MAP[ctx_size];
+        assert!(
+            next != ctx_size,
+            "tx_size {tx_size} is not on max_txsize_rect_lookup[{bsize}]'s \
+             sub_tx_size_map chain — C would loop forever here"
+        );
         depth += 1;
-        ctx_size = SUB_TX_SIZE_MAP[ctx_size];
+        ctx_size = next;
         debug_assert!(depth <= MAX_VARTX_DEPTH); // MAX_TX_DEPTH == 2
     }
     depth

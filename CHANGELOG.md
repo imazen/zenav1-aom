@@ -4,7 +4,51 @@
 
 ### [Unreleased]
 
+### Fixed
+
+- **`--cq-level 0` (coded-lossless) no longer trips `tx_size_to_depth`'s
+  `depth <= MAX_TX_DEPTH` assert** (zenavif#45). `key_frame::count_leaf`
+  computed C's `txb_split_count` predicate — `mbmi->tx_size !=
+  max_txsize_rect_lookup[bsize]`, which C writes as a plain inequality at BOTH
+  of its intra increment sites (`partition_search.c:517`, `:555`) — as
+  `tx_size_to_depth(..) != 0`. That paraphrase is only valid where the tx-size
+  SYMBOL exists, i.e. under `TX_MODE_SELECT` on a non-lossless block, which is
+  the arm C guards the walk with (`:508-510`). A coded-lossless frame has
+  `tx_mode == ONLY_4X4` (`select_tx_mode`, `rdopt_utils.h:391-393`), so every
+  leaf is `TX_4X4` and a `BLOCK_32X32`/`BLOCK_64X64` leaf walks 3 or 4 steps.
+  **The emitted bytes are unchanged** — the walk's only effect was the assert;
+  measured on nine `--profile release` repro cells before and after. Two
+  corrections to the report: the assert is a `debug_assert!` (live in this
+  repo's `test-fast` profile, which inherits `release` with
+  `debug-assertions = true`), and a genuine `--release` build neither panicked
+  nor hung. `tx_size_to_depth` now also refuses an off-chain `(tx_size, bsize)`
+  pair rather than spinning at the `sub_tx_size_map[TX_4X4] == TX_4X4`
+  fixpoint — a set on which C's own loop does not terminate either, so parity
+  is untouched, and C's `debug_assert` is kept verbatim. CLAUDE.md KB-44.
+- **`self_contained_key_frame.rs`'s `split_frame_obu` mis-parsed every cq-0
+  stream.** It built its reader cfg at a hardcoded cq 32, and
+  `read_uncompressed_header` takes `coded_lossless` / `all_lossless` from the
+  caller (`header.rs:3138-3159`); every field after `quantization_params` was
+  therefore garbage on a coded-lossless stream. Now a probe pass reads
+  `base_qindex` (which precedes all the lossless-gated reads) and re-parses
+  with the flags the stream implies.
+
 ### Added
+
+- **The coded-lossless (`--cq-level 0`) parity axis, in depth.**
+  `self_contained_key_frame_byte_matches_real_aomenc` goes **186/186 → 372/372
+  cells byte-identical to real aomenc**: a new J arm sweeps cq 0 over
+  {mono, 4:2:0, 4:2:2, 4:4:4} × bd {8, 10, 12} × 5 content classes ×
+  `--cpu-used` {0, 9} (plus bd8 at {3, 6}) and a 13-point size ladder from 1×1
+  to 258×258. A new `coded_lossless_reconstructs_the_source_exactly` asserts
+  the property C cannot arbitrate inside the pre-existing `HBD_OPEN` band:
+  **248/248 cells** decode — on the real C decoder AND on `aom-decode` — to the
+  encoder's own input, exactly, on every plane. Two self-promoting pins
+  (`PIN_cq0_bd10_grad`, `PIN_cq0_bd12_tex`) register the bd10/bd12 ×
+  `--cpu-used` 1..6 residual, measured `TilePayloadOnly` and measured to be the
+  SAME band at cq 32 — `HBD_OPEN`, not a lossless finding. Measurements:
+  `benchmarks/cq0_lossless_axis_2026-09-03.md`.
+
 
 - **Self-contained KEY-frame encode — no C bootstrap anywhere in the path.**
   `aom_encode::key_frame::encode_key_frame(planes, cfg)` returns a complete AV1

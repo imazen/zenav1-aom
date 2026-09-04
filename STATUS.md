@@ -211,12 +211,19 @@ levels (`pick_filter_level` on the port's own recon), and the `tx_mode`
 SELECT→LARGEST flip (`encodeframe.c:2797`) via a new `key_frame::txb_split_count`
 over the port's own winner trees.
 
-**Gate** (`aom-encode/tests/self_contained_key_frame.rs`, 6 tests, 22 s):
-**186/186 cells byte-identical to real aomenc's whole temporal unit** — cq 0..63
+**Gate** (`aom-encode/tests/self_contained_key_frame.rs`, 7 tests, 30 s):
+**372/372 cells byte-identical to real aomenc's whole temporal unit** (186/186
+on 2026-09-02; the cq-0 / coded-lossless **J arm** added 186 more on 2026-09-03
+with KB-44) — cq 0..63
 step 5 plus 63 and a 1..19 step-2 low-q arm, {mono, 4:2:0, 4:2:2, 4:4:4} × bd
 {8, 10, 12} (profiles 0/1/2), 16×16..512×512, 12 crop/partial-SB sizes including
 1×1, 5 content classes, and **all four (CDEF, loop-restoration) combinations
-including both on** (27 post-filter cells), and **`--cpu-used` 0..=9**. Real
+including both on** (27 post-filter cells), and **`--cpu-used` 0..=9**. The J arm
+is cq 0 over all four chroma formats × all three depths × all five contents ×
+`--cpu-used` {0, 9} (+ bd8 at {3, 6}) and a 1×1..258×258 size ladder; alongside
+it `coded_lossless_reconstructs_the_source_exactly` asserts what C cannot
+arbitrate inside the pre-existing `HBD_OPEN` band — **248/248 cells** decode, on
+BOTH decoders, to the encoder's own input exactly, on every plane. Real
 aomenc's ALLINTRA default is CDEF OFF with restoration ON
 (`av1_cx_iface.c:3067`), and that default is byte-gated at every speed. Both the real C decoder and `aom-decode` decode the
 PORT's own stream to the pixels real aomenc's stream decodes to. The gap is
