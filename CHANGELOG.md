@@ -36,18 +36,28 @@
 ### Added
 
 - **The coded-lossless (`--cq-level 0`) parity axis, in depth.**
-  `self_contained_key_frame_byte_matches_real_aomenc` goes **186/186 → 372/372
-  cells byte-identical to real aomenc**: a new J arm sweeps cq 0 over
-  {mono, 4:2:0, 4:2:2, 4:4:4} × bd {8, 10, 12} × 5 content classes ×
-  `--cpu-used` {0, 9} (plus bd8 at {3, 6}) and a 13-point size ladder from 1×1
-  to 258×258. A new `coded_lossless_reconstructs_the_source_exactly` asserts
-  the property C cannot arbitrate inside the pre-existing `HBD_OPEN` band:
-  **248/248 cells** decode — on the real C decoder AND on `aom-decode` — to the
-  encoder's own input, exactly, on every plane. Two self-promoting pins
-  (`PIN_cq0_bd10_grad`, `PIN_cq0_bd12_tex`) register the bd10/bd12 ×
-  `--cpu-used` 1..6 residual, measured `TilePayloadOnly` and measured to be the
-  SAME band at cq 32 — `HBD_OPEN`, not a lossless finding. Measurements:
+  `self_contained_key_frame_byte_matches_real_aomenc` goes **241/241 → 427/427
+  cells byte-identical to real aomenc** (measured 2026-09-04 on the merged
+  tree): a new **N** arm sweeps cq 0 over {mono, 4:2:0, 4:2:2, 4:4:4} × bd
+  {8, 10, 12} × 5 content classes × `--cpu-used` {0, 9} (plus bd8 at {3, 6})
+  and a 13-point size ladder from 1×1 to 258×258 — **186 new cells**, taking
+  the gate's cq-0 population to **189** (the three pre-existing cq-0 cells are
+  `A_cq0_64x64_420_bd8_tex`, `K2_cq0_59x128_420_bd8_tex_s4` and
+  `M_128x128_cq0_s0_cdef0_lr0_sb128`). A new
+  `coded_lossless_reconstructs_the_source_exactly` asserts the property C
+  cannot arbitrate inside the pre-existing `HBD_OPEN` band: **248/248 cells**
+  decode — on the real C decoder AND on `aom-decode` — to the encoder's own
+  input, exactly, on every plane. Two self-promoting pins
+  (`PIN_cq0_bd10_grad`, `PIN_cq0_bd12_tex`) take `open_divergences_are_pinned`
+  to **9 pins**, both measured `TilePayloadOnly` and measured to be the SAME
+  band at cq 32 — `HBD_OPEN`, not a lossless finding. Measurements:
   `benchmarks/cq0_lossless_axis_2026-09-03.md`.
+- **`decode_cells()` now proves its own keep-list is live.** Every label it
+  lists must match a `sweep_cells()` cell or the test fails by name. That
+  caught a stale one: `H_128x128_420_bd8_cq12_tex_lr1_s6` predated
+  `with_postfilter`'s `_cdef{}_lr{}` label suffix, so the two-decoder pixel
+  gate had silently been running 24 cells while listing 25. With the label
+  corrected and the five cq-0 cells added it runs **30**.
 
 
 - **Self-contained KEY-frame encode — no C bootstrap anywhere in the path.**

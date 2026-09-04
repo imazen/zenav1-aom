@@ -1,3 +1,67 @@
+## cq 0 (coded-lossless) no longer trips `tx_size_to_depth`'s assert; the gate's cq-0 arm goes 3 -> 189 cells, 427/427 (2026-09-04, zenavif#45, KB-44)
+
+**Root, one, in this repo.** `key_frame::count_leaf` implemented C's
+`txb_split_count` predicate — `mbmi->tx_size != max_txsize_rect_lookup[bsize]`,
+which C writes as a plain inequality at BOTH intra increment sites
+(`partition_search.c:516-517`, `:554-555`) — as `tx_size_to_depth(..) != 0`.
+That paraphrase is valid only where the coded tx-size SYMBOL exists, which is
+exactly the arm C guards the walk with (`:508-510`: `TX_MODE_SELECT &&
+!lossless && bsize > BLOCK_4X4`). At `--cq-level 0`, `base_qindex == 0` makes
+the frame `coded_lossless` (`encodeframe.c:2275`) and `select_tx_mode`
+(`rdopt_utils.h:391-393`) returns `ONLY_4X4`, so C takes the `else` arm and
+never walks — while the port walked `TX_64X64` → `TX_4X4`, four steps, tripping
+C's own `assert(depth <= MAX_TX_DEPTH)` (`block.h:1505`, `enums.h:180`). Emitted
+bytes are unchanged by the fix; the walk's only effect was the assert. Full
+mechanism, the two corrections to the report (it is a `debug_assert!`, and a
+genuine `--release` build neither panicked nor hung) and the C citations:
+CLAUDE.md **KB-44**.
+
+**Harness bug found by the first cq-0 pin.** `split_frame_obu` built its reader
+config at a hardcoded cq 32, and `read_uncompressed_header` takes
+`coded_lossless` / `all_lossless` from the CALLER (`header.rs:3138-3159`) — so
+every cq-0 stream was mis-parsed after `quantization_params` (the first pin
+classified as `TilePayloadAndHeader` off loop-filter levels `[0, 27]` on a frame
+whose loop-filter syntax is not present). A probe pass now reads `base_qindex`
+and re-parses with the flags the stream implies.
+
+**Gate, MEASURED 2026-09-04 on the merged tree** (this change was authored
+against the 186-cell base and rebased onto the 241-cell one; every count below
+was re-run after the merge, and the pre-merge figures do not apply):
+
+* `self_contained_key_frame_byte_matches_real_aomenc`: **241/241 → 427/427**
+  cells byte-identical. The new **N** arm contributes 186 cells — cq 0 ×
+  {mono, 4:2:0, 4:2:2, 4:4:4} × bd {8, 10, 12} × 5 contents × `--cpu-used`
+  {0, 9} (+ bd8 at {3, 6}) + a 13-point 1×1..258×258 size ladder — taking the
+  gate's cq-0 population from **3 to 189**. (The three that were already there:
+  `A_cq0_64x64_420_bd8_tex`, `K2_cq0_59x128_420_bd8_tex_s4`,
+  `M_128x128_cq0_s0_cdef0_lr0_sb128`, all bd8 4:2:0.)
+* `coded_lossless_reconstructs_the_source_exactly` (new): **248/248 cells**
+  decode — on the real C decoder AND on `aom-decode` — to the encoder's own
+  input exactly, on every plane. That is the property C cannot arbitrate inside
+  the pre-existing `HBD_OPEN` band, and it is also the direct regression lock on
+  zenavif#45 (a library entry point must return a `Result`, never unwind).
+* `open_divergences_are_pinned`: **7 → 9 pins**, `PIN_cq0_bd10_grad`
+  (`--cpu-used` 6) and `PIN_cq0_bd12_tex` (`--cpu-used` 3), both measured
+  `TilePayloadOnly`. Not a lossless finding: measured over 720 cells × 2
+  quantizers, the cq-0 divergent set is exactly bd {10, 12} × `--cpu-used`
+  1..6 — the SAME band at cq 32, i.e. `HBD_OPEN` (CLAUDE.md T4).
+* `self_contained_key_frame_decodes_to_the_same_pixels`: **30 cells**, both
+  decoders. 5 of the increase are the new cq-0 labels; 1 is a **stale keep-label
+  recovered** — `H_128x128_420_bd8_cq12_tex_lr1_s6` predated
+  `with_postfilter`'s `_cdef{}_lr{}` suffix, so the list said 25 and the test
+  ran 24. `decode_cells()` now asserts every label it lists matches a sweep
+  cell, so a stale one fails by name instead of silently dropping coverage.
+
+**Mutation proof, re-run on the merged tree.** Reverting `count_leaf` to the
+pre-fix paraphrase turns 4 of the file's 9 tests red (`assertion failed: depth
+<= MAX_VARTX_DEPTH` at `aom-dsp/src/entropy/partition.rs:706`, first cell
+`LL_mono_bd8_flat_64x64_cq0_s0`). Forcing `coded_lossless = false` takes the
+byte gate to **238/427** — exactly the 189 cq-0 cells and nothing else. Both
+reverted, sha256 of both sources restored byte-identically, 427/427 + 248/248
+green again.
+
+**Measurements**: `benchmarks/cq0_lossless_axis_2026-09-03.md`.
+
 ## The zenavif-parse frame-header bug is FILED AND FIXED; 19/19 cells now assert base_q_idx (2026-09-03, imazen/zenavif#46)
 
 Closes the "found, not fixed, could not be filed" item from the entry below,
@@ -211,19 +275,13 @@ levels (`pick_filter_level` on the port's own recon), and the `tx_mode`
 SELECT→LARGEST flip (`encodeframe.c:2797`) via a new `key_frame::txb_split_count`
 over the port's own winner trees.
 
-**Gate** (`aom-encode/tests/self_contained_key_frame.rs`, 7 tests, 30 s):
-**372/372 cells byte-identical to real aomenc's whole temporal unit** (186/186
-on 2026-09-02; the cq-0 / coded-lossless **J arm** added 186 more on 2026-09-03
-with KB-44) — cq 0..63
+**Gate** (`aom-encode/tests/self_contained_key_frame.rs`, 6 tests, 22 s, AS OF
+THIS ENTRY — see the 2026-09-04 entry at the top for the current numbers):
+**186/186 cells byte-identical to real aomenc's whole temporal unit** — cq 0..63
 step 5 plus 63 and a 1..19 step-2 low-q arm, {mono, 4:2:0, 4:2:2, 4:4:4} × bd
 {8, 10, 12} (profiles 0/1/2), 16×16..512×512, 12 crop/partial-SB sizes including
 1×1, 5 content classes, and **all four (CDEF, loop-restoration) combinations
-including both on** (27 post-filter cells), and **`--cpu-used` 0..=9**. The J arm
-is cq 0 over all four chroma formats × all three depths × all five contents ×
-`--cpu-used` {0, 9} (+ bd8 at {3, 6}) and a 1×1..258×258 size ladder; alongside
-it `coded_lossless_reconstructs_the_source_exactly` asserts what C cannot
-arbitrate inside the pre-existing `HBD_OPEN` band — **248/248 cells** decode, on
-BOTH decoders, to the encoder's own input exactly, on every plane. Real
+including both on** (27 post-filter cells), and **`--cpu-used` 0..=9**. Real
 aomenc's ALLINTRA default is CDEF OFF with restoration ON
 (`av1_cx_iface.c:3067`), and that default is byte-gated at every speed. Both the real C decoder and `aom-decode` decode the
 PORT's own stream to the pixels real aomenc's stream decodes to. The gap is

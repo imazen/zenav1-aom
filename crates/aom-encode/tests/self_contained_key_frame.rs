@@ -977,7 +977,7 @@ fn decode_cells() -> Vec<Cell> {
         "G_64x64_420_bd8_cq32_tex_cdef1_lr1",
         "G_256x256_420_bd8_cq32_tex_cdef1_lr1",
         "H_64x64_420_bd8_cq32_tex_lr0_s9",
-        "H_128x128_420_bd8_cq12_tex_lr1_s6",
+        "H_128x128_420_bd8_cq12_tex_lr1_cdef0_lr1_s6",
         "H_64x64_420_bd8_cq32_tex_cdef1_lr1_s3",
         "I_4160x64_420_bd8_cq32_tex_multitile_s0",
         "L_force4cols4rows_256x256_s3_tc2tr2",
@@ -992,10 +992,29 @@ fn decode_cells() -> Vec<Cell> {
         "N_mono_bd10_chk_64x64_cq0_s9",
         "N_258x258_420_bd8_tex_cq0_s0",
     ];
-    sweep_cells()
+    let picked: Vec<Cell> = sweep_cells()
         .into_iter()
         .filter(|c| keep.contains(&c.label.as_str()))
-        .collect()
+        .collect();
+    // A label that matches NOTHING silently drops a decode cell, and nothing
+    // else in this file would notice. Found exactly that way on 2026-09-04:
+    // `H_128x128_420_bd8_cq12_tex_lr1_s6` predated `with_postfilter`'s own
+    // `_cdef{}_lr{}` label suffix, so the `lr = true` speed cell had been out
+    // of the two-decoder gate since that suffix landed (24 cells ran where 25
+    // were listed). The list and the sweep must agree by construction.
+    let unmatched: Vec<&str> = keep
+        .iter()
+        .copied()
+        .filter(|k| !picked.iter().any(|c| c.label == *k))
+        .collect();
+    assert!(
+        unmatched.is_empty(),
+        "decode_cells() lists {} label(s) that no sweep cell has: {unmatched:?}. \
+         A stale label is a SILENT coverage loss -- fix the label (or the cell), \
+         do not delete the entry",
+        unmatched.len()
+    );
+    picked
 }
 
 /// Source planes for a cell: luma from the content generator scaled into the

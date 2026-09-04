@@ -1,6 +1,12 @@
 # `--cq-level 0` (coded-lossless) parity axis — measured 2026-09-03
 
-Provenance: base commit `c3e1b4a` + the zenavif#45 fix in this landing.
+Provenance: grids 1-4 measured 2026-09-03 against base commit `c3e1b4a` + the
+zenavif#45 fix. Sections 5 and 6 (what landed in the gate, and the mutation
+proof) were **RE-MEASURED 2026-09-04** on the merged tree — this change was
+authored on the 186-cell gate and rebased onto the concurrent session's
+241-cell one (`8c67755`), so the pre-merge counts (186 -> 372/372, 185/372,
+187 cq-0 cells) do NOT apply and have been replaced below. Grids 1-4 are
+independent of the gate's cell count and are unchanged.
 Host `mac` (aarch64-apple-darwin), rustc 1.98.0, `--profile test-fast`
 (inherits `release`, keeps `debug-assertions = true`).
 Oracle: `aom_sys_ref::ref_encode_av1_kf` / `ref_decode_av1_kf` — the REAL
@@ -109,22 +115,33 @@ real C decoder returns the encoder's own input on every plane).
 
 `crates/aom-encode/tests/self_contained_key_frame.rs`:
 
-* `self_contained_key_frame_byte_matches_real_aomenc`: **186 -> 372 cells**, all
-  byte-identical. The new J arm is cq 0 over 4 formats x bd {8, 10, 12} x 5
-  contents x `--cpu-used` {0, 9} (+ bd8 at {3, 6}), plus a 13-point size ladder
-  1x1..258x258.
+* `self_contained_key_frame_byte_matches_real_aomenc`: **241 -> 427 cells**, all
+  byte-identical (measured 2026-09-04, merged tree). The new N arm contributes
+  **186** cells: cq 0 over 4 formats x bd {8, 10, 12} x 5 contents x
+  `--cpu-used` {0, 9} (+ bd8 at {3, 6}), plus a 13-point size ladder
+  1x1..258x258. The gate's cq-0 population goes **3 -> 189** (the three already
+  present: `A_cq0_64x64_420_bd8_tex`, `K2_cq0_59x128_420_bd8_tex_s4`,
+  `M_128x128_cq0_s0_cdef0_lr0_sb128`).
 * `coded_lossless_reconstructs_the_source_exactly`: **248 cells**, real-C-decode
   AND port-decode of the port's own cq-0 stream both return the source exactly.
   Covers the `HBD_OPEN` band, which the byte gate cannot.
-* `open_divergences_are_pinned`: two new self-promoting pins, `PIN_cq0_bd10_grad`
-  (`--cpu-used` 6) and `PIN_cq0_bd12_tex` (`--cpu-used` 3), both measured
-  `TilePayloadOnly` — every derived frame-header field equals C's.
-* Whole file: 26.2 s -> 30.1 s.
+* `open_divergences_are_pinned`: **7 -> 9 pins**; the two new ones are
+  `PIN_cq0_bd10_grad` (`--cpu-used` 6) and `PIN_cq0_bd12_tex` (`--cpu-used` 3),
+  both measured `TilePayloadOnly` — every derived frame-header field equals C's.
+* `self_contained_key_frame_decodes_to_the_same_pixels`: **30 cells**, both
+  decoders. Five are the new cq-0 labels; one is a stale keep-label recovered
+  (`H_128x128_420_bd8_cq12_tex_lr1_s6` predated `with_postfilter`'s
+  `_cdef{}_lr{}` suffix, so the list said 25 while the test ran 24).
+  `decode_cells()` now asserts every listed label matches a sweep cell.
+* Whole file, merged tree: **36.4 s**, 9 tests, 0 failed.
 
 ## 6. Mutation proof (the gate is not vacuous)
 
 | mutation | result |
 |---|---|
-| `count_leaf` reverted to `tx_size_to_depth(..) != 0` (the pre-fix code) | 4/7 tests FAIL; first red cell `LL_mono_bd8_flat_64x64_cq0_s0`, `assertion failed: depth <= MAX_VARTX_DEPTH` |
-| `coded_lossless = base_qindex == 0` -> `false` | byte gate **185/372** — exactly the 187 cq-0 cells go red and nothing else; the lossless and decode gates fail too |
-| both reverted | sha256 of both sources restored byte-identically; 372/372 and 248/248 green again |
+| `count_leaf` reverted to `tx_size_to_depth(..) != 0` (the pre-fix code) | **4 of 9 tests FAIL** (`byte_matches_real_aomenc`, `decodes_to_the_same_pixels`, `open_divergences_are_pinned`, `coded_lossless_reconstructs_the_source_exactly`); `assertion failed: depth <= MAX_VARTX_DEPTH` at `aom-dsp/src/entropy/partition.rs:706`, first red cell `LL_mono_bd8_flat_64x64_cq0_s0` |
+| `coded_lossless = base_qindex == 0` -> `false` (`key_frame.rs:626`) | byte gate **238/427** — the 189 red cells are exactly the cq-0 population (186 `N_*` + `A_cq0_64x64_420_bd8_tex` + `K2_cq0_59x128_420_bd8_tex_s4` + `M_128x128_cq0_s0_cdef0_lr0_sb128`) and nothing else; the lossless and decode gates fail too |
+| both reverted | sha256 of `key_frame.rs`, `partition.rs` and the gate file restored byte-identically; **427/427** and **248/248** green again (`test result: ok. 9 passed; 0 failed`) |
+
+Re-measured 2026-09-04 on the merged tree; the 2026-09-03 figures against the
+186-cell base were 4/7 tests, 185/372, 187 cq-0 cells.
