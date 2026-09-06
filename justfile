@@ -204,3 +204,11 @@ zq-census corpus targets k out:
 arm-dsp-tiers-macos group="":
     mkdir -p "$HOME/tmp"
     CARGO_BUILD_JOBS=4 RAYON_NUM_THREADS=4 OMP_NUM_THREADS=4 TMPDIR="$HOME/tmp" nice -n 19 /usr/bin/time -l cargo bench --locked -p zenav1-aom-dsp-bench --bench dsp_kernels -- --group={{group}} --format=llm > "$HOME/tmp/aom-arm-dsp-tiers.log" 2>&1
+
+# Regenerate the public-API surface snapshots (docs/public-api/)
+api-doc:
+    cargo test --manifest-path apidoc/Cargo.toml
+
+# Verify the committed snapshots are current
+api-doc-check:
+    ZEN_API_DOC=check cargo test --manifest-path apidoc/Cargo.toml

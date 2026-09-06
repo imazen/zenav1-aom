@@ -7,6 +7,18 @@ license.workspace = true
 repository.workspace = true
 description = "Decoder composition layer for aom-rs: KEY-frame luma tile reconstruction driver (partition walk + per-leaf mode-info/coeff decode + intra predict + inverse transform), roundtrip-pinned to the byte-identical-to-C writers."
 
+# Keep snapshot docs, the apidoc runner and repo-local session files
+# out of the published crate.
+exclude = [
+    "docs/",
+    "apidoc/",
+    "CLAUDE.md",
+    "CONTEXT-HANDOFF.md",
+    "FEEDBACK.md",
+    ".claude/",
+    ".github/",
+    "justfile",
+]
 [lib]
 # Short lib name kept after the package rename to zenav1-aom-decode.
 name = "aom_decode"

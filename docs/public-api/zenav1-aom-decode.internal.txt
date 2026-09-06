@@ -1,0 +1,47 @@
+# zenav1-aom-decode public API — doc(hidden) items and excluded-feature surface
+# excluded features: (none)
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+
+## summary
+#
+#   pub modules                                 1
+#   free functions                              8
+#   inherent methods                            7
+#   trait roster entries (type × trait)         7
+#
+# per-module pub lines:
+#   aom_decode                       16
+
+## items (16 lines)
+
+pub fn aom_decode::AllocMode::assert_fields_are_eq(&self)
+pub fn aom_decode::DecodeError::assert_fields_are_eq(&self)
+pub fn aom_decode::DecodeLimits::assert_fields_are_eq(&self)
+pub fn aom_decode::DecodedBlockKf::assert_fields_are_eq(&self)
+pub fn aom_decode::LimitKind::assert_fields_are_eq(&self)
+pub fn aom_decode::TileBoundsKf::assert_fields_are_eq(&self)
+pub fn aom_decode::frame::apply_cdef(&mut aom_decode::KfTileDecode, &aom_decode::KfTileConfig, &aom_dsp::entropy::header::FrameHeaderObu)
+pub fn aom_decode::frame::apply_deblock(&mut aom_decode::KfTileDecode, &aom_decode::KfTileConfig, &aom_dsp::entropy::header::FrameHeaderObu)
+pub fn aom_decode::frame::apply_restoration(&mut aom_decode::KfTileDecode, &aom_decode::KfTileConfig, core::option::Option<&(alloc::vec::Vec<u16>, alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)>, bool)
+pub fn aom_decode::frame::apply_superres(&mut aom_decode::KfTileDecode, &aom_decode::KfTileConfig, &aom_dsp::entropy::header::FrameHeaderObu)
+pub fn aom_decode::frame::build_lf_inputs(&aom_decode::KfTileDecode, &aom_decode::KfTileConfig, &aom_dsp::entropy::header::FrameHeaderObu) -> (alloc::vec::Vec<aom_dsp::loopfilter::frame::LfMi>, aom_dsp::loopfilter::frame::LfParams)
+pub fn aom_decode::frame::decode_frame_obus_prefilter(&[u8]) -> core::result::Result<(aom_decode::KfTileDecode, aom_decode::KfTileConfig, aom_dsp::entropy::header::FrameHeaderObu), aom_decode::DecodeError>
+pub fn aom_decode::frame::superres_upscale_planes(&[u16], &[u16], &[u16], usize, usize, &aom_decode::KfTileConfig, &aom_dsp::entropy::header::FrameHeaderObu) -> (alloc::vec::Vec<u16>, usize, alloc::vec::Vec<u16>, alloc::vec::Vec<u16>, usize)
+pub fn aom_decode::plane::ReconPlane::assert_fields_are_eq(&self)
+pub fn aom_decode::qm::iqmatrix(usize, usize, usize, usize) -> core::option::Option<&'static [u8]>
+pub mod aom_decode::qm
+
+## trait impls (7 types)
+
+aom_decode::AllocMode: TrivialClone
+aom_decode::DecodeLimits: TrivialClone
+aom_decode::InterFrameCfg<'r>: TrivialClone
+aom_decode::LimitKind: TrivialClone
+aom_decode::MvRefCell: TrivialClone
+aom_decode::TileBoundsKf: TrivialClone
+aom_decode::TileBytesKf<'a>: TrivialClone

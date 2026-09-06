@@ -1,0 +1,325 @@
+# zenav1-aom-encode public API — doc(hidden) items and excluded-feature surface
+# excluded features: (none)
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+
+## summary
+#
+#   free functions                              3
+#   inherent methods                          130
+#   trait roster entries (type × trait)       169
+#
+# per-module pub lines:
+#   aom_encode                      133
+
+## items (133 lines)
+
+pub fn aom_encode::BlockContexts::assert_fields_are_eq(&self)
+pub fn aom_encode::QuantKind::assert_fields_are_eq(&self)
+pub fn aom_encode::TuneKnobs::assert_fields_are_eq(&self)
+pub fn aom_encode::XformQuantOptResult::assert_fields_are_eq(&self)
+pub fn aom_encode::XformQuantOptSummary::assert_fields_are_eq(&self)
+pub fn aom_encode::XformQuantResult::assert_fields_are_eq(&self)
+pub fn aom_encode::XformQuantSummary::assert_fields_are_eq(&self)
+pub fn aom_encode::allintra_vis::haar_ac_sad_mxn_for_test(&[u16], usize, usize, u8, usize, usize) -> i64
+pub fn aom_encode::cnn_partition::decision::CnnPruneDecision::assert_fields_are_eq(&self)
+pub fn aom_encode::compound_type::BestCompTypeStats::assert_fields_are_eq(&self)
+pub fn aom_encode::compound_type::CompRdStats::assert_fields_are_eq(&self)
+pub fn aom_encode::compound_type::CompTypeCosts::assert_fields_are_eq(&self)
+pub fn aom_encode::compound_type::CompoundType::assert_fields_are_eq(&self)
+pub fn aom_encode::compound_type::DistWtdCompFlag::assert_fields_are_eq(&self)
+pub fn aom_encode::compound_type::InterInterComp::assert_fields_are_eq(&self)
+pub fn aom_encode::compound_type::InterIntraWedgePick::assert_fields_are_eq(&self)
+pub fn aom_encode::compound_type::ReuseApplied::assert_fields_are_eq(&self)
+pub fn aom_encode::compound_type::ReuseDecision::assert_fields_are_eq(&self)
+pub fn aom_encode::compound_type::SegPick::assert_fields_are_eq(&self)
+pub fn aom_encode::compound_type::TransformationType::assert_fields_are_eq(&self)
+pub fn aom_encode::compound_type::TxSearchCase::assert_fields_are_eq(&self)
+pub fn aom_encode::compound_type::WedgePick::assert_fields_are_eq(&self)
+pub fn aom_encode::encode_intra::EncodeIntraPlaneOutcome::assert_fields_are_eq(&self)
+pub fn aom_encode::encode_intra::TrellisOptType::assert_fields_are_eq(&self)
+pub fn aom_encode::encode_intra::TxbEncode::assert_fields_are_eq(&self)
+pub fn aom_encode::encode_sb::LeafEncodeOut::assert_fields_are_eq(&self)
+pub fn aom_encode::encode_sb::TileCtxState::assert_fields_are_eq(&self)
+pub fn aom_encode::firstpass::FirstpassInfoError::assert_fields_are_eq(&self)
+pub fn aom_encode::frame_source::TimeStamps::assert_fields_are_eq(&self)
+pub fn aom_encode::inter_costs::InterFrameCdfs::assert_fields_are_eq(&self)
+pub fn aom_encode::inter_costs::InterModeCosts::assert_fields_are_eq(&self)
+pub fn aom_encode::inter_costs::SingleRefCtx::assert_fields_are_eq(&self)
+pub fn aom_encode::inter_fullpel::ObmcSubpelResult::assert_fields_are_eq(&self)
+pub fn aom_encode::inter_fullpel::ObmcSubpelSearchType::assert_fields_are_eq(&self)
+pub fn aom_encode::inter_fullpel::RefineSearch8pResult::assert_fields_are_eq(&self)
+pub fn aom_encode::inter_me::SingleMotionResult::assert_fields_are_eq(&self)
+pub fn aom_encode::inter_me::SubpelResult::assert_fields_are_eq(&self)
+pub fn aom_encode::inter_pred_enc::SubpelParams::assert_fields_are_eq(&self)
+pub fn aom_encode::inter_rd::InterBest::assert_fields_are_eq(&self)
+pub fn aom_encode::interp_rd::SwitchableInterpCosts::assert_fields_are_eq(&self)
+pub fn aom_encode::intra_rd::IntraModeRd::assert_fields_are_eq(&self)
+pub fn aom_encode::intra_rd::IntraSbyBest::assert_fields_are_eq(&self)
+pub fn aom_encode::intra_rd::WinnerModeEntry::assert_fields_are_eq(&self)
+pub fn aom_encode::intra_uv_rd::CflAlphaResult::assert_fields_are_eq(&self)
+pub fn aom_encode::intra_uv_rd::CflRdStats::assert_fields_are_eq(&self)
+pub fn aom_encode::intra_uv_rd::UvModeResult::assert_fields_are_eq(&self)
+pub fn aom_encode::intra_uv_rd::UvModeVisit::assert_fields_are_eq(&self)
+pub fn aom_encode::intrabc_search::DvCell::assert_fields_are_eq(&self)
+pub fn aom_encode::key_frame::KeyFrameError::assert_fields_are_eq(&self)
+pub fn aom_encode::lf_search::LoopFilterLevels::assert_fields_are_eq(&self)
+pub fn aom_encode::mode_costs::CflCosts::assert_fields_are_eq(&self)
+pub fn aom_encode::mode_costs::PaletteCosts::assert_fields_are_eq(&self)
+pub fn aom_encode::mode_costs::TxSizeCosts::assert_fields_are_eq(&self)
+pub fn aom_encode::noise_model::NoiseShape::assert_fields_are_eq(&self)
+pub fn aom_encode::noise_model::NoiseStatus::assert_fields_are_eq(&self)
+pub fn aom_encode::nonrd_idtx::IdtxRd::assert_fields_are_eq(&self)
+pub fn aom_encode::nonrd_idtx::UvModelRd::assert_fields_are_eq(&self)
+pub fn aom_encode::nonrd_inter::SubpelForceStop::assert_fields_are_eq(&self)
+pub fn aom_encode::nonrd_pickmode::fdct4x4_models(&[i16], usize) -> ([i32; 16], [i32; 16])
+pub fn aom_encode::nonrd_pickmode::hadamard_16x16_models(&[i16], usize) -> ([i32; 256], [i32; 256])
+pub fn aom_encode::palette_search::PaletteUvInfo::assert_fields_are_eq(&self)
+pub fn aom_encode::palette_search::PaletteYInfo::assert_fields_are_eq(&self)
+pub fn aom_encode::partition::PartRdStats::assert_fields_are_eq(&self)
+pub fn aom_encode::partition::PartTree::assert_fields_are_eq(&self)
+pub fn aom_encode::partition_pick::FrameSizeSf::assert_fields_are_eq(&self)
+pub fn aom_encode::partition_pick::IntraToolCfg::assert_fields_are_eq(&self)
+pub fn aom_encode::partition_pick::LeafVisit::assert_fields_are_eq(&self)
+pub fn aom_encode::pass2_model::RegionType::assert_fields_are_eq(&self)
+pub fn aom_encode::ratectrl::PickedQ::assert_fields_are_eq(&self)
+pub fn aom_encode::ratectrl::QBounds::assert_fields_are_eq(&self)
+pub fn aom_encode::ratectrl::RcMode::assert_fields_are_eq(&self)
+pub fn aom_encode::ratectrl::SuperresMode::assert_fields_are_eq(&self)
+pub fn aom_encode::ratectrl_init::FramerateBandwidth::assert_fields_are_eq(&self)
+pub fn aom_encode::ratectrl_init::GfIntervalRange::assert_fields_are_eq(&self)
+pub fn aom_encode::ratectrl_init::RateControlInit::assert_fields_are_eq(&self)
+pub fn aom_encode::ratectrl_pick::PickQRoute::assert_fields_are_eq(&self)
+pub fn aom_encode::ratectrl_pick::TwoPassExtend::assert_fields_are_eq(&self)
+pub fn aom_encode::ratectrl_rate::FrameSizeBounds::assert_fields_are_eq(&self)
+pub fn aom_encode::ratectrl_rate::FrameTarget::assert_fields_are_eq(&self)
+pub fn aom_encode::ratectrl_rate::RateFactorLevel::assert_fields_are_eq(&self)
+pub fn aom_encode::ratectrl_update::BufferState::assert_fields_are_eq(&self)
+pub fn aom_encode::ratectrl_update::QHistory::assert_fields_are_eq(&self)
+pub fn aom_encode::rd::EncMode::assert_fields_are_eq(&self)
+pub fn aom_encode::rd::FrameType::assert_fields_are_eq(&self)
+pub fn aom_encode::rd::FrameUpdateType::assert_fields_are_eq(&self)
+pub fn aom_encode::rd::PlaneQuantSetup::assert_fields_are_eq(&self)
+pub fn aom_encode::rd::TuneMetric::assert_fields_are_eq(&self)
+pub fn aom_encode::rd_pick::RdPickUvOutcome::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_gate::InitMbmi::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_gate::ModeSkipVerdict::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_gate::WinnerModeSource::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_mv::BlockEdges::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_mv::IdxMask::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_mv::Mv::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_mv::PredMode::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_obmc::ObmcDir::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_obmc::ObmcNeighbour::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_single_state::InterModeInfoEntry::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_single_state::SingleState::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_single_state::SingleStates::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_single_state::StateList::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_skip::ModeSkipMask::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_skip::NbDir::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_skip::RefSet::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_var_rd::RdStatsCore::assert_fields_are_eq(&self)
+pub fn aom_encode::ref_gop::BufferUpdates::assert_fields_are_eq(&self)
+pub fn aom_encode::ref_gop::ExtRefreshFrameFlags::assert_fields_are_eq(&self)
+pub fn aom_encode::ref_gop::FrameType::assert_fields_are_eq(&self)
+pub fn aom_encode::ref_gop::FrameUpdateType::assert_fields_are_eq(&self)
+pub fn aom_encode::ref_gop::ParallelSkip::assert_fields_are_eq(&self)
+pub fn aom_encode::ref_gop::RefFrameMapPair::assert_fields_are_eq(&self)
+pub fn aom_encode::ref_gop::RefbufState::assert_fields_are_eq(&self)
+pub fn aom_encode::ref_gop::RefreshFrameInfo::assert_fields_are_eq(&self)
+pub fn aom_encode::screen_detect::ScreenContentDecision::assert_fields_are_eq(&self)
+pub fn aom_encode::speed_features::MvSearchMethod::assert_fields_are_eq(&self)
+pub fn aom_encode::speed_features::MvSpeedFeatures::assert_fields_are_eq(&self)
+pub fn aom_encode::speed_features::SpeedFeatures::assert_fields_are_eq(&self)
+pub fn aom_encode::superres_select::SuperresAutoSearchType::assert_fields_are_eq(&self)
+pub fn aom_encode::tpl_model::GopLengthVerdict::assert_fields_are_eq(&self)
+pub fn aom_encode::tpl_model::TplDepStats::assert_fields_are_eq(&self)
+pub fn aom_encode::tx_search::RdStats::assert_fields_are_eq(&self)
+pub fn aom_encode::tx_search::TxPruneType::assert_fields_are_eq(&self)
+pub fn aom_encode::tx_search::TxSizeChoice::assert_fields_are_eq(&self)
+pub fn aom_encode::tx_search::TxTypeSearchResult::assert_fields_are_eq(&self)
+pub fn aom_encode::tx_search::TxTypeSearchSummary::assert_fields_are_eq(&self)
+pub fn aom_encode::tx_search::TxbWinner::assert_fields_are_eq(&self)
+pub fn aom_encode::var_part::NeighbourMvResult::assert_fields_are_eq(&self)
+pub fn aom_encode::var_part::RefFrameForPartition::assert_fields_are_eq(&self)
+pub fn aom_encode::var_part::SourceSad::assert_fields_are_eq(&self)
+pub fn aom_encode::var_part::SubpelMvLimits::assert_fields_are_eq(&self)
+pub fn aom_encode::var_part::VbpSf::assert_fields_are_eq(&self)
+pub fn aom_encode::var_part::ZeromvSkip::assert_fields_are_eq(&self)
+pub fn aom_encode::var_tx::InterLeafResult::assert_fields_are_eq(&self)
+
+## trait impls (169 types)
+
+aom_encode::BlockContext<'a>: TrivialClone
+aom_encode::OptimizeInputs<'a>: TrivialClone
+aom_encode::QmCtx: TrivialClone
+aom_encode::QuantKind: TrivialClone
+aom_encode::QuantParams<'a>: TrivialClone
+aom_encode::TuneKnobs: TrivialClone
+aom_encode::TxTypeContext: TrivialClone
+aom_encode::XformQuantOptSummary: TrivialClone
+aom_encode::XformQuantSummary: TrivialClone
+aom_encode::allintra_vis::WeberStats: TrivialClone
+aom_encode::cnn_partition::decision::CnnPruneDecision: TrivialClone
+aom_encode::compound_type::BestCompTypeStats: TrivialClone
+aom_encode::compound_type::CompRdBlock: TrivialClone
+aom_encode::compound_type::CompRdReuseCfg: TrivialClone
+aom_encode::compound_type::CompRdStats: TrivialClone
+aom_encode::compound_type::CompTypeCosts: TrivialClone
+aom_encode::compound_type::CompoundType: TrivialClone
+aom_encode::compound_type::DistWtdCompFlag: TrivialClone
+aom_encode::compound_type::InterInterComp: TrivialClone
+aom_encode::compound_type::InterIntraWedgePick: TrivialClone
+aom_encode::compound_type::MaskSearchCtx<'a>: TrivialClone
+aom_encode::compound_type::Pixels<'a>: TrivialClone
+aom_encode::compound_type::ReuseApplied: TrivialClone
+aom_encode::compound_type::ReuseDecision: TrivialClone
+aom_encode::compound_type::TransformationType: TrivialClone
+aom_encode::compound_type::TxSearchCase: TrivialClone
+aom_encode::compound_type::ValidCompTypeCfg: TrivialClone
+aom_encode::compound_type::WedgePick: TrivialClone
+aom_encode::encode_intra::TrellisOptType: TrivialClone
+aom_encode::encode_intra::UvEncodeParams: TrivialClone
+aom_encode::encode_intra::UvWinner<'a>: TrivialClone
+aom_encode::encode_sb::DeltaQFrameCtx<'a>: TrivialClone
+aom_encode::firstpass::FirstpassInfoError: TrivialClone
+aom_encode::firstpass::FirstpassStats: TrivialClone
+aom_encode::firstpass::FrameStats: TrivialClone
+aom_encode::firstpass::HighbdOrLowbd<'a>: TrivialClone
+aom_encode::firstpass::UpdateFirstpassStatsParams: TrivialClone
+aom_encode::frame_source::FrameRateUpdate: TrivialClone
+aom_encode::frame_source::TimeStamps: TrivialClone
+aom_encode::inter_costs::SingleRefCtx: TrivialClone
+aom_encode::inter_fullpel::ObmcSubpelResult: TrivialClone
+aom_encode::inter_fullpel::ObmcSubpelSearchType: TrivialClone
+aom_encode::inter_fullpel::RefineSearch8pResult: TrivialClone
+aom_encode::inter_me::SingleMotionResult: TrivialClone
+aom_encode::inter_me::SubpelMvLimits: TrivialClone
+aom_encode::inter_me::SubpelResult: TrivialClone
+aom_encode::inter_pack::InterLeafCtx: TrivialClone
+aom_encode::inter_pack::InterLeafSyntax: TrivialClone
+aom_encode::inter_pred_enc::InterBlockParams: TrivialClone
+aom_encode::inter_pred_enc::SubpelParams: TrivialClone
+aom_encode::inter_pred_enc::WedgeFromBufCtx: TrivialClone
+aom_encode::inter_rd::InterBest: TrivialClone
+aom_encode::intra_rd::Block4x4VarInfo: TrivialClone
+aom_encode::intra_rd::IntraCandidate: TrivialClone
+aom_encode::intra_uv_rd::CflAlphaResult: TrivialClone
+aom_encode::intra_uv_rd::CflRdStats: TrivialClone
+aom_encode::intra_uv_rd::PaletteUvPred<'a>: TrivialClone
+aom_encode::intra_uv_rd::UvModeVisit: TrivialClone
+aom_encode::intrabc_search::BlockHash: TrivialClone
+aom_encode::intrabc_search::DvCell: TrivialClone
+aom_encode::intrabc_search::FullMvLimits: TrivialClone
+aom_encode::intrabc_search::IntrabcVarTxKnobs: TrivialClone
+aom_encode::key_frame::KeyFrameConfig: TrivialClone
+aom_encode::key_frame::KeyFramePlanes<'a>: TrivialClone
+aom_encode::lf_search::LfSearchFrame<'a>: TrivialClone
+aom_encode::lf_search::LoopFilterLevels: TrivialClone
+aom_encode::noise_model::NoiseModelParams: TrivialClone
+aom_encode::noise_model::NoiseShape: TrivialClone
+aom_encode::noise_model::NoiseStatus: TrivialClone
+aom_encode::nonrd_idtx::IdtxRd: TrivialClone
+aom_encode::nonrd_idtx::UvModelRd: TrivialClone
+aom_encode::nonrd_idtx::UvPlane<'a>: TrivialClone
+aom_encode::nonrd_inter::SubpelForceStop: TrivialClone
+aom_encode::nonrd_inter::SubpelSelectCtx: TrivialClone
+aom_encode::nonrd_inter::TxSizeCtx: TrivialClone
+aom_encode::pack::PackCfg: TrivialClone
+aom_encode::partition::PartRdStats: TrivialClone
+aom_encode::partition_pick::FrameSizeSf: TrivialClone
+aom_encode::partition_pick::InterSearchCfg<'a>: TrivialClone
+aom_encode::partition_pick::IntraToolCfg: TrivialClone
+aom_encode::partition_pick::IntrabcFrameCfg<'a>: TrivialClone
+aom_encode::pass2_model::FirstpassStats: TrivialClone
+aom_encode::pass2_model::FrameInfo: TrivialClone
+aom_encode::pass2_model::GfGroupStats: TrivialClone
+aom_encode::pass2_model::Region: TrivialClone
+aom_encode::pass2_model::RegionType: TrivialClone
+aom_encode::pickcdef::CdefSearchFrame<'a>: TrivialClone
+aom_encode::ratectrl::FrameQParams: TrivialClone
+aom_encode::ratectrl::PickedQ: TrivialClone
+aom_encode::ratectrl::QBounds: TrivialClone
+aom_encode::ratectrl::RcMode: TrivialClone
+aom_encode::ratectrl::RcState: TrivialClone
+aom_encode::ratectrl::SuperresMode: TrivialClone
+aom_encode::ratectrl_init::FramerateBandwidth: TrivialClone
+aom_encode::ratectrl_init::GfIntervalRange: TrivialClone
+aom_encode::ratectrl_init::PrimaryRateControlInit: TrivialClone
+aom_encode::ratectrl_init::RateControlInit: TrivialClone
+aom_encode::ratectrl_init::RcInitCfg: TrivialClone
+aom_encode::ratectrl_pick::PickQRoute: TrivialClone
+aom_encode::ratectrl_pick::TwoPassExtend: TrivialClone
+aom_encode::ratectrl_rate::FrameSizeBounds: TrivialClone
+aom_encode::ratectrl_rate::FrameTarget: TrivialClone
+aom_encode::ratectrl_rate::RateFactorLevel: TrivialClone
+aom_encode::ratectrl_update::BufferState: TrivialClone
+aom_encode::ratectrl_update::PostencodeFrame: TrivialClone
+aom_encode::ratectrl_update::QHistory: TrivialClone
+aom_encode::ratectrl_update::RcUpdateState: TrivialClone
+aom_encode::rd::EncMode: TrivialClone
+aom_encode::rd::FrameType: TrivialClone
+aom_encode::rd::FrameUpdateType: TrivialClone
+aom_encode::rd::PlaneQuantSetup: TrivialClone
+aom_encode::rd::TuneMetric: TrivialClone
+aom_encode::rd_pick::ReencodeParams: TrivialClone
+aom_encode::rdopt_gate::InitMbmi: TrivialClone
+aom_encode::rdopt_gate::ModeSkipCtx: TrivialClone
+aom_encode::rdopt_gate::ModeSkipVerdict: TrivialClone
+aom_encode::rdopt_gate::WinnerModeSource: TrivialClone
+aom_encode::rdopt_model::InterModeRdModel: TrivialClone
+aom_encode::rdopt_mv::BlockEdges: TrivialClone
+aom_encode::rdopt_mv::IdxMask: TrivialClone
+aom_encode::rdopt_mv::Mv: TrivialClone
+aom_encode::rdopt_mv::PredMode: TrivialClone
+aom_encode::rdopt_mv::SingleNewMvRow: TrivialClone
+aom_encode::rdopt_obmc::ObmcDir: TrivialClone
+aom_encode::rdopt_obmc::ObmcNeighbour: TrivialClone
+aom_encode::rdopt_single_state::InterModeInfoEntry: TrivialClone
+aom_encode::rdopt_single_state::SingleState: TrivialClone
+aom_encode::rdopt_single_state::SingleStates: TrivialClone
+aom_encode::rdopt_single_state::StateList: TrivialClone
+aom_encode::rdopt_skip::ModeSkipMask: TrivialClone
+aom_encode::rdopt_skip::NbDir: TrivialClone
+aom_encode::rdopt_skip::NbMi: TrivialClone
+aom_encode::rdopt_skip::RefSet: TrivialClone
+aom_encode::rdopt_var_rd::AdjustGates: TrivialClone
+aom_encode::rdopt_var_rd::RdStatsCore: TrivialClone
+aom_encode::rdopt_var_rd::RefFrameDistanceInfo: TrivialClone
+aom_encode::ref_gop::BufferUpdates: TrivialClone
+aom_encode::ref_gop::ExtRefreshFrameFlags: TrivialClone
+aom_encode::ref_gop::FrameType: TrivialClone
+aom_encode::ref_gop::FrameUpdateType: TrivialClone
+aom_encode::ref_gop::ParallelSkip: TrivialClone
+aom_encode::ref_gop::RefFrameMapPair: TrivialClone
+aom_encode::ref_gop::RefbufState: TrivialClone
+aom_encode::ref_gop::RefreshFrameInfo: TrivialClone
+aom_encode::screen_detect::ScreenContentDecision: TrivialClone
+aom_encode::speed_features::MvSearchMethod: TrivialClone
+aom_encode::speed_features::MvSpeedFeatures: TrivialClone
+aom_encode::speed_features::SpeedFeatures: TrivialClone
+aom_encode::superres_select::SuperresAutoSearchType: TrivialClone
+aom_encode::tpl_model::GopLengthVerdict: TrivialClone
+aom_encode::tpl_model::TplDepStats: TrivialClone
+aom_encode::tpl_model::TplRdmultSbParams: TrivialClone
+aom_encode::tx_search::PaletteYrd<'a>: TrivialClone
+aom_encode::tx_search::RdStats: TrivialClone
+aom_encode::tx_search::TxMaskParams: TrivialClone
+aom_encode::tx_search::TxPruneType: TrivialClone
+aom_encode::tx_search::TxTypeSearchPolicy: TrivialClone
+aom_encode::tx_search::TxTypeSearchSummary: TrivialClone
+aom_encode::tx_search::TxbWinner: TrivialClone
+aom_encode::var_part::FullMvLimits: TrivialClone
+aom_encode::var_part::NeighbourMv: TrivialClone
+aom_encode::var_part::NeighbourMvResult: TrivialClone
+aom_encode::var_part::RefFrameForPartition: TrivialClone
+aom_encode::var_part::SourceSad: TrivialClone
+aom_encode::var_part::SubpelMvLimits: TrivialClone
+aom_encode::var_part::VarianceTree: TrivialClone
+aom_encode::var_part::VbpFrame: TrivialClone
+aom_encode::var_part::VbpSf: TrivialClone
+aom_encode::var_part::ZeromvSkip: TrivialClone

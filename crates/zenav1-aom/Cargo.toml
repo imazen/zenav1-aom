@@ -6,6 +6,18 @@ license.workspace = true
 repository.workspace = true
 description = "Pure-Rust, bit-exact libaom v3.14.1 AV1 codec — thin facade re-exporting the DSP kernels plus the (feature-gated) decoder and encoder as one dependency."
 
+# Keep snapshot docs, the apidoc runner and repo-local session files
+# out of the published crate.
+exclude = [
+    "docs/",
+    "apidoc/",
+    "CLAUDE.md",
+    "CONTEXT-HANDOFF.md",
+    "FEEDBACK.md",
+    ".claude/",
+    ".github/",
+    "justfile",
+]
 [lib]
 name = "zenav1_aom"
 

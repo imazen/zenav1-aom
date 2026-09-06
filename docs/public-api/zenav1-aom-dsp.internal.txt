@@ -1,0 +1,90 @@
+# zenav1-aom-dsp public API — doc(hidden) items and excluded-feature surface
+# excluded features: (none)
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+
+## summary
+#
+#   free functions                              1
+#   inherent methods                           23
+#   trait roster entries (type × trait)        43
+#
+# per-module pub lines:
+#   aom_dsp                          24
+
+## items (24 lines)
+
+pub fn aom_dsp::cdef::cdef_find_dir_took_simd_path(&[u16], usize, i32) -> bool
+pub fn aom_dsp::census::Counts::assert_fields_are_eq(&self)
+pub fn aom_dsp::census::Leaf::assert_fields_are_eq(&self)
+pub fn aom_dsp::entropy::dv_ref::DvNbr::assert_fields_are_eq(&self)
+pub fn aom_dsp::entropy::dv_ref::DvTileBounds::assert_fields_are_eq(&self)
+pub fn aom_dsp::entropy::dv_ref::InterMvRefs::assert_fields_are_eq(&self)
+pub fn aom_dsp::entropy::lr::LrUnitInfo::assert_fields_are_eq(&self)
+pub fn aom_dsp::entropy::lr::SgrprojInfoLr::assert_fields_are_eq(&self)
+pub fn aom_dsp::entropy::lr::WienerInfoLr::assert_fields_are_eq(&self)
+pub fn aom_dsp::entropy::obu::ObuHeader::assert_fields_are_eq(&self)
+pub fn aom_dsp::entropy::partition::KfTailResult::assert_fields_are_eq(&self)
+pub fn aom_dsp::entropy::partition::MbModeInfoKf::assert_fields_are_eq(&self)
+pub fn aom_dsp::entropy::partition::MiNbrKf::assert_fields_are_eq(&self)
+pub fn aom_dsp::entropy::partition::PaletteNbrKf::assert_fields_are_eq(&self)
+pub fn aom_dsp::entropy::partition::TxMode::assert_fields_are_eq(&self)
+pub fn aom_dsp::inter::compound::CompoundType::assert_fields_are_eq(&self)
+pub fn aom_dsp::inter::compound::DiffwtdMaskType::assert_fields_are_eq(&self)
+pub fn aom_dsp::inter::compound::DistWtdWeights::assert_fields_are_eq(&self)
+pub fn aom_dsp::inter::scale::ScaleFactors::assert_fields_are_eq(&self)
+pub fn aom_dsp::inter::warp::WarpedMotionParams::assert_fields_are_eq(&self)
+pub fn aom_dsp::quant::QuantTuning::assert_fields_are_eq(&self)
+pub fn aom_dsp::quant::QuantizerSettings::assert_fields_are_eq(&self)
+pub fn aom_dsp::txb::ExtTxDeriv::assert_fields_are_eq(&self)
+pub fn aom_dsp::txb::TxClass::assert_fields_are_eq(&self)
+
+## trait impls (43 types)
+
+aom_dsp::census::Leaf: TrivialClone
+aom_dsp::convolve::compound::CompoundConvolveParams: TrivialClone
+aom_dsp::convolve::scaled::ScaleConvolveParams: TrivialClone
+aom_dsp::entropy::dv_ref::DvNbr: TrivialClone
+aom_dsp::entropy::dv_ref::DvTileBounds: TrivialClone
+aom_dsp::entropy::dv_ref::InterMvRefs: TrivialClone
+aom_dsp::entropy::dv_ref::TplField<'a>: TrivialClone
+aom_dsp::entropy::dv_ref::TplMvRef: TrivialClone
+aom_dsp::entropy::dv_ref::WarpSamples: TrivialClone
+aom_dsp::entropy::header::CdefHeader: TrivialClone
+aom_dsp::entropy::header::ColorConfigParams: TrivialClone
+aom_dsp::entropy::header::DecoderModelInfo: TrivialClone
+aom_dsp::entropy::header::DeltaQParams: TrivialClone
+aom_dsp::entropy::header::FrameSizeHeader: TrivialClone
+aom_dsp::entropy::header::FrameSizeWithRefs: TrivialClone
+aom_dsp::entropy::header::LoopfilterHeader: TrivialClone
+aom_dsp::entropy::header::QuantParamsHeader: TrivialClone
+aom_dsp::entropy::header::RestorationHeader: TrivialClone
+aom_dsp::entropy::header::SequenceHeaderParams: TrivialClone
+aom_dsp::entropy::header::TimingInfoHeader: TrivialClone
+aom_dsp::entropy::header::WarpedMotionParams: TrivialClone
+aom_dsp::entropy::lr::LrFrameConfig: TrivialClone
+aom_dsp::entropy::lr::LrUnitInfo: TrivialClone
+aom_dsp::entropy::lr::SgrprojInfoLr: TrivialClone
+aom_dsp::entropy::lr::WienerInfoLr: TrivialClone
+aom_dsp::entropy::obu::ObuHeader: TrivialClone
+aom_dsp::entropy::partition::MiNbrKf: TrivialClone
+aom_dsp::entropy::partition::PaletteNbrKf: TrivialClone
+aom_dsp::entropy::partition::TxMode: TrivialClone
+aom_dsp::inter::compound::CompoundType: TrivialClone
+aom_dsp::inter::compound::DiffwtdMaskType: TrivialClone
+aom_dsp::inter::compound::DistWtdWeights: TrivialClone
+aom_dsp::inter::scale::ScaleFactors: TrivialClone
+aom_dsp::inter::warp::WarpConvolveParams: TrivialClone
+aom_dsp::inter::warp::WarpedMotionParams: TrivialClone
+aom_dsp::loopfilter::frame::LfMi: TrivialClone
+aom_dsp::loopfilter::frame::LfParams: TrivialClone
+aom_dsp::loopfilter::frame::LfSeg: TrivialClone
+aom_dsp::quant::PlaneQuantRows<'a>: TrivialClone
+aom_dsp::quant::QuantTuning: TrivialClone
+aom_dsp::quant::QuantizerSettings: TrivialClone
+aom_dsp::restore::pick::LrSearchSf: TrivialClone
+aom_dsp::txb::TxClass: TrivialClone

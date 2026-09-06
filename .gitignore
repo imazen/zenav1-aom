@@ -29,3 +29,7 @@ tools/avif-extract/Cargo.lock
 
 # xbench cross-encoder benchmark harness build output (own cargo workspace)
 benchmarks/xbench/target/
+
+# apidoc/ snapshot-runner package: commit its lockfile, ignore its target
+!apidoc/Cargo.lock
+apidoc/target/

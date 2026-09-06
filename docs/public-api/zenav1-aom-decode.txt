@@ -1,0 +1,312 @@
+# zenav1-aom-decode public API — supported surface (default features)
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+#
+# files: zenav1-aom-decode.txt 276 lines (supported surface) | zenav1-aom-decode.features.txt 2 added (features: whereat) | zenav1-aom-decode.internal.txt 23 lines (23 hidden + 0 excluded-feature)
+# arch-unique surface: (none — portable on every target)
+
+## summary
+#
+#   pub modules                                 5
+#   pub types (struct/enum/trait/alias)        17
+#   pub consts/statics                         29
+#   free functions                             27
+#   inherent methods                           20
+#   struct fields                             142
+#   enum variants                              18
+#   trait roster entries (type × trait)        61
+#   auto-trait-complete types                  15
+#   auto-trait exceptions                       1
+#
+# per-module pub lines:
+#   (root)                            2
+#   aom_decode                      256
+
+## items (257 lines)
+
+pub mod aom_decode
+pub mod aom_decode::film_grain
+pub fn aom_decode::film_grain::add_film_grain(&aom_dsp::entropy::header::FilmGrainParams, i32, bool, i32, i32, bool, usize, usize, &[u16], &[u16], &[u16]) -> (alloc::vec::Vec<u16>, alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)
+pub mod aom_decode::frame
+pub struct aom_decode::frame::FrameDecode
+pub aom_decode::frame::FrameDecode::base_qindex: i32
+pub aom_decode::frame::FrameDecode::bit_depth: i32
+pub aom_decode::frame::FrameDecode::cdef_bits: i32
+pub aom_decode::frame::FrameDecode::cdef_damping: i32
+pub aom_decode::frame::FrameDecode::cdef_strengths: [i32; 8]
+pub aom_decode::frame::FrameDecode::cdef_uv_strengths: [i32; 8]
+pub aom_decode::frame::FrameDecode::chroma_sample_position: i32
+pub aom_decode::frame::FrameDecode::color_primaries: i32
+pub aom_decode::frame::FrameDecode::delta_q_present: bool
+pub aom_decode::frame::FrameDecode::disable_cdf_update: bool
+pub aom_decode::frame::FrameDecode::filter_level: [i32; 4]
+pub aom_decode::frame::FrameDecode::full_range: bool
+pub aom_decode::frame::FrameDecode::height: usize
+pub aom_decode::frame::FrameDecode::height_uv: usize
+pub aom_decode::frame::FrameDecode::lr_frame_restoration_type: [u8; 3]
+pub aom_decode::frame::FrameDecode::lr_unit_counts: (usize, usize, usize)
+pub aom_decode::frame::FrameDecode::matrix_coefficients: i32
+pub aom_decode::frame::FrameDecode::monochrome: bool
+pub aom_decode::frame::FrameDecode::reduced_tx_set: bool
+pub aom_decode::frame::FrameDecode::seg_enabled: bool
+pub aom_decode::frame::FrameDecode::seg_last_active_segid: i32
+pub aom_decode::frame::FrameDecode::subsampling_x: usize
+pub aom_decode::frame::FrameDecode::subsampling_y: usize
+pub aom_decode::frame::FrameDecode::tile_cols: usize
+pub aom_decode::frame::FrameDecode::tile_rows: usize
+pub aom_decode::frame::FrameDecode::transfer_characteristics: i32
+pub aom_decode::frame::FrameDecode::tx_mode_select: bool
+pub aom_decode::frame::FrameDecode::u: alloc::vec::Vec<u16>
+pub aom_decode::frame::FrameDecode::v: alloc::vec::Vec<u16>
+pub aom_decode::frame::FrameDecode::width: usize
+pub aom_decode::frame::FrameDecode::width_uv: usize
+pub aom_decode::frame::FrameDecode::y: alloc::vec::Vec<u16>
+pub fn aom_decode::frame::decode_frame_obus(&[u8]) -> core::result::Result<aom_decode::frame::FrameDecode, aom_decode::DecodeError>
+pub fn aom_decode::frame::decode_frame_obus_prefilter_with(&[u8], &aom_decode::DecodeConfig<'_>) -> core::result::Result<(aom_decode::KfTileDecode, aom_decode::KfTileConfig, aom_dsp::entropy::header::FrameHeaderObu), aom_decode::DecodeError>
+pub fn aom_decode::frame::decode_frame_obus_with(&[u8], &aom_decode::DecodeConfig<'_>) -> core::result::Result<aom_decode::frame::FrameDecode, aom_decode::DecodeError>
+pub fn aom_decode::frame::decode_frames(&[u8]) -> core::result::Result<alloc::vec::Vec<aom_decode::frame::FrameDecode>, aom_decode::DecodeError>
+pub fn aom_decode::frame::decode_frames_with(&[u8], &aom_decode::DecodeConfig<'_>) -> core::result::Result<alloc::vec::Vec<aom_decode::frame::FrameDecode>, aom_decode::DecodeError>
+pub mod aom_decode::plane
+pub aom_decode::plane::ReconPlane::HighBd(alloc::vec::Vec<u16>)
+pub aom_decode::plane::ReconPlane::LowBd(alloc::vec::Vec<u8>)
+pub fn aom_decode::plane::ReconPlane::is_empty(&self) -> bool
+pub fn aom_decode::plane::ReconPlane::is_lowbd(&self) -> bool
+pub fn aom_decode::plane::ReconPlane::len(&self) -> usize
+pub fn aom_decode::plane::ReconPlane::px(&self, usize) -> u16
+pub fn aom_decode::plane::ReconPlane::to_u16(&self) -> alloc::vec::Vec<u16>
+pub mod aom_decode::superres
+pub const aom_decode::superres::SCALE_NUMERATOR: i32
+pub static aom_decode::superres::RESIZE_FILTER_NORMATIVE: [[i16; 8]; 64]
+pub fn aom_decode::superres::coded_frame_width(i32, i32) -> i32
+pub fn aom_decode::superres::get_upscale_convolve_step(i32, i32) -> i32
+pub fn aom_decode::superres::get_upscale_convolve_x0(i32, i32, i32) -> i32
+pub fn aom_decode::superres::superres_scaled(i32) -> bool
+pub fn aom_decode::superres::upscale_plane(&[u16], usize, &mut [u16], usize, i32, i32, i32, usize, i32)
+pub fn aom_decode::superres::upscale_plane_tiles(&[u16], usize, &mut [u16], usize, i32, i32, i32, &[i32], i32, usize, i32)
+#[non_exhaustive] pub enum aom_decode::AllocMode
+pub aom_decode::AllocMode::Fallible
+pub aom_decode::AllocMode::Infallible
+#[non_exhaustive] pub enum aom_decode::DecodeError
+pub aom_decode::DecodeError::AllocFailed
+pub aom_decode::DecodeError::AllocFailed::bytes: usize
+pub aom_decode::DecodeError::Cancelled(enough::reason::StopReason)
+pub aom_decode::DecodeError::Internal(&'static str)
+pub aom_decode::DecodeError::LimitExceeded
+pub aom_decode::DecodeError::LimitExceeded::actual: u64
+pub aom_decode::DecodeError::LimitExceeded::kind: aom_decode::LimitKind
+pub aom_decode::DecodeError::LimitExceeded::max: u64
+pub aom_decode::DecodeError::Malformed(alloc::borrow::Cow<'static, str>)
+pub aom_decode::DecodeError::Truncated(&'static str)
+pub aom_decode::DecodeError::UnsupportedFeature(&'static str)
+pub aom_decode::DecodeError::UnsupportedType(alloc::borrow::Cow<'static, str>)
+pub fn aom_decode::DecodeError::category(&self) -> &'static str
+#[non_exhaustive] pub enum aom_decode::LimitKind
+pub aom_decode::LimitKind::Height
+pub aom_decode::LimitKind::MemoryBytes
+pub aom_decode::LimitKind::Pixels
+pub aom_decode::LimitKind::Width
+pub fn aom_decode::LimitKind::as_str(self) -> &'static str
+pub enum aom_decode::ReconPlane [also: aom_decode::plane]
+pub aom_decode::ReconPlane::HighBd(alloc::vec::Vec<u16>)
+pub aom_decode::ReconPlane::LowBd(alloc::vec::Vec<u8>)
+pub fn aom_decode::plane::ReconPlane::is_empty(&self) -> bool
+pub fn aom_decode::plane::ReconPlane::is_lowbd(&self) -> bool
+pub fn aom_decode::plane::ReconPlane::len(&self) -> usize
+pub fn aom_decode::plane::ReconPlane::px(&self, usize) -> u16
+pub fn aom_decode::plane::ReconPlane::to_u16(&self) -> alloc::vec::Vec<u16>
+#[non_exhaustive] pub struct aom_decode::DecodeConfig<'a>
+pub aom_decode::DecodeConfig::alloc: aom_decode::AllocMode
+pub aom_decode::DecodeConfig::limits: aom_decode::DecodeLimits
+pub aom_decode::DecodeConfig::stop: core::option::Option<&'a dyn enough::Stop>
+pub fn aom_decode::DecodeConfig<'a>::new() -> Self
+pub fn aom_decode::DecodeConfig<'a>::with_alloc(self, aom_decode::AllocMode) -> Self
+pub fn aom_decode::DecodeConfig<'a>::with_limits(self, aom_decode::DecodeLimits) -> Self
+pub fn aom_decode::DecodeConfig<'a>::with_stop(self, &'a dyn enough::Stop) -> Self
+#[non_exhaustive] pub struct aom_decode::DecodeLimits
+pub aom_decode::DecodeLimits::max_height: core::option::Option<u32>
+pub aom_decode::DecodeLimits::max_memory_bytes: core::option::Option<u64>
+pub aom_decode::DecodeLimits::max_pixels: core::option::Option<u64>
+pub aom_decode::DecodeLimits::max_width: core::option::Option<u32>
+pub fn aom_decode::DecodeLimits::effective_max_pixels(&self) -> u64
+pub const fn aom_decode::DecodeLimits::new() -> Self
+pub struct aom_decode::DecodedBlockKf
+pub aom_decode::DecodedBlockKf::bsize: usize
+pub aom_decode::DecodedBlockKf::info: aom_dsp::entropy::partition::MbModeInfoKf
+pub aom_decode::DecodedBlockKf::inter_lf: core::option::Option<(i32, i32)>
+pub aom_decode::DecodedBlockKf::mi_col: i32
+pub aom_decode::DecodedBlockKf::mi_row: i32
+pub aom_decode::DecodedBlockKf::partition: usize
+pub aom_decode::DecodedBlockKf::tx_size: usize
+pub aom_decode::DecodedBlockKf::txbs: alloc::vec::Vec<(usize, usize)>
+pub aom_decode::DecodedBlockKf::txbs_uv: alloc::vec::Vec<(usize, usize)>
+pub struct aom_decode::FrameContexts
+pub fn aom_decode::FrameContexts::defaults(i32) -> Self
+pub fn aom_decode::FrameContexts::reset_cdf_counters(&mut self)
+pub struct aom_decode::InterFrameCfg<'r>
+pub aom_decode::InterFrameCfg::allow_high_precision_mv: bool
+pub aom_decode::InterFrameCfg::allow_ref_frame_mvs: bool
+pub aom_decode::InterFrameCfg::allow_warped_motion: bool
+pub aom_decode::InterFrameCfg::cur_frame_force_integer_mv: bool
+pub aom_decode::InterFrameCfg::enable_dual_filter: bool
+pub aom_decode::InterFrameCfg::enable_interintra_compound: bool
+pub aom_decode::InterFrameCfg::gm_wmtype: [u8; 7]
+pub aom_decode::InterFrameCfg::interp_filter: i32
+pub aom_decode::InterFrameCfg::order_hint: i32
+pub aom_decode::InterFrameCfg::ref_frame_side: [i8; 8]
+pub aom_decode::InterFrameCfg::ref_frame_sign_bias: [i8; 8]
+pub aom_decode::InterFrameCfg::reference_mode_select: bool
+pub aom_decode::InterFrameCfg::refs: [core::option::Option<&'r aom_decode::RefFrame>; 7]
+pub aom_decode::InterFrameCfg::skip_mode_present: bool
+pub aom_decode::InterFrameCfg::switchable_motion_mode: bool
+pub aom_decode::InterFrameCfg::tpl_cells: core::option::Option<&'r [aom_dsp::entropy::dv_ref::TplMvRef]>
+pub aom_decode::InterFrameCfg::tpl_cur_offset: [i32; 8]
+pub aom_decode::InterFrameCfg::tpl_stride: usize
+pub struct aom_decode::KfTileConfig
+pub aom_decode::KfTileConfig::allow_intrabc: bool
+pub aom_decode::KfTileConfig::allow_screen_content_tools: bool
+pub aom_decode::KfTileConfig::base_qindex: i32
+pub aom_decode::KfTileConfig::bd: i32
+pub aom_decode::KfTileConfig::cdef_bits: u32
+pub aom_decode::KfTileConfig::chroma_sample_position: i32
+pub aom_decode::KfTileConfig::color_primaries: i32
+pub aom_decode::KfTileConfig::delta_lf_multi: bool
+pub aom_decode::KfTileConfig::delta_lf_present: bool
+pub aom_decode::KfTileConfig::delta_lf_res: i32
+pub aom_decode::KfTileConfig::delta_q_present: bool
+pub aom_decode::KfTileConfig::delta_q_res: i32
+pub aom_decode::KfTileConfig::disable_cdf_update: bool
+pub aom_decode::KfTileConfig::disable_edge_filter: bool
+pub aom_decode::KfTileConfig::enable_filter_intra: bool
+pub aom_decode::KfTileConfig::full_range: bool
+pub aom_decode::KfTileConfig::lr: aom_dsp::entropy::lr::LrFrameConfig
+pub aom_decode::KfTileConfig::matrix_coefficients: i32
+pub aom_decode::KfTileConfig::mi_cols: i32
+pub aom_decode::KfTileConfig::mi_rows: i32
+pub aom_decode::KfTileConfig::monochrome: bool
+pub aom_decode::KfTileConfig::qm_u: usize
+pub aom_decode::KfTileConfig::qm_v: usize
+pub aom_decode::KfTileConfig::qm_y: usize
+pub aom_decode::KfTileConfig::reduced_tx_set: bool
+pub aom_decode::KfTileConfig::sb_size_128: bool
+pub aom_decode::KfTileConfig::seg: aom_dsp::quant::quant_common::Segmentation
+pub aom_decode::KfTileConfig::subsampling_x: usize
+pub aom_decode::KfTileConfig::subsampling_y: usize
+pub aom_decode::KfTileConfig::transfer_characteristics: i32
+pub aom_decode::KfTileConfig::tx_mode: aom_dsp::entropy::partition::TxMode
+pub aom_decode::KfTileConfig::u_ac_delta_q: i32
+pub aom_decode::KfTileConfig::u_dc_delta_q: i32
+pub aom_decode::KfTileConfig::using_qmatrix: bool
+pub aom_decode::KfTileConfig::v_ac_delta_q: i32
+pub aom_decode::KfTileConfig::v_dc_delta_q: i32
+pub aom_decode::KfTileConfig::y_dc_delta_q: i32
+pub struct aom_decode::KfTileDecode
+pub aom_decode::KfTileDecode::blocks: alloc::vec::Vec<aom_decode::DecodedBlockKf>
+pub aom_decode::KfTileDecode::cancelled: core::option::Option<enough::reason::StopReason>
+pub aom_decode::KfTileDecode::corrupt: core::option::Option<alloc::string::String>
+pub aom_decode::KfTileDecode::frame_mvs: alloc::vec::Vec<aom_decode::MvRefCell>
+pub aom_decode::KfTileDecode::height: usize
+pub aom_decode::KfTileDecode::height_uv: usize
+pub aom_decode::KfTileDecode::lr_units: [alloc::vec::Vec<aom_dsp::entropy::lr::LrUnitInfo>; 3]
+pub aom_decode::KfTileDecode::recon: aom_decode::plane::ReconPlane
+pub aom_decode::KfTileDecode::recon_u: aom_decode::plane::ReconPlane
+pub aom_decode::KfTileDecode::recon_v: aom_decode::plane::ReconPlane
+pub aom_decode::KfTileDecode::saved_ctx: core::option::Option<alloc::boxed::Box<aom_decode::FrameContexts>>
+pub aom_decode::KfTileDecode::stride: usize
+pub aom_decode::KfTileDecode::stride_uv: usize
+pub aom_decode::KfTileDecode::tree: alloc::vec::Vec<i8>
+pub aom_decode::KfTileDecode::width: usize
+pub aom_decode::KfTileDecode::width_uv: usize
+pub struct aom_decode::MvRefCell
+pub aom_decode::MvRefCell::col: i16
+pub aom_decode::MvRefCell::ref_frame: i8
+pub aom_decode::MvRefCell::row: i16
+pub struct aom_decode::RefFrame
+pub aom_decode::RefFrame::height: usize
+pub aom_decode::RefFrame::height_uv: usize
+pub aom_decode::RefFrame::order_hint: i32
+pub aom_decode::RefFrame::stride: usize
+pub aom_decode::RefFrame::stride_uv: usize
+pub aom_decode::RefFrame::u: alloc::vec::Vec<u16>
+pub aom_decode::RefFrame::v: alloc::vec::Vec<u16>
+pub aom_decode::RefFrame::width: usize
+pub aom_decode::RefFrame::width_uv: usize
+pub aom_decode::RefFrame::y: alloc::vec::Vec<u16>
+pub fn aom_decode::RefFrame::from_filtered(&aom_decode::KfTileDecode, i32, usize, usize, usize, usize) -> Self
+pub struct aom_decode::TileBoundsKf
+pub aom_decode::TileBoundsKf::mi_col_end: i32
+pub aom_decode::TileBoundsKf::mi_col_start: i32
+pub aom_decode::TileBoundsKf::mi_row_end: i32
+pub aom_decode::TileBoundsKf::mi_row_start: i32
+pub struct aom_decode::TileBytesKf<'a>
+pub aom_decode::TileBytesKf::bounds: aom_decode::TileBoundsKf
+pub aom_decode::TileBytesKf::bytes: &'a [u8]
+pub const aom_decode::ANGLE_STEP: i32
+pub const aom_decode::BLOCK_128X128: usize
+pub const aom_decode::BLOCK_64X64: usize
+pub const aom_decode::BLOCK_8X8: usize
+pub const aom_decode::BLOCK_SIZE_HIGH: [i32; 22]
+pub const aom_decode::BLOCK_SIZE_WIDE: [i32; 22]
+pub const aom_decode::DC_PRED: i32
+pub const aom_decode::DEFAULT_MAX_DECODE_PIXELS: u64
+pub const aom_decode::MAX_TXSIZE_RECT_LOOKUP: [usize; 22]
+pub const aom_decode::MI_SIZE_HIGH: [i32; 22]
+pub const aom_decode::MI_SIZE_WIDE: [i32; 22]
+pub const aom_decode::PARTITION_HORZ: usize
+pub const aom_decode::PARTITION_HORZ_4: usize
+pub const aom_decode::PARTITION_HORZ_A: usize
+pub const aom_decode::PARTITION_HORZ_B: usize
+pub const aom_decode::PARTITION_NONE: usize
+pub const aom_decode::PARTITION_SPLIT: usize
+pub const aom_decode::PARTITION_VERT: usize
+pub const aom_decode::PARTITION_VERT_4: usize
+pub const aom_decode::PARTITION_VERT_A: usize
+pub const aom_decode::PARTITION_VERT_B: usize
+pub const aom_decode::TX_SIZE_HIGH: [usize; 19]
+pub const aom_decode::TX_SIZE_HIGH_UNIT: [usize; 19]
+pub const aom_decode::TX_SIZE_WIDE: [usize; 19]
+pub const aom_decode::TX_SIZE_WIDE_UNIT: [usize; 19]
+pub const aom_decode::UV_CFL_PRED: i32
+pub fn aom_decode::adjusted_tx_size(usize) -> usize
+pub fn aom_decode::calculate_segdata(&aom_dsp::quant::quant_common::Segmentation) -> (bool, i32)
+pub fn aom_decode::decode_frame_tiles_inter(&[aom_decode::TileBytesKf<'_>], &aom_decode::KfTileConfig, &aom_decode::InterFrameCfg<'_>, u16, core::option::Option<&aom_decode::FrameContexts>, i32, core::option::Option<&dyn enough::Stop>) -> aom_decode::KfTileDecode
+pub fn aom_decode::decode_frame_tiles_kf(&[aom_decode::TileBytesKf<'_>], &aom_decode::KfTileConfig, u16, core::option::Option<&dyn enough::Stop>) -> aom_decode::KfTileDecode
+pub fn aom_decode::decode_frame_tiles_kf_ctx(&[aom_decode::TileBytesKf<'_>], &aom_decode::KfTileConfig, u16, core::option::Option<&aom_decode::FrameContexts>, i32, core::option::Option<&dyn enough::Stop>) -> aom_decode::KfTileDecode
+pub fn aom_decode::decode_tile_kf(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &aom_decode::KfTileConfig, &mut aom_dsp::entropy::partition::KfFrameContext, u16) -> aom_decode::KfTileDecode
+pub fn aom_decode::inter_ext_tx_cdf(&mut [[[u16; 17]; 4]; 4], usize, bool) -> &mut [u16]
+pub fn aom_decode::intra_ext_tx_cdf<'a>(&'a mut [[[u16; 8]; 13]; 4], &'a mut [[[u16; 6]; 13]; 4], usize, bool, bool, usize, usize) -> &'a mut [u16]
+pub fn aom_decode::is_chroma_reference(i32, i32, usize, usize, usize) -> bool
+pub fn aom_decode::max_block_units(i32, i32) -> usize
+pub fn aom_decode::max_block_units_ss(i32, i32, usize) -> usize
+pub fn aom_decode::max_uv_txsize(usize, usize, usize) -> usize
+pub fn aom_decode::plane_dequants(&aom_decode::KfTileConfig, i32) -> [[i16; 2]; 3]
+pub fn aom_decode::scale_chroma_bsize(usize, usize, usize) -> usize
+pub fn aom_decode::uv_tx_type(i32, usize, bool) -> usize
+
+## trait impls (17 types)
+
+aom_decode::AllocMode: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_decode::DecodeConfig<'_>: Debug
+aom_decode::DecodeConfig<'a>: Clone, Default
+aom_decode::DecodeError: Clone, Debug, Display, Eq, Error, From<&'static str>, From<alloc::string::String>, From<enough::reason::StopReason>, PartialEq
+aom_decode::DecodeLimits: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_decode::DecodedBlockKf: Clone, Debug, Eq, PartialEq
+aom_decode::FrameContexts: Clone, Debug
+aom_decode::InterFrameCfg<'r>: Clone, Copy
+aom_decode::KfTileConfig: Clone, Debug
+aom_decode::KfTileDecode: Clone, Debug
+aom_decode::LimitKind: Clone, Copy, Debug, Eq, PartialEq
+aom_decode::MvRefCell: Clone, Copy, Debug, Default
+aom_decode::RefFrame: Clone, Debug
+aom_decode::TileBoundsKf: Clone, Copy, Debug, Eq, PartialEq
+aom_decode::TileBytesKf<'a>: Clone, Copy, Debug
+aom_decode::frame::FrameDecode: Clone, Debug
+aom_decode::plane::ReconPlane: Clone, Debug, Eq, PartialEq
+
+## auto traits
+
+15 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+aom_decode::DecodeConfig<'a>: !RefUnwindSafe !UnwindSafe

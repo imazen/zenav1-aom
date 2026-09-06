@@ -1,0 +1,20 @@
+# zenav1-aom-decode public API — additions from non-default features
+# features: whereat
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+
+## summary
+#
+#   free functions                              2
+#
+# per-module pub lines:
+#   aom_decode                        2
+
+## items (2 lines)
+
+pub fn aom_decode::frame::decode_frame_obus_at(&[u8], &aom_decode::DecodeConfig<'_>) -> core::result::Result<aom_decode::frame::FrameDecode, whereat::at::At<aom_decode::DecodeError>>
+pub fn aom_decode::frame::decode_frames_at(&[u8], &aom_decode::DecodeConfig<'_>) -> core::result::Result<alloc::vec::Vec<aom_decode::frame::FrameDecode>, whereat::at::At<aom_decode::DecodeError>>

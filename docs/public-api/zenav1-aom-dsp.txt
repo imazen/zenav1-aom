@@ -1,0 +1,1820 @@
+# zenav1-aom-dsp public API — supported surface (default features)
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+#
+# files: zenav1-aom-dsp.txt 1775 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 67 lines (67 hidden + 0 excluded-feature)
+# arch-unique surface: aarch64 2
+
+## summary
+#
+#   pub modules                                57
+#   pub types (struct/enum/trait/alias)        92
+#   pub consts/statics                        184
+#   free functions                            589
+#   inherent methods                           94
+#   struct fields                             705
+#   enum variants                              13
+#   trait roster entries (type × trait)       262
+#   auto-trait-complete types                  85
+#   auto-trait exceptions                       3
+#
+# per-module pub lines:
+#   (root)                            2
+#   aom_dsp                        1732
+
+## items (1699 lines)
+
+pub mod aom_dsp
+pub mod aom_dsp::cdef
+pub mod aom_dsp::cdef::frame
+pub struct aom_dsp::cdef::frame::CdefFrameParams<'a>
+pub aom_dsp::cdef::frame::CdefFrameParams::bit_depth: i32
+pub aom_dsp::cdef::frame::CdefFrameParams::cdef_strengths: [i32; 8]
+pub aom_dsp::cdef::frame::CdefFrameParams::cdef_uv_strengths: [i32; 8]
+pub aom_dsp::cdef::frame::CdefFrameParams::damping: i32
+pub aom_dsp::cdef::frame::CdefFrameParams::mi_cols: i32
+pub aom_dsp::cdef::frame::CdefFrameParams::mi_rows: i32
+pub aom_dsp::cdef::frame::CdefFrameParams::num_planes: usize
+pub aom_dsp::cdef::frame::CdefFrameParams::skip_txfm: &'a [bool]
+pub aom_dsp::cdef::frame::CdefFrameParams::ss_x: usize
+pub aom_dsp::cdef::frame::CdefFrameParams::ss_y: usize
+pub aom_dsp::cdef::frame::CdefFrameParams::unit_strength: &'a [i32]
+pub const aom_dsp::cdef::frame::CDEF_SEC_STRENGTHS: i32
+pub trait aom_dsp::cdef::frame::CdefPixel: core::marker::Copy
+pub fn aom_dsp::cdef::frame::CdefPixel::filter_block(&mut [Self], usize, usize, &[u16], usize, i32, i32, i32, i32, i32, i32, usize, usize, bool, bool)
+pub fn aom_dsp::cdef::frame::CdefPixel::widen_row(&mut [u16], &[Self])
+pub fn aom_dsp::cdef::frame::cdef_frame(&mut [u16], usize, &mut [u16], &mut [u16], usize, &aom_dsp::cdef::frame::CdefFrameParams<'_>)
+pub fn aom_dsp::cdef::frame::cdef_frame_u8(&mut [u8], usize, &mut [u8], &mut [u8], usize, &aom_dsp::cdef::frame::CdefFrameParams<'_>)
+pub const aom_dsp::cdef::CDEF_BSTRIDE: usize
+pub const aom_dsp::cdef::CDEF_VERY_LARGE: i32
+pub fn aom_dsp::cdef::cdef_filter_block(&mut [u8], usize, &[u16], usize, i32, i32, i32, i32, i32, i32, usize, usize, bool, bool)
+pub fn aom_dsp::cdef::cdef_filter_block_16(&mut [u16], usize, usize, &[u16], usize, i32, i32, i32, i32, i32, i32, usize, usize, bool, bool)
+pub fn aom_dsp::cdef::cdef_filter_block_16_scalar(&mut [u16], usize, usize, &[u16], usize, i32, i32, i32, i32, i32, i32, usize, usize, bool, bool)
+pub fn aom_dsp::cdef::cdef_filter_block_u8(&mut [u8], usize, usize, &[u16], usize, i32, i32, i32, i32, i32, i32, usize, usize, bool, bool)
+pub fn aom_dsp::cdef::cdef_find_dir(&[u16], usize, i32) -> (i32, i32)
+pub fn aom_dsp::cdef::cdef_find_dir_scalar(&[u16], usize, i32) -> (i32, i32)
+pub fn aom_dsp::cdef::cdef_find_dir_simd_eligible(&[u16], usize, i32) -> bool
+pub mod aom_dsp::census
+pub struct aom_dsp::census::Counts
+pub aom_dsp::census::Counts::cfl_calls: [u64; 19]
+pub aom_dsp::census::Counts::cfl_px: u64
+pub aom_dsp::census::Counts::fwd_tx: [[u64; 19]; 16]
+pub aom_dsp::census::Counts::intra_calls: [[u64; 19]; 7]
+pub aom_dsp::census::Counts::intra_px: [[u64; 19]; 7]
+pub aom_dsp::census::Counts::leaf_angle_delta_uv: [u64; 7]
+pub aom_dsp::census::Counts::leaf_angle_delta_y: [u64; 7]
+pub aom_dsp::census::Counts::leaf_bsize: [u64; 22]
+pub aom_dsp::census::Counts::leaf_chroma_ref: u64
+pub aom_dsp::census::Counts::leaf_filter_intra: [u64; 5]
+pub aom_dsp::census::Counts::leaf_filter_intra_px: u64
+pub aom_dsp::census::Counts::leaf_inter: u64
+pub aom_dsp::census::Counts::leaf_intrabc: u64
+pub aom_dsp::census::Counts::leaf_intrabc_px: u64
+pub aom_dsp::census::Counts::leaf_mode: [u64; 13]
+pub aom_dsp::census::Counts::leaf_palette_uv: [u64; 9]
+pub aom_dsp::census::Counts::leaf_palette_uv_px: u64
+pub aom_dsp::census::Counts::leaf_palette_y: [u64; 9]
+pub aom_dsp::census::Counts::leaf_palette_y_px: u64
+pub aom_dsp::census::Counts::leaf_px: [u64; 22]
+pub aom_dsp::census::Counts::leaf_skip_txfm: u64
+pub aom_dsp::census::Counts::leaf_tx_size: [u64; 19]
+pub aom_dsp::census::Counts::leaf_uv_mode: [u64; 14]
+pub aom_dsp::census::Counts::nd_mode_calls: [u64; 13]
+pub aom_dsp::census::Counts::nd_mode_px: [u64; 13]
+pub aom_dsp::census::Counts::nd_mode_tx_calls: [[u64; 19]; 13]
+pub aom_dsp::census::Counts::nd_mode_tx_px: [[u64; 19]; 13]
+pub aom_dsp::census::Counts::plane_calls: [u64; 3]
+pub aom_dsp::census::Counts::plane_px: [u64; 3]
+pub fn aom_dsp::census::Counts::cfl_leaves(&self) -> u64
+pub fn aom_dsp::census::Counts::directional_calls(&self) -> u64
+pub fn aom_dsp::census::Counts::directional_px(&self) -> u64
+pub fn aom_dsp::census::Counts::filter_intra_leaves(&self) -> u64
+pub fn aom_dsp::census::Counts::intra_total_calls(&self) -> u64
+pub fn aom_dsp::census::Counts::intra_total_px(&self) -> u64
+pub fn aom_dsp::census::Counts::is_empty(&self) -> bool
+pub fn aom_dsp::census::Counts::leaf_total_px(&self) -> u64
+pub fn aom_dsp::census::Counts::leaves(&self) -> u64
+pub fn aom_dsp::census::Counts::non_dct_fwd_tx(&self) -> u64
+pub fn aom_dsp::census::Counts::nonzero_angle_delta_leaves(&self) -> u64
+pub fn aom_dsp::census::Counts::palette_uv_leaves(&self) -> u64
+pub fn aom_dsp::census::Counts::palette_y_leaves(&self) -> u64
+pub fn aom_dsp::census::Counts::plane_total(&self) -> u64
+pub fn aom_dsp::census::Counts::rect_fwd_tx(&self) -> u64
+pub fn aom_dsp::census::Counts::rect_leaves(&self) -> u64
+pub fn aom_dsp::census::Counts::since(&self, &aom_dsp::census::Counts) -> alloc::boxed::Box<aom_dsp::census::Counts>
+pub fn aom_dsp::census::Counts::small_fwd_tx(&self) -> u64
+pub fn aom_dsp::census::Counts::small_leaves(&self) -> u64
+pub fn aom_dsp::census::Counts::zero() -> alloc::boxed::Box<Self>
+pub struct aom_dsp::census::Leaf
+pub aom_dsp::census::Leaf::angle_delta_uv: i32
+pub aom_dsp::census::Leaf::angle_delta_y: i32
+pub aom_dsp::census::Leaf::bsize: usize
+pub aom_dsp::census::Leaf::chroma_ref: bool
+pub aom_dsp::census::Leaf::filter_intra_mode: usize
+pub aom_dsp::census::Leaf::is_inter: bool
+pub aom_dsp::census::Leaf::palette_uv_size: usize
+pub aom_dsp::census::Leaf::palette_y_size: usize
+pub aom_dsp::census::Leaf::skip_txfm: bool
+pub aom_dsp::census::Leaf::tx_size: usize
+pub aom_dsp::census::Leaf::use_filter_intra: bool
+pub aom_dsp::census::Leaf::use_intrabc: bool
+pub aom_dsp::census::Leaf::uv_mode: usize
+pub aom_dsp::census::Leaf::y_mode: usize
+pub const aom_dsp::census::BSIZE_H: [usize; 22]
+pub const aom_dsp::census::BSIZE_IS_RECT: [bool; 22]
+pub const aom_dsp::census::BSIZE_NAME: [&str; 22]
+pub const aom_dsp::census::BSIZE_W: [usize; 22]
+pub const aom_dsp::census::FILTER_INTRA_MODE_NAME: [&str; 5]
+pub const aom_dsp::census::INTRA_CLASS: [&str; 7]
+pub const aom_dsp::census::MODE_NAME: [&str; 13]
+pub const aom_dsp::census::N_ANGLE_DELTA: usize
+pub const aom_dsp::census::N_BSIZE: usize
+pub const aom_dsp::census::N_FILTER_INTRA_MODE: usize
+pub const aom_dsp::census::N_MODE: usize
+pub const aom_dsp::census::N_PALETTE_SIZE: usize
+pub const aom_dsp::census::N_PLANE: usize
+pub const aom_dsp::census::N_TX_SIZE: usize
+pub const aom_dsp::census::N_TX_TYPE: usize
+pub const aom_dsp::census::N_UV_MODE: usize
+pub const aom_dsp::census::PLANE_NAME: [&str; 3]
+pub const aom_dsp::census::TX_SIZE_H: [usize; 19]
+pub const aom_dsp::census::TX_SIZE_NAME: [&str; 19]
+pub const aom_dsp::census::TX_SIZE_W: [usize; 19]
+pub const aom_dsp::census::TX_TYPE_NAME: [&str; 16]
+pub const aom_dsp::census::UV_CFL_PRED: usize
+pub const aom_dsp::census::UV_MODE_NAME: [&str; 14]
+pub const fn aom_dsp::census::enabled() -> bool
+pub fn aom_dsp::census::note_cfl_predict(usize)
+pub fn aom_dsp::census::note_coded_leaf(&aom_dsp::census::Leaf)
+pub fn aom_dsp::census::note_fwd_txfm(usize, usize)
+pub fn aom_dsp::census::note_intra_pred(usize, i32, bool, usize)
+pub fn aom_dsp::census::note_plane_intra_pred(usize, usize)
+pub fn aom_dsp::census::reset()
+pub fn aom_dsp::census::snapshot() -> alloc::boxed::Box<aom_dsp::census::Counts>
+pub mod aom_dsp::convolve
+pub mod aom_dsp::convolve::compound
+pub struct aom_dsp::convolve::compound::CompoundConvolveParams
+pub aom_dsp::convolve::compound::CompoundConvolveParams::bck_offset: i32
+pub aom_dsp::convolve::compound::CompoundConvolveParams::do_average: bool
+pub aom_dsp::convolve::compound::CompoundConvolveParams::fwd_offset: i32
+pub aom_dsp::convolve::compound::CompoundConvolveParams::round_0: i32
+pub aom_dsp::convolve::compound::CompoundConvolveParams::round_1: i32
+pub aom_dsp::convolve::compound::CompoundConvolveParams::use_dist_wtd_comp_avg: bool
+pub fn aom_dsp::convolve::compound::dist_wtd_convolve_2d(&[u8], usize, usize, &mut [u8], usize, &mut [u16], usize, usize, usize, &[i16], &[i16], &aom_dsp::convolve::compound::CompoundConvolveParams)
+pub fn aom_dsp::convolve::compound::dist_wtd_convolve_2d_copy(&[u8], usize, usize, &mut [u8], usize, &mut [u16], usize, usize, usize, &aom_dsp::convolve::compound::CompoundConvolveParams)
+pub fn aom_dsp::convolve::compound::dist_wtd_convolve_x(&[u8], usize, usize, &mut [u8], usize, &mut [u16], usize, usize, usize, &[i16], &aom_dsp::convolve::compound::CompoundConvolveParams)
+pub fn aom_dsp::convolve::compound::dist_wtd_convolve_y(&[u8], usize, usize, &mut [u8], usize, &mut [u16], usize, usize, usize, &[i16], &aom_dsp::convolve::compound::CompoundConvolveParams)
+pub fn aom_dsp::convolve::compound::highbd_dist_wtd_convolve_2d(&[u16], usize, usize, &mut [u16], usize, &mut [u16], usize, usize, usize, &[i16], &[i16], &aom_dsp::convolve::compound::CompoundConvolveParams, u32)
+pub fn aom_dsp::convolve::compound::highbd_dist_wtd_convolve_2d_copy(&[u16], usize, usize, &mut [u16], usize, &mut [u16], usize, usize, usize, &aom_dsp::convolve::compound::CompoundConvolveParams, u32)
+pub fn aom_dsp::convolve::compound::highbd_dist_wtd_convolve_x(&[u16], usize, usize, &mut [u16], usize, &mut [u16], usize, usize, usize, &[i16], &aom_dsp::convolve::compound::CompoundConvolveParams, u32)
+pub fn aom_dsp::convolve::compound::highbd_dist_wtd_convolve_y(&[u16], usize, usize, &mut [u16], usize, &mut [u16], usize, usize, usize, &[i16], &aom_dsp::convolve::compound::CompoundConvolveParams, u32)
+pub mod aom_dsp::convolve::highbd
+pub fn aom_dsp::convolve::highbd::highbd_convolve_2d_sr(&[u16], usize, usize, &mut [u16], usize, usize, usize, &[i16], &[i16], i32, i32, u32)
+pub fn aom_dsp::convolve::highbd::highbd_convolve_x_sr(&[u16], usize, usize, &mut [u16], usize, usize, usize, &[i16], i32, u32)
+pub fn aom_dsp::convolve::highbd::highbd_convolve_y_sr(&[u16], usize, usize, &mut [u16], usize, usize, usize, &[i16], u32)
+pub mod aom_dsp::convolve::scaled
+pub struct aom_dsp::convolve::scaled::ScaleConvolveParams
+pub aom_dsp::convolve::scaled::ScaleConvolveParams::bck_offset: i32
+pub aom_dsp::convolve::scaled::ScaleConvolveParams::do_average: bool
+pub aom_dsp::convolve::scaled::ScaleConvolveParams::fwd_offset: i32
+pub aom_dsp::convolve::scaled::ScaleConvolveParams::is_compound: bool
+pub aom_dsp::convolve::scaled::ScaleConvolveParams::round_0: i32
+pub aom_dsp::convolve::scaled::ScaleConvolveParams::round_1: i32
+pub aom_dsp::convolve::scaled::ScaleConvolveParams::use_dist_wtd_comp_avg: bool
+pub fn aom_dsp::convolve::scaled::convolve_2d_scale(&[u8], usize, usize, &mut [u8], usize, &mut [u16], usize, usize, usize, &[[i16; 8]; 16], &[[i16; 8]; 16], usize, i32, i32, i32, i32, &aom_dsp::convolve::scaled::ScaleConvolveParams)
+pub fn aom_dsp::convolve::scaled::highbd_convolve_2d_scale(&[u16], usize, usize, &mut [u16], usize, &mut [u16], usize, usize, usize, &[[i16; 8]; 16], &[[i16; 8]; 16], usize, i32, i32, i32, i32, &aom_dsp::convolve::scaled::ScaleConvolveParams, u32)
+pub const aom_dsp::convolve::FILTER_TABLE_4: usize
+pub const aom_dsp::convolve::FILTER_TABLE_4SMOOTH: usize
+pub const aom_dsp::convolve::FILTER_TABLE_8: usize
+pub const aom_dsp::convolve::FILTER_TABLE_8SHARP: usize
+pub const aom_dsp::convolve::FILTER_TABLE_8SMOOTH: usize
+pub const aom_dsp::convolve::FILTER_TABLE_BILINEAR: usize
+pub static aom_dsp::convolve::BILINEAR_FILTERS: [[i16; 8]; 16]
+pub static aom_dsp::convolve::SUB_PEL_FILTERS_4: [[i16; 8]; 16]
+pub static aom_dsp::convolve::SUB_PEL_FILTERS_4SMOOTH: [[i16; 8]; 16]
+pub static aom_dsp::convolve::SUB_PEL_FILTERS_8: [[i16; 8]; 16]
+pub static aom_dsp::convolve::SUB_PEL_FILTERS_8SHARP: [[i16; 8]; 16]
+pub static aom_dsp::convolve::SUB_PEL_FILTERS_8SMOOTH: [[i16; 8]; 16]
+pub fn aom_dsp::convolve::convolve_2d_sr(&[u8], usize, usize, &mut [u8], usize, usize, usize, usize, usize, usize)
+pub fn aom_dsp::convolve::convolve_x_sr(&[u8], usize, usize, &mut [u8], usize, usize, usize, usize, usize)
+pub fn aom_dsp::convolve::convolve_y_sr(&[u8], usize, usize, &mut [u8], usize, usize, usize, usize, usize)
+pub fn aom_dsp::convolve::filter_table_id(usize, usize) -> usize
+pub fn aom_dsp::convolve::kernel_row(usize, usize) -> &'static [i16; 8]
+pub mod aom_dsp::dispatch
+pub fn aom_dsp::dispatch::scalar_forced() -> bool
+pub mod aom_dsp::dist
+pub mod aom_dsp::dist::avg
+pub fn aom_dsp::dist::avg::avg_4x4<P: core::convert::Into<u32> + core::marker::Copy>(&[P], usize) -> u32
+pub fn aom_dsp::dist::avg::avg_8x8<P: core::convert::Into<u32> + core::marker::Copy>(&[P], usize) -> u32
+pub fn aom_dsp::dist::avg::avg_8x8_quad<P: core::convert::Into<u32> + core::marker::Copy>(&[P], usize, usize, usize) -> [u32; 4]
+pub fn aom_dsp::dist::avg::highbd_avg_4x4(&[u16], usize) -> u32
+pub fn aom_dsp::dist::avg::highbd_avg_8x8(&[u16], usize) -> u32
+pub fn aom_dsp::dist::avg::highbd_minmax_8x8(&[u16], usize, &[u16], usize) -> (i32, i32)
+pub fn aom_dsp::dist::avg::minmax_8x8(&[u8], usize, &[u8], usize) -> (i32, i32)
+pub mod aom_dsp::dist::hadamard
+pub fn aom_dsp::dist::hadamard::hadamard_16x16(&[i16], usize) -> [i32; 256]
+pub fn aom_dsp::dist::hadamard::hadamard_32x32(&[i16], usize) -> [i32; 1024]
+pub fn aom_dsp::dist::hadamard::hadamard_4x4(&[i16], usize) -> [i32; 16]
+pub fn aom_dsp::dist::hadamard::hadamard_8x8(&[i16], usize) -> [i32; 64]
+pub fn aom_dsp::dist::hadamard::highbd_hadamard_16x16(&[i16], usize) -> [i32; 256]
+pub fn aom_dsp::dist::hadamard::highbd_hadamard_32x32(&[i16], usize) -> [i32; 1024]
+pub fn aom_dsp::dist::hadamard::highbd_hadamard_8x8(&[i16], usize) -> [i32; 64]
+pub fn aom_dsp::dist::hadamard::satd(&[i32]) -> i32
+pub mod aom_dsp::dist::obmc
+pub fn aom_dsp::dist::obmc::highbd_obmc_sub_pixel_variance(&[u16], usize, usize, usize, usize, &[i32], &[i32], usize, usize, u32) -> (u32, u32)
+pub fn aom_dsp::dist::obmc::highbd_obmc_variance(&[u16], usize, usize, &[i32], &[i32], usize, usize, u32) -> (u32, u32)
+pub fn aom_dsp::dist::obmc::obmc_sub_pixel_variance(&[u8], usize, usize, usize, usize, &[i32], &[i32], usize, usize) -> (u32, u32)
+pub fn aom_dsp::dist::obmc::obmc_variance(&[u8], usize, usize, &[i32], &[i32], usize, usize) -> (u32, u32)
+pub mod aom_dsp::dist::simd
+pub fn aom_dsp::dist::simd::sad_simd(&[u8], usize, &[u8], usize, usize, usize) -> u32
+pub static aom_dsp::dist::BILINEAR_FILTERS_2T: [[u8; 2]; 8]
+pub fn aom_dsp::dist::block_error(&[i32], &[i32]) -> (i64, i64)
+pub fn aom_dsp::dist::block_error_qm(&[i32], &[i32], &[u8], &[i16], u8) -> (i64, i64)
+pub fn aom_dsp::dist::highbd_block_error(&[i32], &[i32], u8) -> (i64, i64)
+pub fn aom_dsp::dist::highbd_masked_sad(&[u16], usize, &[u16], usize, &[u16], &[u8], usize, bool, usize, usize) -> u32
+pub fn aom_dsp::dist::highbd_obmc_sad(&[u16], usize, &[i32], &[i32], usize, usize) -> u32
+pub fn aom_dsp::dist::highbd_sad(&[u16], usize, &[u16], usize, usize, usize) -> u32
+pub fn aom_dsp::dist::highbd_sad_avg(&[u16], usize, &[u16], usize, &[u16], usize, usize) -> u32
+pub fn aom_dsp::dist::highbd_sub_pixel_variance(&[u16], usize, usize, usize, &[u16], usize, usize, usize, u8) -> (u32, u32)
+pub fn aom_dsp::dist::highbd_subtract_block(usize, usize, &mut [i16], usize, &[u16], usize, &[u16], usize)
+pub fn aom_dsp::dist::highbd_variance(&[u16], usize, &[u16], usize, usize, usize, u8) -> (u32, u32)
+pub fn aom_dsp::dist::highbd_variance64_scalar(&[u16], usize, &[u16], usize, usize, usize) -> (u64, i64)
+pub fn aom_dsp::dist::masked_sad(&[u8], usize, &[u8], usize, &[u8], &[u8], usize, bool, usize, usize) -> u32
+pub fn aom_dsp::dist::obmc_sad(&[u8], usize, &[i32], &[i32], usize, usize) -> u32
+pub fn aom_dsp::dist::sad(&[u8], usize, &[u8], usize, usize, usize) -> u32
+pub fn aom_dsp::dist::sad_avg(&[u8], usize, &[u8], usize, &[u8], usize, usize) -> u32
+pub fn aom_dsp::dist::sub_pixel_variance(&[u8], usize, usize, usize, &[u8], usize, usize, usize) -> (u32, u32)
+pub fn aom_dsp::dist::subtract_block(usize, usize, &mut [i16], usize, &[u8], usize, &[u8], usize)
+pub fn aom_dsp::dist::sum_squares_2d_i16(&[i16], usize, usize, usize) -> u64
+pub fn aom_dsp::dist::sum_squares_i16(&[i16]) -> u64
+pub fn aom_dsp::dist::variance(&[u8], usize, &[u8], usize, usize, usize) -> (u32, u32)
+pub fn aom_dsp::dist::vector_var(&[i16], &[i16], i32) -> i32
+pub mod aom_dsp::entropy
+pub mod aom_dsp::entropy::cdf
+pub fn aom_dsp::entropy::cdf::read_bit(&mut aom_dsp::entropy::dec::OdEcDec<'_>) -> i32
+pub fn aom_dsp::entropy::cdf::read_literal(&mut aom_dsp::entropy::dec::OdEcDec<'_>, u32) -> i32
+pub fn aom_dsp::entropy::cdf::write_bit(&mut aom_dsp::entropy::enc::OdEcEnc, i32)
+pub fn aom_dsp::entropy::cdf::write_literal(&mut aom_dsp::entropy::enc::OdEcEnc, i32, u32)
+pub mod aom_dsp::entropy::dec
+pub aom_dsp::entropy::dec::OdEcDec::allow_update_cdf: bool
+pub fn aom_dsp::entropy::dec::OdEcDec<'a>::decode_bool_q15(&mut self, u32) -> i32
+pub fn aom_dsp::entropy::dec::OdEcDec<'a>::decode_cdf_q15(&mut self, &[u16], i32) -> i32
+pub fn aom_dsp::entropy::dec::OdEcDec<'a>::new(&'a [u8]) -> Self
+pub fn aom_dsp::entropy::dec::OdEcDec<'a>::tell(&self) -> i32
+pub fn aom_dsp::entropy::dec::OdEcDec<'a>::tell_frac(&self) -> u32
+pub mod aom_dsp::entropy::default_cdfs
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_ANGLE_DELTA: [[u16; 8]; 8]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_CFL_ALPHA: [[u16; 17]; 6]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_CFL_SIGN: [u16; 9]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_COMP_INTER: [[u16; 3]; 5]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_DELTA_LF: [u16; 5]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_DELTA_LF_MULTI: [[u16; 5]; 4]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_DELTA_Q: [u16; 5]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_DRL: [[u16; 3]; 3]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_EXT_TX_1DDCT: [[[u16; 8]; 13]; 4]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_EXT_TX_DTT4: [[[u16; 6]; 13]; 4]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_FILTER_INTRA: [[u16; 3]; 22]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_FILTER_INTRA_MODE: [u16; 6]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_INTERINTRA: [[u16; 3]; 4]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_INTERINTRA_MODE: [[u16; 5]; 4]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_INTER_EXT_TX: [[[u16; 17]; 4]; 4]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_INTRABC: [u16; 3]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_INTRA_INTER: [[u16; 3]; 4]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_KF_Y: [[[u16; 14]; 5]; 5]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_MOTION_MODE: [[u16; 4]; 22]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_NEWMV: [[u16; 3]; 6]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_NMV_COMPS: [[u16; 69]; 2]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_NMV_JOINTS: [u16; 5]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_OBMC: [[u16; 3]; 22]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_PALETTE_UV_COLOR_INDEX: [[[u16; 9]; 5]; 7]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_PALETTE_UV_MODE: [[u16; 3]; 2]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_PALETTE_UV_SIZE: [[u16; 8]; 7]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_PALETTE_Y_COLOR_INDEX: [[[u16; 9]; 5]; 7]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_PALETTE_Y_MODE: [[[u16; 3]; 3]; 7]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_PALETTE_Y_SIZE: [[u16; 8]; 7]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_PARTITION: [[u16; 11]; 20]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_REFMV: [[u16; 3]; 6]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_SEG_SPATIAL: [[u16; 9]; 3]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_SGRPROJ_RESTORE: [u16; 3]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_SINGLE_REF: [[[u16; 3]; 6]; 3]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_SKIP: [[u16; 3]; 3]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_SKIP_MODE: [[u16; 3]; 3]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_SWITCHABLE_INTERP: [[u16; 4]; 16]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_SWITCHABLE_RESTORE: [u16; 4]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_TX_SIZE: [[[u16; 4]; 3]; 4]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_UV_MODE: [[[u16; 15]; 13]; 2]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_WEDGE_IDX: [[u16; 17]; 22]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_WEDGE_INTERINTRA: [[u16; 3]; 22]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_WIENER_RESTORE: [u16; 3]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_Y_MODE: [[u16; 14]; 4]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_ZEROMV: [[u16; 3]; 2]
+pub static aom_dsp::entropy::default_cdfs::DEFAULT_COEFF_ARENA: [[u16; 4045]; 4]
+pub mod aom_dsp::entropy::dv_ref
+pub struct aom_dsp::entropy::dv_ref::DvNbr
+pub aom_dsp::entropy::dv_ref::DvNbr::bsize: usize
+pub aom_dsp::entropy::dv_ref::DvNbr::mode: i32
+pub aom_dsp::entropy::dv_ref::DvNbr::mv0_col: i32
+pub aom_dsp::entropy::dv_ref::DvNbr::mv0_row: i32
+pub aom_dsp::entropy::dv_ref::DvNbr::mv1_col: i32
+pub aom_dsp::entropy::dv_ref::DvNbr::mv1_row: i32
+pub aom_dsp::entropy::dv_ref::DvNbr::ref_frame0: i32
+pub aom_dsp::entropy::dv_ref::DvNbr::ref_frame1: i32
+pub aom_dsp::entropy::dv_ref::DvNbr::use_intrabc: bool
+pub struct aom_dsp::entropy::dv_ref::DvTileBounds
+pub aom_dsp::entropy::dv_ref::DvTileBounds::mi_col_end: i32
+pub aom_dsp::entropy::dv_ref::DvTileBounds::mi_col_start: i32
+pub aom_dsp::entropy::dv_ref::DvTileBounds::mi_row_end: i32
+pub aom_dsp::entropy::dv_ref::DvTileBounds::mi_row_start: i32
+pub struct aom_dsp::entropy::dv_ref::InterMvRefs
+pub aom_dsp::entropy::dv_ref::InterMvRefs::global_mv: (i32, i32)
+pub aom_dsp::entropy::dv_ref::InterMvRefs::mode_context: i32
+pub aom_dsp::entropy::dv_ref::InterMvRefs::near: (i32, i32)
+pub aom_dsp::entropy::dv_ref::InterMvRefs::nearest: (i32, i32)
+pub aom_dsp::entropy::dv_ref::InterMvRefs::ref_mv_count: u8
+pub aom_dsp::entropy::dv_ref::InterMvRefs::stack: [(i32, i32); 8]
+pub aom_dsp::entropy::dv_ref::InterMvRefs::weight: [u32; 8]
+pub struct aom_dsp::entropy::dv_ref::TplField<'a>
+pub aom_dsp::entropy::dv_ref::TplField::cells: &'a [aom_dsp::entropy::dv_ref::TplMvRef]
+pub aom_dsp::entropy::dv_ref::TplField::cur_offset: [i32; 8]
+pub aom_dsp::entropy::dv_ref::TplField::stride: usize
+pub struct aom_dsp::entropy::dv_ref::TplMvRef
+pub aom_dsp::entropy::dv_ref::TplMvRef::col: i16
+pub aom_dsp::entropy::dv_ref::TplMvRef::ref_frame_offset: i16
+pub aom_dsp::entropy::dv_ref::TplMvRef::row: i16
+pub aom_dsp::entropy::dv_ref::TplMvRef::valid: bool
+pub struct aom_dsp::entropy::dv_ref::WarpSamples
+pub aom_dsp::entropy::dv_ref::WarpSamples::np: usize
+pub aom_dsp::entropy::dv_ref::WarpSamples::pts: [i32; 16]
+pub aom_dsp::entropy::dv_ref::WarpSamples::pts_inref: [i32; 16]
+pub const aom_dsp::entropy::dv_ref::INTRA_FRAME: i32
+pub const aom_dsp::entropy::dv_ref::LEAST_SQUARES_SAMPLES_MAX: usize
+pub const aom_dsp::entropy::dv_ref::MAX_FRAME_DISTANCE: i32
+pub const aom_dsp::entropy::dv_ref::NONE_FRAME: i32
+pub const aom_dsp::entropy::dv_ref::SAMPLES_ARRAY_SIZE: usize
+pub trait aom_dsp::entropy::dv_ref::DvGrid
+pub fn aom_dsp::entropy::dv_ref::DvGrid::get(&self, i32, i32) -> aom_dsp::entropy::dv_ref::DvNbr
+pub fn aom_dsp::entropy::dv_ref::assign_and_validate_dv((i32, i32), (i32, i32), i32, i32, i32, i32, i32, i32, usize, aom_dsp::entropy::dv_ref::DvTileBounds, i32, bool, i32, i32, i32) -> core::option::Option<(i32, i32)>
+pub fn aom_dsp::entropy::dv_ref::find_dv_ref_mvs(i32, i32, usize, usize, bool, bool, aom_dsp::entropy::dv_ref::DvTileBounds, i32, i32, i32, impl aom_dsp::entropy::dv_ref::DvGrid) -> (i32, i32, i32, i32)
+pub fn aom_dsp::entropy::dv_ref::find_inter_mv_refs(i32, i32, i32, usize, usize, bool, bool, aom_dsp::entropy::dv_ref::DvTileBounds, i32, i32, i32, bool, core::option::Option<&aom_dsp::entropy::dv_ref::TplField<'_>>, (i32, i32), i32, [i8; 8], bool, bool, impl aom_dsp::entropy::dv_ref::DvGrid) -> aom_dsp::entropy::dv_ref::InterMvRefs
+pub fn aom_dsp::entropy::dv_ref::find_ref_dv(i32, i32, i32) -> (i32, i32)
+pub fn aom_dsp::entropy::dv_ref::find_samples(&impl aom_dsp::entropy::dv_ref::DvGrid, &aom_dsp::entropy::dv_ref::DvTileBounds, i32, i32, i32, i32, i32, i32, i32, usize, i32, bool, bool) -> aom_dsp::entropy::dv_ref::WarpSamples
+pub fn aom_dsp::entropy::dv_ref::get_mv_projection(i32, i32, i32, i32) -> (i32, i32)
+pub fn aom_dsp::entropy::dv_ref::has_overlappable_neighbors(&impl aom_dsp::entropy::dv_ref::DvGrid, i32, i32, i32, i32, usize, bool, bool, impl core::ops::function::Fn(&aom_dsp::entropy::dv_ref::DvNbr) -> bool) -> bool
+pub fn aom_dsp::entropy::dv_ref::is_dv_valid(i32, i32, i32, i32, usize, aom_dsp::entropy::dv_ref::DvTileBounds, i32, bool, i32, i32, i32) -> bool
+pub fn aom_dsp::entropy::dv_ref::select_samples(&mut aom_dsp::entropy::dv_ref::WarpSamples, i32, i32, i32, i32) -> usize
+pub mod aom_dsp::entropy::enc
+pub aom_dsp::entropy::enc::OdEcEnc::allow_update_cdf: bool
+pub fn aom_dsp::entropy::enc::OdEcEnc::done(&mut self) -> &[u8]
+pub fn aom_dsp::entropy::enc::OdEcEnc::encode_bool_q15(&mut self, i32, u32)
+pub fn aom_dsp::entropy::enc::OdEcEnc::encode_cdf_q15(&mut self, i32, &[u16], i32)
+pub fn aom_dsp::entropy::enc::OdEcEnc::new() -> Self
+pub fn aom_dsp::entropy::enc::OdEcEnc::reset(&mut self)
+pub mod aom_dsp::entropy::header
+pub struct aom_dsp::entropy::header::CdefHeader
+pub aom_dsp::entropy::header::CdefHeader::allow_intrabc: bool
+pub aom_dsp::entropy::header::CdefHeader::cdef_bits: i32
+pub aom_dsp::entropy::header::CdefHeader::cdef_damping: i32
+pub aom_dsp::entropy::header::CdefHeader::cdef_strengths: [i32; 8]
+pub aom_dsp::entropy::header::CdefHeader::cdef_uv_strengths: [i32; 8]
+pub aom_dsp::entropy::header::CdefHeader::enable_cdef: bool
+pub aom_dsp::entropy::header::CdefHeader::nb_cdef_strengths: usize
+pub struct aom_dsp::entropy::header::ColorConfigParams
+pub aom_dsp::entropy::header::ColorConfigParams::bit_depth: i32
+pub aom_dsp::entropy::header::ColorConfigParams::chroma_sample_position: i32
+pub aom_dsp::entropy::header::ColorConfigParams::color_primaries: i32
+pub aom_dsp::entropy::header::ColorConfigParams::color_range: bool
+pub aom_dsp::entropy::header::ColorConfigParams::matrix_coefficients: i32
+pub aom_dsp::entropy::header::ColorConfigParams::monochrome: bool
+pub aom_dsp::entropy::header::ColorConfigParams::profile: i32
+pub aom_dsp::entropy::header::ColorConfigParams::separate_uv_delta_q: bool
+pub aom_dsp::entropy::header::ColorConfigParams::subsampling_x: i32
+pub aom_dsp::entropy::header::ColorConfigParams::subsampling_y: i32
+pub aom_dsp::entropy::header::ColorConfigParams::transfer_characteristics: i32
+pub struct aom_dsp::entropy::header::DecoderModelInfo
+pub aom_dsp::entropy::header::DecoderModelInfo::buffer_removal_time_length: i32
+pub aom_dsp::entropy::header::DecoderModelInfo::encoder_decoder_buffer_delay_length: i32
+pub aom_dsp::entropy::header::DecoderModelInfo::frame_presentation_time_length: i32
+pub aom_dsp::entropy::header::DecoderModelInfo::num_units_in_decoding_tick: u32
+pub struct aom_dsp::entropy::header::DeltaQParams
+pub aom_dsp::entropy::header::DeltaQParams::allow_intrabc: bool
+pub aom_dsp::entropy::header::DeltaQParams::base_qindex: i32
+pub aom_dsp::entropy::header::DeltaQParams::delta_lf_multi: bool
+pub aom_dsp::entropy::header::DeltaQParams::delta_lf_present: bool
+pub aom_dsp::entropy::header::DeltaQParams::delta_lf_res: i32
+pub aom_dsp::entropy::header::DeltaQParams::delta_q_present: bool
+pub aom_dsp::entropy::header::DeltaQParams::delta_q_res: i32
+pub struct aom_dsp::entropy::header::FilmGrainParams
+pub aom_dsp::entropy::header::FilmGrainParams::apply_grain: bool
+pub aom_dsp::entropy::header::FilmGrainParams::ar_coeff_lag: i32
+pub aom_dsp::entropy::header::FilmGrainParams::ar_coeff_shift: i32
+pub aom_dsp::entropy::header::FilmGrainParams::ar_coeffs_cb: [i32; 25]
+pub aom_dsp::entropy::header::FilmGrainParams::ar_coeffs_cr: [i32; 25]
+pub aom_dsp::entropy::header::FilmGrainParams::ar_coeffs_y: [i32; 24]
+pub aom_dsp::entropy::header::FilmGrainParams::cb_luma_mult: i32
+pub aom_dsp::entropy::header::FilmGrainParams::cb_mult: i32
+pub aom_dsp::entropy::header::FilmGrainParams::cb_offset: i32
+pub aom_dsp::entropy::header::FilmGrainParams::chroma_scaling_from_luma: bool
+pub aom_dsp::entropy::header::FilmGrainParams::clip_to_restricted_range: bool
+pub aom_dsp::entropy::header::FilmGrainParams::cr_luma_mult: i32
+pub aom_dsp::entropy::header::FilmGrainParams::cr_mult: i32
+pub aom_dsp::entropy::header::FilmGrainParams::cr_offset: i32
+pub aom_dsp::entropy::header::FilmGrainParams::grain_scale_shift: i32
+pub aom_dsp::entropy::header::FilmGrainParams::is_inter_frame: bool
+pub aom_dsp::entropy::header::FilmGrainParams::monochrome: bool
+pub aom_dsp::entropy::header::FilmGrainParams::num_cb_points: i32
+pub aom_dsp::entropy::header::FilmGrainParams::num_cr_points: i32
+pub aom_dsp::entropy::header::FilmGrainParams::num_y_points: i32
+pub aom_dsp::entropy::header::FilmGrainParams::overlap_flag: bool
+pub aom_dsp::entropy::header::FilmGrainParams::random_seed: i32
+pub aom_dsp::entropy::header::FilmGrainParams::ref_idx: i32
+pub aom_dsp::entropy::header::FilmGrainParams::scaling_points_cb: [[i32; 2]; 10]
+pub aom_dsp::entropy::header::FilmGrainParams::scaling_points_cr: [[i32; 2]; 10]
+pub aom_dsp::entropy::header::FilmGrainParams::scaling_points_y: [[i32; 2]; 14]
+pub aom_dsp::entropy::header::FilmGrainParams::scaling_shift: i32
+pub aom_dsp::entropy::header::FilmGrainParams::subsampling_x: i32
+pub aom_dsp::entropy::header::FilmGrainParams::subsampling_y: i32
+pub aom_dsp::entropy::header::FilmGrainParams::update_parameters: bool
+pub struct aom_dsp::entropy::header::FrameHeaderObu
+pub aom_dsp::entropy::header::FrameHeaderObu::all_lossless: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::allow_high_precision_mv: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::allow_intrabc: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::allow_ref_frame_mvs: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::allow_screen_content_tools: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::allow_warped_motion: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::cdef: aom_dsp::entropy::header::CdefHeader
+pub aom_dsp::entropy::header::FrameHeaderObu::coded_lossless: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::context_update_tile_id: i32
+pub aom_dsp::entropy::header::FrameHeaderObu::cur_frame_force_integer_mv: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::delta_q: aom_dsp::entropy::header::DeltaQParams
+pub aom_dsp::entropy::header::FrameHeaderObu::derive_skip_mode_allowed: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::film_grain: aom_dsp::entropy::header::FilmGrainParams
+pub aom_dsp::entropy::header::FrameHeaderObu::film_grain_params_present: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::frame_size: aom_dsp::entropy::header::FrameSizeHeader
+pub aom_dsp::entropy::header::FrameHeaderObu::frame_size_with_refs: aom_dsp::entropy::header::FrameSizeWithRefs
+pub aom_dsp::entropy::header::FrameHeaderObu::global_motion: [aom_dsp::entropy::header::WarpedMotionParams; 7]
+pub aom_dsp::entropy::header::FrameHeaderObu::inter_ref: aom_dsp::entropy::header::InterRefSignaling
+pub aom_dsp::entropy::header::FrameHeaderObu::interp_filter: i32
+pub aom_dsp::entropy::header::FrameHeaderObu::large_scale: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::loopfilter: aom_dsp::entropy::header::LoopfilterHeader
+pub aom_dsp::entropy::header::FrameHeaderObu::might_allow_ref_frame_mvs: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::might_allow_warped_motion: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::num_planes: usize
+pub aom_dsp::entropy::header::FrameHeaderObu::prefix: aom_dsp::entropy::header::FrameHeaderPrefix
+pub aom_dsp::entropy::header::FrameHeaderObu::quant: aom_dsp::entropy::header::QuantParamsHeader
+pub aom_dsp::entropy::header::FrameHeaderObu::reduced_tx_set_used: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::ref_global_motion: [aom_dsp::entropy::header::WarpedMotionParams; 7]
+pub aom_dsp::entropy::header::FrameHeaderObu::reference_mode_select: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::refresh_frame_context_disabled: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::restoration: aom_dsp::entropy::header::RestorationHeader
+pub aom_dsp::entropy::header::FrameHeaderObu::segmentation: aom_dsp::entropy::header::SegmentationHeader
+pub aom_dsp::entropy::header::FrameHeaderObu::separate_uv_delta_q: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::skip_mode_allowed: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::skip_mode_flag: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::superres_scaled: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::switchable_motion_mode: bool
+pub aom_dsp::entropy::header::FrameHeaderObu::tile_info: aom_dsp::entropy::header::TileInfoHeader
+pub aom_dsp::entropy::header::FrameHeaderObu::tile_size_bytes: i32
+pub aom_dsp::entropy::header::FrameHeaderObu::tx_mode_select: bool
+pub struct aom_dsp::entropy::header::FrameHeaderPrefix
+pub aom_dsp::entropy::header::FrameHeaderPrefix::allow_screen_content_tools: bool
+pub aom_dsp::entropy::header::FrameHeaderPrefix::buffer_removal_time_length: u32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::buffer_removal_time_present: bool
+pub aom_dsp::entropy::header::FrameHeaderPrefix::buffer_removal_times: [u32; 32]
+pub aom_dsp::entropy::header::FrameHeaderPrefix::cur_frame_force_integer_mv: bool
+pub aom_dsp::entropy::header::FrameHeaderPrefix::current_frame_id: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::decoder_model_info_present_flag: bool
+pub aom_dsp::entropy::header::FrameHeaderPrefix::disable_cdf_update: bool
+pub aom_dsp::entropy::header::FrameHeaderPrefix::display_frame_id: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::enable_order_hint: bool
+pub aom_dsp::entropy::header::FrameHeaderPrefix::equal_picture_interval: bool
+pub aom_dsp::entropy::header::FrameHeaderPrefix::error_resilient_mode: bool
+pub aom_dsp::entropy::header::FrameHeaderPrefix::existing_fb_idx_to_show: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::force_integer_mv: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::force_screen_content_tools: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::frame_id_length: u32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::frame_id_numbers_present_flag: bool
+pub aom_dsp::entropy::header::FrameHeaderPrefix::frame_presentation_time: u32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::frame_presentation_time_length: u32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::frame_type: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::max_frame_height: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::max_frame_width: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::op_decoder_model_param_present: [bool; 32]
+pub aom_dsp::entropy::header::FrameHeaderPrefix::operating_point_idc: [i32; 32]
+pub aom_dsp::entropy::header::FrameHeaderPrefix::operating_points_cnt_minus_1: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::order_hint: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::order_hint_bits_minus_1: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::primary_ref_frame: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::reduced_still_picture_hdr: bool
+pub aom_dsp::entropy::header::FrameHeaderPrefix::ref_frame_map_order_hint: [i32; 8]
+pub aom_dsp::entropy::header::FrameHeaderPrefix::refresh_frame_flags: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::show_existing_frame: bool
+pub aom_dsp::entropy::header::FrameHeaderPrefix::show_frame: bool
+pub aom_dsp::entropy::header::FrameHeaderPrefix::showable_frame: bool
+pub aom_dsp::entropy::header::FrameHeaderPrefix::spatial_layer_id: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::superres_upscaled_height: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::superres_upscaled_width: i32
+pub aom_dsp::entropy::header::FrameHeaderPrefix::temporal_layer_id: i32
+pub struct aom_dsp::entropy::header::FrameSizeHeader
+pub aom_dsp::entropy::header::FrameSizeHeader::enable_superres: bool
+pub aom_dsp::entropy::header::FrameSizeHeader::frame_size_override: bool
+pub aom_dsp::entropy::header::FrameSizeHeader::num_bits_height: u32
+pub aom_dsp::entropy::header::FrameSizeHeader::num_bits_width: u32
+pub aom_dsp::entropy::header::FrameSizeHeader::render_height: i32
+pub aom_dsp::entropy::header::FrameSizeHeader::render_width: i32
+pub aom_dsp::entropy::header::FrameSizeHeader::scale_denominator: i32
+pub aom_dsp::entropy::header::FrameSizeHeader::scaling_active: bool
+pub aom_dsp::entropy::header::FrameSizeHeader::superres_upscaled_height: i32
+pub aom_dsp::entropy::header::FrameSizeHeader::superres_upscaled_width: i32
+pub struct aom_dsp::entropy::header::FrameSizeWithRefs
+pub aom_dsp::entropy::header::FrameSizeWithRefs::enable_superres: bool
+pub aom_dsp::entropy::header::FrameSizeWithRefs::frame_size: aom_dsp::entropy::header::FrameSizeHeader
+pub aom_dsp::entropy::header::FrameSizeWithRefs::ref_cfg_valid: [bool; 7]
+pub aom_dsp::entropy::header::FrameSizeWithRefs::ref_render_height: [i32; 7]
+pub aom_dsp::entropy::header::FrameSizeWithRefs::ref_render_width: [i32; 7]
+pub aom_dsp::entropy::header::FrameSizeWithRefs::ref_y_crop_height: [i32; 7]
+pub aom_dsp::entropy::header::FrameSizeWithRefs::ref_y_crop_width: [i32; 7]
+pub aom_dsp::entropy::header::FrameSizeWithRefs::render_height: i32
+pub aom_dsp::entropy::header::FrameSizeWithRefs::render_width: i32
+pub aom_dsp::entropy::header::FrameSizeWithRefs::scale_denominator: i32
+pub aom_dsp::entropy::header::FrameSizeWithRefs::superres_upscaled_height: i32
+pub aom_dsp::entropy::header::FrameSizeWithRefs::superres_upscaled_width: i32
+pub struct aom_dsp::entropy::header::InterRefSignaling
+pub aom_dsp::entropy::header::InterRefSignaling::current_frame_id: i32
+pub aom_dsp::entropy::header::InterRefSignaling::delta_frame_id_length: u32
+pub aom_dsp::entropy::header::InterRefSignaling::enable_order_hint: bool
+pub aom_dsp::entropy::header::InterRefSignaling::frame_id_length: u32
+pub aom_dsp::entropy::header::InterRefSignaling::frame_id_numbers_present_flag: bool
+pub aom_dsp::entropy::header::InterRefSignaling::frame_refs_short_signaling: bool
+pub aom_dsp::entropy::header::InterRefSignaling::number_spatial_layers: i32
+pub aom_dsp::entropy::header::InterRefSignaling::ref_frame_id: [i32; 8]
+pub aom_dsp::entropy::header::InterRefSignaling::ref_map_idx: [i32; 7]
+pub aom_dsp::entropy::header::InterRefSignaling::rtc_ref_idx: [i32; 7]
+pub aom_dsp::entropy::header::InterRefSignaling::rtc_reference: [i32; 7]
+pub aom_dsp::entropy::header::InterRefSignaling::set_ref_frame_config: bool
+pub struct aom_dsp::entropy::header::LoopfilterHeader
+pub aom_dsp::entropy::header::LoopfilterHeader::allow_intrabc: bool
+pub aom_dsp::entropy::header::LoopfilterHeader::filter_level: [i32; 2]
+pub aom_dsp::entropy::header::LoopfilterHeader::filter_level_u: i32
+pub aom_dsp::entropy::header::LoopfilterHeader::filter_level_v: i32
+pub aom_dsp::entropy::header::LoopfilterHeader::last_mode_deltas: [i8; 2]
+pub aom_dsp::entropy::header::LoopfilterHeader::last_ref_deltas: [i8; 8]
+pub aom_dsp::entropy::header::LoopfilterHeader::mode_deltas: [i8; 2]
+pub aom_dsp::entropy::header::LoopfilterHeader::mode_ref_delta_enabled: bool
+pub aom_dsp::entropy::header::LoopfilterHeader::mode_ref_delta_update: bool
+pub aom_dsp::entropy::header::LoopfilterHeader::ref_deltas: [i8; 8]
+pub aom_dsp::entropy::header::LoopfilterHeader::sharpness_level: i32
+pub struct aom_dsp::entropy::header::QuantParamsHeader
+pub aom_dsp::entropy::header::QuantParamsHeader::base_qindex: i32
+pub aom_dsp::entropy::header::QuantParamsHeader::qmatrix_level_u: i32
+pub aom_dsp::entropy::header::QuantParamsHeader::qmatrix_level_v: i32
+pub aom_dsp::entropy::header::QuantParamsHeader::qmatrix_level_y: i32
+pub aom_dsp::entropy::header::QuantParamsHeader::u_ac_delta_q: i32
+pub aom_dsp::entropy::header::QuantParamsHeader::u_dc_delta_q: i32
+pub aom_dsp::entropy::header::QuantParamsHeader::using_qmatrix: bool
+pub aom_dsp::entropy::header::QuantParamsHeader::v_ac_delta_q: i32
+pub aom_dsp::entropy::header::QuantParamsHeader::v_dc_delta_q: i32
+pub aom_dsp::entropy::header::QuantParamsHeader::y_dc_delta_q: i32
+pub struct aom_dsp::entropy::header::RestorationHeader
+pub aom_dsp::entropy::header::RestorationHeader::allow_intrabc: bool
+pub aom_dsp::entropy::header::RestorationHeader::enable_restoration: bool
+pub aom_dsp::entropy::header::RestorationHeader::frame_restoration_type: [u8; 3]
+pub aom_dsp::entropy::header::RestorationHeader::restoration_unit_size: [i32; 3]
+pub aom_dsp::entropy::header::RestorationHeader::sb_size_128: bool
+pub aom_dsp::entropy::header::RestorationHeader::subsampling_x: i32
+pub aom_dsp::entropy::header::RestorationHeader::subsampling_y: i32
+pub struct aom_dsp::entropy::header::SegmentationHeader
+pub aom_dsp::entropy::header::SegmentationHeader::enabled: bool
+pub aom_dsp::entropy::header::SegmentationHeader::feature_data: [[i32; 8]; 8]
+pub aom_dsp::entropy::header::SegmentationHeader::feature_mask: [u32; 8]
+pub aom_dsp::entropy::header::SegmentationHeader::has_primary_ref: bool
+pub aom_dsp::entropy::header::SegmentationHeader::temporal_update: bool
+pub aom_dsp::entropy::header::SegmentationHeader::update_data: bool
+pub aom_dsp::entropy::header::SegmentationHeader::update_map: bool
+pub struct aom_dsp::entropy::header::SequenceHeaderObu
+pub aom_dsp::entropy::header::SequenceHeaderObu::color_config: aom_dsp::entropy::header::ColorConfigParams
+pub aom_dsp::entropy::header::SequenceHeaderObu::decoder_model_info: aom_dsp::entropy::header::DecoderModelInfo
+pub aom_dsp::entropy::header::SequenceHeaderObu::decoder_model_info_present_flag: bool
+pub aom_dsp::entropy::header::SequenceHeaderObu::display_model_info_present_flag: bool
+pub aom_dsp::entropy::header::SequenceHeaderObu::film_grain_params_present: bool
+pub aom_dsp::entropy::header::SequenceHeaderObu::op_decoder_buffer_delay: [u32; 32]
+pub aom_dsp::entropy::header::SequenceHeaderObu::op_decoder_model_param_present: [bool; 32]
+pub aom_dsp::entropy::header::SequenceHeaderObu::op_display_model_param_present: [bool; 32]
+pub aom_dsp::entropy::header::SequenceHeaderObu::op_encoder_buffer_delay: [u32; 32]
+pub aom_dsp::entropy::header::SequenceHeaderObu::op_initial_display_delay: [i32; 32]
+pub aom_dsp::entropy::header::SequenceHeaderObu::op_low_delay_mode_flag: [bool; 32]
+pub aom_dsp::entropy::header::SequenceHeaderObu::operating_point_idc: [i32; 32]
+pub aom_dsp::entropy::header::SequenceHeaderObu::operating_points_cnt_minus_1: i32
+pub aom_dsp::entropy::header::SequenceHeaderObu::profile: i32
+pub aom_dsp::entropy::header::SequenceHeaderObu::reduced_still_picture_hdr: bool
+pub aom_dsp::entropy::header::SequenceHeaderObu::seq_header: aom_dsp::entropy::header::SequenceHeaderParams
+pub aom_dsp::entropy::header::SequenceHeaderObu::seq_level_idx: [i32; 32]
+pub aom_dsp::entropy::header::SequenceHeaderObu::still_picture: bool
+pub aom_dsp::entropy::header::SequenceHeaderObu::tier: [i32; 32]
+pub aom_dsp::entropy::header::SequenceHeaderObu::timing_info: aom_dsp::entropy::header::TimingInfoHeader
+pub aom_dsp::entropy::header::SequenceHeaderObu::timing_info_present: bool
+pub struct aom_dsp::entropy::header::SequenceHeaderParams
+pub aom_dsp::entropy::header::SequenceHeaderParams::delta_frame_id_length: i32
+pub aom_dsp::entropy::header::SequenceHeaderParams::enable_cdef: bool
+pub aom_dsp::entropy::header::SequenceHeaderParams::enable_dist_wtd_comp: bool
+pub aom_dsp::entropy::header::SequenceHeaderParams::enable_dual_filter: bool
+pub aom_dsp::entropy::header::SequenceHeaderParams::enable_filter_intra: bool
+pub aom_dsp::entropy::header::SequenceHeaderParams::enable_interintra_compound: bool
+pub aom_dsp::entropy::header::SequenceHeaderParams::enable_intra_edge_filter: bool
+pub aom_dsp::entropy::header::SequenceHeaderParams::enable_masked_compound: bool
+pub aom_dsp::entropy::header::SequenceHeaderParams::enable_order_hint: bool
+pub aom_dsp::entropy::header::SequenceHeaderParams::enable_ref_frame_mvs: bool
+pub aom_dsp::entropy::header::SequenceHeaderParams::enable_restoration: bool
+pub aom_dsp::entropy::header::SequenceHeaderParams::enable_superres: bool
+pub aom_dsp::entropy::header::SequenceHeaderParams::enable_warped_motion: bool
+pub aom_dsp::entropy::header::SequenceHeaderParams::force_integer_mv: i32
+pub aom_dsp::entropy::header::SequenceHeaderParams::force_screen_content_tools: i32
+pub aom_dsp::entropy::header::SequenceHeaderParams::frame_id_length: i32
+pub aom_dsp::entropy::header::SequenceHeaderParams::frame_id_numbers_present_flag: bool
+pub aom_dsp::entropy::header::SequenceHeaderParams::max_frame_height: i32
+pub aom_dsp::entropy::header::SequenceHeaderParams::max_frame_width: i32
+pub aom_dsp::entropy::header::SequenceHeaderParams::num_bits_height: u32
+pub aom_dsp::entropy::header::SequenceHeaderParams::num_bits_width: u32
+pub aom_dsp::entropy::header::SequenceHeaderParams::order_hint_bits_minus_1: i32
+pub aom_dsp::entropy::header::SequenceHeaderParams::reduced_still_picture_hdr: bool
+pub aom_dsp::entropy::header::SequenceHeaderParams::sb_size_128: bool
+pub struct aom_dsp::entropy::header::TileInfoHeader
+pub aom_dsp::entropy::header::TileInfoHeader::col_start_sb: [i32; 65]
+pub aom_dsp::entropy::header::TileInfoHeader::cols: usize
+pub aom_dsp::entropy::header::TileInfoHeader::log2_cols: i32
+pub aom_dsp::entropy::header::TileInfoHeader::log2_rows: i32
+pub aom_dsp::entropy::header::TileInfoHeader::max_height_sb: i32
+pub aom_dsp::entropy::header::TileInfoHeader::max_log2_cols: i32
+pub aom_dsp::entropy::header::TileInfoHeader::max_log2_rows: i32
+pub aom_dsp::entropy::header::TileInfoHeader::max_width_sb: i32
+pub aom_dsp::entropy::header::TileInfoHeader::mi_cols: i32
+pub aom_dsp::entropy::header::TileInfoHeader::mi_rows: i32
+pub aom_dsp::entropy::header::TileInfoHeader::mib_size_log2: u32
+pub aom_dsp::entropy::header::TileInfoHeader::min_log2_cols: i32
+pub aom_dsp::entropy::header::TileInfoHeader::min_log2_rows: i32
+pub aom_dsp::entropy::header::TileInfoHeader::row_start_sb: [i32; 65]
+pub aom_dsp::entropy::header::TileInfoHeader::rows: usize
+pub aom_dsp::entropy::header::TileInfoHeader::uniform_spacing: bool
+pub struct aom_dsp::entropy::header::TimingInfoHeader
+pub aom_dsp::entropy::header::TimingInfoHeader::equal_picture_interval: bool
+pub aom_dsp::entropy::header::TimingInfoHeader::num_ticks_per_picture: u32
+pub aom_dsp::entropy::header::TimingInfoHeader::num_units_in_display_tick: u32
+pub aom_dsp::entropy::header::TimingInfoHeader::time_scale: u32
+pub aom_dsp::entropy::header::WarpedMotionParams::wmmat: [i32; 6]
+pub aom_dsp::entropy::header::WarpedMotionParams::wmtype: u8
+pub fn aom_dsp::entropy::header::encode_cdef(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::CdefHeader, usize)
+pub fn aom_dsp::entropy::header::encode_loopfilter(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::LoopfilterHeader, usize)
+pub fn aom_dsp::entropy::header::encode_quantization(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::QuantParamsHeader, usize, bool)
+pub fn aom_dsp::entropy::header::encode_restoration_mode(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::RestorationHeader, usize)
+pub fn aom_dsp::entropy::header::encode_segmentation(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::SegmentationHeader)
+pub fn aom_dsp::entropy::header::read_cdef_header(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, bool, bool, usize) -> aom_dsp::entropy::header::CdefHeader
+pub fn aom_dsp::entropy::header::read_color_config(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, i32) -> aom_dsp::entropy::header::ColorConfigParams
+pub fn aom_dsp::entropy::header::read_decoder_model_info(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>) -> aom_dsp::entropy::header::DecoderModelInfo
+pub fn aom_dsp::entropy::header::read_delta_q_params(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, i32, bool) -> aom_dsp::entropy::header::DeltaQParams
+pub fn aom_dsp::entropy::header::read_ext_tile_info(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, usize, usize) -> (i32, i32)
+pub fn aom_dsp::entropy::header::read_film_grain_params(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, bool, bool, i32, i32) -> aom_dsp::entropy::header::FilmGrainParams
+pub fn aom_dsp::entropy::header::read_frame_header_prefix(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, &aom_dsp::entropy::header::FrameHeaderPrefix) -> (aom_dsp::entropy::header::FrameHeaderPrefix, i32, bool)
+pub fn aom_dsp::entropy::header::read_frame_header_trailing_flags(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, bool, bool, bool) -> (bool, bool, bool, bool)
+pub fn aom_dsp::entropy::header::read_frame_interp_filter(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>) -> i32
+pub fn aom_dsp::entropy::header::read_frame_size(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, bool, u32, u32, bool, i32, i32) -> aom_dsp::entropy::header::FrameSizeHeader
+pub fn aom_dsp::entropy::header::read_frame_size_with_refs(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, &[i32; 7], &[i32; 7], &[i32; 7], &[i32; 7], bool, u32, u32) -> (i32, i32, i32, i32, i32, i32)
+pub fn aom_dsp::entropy::header::read_global_motion(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, &[aom_dsp::entropy::header::WarpedMotionParams; 7], bool) -> [aom_dsp::entropy::header::WarpedMotionParams; 7]
+pub fn aom_dsp::entropy::header::read_global_motion_params(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, &aom_dsp::entropy::header::WarpedMotionParams, bool) -> aom_dsp::entropy::header::WarpedMotionParams
+pub fn aom_dsp::entropy::header::read_inter_ref_signaling(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, bool, bool, u32) -> (bool, i32, i32, [i32; 7], [i32; 7])
+pub fn aom_dsp::entropy::header::read_loopfilter(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, bool, usize, [i8; 8], [i8; 2]) -> aom_dsp::entropy::header::LoopfilterHeader
+pub fn aom_dsp::entropy::header::read_quantization(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, usize, bool) -> aom_dsp::entropy::header::QuantParamsHeader
+pub fn aom_dsp::entropy::header::read_refresh_frame_context(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, bool, bool) -> bool
+pub fn aom_dsp::entropy::header::read_render_size(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>) -> (bool, i32, i32)
+pub fn aom_dsp::entropy::header::read_restoration_mode(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, bool, bool, bool, i32, i32, usize) -> aom_dsp::entropy::header::RestorationHeader
+pub fn aom_dsp::entropy::header::read_segmentation(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, bool) -> aom_dsp::entropy::header::SegmentationHeader
+pub fn aom_dsp::entropy::header::read_sequence_header(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, bool) -> aom_dsp::entropy::header::SequenceHeaderParams
+pub fn aom_dsp::entropy::header::read_sequence_header_obu(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>) -> aom_dsp::entropy::header::SequenceHeaderObu
+pub fn aom_dsp::entropy::header::read_superres_scale(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, bool) -> i32
+pub fn aom_dsp::entropy::header::read_tile_group_header(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, i32) -> (i32, i32, bool)
+pub fn aom_dsp::entropy::header::read_tile_info(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, i32, i32, u32, i32, i32, i32, i32, i32, i32) -> (aom_dsp::entropy::header::TileInfoHeader, i32, i32)
+pub fn aom_dsp::entropy::header::read_tile_info_max_tile(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, i32, i32, u32, i32, i32, i32, i32, i32, i32) -> aom_dsp::entropy::header::TileInfoHeader
+pub fn aom_dsp::entropy::header::read_timing_info_header(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>) -> aom_dsp::entropy::header::TimingInfoHeader
+pub fn aom_dsp::entropy::header::read_tx_mode(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, bool) -> bool
+pub fn aom_dsp::entropy::header::read_uncompressed_header(&mut aom_dsp::entropy::rb::ReadBitBuffer<'_>, &aom_dsp::entropy::header::FrameHeaderObu) -> aom_dsp::entropy::header::FrameHeaderObu
+pub fn aom_dsp::entropy::header::wb_write_uniform(&mut aom_dsp::entropy::wb::WriteBitBuffer, i32, i32)
+pub fn aom_dsp::entropy::header::write_color_config(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::ColorConfigParams)
+pub fn aom_dsp::entropy::header::write_dec_model_op_parameters(&mut aom_dsp::entropy::wb::WriteBitBuffer, u32, u32, bool, u32)
+pub fn aom_dsp::entropy::header::write_decoder_model_info(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::DecoderModelInfo)
+pub fn aom_dsp::entropy::header::write_delta_q_params(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::DeltaQParams)
+pub fn aom_dsp::entropy::header::write_ext_tile_info(&mut aom_dsp::entropy::wb::WriteBitBuffer, usize, usize)
+pub fn aom_dsp::entropy::header::write_film_grain_params(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::FilmGrainParams)
+pub fn aom_dsp::entropy::header::write_frame_header_obu(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::FrameHeaderObu)
+pub fn aom_dsp::entropy::header::write_frame_header_prefix(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::FrameHeaderPrefix) -> (i32, bool)
+pub fn aom_dsp::entropy::header::write_frame_header_trailing_flags(&mut aom_dsp::entropy::wb::WriteBitBuffer, bool, bool, bool, bool, bool, bool, bool)
+pub fn aom_dsp::entropy::header::write_frame_interp_filter(&mut aom_dsp::entropy::wb::WriteBitBuffer, i32)
+pub fn aom_dsp::entropy::header::write_frame_size(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::FrameSizeHeader)
+pub fn aom_dsp::entropy::header::write_frame_size_with_refs(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::FrameSizeWithRefs)
+pub fn aom_dsp::entropy::header::write_global_motion(&mut aom_dsp::entropy::wb::WriteBitBuffer, &[aom_dsp::entropy::header::WarpedMotionParams; 7], &[aom_dsp::entropy::header::WarpedMotionParams; 7], bool)
+pub fn aom_dsp::entropy::header::write_global_motion_params(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::WarpedMotionParams, &aom_dsp::entropy::header::WarpedMotionParams, bool)
+pub fn aom_dsp::entropy::header::write_inter_ref_signaling(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::InterRefSignaling)
+pub fn aom_dsp::entropy::header::write_refresh_frame_context(&mut aom_dsp::entropy::wb::WriteBitBuffer, bool, bool, bool)
+pub fn aom_dsp::entropy::header::write_render_size(&mut aom_dsp::entropy::wb::WriteBitBuffer, bool, i32, i32)
+pub fn aom_dsp::entropy::header::write_sequence_header(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::SequenceHeaderParams)
+pub fn aom_dsp::entropy::header::write_sequence_header_obu(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::SequenceHeaderObu)
+pub fn aom_dsp::entropy::header::write_superres_scale(&mut aom_dsp::entropy::wb::WriteBitBuffer, bool, i32)
+pub fn aom_dsp::entropy::header::write_tile_group_header(&mut aom_dsp::entropy::wb::WriteBitBuffer, i32, i32, i32, bool)
+pub fn aom_dsp::entropy::header::write_tile_info(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::TileInfoHeader)
+pub fn aom_dsp::entropy::header::write_tile_info_max_tile(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::TileInfoHeader)
+pub fn aom_dsp::entropy::header::write_timing_info_header(&mut aom_dsp::entropy::wb::WriteBitBuffer, &aom_dsp::entropy::header::TimingInfoHeader)
+pub fn aom_dsp::entropy::header::write_tx_mode(&mut aom_dsp::entropy::wb::WriteBitBuffer, bool, bool)
+pub mod aom_dsp::entropy::leb128
+pub fn aom_dsp::entropy::leb128::uleb_decode(&[u8]) -> core::option::Option<(u64, usize)>
+pub fn aom_dsp::entropy::leb128::uleb_encode(u64, usize) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn aom_dsp::entropy::leb128::uleb_size_in_bytes(u64) -> usize
+pub mod aom_dsp::entropy::lr
+pub struct aom_dsp::entropy::lr::LrFrameConfig
+pub aom_dsp::entropy::lr::LrFrameConfig::crop_height: i32
+pub aom_dsp::entropy::lr::LrFrameConfig::crop_width: i32
+pub aom_dsp::entropy::lr::LrFrameConfig::frame_restoration_type: [u8; 3]
+pub aom_dsp::entropy::lr::LrFrameConfig::superres_denom: i32
+pub aom_dsp::entropy::lr::LrFrameConfig::unit_size: [i32; 3]
+pub fn aom_dsp::entropy::lr::LrFrameConfig::any_enabled(&self) -> bool
+pub fn aom_dsp::entropy::lr::LrFrameConfig::plane_size(&self, usize, usize, usize) -> (i32, i32)
+pub fn aom_dsp::entropy::lr::LrFrameConfig::plane_units(&self, usize, usize, usize) -> (i32, i32)
+pub struct aom_dsp::entropy::lr::LrRefState
+pub aom_dsp::entropy::lr::LrRefState::sgrproj: [aom_dsp::entropy::lr::SgrprojInfoLr; 3]
+pub aom_dsp::entropy::lr::LrRefState::wiener: [aom_dsp::entropy::lr::WienerInfoLr; 3]
+pub struct aom_dsp::entropy::lr::LrUnitInfo
+pub aom_dsp::entropy::lr::LrUnitInfo::restoration_type: u8
+pub aom_dsp::entropy::lr::LrUnitInfo::sgrproj: aom_dsp::entropy::lr::SgrprojInfoLr
+pub aom_dsp::entropy::lr::LrUnitInfo::wiener: aom_dsp::entropy::lr::WienerInfoLr
+pub struct aom_dsp::entropy::lr::SgrprojInfoLr
+pub aom_dsp::entropy::lr::SgrprojInfoLr::ep: i32
+pub aom_dsp::entropy::lr::SgrprojInfoLr::xqd: [i32; 2]
+pub struct aom_dsp::entropy::lr::WienerInfoLr
+pub aom_dsp::entropy::lr::WienerInfoLr::hfilter: [i16; 8]
+pub aom_dsp::entropy::lr::WienerInfoLr::vfilter: [i16; 8]
+pub const aom_dsp::entropy::lr::RESTORATION_PROC_UNIT_SIZE: i32
+pub const aom_dsp::entropy::lr::RESTORATION_UNITSIZE_MAX: i32
+pub const aom_dsp::entropy::lr::RESTORATION_UNIT_OFFSET: i32
+pub const aom_dsp::entropy::lr::RESTORE_NONE: u8
+pub const aom_dsp::entropy::lr::RESTORE_SGRPROJ: u8
+pub const aom_dsp::entropy::lr::RESTORE_SWITCHABLE: u8
+pub const aom_dsp::entropy::lr::RESTORE_SWITCHABLE_TYPES: usize
+pub const aom_dsp::entropy::lr::RESTORE_WIENER: u8
+pub const aom_dsp::entropy::lr::SGRPROJ_PARAMS_BITS: u32
+pub const aom_dsp::entropy::lr::SGRPROJ_PRJ_BITS: i32
+pub const aom_dsp::entropy::lr::SGRPROJ_PRJ_MAX0: i32
+pub const aom_dsp::entropy::lr::SGRPROJ_PRJ_MAX1: i32
+pub const aom_dsp::entropy::lr::SGRPROJ_PRJ_MIN0: i32
+pub const aom_dsp::entropy::lr::SGRPROJ_PRJ_MIN1: i32
+pub const aom_dsp::entropy::lr::SGRPROJ_PRJ_SUBEXP_K: u16
+pub const aom_dsp::entropy::lr::SGR_PARAMS_R: [[i32; 2]; 16]
+pub const aom_dsp::entropy::lr::WIENER_FILT_TAP0_MAXV: i32
+pub const aom_dsp::entropy::lr::WIENER_FILT_TAP0_MINV: i32
+pub const aom_dsp::entropy::lr::WIENER_FILT_TAP0_SUBEXP_K: u16
+pub const aom_dsp::entropy::lr::WIENER_FILT_TAP1_MAXV: i32
+pub const aom_dsp::entropy::lr::WIENER_FILT_TAP1_MINV: i32
+pub const aom_dsp::entropy::lr::WIENER_FILT_TAP1_SUBEXP_K: u16
+pub const aom_dsp::entropy::lr::WIENER_FILT_TAP2_MAXV: i32
+pub const aom_dsp::entropy::lr::WIENER_FILT_TAP2_MINV: i32
+pub const aom_dsp::entropy::lr::WIENER_FILT_TAP2_SUBEXP_K: u16
+pub const aom_dsp::entropy::lr::WIENER_HALFWIN: usize
+pub const aom_dsp::entropy::lr::WIENER_WIN: usize
+pub const aom_dsp::entropy::lr::WIENER_WIN_CHROMA: usize
+pub fn aom_dsp::entropy::lr::count_primitive_quniform(u16, u16) -> i32
+pub fn aom_dsp::entropy::lr::count_primitive_refsubexpfin(u16, u16, u16, u16) -> i32
+pub fn aom_dsp::entropy::lr::count_primitive_subexpfin(u16, u16, u16) -> i32
+pub fn aom_dsp::entropy::lr::count_sgrproj_bits(&aom_dsp::entropy::lr::SgrprojInfoLr, &aom_dsp::entropy::lr::SgrprojInfoLr) -> i32
+pub fn aom_dsp::entropy::lr::count_wiener_bits(usize, &aom_dsp::entropy::lr::WienerInfoLr, &aom_dsp::entropy::lr::WienerInfoLr) -> i32
+pub fn aom_dsp::entropy::lr::inv_recenter_finite_nonneg(u16, u16, u16) -> u16
+pub fn aom_dsp::entropy::lr::lr_corners_in_sb(&aom_dsp::entropy::lr::LrFrameConfig, usize, usize, usize, i32, i32, i32, i32) -> core::option::Option<(i32, i32, i32, i32)>
+pub fn aom_dsp::entropy::lr::lr_count_units(i32, i32) -> i32
+pub fn aom_dsp::entropy::lr::read_lr_unit(&mut aom_dsp::entropy::dec::OdEcDec<'_>, u8, usize, &mut aom_dsp::entropy::lr::LrRefState, &mut [u16], &mut [u16], &mut [u16]) -> aom_dsp::entropy::lr::LrUnitInfo
+pub fn aom_dsp::entropy::lr::read_primitive_quniform(&mut aom_dsp::entropy::dec::OdEcDec<'_>, u16) -> u16
+pub fn aom_dsp::entropy::lr::read_primitive_refsubexpfin(&mut aom_dsp::entropy::dec::OdEcDec<'_>, u16, u16, u16) -> u16
+pub fn aom_dsp::entropy::lr::read_primitive_subexpfin(&mut aom_dsp::entropy::dec::OdEcDec<'_>, u16, u16) -> u16
+pub fn aom_dsp::entropy::lr::read_sgrproj_filter(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut aom_dsp::entropy::lr::SgrprojInfoLr) -> aom_dsp::entropy::lr::SgrprojInfoLr
+pub fn aom_dsp::entropy::lr::read_wiener_filter(&mut aom_dsp::entropy::dec::OdEcDec<'_>, usize, &mut aom_dsp::entropy::lr::WienerInfoLr) -> aom_dsp::entropy::lr::WienerInfoLr
+pub fn aom_dsp::entropy::lr::recenter_finite_nonneg(u16, u16, u16) -> u16
+pub fn aom_dsp::entropy::lr::write_lr_unit(&mut aom_dsp::entropy::enc::OdEcEnc, &aom_dsp::entropy::lr::LrUnitInfo, u8, usize, &mut aom_dsp::entropy::lr::LrRefState, &mut [u16], &mut [u16], &mut [u16], bool)
+pub fn aom_dsp::entropy::lr::write_primitive_quniform(&mut aom_dsp::entropy::enc::OdEcEnc, u16, u16)
+pub fn aom_dsp::entropy::lr::write_primitive_refsubexpfin(&mut aom_dsp::entropy::enc::OdEcEnc, u16, u16, u16, u16)
+pub fn aom_dsp::entropy::lr::write_primitive_subexpfin(&mut aom_dsp::entropy::enc::OdEcEnc, u16, u16, u16)
+pub fn aom_dsp::entropy::lr::write_sgrproj_filter(&mut aom_dsp::entropy::enc::OdEcEnc, &aom_dsp::entropy::lr::SgrprojInfoLr, &mut aom_dsp::entropy::lr::SgrprojInfoLr)
+pub fn aom_dsp::entropy::lr::write_wiener_filter(&mut aom_dsp::entropy::enc::OdEcEnc, usize, &aom_dsp::entropy::lr::WienerInfoLr, &mut aom_dsp::entropy::lr::WienerInfoLr)
+pub mod aom_dsp::entropy::obu
+pub struct aom_dsp::entropy::obu::ObuHeader
+pub aom_dsp::entropy::obu::ObuHeader::header_len: usize
+pub aom_dsp::entropy::obu::ObuHeader::obu_extension: u8
+pub aom_dsp::entropy::obu::ObuHeader::obu_extension_flag: bool
+pub aom_dsp::entropy::obu::ObuHeader::obu_has_size_field: bool
+pub aom_dsp::entropy::obu::ObuHeader::obu_type: u32
+pub fn aom_dsp::entropy::obu::read_obu_header(&[u8]) -> core::option::Option<aom_dsp::entropy::obu::ObuHeader>
+pub fn aom_dsp::entropy::obu::write_obu_header(u32, bool, bool, u8) -> alloc::vec::Vec<u8>
+pub mod aom_dsp::entropy::partition
+pub enum aom_dsp::entropy::partition::TxMode
+pub aom_dsp::entropy::partition::TxMode::Largest = 1
+pub aom_dsp::entropy::partition::TxMode::Only4x4 = 0
+pub aom_dsp::entropy::partition::TxMode::Select = 2
+pub struct aom_dsp::entropy::partition::KfBlockState
+pub aom_dsp::entropy::partition::KfBlockState::allow_intrabc: bool
+pub aom_dsp::entropy::partition::KfBlockState::allow_palette: bool
+pub aom_dsp::entropy::partition::KfBlockState::bit_depth: i32
+pub aom_dsp::entropy::partition::KfBlockState::bsize: usize
+pub aom_dsp::entropy::partition::KfBlockState::cdef_bits: u32
+pub aom_dsp::entropy::partition::KfBlockState::cdef_transmitted: [bool; 4]
+pub aom_dsp::entropy::partition::KfBlockState::cfl_allowed: bool
+pub aom_dsp::entropy::partition::KfBlockState::coded_lossless: bool
+pub aom_dsp::entropy::partition::KfBlockState::current_base_qindex: i32
+pub aom_dsp::entropy::partition::KfBlockState::dlf_multi: bool
+pub aom_dsp::entropy::partition::KfBlockState::dlf_present: bool
+pub aom_dsp::entropy::partition::KfBlockState::dlf_res: i32
+pub aom_dsp::entropy::partition::KfBlockState::dq_present: bool
+pub aom_dsp::entropy::partition::KfBlockState::dq_res: i32
+pub aom_dsp::entropy::partition::KfBlockState::filter_allowed: bool
+pub aom_dsp::entropy::partition::KfBlockState::has_above: bool
+pub aom_dsp::entropy::partition::KfBlockState::has_left: bool
+pub aom_dsp::entropy::partition::KfBlockState::is_chroma_ref: bool
+pub aom_dsp::entropy::partition::KfBlockState::last_active_segid: i32
+pub aom_dsp::entropy::partition::KfBlockState::mb_to_top_edge: i32
+pub aom_dsp::entropy::partition::KfBlockState::mi_col: i32
+pub aom_dsp::entropy::partition::KfBlockState::mi_row: i32
+pub aom_dsp::entropy::partition::KfBlockState::mib_size: i32
+pub aom_dsp::entropy::partition::KfBlockState::monochrome: bool
+pub aom_dsp::entropy::partition::KfBlockState::num_planes: i32
+pub aom_dsp::entropy::partition::KfBlockState::sb_size: usize
+pub aom_dsp::entropy::partition::KfBlockState::seg_cdf_num: usize
+pub aom_dsp::entropy::partition::KfBlockState::seg_enabled: bool
+pub aom_dsp::entropy::partition::KfBlockState::seg_pred: i32
+pub aom_dsp::entropy::partition::KfBlockState::seg_skip_feature: [bool; 8]
+pub aom_dsp::entropy::partition::KfBlockState::segid_preskip: bool
+pub aom_dsp::entropy::partition::KfBlockState::update_map: bool
+pub aom_dsp::entropy::partition::KfBlockState::xd_delta_lf: [i32; 4]
+pub aom_dsp::entropy::partition::KfBlockState::xd_delta_lf_from_base: i32
+pub struct aom_dsp::entropy::partition::KfCdfs
+pub aom_dsp::entropy::partition::KfCdfs::cfl_alpha: [[u16; 17]; 6]
+pub aom_dsp::entropy::partition::KfCdfs::cfl_sign: [u16; 9]
+pub aom_dsp::entropy::partition::KfCdfs::delta_lf: [u16; 5]
+pub aom_dsp::entropy::partition::KfCdfs::delta_lf_multi: [[u16; 5]; 4]
+pub aom_dsp::entropy::partition::KfCdfs::delta_q: [u16; 5]
+pub aom_dsp::entropy::partition::KfCdfs::fi_mode: [u16; 6]
+pub aom_dsp::entropy::partition::KfCdfs::fi_use: [u16; 3]
+pub aom_dsp::entropy::partition::KfCdfs::intrabc: [u16; 3]
+pub aom_dsp::entropy::partition::KfCdfs::ndvc_comp0: [u16; 69]
+pub aom_dsp::entropy::partition::KfCdfs::ndvc_comp1: [u16; 69]
+pub aom_dsp::entropy::partition::KfCdfs::ndvc_joints: [u16; 5]
+pub aom_dsp::entropy::partition::KfCdfs::pal_uv_mode: [u16; 3]
+pub aom_dsp::entropy::partition::KfCdfs::pal_uv_size: [u16; 8]
+pub aom_dsp::entropy::partition::KfCdfs::pal_y_mode: [u16; 3]
+pub aom_dsp::entropy::partition::KfCdfs::pal_y_size: [u16; 8]
+pub aom_dsp::entropy::partition::KfCdfs::seg: [u16; 9]
+pub aom_dsp::entropy::partition::KfCdfs::skip: [u16; 3]
+pub aom_dsp::entropy::partition::KfCdfs::uv_angle: [u16; 8]
+pub aom_dsp::entropy::partition::KfCdfs::uv_mode: [u16; 15]
+pub aom_dsp::entropy::partition::KfCdfs::y_angle: [u16; 8]
+pub aom_dsp::entropy::partition::KfCdfs::y_mode: [u16; 14]
+pub struct aom_dsp::entropy::partition::KfFrameContext
+pub aom_dsp::entropy::partition::KfFrameContext::angle_delta: [[u16; 8]; 8]
+pub aom_dsp::entropy::partition::KfFrameContext::cfl_alpha: [[u16; 17]; 6]
+pub aom_dsp::entropy::partition::KfFrameContext::cfl_sign: [u16; 9]
+pub aom_dsp::entropy::partition::KfFrameContext::coeff: alloc::vec::Vec<u16>
+pub aom_dsp::entropy::partition::KfFrameContext::delta_lf: [u16; 5]
+pub aom_dsp::entropy::partition::KfFrameContext::delta_lf_multi: [[u16; 5]; 4]
+pub aom_dsp::entropy::partition::KfFrameContext::delta_q: [u16; 5]
+pub aom_dsp::entropy::partition::KfFrameContext::ext_tx_1ddct: [[[u16; 8]; 13]; 4]
+pub aom_dsp::entropy::partition::KfFrameContext::ext_tx_dtt4: [[[u16; 6]; 13]; 4]
+pub aom_dsp::entropy::partition::KfFrameContext::filter_intra: [[u16; 3]; 22]
+pub aom_dsp::entropy::partition::KfFrameContext::filter_intra_mode: [u16; 6]
+pub aom_dsp::entropy::partition::KfFrameContext::inter_ext_tx: [[[u16; 17]; 4]; 4]
+pub aom_dsp::entropy::partition::KfFrameContext::intrabc: [u16; 3]
+pub aom_dsp::entropy::partition::KfFrameContext::kf_y: [[[u16; 14]; 5]; 5]
+pub aom_dsp::entropy::partition::KfFrameContext::ndvc_comp0: [u16; 69]
+pub aom_dsp::entropy::partition::KfFrameContext::ndvc_comp1: [u16; 69]
+pub aom_dsp::entropy::partition::KfFrameContext::ndvc_joints: [u16; 5]
+pub aom_dsp::entropy::partition::KfFrameContext::palette_uv_color_index: [[[u16; 9]; 5]; 7]
+pub aom_dsp::entropy::partition::KfFrameContext::palette_uv_mode: [[u16; 3]; 2]
+pub aom_dsp::entropy::partition::KfFrameContext::palette_uv_size: [[u16; 8]; 7]
+pub aom_dsp::entropy::partition::KfFrameContext::palette_y_color_index: [[[u16; 9]; 5]; 7]
+pub aom_dsp::entropy::partition::KfFrameContext::palette_y_mode: [[[u16; 3]; 3]; 7]
+pub aom_dsp::entropy::partition::KfFrameContext::palette_y_size: [[u16; 8]; 7]
+pub aom_dsp::entropy::partition::KfFrameContext::partition: [[u16; 11]; 20]
+pub aom_dsp::entropy::partition::KfFrameContext::seg_spatial: [[u16; 9]; 3]
+pub aom_dsp::entropy::partition::KfFrameContext::sgrproj_restore: [u16; 3]
+pub aom_dsp::entropy::partition::KfFrameContext::skip: [[u16; 3]; 3]
+pub aom_dsp::entropy::partition::KfFrameContext::switchable_restore: [u16; 4]
+pub aom_dsp::entropy::partition::KfFrameContext::tx_size: [[[u16; 4]; 3]; 4]
+pub aom_dsp::entropy::partition::KfFrameContext::txfm_partition: [[u16; 3]; 21]
+pub aom_dsp::entropy::partition::KfFrameContext::uv_mode: [[[u16; 15]; 13]; 2]
+pub aom_dsp::entropy::partition::KfFrameContext::wiener_restore: [u16; 3]
+pub fn aom_dsp::entropy::partition::KfFrameContext::default_for_qindex(i32) -> Self
+pub fn aom_dsp::entropy::partition::KfFrameContext::reset_cdf_counters(&mut self)
+pub fn aom_dsp::entropy::partition::KfFrameContext::zeroed(usize) -> Self
+pub struct aom_dsp::entropy::partition::KfTailResult
+pub aom_dsp::entropy::partition::KfTailResult::angle_delta_uv: i32
+pub aom_dsp::entropy::partition::KfTailResult::angle_delta_y: i32
+pub aom_dsp::entropy::partition::KfTailResult::cfl_alpha_idx: i32
+pub aom_dsp::entropy::partition::KfTailResult::cfl_joint_sign: i32
+pub aom_dsp::entropy::partition::KfTailResult::diff_col: i32
+pub aom_dsp::entropy::partition::KfTailResult::diff_row: i32
+pub aom_dsp::entropy::partition::KfTailResult::filter_intra_mode: i32
+pub aom_dsp::entropy::partition::KfTailResult::mode: i32
+pub aom_dsp::entropy::partition::KfTailResult::palette_colors: alloc::vec::Vec<u16>
+pub aom_dsp::entropy::partition::KfTailResult::palette_size: [i32; 2]
+pub aom_dsp::entropy::partition::KfTailResult::use_filter_intra: i32
+pub aom_dsp::entropy::partition::KfTailResult::use_intrabc: i32
+pub aom_dsp::entropy::partition::KfTailResult::uv_mode: i32
+pub struct aom_dsp::entropy::partition::MbModeInfoKf
+pub aom_dsp::entropy::partition::MbModeInfoKf::angle_delta_uv: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::angle_delta_y: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::cdef_strength: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::cfl_alpha_idx: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::cfl_joint_sign: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::current_qindex: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::delta_lf: [i32; 4]
+pub aom_dsp::entropy::partition::MbModeInfoKf::delta_lf_from_base: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::dv_col: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::dv_row: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::filter_intra_mode: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::palette_colors: [u16; 24]
+pub aom_dsp::entropy::partition::MbModeInfoKf::palette_size: [i32; 2]
+pub aom_dsp::entropy::partition::MbModeInfoKf::segment_id: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::skip: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::use_filter_intra: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::use_intrabc: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::uv_mode: i32
+pub aom_dsp::entropy::partition::MbModeInfoKf::y_mode: i32
+pub struct aom_dsp::entropy::partition::MiNbrKf
+pub aom_dsp::entropy::partition::MiNbrKf::skip_txfm: i32
+pub aom_dsp::entropy::partition::MiNbrKf::y_mode: i32
+pub struct aom_dsp::entropy::partition::PaletteNbrKf
+pub aom_dsp::entropy::partition::PaletteNbrKf::colors: [u16; 24]
+pub aom_dsp::entropy::partition::PaletteNbrKf::size: [i32; 2]
+pub const aom_dsp::entropy::partition::DEFAULT_TXFM_PARTITION_CDF: [[u16; 3]; 21]
+pub const aom_dsp::entropy::partition::MAX_TX_CATS: usize
+pub const aom_dsp::entropy::partition::PALATTE_BSIZE_CTXS: usize
+pub const aom_dsp::entropy::partition::PALETTE_MIN_SIZE: i32
+pub const aom_dsp::entropy::partition::PALETTE_SIZES: usize
+pub const aom_dsp::entropy::partition::PALETTE_Y_MODE_CONTEXTS: usize
+pub const aom_dsp::entropy::partition::TXFM_CTX_INIT: u8
+pub const aom_dsp::entropy::partition::TX_SIZE_CONTEXTS: usize
+pub fn aom_dsp::entropy::partition::allow_palette(bool, usize) -> bool
+pub fn aom_dsp::entropy::partition::bsize_to_max_depth(usize) -> usize
+pub fn aom_dsp::entropy::partition::bsize_to_tx_size_cat(usize) -> i32
+pub fn aom_dsp::entropy::partition::coeff_cdf_q_ctx(i32) -> usize
+pub fn aom_dsp::entropy::partition::collect_neighbors_ref_counts(bool, bool, i32, i32, bool, bool, i32, i32) -> [u8; 8]
+pub fn aom_dsp::entropy::partition::decode_color_map_tokens(&mut aom_dsp::entropy::dec::OdEcDec<'_>, i32, usize, usize, usize, usize, &mut [[u16; 9]; 5]) -> alloc::vec::Vec<u8>
+pub fn aom_dsp::entropy::partition::delta_encode_palette_colors(&mut aom_dsp::entropy::enc::OdEcEnc, &[i32], i32, i32)
+pub fn aom_dsp::entropy::partition::depth_to_tx_size(i32, usize) -> usize
+pub fn aom_dsp::entropy::partition::encode_color_map_tokens(&mut aom_dsp::entropy::enc::OdEcEnc, i32, usize, &[u8], usize, usize, &mut [[u16; 9]; 5])
+pub fn aom_dsp::entropy::partition::encode_mv(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], &mut [u16; 69], &mut [u16; 69], i32, i32, i32)
+pub fn aom_dsp::entropy::partition::encode_mv_component(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16; 69], i32, i32)
+pub fn aom_dsp::entropy::partition::filter_intra_allowed(bool, usize, i32, i32) -> bool
+pub fn aom_dsp::entropy::partition::get_block_dimensions(usize, usize, usize, usize, i32, i32) -> (usize, usize, usize, usize)
+pub fn aom_dsp::entropy::partition::get_comp_group_idx_context(bool, i32, i32, i32, bool, i32, i32, i32) -> i32
+pub fn aom_dsp::entropy::partition::get_comp_index_context(bool, i32, i32, i32, i32, bool, bool, i32, i32, bool, bool, i32, i32) -> i32
+pub fn aom_dsp::entropy::partition::get_comp_reference_type_context(bool, i32, i32, bool, bool, i32, i32, bool) -> i32
+pub fn aom_dsp::entropy::partition::get_intra_inter_context(bool, bool, bool, bool) -> i32
+pub fn aom_dsp::entropy::partition::get_mv_class(i32) -> (i32, i32)
+pub fn aom_dsp::entropy::partition::get_mv_joint(i32, i32) -> i32
+pub fn aom_dsp::entropy::partition::get_palette_cache(&mut [u16], usize, i32, bool, &[u16], i32, bool, &[u16], i32) -> usize
+pub fn aom_dsp::entropy::partition::get_palette_color_index_context(&[u8], usize, usize, usize, i32) -> ([u8; 8], i32, usize)
+pub fn aom_dsp::entropy::partition::get_partition_subsize(usize, i32) -> i32
+pub fn aom_dsp::entropy::partition::get_plane_block_size(usize, usize, usize) -> usize
+pub fn aom_dsp::entropy::partition::get_pred_context_seg_id(bool, i32, bool, i32) -> i32
+pub fn aom_dsp::entropy::partition::get_pred_context_switchable_interp(usize, i32, bool, core::option::Option<(i32, i32, usize, usize)>, core::option::Option<(i32, i32, usize, usize)>) -> i32
+pub fn aom_dsp::entropy::partition::get_reference_mode_context(bool, i32, i32, bool, bool, i32, i32, bool) -> i32
+pub fn aom_dsp::entropy::partition::get_relative_dist(bool, i32, i32, i32) -> i32
+pub fn aom_dsp::entropy::partition::get_tx_size_context(usize, u8, u8, bool, bool, core::option::Option<usize>, core::option::Option<usize>) -> usize
+pub fn aom_dsp::entropy::partition::get_uv_mode(usize) -> i32
+pub fn aom_dsp::entropy::partition::get_vartx_max_txsize_luma(usize) -> usize
+pub fn aom_dsp::entropy::partition::get_y_mode_ctx(core::option::Option<i32>, core::option::Option<i32>) -> (usize, usize)
+pub fn aom_dsp::entropy::partition::has_bottom_left(usize, usize, i32, i32, bool, bool, usize, usize, i32, i32, i32, i32) -> i32
+pub fn aom_dsp::entropy::partition::has_top_right(usize, usize, i32, i32, bool, bool, usize, usize, i32, i32, i32, i32) -> i32
+pub fn aom_dsp::entropy::partition::have_nearmv_in_inter_mode(i32) -> bool
+pub fn aom_dsp::entropy::partition::index_color_cache(&[u16], &[u16]) -> (alloc::vec::Vec<u8>, alloc::vec::Vec<i32>, usize)
+pub fn aom_dsp::entropy::partition::intra_avail(usize, usize, i32, i32, bool, bool, i32, i32, usize, usize, i32, i32, i32, i32, i32, i32, i32, i32, usize, i32, bool) -> (i32, i32, i32, i32)
+pub fn aom_dsp::entropy::partition::is_cfl_allowed(usize, bool, usize, usize) -> bool
+pub fn aom_dsp::entropy::partition::is_directional_mode(i32) -> bool
+pub fn aom_dsp::entropy::partition::is_inter_compound_mode(i32) -> bool
+pub fn aom_dsp::entropy::partition::is_inter_singleref_mode(i32) -> bool
+pub fn aom_dsp::entropy::partition::mode_context_analyzer(i32, bool) -> i32
+pub fn aom_dsp::entropy::partition::neg_deinterleave(i32, i32, i32) -> i32
+pub fn aom_dsp::entropy::partition::neg_interleave(i32, i32, i32) -> i32
+pub fn aom_dsp::entropy::partition::pack_map_tokens(&mut aom_dsp::entropy::enc::OdEcEnc, i32, &[i32], &[usize], &mut [[u16; 9]; 5])
+pub fn aom_dsp::entropy::partition::palette_bsize_ctx(usize) -> i32
+pub fn aom_dsp::entropy::partition::palette_delta_bits_v(&[u16], i32) -> (i32, i32, i32)
+pub fn aom_dsp::entropy::partition::palette_mode_ctx(bool, i32, bool, i32) -> i32
+pub fn aom_dsp::entropy::partition::partition_cdf_length(usize) -> usize
+pub fn aom_dsp::entropy::partition::partition_gather_horz_alike(&[u16], usize) -> [u16; 2]
+pub fn aom_dsp::entropy::partition::partition_gather_vert_alike(&[u16], usize) -> [u16; 2]
+pub fn aom_dsp::entropy::partition::partition_plane_context(&[i8], &[i8], usize, usize, usize) -> i32
+pub fn aom_dsp::entropy::partition::pred_ctx_brf_or_arf2(&[u8; 8]) -> i32
+pub fn aom_dsp::entropy::partition::pred_ctx_brfarf2_or_arf(&[u8; 8]) -> i32
+pub fn aom_dsp::entropy::partition::pred_ctx_last2_or_l3gld(&[u8; 8]) -> i32
+pub fn aom_dsp::entropy::partition::pred_ctx_last3_or_gld(&[u8; 8]) -> i32
+pub fn aom_dsp::entropy::partition::pred_ctx_last_or_last2(&[u8; 8]) -> i32
+pub fn aom_dsp::entropy::partition::pred_ctx_ll2_or_l3gld(&[u8; 8]) -> i32
+pub fn aom_dsp::entropy::partition::read_angle_delta(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16]) -> i32
+pub fn aom_dsp::entropy::partition::read_cdef(&mut aom_dsp::entropy::dec::OdEcDec<'_>, bool, bool, i32, i32, i32, usize, i32, &mut [bool; 4], u32) -> i32
+pub fn aom_dsp::entropy::partition::read_cfl_alphas(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], &mut [[u16; 17]; 6]) -> (i32, i32)
+pub fn aom_dsp::entropy::partition::read_compound_type_info(&mut aom_dsp::entropy::dec::OdEcDec<'_>, bool, &mut [u16], bool, &mut [u16], bool, &mut [u16], &mut [u16]) -> (i32, i32, i32, i32, i32, i32)
+pub fn aom_dsp::entropy::partition::read_delta_lflevel(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16]) -> i32
+pub fn aom_dsp::entropy::partition::read_delta_palette_colors(&mut aom_dsp::entropy::dec::OdEcDec<'_>, usize, i32, i32) -> alloc::vec::Vec<i32>
+pub fn aom_dsp::entropy::partition::read_delta_q_params_sb(&mut aom_dsp::entropy::dec::OdEcDec<'_>, bool, bool, bool, i32, usize, usize, i32, bool, &mut i32, i32, &mut [i32; 4], &mut i32, i32, &mut [u16], &mut [[u16; 5]; 4], &mut [u16]) -> i32
+pub fn aom_dsp::entropy::partition::read_delta_qindex(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16]) -> i32
+pub fn aom_dsp::entropy::partition::read_drl_idx(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [[u16; 3]; 3], i32, i32, &[u16]) -> i32
+pub fn aom_dsp::entropy::partition::read_filter_intra_mode_info(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], &mut [u16], bool) -> (i32, i32)
+pub fn aom_dsp::entropy::partition::read_inter_compound_mode(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16]) -> i32
+pub fn aom_dsp::entropy::partition::read_inter_mode(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [[u16; 3]; 6], &mut [[u16; 3]; 2], &mut [[u16; 3]; 6], i32) -> i32
+pub fn aom_dsp::entropy::partition::read_interintra_info(&mut aom_dsp::entropy::dec::OdEcDec<'_>, bool, &mut [u16], &mut [u16], bool, &mut [u16], &mut [u16]) -> (i32, i32, i32, i32)
+pub fn aom_dsp::entropy::partition::read_intra_block_mode_info_fc(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut aom_dsp::entropy::partition::KfFrameContext, &mut aom_dsp::entropy::partition::KfBlockState, &mut [u16], bool, bool, bool, core::option::Option<aom_dsp::entropy::partition::PaletteNbrKf>, core::option::Option<aom_dsp::entropy::partition::PaletteNbrKf>, &mut aom_dsp::entropy::partition::MbModeInfoKf)
+pub fn aom_dsp::entropy::partition::read_intra_prediction_modes(&mut aom_dsp::entropy::dec::OdEcDec<'_>, usize, &mut [u16], &mut [u16], bool, bool, bool, &mut [u16], &mut [u16], &mut [[u16; 17]; 6], &mut [u16], bool, i32, &mut [u16], &mut [u16], &mut [u16], &mut [u16], i32, bool, &[u16], [i32; 2], bool, &[u16], [i32; 2], bool, &mut [u16], &mut [u16]) -> (i32, i32, i32, i32, i32, i32, [i32; 2], alloc::vec::Vec<u16>, i32, i32)
+pub fn aom_dsp::entropy::partition::read_intra_uv_and_angle_delta(&mut aom_dsp::entropy::dec::OdEcDec<'_>, bool, bool, bool, usize, &mut [u16], &mut [u16], &mut [[u16; 17]; 6], &mut [u16]) -> (i32, i32, i32, i32)
+pub fn aom_dsp::entropy::partition::read_intra_uv_mode(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], bool) -> i32
+pub fn aom_dsp::entropy::partition::read_intra_y_and_angle_delta(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], usize, &mut [u16]) -> (i32, i32)
+pub fn aom_dsp::entropy::partition::read_intra_y_mode(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16]) -> i32
+pub fn aom_dsp::entropy::partition::read_intrabc_info(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], &mut [u16], &mut [u16; 69], &mut [u16; 69]) -> (i32, i32, i32)
+pub fn aom_dsp::entropy::partition::read_is_inter(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], bool, bool) -> i32
+pub fn aom_dsp::entropy::partition::read_kf_tail(&mut aom_dsp::entropy::dec::OdEcDec<'_>, bool, &mut [u16], &mut [u16], &mut [u16; 69], &mut [u16; 69], usize, &mut [u16], &mut [u16], bool, bool, bool, &mut [u16], &mut [u16], &mut [[u16; 17]; 6], &mut [u16], bool, i32, &mut [u16], &mut [u16], &mut [u16], &mut [u16], i32, bool, &[u16], [i32; 2], bool, &[u16], [i32; 2], bool, &mut [u16], &mut [u16]) -> aom_dsp::entropy::partition::KfTailResult
+pub fn aom_dsp::entropy::partition::read_map_tokens(&mut aom_dsp::entropy::dec::OdEcDec<'_>, i32, &[usize], &mut [[u16; 9]; 5], &mut [i32])
+pub fn aom_dsp::entropy::partition::read_mb_interp_filter(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], &mut [u16], bool, bool, bool) -> (i32, i32)
+pub fn aom_dsp::entropy::partition::read_mb_modes_kf(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut aom_dsp::entropy::partition::KfCdfs, &mut aom_dsp::entropy::partition::KfBlockState) -> aom_dsp::entropy::partition::MbModeInfoKf
+pub fn aom_dsp::entropy::partition::read_mb_modes_kf_fc(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut aom_dsp::entropy::partition::KfFrameContext, &mut aom_dsp::entropy::partition::KfBlockState, bool, core::option::Option<aom_dsp::entropy::partition::MiNbrKf>, core::option::Option<aom_dsp::entropy::partition::MiNbrKf>, core::option::Option<aom_dsp::entropy::partition::PaletteNbrKf>, core::option::Option<aom_dsp::entropy::partition::PaletteNbrKf>) -> aom_dsp::entropy::partition::MbModeInfoKf
+pub fn aom_dsp::entropy::partition::read_mb_modes_kf_prefix(&mut aom_dsp::entropy::dec::OdEcDec<'_>, bool, bool, bool, i32, i32, &mut [u16], &[bool; 8], &mut [u16], bool, bool, i32, i32, i32, usize, &mut [bool; 4], u32, bool, bool, bool, i32, usize, &mut i32, i32, &mut [i32; 4], &mut i32, i32, &mut [u16], &mut [[u16; 5]; 4], &mut [u16]) -> (i32, i32, i32, i32)
+pub fn aom_dsp::entropy::partition::read_modes_b(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [i8], &mut [i8], &mut [[u16; 11]; 20], &mut aom_dsp::entropy::partition::KfCdfs, &mut aom_dsp::entropy::partition::KfBlockState, i32, i32, usize) -> (alloc::vec::Vec<i8>, alloc::vec::Vec<aom_dsp::entropy::partition::MbModeInfoKf>)
+pub fn aom_dsp::entropy::partition::read_modes_sb(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [i8], &mut [i8], &mut [[u16; 11]; 20], i32, i32, usize) -> alloc::vec::Vec<i8>
+pub fn aom_dsp::entropy::partition::read_modes_tile(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [i8], &mut [[u16; 11]; 20], i32, i32, i32, usize) -> alloc::vec::Vec<i8>
+pub fn aom_dsp::entropy::partition::read_motion_mode(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], &mut [u16], i32) -> i32
+pub fn aom_dsp::entropy::partition::read_mv(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], &mut [u16; 69], &mut [u16; 69], i32) -> (i32, i32)
+pub fn aom_dsp::entropy::partition::read_mv_component(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16; 69], i32) -> i32
+pub fn aom_dsp::entropy::partition::read_palette_colors_plane(&mut aom_dsp::entropy::dec::OdEcDec<'_>, usize, usize, i32, i32, i32, bool, &[u16], i32, bool, &[u16], i32) -> alloc::vec::Vec<u16>
+pub fn aom_dsp::entropy::partition::read_palette_colors_v(&mut aom_dsp::entropy::dec::OdEcDec<'_>, usize, i32) -> alloc::vec::Vec<u16>
+pub fn aom_dsp::entropy::partition::read_palette_mode_info(&mut aom_dsp::entropy::dec::OdEcDec<'_>, bool, bool, i32, &mut [u16], &mut [u16], &mut [u16], &mut [u16], i32, bool, &[u16], [i32; 2], bool, &[u16], [i32; 2]) -> ([i32; 2], alloc::vec::Vec<u16>)
+pub fn aom_dsp::entropy::partition::read_palette_mode_info_flags(&mut aom_dsp::entropy::dec::OdEcDec<'_>, bool, &mut [u16], &mut [u16], bool, &mut [u16], &mut [u16]) -> (i32, i32)
+pub fn aom_dsp::entropy::partition::read_partition(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], usize, bool, bool, usize) -> i32
+pub fn aom_dsp::entropy::partition::read_partition_node(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [i8], &mut [i8], i32, i32, usize, i32, i32, &mut [[u16; 11]; 20]) -> i32
+pub fn aom_dsp::entropy::partition::read_ref_frames(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [[u16; 3]; 16], bool, bool, bool, bool) -> (bool, i32, i32, i32)
+pub fn aom_dsp::entropy::partition::read_segment_id(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], i32, i32) -> i32
+pub fn aom_dsp::entropy::partition::read_selected_tx_size(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], usize, usize) -> i32
+pub fn aom_dsp::entropy::partition::read_skip(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], bool) -> i32
+pub fn aom_dsp::entropy::partition::read_skip_mode(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], bool, bool, bool, bool) -> i32
+pub fn aom_dsp::entropy::partition::read_tx_size_vartx(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [[u16; 3]], usize, &mut [usize; 16], i32, i32, &mut [u8], &mut [u8], usize, i32, i32, i32)
+pub fn aom_dsp::entropy::partition::reference_mode_context(core::option::Option<(i32, i32, bool)>, core::option::Option<(i32, i32, bool)>) -> i32
+pub fn aom_dsp::entropy::partition::reset_nmv_comp_counters(&mut [u16; 69])
+pub fn aom_dsp::entropy::partition::set_txfm_context_vartx(usize, &[usize; 16], i32, i32, &mut [u8], &mut [u8], usize, i32, i32)
+pub fn aom_dsp::entropy::partition::set_txfm_ctxs(&mut [u8], &mut [u8], usize, usize, usize, bool)
+pub fn aom_dsp::entropy::partition::single_ref_p1_context(&[u8; 8]) -> i32
+pub fn aom_dsp::entropy::partition::skip_mode_context(i32, i32) -> i32
+pub fn aom_dsp::entropy::partition::skip_txfm_context(i32, i32) -> i32
+pub fn aom_dsp::entropy::partition::spatial_seg_pred(core::option::Option<u8>, core::option::Option<u8>, core::option::Option<u8>) -> (i32, usize)
+pub fn aom_dsp::entropy::partition::tx_partition_set_contexts(usize, &[usize; 16], i32, i32, &mut [u8], &mut [u8])
+pub fn aom_dsp::entropy::partition::tx_size_from_tx_mode(usize, aom_dsp::entropy::partition::TxMode) -> usize
+pub fn aom_dsp::entropy::partition::tx_size_to_depth(usize, usize) -> i32
+pub fn aom_dsp::entropy::partition::txfm_partition_context(u8, u8, usize, usize) -> usize
+pub fn aom_dsp::entropy::partition::txfm_partition_update(&mut [u8], &mut [u8], usize, usize)
+pub fn aom_dsp::entropy::partition::update_ext_partition_context(&mut [i8], &mut [i8], i32, i32, usize, usize, i32)
+pub fn aom_dsp::entropy::partition::use_angle_delta(usize) -> bool
+pub fn aom_dsp::entropy::partition::write_angle_delta(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], i32)
+pub fn aom_dsp::entropy::partition::write_cdef(&mut aom_dsp::entropy::enc::OdEcEnc, bool, bool, i32, i32, i32, usize, i32, &mut [bool; 4], u32, i32)
+pub fn aom_dsp::entropy::partition::write_cfl_alphas(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], &mut [[u16; 17]; 6], i32, i32)
+pub fn aom_dsp::entropy::partition::write_compound_type_info(&mut aom_dsp::entropy::enc::OdEcEnc, bool, i32, &mut [u16], bool, i32, &mut [u16], bool, i32, &mut [u16], i32, &mut [u16], i32, i32)
+pub fn aom_dsp::entropy::partition::write_delta_lflevel(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], i32)
+pub fn aom_dsp::entropy::partition::write_delta_q_params_sb(&mut aom_dsp::entropy::enc::OdEcEnc, bool, bool, bool, i32, usize, usize, i32, bool, i32, &mut i32, i32, &[i32; 4], &mut [i32; 4], i32, &mut i32, i32, &mut [u16], &mut [[u16; 5]; 4], &mut [u16])
+pub fn aom_dsp::entropy::partition::write_delta_qindex(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], i32)
+pub fn aom_dsp::entropy::partition::write_drl_idx(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [[u16; 3]; 3], i32, i32, i32, &[u16])
+pub fn aom_dsp::entropy::partition::write_filter_intra_mode_info(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], &mut [u16], bool, i32, i32)
+pub fn aom_dsp::entropy::partition::write_inter_block_mvs(&mut aom_dsp::entropy::enc::OdEcEnc, i32, bool, [i32; 2], [i32; 2], i32, &mut [u16], &mut [u16; 69], &mut [u16; 69])
+pub fn aom_dsp::entropy::partition::write_inter_compound_mode(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], i32)
+pub fn aom_dsp::entropy::partition::write_inter_mode(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [[u16; 3]; 6], &mut [[u16; 3]; 2], &mut [[u16; 3]; 6], i32, i32)
+pub fn aom_dsp::entropy::partition::write_inter_mode_drl(&mut aom_dsp::entropy::enc::OdEcEnc, bool, i32, i32, &mut [u16], &mut [[u16; 3]; 6], &mut [[u16; 3]; 2], &mut [[u16; 3]; 6], &mut [[u16; 3]; 3], i32, i32, &[u16])
+pub fn aom_dsp::entropy::partition::write_inter_mode_tail(&mut aom_dsp::entropy::enc::OdEcEnc, bool, i32, &mut [u16], i32, &mut [u16], bool, i32, &mut [u16], i32, &mut [u16], bool, &mut [u16], &mut [u16], i32, i32, bool, bool, i32, &mut [u16], bool, i32, &mut [u16], bool, i32, &mut [u16], i32, i32, i32, bool, bool, bool, i32, i32, &mut [u16], &mut [u16])
+pub fn aom_dsp::entropy::partition::write_inter_prefix(&mut aom_dsp::entropy::enc::OdEcEnc, bool, bool, bool, i32, &mut [u16], &mut [u16], bool, i32, i32, i32, &mut [u16], bool, bool, bool, bool, i32, &mut [u16], bool, i32, bool, bool, i32, i32, i32, usize, &mut [bool; 4], u32, i32, bool, bool, bool, i32, usize, i32, &mut i32, i32, &[i32; 4], &mut [i32; 4], i32, &mut i32, i32, &mut [u16], &mut [[u16; 5]; 4], &mut [u16], &mut [u16], bool, bool, i32) -> (i32, i32)
+pub fn aom_dsp::entropy::partition::write_inter_segment_id(&mut aom_dsp::entropy::enc::OdEcEnc, bool, bool, bool, bool, bool, i32, &mut [u16], &mut [u16], bool, i32, i32, i32)
+pub fn aom_dsp::entropy::partition::write_inter_txfm_size(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [[u16; 3]], usize, &[usize; 16], i32, i32, &mut [u8], &mut [u8], usize)
+pub fn aom_dsp::entropy::partition::write_interintra_info(&mut aom_dsp::entropy::enc::OdEcEnc, bool, i32, &mut [u16], i32, &mut [u16], bool, i32, &mut [u16], i32, &mut [u16])
+pub fn aom_dsp::entropy::partition::write_intra_prediction_modes(&mut aom_dsp::entropy::enc::OdEcEnc, i32, usize, &mut [u16], i32, &mut [u16], bool, bool, i32, bool, i32, i32, i32, &mut [u16], &mut [u16], &mut [[u16; 17]; 6], &mut [u16], bool, i32, [i32; 2], &[u16], i32, bool, &[u16], [i32; 2], bool, &[u16], [i32; 2], &mut [u16], &mut [u16], &mut [u16], &mut [u16], bool, i32, i32, &mut [u16], &mut [u16])
+pub fn aom_dsp::entropy::partition::write_intra_uv_and_angle_delta(&mut aom_dsp::entropy::enc::OdEcEnc, bool, bool, i32, bool, usize, i32, i32, i32, &mut [u16], &mut [u16], &mut [[u16; 17]; 6], &mut [u16])
+pub fn aom_dsp::entropy::partition::write_intra_uv_mode(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], i32, bool)
+pub fn aom_dsp::entropy::partition::write_intra_y_and_angle_delta(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], i32, usize, i32, &mut [u16])
+pub fn aom_dsp::entropy::partition::write_intra_y_mode_kf(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], i32)
+pub fn aom_dsp::entropy::partition::write_intra_y_mode_nonkf(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], i32)
+pub fn aom_dsp::entropy::partition::write_intrabc_info(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], &mut [u16], &mut [u16; 69], &mut [u16; 69], i32, i32, i32)
+pub fn aom_dsp::entropy::partition::write_is_inter(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], bool, bool, i32)
+pub fn aom_dsp::entropy::partition::write_kf_tail(&mut aom_dsp::entropy::enc::OdEcEnc, bool, &mut [u16], &mut [u16], &mut [u16; 69], &mut [u16; 69], i32, i32, i32, i32, usize, &mut [u16], i32, &mut [u16], bool, bool, i32, bool, i32, i32, i32, &mut [u16], &mut [u16], &mut [[u16; 17]; 6], &mut [u16], bool, i32, [i32; 2], &[u16], i32, bool, &[u16], [i32; 2], bool, &[u16], [i32; 2], &mut [u16], &mut [u16], &mut [u16], &mut [u16], bool, i32, i32, &mut [u16], &mut [u16])
+pub fn aom_dsp::entropy::partition::write_mb_interp_filter(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], &mut [u16], bool, bool, bool, i32, i32)
+pub fn aom_dsp::entropy::partition::write_mb_modes_kf(&mut aom_dsp::entropy::enc::OdEcEnc, &aom_dsp::entropy::partition::MbModeInfoKf, &mut aom_dsp::entropy::partition::KfCdfs, &mut aom_dsp::entropy::partition::KfBlockState)
+pub fn aom_dsp::entropy::partition::write_mb_modes_kf_fc(&mut aom_dsp::entropy::enc::OdEcEnc, &aom_dsp::entropy::partition::MbModeInfoKf, &mut aom_dsp::entropy::partition::KfFrameContext, &mut aom_dsp::entropy::partition::KfBlockState, bool, core::option::Option<aom_dsp::entropy::partition::MiNbrKf>, core::option::Option<aom_dsp::entropy::partition::MiNbrKf>, core::option::Option<aom_dsp::entropy::partition::PaletteNbrKf>, core::option::Option<aom_dsp::entropy::partition::PaletteNbrKf>)
+pub fn aom_dsp::entropy::partition::write_mb_modes_kf_prefix(&mut aom_dsp::entropy::enc::OdEcEnc, bool, bool, bool, i32, i32, i32, &mut [u16], bool, i32, &mut [u16], bool, bool, i32, i32, i32, usize, &mut [bool; 4], u32, i32, bool, bool, bool, i32, usize, i32, &mut i32, i32, &[i32; 4], &mut [i32; 4], i32, &mut i32, i32, &mut [u16], &mut [[u16; 5]; 4], &mut [u16]) -> i32
+pub fn aom_dsp::entropy::partition::write_modes_b(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [i8], &mut [i8], &mut [[u16; 11]; 20], &mut aom_dsp::entropy::partition::KfCdfs, &mut aom_dsp::entropy::partition::KfBlockState, &[i8], &[aom_dsp::entropy::partition::MbModeInfoKf], i32, i32, usize) -> usize
+pub fn aom_dsp::entropy::partition::write_modes_sb(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [i8], &mut [i8], &mut [[u16; 11]; 20], &[i8], i32, i32, usize) -> usize
+pub fn aom_dsp::entropy::partition::write_modes_tile(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [i8], &mut [[u16; 11]; 20], &[i8], i32, i32, i32, usize) -> usize
+pub fn aom_dsp::entropy::partition::write_motion_mode(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], &mut [u16], i32, i32)
+pub fn aom_dsp::entropy::partition::write_palette_colors_v(&mut aom_dsp::entropy::enc::OdEcEnc, &[u16], i32)
+pub fn aom_dsp::entropy::partition::write_palette_mode_info(&mut aom_dsp::entropy::enc::OdEcEnc, bool, bool, i32, [i32; 2], &[u16], &mut [u16], &mut [u16], &mut [u16], &mut [u16], i32, bool, &[u16], [i32; 2], bool, &[u16], [i32; 2])
+pub fn aom_dsp::entropy::partition::write_palette_mode_info_flags(&mut aom_dsp::entropy::enc::OdEcEnc, bool, i32, &mut [u16], &mut [u16], bool, i32, &mut [u16], &mut [u16])
+pub fn aom_dsp::entropy::partition::write_partition(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], usize, i32, bool, bool, usize)
+pub fn aom_dsp::entropy::partition::write_partition_node(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [i8], &mut [i8], i32, i32, usize, i32, i32, i32, &mut [[u16; 11]; 20])
+pub fn aom_dsp::entropy::partition::write_ref_frames(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [[u16; 3]; 16], bool, bool, bool, bool, bool, i32, i32, i32)
+pub fn aom_dsp::entropy::partition::write_segment_id(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], bool, bool, bool, i32, i32, i32)
+pub fn aom_dsp::entropy::partition::write_selected_tx_size(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], usize, i32, usize)
+pub fn aom_dsp::entropy::partition::write_skip(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], bool, i32) -> i32
+pub fn aom_dsp::entropy::partition::write_skip_mode(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], bool, bool, bool, bool, i32)
+pub fn aom_dsp::entropy::partition::write_tx_size_vartx(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [[u16; 3]], usize, &[usize; 16], i32, i32, &mut [u8], &mut [u8], usize, i32, i32, i32)
+pub fn aom_dsp::entropy::partition::y_mode_size_group(usize) -> usize
+pub mod aom_dsp::entropy::rb
+pub struct aom_dsp::entropy::rb::ReadBitBuffer<'a>
+pub aom_dsp::entropy::rb::ReadBitBuffer::error: bool
+pub aom_dsp::entropy::rb::ReadBitBuffer::syntax_error: core::option::Option<&'static str>
+pub fn aom_dsp::entropy::rb::ReadBitBuffer<'_>::read_signed_primitive_refsubexpfin(&mut self, u16, u16, i16) -> i16
+pub fn aom_dsp::entropy::rb::ReadBitBuffer<'a>::bit_position(&self) -> usize
+pub fn aom_dsp::entropy::rb::ReadBitBuffer<'a>::byte_align(&mut self)
+pub fn aom_dsp::entropy::rb::ReadBitBuffer<'a>::bytes_read(&self) -> usize
+pub fn aom_dsp::entropy::rb::ReadBitBuffer<'a>::is_byte_aligned(&self) -> bool
+pub fn aom_dsp::entropy::rb::ReadBitBuffer<'a>::mark_syntax_error(&mut self, &'static str)
+pub fn aom_dsp::entropy::rb::ReadBitBuffer<'a>::new(&'a [u8]) -> Self
+pub fn aom_dsp::entropy::rb::ReadBitBuffer<'a>::read_bit(&mut self) -> u32
+pub fn aom_dsp::entropy::rb::ReadBitBuffer<'a>::read_inv_signed_literal(&mut self, u32) -> i32
+pub fn aom_dsp::entropy::rb::ReadBitBuffer<'a>::read_literal(&mut self, u32) -> i32
+pub fn aom_dsp::entropy::rb::ReadBitBuffer<'a>::read_unsigned_literal(&mut self, u32) -> u32
+pub fn aom_dsp::entropy::rb::ReadBitBuffer<'a>::read_uvlc(&mut self) -> u32
+pub mod aom_dsp::entropy::wb
+pub struct aom_dsp::entropy::wb::WriteBitBuffer
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::add_trailing_bits(&mut self)
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::bit_position(&self) -> usize
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::byte_align_zeros(&mut self)
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::bytes(&self) -> &[u8]
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::bytes_written(&self) -> usize
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::is_byte_aligned(&self) -> bool
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::mark_saved_position(&mut self)
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::new() -> Self
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::overwrite_literal(&mut self, usize, i32, u32)
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::saved_position(&self) -> core::option::Option<usize>
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::write_bit(&mut self, u32)
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::write_inv_signed_literal(&mut self, i32, u32)
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::write_literal(&mut self, i32, u32)
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::write_signed_primitive_refsubexpfin(&mut self, u16, u16, i16, i16)
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::write_unsigned_literal(&mut self, u32, u32)
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::write_uvlc(&mut self, u32)
+pub struct aom_dsp::entropy::OdEcDec<'a> [also: aom_dsp::entropy::dec]
+pub aom_dsp::entropy::OdEcDec::allow_update_cdf: bool
+pub fn aom_dsp::entropy::dec::OdEcDec<'a>::decode_bool_q15(&mut self, u32) -> i32
+pub fn aom_dsp::entropy::dec::OdEcDec<'a>::decode_cdf_q15(&mut self, &[u16], i32) -> i32
+pub fn aom_dsp::entropy::dec::OdEcDec<'a>::new(&'a [u8]) -> Self
+pub fn aom_dsp::entropy::dec::OdEcDec<'a>::tell(&self) -> i32
+pub fn aom_dsp::entropy::dec::OdEcDec<'a>::tell_frac(&self) -> u32
+pub struct aom_dsp::entropy::OdEcEnc [also: aom_dsp::entropy::enc]
+pub aom_dsp::entropy::OdEcEnc::allow_update_cdf: bool
+pub fn aom_dsp::entropy::enc::OdEcEnc::done(&mut self) -> &[u8]
+pub fn aom_dsp::entropy::enc::OdEcEnc::encode_bool_q15(&mut self, i32, u32)
+pub fn aom_dsp::entropy::enc::OdEcEnc::encode_cdf_q15(&mut self, i32, &[u16], i32)
+pub fn aom_dsp::entropy::enc::OdEcEnc::new() -> Self
+pub fn aom_dsp::entropy::enc::OdEcEnc::reset(&mut self)
+pub fn aom_dsp::entropy::read_symbol(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], usize) -> i32 [also: aom_dsp::entropy::cdf]
+pub fn aom_dsp::entropy::update_cdf(&mut [u16], i32, usize) [also: aom_dsp::entropy::cdf]
+pub fn aom_dsp::entropy::write_symbol(&mut aom_dsp::entropy::enc::OdEcEnc, i32, &mut [u16], usize) [also: aom_dsp::entropy::cdf]
+pub mod aom_dsp::inter
+pub mod aom_dsp::inter::compound
+pub enum aom_dsp::inter::compound::CompoundType
+pub aom_dsp::inter::compound::CompoundType::SegMask
+pub aom_dsp::inter::compound::CompoundType::Wedge
+pub aom_dsp::inter::compound::CompoundType::Wedge::index: usize
+pub aom_dsp::inter::compound::CompoundType::Wedge::sign: usize
+pub enum aom_dsp::inter::compound::DiffwtdMaskType
+pub aom_dsp::inter::compound::DiffwtdMaskType::Diffwtd38 = 0
+pub aom_dsp::inter::compound::DiffwtdMaskType::Diffwtd38Inv = 1
+pub struct aom_dsp::inter::compound::DistWtdWeights
+pub aom_dsp::inter::compound::DistWtdWeights::bck_offset: i32
+pub aom_dsp::inter::compound::DistWtdWeights::fwd_offset: i32
+pub aom_dsp::inter::compound::DistWtdWeights::use_dist_wtd_comp_avg: bool
+pub fn aom_dsp::inter::compound::build_compound_diffwtd_mask(&mut [u8], aom_dsp::inter::compound::DiffwtdMaskType, &[u8], usize, &[u8], usize, usize, usize)
+pub fn aom_dsp::inter::compound::build_compound_diffwtd_mask_d16(&mut [u8], aom_dsp::inter::compound::DiffwtdMaskType, &[u16], usize, &[u16], usize, usize, usize, i32, i32, i32)
+pub fn aom_dsp::inter::compound::build_compound_diffwtd_mask_highbd(&mut [u8], aom_dsp::inter::compound::DiffwtdMaskType, &[u16], usize, &[u16], usize, usize, usize, u32)
+pub fn aom_dsp::inter::compound::dist_wtd_comp_weight_assign(bool, i32, i32, i32, i32, bool, bool) -> aom_dsp::inter::compound::DistWtdWeights
+pub fn aom_dsp::inter::compound::get_compound_type_mask(aom_dsp::inter::compound::CompoundType, usize) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn aom_dsp::inter::compound::highbd_blend_a64_d16_mask(&mut [u16], usize, &[u16], usize, &[u16], usize, &[u8], usize, usize, usize, bool, bool, i32, i32, u32)
+pub fn aom_dsp::inter::compound::lowbd_blend_a64_d16_mask(&mut [u8], usize, &[u16], usize, &[u16], usize, &[u8], usize, usize, usize, bool, bool, i32, i32)
+pub fn aom_dsp::inter::compound::wedge_compute_delta_squares(&mut [i16], &[i16], &[i16], usize)
+pub fn aom_dsp::inter::compound::wedge_sign_from_residuals(&[i16], &[u8], usize, i64) -> bool
+pub fn aom_dsp::inter::compound::wedge_sse_from_residuals(&[i16], &[i16], &[u8], usize) -> u64
+pub mod aom_dsp::inter::interintra
+pub const aom_dsp::inter::interintra::INTERINTRA_TO_INTRA_MODE: [usize; 4]
+pub fn aom_dsp::inter::interintra::blend_a64_mask(&mut [u16], usize, &[u16], usize, &[u16], usize, &[u8], usize, usize, usize, bool, bool)
+pub fn aom_dsp::inter::interintra::blend_a64_mask_lowbd(&mut [u8], usize, &[u8], usize, &[u8], usize, &[u8], usize, usize, usize, bool, bool)
+pub fn aom_dsp::inter::interintra::build_smooth_interintra_mask(usize, usize) -> alloc::vec::Vec<u8>
+pub fn aom_dsp::inter::interintra::combine_interintra(usize, bool, usize, usize, usize, &mut [u16], usize, &[u16], usize, &[u16], usize)
+pub fn aom_dsp::inter::interintra::combine_interintra_lowbd(usize, bool, usize, usize, usize, &mut [u8], usize, &[u8], usize, &[u8], usize)
+pub fn aom_dsp::inter::interintra::is_wedge_used(usize) -> bool
+pub fn aom_dsp::inter::interintra::wedge_mask(usize, usize) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn aom_dsp::inter::interintra::wedge_mask_signed(usize, usize, usize) -> core::option::Option<alloc::vec::Vec<u8>>
+pub mod aom_dsp::inter::scale
+pub struct aom_dsp::inter::scale::ScaleFactors
+pub aom_dsp::inter::scale::ScaleFactors::x_scale_fp: i32
+pub aom_dsp::inter::scale::ScaleFactors::x_step_q4: i32
+pub aom_dsp::inter::scale::ScaleFactors::y_scale_fp: i32
+pub aom_dsp::inter::scale::ScaleFactors::y_step_q4: i32
+pub fn aom_dsp::inter::scale::ScaleFactors::for_frame(i32, i32, i32, i32) -> Self
+pub fn aom_dsp::inter::scale::ScaleFactors::is_scaled(&self) -> bool
+pub fn aom_dsp::inter::scale::ScaleFactors::is_valid(&self) -> bool
+pub fn aom_dsp::inter::scale::ScaleFactors::scaled_x(&self, i32) -> i32
+pub fn aom_dsp::inter::scale::ScaleFactors::scaled_y(&self, i32) -> i32
+pub const aom_dsp::inter::scale::REF_INVALID_SCALE: i32
+pub const aom_dsp::inter::scale::REF_NO_SCALE: i32
+pub const aom_dsp::inter::scale::REF_SCALE_SHIFT: i32
+pub fn aom_dsp::inter::scale::scale_mv((i32, i32), i32, i32, &aom_dsp::inter::scale::ScaleFactors) -> (i32, i32)
+pub fn aom_dsp::inter::scale::valid_ref_frame_size(i32, i32, i32, i32) -> bool
+pub mod aom_dsp::inter::warp
+pub struct aom_dsp::inter::warp::WarpConvolveParams
+pub aom_dsp::inter::warp::WarpConvolveParams::bck_offset: i32
+pub aom_dsp::inter::warp::WarpConvolveParams::do_average: bool
+pub aom_dsp::inter::warp::WarpConvolveParams::fwd_offset: i32
+pub aom_dsp::inter::warp::WarpConvolveParams::is_compound: bool
+pub aom_dsp::inter::warp::WarpConvolveParams::round_0: i32
+pub aom_dsp::inter::warp::WarpConvolveParams::round_1: i32
+pub aom_dsp::inter::warp::WarpConvolveParams::use_dist_wtd_comp_avg: bool
+pub struct aom_dsp::inter::warp::WarpedMotionParams [also: aom_dsp::entropy::header]
+pub aom_dsp::inter::warp::WarpedMotionParams::alpha: i16
+pub aom_dsp::inter::warp::WarpedMotionParams::beta: i16
+pub aom_dsp::inter::warp::WarpedMotionParams::delta: i16
+pub aom_dsp::inter::warp::WarpedMotionParams::gamma: i16
+pub aom_dsp::inter::warp::WarpedMotionParams::invalid: u8
+pub aom_dsp::inter::warp::WarpedMotionParams::wmmat: [i32; 6]
+pub aom_dsp::inter::warp::WarpedMotionParams::wmtype: u8
+pub const aom_dsp::inter::warp::AFFINE: u8
+pub fn aom_dsp::inter::warp::find_projection(usize, &[i32], &[i32], i32, i32, i32, i32, &mut aom_dsp::inter::warp::WarpedMotionParams, i32, i32) -> i32
+pub fn aom_dsp::inter::warp::get_shear_params(&mut aom_dsp::inter::warp::WarpedMotionParams) -> bool
+pub fn aom_dsp::inter::warp::highbd_warp_affine(&[i32; 6], &[u16], usize, usize, usize, &mut [u16], usize, &mut [u16], usize, i32, i32, usize, usize, usize, usize, u32, &aom_dsp::inter::warp::WarpConvolveParams, i16, i16, i16, i16)
+pub fn aom_dsp::inter::warp::warp_affine(&[i32; 6], &[u16], usize, usize, usize, &mut [u16], usize, usize, i32, i32, usize, usize, usize, usize, i16, i16, i16, i16)
+pub fn aom_dsp::inter::blend_a64_hmask(&mut [u16], usize, usize, &[u16], usize, usize, &[u8], usize, usize)
+pub fn aom_dsp::inter::blend_a64_vmask(&mut [u16], usize, usize, &[u16], usize, usize, &[u8], usize, usize)
+pub fn aom_dsp::inter::build_inter_predictor(&[u16], usize, usize, usize, &mut [u16], usize, usize, usize, usize, usize, usize, i32, i32, usize, usize, usize, usize)
+pub fn aom_dsp::inter::build_mc_border(&[u16], usize, usize, usize, i32, i32, usize, usize, &mut [u8])
+pub fn aom_dsp::inter::get_obmc_mask(usize) -> &'static [u8]
+pub fn aom_dsp::inter::inter_predictor(&[u8], usize, usize, &mut [u8], usize, usize, usize, usize, usize, usize, usize)
+pub mod aom_dsp::intra
+pub mod aom_dsp::intra::cfl
+pub struct aom_dsp::intra::cfl::CflCtx
+pub aom_dsp::intra::cfl::CflCtx::ac_buf_q3: [i16; 1024]
+pub aom_dsp::intra::cfl::CflCtx::are_parameters_computed: bool
+pub aom_dsp::intra::cfl::CflCtx::buf_height: i32
+pub aom_dsp::intra::cfl::CflCtx::buf_width: i32
+pub aom_dsp::intra::cfl::CflCtx::recon_buf_q3: [u16; 1024]
+pub aom_dsp::intra::cfl::CflCtx::subsampling_x: i32
+pub aom_dsp::intra::cfl::CflCtx::subsampling_y: i32
+pub fn aom_dsp::intra::cfl::CflCtx::new(i32, i32) -> Self
+pub const aom_dsp::intra::cfl::CFL_BUF_LINE: usize
+pub const aom_dsp::intra::cfl::CFL_BUF_SQUARE: usize
+pub fn aom_dsp::intra::cfl::cfl_idx_to_alpha(i32, i32, usize) -> i32
+pub fn aom_dsp::intra::cfl::cfl_predict_block(&mut aom_dsp::intra::cfl::CflCtx, &mut [u16], usize, usize, usize, usize, i32, i32, i32)
+pub fn aom_dsp::intra::cfl::cfl_predict_hbd(&[i16; 1024], &mut [u16], usize, usize, i32, i32, usize, usize)
+pub fn aom_dsp::intra::cfl::cfl_store_block(&mut aom_dsp::intra::cfl::CflCtx, &[u16], usize, usize, usize, usize, i32, i32, i32, i32)
+pub fn aom_dsp::intra::cfl::cfl_store_tx(&mut aom_dsp::intra::cfl::CflCtx, &[u16], usize, usize, i32, i32, usize, usize, i32, i32)
+pub fn aom_dsp::intra::cfl::subsample_420_hbd(&[u16], usize, usize, &mut [u16; 1024], usize, usize, usize)
+pub fn aom_dsp::intra::cfl::subsample_422_hbd(&[u16], usize, usize, &mut [u16; 1024], usize, usize, usize)
+pub fn aom_dsp::intra::cfl::subsample_444_hbd(&[u16], usize, usize, &mut [u16; 1024], usize, usize, usize)
+pub fn aom_dsp::intra::cfl::subtract_average(&[u16; 1024], &mut [i16; 1024], usize, usize)
+pub mod aom_dsp::intra::dir
+pub struct aom_dsp::intra::dir::EdgeRef<'a>
+pub fn aom_dsp::intra::dir::EdgeRef<'a>::new(&'a [u8], usize) -> Self
+pub struct aom_dsp::intra::dir::EdgeRef16<'a>
+pub fn aom_dsp::intra::dir::EdgeRef16<'a>::new(&'a [u16], usize) -> Self
+pub static aom_dsp::intra::dir::DR_INTRA_DERIVATIVE: [i16; 90]
+pub fn aom_dsp::intra::dir::get_dx(i32) -> i32
+pub fn aom_dsp::intra::dir::get_dy(i32) -> i32
+pub fn aom_dsp::intra::dir::z1(&mut [u8], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef<'_>, i32, i32)
+pub fn aom_dsp::intra::dir::z1_high(&mut [u16], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef16<'_>, i32, i32)
+pub fn aom_dsp::intra::dir::z1_high_scalar(&mut [u16], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef16<'_>, i32, i32)
+pub fn aom_dsp::intra::dir::z2(&mut [u8], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef<'_>, &aom_dsp::intra::dir::EdgeRef<'_>, i32, i32, i32, i32)
+pub fn aom_dsp::intra::dir::z2_high(&mut [u16], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef16<'_>, &aom_dsp::intra::dir::EdgeRef16<'_>, i32, i32, i32, i32)
+pub fn aom_dsp::intra::dir::z2_high_scalar(&mut [u16], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef16<'_>, &aom_dsp::intra::dir::EdgeRef16<'_>, i32, i32, i32, i32)
+pub fn aom_dsp::intra::dir::z3(&mut [u8], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef<'_>, i32, i32)
+pub fn aom_dsp::intra::dir::z3_high(&mut [u16], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef16<'_>, i32, i32)
+pub fn aom_dsp::intra::dir::z3_high_scalar(&mut [u16], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef16<'_>, i32, i32)
+pub mod aom_dsp::intra::edge
+pub fn aom_dsp::intra::edge::edge_filter_strength(i32, i32, i32, i32) -> i32
+pub fn aom_dsp::intra::edge::filter_corner(&mut [u8], &mut [u8])
+pub fn aom_dsp::intra::edge::filter_corner_high(&mut [u16], &mut [u16])
+pub fn aom_dsp::intra::edge::filter_intra_edge(&mut [u8], usize, i32)
+pub fn aom_dsp::intra::edge::highbd_filter_intra_edge(&mut [u16], usize, i32)
+pub fn aom_dsp::intra::edge::highbd_upsample_intra_edge(&mut [u16], usize, usize, u8)
+pub fn aom_dsp::intra::edge::upsample_intra_edge(&mut [u8], usize, usize)
+pub fn aom_dsp::intra::edge::use_upsample(i32, i32, i32, i32) -> i32
+pub struct aom_dsp::intra::AboveRef<'a>(pub &'a [u8])
+pub struct aom_dsp::intra::AboveRef16<'a>(pub &'a [u16])
+pub const aom_dsp::intra::DC: usize
+pub const aom_dsp::intra::DC_128: usize
+pub const aom_dsp::intra::DC_LEFT: usize
+pub const aom_dsp::intra::DC_TOP: usize
+pub const aom_dsp::intra::H: usize
+pub const aom_dsp::intra::PAETH: usize
+pub const aom_dsp::intra::SMOOTH: usize
+pub const aom_dsp::intra::SMOOTH_H: usize
+pub const aom_dsp::intra::SMOOTH_V: usize
+pub const aom_dsp::intra::V: usize
+pub fn aom_dsp::intra::build_directional_intra_high(&[u16], usize, usize, &mut [u16], usize, i32, bool, i32, usize, usize, i32, usize, i32, i32)
+pub fn aom_dsp::intra::build_directional_intra_u8(&[u8], usize, usize, &mut [u8], usize, i32, bool, i32, usize, usize, i32, usize, i32)
+pub fn aom_dsp::intra::build_filter_intra_high(&[u16], usize, usize, &mut [u16], usize, usize, usize, usize, i32, usize, i32, i32)
+pub fn aom_dsp::intra::build_filter_intra_u8(&[u8], usize, usize, &mut [u8], usize, usize, usize, usize, i32, usize, i32)
+pub fn aom_dsp::intra::build_non_directional_intra_high(&[u16], usize, usize, &mut [u16], usize, usize, usize, usize, usize, i32)
+pub fn aom_dsp::intra::build_non_directional_intra_u8(&[u8], usize, usize, &mut [u8], usize, usize, usize, usize, usize)
+pub fn aom_dsp::intra::dr_predict_high(&mut [u16], usize, usize, &[u16], &[u16], usize, i32, i32, i32, i32)
+pub fn aom_dsp::intra::filter_intra_predict_high(&mut [u16], usize, usize, &[u16], &[u16], usize, i32)
+pub fn aom_dsp::intra::predict(usize, &mut [u8], usize, usize, usize, &aom_dsp::intra::AboveRef<'_>, &[u8])
+pub fn aom_dsp::intra::predict_highbd(usize, &mut [u16], usize, usize, usize, &aom_dsp::intra::AboveRef16<'_>, &[u16], i32)
+pub fn aom_dsp::intra::predict_highbd_scalar(usize, &mut [u16], usize, usize, usize, &aom_dsp::intra::AboveRef16<'_>, &[u16], i32)
+pub fn aom_dsp::intra::predict_intra_high(&[u16], usize, usize, &mut [u16], usize, usize, i32, bool, usize, bool, i32, usize, usize, i32, usize, i32, i32)
+pub fn aom_dsp::intra::predict_intra_u8(&[u8], usize, usize, &mut [u8], usize, usize, i32, bool, usize, bool, i32, usize, usize, i32, usize, i32)
+pub mod aom_dsp::loopfilter
+pub mod aom_dsp::loopfilter::frame
+pub struct aom_dsp::loopfilter::frame::LfFrameBuf<'a>
+pub aom_dsp::loopfilter::frame::LfFrameBuf::bd: i32
+pub aom_dsp::loopfilter::frame::LfFrameBuf::crop_height: u32
+pub aom_dsp::loopfilter::frame::LfFrameBuf::crop_width: u32
+pub aom_dsp::loopfilter::frame::LfFrameBuf::ss_x: usize
+pub aom_dsp::loopfilter::frame::LfFrameBuf::ss_y: usize
+pub aom_dsp::loopfilter::frame::LfFrameBuf::u: &'a mut [u16]
+pub aom_dsp::loopfilter::frame::LfFrameBuf::uv_stride: usize
+pub aom_dsp::loopfilter::frame::LfFrameBuf::v: &'a mut [u16]
+pub aom_dsp::loopfilter::frame::LfFrameBuf::y: &'a mut [u16]
+pub aom_dsp::loopfilter::frame::LfFrameBuf::y_stride: usize
+pub struct aom_dsp::loopfilter::frame::LfFrameBufU8<'a>
+pub aom_dsp::loopfilter::frame::LfFrameBufU8::crop_height: u32
+pub aom_dsp::loopfilter::frame::LfFrameBufU8::crop_width: u32
+pub aom_dsp::loopfilter::frame::LfFrameBufU8::ss_x: usize
+pub aom_dsp::loopfilter::frame::LfFrameBufU8::ss_y: usize
+pub aom_dsp::loopfilter::frame::LfFrameBufU8::u: &'a mut [u8]
+pub aom_dsp::loopfilter::frame::LfFrameBufU8::uv_stride: usize
+pub aom_dsp::loopfilter::frame::LfFrameBufU8::v: &'a mut [u8]
+pub aom_dsp::loopfilter::frame::LfFrameBufU8::y: &'a mut [u8]
+pub aom_dsp::loopfilter::frame::LfFrameBufU8::y_stride: usize
+pub struct aom_dsp::loopfilter::frame::LfInfo
+pub aom_dsp::loopfilter::frame::LfInfo::lfthr: [(u8, u8, u8); 64]
+pub aom_dsp::loopfilter::frame::LfInfo::lvl: [[[[[u8; 2]; 8]; 2]; 8]; 3]
+pub struct aom_dsp::loopfilter::frame::LfMi
+pub aom_dsp::loopfilter::frame::LfMi::bsize: u8
+pub aom_dsp::loopfilter::frame::LfMi::delta_lf: [i8; 4]
+pub aom_dsp::loopfilter::frame::LfMi::delta_lf_from_base: i8
+pub aom_dsp::loopfilter::frame::LfMi::is_inter: bool
+pub aom_dsp::loopfilter::frame::LfMi::mode_lf: u8
+pub aom_dsp::loopfilter::frame::LfMi::ref0: u8
+pub aom_dsp::loopfilter::frame::LfMi::segment_id: u8
+pub aom_dsp::loopfilter::frame::LfMi::skip_txfm: bool
+pub aom_dsp::loopfilter::frame::LfMi::tx_size: u8
+pub struct aom_dsp::loopfilter::frame::LfMiGrid<'a>
+pub aom_dsp::loopfilter::frame::LfMiGrid::mi: &'a [aom_dsp::loopfilter::frame::LfMi]
+pub aom_dsp::loopfilter::frame::LfMiGrid::mi_cols: i32
+pub aom_dsp::loopfilter::frame::LfMiGrid::mi_rows: i32
+pub aom_dsp::loopfilter::frame::LfMiGrid::stride: usize
+pub struct aom_dsp::loopfilter::frame::LfParams
+pub aom_dsp::loopfilter::frame::LfParams::delta_lf_multi: bool
+pub aom_dsp::loopfilter::frame::LfParams::delta_lf_present: bool
+pub aom_dsp::loopfilter::frame::LfParams::filter_level: [i32; 2]
+pub aom_dsp::loopfilter::frame::LfParams::filter_level_u: i32
+pub aom_dsp::loopfilter::frame::LfParams::filter_level_v: i32
+pub aom_dsp::loopfilter::frame::LfParams::lossless: [bool; 8]
+pub aom_dsp::loopfilter::frame::LfParams::mode_deltas: [i8; 2]
+pub aom_dsp::loopfilter::frame::LfParams::mode_ref_delta_enabled: bool
+pub aom_dsp::loopfilter::frame::LfParams::ref_deltas: [i8; 8]
+pub aom_dsp::loopfilter::frame::LfParams::seg: aom_dsp::loopfilter::frame::LfSeg
+pub aom_dsp::loopfilter::frame::LfParams::sharpness: i32
+pub struct aom_dsp::loopfilter::frame::LfSeg
+pub aom_dsp::loopfilter::frame::LfSeg::active: [[bool; 4]; 8]
+pub aom_dsp::loopfilter::frame::LfSeg::data: [[i32; 4]; 8]
+pub aom_dsp::loopfilter::frame::LfSeg::enabled: bool
+pub const aom_dsp::loopfilter::frame::FRAME_LF_COUNT: usize
+pub const aom_dsp::loopfilter::frame::MAX_LOOP_FILTER: i32
+pub const aom_dsp::loopfilter::frame::MODE_LF_LUT: [u8; 25]
+pub fn aom_dsp::loopfilter::frame::lf_frame_init(&aom_dsp::loopfilter::frame::LfParams, usize, usize) -> aom_dsp::loopfilter::frame::LfInfo
+pub fn aom_dsp::loopfilter::frame::loop_filter_frame(&mut aom_dsp::loopfilter::frame::LfFrameBuf<'_>, &aom_dsp::loopfilter::frame::LfMiGrid<'_>, &aom_dsp::loopfilter::frame::LfParams, usize, usize)
+pub fn aom_dsp::loopfilter::frame::loop_filter_frame_u8(&mut aom_dsp::loopfilter::frame::LfFrameBufU8<'_>, &aom_dsp::loopfilter::frame::LfMiGrid<'_>, &aom_dsp::loopfilter::frame::LfParams, usize, usize)
+pub mod aom_dsp::loopfilter::highbd
+pub fn aom_dsp::loopfilter::highbd::horizontal(u32, &mut [u16], usize, usize, u8, u8, u8, i32)
+pub fn aom_dsp::loopfilter::highbd::horizontal_scalar(u32, &mut [u16], usize, usize, u8, u8, u8, i32)
+pub fn aom_dsp::loopfilter::highbd::vertical(u32, &mut [u16], usize, usize, u8, u8, u8, i32)
+pub fn aom_dsp::loopfilter::highbd::vertical_scalar(u32, &mut [u16], usize, usize, u8, u8, u8, i32)
+pub fn aom_dsp::loopfilter::horizontal(u32, &mut [u8], usize, usize, u8, u8, u8)
+pub fn aom_dsp::loopfilter::horizontal_scalar(u32, &mut [u8], usize, usize, u8, u8, u8)
+pub fn aom_dsp::loopfilter::vertical(u32, &mut [u8], usize, usize, u8, u8, u8)
+pub fn aom_dsp::loopfilter::vertical_scalar(u32, &mut [u8], usize, usize, u8, u8, u8)
+pub mod aom_dsp::lowbd
+pub mod aom_dsp::quant
+pub mod aom_dsp::quant::simd
+pub fn aom_dsp::quant::simd::av1_quantize_fp_no_qmatrix_dispatch(&[i16; 2], &[i16; 2], &[i16; 2], i32, &[i16], &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
+pub enum aom_dsp::quant::QuantTuning
+pub aom_dsp::quant::QuantTuning::Iq
+pub aom_dsp::quant::QuantTuning::Psnr
+pub aom_dsp::quant::QuantTuning::Ssimulacra2
+pub struct aom_dsp::quant::Dequants
+pub aom_dsp::quant::Dequants::u_dequant_qtx: [[i16; 8]; 256]
+pub aom_dsp::quant::Dequants::v_dequant_qtx: [[i16; 8]; 256]
+pub aom_dsp::quant::Dequants::y_dequant_qtx: [[i16; 8]; 256]
+pub fn aom_dsp::quant::Dequants::zeroed() -> alloc::boxed::Box<Self>
+pub struct aom_dsp::quant::PlaneQuantRows<'a>
+pub aom_dsp::quant::PlaneQuantRows::dequant: &'a [i16; 8]
+pub aom_dsp::quant::PlaneQuantRows::quant: &'a [i16; 8]
+pub aom_dsp::quant::PlaneQuantRows::quant_fp: &'a [i16; 8]
+pub aom_dsp::quant::PlaneQuantRows::quant_shift: &'a [i16; 8]
+pub aom_dsp::quant::PlaneQuantRows::round: &'a [i16; 8]
+pub aom_dsp::quant::PlaneQuantRows::round_fp: &'a [i16; 8]
+pub aom_dsp::quant::PlaneQuantRows::zbin: &'a [i16; 8]
+pub struct aom_dsp::quant::QuantizerSettings
+pub aom_dsp::quant::QuantizerSettings::base_qindex: i32
+pub aom_dsp::quant::QuantizerSettings::qmatrix_level_u: i32
+pub aom_dsp::quant::QuantizerSettings::qmatrix_level_v: i32
+pub aom_dsp::quant::QuantizerSettings::qmatrix_level_y: i32
+pub aom_dsp::quant::QuantizerSettings::u_ac_delta_q: i32
+pub aom_dsp::quant::QuantizerSettings::u_dc_delta_q: i32
+pub aom_dsp::quant::QuantizerSettings::v_ac_delta_q: i32
+pub aom_dsp::quant::QuantizerSettings::v_dc_delta_q: i32
+pub aom_dsp::quant::QuantizerSettings::y_dc_delta_q: i32
+pub struct aom_dsp::quant::Quants
+pub aom_dsp::quant::Quants::u_quant: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::u_quant_fp: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::u_quant_shift: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::u_round: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::u_round_fp: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::u_zbin: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::v_quant: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::v_quant_fp: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::v_quant_shift: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::v_round: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::v_round_fp: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::v_zbin: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::y_quant: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::y_quant_fp: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::y_quant_shift: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::y_round: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::y_round_fp: [[i16; 8]; 256]
+pub aom_dsp::quant::Quants::y_zbin: [[i16; 8]; 256]
+pub fn aom_dsp::quant::Quants::zeroed() -> alloc::boxed::Box<Self>
+pub struct aom_dsp::quant::Segmentation
+pub aom_dsp::quant::Segmentation::enabled: bool
+pub aom_dsp::quant::Segmentation::feature_data: [[i16; 8]; 8]
+pub aom_dsp::quant::Segmentation::feature_mask: [u32; 8]
+pub fn aom_dsp::quant::Segmentation::feature_active(&self, usize, usize) -> bool
+pub fn aom_dsp::quant::Segmentation::segdata(&self, usize, usize) -> i32
+pub const aom_dsp::quant::MAX_SEGMENTS: usize [also: aom_dsp::loopfilter::frame]
+pub const aom_dsp::quant::NUM_QM_LEVELS: usize
+pub const aom_dsp::quant::QINDEX_RANGE: usize
+pub const aom_dsp::quant::QM_FIRST_IQ_SSIMULACRA2: i32
+pub const aom_dsp::quant::QM_LAST_IQ_SSIMULACRA2: i32
+pub const aom_dsp::quant::SEG_LVL_ALT_Q: usize
+pub const aom_dsp::quant::SEG_LVL_MAX: usize
+pub const aom_dsp::quant::SEG_LVL_SKIP: usize
+pub fn aom_dsp::quant::aom_get_qmlevel(i32, i32, i32) -> i32
+pub fn aom_dsp::quant::aom_get_qmlevel_444_chroma(i32, i32, i32) -> i32
+pub fn aom_dsp::quant::aom_get_qmlevel_allintra(i32, i32, i32) -> i32
+pub fn aom_dsp::quant::aom_get_qmlevel_luma_ssimulacra2(i32, i32, i32) -> i32
+pub fn aom_dsp::quant::aom_highbd_quantize_b_adaptive_helper(&[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], i32, core::option::Option<&[u8]>, core::option::Option<&[u8]>, &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::aom_highbd_quantize_b_no_qmatrix(&[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], i32, &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::aom_highbd_quantize_b_qm(&[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], i32, &[u8], &[u8], &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::aom_quantize_b_adaptive_helper(&[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], i32, core::option::Option<&[u8]>, core::option::Option<&[u8]>, &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::aom_quantize_b_no_qmatrix(&[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], i32, &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::aom_quantize_b_qm(&[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], i32, &[u8], &[u8], &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::av1_ac_quant_qtx(i32, i32, u8) -> i16
+pub fn aom_dsp::quant::av1_build_quantizer(u8, i32, i32, i32, i32, i32, &mut aom_dsp::quant::Quants, &mut aom_dsp::quant::Dequants, i32)
+pub fn aom_dsp::quant::av1_dc_quant_qtx(i32, i32, u8) -> i16
+pub fn aom_dsp::quant::av1_get_qindex(&aom_dsp::quant::Segmentation, usize, i32) -> i32
+pub fn aom_dsp::quant::av1_highbd_quantize_dc(&[i16; 2], i16, i16, i32, core::option::Option<&[u8]>, core::option::Option<&[u8]>, &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::av1_highbd_quantize_fp_no_qmatrix(&[i16; 2], &[i16; 2], &[i16; 2], i32, &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::av1_highbd_quantize_fp_qm(&[i16; 2], &[i16; 2], &[i16; 2], i32, &[u8], &[u8], &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::av1_quantize_dc(&[i16; 2], i16, i16, i32, core::option::Option<&[u8]>, core::option::Option<&[u8]>, &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::av1_quantize_fp(&[i32], &[i16; 2], &[i16; 2], &[i16; 2], &mut [i32], &mut [i32], &[i16]) -> u16
+pub fn aom_dsp::quant::av1_quantize_fp_32x32(&[i32], &[i16; 2], &[i16; 2], &[i16; 2], &mut [i32], &mut [i32], &[i16]) -> u16
+pub fn aom_dsp::quant::av1_quantize_fp_64x64(&[i32], &[i16; 2], &[i16; 2], &[i16; 2], &mut [i32], &mut [i32], &[i16]) -> u16
+pub fn aom_dsp::quant::av1_quantize_fp_no_qmatrix(&[i16; 2], &[i16; 2], &[i16; 2], i32, &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::av1_quantize_fp_qm(&[i16; 2], &[i16; 2], &[i16; 2], i32, &[u8], &[u8], &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::av1_set_quantizer(i32, i32, i32, bool, bool, aom_dsp::quant::QuantTuning, i32, i32, bool, bool) -> aom_dsp::quant::QuantizerSettings
+pub fn aom_dsp::quant::iqmatrix(usize, usize, usize, usize) -> core::option::Option<&'static [u8]>
+pub fn aom_dsp::quant::qmatrix(usize, usize, usize, usize) -> core::option::Option<&'static [u8]>
+pub fn aom_dsp::quant::set_q_index<'a>(&'a aom_dsp::quant::Quants, &'a aom_dsp::quant::Dequants, usize, usize) -> aom_dsp::quant::PlaneQuantRows<'a>
+pub mod aom_dsp::recon
+pub struct aom_dsp::recon::ReconScratch
+pub fn aom_dsp::recon::reconstruct_txb(&mut [u16], usize, usize, usize, &[i32], [i16; 2], core::option::Option<&[u8]>, i32)
+pub fn aom_dsp::recon::reconstruct_txb_into(&mut [u16], usize, usize, usize, &[i32], [i16; 2], core::option::Option<&[u8]>, i32, &mut aom_dsp::recon::ReconScratch)
+pub fn aom_dsp::recon::reconstruct_txb_u8_into(&mut [u8], usize, usize, usize, &[i32], [i16; 2], core::option::Option<&[u8]>, &mut aom_dsp::recon::ReconScratch)
+pub mod aom_dsp::restore
+pub mod aom_dsp::restore::frame
+pub struct aom_dsp::restore::frame::LrPlaneInput<'a>
+pub aom_dsp::restore::frame::LrPlaneInput::cur: &'a mut [u16]
+pub aom_dsp::restore::frame::LrPlaneInput::deblocked: &'a [u16]
+pub aom_dsp::restore::frame::LrPlaneInput::stride: usize
+pub aom_dsp::restore::frame::LrPlaneInput::units: &'a [aom_dsp::entropy::lr::LrUnitInfo]
+pub fn aom_dsp::restore::frame::loop_restoration_filter_frame(&mut [aom_dsp::restore::frame::LrPlaneInput<'_>], &aom_dsp::entropy::lr::LrFrameConfig, usize, usize, i32, bool)
+pub mod aom_dsp::restore::pick
+pub struct aom_dsp::restore::pick::LrPlanePixels<'a>
+pub aom_dsp::restore::pick::LrPlanePixels::cur: &'a [u16]
+pub aom_dsp::restore::pick::LrPlanePixels::deblocked: &'a [u16]
+pub aom_dsp::restore::pick::LrPlanePixels::src: &'a [u16]
+pub aom_dsp::restore::pick::LrPlanePixels::stride: usize
+pub struct aom_dsp::restore::pick::LrSearchInput<'a>
+pub aom_dsp::restore::pick::LrSearchInput::bit_depth: i32
+pub aom_dsp::restore::pick::LrSearchInput::crop_height: i32
+pub aom_dsp::restore::pick::LrSearchInput::crop_width: i32
+pub aom_dsp::restore::pick::LrSearchInput::dc_quant_qtx: i32
+pub aom_dsp::restore::pick::LrSearchInput::highbd: bool
+pub aom_dsp::restore::pick::LrSearchInput::mi_cols: i32
+pub aom_dsp::restore::pick::LrSearchInput::mi_rows: i32
+pub aom_dsp::restore::pick::LrSearchInput::mib_size_log2: i32
+pub aom_dsp::restore::pick::LrSearchInput::planes: alloc::vec::Vec<aom_dsp::restore::pick::LrPlanePixels<'a>>
+pub aom_dsp::restore::pick::LrSearchInput::rdmult: i64
+pub aom_dsp::restore::pick::LrSearchInput::sf: aom_dsp::restore::pick::LrSearchSf
+pub aom_dsp::restore::pick::LrSearchInput::sgrproj_restore_cost: [i32; 2]
+pub aom_dsp::restore::pick::LrSearchInput::ss_x: usize
+pub aom_dsp::restore::pick::LrSearchInput::ss_y: usize
+pub aom_dsp::restore::pick::LrSearchInput::switchable_restore_cost: [i32; 3]
+pub aom_dsp::restore::pick::LrSearchInput::tile_sb_cols: alloc::vec::Vec<(i32, i32)>
+pub aom_dsp::restore::pick::LrSearchInput::tile_sb_rows: alloc::vec::Vec<(i32, i32)>
+pub aom_dsp::restore::pick::LrSearchInput::wiener_restore_cost: [i32; 2]
+pub struct aom_dsp::restore::pick::LrSearchOutcome
+pub aom_dsp::restore::pick::LrSearchOutcome::frame_restoration_type: [u8; 3]
+pub aom_dsp::restore::pick::LrSearchOutcome::unit_size: i32
+pub aom_dsp::restore::pick::LrSearchOutcome::units: [alloc::vec::Vec<aom_dsp::entropy::lr::LrUnitInfo>; 3]
+pub struct aom_dsp::restore::pick::LrSearchSf
+pub aom_dsp::restore::pick::LrSearchSf::disable_loop_restoration_chroma: bool
+pub aom_dsp::restore::pick::LrSearchSf::disable_loop_restoration_luma: bool
+pub aom_dsp::restore::pick::LrSearchSf::disable_sgr_filter: bool
+pub aom_dsp::restore::pick::LrSearchSf::disable_wiener_coeff_refine_search: bool
+pub aom_dsp::restore::pick::LrSearchSf::disable_wiener_filter: bool
+pub aom_dsp::restore::pick::LrSearchSf::dual_sgr_penalty_level: i32
+pub aom_dsp::restore::pick::LrSearchSf::enable_sgr_ep_pruning: i32
+pub aom_dsp::restore::pick::LrSearchSf::max_lr_unit_size: i32
+pub aom_dsp::restore::pick::LrSearchSf::min_lr_unit_size: i32
+pub aom_dsp::restore::pick::LrSearchSf::prune_sgr_based_on_wiener: i32
+pub aom_dsp::restore::pick::LrSearchSf::prune_wiener_based_on_src_var: i32
+pub aom_dsp::restore::pick::LrSearchSf::reduce_wiener_window_size: bool
+pub aom_dsp::restore::pick::LrSearchSf::switchable_lr_with_bias_level: i32
+pub aom_dsp::restore::pick::LrSearchSf::use_downsampled_wiener_stats: bool
+pub const aom_dsp::restore::pick::WIENER_FILT_STEP: i64
+pub const aom_dsp::restore::pick::WIENER_STATS_DOWNSAMPLE_FACTOR: i32
+pub const aom_dsp::restore::pick::WIENER_WIN2: usize
+pub const aom_dsp::restore::pick::WIENER_WIN_REDUCED: usize
+pub fn aom_dsp::restore::pick::calc_proj_params(&[u16], usize, usize, usize, usize, &[u16], usize, usize, &[i32], usize, &[i32], usize, usize) -> ([[i64; 2]; 2], [i64; 2])
+pub fn aom_dsp::restore::pick::compute_score(usize, &[i64], &[i64], &[i16; 8], &[i16; 8]) -> i64
+pub fn aom_dsp::restore::pick::compute_stats(usize, &[u16], usize, &[u16], i32, i32, i32, i32, i32, i32, &mut [i64], &mut [i64], bool)
+pub fn aom_dsp::restore::pick::compute_stats_highbd(usize, &[u16], usize, &[u16], i32, i32, i32, i32, i32, i32, &mut [i64], &mut [i64], i32)
+pub fn aom_dsp::restore::pick::encode_xq([i32; 2], usize) -> [i32; 2]
+pub fn aom_dsp::restore::pick::finalize_sym_filter(usize, &[i32; 7], &mut [i16; 8])
+pub fn aom_dsp::restore::pick::get_proj_subspace(&[u16], usize, usize, usize, usize, &[u16], usize, usize, &[i32], usize, &[i32], usize, usize) -> [i32; 2]
+pub fn aom_dsp::restore::pick::pick_filter_restoration(&aom_dsp::restore::pick::LrSearchInput<'_>) -> aom_dsp::restore::pick::LrSearchOutcome
+pub fn aom_dsp::restore::pick::pixel_proj_error(&[u16], usize, usize, usize, usize, &[u16], usize, usize, &[i32], usize, &[i32], usize, [i32; 2], usize, bool) -> i64
+pub fn aom_dsp::restore::pick::wiener_decompose_sep_sym(usize, &[i64], &[i64], &mut [i32; 7], &mut [i32; 7])
+pub mod aom_dsp::restore::sgr
+pub const aom_dsp::restore::sgr::SGR_PARAMS: [([i32; 2], [i32; 2]); 16]
+pub fn aom_dsp::restore::sgr::apply_selfguided_restoration(&[u16], usize, usize, usize, usize, usize, &[i32; 2], &mut [u16], usize, usize, i32)
+pub fn aom_dsp::restore::sgr::decode_xq(&[i32; 2], usize) -> [i32; 2]
+pub fn aom_dsp::restore::sgr::selfguided_restoration(&[u16], usize, usize, usize, usize, &mut [i32], &mut [i32], usize, usize, i32)
+pub mod aom_dsp::restore::wiener
+pub struct aom_dsp::restore::wiener::WienerScratch
+pub fn aom_dsp::restore::wiener::WienerScratch::new() -> Self
+pub fn aom_dsp::restore::wiener::conv_params_wiener(i32) -> (i32, i32)
+pub fn aom_dsp::restore::wiener::wiener_convolve_add_src(&[u16], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32)
+pub fn aom_dsp::restore::wiener::wiener_convolve_add_src_into(&[u16], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32, &mut aom_dsp::restore::wiener::WienerScratch)
+pub fn aom_dsp::restore::wiener::wiener_convolve_add_src_scalar(&[u16], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32)
+pub mod aom_dsp::transform
+pub mod aom_dsp::transform::cospi
+pub const aom_dsp::transform::cospi::COS_BIT_MIN: i32
+pub const aom_dsp::transform::cospi::NEW_INV_SQRT2: i32
+pub const aom_dsp::transform::cospi::NEW_SQRT2: i32
+pub const aom_dsp::transform::cospi::NEW_SQRT2_BITS: i32
+pub static aom_dsp::transform::cospi::COSPI_ARR_DATA: [[i32; 64]; 4]
+pub static aom_dsp::transform::cospi::SINPI_ARR_DATA: [[i32; 5]; 4]
+pub fn aom_dsp::transform::cospi::cospi_arr(i32) -> &'static [i32; 64]
+pub fn aom_dsp::transform::cospi::sinpi_arr(i32) -> &'static [i32; 5]
+pub mod aom_dsp::transform::fdct
+pub mod aom_dsp::transform::inv_txfm1d_gen
+pub mod aom_dsp::transform::inv_txfm2d
+pub struct aom_dsp::transform::inv_txfm2d::InvTxfmScratch
+pub fn aom_dsp::transform::inv_txfm2d::av1_fwht4x4(&[i16], &mut [i32], usize)
+pub fn aom_dsp::transform::inv_txfm2d::av1_highbd_iwht4x4_add(&[i32], &mut [u16], usize, usize, i32)
+pub fn aom_dsp::transform::inv_txfm2d::av1_inv_txfm2d_add(&[i32], &mut [u16], usize, usize, usize, i32)
+pub fn aom_dsp::transform::inv_txfm2d::av1_inv_txfm2d_add_into(&[i32], &mut [u16], usize, usize, usize, i32, &mut aom_dsp::transform::inv_txfm2d::InvTxfmScratch)
+pub fn aom_dsp::transform::inv_txfm2d::av1_inv_txfm2d_add_u8(&[i32], &mut [u8], usize, usize, usize)
+pub fn aom_dsp::transform::inv_txfm2d::av1_inv_txfm2d_add_u8_into(&[i32], &mut [u8], usize, usize, usize, &mut aom_dsp::transform::inv_txfm2d::InvTxfmScratch)
+pub fn aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add(&[i32], &mut [u16], usize, usize, usize, i32, usize, bool)
+pub fn aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add_u8(&[i32], &mut [u8], usize, usize, usize, usize, bool)
+pub fn aom_dsp::transform::inv_txfm2d::av1_iwht4x4_add_u8(&[i32], &mut [u8], usize, usize)
+pub fn aom_dsp::transform::inv_txfm2d::inv_input_len(usize) -> usize
+pub fn aom_dsp::transform::inv_txfm2d::inv_txfm_valid(usize, usize) -> bool
+pub mod aom_dsp::transform::special
+pub mod aom_dsp::transform::txfm1d_gen
+pub mod aom_dsp::transform::txfm2d
+pub struct aom_dsp::transform::txfm2d::FwdTxfmScratch
+pub const aom_dsp::transform::txfm2d::TX_SIZES_ALL: usize
+pub fn aom_dsp::transform::txfm2d::av1_fwd_txfm2d(&[i16], &mut [i32], usize, usize, usize)
+pub fn aom_dsp::transform::txfm2d::av1_fwd_txfm2d_into(&[i16], &mut [i32], usize, usize, usize, &mut aom_dsp::transform::txfm2d::FwdTxfmScratch)
+pub fn aom_dsp::transform::txfm2d::fwd_txfm_valid(usize, usize) -> bool
+pub fn aom_dsp::transform::av1_fadst16(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::txfm1d_gen]
+pub fn aom_dsp::transform::av1_fadst4(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_fadst8(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::txfm1d_gen]
+pub fn aom_dsp::transform::av1_fdct16(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::txfm1d_gen]
+pub fn aom_dsp::transform::av1_fdct32(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::txfm1d_gen]
+pub fn aom_dsp::transform::av1_fdct4(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::fdct]
+pub fn aom_dsp::transform::av1_fdct64(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::txfm1d_gen]
+pub fn aom_dsp::transform::av1_fdct8(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::txfm1d_gen]
+pub fn aom_dsp::transform::av1_fidentity16(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_fidentity32(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_fidentity4(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_fidentity8(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_iadst16(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::inv_txfm1d_gen]
+pub fn aom_dsp::transform::av1_iadst4(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_iadst8(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::inv_txfm1d_gen]
+pub fn aom_dsp::transform::av1_idct16(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::inv_txfm1d_gen]
+pub fn aom_dsp::transform::av1_idct32(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::inv_txfm1d_gen]
+pub fn aom_dsp::transform::av1_idct4(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::inv_txfm1d_gen]
+pub fn aom_dsp::transform::av1_idct64(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::inv_txfm1d_gen]
+pub fn aom_dsp::transform::av1_idct8(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::inv_txfm1d_gen]
+pub fn aom_dsp::transform::av1_iidentity16(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_iidentity32(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_iidentity4(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_iidentity8(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::clamp_value(i32, i8) -> i32 [also: aom_dsp::transform::fdct]
+pub fn aom_dsp::transform::half_btf(i32, i32, i32, i32, i32) -> i32 [also: aom_dsp::transform::fdct]
+pub fn aom_dsp::transform::round_shift(i64, i32) -> i32 [also: aom_dsp::transform::fdct]
+pub mod aom_dsp::txb
+pub enum aom_dsp::txb::TxClass
+pub aom_dsp::txb::TxClass::Horiz = 1
+pub aom_dsp::txb::TxClass::TwoD = 0
+pub aom_dsp::txb::TxClass::Vert = 2
+pub fn aom_dsp::txb::TxClass::from_c(i32) -> aom_dsp::txb::TxClass
+pub struct aom_dsp::txb::CoeffCostSet
+pub aom_dsp::txb::CoeffCostSet::by_txs_ctx: [aom_dsp::txb::LvMapCoeffCost; 5]
+pub aom_dsp::txb::CoeffCostSet::eob_by_multi_size: [[i32; 22]; 7]
+pub fn aom_dsp::txb::CoeffCostSet::tables(&self, usize) -> aom_dsp::txb::CoeffCostTables<'_>
+pub struct aom_dsp::txb::CoeffCostTables<'a>
+pub aom_dsp::txb::CoeffCostTables::base: &'a [i32]
+pub aom_dsp::txb::CoeffCostTables::base_eob: &'a [i32]
+pub aom_dsp::txb::CoeffCostTables::dc_sign: &'a [i32]
+pub aom_dsp::txb::CoeffCostTables::eob: &'a [i32]
+pub aom_dsp::txb::CoeffCostTables::eob_extra: &'a [i32]
+pub aom_dsp::txb::CoeffCostTables::lps: &'a [i32]
+pub aom_dsp::txb::CoeffCostTables::txb_skip: &'a [i32]
+pub struct aom_dsp::txb::ExtTxDeriv
+pub aom_dsp::txb::ExtTxDeriv::eset: i32
+pub aom_dsp::txb::ExtTxDeriv::intra_dir: i32
+pub aom_dsp::txb::ExtTxDeriv::num: i32
+pub aom_dsp::txb::ExtTxDeriv::set_type: i32
+pub aom_dsp::txb::ExtTxDeriv::square: i32
+pub aom_dsp::txb::ExtTxDeriv::symb: i32
+pub aom_dsp::txb::ExtTxDeriv::used: i32
+pub struct aom_dsp::txb::LvMapCoeffCost
+pub aom_dsp::txb::LvMapCoeffCost::base: alloc::vec::Vec<i32>
+pub aom_dsp::txb::LvMapCoeffCost::base_eob: alloc::vec::Vec<i32>
+pub aom_dsp::txb::LvMapCoeffCost::dc_sign: alloc::vec::Vec<i32>
+pub aom_dsp::txb::LvMapCoeffCost::eob_extra: alloc::vec::Vec<i32>
+pub aom_dsp::txb::LvMapCoeffCost::lps: alloc::vec::Vec<i32>
+pub aom_dsp::txb::LvMapCoeffCost::txb_skip: alloc::vec::Vec<i32>
+pub fn aom_dsp::txb::LvMapCoeffCost::tables<'a>(&'a self, &'a [i32]) -> aom_dsp::txb::CoeffCostTables<'a>
+pub struct aom_dsp::txb::OptimizeResult
+pub aom_dsp::txb::OptimizeResult::eob: usize
+pub aom_dsp::txb::OptimizeResult::rate: i32
+pub struct aom_dsp::txb::TxTypeCosts
+pub aom_dsp::txb::TxTypeCosts::inter: [[[i32; 16]; 4]; 4]
+pub aom_dsp::txb::TxTypeCosts::intra: [[[[i32; 16]; 13]; 4]; 3]
+pub fn aom_dsp::txb::TxTypeCosts::zeroed() -> alloc::boxed::Box<Self>
+pub const aom_dsp::txb::CDF_ARENA_LEN: usize
+pub const aom_dsp::txb::EOB_GROUP_START: [i16; 12]
+pub const aom_dsp::txb::EOB_OFFSET_BITS: [i16; 12]
+pub const aom_dsp::txb::EXT_TX_SETS_INTER: usize
+pub const aom_dsp::txb::EXT_TX_SETS_INTRA: usize
+pub const aom_dsp::txb::EXT_TX_SIZES: usize
+pub const aom_dsp::txb::INTRA_MODES: usize
+pub const aom_dsp::txb::TX_PAD_2D: usize
+pub const aom_dsp::txb::TX_PAD_BOTTOM: usize
+pub const aom_dsp::txb::TX_PAD_END: usize
+pub const aom_dsp::txb::TX_PAD_HOR: usize
+pub const aom_dsp::txb::TX_TYPES: usize [also: aom_dsp::transform::txfm2d]
+pub const aom_dsp::txb::TX_TYPE_TO_CLASS: [aom_dsp::txb::TxClass; 16]
+pub static aom_dsp::txb::SCAN_ORDERS: [[(&[i16], &[i16]); 16]; 19]
+pub fn aom_dsp::txb::adjusted_tx_size(usize) -> usize
+pub fn aom_dsp::txb::br_cost_with_diff(i32, &[i32], &mut i32) -> i32
+pub fn aom_dsp::txb::coeff_cost_eob(usize, i32, usize, usize, usize, &aom_dsp::txb::CoeffCostTables<'_>, u32, aom_dsp::txb::TxClass) -> i32
+pub fn aom_dsp::txb::coeff_cost_general(bool, usize, i32, usize, usize, usize, &aom_dsp::txb::CoeffCostTables<'_>, u32, aom_dsp::txb::TxClass, &[u8]) -> i32
+pub fn aom_dsp::txb::cost_coeffs_txb(&[i32], usize, usize, usize, usize, usize, &aom_dsp::txb::CoeffCostTables<'_>) -> i32
+pub fn aom_dsp::txb::cost_coeffs_txb_laplacian(&[i32], usize, usize, usize, usize, &aom_dsp::txb::CoeffCostTables<'_>) -> i32
+pub fn aom_dsp::txb::cost_symbol(i32) -> i32
+pub fn aom_dsp::txb::cost_tokens_from_cdf(&mut [i32], &[u16], core::option::Option<&[i32]>)
+pub fn aom_dsp::txb::dequant_txb(&[i32], &mut [i32], usize, [i16; 2], core::option::Option<&[u8]>, i32)
+pub fn aom_dsp::txb::ext_tx_derive(usize, bool, bool, usize, bool, usize, usize) -> aom_dsp::txb::ExtTxDeriv
+pub fn aom_dsp::txb::ext_tx_set(usize, bool, bool) -> i32
+pub fn aom_dsp::txb::ext_tx_set_type(usize, bool, bool) -> usize
+pub fn aom_dsp::txb::fill_coeff_cost_set_from_arena(&[u16], usize) -> aom_dsp::txb::CoeffCostSet
+pub fn aom_dsp::txb::fill_eob_cost_from_arena(&[u16], usize, usize) -> [i32; 22]
+pub fn aom_dsp::txb::fill_lv_map_coeff_cost(&[u16], &[u16], &[u16], &[u16], &[u16], &[u16]) -> aom_dsp::txb::LvMapCoeffCost
+pub fn aom_dsp::txb::fill_lv_map_coeff_cost_from_arena(&[u16], usize, usize) -> aom_dsp::txb::LvMapCoeffCost
+pub fn aom_dsp::txb::fill_tx_type_costs(&mut aom_dsp::txb::TxTypeCosts, &[u16], &[u16])
+pub fn aom_dsp::txb::get_br_ctx(&[u8], usize, u32, aom_dsp::txb::TxClass) -> i32
+pub fn aom_dsp::txb::get_eob_pos_token(i32) -> (i32, i32)
+pub fn aom_dsp::txb::get_nz_map_contexts(&[u8], &[i16], usize, usize, aom_dsp::txb::TxClass, &mut [i8])
+pub fn aom_dsp::txb::get_tx_type_cost(&aom_dsp::txb::TxTypeCosts, usize, usize, usize, bool, bool, bool, bool, usize, usize) -> i32
+pub fn aom_dsp::txb::get_txb_ctx(usize, usize, usize, &[i8], &[i8]) -> (i32, i32)
+pub fn aom_dsp::txb::iscan(usize, usize) -> &'static [i16]
+pub fn aom_dsp::txb::nz_map_ctx_offset(usize) -> &'static [i8]
+pub fn aom_dsp::txb::optimize_txb(usize, usize, &mut [i32], &mut [i32], &[i32], usize, [i16; 2], i64, usize, usize, i32, &[i16], &aom_dsp::txb::CoeffCostTables<'_>) -> aom_dsp::txb::OptimizeResult
+pub fn aom_dsp::txb::optimize_txb_qm(usize, usize, &mut [i32], &mut [i32], &[i32], usize, [i16; 2], i64, usize, usize, i32, &[i16], &aom_dsp::txb::CoeffCostTables<'_>, &[u8], core::option::Option<&[u8]>) -> aom_dsp::txb::OptimizeResult
+pub fn aom_dsp::txb::read_coeffs_txb(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], &mut [i32], usize, usize, usize, usize, usize, bool) -> usize
+pub fn aom_dsp::txb::read_coeffs_txb_full(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], &mut [u16], &mut [i32], usize, usize, usize, usize, bool, bool, bool, bool, usize) -> (usize, usize)
+pub fn aom_dsp::txb::read_tx_type(&mut aom_dsp::entropy::dec::OdEcDec<'_>, &mut [u16], usize, bool, bool, bool) -> usize
+pub fn aom_dsp::txb::reset_arena_cdf_counters(&mut [u16])
+pub fn aom_dsp::txb::scan(usize, usize) -> &'static [i16]
+pub fn aom_dsp::txb::two_coeff_cost_simple(usize, i32, usize, &aom_dsp::txb::CoeffCostTables<'_>, u32, aom_dsp::txb::TxClass, &[u8]) -> (i32, i32)
+pub fn aom_dsp::txb::tx_scale(usize) -> i32
+pub fn aom_dsp::txb::txb_bhl(usize) -> u32
+pub fn aom_dsp::txb::txb_entropy_context(&[i32], usize, usize, usize) -> u8
+pub fn aom_dsp::txb::txb_high(usize) -> usize
+pub fn aom_dsp::txb::txb_init_levels(&[i32], usize, usize, &mut [u8])
+pub fn aom_dsp::txb::txb_init_levels_scalar(&[i32], usize, usize, &mut [u8])
+pub fn aom_dsp::txb::txb_wide(usize) -> usize
+pub fn aom_dsp::txb::txsize_entropy_ctx(usize) -> usize
+pub fn aom_dsp::txb::write_coeffs_txb(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], &[i32], usize, usize, usize, usize, usize, usize, bool)
+pub fn aom_dsp::txb::write_coeffs_txb_full(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], &mut [u16], &[i32], usize, usize, usize, usize, usize, usize, bool, bool, bool, bool, usize, usize, bool)
+pub fn aom_dsp::txb::write_tx_type(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], usize, bool, bool, usize, bool, usize, usize, bool)
+
+## trait impls (72 types)
+
+F: aom_dsp::entropy::dv_ref::DvNbr> aom_dsp::entropy::dv_ref::DvGrid
+aom_dsp::census::Counts: Clone, Debug, Eq, PartialEq
+aom_dsp::census::Leaf: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_dsp::convolve::compound::CompoundConvolveParams: Clone, Copy, Debug
+aom_dsp::convolve::scaled::ScaleConvolveParams: Clone, Copy, Debug
+aom_dsp::entropy::dv_ref::DvNbr: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_dsp::entropy::dv_ref::DvTileBounds: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_dsp::entropy::dv_ref::InterMvRefs: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_dsp::entropy::dv_ref::TplField<'a>: Clone, Copy
+aom_dsp::entropy::dv_ref::TplMvRef: Clone, Copy, Debug, Default
+aom_dsp::entropy::dv_ref::WarpSamples: Clone, Copy, Debug, Default
+aom_dsp::entropy::enc::OdEcEnc: Default
+aom_dsp::entropy::header::CdefHeader: Clone, Copy, Debug, Default
+aom_dsp::entropy::header::ColorConfigParams: Clone, Copy, Debug
+aom_dsp::entropy::header::DecoderModelInfo: Clone, Copy, Debug
+aom_dsp::entropy::header::DeltaQParams: Clone, Copy, Debug, Default
+aom_dsp::entropy::header::FilmGrainParams: Clone, Debug, Default
+aom_dsp::entropy::header::FrameHeaderObu: Clone, Debug, Default
+aom_dsp::entropy::header::FrameHeaderPrefix: Clone, Debug, Default
+aom_dsp::entropy::header::FrameSizeHeader: Clone, Copy, Debug, Default
+aom_dsp::entropy::header::FrameSizeWithRefs: Clone, Copy, Debug, Default
+aom_dsp::entropy::header::InterRefSignaling: Clone, Debug, Default
+aom_dsp::entropy::header::LoopfilterHeader: Clone, Copy, Debug, Default
+aom_dsp::entropy::header::QuantParamsHeader: Clone, Copy, Debug, Default
+aom_dsp::entropy::header::RestorationHeader: Clone, Copy, Debug, Default
+aom_dsp::entropy::header::SegmentationHeader: Clone, Debug, Default
+aom_dsp::entropy::header::SequenceHeaderObu: Clone, Debug
+aom_dsp::entropy::header::SequenceHeaderParams: Clone, Copy, Debug
+aom_dsp::entropy::header::TileInfoHeader: Clone, Debug, Default
+aom_dsp::entropy::header::TimingInfoHeader: Clone, Copy, Debug
+aom_dsp::entropy::header::WarpedMotionParams: Clone, Copy, Debug, Default
+aom_dsp::entropy::lr::LrFrameConfig: Clone, Copy, Debug, Default
+aom_dsp::entropy::lr::LrRefState: Clone, Debug, Default
+aom_dsp::entropy::lr::LrUnitInfo: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_dsp::entropy::lr::SgrprojInfoLr: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_dsp::entropy::lr::WienerInfoLr: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_dsp::entropy::obu::ObuHeader: Clone, Copy, Debug, Eq, PartialEq
+aom_dsp::entropy::partition::KfBlockState: Clone, Debug
+aom_dsp::entropy::partition::KfCdfs: Clone, Debug
+aom_dsp::entropy::partition::KfFrameContext: Clone, Debug
+aom_dsp::entropy::partition::KfTailResult: Clone, Debug, Eq, PartialEq
+aom_dsp::entropy::partition::MbModeInfoKf: Clone, Debug, Eq, PartialEq
+aom_dsp::entropy::partition::MiNbrKf: Clone, Copy, Debug, Eq, PartialEq
+aom_dsp::entropy::partition::PaletteNbrKf: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_dsp::entropy::partition::TxMode: Clone, Copy, Debug, Eq, PartialEq
+aom_dsp::entropy::rb::ReadBitBuffer<'a>: Clone, Debug
+aom_dsp::entropy::wb::WriteBitBuffer: Clone, Debug, Default
+aom_dsp::inter::compound::CompoundType: Clone, Copy, Debug, Eq, PartialEq
+aom_dsp::inter::compound::DiffwtdMaskType: Clone, Copy, Debug, Eq, PartialEq
+aom_dsp::inter::compound::DistWtdWeights: Clone, Copy, Debug, Eq, PartialEq
+aom_dsp::inter::scale::ScaleFactors: Clone, Copy, Debug, Eq, PartialEq
+aom_dsp::inter::warp::WarpConvolveParams: Clone, Copy, Debug
+aom_dsp::inter::warp::WarpedMotionParams: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_dsp::intra::cfl::CflCtx: Clone
+aom_dsp::loopfilter::frame::LfMi: Clone, Copy, Debug, Default
+aom_dsp::loopfilter::frame::LfParams: Clone, Copy, Debug, Default
+aom_dsp::loopfilter::frame::LfSeg: Clone, Copy, Debug, Default
+aom_dsp::quant::PlaneQuantRows<'a>: Clone, Copy, Debug
+aom_dsp::quant::QuantTuning: Clone, Copy, Debug, Eq, PartialEq
+aom_dsp::quant::QuantizerSettings: Clone, Copy, Debug, Eq, PartialEq
+aom_dsp::quant::Segmentation: Clone, Debug, Default
+aom_dsp::recon::ReconScratch: Clone, Debug, Default
+aom_dsp::restore::pick::LrSearchOutcome: Clone, Debug, Default
+aom_dsp::restore::pick::LrSearchSf: Clone, Copy, Debug, Default
+aom_dsp::restore::wiener::WienerScratch: Default
+aom_dsp::transform::inv_txfm2d::InvTxfmScratch: Clone, Debug, Default
+aom_dsp::transform::txfm2d::FwdTxfmScratch: Clone, Debug, Default
+aom_dsp::txb::ExtTxDeriv: Debug, Eq, PartialEq
+aom_dsp::txb::LvMapCoeffCost: Clone, Debug
+aom_dsp::txb::TxClass: Clone, Copy, Debug, Eq, PartialEq
+u16: aom_dsp::cdef::frame::CdefPixel
+u8: aom_dsp::cdef::frame::CdefPixel
+
+## auto traits
+
+85 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+aom_dsp::loopfilter::frame::LfFrameBuf<'a>: !UnwindSafe
+aom_dsp::loopfilter::frame::LfFrameBufU8<'a>: !UnwindSafe
+aom_dsp::restore::frame::LrPlaneInput<'a>: !UnwindSafe
+## arch shapes (2 shapes: 2 on every recorded arch, 0 arch-unique)
+
+[aarch64] pub fn aom_dsp::dist::<tier>(&[u8], usize, &[u8], usize, usize, usize) -> i64
+[aarch64] pub fn aom_dsp::dist::highbd_<tier>(&[u16], usize, &[u16], usize, usize, usize) -> i64
+
+## arch surface: aarch64 (2 lines)
+
+pub fn aom_dsp::dist::highbd_sse(&[u16], usize, &[u16], usize, usize, usize) -> i64
+pub fn aom_dsp::dist::sse(&[u8], usize, &[u8], usize, usize, usize) -> i64
