@@ -115,7 +115,7 @@ impl TierGroups<'_> {
     {
         self.suite
             .compare(format!("{}/{}", self.prefix, name.into()), |g| {
-                g.throughput_unit(if self.prefix == "quant" {
+                g.throughput_unit(if self.prefix.starts_with("quant") {
                     "coeff"
                 } else {
                     "px"
@@ -348,7 +348,7 @@ fn bench_loopfilter(suite: &mut Suite) {
 /// Distortion metrics — SAD / SSE, the RD search's highest-call-count kernels.
 fn bench_dist(suite: &mut Suite) {
     const STRIDE: usize = 64;
-    tier_group(suite, "dist", |g| {
+    tier_group(suite, "dist_scalar_control", |g| {
         for (w, h, name) in [
             (4usize, 4usize, "04x04"),
             (8, 8, "08x08"),
@@ -405,8 +405,57 @@ fn bench_dist(suite: &mut Suite) {
 }
 
 /// Quantization — `av1_quantize_fp` across the block-size axis.
+// The plain dist::{sad,sse,highbd_sse} entries are scalar control functions.
+// Measure the separate runtime-dispatched SAD entry explicitly as well.
+fn bench_sad_dispatch(suite: &mut Suite) {
+    for w in [4usize, 8, 16, 32, 64] {
+        const STRIDE: usize = 64;
+        let mut rng = Rng(0x5EED_0007 ^ (w as u64) << 8);
+        let a: Vec<u8> = (0..STRIDE * 64).map(|_| rng.pixel()).collect();
+        let c: Vec<u8> = (0..STRIDE * 64).map(|_| rng.pixel()).collect();
+        let expected = dist::sad(&a, STRIDE, &c, STRIDE, w, w);
+        for enabled in [false, true] {
+            set_simd(enabled);
+            assert_eq!(dist::simd::sad_simd(&a, STRIDE, &c, STRIDE, w, w), expected);
+        }
+        suite.compare(format!("dist_dispatch/sad_{w:02}x{w:02}"), |g| {
+            tune(g);
+            g.throughput(Throughput::Elements(WORK_PX as u64));
+            for (label, enabled, reference) in [
+                ("runtime_enabled", true, false),
+                ("forced_scalar", false, false),
+                ("scalar_reference", true, true),
+            ] {
+                let a = a.clone();
+                let c = c.clone();
+                g.bench(label, move |b| {
+                    set_simd(enabled);
+                    b.iter(|| {
+                        let mut sum = 0u64;
+                        for _ in 0..WORK_PX / (w * w) {
+                            sum += if reference {
+                                dist::sad(black_box(&a), STRIDE, black_box(&c), STRIDE, w, w)
+                            } else {
+                                dist::simd::sad_simd(
+                                    black_box(&a),
+                                    STRIDE,
+                                    black_box(&c),
+                                    STRIDE,
+                                    w,
+                                    w,
+                                )
+                            } as u64;
+                        }
+                        sum
+                    });
+                });
+            }
+        });
+    }
+}
+
 fn bench_quant(suite: &mut Suite) {
-    tier_group(suite, "quant", |g| {
+    tier_group(suite, "quant_scalar_control", |g| {
         for &(tx_size, name) in &[(0usize, "04x04"), (1, "08x08"), (2, "16x16"), (3, "32x32")] {
             let n = TX_W[tx_size] * TX_H[tx_size];
             let reps = WORK_PX / n;
@@ -439,7 +488,7 @@ fn bench_quant(suite: &mut Suite) {
 
 /// Intra prediction — the compute-heavy predictors across the size axis.
 fn bench_intra(suite: &mut Suite) {
-    tier_group(suite, "intra", |g| {
+    tier_group(suite, "intra_scalar_control", |g| {
         // SMOOTH* / PAETH are the compute-heavy predictors; V/H are
         // memory-bound copies, kept as the control.
         for (mode, mname) in [
@@ -481,6 +530,134 @@ fn bench_intra(suite: &mut Suite) {
     });
 }
 
+fn bench_quant_dispatch(suite: &mut Suite) {
+    tier_group(suite, "quant_dispatch", |g| {
+        for &(tx_size, name) in &[(0usize, "04x04"), (1, "08x08"), (2, "16x16"), (3, "32x32")] {
+            let n = TX_W[tx_size] * TX_H[tx_size];
+            let reps = WORK_PX / n;
+            g.bench(format!("fp_{name}"), move |b| {
+                let mut rng = Rng(0x5EED_000A ^ (tx_size as u64) << 8);
+                let coeff: Vec<i32> = (0..n).map(|i| rng.coeff(i) * 4).collect();
+                let scan: Vec<i16> = (0..n as i16).collect();
+                let q = vec![0i32; n];
+                let dq = vec![0i32; n];
+                let mut want_q = q.clone();
+                let mut want_dq = dq.clone();
+                let want_eob = quant::av1_quantize_fp(
+                    &coeff,
+                    &[13, 13],
+                    &[0x4000, 0x4000],
+                    &[16, 16],
+                    &mut want_q,
+                    &mut want_dq,
+                    &scan,
+                );
+                let mut got_q = q.clone();
+                let mut got_dq = dq.clone();
+                let got_eob = quant::simd::av1_quantize_fp_no_qmatrix_dispatch(
+                    &[0x4000, 0x4000],
+                    &[16, 16],
+                    &[13, 13],
+                    0,
+                    &scan,
+                    &scan,
+                    &coeff,
+                    &mut got_q,
+                    &mut got_dq,
+                );
+                assert_eq!((got_eob, got_q, got_dq), (want_eob, want_q, want_dq));
+                b.with_input(move || (coeff.clone(), scan.clone(), q.clone(), dq.clone()))
+                    .run(move |(coeff, scan, mut q, mut dq)| {
+                        let mut acc = 0u32;
+                        for _ in 0..reps {
+                            acc += quant::simd::av1_quantize_fp_no_qmatrix_dispatch(
+                                &[0x4000, 0x4000],
+                                &[16, 16],
+                                &[13, 13],
+                                0,
+                                &scan,
+                                &scan,
+                                &coeff,
+                                &mut q,
+                                &mut dq,
+                            ) as u32;
+                        }
+                        (acc, q, dq)
+                    });
+            });
+        }
+    });
+}
+
+fn bench_intra_dispatch(suite: &mut Suite) {
+    tier_group(suite, "intra_dispatch", |g| {
+        // SMOOTH* / PAETH are the compute-heavy predictors; V/H are
+        // memory-bound copies, kept as the control.
+        for (mode, mname) in [
+            (intra::V, "v"),
+            (intra::H, "h"),
+            (intra::PAETH, "paeth"),
+            (intra::SMOOTH, "smooth"),
+            (intra::SMOOTH_V, "smooth_v"),
+        ] {
+            for (bw, bh, name) in [
+                (4usize, 4usize, "04x04"),
+                (16, 16, "16x16"),
+                (32, 32, "32x32"),
+            ] {
+                let reps = WORK_PX / (bw * bh);
+                g.bench(format!("{mname}_{name}"), move |b| {
+                    let mut rng = Rng(0x5EED_000B ^ (bw as u64) << 8 ^ mode as u64);
+                    let above: Vec<u16> = (0..bw + 2 * bh + 2)
+                        .map(|_| u16::from(rng.pixel()))
+                        .collect();
+                    let left: Vec<u16> = (0..bh + bw).map(|_| u16::from(rng.pixel())).collect();
+                    let dst = vec![0u16; bw * bh];
+                    let mut want = dst.clone();
+                    let mut got = dst.clone();
+                    intra::predict_highbd_scalar(
+                        mode,
+                        &mut want,
+                        bw,
+                        bw,
+                        bh,
+                        &intra::AboveRef16(&above),
+                        &left,
+                        8,
+                    );
+                    intra::predict_highbd(
+                        mode,
+                        &mut got,
+                        bw,
+                        bw,
+                        bh,
+                        &intra::AboveRef16(&above),
+                        &left,
+                        8,
+                    );
+                    assert_eq!(got, want);
+                    b.with_input(move || (above.clone(), left.clone(), dst.clone()))
+                        .run(move |(above, left, mut dst)| {
+                            for _ in 0..reps {
+                                intra::predict_highbd(
+                                    mode,
+                                    &mut dst,
+                                    bw,
+                                    bw,
+                                    bh,
+                                    &intra::AboveRef16(&above),
+                                    &left,
+                                    8,
+                                );
+                            }
+                            dst
+                        });
+                });
+            }
+        }
+    });
+}
+
 fn main() {
     assert!(
         !aom_dsp::dispatch::scalar_forced(),
@@ -500,6 +677,9 @@ fn main() {
         bench_cdef(suite);
         bench_loopfilter(suite);
         bench_dist(suite);
+        bench_sad_dispatch(suite);
+        bench_quant_dispatch(suite);
+        bench_intra_dispatch(suite);
         bench_quant(suite);
         bench_intra(suite);
     });

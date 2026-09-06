@@ -1,0 +1,130 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling rustversion v1.0.23
+   Compiling safe_unaligned_simd v0.2.5
+   Compiling zenav1-aom-sys-ref v0.0.1 (/Users/lilith/work/zen/zenav1-aom/crates/aom-sys-ref)
+   Compiling syn v2.0.119
+   Compiling archmage-macros v0.9.28
+   Compiling archmage v0.9.28
+   Compiling magetypes v0.9.28
+   Compiling zenav1-aom-dsp v0.0.1 (/Users/lilith/work/zen/zenav1-aom/crates/aom-dsp)
+warning: unused doc comment
+   --> crates/aom-sys-ref/src/lib.rs:247:1
+    |
+247 | / /// The architecture-specialised tier of the same two kernels, named directly
+248 | | /// rather than reached through RTCD's pointer (arm64 binds some kernels at
+249 | | /// compile time anyway — LIBAOM_UPSTREAM_NOTES A5).
+250 | | ///
+...   |
+254 | | /// `aom_hadamard_lp_16x16` additionally has an AVX2 tier (`:1291`) that makes
+255 | | /// the same int16 arithmetic choice as SSE2, so SSE2 is representative.
+    | |________________________________________________________________________^
+256 |   #[cfg(target_arch = "aarch64")]
+257 | / unsafe extern "C" {
+258 | |     pub fn aom_hadamard_lp_8x8_neon(src: *const i16, stride: isize, coeff: *mut i16);
+259 | |     pub fn aom_hadamard_lp_16x16_neon(src: *const i16, stride: isize, coeff: *mut i16);
+260 | | }
+    | |_- rustdoc does not generate documentation for extern blocks
+    |
+    = help: use `//` for a plain comment
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+     --> crates/aom-sys-ref/src/lib.rs:10230:1
+      |
+10230 | / /// Oracle for `av1/encoder/ml.c` `av1_nn_predict_c` (+ `av1_nn_output_prec_reduce`
+10231 | | /// when `reduce_prec`). `hidden_nodes` gives the per-hidden-layer node counts;
+10232 | | /// `weights_flat`/`bias_flat` are the per-layer weight/bias tables concatenated
+10233 | | /// in NN_CONFIG order (`weights[l][node*num_in + i]`, `bias[l][node]`; the final
+10234 | | /// entry is the linear output layer). Returns the `num_outputs` logits.
+      | |________________________________________________________________________^
+10235 | / unsafe extern "C" {
+10236 | |     fn shim_prune_tx_2D(
+10237 | |         diff: *const i16,
+10238 | |         diff_stride: i32,
+...     |
+10245 | |     );
+10246 | | }
+      | |_- rustdoc does not generate documentation for extern blocks
+      |
+      = help: use `//` for a plain comment
+
+warning: `zenav1-aom-sys-ref` (lib) generated 2 warnings
+warning: unused import: `constrain`
+  --> crates/aom-dsp/src/cdef/simd.rs:53:80
+   |
+53 | use crate::cdef::{CDEF_BSTRIDE, CDEF_VERY_LARGE, PRI_TAPS, SEC_TAPS, cdef_dir, constrain, get_msb};
+   |                                                                                ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `archmage::prelude`
+  --> crates/aom-dsp/src/restore/wiener.rs:20:5
+   |
+20 | use archmage::prelude::*;
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: constant `MODE_TO_ANGLE` is never used
+   --> crates/aom-dsp/src/census.rs:179:7
+    |
+179 | const MODE_TO_ANGLE: [i32; N_MODE] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0];
+    |       ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zenav1-aom-dsp` (lib) generated 3 warnings (run `cargo fix --lib -p zenav1-aom-dsp` to apply 1 suggestion)
+    Finished `test-fast` profile [optimized + debuginfo] target(s) in 12.31s
+     Running tests/cdef_filter_simd_diff.rs (target/test-fast/deps/cdef_filter_simd_diff-285c0226f36a70e3)
+
+running 1 test
+test cdef_filter16_w8_simd_bit_identical_to_scalar_at_every_tier ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+
+     Running tests/intra_simd_diff.rs (target/test-fast/deps/intra_simd_diff-a4871db9f0f4f323)
+
+running 1 test
+test intra_highbd_simd_bit_identical_to_scalar_at_every_tier ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+
+     Running tests/inv_txfm2d_u8_simd_diff.rs (target/test-fast/deps/inv_txfm2d_u8_simd_diff-985a7117788aecef)
+
+running 3 tests
+test vtx_tab_matches_public_validity ... ok
+test inv_txfm2d_add_u8_i32_arm_simd_bit_identical_to_scalar_at_every_tier ... ok
+test inv_txfm2d_add_u8_i16_arm_simd_bit_identical_to_scalar_at_every_tier ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/lpf_simd_diff.rs (target/test-fast/deps/lpf_simd_diff-7e0b90a78c8631a0)
+
+running 2 tests
+test hbd_lpf_simd_bit_identical_to_scalar_at_every_tier ... ok
+test lowbd_lpf_simd_bit_identical_to_scalar_at_every_tier ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.35s
+
+     Running tests/quantize_fp_simd_diff.rs (target/test-fast/deps/quantize_fp_simd_diff-bece81a24430c567)
+
+running 1 test
+test quantize_fp_simd_bit_identical_to_scalar_at_every_tier ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/sad_simd.rs (target/test-fast/deps/sad_simd-12b1f02f9f9174cb)
+
+running 2 tests
+test avx2_sad_perf_ratio ... ignored
+test avx2_sad_lane_identical ... ok
+
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+     Running tests/txfm2d_simd_perm_diff.rs (target/test-fast/deps/txfm2d_simd_perm_diff-ea1a07ec27b1628e)
+
+running 1 test
+test txfm2d_simd_equals_scalar_at_every_permutation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s
+

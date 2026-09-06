@@ -1,0 +1,134 @@
+warning: unused import: `constrain`
+  --> crates/aom-dsp/src/cdef/simd.rs:53:80
+   |
+53 | use crate::cdef::{CDEF_BSTRIDE, CDEF_VERY_LARGE, PRI_TAPS, SEC_TAPS, cdef_dir, constrain, get_msb};
+   |                                                                                ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `archmage::prelude`
+  --> crates/aom-dsp/src/restore/wiener.rs:20:5
+   |
+20 | use archmage::prelude::*;
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: constant `MODE_TO_ANGLE` is never used
+   --> crates/aom-dsp/src/census.rs:179:7
+    |
+179 | const MODE_TO_ANGLE: [i32; N_MODE] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0];
+    |       ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zenav1-aom-dsp` (lib) generated 3 warnings (run `cargo fix --lib -p zenav1-aom-dsp` to apply 1 suggestion)
+   Compiling zenav1-aom-dsp-bench v0.0.1 (/Users/lilith/work/zen/zenav1-aom/crates/aom-dsp-bench)
+    Finished `bench` profile [optimized] target(s) in 0.67s
+     Running benches/dsp_kernels.rs (target/release/deps/dsp_kernels-4b99c028063fb4cd)
+[zenbench] calibration: int=0.37ns/iter mem_bw=86.5GiB/s mem_lat=7.7ns
+[zenbench] timer resolution: 41ns, loop overhead: 0.42ns/iter, TSC: 1.000 ticks/ns (invariant)
+[zenbench] results → /Users/lilith/tmp/zenbench/zenbench-1788696420-31cf.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788696420-31cf
+  git: db0a3b3f409a9a51df9baa4995207f14841a5c90
+═══════════════════════════════════════════════════════════════
+
+  dist_dispatch/sad_04x04  200 rounds × 30 calls
+                         mean ±mad µs  95% CI vs base     ops/s
+  ├─ runtime_enabled    55.1 ±25.1µs  [51.9–58.3]µs      1.19G [1]
+  ├─ forced_scalar      55.3 ±24.5µs  [-0.9%–+0.6%]      1.19G [2] [3]
+  ╰─ scalar_reference   72.9 ±34.0µs  [+28.9%–+34.1%]     900M [4] [5]
+
+  runtime_enabled   ████████████████████████████████████████████████ 1.19 Gops/s
+  forced_scalar     ████████████████████████████████████████████████ 1.19 Gops/s
+  scalar_reference  ████████████████████████████████████ 900 Mops/s
+  [1] CV=41%
+  [2] CI crosses zero
+  [3] CV=42%
+  [4] drift r=-0.65 — later rounds faster
+  [5] CV=43%
+
+  dist_dispatch/sad_08x08  200 rounds × 66 calls
+                        mean ±mad µs  95% CI vs base       ops/s
+  ├─ runtime_enabled    34.2 ±2.1µs  [33.4–34.9]µs        1.92G
+  ├─ forced_scalar      34.1 ±2.3µs  [-0.5%–+1.3%]        1.92G [1]
+  ╰─ scalar_reference   72.6 ±6.3µs  [+103.9%–+109.3%]     903M
+
+  forced_scalar     ████████████████████████████████████████████████ 1.92 Gops/s
+  runtime_enabled   ████████████████████████████████████████████████ 1.92 Gops/s
+  scalar_reference  ███████████████████████ 903 Mops/s
+  [1] CI crosses zero
+
+  dist_dispatch/sad_16x16  200 rounds × 83 calls
+                        mean ±mad µs  95% CI vs base       ops/s
+  ├─ runtime_enabled    25.9 ±2.4µs  [25.3–26.5]µs        2.53G
+  ├─ forced_scalar      25.9 ±2.4µs  [-0.3%–+0.2%]        2.53G [1]
+  ╰─ scalar_reference   64.7 ±5.3µs  [+132.7%–+137.3%]    1.01G [2]
+
+  forced_scalar     ████████████████████████████████████████████████ 2.53 Gops/s
+  runtime_enabled   ████████████████████████████████████████████████ 2.53 Gops/s
+  scalar_reference  ███████████████████ 1.01 Gops/s
+  [1] CI crosses zero
+  [2] CV=21%
+
+  dist_dispatch/sad_32x32  200 rounds × 153 calls
+                        mean ±mad µs  95% CI vs base       ops/s
+  ├─ runtime_enabled     7.6 ±0.5µs  [7.3–7.9]µs          8.65G [1]
+  ├─ forced_scalar       7.6 ±0.5µs  [-0.1%–+1.0%]        8.67G [2] [3]
+  ╰─ scalar_reference   27.0 ±2.0µs  [+254.8%–+261.6%]    2.43G [4]
+
+  forced_scalar     ████████████████████████████████████████████████ 8.67 Gops/s
+  runtime_enabled   ████████████████████████████████████████████████ 8.65 Gops/s
+  scalar_reference  █████████████ 2.43 Gops/s
+  [1] CV=27%
+  [2] CI crosses zero
+  [3] CV=24%
+  [4] CV=25%
+
+  dist_dispatch/sad_64x64  120 rounds × 170 calls
+                        mean ±mad µs  95% CI vs base       ops/s
+  ├─ runtime_enabled     5.5 ±0.4µs  [5.5–5.6]µs          11.8G
+  ├─ forced_scalar       5.6 ±0.4µs  [+0.4%–+2.2%]        11.7G [1]
+  ╰─ scalar_reference   14.7 ±0.7µs  [+164.5%–+167.9%]    4.44G
+
+  runtime_enabled   ████████████████████████████████████████████████ 11.8 Gops/s
+  forced_scalar     ███████████████████████████████████████████████ 11.7 Gops/s
+  scalar_reference  ██████████████████ 4.44 Gops/s
+  [1] CI crosses zero
+
+  total: 98.9s  (196 noisy rounds)
+═══════════════════════════════════════════════════════════════
+  filter: cargo bench -- --group=NAME  format: --format=llm|csv|md|json
+group=dist_dispatch/sad_04x04 benchmark=runtime_enabled  |  vs_base=baseline  |  min=28.77µs mean=55.11µs median=47.52µs mad=25.05µs  |  throughput=1.19 Gops/s  |  n=200 cv=41.5% rounds=200 calls=30 mean_ci=[51.95µs 58.27µs] cold=32.79µs
+group=dist_dispatch/sad_04x04 benchmark=forced_scalar  |  vs_base_pct=-0.16 ci=[-0.92% +0.62%] significant=false effect=-0.00 p=0.5215  |  min=28.19µs mean=55.28µs median=47.20µs mad=24.45µs  |  throughput=1.19 Gops/s  |  n=200 cv=42.4% rounds=200 calls=30 mean_ci=[52.06µs 58.55µs] cold=33.75µs
+group=dist_dispatch/sad_04x04 benchmark=scalar_reference  |  vs_base_pct=+31.51 ci=[+28.95% +34.06%] significant=true effect=0.63 p=0.0000  |  min=38.02µs mean=72.86µs median=62.93µs mad=33.96µs  |  throughput=899.54 Mops/s  |  n=200 cv=43.3% rounds=200 calls=30 mean_ci=[68.52µs 77.21µs] cold=39.67µs
+group=dist_dispatch/sad_08x08 benchmark=runtime_enabled  |  vs_base=baseline  |  min=14.52µs mean=34.17µs median=35.07µs mad=2.07µs  |  throughput=1.92 Gops/s  |  n=200 cv=16.5% rounds=200 calls=66 mean_ci=[33.37µs 34.93µs] cold=15.79µs
+group=dist_dispatch/sad_08x08 benchmark=forced_scalar  |  vs_base_pct=+0.41 ci=[-0.46% +1.32%] significant=false effect=0.03 p=0.3757  |  min=14.90µs mean=34.14µs median=34.75µs mad=2.28µs  |  throughput=1.92 Gops/s  |  n=200 cv=15.2% rounds=200 calls=66 mean_ci=[33.42µs 34.84µs] cold=14.00µs
+group=dist_dispatch/sad_08x08 benchmark=scalar_reference  |  vs_base_pct=+106.55 ci=[+103.91% +109.27%] significant=true effect=5.23 p=0.0000  |  min=30.30µs mean=72.59µs median=72.09µs mad=6.25µs  |  throughput=902.85 Mops/s  |  n=200 cv=18.0% rounds=200 calls=66 mean_ci=[70.82µs 74.40µs] cold=28.83µs
+group=dist_dispatch/sad_16x16 benchmark=runtime_enabled  |  vs_base=baseline  |  min=10.73µs mean=25.91µs median=26.86µs mad=2.41µs  |  throughput=2.53 Gops/s  |  n=200 cv=15.8% rounds=200 calls=83 mean_ci=[25.34µs 26.46µs] cold=12.08µs
+group=dist_dispatch/sad_16x16 benchmark=forced_scalar  |  vs_base_pct=-0.06 ci=[-0.29% +0.18%] significant=false effect=-0.00 p=0.5756  |  min=11.03µs mean=25.91µs median=26.84µs mad=2.38µs  |  throughput=2.53 Gops/s  |  n=200 cv=15.1% rounds=200 calls=83 mean_ci=[25.36µs 26.44µs] cold=10.96µs
+group=dist_dispatch/sad_16x16 benchmark=scalar_reference  |  vs_base_pct=+135.00 ci=[+132.71% +137.26%] significant=true effect=8.24 p=0.0000  |  min=28.57µs mean=64.75µs median=62.87µs mad=5.29µs  |  throughput=1.01 Gops/s  |  n=200 cv=21.4% rounds=200 calls=83 mean_ci=[62.85µs 66.75µs] cold=26.29µs
+group=dist_dispatch/sad_32x32 benchmark=runtime_enabled  |  vs_base=baseline  |  min=6.40µs mean=7.58µs median=7.02µs mad=541.8ns  |  throughput=8.65 Gops/s  |  n=200 cv=26.9% rounds=200 calls=153 mean_ci=[7.31µs 7.88µs] cold=6.75µs
+group=dist_dispatch/sad_32x32 benchmark=forced_scalar  |  vs_base_pct=+0.42 ci=[-0.14% +0.99%] significant=false effect=0.02 p=0.2571  |  min=6.41µs mean=7.56µs median=7.05µs mad=493.0ns  |  throughput=8.67 Gops/s  |  n=200 cv=24.4% rounds=200 calls=153 mean_ci=[7.32µs 7.83µs] cold=6.46µs
+group=dist_dispatch/sad_32x32 benchmark=scalar_reference  |  vs_base_pct=+258.13 ci=[+254.76% +261.58%] significant=true effect=13.57 p=0.0000  |  min=21.50µs mean=26.97µs median=24.95µs mad=1.97µs  |  throughput=2.43 Gops/s  |  n=200 cv=25.1% rounds=200 calls=153 mean_ci=[26.10µs 27.95µs] cold=21.71µs
+group=dist_dispatch/sad_64x64 benchmark=runtime_enabled  |  vs_base=baseline  |  min=5.08µs mean=5.54µs median=5.48µs mad=370.5ns  |  throughput=11.84 Gops/s  |  n=120 cv=5.5% rounds=120 calls=170 mean_ci=[5.48µs 5.59µs] cold=9.17µs
+group=dist_dispatch/sad_64x64 benchmark=forced_scalar  |  vs_base_pct=+1.29 ci=[+0.43% +2.20%] significant=false effect=0.24 p=0.0156  |  min=5.07µs mean=5.61µs median=5.59µs mad=374.4ns  |  throughput=11.69 Gops/s  |  n=120 cv=5.4% rounds=120 calls=170 mean_ci=[5.55µs 5.66µs] cold=6.04µs
+group=dist_dispatch/sad_64x64 benchmark=scalar_reference  |  vs_base_pct=+166.15 ci=[+164.51% +167.89%] significant=true effect=18.51 p=0.0000  |  min=13.28µs mean=14.75µs median=14.68µs mad=675.3ns  |  throughput=4.44 Gops/s  |  n=120 cv=4.5% rounds=120 calls=170 mean_ci=[14.63µs 14.87µs] cold=15.96µs
+       99.98 real        15.11 user        11.17 sys
+           158580736  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              169169  page reclaims
+                 142  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   2  messages sent
+                   4  messages received
+                   5  signals received
+                  67  voluntary context switches
+              143257  involuntary context switches
+           742925050  instructions retired
+           237637569  cycles elapsed
+            29803072  peak memory footprint

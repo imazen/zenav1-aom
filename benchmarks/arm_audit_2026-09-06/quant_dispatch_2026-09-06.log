@@ -1,0 +1,98 @@
+warning: unused import: `constrain`
+  --> crates/aom-dsp/src/cdef/simd.rs:53:80
+   |
+53 | use crate::cdef::{CDEF_BSTRIDE, CDEF_VERY_LARGE, PRI_TAPS, SEC_TAPS, cdef_dir, constrain, get_msb};
+   |                                                                                ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `archmage::prelude`
+  --> crates/aom-dsp/src/restore/wiener.rs:20:5
+   |
+20 | use archmage::prelude::*;
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: constant `MODE_TO_ANGLE` is never used
+   --> crates/aom-dsp/src/census.rs:179:7
+    |
+179 | const MODE_TO_ANGLE: [i32; N_MODE] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0];
+    |       ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zenav1-aom-dsp` (lib) generated 3 warnings (run `cargo fix --lib -p zenav1-aom-dsp` to apply 1 suggestion)
+   Compiling zenav1-aom-dsp-bench v0.0.1 (/Users/lilith/work/zen/zenav1-aom/crates/aom-dsp-bench)
+    Finished `bench` profile [optimized] target(s) in 0.69s
+     Running benches/dsp_kernels.rs (target/release/deps/dsp_kernels-4b99c028063fb4cd)
+[zenbench] calibration: int=0.28ns/iter mem_bw=115.5GiB/s mem_lat=8.4ns
+[zenbench] timer resolution: 41ns, loop overhead: 0.23ns/iter, TSC: 1.000 ticks/ns (invariant)
+[zenbench] results → /Users/lilith/tmp/zenbench/zenbench-1788696561-38b8.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788696561-38b8
+  git: db0a3b3f409a9a51df9baa4995207f14841a5c90
+═══════════════════════════════════════════════════════════════
+
+  quant_dispatch/fp_04x04  30 rounds × 33 calls
+                     mean ±mad µs  95% CI vs base        px/s
+  ├─ native_simd     29.0 ±1.6µs  [28.5–29.5]µs        2.26G
+  ╰─ forced_scalar   94.4 ±2.6µs  [+222.3%–+228.8%]     694M
+
+  native_simd    ████████████████████████████████████████████████████ 2.26 Gpx/s
+  forced_scalar  ████████████████ 694 Mpx/s
+
+  quant_dispatch/fp_08x08  30 rounds × 40 calls
+                     mean ±mad µs  95% CI vs base        px/s
+  ├─ native_simd     24.0 ±0.5µs  [23.8–24.3]µs        2.73G
+  ╰─ forced_scalar   89.7 ±2.1µs  [+270.3%–+275.7%]     730M
+
+  native_simd    ████████████████████████████████████████████████████ 2.73 Gpx/s
+  forced_scalar  ██████████████ 730 Mpx/s
+
+  quant_dispatch/fp_16x16  30 rounds × 44 calls
+                     mean ±mad µs  95% CI vs base        px/s
+  ├─ native_simd     22.3 ±0.3µs  [22.1–22.6]µs        2.94G
+  ╰─ forced_scalar   91.5 ±2.1µs  [+306.7%–+312.7%]     717M
+
+  native_simd    ████████████████████████████████████████████████████ 2.94 Gpx/s
+  forced_scalar  █████████████ 717 Mpx/s
+
+  quant_dispatch/fp_32x32  30 rounds × 44 calls
+                       mean ±mad µs  95% CI vs base        px/s
+  ├─ native_simd      38.8 ±11.7µs  [35.2–42.4]µs        1.69G [1]
+  ╰─ forced_scalar   165.3 ±48.0µs  [+294.3%–+356.0%]     396M [2]
+
+  native_simd    ████████████████████████████████████████████████████ 1.69 Gpx/s
+  forced_scalar  ████████████ 396 Mpx/s
+  [1] CV=27%
+  [2] CV=27%
+
+  total: 13.6s  (26 noisy rounds)
+═══════════════════════════════════════════════════════════════
+  filter: cargo bench -- --group=NAME  format: --format=llm|csv|md|json
+group=quant_dispatch/fp_04x04 benchmark=native_simd  |  vs_base=baseline  |  min=26.56µs mean=29.01µs median=28.93µs mad=1.58µs  |  throughput=2.26 Gpx/s  |  n=30 cv=4.5% rounds=30 calls=33 mean_ci=[28.54µs 29.47µs] cold=29.96µs
+group=quant_dispatch/fp_04x04 benchmark=forced_scalar  |  vs_base_pct=+225.55 ci=[+222.29% +228.81%] significant=true effect=27.68 p=0.0000  |  min=89.34µs mean=94.44µs median=93.45µs mad=2.63µs  |  throughput=693.92 Mpx/s  |  n=30 cv=3.3% rounds=30 calls=33 mean_ci=[93.38µs 95.54µs] cold=97.58µs
+group=quant_dispatch/fp_08x08 benchmark=native_simd  |  vs_base=baseline  |  min=22.78µs mean=24.00µs median=23.89µs mad=467.0ns  |  throughput=2.73 Gpx/s  |  n=30 cv=2.9% rounds=30 calls=40 mean_ci=[23.77µs 24.26µs] cold=24.54µs
+group=quant_dispatch/fp_08x08 benchmark=forced_scalar  |  vs_base_pct=+272.98 ci=[+270.30% +275.69%] significant=true effect=41.23 p=0.0000  |  min=85.59µs mean=89.73µs median=89.18µs mad=2.11µs  |  throughput=730.35 Mpx/s  |  n=30 cv=2.5% rounds=30 calls=40 mean_ci=[88.96µs 90.55µs] cold=96.42µs
+group=quant_dispatch/fp_16x16 benchmark=native_simd  |  vs_base=baseline  |  min=21.22µs mean=22.32µs median=22.30µs mad=337.1ns  |  throughput=2.94 Gpx/s  |  n=30 cv=2.8% rounds=30 calls=44 mean_ci=[22.11µs 22.56µs] cold=22.67µs
+group=quant_dispatch/fp_16x16 benchmark=forced_scalar  |  vs_base_pct=+309.74 ci=[+306.72% +312.68%] significant=true effect=45.55 p=0.0000  |  min=87.52µs mean=91.46µs median=91.70µs mad=2.12µs  |  throughput=716.52 Mpx/s  |  n=30 cv=2.2% rounds=30 calls=44 mean_ci=[90.72µs 92.17µs] cold=97.29µs
+group=quant_dispatch/fp_32x32 benchmark=native_simd  |  vs_base=baseline  |  min=21.47µs mean=38.80µs median=38.41µs mad=11.68µs  |  throughput=1.69 Gpx/s  |  n=30 cv=26.9% rounds=30 calls=44 mean_ci=[35.16µs 42.40µs] cold=22.46µs
+group=quant_dispatch/fp_32x32 benchmark=forced_scalar  |  vs_base_pct=+326.00 ci=[+294.25% +355.97%] significant=true effect=3.95 p=0.0000  |  min=87.35µs mean=165.29µs median=178.72µs mad=47.98µs  |  throughput=396.48 Mpx/s  |  n=30 cv=26.6% rounds=30 calls=44 mean_ci=[149.52µs 180.14µs] cold=94.79µs
+       14.63 real         4.09 user         1.28 sys
+           164151296  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               50772  page reclaims
+                 120  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   2  messages sent
+                   2  messages received
+                   5  signals received
+                  58  voluntary context switches
+               19387  involuntary context switches
+           740042217  instructions retired
+           236080462  cycles elapsed
+            29819480  peak memory footprint
