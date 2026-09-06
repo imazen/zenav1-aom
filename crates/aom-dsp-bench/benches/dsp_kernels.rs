@@ -82,8 +82,12 @@ const WORK_PX: usize = 1 << 16;
 const WORK_BYTES_CAP: usize = 256 << 10;
 
 /// `tx_size_wide` / `tx_size_high` (`common_data.h`), indexed by `TX_SIZE`.
-const TX_W: [usize; 19] = [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
-const TX_H: [usize; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+const TX_W: [usize; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
+const TX_H: [usize; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 
 /// Transform cells spanning the size axis: squares 4x4..64x64 plus the extreme
 /// aspect ratios (1:4 / 4:1), which take different driver paths.
@@ -124,14 +128,21 @@ fn batch(w: usize, h: usize, bytes_per_px: usize) -> (usize, usize) {
 struct Rng(u64);
 impl Rng {
     fn next_u32(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.0 >> 32) as u32
     }
     /// Coefficient-shaped values: small, signed, with a heavy DC — the
     /// distribution the transform's eob-driven paths actually see.
     fn coeff(&mut self, i: usize) -> i32 {
         let v = (self.next_u32() % 512) as i32 - 256;
-        if i == 0 { v * 8 } else { v }
+        if i == 0 {
+            v * 8
+        } else {
+            v
+        }
     }
     fn pixel(&mut self) -> u8 {
         (self.next_u32() >> 8) as u8
@@ -201,22 +212,24 @@ fn bench_inv_txfm_hbd(suite: &mut Suite) {
                 let mut rng = Rng(0x5EED_0002 ^ (tx_size as u64) << 8);
                 let n = inv_txfm2d::inv_input_len(tx_size);
                 let input: Vec<i32> = (0..n * slots).map(|i| rng.coeff(i % n)).collect();
-                let dst: Vec<u16> =
-                    (0..w * h * slots).map(|_| (rng.next_u32() % 1024) as u16).collect();
-                b.with_input(move || (input.clone(), dst.clone())).run(move |(input, mut dst)| {
-                    for r in 0..reps {
-                        let s = r % slots;
-                        inv_txfm2d::av1_inv_txfm2d_add(
-                            &input[s * n..][..n],
-                            &mut dst[s * w * h..][..w * h],
-                            w,
-                            DCT_DCT,
-                            tx_size,
-                            10,
-                        );
-                    }
-                    dst
-                });
+                let dst: Vec<u16> = (0..w * h * slots)
+                    .map(|_| (rng.next_u32() % 1024) as u16)
+                    .collect();
+                b.with_input(move || (input.clone(), dst.clone()))
+                    .run(move |(input, mut dst)| {
+                        for r in 0..reps {
+                            let s = r % slots;
+                            inv_txfm2d::av1_inv_txfm2d_add(
+                                &input[s * n..][..n],
+                                &mut dst[s * w * h..][..w * h],
+                                w,
+                                DCT_DCT,
+                                tx_size,
+                                10,
+                            );
+                        }
+                        dst
+                    });
             });
         }
         tune(g);
@@ -238,8 +251,9 @@ fn bench_fwd_txfm(suite: &mut Suite) {
                 g.bench(format!("{name}_{tname}"), move |b| {
                     let mut rng = Rng(0x5EED_0003 ^ (tx_size as u64) << 8 ^ tx_type as u64);
                     // Residual domain: signed, |v| < 2^9 for 8-bit input.
-                    let input: Vec<i16> =
-                        (0..w * h * slots).map(|_| (rng.next_u32() % 512) as i16 - 256).collect();
+                    let input: Vec<i16> = (0..w * h * slots)
+                        .map(|_| (rng.next_u32() % 512) as i16 - 256)
+                        .collect();
                     let out = vec![0i32; w * h * slots];
                     b.with_input(move || (input.clone(), out.clone())).run(
                         move |(input, mut out)| {
@@ -316,7 +330,9 @@ fn bench_cdef(suite: &mut Suite) {
         let dir_reps = WORK_PX / 64;
         g.bench("find_dir_08x08", move |b| {
             let mut rng = Rng(0x5EED_0005);
-            let img: Vec<u16> = (0..9 * STRIDE).map(|_| (rng.next_u32() % 256) as u16).collect();
+            let img: Vec<u16> = (0..9 * STRIDE)
+                .map(|_| (rng.next_u32() % 256) as u16)
+                .collect();
             b.with_input(move || img.clone()).run(move |img| {
                 let mut acc = 0i32;
                 for _ in 0..dir_reps {
@@ -383,39 +399,44 @@ fn bench_dist(suite: &mut Suite) {
                 let mut rng = Rng(0x5EED_0007 ^ (w as u64) << 8);
                 let a: Vec<u8> = (0..STRIDE * 64).map(|_| rng.pixel()).collect();
                 let c: Vec<u8> = (0..STRIDE * 64).map(|_| rng.pixel()).collect();
-                b.with_input(move || (a.clone(), c.clone())).run(move |(a, c)| {
-                    let mut acc = 0u64;
-                    for _ in 0..reps {
-                        acc += dist::sad(&a, STRIDE, &c, STRIDE, w, h) as u64;
-                    }
-                    acc
-                });
+                b.with_input(move || (a.clone(), c.clone()))
+                    .run(move |(a, c)| {
+                        let mut acc = 0u64;
+                        for _ in 0..reps {
+                            acc += dist::sad(&a, STRIDE, &c, STRIDE, w, h) as u64;
+                        }
+                        acc
+                    });
             });
             g.bench(format!("sse_{name}"), move |b| {
                 let mut rng = Rng(0x5EED_0008 ^ (w as u64) << 8);
                 let a: Vec<u8> = (0..STRIDE * 64).map(|_| rng.pixel()).collect();
                 let c: Vec<u8> = (0..STRIDE * 64).map(|_| rng.pixel()).collect();
-                b.with_input(move || (a.clone(), c.clone())).run(move |(a, c)| {
-                    let mut acc = 0i64;
-                    for _ in 0..reps {
-                        acc += dist::sse(&a, STRIDE, &c, STRIDE, w, h);
-                    }
-                    acc
-                });
+                b.with_input(move || (a.clone(), c.clone()))
+                    .run(move |(a, c)| {
+                        let mut acc = 0i64;
+                        for _ in 0..reps {
+                            acc += dist::sse(&a, STRIDE, &c, STRIDE, w, h);
+                        }
+                        acc
+                    });
             });
             g.bench(format!("highbd_sse_{name}"), move |b| {
                 let mut rng = Rng(0x5EED_0009 ^ (w as u64) << 8);
-                let a: Vec<u16> =
-                    (0..STRIDE * 64).map(|_| (rng.next_u32() % 1024) as u16).collect();
-                let c: Vec<u16> =
-                    (0..STRIDE * 64).map(|_| (rng.next_u32() % 1024) as u16).collect();
-                b.with_input(move || (a.clone(), c.clone())).run(move |(a, c)| {
-                    let mut acc = 0i64;
-                    for _ in 0..reps {
-                        acc += dist::highbd_sse(&a, STRIDE, &c, STRIDE, w, h);
-                    }
-                    acc
-                });
+                let a: Vec<u16> = (0..STRIDE * 64)
+                    .map(|_| (rng.next_u32() % 1024) as u16)
+                    .collect();
+                let c: Vec<u16> = (0..STRIDE * 64)
+                    .map(|_| (rng.next_u32() % 1024) as u16)
+                    .collect();
+                b.with_input(move || (a.clone(), c.clone()))
+                    .run(move |(a, c)| {
+                        let mut acc = 0i64;
+                        for _ in 0..reps {
+                            acc += dist::highbd_sse(&a, STRIDE, &c, STRIDE, w, h);
+                        }
+                        acc
+                    });
             });
         }
         tune(g);
@@ -436,8 +457,8 @@ fn bench_quant(suite: &mut Suite) {
                 let scan: Vec<i16> = (0..n as i16).collect();
                 let q = vec![0i32; n];
                 let dq = vec![0i32; n];
-                b.with_input(move || (coeff.clone(), scan.clone(), q.clone(), dq.clone())).run(
-                    move |(coeff, scan, mut q, mut dq)| {
+                b.with_input(move || (coeff.clone(), scan.clone(), q.clone(), dq.clone()))
+                    .run(move |(coeff, scan, mut q, mut dq)| {
                         let mut acc = 0u32;
                         for _ in 0..reps {
                             acc += quant::av1_quantize_fp(
@@ -451,8 +472,7 @@ fn bench_quant(suite: &mut Suite) {
                             ) as u32;
                         }
                         (acc, q, dq)
-                    },
-                );
+                    });
             });
         }
         tune(g);
@@ -473,16 +493,19 @@ fn bench_intra(suite: &mut Suite) {
             (intra::SMOOTH, "smooth"),
             (intra::SMOOTH_V, "smooth_v"),
         ] {
-            for (bw, bh, name) in [(4usize, 4usize, "04x04"), (16, 16, "16x16"), (32, 32, "32x32")]
-            {
+            for (bw, bh, name) in [
+                (4usize, 4usize, "04x04"),
+                (16, 16, "16x16"),
+                (32, 32, "32x32"),
+            ] {
                 let reps = WORK_PX / (bw * bh);
                 g.bench(format!("{mname}_{name}"), move |b| {
                     let mut rng = Rng(0x5EED_000B ^ (bw as u64) << 8 ^ mode as u64);
                     let above: Vec<u8> = (0..bw + 2 * bh + 2).map(|_| rng.pixel()).collect();
                     let left: Vec<u8> = (0..bh + bw).map(|_| rng.pixel()).collect();
                     let dst = vec![0u8; bw * bh];
-                    b.with_input(move || (above.clone(), left.clone(), dst.clone())).run(
-                        move |(above, left, mut dst)| {
+                    b.with_input(move || (above.clone(), left.clone(), dst.clone()))
+                        .run(move |(above, left, mut dst)| {
                             for _ in 0..reps {
                                 intra::predict(
                                     mode,
@@ -495,8 +518,7 @@ fn bench_intra(suite: &mut Suite) {
                                 );
                             }
                             dst
-                        },
-                    );
+                        });
                 });
             }
         }
