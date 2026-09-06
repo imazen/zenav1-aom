@@ -1,0 +1,73 @@
+   Compiling zenav1-aom-dsp v0.0.1 (/Users/lilith/work/zen/zenav1-aom/crates/aom-dsp)
+warning: unused import: `constrain`
+  --> crates/aom-dsp/src/cdef/simd.rs:53:80
+   |
+53 | use crate::cdef::{CDEF_BSTRIDE, CDEF_VERY_LARGE, PRI_TAPS, SEC_TAPS, cdef_dir, constrain, get_msb};
+   |                                                                                ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `archmage::prelude`
+  --> crates/aom-dsp/src/restore/wiener.rs:20:5
+   |
+20 | use archmage::prelude::*;
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: constant `MODE_TO_ANGLE` is never used
+   --> crates/aom-dsp/src/census.rs:179:7
+    |
+179 | const MODE_TO_ANGLE: [i32; N_MODE] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0];
+    |       ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zenav1-aom-dsp` (lib) generated 3 warnings (run `cargo fix --lib -p zenav1-aom-dsp` to apply 1 suggestion)
+   Compiling zenav1-aom-dsp-bench v0.0.1 (/Users/lilith/work/zen/zenav1-aom/crates/aom-dsp-bench)
+    Finished `bench` profile [optimized] target(s) in 7.58s
+     Running benches/dsp_kernels.rs (target/release/deps/dsp_kernels-4b99c028063fb4cd)
+[zenbench] calibration: int=0.42ns/iter mem_bw=80.8GiB/s mem_lat=8.3ns
+[zenbench] timer resolution: 41ns, loop overhead: 0.47ns/iter, TSC: 1.000 ticks/ns (invariant)
+[zenbench] results → /Users/lilith/tmp/zenbench/zenbench-1788698405-6560.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788698405-6560
+  git: bcf2a44b8657b54dae95f8946f3d308cd61f432b
+═══════════════════════════════════════════════════════════════
+
+  intra_dispatch/paeth_04x04  200 rounds × 39 calls
+                          mean ±mad µs  95% CI vs base       ops/s
+  ├─ native_simd         65.5 ±16.6µs  [63.0–68.0]µs        1.00G [1]
+  ├─ forced_scalar       65.2 ±21.2µs  [-2.7%–+2.5%]        1.00G [2] [3]
+  ╰─ scalar_reference   173.4 ±13.4µs  [+159.7%–+169.8%]     378M
+
+  forced_scalar     ████████████████████████████████████████████████ 1.00 Gops/s
+  native_simd       ████████████████████████████████████████████████ 1.00 Gops/s
+  scalar_reference  ██████████████████ 378 Mops/s
+  [1] CV=28%
+  [2] CI crosses zero
+  [3] CV=29%
+
+  total: 24.0s  (3 noisy rounds)
+═══════════════════════════════════════════════════════════════
+  filter: cargo bench -- --group=NAME  format: --format=llm|csv|md|json
+group=intra_dispatch/paeth_04x04 benchmark=native_simd  |  vs_base=baseline  |  min=23.94µs mean=65.48µs median=69.91µs mad=16.59µs  |  throughput=1.00 Gops/s  |  n=200 cv=27.8% rounds=200 calls=39 mean_ci=[62.96µs 67.97µs] cold=23.42µs
+group=intra_dispatch/paeth_04x04 benchmark=forced_scalar  |  vs_base_pct=-0.10 ci=[-2.66% +2.47%] significant=false effect=-0.00 p=0.8821  |  min=24.07µs mean=65.25µs median=62.07µs mad=21.16µs  |  throughput=1.00 Gops/s  |  n=200 cv=28.9% rounds=200 calls=39 mean_ci=[62.60µs 67.85µs] cold=26.08µs
+group=intra_dispatch/paeth_04x04 benchmark=scalar_reference  |  vs_base_pct=+164.76 ci=[+159.74% +169.83%] significant=true effect=4.04 p=0.0000  |  min=73.25µs mean=173.35µs median=181.56µs mad=13.40µs  |  throughput=378.05 Mops/s  |  n=200 cv=19.1% rounds=200 calls=39 mean_ci=[168.67µs 177.89µs] cold=78.71µs
+       32.04 real         5.18 user         3.15 sys
+           165085184  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               63528  page reclaims
+                 108  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   3  messages sent
+                   4  messages received
+                   6  signals received
+                  50  voluntary context switches
+               31566  involuntary context switches
+           725529269  instructions retired
+           234335630  cycles elapsed
+            29753920  peak memory footprint

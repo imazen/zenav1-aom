@@ -41,3 +41,7 @@ Paeth, smooth and smooth-V now process width four with fixed four-element rows b
 At 4x4, paired reference-over-new-path increases were 38.92% for Paeth (CI +36.40% to +41.54%), 20.18% for smooth (+18.50% to +21.88%), and 34.83% for smooth-V (+33.04% to +36.68%). Enabled/disabled token timings tie as expected. All six corresponding 16x16/32x32 cells still favor SIMD over their forced-scalar fallback in the follow-up runs. This does not establish whole-codec or other-CPU speedups.
 
 The full intra differential and strict benchmark-only Clippy pass. The emitted smooth-V four-column loop uses scalar multiply-adds and one 64-bit row store; the fixed-array win does not require explicit intrinsics. Paeth's array map still emits an out-of-line `core::array::try_map` call, which is a further codegen opportunity.
+
+Replacing Paeth's four-element `array::map` with an indexed fixed-array loop removes its per-row `core::array::try_map` call. The new four-column body auto-vectorizes into NEON `sabd.4s`, comparisons and bit-selects, ending with a single 64-bit row store; see `aom-paeth-indexed.s`. No explicit intrinsics were added.
+
+The indexed Paeth case measures 65.48 µs per batch versus 173.35 µs for the unchanged scalar reference; the paired reference-over-new interval is +159.74% to +169.83%. Enabled and disabled tokens tie because the compiler vectorizes this fixed-row path even on baseline ARM. This is a new same-binary comparison, not a paired speedup against the previous build. Full intra differential and benchmark-only Clippy pass again.

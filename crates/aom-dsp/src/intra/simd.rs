@@ -459,9 +459,14 @@ pub(crate) fn paeth(
     if bw == 4 {
         let above: &[u16; 4] = above_row[..4].try_into().unwrap();
         for r in 0..bh {
-            let out = above.map(|top| {
-                crate::intra::paeth_single_i32(i32::from(left[r]), i32::from(top), top_left) as u16
-            });
+            let mut out = [0u16; 4];
+            for c in 0..4 {
+                out[c] = crate::intra::paeth_single_i32(
+                    i32::from(left[r]),
+                    i32::from(above[c]),
+                    top_left,
+                ) as u16;
+            }
             dst[r * stride..r * stride + 4].copy_from_slice(&out);
         }
         return;

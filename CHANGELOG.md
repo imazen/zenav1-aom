@@ -6,6 +6,8 @@
 
 ### Fixed
 
+- Four-column Paeth, smooth and smooth-V predictors avoid wider-block staging while preserving exact output (`bcf2a44b`).
+
 - Smooth-V intra prediction stores full SIMD vectors directly into output rows, improving the measured ARM 16x16/32x32 kernels (`77fc3265`).
 
 - **`--cq-level 0` (coded-lossless) no longer trips `tx_size_to_depth`'s
