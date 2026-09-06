@@ -19,6 +19,7 @@ zenav1-aom-dsp = { path = "../aom-dsp" }
 
 [dev-dependencies]
 zenbench = "0.1.9"
+archmage = { version = "0.9.27", features = ["testable_dispatch"] }
 
 [[bench]]
 name = "dsp_kernels"

@@ -861,6 +861,7 @@ dependencies = [
 name = "zenav1-aom-dsp-bench"
 version = "0.0.1"
 dependencies = [
+ "archmage",
  "zenav1-aom-dsp",
  "zenbench",
 ]

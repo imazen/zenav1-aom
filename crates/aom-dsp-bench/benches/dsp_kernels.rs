@@ -1,74 +1,8 @@
-//! Port-only DSP kernel benchmarks — the SIMD-lever measurement harness.
-//!
-//! Unlike `aom-bench`'s `gate3` (port vs the REAL libaom C oracle), this bench
-//! needs NO C reference: it times the port's own public dispatch entry points.
-//! That makes it the harness for **per-architecture SIMD work**, where the
-//! question is "what does this kernel gain from its vector path on THIS CPU",
-//! not "how do we compare to C". It runs unchanged on x86-64, aarch64, and
-//! wasm32 — which the Gate-3 oracle harness cannot do (`aom-sys-ref` needs the
-//! pinned libaom submodule + cmake, and on a dev box it may not be built).
-//!
-//! # How to compare two builds
-//!
-//! The intended use is a **before/after baseline around your own change**:
-//!
-//! ```text
-//! # on the commit before the optimization
-//! cargo bench -p zenav1-aom-dsp-bench --bench dsp_kernels -- --save-baseline=before
-//! # after the optimization
-//! cargo bench -p zenav1-aom-dsp-bench --bench dsp_kernels -- --baseline=before
-//! ```
-//!
-//! Within a single run, rows are interleaved, so same-run comparisons (e.g.
-//! across tx sizes) are paired and thermally sound.
-//!
-//! ## `AOM_FORCE_SCALAR=1` is NOT a valid scalar baseline on aarch64
-//!
-//! MEASURED 2026-07-25 on an Apple M4 Pro: `AOM_FORCE_SCALAR=1` (the
-//! `aom_dsp::dispatch` pin) is a **no-op for the NEON tier**, so a
-//! pinned-vs-unpinned pair on ARM measures the SAME code twice. `neon` is a
-//! compile-time-guaranteed baseline feature of `aarch64-apple-darwin` (and of
-//! aarch64 generally), and archmage refuses to disable compile-time-guaranteed
-//! tokens: `NeonToken::dangerously_disable_token_process_wide(true)` returns
-//! `Err`, and `NeonToken::summon()` keeps returning `Some` afterwards (verified
-//! directly). A full 77-row pinned-vs-unpinned pair on this box came back with
-//! every row inside ±3% — noise, not a scalar/SIMD delta.
-//!
-//! So on aarch64 do NOT read `AOM_FORCE_SCALAR` rows as "the scalar baseline".
-//! The pin still works as documented on x86-64, where every tier above the
-//! `sse2` baseline is runtime-detected and therefore disableable.
-//!
-//! A second consequence worth keeping in mind when reading ARM numbers: because
-//! NEON is baseline, the `_scalar` variants are themselves compiled with NEON
-//! available, so LLVM auto-vectorizes them. On ARM the interesting question is
-//! not "scalar vs vector" but "does this kernel exploit structure LLVM cannot
-//! find on its own" — chiefly batching independent work across lanes (e.g. the
-//! transform's 8-columns-at-once passes, which the per-column scalar driver
-//! loop structurally prevents LLVM from forming).
-//!
-//! # Why every cell batches to a fixed pixel budget
-//!
-//! A single 4x4 inverse transform is tens of ns — below useful resolution once
-//! the timer (41ns on an M4 Pro) and per-call overhead are accounted for; an
-//! unbatched first cut of this bench measured CV ~50%. Each cell therefore runs
-//! [`WORK_PX`] pixels' worth of back-to-back kernel calls, which puts every row
-//! in the tens-of-µs range and makes the batch a fair stand-in for the
-//! frame-level loops that call these kernels thousands of times per tile.
-//! Throughput is reported over the whole batch, so `px/s` is comparable across
-//! cells of different block sizes.
-//!
-//! The working set is capped at [`WORK_BYTES_CAP`] and cycled, keeping cells
-//! L2-resident: this measures kernel COMPUTE (the thing SIMD changes), not DRAM
-//! bandwidth. Kernels that are memory-bound at frame scale will show a smaller
-//! end-to-end win than their row here suggests — read this harness as a
-//! per-kernel lever and `gate3` as the end-to-end truth.
-//!
-//! # Size sweep
-//!
-//! Every group sweeps the transform/block-size axis from tiny (4x4) to large
-//! (64x64), including the extreme 1:4 / 4:1 aspect ratios, so per-call fixed
-//! overhead is separable from per-pixel work per the sweep discipline in
-//! CLAUDE.md. Bit depth is swept where the kernel has an hbd path.
+//! Interleaved runtime SIMD versus forced-scalar DSP kernels.
+//! The bench crate enables testable_dispatch so ARM baseline NEON can be
+//! disabled. Compiler auto-vectorization of the scalar fallback is allowed.
+//! Each size/kernel is its own paired group. This measures hot L2-resident
+//! batches, not end-to-end codec throughput.
 
 use std::time::Duration;
 
@@ -158,11 +92,54 @@ fn tune(g: &mut BenchGroup) {
         .max_wall_time(Duration::from_secs(60));
 }
 
+struct TierGroups<'a> {
+    suite: &'a mut Suite,
+    prefix: &'static str,
+}
+
+fn set_simd(enabled: bool) {
+    #[cfg(target_arch = "aarch64")]
+    archmage::NeonToken::dangerously_disable_token_process_wide(!enabled)
+        .expect("testable ARM dispatch");
+    #[cfg(target_arch = "x86_64")]
+    archmage::X64V2Token::dangerously_disable_token_process_wide(!enabled)
+        .expect("testable x86 dispatch");
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    panic!("tier comparison requires ARM64 or x86-64, enabled={enabled}");
+}
+
+impl TierGroups<'_> {
+    fn bench<F>(&mut self, name: impl Into<String>, f: F)
+    where
+        F: FnMut(&mut Bencher) + Clone + Send + 'static,
+    {
+        self.suite
+            .compare(format!("{}/{}", self.prefix, name.into()), |g| {
+                g.throughput_unit(if self.prefix == "quant" {
+                    "coeff"
+                } else {
+                    "px"
+                });
+                g.throughput(Throughput::Elements(WORK_PX as u64));
+                tune(g);
+                for (label, enabled) in [("native_simd", true), ("forced_scalar", false)] {
+                    let mut run = f.clone();
+                    g.bench(label, move |b| {
+                        set_simd(enabled);
+                        run(b);
+                    });
+                }
+            });
+    }
+}
+
+fn tier_group(suite: &mut Suite, prefix: &'static str, f: impl FnOnce(&mut TierGroups<'_>)) {
+    f(&mut TierGroups { suite, prefix });
+}
+
 /// bd8 inverse transform (`av1_inv_txfm2d_add_u8`) — the decode hot path.
 fn bench_inv_txfm_u8(suite: &mut Suite) {
-    suite.group("inv_txfm_u8", |g| {
-        g.throughput_unit("px");
-        g.throughput(Throughput::Elements(WORK_PX as u64));
+    tier_group(suite, "inv_txfm_u8", |g| {
         for &(tx_size, name) in TX_CELLS {
             for (tx_type, tname) in [(DCT_DCT, "dct"), (ADST_ADST, "adst")] {
                 if !inv_txfm2d::inv_txfm_valid(tx_type, tx_size) {
@@ -193,15 +170,12 @@ fn bench_inv_txfm_u8(suite: &mut Suite) {
                 });
             }
         }
-        tune(g);
     });
 }
 
 /// High-bit-depth inverse transform (`av1_inv_txfm2d_add`, bd10).
 fn bench_inv_txfm_hbd(suite: &mut Suite) {
-    suite.group("inv_txfm_hbd10", |g| {
-        g.throughput_unit("px");
-        g.throughput(Throughput::Elements(WORK_PX as u64));
+    tier_group(suite, "inv_txfm_hbd10", |g| {
         for &(tx_size, name) in TX_CELLS {
             if !inv_txfm2d::inv_txfm_valid(DCT_DCT, tx_size) {
                 continue;
@@ -232,15 +206,12 @@ fn bench_inv_txfm_hbd(suite: &mut Suite) {
                     });
             });
         }
-        tune(g);
     });
 }
 
 /// Forward transform (`av1_fwd_txfm2d`) — the encode hot path.
 fn bench_fwd_txfm(suite: &mut Suite) {
-    suite.group("fwd_txfm", |g| {
-        g.throughput_unit("px");
-        g.throughput(Throughput::Elements(WORK_PX as u64));
+    tier_group(suite, "fwd_txfm", |g| {
         for &(tx_size, name) in TX_CELLS {
             for (tx_type, tname) in [(DCT_DCT, "dct"), (ADST_ADST, "adst")] {
                 if !txfm2d::fwd_txfm_valid(tx_type, tx_size) {
@@ -273,7 +244,6 @@ fn bench_fwd_txfm(suite: &mut Suite) {
                 });
             }
         }
-        tune(g);
     });
 }
 
@@ -287,9 +257,7 @@ fn bench_cdef(suite: &mut Suite) {
     const STRIDE: usize = cdef::CDEF_BSTRIDE;
     const VB: usize = 2;
     const HB: usize = 8;
-    suite.group("cdef", |g| {
-        g.throughput_unit("px");
-        g.throughput(Throughput::Elements(WORK_PX as u64));
+    tier_group(suite, "cdef", |g| {
         for (bw, bh, name) in [(4usize, 4usize, "04x04"), (8, 8, "08x08")] {
             let reps = WORK_PX / (bw * bh);
             g.bench(format!("filter_u8_{name}"), move |b| {
@@ -342,7 +310,6 @@ fn bench_cdef(suite: &mut Suite) {
                 acc
             });
         });
-        tune(g);
     });
 }
 
@@ -350,9 +317,7 @@ fn bench_cdef(suite: &mut Suite) {
 fn bench_loopfilter(suite: &mut Suite) {
     const STRIDE: usize = 64;
     const ROWS: usize = 64;
-    suite.group("loopfilter", |g| {
-        g.throughput_unit("px");
-        g.throughput(Throughput::Elements(WORK_PX as u64));
+    tier_group(suite, "loopfilter", |g| {
         for width in [4u32, 8, 14] {
             // One call filters a `width`-tap edge across a 4-sample run.
             let reps = WORK_PX / (width as usize * 4);
@@ -377,16 +342,13 @@ fn bench_loopfilter(suite: &mut Suite) {
                 });
             }
         }
-        tune(g);
     });
 }
 
 /// Distortion metrics — SAD / SSE, the RD search's highest-call-count kernels.
 fn bench_dist(suite: &mut Suite) {
     const STRIDE: usize = 64;
-    suite.group("dist", |g| {
-        g.throughput_unit("px");
-        g.throughput(Throughput::Elements(WORK_PX as u64));
+    tier_group(suite, "dist", |g| {
         for (w, h, name) in [
             (4usize, 4usize, "04x04"),
             (8, 8, "08x08"),
@@ -439,15 +401,12 @@ fn bench_dist(suite: &mut Suite) {
                     });
             });
         }
-        tune(g);
     });
 }
 
 /// Quantization — `av1_quantize_fp` across the block-size axis.
 fn bench_quant(suite: &mut Suite) {
-    suite.group("quant", |g| {
-        g.throughput_unit("coeff");
-        g.throughput(Throughput::Elements(WORK_PX as u64));
+    tier_group(suite, "quant", |g| {
         for &(tx_size, name) in &[(0usize, "04x04"), (1, "08x08"), (2, "16x16"), (3, "32x32")] {
             let n = TX_W[tx_size] * TX_H[tx_size];
             let reps = WORK_PX / n;
@@ -475,15 +434,12 @@ fn bench_quant(suite: &mut Suite) {
                     });
             });
         }
-        tune(g);
     });
 }
 
 /// Intra prediction — the compute-heavy predictors across the size axis.
 fn bench_intra(suite: &mut Suite) {
-    suite.group("intra", |g| {
-        g.throughput_unit("px");
-        g.throughput(Throughput::Elements(WORK_PX as u64));
+    tier_group(suite, "intra", |g| {
         // SMOOTH* / PAETH are the compute-heavy predictors; V/H are
         // memory-bound copies, kept as the control.
         for (mode, mname) in [
@@ -522,11 +478,16 @@ fn bench_intra(suite: &mut Suite) {
                 });
             }
         }
-        tune(g);
     });
 }
 
 fn main() {
+    assert!(
+        !aom_dsp::dispatch::scalar_forced(),
+        "remove AOM_FORCE_SCALAR for paired tiers"
+    );
+    set_simd(false);
+    set_simd(true);
     let group_filter: Option<String> =
         std::env::args().find_map(|a| a.strip_prefix("--group=").map(String::from));
     let result = zenbench::run(|suite: &mut Suite| {

@@ -168,3 +168,8 @@ gate-svt-interop:
 # benchmarks/zensim_zq_target_wave_2026-08-29.md
 zq-census corpus targets k out:
     cargo run --release -p zenav1-aom-target --features census --example zq_census -- {{corpus}} {{targets}} {{k}} {{out}}
+
+# Interleaved native/scalar DSP pairs; no C oracle required.
+arm-dsp-tiers-macos group="":
+    mkdir -p "$HOME/tmp"
+    CARGO_BUILD_JOBS=4 RAYON_NUM_THREADS=4 OMP_NUM_THREADS=4 TMPDIR="$HOME/tmp" nice -n 19 /usr/bin/time -l cargo bench --locked -p zenav1-aom-dsp-bench --bench dsp_kernels -- --group={{group}} --format=llm > "$HOME/tmp/aom-arm-dsp-tiers.log" 2>&1
