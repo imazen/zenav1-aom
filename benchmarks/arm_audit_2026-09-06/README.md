@@ -24,3 +24,11 @@ The SAD dispatcher disassembly is retained in `sad_dispatch_arm.s`. Both token b
 The 15 dispatched intra cells expose four regressions: forced scalar is 7.39% faster for Paeth 4x4, 6.10% for smooth 4x4, 13.42% for smooth-V 4x4, and 10.75% for smooth-V 32x32. Five larger Paeth/smooth cells favor SIMD; the six V/H copy controls tie (the smooth-V 32x32 regression is counted separately). These measurements motivate codegen follow-up; no fallback policy has been changed based on this single bit-depth/shape fixture.
 
 Validation: seven existing DSP integration binaries passed: forward/inverse transforms, quantization, CDEF, intra predictors, loopfilter and SAD. One pre-existing SAD performance test is ignored. The intra differential covers all modes, widths/heights 4/8/16/32/64, bit depths 8/10/12, and both tight and padded strides across token permutations. Full log: `aom_simd_parity_2026-09-06.log`.
+
+## Smooth-V full-vector stores
+
+Full 16-lane outputs now store directly into a checked `[u16; 16]` destination. Partial vectors retain their existing temporary-buffer copy. This removes the dynamic-length copy from each full-vector row without changing arithmetic, dimensions, strides, or the sample-domain gate.
+
+New paired means per 65536-pixel batch: 16x16 SIMD 16.21 µs / scalar 68.11 µs; 32x32 SIMD 10.98 µs / scalar 34.20 µs. The 32x32 paired scalar-over-SIMD interval is +201.53% to +220.18%; previously scalar won this cell. These are separate before/after runs, and CV is 17–22% in the new 32x32 pair, so no precise before/after speedup is claimed. The 4x4 SIMD path still loses to scalar and is the next investigation.
+
+The existing full intra differential passes after the change (all modes, sizes, bit depths, strides, token permutations). Benchmark Clippy passes with `--no-deps -D warnings`; the pre-existing DSP library lints remain as documented above. The DSP crate also has pre-existing formatting drift; a package-wide fmt output was preserved in jj change `vtnvlqlm`, while this production change is kept to its eight-line store diff.

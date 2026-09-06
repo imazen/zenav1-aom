@@ -1,0 +1,28 @@
+    Checking archmage v0.9.28
+    Checking magetypes v0.9.28
+    Checking zenav1-aom-dsp v0.0.1 (/Users/lilith/work/zen/zenav1-aom/crates/aom-dsp)
+warning: unused import: `constrain`
+  --> crates/aom-dsp/src/cdef/simd.rs:53:80
+   |
+53 | use crate::cdef::{CDEF_BSTRIDE, CDEF_VERY_LARGE, PRI_TAPS, SEC_TAPS, cdef_dir, constrain, get_msb};
+   |                                                                                ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `archmage::prelude`
+  --> crates/aom-dsp/src/restore/wiener.rs:20:5
+   |
+20 | use archmage::prelude::*;
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: constant `MODE_TO_ANGLE` is never used
+   --> crates/aom-dsp/src/census.rs:179:7
+    |
+179 | const MODE_TO_ANGLE: [i32; N_MODE] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0];
+    |       ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zenav1-aom-dsp` (lib) generated 3 warnings (run `cargo clippy --fix --lib -p zenav1-aom-dsp -- --no-deps -D warnings` to apply 1 suggestion)
+    Checking zenav1-aom-dsp-bench v0.0.1 (/Users/lilith/work/zen/zenav1-aom/crates/aom-dsp-bench)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.72s

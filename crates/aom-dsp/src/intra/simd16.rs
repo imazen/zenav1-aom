@@ -311,9 +311,13 @@ fn smooth_v_impl(
             let below_term = u16x16::splat(token, below_term_s[r]);
             let p = w_v * above_v + below_term;
             let out = (p + round).shr_logical_const::<8>();
-            out.store(&mut buf);
             let row = r * stride;
-            dst[row + c..row + c + n].copy_from_slice(&buf[..n]);
+            if n == 16 {
+                out.store((&mut dst[row + c..row + c + 16]).try_into().unwrap());
+            } else {
+                out.store(&mut buf);
+                dst[row + c..row + c + n].copy_from_slice(&buf[..n]);
+            }
         }
         c += 16;
     }
