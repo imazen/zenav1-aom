@@ -1,0 +1,71 @@
+warning: unused import: `constrain`
+  --> crates/aom-dsp/src/cdef/simd.rs:53:80
+   |
+53 | use crate::cdef::{CDEF_BSTRIDE, CDEF_VERY_LARGE, PRI_TAPS, SEC_TAPS, cdef_dir, constrain, get_msb};
+   |                                                                                ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `archmage::prelude`
+  --> crates/aom-dsp/src/restore/wiener.rs:20:5
+   |
+20 | use archmage::prelude::*;
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: constant `MODE_TO_ANGLE` is never used
+   --> crates/aom-dsp/src/census.rs:179:7
+    |
+179 | const MODE_TO_ANGLE: [i32; N_MODE] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0];
+    |       ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zenav1-aom-dsp` (lib) generated 3 warnings (run `cargo fix --lib -p zenav1-aom-dsp` to apply 1 suggestion)
+    Finished `bench` profile [optimized] target(s) in 0.04s
+     Running benches/dsp_kernels.rs (target/release/deps/dsp_kernels-4b99c028063fb4cd)
+[zenbench] calibration: int=0.27ns/iter mem_bw=117.8GiB/s mem_lat=7.5ns
+[zenbench] timer resolution: 41ns, loop overhead: 0.22ns/iter, TSC: 1.000 ticks/ns (invariant)
+[zenbench] results → /Users/lilith/tmp/zenbench/zenbench-1788698066-61ca.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788698066-61ca
+  git: 77fc3265b346616cad4b18b66af74164f61b70ac
+═══════════════════════════════════════════════════════════════
+
+  intra_dispatch/smooth_v_04x04  200 rounds × 32 calls
+                          mean ±mad µs  95% CI vs base     ops/s
+  ├─ native_simd          93.2 ±7.4µs  [90.6–95.8]µs      703M [1]
+  ├─ forced_scalar        94.0 ±8.5µs  [-0.4%–+2.6%]      697M [2] [3]
+  ╰─ scalar_reference   127.1 ±11.8µs  [+33.0%–+36.7%]    515M
+
+  native_simd       █████████████████████████████████████████████████ 703 Mops/s
+  forced_scalar     █████████████████████████████████████████████████ 697 Mops/s
+  scalar_reference  ████████████████████████████████████ 515 Mops/s
+  [1] CV=20%
+  [2] CI crosses zero
+  [3] CV=21%
+
+  total: 24.6s  (4 noisy rounds)
+═══════════════════════════════════════════════════════════════
+  filter: cargo bench -- --group=NAME  format: --format=llm|csv|md|json
+group=intra_dispatch/smooth_v_04x04 benchmark=native_simd  |  vs_base=baseline  |  min=30.27µs mean=93.17µs median=92.16µs mad=7.36µs  |  throughput=703.37 Mops/s  |  n=200 cv=20.1% rounds=200 calls=32 mean_ci=[90.56µs 95.79µs] cold=33.12µs
+group=intra_dispatch/smooth_v_04x04 benchmark=forced_scalar  |  vs_base_pct=+1.11 ci=[-0.39% +2.57%] significant=false effect=0.06 p=0.2336  |  min=31.72µs mean=94.04µs median=92.22µs mad=8.46µs  |  throughput=696.89 Mops/s  |  n=200 cv=21.0% rounds=200 calls=32 mean_ci=[91.38µs 96.86µs] cold=29.62µs
+group=intra_dispatch/smooth_v_04x04 benchmark=scalar_reference  |  vs_base_pct=+34.83 ci=[+33.04% +36.68%] significant=true effect=1.65 p=0.0000  |  min=43.31µs mean=127.15µs median=126.88µs mad=11.77µs  |  throughput=515.44 Mops/s  |  n=200 cv=18.0% rounds=200 calls=32 mean_ci=[123.98µs 130.27µs] cold=52.17µs
+       24.76 real         3.98 user         3.66 sys
+            55377920  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               36568  page reclaims
+                   8  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   1  signals received
+                   9  voluntary context switches
+               31140  involuntary context switches
+           646342097  instructions retired
+           208330829  cycles elapsed
+            29819456  peak memory footprint

@@ -1,0 +1,73 @@
+   Compiling zenav1-aom-dsp v0.0.1 (/Users/lilith/work/zen/zenav1-aom/crates/aom-dsp)
+warning: unused import: `constrain`
+  --> crates/aom-dsp/src/cdef/simd.rs:53:80
+   |
+53 | use crate::cdef::{CDEF_BSTRIDE, CDEF_VERY_LARGE, PRI_TAPS, SEC_TAPS, cdef_dir, constrain, get_msb};
+   |                                                                                ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `archmage::prelude`
+  --> crates/aom-dsp/src/restore/wiener.rs:20:5
+   |
+20 | use archmage::prelude::*;
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: constant `MODE_TO_ANGLE` is never used
+   --> crates/aom-dsp/src/census.rs:179:7
+    |
+179 | const MODE_TO_ANGLE: [i32; N_MODE] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0];
+    |       ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zenav1-aom-dsp` (lib) generated 3 warnings (run `cargo fix --lib -p zenav1-aom-dsp` to apply 1 suggestion)
+   Compiling zenav1-aom-dsp-bench v0.0.1 (/Users/lilith/work/zen/zenav1-aom/crates/aom-dsp-bench)
+    Finished `bench` profile [optimized] target(s) in 7.74s
+     Running benches/dsp_kernels.rs (target/release/deps/dsp_kernels-4b99c028063fb4cd)
+[zenbench] calibration: int=0.40ns/iter mem_bw=80.8GiB/s mem_lat=8.2ns
+[zenbench] timer resolution: 41ns, loop overhead: 0.42ns/iter, TSC: 1.000 ticks/ns (invariant)
+[zenbench] results → /Users/lilith/tmp/zenbench/zenbench-1788698016-616b.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788698016-616b
+  git: 77fc3265b346616cad4b18b66af74164f61b70ac
+═══════════════════════════════════════════════════════════════
+
+  intra_dispatch/paeth_04x04  200 rounds × 23 calls
+                          mean ±mad µs  95% CI vs base      ops/s
+  ├─ native_simd        140.3 ±23.3µs  [133.6–149.8]µs     467M [1]
+  ├─ forced_scalar      141.4 ±25.6µs  [-2.6%–+2.3%]       463M [2] [3]
+  ╰─ scalar_reference   189.7 ±16.0µs  [+36.4%–+41.5%]     345M
+
+  native_simd       █████████████████████████████████████████████████ 467 Mops/s
+  forced_scalar     █████████████████████████████████████████████████ 463 Mops/s
+  scalar_reference  ████████████████████████████████████ 345 Mops/s
+  [1] CV=43%
+  [2] CI crosses zero
+  [3] CV=48%
+
+  total: 24.6s  (4 noisy rounds)
+═══════════════════════════════════════════════════════════════
+  filter: cargo bench -- --group=NAME  format: --format=llm|csv|md|json
+group=intra_dispatch/paeth_04x04 benchmark=native_simd  |  vs_base=baseline  |  min=38.68µs mean=140.34µs median=142.95µs mad=23.31µs  |  throughput=466.98 Mops/s  |  n=200 cv=42.6% rounds=200 calls=23 mean_ci=[133.60µs 149.81µs] cold=44.42µs
+group=intra_dispatch/paeth_04x04 benchmark=forced_scalar  |  vs_base_pct=-0.20 ci=[-2.61% +2.27%] significant=false effect=-0.01 p=0.8661  |  min=41.49µs mean=141.42µs median=142.02µs mad=25.57µs  |  throughput=463.40 Mops/s  |  n=200 cv=48.0% rounds=200 calls=23 mean_ci=[133.60µs 151.85µs] cold=44.42µs
+group=intra_dispatch/paeth_04x04 benchmark=scalar_reference  |  vs_base_pct=+38.92 ci=[+36.40% +41.54%] significant=true effect=2.13 p=0.0000  |  min=81.88µs mean=189.71µs median=191.24µs mad=16.03µs  |  throughput=345.46 Mops/s  |  n=200 cv=11.4% rounds=200 calls=23 mean_ci=[186.61µs 192.63µs] cold=79.71µs
+       32.74 real         5.07 user         3.60 sys
+           164544512  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               63531  page reclaims
+                 108  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   3  messages sent
+                   4  messages received
+                   6  signals received
+                  43  voluntary context switches
+               31786  involuntary context switches
+           766129009  instructions retired
+           241830309  cycles elapsed
+            29590128  peak memory footprint

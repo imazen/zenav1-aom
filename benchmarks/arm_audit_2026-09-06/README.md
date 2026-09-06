@@ -32,3 +32,12 @@ Full 16-lane outputs now store directly into a checked `[u16; 16]` destination. 
 New paired means per 65536-pixel batch: 16x16 SIMD 16.21 µs / scalar 68.11 µs; 32x32 SIMD 10.98 µs / scalar 34.20 µs. The 32x32 paired scalar-over-SIMD interval is +201.53% to +220.18%; previously scalar won this cell. These are separate before/after runs, and CV is 17–22% in the new 32x32 pair, so no precise before/after speedup is claimed. The 4x4 SIMD path still loses to scalar and is the next investigation.
 
 The existing full intra differential passes after the change (all modes, sizes, bit depths, strides, token permutations). Benchmark Clippy passes with `--no-deps -D warnings`; the pre-existing DSP library lints remain as documented above. The DSP crate also has pre-existing formatting drift; a package-wide fmt output was preserved in jj change `vtnvlqlm`, while this production change is kept to its eight-line store diff.
+
+
+## Four-column predictors
+
+Paeth, smooth and smooth-V now process width four with fixed four-element rows before entering their wider vector kernels. The scalar reference functions remain unchanged. The dispatch benchmark now includes that explicit scalar reference as a third arm, because both enabled and disabled tokens use the new fixed-row path.
+
+At 4x4, paired reference-over-new-path increases were 38.92% for Paeth (CI +36.40% to +41.54%), 20.18% for smooth (+18.50% to +21.88%), and 34.83% for smooth-V (+33.04% to +36.68%). Enabled/disabled token timings tie as expected. All six corresponding 16x16/32x32 cells still favor SIMD over their forced-scalar fallback in the follow-up runs. This does not establish whole-codec or other-CPU speedups.
+
+The full intra differential and strict benchmark-only Clippy pass. The emitted smooth-V four-column loop uses scalar multiply-adds and one 64-bit row store; the fixed-array win does not require explicit intrinsics. Paeth's array map still emits an out-of-line `core::array::try_map` call, which is a further codegen opportunity.

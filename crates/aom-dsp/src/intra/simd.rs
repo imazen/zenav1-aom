@@ -92,6 +92,27 @@ pub(crate) fn smooth(
     sw_h: &[u8],
 ) {
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    // Four columns fit one fixed-array row; avoid staging a wider vector block.
+    if bw == 4 {
+        let above: &[u16; 4] = above_row[..4].try_into().unwrap();
+        let weights: &[u8; 4] = sw_w[..4].try_into().unwrap();
+        let below = i32::from(left[bh - 1]);
+        let right = i32::from(above[3]);
+        for r in 0..bh {
+            let wh = i32::from(sw_h[r]);
+            let mut out = [0u16; 4];
+            for c in 0..4 {
+                let ww = i32::from(weights[c]);
+                let p = wh * i32::from(above[c])
+                    + (SCALE - wh) * below
+                    + ww * i32::from(left[r])
+                    + (SCALE - ww) * right;
+                out[c] = crate::intra::divide_round(p, 1 + SMOOTH_WEIGHT_LOG2_SCALE) as u16;
+            }
+            dst[r * stride..r * stride + 4].copy_from_slice(&out);
+        }
+        return;
+    }
     // The 16-bit-lane path when the block's samples are inside its bound
     // (`crate::intra::simd16`); otherwise the i32x8 body below, unchanged.
     if super::simd16::smooth_applies(bw, bh, above_row, left) {
@@ -221,6 +242,19 @@ pub(crate) fn smooth_v(
     sw_h: &[u8],
 ) {
     let _ = crate::dispatch::scalar_forced();
+    // Four columns fit one fixed-array row; avoid staging a wider vector block.
+    if bw == 4 {
+        let above: &[u16; 4] = above_row[..4].try_into().unwrap();
+        for r in 0..bh {
+            let w = i32::from(sw_h[r]);
+            let out = above.map(|top| {
+                let p = w * i32::from(top) + (SCALE - w) * below;
+                crate::intra::divide_round(p, SMOOTH_WEIGHT_LOG2_SCALE) as u16
+            });
+            dst[r * stride..r * stride + 4].copy_from_slice(&out);
+        }
+        return;
+    }
     if super::simd16::smooth_v_applies(bw, above_row, below) {
         super::simd16::smooth_v(dst, stride, bw, bh, above_row, below, sw_h);
         return;
@@ -421,6 +455,17 @@ pub(crate) fn paeth(
     top_left: i32,
 ) {
     let _ = crate::dispatch::scalar_forced();
+    // Four columns fit one fixed-array row; avoid staging a wider vector block.
+    if bw == 4 {
+        let above: &[u16; 4] = above_row[..4].try_into().unwrap();
+        for r in 0..bh {
+            let out = above.map(|top| {
+                crate::intra::paeth_single_i32(i32::from(left[r]), i32::from(top), top_left) as u16
+            });
+            dst[r * stride..r * stride + 4].copy_from_slice(&out);
+        }
+        return;
+    }
     incant!(
         paeth_impl(dst, stride, bw, bh, above_row, left, top_left),
         [v3, neon, wasm128, scalar]
@@ -440,7 +485,8 @@ pub(crate) fn paeth_scalar(
     for r in 0..bh {
         for c in 0..bw {
             dst[r * stride + c] =
-                crate::intra::paeth_single_i32(left[r] as i32, above_row[c] as i32, top_left) as u16;
+                crate::intra::paeth_single_i32(left[r] as i32, above_row[c] as i32, top_left)
+                    as u16;
         }
     }
 }
@@ -499,7 +545,8 @@ fn paeth_impl(
             c += 8;
         }
         while c < bw {
-            dst[row + c] = crate::intra::paeth_single_i32(left_r, above_row[c] as i32, top_left) as u16;
+            dst[row + c] =
+                crate::intra::paeth_single_i32(left_r, above_row[c] as i32, top_left) as u16;
             c += 1;
         }
     }

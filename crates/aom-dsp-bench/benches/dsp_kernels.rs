@@ -590,72 +590,94 @@ fn bench_quant_dispatch(suite: &mut Suite) {
 }
 
 fn bench_intra_dispatch(suite: &mut Suite) {
-    tier_group(suite, "intra_dispatch", |g| {
-        // SMOOTH* / PAETH are the compute-heavy predictors; V/H are
-        // memory-bound copies, kept as the control.
-        for (mode, mname) in [
-            (intra::V, "v"),
-            (intra::H, "h"),
-            (intra::PAETH, "paeth"),
-            (intra::SMOOTH, "smooth"),
-            (intra::SMOOTH_V, "smooth_v"),
+    // SMOOTH* / PAETH are the compute-heavy predictors; V/H are
+    // memory-bound copies, kept as the control.
+    for (mode, mname) in [
+        (intra::V, "v"),
+        (intra::H, "h"),
+        (intra::PAETH, "paeth"),
+        (intra::SMOOTH, "smooth"),
+        (intra::SMOOTH_V, "smooth_v"),
+    ] {
+        for (bw, bh, name) in [
+            (4usize, 4usize, "04x04"),
+            (16, 16, "16x16"),
+            (32, 32, "32x32"),
         ] {
-            for (bw, bh, name) in [
-                (4usize, 4usize, "04x04"),
-                (16, 16, "16x16"),
-                (32, 32, "32x32"),
-            ] {
-                let reps = WORK_PX / (bw * bh);
-                g.bench(format!("{mname}_{name}"), move |b| {
-                    let mut rng = Rng(0x5EED_000B ^ (bw as u64) << 8 ^ mode as u64);
-                    let above: Vec<u16> = (0..bw + 2 * bh + 2)
-                        .map(|_| u16::from(rng.pixel()))
-                        .collect();
-                    let left: Vec<u16> = (0..bh + bw).map(|_| u16::from(rng.pixel())).collect();
-                    let dst = vec![0u16; bw * bh];
-                    let mut want = dst.clone();
-                    let mut got = dst.clone();
-                    intra::predict_highbd_scalar(
-                        mode,
-                        &mut want,
-                        bw,
-                        bw,
-                        bh,
-                        &intra::AboveRef16(&above),
-                        &left,
-                        8,
-                    );
-                    intra::predict_highbd(
-                        mode,
-                        &mut got,
-                        bw,
-                        bw,
-                        bh,
-                        &intra::AboveRef16(&above),
-                        &left,
-                        8,
-                    );
-                    assert_eq!(got, want);
-                    b.with_input(move || (above.clone(), left.clone(), dst.clone()))
-                        .run(move |(above, left, mut dst)| {
-                            for _ in 0..reps {
-                                intra::predict_highbd(
-                                    mode,
-                                    &mut dst,
-                                    bw,
-                                    bw,
-                                    bh,
-                                    &intra::AboveRef16(&above),
-                                    &left,
-                                    8,
-                                );
-                            }
-                            dst
-                        });
-                });
-            }
+            let reps = WORK_PX / (bw * bh);
+            suite.compare(format!("intra_dispatch/{mname}_{name}"), |g| {
+                tune(g);
+                g.throughput(Throughput::Elements(WORK_PX as u64));
+                for (label, enabled, reference) in [
+                    ("native_simd", true, false),
+                    ("forced_scalar", false, false),
+                    ("scalar_reference", true, true),
+                ] {
+                    g.bench(label, move |b| {
+                        set_simd(enabled);
+                        let mut rng = Rng(0x5EED_000B ^ (bw as u64) << 8 ^ mode as u64);
+                        let above: Vec<u16> = (0..bw + 2 * bh + 2)
+                            .map(|_| u16::from(rng.pixel()))
+                            .collect();
+                        let left: Vec<u16> = (0..bh + bw).map(|_| u16::from(rng.pixel())).collect();
+                        let dst = vec![0u16; bw * bh];
+                        let mut want = dst.clone();
+                        let mut got = dst.clone();
+                        intra::predict_highbd_scalar(
+                            mode,
+                            &mut want,
+                            bw,
+                            bw,
+                            bh,
+                            &intra::AboveRef16(&above),
+                            &left,
+                            8,
+                        );
+                        intra::predict_highbd(
+                            mode,
+                            &mut got,
+                            bw,
+                            bw,
+                            bh,
+                            &intra::AboveRef16(&above),
+                            &left,
+                            8,
+                        );
+                        assert_eq!(got, want);
+                        b.with_input(move || (above.clone(), left.clone(), dst.clone()))
+                            .run(move |(above, left, mut dst)| {
+                                for _ in 0..reps {
+                                    if reference {
+                                        intra::predict_highbd_scalar(
+                                            mode,
+                                            &mut dst,
+                                            bw,
+                                            bw,
+                                            bh,
+                                            &intra::AboveRef16(&above),
+                                            &left,
+                                            8,
+                                        );
+                                    } else {
+                                        intra::predict_highbd(
+                                            mode,
+                                            &mut dst,
+                                            bw,
+                                            bw,
+                                            bh,
+                                            &intra::AboveRef16(&above),
+                                            &left,
+                                            8,
+                                        );
+                                    }
+                                }
+                                dst
+                            });
+                    });
+                }
+            });
         }
-    });
+    }
 }
 
 fn main() {
