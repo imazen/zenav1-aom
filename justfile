@@ -143,6 +143,14 @@ audit-i16-fwd:
 gate-armed-decode:
     AOM_DAV1D_BIN="$(command -v dav1d || true)" cargo test --profile test-fast -p zenav1-aom-bench --test armed_tools_decode_gate -- --nocapture
 
+# ENCODE TIME vs libaom, on the standalone entry, with byte-identity asserted
+# per cell (byte identity IS the RD claim — same bytes means the same
+# rate-distortion point, not a nearby one). `#[ignore]`d in the ordinary suite
+# because it is a timing measurement and `CLAUDE.md` requires those isolated.
+# Record: benchmarks/encode_perf_vs_libaom_2026-09-08.md.
+gate-encode-perf:
+    cargo test --profile test-fast -p zenav1-aom-bench --test encode_perf_vs_libaom -- --ignored --test-threads 1 --nocapture
+
 # CANCELLATION-LATENCY GATE (the three timing arms of
 # `crates/aom-bench/tests/cancel_latency.rs`). They are `#[ignore]`d in the
 # ordinary suite ON PURPOSE: they measure WALL-CLOCK latency, which a parallel

@@ -80,6 +80,15 @@ user says otherwise; the two retained fleet photo witnesses are at 2.49x / 2.65x
   remain agreement checks; the standalone gate is the evidence that the port can produce a
   configuration.
 - **Gate 3 — Performance:** user-set acceptance bar ≤ 1.5× C (2026-07-20 directive).
+  **ENCODER, MEASURED IN-REPO FOR THE FIRST TIME 2026-09-08 — the bar is NOT met.** The
+  standalone `encode_key_frame` runs at **3.24x .. 4.03x libaom** on cells whose output is
+  BYTE-IDENTICAL to it (real photographic content, ALLINTRA defaults, `--cpu-used` {0, 6},
+  128x128 and 192x192, cq {27, 45}), i.e. ~2.2x to ~2.7x over the bar. Record + method:
+  `benchmarks/encode_perf_vs_libaom_2026-09-08.md`; gate `just gate-encode-perf`. The
+  2.49x / 2.65x fleet witnesses quoted in GitHub #16 are the OPTIMISTIC end of that range,
+  not a typical value, and were taken on other hardware with another harness. Byte identity
+  is also the RD evidence: same bytes means the same rate-distortion POINT, so "match the RD
+  of C" is satisfied exactly where the byte gates hold and nowhere else.
   **Met at the 4K headline cells** (≈1.22× cq20 / ≈1.19× cq40 wall after the bd8 lowbd +
   i16-rows + CDEF find_dir landings); 2K and small-frame cells still exceed it
   (1.66–1.9× at 2K, up to ~2.4× on tiny/entropy-dominated cells) — see
