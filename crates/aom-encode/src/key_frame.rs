@@ -304,7 +304,49 @@ impl KeyFrameConfig {
                 "ss_x/ss_y: must be (1,1) 4:2:0, (1,0) 4:2:2 or (0,0) 4:4:4",
             ));
         }
+        // The sequence header codes `frame_width_bits_minus_1` / `_height_` as
+        // `f(4)` (AV1 5.5.1), so `num_bits_for_dim` must land in 1..=16 and the
+        // largest representable dimension is 65536. Past that
+        // `write_sequence_header` would emit `write_literal(16, 4)` == 0,
+        // signalling ONE width bit and then writing seventeen — a silently
+        // corrupt stream, not a refusal. `mi_dim`'s `as i32` is safe inside the
+        // same bound.
+        if cfg.width > MAX_FRAME_DIM || cfg.height > MAX_FRAME_DIM {
+            return Err(KeyFrameError::Unsupported(
+                "width/height: must be <= 65536 (frame_width_bits_minus_1 is f(4))",
+            ));
+        }
+        // Tiles. Derived, not taken on trust, and derived HERE so the query and
+        // the encoder cannot disagree — `encode_key_frame` consumes the same
+        // call's result rather than repeating the predicate.
+        cfg.derive_tiles()?;
         Ok(())
+    }
+
+    /// The uniform-spacing tile grid this configuration resolves to, or the
+    /// refusal it earns.
+    ///
+    /// `av1_calculate_tile_cols` / `_rows` derive `cols` / `rows` as loop
+    /// counts; for a uniform-spacing grid they always equal `1 << log2`. A
+    /// configuration where they do not is one this shell has never seen, so it
+    /// is refused rather than encoded. Shared by [`Self::validate_configuration`]
+    /// (which discards the value) and [`encode_key_frame`] (which uses it).
+    pub fn derive_tiles(&self) -> Result<TileInfoHeader, KeyFrameError> {
+        let mib_size_log2 = if self.sb_size_128 { 5u32 } else { 4u32 }; // SB128 / SB64
+        let tile_info = derive_tile_info(
+            mi_dim(self.width as i32),
+            mi_dim(self.height as i32),
+            mib_size_log2,
+            self.tile_columns_log2,
+            self.tile_rows_log2,
+        );
+        let tiles_log2 = tile_info.log2_cols + tile_info.log2_rows;
+        if tile_info.rows * tile_info.cols != 1usize << tiles_log2 {
+            return Err(KeyFrameError::Unsupported(
+                "tile grid: uniform spacing must give rows*cols == 2^(log2_cols+log2_rows)",
+            ));
+        }
+        Ok(tile_info)
     }
 
     /// `cfg.g_profile` exactly as `encode_av1_kf_impl` (`dec_shim.c:508-518`)
@@ -399,6 +441,11 @@ fn num_bits_for_dim(dim: i32) -> u32 {
         1
     }
 }
+
+/// The largest frame dimension a sequence header can code. AV1 5.5.1 writes
+/// `frame_width_bits_minus_1` / `frame_height_bits_minus_1` as `f(4)`, so the
+/// bit-width is at most 16 and `max_frame_width_minus_1` at most `2^16 - 1`.
+pub const MAX_FRAME_DIM: usize = 1 << 16;
 
 /// `CEIL_POWER_OF_TWO(value, n)`.
 fn ceil_power_of_two(value: i32, n: u32) -> i32 {
@@ -1031,24 +1078,11 @@ pub fn encode_key_frame(
     let mib_size_log2 = if cfg.sb_size_128 { 5u32 } else { 4u32 }; // SB128 / SB64
     let mi_cols = mi_dim(w as i32);
     let mi_rows = mi_dim(h as i32);
-    let tile_info = derive_tile_info(
-        mi_cols,
-        mi_rows,
-        mib_size_log2,
-        cfg.tile_columns_log2,
-        cfg.tile_rows_log2,
-    );
+    // The SAME derivation `validate_configuration` ran (and refused on) above.
+    let tile_info = cfg.derive_tiles()?;
     let tiles_log2 = tile_info.log2_cols + tile_info.log2_rows;
     let n_tile_rows = tile_info.rows;
     let n_tile_cols = tile_info.cols;
-    if n_tile_rows * n_tile_cols != 1usize << tiles_log2 {
-        // `av1_calculate_tile_cols`/`_rows` derive `cols`/`rows` as loop counts;
-        // for a uniform-spacing grid they always equal `1 << log2`. A stream
-        // where they do not is one this shell has never seen.
-        return Err(KeyFrameError::Unsupported(
-            "tile grid: uniform spacing must give rows*cols == 2^(log2_cols+log2_rows)",
-        ));
-    }
 
     // ---- source planes: SB-aligned, border-extended (the harness recipe) --
     let bd = cfg.bit_depth;
