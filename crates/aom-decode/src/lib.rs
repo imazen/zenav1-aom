@@ -342,7 +342,8 @@ fn cfl_store_tx_any(
 }
 use aom_dsp::entropy::dec::OdEcDec;
 use aom_dsp::entropy::dv_ref::{
-    DvGrid, DvNbr, DvTileBounds, assign_and_validate_dv, find_dv_ref_mvs, find_inter_mv_refs,
+    DV_NBR_SLOTS, DvGrid, DvNbr, DvNbrPacked, DvTileBounds, assign_and_validate_dv,
+    find_dv_ref_mvs, find_inter_mv_refs,
     find_samples, select_samples,
 };
 use aom_dsp::entropy::partition::{
@@ -1320,7 +1321,7 @@ pub fn inter_ext_tx_cdf(
 /// filters candidates, so out-of-frame offsets return a non-contributing
 /// default cell.
 struct MiDvGrid<'a> {
-    mi_dv: &'a [DvNbr],
+    mi_dv: &'a [DvNbrPacked],
     cols: i32,
     rows: i32,
     mi_row: i32,
@@ -1332,7 +1333,7 @@ impl DvGrid for MiDvGrid<'_> {
         let r = self.mi_row + row_offset;
         let c = self.mi_col + col_offset;
         if r >= 0 && r < self.rows && c >= 0 && c < self.cols {
-            self.mi_dv[(r * self.cols + c) as usize]
+            DvNbr::from_packed(self.mi_dv[(r * self.cols + c) as usize])
         } else {
             DvNbr::default()
         }
@@ -1804,7 +1805,7 @@ struct TileKf<'c> {
     /// encode-shared [`MiNbrKf`]. Frame-cropped stamps (like `mi`); every cell
     /// is a non-intrabc DC default until an intrabc block stamps its DV. Also
     /// carries the neighbour `is_inter_block`/`bsize` `get_tx_size_context` reads.
-    mi_dv: Vec<DvNbr>,
+    mi_dv: Vec<DvNbrPacked>,
     /// Per-mi coded interpolation-filter grid `(y_filter, x_filter)` — the
     /// neighbour projection of `MB_MODE_INFO::interp_filters` that
     /// `av1_get_pred_context_switchable_interp` (pred_common.c) reads through
@@ -2071,7 +2072,12 @@ impl<'c> TileKf<'c> {
                 };
                 (cfg.mi_rows * cfg.mi_cols) as usize
             ],
-            mi_dv: vec![DvNbr::default(); (cfg.mi_rows * cfg.mi_cols) as usize],
+            // `DvNbrPacked`, not `DvNbr`: an array of `i32` is zero-specialised
+            // by `std` and so comes from `calloc`, where the struct form is
+            // written element by element — 12.0-12.8 ms at 4096x4096 vs 0.003 ms
+            // (GitHub #17). `DvNbr::default()` is all-zero, so the zeroed
+            // mapping IS the default grid.
+            mi_dv: vec![[0i32; DV_NBR_SLOTS]; (cfg.mi_rows * cfg.mi_cols) as usize],
             mi_interp: vec![(0u8, 0u8); (cfg.mi_rows * cfg.mi_cols) as usize],
             frame_mvs: vec![
                 MvRefCell::default();
@@ -2319,7 +2325,7 @@ impl<'c> TileKf<'c> {
         let y_mis = MI_SIZE_HIGH[bsize].min(self.cfg.mi_rows - mi_row);
         for r in 0..y_mis {
             let base = ((mi_row + r) * self.cfg.mi_cols + mi_col) as usize;
-            self.mi_dv[base..base + x_mis as usize].fill(cell);
+            self.mi_dv[base..base + x_mis as usize].fill(cell.to_packed());
         }
     }
 
@@ -2480,7 +2486,7 @@ impl<'c> TileKf<'c> {
         let end_col = (mi_col + width).min(cols);
         let mut amc = mi_col;
         while amc < end_col && (out.len() as i32) < nb_max {
-            let d0 = self.mi_dv[((mi_row - 1) * cols + amc) as usize];
+            let d0 = DvNbr::from_packed(self.mi_dv[((mi_row - 1) * cols + amc) as usize]);
             let mut mi_step = MI_SIZE_WIDE[d0.bsize].min(MI64);
             // The neighbour mbmi (and its coded interp filter, for the OBMC strip
             // MC — C uses `above_mbmi->interp_filters`) come from the SAME grid cell.
@@ -2488,7 +2494,7 @@ impl<'c> TileKf<'c> {
                 amc &= !1;
                 mi_step = 2;
                 let idx = ((mi_row - 1) * cols + amc + 1) as usize;
-                (self.mi_dv[idx], self.mi_interp[idx])
+                (DvNbr::from_packed(self.mi_dv[idx]), self.mi_interp[idx])
             } else {
                 (d0, self.mi_interp[((mi_row - 1) * cols + amc) as usize])
             };
@@ -2519,13 +2525,13 @@ impl<'c> TileKf<'c> {
         let end_row = (mi_row + height).min(self.cfg.mi_rows);
         let mut amr = mi_row;
         while amr < end_row && (out.len() as i32) < nb_max {
-            let d0 = self.mi_dv[(amr * cols + mi_col - 1) as usize];
+            let d0 = DvNbr::from_packed(self.mi_dv[(amr * cols + mi_col - 1) as usize]);
             let mut mi_step = MI_SIZE_HIGH[d0.bsize].min(MI64);
             let (nb, nb_if) = if mi_step == 1 {
                 amr &= !1;
                 mi_step = 2;
                 let idx = ((amr + 1) * cols + mi_col - 1) as usize;
-                (self.mi_dv[idx], self.mi_interp[idx])
+                (DvNbr::from_packed(self.mi_dv[idx]), self.mi_interp[idx])
             } else {
                 (d0, self.mi_interp[(amr * cols + mi_col - 1) as usize])
             };
@@ -2579,7 +2585,7 @@ impl<'c> TileKf<'c> {
         let mut do_tl = true;
 
         if up {
-            let d0 = self.mi_dv[((mi_row - 1) * cols + mi_col) as usize];
+            let d0 = DvNbr::from_packed(self.mi_dv[((mi_row - 1) * cols + mi_col) as usize]);
             let sbw = MI_SIZE_WIDE[d0.bsize];
             if width <= sbw {
                 let col_offset = (-mi_col) % sbw;
@@ -2596,7 +2602,8 @@ impl<'c> TileKf<'c> {
                 let end = width.min(cols - mi_col);
                 let mut i = 0;
                 while i < end {
-                    let d = self.mi_dv[((mi_row - 1) * cols + mi_col + i) as usize];
+                    let d =
+                        DvNbr::from_packed(self.mi_dv[((mi_row - 1) * cols + mi_col + i) as usize]);
                     if matches(&d) {
                         np += 1;
                         if np >= MAX {
@@ -2609,7 +2616,7 @@ impl<'c> TileKf<'c> {
         }
 
         if left {
-            let d0 = self.mi_dv[(mi_row * cols + mi_col - 1) as usize];
+            let d0 = DvNbr::from_packed(self.mi_dv[(mi_row * cols + mi_col - 1) as usize]);
             let sbh = MI_SIZE_HIGH[d0.bsize];
             if height <= sbh {
                 let row_offset = (-mi_row) % sbh;
@@ -2626,7 +2633,8 @@ impl<'c> TileKf<'c> {
                 let end = height.min(rows - mi_row);
                 let mut i = 0;
                 while i < end {
-                    let d = self.mi_dv[((mi_row + i) * cols + mi_col - 1) as usize];
+                    let d =
+                        DvNbr::from_packed(self.mi_dv[((mi_row + i) * cols + mi_col - 1) as usize]);
                     if matches(&d) {
                         np += 1;
                         if np >= MAX {
@@ -2639,7 +2647,7 @@ impl<'c> TileKf<'c> {
         }
 
         if do_tl && left && up {
-            let d = self.mi_dv[((mi_row - 1) * cols + mi_col - 1) as usize];
+            let d = DvNbr::from_packed(self.mi_dv[((mi_row - 1) * cols + mi_col - 1) as usize]);
             if matches(&d) {
                 np += 1;
                 if np >= MAX {
@@ -3085,8 +3093,10 @@ impl<'c> TileKf<'c> {
 
         // Neighbour projections for the mode-info contexts.
         let (above_mi, left_mi) = self.neighbours(mi_row, mi_col);
-        let above_dv = up_available.then(|| self.mi_dv[((mi_row - 1) * cols + mi_col) as usize]);
-        let left_dv = left_available.then(|| self.mi_dv[(mi_row * cols + mi_col - 1) as usize]);
+        let above_dv = up_available
+            .then(|| DvNbr::from_packed(self.mi_dv[((mi_row - 1) * cols + mi_col) as usize]));
+        let left_dv = left_available
+            .then(|| DvNbr::from_packed(self.mi_dv[(mi_row * cols + mi_col - 1) as usize]));
         // The neighbours' coded interp filters (parallel to `mi_dv`), for
         // `av1_get_pred_context_switchable_interp`. Gated by the same edge
         // availability as `above_dv`/`left_dv`, so they zip cleanly below.
@@ -3883,7 +3893,9 @@ impl<'c> TileKf<'c> {
                         let (smv_r, smv_c) = if row == 0 && col == 0 {
                             (mv_row, mv_col)
                         } else {
-                            let d = self.mi_dv[((mi_row + row) * cols + (mi_col + col)) as usize];
+                            let d = DvNbr::from_packed(
+                                self.mi_dv[((mi_row + row) * cols + (mi_col + col)) as usize],
+                            );
                             (d.mv0_row, d.mv0_col)
                         };
                         // Per-plane clamp for this covered sub-block (C's sub8x8
@@ -5042,11 +5054,19 @@ impl<'c> TileKf<'c> {
                 // decoder and desyncs a few reads later.
                 let is_inter_nbr = |d: &DvNbr| d.use_intrabc || d.ref_frame0 > 0;
                 let above_inter_bsize = up_available
-                    .then(|| self.mi_dv[((mi_row - 1) * cfg.mi_cols + mi_col) as usize])
+                    .then(|| {
+                        DvNbr::from_packed(
+                            self.mi_dv[((mi_row - 1) * cfg.mi_cols + mi_col) as usize],
+                        )
+                    })
                     .filter(is_inter_nbr)
                     .map(|d| d.bsize);
                 let left_inter_bsize = left_available
-                    .then(|| self.mi_dv[(mi_row * cfg.mi_cols + mi_col - 1) as usize])
+                    .then(|| {
+                        DvNbr::from_packed(
+                            self.mi_dv[(mi_row * cfg.mi_cols + mi_col - 1) as usize],
+                        )
+                    })
                     .filter(is_inter_nbr)
                     .map(|d| d.bsize);
                 let ctx = get_tx_size_context(

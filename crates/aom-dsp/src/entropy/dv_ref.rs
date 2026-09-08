@@ -85,6 +85,69 @@ pub struct DvNbr {
     pub mv1_col: i32,
 }
 
+/// Number of `i32` slots in [`DvNbrPacked`].
+pub const DV_NBR_SLOTS: usize = 9;
+
+/// The ZERO-INITIALISABLE storage form of [`DvNbr`].
+///
+/// A per-mi `DvNbr` grid is one of the largest allocations a decode makes —
+/// `mi_rows * mi_cols` cells, i.e. 1,048,576 at 4096x4096 — and
+/// `vec![DvNbr::default(); n]` cannot come from `calloc`: `std`'s zero
+/// specialisation (`IsZero`) covers primitives, arrays of them and a couple of
+/// `Option`s, never a user struct, so every element is written one at a time.
+/// MEASURED at 4096x4096 on x86-64 Linux: **12.0-12.8 ms** for
+/// `vec![DvNbr::default(); n]` against **0.003 ms** for `vec![[0i32; 9]; n]`,
+/// which IS specialised (`[T; N]: IsZero` where `T: IsZero`) and so is a lazily
+/// zeroed mapping the decoder then faults in as it writes. That 12 ms was the
+/// whole of an un-pollable frame-setup window (GitHub #17).
+///
+/// The conversion is sound precisely because `DvNbr::default()` is all-zero in
+/// EVERY field — `from_packed([0; DV_NBR_SLOTS]) == DvNbr::default()` is
+/// asserted below, and it is the entire correctness argument for handing the
+/// grid `calloc`'d memory.
+pub type DvNbrPacked = [i32; DV_NBR_SLOTS];
+
+impl DvNbr {
+    /// [`DvNbrPacked`] -> `DvNbr`. Slot order is the field order below and is
+    /// pinned by `dv_nbr_packed_roundtrips`; a swapped pair still compiles and
+    /// still yields plausible candidates, so the roundtrip test is what guards
+    /// it, not the reader.
+    #[inline]
+    pub fn from_packed(p: DvNbrPacked) -> Self {
+        DvNbr {
+            bsize: p[0] as usize,
+            ref_frame0: p[1],
+            ref_frame1: p[2],
+            use_intrabc: p[3] != 0,
+            mode: p[4],
+            mv0_row: p[5],
+            mv0_col: p[6],
+            mv1_row: p[7],
+            mv1_col: p[8],
+        }
+    }
+
+    /// `DvNbr` -> [`DvNbrPacked`], the inverse of [`Self::from_packed`].
+    #[inline]
+    pub fn to_packed(self) -> DvNbrPacked {
+        debug_assert!(
+            self.bsize <= i32::MAX as usize,
+            "bsize is a BLOCK_SIZES_ALL index, not a size"
+        );
+        [
+            self.bsize as i32,
+            self.ref_frame0,
+            self.ref_frame1,
+            i32::from(self.use_intrabc),
+            self.mode,
+            self.mv0_row,
+            self.mv0_col,
+            self.mv1_row,
+            self.mv1_col,
+        ]
+    }
+}
+
 /// `NONE_FRAME` (`enums.h`).
 pub const NONE_FRAME: i32 = -1;
 /// `INTRA_FRAME` (`enums.h`).
@@ -2051,5 +2114,95 @@ mod geometry_agreement {
             super::MI_SIZE_WIDE => crate::blocksize::MI_SIZE_WIDE,
             super::MI_SIZE_HIGH => crate::blocksize::MI_SIZE_HIGH,
         );
+    }
+}
+
+#[cfg(test)]
+mod packed_repr {
+    //! [`DvNbrPacked`] exists so a per-mi grid can be `calloc`'d instead of
+    //! written element by element (see its doc comment). Both halves of that
+    //! trade need a test, because both fail SILENTLY:
+    //!
+    //! * a swapped or dropped slot still compiles and still yields plausible
+    //!   MV candidates — a wrong-neighbour desync, not a panic;
+    //! * and the whole reason zeroed memory is a legal grid is that
+    //!   `DvNbr::default()` is all-zero. If a field ever gains a non-zero
+    //!   default (`ref_frame1` reads `NONE_FRAME` == -1 in libaom's own
+    //!   semantics, so this is not hypothetical), `calloc` would silently hand
+    //!   the decoder a grid of the WRONG default.
+
+    use super::{DV_NBR_SLOTS, DvNbr};
+
+    /// THE correctness argument for `calloc`: zeroed memory decodes to exactly
+    /// the value the old `vec![DvNbr::default(); n]` wrote.
+    #[test]
+    fn all_zero_packed_is_the_default_cell() {
+        assert_eq!(DvNbr::from_packed([0; DV_NBR_SLOTS]), DvNbr::default());
+        assert_eq!(DvNbr::default().to_packed(), [0; DV_NBR_SLOTS]);
+    }
+
+    /// Every field must survive the roundtrip, at a value distinct from every
+    /// other field's, so a swapped pair of slots cannot pass. Negative and
+    /// large magnitudes included: the MV components are 1/8-pel and reach
+    /// +-32768 at 4096 px, which is why they are `i32` slots and not `i16`.
+    #[test]
+    fn dv_nbr_packed_roundtrips() {
+        let cases = [
+            DvNbr {
+                bsize: 21, // BLOCK_SIZES_ALL - 1
+                ref_frame0: 7,
+                ref_frame1: -1,
+                use_intrabc: true,
+                mode: 24,
+                mv0_row: -32768,
+                mv0_col: 32767,
+                mv1_row: 9,
+                mv1_col: -2,
+            },
+            DvNbr {
+                bsize: 1,
+                ref_frame0: -1,
+                ref_frame1: 3,
+                use_intrabc: false,
+                mode: 15,
+                mv0_row: 4,
+                mv0_col: -5,
+                mv1_row: -131072,
+                mv1_col: 131071,
+            },
+        ];
+        for c in cases {
+            assert_eq!(DvNbr::from_packed(c.to_packed()), c);
+        }
+        // A swapped pair must be OBSERVABLE — i.e. the two slots really do
+        // carry different values in the fixture above, so the roundtrip is not
+        // vacuously satisfied by a symmetric cell.
+        for c in cases {
+            let p = c.to_packed();
+            for i in 0..DV_NBR_SLOTS {
+                for j in (i + 1)..DV_NBR_SLOTS {
+                    let mut q = p;
+                    q.swap(i, j);
+                    assert_ne!(
+                        DvNbr::from_packed(q),
+                        c,
+                        "slots {i} and {j} are indistinguishable — the fixture cannot \
+                         catch a swap between them. NOTE `use_intrabc` packs to 0/1 \
+                         only, so its slot must not share a value with any other."
+                    );
+                }
+            }
+        }
+    }
+
+    /// The size claim the change rests on. `[i32; 9]` is 36 bytes and, unlike
+    /// the 40-byte struct, is `IsZero`-specialised by `std`.
+    #[test]
+    fn packed_is_a_plain_i32_array() {
+        assert_eq!(
+            core::mem::size_of::<super::DvNbrPacked>(),
+            DV_NBR_SLOTS * core::mem::size_of::<i32>()
+        );
+        assert_eq!(core::mem::align_of::<super::DvNbrPacked>(), 4);
     }
 }
