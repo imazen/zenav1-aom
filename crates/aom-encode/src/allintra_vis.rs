@@ -252,6 +252,49 @@ pub fn setup_delta_q_perceptual_ai(
     av1_adjust_q_from_delta_q_res(delta_q_res, current_base_qindex, current)
 }
 
+/// The per-SB qindex of **`setup_delta_q_nonrd`** (encodeframe.c:246-277) — the
+/// delta-q the NONRD pick-mode path uses, i.e. what `encode_nonrd_sb` runs at
+/// ALLINTRA `--cpu-used` >= 8 instead of `setup_delta_q`.
+///
+/// **The whole point is what it does NOT model.** `setup_delta_q_nonrd` has one
+/// mode arm:
+///
+/// ```c
+/// int current_qindex = cm->quant_params.base_qindex;
+/// if (cpi->oxcf.q_cfg.deltaq_mode == DELTA_Q_VARIANCE_BOOST)
+///   current_qindex = av1_get_sbq_variance_boost(cpi, x);
+/// ...
+/// current_qindex = av1_adjust_q_from_delta_q_res(
+///     delta_q_res, xd->current_base_qindex, current_qindex);
+/// ```
+///
+/// So under `--deltaq-mode` 2 (`DELTA_Q_PERCEPTUAL`) and 3
+/// (`DELTA_Q_PERCEPTUAL_AI`) the modulation is simply **absent** at nonrd
+/// speeds: the wavelet-energy and wiener-variance maps are never consulted, and
+/// every superblock quantizes against the FRAME `base_qindex`.
+///
+/// That is normally — but NOT always — a zero delta, and the exception is the
+/// reason this takes the running `current_base_qindex` rather than returning
+/// `base_qindex` outright: `av1_adjust_q_from_delta_q_res` opens with
+/// `clamp(curr, delta_q_res, 256 - delta_q_res)` (rd.c:496), so a frame with
+/// `base_qindex > 256 - delta_q_res` has its own base clamped away from itself
+/// and DOES produce a nonzero delta. At `delta_q_res == 4` that is
+/// `base_qindex >= 253`.
+///
+/// Downstream this decides a HEADER BIT, not just a qindex map: every delta
+/// being zero leaves `cpi->deltaq_used == 0`, and `encodeframe.c:2450-2451`
+/// then clears `delta_q_present_flag` outright. A caller that models
+/// `setup_delta_q` at a nonrd speed therefore derives `delta_q_present = true`
+/// where real aomenc writes `false` — which is exactly the refusal this port
+/// closes (`CLAUDE.md` KB-39 residual (b)).
+///
+/// `DELTA_Q_VARIANCE_BOOST` is deliberately not routed here: it is outside the
+/// gated envelope, and modelling it would mean claiming coverage this has no
+/// cell for. Use [`setup_delta_q_variance_boost`] if that changes.
+pub fn setup_delta_q_nonrd(base_qindex: i32, delta_q_res: i32, current_base_qindex: i32) -> i32 {
+    av1_adjust_q_from_delta_q_res(delta_q_res, current_base_qindex, base_qindex)
+}
+
 // ===========================================================================
 // `--deltaq-mode=2` (DELTA_Q_PERCEPTUAL, wavelet AC energy — the arm selected
 // by `DELTA_Q_PERCEPTUAL_MODULATION == 1`, encodeframe.h:25). Ports (libaom

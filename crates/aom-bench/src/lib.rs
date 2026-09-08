@@ -1593,6 +1593,15 @@ impl EncodeCell {
                 !knobs.enable_intra_edge_filter,
             )
         });
+        // At ALLINTRA `--cpu-used` >= 8 the frame goes through `encode_nonrd_sb`,
+        // whose delta-q is `setup_delta_q_nonrd` (encodeframe.c:598), NOT
+        // `setup_delta_q` (:697). That arm models `DELTA_Q_VARIANCE_BOOST` only,
+        // so modes 2 and 3 quantize every superblock against the frame
+        // `base_qindex` and the modulation maps are never consulted. Usually
+        // that means a zero delta everywhere -> `deltaq_used == 0` ->
+        // `delta_q_present_flag` cleared at :2450 — which is why deriving it
+        // with `setup_delta_q` here used to ASSERT against the real header.
+        let nonrd_delta_q = self.speed >= 8;
         let (dq3_sb_qindex, dq3_present, dq3_res) = if let Some(map) = &weber_map {
             // delta_q_present = (any SB produced a nonzero delta) && qindex > 0
             // (bitstream.c:4287 resets it when deltaq_used == 0). Replays the
@@ -1604,9 +1613,13 @@ impl EncodeCell {
                 sb_mi,
                 qindex,
                 |mi_row, mi_col, running| {
-                    aom_encode::allintra_vis::setup_delta_q_perceptual_ai(
-                        map, qindex, bd, res, sb_mi, mi_row, mi_col, running,
-                    )
+                    if nonrd_delta_q {
+                        aom_encode::allintra_vis::setup_delta_q_nonrd(qindex, res, running)
+                    } else {
+                        aom_encode::allintra_vis::setup_delta_q_perceptual_ai(
+                            map, qindex, bd, res, sb_mi, mi_row, mi_col, running,
+                        )
+                    }
                 },
             );
             (per_sb, used && qindex > 0, res)
@@ -1650,6 +1663,11 @@ impl EncodeCell {
                 sb_mi,
                 qindex,
                 |mi_row, mi_col, running| {
+                    // The nonrd arm, exactly as for mode 3 above: at
+                    // `--cpu-used` >= 8 C never consults the wavelet energy.
+                    if nonrd_delta_q {
+                        return aom_encode::allintra_vis::setup_delta_q_nonrd(qindex, res, running);
+                    }
                     let sb_off = mi_row as usize * 4 * stride + mi_col as usize * 4;
                     aom_encode::allintra_vis::setup_delta_q_perceptual(
                         &src_y_strided,

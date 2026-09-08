@@ -257,7 +257,7 @@ it here in the same commit.**
 | **crops straddling 2160 at bd10/12, 4:2:2/4:4:4/mono, SB128** | the cheap follow-on the closed 2160 arm opens — same razor, one format at a time | ~35 s per format, no new machinery |
 | **1440..2160 at formats other than bd8 4:2:0 SB64 cq24** | same shape as the >=1080p format arm, one tier up | ~7 min per format |
 | **multi-tile at SB128 / bd10-12 / 4:4:4-4:2:2 / mono** | KB-31 residual (c): that whole file is bd8 4:2:0 SB64 — and so is `kb31_deltaq_multitile.rs` (KB-39) | moderate; large frames |
-| **`--deltaq-mode` 2/3 x `--cpu-used` >= 8** | KB-39 residual (b): `port_encode_with` ASSERTS (*"derived delta_q_present must match the real --deltaq-mode=3 header, left: false right: true"*) — a refusal-shaped hole one tier down from the one just closed. C routes nonrd speeds through `setup_delta_q_nonrd` (encodeframe.c:594-599), which models only `DELTA_Q_VARIANCE_BOOST`; the port models neither that routing nor whatever keeps the real header's flag set | unknown; start by reading which of C's two `setup_delta_q*` call sites a speed-8 allintra KEY frame actually takes |
+| ~~**`--deltaq-mode` 2/3 x `--cpu-used` >= 8**~~ | **CLOSED 2026-09-08 — KB-46.** `setup_delta_q_nonrd` ported (`aom_encode::allintra_vis`); **24/24 cells byte-identical** where all 24 previously PANICKED. The row's own diagnosis was BACKWARDS: it guessed the port lacked "whatever keeps the real header's flag set", and the truth is the reverse — the real flag is CLEARED (every nonrd delta is zero -> `deltaq_used == 0` -> `encodeframe.c:2450`) and the PORT was the side keeping it set. **Newly named, NOT closed:** cq 63 at both nonrd speeds in both modes (4 cells, pinned `NONRD_CQ63_OPEN`) | done |
 | **multi-tile x the crop straddle** | needs its OWN crop pair at tile-forcing size (e.g. 4090x2154 vs 4096x2160) — it cannot be combined with a 714x720 frame | same cost class as the 2160 arm |
 | ~~**bd12 x the 480/720 crop straddle**~~ | **CLOSED 2026-08-04.** 474x480 + 714x720 + their mi-aligned SB-exact controls x cpu {0, 7} — **8/8 byte-exact**, `s4cov_crop_format_axis::crop_straddle_bd12_byte_matches_where_interpretable`. | measured **53 s** |
 
@@ -292,6 +292,60 @@ it here in the same commit.**
 
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
+
+### KB-46 — Encoder: `--deltaq-mode` 2/3 at `--cpu-used` >= 8 PANICKED — FIXED ✅ 2026-09-08, and the queue's diagnosis was BACKWARDS
+
+- **The refusal.** `port_encode_with` asserted *"derived delta_q_present must match the real
+  `--deltaq-mode=3` header, left: false right: true"* on every nonrd-speed delta-q cell. The
+  coverage queue read that as "the port models neither the nonrd routing nor whatever keeps
+  the real header's flag set". **Left is the REAL header and right is the port's derivation**,
+  so it is the other way round: real = false, port = true. Nothing keeps the real flag set —
+  the real flag is CLEARED, and the port was the side keeping it on.
+- **ROOT, one unported function.** At ALLINTRA `--cpu-used` >= 8 the frame goes through
+  `encode_nonrd_sb`, whose delta-q is **`setup_delta_q_nonrd`** (`encodeframe.c:246-277`,
+  called at `:598`) — NOT `setup_delta_q` (`:697`). That arm has exactly one mode branch:
+
+      int current_qindex = cm->quant_params.base_qindex;
+      if (cpi->oxcf.q_cfg.deltaq_mode == DELTA_Q_VARIANCE_BOOST)
+        current_qindex = av1_get_sbq_variance_boost(cpi, x);
+
+  So under modes 2 (`DELTA_Q_PERCEPTUAL`) and 3 (`DELTA_Q_PERCEPTUAL_AI`) the modulation is
+  simply ABSENT at nonrd speeds: the wavelet-energy and wiener-variance maps are never
+  consulted, every superblock quantizes against the frame `base_qindex`, `x->delta_qindex`
+  is zero everywhere, `cpi->deltaq_used` stays 0, and `encodeframe.c:2450-2451` clears
+  `delta_q_present_flag` outright. The port derived the per-SB map with `setup_delta_q` at
+  every speed, so it derived a firing flag where real aomenc writes none.
+- **FIX.** `aom_encode::allintra_vis::setup_delta_q_nonrd(base_qindex, delta_q_res,
+  current_base_qindex)`, and both delta-q replays in `aom-bench`'s `port_encode_impl` route
+  through it at `self.speed >= 8`. It is deliberately NOT a `return base_qindex`: C still
+  runs `av1_adjust_q_from_delta_q_res`, whose opening `clamp(curr, res, 256 - res)`
+  (`rd.c:496`) means a frame with `base_qindex > 256 - res` has its own base clamped away
+  from itself and DOES produce a nonzero delta. `DELTA_Q_VARIANCE_BOOST` is deliberately not
+  routed here — outside the gated envelope, and modelling it would claim coverage no cell
+  checks.
+- **MEASURED: 24/24 byte-identical** (`aom-bench/tests/deltaq_nonrd_speed.rs`) — modes {2, 3}
+  x `--cpu-used` {8, 9} x cq {12, 32, 48, 55, 60} + a 192x128 (3x2 SB) shape. **All 24
+  previously PANICKED.** Bite proof: forcing `nonrd_delta_q = false` restores the original
+  assertion text verbatim and fails ONLY the byte gate — the other two tests stay green.
+- **The non-vacuity is unusual and is stated rather than dressed up.** On all 24 gated cells
+  the REFERENCE codes byte-identical streams with and without `--deltaq-mode`, so the byte
+  gate alone only proves the port ignores the knob as thoroughly as C does. That inertness
+  IS the prediction (`the_modes_are_inert_at_nonrd_speeds_and_that_is_the_prediction` asserts
+  24/24 inert AND 24/24 flag-off, so an encoder that modulated would fail it), and what keeps
+  it from being vacuous is the cq-63 row, where the reference DOES move — 235 B against
+  plain's 228 at `--cpu-used 8`.
+- **NEWLY NAMED, NOT CLOSED — `NONRD_CQ63_OPEN`, 4 cells, pinned self-promotingly.** cq 63
+  (base_qindex 63) diverges at both nonrd speeds in both modes; every other quantizer on the
+  same content matches, and so does the PLAIN no-delta-q control at cq 63 — asserted inside
+  the pin, so the attribution is measured, not argued. Two different mechanisms:
+  * `--cpu-used 8`: real header `delta_q_present = false` and the port AGREES, yet the real
+    stream is 235 B against plain's 228. `setup_delta_q_nonrd` re-runs
+    `av1_init_plane_quantizers` and stamps `mi->current_qindex` per superblock even when the
+    delta is zero — observable in the bitstream with the header bit off, and unmodelled.
+  * `--cpu-used 9`: real header `delta_q_present = TRUE` with **`delta_q_res = 8`**. 8 is not
+    `DEFAULT_DELTA_Q_RES_PERCEPTUAL` (4) — it is what `aom_get_variance_boost_delta_q_res`
+    produces, i.e. at speed 9 the reference is on the `DELTA_Q_VARIANCE_BOOST` arm, not on
+    mode 2/3 at all. Why speed 9 takes it and speed 8 does not is **unmeasured**.
 
 ### KB-45 — Decoder: the per-mi DV grid was 12 ms of un-pollable frame setup at 4096² — FIXED ✅ 2026-09-08 (GitHub #17)
 

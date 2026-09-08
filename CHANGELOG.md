@@ -6,6 +6,24 @@
 
 ### Fixed
 
+- **`--deltaq-mode` 2 and 3 at `--cpu-used` >= 8 PANICKED rather than encoding**
+  (CLAUDE.md KB-46). At ALLINTRA nonrd speeds the frame goes through
+  `encode_nonrd_sb`, whose delta-q is `setup_delta_q_nonrd`
+  (`encodeframe.c:598`), not `setup_delta_q` (`:697`). That arm models
+  `DELTA_Q_VARIANCE_BOOST` and nothing else, so modes 2 and 3 never consult
+  their modulation maps, every superblock quantizes against the frame
+  `base_qindex`, `cpi->deltaq_used` stays 0 and `encodeframe.c:2450` clears
+  `delta_q_present_flag`. The port derived its per-SB map with `setup_delta_q`
+  at every speed and so derived a firing flag where real aomenc writes none —
+  which the harness caught as a hard assertion. `setup_delta_q_nonrd` is now
+  ported (`aom_encode::allintra_vis`) and both replays route through it at
+  speed >= 8: **24/24 cells byte-identical where all 24 previously panicked**,
+  across modes {2, 3} x `--cpu-used` {8, 9} x cq {12, 32, 48, 55, 60} plus a
+  3x2-superblock shape. Gate: `aom-bench/tests/deltaq_nonrd_speed.rs`. Four
+  cq-63 cells remain divergent and are pinned with their measured attribution
+  (`NONRD_CQ63_OPEN`), the plain no-delta-q control at the same cells asserted
+  byte-exact so the pin cannot be mis-read as a general cq-63 nonrd defect.
+
 - **The per-mi DV grid was 12 ms of un-pollable frame setup at 4096x4096**
   (GitHub #17). `vec![DvNbr::default(); mi_rows * mi_cols]` cannot come from
   `calloc` — `std`'s `IsZero` specialisation covers primitives, `[T; N]` and a
