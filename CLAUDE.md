@@ -5362,7 +5362,7 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   conformance-corpus breadth. Only cpu-used 0 on the `[KEY, P]` grid; bd × speed unmeasured.
 - Record: `benchmarks/highbd_inter_decode_envelope_2026-08-06.{md,tsv,meta}`.
 
-### KB-PERF-6 — Encoder: the Wiener stats inner loop had no SIMD tier — LANDED ✅ 2026-09-08 (2.725x -> 2.639x, byte-identical), and it is the first lever ranked on THIS platform
+### KB-PERF-6 — Encoder: loop-restoration search had NO SIMD anywhere — three tiers LANDED ✅ 2026-09-08 (2.733x -> 2.557x, all byte-identical), the first levers ranked on THIS platform
 
 Record: `benchmarks/encoder_wiener_stats_simd_2026-09-08.md`. Taken from
 `benchmarks/encoder_x86_profile_2026-09-08.md`, the first x86-64 profile of this
@@ -5412,6 +5412,52 @@ transfer** (KB-PERF-2 had already measured a lever's rank moving from 21 % to
   green, `pick_diff` + `pick_search` 9/9 in BOTH dispatch modes, census 4/4, and
   both encoder packages green under `AOM_FORCE_SCALAR=1` — the leg that exercises
   the verbatim scalar tier through the byte gates.
+
+**TWO MORE TIERS, same stage, same protocol** (rotated arms, two binaries from
+one tree, byte-identical output throughout):
+
+| lever | port ms | ratio | paired | rounds | p |
+|---|---:|---:|---:|---:|---:|
+| session baseline | 483.01 | 2.733x | — | — | — |
+| Wiener stats (`3b2f0c8`) | 466.79 | 2.639x | -3.13 % | 8/8 | 0.008 |
+| `pixel_proj_error` (`6087e7f`) | 454.97 | 2.573x | -2.47 % | 6/6 | — |
+| SGR box-sum vertical pass (`fe770b7`) | **452.65** | **2.557x** | -0.73 % | 15/16 | 0.0005 |
+
+**Stage total: 90.6 -> ~19.8 ms.** Cumulative **-6.3 %**.
+
+- **`pixel_proj_error`: a bound DECLINED on purpose.** Squaring in `i32` lanes and
+  reducing per chunk needs `8 * e^2 < 2^31`, i.e. `|e| < 16384` — and the
+  arithmetic (`xq` reaches ~96 via `SGRPROJ_PRJ_MIN0/MAX0`, `flt - u` reaches
+  ~2^16 at bd12) puts `|e|` AT that bound, not inside it. This module feeds RD
+  decisions and therefore the byte gates, so the shipped form squares in the
+  scalar tier's own order and vectorizes only the arithmetic producing `e`:
+  bit-exact BY CONSTRUCTION, needing no bound at all. To claim those
+  milliseconds, DERIVE the bound and gate it at runtime the way
+  `intra/dir_simd.rs` gates its tap bound.
+- **THE BOX-SUM LESSON — §14 from a NEW direction, and it is the transferable
+  part of this whole sequence.** The profile attributed **13.3 ms** to
+  `calculate_intermediate::{closure#0}`; the vectorized pass measures 1.1 ms
+  where ~8 ms used to be, and the wall moved **3.3 ms, not 8**. That closure is
+  `bx`, into which `boxsum1`/`boxsum2` are inlined — **it absorbs work from its
+  caller**, so a symbol reading as a self-contained 13 ms lever is not one. Every
+  earlier §14 instance (5x, 13x, 18x optimistic) came from a profiler's ranked
+  STAGE table; this one comes from a single SYMBOL whose body is not what its
+  name suggests. **Check whether a symbol is a closure or an inlining sink before
+  costing a lever off it.**
+- **Corollary, equally practical: n=6 could not resolve a 0.7 % effect.** The
+  box-sum's first band read -0.50 % at 5/6 (p = 0.22) and would have been
+  discarded as noise; n=16 resolved it at p = 0.0005. Size the band to the
+  effect, not to the last landing's effect.
+- **The box-sum tier is the only one of the three that reaches the DECODER** —
+  `sgr.rs` is on the decode restoration path, so it can move Gate 1, and
+  `-p zenav1-aom-decode` is in its gate list where the other two did not need it.
+- **WHERE THE STAGE STOPS.** What is left is `calculate_intermediate`'s own body
+  (8.5 ms), whose hot loop is a 256-entry table lookup
+  (`X_BY_XPLUS1[z.min(255)]`) — a gather the current vector vocabulary does not
+  handle well, and not worth forcing for 8 ms. **The honest next targets are
+  elsewhere: the transform INVERSE half (+53 ms, the largest single item in the
+  gap and a named open residual of KB-PERF-3 — only the DCT family passed its i16
+  audit) and the register-blocked `compute_stats`.**
 
 ### KB-PERF-1 — Encoder: the intra-mode CNN is recomputed ~10x per superblock (C computes it ONCE and caches) — FIXED ✅ 2026-08-02
 
