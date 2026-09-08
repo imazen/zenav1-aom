@@ -293,6 +293,44 @@ it here in the same commit.**
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-51 — Encoder: a bd8 encode handed 16-bit samples PANICKED with an arithmetic overflow — FIXED ✅ 2026-09-08, found by a new fuzz sweep on its first run
+
+- **The sweep found it in 59 iterations.** A new stable-path encoder fuzz sweep
+  (`aom-encode/tests/encode_fuzz_sweep.rs`, the twin of the decoder's
+  `fuzz_sweep.rs`) randomises the two things a caller actually controls — a `KeyFrameConfig`
+  and three plane buffers — and asserts the entry RETURNS rather than panics. Its 59th input
+  panicked: `attempt to multiply with overflow` at `aom_dsp::dist::mod.rs:213`, on a
+  perfectly ordinary `19x35 bd8 4:4:4 cq29 cpu0` config with correctly-sized planes.
+- **ROOT.** The planes are `&[u16]` at every bit depth, so nothing in the TYPE stops a
+  caller handing 16-bit samples to a `bit_depth: 8` encode — and a caller that forgot to
+  shift a 16-bit source does exactly that. `highbd_variance64_scalar` squares the residual in
+  `i32` (mirroring libaom's own `int` multiply), which is well defined only while
+  `|diff| <= 2^bd`; at bd8 with 16-bit samples `diff` reaches +-65535 and `diff * diff`
+  overflows `i32`. Debug builds panic; release wraps. **Same shape as KB-ARM-FLOAT root #3**
+  (`av1_block_error_c` fed outside its defined domain) — except that this time the caller of
+  the out-of-domain kernel is the PUBLIC ENTRY POINT, not a harness.
+- **FIX: refuse by name, not widen the kernel.** New `KeyFrameError::SampleRange { plane,
+  max, got }`, checked in `encode_key_frame_with` beside the existing plane-SIZE checks. One
+  `O(pixels)` pass that short-circuits at the first bad sample — nothing beside an encode.
+  Widening the kernel was NOT an option: it is a byte-exact transcription of libaom's `int`
+  arithmetic, and changing it would change the bitstream.
+- **NON-VACUITY is pinned**, so the refusal cannot be deleted later on the grounds that
+  nothing produces it: the sweep asserts the sample-range class is REACHED, alongside the
+  successful-encode, config-refusal and plane-size classes.
+- **The sweep's first shape was nearly useless and the fix is worth recording.** Drawing
+  every config field uniformly over "legal plus a bit either side" left only **13 of 600**
+  inputs reaching a real encode — 89 % were refused at the config gate, so it was testing
+  `validate_configuration` and barely testing the encoder. Each field is now valid ~15 times
+  in 16, which puts **178 of 600** inside the encoder while still reaching every refusal
+  path. A fuzz sweep needs its own reach measurement exactly like the decoder's
+  `MIN_DEEP_REACH_PPM` does.
+- **HUNTED after the fix: 90,000 inputs across six seeds (1, 2, 3, 7, 11, 101), 0 panics**,
+  with ~26,600 of them reaching a real encode. Per-seed shape is stable (~4,400 encoded /
+  ~5,770 unsupported / ~2,860 plane-size / ~1,940 sample-range), ~46 s per 15,000. The
+  committed default is 600 inputs so it costs ~2 s in CI; `AOM_ENC_FUZZ_ITERS` and
+  `AOM_ENC_FUZZ_SEED` drive a longer hunt, and a failure prints the seed, the iteration and
+  the whole configuration so it replays from the message alone.
+
 ### KB-50 — Encoder: resource limits + a side-effect-free peak-memory estimate — 2026-09-08 (contracts 2 of 6)
 
 - **Two more of the six zen contracts the encoder lacked**: `EncodeLimits`

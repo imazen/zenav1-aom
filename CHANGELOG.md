@@ -82,6 +82,25 @@
 
 ### Added
 
+- **A bd8 encode handed 16-bit samples PANICKED with an arithmetic overflow**
+  (CLAUDE.md KB-51), found by a new encoder fuzz sweep on its 59th input. The
+  planes are `&[u16]` at every bit depth, so nothing in the type stops a caller
+  handing a 16-bit source to a `bit_depth: 8` encode — and
+  `highbd_variance64_scalar` squares the residual in `i32` (mirroring libaom's
+  own `int` multiply), which is defined only while `|diff| <= 2^bd`. Now refused
+  by name as `KeyFrameError::SampleRange`, checked beside the existing
+  plane-size checks in one short-circuiting `O(pixels)` pass. The kernel was NOT
+  widened: it is a byte-exact transcription and changing it would change the
+  bitstream.
+
+- **A stable-path ENCODER fuzz sweep** (`aom-encode/tests/encode_fuzz_sweep.rs`),
+  the twin of the decoder's. Randomises the two things a caller controls — the
+  config and the three plane buffers — and asserts the entry RETURNS rather than
+  panics. **90,000 inputs across six seeds, 0 panics**, ~26,600 of them reaching
+  a real encode. Non-vacuity is asserted per class (successful encode, config
+  refusal, plane size, sample range), because the sweep's first shape had only
+  13 of 600 inputs reach the encoder at all.
+
 - **`KeyFrameError` is now machine-readable**: `category()` (`unsupported` /
   `invalid-input` / `limit-exceeded` / `cancelled` — the four decisions a
   backend router actually has to make), `is_transient()`, and a real

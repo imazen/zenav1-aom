@@ -526,6 +526,24 @@ pub enum KeyFrameError {
     /// The caller's cooperative stop token asked the encode to stop. No stream
     /// is produced; whatever had been coded is discarded.
     Cancelled(enough::StopReason),
+    /// A source sample exceeds what the configured bit depth can represent.
+    ///
+    /// The planes are `&[u16]` whatever the bit depth, so nothing in the TYPE
+    /// stops a caller handing 16-bit samples to a `bit_depth: 8` encode — and a
+    /// caller that forgot to shift a 16-bit source does exactly that. It is not
+    /// a harmless mistake: the distortion kernels square the residual in `i32`
+    /// (`aom_dsp::dist::highbd_variance64_scalar`, mirroring libaom's own
+    /// `int` multiply), which is well defined only while `|diff| <= 2^bd`.
+    /// Past that the port's debug build PANICS on the overflow and a release
+    /// build wraps — so this is refused up front, by name.
+    SampleRange {
+        /// 0 = Y, 1 = U, 2 = V.
+        plane: usize,
+        /// The largest value the configured bit depth can represent.
+        max: u16,
+        /// The offending sample.
+        got: u16,
+    },
     /// A caller-supplied [`EncodeLimits`] cap would be exceeded. Refused before
     /// anything is allocated.
     LimitExceeded {
@@ -560,7 +578,7 @@ impl KeyFrameError {
     /// added here.
     pub fn category(&self) -> &'static str {
         match self {
-            KeyFrameError::PlaneSize { .. } => "invalid-input",
+            KeyFrameError::PlaneSize { .. } | KeyFrameError::SampleRange { .. } => "invalid-input",
             KeyFrameError::Unsupported(_) => "unsupported",
             KeyFrameError::LimitExceeded { .. } => "limit-exceeded",
             KeyFrameError::Cancelled(_) => "cancelled",
@@ -579,6 +597,7 @@ impl KeyFrameError {
     pub fn is_transient(&self) -> bool {
         match self {
             KeyFrameError::PlaneSize { .. }
+            | KeyFrameError::SampleRange { .. }
             | KeyFrameError::Unsupported(_)
             | KeyFrameError::LimitExceeded { .. }
             | KeyFrameError::Cancelled(_) => false,
@@ -596,6 +615,11 @@ impl core::fmt::Display for KeyFrameError {
                 expected,
                 got,
             } => write!(f, "plane {plane}: expected {expected} samples, got {got}"),
+            KeyFrameError::SampleRange { plane, max, got } => write!(
+                f,
+                "plane {plane}: sample {got} exceeds the bit depth's maximum {max} \
+                 (a 16-bit source handed to a lower-depth encode?)"
+            ),
             KeyFrameError::Unsupported(what) => write!(f, "outside the gated envelope: {what}"),
             KeyFrameError::Cancelled(r) => write!(f, "cancelled by the caller's stop token: {r:?}"),
             KeyFrameError::LimitExceeded { what, actual, max } => {
@@ -1384,6 +1408,20 @@ pub fn encode_key_frame_with(
                 plane: 2,
                 expected: cw * ch,
                 got: planes.v.len(),
+            });
+        }
+    }
+    // Sample range. One O(pixels) pass, which is nothing beside an encode, and
+    // it is the difference between a named refusal and an arithmetic-overflow
+    // PANIC deep in a distortion kernel — see `KeyFrameError::SampleRange`.
+    // Short-circuits, so an out-of-range plane exits at the first bad sample.
+    let max_sample: u16 = ((1u32 << cfg.bit_depth) - 1) as u16;
+    for (idx, plane) in [planes.y, planes.u, planes.v].into_iter().enumerate() {
+        if let Some(&got) = plane.iter().find(|&&v| v > max_sample) {
+            return Err(KeyFrameError::SampleRange {
+                plane: idx,
+                max: max_sample,
+                got,
             });
         }
     }
