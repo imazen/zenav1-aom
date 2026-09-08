@@ -1625,6 +1625,11 @@ fn decode_inter_tile_payload(
         );
     }
     let tiles = split_tiles(tile_data, &p.tile_info, p.tile_size_bytes)?;
+    // The INTER twin of the pre-allocation poll in [`decode_tile_payload`] —
+    // `decode_frame_tiles_inter` opens with the same `TileKf::new`.
+    if let Some(s) = stop {
+        s.check()?;
+    }
     let t = crate::decode_frame_tiles_inter(
         &tiles,
         &cfg,
@@ -2058,6 +2063,23 @@ fn decode_tile_payload(
 ) -> Result<(KfTileDecode, KfTileConfig, FrameHeaderObu), DecodeError> {
     let cfg = build_tile_cfg(seq, p);
     let tiles = split_tiles(tile_data, &p.tile_info, p.tile_size_bytes)?;
+    // Poll BEFORE `TileKf::new` commits the frame state, so a caller can
+    // abandon a large decode without first paying for it — and so the
+    // parse is not charged to the same un-pollable window as the allocation.
+    //
+    // MEASURED (x86-64 Linux, 24-core, glibc; the 4096x4096 cell of
+    // `crates/aom-bench/tests/cancel_latency.rs`): before this poll the
+    // decode's first un-pollable stretch was 21.6 ms of "parse + allocate";
+    // after it the parse is 0.02 ms and `TileKf::new` alone is 17.3-22.8 ms.
+    // The allocation is NOT further subdividable: the per-mi grids are
+    // `vec![T::default(); mi_rows * mi_cols]` over structs std cannot
+    // zero-specialise, so they never come from `calloc`'s lazy zero pages and
+    // are written element by element. `mi_dv` dominates — `DvNbr` is 40 bytes,
+    // i.e. 41.9 MB at 4096x4096. So this poll SHARPENS the attribution; it
+    // does not by itself bring that cell under `poll_gap_map`'s 20 ms bar.
+    if let Some(s) = stop {
+        s.check()?;
+    }
     // KEY frames always load the qindex defaults (`primary_ref = NONE`); the
     // `context_update_tile_id` tile's end-of-frame adapted CDFs ride out on
     // `t.saved_ctx` for the multi-frame driver (single-frame callers ignore it).
