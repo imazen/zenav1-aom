@@ -6,6 +6,19 @@
 
 ### Fixed
 
+- **`encode_key_frame` refused a tile grid real aomenc accepts** (CLAUDE.md
+  KB-47). `derive_tiles` required `rows * cols == 1 << (log2_cols +
+  log2_rows)`, which is not true of AV1: `av1_set_tile_info` clamps the
+  requested log2 to `tile_log2(1, sb_count)` — a CEILING — while
+  `av1_calculate_tile_cols`/`_rows` count loop iterations over the superblocks,
+  so an axis whose superblock count is not a power of two makes the two
+  disagree. Measured at 200x136 SB64 with `--tile-columns=2 --tile-rows=2`:
+  `log2 = (2, 2)` but the grid is **4 x 3 = 12 tiles**, not 16. The log2 pair is
+  the `context_update_tile_id` field width; the product is the tile count. Found
+  by the new refusal census, gated by an end-to-end cell that requires the REAL
+  C decoder to accept the port's 12-tile stream and this port's decoder to
+  reconstruct the same pixels.
+
 - **`--deltaq-mode` 2 and 3 at `--cpu-used` >= 8 PANICKED rather than encoding**
   (CLAUDE.md KB-46). At ALLINTRA nonrd speeds the frame goes through
   `encode_nonrd_sb`, whose delta-q is `setup_delta_q_nonrd`
@@ -48,6 +61,18 @@
   parse (0.02 ms) is no longer charged to the same window as the allocation.
 
 ### Added
+
+- **A REFUSAL CENSUS for the standalone still-image entry point**
+  (`aom-encode/tests/refusal_census.rs`). The ship goal asks for "no panics or
+  refusals on inputs a caller can produce" — a claim about a SET, so it needs a
+  sweep rather than a spot check. Every chroma format x bit depth x awkward size
+  (1x1, 3x7, 17x5, 65x67, 100x60, 129x128), and every enumerated knob across its
+  whole documented range (cq 0..63, `--cpu-used` 0..9, SB64/SB128, five tile
+  requests, all four CDEF x loop-restoration combinations), is encoded and
+  classified Ok / Refused / Panicked. Current reading: **72/72 format cells and
+  90/90 knob cells encode, 0 panics**, and the 8 documented refusals are pinned
+  by name in BOTH directions — each must refuse, and the support query must
+  refuse whatever the encoder refuses. It found KB-47 on its first run.
 
 - **Differential + reachability search for the `(int)double` cast semantics on the
   `--deltaq-mode=3` wiener chain** (`9b337873`). The three casts at

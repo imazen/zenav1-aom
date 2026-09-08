@@ -323,14 +323,26 @@ impl KeyFrameConfig {
         Ok(())
     }
 
-    /// The uniform-spacing tile grid this configuration resolves to, or the
-    /// refusal it earns.
+    /// The uniform-spacing tile grid this configuration resolves to.
     ///
-    /// `av1_calculate_tile_cols` / `_rows` derive `cols` / `rows` as loop
-    /// counts; for a uniform-spacing grid they always equal `1 << log2`. A
-    /// configuration where they do not is one this shell has never seen, so it
-    /// is refused rather than encoded. Shared by [`Self::validate_configuration`]
-    /// (which discards the value) and [`encode_key_frame`] (which uses it).
+    /// **`rows * cols` is NOT `1 << (log2_cols + log2_rows)`, and assuming it
+    /// was refused a configuration real aomenc accepts.** `av1_set_tile_info`
+    /// clamps the REQUESTED log2 up to `min_log2_*` and down to `max_log2_*`
+    /// (`tile_log2(1, sb_cols/sb_rows)`, i.e. the CEILING of the log2 of the
+    /// superblock count), while `av1_calculate_tile_cols` / `_rows` derive the
+    /// counts as loop counts over the superblocks. Whenever the superblock
+    /// count on an axis is not a power of two and the request reaches the
+    /// ceiling, the two disagree — measured at 200x136 SB64
+    /// (`sb_cols = 4, sb_rows = 3`) with `--tile-columns=2 --tile-rows=2`:
+    /// **`log2 = (2, 2)` but the grid is 4 x 3 = 12 tiles, not 16.** Real
+    /// aomenc encodes that happily, and the AV1 uniform-spacing decoder derives
+    /// the same 12 by running the same loop, so the stream is well formed; the
+    /// log2 pair is a FIELD WIDTH (`context_update_tile_id`) and the product is
+    /// the tile COUNT, and they are simply different quantities.
+    ///
+    /// Shared by [`Self::validate_configuration`] (which discards the value)
+    /// and [`encode_key_frame`] (which uses it), so the support query and the
+    /// encoder cannot disagree about which grids are accepted.
     pub fn derive_tiles(&self) -> Result<TileInfoHeader, KeyFrameError> {
         let mib_size_log2 = if self.sb_size_128 { 5u32 } else { 4u32 }; // SB128 / SB64
         let tile_info = derive_tile_info(
@@ -340,12 +352,18 @@ impl KeyFrameConfig {
             self.tile_columns_log2,
             self.tile_rows_log2,
         );
-        let tiles_log2 = tile_info.log2_cols + tile_info.log2_rows;
-        if tile_info.rows * tile_info.cols != 1usize << tiles_log2 {
-            return Err(KeyFrameError::Unsupported(
-                "tile grid: uniform spacing must give rows*cols == 2^(log2_cols+log2_rows)",
-            ));
-        }
+        debug_assert!(
+            tile_info.rows >= 1
+                && tile_info.cols >= 1
+                && tile_info.rows <= 1usize << tile_info.log2_rows
+                && tile_info.cols <= 1usize << tile_info.log2_cols,
+            "a uniform-spacing axis holds at most `1 << log2` tiles and at \
+             least one: got {} x {} against log2 ({}, {})",
+            tile_info.cols,
+            tile_info.rows,
+            tile_info.log2_cols,
+            tile_info.log2_rows
+        );
         Ok(tile_info)
     }
 

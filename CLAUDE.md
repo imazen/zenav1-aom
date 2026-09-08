@@ -293,6 +293,56 @@ it here in the same commit.**
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-47 — Encoder: `encode_key_frame` REFUSED a tile grid real aomenc accepts — the `rows*cols == 2^log2` invariant is simply false — FIXED ✅ 2026-09-08
+
+- **Found by measurement, not by reading.** A new REFUSAL CENSUS
+  (`aom-encode/tests/refusal_census.rs`) sweeps the `KeyFrameConfig` space a still-image
+  wrapper could generate — every chroma format x bit depth x awkward size, and every
+  enumerated knob across its whole documented range — and classifies each point Ok /
+  Refused / Panicked. The knob sweep came back **86 ok, 4 REFUSED** on its first run:
+  `200x136` with `--tile-columns=2 --tile-rows=2` at SB64, in all four
+  (CDEF, loop-restoration) combinations.
+- **ROOT — an invariant that is not true of AV1.** `derive_tiles` refused whenever
+  `rows * cols != 1 << (log2_cols + log2_rows)`, under a comment claiming uniform spacing
+  always makes them equal. It does not. `av1_set_tile_info` clamps the REQUESTED log2 up to
+  `min_log2_*` and down to `max_log2_* = tile_log2(1, sb_cols/sb_rows)` — the CEILING of the
+  log2 of the superblock count — while `av1_calculate_tile_cols` / `_rows` derive the counts
+  as LOOP COUNTS over the superblocks. Whenever an axis's superblock count is not a power of
+  two and the request reaches the ceiling, the two disagree.
+  MEASURED on the port's own `derive_tile_info`:
+
+  | frame | SB grid | request | log2 | grid | `1 << log2sum` |
+  |---|---|---|---|---|---|
+  | 200x136 | 4 x 3 | (2, 2) | (2, 2) | **4 x 3 = 12** | 16 |
+  | 256x256 | 4 x 4 | (2, 2) | (2, 2) | 4 x 4 = 16 | 16 |
+  | 512x128 | 8 x 2 | (3, 3) | (3, 1) | 8 x 2 = 16 | 16 |
+
+  The log2 pair is the `context_update_tile_id` FIELD WIDTH; the product is the tile COUNT.
+  They are different quantities, and the AV1 uniform-spacing decoder derives the count by
+  running the same loop, so a 12-tile stream with a log2 sum of 4 is well formed.
+- **Real aomenc accepts the same request** (measured through `c_encode_ctrls` with
+  `AV1E_SET_TILE_COLUMNS`/`_ROWS` = 33/34 — note 40/41 are a DIFFERENT control and return
+  -3, which is what an earlier probe mistook for a C refusal). So this was a refusal on a
+  configuration a caller can produce — the class the standing goal puts outside the parity
+  cap.
+- **FIX.** The equality refusal is gone. `assemble_multitile_frame_obu_payload_derived`
+  already used `ti.rows * ti.cols` as the count, and the tile walk already used
+  `n_tile_rows`/`n_tile_cols`, so nothing else needed changing. A `debug_assert` keeps the
+  bound that IS true — each axis holds at least one tile and at most `1 << log2`.
+- **GATED on the property that matters, not on the absence of a panic:**
+  `a_non_power_of_two_tile_grid_encodes_and_decodes` asserts the cell actually EXHIBITS the
+  4x3-against-log2-4 grid (else it gates nothing), encodes it, and requires the **real C
+  decoder** to accept the port's stream and this port's decoder to reconstruct the same
+  pixels. A wrong `context_update_tile_id` width or a header/count disagreement is rejected
+  there, not merely different. Bite proof: restoring the invariant fails that test AND the
+  knob sweep, while the format sweep and the documented-refusal pin stay green.
+- **The census is the durable part.** Panic-freedom and refusal-freedom are claims about a
+  SET, so they need a sweep rather than a spot check; a NEW refusal anywhere in the swept
+  space now fails a test instead of quietly narrowing what the backend accepts. Current
+  reading: **72/72 format cells and 90/90 knob cells encode, 0 panics**, and the 8
+  documented refusals are pinned BY NAME in both directions (each must refuse, and the
+  support query must refuse whatever the encoder refuses).
+
 ### KB-46 — Encoder: `--deltaq-mode` 2/3 at `--cpu-used` >= 8 PANICKED — FIXED ✅ 2026-09-08, and the queue's diagnosis was BACKWARDS
 
 - **The refusal.** `port_encode_with` asserted *"derived delta_q_present must match the real
