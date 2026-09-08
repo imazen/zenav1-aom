@@ -538,6 +538,56 @@ pub enum KeyFrameError {
     },
 }
 
+impl KeyFrameError {
+    /// A stable, machine-readable CATEGORY for this failure.
+    ///
+    /// The decoder has had `DecodeError::category` since the zen hardening
+    /// work, for the reason its module doc gives: a consumer that collapses
+    /// every failure into one opaque code cannot decide what to do next. The
+    /// encoder's consumer is a backend router, and the four categories below are
+    /// exactly the four decisions it has to make:
+    ///
+    /// | category | what a router should do |
+    /// |---|---|
+    /// | `unsupported` | route to another backend; retrying here cannot help |
+    /// | `invalid-input` | a caller bug (plane sizes) — surface it, do not retry |
+    /// | `limit-exceeded` | retry with a larger budget, or route elsewhere |
+    /// | `cancelled` | the caller asked; do NOT retry automatically |
+    ///
+    /// Strings, not an enum, and matching the decoder's spelling — the
+    /// integration crate owns the mapping onto its own category type, and a
+    /// `&'static str` cannot force a breaking change on it when a variant is
+    /// added here.
+    pub fn category(&self) -> &'static str {
+        match self {
+            KeyFrameError::PlaneSize { .. } => "invalid-input",
+            KeyFrameError::Unsupported(_) => "unsupported",
+            KeyFrameError::LimitExceeded { .. } => "limit-exceeded",
+            KeyFrameError::Cancelled(_) => "cancelled",
+        }
+    }
+
+    /// Whether retrying this exact call could ever succeed without the CALLER
+    /// changing something.
+    ///
+    /// `false` for every current variant, and that is the useful answer: each
+    /// one names something the caller must change (the configuration, the
+    /// planes, the budget, or its own mind). It exists so a router does not
+    /// have to enumerate variants to learn "do not loop on this", and so that a
+    /// future genuinely-transient variant (an allocation failure, say) has an
+    /// obvious place to say otherwise.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            KeyFrameError::PlaneSize { .. }
+            | KeyFrameError::Unsupported(_)
+            | KeyFrameError::LimitExceeded { .. }
+            | KeyFrameError::Cancelled(_) => false,
+        }
+    }
+}
+
+impl core::error::Error for KeyFrameError {}
+
 impl core::fmt::Display for KeyFrameError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {

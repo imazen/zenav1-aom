@@ -337,8 +337,23 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
   tests measure each other. The first version of that file passed when run alone and failed
   in the suite. A process-local `Mutex` fixes it for `cargo test` and is correctly a no-op
   under `cargo nextest`, where each test is its own process.
-- **Still missing from the encoder's six:** categorized/located errors beyond
-  `KeyFrameError`, a configurable allocation mode, and a fuzz target.
+- **Contract 4, same landing family: `KeyFrameError::category()` + `is_transient()` + a real
+  `core::error::Error` impl.** The decoder has had `DecodeError::category` since the zen
+  hardening work, for the reason its module doc gives — a consumer that collapses every
+  failure into one opaque code cannot decide what to do next — and the encoder had nothing.
+  The four categories are exactly the four decisions a backend router has to make:
+  `unsupported` (route elsewhere), `invalid-input` (a caller bug — surface it),
+  `limit-exceeded` (retry with a bigger budget, or route elsewhere), `cancelled` (the caller
+  asked; do NOT retry). `&'static str` rather than an enum, matching the decoder's spelling,
+  so the integration crate owns the mapping and a new variant here cannot force a breaking
+  change on it. `is_transient()` is `false` for every current variant — the useful answer,
+  since each names something the CALLER must change — and exists so a router need not
+  enumerate variants to learn "do not loop on this". Gated by
+  `refusal_census::every_error_variant_carries_a_category_and_a_retry_verdict`, which
+  constructs one error of each kind and requires the four categories to be DISTINCT (a
+  category that cannot discriminate cannot drive a decision).
+- **Still missing from the encoder's six:** a configurable allocation mode, and a fuzz
+  target.
 
 ### KB-49 — Encoder: there was no cancellation at all — `EncodeConfig` + a per-superblock-row stop token, 2026-09-08
 

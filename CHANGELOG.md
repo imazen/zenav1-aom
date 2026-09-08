@@ -82,6 +82,13 @@
 
 ### Added
 
+- **`KeyFrameError` is now machine-readable**: `category()` (`unsupported` /
+  `invalid-input` / `limit-exceeded` / `cancelled` — the four decisions a
+  backend router actually has to make), `is_transient()`, and a real
+  `core::error::Error` impl. The decoder has had `DecodeError::category` since
+  the zen hardening work; the encoder had nothing, so every failure reached a
+  consumer as one opaque code.
+
 - **Encoder resource limits and a side-effect-free peak-memory estimate**
   (CLAUDE.md KB-50). `EncodeLimits` on `EncodeConfig` (`max_pixels` /
   `max_width` / `max_height` / `max_memory_bytes`, all `Option`, no implicit

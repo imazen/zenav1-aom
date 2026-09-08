@@ -329,3 +329,79 @@ fn a_non_power_of_two_tile_grid_encodes_and_decodes() {
         stream.len()
     );
 }
+
+/// The failure surface must be MACHINE-readable, not just printable. A router
+/// that cannot tell "route elsewhere" from "raise the budget" from "the caller
+/// cancelled" will retry the wrong thing — which is the whole reason the
+/// decoder grew `DecodeError::category` and the encoder had nothing.
+#[test]
+fn every_error_variant_carries_a_category_and_a_retry_verdict() {
+    use aom_encode::key_frame::{EncodeConfig, EncodeLimits};
+
+    let base = base(65, 67);
+
+    // unsupported
+    let mut c = base;
+    c.cq_level = 64;
+    let unsupported = c
+        .validate_configuration()
+        .expect_err("cq 64 must refuse");
+
+    // invalid-input: a config that VALIDATES but whose planes do not match.
+    let plane_size = encode_key_frame(
+        KeyFramePlanes {
+            y: &[0u16; 4],
+            u: &[],
+            v: &[],
+        },
+        &base,
+    )
+    .expect_err("mismatched planes must refuse");
+
+    // limit-exceeded
+    let limit = base
+        .check_limits(&EncodeLimits {
+            max_pixels: Some(1),
+            ..EncodeLimits::new()
+        })
+        .expect_err("a 1-pixel cap must refuse");
+
+    // cancelled
+    struct Always;
+    impl enough::Stop for Always {
+        fn check(&self) -> Result<(), enough::StopReason> {
+            Err(enough::StopReason::Cancelled)
+        }
+    }
+    let (y, u, v) = planes(&base);
+    let cancelled = aom_encode::key_frame::encode_key_frame_with(
+        KeyFramePlanes {
+            y: &y,
+            u: &u,
+            v: &v,
+        },
+        &base,
+        &EncodeConfig::new().with_stop(&Always),
+    )
+    .expect_err("an always-firing token must cancel");
+
+    let seen = [
+        (&unsupported, "unsupported"),
+        (&plane_size, "invalid-input"),
+        (&limit, "limit-exceeded"),
+        (&cancelled, "cancelled"),
+    ];
+    for (e, want) in seen {
+        assert_eq!(e.category(), want, "wrong category for {e}");
+        assert!(!e.is_transient(), "no current variant is transient: {e}");
+        // Display must be usable on its own — a router surfacing this to a
+        // human should not have to match on the variant to get a reason.
+        assert!(!e.to_string().is_empty());
+        // And it must be a real `Error`, so `?` and `dyn Error` work.
+        let _: &dyn core::error::Error = e;
+    }
+    // The four categories must be DISTINCT, else they cannot drive a decision.
+    let cats: std::collections::BTreeSet<&str> =
+        seen.iter().map(|(e, _)| e.category()).collect();
+    assert_eq!(cats.len(), 4, "categories must be distinct: {cats:?}");
+}
