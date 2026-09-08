@@ -383,6 +383,100 @@ kernel neither documents nor enforces it.
 
 ---
 
+### B2. `(int)double` in the deltaq-mode-3 wiener chain is UB, and the two targets disagree by the full clamp
+
+`av1/encoder/allintra_vis.c` converts unbounded `double`s to integers in three
+places on the `--deltaq-mode=3` (`DELTA_Q_PERCEPTUAL_AI`) path:
+
+- `get_window_wiener_var` — `sb_wiener_var = (int)(((base_num + base_reg) /
+  (base_den + base_reg)) / mb_count)` (`:209-210`), then `AOMMAX(1, .)`;
+- the frame normalizer — `cpi->norm_wiener_variance =
+  (int64_t)(exp(sb_wiener_log / sb_count))` (`:678`, and the same expression at
+  `:509`);
+- `sb_wiener_var = (int)(cpi->norm_wiener_variance / beta)` (`:669`).
+
+None of the three operands carries a bound of its own. Out-of-range
+float-to-integer conversion is **undefined behaviour** (C11 6.3.1.4 p1), so what
+libaom "does" here is a property of the ISA:
+
+| input | x86-64 `cvttsd2si` | aarch64 `fcvtzs` | Rust `as` |
+|---|---|---|---|
+| `> INT_MAX` | `INT_MIN` | `INT_MAX` | `INT_MAX` |
+| `< INT_MIN` | `INT_MIN` | `INT_MIN` | `INT_MIN` |
+| `NaN` | `INT_MIN` | `0` | `0` |
+
+**MEASURED** (2026-09-08, both halves): the x86-64 column by running the cast
+natively; the aarch64 column by building a freestanding binary with
+`clang --target=aarch64-linux-gnu` and running it under `qemu-aarch64`. The
+instructions were confirmed by codegen (`fcvtzs w0, d0` vs `cvttsd2si %xmm0,
+%eax`), so this is not an inference from the ARM ARM.
+
+**Rust's `as` is defined as the aarch64 behaviour**, so the port already agrees
+with an ARM libaom build and disagrees with an x86-64 one. This is the same
+shape as A3 (`-ffp-contract`) and KB-ARM-FLOAT: libaom's own answer differs by
+target, so a port cannot match both.
+
+**The consequence is not small.** `AOMMAX(1, .)` turns x86-64's `INT_MIN` into
+`1`, so `beta = norm / 1` saturates the 4.0 ceiling, while the port's `INT_MAX`
+gives `beta ~ 0` and hits the 0.25 floor — opposite ends of the same clamp,
+hence an opposite-signed per-SB qindex delta. **MEASURED** on a constructed
+bd12 map at `base_qindex 128`: port qindex **128**, x86-64 libaom qindex **78**
+(`deltaq_cast_semantics_diff::i32_overflow_flips_beta_to_the_opposite_end_of_the_clamp`).
+
+**Is it reachable in practice? NOT ESTABLISHED — and the honest answer is
+"probably not, but nothing enforces that".** Two measurements, deliberately
+kept apart:
+
+- *Arithmetic bound*, from the physical ranges of every `WeberStats` field
+  (`peak <= 2^bd - 1`, `variance <= peak^2`, `distortion <= 64 * peak^2`) in the
+  single-block limit (`mb_count == 1`, `base_den` at its 1.0 floor): bd8 peaks
+  **25.9x under** `INT_MAX` — structurally immune at any content — while bd10 is
+  **1.2x over** and bd12 **40x over**. So bd8 is safe by construction and bd10/12
+  are not.
+- *Search over real encodes*: 72 cells (bd10/bd12 x 8x8/16x16/64x64/192x192 x
+  qindex 8/128/255 x checkerboard/impulse/ramp), driving the real
+  `av1_set_mb_wiener_variance` pass and reproducing `get_window_wiener_var`'s own
+  window accumulation. **Zero overflows.** Closest approach `bd12 8x8 q255
+  checker` at `9.012e7` — **24x under** the cliff.
+
+The gap between the two is structural, and it is the useful part: the bound is a
+*single-block* limit, but a 64x64 window averages up to 64 blocks and `base_den`
+accumulates with them, so the `/ mb_count` divide and the growing denominator
+both damp the ratio. Real content cannot hold `base_den` at its floor while
+driving `distortion` to its ceiling across a whole window. The 8x8 frames in the
+sweep exist to force `mb_count` toward 1 and still fall 24x short.
+
+**How we handle it.** Nothing is changed — the port keeps Rust's `as`, and is
+therefore x86-64-divergent-in-principle and ARM-exact. The semantics, the
+consequence, and the reachability search are pinned by
+`crates/aom-encode/tests/deltaq_cast_semantics_diff.rs` (5 tests), whose
+overflow search **asserts that no encode-reachable overflow exists**; if one
+ever appears that assertion fires and the finding is promoted from theoretical
+to live. The C oracle is `shim_c_cast_double_to_int{,64}`
+(`crates/aom-sys-ref/shim/enc_misc_shim.c`) — the real cast, compiled by the
+same compiler as the rest of the oracle, so the differential reports what *this
+host's* libaom would do rather than what the standard declines to define.
+
+**Why no existing test caught it.** `deltaq_perceptual_ai_diff.rs` has two
+tests: one pins `av1_get_deltaq_offset` against the C oracle — a *different*
+function — and the other, `sbq_perceptual_ai_bounds_and_direction`, is a
+structural smoke test whose own doc says it "only catches gross regressions",
+runs **bd8 only**, and caps `norm` at 1e6. The three `WeberVarMap` cast sites had
+**no C-oracle differential at all**; byte-exactness was proven only e2e, and
+`deltaq_mode3_e2e`'s bd12 cells are 192x192, well inside the safe region.
+
+- **Reportable upstream?** As a hardening request, yes — `AOMMAX(1, .)` after an
+  unbounded `(int)` cast reads as if it were defensive, and on x86-64 it is
+  exactly the branch that converts an overflow into the *smallest legal* value.
+  Unreachable from measured content, so low priority.
+- **Provenance:** found 2026-09-08 on the abandoned branch
+  `preserve/2026-07-25-agent-a788dbb3aaec3a1dc`, whose WIP commit proposed an
+  unconditional x86-64 model (`c_int`/`c_int64`) and did not notice the ARM half
+  — adopting it as written would have *introduced* an aarch64 divergence where
+  there is none today.
+
+---
+
 ## Category C — surprising-but-intended behaviour
 
 Not bugs. Recorded because each one cost time to discover and would cost it

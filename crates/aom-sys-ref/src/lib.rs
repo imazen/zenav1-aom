@@ -14336,6 +14336,35 @@ extern "C" {
     fn av1_get_deltaq_offset(bit_depth: i32, qindex: i32, beta: f64) -> i32;
 }
 
+// ---------------------------------------------------------------------------
+// C `(int)double` cast oracle — an ISA-dependent answer, not a language one.
+//
+// Out-of-range float->integer conversion is UNDEFINED BEHAVIOR in C
+// (C11 6.3.1.4 p1). x86-64 `cvttsd2si` yields INT_MIN for every out-of-range
+// magnitude and for NaN; aarch64 `fcvtzs` SATURATES and maps NaN to 0. Rust's
+// `as` is defined as the aarch64 behaviour, so the port agrees with an ARM
+// libaom and disagrees with an x86-64 one. These bind the real cast as
+// compiled for THIS host, so a differential reports what this host's libaom
+// would actually do. See `docs/LIBAOM_UPSTREAM_NOTES.md` A7.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn shim_c_cast_double_to_int(d: f64) -> i32;
+    fn shim_c_cast_double_to_int64(d: f64) -> i64;
+}
+
+/// C's `(int)d` as this host's compiler emits it. Out of range: INT_MIN on
+/// x86-64, saturating on aarch64, NaN -> INT_MIN / 0 respectively.
+pub fn ref_c_cast_double_to_int(d: f64) -> i32 {
+    unsafe { shim_c_cast_double_to_int(d) }
+}
+
+/// C's `(int64_t)d` as this host's compiler emits it. Same ISA split as
+/// [`ref_c_cast_double_to_int`].
+pub fn ref_c_cast_double_to_int64(d: f64) -> i64 {
+    unsafe { shim_c_cast_double_to_int64(d) }
+}
+
 /// Reference `av1_get_deltaq_offset` (rd.c:466): the exported libaom fn that
 /// maps `(bit_depth, base qindex, beta)` to the qindex offset whose DC quant
 /// step is closest to `q(base)/sqrt(beta)`. `bit_depth` is the raw 8/10/12

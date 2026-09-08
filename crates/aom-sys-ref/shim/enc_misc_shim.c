@@ -187,3 +187,27 @@ int shim_update_rd_thresh_fact(int sb_size, int32_t *factor_buf,
   free(seq);
   return 0;
 }
+
+/* ---------------------------------------------------------------------------
+ * C `(int)double` / `(int64_t)double` cast oracle.
+ *
+ * Out-of-range float->integer conversion is UNDEFINED BEHAVIOR in C
+ * (C11 6.3.1.4 p1), so "what libaom does" is a property of the ISA, not of the
+ * language — and the two ISAs this project gates on disagree:
+ *
+ *   x86-64  cvttsd2si  -> the "integer indefinite" INT_MIN for every
+ *                         out-of-range magnitude AND for NaN.
+ *   aarch64 fcvtzs     -> SATURATES to INT_MIN/INT_MAX, and NaN -> 0.
+ *
+ * Rust's `as` is defined as the aarch64 behaviour (saturate, NaN -> 0), so the
+ * port agrees with an ARM libaom build and disagrees with an x86-64 one.
+ *
+ * These entries are the real cast, compiled by the same compiler and flags as
+ * the rest of the oracle, so the differential reports what THIS host's libaom
+ * would actually do rather than what the C standard declines to define. Do not
+ * "simplify" them to a Rust-side model: the whole point is that the answer is
+ * the compiler's, not ours.
+ * ------------------------------------------------------------------------ */
+int shim_c_cast_double_to_int(double d) { return (int)d; }
+
+int64_t shim_c_cast_double_to_int64(double d) { return (int64_t)d; }
