@@ -162,3 +162,53 @@ data-dependent gate with reach and bite pins on both sides.
 * bd10/12 remains scalar throughout: `compute_stats_highbd` is a separate i64
   loop, and `pixel_proj_error`'s highbd arm shares this tier but was measured
   only through the bd8 cell.
+
+---
+
+# Third lever: the SGR box-sum vertical pass — 2.571x -> 2.557x
+
+The last of the three loop-restoration kernels the x86-64 profile found with no
+SIMD tier. Every output is an INDEPENDENT sum of `2r + 1` source rows at one
+column, so vectorizing across `j` reorders nothing — and it also fixes a bad
+access pattern: the scalar form is column-OUTER and strides by `src_stride` on
+every step, re-reading each row `width` times with no locality.
+
+## Measured — and it took n=16 to resolve
+
+| n | paired median | rounds faster | verdict |
+|---|---:|---:|---|
+| 6 | −0.50 % | 5/6 | p = 0.22, **unresolved** |
+| 16 | **−0.73 %** | **15/16** | **p = 0.0005** |
+
+455.05 → 452.65 ms min, ratio **2.571x → 2.557x**.
+
+**Session cumulative: 483.01 → 452.65 ms, −6.3 %, ratio 2.733x → 2.557x.**
+
+## THE LESSON: an inlined closure overstated its own lever by ~2x
+
+The profile attributed **13.3 ms** to `calculate_intermediate::{closure#0}`. The
+vectorized vertical pass now measures **1.1 ms** where ~8 ms used to be — and the
+wall moved **3.3 ms**, not 8.
+
+`{closure#0}` is `bx`, into which `boxsum1`/`boxsum2` are inlined; it absorbs
+work from its caller, so a symbol that reads as a self-contained 13 ms lever is
+not one. This is the KB-PERF §14 pattern (projections 5x, 13x and 18x optimistic)
+arriving from a NEW direction: the earlier instances all came from a profiler's
+ranked STAGE table, this one from **a single symbol whose body is not what its
+name suggests**. Before costing a lever off one symbol, check whether it is a
+closure or an inlining sink.
+
+Corollary, equally practical: **n=6 could not resolve a 0.7 % effect.** The first
+band read −0.50 % at 5/6 (p = 0.22) and would have been discarded as noise. Size
+the band to the effect, not to the last landing's effect.
+
+## Where the stage stands
+
+Loop-restoration search **90.6 ms → ~19.8 ms** across the three landings. What is
+left is `calculate_intermediate`'s own body (8.5 ms), whose hot loop contains a
+256-entry table lookup (`X_BY_XPLUS1[z.min(255)]`) — a gather, which the current
+vector vocabulary does not handle well, and not worth forcing for 8 ms.
+
+**The honest next targets are elsewhere:** the transform INVERSE half (+53 ms —
+the largest single item in the gap, and a named open residual of KB-PERF-3: only
+the DCT family passed its i16 audit), and the register-blocked `compute_stats`.

@@ -71,6 +71,190 @@ fn rpot_u32(v: u32, n: u32) -> u32 {
     (v + ((1u32 << n) >> 1)) >> n
 }
 
+
+/// The VERTICAL half of `boxsum1`/`boxsum2`, vectorized over `j`.
+///
+/// # Why this exists
+///
+/// `benchmarks/encoder_x86_profile_2026-09-08.md`: the loop-restoration search
+/// is 26 % of the speed-0 encode-time gap to libaom and had no SIMD anywhere.
+/// After the `compute_stats` and `pixel_proj_error` tiers landed, the box-sum
+/// was the largest scalar item left in the stage (13.3 ms of a 455 ms encode).
+///
+/// # Bit-exact, and it also fixes an access pattern
+///
+/// Every output is an INDEPENDENT sum of `2r + 1` source rows at one column, so
+/// vectorizing across `j` reorders nothing: lane `j` performs exactly the scalar
+/// tier's adds in exactly its order. What changes besides the width is the walk
+/// — the scalar form is column-OUTER and strides by `src_stride` on every step,
+/// so it re-reads each row `width` times with no locality; this form carries a
+/// strip of 8 columns down the rows at once. The tail (`width % 8`) stays
+/// scalar and shares the same code as before via `boxsum_vert_scalar_cols`.
+#[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn boxsum_vert_impl(
+    token: Token,
+    src: &[i32],
+    src_off: usize,
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    sqr: bool,
+    dst: &mut [i32],
+    dst_stride: usize,
+    r5: bool,
+) {
+    let ld = |s: &[i32], o: usize| -> i32x8 {
+        let v = i32x8::from_slice(token, &s[o..o + 8]);
+        if sqr { v * v } else { v }
+    };
+    let st = |d: &mut [i32], o: usize, v: i32x8| {
+        let t: &mut [i32; 8] = (&mut d[o..o + 8]).try_into().unwrap();
+        v.store(t);
+    };
+
+    let mut j = 0usize;
+    while j + 8 <= width {
+        if r5 {
+            let mut a = ld(src, src_off + j);
+            let mut b = ld(src, src_off + src_stride + j);
+            let mut c = ld(src, src_off + 2 * src_stride + j);
+            let mut d = ld(src, src_off + 3 * src_stride + j);
+            let mut e = ld(src, src_off + 4 * src_stride + j);
+            st(dst, j, a + b + c);
+            st(dst, dst_stride + j, a + b + c + d);
+            let mut i = 2;
+            while i < height - 3 {
+                st(dst, i * dst_stride + j, a + b + c + d + e);
+                a = b;
+                b = c;
+                c = d;
+                d = e;
+                e = ld(src, src_off + (i + 3) * src_stride + j);
+                i += 1;
+            }
+            st(dst, i * dst_stride + j, a + b + c + d + e);
+            st(dst, (i + 1) * dst_stride + j, b + c + d + e);
+            st(dst, (i + 2) * dst_stride + j, c + d + e);
+        } else {
+            let mut a = ld(src, src_off + j);
+            let mut b = ld(src, src_off + src_stride + j);
+            let mut c = ld(src, src_off + 2 * src_stride + j);
+            st(dst, j, a + b);
+            let mut i = 1;
+            while i < height - 2 {
+                st(dst, i * dst_stride + j, a + b + c);
+                a = b;
+                b = c;
+                c = ld(src, src_off + (i + 2) * src_stride + j);
+                i += 1;
+            }
+            st(dst, i * dst_stride + j, a + b + c);
+            st(dst, (i + 1) * dst_stride + j, b + c);
+        }
+        j += 8;
+    }
+    boxsum_vert_scalar_cols(
+        src, src_off, j, width, height, src_stride, sqr, dst, dst_stride, r5,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn boxsum_vert_impl_scalar(
+    _t: archmage::ScalarToken,
+    src: &[i32],
+    src_off: usize,
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    sqr: bool,
+    dst: &mut [i32],
+    dst_stride: usize,
+    r5: bool,
+) {
+    boxsum_vert_scalar_cols(
+        src, src_off, 0, width, height, src_stride, sqr, dst, dst_stride, r5,
+    );
+}
+
+/// The scalar vertical pass over columns `j0..width` — the transcribed port,
+/// verbatim, and the reference the vector tier is compared against.
+#[allow(clippy::too_many_arguments)]
+fn boxsum_vert_scalar_cols(
+    src: &[i32],
+    src_off: usize,
+    j0: usize,
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    sqr: bool,
+    dst: &mut [i32],
+    dst_stride: usize,
+    r5: bool,
+) {
+    let sq = |v: i32| if sqr { v * v } else { v };
+    for j in j0..width {
+        if r5 {
+            let mut a = sq(src[src_off + j]);
+            let mut b = sq(src[src_off + src_stride + j]);
+            let mut c = sq(src[src_off + 2 * src_stride + j]);
+            let mut d = sq(src[src_off + 3 * src_stride + j]);
+            let mut e = sq(src[src_off + 4 * src_stride + j]);
+            dst[j] = a + b + c;
+            dst[dst_stride + j] = a + b + c + d;
+            let mut i = 2;
+            while i < height - 3 {
+                dst[i * dst_stride + j] = a + b + c + d + e;
+                a = b;
+                b = c;
+                c = d;
+                d = e;
+                e = sq(src[src_off + (i + 3) * src_stride + j]);
+                i += 1;
+            }
+            dst[i * dst_stride + j] = a + b + c + d + e;
+            dst[(i + 1) * dst_stride + j] = b + c + d + e;
+            dst[(i + 2) * dst_stride + j] = c + d + e;
+        } else {
+            let mut a = sq(src[src_off + j]);
+            let mut b = sq(src[src_off + src_stride + j]);
+            let mut c = sq(src[src_off + 2 * src_stride + j]);
+            dst[j] = a + b;
+            let mut i = 1;
+            while i < height - 2 {
+                dst[i * dst_stride + j] = a + b + c;
+                a = b;
+                b = c;
+                c = sq(src[src_off + (i + 2) * src_stride + j]);
+                i += 1;
+            }
+            dst[i * dst_stride + j] = a + b + c;
+            dst[(i + 1) * dst_stride + j] = b + c;
+        }
+    }
+}
+
+/// Dispatch the vertical pass.
+#[allow(clippy::too_many_arguments)]
+fn boxsum_vert(
+    src: &[i32],
+    src_off: usize,
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    sqr: bool,
+    dst: &mut [i32],
+    dst_stride: usize,
+    r5: bool,
+) {
+    archmage::incant!(
+        boxsum_vert_impl(
+            src, src_off, width, height, src_stride, sqr, dst, dst_stride, r5
+        ),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
 /// `boxsum1` — windowed 3x3 sums (or sums of squares) over `src` (dims
 /// `width x height` at `src_stride`, offset `src_off`) into `dst`.
 #[allow(clippy::too_many_arguments)]
@@ -84,24 +268,10 @@ fn boxsum1(
     dst: &mut [i32],
     dst_stride: usize,
 ) {
-    let sq = |v: i32| if sqr { v * v } else { v };
     // Vertical sum over 3-pixel regions, from src into dst.
-    for j in 0..width {
-        let mut a = sq(src[src_off + j]);
-        let mut b = sq(src[src_off + src_stride + j]);
-        let mut c = sq(src[src_off + 2 * src_stride + j]);
-        dst[j] = a + b;
-        let mut i = 1;
-        while i < height - 2 {
-            dst[i * dst_stride + j] = a + b + c;
-            a = b;
-            b = c;
-            c = sq(src[src_off + (i + 2) * src_stride + j]);
-            i += 1;
-        }
-        dst[i * dst_stride + j] = a + b + c;
-        dst[(i + 1) * dst_stride + j] = b + c;
-    }
+    boxsum_vert(
+        src, src_off, width, height, src_stride, sqr, dst, dst_stride, false,
+    );
     // Horizontal sum over 3-pixel regions of dst.
     for i in 0..height {
         let row = i * dst_stride;
@@ -134,29 +304,9 @@ fn boxsum2(
     dst: &mut [i32],
     dst_stride: usize,
 ) {
-    let sq = |v: i32| if sqr { v * v } else { v };
-    for j in 0..width {
-        let mut a = sq(src[src_off + j]);
-        let mut b = sq(src[src_off + src_stride + j]);
-        let mut c = sq(src[src_off + 2 * src_stride + j]);
-        let mut d = sq(src[src_off + 3 * src_stride + j]);
-        let mut e = sq(src[src_off + 4 * src_stride + j]);
-        dst[j] = a + b + c;
-        dst[dst_stride + j] = a + b + c + d;
-        let mut i = 2;
-        while i < height - 3 {
-            dst[i * dst_stride + j] = a + b + c + d + e;
-            a = b;
-            b = c;
-            c = d;
-            d = e;
-            e = sq(src[src_off + (i + 3) * src_stride + j]);
-            i += 1;
-        }
-        dst[i * dst_stride + j] = a + b + c + d + e;
-        dst[(i + 1) * dst_stride + j] = b + c + d + e;
-        dst[(i + 2) * dst_stride + j] = c + d + e;
-    }
+    boxsum_vert(
+        src, src_off, width, height, src_stride, sqr, dst, dst_stride, true,
+    );
     for i in 0..height {
         let row = i * dst_stride;
         let mut a = dst[row];
