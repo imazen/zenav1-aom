@@ -269,6 +269,44 @@ impl KeyFrameConfig {
         }
     }
 
+    /// Check configuration support without allocating planes or encoding.
+    ///
+    /// The encoder calls this same validator. This reports configuration
+    /// support, not a promise about source-buffer validity or allocation.
+    pub fn validate_configuration(&self) -> Result<(), KeyFrameError> {
+        let cfg = self;
+        if cfg.usage != 2 {
+            return Err(KeyFrameError::Unsupported(
+                "usage: only AOM_USAGE_ALL_INTRA (2) is gated",
+            ));
+        }
+        if !(0..=9).contains(&cfg.cpu_used) {
+            return Err(KeyFrameError::Unsupported("cpu_used: must be 0..=9"));
+        }
+        if !matches!(cfg.bit_depth, 8 | 10 | 12) {
+            return Err(KeyFrameError::Unsupported("bit_depth: must be 8, 10 or 12"));
+        }
+        if cfg.width == 0 || cfg.height == 0 {
+            return Err(KeyFrameError::Unsupported("width/height: must be non-zero"));
+        }
+        if !(0..=63).contains(&cfg.cq_level) {
+            return Err(KeyFrameError::Unsupported("cq_level: must be 0..=63"));
+        }
+        if cfg.monochrome && (cfg.ss_x, cfg.ss_y) != (1, 1) {
+            return Err(KeyFrameError::Unsupported(
+                "monochrome: ss must be (1, 1) (the AOM_IMG_FMT_I420 a mono image allocates)",
+            ));
+        }
+        // AV1 has three chroma formats; (0, 1) is not one of them
+        // (`aom_img_fmt_t`: I420 = (1,1), I422 = (1,0), I444 = (0,0)).
+        if !matches!((cfg.ss_x, cfg.ss_y), (1, 1) | (1, 0) | (0, 0)) {
+            return Err(KeyFrameError::Unsupported(
+                "ss_x/ss_y: must be (1,1) 4:2:0, (1,0) 4:2:2 or (0,0) 4:4:4",
+            ));
+        }
+        Ok(())
+    }
+
     /// `cfg.g_profile` exactly as `encode_av1_kf_impl` (`dec_shim.c:508-518`)
     /// derives it from bit depth + subsampling, which is itself the
     /// `av1_cx_iface` rule: 4:4:4 at 8/10-bit is PROFILE_1, 12-bit and 4:2:2
@@ -961,36 +999,7 @@ pub fn encode_key_frame(
     planes: KeyFramePlanes<'_>,
     cfg: &KeyFrameConfig,
 ) -> Result<Vec<u8>, KeyFrameError> {
-    // ---- envelope + input validation -------------------------------------
-    if cfg.usage != 2 {
-        return Err(KeyFrameError::Unsupported(
-            "usage: only AOM_USAGE_ALL_INTRA (2) is gated",
-        ));
-    }
-    if !(0..=9).contains(&cfg.cpu_used) {
-        return Err(KeyFrameError::Unsupported("cpu_used: must be 0..=9"));
-    }
-    if !matches!(cfg.bit_depth, 8 | 10 | 12) {
-        return Err(KeyFrameError::Unsupported("bit_depth: must be 8, 10 or 12"));
-    }
-    if cfg.width == 0 || cfg.height == 0 {
-        return Err(KeyFrameError::Unsupported("width/height: must be non-zero"));
-    }
-    if !(0..=63).contains(&cfg.cq_level) {
-        return Err(KeyFrameError::Unsupported("cq_level: must be 0..=63"));
-    }
-    if cfg.monochrome && (cfg.ss_x, cfg.ss_y) != (1, 1) {
-        return Err(KeyFrameError::Unsupported(
-            "monochrome: ss must be (1, 1) (the AOM_IMG_FMT_I420 a mono image allocates)",
-        ));
-    }
-    // AV1 has three chroma formats; (0, 1) is not one of them
-    // (`aom_img_fmt_t`: I420 = (1,1), I422 = (1,0), I444 = (0,0)).
-    if !matches!((cfg.ss_x, cfg.ss_y), (1, 1) | (1, 0) | (0, 0)) {
-        return Err(KeyFrameError::Unsupported(
-            "ss_x/ss_y: must be (1,1) 4:2:0, (1,0) 4:2:2 or (0,0) 4:4:4",
-        ));
-    }
+    cfg.validate_configuration()?;
     let (w, h) = (cfg.width, cfg.height);
     let (cw, ch) = cfg.chroma_dims();
     if planes.y.len() != w * h {
