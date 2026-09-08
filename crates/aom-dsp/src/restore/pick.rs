@@ -41,6 +41,23 @@ use crate::entropy::lr::{WIENER_HALFWIN, WIENER_WIN};
 
 /// `WIENER_WIN2` / `WIENER_HALFWIN1` (restoration.h).
 pub const WIENER_WIN2: usize = WIENER_WIN * WIENER_WIN;
+/// `WIENER_WIN2` rounded up to a whole `i32x8`.
+///
+/// The per-row `H` accumulator inside [`compute_stats`] is strided by
+/// `round_up(win2, 8)` rather than by `win2`, and the window vector `y` is
+/// zero-padded to the same length. That is PURELY a layout choice and changes
+/// no value: the padding lanes hold `y[l] = 0`, so the products written past
+/// column `win2` are zero added to zero, and nothing ever reads them (the fold
+/// back into the `i64` `H` walks `l < win2`).
+///
+/// It exists because without it the vector loop needs a scalar tail per `k`:
+/// at `win7` those tails are ~171 scalar multiply-accumulates per pixel against
+/// only 132 vector iterations. Measured on the profile cell, the padding is
+/// worth **18.4 ms -> 17.5 ms** — real, and much smaller than that op count
+/// predicts, because the tails were not the limit (see `acc_stat_line_impl`).
+const WIENER_H_STRIDE: usize = WIENER_WIN2.div_ceil(8) * 8;
+/// Length of the internal padded `H` row accumulator.
+const WIENER_H_ROW_LEN: usize = WIENER_WIN2 * WIENER_H_STRIDE;
 const WIENER_HALFWIN1: usize = WIENER_HALFWIN + 1;
 /// `WIENER_WIN_REDUCED` (restoration.h): the 5-tap luma window under
 /// `lpf_sf.reduce_wiener_window_size`.
@@ -78,6 +95,29 @@ fn find_average(
 
 /// `acc_stat_one_line` (pickrst.c): one source row's contribution to the
 /// int32 row accumulators (`count` = the dgd row this line is centred on).
+///
+/// # Why this has a SIMD tier
+///
+/// This is the inner loop of the Wiener stats, and it was the largest
+/// scalar-only function in the encoder. Measured on x86-64
+/// (`benchmarks/encoder_x86_profile_2026-09-08.md`): `compute_stats` is
+/// **32.2 ms of a 485 ms speed-0 encode against libaom's 2.4 ms** — a 13.4x
+/// gap, and 160.25 M multiply-accumulates per encode retiring at **1.06 per
+/// cycle**, i.e. exactly scalar-bound. libaom has `compute_stats_win7_avx2`;
+/// the port had nothing.
+///
+/// # Why the SIMD tier is BIT-EXACT by construction, not merely by luck
+///
+/// Every accumulator element receives *the same products in the same order* as
+/// the scalar tier — the vectorization is across elements `l` of one `k` row of
+/// `H` (and across `k` for `M`), never across the pixel loop `j`, so no
+/// reassociation happens at all. Integer products, integer adds, no saturation.
+/// The scalar tier below is retained verbatim as the reference, and
+/// `tests/pick_diff.rs` compares BOTH tiers against the real exported C.
+///
+/// The accumulator width is C's own: `|y|, |x| <= 255` at bd8, so a product is
+/// at most 65025 and a row of at most 256 pixels accumulates below 16.7 M —
+/// well inside `i32`, which is why C uses `int32_t` here too.
 #[allow(clippy::too_many_arguments)]
 fn acc_stat_one_line(
     dgd: &[u16],
@@ -91,29 +131,199 @@ fn acc_stat_one_line(
     wiener_win2: usize,
     m_row: &mut [i32],
     h_row: &mut [i32],
+    hstride: usize,
     count: i32,
 ) {
-    let mut y = [0i16; WIENER_WIN2];
-    for j in h_start..h_end {
-        let x = src_row[j as usize] as i16 - avg as i16;
-        let mut idx = 0usize;
-        for k in -wiener_halfwin..=wiener_halfwin {
-            for l in -wiener_halfwin..=wiener_halfwin {
-                // Window reads may go up to ±3 outside the rect — negative
-                // plane coords land in the extended border BEFORE the
-                // origin (C pointer semantics).
-                let off = dgd_origin as isize + ((count + l) * dgd_stride + (j + k)) as isize;
-                y[idx] = dgd[off as usize] as i16 - avg as i16;
-                idx += 1;
-            }
+    archmage::incant!(
+        acc_stat_line_impl(
+            dgd,
+            dgd_origin,
+            src_row,
+            dgd_stride,
+            h_start,
+            h_end,
+            avg,
+            wiener_halfwin,
+            wiener_win2,
+            m_row,
+            h_row,
+            hstride,
+            count
+        ),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+/// Gather the `wiener_win2` window values around source column `j`, about the
+/// dgd mean, in C's index order (`idx = (k + halfwin) * win + (l + halfwin)`,
+/// i.e. column-major over the window).
+///
+/// Shared verbatim by both tiers so the two cannot drift in the one place a
+/// drift would be invisible to a lane-level review.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn gather_window(
+    dgd: &[u16],
+    dgd_origin: usize,
+    dgd_stride: i32,
+    avg: u16,
+    wiener_halfwin: i32,
+    j: i32,
+    count: i32,
+    y: &mut [i32; WIENER_H_STRIDE],
+) -> usize {
+    let mut idx = 0usize;
+    for k in -wiener_halfwin..=wiener_halfwin {
+        for l in -wiener_halfwin..=wiener_halfwin {
+            // Window reads may go up to ±3 outside the rect — negative
+            // plane coords land in the extended border BEFORE the
+            // origin (C pointer semantics).
+            let off = dgd_origin as isize + ((count + l) * dgd_stride + (j + k)) as isize;
+            y[idx] = i32::from(dgd[off as usize] as i16 - avg as i16);
+            idx += 1;
         }
+    }
+    idx
+}
+
+/// Scalar tier = the transcribed port, verbatim.
+#[allow(clippy::too_many_arguments)]
+fn acc_stat_line_impl_scalar(
+    _t: archmage::ScalarToken,
+    dgd: &[u16],
+    dgd_origin: usize,
+    src_row: &[u16],
+    dgd_stride: i32,
+    h_start: i32,
+    h_end: i32,
+    avg: u16,
+    wiener_halfwin: i32,
+    wiener_win2: usize,
+    m_row: &mut [i32],
+    h_row: &mut [i32],
+    hstride: usize,
+    count: i32,
+) {
+    let mut y = [0i32; WIENER_H_STRIDE];
+    for j in h_start..h_end {
+        let x = i32::from(src_row[j as usize] as i16 - avg as i16);
+        let idx = gather_window(dgd, dgd_origin, dgd_stride, avg, wiener_halfwin, j, count, &mut y);
         debug_assert_eq!(idx, wiener_win2);
         for k in 0..wiener_win2 {
-            m_row[k] += y[k] as i32 * x as i32;
+            m_row[k] += y[k] * x;
             for l in k..wiener_win2 {
                 // H is symmetric; fill the upper triangle here (copied down
                 // outside the pixel loops).
-                h_row[k * wiener_win2 + l] += y[k] as i32 * y[l] as i32;
+                h_row[k * hstride + l] += y[k] * y[l];
+            }
+        }
+    }
+}
+
+/// Vector tier: lanes are elements of one `H` row (and of `M`), so each
+/// accumulator still sees the scalar tier's exact product sequence.
+///
+/// # What this achieves, and what still limits it — measured, not projected
+///
+/// On the profile cell (192x192 cq27 speed 0, 165,888 stat pixels,
+/// 160.25 M multiply-accumulates per encode):
+///
+/// | build | `compute_stats` | madds/s | madds/cycle |
+/// |---|---:|---:|---:|
+/// | scalar (before) | 32.2 ms | 4.98 G | 1.06 |
+/// | this tier | **17.5 ms** | 9.16 G | 1.95 |
+/// | libaom `compute_stats_win7_avx2` | 2.4 ms | 66 G | ~14 |
+///
+/// **1.84x, and 8-wide lanes did NOT buy 8x.** Two hypotheses were tested and
+/// both are refuted, so do not re-spend them:
+///
+/// * *"the scalar tails dominate"* — they were ~171 madds per pixel against 132
+///   vector iterations, which looks decisive. Removing them entirely (the
+///   `WIENER_H_STRIDE` padding) was worth 0.9 ms of 18.4.
+/// * *"it is L1 bandwidth on the `H` accumulator"* — the read-modify-write
+///   streams ~1.25 GB per encode, which is **71 GB/s**, about 16 % of this
+///   core's L1 ceiling. Not the limit.
+///
+/// What is left is the shape of the loop: ~2.8 cycles per vector iteration for
+/// a load + load + multiply + add + store + loop, i.e. the per-element
+/// read-modify-write of `H` itself. **The next step is therefore not wider
+/// lanes but register blocking** — libaom's `acc_stat_win7_one_line_avx2` holds
+/// `H` tiles in registers ACROSS the pixel loop and folds pairs of pixels with
+/// `_mm256_madd_epi16`, so `H` is touched once per tile instead of once per
+/// pixel. That is a different loop nest, not a tweak to this one; vectorizing
+/// over `j` (pixels) instead of over `l` is the same idea and stays bit-exact
+/// because integer addition is associative.
+#[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn acc_stat_line_impl(
+    token: Token,
+    dgd: &[u16],
+    dgd_origin: usize,
+    src_row: &[u16],
+    dgd_stride: i32,
+    h_start: i32,
+    h_end: i32,
+    avg: u16,
+    wiener_halfwin: i32,
+    wiener_win2: usize,
+    m_row: &mut [i32],
+    h_row: &mut [i32],
+    hstride: usize,
+    count: i32,
+) {
+    // One bounds check + one 32-byte move per load/store, the shape
+    // `restore::wiener` already uses; the lane VALUES are the scalar tier's.
+    macro_rules! ld {
+        ($s:expr, $o:expr) => {
+            i32x8::from_slice(token, &$s[$o..$o + 8])
+        };
+    }
+    macro_rules! st {
+        ($s:expr, $o:expr, $v:expr) => {{
+            let d: &mut [i32; 8] = (&mut $s[$o..$o + 8]).try_into().unwrap();
+            ($v).store(d);
+        }};
+    }
+
+    debug_assert!(hstride >= wiener_win2 && hstride % 8 == 0);
+    // `y` is zero-padded to a whole vector and NEVER written past `win2`, so
+    // the padding lanes contribute `0 * anything` — see `WIENER_H_STRIDE`.
+    let mut y = [0i32; WIENER_H_STRIDE];
+    for j in h_start..h_end {
+        let x = i32::from(src_row[j as usize] as i16 - avg as i16);
+        let idx = gather_window(dgd, dgd_origin, dgd_stride, avg, wiener_halfwin, j, count, &mut y);
+        debug_assert_eq!(idx, wiener_win2);
+
+        // M: lanes are k. Runs off the end into the padding, which stays zero.
+        let xv = i32x8::splat(token, x);
+        let mut k = 0usize;
+        while k < wiener_win2 {
+            let acc = ld!(m_row, k) + ld!(y, k) * xv;
+            st!(m_row, k, acc);
+            k += 8;
+        }
+
+        // H upper triangle: lanes are l, one broadcast `y[k]` per row. No
+        // scalar tail — the padded stride guarantees a whole vector starting
+        // at any `l < win2` stays inside row `k`.
+        //
+        // MEASURED AND REJECTED: starting the sweep at `k & !7` instead, so
+        // both slices are whole 8-lane chunks and `chunks_exact` drops the
+        // per-iteration bounds check (this crate is `#![forbid(unsafe_code)]`,
+        // so a check can only be removed structurally). It is CORRECT — the
+        // extra lanes at `l < k` land in row `k`'s lower triangle, which is
+        // zeroed per source row and never read — and it is SLOWER: at win7 it
+        // costs 217 vector iterations per pixel against 175, +24 %, which the
+        // removed bounds checks do not pay for. Measured 471.6 ms against
+        // 468.7 on the profile cell. Do not re-try it without that arithmetic.
+        for k in 0..wiener_win2 {
+            let yk = i32x8::splat(token, y[k]);
+            let base = k * hstride;
+            let mut l = k;
+            while l < wiener_win2 {
+                let acc = ld!(h_row, base + l) + ld!(y, l) * yk;
+                st!(h_row, base + l, acc);
+                l += 8;
             }
         }
     }
@@ -143,8 +353,9 @@ pub fn compute_stats(
     let wiener_win2 = wiener_win * wiener_win;
     let wiener_halfwin = (wiener_win >> 1) as i32;
     let avg = find_average(dgd, dgd_origin, h_start, h_end, v_start, v_end, dgd_stride);
-    let mut m_row = [0i32; WIENER_WIN2];
-    let mut h_row = [0i32; WIENER_WIN2 * WIENER_WIN2];
+    let mut m_row = [0i32; WIENER_H_STRIDE];
+    let mut h_row = [0i32; WIENER_H_ROW_LEN];
+    let hstride = wiener_win2.div_ceil(8) * 8;
     let mut downsample_factor = if use_downsampled_wiener_stats {
         WIENER_STATS_DOWNSAMPLE_FACTOR
     } else {
@@ -159,8 +370,8 @@ pub fn compute_stats(
         if use_downsampled_wiener_stats && (v_end - i < WIENER_STATS_DOWNSAMPLE_FACTOR) {
             downsample_factor = v_end - i;
         }
-        m_row[..wiener_win2].fill(0);
-        h_row[..wiener_win2 * wiener_win2].fill(0);
+        m_row[..hstride].fill(0);
+        h_row[..wiener_win2 * hstride].fill(0);
         acc_stat_one_line(
             dgd,
             dgd_origin,
@@ -173,6 +384,7 @@ pub fn compute_stats(
             wiener_win2,
             &mut m_row,
             &mut h_row,
+            hstride,
             i,
         );
         for k in 0..wiener_win2 {
@@ -180,7 +392,7 @@ pub fn compute_stats(
             m[k] += m_row[k] as i64 * downsample_factor as i64;
             for l in k..wiener_win2 {
                 h[k * wiener_win2 + l] +=
-                    h_row[k * wiener_win2 + l] as i64 * downsample_factor as i64;
+                    h_row[k * hstride + l] as i64 * downsample_factor as i64;
             }
         }
         i += downsample_factor;
