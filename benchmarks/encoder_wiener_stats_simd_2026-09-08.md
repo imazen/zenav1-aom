@@ -111,3 +111,54 @@ cargo build --release -p zenav1-aom-bench --example eprof_x86
 ./target/release/examples/eprof_x86 port 192 192 27 0 10
 ./target/release/examples/eprof_x86 c    192 192 27 0 10
 ```
+
+---
+
+# Second lever, same stage: `pixel_proj_error` — 2.641x -> 2.573x
+
+The SGR projection error, the second of the three loop-restoration kernels the
+x86-64 profile found with no SIMD tier: **17.8 ms against libaom's
+`av1_lowbd_pixel_proj_error_avx2` at 2.0 ms**.
+
+## Measured
+
+Same cell and protocol (two binaries from one tree, arm order rotated):
+
+| | min | median |
+|---|---:|---:|
+| before (= the Wiener-stats landing) | 468.19 ms | 469.28 |
+| after | **454.97 ms** | 457.18 |
+| libaom-c | 176.95 ms | — |
+
+**Paired median −2.47 %, faster in 6 of 6 rounds.** Ratio **2.641x → 2.573x**.
+
+**Session cumulative: 483.01 → 454.97 ms, −5.8 %, ratio 2.733x → 2.571x.**
+
+## The trade that was NOT taken, and why
+
+The fast form squares in `i32` lanes and reduces per chunk. That needs
+`8 * e^2 < 2^31`, i.e. **`|e| < 16384`** — and working the arithmetic through
+(`xq` reaches ~96 via `SGRPROJ_PRJ_MIN0/MAX0`, `flt - u` reaches ~2^16 at bd12,
+so `v` reaches ~2^24 and `e` ~2^13..2^14) puts `|e|` **at** that bound rather
+than comfortably inside it.
+
+`restore/pick.rs` feeds RD decisions and therefore the encoder byte gates, so the
+shipped form squares and accumulates in **the scalar tier's own order** —
+`err += e as i64 * e as i64` over `j` ascending — and vectorizes only the
+arithmetic that produces `e`. That is bit-exact **by construction**, not within a
+margin, and needs no bound at all.
+
+Anyone who wants those milliseconds should DERIVE the bound from
+`SGRPROJ_PRJ_MIN0/MAX0` and the SGR output range, then gate it at runtime the way
+`intra/dir_simd.rs` gates its tap bound — that file is the worked precedent for a
+data-dependent gate with reach and bite pins on both sides.
+
+## What is left on this stage
+
+* SGR `calculate_intermediate` + `selfguided_restoration`, **28.1 ms, scalar** —
+  now the largest scalar item in loop restoration.
+* `compute_stats` at 17.5 ms wants the register-blocked rewrite (above), not more
+  lanes.
+* bd10/12 remains scalar throughout: `compute_stats_highbd` is a separate i64
+  loop, and `pixel_proj_error`'s highbd arm shares this tier but was measured
+  only through the bd8 cell.

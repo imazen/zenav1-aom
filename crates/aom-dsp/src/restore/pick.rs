@@ -776,9 +776,8 @@ const SGRPROJ_PRJ_BITS: i32 = 7;
 /// (pickrst.c) on u16 planes: the SSE of the xq-projected SGR restoration
 /// against the source. The lowbd and highbd forms round differently
 /// (ROUND_POWER_OF_TWO vs add-half-then-shift with `+d - s` recomposition) —
-/// both are ported exactly.
-#[allow(clippy::too_many_arguments)]
-pub fn pixel_proj_error(
+/// Scalar tier = the transcribed port, verbatim.
+fn pixel_proj_error_scalar(
     src: &[u16],
     src_off: usize,
     width: usize,
@@ -845,6 +844,209 @@ pub fn pixel_proj_error(
                     err += e as i64 * e as i64;
                 }
             }
+        }
+    }
+    err
+}
+
+/// SIMD-dispatched (Gate 3). `width >= 8` takes the magetypes `i32x8` kernel;
+/// narrower rows and the tail keep the scalar tier.
+///
+/// # Why this has a SIMD tier
+///
+/// `benchmarks/encoder_x86_profile_2026-09-08.md`: the loop-restoration SEARCH
+/// is **26 % of the speed-0 encode-time gap to libaom** and had never been
+/// profiled (libaom disables Wiener + SGR at `speed >= 5`, and every earlier
+/// profile in this repo was taken at `--cpu-used 6`, where the stage is
+/// structurally absent). This kernel was **17.8 ms of a 471 ms encode against
+/// libaom's `av1_lowbd_pixel_proj_error_avx2` at 2.0 ms**, with no SIMD tier.
+///
+/// # Bit-exactness, and why no magnitude bound is needed
+///
+/// The vector tier computes `e` in `i32` lanes — the same width, the same
+/// operations and the same wrapping as the scalar tier — and then **squares and
+/// accumulates in the scalar tier's own order**, `err += e as i64 * e as i64`
+/// over `j` ascending. So the i64 accumulator sees an identical sequence of
+/// identical products: this is bit-exact by construction, not within a bound.
+///
+/// That choice is deliberate. Squaring in `i32` lanes and reducing per chunk
+/// would be faster, but it needs `8 * e^2 < 2^31`, i.e. `|e| < 16384`, and the
+/// arithmetic puts `|e|` at roughly `2^14` at bd12 (`xq` reaches ~96 and
+/// `flt - u` reaches ~2^16, so `v` reaches ~2^24 and `e` ~2^13..2^14) — at the
+/// edge of the bound rather than comfortably inside it. `restore/pick.rs` feeds
+/// RD decisions and therefore the byte gates, so an unproven bound is not worth
+/// the milliseconds. If someone wants them, DERIVE the bound from
+/// `SGRPROJ_PRJ_MIN0/MAX0` and the SGR output range first, and gate it at
+/// runtime the way `intra/dir_simd.rs` gates its tap bound.
+#[allow(clippy::too_many_arguments)]
+pub fn pixel_proj_error(
+    src: &[u16],
+    src_off: usize,
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    dat: &[u16],
+    dat_off: usize,
+    dat_stride: usize,
+    flt0: &[i32],
+    flt0_stride: usize,
+    flt1: &[i32],
+    flt1_stride: usize,
+    xq: [i32; 2],
+    ep: usize,
+    highbd: bool,
+) -> i64 {
+    if width < 8 {
+        return pixel_proj_error_scalar(
+            src, src_off, width, height, src_stride, dat, dat_off, dat_stride, flt0, flt0_stride,
+            flt1, flt1_stride, xq, ep, highbd,
+        );
+    }
+    archmage::incant!(
+        pixel_proj_error_impl(
+            src, src_off, width, height, src_stride, dat, dat_off, dat_stride, flt0, flt0_stride,
+            flt1, flt1_stride, xq, ep, highbd
+        ),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pixel_proj_error_impl_scalar(
+    _t: archmage::ScalarToken,
+    src: &[u16],
+    src_off: usize,
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    dat: &[u16],
+    dat_off: usize,
+    dat_stride: usize,
+    flt0: &[i32],
+    flt0_stride: usize,
+    flt1: &[i32],
+    flt1_stride: usize,
+    xq: [i32; 2],
+    ep: usize,
+    highbd: bool,
+) -> i64 {
+    pixel_proj_error_scalar(
+        src, src_off, width, height, src_stride, dat, dat_off, dat_stride, flt0, flt0_stride, flt1,
+        flt1_stride, xq, ep, highbd,
+    )
+}
+
+/// Vector tier: lanes are adjacent `j`. See the dispatcher's doc for why the
+/// squares stay scalar.
+#[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn pixel_proj_error_impl(
+    token: Token,
+    src: &[u16],
+    src_off: usize,
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    dat: &[u16],
+    dat_off: usize,
+    dat_stride: usize,
+    flt0: &[i32],
+    flt0_stride: usize,
+    flt1: &[i32],
+    flt1_stride: usize,
+    xq: [i32; 2],
+    ep: usize,
+    highbd: bool,
+) -> i64 {
+    let (rads, _) = SGR_PARAMS[ep];
+    let r0 = rads[0] > 0;
+    let r1 = rads[1] > 0;
+    let mut err: i64 = 0;
+    let vw = width & !7;
+
+    let widen = |s: &[u16]| -> i32x8 {
+        let a: [u16; 8] = s[..8].try_into().unwrap();
+        i32x8::from_array(
+            token,
+            [
+                a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32,
+                a[4] as i32, a[5] as i32, a[6] as i32, a[7] as i32,
+            ],
+        )
+    };
+    let ld32 = |s: &[i32]| -> i32x8 { i32x8::from_slice(token, &s[..8]) };
+
+    let half = i32x8::splat(token, 1 << (SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS - 1));
+    let xq0 = i32x8::splat(token, xq[0]);
+    let xq1 = i32x8::splat(token, xq[1]);
+
+    for i in 0..height {
+        let dr = dat_off + i * dat_stride;
+        let sr = src_off + i * src_stride;
+        let f0r = i * flt0_stride;
+        let f1r = i * flt1_stride;
+        let mut j = 0usize;
+        while j < vw {
+            let d = widen(&dat[dr + j..dr + j + 8]);
+            let sv = widen(&src[sr + j..sr + j + 8]);
+            let e = if r0 || r1 {
+                let u = d.shl_const::<{ SGRPROJ_RST_BITS as i32 }>();
+                // lowbd starts from `u << PRJ_BITS`; highbd starts from the
+                // rounding constant and adds `d` after the shift. Both are the
+                // scalar tier's own expressions, lane for lane.
+                let mut v = if highbd { half } else { u.shl_const::<{ SGRPROJ_PRJ_BITS as i32 }>() };
+                if r0 {
+                    v = v + xq0 * (ld32(&flt0[f0r + j..]) - u);
+                }
+                if r1 {
+                    v = v + xq1 * (ld32(&flt1[f1r + j..]) - u);
+                }
+                if highbd {
+                    v.shr_arithmetic_const::<{ (SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS) as i32 }>()
+                        + d
+                        - sv
+                } else {
+                    (v + half)
+                        .shr_arithmetic_const::<{ (SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS) as i32 }>()
+                        - sv
+                }
+            } else {
+                d - sv
+            };
+            // Squares in the scalar tier's exact order — see the dispatcher doc.
+            for x in e.to_array() {
+                err += x as i64 * x as i64;
+            }
+            j += 8;
+        }
+        while j < width {
+            let d = dat[dr + j] as i32;
+            let s = src[sr + j] as i32;
+            let e = if r0 || r1 {
+                let u = d << SGRPROJ_RST_BITS;
+                let mut v = if highbd {
+                    1 << (SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS - 1)
+                } else {
+                    u << SGRPROJ_PRJ_BITS
+                };
+                if r0 {
+                    v += xq[0] * (flt0[f0r + j] - u);
+                }
+                if r1 {
+                    v += xq[1] * (flt1[f1r + j] - u);
+                }
+                if highbd {
+                    (v >> (SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS)) + d - s
+                } else {
+                    ((v + (1 << (SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS - 1)))
+                        >> (SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS))
+                        - s
+                }
+            } else {
+                d - s
+            };
+            err += e as i64 * e as i64;
+            j += 1;
         }
     }
     err
