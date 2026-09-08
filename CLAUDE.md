@@ -56,7 +56,7 @@ user says otherwise; the two retained fleet photo witnesses are at 2.49x / 2.65x
 | (1) a backend zenavif can select **by default** | seam **works at HEAD** — 22/22 `tests/aom_encode_backend.rs`, `cargo check` clean, against `7b86ffc` with the pin 34 commits behind. "By default" needs two zenavif-side flips (`default` feature set; `#[default]` on `Av1Backend::Zenravif`), and **both are blocked on clause (4) alone**. `benchmarks/zenavif_backend_integration_2026-09-08.md` |
 | (2) a support contract that never lies | `configuration_support.rs` + `refusal_census.rs` — the support query, the knob ranges and the documented refusals are asserted against the encoder's own behaviour |
 | (3) no panics or refusals on reachable inputs | 90k fuzz inputs, 0 panics (`encode_fuzz_sweep.rs`); KB-51 was found this way |
-| (4) encode time within libaom | **NOT MET — 3.24x-4.03x** over byte-identical cells vs Gate 3's <= 1.5x. `benchmarks/encode_perf_vs_libaom_2026-09-08.md`. **This is the critical path: clause (1) reduces to it.** |
+| (4) encode time within libaom | **NOT MET — 3.24x-4.03x** over byte-identical cells vs Gate 3's <= 1.5x (`benchmarks/encode_perf_vs_libaom_2026-09-08.md`). **This is the critical path: clause (1) reduces to it.** Rank levers off `benchmarks/encoder_x86_profile_2026-09-08.md` — the FIRST x86-64 profile; every earlier ranking (KB-PERF-1..5) is aarch64-apple-darwin and does NOT transfer. First lever landed: KB-PERF-6. |
 | (5) match the RD of C | byte identity is the strongest available evidence and holds on 427/427 standalone cells; the pinned divergences are the measured/attributed/bounded residual the directive permits to ship |
 | (6) sensible conversion + wiring + testing of all of the C encoder | `av1_determine_sc_tools_with_encoding` (PARITY C3) unported; the bd12 dispatch-tier disagreement open |
 
@@ -5361,6 +5361,57 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   cells hit the guard. The 12-bit / 4:2:2 KEY coverage above is port-generated, not
   conformance-corpus breadth. Only cpu-used 0 on the `[KEY, P]` grid; bd × speed unmeasured.
 - Record: `benchmarks/highbd_inter_decode_envelope_2026-08-06.{md,tsv,meta}`.
+
+### KB-PERF-6 — Encoder: the Wiener stats inner loop had no SIMD tier — LANDED ✅ 2026-09-08 (2.725x -> 2.639x, byte-identical), and it is the first lever ranked on THIS platform
+
+Record: `benchmarks/encoder_wiener_stats_simd_2026-09-08.md`. Taken from
+`benchmarks/encoder_x86_profile_2026-09-08.md`, the first x86-64 profile of this
+encoder — **KB-PERF-1..5 are all aarch64-apple-darwin and their ranking does not
+transfer** (KB-PERF-2 had already measured a lever's rank moving from 21 % to
+99 % across a platform change).
+
+- **WHY IT WAS INVISIBLE.** Loop-restoration search is **26 % of the speed-0 gap
+  and had never been profiled**: libaom disables Wiener + SGR at `speed >= 5`
+  (`speed_features.c:519-520`) and every prior profile in this repo was taken at
+  `--cpu-used 6`, where the stage is structurally absent (measured 0.0 ms in both
+  arms at speed 6, 90.6 vs 10.2 ms at speed 0). Restoration is ON by default in
+  ALLINTRA at speeds 0-4 — the quality end a still-image caller selects.
+- **REDUNDANCY RULED OUT FIRST** (KB-PERF-1's precedent — the largest perf finding
+  in this project was repeated work, not slow work). Counted BEFORE writing any
+  SIMD: 26 calls, 165,888 stat pixels, **160.25 M multiply-accumulates per encode
+  at 1.06 per cycle**. Real work, purely scalar-bound; libaom's
+  `compute_stats_win7_avx2` does the same 160 M at ~14/cycle.
+- **BIT-EXACT BY CONSTRUCTION.** Lanes are elements of one `H` row (and of `M`),
+  never the pixel loop `j`, so every accumulator receives the same products in
+  the same order — no reassociation at all. Scalar tier kept verbatim as the
+  reference; `pick_diff` compares BOTH tiers against the real exported C.
+- **MEASURED** (192x192 cq27 speed 0, two binaries from one tree, interleaved
+  with the arm order ROTATED so an arm is not confounded with its position):
+  483.01 -> **466.79 ms** min, paired median **-3.13 %**, faster in **8 of 8
+  rounds** (p = 0.008); ratio **2.725x -> 2.639x**, per-round ratio ranges
+  non-overlapping. Both arms emit the same 1177-byte stream. Stage 32.2 -> 17.5 ms.
+- **TWO HYPOTHESES REFUTED — do not re-spend them.** (a) *the scalar tails
+  dominate*: ~171 madds/pixel against 132 vector iterations, which looks
+  decisive; removing them entirely (padding the `H` row stride to a whole vector)
+  was worth **0.9 ms of 18.4**. (b) *L1 bandwidth on `H`*: the read-modify-write
+  streams ~1.25 GB/encode = **71 GB/s**, ~16 % of this core's ceiling. What is
+  left is the per-element RMW of `H` itself, so **the next step is register
+  blocking over pixels — libaom's own structure — not wider lanes.**
+- **A CORRECT VARIANT REJECTED ON MEASUREMENT.** Starting each row at `k & !7`
+  lets `chunks_exact` drop the per-iteration bounds check (the only way to remove
+  one in a `forbid(unsafe_code)` crate) and is correct — the extra lanes land in
+  the lower triangle, zeroed per row and never read. It is **slower**: 217 vector
+  iterations per pixel against 175, +24 %, measured 471.6 vs 468.7 ms. Reverted,
+  arithmetic recorded at the site.
+- **HONEST LIMITS.** bd10/12 untouched (`compute_stats_highbd` is a separate i64
+  loop, C's own structure for the highbd variant); the stage is absent above
+  speed 4 so this cannot move the speed-6 number; `pixel_proj_error` (17.8 ms)
+  and the SGR `calculate_intermediate` / `selfguided_restoration` pair (28.1 ms)
+  remain scalar and together are LARGER than what this addressed.
+- **Gates:** `-p zenav1-aom-encode` 143 binaries 0 failures, `-p zenav1-aom-bench`
+  green, `pick_diff` + `pick_search` 9/9 in BOTH dispatch modes, census 4/4, and
+  both encoder packages green under `AOM_FORCE_SCALAR=1` — the leg that exercises
+  the verbatim scalar tier through the byte gates.
 
 ### KB-PERF-1 — Encoder: the intra-mode CNN is recomputed ~10x per superblock (C computes it ONCE and caches) — FIXED ✅ 2026-08-02
 
