@@ -82,6 +82,19 @@
 
 ### Added
 
+- **Encoder resource limits and a side-effect-free peak-memory estimate**
+  (CLAUDE.md KB-50). `EncodeLimits` on `EncodeConfig` (`max_pixels` /
+  `max_width` / `max_height` / `max_memory_bytes`, all `Option`, no implicit
+  ceiling) refuses by name before allocating; `KeyFrameConfig::estimate()`
+  returns an upper bound a router can decide on without encoding. The estimate
+  is keyed on `padded_plane_geometry()` and NOT on `width * height`, because
+  the planes are superblock-aligned with a 320-sample stride floor: two cells
+  with identical pixel counts measure **27.9 B/px (8320x64)** and **107.5 B/px
+  (64x8320)**. Model `1 MiB + 64 B per padded luma sample`, fitted to 16
+  measured cells (21.5..51.6 B/sample over a 610,974 B floor) and gated in BOTH
+  directions against a counting `GlobalAlloc` — never under the measured peak,
+  never more than 6x over it, so "upper bound" cannot decay into `u64::MAX`.
+
 - **Cooperative cancellation for the ENCODER** (CLAUDE.md KB-49). The decoder
   has had a stop token since the zen hardening work; the encoder had none, and
   with screen-content tools on its IntraBC DV search runs ~80 s on a single

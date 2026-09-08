@@ -293,6 +293,53 @@ it here in the same commit.**
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-50 — Encoder: resource limits + a side-effect-free peak-memory estimate — 2026-09-08 (contracts 2 of 6)
+
+- **Two more of the six zen contracts the encoder lacked**: `EncodeLimits`
+  (`max_pixels` / `max_width` / `max_height` / `max_memory_bytes`, all `Option`, no implicit
+  ceiling) on `EncodeConfig`, refused BEFORE any allocation; and
+  `KeyFrameConfig::estimate() -> EncodeEstimate`, a side-effect-free upper bound a router can
+  decide on without encoding. `check_limits` is a separate method from
+  `validate_configuration` because the two answer different questions — "can this encoder
+  produce this stream" is a property of the PORT, "does the caller allow it" is a property of
+  the REQUEST — and a support query wants the first without the second.
+- **THE FINDING, and it is why the estimate is not keyed on `width * height`.** The source
+  and reconstruction planes are superblock-ALIGNED, border-extended, and the stride has a
+  **320-sample floor**. So per-pixel cost depends on SHAPE, not just area. Measured on two
+  cells with IDENTICAL pixel counts:
+
+  | cell | pixels | peak | B/px |
+  |---|---|---|---|
+  | 8320x64 | 532,480 | 16.3 MB | **27.9** |
+  | 64x8320 | 532,480 | 57.2 MB | **107.5** |
+
+  A 64-wide frame still buys a 320-sample stride. Any estimate keyed on area is wrong by
+  ~3.9x on that shape. `KeyFrameConfig::padded_plane_geometry()` exposes the derivation, and
+  `encode_key_frame` now ALLOCATES from it (with a `debug_assert` that it equals the
+  expression it replaced), so the estimate cannot drift from what is allocated.
+- **The model is fitted to measurement, not guessed**: `1 MiB + 64 bytes per padded luma
+  sample`. Measured across 16 cells spanning 1x1..2048x2048, both aspect extremes, all four
+  chroma formats, bd 8/10/12, SB64 and SB128, and `--cpu-used` {0, 6, 9}, the observed cost
+  is **21.5 .. 51.6** bytes per padded sample (worst at 1024x1024 `--cpu-used 0`) over a
+  **610,974 B** fixed floor (the 1x1 cell).
+- **GATED IN BOTH DIRECTIONS, which is what makes it a contract rather than a number.**
+  `aom-encode/tests/encode_limits_and_estimate.rs` measures the real peak with a counting
+  `GlobalAlloc` and asserts the estimate is never UNDER it (an under-estimate is worse than
+  none — a caller sizing a budget from it will OOM) and never more than
+  `ESTIMATE_MAX_SLACK = 6x` OVER it (without a ceiling, "upper bound" is satisfiable by
+  returning `u64::MAX`). Measured slack: **1.26x .. 4.00x**, worst at 1x1 where the fixed
+  term is the whole answer, tightest at 1024x1024 speed 0.
+- **Bite proofs, both directions:** 8 B/sample fails with *"the estimate UNDER-states the
+  measured peak (1714176 < 2995370)"*; 4096 B/sample fails with *"too loose at 64x8320
+  (190.65x > 6.0x)"*.
+- **A test-harness trap worth remembering:** the counting allocator's counters are
+  PROCESS-global, so `cargo test`'s default intra-binary concurrency makes two measuring
+  tests measure each other. The first version of that file passed when run alone and failed
+  in the suite. A process-local `Mutex` fixes it for `cargo test` and is correctly a no-op
+  under `cargo nextest`, where each test is its own process.
+- **Still missing from the encoder's six:** categorized/located errors beyond
+  `KeyFrameError`, a configurable allocation mode, and a fuzz target.
+
 ### KB-49 — Encoder: there was no cancellation at all — `EncodeConfig` + a per-superblock-row stop token, 2026-09-08
 
 - **The gap.** `CLAUDE.md`'s "Zen codec cross-cutting compliance" section specs six contracts

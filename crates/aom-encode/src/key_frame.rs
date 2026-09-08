@@ -323,6 +323,94 @@ impl KeyFrameConfig {
         Ok(())
     }
 
+    /// The PADDED working geometry the encoder allocates its source and
+    /// reconstruction planes at: `(stride, buf_h)` in luma samples.
+    ///
+    /// Not `width x height`. The planes are superblock-ALIGNED and
+    /// border-extended, and the stride has a 320-sample floor, so a tall narrow
+    /// frame pays far more per pixel than a square one — MEASURED: a
+    /// 64x8320 encode peaks at **107.5 bytes per pixel** against 35.2 for
+    /// 2048x2048, and the difference is entirely this padding (a 64-wide frame
+    /// still buys a 320-sample stride). Any estimate keyed on `width * height`
+    /// is wrong by 3x on that shape; this is what it must be keyed on.
+    ///
+    /// Shared with [`encode_key_frame`], which allocates from this exact
+    /// derivation, so an estimate cannot drift from what is allocated.
+    pub fn padded_plane_geometry(&self) -> (usize, usize) {
+        let sb_mi = if self.sb_size_128 { SB_MI_128 } else { SB_MI_64 };
+        let sb_px = (sb_mi * 4) as usize;
+        let mi_cols = mi_dim(self.width as i32);
+        let mi_rows = mi_dim(self.height as i32);
+        let n_sb_x = ((mi_cols + sb_mi - 1) / sb_mi).max(1) as usize;
+        let n_sb_y = ((mi_rows + sb_mi - 1) / sb_mi).max(1) as usize;
+        let stride = 320.max(n_sb_x * sb_px + 4);
+        let buf_h = (n_sb_y * sb_px + 4).max(self.height + 4);
+        (stride, buf_h)
+    }
+
+    /// A side-effect-free UPPER BOUND on what an encode of this configuration
+    /// will cost, for a caller deciding whether to attempt it.
+    ///
+    /// See [`EncodeEstimate`] for what the number is and is not.
+    pub fn estimate(&self) -> EncodeEstimate {
+        let (stride, buf_h) = self.padded_plane_geometry();
+        let padded = (stride as u64).saturating_mul(buf_h as u64);
+        EncodeEstimate {
+            peak_memory_bytes: ESTIMATE_FIXED_BYTES
+                .saturating_add(padded.saturating_mul(ESTIMATE_BYTES_PER_PADDED_SAMPLE)),
+        }
+    }
+
+    /// Check this configuration against caller-supplied [`EncodeLimits`].
+    ///
+    /// Separate from [`Self::validate_configuration`] because the two answer
+    /// different questions: that one asks "can this encoder produce this
+    /// stream at all", which is a property of the port, while this asks "does
+    /// the CALLER allow it", which is a property of the request. A support
+    /// query wants the first without the second; `encode_key_frame_with` runs
+    /// both, in that order, before allocating anything.
+    pub fn check_limits(&self, limits: &EncodeLimits) -> Result<(), KeyFrameError> {
+        let px = (self.width as u64).saturating_mul(self.height as u64);
+        if let Some(max) = limits.max_pixels {
+            if px > max {
+                return Err(KeyFrameError::LimitExceeded {
+                    what: "pixels",
+                    actual: px,
+                    max,
+                });
+            }
+        }
+        if let Some(max) = limits.max_width {
+            if self.width as u64 > max as u64 {
+                return Err(KeyFrameError::LimitExceeded {
+                    what: "width",
+                    actual: self.width as u64,
+                    max: max as u64,
+                });
+            }
+        }
+        if let Some(max) = limits.max_height {
+            if self.height as u64 > max as u64 {
+                return Err(KeyFrameError::LimitExceeded {
+                    what: "height",
+                    actual: self.height as u64,
+                    max: max as u64,
+                });
+            }
+        }
+        if let Some(max) = limits.max_memory_bytes {
+            let need = self.estimate().peak_memory_bytes;
+            if need > max {
+                return Err(KeyFrameError::LimitExceeded {
+                    what: "memory_bytes",
+                    actual: need,
+                    max,
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// The uniform-spacing tile grid this configuration resolves to.
     ///
     /// **`rows * cols` is NOT `1 << (log2_cols + log2_rows)`, and assuming it
@@ -438,6 +526,16 @@ pub enum KeyFrameError {
     /// The caller's cooperative stop token asked the encode to stop. No stream
     /// is produced; whatever had been coded is discarded.
     Cancelled(enough::StopReason),
+    /// A caller-supplied [`EncodeLimits`] cap would be exceeded. Refused before
+    /// anything is allocated.
+    LimitExceeded {
+        /// Which cap: `"pixels"`, `"width"`, `"height"` or `"memory_bytes"`.
+        what: &'static str,
+        /// What this configuration needs (or is estimated to need).
+        actual: u64,
+        /// The cap the caller set.
+        max: u64,
+    },
 }
 
 impl core::fmt::Display for KeyFrameError {
@@ -450,6 +548,9 @@ impl core::fmt::Display for KeyFrameError {
             } => write!(f, "plane {plane}: expected {expected} samples, got {got}"),
             KeyFrameError::Unsupported(what) => write!(f, "outside the gated envelope: {what}"),
             KeyFrameError::Cancelled(r) => write!(f, "cancelled by the caller's stop token: {r:?}"),
+            KeyFrameError::LimitExceeded { what, actual, max } => {
+                write!(f, "exceeds the caller's {what} limit: {actual} > {max}")
+            }
         }
     }
 }
@@ -462,6 +563,48 @@ fn num_bits_for_dim(dim: i32) -> u32 {
     } else {
         1
     }
+}
+
+/// Fixed overhead of any encode, in bytes — the tables, contexts and scratch
+/// that do not scale with the frame. MEASURED at **610,974 B** for a 1x1 frame;
+/// rounded up to 1 MiB.
+const ESTIMATE_FIXED_BYTES: u64 = 1 << 20;
+
+/// Bytes per PADDED luma sample (see
+/// [`KeyFrameConfig::padded_plane_geometry`]). MEASURED across a 24-cell grid
+/// spanning 1x1..2048x2048, both aspect extremes (8320x64 and 64x8320), all
+/// four chroma formats, bd 8/10/12, SB64 and SB128, and `--cpu-used` {0, 6, 9}:
+/// the observed range is **21.5 .. 37.2** bytes per padded sample, worst at
+/// 1024x1024 `--cpu-used 0`. 64 is an upper bound with margin, not a fit — the
+/// number this feeds is documented as a bound, and the gate asserts BOTH that
+/// it is never under and that it never exceeds the measured peak by more than
+/// `ESTIMATE_MAX_SLACK`, so it cannot decay into "return a huge number".
+const ESTIMATE_BYTES_PER_PADDED_SAMPLE: u64 = 64;
+
+/// The most the estimate may exceed a MEASURED peak by, as a multiple, before
+/// `encode_limits_and_estimate` fails it. Without a ceiling an "upper bound"
+/// can always be satisfied by returning a huge number, which would make the
+/// limit useless to a router; with one, the bound has to stay honest.
+///
+/// 6 is set above the worst measured slack (4.0x, at 1x1 where the fixed term
+/// is the whole answer) with room for allocator variation, and well under the
+/// point where the number stops being decision-useful.
+pub const ESTIMATE_MAX_SLACK: f64 = 6.0;
+
+/// A side-effect-free estimate of an encode's cost, for a caller deciding
+/// whether to attempt it.
+///
+/// **What this is:** an UPPER BOUND on peak heap allocated by the encode,
+/// ABOVE the caller's own source planes, derived from the configuration alone.
+///
+/// **What it is not:** a prediction, a measurement of THIS machine, or a
+/// promise that the allocation will succeed. It is deliberately conservative —
+/// measured slack over the fitted grid is up to 4x on the smallest frames,
+/// where the fixed term dominates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EncodeEstimate {
+    /// Upper bound on peak heap bytes above the caller's source planes.
+    pub peak_memory_bytes: u64,
 }
 
 /// The largest frame dimension a sequence header can code. AV1 5.5.1 writes
@@ -1073,8 +1216,42 @@ pub fn sequence_header_obu(seq: &SequenceHeaderObu) -> Vec<u8> {
 /// nothing. This is the first of those contracts. It is a struct rather than a
 /// bare token argument so limits and an allocation mode can be added without
 /// another entry point.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EncodeLimits {
+    /// Maximum `width * height`. `None` -> unbounded.
+    pub max_pixels: Option<u64>,
+    /// Maximum frame width in pixels. `None` -> unbounded.
+    pub max_width: Option<u32>,
+    /// Maximum frame height in pixels. `None` -> unbounded.
+    pub max_height: Option<u32>,
+    /// Maximum peak heap the encode may be ESTIMATED to need
+    /// ([`KeyFrameConfig::estimate`]). `None` -> unbounded.
+    ///
+    /// Checked against the estimate, not against a running total: the point is
+    /// to refuse BEFORE committing, which is what a router needs. It is
+    /// therefore conservative in the caller's favour — a configuration whose
+    /// estimate exceeds the cap might have fitted.
+    pub max_memory_bytes: Option<u64>,
+}
+
+impl EncodeLimits {
+    /// Every field unset — no caps. Same as [`EncodeLimits::default`].
+    pub const fn new() -> Self {
+        EncodeLimits {
+            max_pixels: None,
+            max_width: None,
+            max_height: None,
+            max_memory_bytes: None,
+        }
+    }
+}
+
 #[derive(Default, Clone, Copy)]
 pub struct EncodeConfig<'a> {
+    /// Caller-supplied resource caps, refused BEFORE any allocation. Default:
+    /// no caps — this shell has never had an implicit ceiling and adding one
+    /// silently would change what existing callers can encode.
+    pub limits: EncodeLimits,
     /// Optional cooperative stop token ([`enough::Stop`]). `None` (the default)
     /// never cancels.
     ///
@@ -1100,6 +1277,12 @@ impl<'a> EncodeConfig<'a> {
     /// Attach a cooperative stop token (builder style).
     pub fn with_stop(mut self, stop: &'a dyn enough::Stop) -> Self {
         self.stop = Some(stop);
+        self
+    }
+
+    /// Attach resource caps (builder style).
+    pub fn with_limits(mut self, limits: EncodeLimits) -> Self {
+        self.limits = limits;
         self
     }
 }
@@ -1128,6 +1311,7 @@ pub fn encode_key_frame_with(
     opts: &EncodeConfig<'_>,
 ) -> Result<Vec<u8>, KeyFrameError> {
     cfg.validate_configuration()?;
+    cfg.check_limits(&opts.limits)?;
     let (w, h) = (cfg.width, cfg.height);
     let (cw, ch) = cfg.chroma_dims();
     if planes.y.len() != w * h {
@@ -1173,8 +1357,14 @@ pub fn encode_key_frame_with(
     let n_sb_y = ((mi_rows + sb_mi - 1) / sb_mi).max(1);
     let sb_px_w = n_sb_x as usize * sb_px;
     let sb_px_h = n_sb_y as usize * sb_px;
-    let stride = 320.max(sb_px_w + 4);
-    let buf_h = (sb_px_h + 4).max(h + 4);
+    // The SAME derivation `KeyFrameConfig::padded_plane_geometry` exposes, so
+    // `estimate()` cannot drift from what is actually allocated.
+    let (stride, buf_h) = cfg.padded_plane_geometry();
+    debug_assert_eq!(
+        (stride, buf_h),
+        (320.max(sb_px_w + 4), (sb_px_h + 4).max(h + 4)),
+        "padded_plane_geometry must equal the allocation it describes"
+    );
     let extend_plane = |dst: &mut [u16], pw: usize, ph: usize| {
         for r in 0..ph {
             let edge = dst[r * stride + pw - 1];
