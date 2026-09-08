@@ -4,6 +4,23 @@
 
 ### [Unreleased]
 
+### Added
+
+- **Differential + reachability search for the `(int)double` cast semantics on the
+  `--deltaq-mode=3` wiener chain** (`9b337873`). The three casts at
+  `allintra_vis.c:209-210`, `:669` and `:678`/`:509` convert unbounded doubles,
+  which is undefined behaviour in C (C11 6.3.1.4), so libaom's answer is
+  ISA-dependent: x86-64 `cvttsd2si` returns `INT_MIN` for any out-of-range
+  magnitude and for NaN, aarch64 `fcvtzs` saturates with NaN -> 0. Rust's `as`
+  is the aarch64 rule, so the port is ARM-exact and x86-64-divergent-in-principle;
+  were it to fire, the split is the full clamp (measured port qindex 128 vs
+  x86-64 libaom 78 at bd12/base_q128), because `AOMMAX(1, .)` turns C's
+  `INT_MIN` into 1. **No port behaviour changes** — the three sites had no
+  C-oracle differential at all, and now do. A 72-cell search over real encodes
+  found zero reachable overflows (closest 24x under the cliff at `bd12 8x8 q255`)
+  and asserts that, so it self-promotes if one ever appears. Full entry:
+  `docs/LIBAOM_UPSTREAM_NOTES.md` B2; queue pin `DELTAQ_CAST_UB_OPEN`.
+
 ### Fixed
 
 - Four-column Paeth, smooth and smooth-V predictors avoid wider-block staging while preserving exact output (`bcf2a44b`).
