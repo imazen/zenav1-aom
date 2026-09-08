@@ -30,14 +30,17 @@ Three consequences, because this REORDERS the queue below rather than adding to 
    byte; (b) anything where the port disagrees with ITSELF across dispatch tiers (the bd12
    `1920x1080 cq24 cpu0` cell, +181 B default vs +55 B scalar), because a kernel whose
    tiers disagree is a differential hole (playbook §1).
-3. **The encoder has none of the six zen cross-cutting contracts the decoder has.** The
-   "Zen codec cross-cutting compliance" section below specs limits, estimation, located
-   errors, error categories, panic-freedom + fallible alloc and stop-token cancellation —
-   and tracks them for the DECODER only. The encoder has `KeyFrameError` and nothing else:
-   no limits, no cost estimate, **no cancellation at all** (the IntraBC DV search runs ~80 s
-   on a 1080p screenshot at cpu6 and cannot be interrupted), no fuzz target, no allocation
-   mode. That is the largest concrete ship-readiness gap in the tree and it is API surface,
-   not parity.
+3. ~~**The encoder has none of the six zen cross-cutting contracts the decoder has.**~~
+   **CLOSED 2026-09-08** — all six landed this cycle (limits + estimate, located/structured
+   errors, `category()`/`is_transient()`, panic-freedom under a fuzz sweep, `AllocMode`,
+   `enough::Stop` cancellation), gated by `encode_limits_and_estimate.rs`,
+   `refusal_census.rs`, `configuration_support.rs`, `encode_cancel.rs` and
+   `encode_fuzz_sweep.rs`. The one asymmetry that remains is that `whereat`-located errors
+   have a decoder form and no encoder twin. Historical shape, kept because it is what the
+   directive was written against: the encoder had `KeyFrameError` and nothing else — no
+   limits, no cost estimate, no cancellation at all (the IntraBC DV search runs ~80 s on a
+   1080p screenshot at cpu6 and could not be interrupted), no fuzz target, no allocation
+   mode.
 
 **Non-goals until after ship** (say so out loud rather than drifting into them):
 inter-frame parity, closing `HBD_OPEN`, the full imazen-26 corpus sweep, beating SVT.
@@ -45,6 +48,20 @@ inter-frame parity, closing `HBD_OPEN`, the full imazen-26 corpus sweep, beating
 **Numeric caveat, stated because the number was elided in the directive:** "within libaom"
 carries no multiple. Gate 3's standing bar is <= 1.5x C, so that is the reading until the
 user says otherwise; the two retained fleet photo witnesses are at 2.49x / 2.65x today.
+
+### Clause status, MEASURED (do not re-derive these; each names its record)
+
+| clause | state |
+|---|---|
+| (1) a backend zenavif can select **by default** | seam **works at HEAD** — 22/22 `tests/aom_encode_backend.rs`, `cargo check` clean, against `7b86ffc` with the pin 34 commits behind. "By default" needs two zenavif-side flips (`default` feature set; `#[default]` on `Av1Backend::Zenravif`), and **both are blocked on clause (4) alone**. `benchmarks/zenavif_backend_integration_2026-09-08.md` |
+| (2) a support contract that never lies | `configuration_support.rs` + `refusal_census.rs` — the support query, the knob ranges and the documented refusals are asserted against the encoder's own behaviour |
+| (3) no panics or refusals on reachable inputs | 90k fuzz inputs, 0 panics (`encode_fuzz_sweep.rs`); KB-51 was found this way |
+| (4) encode time within libaom | **NOT MET — 3.24x-4.03x** over byte-identical cells vs Gate 3's <= 1.5x. `benchmarks/encode_perf_vs_libaom_2026-09-08.md`. **This is the critical path: clause (1) reduces to it.** |
+| (5) match the RD of C | byte identity is the strongest available evidence and holds on 427/427 standalone cells; the pinned divergences are the measured/attributed/bounded residual the directive permits to ship |
+| (6) sensible conversion + wiring + testing of all of the C encoder | `av1_determine_sc_tools_with_encoding` (PARITY C3) unported; the bd12 dispatch-tier disagreement open |
+
+**The one-line reading:** everything except encode time is either met or reduced to encode
+time. Rank perf work first until 3.24x moves.
 
 ## Gates (definition of done)
 
