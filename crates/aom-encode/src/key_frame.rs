@@ -178,6 +178,66 @@ const KF_MODE_DELTAS: [i8; 2] = [0, 0];
 /// `PRIMARY_REF_NONE`.
 const PRIMARY_REF_NONE: i32 = 7;
 
+/// The CICP colour description and pixel range written into the sequence
+/// header's `color_config` (AV1 5.5.2, `write_color_config`).
+///
+/// # Why this is configuration and not a constant
+///
+/// It used to be hardcoded — `(2, 2, 2)` "unspecified" with
+/// `color_range = 0` (`AOM_CR_STUDIO_RANGE`) — which made two things
+/// unreachable rather than unsupported:
+///
+/// * **full-range stills.** A caller with full-range samples had no way to say
+///   so, and a consumer that converted for limited range would have discarded
+///   ~13 % of the code range at 8 bits. zenavif's backend refuses
+///   `EncodePixelRange::Full` by name today for exactly this reason.
+/// * **AVIF alpha.** An alpha plane is an auxiliary *monochrome, full-range*
+///   item; with the range pinned to studio the port could not signal one
+///   correctly, so wiring the Cs400 item was blocked here rather than there.
+///
+/// [`Default`] reproduces the previous hardcode exactly, so every existing
+/// gate is byte-identical (the writer emits `color_description_present_flag`
+/// = 0 for the all-unspecified triple, and one `color_range` bit).
+///
+/// **This signals; it does not convert.** The encoder codes the samples it is
+/// given — declaring `full_range` on limited-range samples mis-describes the
+/// stream just as surely as the old hardcode did on full-range ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ColorDescription {
+    /// CICP colour primaries (`AOM_CICP_CP_*`); 2 = unspecified.
+    pub color_primaries: u32,
+    /// CICP transfer characteristics (`AOM_CICP_TC_*`); 2 = unspecified.
+    pub transfer_characteristics: u32,
+    /// CICP matrix coefficients (`AOM_CICP_MC_*`); 2 = unspecified,
+    /// 0 = identity (GBR), which AV1 allows only at 4:4:4.
+    pub matrix_coefficients: u32,
+    /// `AOM_CR_FULL_RANGE` when true, `AOM_CR_STUDIO_RANGE` when false.
+    pub full_range: bool,
+}
+
+impl Default for ColorDescription {
+    fn default() -> Self {
+        Self {
+            color_primaries: 2,
+            transfer_characteristics: 2,
+            matrix_coefficients: 2,
+            full_range: false,
+        }
+    }
+}
+
+impl ColorDescription {
+    /// The sRGB triple AV1 gives a special case: `color_primaries == BT_709`,
+    /// `transfer == SRGB`, `matrix == IDENTITY`. The writer emits NO
+    /// `color_range` bit for it, because the spec fixes the range to full and
+    /// the subsampling to 4:4:4 (`write_color_config`, and
+    /// `read_color_config`'s mirror at `header.rs:1978`).
+    #[must_use]
+    pub fn is_srgb(&self) -> bool {
+        self.color_primaries == 1 && self.transfer_characteristics == 13 && self.matrix_coefficients == 0
+    }
+}
+
 /// Everything [`encode_key_frame`] needs that is not the pixels.
 ///
 /// The field set is deliberately the CLI-equivalent one
@@ -233,6 +293,9 @@ pub struct KeyFrameConfig {
     /// [`Self::allintra_speed0`] default) matches every other gate in this
     /// file.
     pub sb_size_128: bool,
+    /// CICP colour description + pixel range. See [`ColorDescription`];
+    /// [`Default`] reproduces the historical hardcode byte-for-byte.
+    pub color: ColorDescription,
 }
 
 impl KeyFrameConfig {
@@ -266,6 +329,7 @@ impl KeyFrameConfig {
             tile_columns_log2: 0,
             tile_rows_log2: 0,
             sb_size_128: false,
+            color: ColorDescription::default(),
         }
     }
 
@@ -314,6 +378,38 @@ impl KeyFrameConfig {
         if cfg.width > MAX_FRAME_DIM || cfg.height > MAX_FRAME_DIM {
             return Err(KeyFrameError::Unsupported(
                 "width/height: must be <= 65536 (frame_width_bits_minus_1 is f(4))",
+            ));
+        }
+        // Colour description. The CICP fields are `f(8)` in `color_config`
+        // (AV1 5.5.2), so anything past 255 would be silently truncated.
+        if cfg.color.color_primaries > 255
+            || cfg.color.transfer_characteristics > 255
+            || cfg.color.matrix_coefficients > 255
+        {
+            return Err(KeyFrameError::Unsupported(
+                "color: CICP code points are f(8) and must be <= 255",
+            ));
+        }
+        // MC_IDENTITY means the three planes ARE G/B/R, so there is nothing to
+        // subsample. AV1 makes this a conformance requirement, not a
+        // preference: "if matrix_coefficients is equal to MC_IDENTITY,
+        // subsampling_x is equal to 0 and subsampling_y is equal to 0"
+        // (AV1 5.5.2), and libaom asserts it in `write_color_config`.
+        if cfg.color.matrix_coefficients == 0 && (cfg.monochrome || (cfg.ss_x, cfg.ss_y) != (0, 0))
+        {
+            return Err(KeyFrameError::Unsupported(
+                "color: matrix_coefficients = MC_IDENTITY requires 4:4:4 (ss (0,0)) and not monochrome",
+            ));
+        }
+        // The sRGB triple takes `write_color_config`'s special branch, which
+        // emits NO `color_range` bit at all — the spec fixes the range to FULL.
+        // Accepting `full_range = false` here would code a stream every decoder
+        // reads as full range while the caller was told it asked for studio:
+        // exactly the silent mis-signalling this type exists to remove.
+        if cfg.color.is_srgb() && !cfg.color.full_range {
+            return Err(KeyFrameError::Unsupported(
+                "color: the sRGB triple (BT.709 / sRGB / identity) is full-range by \
+                 definition in AV1 — it codes no range bit; set full_range = true",
             ));
         }
         // Tiles. Derived, not taken on trust, and derived HERE so the query and
@@ -926,13 +1022,15 @@ pub fn derive_sequence_header(cfg: &KeyFrameConfig) -> SequenceHeaderObu {
             bit_depth: i32::from(cfg.bit_depth),
             profile: cfg.profile(),
             monochrome: cfg.monochrome,
-            // AOM_CICP_*_UNSPECIFIED (2/2/2) -> `write_color_config` codes "no
-            // colour description", which is what an unconfigured encode emits.
-            color_primaries: 2,
-            transfer_characteristics: 2,
-            matrix_coefficients: 2,
-            // AOM_CR_STUDIO_RANGE.
-            color_range: false,
+            // Defaults are AOM_CICP_*_UNSPECIFIED (2/2/2) + AOM_CR_STUDIO_RANGE,
+            // which is what an unconfigured encode emits: `write_color_config`
+            // then codes "no colour description" plus one range bit.
+            // `validate_configuration` bounds each to <= 255 (they are f(8)),
+            // so the narrowing cannot lose a bit.
+            color_primaries: cfg.color.color_primaries as i32,
+            transfer_characteristics: cfg.color.transfer_characteristics as i32,
+            matrix_coefficients: cfg.color.matrix_coefficients as i32,
+            color_range: cfg.color.full_range,
             subsampling_x: cfg.ss_x as i32,
             subsampling_y: cfg.ss_y as i32,
             // AOM_CSP_UNKNOWN.
