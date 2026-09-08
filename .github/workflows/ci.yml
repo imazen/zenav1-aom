@@ -155,6 +155,16 @@ jobs:
       - name: Test workspace under the scalar pin
         run: cargo test --profile test-fast --workspace --no-fail-fast
 
+      # The cancellation gate runs HERE as well as on the x86-64 leg, and this
+      # is the leg where it has the most to say: MEASURED on run 34236344662,
+      # this job's natural 4096x4096 decode is 2133 ms against ~310 ms on a
+      # developer box, so its un-pollable windows are the largest anywhere in
+      # CI. (That is also the measurement that made the bars machine-relative —
+      # its per-CDEF-filter-block-row gaps are ~24 ms, so a flat 20 ms bar could
+      # never pass here no matter how finely the decoder polled.)
+      - name: Cancellation latency (isolated timing gate, scalar pin)
+        run: cargo test --profile test-fast -p zenav1-aom-bench --test cancel_latency -- --ignored --test-threads 1 --nocapture
+
   # AARCH64 DIFFERENTIAL — the NEON tier's byte-identity gate, WORKSPACE-WIDE.
   #
   # Added 2026-07-25 with the transform NEON landing. Until then the ONLY ARM leg
