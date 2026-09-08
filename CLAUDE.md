@@ -8,6 +8,44 @@ transcribed oracles can carry shared bugs).
 **Module-progress source of truth:** `STATUS.md` (updated per landing by the track agents).
 **This file** holds project-level coordination rules + the durable **Known Bugs** log.
 
+## THE STANDING GOAL (set by the user 2026-09-08) — read this before picking work
+
+> Make `zenav1-aom` a backend zenavif can select **by default** for still images, with a
+> support contract that never lies, no panics or refusals on inputs a caller can produce,
+> and encode time within libaom — **capping parity work at "measured, attributed, bounded
+> and documented" rather than "closed"**. Do work to ensure we match the RD of C, doing
+> bitwise parity if needed to get RD close enough, but **prioritizing a sensible
+> conversion, wiring, and testing of all of the aom encoder from C.**
+
+Three consequences, because this REORDERS the queue below rather than adding to it:
+
+1. **Breadth beats depth.** Porting, wiring and testing another piece of the C encoder
+   outranks closing the last byte of an existing pin. Bitwise parity is the MEANS to
+   RD-matching, not the end — when a divergence is measured, attributed to a named
+   mechanism, bounded in reach and written down, it may SHIP. That is the stop rule the
+   coverage queue never had, and it is what makes this finishable.
+2. **Two classes still must close, and they are not "divergences".** (a) anything that
+   REFUSES a configuration a caller can reach (`--deltaq-mode` 2/3 at `--cpu-used` >= 8
+   asserts; the unported SCM trial), because a refusal is a hole in the contract, not a
+   byte; (b) anything where the port disagrees with ITSELF across dispatch tiers (the bd12
+   `1920x1080 cq24 cpu0` cell, +181 B default vs +55 B scalar), because a kernel whose
+   tiers disagree is a differential hole (playbook §1).
+3. **The encoder has none of the six zen cross-cutting contracts the decoder has.** The
+   "Zen codec cross-cutting compliance" section below specs limits, estimation, located
+   errors, error categories, panic-freedom + fallible alloc and stop-token cancellation —
+   and tracks them for the DECODER only. The encoder has `KeyFrameError` and nothing else:
+   no limits, no cost estimate, **no cancellation at all** (the IntraBC DV search runs ~80 s
+   on a 1080p screenshot at cpu6 and cannot be interrupted), no fuzz target, no allocation
+   mode. That is the largest concrete ship-readiness gap in the tree and it is API surface,
+   not parity.
+
+**Non-goals until after ship** (say so out loud rather than drifting into them):
+inter-frame parity, closing `HBD_OPEN`, the full imazen-26 corpus sweep, beating SVT.
+
+**Numeric caveat, stated because the number was elided in the directive:** "within libaom"
+carries no multiple. Gate 3's standing bar is <= 1.5x C, so that is the reading until the
+user says otherwise; the two retained fleet photo witnesses are at 2.49x / 2.65x today.
+
 ## Gates (definition of done)
 
 - **Gate 1 — Decoder:** bit-identical to C across the AV1 conformance corpus (intra scope
@@ -254,6 +292,61 @@ it here in the same commit.**
 
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
+
+### KB-45 — Decoder: the per-mi DV grid was 12 ms of un-pollable frame setup at 4096² — FIXED ✅ 2026-09-08 (GitHub #17)
+
+- **Found 2026-09-08** by PR #13's new `poll_gap_map`, which is the first gate in the tree
+  to measure the decoder's cancellation exposure. Its 4096x4096 cell read **21.98 ms**
+  against a 20 ms bar on x86-64 Linux (24-core, glibc). The gate could not name the window:
+  the first poll sat at the tile boundary, AFTER the allocation, so start-to-first-poll was
+  the compound "header parse + allocate".
+- **Localized in two steps.** A poll added before `TileKf::new` (`decode_tile_payload` and
+  its INTER twin) split it: parse fell to **0.021 ms**, `TileKf::new` alone measured
+  **17.3-22.8 ms**. Then a per-allocation instrument (throwaway, removed) on the same cell:
+
+  | allocation | ms |
+  |---|---|
+  | recon_y / recon_uv / mi / mi_interp / frame_mvs | 0.44 / 0.23 / 0.20 / 0.06 / 0.06 |
+  | **mi_dv** | **12.0-12.8** |
+
+- **ROOT — `std`'s zero specialisation does not cover user structs.**
+  `vec![DvNbr::default(); mi_rows * mi_cols]` cannot come from `calloc`: `IsZero` is
+  implemented for primitives, `[T; N]` where `T: IsZero`, and a couple of `Option`s, never
+  a `#[derive(Default)]` struct. So 1,048,576 cells x **40 bytes** (`DvNbr` is `usize` +
+  8x`i32` + `bool`) were written one element at a time — and then written AGAIN by the
+  per-block `stamp_dv` fills. The same bytes as an array are free:
+
+      vec![DvNbr::default(); n]   12.0-12.8 ms
+      vec![[0i32; 9]; n]           0.003 ms      (4000x)
+
+- **FIX.** `TileKf::mi_dv` stores `DvNbrPacked = [i32; DV_NBR_SLOTS]`
+  (`aom-dsp/src/entropy/dv_ref.rs`); `DvNbr::from_packed` on the ~14 read sites,
+  `to_packed` on the one `fill`. The `DvGrid` trait already returned `DvNbr` BY VALUE, so
+  the abstraction seam was already where it needed to be — only `MiDvGrid`'s slice type
+  changed.
+- **The correctness argument is `DvNbr::default()` being all-zero in every field**, which
+  makes `calloc`'d memory the default grid. Asserted (`all_zero_packed_is_the_default_cell`)
+  rather than assumed: `ref_frame1` reads `NONE_FRAME == -1` in libaom's own semantics, so
+  a future non-zero default is not hypothetical and that test is what catches it.
+- **Slot order is the silent failure** — swap two slots and it still compiles and still
+  yields plausible MV candidates (a wrong-neighbour desync, not a panic).
+  `dv_nbr_packed_roundtrips` sweeps all 36 slot pairs and requires each swap to be
+  OBSERVABLE. It caught a vacuous fixture on its first run: `use_intrabc` packs to 0/1, so
+  a slot holding 1 was indistinguishable from it. Fixture values are now pairwise distinct
+  and the test says why.
+- **MEASURED** (`--test-threads 1`, the methodology the committed record used), 4096x4096:
+  `poll_gap_map` worst un-pollable **21.98 -> 12.37 ms**; `cancel_latency_by_size` p90
+  **16.97 -> 8.02**, max **23.81 -> 13.62**; the file goes **1 of 3 arms passing -> 3 of 3**.
+  The residual 12.37 ms is the CROP, not the allocation.
+- **Byte-inert, shown not argued** (this is DV/MV reference machinery — KB-15, KB-29,
+  KB-33): workspace **1487/1489** default dispatch and **1486/1489** scalar-pinned, the only
+  failures being `cancel_latency`'s timing arms under `nextest`'s process-per-test.
+- **STILL OPEN, same file, same class.** `film_grain_stage_cost` reads **18.14 ms** against
+  the same flat 20 ms bar — a 9 % margin over a whole-frame copy, i.e. another
+  machine-dependent quantity on a flat bar; it will fail on a slower runner. And
+  `timing_serial()` is a process-local `Mutex`, so it is a no-op under `cargo nextest`,
+  which the `justfile` advertises as coverage-identical to `just test-fast`. Both recorded
+  in #17.
 
 ### KB-44 — Encoder: `--cq-level 0` (coded-lossless) tripped `tx_size_to_depth`'s `depth <= MAX_TX_DEPTH` assert — FIXED ✅ 2026-09-04 (zenavif#45); the report's "release also fails" and "infinite loop" readings are BOTH corrected by measurement
 

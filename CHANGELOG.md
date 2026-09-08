@@ -4,6 +4,31 @@
 
 ### [Unreleased]
 
+### Fixed
+
+- **The per-mi DV grid was 12 ms of un-pollable frame setup at 4096x4096**
+  (GitHub #17). `vec![DvNbr::default(); mi_rows * mi_cols]` cannot come from
+  `calloc` — `std`'s `IsZero` specialisation covers primitives, `[T; N]` and a
+  couple of `Option`s, never a user struct — so 1,048,576 cells x 40 bytes were
+  written one element at a time, then written again by the per-block fills.
+  Measured on that cell: `mi_dv` **12.0-12.8 ms** of a ~14 ms allocation total,
+  against **0.003 ms** for the same bytes as `vec![[0i32; 9]; n]`. The grid now
+  stores `DvNbrPacked = [i32; DV_NBR_SLOTS]` and converts at the boundary; the
+  `DvGrid` trait already returned `DvNbr` by value, so only `MiDvGrid`'s slice
+  type moved. Zeroed memory is a legal grid precisely because
+  `DvNbr::default()` is all-zero in every field — asserted, not assumed.
+  Cancellation exposure at 4096x4096: `poll_gap_map`'s worst un-pollable stretch
+  **21.98 -> 12.37 ms** (bar 20), `cancel_latency_by_size` p90 **16.97 -> 8.02**
+  and max **23.81 -> 13.62**; the file goes 1 of 3 arms passing to 3 of 3. Byte-
+  inert: workspace 1487/1489 default and 1486/1489 scalar-pinned, failures only
+  in that file's timing arms under `nextest`. CLAUDE.md KB-45.
+
+- **A cancel could not be observed before the frame state was allocated.**
+  `DecodeConfig::with_stop`'s first poll sat at the tile boundary, after
+  `TileKf::new`; both tile-decode entries now poll before it, so a caller can
+  abandon a large decode without first committing ~20 MB of grids — and the
+  parse (0.02 ms) is no longer charged to the same window as the allocation.
+
 ### Added
 
 - **Differential + reachability search for the `(int)double` cast semantics on the
