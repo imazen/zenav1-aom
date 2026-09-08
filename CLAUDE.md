@@ -293,6 +293,44 @@ it here in the same commit.**
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-52 — Encoder: `AllocMode` closes the last of the six zen contracts — and the gate caught its own instrument, 2026-09-08
+
+- **`AllocMode { Fallible, Infallible }` on `EncodeConfig`**, with a pre-flight
+  `try_reserve_exact` of `estimate()` bytes returning `KeyFrameError::AllocFailed`. Default
+  `Fallible`, matching the decoder — though for a DIFFERENT reason, which is worth saying
+  rather than copying: the decoder defaults that way because it consumes UNTRUSTED bytes and
+  a crafted header must not abort the process; the encoder's input is the caller's own, but a
+  server encoding uploads at scale still wants a recoverable error under memory pressure, and
+  that is not a property of the input at all.
+- **Scope, stated rather than implied.** It reserves and releases ONE block immediately
+  before the encode allocates for real. It does NOT make every internal allocation
+  fallible — that means threading a fallible allocator through the whole search. What it
+  buys is that the common failure (a frame too large for the memory available right now) is a
+  returned error rather than an abort. The residual is the same TOCTOU window the decoder's
+  equivalent documents, plus any smaller allocation that fails on its own.
+- **`AllocFailed` is the ONE variant `is_transient()` calls true**, and that is the point of
+  having the method: a router that treated it like `Unsupported` would permanently blacklist
+  a backend over a transient shortage. The gate asserts every other variant is NOT transient,
+  so the flag discriminates.
+- **THE GATE CAUGHT ITS OWN INSTRUMENT, and this is the transferable part.** Adding the
+  pre-flight made `the_estimate_is_an_upper_bound_and_stays_honest` **vacuous**: the probe
+  reserves exactly `estimate()` bytes, the counting `GlobalAlloc` sees them, so `peak >= est`
+  became true BY CONSTRUCTION. It showed as every slack reading exactly **1.00x** and the 1x1
+  peak jumping from its real 610,974 to 2,441,145 — i.e. to the estimate. `measure_peak` now
+  runs `AllocMode::Infallible` and slack is back to 1.26x..4.00x. **A self-measuring test can
+  be broken by a feature that is itself correct**; when a landing adds allocation, re-read
+  what the allocation gates SAY, not just whether they pass.
+- **The end-to-end half is platform-honest.** A 275 GB reservation is refused under Linux's
+  default heuristic overcommit and would be GRANTED under `vm.overcommit_memory=1`, so
+  asserting the refusal unconditionally would make the test a report on
+  `/proc/sys/vm/overcommit_memory`. It asserts whichever outcome it observes and prints
+  which, so it can neither flake nor pass vacuously; the retry contract a router actually
+  depends on is asserted UNCONDITIONALLY from directly-constructed error values.
+- **All six zen cross-cutting contracts now exist on the encoder** — limits, estimation,
+  categorized errors, panic-freedom + fallible alloc, stop-token cancellation, and a fuzz
+  target. The decoder's `whereat`-located errors have no encoder twin yet; that is the
+  remaining asymmetry and it is smaller than any of the six.
+
 ### KB-51 — Encoder: a bd8 encode handed 16-bit samples PANICKED with an arithmetic overflow — FIXED ✅ 2026-09-08, found by a new fuzz sweep on its first run
 
 - **The sweep found it in 59 iterations.** A new stable-path encoder fuzz sweep
@@ -390,8 +428,39 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
   `refusal_census::every_error_variant_carries_a_category_and_a_retry_verdict`, which
   constructs one error of each kind and requires the four categories to be DISTINCT (a
   category that cannot discriminate cannot drive a decision).
-- **Still missing from the encoder's six:** a configurable allocation mode, and a fuzz
-  target.
+- **Contract 6, the last: `AllocMode { Fallible, Infallible }` on `EncodeConfig`** with a
+  pre-flight `try_reserve_exact` of `estimate()` bytes, returning
+  `KeyFrameError::AllocFailed`. Default `Fallible`, matching the decoder — though for a
+  different reason, stated rather than copied: the decoder defaults that way because it
+  consumes UNTRUSTED bytes and a crafted header must not abort the process; the encoder's
+  input is the caller's own, but a server encoding uploads at scale still wants a recoverable
+  error under memory pressure, and that is not a property of the input at all.
+  **Scope, stated rather than implied:** this reserves and releases ONE block immediately
+  before the encode allocates for real. It does NOT make every internal allocation fallible —
+  that means threading a fallible allocator through the whole search. What it buys is that
+  the common failure (a frame too large for the memory available right now) is a returned
+  error rather than an abort.
+  `AllocFailed` is the ONE variant `is_transient()` calls true, and that is the point: a
+  router that treated it like `Unsupported` would permanently blacklist a backend over a
+  transient shortage.
+- **The gate caught its own instrument.** Adding the pre-flight made
+  `the_estimate_is_an_upper_bound_and_stays_honest` VACUOUS — the probe reserves exactly
+  `estimate()` bytes, the counting allocator sees them, so `peak >= est` became true BY
+  CONSTRUCTION. It showed as every slack reading exactly **1.00x** and the 1x1 peak jumping
+  from 610,974 to 2,441,145. `measure_peak` now runs `AllocMode::Infallible`; slack is back
+  to the encoder's real 1.26x..4.00x. **A self-measuring test can be broken by a feature that
+  is itself correct** — when a landing adds allocation, re-read what the allocation gates
+  say, not just whether they pass.
+- **The end-to-end half is platform-honest.** A 275 GB reservation is refused under Linux's
+  default heuristic overcommit and would be GRANTED under `vm.overcommit_memory=1`, so
+  asserting the refusal unconditionally would make the test a report on
+  `/proc/sys/vm/overcommit_memory`. It asserts whichever outcome it observes and prints
+  which; the retry contract that a router actually depends on is asserted UNCONDITIONALLY
+  from directly-constructed error values.
+- **All six zen cross-cutting contracts now exist on the encoder** (limits, estimation,
+  categorized errors, panic-freedom + fallible alloc, stop-token cancellation, fuzz target).
+  The decoder's `whereat`-located errors have no encoder twin yet — that is the remaining
+  asymmetry, and it is a smaller one than any of the six.
 
 ### KB-49 — Encoder: there was no cancellation at all — `EncodeConfig` + a per-superblock-row stop token, 2026-09-08
 
@@ -426,9 +495,10 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
   is still one un-pollable window, and no latency has been MEASURED for the encoder the way
   `cancel_latency.rs` measures it for the decoder. There is no encoder latency record yet;
   this lands the mechanism and its correctness, not a measured bound.
-- **Still missing from the encoder's six contracts:** resource limits, a cost/peak-memory
-  estimate, typed+categorized errors beyond `KeyFrameError`, a configurable allocation mode,
-  and a fuzz target. See the standing goal at the top of this file.
+- **Still missing from the encoder's six contracts** (accurate WHEN WRITTEN; **superseded —
+  all six exist as of KB-52**): resource limits, a cost/peak-memory estimate,
+  typed+categorized errors beyond `KeyFrameError`, a configurable allocation mode, and a
+  fuzz target.
 
 ### KB-48 — Decoder: the remaining un-pollable windows, and why the cancellation bar had to become machine-relative — 2026-09-08 (GitHub #17 follow-through)
 

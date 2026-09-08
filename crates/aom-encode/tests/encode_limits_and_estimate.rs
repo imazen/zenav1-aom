@@ -17,8 +17,8 @@
 //! three bit depths, both superblock sizes, and the speed extremes.
 
 use aom_encode::key_frame::{
-    EncodeConfig, EncodeLimits, ESTIMATE_MAX_SLACK, KeyFrameConfig, KeyFrameError, KeyFramePlanes,
-    encode_key_frame_with,
+    AllocMode, EncodeConfig, EncodeLimits, ESTIMATE_MAX_SLACK, KeyFrameConfig, KeyFrameError,
+    KeyFramePlanes, encode_key_frame_with,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -95,6 +95,14 @@ fn planes(cfg: &KeyFrameConfig) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
 
 /// Peak heap ABOVE the caller's source planes, which are already live when the
 /// encode starts (resetting the counter to zero would underflow on their free).
+///
+/// **`AllocMode::Infallible`, deliberately.** The default `Fallible` mode
+/// pre-flights by reserving exactly `estimate()` bytes, and that reservation is
+/// heap the counter sees — so measuring under it makes `peak >= est` true BY
+/// CONSTRUCTION and the upper-bound assertion tautological. It was: the first
+/// run after the mode landed reported every slack as exactly 1.00x and the 1x1
+/// peak as 2,441,145 against its real 610,974. Measuring the encoder means
+/// switching the probe off.
 fn measure_peak(cfg: &KeyFrameConfig) -> (u64, usize) {
     let (y, u, v) = planes(cfg);
     let base = LIVE.load(Relaxed);
@@ -106,7 +114,7 @@ fn measure_peak(cfg: &KeyFrameConfig) -> (u64, usize) {
             v: &v,
         },
         cfg,
-        &EncodeConfig::new(),
+        &EncodeConfig::new().with_alloc(AllocMode::Infallible),
     )
     .expect("encode");
     let peak = PEAK.load(Relaxed).saturating_sub(base) as u64;
@@ -254,4 +262,96 @@ fn every_limit_refuses_by_name_and_before_allocating() {
         &EncodeConfig::new().with_limits(ok),
     )
     .expect("generous caps must encode");
+}
+
+/// The allocation mode, in two halves so that neither depends on a property
+/// this port does not control.
+///
+/// The half that MATTERS to a router is unconditional: `AllocFailed` is the one
+/// variant `is_transient()` calls true, because it is the only one the caller
+/// need change nothing to get past. A router that treated it like `Unsupported`
+/// would permanently blacklist a backend for a transient memory shortage.
+///
+/// The half that exercises the pre-flight END TO END depends on the kernel's
+/// overcommit policy: a 275 GB reservation is refused under Linux's default
+/// heuristic (`vm.overcommit_memory=0`) and would be GRANTED under
+/// `=1`. Asserting it unconditionally would make this test a report on
+/// `/proc/sys/vm/overcommit_memory`. So it asserts the outcome it gets and says
+/// which one it saw, and can therefore neither flake nor pass vacuously.
+#[test]
+fn the_allocation_mode_is_honoured_and_alloc_failure_is_the_transient_case() {
+    let _guard = measuring();
+
+    // --- unconditional: the retry contract ------------------------------
+    let alloc_failed = KeyFrameError::AllocFailed { bytes: 1 << 40 };
+    assert_eq!(alloc_failed.category(), "alloc-failed");
+    assert!(
+        alloc_failed.is_transient(),
+        "AllocFailed is the one variant a caller need change nothing to get past"
+    );
+    let mut bad = cell(64, 64, 8, false, 1, 1, false, 6);
+    bad.cq_level = 64;
+    for other in [
+        bad.validate_configuration().unwrap_err(),
+        KeyFrameError::PlaneSize { plane: 0, expected: 1, got: 2 },
+        KeyFrameError::SampleRange { plane: 0, max: 255, got: 4096 },
+        KeyFrameError::LimitExceeded { what: "pixels", actual: 2, max: 1 },
+    ] {
+        assert!(
+            !other.is_transient(),
+            "only AllocFailed may be transient, but {other} claims to be"
+        );
+        assert_ne!(other.category(), "alloc-failed");
+    }
+
+    // --- the mode must never change a coded byte ------------------------
+    let ok = cell(64, 64, 8, false, 1, 1, false, 6);
+    let (y, u, v) = planes(&ok);
+    let a = encode_key_frame_with(
+        KeyFramePlanes { y: &y, u: &u, v: &v },
+        &ok,
+        &EncodeConfig::new().with_alloc(AllocMode::Fallible),
+    )
+    .expect("fallible mode must still encode");
+    let b = encode_key_frame_with(
+        KeyFramePlanes { y: &y, u: &u, v: &v },
+        &ok,
+        &EncodeConfig::new().with_alloc(AllocMode::Infallible),
+    )
+    .expect("infallible mode must still encode");
+    assert_eq!(a, b, "the allocation mode must not change a single coded byte");
+
+    // --- end to end, where the platform lets it be observed -------------
+    // 65536x65536 is a SUPPORTED configuration (the dimension ceiling is
+    // 65536), so this is a frame that simply will not fit — the case the mode
+    // exists for, not a disguised refusal.
+    let huge = cell(65536, 65536, 8, false, 1, 1, false, 6);
+    huge.validate_configuration()
+        .expect("65536x65536 must be a SUPPORTED configuration, else this tests the wrong thing");
+    let est = huge.estimate().peak_memory_bytes;
+    assert!(
+        est > (1u64 << 36),
+        "the cell must estimate beyond any plausible machine ({est} bytes)"
+    );
+    match encode_key_frame_with(
+        KeyFramePlanes { y: &[], u: &[], v: &[] },
+        &huge,
+        &EncodeConfig::new(),
+    ) {
+        Err(KeyFrameError::AllocFailed { bytes }) => {
+            assert!(bytes > 0);
+            println!("pre-flight refused {est} bytes ({bytes} reserved) — mode observed end to end");
+        }
+        // The allocator GRANTED a 275 GB reservation, which means this kernel
+        // overcommits. The pre-flight then correctly does not fire, and the
+        // call falls through to the plane-size check on the empty planes.
+        Err(KeyFrameError::PlaneSize { .. }) => {
+            println!(
+                "this kernel granted a {est}-byte reservation (overcommit); the \
+                 pre-flight cannot be observed here, and the retry contract above \
+                 is asserted unconditionally"
+            );
+        }
+        other => panic!("expected AllocFailed or PlaneSize, got {other:?}"),
+    }
 }

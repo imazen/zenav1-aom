@@ -82,6 +82,17 @@
 
 ### Added
 
+- **Encoder `AllocMode { Fallible, Infallible }`** (CLAUDE.md KB-52) — the last
+  of the six zen cross-cutting contracts the encoder lacked. A pre-flight
+  `try_reserve_exact` of `estimate()` bytes returns `KeyFrameError::AllocFailed`
+  instead of aborting; default `Fallible`. `AllocFailed` is the one variant
+  `is_transient()` calls true, so a router does not blacklist a backend over a
+  transient memory shortage. Scope stated rather than implied: one block is
+  pre-flighted, not every internal allocation. Adding it made the estimate gate
+  VACUOUS — the probe reserves exactly `estimate()` bytes and the counting
+  allocator saw them, so `peak >= est` held by construction and every slack read
+  1.00x; `measure_peak` now runs `Infallible`.
+
 - **A bd8 encode handed 16-bit samples PANICKED with an arithmetic overflow**
   (CLAUDE.md KB-51), found by a new encoder fuzz sweep on its 59th input. The
   planes are `&[u16]` at every bit depth, so nothing in the type stops a caller

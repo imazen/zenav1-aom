@@ -544,6 +544,15 @@ pub enum KeyFrameError {
         /// The offending sample.
         got: u16,
     },
+    /// The pre-flight reservation failed under [`AllocMode::Fallible`] — the
+    /// machine does not have the memory this encode needs right now.
+    ///
+    /// The only variant for which [`KeyFrameError::is_transient`] is TRUE: the
+    /// caller changed nothing and the same call may succeed later.
+    AllocFailed {
+        /// The reservation that failed, in bytes.
+        bytes: usize,
+    },
     /// A caller-supplied [`EncodeLimits`] cap would be exceeded. Refused before
     /// anything is allocated.
     LimitExceeded {
@@ -581,6 +590,7 @@ impl KeyFrameError {
             KeyFrameError::PlaneSize { .. } | KeyFrameError::SampleRange { .. } => "invalid-input",
             KeyFrameError::Unsupported(_) => "unsupported",
             KeyFrameError::LimitExceeded { .. } => "limit-exceeded",
+            KeyFrameError::AllocFailed { .. } => "alloc-failed",
             KeyFrameError::Cancelled(_) => "cancelled",
         }
     }
@@ -601,6 +611,8 @@ impl KeyFrameError {
             | KeyFrameError::Unsupported(_)
             | KeyFrameError::LimitExceeded { .. }
             | KeyFrameError::Cancelled(_) => false,
+            // The one variant the CALLER need not change anything to get past.
+            KeyFrameError::AllocFailed { .. } => true,
         }
     }
 }
@@ -622,6 +634,9 @@ impl core::fmt::Display for KeyFrameError {
             ),
             KeyFrameError::Unsupported(what) => write!(f, "outside the gated envelope: {what}"),
             KeyFrameError::Cancelled(r) => write!(f, "cancelled by the caller's stop token: {r:?}"),
+            KeyFrameError::AllocFailed { bytes } => {
+                write!(f, "allocation of {bytes} bytes failed (out of memory)")
+            }
             KeyFrameError::LimitExceeded { what, actual, max } => {
                 write!(f, "exceeds the caller's {what} limit: {actual} > {max}")
             }
@@ -1290,6 +1305,26 @@ pub fn sequence_header_obu(seq: &SequenceHeaderObu) -> Vec<u8> {
 /// nothing. This is the first of those contracts. It is a struct rather than a
 /// bare token argument so limits and an allocation mode can be added without
 /// another entry point.
+/// How the encode's dominant frame-sized allocation is obtained.
+///
+/// The decoder defaults to [`AllocMode::Fallible`] because it consumes UNTRUSTED
+/// bytes and a crafted header must not be able to abort the process. An
+/// encoder's input is the caller's own planes and configuration, so the hostile
+/// case does not arise the same way — but a server encoding uploads at scale
+/// still wants a recoverable error rather than an abort when the box is under
+/// memory pressure, and that is not a property of the input at all.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AllocMode {
+    /// Pre-flight the dominant allocation with a fallible reservation and
+    /// return [`KeyFrameError::AllocFailed`] instead of aborting. The
+    /// **default**, matching the decoder.
+    #[default]
+    Fallible,
+    /// Allocate directly, aborting on OOM. Opt in for a trusted or benchmark
+    /// caller that wants no pre-flight at all.
+    Infallible,
+}
+
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EncodeLimits {
     /// Maximum `width * height`. `None` -> unbounded.
@@ -1326,6 +1361,8 @@ pub struct EncodeConfig<'a> {
     /// no caps — this shell has never had an implicit ceiling and adding one
     /// silently would change what existing callers can encode.
     pub limits: EncodeLimits,
+    /// How the dominant frame-sized allocation is obtained ([`AllocMode`]).
+    pub alloc: AllocMode,
     /// Optional cooperative stop token ([`enough::Stop`]). `None` (the default)
     /// never cancels.
     ///
@@ -1359,6 +1396,35 @@ impl<'a> EncodeConfig<'a> {
         self.limits = limits;
         self
     }
+
+    /// Choose the allocation mode (builder style).
+    pub fn with_alloc(mut self, alloc: AllocMode) -> Self {
+        self.alloc = alloc;
+        self
+    }
+
+    /// Pre-flight the dominant allocation under [`AllocMode::Fallible`].
+    ///
+    /// **Scope, stated rather than implied:** this reserves and releases ONE
+    /// block the size of [`KeyFrameConfig::estimate`], immediately before the
+    /// encode allocates for real. It does NOT make every internal allocation
+    /// fallible — that would mean threading a fallible allocator through the
+    /// whole search, which is a different and much larger change. What it buys
+    /// is that the common failure (a frame too large for the memory available
+    /// right now) is a returned error rather than an abort. The residual is the
+    /// same TOCTOU window the decoder's equivalent documents, plus any smaller
+    /// allocation that fails on its own.
+    pub(crate) fn check_alloc_budget(&self, bytes: u64) -> Result<(), KeyFrameError> {
+        if self.alloc == AllocMode::Infallible {
+            return Ok(());
+        }
+        let n = usize::try_from(bytes).unwrap_or(usize::MAX);
+        let mut probe: Vec<u8> = Vec::new();
+        if probe.try_reserve_exact(n).is_err() {
+            return Err(KeyFrameError::AllocFailed { bytes: n });
+        }
+        Ok(())
+    }
 }
 
 impl core::fmt::Debug for EncodeConfig<'_> {
@@ -1386,6 +1452,7 @@ pub fn encode_key_frame_with(
 ) -> Result<Vec<u8>, KeyFrameError> {
     cfg.validate_configuration()?;
     cfg.check_limits(&opts.limits)?;
+    opts.check_alloc_budget(cfg.estimate().peak_memory_bytes)?;
     let (w, h) = (cfg.width, cfg.height);
     let (cw, ch) = cfg.chroma_dims();
     if planes.y.len() != w * h {
