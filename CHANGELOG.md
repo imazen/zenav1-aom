@@ -6,6 +6,26 @@
 
 ### Fixed
 
+- **Four more un-pollable decode windows, and a cancellation bar that no longer
+  gates absolute wall time on hardware the project does not choose** (CLAUDE.md
+  KB-48). Removed first, all measured at 4096x4096: the reconstruction crop
+  (12.1 ms), the film-grain crop tail (18.1 ms) and the bd8 whole-plane widen
+  feeding CDEF (11.5 ms) are now polled per 64-row strip / per MiB — the widen
+  was NOT removed by routing CDEF through `cdef_frame_u8`, because that entry's
+  own record has it at 6.6 % MORE Ir than delegating. Net: `poll_gap_map`'s
+  4096x4096 worst un-pollable stretch **21.98 -> 10.0 ms**,
+  `cancel_latency_by_size` p90 **16.97 -> 6.8** and max **23.81 -> 10.3**. What
+  remains is `TileKf::new`'s O(frame) setup, which is genuine work and not a
+  missing poll. Only then were the three arms' bounds made machine-RELATIVE, at
+  the `max(BAR_MS, MAX_TRIPWIRE_FRACTION * own cost)` the file already carried
+  for one of them — a flat 20 ms was measured failing on this repo's own CI
+  runners while the identical code passed locally. Liveness re-verified under
+  the new bound: deleting CDEF's poll gives 143.5 ms against a 39.1 ms bound
+  (3.7x), deleting film grain's gives 90.2 ms of a 114 ms stage. The arms are
+  `#[ignore]`d in the ordinary suite and run as their own gate
+  (`just gate-cancel-latency`, plus a CI step), because wall-clock latency is
+  not measurable inside a parallel test pool.
+
 - **`encode_key_frame` refused a tile grid real aomenc accepts** (CLAUDE.md
   KB-47). `derive_tiles` required `rows * cols == 1 << (log2_cols +
   log2_rows)`, which is not true of AV1: `av1_set_tile_info` clamps the

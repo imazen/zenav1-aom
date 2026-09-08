@@ -105,6 +105,18 @@ jobs:
       - name: Located-error entries (whereat feature)
         run: cargo test -p zenav1-aom-decode --features whereat --test whereat_entries
 
+      # The cancellation-latency gate. `#[ignore]`d in the workspace run because
+      # it measures WALL-CLOCK latency, which a parallel test pool cannot
+      # measure; run here on its own with `--test-threads 1`, the methodology
+      # its committed record was taken with. Its bounds are machine-RELATIVE
+      # (`max(20 ms, 12.5 % of this machine's own cost)`), so a slow runner
+      # scales the bar instead of failing it — see `MAX_TRIPWIRE_FRACTION`.
+      # (Spelled out rather than `just gate-cancel-latency`: no CI job installs
+      # `just`, and a step that silently needs a missing tool is worse than a
+      # duplicated command line. `justfile`'s recipe is the same invocation.)
+      - name: Cancellation latency (isolated timing gate)
+        run: cargo test --profile test-fast -p zenav1-aom-bench --test cancel_latency -- --ignored --test-threads 1 --nocapture
+
   # SCALAR-PIN mode (Gate-3 parity rule 3): AOM_FORCE_SCALAR disables every
   # archmage SIMD token process-wide (aom_dsp::dispatch), so every kernel
   # dispatch falls through to `_scalar` = the transcribed C port, verbatim.

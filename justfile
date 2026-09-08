@@ -143,6 +143,21 @@ audit-i16-fwd:
 gate-armed-decode:
     AOM_DAV1D_BIN="$(command -v dav1d || true)" cargo test --profile test-fast -p zenav1-aom-bench --test armed_tools_decode_gate -- --nocapture
 
+# CANCELLATION-LATENCY GATE (the three timing arms of
+# `crates/aom-bench/tests/cancel_latency.rs`). They are `#[ignore]`d in the
+# ordinary suite ON PURPOSE: they measure WALL-CLOCK latency, which a parallel
+# test pool cannot measure. Their own `timing_serial()` mutex serialises the
+# three arms against each other but is process-local, so `cargo nextest`
+# (one process per test) defeats it and ~20 unrelated test processes compete —
+# measured 33.1 ms against a 22.8 ms bound in a whole-workspace nextest run and
+# 17.0 ms for the same code run alone.
+#
+# `--test-threads 1` is the methodology the committed record
+# (`benchmarks/decode_cancel_latency_2026-08-06.*`) was taken with. Also wired
+# as its own CI step, so the coverage is not lost by the `#[ignore]`.
+gate-cancel-latency:
+    cargo test --profile test-fast -p zenav1-aom-bench --test cancel_latency -- --ignored --test-threads 1 --nocapture
+
 # LOCATED-ERROR ENTRIES (`whereat` feature, default-off). `decode_frame_obus_at`
 # and `decode_frames_at` are `#[cfg(feature = "whereat")]`, so no workspace test
 # run compiles them — the feature could be broken indefinitely and nothing would

@@ -1205,9 +1205,20 @@ pub fn add_film_grain_stop(
     if let Some(s) = stop {
         s.check()?;
     }
-    // Crop back to the coded dims.
+    // Crop back to the coded dims. Polled per 64-row strip for the same reason
+    // the reconstruction crop is (`frame::CROP_ROWS_PER_POLL`): these two copies
+    // run AFTER the grain walk's last poll, so without a poll of their own they
+    // are the stage's whole un-pollable tail — MEASURED at 18.1 ms of a 100 ms
+    // stage at 4096x4096, i.e. 18 %, which no machine-scaled bound would
+    // forgive either.
+    const ROWS_PER_POLL: usize = 64;
     let mut out_y = vec![0u16; d_w * d_h];
     for r in 0..d_h {
+        if r % ROWS_PER_POLL == 0 {
+            if let Some(s) = stop {
+                s.check()?;
+            }
+        }
         for c in 0..d_w {
             out_y[r * d_w + c] = luma[r * luma_stride + c];
         }
@@ -1218,6 +1229,11 @@ pub fn add_film_grain_stop(
         out_u = vec![0u16; src_cw * src_ch];
         out_v = vec![0u16; src_cw * src_ch];
         for r in 0..src_ch {
+            if r % ROWS_PER_POLL == 0 {
+                if let Some(s) = stop {
+                    s.check()?;
+                }
+            }
             for c in 0..src_cw {
                 out_u[r * src_cw + c] = cb[r * chroma_stride + c];
                 out_v[r * src_cw + c] = cr[r * chroma_stride + c];

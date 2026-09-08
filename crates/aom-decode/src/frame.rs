@@ -941,7 +941,7 @@ fn finish_and_grain(
     if let Some(s) = stop {
         s.check()?;
     }
-    let mut fd = finish_frame(t, cfg, header);
+    let mut fd = finish_frame(t, cfg, header, stop)?;
     if let Some(s) = stop {
         s.check()?;
     }
@@ -2170,7 +2170,23 @@ fn build_tile_cfg(seq: &SequenceHeaderObu, p: &FrameHeaderObu) -> KfTileConfig {
 
 /// Crop the (post-filter) mi-aligned recon to the frame dims and assemble the
 /// output facts. The deblocking gate ran in [`decode_frame_obus`].
-fn finish_frame(t: KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) -> FrameDecode {
+/// Rows per stop-token poll inside the whole-frame crop copies.
+///
+/// The crop is `width * height` (plus chroma) of `u16` writes with no
+/// intermediate state, so it can be polled at any row boundary; 64 keeps the
+/// branch cost at `height / 64` per plane while bounding the un-pollable window
+/// to a 64-row strip. MEASURED at 4096x4096 on x86-64 Linux: the crop was the
+/// LARGEST remaining inter-poll gap once `TileKf::new` stopped being one
+/// (12.1-12.5 ms of a ~310 ms decode, GitHub #17); the next-largest at that
+/// point was CDEF's per-filter-block-row 2.3 ms.
+const CROP_ROWS_PER_POLL: usize = 64;
+
+fn finish_frame(
+    t: KfTileDecode,
+    cfg: &KfTileConfig,
+    p: &FrameHeaderObu,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<FrameDecode, enough::StopReason> {
     // The coded frame (crop) dims — superres is unscaled and frame-size
     // override rejected in this envelope, so the upscaled size IS the size.
     let width = p.frame_size.superres_upscaled_width as usize;
@@ -2179,6 +2195,11 @@ fn finish_frame(t: KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) -> Fram
 
     let mut y = vec![0u16; width * height];
     for r in 0..height {
+        if r % CROP_ROWS_PER_POLL == 0 {
+            if let Some(s) = stop {
+                s.check()?;
+            }
+        }
         // Widening crop: the `FrameDecode` output surface stays `u16`; a bd8
         // (`LowBd`) plane widens bit-exactly here (see `crate::plane`).
         t.recon
@@ -2192,13 +2213,18 @@ fn finish_frame(t: KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) -> Fram
     let mut u = vec![0u16; width_uv * height_uv];
     let mut v = vec![0u16; width_uv * height_uv];
     for r in 0..height_uv {
+        if r % CROP_ROWS_PER_POLL == 0 {
+            if let Some(s) = stop {
+                s.check()?;
+            }
+        }
         t.recon_u
             .copy_row_wide(r * t.stride_uv, &mut u[r * width_uv..(r + 1) * width_uv]);
         t.recon_v
             .copy_row_wide(r * t.stride_uv, &mut v[r * width_uv..(r + 1) * width_uv]);
     }
 
-    FrameDecode {
+    Ok(FrameDecode {
         y,
         u,
         v,
@@ -2248,7 +2274,7 @@ fn finish_frame(t: KfTileDecode, cfg: &KfTileConfig, p: &FrameHeaderObu) -> Fram
         tile_cols: p.tile_info.cols,
         tile_rows: p.tile_info.rows,
         disable_cdf_update: cfg.disable_cdf_update,
-    }
+    })
 }
 
 /// Build the loop-filter mi grid + params from the decoded leaf blocks and
@@ -2419,9 +2445,9 @@ fn apply_deblock_stop(
         // constructs all three planes) but would still be CORRECT here via the
         // widen/narrow delegation.
         (y_p, u_p, v_p) => {
-            let mut wy = y_p.take_wide();
-            let mut wu = u_p.take_wide();
-            let mut wv = v_p.take_wide();
+            let mut wy = y_p.take_wide_stop(stop)?;
+            let mut wu = u_p.take_wide_stop(stop)?;
+            let mut wv = v_p.take_wide_stop(stop)?;
             let mut buf = LfFrameBuf {
                 y: &mut wy,
                 y_stride: t.stride,
@@ -2524,11 +2550,19 @@ fn apply_cdef_stop(
     };
     // Phase A: run the (unchanged) highbd CDEF on widened working planes;
     // bd8 (`LowBd`) narrows back bit-exactly (see `crate::plane`).
-    let mut wy = t.recon.take_wide();
-    let mut wu = t.recon_u.take_wide();
-    let mut wv = t.recon_v.take_wide();
+    // The widen is POLLED: at bd8 it is a whole-plane `u8 -> u16` copy and, at
+    // 4096x4096, the largest un-pollable window left in a decode (11.5-11.8 ms,
+    // measured as the deblock -> CDEF transition gap). Routing CDEF through
+    // `cdef_frame_u8` would avoid it, but that entry's own doc records it as
+    // 6.6 % MORE Ir than delegating — the widen is a deliberate throughput
+    // choice, so it is made interruptible rather than removed.
+    let mut wy = t.recon.take_wide_stop(stop)?;
+    let mut wu = t.recon_u.take_wide_stop(stop)?;
+    let mut wv = t.recon_v.take_wide_stop(stop)?;
     // Put the (possibly partially filtered) planes back BEFORE propagating a
     // cancellation, so `t` never survives with its recon planes taken out.
+    // `put_wide` (unpolled) on the error path for the same reason: a cancelled
+    // decode must still leave `t` droppable.
     let r = cdef_frame_stop(
         &mut wy,
         t.stride,
@@ -2538,10 +2572,16 @@ fn apply_cdef_stop(
         &params,
         stop,
     );
-    t.recon.put_wide(wy);
-    t.recon_u.put_wide(wu);
-    t.recon_v.put_wide(wv);
-    r
+    if r.is_err() {
+        t.recon.put_wide(wy);
+        t.recon_u.put_wide(wu);
+        t.recon_v.put_wide(wv);
+        return r;
+    }
+    t.recon.put_wide_stop(wy, stop)?;
+    t.recon_u.put_wide_stop(wu, stop)?;
+    t.recon_v.put_wide_stop(wv, stop)?;
+    Ok(())
 }
 
 #[cfg(all(test, feature = "whereat"))]

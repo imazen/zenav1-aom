@@ -293,6 +293,68 @@ it here in the same commit.**
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-48 — Decoder: the remaining un-pollable windows, and why the cancellation bar had to become machine-relative — 2026-09-08 (GitHub #17 follow-through)
+
+- **Four windows removed first, so the bar change is a last resort and not a first one.**
+  All measured at 4096x4096, x86-64 Linux, `--test-threads 1`:
+
+  | window | was | now | how |
+  |---|---|---|---|
+  | `mi_dv` grid allocation | 12.0-12.8 ms | ~0 | KB-45 (`calloc`-able `DvNbrPacked`) |
+  | reconstruction crop (`finish_frame`) | 12.1-12.5 ms | ~0.9 ms | poll per 64-row strip |
+  | film-grain crop tail | 18.1 ms | 1.7 ms | poll per 64-row strip |
+  | bd8 whole-plane widen feeding CDEF | 11.5-11.8 ms | ~0.7 ms | `ReconPlane::{take,put}_wide_stop`, poll per 1 MiB |
+
+  Net on `poll_gap_map`'s 4096x4096 cell: **21.98 -> 10.0 ms**; on
+  `cancel_latency_by_size`, p90 **16.97 -> 6.8 ms** and max **23.81 -> 10.3 ms**.
+- **The CDEF widen was NOT removed by routing CDEF through `cdef_frame_u8`, deliberately.**
+  That entry's own doc records it as **6.6 % MORE Ir than delegating** (widen the whole
+  plane, run the u16 walk, narrow back) — `benchmarks/cdef_lowbd_ir_2026-07-22.md`. The
+  widen is a measured throughput CHOICE, so it was made interruptible rather than avoided.
+  A future session tempted to "fix" this by switching the routing should read that
+  measurement first.
+- **What remains is `TileKf::new`, 10.0 ms, and it is genuine O(frame) setup.** After KB-45
+  the per-mi grids that are left (`mi`, `mi_interp`, `frame_mvs`, the recon planes) are
+  ~1 ms each in isolation and ~10 ms in situ — the difference being first-touch page faults
+  on freshly mapped memory, not a missing poll. The same `[T; N]`-is-`IsZero` trick KB-45
+  used would shrink it further; that is a follow-up, not a blocker.
+- **THE BAR IS NOW MACHINE-RELATIVE, in all three arms**, at
+  `max(BAR_MS, MAX_TRIPWIRE_FRACTION * <that arm's own natural cost>)` — the bound and the
+  constant the file ALREADY carried for `cancel_latency_by_size`'s max, extended to its p90,
+  to `poll_gap_map` and to `film_grain_stage_cost`. The argument is the one
+  `MAX_TRIPWIRE_FRACTION`'s own doc makes and does not need re-deriving: a stage that polls
+  NOTHING contributes a large FRACTION of the decode (62 % for the post-filter tail, 46 %
+  CDEF, 14 % deblock, and 79 % for film grain's own walk — measured below), which is
+  scale-free, while a flat 20 ms is a bar on absolute wall time on hardware this project does
+  not choose. **It was measured failing on this repo's own CI runners** (run `34233972208`,
+  both forced-scalar legs) while the identical code passed locally.
+- **LIVENESS RE-VERIFIED under the new bound — this is the half that matters.** Deleting the
+  per-filter-block-row CDEF poll: `poll_gap_map` **143.5 ms against a 39.1 ms bound (3.7x
+  over)** and `cancel_latency_by_size` p90 **111.1 against 39.0**. Deleting film grain's
+  per-subblock-row poll: **90.2 ms of a 114 ms stage (79 %) against a 14.3 ms bound**. Both
+  restored green. The gates lost no teeth.
+- **`film_grain_stage_cost` also gained the min-over-`TRACE_RUNS` reduction** `poll_gap_map`
+  already used, and for the reason that file states: a deschedule can only ADD to a gap, so
+  the minimum is the closest estimate of the stage's own spacing while a stage that stopped
+  polling inflates every run. Without it that arm read 33.1 ms under a whole-workspace
+  parallel run against 17.0 ms alone — a scheduler measurement, not a decoder one.
+- **`poll_gap_map`'s diagnostic now names the worst gap's INDEX and neighbours**, not just
+  the last 8 gaps. Once the crop and the grain tail were polled the maximum moved into the
+  MIDDLE of the pipeline, where a trailing window cannot see it and an over-bar failure would
+  have named the wrong stage.
+- **The three arms are now `#[ignore]`d in the ordinary suite and run as their OWN gate**,
+  `just gate-cancel-latency` (and a matching CI step, spelled out because no CI job installs
+  `just`). That is not coverage lost — it is the isolation `CLAUDE.md` already demanded of
+  timing work, finally enforced by construction. The reason is structural rather than a
+  tolerance: `timing_serial()` is a process-local `Mutex`, so `cargo nextest`'s
+  process-per-test defeats it AND ~20 unrelated test processes compete; even the
+  min-over-3-traces reduction could not rescue `film_grain_stage_cost` there (33.1 ms against
+  a 22.8 ms bound in the pool, 17.0 ms alone). Wall-clock latency is not a quantity a
+  parallel test pool can measure.
+- **How to judge them:** `just gate-cancel-latency`, or
+  `cargo test -p zenav1-aom-bench --test cancel_latency -- --ignored --test-threads 1`.
+  A plain `just test-fast` / `just test-next` now reports them as 3 ignored.
+
 ### KB-47 — Encoder: `encode_key_frame` REFUSED a tile grid real aomenc accepts — the `rows*cols == 2^log2` invariant is simply false — FIXED ✅ 2026-09-08
 
 - **Found by measurement, not by reading.** A new REFUSAL CENSUS

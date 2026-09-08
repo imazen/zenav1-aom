@@ -44,6 +44,14 @@ fn narrow(v: u16) -> u8 {
     v as u8
 }
 
+/// Samples per stop-token poll in [`ReconPlane::take_wide_stop`] /
+/// [`ReconPlane::put_wide_stop`].
+///
+/// 1 << 20 samples is 1 MiB read + 2 MiB written per chunk — about 0.7 ms on
+/// the machine the cancellation record was taken on, i.e. two orders under the
+/// 20 ms bar, while costing a 4096x4096 luma plane only 16 branches.
+const WIDEN_SAMPLES_PER_POLL: usize = 1 << 20;
+
 impl ReconPlane {
     /// A plane of `len` samples filled with `init`. `lowbd` selects the `u8`
     /// representation (caller guarantees `init <= 255` then — asserted).
@@ -101,6 +109,70 @@ impl ReconPlane {
         match self {
             ReconPlane::LowBd(p) => p.iter().map(|&v| v as u16).collect(),
             ReconPlane::HighBd(p) => core::mem::take(p),
+        }
+    }
+
+    /// [`ReconPlane::take_wide`] with a cooperative stop token polled every
+    /// [`WIDEN_SAMPLES_PER_POLL`] samples of the widening copy.
+    ///
+    /// The `LowBd` arm is a whole-plane `u8 -> u16` conversion, and at
+    /// 4096x4096 it is the single largest un-pollable window left in a decode:
+    /// **MEASURED 11.5-11.8 ms** as the deblock -> CDEF transition gap
+    /// (GitHub #17), against CDEF's own 2.3 ms per filter-block row. It is not
+    /// removable by routing CDEF through `cdef_frame_u8` instead — that entry's
+    /// own doc records it as **6.6 % MORE Ir than delegating**, i.e. the widen
+    /// is a deliberate, measured throughput choice — so it is made INTERRUPTIBLE
+    /// rather than avoided.
+    ///
+    /// `HighBd` is a `mem::take` and cannot be subdivided; it does not need to
+    /// be, being O(1).
+    pub(crate) fn take_wide_stop(
+        &mut self,
+        stop: Option<&dyn enough::Stop>,
+    ) -> Result<Vec<u16>, enough::StopReason> {
+        match self {
+            ReconPlane::LowBd(p) => {
+                let mut out = Vec::with_capacity(p.len());
+                for chunk in p.chunks(WIDEN_SAMPLES_PER_POLL) {
+                    if let Some(s) = stop {
+                        s.check()?;
+                    }
+                    out.extend(chunk.iter().map(|&v| v as u16));
+                }
+                Ok(out)
+            }
+            ReconPlane::HighBd(p) => Ok(core::mem::take(p)),
+        }
+    }
+
+    /// [`ReconPlane::put_wide`] with the same per-chunk poll as
+    /// [`ReconPlane::take_wide_stop`]. The narrowing store is the same size as
+    /// the widening load, so it is the same un-pollable window on the way back.
+    ///
+    /// On cancellation the plane is left PARTIALLY filled — which is sound
+    /// because every caller propagates the stop and drops the whole decode; a
+    /// cancelled decode never produces a frame.
+    pub(crate) fn put_wide_stop(
+        &mut self,
+        v: Vec<u16>,
+        stop: Option<&dyn enough::Stop>,
+    ) -> Result<(), enough::StopReason> {
+        match self {
+            ReconPlane::LowBd(p) => {
+                p.clear();
+                p.reserve(v.len());
+                for chunk in v.chunks(WIDEN_SAMPLES_PER_POLL) {
+                    if let Some(s) = stop {
+                        s.check()?;
+                    }
+                    p.extend(chunk.iter().map(|&x| narrow(x)));
+                }
+                Ok(())
+            }
+            ReconPlane::HighBd(p) => {
+                *p = v;
+                Ok(())
+            }
         }
     }
 
