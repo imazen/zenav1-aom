@@ -872,6 +872,7 @@ dependencies = [
 name = "zenav1-aom-encode"
 version = "0.0.1"
 dependencies = [
+ "enough",
  "zenav1-aom-decode",
  "zenav1-aom-dsp",
  "zenav1-aom-sys-ref",

@@ -435,6 +435,9 @@ pub enum KeyFrameError {
     /// A config field is outside this shell's gated envelope. Carries the
     /// field name and the reason.
     Unsupported(&'static str),
+    /// The caller's cooperative stop token asked the encode to stop. No stream
+    /// is produced; whatever had been coded is discarded.
+    Cancelled(enough::StopReason),
 }
 
 impl core::fmt::Display for KeyFrameError {
@@ -446,6 +449,7 @@ impl core::fmt::Display for KeyFrameError {
                 got,
             } => write!(f, "plane {plane}: expected {expected} samples, got {got}"),
             KeyFrameError::Unsupported(what) => write!(f, "outside the gated envelope: {what}"),
+            KeyFrameError::Cancelled(r) => write!(f, "cancelled by the caller's stop token: {r:?}"),
         }
     }
 }
@@ -1060,9 +1064,68 @@ pub fn sequence_header_obu(seq: &SequenceHeaderObu) -> Vec<u8> {
 /// Encode ONE self-contained AV1 KEY frame: `TD OBU ++ sequence-header OBU ++
 /// OBU_FRAME`, decodable by any conformant AV1 decoder, with **no C bootstrap
 /// in the path**. See the module docs for what is derived and what is refused.
+/// Caller-supplied ENCODE options, separate from [`KeyFrameConfig`] (which
+/// describes the STREAM to produce) because these describe how the call may
+/// behave rather than what it emits.
+///
+/// The decoder has carried a `DecodeConfig` — limits, allocation mode and a
+/// cooperative stop token — since the zen hardening work; the encoder had
+/// nothing. This is the first of those contracts. It is a struct rather than a
+/// bare token argument so limits and an allocation mode can be added without
+/// another entry point.
+#[derive(Default, Clone, Copy)]
+pub struct EncodeConfig<'a> {
+    /// Optional cooperative stop token ([`enough::Stop`]). `None` (the default)
+    /// never cancels.
+    ///
+    /// **Where it is polled:** once per SUPERBLOCK ROW of each tile's search,
+    /// and once per tile before the phase-2 repack. The superblock row is the
+    /// coarsest unit that carries no state a caller can observe — C's
+    /// `INTERNAL_COST_UPD_SBROW` already re-derives the cost tables there and
+    /// the left contexts are reset — so a poll cannot alter a coded bit.
+    ///
+    /// **Why this exists:** with screen-content tools on, the IntraBC DV search
+    /// runs ~80 s on a single 1080p screenshot at `--cpu-used 6` against ~1 s
+    /// for the oracle, and a `--cpu-used 4` cell has been observed not
+    /// finishing in 40 minutes. Before this there was no way to say "stop".
+    pub stop: Option<&'a dyn enough::Stop>,
+}
+
+impl<'a> EncodeConfig<'a> {
+    /// The default: no cancellation.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Attach a cooperative stop token (builder style).
+    pub fn with_stop(mut self, stop: &'a dyn enough::Stop) -> Self {
+        self.stop = Some(stop);
+        self
+    }
+}
+
+impl core::fmt::Debug for EncodeConfig<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("EncodeConfig")
+            .field("stop", &self.stop.map(|_| "Some(<dyn Stop>)"))
+            .finish()
+    }
+}
+
 pub fn encode_key_frame(
     planes: KeyFramePlanes<'_>,
     cfg: &KeyFrameConfig,
+) -> Result<Vec<u8>, KeyFrameError> {
+    encode_key_frame_with(planes, cfg, &EncodeConfig::new())
+}
+
+/// [`encode_key_frame`] with caller-supplied [`EncodeConfig`] — currently the
+/// cooperative stop token. `EncodeConfig::default()` is byte-identical to
+/// [`encode_key_frame`]: a `None` token is never polled.
+pub fn encode_key_frame_with(
+    planes: KeyFramePlanes<'_>,
+    cfg: &KeyFrameConfig,
+    opts: &EncodeConfig<'_>,
 ) -> Result<Vec<u8>, KeyFrameError> {
     cfg.validate_configuration()?;
     let (w, h) = (cfg.width, cfg.height);
@@ -1410,7 +1473,7 @@ pub fn encode_key_frame(
         env.tile_col_end = c1;
         let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
         let mut scratch = OdEcEnc::new();
-        let t = pack_tile(
+        let t = crate::pack::pack_tile_stop(
             &mut scratch,
             &env,
             &pick_cfg,
@@ -1425,7 +1488,9 @@ pub fn encode_key_frame(
             n_tc,
             sb_mi,
             sb_block,
-        );
+            opts.stop,
+        )
+        .map_err(KeyFrameError::Cancelled)?;
         let _ = scratch.done();
         let (sb_r0, sb_c0) = (r0 / sb_mi, c0 / sb_mi);
         for (i, tree) in t.into_iter().enumerate() {
@@ -1762,6 +1827,9 @@ pub fn encode_key_frame(
             .collect();
         let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
         let mut enc = OdEcEnc::new();
+        if let Some(s) = opts.stop {
+            s.check().map_err(KeyFrameError::Cancelled)?;
+        }
         pack_tile_from_trees_lr(
             &mut enc,
             &env,

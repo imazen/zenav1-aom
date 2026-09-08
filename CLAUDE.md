@@ -293,6 +293,43 @@ it here in the same commit.**
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-49 — Encoder: there was no cancellation at all — `EncodeConfig` + a per-superblock-row stop token, 2026-09-08
+
+- **The gap.** `CLAUDE.md`'s "Zen codec cross-cutting compliance" section specs six contracts
+  and the DECODER has all six; the encoder had `KeyFrameError` and nothing else. No stop
+  token is the one that bites hardest: with screen-content tools on, the IntraBC DV search
+  runs **~80 s on a single 1080p screenshot at `--cpu-used 6`** against ~1 s for the oracle,
+  and a `--cpu-used 4` cell has been observed not finishing in 40 minutes (KB-41's perf
+  note). A caller — or a server shedding load — had no way to say stop.
+- **LANDED, additively.** `aom_encode::key_frame::EncodeConfig` (a struct, not a bare token
+  argument, so limits and an allocation mode can follow without another entry point) +
+  `encode_key_frame_with(planes, cfg, opts)`; `encode_key_frame` delegates with the default.
+  `pack::pack_tile_lr_stop` / `pack_tile_stop` are the `_stop` twins the decode side
+  established, and the historical entries delegate with `None`, so **not one of the 27
+  existing call sites changed**.
+- **Cadence: once per SUPERBLOCK ROW of each tile's search**, plus once per tile before the
+  phase-2 repack. The row is the coarsest unit carrying no state a caller can observe —
+  C's `INTERNAL_COST_UPD_SBROW` already re-derives the cost tables there and the left
+  contexts are reset — so a poll cannot alter a coded bit.
+- **GATED on three properties** (`aom-encode/tests/encode_cancel.rs`), the third being what
+  makes the first two mean anything: (1) a never-firing token produces the BYTE-IDENTICAL
+  stream; (2) a firing token returns `KeyFrameError::Cancelled` instead of a stream; (3) it
+  is observed PARTWAY THROUGH — cancellation at poll budgets 0, 1 and half the total all
+  stop the encode, which a `check()` bolted onto the return path would not satisfy. A fourth
+  test pins that `Cancelled` is distinguishable from `Unsupported` and says so in `Display`,
+  because a router that cannot tell "you cancelled" from "unsupported configuration" retries
+  the wrong thing.
+- **Bite proof:** removing the superblock-row poll fails the cadence test AND the
+  partway test while the error-distinctness test stays green.
+- **HONEST SCOPE.** The phase-2 repack is polled once per TILE, not per row — it replays
+  already-decided trees and is far cheaper than the search, but on a single-tile 4K frame it
+  is still one un-pollable window, and no latency has been MEASURED for the encoder the way
+  `cancel_latency.rs` measures it for the decoder. There is no encoder latency record yet;
+  this lands the mechanism and its correctness, not a measured bound.
+- **Still missing from the encoder's six contracts:** resource limits, a cost/peak-memory
+  estimate, typed+categorized errors beyond `KeyFrameError`, a configurable allocation mode,
+  and a fuzz target. See the standing goal at the top of this file.
+
 ### KB-48 — Decoder: the remaining un-pollable windows, and why the cancellation bar had to become machine-relative — 2026-09-08 (GitHub #17 follow-through)
 
 - **Four windows removed first, so the bar change is a last resort and not a first one.**

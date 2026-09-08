@@ -1646,6 +1646,33 @@ pub fn pack_tile(
     )
 }
 
+/// [`pack_tile`] with a cooperative stop token, polled once per superblock row.
+/// See [`pack_tile_lr_stop`] for the cadence and what a cancellation leaves
+/// behind.
+#[allow(clippy::too_many_arguments)]
+pub fn pack_tile_stop(
+    enc: &mut OdEcEnc,
+    env: &SbEncodeEnv,
+    pick_cfg: &PickFrameCfg,
+    pack_cfg: &PackCfg,
+    kf: &mut KfFrameContext,
+    recon_y: &mut [u16],
+    recon_u: &mut [u16],
+    recon_v: &mut [u16],
+    mi_row0: i32,
+    mi_col0: i32,
+    n_sb_rows: i32,
+    n_sb_cols: i32,
+    sb_mi: i32,
+    sb_size: usize,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<Vec<SbTree>, enough::StopReason> {
+    pack_tile_lr_stop(
+        enc, env, pick_cfg, pack_cfg, kf, recon_y, recon_u, recon_v, mi_row0, mi_col0, n_sb_rows,
+        n_sb_cols, sb_mi, sb_size, None, None, stop,
+    )
+}
+
 /// The loop-restoration pack inputs: the frame-level decision
 /// (`av1_pick_filter_restoration`'s outcome) whose per-RU parameters are
 /// written INTERLEAVED in the tile data at each superblock root, BEFORE the
@@ -1681,8 +1708,53 @@ pub fn pack_tile_lr(
     sb_mi: i32,
     sb_size: usize,
     lr: Option<&LrPackParams<'_>>,
-    mut inter_cdfs: Option<&mut crate::inter_costs::InterFrameCdfs>,
+    inter_cdfs: Option<&mut crate::inter_costs::InterFrameCdfs>,
 ) -> Vec<SbTree> {
+    // A `None` token is never polled, so this cannot stop; discarding the
+    // `Ok` keeps the historical signature infallible.
+    pack_tile_lr_stop(
+        enc, env, pick_cfg, pack_cfg, kf, recon_y, recon_u, recon_v, mi_row0, mi_col0, n_sb_rows,
+        n_sb_cols, sb_mi, sb_size, lr, inter_cdfs, None,
+    )
+    .unwrap_or_else(|_| unreachable!("a None stop token cannot cancel"))
+}
+
+/// [`pack_tile_lr`] with a cooperative stop token, polled once per SUPERBLOCK
+/// ROW of the tile.
+///
+/// The encoder had no cancellation at all, which is not a theoretical gap: with
+/// screen-content tools on, the IntraBC DV search runs **~80 s on a single
+/// 1080p screenshot at `--cpu-used 6`** (CLAUDE.md KB-41's perf note) against
+/// ~1 s for the oracle, and a `--cpu-used 4` cell had not finished after 40
+/// minutes. A caller that changes its mind — or a server shedding load — had no
+/// way to say so.
+///
+/// The superblock ROW is the coarsest unit that carries no state a caller can
+/// observe: `INTERNAL_COST_UPD_SBROW` already re-derives the cost tables at
+/// each row start, and the left contexts are reset there, so a poll at the top
+/// of the row cannot alter a coded bit. Returns `Err(StopReason)` with the
+/// entropy coder and recon planes PARTIALLY written — for a cancelled encode,
+/// whose caller discards them.
+#[allow(clippy::too_many_arguments)]
+pub fn pack_tile_lr_stop(
+    enc: &mut OdEcEnc,
+    env: &SbEncodeEnv,
+    pick_cfg: &PickFrameCfg,
+    pack_cfg: &PackCfg,
+    kf: &mut KfFrameContext,
+    recon_y: &mut [u16],
+    recon_u: &mut [u16],
+    recon_v: &mut [u16],
+    mi_row0: i32,
+    mi_col0: i32,
+    n_sb_rows: i32,
+    n_sb_cols: i32,
+    sb_mi: i32,
+    sb_size: usize,
+    lr: Option<&LrPackParams<'_>>,
+    mut inter_cdfs: Option<&mut crate::inter_costs::InterFrameCdfs>,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<Vec<SbTree>, enough::StopReason> {
     // C write_modes (bitstream.c): `w->allow_update_cdf = !large_scale_tile
     // && !disable_cdf_update` — the tile writer's symbol adaptation gate
     // (aom_write_symbol adapts iff set). large_scale_tile is out of this
@@ -1796,6 +1868,11 @@ pub fn pack_tile_lr(
     // encodeframe_utils.c:1556-1564). Row-scoped so the tile's first row starts
     // from a fresh derivation like every other row.
     for r in 0..n_sb_rows {
+        // Cooperative cancellation, once per superblock ROW — see
+        // `pack_tile_lr_stop`'s doc for why the row is the right cadence.
+        if let Some(s) = stop {
+            s.check()?;
+        }
         let mut row_real: Option<crate::real_costs::RealCosts> = None;
         search_tile.left_ectx = [[0; 32]; 3];
         search_tile.left_pctx = [0; 32];
@@ -2230,7 +2307,7 @@ pub fn pack_tile_lr(
             trees.push(tree);
         }
     }
-    trees
+    Ok(trees)
 }
 
 /// Phase-2 pack walk for the TWO-PASS (post-filter-search) frame encode:

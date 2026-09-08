@@ -82,6 +82,23 @@
 
 ### Added
 
+- **Cooperative cancellation for the ENCODER** (CLAUDE.md KB-49). The decoder
+  has had a stop token since the zen hardening work; the encoder had none, and
+  with screen-content tools on its IntraBC DV search runs ~80 s on a single
+  1080p screenshot at `--cpu-used 6` with no way to interrupt it. New
+  `aom_encode::key_frame::EncodeConfig` (a struct, so limits and an allocation
+  mode can follow without another entry point) and
+  `encode_key_frame_with(planes, cfg, opts)`; `pack::pack_tile_stop` /
+  `pack_tile_lr_stop` are the `_stop` twins the decode side established, so none
+  of the 27 existing `pack_tile*` call sites changed. Polled once per SUPERBLOCK
+  ROW of each tile's search — the coarsest unit carrying no state a caller can
+  observe, since `INTERNAL_COST_UPD_SBROW` already re-derives the cost tables
+  there — plus once per tile before the phase-2 repack. Gated on three
+  properties: a never-firing token is byte-inert, a firing one returns
+  `KeyFrameError::Cancelled`, and it is observed PARTWAY THROUGH (budgets 0, 1
+  and half the polls all stop the encode). Scope, stated: the repack is polled
+  per tile rather than per row, and no encoder latency record exists yet.
+
 - **A REFUSAL CENSUS for the standalone still-image entry point**
   (`aom-encode/tests/refusal_census.rs`). The ship goal asks for "no panics or
   refusals on inputs a caller can produce" — a claim about a SET, so it needs a

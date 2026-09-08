@@ -16,6 +16,10 @@ name = "aom_encode"
 # loop_filter_frame as the LF-search trial primitive; the CDEF-search kernels)
 # still apply — those kernels are now aom_dsp::{convolve,loopfilter,cdef}.
 zenav1-aom-dsp = { path = "../aom-dsp" }
+# Cooperative cancellation (stop token) — zero-dep, no_std. Same version the
+# decoder depends on so the `dyn Stop` vtable is the same trait; a mismatched
+# major would not type-check across the crate boundary.
+enough = "0.4.4"
 
 [features]
 # Forwards `aom_dsp/census` and adds this crate's own hook (the coded-leaf
