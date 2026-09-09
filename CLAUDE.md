@@ -5564,6 +5564,64 @@ one tree, byte-identical output throughout):
   gap and a named open residual of KB-PERF-3 — only the DCT family passed its i16
   audit) and the register-blocked `compute_stats`.**
 
+### KB-PERF-15 — Encoder: `txb_init_levels` computed eight lanes in parallel and stored them ONE BYTE AT A TIME — LANDED ✅ 2026-09-09 (byte-identical)
+
+Record: `benchmarks/encoder_txb_init_levels_2026-09-09.md` (+ THREE band TSVs).
+
+- **THE INSTRUMENT WAS THE FINDING, and it generalises.** The memory class had
+  been the 12x-vs-C outlier since the 1 MP re-profile but was UNATTRIBUTABLE:
+  release omits frame pointers, so `perf`'s inverted callgraph could not name a
+  single `memset` caller, and the class read as "a programme, not a lever".
+  Rebuilding the profiling driver with `RUSTFLAGS="-C force-frame-pointer=yes"`
+  and recording `--call-graph fp` produced a ranked caller list in one step:
+  **`txb_init_levels_impl_v3` 0.20 %**, `try_inv_row_pass` 0.11 %,
+  `try_fwd_col_pass` 0.07 %, `assemble_dir_edges_v4` 0.06 %,
+  `quantize_fp_impl_v3` 0.05 %. **Frame pointers cost ~nothing on a profiling
+  build — do this before writing off a memory class.**
+- **AN AGGREGATE CLASS RATIO NEAR PARITY DOES NOT MEAN ITS MEMBERS ARE.**
+  `txb_init_levels_impl_v3` is **183 ms vs `av1_txb_init_levels_avx2` 41 ms —
+  4.5x** — sitting inside the txb/trellis class the 1 MP table records at **ratio
+  1.32, the best of any class**, because `optimize_txb_core` is FASTER than
+  libaom's trellis and offsets it. The class table is a ranking tool, not a
+  verdict on its contents.
+- **THE DEFECT.** Both sides are already SIMD. The port computes `abs127` across
+  eight `i32` lanes, then `.to_array()` and **eight bounds-checked single-byte
+  stores** per vector; libaom narrows with `_mm256_packs_epi32` +
+  `_mm256_packus_epi16` and stores 8/16/32 bytes at once.
+- **magetypes 0.9.28 HAS NO i32->u8 NARROWING PRIMITIVE** — checked against the
+  crate source, not assumed: `bitcast_*` and the `store*` family exist, and no
+  `narrow`/`pack`/`shrink`/`saturat*` of any kind. Third instance of this
+  vocabulary gap after the missing gather (KB-PERF-8) and shuffle (KB-PERF-10).
+  What is available is building the eight bytes and storing them as ONE 8-byte
+  run, which is what landed; in the `height == 4` branch the same rewrite also
+  **absorbs the two 4-byte pad fills**, since `stride == height + TX_PAD_HOR == 8`
+  exactly.
+- **MEASURED, AND THE POOLING IS STATED RATHER THAN BURIED.** Byte-identical
+  output verified directly on two cells before timing (39,694 B / 10,912 B).
+
+  | cell | paired | rounds | p |
+  |---|---:|---:|---:|
+  | 512x512 | **-0.30 %** | 19/24 | **0.0066** |
+  | 1024x1024 band A (n=16) | -0.49 % | 12/16 | 0.0768 |
+  | 1024x1024 band B (n=30) | -0.25 % | 20/30 | 0.0987 |
+  | **1024x1024 pooled (n=46)** | **-0.32 %** | **32/46** | **0.0114** |
+
+  **NEITHER 1 MP band cleared p < 0.05 alone.** Band A was underpowered (the new
+  arm's spread runs ~2 % against base's ~1 %); band B was run to n=30 for that
+  reason and still did not clear it. They are independent replicates of the same
+  comparison with the same two binaries, so pooling is meta-analysis rather than
+  p-hacking — **and the check that matters is that the pooled median (-0.32 %)
+  sits BETWEEN the two individual medians (-0.49 %, -0.25 %)**, so no favourable
+  band was selected. Pooled null flat at +0.00 %, 22/46, p=0.88. The 512x512 band
+  is significant on its own and agrees in sign and magnitude.
+- **Not covered:** the narrowing is still scalar — a real `pack` needs a
+  magetypes primitive that 0.9.28 does not have, and adding one (or moving to a
+  version that has it) would let this kernel take libaom's shape and is worth
+  more than this landing. The other named `memset` callers above are untouched
+  and are now a ranked list rather than an opaque class.
+- **Gates:** `just gate-landing` green in full — `test-next` **1503/1503**,
+  `test-next-scalar` **1503/1503**, `census-gate` 4/4, `test-whereat` 4/4.
+
 ### KB-PERF-14 — Encoder: the transform config built two function pointers per call that only the scalar fallback reads — LANDED ✅ 2026-09-09 (2.402x -> 2.395x at 1 MP, byte-identical)
 
 Record: `benchmarks/encoder_txfm_cfg_2026-09-09.md` (+ THREE band TSVs, one of

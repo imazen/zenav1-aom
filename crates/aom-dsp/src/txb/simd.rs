@@ -58,15 +58,17 @@ pub(crate) fn txb_init_levels_impl(
         // 4 pad zeros are 8 output bytes, so a pair writes bytes 0..4 and
         // 8..12 of a 16-byte window. Widths are powers of two >= 4.
         debug_assert!(width % 2 == 0);
+        debug_assert_eq!(stride, 8, "height 4 + TX_PAD_HOR 4");
         for p in 0..width / 2 {
-            let arr = abs127(i32x8::from_slice(token, &coeff[p * 8..p * 8 + 8])).to_array();
+            let a = abs127(i32x8::from_slice(token, &coeff[p * 8..p * 8 + 8])).to_array();
             let out = &mut levels[p * 2 * stride..p * 2 * stride + 2 * stride];
-            for k in 0..4 {
-                out[k] = arr[k] as u8;
-                out[stride + k] = arr[4 + k] as u8;
-            }
-            out[4..8].fill(0);
-            out[stride + 4..stride + 8].fill(0);
+            // One 8-byte store per column instead of four byte stores plus a
+            // 4-byte fill: `stride == 8` here, so each column's four levels and
+            // four pad zeros are exactly one aligned run. Values are already in
+            // `0..=127` (module docs), so `as u8` is exact.
+            out[..8].copy_from_slice(&[a[0] as u8, a[1] as u8, a[2] as u8, a[3] as u8, 0, 0, 0, 0]);
+            out[stride..stride + 8]
+                .copy_from_slice(&[a[4] as u8, a[5] as u8, a[6] as u8, a[7] as u8, 0, 0, 0, 0]);
         }
         return;
     }
@@ -76,10 +78,19 @@ pub(crate) fn txb_init_levels_impl(
         let col = &coeff[i * height..(i + 1) * height];
         let out = &mut levels[i * stride..i * stride + stride];
         for c in 0..height / 8 {
-            let arr = abs127(i32x8::from_slice(token, &col[c * 8..c * 8 + 8])).to_array();
-            for (k, v) in arr.into_iter().enumerate() {
-                out[c * 8 + k] = v as u8;
-            }
+            let a = abs127(i32x8::from_slice(token, &col[c * 8..c * 8 + 8])).to_array();
+            // ONE 8-byte store, not eight byte stores. magetypes 0.9.28 has no
+            // i32->u8 narrowing primitive (no pack/narrow/shuffle — only
+            // `blend`), so libaom's `_mm256_packs_epi32` + `_mm256_packus_epi16`
+            // shape is not expressible here; building the run and storing it
+            // once is what is available, and it is where this kernel's time was
+            // going — it was the top `__memset`/store caller in the frame-pointer
+            // profile despite already being SIMD.
+            let bytes = [
+                a[0] as u8, a[1] as u8, a[2] as u8, a[3] as u8,
+                a[4] as u8, a[5] as u8, a[6] as u8, a[7] as u8,
+            ];
+            out[c * 8..c * 8 + 8].copy_from_slice(&bytes);
         }
         out[height..height + TX_PAD_HOR].fill(0);
     }
