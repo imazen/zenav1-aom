@@ -134,6 +134,36 @@ with its cell AND its speed, the speed being the one the backend ships.
 The ranked target is unchanged from the speed-0 table and is now confirmed at
 the shipping preset: **transform, +789 ms, 40.5 % of the gap, 3.78x.**
 
+## 6. The memory class at the shipping preset is DIFFUSE — no caller over 10 ms
+
+The profile was recorded with `-C force-frame-pointers=yes` and `--call-graph fp`
+(KB-PERF-15's instrument), so the memory class — 174.2 ms against C's 27.0,
+**6.45x, +147.2 ms, 7.6 % of the gap** — is attributable rather than opaque.
+First-level callers, port side:
+
+| | share | ms | top callers |
+|---|---:|---:|---|
+| `__memmove_avx512_unaligned_erms` | 1.57 % | 54.9 | `txfm_rd_in_plane_intra` 9.8, `intra_model_rd_y` 5.6, `txfm_rd_in_plane_uv_p` 5.2, `av1_inv_txfm2d_add_into` 2.1 |
+| `__memset_avx512_unaligned_erms` | 1.46 % | 51.1 | `optimize_txb_core` 8.7, `txb_init_levels_impl_v3` 4.2, `assemble_dir_edges_v4` 3.5, `build_directional_intra_high` 2.4, `try_fwd_col_pass` 2.1, `fwd_col_pass_core_v3` 1.7 |
+| `_int_malloc` | 0.37 % | 12.9 | `txfm_rd_in_plane_uv_p` 2.4, `txfm_rd_in_plane_intra` 2.1 |
+| `cfree` | 0.35 % | 12.2 | (below the 0.05 % cut) |
+
+**The useful result is negative: the largest single caller is 9.8 ms, ~0.5 % of
+the gap, and the named callers together account for under a third of the
+memset+memmove mass** — the rest is a sub-0.05 % tail. So the memory class is
+not one lever wearing a class's clothes; it is what KB-PERF-13 called it,
+diffuse per-call setup, and it will take many small landings rather than one.
+
+Two observations worth carrying:
+
+* **`txfm_rd_in_plane_intra` is still the top memmove caller (9.8 ms) after
+  KB-PERF-13 fixed its three allocations.** That landing removed the
+  bookkeeping; the copies that remain are elsewhere in the same function.
+* **`try_fwd_col_pass` + `fwd_col_pass_core_v3` contribute 3.8 ms of memset**,
+  which is the tiered vector scratch's zero-init — the same shape KB-PERF-2
+  tiered `{8,16,64}` for. It is now small, so the tiering worked; it is simply
+  not zero.
+
 ## Limits
 
 One cell, one content class, one box, bd8 4:2:0, cq27. Single timing pass per
