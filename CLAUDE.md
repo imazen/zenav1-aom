@@ -5564,6 +5564,44 @@ one tree, byte-identical output throughout):
   gap and a named open residual of KB-PERF-3 — only the DCT family passed its i16
   audit) and the register-blocked `compute_stats`.**
 
+### VOCABULARY CORRECTION 2026-09-09 — three KB-PERF entries state magetypes' capabilities WRONGLY, in both directions; the map is `docs/MAGETYPES_VOCABULARY.md`
+
+**Read that file before concluding a kernel shape is unavailable.** The errors
+and their single root cause:
+
+- **Root cause:** every wrong claim came from grepping the crate for the names
+  expected — `shuffle`, `permute`, `pack`, `gather` — and concluding from their
+  absence. The lane-movement primitives exist under **different names**
+  (`interleave_*`, `transpose_*`) and were never grepped for. **Grep for the
+  OPERATION's shape, not one vendor's spelling of it.** (KB-PERF-7 separately
+  records the twin failure: grep the version in `Cargo.lock`, not the newest on
+  crates.io.) Each restatement across entries made the wrong version look
+  better established — the §9 shape, in the perf log rather than the parity log.
+- **WRONG AS WRITTEN, in the permissive direction:** *"magetypes has no shuffle,
+  permute or unpack — only `blend`"* (KB-PERF-10, repeated in KB-PERF-15 and the
+  0.9.29 bump record). `f32x4`/`f32x8` have `interleave_lo`/`interleave_hi`/
+  `interleave`/`transpose_4x4`/`transpose_8x8`, in **0.9.28 too**. The claim is
+  true only of INTEGER lanes.
+- **WRONG IN THE OTHER DIRECTION, and this one would waste a landing:** the
+  0.9.29 bump commit and record say `madd_adjacent` unblocks `wiener_impl` (the
+  7.6x, ~167 ms). **It does not.** `madd_adjacent` pairs ADJACENT LANES, so a
+  convolution whose lanes are output columns needs `src[j], src[j+1]`
+  interleaved per lane — what libaom builds with `_mm256_unpacklo_epi16`, and
+  there is no integer equivalent here. Both passes have that shape, and
+  offsetting the loads does not avoid it (partial sums at stride 2 still need a
+  shuffle to recombine). **Do not start that work expecting it to close.**
+- **CONCLUSIONS THAT STAND:** KB-PERF-10's (no i16 8x8 transpose, so the
+  two-pass Hadamard cannot be vectorised end to end — the float transpose is
+  32-bit-lane); KB-PERF-8's (`gather` is absent in both versions).
+- **GENUINELY UNBLOCKED by 0.9.29, and the most concrete item:** KB-PERF-15's
+  named follow-up — `narrow_saturating_i32_to_i16` / `_i16_to_u8` give
+  `txb_init_levels` a real pack instead of building an 8-byte run. Also
+  `shr_logical_uniform` for KB-PERF-8's blend-chain shift select.
+- **Still blocked on primitives that do not exist at 0.9.29:** wiener's i16
+  convolution, `acc_stat_line`'s i16 fold, and the full-SIMD Hadamard — all
+  three need integer interleave/unpack. Closing them means a magetypes
+  contribution, not a version bump.
+
 ### KB-PERF-15 — Encoder: `txb_init_levels` computed eight lanes in parallel and stored them ONE BYTE AT A TIME — LANDED ✅ 2026-09-09 (byte-identical)
 
 Record: `benchmarks/encoder_txb_init_levels_2026-09-09.md` (+ THREE band TSVs).
