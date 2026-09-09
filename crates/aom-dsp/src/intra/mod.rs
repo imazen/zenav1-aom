@@ -764,26 +764,39 @@ pub fn filter_intra_predict_high(
     let (bw, bh) = (TX_W[tx_size], TX_H[tx_size]);
     debug_assert!(bw <= 32 && bh <= 32);
     let max_v = (1i32 << bd) - 1;
-    // buffer[row][col]: row 0 is above (with corner at col 0), col 0 is left.
-    let mut buf = [[0u16; 33]; 33];
-    for r in 0..bh {
-        buf[r + 1][0] = left[r];
-    }
-    // buf[0][0..bw+1] = above[-1..bw] = corner then the above row.
-    buf[0][..bw + 1].copy_from_slice(&above[..bw + 1]);
+
+    // C keeps a whole (bh+1) x (bw+1) scratch (`buffer` in
+    // `av1_filter_intra_predictor_c`), but the recursion only ever reads rows
+    // `r-1`, `r` and `r+1`, so THREE rows are sufficient and the values are
+    // identical. That matters because the flat form was
+    // `[[u16; 33]; 33]` — a 2178-byte zero-init on EVERY call, to fill as few
+    // as 25 useful cells for a 4x4 — which is the shape KB-PERF-2's lever 3a
+    // found dominating the small transforms. 198 bytes now.
+    //
+    // Row mapping: `prev` is C's `buffer[r-1]`, `row0` is `buffer[r]`, `row1`
+    // is `buffer[r+1]`; column 0 of each is the left edge and row 0 is the
+    // above edge with the corner at column 0, exactly as C initialises them.
+    let mut prev = [0u16; 33];
+    let mut row0 = [0u16; 33];
+    let mut row1 = [0u16; 33];
+    prev[..bw + 1].copy_from_slice(&above[..bw + 1]);
 
     let mut r = 1;
     while r < bh + 1 {
+        // C: buffer[r][0] = left[r-1], buffer[r+1][0] = left[r]. The loop step
+        // is 2 and `r <= bh - 1`, so both indices are inside `left[..bh]`.
+        row0[0] = left[r - 1];
+        row1[0] = left[r];
         let mut c = 1;
         while c < bw + 1 {
             let p = [
-                buf[r - 1][c - 1] as i32, // p0 corner
-                buf[r - 1][c] as i32,     // p1..p4 above
-                buf[r - 1][c + 1] as i32,
-                buf[r - 1][c + 2] as i32,
-                buf[r - 1][c + 3] as i32,
-                buf[r][c - 1] as i32,     // p5 left of row r
-                buf[r + 1][c - 1] as i32, // p6 left of row r+1
+                prev[c - 1] as i32, // p0 corner
+                prev[c] as i32,     // p1..p4 above
+                prev[c + 1] as i32,
+                prev[c + 2] as i32,
+                prev[c + 3] as i32,
+                row0[c - 1] as i32, // p5 left of row r
+                row1[c - 1] as i32, // p6 left of row r+1
             ];
             for k in 0..8 {
                 let taps = &FILTER_INTRA_TAPS[mode][k];
@@ -792,15 +805,21 @@ pub fn filter_intra_predict_high(
                     pr += taps[j] as i32 * p[j];
                 }
                 let v = ((pr + 8) >> 4).clamp(0, max_v) as u16;
-                buf[r + (k >> 2)][c + (k & 3)] = v;
+                if k < 4 {
+                    row0[c + k] = v;
+                } else {
+                    row1[c + (k - 4)] = v;
+                }
             }
             c += 4;
         }
+        // C copies `buffer[r+1][1..bw+1]` into `dst` row r at the end; emitting
+        // the two rows here is the same assignment, one iteration earlier.
+        dst[(r - 1) * dst_stride..(r - 1) * dst_stride + bw].copy_from_slice(&row0[1..bw + 1]);
+        dst[r * dst_stride..r * dst_stride + bw].copy_from_slice(&row1[1..bw + 1]);
+        // Next iteration's `buffer[r-1]` is this iteration's `buffer[r+1]`.
+        prev = row1;
         r += 2;
-    }
-
-    for r in 0..bh {
-        dst[r * dst_stride..r * dst_stride + bw].copy_from_slice(&buf[r + 1][1..bw + 1]);
     }
 }
 
