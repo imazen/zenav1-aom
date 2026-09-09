@@ -561,7 +561,15 @@ pub(crate) fn try_fwd_col_pass(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    if col_n % 8 != 0 {
+    // `col_n == 4` runs a HALF-FILLED 8-lane batch, exactly as
+    // [`try_inv_col_pass`] already does. It is the same trade and the same
+    // `half_batch_pays` policy, and it is worth taking here for the reason
+    // KB-PERF-5 records: the competition is not a full-width vector pass but
+    // the driver's SCALAR per-column loop, so 4 live lanes is still ~4x. Both
+    // ends stay contiguous at 4-wide (an i16 run of the source row in, a
+    // 4-entry run of `buf` out), so this is the inverse COLUMN pass's shape,
+    // not the row pass's gather.
+    if col_n % 8 != 0 && !(col_n == 4 && half_batch_pays(row_n)) {
         return false;
     }
     let _ = crate::dispatch::scalar_forced();
@@ -635,7 +643,7 @@ fn fwd_col_pass(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    debug_assert!(row_n <= 64 && col_n % 8 == 0);
+    debug_assert!(row_n <= 64 && (col_n % 8 == 0 || col_n == 4));
     if row_n <= 8 {
         let mut tin = [i32x8::zero(t); 8];
         let mut tout = [i32x8::zero(t); 8];
@@ -678,10 +686,25 @@ fn fwd_col_pass_core(
     tout: &mut [I32x8<Token>],
 ) {
     let sr = [0i8; 12]; // fwd kernels ignore stage_range
-    for cg in (0..col_n).step_by(8) {
+    let mut cg = 0usize;
+    while cg < col_n {
+        let active = (col_n - cg).min(8); // 8, or 4 (col_n == 4)
         for (r, ti) in tin[..row_n].iter_mut().enumerate() {
             let src_r = if ud_flip { row_n - r - 1 } else { r };
-            let mut v = widen16(t, &input[src_r * stride + cg..src_r * stride + cg + 8]);
+            let off = src_r * stride + cg;
+            let mut v = if active == 8 {
+                widen16(t, &input[off..off + 8])
+            } else {
+                // The idle lanes are ZERO, and they stay inert end to end: the
+                // 1-D kernels are linear, `shl_clamp64v`/`rshiftv` map 0 to 0,
+                // and only `active` lanes are stored. So a half batch computes
+                // the same values for its live columns as a full one.
+                let a: [i16; 4] = input[off..off + 4].try_into().unwrap();
+                i32x8::from_array(
+                    t,
+                    [a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32, 0, 0, 0, 0],
+                )
+            };
             if shift0 > 0 {
                 // round_shift_array(temp_in, -shift[0]) with shift[0]=2 →
                 // the NEGATIVE-bit arm: (v << 2) clamped to i32 in i64.
@@ -693,14 +716,28 @@ fn fwd_col_pass_core(
         for (r, to) in tout[..row_n].iter_mut().enumerate() {
             let v = if shift1_bit > 0 { rshiftv(t, *to, shift1_bit) } else { *to };
             // Scalar: buf[r*col_n + dst_c] = temp_out[r], dst_c lr-flipped.
+            // Lane j holds source column `cg + j`, so under lr_flip it lands at
+            // `col_n - 1 - (cg + j)` — a descending run based at
+            // `col_n - cg - active`, i.e. the lanes reversed. That is the same
+            // expression the 8-lane arm used, with `active` in place of 8.
             if lr_flip {
-                let base = r * col_n + (col_n - cg - 8);
-                revv(t, v).store((&mut buf[base..base + 8]).try_into().unwrap());
+                let base = r * col_n + (col_n - cg - active);
+                if active == 8 {
+                    revv(t, v).store((&mut buf[base..base + 8]).try_into().unwrap());
+                } else {
+                    let a = v.to_array();
+                    buf[base..base + 4].copy_from_slice(&[a[3], a[2], a[1], a[0]]);
+                }
             } else {
                 let base = r * col_n + cg;
-                v.store((&mut buf[base..base + 8]).try_into().unwrap());
+                if active == 8 {
+                    v.store((&mut buf[base..base + 8]).try_into().unwrap());
+                } else {
+                    buf[base..base + 4].copy_from_slice(&v.to_array()[..4]);
+                }
             }
         }
+        cg += active;
     }
 }
 

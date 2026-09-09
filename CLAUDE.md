@@ -56,7 +56,7 @@ user says otherwise; the two retained fleet photo witnesses are at 2.49x / 2.65x
 | (1) a backend zenavif can select **by default** | seam **works and is much wider at HEAD**. Closed at the seam 2026-09-08 (zenavif `e73e3d7`, `aae9d98`, `6788cdf`, `138cc01`): full pixel range, 4:4:4, alpha (the auxiliary Cs400 item), cq-0 lossless, GBR identity, and grayscale at 8/10/12. Three query surfaces now agree with the encode path by construction rather than by restatement — `validate_for_input` delegates to the encode path's own predicate, `backend_router` derives its matrix rule from the muxer's, and `zenavif-serialize` derives the whole `av1C`/`pixi`/`colr` from the payload's sequence header. Gated by `aom_encode_backend.rs` 24/24, `aom_roundtrip_loss.rs` 6/6 (72 support pairs + 24 routing configurations + 54 container/payload files) and `resolved_routing.rs` 6/6; whole-crate **449 passed / 0 failed** with `tests/vectors` provisioned. "By default" still needs two zenavif-side flips (`default` feature set; `#[default]` on `Av1Backend`), and **both remain blocked on clause (4) alone**. `benchmarks/zenavif_backend_integration_2026-09-08.md` |
 | (2) a support contract that never lies | `configuration_support.rs` + `refusal_census.rs` — the support query, the knob ranges and the documented refusals are asserted against the encoder's own behaviour |
 | (3) no panics or refusals on reachable inputs | 90k fuzz inputs, 0 panics (`encode_fuzz_sweep.rs`); KB-51 was found this way |
-| (4) encode time within libaom | **NOT MET — 2.475x at the speed-0 profile cell and 2.531x at 1024x1024** (2.542x / 2.624x before KB-PERF-7, 2.69x before KB-PERF-6) vs Gate 3's <= 1.5x; the 3.24x-4.03x band across byte-identical cells is `benchmarks/encode_perf_vs_libaom_2026-09-08.md`. **This is the critical path: clause (1) reduces to it, and closing it needs ~178 ms of a 275 ms gap — several landings, not one.** Rank levers off `benchmarks/encoder_x86_reprofile_2026-09-08.md` (2026-09-08, taken AFTER KB-PERF-6; supersedes the ranked table in `..._x86_profile_...` and keeps its two findings). Every KB-PERF-1..5 ranking is aarch64-apple-darwin and does NOT transfer. **The structural root under ~42 % of the gap is that the encoder holds planes as `u16` at every bit depth and so runs the HIGHBD kernels at bd8, where libaom runs a specialised lowbd path: forward transform +56.3 ms, inverse +51.0 ms, `highbd_variance` at bd8 +7.6 ms — one cause, ~115 ms, no single landing closes it.** **The obvious next step was BUILT AND MEASURED NULL — do not rebuild it.** The audited i16 inverse kernels are wired only to the DECODER's `u8` path (a reach probe on `try_inv_col_pass_u8` records ZERO calls); the u16-output twin was written, is CORRECT (427/427 still byte-identical, aom-dsp green), and is **-0.03 % on 5/8 interleaved rounds** — the -8 to -10 ms bound is refuted, measured 0. Mechanism, and it is KB-PERF-3's own lesson from the other side: an `i16x16` and an `i32x8` are both 256 bits, so lane count changes and work does not; the inverse kernels never get `fbtf16`'s cheaper `half_btf` because their 17-bit transients live in a two-domain i32 representation anyway. **Both transform rows therefore need a different idea than lane width** — the profile points at libaom's SIZE-SPECIALISED whole-transform functions vs the port's generic driver, which is a much larger programme. Two other hypotheses were tested and refuted the same day: inverse redundancy (C's full tail is 15.7 ms, ratio 4.2x, not the 17x a top-N cut suggested) and a `col_n >= 16` restriction (+0.4 %). **SIZE-CONTROLLED**: the 192x192 profile cell is L2-resident (~108 KiB of planes), which is exactly the regime where a traffic-halving lever cannot show a win, so the null was re-measured at 512x512 and 1024x1024 (3 MiB, L3) — **+0.64 % and +0.22 %, faster in 1/5 rounds each, byte-identical output**; the revert stands on a 28x pixel-count span. The STAGE RANKING transfers (max shift 3.0 pp, no reordering of the top four), so the cheap cell is a valid ranking tool at 24x the iteration speed — but **the ratio itself is cell-dependent — 2.4988x at 192x192 and 2.5717x at 1024x1024 after KB-PERF-7** (2.542x / 2.624x before it), so quote the headline with its cell. **KB-PERF-7 also measured the size regime from the other direction**: its four-pixel fold is WORTH MORE at 1024x1024 (-2.00 %) than at 192x192 (-1.68 %), which is what an L2-resident cell under-measuring a traffic lever looks like when the lever actually works. |
+| (4) encode time within libaom | **NOT MET — 2.475x at the 192x192 profile cell and 2.478x at 1024x1024** (KB-PERF-9 measured 2.521x -> 2.478x at 1 MP; the 192x192 cell was NOT re-measured for it, so that figure is KB-PERF-8's) (2.542x / 2.624x before KB-PERF-7, 2.69x before KB-PERF-6) vs Gate 3's <= 1.5x; the 3.24x-4.03x band across byte-identical cells is `benchmarks/encode_perf_vs_libaom_2026-09-08.md`. **This is the critical path: clause (1) reduces to it, and closing it needs ~178 ms of a 275 ms gap — several landings, not one.** **Rank levers off `benchmarks/encoder_x86_reprofile_1024_2026-09-09.md`** (2026-09-09, taken at 1024x1024 AFTER KB-PERF-7/8 — the 192x192 tables are L2-resident and their class SHARES do not carry to a 1 MP frame; it supersedes `..._x86_reprofile_2026-09-08.md`, which supersedes `..._x86_profile_...`). **Its headline finding is a lever that does NOT exist: `optimize_txb_core` is the port's LARGEST symbol at 11.44 %, and like-for-like it is 1211 ms against C's `av1_optimize_txb` 1258 ms — the port's trellis is FASTER, and the whole txb/trellis class runs at ratio 1.32, the best of any class. Do not spend a landing on it.** The class table at 1 MP (gap 6370 ms): transform +2440 (38.3 %), rd-driver +1023 (16.1 %), loop-restoration +900 (14.1 %), intra-pred +514, memory/memset +486 at 12.4x, txb +483 at 1.32x, quantize +340, distortion +295. Every KB-PERF-1..5 ranking is aarch64-apple-darwin and does NOT transfer. **The structural root under ~42 % of the gap is that the encoder holds planes as `u16` at every bit depth and so runs the HIGHBD kernels at bd8, where libaom runs a specialised lowbd path: forward transform +56.3 ms, inverse +51.0 ms, `highbd_variance` at bd8 +7.6 ms — one cause, ~115 ms, no single landing closes it.** **The obvious next step was BUILT AND MEASURED NULL — do not rebuild it.** The audited i16 inverse kernels are wired only to the DECODER's `u8` path (a reach probe on `try_inv_col_pass_u8` records ZERO calls); the u16-output twin was written, is CORRECT (427/427 still byte-identical, aom-dsp green), and is **-0.03 % on 5/8 interleaved rounds** — the -8 to -10 ms bound is refuted, measured 0. Mechanism, and it is KB-PERF-3's own lesson from the other side: an `i16x16` and an `i32x8` are both 256 bits, so lane count changes and work does not; the inverse kernels never get `fbtf16`'s cheaper `half_btf` because their 17-bit transients live in a two-domain i32 representation anyway. **Both transform rows therefore need a different idea than lane width** — the profile points at libaom's SIZE-SPECIALISED whole-transform functions vs the port's generic driver, which is a much larger programme. Two other hypotheses were tested and refuted the same day: inverse redundancy (C's full tail is 15.7 ms, ratio 4.2x, not the 17x a top-N cut suggested) and a `col_n >= 16` restriction (+0.4 %). **SIZE-CONTROLLED**: the 192x192 profile cell is L2-resident (~108 KiB of planes), which is exactly the regime where a traffic-halving lever cannot show a win, so the null was re-measured at 512x512 and 1024x1024 (3 MiB, L3) — **+0.64 % and +0.22 %, faster in 1/5 rounds each, byte-identical output**; the revert stands on a 28x pixel-count span. The STAGE RANKING transfers (max shift 3.0 pp, no reordering of the top four), so the cheap cell is a valid ranking tool at 24x the iteration speed — but **the ratio itself is cell-dependent — 2.4988x at 192x192 and 2.5717x at 1024x1024 after KB-PERF-7** (2.542x / 2.624x before it), so quote the headline with its cell. **KB-PERF-7 also measured the size regime from the other direction**: its four-pixel fold is WORTH MORE at 1024x1024 (-2.00 %) than at 192x192 (-1.68 %), which is what an L2-resident cell under-measuring a traffic lever looks like when the lever actually works. |
 | (5) match the RD of C | byte identity is the strongest available evidence and holds on 427/427 standalone cells; the pinned divergences are the measured/attributed/bounded residual the directive permits to ship |
 | (6) sensible conversion + wiring + testing of all of the C encoder | `av1_determine_sc_tools_with_encoding` (PARITY C3) unported; the bd12 dispatch-tier disagreement open |
 
@@ -5563,6 +5563,64 @@ one tree, byte-identical output throughout):
   elsewhere: the transform INVERSE half (+53 ms, the largest single item in the
   gap and a named open residual of KB-PERF-3 — only the DCT family passed its i16
   audit) and the register-blocked `compute_stats`.**
+
+### KB-PERF-9 — Encoder: the forward transform COLUMN pass had no 4-wide arm, so every 4-wide forward transform ran the driver's SCALAR per-column loop — LANDED ✅ 2026-09-09 (2.521x -> 2.478x at 1024x1024, byte-identical)
+
+Record: `benchmarks/encoder_fwd_col_4wide_2026-09-09.md` (+ two band TSVs).
+Found by the 1024x1024 re-profile that opens
+`benchmarks/encoder_x86_reprofile_1024_2026-09-09.md`.
+
+- **THE DEFECT.** `try_fwd_col_pass` opened with a flat `if col_n % 8 != 0 {
+  return false; }`, so any transform whose WIDTH is 4 declined the vector column
+  pass and fell back to `fwd_txfm2d_core`'s scalar per-column loop. **The INVERSE
+  column pass in the same file has had the arm since the 2026-07-17 AVX2
+  landing** — `if col_n % 8 != 0 && !(col_n == 4 && half_batch_pays(row_n))` —
+  and `half_batch_pays`'s own doc says *"x86-64 always says yes: the 4-wide arms
+  are the shape the 2026-07-17 AVX2 landing measured and kept"*. The forward twin
+  simply never got it. Cost on a 1 MP frame: **~294 ms/encode of scalar 1-D
+  forward kernels** (`av1_fadst4` 65, `av1_fdct4` 54, `av1_fadst16` 47,
+  `av1_fdct16` 46, `av1_fadst8` 42, `av1_fdct8` 41).
+- **WHY A HALF-FILLED BATCH PAYS HERE AND DID NOT IN KB-PERF-3 — the KB-PERF-5
+  lesson, third instance.** *Same shape, opposite verdict, because the baseline
+  differs.* KB-PERF-3's half-idle `i16x16` competed against a full `i32x8` (both
+  256 bits, so nothing changed) and measured null; here the competition is a
+  SCALAR loop, so 4 live lanes is still ~4x. Both ends also stay CONTIGUOUS at
+  4-wide, which is the inverse COLUMN pass's shape and not the row pass's — a
+  distinction this file already prices, since `try_fwd_row_pass` records that
+  `col_n < 8` degrades its loads to a gather and measured **+9.8 %**
+  (*"gathers cost; scatters don't"*).
+- **BIT-EXACT BY CONSTRUCTION, no numeric bound.** The idle lanes are zero and
+  stay inert end to end: the 1-D kernels are linear, `shl_clamp64v`/`rshiftv` map
+  0 to 0, and only `active` lanes are stored. The `lr_flip` store index needed no
+  new case either — lane `j` holds source column `cg + j`, landing at
+  `col_n - 1 - (cg + j)`, a descending run based at `col_n - cg - active`, which
+  is the 8-lane arm's own expression with `active` for 8.
+- **BITE PROOF, ASYMMETRIC.** Swapping two lanes in the new 4-wide non-flip store
+  — the only perturbation reachable SOLELY through the new arm — fails
+  `txfm2d_differential_fuzz` (vs the real exported C) and
+  `txfm2d_simd_perm_diff::txfm2d_simd_equals_scalar_at_every_permutation` while
+  **all 10 inverse tests stay green**. So the arm is genuinely reached and the
+  green is not vacuous.
+- **MEASURED** (two sha256-distinct binaries from one tree, arms ROTATED per
+  round, a same-binary null in every band, byte-identical 39,694 B output):
+
+  | cell | base | new | paired | rounds | p | null |
+  |---|---:|---:|---:|---:|---:|---:|
+  | 1024x1024 cq27 s0 | 10541.2 ms | 10362.6 ms | **-1.63 %** | 10/10 | 0.0020 | -0.15 % (p=0.11) |
+  | 512x512 cq27 s0 | 3778.6 ms | 3712.2 ms | **-1.76 %** | 20/20 | <0.0001 | -0.19 % (p=0.82) |
+
+  **Ratio 2.521x -> 2.478x** at 1024x1024 (C median 4181.9 ms). ~172 ms of the
+  ~294 ms of scalar forward kernels removed — the right order, since the vector
+  path is not free and reaches only the COLUMN pass.
+- **NOT COVERED, precisely.** The column kernel spans `row_n` and the row kernel
+  spans `col_n`, so the arm reaches exactly the WIDTH-4 transforms: TX_4X4 /
+  TX_4X8 / TX_4X16 column passes are fixed; the forward ROW pass is **still
+  scalar whenever `row_n == 4`** (TX_4X4, TX_8X4, TX_16X4), and must not be
+  assumed symmetric — its loads from row-major `buf` are strided, i.e. the gather
+  case this file has already measured losing. **aarch64 unmeasured**
+  (`half_batch_pays` declines `row_n == 4` there, same policy as the inverse).
+- **Gates:** `just gate-landing` green in full — `test-next` **1503/1503**,
+  `test-next-scalar` **1503/1503**, `census-gate` 4/4, `test-whereat` 4/4.
 
 ### KB-PERF-8 — Encoder+Decoder: the SGR A/B pass was scalar because ONE of its ~20 operations is a table lookup — LANDED ✅ 2026-09-08 (2.572x -> 2.531x at 1024x1024, byte-identical)
 
