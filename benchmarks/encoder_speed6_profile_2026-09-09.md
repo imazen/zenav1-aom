@@ -28,6 +28,17 @@ speed 0 (`speed_features.c:387-388`, KB-23), so the intra-mode CNN never runs
 there — which is exactly why every speed-0 profile in this repo, and therefore
 every ranked lever table, is blind to it.
 
+> **CORRECTION, same day — the clause-(4) half of this record does NOT hold at
+> the preset zenavif ships.** `encoder_shipping_preset_1mp_2026-09-09.md`
+> establishes that zenavif's default is `speed: 4` -> **`--cpu-used 3`**, and
+> measures the CNN there at **40.9 ms vs C's 9.3 = +31.6 ms, which is 1.6 % of
+> the 1949 ms speed-3 gap** — against the 11.1 % below. The CNN's ABSOLUTE cost
+> is speed-invariant (~32 ms, computed once per 64x64 by KB-PERF-1's cache);
+> only the DENOMINATOR moved. So the "one piece of work serves both" claim
+> below should be read as: **it serves KB-41 root #27, and at the shipping
+> preset it is not a ranked clause-(4) lever.** The ranked lever at s3 is
+> transform, +789 ms, 40.5 % of the gap — the same item the speed-0 table names.
+
 ## The fix is already scoped, and it closes an open PARITY root too
 
 The mechanism was measured by KB-PERF-1 and never acted on: the port's

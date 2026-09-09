@@ -1,0 +1,480 @@
+26.80	av1_optimize_txb
+6.99	search_tx_type
+2.50	build_directional_and_filter_intra_predictors
+2.29	av1_predict_intra_block
+2.27	av1_dr_prediction_z2_avx2
+1.59	av1_get_txb_entropy_context
+1.58	av1_quantize_fp_avx2
+1.49	update_coeff_general.constprop.0
+1.40	av1_cost_coeffs_txb
+1.39	block_rd_txfm
+1.05	av1_rd_pick_intra_sby_mode
+1.04	av1_txfm_rd_in_plane
+0.96	av1_predict_intra_block_facade
+0.95	dist_block_px_domain
+0.93	av1_selfguided_restoration_avx2
+0.91	choose_tx_size_type_from_rd
+0.90	av1_quant
+0.88	av1_txb_init_levels_avx2
+0.87	av1_quantize_fp_facade
+0.82	build_non_directional_intra_predictors
+0.81	fdct8x8_new_sse2
+0.79	lowbd_inv_txfm2d_add_no_identity_ssse3
+0.77	av1_lowbd_fwd_txfm2d_8x8_avx2
+0.70	av1_idct8_sse2
+0.70	aom_subtract_block_sse2
+0.67	fadst8x8_new_sse2
+0.63	av1_iadst8_sse2
+0.63	av1_rd_pick_intra_sbuv_mode
+0.59	prune_intra_mode_with_hog
+0.59	av1_dr_prediction_z3_avx2
+0.59	get_tx_type_cost.part.0
+0.57	intra_model_rd.constprop.0
+0.57	av1_block_error_avx2
+0.57	lowbd_inv_txfm2d_add_no_identity_avx2
+0.55	av1_inverse_transform_block
+0.54	fdct16x16_new_avx2
+0.52	av1_foreach_transformed_block_in_plane
+0.51	aom_hadamard_8x8_sse2
+0.51	av1_lowbd_pixel_proj_error_avx2
+0.50	av1_lowbd_inv_txfm2d_add_ssse3
+0.49	__memmove_avx512_unaligned_erms
+0.48	av1_get_eob_pos_token
+0.47	av1_filter_intra_predictor_sse4_1
+0.47	aom_convolve_copy_avx2
+0.45	aom_subtract_block_avx2
+0.45	av1_lowbd_fwd_txfm2d_4x4_sse2
+0.44	lowbd_inv_txfm2d_8x8_no_identity_avx2.constprop.0
+0.44	lowbd_fwd_txfm2d_16x8_avx2
+0.43	fadst16x16_new_avx2
+0.41	av1_setup_xform
+0.40	compute_stats_win5_avx2
+0.40	av1_wiener_convolve_add_src_avx2
+0.40	fdct8x16_new_avx2
+0.39	av1_xform
+0.37	av1_subtract_txb
+0.36	av1_filter_intra_edge_sse4_1
+0.35	av1_pixel_diff_dist
+0.35	__log1p_fma
+0.33	intra_rd_variance_factor
+0.33	av1_encode_sb_row
+0.33	av1_lowbd_fwd_txfm2d_8x4_sse2
+0.32	aom_variance4x4_sse2
+0.32	av1_optimize_b
+0.31	fadst8x16_new_avx2
+0.31	fdct4x4_new_sse2
+0.31	__memset_avx512_unaligned_erms
+0.29	lowbd_fwd_txfm2d_16x16_avx2
+0.29	lowbd_fwd_txfm2d_8x16_avx2
+0.29	av1_get_iqmatrix
+0.28	aom_satd_avx2
+0.27	av1_filter_block_plane_horz_opt
+0.26	av1_nn_predict_avx2
+0.26	set_y_mode_and_delta_angle
+0.25	fdct4x8_new_sse2
+0.24	fdct16x32_avx2
+0.24	av1_lowbd_fwd_txfm2d_4x8_sse2
+0.24	av1_get_tx_scale
+0.23	av1_lowbd_inv_txfm2d_add_v_identity_ssse3
+0.23	prune_intra_y_mode
+0.23	av1_set_offsets_without_segment_id
+0.22	__memset_avx512_unaligned
+0.22	fadst4x8_new_sse2
+0.22	av1_lowbd_inv_txfm2d_add_avx2
+0.21	fdct8x8_new_avx2
+0.21	idct16_avx2
+0.20	aom_sum_squares_2d_i16_nxn_sse2
+0.20	idct4_w4_sse2
+0.19	av1_filter_block_plane_vert_opt
+0.19	intra_edge_filter_strength
+0.19	encode_block_intra_and_set_context
+0.19	aom_variance8x8_sse2
+0.19	av1_get_nz_map_contexts_sse2
+0.19	idct16_sse2
+0.19	_int_malloc
+0.19	av1_setup_quant
+0.18	fdct8x16_new_sse2
+0.18	av1_rd_pick_partition
+0.18	av1_txfm_uvrd
+0.18	idct16_low8_ssse3
+0.18	aom_sse_avx2
+0.18	iadst4_w4_sse2
+0.18	av1_cost_tokens_from_cdf
+0.17	fdct8x4_new_sse2
+0.17	av1_lowbd_fwd_txfm_avx2
+0.17	get_txb_ctx_general
+0.17	lowbd_inv_txfm2d_add_8x4_ssse3.constprop.0
+0.17	iadst16_low8_ssse3
+0.16	av1_upsample_intra_edge_sse4_1
+0.16	av1_get_entropy_contexts
+0.16	aom_quantize_b_avx2
+0.15	aom_lpf_vertical_14_dual_sse2
+0.15	cnn_convolve_no_maxpool_padding_valid_5x5_avx2
+0.15	av1_subtract_block
+0.15	fadst8x8_new_avx2
+0.14	aom_hadamard_4x4_sse2
+0.14	fadst4x4_new_sse2
+0.14	av1_update_and_record_txb_context
+0.14	idct32_avx2
+0.14	aom_variance8x16_sse2
+0.13	av1_filter_block_plane_horz_opt_chroma
+0.13	dr_prediction_z1_8xN_avx2
+0.13	fadst8x16_new_sse2
+0.12	av1_quick_txfm
+0.12	encode_superblock.constprop.0
+0.12	cfl_load_dc_pred
+0.12	av1_pick_uniform_tx_size_type_yrd
+0.11	av1_rd_pick_intra_mode_sb
+0.11	hadamard_16x16_avx2
+0.11	aom_variance16x16_avx2
+0.11	aom_sum_squares_2d_i16_avx2
+0.11	av1_inv_txfm_add_avx2
+0.11	av1_calc_normalized_variance
+0.11	av1_filter_block_plane_vert_opt_chroma
+0.11	cfree@GLIBC_2.2.5
+0.11	aom_hadamard_lp_8x8_dual_avx2
+0.11	av1_calc_proj_params_avx2
+0.11	iadst8_w4_sse2
+     0.10%  eprof_x86  [unknown]         [k] 0xffffffffb322c68a
+0.10	aom_lpf_vertical_8_dual_sse2
+0.10	aom_smooth_predictor_8x8_ssse3
+0.10	dr_prediction_z3_16x16_avx2
+0.10	aom_lpf_vertical_8_sse2
+0.10	transpose_16bit_16x16_avx2
+0.09	av1_fdct8x32_new_sse2
+0.09	av1_iadst8_low1_ssse3
+0.09	aom_lpf_horizontal_8_dual_sse2
+0.09	av1_cnn_convolve_no_maxpool_padding_valid_avx2
+0.09	idct8_w4_sse2
+0.09	idct16_low8_avx2
+0.09	idct4_sse2
+0.09	iadst4_sse2
+0.09	iadst16_avx2
+0.09	pick_sb_modes
+0.08	av1_fwd_txfm
+0.08	iadst16_low8_avx2
+0.08	av1_cfl_predict_block
+0.08	memset@plt
+0.08	cfl_store_tx
+0.08	fadst8x4_new_sse2
+0.08	av1_dr_prediction_z1_avx2
+0.08	aom_paeth_predictor_8x8_ssse3
+0.07	av1_setup_dst_planes
+0.07	av1_use_qmatrix
+0.07	aom_hadamard_32x32_avx2
+0.07	av1_alloc_pmc
+0.07	av1_lowbd_fwd_txfm2d_16x4_sse2
+0.07	av1_write_coeffs_txb
+0.07	aom_variance16x8_avx2
+0.07	memcpy@plt
+0.07	aom_memalign
+0.07	aom_paeth_predictor_4x4_ssse3
+0.07	av1_quantize_b_facade
+0.06	get_txb_ctx_8x8
+0.06	av1_update_state
+0.06	lowbd_fwd_txfm2d_32x16_avx2
+0.06	iadst16_sse2
+0.06	aom_lpf_vertical_6_sse2
+0.06	aom_lpf_vertical_4_sse2
+0.06	get_txb_ctx
+0.05	av1_lowbd_fwd_txfm2d_4x16_sse2
+0.05	cfl_compute_rd.constprop.0
+0.05	cfl_compute_rd.constprop.1
+0.05	aom_smooth_predictor_4x4_ssse3
+0.05	malloc
+0.05	_int_free_merge_chunk
+0.05	av1_free_pmc
+0.05	av1_set_entropy_contexts
+0.05	av1_quantize_fp_32x32_avx2
+0.05	aom_sum_squares_2d_i16_4x4_sse2
+0.05	lowbd_fwd_txfm2d_32x32_avx2
+0.05	av1_lowbd_fwd_txfm2d_32x8_sse2
+0.05	fidentity16x16_new_avx2
+0.05	av1_free_pc_tree_recursive
+0.04	aom_lpf_horizontal_14_dual_sse2
+0.04	lowbd_inv_txfm2d_add_16x4_ssse3.constprop.0
+0.04	av1_encode_intra_block_plane
+0.04	iadst16_w4_sse2
+0.04	aom_variance4x8_sse2
+0.04	od_ec_encode_cdf_q15
+0.04	aom_lpf_horizontal_4_sse2
+0.04	filter_vert.isra.0
+0.04	aom_lpf_vertical_14_sse2
+0.04	idct32_low16_ssse3
+0.04	dr_prediction_z3_16x8_avx2
+0.04	av1_fill_coeff_costs
+0.04	av1_setup_qmatrix
+0.04	idct32_low16_avx2
+0.04	av1_setup_src_planes
+     0.03%  eprof_x86  [unknown]         [k] 0xffffffffb2a011b2
+0.03	aom_smooth_predictor_8x16_ssse3
+0.03	aom_lpf_horizontal_8_sse2
+0.03	idct32_low8_ssse3
+0.03	aom_lpf_horizontal_8_quad_avx2
+0.03	fidentity8x8_new_sse2
+0.03	log_sub_block_var
+0.03	av1_cnn_convolve_no_maxpool_padding_valid_c
+0.03	idct32_low8_avx2
+0.03	av1_idct8_low1_ssse3
+0.03	idct16_w4_sse2
+0.03	aom_paeth_predictor_8x4_ssse3
+0.03	intra_mode_cnn_partition
+0.03	write_modes_b.isra.0
+0.02	wiener_filter_stripe
+0.02	filter_horz.isra.0
+0.02	av1_get_qmatrix
+0.02	av1_cnn_activate_c
+0.02	dr_prediction_z3_32x32_avx2.isra.0
+     0.02%  eprof_x86  [unknown]         [k] 0xffffffffb2a00ef0
+0.02	av1_update_intra_mb_txb_context
+     0.02%  eprof_x86  [unknown]         [k] 0xffffffffb2b0410b
+0.02	dr_prediction_z1_16xN_avx2
+0.02	av1_dilate_block
+0.02	av1_restore_context
+0.02	encode_b.constprop.0
+0.02	__libc_malloc2
+0.02	aom_smooth_predictor_16x16_ssse3
+0.02	fdct8x8_new_sse2
+     0.02%  eprof_x86  [unknown]         [k] 0xffffffffb411f851
+0.02	lowbd_inv_txfm2d_add_4x16_ssse3.constprop.0
+0.02	aom_dc_predictor_8x8_sse2
+0.02	aom_sum_squares_2d_i16_4xn_sse2
+0.02	aom_dc_predictor_8x4_sse2
+0.02	unlink_chunk.isra.0
+0.02	aom_calloc
+0.02	iidentity4_ssse3
+0.02	av1_lowbd_inv_txfm2d_add_h_identity_ssse3
+0.02	fidentity8x4_new_sse2
+0.02	write_intra_prediction_modes
+0.02	aom_smooth_h_predictor_4x4_ssse3
+     0.02%  eprof_x86  [unknown]         [k] 0xffffffffb32ba0c4
+0.02	__w_logp1
+0.02	idct16_low1_ssse3
+0.02	fidentity4x4_new_sse2
+0.02	av1_prune_partitions_before_search
+0.02	av1_count_colors_with_threshold
+     0.02%  eprof_x86  [unknown]         [k] 0xffffffffb2eafe33
+0.02	idct64_low32_avx2
+0.02	cfl_predict_lbd_4x4_ssse3
+0.02	aom_variance8x4_sse2
+0.02	cfl_predict_lbd_4x8_ssse3
+0.02	av1_sum_intra_stats
+0.02	update_ext_partition_context.part.0
+0.02	aom_paeth_predictor_4x8_ssse3
+0.02	fidentity8x16_new_avx2
+0.02	aom_paeth_predictor_16x8_avx2
+0.02	setup_block_rdmult
+0.02	av1_lowbd_fwd_txfm2d_8x32_sse2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2eafe60
+0.01	aom_lpf_vertical_8_quad_sse2
+0.01	encode_sb.constprop.0
+0.01	lowbd_fwd_txfm2d_16x32_avx2
+0.01	dr_prediction_z3_16x32_avx2.isra.0
+0.01	av1_ml_prune_4_partition
+0.01	od_ec_encode_bool_q15
+0.01	aom_dc_predictor_4x8_sse2
+0.01	aom_dc_predictor_4x4_sse2
+0.01	av1_apply_selfguided_restoration_avx2
+0.01	cfl_predict_lbd_8x8_ssse3
+0.01	aom_lpf_horizontal_14_quad_avx2
+0.01	rd_pick_intrabc_mode_sb
+0.01	aom_lpf_horizontal_4_dual_sse2
+0.01	av1_nn_output_prec_reduce
+0.01	cfl_subtract_average_4x4_sse2
+0.01	av1_write_tx_type
+0.01	write_modes_sb.isra.0
+0.01	aom_h_predictor_8x16_sse2
+0.01	av1_find_dominant_value
+0.01	cfl_get_predict_lbd_fn_avx2
+0.01	aom_lpf_vertical_6_dual_sse2
+0.01	memmove@plt
+0.01	aom_smooth_predictor_4x16_ssse3
+0.01	__log1p_ifunc@plt
+0.01	get_txb_ctx_16x16
+0.01	aom_variance8x32_sse2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2dafa20
+0.01	iadst16_low1_ssse3
+0.01	av1_prune_partitions_by_max_min_bsize
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2b04109
+0.01	aom_smooth_h_predictor_8x8_ssse3
+0.01	_int_free_chunk
+0.01	idct64_low16_avx2
+0.01	aom_free
+0.01	aom_variance4x16_sse2
+0.01	aom_paeth_predictor_16x32_avx2
+0.01	iidentity8_sse2
+0.01	av1_quantize_fp_64x64_avx2
+0.01	malloc@plt
+0.01	aom_paeth_predictor_8x16_ssse3
+0.01	aom_h_predictor_16x16_sse2
+0.01	_int_free_maybe_trim
+0.01	cfl_store_dc_pred
+0.01	aom_h_predictor_4x4_sse2
+0.01	fdct16x64_new_avx2
+0.01	cfl_predict_lbd_8x4_ssse3
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f01b93
+0.01	__sigsetjmp
+0.01	aom_paeth_predictor_16x16_avx2
+0.01	fdct64_new_avx2
+0.01	av1_compute_stats_avx2
+0.01	aom_lpf_horizontal_6_dual_sse2
+0.01	aom_smooth_predictor_8x4_ssse3
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb31fe853
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f44e44
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2ec2fa8
+0.01	av1_write_intra_coeffs_mb
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb322e5e1
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f93215
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2dfb068
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2eb8a0a
+0.01	aom_v_predictor_16x16_sse2
+0.01	encode_av1_kf_impl
+0.01	aom_var_2d_u8_avx2
+0.01	idct32_sse2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb413222b
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb327e8cf
+0.01	aom_dc_predictor_4x16_sse2
+0.01	aom_smooth_predictor_16x8_ssse3
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f72931
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f74db9
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2dc54b5
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb4104844
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2e88ef2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb32bbed4
+0.01	get_filter_level.constprop.0
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f8eea0
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2e4e3a9
+0.01	dr_prediction_z3_16x4_avx2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2ea50fd
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb32b71fe
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f95ec9
+0.01	av1_get_perpixel_variance
+0.01	aom_h_predictor_4x8_sse2
+0.01	aom_quantize_b_32x32_avx2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb36ddc4d
+0.01	aom_dc_predictor_16x8_sse2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f8f59e
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2e9cf6b
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb31f474b
+0.01	fidentity8x16_new_sse2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2a00002
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb31fcd78
+0.01	fidentity8x8_new_sse2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2deded9
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb32bbeb4
+0.01	dr_prediction_z3_64x32_avx2.isra.0
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f78979
+0.01	get_txb_ctx_32x32
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2eb9610
+0.01	log1p@plt
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb3211c2f
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2fbe315
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2eaa67a
+0.01	cfl_subsample_lbd_420_16x8_ssse3
+0.01	aom_variance16x4_avx2
+0.01	aom_h_predictor_16x8_sse2
+0.01	av1_save_context
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2a00efb
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb3a51a90
+0.01	fidentity8x8_new_avx2
+0.01	get_sse
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2a01170
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f75876
+0.01	aom_tell_size
+0.01	av1_build_quantizer
+0.01	av1_fill_mode_rates
+0.01	av1_loop_restoration_corners_in_sb
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2ec2fc6
+0.01	aom_h_predictor_8x8_sse2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f8f716
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2e0c9e5
+0.01	aom_paeth_predictor_4x16_ssse3
+0.01	aom_variance64x64_avx2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb32bb639
+0.01	alloc_perturb
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2a00b90
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f44e34
+0.01	update_stats
+0.01	aom_smooth_predictor_4x8_ssse3
+0.01	aom_smooth_predictor_16x32_ssse3
+0.01	dr_prediction_z3_32x16_avx2
+0.01	aom_smooth_predictor_32x8_ssse3
+0.01	av1_cnn_predict_img_multi_out
+0.01	aom_dc_left_predictor_16x32_sse2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb31620b7
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb3211ca2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb411d044
+0.01	__sigjmp_save
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f769a5
+0.01	try_filter_frame
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb41130ac
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2ea1d64
+0.01	aom_variance64x32_avx2
+0.01	cfl_subsample_lbd_420_8x4_ssse3
+0.01	iidentity16_ssse3
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2ec2fba
+0.01	aom_smooth_h_predictor_8x16_ssse3
+0.01	aom_lpf_vertical_4_dual_sse2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2e4dea5
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb32ba071
+0.01	av1_change_config
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f458f4
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2dedf28
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f747c0
+0.01	aom_hadamard_16x16_avx2
+0.01	aom_smooth_predictor_32x16_ssse3
+0.01	cfl_subtract_average_16x16_avx2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb31fdf7b
+0.01	lowbd_fwd_txfm2d_64x32_avx2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2efa3f0
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2fbe3c8
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2ede7c5
+0.01	aom_lpf_horizontal_6_sse2
+0.01	aom_h_predictor_8x4_sse2
+0.01	aom_smooth_h_predictor_8x4_ssse3
+0.01	aom_variance32x8_avx2
+0.01	dr_prediction_z1_32xN_avx2.isra.0
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2eafde6
+0.01	cfl_predict_lbd_16x4_ssse3
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f7c21d
+0.01	cfl_predict_lbd_16x8_ssse3
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb41007c2
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2ec2fcc
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2e09293
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb3a5242d
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2eafe66
+0.01	av1_cnn_predict_c
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb31fddfe
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb41007c8
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f6e160
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2e09288
+0.01	av1_xform_quant
+0.01	rd_pick_4partition
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2f5f704
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2dc554c
+     0.01%  eprof_x86  [unknown]         [k] 0xffffffffb2eafe3a
+0.01	cfl_subsample_lbd_420_4x8_ssse3
+0.01	cfl_predict_lbd_4x16_ssse3
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb2a01570
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb3215247
+0.00	idct16_low1_avx2
+0.00	aom_smooth_v_predictor_4x8_ssse3
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb2f8be89
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb3234c46
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb324deec
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb2db4a31
+     0.00%  perf-exec  [unknown]         [k] 0xffffffffb2d5426f
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb31649f9
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb411d060
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb2d5724e
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb3154e16
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb3154e19
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb3154e28
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb3162055
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb3162056
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb316206f
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb3162093
+     0.00%  eprof_x86  [unknown]         [k] 0xffffffffb412062a
+     0.00%  perf-exec  [unknown]         [k] 0xffffffffb3154e30
+     0.00%  perf-exec  [unknown]         [k] 0xffffffffb3162055
+     0.00%  perf-exec  [unknown]         [k] 0xffffffffb411d060
