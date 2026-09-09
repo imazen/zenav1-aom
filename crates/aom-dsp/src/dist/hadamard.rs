@@ -3,6 +3,8 @@
 //! (wrapping), matching the C dynamic-range contract; the SSE2/AVX2 output
 //! transposes are replicated.
 
+use archmage::prelude::*;
+
 /// `hadamard_col8` (`aom_dsp/avg.c:149`) over eight ALREADY-GATHERED values.
 ///
 /// Taking `[i16; 8]` by value rather than `(&[i16], off, stride)` is what makes
@@ -96,6 +98,140 @@ pub fn hadamard_4x4(src: &[i16], src_stride: usize) -> [i32; 16] {
 /// eob and nothing else, which reads as a near-tie for four sessions), so it is
 /// preserved by construction here rather than by a separate pass.
 pub fn hadamard_8x8(src: &[i16], src_stride: usize) -> [i32; 64] {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let _ = crate::dispatch::scalar_forced();
+        if let Some(c) = archmage::incant!(hadamard_8x8_avx2(src, src_stride), [v3, scalar]) {
+            return c;
+        }
+    }
+    hadamard_8x8_scalar_core(src, src_stride)
+}
+
+/// AVX2/SSE2 `aom_hadamard_8x8_sse2`'s shape: the eight ROW loads are
+/// contiguous, the butterfly runs vertically across eight `__m128i`, and the
+/// pass-2 horizontal butterfly is made vertical by ONE in-register 8x8 i16
+/// transpose. Returns `None` on no tier, which routes to the scalar core.
+///
+/// **Why raw intrinsics rather than magetypes.** magetypes 0.9.29 has no
+/// integer interleave/transpose of any width (they exist for `f32` only), which
+/// is what `benchmarks/encoder_simd_lane_width_audit_2026-09-09.md` recorded as
+/// blocking this kernel. `archmage::intrinsics` re-exports `core::arch`, and a
+/// `#[rite(v3)]` body carries `target_feature(avx2)`, so the unpack family is
+/// callable here **with `#![forbid(unsafe_code)]` still in force** — loads and
+/// stores go through `safe_unaligned_simd`'s reference-based forms.
+/// `benchmarks/encoder_intrinsics_unblock_2026-09-09.md` is the probe.
+///
+/// **Bit-exactness.** `_mm_add_epi16`/`_mm_sub_epi16` wrap, which is exactly
+/// `i16::wrapping_add`/`_sub`; the butterfly is the same network in the same
+/// order as [`hadamard_col8`], including its output permutation. The transpose
+/// only MOVES lanes. KB-12 is the standing proof that a lost transpose here
+/// perturbs the `eob` alone and reads as an RD near-tie, so this is gated by
+/// `hadamard_diff` against the real exported C, not by inspection.
+/// The `incant!` fallback: decline, routing to the scalar core. Also what the
+/// `AOM_FORCE_SCALAR` pin selects.
+#[cfg(target_arch = "x86_64")]
+fn hadamard_8x8_avx2_scalar(
+    _t: archmage::ScalarToken,
+    _src: &[i16],
+    _src_stride: usize,
+) -> Option<[i32; 64]> {
+    None
+}
+
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i16x8), v3, -scalar)]
+fn hadamard_8x8_avx2(
+    _token: Token,
+    src: &[i16],
+    src_stride: usize,
+) -> Option<[i32; 64]> {
+    use archmage::intrinsics::x86_64::*;
+
+    // The eight-point butterfly of `hadamard_col8`, lane-parallel over 8 columns.
+    let col8 = |s: [__m128i; 8]| -> [__m128i; 8] {
+        let b0 = _mm_add_epi16(s[0], s[1]);
+        let b1 = _mm_sub_epi16(s[0], s[1]);
+        let b2 = _mm_add_epi16(s[2], s[3]);
+        let b3 = _mm_sub_epi16(s[2], s[3]);
+        let b4 = _mm_add_epi16(s[4], s[5]);
+        let b5 = _mm_sub_epi16(s[4], s[5]);
+        let b6 = _mm_add_epi16(s[6], s[7]);
+        let b7 = _mm_sub_epi16(s[6], s[7]);
+        let c0 = _mm_add_epi16(b0, b2);
+        let c1 = _mm_add_epi16(b1, b3);
+        let c2 = _mm_sub_epi16(b0, b2);
+        let c3 = _mm_sub_epi16(b1, b3);
+        let c4 = _mm_add_epi16(b4, b6);
+        let c5 = _mm_add_epi16(b5, b7);
+        let c6 = _mm_sub_epi16(b4, b6);
+        let c7 = _mm_sub_epi16(b5, b7);
+        let mut o = [_mm_setzero_si128(); 8];
+        o[0] = _mm_add_epi16(c0, c4);
+        o[7] = _mm_add_epi16(c1, c5);
+        o[3] = _mm_add_epi16(c2, c6);
+        o[4] = _mm_add_epi16(c3, c7);
+        o[2] = _mm_sub_epi16(c0, c4);
+        o[6] = _mm_sub_epi16(c1, c5);
+        o[1] = _mm_sub_epi16(c2, c6);
+        o[5] = _mm_sub_epi16(c3, c7);
+        o
+    };
+
+    // Standard three-stage in-register 8x8 transpose of i16 lanes.
+    let transpose = |r: [__m128i; 8]| -> [__m128i; 8] {
+        let a0 = _mm_unpacklo_epi16(r[0], r[1]);
+        let a1 = _mm_unpackhi_epi16(r[0], r[1]);
+        let a2 = _mm_unpacklo_epi16(r[2], r[3]);
+        let a3 = _mm_unpackhi_epi16(r[2], r[3]);
+        let a4 = _mm_unpacklo_epi16(r[4], r[5]);
+        let a5 = _mm_unpackhi_epi16(r[4], r[5]);
+        let a6 = _mm_unpacklo_epi16(r[6], r[7]);
+        let a7 = _mm_unpackhi_epi16(r[6], r[7]);
+        let b0 = _mm_unpacklo_epi32(a0, a2);
+        let b1 = _mm_unpackhi_epi32(a0, a2);
+        let b2 = _mm_unpacklo_epi32(a1, a3);
+        let b3 = _mm_unpackhi_epi32(a1, a3);
+        let b4 = _mm_unpacklo_epi32(a4, a6);
+        let b5 = _mm_unpackhi_epi32(a4, a6);
+        let b6 = _mm_unpacklo_epi32(a5, a7);
+        let b7 = _mm_unpackhi_epi32(a5, a7);
+        [
+            _mm_unpacklo_epi64(b0, b4),
+            _mm_unpackhi_epi64(b0, b4),
+            _mm_unpacklo_epi64(b1, b5),
+            _mm_unpackhi_epi64(b1, b5),
+            _mm_unpacklo_epi64(b2, b6),
+            _mm_unpackhi_epi64(b2, b6),
+            _mm_unpacklo_epi64(b3, b7),
+            _mm_unpackhi_epi64(b3, b7),
+        ]
+    };
+
+    let mut v = [_mm_setzero_si128(); 8];
+    for (k, vk) in v.iter_mut().enumerate() {
+        let row: &[i16; 8] = match src[k * src_stride..k * src_stride + 8].try_into() {
+            Ok(r) => r,
+            Err(_) => return None,
+        };
+        *vk = _mm_loadu_si128(row);
+    }
+    // Pass 1 is vertical (lane = column). Pass 2 is horizontal in that layout,
+    // so transpose first and run the identical network again.
+    let u = col8(transpose(col8(v)));
+
+    let mut coeff = [0i32; 64];
+    for (i, ui) in u.iter().enumerate() {
+        let wide = _mm256_cvtepi16_epi32(*ui);
+        let dst: &mut [i32; 8] = (&mut coeff[i * 8..i * 8 + 8]).try_into().ok()?;
+        _mm256_storeu_si256(dst, wide);
+    }
+    Some(coeff)
+}
+
+/// The transcribed scalar core — the differential's reference and the
+/// non-x86 / `AOM_FORCE_SCALAR` path.
+fn hadamard_8x8_scalar_core(src: &[i16], src_stride: usize) -> [i32; 64] {
     let mut rows = [[0i16; 8]; 8];
     for (r, row) in rows.iter_mut().enumerate() {
         row.copy_from_slice(&src[r * src_stride..r * src_stride + 8]);
