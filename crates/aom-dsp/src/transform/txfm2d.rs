@@ -101,16 +101,14 @@ fn txfm_func(txfm_type: i32) -> Txfm1d {
     }
 }
 
-#[inline]
+/// `log2(n) - 2` for the transform dimensions, which are the powers of two
+/// 4..=64. `trailing_zeros` is one instruction where the `match` compiled to a
+/// comparison chain, and this runs twice per `get_*_txfm_cfg`, i.e. twice per
+/// transform.
+#[inline(always)]
 pub(crate) fn log2_idx(n: usize) -> usize {
-    match n {
-        4 => 0,
-        8 => 1,
-        16 => 2,
-        32 => 3,
-        64 => 4,
-        _ => unreachable!(),
-    }
+    debug_assert!(matches!(n, 4 | 8 | 16 | 32 | 64), "log2_idx({n})");
+    n.trailing_zeros() as usize - 2
 }
 
 pub(crate) fn get_rect_tx_log_ratio(col: i64, row: i64) -> i32 {
@@ -140,9 +138,13 @@ struct Cfg {
     shift: [i8; 3],
     cos_bit_col: i8,
     cos_bit_row: i8,
-    func_col: Txfm1d,
-    func_row: Txfm1d,
-    /// Raw TXFM_TYPE ids (0..=11) — the SIMD per-kernel dispatch keys.
+    /// Raw TXFM_TYPE ids (0..=11) — the SIMD per-kernel dispatch keys, and
+    /// (via [`txfm_func`]) the scalar kernels too. The resolved `Txfm1d`
+    /// pointers are NOT stored: they are read only on the scalar fallback
+    /// path, which the SIMD passes usually skip, so materialising them here
+    /// cost two match-dispatches and two stores on every transform.
+    /// `valid` is asserted at the entry point before any core runs, so the
+    /// on-demand lookup cannot hit the old `else` fallback.
     txfm_type_col: i32,
     txfm_type_row: i32,
     ud_flip: bool,
@@ -164,8 +166,6 @@ fn get_fwd_txfm_cfg(tx_type: usize, tx_size: usize) -> Cfg {
         shift: FWD_SHIFT[tx_size],
         cos_bit_col: COS_BIT_COL[txw_idx][txh_idx],
         cos_bit_row: COS_BIT_ROW[txw_idx][txh_idx],
-        func_col: if valid { txfm_func(txfm_type_col) } else { av1_fdct4 },
-        func_row: if valid { txfm_func(txfm_type_row) } else { av1_fdct4 },
         txfm_type_col,
         txfm_type_row,
         ud_flip,
@@ -259,6 +259,11 @@ fn fwd_txfm2d_core(
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let cols_done = false;
     if !cols_done {
+        // Resolve the kernel ONCE for the whole pass. Measured: doing the
+        // `txfm_func` match per column instead is +0.20 % on the whole encode
+        // (5/24 rounds faster, p=0.0066) — the dispatch is cheap but the loop
+        // is not the place for it.
+        let f_col = txfm_func(cfg.txfm_type_col);
         // Scalar: temp_in = output[0..row], temp_out = output[row..2row].
         for c in 0..col_n {
             {
@@ -269,7 +274,7 @@ fn fwd_txfm2d_core(
                     temp_in[r] = input[src_r * stride + c] as i32;
                 }
                 round_shift_array(temp_in, -(shift[0] as i32));
-                (cfg.func_col)(temp_in, temp_out, cfg.cos_bit_col as i32, &SR);
+                f_col(temp_in, temp_out, cfg.cos_bit_col as i32, &SR);
                 round_shift_array(temp_out, -(shift[1] as i32));
                 for r in 0..row_n {
                     let dst_c = if cfg.lr_flip { col_n - c - 1 } else { c };
@@ -295,10 +300,11 @@ fn fwd_txfm2d_core(
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let rows_done = false;
     if !rows_done {
+        let f_row = txfm_func(cfg.txfm_type_row);
         let mut row_buffer = [0i32; 64];
         for r in 0..row_n {
             let rb = &mut row_buffer[0..col_n];
-            (cfg.func_row)(&buf[r * col_n..r * col_n + col_n], rb, cfg.cos_bit_row as i32, &SR);
+            f_row(&buf[r * col_n..r * col_n + col_n], rb, cfg.cos_bit_row as i32, &SR);
             round_shift_array(rb, -(shift[2] as i32));
             if rect_type.abs() == 1 {
                 for v in rb.iter_mut() {

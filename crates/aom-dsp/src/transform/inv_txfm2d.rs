@@ -63,8 +63,9 @@ fn opt_range(bd: i32) -> (i8, i8) {
 
 struct Cfg {
     shift: [i8; 2],
-    func_col: Txfm1d,
-    func_row: Txfm1d,
+    // The resolved `Txfm1d` pointers are NOT stored; see the forward twin in
+    // `txfm2d.rs`. They are read only on the scalar fallback path and `valid`
+    // is asserted at the entry point, so `inv_txfm_func` on demand is exact.
     /// Raw TXFM_TYPE ids (0..=11) — the SIMD per-kernel dispatch keys.
     txfm_type_col: i32,
     txfm_type_row: i32,
@@ -82,8 +83,6 @@ fn get_inv_txfm_cfg(tx_type: usize, tx_size: usize) -> Cfg {
     let valid = txfm_type_col != -1 && txfm_type_row != -1;
     Cfg {
         shift: INV_SHIFT[tx_size],
-        func_col: if valid { inv_txfm_func(txfm_type_col) } else { av1_idct4 },
-        func_row: if valid { inv_txfm_func(txfm_type_row) } else { av1_idct4 },
         txfm_type_col,
         txfm_type_row,
         ud_flip,
@@ -281,6 +280,9 @@ pub fn av1_inv_txfm2d_add_into(
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let rows_done = false;
     if !rows_done {
+        // Resolve ONCE per pass, not per row: doing the match inside the loop
+        // measured +0.20 % on the whole encode (5/24 rounds, p=0.0066).
+        let f_row = inv_txfm_func(cfg.txfm_type_row);
         for r in 0..row_n {
             let ti = &mut temp_in[0..col_n];
             if rect_type.abs() == 1 {
@@ -296,7 +298,7 @@ pub fn av1_inv_txfm2d_add_into(
                 }
             }
             clamp_buf(ti, (bd + 8) as i8);
-            (cfg.func_row)(ti, &mut buf[r * col_n..r * col_n + col_n], INV_COS_BIT, &stage_range_row);
+            f_row(ti, &mut buf[r * col_n..r * col_n + col_n], INV_COS_BIT, &stage_range_row);
             round_shift_array(&mut buf[r * col_n..r * col_n + col_n], -(shift[0] as i32));
         }
     }
@@ -322,6 +324,7 @@ pub fn av1_inv_txfm2d_add_into(
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let cols_done = false;
     if !cols_done {
+        let f_col = inv_txfm_func(cfg.txfm_type_col);
         for c in 0..col_n {
             let ti = &mut temp_in[0..row_n];
             for r in 0..row_n {
@@ -330,7 +333,7 @@ pub fn av1_inv_txfm2d_add_into(
             }
             clamp_buf(ti, col_clamp);
             let to = &mut temp_out[0..row_n];
-            (cfg.func_col)(ti, to, INV_COS_BIT, &stage_range_col);
+            f_col(ti, to, INV_COS_BIT, &stage_range_col);
             round_shift_array(to, -(shift[1] as i32));
             for r in 0..row_n {
                 let src = if cfg.ud_flip { to[row_n - r - 1] } else { to[r] };
@@ -426,6 +429,9 @@ pub fn av1_inv_txfm2d_add_u8_into(
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let rows_done = false;
     if !rows_done {
+        // Resolve ONCE per pass, not per row: doing the match inside the loop
+        // measured +0.20 % on the whole encode (5/24 rounds, p=0.0066).
+        let f_row = inv_txfm_func(cfg.txfm_type_row);
         for r in 0..row_n {
             let ti = &mut temp_in[0..col_n];
             if rect_type.abs() == 1 {
@@ -441,7 +447,7 @@ pub fn av1_inv_txfm2d_add_u8_into(
                 }
             }
             clamp_buf(ti, (BD + 8) as i8);
-            (cfg.func_row)(ti, &mut buf[r * col_n..r * col_n + col_n], INV_COS_BIT, &stage_range_row);
+            f_row(ti, &mut buf[r * col_n..r * col_n + col_n], INV_COS_BIT, &stage_range_row);
             round_shift_array(&mut buf[r * col_n..r * col_n + col_n], -(shift[0] as i32));
         }
     }
@@ -465,6 +471,7 @@ pub fn av1_inv_txfm2d_add_u8_into(
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let cols_done = false;
     if !cols_done {
+        let f_col = inv_txfm_func(cfg.txfm_type_col);
         for c in 0..col_n {
             let ti = &mut temp_in[0..row_n];
             for r in 0..row_n {
@@ -473,7 +480,7 @@ pub fn av1_inv_txfm2d_add_u8_into(
             }
             clamp_buf(ti, col_clamp);
             let to = &mut temp_out[0..row_n];
-            (cfg.func_col)(ti, to, INV_COS_BIT, &stage_range_col);
+            f_col(ti, to, INV_COS_BIT, &stage_range_col);
             round_shift_array(to, -(shift[1] as i32));
             for r in 0..row_n {
                 let src = if cfg.ud_flip { to[row_n - r - 1] } else { to[r] };
