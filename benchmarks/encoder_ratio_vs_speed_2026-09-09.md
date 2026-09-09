@@ -61,3 +61,62 @@ where the same absolute cost is a bigger share.
 * It is a ratio of two single measurements per row, not a rotated band with a
   null. It is strong enough to establish the monotone trend and the ~2.4x spread
   across the speed axis; it is not a landing-grade delta.
+
+
+---
+
+# FOLLOW-UP, SAME DAY: the prediction above is REFUTED, and there are TWO overhead classes
+
+The section above predicted that this cycle's landings — all of which attack
+fixed per-call overhead — "should pay MORE at speed 6+, where the same absolute
+cost is a bigger share", and flagged that none had been measured there. They
+have now been, and **they pay 4.6x LESS.**
+
+## Measured: the cycle's four landings, the SAME two binaries, at two speeds
+
+`base` is `807f928` (immediately before KB-PERF-16); `new` is HEAD. Rotated
+arms, same-binary null, output byte-identical at BOTH speeds (10,912 B at s0,
+11,961 B at s6 — so the landings are byte-inert at speed 6 as well, which
+nothing had checked).
+
+| cell | base | new | paired median | rounds faster | p | null |
+|---|---:|---:|---:|---:|---:|---:|
+| 512x512 cq27 **s0** | 3596.3 ms | 3405.9 ms | **−5.39 %** | **20/20** | <0.0001 | −0.11 % |
+| 512x512 cq27 **s6** | 125.9 ms | 124.4 ms | **−1.18 %** | **24/24** | <0.0001 | +0.03 % |
+
+Ratio at 512x512 s0: **2.309x → 2.187x**.
+
+## Why the prediction was wrong, and what it means
+
+**The overhead this cycle removed is per-TRANSFORM-CALL**, and a speed-6 encode
+issues far fewer transform calls per pixel because the tx search is pruned hard.
+So the absolute saving shrinks with the search, and shrinks FASTER than the
+total encode time does — the opposite of the reasoning above, which treated
+"fixed overhead" as one undifferentiated thing.
+
+It is not: there are at least **two** overhead classes with opposite speed
+behaviour.
+
+| class | scales with | biggest at | this cycle |
+|---|---|---|---|
+| per-transform-call setup (config derivation, scratch churn, buffer round trip) | the SEARCH | **speed 0** | removed −5.39 % of it |
+| whatever drives the ratio from 2.19x to 5.29x as the preset rises | frame / block count, not search depth | **speed 9** | **untouched, unidentified** |
+
+The ratio still worsens monotonically with speed, so the second class is real
+and is what a fast still-image configuration actually pays. **This cycle did not
+touch it**, and the speed-0 profile the entire ranking is built on cannot see it
+— at speed 0 the search-scaled work dominates and hides it.
+
+## The actionable conclusion
+
+**Profile at the speed that will ship, not at speed 0.** Every ranked table in
+this repo (`encoder_x86_reprofile_1024_2026-09-09.after.md` and its
+predecessors) is a speed-0 profile, so it ranks the first class and is blind to
+the second. A speed-6 or speed-8 profile has never been taken at HEAD, and it is
+the cheapest remaining step on clause (4) — it would name the second class
+rather than leaving it as "whatever drives the ratio".
+
+That also re-reads this cycle honestly: **−5.39 % at speed 0 is a real result on
+the class it targeted**, and it is a smaller result (−1.18 %) on the
+configuration that matters most for clause (1). Both numbers are true; only the
+first was measured before today.
