@@ -164,10 +164,68 @@ cost. No redundancy is indicated. The hypothesis was worth one measurement
 because a redundancy finding would have been worth an order of magnitude more
 than a lane-width one.
 
-## Not attempted here, and why
+## THE LEVER WAS BUILT AND MEASURED NULL — do not rebuild it
 
-The implementation is deliberately left for its own landing. It sits on the
-reconstruction path, where a wrong sample is a wrong bitstream, and the protocol
-it needs — differential against the i32 pass, a reach pin, a bite proof, and
-both dispatch modes — is what KB-42 exists to enforce. Landing it at the end of
-a long session without room for that protocol is how KB-42 happened.
+Same day, after the analysis above. **Built in full, measured, reverted.**
+
+`lowbd16::inv_col_pass_u16_i16` — the u16-pixel twin of `inv_col_pass_u8_i16`,
+derived mechanically from the u8 source so the gather logic could not drift,
+with the store widened to `u16` and clamped at 255 — plus the arm in
+`try_inv_col_pass` gated on `bd == 8` and the same structural constants the u8
+arm asserts.
+
+**It is CORRECT.** `self_contained_key_frame` is 9/9 with it live, i.e. all
+**427 cells still byte-identical to real aomenc**, and the whole `aom-dsp`
+suite is green (25 binaries). So this is a null result, not a broken one.
+
+**It is not FASTER.** Interleaved A/B, two binaries from one tree, the profile
+cell:
+
+| variant | paired median vs base | rounds faster |
+|---|---:|---:|
+| as first written | **+1.98 %** | 0 / 8 |
+| gated `col_n >= 16` | +0.4 % | 2 / 6 |
+| store restructured (full-group / tail split) | **-0.03 %** | 5 / 8 |
+
+The +1.98 % was a self-inflicted store: a per-lane `if j < active` branch across
+all 16 lanes on every row, where the i32 core splits the full and tail groups
+instead. Fixing it recovered the loss and delivered nothing.
+
+**Why, and it is KB-PERF-3's own lesson arriving from the other side.** That
+entry measured its half-batch forward extension at -0.006 % and recorded the
+mechanism: *"an `i16x16` and an `i32x8` are both 256 bits, so the op count is
+equal."* The same holds here. The i16 win in KB-PERF-3's shipped work came from
+`fbtf16` being cheaper than `prims::hb` (a widening madd instead of a widen-to-
+i64 round trip), and the INVERSE kernels do not get that: their 17-bit
+butterfly transients live in `prims16`'s two-domain `P32` representation, which
+costs about what staying in i32 costs. The lane count changes; the work does
+not.
+
+**What this retires.** The bound stated above (-8 to -10 ms, ~3-4 % of the gap)
+is REFUTED — measured 0. The 58.2 %-coverage figure is still correct and still
+irrelevant, because coverage was never the binding constraint. **The transform
+inverse row (+51 ms) needs a different idea than lane width**, and the same
+doubt now attaches to the forward row (+56.3 ms), whose i16 work KB-PERF-3
+measured at -2.0 to -2.6 % — real, but an order of magnitude short of what the
+row would need.
+
+To re-derive rather than re-invent: the twin is a mechanical transform of
+`inv_col_pass_u8_i16` (replace `u8` -> `u16` in the output type, and the
+`add_store_u8` full-group store with a `from_array`/`clamp`/`to_array` at
+ceiling 255), plus a `bd == 8` arm in `try_inv_col_pass` ahead of the
+`inv_kernel` lookup. It took under an hour; the measurement is the expensive
+part and it is above.
+
+## What is left on the transform rows
+
+With lane width refuted for the inverse and known-small for the forward, the
++107 ms those two rows carry needs a different mechanism. The one the profile
+points at is not lane width but SPECIALISATION: libaom's lowbd inverse is a
+family of size-specific whole-transform functions
+(`lowbd_inv_txfm2d_8x8_no_identity_avx2`, `lowbd_inv_txfm2d_add_8x4_ssse3`,
+`idct4_w4_sse2`, ...), each fusing row pass, column pass and reconstruction with
+no generic driver between them, while the port runs one generic driver over
+per-kernel function pointers. That is a much larger piece of work than a lane
+swap and should not be started without first measuring what fraction of the
++107 ms is driver overhead rather than arithmetic — the `other` bucket above
+suggests driver overhead is substantial across the whole encoder.
