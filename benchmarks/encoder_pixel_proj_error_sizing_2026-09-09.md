@@ -65,7 +65,64 @@ gates, so a bound that is wrong in a corner is a wrong bitstream, not a slow
 one. KB-PERF-6 declined it on that reasoning with the same arithmetic in front
 of it; overriding that on a back-of-envelope would be the weaker call.
 
-## What the next attempt should do
+## RESOLVED THE SAME DAY: the lever is NULL, and the audit below should NOT be written
+
+**Both halves were built and measured. Neither pays.** This section supersedes
+the four-step plan that follows it, which is kept only to show what was
+attempted.
+
+### 1. Vectorized squares with an optimistic VERIFY (no audit needed)
+
+Rather than prove `|e| < 16384` offline, the vector path ran optimistically —
+`err += i64::from((e * e).reduce_add())` — while tracking the true range of `e`
+with lane-wise `max`/`min`, discarding everything and recomputing scalar if the
+range ever left the safe window. Correctness from the check, not an inequality;
+wrapping en route is harmless because magetypes' integer `Mul`/`Add` wrap on
+every backend and the verify throws the garbage away. (Range tracked as separate
+max/min rather than `abs`, since `abs(i32::MIN)` wraps NEGATIVE and would slip
+through.)
+
+Byte-identical output, `pick_diff` 6/6 against the real exported C — and:
+
+| | paired median | rounds faster | p |
+|---|---:|---:|---:|
+| verified variant | **+0.07 %** | 9/24 | 0.31 |
+| same-binary null | −0.08 % | 16/24 | 0.15 |
+
+**Null.**
+
+### 2. The same thing with the verify STRIPPED — the theoretical best case
+
+To separate "the verify costs too much" from "the vectorized square does not
+pay", the tracking and the bail were deleted outright (unsafe, throwaway):
+
+| | paired median | rounds faster | p |
+|---|---:|---:|---:|
+| no-verify probe | **−0.07 %** | 10/16 | 0.45 |
+| same-binary null | −0.05 % | 10/16 | 0.45 |
+
+**Also null, and indistinguishable from the null arm to two decimal places.**
+
+### The conclusion, and it is stronger than "not worth it"
+
+The verify is not the cost. **A per-chunk horizontal `reduce_add` costs about
+what the eight scalar `i64` multiply-accumulates it replaces** — superscalar
+hardware absorbs eight independent MACs well, while a horizontal reduce is a
+serial dependency chain of shuffles and adds. So **no bound, however derived,
+can make this lever pay**: an offline audit proving `M* < 16384` would license
+exactly the code measured null in probe 2.
+
+**Do not write `xtask/audit_sgr_proj_error.py`.** The recommendation below was
+made before these two bands existed and is withdrawn. KB-PERF-6's named lever is
+CLOSED by measurement rather than left open.
+
+The 93-stack-op diagnosis above is still correct about the mechanism — the
+round trip is real — it just does not follow that removing it is a win, because
+what replaces it is not cheaper. That is the same shape as KB-PERF-6's own
+box-sum lesson (a symbol's cost is not automatically a lever's size) arriving
+from the arithmetic side instead of the profiler side.
+
+## SUPERSEDED — what the next attempt was going to do
 
 1. Write `xtask/audit_sgr_proj_error.py` in the shape of the two existing
    audits: propagate exact bounds for `v`, then `e`, over `bd in {8, 10, 12}`,
