@@ -29,6 +29,7 @@ grep the version in `Cargo.lock` rather than the newest on crates.io
 | interleave / unpack | **NO for integer lanes** |
 | transpose | **NO for integer lanes** |
 | gather | **NO**, in either version |
+| `mul_high` / `mulhi` (i16 `(a*b)>>16`) | **NO** — the complete multiply set is `mul`, `mul_add`, `mul_sub`; `_mm256_mulhi_epi16` is never referenced in the crate |
 
 ## FLOAT lanes — the part the earlier claims missed
 
@@ -72,3 +73,23 @@ lanes, so it does not supply the **i16** transpose the Hadamard wants anyway.
 Wiener's i16 convolution, `acc_stat_line`'s i16 fold, and the full-SIMD
 Hadamard — all three need integer interleave/unpack, which does not exist at
 0.9.29. Closing them means a magetypes contribution, not a version bump.
+
+## What the two missing integer ops actually block (2026-09-09)
+
+Two of the three largest remaining kernel gaps in clause (4) are gated on this
+vocabulary rather than on port-side effort. Both were established by
+measurement, and each has its own record:
+
+| gap at 1 MP | needs | record |
+|---|---|---|
+| loop-restoration `wiener_impl_v3`, +901 ms class, **7.6x** — the worst single ratio in the profile | integer `interleave` (libaom convolves in i16 with `madd_epi16`) | `benchmarks/encoder_x86_reprofile_1024_2026-09-09.after.md` |
+| quantize fp kernel, **+171 ms at 3.4x** | **`mul_high`** (libaom runs 16 coefficients per vector in i16 with `_mm256_mulhi_epi16`) | `benchmarks/encoder_quantize_investigation_2026-09-09.md` |
+
+`saturating_add`, `abs`, `widen_low/high_i16_to_i32` and
+`narrow_saturating_i32_to_i16` are all present, so in the quantize case
+`mul_high` is the **single** missing piece — the rest of libaom's i16 kernel is
+expressible today.
+
+**This is a magetypes contribution, not a version bump.** The 0.9.29 bump
+(`9f86281`) is already in and supplies neither op. Until one lands, port-side
+headroom is concentrated in the transform programme and in per-call overhead.

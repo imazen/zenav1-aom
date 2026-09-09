@@ -58,8 +58,13 @@ class ratio near parity says nothing about its members.**
    this from an opaque class into a ranked caller list (KB-PERF-15). Remaining
    named callers: `try_inv_row_pass`, `try_fwd_col_pass`,
    `assemble_dir_edges_v4`, `quantize_fp_impl_v3`.
-5. **quantize +384 ms at 3.52x** — the one class that grew this cycle and has
-   never been examined. Cheapest unexamined item on the list.
+5. **quantize +384 ms at 3.52x** — **examined 2026-09-09 and it is NOT the
+   cheap lever this line originally called it; see
+   `encoder_quantize_investigation_2026-09-09.md`.** Two candidate levers were
+   refuted (the `iscan` load already compiles to `vpmovsxwd`; the driver has no
+   hot loop, only per-call overhead) and the real one — libaom's i16, 16-lane
+   kernel — is **blocked on a missing magetypes `mul_high`**, the same class of
+   blocker as wiener's interleave.
 
 ## Method notes worth carrying
 
