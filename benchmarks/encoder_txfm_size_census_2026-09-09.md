@@ -64,6 +64,19 @@ So the 4x4 target is **per-call overhead**, and two consequences follow:
   73 % of the calls. That is the difference between "a much larger programme"
   and a bounded one.
 
+> **FOLLOW-UP TAKEN, same day — both gaps this section names are now measured**
+> (`encoder_txfm_size_census_s3_2026-09-09.md`). The inverse twin exists
+> (KB-PERF-17's `note_inv_txfm`) and **the inverse mix DOES match the forward**
+> — at `--cpu-used 3` they agree to within a point on every size — so the
+> assumption flagged below held. The SPEED axis, however, moves the
+> distribution by ten points: at the preset zenavif ships (`--cpu-used 3`)
+> **4x4 is 40.51 % of forwards, not 50.70 %**, 4x4+8x8 is 66.3 % not 73.0 %,
+> and `fwd_tx_non_dct` is 61.66 % not 76.24 %. **The 4x4 conclusion below
+> survives — no other size is close — but its reach should be quoted with a
+> speed, and KB-PERF-16/17's fused paths cover about a fifth less at the
+> shipping preset than at the speed 0 they were measured at.** The frame-size
+> half is still an argument, not a measurement.
+
 ## Honest scope
 
 This is the FORWARD side. The inverse is larger in the profile
