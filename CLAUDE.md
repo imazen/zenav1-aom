@@ -56,7 +56,7 @@ user says otherwise; the two retained fleet photo witnesses are at 2.49x / 2.65x
 | (1) a backend zenavif can select **by default** | seam **works and is much wider at HEAD**. Closed at the seam 2026-09-08 (zenavif `e73e3d7`, `aae9d98`, `6788cdf`, `138cc01`): full pixel range, 4:4:4, alpha (the auxiliary Cs400 item), cq-0 lossless, GBR identity, and grayscale at 8/10/12. Three query surfaces now agree with the encode path by construction rather than by restatement — `validate_for_input` delegates to the encode path's own predicate, `backend_router` derives its matrix rule from the muxer's, and `zenavif-serialize` derives the whole `av1C`/`pixi`/`colr` from the payload's sequence header. Gated by `aom_encode_backend.rs` 24/24, `aom_roundtrip_loss.rs` 6/6 (72 support pairs + 24 routing configurations + 54 container/payload files) and `resolved_routing.rs` 6/6; whole-crate **449 passed / 0 failed** with `tests/vectors` provisioned. "By default" still needs two zenavif-side flips (`default` feature set; `#[default]` on `Av1Backend`), and **both remain blocked on clause (4) alone**. `benchmarks/zenavif_backend_integration_2026-09-08.md` |
 | (2) a support contract that never lies | `configuration_support.rs` + `refusal_census.rs` — the support query, the knob ranges and the documented refusals are asserted against the encoder's own behaviour |
 | (3) no panics or refusals on reachable inputs | 90k fuzz inputs, 0 panics (`encode_fuzz_sweep.rs`); KB-51 was found this way |
-| (4) encode time within libaom | **NOT MET — 2.499x at the speed-0 profile cell and 2.572x at 1024x1024** (2.542x / 2.624x before KB-PERF-7, 2.69x before KB-PERF-6) vs Gate 3's <= 1.5x; the 3.24x-4.03x band across byte-identical cells is `benchmarks/encode_perf_vs_libaom_2026-09-08.md`. **This is the critical path: clause (1) reduces to it, and closing it needs ~178 ms of a 275 ms gap — several landings, not one.** Rank levers off `benchmarks/encoder_x86_reprofile_2026-09-08.md` (2026-09-08, taken AFTER KB-PERF-6; supersedes the ranked table in `..._x86_profile_...` and keeps its two findings). Every KB-PERF-1..5 ranking is aarch64-apple-darwin and does NOT transfer. **The structural root under ~42 % of the gap is that the encoder holds planes as `u16` at every bit depth and so runs the HIGHBD kernels at bd8, where libaom runs a specialised lowbd path: forward transform +56.3 ms, inverse +51.0 ms, `highbd_variance` at bd8 +7.6 ms — one cause, ~115 ms, no single landing closes it.** **The obvious next step was BUILT AND MEASURED NULL — do not rebuild it.** The audited i16 inverse kernels are wired only to the DECODER's `u8` path (a reach probe on `try_inv_col_pass_u8` records ZERO calls); the u16-output twin was written, is CORRECT (427/427 still byte-identical, aom-dsp green), and is **-0.03 % on 5/8 interleaved rounds** — the -8 to -10 ms bound is refuted, measured 0. Mechanism, and it is KB-PERF-3's own lesson from the other side: an `i16x16` and an `i32x8` are both 256 bits, so lane count changes and work does not; the inverse kernels never get `fbtf16`'s cheaper `half_btf` because their 17-bit transients live in a two-domain i32 representation anyway. **Both transform rows therefore need a different idea than lane width** — the profile points at libaom's SIZE-SPECIALISED whole-transform functions vs the port's generic driver, which is a much larger programme. Two other hypotheses were tested and refuted the same day: inverse redundancy (C's full tail is 15.7 ms, ratio 4.2x, not the 17x a top-N cut suggested) and a `col_n >= 16` restriction (+0.4 %). **SIZE-CONTROLLED**: the 192x192 profile cell is L2-resident (~108 KiB of planes), which is exactly the regime where a traffic-halving lever cannot show a win, so the null was re-measured at 512x512 and 1024x1024 (3 MiB, L3) — **+0.64 % and +0.22 %, faster in 1/5 rounds each, byte-identical output**; the revert stands on a 28x pixel-count span. The STAGE RANKING transfers (max shift 3.0 pp, no reordering of the top four), so the cheap cell is a valid ranking tool at 24x the iteration speed — but **the ratio itself is cell-dependent — 2.4988x at 192x192 and 2.5717x at 1024x1024 after KB-PERF-7** (2.542x / 2.624x before it), so quote the headline with its cell. **KB-PERF-7 also measured the size regime from the other direction**: its four-pixel fold is WORTH MORE at 1024x1024 (-2.00 %) than at 192x192 (-1.68 %), which is what an L2-resident cell under-measuring a traffic lever looks like when the lever actually works. |
+| (4) encode time within libaom | **NOT MET — 2.475x at the speed-0 profile cell and 2.531x at 1024x1024** (2.542x / 2.624x before KB-PERF-7, 2.69x before KB-PERF-6) vs Gate 3's <= 1.5x; the 3.24x-4.03x band across byte-identical cells is `benchmarks/encode_perf_vs_libaom_2026-09-08.md`. **This is the critical path: clause (1) reduces to it, and closing it needs ~178 ms of a 275 ms gap — several landings, not one.** Rank levers off `benchmarks/encoder_x86_reprofile_2026-09-08.md` (2026-09-08, taken AFTER KB-PERF-6; supersedes the ranked table in `..._x86_profile_...` and keeps its two findings). Every KB-PERF-1..5 ranking is aarch64-apple-darwin and does NOT transfer. **The structural root under ~42 % of the gap is that the encoder holds planes as `u16` at every bit depth and so runs the HIGHBD kernels at bd8, where libaom runs a specialised lowbd path: forward transform +56.3 ms, inverse +51.0 ms, `highbd_variance` at bd8 +7.6 ms — one cause, ~115 ms, no single landing closes it.** **The obvious next step was BUILT AND MEASURED NULL — do not rebuild it.** The audited i16 inverse kernels are wired only to the DECODER's `u8` path (a reach probe on `try_inv_col_pass_u8` records ZERO calls); the u16-output twin was written, is CORRECT (427/427 still byte-identical, aom-dsp green), and is **-0.03 % on 5/8 interleaved rounds** — the -8 to -10 ms bound is refuted, measured 0. Mechanism, and it is KB-PERF-3's own lesson from the other side: an `i16x16` and an `i32x8` are both 256 bits, so lane count changes and work does not; the inverse kernels never get `fbtf16`'s cheaper `half_btf` because their 17-bit transients live in a two-domain i32 representation anyway. **Both transform rows therefore need a different idea than lane width** — the profile points at libaom's SIZE-SPECIALISED whole-transform functions vs the port's generic driver, which is a much larger programme. Two other hypotheses were tested and refuted the same day: inverse redundancy (C's full tail is 15.7 ms, ratio 4.2x, not the 17x a top-N cut suggested) and a `col_n >= 16` restriction (+0.4 %). **SIZE-CONTROLLED**: the 192x192 profile cell is L2-resident (~108 KiB of planes), which is exactly the regime where a traffic-halving lever cannot show a win, so the null was re-measured at 512x512 and 1024x1024 (3 MiB, L3) — **+0.64 % and +0.22 %, faster in 1/5 rounds each, byte-identical output**; the revert stands on a 28x pixel-count span. The STAGE RANKING transfers (max shift 3.0 pp, no reordering of the top four), so the cheap cell is a valid ranking tool at 24x the iteration speed — but **the ratio itself is cell-dependent — 2.4988x at 192x192 and 2.5717x at 1024x1024 after KB-PERF-7** (2.542x / 2.624x before it), so quote the headline with its cell. **KB-PERF-7 also measured the size regime from the other direction**: its four-pixel fold is WORTH MORE at 1024x1024 (-2.00 %) than at 192x192 (-1.68 %), which is what an L2-resident cell under-measuring a traffic lever looks like when the lever actually works. |
 | (5) match the RD of C | byte identity is the strongest available evidence and holds on 427/427 standalone cells; the pinned divergences are the measured/attributed/bounded residual the directive permits to ship |
 | (6) sensible conversion + wiring + testing of all of the C encoder | `av1_determine_sc_tools_with_encoding` (PARITY C3) unported; the bd12 dispatch-tier disagreement open |
 
@@ -5486,13 +5486,117 @@ one tree, byte-identical output throughout):
 - **The box-sum tier is the only one of the three that reaches the DECODER** —
   `sgr.rs` is on the decode restoration path, so it can move Gate 1, and
   `-p zenav1-aom-decode` is in its gate list where the other two did not need it.
-- **WHERE THE STAGE STOPS.** What is left is `calculate_intermediate`'s own body
+- **WHERE THE STAGE STOPS. ~~What is left is `calculate_intermediate`'s own body
   (8.5 ms), whose hot loop is a 256-entry table lookup
   (`X_BY_XPLUS1[z.min(255)]`) — a gather the current vector vocabulary does not
-  handle well, and not worth forcing for 8 ms. **The honest next targets are
+  handle well, and not worth forcing for 8 ms.~~ SUPERSEDED 2026-09-08 by
+  KB-PERF-8, and both halves were wrong: the 8.5 ms omitted `{closure#0}` (this
+  entry's own correction flags that inlining sink), and the LOOKUP IS NOT THE
+  COST — it is one operation of ~20 in that loop, blocking vectorization of the
+  other nineteen. Vectorized with the lookup left as eight scalar loads, the A/B
+  pass went 287.7 -> 70.9 ms (4.1x). No gather was needed or wanted.** **The honest next targets are
   elsewhere: the transform INVERSE half (+53 ms, the largest single item in the
   gap and a named open residual of KB-PERF-3 — only the DCT family passed its i16
   audit) and the register-blocked `compute_stats`.**
+
+### KB-PERF-8 — Encoder+Decoder: the SGR A/B pass was scalar because ONE of its ~20 operations is a table lookup — LANDED ✅ 2026-09-08 (2.572x -> 2.531x at 1024x1024, byte-identical)
+
+After KB-PERF-7 the largest loop-restoration symbol was
+`sgr::calculate_intermediate` — `av1_selfguided_restoration_c`'s A/B pass — at
+**2.71 % = 288 ms on a 1 MP frame**. KB-PERF-6 had left it with the note *"the
+hot loop is a 256-entry table lookup (`X_BY_XPLUS1[z.min(255)]`), a gather the
+current vector vocabulary does not handle well, and not worth forcing for
+8 ms"*. **Both halves of that note were wrong, and in opposite directions.**
+
+- **The 8 ms was half the number** (KB-PERF-6's own correction blockquote had
+  already flagged this: the figure omitted `{closure#0}`, an inlining sink).
+- **More importantly, the lookup is not the cost.** It is ONE operation of about
+  twenty in that loop body — two `ROUND_POWER_OF_TWO`s, three multiplies, a
+  saturating subtract, another rounding shift, the `b` chain, two stores. It was
+  never slow; it was **blocking vectorization of the other nineteen**. So no
+  gather is needed: the lookup stays eight scalar loads through a stack round
+  trip and everything around it goes eight-wide.
+
+- **FIX.** `sgr::ab_row_impl` (+ `ab_row_impl_scalar` twin, `ab_row` dispatch)
+  processes 8 columns `j` of one A/B row per iteration; `calculate_intermediate`
+  hands it one contiguous run of `width + 2` cells per ring row (`k` is
+  contiguous in `j`). `ab_one` holds the loop body and is shared VERBATIM by the
+  scalar tier and the vector tier's column tail, so the two cannot drift.
+
+- **BIT-EXACT WITH NO RANGE ARGUMENT AT ALL — stronger than KB-PERF-7's.** Each
+  `j` is independent, so unlike the four-pixel fold nothing is reassociated. The
+  lane arithmetic IS C's `uint32_t` arithmetic: `+`/`-`/`*` are the low 32 bits
+  (signedness cannot change a low-32 result), every right shift is
+  `shr_logical`, and the one place signedness would matter — `saturating_sub` —
+  does not lean on the box-sum bound: the compare is made unsigned by flipping
+  both operands' sign bits (`x ^ i32::MIN`). The single signed compare kept is
+  `z.min(255)`, unconditionally safe because `z` is a logical shift right by 20
+  and so lies in `0..=4095`.
+  One asymmetry recorded at the site rather than left to be rediscovered: the
+  scalar tier spells `a * n` and `v + half` as CHECKED Rust ops, so a
+  `debug-assertions` build would panic exactly where these lanes wrap. That
+  input does not exist (`a <= 25*4095^2 >> 8` ~ 1.64e6, `a * n <= ~4.1e7`, three
+  orders under `u32::MAX`) and a release build wraps on both sides.
+
+- **THE GATHER QUESTION, ANSWERED PROPERLY** (it is why this was deferred twice):
+  * the needed instruction is `_mm256_i32gather_epi32` (VPGATHERDD). **magetypes
+    has no gather at all** — verified in the pinned 0.9.28 AND in 0.9.29 — and no
+    shuffle/permute either, only `blend`, so a `pshufb` in-register LUT is out
+    too (the low 16 entries would have fit: all <= 240);
+  * it WOULD be soundly wrappable — a `&[i32; 256]` plus an index masked to
+    `N-1` is in-bounds by construction, and the `unsafe` would live in magetypes
+    exactly as archmage already does for `safe_unaligned_simd`. **Soundness was
+    never the obstacle**;
+  * it would very likely LOSE anyway: AVX2-only (aarch64 has none before SVE2,
+    wasm128 none), and VPGATHERDD is ~12-20 cycles of throughput for 8 lanes
+    against 8 L1 loads at ~0.5 each, on a 1 KB permanently-resident table.
+
+- **The arithmetic reformulation is PROVEN and held in reserve.** The domain is
+  256 inputs, so exhaustive enumeration is a COMPLETE proof, not sampling.
+  Measured: `X_BY_XPLUS1[z] == round(256z/(z+1))` at 254 of 256 entries, with two
+  deliberate endpoints (`z=0 -> 1`, libaom's "value of 1/256"; `z=255 -> 256`),
+  and an f32 form (`256.0/(z+1)`, `+0.5`, floor, `256 - r`, two endpoint blends)
+  is **exact on all 256 inputs** — nearest half-integer 0.002924 away against an
+  f32 error of ~1.5e-5, a ~200x margin. It is the follow-up if the
+  store-forward round trip ever dominates. **It must use true `Div`, never
+  `rcp_approx`/`recip`**: approximate reciprocal is specified only to a
+  relative-error bound and its bits differ between vendors, which would make the
+  encoder's output depend on whose CPU ran it.
+
+- **MEASURED** (two binaries from one tree, rotated arms, same-binary null in
+  every band, byte-identical output throughout):
+
+  | cell | before | after | vs libaom | paired | rounds | p | null |
+  |---|---:|---:|---:|---:|---:|---:|---:|
+  | 192x192 cq27 s0 | 441.19 ms | 436.13 ms | 2.5039x -> **2.4752x** | -1.20 % | 20/20 | 1.9e-6 | +0.10 % (p=0.50) |
+  | 1024x1024 cq27 s0 | 10615.10 ms | 10424.88 ms | 2.5775x -> **2.5313x** | -2.00 % | 8/8 | 0.008 | -0.24 % (p=0.29) |
+
+  The 1024x1024 base arm reads 10615 against KB-PERF-7's just-pushed 10600 —
+  0.14 % apart, so this is read against a live control reproducing the landed
+  number.
+
+- **ATTRIBUTED BY SYMBOL.** The A/B pass was inlined into
+  `calculate_intermediate` at 2.71 % = **287.7 ms**; it is now `ab_row_impl_v3`
+  at 0.63 % = 65.7 ms plus a 0.05 % = 5.2 ms residual — **287.7 -> 70.9 ms,
+  4.1x** — and it leaves the loop-restoration symbol list altogether. -216.8 ms
+  attributed against a -190.2 ms wall delta; the box-sum closure reads +8.8 ms in
+  the same single-run profile, within one-sample noise. **The 8-round wall band
+  is the ground truth; the symbol split attributes the work that MOVED and is
+  not a per-symbol measurement of everything that did not.**
+
+- **THIS ONE REACHES THE DECODER.** `sgr.rs` is on the decode restoration path,
+  so it can move Gate 1 — `-p zenav1-aom-decode` is in the gate list (19/19 ok),
+  alongside `pick_diff` 6/6 (incl. `selfguided_flt_producer_matches_c`),
+  `pick_search` 3/3 and `kernels_diff` 2/2, all in BOTH dispatch modes.
+
+- **Session total for clause (4):** 2.5412x -> **2.4752x** at 192x192 and
+  2.6227x -> **2.5313x** at 1024x1024 across KB-PERF-7 + KB-PERF-8, all
+  byte-identical.
+
+- **Still scalar in this stage, named:** `calculate_intermediate`'s box-sum
+  closure (already vectorized in KB-PERF-6, ~155 ms), `selfguided_restoration`
+  itself, and `compute_stats_highbd`. Loop restoration as a stage was +1406 ms
+  of the 1024x1024 gap before these two landings.
 
 ### KB-PERF-7 — Encoder: `compute_stats` touched the `H` accumulator once per PIXEL — the four-pixel fold KB-PERF-6 pre-registered — LANDED ✅ 2026-09-08 (2.624x -> 2.572x at 1024x1024, byte-identical)
 
@@ -5553,7 +5657,10 @@ the worst kernel ratio anywhere in it (8.2x vs `compute_stats_win7_avx2` + win5 
   regime note the clause-(4) row already carries for the i16 inverse null. Quote the
   ratio with its cell.
 - **WHAT IS NOW THE LARGEST LR SYMBOL: `calculate_intermediate` (2.45 %), and its
-  hot loop is a 256-entry `X_BY_XPLUS1[z.min(255)]` table lookup.** Verified
+  hot loop is a 256-entry `X_BY_XPLUS1[z.min(255)]` table lookup.** **CLOSED the
+  same day by KB-PERF-8** — without a gather, by vectorizing the other ~19
+  operations of that loop and leaving the lookup as eight scalar loads
+  (287.7 -> 70.9 ms). Verified
   first-hand this session: **magetypes contains no `gather` at all**, in 0.9.28 or
   0.9.29, so there is no vector form of that lookup in this vocabulary. Closing it
   means replacing the table with arithmetic (`256*z/(z+1)`, exhaustively checkable

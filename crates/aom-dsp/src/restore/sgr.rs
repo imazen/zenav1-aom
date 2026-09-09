@@ -336,6 +336,267 @@ fn boxsum2(
 /// blended A (edge-strength) / B (offset) arrays including a 1-pixel ring,
 /// at rows stepped by 2 for the fast (r=2) pass. Returns `(a_buf, b_buf,
 /// buf_stride, origin_offset)`.
+/// One `(A, B)` cell of the SGR intermediate — the loop body of
+/// `av1_selfguided_restoration_c`'s A/B pass.
+///
+/// Shared VERBATIM by the scalar tier and by the vector tier's column tail, so
+/// the two cannot drift in the one place a drift would be invisible to a
+/// lane-level review (the `gather_window` precedent in `restore::pick`).
+#[inline(always)]
+fn ab_one(
+    a_raw: i32,
+    b_raw: i32,
+    n: u32,
+    s: u32,
+    one_by_x: u32,
+    shift_a: u32,
+    shift_b: u32,
+) -> (i32, i32) {
+    let a = rpot_u32(a_raw as u32, shift_a);
+    let b = rpot_u32(b_raw as u32, shift_b);
+    // C: `p = (a * n < b * b) ? 0 : a * n - b * b` (the highbd
+    // rounding artefact saturation).
+    let p = (a * n).saturating_sub(b * b);
+    // p * s < 2^32 for the valid s table (see the C bound comments);
+    // wrapping matches C uint32 semantics exactly regardless.
+    let z = rpot_u32(p.wrapping_mul(s), SGRPROJ_MTABLE_BITS);
+    let a_out = X_BY_XPLUS1[z.min(255) as usize];
+    let b_out = rpot_u32(
+        ((SGRPROJ_SGR - a_out) as u32)
+            .wrapping_mul(b_raw as u32)
+            .wrapping_mul(one_by_x),
+        SGRPROJ_RECIP_BITS,
+    ) as i32;
+    (a_out, b_out)
+}
+
+/// Scalar tier = the transcribed port, verbatim.
+#[allow(clippy::too_many_arguments)]
+fn ab_row_impl_scalar(
+    _t: archmage::ScalarToken,
+    a_row: &mut [i32],
+    b_row: &mut [i32],
+    n: u32,
+    s: u32,
+    one_by_x: u32,
+    shift_a: u32,
+    shift_b: u32,
+) {
+    for t in 0..a_row.len() {
+        let (a_out, b_out) = ab_one(a_row[t], b_row[t], n, s, one_by_x, shift_a, shift_b);
+        a_row[t] = a_out;
+        b_row[t] = b_out;
+    }
+}
+
+// The two shift amounts below are hardcoded as const generics; these pin the
+// named constants they stand for, so a future change to either breaks the
+// build instead of silently changing the rounding.
+const _: () = assert!(SGRPROJ_MTABLE_BITS == 20);
+const _: () = assert!(SGRPROJ_RECIP_BITS == 12);
+
+/// Vector tier: lanes are columns `j` of one A/B row.
+///
+/// # Why this is bit-exact for EVERY bit pattern, with no range argument
+///
+/// Each `j` is independent — no lane reads another lane's output — so nothing
+/// is reassociated at all (contrast `restore::pick`'s four-pixel fold, which
+/// does reassociate and argues from the associativity of wrapping `i32` adds).
+/// The lane arithmetic is C's `uint32_t` arithmetic exactly:
+///
+/// * `+`, `-` and `*` are the low 32 bits, which is what `wrapping_add` /
+///   `wrapping_sub` / `wrapping_mul` on `u32` compute — signedness cannot
+///   change a low-32 result;
+/// * every right shift is `shr_logical`, i.e. the `u32` shift, never the
+///   arithmetic one;
+/// * `saturating_sub` is the one place signedness WOULD matter, so it does not
+///   rely on a bound: the compare is made unsigned by flipping both operands'
+///   sign bits (`x ^ i32::MIN`), which turns signed `>=` into `>=` on the u32
+///   bit patterns for all inputs;
+/// * `z.min(255)` is the one signed compare kept, and it is unconditionally
+///   safe: `z` is a logical shift right by 20 of a 32-bit value, so it is in
+///   `0 ..= 4095` and can never be negative.
+///
+/// So the A/B buffers hold the same bits the scalar tier writes, whatever the
+/// box sums contain.
+///
+/// One asymmetry, stated because a tier disagreement is a differential hole
+/// even when it is unreachable: the scalar tier spells `a * n` and `v + half`
+/// as CHECKED Rust operations (it is the verbatim transcription, and C writes
+/// them on `uint32_t`), while these lanes wrap. A `debug-assertions` build
+/// would therefore panic in the scalar tier exactly where this one wraps. That
+/// input does not exist: `a` is a box sum of squares shifted right by
+/// `2 * (bit_depth - 8)`, so it is at most `25 * 4095^2 >> 8` ~ 1.64e6 and
+/// `a * n` at most ~4.1e7, three orders under `u32::MAX`; `p * s` is already
+/// spelled `wrapping_mul` on both sides. In a release build the scalar tier
+/// wraps too, so the tiers agree unconditionally there.
+///
+/// # The table lookup, and why it did NOT need a gather
+///
+/// `X_BY_XPLUS1[z.min(255)]` is the one operation with no vector form here:
+/// **magetypes has no gather at all** (checked in the pinned 0.9.28 AND in
+/// 0.9.29) and no shuffle/permute either, only `blend` — so neither a
+/// `vpgatherdd`-style lookup nor a `pshufb` in-register LUT is expressible.
+///
+/// It does not need one. The lookup is ONE operation of roughly twenty in this
+/// loop body; it was never slow, it was *blocking vectorization of the other
+/// nineteen*. So it stays eight scalar loads through a stack round trip and
+/// everything around it goes eight-wide. Two things this deliberately avoids:
+///
+/// * a real gather would be **AVX2-only** (aarch64 has none before SVE2,
+///   wasm128 none), and `VPGATHERDD` is ~12-20 cycles of throughput for 8 lanes
+///   against 8 L1 loads at ~0.5 each — for a 1 KB permanently-L1-resident table
+///   it would most likely LOSE to the scalar loads it replaced;
+/// * an arithmetic reformulation IS available and IS provable — the table is
+///   `round(256z/(z+1))` at 254 of its 256 entries, with two deliberate
+///   endpoints (`z=0 -> 1`, libaom's "value of 1/256"; `z=255 -> 256`), and an
+///   f32 form (`256.0/(z+1)`, `+0.5`, floor, `256 - r`, two endpoint blends) is
+///   exact on **all 256 inputs**, the nearest half-integer being 0.002924 away
+///   against an f32 error of ~1.5e-5. It is the follow-up if the store-forward
+///   round trip ever dominates. It must use true `Div`, never `rcp_approx`:
+///   approximate reciprocal is only specified to a relative-error bound and its
+///   exact bits differ between vendors, which would make the encoder's output
+///   depend on whose CPU ran it.
+///
+/// `& 255` on the stored index is a no-op after the clamp and makes the index
+/// provably in range, so no bounds check survives into the loop.
+///
+/// # Measured
+///
+/// Two binaries from one tree, arms interleaved and ROTATED, a same-binary null
+/// arm in every band, byte-identical output on every arm:
+///
+/// | cell | before | after | vs libaom | paired | rounds | p | null |
+/// |---|---:|---:|---:|---:|---:|---:|---:|
+/// | 192x192 cq27 s0 | 441.19 ms | 436.13 ms | 2.5039x -> 2.4752x | -1.20 % | 20/20 | 1.9e-6 | +0.10 % (p=0.50) |
+/// | 1024x1024 cq27 s0 | 10615.10 ms | 10424.88 ms | 2.5775x -> 2.5313x | -2.00 % | 8/8 | 0.008 | -0.24 % (p=0.29) |
+///
+/// Attributed by symbol on the 1024x1024 cell: the A/B pass was inlined into
+/// `calculate_intermediate` at **2.71 % = 287.7 ms**; it is now
+/// `ab_row_impl_v3` at 0.63 % = 65.7 ms plus a 0.05 % = 5.2 ms residual, i.e.
+/// **287.7 -> 70.9 ms, 4.1x**, and it leaves the loop-restoration symbol list
+/// altogether. That is -216.8 ms attributed against a -190.2 ms wall delta;
+/// the box-sum closure reads +8.8 ms in the same single-run profile, which is
+/// within one-sample noise. **The wall band (8 rounds, 8/8) is the ground
+/// truth — the symbol split attributes the work that MOVED, and is not a
+/// per-symbol measurement of everything that did not** (reading it that way is
+/// the KB-PERF-6 roll-up error).
+///
+/// The lookup itself was never the cost, which is the point: it is one
+/// operation of about twenty here, and eight scalar loads through a stack round
+/// trip cost less than leaving the other nineteen scalar.
+#[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn ab_row_impl(
+    token: Token,
+    a_row: &mut [i32],
+    b_row: &mut [i32],
+    n: u32,
+    s: u32,
+    one_by_x: u32,
+    shift_a: u32,
+    shift_b: u32,
+) {
+    // The two `ROUND_POWER_OF_TWO` shifts are frame-level constants but not
+    // COMPILE-time ones, and this vocabulary has only const-generic shifts
+    // (no `shr_logical_uniform` in 0.9.28). `bit_depth` is 8, 10 or 12, so
+    // `shift_a` is 0/4/8 and `shift_b` is 0/2/4: each is a select over three
+    // const shifts, with the masks hoisted out of the loop.
+    let all = i32x8::splat(token, -1);
+    let none = i32x8::zero(token);
+    let m_a4 = if shift_a >= 4 { all } else { none };
+    let m_a8 = if shift_a >= 8 { all } else { none };
+    let m_b2 = if shift_b >= 2 { all } else { none };
+    let m_b4 = if shift_b >= 4 { all } else { none };
+
+    let nv = i32x8::splat(token, n as i32);
+    let sv = i32x8::splat(token, s as i32);
+    let obx = i32x8::splat(token, one_by_x as i32);
+    let sgr = i32x8::splat(token, SGRPROJ_SGR);
+    let half_a = i32x8::splat(token, ((1u32 << shift_a) >> 1) as i32);
+    let half_b = i32x8::splat(token, ((1u32 << shift_b) >> 1) as i32);
+    let half_z = i32x8::splat(token, ((1u32 << SGRPROJ_MTABLE_BITS) >> 1) as i32);
+    let half_r = i32x8::splat(token, ((1u32 << SGRPROJ_RECIP_BITS) >> 1) as i32);
+    let c255 = i32x8::splat(token, 255);
+    // Flipping the sign bit of both operands turns signed `>=` into `>=` on the
+    // u32 bit patterns — the unsigned compare `saturating_sub` needs.
+    let bias = i32x8::splat(token, i32::MIN);
+
+    let len = a_row.len();
+    let mut o = 0usize;
+    while o + 8 <= len {
+        let a_raw = i32x8::from_slice(token, &a_row[o..o + 8]);
+        let b_raw = i32x8::from_slice(token, &b_row[o..o + 8]);
+
+        // a = ROUND_POWER_OF_TWO(a_raw, shift_a), b likewise, in u32.
+        let xa = a_raw + half_a;
+        let a = i32x8::blend(
+            m_a8,
+            xa.shr_logical::<8>(),
+            i32x8::blend(m_a4, xa.shr_logical::<4>(), xa),
+        );
+        let xb = b_raw + half_b;
+        let b = i32x8::blend(
+            m_b4,
+            xb.shr_logical::<4>(),
+            i32x8::blend(m_b2, xb.shr_logical::<2>(), xb),
+        );
+
+        // p = (a * n).saturating_sub(b * b), on the u32 bit patterns.
+        let an = a * nv;
+        let bb = b * b;
+        let ge = (an ^ bias).simd_ge(bb ^ bias);
+        let p = i32x8::blend(ge, an - bb, none);
+
+        // z = ROUND_POWER_OF_TWO(p.wrapping_mul(s), SGRPROJ_MTABLE_BITS).
+        let zc = (((p * sv) + half_z).shr_logical::<20>()).min(c255);
+
+        let mut zs = [0i32; 8];
+        zc.store(&mut zs);
+        let mut lut = [0i32; 8];
+        for t in 0..8 {
+            lut[t] = X_BY_XPLUS1[(zs[t] as usize) & 255];
+        }
+        let a_out = i32x8::from_slice(token, &lut[..]);
+
+        let b_out = (((sgr - a_out) * b_raw * obx) + half_r).shr_logical::<12>();
+
+        {
+            let d: &mut [i32; 8] = (&mut a_row[o..o + 8]).try_into().unwrap();
+            a_out.store(d);
+        }
+        {
+            let d: &mut [i32; 8] = (&mut b_row[o..o + 8]).try_into().unwrap();
+            b_out.store(d);
+        }
+        o += 8;
+    }
+
+    // Column tail: the shared scalar body, so the tiers cannot drift.
+    for t in o..len {
+        let (a_out, b_out) = ab_one(a_row[t], b_row[t], n, s, one_by_x, shift_a, shift_b);
+        a_row[t] = a_out;
+        b_row[t] = b_out;
+    }
+}
+
+/// `av1_selfguided_restoration_c`'s A/B pass over one row of the ring.
+#[allow(clippy::too_many_arguments)]
+fn ab_row(
+    a_row: &mut [i32],
+    b_row: &mut [i32],
+    n: u32,
+    s: u32,
+    one_by_x: u32,
+    shift_a: u32,
+    shift_b: u32,
+) {
+    archmage::incant!(
+        ab_row_impl(a_row, b_row, n, s, one_by_x, shift_a, shift_b),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn calculate_intermediate(
     dgd: &[i32],
@@ -379,27 +640,24 @@ fn calculate_intermediate(
     // A[] / B[] with a 1-pixel ring: i in -1 ..= height, j in -1 ..= width.
     let n = ((2 * r + 1) * (2 * r + 1)) as u32;
     let s = ss[radius_idx] as u32;
+    let one_by_x = ONE_BY_X[(n - 1) as usize];
+    let shift_a = 2 * (bit_depth - 8) as u32;
+    let shift_b = (bit_depth - 8) as u32;
+    // `k` is contiguous in `j`, so each row of the ring is one contiguous run
+    // of `width + 2` cells in each buffer (j = -1 ..= width).
+    let count = width + 2;
     let mut i: i32 = -1;
     while i < height as i32 + 1 {
-        for j in -1..=(width as i32) {
-            let k = (org as i32 + i * buf_stride as i32 + j) as usize;
-            let a = rpot_u32(a_buf[k] as u32, 2 * (bit_depth - 8) as u32);
-            let b = rpot_u32(b_buf[k] as u32, (bit_depth - 8) as u32);
-            // C: `p = (a * n < b * b) ? 0 : a * n - b * b` (the highbd
-            // rounding artefact saturation).
-            let p = (a * n).saturating_sub(b * b);
-            // p * s < 2^32 for the valid s table (see the C bound comments);
-            // wrapping matches C uint32 semantics exactly regardless.
-            let z = rpot_u32(p.wrapping_mul(s), SGRPROJ_MTABLE_BITS);
-            let a_out = X_BY_XPLUS1[z.min(255) as usize];
-            a_buf[k] = a_out;
-            b_buf[k] = rpot_u32(
-                ((SGRPROJ_SGR - a_out) as u32)
-                    .wrapping_mul(b_buf[k] as u32)
-                    .wrapping_mul(ONE_BY_X[(n - 1) as usize]),
-                SGRPROJ_RECIP_BITS,
-            ) as i32;
-        }
+        let k0 = (org as i32 + i * buf_stride as i32 - 1) as usize;
+        ab_row(
+            &mut a_buf[k0..k0 + count],
+            &mut b_buf[k0..k0 + count],
+            n,
+            s,
+            one_by_x,
+            shift_a,
+            shift_b,
+        );
         i += step;
     }
     (a_buf, b_buf, buf_stride, org)
