@@ -27,9 +27,15 @@ Three consequences, because this REORDERS the queue below rather than adding to 
 2. **Two classes still must close, and they are not "divergences".** (a) anything that
    REFUSES a configuration a caller can reach (`--deltaq-mode` 2/3 at `--cpu-used` >= 8
    asserts; the unported SCM trial), because a refusal is a hole in the contract, not a
-   byte; (b) anything where the port disagrees with ITSELF across dispatch tiers (the bd12
+   byte; (b) ~~anything where the port disagrees with ITSELF across dispatch tiers (the bd12
    `1920x1080 cq24 cpu0` cell, +181 B default vs +55 B scalar), because a kernel whose
-   tiers disagree is a differential hole (playbook §1).
+   tiers disagree is a differential hole (playbook §1)~~ — **(b) CLOSED 2026-09-09,
+   MEASURED: both tiers now emit the byte-identical stream at that exact cell
+   (`len 158731`, fnv `4b5f1efec0345f57`), and the residual `+59 B` against real aomenc is
+   a plain divergence covered by the cap, not a differential hole. It closed silently
+   because NOTHING in the tree encoded bd12; that hole is now gated by
+   `bd12_dispatch_tier_agreement`.** So (a) — the refusals — is the only must-close class
+   still open.
 3. ~~**The encoder has none of the six zen cross-cutting contracts the decoder has.**~~
    **CLOSED 2026-09-08** — all six landed this cycle (limits + estimate, located/structured
    errors, `category()`/`is_transient()`, panic-freedom under a fuzz sweep, `AllocMode`,
@@ -58,7 +64,7 @@ user says otherwise; the two retained fleet photo witnesses are at 2.49x / 2.65x
 | (3) no panics or refusals on reachable inputs | 90k fuzz inputs, 0 panics (`encode_fuzz_sweep.rs`); KB-51 was found this way |
 | (4) encode time within libaom | **NOT MET — ~2.39x at 1024x1024** (KB-PERF-9 2.521x -> 2.478x, KB-PERF-10 2.488x -> 2.464x, KB-PERF-11 2.457x -> 2.440x, KB-PERF-12 2.430x -> 2.424x, KB-PERF-13 2.410x -> 2.398x, KB-PERF-14 2.402x -> 2.395x, all at 1 MP. **Each ratio is against a C median from its OWN band and the C arm drifts 1.15 % across those four bands, so every ratio carries ~±0.6 % and the chain is not as precise as its digits — quote the PAIRED port-vs-port deltas when precision matters**; the 192x192 cell has not been re-measured since KB-PERF-8's 2.475x, so do not quote a 192x192 figure for either) (2.542x / 2.624x before KB-PERF-7, 2.69x before KB-PERF-6) vs Gate 3's <= 1.5x; the 3.24x-4.03x band across byte-identical cells is `benchmarks/encode_perf_vs_libaom_2026-09-08.md`. **This is the critical path: clause (1) reduces to it, and closing it needs ~178 ms of a 275 ms gap — several landings, not one.** **Rank levers off `benchmarks/encoder_x86_reprofile_1024_2026-09-09.after.md`** — the table re-taken at HEAD after KB-PERF-9..15 (port 10128 / C 4222 / **2.399x** / gap 5906 ms): transform +2263 (38.3 %), rd-driver +950 (16.1 %), loop-restoration +901 (15.3 %), intra-pred +473, txb/trellis +464 at **1.31x**, memory +448 at 7.43x, quantize +384 (never examined, and the one class that GREW), distortion +234. Its opening table is in `benchmarks/encoder_x86_reprofile_1024_2026-09-09.md` (2026-09-09, taken at 1024x1024 AFTER KB-PERF-7/8 — the 192x192 tables are L2-resident and their class SHARES do not carry to a 1 MP frame; it supersedes `..._x86_reprofile_2026-09-08.md`, which supersedes `..._x86_profile_...`). **Its headline finding is a lever that does NOT exist: `optimize_txb_core` is the port's LARGEST symbol at 11.44 %, and like-for-like it is 1211 ms against C's `av1_optimize_txb` 1258 ms — the port's trellis is FASTER, and the whole txb/trellis class runs at ratio 1.32, the best of any class. Do not spend a landing on it.** The class table at 1 MP (gap 6370 ms): transform +2440 (38.3 %), rd-driver +1023 (16.1 %), loop-restoration +900 (14.1 %), intra-pred +514, memory/memset +486 at 12.4x, txb +483 at 1.32x, quantize +340, distortion +295. Every KB-PERF-1..5 ranking is aarch64-apple-darwin and does NOT transfer. **The structural root under ~42 % of the gap is that the encoder holds planes as `u16` at every bit depth and so runs the HIGHBD kernels at bd8, where libaom runs a specialised lowbd path: forward transform +56.3 ms, inverse +51.0 ms, `highbd_variance` at bd8 +7.6 ms — one cause, ~115 ms, no single landing closes it.** **The obvious next step was BUILT AND MEASURED NULL — do not rebuild it.** The audited i16 inverse kernels are wired only to the DECODER's `u8` path (a reach probe on `try_inv_col_pass_u8` records ZERO calls); the u16-output twin was written, is CORRECT (427/427 still byte-identical, aom-dsp green), and is **-0.03 % on 5/8 interleaved rounds** — the -8 to -10 ms bound is refuted, measured 0. Mechanism, and it is KB-PERF-3's own lesson from the other side: an `i16x16` and an `i32x8` are both 256 bits, so lane count changes and work does not; the inverse kernels never get `fbtf16`'s cheaper `half_btf` because their 17-bit transients live in a two-domain i32 representation anyway. **Both transform rows therefore need a different idea than lane width** — the profile points at libaom's SIZE-SPECIALISED whole-transform functions vs the port's generic driver, which is a much larger programme. Two other hypotheses were tested and refuted the same day: inverse redundancy (C's full tail is 15.7 ms, ratio 4.2x, not the 17x a top-N cut suggested) and a `col_n >= 16` restriction (+0.4 %). **SIZE-CONTROLLED**: the 192x192 profile cell is L2-resident (~108 KiB of planes), which is exactly the regime where a traffic-halving lever cannot show a win, so the null was re-measured at 512x512 and 1024x1024 (3 MiB, L3) — **+0.64 % and +0.22 %, faster in 1/5 rounds each, byte-identical output**; the revert stands on a 28x pixel-count span. The STAGE RANKING transfers (max shift 3.0 pp, no reordering of the top four), so the cheap cell is a valid ranking tool at 24x the iteration speed — but **the ratio itself is cell-dependent — 2.4988x at 192x192 and 2.5717x at 1024x1024 after KB-PERF-7** (2.542x / 2.624x before it), so quote the headline with its cell. **KB-PERF-7 also measured the size regime from the other direction**: its four-pixel fold is WORTH MORE at 1024x1024 (-2.00 %) than at 192x192 (-1.68 %), which is what an L2-resident cell under-measuring a traffic lever looks like when the lever actually works. |
 | (5) match the RD of C | byte identity is the strongest available evidence and holds on 427/427 standalone cells; the pinned divergences are the measured/attributed/bounded residual the directive permits to ship |
-| (6) sensible conversion + wiring + testing of all of the C encoder | `av1_determine_sc_tools_with_encoding` (PARITY C3) unported; the bd12 dispatch-tier disagreement open |
+| (6) sensible conversion + wiring + testing of all of the C encoder | `av1_determine_sc_tools_with_encoding` (PARITY C3) unported. **The bd12 dispatch-tier disagreement is CLOSED 2026-09-09 (measured: both tiers byte-identical at `1920x1080 cq24 cpu0`) and now GATED by `bd12_dispatch_tier_agreement` — the tree had no bd12 coverage at all, which is why it sat open.** |
 
 **The one-line reading:** everything except encode time is either met or reduced to encode
 time. Rank perf work first until 3.24x moves.
@@ -344,7 +350,7 @@ it here in the same commit.**
 | ~~**partial-SB x bd12, and x 4:2:2/mono at high bit depth**~~ | **CLOSED 2026-08-04.** 7 formats (b10 {mono,4:4:4,4:2:2} + b12 {4:2:0,mono,4:4:4,4:2:2}) x KB-23's four sizes x cpu {0, 7} — **56/56 byte-exact**, `s4cov_partial_sb_axis::partial_sb_high_bitdepth_formats_byte_match`. | measured **53 s** |
 | **KB-41 root #27 — `av1_cnn_convolve_no_maxpool_padding_valid`'s RTCD dispatch** | NEW 2026-08-30, and it is the CARRIER for the last 13 cells of the aom-rs wave (3 screen `--cpu-used 6` + all 10 photo). The port transcribes the `_c` convolve (the oracle is pinned scalar by `shim/cnn_cscalar.c` so `cnn_partition_cnn_diff` has a stable target); a real encode runs `_avx2` on x86-64 / `_neon` on aarch64. The CNN branch outputs then differ in the 7th digit, which the branch DNN carries into a logit that `prec_reduce` puts on ADJACENT 1/512 quanta — and the intra-CNN prune compares that quantum against `no_split_thresh`, so `do_square_split` flips. Measured on `2765x4096_cq6_s6` mi(0,352): the port's 25 DNN features are BIT-IDENTICAL to the same oracle under `AOM_SIMD_CAPS=0`, raw logits −3.86037111 (port) vs −3.8603348731994629 (C), quanta −3.859375 vs −3.857421875, threshold −3.858222961 | `cnn_avx2.c` is 532 lines but only TWO specializations are reachable here — 5x5/skip-4 (layer 0) and 2x2/skip-2 (layers 1-3), everything else falls through to `_c`; each is a fixed shuffle-mask add tree expressible as scalar f32 (the root-#26 `nn_predict_avx2_order` is the worked precedent, and its gate shape — assert the variant THIS host dispatches, sweep the un-quantised form too — transfers directly). The NEON twin is needed for the aarch64 leg |
 | **KB-38's remaining root(s)** | NEW 2026-08-04. The `is_1080p_or_larger && base_qindex <= 108` arm is ported and moved both cq24 cells without closing either, and `bd10 1920x1080 cq32` diverges outside its predicate. Pinned by `speed0_1080p_band_map_is_pinned` | playbook §10 decode-both on 1920x1080 cq24 cpu0 bd8; ~85 s per port encode |
-| **the bd12 dispatch-tier disagreement at `1920x1080 cq24 cpu0`** | NEW 2026-08-04, from KB-38's scalar leg. That cell's delta is **+181 B on default dispatch and +55 B under `AOM_FORCE_SCALAR=1`** — the port's own scalar and vector tiers produce different bytes there, which they do nowhere else in the grid. A kernel whose tiers disagree is a differential hole (playbook §1) and is its own defect, not just a symptom of KB-38 | bisect the bd12 kernels live on that cell against their exported C symbols; the two encodes are ~55 s each |
+| ~~**the bd12 dispatch-tier disagreement at `1920x1080 cq24 cpu0`**~~ **CLOSED 2026-09-09** — re-measured at the named cell: both tiers emit `len 158731` / fnv `4b5f1efec0345f57`, i.e. byte-identical, so the port no longer disagrees with itself; the residual is `+59 B` vs real aomenc (KB-38's own open root, a divergence not a hole). Gated by `bd12_dispatch_tier_agreement` in both dispatch modes. Historical shape: NEW 2026-08-04, from KB-38's scalar leg. That cell's delta is **+181 B on default dispatch and +55 B under `AOM_FORCE_SCALAR=1`** — the port's own scalar and vector tiers produce different bytes there, which they do nowhere else in the grid. A kernel whose tiers disagree is a differential hole (playbook §1) and is its own defect, not just a symptom of KB-38 | bisect the bd12 kernels live on that cell against their exported C symbols; the two encodes are ~55 s each |
 | **crops straddling 2160 at bd10/12, 4:2:2/4:4:4/mono, SB128** | the cheap follow-on the closed 2160 arm opens — same razor, one format at a time | ~35 s per format, no new machinery |
 | **1440..2160 at formats other than bd8 4:2:0 SB64 cq24** | same shape as the >=1080p format arm, one tier up | ~7 min per format |
 | **multi-tile at SB128 / bd10-12 / 4:4:4-4:2:2 / mono** | KB-31 residual (c): that whole file is bd8 4:2:0 SB64 — and so is `kb31_deltaq_multitile.rs` (KB-39) | moderate; large frames |
@@ -5114,6 +5120,36 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   there, which they do nowhere else in the grid). The second is independently a defect worth
   its own probe — a kernel whose tiers disagree is a differential hole (playbook §1), not
   merely a symptom of the first.
+- **THE DISPATCH-TIER HALF IS CLOSED — MEASURED 2026-09-09, and it closed on its own.** At
+  the exact cell this entry names, `bd12 1920x1080 cq24 cpu0`, the two tiers now emit the
+  **byte-identical** stream: `port_len 158731`, fnv-1a-64 `4b5f1efec0345f57`, under default
+  dispatch AND under `AOM_FORCE_SCALAR=1`. Against this entry's 2026-08-04 reading of
+  **+181 default / +55 scalar**, the residual is now **+59 B in both tiers**. So the port no
+  longer disagrees with itself, and what is left here is a plain DIVERGENCE under the
+  standing goal's cap rather than a must-close differential hole. No fix is attributable —
+  one of the ~74 landings since 2026-08-04 closed it, and nothing could have reported that,
+  because **the tree encoded bd12 nowhere**: `speed0_1080p_band_map_is_pinned` sweeps bd8
+  and bd10 only. That is the real lesson, and it is playbook §7's shape one level up — a
+  must-close item can CLOSE unobserved just as easily as it can open unobserved.
+- **The bd12 band is now GATED, in both directions**
+  (`aom-bench/tests/all/bd12_dispatch_tier_agreement.rs`). Default tier: 18 bd12 cells from
+  64x64 to 256x256, SB-exact and partial-SB, **byte-identical to real aomenc** (~23 s). It
+  is simultaneously a TIER gate without running two dispatch modes itself, because
+  `just gate-landing` runs the suite twice (`test-next` + `test-next-scalar`) — a
+  byte-identity assertion checked under both modes IS a tier-agreement assertion, and a
+  reopened disagreement fails exactly one of the two runs. `#[ignore]`d tier: the >=1080p
+  map pinned at `1072x1072 cq24/cq32 = 0`, `1080x1080 cq32 = 0`, `1080x1080 cq24 = +138`,
+  `1920x1080 cq24 = +59`, with the straddle count asserted.
+- **A CHEAPER REPRODUCER FOR THE REMAINING (byte) ROOT: `1080x1080 cq24`, +138 B.** It is
+  1.17 MP against 1920x1080's 2.07, and the razor is sharper than the one this entry had —
+  BOTH neighbours are byte-exact: `1072x1072 cq24` (eight pixels under the
+  `AOMMIN(w,h) >= 1080` term) and `1080x1080 cq32` (`base_qindex` 128, above the `<= 108`
+  term). So both terms of the predicate are necessary, measured rather than argued. Use
+  this cell for the decode-both probe below, not the 1920 one.
+- **Also measured while here, and it bounds the search: bd12 is byte-exact at every size
+  below 1080p** — 18 cells x cq {24, 32, 48} from 64x64 to 256x256, both dispatch modes. So
+  the remaining root is not a bd12 kernel defect reachable from ordinary content; it needs
+  the >=1080p arm.
 - **NEXT PROBE, named not attempted:** playbook §10 decode-both first-divergent-block on
   `1920x1080 cq24 --cpu-used 0` at **bd8** — the cheaper side to read (no hbd path in the
   way) and the larger delta. ~85 s per port encode. Take the dispatch-mode clue above with

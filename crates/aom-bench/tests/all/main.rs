@@ -14,6 +14,7 @@
 //! tests/ directory alongside this one.
 
 mod armed_tools_decode_gate;
+mod bd12_dispatch_tier_agreement;
 mod cancel_latency;
 mod cnn_cache_identity;
 mod config_permutations;
