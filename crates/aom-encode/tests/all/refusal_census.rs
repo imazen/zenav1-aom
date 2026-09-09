@@ -405,3 +405,162 @@ fn every_error_variant_carries_a_category_and_a_retry_verdict() {
         seen.iter().map(|(e, _)| e.category()).collect();
     assert_eq!(cats.len(), 4, "categories must be distinct: {cats:?}");
 }
+
+/// Screen-shaped planes: flat few-colour panels plus a repeating glyph
+/// alphabet, so a 16x16 block holds a handful of distinct values.
+///
+/// This is deliberately NOT [`planes`]'s textured gradient. libaom's
+/// `estimate_screen_content` is a COLOUR-COUNT statistic (the fraction of full
+/// 16x16 luma blocks with 2..4 distinct `pix >> (bd-8)` values, KB-17), so a
+/// gradient is detector-NEGATIVE by construction — and detector-negative
+/// content is precisely the class `av1_determine_sc_tools_with_encoding`
+/// governs, since C's trial encode returns early whenever the detector already
+/// said yes. A refusal census run only on gradients cannot reach it.
+fn screen_planes(cfg: &KeyFrameConfig) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+    let (w, h) = (cfg.width, cfg.height);
+    let (cw, ch) = cfg.chroma_dims();
+    let shift = cfg.bit_depth - 8;
+    let mk = |pw: usize, ph: usize, base: u32| {
+        let mut v = Vec::with_capacity(pw * ph);
+        for y in 0..ph {
+            for x in 0..pw {
+                // Panels of one flat colour, with a small repeating glyph
+                // stamped inside them: two to four distinct values per 16x16.
+                let panel = ((x / 32) + (y / 24)) % 3;
+                let flat = [base, base + 60, base + 120][panel];
+                let glyph = ((x % 8) < 2 && (y % 12) < 7) as u32;
+                let px = flat + glyph * 70;
+                v.push(((px.min(255)) << shift) as u16);
+            }
+        }
+        v
+    };
+    let y = mk(w, h, 24);
+    if cfg.monochrome {
+        (y, Vec::new(), Vec::new())
+    } else {
+        (y, mk(cw, ch, 90), mk(cw, ch, 110))
+    }
+}
+
+/// Count 16x16 luma blocks holding 2..=4 distinct 8-bit codes — libaom's own
+/// screen statistic, so the fixture's shape is measured rather than asserted.
+fn screenish_block_fraction(y: &[u16], w: usize, h: usize, bd: u8) -> f64 {
+    let (mut hits, mut total) = (0usize, 0usize);
+    let shift = bd - 8;
+    for by in (0..h).step_by(16) {
+        for bx in (0..w).step_by(16) {
+            if bx + 16 > w || by + 16 > h {
+                continue;
+            }
+            let mut seen: Vec<u16> = Vec::new();
+            for r in 0..16 {
+                for c in 0..16 {
+                    let p = y[(by + r) * w + bx + c] >> shift;
+                    if !seen.contains(&p) {
+                        seen.push(p);
+                    }
+                }
+            }
+            total += 1;
+            if (2..=4).contains(&seen.len()) {
+                hits += 1;
+            }
+        }
+    }
+    if total == 0 { 0.0 } else { hits as f64 / total as f64 }
+}
+
+/// **The standing goal's last must-close item, asked of the SHIPPING path.**
+///
+/// The goal lists two classes that must CLOSE rather than ship under the
+/// "measured, attributed, bounded and documented" cap, and names *"the unported
+/// SCM trial"* as one of only two examples of the refusal class. That reading
+/// deserves a measurement rather than an inference, because the two things the
+/// SCM gap touches are in DIFFERENT crates:
+///
+/// * `aom_bench`'s differential harness carries a hard `assert_eq!` on the
+///   ported screen-content decision agreeing with the oracle header, whose own
+///   message names `av1_determine_sc_tools_with_encoding` as the remaining C
+///   arm. That is a HARNESS assertion — it fires while comparing against
+///   libaom, and no caller reaches it.
+/// * `aom_encode::key_frame::encode_key_frame` — the path zenavif calls — runs
+///   its OWN detector and lists the trial under "Not yet wired". Its entire
+///   refusal surface is `PlaneSize` / `Unsupported` / `Cancelled` /
+///   `SampleRange` / `AllocFailed` / `LimitExceeded`, and **none of them is
+///   reachable from a screen-content decision.**
+///
+/// So the prediction is that the unported trial is a byte DIVERGENCE under the
+/// cap, not a refusal — and this sweeps the tiny-cell class KB-41 named as the
+/// trial's reproducer neighbourhood (`59x128`/`85x128` at `cq >= ~40`, cpu 4
+/// and 6) to hold that accountable. A refusal here would move the item back
+/// onto the must-close list and this test says so by name.
+///
+/// Non-vacuity is asserted on the FIXTURE, not assumed: the content must
+/// actually be screen-shaped by libaom's own colour-count statistic, else the
+/// sweep would be re-running the gradient census under a new name.
+#[test]
+fn screen_shaped_tiny_cells_encode_rather_than_refuse() {
+    let mut cells: Vec<(String, Outcome)> = Vec::new();
+    let mut checked_shape = false;
+    for &(w, h) in &[(59usize, 128usize), (85, 128), (128, 80), (128, 128)] {
+        for &cq in &[40i32, 44, 50, 57, 62] {
+            for &speed in &[4i32, 6, 8] {
+                let mut cfg = base(w, h);
+                cfg.cq_level = cq;
+                cfg.cpu_used = speed;
+                let (y, u, v) = screen_planes(&cfg);
+
+                if !checked_shape {
+                    let frac = screenish_block_fraction(&y, w, h, cfg.bit_depth);
+                    assert!(
+                        frac >= 0.10,
+                        "the fixture is not screen-shaped ({:.1}% of 16x16 blocks hold 2..=4 \
+                         distinct codes, against libaom's own >= 10% detector threshold). This \
+                         sweep would then be the gradient census under a new name, and could not \
+                         reach the class av1_determine_sc_tools_with_encoding governs.",
+                        frac * 100.0
+                    );
+                    println!("  fixture: {:.1}% screenish 16x16 blocks", frac * 100.0);
+                    checked_shape = true;
+                }
+
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    encode_key_frame(
+                        KeyFramePlanes {
+                            y: &y,
+                            u: &u,
+                            v: &v,
+                        },
+                        &cfg,
+                    )
+                }));
+                let o = match r {
+                    Ok(Ok(b)) => Outcome::Ok(b.len()),
+                    Ok(Err(e)) => Outcome::Refused(e.to_string()),
+                    Err(p) => Outcome::Panicked(
+                        p.downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                            .unwrap_or_else(|| "<non-string panic>".into()),
+                    ),
+                };
+                cells.push((format!("{w}x{h} cq{cq} cpu{speed}"), o));
+            }
+        }
+    }
+    assert_no_panics("screen-shaped tiny cells", &cells);
+    let refused: Vec<&(String, Outcome)> = cells
+        .iter()
+        .filter(|(_, o)| matches!(o, Outcome::Refused(_)))
+        .collect();
+    assert!(
+        refused.is_empty(),
+        "screen-shaped cells must ENCODE, not refuse. A refusal here puts the unported \
+         `av1_determine_sc_tools_with_encoding` (or whatever else this names) back on the \
+         standing goal's MUST-CLOSE list, because it is then a refusal on a configuration a \
+         caller can produce rather than a divergence under the cap: {refused:#?}"
+    );
+    let (ok, _) = summarise("screen-shaped tiny cells", &cells);
+    assert_eq!(ok, cells.len());
+}
