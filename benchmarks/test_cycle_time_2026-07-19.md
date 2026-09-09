@@ -140,3 +140,65 @@ No silent runtime self-skips were found either.
    `dv_ref_diff::find_samples_matches_c` (11.3 s), the `aom-dsp` floor.
 3. Keep `--profile test-fast` as the default developer path.
 4. Do NOT consolidate test binaries. Do NOT switch to lld. Both measured, both rejected.
+
+---
+
+# ADDENDUM 2026-09-09 — consolidation REVISITED and now DONE, on different grounds
+
+**The 2026-07-19 rejection above is not overturned on its own terms, and this
+addendum starts by agreeing with it.** Consolidation is not a build-time win of
+consequence, and the linker is not the bottleneck. Both were re-measured today,
+independently, before this record was re-read — and both reproduced:
+
+| re-measured 2026-09-09 | 2026-07-19 said | today |
+|---|---|---|
+| cold build, aom-dsp test targets | 17.65 s (94 targets) | 23.83 s (111 targets) -> **5.48 s** (1 target) |
+| linker | lld 9 % SLOWER than bfd | mold 2.7x faster on an isolated 9.8 MB link, but link is a minority of a 22.8 s whole-workspace test build -> **dropped, not worth a CI dependency** |
+| the actual bottleneck | sequential binaries; nextest 4.7x | **confirmed: `cargo test` 57.4 min vs nextest 340.9 s = ~10x on the full workspace** |
+
+So the ranking in the original record was right, and two hypotheses of mine
+("link time dominates", "relink after touching a lib dominates") were wrong and
+were corrected by measurement — the relink win is only 13.6 s -> 10.7 s, because
+that time is recompiling the LIB at opt-level 3, not linking.
+
+## What changed the decision: three grounds the original did not weigh
+
+1. **Disk. 8.19 GB -> 202 MB (40x).** 446 test executables at a ~21.8 MB median,
+   each statically linking the port + libaom.a, against 6 harnesses totalling
+   202 MB. The original noted `target/` at 19.6 GB but did not treat it as a
+   reason; it is now 22.68 GB and the single largest measured effect here.
+2. **Its stated cost is answerable.** The original declined partly for "the loss
+   of `cargo test --test <name>`". Measured today: `--test all -- <module>::`
+   works, and libtest accepts MULTIPLE positional filters (verified against a
+   real test binary: `--list a b` returns the union), so `just test-simd`'s ten
+   `--test` flags collapse into one invocation with ten filters. No capability
+   is lost; 20 call sites in `justfile`/`ci.yml` were rewritten.
+3. **It unlocks two things that are not about speed at all**, and these are the
+   actual mandate:
+   * **the public-API leak.** 4,149 `pub` items exist across the workspace, and
+     the measured REAL consumer surface is **two modules** — zenavif uses only
+     `aom_encode::key_frame` and `aom_decode::frame`. The rest is public because
+     320 separate test crates had no other way in. One test target per crate
+     needs ONE declared door (`__internals`) instead of 4,149 `pub`s.
+   * **per-package `opt-level`.** All 134k lines of test code compile at
+     `opt-level = 3`, which only the code under test needs. Cargo cannot set a
+     different opt-level for a package's lib vs its tests — but it can per
+     PACKAGE, which becomes expressible once tests are consolidated.
+
+## Result
+
+320 integration binaries -> **6** (7 with the `census` target). Two files stay
+their own target for stated reasons, not taste:
+
+* `encode_limits_and_estimate` — it defines the counting `#[global_allocator]`
+  (KB-50). Its counters are process-global, and KB-50 already records two
+  measuring tests corrupting each other under intra-binary concurrency; merging
+  141 other files' allocations into that process would corrupt the peak it gates.
+* `content_family_census` — builds under `--no-default-features --features
+  census`, which its siblings cannot compile under.
+
+**Verified equal, not assumed:** the full workspace runs **1506 -> 1502** tests,
+all passing. The 4-test delta is fully explained and is a duplicate REMOVAL:
+`tests/common/mod.rs` carries a `#[test]`, which was compiled and executed once
+per including binary (5 copies of `common::md5::md5_known_vectors` in
+aom-decode); it now runs once. `1506 - 5 + 1 = 1502`, exactly.

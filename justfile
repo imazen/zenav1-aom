@@ -37,7 +37,12 @@ test-fast-scalar:
 #   cargo test sequential  57.02s | nextest  12.07s  = 4.7x, within 7% of the
 #   floor (the slowest single test, dv_ref_diff::find_samples_matches_c 11.31s).
 # A pool cannot beat its slowest single test — see benchmarks/test_cycle_time_
-# 2026-07-19.md for why binary consolidation and lld were measured and rejected.
+# 2026-07-19.md, which measured binary consolidation and lld and rejected both.
+# Its BUILD-TIME finding still stands and was reproduced 2026-09-09 (lld/mold are
+# a wash; the relink win is 13.6s -> 10.7s because that time is the LIB compile,
+# not links). Consolidation was done anyway on three grounds that record did not
+# weigh — disk 8.19 GB -> 202 MB, and it is what makes the `__internals` API gate
+# and a per-package test opt-level expressible. See its 2026-09-09 addendum.
 #
 # Needs cargo-nextest (prebuilt: curl -LsSf https://get.nexte.st/latest/linux
 # | tar zxf - -C ~/.cargo/bin). CI still uses plain `cargo test`.
@@ -61,7 +66,7 @@ test-slowest:
 # Measured 2026-07-17: ~45s cold (optimized build-dominated), test-RUN a few
 # seconds — the transform per-kernel differential is 1.5s here vs ~10s in debug.
 test-simd:
-    cargo test --profile test-fast -p zenav1-aom-dsp --test txfm2d_simd_perm_diff --test quantize_fp_simd_diff --test cdef_filter_simd_diff --test sad_simd --test hbd_variance_simd_diff --test txb_init_levels_simd_diff --test intra_simd_diff --test lpf_simd_diff --test wiener_simd_diff --test convolve_diff --no-fail-fast
+    cargo test --profile test-fast -p zenav1-aom-dsp --test all --no-fail-fast -- txfm2d_simd_perm_diff:: quantize_fp_simd_diff:: cdef_filter_simd_diff:: sad_simd:: hbd_variance_simd_diff:: txb_init_levels_simd_diff:: intra_simd_diff:: lpf_simd_diff:: wiener_simd_diff:: convolve_diff::
 
 # CONTENT-FAMILY COVERAGE GATE. Censuses the four committed `winperf` contents
 # through the port and asserts every coding-tool family (directional intra,
@@ -85,6 +90,40 @@ gate-encode:
     cargo test --profile test-fast -p zenav1-aom-encode --no-fail-fast
     cargo test --profile test-fast -p zenav1-aom-bench --no-fail-fast
     just census-gate
+
+# THE LANDING GATE. Same coverage as the old `gate-encode` + `test-fast` +
+# `test-fast-scalar` trio, MEASURED, in a fraction of the wall time.
+#
+# Two measurements from 2026-09-09 justify the shape, and both are the kind of
+# claim KB-42 says not to make on a name-level argument:
+#
+#  1. `gate-encode` is a strict SUBSET of the workspace run. Measured on the
+#     2026-09-08 gate log: 189 distinct binaries vs 319, and the only one not in
+#     the superset is `content_family_census` (a non-default `census` build). The
+#     old trio therefore ran 188 of 189 binaries TWICE -- 779 s = 13 min per run.
+#     Feature resolution was checked empirically, not assumed: after a
+#     `--workspace` build, `-p zenav1-aom-encode` and `-p zenav1-aom-bench`
+#     recompile NOTHING and `--workspace` does not rebuild after them either, so
+#     the two selections share artifacts and cannot differ in features.
+#  2. `cargo test` drains binaries serially -- measured load 3.94 on 24 cores,
+#     ~84 % idle. nextest: whole workspace 57.4 min -> 340.9 s (~10x).
+#
+# `gate-encode` is KEPT as the fast pre-check while iterating on encoder work.
+# It is just no longer worth running alongside the workspace gate.
+gate-landing:
+    just test-next
+    just test-next-scalar
+    just census-gate
+    just gate-whereat
+
+# The `whereat` feature gates 4 sites in aom-decode AND its own test module, so
+# a default build never COMPILES them. That is a verification hole, and it bit:
+# consolidating tests/ moved `whereat_entries.rs` one directory deeper, breaking
+# its `include_bytes!("data/...")`, and a 1502-test green run did not notice
+# because the target was never built. Any feature that gates a test target must
+# be built by the landing gate, or the gate is lying about its coverage.
+gate-whereat:
+    cargo test --profile test-fast -p zenav1-aom-decode --features whereat --test all -- whereat_entries::
 
 # The census TOOL. `just census-corpus` prints the family table for the four
 # harness contents; add `yuv:<path>:<w>x<h>`, `scr:<path>:<w>x<h>` (screen
@@ -141,7 +180,7 @@ audit-i16-fwd:
 # to the caller. Included in `just test` / `just test-fast` as an ordinary
 # aom-bench test; this recipe exists to add the dav1d leg.
 gate-armed-decode:
-    AOM_DAV1D_BIN="$(command -v dav1d || true)" cargo test --profile test-fast -p zenav1-aom-bench --test armed_tools_decode_gate -- --nocapture
+    AOM_DAV1D_BIN="$(command -v dav1d || true)" cargo test --profile test-fast -p zenav1-aom-bench --test all -- --nocapture armed_tools_decode_gate::
 
 # ENCODE TIME vs libaom, on the standalone entry, with byte-identity asserted
 # per cell (byte identity IS the RD claim — same bytes means the same
@@ -149,7 +188,7 @@ gate-armed-decode:
 # because it is a timing measurement and `CLAUDE.md` requires those isolated.
 # Record: benchmarks/encode_perf_vs_libaom_2026-09-08.md.
 gate-encode-perf:
-    cargo test --profile test-fast -p zenav1-aom-bench --test encode_perf_vs_libaom -- --ignored --test-threads 1 --nocapture
+    cargo test --profile test-fast -p zenav1-aom-bench --test all -- --ignored --test-threads 1 --nocapture encode_perf_vs_libaom::
 
 # CANCELLATION-LATENCY GATE (the three timing arms of
 # `crates/aom-bench/tests/cancel_latency.rs`). They are `#[ignore]`d in the
@@ -164,7 +203,7 @@ gate-encode-perf:
 # (`benchmarks/decode_cancel_latency_2026-08-06.*`) was taken with. Also wired
 # as its own CI step, so the coverage is not lost by the `#[ignore]`.
 gate-cancel-latency:
-    cargo test --profile test-fast -p zenav1-aom-bench --test cancel_latency -- --ignored --test-threads 1 --nocapture
+    cargo test --profile test-fast -p zenav1-aom-bench --test all -- --ignored --test-threads 1 --nocapture cancel_latency::
 
 # LOCATED-ERROR ENTRIES (`whereat` feature, default-off). `decode_frame_obus_at`
 # and `decode_frames_at` are `#[cfg(feature = "whereat")]`, so no workspace test
@@ -172,7 +211,7 @@ gate-cancel-latency:
 # say so. This is the only invocation that builds it; also wired as a CI step on
 # the pure-Rust portability job.
 test-whereat:
-    cargo test -p zenav1-aom-decode --features whereat --test whereat_entries
+    cargo test -p zenav1-aom-decode --features whereat --test all -- whereat_entries::
 
 # CROSS-ENCODER INTRABC DECODE GATE (GitHub #5). The armed gate above decodes
 # streams from THIS port's encoder, and the conformance corpus is entirely
@@ -184,7 +223,7 @@ test-whereat:
 # rule: the dav1d leg is wired here, not inside the test. Regenerate/extend the
 # corpus with scripts/svt_interop/.
 gate-svt-interop:
-    AOM_DAV1D_BIN="$(command -v dav1d || true)" cargo test --profile test-fast -p zenav1-aom-bench --test svt_interop_decode_gate -- --nocapture
+    AOM_DAV1D_BIN="$(command -v dav1d || true)" cargo test --profile test-fast -p zenav1-aom-bench --test all -- --nocapture svt_interop_decode_gate::
 
 # ZENSIM-QUALITY (Zq) TARGET CENSUS — the phase-A harness for the
 # dependency-injected target loop (`zenav1-aom-target`). The crate's LIBRARY

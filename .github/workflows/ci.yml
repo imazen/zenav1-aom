@@ -103,7 +103,7 @@ jobs:
       # `aom-bench` opts out via its `c-oracle` feature; the fix is to run it on
       # a leg that already has the oracle, which costs this job ~1 s.
       - name: Located-error entries (whereat feature)
-        run: cargo test -p zenav1-aom-decode --features whereat --test whereat_entries
+        run: cargo test -p zenav1-aom-decode --features whereat --test all -- whereat_entries::
 
       # The cancellation-latency gate. `#[ignore]`d in the workspace run because
       # it measures WALL-CLOCK latency, which a parallel test pool cannot
@@ -115,7 +115,7 @@ jobs:
       # `just`, and a step that silently needs a missing tool is worse than a
       # duplicated command line. `justfile`'s recipe is the same invocation.)
       - name: Cancellation latency (isolated timing gate)
-        run: cargo test --profile test-fast -p zenav1-aom-bench --test cancel_latency -- --ignored --test-threads 1 --nocapture
+        run: cargo test --profile test-fast -p zenav1-aom-bench --test all -- --ignored --test-threads 1 --nocapture cancel_latency::
 
   # SCALAR-PIN mode (Gate-3 parity rule 3): AOM_FORCE_SCALAR disables every
   # archmage SIMD token process-wide (aom_dsp::dispatch), so every kernel
@@ -163,7 +163,7 @@ jobs:
       # its per-CDEF-filter-block-row gaps are ~24 ms, so a flat 20 ms bar could
       # never pass here no matter how finely the decoder polled.)
       - name: Cancellation latency (isolated timing gate, scalar pin)
-        run: cargo test --profile test-fast -p zenav1-aom-bench --test cancel_latency -- --ignored --test-threads 1 --nocapture
+        run: cargo test --profile test-fast -p zenav1-aom-bench --test all -- --ignored --test-threads 1 --nocapture cancel_latency::
 
   # AARCH64 DIFFERENTIAL — the NEON tier's byte-identity gate, WORKSPACE-WIDE.
   #

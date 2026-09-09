@@ -121,17 +121,41 @@ so a landing that reports "311/311 aom-encode unit tests" has run none of them. 
 literally how KB-42 happened: four consecutive landings gated on `--lib` plus named diff
 tests, and 23 byte/RD gates plus the coverage census stayed broken across six red CI runs.
 
-Before pushing any encoder change, run **all** of:
+Before pushing any encoder change, run:
 
 ```
-just gate-encode        # aom-encode + aom-bench INTEGRATION targets + the census gate
-just test-fast          # or `just test-next` — the whole workspace, both dispatch modes
-just test-fast-scalar   # AOM_FORCE_SCALAR: the transcribed-C path
+just gate-landing       # = test-next + test-next-scalar + census-gate
 ```
 
-and, for screen-content / IntraBC / palette work, the KB-41 plane-dir census
-(`crates/aom-bench/tests/kb41_screen_detected_defaults.rs` with `ZENAV1_PLANES_DIR`
-over the 14 plane dirs — 104/104 byte-identical).
+**This REPLACED the old `gate-encode` + `test-fast` + `test-fast-scalar` trio on
+2026-09-09, on measurement, and the coverage is identical** — the reduction is
+exactly the kind of claim KB-42 says not to make from a name-level argument, so
+both halves were measured:
+
+* **`gate-encode` is a strict SUBSET of the workspace run.** On the 2026-09-08
+  gate log it ran **189 distinct binaries against `test-fast`'s 319**, and the
+  ONLY one not in the superset is `content_family_census` (a non-default
+  `census` feature build, kept as its own step). The trio therefore ran 188 of
+  189 binaries **twice — 779 s = 13 min of every gate run.**
+* **Feature resolution was checked EMPIRICALLY, not argued.** `-p` and
+  `--workspace` could in principle resolve a shared dependency's features
+  differently (resolver v2 unions features across selected packages). Measured:
+  after a `--workspace` build, `-p zenav1-aom-encode` and `-p zenav1-aom-bench`
+  recompile **nothing**, and `--workspace` does not rebuild after them either —
+  no oscillation, so the two selections share artifacts and cannot differ.
+* **`cargo test` drains test BINARIES serially** (threading only within one),
+  measured at load **3.94 on 24 cores, ~84 % idle**. nextest puts every test in
+  one global pool: the whole workspace goes **57.4 min -> 340.9 s (~10x)**.
+
+`just gate-encode` is KEPT as the fast pre-check while iterating on encoder work
+— it is simply not worth running alongside the workspace gate. `just test-fast` /
+`just test-fast-scalar` also remain, for a box with no `cargo-nextest`.
+
+For screen-content / IntraBC / palette work also run the KB-41 plane-dir census.
+
+The KB-41 plane-dir census is
+`crates/aom-bench/tests/all/kb41_screen_detected_defaults.rs` with
+`ZENAV1_PLANES_DIR` over the 14 plane dirs — 104/104 byte-identical.
 
 A landing's own gate list in the commit message must name the integration targets it
 ran, not just the unit-test count.
