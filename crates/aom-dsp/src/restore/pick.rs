@@ -186,6 +186,55 @@ fn gather_window(
     idx
 }
 
+/// Gather the windows of FOUR adjacent source columns `j .. j + 4` at once,
+/// one array per column.
+///
+/// Two things come out of this shape, and only the second one is the point:
+///
+/// * the four windows overlap in all but three columns, so the quad spans
+///   `win + 3` columns rather than `4 * win` — 70 plane loads at win7 against
+///   196;
+/// * it lets [`acc_stat_line_impl`] fold all four pixels' contributions to one
+///   `H` element before touching `H`, which is what the per-element
+///   read-modify-write measurement below asks for.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn gather_window_quad(
+    dgd: &[u16],
+    dgd_origin: usize,
+    dgd_stride: i32,
+    avg: u16,
+    wiener_halfwin: i32,
+    j: i32,
+    count: i32,
+    y: &mut [[i32; WIENER_H_STRIDE]; 4],
+) -> usize {
+    let win = (2 * wiener_halfwin + 1) as usize;
+    // One entry per (column of the strip, row of the window). Column `c` is
+    // plane column `j - halfwin + c`; pixel `j + p` uses columns `p..p + win`.
+    let mut col = [[0i32; WIENER_WIN]; WIENER_WIN + 3];
+    for (c, cw) in col.iter_mut().enumerate().take(win + 3) {
+        let x = j - wiener_halfwin + c as i32;
+        for (l, v) in cw.iter_mut().enumerate().take(win) {
+            // Same ±halfwin border reach as `gather_window`.
+            let off = dgd_origin as isize
+                + ((count - wiener_halfwin + l as i32) * dgd_stride + x) as isize;
+            *v = i32::from(dgd[off as usize] as i16 - avg as i16);
+        }
+    }
+    let mut idx = 0usize;
+    for k in 0..win {
+        for l in 0..win {
+            y[0][idx] = col[k][l];
+            y[1][idx] = col[k + 1][l];
+            y[2][idx] = col[k + 2][l];
+            y[3][idx] = col[k + 3][l];
+            idx += 1;
+        }
+    }
+    idx
+}
+
 /// Scalar tier = the transcribed port, verbatim.
 #[allow(clippy::too_many_arguments)]
 fn acc_stat_line_impl_scalar(
@@ -244,15 +293,57 @@ fn acc_stat_line_impl_scalar(
 ///   streams ~1.25 GB per encode, which is **71 GB/s**, about 16 % of this
 ///   core's L1 ceiling. Not the limit.
 ///
-/// What is left is the shape of the loop: ~2.8 cycles per vector iteration for
+/// What was left is the shape of the loop: ~2.8 cycles per vector iteration for
 /// a load + load + multiply + add + store + loop, i.e. the per-element
-/// read-modify-write of `H` itself. **The next step is therefore not wider
-/// lanes but register blocking** — libaom's `acc_stat_win7_one_line_avx2` holds
-/// `H` tiles in registers ACROSS the pixel loop and folds pairs of pixels with
-/// `_mm256_madd_epi16`, so `H` is touched once per tile instead of once per
-/// pixel. That is a different loop nest, not a tweak to this one; vectorizing
-/// over `j` (pixels) instead of over `l` is the same idea and stays bit-exact
-/// because integer addition is associative.
+/// read-modify-write of `H` itself. That diagnosis predicted the next step —
+/// **not wider lanes but folding several pixels before touching `H`** — and
+/// that step is what this function now does.
+///
+/// # The four-pixel fold (2026-09-08), and why it is the SECOND thing tried
+///
+/// libaom's `acc_stat_win7_one_line_avx2` folds pairs of pixels with
+/// `_mm256_madd_epi16`, so `H` is touched once per PAIR. **That exact
+/// instruction is not available here**: the workspace pins magetypes 0.9.28,
+/// whose `i16x16` has no `madd_adjacent` (it lands in 0.9.29), and this crate
+/// is `#![forbid(unsafe_code)]` so the intrinsic cannot be reached by hand.
+/// Do not re-derive that — check the lockfile before assuming an op exists.
+///
+/// It does not matter, because the 16-bit multiply was never the limit. The
+/// measurement above says the limit is the `H` read-modify-write, and four
+/// pixels folded in `i32` cut those by 4x while leaving the products alone:
+/// per 8 `H` elements the loop went from 4 x (load y, mul, load H, add, store H)
+/// to (4 x load y, 4 x mul, 3 add, load H, add, store H) — 20 ops to 13, and
+/// one quarter of the `H` traffic.
+///
+/// MEASURED (two binaries from one tree, arms interleaved and ROTATED, a
+/// same-binary null arm in every band; both arms byte-identical output):
+///
+/// | cell | before | after | vs libaom | paired | rounds | p | null |
+/// |---|---:|---:|---:|---:|---:|---:|---:|
+/// | 192x192 cq27 s0 | 453.60 ms | 446.04 ms | 2.5412x -> 2.4988x | -1.68 % | 20/20 | 2e-6 | +0.21 % |
+/// | 1024x1024 cq27 s0 | 10810.31 ms | 10600.42 ms | 2.6227x -> 2.5717x | -2.00 % | 8/8 | 0.008 | -0.04 % |
+///
+/// ATTRIBUTED, not inferred from the wall (the KB-PERF-6 roll-up error was
+/// exactly that mistake): on the 1024x1024 cell this symbol is **4.01 % ->
+/// 1.90 %** of the profile, i.e. **433 ms -> 201 ms**, against a wall delta of
+/// -210 ms. Every other `restore::` symbol is unmoved (`calculate_intermediate`
+/// 2.41 -> 2.45 %, `pixel_proj_error` 1.99 -> 1.86 %, `wiener` 1.73 -> 1.74 %).
+/// So the kernel is **2.2x faster** and its ratio to
+/// `compute_stats_win7_avx2` + win5 + `_c` (54.4 ms) goes **8.2x -> ~3.7x**.
+/// It is no longer the largest loop-restoration symbol — `calculate_intermediate`
+/// is, and its own hot loop is the 256-entry `X_BY_XPLUS1` gather that this
+/// vector vocabulary has no instruction for (verified: magetypes 0.9.28 and
+/// 0.9.29 both contain no `gather` at all).
+///
+/// **The lever is BIGGER at real image size**, which is why both cells are
+/// quoted: at 192x192 the bd8 u16 planes are ~108 KiB and sit in L2, so a
+/// traffic-reducing lever is under-measured there. Quote the ratio with its
+/// cell.
+///
+/// Still not done, and named rather than implied: libaom folds pixels in
+/// **16-bit** lanes on top of the fold, which is a further 2x on the multiply
+/// side and needs either a magetypes bump to >= 0.9.29 (for `madd_adjacent`) or
+/// an equivalent widening-multiply-add. `compute_stats_highbd` is untouched.
 #[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn acc_stat_line_impl(
@@ -286,46 +377,118 @@ fn acc_stat_line_impl(
     }
 
     debug_assert!(hstride >= wiener_win2 && hstride % 8 == 0);
-    // `y` is zero-padded to a whole vector and NEVER written past `win2`, so
-    // the padding lanes contribute `0 * anything` — see `WIENER_H_STRIDE`.
-    let mut y = [0i32; WIENER_H_STRIDE];
-    for j in h_start..h_end {
-        let x = i32::from(src_row[j as usize] as i16 - avg as i16);
-        let idx = gather_window(dgd, dgd_origin, dgd_stride, avg, wiener_halfwin, j, count, &mut y);
+    // Each `y` is zero-padded to a whole vector and NEVER written past
+    // `win2`, so the padding lanes contribute `0 * anything` — see
+    // `WIENER_H_STRIDE`.
+    let mut y = [[0i32; WIENER_H_STRIDE]; 4];
+
+    // FOUR source columns at a time, folded before `H` is touched.
+    //
+    // Bit-exact by construction, and for a WEAKER reason than the per-element
+    // form it replaces: that one reassociated nothing at all, this one
+    // reassociates the four pixels' contributions to a given accumulator
+    // element (`h += p0; h += p1; h += p2; h += p3` becomes
+    // `h += ((p0 + p1) + p2) + p3`). Integer addition is associative — over
+    // `i32` it is associative even on overflow, since wrapping addition is a
+    // group operation — so every accumulator ends at the same value. The
+    // products themselves are unchanged, and the width note above still bounds
+    // them well inside `i32`.
+    let mut j = h_start;
+    while j + 3 < h_end {
+        let idx = gather_window_quad(
+            dgd,
+            dgd_origin,
+            dgd_stride,
+            avg,
+            wiener_halfwin,
+            j,
+            count,
+            &mut y,
+        );
         debug_assert_eq!(idx, wiener_win2);
+        let xv = [0usize, 1, 2, 3].map(|p| {
+            i32x8::splat(token, i32::from(src_row[j as usize + p] as i16 - avg as i16))
+        });
 
         // M: lanes are k. Runs off the end into the padding, which stays zero.
-        let xv = i32x8::splat(token, x);
         let mut k = 0usize;
         while k < wiener_win2 {
-            let acc = ld!(m_row, k) + ld!(y, k) * xv;
+            let acc = ld!(m_row, k)
+                + ld!(y[0], k) * xv[0]
+                + ld!(y[1], k) * xv[1]
+                + ld!(y[2], k) * xv[2]
+                + ld!(y[3], k) * xv[3];
             st!(m_row, k, acc);
             k += 8;
         }
 
-        // H upper triangle: lanes are l, one broadcast `y[k]` per row. No
-        // scalar tail — the padded stride guarantees a whole vector starting
-        // at any `l < win2` stays inside row `k`.
+        // H upper triangle: lanes are l, one broadcast `y[p][k]` per pixel per
+        // row, and ONE read-modify-write of `H` per four pixels. That last
+        // part is the lever — see the function's doc comment. No scalar tail:
+        // the padded stride guarantees a whole vector starting at any
+        // `l < win2` stays inside row `k`.
         //
-        // MEASURED AND REJECTED: starting the sweep at `k & !7` instead, so
-        // both slices are whole 8-lane chunks and `chunks_exact` drops the
-        // per-iteration bounds check (this crate is `#![forbid(unsafe_code)]`,
-        // so a check can only be removed structurally). It is CORRECT — the
-        // extra lanes at `l < k` land in row `k`'s lower triangle, which is
-        // zeroed per source row and never read — and it is SLOWER: at win7 it
-        // costs 217 vector iterations per pixel against 175, +24 %, which the
-        // removed bounds checks do not pay for. Measured 471.6 ms against
-        // 468.7 on the profile cell. Do not re-try it without that arithmetic.
+        // MEASURED AND REJECTED (still true of this loop nest): starting the
+        // sweep at `k & !7` so both slices are whole 8-lane chunks and
+        // `chunks_exact` drops the per-iteration bounds check (this crate is
+        // `#![forbid(unsafe_code)]`, so a check can only be removed
+        // structurally). It is CORRECT — the extra lanes at `l < k` land in
+        // row `k`'s lower triangle, which is zeroed per source row and never
+        // read — and it is SLOWER: at win7 it costs 217 vector iterations per
+        // pixel against 175, +24 %. Do not re-try it without that arithmetic.
         for k in 0..wiener_win2 {
-            let yk = i32x8::splat(token, y[k]);
+            let k0 = i32x8::splat(token, y[0][k]);
+            let k1 = i32x8::splat(token, y[1][k]);
+            let k2 = i32x8::splat(token, y[2][k]);
+            let k3 = i32x8::splat(token, y[3][k]);
             let base = k * hstride;
             let mut l = k;
             while l < wiener_win2 {
-                let acc = ld!(h_row, base + l) + ld!(y, l) * yk;
+                let acc = ld!(h_row, base + l)
+                    + ld!(y[0], l) * k0
+                    + ld!(y[1], l) * k1
+                    + ld!(y[2], l) * k2
+                    + ld!(y[3], l) * k3;
                 st!(h_row, base + l, acc);
                 l += 8;
             }
         }
+        j += 4;
+    }
+
+    // Column tail: up to three pixels, one at a time, the original shape.
+    while j < h_end {
+        let x = i32::from(src_row[j as usize] as i16 - avg as i16);
+        let idx = gather_window(
+            dgd,
+            dgd_origin,
+            dgd_stride,
+            avg,
+            wiener_halfwin,
+            j,
+            count,
+            &mut y[0],
+        );
+        debug_assert_eq!(idx, wiener_win2);
+
+        let xv = i32x8::splat(token, x);
+        let mut k = 0usize;
+        while k < wiener_win2 {
+            let acc = ld!(m_row, k) + ld!(y[0], k) * xv;
+            st!(m_row, k, acc);
+            k += 8;
+        }
+        for k in 0..wiener_win2 {
+            let yk = i32x8::splat(token, y[0][k]);
+            let base = k * hstride;
+            let mut l = k;
+            while l < wiener_win2 {
+                let acc = ld!(h_row, base + l) + ld!(y[0], l) * yk;
+                st!(h_row, base + l, acc);
+                l += 8;
+            }
+        }
+        j += 1;
     }
 }
 
