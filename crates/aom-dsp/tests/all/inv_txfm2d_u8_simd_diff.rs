@@ -282,6 +282,9 @@ fn vector_tier_live() -> bool {
 /// Drive one arm's whole matrix through every token permutation and assert
 /// byte-equality against the first permutation, plus the non-vacuity floors.
 fn run_arm(arm: Arm, min_changed_pct: u32) {
+    // Serialise: this sweep permutes PROCESS-GLOBAL dispatch
+    // state; see `crate::dispatch_serial`.
+    let _serial = crate::dispatch_serial::dispatch_serial();
     // Fire the AOM_FORCE_SCALAR pin (if set) BEFORE the harness takes over
     // token state, so both a vector and a scalar permutation run in either
     // dispatch mode.

@@ -111,6 +111,9 @@ fn angles() -> Vec<i32> {
 
 #[test]
 fn dir_highbd_simd_bit_identical_to_scalar_at_every_tier() {
+    // Serialise: this sweep permutes PROCESS-GLOBAL dispatch
+    // state; see `crate::dispatch_serial`.
+    let _serial = crate::dispatch_serial::dispatch_serial();
     let mut simd_perms = 0usize;
     let (mut z1_vec, mut z2_vec, mut z3_vec) = (0usize, 0usize, 0usize);
     let report = for_each_token_permutation(CompileTimePolicy::Warn, |_tier| {

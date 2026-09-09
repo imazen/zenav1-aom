@@ -37,6 +37,9 @@ const M: usize = 8;
 
 #[test]
 fn wiener_simd_bit_identical_to_scalar_at_every_tier() {
+    // Serialise: this sweep permutes PROCESS-GLOBAL dispatch
+    // state; see `crate::dispatch_serial`.
+    let _serial = crate::dispatch_serial::dispatch_serial();
     // NOTE: there is deliberately no pre-flight `X64V3Token::summon().is_some()`
     // check here. It looks like a non-vacuity guard but is an ordering trap:
     // under AOM_FORCE_SCALAR=1 the pin disables every runtime-dispatchable

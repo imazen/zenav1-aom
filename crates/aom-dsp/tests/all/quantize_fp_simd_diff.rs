@@ -83,6 +83,9 @@ fn assert_case(
 
 #[test]
 fn quantize_fp_simd_bit_identical_to_scalar_at_every_tier() {
+    // Serialise: this sweep permutes PROCESS-GLOBAL dispatch
+    // state; see `crate::dispatch_serial`.
+    let _serial = crate::dispatch_serial::dispatch_serial();
     // Anti-vacuous: on x86-64/aarch64 CI the SIMD tier must actually be
     // available, or every permutation would be scalar==scalar.
     // NOTE: there is deliberately no pre-flight `X64V3Token::summon().is_some()`

@@ -248,6 +248,9 @@ fn all_outputs() -> Vec<(String, Vec<i64>)> {
 
 #[test]
 fn txfm2d_simd_equals_scalar_at_every_permutation() {
+    // Serialise: this sweep permutes PROCESS-GLOBAL dispatch
+    // state; see `crate::dispatch_serial`.
+    let _serial = crate::dispatch_serial::dispatch_serial();
     // Fire the AOM_FORCE_SCALAR pin (if set) BEFORE the permutation harness —
     // the harness then owns token state, so both a SIMD and a scalar
     // permutation run in either dispatch mode.

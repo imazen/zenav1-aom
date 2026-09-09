@@ -13,6 +13,7 @@
 //! Files kept OUT of here, each for a stated reason, are listed in the crate's
 //! tests/ directory alongside this one.
 
+mod dispatch_serial;
 mod avail_diff;
 mod block_error_diff;
 mod block_error_qm_diff;
