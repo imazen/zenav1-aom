@@ -312,6 +312,32 @@ vectorized, which is what KB-PERF-6 predicted when it said the next step is
 "register blocking over pixels — libaom's own structure — not wider lanes".
 That prediction stands and is now sized: 446 ms on a 1 MP frame.
 
+## Per-KERNEL ratios at 1024x1024 — sharper than the stage table
+
+The stage table groups a port symbol with everything else in its bucket. Naming
+each port kernel against its libaom counterpart is more actionable, and one row
+is far worse than the stage view suggested:
+
+| port symbol | port ms | libaom counterpart | C ms | ratio |
+|---|---:|---|---:|---:|
+| `restore::pick::acc_stat_line_impl_v3` | 446 | `compute_stats_win7_avx2` + win5 + `av1_compute_stats_avx2` | 54.4 | **8.2x** |
+| `restore::sgr::calculate_intermediate` (+closure) | 416 | `av1_selfguided_restoration_avx2` | 128.4 | 3.2x |
+| `restore::pick::pixel_proj_error_impl_v3` | 222 | `av1_lowbd_pixel_proj_error_avx2` | 53.2 | 4.2x |
+| `restore::wiener::wiener_impl_v3` | 201 | `av1_wiener_convolve_add_src_avx2` | 32.0 | 6.3x |
+
+**`acc_stat_line` at 8.2x is the largest kernel-level ratio in the whole
+profile**, and it is the one KB-PERF-6 already vectorized — which is what makes
+its own diagnosis credible rather than merely plausible. The port vectorizes
+over MATRIX ELEMENTS: per source pixel it gathers a 49-element window and then
+does ~175 read-modify-writes over an ~11 KB `H` matrix (`pick.rs`'s inner
+loop). libaom's `compute_stats_win7_avx2` vectorizes over PIXELS, holding each
+`H[k][l]` accumulator in a register across many source pixels, so `H` is written
+once per block rather than once per pixel.
+
+That reordering is bit-exact here and it is worth stating why, because it is the
+thing that makes the rewrite legal: `h_row` is `i32` and wrapping i32 addition
+is associative modulo 2^32, so any summation order produces the same bits.
+
 ## What is left on the transform rows
 
 With lane width refuted for the inverse and known-small for the forward, the
