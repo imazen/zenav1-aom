@@ -1,0 +1,13 @@
+port 10128 ms   C 4222 ms   ratio 2.399   gap 5906 ms
+
+class                 port       C   ratio     gap    %gap
+transform             2991     728    4.11    2263   38.3%
+rd-driver             1379     429    3.21     950   16.1%
+loop-restoration      1179     278    4.24     901   15.3%
+intra-pred             898     426    2.11     473    8.0%
+txb/trellis           1944    1480    1.31     464    7.9%
+memory                 518      70    7.43     448    7.6%
+quantize               536     152    3.52     384    6.5%
+distortion             407     174    2.35     234    4.0%
+entropy/pack            72      12    5.87      60    1.0%
+other                  156     436    0.36    -280   -4.7%
