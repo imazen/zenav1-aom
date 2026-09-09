@@ -28,6 +28,47 @@ use aom_encode::key_frame::{KeyFrameConfig, KeyFramePlanes, encode_key_frame};
 use aom_sys_ref as c;
 use std::time::Instant;
 
+/// Mirror-tile a small cell up to `w`x`h` — the same recipe as
+/// `kb28_crop_dims::mirror_tile` / `s4cov_hd_speed_axis::mirror_tile`.
+fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+    let mir = |i: usize, n: usize| {
+        let m = i % (2 * n);
+        if m < n { m } else { 2 * n - 1 - m }
+    };
+    let (bw, bh) = (base.w, base.h);
+    let mut y = vec![0u16; w * h];
+    for r in 0..h {
+        for col in 0..w {
+            y[r * w + col] = base.y[mir(r, bh) * bw + mir(col, bw)];
+        }
+    }
+    let (bcw, bch) = ((bw + base.ss_x) >> base.ss_x, (bh + base.ss_y) >> base.ss_y);
+    let (cw, ch) = ((w + base.ss_x) >> base.ss_x, (h + base.ss_y) >> base.ss_y);
+    let mut u = vec![0u16; cw * ch];
+    let mut v = vec![0u16; cw * ch];
+    for r in 0..ch {
+        for col in 0..cw {
+            u[r * cw + col] = base.u[mir(r, bch) * bcw + mir(col, bcw)];
+            v[r * cw + col] = base.v[mir(r, bch) * bcw + mir(col, bcw)];
+        }
+    }
+    EncodeCell {
+        label: label.to_string(),
+        w,
+        h,
+        mono: base.mono,
+        ss_x: base.ss_x,
+        ss_y: base.ss_y,
+        usage: base.usage,
+        cq_level: cq,
+        speed,
+        bd: base.bd,
+        y,
+        u,
+        v,
+    }
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 7 {
@@ -44,13 +85,30 @@ fn main() {
     );
 
     c::ref_init();
-    let cell = EncodeCell::real_content(
-        &format!("photo_{w}x{h}_cq{cq}_s{speed}"),
+    // The source vector is 196x196, so anything larger is MIRROR-TILED from it
+    // (the recipe every HD gate in this repo uses). Real sizes matter for a
+    // perf measurement and not only for coverage: at 192x192 the bd8 u16 planes
+    // are ~110 KiB and sit in L2, so memory traffic is free and a measurement
+    // there sees only op count. A lever that halves traffic — any lane-width
+    // change — cannot show its win in that regime.
+    let base = EncodeCell::real_content(
+        "eprof_base_196",
         "av1-1-b8-01-size-196x196",
-        Some((w, h, 0, 0)),
+        Some((196, 196, 0, 0)),
         cq,
         speed,
     );
+    let cell = if w <= 196 && h <= 196 {
+        EncodeCell::real_content(
+            &format!("photo_{w}x{h}_cq{cq}_s{speed}"),
+            "av1-1-b8-01-size-196x196",
+            Some((w, h, 0, 0)),
+            cq,
+            speed,
+        )
+    } else {
+        mirror_tile(&base, &format!("photo_{w}x{h}_cq{cq}_s{speed}"), w, h, cq, speed)
+    };
 
     let mut cfg = KeyFrameConfig::allintra_speed0(
         cell.w, cell.h, cell.bd, cell.mono, cell.ss_x, cell.ss_y, cell.cq_level,

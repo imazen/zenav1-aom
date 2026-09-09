@@ -216,6 +216,64 @@ ceiling 255), plus a `bd == 8` arm in `try_inv_col_pass` ahead of the
 `inv_kernel` lookup. It took under an hour; the measurement is the expensive
 part and it is above.
 
+## SIZE CONTROL: does any of this survive real image sizes?
+
+Everything above was measured on a **192x192** cell. At bd8 4:2:0 held as `u16`
+that is ~108 KiB of planes — **L2-resident on this box** (L1d 32 KiB/core, L2
+1 MiB/core, L3 64 MiB shared). Memory traffic is therefore nearly free there,
+and a lever that halves traffic — any lane-width change — cannot show its win in
+that regime. So the null above could have been an artefact of the cell, and the
+STAGE RANKING could have been mis-ordered for the same reason.
+
+`eprof_x86` now mirror-tiles its 196x196 source (the recipe every HD gate here
+uses) so it can be driven at real sizes. Measured:
+
+### 1. The i16 lever is null at every size — the cache regime does not rescue it
+
+| cell | planes | regime | base | i16 | delta | faster |
+|---|---:|---|---:|---:|---:|---:|
+| 192x192 s6 | 108 KiB | L2 | 18.99 ms | 18.54 ms | -2.37 % | — |
+| 512x512 s6 | 768 KiB | L2 | 129.56 ms | 129.92 ms | +0.28 % | — |
+| 1024x1024 s6 | 3 MiB | L3 | 482.82 ms | 483.71 ms | +0.18 % | — |
+| **512x512 s0** | 768 KiB | L2 | 3862.3 ms | 3886.4 ms | **+0.64 %** | 1/5 |
+| **1024x1024 s0** | 3 MiB | L3 | 10927.7 ms | 10956.7 ms | **+0.22 %** | 1/5 |
+
+Both arms emit identical bytes at every size (1473 at 192 s6, 11961 at 512 s6,
+39694 at 1024 s0). If anything the sign runs the WRONG way for the cache
+hypothesis — the only negative reading is the smallest, most L2-resident cell,
+at n=3. **The revert stands, now on evidence spanning a 28x pixel count rather
+than one cell.**
+
+### 2. The stage ranking DOES transfer — the cheap cell is a valid ranking tool
+
+Full-tail attribution at 1024x1024 speed 0 (port 10904.0 ms vs C 4156.4 ms),
+against the 192x192 table:
+
+| stage | 192² gap | % | 1024² gap | % | shift |
+|---|---:|---:|---:|---:|---:|
+| other (RD drivers) | 65.8 | 23.9 % | 1532.2 | 22.7 % | -1.2 pp |
+| loop-restoration | 49.0 | 17.8 % | 1405.5 | 20.8 % | **+3.0 pp** |
+| transform forward | 56.3 | 20.4 % | 1251.9 | 18.6 % | -1.9 pp |
+| transform inverse | 51.0 | 18.5 % | 1053.2 | 15.6 % | -2.9 pp |
+| intra predictors | 20.6 | 7.5 % | 572.9 | 8.5 % | +1.0 pp |
+| memset/memcpy | 10.6 | 3.8 % | 286.4 | 4.2 % | +0.4 pp |
+| trellis | 10.9 | 4.0 % | 265.3 | 3.9 % | -0.0 pp |
+| allocation | 7.8 | 2.8 % | 216.7 | 3.2 % | +0.4 pp |
+| quantize | 2.7 | 1.0 % | 136.3 | 2.0 % | +1.0 pp |
+
+**Maximum shift 3.0 pp, no reordering of the top four.** The two transform rows
+shrink slightly at scale and loop-restoration grows — consistent with the
+transform working on small tiles that stay cached however big the frame is,
+while restoration sweeps whole planes. This licenses ranking from the 192x192
+cell, which matters: **0.45 s per speed-0 rep against 11 s, a 24x iteration
+difference.**
+
+### 3. The small cell is mildly OPTIMISTIC about the ratio — quote both
+
+**2.542x at 192x192 vs 2.624x at 1024x1024**, same cq, same speed, byte-identical
+output. The headline ratio should be quoted with its cell; the gap to Gate 3's
+<= 1.5x bar is slightly larger on real images than the profile cell suggests.
+
 ## What is left on the transform rows
 
 With lane width refuted for the inverse and known-small for the forward, the
