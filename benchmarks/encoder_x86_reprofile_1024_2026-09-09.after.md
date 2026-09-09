@@ -54,7 +54,12 @@ class ratio near parity says nothing about its members.**
    scratch clear/resize, two pass dispatches, the intermediate `buf`
    round-trip), not lane width — which also means KB-PERF-3's `fadst4` i16
    rejection does not block a fused 4x4, so it can serve all four DCT/ADST
-   combinations (81 % of types) rather than DCT-only. Lane width itself was
+   combinations (81 % of types) rather than DCT-only. **8x8 was then built
+   and measured +7.07 % (0/16 rounds) and REVERTED** — the census ranks by
+   call count and cannot see that 8x8's generic path is already FULL 8-wide
+   SIMD on both passes, where 4x4's row pass declines and its column pass is
+   half-filled. The usable rule is the conjunction: fuse where the call count
+   is high AND the generic SIMD declines. Do not re-attempt 8x8 scalar fusion. Lane width itself was
    measured NULL at three frame sizes (clause-4 row); do not rebuild that.
 2. **rd-driver +950 ms (16 %)** — beware: its two biggest apparent items
    (`intra_model_rd_y`, `txfm_rd_in_plane_intra`) are **inlining sinks**, not

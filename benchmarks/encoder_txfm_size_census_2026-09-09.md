@@ -85,3 +85,60 @@ needs it at ~2111 ms, so **-3795 ms**. Quantize's whole +171 ms (2.9 %) cannot
 reach it even fully closed, and it is blocked on a missing magetypes `mul_high`
 besides. Transform at +2263 ms is the only class big enough to matter, and this
 census says where inside it to start.
+
+---
+
+# CORRECTION 2026-09-09: 8x8 was BUILT, measured **+7.07 %**, and REVERTED
+
+**The census above ranks by CALL COUNT, and that is not sufficient to pick a
+fusion target.** This section is the measurement that proves it, written into
+the census record itself so the ranking cannot be read naively again.
+
+Following the census's own ordering, the next target after 4x4 (50.70 %
+forward / 44.43 % inverse) was 8x8 (22.30 % / 25.66 %). Both fused kernels were
+written and both are bit-exact — the full transform differential suite against
+the **real exported C**, forward and inverse across bd 8/10/12 and the whole TX
+grid, passes **23/23**. Then the band:
+
+| cell | base | new | paired median | rounds faster | p | null |
+|---|---:|---:|---:|---:|---:|---:|
+| 512x512 cq27 s0 | 3469.3 ms | 3717.1 ms | **+7.07 %** | **0/16** | <0.0001 | +0.03 %, 7/16, p=0.80 |
+
+**Zero of sixteen rounds faster.** Reverted; band kept as
+`encoder_fused_txfm8x8_2026-09-09.rejected.band512.tsv`.
+
+## Why — and it is the thing the census cannot see
+
+A fused kernel replaces the generic driver's passes with its own **scalar**
+ones. That is a win only where the generic path was not already vectorised:
+
+| | `try_fwd_col_pass` | `try_fwd_row_pass` | what fusion trades away |
+|---|---|---|---|
+| **4x4** | a HALF-FILLED 4-wide batch (KB-PERF-9's arm) | **declines** — still scalar at `row_n == 4` | almost nothing |
+| **8x8** | full 8-wide SIMD (`col_n % 8 == 0`) | full 8-wide SIMD (`row_n % 8 == 0`) | **both vector passes** |
+
+So at 4x4 the fusion removed per-call overhead from an essentially scalar path,
+and at 8x8 it removed per-call overhead *and* the SIMD — and the SIMD is worth
+far more than the overhead. **Same change, opposite sign, because the baseline
+differs.** That is KB-PERF-5's lesson exactly (its half-batch was worth it where
+KB-PERF-3's was not, for the same reason), and KB-PERF-9's, arriving a third
+time from a new direction.
+
+## What the census IS good for, restated
+
+It correctly said the big kernels are worth nothing (both dims >= 32 is ~0.5 %)
+and correctly identified 4x4 as the one size where half the calls live. What it
+cannot say is **whether the generic path is already fast for that size**. The
+usable rule is the conjunction:
+
+> fuse where the call count is high **AND** the generic path's SIMD passes
+> decline or run half-filled.
+
+By that rule 4x4 was the only forward/inverse target available, and the
+transform class's remaining headroom is NOT another fusion — it is making the
+8-wide passes themselves cheaper, or reducing how many transforms the speed-0
+search asks for (1,196,534 forward transforms on a 196x196 frame is 31 per
+pixel).
+
+**Do not re-attempt an 8x8 fusion against a SIMD-capable generic path.** A
+future one would have to be vectorised itself to beat what is already there.
