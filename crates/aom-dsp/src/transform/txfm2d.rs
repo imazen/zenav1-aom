@@ -318,6 +318,88 @@ fn fwd_txfm2d_core(
     }
 }
 
+/// **Fused whole-transform 4x4 forward pass — the port's first
+/// size-specialised entry point, and the one the census says matters.**
+///
+/// `benchmarks/encoder_txfm_size_census_2026-09-09.md`: **4x4 is 50.70 % of
+/// every forward transform** on a speed-0 encode (4x4+8x8 is 73 %, and
+/// everything with both dims >= 32 is together 0.55 %). libaom reaches that with
+/// compile-time-specialised entry points like `av1_lowbd_fwd_txfm2d_4x4_sse2`;
+/// the port reached it through [`fwd_txfm2d_core`]'s generic driver, which for
+/// SIXTEEN coefficients spends a `get_fwd_txfm_cfg` derivation, a heap scratch
+/// `clear` + `resize`, two pass dispatches, a write into the intermediate `buf`
+/// and a read back out of it, plus the `tx_size` post-process match.
+///
+/// **The lever here is per-call overhead, not lane width** — which is why
+/// KB-PERF-3's `fadst4` rejection does not apply: that audit was about the i16
+/// domain, and this keeps the port's existing i32 arithmetic exactly. So it
+/// serves every 4x4 tx_type, not just DCT_DCT (the four DCT/ADST combinations
+/// are 81 % of types; non-DCT is 76 %).
+///
+/// # Bit-exactness
+///
+/// The arithmetic is [`fwd_txfm2d_core`]'s, specialised rather than changed:
+/// the same 1-D kernels via [`txfm_func`], the same `cos_bit`s read from the
+/// same tables, and the same shift recipe. At TX_4X4 that recipe collapses —
+/// `FWD_SHIFT[TX_4X4]` is `[2, 0, 0]`, so `round_shift_array(_, -2)` is an
+/// exact `* 4` (a 16-bit input reaches 131072, three orders under the clamp it
+/// would otherwise apply) and the two remaining shifts are 0, i.e. `bit == 0`
+/// early-returns. `get_rect_tx_log_ratio(4, 4)` is 0, so the `NEW_SQRT2` step
+/// does not run either.
+///
+/// Every one of those is a PRECONDITION, so each is CHECKED at runtime and the
+/// function DECLINES rather than diverging if a table ever moves — the gate
+/// shape KB-PERF-3 and KB-PERF-9 both use. A decline falls through to the
+/// generic driver, which is always correct.
+fn fwd_txfm2d_4x4_fused(input: &[i16], output: &mut [i32], stride: usize, tx_type: usize) -> bool {
+    // Read the config from the SAME tables the generic path uses, so this
+    // cannot drift from it silently.
+    let shift = FWD_SHIFT[TX_4X4_IDX];
+    if shift != [2, 0, 0] || get_rect_tx_log_ratio(4, 4) != 0 {
+        return false;
+    }
+    let txfm_type_col = TXFM_TYPE_LS[0][VTX_TAB[tx_type]];
+    let txfm_type_row = TXFM_TYPE_LS[0][HTX_TAB[tx_type]];
+    if txfm_type_col < 0 || txfm_type_row < 0 {
+        return false;
+    }
+    let (ud_flip, lr_flip) = FLIP_CFG[tx_type];
+    let f_col = txfm_func(txfm_type_col);
+    let f_row = txfm_func(txfm_type_row);
+    let cos_bit_col = COS_BIT_COL[0][0] as i32;
+    let cos_bit_row = COS_BIT_ROW[0][0] as i32;
+
+    let mut buf = [0i32; 16];
+    let mut temp_in = [0i32; 4];
+    let mut temp_out = [0i32; 4];
+
+    for c in 0..4 {
+        for r in 0..4 {
+            let src_r = if ud_flip { 3 - r } else { r };
+            // `round_shift_array(_, -2)`, exact for a 16-bit source.
+            temp_in[r] = (input[src_r * stride + c] as i32) * 4;
+        }
+        f_col(&temp_in, &mut temp_out, cos_bit_col, &SR);
+        // shift[1] == 0 -> `round_shift_array` early-returns.
+        for r in 0..4 {
+            let dst_c = if lr_flip { 3 - c } else { c };
+            buf[r * 4 + dst_c] = temp_out[r];
+        }
+    }
+
+    for r in 0..4 {
+        f_row(&buf[r * 4..r * 4 + 4], &mut temp_out, cos_bit_row, &SR);
+        // shift[2] == 0, and rect_type == 0 so no NEW_SQRT2 scaling.
+        for c in 0..4 {
+            output[c * 4 + r] = temp_out[c];
+        }
+    }
+    true
+}
+
+/// `TX_4X4`'s index into the `tx_size`-keyed tables.
+const TX_4X4_IDX: usize = 0;
+
 /// Public forward 2-D transform. `output` must have length `wide*high` of the
 /// given `tx_size`. Mirrors the C `av1_fwd_txfm2d_<size>_c` entry points,
 /// including the 64-point coefficient zeroing/repacking.
@@ -338,6 +420,12 @@ pub fn av1_fwd_txfm2d_into(
 ) {
     // Content census (`crate::census`) — no-op without the `census` feature.
     crate::census::note_fwd_txfm(tx_type, tx_size);
+    // The size-specialised 4x4 entry point: half of all forward transforms at
+    // speed 0. Declines (falling through to the generic driver) on anything it
+    // is not proven for.
+    if tx_size == TX_4X4_IDX && fwd_txfm2d_4x4_fused(input, output, stride, tx_type) {
+        return;
+    }
     let cfg = get_fwd_txfm_cfg(tx_type, tx_size);
     assert!(cfg.valid, "unsupported (tx_type={tx_type}, tx_size={tx_size})");
     fwd_txfm2d_core(input, output, stride, &cfg, scratch);
