@@ -26,8 +26,8 @@ name = "aom_dsp"
 [dependencies]
 # ONE archmage universe workspace-wide (registry, exact version) so the
 # dispatch module's AOM_FORCE_SCALAR process-wide pin reaches every kernel.
-archmage = { version = "0.9.27", features = ["avx512"] }
-magetypes = { version = "0.9.27", features = ["avx512"] }
+archmage = "0.9.27"
+magetypes = "0.9.27"
 # Cooperative cancellation (`no_std`, zero-dependency). Only the `*_stop`
 # frame-walk entries touch it; the historical entries delegate with `None` and
 # are byte-identical. Same version aom-decode depends on, so the `dyn Stop`
@@ -35,16 +35,29 @@ magetypes = { version = "0.9.27", features = ["avx512"] }
 enough = "0.4.4"
 
 [features]
-# NOTE: there is no `avx512` feature. It existed as a pure pass-through to
-# `archmage/avx512` + `magetypes/avx512` with ZERO gated sites in this crate,
-# and MEASURED 2026-09-09 it was never disabled anywhere: `--no-default-features`
-# appears only on `zenav1-aom-bench` and `zenav1-aom`, and aom-bench depends on
-# this crate without `default-features = false`. A feature nothing ever turns off
-# is not a knob, it is an extra axis on which `-p` and `--workspace` builds can
-# silently diverge -- so the two dep-features are now enabled unconditionally
-# below and the axis is gone. Runtime dispatch still decides what executes, so
-# the binary stays portable exactly as before.
-default = []
+# AVX-512 tiers (X64V4Token codegen), forwarded to archmage + magetypes.
+# Default-ON; runtime dispatch decides what executes, so the binary is portable
+# either way.
+#
+# KEEP THIS. It was deleted 2026-09-09 on the argument that nothing in this repo
+# ever disables it, and restored the same day: that is repo-local reasoning about
+# a knob whose users are CONSUMERS. AVX-512 codegen costs compile time and can
+# downclock some parts, so a downstream crate must be able to turn it off;
+# "never disabled in-tree" means untested-off, not unused. It is now forwarded by
+# aom-encode / aom-decode / aom-bench / the facade, so the switch is actually
+# reachable from outside -- which is what was really missing before.
+#
+# MEASURED 2026-09-09, and stated so nobody re-derives it: today the switch is
+# INERT for this crate's own codegen. Built both ways into isolated target dirs,
+# the rlib is the same size (31169 vs 31173 KB) with the same 2 X64V4 symbols,
+# because NO kernel here lists `v4` in its tier list -- every one is
+# `(define(...), v3, neon, wasm128, -scalar)`. magetypes' `impls/x86_v4.rs`
+# implements only the 512-bit-wide backends (I32x16Backend, I16x32Backend, ...),
+# so adding `v4` to an existing 256-bit kernel cannot compile; a 512-wide kernel
+# is a separate body. What this feature currently gates is whether archmage and
+# magetypes build their 512-bit backends at all. It becomes load-bearing the
+# moment a kernel here gains a `v4` tier.
+avx512 = ["archmage/avx512", "magetypes/avx512"]
 # Content census (`src/census.rs`): thread-local counters on the intra
 # predictor, the forward transform and the bitstream leaf writer, so a harness
 # source can be checked against a reference distribution instead of assumed.
@@ -63,4 +76,4 @@ zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
 # permutations" warnings.) This is what makes the differentials — the byte-exactness
 # mechanism that DOES cover ARM, since the `AOM_FORCE_SCALAR` pin cannot (see
 # `src/dispatch/mod.rs`) — actually load-bearing on aarch64.
-archmage = { version = "0.9.27", features = ["testable_dispatch", "avx512"] }
+archmage = { version = "0.9.27", features = ["testable_dispatch"] }

@@ -13,14 +13,14 @@ name = "aom_bench"
 [dependencies]
 # The port under measurement.
 zenav1-aom-encode = { path = "../aom-encode" }
-zenav1-aom-decode = { path = "../aom-decode" }
+zenav1-aom-decode = { path = "../aom-decode", features = ["__internals"] }
 # Consolidated DSP/entropy kernels (was: aom-entropy/quant/restore/loopfilter/
 # txb — folded into aom-dsp per GitHub #2). Stills-parity post-filter stages
 # still ride these: the loop-restoration search (aom_dsp::restore::pick), the
 # deblock APPLY feeding the LR and CDEF gates (aom_dsp::loopfilter::
 # loop_filter_frame), and the LR mode-cost derivation (aom_dsp::txb::
 # cost_tokens_from_cdf).
-zenav1-aom-dsp = { path = "../aom-dsp" }
+zenav1-aom-dsp = { path = "../aom-dsp", default-features = false }
 # The REAL C oracle (reference libaom v3.14.1, Release + SIMD). This crate is
 # bench-only (publish = false), so depending on the FFI oracle here mirrors the
 # dev-dependency isolation the shipping crates use: all unsafe stays inside
@@ -35,7 +35,13 @@ zensim = { version = "0.2.7", optional = true }
 # DEFAULT ON, and every existing target (tests, benches, the profile bins, all
 # the C-comparing examples) requires it: without the oracle there is nothing to
 # be differential against, which is this crate's whole job.
-default = ["c-oracle"]
+# AVX-512 tiers, forwarded from `zenav1-aom-dsp`. Default-ON so behaviour is
+# unchanged; a consumer that does not want AVX-512 codegen (compile time, and
+# downclocking on some parts) can now actually reach the knob with
+# `--no-default-features`, which it could NOT before -- this crate depended on
+# aom-dsp with its defaults, so the switch was unreachable from outside.
+default = ["c-oracle", "avx512"]
+avx512 = ["zenav1-aom-dsp/avx512", "zenav1-aom-encode/avx512", "zenav1-aom-decode/avx512"]
 # Turning it OFF leaves exactly the PURE-RUST half of this crate compilable —
 # `EncodeCell` + `port_encode*` + the `winperf` harness — on a runner with no C
 # toolchain, no cmake, no nasm and no `upstream/` submodule. That is what the

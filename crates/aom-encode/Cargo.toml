@@ -27,7 +27,7 @@ name = "aom_encode"
 # reuse notes that lived here (subpel filter tables for aom_upsampled_pred;
 # loop_filter_frame as the LF-search trial primitive; the CDEF-search kernels)
 # still apply — those kernels are now aom_dsp::{convolve,loopfilter,cdef}.
-zenav1-aom-dsp = { path = "../aom-dsp" }
+zenav1-aom-dsp = { path = "../aom-dsp", default-features = false }
 # Cooperative cancellation (stop token) — zero-dep, no_std. Same version the
 # decoder depends on so the `dyn Stop` vtable is the same trait; a mismatched
 # major would not type-check across the crate boundary.
@@ -37,6 +37,13 @@ enough = "0.4.4"
 # Forwards `aom_dsp/census` and adds this crate's own hook (the coded-leaf
 # counter in `pack::pack_leaf`). DEFAULT OFF: a census build is not a timing
 # build. See `aom_dsp::census`.
+# AVX-512 tiers, forwarded from `zenav1-aom-dsp`. Default-ON so behaviour is
+# unchanged; a consumer that does not want AVX-512 codegen (compile time, and
+# downclocking on some parts) can now actually reach the knob with
+# `--no-default-features`, which it could NOT before -- this crate depended on
+# aom-dsp with its defaults, so the switch was unreachable from outside.
+default = ["avx512"]
+avx512 = ["zenav1-aom-dsp/avx512"]
 census = ["zenav1-aom-dsp/census"]
 
 [dev-dependencies]
@@ -47,7 +54,7 @@ zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
 # does not create a cycle in the library build graph (aom-decode's own
 # [dependencies] on aom-encode only applies when building aom-decode itself;
 # test binaries here are a separate compilation unit).
-zenav1-aom-decode = { path = "../aom-decode" }
+zenav1-aom-decode = { path = "../aom-decode", features = ["__internals"] }
 # AVIF container muxer -- used ONLY by the `avif_parity` test (Gate 4,
 # zenavif integration): wraps the port's byte-exact AV1 OBU frame into an
 # AVIF still, which the harness then round-trips (parse container -> extract

@@ -63,6 +63,47 @@ user says otherwise; the two retained fleet photo witnesses are at 2.49x / 2.65x
 **The one-line reading:** everything except encode time is either met or reduced to encode
 time. Rank perf work first until 3.24x moves.
 
+## Public API surface — the `__internals` gate (2026-09-09)
+
+**MEASURED: 4,149 `pub` items across the workspace, and the real external
+consumer surface is TWO modules.** zenavif — the only external consumer, and it
+depends on `zenav1-aom-decode` / `zenav1-aom-encode` DIRECTLY, not on the
+`zenav1-aom` facade (which has no consumer at all) — uses exactly
+`aom_decode::frame` and `aom_encode::key_frame`, plus the config/error types.
+Everything else was `pub` because 320 separate integration-test crates had no
+other way in.
+
+**A correction worth keeping, because the raw count misleads:** `aom-dsp`'s 1,022
+items are NOT the leak. `aom-encode` and `aom-decode` are separate crates that
+legitimately consume them, so they must stay `pub` for in-workspace use. The
+externally-visible surface is `aom-encode` (1,832) and `aom-decode` (106).
+
+**The pattern, landed for `aom-decode` first:**
+* the crate's real API stays `pub` (`frame` + the `config`/`error` re-exports);
+* implementation modules are `pub` only under a default-OFF `__internals`
+  feature, `pub(crate)` otherwise — verified: without it they are genuinely
+  unreachable (`E0603 module is private`);
+* in-workspace crates that reach inside declare
+  `features = ["__internals"]`, so a `--workspace` build unifies it on and the
+  harness runs (measured: 76 aom-decode tests visible under `--workspace`);
+* the consolidated `tests/all` target carries `required-features` AND an
+  explicit `path` — **cargo resolves `[[test]] name = "all"` to `tests/all.rs`,
+  not `tests/all/main.rs`, so without the path the section silently does nothing
+  and the harness builds anyway.** That cost a debug cycle here.
+
+**The anti-KB-42 guard, which is what makes `required-features` safe.** A
+`required-features` target is SILENTLY SKIPPED when the feature is off, so a
+plain `cargo test -p zenav1-aom-decode` would report green having built no
+integration tests — precisely the failure KB-42 documents. So
+`tests/internals_feature_guard.rs` is deliberately NOT gated: it always compiles,
+always runs, and fails with the exact command to re-run. Verified in both
+directions (fails without the feature, passes with it).
+
+**Not yet done:** `aom-encode`'s 77 modules (1,832 items). Same pattern, larger
+blast radius — `tx_search` (49 uses), `encode_sb` (43), `pack` (40) and others
+are reached from `aom-bench` and the harnesses, all in-workspace and therefore
+fixable by declaring the feature, but it is its own landing.
+
 ## Gates (definition of done)
 
 - **Gate 1 — Decoder:** bit-identical to C across the AV1 conformance corpus (intra scope

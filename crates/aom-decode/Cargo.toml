@@ -26,7 +26,7 @@ name = "aom_decode"
 [dependencies]
 # Consolidated DSP/entropy kernels (was: aom-cdef/entropy/inter/intra/loopfilter/
 # quant/recon/restore/transform/txb — folded into aom-dsp per GitHub #2).
-zenav1-aom-dsp = { path = "../aom-dsp" }
+zenav1-aom-dsp = { path = "../aom-dsp", default-features = false }
 # Cooperative cancellation (stop token) — zero-dep, no_std; threaded through the
 # `*_with` decode entries and polled at SB-row / tile / frame boundaries.
 enough = "0.4.4"
@@ -39,7 +39,24 @@ whereat = { version = "0.1.5", optional = true }
 # Enable `whereat::At<DecodeError>`-returning `*_at` entries (repo/commit-linked
 # located errors). Off by default — the bare + `_with` entries always return the
 # plain category-bearing `DecodeError`.
+# AVX-512 tiers, forwarded from `zenav1-aom-dsp`. Default-ON so behaviour is
+# unchanged; a consumer that does not want AVX-512 codegen (compile time, and
+# downclocking on some parts) can now actually reach the knob with
+# `--no-default-features`, which it could NOT before -- this crate depended on
+# aom-dsp with its defaults, so the switch was unreachable from outside.
+default = ["avx512"]
+avx512 = ["zenav1-aom-dsp/avx512"]
 whereat = ["dep:whereat"]
+# Exposes this crate's implementation modules (film_grain, plane, superres, qm)
+# as `pub`. DEFAULT OFF: the public API is `frame` + the config/error types, which
+# is measured -- zenavif, the only external consumer, uses exactly those.
+#
+# It is enabled by the in-workspace crates that genuinely reach inside, and by
+# this crate's own test harness (see `[[test]] name = "all"`). A guard test that
+# is NOT gated fails loudly if the harness was skipped, so the suite can never be
+# silently empty -- that is the KB-42 failure mode and it is what makes a
+# `required-features` target safe to use here.
+__internals = []
 
 [dev-dependencies]
 zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
@@ -49,3 +66,12 @@ zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
 # the decode LIBRARY no longer depends on aom-encode: the reverse-dependency
 # edge is broken (reconstruct_txb now comes from aom-recon).
 zenav1-aom-encode = { path = "../aom-encode" }
+
+# The consolidated harness reaches into this crate's internals, so it requires
+# the `__internals` feature. `internals_feature_guard` is deliberately NOT listed
+# here: it stays unconditional so a build without the feature FAILS loudly
+# instead of reporting green with zero integration tests (the KB-42 shape).
+[[test]]
+name = "all"
+path = "tests/all/main.rs"
+required-features = ["__internals"]

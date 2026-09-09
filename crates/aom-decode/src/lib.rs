@@ -180,9 +180,27 @@ whereat::define_at_crate_info!();
 pub mod frame;
 
 /// Byte-exact AV1 film-grain synthesis (post-reconstruction output stage).
+
+// ---------------------------------------------------------------------------
+// INTERNALS. `frame` above, plus the `config`/`error` re-exports, are THE public
+// API: measured 2026-09-09, the only external consumer (zenavif) uses exactly
+// `aom_decode::frame` and those types. The modules below are implementation
+// detail that in-workspace crates and this crate's own tests reach into, so
+// they are `pub` only under `__internals` -- see that feature's doc comment in
+// Cargo.toml for why a never-disabled feature is worse than no feature at all.
+// ---------------------------------------------------------------------------
+#[cfg(feature = "__internals")]
 pub mod film_grain;
+#[cfg(not(feature = "__internals"))]
+pub(crate) mod film_grain;
+#[cfg(feature = "__internals")]
 pub mod plane;
+#[cfg(not(feature = "__internals"))]
+pub(crate) mod plane;
+#[cfg(feature = "__internals")]
 pub mod superres;
+#[cfg(not(feature = "__internals"))]
+pub(crate) mod superres;
 
 pub use plane::ReconPlane;
 
@@ -192,7 +210,10 @@ pub use plane::ReconPlane;
 // `av1_qm_init` packing — and this module is a thin decode-side alias for the
 // inverse half. Only `iqmatrix` is exposed.
 #[doc(hidden)]
+#[cfg(feature = "__internals")]
 pub mod qm;
+#[cfg(not(feature = "__internals"))]
+pub(crate) mod qm;
 
 use aom_dsp::entropy::cdf::read_symbol;
 use aom_dsp::recon::{ReconScratch, reconstruct_txb_into};

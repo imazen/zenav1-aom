@@ -24,11 +24,19 @@ name = "zenav1_aom"
 [dependencies]
 # The consolidated kernels are always present; decode/encode are feature-gated
 # so size-sensitive consumers can pull a decode-only stack (encoder never built).
-zenav1-aom-dsp = { path = "../aom-dsp" }
+zenav1-aom-dsp = { path = "../aom-dsp", default-features = false }
 zenav1-aom-decode = { path = "../aom-decode", optional = true }
 zenav1-aom-encode = { path = "../aom-encode", optional = true }
 
 [features]
-default = ["decode", "encode"]
+# AVX-512 tiers, forwarded all the way down so a consumer of the FACADE can
+# reach the knob too. Default-ON: unchanged behaviour, runtime dispatch still
+# decides what executes.
+default = ["decode", "encode", "avx512"]
+avx512 = [
+    "zenav1-aom-dsp/avx512",
+    "zenav1-aom-decode?/avx512",
+    "zenav1-aom-encode?/avx512",
+]
 decode = ["dep:zenav1-aom-decode"]
 encode = ["dep:zenav1-aom-encode"]

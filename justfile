@@ -114,16 +114,8 @@ gate-landing:
     just test-next
     just test-next-scalar
     just census-gate
-    just gate-whereat
+    just test-whereat
 
-# The `whereat` feature gates 4 sites in aom-decode AND its own test module, so
-# a default build never COMPILES them. That is a verification hole, and it bit:
-# consolidating tests/ moved `whereat_entries.rs` one directory deeper, breaking
-# its `include_bytes!("data/...")`, and a 1502-test green run did not notice
-# because the target was never built. Any feature that gates a test target must
-# be built by the landing gate, or the gate is lying about its coverage.
-gate-whereat:
-    cargo test --profile test-fast -p zenav1-aom-decode --features whereat --test all -- whereat_entries::
 
 # The census TOOL. `just census-corpus` prints the family table for the four
 # harness contents; add `yuv:<path>:<w>x<h>`, `scr:<path>:<w>x<h>` (screen
@@ -211,7 +203,7 @@ gate-cancel-latency:
 # say so. This is the only invocation that builds it; also wired as a CI step on
 # the pure-Rust portability job.
 test-whereat:
-    cargo test -p zenav1-aom-decode --features whereat --test all -- whereat_entries::
+    cargo test -p zenav1-aom-decode --features whereat,__internals --test all -- whereat_entries::
 
 # CROSS-ENCODER INTRABC DECODE GATE (GitHub #5). The armed gate above decodes
 # streams from THIS port's encoder, and the conformance corpus is entirely

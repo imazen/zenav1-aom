@@ -103,7 +103,7 @@ jobs:
       # `aom-bench` opts out via its `c-oracle` feature; the fix is to run it on
       # a leg that already has the oracle, which costs this job ~1 s.
       - name: Located-error entries (whereat feature)
-        run: cargo test -p zenav1-aom-decode --features whereat --test all -- whereat_entries::
+        run: cargo test -p zenav1-aom-decode --features whereat,__internals --test all -- whereat_entries::
 
       # The cancellation-latency gate. `#[ignore]`d in the workspace run because
       # it measures WALL-CLOCK latency, which a parallel test pool cannot

@@ -136,7 +136,7 @@ jobs:
       - name: Build the post arm
         shell: bash
         run: |
-          cargo build --release -p zenav1-aom-bench --no-default-features \
+          cargo build --release -p zenav1-aom-bench --no-default-features --features avx512 \
             --example winperf --example winperf_alloc
           mkdir -p bin
           cp target/release/examples/winperf.exe       bin/winperf_post.exe
@@ -162,7 +162,7 @@ jobs:
         run: |
           set -x
           git checkout ${{ inputs.base_sha }} -- crates/aom-dsp/src crates/aom-encode/src
-          cargo build --release -p zenav1-aom-bench --no-default-features \
+          cargo build --release -p zenav1-aom-bench --no-default-features --features avx512 \
             --example winperf --example winperf_alloc
           cp target/release/examples/winperf.exe       bin/winperf_pre.exe
           cp target/release/examples/winperf.exe       bin/winperf_l3a.exe
@@ -180,7 +180,7 @@ jobs:
           set -x
           # l3 = everything post EXCEPT 3a's file.
           git checkout ${{ inputs.base_sha }} -- crates/aom-dsp/src/transform/simd/mod.rs
-          cargo build --release -p zenav1-aom-bench --no-default-features \
+          cargo build --release -p zenav1-aom-bench --no-default-features --features avx512 \
             --example winperf --example winperf_alloc
           cp target/release/examples/winperf.exe       bin/winperf_l3.exe
           cp target/release/examples/winperf_alloc.exe bin/winperf_alloc_l3.exe
@@ -189,14 +189,14 @@ jobs:
           # l3a = everything pre EXCEPT 3a's file.
           git checkout ${{ inputs.base_sha }} -- crates/aom-dsp/src crates/aom-encode/src
           git checkout HEAD -- crates/aom-dsp/src/transform/simd/mod.rs
-          cargo build --release -p zenav1-aom-bench --no-default-features \
+          cargo build --release -p zenav1-aom-bench --no-default-features --features avx512 \
             --example winperf --example winperf_alloc
           cp target/release/examples/winperf.exe       bin/winperf_l3a.exe
           cp target/release/examples/winperf_alloc.exe bin/winperf_alloc_l3a.exe
 
           # pre = everything pre.
           git checkout ${{ inputs.base_sha }} -- crates/aom-dsp/src crates/aom-encode/src
-          cargo build --release -p zenav1-aom-bench --no-default-features \
+          cargo build --release -p zenav1-aom-bench --no-default-features --features avx512 \
             --example winperf --example winperf_alloc
           cp target/release/examples/winperf.exe       bin/winperf_pre.exe
           cp target/release/examples/winperf_alloc.exe bin/winperf_alloc_pre.exe
