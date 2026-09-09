@@ -204,6 +204,10 @@ pub struct Counts {
     pub nd_mode_tx_px: [[u64; N_TX_SIZE]; N_MODE],
     /// `[tx_type][tx_size]` forward 2-D transforms.
     pub fwd_tx: [[u64; N_TX_SIZE]; N_TX_TYPE],
+    /// `[tx_type][tx_size]` inverse 2-D transforms — the forward twin's mirror.
+    /// The inverse side is LARGER in the 1 MP profile than the forward, and its
+    /// size distribution was unmeasured until this counter existed.
+    pub inv_tx: [[u64; N_TX_SIZE]; N_TX_TYPE],
     /// Coded leaves by `bsize`, counted at the bitstream writer.
     pub leaf_bsize: [u64; N_BSIZE],
     /// Coded leaves by winning luma intra mode.
@@ -284,6 +288,7 @@ impl Counts {
             nd_mode_tx_calls: [[0; N_TX_SIZE]; N_MODE],
             nd_mode_tx_px: [[0; N_TX_SIZE]; N_MODE],
             fwd_tx: [[0; N_TX_SIZE]; N_TX_TYPE],
+            inv_tx: [[0; N_TX_SIZE]; N_TX_TYPE],
             leaf_bsize: [0; N_BSIZE],
             leaf_mode: [0; N_MODE],
             plane_calls: [0; N_PLANE],
@@ -327,6 +332,7 @@ impl Counts {
             nd_mode_tx_calls,
             nd_mode_tx_px,
             fwd_tx,
+            inv_tx,
             leaf_bsize,
             leaf_mode,
             plane_calls,
@@ -358,6 +364,7 @@ impl Counts {
             nd_mode_tx_calls: sub2(nd_mode_tx_calls, &base.nd_mode_tx_calls),
             nd_mode_tx_px: sub2(nd_mode_tx_px, &base.nd_mode_tx_px),
             fwd_tx: sub2(fwd_tx, &base.fwd_tx),
+            inv_tx: sub2(inv_tx, &base.inv_tx),
             leaf_bsize: sub(leaf_bsize, &base.leaf_bsize),
             leaf_mode: sub(leaf_mode, &base.leaf_mode),
             plane_calls: sub(plane_calls, &base.plane_calls),
@@ -595,6 +602,24 @@ pub fn note_fwd_txfm(tx_type: usize, tx_size: usize) {
     {
         if tx_type < N_TX_TYPE && tx_size < N_TX_SIZE {
             COUNTS.with(|c| c.borrow_mut().fwd_tx[tx_type][tx_size] += 1);
+        }
+    }
+    #[cfg(not(feature = "census"))]
+    {
+        let _ = (tx_type, tx_size);
+    }
+}
+
+/// One inverse 2-D transform. The mirror of [`note_fwd_txfm`], added because
+/// the inverse side is larger in the 1 MP profile and its size distribution was
+/// unmeasured — "assume it matches the forward mix" is exactly the kind of
+/// claim this file exists to replace with a number.
+#[inline(always)]
+pub fn note_inv_txfm(tx_type: usize, tx_size: usize) {
+    #[cfg(feature = "census")]
+    {
+        if tx_type < N_TX_TYPE && tx_size < N_TX_SIZE {
+            COUNTS.with(|c| c.borrow_mut().inv_tx[tx_type][tx_size] += 1);
         }
     }
     #[cfg(not(feature = "census"))]

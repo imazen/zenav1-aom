@@ -231,6 +231,91 @@ pub struct InvTxfmScratch {
 /// single largest allocator caller in the decode profile (measured 61.7 M
 /// Ir/decode of calloc+free on `dec_mosaic_4k_cq20`, ~1.9 % of the decode).
 #[allow(clippy::too_many_arguments)]
+/// **Fused whole-transform 4x4 inverse — the mirror of the forward one, and
+/// the LARGER half of the transform gap.**
+///
+/// The inverse side outweighs the forward in the 1 MP profile
+/// (`run_inv1d_v3` 472 ms + `inv_col_pass_core_v3` 374 + `inv_row_pass_core_v3`
+/// 229 + `av1_inv_txfm2d_add_into` 127 against the forward's
+/// 259/188/128/206), and its size distribution was UNMEASURED until
+/// `census::note_inv_txfm` was added alongside this: **4x4 is 44.43 % of every
+/// inverse transform** (4x4+8x8 is 70.1 %). Close to the forward's 50.70 % but
+/// not equal to it, which is why it was measured rather than assumed.
+///
+/// # Bit-exactness
+///
+/// Same kernels via [`inv_txfm_func`], same `INV_COS_BIT`, same clamps, same
+/// stage ranges from [`opt_range`], same `highbd_clip_pixel_add` — specialised,
+/// not changed. At TX_4X4 the recipe collapses differently from the forward's,
+/// and the difference is the point:
+///
+/// * `INV_SHIFT[TX_4X4]` is `[0, -4]`, so it is the ROW shift that vanishes
+///   (`round_shift_array` early-returns at `bit == 0`) while the COLUMN shift
+///   is a real rounding shift by 4 — the forward's `[2, 0, 0]` is the other way
+///   round. Copying the forward's argument here would have been wrong.
+/// * `get_rect_tx_log_ratio(4, 4)` is 0, so the `NEW_INV_SQRT2` row scaling
+///   does not run.
+/// * `remap_input` borrows rather than copies for every non-64-point size, so
+///   TX_4X4 never needed it; the fused path indexes `input` directly.
+///
+/// Each is a PRECONDITION and each is CHECKED, declining to the generic driver
+/// rather than diverging if a table moves.
+#[allow(clippy::too_many_arguments)]
+fn inv_txfm2d_add_4x4_fused(
+    input: &[i32],
+    output: &mut [u16],
+    stride: usize,
+    tx_type: usize,
+    bd: i32,
+) -> bool {
+    let shift = INV_SHIFT[0];
+    if shift != [0, -4] || get_rect_tx_log_ratio(4, 4) != 0 {
+        return false;
+    }
+    let txfm_type_col = TXFM_TYPE_LS[0][VTX_TAB[tx_type]];
+    let txfm_type_row = TXFM_TYPE_LS[0][HTX_TAB[tx_type]];
+    if txfm_type_col < 0 || txfm_type_row < 0 {
+        return false;
+    }
+    let (ud_flip, lr_flip) = FLIP_CFG[tx_type];
+    let f_row = inv_txfm_func(txfm_type_row);
+    let f_col = inv_txfm_func(txfm_type_col);
+    let (opt_range_col, opt_range_row) = opt_range(bd);
+    let stage_range_row = [opt_range_row; 12];
+    let stage_range_col = [opt_range_col; 12];
+
+    let mut buf = [0i32; 16];
+    let mut temp_in = [0i32; 4];
+    let mut temp_out = [0i32; 4];
+
+    // Rows. shift[0] == 0, so the post-pass `round_shift_array` is a no-op.
+    for r in 0..4 {
+        for c in 0..4 {
+            temp_in[c] = input[c * 4 + r];
+        }
+        clamp_buf(&mut temp_in, (bd + 8) as i8);
+        f_row(&temp_in, &mut buf[r * 4..r * 4 + 4], INV_COS_BIT, &stage_range_row);
+    }
+
+    // Columns.
+    let col_clamp = (bd + 6).max(16) as i8;
+    for c in 0..4 {
+        for r in 0..4 {
+            let cc = if lr_flip { 3 - c } else { c };
+            temp_in[r] = buf[r * 4 + cc];
+        }
+        clamp_buf(&mut temp_in, col_clamp);
+        f_col(&temp_in, &mut temp_out, INV_COS_BIT, &stage_range_col);
+        round_shift_array(&mut temp_out, -(shift[1] as i32));
+        for r in 0..4 {
+            let src = if ud_flip { temp_out[3 - r] } else { temp_out[r] };
+            let idx = r * stride + c;
+            output[idx] = highbd_clip_pixel_add(output[idx], src, bd);
+        }
+    }
+    true
+}
+
 pub fn av1_inv_txfm2d_add_into(
     input: &[i32],
     output: &mut [u16],
@@ -240,6 +325,12 @@ pub fn av1_inv_txfm2d_add_into(
     bd: i32,
     scratch: &mut InvTxfmScratch,
 ) {
+    crate::census::note_inv_txfm(tx_type, tx_size);
+    // The size-specialised 4x4 entry point: 44.4 % of all inverse transforms at
+    // speed 0. Declines to the generic driver on anything it is not proven for.
+    if tx_size == 0 && inv_txfm2d_add_4x4_fused(input, output, stride, tx_type, bd) {
+        return;
+    }
     let InvTxfmScratch { buf, mod_input: mod_input_scratch } = scratch;
     let cfg = get_inv_txfm_cfg(tx_type, tx_size);
     assert!(cfg.valid, "unsupported inverse (tx_type={tx_type}, tx_size={tx_size})");

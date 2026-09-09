@@ -430,6 +430,26 @@ fn print_source(r: &Row) {
         }
     }
     println!();
+    // The INVERSE mirror. The inverse side is larger than the forward in the
+    // 1 MP profile, so "assume the mixes match" is a claim worth a number.
+    let inv_total: u64 = c.inv_tx.iter().flatten().sum();
+    println!("inv_tx_total\t-\t{inv_total}");
+    println!("inv_tx_size\tcount\tpct");
+    for t in 0..N_TX_SIZE {
+        let n: u64 = (0..N_TX_TYPE).map(|ty| c.inv_tx[ty][t]).sum();
+        if n > 0 {
+            println!("{}\t{n}\t{:.2}", TX_SIZE_NAME[t], 100.0 * n as f64 / inv_total as f64);
+        }
+    }
+    println!();
+    println!("inv_tx_type\tcount\tpct");
+    for ty in 0..N_TX_TYPE {
+        let n: u64 = c.inv_tx[ty].iter().sum();
+        if n > 0 {
+            println!("{}\t{n}\t{:.2}", TX_TYPE_NAME[ty], 100.0 * n as f64 / inv_total as f64);
+        }
+    }
+    println!();
     let leaves: u64 = c.leaf_bsize.iter().sum();
     println!("leaf_bsize\tcount\tpct");
     for b in 0..N_BSIZE {
