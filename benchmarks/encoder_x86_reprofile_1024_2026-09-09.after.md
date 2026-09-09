@@ -44,10 +44,18 @@ class ratio near parity says nothing about its members.**
 
 ## Ranked, with what each actually needs
 
-1. **transform +2263 ms (38 %)** — still the largest and still a *programme*:
-   libaom's size-specialised whole-transform entry points against the port's
-   generic driver. Lane width was measured NULL at three frame sizes (clause-4
-   row); do not rebuild that.
+1. **transform +2263 ms (38 %)** — still the largest, and **no longer an
+   unscoped programme: `benchmarks/encoder_txfm_size_census_2026-09-09.md`
+   measures where inside it to start.** 4x4 is **50.7 %** of all forward
+   transforms and 4x4+8x8 is **73 %**, while everything with both dims >= 32 is
+   together **under 1 %** — so the big kernels, which a whole-transform rewrite
+   instinctively starts with, are worth almost nothing. For a 16-coefficient
+   transform the lever is **per-call driver overhead** (config derivation, the
+   scratch clear/resize, two pass dispatches, the intermediate `buf`
+   round-trip), not lane width — which also means KB-PERF-3's `fadst4` i16
+   rejection does not block a fused 4x4, so it can serve all four DCT/ADST
+   combinations (81 % of types) rather than DCT-only. Lane width itself was
+   measured NULL at three frame sizes (clause-4 row); do not rebuild that.
 2. **rd-driver +950 ms (16 %)** — beware: its two biggest apparent items
    (`intra_model_rd_y`, `txfm_rd_in_plane_intra`) are **inlining sinks**, not
    gaps (KB-PERF-10). Anything costed off them is costed off C's dispatch
