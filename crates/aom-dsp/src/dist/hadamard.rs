@@ -3,17 +3,24 @@
 //! (wrapping), matching the C dynamic-range contract; the SSE2/AVX2 output
 //! transposes are replicated.
 
-#[inline]
-fn hadamard_col8(src: &[i16], off: usize, stride: usize) -> [i16; 8] {
-    let s = |k: usize| src[off + k * stride];
-    let b0 = s(0).wrapping_add(s(1));
-    let b1 = s(0).wrapping_sub(s(1));
-    let b2 = s(2).wrapping_add(s(3));
-    let b3 = s(2).wrapping_sub(s(3));
-    let b4 = s(4).wrapping_add(s(5));
-    let b5 = s(4).wrapping_sub(s(5));
-    let b6 = s(6).wrapping_add(s(7));
-    let b7 = s(6).wrapping_sub(s(7));
+/// `hadamard_col8` (`aom_dsp/avg.c:149`) over eight ALREADY-GATHERED values.
+///
+/// Taking `[i16; 8]` by value rather than `(&[i16], off, stride)` is what makes
+/// this compile to twenty-four register add/subs: a slice parameter forces a
+/// bounds check on each of the eight strided loads (128 per 8x8 block, since
+/// the block runs this sixteen times), and the runtime slice length stops LLVM
+/// keeping the intermediates in registers or vectorizing the caller's loop.
+/// The arithmetic is byte-for-byte the C, `wrapping` included.
+#[inline(always)]
+fn hadamard_col8(s: [i16; 8]) -> [i16; 8] {
+    let b0 = s[0].wrapping_add(s[1]);
+    let b1 = s[0].wrapping_sub(s[1]);
+    let b2 = s[2].wrapping_add(s[3]);
+    let b3 = s[2].wrapping_sub(s[3]);
+    let b4 = s[4].wrapping_add(s[5]);
+    let b5 = s[4].wrapping_sub(s[5]);
+    let b6 = s[6].wrapping_add(s[7]);
+    let b7 = s[6].wrapping_sub(s[7]);
     let c0 = b0.wrapping_add(b2);
     let c1 = b1.wrapping_add(b3);
     let c2 = b0.wrapping_sub(b2);
@@ -34,13 +41,16 @@ fn hadamard_col8(src: &[i16], off: usize, stride: usize) -> [i16; 8] {
     o
 }
 
-#[inline]
-fn hadamard_col4(src: &[i16], off: usize, stride: usize) -> [i16; 4] {
-    let s = |k: usize| src[off + k * stride] as i32;
-    let b0 = ((s(0) + s(1)) >> 1) as i16;
-    let b1 = ((s(0) - s(1)) >> 1) as i16;
-    let b2 = ((s(2) + s(3)) >> 1) as i16;
-    let b3 = ((s(2) - s(3)) >> 1) as i16;
+/// `hadamard_col4` (`aom_dsp/avg.c:132`) over four ALREADY-GATHERED values.
+/// The first stage widens to `i32` and shifts before narrowing, exactly as C
+/// does; see [`hadamard_col8`] for why the parameter is an array.
+#[inline(always)]
+fn hadamard_col4(s: [i16; 4]) -> [i16; 4] {
+    let v = |k: usize| s[k] as i32;
+    let b0 = ((v(0) + v(1)) >> 1) as i16;
+    let b1 = ((v(0) - v(1)) >> 1) as i16;
+    let b2 = ((v(2) + v(3)) >> 1) as i16;
+    let b3 = ((v(2) - v(3)) >> 1) as i16;
     [
         b0.wrapping_add(b2),
         b1.wrapping_add(b3),
@@ -51,41 +61,53 @@ fn hadamard_col4(src: &[i16], off: usize, stride: usize) -> [i16; 4] {
 
 /// `aom_hadamard_4x4_c`. `src` row stride is `src_stride`. Returns 16 coeffs.
 pub fn hadamard_4x4(src: &[i16], src_stride: usize) -> [i32; 16] {
-    let mut buffer = [0i16; 16];
-    for idx in 0..4 {
-        let col = hadamard_col4(src, idx, src_stride);
-        buffer[idx * 4..idx * 4 + 4].copy_from_slice(&col);
+    let mut rows = [[0i16; 4]; 4];
+    for (r, row) in rows.iter_mut().enumerate() {
+        row.copy_from_slice(&src[r * src_stride..r * src_stride + 4]);
     }
-    let mut buffer2 = [0i16; 16];
-    for idx in 0..4 {
-        let col = hadamard_col4(&buffer, idx, 4);
-        buffer2[idx * 4..idx * 4 + 4].copy_from_slice(&col);
-    }
+    // C: buffer[idx*4 + k] = A[idx][k], A[idx] = col4(source column idx).
+    let a: [[i16; 4]; 4] =
+        core::array::from_fn(|idx| hadamard_col4(core::array::from_fn(|k| rows[k][idx])));
+    // C's second pass reads `buffer[idx + k*4]`, which under that layout is
+    // A[k][idx] — see [`hadamard_8x8`] for the substitution written out.
+    let b: [[i16; 4]; 4] =
+        core::array::from_fn(|idx| hadamard_col4(core::array::from_fn(|k| a[k][idx])));
     let mut coeff = [0i32; 16];
     for i in 0..4 {
         for j in 0..4 {
-            coeff[i * 4 + j] = buffer2[j * 4 + i] as i32;
+            coeff[i * 4 + j] = b[j][i] as i32;
         }
     }
     coeff
 }
 
 /// `aom_hadamard_8x8_c`. Returns 64 coeffs.
+///
+/// Same values as the C, with C's own index algebra folded so the trailing
+/// transpose is never performed. C writes `buffer[idx*8 + k] = A[idx][k]` where
+/// `A[idx] = col8(source column idx)`; its second pass reads
+/// `buffer[idx + k*8]`, which in that layout is `A[k][idx]`, so
+/// `B[idx] = col8([A[k][idx] for k])` and it writes
+/// `buffer2[idx*8 + k] = B[idx][k]`. The final
+/// *"Extra transpose to match SSE2 behavior"* (`aom_dsp/avg.c:232-236`) is
+/// `coeff[i*8 + j] = buffer2[j*8 + i]`, i.e. exactly `B[j][i]` — so emitting
+/// `B[j][i]` in place IS the transpose, not an omission of it. KB-12 is the
+/// standing warning that this transpose is load-bearing (dropping it moves the
+/// eob and nothing else, which reads as a near-tie for four sessions), so it is
+/// preserved by construction here rather than by a separate pass.
 pub fn hadamard_8x8(src: &[i16], src_stride: usize) -> [i32; 64] {
-    let mut buffer = [0i16; 64];
-    for idx in 0..8 {
-        let col = hadamard_col8(src, idx, src_stride);
-        buffer[idx * 8..idx * 8 + 8].copy_from_slice(&col);
+    let mut rows = [[0i16; 8]; 8];
+    for (r, row) in rows.iter_mut().enumerate() {
+        row.copy_from_slice(&src[r * src_stride..r * src_stride + 8]);
     }
-    let mut buffer2 = [0i16; 64];
-    for idx in 0..8 {
-        let col = hadamard_col8(&buffer, idx, 8);
-        buffer2[idx * 8..idx * 8 + 8].copy_from_slice(&col);
-    }
+    let a: [[i16; 8]; 8] =
+        core::array::from_fn(|idx| hadamard_col8(core::array::from_fn(|k| rows[k][idx])));
+    let b: [[i16; 8]; 8] =
+        core::array::from_fn(|idx| hadamard_col8(core::array::from_fn(|k| a[k][idx])));
     let mut coeff = [0i32; 64];
     for i in 0..8 {
         for j in 0..8 {
-            coeff[i * 8 + j] = buffer2[j * 8 + i] as i32;
+            coeff[i * 8 + j] = b[j][i] as i32;
         }
     }
     coeff
