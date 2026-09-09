@@ -440,7 +440,21 @@ pub fn xform_quant_into(
     // `clear` + `resize(_, 0)` reproduces the `vec![0i32; n]` these three
     // replace element for element (see `XformQuantScratch`).
     let XformQuantScratch { coeff, qcoeff, dqcoeff, fwd } = scratch;
-    coeff.clear();
+    // GROW-ONLY, not clear-and-refill. `resize` alone already leaves the length
+    // exactly right — it truncates when the buffer is long enough and pads with
+    // zeros only when it genuinely grows. The `clear()` that used to precede it
+    // is what forced all `n` elements to be re-zeroed on EVERY call.
+    //
+    // Dropping it is sound because every element these buffers hand on is
+    // written before it is read, which KB-PERF-2 established rather than
+    // assumed: `av1_fwd_txfm2d` writes every `coeff[..full]`, and all twelve
+    // quantizer variants open by filling `qcoeff[..n]` / `dqcoeff[..n]`.
+    //
+    // KB-PERF-2 built this and measured it INSIDE the control band — on
+    // aarch64-apple-darwin at `--cpu-used 6`. Its own record says the
+    // memset-vs-allocator split is priced differently by platform, so this is a
+    // re-measurement on x86-64 at `--cpu-used 0`, not a re-run of a settled
+    // question.
     coeff.resize(full, 0);
     if qp.lossless {
         debug_assert_eq!(tx_size, 0, "lossless forces TX_4X4");
@@ -451,9 +465,7 @@ pub fn xform_quant_into(
     }
 
     // av1_quant: quantize the valid coefficient block.
-    qcoeff.clear();
     qcoeff.resize(n_coeffs, 0);
-    dqcoeff.clear();
     dqcoeff.resize(n_coeffs, 0);
     let (qcoeff, dqcoeff) = (&mut qcoeff[..], &mut dqcoeff[..]);
     let src = &coeff[..n_coeffs];
