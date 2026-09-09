@@ -274,6 +274,44 @@ difference.**
 output. The headline ratio should be quoted with its cell; the gap to Gate 3's
 <= 1.5x bar is slightly larger on real images than the profile cell suggests.
 
+## Loop-restoration: the record said it was nearly done; it is the #2 lever
+
+KB-PERF-6's summary line reads *"Stage total: 90.6 -> ~19.8 ms"*, which would
+make loop-restoration ~4 % of the encode and effectively finished. **It is
+wrong, and that entry's own A/B table disproves it**: the table shows the whole
+encode moving 483.01 -> 452.65 ms (-30.4 ms), and a stage cannot shed 70.8 ms
+while the encode sheds 30.4.
+
+Re-measured here by summing every `aom_dsp::restore::*` symbol at
+`--percent-limit 0.01`:
+
+| cell | port LR | C LR | ratio | gap | % of total gap |
+|---|---:|---:|---:|---:|---:|
+| 192x192 s0 | 57.8 ms | 8.8 ms | 6.6x | +49.0 | 17.8 % |
+| 1024x1024 s0 | 1635 ms | 229 ms | 7.1x | **+1406** | **20.8 %** |
+
+So the three KB-PERF-6 landings took the stage 90.6 -> ~58 ms, a real -33 ms,
+and left **the #2 gap item — one that GROWS with frame size** while the two
+transform rows shrink. The per-lever numbers in that entry are sound; only the
+roll-up is not.
+
+Largest remaining LR symbols at 1024x1024: `acc_stat_line_impl_v3` **446 ms**,
+`calculate_intermediate` + `{closure#0}` **416 ms**, `pixel_proj_error_impl_v3`
+222 ms, `wiener_impl_v3` 201 ms, `selfguided_restoration` 136 ms. C's side is
+`av1_selfguided_restoration_avx2` 128 ms, `av1_lowbd_pixel_proj_error_avx2`
+53 ms, `av1_wiener_convolve_add_src_avx2` 32 ms.
+
+**`calculate_intermediate` was sized at 8.5 ms and dismissed** ("a gather the
+current vector vocabulary does not handle well, and not worth forcing for
+8 ms"). With its closure it is **16.3 ms at 192x192 and 416 ms at 1024x1024** —
+the conclusion was drawn on half the number, and the closure it omits is one
+that entry itself flags as an inlining sink.
+
+**`acc_stat_line_impl_v3` is still the largest LR symbol** after being
+vectorized, which is what KB-PERF-6 predicted when it said the next step is
+"register blocking over pixels — libaom's own structure — not wider lanes".
+That prediction stands and is now sized: 446 ms on a 1 MP frame.
+
 ## What is left on the transform rows
 
 With lane width refuted for the inverse and known-small for the forward, the

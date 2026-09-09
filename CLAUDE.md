@@ -5425,6 +5425,41 @@ one tree, byte-identical output throughout):
 
 **Stage total: 90.6 -> ~19.8 ms.** Cumulative **-6.3 %**.
 
+> **CORRECTED 2026-09-08 by re-measurement — the `~19.8 ms` is WRONG and this
+> entry's own table disproves it.** The table shows the WHOLE ENCODE moving
+> 483.01 -> 452.65 ms, i.e. **-30.4 ms**; a stage cannot shed 70.8 ms while the
+> encode sheds 30.4. Re-profiled on the same cell at `--percent-limit 0.01`,
+> summing every `aom_dsp::restore::*` symbol: the stage is **57.8 ms**, so the
+> three landings took it **90.6 -> ~58 ms (-33 ms)** — real, and less than half
+> what the summary line claimed. The per-lever numbers in the table above are
+> sound; only this roll-up is not, and it looks like it subtracted each lever's
+> micro-measured symbol delta from 90.6 without accounting for what those
+> symbols do not cover.
+>
+> **Consequence: loop-restoration is NOT nearly done — it is the #2 gap item
+> and it GROWS with frame size.** Measured 2026-09-08:
+>
+> | cell | port LR | C LR | gap | % of total gap |
+> |---|---:|---:|---:|---:|
+> | 192x192 s0 | 57.8 ms | 8.8 ms | +49.0 | 17.8 % |
+> | 1024x1024 s0 | 1635 ms | 229 ms | **+1406** | **20.8 %** |
+>
+> Ratio 6.6x / 7.1x. The largest remaining symbols at 1024x1024:
+> `acc_stat_line_impl_v3` **446 ms**, `calculate_intermediate` + its closure
+> **416 ms**, `pixel_proj_error_impl_v3` **222 ms**, `wiener_impl_v3` 201 ms,
+> `selfguided_restoration` 136 ms.
+>
+> Two things that follow, both correcting notes below:
+> * **`calculate_intermediate` is ~16.3 ms at 192x192, not the 8.5 ms this
+>   entry records** — its `{closure#0}` is a second 5.2 ms that the 8.5 figure
+>   omits, and this entry ALREADY warns that that closure is an inlining sink.
+>   The "not worth forcing for 8 ms" conclusion was drawn on half the number.
+> * **`acc_stat_line_impl_v3` is STILL the single largest LR symbol** after
+>   being vectorized here, which is exactly what this entry predicted when it
+>   said the next step is "register blocking over pixels — libaom's own
+>   structure — not wider lanes". That prediction stands and is now sized at
+>   446 ms on a 1 MP frame.
+
 - **`pixel_proj_error`: a bound DECLINED on purpose.** Squaring in `i32` lanes and
   reducing per chunk needs `8 * e^2 < 2^31`, i.e. `|e| < 16384` — and the
   arithmetic (`xq` reaches ~96 via `SGRPROJ_PRJ_MIN0/MAX0`, `flt - u` reaches
