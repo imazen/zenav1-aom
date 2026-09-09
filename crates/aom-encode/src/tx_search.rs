@@ -2144,22 +2144,46 @@ pub fn txfm_rd_in_plane_intra(
     let blocks_high_visible = max_blocks_high.min((env.mi_rows - env.mi_row).max(0) as usize);
 
     // av1_get_entropy_contexts: working copies of the neighbour contexts.
-    let mut t_above: Vec<i8> = env.above_ctx[..max_blocks_wide].to_vec();
-    let mut t_left: Vec<i8> = env.left_ctx[..max_blocks_high].to_vec();
+    // Fixed arrays, not `to_vec()`: `MI_SIZE_WIDE_B`/`MI_SIZE_HIGH_B` top out at
+    // 32 (BLOCK_128X128 in 4x4 units), so 32 bytes each covers every bsize, and
+    // this function is hot enough that two heap allocations per call showed up
+    // in the allocator class of the 1 MP profile. Every use below slices to
+    // `max_blocks_wide`/`max_blocks_high` so the lengths handed downstream are
+    // exactly the ones the `Vec` form passed.
+    debug_assert!(max_blocks_wide <= 32 && max_blocks_high <= 32);
+    let mut t_above = [0i8; 32];
+    let mut t_left = [0i8; 32];
+    t_above[..max_blocks_wide].copy_from_slice(&env.above_ctx[..max_blocks_wide]);
+    t_left[..max_blocks_high].copy_from_slice(&env.left_ctx[..max_blocks_high]);
     // predict_dc_only_block's zero_blk_rate ctx (tx_search.c:2055-2063): the
     // BLOCK-ORIGIN skip ctx from the PERSISTENT (pre-walk) entropy arrays —
     // shared by every txb of this block (see the
     // `TxTypeSearchInputs::predict_skip_zero_blk_rate` docs). Computed here
     // BEFORE the walk stamps t_above/t_left.
     let predict_skip_zero_blk_rate = if pol.predict_dc_level >= 1 {
-        let (origin_skip_ctx, _) = aom_dsp::txb::get_txb_ctx(bsize, tx_size, 0, &t_above, &t_left);
+        let (origin_skip_ctx, _) = aom_dsp::txb::get_txb_ctx(
+            bsize,
+            tx_size,
+            0,
+            &t_above[..max_blocks_wide],
+            &t_left[..max_blocks_high],
+        );
         env.coeff_costs.tables(tx_size).txb_skip[origin_skip_ctx as usize * 2 + 1]
     } else {
         0
     };
 
     let mut stats = RdStats::zero();
-    let mut winners: Vec<TxbWinner> = Vec::new();
+    // One allocation of the exact size instead of growth. The walk visits every
+    // grid point of the `txw_unit` x `txh_unit` lattice inside the visible
+    // extent — the mu-64 chunking does not change that set, because a chunk
+    // start is a multiple of 16 and `txw_unit`/`txh_unit` divide 16 — so the
+    // count is known before the walk. `Vec::new()` + `push` showed up in the
+    // 1 MP profile as `RawVec<TxbWinner>::grow_one` plus its share of
+    // `finish_grow`.
+    let n_txbs =
+        blocks_wide_visible.div_ceil(txw_unit) * blocks_high_visible.div_ceil(txh_unit);
+    let mut winners: Vec<TxbWinner> = Vec::with_capacity(n_txbs);
     let mut current_rd = current_rd_in;
     let mut exit_early = false;
 
@@ -2311,8 +2335,8 @@ pub fn txfm_rd_in_plane_intra(
             let bctx = crate::BlockContext {
                 plane_bsize: bsize,
                 plane: 0,
-                above: &t_above[blk_col..],
-                left: &t_left[blk_row..],
+                above: &t_above[blk_col..max_blocks_wide],
+                left: &t_left[blk_row..max_blocks_high],
             };
             // The real per-txs_ctx/eob_multi_size table for THIS CANDIDATE
             // tx_size (env.coeff_costs is shared across every depth the
