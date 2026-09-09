@@ -347,9 +347,24 @@ pub fn av1_inv_txfm2d_add_into(
     // Reused across calls when the caller supplies a live scratch; `resize`
     // touches only `col_n * row_n` elements, and every one of them is
     // overwritten by the row pass below before the column pass reads it.
-    buf.clear();
-    buf.resize(col_n * row_n, 0);
-    let mut buf = &mut buf[..];
+    //
+    // **86.7 % of inverse transforms need at most 64 coefficients** (4x4, 8x8,
+    // 4x8, 8x4, 4x16, 16x4 — `encoder_txfm_size_census_2026-09-09.md`), so those
+    // take a STACK buffer and skip the `Vec` bookkeeping and the heap
+    // indirection entirely. This is deliberately NOT the 8x8 fusion that
+    // measured +7.07 % and was reverted: every pass below, SIMD included, runs
+    // exactly as before — only where the intermediate lives changes. The stack
+    // array is zeroed like the `Vec` was, so the two are semantically
+    // identical rather than merely equivalent-in-practice.
+    let n = col_n * row_n;
+    let mut stack_buf = [0i32; 64];
+    let mut buf: &mut [i32] = if n <= 64 {
+        &mut stack_buf[..n]
+    } else {
+        buf.clear();
+        buf.resize(n, 0);
+        &mut buf[..]
+    };
     let mut temp_in = [0i32; 64];
     let mut temp_out = [0i32; 64];
 
