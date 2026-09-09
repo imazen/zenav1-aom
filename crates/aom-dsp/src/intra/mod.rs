@@ -8,6 +8,7 @@
 pub mod cfl;
 pub mod dir;
 mod dir_simd;
+mod filter_simd;
 pub mod edge;
 mod simd;
 mod simd16;
@@ -713,7 +714,7 @@ pub fn dr_predict_high(
 /// `av1_filter_intra_taps[FILTER_INTRA_MODES][8][8]` (reconintra.c): the recursive
 /// filter-intra prediction taps (only columns 0..7 are used; column 7 is 0).
 #[rustfmt::skip]
-const FILTER_INTRA_TAPS: [[[i8; 8]; 8]; 5] = [
+pub(crate) const FILTER_INTRA_TAPS: [[[i8; 8]; 8]; 5] = [
     [
         [-6, 10, 0, 0, 0, 12, 0, 0], [-5, 2, 10, 0, 0, 9, 0, 0],
         [-3, 1, 1, 10, 0, 7, 0, 0], [-3, 1, 1, 2, 10, 5, 0, 0],
@@ -761,6 +762,13 @@ pub fn filter_intra_predict_high(
     mode: usize,
     bd: i32,
 ) {
+    // The vector kernel — one dispatch per predict call. Bit-exact by
+    // construction (same i32 expression per lane, same accumulation order), so
+    // it carries no range gate; it declines only when no vector tier exists or
+    // `AOM_FORCE_SCALAR` is pinned, and then this scalar loop runs unchanged.
+    if filter_simd::try_filter_intra_predict_high(dst, dst_stride, tx_size, above, left, mode, bd) {
+        return;
+    }
     let (bw, bh) = (TX_W[tx_size], TX_H[tx_size]);
     debug_assert!(bw <= 32 && bh <= 32);
     let max_v = (1i32 << bd) - 1;
