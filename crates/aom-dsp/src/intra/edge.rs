@@ -162,17 +162,37 @@ pub fn highbd_filter_intra_edge(p: &mut [u16], sz: usize, strength: i32) {
     }
     const KERNEL: [[i32; 5]; 3] = [[0, 4, 8, 4, 0], [0, 5, 6, 5, 0], [2, 4, 4, 4, 2]];
     let filt = (strength - 1) as usize;
-    let mut edge = [0i32; 129];
-    edge[..sz]
-        .iter_mut()
-        .zip(p.iter().take(sz))
-        .for_each(|(d, &s)| *d = s as i32);
-    #[allow(clippy::needless_range_loop)]
+    let taps = KERNEL[filt];
+    let idx = |k: i32| k.clamp(0, sz as i32 - 1) as usize;
+
+    // C copies the whole edge into a scratch (`edge[129]` in
+    // `av1_highbd_filter_intra_edge_c`) because the filter reads ORIGINAL
+    // samples while writing `p` in place. Only a 5-wide window of originals is
+    // ever live, and it can be carried forward, so neither the 516-byte
+    // zero-init nor the `sz`-element copy is needed — this is KB-PERF-11's
+    // finding one function over.
+    //
+    // Invariant: on entry to iteration `i`, `w[j] == original p[clamp(i-2+j)]`.
+    // It holds at `i = 1` by construction, and the shift re-establishes it
+    // because old `w[j+1]` is `original p[clamp((i-1)-2+j+1))]`, the same index.
+    // The incoming `w[4]` reads `p[clamp(i+2)]`, whose index is `>= i` and so
+    // has not been written yet — including at `i == sz-1`, where it is `i`
+    // itself and the read precedes the write.
+    let mut w = [0i32; 5];
+    for (j, wj) in w.iter_mut().enumerate() {
+        *wj = p[idx(j as i32 - 1)] as i32;
+    }
     for i in 1..sz {
+        if i > 1 {
+            w[0] = w[1];
+            w[1] = w[2];
+            w[2] = w[3];
+            w[3] = w[4];
+            w[4] = p[idx(i as i32 + 2)] as i32;
+        }
         let mut s = 0i32;
         for j in 0..5 {
-            let k = (i as i32 - 2 + j as i32).clamp(0, sz as i32 - 1) as usize;
-            s += edge[k] * KERNEL[filt][j];
+            s += w[j] * taps[j];
         }
         p[i] = ((s + 8) >> 4) as u16;
     }
