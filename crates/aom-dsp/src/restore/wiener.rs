@@ -193,6 +193,154 @@ macro_rules! shr_round_by {
     };
 }
 
+/// The `incant!` fallback for the x86 madd passes: decline to the i32x8 loop.
+#[cfg(target_arch = "x86_64")]
+fn wiener_pass_madd_scalar(
+    _t: archmage::ScalarToken,
+    _src: &[u16],
+    _base: usize,
+    _stride: usize,
+    _step: usize,
+    _dst: &mut [u16],
+    _dst_base: usize,
+    _dst_stride: usize,
+    _taps: &[i16; 8],
+    _w: usize,
+    _rows: usize,
+    _bias: i32,
+    _round: i32,
+    _lo: i32,
+    _hi: i32,
+) -> bool {
+    false
+}
+
+/// Both wiener passes share ONE shape: `out[c] = clamp(round(bias +
+/// (in[c + 3*step] << 7) + sum_k in[c + k*step] * tap[k]))`, with `step` = 1
+/// sample for the horizontal pass and `step` = one row for the vertical.
+///
+/// **Sixteen output columns per iteration, four `vpmaddwd` per tap pair.**
+/// `benchmarks/encoder_wiener_uop_analysis_2026-09-09.md` costed the three
+/// candidate shapes before this was written: today's `vpmulld` form is 32 uops
+/// per 8 columns, the OBVIOUS 8-column madd form is 27 (a 16 % cut, at or under
+/// this box's band resolution — it would measure null), and this 16-column form
+/// is 19. The setup that builds interleaved pairs is fixed per iteration, so
+/// only doubling the columns amortises it.
+///
+/// **No range obligation, and that is proven rather than gated.**
+/// `_mm256_madd_epi16` takes i16 inputs and accumulates in i32 — nothing is
+/// narrowed. Horizontal inputs are samples `<= (1<<bd)-1 <= 4095`; vertical
+/// inputs are the intermediate, whose clamp ceiling `conv_params_wiener` pins at
+/// exactly 32767 (it raises `round_0` precisely when `bd + FILTER_BITS -
+/// round_0 + 2 > 16`). Both are inside i16 at bd 8/10/12, and four madd results
+/// sum to ~33.5 M, inside i32. So this runs at every bit depth with no gate.
+///
+/// AVX2's unpack works within each 128-bit half, so the interleaved pairs arrive
+/// as columns 0-3/8-11 and 4-7/12-15; `_mm256_permute2x128_si256` straightens
+/// them. libaom does not pay that because its source is `u8` — 32 samples per
+/// load — which is the u16-at-bd8 root, not something reachable from here.
+#[cfg(target_arch = "x86_64")]
+#[archmage::magetypes(define(i32x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn wiener_pass_madd(
+    _token: Token,
+    src: &[u16],
+    base: usize,
+    stride: usize,
+    step: usize,
+    dst: &mut [u16],
+    dst_base: usize,
+    dst_stride: usize,
+    taps: &[i16; 8],
+    w: usize,
+    rows: usize,
+    bias: i32,
+    round: i32,
+    lo: i32,
+    hi: i32,
+) -> bool {
+    use archmage::intrinsics::x86_64::*;
+    if w < 16 {
+        return false;
+    }
+    // (tap[2j], tap[2j+1]) packed so madd's even/odd lanes line up with the
+    // interleaved sample pairs.
+    let tapv: [__m256i; 4] = core::array::from_fn(|j| {
+        let a = taps[2 * j] as u16 as u32;
+        let b = taps[2 * j + 1] as u16 as u32;
+        _mm256_set1_epi32((a | (b << 16)) as i32)
+    });
+    let halfv = _mm256_set1_epi32(1 << (round - 1));
+    let biasv = _mm256_set1_epi32(bias);
+    let lov = _mm256_set1_epi32(lo);
+    let hiv = _mm256_set1_epi32(hi);
+
+    for y in 0..rows {
+        let row = base + y * stride;
+        let drow = dst_base + y * dst_stride;
+        let mut xs = 0usize;
+        loop {
+            let x0 = xs.min(w - 16);
+            let at = |o: usize| -> Option<__m256i> {
+                let a: &[u16; 16] = src.get(row + x0 + o..row + x0 + o + 16)?.try_into().ok()?;
+                Some(_mm256_loadu_si256(a))
+            };
+            // The `(in[c + 3*step] << 7) + bias` term.
+            let c3 = match at(3 * step) {
+                Some(v) => v,
+                None => return false,
+            };
+            let w0 = _mm256_slli_epi32::<7>(_mm256_cvtepu16_epi32(_mm256_castsi256_si128(c3)));
+            let w1 = _mm256_slli_epi32::<7>(_mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(c3)));
+            let mut acc0 = _mm256_add_epi32(w0, biasv);
+            let mut acc1 = _mm256_add_epi32(w1, biasv);
+
+            for j in 0..4 {
+                let s0 = match at(2 * j * step) {
+                    Some(v) => v,
+                    None => return false,
+                };
+                let s1 = match at((2 * j + 1) * step) {
+                    Some(v) => v,
+                    None => return false,
+                };
+                let ul = _mm256_unpacklo_epi16(s0, s1); // cols 0-3 | 8-11
+                let uh = _mm256_unpackhi_epi16(s0, s1); // cols 4-7 | 12-15
+                let a = _mm256_permute2x128_si256::<0x20>(ul, uh); // cols 0-7
+                let b = _mm256_permute2x128_si256::<0x31>(ul, uh); // cols 8-15
+                acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(a, tapv[j]));
+                acc1 = _mm256_add_epi32(acc1, _mm256_madd_epi16(b, tapv[j]));
+            }
+
+            // `round` is a runtime bd-derived constant, so the shift count goes
+            // through the __m128i form rather than the const-generic one.
+            let shv = _mm_cvtsi32_si128(round);
+            let fin = |a: __m256i| -> __m256i {
+                let r = _mm256_sra_epi32(_mm256_add_epi32(a, halfv), shv);
+                _mm256_min_epi32(_mm256_max_epi32(r, lov), hiv)
+            };
+            let r0 = fin(acc0);
+            let r1 = fin(acc1);
+            // Both are already inside [lo, hi] <= u16, so the unsigned pack
+            // saturates nothing; permute4x64 undoes packus' per-128-lane order.
+            let packed = _mm256_permute4x64_epi64::<0xD8>(_mm256_packus_epi32(r0, r1));
+            let out: &mut [u16; 16] = match dst.get_mut(drow + x0..drow + x0 + 16) {
+                Some(o) => match o.try_into() {
+                    Ok(o) => o,
+                    Err(_) => return false,
+                },
+                None => return false,
+            };
+            _mm256_storeu_si256(out, packed);
+            if x0 + 16 >= w {
+                break;
+            }
+            xs += 16;
+        }
+    }
+    true
+}
+
 #[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn wiener_impl(
@@ -265,7 +413,22 @@ fn wiener_impl(
     let hbias = i32x8::splat(token, 1 << (bd + FILTER_BITS - 1));
     let htap: [i32x8; 8] = core::array::from_fn(|k| i32x8::splat(token, hfilter[k] as i32));
     let horiz_base = src_off as isize - 3 * src_stride as isize - 3;
-    for y in 0..intermediate_height {
+    // The 16-column madd pass (x86-64). Declines on `w < 16` or any
+    // out-of-range window, routing to the i32x8 loop below unchanged.
+    let mut h_done = false;
+    #[cfg(target_arch = "x86_64")]
+    {
+        h_done = incant!(
+            wiener_pass_madd(
+                src, horiz_base as usize, src_stride, 1,
+                temp, 0, MAX_SB_SIZE,
+                hfilter, w, intermediate_height,
+                1 << (bd + FILTER_BITS - 1), round_0, 0, clamp_limit - 1,
+            ),
+            [v3, scalar]
+        );
+    }
+    for y in 0..(if h_done { 0 } else { intermediate_height }) {
         let row = (horiz_base + (y * src_stride) as isize) as usize;
         let mut xs = 0usize;
         loop {
@@ -292,7 +455,20 @@ fn wiener_impl(
     let v_half = i32x8::splat(token, 1 << (round_1 - 1));
     let vbias = i32x8::splat(token, 1 << (bd + round_1 - 1));
     let vtap: [i32x8; 8] = core::array::from_fn(|k| i32x8::splat(token, vfilter[k] as i32));
-    for y in 0..h {
+    let mut v_done = false;
+    #[cfg(target_arch = "x86_64")]
+    {
+        v_done = incant!(
+            wiener_pass_madd(
+                temp, 0, MAX_SB_SIZE, MAX_SB_SIZE,
+                dst, dst_off, dst_stride,
+                vfilter, w, h,
+                -(1 << (bd + round_1 - 1)), round_1, 0, (1i32 << bd) - 1,
+            ),
+            [v3, scalar]
+        );
+    }
+    for y in 0..(if v_done { 0 } else { h }) {
         let mut xs = 0usize;
         loop {
             let x0 = xs.min(w - 8);
