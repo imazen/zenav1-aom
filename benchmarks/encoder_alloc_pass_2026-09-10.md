@@ -176,6 +176,59 @@ changes were platform-robust because they added no mechanism; an arena adds
 indexing, which is a mechanism, so it belongs in the class where the platforms
 have now been shown to disagree.
 
+## The libaom BASELINE, which nobody had measured
+
+heaptrack on the **C arm** of the same 1 MP cell:
+
+| | allocations | temporary |
+|---|---:|---:|
+| **libaom (C)** | **1,055,245** | **7,209** |
+| port, at the start of this pass | 10,419,121 | 1,931,251 |
+| port, after KB-PERF-43/44/48/49/50 | **5,106,723** | 336,064 |
+
+**The port was 9.9x libaom on allocation count and 268x on temporaries; it is
+now 4.8x and 47x.** libaom is not at zero either — a floor near 1 M is what
+"as good as C" means here, not zero.
+
+## KB-PERF-50 — where the remaining millions actually were
+
+`intra_model_rd_y` sat on top of **3,527,376 of 6,922,557 allocations**, and
+**nothing inside it allocates** — it only does `clear()` + `resize()` on a
+scratch that is correctly threaded in. The cause was one line upstream
+(`intra_rd.rs:1103`):
+
+    let mut txs = crate::tx_search::IntraTxScratch::default();
+
+**`rd_pick_intra_sby_mode_y` built a fresh scratch on every call**, and it is
+called once per leaf. Its own comment says the scratch exists so "every mode x
+tx size x txb x candidate tx type shares it" — and they do, *within* a call. It
+was thrown away *between* calls, so every buffer started empty and regrew. The
+chroma twin `rd_pick_intra_sbuv_mode` had the same line.
+
+Both pooled (the KB-PERF-48 pattern; neither function has an early return, so
+take-at-entry / restore-at-exit is total).
+
+| | allocations |
+|---|---:|
+| before | 7,378,761 |
+| + `SmallVec<[i32; 32]>` coefficients (KB-PERF-49) | 6,922,557 |
+| + both scratch pools (KB-PERF-50) | **5,106,723** |
+| **total** | **−2,272,038 (−31 %)** |
+
+**Wall: −0.151 % / −0.068 %** against the two base copies (14/24 and 16/24, not
+significant; null −0.050 %). Byte-identical on four cells.
+
+**Merged under the standing policy — take allocation reductions that cost under
+a percent, because they compound and locality only improves once the churn is
+gone.** Note the pool *paid for* the coefficient change: KB-PERF-49 alone
+measured **+0.46 %**, and together they are net negative.
+
+**The gate earned its keep here.** The `SmallVec` field type broke nine
+differential assertions that compare a txb's coefficients against the C oracle's
+`Vec` — and `-p zenav1-aom-encode` passed 772/772 while the integration targets
+did not compile. That is KB-42's rule exactly: a crate's unit tests are not the
+gate. Fixed by comparing as slices, which preserves each assertion's meaning.
+
 ## Not covered
 
 One box, one content class, one quantizer, `--cpu-used 3`, x86-64. Peak heap and

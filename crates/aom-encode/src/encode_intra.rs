@@ -243,6 +243,18 @@ pub struct EncodeIntraYEnv<'a> {
 
 /// One re-encoded txb's outputs (the `p->qcoeff/dqcoeff/eobs/txb_entropy_ctx`
 /// slots plus the tx_type actually used).
+/// A txb's quantized / dequantized coefficients — inline for up to 32, which
+/// the s3 census says is **57.2 % of forward transforms** (4x4 at 40.5 % plus
+/// 4x8/8x4 at 16.7 %).
+///
+/// KB-PERF-49: these two fields were `Vec<i32>` MOVED out of the
+/// transform/quantize scratch with `core::mem::take`, which emptied the scratch
+/// on every txb and made its buffers regrow from zero — **4,822,422 of
+/// 7,378,761 allocations (62 %) were that regrowth**. Copying into an inline
+/// buffer instead lets the pooled scratch (KB-PERF-48) keep its allocation for
+/// the life of the thread, and the copy is free for the 57.2 % that fit inline.
+pub type TxbCoeffs = smallvec::SmallVec<[i32; 32]>;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxbEncode {
     /// The tx type used by the transform (skip arm: DCT_DCT).
@@ -251,8 +263,8 @@ pub struct TxbEncode {
     pub txb_entropy_ctx: u8,
     /// Quantized / dequantized coefficients (empty on the skip arm — the C
     /// leaves the shared scratch buffers untouched there).
-    pub qcoeff: Vec<i32>,
-    pub dqcoeff: Vec<i32>,
+    pub qcoeff: TxbCoeffs,
+    pub dqcoeff: TxbCoeffs,
     /// `get_txb_ctx`'s `(txb_skip_ctx, dc_sign_ctx)` derived for this txb from
     /// the *pre*-write neighbour contexts (the same pair the trellis used to
     /// select its rate tables, exposed here for the pack-stage coefficient
@@ -461,11 +473,11 @@ pub fn encode_intra_block_plane_y(
             }
 
             let mut tx_type = 0usize; // DCT_DCT
-            let (qcoeff, dqcoeff, eob, ent_ctx, txb_skip_ctx, dc_sign_ctx);
+            let (qcoeff, dqcoeff, eob, ent_ctx, txb_skip_ctx, dc_sign_ctx): (TxbCoeffs, TxbCoeffs, _, _, _, _);
             if env.skip_txfm {
                 // *eob = 0; p->txb_entropy_ctx[block] = 0 (encodemb.c:722-724).
-                qcoeff = Vec::new();
-                dqcoeff = Vec::new();
+                qcoeff = TxbCoeffs::new();
+                dqcoeff = TxbCoeffs::new();
                 eob = 0u16;
                 ent_ctx = 0u8;
                 // Dead arm in the KEY intra envelope (skip_txfm asserted 0 by
@@ -532,8 +544,8 @@ pub fn encode_intra_block_plane_y(
                     let r = crate::xform_quant_optimize_split_into(
                         &residual, tx_size, tx_type, kind, &qp, &qp, &bctx, &opt, &mut xq,
                     );
-                    qcoeff = core::mem::take(&mut xq.qcoeff);
-                    dqcoeff = core::mem::take(&mut xq.dqcoeff);
+                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff);
+                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     txb_skip_ctx = r.txb_skip_ctx;
@@ -542,8 +554,8 @@ pub fn encode_intra_block_plane_y(
                     let r = crate::xform_quant_into(
                         &residual, tx_size, tx_type, kind, &qp, false, &mut xq,
                     );
-                    qcoeff = core::mem::take(&mut xq.qcoeff);
-                    dqcoeff = core::mem::take(&mut xq.dqcoeff);
+                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff);
+                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     // get_txb_ctx: xform_quant (non-optimize_b) doesn't derive
@@ -799,11 +811,11 @@ pub fn encode_intra_block_plane_uv(
             }
 
             let mut tx_type = 0usize; // DCT_DCT
-            let (qcoeff, dqcoeff, eob, ent_ctx, txb_skip_ctx, dc_sign_ctx);
+            let (qcoeff, dqcoeff, eob, ent_ctx, txb_skip_ctx, dc_sign_ctx): (TxbCoeffs, TxbCoeffs, _, _, _, _);
             if prm.skip_txfm {
                 // *eob = 0; p->txb_entropy_ctx[block] = 0 (encodemb.c:722-724).
-                qcoeff = Vec::new();
-                dqcoeff = Vec::new();
+                qcoeff = TxbCoeffs::new();
+                dqcoeff = TxbCoeffs::new();
                 eob = 0u16;
                 ent_ctx = 0u8;
                 // Dead arm in the KEY intra envelope (skip_txfm asserted 0).
@@ -877,8 +889,8 @@ pub fn encode_intra_block_plane_uv(
                     let r = crate::xform_quant_optimize_split_into(
                         &residual, tx_size, tx_type, kind, &qp, &qp, &bctx, &opt, &mut xq,
                     );
-                    qcoeff = core::mem::take(&mut xq.qcoeff);
-                    dqcoeff = core::mem::take(&mut xq.dqcoeff);
+                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff);
+                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     txb_skip_ctx = r.txb_skip_ctx;
@@ -887,8 +899,8 @@ pub fn encode_intra_block_plane_uv(
                     let r = crate::xform_quant_into(
                         &residual, tx_size, tx_type, kind, &qp, false, &mut xq,
                     );
-                    qcoeff = core::mem::take(&mut xq.qcoeff);
-                    dqcoeff = core::mem::take(&mut xq.dqcoeff);
+                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff);
+                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     let (sc, dc) =

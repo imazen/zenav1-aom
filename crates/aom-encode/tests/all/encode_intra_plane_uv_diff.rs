@@ -406,8 +406,8 @@ fn encode_intra_block_plane_uv_matches_c_walk() {
                     assert_eq!(r.tx_type, cc.0, "txb {k} tx_type: {tag}");
                     assert_eq!(r.eob, cc.1, "txb {k} eob: {tag}");
                     assert_eq!(r.txb_entropy_ctx, cc.2, "txb {k} entropy ctx: {tag}");
-                    assert_eq!(r.qcoeff, cc.3, "txb {k} qcoeff: {tag}");
-                    assert_eq!(r.dqcoeff, cc.4, "txb {k} dqcoeff: {tag}");
+                    assert_eq!(&r.qcoeff[..], &cc.3[..], "txb {k} qcoeff: {tag}");
+                    assert_eq!(&r.dqcoeff[..], &cc.4[..], "txb {k} dqcoeff: {tag}");
                     if cc.1 == 0 {
                         eob0 += 1;
                     } else {

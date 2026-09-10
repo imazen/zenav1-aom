@@ -566,8 +566,8 @@ fn encode_sb_dry_run_matches_c_walk() {
                 assert_eq!(rt.tx_type, ct.0, "y txb {j} tx_type: {ltag}");
                 assert_eq!(rt.eob, ct.1, "y txb {j} eob: {ltag}");
                 assert_eq!(rt.txb_entropy_ctx, ct.2, "y txb {j} ctx: {ltag}");
-                assert_eq!(rt.qcoeff, ct.3, "y txb {j} qcoeff: {ltag}");
-                assert_eq!(rt.dqcoeff, ct.4, "y txb {j} dqcoeff: {ltag}");
+                assert_eq!(&rt.qcoeff[..], &ct.3[..], "y txb {j} qcoeff: {ltag}");
+                assert_eq!(&rt.dqcoeff[..], &ct.4[..], "y txb {j} dqcoeff: {ltag}");
             }
             assert_eq!(r.u.is_some(), cc.6.is_some(), "u presence: {ltag}");
             for (plane, (ro, co)) in [(&r.u, &cc.6), (&r.v, &cc.7)].into_iter().enumerate() {
@@ -577,7 +577,7 @@ fn encode_sb_dry_run_matches_c_walk() {
                         assert_eq!(rt.tx_type, ct.0, "uv{plane} txb {j} tx_type: {ltag}");
                         assert_eq!(rt.eob, ct.1, "uv{plane} txb {j} eob: {ltag}");
                         assert_eq!(rt.txb_entropy_ctx, ct.2, "uv{plane} txb {j} ctx: {ltag}");
-                        assert_eq!(rt.qcoeff, ct.3, "uv{plane} txb {j} qcoeff: {ltag}");
+                        assert_eq!(&rt.qcoeff[..], &ct.3[..], "uv{plane} txb {j} qcoeff: {ltag}");
                     }
                 }
             }

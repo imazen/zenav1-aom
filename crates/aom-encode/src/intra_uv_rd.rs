@@ -1688,6 +1688,14 @@ pub fn rd_pick_intra_angle_sbuv(
 /// the angle/palette-flag bits; `cfl_allowed` is `is_cfl_allowed(xd)`.
 /// Returns the winner + the per-candidate visit log (gating/rd sequence).
 #[allow(clippy::too_many_arguments)]
+thread_local! {
+    /// KB-PERF-50: the CHROMA twin of the luma pool in `intra_rd`. Same defect
+    /// (a fresh `IntraTxScratch::default()` per call, on a per-leaf function),
+    /// same fix, and total for the same reason: no early return.
+    static TXS_POOL_UV: core::cell::RefCell<crate::tx_search::IntraTxScratch> =
+        core::cell::RefCell::new(crate::tx_search::IntraTxScratch::default());
+}
+
 pub fn rd_pick_intra_sbuv_mode(
     env: &UvRdEnv,
     recon_u: &mut [u16],
@@ -1718,7 +1726,7 @@ pub fn rd_pick_intra_sbuv_mode(
     let mut visits: Vec<UvModeVisit> = Vec::new();
     // ONE set of per-transform-block buffers for the whole chroma mode loop —
     // see `tx_search::IntraTxScratch` (the luma loop owns the twin).
-    let mut txs = crate::tx_search::IntraTxScratch::default();
+    let mut txs = TXS_POOL_UV.with(|c| core::mem::take(&mut *c.borrow_mut()));
     let sqr_up = crate::tx_search::TXSIZE_SQR_UP_MAP[max_tx_size];
     let _ = sqr_up; // the caller resolved intra_uv_mode_mask by this class
 
@@ -1879,6 +1887,7 @@ pub fn rd_pick_intra_sbuv_mode(
             );
         }
     }
+    TXS_POOL_UV.with(|c| *c.borrow_mut() = txs);
     // *mbmi = best_mbmi; assert a mode was chosen.
     assert!(best.best_rd < i64::MAX, "sbuv search must choose a mode");
     (best, visits)

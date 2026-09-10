@@ -2118,8 +2118,10 @@ fn ibc_encode_txb(
         tx_type,
         eob,
         txb_entropy_ctx: ent_ctx,
-        qcoeff,
-        dqcoeff,
+        // KB-PERF-49: `TxbEncode`'s coefficient fields are inline-32 now; this
+        // intrabc path still produces owned `Vec`s, so it copies in.
+        qcoeff: crate::encode_intra::TxbCoeffs::from_slice(&qcoeff),
+        dqcoeff: crate::encode_intra::TxbCoeffs::from_slice(&dqcoeff),
         txb_skip_ctx,
         dc_sign_ctx,
     }

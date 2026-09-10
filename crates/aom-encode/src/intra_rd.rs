@@ -1063,6 +1063,32 @@ pub struct IntraSbyOutcome {
 /// `mbmi->filter_intra_mode_info.use_filter_intra` before the loop).
 /// `var_cache` is the per-superblock [`Block4x4VarInfo`] array (shared across
 /// candidates and across the SB's blocks).
+thread_local! {
+    /// KB-PERF-50: per-thread reusable `IntraTxScratch` for the intra mode loop.
+    ///
+    /// heaptrack put **3,527,376 of 6,922,557 allocations** under
+    /// `intra_model_rd_y` — but nothing inside that function allocates; it only
+    /// does `clear()` + `resize()` on a threaded scratch. The cause is one line
+    /// upstream: this function built a fresh `IntraTxScratch::default()` on
+    /// **every call**, and it is called once per leaf, so every buffer started
+    /// empty and regrew. The scratch was shared *within* a call, as its comment
+    /// says, and thrown away *between* calls.
+    ///
+    /// Baseline for scale: **libaom makes 1,055,245 allocations** for the same
+    /// 1 MP encode against the port's 6.92 M, so this one site is most of the
+    /// difference.
+    ///
+    /// Same shape as KB-PERF-48, and total for the same reason: this function
+    /// has no early return, so taking the scratch at entry and putting it back
+    /// at exit cannot leak it.
+    ///
+    /// Byte-inert by construction: every buffer is refilled with `clear()` +
+    /// `resize(_, 0)` before use, so a carried-over allocation holds exactly
+    /// what a fresh one would.
+    static TXS_POOL_Y: core::cell::RefCell<crate::tx_search::IntraTxScratch> =
+        core::cell::RefCell::new(crate::tx_search::IntraTxScratch::default());
+}
+
 pub fn rd_pick_intra_sby_mode_y(
     env: &mut TxfmYrdEnv,
     recon: &mut [u16],
@@ -1100,7 +1126,7 @@ pub fn rd_pick_intra_sby_mode_y(
     // ONE set of per-transform-block buffers for the whole mode loop (every
     // mode x tx size x txb x candidate tx type below shares it) — see
     // `tx_search::IntraTxScratch`. These were per-txb `vec![]`s.
-    let mut txs = crate::tx_search::IntraTxScratch::default();
+    let mut txs = TXS_POOL_Y.with(|c| core::mem::take(&mut *c.borrow_mut()));
 
     let mut best_rd = best_rd_in;
     let mut best: Option<IntraSbyBest> = None;
@@ -1497,6 +1523,7 @@ pub fn rd_pick_intra_sby_mode_y(
         env.tx_mode_is_select = select_default;
     }
 
+    TXS_POOL_Y.with(|c| *c.borrow_mut() = txs);
     IntraSbyOutcome {
         best,
         intra_modes_rd_cost,

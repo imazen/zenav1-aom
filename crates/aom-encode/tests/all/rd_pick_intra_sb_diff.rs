@@ -681,8 +681,8 @@ fn rd_pick_intra_mode_sb_matches_c_composition() {
                         assert_eq!(r.tx_type, cc.0, "re-encode txb {k} tx_type {m}");
                         assert_eq!(r.eob, cc.1, "re-encode txb {k} eob {m}");
                         assert_eq!(r.txb_entropy_ctx, cc.2, "re-encode txb {k} ctx {m}");
-                        assert_eq!(r.qcoeff, cc.3, "re-encode txb {k} qcoeff {m}");
-                        assert_eq!(r.dqcoeff, cc.4, "re-encode txb {k} dqcoeff {m}");
+                        assert_eq!(&r.qcoeff[..], &cc.3[..], "re-encode txb {k} qcoeff {m}");
+                        assert_eq!(&r.dqcoeff[..], &cc.4[..], "re-encode txb {k} dqcoeff {m}");
                         if r.eob == 0 {
                             reencode_eob0 += 1;
                         } else {
