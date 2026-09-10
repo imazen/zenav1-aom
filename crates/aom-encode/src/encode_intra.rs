@@ -281,6 +281,18 @@ pub struct EncodeIntraPlaneOutcome {
 /// reset to DCT_DCT at `eob == 0`; `cfl` = `Some` models `xd->cfl.store_y`
 /// (the sbuv preamble sets it via `store_cfl_required_rdo`,
 /// intra_mode_search.c:890) and receives every txb's reconstructed luma.
+thread_local! {
+    /// Windows probe (see `benchmarks/encoder_smallvec_winners_2026-09-10.md`):
+    /// this pool removed 412,208 allocations per 1 MP encode and measured
+    /// **+0.23 % on Linux/glibc**, where a malloc of a hot reused size class is
+    /// close to a free-list pop. Microsoft's heap is a different implementation
+    /// with a different cost per call, so the verdict may flip there.
+    static XQ_POOL_Y: core::cell::RefCell<crate::XformQuantScratch> =
+        core::cell::RefCell::new(crate::XformQuantScratch::default());
+    static XQ_POOL_UV: core::cell::RefCell<crate::XformQuantScratch> =
+        core::cell::RefCell::new(crate::XformQuantScratch::default());
+}
+
 pub fn encode_intra_block_plane_y(
     env: &EncodeIntraYEnv,
     recon: &mut [u16],
@@ -335,7 +347,7 @@ pub fn encode_intra_block_plane_y(
     let mut pred: Vec<u16> = Vec::new();
     let mut residual: Vec<i16> = Vec::new();
     let mut tight: Vec<u16> = Vec::new();
-    let mut xq = crate::XformQuantScratch::default();
+    let mut xq = XQ_POOL_Y.with(|c| core::mem::take(&mut *c.borrow_mut()));
     let mut txbs: Vec<TxbEncode> = Vec::new();
     // `av1_foreach_transformed_block_in_plane` mu-64 chunk walk (encodemb.c:
     // 560-582): a coding block > 64x64 is split into 64x64 units so prediction
@@ -589,6 +601,7 @@ pub fn encode_intra_block_plane_y(
         chunk_r += mu_h;
     }
 
+    XQ_POOL_Y.with(|c| *c.borrow_mut() = xq);
     EncodeIntraPlaneOutcome { txbs, ta, tl }
 }
 
@@ -698,7 +711,7 @@ pub fn encode_intra_block_plane_uv(
     let mut pred: Vec<u16> = Vec::new();
     let mut residual: Vec<i16> = Vec::new();
     let mut tight: Vec<u16> = Vec::new();
-    let mut xq = crate::XformQuantScratch::default();
+    let mut xq = XQ_POOL_UV.with(|c| core::mem::take(&mut *c.borrow_mut()));
     let mut txbs: Vec<TxbEncode> = Vec::new();
     // mu-64 chunk walk (see `encode_intra_block_plane_y`). The chroma unit is
     // `get_plane_block_size(BLOCK_64X64, ss_x, ss_y)` (encodemb.c:560-561) — at
@@ -917,5 +930,6 @@ pub fn encode_intra_block_plane_uv(
         chunk_r += mu_h;
     }
 
+    XQ_POOL_UV.with(|c| *c.borrow_mut() = xq);
     EncodeIntraPlaneOutcome { txbs, ta, tl }
 }
