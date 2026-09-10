@@ -86,27 +86,48 @@ pub fn generate_hog(
 ) -> [f32; HOG_BINS] {
     let mut hist = [0f32; HOG_BINS];
     let mut total = 0.1f32;
-    let p = |r: usize, c: usize| -> i32 { i32::from(src[src_off + r * stride + c]) };
-    for r in 1..rows.saturating_sub(1) {
-        for c in 1..cols - 1 {
-            // Sobel: dx from the right/left columns, dy from below/above rows.
-            let dx = (p(r - 1, c + 1) + 2 * p(r, c + 1) + p(r + 1, c + 1))
-                - (p(r - 1, c - 1) + 2 * p(r, c - 1) + p(r + 1, c - 1));
-            let dy = (p(r + 1, c - 1) + 2 * p(r + 1, c) + p(r + 1, c + 1))
-                - (p(r - 1, c - 1) + 2 * p(r - 1, c) + p(r - 1, c + 1));
-            if dx == 0 && dy == 0 {
-                continue;
-            }
-            let temp = dx.abs() + dy.abs();
-            if temp == 0 {
-                continue;
-            }
-            total += temp as f32;
-            if dx == 0 {
-                hist[0] += (temp / 2) as f32;
-                hist[HOG_BINS - 1] += (temp / 2) as f32;
-            } else {
-                hist[get_hist_bin_idx(dx, dy)] += temp as f32;
+    // KB-PERF-32: three row slices walked as overlapping 3-wide windows.
+    //
+    // The arithmetic, the walk order and the f32 accumulation order are exactly
+    // what the per-pixel `src[src_off + r * stride + c]` closure this replaces
+    // produced — window `i` of a `cols`-long row is column `c = i + 1`, and
+    // `windows(3)` yields `cols - 2` of them, which is `1..cols - 1`. What
+    // changes is that the compiler sees ONE bounds check per row instead of
+    // EIGHT per pixel, and each tap is a `[u16; 3]`-shaped read whose indices
+    // are statically in range.
+    //
+    // The `rows >= 3 && cols >= 3` guard is the same set the old loop bounds
+    // selected (`1..rows - 1` and `1..cols - 1` are both empty below 3), except
+    // that `cols == 0` returned a normalized all-zero histogram here where the
+    // old `cols - 1` would have underflowed. No caller reaches that.
+    if rows >= 3 && cols >= 3 {
+        for r in 1..rows - 1 {
+            let (ra, rb, rd) =
+                (src_off + (r - 1) * stride, src_off + r * stride, src_off + (r + 1) * stride);
+            let above = &src[ra..ra + cols];
+            let cur = &src[rb..rb + cols];
+            let below = &src[rd..rd + cols];
+            for ((wa, wc), wb) in above.windows(3).zip(cur.windows(3)).zip(below.windows(3)) {
+                let (a0, a1, a2) = (wa[0] as i32, wa[1] as i32, wa[2] as i32);
+                let (c0, c2) = (wc[0] as i32, wc[2] as i32);
+                let (b0, b1, b2) = (wb[0] as i32, wb[1] as i32, wb[2] as i32);
+                // Sobel: dx from the right/left columns, dy from below/above rows.
+                let dx = (a2 + 2 * c2 + b2) - (a0 + 2 * c0 + b0);
+                let dy = (b0 + 2 * b1 + b2) - (a0 + 2 * a1 + a2);
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let temp = dx.abs() + dy.abs();
+                if temp == 0 {
+                    continue;
+                }
+                total += temp as f32;
+                if dx == 0 {
+                    hist[0] += (temp / 2) as f32;
+                    hist[HOG_BINS - 1] += (temp / 2) as f32;
+                } else {
+                    hist[get_hist_bin_idx(dx, dy)] += temp as f32;
+                }
             }
         }
     }
