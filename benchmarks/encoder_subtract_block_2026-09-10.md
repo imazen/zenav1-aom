@@ -108,6 +108,26 @@ binaries.
 symbol can lose more to lost specialisation than it gains.** Re-annotate after
 landing, not just re-band — the band said +3.17 % and looked finished.
 
+## The same fix applied to a THIRD kernel, and it measured NULL
+
+`txb_init_levels_impl_v3` (49 ms, ~2.6x libaom's `av1_txb_init_levels_avx2`) has
+the identical per-column index arithmetic — `perf annotate` put **4.1 % of it in
+a single `imulq`** and 6.6 % in the per-column pad store. Running offsets were
+applied exactly as in KB-PERF-38.
+
+**Measured null**: +0.163 % against one base copy (8/24, p=0.15) and +0.019 %
+against the other (12/24, p=1.00), with the null arm itself at +0.105 %.
+Reverted; band committed as `.txbinit.rejected.tsv`.
+
+**Why, and it bounds the whole technique:** 4.1 % of a 49 ms symbol is **~2 ms**,
+which is **0.06 % of the encode** — an order of magnitude below what a 24-round
+band can resolve. The same edit was worth −0.23 % in `highbd_subtract_block`
+because that kernel is called far more often and its rows are shorter.
+
+**So "remove the per-row `imul`" is not a general win — it is a win where the
+row count is high and the row is short.** Check the symbol's absolute ms and the
+share the annotate attributes before assuming a repeat.
+
 ## Siblings, same shape, not yet measured
 
 * **`subtract_block`** (the lowbd `u8` twin, same file) — identical triple
