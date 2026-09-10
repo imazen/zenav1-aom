@@ -76,6 +76,36 @@ both failed:
    replaced *loop bodies*; both annotate-driven attempts at *call overhead*
    failed.
 
+## A THIRD rejection on this map, and it completes the pattern
+
+**Hoisting `aom_quantize_b_no_qmatrix`'s loop invariants: +0.149 %, 8 of 24
+rounds faster, p = 1.0000** against a −0.045 % null. REVERTED; band committed as
+`.quantize_b_hoist_rejected.tsv`.
+
+Every per-`ac` table lookup in that loop, plus both derived constants
+(`round_power_of_two(round[ac], log_scale)` and the `dequant_v` rounding), is
+genuinely loop-invariant and was genuinely being recomputed per coefficient. The
+hoist was exact and byte-identical on four cells. It is still slower, because
+what it actually did was **replace a two-element indexed lookup with a branch
+per iteration** — `if is_ac { ac_const } else { dc_const }` — and on this loop
+the branch costs more than the load it removed.
+
+**The pattern across this session's three rejections is now clear and is worth
+more than any one of them:**
+
+| change | what it did to the work | result |
+|---|---|---|
+| `#[inline]` on `intra_avail` | moved a call's cost, removed none | **+0.238 %** |
+| `quantize_b` invariant hoist | traded a load for a branch | **+0.149 %** |
+| the reconstruct round trip | removed 2 copies on a minority of txbs | −0.147 %, **null** |
+| **the 4x4 variance direct read** | **removed a copy + a walk on EVERY 4x4 unit** | **−0.827 %** |
+
+**Changes that REMOVE work on a hot inner loop pay. Changes that RESHAPE how the
+same work is reached — inlining, hoisting, re-scoping a lookup — do not, and
+have measured positive (slower) twice.** That is the same distinction
+KB-PERF-44/45 drew for allocation (removal pays; adding a mechanism does not),
+arriving independently from the arithmetic side.
+
 ## What the table says to do next, in order
 
 1. **variance family, +71.4 ms at 4.91x** — the largest addressable row that has
