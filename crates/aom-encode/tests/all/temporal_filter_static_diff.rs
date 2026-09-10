@@ -649,7 +649,14 @@ fn check_show_filtered_frame_separates_both_boundaries() {
         (18, 22, 601_286_478, 2_227_703_944_999_126),
         (19, 23, 80_153_209, 35_871_555_785_476),
     ];
-    let mut reached_std = false;
+    // NON-VACUITY. `reached_std` used to be declared here and never set or
+    // asserted — a reach flag that guards nothing. These cells exist to
+    // DISCRIMINATE C's `(float)sse / num_mbs` from a widened spelling, so a set
+    // that returned one constant verdict would be satisfied by a constant and
+    // would stop distinguishing anything the day the port's spelling changed.
+    // Measured 2026-09-10: 16 `false` and 2 `true` across the 18 (cell x q)
+    // points, i.e. they really do straddle `std < mean * 1.2`.
+    let (mut saw_below, mut saw_above) = (false, false);
     for &(mb_rows, mb_cols, sum, sse) in F32_SPELLING_DISCRIMINATORS {
         let (w, h) = (mb_cols * 64, mb_rows * 64);
         for q in [0i32, 60, 255] {
@@ -659,6 +666,12 @@ fn check_show_filtered_frame_separates_both_boundaries() {
                 got, want,
                 "f32-spelling cell {w}x{h} sum {sum} sse {sse} q {q}"
             );
+            saw_below |= !got;
+            saw_above |= got;
         }
     }
+    assert!(
+        saw_below && saw_above,
+        "the f32-spelling discriminators no longer straddle the `std < mean * 1.2`          boundary (below={saw_below}, above={saw_above}) — they cannot distinguish a          widened spelling from C's any more, so this cell set has stopped gating"
+    );
 }
