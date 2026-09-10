@@ -624,17 +624,40 @@ pub(crate) fn calc_normalized_variance_4x4(buf: &[u16], off: usize, stride: usiz
         const ZEROS16: [u16; 4] = [0; 4];
         aom_dsp::dist::highbd_variance(&buf[off..], stride, &ZEROS16, 0, 4, 4, bd).0 as i32
     } else {
-        // The production 8-bit encoder reads u8 planes; the strided window
-        // holds the same 16 values, so a tight copy is kernel-identical.
-        let mut w8 = [0u8; 16];
+        // KB-PERF-53: compute the 4x4 variance DIRECTLY off the strided window.
+        //
+        // This used to copy the 16 samples into a `[u8; 16]` scratch — sixteen
+        // bounds-checked `buf[off + r*stride + c]` reads — and then call the
+        // generic `aom_dsp::dist::variance` over that scratch against a
+        // stride-0 zero reference, which walks the 16 values again with more
+        // bounds checks. libaom calls `aom_variance4x4_sse2` straight on the
+        // plane. This function is 80.9 % of every `dist::variance` sample at the
+        // shipping preset (`benchmarks/encoder_lever_map_s3_2026-09-10.md`),
+        // because `intra_rd_variance_factor` walks the block in 4x4 units.
+        //
+        // BIT-EXACT, and the arithmetic is why. The reference is all-zero, so
+        // `diff == a` and the generic kernel reduces to `tsum = sum(a)`,
+        // `tsse = sum(a*a)`; its `wrapping_add` cannot wrap here because
+        // `sum(a*a) <= 16*255^2 = 1_040_400`. The final expression is copied
+        // verbatim, `wrapping_sub` included — though by Cauchy-Schwarz
+        // `16*sum(a^2) >= sum(a)^2`, so it never actually wraps either.
+        //
+        // The `<= 255` bound is the same one the old `as u8` narrowing relied
+        // on, and it is guaranteed rather than assumed: KB-51 made an
+        // out-of-range bd8 sample a refusal at the public entry point
+        // (`KeyFrameError::SampleRange`), so the domain cannot be reached.
+        let mut tsum: i32 = 0;
+        let mut tsse: u32 = 0;
         for r in 0..4 {
-            for c in 0..4 {
-                debug_assert!(buf[off + r * stride + c] <= 255);
-                w8[r * 4 + c] = buf[off + r * stride + c] as u8;
+            let row = &buf[off + r * stride..off + r * stride + 4];
+            for &v in row {
+                debug_assert!(v <= 255);
+                let d = i32::from(v);
+                tsum += d;
+                tsse = tsse.wrapping_add((d * d) as u32);
             }
         }
-        const ZEROS8: [u8; 4] = [0; 4];
-        aom_dsp::dist::variance(&w8, 4, &ZEROS8, 0, 4, 4).0 as i32
+        tsse.wrapping_sub(((i64::from(tsum) * i64::from(tsum)) / 16) as u32) as i32
     }
 }
 
