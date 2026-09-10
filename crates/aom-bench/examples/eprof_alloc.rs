@@ -140,14 +140,28 @@ fn report(tag: &str, a: Snap, b: Snap, px: usize, blocks: Option<usize>) {
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    if a.len() != 6 {
-        eprintln!("usage: eprof_alloc <w> <h> <cq> <cpu-used> <in.yuv>");
+    if a.len() != 5 && a.len() != 6 {
+        eprintln!("usage: eprof_alloc <w> <h> <cq> <cpu-used> [in.yuv]");
+        eprintln!("  with no .yuv, the cell is built exactly as `eprof_x86` builds it");
+        eprintln!("  (in-repo `av1-1-b8-01-size-196x196`, mirror-tiled above 196px), so an");
+        eprintln!("  allocation census can be taken at the SAME cell a timing band uses.");
         std::process::exit(2);
     }
     let w: usize = a[1].parse().unwrap();
     let h: usize = a[2].parse().unwrap();
     let q: i32 = a[3].parse().unwrap();
     let speed: i32 = a[4].parse().unwrap();
+
+    // KB-PERF-13 named this gap: `eprof_alloc` took a `.yuv` PATH while every
+    // timing band synthesises its cell from an in-repo vector, so an allocation
+    // census could not be taken at the cell a band was measured on. Same recipe
+    // as `eprof_x86` (and `kb28_crop_dims::mirror_tile`).
+    if a.len() == 5 {
+        let cell = cell_from_repo(w, h, q, speed);
+        census(&cell, w, h);
+        return;
+    }
+
     let buf = std::fs::read(&a[5]).expect("read .yuv");
     let (cw, ch) = (w / 2, h / 2);
     assert_eq!(buf.len(), w * h + 2 * cw * ch, "I420 size mismatch");
@@ -168,6 +182,42 @@ fn main() {
         v: up(&buf[w * h + cw * ch..]),
     };
 
+    census(&cell, w, h);
+}
+
+/// The `eprof_x86` cell recipe: the in-repo 196x196 conformance decode, cropped
+/// below 196px and mirror-tiled above it.
+fn cell_from_repo(w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+    let label = format!("photo_{w}x{h}_cq{cq}_s{speed}");
+    if w <= 196 && h <= 196 {
+        return EncodeCell::real_content(&label, "av1-1-b8-01-size-196x196", Some((w, h, 0, 0)), cq, speed);
+    }
+    let base = EncodeCell::real_content("base", "av1-1-b8-01-size-196x196", None, cq, speed);
+    let mir = |i: usize, n: usize| {
+        let m = i % (2 * n);
+        if m < n { m } else { 2 * n - 1 - m }
+    };
+    let (bw, bh) = (base.w, base.h);
+    let (cw, ch) = (w.div_ceil(1 << base.ss_x), h.div_ceil(1 << base.ss_y));
+    let (bcw, bch) = (bw.div_ceil(1 << base.ss_x), bh.div_ceil(1 << base.ss_y));
+    let mut y = vec![0u16; w * h];
+    for r in 0..h {
+        for c in 0..w {
+            y[r * w + c] = base.y[mir(r, bh) * bw + mir(c, bw)];
+        }
+    }
+    let mut u = vec![0u16; cw * ch];
+    let mut v = vec![0u16; cw * ch];
+    for r in 0..ch {
+        for c in 0..cw {
+            u[r * cw + c] = base.u[mir(r, bch) * bcw + mir(c, bcw)];
+            v[r * cw + c] = base.v[mir(r, bch) * bcw + mir(c, bcw)];
+        }
+    }
+    EncodeCell { label, w, h, y, u, v, cq_level: cq, speed, ..base }
+}
+
+fn census(cell: &EncodeCell, w: usize, h: usize) {
     let watch0 = || WATCH_N.iter().map(|c| c.load(Relaxed)).collect::<Vec<_>>();
     let s0 = snap();
     let bootstrap = cell.c_encode_defaults();
