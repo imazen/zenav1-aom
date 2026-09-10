@@ -589,13 +589,88 @@ pub fn build_non_directional_intra_high(
     n_left_px: usize,
     bd: i32,
 ) {
-    let txwpx = TX_W[tx_size];
-    let txhpx = TX_H[tx_size];
-    let base = 128i32 << (bd - 8);
-
     // [-1..] reference windows: index 0 is the top-left corner.
     let mut above_buf = [0u16; 1 + 64];
     let mut left_buf = [0u16; 1 + 64];
+    let pmode = plan_nd_intra_high(
+        recon,
+        ref_off,
+        ref_stride,
+        &mut above_buf,
+        &mut left_buf,
+        av1_mode,
+        tx_size,
+        n_top_px,
+        n_left_px,
+        bd,
+    );
+    write_nd_intra_high(dst, dst_stride, pmode, &above_buf, &left_buf, tx_size, bd);
+}
+
+/// [`build_non_directional_intra_high`] writing back into the plane it predicts
+/// from: `buf[off]` is the block top-left and `stride` is the row stride of both
+/// the reference and the destination.
+///
+/// Sound because the split below is total: [`plan_nd_intra_high`] performs EVERY
+/// read of `buf` — it copies the above/left neighbours into owned local windows
+/// — and returns before [`write_nd_intra_high`] touches the destination. The
+/// values written are therefore identical to predicting into a tight scratch and
+/// copying the block back, which is what the two-slice form above does.
+#[allow(clippy::too_many_arguments)]
+pub fn build_non_directional_intra_high_in_place(
+    buf: &mut [u16],
+    off: usize,
+    stride: usize,
+    av1_mode: usize,
+    tx_size: usize,
+    n_top_px: usize,
+    n_left_px: usize,
+    bd: i32,
+) {
+    let mut above_buf = [0u16; 1 + 64];
+    let mut left_buf = [0u16; 1 + 64];
+    let pmode = plan_nd_intra_high(
+        &*buf,
+        off,
+        stride,
+        &mut above_buf,
+        &mut left_buf,
+        av1_mode,
+        tx_size,
+        n_top_px,
+        n_left_px,
+        bd,
+    );
+    write_nd_intra_high(
+        &mut buf[off..],
+        stride,
+        pmode,
+        &above_buf,
+        &left_buf,
+        tx_size,
+        bd,
+    );
+}
+
+/// The reference-assembly half of [`build_non_directional_intra_high`]: fill the
+/// `[-1..]` above/left windows out of the recon plane and resolve the predictor
+/// index. Every read of `recon` happens here.
+#[allow(clippy::too_many_arguments)]
+fn plan_nd_intra_high(
+    recon: &[u16],
+    ref_off: usize,
+    ref_stride: usize,
+    above_buf: &mut [u16; 1 + 64],
+    left_buf: &mut [u16; 1 + 64],
+    av1_mode: usize,
+    tx_size: usize,
+    n_top_px: usize,
+    n_left_px: usize,
+    bd: i32,
+) -> usize {
+    let txwpx = TX_W[tx_size];
+    let txhpx = TX_H[tx_size];
+    let base = 128i32 << (bd - 8);
     let g = NdEdge {
         ref_off,
         ref_stride,
@@ -614,7 +689,7 @@ pub fn build_non_directional_intra_high(
     );
 
     // Map AV1 mode → predictor index; DC picks the availability variant.
-    let pmode = match av1_mode {
+    match av1_mode {
         0 => match (n_left_px > 0, n_top_px > 0) {
             (true, true) => DC,
             (false, true) => DC_TOP,
@@ -626,8 +701,22 @@ pub fn build_non_directional_intra_high(
         11 => SMOOTH_H,
         12 => PAETH,
         _ => unreachable!("build_non_directional_intra_high: non-directional modes only"),
-    };
+    }
+}
 
+/// The write half of [`build_non_directional_intra_high`]: run the predictor over
+/// the already-assembled windows. Touches no reference pixel.
+fn write_nd_intra_high(
+    dst: &mut [u16],
+    dst_stride: usize,
+    pmode: usize,
+    above_buf: &[u16; 1 + 64],
+    left_buf: &[u16; 1 + 64],
+    tx_size: usize,
+    bd: i32,
+) {
+    let txwpx = TX_W[tx_size];
+    let txhpx = TX_H[tx_size];
     let above = AboveRef16(&above_buf[..1 + txwpx]);
     predict_highbd(
         pmode,
@@ -993,6 +1082,121 @@ pub fn build_directional_intra_high(
     n_bottomleft_px: i32,
     bd: i32,
 ) {
+    let mut above_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
+    let mut left_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
+    let plan = plan_dir_intra_high(
+        recon,
+        ref_off,
+        ref_stride,
+        &mut above_data,
+        &mut left_data,
+        p_angle,
+        disable_edge_filter,
+        filter_type,
+        tx_size,
+        n_top_px,
+        n_topright_px,
+        n_left_px,
+        n_bottomleft_px,
+        bd,
+    );
+    write_dir_intra_high(
+        dst,
+        dst_stride,
+        plan,
+        &above_data,
+        &left_data,
+        tx_size,
+        p_angle,
+        bd,
+    );
+}
+
+/// [`build_directional_intra_high`] writing back into the plane it predicts from:
+/// `buf[off]` is the block top-left and `stride` is the row stride of both the
+/// reference and the destination.
+///
+/// Sound because the split is total: [`plan_dir_intra_high`] performs EVERY read
+/// of `buf` — both the edge assembly and the two corner reads of the degenerate
+/// arm — into owned local arrays, and returns before [`write_dir_intra_high`]
+/// touches the destination.
+#[allow(clippy::too_many_arguments)]
+pub fn build_directional_intra_high_in_place(
+    buf: &mut [u16],
+    off: usize,
+    stride: usize,
+    p_angle: i32,
+    disable_edge_filter: bool,
+    filter_type: i32,
+    tx_size: usize,
+    n_top_px: usize,
+    n_topright_px: i32,
+    n_left_px: usize,
+    n_bottomleft_px: i32,
+    bd: i32,
+) {
+    let mut above_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
+    let mut left_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
+    let plan = plan_dir_intra_high(
+        &*buf,
+        off,
+        stride,
+        &mut above_data,
+        &mut left_data,
+        p_angle,
+        disable_edge_filter,
+        filter_type,
+        tx_size,
+        n_top_px,
+        n_topright_px,
+        n_left_px,
+        n_bottomleft_px,
+        bd,
+    );
+    write_dir_intra_high(
+        &mut buf[off..],
+        stride,
+        plan,
+        &above_data,
+        &left_data,
+        tx_size,
+        p_angle,
+        bd,
+    );
+}
+
+/// What [`plan_dir_intra_high`] resolved: either libaom's degenerate
+/// one-side-missing early-out (fill the block with a constant) or a full
+/// prediction over the assembled edges, carrying the two upsample flags.
+#[derive(Clone, Copy)]
+enum DirPlan {
+    Flat(u16),
+    Pred {
+        upsample_above: i32,
+        upsample_left: i32,
+    },
+}
+
+/// The reference half of [`build_directional_intra_high`]: the need-flags, the
+/// degenerate early-out, the edge assembly, the corner/edge filters and the
+/// upsample decisions. Every read of `recon` happens here.
+#[allow(clippy::too_many_arguments)]
+fn plan_dir_intra_high(
+    recon: &[u16],
+    ref_off: usize,
+    ref_stride: usize,
+    above_data: &mut [u16; NUM_INTRA_NEIGHBOUR_PIXELS],
+    left_data: &mut [u16; NUM_INTRA_NEIGHBOUR_PIXELS],
+    p_angle: i32,
+    disable_edge_filter: bool,
+    filter_type: i32,
+    tx_size: usize,
+    n_top_px: usize,
+    n_topright_px: i32,
+    n_left_px: usize,
+    n_bottomleft_px: i32,
+    bd: i32,
+) -> DirPlan {
     let txwpx = TX_W[tx_size];
     let txhpx = TX_H[tx_size];
     let base = 128i32 << (bd - 8);
@@ -1019,16 +1223,9 @@ pub fn build_directional_intra_high(
         } else {
             (base - 1) as u16
         };
-        for r in 0..txhpx {
-            for e in dst[r * dst_stride..r * dst_stride + txwpx].iter_mut() {
-                *e = val;
-            }
-        }
-        return;
+        return DirPlan::Flat(val);
     }
 
-    let mut above_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
-    let mut left_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
     let g = DirEdge {
         ref_off,
         ref_stride,
@@ -1043,7 +1240,7 @@ pub fn build_directional_intra_high(
         need_above_left,
         base,
     };
-    assemble_dir_edges(recon, &g, &mut above_data, &mut left_data);
+    assemble_dir_edges(recon, &g, above_data, left_data);
 
     let mut upsample_above = 0;
     let mut upsample_left = 0;
@@ -1089,27 +1286,57 @@ pub fn build_directional_intra_high(
         upsample_above = edge::use_upsample(txwpx as i32, txhpx as i32, p_angle - 90, filter_type);
         if need_above && upsample_above != 0 {
             let n_px = txwpx + if need_right { txhpx } else { 0 };
-            edge::highbd_upsample_intra_edge(&mut above_data, DIR_PAD, n_px, bd as u8);
+            edge::highbd_upsample_intra_edge(above_data, DIR_PAD, n_px, bd as u8);
         }
         upsample_left = edge::use_upsample(txhpx as i32, txwpx as i32, p_angle - 180, filter_type);
         if need_left && upsample_left != 0 {
             let n_px = txhpx + if need_bottom { txwpx } else { 0 };
-            edge::highbd_upsample_intra_edge(&mut left_data, DIR_PAD, n_px, bd as u8);
+            edge::highbd_upsample_intra_edge(left_data, DIR_PAD, n_px, bd as u8);
         }
     }
 
-    dr_predict_high(
-        dst,
-        dst_stride,
-        tx_size,
-        &above_data,
-        &left_data,
-        DIR_PAD,
+    DirPlan::Pred {
         upsample_above,
         upsample_left,
-        p_angle,
-        bd,
-    );
+    }
+}
+
+/// The write half of [`build_directional_intra_high`]. Touches no reference pixel.
+#[allow(clippy::too_many_arguments)]
+fn write_dir_intra_high(
+    dst: &mut [u16],
+    dst_stride: usize,
+    plan: DirPlan,
+    above_data: &[u16; NUM_INTRA_NEIGHBOUR_PIXELS],
+    left_data: &[u16; NUM_INTRA_NEIGHBOUR_PIXELS],
+    tx_size: usize,
+    p_angle: i32,
+    bd: i32,
+) {
+    let txwpx = TX_W[tx_size];
+    let txhpx = TX_H[tx_size];
+    match plan {
+        DirPlan::Flat(val) => {
+            for r in 0..txhpx {
+                dst[r * dst_stride..r * dst_stride + txwpx].fill(val);
+            }
+        }
+        DirPlan::Pred {
+            upsample_above,
+            upsample_left,
+        } => dr_predict_high(
+            dst,
+            dst_stride,
+            tx_size,
+            above_data,
+            left_data,
+            DIR_PAD,
+            upsample_above,
+            upsample_left,
+            p_angle,
+            bd,
+        ),
+    }
 }
 
 /// `mode_to_angle_map[INTRA_MODES]` (reconintra.h): the base prediction angle per
@@ -1194,6 +1421,77 @@ pub fn predict_intra_high(
     }
 }
 
+/// [`predict_intra_high`] with the reference plane AS the destination:
+/// `buf[off]` is the block top-left and `stride` is its row stride.
+///
+/// This is what libaom's `av1_predict_intra_block_facade` actually does — it
+/// hands the predictor `pd->dst`, so the prediction lands in the reconstruction
+/// buffer directly. The port's two-slice form predicts into a tight
+/// `txw * txh` scratch and the caller copies the block back row by row; on the
+/// encoder's hottest walk that copy is a `memcpy` per transform block **per
+/// candidate mode**, and it is pure overhead.
+///
+/// Soundness is a property of the three builders, not of this dispatcher: each
+/// one is split into a `plan_*` half that performs EVERY read of the reference
+/// plane (the above/left/corner neighbours, into owned local arrays) and a
+/// `write_*` half that only writes. The reads therefore all complete before the
+/// first write, so aliasing the two slices cannot change a value — the block
+/// receives exactly the bytes the copy used to deliver.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_intra_high_in_place(
+    buf: &mut [u16],
+    off: usize,
+    stride: usize,
+    mode: usize,
+    angle_delta: i32,
+    use_filter_intra: bool,
+    filter_intra_mode: usize,
+    disable_edge_filter: bool,
+    filter_type: i32,
+    tx_size: usize,
+    n_top_px: usize,
+    n_topright_px: i32,
+    n_left_px: usize,
+    n_bottomleft_px: i32,
+    bd: i32,
+) {
+    let is_dr = (1..=8).contains(&mode); // V_PRED..=D67_PRED
+    crate::census::note_intra_pred(mode, angle_delta, use_filter_intra, tx_size);
+    if use_filter_intra {
+        build_filter_intra_high_in_place(
+            buf,
+            off,
+            stride,
+            filter_intra_mode,
+            tx_size,
+            n_top_px,
+            n_topright_px,
+            n_left_px,
+            n_bottomleft_px,
+            bd,
+        );
+    } else if !is_dr {
+        build_non_directional_intra_high_in_place(
+            buf, off, stride, mode, tx_size, n_top_px, n_left_px, bd,
+        );
+    } else {
+        build_directional_intra_high_in_place(
+            buf,
+            off,
+            stride,
+            MODE_TO_ANGLE[mode] + angle_delta,
+            disable_edge_filter,
+            filter_type,
+            tx_size,
+            n_top_px,
+            n_topright_px,
+            n_left_px,
+            n_bottomleft_px,
+            bd,
+        );
+    }
+}
+
 /// Build the intra prediction for the filter-intra mode into `dst` — the
 /// `use_filter_intra` branch of libaom's directional-and-filter builder
 /// (reconintra.c): assemble the reference edges (above / left / corner all
@@ -1216,17 +1514,100 @@ pub fn build_filter_intra_high(
     n_bottomleft_px: i32,
     bd: i32,
 ) {
-    let txwpx = TX_W[tx_size];
-    let txhpx = TX_H[tx_size];
-    let base = 128i32 << (bd - 8);
     let mut above_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
     let mut left_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
-    // Filter-intra needs above, left, and the corner (all-need); no early-out.
+    plan_filter_intra_high(
+        recon,
+        ref_off,
+        ref_stride,
+        &mut above_data,
+        &mut left_data,
+        tx_size,
+        n_top_px,
+        n_topright_px,
+        n_left_px,
+        n_bottomleft_px,
+        bd,
+    );
+    write_filter_intra_high(
+        dst,
+        dst_stride,
+        &above_data,
+        &left_data,
+        tx_size,
+        filter_intra_mode,
+        bd,
+    );
+}
+
+/// [`build_filter_intra_high`] writing back into the plane it predicts from:
+/// `buf[off]` is the block top-left and `stride` is the row stride of both the
+/// reference and the destination.
+///
+/// Sound because the split is total: [`plan_filter_intra_high`] performs EVERY
+/// read of `buf`, and the recursive predictor reads only its own three-row
+/// scratch plus the assembled edges — never the destination.
+#[allow(clippy::too_many_arguments)]
+pub fn build_filter_intra_high_in_place(
+    buf: &mut [u16],
+    off: usize,
+    stride: usize,
+    filter_intra_mode: usize,
+    tx_size: usize,
+    n_top_px: usize,
+    n_topright_px: i32,
+    n_left_px: usize,
+    n_bottomleft_px: i32,
+    bd: i32,
+) {
+    let mut above_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
+    let mut left_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
+    plan_filter_intra_high(
+        &*buf,
+        off,
+        stride,
+        &mut above_data,
+        &mut left_data,
+        tx_size,
+        n_top_px,
+        n_topright_px,
+        n_left_px,
+        n_bottomleft_px,
+        bd,
+    );
+    write_filter_intra_high(
+        &mut buf[off..],
+        stride,
+        &above_data,
+        &left_data,
+        tx_size,
+        filter_intra_mode,
+        bd,
+    );
+}
+
+/// The reference half of [`build_filter_intra_high`]. Every read of `recon`
+/// happens here. Filter-intra needs above, left AND the corner (all-need), so
+/// there is no early-out to resolve.
+#[allow(clippy::too_many_arguments)]
+fn plan_filter_intra_high(
+    recon: &[u16],
+    ref_off: usize,
+    ref_stride: usize,
+    above_data: &mut [u16; NUM_INTRA_NEIGHBOUR_PIXELS],
+    left_data: &mut [u16; NUM_INTRA_NEIGHBOUR_PIXELS],
+    tx_size: usize,
+    n_top_px: usize,
+    n_topright_px: i32,
+    n_left_px: usize,
+    n_bottomleft_px: i32,
+    bd: i32,
+) {
     let g = DirEdge {
         ref_off,
         ref_stride,
-        txwpx,
-        txhpx,
+        txwpx: TX_W[tx_size],
+        txhpx: TX_H[tx_size],
         n_top_px,
         n_topright_px,
         n_left_px,
@@ -1234,15 +1615,27 @@ pub fn build_filter_intra_high(
         need_above: true,
         need_left: true,
         need_above_left: true,
-        base,
+        base: 128i32 << (bd - 8),
     };
-    assemble_dir_edges(recon, &g, &mut above_data, &mut left_data);
+    assemble_dir_edges(recon, &g, above_data, left_data);
+}
+
+/// The write half of [`build_filter_intra_high`]. Touches no reference pixel.
+fn write_filter_intra_high(
+    dst: &mut [u16],
+    dst_stride: usize,
+    above_data: &[u16; NUM_INTRA_NEIGHBOUR_PIXELS],
+    left_data: &[u16; NUM_INTRA_NEIGHBOUR_PIXELS],
+    tx_size: usize,
+    filter_intra_mode: usize,
+    bd: i32,
+) {
     filter_intra_predict_high(
         dst,
         dst_stride,
         tx_size,
         &above_data[DIR_PAD - 1..],
-        &left_data[DIR_PAD..DIR_PAD + txhpx],
+        &left_data[DIR_PAD..DIR_PAD + TX_H[tx_size]],
         filter_intra_mode,
         bd,
     );

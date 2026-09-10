@@ -198,7 +198,7 @@
 use crate::encode_sb::SbEncodeEnv;
 use crate::partition::PartRdStats;
 use aom_dsp::dist::highbd_subtract_block;
-use aom_dsp::intra::predict_intra_high;
+use aom_dsp::intra::predict_intra_high_in_place;
 
 /// `MI_SIZE_WIDE`/`HIGH` for the square sizes used here (port-wide numbering:
 /// BLOCK_8X8=3, BLOCK_16X16=6, BLOCK_32X32=9, BLOCK_64X64=12).
@@ -1893,7 +1893,6 @@ pub fn nonrd_pick_intra_mode(
     let visits = &visits[..];
 
     let mut diff = vec![0i16; tx_bw * tx_bh];
-    let mut pred = vec![0u16; tx_bw * tx_bh];
 
     for &this_mode in INTRA_MODE_LIST.iter() {
         // Force DC for spatially flat block at top-left, bsize >= 32x32
@@ -1969,12 +1968,15 @@ pub fn nonrd_pick_intra_mode(
             // plane split is annotated where the caller knows it. `plane_total()`
             // must equal `intra_total_calls()`; the census tool asserts it.
             aom_dsp::census::note_plane_intra_pred(0, tx_size_full);
-            predict_intra_high(
+            // The facade predicts INTO the recon plane (dst) — do that directly
+            // rather than filling a tight scratch and copying the block back. It
+            // must land BEFORE the next txb's `intra_avail`/`predict` reads its
+            // above/left neighbours out of the same buffer, and predicting in
+            // place is exactly that ordering.
+            predict_intra_high_in_place(
                 recon_y,
                 txb_off,
                 env.stride,
-                &mut pred,
-                tx_bw,
                 this_mode,
                 0,
                 false,
@@ -1988,28 +1990,21 @@ pub fn nonrd_pick_intra_mode(
                 n_bottomleft,
                 i32::from(env.bd),
             );
-            // Facade writes prediction into the recon plane (dst) — mirror that.
-            // It must land BEFORE the next txb's `intra_avail`/`predict` reads its
-            // above/left neighbours out of the same buffer.
-            for r in 0..tx_bh {
-                recon_y[txb_off + r * env.stride..txb_off + r * env.stride + tx_bw]
-                    .copy_from_slice(&pred[r * tx_bw..r * tx_bw + tx_bw]);
-            }
 
             // Speed-9 SAD prune (av1_estimate_block_intra, nonrd_opt.c:629-648).
             // `prune_mode_based_on_sad` implies `bsize == tx_bsize`, so `sdf` runs
             // over the whole leaf and this is the only visit.
             if prune_mode_based_on_sad {
-                // Enforced, not argued: `pred` is tx-sized, so reading it over
-                // the LEAF's bw x bh below is only sound when they are the same
-                // block. C's own gate guarantees that; this is the tripwire if
-                // it ever stops.
+                // Enforced, not argued: the prediction just written covers the
+                // TXB, so reading it over the LEAF's bw x bh below is only sound
+                // when they are the same block. C's own gate guarantees that;
+                // this is the tripwire if it ever stops.
                 debug_assert!(single_txb, "the SAD prune requires bsize == tx_bsize");
                 let mut this_sad: u32 = 0;
                 for r in 0..bh {
                     for c in 0..bw {
                         let s = env.src_y[src_off + r * env.stride + c] as i32;
-                        let p = pred[r * bw + c] as i32;
+                        let p = recon_y[txb_off + r * env.stride + c] as i32;
                         this_sad += (s - p).unsigned_abs();
                     }
                 }
@@ -2059,8 +2054,8 @@ pub fn nonrd_pick_intra_mode(
                 tx_bw,
                 &env.src_y[txb_src..],
                 env.stride,
-                &pred,
-                tx_bw,
+                &recon_y[txb_off..],
+                env.stride,
             );
             let (rate_yrd, dist_yrd, txb_skippable) = if use_hbd {
                 block_yrd_hbd(

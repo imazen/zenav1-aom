@@ -1957,7 +1957,7 @@ pub fn dist_block_px_domain_into(
 use crate::mode_costs::{TxSizeCosts, block_signals_txsize, tx_size_cost};
 use aom_dsp::dist::highbd_subtract_block;
 use aom_dsp::entropy::partition::intra_avail;
-use aom_dsp::intra::predict_intra_high;
+use aom_dsp::intra::{predict_intra_high, predict_intra_high_in_place};
 
 /// `RD_STATS` as this walk uses it (rate `i32::MAX` = invalid).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3102,21 +3102,18 @@ pub fn intra_model_rd_y(
                 env.use_filter_intra,
             );
             let txb_off = env.ref_off + (blk_row * env.ref_stride + blk_col) * 4;
-            // Hoisted out of the walk — see `TxWalkScratch`.
-            walk.pred.clear();
-            walk.pred.resize(txw * txh, 0);
-            let pred = &mut walk.pred;
             // Census plane tag (`aom_dsp::census`, no-op without the feature):
             // `predict_intra_high` has no `plane` argument and gains none, so the
             // plane split is annotated where the caller knows it. `plane_total()`
             // must equal `intra_total_calls()`; the census tool asserts it.
             aom_dsp::census::note_plane_intra_pred(0, tx_size);
-            predict_intra_high(
+            // The C facade predicts INTO the recon plane (`pd->dst`), so do that
+            // rather than filling a tight scratch and copying the block back —
+            // on this walk the copy is a `memcpy` per txb PER CANDIDATE MODE.
+            predict_intra_high_in_place(
                 recon,
                 txb_off,
                 env.ref_stride,
-                pred,
-                txw,
                 env.mode,
                 env.angle_delta * 3,
                 env.use_filter_intra,
@@ -3130,30 +3127,27 @@ pub fn intra_model_rd_y(
                 n_bottomleft,
                 env.bd as i32,
             );
-            for r in 0..txh {
-                recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw]
-                    .copy_from_slice(&pred[r * txw..r * txw + txw]);
-            }
 
             // av1_subtract_block into a tight txw-stride buffer (the C stores
             // at block_size_wide[plane_bsize] stride and reads it back with
-            // the same stride — values per (r, c) identical).
+            // the same stride — values per (r, c) identical). The prediction is
+            // now read straight out of the plane at `ref_stride`; the copy this
+            // replaced made those bytes equal by construction.
             let src_txb_off = env.src_off + (blk_row * env.src_stride + blk_col) * 4;
             walk.residual.clear();
             walk.residual.resize(txw * txh, 0);
-            let (pred, residual) = (&walk.pred, &mut walk.residual);
             highbd_subtract_block(
                 txh,
                 txw,
-                residual,
+                &mut walk.residual,
                 txw,
                 &env.src[src_txb_off..],
                 env.src_stride,
-                pred,
-                txw,
+                &recon[txb_off..],
+                env.ref_stride,
             );
 
-            satd_cost += i64::from(wht_satd(residual, txw, tx_size, env.bd));
+            satd_cost += i64::from(wht_satd(&walk.residual, txw, tx_size, env.bd));
             blk_col += txw_unit;
                 }
                 blk_row += txh_unit;

@@ -740,7 +740,6 @@ pub fn encode_intra_block_plane_uv(
     let mut dc_cache = CflDcCache::cleared();
 
     // Per-txb buffers hoisted out of the walk — see the luma twin above.
-    let mut uv_pred_scratch: Vec<u16> = Vec::new();
     let mut pred: Vec<u16> = Vec::new();
     let mut residual: Vec<i16> = Vec::new();
     let mut tight: Vec<u16> = Vec::new();
@@ -806,7 +805,6 @@ pub fn encode_intra_block_plane_uv(
                     blk_row,
                     blk_col,
                     txb_off,
-                    &mut uv_pred_scratch,
                 );
             }
 

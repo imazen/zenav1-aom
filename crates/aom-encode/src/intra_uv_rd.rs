@@ -53,7 +53,7 @@ use crate::tx_search::{
 };
 use aom_dsp::entropy::partition::{get_plane_block_size, get_uv_mode, intra_avail};
 use aom_dsp::intra::cfl::{CFL_BUF_LINE, CflCtx, cfl_predict_block};
-use aom_dsp::intra::predict_intra_high;
+use aom_dsp::intra::predict_intra_high_in_place;
 use aom_dsp::txb::{CoeffCostTables, TxTypeCosts};
 
 const TXS_W: [usize; 19] = [
@@ -348,7 +348,6 @@ pub(crate) fn predict_uv_txb(
     blk_row: usize,
     blk_col: usize,
     txb_off: usize,
-    pred: &mut Vec<u16>,
 ) {
     let (txw, txh) = (TXS_W[tx_size], TXS_H[tx_size]);
     let mode = get_uv_mode(uv_mode) as usize;
@@ -390,20 +389,18 @@ pub(crate) fn predict_uv_txb(
                 0,
                 false,
             );
-            // Caller-owned (see `tx_search::TxWalkScratch`); same contents.
-            pred.clear();
-            pred.resize(txw * txh, 0);
             // Census plane tag (`aom_dsp::census`, no-op without the feature):
             // `predict_intra_high` has no `plane` argument and gains none, so the
             // plane split is annotated where the caller knows it. `plane_total()`
             // must equal `intra_total_calls()`; the census tool asserts it.
             aom_dsp::census::note_plane_intra_pred(plane, tx_size);
-            predict_intra_high(
+            // The facade's in-place dst write, done in place: the DC prediction
+            // lands in the recon plane directly instead of in a tight scratch
+            // that is then copied back.
+            predict_intra_high_in_place(
                 recon,
                 txb_off,
                 env.ref_stride,
-                pred,
-                txw,
                 mode,
                 0,
                 false,
@@ -417,10 +414,6 @@ pub(crate) fn predict_uv_txb(
                 n_bottomleft,
                 env.bd as i32,
             );
-            for r in 0..txh {
-                recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw]
-                    .copy_from_slice(&pred[r * txw..r * txw + txw]);
-            }
             if cfl.cache.use_cache {
                 // cfl_store_dc_pred: the first `width` pixels of the dc pred.
                 cfl.cache.row[pred_plane][..txw].copy_from_slice(&recon[txb_off..txb_off + txw]);
@@ -468,19 +461,15 @@ pub(crate) fn predict_uv_txb(
             angle_delta_uv * 3, // ANGLE_STEP
             false,
         );
-        pred.clear();
-        pred.resize(txw * txh, 0);
         // Census plane tag (`aom_dsp::census`, no-op without the feature):
         // `predict_intra_high` has no `plane` argument and gains none, so the
         // plane split is annotated where the caller knows it. `plane_total()`
         // must equal `intra_total_calls()`; the census tool asserts it.
         aom_dsp::census::note_plane_intra_pred(plane, tx_size);
-        predict_intra_high(
+        predict_intra_high_in_place(
             recon,
             txb_off,
             env.ref_stride,
-            pred,
-            txw,
             mode,
             angle_delta_uv * 3,
             false,
@@ -494,10 +483,6 @@ pub(crate) fn predict_uv_txb(
             n_bottomleft,
             env.bd as i32,
         );
-        for r in 0..txh {
-            recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw]
-                .copy_from_slice(&pred[r * txw..r * txw + txw]);
-        }
     }
 }
 
@@ -668,7 +653,6 @@ pub fn txfm_rd_in_plane_uv_p(
                     blk_row,
                     blk_col,
                     txb_off,
-                    &mut walk.tight,
                 );
             }
             // Snapshot the prediction (tight) for the search + recon base.
@@ -1074,31 +1058,24 @@ pub fn intra_model_rd_uv(
                 blk_row,
                 blk_col,
                 txb_off,
-                &mut txs.walk.tight,
             );
-            // Caller-owned per-txb buffers (see `tx_search::IntraTxScratch`);
-            // same contents as the `vec![]`s they replace.
-            let pred = &mut txs.walk.pred;
-            pred.clear();
-            pred.resize(n, 0);
-            for r in 0..txh {
-                pred[r * txw..r * txw + txw].copy_from_slice(
-                    &recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw],
-                );
-            }
+            // Caller-owned per-txb buffer (see `tx_search::IntraTxScratch`);
+            // same contents as the `vec![]` it replaces. The prediction is read
+            // straight out of the plane at `ref_stride` — `predict_uv_txb` wrote
+            // it there, so the tight snapshot this replaced was a copy of these
+            // very bytes, and the subtract's per-(r, c) inputs are unchanged.
             let src_txb_off = env.src_off[pi] + (blk_row * env.src_stride + blk_col) * 4;
             txs.walk.residual.clear();
             txs.walk.residual.resize(n, 0);
-            let (pred, residual) = (&txs.walk.pred, &mut txs.walk.residual);
             aom_dsp::dist::highbd_subtract_block(
                 txh,
                 txw,
-                residual,
+                &mut txs.walk.residual,
                 txw,
                 &src[src_txb_off..],
                 env.src_stride,
-                pred,
-                txw,
+                &recon[txb_off..],
+                env.ref_stride,
             );
             // av1_quick_txfm(use_hadamard=0): DCT_DCT forward transform.
             let coeff = &mut txs.search.satd_coeff;

@@ -90,6 +90,7 @@ mod partition_diff;
 mod pick_diff;
 mod pick_search;
 mod predict_intra_diff;
+mod predict_intra_in_place_diff;
 mod prob_cost_diff;
 mod qm_fwd_select_diff;
 mod qm_inv_select_diff;

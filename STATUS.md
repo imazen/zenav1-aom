@@ -1,3 +1,42 @@
+## The intra predictor stopped writing into a scratch the caller then copied back — −0.50 % at the shipping preset, −0.79 % at speed 0, byte-identical (2026-09-10, KB-PERF-56)
+
+libaom's `av1_predict_intra_block_facade` hands the predictor `pd->dst`, so the
+prediction lands in the reconstruction plane directly. The port's two-slice
+`predict_intra_high` made every encoder call site fill a tight `txw * txh`
+scratch and copy the block back row by row — and
+`benchmarks/encoder_lever_map_s3_2026-09-10.md` had annotated `intra_model_rd_y`
+and found that copy is its **hottest single instruction**, at the encoder's
+highest trip count: per txb PER CANDIDATE MODE.
+
+`predict_intra_high_in_place` is additive. Each of the three highbd builders now
+splits into a `plan_*` half that performs EVERY read of the reference plane
+(above/left/corner into owned local arrays, plus the directional degenerate
+arm's two corner reads) and a `write_*` half that touches no reference pixel —
+so reads complete before writes and aliasing the two slices cannot change a
+value. The two-slice entry points are unchanged, which keeps the DECODER out of
+the blast radius.
+
+**Five call sites converted, two deliberately not.** `intra_model_rd_y`,
+`intra_model_rd_uv`, both arms of `predict_uv_txb` and
+`nonrd_pick_intra_mode` drop the scratch, the memset and the copy; their
+consumers (subtract, the speed-9 SAD prune, the CfL DC cache) read the plane
+strided instead. `txfm_rd_in_plane_intra` and `encode_intra_block_plane_*` were
+NOT converted: their prediction feeds `dist_block_px_domain` per TX TYPE, which
+needs a tight `w * h` buffer, so predicting in place there would relocate the
+memcpy rather than remove it.
+
+**Measured** (rotated arms, same-binary null, byte-length identity checked on
+four cells first): **1024x1024 cq27 s3 −0.497 %, 28/30 rounds, p = 8.7e-07**
+against a null of +0.080 %; **512x512 cq27 s0 −0.793 %, 24/24, p = 1.2e-07**
+against +0.042 %. It pays MORE at speed 0 because speed 0 evaluates more
+candidates per transform block — a different overhead class from the
+per-transform-call setup, which pays LESS at faster presets.
+
+New gate `predict_intra_in_place_diff` asserts the WHOLE PLANE is byte-identical
+to predict-then-copy over every mode x angle-delta x filter-intra mode x 19 tx
+sizes x 6 availability combinations x bd {8,10,12}, and that the block still
+equals the real exported C predictor. `just gate-landing` 1507/1507 twice.
+
 ## cq 0 (coded-lossless) no longer trips `tx_size_to_depth`'s assert; the gate's cq-0 arm goes 3 -> 189 cells, 427/427 (2026-09-04, zenavif#45, KB-44)
 
 **Root, one, in this repo.** `key_frame::count_leaf` implemented C's
