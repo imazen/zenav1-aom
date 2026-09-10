@@ -336,12 +336,26 @@ pub fn z2_high(
         z2_high_scalar(dst, stride, bw, bh, above, left, up_above, up_left, dx, dy);
         return;
     }
+    // KB-PERF-55: the left-gather prefix is this function's whole self cost —
+    // the above suffix is dispatched to `two_tap_run` — and it was paying THREE
+    // bounds checks per pixel: `left.at(base_y)`, `left.at(base_y + 1)` (each a
+    // checked slice index through a signed i32 -> usize cast) and the
+    // `dst[row + c]` store. `perf annotate` at the shipping preset put ~9 % of
+    // the function in that check machinery alone (`cmpq` against a stack slot
+    // plus the `movabsq $0x7fff...` limit constant).
+    //
+    // Now: one row slice for the destination, so the store is unchecked inside
+    // the loop; and ONE two-element window for the tap pair instead of two
+    // independent checked reads. Arithmetic, walk order and panic behaviour are
+    // unchanged — `&ld[i0..i0 + 2]` panics exactly when the old
+    // `left.at(base_y + 1)` would have (both require `i0 + 2 <= len`).
+    let ld = left.data();
     for r in 0..bh {
         let y = (r + 1) as i32;
-        let row = r * stride;
+        let drow = &mut dst[r * stride..r * stride + bw];
         let mut c = 0usize;
         // Left-gather prefix, verbatim from the scalar core.
-        while c < bw {
+        for slot in drow.iter_mut() {
             let x = ((c as i32) << 6) - y * dx;
             if (x >> frac_bits_x) >= min_base_x {
                 break;
@@ -350,7 +364,9 @@ pub fn z2_high(
             let y2 = ((r as i32) << 6) - x2 * dy;
             let base_y = y2 >> frac_bits_y;
             let shift = ((y2 * (1 << up_left)) & 0x3F) >> 1;
-            dst[row + c] = rpo2_5_16(left.at(base_y) * (32 - shift) + left.at(base_y + 1) * shift);
+            let i0 = left.idx(base_y);
+            let w = &ld[i0..i0 + 2];
+            *slot = rpo2_5_16(i32::from(w[0]) * (32 - shift) + i32::from(w[1]) * shift);
             c += 1;
         }
         if c < bw {
@@ -359,16 +375,10 @@ pub fn z2_high(
             let shift = (x & 0x3F) >> 1;
             let n = bw - c;
             if n >= MIN_VEC_RUN {
-                two_tap_run(
-                    &mut dst[row + c..row + bw],
-                    above.data(),
-                    above.idx(base_x),
-                    shift,
-                    n,
-                );
+                two_tap_run(&mut drow[c..], above.data(), above.idx(base_x), shift, n);
             } else {
                 crate::intra::dir_simd::two_tap_run_scalar(
-                    &mut dst[row + c..row + bw],
+                    &mut drow[c..],
                     above.data(),
                     above.idx(base_x),
                     shift,
