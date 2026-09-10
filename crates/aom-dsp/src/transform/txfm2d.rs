@@ -403,6 +403,9 @@ const TX_4X4_IDX: usize = 0;
 const TX_8X8_IDX: usize = 1;
 /// `TX_16X16`'s index into the same tables.
 const TX_16X16_IDX: usize = 2;
+/// `TX_4X8` / `TX_8X4` indices.
+const TX_4X8_IDX: usize = 5;
+const TX_8X4_IDX: usize = 6;
 
 /// Public forward 2-D transform. `output` must have length `wide*high` of the
 /// given `tx_size`. Mirrors the C `av1_fwd_txfm2d_<size>_c` entry points,
@@ -479,6 +482,34 @@ pub fn av1_fwd_txfm2d_into(
                 COS_BIT_ROW[2][2] as i32,
                 ud_flip,
                 lr_flip,
+            ) {
+                return;
+            }
+        }
+    }
+    // 4x8 / 8x4 — together 16.7 % of forward transforms at the shipping preset,
+    // the largest block after 4x4 and 8x8. Rectangular, so the row pass carries
+    // the NEW_SQRT2 scaling the square kernels skip. The config comes from
+    // `get_fwd_txfm_cfg` rather than hand-derived tables so it cannot drift.
+    #[cfg(target_arch = "x86_64")]
+    if (tx_size == TX_4X8_IDX || tx_size == TX_8X4_IDX)
+        && FWD_SHIFT[tx_size] == [2, -1, 0]
+    {
+        let c = get_fwd_txfm_cfg(tx_type, tx_size);
+        let (cw, ch) = (TX_SIZE_WIDE[tx_size], TX_SIZE_HIGH[tx_size]);
+        if c.valid && get_rect_tx_log_ratio(cw as i64, ch as i64).abs() == 1 {
+            if crate::transform::simd::try_fwd_txfm2d_rect48_fused(
+                c.txfm_type_col,
+                c.txfm_type_row,
+                input,
+                output,
+                stride,
+                cw,
+                ch,
+                c.cos_bit_col as i32,
+                c.cos_bit_row as i32,
+                c.ud_flip,
+                c.lr_flip,
             ) {
                 return;
             }
