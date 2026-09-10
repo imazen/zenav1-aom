@@ -129,6 +129,54 @@ capacity hint is the point:**
 On the platforms this ships to that arithmetic is different: see the platform
 section above.
 
+## KB-PERF-45 — a thread-local scratch pool: 412,208 allocations removed, and it measured SLOWER
+
+The next site after KB-PERF-44 was unambiguous: **4,822,422 of 7,790,969
+allocations (62 %) are `RawVecInner::finish_grow`**, and every stack is
+`xform_quant_into` <- `xform_quant_optimize_split_into` <-
+`encode_intra_block_plane_{y,uv}` <- `encode_b_intra_dry` <- the partition
+recursion. Cause: each plane walk built its own `XformQuantScratch::default()`,
+so its buffers grew from empty on **every leaf**.
+
+`encode_b_intra_dry` has **28 call sites** through a recursive walk, so a
+threaded parameter is a large change; the two plane functions have five between
+them and **neither has an early return**, so a `thread_local!` pool taken at
+entry and put back at exit is total and needs no signature churn.
+
+**It worked, and it was still slower.**
+
+| | before | after |
+|---|---:|---:|
+| allocations | 7,790,969 | **7,378,761 (−412,208)** |
+| wall | — | **+0.269 % / +0.196 %** (10/24 and 6/24; null −0.030 %) |
+
+Reverted; band committed as `.tlspool.rejected.tsv`.
+
+**Why:** `XQ_POOL.with(...)` is a TLS lookup plus a `RefCell` borrow check,
+**twice per plane call** — about a million of each per encode. Dynamic TLS
+access is a real function call on Linux. That cost exceeds the ~412 k
+`malloc`/`free` pairs it removed, which on glibc are close to a free-list pop.
+
+## The rule this and its three siblings establish
+
+Four allocation-reduction attempts this session, and the outcome is predicted
+entirely by **what replaces the allocation**, not by how many are removed:
+
+| change | allocations removed | mechanism added | result |
+|---|---:|---|---:|
+| `SmallVec` for `winners` | 1.5 M | inline storage (none) | **−0.457 %** |
+| stack array in `perpixel_variance_y` | 220 k | none | −0.074 % (kept) |
+| exact `with_capacity` | **0** | two integer divisions/call | **+0.77 %** (reverted) |
+| thread-local scratch pool | 412 k | TLS + `RefCell`, 2x/call | **+0.23 %** (reverted) |
+
+**An allocation removal only pays if its replacement is cheaper than the
+allocation was.** On glibc a hot repeatedly-reused size class is nearly free, so
+the bar is low: inline storage and stack arrays clear it, TLS pools and extra
+arithmetic do not. On Windows and macOS allocators the bar is much higher and
+these verdicts could flip — which is exactly why the platform note above matters,
+and why `winperf.yml` should re-run the two rejected variants before anyone
+concludes they are dead.
+
 ## What is left
 
 Temporary allocations are down to 417,969 and total to 8.0 M. The remaining mass
