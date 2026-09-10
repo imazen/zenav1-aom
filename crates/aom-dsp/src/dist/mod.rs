@@ -340,6 +340,16 @@ pub fn sub_pixel_variance(
 /// (matching C's `int` arithmetic — wraps like C on overflow) and accumulate
 /// into 64-bit. Used by the encoder's RD search.
 pub fn block_error(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
+    // KB-PERF-39: routed to the `#[autoversion]` twin, which is this exact loop
+    // compiled per SIMD tier. Bit-identical (see `simd::block_error_simd`); the
+    // scalar body below is what that kernel's scalar tier compiles to.
+    crate::dist::simd::block_error_simd(coeff, dqcoeff)
+}
+
+/// The transcribed scalar reference for [`block_error`], kept verbatim as the
+/// differential's target and as documentation of the wrapping arithmetic.
+#[allow(dead_code)]
+pub(crate) fn block_error_scalar_ref(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
     let n = coeff.len();
     let mut error = 0i64;
     let mut sqcoeff = 0i64;
