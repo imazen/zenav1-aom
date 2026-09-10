@@ -1,0 +1,499 @@
+11.89	aom_dsp::txb::optimize::optimize_txb_core
+4.44	aom_encode::tx_search::search_tx_type_intra_into
+3.97	aom_encode::tx_search::txfm_rd_in_plane_intra
+3.64	aom_encode::tx_search::intra_model_rd_y
+3.25	aom_dsp::transform::simd::__arcane_run_inv1d_v3
+2.43	aom_dsp::transform::simd::__arcane_run_fwd1d_v3
+2.32	aom_dsp::intra::dir::z2_high
+2.31	aom_dsp::quant::simd::__arcane_quantize_fp_impl_v3
+1.76	aom_dsp::transform::simd::__arcane_inv_col_pass_core_v3
+1.66	aom_encode::intra_uv_rd::txfm_rd_in_plane_uv_p
+1.65	aom_encode::dist_block_tx_domain
+1.65	aom_dsp::transform::inv_txfm2d::av1_inv_txfm2d_add_into
+1.60	__memmove_avx512_unaligned_erms
+1.52	aom_dsp::transform::txfm2d::av1_fwd_txfm2d_into
+1.50	__memset_avx512_unaligned_erms
+1.42	aom_dsp::txb::simd::__arcane_txb_init_levels_impl_v3
+1.35	aom_encode::xform_quant_into
+1.34	aom_dsp::loopfilter::simd::__arcane_lpf_impl_v3
+1.19	aom_dsp::txb::trellis_cost::two_coeff_cost_simple
+1.10	aom_dsp::dist::variance
+1.04	aom_dsp::transform::simd::lowbd16_fwd::__arcane_run_fwd1d_i16_v3
+1.03	aom_encode::cnn_partition::cnn::cnn_predict
+1.00	aom_dsp::transform::simd::lowbd16_fwd::__arcane_fwd_row_pass_i16_core_v3
+1.00	aom_dsp::txb::get_nz_map_contexts
+0.99	aom_dsp::transform::simd::try_fwd_col_pass
+0.97	aom_dsp::transform::simd::__arcane_inv_row_pass_core_v3
+0.92	aom_dsp::restore::pick::__arcane_acc_stat_line_impl_v3
+0.87	aom_dsp::quant::aom_quantize_b_no_qmatrix
+0.87	aom_encode::hog::generate_hog
+0.82	aom_dsp::restore::pick::__arcane_pixel_proj_error_impl_v3
+0.82	aom_encode::xform_quant_optimize_split_into
+0.81	aom_dsp::intra::__arcane_assemble_dir_edges_v4
+0.79	aom_dsp::transform::simd::__arcane_inv_8x8_fused_v3
+0.74	aom_dsp::dist::simd_variance::__arcane_highbd_variance64_impl_v3
+0.74	aom_dsp::txb::trellis_cost::coeff_cost_general
+0.74	aom_dsp::restore::wiener::__arcane_wiener_pass_madd_v3
+0.72	aom_dsp::transform::simd::__arcane_fwd_8x8_fused_v3
+0.72	aom_dsp::transform::simd::lowbd16_fwd::__arcane_fwd_col_pass_i16_core_v3
+0.71	aom_dsp::transform::simd::__arcane_fwd_col_pass_core_v3
+0.71	aom_encode::encode_intra::encode_intra_block_plane_y
+0.71	aom_dsp::txb::entropy_ctx::txb_entropy_context
+0.70	aom_dsp::dist::highbd_variance
+0.66	aom_dsp::txb::optimize::update_coeff_general
+0.65	aom_dsp::entropy::partition::intra_avail
+0.63	aom_dsp::transform::simd::__arcane_fwd_row_pass_core_v3
+0.62	aom_dsp::txb::cost::cost_coeffs_txb
+0.62	aom_dsp::intra::edge::highbd_filter_intra_edge
+0.60	aom_dsp::txb::entropy_ctx::get_txb_ctx
+0.60	aom_dsp::restore::sgr::calculate_intermediate::{closure#0}
+0.59	aom_dsp::transform::inv_txfm1d_gen::av1_idct4
+0.59	aom_dsp::intra::build_directional_intra_high
+0.58	aom_dsp::transform::fdct::av1_fdct4
+0.58	aom_dsp::intra::dir::z3_high_scalar
+0.57	aom_dsp::transform::simd::try_fwd_row_pass
+0.57	aom_dsp::txb::cost::eob_cost
+0.53	aom_dsp::intra::cfl::cfl_predict_block
+0.50	aom_encode::intra_rd::rd_pick_intra_sby_mode_y
+0.49	aom_dsp::restore::sgr::selfguided_restoration
+0.44	aom_dsp::transform::simd::lowbd16::__arcane_inv_row_pass_i16_core_v3
+0.44	aom_dsp::intra::__arcane_assemble_nd_edges_v4
+0.44	aom_encode::tx_search::get_tx_mask_intra
+0.43	aom_dsp::intra::dir::z3_high
+0.41	aom_dsp::intra::dir_simd::__arcane_two_tap_run_impl_v3
+0.40	aom_encode::encode_intra::encode_intra_block_plane_uv
+0.40	aom_encode::intra_uv_rd::predict_uv_txb
+0.38	aom_dsp::intra::filter_simd::__arcane_filter_intra_predict_high_impl_v3
+0.38	aom_dsp::intra::edge::highbd_upsample_intra_edge
+0.37	_int_malloc
+0.37	aom_dsp::intra::simd::__arcane_paeth_impl_v3
+0.36	aom_dsp::intra::predict_highbd
+0.35	<aom_encode::intra_rd::IntraSbyGates>::visits
+0.34	cfree@GLIBC_2.2.5
+0.34	aom_dsp::transform::special::av1_fadst4
+0.34	aom_encode::tx_search::dist_block_px_domain_into
+0.33	<aom_dsp::restore::pick::PlaneCtx>::try_restoration_unit
+0.32	aom_dsp::dist::hadamard::__arcane_hadamard_8x8_avx2_v3
+0.32	aom_dsp::txb::trellis_cost::coeff_cost_eob
+0.31	aom_dsp::loopfilter::frame::loop_filter_frame_stop
+0.31	aom_dsp::transform::simd::lowbd16::__arcane_run_inv1d_i16_v3
+0.29	aom_dsp::dist::hadamard::hadamard_16x16
+0.28	aom_encode::encode_sb::encode_b_intra_dry
+0.28	aom_dsp::intra::build_non_directional_intra_high
+0.28	aom_dsp::quant::simd::av1_quantize_fp_no_qmatrix_dispatch
+0.28	aom_dsp::txb::ext_tx::get_tx_type_cost
+0.27	aom_encode::partition_pick::leaf_pick_sb_modes
+0.27	malloc
+0.26	aom_encode::lf_search::search_filter_level::{closure#0}
+0.25	aom_dsp::intra::predict_intra_high
+0.24	aom_encode::intra_uv_rd::intra_model_rd_uv
+0.24	aom_dsp::intra::dr_predict_high
+0.24	aom_dsp::transform::txfm1d_gen::av1_fdct8
+0.23	aom_dsp::restore::pick::calc_proj_params
+0.22	aom_dsp::transform::special::av1_iadst4
+0.21	aom_encode::tx_search::choose_tx_size_type_from_rd_intra
+0.19	aom_dsp::restore::sgr::__arcane_ab_row_impl_v3
+0.19	aom_dsp::transform::txfm1d_gen::av1_fadst8
+0.19	aom_dsp::intra::dir::z1_high_scalar
+0.18	__log1p_fma
+0.17	aom_encode::intra_rd::intra_rd_variance_factor
+0.17	aom_dsp::transform::simd::__arcane_fwd_col_pass_v3
+0.17	aom_dsp::transform::txfm2d::get_fwd_txfm_cfg
+0.17	aom_encode::intra_rd::calc_normalized_variance_4x4
+0.16	aom_dsp::txb::optimize::optimize_txb
+0.16	aom_dsp::intra::simd16::__arcane_smooth_impl_v3
+0.16	<alloc::raw_vec::RawVecInner>::finish_grow
+0.16	_int_free_merge_chunk
+0.15	aom_dsp::transform::simd::__arcane_inv_col_pass_v3
+0.15	aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add
+0.15	aom_dsp::transform::simd::try_inv_row_pass
+0.14	aom_dsp::transform::txfm1d_gen::av1_fadst16
+0.13	aom_dsp::txb::prob_cost::cost_tokens_from_cdf
+0.13	aom_dsp::intra::dir::z2_high_scalar
+0.13	aom_dsp::transform::txfm1d_gen::av1_fdct16
+0.13	aom_dsp::intra::simd::smooth
+0.12	aom_encode::partition_pick::rd_pick_partition_real
+0.12	__memset_avx512_unaligned
+0.11	aom_dsp::intra::dir_simd::two_tap_run
+0.11	aom_dsp::transform::simd::__arcane_fwd_row_pass_v3
+0.11	aom_dsp::transform::inv_txfm2d::get_inv_txfm_cfg
+0.11	aom_dsp::dist::hadamard::hadamard_8x8
+0.11	aom_encode::intra_uv_rd::cfl_rd_pick_alpha
+0.11	aom_dsp::intra::assemble_dir_edges
+0.10	aom_encode::intra_uv_rd::rd_pick_intra_sbuv_mode
+0.10	aom_encode::tx_search::uniform_txfm_yrd_intra
+0.10	aom_dsp::intra::dir::z1_high
+0.10	aom_dsp::transform::simd::__arcane_inv_row_pass_v3
+0.09	__rustc::__rdl_alloc
+0.09	aom_encode::cnn_partition::nn::relu_layer
+0.09	<alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global>
+0.09	aom_encode::tx_search::get_tx_mask_uv_intra
+0.09	aom_dsp::transform::simd::lowbd16_fwd::__arcane_fwd_col_pass_i16_v3
+0.08	aom_encode::hog::hog_nn_predict
+0.08	<aom_dsp::txb::fill::CoeffCostSet>::tables
+0.08	aom_dsp::restore::sgr::boxsum_vert_scalar_cols
+0.08	aom_encode::ab_nn_prune::predict_ab_partition_prune
+0.08	<aom_encode::intra_rd::Block4x4VarInfo>::sb_cache
+0.08	aom_dsp::restore::sgr::__arcane_boxsum_vert_impl_v3
+0.08	aom_dsp::dist::hadamard::hadamard_4x4
+0.08	<alloc::raw_vec::RawVecInner>::finish_grow
+0.07	aom_dsp::intra::simd::paeth
+0.07	aom_encode::rd_pick::rd_pick_intra_mode_sb
+0.06	aom_dsp::intra::cfl::cfl_store
+0.06	aom_dsp::txb::write::write_txb_body
+0.06	aom_encode::intra_uv_rd::txfm_uvrd_p
+0.06	unlink_chunk.isra.0
+0.06	aom_encode::intra_uv_rd::cfl_pick_plane_rd
+0.06	__libc_malloc2
+0.06	aom_dsp::entropy::partition::has_bottom_left
+0.05	__libc_calloc
+0.05	_int_free_maybe_trim
+0.05	aom_dsp::transform::inv_txfm2d::remap_input
+0.05	aom_encode::mode_costs::tx_size_cost
+0.05	_int_free_chunk
+0.05	aom_dsp::transform::simd::lowbd16_fwd::__arcane_fwd_row_pass_i16_v3
+0.04	aom_encode::intra_rd::rd_pick_filter_intra_sby_y
+0.04	aom_dsp::txb::fill::fill_lv_map_coeff_cost
+0.04	<alloc::raw_vec::RawVec<aom_encode::tx_search::TxbWinner>>::grow_one
+0.03	aom_encode::dist_block_tx_domain_qm
+0.03	aom_dsp::intra::build_filter_intra_high
+0.03	aom_dsp::restore::sgr::apply_selfguided_restoration
+0.03	aom_dsp::transform::simd::inv1d_v3_gen::__arcane_av1_idct64_impl_v3
+0.03	realloc
+0.03	<aom_dsp::entropy::enc::OdEcEnc>::normalize
+0.03	aom_dsp::transform::simd::lowbd16::__arcane_inv_row_pass_i16_v3
+0.03	__libc_calloc2
+0.03	aom_dsp::restore::pick::pick_filter_restoration
+0.03	aom_encode::tx_search::pick_uniform_tx_size_type_yrd_intra
+0.03	aom_encode::partition_pick::restore_context
+0.03	aom_dsp::transform::simd::fwd1d_v3_i16_gen::__arcane_av1_fdct64_i16_impl_v3
+0.03	core::ptr::drop_glue::<aom_encode::tx_search::IntraTxScratch>
+0.03	_int_realloc
+0.03	aom_encode::hog::prune_intra_mode_with_hog_y
+0.02	aom_encode::pack::pack_leaf
+0.02	__rustc::__rust_dealloc
+0.02	aom_encode::hog::prune_intra_mode_with_hog_uv
+0.02	aom_encode::mode_costs::intra_mode_info_cost_y
+0.02	<alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global>
+     0.02%  drv_i8   [unknown]         [k] 0xffffffffb322c68a
+     0.02%  drv_i8   [unknown]         [k] 0xffffffffb2a011b2
+0.02	aom_dsp::entropy::partition::is_directional_mode
+0.02	__rustc::__rdl_alloc_zeroed
+0.02	<aom_encode::partition_pick::ModeGrid>::stamp
+0.02	__rustc::__rust_no_alloc_shim_is_unstable_v2
+0.02	aom_dsp::entropy::partition::tx_size_to_depth
+0.02	__rustc::__rdl_dealloc
+0.02	aom_encode::screen_detect::count_colors_with_threshold
+0.02	aom_encode::partition_pick::save_context
+0.02	aom_encode::partition_pick::rd_pick_rect_partition
+     0.02%  drv_i8   [unknown]         [k] 0xffffffffb2b0410b
+0.02	aom_dsp::restore::pick::compute_stats
+0.02	<aom_dsp::entropy::enc::OdEcEnc>::encode_cdf_q15
+0.02	aom_dsp::entropy::partition::write_mb_modes_kf_fc
+0.02	aom_dsp::dist::hadamard::hadamard_32x32
+0.02	aom_dsp::entropy::partition::has_top_right
+0.02	core::ptr::drop_glue::<aom_encode::encode_intra::EncodeIntraPlaneOutcome>
+0.02	<alloc::raw_vec::RawVec<aom_encode::intra_rd::WinnerModeEntry>>::grow_one
+0.02	aom_dsp::transform::special::av1_fidentity4
+0.02	aom_encode::part4_prune::predict_4partition_prune
+0.02	aom_dsp::restore::sgr::calculate_intermediate
+0.02	aom_encode::intra_uv_rd::pick_intra_angle_routine_sbuv
+0.02	aom_dsp::intra::simd::smooth_v
+0.02	aom_dsp::transform::simd::inv1d_v3_i16_gen::__arcane_av1_idct64_i16_impl_v3
+0.01	aom_encode::key_frame::encode_key_frame_with
+0.01	<aom_encode::encode_sb::LeafWinner as core::clone::Clone>::clone
+0.01	aom_encode::partition_pick::stamp_grid_from_tree
+0.01	aom_encode::encode_sb::encode_sb_dry
+0.01	aom_encode::partition_pick::perpixel_variance_y
+0.01	<alloc::raw_vec::RawVec<aom_encode::rdopt_single_state::InterModeInfoEntry>>::grow_one
+0.01	__rustc::__rust_alloc
+0.01	aom_encode::intra_uv_rd::av1_get_tx_size_uv
+0.01	aom_dsp::intra::filter_intra_predict_high
+     0.01%  drv_i8   [unknown]         [k] 0xffffffffb2dafa20
+     0.01%  drv_i8   [unknown]         [k] 0xffffffffb2a00ef0
+0.01	<aom_encode::encode_sb::LeafWinner as core::clone::Clone>::clone
+0.01	aom_dsp::txb::write::write_coeffs_txb_full
+0.01	aom_encode::partition_pick::rd_pick_4partition
+0.01	aom_encode::rd_pick::winner_tx_type_map
+0.01	aom_dsp::entropy::cdf::update_cdf
+0.01	aom_encode::partition_pick::rd_pick_ab_part
+0.01	aom_dsp::transform::special::av1_iidentity4
+     0.01%  drv_i8   [unknown]         [k] 0xffffffffb2b04109
+0.01	aom_dsp::intra::simd16::__arcane_smooth_h_impl_v3
+0.01	aom_encode::partition_pick::extract_intra_cnn_window
+0.01	aom_encode::screen_detect::estimate_screen_content_antialiasing_aware
+     0.01%  drv_i8   [unknown]         [k] 0xffffffffb2a01268
+     0.01%  drv_i8   [unknown]         [k] 0xffffffffb2ec2fba
+0.01	aom_dsp::entropy::partition::update_ext_partition_context
+     0.01%  drv_i8   [unknown]         [k] 0xffffffffb2b04104
+0.01	aom_dsp::intra::simd16::__arcane_smooth_v_impl_v3
+0.01	aom_encode::intra_uv_rd::rd_pick_intra_angle_sbuv
+0.01	aom_encode::intra_uv_rd::cfl_pick_plane_parameter
+0.01	core::ptr::drop_glue::<aom_encode::encode_intra::EncodeIntraPlaneOutcome>
+0.01	__w_logp1
+0.01	aom_encode::cnn_partition::nn::nn_predict
+     0.01%  drv_i8   [unknown]         [k] 0xffffffffb2dedf28
+     0.01%  drv_i8   [unknown]         [k] 0xffffffffb2f78979
+     0.01%  drv_i8   [unknown]         [k] 0xffffffffb2e09282
+     0.01%  drv_i8   [unknown]         [k] 0xffffffffb2a01170
+0.01	aom_encode::partition_pick::log_sub_block_var
+0.01	aom_encode::pack::pack_sb
+     0.01%  drv_i8   [unknown]         [k] 0xffffffffb2e4e2d9
+0.01	aom_encode::cnn_partition::decision::assemble_features
+     0.01%  drv_i8   [unknown]         [k] 0xffffffffb32bbee1
+0.01	__rustc::__rdl_realloc
+0.01	av1_find_qindex
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31fdeb3
+0.00	core::ptr::drop_glue::<aom_encode::encode_intra::EncodeIntraPlaneOutcome>
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31fc80c
+0.00	aom_dsp::entropy::partition::write_mb_modes_kf_prefix
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2a00f03
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2a00b90
+0.00	aom_dsp::restore::wiener::__arcane_wiener_impl_v3
+0.00	aom_encode::lf_search::stamp_lf_tree
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb411d17a
+0.00	aom_encode::pack::pack_tile_from_trees_lr
+0.00	memcpy@@GLIBC_2.14@plt
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ec2fd1
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f8f6ca
+0.00	<core::iter::adapters::copied::Copied<core::iter::adapters::flatten::Flatten<core::iter::adapters::flatten::Flatten<core::slice::iter::Iter<[[u16; 3]; 3]>>>> as core::iter::traits::iterator::Iterator>::fold::<(), core::iter::traits::iterator::Iterator::for_each::call<u16, <alloc::vec::Vec<u16>>::extend_trusted<core::iter::adapters::copied::Copied<core::iter::adapters::flatten::Flatten<core::iter::adapters::flatten::Flatten<core::slice::iter::Iter<[[u16; 3]; 3]>>>>>::{closure#0}>::{closure#0}>
+0.00	aom_dsp::intra::cfl::cfl_store_tx
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eafe60
+0.00	eprof_x86::main
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2e9f6a2
+0.00	<alloc::vec::Vec<u16> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<u16, core::iter::adapters::copied::Copied<core::iter::adapters::flatten::Flatten<core::slice::iter::Iter<[u16; 11]>>>>>::from_iter
+0.00	<alloc::raw_vec::RawVec<core::option::Option<aom_encode::encode_sb::SbTree>>>::grow_one
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eafe37
+0.00	aom_dsp::txb::fill::fill_coeff_cost_set_from_arena
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3233767
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31eb799
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31fc7f2
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f44e3c
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb32394c1
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb32159f1
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f95de9
+0.00	aom_dsp::intra::simd::smooth_h
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ded055
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eafe0d
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f9526c
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eafddf
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3a2336e
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eaa57c
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb41130c6
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f951f8
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb958e
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3212f93
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffc7aea7c0
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb411d0ad
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3154f0c
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb9615
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2dc5489
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f8eea0
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb36ddf26
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f75b7e
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2dfb068
+0.00	aom_dsp::txb::ext_tx::ext_tx_derive
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ed99a5
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31fcbc0
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb41202cc
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31c5d6d
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f45846
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ec2f9f
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2d51fa0
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f75a83
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb41202f9
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31620b7
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31fc60f
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ee6625
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2e1af69
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2a00f06
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2edbd50
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb411f863
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ef6fe9
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31986b2
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb412062f
+0.00	aom_dsp::transform::special::av1_fidentity16
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f8f581
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb411333e
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f758e0
+0.00	core::ptr::drop_glue::<aom_encode::encode_sb::SbTree>
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2d56bae
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ea5269
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2a001bd
+0.00	<core::iter::adapters::copied::Copied<core::iter::adapters::flatten::Flatten<core::iter::adapters::flatten::Flatten<core::slice::iter::Iter<[[u16; 17]; 4]>>>> as core::iter::traits::iterator::Iterator>::fold::<(), core::iter::traits::iterator::Iterator::for_each::call<u16, <alloc::vec::Vec<u16>>::extend_trusted<core::iter::adapters::copied::Copied<core::iter::adapters::flatten::Flatten<core::iter::adapters::flatten::Flatten<core::slice::iter::Iter<[[u16; 17]; 4]>>>>>::{closure#0}>::{closure#0}>
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eafde1
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb32b6e14
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb315d940
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb411ba3e
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3197aea
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ef4b9a
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb41007bf
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb8b26
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb8397
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb36ddea5
+0.00	aom_dsp::txb::ext_tx::fill_tx_type_costs
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f8f54c
+0.00	<aom_encode::pack::MiNbrGrid>::stamp
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb41130ac
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f5f67d
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb412098b
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3a52456
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb36ddfb9
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ec2fc6
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f7894b
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb8ac9
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f8bec7
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eab29b
+0.00	<alloc::vec::Vec<u16> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<u16, core::iter::adapters::copied::Copied<core::iter::adapters::flatten::Flatten<core::iter::adapters::flatten::Flatten<core::slice::iter::Iter<[[u16; 17]; 4]>>>>>>::from_iter
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31f44c3
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb8646
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb4101b21
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f75950
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f73049
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb411d060
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f8f716
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f79982
+0.00	aom_dsp::restore::frame::filter_unit
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ee667d
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2fa0da6
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb32ba007
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb411f854
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb411f850
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31ed56c
+0.00	__log1p_ifunc@plt
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ec2f25
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb413223f
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb411ba41
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ee6640
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2d46b26
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3a21d26
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f7c185
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f469cb
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb41202e3
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ea5182
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2fbe315
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f79946
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb4132ae6
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eafe66
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb8919
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb411f887
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb83c6
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2edbe4a
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb95ad
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f76a3d
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2edbe41
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2e9d125
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb82c0
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb83aa
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f76a17
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2dedefd
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f8eec2
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f75876
+0.00	core::ptr::drop_glue::<aom_encode::encode_sb::SbTree>
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb32b7381
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f76910
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ef6d82
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f76a38
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb914c
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ec2fb2
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb904d
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f952d6
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f792a6
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f7959d
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb9670
+0.00	core::ptr::drop_glue::<aom_encode::partition_pick::SavedCtx>
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2dedf04
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3154be8
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb8a75
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f758e3
+0.00	aom_dsp::restore::pick::update_sep_sym
+0.00	aom_encode::mode_costs::fill_tx_size_costs
+0.00	aom_dsp::loopfilter::frame::lf_frame_init
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f76915
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb8910
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2a00bb7
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31fcba5
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2edbe44
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ef68d7
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f747bb
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31fcbc5
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb315d9d1
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f7c995
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb8e86
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f94ffa
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eaa67a
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f74458
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eafe77
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb4120784
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31620f5
+0.00	core::ptr::drop_glue::<aom_encode::encode_sb::LeafEncodeOut>
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f74443
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb9625
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2da995c
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f9529a
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ed9479
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb32bbed4
+0.00	aom_dsp::quant::build_quantizer::av1_build_quantizer
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ded04d
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f756a6
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb36ddf1f
+0.00	<aom_encode::encode_sb::SbTree as core::clone::Clone>::clone
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ec3315
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2a00efe
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f74c6d
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3239601
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb32b3b70
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb36ddeb4
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffc7aea7c5
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f44272
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2a00b9c
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb36ddf05
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2a015f7
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb4113096
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f8eede
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f45b17
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffc7aea7d2
+0.00	core::ptr::drop_glue::<alloc::boxed::Box<[core::option::Option<aom_encode::encode_sb::LeafWinner>; 4]>>
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ee6630
+0.00	aom_dsp::transform::special::av1_fidentity8
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb32bd7f2
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb36ddf11
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31eb7b8
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2def5f6
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb324bab1
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2eb9140
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3154c16
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2ea50b6
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f77df9
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f79400
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31fe235
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3233764
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb32ba15b
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31e07b6
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb41209cb
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb4100fd1
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3163985
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31531a0
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31531a6
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3162cca
+     0.00%  perf-ex  [unknown]         [k] 0xffffffffb2d556c5
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2d52033
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb31620fa
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3154be6
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3154f16
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3162055
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2e0943b
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3154e15
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2d5724e
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3154e10
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb411d0d6
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2e09441
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f3aab4
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb2f3aab7
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3154e16
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3154e19
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb3162060
+     0.00%  drv_i8   [unknown]         [k] 0xffffffffb316208c
+     0.00%  perf-ex  [unknown]         [k] 0xffffffffb2e0943b
+     0.00%  perf-ex  [unknown]         [k] 0xffffffffb3162055
+     0.00%  perf-ex  [unknown]         [k] 0xffffffffb411d060
