@@ -130,6 +130,52 @@ mass is real; whether removing it is worth 0.5 % or 3 % cannot be known until
 the arena exists, because glibc's allocator is fast on a hot, repeatedly-reused
 size class and these are all the same few sizes.
 
+## The remaining 62 %: sizing data for the arena / SmallVec decision
+
+After KB-PERF-43/44, **4,822,422 of 7,378,761 allocations are still
+`finish_grow`**, and they are `TxbEncode`'s two owned `Vec<i32>` (`qcoeff`,
+`dqcoeff`) — one pair per transform block. **The TLS-pool platform flip
+(`encoder_tlspool_windows_2026-09-10.md`) is what makes this worth funding**:
+Linux systematically understates it, and Windows ARM reversed the sign on a
+change removing eight times fewer allocations.
+
+**The measurements a next session needs, so it does not re-derive them:**
+
+Coefficient counts per transform (s3 census, forward):
+
+| inline capacity | covers | bytes inline per field |
+|---:|---:|---:|
+| 16 | **40.5 %** | 64 |
+| 64 | **84.4 %** | 256 |
+| 256 | 99.3 % | 1024 |
+
+Txb counts per walk (`NTXB` histogram, measured for KB-PERF-43): **1 txb
+50.6 %, 2 txbs 35.6 %, 4 txbs 13.8 %, nothing above 4.**
+
+**Why the choice is not obvious, and both effects must be measured, not
+argued:**
+
+* `TxbEncode` is ~80 bytes today. Inline-16 makes it ~208, inline-64 ~592 — and
+  it lives in a `Vec<TxbEncode>` of up to 4, so the struct-size growth is paid
+  on every move of that vector.
+* The producer currently does `core::mem::take(&mut xq.qcoeff)`, a **free
+  move**. A `SmallVec` must `from_slice`, a **copy**. Trivial at 16 elements
+  (64 bytes), but for the 0.7 % of blocks at 1024 coefficients it becomes a 4 KB
+  copy *plus* a heap spill where there used to be a pointer move.
+* So inline-16 buys 40.5 % of the allocations and pays a copy on exactly those;
+  inline-64 buys 84.4 % and pays a much larger struct everywhere.
+
+**A true arena** — one flat `Vec<i32>` per walk with `(offset, len)` in
+`TxbEncode` — avoids both the struct growth and the copy, at the cost of
+threading the arena's lifetime alongside the outcome struct. That is the shape
+KB-PERF-45's record already names, and this data says it is preferable to a
+`SmallVec` field on both counts.
+
+**Measure on `winperf.yml`, not only here.** This cycle's two kept allocation
+changes were platform-robust because they added no mechanism; an arena adds
+indexing, which is a mechanism, so it belongs in the class where the platforms
+have now been shown to disagree.
+
 ## Not covered
 
 One box, one content class, one quantizer, `--cpu-used 3`, x86-64. Peak heap and
