@@ -63,6 +63,37 @@ same-binary null, 24 rounds x 4 reps.
 **Byte-identical on all four standard cells** — 40,237 / 39,694 / 10,912 /
 11,961.
 
+## The same transformation on z1 and z3: REJECTED, and it sharpens the rule
+
+Applying the identical change to `z1_high_scalar` (contiguous inner loop, so
+3 checks -> 1, exactly like z2) and `z3_high_scalar` (STRIDED inner loop, so only
+the window applies, 3 -> 2) measures **+0.123 %, 10 of 24 rounds faster,
+p = 1.0000** against a +0.040 % null. Byte-identical on four cells. **Reverted**;
+band committed as `.z1z3_rejected.tsv`.
+
+**Why it does not follow from z2's win:** `z2_high` carries **78 ms** of self
+cost and lost **2 of 3** checks per pixel. `z3_high_scalar` carries **27 ms** and
+loses **1 of 3** (its store is strided, so there is no row slice to take), and
+z1's scalar path barely clears the profile floor at all. Same shape, roughly a
+quarter of the work removed, and it disappears into the noise.
+
+**This is a real qualification of the rule this session derived**, and it is
+worth more than the change would have been. "Removes work and adds none" is
+**necessary but not sufficient** — and it does not even guarantee the right sign:
+
+| change | strictly removes work? | measured |
+|---|---|---:|
+| 4x4 variance (copy + walk, every unit) | yes | **−0.827 %** |
+| z2 left prefix (2 of 3 checks, 78 ms symbol) | yes | **−0.274 %** |
+| reconstruct round trip (2 copies, minority of txbs) | yes | −0.147 %, null |
+| **z1/z3 (1 of 3 checks, 27 ms symbol)** | **yes** | **+0.123 %, null** |
+
+Two of the four "strictly removes work" changes landed on the wrong side of zero.
+So the KB-PERF-44 argument — *keep it anyway, it cannot be slower in principle* —
+is **not** a reliable predictor of sign at this magnitude, and should be used only
+to justify keeping a change that already measured negative, never to skip the
+band or to keep one that did not.
+
 ## Not covered
 
 The row is not closed: the gather itself remains scalar, and closing it properly
