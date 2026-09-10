@@ -331,6 +331,37 @@ pub fn av1_inv_txfm2d_add_into(
     if tx_size == 0 && inv_txfm2d_add_4x4_fused(input, output, stride, tx_type, bd) {
         return;
     }
+    // The SIMD-preserving 8x8 specialisation — KB-PERF-23's twin, 26.96 % of
+    // inverse transforms at the shipping preset. Declines to the generic driver
+    // on anything it is not proven for.
+    #[cfg(target_arch = "x86_64")]
+    if tx_size == 1 && INV_SHIFT[1] == [-1, -4] && get_rect_tx_log_ratio(8, 8) == 0 {
+        let cfg8 = get_inv_txfm_cfg(tx_type, 1);
+        if cfg8.valid {
+            // `opt_range` returns (COL, ROW) — the driver above destructures it
+            // as `let (opt_range_col, opt_range_row) = opt_range(bd);`. Getting
+            // this backwards is what the first version did, and both inverse
+            // differentials caught it.
+            let (opt_col, opt_row) = opt_range(bd);
+            let (srr, src_) = ([opt_row; 12], [opt_col; 12]);
+            if crate::transform::simd::try_inv_txfm2d_8x8_fused(
+                cfg8.txfm_type_row,
+                cfg8.txfm_type_col,
+                input,
+                output,
+                stride,
+                (bd + 8) as i8,
+                (bd + 6).max(16) as i8,
+                &srr,
+                &src_,
+                cfg8.ud_flip,
+                cfg8.lr_flip,
+                bd,
+            ) {
+                return;
+            }
+        }
+    }
     let InvTxfmScratch { buf, mod_input: mod_input_scratch } = scratch;
     let cfg = get_inv_txfm_cfg(tx_type, tx_size);
     assert!(cfg.valid, "unsupported inverse (tx_type={tx_type}, tx_size={tx_size})");
