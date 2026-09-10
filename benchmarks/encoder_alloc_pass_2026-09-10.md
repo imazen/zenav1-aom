@@ -1,0 +1,86 @@
+# The alloc pass: 10.4 M allocations per 1 MP encode — where they are, and one hypothesis measured and REFUTED
+
+**2026-09-10.** Prompted by the observation that the `memory` class runs at
+**6.7x libaom** and might be the perf problem. Measured with **heaptrack** plus
+a code reading, not inferred from the profile.
+
+## The measurement
+
+One 1024x1024 cq27 `--cpu-used 3` encode:
+
+| | |
+|---|---:|
+| allocations | **10,419,121** |
+| temporary allocations | 1,931,251 |
+| leaked | 1 |
+| calls through `RawVecInner::finish_grow` (aom_encode) | **5,870,590 — 56 %** |
+
+**Over ten million allocations for a single still image, and more than half of
+them are a `Vec` GROWING.** libaom's equivalent work is a handful of frame-level
+buffers.
+
+## Where they come from — the code reading
+
+`finish_grow` at 5.87 M is `Vec` growth, and the arithmetic points at one shape:
+**two `Vec<i32>` per transform block**.
+
+* `XformQuantScratch` holds `coeff` / `qcoeff` / `dqcoeff`, and the `_into`
+  forms reuse it — that is KB-PERF-2's landing and it works.
+* But **the OWNED forms `xform_quant_optimize` / `xform_quant` allocate fresh
+  `Vec`s per call**, and they still have live callers on hot paths:
+  `intra_rd.rs:181` (`intra_mode_rd_eval`), `encode_sb.rs:2063` and `:2071`,
+  `lib.rs:858` / `:907`, `var_tx.rs:583` / `:603`.
+* `TxbEncode` itself **owns** `qcoeff: Vec<i32>` and `dqcoeff: Vec<i32>`, one
+  pair per txb, and those are retained output rather than churn — so they cannot
+  simply move into a scratch.
+
+`5,870,590 / 2 ≈ 2.9 M` transform blocks with a growing pair each, which is the
+right order for this cell. **The fix is structural**: an arena — one flat
+`Vec<i32>` per walk with `(offset, len)` in `TxbEncode` — not a capacity hint.
+
+## The hypothesis that was measured and REFUTED
+
+The obvious cheap fix was to give the growing `Vec`s an exact capacity, as
+KB-PERF-13 did for the luma `winners`. Applied at three sites — the luma and
+chroma `Vec<TxbEncode>` walks in `encode_intra.rs` and the chroma `winners` in
+`intra_uv_rd.rs`, all named by heaptrack.
+
+**Result: allocations UNCHANGED at 10,419,121 (identical to the digit), and the
+encode measured +0.77 % SLOWER** (+0.859 % and +0.673 % against the two base
+copies, **1 of 24 rounds faster**, p<0.0001; null +0.131 %, p=0.31).
+
+Two reasons, both worth keeping:
+
+1. **Most blocks are single-txb.** A 4x4 transform in a 4x4 block pushes ONE
+   element, and `Vec::new()` + one push allocates exactly once — the same as
+   `with_capacity(1)`. There was no growth chain to remove. `temporary`
+   allocations fell by only 13,922 of 1.93 M.
+2. **The capacity expression costs two integer divisions** (`div_ceil` twice)
+   on a path called millions of times. Divisions are ~20-40 cycles; the
+   allocations they were meant to save did not exist.
+
+**Reverted.** Band committed as `.capacity.rejected.tsv`.
+
+**The transferable rule: a capacity hint is arithmetic, and on a hot path it has
+to earn its keep like any other change. Measure the allocation COUNT before and
+after — if it does not move, the hint is pure cost.**
+
+## What this says about the `memory` class
+
+It does **not** say the 6.7x class ratio is the perf problem, and the evidence
+is that the class's own components have been attacked directly all cycle with
+small returns, while the two biggest wins of the session (`highbd_subtract_block`
+−3.17 %, `block_error` −0.88 %) were **arithmetic** loops found by disassembly,
+not allocation.
+
+The honest reading: **10.4 M allocations is genuinely bad and worth fixing, but
+the fix is the arena refactor, and its size is unmeasured.** The `finish_grow`
+mass is real; whether removing it is worth 0.5 % or 3 % cannot be known until
+the arena exists, because glibc's allocator is fast on a hot, repeatedly-reused
+size class and these are all the same few sizes.
+
+## Not covered
+
+One box, one content class, one quantizer, `--cpu-used 3`, x86-64. Peak heap and
+total bytes were not extracted; only counts. The arena refactor was not
+attempted.
