@@ -335,6 +335,33 @@ pub fn av1_inv_txfm2d_add_into(
     // inverse transforms at the shipping preset. Declines to the generic driver
     // on anything it is not proven for.
     #[cfg(target_arch = "x86_64")]
+    if (tx_size == 5 || tx_size == 6) && INV_SHIFT[tx_size] == [0, -4] {
+        let c48 = get_inv_txfm_cfg(tx_type, tx_size);
+        let (cw, ch) = (TX_SIZE_WIDE[tx_size], TX_SIZE_HIGH[tx_size]);
+        if c48.valid && get_rect_tx_log_ratio(cw as i64, ch as i64).abs() == 1 {
+            let (opt_col, opt_row) = opt_range(bd);
+            let (srr, src_) = ([opt_row; 12], [opt_col; 12]);
+            if crate::transform::simd::try_inv_txfm2d_rect48_fused(
+                c48.txfm_type_row,
+                c48.txfm_type_col,
+                input,
+                output,
+                stride,
+                cw,
+                ch,
+                (bd + 8) as i8,
+                (bd + 6).max(16) as i8,
+                &srr,
+                &src_,
+                c48.ud_flip,
+                c48.lr_flip,
+                bd,
+            ) {
+                return;
+            }
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
     if tx_size == 2 && INV_SHIFT[2] == [-2, -4] && get_rect_tx_log_ratio(16, 16) == 0 {
         let cfg16 = get_inv_txfm_cfg(tx_type, 2);
         if cfg16.valid {
