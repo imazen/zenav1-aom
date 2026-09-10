@@ -161,6 +161,46 @@ resting on an argument that does not support it.
    (`base_y` is not affine in `c`), which is why KB-PERF-4 vectorised only the
    above half.
 
+## The hog division: the exactness argument, derived — and it says DO NOT BOTHER
+
+`generate_hog` (+21.1 ms, 3.62x) is recorded as carrying *"an integer division
+per interior pixel (`(dy << 16) / dx`), not removable without an exactness
+argument about truncation toward zero"*. That reads as "blocked, someone derive
+it". It was derived here, and the conclusion is that the lever is **not worth
+implementing** — which is cheaper to know now than after a session of work.
+
+**The argument.** `get_hist_bin_idx` computes `q = trunc(N / dx)` with
+`N = dy << 16` (Rust `/` truncates toward zero, matching C), then finds the
+smallest `idx` with `q <= BIN_THRESHOLDS[idx]`. Truncation is floor for a
+non-negative quotient and ceil for a negative one, so the division-free form of
+`q <= T` is sign-split:
+
+* `dx > 0`, `N >= 0`: `q <= T` iff `N < (T + 1) * dx`
+* `dx > 0`, `N < 0` : `q <= T` iff `N <= T * dx`
+* `dx < 0`: the mirror, with the inequality reversed.
+
+Spot-checked at the boundaries the truncation actually bites:
+`N=5, dx=2, T=2` -> `q=2 <= 2` true and `5 < 6` true;
+`N=6, dx=2, T=2` -> `q=3 <= 2` false and `6 < 6` false;
+`N=-5, dx=2, T=-2` -> `q=-2 <= -2` true and `-5 <= -4` true;
+`N=-5, dx=2, T=-3` -> `q=-2 <= -3` false and `-5 <= -6` false.
+
+So it is derivable and exact. **The problem is the arithmetic it replaces the
+division with.** `BIN_THRESHOLDS` reaches 441,831 and `|dx|` reaches 16,380 at
+bd12, so `T * dx` needs **i64** (7.2e9 overflows i32) — and the lookup is a
+4-way bisect **plus** a linear scan of up to 8, i.e. **up to ~11 comparisons per
+pixel**. Trading **one** 20-40 cycle division for **up to eleven** i64 multiplies
+is a wash at best and likely a loss.
+
+**This is the session's own rule applied before writing code rather than after:**
+the change does not remove work, it *reshapes* it — and reshaping measured
+positive (slower) twice today. A cheaper division is not the lever either; what
+is left in `generate_hog` is that it reads `u16` planes where libaom at bd8 reads
+`u8`, which is the u16-at-bd8 root and not reachable from inside the function.
+
+**Recommendation: strike the hog division from the lever list.** The row's
+remaining +21.1 ms is structural.
+
 ## Not covered
 
 One box, one content class, one quantizer, `--cpu-used 3`, x86-64. Flat
