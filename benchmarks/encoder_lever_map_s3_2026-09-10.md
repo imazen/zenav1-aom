@@ -106,6 +106,40 @@ have measured positive (slower) twice.** That is the same distinction
 KB-PERF-44/45 drew for allocation (removal pays; adding a mechanism does not),
 arriving independently from the arithmetic side.
 
+## `optimize_txb_core` is not a lever — but the RECORDED REASON is wrong
+
+Every prior entry says "do not touch the trellis: it is FASTER than libaom"
+(1.13x as a class; `optimize_txb_core` 417 ms against C's 426). **That reasoning
+optimises the wrong objective.** Clause (4) is absolute encode time, not a
+per-kernel ratio, and `optimize_txb_core` is **the largest single symbol in the
+port at 13.73 % = 417 ms**. A 5 % improvement there would be 21 ms — more than
+most landings in this cycle. "We already beat C here" is not an argument that no
+time can be recovered.
+
+So it was checked properly, and the conclusion survives on **measured** grounds:
+
+* **the cost is diffuse.** 1495 instructions; the hottest single instruction is
+  **1.49 %** of the symbol, and the top twenty sum to under 20 %. There is no
+  block to attack — the samples are spread over bounds checks against spilled
+  slice lengths (`cmpq 0x718(%rsp)`, `cmpq 0x80(%rsp)`) and stack-array reads.
+* **the oversized scratch, which looked like the obvious win, is not one.**
+  `let mut levels = [0u8; TX_PAD_2D]` compiles to a **1312-byte `memset` at
+  function entry** (`movl $0x520, %edx; xorl %esi, %esi; callq`), sized for 32x32
+  whatever the actual transform — textbook KB-PERF-11 / KB-PERF-2-lever-3a shape,
+  and KB-PERF-11 explicitly says to grep the tree for it. **But it carries only
+  0.22 % of the symbol's samples = ~1 ms**, because `optimize_txb_core` runs per
+  WINNING transform under `perform_block_coeff_opt`, not per candidate. The
+  count, not the shape, decides.
+
+**So: leave it alone — but for the reason that its cost is diffuse and its
+obvious scratch is cold, not because its ratio to libaom is good.** A future
+session comparing ratios would keep skipping the port's biggest symbol; one
+comparing milliseconds would rightly look, and should find this note.
+
+This is the KB-PERF-47 lesson again from the other side: there, a wrong reason
+kept a real row closed; here, a wrong reason would have kept a *correct* closure
+resting on an argument that does not support it.
+
 ## What the table says to do next, in order
 
 1. **variance family, +71.4 ms at 4.91x** — the largest addressable row that has
