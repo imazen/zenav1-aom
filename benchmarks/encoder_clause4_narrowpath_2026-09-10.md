@@ -108,6 +108,37 @@ uniquely to it is u8 loads/stores — real, but it is the residue after this
 lever, not the headline, and sizing it needs its own measurement rather than the
 192x192 figure.
 
+## Where the 63 ms sits, so the next session does not re-derive it
+
+Recoverable 1-D work by transform, as a share of ALL 1-D transform work
+(weighted `ceil(dim / lanes)` groups x `n log n`, over the s3 census):
+
+| transform | share of 1-D work | ms |
+|---|---:|---:|
+| **fwd 16x16** | **7.82 %** | **22.4** |
+| **inv 16x16** | **4.34 %** | **12.4** |
+| fwd 16x8 | 1.34 % | 3.8 |
+| fwd 8x16 | 1.01 % | 2.9 |
+| fwd 32x32 | 0.97 % | 2.8 |
+| inv 32x32 | 0.92 % | 2.6 |
+| inv 16x8 | 0.89 % | 2.6 |
+| fwd 32x16 / inv 32x16 / fwd 16x32 | 2.32 % | 6.6 |
+| everything else | 2.57 % | 7.3 |
+| **total** | **22.18 %** | **63.4** |
+
+**Two kernels carry 55 % of it** — `fwd_16x16_fused` and `inv_16x16_fused`, both
+written this cycle, and both the case where BOTH passes fill a 16-lane batch
+(every other shape fills at most one). So the first increment is those two and
+nothing else.
+
+**And it is small.** `fwd 16x16` at 22.4 ms is **0.69 % of the encode as a
+ceiling**, i.e. **0.14 %–0.41 % delivered** at this session's measured optimism
+— for a kernel rewrite that needs a 16x16 i16 in-register transpose (raw AVX2:
+magetypes has no integer transpose), a fresh bound audit, and new differentials.
+That is a poor trade in isolation and it is stated here so nobody starts it
+expecting otherwise; it is worth doing as part of an i16 fused programme
+covering the whole table above, not as a one-off.
+
 ## Honest position on the clause
 
 At **2.090x** the bar needs **−915 ms, 54 % of the 1690 ms gap**. This lever at
