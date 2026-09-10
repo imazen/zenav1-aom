@@ -1042,6 +1042,36 @@ fn set_stage2_params(winner: i32, end_n: i32) -> (i32, i32, i32) {
     (min_n, max_n, step_size)
 }
 
+thread_local! {
+    /// Pooled [`crate::tx_search::IntraTxScratch`] for the LUMA palette search.
+    ///
+    /// KB-PERF-50's third and fourth sites. `rd_pick_palette_intra_sby` and
+    /// `rd_pick_palette_intra_sbuv` each built a fresh scratch **per call**, one
+    /// call per leaf that reaches the palette search — the same defect the two
+    /// intra mode searches carried, one function down. The scratch is shared
+    /// across every candidate colour set *within* a call and was thrown away
+    /// *between* calls, so every buffer started empty and regrew.
+    ///
+    /// Luma and chroma get SEPARATE pools because the chroma search runs nested
+    /// inside `rd_pick_intra_sbuv_mode`, which already holds its own pool — two
+    /// statics cannot collide, one would have to be re-entrant.
+    ///
+    /// Byte-inert by construction: every buffer is refilled with `clear()` +
+    /// `resize(_, 0)` before use, so a carried-over allocation holds exactly
+    /// what a fresh one would.
+    static TXS_POOL_PAL_Y: core::cell::RefCell<crate::tx_search::IntraTxScratch> =
+        core::cell::RefCell::new(crate::tx_search::IntraTxScratch::default());
+
+    /// Pooled scratch for the CHROMA palette search — see [`TXS_POOL_PAL_Y`].
+    ///
+    /// This one is NOT total: `rd_pick_palette_intra_sbuv` returns early when
+    /// the colour count misses the threshold, so the scratch is taken *after*
+    /// that return rather than at entry. Taking it first would hand the pool
+    /// back empty on every early exit, which is the defect being fixed.
+    static TXS_POOL_PAL_UV: core::cell::RefCell<crate::tx_search::IntraTxScratch> =
+        core::cell::RefCell::new(crate::tx_search::IntraTxScratch::default());
+}
+
 /// `av1_rd_pick_palette_intra_sby` (palette.c:540): the full luma palette
 /// search. `best_rd`/`best`/`winner_stats` are the enclosing sby search's
 /// running state; a palette win replaces `best` (with `palette_y` set) and
@@ -1106,7 +1136,7 @@ pub fn rd_pick_palette_intra_sby(
         best_rd: *best_rd,
         best: None,
         winner_stats,
-        txs: crate::tx_search::IntraTxScratch::default(),
+        txs: TXS_POOL_PAL_Y.with(|c| core::mem::take(&mut *c.borrow_mut())),
     };
 
     if colors_threshold > 1 && colors_threshold <= color_thresh_palette {
@@ -1319,6 +1349,7 @@ pub fn rd_pick_palette_intra_sby(
         *best_rd = st.best_rd;
         *best = st.best;
     }
+    TXS_POOL_PAL_Y.with(|c| *c.borrow_mut() = st.txs);
     won
 }
 
@@ -1434,8 +1465,6 @@ pub fn rd_pick_palette_intra_sbuv(
 
     // Colour counts per channel (the 8-bit-domain threshold for hbd).
     let mut count_buf = vec![0i32; 1 << 12];
-    // One set of per-transform-block buffers for this palette-UV search.
-    let mut txs = crate::tx_search::IntraTxScratch::default();
     let (mut thr_u, mut thr_v) = (0i32, 0i32);
     let colors_u = if is_hbd {
         count_colors_highbd(
@@ -1493,6 +1522,11 @@ pub fn rd_pick_palette_intra_sbuv(
     if !(colors_threshold > 1 && colors_threshold <= 64) {
         return;
     }
+
+    // One set of per-transform-block buffers for this palette-UV search, taken
+    // from the thread pool AFTER the early return above so a miss cannot empty
+    // it (see `TXS_POOL_PAL_UV`).
+    let mut txs = TXS_POOL_PAL_UV.with(|c| core::mem::take(&mut *c.borrow_mut()));
 
     let max_itr = 50usize;
     // Interleaved (u, v) data + per-channel bounds.
@@ -1687,4 +1721,5 @@ pub fn rd_pick_palette_intra_sbuv(
             };
         }
     }
+    TXS_POOL_PAL_UV.with(|c| *c.borrow_mut() = txs);
 }

@@ -1676,6 +1676,14 @@ pub fn rd_pick_intra_angle_sbuv(
     best_stats.map(|(rate, dist, skip)| (best_angle_delta, rate, dist, skip, best_rd))
 }
 
+thread_local! {
+    /// KB-PERF-50: the CHROMA twin of the luma pool in `intra_rd`. Same defect
+    /// (a fresh `IntraTxScratch::default()` per call, on a per-leaf function),
+    /// same fix, and total for the same reason: no early return.
+    static TXS_POOL_UV: core::cell::RefCell<crate::tx_search::IntraTxScratch> =
+        core::cell::RefCell::new(crate::tx_search::IntraTxScratch::default());
+}
+
 /// `av1_rd_pick_intra_sbuv_mode` (intra_mode_search.c:864) for a
 /// chroma-reference intra block (the `!xd->is_chroma_ref` early return and
 /// the `store_cfl_required_rdo` luma re-encode are the CALLER's: `cfl_ctx`
@@ -1688,14 +1696,6 @@ pub fn rd_pick_intra_angle_sbuv(
 /// the angle/palette-flag bits; `cfl_allowed` is `is_cfl_allowed(xd)`.
 /// Returns the winner + the per-candidate visit log (gating/rd sequence).
 #[allow(clippy::too_many_arguments)]
-thread_local! {
-    /// KB-PERF-50: the CHROMA twin of the luma pool in `intra_rd`. Same defect
-    /// (a fresh `IntraTxScratch::default()` per call, on a per-leaf function),
-    /// same fix, and total for the same reason: no early return.
-    static TXS_POOL_UV: core::cell::RefCell<crate::tx_search::IntraTxScratch> =
-        core::cell::RefCell::new(crate::tx_search::IntraTxScratch::default());
-}
-
 pub fn rd_pick_intra_sbuv_mode(
     env: &UvRdEnv,
     recon_u: &mut [u16],

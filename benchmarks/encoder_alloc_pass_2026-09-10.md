@@ -229,8 +229,57 @@ differential assertions that compare a txb's coefficients against the C oracle's
 did not compile. That is KB-42's rule exactly: a crate's unit tests are not the
 gate. Fixed by comparing as slices, which preserves each assertion's meaning.
 
+## The two palette sites — the same defect, on a path the photo cells cannot reach
+
+`rd_pick_palette_intra_sby` and `rd_pick_palette_intra_sbuv` each built their own
+`IntraTxScratch::default()` **per call**, one call per leaf that reaches the
+palette search — the same one-line defect as the two intra mode searches, one
+function down. Both are now pooled.
+
+**The chroma pool is NOT taken at entry, and that is the whole subtlety.**
+`rd_pick_palette_intra_sbuv` returns early when the colour count misses the
+threshold, and the scratch used to be built *before* that return. Taking from the
+pool there would hand it back **empty** on every early exit — i.e. it would
+reproduce the defect being fixed, on the majority path. The take is placed after
+the return instead; the luma twin has no early return at all, so it is total.
+
+Luma and chroma get **separate** statics because the chroma search runs nested
+inside `rd_pick_intra_sbuv_mode`, which already holds its own pool. One static
+shared between them would have to be re-entrant.
+
+### Reach, stated rather than assumed
+
+Palette is **knob- AND header-gated** (`--enable-palette` plus
+`allow_screen_content_tools`), so on the photographic cells every other number in
+this record is measured on, these two functions are **never called** and the
+change is inert by construction. It is measured where it does fire —
+`winperf::SCREEN_GATE_CELL`, 512x384 cq44 s6, `Content::Screen`, palette on:
+
+| | allocations | bytes | coded |
+|---|---:|---:|---:|
+| base | 251,496 | 154,039,321 | 6,131 B |
+| pooled | **241,140** | 150,584,345 | 6,131 B |
+| | **−10,356 (−4.1 %)** | −3.5 MB | **identical** |
+
+Two sha256-distinct binaries from one tree. No timing band was run: this is a
+4 % cut on a path the default still-image encode does not take, so a wall
+measurement on it would be a statement about screenshots, and the byte gates
+(`rd_close_palette`, `kb35_nonrd_palette_arm`, `kb37_nonrd_palette_search`, the
+KB-41 census) are what carry the correctness claim.
+
+### A documentation defect fixed with it
+
+Inserting a `thread_local!` block immediately above a function puts it **between
+that function's doc comment and the function**, which orphans the docs onto the
+macro. `rustc` says so (`unused doc comment`) and three sites had it — the two
+pools landed above plus KB-PERF-48's `encode_intra.rs`. At
+`intra_uv_rd.rs` it was worse: the block landed between
+`#[allow(clippy::too_many_arguments)]` and the function, so the **attribute** was
+orphaned too and clippy would have started flagging the function. All three
+blocks moved above their doc runs; the warning count is zero.
+
 ## Not covered
 
 One box, one content class, one quantizer, `--cpu-used 3`, x86-64. Peak heap and
-total bytes were not extracted; only counts. The arena refactor was not
-attempted.
+total bytes were not extracted for the photo cells; only counts. The arena
+refactor was not attempted. The palette sites carry no wall measurement.

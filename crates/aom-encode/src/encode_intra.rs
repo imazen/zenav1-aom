@@ -286,13 +286,6 @@ pub struct EncodeIntraPlaneOutcome {
     pub tl: Vec<i8>,
 }
 
-/// `av1_encode_intra_block_plane(cpi, x, bsize, AOM_PLANE_Y, dry_run,
-/// enable_optimize_b)` (encodemb.c:801-823) — see the module docs for the
-/// per-txb sequence and gating. `recon` is predicted into and reconstructed
-/// in place; `tx_type_map` (stride `mi_size_wide[bsize]`) is read per txb and
-/// reset to DCT_DCT at `eob == 0`; `cfl` = `Some` models `xd->cfl.store_y`
-/// (the sbuv preamble sets it via `store_cfl_required_rdo`,
-/// intra_mode_search.c:890) and receives every txb's reconstructed luma.
 thread_local! {
     /// KB-PERF-48: per-thread reusable transform/quantize scratch for the two
     /// plane encode walks. Each walk used to build its own
@@ -326,6 +319,13 @@ thread_local! {
         core::cell::RefCell::new(crate::XformQuantScratch::default());
 }
 
+/// `av1_encode_intra_block_plane(cpi, x, bsize, AOM_PLANE_Y, dry_run,
+/// enable_optimize_b)` (encodemb.c:801-823) — see the module docs for the
+/// per-txb sequence and gating. `recon` is predicted into and reconstructed
+/// in place; `tx_type_map` (stride `mi_size_wide[bsize]`) is read per txb and
+/// reset to DCT_DCT at `eob == 0`; `cfl` = `Some` models `xd->cfl.store_y`
+/// (the sbuv preamble sets it via `store_cfl_required_rdo`,
+/// intra_mode_search.c:890) and receives every txb's reconstructed luma.
 pub fn encode_intra_block_plane_y(
     env: &EncodeIntraYEnv,
     recon: &mut [u16],
