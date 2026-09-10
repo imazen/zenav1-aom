@@ -2455,23 +2455,32 @@ pub fn txfm_rd_in_plane_intra(
             let not_last_txb =
                 blk_row + txh_unit < max_blocks_high || blk_col + txw_unit < max_blocks_wide;
             if win.best_eob > 0 && not_last_txb {
-                let TxWalkScratch { pred, tight, .. } = &mut *walk;
-                tight.clear();
-                tight.extend_from_slice(pred);
+                // KB-PERF-51: reconstruct IN PLACE in the recon plane.
+                //
+                // `recon[txb_off..]` ALREADY holds exactly this txb's
+                // prediction, at `env.ref_stride` — written a few lines above,
+                // which is C's own "the facade writes the prediction into dst".
+                // `av1_inverse_transform_add` takes a destination STRIDE, and C
+                // reconstructs straight into `pd->dst.buf` at `dst_stride` for
+                // precisely this reason. So the contiguous `tight` round trip —
+                // one whole-block copy in, one strided row copy back out — was
+                // pure overhead, and it was the single largest `__memmove`
+                // caller in the shipping-preset profile.
+                //
+                // Safe because NOTHING writes `recon` between the two points:
+                // inside this loop body `recon` is touched only by the
+                // prediction store above and by this call, and
+                // `search_tx_type_intra_into` does not take it at all.
                 aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add(
                     &search.best_dqcoeff,
-                    tight,
-                    txw,
+                    &mut recon[txb_off..],
+                    env.ref_stride,
                     win.best_tx_type,
                     tx_size,
                     i32::from(env.bd),
                     win.best_eob as usize,
                     env.lossless,
                 );
-                for r in 0..txh {
-                    recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw]
-                        .copy_from_slice(&tight[r * txw..r * txw + txw]);
-                }
             }
 
             winners.push(TxbWinner {

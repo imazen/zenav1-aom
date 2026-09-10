@@ -757,23 +757,25 @@ pub fn txfm_rd_in_plane_uv_p(
 
             // recon_intra: reconstruct the winner over the prediction.
             if win.best_eob > 0 {
-                let crate::tx_search::TxWalkScratch { pred, tight, .. } = &mut *walk;
-                tight.clear();
-                tight.extend_from_slice(pred);
+                // KB-PERF-51, the chroma twin: reconstruct IN PLACE.
+                //
+                // `recon[txb_off..]` already holds this txb's prediction —
+                // BOTH arms above write it there directly (the palette fill and
+                // `predict_uv_txb`), and the `pred` snapshot a few lines down is
+                // a COPY OUT of `recon` taken for the subtract and the search.
+                // `av1_inverse_transform_add` takes a destination stride, so the
+                // `tight` round trip was pure overhead here exactly as in the
+                // luma walk, and nothing writes `recon` in between.
                 aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add(
                     &search.best_dqcoeff,
-                    tight,
-                    txw,
+                    &mut recon[txb_off..],
+                    env.ref_stride,
                     win.best_tx_type,
                     tx_size,
                     i32::from(env.bd),
                     win.best_eob as usize,
                     env.lossless,
                 );
-                for r in 0..txh {
-                    recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw]
-                        .copy_from_slice(&tight[r * txw..r * txw + txw]);
-                }
             }
 
             winners.push(TxbWinner {
