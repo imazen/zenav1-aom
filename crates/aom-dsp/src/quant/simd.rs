@@ -142,12 +142,21 @@ fn quantize_fp_impl(
     let clamp_hi = i32x8::splat(token, i16::MAX as i32);
     let mut eob_v = zero;
 
+    // KB-PERF-36: only chunk 0 carries the DC lane, so the AC-only parameter
+    // vectors are loop-invariant — building them once instead of four `splat`s
+    // per chunk. Same values, same lanes: `mk(.., false)` IS `splat(ac)`.
+    let (thr_ac, rnd_ac, qnt_ac, dqv_ac) = (
+        i32x8::splat(token, thr_c[1]),
+        i32x8::splat(token, rounding[1]),
+        i32x8::splat(token, quant[1] as i32),
+        i32x8::splat(token, dequant[1] as i32),
+    );
     for ci in 0..n / 8 {
         let first = ci == 0;
-        let thr_v = mk(thr_c[0], thr_c[1], first);
-        let rnd_v = mk(rounding[0], rounding[1], first);
-        let qnt_v = mk(quant[0] as i32, quant[1] as i32, first);
-        let dqv_v = mk(dequant[0] as i32, dequant[1] as i32, first);
+        let thr_v = if first { mk(thr_c[0], thr_c[1], true) } else { thr_ac };
+        let rnd_v = if first { mk(rounding[0], rounding[1], true) } else { rnd_ac };
+        let qnt_v = if first { mk(quant[0] as i32, quant[1] as i32, true) } else { qnt_ac };
+        let dqv_v = if first { mk(dequant[0] as i32, dequant[1] as i32, true) } else { dqv_ac };
 
         let c = i32x8::from_slice(token, &coeff[ci * 8..ci * 8 + 8]);
         // sign = c >> 31 (all-ones for negative); abs = (c ^ sign) - sign (wrapping).
@@ -187,10 +196,17 @@ fn quantize_fp_impl(
 
         // eob candidate: iscan[rc] + 1 where tmp != 0.
         let base = ci * 8;
-        let isc = i32x8::from_array(
-            token,
-            core::array::from_fn(|k| iscan[base + k] as i32 + 1),
-        );
+        // KB-PERF-36: read the eight `iscan` entries as ONE fixed-size array so
+        // the compiler sees a single bounds check per chunk rather than eight
+        // per chunk — the same per-lane-load defect KB-PERF-34/35 measured at
+        // ~0.2 pp apiece. Values and lanes are unchanged; the `unwrap_or` arm
+        // is unreachable (`iscan.len() >= n` is asserted at entry) and exists
+        // only to keep this panic-free.
+        let raw: [i16; 8] = match iscan.get(base..base + 8).and_then(|s| s.try_into().ok()) {
+            Some(a) => a,
+            None => [0i16; 8],
+        };
+        let isc = i32x8::from_array(token, core::array::from_fn(|k| raw[k] as i32 + 1));
         let nz = tmp.simd_ne(zero);
         eob_v = eob_v.max(i32x8::blend(nz, isc, zero));
     }
