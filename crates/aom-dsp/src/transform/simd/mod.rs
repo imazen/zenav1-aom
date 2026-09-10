@@ -389,11 +389,21 @@ fn inv_rect48_fused(
     let mut k = [i32x8::zero(t); 8];
     for c in 0..col_n {
         let base = c * row_n;
-        let sl = match input.get(base..base + row_n) {
-            Some(sl) => sl,
-            None => return false,
+        // KB-PERF-31: at 4x8 a whole vector of coefficients is contiguous, so
+        // this is a plain `from_slice` — the padded per-lane build is needed
+        // only for the 8x4 shape, whose column is four coefficients long.
+        let v = if row_n == 8 {
+            match input.get(base..base + 8) {
+                Some(sl) => i32x8::from_slice(t, sl),
+                None => return false,
+            }
+        } else {
+            let a: [i32; 4] = match input.get(base..base + 4).and_then(|s| s.try_into().ok()) {
+                Some(a) => a,
+                None => return false,
+            };
+            i32x8::from_array(t, core::array::from_fn(|j| if j < 4 { a[j] } else { 0 }))
         };
-        let v = i32x8::from_array(t, core::array::from_fn(|j| if j < row_n { sl[j] } else { 0 }));
         // rect_type == +-1: the NEW_INV_SQRT2 scaling, BEFORE the clamp.
         let v = mul_rshiftv(t, v, NEW_INV_SQRT2, NEW_SQRT2_BITS);
         k[c] = clampv(t, v, row_clamp);
@@ -434,9 +444,17 @@ fn inv_rect48_fused(
     // ---- column pass: lane = output column ----
     let mut ci = [i32x8::zero(t); 8];
     for r in 0..row_n {
+        // KB-PERF-31: at 8x4 all eight lanes are live, so the flip is the same
+        // whole-vector `revv` every unpadded inverse uses; only the 4-wide
+        // shape needs the array round trip, because reversing four LIVE lanes
+        // inside an eight-lane vector is not what `revv` does.
         let v = if lr_flip {
-            let a = tr[r].to_array();
-            i32x8::from_array(t, core::array::from_fn(|j| if j < col_n { a[col_n - 1 - j] } else { 0 }))
+            if col_n == 8 {
+                revv(t, tr[r])
+            } else {
+                let a = tr[r].to_array();
+                i32x8::from_array(t, core::array::from_fn(|j| if j < col_n { a[col_n - 1 - j] } else { 0 }))
+            }
         } else {
             tr[r]
         };
@@ -454,14 +472,30 @@ fn inv_rect48_fused(
     for r in 0..row_n {
         let src = co[if ud_flip { row_n - 1 - r } else { r }];
         let idx = r * stride;
-        let d = match output.get(idx..idx + col_n) {
-            Some(d) => d,
-            None => return false,
-        };
-        let dv = i32x8::from_array(t, core::array::from_fn(|j| if j < col_n { d[j] as i32 } else { 0 }));
-        let s = (dv + src).clamp(zero, pix_hi).to_array();
-        for j in 0..col_n {
-            output[idx + j] = s[j] as u16;
+        // KB-PERF-31: at 8x4 the destination row is a whole vector — the same
+        // fixed-size read the unpadded inverses use, so the bounds check is one
+        // per row rather than one per lane. The 4-wide shape keeps a 4-element
+        // fixed-size read for the same reason; it is a tail, not a slice walk.
+        if col_n == 8 {
+            let d: [u16; 8] = match output.get(idx..idx + 8).and_then(|s| s.try_into().ok()) {
+                Some(d) => d,
+                None => return false,
+            };
+            let dv = i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32));
+            let s = (dv + src).clamp(zero, pix_hi).to_array();
+            for j in 0..8 {
+                output[idx + j] = s[j] as u16;
+            }
+        } else {
+            let d: [u16; 4] = match output.get(idx..idx + 4).and_then(|s| s.try_into().ok()) {
+                Some(d) => d,
+                None => return false,
+            };
+            let dv = i32x8::from_array(t, core::array::from_fn(|j| if j < 4 { d[j] as i32 } else { 0 }));
+            let s = (dv + src).clamp(zero, pix_hi).to_array();
+            for j in 0..4 {
+                output[idx + j] = s[j] as u16;
+            }
         }
     }
     true
