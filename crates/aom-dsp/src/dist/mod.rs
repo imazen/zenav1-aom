@@ -479,6 +479,17 @@ pub fn sum_squares_i16(src: &[i16]) -> u64 {
 /// `aom_sum_squares_2d_i16_c`: the 2-D strided residual energy over a
 /// `width x height` block with row stride `src_stride`.
 pub fn sum_squares_2d_i16(src: &[i16], src_stride: usize, width: usize, height: usize) -> u64 {
+    // KB-PERF-46: routed to the `#[autoversion]` twin (bit-identical; see
+    // `simd::sum_squares_2d_i16_simd`). The verbatim scalar loop is kept below
+    // as the transcription reference.
+    crate::dist::simd::sum_squares_2d_i16_simd(src, src_stride, width, height)
+}
+
+/// The transcribed scalar reference for [`sum_squares_2d_i16`].
+#[allow(dead_code)]
+pub(crate) fn sum_squares_2d_i16_scalar_ref(
+    src: &[i16], src_stride: usize, width: usize, height: usize,
+) -> u64 {
     let mut ss = 0u64;
     for r in 0..height {
         let base = r * src_stride;

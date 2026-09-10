@@ -128,6 +128,33 @@ because that kernel is called far more often and its rows are shorter.
 row count is high and the row is short.** Check the symbol's absolute ms and the
 share the annotate attributes before assuming a repeat.
 
+## KB-PERF-46 — the named sibling, taken: **−0.35 %**
+
+`sum_squares_2d_i16` was listed below as a sibling of the same shape and left
+unmeasured. Taking it: **−0.338 % and −0.360 %** against the two base copies
+(23/24 and 21/24, p<=0.0003; null −0.080 %, p=0.15), byte-identical.
+
+It is live inside `search_tx_type_intra_into` — annotating that symbol shows its
+`movswl` / `imull` chain with **two `cmp` bounds checks** around it, exactly the
+pattern KB-PERF-37 fixed one file over.
+
+Two defects, both already-proven fixes:
+
+* **one bounds check per element** (a runtime slice length indexed by
+  `base + c`) — replaced by a row slice, one check per row;
+* **a serial `u64` accumulator that blocked vectorization** — unlocked with
+  `#[autoversion]`, the same attribute that gave KB-PERF-39 its −0.88 %.
+
+Bit-exact: each `v * v` is computed in `i32` exactly as before (non-negative,
+at most `2^30` for an `i16` input, so the `as u64` is exact), and vectorizing
+reassociates the sum, which is exact because `u64` addition is associative and
+the total cannot overflow (`2^30` over at most `128 * 128` elements is under
+`2^44`).
+
+**Both remaining siblings named in this record are now resolved**: this one
+landed, and the lowbd `subtract_block` twin is decoder-path only (the encoder is
+u16-through at every bit depth) so it does not appear in the encoder profile.
+
 ## Siblings, same shape, not yet measured
 
 * **`subtract_block`** (the lowbd `u8` twin, same file) — identical triple

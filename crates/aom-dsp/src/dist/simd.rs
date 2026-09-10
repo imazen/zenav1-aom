@@ -65,3 +65,38 @@ pub fn block_error_simd(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
     }
     (error, sqcoeff)
 }
+
+/// `aom_sum_squares_2d_i16_c` via `#[autoversion]` — the residual energy over a
+/// `width x height` block with row stride `src_stride`.
+///
+/// KB-PERF-46: the scalar body carried **one bounds check per element** (a
+/// runtime slice length indexed by `base + c`) plus a serial `u64` accumulator,
+/// which together blocked vectorization of a trivially reducible sum. It is
+/// live inside `search_tx_type_intra_into` — `perf annotate` on that symbol
+/// shows its `movswl` / `imull` chain with two `cmp`s around it — and it is the
+/// sibling KB-PERF-37 named and did not take.
+///
+/// Row slices remove the per-element check (one per row instead), and
+/// `#[autoversion]` compiles the body per SIMD tier so LLVM may emit `pmaddwd`.
+///
+/// # Bit-exactness
+///
+/// Identical to [`crate::dist::sum_squares_2d_i16`]. Each `v * v` is computed in
+/// `i32` exactly as before — non-negative and at most `2^30` for an `i16` input,
+/// so the `as u64` is exact — and vectorizing REASSOCIATES the sum, which is
+/// exact here: `u64` addition is associative and the total cannot overflow
+/// (`2^30` over at most `128 * 128` elements is under `2^44`).
+#[autoversion]
+pub fn sum_squares_2d_i16_simd(src: &[i16], src_stride: usize, width: usize, height: usize) -> u64 {
+    let mut ss = 0u64;
+    let mut off = 0usize;
+    for _ in 0..height {
+        let row = &src[off..off + width];
+        for &v in row.iter() {
+            let v = v as i32;
+            ss += (v * v) as u64;
+        }
+        off += src_stride;
+    }
+    ss
+}
