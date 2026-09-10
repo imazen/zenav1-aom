@@ -59,11 +59,35 @@ changes is that the intermediates are held as `i16x16` where the runtime bound
 admits, which is 16 lanes instead of 8 for the same work plus the cheaper
 `fbtf16` `half_btf`.
 
-Ceiling, stated with §14's discount attached rather than without it: halving the
-285.9 ms would be **−136 ms ≈ 4.2 % of the encode** — an order of magnitude more
-than any other lever on the board (the last seven landings averaged 0.3 pp).
-This session's levers came in **1.7x to 4.8x optimistic** against their own
-kernel self-costs, so **plan for 1–2 %**, not 4.
+### CORRECTED, same day, before anyone spent a session on it
+
+**The first version of this section said "halving the 285.9 ms would be −136 ms
+≈ 4.2 % of the encode". That was WRONG by ~2x, and this repo's own measurement
+refutes it.**
+
+KB-PERF-3 built the half-idle variant — running 8-dimension blocks as 16-lane
+i16 batches — and **measured it NULL** (−0.009 % against a +0.08 % null): an
+`i16x16` and an `i32x8` are both 256 bits, so a pass whose vectorized dimension
+is under 16 gets **nothing**. Halving assumed every pass fills. It does not:
+
+* **82.98 % of forward transforms have BOTH dimensions < 16** (s3 census), so
+  neither of their passes can fill a 16-lane batch;
+* of the rest, most fill only ONE of the two passes (8x16 fills its row pass,
+  not its column pass).
+
+Weighting each pass by its real vector work — `ceil(dim / lanes)` groups of an
+`n log n` kernel, summed over the census — the recoverable share is **22.2 % of
+1-D transform work**, i.e.
+
+| | |
+|---|---:|
+| ceiling | **63 ms = 1.96 % of the encode** |
+| with this session's measured 1.7x–4.8x optimism | **0.41 % – 1.15 %** |
+
+So the lever is a **~1 % item, not a 4 % one.** It is still the largest single
+thing on the board — the last seven landings averaged 0.3 pp — but it does not
+change the shape of the clause-(4) problem, and the paragraph below should be
+read with that correction applied.
 
 **Two things already settled that this must not re-litigate:**
 
