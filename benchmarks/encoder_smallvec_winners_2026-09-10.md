@@ -88,6 +88,47 @@ be worth considerably more than −0.26 %.
 `windows-latest`; that run is the honest place to quote this lever's value, not
 this box.
 
+## KB-PERF-44 — the next site, found by re-attributing with frame pointers
+
+Re-running heaptrack on a `-C force-frame-pointers=yes` build (the rule this
+record's predecessor added, after unresolved stacks cost three wrong fixes)
+named the largest remaining site immediately:
+
+    220,000 temporary allocations of 220,000 in total (100.00%)
+      from aom_encode::partition_pick::perpixel_variance_y
+
+One line:
+
+    let offs = vec![128u16 << (bd - 8); w];
+
+**A heap allocation of a CONSTANT-valued buffer**, at most 128 entries wide (the
+widest `BLK_W`), 220,000 times per 1 MP encode. `highbd_variance` reads it with
+stride 0, so only `offs[..w]` is ever touched. Replaced by a `[u16; 128]` stack
+array with a `w`-element fill.
+
+| | before | after |
+|---|---:|---:|
+| allocations | 8,010,969 | **7,790,969** (−220,000, exactly as predicted) |
+| **temporary allocations** | 417,969 | **197,969 (−53 %)** |
+
+**Cumulative across KB-PERF-43 + 44: temporary allocations 1,931,251 ->
+197,969, a 90 % reduction.**
+
+**Wall: −0.074 % / −0.065 %, NOT significant on glibc** (15/24 both, p=0.31;
+null +0.034 %). **It is kept anyway, and the distinction from the REVERTED
+capacity hint is the point:**
+
+* the capacity hint **ADDED** arithmetic (two integer divisions per call) to
+  save allocations that did not exist — it measured **+0.77 %** and was reverted;
+* this **strictly REMOVES** work — no `malloc`, no `free`, and the fill is the
+  same `w` stores `vec![v; w]` already performed. It cannot be slower in
+  principle, and it measures on the right side of zero, just below what 24
+  rounds resolve (220,000 malloc/free pairs at ~30 cycles is ~1.5 ms = 0.05 %,
+  which matches the observed −0.07 %).
+
+On the platforms this ships to that arithmetic is different: see the platform
+section above.
+
 ## What is left
 
 Temporary allocations are down to 417,969 and total to 8.0 M. The remaining mass

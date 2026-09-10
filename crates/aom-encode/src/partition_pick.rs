@@ -233,8 +233,16 @@ pub fn perpixel_variance_y(src: &[u16], off: usize, stride: usize, bsize: usize,
         4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16,
     ];
     let (w, h) = (BLK_W[bsize], BLK_H[bsize]);
-    let offs = vec![128u16 << (bd - 8); w];
-    let (var, _sse) = highbd_variance(&src[off..], stride, &offs, 0, w, h, bd);
+    // KB-PERF-44: a stack array, not `vec![]`. This is a CONSTANT-valued buffer
+    // of at most 128 entries (the widest `BLK_W`), and heaptrack measured this
+    // one line as **220,000 allocations per 1 MP encode, 100 % of them
+    // temporary** — the single largest remaining allocation site after
+    // KB-PERF-43. `highbd_variance` reads it with stride 0, so only `offs[..w]`
+    // is ever touched and the fill is `w` stores against a malloc + free.
+    debug_assert!(w <= 128);
+    let mut offs = [0u16; 128];
+    offs[..w].fill(128u16 << (bd - 8));
+    let (var, _sse) = highbd_variance(&src[off..], stride, &offs[..w], 0, w, h, bd);
     let bits = NUM_PELS_LOG2[bsize];
     (var + (1 << (bits - 1))) >> bits
 }
