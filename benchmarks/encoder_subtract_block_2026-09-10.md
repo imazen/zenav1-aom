@@ -155,6 +155,27 @@ the total cannot overflow (`2^30` over at most `128 * 128` elements is under
 landed, and the lowbd `subtract_block` twin is decoder-path only (the encoder is
 u16-through at every bit depth) so it does not appear in the encoder profile.
 
+## KB-PERF-47 — the same two fixes on `variance_raw`, and they measured NULL
+
+`aom_dsp::dist::variance` is 35 ms with no `__arcane_` prefix — scalar, while
+its highbd twin is vectorized — and `variance_raw` has the identical shape:
+**two bounds checks per element** plus two serial accumulators. Both proven
+fixes were applied (row slices + `#[autoversion]`).
+
+**Measured null/slightly negative**: +0.245 % and +0.101 % against the two base
+copies (9/24 and 10/24, p=0.31 and p=0.54), null +0.070 %. Reverted; band
+committed as `.variance.rejected.tsv`.
+
+**Why, and it refines the `#[autoversion]` rule:** the attribute adds a
+**runtime dispatch per call**. It paid in `block_error` (−0.88 %) and
+`sum_squares_2d_i16` (−0.35 %) because those run over whole transform blocks —
+few calls, large per-call work. `variance` is called on small blocks from
+inter/motion paths (`compound_type`, `rdopt_sse`, `firstpass`, `inter_me`) that
+are largely dead on an ALLINTRA KEY frame, so the dispatch is not amortized.
+
+**`#[autoversion]` pays when per-call work is large enough to amortize a
+dispatch. Check the call size, not just the symbol's total milliseconds.**
+
 ## Siblings, same shape, not yet measured
 
 * **`subtract_block`** (the lowbd `u8` twin, same file) — identical triple
