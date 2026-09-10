@@ -140,6 +140,63 @@ This is the KB-PERF-47 lesson again from the other side: there, a wrong reason
 kept a real row closed; here, a wrong reason would have kept a *correct* closure
 resting on an argument that does not support it.
 
+## `intra_model_rd_y` annotated — diffuse, and the one real lever in it is specified below
+
+`intra_model_rd_y` shows the worst raw ratio in the profile (74 ms against C's
+`intra_model_rd.constprop.0` at 8.8 ms) and it is **not** a lever at that ratio —
+KB-PERF-10 already recorded why: the port INLINES subtract and satd where C
+DISPATCHES them, so C's counterpart cost lives in `aom_subtract_block_sse2`
+(25.5), `_avx2` (15.1), `av1_subtract_block` (7.1), `av1_subtract_txb` (5.0),
+`aom_satd_avx2` (11.7) and `av1_quick_txfm` (5.0). Summed, the two sides are much
+closer than 8.4x.
+
+Annotated: **856 instructions, hottest 3.70 %** — diffuse, like the trellis. Two
+things worth carrying forward:
+
+* the SSE in it is `movq` + `psubw`, i.e. **64-bit loads, 4 lanes** — that is the
+  inlined `highbd_subtract_block` and it is *correct*, not a defect: 40.5 % of
+  transforms are 4x4, where 4 lanes IS the whole row. Do not "fix" it to 256-bit.
+* the hottest instruction is an indirect `callq` whose arguments are
+  `(dst_ptr, src_ptr, len*2)` — a **per-row `memcpy` of u16**, the
+  predict-into-a-scratch-then-publish-to-recon pattern, here at the highest trip
+  count in the encoder (per txb **per candidate mode**, 61 of them).
+
+### The in-place predictor: the safety precondition is now VERIFIED
+
+Both this function and `txfm_rd_in_plane_intra` do:
+
+```rust
+walk.pred.clear(); walk.pred.resize(txw * txh, 0);   // a memset
+predict_intra_high(recon, txb_off, ref_stride, pred, txw, ...);
+for r in 0..txh { recon[..].copy_from_slice(&pred[r*txw..]); }  // the memcpy
+highbd_subtract_block(.., &pred, txw);               // takes a STRIDE already
+```
+
+All three of it could go — the memset, the copy, and the scratch — if
+`predict_intra_high` wrote straight into `recon` at `ref_stride`, which is C's
+own `ref == dst` form (reconintra.c:1622, already documented by KB-34).
+
+**The blocker was never soundness, and that is the new information.** Checked
+this session: **every arm assembles the reference edges into OWNED LOCAL ARRAYS
+before any `dst` write** — `build_filter_intra_high` fills `above_data` /
+`left_data` via `assemble_dir_edges(recon, ..)` and only then calls
+`filter_intra_predict_high(.., dst, ..)`; the non-directional and directional
+arms have the same shape. So reads of the plane are complete before writes begin,
+and a single-`&mut [u16]` variant is **sound**, not merely plausible.
+
+**What it costs:** the three `build_*` functions must be split into
+(assemble edges) + (write dst) so the borrow can be handed over, and they are
+shared with the decoder — so it should be **additive** (a new
+`predict_intra_high_in_place`, existing signatures untouched) to keep the decoder
+out of the blast radius.
+
+**What it is worth: unknown, and honestly bounded by the same trap that produced
+this session's null.** The per-call bytes are small (a 4x4 txb copies 32 bytes in
+4 rows), and removing a copy on a *minority* of txbs already measured −0.147 %
+(null). What is different here is the trip count — per candidate mode rather than
+per winning transform. **Band it before believing it**, and note the memset it
+also removes may matter more than the copy.
+
 ## What the table says to do next, in order
 
 1. **variance family, +71.4 ms at 4.91x** — the largest addressable row that has
