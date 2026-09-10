@@ -569,6 +569,7 @@ pub fn xform_quant_into(
             qp.dequant,
             log_scale,
             sc,
+            iscan(tx_size, tx_type),
             src,
             qcoeff,
             dqcoeff,

@@ -1,3 +1,45 @@
+## `aom_quantize_b_no_qmatrix` walks raster order, not scan order — −0.134 % pooled, and the 11.89x kernel is now vectorisable in principle (2026-09-10, KB-PERF-57)
+
+The lever map's "biggest single un-taken kernel left" (+28.7 ms at 11.89x, the
+only addressable row with no SIMD at all). Re-profiled at HEAD first: 0.86 % =
+25.7 ms, matching the ranked 26.9; `objdump` confirms 217 instructions, zero
+ymm, zero xmm, 14 `cmp`, 8 panic-call sites and two real `memset` calls.
+
+**A throwaway counter decided the design.** C's pre-scan trims trailing
+dead-zone coefficients, so scan order runs `non_zero_count` iterations where
+raster order runs `n`. Measured on the shipping cell: 538,094 calls per 1 MP
+encode, mean n = 60.8, mean non_zero_count = 32.7 — **raster order pays 1.86x
+the iterations**, and has to buy that back.
+
+It buys it back by deleting both `memset`s (every position is written
+unconditionally; C's pre-scan and main-loop dead-zone tests are exact
+complements, so the set of positions that WRITE is unchanged), every bounds
+check, the `scan[i]` load, the gather/scatter, and the per-coefficient class
+select — C's `ac = (scan[i] != 0)` is asking whether the RASTER position is the
+DC, which in raster order is `i != 0`, so the DC peels off and five per-class
+constants become loop scalars. The EOB comes from `iscan`, exactly as
+`quant/simd.rs` already does for `quantize_fp` and as libaom's own
+`aom_quantize_b_avx2` does (its `iscan` argument exists for this; the `_c` body
+ignores it).
+
+**Measured: −0.134 % pooled over two independent 30-round bands, 40/60,
+p = 0.0135** (A −0.169 %, B −0.106 %; pooled null −0.013 %). Pooled because A
+was marginal and B alone is not significant; the pooled median sits between the
+two band medians, so no favourable band was selected. That is ~4.0 ms of 25.7 —
+16 % of the kernel.
+
+**Reported as a trade, not a removal:** it removes two memsets, all bounds
+checks and the indirection but adds arithmetic on 0.46n extra coefficients. It
+measured positive and significant, but only just. The reason to keep it is as
+much structural — the kernel is now in the only shape a vector tier can take.
+What blocks that tier is `t2 * quant_shift` reaching ~2^35 (the rest of the
+chain is provably i32-safe); libaom clears it with 16-bit arithmetic, which this
+project already rules structural for `quantize_fp`.
+
+Bite proof aimed at the eob (KB-12): deriving it from the raster index instead
+of `iscan` fails exactly one test, on the eob, while 37 other quantize/txb tests
+stay green. `just gate-landing` 1507/1507 twice.
+
 ## The intra predictor stopped writing into a scratch the caller then copied back — −0.50 % at the shipping preset, −0.79 % at speed 0, byte-identical (2026-09-10, KB-PERF-56)
 
 libaom's `av1_predict_intra_block_facade` hands the predictor `pd->dst`, so the

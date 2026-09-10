@@ -94,9 +94,74 @@ pub fn av1_quantize_fp_no_qmatrix(
 
 const AOM_QM_BITS: i32 = 5;
 
+/// One coefficient of [`aom_quantize_b_no_qmatrix`], with every per-class
+/// constant already resolved by the caller. Returns the quantized magnitude
+/// `tmp32` (0 when the coefficient is inside the dead zone) and writes the
+/// signed `qcoeff` / `dqcoeff` pair.
+///
+/// The arithmetic is the C body verbatim, including the `wrapping_*` forms:
+/// `abs_coeff` is `i32::MIN` when `coeff == i32::MIN`, and C's `int` multiply
+/// wraps there too.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn quantize_b_one(
+    coeff_v: i32,
+    zbin_gate: i32,
+    round_rpo: i32,
+    quant_v: i64,
+    quant_shift_v: i64,
+    dequant_v: i32,
+    log_scale: i32,
+    shift: i32,
+    qcoeff: &mut i32,
+    dqcoeff: &mut i32,
+) -> i32 {
+    const WT: i32 = 1 << AOM_QM_BITS; // 32; no quant matrix
+    let coeff_sign = aomsign(coeff_v);
+    let abs_coeff = (coeff_v ^ coeff_sign).wrapping_sub(coeff_sign);
+    let tmp32 = if abs_coeff.wrapping_mul(WT) >= zbin_gate {
+        let clamped =
+            abs_coeff.wrapping_add(round_rpo).clamp(i16::MIN as i32, i16::MAX as i32) as i64;
+        let tmp = clamped * WT as i64;
+        (((((tmp * quant_v) >> 16) + tmp) * quant_shift_v) >> shift) as i32
+    } else {
+        0
+    };
+    *qcoeff = (tmp32 ^ coeff_sign).wrapping_sub(coeff_sign);
+    let abs_dqcoeff = tmp32.wrapping_mul(dequant_v) >> log_scale;
+    *dqcoeff = (abs_dqcoeff ^ coeff_sign).wrapping_sub(coeff_sign);
+    tmp32
+}
+
 /// Bit-exact port of `aom_quantize_b_helper_c` (`aom_dsp/quantize.c`) for the
 /// no-quant-matrix case (`wt = iwt = 1<<AOM_QM_BITS`). The "b" quantizer with a
 /// dead-zone (`zbin`) pre-scan and two-step `quant`/`quant_shift`.
+///
+/// **Walks RASTER order, where C walks scan order, and derives the EOB from
+/// `iscan`** — the same restructuring `crate::quant::simd`'s `quantize_fp`
+/// already uses, and the same one libaom's own `aom_quantize_b_avx2` uses (its
+/// `iscan` argument exists for exactly this; the `_c` body ignores it). Three
+/// facts make it value-identical, and the differential against the real
+/// exported C is what asserts it:
+///
+/// * **The set of positions that WRITE is the same.** C's pre-scan trims
+///   trailing coefficients satisfying `|coeff| < zbin[ac]` and the main loop
+///   writes only where `|coeff| >= zbin[ac]` — exact complements, so a trimmed
+///   position would have written nothing anyway, and `memset` had already left
+///   it zero. Here every position is written unconditionally, with the same
+///   zero on the dead-zone side, so **both `memset`s are gone** rather than
+///   being re-done by the loop.
+/// * **`ac` is the raster index test.** C computes `ac = (scan[i] != 0)`, i.e.
+///   it asks whether the RASTER position is the DC. Walking raster order that
+///   is `i != 0`, so the per-class constants become loop-invariant and the DC
+///   peels off — no `scan[i]` load, no select, no table index per coefficient.
+/// * **`eob = 1 + max(iscan[rc])` over written-nonzero positions equals C's
+///   scan-order maximum**, because `iscan` is the inverse permutation of
+///   `scan`. This is the ONE order-sensitive output of the family (KB-12), so
+///   it carries its own bite proof in `quantize_b_diff`.
+///
+/// `scan` is retained for signature fidelity with `aom_quantize_b_helper_c` and
+/// is used only to check the two permutations agree in length.
 #[allow(clippy::too_many_arguments)]
 pub fn aom_quantize_b_no_qmatrix(
     zbin: &[i16; 2],
@@ -106,60 +171,76 @@ pub fn aom_quantize_b_no_qmatrix(
     dequant: &[i16; 2],
     log_scale: i32,
     scan: &[i16],
+    iscan: &[i16],
     coeff: &[i32],
     qcoeff: &mut [i32],
     dqcoeff: &mut [i32],
 ) -> u16 {
+    const WT: i32 = 1 << AOM_QM_BITS;
     let n = coeff.len();
-    let wt: i32 = 1 << AOM_QM_BITS; // 32; no quant matrix
-    let zbins = [
-        round_power_of_two(zbin[0] as i32, log_scale),
-        round_power_of_two(zbin[1] as i32, log_scale),
+    debug_assert_eq!(scan.len(), n, "scan must cover the block");
+    debug_assert!(
+        iscan.len() >= n && qcoeff.len() >= n && dqcoeff.len() >= n,
+        "iscan/qcoeff/dqcoeff must cover the block"
+    );
+    if n == 0 {
+        return 0;
+    }
+
+    // Per-class constants, hoisted out of the walk. In C every one of these is
+    // re-derived per coefficient through `ac = (scan[i] != 0)`.
+    let zbin_gate = [
+        round_power_of_two(zbin[0] as i32, log_scale) << AOM_QM_BITS,
+        round_power_of_two(zbin[1] as i32, log_scale) << AOM_QM_BITS,
     ];
-    let nzbins = [-zbins[0], -zbins[1]];
-    qcoeff[..n].fill(0);
-    dqcoeff[..n].fill(0);
+    let round_rpo = [
+        round_power_of_two(round[0] as i32, log_scale),
+        round_power_of_two(round[1] as i32, log_scale),
+    ];
+    // iwt = 32 -> dequant = (dequant[ac]*32 + 16) >> 5 == dequant[ac].
+    let dequant_v = [
+        (dequant[0] as i32 * WT + (1 << (AOM_QM_BITS - 1))) >> AOM_QM_BITS,
+        (dequant[1] as i32 * WT + (1 << (AOM_QM_BITS - 1))) >> AOM_QM_BITS,
+    ];
+    let shift = 16 - log_scale + AOM_QM_BITS;
 
-    // Pre-scan pass (from the end): trim trailing dead-zone coefficients.
-    let mut non_zero_count = n as i32;
-    for i in (0..n).rev() {
-        let rc = scan[i] as usize;
-        let ac = (rc != 0) as usize;
-        let c = coeff[rc].wrapping_mul(wt);
-        if c < zbins[ac].wrapping_mul(1 << AOM_QM_BITS)
-            && c > nzbins[ac].wrapping_mul(1 << AOM_QM_BITS)
-        {
-            non_zero_count -= 1;
-        } else {
-            break;
-        }
+    // `eob` is 1 + the largest SCAN index that quantized nonzero; 0 = none.
+    let mut eob: i32 = 0;
+
+    // Raster position 0 is the DC — the only one taking the `ac == 0` class.
+    let tmp32 = quantize_b_one(
+        coeff[0],
+        zbin_gate[0],
+        round_rpo[0],
+        quant[0] as i64,
+        quant_shift[0] as i64,
+        dequant_v[0],
+        log_scale,
+        shift,
+        &mut qcoeff[0],
+        &mut dqcoeff[0],
+    );
+    if tmp32 != 0 {
+        eob = iscan[0] as i32 + 1;
     }
 
-    let mut eob: i32 = -1;
-    for i in 0..non_zero_count as usize {
-        let rc = scan[i] as usize;
-        let ac = (rc != 0) as usize;
-        let coeff_v = coeff[rc];
-        let coeff_sign = aomsign(coeff_v);
-        let abs_coeff = (coeff_v ^ coeff_sign).wrapping_sub(coeff_sign);
-        if abs_coeff.wrapping_mul(wt) >= (zbins[ac] << AOM_QM_BITS) {
-            let clamped = (abs_coeff.wrapping_add(round_power_of_two(round[ac] as i32, log_scale)))
-                .clamp(i16::MIN as i32, i16::MAX as i32);
-            let mut tmp = clamped as i64;
-            tmp *= wt as i64;
-            let tmp32 = ((((tmp * quant[ac] as i64) >> 16) + tmp) * quant_shift[ac] as i64
-                >> (16 - log_scale + AOM_QM_BITS)) as i32;
-            qcoeff[rc] = (tmp32 ^ coeff_sign).wrapping_sub(coeff_sign);
-            // iwt = 32 -> dequant = (dequant[ac]*32 + 16) >> 5 == dequant[ac]
-            let dequant_v = (dequant[ac] as i32 * wt + (1 << (AOM_QM_BITS - 1))) >> AOM_QM_BITS;
-            let abs_dqcoeff = tmp32.wrapping_mul(dequant_v) >> log_scale;
-            dqcoeff[rc] = (abs_dqcoeff ^ coeff_sign).wrapping_sub(coeff_sign);
-            if tmp32 != 0 {
-                eob = i as i32;
-            }
+    // Every remaining raster position is AC, so the five constants below are
+    // scalars for the whole walk and the three slices are iterated rather than
+    // indexed — no bounds check, no gather, no scatter.
+    let (zg, rr) = (zbin_gate[1], round_rpo[1]);
+    let (qv, qsv, dqv) = (quant[1] as i64, quant_shift[1] as i64, dequant_v[1]);
+    for (((&c, q), dq), &is) in coeff[1..n]
+        .iter()
+        .zip(qcoeff[1..n].iter_mut())
+        .zip(dqcoeff[1..n].iter_mut())
+        .zip(iscan[1..n].iter())
+    {
+        let tmp32 = quantize_b_one(c, zg, rr, qv, qsv, dqv, log_scale, shift, q, dq);
+        if tmp32 != 0 {
+            eob = eob.max(is as i32 + 1);
         }
     }
-    (eob + 1) as u16
+    eob as u16
 }
 
 /// Bit-exact port of `aom_quantize_b_helper_c` (`aom_dsp/quantize.c`) *with* a

@@ -31,6 +31,15 @@ fn perm(rng: &mut Rng, n: usize) -> Vec<i16> {
     v
 }
 
+/// The inverse permutation: `iscan[scan[i]] == i`.
+fn invert(scan: &[i16]) -> Vec<i16> {
+    let mut iscan = vec![0i16; scan.len()];
+    for (i, &rc) in scan.iter().enumerate() {
+        iscan[rc as usize] = i as i16;
+    }
+    iscan
+}
+
 fn check(rng: &mut Rng, log_scale: i32, n: usize, scan: &[i16]) {
     let coeff: Vec<i32> = (0..n).map(|_| rng.coeff()).collect();
     let zbin = [rng.pos_i16(1, 1000), rng.pos_i16(1, 1000)];
@@ -41,8 +50,14 @@ fn check(rng: &mut Rng, log_scale: i32, n: usize, scan: &[i16]) {
 
     let mut q_got = vec![0i32; n];
     let mut dq_got = vec![0i32; n];
+    // `iscan` is the INVERSE of `scan` — the port walks raster order and derives
+    // the EOB from it, so a wrong inverse is a wrong EOB and nothing else. The
+    // scans here are random permutations, which stresses that far harder than
+    // the real `av1_scan_orders` rows do.
+    let iscan = invert(scan);
     let eob_got = aom_quantize_b_no_qmatrix(
-        &zbin, &round, &quant, &quant_shift, &dequant, log_scale, scan, &coeff, &mut q_got, &mut dq_got,
+        &zbin, &round, &quant, &quant_shift, &dequant, log_scale, scan, &iscan, &coeff,
+        &mut q_got, &mut dq_got,
     );
 
     let (q_want, dq_want, eob_want) =
