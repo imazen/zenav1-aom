@@ -90,6 +90,44 @@ dequant step (two `vpunpck` + `vperm2i128` per 16 coefficients), so it buys one
 (where the same setup cost made the 8-column shape a wash) **this is very
 likely null**, and it should be costed in uops before anyone writes it.
 
+## THE PREREQUISITE IS NOW ANSWERED — the overflow IS reachable
+
+This record's own handoff said an overflow-reachability sweep over
+`(coeff, quant, dequant, log_scale)` was the prerequisite. It is done:
+**`xtask/audit_quantize_dqcoeff_range.py`**, computed from the port's own
+quantizer tables rather than sampled.
+
+`av1_quantize_fp` uses `quant_fp = 65536 / dequant`, so `tmp ~ |coeff| / dequant`
+and therefore **`tmp * dequant ~ |coeff|`** — the dqcoeff bound tracks the
+forward-transform cap, not the dequant magnitude:
+
+| bd | worst \|dqcoeff\| | vs `i16::MAX` = 32767 |
+|---:|---:|---|
+| **8** | **33,137** | **OVERFLOWS by 1.01x** |
+| 10 | 131,870 | 4.02x |
+| 12 | 134,937 | 4.12x |
+
+**At bd8 — the only depth `av1_quantize_fp_avx2` serves, since high bit depth has
+its own kernel — the margin is essentially ONE UNIT**: `av1_gen_fwd_stage_range`
+caps `|coeff|` at `2^15 = 32768` (KB-ARM-FLOAT root #3 derives the same number
+from the spec clamp on `dqcoeff`), and `i16::MAX` is 32767.
+
+**So the overflow is REACHABLE, and an i16 rewrite cannot be justified by an
+unreachability proof.** It would be a deliberate choice to make the port's
+bitstream ISA-conditional — and `just gate-landing`'s two legs would reject it on
+any cell that reaches the cap.
+
+**CONSEQUENCE: stop ranking quantize_fp's +54.6 ms as an available lever.** It is
+structural in the same sense as directional intra: reachable only by changing
+what the port is bit-identical TO, which is a project decision and not a
+kernel-level one. The audit script is committed so the next session can re-run
+it against changed tables rather than re-derive it.
+
+**Caveat kept honest:** `2^15` is the transform's absolute stage-range maximum,
+not what real residuals produce. The overflow may well be unreachable on real
+content — but "unreachable in practice on the corpus we happen to gate" is not a
+proof, and this kernel feeds the bitstream.
+
 ## Handoff
 
 1. **Do not implement "quantize with mul_high" as a perf task.** The instruction
