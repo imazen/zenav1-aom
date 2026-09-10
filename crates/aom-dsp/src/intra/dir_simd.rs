@@ -139,7 +139,16 @@ fn two_tap_run_impl(
     }
     let sv = i16x16::splat(token, shift as i16);
     let round = i16x16::splat(token, 16);
-    let mut buf = [0i16; 16];
+    // KB-PERF-34: a `u16` staging buffer plus one `copy_from_slice`, NOT an
+    // `i16` buffer plus a per-lane cast loop. The per-lane copy was measured to
+    // be this kernel's real cost — see
+    // `benchmarks/encoder_dir_pred_reach_audit_2026-09-10.md`, where doubling
+    // the ARITHMETIC to avoid a gather made it 0.34 % slower because it doubled
+    // the copy. The bitcast is exact rather than convenient: every output is
+    // `((a0 * (32 - shift) + a1 * shift + 16) >> 5)` with taps `<= I16_TAP_MAX`,
+    // hence non-negative and `<= 1023`, so its `i16` bit pattern IS its `u16`
+    // value — the same equality `buf[k] as u16` relied on.
+    let mut buf = [0u16; 16];
     let mut i = 0;
     // A chunk needs 17 in-range samples. For a FULL chunk that is implied by the
     // caller's `start + n < edge.len()`; the guard binds only on a partial tail
@@ -150,10 +159,8 @@ fn two_tap_run_impl(
         let v0 = u16x16::from_slice(token, &edge[idx..idx + 16]).bitcast_i16x16();
         let v1 = u16x16::from_slice(token, &edge[idx + 1..idx + 17]).bitcast_i16x16();
         let res = (v0.shl_const::<5>() + (v1 - v0) * sv + round).shr_arithmetic_const::<5>();
-        res.store(&mut buf);
-        for (k, o) in out[i..i + m].iter_mut().enumerate() {
-            *o = buf[k] as u16;
-        }
+        res.bitcast_u16x16().store(&mut buf);
+        out[i..i + m].copy_from_slice(&buf[..m]);
         i += m;
     }
     if i < n {

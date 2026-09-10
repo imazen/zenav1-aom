@@ -586,8 +586,19 @@ pub fn txfm_rd_in_plane_uv_p(
     );
 
     // av1_get_entropy_contexts: working copies of the neighbour contexts.
-    let mut t_above: Vec<i8> = env.above_ctx[pi][..max_blocks_wide].to_vec();
-    let mut t_left: Vec<i8> = env.left_ctx[pi][..max_blocks_high].to_vec();
+    //
+    // KB-PERF-35: fixed-size arrays, not `to_vec()` — the CHROMA twin of
+    // KB-PERF-13's luma fix, which this file was left out of.
+    // `MI_SIZE_WIDE_B`/`MI_SIZE_HIGH_B` top out at 32 (BLOCK_128X128 in 4x4
+    // units), so this is at most 32 bytes each and never needed a heap. Every
+    // use below slices to `max_blocks_wide`/`max_blocks_high`, so the lengths
+    // handed to `get_txb_ctx` and to the per-txb `above:`/`left:` fields are
+    // exactly the ones the `Vec` form passed.
+    debug_assert!(max_blocks_wide <= 32 && max_blocks_high <= 32);
+    let mut t_above = [0i8; 32];
+    let mut t_left = [0i8; 32];
+    t_above[..max_blocks_wide].copy_from_slice(&env.above_ctx[pi][..max_blocks_wide]);
+    t_left[..max_blocks_high].copy_from_slice(&env.left_ctx[pi][..max_blocks_high]);
     // predict_dc_only_block's zero_blk_rate ctx (tx_search.c:2055-2063): the
     // BLOCK-ORIGIN skip ctx from the PERSISTENT (pre-walk) entropy arrays,
     // shared by every txb of this chroma block — same quirk as the luma walk
