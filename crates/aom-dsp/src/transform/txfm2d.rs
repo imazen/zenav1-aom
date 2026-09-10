@@ -401,6 +401,8 @@ fn fwd_txfm2d_4x4_fused(input: &[i16], output: &mut [i32], stride: usize, tx_typ
 const TX_4X4_IDX: usize = 0;
 /// `TX_8X8`'s index into the same tables.
 const TX_8X8_IDX: usize = 1;
+/// `TX_16X16`'s index into the same tables.
+const TX_16X16_IDX: usize = 2;
 
 /// Public forward 2-D transform. `output` must have length `wide*high` of the
 /// given `tx_size`. Mirrors the C `av1_fwd_txfm2d_<size>_c` entry points,
@@ -449,6 +451,32 @@ pub fn av1_fwd_txfm2d_into(
                 stride,
                 COS_BIT_COL[1][1] as i32,
                 COS_BIT_ROW[1][1] as i32,
+                ud_flip,
+                lr_flip,
+            ) {
+                return;
+            }
+        }
+    }
+    // The 16x16 specialisation — same shape as the 8x8 pair, 5.62 % of forward
+    // transforms at the shipping preset. Declines to the generic driver on
+    // anything it is not proven for.
+    #[cfg(target_arch = "x86_64")]
+    if tx_size == TX_16X16_IDX
+        && FWD_SHIFT[TX_16X16_IDX] == [2, -2, 0]
+        && get_rect_tx_log_ratio(16, 16) == 0
+    {
+        let (tc, tr) = (TXFM_TYPE_LS[2][VTX_TAB[tx_type]], TXFM_TYPE_LS[2][HTX_TAB[tx_type]]);
+        if tc >= 0 && tr >= 0 {
+            let (ud_flip, lr_flip) = FLIP_CFG[tx_type];
+            if crate::transform::simd::try_fwd_txfm2d_16x16_fused(
+                tc,
+                tr,
+                input,
+                output,
+                stride,
+                COS_BIT_COL[2][2] as i32,
+                COS_BIT_ROW[2][2] as i32,
                 ud_flip,
                 lr_flip,
             ) {

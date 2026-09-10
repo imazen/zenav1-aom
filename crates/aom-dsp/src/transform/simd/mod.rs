@@ -728,6 +728,189 @@ fn inv_row_pass_core(
 /// The `incant!` fallback: decline to the generic two-pass driver.
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::too_many_arguments)]
+fn fwd_16x16_fused_scalar(
+    _t: archmage::ScalarToken,
+    _kc: Fwd1d,
+    _kr: Fwd1d,
+    _input: &[i16],
+    _output: &mut [i32],
+    _stride: usize,
+    _cos_bit_col: i32,
+    _cos_bit_row: i32,
+    _ud_flip: bool,
+    _lr_flip: bool,
+) -> bool {
+    false
+}
+
+/// **The SIMD-preserving fused 16x16 forward transform** — KB-PERF-23's shape
+/// at twice the width.
+///
+/// `i32x8` holds eight lanes, so sixteen columns is TWO vectors per row and the
+/// 16x16 transpose is **four 8x8 block transposes**: `w_lo[0..8]`,
+/// `w_lo[8..16]`, `w_hi[0..8]`, `w_hi[8..16]` become, respectively, columns
+/// 0-7 x rows 0-7, columns 0-7 x rows 8-15, columns 8-15 x rows 0-7, and
+/// columns 8-15 x rows 8-15 — which is exactly the two row-groups the row pass
+/// wants. No off-diagonal swap is needed because the groups are consumed
+/// separately.
+///
+/// `FWD_SHIFT[TX_16X16] = [2, -2, 0]`, so `shift1` is a round-shift by **2**
+/// (8x8's is 1) and the tail is again a no-op; `rect_type == 0`. Note
+/// `COS_BIT_ROW[2][2]` is **12**, not 13 — the row and column cos bits differ
+/// at this size, unlike 8x8.
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i32x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn fwd_16x16_fused(
+    t: Token,
+    kc: Fwd1d,
+    kr: Fwd1d,
+    input: &[i16],
+    output: &mut [i32],
+    stride: usize,
+    cos_bit_col: i32,
+    cos_bit_row: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    use archmage::intrinsics::x86_64::*;
+    let sr = [0i8; 12];
+
+    // One 8x8 i32 transpose, written out (KB-PERF-23/24: an index-computed
+    // version got a stage pairing wrong and the differentials caught it).
+    let tr8 = |m: &[i32x8]| -> [i32x8; 8] {
+        let r: [__m256i; 8] = core::array::from_fn(|i| m[i].into_repr());
+        let a0 = _mm256_unpacklo_epi32(r[0], r[1]);
+        let a1 = _mm256_unpackhi_epi32(r[0], r[1]);
+        let a2 = _mm256_unpacklo_epi32(r[2], r[3]);
+        let a3 = _mm256_unpackhi_epi32(r[2], r[3]);
+        let a4 = _mm256_unpacklo_epi32(r[4], r[5]);
+        let a5 = _mm256_unpackhi_epi32(r[4], r[5]);
+        let a6 = _mm256_unpacklo_epi32(r[6], r[7]);
+        let a7 = _mm256_unpackhi_epi32(r[6], r[7]);
+        let b0 = _mm256_unpacklo_epi64(a0, a2);
+        let b1 = _mm256_unpackhi_epi64(a0, a2);
+        let b2 = _mm256_unpacklo_epi64(a1, a3);
+        let b3 = _mm256_unpackhi_epi64(a1, a3);
+        let b4 = _mm256_unpacklo_epi64(a4, a6);
+        let b5 = _mm256_unpackhi_epi64(a4, a6);
+        let b6 = _mm256_unpacklo_epi64(a5, a7);
+        let b7 = _mm256_unpackhi_epi64(a5, a7);
+        [
+            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
+            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
+            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
+            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
+            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
+            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
+            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
+            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
+        ]
+    };
+
+    // ---- column pass: lane = column, two vectors per row ----
+    let mut vlo = [i32x8::zero(t); 16];
+    let mut vhi = [i32x8::zero(t); 16];
+    for r in 0..16usize {
+        let src_r = if ud_flip { 15 - r } else { r };
+        let base = src_r * stride;
+        let a: [i16; 16] = match input.get(base..base + 16).and_then(|s| s.try_into().ok()) {
+            Some(a) => a,
+            None => return false,
+        };
+        let lo = i32x8::from_array(t, core::array::from_fn(|j| a[j] as i32));
+        let hi = i32x8::from_array(t, core::array::from_fn(|j| a[j + 8] as i32));
+        vlo[r] = shl_clamp64v(t, lo, 2);
+        vhi[r] = shl_clamp64v(t, hi, 2);
+    }
+    let mut wlo = [i32x8::zero(t); 16];
+    let mut whi = [i32x8::zero(t); 16];
+    incant!(run_fwd1d(kc, &vlo, &mut wlo, cos_bit_col, &sr), [v3]);
+    incant!(run_fwd1d(kc, &vhi, &mut whi, cos_bit_col, &sr), [v3]);
+
+    // `round_shift_array(_, -shift[1])` with shift[1] == -2, then the lr flip:
+    // source column c lands at column 15-c, i.e. the halves swap AND reverse.
+    for r in 0..16usize {
+        let l = rshiftv(t, wlo[r], 2);
+        let h = rshiftv(t, whi[r], 2);
+        if lr_flip {
+            wlo[r] = revv(t, h);
+            whi[r] = revv(t, l);
+        } else {
+            wlo[r] = l;
+            whi[r] = h;
+        }
+    }
+
+    // ---- transpose: four 8x8 blocks -> the two row-groups ----
+    let ta = tr8(&wlo[0..8]); // cols 0-7,  rows 0-7
+    let tb = tr8(&wlo[8..16]); // cols 0-7,  rows 8-15
+    let tc = tr8(&whi[0..8]); // cols 8-15, rows 0-7
+    let td = tr8(&whi[8..16]); // cols 8-15, rows 8-15
+
+    let mut ga = [i32x8::zero(t); 16];
+    let mut gb = [i32x8::zero(t); 16];
+    for c in 0..8usize {
+        ga[c] = ta[c];
+        ga[c + 8] = tc[c];
+        gb[c] = tb[c];
+        gb[c + 8] = td[c];
+    }
+
+    // ---- row pass: lane = row, one call per 8-row group ----
+    let mut ua = [i32x8::zero(t); 16];
+    let mut ub = [i32x8::zero(t); 16];
+    incant!(run_fwd1d(kr, &ga, &mut ua, cos_bit_row, &sr), [v3]);
+    incant!(run_fwd1d(kr, &gb, &mut ub, cos_bit_row, &sr), [v3]);
+
+    // shift[2] == 0 and rect_type == 0: `output[c*16 + r]`.
+    for c in 0..16usize {
+        let o = match output.get_mut(c * 16..c * 16 + 16) {
+            Some(o) => o,
+            None => return false,
+        };
+        let (lo, hi) = o.split_at_mut(8);
+        match (<&mut [i32; 8]>::try_from(lo), <&mut [i32; 8]>::try_from(hi)) {
+            (Ok(l), Ok(h)) => {
+                ua[c].store(l);
+                ub[c].store(h);
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Dispatch for [`fwd_16x16_fused`]; `false` routes to the generic driver.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_fwd_txfm2d_16x16_fused(
+    txfm_type_col: i32,
+    txfm_type_row: i32,
+    input: &[i16],
+    output: &mut [i32],
+    stride: usize,
+    cos_bit_col: i32,
+    cos_bit_row: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    let _ = crate::dispatch::scalar_forced();
+    let (Some(kc), Some(kr)) = (fwd_kernel(txfm_type_col), fwd_kernel(txfm_type_row)) else {
+        return false;
+    };
+    if fwd_kernel_n(kc) != 16 || fwd_kernel_n(kr) != 16 {
+        return false;
+    }
+    incant!(
+        fwd_16x16_fused(kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip),
+        [v3, scalar]
+    )
+}
+
+/// The `incant!` fallback: decline to the generic two-pass driver.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
 fn fwd_8x8_fused_scalar(
     _t: archmage::ScalarToken,
     _kc: Fwd1d,
