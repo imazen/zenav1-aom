@@ -395,10 +395,23 @@ pub fn highbd_subtract_block(
     rows: usize, cols: usize, diff: &mut [i16], diff_stride: usize,
     src: &[u16], src_stride: usize, pred: &[u16], pred_stride: usize,
 ) {
+    // KB-PERF-37: row slices, not triple indexing. The old form emitted THREE
+    // bounds checks per ELEMENT against three runtime slice lengths, which also
+    // blocked vectorization — measured as ~20 % of `txfm_rd_in_plane_intra`'s
+    // 124 ms, a scalar `movzwl`/`subw`/`movw` chain, against libaom's
+    // `aom_subtract_block_sse2` at 10.9 ms.
+    //
+    // Same values and same order: `(a as i32 - b as i32) as i16` truncates to
+    // 16 bits, which is exactly the 16-bit wrapping difference, so a 16-lane
+    // vector subtract is bit-identical. The slice bounds are the same ones the
+    // indexed form required (`(rows - 1) * stride + cols` on each buffer), so
+    // this panics on exactly the inputs the old form panicked on.
     for r in 0..rows {
-        let (d, s, p) = (r * diff_stride, r * src_stride, r * pred_stride);
-        for c in 0..cols {
-            diff[d + c] = (src[s + c] as i32 - pred[p + c] as i32) as i16;
+        let d = &mut diff[r * diff_stride..r * diff_stride + cols];
+        let s = &src[r * src_stride..r * src_stride + cols];
+        let p = &pred[r * pred_stride..r * pred_stride + cols];
+        for ((dv, &sv), &pv) in d.iter_mut().zip(s.iter()).zip(p.iter()) {
+            *dv = (sv as i32 - pv as i32) as i16;
         }
     }
 }
