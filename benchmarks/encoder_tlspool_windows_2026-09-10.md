@@ -1,4 +1,4 @@
-# The TLS scratch pool: **+0.23 % on Linux, −0.60 % on Windows ARM.** The rejection was platform-local
+# The TLS scratch pool: **+0.23 % on Linux, −0.60 % on Windows ARM** — MERGED on policy
 
 **2026-09-10.** GitHub Actions run
 [34489034382](https://github.com/imazen/zenav1-aom/actions/runs/34489034382),
@@ -39,7 +39,27 @@ its noise floor was 0.59-1.65 % this run against an effect near 0.5 %. That
 runner has failed to resolve sub-1 % effects throughout the project; it resolved
 the whole-cycle −7 % at 55x its floor, and cannot resolve this.
 
-## The decision this hands over — and it is a decision, not a measurement
+## MERGED, on a stated policy
+
+**Take allocation reductions that cost under a percent.** The reasoning, and it
+is the user's call rather than a measurement: the drops **compound**, and
+locality only improves once the churn is broadly gone — so a per-change
+reject-on-any-regression rule is the wrong stopping rule for this class. It
+would reject every step of a compounding sequence, and it would do so on the
+platform that systematically understates the class.
+
+This change qualifies squarely: **−412,208 allocations, +0.23 % on the
+understating platform, −0.60 % on a shipping one.**
+
+**The `with_capacity` variant does NOT qualify and stays rejected** — it removed
+**zero** allocations, so it is not an allocation reduction at all, just added
+arithmetic (two integer divisions per call). The policy is about reductions;
+that one has nothing to compound.
+
+Merged as KB-PERF-48. Allocations **7,790,969 -> 7,378,761**; output
+byte-identical on all four cells; `just gate-landing` green.
+
+## What the decision looked like before the policy
 
 The change is **byte-identical everywhere**, so nothing about parity, RD or the
 gates is at stake. What is at stake is a per-platform performance trade:
