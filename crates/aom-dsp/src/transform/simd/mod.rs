@@ -548,6 +548,181 @@ fn inv_row_pass_core(
 /// `buf` (lane-reversed at the mirrored position under `lr_flip`).
 /// Returns `false` → caller runs the scalar loop.
 #[allow(clippy::too_many_arguments)]
+/// The `incant!` fallback: decline to the generic two-pass driver.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn fwd_8x8_fused_scalar(
+    _t: archmage::ScalarToken,
+    _kc: Fwd1d,
+    _kr: Fwd1d,
+    _input: &[i16],
+    _output: &mut [i32],
+    _stride: usize,
+    _cos_bit_col: i32,
+    _cos_bit_row: i32,
+    _ud_flip: bool,
+    _lr_flip: bool,
+) -> bool {
+    false
+}
+
+/// **The SIMD-PRESERVING fused 8x8 forward transform.**
+///
+/// `encoder_txfm_size_census_2026-09-09.md`'s own correction is the brief:
+/// KB-PERF-16's 8x8 fusion was SCALAR, measured **+7.07 %** and was reverted,
+/// because at 8x8 both generic passes satisfy `n % 8 == 0` and run full-width —
+/// so a scalar fusion trades the SIMD away. Its closing line: *"a future one
+/// would have to be VECTORISED itself to beat what is already there."* This is
+/// that one. **It keeps both vector passes and removes only the DRIVER**: the
+/// config derivation, the two `try_*` gates, the scratch tiering, and the
+/// round trip through `buf` between the passes.
+///
+/// `encoder_domain_split_2026-09-09.md` is why this is the ranked target:
+/// **52.8 % of the shipping-preset gap is coefficient-domain** (against 24.4 %
+/// for the plane representation), and transform alone is 40.5 %. 8x8 is
+/// **25.74 % of forward transforms** at that preset, second only to the
+/// already-fused 4x4.
+///
+/// # Layout
+///
+/// Lane = COLUMN for the first pass: `v[r]` is input row `r`, so the column
+/// kernel runs vertically across the eight vectors, per lane — exactly what
+/// `fwd_col_pass` does, without materialising `buf`. Then ONE in-register
+/// 8x8 `i32` transpose makes lane = ROW, and the row kernel runs the same way.
+/// The generic row pass already pays a transpose (it loads `buf` through 8x8
+/// tiles), so this does not ADD one — it moves it out of memory.
+///
+/// # Exactness
+///
+/// Every step is the generic path's own, in its order: `shl_clamp64v(_, 2)` is
+/// `round_shift_array(_, -shift[0])` with `FWD_SHIFT[TX_8X8] = [2, -1, 0]`;
+/// `rshiftv(_, 1)` is `round_shift_array(_, -shift[1])`; `shift[2] == 0` and
+/// `rect_type == 0` so the row pass has no tail. `lr_flip` is a LANE REVERSE
+/// applied AFTER the column kernel, because the generic writes lane `j`'s
+/// result to column `col_n-1-j` — reversing before the kernel would be wrong.
+/// `ud_flip` is the source-row reversal at load. The transpose only moves
+/// lanes.
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i32x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn fwd_8x8_fused(
+    t: Token,
+    kc: Fwd1d,
+    kr: Fwd1d,
+    input: &[i16],
+    output: &mut [i32],
+    stride: usize,
+    cos_bit_col: i32,
+    cos_bit_row: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    use archmage::intrinsics::x86_64::*;
+    let sr = [0i8; 12];
+
+    // Lane = column. `shift[0] == 2` -> the NEGATIVE-bit arm of
+    // `round_shift_array`, i.e. a clamped left shift, same as `fwd_col_pass`.
+    let mut v = [i32x8::zero(t); 8];
+    for (r, vr) in v.iter_mut().enumerate() {
+        let src_r = if ud_flip { 7 - r } else { r };
+        let base = src_r * stride;
+        let a: [i16; 8] = match input.get(base..base + 8).and_then(|s| s.try_into().ok()) {
+            Some(a) => a,
+            None => return false,
+        };
+        let w = i32x8::from_array(
+            t,
+            [
+                a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32,
+                a[4] as i32, a[5] as i32, a[6] as i32, a[7] as i32,
+            ],
+        );
+        *vr = shl_clamp64v(t, w, 2);
+    }
+
+    let mut w = [i32x8::zero(t); 8];
+    incant!(run_fwd1d(kc, &v, &mut w, cos_bit_col, &sr), [v3]);
+
+    // `round_shift_array(_, -shift[1])` with shift[1] == -1, then the lr flip:
+    // lane j held source column j, and the generic writes it to column 7-j.
+    for x in w.iter_mut() {
+        let s = rshiftv(t, *x, 1);
+        *x = if lr_flip { revv(t, s) } else { s };
+    }
+
+    // In-register 8x8 i32 transpose -> lane = row. Written out rather than
+    // index-computed: a clever `from_fn` got stage 2's pairing wrong and the
+    // differentials caught it.
+    let r: [__m256i; 8] = core::array::from_fn(|i| w[i].into_repr());
+    let t0 = _mm256_unpacklo_epi32(r[0], r[1]);
+    let t1 = _mm256_unpackhi_epi32(r[0], r[1]);
+    let t2 = _mm256_unpacklo_epi32(r[2], r[3]);
+    let t3 = _mm256_unpackhi_epi32(r[2], r[3]);
+    let t4 = _mm256_unpacklo_epi32(r[4], r[5]);
+    let t5 = _mm256_unpackhi_epi32(r[4], r[5]);
+    let t6 = _mm256_unpacklo_epi32(r[6], r[7]);
+    let t7 = _mm256_unpackhi_epi32(r[6], r[7]);
+    let u0 = _mm256_unpacklo_epi64(t0, t2);
+    let u1 = _mm256_unpackhi_epi64(t0, t2);
+    let u2 = _mm256_unpacklo_epi64(t1, t3);
+    let u3 = _mm256_unpackhi_epi64(t1, t3);
+    let u4 = _mm256_unpacklo_epi64(t4, t6);
+    let u5 = _mm256_unpackhi_epi64(t4, t6);
+    let u6 = _mm256_unpacklo_epi64(t5, t7);
+    let u7 = _mm256_unpackhi_epi64(t5, t7);
+    let tr: [i32x8; 8] = [
+        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(u0, u4)),
+        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(u1, u5)),
+        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(u2, u6)),
+        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(u3, u7)),
+        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(u0, u4)),
+        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(u1, u5)),
+        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(u2, u6)),
+        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(u3, u7)),
+    ];
+
+    let mut u = [i32x8::zero(t); 8];
+    incant!(run_fwd1d(kr, &tr, &mut u, cos_bit_row, &sr), [v3]);
+
+    // shift[2] == 0 and rect_type == 0, so no tail. `output[k*8 + r]` is
+    // lane `r` of `u[k]` — one contiguous vector store per k.
+    for (k, uk) in u.iter().enumerate() {
+        let o: &mut [i32; 8] = match output.get_mut(k * 8..k * 8 + 8).and_then(|s| s.try_into().ok()) {
+            Some(o) => o,
+            None => return false,
+        };
+        uk.store(o);
+    }
+    true
+}
+
+/// Dispatch for [`fwd_8x8_fused`]; `false` routes to the generic driver.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_fwd_txfm2d_8x8_fused(
+    txfm_type_col: i32,
+    txfm_type_row: i32,
+    input: &[i16],
+    output: &mut [i32],
+    stride: usize,
+    cos_bit_col: i32,
+    cos_bit_row: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    let _ = crate::dispatch::scalar_forced();
+    let (Some(kc), Some(kr)) = (fwd_kernel(txfm_type_col), fwd_kernel(txfm_type_row)) else {
+        return false;
+    };
+    if fwd_kernel_n(kc) != 8 || fwd_kernel_n(kr) != 8 {
+        return false;
+    }
+    incant!(
+        fwd_8x8_fused(kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip),
+        [v3, scalar]
+    )
+}
+
 pub(crate) fn try_fwd_col_pass(
     txfm_type_col: i32,
     input: &[i16],

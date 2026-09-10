@@ -399,6 +399,8 @@ fn fwd_txfm2d_4x4_fused(input: &[i16], output: &mut [i32], stride: usize, tx_typ
 
 /// `TX_4X4`'s index into the `tx_size`-keyed tables.
 const TX_4X4_IDX: usize = 0;
+/// `TX_8X8`'s index into the same tables.
+const TX_8X8_IDX: usize = 1;
 
 /// Public forward 2-D transform. `output` must have length `wide*high` of the
 /// given `tx_size`. Mirrors the C `av1_fwd_txfm2d_<size>_c` entry points,
@@ -425,6 +427,34 @@ pub fn av1_fwd_txfm2d_into(
     // is not proven for.
     if tx_size == TX_4X4_IDX && fwd_txfm2d_4x4_fused(input, output, stride, tx_type) {
         return;
+    }
+    // The SIMD-preserving 8x8 specialisation — 25.74 % of forward transforms at
+    // the shipping preset, second only to the already-fused 4x4. Unlike
+    // KB-PERF-16's reverted SCALAR 8x8 fusion it keeps both vector passes and
+    // removes only the driver; it declines to the generic path on anything it
+    // is not proven for.
+    #[cfg(target_arch = "x86_64")]
+    if tx_size == TX_8X8_IDX
+        && FWD_SHIFT[TX_8X8_IDX] == [2, -1, 0]
+        && get_rect_tx_log_ratio(8, 8) == 0
+    {
+        let (tc, tr) = (TXFM_TYPE_LS[1][VTX_TAB[tx_type]], TXFM_TYPE_LS[1][HTX_TAB[tx_type]]);
+        if tc >= 0 && tr >= 0 {
+            let (ud_flip, lr_flip) = FLIP_CFG[tx_type];
+            if crate::transform::simd::try_fwd_txfm2d_8x8_fused(
+                tc,
+                tr,
+                input,
+                output,
+                stride,
+                COS_BIT_COL[1][1] as i32,
+                COS_BIT_ROW[1][1] as i32,
+                ud_flip,
+                lr_flip,
+            ) {
+                return;
+            }
+        }
     }
     let cfg = get_fwd_txfm_cfg(tx_type, tx_size);
     assert!(cfg.valid, "unsupported (tx_type={tx_type}, tx_size={tx_size})");
