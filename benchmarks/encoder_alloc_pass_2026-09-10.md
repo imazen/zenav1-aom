@@ -19,7 +19,48 @@ One 1024x1024 cq27 `--cpu-used 3` encode:
 them are a `Vec` GROWING.** libaom's equivalent work is a handful of frame-level
 buffers.
 
-## Where they come from — the code reading
+## CORRECTED — the attribution below was WRONG, and heaptrack with frame pointers says so
+
+**The "two `Vec<i32>` per transform block" reading in the next section is wrong.**
+It was inferred from `finish_grow`'s count and a code reading, without checking
+that the named paths are live. Three separate fixes were written on it — exact
+`with_capacity` at three sites, and a full scratch conversion of
+`intra_mode_rd_eval` — and **all three left the allocation count identical to
+the digit (10,419,121)**. That is not a coincidence: `intra_mode_rd_eval` turns
+out to have **no callers on the encode path at all**, and the capacity sites
+were single-element pushes.
+
+**Re-run under heaptrack with `-C force-frame-pointers=yes`, which resolves the
+stacks the release build could not**, the answer is one function:
+
+    823,028 temporary allocations of 1,359,984 in total (60.52 %)
+      from aom_encode::tx_search::txfm_rd_in_plane_intra
+
+and its stack is `uniform_txfm_yrd_intra` <- `choose_tx_size_type_from_rd_intra`
+<- `pick_uniform_tx_size_type_yrd_intra` <- `rd_pick_intra_sby_mode_y` <-
+`rd_pick_intra_mode_sb` <- the partition recursion.
+
+**The source is the `winners: Vec<TxbWinner>` the function RETURNS — one
+allocation per call, ~823 k calls per 1 MP encode.** `TxbWinner` itself is three
+scalar fields, so it is the `Vec` and not its contents. KB-PERF-13 gave it an
+exact capacity and explicitly left it allocating *because it is returned*.
+
+**The fix is not a scratch.** The value escapes four layers up, and at each
+level a candidate's winners must SURVIVE while losing candidates' are discarded
+— so it needs a **two-buffer keep-best swap** (current + best, swapped on
+improvement), which is a real refactor of that call chain rather than a
+`&mut` parameter.
+
+**Two lessons, both paid for here:**
+
+1. **A release build's heaptrack stacks can be unresolved, and an unresolved
+   stack invites a guess.** Build with frame pointers before attributing
+   allocations — the same flag that made KB-PERF-15's `memset` callers visible.
+2. **Verify the path is live before fixing it.** "Allocation count unchanged to
+   the digit" is the cheapest possible check and it caught three wrong fixes in
+   a row.
+
+## Where they come from — the SUPERSEDED code reading
 
 `finish_grow` at 5.87 M is `Vec` growth, and the arithmetic points at one shape:
 **two `Vec<i32>` per transform block**.
@@ -64,6 +105,16 @@ Two reasons, both worth keeping:
 **The transferable rule: a capacity hint is arithmetic, and on a hot path it has
 to earn its keep like any other change. Measure the allocation COUNT before and
 after — if it does not move, the hint is pure cost.**
+
+## Platform: this is worth more than the Linux number suggests
+
+glibc is fast on a hot, repeatedly-reused size class, which is why the capacity
+experiment could measure +0.77 % while removing real allocations. **KB-PERF-2
+measured the same class of lever at 21 % of the win on Darwin and 86-99 % on
+Windows** — so 823 k allocations per encode is likely to cost substantially more
+on the platforms this ships to than it does on the box it was measured on.
+`winperf.yml`'s `arms: prepost` mode can settle that on `windows-11-arm` and
+`windows-latest` once the keep-best refactor exists.
 
 ## What this says about the `memory` class
 
