@@ -76,6 +76,38 @@ on.
 | new vs base | 3127.9 | 1.2 % | **−3.170 %** | **30/30** | **<0.0001** |
 | new vs baseB | | | **−3.188 %** | **30/30** | **<0.0001** |
 
+## KB-PERF-38 — the follow-up annotate, and why one fix was not enough
+
+Re-profiling after the above (port 3241 -> 3148 ms) moved
+`highbd_subtract_block` OUT of its callers and into its own symbol at **54 ms —
+still 5x libaom's 10.9 ms**. Annotating it again showed the remaining cost was
+**the row loop, not the inner one**:
+
+    6.74  movq    (%r9,%rbx,2), %xmm0      <- 4 lanes of real work
+    4.46  cmpq    0x68(%rsp), %r11
+    4.41  addq    %r14, %rdx
+    3.70  cmpq    %rax, %rsi
+    2.93  imulq   0x70(%rsp), %r14
+    2.26  imulq   0x58(%rsp), %rbx
+
+Two `imul`s and three bounds checks **per row**, around a `movq` — eight bytes,
+**four** `i16` lanes. **TX_4X4 is 40 % of transforms**, so a typical row is four
+columns and the per-row overhead is larger than the work it guards.
+
+And the rewrite had **cost its own inlining**: before KB-PERF-37 the body was
+inlined into its callers and LLVM specialised it on their constant `cols` and
+strides; as a standalone symbol that specialisation was gone.
+
+**Fixed** with running offsets (`off += stride`, the same values the
+multiplication produced, so the slice bounds are unchanged) plus `#[inline]` to
+restore the specialisation. **−0.23 %** (−0.228 % at 21/29, p=0.0241, and
+−0.225 % at 26/29, p<0.0001; null +0.038 %, p=0.71), byte-identical, distinct
+binaries.
+
+**The transferable part: a fix that makes a hot inlined loop into a standalone
+symbol can lose more to lost specialisation than it gains.** Re-annotate after
+landing, not just re-band — the band said +3.17 % and looked finished.
+
 ## Siblings, same shape, not yet measured
 
 * **`subtract_block`** (the lowbd `u8` twin, same file) — identical triple

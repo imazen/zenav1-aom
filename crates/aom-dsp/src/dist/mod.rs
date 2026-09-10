@@ -390,6 +390,10 @@ pub fn subtract_block(
 /// `aom_highbd_subtract_block_c`: highbd (10/12-bit) residual generator. Same as
 /// [`subtract_block`] but 16-bit `src`/`pred`; the difference is truncated to
 /// `i16` exactly as the C stores `int` into `int16_t`.
+// `#[inline]` deliberately: before KB-PERF-37 this body was inlined into its
+// callers and LLVM specialised it on their constant `cols`/strides. The rewrite
+// made it a standalone symbol and that specialisation was lost.
+#[inline]
 #[allow(clippy::too_many_arguments)]
 pub fn highbd_subtract_block(
     rows: usize, cols: usize, diff: &mut [i16], diff_stride: usize,
@@ -406,13 +410,23 @@ pub fn highbd_subtract_block(
     // vector subtract is bit-identical. The slice bounds are the same ones the
     // indexed form required (`(rows - 1) * stride + cols` on each buffer), so
     // this panics on exactly the inputs the old form panicked on.
-    for r in 0..rows {
-        let d = &mut diff[r * diff_stride..r * diff_stride + cols];
-        let s = &src[r * src_stride..r * src_stride + cols];
-        let p = &pred[r * pred_stride..r * pred_stride + cols];
+    // KB-PERF-38: RUNNING offsets, not `r * stride` recomputed per row — the
+    // annotate after KB-PERF-37 showed the remaining cost was the row loop, not
+    // the inner one: two `imul`s and three bounds checks per row around a
+    // 4-wide `movq` of real work, because TX_4X4 is 40 % of transforms and a
+    // 4-column row is four elements. The offsets are the same values the
+    // multiplication produced, so the slice bounds are unchanged.
+    let (mut d_off, mut s_off, mut p_off) = (0usize, 0usize, 0usize);
+    for _ in 0..rows {
+        let d = &mut diff[d_off..d_off + cols];
+        let s = &src[s_off..s_off + cols];
+        let p = &pred[p_off..p_off + cols];
         for ((dv, &sv), &pv) in d.iter_mut().zip(s.iter()).zip(p.iter()) {
             *dv = (sv as i32 - pv as i32) as i16;
         }
+        d_off += diff_stride;
+        s_off += src_stride;
+        p_off += pred_stride;
     }
 }
 
