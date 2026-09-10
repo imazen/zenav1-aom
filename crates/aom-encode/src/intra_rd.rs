@@ -998,7 +998,7 @@ pub struct IntraSbyBest {
     pub tx_size: usize,
     /// The winner's per-txb (tx_type, eob, entropy ctx) — the
     /// `ctx->tx_type_map` snapshot (`av1_copy_array` on best update).
-    pub winners: Vec<TxbWinner>,
+    pub winners: crate::tx_search::TxbWinners,
     /// `*rate`: tokenonly + tx-size-adjusted + mode-info signaling.
     pub rate: i32,
     /// `*rate_tokenonly`: the tx-search rate MINUS the tx-size cost on

@@ -524,7 +524,7 @@ pub fn txfm_rd_in_plane_uv(
     current_rd_in: i64,
     pol: &TxTypeSearchPolicy,
     txs: &mut crate::tx_search::IntraTxScratch,
-) -> Option<(RdStats, Vec<TxbWinner>)> {
+) -> Option<(RdStats, crate::tx_search::TxbWinners)> {
     txfm_rd_in_plane_uv_p(
         env,
         recon,
@@ -556,7 +556,7 @@ pub fn txfm_rd_in_plane_uv_p(
     pol: &TxTypeSearchPolicy,
     palette: Option<&PaletteUvPred>,
     txs: &mut crate::tx_search::IntraTxScratch,
-) -> Option<(RdStats, Vec<TxbWinner>)> {
+) -> Option<(RdStats, crate::tx_search::TxbWinners)> {
     if current_rd_in > ref_best_rd {
         return None;
     }
@@ -613,7 +613,7 @@ pub fn txfm_rd_in_plane_uv_p(
     };
 
     let mut stats = RdStats::zero();
-    let mut winners: Vec<TxbWinner> = Vec::new();
+    let mut winners = crate::tx_search::TxbWinners::new();
     let mut current_rd = current_rd_in;
     let mut exit_early = false;
     // Per-txb buffers hoisted out of the walk AND out of this call — the same
@@ -850,7 +850,7 @@ pub fn txfm_uvrd(
     ref_best_rd: i64,
     pol: &TxTypeSearchPolicy,
     txs: &mut crate::tx_search::IntraTxScratch,
-) -> Option<(RdStats, Vec<TxbWinner>, Vec<TxbWinner>)> {
+) -> Option<(RdStats, crate::tx_search::TxbWinners, crate::tx_search::TxbWinners)> {
     txfm_uvrd_p(
         env,
         recon_u,
@@ -878,7 +878,7 @@ pub fn txfm_uvrd_p(
     pol: &TxTypeSearchPolicy,
     palette: Option<&PaletteUvPred>,
     txs: &mut crate::tx_search::IntraTxScratch,
-) -> Option<(RdStats, Vec<TxbWinner>, Vec<TxbWinner>)> {
+) -> Option<(RdStats, crate::tx_search::TxbWinners, crate::tx_search::TxbWinners)> {
     debug_assert_ne!(
         uv_mode, UV_CFL_PRED,
         "CfL evaluates through cfl_rd_pick_alpha"
@@ -889,8 +889,8 @@ pub fn txfm_uvrd_p(
     let uv_tx_size = av1_get_tx_size_uv(env.bsize, env.lossless, env.ss_x, env.ss_y);
 
     let mut stats = RdStats::zero();
-    let mut winners_u = Vec::new();
-    let mut winners_v = Vec::new();
+    let mut winners_u = crate::tx_search::TxbWinners::new();
+    let mut winners_v = crate::tx_search::TxbWinners::new();
     for plane in 1..=2usize {
         // Intra: chroma_ref_best_rd stays ref_best_rd (inter-only gating sf).
         let recon: &mut [u16] = if plane == 1 { recon_u } else { recon_v };

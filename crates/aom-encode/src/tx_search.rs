@@ -2076,12 +2076,23 @@ pub struct TxfmYrdEnv<'a> {
 
 /// One txb's winner within a walk (the `tx_type_map` / eob state the depth
 /// loop snapshots for the winning size).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TxbWinner {
     pub tx_type: usize,
     pub eob: u16,
     pub txb_ctx: u8,
 }
+
+/// The per-txb winner list a transform-search walk produces — inline for up to
+/// FOUR entries, which the measured distribution says is every call.
+///
+/// KB-PERF-43: this list is RETURNED and travels four layers up
+/// (`uniform_txfm_yrd_intra` -> `choose_tx_size_type_from_rd_intra` ->
+/// `pick_uniform_tx_size_type_yrd_intra` -> `rd_pick_intra_sby_mode_y`), with a
+/// candidate's list having to survive while losing candidates' are dropped — so
+/// a caller-owned scratch would need a two-buffer keep-best swap through all
+/// four. An inline small vector is a drop-in for the return type instead.
+pub type TxbWinners = smallvec::SmallVec<[TxbWinner; 4]>;
 
 /// A palette-Y candidate for the yrd walk (`av1_predict_intra_block`'s
 /// `use_palette` arm): per-txb prediction is `palette[map[(r+y)*stride+c+x]]`
@@ -2126,7 +2137,7 @@ pub fn txfm_rd_in_plane_intra(
     mut nn_prune: Option<NnDepthPruneCtx<'_>>,
     palette: Option<&PaletteYrd>,
     txs: &mut IntraTxScratch,
-) -> Option<(RdStats, Vec<TxbWinner>)> {
+) -> Option<(RdStats, TxbWinners)> {
     if current_rd_in > ref_best_rd {
         return None;
     }
@@ -2179,11 +2190,12 @@ pub fn txfm_rd_in_plane_intra(
     // extent — the mu-64 chunking does not change that set, because a chunk
     // start is a multiple of 16 and `txw_unit`/`txh_unit` divide 16 — so the
     // count is known before the walk. `Vec::new()` + `push` showed up in the
-    // 1 MP profile as `RawVec<TxbWinner>::grow_one` plus its share of
+    // 1 MP profile as `RawTxbWinners::grow_one` plus its share of
     // `finish_grow`.
     let n_txbs =
         blocks_wide_visible.div_ceil(txw_unit) * blocks_high_visible.div_ceil(txh_unit);
-    let mut winners: Vec<TxbWinner> = Vec::with_capacity(n_txbs);
+    let mut winners = TxbWinners::new();
+    let _ = n_txbs; // capacity is inline; see `TxbWinners`
     let mut current_rd = current_rd_in;
     let mut exit_early = false;
 
@@ -2525,7 +2537,7 @@ pub fn uniform_txfm_yrd_intra(
     // prediction becomes the colour-map fill).
     palette: Option<&PaletteYrd>,
     txs: &mut IntraTxScratch,
-) -> (i64, Option<(RdStats, Vec<TxbWinner>)>) {
+) -> (i64, Option<(RdStats, TxbWinners)>) {
     let tx_select = env.tx_mode_is_select && block_signals_txsize(env.bsize);
     let tx_size_rate = if tx_select {
         tx_size_cost(env.tx_size_costs, true, env.bsize, tx_size, env.tx_size_ctx)
@@ -2799,7 +2811,7 @@ pub struct TxSizeChoice {
     pub best_tx_size: usize,
     pub best_rd: i64,
     pub stats: RdStats,
-    pub winners: Vec<TxbWinner>,
+    pub winners: TxbWinners,
 }
 
 /// `choose_tx_size_type_from_rd` (tx_search.c, static) — the uniform-tx-size

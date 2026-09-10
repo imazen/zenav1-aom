@@ -22,6 +22,17 @@ exclude = [
 name = "aom_encode"
 
 [dependencies]
+# KB-PERF-43: `TxbWinner` lists for the transform-search walk. MEASURED on the
+# shipping-preset cell: `txfm_rd_in_plane_intra` runs 1,359,984 times per 1 MP
+# encode and every call allocated one `Vec` — 60.5 % of all TEMPORARY
+# allocations in the encoder. The walk's length distribution is 1 txb 50.6 %,
+# 2 txbs 35.6 %, 4 txbs 13.8 %, and NOTHING above 4, so a 4-element inline
+# capacity removes 100 % of them. `tinyvec` rather than `smallvec` because it is
+# itself `#![forbid(unsafe_code)]`, matching this workspace's policy; the cost
+# is `unsafe` inside the dependency (not in this crate).
+#
+# `smallvec` rather than `tinyvec`, MEASURED not assumed — see the record's A/B.
+smallvec = "1"
 # Consolidated DSP/entropy kernels (was: aom-transform/quant/txb/recon/entropy/
 # dist/intra/convolve/loopfilter/cdef — folded into aom-dsp per GitHub #2). The
 # reuse notes that lived here (subpel filter tables for aom_upsampled_pred;
