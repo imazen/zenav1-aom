@@ -491,6 +491,30 @@ pub fn av1_fwd_txfm2d_into(
     // the largest block after 4x4 and 8x8. Rectangular, so the row pass carries
     // the NEW_SQRT2 scaling the square kernels skip. The config comes from
     // `get_fwd_txfm_cfg` rather than hand-derived tables so it cannot drift.
+    // 8x16 / 16x8 — 9.02 % of forwards, rectangular but with BOTH dimensions
+    // >= 8, so no padding and none of KB-PERF-28's per-lane glue.
+    #[cfg(target_arch = "x86_64")]
+    if (tx_size == 7 || tx_size == 8) && FWD_SHIFT[tx_size] == [2, -2, 0] {
+        let c = get_fwd_txfm_cfg(tx_type, tx_size);
+        let (cw, ch) = (TX_SIZE_WIDE[tx_size], TX_SIZE_HIGH[tx_size]);
+        if c.valid && get_rect_tx_log_ratio(cw as i64, ch as i64).abs() == 1 {
+            if crate::transform::simd::try_fwd_txfm2d_rect816_fused(
+                c.txfm_type_col,
+                c.txfm_type_row,
+                input,
+                output,
+                stride,
+                cw,
+                ch,
+                c.cos_bit_col as i32,
+                c.cos_bit_row as i32,
+                c.ud_flip,
+                c.lr_flip,
+            ) {
+                return;
+            }
+        }
+    }
     #[cfg(target_arch = "x86_64")]
     if (tx_size == TX_4X8_IDX || tx_size == TX_8X4_IDX)
         && FWD_SHIFT[tx_size] == [2, -1, 0]
