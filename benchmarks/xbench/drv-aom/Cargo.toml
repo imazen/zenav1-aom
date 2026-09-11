@@ -5,6 +5,8 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The SHIPPING entry point this driver now times by default.
+zenav1-aom-encode = { path = "../../../crates/aom-encode" }
 # The zenav1-aom port under measurement, plus the C libaom oracle that supplies
 # the sequence-header bootstrap the port's encode path requires.
 zenav1-aom-bench = { path = "../../../crates/aom-bench" }
