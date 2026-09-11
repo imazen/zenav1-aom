@@ -57,9 +57,18 @@
 //!   3x3), a non-multiple-of-128 size (a partial edge superblock), CDEF+LR
 //!   both on, bd10, speed 0 through 9, cq 0 and 63, and composed with an
 //!   explicit multi-tile request), no superres, no QM, no film grain, no
-//!   segmentation, no delta-q, palette + IntraBC search off (matching
-//!   `aom-sys-ref`'s `shim_encode_av1_kf`, whose `--enable-palette=0
-//!   --enable-intrabc=0` is what the byte gate compares against);
+//!   segmentation, no delta-q. **PALETTE AND INTRABC ARE ON by default since
+//!   2026-09-10** ([`KeyFrameConfig::enable_palette`] /
+//!   [`KeyFrameConfig::enable_intrabc`], matching aomenc's own ALLINTRA
+//!   defaults and gated on the frame's screen decision exactly as C gates
+//!   them, so they are inert on photographic content). They have their OWN
+//!   byte gate against a MATCHED oracle —
+//!   `screen_content_tools_byte_match_real_aomenc` drives
+//!   `shim_encode_av1_kf_screen_content` with the same two knobs — because the
+//!   427-cell gate's oracle (`shim_encode_av1_kf`) hardcodes
+//!   `--enable-palette=0 --enable-intrabc=0` and is therefore blind to both by
+//!   construction. IntraBC declines at coded-lossless, a bounded divergence
+//!   documented at its site;
 //! * **multi-tile** in the form `av1_get_tile_limits` MANDATES it (frames wider
 //!   than `MAX_TILE_WIDTH` = 4096 px, or larger than `MAX_TILE_AREA`): each
 //!   tile is packed independently with a fresh frame context — C's
@@ -78,7 +87,11 @@
 //!
 //! * **`av1_determine_sc_tools_with_encoding`** (`encoder_utils.c:1214`) — C's
 //!   two-pass trial encode that can turn screen-content tools ON after the
-//!   detector said off. Unported. It returns early when the detector already
+//!   detector said off. Unported. **Note this became a REAL gap only on
+//!   2026-09-10:** before palette was wired in, porting the trial would have
+//!   been vacuous — both of its passes would have coded identically, so
+//!   `psnr_diff` and `palette_ratio` would both have been 0 and the decision
+//!   would always have kept the detector's answer. It returns early when the detector already
 //!   said on, so it only ever matters on detector-negative content; the byte
 //!   gate holds this accountable per cell, and (2026-09-03) two adversarial
 //!   differential probes designed specifically to find a counterexample —
