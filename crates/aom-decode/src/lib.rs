@@ -30,7 +30,7 @@
 //!   by the inter landing and is corrected here, 2026-08-06.) The inter path
 //!   lives in this file: [`decode_frame_tiles_inter`], [`InterFrameCfg`],
 //!   [`RefFrame`], `TileKf::decode_block_inter`, the OBMC blends, interintra,
-//!   and the warp helpers. Measured envelope, per `INTER_DECODE_ENVELOPE.md`
+//!   and the warp helpers. Measured envelope, per `docs/inter/INTER_DECODE_ENVELOPE.md`
 //!   and `tests/{animated_avif,inter_real_frame}.rs`: 8/8 animated-AVIF corpus
 //!   tracks / 40/40 shown frames byte-exact, plus a 352x288 conformance P-frame
 //!   with SIMPLE + OBMC + WARPED_CAUSAL + interintra + intra-in-inter + var-tx.

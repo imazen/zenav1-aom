@@ -31,7 +31,7 @@ byte-identical to real aomenc *alone* (PARITY.md §A). Nothing gated them
 **together**. That matters here specifically, because this repo has already
 found two defects that are only visible in a particular configuration — the C11
 cdf-update pack bug and the `--disable-trellis-quant=2` FINAL_PASS
-`dry_run_output_enabled` bug (HANDOFF-TOGGLES.md).
+`dry_run_output_enabled` bug (docs/HANDOFF-TOGGLES.md).
 
 The gate covers the *combination* space with small images, in **26.3 s wall**,
 by collapsing rather than exploding.
@@ -133,7 +133,7 @@ produces. Every canonicalisation cites the libaom line that makes the knob dead:
 | `--cdf-update-mode=2` ≡ `=1` | `encoder.c:4375-4395`: case 2 is `frame_is_intra_only ? 0 : 1` ⇒ 0 on a lone KEY frame; the only other reader, `should_force_mode_cost_update` (`rd.c:762`), is `rt_sf`-gated |
 | `--disable-trellis-quant=0` (FULL) ≡ `=3` (NO_ESTIMATE_YRD, the default) | `init_rd_sf` (`speed_features.c:2479-2498`) + `is_trellis_used`; the two differ only in `estimate_yrd_for_sb`, which is inter-only |
 
-**The documented "verified-INERT" cases in HANDOFF-TOGGLES.md are re-derived, not
+**The documented "verified-INERT" cases in docs/HANDOFF-TOGGLES.md are re-derived, not
 hardcoded** — `config_perm::tests::engine_rediscovers_the_documented_inert_cases`
 asserts the engine reaches the same verdict for `--disable-trellis-quant=0`,
 `--cdf-update-mode=2` and `--max-partition-size=64` without any special case.
@@ -378,7 +378,7 @@ is where the next effort belongs.
    16..226 px) rather than raising t. Budget: at ~17 ms/cell for
    knob-narrowed rows, another ten contexts is ~30 s CPU.
 3. **Reach the axes this matrix cannot.** `--sb-size=128` (encoder walk is
-   SB64-only, HANDOFF-TOGGLES.md), `--coeff/mode-cost-upd-freq` (C ctrls emitted,
+   SB64-only, docs/HANDOFF-TOGGLES.md), `--coeff/mode-cost-upd-freq` (C ctrls emitted,
    port gate unwired), `--quant-b-adapt` (needs the `aom_quantize_b_adaptive`
    kernel family), and `large_scale`. Each needs a `ToggleKnobs` field plus port
    plumbing first; `CellCtx.sb_px` and `Effective::resolve` are already written
@@ -864,7 +864,7 @@ near-tie.
 
 ### C. The "SB64 only" scope note was stale
 
-`cell_ctx` carried "`--sb-size=128` encode is unstarted; HANDOFF-TOGGLES.md".
+`cell_ctx` carried "`--sb-size=128` encode is unstarted; docs/HANDOFF-TOGGLES.md".
 `crates/aom-bench/tests/sb128_e2e.rs` proves SB128 encode byte-exact vs real
 aomenc, including a coded 128-level leaf. SB128 is where the >= 480p threshold
 stops being inert, so that stale note was hiding the single most consequential

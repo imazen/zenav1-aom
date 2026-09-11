@@ -2,13 +2,9 @@
 //! (nonrd_pickmode.c:1582) + its `av1_block_yrd` Hadamard estimator
 //! (nonrd_opt.c:126) + the LP kernel set they stand on.
 //!
-//! STATUS (2026-07-17) — **SUPERSEDED, kept for the history; read the 2026-08-03
-//! stanza at the bottom of this list for the current state.** As written: LANDED —
-//! compiled + gated. Speed 9 byte-matches real `aomenc --cpu-used=9` 64/64 (canon)
-//! + noise; speed 8 60/64 (canon) + noise, with 4 `diag` estimate-arm V/H near-ties
-//! pinned open (KB-12). Every function carries its exact C provenance; the
-//! remaining `// HANDOFF:` marks were then genuine out-of-envelope work (lossless
-//! TX_4X4, screen-content palette) — **both of those have since closed.**
+//! STATUS: landed and gated — speeds 8 and 9 are 64/64 canon byte-identical to
+//! real aomenc at bd8; the HBD arm, the non-square leaf, lossless TX_4X4 and the
+//! palette arm all closed (KB-12, KB-20, KB-34, KB-5, KB-35/37). Details below.
 //!
 //! STATUS (2026-07-30, KB-20): the HBD estimate arm is ported — bd10/bd12 x
 //! `--cpu-used` {8,9} are byte-identical to real aomenc (24 cells,
@@ -72,9 +68,8 @@
 //!   unconditional ONLY_SPLIT). Port: thread the existing
 //!   `vbp_prune_16x16_split_using_min_max_sub_blk_var` param of
 //!   [`crate::var_part::choose_var_based_partitioning_key`] as
-//!   `speed >= 9` — the param already exists (passed `false` today) but
-//!   HANDOFF: verify var_part.rs implements the ONLY_NONE arm (3-state
-//!   PART_EVAL semantics), not just a bool force-split.
+//!   `speed >= 9`. OPEN (unverified): that var_part.rs implements the
+//!   ONLY_NONE arm with C's 3-state PART_EVAL semantics, not a bool force-split.
 //! - `prune_h_pred_using_best_mode_so_far = true` → estimate-loop prune (live).
 //! - `enable_intra_mode_pruning_using_neighbors = true` → estimate-loop prune
 //!   (live).
@@ -190,10 +185,9 @@
 //!   cells byte-identical across `--cpu-used` 0..9 (KB-5,
 //!   `aom-bench/tests/kb5_lossless_speed_axis.rs`).
 //!
-//! There are no `unimplemented!()` / `panic!()` refusals left in this file. What
-//! remains OPEN is a byte divergence, not a refusal: `PALETTE_ON_SPEED8_OPEN`
-//! (palette ON x cpu8 x screen-detected, 13 rows) — see CLAUDE.md's coverage
-//! queue, T4.
+//! There are no `unimplemented!()` / `panic!()` refusals left in this file, and
+//! no open divergence is attributed to it (`PALETTE_ON_SPEED8_OPEN` closed
+//! 2026-08-30, KB-41).
 
 use crate::encode_sb::SbEncodeEnv;
 use crate::partition::PartRdStats;
@@ -210,8 +204,8 @@ const MI_H: [usize; 22] = [
 ];
 
 /// `intra_mode_context[]` (av1_common_int.h) — KF y-mode cost context per
-/// neighbour PREDICTION_MODE. HANDOFF: dedupe with the copy the full-RD leaf
-/// uses (intra_rd.rs derives above_ctx/left_ctx somewhere — same table).
+/// neighbour PREDICTION_MODE. (Duplicate of the table the full-RD leaf derives
+/// in intra_rd.rs; a dedupe is cosmetic.)
 const INTRA_MODE_CONTEXT: [usize; 13] = [0, 1, 2, 3, 4, 4, 4, 4, 3, 0, 1, 2, 0];
 
 /// `intra_mode_list[]` (nonrd_opt.h:121): DC, V, H, SMOOTH.

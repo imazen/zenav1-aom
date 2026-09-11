@@ -5,7 +5,7 @@
 //!
 //! Built for the animated-AVIF inter-decode envelope work: run it over the
 //! per-track streams extracted by `tools/avif-extract` to inventory exactly
-//! which inter tools a target corpus uses (INTER_DECODE_ENVELOPE.md).
+//! which inter tools a target corpus uses (docs/inter/INTER_DECODE_ENVELOPE.md).
 //!
 //! ```text
 //! cargo run -p zenav1-aom-decode --example inspect_headers -- <stream.obu>

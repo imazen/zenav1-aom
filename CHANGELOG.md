@@ -1016,12 +1016,12 @@
   ones where the oracle cannot be built. (4b92e2b; changelog entry added
   2026-08-03 — the crate had landed with no record here, which is why
   `docs/ARCHITECTURE.md` still said "Six packages".)
-- **`CONTEXT-HANDOFF.md` rewritten as the current project handoff** (fresh-box
+- **`docs/archive/CONTEXT-HANDOFF.md` rewritten as the current project handoff** (fresh-box
   setup incl. the mirror-backed submodule and mosaic-vector regeneration, the
   four gates' verified state, live tracks, open pinned cells, jj/marker
   conventions). Removed the consumed `HANDOFF-SCREEN.md` / `HANDOFF-TXSIMD.md`
   (their content lives in CLAUDE.md KB-15/KB-P29 and the landed
-  `transform/simd` + STATUS entries; `HANDOFF-TOGGLES.md` stays — it holds the
+  `transform/simd` + STATUS entries; `docs/HANDOFF-TOGGLES.md` stays — it holds the
   live localization notes for the one open toggle cell).
 
 - **bd8 decode Phase C: i16-lane inverse-transform column pass** — the u8

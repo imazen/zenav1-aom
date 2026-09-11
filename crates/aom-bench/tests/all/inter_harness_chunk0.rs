@@ -1,5 +1,5 @@
 //! INTER-ENCODE Chunk 0 GATE — the multi-frame encode harness + decode-both
-//! localizer (INTER-ENCODE-ROADMAP.md chunk 0).
+//! localizer (docs/inter/INTER-ENCODE-ROADMAP.md chunk 0).
 //!
 //! Chunk 0 is test/verification INFRASTRUCTURE that unblocks the inter-encode
 //! skeleton (chunk 2). The gate here is that the infra WORKS — a real (not

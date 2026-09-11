@@ -18,7 +18,7 @@
 >   were executed**. Their targets exist: `inter_rd.rs:252`, `inter_pack.rs:102`,
 >   `interp_rd.rs:95/:158`.
 > - §Coordination's "Symlink `reference/libaom` + `conformance/data` from `/root/aom-rs/`" is
->   obsolete AND was an active hazard — see CONTEXT-HANDOFF.md on the tracked self-referential
+>   obsolete AND was an active hazard — see docs/archive/CONTEXT-HANDOFF.md on the tracked self-referential
 >   symlink that gave every fresh worktree ~10 phantom conformance failures. Use the
 >   `upstream/` submodule and `python3 xtask/conformance.py --fetch --scope intra`.
 >

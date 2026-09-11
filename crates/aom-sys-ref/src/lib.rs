@@ -8716,7 +8716,7 @@ extern "C" {
 
     /// INTER-ENCODE Chunk 0: encode a 2-frame low-delay [KEY, P] clip through
     /// the REAL `aom_codec_av1_cx` API at the "simplest inter config"
-    /// (INTER-ENCODE-ROADMAP.md §3): `--end-usage=q --lag-in-frames=0
+    /// (docs/inter/INTER-ENCODE-ROADMAP.md §3): `--end-usage=q --lag-in-frames=0
     /// --cpu-used=<cpu_used>` with obmc/warp/global-motion/interintra/masked/
     /// diff-wtd/dual-filter/ref-frame-mvs all disabled, `--limit=2`, usage =
     /// GOOD_QUALITY. Frame 0 forced KEY, frame 1 single-ref translational P.
@@ -9651,7 +9651,7 @@ pub fn ref_decode_av1_kf(data: &[u8], expect_w: usize, expect_h: usize) -> RefDe
 
 /// INTER-ENCODE Chunk 0: encode a 2-frame low-delay `[KEY, P]` clip through the
 /// REAL `aom_codec_av1_cx` API at the "simplest inter config"
-/// (INTER-ENCODE-ROADMAP.md §3). `f0` / `f1` are `(y, u, v)` tight u16 planes
+/// (docs/inter/INTER-ENCODE-ROADMAP.md §3). `f0` / `f1` are `(y, u, v)` tight u16 planes
 /// (empty u/v when `mono`) for frame 0 and frame 1, same geometry. Frame 0 is
 /// forced KEY; frame 1 codes as a single-reference translational P (obmc / warp
 /// / global-motion / interintra / masked / diff-wtd / dual-filter /

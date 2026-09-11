@@ -213,7 +213,7 @@ so the moment a fix makes a pinned cell byte-match, its gate fails and the cell 
 promoted — the suite can't silently drift, and "done" always means measured on the
 real C oracle, never asserted by hand.
 
-[`CONTEXT-HANDOFF.md`](CONTEXT-HANDOFF.md) is the current-state entry point;
+[`docs/archive/CONTEXT-HANDOFF.md`](docs/archive/CONTEXT-HANDOFF.md) is the current-state entry point;
 [`STATUS.md`](STATUS.md) tracks what has landed module-by-module; [`PARITY.md`](PARITY.md)
 is the stills-parity ledger; [`PORTING.md`](PORTING.md) maps each Rust module to the
 `upstream/` libaom file(s) it ports and to the differential test that gates it;

@@ -13,7 +13,6 @@ exclude = [
     "docs/",
     "apidoc/",
     "CLAUDE.md",
-    "CONTEXT-HANDOFF.md",
     "FEEDBACK.md",
     ".claude/",
     ".github/",

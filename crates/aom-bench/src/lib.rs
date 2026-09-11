@@ -2622,7 +2622,7 @@ impl MultiFrameEncodeCell {
     }
 
     /// Encode the 2-frame `[KEY, P]` clip with real `aomenc` at the "simplest
-    /// inter config" (INTER-ENCODE-ROADMAP.md §3): `--end-usage=q
+    /// inter config" (docs/inter/INTER-ENCODE-ROADMAP.md §3): `--end-usage=q
     /// --lag-in-frames=0 --cpu-used=<speed> --limit=2` with obmc / warp /
     /// global-motion / interintra / masked / diff-wtd / dual-filter /
     /// ref-frame-mvs all disabled. `enable_cdef` / `enable_restoration` select

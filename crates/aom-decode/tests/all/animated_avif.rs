@@ -1,4 +1,4 @@
-//! Animated-AVIF inter-decode differential gate (INTER_DECODE_ENVELOPE.md).
+//! Animated-AVIF inter-decode differential gate (docs/inter/INTER_DECODE_ENVELOPE.md).
 //!
 //! Fixtures: `tests/data/animated/<vector>.<track>.obu` — the concatenated
 //! per-track AV1 temporal-unit streams extracted from libavif's

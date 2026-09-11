@@ -257,7 +257,7 @@ fn cell_ctx(cell: &EncodeCell) -> CellCtx {
         h: cell.h,
         mono: cell.mono,
         // The proven envelope is SB64 (`--sb-size=128` encode is unstarted;
-        // HANDOFF-TOGGLES.md). `port_encode_with` reads the real seq bit, so a
+        // docs/HANDOFF-TOGGLES.md). `port_encode_with` reads the real seq bit, so a
         // future sb128 bootstrap would need this to follow it.
         sb_px: 64,
     }
@@ -1419,7 +1419,7 @@ fn combinations_dct_only_verdict_set_pinned() {
     assert_eq!(
         diverged, expected,
         "the --use-intra-dct-only divergence set MOVED. Rows that started \
-         matching mean the UV-loop mis-model (HANDOFF-TOGGLES.md) was fixed — \
+         matching mean the UV-loop mis-model (docs/HANDOFF-TOGGLES.md) was fixed — \
          re-pin this set and promote the knob into the main covering array. \
          Rows that started diverging are a regression."
     );

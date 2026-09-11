@@ -1915,15 +1915,14 @@ pub struct IntrabcLeafArgs<'a> {
     /// flags (0 when intrabc-off — the pre-existing invariant).
     pub skip_ctx: usize,
     pub txfm_partition_costs: &'a [[i32; 2]; 21],
-    // Coeff-arm inputs (HANDOFF: DCT_DCT-only; C searches the inter tx set)
+    // Coeff-arm inputs (the inter var-tx search in `var_tx.rs`, full inter tx set)
     pub rows_y: &'a aom_dsp::quant::PlaneQuantRows<'a>,
     pub rows_u: &'a aom_dsp::quant::PlaneQuantRows<'a>,
     pub rows_v: &'a aom_dsp::quant::PlaneQuantRows<'a>,
     pub coeff_costs_y: &'a aom_dsp::txb::CoeffCostSet,
     pub coeff_costs_uv: &'a aom_dsp::txb::CoeffCostSet,
-    /// Inter tx-type costs (TxTypeCosts.inter — HANDOFF: derive_real_costs
-    /// currently fills inter with a DUMMY zero cdf; fill from
-    /// `kf.inter_ext_tx` (flatten [4][4][17]) before enabling this search).
+    /// Inter tx-type costs (`TxTypeCosts.inter`, filled from `kf.inter_ext_tx`
+    /// by `derive_real_costs`).
     pub tx_type_costs: &'a aom_dsp::txb::TxTypeCosts,
     pub sharpness: i32,
     pub enable_optimize_b: TrellisOptType,

@@ -8,7 +8,7 @@ diagnosing a divergence.
 
 Companion docs: `PARITY.md` (what is proven), `CLAUDE.md` (Known Bugs +
 coordination rules), `docs/LIBAOM_UPSTREAM_NOTES.md` (libaom's own quirks),
-`HANDOFF-TOGGLES.md` (the sibling-C dump recipe).
+`docs/HANDOFF-TOGGLES.md` (the sibling-C dump recipe).
 
 **Citation audit, 2026-07-31.** Every in-repo reference here was independently
 re-checked by a session that did not write the doc. Corrections are inline;
@@ -553,7 +553,7 @@ ideas:
 - **Effective-config collapse.** Hash the *resolved* internal state
   (`SpeedFeatures` + `PackCfg` + header bits) and keep one representative per
   signature. Validate the engine by checking it re-derives the known-inert cases
-  in `HANDOFF-TOGGLES.md` rather than hardcoding them. Raw cartesian 14,155,776
+  in `docs/HANDOFF-TOGGLES.md` rather than hardcoding them. Raw cartesian 14,155,776
   → 777,600 effective configs, a 13.7× collapse
   (`docs/CONFIG_PERMUTATION_DESIGN_2026-07-30.md:64-66`).
 - **Independence must be measured.** A four-corner (`{A0B0, A0B1, A1B0, A1B1}`)
@@ -748,7 +748,7 @@ search outcomes cost nearly the same number of bits. Small delta means "the two
 encoders agree about most of the picture", NOT "the two encoders nearly agreed
 about one decision".
 
-Method: the sibling-C dump in `HANDOFF-TOGGLES.md:42-46` (ar-swap an
+Method: the sibling-C dump in `docs/HANDOFF-TOGGLES.md:42-46` (ar-swap an
 instrumented `libaom.a`, run the pinned cell, **revert everything**). Verify the
 revert by byte-comparing the restored archive against a pristine backup. *Stale
 path warning (2026-07-31): the recipe names `reference/libaom/build/libaom.a`,

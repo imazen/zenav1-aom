@@ -223,7 +223,7 @@ line refs; this is the index.
 | `pack.rs` | the `OUTPUT_ENABLED` partition/mode-info/coefficient write walk (`av1/encoder/bitstream.c` + `encodetxb.c`) |
 | `obu_assemble.rs` | `OBU_FRAME` assembly (frame header + tile group, the `num_tg == 1` combined form) |
 
-**Inter encode — an early skeleton, not a landed path** (see `INTER-ENCODE-ROADMAP.md`)
+**Inter encode — an early skeleton, not a landed path** (see `docs/inter/INTER-ENCODE-ROADMAP.md`)
 
 | Module | `upstream/` libaom source |
 |---|---|

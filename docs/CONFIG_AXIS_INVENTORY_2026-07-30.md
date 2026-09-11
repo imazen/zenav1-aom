@@ -1,7 +1,7 @@
 # CONFIG AXIS INVENTORY — 2026-07-30
 
 **What this is.** An inventory of every configuration axis that can change what this
-codebase computes, derived from **source**, not from `PARITY.md` / `HANDOFF-TOGGLES.md`.
+codebase computes, derived from **source**, not from `PARITY.md` / `docs/HANDOFF-TOGGLES.md`.
 It exists as the independent control on a specific failure mode: the encoder-side and
 decoder-side permutation gates are both being built from the same two prose documents,
 so an axis those documents omit is omitted by both gates *identically* and the gap is
@@ -9,7 +9,7 @@ invisible.
 
 **Read at commit** `854b2ac` (`origin/main`). Sibling docs read for
 overlap-avoidance only, at these blob shas: `PARITY.md` = `cdc9ed414e5ae1de89517551fc129449c839bbaf`,
-`HANDOFF-TOGGLES.md` = `c225daec176573b3f4e862a7aa4febc52da4c355`. The two sibling agents'
+`docs/HANDOFF-TOGGLES.md` = `c225daec176573b3f4e862a7aa4febc52da4c355`. The two sibling agents'
 own docs (`docs/CONFIG_PERMUTATION_DESIGN_2026-07-30.md`,
 `docs/DECODER_CONFIG_COVERAGE_2026-07-30.md`) did not exist yet when this was written.
 
@@ -94,7 +94,7 @@ is the non-default flag. The port's byte-exactness claims are all in the non-def
 A pinned, self-promoting test for the speed-0 case already exists
 (`good_usage_key_frame0_pinned_divergent`, `crates/aom-bench/tests/inter_e2e_search.rs:180-191`,
 with a 12-line explanation at `:168-179`) — but it lives in an *inter* test file and appears
-**nowhere in `PARITY.md` §A/§B/§C or `HANDOFF-TOGGLES.md`** (grepped both for `usage` / `GOOD` /
+**nowhere in `PARITY.md` §A/§B/§C or `docs/HANDOFF-TOGGLES.md`** (grepped both for `usage` / `GOOD` /
 `set_good`: `PARITY.md:6, 140, 145-150` only, all inside the C2 loop-restoration narrative).
 That is exactly the "invisible to both permutation agents" case this audit was created to catch.
 
@@ -182,7 +182,7 @@ excluding the declaration block):
 | `enable_tx_size_search` | `:366` | bool | `:605-610` | 13 | MODELLED; one-directional assert `:1118` |
 | `cdf_update_mode` | `:372` | 0/1/2 | `:611-613` | 7 | MODELLED for 0 and 1; **mode 2 (selective) not swept** (`:369-371` says identical on a lone KEY frame) |
 | `enable_palette` | `:377` | bool | not emitted (port-side) | 31 | MODELLED |
-| `disable_trellis_quant` | `:385` | 0/1/2/3 | `:614-619` | 9 | MODELLED for 1/2/3; **0 (FULL) verified vacuous** (`HANDOFF-TOGGLES.md:29`) |
+| `disable_trellis_quant` | `:385` | 0/1/2/3 | `:614-619` | 9 | MODELLED for 1/2/3; **0 (FULL) verified vacuous** (`docs/HANDOFF-TOGGLES.md:29`) |
 | `coeff_cost_upd_freq` | `:401` | 0/1/2/3 | `:620-625` | 5 (decl only) | **SILENTLY IGNORED — S1** |
 | `mode_cost_upd_freq` | `:403` | 0/1/2/3 | `:626-628` | 4 (decl only) | **SILENTLY IGNORED — S2** |
 | `deltaq_mode3` | `:410` | bool | not emitted | 7 | MODELLED |
@@ -313,7 +313,7 @@ Config-bearing: `qm`/`iqm`/`qm_ctx` (`:167-172`), `bd` (`:176`), `lossless` (`:1
 
 `adaptive` is read **only** by `QuantKind::B`. On the default speed-0 allintra envelope the
 trellis is on, so `AV1_XFORM_QUANT_FP` is selected and `quant_b_adapt` is inert — this is
-correctly documented at `HANDOFF-TOGGLES.md:23`. It is live only combined with
+correctly documented at `docs/HANDOFF-TOGGLES.md:23`. It is live only combined with
 `--disable-trellis-quant=1/2`, and that combination has **no kernel** (`aom_quantize_b_adaptive`
 family unported). `QuantKind::Dc` (`crates/aom-encode/src/lib.rs:107`) is documented at `:99` as
 "not modelled yet" for the `AV1_XFORM_QUANT_DC` dispatch.
@@ -782,7 +782,7 @@ feeds the trellis rdmult path — i.e. whether that second half is a real diverg
 `AV1E_SET_DV_COST_UPD_FREQ` 142 (`:1379`) — a declared constant
 (`crates/aom-sys-ref/src/lib.rs:9015`), a `PROBE_TABLE` entry (`:9056`) and a shim probe case
 (`dec_shim.c:824`), but never emitted and with no `ToggleKnobs` field; self-documented inert at
-`crates/aom-sys-ref/src/lib.rs:9013-9014` and at `HANDOFF-TOGGLES.md:32`.
+`crates/aom-sys-ref/src/lib.rs:9013-9014` and at `docs/HANDOFF-TOGGLES.md:32`.
 
 ### 5.4 NOT-DRIVEN and NOT-MODELLED — the genuinely absent tools
 
@@ -931,13 +931,13 @@ non-default value*, or the port accepts it and does nothing.
 | 25 | `min_partition_size_px` ∈ {32,64,128} and `max_partition_size_px` ∈ {4,8,16} never tested | tested values are min 4/8/16 (`crates/aom-bench/tests/toggles_rd_close.rs:153, 181`) and max 32/64/128 (`:166, 182`, `crates/aom-bench/tests/sb128_e2e.rs:86`) |
 | 26 | `--cdf-update-mode=2` (selective) never swept | `crates/aom-bench/src/lib.rs:369-371` argues it is identical to mode 1 on a lone KEY frame — plausible, but unasserted |
 
-### What a permutation gate built only from `PARITY.md` + `HANDOFF-TOGGLES.md` would miss
+### What a permutation gate built only from `PARITY.md` + `docs/HANDOFF-TOGGLES.md` would miss
 
 Items **1, 5, 6, 7, 8, 10** and all of tier 2 and tier 3. Cross-checked by grepping both
 documents: `usage` / `GOOD` / `set_good` appear only at `PARITY.md:6, 140, 145-150` (inside the
 C2 loop-restoration narrative, never as an axis); `combination` / `permutation` / `compose`
 appear only at `PARITY.md:237`, and only about composition *within* the tune bundle; neither
 document mentions cargo features, `#[cfg]` gates, `AOM_FORCE_SCALAR`, or any environment
-variable. Items **2, 3, 4, 9** are partially present (`HANDOFF-TOGGLES.md:22` for the cost-upd
+variable. Items **2, 3, 4, 9** are partially present (`docs/HANDOFF-TOGGLES.md:22` for the cost-upd
 pair, `PARITY.md:281-287` for aq-mode/segmentation, `PARITY.md:113-118` for the CDEF control
 values) — but as prose inside feature narratives, not as a checkable axis list.

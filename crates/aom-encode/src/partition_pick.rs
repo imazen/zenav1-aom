@@ -3012,10 +3012,7 @@ pub fn rd_pick_partition_real(
     let mut best_tree: Option<SbTree> = None;
     // `pc_tree->partitioning` (context_tree.c:150 inits PARTITION_NONE at
     // alloc; each stage overwrites on its own win, :4478/:4628/:3013/etc).
-    // Feeds the 4-way ML prune's `part_ctx` feature; the final (4-way-
-    // stage) write is unread THIS chunk (AB, which would read it next, is
-    // not yet ported) -- kept live rather than deleted since it's exactly
-    // what the AB chunk needs.
+    // Feeds the 4-way ML prune's `part_ctx` feature.
     let mut pc_tree_partitioning: i32 = 0; // PARTITION_NONE
     // part_search_state->none_rd (:3366; the :4458 store is PRE-pt_cost).
     let mut none_rd: i64 = 0;
@@ -5023,14 +5020,9 @@ mod edge_partition_cost_tests {
 
 // ===========================================================================
 // KB-12 — speed >= 8: av1_nonrd_use_partition (partition_search.c:2960).
-// [Corrected 2026-08-03. This read: "HANDOFF: written under kill-order, NEVER
-// COMPILED — see HANDOFF-SPEED89.md." Both halves are dead. The code compiles and
-// is on the hot path for every `--cpu-used` 8/9 encode: speeds 8 and 9 are 64/64
-// canon byte-identical to real aomenc, and it is exercised by
-// aom-bench/tests/{kb34_nonsquare_nonrd_leaf,kb35_nonrd_palette_arm,
-// kb37_nonrd_palette_search}.rs. HANDOFF-SPEED89.md was the WIP capture (d862208)
-// and was deleted when KB-12 landed (9b57803); `git show d862208:HANDOFF-SPEED89.md`
-// if you need it.]
+// On the hot path of every `--cpu-used` 8/9 encode; 64/64 canon byte-identical
+// to real aomenc, exercised by aom-bench/tests/{kb34_nonsquare_nonrd_leaf,
+// kb35_nonrd_palette_arm,kb37_nonrd_palette_search}.rs.
 // ===========================================================================
 
 /// `av1_nonrd_use_partition` (partition_search.c:2960) for the allintra KEY

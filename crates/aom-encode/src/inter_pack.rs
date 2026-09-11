@@ -24,7 +24,7 @@
 //!
 //! Note that **skip precedes is_inter**, with cdef and delta-q between them —
 //! the prologue is shape-identical to the KEY writer's, and only step 7 onward
-//! differs. (An earlier handoff note in `INTER-CHUNK2-HANDOFF.md` gave the order
+//! differs. (An earlier handoff note in `docs/inter/INTER-CHUNK2-HANDOFF.md` gave the order
 //! as "is_inter → ref → mode → skip"; that is wrong, and this module follows
 //! the C source.)
 //!

@@ -58,7 +58,7 @@ use crate::ToggleKnobs;
 /// One configuration axis: a [`ToggleKnobs`] field the covering array varies.
 ///
 /// Level 0 of every axis is the aomenc DEFAULT (verified in
-/// `av1_cx_iface.c::default_extra_cfg`; HANDOFF-TOGGLES.md item 5), so the
+/// `av1_cx_iface.c::default_extra_cfg`; docs/HANDOFF-TOGGLES.md item 5), so the
 /// all-zero row reproduces the stock byte-exact envelope exactly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Axis {
@@ -372,7 +372,7 @@ pub fn illegal_reason(row: &Row) -> Option<&'static str> {
     // `--enable-tx-size-search=0` forces tx_size_search_level = 3 = USE_LARGESTALL
     // (speed_features.c:2726), so combining it with `--enable-tx64=0` aborts a
     // debug-built libaom and is undefined in release. Also recorded in
-    // HANDOFF-TOGGLES.md ("Gotchas").
+    // docs/HANDOFF-TOGGLES.md ("Gotchas").
     if !k.enable_tx_size_search && !k.enable_tx64 {
         return Some(
             "--enable-tx-size-search=0 + --enable-tx64=0: libaom \
@@ -800,7 +800,7 @@ impl Effective {
     ///
     /// Every canonicalisation below cites the libaom line that makes the knob
     /// dead. Nothing here is a hardcoded "known inert" list: the documented
-    /// inert cases (HANDOFF-TOGGLES.md) fall out of the resolution, which is
+    /// inert cases (docs/HANDOFF-TOGGLES.md) fall out of the resolution, which is
     /// how the engine validates itself.
     pub fn resolve(row: &Row, ctx: &CellCtx) -> Effective {
         let k = knobs_of(row);
@@ -905,7 +905,7 @@ impl Effective {
         //   2 FINAL_PASS        → search no,  pack yes
         //   3 NO_ESTIMATE_YRD   → search yes, pack yes   (the default)
         // 0 and 3 differ ONLY in `estimate_yrd_for_sb`, which is inter-only —
-        // so on this KEY envelope they collapse. HANDOFF-TOGGLES.md records
+        // so on this KEY envelope they collapse. docs/HANDOFF-TOGGLES.md records
         // exactly this as verified-INERT; the engine re-derives it.
         let (search_trellis, pack_trellis) = match k.disable_trellis_quant {
             0 | 3 => (true, true),
@@ -1366,7 +1366,7 @@ mod tests {
         }
     }
 
-    /// The documented verified-INERT cases (HANDOFF-TOGGLES.md) must fall OUT
+    /// The documented verified-INERT cases (docs/HANDOFF-TOGGLES.md) must fall OUT
     /// of the resolution — none of them is hardcoded as an exception.
     #[test]
     fn engine_rediscovers_the_documented_inert_cases() {

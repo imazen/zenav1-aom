@@ -1,5 +1,5 @@
 //! Inter-frame motion estimation — the net-new subpel search machinery
-//! (INTER-ENCODE-ROADMAP.md chunk 2d).
+//! (docs/inter/INTER-ENCODE-ROADMAP.md chunk 2d).
 //!
 //! The full-pel diamond/mesh search is the shared intrabc/inter core in
 //! [`crate::intrabc_search`] (retargeted to a reference frame). This module

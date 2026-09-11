@@ -4,7 +4,7 @@
 //! could pass vacuously (QM doing nothing). Also exercises the new
 //! `ref_encode_av1_kf_qm` FFI wrapper (AV1E_SET_ENABLE_QM/QM_MIN/QM_MAX) end to
 //! end. This is the C-reference half of the e2e gate; the port half is blocked
-//! on the RD-search QM threading staged in docs/qm_rd_threading_staged.md.
+//! on the RD-search QM threading staged in docs/archive/qm_rd_threading_staged.md.
 
 use aom_sys_ref as c;
 

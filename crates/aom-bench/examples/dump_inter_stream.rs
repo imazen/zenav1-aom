@@ -1,4 +1,4 @@
-//! Dump the "simplest inter config" (INTER-ENCODE-ROADMAP.md §3) 2-frame
+//! Dump the "simplest inter config" (docs/inter/INTER-ENCODE-ROADMAP.md §3) 2-frame
 //! `[KEY, P]` `aomenc` stream to an IVF file, so the instrumented libaom
 //! decoder (`/root/aom-inspect/examples/inspect`, CONFIG_INSPECTION=1) can be
 //! pointed at it to read C's OWN per-block partition / mode / MV / ref / skip

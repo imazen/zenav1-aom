@@ -1,3 +1,5 @@
+> **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
+
 ## The publish window is still OPEN — none of the four names are taken, and the facade has no consumer (2026-09-10)
 
 Measured, not assumed: `zenav1-aom`, `-dsp`, `-encode` and `-decode` all return
@@ -888,7 +890,7 @@ times + cross-run agreement. Also this date: the 2026-07-23 "17 invalid
 AV1 streams" finding was REFUTED as a KB-13 harness bug (see the KB-13
 CLAUDE.md correction + `intra_tiebreak_deltas_2026-07-23.md` banner), the
 stale agent bookmarks/worktrees were all audited landed-or-superseded and
-deleted, and CONTEXT-HANDOFF.md was rewritten as the current project handoff.
+deleted, and docs/archive/CONTEXT-HANDOFF.md was rewritten as the current project handoff.
 
 ## bd8 i16-lane inverse-transform ROW pass — DCT rows h>=16 narrowed on the shared try_inv_row_pass (2026-07-23, decoder track)
 
@@ -1176,7 +1178,7 @@ block, NEARESTMV, ref (LAST, NONE), SIMPLE_TRANSLATION, skip, TX_64X64, qindex 2
 per-symbol accounting gives exactly `partition → skip → is_inter → ref_frames(3) →
 inter_mode(3)`.
 
-**Two corrections to INTER-CHUNK2-HANDOFF.md** (prior-session notes, verified against C rather
+**Two corrections to docs/inter/INTER-CHUNK2-HANDOFF.md** (prior-session notes, verified against C rather
 than trusted): the pack order is **skip BEFORE is_inter** (with cdef and delta-q between) per
 `pack_inter_mode_mvs` (bitstream.c:1092) — the handoff's "is_inter → ref → mode → skip" is
 wrong; and the mode is **NEARESTMV**, not the hedged "GLOBALMV/NEARESTMV".
@@ -1189,7 +1191,7 @@ blocker does not apply to this frame config.
 aomenc `[f2,24,80]` vs port `[99,24]`. Header byte-identical, block 0 proven exact, symbol order
 confirmed, and a sweep of all 72 valid `mode_context` encodings for block 1 reproduces nothing;
 libaom's decoder rejects the port's two-SB stream, so it desyncs rather than merely differs.
-Next step + the ruled-out list are recorded on the test and in INTER-CHUNK2-HANDOFF.md.
+Next step + the ruled-out list are recorded on the test and in docs/inter/INTER-CHUNK2-HANDOFF.md.
 
 **MISSING (stated as a fraction):** rung 1 of 3, and within it the PACK half only. The RD arm
 and pack exist and are gated but are NOT yet wired into the partition search / `pack_tile`, so
@@ -4277,7 +4279,7 @@ pick_sb_modes_nonrd re-derives per leaf before trusting the SB value.
 ## #23 QM-on forward-quant encode — byte-match gate (2026-07-16, encoder track)
 
 **`--enable-qm=1` ALLINTRA KEY encodes byte-match real aomenc end-to-end** — the
-one remaining piece of #23 (`docs/qm_rd_threading_staged.md`'s RD-search
+one remaining piece of #23 (`docs/archive/qm_rd_threading_staged.md`'s RD-search
 threading) is landed and gated. QM selection now runs INSIDE every search-side
 `xform_quant`/`xform_quant_optimize` (per `(tx_size, tx_type)`, mirroring
 `av1_setup_qmatrix`), so the matrices shape the mode/tx/partition RD exactly as

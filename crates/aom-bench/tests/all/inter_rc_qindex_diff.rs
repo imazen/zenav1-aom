@@ -5,7 +5,7 @@
 //! `--cq-level` under `--end-usage=q`. The lone-KEY value was already locked
 //! (`qindex_from_cq_diff`); this gate locks the **multi-frame low-delay P (inter
 //! leaf) frame** value — the qindex frame 1 of a `--lag-in-frames=0 --limit=2`
-//! `[KEY, P]` clip is coded at (INTER-ENCODE-ROADMAP.md §3, chunk 2b).
+//! `[KEY, P]` clip is coded at (docs/inter/INTER-ENCODE-ROADMAP.md §3, chunk 2b).
 //!
 //! Method: encode the 2-frame clip with real `aomenc` at the §3 simplest inter
 //! config ([`MultiFrameEncodeCell::c_encode_inter`]), decode both frames with the
