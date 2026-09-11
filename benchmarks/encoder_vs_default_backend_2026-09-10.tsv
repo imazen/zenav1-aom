@@ -1,0 +1,7 @@
+arm	setting	ms	bytes
+zenav1-aom encode_key_frame	cq27 cpu-used 3	2994.6	40237
+zenrav1e	q127 speed 4	30538.0	40436
+zenrav1e	q132 speed 4	29725.5	38382
+zenrav1e	q140 speed 4	28336.8	35532
+zenrav1e	q132 speed 7	2370.8	40354
+drv-aom port_encode_with (harness path)	cq27 cpu-used 3	5687.5	40237
