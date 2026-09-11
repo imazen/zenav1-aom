@@ -18,8 +18,8 @@ use zenrav1e::prelude::*;
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    if a.len() != 9 {
-        eprintln!("usage: drv-rav1e <w> <h> <quantizer 0..255> <speed 0..10> <in.yuv> <out.obu> <warmup> <reps>");
+    if a.len() != 9 && a.len() != 10 {
+        eprintln!("usage: drv-rav1e <w> <h> <quantizer 0..255> <speed 0..10> <in.yuv> <out.obu> <warmup> <reps> [threads=1]");
         std::process::exit(2);
     }
     let w: usize = a[1].parse().unwrap();
@@ -28,6 +28,12 @@ fn main() {
     let speed: u8 = a[4].parse().unwrap();
     let warmup: usize = a[7].parse().unwrap();
     let reps: usize = a[8].parse().unwrap();
+    // OPTIONAL 9th arg: encoder threads (default 1, this repo's protocol).
+    // rav1e THREADS IN PRODUCTION, so a single-threaded-only driver cannot
+    // answer "how much does the incumbent close the gap with threads" -- which
+    // is exactly the caveat `encoder_vs_default_backend_2026-09-10.md` records.
+    // rav1e needs tiles to parallelise a single frame, so tiles track threads.
+    let threads: usize = a.get(9).and_then(|v| v.parse().ok()).unwrap_or(1);
     assert!(w % 2 == 0 && h % 2 == 0, "even dims only");
 
     let buf = std::fs::read(&a[5]).expect("read .yuv");
@@ -50,11 +56,11 @@ fn main() {
         max_key_frame_interval: 1,
         low_latency: true,
         quantizer,
-        tiles: 1,
+        tiles: threads.max(1),
         speed_settings: SpeedSettings::from_preset(speed),
         ..Default::default()
     };
-    let cfg = Config::new().with_encoder_config(enc).with_threads(1);
+    let cfg = Config::new().with_encoder_config(enc).with_threads(threads.max(1));
 
     let mk_frame = |ctx: &Context<u8>| {
         let mut f = ctx.new_frame();

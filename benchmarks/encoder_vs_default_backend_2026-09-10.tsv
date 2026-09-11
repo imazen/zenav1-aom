@@ -5,3 +5,15 @@ zenrav1e	q132 speed 4	29725.5	38382
 zenrav1e	q140 speed 4	28336.8	35532
 zenrav1e	q132 speed 7	2370.8	40354
 drv-aom port_encode_with (harness path)	cq27 cpu-used 3	5687.5	40237
+
+# quality at matched rate (aomdec v3.14.1 + xtool score vs source)
+arm	bytes	ssim2	ba_max	ba_3n
+zenav1-aom cq27 cpu3	40237	79.223528	3.434954	1.110362
+zenrav1e q127 s4	40436	76.209534	3.822373	1.236779
+
+# zenrav1e s4 q127 threading
+threads	ms	bytes
+1	30777.4	40436
+4	30682.1	41459
+8	30109.7	42049
+16	29835.7	42853

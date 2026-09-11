@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "fast-ssim2"
-version = "0.8.2"
+version = "0.9.0"
 dependencies = [
  "archmage",
  "enough",
@@ -352,9 +352,9 @@ dependencies = [
 
 [[package]]
 name = "imgref"
-version = "1.12.2"
+version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89194689a993ab15268672e99e7b0e19da2da3268ac682e8f02d29d4d1434cd7"
+checksum = "6e44b0a4eaa4c82f441d50a963f2d5f05a787240aeee097597033e72accfd22f"
 
 [[package]]
 name = "interpolate_name"
@@ -727,6 +727,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "smallvec"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -750,18 +756,18 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.19"
+version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09a43598840e33d5b0331f38c5e30d13bb11c11210a4b58f0d9b18a5a5eefcd9"
+checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.19"
+version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43cbfe0cf76104d42a574802844187e84a305e531ed54455f11fbde0f10541cd"
+checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -936,6 +942,7 @@ name = "zenav1-aom-dsp"
 version = "0.0.1"
 dependencies = [
  "archmage",
+ "enough",
  "magetypes",
 ]
 
@@ -943,6 +950,8 @@ dependencies = [
 name = "zenav1-aom-encode"
 version = "0.0.1"
 dependencies = [
+ "enough",
+ "smallvec",
  "zenav1-aom-dsp",
 ]
 
@@ -956,7 +965,6 @@ version = "0.1.0"
 dependencies = [
  "archmage",
  "magetypes",
- "zenav1-svt-tables",
  "zenav1-svt-types",
 ]
 
@@ -965,28 +973,11 @@ name = "zenav1-svt-encoder"
 version = "0.1.0"
 dependencies = [
  "almost-enough",
+ "archmage",
  "enough",
+ "magetypes",
  "whereat",
  "zenav1-svt-dsp",
- "zenav1-svt-entropy",
- "zenav1-svt-tables",
- "zenav1-svt-types",
-]
-
-[[package]]
-name = "zenav1-svt-entropy"
-version = "0.1.0"
-dependencies = [
- "archmage",
- "magetypes",
- "zenav1-svt-tables",
- "zenav1-svt-types",
-]
-
-[[package]]
-name = "zenav1-svt-tables"
-version = "0.1.0"
-dependencies = [
  "zenav1-svt-types",
 ]
 
