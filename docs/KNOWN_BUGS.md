@@ -5,6 +5,62 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-53 — Encoder: the RD/tune/tool knobs were HARNESS-ONLY — WIRED into `encode_key_frame` 2026-09-11, byte-gated with a matched oracle; parity status per knob recorded, one corrupt-stream knob refused by name
+
+- **What was true before.** `KeyFrameConfig` had no way to reach tune=IQ/SSIMULACRA2, QM,
+  sharpness, chroma delta-q, the delta-q modes, adaptive CDEF, the C8–C11 tool toggles, a
+  film-grain table or fixed superres — every one ported and byte-gated for months, but only
+  through `aom-bench`'s `port_encode_with`, which zenavif cannot call (README "harness-only").
+- **LANDED.** `KeyFrameConfig` gains `quality: QualityTools` (`tune`, `qm`, `qm_dist_metric`,
+  `sharpness`, `adaptive_sharpness`, `chroma_deltaq`, `deltaq_mode` {Off, Perceptual,
+  PerceptualAi, VarianceBoost}, `deltaq_strength`, `delta_lf`, `cdef_adaptive`),
+  `tools: CodingTools` (24 aomenc toggles, `Default` = aomenc's defaults), `film_grain:
+  Option<FilmGrainParams>`, `superres_denom: u8`, and `apply_tune(Tune)`, which installs
+  libaom's `handle_tuning` bundle field for field (av1_cx_iface.c:1938). `pickcdef.rs` gains
+  the three `CDEF_ADAPTIVE` arms (`av1_cdef_search_adaptive`: off at cq<=32, halve at cq<=220,
+  zero low strengths at qindex<=140). Every knob is validated at the config gate (the
+  support query IS the encoder's predicate), including film-grain field widths.
+- **THE ORACLE IS THE POINT.** `shim_encode_av1_kf_cfg` / `ref_encode_av1_kf_cfg` drive real
+  libaom with the SAME resolved knobs in the same order the port documents (tune first, every
+  explicit knob as an override, generic controls last), so `self_contained_tools.rs` is a
+  like-for-like comparison by construction. Every cell also decodes the port's stream with
+  the real libaom decoder AND this repo's decoder and requires identical pixels.
+- **MEASURED AT LANDING (`self_contained_tools.rs`, 236 cells, all conformant):**
+
+  | gate | byte-identical | open (pinned, self-promoting) |
+  |---|---|---|
+  | superres fixed d9/12/16, bd8+bd10, 420+mono | **18/18** | — |
+  | film-grain table, 4 libaom test vectors x 3 formats | **10/10** | — |
+  | coding tools (24 toggles x 420/444 x s0/s6) | **46/48** | `--intra-dct-only` at s0, both formats |
+  | quality knobs alone (PSNR tune) | **48/71** | see below |
+  | tune=IQ / SSIMULACRA2 bundle, s0/s3, 3 formats, LR on/off | **0/84** | all |
+  | tune bundle at s6/s8 | 0/8 | all (CDEF at speed >= 4 is a pre-existing pin, PARITY C1) |
+
+  Byte-identical ALONE: every QM range, the QM-PSNR metric, sharpness + adaptive sharpness,
+  the constant chroma-delta-q arm at every subsampling, Variance-Boost delta-q at s0,
+  Perceptual-AI delta-q at s0/s3 with and without delta-lf, adaptive CDEF's OFF arm (cq 8)
+  and its cq-40 arm. **Open:** the tune chroma-delta-q RAMPS (IQ/SSIM2), Perceptual delta-q
+  (mode 2) everywhere, the nonrd (s8) arm of every delta-q mode, VarianceBoost cq44 s3,
+  adaptive CDEF at cq 20/60 (the halve and zero-low arms), and therefore the whole tune
+  bundle. **In every open cell the first differing byte is the frame OBU's SIZE field — a
+  payload divergence, not a header derivation bug** (the old bench-driven tune gate passed
+  because it BOOTSTRAPPED the header from C and compared tile payloads on 64x64 cells at cq
+  the ramps do not fire; this gate authors the header and sweeps wider). Localize with
+  playbook §10 decode-both on `Iq 420 64x64 cq20 s0 lr0` (1949 vs 1926 B).
+- **ONE CORRUPT-STREAM KNOB, REFUSED BY NAME.** `tools.cdf_update_mode = 0`
+  (`disable_cdf_update = 1`) produced a stream the real libaom decoder REJECTS while
+  aomenc's own `--cdf-update-mode=0` stream decodes — the pack still adapts CDFs the header
+  said it would not. Refused with `Unsupported` (KB-53 named) until fixed; a knob that emits a
+  non-conformant stream is worse than a divergence and cannot ship as a divergence.
+- **An oracle-decoder oddity, recorded so it is not chased:** `ref_decode_av1_kf` rejects
+  libaom's OWN `tv15` (chroma-scaling-from-luma) grain stream on a MONOCHROME frame; the
+  port's stream is byte-identical to it. The grain gate runs the decode leg only where the
+  oracle accepts its own output.
+- **Not done here:** zenavif's pin bump (its `KeyFrameConfig` literal must gain `quality`,
+  `tools`, `film_grain`, `superres_denom`, `enable_palette`, `enable_intrabc`) and exposing
+  the knobs through `EncoderConfig` (`with_qm`, `with_still_image_tuning`, `with_trellis`,
+  `with_cdef` already exist for the rav1e backend and are the natural carriers).
+
 ### KB-52 — Encoder: `AllocMode` closes the last of the six zen contracts — and the gate caught its own instrument, 2026-09-08
 
 - **`AllocMode { Fallible, Infallible }` on `EncodeConfig`**, with a pre-flight

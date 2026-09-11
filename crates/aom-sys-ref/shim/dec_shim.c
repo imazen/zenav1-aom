@@ -4273,3 +4273,185 @@ int shim_dump_default_intra_in_inter_cdfs(int base_qindex, uint16_t *out) {
   free(rcb);
   return off == 528 ? 0 : 2;
 }
+
+/* ---- General-configuration KEY-frame oracle ------------------------------
+ * ONE entry point that can drive every knob `aom_encode::key_frame::
+ * KeyFrameConfig` exposes, with the SAME semantics the port documents:
+ * `AOME_SET_TUNING` is applied FIRST (installing libaom's `handle_tuning`
+ * bundle, av1_cx_iface.c:1938), then every RESOLVED knob is applied as an
+ * explicit override in aomenc-CLI order, then the generic control list.
+ * A caller that passes the bundle's own values as overrides therefore gets
+ * exactly the tune; one that passes different values gets the override, as
+ * `aomenc --tune=iq --sharpness=3` would.
+ *
+ * Negative values mean "leave the default" for every tune-family knob;
+ * `superres_denom == 0` means no superres; `film_grain_table == NULL` means no
+ * table. `enable_cdef` is the CDEF_CONTROL enum (0 off, 1 all, 3 adaptive).
+ *
+ * Everything else (cfg fields, image setup, the two-pass drain) is identical
+ * to encode_av1_kf_impl / shim_encode_av1_kf_tune so a cell with every knob
+ * at its default reproduces shim_encode_av1_kf byte for byte. */
+long shim_encode_av1_kf_cfg(const uint16_t *y, const uint16_t *u,
+                            const uint16_t *v, int w, int h, int bd, int mono,
+                            int ss_x, int ss_y, int cq_level, int cpu_used,
+                            int usage, int enable_cdef, int enable_restoration,
+                            int sb_size_128, int tile_columns_log2,
+                            int tile_rows_log2, int enable_palette,
+                            int enable_intrabc, int tuning, int sharpness,
+                            int enable_adaptive_sharpness, int dist_metric,
+                            int enable_chroma_deltaq, int deltaq_mode,
+                            int deltaq_strength, int enable_deltalf_mode,
+                            int enable_qm, int qm_min, int qm_max,
+                            int superres_denom, const char *film_grain_table,
+                            const int *ctrl_ids, const int *ctrl_vals,
+                            int n_ctrls, uint8_t *out, size_t out_cap) {
+  aom_codec_iface_t *iface = aom_codec_av1_cx();
+  aom_codec_enc_cfg_t cfg;
+  if (aom_codec_enc_config_default(iface, &cfg, (unsigned int)usage)) return -1;
+  cfg.g_w = w;
+  cfg.g_h = h;
+  cfg.g_limit = 1;
+  cfg.g_lag_in_frames = 0;
+  cfg.g_threads = 1;
+  cfg.g_pass = AOM_RC_ONE_PASS;
+  cfg.rc_end_usage = AOM_Q;
+  cfg.monochrome = mono;
+  cfg.g_input_bit_depth = bd;
+  if (bd == 8) {
+    cfg.g_bit_depth = AOM_BITS_8;
+    cfg.g_profile = (ss_x == 0 && ss_y == 0) ? 1 : 0;
+  } else if (bd == 10) {
+    cfg.g_bit_depth = AOM_BITS_10;
+    cfg.g_profile = (ss_x == 0 && ss_y == 0) ? 1 : 0;
+  } else {
+    cfg.g_bit_depth = AOM_BITS_12;
+    cfg.g_profile = 2;
+  }
+  if (!mono && ss_x == 1 && ss_y == 0) cfg.g_profile = 2; /* 4:2:2 */
+  if (superres_denom > 0) {
+    /* Fixed-denominator superres via the enc-config fields; a forced KEY frame
+     * reads rc_superres_kf_denominator (see shim_encode_av1_kf_superres). */
+    cfg.rc_superres_mode = AOM_SUPERRES_FIXED;
+    cfg.rc_superres_denominator = (unsigned int)superres_denom;
+    cfg.rc_superres_kf_denominator = (unsigned int)superres_denom;
+  }
+
+  aom_img_fmt_t fmt;
+  if (mono || (ss_x == 1 && ss_y == 1))
+    fmt = AOM_IMG_FMT_I420;
+  else if (ss_x == 1)
+    fmt = AOM_IMG_FMT_I422;
+  else
+    fmt = AOM_IMG_FMT_I444;
+  if (bd > 8) fmt |= AOM_IMG_FMT_HIGHBITDEPTH;
+  aom_image_t *img = aom_img_alloc(NULL, fmt, w, h, 32);
+  if (!img) return -4;
+  img->monochrome = mono;
+  img->bit_depth = bd;
+  const int cw = mono ? 0 : (w + ss_x) >> ss_x;
+  const int ch = mono ? 0 : (h + ss_y) >> ss_y;
+  for (int plane = 0; plane < (mono ? 1 : 3); plane++) {
+    const uint16_t *src = plane == 0 ? y : (plane == 1 ? u : v);
+    const int pw = plane == 0 ? w : cw;
+    const int ph = plane == 0 ? h : ch;
+    for (int r = 0; r < ph; r++) {
+      if (bd > 8) {
+        uint16_t *row =
+            (uint16_t *)(img->planes[plane] + (size_t)r * img->stride[plane]);
+        for (int c = 0; c < pw; c++) row[c] = src[(size_t)r * pw + c];
+      } else {
+        uint8_t *row = img->planes[plane] + (size_t)r * img->stride[plane];
+        for (int c = 0; c < pw; c++) row[c] = (uint8_t)src[(size_t)r * pw + c];
+      }
+    }
+  }
+
+  aom_codec_ctx_t ctx;
+  aom_codec_flags_t flags = bd > 8 ? AOM_CODEC_USE_HIGHBITDEPTH : 0;
+  if (aom_codec_enc_init(&ctx, iface, &cfg, flags)) {
+    aom_img_free(img);
+    return -2;
+  }
+#define TRYCTRL_CFG(id, val)                    \
+  do {                                          \
+    if (aom_codec_control(&ctx, (id), (val))) { \
+      aom_codec_destroy(&ctx);                  \
+      aom_img_free(img);                        \
+      return -3;                                \
+    }                                           \
+  } while (0)
+  TRYCTRL_CFG(AOME_SET_CPUUSED, cpu_used);
+  TRYCTRL_CFG(AOME_SET_CQ_LEVEL, cq_level);
+  TRYCTRL_CFG(AV1E_SET_ENABLE_RESTORATION, enable_restoration);
+  TRYCTRL_CFG(AV1E_SET_SUPERBLOCK_SIZE, sb_size_128 ? AOM_SUPERBLOCK_SIZE_128X128
+                                                    : AOM_SUPERBLOCK_SIZE_64X64);
+  TRYCTRL_CFG(AV1E_SET_TILE_COLUMNS, tile_columns_log2);
+  TRYCTRL_CFG(AV1E_SET_TILE_ROWS, tile_rows_log2);
+  TRYCTRL_CFG(AV1E_SET_AQ_MODE, 0);
+  TRYCTRL_CFG(AV1E_SET_ENABLE_PALETTE, enable_palette);
+  TRYCTRL_CFG(AV1E_SET_ENABLE_INTRABC, enable_intrabc);
+  /* The tune FIRST (installs the handle_tuning bundle) ... */
+  if (tuning >= 0) TRYCTRL_CFG(AOME_SET_TUNING, tuning);
+  /* ... then the explicit per-knob overrides, aomenc-CLI-order semantics. */
+  if (sharpness >= 0) TRYCTRL_CFG(AOME_SET_SHARPNESS, (unsigned int)sharpness);
+  if (enable_adaptive_sharpness >= 0)
+    TRYCTRL_CFG(AV1E_SET_ENABLE_ADAPTIVE_SHARPNESS, enable_adaptive_sharpness);
+  if (dist_metric >= 0) {
+    /* No aom_codec_control id: string-option interface only
+     * (encoder_set_option, av1_cx_iface.c: "dist-metric" = psnr | qm-psnr). */
+    if (aom_codec_set_option(&ctx, "dist-metric",
+                             dist_metric == 1 ? "qm-psnr" : "psnr")) {
+      aom_codec_destroy(&ctx);
+      aom_img_free(img);
+      return -3;
+    }
+  }
+  if (enable_chroma_deltaq >= 0)
+    TRYCTRL_CFG(AV1E_SET_ENABLE_CHROMA_DELTAQ, enable_chroma_deltaq);
+  if (deltaq_mode >= 0) TRYCTRL_CFG(AV1E_SET_DELTAQ_MODE, deltaq_mode);
+  if (deltaq_strength >= 0)
+    TRYCTRL_CFG(AV1E_SET_DELTAQ_STRENGTH, deltaq_strength);
+  if (enable_deltalf_mode >= 0)
+    TRYCTRL_CFG(AV1E_SET_DELTALF_MODE, enable_deltalf_mode);
+  if (enable_qm >= 0) {
+    TRYCTRL_CFG(AV1E_SET_ENABLE_QM, enable_qm);
+    if (enable_qm) {
+      TRYCTRL_CFG(AV1E_SET_QM_MIN, qm_min);
+      TRYCTRL_CFG(AV1E_SET_QM_MAX, qm_max);
+    }
+  }
+  if (enable_cdef >= 0) TRYCTRL_CFG(AV1E_SET_ENABLE_CDEF, enable_cdef);
+  if (film_grain_table) {
+    if (aom_codec_control(&ctx, AV1E_SET_FILM_GRAIN_TABLE, film_grain_table)) {
+      aom_codec_destroy(&ctx);
+      aom_img_free(img);
+      return -3;
+    }
+  }
+  for (int i = 0; i < n_ctrls; i++) TRYCTRL_CFG(ctrl_ids[i], ctrl_vals[i]);
+#undef TRYCTRL_CFG
+
+  long total = 0;
+  int rc = 0;
+  for (int pass = 0; pass < 2 && rc == 0; pass++) {
+    if (aom_codec_encode(&ctx, pass == 0 ? img : NULL, 0, 1,
+                         pass == 0 ? AOM_EFLAG_FORCE_KF : 0)) {
+      rc = -5;
+      break;
+    }
+    aom_codec_iter_t iter = NULL;
+    const aom_codec_cx_pkt_t *pkt;
+    while ((pkt = aom_codec_get_cx_data(&ctx, &iter)) != NULL) {
+      if (pkt->kind != AOM_CODEC_CX_FRAME_PKT) continue;
+      if ((size_t)total + pkt->data.frame.sz > out_cap) {
+        rc = -6;
+        break;
+      }
+      memcpy(out + total, pkt->data.frame.buf, pkt->data.frame.sz);
+      total += (long)pkt->data.frame.sz;
+    }
+  }
+  aom_codec_destroy(&ctx);
+  aom_img_free(img);
+  return rc ? rc : total;
+}

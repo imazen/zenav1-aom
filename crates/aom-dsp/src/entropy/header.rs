@@ -556,7 +556,7 @@ pub fn write_tx_mode(wb: &mut WriteBitBuffer, coded_lossless: bool, tx_mode_sele
 
 /// The film-grain params written into the frame header (`aom_film_grain_t`), plus
 /// the seq/frame context the writer reads (monochrome, subsampling, inter frame).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct FilmGrainParams {
     pub apply_grain: bool,
     pub random_seed: i32,

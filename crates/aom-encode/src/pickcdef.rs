@@ -950,7 +950,39 @@ fn get_msb(n: u32) -> i32 {
 /// bits, per-unit best-index assignment, fast-method strength re-mapping.
 /// `pick_method` = `CDEF_FULL_SEARCH`(0) .. `CDEF_FAST_SEARCH_LVL5`(5)
 /// (the [`crate::speed_features`] `cdef_pick_method` value; speed 0 = FULL).
+/// The `CDEF_ADAPTIVE` inputs (`cdef_control == CDEF_ADAPTIVE` under AOM_Q,
+/// pickcdef.c:841-843) — the arm `tune=IQ` / `tune=SSIMULACRA2` install
+/// (`handle_tuning`, av1_cx_iface.c:1962).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CdefAdaptive {
+    /// `oxcf.rc_cfg.cq_level` (the 0..=63 dial, NOT the qindex): CDEF is
+    /// turned off at `<= 32` and strengths are halved at `<= 220`
+    /// (pickcdef.c:850, :927).
+    pub cq_level: i32,
+    /// `lpf_sf.zero_low_cdef_strengths` — ALLINTRA (or IQ/SSIMULACRA2 tune)
+    /// with `base_qindex <= 140` (speed_features.c:2886-2891).
+    pub zero_low_strengths: bool,
+}
+
+/// `av1_cdef_search` with `cdef_control == CDEF_ALL` — see
+/// [`av1_cdef_search_adaptive`] for the `CDEF_ADAPTIVE` arms.
 pub fn av1_cdef_search(f: &CdefSearchFrame, pick_method: i32) -> CdefSearchResult {
+    av1_cdef_search_adaptive(f, pick_method, None)
+}
+
+/// `av1_cdef_search` (pickcdef.c:837), including the three `CDEF_ADAPTIVE`
+/// arms when `adaptive` is `Some`:
+/// * `cq_level <= 32`: no search, one zero strength (`:850-856`);
+/// * `cq_level <= 220` (`should_reduce_cdef_strengths`): every picked
+///   primary/secondary strength is halved after the search (`:1046-1064`);
+/// * with `zero_low_cdef_strengths`, the search is forced to derive at least
+///   two strengths (`min_signaling_bits = 1`, `:940`) and halved strengths at
+///   or under (pri 4, sec 1) are zeroed, chroma following luma (`:1077-1090`).
+pub fn av1_cdef_search_adaptive(
+    f: &CdefSearchFrame,
+    pick_method: i32,
+    adaptive: Option<CdefAdaptive>,
+) -> CdefSearchResult {
     assert!(
         (0..=5).contains(&pick_method),
         "CDEF_PICK_FROM_Q (speed >= 7 rt) is out of this port's envelope"
@@ -962,6 +994,31 @@ pub fn av1_cdef_search(f: &CdefSearchFrame, pick_method: i32) -> CdefSearchResul
     let total_strengths = NB_CDEF_STRENGTHS[pick_method as usize];
     let nvfb = (f.mi_rows + MI_SIZE_64X64 - 1) / MI_SIZE_64X64;
     let nhfb = (f.mi_cols + MI_SIZE_64X64 - 1) / MI_SIZE_64X64;
+
+    // CDEF_ADAPTIVE, arm 1 (pickcdef.c:846-857): "turning off CDEF around
+    // qindex 32 was best for still pictures" — one zero strength, no search.
+    // The early return leaves `cdef_info->cdef_damping` UNTOUCHED, and on a
+    // fresh encoder that is the calloc'd 0 (the only two assignments to it are
+    // the search's own `:1097` and `av1_pick_cdef_from_qp`'s `:761`, neither of
+    // which runs here). `write_cdef` then codes `cdef_damping - 3` as 2 bits,
+    // i.e. `(-3) & 3 == 1`, which every decoder reads back as damping 4. The
+    // strengths are all zero so the value is pixel-inert; it is coded, so it
+    // must be reproduced.
+    if adaptive.is_some_and(|a| a.cq_level <= 32) {
+        return CdefSearchResult {
+            cdef_bits: 0,
+            nb_cdef_strengths: 1,
+            cdef_strengths: [0; 8],
+            cdef_uv_strengths: [0; 8],
+            cdef_damping: 4,
+            unit_strength: vec![0i32; (nvfb * nhfb) as usize],
+            nvfb,
+            nhfb,
+        };
+    }
+    let should_reduce_cdef_strengths = adaptive.is_some_and(|a| a.cq_level <= 220);
+    let should_zero_cdef_strengths =
+        should_reduce_cdef_strengths && adaptive.is_some_and(|a| a.zero_low_strengths);
 
     // Frame-level MSE grid (cdef_mse_calc_frame).
     let mut mse_y: Vec<[u64; TOTAL_STRENGTHS]> = Vec::new();
@@ -1013,7 +1070,14 @@ pub fn av1_cdef_search(f: &CdefSearchFrame, pick_method: i32) -> CdefSearchResul
     let mut best_rd = u64::MAX;
     let mut cdef_strengths = [0i32; 8];
     let mut cdef_uv_strengths = [0i32; 8];
-    for i in 0..=3i32 {
+    // pickcdef.c:934-940: with strength zeroing on, derive at least two
+    // strengths (one signalling bit) so the zeroing has something to work on.
+    let min_signaling_bits = if should_zero_cdef_strengths && max_signaling_bits > 0 {
+        1
+    } else {
+        0
+    };
+    for i in min_signaling_bits..=3i32 {
         if i > max_signaling_bits {
             break;
         }
@@ -1076,6 +1140,40 @@ pub fn av1_cdef_search(f: &CdefSearchFrame, pick_method: i32) -> CdefSearchResul
             if num_planes > 1 {
                 let (pri, sec) = get_cdef_filter_strengths(pick_method, cdef_uv_strengths[j]);
                 cdef_uv_strengths[j] = pri * CDEF_SEC_STRENGTHS + sec;
+            }
+        }
+    }
+
+    // CDEF_ADAPTIVE, arm 2 (pickcdef.c:1032-1091): halve every picked
+    // primary and secondary strength (`>> 1`, so odd strengths lose more than
+    // half — intended, see C's Note 1), then with `zero_low_cdef_strengths`
+    // zero the entries whose HALVED luma strength is <= (pri 4, sec 1); chroma
+    // is zeroed when either its own halved strength is low OR luma's was.
+    if should_reduce_cdef_strengths {
+        for j in 0..nb_cdef_strengths {
+            let luma = cdef_strengths[j];
+            let new_pri_luma = (luma / CDEF_SEC_STRENGTHS) >> 1;
+            let new_sec_luma = (luma % CDEF_SEC_STRENGTHS) >> 1;
+            cdef_strengths[j] = new_pri_luma * CDEF_SEC_STRENGTHS + new_sec_luma;
+            let mut new_pri_chroma = 0;
+            let mut new_sec_chroma = 0;
+            if num_planes > 1 {
+                let chroma = cdef_uv_strengths[j];
+                new_pri_chroma = (chroma / CDEF_SEC_STRENGTHS) >> 1;
+                new_sec_chroma = (chroma % CDEF_SEC_STRENGTHS) >> 1;
+                cdef_uv_strengths[j] = new_pri_chroma * CDEF_SEC_STRENGTHS + new_sec_chroma;
+            }
+            if should_zero_cdef_strengths {
+                let is_low_luma = new_pri_luma <= 4 && new_sec_luma <= 1;
+                if is_low_luma {
+                    cdef_strengths[j] = 0;
+                }
+                if num_planes > 1 {
+                    let is_low_chroma = new_pri_chroma <= 4 && new_sec_chroma <= 1;
+                    if is_low_luma || is_low_chroma {
+                        cdef_uv_strengths[j] = 0;
+                    }
+                }
             }
         }
     }

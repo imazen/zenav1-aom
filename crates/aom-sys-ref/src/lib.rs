@@ -14328,6 +14328,190 @@ pub fn ref_encode_av1_kf_tune(
 }
 
 // ---------------------------------------------------------------------------
+// General-configuration KEY-frame oracle (`shim_encode_av1_kf_cfg`): every knob
+// `aom_encode::key_frame::KeyFrameConfig` exposes, applied with the port's own
+// semantics (tune bundle FIRST, resolved knobs as explicit overrides after,
+// then generic controls). See the C shim's doc comment.
+// ---------------------------------------------------------------------------
+unsafe extern "C" {
+    fn shim_encode_av1_kf_cfg(
+        y: *const u16,
+        u: *const u16,
+        v: *const u16,
+        w: i32,
+        h: i32,
+        bd: i32,
+        mono: i32,
+        ss_x: i32,
+        ss_y: i32,
+        cq_level: i32,
+        cpu_used: i32,
+        usage: i32,
+        enable_cdef: i32,
+        enable_restoration: i32,
+        sb_size_128: i32,
+        tile_columns_log2: i32,
+        tile_rows_log2: i32,
+        enable_palette: i32,
+        enable_intrabc: i32,
+        tuning: i32,
+        sharpness: i32,
+        enable_adaptive_sharpness: i32,
+        dist_metric: i32,
+        enable_chroma_deltaq: i32,
+        deltaq_mode: i32,
+        deltaq_strength: i32,
+        enable_deltalf_mode: i32,
+        enable_qm: i32,
+        qm_min: i32,
+        qm_max: i32,
+        superres_denom: i32,
+        film_grain_table: *const std::os::raw::c_char,
+        ctrl_ids: *const i32,
+        ctrl_vals: *const i32,
+        n_ctrls: i32,
+        out: *mut u8,
+        out_cap: usize,
+    ) -> std::os::raw::c_long;
+}
+
+/// The knob set of [`ref_encode_av1_kf_cfg`]. Every tune-family field is an
+/// `i32` with `-1` = "leave libaom's default (or whatever the tune bundle
+/// installed)"; the base toggles are plain values. `Default` is the plain
+/// `shim_encode_av1_kf` configuration (CDEF off, restoration off, SB64, one
+/// tile, palette/intrabc off, no tune, no superres, no grain).
+#[derive(Clone, Debug)]
+pub struct RefKfCfg {
+    /// `AV1E_SET_ENABLE_CDEF`: 0 off, 1 all, 3 adaptive (CDEF_CONTROL).
+    pub enable_cdef: i32,
+    pub enable_restoration: bool,
+    pub sb_size_128: bool,
+    pub tile_columns_log2: i32,
+    pub tile_rows_log2: i32,
+    pub enable_palette: bool,
+    pub enable_intrabc: bool,
+    /// `AOME_SET_TUNING`: -1 none, 10 IQ, 11 SSIMULACRA2.
+    pub tuning: i32,
+    pub sharpness: i32,
+    pub enable_adaptive_sharpness: i32,
+    /// "dist-metric": -1 default, 0 psnr, 1 qm-psnr.
+    pub dist_metric: i32,
+    pub enable_chroma_deltaq: i32,
+    /// `AV1E_SET_DELTAQ_MODE`: -1 default, 0 off, 2, 3, 6.
+    pub deltaq_mode: i32,
+    pub deltaq_strength: i32,
+    pub enable_deltalf_mode: i32,
+    pub enable_qm: i32,
+    pub qm_min: i32,
+    pub qm_max: i32,
+    /// 0 = no superres; 9..=16 = fixed denominator.
+    pub superres_denom: i32,
+    /// Path to an aomenc film-grain table file, or `None`.
+    pub film_grain_table: Option<std::path::PathBuf>,
+    /// Generic `(aome_enc_control_id, value)` pairs applied LAST.
+    pub ctrls: Vec<(i32, i32)>,
+}
+
+impl Default for RefKfCfg {
+    fn default() -> Self {
+        RefKfCfg {
+            enable_cdef: 0,
+            enable_restoration: false,
+            sb_size_128: false,
+            tile_columns_log2: 0,
+            tile_rows_log2: 0,
+            enable_palette: false,
+            enable_intrabc: false,
+            tuning: -1,
+            sharpness: -1,
+            enable_adaptive_sharpness: -1,
+            dist_metric: -1,
+            enable_chroma_deltaq: -1,
+            deltaq_mode: -1,
+            deltaq_strength: -1,
+            enable_deltalf_mode: -1,
+            enable_qm: -1,
+            qm_min: -1,
+            qm_max: -1,
+            superres_denom: 0,
+            film_grain_table: None,
+            ctrls: Vec::new(),
+        }
+    }
+}
+
+/// Real libaom KEY-frame encode under an arbitrary [`RefKfCfg`] — the oracle
+/// for the standalone shell's tool knobs. Returns the whole temporal unit.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_encode_av1_kf_cfg(
+    y: &[u16],
+    u: &[u16],
+    v: &[u16],
+    w: usize,
+    h: usize,
+    bd: i32,
+    mono: bool,
+    ss_x: i32,
+    ss_y: i32,
+    cq_level: i32,
+    cpu_used: i32,
+    usage: u32,
+    cfg: &RefKfCfg,
+) -> Vec<u8> {
+    let mut out = vec![0u8; (w * h * 8).max(1 << 20)];
+    ref_init();
+    let ids: Vec<i32> = cfg.ctrls.iter().map(|c| c.0).collect();
+    let vals: Vec<i32> = cfg.ctrls.iter().map(|c| c.1).collect();
+    let table = cfg.film_grain_table.as_ref().map(|p| {
+        std::ffi::CString::new(p.to_str().expect("utf-8 table path")).expect("no NUL in path")
+    });
+    let n = unsafe {
+        shim_encode_av1_kf_cfg(
+            y.as_ptr(),
+            u.as_ptr(),
+            v.as_ptr(),
+            w as i32,
+            h as i32,
+            bd,
+            mono as i32,
+            ss_x,
+            ss_y,
+            cq_level,
+            cpu_used,
+            usage as i32,
+            cfg.enable_cdef,
+            cfg.enable_restoration as i32,
+            cfg.sb_size_128 as i32,
+            cfg.tile_columns_log2,
+            cfg.tile_rows_log2,
+            cfg.enable_palette as i32,
+            cfg.enable_intrabc as i32,
+            cfg.tuning,
+            cfg.sharpness,
+            cfg.enable_adaptive_sharpness,
+            cfg.dist_metric,
+            cfg.enable_chroma_deltaq,
+            cfg.deltaq_mode,
+            cfg.deltaq_strength,
+            cfg.enable_deltalf_mode,
+            cfg.enable_qm,
+            cfg.qm_min,
+            cfg.qm_max,
+            cfg.superres_denom,
+            table.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+            ids.as_ptr(),
+            vals.as_ptr(),
+            ids.len() as i32,
+            out.as_mut_ptr(),
+            out.len(),
+        )
+    };
+    assert!(n > 0, "shim_encode_av1_kf_cfg failed ({n})");
+    out.truncate(n as usize);
+    out
+}
+
+// ---------------------------------------------------------------------------
 // deltaq-mode=3 (DELTA_Q_PERCEPTUAL_AI, family C5) reference oracles.
 // Append-only; `av1_get_deltaq_offset` is a plain libaom.a export (rd.c:466),
 // a table walk over `av1_dc_quant_QTX` (no RTCD dispatch).

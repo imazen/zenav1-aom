@@ -6,28 +6,28 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-encode.txt 204 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4804 lines (311 hidden + 7510 excluded-feature)
+# files: zenav1-aom-encode.txt 266 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4823 lines (323 hidden + 7530 excluded-feature)
 # arch-unique surface: aarch64 39
 
 ## summary
 #
 #   pub modules                                 2
-#   pub types (struct/enum/trait/alias)        21
+#   pub types (struct/enum/trait/alias)        26
 #   pub consts/statics                          5
 #   free functions                             23
-#   inherent methods                           20
-#   struct fields                              97
-#   enum variants                              11
+#   inherent methods                           25
+#   struct fields                             133
+#   enum variants                              22
 #   re-exports                                  1
-#   trait roster entries (type × trait)        89
-#   auto-trait-complete types                  20
+#   trait roster entries (type × trait)       119
+#   auto-trait-complete types                  25
 #   auto-trait exceptions                       1
 #
 # per-module pub lines:
 #   (root)                            2
-#   aom_encode                      178
+#   aom_encode                      235
 
-## items (180 lines)
+## items (237 lines)
 
 pub mod aom_encode
 pub use aom_encode::reconstruct_txb
@@ -35,6 +35,12 @@ pub mod aom_encode::key_frame
 pub enum aom_encode::key_frame::AllocMode
 pub aom_encode::key_frame::AllocMode::Fallible
 pub aom_encode::key_frame::AllocMode::Infallible
+pub enum aom_encode::key_frame::DeltaQMode
+pub aom_encode::key_frame::DeltaQMode::Off
+pub aom_encode::key_frame::DeltaQMode::Perceptual
+pub aom_encode::key_frame::DeltaQMode::PerceptualAi
+pub aom_encode::key_frame::DeltaQMode::VarianceBoost
+pub fn aom_encode::key_frame::DeltaQMode::aomenc_value(self) -> i32
 pub enum aom_encode::key_frame::KeyFrameError
 pub aom_encode::key_frame::KeyFrameError::AllocFailed
 pub aom_encode::key_frame::KeyFrameError::AllocFailed::bytes: usize
@@ -54,6 +60,40 @@ pub aom_encode::key_frame::KeyFrameError::SampleRange::plane: usize
 pub aom_encode::key_frame::KeyFrameError::Unsupported(&'static str)
 pub fn aom_encode::key_frame::KeyFrameError::category(&self) -> &'static str
 pub fn aom_encode::key_frame::KeyFrameError::is_transient(&self) -> bool
+pub enum aom_encode::key_frame::TrellisMode
+pub aom_encode::key_frame::TrellisMode::FinalPass
+pub aom_encode::key_frame::TrellisMode::Full
+pub aom_encode::key_frame::TrellisMode::NoEstimateYrd
+pub aom_encode::key_frame::TrellisMode::Off
+pub fn aom_encode::key_frame::TrellisMode::aomenc_value(self) -> i32
+pub enum aom_encode::key_frame::Tune
+pub aom_encode::key_frame::Tune::Iq
+pub aom_encode::key_frame::Tune::Psnr
+pub aom_encode::key_frame::Tune::Ssimulacra2
+pub fn aom_encode::key_frame::Tune::aomenc_value(self) -> i32
+pub struct aom_encode::key_frame::CodingTools
+pub aom_encode::key_frame::CodingTools::cdf_update_mode: u32
+pub aom_encode::key_frame::CodingTools::enable_1to4_partitions: bool
+pub aom_encode::key_frame::CodingTools::enable_ab_partitions: bool
+pub aom_encode::key_frame::CodingTools::enable_angle_delta: bool
+pub aom_encode::key_frame::CodingTools::enable_cfl_intra: bool
+pub aom_encode::key_frame::CodingTools::enable_diagonal_intra: bool
+pub aom_encode::key_frame::CodingTools::enable_directional_intra: bool
+pub aom_encode::key_frame::CodingTools::enable_filter_intra: bool
+pub aom_encode::key_frame::CodingTools::enable_flip_idtx: bool
+pub aom_encode::key_frame::CodingTools::enable_intra_edge_filter: bool
+pub aom_encode::key_frame::CodingTools::enable_paeth_intra: bool
+pub aom_encode::key_frame::CodingTools::enable_rect_partitions: bool
+pub aom_encode::key_frame::CodingTools::enable_rect_tx: bool
+pub aom_encode::key_frame::CodingTools::enable_smooth_intra: bool
+pub aom_encode::key_frame::CodingTools::enable_tx64: bool
+pub aom_encode::key_frame::CodingTools::enable_tx_size_search: bool
+pub aom_encode::key_frame::CodingTools::max_partition_size_px: u32
+pub aom_encode::key_frame::CodingTools::min_partition_size_px: u32
+pub aom_encode::key_frame::CodingTools::reduced_tx_type_set: bool
+pub aom_encode::key_frame::CodingTools::trellis: aom_encode::key_frame::TrellisMode
+pub aom_encode::key_frame::CodingTools::use_intra_dct_only: bool
+pub aom_encode::key_frame::CodingTools::use_intra_default_tx_only: bool
 pub struct aom_encode::key_frame::ColorDescription
 pub aom_encode::key_frame::ColorDescription::color_primaries: u32
 pub aom_encode::key_frame::ColorDescription::full_range: bool
@@ -85,18 +125,24 @@ pub aom_encode::key_frame::KeyFrameConfig::enable_cdef: bool
 pub aom_encode::key_frame::KeyFrameConfig::enable_intrabc: bool
 pub aom_encode::key_frame::KeyFrameConfig::enable_palette: bool
 pub aom_encode::key_frame::KeyFrameConfig::enable_restoration: bool
+pub aom_encode::key_frame::KeyFrameConfig::film_grain: core::option::Option<aom_dsp::entropy::header::FilmGrainParams>
 pub aom_encode::key_frame::KeyFrameConfig::height: usize
 pub aom_encode::key_frame::KeyFrameConfig::monochrome: bool
+pub aom_encode::key_frame::KeyFrameConfig::quality: aom_encode::key_frame::QualityTools
 pub aom_encode::key_frame::KeyFrameConfig::sb_size_128: bool
 pub aom_encode::key_frame::KeyFrameConfig::ss_x: usize
 pub aom_encode::key_frame::KeyFrameConfig::ss_y: usize
+pub aom_encode::key_frame::KeyFrameConfig::superres_denom: u8
 pub aom_encode::key_frame::KeyFrameConfig::tile_columns_log2: i32
 pub aom_encode::key_frame::KeyFrameConfig::tile_rows_log2: i32
+pub aom_encode::key_frame::KeyFrameConfig::tools: aom_encode::key_frame::CodingTools
 pub aom_encode::key_frame::KeyFrameConfig::usage: u32
 pub aom_encode::key_frame::KeyFrameConfig::width: usize
 pub fn aom_encode::key_frame::KeyFrameConfig::allintra_speed0(usize, usize, u8, bool, usize, usize, i32) -> Self
+pub fn aom_encode::key_frame::KeyFrameConfig::apply_tune(&mut self, aom_encode::key_frame::Tune)
 pub fn aom_encode::key_frame::KeyFrameConfig::check_limits(&self, &aom_encode::key_frame::EncodeLimits) -> core::result::Result<(), aom_encode::key_frame::KeyFrameError>
 pub fn aom_encode::key_frame::KeyFrameConfig::chroma_dims(&self) -> (usize, usize)
+pub fn aom_encode::key_frame::KeyFrameConfig::coded_width(&self) -> usize
 pub fn aom_encode::key_frame::KeyFrameConfig::derive_tiles(&self) -> core::result::Result<aom_dsp::entropy::header::TileInfoHeader, aom_encode::key_frame::KeyFrameError>
 pub fn aom_encode::key_frame::KeyFrameConfig::estimate(&self) -> aom_encode::key_frame::EncodeEstimate
 pub fn aom_encode::key_frame::KeyFrameConfig::num_planes(&self) -> usize
@@ -107,6 +153,17 @@ pub struct aom_encode::key_frame::KeyFramePlanes<'a>
 pub aom_encode::key_frame::KeyFramePlanes::u: &'a [u16]
 pub aom_encode::key_frame::KeyFramePlanes::v: &'a [u16]
 pub aom_encode::key_frame::KeyFramePlanes::y: &'a [u16]
+pub struct aom_encode::key_frame::QualityTools
+pub aom_encode::key_frame::QualityTools::adaptive_sharpness: bool
+pub aom_encode::key_frame::QualityTools::cdef_adaptive: bool
+pub aom_encode::key_frame::QualityTools::chroma_deltaq: bool
+pub aom_encode::key_frame::QualityTools::delta_lf: bool
+pub aom_encode::key_frame::QualityTools::deltaq_mode: aom_encode::key_frame::DeltaQMode
+pub aom_encode::key_frame::QualityTools::deltaq_strength: u32
+pub aom_encode::key_frame::QualityTools::qm: core::option::Option<(i32, i32)>
+pub aom_encode::key_frame::QualityTools::qm_dist_metric: bool
+pub aom_encode::key_frame::QualityTools::sharpness: i32
+pub aom_encode::key_frame::QualityTools::tune: aom_encode::key_frame::Tune
 pub const aom_encode::key_frame::ESTIMATE_MAX_SLACK: f64
 pub const aom_encode::key_frame::MAX_FRAME_DIM: usize
 pub const aom_encode::key_frame::OBU_SEQUENCE_HEADER: u32
@@ -210,7 +267,7 @@ pub fn aom_encode::xform_quant_optimize(&[i16], usize, usize, aom_encode::QuantK
 pub fn aom_encode::xform_quant_optimize_split(&[i16], usize, usize, aom_encode::QuantKind, &aom_encode::QuantParams<'_>, &aom_encode::QuantParams<'_>, &aom_encode::BlockContext<'_>, &aom_encode::OptimizeInputs<'_>) -> aom_encode::XformQuantOptResult
 pub fn aom_encode::xform_quant_optimize_split_into(&[i16], usize, usize, aom_encode::QuantKind, &aom_encode::QuantParams<'_>, &aom_encode::QuantParams<'_>, &aom_encode::BlockContext<'_>, &aom_encode::OptimizeInputs<'_>, &mut aom_encode::XformQuantScratch) -> aom_encode::XformQuantOptSummary
 
-## trait impls (22 types)
+## trait impls (27 types)
 
 aom_encode::BlockContext<'a>: Clone, Copy, Debug
 aom_encode::BlockContexts: Clone, Debug, Eq, PartialEq
@@ -226,7 +283,9 @@ aom_encode::XformQuantResult: Clone, Debug, Eq, PartialEq
 aom_encode::XformQuantScratch: Clone, Debug, Default
 aom_encode::XformQuantSummary: Clone, Copy, Debug, Eq, PartialEq
 aom_encode::key_frame::AllocMode: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_encode::key_frame::CodingTools: Clone, Copy, Debug, Default, Eq, PartialEq
 aom_encode::key_frame::ColorDescription: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_encode::key_frame::DeltaQMode: Clone, Copy, Debug, Default, Eq, PartialEq
 aom_encode::key_frame::EncodeConfig<'_>: Debug
 aom_encode::key_frame::EncodeConfig<'a>: Clone, Copy, Default
 aom_encode::key_frame::EncodeEstimate: Clone, Copy, Debug, Eq, PartialEq
@@ -234,10 +293,13 @@ aom_encode::key_frame::EncodeLimits: Clone, Copy, Debug, Default, Eq, PartialEq
 aom_encode::key_frame::KeyFrameConfig: Clone, Copy, Debug
 aom_encode::key_frame::KeyFrameError: Clone, Debug, Display, Eq, Error, PartialEq
 aom_encode::key_frame::KeyFramePlanes<'a>: Clone, Copy, Debug
+aom_encode::key_frame::QualityTools: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_encode::key_frame::TrellisMode: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_encode::key_frame::Tune: Clone, Copy, Debug, Default, Eq, PartialEq
 
 ## auto traits
 
-20 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+25 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
 aom_encode::key_frame::EncodeConfig<'a>: !RefUnwindSafe !UnwindSafe
 
 ## arch surface: aarch64 (39 lines)

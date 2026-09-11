@@ -11,7 +11,7 @@
 #
 #   free functions                              1
 #   inherent methods                           23
-#   trait roster entries (type × trait)        43
+#   trait roster entries (type × trait)        44
 #
 # per-module pub lines:
 #   aom_dsp                          24
@@ -43,7 +43,7 @@ pub fn aom_dsp::quant::QuantizerSettings::assert_fields_are_eq(&self)
 pub fn aom_dsp::txb::ExtTxDeriv::assert_fields_are_eq(&self)
 pub fn aom_dsp::txb::TxClass::assert_fields_are_eq(&self)
 
-## trait impls (43 types)
+## trait impls (44 types)
 
 aom_dsp::census::Leaf: TrivialClone
 aom_dsp::convolve::compound::CompoundConvolveParams: TrivialClone
@@ -58,6 +58,7 @@ aom_dsp::entropy::header::CdefHeader: TrivialClone
 aom_dsp::entropy::header::ColorConfigParams: TrivialClone
 aom_dsp::entropy::header::DecoderModelInfo: TrivialClone
 aom_dsp::entropy::header::DeltaQParams: TrivialClone
+aom_dsp::entropy::header::FilmGrainParams: TrivialClone
 aom_dsp::entropy::header::FrameSizeHeader: TrivialClone
 aom_dsp::entropy::header::FrameSizeWithRefs: TrivialClone
 aom_dsp::entropy::header::LoopfilterHeader: TrivialClone

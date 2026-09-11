@@ -77,12 +77,12 @@ against C, but the shipping API exposes no knob for them yet.
 | CDEF search | ✅ opt-in | ✅ speeds 0–3 · ⚠️ 4–9 | `encoder_gate_cdef_*` (14/14); speeds 4–9 diverge in the header's `cdef_strengths` only, pinned |
 | **Palette** (screen content) | ✅ default on | ✅ | `screen_content_tools_byte_match_real_aomenc` (54/54, matched oracle) |
 | **IntraBC** (screen content) | ✅ default on | ✅ | same · ⚠️ declined at coded-lossless (documented divergence, pixels unaffected) |
-| Quantization matrices (`--enable-qm`) | ❌ harness-only | ✅ | `qm_encode_witness` (40 cells) |
-| `tune=IQ` / `tune=SSIMULACRA2` bundle | ❌ harness-only | ✅ | `encoder_gate_tune_iq_e2e` (54/54) |
-| Superres, fixed denominator | ❌ harness-only | ✅ | `encoder_gate_superres_*` (13/13 bd8 + 16/16 hbd) |
-| `--deltaq-mode` 2 / 3 / 6, `--delta-lf-mode` | ❌ harness-only | ✅ | `deltaq_mode2_e2e`, `deltaq_mode3_e2e`, `delta_lf_mode_e2e` |
-| Film-grain table inject | ❌ harness-only | ✅ | `film_grain_gate` |
-| Partition / intra-tool / tx-control disable knobs (C8–C11) | ❌ harness-only | ✅ | `toggles_rd_close::toggles_c8..c11` |
+| Quantization matrices (`--enable-qm`) | ✅ `quality.qm` | ✅ | `self_contained_tools` (every range byte-exact) + `qm_encode_witness` |
+| `tune=IQ` / `tune=SSIMULACRA2` bundle | ✅ `apply_tune` | ⚠️ pieces yes, bundle 0/84 | `self_contained_tools` — QM, sharpness, adaptive sharpness, PSNR chroma-deltaq, VarianceBoost/PerceptualAI delta-q byte-exact ALONE; the tune chroma-delta-q ramps and adaptive-CDEF halving diverge in the payload and are pinned (KB-53). Streams are conformant. |
+| Superres, fixed denominator | ✅ `superres_denom` (CDEF/LR off) | ✅ | `self_contained_tools` (18/18) + `encoder_gate_superres_*` |
+| `--deltaq-mode` 2 / 3 / 6, `--delta-lf-mode` | ✅ `quality.deltaq_mode` / `delta_lf` | ⚠️ 3 and 6 at speeds 0–3 yes; mode 2 and the nonrd speeds diverge (pinned, KB-53) | `self_contained_tools` + `deltaq_mode*_e2e` |
+| Film-grain table inject | ✅ `film_grain` | ✅ | `self_contained_tools` (10/10) + `film_grain_gate` |
+| Partition / intra-tool / tx-control disable knobs (C8–C11) | ✅ `tools` | ✅ 46/48 (`--intra-dct-only` at speed 0 pinned) · `cdf_update_mode=0` REFUSED (KB-53) | `self_contained_tools` + `toggles_rd_close` |
 | Screen-tools **trial encode** (`av1_determine_sc_tools_with_encoding`) | ❌ | ❌ unported | scoped in [`PARITY.md`](PARITY.md) C3 |
 | Inter / video encode | ❌ | — | see the video table |
 

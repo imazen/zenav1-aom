@@ -128,6 +128,7 @@ mod resize_plane_diff;
 mod resize_plane_highbd_diff;
 mod search_tx_type_diff;
 mod self_contained_key_frame;
+mod self_contained_tools;
 mod seq_header_matches_real_encoder;
 mod seq_level_idx_diff;
 mod single_motion_search_composition;

@@ -88,6 +88,47 @@ fn random_config(r: &mut Rng) -> KeyFrameConfig {
     c.tile_rows_log2 = r.below(5) as i32;
     c.enable_cdef = r.chance(2);
     c.enable_restoration = r.chance(2);
+    // The tool knobs (2026-09-11): each usually valid, sometimes not, so the
+    // sweep reaches both the encoder and every new refusal path.
+    use aom_encode::key_frame::{DeltaQMode, TrellisMode, Tune};
+    if r.chance(3) {
+        c.apply_tune([Tune::Iq, Tune::Ssimulacra2][r.below(2) as usize]);
+    }
+    if r.chance(3) {
+        c.quality.qm = Some(if r.chance(16) { (12, 4) } else { let lo = r.below(16) as i32; (lo, lo + r.below((16 - lo) as u64) as i32) });
+    }
+    c.quality.qm_dist_metric = r.chance(4);
+    c.quality.sharpness = if r.chance(16) { 9 } else { r.below(8) as i32 };
+    c.quality.adaptive_sharpness = r.chance(3);
+    c.quality.chroma_deltaq = r.chance(3);
+    c.quality.deltaq_mode = [DeltaQMode::Off, DeltaQMode::Perceptual, DeltaQMode::PerceptualAi, DeltaQMode::VarianceBoost][r.below(4) as usize];
+    c.quality.deltaq_strength = if r.chance(16) { 2000 } else { r.below(301) as u32 };
+    c.quality.delta_lf = r.chance(3);
+    c.quality.cdef_adaptive = r.chance(2);
+    let t = &mut c.tools;
+    t.enable_rect_partitions = !r.chance(6);
+    t.enable_ab_partitions = !r.chance(6);
+    t.enable_1to4_partitions = !r.chance(6);
+    t.min_partition_size_px = if r.chance(16) { 12 } else { [4u32, 8, 16, 32, 64, 128][r.below(6) as usize] };
+    t.max_partition_size_px = if r.chance(16) { 4 } else { [16u32, 32, 64, 128][r.below(4) as usize] };
+    t.enable_intra_edge_filter = !r.chance(6);
+    t.enable_filter_intra = !r.chance(6);
+    t.enable_smooth_intra = !r.chance(6);
+    t.enable_paeth_intra = !r.chance(6);
+    t.enable_cfl_intra = !r.chance(6);
+    t.enable_directional_intra = !r.chance(6);
+    t.enable_diagonal_intra = !r.chance(6);
+    t.enable_angle_delta = !r.chance(6);
+    t.enable_tx64 = !r.chance(6);
+    t.enable_rect_tx = !r.chance(6);
+    t.enable_flip_idtx = !r.chance(6);
+    t.use_intra_dct_only = r.chance(6);
+    t.use_intra_default_tx_only = r.chance(6);
+    t.reduced_tx_type_set = r.chance(6);
+    t.enable_tx_size_search = !r.chance(6);
+    t.cdf_update_mode = if r.chance(16) { 3 } else { r.below(3) as u32 };
+    t.trellis = [TrellisMode::Full, TrellisMode::Off, TrellisMode::FinalPass, TrellisMode::NoEstimateYrd][r.below(4) as usize];
+    c.superres_denom = if r.chance(4) { [9u8, 12, 16, 17, 5][r.below(5) as usize] } else { 0 };
     c
 }
 

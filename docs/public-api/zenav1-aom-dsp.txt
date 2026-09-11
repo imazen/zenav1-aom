@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1809 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 67 lines (67 hidden + 0 excluded-feature)
+# files: zenav1-aom-dsp.txt 1809 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 2
 
 ## summary
@@ -19,7 +19,7 @@
 #   inherent methods                           96
 #   struct fields                             706
 #   enum variants                              13
-#   trait roster entries (type × trait)       262
+#   trait roster entries (type × trait)       263
 #   auto-trait-complete types                  85
 #   auto-trait exceptions                       3
 #
@@ -1781,7 +1781,7 @@ aom_dsp::entropy::header::CdefHeader: Clone, Copy, Debug, Default
 aom_dsp::entropy::header::ColorConfigParams: Clone, Copy, Debug
 aom_dsp::entropy::header::DecoderModelInfo: Clone, Copy, Debug
 aom_dsp::entropy::header::DeltaQParams: Clone, Copy, Debug, Default
-aom_dsp::entropy::header::FilmGrainParams: Clone, Debug, Default
+aom_dsp::entropy::header::FilmGrainParams: Clone, Copy, Debug, Default
 aom_dsp::entropy::header::FrameHeaderObu: Clone, Debug, Default
 aom_dsp::entropy::header::FrameHeaderPrefix: Clone, Debug, Default
 aom_dsp::entropy::header::FrameSizeHeader: Clone, Copy, Debug, Default

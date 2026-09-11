@@ -10,24 +10,24 @@
 ## summary
 #
 #   pub modules                                80
-#   pub types (struct/enum/trait/alias)       276
+#   pub types (struct/enum/trait/alias)       277
 #   pub consts/statics                        635
-#   free functions                            610
-#   inherent methods                          909
-#   struct fields                            1915
+#   free functions                            611
+#   inherent methods                          918
+#   struct fields                            1917
 #   enum variants                             174
 #   re-exports                                  1
-#   trait roster entries (type × trait)      1073
-#   auto-trait-complete types                 257
+#   trait roster entries (type × trait)      1084
+#   auto-trait-complete types                 258
 #   auto-trait exceptions                       8
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4572
+#   aom_encode                     4585
 #   u16                               3
 #   u8                                3
 
-## items (4564 lines)
+## items (4577 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -1168,6 +1168,8 @@ pub aom_encode::pass2_model::RegionType::Blending = 3
 pub aom_encode::pass2_model::RegionType::HighVar = 1
 pub aom_encode::pass2_model::RegionType::Scenecut = 2
 pub aom_encode::pass2_model::RegionType::Stable = 0
+pub aom_encode::pickcdef::CdefAdaptive::cq_level: i32
+pub aom_encode::pickcdef::CdefAdaptive::zero_low_strengths: bool
 pub aom_encode::pickcdef::CdefSearchFrame::base_qindex: i32
 pub aom_encode::pickcdef::CdefSearchFrame::bd: u8
 pub aom_encode::pickcdef::CdefSearchFrame::mi: &'a [aom_dsp::loopfilter::frame::LfMi]
@@ -3179,10 +3181,15 @@ pub fn aom_encode::intrabc_search::sad_wxh(&[u16], usize, usize, &[u16], usize, 
 pub fn aom_encode::intrabc_search::set_mv_search_range(&mut aom_encode::intrabc_search::FullMvLimits, i32, i32)
 pub fn aom_encode::intrabc_search::variance_wxh(&[u16], usize, usize, &[u16], usize, usize, usize, usize) -> u32
 pub fn aom_encode::key_frame::AllocMode::assert_fields_are_eq(&self)
+pub fn aom_encode::key_frame::CodingTools::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::ColorDescription::assert_fields_are_eq(&self)
+pub fn aom_encode::key_frame::DeltaQMode::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::EncodeEstimate::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::EncodeLimits::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::KeyFrameError::assert_fields_are_eq(&self)
+pub fn aom_encode::key_frame::QualityTools::assert_fields_are_eq(&self)
+pub fn aom_encode::key_frame::TrellisMode::assert_fields_are_eq(&self)
+pub fn aom_encode::key_frame::Tune::assert_fields_are_eq(&self)
 pub fn aom_encode::lf_search::LfSearchFrame<'a>::clone(&self) -> aom_encode::lf_search::LfSearchFrame<'a>
 pub fn aom_encode::lf_search::LoopFilterLevels::assert_fields_are_eq(&self)
 pub fn aom_encode::lf_search::LoopFilterLevels::clone(&self) -> aom_encode::lf_search::LoopFilterLevels
@@ -3491,10 +3498,15 @@ pub fn aom_encode::pass2_model::set_baseline_gf_interval(i32) -> i32
 pub fn aom_encode::pass2_model::slide_transition(&aom_encode::pass2_model::FirstpassStats, &aom_encode::pass2_model::FirstpassStats, &aom_encode::pass2_model::FirstpassStats) -> bool
 pub fn aom_encode::pass2_model::smooth_filter_noise(&mut [aom_encode::pass2_model::FirstpassStats])
 pub fn aom_encode::pass2_model::smooth_filter_stats(&[aom_encode::pass2_model::FirstpassStats], usize, usize, &mut [f64], &mut [f64])
+pub fn aom_encode::pickcdef::CdefAdaptive::assert_fields_are_eq(&self)
+pub fn aom_encode::pickcdef::CdefAdaptive::clone(&self) -> aom_encode::pickcdef::CdefAdaptive
+pub fn aom_encode::pickcdef::CdefAdaptive::eq(&self, &aom_encode::pickcdef::CdefAdaptive) -> bool
+pub fn aom_encode::pickcdef::CdefAdaptive::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::pickcdef::CdefSearchFrame<'a>::clone(&self) -> aom_encode::pickcdef::CdefSearchFrame<'a>
 pub fn aom_encode::pickcdef::CdefSearchResult::clone(&self) -> aom_encode::pickcdef::CdefSearchResult
 pub fn aom_encode::pickcdef::CdefSearchResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::pickcdef::av1_cdef_search(&aom_encode::pickcdef::CdefSearchFrame<'_>, i32) -> aom_encode::pickcdef::CdefSearchResult
+pub fn aom_encode::pickcdef::av1_cdef_search_adaptive(&aom_encode::pickcdef::CdefSearchFrame<'_>, i32, core::option::Option<aom_encode::pickcdef::CdefAdaptive>) -> aom_encode::pickcdef::CdefSearchResult
 pub fn aom_encode::pickcdef::get_cdef_filter_strengths(i32, i32) -> (i32, i32)
 pub fn aom_encode::prune_tx_2d::prune_tx_2d(&[i16], usize, usize, usize, usize, u16) -> core::option::Option<aom_encode::prune_tx_2d::PruneTx2dResult>
 pub fn aom_encode::rate_model::bpmb_enumerator(bool, bool) -> i32
@@ -4490,6 +4502,7 @@ pub struct aom_encode::partition_pick::PickFrameCfg<'a>
 pub struct aom_encode::pass2_model::FrameInfo
 pub struct aom_encode::pass2_model::GfGroupStats
 pub struct aom_encode::pass2_model::Region
+pub struct aom_encode::pickcdef::CdefAdaptive
 pub struct aom_encode::pickcdef::CdefSearchFrame<'a>
 pub struct aom_encode::pickcdef::CdefSearchResult
 pub struct aom_encode::prune_tx_2d::PruneTx2dResult
@@ -4594,7 +4607,7 @@ pub type aom_encode::tx_search::TxbWinners = smallvec::SmallVec<[aom_encode::tx_
 pub type aom_encode::var_part::Leaf8x8 = (u32, i32)
 pub use aom_encode::intrabc_search::DEFAULT_TXFM_PARTITION_CDF
 
-## trait impls (231 types)
+## trait impls (237 types)
 
 aom_encode::BlockContext<'a>: TrivialClone
 aom_encode::OptimizeInputs<'a>: TrivialClone
@@ -4682,12 +4695,17 @@ aom_encode::intrabc_search::FullMvLimits: Clone, Copy, Debug, TrivialClone
 aom_encode::intrabc_search::IntrabcBest: Clone, Debug
 aom_encode::intrabc_search::IntrabcVarTxKnobs: Clone, Copy, Debug, TrivialClone
 aom_encode::key_frame::AllocMode: TrivialClone
+aom_encode::key_frame::CodingTools: TrivialClone
 aom_encode::key_frame::ColorDescription: TrivialClone
+aom_encode::key_frame::DeltaQMode: TrivialClone
 aom_encode::key_frame::EncodeConfig<'a>: TrivialClone
 aom_encode::key_frame::EncodeEstimate: TrivialClone
 aom_encode::key_frame::EncodeLimits: TrivialClone
 aom_encode::key_frame::KeyFrameConfig: TrivialClone
 aom_encode::key_frame::KeyFramePlanes<'a>: TrivialClone
+aom_encode::key_frame::QualityTools: TrivialClone
+aom_encode::key_frame::TrellisMode: TrivialClone
+aom_encode::key_frame::Tune: TrivialClone
 aom_encode::lf_search::LfSearchFrame<'a>: Clone, Copy, TrivialClone
 aom_encode::lf_search::LoopFilterLevels: Clone, Copy, Debug, Eq, PartialEq, TrivialClone
 aom_encode::mode_costs::CflCosts: Clone, Debug, Eq, PartialEq
@@ -4722,6 +4740,7 @@ aom_encode::pass2_model::FrameInfo: Clone, Copy, Debug, TrivialClone
 aom_encode::pass2_model::GfGroupStats: Clone, Copy, Debug, PartialEq, TrivialClone
 aom_encode::pass2_model::Region: Clone, Copy, Debug, Default, PartialEq, TrivialClone
 aom_encode::pass2_model::RegionType: Clone, Copy, Debug, Eq, PartialEq, TrivialClone
+aom_encode::pickcdef::CdefAdaptive: Clone, Copy, Debug, Eq, PartialEq, TrivialClone
 aom_encode::pickcdef::CdefSearchFrame<'a>: Clone, Copy, TrivialClone
 aom_encode::pickcdef::CdefSearchResult: Clone, Debug
 aom_encode::ratectrl::FrameQParams: Clone, Copy, Debug, PartialEq, TrivialClone
@@ -4830,7 +4849,7 @@ u8: aom_encode::temporal_filter::TfPixel, aom_encode::temporal_filter::TfPixelMu
 
 ## auto traits
 
-257 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+258 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
 aom_encode::inter_pred_enc::PixelsMut<'a>: !UnwindSafe
 aom_encode::intra_uv_rd::CflPredict<'a>: !UnwindSafe
 aom_encode::intrabc_search::IntrabcLeafArgs<'a>: !RefUnwindSafe !Send !Sync !UnwindSafe

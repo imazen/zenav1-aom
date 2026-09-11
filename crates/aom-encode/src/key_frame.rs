@@ -136,7 +136,7 @@ use aom_dsp::entropy::header::{
     CdefHeader, ColorConfigParams, DecoderModelInfo, DeltaQParams, FrameHeaderObu,
     FrameHeaderPrefix, FrameSizeHeader, LoopfilterHeader, QuantParamsHeader, RestorationHeader,
     SequenceHeaderObu, SequenceHeaderParams, TileInfoHeader, TimingInfoHeader,
-    write_sequence_header_obu,
+    write_sequence_header_obu, FilmGrainParams,
 };
 use aom_dsp::entropy::leb128::uleb_encode;
 use aom_dsp::entropy::lr::{LrFrameConfig, RESTORE_NONE as LR_RESTORE_NONE};
@@ -158,9 +158,9 @@ use crate::lf_search::{
 use crate::obu_assemble::{
     OBU_FRAME, assemble_multitile_frame_obu_payload_derived, assemble_obu_frame_single_tile,
 };
-use crate::pack::{CdefPackState, LrPackParams, PackCfg, pack_tile, pack_tile_from_trees_lr};
+use crate::pack::{CdefPackState, LrPackParams, PackCfg, pack_tile_from_trees_lr};
 use crate::partition_pick::PickFrameCfg;
-use crate::pickcdef::{CdefSearchFrame, av1_cdef_search};
+use crate::pickcdef::CdefSearchFrame;
 use crate::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
 use crate::real_costs::derive_real_costs;
 use crate::screen_detect::ScreenContentDecision;
@@ -251,6 +251,263 @@ impl ColorDescription {
     }
 }
 
+/// `AOME_SET_TUNING` — the tuning family. `Iq` / `Ssimulacra2` are the
+/// still-image tunes; [`KeyFrameConfig::apply_tune`] installs their bundle
+/// exactly as libaom's `handle_tuning` (av1_cx_iface.c:1938) does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Tune {
+    /// `AOM_TUNE_PSNR` (0), the default.
+    #[default]
+    Psnr,
+    /// `AOM_TUNE_IQ` (10).
+    Iq,
+    /// `AOM_TUNE_SSIMULACRA2` (11).
+    Ssimulacra2,
+}
+
+impl Tune {
+    /// The `aom_tune_metric` value (`AOME_SET_TUNING`).
+    pub fn aomenc_value(self) -> i32 {
+        match self {
+            Tune::Psnr => 0,
+            Tune::Iq => 10,
+            Tune::Ssimulacra2 => 11,
+        }
+    }
+    fn quant_tuning(self) -> aom_dsp::quant::QuantTuning {
+        match self {
+            Tune::Psnr => aom_dsp::quant::QuantTuning::Psnr,
+            Tune::Iq => aom_dsp::quant::QuantTuning::Iq,
+            Tune::Ssimulacra2 => aom_dsp::quant::QuantTuning::Ssimulacra2,
+        }
+    }
+    fn metric(self) -> TuneMetric {
+        match self {
+            Tune::Psnr => TuneMetric::Psnr,
+            Tune::Iq => TuneMetric::Iq,
+            Tune::Ssimulacra2 => TuneMetric::Ssimulacra2,
+        }
+    }
+}
+
+/// `AV1E_SET_DELTAQ_MODE` on the ALLINTRA KEY path (the modes `setup_delta_q`,
+/// encodeframe.c:316-356, reaches from a still encode).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DeltaQMode {
+    /// `NO_DELTA_Q` (0).
+    #[default]
+    Off,
+    /// `DELTA_Q_PERCEPTUAL` (2): per-superblock wavelet AC energy.
+    Perceptual,
+    /// `DELTA_Q_PERCEPTUAL_AI` (3): the wiener-variance map (`--deltaq-mode=3`).
+    PerceptualAi,
+    /// `DELTA_Q_VARIANCE_BOOST` (6): per-superblock source variance — the mode
+    /// `tune=IQ` / `tune=SSIMULACRA2` install.
+    VarianceBoost,
+}
+
+impl DeltaQMode {
+    /// The `AV1E_SET_DELTAQ_MODE` value.
+    pub fn aomenc_value(self) -> i32 {
+        match self {
+            DeltaQMode::Off => 0,
+            DeltaQMode::Perceptual => 2,
+            DeltaQMode::PerceptualAi => 3,
+            DeltaQMode::VarianceBoost => 6,
+        }
+    }
+}
+
+/// `--disable-trellis-quant` (`AV1E_SET_DISABLE_TRELLIS_QUANT`, `init_rd_sf`
+/// speed_features.c:2479-2498). aomenc's default is 3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TrellisMode {
+    /// 0: trellis in every pass.
+    Full,
+    /// 1: no trellis at all.
+    Off,
+    /// 2: trellis in the final (coding) pass only.
+    FinalPass,
+    /// 3 (default): full trellis, no estimate-yrd trellis (inter-only anyway).
+    #[default]
+    NoEstimateYrd,
+}
+
+impl TrellisMode {
+    /// The `AV1E_SET_DISABLE_TRELLIS_QUANT` value.
+    pub fn aomenc_value(self) -> i32 {
+        match self {
+            TrellisMode::Full => 0,
+            TrellisMode::Off => 1,
+            TrellisMode::FinalPass => 2,
+            TrellisMode::NoEstimateYrd => 3,
+        }
+    }
+    fn opt(self) -> TrellisOptType {
+        match self {
+            TrellisMode::Full => TrellisOptType::FullTrellisOpt,
+            TrellisMode::Off => TrellisOptType::NoTrellisOpt,
+            TrellisMode::FinalPass => TrellisOptType::FinalPassTrellisOpt,
+            TrellisMode::NoEstimateYrd => TrellisOptType::NoEstimateYrdTrellisOpt,
+        }
+    }
+}
+
+/// The rate-distortion tuning knobs: everything libaom's `handle_tuning`
+/// bundle touches, exposed individually so a caller can take the bundle
+/// ([`KeyFrameConfig::apply_tune`]) or any piece of it. Every field is
+/// byte-gated against real aomenc driven with the same explicit knobs
+/// (`self_contained_tools.rs`). `Default` is aomenc's PSNR default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QualityTools {
+    /// `AOME_SET_TUNING`. Affects the rdmult weight (`av1_compute_rd_mult_based_on_qindex`),
+    /// the trellis `rshift` arm, the chroma delta-q ramps and the QM level formula.
+    pub tune: Tune,
+    /// `--enable-qm=1` with `(qm_min, qm_max)` (`AV1E_SET_QM_MIN`/`_MAX`, 0..=15).
+    /// `None` = QM off (aomenc's default; the tune bundle sets `Some((2, 10))`).
+    pub qm: Option<(i32, i32)>,
+    /// `--dist-metric=qm-psnr`: trellis and tx-search distortion weighted by the
+    /// forward QM (`TuneKnobs::use_qm_dist_metric`). Installed by the tune bundle.
+    pub qm_dist_metric: bool,
+    /// `--sharpness` 0..=7 (`AOME_SET_SHARPNESS`): quantizer rounding bias,
+    /// trellis `(8 - sharpness)` scaling, and the loop-filter `sharpness_level`.
+    pub sharpness: i32,
+    /// `--enable-adaptive-sharpness`: the qindex-adaptive loop-filter sharpness
+    /// cap (picklpf.c:232-247). Installed by `tune=IQ` only.
+    pub adaptive_sharpness: bool,
+    /// `--enable-chroma-deltaq`: the frame chroma delta-q derivation
+    /// (`av1_set_quantizer`, av1_quantize.c:886-966).
+    pub chroma_deltaq: bool,
+    /// `AV1E_SET_DELTAQ_MODE`. Inert at `cq_level == 0`.
+    pub deltaq_mode: DeltaQMode,
+    /// `--deltaq-strength` (percent, `AV1E_SET_DELTAQ_STRENGTH`), read only
+    /// under [`DeltaQMode::VarianceBoost`]. aomenc's default is 100.
+    pub deltaq_strength: u32,
+    /// `--delta-lf-mode=1`: per-superblock loop-filter deltas riding on a
+    /// firing delta-q mode (`enable_deltalf_mode = deltaq_mode != 0 &&
+    /// deltalf_mode`, av1_cx_iface.c:1326). Inert when `deltaq_mode` is off.
+    pub delta_lf: bool,
+    /// `--enable-cdef=3` (`CDEF_ADAPTIVE`): with [`KeyFrameConfig::enable_cdef`],
+    /// CDEF is off at `cq_level <= 32`, strengths halved at `<= 220`, and low
+    /// strengths zeroed at `base_qindex <= 140` (pickcdef.c:841-1091). Installed
+    /// by the tune bundle. Ignored when `enable_cdef` is false.
+    pub cdef_adaptive: bool,
+}
+
+impl Default for QualityTools {
+    fn default() -> Self {
+        QualityTools {
+            tune: Tune::Psnr,
+            qm: None,
+            qm_dist_metric: false,
+            sharpness: 0,
+            adaptive_sharpness: false,
+            chroma_deltaq: false,
+            deltaq_mode: DeltaQMode::Off,
+            deltaq_strength: 100,
+            delta_lf: false,
+            cdef_adaptive: false,
+        }
+    }
+}
+
+/// The coding-tool toggles (PARITY.md families C8 partitions, C9 transforms,
+/// C10 intra modes, C11 bitstream). Every field is an `aome_enc_control_id`
+/// knob and `Default` is aomenc's default for it; all are byte-gated against
+/// real aomenc driven with the same control (`self_contained_tools.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CodingTools {
+    /// `AV1E_SET_ENABLE_RECT_PARTITIONS`.
+    pub enable_rect_partitions: bool,
+    /// `AV1E_SET_ENABLE_AB_PARTITIONS`.
+    pub enable_ab_partitions: bool,
+    /// `AV1E_SET_ENABLE_1TO4_PARTITIONS`.
+    pub enable_1to4_partitions: bool,
+    /// `AV1E_SET_MIN_PARTITION_SIZE` in pixels: 4, 8, 16, 32, 64 or 128.
+    pub min_partition_size_px: u32,
+    /// `AV1E_SET_MAX_PARTITION_SIZE` in pixels: 4, 8, 16, 32, 64 or 128.
+    pub max_partition_size_px: u32,
+    /// `AV1E_SET_ENABLE_INTRA_EDGE_FILTER` (a SEQUENCE-header bit).
+    pub enable_intra_edge_filter: bool,
+    /// `AV1E_SET_ENABLE_FILTER_INTRA` (a SEQUENCE-header bit).
+    pub enable_filter_intra: bool,
+    /// `AV1E_SET_ENABLE_SMOOTH_INTRA`.
+    pub enable_smooth_intra: bool,
+    /// `AV1E_SET_ENABLE_PAETH_INTRA`.
+    pub enable_paeth_intra: bool,
+    /// `AV1E_SET_ENABLE_CFL_INTRA`.
+    pub enable_cfl_intra: bool,
+    /// `AV1E_SET_ENABLE_DIRECTIONAL_INTRA`.
+    pub enable_directional_intra: bool,
+    /// `AV1E_SET_ENABLE_DIAGONAL_INTRA`.
+    pub enable_diagonal_intra: bool,
+    /// `AV1E_SET_ENABLE_ANGLE_DELTA`.
+    pub enable_angle_delta: bool,
+    /// `AV1E_SET_ENABLE_TX64`.
+    pub enable_tx64: bool,
+    /// `AV1E_SET_ENABLE_RECT_TX`.
+    pub enable_rect_tx: bool,
+    /// `AV1E_SET_ENABLE_FLIP_IDTX`.
+    pub enable_flip_idtx: bool,
+    /// `AV1E_SET_INTRA_DCT_ONLY`.
+    pub use_intra_dct_only: bool,
+    /// `AV1E_SET_INTRA_DEFAULT_TX_ONLY`.
+    pub use_intra_default_tx_only: bool,
+    /// `AV1E_SET_REDUCED_TX_TYPE_SET` (a FRAME-header bit).
+    pub reduced_tx_type_set: bool,
+    /// `AV1E_SET_ENABLE_TX_SIZE_SEARCH`. Off codes `TX_MODE_LARGEST`.
+    pub enable_tx_size_search: bool,
+    /// `AV1E_SET_CDF_UPDATE_MODE`: 0 codes `disable_cdf_update = 1`; 1 and 2
+    /// both update on a lone KEY frame (mode 2's selective schedule is a
+    /// multi-frame policy, encoder.c:4375).
+    pub cdf_update_mode: u32,
+    /// `AV1E_SET_DISABLE_TRELLIS_QUANT`.
+    pub trellis: TrellisMode,
+}
+
+impl Default for CodingTools {
+    fn default() -> Self {
+        CodingTools {
+            enable_rect_partitions: true,
+            enable_ab_partitions: true,
+            enable_1to4_partitions: true,
+            min_partition_size_px: 4,
+            max_partition_size_px: 128,
+            enable_intra_edge_filter: true,
+            enable_filter_intra: true,
+            enable_smooth_intra: true,
+            enable_paeth_intra: true,
+            enable_cfl_intra: true,
+            enable_directional_intra: true,
+            enable_diagonal_intra: true,
+            enable_angle_delta: true,
+            enable_tx64: true,
+            enable_rect_tx: true,
+            enable_flip_idtx: true,
+            use_intra_dct_only: false,
+            use_intra_default_tx_only: false,
+            reduced_tx_type_set: false,
+            enable_tx_size_search: true,
+            cdf_update_mode: 1,
+            trellis: TrellisMode::NoEstimateYrd,
+        }
+    }
+}
+
+/// `dim_to_size` (partition_strategy.h:201): a square partition dimension in
+/// pixels -> its `BLOCK_SIZE` index. Only called after validation admitted
+/// the value.
+fn dim_to_bsize(px: u32) -> usize {
+    match px {
+        4 => 0,
+        8 => 3,
+        16 => 6,
+        32 => 9,
+        64 => 12,
+        _ => 15,
+    }
+}
+
 /// Everything [`encode_key_frame`] needs that is not the pixels.
 ///
 /// The field set is deliberately the CLI-equivalent one
@@ -331,6 +588,24 @@ pub struct KeyFrameConfig {
     /// [`Self::enable_palette`] — palette carries most of the win on UI
     /// content and costs far less.
     pub enable_intrabc: bool,
+    /// The rate-distortion tuning knobs (tune, QM, sharpness, chroma delta-q,
+    /// delta-q modes, adaptive CDEF). `Default` is aomenc's PSNR default;
+    /// [`Self::apply_tune`] installs a tune's whole bundle.
+    pub quality: QualityTools,
+    /// The coding-tool toggles (partition / intra / transform / bitstream
+    /// knobs). `Default` is aomenc's default for every one.
+    pub tools: CodingTools,
+    /// `--film-grain-table`: film-grain synthesis parameters to signal in the
+    /// frame header (decode-side synthesis; the coded pixels are unchanged).
+    /// The context fields (`monochrome`, `subsampling_*`, `is_inter_frame`) are
+    /// overwritten from this configuration, as libaom derives them.
+    pub film_grain: Option<FilmGrainParams>,
+    /// `--superres-mode=fixed --superres-denominator=N`: 0 = off, 9..=16 =
+    /// code the frame at `width * 8 / N` luma columns and signal the upscale.
+    /// Gated with CDEF and loop restoration OFF only (the post-filters run on
+    /// the upscaled frame in libaom, which this path does not model yet) —
+    /// a request that combines them is REFUSED by name.
+    pub superres_denom: u8,
 }
 
 impl KeyFrameConfig {
@@ -370,6 +645,47 @@ impl KeyFrameConfig {
             // content and this is not a change to the photographic envelope.
             enable_palette: true,
             enable_intrabc: true,
+            quality: QualityTools::default(),
+            tools: CodingTools::default(),
+            film_grain: None,
+            superres_denom: 0,
+        }
+    }
+
+    /// Install a tune's whole bundle exactly as libaom's `handle_tuning`
+    /// (av1_cx_iface.c:1938-1974) does when `AOME_SET_TUNING` is applied: QM on
+    /// over levels 2..=10, sharpness 7, the QM-PSNR distortion metric, adaptive
+    /// CDEF, chroma delta-q and Variance-Boost delta-q; `Iq` additionally turns
+    /// adaptive sharpness on. `Psnr` only records the tune. Set the individual
+    /// [`Self::quality`] fields AFTER this call to override pieces, as
+    /// `aomenc --tune=iq --sharpness=3` would.
+    pub fn apply_tune(&mut self, tune: Tune) {
+        self.quality.tune = tune;
+        if tune == Tune::Psnr {
+            return;
+        }
+        // QM_FIRST_IQ_SSIMULACRA2 / QM_LAST_IQ_SSIMULACRA2 (quant_common.h:41-42).
+        self.quality.qm = Some((2, 10));
+        self.quality.sharpness = 7;
+        self.quality.qm_dist_metric = true;
+        self.enable_cdef = true;
+        self.quality.cdef_adaptive = true;
+        self.quality.chroma_deltaq = true;
+        self.quality.deltaq_mode = DeltaQMode::VarianceBoost;
+        // `screen_detection_mode = AOM_SCREEN_DETECTION_ANTIALIASING_AWARE` is
+        // already the only detector this path runs.
+        self.quality.adaptive_sharpness = tune == Tune::Iq;
+    }
+
+    /// The CODED luma width: `width` unless [`Self::superres_denom`] is set, in
+    /// which case `av1_calculate_scaled_superres_size`'s
+    /// `(width * SCALE_NUMERATOR + denom / 2) / denom`.
+    pub fn coded_width(&self) -> usize {
+        if self.superres_denom == 0 {
+            self.width
+        } else {
+            crate::resize::coded_superres_width(self.width as i32, i32::from(self.superres_denom))
+                as usize
         }
     }
 
@@ -452,10 +768,97 @@ impl KeyFrameConfig {
                  definition in AV1 — it codes no range bit; set full_range = true",
             ));
         }
+        // Quality tools. Each bound is libaom's own `RANGE_CHECK` in
+        // `validate_config` (av1_cx_iface.c) or the writer's field width.
+        if let Some((lo, hi)) = cfg.quality.qm {
+            if !(0..=15).contains(&lo) || !(0..=15).contains(&hi) || lo > hi {
+                return Err(KeyFrameError::Unsupported(
+                    "quality.qm: (qm_min, qm_max) must satisfy 0 <= qm_min <= qm_max <= 15",
+                ));
+            }
+        }
+        if !(0..=7).contains(&cfg.quality.sharpness) {
+            return Err(KeyFrameError::Unsupported("quality.sharpness: must be 0..=7"));
+        }
+        if cfg.quality.deltaq_strength > 1000 {
+            return Err(KeyFrameError::Unsupported(
+                "quality.deltaq_strength: must be 0..=1000 (percent)",
+            ));
+        }
+        // Coding tools.
+        let square = |px: u32| matches!(px, 4 | 8 | 16 | 32 | 64 | 128);
+        if !square(cfg.tools.min_partition_size_px)
+            || !square(cfg.tools.max_partition_size_px)
+            || cfg.tools.min_partition_size_px > cfg.tools.max_partition_size_px
+        {
+            return Err(KeyFrameError::Unsupported(
+                "tools.min/max_partition_size_px: each must be 4, 8, 16, 32, 64 or 128, min <= max",
+            ));
+        }
+        if cfg.tools.cdf_update_mode > 2 {
+            return Err(KeyFrameError::Unsupported("tools.cdf_update_mode: must be 0, 1 or 2"));
+        }
+        // MEASURED 2026-09-11 (`self_contained_tools`): with `disable_cdf_update = 1`
+        // this path emits a stream the REAL libaom decoder REJECTS, while aomenc's
+        // own `--cdf-update-mode=0` stream decodes — a pack-side conformance bug
+        // (KB-53), not a divergence. A refusal by name is the honest contract
+        // until the pack stops adapting CDFs the header said it would not.
+        if cfg.tools.cdf_update_mode == 0 {
+            return Err(KeyFrameError::Unsupported(
+                "tools.cdf_update_mode = 0 (disable_cdf_update): the pack still adapts CDFs and                  the real libaom decoder rejects the stream (KB-53) — use 1 or 2",
+            ));
+        }
+        // Film grain: the writer codes each field at a fixed width, so a value
+        // outside its field would be silently truncated into a different stream.
+        if let Some(g) = &cfg.film_grain {
+            let pts_ok = |pts: &[[i32; 2]], n: i32, cap: i32| {
+                (0..=cap).contains(&n)
+                    && pts[..n.clamp(0, cap) as usize]
+                        .iter()
+                        .all(|p| (0..=255).contains(&p[0]) && (0..=255).contains(&p[1]))
+            };
+            if !(0..=65535).contains(&g.random_seed)
+                || !pts_ok(&g.scaling_points_y, g.num_y_points, 14)
+                || !pts_ok(&g.scaling_points_cb, g.num_cb_points, 10)
+                || !pts_ok(&g.scaling_points_cr, g.num_cr_points, 10)
+                || !(8..=11).contains(&g.scaling_shift)
+                || !(0..=3).contains(&g.ar_coeff_lag)
+                || !(6..=9).contains(&g.ar_coeff_shift)
+                || !(0..=3).contains(&g.grain_scale_shift)
+                || g.ar_coeffs_y.iter().chain(&g.ar_coeffs_cb).chain(&g.ar_coeffs_cr).any(|&c| !(-128..=127).contains(&c))
+                || [g.cb_mult, g.cb_luma_mult, g.cb_offset, g.cr_mult, g.cr_luma_mult, g.cr_offset]
+                    .iter()
+                    .any(|&v| !(0..=511).contains(&v))
+            {
+                return Err(KeyFrameError::Unsupported(
+                    "film_grain: a parameter is outside its bitstream field (seed 16 bits, <= 14/10/10                      scaling points of 8-bit values, scaling_shift 8..=11, ar_coeff_lag 0..=3,                      ar_coeff_shift 6..=9, grain_scale_shift 0..=3, AR coeffs -128..=127, multipliers 0..=511)",
+                ));
+            }
+        }
+        // Superres.
+        if cfg.superres_denom != 0 {
+            if !(9..=16).contains(&cfg.superres_denom) {
+                return Err(KeyFrameError::Unsupported(
+                    "superres_denom: must be 0 (off) or 9..=16",
+                ));
+            }
+            if cfg.enable_cdef || cfg.enable_restoration {
+                return Err(KeyFrameError::Unsupported(
+                    "superres_denom: gated with enable_cdef = false and enable_restoration = false                      only (libaom runs both post-filters on the UPSCALED frame under superres,                      which this path does not model yet)",
+                ));
+            }
+            if cfg.width < 16 {
+                return Err(KeyFrameError::Unsupported(
+                    "superres_denom: the frame must be at least 16 luma columns wide",
+                ));
+            }
+            // The tile grid of the CODED frame must be derivable too.
+            cfg.derive_tiles_at(cfg.coded_width())?;
+        }
         // Tiles. Derived, not taken on trust, and derived HERE so the query and
         // the encoder cannot disagree — `encode_key_frame` consumes the same
         // call's result rather than repeating the predicate.
-        cfg.derive_tiles()?;
+        cfg.derive_tiles_at(cfg.width)?;
         Ok(())
     }
 
@@ -568,9 +971,15 @@ impl KeyFrameConfig {
     /// and [`encode_key_frame`] (which uses it), so the support query and the
     /// encoder cannot disagree about which grids are accepted.
     pub fn derive_tiles(&self) -> Result<TileInfoHeader, KeyFrameError> {
+        self.derive_tiles_at(self.coded_width())
+    }
+
+    /// [`Self::derive_tiles`] at an explicit CODED width (superres codes fewer
+    /// luma columns than `width`, and the tile grid follows the coded frame).
+    fn derive_tiles_at(&self, coded_width: usize) -> Result<TileInfoHeader, KeyFrameError> {
         let mib_size_log2 = if self.sb_size_128 { 5u32 } else { 4u32 }; // SB128 / SB64
         let tile_info = derive_tile_info(
-            mi_dim(self.width as i32),
+            mi_dim(coded_width as i32),
             mi_dim(self.height as i32),
             mib_size_log2,
             self.tile_columns_log2,
@@ -1020,8 +1429,8 @@ pub fn derive_sequence_header(cfg: &KeyFrameConfig) -> SequenceHeaderObu {
             sb_size_128: cfg.sb_size_128,
             // `--enable-filter-intra` / `--enable-intra-edge-filter` default on
             // (`av1_cx_iface` extra_cfg defaults).
-            enable_filter_intra: true,
-            enable_intra_edge_filter: true,
+            enable_filter_intra: cfg.tools.enable_filter_intra,
+            enable_intra_edge_filter: cfg.tools.enable_intra_edge_filter,
             // The inter tool bits are not coded in a reduced still-picture
             // header; C's own init leaves them at the ALLINTRA-forced 0
             // (`av1_cx_iface.c` turns the inter tools off for usage 2).
@@ -1037,8 +1446,9 @@ pub fn derive_sequence_header(cfg: &KeyFrameConfig) -> SequenceHeaderObu {
             force_screen_content_tools: 2,
             force_integer_mv: 2,
             order_hint_bits_minus_1: -1,
-            // `--enable-superres` defaults off for a still encode.
-            enable_superres: false,
+            // `--enable-superres` defaults off for a still encode; a fixed
+            // `--superres-mode` sets the sequence bit.
+            enable_superres: cfg.superres_denom != 0,
             enable_cdef: cfg.enable_cdef,
             // `av1_set_speed_features_framesize_independent`'s epilogue
             // (speed_features.c:2746-2758, `if (!seq_params_locked)`):
@@ -1077,7 +1487,7 @@ pub fn derive_sequence_header(cfg: &KeyFrameConfig) -> SequenceHeaderObu {
             chroma_sample_position: 0,
             separate_uv_delta_q: false,
         },
-        film_grain_params_present: false,
+        film_grain_params_present: cfg.film_grain.is_some(),
     }
 }
 
@@ -1098,9 +1508,43 @@ pub fn derive_frame_header(
     let s = &seq.seq_header;
     let cc = &seq.color_config;
     let base_qindex = crate::rc::base_qindex_from_cq(cfg.cq_level);
-    // `frame_is_coded_lossless` for a segmentation-off KEY frame with no
-    // superres: base_qindex 0 and all five plane deltas 0.
-    let coded_lossless = base_qindex == 0;
+    // `av1_set_quantizer` (av1_quantize.c:878): the chroma delta-q ramps (under
+    // `--enable-chroma-deltaq`, per tune and subsampling) and the frame QM
+    // levels (`aom_get_qmlevel_allintra` / `_luma_ssimulacra2` / `_444_chroma`
+    // per tune). `delta_q_present` only matters at q == 0, where delta-q is
+    // inert anyway, so `false` is exact here.
+    let (qm_min, qm_max) = cfg.quality.qm.unwrap_or((4, 10));
+    let qs = aom_dsp::quant::av1_set_quantizer(
+        qm_min,
+        qm_max,
+        base_qindex,
+        cfg.quality.chroma_deltaq,
+        /*is_allintra=*/ true,
+        cfg.quality.tune.quant_tuning(),
+        cfg.ss_x as i32,
+        cfg.ss_y as i32,
+        cc.separate_uv_delta_q,
+        /*delta_q_present=*/ false,
+    );
+    let (u_dc, u_ac, v_dc, v_ac) = if cfg.monochrome {
+        (0, 0, 0, 0)
+    } else {
+        (qs.u_dc_delta_q, qs.u_ac_delta_q, qs.v_dc_delta_q, qs.v_ac_delta_q)
+    };
+    // `frame_is_coded_lossless`: base_qindex 0 and all five plane deltas 0
+    // (a chroma delta at q == 0 is not produced by any ramp).
+    let coded_lossless = base_qindex == 0 && (qs.y_dc_delta_q, u_dc, u_ac, v_dc, v_ac) == (0, 0, 0, 0, 0);
+    let superres = cfg.superres_denom != 0;
+    let coded_w = cfg.coded_width() as i32;
+    let grain = cfg.film_grain.map(|mut g| {
+        // Context fields are NOT in a grain table — C derives them from the
+        // seq/frame header (`av1_add_film_grain` context).
+        g.monochrome = cfg.monochrome;
+        g.subsampling_x = cfg.ss_x as i32;
+        g.subsampling_y = cfg.ss_y as i32;
+        g.is_inter_frame = false;
+        g
+    });
     FrameHeaderObu {
         prefix: FrameHeaderPrefix {
             reduced_still_picture_hdr: seq.reduced_still_picture_hdr,
@@ -1118,8 +1562,8 @@ pub fn derive_frame_header(
             show_frame: true,
             showable_frame: false,
             error_resilient_mode: false,
-            // `frame_parallel_decoding_mode` (default 0).
-            disable_cdf_update: false,
+            // `--cdf-update-mode=0` codes `disable_cdf_update = 1` (encoder.c:4375).
+            disable_cdf_update: cfg.tools.cdf_update_mode == 0,
             force_screen_content_tools: s.force_screen_content_tools,
             allow_screen_content_tools: sct.allow_screen_content_tools,
             force_integer_mv: s.force_integer_mv,
@@ -1149,7 +1593,6 @@ pub fn derive_frame_header(
             ref_frame_map_order_hint: [0; 8],
         },
         allow_screen_content_tools: sct.allow_screen_content_tools,
-        superres_scaled: false,
         // `allow_intrabc` is decided AFTER the frame: C sets the header bit
         // from `cpi->intrabc_used` at the end of `av1_encode_frame`
         // (encodeframe.c:2442), so a header derived BEFORE the search cannot
@@ -1157,6 +1600,8 @@ pub fn derive_frame_header(
         // once phase 1 has run, exactly as it does for `tx_mode_select`; the
         // SEARCH-time decision rides in `sct.allow_intrabc` throughout.
         allow_intrabc: false,
+        // `av1_superres_scaled(cm)`: the coded width differs from the upscaled.
+        superres_scaled: superres && coded_w != s.max_frame_width,
         frame_size: FrameSizeHeader {
             frame_size_override: false,
             num_bits_width: s.num_bits_width,
@@ -1164,8 +1609,8 @@ pub fn derive_frame_header(
             superres_upscaled_width: s.max_frame_width,
             superres_upscaled_height: s.max_frame_height,
             enable_superres: s.enable_superres,
-            // SCALE_NUMERATOR — "no superres scaling".
-            scale_denominator: 8,
+            // SCALE_NUMERATOR (8) — "no superres scaling" — or the fixed denominator.
+            scale_denominator: if superres { i32::from(cfg.superres_denom) } else { 8 },
             // `render_and_frame_size_different`: the render size equals the
             // frame size, so nothing is coded.
             scaling_active: false,
@@ -1177,15 +1622,15 @@ pub fn derive_frame_header(
         tile_size_bytes: 1,
         quant: QuantParamsHeader {
             base_qindex,
-            y_dc_delta_q: 0,
-            u_dc_delta_q: 0,
-            u_ac_delta_q: 0,
-            v_dc_delta_q: 0,
-            v_ac_delta_q: 0,
-            using_qmatrix: false,
-            qmatrix_level_y: 0,
-            qmatrix_level_u: 0,
-            qmatrix_level_v: 0,
+            y_dc_delta_q: qs.y_dc_delta_q,
+            u_dc_delta_q: u_dc,
+            u_ac_delta_q: u_ac,
+            v_dc_delta_q: v_dc,
+            v_ac_delta_q: v_ac,
+            using_qmatrix: cfg.quality.qm.is_some(),
+            qmatrix_level_y: qs.qmatrix_level_y,
+            qmatrix_level_u: qs.qmatrix_level_u,
+            qmatrix_level_v: qs.qmatrix_level_v,
         },
         num_planes: cfg.num_planes(),
         separate_uv_delta_q: cc.separate_uv_delta_q,
@@ -1244,12 +1689,12 @@ pub fn derive_frame_header(
         skip_mode_flag: false,
         might_allow_warped_motion: false,
         allow_warped_motion: false,
-        // `--reduced-tx-type-set` default off.
-        reduced_tx_set_used: false,
+        // `--reduced-tx-type-set` (encodeframe.c:2712).
+        reduced_tx_set_used: cfg.tools.reduced_tx_type_set,
         global_motion: Default::default(),
         ref_global_motion: Default::default(),
-        film_grain_params_present: false,
-        film_grain: Default::default(),
+        film_grain_params_present: grain.is_some(),
+        film_grain: grain.unwrap_or_default(),
         large_scale: false,
         // `refresh_frame_context == REFRESH_FRAME_CONTEXT_DISABLED` for the
         // reduced still-picture header (nothing coded).
@@ -1636,7 +2081,18 @@ pub fn encode_key_frame_with(
     // ---- headers ---------------------------------------------------------
     let seq = derive_sequence_header(cfg);
     let mib_size_log2 = if cfg.sb_size_128 { 5u32 } else { 4u32 }; // SB128 / SB64
-    let mi_cols = mi_dim(w as i32);
+    let bd = cfg.bit_depth;
+    let tools = &cfg.tools;
+    let quality = &cfg.quality;
+    // Superres: the frame is CODED at `coded_w` luma columns (horizontal-only
+    // downscale, `av1_superres_downscale`) and signalled at `w`; every
+    // per-frame quantity below — mi grid, tiles, superblocks, the loop
+    // filter's crop — follows the CODED width. Validation has already refused
+    // superres with either post-filter on.
+    let superres = cfg.superres_denom != 0;
+    let enc_w = cfg.coded_width();
+    let enc_cw = if cfg.monochrome { 0 } else { (enc_w + cfg.ss_x) >> cfg.ss_x };
+    let mi_cols = mi_dim(enc_w as i32);
     let mi_rows = mi_dim(h as i32);
     // The SAME derivation `validate_configuration` ran (and refused on) above.
     let tile_info = cfg.derive_tiles()?;
@@ -1645,19 +2101,19 @@ pub fn encode_key_frame_with(
     let n_tile_cols = tile_info.cols;
 
     // ---- source planes: SB-aligned, border-extended (the harness recipe) --
-    let bd = cfg.bit_depth;
     let sb_mi = if cfg.sb_size_128 { SB_MI_128 } else { SB_MI_64 };
     let sb_px = (sb_mi * 4) as usize;
     let n_sb_x = ((mi_cols + sb_mi - 1) / sb_mi).max(1);
     let n_sb_y = ((mi_rows + sb_mi - 1) / sb_mi).max(1);
     let sb_px_w = n_sb_x as usize * sb_px;
     let sb_px_h = n_sb_y as usize * sb_px;
+    let (stride, buf_h) = (320.max(sb_px_w + 4), (sb_px_h + 4).max(h + 4));
     // The SAME derivation `KeyFrameConfig::padded_plane_geometry` exposes, so
-    // `estimate()` cannot drift from what is actually allocated.
-    let (stride, buf_h) = cfg.padded_plane_geometry();
-    debug_assert_eq!(
-        (stride, buf_h),
-        (320.max(sb_px_w + 4), (sb_px_h + 4).max(h + 4)),
+    // `estimate()` cannot drift from what is actually allocated. (Under
+    // superres the coded frame is narrower than the estimate's, which keeps
+    // the estimate an upper bound.)
+    debug_assert!(
+        superres || (stride, buf_h) == cfg.padded_plane_geometry(),
         "padded_plane_geometry must equal the allocation it describes"
     );
     let extend_plane = |dst: &mut [u16], pw: usize, ph: usize| {
@@ -1671,20 +2127,45 @@ pub fn encode_key_frame_with(
             dst.copy_within((ph - 1) * stride..ph * stride, r * stride);
         }
     };
+    // `av1_superres_downscale`: libaom's optimized 8-bit scaler is
+    // all-planes-or-none (`av1_has_optimized_scaler` on every plane), else the
+    // non-normative `resize_plane`; bd10/12 always take `highbd_resize_plane`.
+    let ds_y: Vec<u16>;
+    let ds_u: Vec<u16>;
+    let ds_v: Vec<u16>;
+    let (tight_y, tight_u, tight_v): (&[u16], &[u16], &[u16]) = if superres {
+        let use_opt = bd == 8
+            && crate::resize::has_optimized_scaler(w as i32, h as i32, enc_w as i32, h as i32)
+            && (cfg.monochrome
+                || crate::resize::has_optimized_scaler(cw as i32, ch as i32, enc_cw as i32, ch as i32));
+        ds_y = superres_downscale_plane(planes.y, w, h, enc_w, bd, use_opt);
+        if cfg.monochrome {
+            ds_u = Vec::new();
+            ds_v = Vec::new();
+        } else {
+            ds_u = superres_downscale_plane(planes.u, cw, ch, enc_cw, bd, use_opt);
+            ds_v = superres_downscale_plane(planes.v, cw, ch, enc_cw, bd, use_opt);
+        }
+        (&ds_y, &ds_u, &ds_v)
+    } else {
+        (planes.y, planes.u, planes.v)
+    };
     let mut src_y = vec![0u16; stride * buf_h];
     for r in 0..h {
-        src_y[r * stride..r * stride + w].copy_from_slice(&planes.y[r * w..r * w + w]);
+        src_y[r * stride..r * stride + enc_w].copy_from_slice(&tight_y[r * enc_w..r * enc_w + enc_w]);
     }
-    extend_plane(&mut src_y, w, h);
+    extend_plane(&mut src_y, enc_w, h);
     let mut src_u = vec![0u16; stride * buf_h];
     let mut src_v = vec![0u16; stride * buf_h];
     if !cfg.monochrome {
         for r in 0..ch {
-            src_u[r * stride..r * stride + cw].copy_from_slice(&planes.u[r * cw..r * cw + cw]);
-            src_v[r * stride..r * stride + cw].copy_from_slice(&planes.v[r * cw..r * cw + cw]);
+            src_u[r * stride..r * stride + enc_cw]
+                .copy_from_slice(&tight_u[r * enc_cw..r * enc_cw + enc_cw]);
+            src_v[r * stride..r * stride + enc_cw]
+                .copy_from_slice(&tight_v[r * enc_cw..r * enc_cw + enc_cw]);
         }
-        extend_plane(&mut src_u, cw, ch);
-        extend_plane(&mut src_v, cw, ch);
+        extend_plane(&mut src_u, enc_cw, ch);
+        extend_plane(&mut src_v, enc_cw, ch);
     }
 
     // ---- screen-content decision (av1_set_screen_content_options) ---------
@@ -1699,11 +2180,25 @@ pub fn encode_key_frame_with(
     //
     // `width`/`height` are C's `unfiltered_source->y_width`/`y_height` — the
     // 8-ALIGNED dimensions, not the crop (see the function's docs; passing the
-    // crop mis-decides borderline frames).
+    // crop mis-decides borderline frames). The estimator reads
+    // `cpi->unfiltered_source` (encoder.c:2045), the ORIGINAL frame — it runs
+    // in `av1_encode_strategy` (encode_strategy.c:1720), before the superres
+    // downscale — so under superres it is fed the full-width source.
     let speed = cfg.cpu_used;
     let sf_probe = SpeedFeatures::set_allintra(speed, false, bd > 8);
-    let sct = if sf_probe.use_nonrd_pick_mode && sf_probe.hybrid_intra_pickmode == 0 {
+    let mut sct = if sf_probe.use_nonrd_pick_mode && sf_probe.hybrid_intra_pickmode == 0 {
         ScreenContentDecision::detection_disabled()
+    } else if superres {
+        let det_stride = w;
+        crate::screen_detect::estimate_screen_content_antialiasing_aware(
+            planes.y,
+            0,
+            det_stride,
+            (w + 7) & !7,
+            (h + 7) & !7,
+            bd,
+            sf_probe.screen_detection_mode2_fast_detection,
+        )
     } else {
         crate::screen_detect::estimate_screen_content_antialiasing_aware(
             &src_y,
@@ -1715,6 +2210,12 @@ pub fn encode_key_frame_with(
             sf_probe.screen_detection_mode2_fast_detection,
         )
     };
+    // `allow_intrabc` is read by the decoder only when `UpscaledWidth ==
+    // FrameWidth` (AV1 5.9.2); libaom clears it under superres
+    // (encoder.c:2488), so the SEARCH-time decision is 0 as well.
+    if superres {
+        sct.allow_intrabc = false;
+    }
 
     let mut p = derive_frame_header(cfg, &seq, &sct, tile_info);
     let qindex = p.quant.base_qindex;
@@ -1727,6 +2228,9 @@ pub fn encode_key_frame_with(
     let search_palette = sct.allow_screen_content_tools && cfg.enable_palette;
 
     // ---- quantizer + cost tables -----------------------------------------
+    // The chroma deltas and QM levels came out of `av1_set_quantizer` in
+    // `derive_frame_header`; `--sharpness` is `av1_build_quantizer`'s rounding
+    // bias (`sharpness_adjustment`, av1_quantize.c:607).
     let mut quants = Quants::zeroed();
     let mut deq = Dequants::zeroed();
     av1_build_quantizer(
@@ -1738,11 +2242,16 @@ pub fn encode_key_frame_with(
         p.quant.v_ac_delta_q,
         &mut quants,
         &mut deq,
-        0,
+        quality.sharpness,
     );
     let rows_y = set_q_index(&quants, &deq, qindex as usize, 0);
     let rows_u = set_q_index(&quants, &deq, qindex as usize, 1);
     let rows_v = set_q_index(&quants, &deq, qindex as usize, 2);
+    let qm_levels = p.quant.using_qmatrix.then_some([
+        p.quant.qmatrix_level_y as usize,
+        p.quant.qmatrix_level_u as usize,
+        p.quant.qmatrix_level_v as usize,
+    ]);
 
     let enable_filter_intra = seq.seq_header.enable_filter_intra;
     let real = derive_real_costs(
@@ -1750,25 +2259,31 @@ pub fn encode_key_frame_with(
         enable_filter_intra,
         None,
     );
+    // The rdmult tuning arm: IQ / SSIMULACRA2 share the SSIM weight.
     let rdmult = av1_compute_rd_mult_based_on_qindex(
         bd,
         FrameUpdateType::Kf,
         qindex,
-        TuneMetric::Psnr,
+        quality.tune.metric(),
         EncMode::Allintra,
     );
+    let tune = crate::TuneKnobs {
+        use_qm_dist_metric: quality.qm_dist_metric,
+        iq_tuning: quality.tune != Tune::Psnr,
+    };
 
     // ---- speed features ---------------------------------------------------
     let mut sf = SpeedFeatures::set_allintra(speed, sct.allow_screen_content_tools, bd > 8);
     // The modelled arms of `set_allintra_speed_feature_framesize_dependent`
     // (speed_features.c:166) and the ALLINTRA-reachable arms of
     // `av1_set_speed_features_qindex_dependent` (:2872) — C's second and third
-    // passes, both framesize-blind in the `set_allintra` setter itself.
-    sf.apply_allintra_framesize_dependent(w, h, speed);
-    sf.apply_allintra_qindex_dependent(w, h, qindex, speed);
+    // passes, both framesize-blind in the `set_allintra` setter itself. Both
+    // read `cm->width`, which under superres is the CODED width.
+    sf.apply_allintra_framesize_dependent(enc_w, h, speed);
+    sf.apply_allintra_qindex_dependent(enc_w, h, qindex, speed);
     // `prune_tx_type_using_stats`: ALLINTRA sets 1 at speed >= 2 and 2 at
     // speed >= 4, but ONLY `is_480p_or_larger` (speed_features.c:261/299).
-    sf.prune_tx_type_using_stats = if w.min(h) >= 480 {
+    sf.prune_tx_type_using_stats = if enc_w.min(h) >= 480 {
         if speed >= 4 {
             2
         } else if speed >= 2 {
@@ -1780,18 +2295,146 @@ pub fn encode_key_frame_with(
         0
     };
 
+    // ---- delta-q (`setup_delta_q`, encodeframe.c:316-375) -----------------
+    // The per-superblock qindex is re-derived INSIDE the search/pack walk (the
+    // `DeltaQFrameCtx` below carries the inputs); this replay exists to derive
+    // the frame-level `delta_q_present` — C clears it post-encode when no SB
+    // produced a nonzero delta (encodeframe.c:2450) — and, under
+    // `--delta-lf-mode`, the per-SB `delta_lf_from_base` the loop-filter
+    // search reads. It walks TILE order with the per-tile base reset
+    // (encodeframe.c:1232-1239 / bitstream.c:1745-1751, KB-39), and at the
+    // nonrd speeds (>= 8) routes modes 2/3 through `setup_delta_q_nonrd`
+    // (encodeframe.c:598), which never consults their maps (KB-46).
+    let deltaq_live = quality.deltaq_mode != DeltaQMode::Off && qindex > 0;
+    let tile_grid: Vec<(i32, i32, i32, i32, i32, i32)> = (0..n_tile_rows)
+        .flat_map(|trow| {
+            let ti = &p.tile_info;
+            (0..n_tile_cols).map(move |tcol| {
+                let r0 = ti.row_start_sb[trow] << mib_size_log2;
+                let r1 = (ti.row_start_sb[trow + 1] << mib_size_log2).min(mi_rows);
+                let c0 = ti.col_start_sb[tcol] << mib_size_log2;
+                let c1 = (ti.col_start_sb[tcol + 1] << mib_size_log2).min(mi_cols);
+                (
+                    r0,
+                    c0,
+                    r1,
+                    c1,
+                    ti.row_start_sb[trow + 1] - ti.row_start_sb[trow],
+                    ti.col_start_sb[tcol + 1] - ti.col_start_sb[tcol],
+                )
+            })
+        })
+        .collect();
+    debug_assert_eq!(
+        tile_grid
+            .iter()
+            .map(|t| (t.4 * t.5) as usize)
+            .sum::<usize>(),
+        (n_sb_x * n_sb_y) as usize,
+        "the tile grid must partition every superblock exactly once"
+    );
     let sb_block = if cfg.sb_size_128 {
         SB_BLOCK_128
     } else {
         SB_BLOCK_64
     };
+    let nonrd_delta_q = sf.use_nonrd_pick_mode;
+    let weber_map = (deltaq_live && quality.deltaq_mode == DeltaQMode::PerceptualAi).then(|| {
+        crate::allintra_vis::av1_set_mb_wiener_variance(
+            &src_y,
+            0,
+            stride,
+            mi_rows,
+            mi_cols,
+            qindex,
+            bd,
+            &quants,
+            &deq,
+            sb_block,
+            sb_mi,
+            !tools.enable_intra_edge_filter,
+        )
+    });
+    let (sb_qindex, delta_q_present, delta_q_res) = if deltaq_live {
+        let res = match quality.deltaq_mode {
+            DeltaQMode::VarianceBoost => crate::allintra_vis::variance_boost_delta_q_res(qindex),
+            _ => crate::allintra_vis::DELTA_Q_RES_PERCEPTUAL,
+        };
+        let num_pels_log2 = (sb_px * sb_px).trailing_zeros();
+        let dq2_screen = sct.allow_screen_content_tools;
+        let (per_sb, used) = replay_sb_qindex_tile_order(
+            &tile_grid,
+            n_sb_x,
+            sb_mi,
+            qindex,
+            |mi_row, mi_col, running| {
+                let sb_off = mi_row as usize * 4 * stride + mi_col as usize * 4;
+                match quality.deltaq_mode {
+                    DeltaQMode::VarianceBoost => {
+                        crate::allintra_vis::setup_delta_q_variance_boost(
+                            &src_y,
+                            sb_off,
+                            stride,
+                            bd,
+                            qindex,
+                            quality.deltaq_strength,
+                            res,
+                            running,
+                        )
+                    }
+                    _ if nonrd_delta_q => {
+                        crate::allintra_vis::setup_delta_q_nonrd(qindex, res, running)
+                    }
+                    DeltaQMode::PerceptualAi => {
+                        crate::allintra_vis::setup_delta_q_perceptual_ai(
+                            weber_map.as_ref().expect("map built for mode 3"),
+                            qindex,
+                            bd,
+                            res,
+                            sb_mi,
+                            mi_row,
+                            mi_col,
+                            running,
+                        )
+                    }
+                    DeltaQMode::Perceptual => crate::allintra_vis::setup_delta_q_perceptual(
+                        &src_y,
+                        sb_off,
+                        stride,
+                        bd,
+                        qindex,
+                        dq2_screen,
+                        sb_px,
+                        sb_px,
+                        num_pels_log2,
+                        res,
+                        running,
+                    ),
+                    DeltaQMode::Off => unreachable!("deltaq_live"),
+                }
+            },
+        );
+        (per_sb, used, res)
+    } else {
+        (Vec::new(), false, 0)
+    };
+    p.delta_q.delta_q_present = delta_q_present;
+    p.delta_q.delta_q_res = if delta_q_present { delta_q_res } else { 1 };
+    // `--delta-lf-mode=1`: `enable_deltalf_mode = (deltaq_mode != NO_DELTA_Q)
+    // && deltalf_mode` (av1_cx_iface.c:1326) -> `delta_lf_present_flag`
+    // (encodeframe.c:2321); DEFAULT_DELTA_LF_RES = 2, single (not multi).
+    let delta_lf_present = quality.delta_lf && delta_q_present;
+    p.delta_q.delta_lf_present = delta_lf_present;
+    p.delta_q.delta_lf_res = if delta_lf_present { 2 } else { 1 };
+    p.delta_q.delta_lf_multi = false;
+
     let mut env = SbEncodeEnv {
         ref_frame: None,
         sb_size: sb_block,
         mi_rows,
         mi_cols,
-        // `cm->width` / `cm->height` — the TRUE crop (KB-28).
-        frame_width: w as i32,
+        // `cm->width` / `cm->height` — the TRUE (coded) crop (KB-28).
+        frame_width: enc_w as i32,
         frame_height: h as i32,
         // Placeholders — the real per-tile bounds are stamped in before every
         // `pack_tile` / `pack_tile_from_trees_lr` call below. They MATTER:
@@ -1825,22 +2468,58 @@ pub fn encode_key_frame_with(
         rows_u: &rows_u,
         rows_v: &rows_v,
         rdmult,
-        sharpness: 0,
+        sharpness: quality.sharpness,
+        // `init_rd_sf`: lossless forces NO_TRELLIS_OPT for every knob value.
         enable_optimize_b: if coded_lossless {
             TrellisOptType::NoTrellisOpt
         } else {
-            TrellisOptType::FullTrellisOpt
+            tools.trellis.opt()
         },
         use_chroma_trellis_rd_mult: true,
         coeff_costs_y: &real.coeff_costs_y,
         coeff_costs_uv: &real.coeff_costs_uv,
         txfm_partition_costs: [[0i32; 2]; 21],
         tx_type_costs: &real.tx_type_costs_y,
-        qm_levels: None,
-        tune: Default::default(),
-        deltaq: None,
+        qm_levels,
+        tune,
+        deltaq: delta_q_present.then_some(crate::encode_sb::DeltaQFrameCtx {
+            quants: &quants,
+            deq: &deq,
+            base_qindex: qindex,
+            delta_q_res,
+            deltaq_strength: quality.deltaq_strength,
+            perceptual_ai: weber_map.as_ref(),
+            perceptual_wavelet: (quality.deltaq_mode == DeltaQMode::Perceptual)
+                .then_some(sct.allow_screen_content_tools),
+            sb_mi,
+            delta_lf_present,
+        }),
     };
-    let pol = sf.tx_type_search_policy(false, 0); // (skip_trellis, sharpness)
+    // `--disable-trellis-quant`: the search runs trellis iff
+    // `is_trellis_used(opt, DRY_RUN_NORMAL)`; the CLI tx-type toggles override
+    // the sf-derived policy (C reads oxcf directly in `get_tx_mask`).
+    let pol = {
+        let skip_trellis = !crate::encode_intra::is_trellis_used(tools.trellis.opt(), false);
+        let mut pol = sf
+            .tx_type_search_policy(skip_trellis, quality.sharpness)
+            .with_tune_knobs(tune);
+        pol.enable_flip_idtx = tools.enable_flip_idtx;
+        pol.use_intra_dct_only = tools.use_intra_dct_only;
+        pol.use_default_intra_tx_type |= tools.use_intra_default_tx_only;
+        pol.enable_tx_size_search = tools.enable_tx_size_search;
+        pol
+    };
+    // Chroma-loop tool toggles ride on the UvLoopPolicy (the speed>=3 chroma
+    // rebuild in partition_pick spreads `..cfg.uv_lp.clone()`, so they survive).
+    let uv_lp = UvLoopPolicy {
+        enable_diagonal_intra: tools.enable_diagonal_intra,
+        enable_directional_intra: tools.enable_directional_intra,
+        enable_smooth_intra: tools.enable_smooth_intra,
+        enable_paeth_intra: tools.enable_paeth_intra,
+        enable_cfl_intra: tools.enable_cfl_intra,
+        enable_angle_delta: tools.enable_angle_delta,
+        ..UvLoopPolicy::speed0_allintra()
+    };
 
     // ---- IntraBC (screen content) -----------------------------------------
     // `rd_pick_intrabc_mode_sb`'s frame-wide gates (rdopt.c:3432-3434):
@@ -1886,7 +2565,7 @@ pub fn encode_key_frame_with(
     // port had this wrong once and a source-clone recon initialization masked
     // it everywhere the referenced region was not yet written).
     let ibc_hash = run_intrabc_search.then(|| {
-        crate::intrabc_search::build_intrabc_hash_table(&src_y, 0, stride, w, h, bd > 8, 64)
+        crate::intrabc_search::build_intrabc_hash_table(&src_y, 0, stride, enc_w, h, bd > 8, 64)
     });
     let kf_init = KfFrameContext::default_for_qindex(qindex);
     let ibc_dv_costs = ibc_hash.as_ref().map(|_| {
@@ -1908,7 +2587,7 @@ pub fn encode_key_frame_with(
             // `x->rdmult`, not taken from the frame-init value.
             error_per_bit: (rdmult >> 6).max(1),
             sad_per_bit: crate::rd::av1_set_sad_per_bit(qindex, bd),
-            mv_step_param: init_search_range(w.max(h) as i32),
+            mv_step_param: init_search_range(enc_w.max(h) as i32),
             mv_sf: sf.mv_sf,
         }),
         _ => None,
@@ -1924,18 +2603,24 @@ pub fn encode_key_frame_with(
                 allintra: true,
             },
             // `is_4k_or_larger` = `AOMMIN(cm->width, cm->height) >= 2160`.
-            is_4k_or_larger: w.min(h) >= 2160,
+            is_4k_or_larger: enc_w.min(h) >= 2160,
         },
         inter: None,
         intrabc: ibc_frame,
         search_allow_intrabc,
-        intra_tools: Default::default(),
+        intra_tools: crate::partition_pick::IntraToolCfg {
+            enable_diagonal_intra: tools.enable_diagonal_intra,
+            enable_directional_intra: tools.enable_directional_intra,
+            enable_smooth_intra: tools.enable_smooth_intra,
+            enable_paeth_intra: tools.enable_paeth_intra,
+            enable_angle_delta: tools.enable_angle_delta,
+        },
         mode_costs: &real.mode_costs,
         tx_size_costs: &real.tx_size_costs,
         skip_costs: &real.skip_costs,
         tx_type_costs_y: &real.tx_type_costs_y,
         pol: &pol,
-        uv_lp: &UvLoopPolicy::speed0_allintra(),
+        uv_lp: &uv_lp,
         intra_uv_mode_cost: &real.mode_costs.intra_uv_mode_cost,
         cfl_costs: &real.cfl_costs,
         partition_costs: &real.partition_costs,
@@ -1944,10 +2629,10 @@ pub fn encode_key_frame_with(
         speed,
         qindex,
         enable_filter_intra,
-        enable_tx64: true,
-        enable_rect_tx: true,
+        enable_tx64: tools.enable_tx64,
+        enable_rect_tx: tools.enable_rect_tx,
         intra_pruning_with_hog: sf.intra_pruning_with_hog != 0,
-        enable_rect_partitions: true,
+        enable_rect_partitions: tools.enable_rect_partitions,
         // `av1_set_speed_features_qindex_dependent` runs AFTER the allintra
         // setters and overrides at speed 3 ONLY (speed_features.c:3032-3034);
         // its speed <= 2 and speed >= 4 arms equal the allintra values.
@@ -1956,14 +2641,21 @@ pub fn encode_key_frame_with(
         } else {
             sf.less_rectangular_check_level
         },
-        // `set_max_min_partition_size` (partition_strategy.h:214/224) with the
-        // default `--min-partition-size 4` / `--max-partition-size 128`.
-        max_partition_size: sf.default_max_partition_size.min(sb_block),
-        min_partition_size: sf.default_min_partition_size.min(sb_block),
-        enable_1to4_partitions: true,
-        enable_ab_partitions: true,
+        // `set_max_min_partition_size` (partition_strategy.h:214/224):
+        // max = min(sf default, CLI dim, sb); min = min(max(sf default, CLI
+        // dim), sb).
+        max_partition_size: sf
+            .default_max_partition_size
+            .min(dim_to_bsize(tools.max_partition_size_px))
+            .min(sb_block),
+        min_partition_size: sf
+            .default_min_partition_size
+            .max(dim_to_bsize(tools.min_partition_size_px))
+            .min(sb_block),
+        enable_1to4_partitions: tools.enable_1to4_partitions,
+        enable_ab_partitions: tools.enable_ab_partitions,
         allow_screen_content_tools: sct.allow_screen_content_tools,
-        qm_levels: None,
+        qm_levels,
         // `av1_allow_palette`'s frame-level half. `real.palette_costs` is always
         // built; handing it to the search is what turns the RD arm on, and the
         // per-SB refresh in `pack.rs` re-derives it from the ADAPTING search-ctx
@@ -1977,16 +2669,18 @@ pub fn encode_key_frame_with(
     // coder; only the trees, the recon and the split count are kept.
     // KB-41 root #12: `update_stats`' tx-size gate is the SEARCH-time
     // DEFAULT_EVAL tx mode (rdopt_utils.h:494), not the final header one. The
-    // nonrd speeds still search SELECT.
-    let search_tx_mode_is_select = !coded_lossless;
+    // nonrd speeds still search SELECT; `--enable-tx-size-search=0` selects
+    // `USE_LARGESTALL` -> TX_MODE_LARGEST on the RD speeds (KB-42).
+    let search_tx_mode_is_select =
+        !coded_lossless && (tools.enable_tx_size_search || sf.use_nonrd_pick_mode);
     let phase1_pack_cfg = PackCfg {
         enable_filter_intra,
         tx_mode_is_select: search_tx_mode_is_select,
         signal_gate: qindex > 0,
         allow_update_cdf: !p.prefix.disable_cdf_update,
         base_qindex: qindex,
-        delta_q_present: false,
-        delta_q_res: 0,
+        delta_q_present,
+        delta_q_res: if delta_q_present { delta_q_res } else { 0 },
         allow_screen_content_tools: sct.allow_screen_content_tools,
         // DURING `av1_encode_frame` the frame's `allow_intrabc` is still the
         // SEARCH-time decision — the flip to 0 happens at its very end
@@ -1997,38 +2691,6 @@ pub fn encode_key_frame_with(
         search_allow_intrabc,
         search_tx_mode_is_select,
     };
-    // Tile geometry in raster (tile-row-major) order:
-    // `(mi_row_start, mi_col_start, mi_row_end, mi_col_end, n_sb_rows, n_sb_cols)`.
-    // The mi ENDS are clamped to the frame exactly like C's `av1_tile_set_row` /
-    // `_col` (`tile->mi_row_end = AOMMIN(.., mi_rows)`, tile_common.c). A single
-    // tile is one entry covering the frame.
-    let tile_grid: Vec<(i32, i32, i32, i32, i32, i32)> = (0..n_tile_rows)
-        .flat_map(|trow| {
-            let ti = &p.tile_info;
-            (0..n_tile_cols).map(move |tcol| {
-                let r0 = ti.row_start_sb[trow] << mib_size_log2;
-                let r1 = (ti.row_start_sb[trow + 1] << mib_size_log2).min(mi_rows);
-                let c0 = ti.col_start_sb[tcol] << mib_size_log2;
-                let c1 = (ti.col_start_sb[tcol + 1] << mib_size_log2).min(mi_cols);
-                (
-                    r0,
-                    c0,
-                    r1,
-                    c1,
-                    ti.row_start_sb[trow + 1] - ti.row_start_sb[trow],
-                    ti.col_start_sb[tcol + 1] - ti.col_start_sb[tcol],
-                )
-            })
-        })
-        .collect();
-    debug_assert_eq!(
-        tile_grid
-            .iter()
-            .map(|t| (t.4 * t.5) as usize)
-            .sum::<usize>(),
-        (n_sb_x * n_sb_y) as usize,
-        "the tile grid must partition every superblock exactly once"
-    );
 
     let mut recon_y = src_y.clone();
     let mut recon_u = src_u.clone();
@@ -2101,7 +2763,18 @@ pub fn encode_key_frame_with(
     p.restoration.allow_intrabc = p.allow_intrabc;
 
     // ---- loop-filter level: derived from THIS port's reconstruction -------
-    let mi_grid = build_lf_mi_grid(&trees, mi_rows, mi_cols, n_sb_x, sb_mi, sb_block);
+    let mut mi_grid = build_lf_mi_grid(&trees, mi_rows, mi_cols, n_sb_x, sb_mi, sb_block);
+    // `--delta-lf-mode=1`: the LF trial deblock reads per-SB `delta_lf_from_base`
+    // through `get_filter_level`; it is `((delta_qindex / 4 + res / 2) & ~(res - 1))`
+    // clamped, `res = DEFAULT_DELTA_LF_RES = 2` (encodeframe.c:380), off the SAME
+    // per-SB qindex the pack coded (tile order, KB-39).
+    if delta_lf_present {
+        let dlf_per_sb: Vec<i32> = sb_qindex
+            .iter()
+            .map(|&adj| ((((adj - qindex) / 4) + 1) & !1).clamp(-63, 63))
+            .collect();
+        crate::lf_search::stamp_lf_delta_lf(&mut mi_grid, &dlf_per_sb, mi_rows, mi_cols, n_sb_x, sb_mi);
+    }
     let lf_frame = LfSearchFrame {
         recon_y: &recon_y,
         recon_u: &recon_u,
@@ -2110,7 +2783,7 @@ pub fn encode_key_frame_with(
         src_u: &src_u,
         src_v: &src_v,
         stride,
-        crop_width: w as u32,
+        crop_width: enc_w as u32,
         crop_height: h as u32,
         ss_x: cfg.ss_x,
         ss_y: cfg.ss_y,
@@ -2119,8 +2792,17 @@ pub fn encode_key_frame_with(
         mi: &mi_grid,
         mi_rows,
         mi_cols,
-        delta_lf_present: false,
+        delta_lf_present,
     };
+    // `frame_lf_sharpness` (picklpf.c:220-247): `--sharpness` under ALLINTRA,
+    // with the optional qindex-adaptive cap `--enable-adaptive-sharpness`.
+    let lf_sharpness = crate::lf_search::frame_lf_sharpness(
+        true,
+        quality.tune != Tune::Psnr,
+        quality.sharpness,
+        quality.adaptive_sharpness,
+        qindex,
+    );
     // `lpf_sf.lpf_pick`: LPF_PICK_FROM_FULL_IMAGE (DUAL) at allintra speed
     // 0..=3, ..._NON_DUAL at 4/5 (speed_features.c:496), and the CLOSED-FORM
     // LPF_PICK_FROM_Q at speed >= 6 (:559) — no search at all, the level is a
@@ -2129,8 +2811,7 @@ pub fn encode_key_frame_with(
     // `!coded_lossless && !large_scale`, so a coded-lossless frame keeps
     // `cm->lf`'s zeroed levels (byte-inert — the header writer skips the whole
     // loop-filter block — but running a search C never runs would be a lie
-    // about what this models). The third argument is SHARPNESS
-    // (`--sharpness`, 0 here), not the speed.
+    // about what this models).
     let derived_lf = if coded_lossless {
         LoopFilterLevels {
             filter_level: [0, 0],
@@ -2139,9 +2820,9 @@ pub fn encode_key_frame_with(
             sharpness: 0,
         }
     } else if speed >= 6 {
-        pick_filter_level_from_q(qindex, bd, true, 0)
+        pick_filter_level_from_q(qindex, bd, true, lf_sharpness)
     } else {
-        pick_filter_level(&lf_frame, true, 0, speed >= 4)
+        pick_filter_level(&lf_frame, true, lf_sharpness, speed >= 4)
     };
     // `loopfilter_frame` is wrapped whole in `if (!cm->features.allow_intrabc)`
     // (encoder.c:3780), so an IntraBC frame never runs `av1_pick_filter_level`
@@ -2157,6 +2838,7 @@ pub fn encode_key_frame_with(
         p.loopfilter.filter_level_u = derived_lf.filter_level_u;
         p.loopfilter.filter_level_v = derived_lf.filter_level_v;
     }
+    p.loopfilter.sharpness_level = derived_lf.sharpness;
 
     // ---- post-filter stages: deblock -> CDEF -> loop restoration ----------
     // C's order (`encoder.c` `loopfilter_frame` -> `cdef_restoration_frame`):
@@ -2189,7 +2871,7 @@ pub fn encode_key_frame_with(
                 mode_ref_delta_enabled: true,
                 ref_deltas: KF_REF_DELTAS,
                 mode_deltas: KF_MODE_DELTAS,
-                delta_lf_present: false,
+                delta_lf_present,
                 delta_lf_multi: false,
                 lossless: [false; 8],
                 seg: Default::default(),
@@ -2206,7 +2888,7 @@ pub fn encode_key_frame_with(
                 u: &mut deblocked_u,
                 v: &mut deblocked_v,
                 uv_stride: stride,
-                crop_width: w as u32,
+                crop_width: enc_w as u32,
                 crop_height: h as u32,
                 ss_x: cfg.ss_x,
                 ss_y: cfg.ss_y,
@@ -2221,7 +2903,15 @@ pub fn encode_key_frame_with(
     let mut cur_u = Vec::new();
     let mut cur_v = Vec::new();
     let cdef_pack = if postfilter && cfg.enable_cdef {
-        let cdef_res = av1_cdef_search(
+        // `CDEF_ADAPTIVE` (`--enable-cdef=3`, the tune bundle): `apply_adaptive_cdef`
+        // needs AOM_Q (always here); `zero_low_cdef_strengths` is the
+        // qindex-dependent ALLINTRA/IQ/SSIMULACRA2 arm at `base_qindex <= 140`
+        // (speed_features.c:2886-2891).
+        let adaptive = quality.cdef_adaptive.then_some(crate::pickcdef::CdefAdaptive {
+            cq_level: cfg.cq_level,
+            zero_low_strengths: qindex <= 140,
+        });
+        let cdef_res = crate::pickcdef::av1_cdef_search_adaptive(
             &CdefSearchFrame {
                 recon_y: &deblocked_y,
                 recon_u: &deblocked_u,
@@ -2241,6 +2931,7 @@ pub fn encode_key_frame_with(
                 rdmult,
             },
             sf.cdef_pick_method,
+            adaptive,
         );
         p.cdef.cdef_damping = cdef_res.cdef_damping;
         p.cdef.cdef_bits = cdef_res.cdef_bits;
@@ -2339,7 +3030,7 @@ pub fn encode_key_frame_with(
         };
         let outcome = pick_filter_restoration(&LrSearchInput {
             planes,
-            crop_width: w as i32,
+            crop_width: enc_w as i32,
             crop_height: h as i32,
             ss_x: cfg.ss_x,
             ss_y: cfg.ss_y,
@@ -2350,9 +3041,6 @@ pub fn encode_key_frame_with(
             mib_size_log2: mib_size_log2 as i32,
             mi_rows,
             mi_cols,
-            // `av1_pick_filter_restoration` walks tiles outer / SBs inner and
-            // resets the per-RU delta-coding references at every tile start.
-            // Single tile (asserted above) => one span per axis.
             // `av1_pick_filter_restoration` walks tiles outer / SBs inner and
             // resets the per-RU delta-coding references at every tile start, so
             // the spans must be the REAL ones.
@@ -2368,7 +3056,7 @@ pub fn encode_key_frame_with(
             sf: crate::speed_features::lr_search_sf_allintra(
                 speed,
                 qindex,
-                w,
+                enc_w,
                 h,
                 sct.allow_screen_content_tools,
             ),
@@ -2412,7 +3100,7 @@ pub fn encode_key_frame_with(
             cfg: LrFrameConfig {
                 frame_restoration_type: outcome.frame_restoration_type,
                 unit_size: [outcome.unit_size; 3],
-                crop_width: w as i32,
+                crop_width: enc_w as i32,
                 crop_height: h as i32,
                 superres_denom: 0,
             },
@@ -2481,6 +3169,84 @@ pub fn encode_key_frame_with(
     out.extend_from_slice(&seq_obu);
     out.extend_from_slice(&frame_obu);
     Ok(out)
+}
+
+/// `av1_superres_downscale` for one tight plane (`w x h` samples) to `coded_w`
+/// columns, height unchanged. bd8 takes libaom's OPTIMIZED scaler when the
+/// encoder would (`use_opt`, all-planes-or-none) and the non-normative
+/// `resize_plane` otherwise; bd10/12 always take `highbd_resize_plane`.
+fn superres_downscale_plane(
+    src: &[u16],
+    w: usize,
+    h: usize,
+    coded_w: usize,
+    bd: u8,
+    use_opt: bool,
+) -> Vec<u16> {
+    if bd == 8 {
+        let src_u8: Vec<u8> = src.iter().map(|&p| p as u8).collect();
+        let out_u8 = if use_opt {
+            crate::resize::optimized_downscale_plane_8bit(&src_u8, w, h, coded_w, h)
+        } else {
+            let mut out = vec![0u8; coded_w * h];
+            crate::resize::resize_plane(
+                &src_u8,
+                h as i32,
+                w as i32,
+                w as i32,
+                &mut out,
+                h as i32,
+                coded_w as i32,
+                coded_w as i32,
+            );
+            out
+        };
+        return out_u8.iter().map(|&p| u16::from(p)).collect();
+    }
+    let mut out = vec![0u16; coded_w * h];
+    crate::resize::highbd_resize_plane(
+        src,
+        h as i32,
+        w as i32,
+        w as i32,
+        &mut out,
+        h as i32,
+        coded_w as i32,
+        coded_w as i32,
+        i32::from(bd),
+    );
+    out
+}
+
+/// Replay the per-superblock delta-q chain in TILE order with the per-tile
+/// base reset (encodeframe.c:1232-1239 / bitstream.c:1745-1751): each SB's
+/// qindex is `av1_adjust_q_from_delta_q_res(res, prev, curr)`, a deadzone
+/// rounding against the PREVIOUS superblock's, so the order is load-bearing.
+/// Returns the per-SB qindex in FRAME raster and whether any SB moved off the
+/// base (`cpi->deltaq_used`).
+fn replay_sb_qindex_tile_order(
+    tile_grid: &[(i32, i32, i32, i32, i32, i32)],
+    n_sb_x: i32,
+    sb_mi: i32,
+    base_qindex: i32,
+    mut sb_qindex: impl FnMut(i32, i32, i32) -> i32,
+) -> (Vec<i32>, bool) {
+    let n_sb = tile_grid.iter().map(|t| (t.4 * t.5) as usize).sum::<usize>();
+    let mut per_sb = vec![base_qindex; n_sb];
+    let mut used = false;
+    for &(mi_row_start, mi_col_start, _, _, n_sb_rows, n_sb_cols) in tile_grid {
+        let mut running = base_qindex;
+        let (sb_row0, sb_col0) = (mi_row_start / sb_mi, mi_col_start / sb_mi);
+        for r in 0..n_sb_rows {
+            for c in 0..n_sb_cols {
+                let adj = sb_qindex(mi_row_start + r * sb_mi, mi_col_start + c * sb_mi, running);
+                used |= adj != base_qindex;
+                running = adj;
+                per_sb[((sb_row0 + r) * n_sb_x + sb_col0 + c) as usize] = adj;
+            }
+        }
+    }
+    (per_sb, used)
 }
 
 #[cfg(test)]
