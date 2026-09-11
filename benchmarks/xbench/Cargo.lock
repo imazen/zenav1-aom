@@ -371,6 +371,7 @@ name = "drv-aom"
 version = "0.0.0"
 dependencies = [
  "zenav1-aom-bench",
+ "zenav1-aom-encode",
 ]
 
 [[package]]
