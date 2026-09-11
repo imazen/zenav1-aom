@@ -129,6 +129,16 @@ paired sign test that produced every KB-PERF-20..57 number. Now `scripts/perf_ba
   i686, Windows ARM, macOS — is green from `52aba0e` on. **Fixed here:** nightly pinned to
   `nightly-2026-09-09` in CI and the justfile, snapshot regenerated, `ci-yaml-check` added to
   `gate-landing`, `just ci-status`.
+* **Verified after the fix (run 34561262330 / 34561274930, 04:11Z): `public API surface + crates.io publishability` is GREEN.**
+* **A second CI defect, seen on `a038d59`'s run (docs-only commit): both x86 differential legs failed on
+  `cdef_find_dir_simd_diff::cdef_find_dir_simd_bit_identical_to_scalar_at_every_tier`** (395 passed / 1 failed
+  in the consolidated `aom-dsp` binary). This is the KNOWN dispatch-permutation race the test consolidation
+  introduced (`a88e739`): the token sweeps are process-global and CI runs `cargo test --workspace`, whose
+  intra-binary thread pool lets a sweep overlap a test that merely calls a kernel. `e1652b4` serialised
+  sweep-vs-sweep only. `gate-landing` is immune because nextest runs one process per test. **Open, and
+  the first item of the plan: run the differential legs under nextest (or the `aom-dsp` `all` binary with
+  `--test-threads=1`), which also makes CI ~3-10x faster.** Until then a red x86 leg naming that test is
+  the flake, not a regression; re-run the job.
 * **The corrected cross-encoder sweep completed** (02:48–02:54Z, ~6 min, not the "~50 min"
   estimated) and wrote `benchmarks/enc_rd_cross_2026-09-10.tsv` with `drv-aom` on the
   shipping path; the session died before charting or committing it. Recorded here in
