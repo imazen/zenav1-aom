@@ -114,6 +114,12 @@ fn main() {
         cell.w, cell.h, cell.bd, cell.mono, cell.ss_x, cell.ss_y, cell.cq_level,
     );
     cfg.cpu_used = cell.speed;
+    // Optional 7th arg: tile_columns_log2 (rows get the same), so the
+    // tile-parallel ceiling and its bitstream cost can be measured.
+    if let Some(t) = std::env::args().nth(7).and_then(|v| v.parse::<i32>().ok()) {
+        cfg.tile_columns_log2 = t;
+        cfg.tile_rows_log2 = t;
+    }
     cfg.enable_cdef = false;
     cfg.enable_restoration = true;
 
