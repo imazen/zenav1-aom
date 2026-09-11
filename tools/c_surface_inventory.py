@@ -49,7 +49,7 @@ RSRC = [os.path.join(REPO, "crates")]
 LIBAOM_A = os.path.join(REPO, "upstream", "build", "libaom.a")
 
 # The inter-ENCODE scope.  Each entry is <subdir>/<file.c> under upstream/av1/.
-# Chosen from INTER-ENCODE-ROADMAP.md §2's C-path gap map plus the call trees it
+# Chosen from docs/inter/INTER-ENCODE-ROADMAP.md §2's C-path gap map plus the call trees it
 # names.  Files that are purely intra/still are excluded even when the encoder
 # links them (pickcdef.c, pickrst.c, palette.c, intra_mode_search.c, ...): the
 # port already holds those byte-exact on the ALLINTRA track.
