@@ -1,3 +1,36 @@
+## The publish window is still OPEN — none of the four names are taken, and the facade has no consumer (2026-09-10)
+
+Measured, not assumed: `zenav1-aom`, `-dsp`, `-encode` and `-decode` all return
+404 from the crates.io API while `zenavif` returns 200. **Nothing is published,
+so the published set is still fully revisable — and it stops being revisable at
+the first `cargo publish`.** The user's constraint ("crates cannot be deleted
+from crates") therefore binds the FUTURE, not the present; the whole value of
+deciding now is that the decision is still free.
+
+**`zenav1-aom` — the facade — has no consumer.** zenavif is the only external
+consumer and it depends on `zenav1-aom-decode` and `zenav1-aom-encode` DIRECTLY
+by git rev (`Cargo.toml:123-126`); `zenav1_aom::` appears nowhere in its source.
+That is precisely the case the new publish gate was written to catch, live in
+the tree right now.
+
+**It is deliberately NOT resolved, because the argument runs both ways and the
+losing move is unrecoverable either direction:**
+* don't publish it — a crate with no consumer is the mistake the pin exists to
+  prevent, and NOT publishing is reversible where publishing is not;
+* publish it — `zenav1-aom` is the PRIMARY name, and publishing the three
+  suffixed crates while leaving the unsuffixed one free lets someone else take
+  the brand, which is equally unrecoverable.
+
+Left in `PUBLISHED` (the name-defence reading) because that is the status quo,
+with the tradeoff recorded in the gate's own doc comment so a publisher meets it
+at the point of decision. **Resolve before publishing, not after.**
+
+The other four workspace crates (`aom-bench`, `aom-dsp-bench`, `aom-sys-ref`,
+`aom-target`) are `publish = false` and stay that way — they are test/bench
+infrastructure, and `aom-dsp-bench` carries an explicit "do not fold this back
+into aom-dsp" rationale (aom-dsp dev-depends on the C oracle, so an in-crate
+bench could not build without the libaom submodule + cmake).
+
 ## The public-API snapshots were enforced NOWHERE, so all four had drifted — and the publish scan found three crates that could not be published at all (2026-09-10)
 
 `docs/public-api/` and `just api-doc-check` have existed since 2026-09-09. They

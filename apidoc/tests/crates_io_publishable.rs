@@ -30,6 +30,25 @@ use std::process::Command;
 /// The crates this workspace publishes. **Pinned by name on purpose.** A name on
 /// crates.io cannot be given back, so a crate joining this list is a decision,
 /// not a side effect of dropping `publish = false`.
+///
+/// **MEASURED 2026-09-10, and the window is still open: NONE of these four are
+/// on crates.io yet** (queried directly; all four return 404 while `zenavif`
+/// returns 200). So the published set is still fully revisable — and it stops
+/// being revisable at the first `cargo publish`.
+///
+/// **The one open question, stated here because this is where a publisher will
+/// look: `zenav1-aom` (the facade) has NO CONSUMER.** zenavif — the only
+/// external consumer — depends on `zenav1-aom-decode` and `zenav1-aom-encode`
+/// DIRECTLY by git rev, and `zenav1_aom::` appears nowhere in its source. The
+/// argument each way is real and this list deliberately does not settle it:
+///   * DON'T publish it — publishing is irreversible and a crate with no
+///     consumer is the exact mistake this pin exists to prevent; not publishing
+///     is reversible, publishing is not, so the asymmetry favours waiting.
+///   * DO publish it — `zenav1-aom` is the PRIMARY name. Publishing the three
+///     `-dsp`/`-encode`/`-decode` crates while leaving the unsuffixed name free
+///     lets someone else take the brand, which is also unrecoverable.
+/// It is left in the list (the name-defence reading) because that is the status
+/// quo, NOT because the question was resolved. Resolve it before publishing.
 const PUBLISHED: &[&str] = &[
     "zenav1-aom",
     "zenav1-aom-decode",
