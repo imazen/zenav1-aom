@@ -252,3 +252,31 @@ api-doc:
 # per-landing gate at all.
 api-doc-check:
     ZEN_API_DOC=check cargo test --manifest-path apidoc/Cargo.toml
+
+# ---------------------------------------------------------------------------
+# Cross-encoder comparison (zenav1-aom vs zenav1-svt main vs crates.io ravif
+# vs the zenrav1e fork). Two halves, because neither answers alone:
+#
+#   bench-cross-speed  zenbench, all four linked into one process and
+#                      interleaved round-robin -- the rigorous SPEED number
+#                      with paired CIs.
+#   bench-cross-rd     the rate/quality frontier: each arm swept along its own
+#                      quality AND speed ladders, every output decoded by ONE
+#                      decoder and scored in RGB (the arms disagree on chroma
+#                      format and bit depth, so nothing else is comparable).
+#
+# Both need the sibling repos present and the imazen-26 PNG subset pulled:
+#   (cd ~/work/zen/imazen-26-png-v3 && git lfs pull --include="png-v3/...")
+# `xbench` is its OWN cargo workspace -- see its Cargo.toml for why.
+
+# Interleaved speed comparison on one prepared .yuv.
+bench-cross-speed YUV W H:
+    cd benchmarks/xbench && cargo build --release -p encbench -p xtool
+    benchmarks/xbench/target/release/encbench {{YUV}} {{W}} {{H}} \
+        --md benchmarks/xbench/target/cross_speed.md
+
+# Rate/quality sweep + Pareto charts. ~40 min for the default 3 images/class.
+bench-cross-rd OUT="benchmarks/enc_rd_cross.tsv":
+    cd benchmarks/xbench && cargo build --release
+    python3 scripts/enc_rd_compare.py sweep --out {{OUT}} --size 512 --per-class 3
+    python3 scripts/enc_rd_compare.py chart --tsv {{OUT}}

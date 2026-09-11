@@ -86,6 +86,15 @@ against C, but the shipping API exposes no knob for them yet.
 | Screen-tools **trial encode** (`av1_determine_sc_tools_with_encoding`) | ❌ | ❌ unported | scoped in [`PARITY.md`](PARITY.md) C3 |
 | Inter / video encode | ❌ | — | see the video table |
 
+**One thing the 427/427 does not cover, stated because it took a year to
+notice:** that gate's oracle is `shim_encode_av1_kf`, which hardcodes
+`--enable-palette=0 --enable-intrabc=0`. It is therefore a parity claim against
+a *palette-disabled* libaom, and was blind to both screen-content tools by
+construction. They have their own gate with a matched oracle. The general
+lesson — **check what the oracle was configured with before reading a parity
+count as coverage** — is written up in
+[`benchmarks/encoder_screen_tools_2026-09-10.md`](benchmarks/encoder_screen_tools_2026-09-10.md).
+
 ### Stills — decoder
 
 | Feature | Supported | Bit-exact vs libaom | Gate |
