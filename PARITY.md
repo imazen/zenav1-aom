@@ -256,7 +256,23 @@ points are libaom v3.14.1 (`reference/libaom`). Defaults verified in
   2. `q_for_screen_content_quick_run = AOMMAX(q_orig, 244)` (or `q_orig` when lossless), then
      `av1_set_quantizer` + `av1_set_speed_features_qindex_dependent` + `av1_init_quantizer`
      re-run at that q for the trials, and RESTORED afterwards.
-  3. `cpi->rc.projected_frame_size` — i.e. each trial must be **packed**, not just searched.
+  3. ~~`cpi->rc.projected_frame_size` — i.e. each trial must be **packed**, not just
+     searched.~~ **STRUCK 2026-09-10, MEASURED IN THE C SOURCE: THE TRIALS NEVER PACK, AND
+     THIS ITEM WAS HALF THE STATED COST.** Three facts, each checked rather than argued:
+     (a) `projected_size_pass` is a DEAD LOCAL — declared `int [3] = {0}` at
+     encoder_utils.c:1219, written at :1139/:1145, passed at :1293, and **read nowhere in the
+     file** (`grep -n projected_size_pass` returns exactly those four lines); (b) the decision
+     at :1161-1168 uses ONLY `psnr_diff = psnr[1].psnr[0] - psnr[0].psnr[0]` and
+     `palette_ratio` — the function's own header comment *"We compare the psnr and frame size
+     to make the decision"* is STALE and is what this checklist item was written from;
+     (c) the trial loop calls `av1_encode_frame(cpi)` (:1289, comment *"transform / motion
+     compensation build reconstruction frame"*), and **`av1_pack_bitstream` is called only
+     from `encoder.c`'s frame driver (:3565/:3801/:4174), never from `av1_encode_frame`** —
+     so `cpi->rc.projected_frame_size` (set at ratectrl.c:2463 and encoder.c:3571, both
+     outside this loop) is STALE during the trials as well as unread.
+     **So a trial needs SEARCH + RECONSTRUCTION only — no entropy coding, no tile pack, no
+     bitstream.** That removes the one piece the port "has never driven" and leaves item 1 as
+     the single dominating cost.
   4. `aom_calc_psnr` / `aom_calc_highbd_psnr` of source vs the trial reconstruction, at the
      STREAM bit depth (encoder_utils.c:1245-1253), both passes.
   5. `cpi->palette_pixel_num` accumulated during the pass-1 encode, and `cpi->intrabc_used`.
@@ -264,9 +280,22 @@ points are libaom v3.14.1 (`reference/libaom`). Defaults verified in
      `palette_ratio = palette_pixel_num / (w*h)`, ON iff
      `psnr_diff > STRICT_PSNR_DIFF_THRESH` (0.9, encoder_utils.c:1123) **or** (`palette_ratio >= 0.0001` and
      `psnr_diff / palette_ratio > 4`); otherwise the detector's original decision stands.
-  Cost is dominated by items 1 and 3 (a fixed-partition encode + pack that the port has never
-  driven), not by the arithmetic — this is NOT a one-sitting port, which is why roots #22/#23
-  landed without it.
+  ~~Cost is dominated by items 1 and 3 (a fixed-partition encode + pack that the port has
+  never driven), not by the arithmetic.~~ **RE-SCOPED 2026-09-10: item 3 is struck (above), so
+  the cost is dominated by item 1 ALONE — a fixed-32x32 partition driver feeding the EXISTING
+  `rd_use_partition_real` walk, which already consumes a fixed tree (that is what the speed-7
+  VAR_BASED path does, KB-11).** Items 2 and 4-6 are arithmetic on values the port already
+  computes. **This is still not a one-sitting port and it was NOT attempted here** — items 4-6
+  need a PSNR helper and a `palette_pixel_num` accumulator that do not exist, and the whole
+  thing needs its own byte gate on the 14 reproducer cells — but the estimate it was deferred
+  under counted a bitstream pack that libaom does not perform. Whoever takes it should re-cost
+  from item 1 rather than from the struck pair.
+  **One consequence worth carrying, because it narrows what must be built:** both trial passes
+  run with `allow_intrabc = 0` (pass 0 sets it explicitly at :1197; pass 1 leaves it, under
+  libaom's own `TODO(chengchen): turn intrabc on could lead to data race issue` at :1204-1205),
+  so no trial block can use IntraBC and `features->allow_intrabc = cpi->intrabc_used` resolves
+  to 0 when the arm fires. That is exactly what the reproducer's oracle header reads
+  (`palette=0 intrabc=0`) — so the port needs NO IntraBC trial, only a palette-enabled one.
   **NEW EVIDENCE 2026-09-03 (issue #15, `self_contained_key_frame.rs`, commit `65ffb75d`):**
   the reproducer geometry above (`8468.scale59x128.png`'s 59x128, plus 78x128/115x128) does
   NOT panic on `encode_key_frame` — the standalone shell this session's landing built, which
