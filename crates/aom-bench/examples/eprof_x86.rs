@@ -114,11 +114,22 @@ fn main() {
         cell.w, cell.h, cell.bd, cell.mono, cell.ss_x, cell.ss_y, cell.cq_level,
     );
     cfg.cpu_used = cell.speed;
-    // Optional 7th arg: tile_columns_log2 (rows get the same), so the
-    // tile-parallel ceiling and its bitstream cost can be measured.
-    if let Some(t) = std::env::args().nth(7).and_then(|v| v.parse::<i32>().ok()) {
-        cfg.tile_columns_log2 = t;
-        cfg.tile_rows_log2 = t;
+    // Optional 7th arg: the tile grid, as `N` (square: cols = rows = N) or
+    // `C,R` (independent log2s), so the tile-parallel ceiling and its bitstream
+    // cost can be measured. The two spellings are NOT interchangeable for a
+    // threading study: ROW tiles own contiguous row bands of the recon plane
+    // and so are reachable with `split_at_mut` under `forbid(unsafe_code)`,
+    // while COLUMN tiles interleave within every row and are not.
+    if let Some(t) = std::env::args().nth(7) {
+        let (c, r) = match t.split_once(',') {
+            Some((c, r)) => (c.parse::<i32>().unwrap(), r.parse::<i32>().unwrap()),
+            None => {
+                let n = t.parse::<i32>().unwrap();
+                (n, n)
+            }
+        };
+        cfg.tile_columns_log2 = c;
+        cfg.tile_rows_log2 = r;
     }
     cfg.enable_cdef = false;
     cfg.enable_restoration = true;
