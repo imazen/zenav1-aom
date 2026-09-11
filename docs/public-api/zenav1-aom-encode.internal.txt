@@ -4836,8 +4836,8 @@ aom_encode::intra_uv_rd::CflPredict<'a>: !UnwindSafe
 aom_encode::intrabc_search::IntrabcLeafArgs<'a>: !RefUnwindSafe !Send !Sync !UnwindSafe
 aom_encode::rd_pick::RdPickUvArgs<'a, 'b>: !UnwindSafe
 aom_encode::rdopt_obmc::ObmcTargetArgs<'a>: !RefUnwindSafe !Send !Sync !UnwindSafe
-aom_encode::temporal_filter::TfPlane<'a, P>: !RefUnwindSafe !Send !Sync !UnwindSafe
-aom_encode::temporal_filter::TfPlaneMut<'a, P>: !RefUnwindSafe !Send !Sync !UnwindSafe
+aom_encode::temporal_filter::TfPlane<'a, P>: !Freeze !RefUnwindSafe !Send !Sync !Unpin !UnwindSafe
+aom_encode::temporal_filter::TfPlaneMut<'a, P>: !Freeze !RefUnwindSafe !Send !Sync !Unpin !UnwindSafe
 aom_encode::tx_search::NnDepthPruneCtx<'a>: !UnwindSafe
 ## arch shapes (39 shapes: 39 on every recorded arch, 0 arch-unique)
 

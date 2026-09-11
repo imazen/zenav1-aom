@@ -111,6 +111,7 @@ gate-encode:
 # `gate-encode` is KEPT as the fast pre-check while iterating on encoder work.
 # It is just no longer worth running alongside the workspace gate.
 gate-landing:
+    just ci-yaml-check
     just test-next
     just test-next-scalar
     just census-gate
@@ -242,7 +243,7 @@ arm-dsp-tiers-macos group="":
 # snapshots are what a reviewer reads before an IRREVERSIBLE publish, since a
 # crates.io name can never be deleted.
 api-doc:
-    cargo test --manifest-path apidoc/Cargo.toml
+    ZEN_API_DOC_TOOLCHAIN=nightly-2026-09-09 cargo test --manifest-path apidoc/Cargo.toml
 
 # The gate half of the pair, wired into `gate-landing`: the committed snapshots
 # must be current AND every crate this workspace would publish must actually be
@@ -251,7 +252,7 @@ api-doc:
 # codec nor rustdoc for it -- measured ~12 s, which is why it can sit in the
 # per-landing gate at all.
 api-doc-check:
-    ZEN_API_DOC=check cargo test --manifest-path apidoc/Cargo.toml
+    ZEN_API_DOC=check ZEN_API_DOC_TOOLCHAIN=nightly-2026-09-09 cargo test --manifest-path apidoc/Cargo.toml
 
 # ---------------------------------------------------------------------------
 # Cross-encoder comparison (zenav1-aom vs zenav1-svt main vs crates.io ravif
@@ -280,3 +281,50 @@ bench-cross-rd OUT="benchmarks/enc_rd_cross.tsv":
     cd benchmarks/xbench && cargo build --release
     python3 scripts/enc_rd_compare.py sweep --out {{OUT}} --size 512 --per-class 3
     python3 scripts/enc_rd_compare.py chart --tsv {{OUT}}
+
+# ---------------------------------------------------------------------------
+# CI hygiene. Added 2026-09-11 after CI ran ZERO jobs for ~41 hours (a88e739 ..
+# b4f9094, ~85 commits): `a88e739` left `ci.yml` unparsable ("mapping values are
+# not allowed here"), GitHub reported every push as a red run with no jobs, and
+# nobody looked because every landing's gate was green LOCALLY. A red run with
+# zero jobs and a red run with a failing differential leg look identical in the
+# commit list. These two recipes make both visible in seconds.
+
+# Every workflow file must parse. Cheap (ms), so it is the FIRST step of
+# `gate-landing`; a push that GitHub cannot even start is worse than a red leg.
+ci-yaml-check:
+    python3 scripts/ci_yaml_check.py
+
+# Did CI actually RUN on the last pushes, and which job failed? Prints the last
+# 6 runs with their job count, then the failing jobs of the newest completed one.
+ci-status:
+    @gh run list -R imazen/zenav1-aom --workflow ci.yml --limit 6 --json databaseId,headSha,status,conclusion,createdAt --jq '.[] | "\(.createdAt[5:16]) \(.headSha[:7]) \(.status) \(.conclusion)"'
+    @for id in $(gh run list -R imazen/zenav1-aom --workflow ci.yml --limit 6 --json databaseId --jq '.[].databaseId'); do printf '%s jobs=' $id; gh api repos/imazen/zenav1-aom/actions/runs/$id/jobs --jq '.total_count'; done
+    @id=$(gh run list -R imazen/zenav1-aom --workflow ci.yml --status completed --limit 1 --json databaseId --jq '.[0].databaseId'); echo "newest completed run $id, non-green jobs:"; gh api repos/imazen/zenav1-aom/actions/runs/$id/jobs --jq '.jobs[] | select(.conclusion!="success") | "  \(.conclusion)  \(.name)"'
+
+# ---------------------------------------------------------------------------
+# The clause-(4) perf loop, as ONE command per step. This is the protocol every
+# 2026-09-09/10 band used (it lived in a session scratchpad as band.sh + stats.py
+# and was never committed -- see docs/ITERATION_PLAYBOOK.md). The cell is the
+# SHIPPING preset, 1024x1024 cq27 --cpu-used 3, mirror-tiled from the in-repo
+# 196x196 vector; override with W= H= CQ= SPEED= env vars.
+
+# Build the `base` (BASE_SHA, in a throwaway worktree) and `new` (HEAD working
+# tree) eprof_x86 arms into $ARMS (default ~/tmp/arms), sha256-check them, and
+# refuse if they are byte-identical (a stale build feeds a silent wrong answer).
+perf-arms BASE_SHA:
+    scripts/perf_arms.sh {{BASE_SHA}}
+
+# Rotated, interleaved band over base / new / baseB (same-binary null), N rounds
+# (default 24), paired-median + exact sign test. Writes $OUT (default
+# ~/tmp/arms/band.tsv) and prints the stats. ~3 s per encode at the shipping cell.
+perf-band N="24":
+    N={{N}} scripts/perf_band.sh
+    python3 scripts/perf_band_stats.py "${OUT:-$HOME/tmp/arms/band.tsv}"
+
+# perf record + report of one arm on the shipping cell (frame pointers on, so
+# memset/memcpy/malloc are attributable to their callers). SIDE = port | c.
+perf-profile SIDE REPS="6":
+    RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release -p zenav1-aom-bench --example eprof_x86
+    perf record -F 499 --call-graph fp -o "$HOME/tmp/perf_{{SIDE}}.data" -- ./target/release/examples/eprof_x86 {{SIDE}} "${W:-1024}" "${H:-1024}" "${CQ:-27}" "${SPEED:-3}" {{REPS}}
+    perf report -i "$HOME/tmp/perf_{{SIDE}}.data" --no-children --percent-limit 0.3 --stdio 2>/dev/null | grep -vE '^#|^$' | head -60

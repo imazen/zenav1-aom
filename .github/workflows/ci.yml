@@ -355,13 +355,21 @@ jobs:
       # zenutils-apidoc builds rustdoc JSON, which is nightly-only. The
       # publishability scan itself needs no nightly, but one toolchain for the
       # whole job is simpler than splitting it.
-      - uses: dtolnay/rust-toolchain@nightly
+      # PINNED, not tracking: rustdoc's auto-trait rendering changes between
+      # nightlies (1.100 added `!Freeze !Unpin` lines that 1.99 did not), so a
+      # tracking nightly makes the committed snapshot stale on CI while it is
+      # current locally -- which is exactly what happened 2026-09-10/11, when
+      # this job failed on every run from 52aba0e to 2984ad1 for a two-line
+      # rendering difference. The justfile pins the SAME toolchain.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-09-09
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apidoc
       - name: Snapshots current + every published crate is publishable
-        run: ZEN_API_DOC=check cargo test --manifest-path apidoc/Cargo.toml
+        run: ZEN_API_DOC=check ZEN_API_DOC_TOOLCHAIN=nightly-2026-09-09 cargo test --manifest-path apidoc/Cargo.toml
 
   # i686 is a primary target (32-bit correctness for WASM compatibility + catching
   # pointer-width bugs, per CLAUDE.md). Built via `cross` (Docker) — same pure-Rust,
