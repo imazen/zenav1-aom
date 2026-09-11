@@ -1,5 +1,5 @@
 # zenav1-aom-encode public API — additions from non-default features
-# features: census
+# features: avx512,census
 # (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
 # Encodings: crate-name prefix stripped; auto traits collapse to a
 # count + exceptions; trait impls collapse to one roster line per

@@ -27,83 +27,103 @@
 //! `(qcoeff, dqcoeff, eob, txb_entropy_ctx)`.
 #![forbid(unsafe_code)]
 
-pub mod allintra_vis;
-pub mod ab_nn_prune;
-pub mod ab_nn_weights;
-pub mod cnn_partition;
-pub mod denoise;
-pub mod encode_intra;
-pub mod encode_sb;
-pub mod grain_table;
-pub mod hog;
-pub mod intra_rd;
-pub mod intra_tx_nn_weights;
-pub mod intra_uv_rd;
-pub mod intrabc_search;
-pub mod compound_type;
-pub mod curvfit_tables;
-pub mod enc_misc;
-pub mod firstpass;
-pub mod frame_source;
-pub mod global_motion;
-pub mod inter_costs;
-pub mod inter_frame;
-pub mod inter_fullpel;
-pub mod inter_rd;
-pub mod interp_rd;
-pub mod inter_me;
-pub mod inter_pack;
-pub mod inter_pred_enc;
-pub mod lf_search;
-pub mod mode_costs;
-pub mod noise_fft;
-pub mod noise_model;
-pub mod nonrd_idtx;
-pub mod nonrd_inter;
-pub mod nonrd_pickmode;
-pub mod obu_assemble;
-pub mod pack;
-pub mod pass2_model;
-pub mod palette_search;
-pub mod part4_nn_weights;
-pub mod part4_prune;
-pub mod partition;
-pub mod partition_pick;
-pub mod pickcdef;
-pub mod rate_model;
-pub mod ratectrl;
-pub mod ratectrl_init;
-pub mod ratectrl_pick;
-pub mod ratectrl_rate;
-pub mod ratectrl_update;
-pub mod rc;
-pub mod rd;
-pub mod rd_thresh;
-pub mod rdopt_gate;
-pub mod ref_gop;
-pub mod rdopt_model;
-pub mod rdopt_mv;
-pub mod rdopt_obmc;
-pub mod rdopt_single_state;
-pub mod rdopt_sse;
-pub mod rdopt_var_rd;
-pub mod rdopt_skip;
-pub mod rd_pick;
-pub mod real_costs;
-pub mod resize;
-pub mod speed_features;
+
+
+// ---------------------------------------------------------------------------
+// PUBLIC API SURFACE. The only thing an external consumer needs from this crate
+// is `key_frame` -- zenavif, the sole external consumer, uses exactly
+// `encode_key_frame`, `KeyFrameConfig`, `KeyFramePlanes` and `ColorDescription`
+// (measured 2026-09-10). The 76 modules below are implementation detail that
+// in-workspace crates and this crate's own harness reach into, so they are
+// `pub` only under `__internals` -- the same pattern aom-decode already uses;
+// see that feature's doc comment in Cargo.toml for why a never-disabled feature
+// is worse than no feature at all.
+// ---------------------------------------------------------------------------
 pub mod key_frame;
-pub mod screen_detect;
-pub mod seq_level;
-pub mod superres_select;
-pub mod temporal_filter;
-pub mod tpl_model;
-pub mod tx_search;
-pub mod var_part;
-pub mod var_tx;
-pub mod tx_split_nn_weights;
-pub mod prune_tx_2d_nn_weights;
-pub mod prune_tx_2d;
+
+#[cfg(feature = "__internals")]
+macro_rules! impl_mods { ($($m:ident),* $(,)?) => { $(pub mod $m;)* }; }
+#[cfg(not(feature = "__internals"))]
+macro_rules! impl_mods { ($($m:ident),* $(,)?) => { $(pub(crate) mod $m;)* }; }
+
+impl_mods!(
+    allintra_vis,
+    ab_nn_prune,
+    ab_nn_weights,
+    cnn_partition,
+    denoise,
+    encode_intra,
+    encode_sb,
+    grain_table,
+    hog,
+    intra_rd,
+    intra_tx_nn_weights,
+    intra_uv_rd,
+    intrabc_search,
+    compound_type,
+    curvfit_tables,
+    enc_misc,
+    firstpass,
+    frame_source,
+    global_motion,
+    inter_costs,
+    inter_frame,
+    inter_fullpel,
+    inter_rd,
+    interp_rd,
+    inter_me,
+    inter_pack,
+    inter_pred_enc,
+    lf_search,
+    mode_costs,
+    noise_fft,
+    noise_model,
+    nonrd_idtx,
+    nonrd_inter,
+    nonrd_pickmode,
+    obu_assemble,
+    pack,
+    pass2_model,
+    palette_search,
+    part4_nn_weights,
+    part4_prune,
+    partition,
+    partition_pick,
+    pickcdef,
+    rate_model,
+    ratectrl,
+    ratectrl_init,
+    ratectrl_pick,
+    ratectrl_rate,
+    ratectrl_update,
+    rc,
+    rd,
+    rd_thresh,
+    rdopt_gate,
+    ref_gop,
+    rdopt_model,
+    rdopt_mv,
+    rdopt_obmc,
+    rdopt_single_state,
+    rdopt_sse,
+    rdopt_var_rd,
+    rdopt_skip,
+    rd_pick,
+    real_costs,
+    resize,
+    speed_features,
+    screen_detect,
+    seq_level,
+    superres_select,
+    temporal_filter,
+    tpl_model,
+    tx_search,
+    var_part,
+    var_tx,
+    tx_split_nn_weights,
+    prune_tx_2d_nn_weights,
+    prune_tx_2d,
+);
 
 use aom_dsp::entropy::dec::OdEcDec;
 use aom_dsp::entropy::enc::OdEcEnc;

@@ -12,7 +12,7 @@ name = "aom_bench"
 
 [dependencies]
 # The port under measurement.
-zenav1-aom-encode = { path = "../aom-encode" }
+zenav1-aom-encode = { path = "../aom-encode", features = ["__internals"] }
 zenav1-aom-decode = { path = "../aom-decode", features = ["__internals"] }
 # Consolidated DSP/entropy kernels (was: aom-entropy/quant/restore/loopfilter/
 # txb — folded into aom-dsp per GitHub #2). Stills-parity post-filter stages

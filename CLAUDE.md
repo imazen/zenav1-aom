@@ -122,10 +122,58 @@ integration tests — precisely the failure KB-42 documents. So
 always runs, and fails with the exact command to re-run. Verified in both
 directions (fails without the feature, passes with it).
 
-**Not yet done:** `aom-encode`'s 77 modules (1,832 items). Same pattern, larger
-blast radius — `tx_search` (49 uses), `encode_sb` (43), `pack` (40) and others
-are reached from `aom-bench` and the harnesses, all in-workspace and therefore
-fixable by declaring the feature, but it is its own landing.
+**`aom-encode` IS NOW DONE TOO — 2026-09-10, and the number is the headline:
+`docs/public-api/zenav1-aom-encode.txt` goes from 4,305 lines to 281.** All 77
+`pub mod` lines are replaced by `pub mod key_frame;` (the one module zenavif
+calls) plus an `impl_mods!` macro over the remaining 76, expanding to `pub` under
+`__internals` and `pub(crate)` without it. `aom-bench` and `aom-decode` declare
+the feature; `tests/all` carries `required-features` AND the explicit `path`
+(the cargo trap above); `tests/internals_feature_guard.rs` is the non-gated
+anti-KB-42 guard. The blast radius predicted above was real but mechanical —
+every consumer is in-workspace, exactly as the note said.
+
+**AND THE SNAPSHOTS ARE NOW ENFORCED, WHICH THEY WERE NOT — this is the part
+worth keeping.** `docs/public-api/` and `just api-doc-check` existed from
+2026-09-09 and were wired into **NEITHER CI NOR `gate-landing`**. An unenforced
+snapshot is a document, not a gate, and it behaved like one: when the
+enforcement landed **all four crates were stale**, including `aom-dsp`, which had
+silently accreted this cycle's `predict_intra_high_in_place` family and
+`aom_quantize_b_no_qmatrix`'s new `iscan` parameter. `api-doc-check` is now the
+fifth step of `gate-landing` and its own CI job (`public-api`); it needs no C
+oracle, no conformance corpus and no codec build, and **measures 7.7 s**, which
+is why it can sit in a per-landing gate at all.
+
+**The second half of that gate is crates.io publishability, and it found three
+crates that could not have been published** (`apidoc/tests/crates_io_publishable.rs`,
+5 tests): `zenav1-aom`, `zenav1-aom-encode` and `zenav1-aom-decode` carried
+intra-workspace **path dependencies with no version requirement**, which cargo
+rejects outright (*"all dependencies must have a version requirement specified
+when publishing"* — confirmed with `cargo publish --dry-run`, not inferred), and
+`zenav1-aom-encode` had no `repository` field. Fixed in the manifests.
+
+**Why a metadata scan and NOT `cargo publish --dry-run` as the gate:** a first
+publish is bottom-up, and cargo resolves a downstream crate's version
+requirements against the real index — so `--dry-run` on `zenav1-aom-encode`
+cannot succeed until `zenav1-aom-dsp` is actually on crates.io (*"no matching
+package named `zenav1-aom-dsp` found"*). That failure is inherent, not a defect,
+so it cannot be a gate. Everything cargo checks BEFORE it touches the index can
+be, and that is where all three defects lived.
+
+**THE SET OF PUBLISHED CRATES IS PINNED BY NAME, and the reason is the user's:
+a crate cannot be deleted from crates.io.** The stakes are asymmetric — a broken
+manifest costs a retry, whereas publishing a name nobody meant to own, or a
+surface nobody reviewed, is unrecoverable. So `PUBLISHED` is an explicit list
+and a crate joining it takes an edit, not merely dropping `publish = false`.
+Bite-proved five ways, and the asymmetry is informative: four perturbations fail
+exactly one test each, while "a `publish = false` crate becomes publishable"
+fails FOUR at once — the loudest signal for the one mistake that cannot be
+undone.
+
+**Found while wiring the CI job, pre-existing and latent:** three `run:` lines in
+`ci.yml` ended a plain scalar with `:` (e.g. `-- whereat_entries::`), which is
+invalid YAML that GitHub's lenient parser happens to accept — `yaml.safe_load`
+refuses the file at `HEAD`. Quoted, so the workflow can be validated locally
+before it is pushed.
 
 ## Gates (definition of done)
 
@@ -189,6 +237,7 @@ Before pushing any encoder change, run:
 
 ```
 just gate-landing       # = test-next + test-next-scalar + census-gate
+                        #   + test-whereat + api-doc-check
 ```
 
 **This REPLACED the old `gate-encode` + `test-fast` + `test-fast-scalar` trio on

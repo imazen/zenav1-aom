@@ -115,6 +115,7 @@ gate-landing:
     just test-next-scalar
     just census-gate
     just test-whereat
+    just api-doc-check
 
 
 # The census TOOL. `just census-corpus` prints the family table for the four
@@ -236,10 +237,18 @@ arm-dsp-tiers-macos group="":
     mkdir -p "$HOME/tmp"
     CARGO_BUILD_JOBS=4 RAYON_NUM_THREADS=4 OMP_NUM_THREADS=4 TMPDIR="$HOME/tmp" nice -n 19 /usr/bin/time -l cargo bench --locked -p zenav1-aom-dsp-bench --bench dsp_kernels -- --group={{group}} --format=llm > "$HOME/tmp/aom-arm-dsp-tiers.log" 2>&1
 
-# Regenerate the public-API surface snapshots (docs/public-api/)
+# Regenerate the public-API surface snapshots (docs/public-api/) AND run the
+# crates.io publishability scan. Run this after any change to a `pub` item; the
+# snapshots are what a reviewer reads before an IRREVERSIBLE publish, since a
+# crates.io name can never be deleted.
 api-doc:
     cargo test --manifest-path apidoc/Cargo.toml
 
-# Verify the committed snapshots are current
+# The gate half of the pair, wired into `gate-landing`: the committed snapshots
+# must be current AND every crate this workspace would publish must actually be
+# publishable (apidoc/tests/crates_io_publishable.rs). Detached from the parent
+# workspace by apidoc's own empty [workspace] table, so it compiles neither the
+# codec nor rustdoc for it -- measured ~12 s, which is why it can sit in the
+# per-landing gate at all.
 api-doc-check:
     ZEN_API_DOC=check cargo test --manifest-path apidoc/Cargo.toml

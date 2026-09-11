@@ -284,6 +284,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 name = "zenav1-aom-apidoc"
 version = "0.0.0"
 dependencies = [
+ "serde_json",
  "zenutils-apidoc",
 ]
 

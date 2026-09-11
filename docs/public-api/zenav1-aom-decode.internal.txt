@@ -1,5 +1,5 @@
 # zenav1-aom-decode public API — doc(hidden) items and excluded-feature surface
-# excluded features: (none)
+# excluded features: __internals
 # (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
 # Encodings: crate-name prefix stripped; auto traits collapse to a
 # count + exceptions; trait impls collapse to one roster line per
@@ -9,22 +9,36 @@
 
 ## summary
 #
-#   pub modules                                 1
-#   free functions                              8
-#   inherent methods                            7
-#   trait roster entries (type × trait)         7
+#   pub modules                                 4
+#   pub types (struct/enum/trait/alias)         1
+#   pub consts/statics                          2
+#   free functions                             16
+#   inherent methods                           15
+#   struct fields                               3
+#   enum variants                               2
+#   trait roster entries (type × trait)        11
+#   auto-trait-complete types                   1
 #
 # per-module pub lines:
-#   aom_decode                       16
+#   aom_decode                       43
 
-## items (16 lines)
+## items (43 lines)
 
+pub aom_decode::KfTileDecode::recon: aom_decode::plane::ReconPlane
+pub aom_decode::KfTileDecode::recon_u: aom_decode::plane::ReconPlane
+pub aom_decode::KfTileDecode::recon_v: aom_decode::plane::ReconPlane
+pub aom_decode::plane::ReconPlane::HighBd(alloc::vec::Vec<u16>)
+pub aom_decode::plane::ReconPlane::LowBd(alloc::vec::Vec<u8>)
+pub const aom_decode::superres::SCALE_NUMERATOR: i32
+pub enum aom_decode::plane::ReconPlane
 pub fn aom_decode::AllocMode::assert_fields_are_eq(&self)
 pub fn aom_decode::DecodeError::assert_fields_are_eq(&self)
 pub fn aom_decode::DecodeLimits::assert_fields_are_eq(&self)
 pub fn aom_decode::DecodedBlockKf::assert_fields_are_eq(&self)
 pub fn aom_decode::LimitKind::assert_fields_are_eq(&self)
 pub fn aom_decode::TileBoundsKf::assert_fields_are_eq(&self)
+pub fn aom_decode::film_grain::add_film_grain(&aom_dsp::entropy::header::FilmGrainParams, i32, bool, i32, i32, bool, usize, usize, &[u16], &[u16], &[u16]) -> (alloc::vec::Vec<u16>, alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)
+pub fn aom_decode::film_grain::add_film_grain_stop(&aom_dsp::entropy::header::FilmGrainParams, i32, bool, i32, i32, bool, usize, usize, &[u16], &[u16], &[u16], core::option::Option<&dyn enough::Stop>) -> core::result::Result<(alloc::vec::Vec<u16>, alloc::vec::Vec<u16>, alloc::vec::Vec<u16>), enough::reason::StopReason>
 pub fn aom_decode::frame::apply_cdef(&mut aom_decode::KfTileDecode, &aom_decode::KfTileConfig, &aom_dsp::entropy::header::FrameHeaderObu)
 pub fn aom_decode::frame::apply_deblock(&mut aom_decode::KfTileDecode, &aom_decode::KfTileConfig, &aom_dsp::entropy::header::FrameHeaderObu)
 pub fn aom_decode::frame::apply_restoration(&mut aom_decode::KfTileDecode, &aom_decode::KfTileConfig, core::option::Option<&(alloc::vec::Vec<u16>, alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)>, bool)
@@ -33,10 +47,28 @@ pub fn aom_decode::frame::build_lf_inputs(&aom_decode::KfTileDecode, &aom_decode
 pub fn aom_decode::frame::decode_frame_obus_prefilter(&[u8]) -> core::result::Result<(aom_decode::KfTileDecode, aom_decode::KfTileConfig, aom_dsp::entropy::header::FrameHeaderObu), aom_decode::DecodeError>
 pub fn aom_decode::frame::superres_upscale_planes(&[u16], &[u16], &[u16], usize, usize, &aom_decode::KfTileConfig, &aom_dsp::entropy::header::FrameHeaderObu) -> (alloc::vec::Vec<u16>, usize, alloc::vec::Vec<u16>, alloc::vec::Vec<u16>, usize)
 pub fn aom_decode::plane::ReconPlane::assert_fields_are_eq(&self)
+pub fn aom_decode::plane::ReconPlane::clone(&self) -> aom_decode::plane::ReconPlane
+pub fn aom_decode::plane::ReconPlane::eq(&self, &aom_decode::plane::ReconPlane) -> bool
+pub fn aom_decode::plane::ReconPlane::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn aom_decode::plane::ReconPlane::is_empty(&self) -> bool
+pub fn aom_decode::plane::ReconPlane::is_lowbd(&self) -> bool
+pub fn aom_decode::plane::ReconPlane::len(&self) -> usize
+pub fn aom_decode::plane::ReconPlane::px(&self, usize) -> u16
+pub fn aom_decode::plane::ReconPlane::to_u16(&self) -> alloc::vec::Vec<u16>
 pub fn aom_decode::qm::iqmatrix(usize, usize, usize, usize) -> core::option::Option<&'static [u8]>
+pub fn aom_decode::superres::coded_frame_width(i32, i32) -> i32
+pub fn aom_decode::superres::get_upscale_convolve_step(i32, i32) -> i32
+pub fn aom_decode::superres::get_upscale_convolve_x0(i32, i32, i32) -> i32
+pub fn aom_decode::superres::superres_scaled(i32) -> bool
+pub fn aom_decode::superres::upscale_plane(&[u16], usize, &mut [u16], usize, i32, i32, i32, usize, i32)
+pub fn aom_decode::superres::upscale_plane_tiles(&[u16], usize, &mut [u16], usize, i32, i32, i32, &[i32], i32, usize, i32)
+pub mod aom_decode::film_grain
+pub mod aom_decode::plane
 pub mod aom_decode::qm
+pub mod aom_decode::superres
+pub static aom_decode::superres::RESIZE_FILTER_NORMATIVE: [[i16; 8]; 64]
 
-## trait impls (7 types)
+## trait impls (8 types)
 
 aom_decode::AllocMode: TrivialClone
 aom_decode::DecodeLimits: TrivialClone
@@ -45,3 +77,8 @@ aom_decode::LimitKind: TrivialClone
 aom_decode::MvRefCell: TrivialClone
 aom_decode::TileBoundsKf: TrivialClone
 aom_decode::TileBytesKf<'a>: TrivialClone
+aom_decode::plane::ReconPlane: Clone, Debug, Eq, PartialEq
+
+## auto traits
+
+1 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe

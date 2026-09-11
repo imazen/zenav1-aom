@@ -3,6 +3,7 @@ name = "zenav1-aom-encode"
 version = "0.0.1"
 edition = "2024"
 license.workspace = true
+repository.workspace = true
 description = "Encoder composition layer for aom-rs: av1_xform_quant (forward transform + quantize + entropy context), bit-exact vs libaom."
 
 # Keep snapshot docs, the apidoc runner and repo-local session files
@@ -38,7 +39,7 @@ smallvec = "1"
 # reuse notes that lived here (subpel filter tables for aom_upsampled_pred;
 # loop_filter_frame as the LF-search trial primitive; the CDEF-search kernels)
 # still apply — those kernels are now aom_dsp::{convolve,loopfilter,cdef}.
-zenav1-aom-dsp = { path = "../aom-dsp", default-features = false }
+zenav1-aom-dsp = { path = "../aom-dsp", version = "0.0.1", default-features = false }
 # Cooperative cancellation (stop token) — zero-dep, no_std. Same version the
 # decoder depends on so the `dyn Stop` vtable is the same trait; a mismatched
 # major would not type-check across the crate boundary.
@@ -56,6 +57,12 @@ enough = "0.4.4"
 default = ["avx512"]
 avx512 = ["zenav1-aom-dsp/avx512"]
 census = ["zenav1-aom-dsp/census"]
+# Exposes this crate's 76 implementation modules as `pub`. DEFAULT OFF: the
+# external API is `key_frame` alone. In-workspace crates that reach inside
+# declare it, and a `--workspace` build unifies it on, so the harness still
+# runs. NOT a never-disabled feature: `cargo build -p zenav1-aom-encode`
+# genuinely hides them (E0603), which is the whole point.
+__internals = []
 
 [dev-dependencies]
 zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
@@ -85,3 +92,15 @@ zenavif-serialize = { git = "https://github.com/imazen/zenavif-serialize", rev =
 # dependency) -- `zenavif-serialize` above is the precedent for taking a
 # zenavif-family crate as a direct dev-dependency here.
 zenavif-parse = "0.6.2"
+
+# The consolidated harness reaches into this crate's internals, so it requires
+# the `__internals` feature. `internals_feature_guard` is deliberately NOT
+# listed here: it stays unconditional so a build without the feature FAILS
+# loudly instead of reporting green with zero integration tests (KB-42's shape).
+# The explicit `path` is load-bearing -- cargo resolves `name = "all"` to
+# `tests/all.rs`, NOT `tests/all/main.rs`, and without it this section silently
+# does nothing while the harness builds anyway.
+[[test]]
+name = "all"
+path = "tests/all/main.rs"
+required-features = ["__internals"]

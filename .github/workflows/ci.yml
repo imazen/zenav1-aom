@@ -103,7 +103,7 @@ jobs:
       # `aom-bench` opts out via its `c-oracle` feature; the fix is to run it on
       # a leg that already has the oracle, which costs this job ~1 s.
       - name: Located-error entries (whereat feature)
-        run: cargo test -p zenav1-aom-decode --features whereat,__internals --test all -- whereat_entries::
+        run: "cargo test -p zenav1-aom-decode --features whereat,__internals --test all -- whereat_entries::"
 
       # The cancellation-latency gate. `#[ignore]`d in the workspace run because
       # it measures WALL-CLOCK latency, which a parallel test pool cannot
@@ -115,7 +115,7 @@ jobs:
       # `just`, and a step that silently needs a missing tool is worse than a
       # duplicated command line. `justfile`'s recipe is the same invocation.)
       - name: Cancellation latency (isolated timing gate)
-        run: cargo test --profile test-fast -p zenav1-aom-bench --test all -- --ignored --test-threads 1 --nocapture cancel_latency::
+        run: "cargo test --profile test-fast -p zenav1-aom-bench --test all -- --ignored --test-threads 1 --nocapture cancel_latency::"
 
   # SCALAR-PIN mode (Gate-3 parity rule 3): AOM_FORCE_SCALAR disables every
   # archmage SIMD token process-wide (aom_dsp::dispatch), so every kernel
@@ -163,7 +163,7 @@ jobs:
       # its per-CDEF-filter-block-row gaps are ~24 ms, so a flat 20 ms bar could
       # never pass here no matter how finely the decoder polled.)
       - name: Cancellation latency (isolated timing gate, scalar pin)
-        run: cargo test --profile test-fast -p zenav1-aom-bench --test all -- --ignored --test-threads 1 --nocapture cancel_latency::
+        run: "cargo test --profile test-fast -p zenav1-aom-bench --test all -- --ignored --test-threads 1 --nocapture cancel_latency::"
 
   # AARCH64 DIFFERENTIAL — the NEON tier's byte-identity gate, WORKSPACE-WIDE.
   #
@@ -330,6 +330,38 @@ jobs:
       # benchmarks/winperf_family_census_2026-08-03.md).
       - name: Content-family coverage gate (census)
         run: cargo test --release -p zenav1-aom-bench --no-default-features --features census --test content_family_census
+
+  # The public-API surface + crates.io publishability gate. Neither half needs
+  # the C oracle, the conformance corpus, or a codec build, so this is the
+  # cheapest job in the matrix.
+  #
+  # WHY IT IS A GATE AND NOT A CONVENTION: the snapshots under docs/public-api/
+  # existed from 2026-09-09 and were enforced NOWHERE — not here, not in
+  # `just gate-landing` — so they drifted silently. When the enforcement landed
+  # on 2026-09-10 every one of the four crates was stale, and the scan's first
+  # run found three of them could not have been published at all (intra-workspace
+  # path dependencies with no version requirement, which cargo rejects up front).
+  # An unenforced snapshot is a document, not a gate.
+  #
+  # The stakes are asymmetric: a crates.io name is PERMANENT. A broken manifest
+  # costs a retry; publishing a crate nobody meant to own, or a surface nobody
+  # reviewed, cannot be undone.
+  public-api:
+    name: public API surface + crates.io publishability
+    runs-on: ubuntu-latest
+    steps:
+      # No submodules and no oracle: this reads manifests and runs rustdoc.
+      - uses: actions/checkout@v7
+      # zenutils-apidoc builds rustdoc JSON, which is nightly-only. The
+      # publishability scan itself needs no nightly, but one toolchain for the
+      # whole job is simpler than splitting it.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apidoc
+      - name: Snapshots current + every published crate is publishable
+        run: ZEN_API_DOC=check cargo test --manifest-path apidoc/Cargo.toml
 
   # i686 is a primary target (32-bit correctness for WASM compatibility + catching
   # pointer-width bugs, per CLAUDE.md). Built via `cross` (Docker) — same pure-Rust,

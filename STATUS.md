@@ -1,3 +1,59 @@
+## The public-API snapshots were enforced NOWHERE, so all four had drifted — and the publish scan found three crates that could not be published at all (2026-09-10)
+
+`docs/public-api/` and `just api-doc-check` have existed since 2026-09-09. They
+appeared in **neither `.github/workflows/*.yml` nor `just gate-landing`**. An
+unenforced snapshot is a document, not a gate, and it behaved exactly like one:
+the first run of the check as a gate failed on **all four crates**.
+
+**The headline number is the `__internals` gating for `aom-encode`, landed in
+the same change: `zenav1-aom-encode.txt` goes 4,305 lines -> 281.** All 77
+`pub mod` lines become `pub mod key_frame;` (the one module zenavif calls) plus
+an `impl_mods!` macro over the other 76, `pub` under a default-OFF `__internals`
+feature and `pub(crate)` without it — the pattern `aom-decode` landed first,
+including the non-gated `tests/internals_feature_guard.rs` that stops
+`required-features` from silently skipping the whole integration suite (KB-42).
+
+**The drift was not only that landing's.** `aom-dsp` had quietly accreted this
+cycle's `predict_intra_high_in_place` family (KB-PERF-56) and
+`aom_quantize_b_no_qmatrix`'s new `iscan` parameter (KB-PERF-57); `aom-decode`
+had `ReconPlane` and the avx512 feature. None of it was reviewed as a surface
+change, because nothing asked.
+
+**The crates.io half found three real blockers, confirmed with cargo rather than
+inferred from metadata.** `zenav1-aom`, `zenav1-aom-encode` and
+`zenav1-aom-decode` each carried an intra-workspace **path dependency with no
+version requirement**; `cargo publish --dry-run` rejects that outright (*"all
+dependencies must have a version requirement specified when publishing"*).
+`zenav1-aom-encode` also had no `repository`. Fixed in the manifests, and the
+scan additionally pins each requirement to the member's actual version so it
+cannot drift silently to the next publish.
+
+**Why the gate is a metadata scan and not `cargo publish --dry-run`:** a first
+publish is bottom-up, and cargo resolves a downstream crate's requirements
+against the real index — so `--dry-run` on `zenav1-aom-encode` cannot succeed
+until `zenav1-aom-dsp` is actually on crates.io. That failure is inherent, not a
+defect, so it cannot gate. Everything cargo checks BEFORE it touches the index
+can, and all three defects lived there.
+
+**The published SET is pinned by name, because a crates.io name is permanent.**
+The stakes are asymmetric: a broken manifest costs a retry; publishing a name
+nobody meant to own, or a surface nobody reviewed, cannot be undone. So a crate
+joining `PUBLISHED` takes an edit, not merely dropping `publish = false`.
+Bite-proved five ways — four perturbations fail exactly one test each, while "a
+`publish = false` crate becomes publishable" fails FOUR at once, which is the
+right shape for the one mistake that is unrecoverable.
+
+`api-doc-check` is now the fifth step of `gate-landing` and its own CI job. It
+needs no C oracle, no conformance corpus and no codec build: **7.7 s**, which is
+why it can sit in a per-landing gate. Gate green: 1508/1508 in both dispatch
+modes, census 4/4, whereat 4/4, api-doc 6/6.
+
+**Found while wiring the CI job, pre-existing:** three `run:` lines in `ci.yml`
+ended a plain scalar with `:` (`-- whereat_entries::`), which is invalid YAML
+that GitHub's lenient parser happens to accept — `yaml.safe_load` refuses the
+file at `HEAD`. Quoted, so the workflow can now be validated locally before
+being pushed.
+
 ## `aom_quantize_b_no_qmatrix` walks raster order, not scan order — −0.134 % pooled, and the 11.89x kernel is now vectorisable in principle (2026-09-10, KB-PERF-57)
 
 The lever map's "biggest single un-taken kernel left" (+28.7 ms at 11.89x, the

@@ -6,31 +6,29 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-decode.txt 276 lines (supported surface) | zenav1-aom-decode.features.txt 2 added (features: whereat) | zenav1-aom-decode.internal.txt 23 lines (23 hidden + 0 excluded-feature)
+# files: zenav1-aom-decode.txt 257 lines (supported surface) | zenav1-aom-decode.features.txt 2 added (features: avx512,whereat) | zenav1-aom-decode.internal.txt 52 lines (23 hidden + 61 excluded-feature)
 # arch-unique surface: (none — portable on every target)
 
 ## summary
 #
-#   pub modules                                 5
-#   pub types (struct/enum/trait/alias)        17
-#   pub consts/statics                         29
-#   free functions                             27
-#   inherent methods                           20
+#   pub modules                                 2
+#   pub types (struct/enum/trait/alias)        16
+#   pub consts/statics                         27
+#   free functions                             20
+#   inherent methods                           15
 #   struct fields                             142
-#   enum variants                              18
+#   enum variants                              16
 #   trait roster entries (type × trait)        61
 #   auto-trait-complete types                  15
 #   auto-trait exceptions                       1
 #
 # per-module pub lines:
 #   (root)                            2
-#   aom_decode                      256
+#   aom_decode                      236
 
-## items (257 lines)
+## items (238 lines)
 
 pub mod aom_decode
-pub mod aom_decode::film_grain
-pub fn aom_decode::film_grain::add_film_grain(&aom_dsp::entropy::header::FilmGrainParams, i32, bool, i32, i32, bool, usize, usize, &[u16], &[u16], &[u16]) -> (alloc::vec::Vec<u16>, alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)
 pub mod aom_decode::frame
 pub struct aom_decode::frame::FrameDecode
 pub aom_decode::frame::FrameDecode::base_qindex: i32
@@ -70,23 +68,6 @@ pub fn aom_decode::frame::decode_frame_obus_prefilter_with(&[u8], &aom_decode::D
 pub fn aom_decode::frame::decode_frame_obus_with(&[u8], &aom_decode::DecodeConfig<'_>) -> core::result::Result<aom_decode::frame::FrameDecode, aom_decode::DecodeError>
 pub fn aom_decode::frame::decode_frames(&[u8]) -> core::result::Result<alloc::vec::Vec<aom_decode::frame::FrameDecode>, aom_decode::DecodeError>
 pub fn aom_decode::frame::decode_frames_with(&[u8], &aom_decode::DecodeConfig<'_>) -> core::result::Result<alloc::vec::Vec<aom_decode::frame::FrameDecode>, aom_decode::DecodeError>
-pub mod aom_decode::plane
-pub aom_decode::plane::ReconPlane::HighBd(alloc::vec::Vec<u16>)
-pub aom_decode::plane::ReconPlane::LowBd(alloc::vec::Vec<u8>)
-pub fn aom_decode::plane::ReconPlane::is_empty(&self) -> bool
-pub fn aom_decode::plane::ReconPlane::is_lowbd(&self) -> bool
-pub fn aom_decode::plane::ReconPlane::len(&self) -> usize
-pub fn aom_decode::plane::ReconPlane::px(&self, usize) -> u16
-pub fn aom_decode::plane::ReconPlane::to_u16(&self) -> alloc::vec::Vec<u16>
-pub mod aom_decode::superres
-pub const aom_decode::superres::SCALE_NUMERATOR: i32
-pub static aom_decode::superres::RESIZE_FILTER_NORMATIVE: [[i16; 8]; 64]
-pub fn aom_decode::superres::coded_frame_width(i32, i32) -> i32
-pub fn aom_decode::superres::get_upscale_convolve_step(i32, i32) -> i32
-pub fn aom_decode::superres::get_upscale_convolve_x0(i32, i32, i32) -> i32
-pub fn aom_decode::superres::superres_scaled(i32) -> bool
-pub fn aom_decode::superres::upscale_plane(&[u16], usize, &mut [u16], usize, i32, i32, i32, usize, i32)
-pub fn aom_decode::superres::upscale_plane_tiles(&[u16], usize, &mut [u16], usize, i32, i32, i32, &[i32], i32, usize, i32)
 #[non_exhaustive] pub enum aom_decode::AllocMode
 pub aom_decode::AllocMode::Fallible
 pub aom_decode::AllocMode::Infallible
@@ -110,14 +91,14 @@ pub aom_decode::LimitKind::MemoryBytes
 pub aom_decode::LimitKind::Pixels
 pub aom_decode::LimitKind::Width
 pub fn aom_decode::LimitKind::as_str(self) -> &'static str
-pub enum aom_decode::ReconPlane [also: aom_decode::plane]
+pub enum aom_decode::ReconPlane
 pub aom_decode::ReconPlane::HighBd(alloc::vec::Vec<u16>)
 pub aom_decode::ReconPlane::LowBd(alloc::vec::Vec<u8>)
-pub fn aom_decode::plane::ReconPlane::is_empty(&self) -> bool
-pub fn aom_decode::plane::ReconPlane::is_lowbd(&self) -> bool
-pub fn aom_decode::plane::ReconPlane::len(&self) -> usize
-pub fn aom_decode::plane::ReconPlane::px(&self, usize) -> u16
-pub fn aom_decode::plane::ReconPlane::to_u16(&self) -> alloc::vec::Vec<u16>
+pub fn aom_decode::ReconPlane::is_empty(&self) -> bool
+pub fn aom_decode::ReconPlane::is_lowbd(&self) -> bool
+pub fn aom_decode::ReconPlane::len(&self) -> usize
+pub fn aom_decode::ReconPlane::px(&self, usize) -> u16
+pub fn aom_decode::ReconPlane::to_u16(&self) -> alloc::vec::Vec<u16>
 #[non_exhaustive] pub struct aom_decode::DecodeConfig<'a>
 pub aom_decode::DecodeConfig::alloc: aom_decode::AllocMode
 pub aom_decode::DecodeConfig::limits: aom_decode::DecodeLimits
@@ -211,9 +192,9 @@ pub aom_decode::KfTileDecode::frame_mvs: alloc::vec::Vec<aom_decode::MvRefCell>
 pub aom_decode::KfTileDecode::height: usize
 pub aom_decode::KfTileDecode::height_uv: usize
 pub aom_decode::KfTileDecode::lr_units: [alloc::vec::Vec<aom_dsp::entropy::lr::LrUnitInfo>; 3]
-pub aom_decode::KfTileDecode::recon: aom_decode::plane::ReconPlane
-pub aom_decode::KfTileDecode::recon_u: aom_decode::plane::ReconPlane
-pub aom_decode::KfTileDecode::recon_v: aom_decode::plane::ReconPlane
+pub aom_decode::KfTileDecode::recon: aom_decode::ReconPlane
+pub aom_decode::KfTileDecode::recon_u: aom_decode::ReconPlane
+pub aom_decode::KfTileDecode::recon_v: aom_decode::ReconPlane
 pub aom_decode::KfTileDecode::saved_ctx: core::option::Option<alloc::boxed::Box<aom_decode::FrameContexts>>
 pub aom_decode::KfTileDecode::stride: usize
 pub aom_decode::KfTileDecode::stride_uv: usize
@@ -300,11 +281,11 @@ aom_decode::KfTileConfig: Clone, Debug
 aom_decode::KfTileDecode: Clone, Debug
 aom_decode::LimitKind: Clone, Copy, Debug, Eq, PartialEq
 aom_decode::MvRefCell: Clone, Copy, Debug, Default
+aom_decode::ReconPlane: Clone, Debug, Eq, PartialEq
 aom_decode::RefFrame: Clone, Debug
 aom_decode::TileBoundsKf: Clone, Copy, Debug, Eq, PartialEq
 aom_decode::TileBytesKf<'a>: Clone, Copy, Debug
 aom_decode::frame::FrameDecode: Clone, Debug
-aom_decode::plane::ReconPlane: Clone, Debug, Eq, PartialEq
 
 ## auto traits
 

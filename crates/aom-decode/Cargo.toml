@@ -26,7 +26,7 @@ name = "aom_decode"
 [dependencies]
 # Consolidated DSP/entropy kernels (was: aom-cdef/entropy/inter/intra/loopfilter/
 # quant/recon/restore/transform/txb — folded into aom-dsp per GitHub #2).
-zenav1-aom-dsp = { path = "../aom-dsp", default-features = false }
+zenav1-aom-dsp = { path = "../aom-dsp", version = "0.0.1", default-features = false }
 # Cooperative cancellation (stop token) — zero-dep, no_std; threaded through the
 # `*_with` decode entries and polled at SB-row / tile / frame boundaries.
 enough = "0.4.4"
@@ -65,7 +65,7 @@ zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
 # encode->decode roundtrip legitimately needs the encoder. As a dev-dependency
 # the decode LIBRARY no longer depends on aom-encode: the reverse-dependency
 # edge is broken (reconstruct_txb now comes from aom-recon).
-zenav1-aom-encode = { path = "../aom-encode" }
+zenav1-aom-encode = { path = "../aom-encode", features = ["__internals"] }
 
 # The consolidated harness reaches into this crate's internals, so it requires
 # the `__internals` feature. `internals_feature_guard` is deliberately NOT listed
