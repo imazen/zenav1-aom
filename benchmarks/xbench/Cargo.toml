@@ -6,9 +6,20 @@
 # product lock would be a real change to the shipping crates' resolution.
 [workspace]
 resolver = "2"
-members = ["xtool", "drv-aom", "drv-svtrs", "drv-rav1e"]
+members = ["xtool", "drv-aom", "drv-svtrs", "drv-rav1e", "drv-ravif", "encbench"]
 
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
 publish = false
+
+# `zenav1-svt` main needs `u8x16::abs_diff`, which lands in the archmage git
+# rev its own workspace patches to (its `rust/Cargo.toml:100-103`). A cargo
+# workspace resolves ONE version of a shared dependency, so measuring
+# zenav1-svt at main means adopting that rev here too. Bump this stanza in
+# lockstep with the sibling when it moves — a stale rev shows up as a missing
+# method on a magetypes type, not as a version error.
+[patch.crates-io]
+archmage = { git = "https://github.com/imazen/archmage", rev = "cc24398c9a9fee0251722931e295da840730704d" }
+archmage-macros = { git = "https://github.com/imazen/archmage", rev = "cc24398c9a9fee0251722931e295da840730704d" }
+magetypes = { git = "https://github.com/imazen/archmage", rev = "cc24398c9a9fee0251722931e295da840730704d" }

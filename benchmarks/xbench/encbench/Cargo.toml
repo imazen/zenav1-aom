@@ -1,0 +1,27 @@
+[package]
+name = "encbench"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# The zenbench-driven cross-encoder SPEED comparison. Separate from the
+# `drv-*` binaries on purpose: those implement the one-shot timing contract the
+# `scripts/xbench.py` RD sweeps use, while this links every encoder into ONE
+# process so zenbench can interleave them round-robin. That matters here more
+# than in most comparisons — four encoders measured sequentially would each see
+# a differently-warmed CPU, and the slowest arm runs ~20x the fastest.
+[dependencies]
+zenbench = { path = "../../../../zenbench" }
+zenav1-aom-encode = { path = "../../../crates/aom-encode" }
+zenav1-svt-encoder = { path = "../../../../zenav1-svt/rust/crates/svtav1-encoder" }
+zenrav1e = { path = "../../../../zenrav1e", default-features = false }
+ravif = { version = "0.13", default-features = false, features = ["asm"] }
+rgb = "0.8"
+imgref = "1.11"
+
+[[bin]]
+name = "encbench"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3

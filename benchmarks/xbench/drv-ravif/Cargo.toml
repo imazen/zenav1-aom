@@ -1,0 +1,21 @@
+[package]
+name = "drv-ravif"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# The CRATES.IO `ravif` — deliberately NOT the `~/work/zen/ravif` fork and NOT
+# the `zenrav1e` fork `drv-rav1e` measures. This driver answers "what does a
+# Rust user get today from `cargo add ravif`", which is a different question
+# from "how does our fork compare".
+#
+# `threading` is OFF: every driver in this harness is single-threaded by
+# contract. `asm` stays ON — it is rav1e's default and turning it off would
+# measure a configuration nobody ships.
+[dependencies]
+ravif = { version = "0.13", default-features = false, features = ["asm"] }
+rgb = "0.8"
+imgref = "1.11"
+
+[profile.release]
+opt-level = 3

@@ -270,12 +270,186 @@ fn cmd_score(args: &[String]) {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 2 {
-        die("usage: xtool <prep|ivf|score> ...");
+        die("usage: xtool <prep|ivf|score|yuv2rgb|decode|score-rgb> ...");
     }
     match a[1].as_str() {
         "prep" => cmd_prep(&a[2..]),
         "ivf" => cmd_ivf(&a[2..]),
         "score" => cmd_score(&a[2..]),
+        "yuv2rgb" => cmd_yuv2rgb(&a[2..]),
+        "decode" => cmd_decode(&a[2..]),
+        "score-rgb" => cmd_score_rgb(&a[2..]),
         other => die(&format!("unknown subcommand {other}")),
     }
+}
+
+// ------------------------------------------------- format-neutral scoring ---
+//
+// The arms in this harness do NOT agree on chroma format or bit depth —
+// `ravif` codes 4:4:4 and defaults to 10-bit while every AV1-payload driver
+// codes 8-bit 4:2:0 — so a YUV-plane comparison cannot be written at all, let
+// alone written fairly. These three subcommands put every arm through ONE
+// decoder and score in RGB, which is the only space they share.
+//
+//   yuv2rgb  <in.yuv> <out.rgb> <w> <h>   the REFERENCE (what each encoder saw)
+//   decode   <in.obu|in.avif> <out.rgb>   any arm's output -> 8-bit RGB
+//   score-rgb <ref.rgb> <dist.rgb> <w> <h>
+//
+// `decode` reads the matrix coefficients and range the STREAM signals rather
+// than assuming them, because the arms disagree there too: ravif writes BT.601
+// for its YCbCr model, and an Identity/GBR stream is not YCbCr at all.
+
+/// Extract the AV1 payload from an AVIF file's `mdat`, or pass a raw OBU
+/// stream through unchanged. A minimal ISOBMFF top-level box walk — enough for
+/// the single-item, no-alpha files this harness produces, and it fails loudly
+/// rather than guessing on anything else.
+fn av1_payload(bytes: Vec<u8>) -> Vec<u8> {
+    if bytes.len() < 12 || &bytes[4..8] != b"ftyp" {
+        return bytes; // already a bare OBU stream
+    }
+    let mut i = 0usize;
+    while i + 8 <= bytes.len() {
+        let size = u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as usize;
+        let kind = &bytes[i + 4..i + 8];
+        let (body, next) = match size {
+            0 => (i + 8, bytes.len()),              // to end of file
+            1 => die("64-bit box sizes are not handled"),
+            n if n < 8 => die("corrupt box size"),
+            n => (i + 8, i + n),
+        };
+        if kind == b"mdat" {
+            return bytes[body..next.min(bytes.len())].to_vec();
+        }
+        if next <= i {
+            die("box walk made no progress");
+        }
+        i = next;
+    }
+    die("no mdat box found in the AVIF file")
+}
+
+/// Convert a decoded frame to 8-bit RGB using the CICP the stream signals.
+fn frame_to_rgb(f: &aom_decode::frame::FrameDecode) -> Vec<u8> {
+    let (w, h) = (f.width, f.height);
+    let maxv = f64::from((1i32 << f.bit_depth) - 1);
+    let scale = 255.0 / maxv;
+    let mut out = vec![0u8; w * h * 3];
+    // MC 0 = Identity (GBR), 1 = BT.709, 5/6 = BT.601, 2 = unspecified.
+    // `xtool score`'s own reference conversion is BT.709 limited-range, so an
+    // unspecified stream is read that way and the two agree by construction.
+    let (kr, kb) = match f.matrix_coefficients {
+        5 | 6 => (0.299_f64, 0.114_f64),  // BT.601
+        _ => (0.212_6_f64, 0.072_2_f64),  // BT.709 / unspecified
+    };
+    let identity = f.matrix_coefficients == 0;
+    for r in 0..h {
+        for c in 0..w {
+            let o = (r * w + c) * 3;
+            if f.monochrome {
+                let g = (f64::from(f.y[r * w + c]) * scale).round().clamp(0.0, 255.0) as u8;
+                out[o] = g;
+                out[o + 1] = g;
+                out[o + 2] = g;
+                continue;
+            }
+            let ci = (r >> f.subsampling_y) * f.width_uv + (c >> f.subsampling_x);
+            let (yv, uv, vv) = (
+                f64::from(f.y[r * w + c]) * scale,
+                f64::from(f.u[ci]) * scale,
+                f64::from(f.v[ci]) * scale,
+            );
+            let (rr, gg, bb) = if identity {
+                // GBR: plane order is G, B, R (AV1's identity matrix).
+                (vv, yv, uv)
+            } else {
+                let yy = if f.full_range { yv } else { (yv - 16.0) * 255.0 / 219.0 };
+                let (cb, cr) = if f.full_range {
+                    (uv - 128.0, vv - 128.0)
+                } else {
+                    ((uv - 128.0) * 255.0 / 224.0, (vv - 128.0) * 255.0 / 224.0)
+                };
+                let rr = yy + 2.0 * (1.0 - kr) * cr;
+                let bb = yy + 2.0 * (1.0 - kb) * cb;
+                let gg = (yy - kr * rr - kb * bb) / (1.0 - kr - kb);
+                (rr, gg, bb)
+            };
+            out[o] = rr.round().clamp(0.0, 255.0) as u8;
+            out[o + 1] = gg.round().clamp(0.0, 255.0) as u8;
+            out[o + 2] = bb.round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+fn cmd_yuv2rgb(args: &[String]) {
+    if args.len() != 4 {
+        die("usage: yuv2rgb <in.yuv> <out.rgb> <w> <h>");
+    }
+    let w: usize = args[2].parse().unwrap_or_else(|_| die("w"));
+    let h: usize = args[3].parse().unwrap_or_else(|_| die("h"));
+    let (y, u, v) = read_i420(Path::new(&args[0]), w, h);
+    std::fs::write(&args[1], yuv420_to_rgb(&y, &u, &v, w, h))
+        .unwrap_or_else(|e| die(&format!("write: {e}")));
+    println!("W={w} H={h}");
+}
+
+fn cmd_decode(args: &[String]) {
+    if args.len() != 2 {
+        die("usage: decode <in.obu|in.avif> <out.rgb>");
+    }
+    let bytes = std::fs::read(&args[0]).unwrap_or_else(|e| die(&format!("read: {e}")));
+    let payload = av1_payload(bytes);
+    let f = aom_decode::frame::decode_frame_obus(&payload)
+        .unwrap_or_else(|e| die(&format!("decode {}: {e}", args[0])));
+    let rgb = frame_to_rgb(&f);
+    std::fs::write(&args[1], rgb).unwrap_or_else(|e| die(&format!("write: {e}")));
+    println!(
+        "W={} H={} BD={} SS={}{} MC={} RANGE={}",
+        f.width,
+        f.height,
+        f.bit_depth,
+        f.subsampling_x,
+        f.subsampling_y,
+        f.matrix_coefficients,
+        u8::from(f.full_range)
+    );
+}
+
+fn cmd_score_rgb(args: &[String]) {
+    if args.len() != 4 {
+        die("usage: score-rgb <ref.rgb> <dist.rgb> <w> <h>");
+    }
+    let w: usize = args[2].parse().unwrap_or_else(|_| die("w"));
+    let h: usize = args[3].parse().unwrap_or_else(|_| die("h"));
+    let rd = std::fs::read(&args[0]).unwrap_or_else(|e| die(&format!("read ref: {e}")));
+    let dd = std::fs::read(&args[1]).unwrap_or_else(|e| die(&format!("read dist: {e}")));
+    if rd.len() != w * h * 3 || dd.len() != w * h * 3 {
+        die(&format!(
+            "expected {} bytes of RGB each, got {} / {}",
+            w * h * 3,
+            rd.len(),
+            dd.len()
+        ));
+    }
+    let to_ss = |b: &[u8]| -> imgref::ImgVec<[u8; 3]> {
+        imgref::ImgVec::new(b.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(), w, h)
+    };
+    let ss2 = fast_ssim2::compute_ssimulacra2(to_ss(&rd).as_ref(), to_ss(&dd).as_ref())
+        .unwrap_or_else(|e| die(&format!("ssimulacra2: {e:?}")));
+    let to_ba = |b: &[u8]| -> butteraugli::ImgVec<butteraugli::RGB8> {
+        butteraugli::ImgVec::new(
+            b.chunks_exact(3)
+                .map(|c| butteraugli::RGB8 { r: c[0], g: c[1], b: c[2] })
+                .collect(),
+            w,
+            h,
+        )
+    };
+    let bar = butteraugli::butteraugli(
+        to_ba(&rd).as_ref(),
+        to_ba(&dd).as_ref(),
+        &butteraugli::ButteraugliParams::default(),
+    )
+    .unwrap_or_else(|e| die(&format!("butteraugli: {e:?}")));
+    println!("SSIM2={ss2:.6} BA_MAX={:.6} BA_3N={:.6}", bar.score, bar.pnorm_3);
 }
