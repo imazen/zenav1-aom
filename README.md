@@ -50,6 +50,83 @@ Depending on any published crate pulls in **no C toolchain and no `build.rs`** �
 the C libaom oracle is a dev-dependency of the harnesses only, never a normal
 dependency of the shipping crates.
 
+## Feature support at a glance
+
+Three tables: what the **shipping encoder API** does, what the **decoder** does,
+and where **video** stands. "Bit-exact" always means *byte-identical to the
+pinned C libaom v3.14.1 oracle on a named gate*, never "looks right".
+
+Read the first column of the stills-encoder table carefully — it is the one
+distinction this project has repeatedly had to re-learn. A feature can be
+**ported and byte-gated** while not being reachable from
+`aom_encode::key_frame::encode_key_frame`, the self-contained entry point
+zenavif calls. Those rows are marked *harness-only*: the port has them, proven
+against C, but the shipping API exposes no knob for them yet.
+
+### Stills — encoder (ALLINTRA, KEY frame)
+
+| Feature | In `encode_key_frame` | Bit-exact vs libaom | Gate |
+|---|:---:|:---:|---|
+| ALLINTRA KEY, `--cpu-used` 0–9 | ✅ default | ✅ | `self_contained_key_frame` (427/427) |
+| 8 / 10 / 12-bit | ✅ | ✅ | same |
+| 4:2:0 / 4:2:2 / 4:4:4 / monochrome | ✅ | ✅ | same |
+| Coded-lossless (`cq 0`) | ✅ | ✅ | same (189 cq-0 cells) + 248/248 exact reconstruction |
+| Superblock 64 **and** 128 | ✅ | ✅ | same |
+| Single tile + multi-tile (mandatory and requested) | ✅ | ✅ | same |
+| Loop-restoration search (Wiener / SGR) | ✅ default on | ✅ | `lr_restoration_gate` (8/8) |
+| CDEF search | ✅ opt-in | ✅ speeds 0–3 · ⚠️ 4–9 | `encoder_gate_cdef_*` (14/14); speeds 4–9 diverge in the header's `cdef_strengths` only, pinned |
+| **Palette** (screen content) | ✅ default on | ✅ | `screen_content_tools_byte_match_real_aomenc` (54/54, matched oracle) |
+| **IntraBC** (screen content) | ✅ default on | ✅ | same · ⚠️ declined at coded-lossless (documented divergence, pixels unaffected) |
+| Quantization matrices (`--enable-qm`) | ❌ harness-only | ✅ | `qm_encode_witness` (40 cells) |
+| `tune=IQ` / `tune=SSIMULACRA2` bundle | ❌ harness-only | ✅ | `encoder_gate_tune_iq_e2e` (54/54) |
+| Superres, fixed denominator | ❌ harness-only | ✅ | `encoder_gate_superres_*` (13/13 bd8 + 16/16 hbd) |
+| `--deltaq-mode` 2 / 3 / 6, `--delta-lf-mode` | ❌ harness-only | ✅ | `deltaq_mode2_e2e`, `deltaq_mode3_e2e`, `delta_lf_mode_e2e` |
+| Film-grain table inject | ❌ harness-only | ✅ | `film_grain_gate` |
+| Partition / intra-tool / tx-control disable knobs (C8–C11) | ❌ harness-only | ✅ | `toggles_rd_close::toggles_c8..c11` |
+| Screen-tools **trial encode** (`av1_determine_sc_tools_with_encoding`) | ❌ | ❌ unported | scoped in [`PARITY.md`](PARITY.md) C3 |
+| Inter / video encode | ❌ | — | see the video table |
+
+### Stills — decoder
+
+| Feature | Supported | Bit-exact vs libaom | Gate |
+|---|:---:|:---:|---|
+| AV1 intra conformance corpus | ✅ | ✅ | `conformance_corpus`, 235 vectors, byte-identity + golden MD5 |
+| 8 / 10-bit (corpus) · 12-bit | ✅ | ✅ | corpus · port-generated (`config_permutations_decode`) |
+| 4:2:0 (corpus) · 4:2:2 / 4:4:4 / mono | ✅ | ✅ | corpus · port-generated |
+| Superblock 128 · multi-tile · superres | ✅ | ✅ | `real_bitstream` family, `superres_diff` |
+| Superres × multi-tile columns | ✅ | ✅ | `superres_tiles_diff`, 44 real streams |
+| Quantization matrices · segmentation · lossless | ✅ | ✅ | `real_bitstream` family |
+| Palette · IntraBC · `disable_cdf_update` | ✅ | ✅ | `real_bitstream`, `svt_interop_decode_gate` (streams from a *third* encoder) |
+| Film-grain synthesis | ✅ | ✅ | `film_grain_diff` |
+| Resource limits · cancellation · fallible alloc · fuzz | ✅ | n/a | `cancel_latency` (own gate), `fuzz_sweep`, 45k inputs / 0 panics |
+
+**Scope caveat, measured:** the conformance corpus is a deep sweep of *one*
+sequence shape — 233/235 are 4:2:0, all 8- or 10-bit, and **zero** carry
+superres, multi-tile, QM, segmentation, `reduced_tx_set`, 4:2:2, 4:4:4 or
+12-bit. Those axes are held by the port-generated gates above, not by
+conformance. Do not read "the conformance corpus passes" as breadth across the
+format.
+
+### Video (inter frames)
+
+This is an **ALLINTRA (still-picture) port**. Inter is a live track, not
+finished work, and nothing here is a shipping claim.
+
+| Feature | Encode | Decode |
+|---|:---:|:---:|
+| Zero-MV P frame, single superblock | ✅ byte-exact (`inter_e2e_search`) | ✅ |
+| `[KEY, P]` across bd 8/10/12 × 4:2:0/4:2:2/4:4:4/mono | ❌ | ✅ 24/24 cells, 48/48 frames (`highbd_inter_decode_envelope`) |
+| Animated multi-frame tracks | ❌ | ✅ 8/8 tracks, 40/40 shown frames |
+| Nonzero-MV motion compensation | ⚠️ skeleton | ✅ bd8 · ❌ **refused by name** above bd8 |
+| Switchable interpolation-filter rate model | ✅ ported | ✅ |
+| Compound / OBMC / warped motion / global motion | ❌ | partial |
+| GOP structure, rate control beyond fixed-Q, TPL, temporal filtering | ❌ | n/a |
+
+Inter encode's two open items are pinned self-promoting gates:
+`av1_simple_motion_search_term_none` (an unported linear early-termination
+model) and GOOD-usage (`usage=0`) KEY-frame byte-exactness — every landed
+byte gate in this repo is ALLINTRA.
+
 ## Status: early development
 
 This is a work in progress, not yet a drop-in libaom replacement. **Scope: this is
@@ -81,7 +158,9 @@ not finished work. What holds today, measured against the C oracle (state verifi
   configuration-permutation grid (both open-cell lists in
   `crates/aom-bench/tests/config_permutations.rs` have been empty since
   2026-08-02). On real conformance-decoded content it is 30/30 at speed 0 and
-  **58/60 at speeds 1–4** — including partial-superblock (non-64-aligned) frames.
+  **60/60 at speeds 1–4** — including partial-superblock (non-64-aligned) frames
+  (the last two `--cpu-used 3` cq63 cells closed 2026-08-30 with KB-41's
+  search-context CDF shadows).
   Non-default stills knobs are byte-exact too: QM, CDEF search, loop-restoration
   search, SB128, multi-tile, film grain, lossless (at every speed), 10/12-bit,
   `tune=IQ`/SSIMULACRA2, the deltaq modes and the toggle set ([`PARITY.md`](PARITY.md)
@@ -93,19 +172,32 @@ not finished work. What holds today, measured against the C oracle (state verifi
   lists the configuration axes nobody has measured yet, which is where every bug
   closed between 2026-07-30 and 08-03 came from. Inter-frame encode is an early
   skeleton.
-- **Performance — the bar is ≤1.5× C, and it is not met everywhere.** *Decoder:*
+- **Performance — the bar is ≤1.5× C, and it is not met.** *Decoder:*
   met at the 4K headline cells (≈1.22× at cq20, ≈1.19× at cq40); 2K and small
   frames still exceed it — 1.66–1.9× at 2K, up to ~2.4× on tiny,
   entropy-dominated cells ([`benchmarks/gate3_peak_wall_2026-07-25.md`](benchmarks/gate3_peak_wall_2026-07-25.md)).
-  *Encoder:* first profiled on 2026-08-02; five byte-identical levers took it from
-  **10.66× to 3.15×** vs libaom on the study cell (Darwin, 1 MP photo, cq44,
-  `--cpu-used 6`), with Gate 2 holding zero pinned cells throughout. That ratio is
-  a measurement of one cell, not a property of the encoder: on the same content the
-  breadth sweep read 5.64× at `--cpu-used 9` and 7.76× at `--cpu-used 4` (taken
-  2026-08-02 after the first lever, so the last four are not in those two figures —
-  no lever since has been re-measured off the study cell). See
-  [`benchmarks/encoder_hotspot_reprofile_2026-08-02.md`](benchmarks/encoder_hotspot_reprofile_2026-08-02.md)
-  and [`benchmarks/encoder_rotate_reverify_2026-08-03.md`](benchmarks/encoder_rotate_reverify_2026-08-03.md).
+  *Encoder:* **1.94× libaom at 1024×1024, cq27, `--cpu-used 3`** — the preset the
+  zenavif integration actually ships — down from 10.66× when the encoder was first
+  profiled on 2026-08-02, across ~50 byte-identical levers with Gate 2 holding zero
+  pinned cells throughout. **Quote that ratio with its cell AND its speed**: the
+  ratio is not flat across the speed axis, and a figure taken at `--cpu-used 6` on
+  a different box is not comparable. It is a **CPU-time ratio as well as a wall
+  one** (both arms measure 99 % CPU) and both arms are **single-threaded by
+  construction**, so the comparison excludes libaom's threading, which is a real
+  capability this port does not have.
+
+  The remaining gap is **diffuse**: no class is over 26 % of it, and closing every
+  named lever completely would recover ~27 % of what the bar needs
+  ([`benchmarks/encoder_lever_map_s3_2026-09-10.md`](benchmarks/encoder_lever_map_s3_2026-09-10.md)).
+  The route to 1.5× is halving every class gap — breadth, not a list of symbols.
+
+  **Against the backend it would actually replace**, rather than against the bar:
+  measured at the same zenavif config on photographic content, this port is
+  **~10× faster than zenavif's current default AV1 backend at +3.01 SSIMULACRA2
+  and 0.5 % fewer bytes**, and threading the incumbent recovers ~3 % of that at a
+  6 % rate cost
+  ([`benchmarks/encoder_vs_default_backend_2026-09-10.md`](benchmarks/encoder_vs_default_backend_2026-09-10.md)).
+  Both readings are true and they answer different questions.
 
 Every open item is held by a gate that *asserts the divergence is still present*,
 so the moment a fix makes a pinned cell byte-match, its gate fails and the cell is

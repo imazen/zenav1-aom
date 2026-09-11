@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-encode.txt 202 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4804 lines (311 hidden + 7510 excluded-feature)
+# files: zenav1-aom-encode.txt 204 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4804 lines (311 hidden + 7510 excluded-feature)
 # arch-unique surface: aarch64 39
 
 ## summary
@@ -16,7 +16,7 @@
 #   pub consts/statics                          5
 #   free functions                             23
 #   inherent methods                           20
-#   struct fields                              95
+#   struct fields                              97
 #   enum variants                              11
 #   re-exports                                  1
 #   trait roster entries (type × trait)        89
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            2
-#   aom_encode                      176
+#   aom_encode                      178
 
-## items (178 lines)
+## items (180 lines)
 
 pub mod aom_encode
 pub use aom_encode::reconstruct_txb
@@ -82,6 +82,8 @@ pub aom_encode::key_frame::KeyFrameConfig::color: aom_encode::key_frame::ColorDe
 pub aom_encode::key_frame::KeyFrameConfig::cpu_used: i32
 pub aom_encode::key_frame::KeyFrameConfig::cq_level: i32
 pub aom_encode::key_frame::KeyFrameConfig::enable_cdef: bool
+pub aom_encode::key_frame::KeyFrameConfig::enable_intrabc: bool
+pub aom_encode::key_frame::KeyFrameConfig::enable_palette: bool
 pub aom_encode::key_frame::KeyFrameConfig::enable_restoration: bool
 pub aom_encode::key_frame::KeyFrameConfig::height: usize
 pub aom_encode::key_frame::KeyFrameConfig::monochrome: bool

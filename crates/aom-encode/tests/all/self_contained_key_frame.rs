@@ -1050,6 +1050,22 @@ fn cell_cfg(cell: &Cell) -> KeyFrameConfig {
     cfg.tile_columns_log2 = cell.tile_cols_log2;
     cfg.tile_rows_log2 = cell.tile_rows_log2;
     cfg.sb_size_128 = cell.sb128;
+    // **This file's oracle is a palette- and IntraBC-DISABLED libaom** —
+    // `shim_encode_av1_kf` and its `_sb128` / `_tiles` twins all pass
+    // `enable_palette = 0, enable_intrabc = 0` (dec_shim.c:612/635/660). The
+    // port's own defaults are aomenc's (both ON), so the two must be matched
+    // here or the comparison is between two different encoders rather than two
+    // implementations of one.
+    //
+    // That matching is not a weakening: both tools are gated on the frame's
+    // `allow_screen_content_tools`, so on every detector-NEGATIVE cell in this
+    // grid these two lines are inert, and on the detector-positive ones (the
+    // `chk` checkerboards) they are what keeps this a parity test instead of a
+    // tools-on-vs-tools-off size comparison. The screen envelope has its own
+    // gate with a MATCHED palette-enabled oracle:
+    // `screen_content_tools_byte_match_real_aomenc`.
+    cfg.enable_palette = false;
+    cfg.enable_intrabc = false;
     cfg
 }
 
@@ -2292,5 +2308,150 @@ fn coded_lossless_reconstructs_the_source_exactly() {
         "coded_lossless_reconstructs_the_source_exactly: {checked}/{} cells decode to the \
          source exactly, on both decoders",
         cells.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Screen-content tools: palette + IntraBC, against a MATCHED oracle.
+// ---------------------------------------------------------------------------
+
+/// **The screen envelope of `encode_key_frame`, against a libaom configured the
+/// SAME way.**
+///
+/// Every other gate in this file drives `shim_encode_av1_kf`, which hardcodes
+/// `enable_palette = 0, enable_intrabc = 0` (dec_shim.c:612). That made the
+/// 427-cell byte gate blind to the two screen-content tools by construction —
+/// not because they diverged, but because neither side had them. aomenc's real
+/// ALLINTRA defaults turn BOTH on, gated only on the frame's
+/// `allow_screen_content_tools`, so a still-image caller on UI content gets
+/// them and this port's shipping path must too.
+///
+/// This drives `shim_encode_av1_kf_screen_content` with the SAME two knobs the
+/// port is given, so a divergence here is a divergence in the ported palette /
+/// IntraBC search rather than a configuration mismatch.
+///
+/// **Non-vacuity is asserted, in the one way that matters:** each cell requires
+/// the oracle's tools-ON stream to DIFFER from its own tools-OFF stream. A
+/// palette gate on content the detector calls photographic would pass for the
+/// same reason a deleted test passes, and the checkerboard/UI generators here
+/// are chosen so it cannot.
+#[test]
+fn screen_content_tools_byte_match_real_aomenc() {
+    c::ref_init();
+    // Few-colour, highly-repetitive content — what palette and IntraBC exist
+    // for. `Checker` is the extreme (2 colours); the banded variant adds a
+    // handful more plus horizontal self-similarity for the DV search.
+    let ui_sample = |r: usize, col: usize| -> i32 {
+        let band = (r / 12) % 4;
+        let cell = ((r / 8) + (col / 8)) % 2;
+        match (band, cell) {
+            (0, 0) => 16,
+            (0, _) => 235,
+            (1, 0) => 60,
+            (1, _) => 200,
+            (2, 0) => 120,
+            (2, _) => 16,
+            (_, 0) => 235,
+            (_, _) => 60,
+        }
+    };
+
+    let mut checked = 0usize;
+    let mut open: Vec<String> = Vec::new();
+    for &(w, h) in &[(64usize, 64usize), (128, 128), (192, 192)] {
+        for &cq in &[20i32, 32, 50] {
+            for &speed in &[0i32, 3, 6] {
+                for (cnm, ui) in [("chk", false), ("ui", true)] {
+                    let (cw, ch) = (w / 2, h / 2);
+                    let mut y = vec![0u16; w * h];
+                    for r in 0..h {
+                        for col in 0..w {
+                            y[r * w + col] = if ui {
+                                ui_sample(r, col)
+                            } else {
+                                content_sample(Content::Checker, r, col)
+                            }
+                            .clamp(0, 255) as u16;
+                        }
+                    }
+                    let u = vec![128u16; cw * ch];
+                    let v = vec![128u16; cw * ch];
+                    let label = format!("SC_{cnm}_{w}x{h}_cq{cq}_s{speed}");
+
+                    let c_off = c::ref_encode_av1_kf_screen_content(
+                        &y, &u, &v, w, h, 8, false, 1, 1, cq, speed, false, true, 2, 0, false,
+                        false, false,
+                    );
+                    let c_on = c::ref_encode_av1_kf_screen_content(
+                        &y, &u, &v, w, h, 8, false, 1, 1, cq, speed, false, true, 2, 0, false,
+                        true, true,
+                    );
+                    assert!(!c_on.is_empty(), "{label}: C encode failed");
+                    // Anti-vacuity: this cell must actually REACH the tools.
+                    assert_ne!(
+                        c_off, c_on,
+                        "{label}: the oracle codes the SAME stream with the screen tools on and \
+                         off, so this cell cannot witness them — pick content the detector calls \
+                         screen"
+                    );
+
+                    let mut cfg = KeyFrameConfig::allintra_speed0(w, h, 8, false, 1, 1, cq);
+                    cfg.cpu_used = speed;
+                    cfg.enable_restoration = true;
+                    cfg.enable_palette = true;
+                    cfg.enable_intrabc = true;
+                    let port = encode_key_frame(
+                        KeyFramePlanes {
+                            y: &y,
+                            u: &u,
+                            v: &v,
+                        },
+                        &cfg,
+                    )
+                    .unwrap_or_else(|e| panic!("{label}: encode_key_frame refused: {e}"));
+
+                    // CONFORMANCE, not just parity. A screen frame sets
+                    // `allow_intrabc`, which makes `uncompressed_header` SKIP
+                    // loop_filter_params / cdef_params / lr_params; emitting
+                    // them anyway desynchronises the tile group in the same
+                    // OBU_FRAME, and that is a corrupt stream rather than a
+                    // larger one. This port shipped exactly that bug until the
+                    // matched-oracle comparison above exposed it as a constant
+                    // +3 bytes over a byte-IDENTICAL tile payload, so the
+                    // decode leg is what keeps it closed. KB-29 / KB-33 are the
+                    // standing precedent that an IntraBC stream can be wrong in
+                    // a way only a real decoder sees.
+                    let c_dec = c::ref_decode_av1_kf(&port, w, h);
+                    let p_dec = aom_decode::frame::decode_frame_obus(&port)
+                        .unwrap_or_else(|e| panic!("{label}: port decode of its own stream: {e}"));
+                    assert_eq!(
+                        (&p_dec.y, &p_dec.u, &p_dec.v),
+                        (&c_dec.y, &c_dec.u, &c_dec.v),
+                        "{label}: port-decode(port stream) != real-C-decode(port stream)"
+                    );
+
+                    checked += 1;
+                    if port != c_on {
+                        open.push(format!(
+                            "{label}: port {} bytes vs C {} bytes (tools-off C is {})",
+                            port.len(),
+                            c_on.len(),
+                            c_off.len()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 0, "the screen grid must not be empty");
+    println!("screen-tools parity: {}/{checked} byte-exact", checked - open.len());
+    for o in &open {
+        println!("  {o}");
+    }
+    assert!(
+        open.is_empty(),
+        "{} of {checked} screen-content cells diverge from a MATCHED palette+IntraBC libaom:\n{}",
+        open.len(),
+        open.join("\n")
     );
 }

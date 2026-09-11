@@ -296,6 +296,28 @@ pub struct KeyFrameConfig {
     /// CICP colour description + pixel range. See [`ColorDescription`];
     /// [`Default`] reproduces the historical hardcode byte-for-byte.
     pub color: ColorDescription,
+    /// `AV1E_SET_ENABLE_PALETTE` — real aomenc's default is **1**
+    /// (`av1_cx_iface.c`'s `default_extra_cfg.enable_palette`), and the
+    /// ALLINTRA override does not touch it.
+    ///
+    /// The knob only ENABLES the palette RD search; whether any block reaches
+    /// it is still gated on the frame's `allow_screen_content_tools`, exactly
+    /// as C gates it (`av1_allow_palette`, blockd.h:1503). So on photographic
+    /// content this field is inert by construction — the screen detector
+    /// decides.
+    pub enable_palette: bool,
+    /// `AV1E_SET_ENABLE_INTRABC` — real aomenc's default is **1**, and like
+    /// [`Self::enable_palette`] it is gated on the screen decision
+    /// (`rd_pick_intrabc_mode_sb`'s frame-wide bail, rdopt.c:3432-3434, which
+    /// also drops the search at `rt_sf.use_nonrd_pick_mode`, i.e. speed >= 8).
+    ///
+    /// **Cost note, measured rather than assumed:** the IntraBC DV search is
+    /// the port's most expensive stage on screen content (KB-41 records
+    /// ~80 s per 1 MP at `--cpu-used 6`). A caller that wants screen-content
+    /// compression without that latency can leave this `false` and keep
+    /// [`Self::enable_palette`] — palette carries most of the win on UI
+    /// content and costs far less.
+    pub enable_intrabc: bool,
 }
 
 impl KeyFrameConfig {
@@ -330,6 +352,11 @@ impl KeyFrameConfig {
             tile_rows_log2: 0,
             sb_size_128: false,
             color: ColorDescription::default(),
+            // aomenc's own ALLINTRA defaults. Both are gated on the frame's
+            // screen-content decision, so they are inert on photographic
+            // content and this is not a change to the photographic envelope.
+            enable_palette: true,
+            enable_intrabc: true,
         }
     }
 
@@ -1110,10 +1137,12 @@ pub fn derive_frame_header(
         },
         allow_screen_content_tools: sct.allow_screen_content_tools,
         superres_scaled: false,
-        // `allow_intrabc` is the SEARCH-time decision, flipped to 0 after the
-        // frame when no block used IntraBC (encodeframe.c:2442). This shell
-        // runs no IntraBC search, so the coded bit is 0; the search-time value
-        // still rides in `sct.allow_intrabc` for the caller.
+        // `allow_intrabc` is decided AFTER the frame: C sets the header bit
+        // from `cpi->intrabc_used` at the end of `av1_encode_frame`
+        // (encodeframe.c:2442), so a header derived BEFORE the search cannot
+        // know it. `encode_key_frame` overwrites this from its own winner trees
+        // once phase 1 has run, exactly as it does for `tx_mode_select`; the
+        // SEARCH-time decision rides in `sct.allow_intrabc` throughout.
         allow_intrabc: false,
         frame_size: FrameSizeHeader {
             frame_size_override: false,
@@ -1677,6 +1706,12 @@ pub fn encode_key_frame_with(
     let mut p = derive_frame_header(cfg, &seq, &sct, tile_info);
     let qindex = p.quant.base_qindex;
     let coded_lossless = p.coded_lossless;
+    // `av1_allow_palette` (blockd.h:1503) is `allow_screen_content_tools &&
+    // enable_palette && bsize in [BLOCK_8X8, 64x64]` — the frame-level half is
+    // these two, and the per-block half lives in the search. On a
+    // detector-negative (photographic) frame this is `false` and every palette
+    // path below is inert by construction.
+    let search_palette = sct.allow_screen_content_tools && cfg.enable_palette;
 
     // ---- quantizer + cost tables -----------------------------------------
     let mut quants = Quants::zeroed();
@@ -1793,6 +1828,78 @@ pub fn encode_key_frame_with(
         deltaq: None,
     };
     let pol = sf.tx_type_search_policy(false, 0); // (skip_trellis, sharpness)
+
+    // ---- IntraBC (screen content) -----------------------------------------
+    // `rd_pick_intrabc_mode_sb`'s frame-wide gates (rdopt.c:3432-3434):
+    // `!av1_allow_intrabc(cm) || !enable_intrabc || !mv_sf.use_intrabc ||
+    // rt_sf.use_nonrd_pick_mode` -> no DV search for any block. The SEARCH-time
+    // `allow_intrabc` (`sct.allow_intrabc`) is a separate quantity from the
+    // header bit: C decides it BEFORE the frame from the detector
+    // (encoder.c:2416) and only flips the HEADER to 0 afterwards if no block
+    // used IntraBC (encodeframe.c:2442). KB-41 roots #7/#8/#10 — the search-time
+    // value is what every intra candidate pays `intrabc_cost[0]` against and
+    // what `update_stats` adapts the CDF with, so it must survive that flip.
+    let search_allow_intrabc = sct.allow_intrabc;
+    let run_intrabc_search = search_allow_intrabc
+        && cfg.enable_intrabc
+        && sf.mv_sf.use_intrabc
+        && !sf.use_nonrd_pick_mode
+        // DIVERGENCE, measured and bounded — see the module docs' "Not yet
+        // wired". C runs IntraBC at coded-lossless too, dispatching the coeff
+        // arm to `av1_pick_uniform_tx_size_type_yrd` instead of the recursive
+        // var-tx one (`av1_txfm_search`, tx_search.c:3824: `tx_mode_search_type
+        // == TX_MODE_SELECT && !xd->lossless[..]`). The port has no INTER
+        // uniform-tx arm, so its IntraBC coeff path is var-tx-only and fires a
+        // `lossless forces TX_4X4` assertion there. Declining the SEARCH at
+        // lossless is the bounded choice: a lossless frame reconstructs to the
+        // source either way, so this can only cost SIZE on cq-0 screen
+        // content, never a pixel — and it is a divergence rather than a
+        // refusal, so no caller-reachable configuration is rejected.
+        && !coded_lossless;
+    // `av1_init_search_range(AOMMAX(w, h))` (mcomp.c) — the DV search's step
+    // parameter.
+    let init_search_range = |size: i32| -> usize {
+        let size = size.max(16);
+        let mut sr = 0usize;
+        while (size << sr) < 1023 {
+            sr += 1;
+        }
+        sr.min(9)
+    };
+    // The hash table is built ONCE from the SOURCE luma: C sets
+    // `xd->plane[i].pre[0]` from `xd->cur_buf`, and `xd->cur_buf = cpi->source`
+    // (encoder.c:4121), so both the hash candidates and the full-pel search
+    // measure against the SOURCE, not the reconstruction (KB-15 root #5 — the
+    // port had this wrong once and a source-clone recon initialization masked
+    // it everywhere the referenced region was not yet written).
+    let ibc_hash = run_intrabc_search.then(|| {
+        crate::intrabc_search::build_intrabc_hash_table(&src_y, 0, stride, w, h, bd > 8, 64)
+    });
+    let kf_init = KfFrameContext::default_for_qindex(qindex);
+    let ibc_dv_costs = ibc_hash.as_ref().map(|_| {
+        crate::intrabc_search::fill_dv_costs(
+            &kf_init.ndvc_joints,
+            &kf_init.ndvc_comp0,
+            &kf_init.ndvc_comp1,
+        )
+    });
+    let ibc_txfm_costs = crate::intrabc_search::fill_txfm_partition_costs(
+        &crate::intrabc_search::DEFAULT_TXFM_PARTITION_CDF,
+    );
+    let ibc_frame = match (ibc_hash.as_ref(), ibc_dv_costs.as_ref()) {
+        (Some(hash), Some(dv_costs)) => Some(crate::partition_pick::IntrabcFrameCfg {
+            hash,
+            dv_costs,
+            txfm_partition_costs: ibc_txfm_costs,
+            // KB-15 root-3 class: `error_per_bit` is recomputed per block from
+            // `x->rdmult`, not taken from the frame-init value.
+            error_per_bit: (rdmult >> 6).max(1),
+            sad_per_bit: crate::rd::av1_set_sad_per_bit(qindex, bd),
+            mv_step_param: init_search_range(w.max(h) as i32),
+            mv_sf: sf.mv_sf,
+        }),
+        _ => None,
+    };
     let pick_cfg = PickFrameCfg {
         // KB-32: carry the RESOLVED frame-level variance-partition values down
         // rather than letting the walk re-derive them from mi-ALIGNED dims.
@@ -1807,8 +1914,8 @@ pub fn encode_key_frame_with(
             is_4k_or_larger: w.min(h) >= 2160,
         },
         inter: None,
-        intrabc: None,
-        search_allow_intrabc: false,
+        intrabc: ibc_frame,
+        search_allow_intrabc,
         intra_tools: Default::default(),
         mode_costs: &real.mode_costs,
         tx_size_costs: &real.tx_size_costs,
@@ -1844,8 +1951,11 @@ pub fn encode_key_frame_with(
         enable_ab_partitions: true,
         allow_screen_content_tools: sct.allow_screen_content_tools,
         qm_levels: None,
-        // `--enable-palette=0` (the shim's config): no palette search.
-        palette_costs: None,
+        // `av1_allow_palette`'s frame-level half. `real.palette_costs` is always
+        // built; handing it to the search is what turns the RD arm on, and the
+        // per-SB refresh in `pack.rs` re-derives it from the ADAPTING search-ctx
+        // palette CDFs (KB-41 root #23 — the frame-init table is only SB 0's).
+        palette_costs: search_palette.then_some(&real.palette_costs),
     };
 
     // ---- phase 1: search + encode (bits discarded) ------------------------
@@ -1865,8 +1975,13 @@ pub fn encode_key_frame_with(
         delta_q_present: false,
         delta_q_res: 0,
         allow_screen_content_tools: sct.allow_screen_content_tools,
-        allow_intrabc: false,
-        search_allow_intrabc: false,
+        // DURING `av1_encode_frame` the frame's `allow_intrabc` is still the
+        // SEARCH-time decision — the flip to 0 happens at its very end
+        // (encodeframe.c:2442), after this walk. So phase 1 writes the
+        // `use_intrabc` flag exactly where C's encode pass writes it, and the
+        // final pack below uses the flipped bit instead.
+        allow_intrabc: search_allow_intrabc,
+        search_allow_intrabc,
         search_tx_mode_is_select,
     };
     // Tile geometry in raster (tile-row-major) order:
@@ -1953,6 +2068,25 @@ pub fn encode_key_frame_with(
     let splits = txb_split_count(&trees, mi_rows, mi_cols, n_sb_x, sb_mi, sb_block);
     p.tx_mode_select = search_tx_mode_is_select && splits > 0;
 
+    // `av1_encode_frame`'s closing flip (encodeframe.c:2442): the header codes
+    // `allow_intrabc = 1` only if a block ACTUALLY used IntraBC. Exactly the
+    // same shape as `tx_mode_select` above — a header field the search decides
+    // and the pack then writes — which is why both are set here off this port's
+    // own winner trees rather than guessed before the walk.
+    p.allow_intrabc = search_allow_intrabc && trees.iter().any(SbTree::any_intrabc);
+    // `uncompressed_header` SKIPS loop_filter_params, cdef_params and
+    // lr_params entirely when `allow_intrabc` is set (`write_uncompressed_header`
+    // gates all three; the DECODER skips them the same way). The three sub-header
+    // structs carry their own copy of the bit, so failing to propagate it here
+    // does not merely mis-size the header — it emits three syntax elements the
+    // decoder never reads, desynchronising the tile group that follows in the
+    // same OBU_FRAME. Caught by `screen_content_tools_byte_match_real_aomenc`
+    // as a constant +3 bytes with a byte-IDENTICAL tile payload, which is the
+    // signature of a header-length bug rather than an RD divergence.
+    p.loopfilter.allow_intrabc = p.allow_intrabc;
+    p.cdef.allow_intrabc = p.allow_intrabc;
+    p.restoration.allow_intrabc = p.allow_intrabc;
+
     // ---- loop-filter level: derived from THIS port's reconstruction -------
     let mi_grid = build_lf_mi_grid(&trees, mi_rows, mi_cols, n_sb_x, sb_mi, sb_block);
     let lf_frame = LfSearchFrame {
@@ -1996,9 +2130,20 @@ pub fn encode_key_frame_with(
     } else {
         pick_filter_level(&lf_frame, true, 0, speed >= 4)
     };
-    p.loopfilter.filter_level = derived_lf.filter_level;
-    p.loopfilter.filter_level_u = derived_lf.filter_level_u;
-    p.loopfilter.filter_level_v = derived_lf.filter_level_v;
+    // `loopfilter_frame` is wrapped whole in `if (!cm->features.allow_intrabc)`
+    // (encoder.c:3780), so an IntraBC frame never runs `av1_pick_filter_level`
+    // and keeps `cm->lf`'s zeroed levels — the DECODER applies the same rule, so
+    // deriving a level here would be a divergence, not a refinement. KB-41
+    // root #14 is the other half of the same gate (the LR stage below).
+    if p.allow_intrabc {
+        p.loopfilter.filter_level = [0, 0];
+        p.loopfilter.filter_level_u = 0;
+        p.loopfilter.filter_level_v = 0;
+    } else {
+        p.loopfilter.filter_level = derived_lf.filter_level;
+        p.loopfilter.filter_level_u = derived_lf.filter_level_u;
+        p.loopfilter.filter_level_v = derived_lf.filter_level_v;
+    }
 
     // ---- post-filter stages: deblock -> CDEF -> loop restoration ----------
     // C's order (`encoder.c` `loopfilter_frame` -> `cdef_restoration_frame`):
@@ -2229,6 +2374,13 @@ pub fn encode_key_frame_with(
     // when the flip removed the coded symbol (KB-42).
     let pack_cfg = PackCfg {
         tx_mode_is_select: p.tx_mode_select,
+        // The FINAL header bit, after `av1_encode_frame`'s flip. When the search
+        // ran with IntraBC allowed but no block took it, this is false while
+        // `search_allow_intrabc` stays true — which is exactly the asymmetry
+        // `PackCfg::search_allow_intrabc` exists for (KB-41 root #8): the writer
+        // codes no `use_intrabc` symbol, and the pack still adapts `kf.intrabc`
+        // with the symbol C's `update_stats` adapted during the search.
+        allow_intrabc: p.allow_intrabc,
         ..phase1_pack_cfg
     };
     let mut recon2_y = src_y.clone();
