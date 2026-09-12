@@ -114,6 +114,7 @@ mod sum_squares_diff;
 mod trellis_cost_diff;
 mod txb_diff;
 mod txb_init_levels_simd_diff;
+mod txb_nz_map_simd_diff;
 mod txfm1d_diff;
 mod txfm2d_diff;
 mod txfm2d_simd_perm_diff;

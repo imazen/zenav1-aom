@@ -405,8 +405,33 @@ pub(crate) fn padded_idx(idx: usize, bhl: u32) -> usize {
 /// coefficient of a transform block. `scan` is the (tx_size, tx_type) scan
 /// order (transposed positions); writes `coeff_contexts[scan[i]]` for
 /// `i < eob` and touches nothing else.
+///
+/// v3 runs the raster-tile port of `av1_get_nz_map_contexts_sse2`
+/// (`simd::nz_map_contexts_impl`): it computes every raster position into a
+/// stack scratch, then scatters the `eob` scan positions — same write
+/// footprint as the scalar walk, pinned byte-for-byte by
+/// `txb_diff::txb_kernels_byte_identical`.
 #[inline]
 pub fn get_nz_map_contexts(
+    levels: &[u8],
+    scan: &[i16],
+    eob: usize,
+    tx_size: usize,
+    tx_class: TxClass,
+    coeff_contexts: &mut [i8],
+) {
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    archmage::incant!(
+        simd::nz_map_contexts_impl(levels, scan, eob, tx_size, tx_class, coeff_contexts),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+/// The scalar core of `av1_get_nz_map_contexts_c` — also the every-tier
+/// fallback inside `simd::nz_map_contexts_impl` (non-v3 tiers and
+/// `AOM_FORCE_SCALAR` route here verbatim).
+#[inline]
+pub(crate) fn nz_map_contexts_scalar(
     levels: &[u8],
     scan: &[i16],
     eob: usize,
