@@ -116,6 +116,7 @@ fn dir_highbd_simd_bit_identical_to_scalar_at_every_tier() {
     let _serial = crate::dispatch_serial::dispatch_serial();
     let mut simd_perms = 0usize;
     let (mut z1_vec, mut z2_vec, mut z3_vec) = (0usize, 0usize, 0usize);
+    let mut z3_vec_up = 0usize;
     let report = for_each_token_permutation(CompileTimePolicy::Warn, |_tier| {
         if if cfg!(target_arch = "aarch64") {
             archmage::NeonToken::summon().is_some()
@@ -182,6 +183,9 @@ fn dir_highbd_simd_bit_identical_to_scalar_at_every_tier() {
                                     if upl == 0 && bh >= 8 && bd == 8 {
                                         z3_vec += 1;
                                     }
+                                    if upl == 1 && bh >= 8 && bd == 8 {
+                                        z3_vec_up += 1;
+                                    }
                                     assert_eq!(
                                         got, want,
                                         "z3 {bw}x{bh} stride={stride} up={upl} angle={angle} \
@@ -196,7 +200,7 @@ fn dir_highbd_simd_bit_identical_to_scalar_at_every_tier() {
         }
     });
     eprintln!(
-        "dir highbd i16 parity: {report}  (shape-eligible bd8 cells z1={z1_vec} z2={z2_vec} z3={z3_vec})"
+        "dir highbd i16 parity: {report}  (shape-eligible bd8 cells z1={z1_vec} z2={z2_vec} z3={z3_vec} z3_up={z3_vec_up})"
     );
     assert!(
         simd_perms >= 1,
@@ -210,6 +214,11 @@ fn dir_highbd_simd_bit_identical_to_scalar_at_every_tier() {
     assert!(
         z1_vec > 0 && z2_vec > 0 && z3_vec > 0,
         "no shape-eligible bd8 cells in the grid: z1={z1_vec} z2={z2_vec} z3={z3_vec}"
+    );
+    assert!(
+        z3_vec_up > 0,
+        "no upsample-left bd8 cells in the grid: the z3 up==1 arm is \
+         untested if this is zero"
     );
 }
 

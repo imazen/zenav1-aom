@@ -214,7 +214,9 @@ pub(crate) fn z2_vec_applies(above: &EdgeRef16, bw: usize, up_above: i32) -> boo
 /// The z3 vector-path predicate.
 pub(crate) fn z3_vec_applies(left: &EdgeRef16, bw: usize, bh: usize, up: i32) -> bool {
     let max_base_y = ((bw + bh) as i32 - 1) << up;
-    up == 0 && bh >= MIN_VEC_RUN && span_fits_i16(left.data(), left.idx(0), left.idx(max_base_y))
+    (0..=1).contains(&up)
+        && bh >= MIN_VEC_RUN
+        && span_fits_i16(left.data(), left.idx(0), left.idx(max_base_y))
 }
 
 /// `av1_highbd_dr_prediction_z1_c` (dy == 1, dx > 0). Highbd analogue of [`z1`];
@@ -445,7 +447,7 @@ pub fn z3_high(
         z3_high_scalar(dst, stride, bw, bh, left, up, dy);
         return;
     }
-    // up == 0 under the gate: column-major taps + transposed stores, ONE
+    // up <= 1 under the gate: column-major taps + transposed stores, ONE
     // dispatch for the whole block (dir_simd::z3_cols).
     crate::intra::dir_simd::z3_cols(
         dst,
@@ -455,6 +457,7 @@ pub fn z3_high(
         left.data(),
         left.idx(0),
         dy,
+        up,
     );
 }
 
@@ -504,7 +507,8 @@ mod reach {
     use super::*;
 
     const PAD: usize = 16;
-    const BUF: usize = 160;
+    // Must hold pad + max_base_y for up == 1 too: 16 + 2*(64+64-1) = 270.
+    const BUF: usize = 272;
     const TX_DIMS: [(usize, usize); 19] = [
         (4, 4),
         (8, 8),
@@ -552,15 +556,17 @@ mod reach {
                 }
             }
         }
-        // 19 shapes x {up=0, up=1}. `up == 1` never vectorizes (stride-2
-        // gather), so the ceiling is 19 each.
+        // 19 shapes x {up=0, up=1}. z1's `up == 1` arm stays scalar (stride-2
+        // gather over `above`), so its ceiling is 19; z3 admits `up <= 1` via
+        // the pshufb even/odd deinterleave, so its ceiling is 38.
         // z1/z3 additionally need the vectorized dimension >= MIN_VEC_RUN: the
         // THREE shapes with bw == 4 ((4,4), (4,8), (4,16)) decline for z1, and
-        // the three with bh == 4 ((4,4), (8,4), (16,4)) for z3.
+        // the three with bh == 4 ((4,4), (8,4), (16,4)) for z3 — in BOTH up
+        // arms for z3.
         assert_eq!((z1n, z1d), (16, 3), "z1 admitted/declined at bd8");
         assert_eq!(z2n, 19, "z2 admitted at bd8 (no width floor: the run length \
                              varies per row, so the length test is per-run)");
-        assert_eq!((z3n, z3d), (16, 3), "z3 admitted/declined at bd8");
+        assert_eq!((z3n, z3d), (32, 3), "z3 admitted/declined at bd8");
     }
 
     #[test]
@@ -571,11 +577,15 @@ mod reach {
         assert!(z1_vec_applies(&e, 16, 16, 0));
         assert!(z2_vec_applies(&e, 16, 0));
         assert!(z3_vec_applies(&e, 16, 16, 0));
+        assert!(z3_vec_applies(&e, 16, 16, 1));
         buf[PAD + 5] = 1024;
         let e = EdgeRef16::new(&buf, PAD);
         assert!(!z1_vec_applies(&e, 16, 16, 0), "1024 must decline");
         assert!(!z2_vec_applies(&e, 16, 0), "1024 must decline");
         assert!(!z3_vec_applies(&e, 16, 16, 0), "1024 must decline");
+        // up == 1 doubles the indexed span (max_base_y << 1) — the same
+        // over-bound sample still sits inside it and must still decline.
+        assert!(!z3_vec_applies(&e, 16, 16, 1), "1024 must decline");
         // A bd12-range edge declines everywhere.
         let buf = vec![4095u16; BUF];
         let e = EdgeRef16::new(&buf, PAD);
@@ -583,6 +593,7 @@ mod reach {
             assert!(!z1_vec_applies(&e, bw, bh, 0));
             assert!(!z2_vec_applies(&e, bw, 0));
             assert!(!z3_vec_applies(&e, bw, bh, 0));
+            assert!(!z3_vec_applies(&e, bw, bh, 1));
         }
     }
 }

@@ -374,17 +374,25 @@ fn z2_left_gather_impl(
 /// The column compute is [`two_tap_run_impl`]'s i16-lane recipe verbatim —
 /// `(v0 << 5) + (v1 - v0) * s + 16, >> 5` — exact because the caller's
 /// `span_fits_i16` gate bounds every tap by `I16_TAP_MAX` (the convex-combo
-/// bound it documents). Sub-8 tails use `two_tap_run_scalar`; the fill is the
-/// same `edge[pad + max_base_y]` the scalar loop writes. The transpose only
-/// MOVES lanes.
+/// bound it documents). Partial bands and the row/column tails use the scalar
+/// recipe; the fill is the same `edge[pad + max_base_y]` the scalar loop
+/// writes. The transpose only MOVES lanes.
+///
+/// # `up == 1` (upsampled left edge)
+///
+/// Taps step by `base_inc = 2` down the edge, so a full band's `a0`/`a1` are
+/// the even/odd u16 lanes of ONE contiguous 16-element read — two `pshufb`s
+/// plus an `unpacklo_epi64` each, the same trick C's `HighbdEvenOddMaskx4`
+/// masks use in `highbd_dr_prediction_z1_*_internal_avx2`. The per-column
+/// `shift` is `((y << up) & 0x3F) >> 1` as in the scalar.
 ///
 /// # Bounds
 ///
-/// A vector band reads `edge[pad + base + r ..= pad + base + r + 8]`; with
-/// `r + 8 <= n_act` that tops out at `pad + max_base_y + 1 <= edge.len()`,
-/// which the gate's `hi < edge.len()` already guarantees — so no per-band
-/// guard is needed and the kernel adds no panic the scalar path lacks.
-/// `bw % 8 == 4` blocks (the 4-wide tx sizes) take a scalar column tail.
+/// A vector band reads `edge[pad + base + r*inc ..= +7*inc + 1]`; a full band
+/// (`r0 + 8 <= n_act`) tops out at `pad + max_base_y`, which the gate's
+/// `hi < edge.len()` already guarantees — so no per-band guard is needed and
+/// the kernel adds no panic the scalar path lacks. `bw % 8 == 4` blocks (the
+/// 4-wide tx sizes) take a scalar column tail.
 #[cfg(target_arch = "x86_64")]
 #[magetypes(define(i16x8), v3, -scalar)]
 fn z3_cols_impl(
@@ -396,6 +404,7 @@ fn z3_cols_impl(
     edge: &[u16],
     pad: usize,
     dy: i32,
+    up: i32,
 ) {
     use archmage::intrinsics::x86_64::*;
 
@@ -431,10 +440,17 @@ fn z3_cols_impl(
         ]
     };
 
-    let max_base_y = (bw + bh) as i32 - 1;
+    let frac_bits = 6 - up;
+    let base_inc = 1usize << up;
+    let max_base_y = ((bw + bh) as i32 - 1) << up;
     let fillv = edge[pad + max_base_y as usize];
     let fill = _mm_set1_epi16(fillv as i16);
     let sixteen = _mm_set1_epi16(16);
+    // Stride-2 gather masks (up == 1): the low u64 of each pshufb result
+    // picks the even / odd u16 lanes of one 8-lane load; the high u64 is
+    // zeroed and discarded by the unpacklo_epi64 pair below.
+    let ev = _mm_setr_epi8(0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1);
+    let od = _mm_setr_epi8(2, 3, 6, 7, 10, 11, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1);
 
     // Per 8-column group: each column's band lives in a register — no scratch
     // round trip. `base`/`shift`/`n_act` are scalar per column (they differ per
@@ -446,13 +462,14 @@ fn z3_cols_impl(
         let mut n_acts = [0usize; 8];
         for k in 0..8 {
             let y = dy * (c0 + k + 1) as i32;
-            let base = y >> 6;
+            let base = y >> frac_bits;
             bases[k] = base as usize;
-            shifts[k] = ((y & 0x3F) >> 1) as i16;
+            shifts[k] = (((y << up) & 0x3F) >> 1) as i16;
             n_acts[k] = if base >= max_base_y {
                 0
             } else {
-                bh.min((max_base_y - base) as usize)
+                // Rows are active while base + r*base_inc < max_base_y.
+                bh.min(((max_base_y - base) as usize + base_inc - 1) / base_inc)
             };
         }
         let mut r0 = 0usize;
@@ -460,13 +477,32 @@ fn z3_cols_impl(
             let cols: [__m128i; 8] = core::array::from_fn(|k| {
                 let n_act = n_acts[k];
                 if r0 + 8 <= n_act {
-                    // Full band: reads edge[pad+base+r0 ..= pad+base+r0+8],
-                    // in bounds under the gate (see Bounds above).
-                    let b0 = pad + bases[k] + r0;
-                    let a: &[u16; 8] = edge[b0..b0 + 8].try_into().unwrap();
-                    let b: &[u16; 8] = edge[b0 + 1..b0 + 9].try_into().unwrap();
-                    let v0 = _mm_loadu_si128(a);
-                    let v1 = _mm_loadu_si128(b);
+                    // Full band — all eight lanes are real taps, so the loads
+                    // stay <= pad + max_base_y (see Bounds above).
+                    let b0 = pad + bases[k] + r0 * base_inc;
+                    let (v0, v1) = if up == 0 {
+                        let a: &[u16; 8] = edge[b0..b0 + 8].try_into().unwrap();
+                        let b: &[u16; 8] = edge[b0 + 1..b0 + 9].try_into().unwrap();
+                        (_mm_loadu_si128(a), _mm_loadu_si128(b))
+                    } else {
+                        // Taps step by 2 down the edge: one contiguous
+                        // 16-element read + even/odd lane extraction, the
+                        // same trick as C's HighbdEvenOddMaskx4 pshufb.
+                        let lo: &[u16; 8] = edge[b0..b0 + 8].try_into().unwrap();
+                        let hi: &[u16; 8] = edge[b0 + 8..b0 + 16].try_into().unwrap();
+                        let lo = _mm_loadu_si128(lo);
+                        let hi = _mm_loadu_si128(hi);
+                        (
+                            _mm_unpacklo_epi64(
+                                _mm_shuffle_epi8(lo, ev),
+                                _mm_shuffle_epi8(hi, ev),
+                            ),
+                            _mm_unpacklo_epi64(
+                                _mm_shuffle_epi8(lo, od),
+                                _mm_shuffle_epi8(hi, od),
+                            ),
+                        )
+                    };
                     let sv = _mm_set1_epi16(shifts[k]);
                     _mm_srai_epi16::<5>(_mm_add_epi16(
                         _mm_add_epi16(
@@ -481,13 +517,13 @@ fn z3_cols_impl(
                     // Partial band: taps for rows < n_act, fill above — the
                     // vector load would read past `max_base_y + 1` here.
                     let mut buf = [fillv; 8];
-                    two_tap_run_scalar(
-                        &mut buf[..n_act - r0],
-                        edge,
-                        pad + bases[k] + r0,
-                        shifts[k] as i32,
-                        n_act - r0,
-                    );
+                    let sv = shifts[k] as i32;
+                    for (i, slot) in buf[..n_act - r0].iter_mut().enumerate() {
+                        let t = pad + bases[k] + (r0 + i) * base_inc;
+                        let a0 = edge[t] as i32;
+                        let a1 = edge[t + 1] as i32;
+                        *slot = ((a0 * (32 - sv) + a1 * sv + 16) >> 5) as u16;
+                    }
                     _mm_loadu_si128(&buf)
                 }
             });
@@ -504,8 +540,9 @@ fn z3_cols_impl(
         for r in r0..bh {
             for k in 0..8 {
                 dst[r * stride + c0 + k] = if r < n_acts[k] {
-                    let a0 = edge[pad + bases[k] + r] as i32;
-                    let a1 = edge[pad + bases[k] + r + 1] as i32;
+                    let t = pad + bases[k] + r * base_inc;
+                    let a0 = edge[t] as i32;
+                    let a1 = edge[t + 1] as i32;
                     ((a0 * (32 - shifts[k] as i32) + a1 * shifts[k] as i32 + 16) >> 5) as u16
                 } else {
                     fillv
@@ -517,14 +554,14 @@ fn z3_cols_impl(
     // Column tail: bw % 8 == 4 blocks. Scalar recipe verbatim.
     for c in c0..bw {
         let y = dy * (c + 1) as i32;
-        let mut base = y >> 6;
-        let shift = (y & 0x3F) >> 1;
+        let mut base = y >> frac_bits;
+        let shift = ((y << up) & 0x3F) >> 1;
         for r in 0..bh {
             if base < max_base_y {
                 let a0 = edge[pad + base as usize] as i32;
                 let a1 = edge[pad + base as usize + 1] as i32;
                 dst[r * stride + c] = ((a0 * (32 - shift) + a1 * shift + 16) >> 5) as u16;
-                base += 1;
+                base += base_inc as i32;
             } else {
                 for rr in r..bh {
                     dst[rr * stride + c] = fillv;
@@ -535,8 +572,8 @@ fn z3_cols_impl(
     }
 }
 
-/// The scalar tier — the previous `z3_high` vec path verbatim: per-column
-/// `two_tap_run` (self-dispatching) plus the strided scatter.
+/// The scalar tier — `dir::z3_high_scalar`'s per-pixel recipe verbatim
+/// (stride-`base_inc` taps for `up == 1`, contiguous for `up == 0`).
 #[cfg(target_arch = "x86_64")]
 fn z3_cols_impl_scalar(
     _t: archmage::ScalarToken,
@@ -547,12 +584,13 @@ fn z3_cols_impl_scalar(
     edge: &[u16],
     pad: usize,
     dy: i32,
+    up: i32,
 ) {
-    z3_cols_body_scalar(dst, stride, bw, bh, edge, pad, dy);
+    z3_cols_body_scalar(dst, stride, bw, bh, edge, pad, dy, up);
 }
 
 /// The column loop shared by the scalar tier and the non-x86 fallback —
-/// byte-identical to the pre-kernel `z3_high` body.
+/// byte-identical to `dir::z3_high_scalar`'s per-pixel walk.
 #[allow(clippy::too_many_arguments)]
 fn z3_cols_body_scalar(
     dst: &mut [u16],
@@ -562,28 +600,27 @@ fn z3_cols_body_scalar(
     edge: &[u16],
     pad: usize,
     dy: i32,
+    up: i32,
 ) {
-    let max_base_y = (bw + bh) as i32 - 1;
-    let mut col = [0u16; 64];
+    let frac_bits = 6 - up;
+    let base_inc = 1i32 << up;
+    let max_base_y = ((bw + bh) as i32 - 1) << up;
+    let fillv = edge[pad + max_base_y as usize];
     let mut y = dy;
     for c in 0..bw {
-        let base = y >> 6;
-        let shift = (y & 0x3F) >> 1;
-        let n_act = if base >= max_base_y {
-            0
-        } else {
-            bh.min((max_base_y - base) as usize)
-        };
-        if n_act > 0 {
-            two_tap_run(&mut col[..n_act], edge, pad + base as usize, shift, n_act);
-        }
-        for (r, &v) in col[..n_act].iter().enumerate() {
-            dst[r * stride + c] = v;
-        }
-        if n_act < bh {
-            let fillv = edge[pad + max_base_y as usize];
-            for r in n_act..bh {
-                dst[r * stride + c] = fillv;
+        let mut base = y >> frac_bits;
+        let shift = ((y << up) & 0x3F) >> 1;
+        for r in 0..bh {
+            if base < max_base_y {
+                let a0 = edge[pad + base as usize] as i32;
+                let a1 = edge[pad + base as usize + 1] as i32;
+                dst[r * stride + c] = ((a0 * (32 - shift) + a1 * shift + 16) >> 5) as u16;
+                base += base_inc;
+            } else {
+                for rr in r..bh {
+                    dst[rr * stride + c] = fillv;
+                }
+                break;
             }
         }
         y += dy;
@@ -591,7 +628,7 @@ fn z3_cols_body_scalar(
 }
 
 /// One-`incant!` z3 entry — called from `super::dir::z3_high` only under the
-/// `z3_vec_applies` gate (`up == 0`, `bh >= MIN_VEC_RUN`, taps `<= I16_TAP_MAX`).
+/// `z3_vec_applies` gate (`up <= 1`, `bh >= MIN_VEC_RUN`, taps `<= I16_TAP_MAX`).
 pub(crate) fn z3_cols(
     dst: &mut [u16],
     stride: usize,
@@ -600,18 +637,19 @@ pub(crate) fn z3_cols(
     edge: &[u16],
     pad: usize,
     dy: i32,
+    up: i32,
 ) {
     #[cfg(target_arch = "x86_64")]
     {
         let _ = crate::dispatch::scalar_forced();
         archmage::incant!(
-            z3_cols_impl(dst, stride, bw, bh, edge, pad, dy),
+            z3_cols_impl(dst, stride, bw, bh, edge, pad, dy, up),
             [v3, scalar]
         );
         return;
     }
     #[cfg(not(target_arch = "x86_64"))]
-    z3_cols_body_scalar(dst, stride, bw, bh, edge, pad, dy);
+    z3_cols_body_scalar(dst, stride, bw, bh, edge, pad, dy, up);
 }
 
 #[cfg(test)]
