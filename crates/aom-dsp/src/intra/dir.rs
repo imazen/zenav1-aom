@@ -190,15 +190,16 @@ pub fn z3(dst: &mut [u8], stride: usize, bw: usize, bh: usize, left: &EdgeRef, u
 // references the differentials compare against (`tests/dir_simd_diff.rs`) and
 // are exactly the C transcriptions they always were.
 
-use crate::intra::dir_simd::{MIN_VEC_RUN, span_fits_i16, two_tap_run};
+use crate::intra::dir_simd::{MIN_VEC_RUN, span_fits_i16, z1_rows};
 
 /// The z1 vector-path predicate, named so the driver and the reach test cannot
-/// drift apart (`dir_simd::reach`). Contiguous taps only, a run long enough to
-/// pay for a 16-lane round trip, and every sample the run reads inside the i16
+/// drift apart (`dir_simd::reach`). `up <= 1`: `up == 1` makes the taps
+/// stride-2, which the kernel gathers with `pshufb`. A block wide enough to
+/// pay for a lane round trip, and every sample the run reads inside the i16
 /// bound.
 pub(crate) fn z1_vec_applies(above: &EdgeRef16, bw: usize, bh: usize, up: i32) -> bool {
     let max_base_x = (((bw + bh) as i32) - 1) << up;
-    up == 0
+    (0..=1).contains(&up)
         && bw >= MIN_VEC_RUN
         && span_fits_i16(above.data(), above.idx(0), above.idx(max_base_x))
 }
@@ -231,41 +232,24 @@ pub fn z1_high(
     up: i32,
     dx: i32,
 ) {
-    let max_base_x = (((bw + bh) as i32) - 1) << up;
-    // The vector kernel handles contiguous runs only; `up == 1` is a stride-2
-    // gather. The span read is `above[0 ..= max_base_x]` (the `+1` tap of the
-    // last interpolated output is `<= max_base_x`).
+    // One `incant!` for the whole block: every row is a constant-shift
+    // two-tap run (stride-`1 << up` taps — `up == 1` gathered via `pshufb`)
+    // plus a constant fill tail. The span read is `above[0 ..= max_base_x]`
+    // (the `+1` tap of the last interpolated output is `<= max_base_x`).
     if !z1_vec_applies(above, bw, bh, up) {
         z1_high_scalar(dst, stride, bw, bh, above, up, dx);
         return;
     }
-    let mut x = dx;
-    for r in 0..bh {
-        let base = x >> 6;
-        let shift = (x & 0x3F) >> 1;
-        let row = r * stride;
-        if base >= max_base_x {
-            let fillv = above.at(max_base_x) as u16;
-            for rr in r..bh {
-                dst[rr * stride..rr * stride + bw].fill(fillv);
-            }
-            return;
-        }
-        // Outputs `c` with `base + c < max_base_x` interpolate; the rest fill.
-        let n_act = bw.min((max_base_x - base) as usize);
-        two_tap_run(
-            &mut dst[row..row + n_act],
-            above.data(),
-            above.idx(base),
-            shift,
-            n_act,
-        );
-        if n_act < bw {
-            let fillv = above.at(max_base_x) as u16;
-            dst[row + n_act..row + bw].fill(fillv);
-        }
-        x += dx;
-    }
+    z1_rows(
+        dst,
+        stride,
+        bw,
+        bh,
+        above.data(),
+        above.idx(0),
+        dx,
+        up,
+    );
 }
 
 /// `av1_highbd_dr_prediction_z1_c` — the never-dispatched scalar core.
@@ -557,16 +541,14 @@ mod reach {
                 }
             }
         }
-        // 19 shapes x {up=0, up=1}. z1's `up == 1` arm stays scalar (stride-2
-        // gather over `above`), so its ceiling is 19; z2 and z3 admit
-        // `up <= 1` via the pshufb even/odd deinterleave, so their ceilings
-        // are 38.
+        // 19 shapes x {up=0, up=1}. All three kernels admit `up <= 1` via the
+        // pshufb even/odd deinterleave, so every ceiling is 38.
         // z1/z3 additionally need the vectorized dimension >= MIN_VEC_RUN: the
         // THREE shapes with bw == 4 ((4,4), (4,8), (4,16)) decline for z1, and
         // the three with bh == 4 ((4,4), (8,4), (16,4)) for z3 — in BOTH up
-        // arms for z3. z2 has no width floor — the run length varies per row
+        // arms. z2 has no width floor — the run length varies per row
         // and the length test is per-run inside the kernel.
-        assert_eq!((z1n, z1d), (16, 3), "z1 admitted/declined at bd8");
+        assert_eq!((z1n, z1d), (32, 3), "z1 admitted/declined at bd8");
         assert_eq!(z2n, 38, "z2 admitted at bd8 (up <= 1, no width floor)");
         assert_eq!((z3n, z3d), (32, 3), "z3 admitted/declined at bd8");
     }
@@ -577,6 +559,7 @@ mod reach {
         let mut buf = vec![1023u16; BUF];
         let e = EdgeRef16::new(&buf, PAD);
         assert!(z1_vec_applies(&e, 16, 16, 0));
+        assert!(z1_vec_applies(&e, 16, 16, 1));
         assert!(z2_vec_applies(&e, 16, 0));
         assert!(z2_vec_applies(&e, 16, 1));
         assert!(z3_vec_applies(&e, 16, 16, 0));
@@ -588,6 +571,7 @@ mod reach {
         assert!(!z3_vec_applies(&e, 16, 16, 0), "1024 must decline");
         // up == 1 doubles the indexed span (max_base_y << 1) — the same
         // over-bound sample still sits inside it and must still decline.
+        assert!(!z1_vec_applies(&e, 16, 16, 1), "1024 must decline");
         assert!(!z2_vec_applies(&e, 16, 1), "1024 must decline");
         assert!(!z3_vec_applies(&e, 16, 16, 1), "1024 must decline");
         // A bd12-range edge declines everywhere.
@@ -595,6 +579,7 @@ mod reach {
         let e = EdgeRef16::new(&buf, PAD);
         for &(bw, bh) in &TX_DIMS {
             assert!(!z1_vec_applies(&e, bw, bh, 0));
+            assert!(!z1_vec_applies(&e, bw, bh, 1));
             assert!(!z2_vec_applies(&e, bw, 0));
             assert!(!z2_vec_applies(&e, bw, 1));
             assert!(!z3_vec_applies(&e, bw, bh, 0));

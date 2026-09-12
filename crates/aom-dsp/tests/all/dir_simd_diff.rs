@@ -118,6 +118,7 @@ fn dir_highbd_simd_bit_identical_to_scalar_at_every_tier() {
     let (mut z1_vec, mut z2_vec, mut z3_vec) = (0usize, 0usize, 0usize);
     let mut z3_vec_up = 0usize;
     let mut z2_vec_up = 0usize;
+    let mut z1_vec_up = 0usize;
     let report = for_each_token_permutation(CompileTimePolicy::Warn, |_tier| {
         if if cfg!(target_arch = "aarch64") {
             archmage::NeonToken::summon().is_some()
@@ -159,6 +160,9 @@ fn dir_highbd_simd_bit_identical_to_scalar_at_every_tier() {
                                     z1_high_scalar(&mut want, stride, bw, bh, &a, up, dx);
                                     if up == 0 && bw >= 8 && bd == 8 {
                                         z1_vec += 1;
+                                    }
+                                    if up == 1 && bw >= 8 && bd == 8 {
+                                        z1_vec_up += 1;
                                     }
                                     assert_eq!(
                                         got, want,
@@ -204,7 +208,7 @@ fn dir_highbd_simd_bit_identical_to_scalar_at_every_tier() {
         }
     });
     eprintln!(
-        "dir highbd i16 parity: {report}  (shape-eligible bd8 cells z1={z1_vec} z2={z2_vec} z3={z3_vec} z3_up={z3_vec_up} z2_up={z2_vec_up})"
+        "dir highbd i16 parity: {report}  (shape-eligible bd8 cells z1={z1_vec} z2={z2_vec} z3={z3_vec} z3_up={z3_vec_up} z2_up={z2_vec_up} z1_up={z1_vec_up})"
     );
     assert!(
         simd_perms >= 1,
@@ -227,6 +231,11 @@ fn dir_highbd_simd_bit_identical_to_scalar_at_every_tier() {
     assert!(
         z2_vec_up > 0,
         "no upsample-above bd8 cells in the grid: the z2 up==1 arm is \
+         untested if this is zero"
+    );
+    assert!(
+        z1_vec_up > 0,
+        "no upsample-above bd8 cells in the grid: the z1 up==1 arm is \
          untested if this is zero"
     );
 }

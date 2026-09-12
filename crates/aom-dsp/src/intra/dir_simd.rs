@@ -57,17 +57,16 @@
 //!
 //! # Scope — what runs vector and what does not
 //!
-//! Only **contiguous** tap runs (`base_inc == 1`, i.e. `upsample == 0`) take the
-//! vector path, because then the two operand vectors are plain unaligned loads
-//! of `edge[b..b+16]` and `edge[b+1..b+17]` with no staging array at all. The
-//! `upsample == 1` runs are a stride-2 gather and stay scalar; they are
-//! **12.6 % of z1 and 14.9 % of z3 pixels** at the profile cell (upsampling is
-//! only ever enabled for `bw + bh <= 16`, `edge::use_upsample`), and the census
-//! is in the writeup. `z2`'s left-hand half is a genuine gather (`base_y` is not
-//! affine in `c`) and likewise stays scalar — it is 50.2 % of z2's pixels.
+//! Contiguous tap runs (`upsample == 0`) take the vector path as plain
+//! unaligned loads; `upsample == 1` runs are stride-2 gathers taken by the
+//! `pshufb` even/odd deinterleave in `z1_rows` / `z2_above_run` / `z3_cols`
+//! (upsampling is only ever enabled for `bw + bh <= 16`,
+//! `edge::use_upsample`). `z2`'s left-hand half is a genuine gather
+//! (`base_y` is not affine in `c`) handled by `z2_left_gather`'s per-lane
+//! scalar loads with vector index/blend math.
 //!
 //! Runs shorter than [`MIN_VEC_RUN`] stay scalar: a 4-wide block cannot fill
-//! enough of a 16-lane vector to pay for the round trip through the stack array.
+//! enough of a vector to pay for the round trip.
 
 use archmage::prelude::*;
 
@@ -87,87 +86,6 @@ pub(crate) fn span_fits_i16(edge: &[u16], lo: usize, hi: usize) -> bool {
     hi < edge.len() && lo <= hi && edge[lo..=hi].iter().all(|&v| v <= I16_TAP_MAX)
 }
 
-/// The scalar two-tap run — the differential reference AND the tail/decline
-/// path. Byte-identical to the expression in [`super::dir`] by construction.
-#[inline]
-pub(crate) fn two_tap_run_scalar(out: &mut [u16], edge: &[u16], start: usize, shift: i32, n: usize) {
-    for (i, o) in out.iter_mut().take(n).enumerate() {
-        let a0 = edge[start + i] as i32;
-        let a1 = edge[start + i + 1] as i32;
-        *o = ((a0 * (32 - shift) + a1 * shift + 16) >> 5) as u16;
-    }
-}
-
-/// Dispatch entry: write `n` outputs of the contiguous two-tap run starting at
-/// `edge[start]` into `out[..n]`.
-///
-/// PRECONDITIONS (the caller's, and all three are what the scalar kernel already
-/// requires plus the bound): `start + n < edge.len()`, `shift ∈ [0, 31]`, and
-/// every sample in `edge[start ..= start + n]` `<= I16_TAP_MAX`. Callers take
-/// the last one with [`span_fits_i16`] once per block.
-pub(crate) fn two_tap_run(out: &mut [u16], edge: &[u16], start: usize, shift: i32, n: usize) {
-    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
-    incant!(
-        two_tap_run_impl(out, edge, start, shift, n),
-        [v3, neon, scalar]
-    )
-}
-
-fn two_tap_run_impl_scalar(
-    _t: archmage::ScalarToken,
-    out: &mut [u16],
-    edge: &[u16],
-    start: usize,
-    shift: i32,
-    n: usize,
-) {
-    two_tap_run_scalar(out, edge, start, shift, n);
-}
-
-#[magetypes(define(i16x16, u16x16), v3, neon, -scalar)]
-fn two_tap_run_impl(
-    token: Token,
-    out: &mut [u16],
-    edge: &[u16],
-    start: usize,
-    shift: i32,
-    n: usize,
-) {
-    if n < MIN_VEC_RUN {
-        two_tap_run_scalar(out, edge, start, shift, n);
-        return;
-    }
-    let sv = i16x16::splat(token, shift as i16);
-    let round = i16x16::splat(token, 16);
-    // KB-PERF-34: a `u16` staging buffer plus one `copy_from_slice`, NOT an
-    // `i16` buffer plus a per-lane cast loop. The per-lane copy was measured to
-    // be this kernel's real cost — see
-    // `benchmarks/encoder_dir_pred_reach_audit_2026-09-10.md`, where doubling
-    // the ARITHMETIC to avoid a gather made it 0.34 % slower because it doubled
-    // the copy. The bitcast is exact rather than convenient: every output is
-    // `((a0 * (32 - shift) + a1 * shift + 16) >> 5)` with taps `<= I16_TAP_MAX`,
-    // hence non-negative and `<= 1023`, so its `i16` bit pattern IS its `u16`
-    // value — the same equality `buf[k] as u16` relied on.
-    let mut buf = [0u16; 16];
-    let mut i = 0;
-    // A chunk needs 17 in-range samples. For a FULL chunk that is implied by the
-    // caller's `start + n < edge.len()`; the guard binds only on a partial tail
-    // (n == 8 is the common one — an 8-wide block).
-    while i < n && start + i + 17 <= edge.len() {
-        let m = (n - i).min(16);
-        let idx = start + i;
-        let v0 = u16x16::from_slice(token, &edge[idx..idx + 16]).bitcast_i16x16();
-        let v1 = u16x16::from_slice(token, &edge[idx + 1..idx + 17]).bitcast_i16x16();
-        let res = (v0.shl_const::<5>() + (v1 - v0) * sv + round).shr_arithmetic_const::<5>();
-        res.bitcast_u16x16().store(&mut buf);
-        out[i..i + m].copy_from_slice(&buf[..m]);
-        i += m;
-    }
-    if i < n {
-        two_tap_run_scalar(&mut out[i..], edge, start + i, shift, n - i);
-    }
-}
-
 /// Dispatch entry for the z2 LEFT-half gather, ALL ROWS in one dispatch:
 /// for each row `r`, writes the `c_end(r)` columns whose `base_x` falls short
 /// of the above edge (`c_end = ((y*dx - 1) >> 6).clamp(0, bw)` — see
@@ -185,7 +103,7 @@ fn two_tap_run_impl(
 /// (~6 ops), the two-tap blend (~5 ops), the checked dst store, and the
 /// per-row dispatch/setup — this is one `incant!` per block, not per row.
 ///
-/// i32 lanes, not the i16 trick [`two_tap_run_impl`] uses: the i16 bound needs
+/// i32 lanes, not the i16 trick the contiguous kernels use: the i16 bound needs
 /// `M <= I16_TAP_MAX`, and this kernel is only reachable on rows where the
 /// above side's `span_fits_i16` may have declined — the gather must not inherit
 /// a data bound it never checked. `res = a0*32 + (a1-a0)*s + 16` maxes at
@@ -530,6 +448,168 @@ pub(crate) fn z2_above_run(
     z2_above_run_scalar(dst, stride, bw, bh, edge, pad, dx, frac_x, up);
 }
 
+/// Dispatch entry for the z1 vec path — ALL ROWS in ONE `incant!`.
+///
+/// Row `r` is a single constant-shift two-tap run from column 0
+/// (`base = (dx + r*dx) >> frac`, `shift` fixed for the row — see
+/// `super::dir::z1_high_scalar`): column `c` interpolates
+/// `edge[pad + base + c*inc]` / `edge[pad + base + c*inc + 1]` while
+/// `base + c*inc < max_base_x` and takes the fill value
+/// `edge[pad + max_base_x]` beyond it (the scalar's per-column `else`).
+/// `up == 1` makes the taps stride-2, gathered with the same `pshufb`
+/// even/odd deinterleave [`z2_above_run_impl`] uses for its upsampled
+/// suffix. i16 lanes, exact under the caller's `span_fits_i16` gate
+/// (`I16_TAP_MAX`); a full 8-lane chunk reads `edge[t0 ..= t0 + 7*inc + 1]`,
+/// bounded by the gate's `hi` on the last interpolated column's `+1` tap —
+/// the vector path adds no panic the scalar lacks.
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i16x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn z1_rows_impl(
+    _token: Token,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    edge: &[u16],
+    pad: usize,
+    dx: i32,
+    up: i32,
+) {
+    use archmage::intrinsics::x86_64::*;
+    let frac_bits = 6 - up;
+    let inc = 1usize << up;
+    let inc_i = inc as i32;
+    let max_base_x = (((bw + bh) as i32) - 1) << up;
+    let fillv = edge[(pad as i32 + max_base_x) as usize];
+    let sixteen = _mm_set1_epi16(16);
+    let ev = _mm_setr_epi8(0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1);
+    let od = _mm_setr_epi8(2, 3, 6, 7, 10, 11, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1);
+    let mut x = dx;
+    for r in 0..bh {
+        let base0 = x >> frac_bits;
+        let shift = ((x << up) & 0x3F) >> 1;
+        x += dx;
+        if base0 >= max_base_x {
+            for rr in r..bh {
+                dst[rr * stride..rr * stride + bw].fill(fillv);
+            }
+            return;
+        }
+        // Columns with `base0 + c*inc < max_base_x` interpolate (the scalar's
+        // per-column `if`); `ceil` because the tap index steps by `inc`.
+        let n_act = bw.min(((max_base_x - base0 + inc_i - 1) / inc_i) as usize);
+        let sv = _mm_set1_epi16(shift as i16);
+        let start = (pad as i32 + base0) as usize;
+        let drow = &mut dst[r * stride..r * stride + bw];
+        let mut i = 0usize;
+        while i + 8 <= n_act {
+            let s = start + i * inc;
+            let (v0, v1) = if up == 0 {
+                let a: &[u16; 8] = edge[s..s + 8].try_into().unwrap();
+                let b: &[u16; 8] = edge[s + 1..s + 9].try_into().unwrap();
+                (_mm_loadu_si128(a), _mm_loadu_si128(b))
+            } else {
+                let lo: &[u16; 8] = edge[s..s + 8].try_into().unwrap();
+                let hi: &[u16; 8] = edge[s + 8..s + 16].try_into().unwrap();
+                let lo = _mm_loadu_si128(lo);
+                let hi = _mm_loadu_si128(hi);
+                (
+                    _mm_unpacklo_epi64(
+                        _mm_shuffle_epi8(lo, ev),
+                        _mm_shuffle_epi8(hi, ev),
+                    ),
+                    _mm_unpacklo_epi64(
+                        _mm_shuffle_epi8(lo, od),
+                        _mm_shuffle_epi8(hi, od),
+                    ),
+                )
+            };
+            let res = _mm_srai_epi16::<5>(_mm_add_epi16(
+                _mm_add_epi16(
+                    _mm_slli_epi16::<5>(v0),
+                    _mm_mullo_epi16(_mm_sub_epi16(v1, v0), sv),
+                ),
+                sixteen,
+            ));
+            let t: &mut [u16; 8] = (&mut drow[i..i + 8]).try_into().unwrap();
+            _mm_storeu_si128(t, res);
+            i += 8;
+        }
+        if i < n_act {
+            let mut base = base0 + (i * inc) as i32;
+            for slot in drow[i..n_act].iter_mut() {
+                let t = (pad as i32 + base) as usize;
+                let a0 = edge[t] as i32;
+                let a1 = edge[t + 1] as i32;
+                *slot = ((a0 * (32 - shift) + a1 * shift + 16) >> 5) as u16;
+                base += inc_i;
+            }
+        }
+        drow[n_act..].fill(fillv);
+    }
+}
+
+/// Scalar tier — `super::dir::z1_high_scalar` verbatim (the flat `edge`/`pad`
+/// pair IS its `EdgeRef16`).
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn z1_rows_impl_scalar(
+    _t: archmage::ScalarToken,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    edge: &[u16],
+    pad: usize,
+    dx: i32,
+    up: i32,
+) {
+    super::dir::z1_high_scalar(
+        dst,
+        stride,
+        bw,
+        bh,
+        &super::dir::EdgeRef16::new(edge, pad),
+        up,
+        dx,
+    );
+}
+
+/// One-`incant!` z1 entry — called from `super::dir::z1_high` only under the
+/// `z1_vec_applies` gate (`up <= 1`, `bw >= MIN_VEC_RUN`, taps `<= I16_TAP_MAX`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn z1_rows(
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    edge: &[u16],
+    pad: usize,
+    dx: i32,
+    up: i32,
+) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let _ = crate::dispatch::scalar_forced();
+        archmage::incant!(
+            z1_rows_impl(dst, stride, bw, bh, edge, pad, dx, up),
+            [v3, scalar]
+        );
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    super::dir::z1_high_scalar(
+        dst,
+        stride,
+        bw,
+        bh,
+        &super::dir::EdgeRef16::new(edge, pad),
+        up,
+        dx,
+    );
+}
+
 /// Dispatch entry for the z3 vec path — ALL columns in ONE `incant!`.
 ///
 /// # Shape: transposed z1, the same trick `av1_highbd_dr_prediction_z3_avx2`
@@ -538,13 +618,13 @@ pub(crate) fn z2_above_run(
 /// C computes z3 by running its z1 kernel down `left` into a column-major
 /// scratch (`highbd_dr_prediction_z1_NxW_internal_avx2` writing `dstT`) and
 /// then `highbd_transpose16x16` for the row-major stores. The port's old path
-/// paid a per-column `two_tap_run` dispatch, a `col[]` stack bounce and a
+/// paid a per-column two-tap dispatch, a `col[]` stack bounce and a
 /// strided `dst[r * stride + c]` scalar store per pixel — this kernel keeps
 /// C's shape instead: contiguous column writes, contiguous row stores.
 ///
 /// # Bit-exactness
 ///
-/// The column compute is [`two_tap_run_impl`]'s i16-lane recipe verbatim —
+/// The column compute is the shared i16-lane recipe —
 /// `(v0 << 5) + (v1 - v0) * s + 16, >> 5` — exact because the caller's
 /// `span_fits_i16` gate bounds every tap by `I16_TAP_MAX` (the convex-combo
 /// bound it documents). Partial bands and the row/column tails use the scalar
@@ -829,87 +909,38 @@ pub(crate) fn z3_cols(
 mod tests {
     use super::*;
 
-    /// Every token permutation, against the scalar core, over the full admitted
-    /// domain. Probes are asymmetric (a flat edge is invariant under the
-    /// re-association being tested — playbook §1 / KB-12).
-    #[test]
-    fn two_tap_matches_scalar_at_every_tier() {
-        let mut edge = vec![0u16; 200];
-        let mut s = 0x1234_5678u32;
-        let mut next = || {
-            s ^= s << 13;
-            s ^= s >> 17;
-            s ^= s << 5;
-            s
-        };
-        let mut vector_cells = 0usize;
-        for rep in 0..8 {
-            for (i, e) in edge.iter_mut().enumerate() {
-                *e = match rep {
-                    0 => (next() % (I16_TAP_MAX as u32 + 1)) as u16, // dense random
-                    1 => {
-                        if i % 2 == 0 {
-                            I16_TAP_MAX
-                        } else {
-                            0
-                        }
-                    } // max sawtooth
-                    2 => (i as u16) % 256,                        // ramp
-                    3 => I16_TAP_MAX,                             // flat max
-                    4 => (next() % 256) as u16,                   // bd8 range
-                    5 => 255 - (i as u16 % 256),                  // reverse ramp
-                    6 => {
-                        if i < 100 {
-                            0
-                        } else {
-                            I16_TAP_MAX
-                        }
-                    } // step
-                    _ => (next() % 1024) as u16,
-                };
-            }
-            for &n in &[1usize, 4, 7, 8, 9, 15, 16, 17, 31, 32, 64] {
-                for shift in 0..32i32 {
-                    for &start in &[0usize, 1, 3, 16, 100] {
-                        if start + n + 1 > edge.len() {
-                            continue;
-                        }
-                        let mut got = vec![0u16; n];
-                        let mut want = vec![0u16; n];
-                        two_tap_run(&mut got, &edge, start, shift, n);
-                        two_tap_run_scalar(&mut want, &edge, start, shift, n);
-                        assert_eq!(got, want, "n={n} shift={shift} start={start} rep={rep}");
-                        if n >= MIN_VEC_RUN {
-                            vector_cells += 1;
-                        }
-                    }
-                }
-            }
-        }
-        // Non-vacuity: the vector body must actually have been reachable.
-        assert!(vector_cells > 1000, "vector arm unreached ({vector_cells})");
-    }
-
     /// Playbook §2 — the bound must BITE. One tap over `I16_TAP_MAX` and the
     /// i16 lanes must genuinely diverge from the scalar reference, else the
-    /// gate is decorative.
+    /// gate is decorative. The probe drives `z1_rows` DIRECTLY (bypassing
+    /// `z1_vec_applies`) — the i16 recipe now lives inside the one-dispatch
+    /// block kernels, and z1's is the simplest to aim: an 8x8 block at `up =
+    /// 0`, `pad = 0`, `dx = 32` puts base 0 / shift 16 on row 0, whose taps
+    /// cover `edge[3]`.
     ///
     /// The divergence half is necessarily conditional on a VECTOR tier actually
-    /// dispatching: under `AOM_FORCE_SCALAR=1` `two_tap_run` routes to
-    /// `two_tap_run_scalar`, so it cannot diverge from itself, and asserting
-    /// otherwise fails the scalar-pinned CI leg (it did, on the first run). The
-    /// gate's own rejection is asserted UNconditionally — that half is pure
-    /// arithmetic on the span and has no tier.
+    /// dispatching: under `AOM_FORCE_SCALAR=1` `z1_rows` routes to
+    /// `z1_high_scalar`, so it cannot diverge from itself, and asserting
+    /// otherwise fails the scalar-pinned CI leg. The gate's own rejection is
+    /// asserted UNconditionally — that half is pure arithmetic on the span and
+    /// has no tier.
     #[test]
     fn the_tap_bound_is_load_bearing() {
-        let n = 16;
+        let (bw, bh, stride) = (8usize, 8usize, 8usize);
         let mut edge = vec![I16_TAP_MAX; 64];
         // At exactly the bound, every shift agrees. True at every tier.
-        for shift in 0..32i32 {
-            let (mut got, mut want) = (vec![0u16; n], vec![0u16; n]);
-            two_tap_run(&mut got, &edge, 0, shift, n);
-            two_tap_run_scalar(&mut want, &edge, 0, shift, n);
-            assert_eq!(got, want, "at the bound, shift={shift}");
+        for dx in [2i32, 8, 16, 24, 32, 48, 62] {
+            let (mut got, mut want) = (vec![0u16; 64], vec![0u16; 64]);
+            z1_rows(&mut got, stride, bw, bh, &edge, 0, dx, 0);
+            super::super::dir::z1_high_scalar(
+                &mut want,
+                stride,
+                bw,
+                bh,
+                &super::super::dir::EdgeRef16::new(&edge, 0),
+                0,
+                dx,
+            );
+            assert_eq!(got, want, "at the bound, dx={dx}");
         }
         // The gate rejects one over the bound, and accepts the bound itself.
         edge[3] = I16_TAP_MAX + 1;
@@ -921,13 +952,21 @@ mod tests {
             return; // no vector tier to diverge; the half above still ran
         }
         // One over the bound, and the vector path is wrong for at least one
-        // shift — else the gate guards nothing.
+        // dx — else the gate guards nothing.
         edge[3] = I16_TAP_MAX + 1;
         let mut diverged = false;
-        for shift in 0..32i32 {
-            let (mut got, mut want) = (vec![0u16; n], vec![0u16; n]);
-            two_tap_run(&mut got, &edge, 0, shift, n);
-            two_tap_run_scalar(&mut want, &edge, 0, shift, n);
+        for dx in [2i32, 8, 16, 24, 32, 48, 62] {
+            let (mut got, mut want) = (vec![0u16; 64], vec![0u16; 64]);
+            z1_rows(&mut got, stride, bw, bh, &edge, 0, dx, 0);
+            super::super::dir::z1_high_scalar(
+                &mut want,
+                stride,
+                bw,
+                bh,
+                &super::super::dir::EdgeRef16::new(&edge, 0),
+                0,
+                dx,
+            );
             if got != want {
                 diverged = true;
             }

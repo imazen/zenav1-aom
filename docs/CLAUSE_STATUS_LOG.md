@@ -160,7 +160,30 @@ ways; e2e gate `isolate_vgrad256_cq32_cnn_partition_prune` green; DSP suite
 conv_valid_impl_v3 17.5M (the DNN-order switch cost +1.6M Ir of tree-order
 scalar adds, included in the net). 24-round shipping-cell band on the final
 binary: **-0.804 %, 23/24, p=3.0e-6, null +0.034 % — CLEARS.** Byte-
-identical 40,237 B. |
+identical 40,237 B.
+
+**2026-09-11 z1 one-dispatch kernel (`z1_rows_impl`), `up <= 1` — the last
+scalar arm of the directional-predictor family.** `z1_high` still ran a
+per-ROW `two_tap_run` `incant!` for `up == 0` and fell wholly scalar for
+`up == 1` — the same shape z3 (89ec4af/4a95926) and the z2 above-suffix
+(90a2445) had before their one-dispatch landings. `z1_rows` takes the whole
+block in ONE `incant! [v3, scalar]`: per row the constant-shift two-tap run
+(stride-`1 << up` taps — `up == 1` deinterleaved with the same `pshufb`
+even/odd idiom) plus the `edge[max_base_x]` fill tail, all in i16 lanes
+under the existing `span_fits_i16` gate, which widened to `up <= 1`
+(identical bound argument — the gate's `hi` is the last interpolated
+column's `+1` tap). `two_tap_run` itself is now production-dead (z1 was
+the last caller) and removed; `the_tap_bound_is_load_bearing` was
+retargeted to drive `z1_rows` directly, and `dir_simd_diff` gained the
+`z1_vec_up` reach pin (z1 up==1 cells: (8,8)/(8,4) at angles 51..87,
+ty=0). Tests: dir lib reach pins updated (z1 32/3 like z3), all 8 dir
+differentials + DSP suite 400/400. Callgrind 196x196 cq27 s3 x3:
+6,538.0M -> 6,521.0M (**-17.0M Ir, -0.26 %**), attributed
+z1_high_scalar 20.3M -> 6.3M (declined cells only: bd12-range edges,
+bw < 8), two_tap_run family 9.3M -> 0, driver 7.0M -> 3.5M; kernel costs
+15.3M. 24-round band: +0.057 %, 10/24, p=0.54, null -0.018 % — clean
+NULL; lands Ir-measured/band-null like the z2-gather and boxsum rows.
+Byte-identical 40,237 B. |
 | (5) match the RD of C | byte identity is the strongest available evidence and holds on 427/427 standalone cells; the pinned divergences are the measured/attributed/bounded residual the directive permits to ship |
 | (6) sensible conversion + wiring + testing of all of the C encoder | **PALETTE AND INTRABC ARE NOW WIRED INTO THE SHIPPING PATH — 2026-09-10, and the finding is that they were not.** `encode_key_frame` built its `PickFrameCfg` with `palette_costs: None` and `intrabc: None`, so it ran NEITHER screen-content search on ANY frame, including frames whose header it writes with `allow_screen_content_tools = 1` from its own detector. **No gate could see it: every byte gate in `self_contained_key_frame.rs` drives `shim_encode_av1_kf`, which hardcodes `enable_palette = 0, enable_intrabc = 0` (`dec_shim.c:612`), so the 427/427 is a parity claim against a palette-DISABLED libaom and was blind to both tools BY CONSTRUCTION.** That is KB-42's shape on a new axis — a gate can be green, exhaustive and honest about what it measures and still say nothing about a feature, because the ORACLE was configured out of the question. **Cost of the gap, libaom on BOTH sides so the number is the TOOLS' value and not the port's RD: −73.1 % bytes at 1024x768 cq20 s3, −68.6 % at cq32, −69.6 % at 512x384 cq20** (`benchmarks/encoder_screen_tools_2026-09-10.md`). Read the sign at the low-rate end: at cq44-55 palette ALONE is often WORSE (+21 % to +83 %) because a colour table plus an index map beats coarse transform coding only when the quantizer is fine; IntraBC carries those cells. **The matched-oracle gate found a STREAM-CORRUPTION bug on its first run:** `uncompressed_header` skips loop_filter/cdef/lr params entirely when `allow_intrabc` is set, the three sub-header structs each carry their own copy of the bit, and `derive_frame_header` hardcoded all three false — so the writer emitted three syntax elements the decoder never reads, desynchronising the tile group in the same OBU_FRAME. **Signature worth keeping: a CONSTANT +3 bytes over a byte-IDENTICAL tile payload (common suffix 31,114 of 31,132) — sign-random size-varying deltas are RD divergences; a constant delta with an identical payload is a header-length bug.** 51/54 -> 54/54. Gated by `screen_content_tools_byte_match_real_aomenc` (54 cells, matched `shim_encode_av1_kf_screen_content` oracle, non-vacuity asserted per cell by requiring the oracle's tools-ON stream to DIFFER from its own tools-OFF stream, plus a real-C decode round-trip) and 24/24 in the wider `screen_tools_gap` probe. The 427-cell gate now sets both knobs FALSE to match its own oracle — matching, not weakening: inert on every detector-negative cell, and on the `chk` cells it is what keeps it a parity test. **ONE DIVERGENCE, measured and bounded: IntraBC declines at coded-lossless.** C runs it there, dispatching the coeff arm to `av1_pick_uniform_tx_size_type_yrd` (tx_search.c:3824) instead of the recursive var-tx one; the port has no INTER uniform-tx arm and fired a `lossless forces TX_4X4` assertion — a crossing nothing had reached, since the shell never ran IntraBC and the bench never crossed it with cq 0. A lossless frame reconstructs to the source either way, so declining the SEARCH can only cost SIZE on cq-0 screen content, never a pixel, and it is a divergence rather than a refusal. Historical: `av1_determine_sc_tools_with_encoding` (PARITY C3) unported — **and MEASURED 2026-09-09 to be a DIVERGENCE, not a refusal, on the shipping path: 60/60 screen-shaped tiny cells encode through `encode_key_frame` with 0 refusals and 0 panics** (gated, `refusal_census::screen_shaped_tiny_cells_encode_rather_than_refuse`). The hard SCM assert is `aom-bench`'s differential harness, which no caller reaches. **The bd12 dispatch-tier disagreement is CLOSED 2026-09-09 (measured: both tiers byte-identical at `1920x1080 cq24 cpu0`) and now GATED by `bd12_dispatch_tier_agreement` — the tree had no bd12 coverage at all, which is why it sat open.** |
 
