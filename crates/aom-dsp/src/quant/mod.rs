@@ -620,55 +620,324 @@ pub fn aom_highbd_quantize_b_no_qmatrix(
     dequant: &[i16; 2],
     log_scale: i32,
     scan: &[i16],
+    iscan: &[i16],
     coeff: &[i32],
     qcoeff: &mut [i32],
     dqcoeff: &mut [i32],
 ) -> u16 {
     let n = coeff.len();
-    qcoeff[..n].fill(0);
-    dqcoeff[..n].fill(0);
+    debug_assert_eq!(scan.len(), n, "scan must cover the block");
+    debug_assert!(
+        iscan.len() >= n && qcoeff.len() >= n && dqcoeff.len() >= n,
+        "iscan/qcoeff/dqcoeff must cover the block"
+    );
+    if n == 0 {
+        return 0;
+    }
+    if n < 8 {
+        return highbd_quantize_b_scalar(
+            zbin, round, quant, quant_shift, dequant, log_scale, iscan, coeff, qcoeff, dqcoeff,
+        );
+    }
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    archmage::incant!(
+        highbd_quantize_b_impl(
+            zbin, round, quant, quant_shift, dequant, log_scale, iscan, coeff, qcoeff, dqcoeff
+        ),
+        [v3, scalar]
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn highbd_quantize_b_impl_scalar(
+    _t: archmage::ScalarToken,
+    zbin: &[i16; 2],
+    round: &[i16; 2],
+    quant: &[i16; 2],
+    quant_shift: &[i16; 2],
+    dequant: &[i16; 2],
+    log_scale: i32,
+    iscan: &[i16],
+    coeff: &[i32],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    highbd_quantize_b_scalar(
+        zbin, round, quant, quant_shift, dequant, log_scale, iscan, coeff, qcoeff, dqcoeff,
+    )
+}
+
+/// The scalar core of `aom_highbd_quantize_b_helper_c` (no qmatrix) — walks
+/// RASTER order where C walks scan order, exactly as [`quantize_b_scalar`]
+/// does for the lowbd twin (see its doc for why the reordering is
+/// value-identical: position-local arithmetic, `ac` as the raster index test,
+/// eob from `iscan`). Every position is written unconditionally, which is
+/// what lets the dispatch drop C's two upfront `memset`s and the
+/// scan-order `idx_arr`.
+#[allow(clippy::too_many_arguments)]
+fn highbd_quantize_b_scalar(
+    zbin: &[i16; 2],
+    round: &[i16; 2],
+    quant: &[i16; 2],
+    quant_shift: &[i16; 2],
+    dequant: &[i16; 2],
+    log_scale: i32,
+    iscan: &[i16],
+    coeff: &[i32],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    let n = coeff.len();
+    let wt = 1i64 << AOM_QM_BITS;
+    // Per-class constants (index 0 = DC, 1 = AC), hoisted out of the walk.
+    let zbins = [
+        round_power_of_two(zbin[0] as i32, log_scale) as i64 * wt,
+        round_power_of_two(zbin[1] as i32, log_scale) as i64 * wt,
+    ];
+    let rr = [
+        round_power_of_two(round[0] as i32, log_scale),
+        round_power_of_two(round[1] as i32, log_scale),
+    ];
+    let dqv = [
+        ((dequant[0] as i32 * (1 << AOM_QM_BITS)) + (1 << (AOM_QM_BITS - 1))) >> AOM_QM_BITS,
+        ((dequant[1] as i32 * (1 << AOM_QM_BITS)) + (1 << (AOM_QM_BITS - 1))) >> AOM_QM_BITS,
+    ];
+    let shift = 16 - log_scale + AOM_QM_BITS;
+    let mut eob: i32 = 0;
+    for i in 0..n {
+        let ac = (i != 0) as usize;
+        let c = coeff[i];
+        let sign = aomsign(c);
+        // C's pre-scan gate: keep iff c*wt >= zbin*wt || c*wt <= -zbin*wt.
+        // The compiled C treats `coeff_ptr[rc] * wt` (i32 mul, UB on
+        // overflow) as unbounded — measured: |coeff| >= 2^27 lanes are
+        // processed — so the compare runs in i64 and i32::MIN lands outside
+        // correctly.
+        let cw = c as i64 * wt;
+        let tmp32 = if cw >= zbins[ac] || cw <= -zbins[ac] {
+            let abs_coeff = (c ^ sign).wrapping_sub(sign);
+            // C computes `abs_coeff + round` in `int` — it WRAPS for
+            // |coeff| near i32::MAX, making tmp1 negative — then widens.
+            let tmp1 = abs_coeff.wrapping_add(rr[ac]) as i64;
+            let tmpw = tmp1 * wt;
+            let tmp2 = ((tmpw * quant[ac] as i64) >> 16) + tmpw;
+            ((tmp2 * quant_shift[ac] as i64) >> shift) as i32
+        } else {
+            0
+        };
+        qcoeff[i] = (tmp32 ^ sign).wrapping_sub(sign);
+        let abs_dq = tmp32.wrapping_mul(dqv[ac]) >> log_scale;
+        dqcoeff[i] = (abs_dq ^ sign).wrapping_sub(sign);
+        if tmp32 != 0 {
+            eob = eob.max(iscan[i] as i32 + 1);
+        }
+    }
+    eob as u16
+}
+
+/// x86-64/AVX2 body for [`aom_highbd_quantize_b_no_qmatrix`], the highbd
+/// sibling of `quantize_b_impl_v3` mirroring `aom_highbd_quantize_b_avx2`
+/// (highbd_quantize_intrin_avx2.c): raster-order 8-lane walk, iscan max for
+/// eob, dead-zone mask folded through the chain.
+///
+/// The highbd scalar keeps i64 intermediates where the lowbd one clamps to
+/// i16, so the two multiplies can't stay in i32 lanes. On the guarded domain
+/// (`tmp1 = abs + round` below `TMP1_MAX` — everything a real transform can
+/// emit; 12-bit magnitudes top out near 2^23 — plus round/quant/quant_shift
+/// >= 0):
+/// ```text
+/// tmp1  = (abs + round) & gate          i32 add, matches C's int add
+/// tmp2  = ((tmp1*32)*quant)>>16 + tmp1*32
+///       = (tmp1*quant)>>11 + tmp1<<5    fits i32 (<= TMP1_MAX*48 < 2^31)
+/// tmp32 = (tmp2 * quant_shift) >> (21-log_scale)   low 32 kept, like scalar
+/// ```
+/// The products run `mul_epi32` on the even lanes and on the
+/// `srli_epi64(.,32)` odd-lane view (nonneg, so no sign fixup), logical-shift
+/// down, and re-narrow by `blend_epi32(prod_even, slli64(prod_odd,32), 0xAA)`.
+/// A per-chunk unsigned-overflow check (`tmp1u > TMP1_MAX`, which also catches
+/// the wrapped-negative sums — huge coeffs and `coeff == i32::MIN`) falls back
+/// to the scalar body, so the kernel is exact on the FULL i32 domain.
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn highbd_quantize_b_impl_v3(
+    _t: archmage::X64V3Token,
+    zbin: &[i16; 2],
+    round: &[i16; 2],
+    quant: &[i16; 2],
+    quant_shift: &[i16; 2],
+    dequant: &[i16; 2],
+    log_scale: i32,
+    iscan: &[i16],
+    coeff: &[i32],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    use archmage::intrinsics::x86_64::*;
+    let n = coeff.len();
+    let nb = n / 8 * 8;
+    let wt = 1i64 << AOM_QM_BITS;
     let zbins = [
         round_power_of_two(zbin[0] as i32, log_scale),
         round_power_of_two(zbin[1] as i32, log_scale),
     ];
-    let nzbins = [-zbins[0], -zbins[1]];
-    let wt = 1i64 << AOM_QM_BITS;
+    let rr = [
+        round_power_of_two(round[0] as i32, log_scale),
+        round_power_of_two(round[1] as i32, log_scale),
+    ];
+    let dqv = [
+        ((dequant[0] as i32 * (1 << AOM_QM_BITS)) + (1 << (AOM_QM_BITS - 1))) >> AOM_QM_BITS,
+        ((dequant[1] as i32 * (1 << AOM_QM_BITS)) + (1 << (AOM_QM_BITS - 1))) >> AOM_QM_BITS,
+    ];
+    let shift = 16 - log_scale + AOM_QM_BITS;
 
-    // Pre-scan pass (wt = 32): keep coeffs outside the ZBIN dead-zone.
-    let mut idx_arr = Vec::with_capacity(n);
-    for (i, &sc) in scan[..n].iter().enumerate() {
-        let rc = sc as usize;
-        let coeff_w = coeff[rc] as i64 * wt;
-        if coeff_w >= zbins[(rc != 0) as usize] as i64 * wt
-            || coeff_w <= nzbins[(rc != 0) as usize] as i64 * wt
-        {
-            idx_arr.push(i);
-        }
+    // Preconditions for the i32-lane chain: shift counts must be in range
+    // (outside, the scalar body keeps its own behaviour — including panics)
+    // and the three multiplicands must be nonneg so the i64 products take
+    // logical shifts.
+    if !(0..=21).contains(&log_scale)
+        || rr[0] < 0
+        || rr[1] < 0
+        || quant[0] < 0
+        || quant[1] < 0
+        || quant_shift[0] < 0
+        || quant_shift[1] < 0
+    {
+        return highbd_quantize_b_scalar(
+            zbin, round, quant, quant_shift, dequant, log_scale, iscan, coeff, qcoeff, dqcoeff,
+        );
+    }
+    let sh_cnt = _mm_cvtsi32_si128(shift);
+    let ls_cnt = _mm_cvtsi32_si128(log_scale);
+
+    // tmp1 = abs + round must stay <= TMP1_MAX so tmp2 <= 48*tmp1 < 2^31
+    // (see the doc). The check runs on the SUM — C computes the add in int,
+    // so a wrapped-negative tmp1 must also route scalar (it does: unsigned-
+    // compare of a negative i32 reads as huge).
+    const TMP1_MAX: i32 = i32::MAX / 48; // 44_739_242
+    let msb = _mm256_set1_epi32(i32::MIN);
+    let lim = _mm256_set1_epi32(TMP1_MAX ^ i32::MIN);
+
+    // Chunk-0 vectors carry the DC class in lane 0; the rest are all-AC.
+    let lane0 = |dc: i32, ac: i32| _mm256_loadu_si256(&[dc, ac, ac, ac, ac, ac, ac, ac]);
+    let zg_f = lane0(zbins[0] - 1, zbins[1] - 1);
+    let rr_f = lane0(rr[0], rr[1]);
+    let q_f = lane0(quant[0] as i32, quant[1] as i32);
+    let qs_f = lane0(quant_shift[0] as i32, quant_shift[1] as i32);
+    let dq_f = lane0(dqv[0], dqv[1]);
+    let (zg_a, rr_a) = (_mm256_set1_epi32(zbins[1] - 1), _mm256_set1_epi32(rr[1]));
+    let (q_a, qs_a) = (
+        _mm256_set1_epi32(quant[1] as i32),
+        _mm256_set1_epi32(quant_shift[1] as i32),
+    );
+    let dq_a = _mm256_set1_epi32(dqv[1]);
+    // Odd-lane views of the (nonneg) multiplicands for `mul_epi32`.
+    let q_f_o = _mm256_srli_epi64::<32>(q_f);
+    let q_a_o = _mm256_srli_epi64::<32>(q_a);
+    let qs_f_o = _mm256_srli_epi64::<32>(qs_f);
+    let qs_a_o = _mm256_srli_epi64::<32>(qs_a);
+
+    let one = _mm256_set1_epi32(1);
+    let zero = _mm256_setzero_si256();
+    let mut eob_v = zero;
+    let mut eob: i32 = 0;
+
+    /// Scalar body for one raster position — the overflow-guarded chunks and
+    /// the sub-8 tail share it.
+    macro_rules! one_pos {
+        ($i:expr, $ac:expr) => {{
+            let i = $i;
+            let ac: usize = $ac;
+            let c = coeff[i];
+            let s = aomsign(c);
+            let cw = c as i64 * wt;
+            let t32 = if cw >= zbins[ac] as i64 * wt || cw <= -(zbins[ac] as i64 * wt) {
+                // Same i32-wrap add as the scalar body: C's `abs_coeff +
+                // round` is `int + int`, which wraps at extreme |coeff|.
+                let ab = (c ^ s).wrapping_sub(s);
+                let tw = (ab.wrapping_add(rr[ac]) as i64) * wt;
+                let t2 = ((tw * quant[ac] as i64) >> 16) + tw;
+                ((t2 * quant_shift[ac] as i64) >> shift) as i32
+            } else {
+                0
+            };
+            qcoeff[i] = (t32 ^ s).wrapping_sub(s);
+            let ad = t32.wrapping_mul(dqv[ac]) >> log_scale;
+            dqcoeff[i] = (ad ^ s).wrapping_sub(s);
+            if t32 != 0 {
+                eob = eob.max(iscan[i] as i32 + 1);
+            }
+        }};
     }
 
-    let mut eob: i32 = -1;
-    for &ii in &idx_arr {
-        let rc = scan[ii] as usize;
-        let rc01 = (rc != 0) as usize;
-        let coeff_v = coeff[rc];
-        let sign = aomsign(coeff_v);
-        let abs_coeff = ((coeff_v ^ sign).wrapping_sub(sign)) as i64;
-        let tmp1 = abs_coeff + round_power_of_two(round[rc01] as i32, log_scale) as i64;
-        let tmpw = tmp1 * wt;
-        let tmp2 = ((tmpw * quant[rc01] as i64) >> 16) + tmpw;
-        let abs_qcoeff =
-            ((tmp2 * quant_shift[rc01] as i64) >> (16 - log_scale + AOM_QM_BITS)) as i32;
-        qcoeff[rc] = (abs_qcoeff ^ sign).wrapping_sub(sign);
-        // iwt = 32: dequant = (dequant*32 + 16) >> 5 == dequant.
-        let dq =
-            ((dequant[rc01] as i32 * (1 << AOM_QM_BITS)) + (1 << (AOM_QM_BITS - 1))) >> AOM_QM_BITS;
-        let abs_dqcoeff = abs_qcoeff.wrapping_mul(dq) >> log_scale;
-        dqcoeff[rc] = (abs_dqcoeff ^ sign).wrapping_sub(sign);
-        if abs_qcoeff != 0 {
-            eob = ii as i32;
-        }
+    macro_rules! chunk8 {
+        ($ci:expr, $zg:expr, $rr:expr, $q:expr, $qo:expr, $qs:expr, $qso:expr, $dq:expr) => {{
+            let ci = $ci;
+            let c8: &[i32; 8] = coeff[ci * 8..ci * 8 + 8].try_into().unwrap();
+            let cv = _mm256_loadu_si256(c8);
+            let sign = _mm256_srai_epi32::<31>(cv);
+            let abs = _mm256_sub_epi32(_mm256_xor_si256(cv, sign), sign);
+            // add_epi32 IS C's `int + int` add — identical including the
+            // wrap. The guard checks the SUM (unsigned tmp1 > TMP1_MAX),
+            // which catches huge coeffs AND any lane whose add wrapped
+            // negative (incl. the i32::MIN wrapped-abs lane): those run
+            // scalar, where the i64 shifts handle the negative tmp1.
+            let tmp1u = _mm256_add_epi32(abs, $rr);
+            let over = _mm256_cmpgt_epi32(_mm256_xor_si256(tmp1u, msb), lim);
+            if _mm256_movemask_epi8(over) != 0 {
+                for i in ci * 8..ci * 8 + 8 {
+                    one_pos!(i, if ci == 0 && i == 0 { 0 } else { 1 });
+                }
+            } else {
+                let gate = _mm256_cmpgt_epi32(abs, $zg);
+                let tmp1 = _mm256_and_si256(tmp1u, gate);
+                // tmp1 * quant as i64 lanes, nonneg -> logical shifts.
+                let pe = _mm256_mul_epi32(tmp1, $q);
+                let po = _mm256_mul_epi32(_mm256_srli_epi64::<32>(tmp1), $qo);
+                let prod = _mm256_blend_epi32::<0xAA>(
+                    _mm256_srli_epi64::<11>(pe),
+                    _mm256_slli_epi64::<32>(_mm256_srli_epi64::<11>(po)),
+                );
+                let tmp2 = _mm256_add_epi32(prod, _mm256_slli_epi32::<5>(tmp1));
+                // tmp2 * quant_shift as i64, >> shift, keep low 32.
+                let qe = _mm256_srl_epi64(_mm256_mul_epi32(tmp2, $qs), sh_cnt);
+                let qo = _mm256_srl_epi64(
+                    _mm256_mul_epi32(_mm256_srli_epi64::<32>(tmp2), $qso),
+                    sh_cnt,
+                );
+                let t32 = _mm256_blend_epi32::<0xAA>(qe, _mm256_slli_epi64::<32>(qo));
+                let qc = _mm256_sub_epi32(_mm256_xor_si256(t32, sign), sign);
+                let adq = _mm256_sra_epi32(_mm256_mullo_epi32(t32, $dq), ls_cnt);
+                let dq = _mm256_sub_epi32(_mm256_xor_si256(adq, sign), sign);
+                let q8: &mut [i32; 8] = (&mut qcoeff[ci * 8..ci * 8 + 8]).try_into().unwrap();
+                let d8: &mut [i32; 8] = (&mut dqcoeff[ci * 8..ci * 8 + 8]).try_into().unwrap();
+                _mm256_storeu_si256(q8, qc);
+                _mm256_storeu_si256(d8, dq);
+                let is8: &[i16; 8] = iscan[ci * 8..ci * 8 + 8].try_into().unwrap();
+                let isc =
+                    _mm256_add_epi32(_mm256_cvtepi16_epi32(_mm_loadu_si128(is8)), one);
+                eob_v = _mm256_max_epi32(
+                    eob_v,
+                    _mm256_andnot_si256(_mm256_cmpeq_epi32(t32, zero), isc),
+                );
+            }
+        }};
     }
-    (eob + 1) as u16
+
+    chunk8!(0, zg_f, rr_f, q_f, q_f_o, qs_f, qs_f_o, dq_f);
+    for ci in 1..nb / 8 {
+        chunk8!(ci, zg_a, rr_a, q_a, q_a_o, qs_a, qs_a_o, dq_a);
+    }
+
+    let mut eob_lanes = [0i32; 8];
+    _mm256_storeu_si256(&mut eob_lanes, eob_v);
+    eob = eob.max(eob_lanes.into_iter().max().unwrap_or(0));
+
+    // Raster tail (< 8 coeffs, unreachable for real transform sizes): scalar.
+    for i in nb..n {
+        one_pos!(i, 1);
+    }
+    eob as u16
 }
 
 /// Bit-exact port of `aom_highbd_quantize_b_helper_c` (`aom_dsp/quantize.c`)

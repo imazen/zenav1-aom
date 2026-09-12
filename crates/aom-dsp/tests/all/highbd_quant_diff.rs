@@ -63,7 +63,20 @@ fn highbd_quantize_b_differential() {
         for log_scale in 0..=2 {
             for _ in 0..2000 {
                 let scan = perm(&mut rng, n);
-                let coeff: Vec<i32> = (0..n).map(|_| rng.coeff()).collect();
+                let mut iscan = vec![0i16; n];
+                for (i, &s) in scan.iter().enumerate() {
+                    iscan[s as usize] = i as i16;
+                }
+                let mut coeff: Vec<i32> = (0..n).map(|_| rng.coeff()).collect();
+                // Every ~64th iter pins the v3 kernel's overflow-guard lanes:
+                // |coeff| past GUARD (2^26) forces the scalar chunk path, and
+                // i32::MIN exercises the wrapped-abs lane.
+                if rng.next() % 64 == 0 {
+                    coeff[0] = i32::MIN;
+                    coeff[n / 3] = i32::MAX;
+                    coeff[2 * n / 3] = -(1 << 27);
+                    coeff[n / 2] = (1 << 26) + 7;
+                }
                 let zbin = [rng.i16r(1, 1500), rng.i16r(1, 1500)];
                 let round = [rng.i16r(1, 2000), rng.i16r(1, 2000)];
                 let quant = [rng.i16r(1, 32767), rng.i16r(1, 32767)];
@@ -71,7 +84,7 @@ fn highbd_quantize_b_differential() {
                 let dequant = [rng.i16r(1, 8000), rng.i16r(1, 8000)];
                 let mut q = vec![0i32; n];
                 let mut dq = vec![0i32; n];
-                let eob = aom_highbd_quantize_b_no_qmatrix(&zbin, &round, &quant, &quant_shift, &dequant, log_scale, &scan, &coeff, &mut q, &mut dq);
+                let eob = aom_highbd_quantize_b_no_qmatrix(&zbin, &round, &quant, &quant_shift, &dequant, log_scale, &scan, &iscan, &coeff, &mut q, &mut dq);
                 let (qw, dqw, ew) = c::ref_highbd_quantize_b(log_scale, &coeff, &zbin, &round, &quant, &quant_shift, &dequant, &scan);
                 assert_eq!(eob, ew, "hbd b eob n={n} ls={log_scale}");
                 assert_eq!(q, qw, "hbd b qcoeff n={n} ls={log_scale}");

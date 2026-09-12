@@ -1500,7 +1500,7 @@ pub fn aom_dsp::quant::aom_get_qmlevel_444_chroma(i32, i32, i32) -> i32
 pub fn aom_dsp::quant::aom_get_qmlevel_allintra(i32, i32, i32) -> i32
 pub fn aom_dsp::quant::aom_get_qmlevel_luma_ssimulacra2(i32, i32, i32) -> i32
 pub fn aom_dsp::quant::aom_highbd_quantize_b_adaptive_helper(&[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], i32, core::option::Option<&[u8]>, core::option::Option<&[u8]>, &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
-pub fn aom_dsp::quant::aom_highbd_quantize_b_no_qmatrix(&[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], i32, &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::aom_highbd_quantize_b_no_qmatrix(&[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], i32, &[i16], &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
 pub fn aom_dsp::quant::aom_highbd_quantize_b_qm(&[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], i32, &[u8], &[u8], &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
 pub fn aom_dsp::quant::aom_quantize_b_adaptive_helper(&[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], i32, core::option::Option<&[u8]>, core::option::Option<&[u8]>, &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
 pub fn aom_dsp::quant::aom_quantize_b_no_qmatrix(&[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], &[i16; 2], i32, &[i16], &[i16], &[i32], &mut [i32], &mut [i32]) -> u16

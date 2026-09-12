@@ -61,6 +61,7 @@ mod hbd_variance_simd_diff;
 mod header_diff;
 mod highbd_diff;
 mod highbd_hadamard_diff;
+mod highbd_quant_b_simd_diff;
 mod highbd_quant_diff;
 mod interintra_diff;
 mod interp_filter_params_diff;
