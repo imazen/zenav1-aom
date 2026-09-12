@@ -328,62 +328,61 @@ pub fn z2_high(
     dx: i32,
     dy: i32,
 ) {
-    let min_base_x = -(1 << up_above);
     let frac_bits_x = 6 - up_above;
     let frac_bits_y = 6 - up_left;
-    // Span the above suffix can read: `[min_base_x, ((bw-1) << up_above) + 1]`.
-    if !z2_vec_applies(above, bw, up_above) {
-        z2_high_scalar(dst, stride, bw, bh, above, left, up_above, up_left, dx, dy);
-        return;
-    }
-    // KB-PERF-55: the left-gather prefix is this function's whole self cost —
-    // the above suffix is dispatched to `two_tap_run` — and it was paying THREE
-    // bounds checks per pixel: `left.at(base_y)`, `left.at(base_y + 1)` (each a
-    // checked slice index through a signed i32 -> usize cast) and the
-    // `dst[row + c]` store. `perf annotate` at the shipping preset put ~9 % of
-    // the function in that check machinery alone (`cmpq` against a stack slot
-    // plus the `movabsq $0x7fff...` limit constant).
-    //
-    // Now: one row slice for the destination, so the store is unchecked inside
-    // the loop; and ONE two-element window for the tap pair instead of two
-    // independent checked reads. Arithmetic, walk order and panic behaviour are
-    // unchanged — `&ld[i0..i0 + 2]` panics exactly when the old
-    // `left.at(base_y + 1)` would have (both require `i0 + 2 <= len`).
+    // The left-gather prefix ends at the first column whose `base_x` reaches
+    // `min_base_x`. `x = (c << 6) - y*dx` is strictly increasing in `c` and
+    // `x >> frac >= -(1 << up)` is equivalent to `x >= -64` at BOTH upsample
+    // values (`-(1 << up) << (6 - up) == -64`), so the split is closed-form:
+    // `c_end = (y*dx - 1) >> 6` — the count of columns with `x <= -65` —
+    // clamped to `[0, bw]`. The scalar twin's per-column `break` lands on the
+    // same column, so prefix/suffix boundaries are byte-identical.
+    let above_vec = z2_vec_applies(above, bw, up_above);
     let ld = left.data();
+    let lpad = left.idx(0);
+    // Left-gather prefixes for every row in ONE dispatch: vector index/blend
+    // math + in-order scalar tap loads (a genuine gather — `base_y` is not
+    // affine in `c`). The kernel keeps the scalar panic surface: its per-lane
+    // `ld[i0]`/`ld[i0 + 1]` reads panic at exactly the column `&ld[i0..i0 + 2]`
+    // would.
+    crate::intra::dir_simd::z2_left_gather(
+        dst,
+        stride,
+        bw,
+        bh,
+        ld,
+        lpad,
+        dx,
+        dy,
+        frac_bits_y as u32,
+        up_left as u32,
+    );
     for r in 0..bh {
         let y = (r + 1) as i32;
         let drow = &mut dst[r * stride..r * stride + bw];
-        let mut c = 0usize;
-        // Left-gather prefix, verbatim from the scalar core.
-        for slot in drow.iter_mut() {
-            let x = ((c as i32) << 6) - y * dx;
-            if (x >> frac_bits_x) >= min_base_x {
-                break;
-            }
-            let x2 = (c + 1) as i32;
-            let y2 = ((r as i32) << 6) - x2 * dy;
-            let base_y = y2 >> frac_bits_y;
-            let shift = ((y2 * (1 << up_left)) & 0x3F) >> 1;
-            let i0 = left.idx(base_y);
-            let w = &ld[i0..i0 + 2];
-            *slot = rpo2_5_16(i32::from(w[0]) * (32 - shift) + i32::from(w[1]) * shift);
-            c += 1;
-        }
-        if c < bw {
-            let x = ((c as i32) << 6) - y * dx;
+        let c_end = ((y * dx - 1) >> 6).clamp(0, bw as i32) as usize;
+        if c_end < bw {
+            let x = ((c_end as i32) << 6) - y * dx;
             let base_x = x >> frac_bits_x;
-            let shift = (x & 0x3F) >> 1;
-            let n = bw - c;
-            if n >= MIN_VEC_RUN {
-                two_tap_run(&mut drow[c..], above.data(), above.idx(base_x), shift, n);
+            let n = bw - c_end;
+            if above_vec && n >= MIN_VEC_RUN {
+                // up_above == 0 here (z2_vec_applies), so `(x & 0x3F) >> 1`
+                // and `(x * (1 << up_above) & 0x3F) >> 1` coincide.
+                let shift = ((x * (1 << up_above)) & 0x3F) >> 1;
+                two_tap_run(&mut drow[c_end..], above.data(), above.idx(base_x), shift, n);
             } else {
-                crate::intra::dir_simd::two_tap_run_scalar(
-                    &mut drow[c..],
-                    above.data(),
-                    above.idx(base_x),
-                    shift,
-                    n,
-                );
+                // The above side declined (up_above == 1 or the i16 bound
+                // failed): per-pixel scalar recipe, identical to
+                // `z2_high_scalar`'s above branch.
+                for (k, slot) in drow[c_end..].iter_mut().enumerate() {
+                    let c = c_end + k;
+                    let x = ((c as i32) << 6) - y * dx;
+                    let base_x = x >> frac_bits_x;
+                    let shift = ((x * (1 << up_above)) & 0x3F) >> 1;
+                    *slot = rpo2_5_16(
+                        above.at(base_x) * (32 - shift) + above.at(base_x + 1) * shift,
+                    );
+                }
             }
         }
     }

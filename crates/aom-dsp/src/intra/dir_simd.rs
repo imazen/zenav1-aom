@@ -168,6 +168,195 @@ fn two_tap_run_impl(
     }
 }
 
+/// Dispatch entry for the z2 LEFT-half gather, ALL ROWS in one dispatch:
+/// for each row `r`, writes the `c_end(r)` columns whose `base_x` falls short
+/// of the above edge (`c_end = ((y*dx - 1) >> 6).clamp(0, bw)` — see
+/// `super::dir::z2_high`) into `dst[r*stride .. r*stride + c_end]`, reading the
+/// left edge through `ld`/`pad` (`EdgeRef16`'s data + pad).
+///
+/// `base_y(c) = ((r << 6) - (c + 1) * dy) >> frac_y` is NOT affine in `c`, so
+/// the taps are a genuine gather: the vector body computes the index and blend
+/// arithmetic in i32 lanes, then performs the two tap loads per lane IN ORDER
+/// as plain scalar reads. That keeps the panic surface byte-for-byte — the
+/// scalar twin reads `&ld[idx..idx + 2]` at the same index in the same column
+/// order — at the cost of a per-lane array round trip the contiguous kernel
+/// never pays. The loads are irreducible (the values genuinely live at
+/// non-affine offsets); what the kernel removes is the per-pixel index math
+/// (~6 ops), the two-tap blend (~5 ops), the checked dst store, and the
+/// per-row dispatch/setup — this is one `incant!` per block, not per row.
+///
+/// i32 lanes, not the i16 trick [`two_tap_run_impl`] uses: the i16 bound needs
+/// `M <= I16_TAP_MAX`, and this kernel is only reachable on rows where the
+/// above side's `span_fits_i16` may have declined — the gather must not inherit
+/// a data bound it never checked. `res = a0*32 + (a1-a0)*s + 16` maxes at
+/// `32 * 65535 + 16` in i32 — exact for every sample value.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn z2_left_gather(
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    ld: &[u16],
+    pad: usize,
+    dx: i32,
+    dy: i32,
+    frac_y: u32,
+    up_left: u32,
+) {
+    let _ = crate::dispatch::scalar_forced();
+    incant!(
+        z2_left_gather_impl(dst, stride, bw, bh, ld, pad, dx, dy, frac_y, up_left),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn z2_left_gather_impl_scalar(
+    _t: archmage::ScalarToken,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    ld: &[u16],
+    pad: usize,
+    dx: i32,
+    dy: i32,
+    frac_y: u32,
+    up_left: u32,
+) {
+    z2_left_gather_scalar(dst, stride, bw, bh, ld, pad, dx, dy, frac_y, up_left);
+}
+
+/// The scalar gather recipe — the differential reference and the tail path.
+/// Byte-identical to the left-prefix loop in `super::dir::z2_high` (same index
+/// expressions, same column order, same `&ld[i0..i0 + 2]` panic point).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn z2_left_gather_scalar(
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    ld: &[u16],
+    pad: usize,
+    dx: i32,
+    dy: i32,
+    frac_y: u32,
+    up_left: u32,
+) {
+    for r in 0..bh {
+        let y = (r + 1) as i32;
+        let c_end = ((y * dx - 1) >> 6).clamp(0, bw as i32) as usize;
+        let drow = &mut dst[r * stride..r * stride + c_end];
+        for (k, slot) in drow.iter_mut().enumerate() {
+            let x2 = (k + 1) as i32;
+            let y2 = ((r as i32) << 6) - x2 * dy;
+            let base_y = y2 >> frac_y;
+            let shift = ((y2 * (1 << up_left)) & 0x3F) >> 1;
+            let i0 = (pad as i32 + base_y) as usize;
+            let w = &ld[i0..i0 + 2];
+            *slot =
+                ((i32::from(w[0]) * (32 - shift) + i32::from(w[1]) * shift + 16) >> 5) as u16;
+        }
+    }
+}
+
+/// One row's scalar tail, starting at block column `c0` (so `x2 = c0 + k + 1`).
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn z2_left_gather_tail(
+    drow: &mut [u16],
+    ld: &[u16],
+    pad: usize,
+    r: usize,
+    c0: usize,
+    dy: i32,
+    frac_y: u32,
+    up_left: u32,
+) {
+    for (k, slot) in drow.iter_mut().enumerate() {
+        let x2 = (c0 + k + 1) as i32;
+        let y2 = ((r as i32) << 6) - x2 * dy;
+        let base_y = y2 >> frac_y;
+        let shift = ((y2 * (1 << up_left)) & 0x3F) >> 1;
+        let i0 = (pad as i32 + base_y) as usize;
+        let w = &ld[i0..i0 + 2];
+        *slot = ((i32::from(w[0]) * (32 - shift) + i32::from(w[1]) * shift + 16) >> 5) as u16;
+    }
+}
+
+#[magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn z2_left_gather_impl(
+    token: Token,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    ld: &[u16],
+    pad: usize,
+    dx: i32,
+    dy: i32,
+    frac_y: u32,
+    up_left: u32,
+) {
+    let dyv = i32x8::splat(token, dy);
+    let c63 = i32x8::splat(token, 0x3F);
+    let c16 = i32x8::splat(token, 16);
+    let c32 = i32x8::splat(token, 32);
+    let mask_lo = i32x8::splat(token, 0xFFFF);
+    let step = i32x8::splat(token, 8);
+    let mut pairs = [0i32; 8];
+    for r in 0..bh {
+        let y = (r + 1) as i32;
+        let c_end = ((y * dx - 1) >> 6).clamp(0, bw as i32) as usize;
+        let n8 = c_end & !7;
+        if n8 == 0 {
+            if c_end > 0 {
+                z2_left_gather_tail(
+                    &mut dst[r * stride..r * stride + c_end],
+                    ld,
+                    pad,
+                    r,
+                    0,
+                    dy,
+                    frac_y,
+                    up_left,
+                );
+            }
+            continue;
+        }
+        let drow = &mut dst[r * stride..r * stride + c_end];
+        let r6 = i32x8::splat(token, (r as i32) << 6);
+        // Lane k holds x2 = c + 1 + k; each chunk advances the base by 8.
+        let mut x2v = i32x8::from_array(token, [1, 2, 3, 4, 5, 6, 7, 8]);
+        let mut c = 0usize;
+        while c < n8 {
+            let y2v = r6 - x2v * dyv;
+            let byv = y2v.shr_arithmetic_uniform(frac_y);
+            let shv = (y2v.shl_uniform(up_left) & c63).shr_logical_const::<1>();
+            let by = byv.to_array();
+            for (k, p) in pairs.iter_mut().enumerate() {
+                // Same index expression as the scalar twin: `(pad + base_y)`
+                // is computed in i32 THEN cast, so a negative base wraps to a
+                // huge index and panics at the lane the scalar would.
+                let i0 = (pad as i32 + by[k]) as usize;
+                *p = i32::from(ld[i0]) | (i32::from(ld[i0 + 1]) << 16);
+            }
+            let pv = i32x8::from_array(token, pairs);
+            let a0 = pv & mask_lo;
+            let a1 = pv.shr_logical_const::<16>();
+            let res = (a0 * c32 + (a1 - a0) * shv + c16).shr_arithmetic_const::<5>();
+            let out_arr: [u16; 8] = res.to_array().map(|v| v as u16);
+            drow[c..c + 8].copy_from_slice(&out_arr);
+            x2v += step;
+            c += 8;
+        }
+        if c < c_end {
+            z2_left_gather_tail(&mut drow[c..], ld, pad, r, c, dy, frac_y, up_left);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +468,82 @@ mod tests {
             diverged,
             "the i16 tap bound never bites — the gate would be decorative"
         );
+    }
+
+    /// `z2_left_gather` vs its scalar recipe across the admitted domain:
+    /// block shapes 4..=64, both `up_left` values, `dx`/`dy` over the
+    /// signalled z2 ranges, and samples past `I16_TAP_MAX` — the gather runs
+    /// i32 lanes precisely so it needs no data bound, and bd12-range probes
+    /// pin that.
+    #[test]
+    fn z2_left_gather_matches_scalar_recipe() {
+        let mut s = 0x9E37_79B9u32;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            s
+        };
+        let mut vec_chunks = 0usize;
+        for rep in 0..4 {
+            // pad=8, 144 usable samples (the production max is ~129), tail pad.
+            let mut ld = vec![0u16; 160];
+            for (i, e) in ld.iter_mut().enumerate() {
+                *e = match rep {
+                    0 => (next() % 4096) as u16, // bd12 dense random
+                    1 => (next() % 65536) as u16, // full u16 (no data bound)
+                    2 => ((i as u32 * 53) % 4096) as u16, // ramp
+                    _ => 4095,                   // flat bd12 max
+                };
+            }
+            for &up_left in &[0u32, 1] {
+                let frac_y = 6 - up_left;
+                for &(bw, bh) in &[(8usize, 8usize), (16, 16), (32, 32), (64, 64), (4, 8), (8, 16), (16, 8), (64, 16)] {
+                    for &dx in &[4i32, 17, 32, 45, 64, 90, 121, 190, 361] {
+                        for &dy in &[4i32, 17, 45, 90, 190] {
+                            // Feasibility: every kept lane's `pad + base_y` /
+                            // `+ 1` must be in bounds. `base_y` is
+                            // non-increasing in c, so per row the extremes are
+                            // lanes 0 and c_end-1.
+                            let mut ok = true;
+                            for r in 0..bh {
+                                let y = (r + 1) as i32;
+                                let ce =
+                                    ((y * dx - 1) >> 6).clamp(0, bw as i32) as usize;
+                                if ce == 0 {
+                                    continue;
+                                }
+                                let r6 = (r as i32) << 6;
+                                let hi = (r6 - dy) >> frac_y;
+                                let lo = (r6 - (ce as i32) * dy) >> frac_y;
+                                if 8 + lo < 0 || 8 + hi + 2 > ld.len() as i32 {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                            if !ok {
+                                continue;
+                            }
+                            let stride = bw;
+                            let mut got = vec![0x55u16; stride * bh];
+                            let mut want = vec![0x55u16; stride * bh];
+                            z2_left_gather(
+                                &mut got, stride, bw, bh, &ld, 8, dx, dy, frac_y, up_left,
+                            );
+                            z2_left_gather_scalar(
+                                &mut want, stride, bw, bh, &ld, 8, dx, dy, frac_y, up_left,
+                            );
+                            assert_eq!(got, want, "{bw}x{bh} dx={dx} dy={dy} up_l={up_left} rep={rep}");
+                            for r in 0..bh {
+                                let y = (r + 1) as i32;
+                                let c_end = ((y * dx - 1) >> 6).clamp(0, bw as i32) as usize;
+                                vec_chunks += c_end / 8;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(vec_chunks > 200, "vector arm unreached ({vec_chunks})");
     }
 }
