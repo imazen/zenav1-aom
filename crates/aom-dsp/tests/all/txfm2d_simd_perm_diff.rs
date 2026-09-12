@@ -276,6 +276,15 @@ fn fwd_spike_gate(k: usize, i: usize) -> i16 {
         14 => 804,  // over ADST->IDTX (803)
         15 => -1137, // over IDTX->ADST (1136)
         16 => 2895, // IDTX->IDTX's exact edge -> accept
+        17 => 1448, // one over 16x8 DCT->IDTX (1447) -> decline that pair
+        18 => -1606, // under 16x8 ADST->IDTX (1605) -> decline
+        19 => {
+            if i % 3 == 0 {
+                567 // inside 8x16 DCT->ADST (567), over DCT->DCT/ADST->DCT (511)
+            } else {
+                0
+            }
+        }
         _ => {
             if i % 4 == 0 {
                 512 // over the 8x8 bound -> decline there, accept at the 4x4 edge
