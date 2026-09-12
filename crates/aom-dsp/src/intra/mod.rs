@@ -11,6 +11,7 @@ pub mod dir;
 mod dir_simd;
 mod filter_simd;
 pub mod edge;
+mod edge_simd;
 mod simd;
 mod simd16;
 mod weights;

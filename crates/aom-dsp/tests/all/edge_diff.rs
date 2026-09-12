@@ -118,3 +118,60 @@ fn highbd_upsample_intra_edge_byte_identical() {
         }
     }
 }
+
+/// Tier sweep for the i32-lane kernels behind `highbd_filter_intra_edge` and
+/// `highbd_upsample_intra_edge`: the C differentials above pin the default
+/// tier; this runs every archmage token permutation so the NEON / wasm128 /
+/// scalar tiers are held to the same byte-identity against the real C
+/// kernels. The filter's `sz` sweep reaches 129 — the production maximum
+/// (`n_top_px + 1 + txhpx` for 64-wide blocks), beyond the default-tier
+/// test's 65 — and the upsample sweep covers its full `sz <= 16` domain.
+#[test]
+fn highbd_edge_kernels_match_c_at_every_tier() {
+    use archmage::SimdToken;
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    // Serialise: this sweep permutes PROCESS-GLOBAL dispatch state.
+    let _serial = crate::dispatch_serial::dispatch_serial();
+    let mut simd_perms = 0usize;
+    let report = for_each_token_permutation(CompileTimePolicy::Warn, |_tier| {
+        if if cfg!(target_arch = "aarch64") {
+            archmage::NeonToken::summon().is_some()
+        } else {
+            archmage::X64V3Token::summon().is_some()
+        } {
+            simd_perms += 1;
+        }
+        let mut rng = Rng(0x_ED6E_51B1_7E12_2026 ^ 0x9E37_79B9_7F4A_7C15);
+        for &bd in &[8u8, 10, 12] {
+            let max = (1u32 << bd) - 1;
+            for sz in 2..=129usize {
+                for strength in 1..=3 {
+                    for _ in 0..8 {
+                        let base: Vec<u16> =
+                            (0..sz).map(|_| (rng.next() as u32 & max) as u16).collect();
+                        let mut a = base.clone();
+                        let mut b = base.clone();
+                        aom_dsp::intra::edge::highbd_filter_intra_edge(&mut a, sz, strength);
+                        c::ref_highbd_filter_intra_edge(&mut b, 0, sz, strength);
+                        assert_eq!(a, b, "tier filter bd={bd} sz={sz} s={strength}");
+                    }
+                }
+            }
+            for sz in 1..=16usize {
+                for _ in 0..40 {
+                    const OFF: usize = 4;
+                    let n = OFF + 2 * sz + 4;
+                    let base: Vec<u16> =
+                        (0..n).map(|_| (rng.next() as u32 & max) as u16).collect();
+                    let mut a = base.clone();
+                    let mut b = base.clone();
+                    aom_dsp::intra::edge::highbd_upsample_intra_edge(&mut a, OFF, sz, bd);
+                    c::ref_highbd_upsample_intra_edge(&mut b, OFF, sz, bd);
+                    assert_eq!(a, b, "tier upsample bd={bd} sz={sz}");
+                }
+            }
+        }
+    });
+    eprintln!("{report}");
+    assert!(simd_perms >= 1, "no vector tier ever ran — sweep was vacuous");
+}

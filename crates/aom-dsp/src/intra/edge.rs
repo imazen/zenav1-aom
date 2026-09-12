@@ -163,8 +163,14 @@ pub fn highbd_filter_intra_edge(p: &mut [u16], sz: usize, strength: i32) {
     const KERNEL: [[i32; 5]; 3] = [[0, 4, 8, 4, 0], [0, 5, 6, 5, 0], [2, 4, 4, 4, 2]];
     let filt = (strength - 1) as usize;
     let taps = KERNEL[filt];
-    let idx = |k: i32| k.clamp(0, sz as i32 - 1) as usize;
+    filter_intra_edge_dispatch(p, sz, taps);
+}
 
+/// The in-place rolling-window walk — the pre-SIMD body of
+/// `highbd_filter_intra_edge`, kept as the out-of-envelope fallback
+/// (`sz > FILTER_SCRATCH`, unreachable from any production caller) and the
+/// semantic reference for `intra::edge_simd`.
+pub(crate) fn filter_intra_edge_scalar_inplace(p: &mut [u16], sz: usize, taps: [i32; 5]) {
     // C copies the whole edge into a scratch (`edge[129]` in
     // `av1_highbd_filter_intra_edge_c`) because the filter reads ORIGINAL
     // samples while writing `p` in place. Only a 5-wide window of originals is
@@ -178,6 +184,7 @@ pub fn highbd_filter_intra_edge(p: &mut [u16], sz: usize, strength: i32) {
     // The incoming `w[4]` reads `p[clamp(i+2)]`, whose index is `>= i` and so
     // has not been written yet — including at `i == sz-1`, where it is `i`
     // itself and the read precedes the write.
+    let idx = |k: i32| k.clamp(0, sz as i32 - 1) as usize;
     let mut w = [0i32; 5];
     for (j, wj) in w.iter_mut().enumerate() {
         *wj = p[idx(j as i32 - 1)] as i32;
@@ -198,23 +205,13 @@ pub fn highbd_filter_intra_edge(p: &mut [u16], sz: usize, strength: i32) {
     }
 }
 
+fn filter_intra_edge_dispatch(p: &mut [u16], sz: usize, taps: [i32; 5]) {
+    super::edge_simd::filter_intra_edge_run(p, sz, taps);
+}
+
 /// `av1_highbd_upsample_intra_edge_c`: highbd edge doubling, clipping half-sample
 /// outputs to `[0, (1<<bd)-1]`. Layout as `upsample_intra_edge` (`off >= 2`).
 pub fn highbd_upsample_intra_edge(buf: &mut [u16], off: usize, sz: usize, bd: u8) {
     let max_v = (1i32 << bd) - 1;
-    let mut inp = [0i32; 19];
-    inp[0] = buf[off - 1] as i32;
-    inp[1] = buf[off - 1] as i32;
-    for i in 0..sz {
-        inp[i + 2] = buf[off + i] as i32;
-    }
-    inp[sz + 2] = buf[off + sz - 1] as i32;
-    buf[off - 2] = inp[0] as u16;
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..sz {
-        let s = (-inp[i] + 9 * inp[i + 1] + 9 * inp[i + 2] - inp[i + 3] + 8) >> 4;
-        let s = s.clamp(0, max_v) as u16;
-        buf[(off as i32 + 2 * i as i32 - 1) as usize] = s;
-        buf[off + 2 * i] = inp[i + 2] as u16;
-    }
+    super::edge_simd::upsample_intra_edge_run(buf, off, sz, max_v);
 }
