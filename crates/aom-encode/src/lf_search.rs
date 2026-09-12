@@ -185,6 +185,7 @@ fn try_filter_plane(
     filter_level_u: i32,
     filter_level_v: i32,
     sharpness: i32,
+    scratch: &mut Vec<u16>,
 ) -> i64 {
     let p = LfParams {
         filter_level,
@@ -214,9 +215,14 @@ fn try_filter_plane(
     let mut dummy_b = [0u16; 1];
     match plane {
         0 => {
-            let mut y = f.recon_y.to_vec();
+            // C's try_filter_frame filters cur_frame->buf in place and
+            // restores from a saved copy; we keep the copy semantics but the
+            // buffer is REUSED across trials (C's pick_lf_lvl_frame_buffer).
+            scratch.clear();
+            scratch.extend_from_slice(f.recon_y);
+            let y = scratch.as_mut_slice();
             let mut buf = LfFrameBuf {
-                y: &mut y,
+                y,
                 y_stride: f.stride,
                 u: &mut dummy_a,
                 v: &mut dummy_b,
@@ -231,18 +237,20 @@ fn try_filter_plane(
             sse_plane(
                 f.src_y,
                 f.stride,
-                &y,
+                &buf.y[..],
                 f.stride,
                 f.crop_width as usize,
                 f.crop_height as usize,
             )
         }
         1 => {
-            let mut u = f.recon_u.to_vec();
+            scratch.clear();
+            scratch.extend_from_slice(f.recon_u);
+            let u = scratch.as_mut_slice();
             let mut buf = LfFrameBuf {
                 y: &mut dummy_a,
                 y_stride: f.stride,
-                u: &mut u,
+                u,
                 v: &mut dummy_b,
                 uv_stride: f.stride,
                 crop_width: f.crop_width,
@@ -252,15 +260,17 @@ fn try_filter_plane(
                 bd: f.bd,
             };
             loop_filter_frame(&mut buf, &grid, &p, 1, 2);
-            sse_plane(f.src_u, f.stride, &u, f.stride, uv_w, uv_h)
+            sse_plane(f.src_u, f.stride, &buf.u[..], f.stride, uv_w, uv_h)
         }
         _ => {
-            let mut v = f.recon_v.to_vec();
+            scratch.clear();
+            scratch.extend_from_slice(f.recon_v);
+            let v = scratch.as_mut_slice();
             let mut buf = LfFrameBuf {
                 y: &mut dummy_a,
                 y_stride: f.stride,
                 u: &mut dummy_b,
-                v: &mut v,
+                v,
                 uv_stride: f.stride,
                 crop_width: f.crop_width,
                 crop_height: f.crop_height,
@@ -269,7 +279,7 @@ fn try_filter_plane(
                 bd: f.bd,
             };
             loop_filter_frame(&mut buf, &grid, &p, 2, 3);
-            sse_plane(f.src_v, f.stride, &v, f.stride, uv_w, uv_h)
+            sse_plane(f.src_v, f.stride, &buf.v[..], f.stride, uv_w, uv_h)
         }
     }
 }
@@ -315,6 +325,7 @@ fn search_filter_level(
     held_vert: i32,
     held_horiz: i32,
     sharpness: i32,
+    scratch: &mut Vec<u16>,
 ) -> i32 {
     const MIN_FILTER_LEVEL: i32 = 0;
     let max_filter_level = MAX_LOOP_FILTER; // one-pass envelope: always 63 (module docs)
@@ -323,15 +334,19 @@ fn search_filter_level(
     let mut filt_direction = 0i32;
     let mut ss_err = [-1i64; (MAX_LOOP_FILTER + 1) as usize];
 
-    let trial = |level: i32, ss_err: &mut [i64; (MAX_LOOP_FILTER + 1) as usize]| -> i64 {
+    let trial = |level: i32,
+                 ss_err: &mut [i64; (MAX_LOOP_FILTER + 1) as usize],
+                 scratch: &mut Vec<u16>|
+     -> i64 {
         if ss_err[level as usize] < 0 {
             let (fl, flu, flv) = filt_pair(plane, dir, level, held_vert, held_horiz);
-            ss_err[level as usize] = try_filter_plane(f, plane, fl, flu, flv, sharpness);
+            ss_err[level as usize] =
+                try_filter_plane(f, plane, fl, flu, flv, sharpness, scratch);
         }
         ss_err[level as usize]
     };
 
-    let mut best_err = trial(filt_mid, &mut ss_err);
+    let mut best_err = trial(filt_mid, &mut ss_err, scratch);
     let mut filt_best = filt_mid;
 
     while filter_step > 0 {
@@ -346,7 +361,7 @@ fn search_filter_level(
         bias >>= 1;
 
         if filt_direction <= 0 && filt_low != filt_mid {
-            let e = trial(filt_low, &mut ss_err);
+            let e = trial(filt_low, &mut ss_err, scratch);
             if e < best_err + bias {
                 if e < best_err {
                     best_err = e;
@@ -355,7 +370,7 @@ fn search_filter_level(
             }
         }
         if filt_direction >= 0 && filt_high != filt_mid {
-            let e = trial(filt_high, &mut ss_err);
+            let e = trial(filt_high, &mut ss_err, scratch);
             if e < best_err - bias {
                 best_err = e;
                 filt_best = filt_high;
@@ -431,19 +446,25 @@ pub fn pick_filter_level(
     // `LPF_PICK_FROM_FULL_IMAGE_NON_DUAL` (allintra speed>=4, speed_features.c:496)
     // SKIPS the two refine passes (`method != ..._NON_DUAL` guard, picklpf.c:376)
     // and leaves both luma levels equal to the combined dir=2 winner.
-    let combined = search_filter_level(f, 0, 2, 0, 0, sharpness);
+    // C's `pick_lf_lvl_frame_buffer`: one scratch the per-trial filtered
+    // copies reuse — the port's `to_vec`-per-trial paid a full-plane malloc
+    // on every level probe.
+    let mut scratch = Vec::new();
+    let combined = search_filter_level(f, 0, 2, 0, 0, sharpness, &mut scratch);
     let mut filter_level = [combined, combined];
     if !non_dual {
-        filter_level[0] = search_filter_level(f, 0, 0, 0, filter_level[1], sharpness);
-        filter_level[1] = search_filter_level(f, 0, 1, filter_level[0], 0, sharpness);
+        filter_level[0] =
+            search_filter_level(f, 0, 0, 0, filter_level[1], sharpness, &mut scratch);
+        filter_level[1] =
+            search_filter_level(f, 0, 1, filter_level[0], 0, sharpness, &mut scratch);
     }
 
     let (filter_level_u, filter_level_v) = if f.monochrome {
         (0, 0)
     } else {
         (
-            search_filter_level(f, 1, 0, 0, 0, sharpness),
-            search_filter_level(f, 2, 0, 0, 0, sharpness),
+            search_filter_level(f, 1, 0, 0, 0, sharpness, &mut scratch),
+            search_filter_level(f, 2, 0, 0, 0, sharpness, &mut scratch),
         )
     };
 
