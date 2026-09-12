@@ -395,3 +395,48 @@ Next of the same shape: 16x16 and 8x16/16x8 (`fwd_16x16_fused`,
 `fwd_rect816_fused` — ~131M + ~110M self-Ir plus their `run_fwd1d` shares)
 need 16-pt kernels (`fdct16x16_new_sse2` family, w16 butterflies via two
 regs per index) — bigger transcription, same gate derivation.
+
+## Inverse 8x8 whole-block kernel on i16 lanes — `av1_lowbd_inv_txfm2d_add_8x8` shape — LANDED −1.140 %
+
+The last 8x8-sized transform gap: `inv_8x8_fused` ran i32 lanes through
+`run_inv1d` (96.7M self-Ir + ~175M kernel share at 196² cq27 s3, 203k
+calls/iter at s0). `inv_8x8_fused_i16` (`transform/simd/mod.rs`)
+transcribes C's lowbd shape — contiguous column loads `input[c*8+r]` packed
+i32->i16 (`packs` == `clamp_buf(bd+8)` at the bd8 clamp the dispatcher
+requires), `av1_idct8_sse2`/`av1_iadst8_sse2`/`iidentity8_sse2` verbatim over
+`btf_16_sse2`, `mulhrs` for both round-shifts (`(v+1)>>1`, `(v+8)>>4`),
+in-register `transpose_16bit_8x8`, `lr_flip` as a lane reverse, `ud_flip` as
+register selection, `highbd_clip_pixel_add` store.
+
+Gate: per-(row, col)-kernel input bounds from exhaustive sign-vertex
+simulation of the saturating kernel, chained through the `>>1` inter-pass
+shift — `B[row][col]` = {dct: [2347,2431,6201], adst: [2432,2518,6423],
+idtx: [6202,6423,16383]}; `iidentity8`'s unclamped `2*v` and `iadst8`'s
+terminal `subs(0,x)` negations set the edges. Over-bound input declines to
+the i32 fused path. Real encode input: 125,610 accepts / 1,610 declines per
+196² iter (the gate genuinely fires — the decline path is not dead code).
+The bound check folds into the loads (8 `abs`/`max_epu32`/`cmpgt`/`ptest`,
+the `abs(i32::MIN)` wrap covered by the subtract-then-compare trick).
+
+**Two transcription bugs the perm differential caught.** (a) The transpose
+emitted the `b2/b3` pair where C's `transpose_16bit_8x8` emits `b4/b5` —
+flat-symmetric inputs are blind to it; the random accepted-band arm was not.
+(b) `lr_flip`'s lane reverse used `shuffle_epi32::<0x1B>` — reversing i32
+lanes SCRAMBLES i16 pairs ([3,2,1,0,7,6,5,4]->[5,4,7,6,1,0,3,2]), not
+reverses them; the correct form is `shufflelo`+`shufflehi::<0x1B>` per 64-bit
+half then `shuffle_epi32::<0x4E>` to swap the halves. An in-crate probe
+(i16 vs the proven i32 kernel, all 9 kernel pairs x 4 flip combos) isolated
+both before removal; the durable coverage is the perm test's ±737 accepted
+arm + ±737/±738/±2347/±2348 gate-edge spikes.
+
+At 196² cq27 s3 (4 reps): whole-cell 9.185B -> 9.104B Ir (−81.6M, −0.89 %);
+`run_inv1d` self-Ir 321.8M -> 235.1M, `inv_8x8_fused` 96.7M -> 2.4M (1,610
+declines). Band 24 rounds rotated arms + same-binary null: **−1.140 %
+(22/24, p=3.59e-5, null −0.112 %)**, all arms 40,237 B. Full aom-decode
+suite (incl. `real_bitstream` end-to-end) green; the inverse path is
+decode-side too.
+
+Next of the same shape: `inv_rect48_fused` (~88M incl-Ir, 85,920 calls) —
+reuses every kernel above plus the inv-4x4's w4 set; its rect scale is the
+one new piece (scalar scales i64 PRE-clamp, C's `mulhrs` post-pack — the i16
+form must scale in i32 before `packs`).
