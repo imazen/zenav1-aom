@@ -196,6 +196,30 @@ fn inv_spike_gate48(k: usize, i: usize) -> i32 {
     }
 }
 
+/// Gate-edge spikes for the fused 16x16 and 8x16/16x8 INVERSE i16 kernels —
+/// the tightest accept bound across all three tables (±1238, `Dct -> Adst` at
+/// 16x16) and just past it, the 16x16 `Dct -> Dct` edge (±2474/±2475), the
+/// widest 16x16 cell (±11584 `Idtx -> Idtx`, /±11585 over), and a partial
+/// block that only the loosest pairs decline.
+fn inv_spike_gate16(k: usize, i: usize) -> i32 {
+    match k {
+        0 => 1238,   // 16x16 Dct->Adst exact edge — every pair accepts
+        1 => -1238,
+        2 => 1239,   // over 16x16's two tightest cells only
+        3 => 2474,   // 16x16 Dct->Dct exact edge
+        4 => 2475,   // over 16x16 Dct->Dct and both rect tightest cells
+        5 => -11584, // 16x16 Idtx->Idtx exact edge — that pair only
+        6 => 11585,  // over every 16x16 bound
+        _ => {
+            if i % 4 == 0 {
+                16385 // over even the widest rect bound (16384) -> all decline
+            } else {
+                -1721 // inside every bound except none — all accept
+            }
+        }
+    }
+}
+
 /// bd8-range spike patterns for the forward residual buffer — the
 /// coefficient-sum sign vertices at the exact ±255 bd8 extreme, which is where
 /// the i16-lane forward passes are closest to their proven bound.
@@ -380,6 +404,17 @@ fn all_outputs() -> Vec<(String, Vec<i64>)> {
                             (0..ilen).map(|i| inv_spike_gate48(k, i)).collect();
                         push_inv(
                             format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} gspike48_{k}"),
+                            &input,
+                            &mut rng,
+                        );
+                    }
+                    // Gate-edge spikes for the fused 16x16 + 8x16/16x8 i16
+                    // kernel.
+                    for k in 0..8usize {
+                        let input: Vec<i32> =
+                            (0..ilen).map(|i| inv_spike_gate16(k, i)).collect();
+                        push_inv(
+                            format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} gspike16_{k}"),
                             &input,
                             &mut rng,
                         );
