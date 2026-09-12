@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1811 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
+# files: zenav1-aom-dsp.txt 1812 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 2
 
 ## summary
@@ -15,7 +15,7 @@
 #   pub types (struct/enum/trait/alias)        93
 #   pub consts/statics                        205
 #   pub macros                                  1
-#   free functions                            599
+#   free functions                            600
 #   inherent methods                           96
 #   struct fields                             706
 #   enum variants                              13
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            3
-#   aom_dsp                        1768
+#   aom_dsp                        1769
 
-## items (1735 lines)
+## items (1736 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -1625,6 +1625,7 @@ pub fn aom_dsp::transform::inv_txfm2d::av1_inv_txfm2d_add_into(&[i32], &mut [u16
 pub fn aom_dsp::transform::inv_txfm2d::av1_inv_txfm2d_add_u8(&[i32], &mut [u8], usize, usize, usize)
 pub fn aom_dsp::transform::inv_txfm2d::av1_inv_txfm2d_add_u8_into(&[i32], &mut [u8], usize, usize, usize, &mut aom_dsp::transform::inv_txfm2d::InvTxfmScratch)
 pub fn aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add(&[i32], &mut [u16], usize, usize, usize, i32, usize, bool)
+pub fn aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add_into(&[i32], &mut [u16], usize, usize, usize, i32, usize, bool, &mut aom_dsp::transform::inv_txfm2d::InvTxfmScratch)
 pub fn aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add_u8(&[i32], &mut [u8], usize, usize, usize, usize, bool)
 pub fn aom_dsp::transform::inv_txfm2d::av1_iwht4x4_add_u8(&[i32], &mut [u8], usize, usize)
 pub fn aom_dsp::transform::inv_txfm2d::inv_input_len(usize) -> usize

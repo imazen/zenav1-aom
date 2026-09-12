@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-encode.txt 267 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4824 lines (323 hidden + 7531 excluded-feature)
+# files: zenav1-aom-encode.txt 268 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4825 lines (323 hidden + 7532 excluded-feature)
 # arch-unique surface: aarch64 39
 
 ## summary
@@ -16,7 +16,7 @@
 #   pub consts/statics                          5
 #   free functions                             23
 #   inherent methods                           25
-#   struct fields                             134
+#   struct fields                             135
 #   enum variants                              22
 #   re-exports                                  1
 #   trait roster entries (type × trait)       119
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            2
-#   aom_encode                      236
+#   aom_encode                      237
 
-## items (238 lines)
+## items (239 lines)
 
 pub mod aom_encode
 pub use aom_encode::reconstruct_txb
@@ -247,6 +247,7 @@ pub struct aom_encode::XformQuantScratch
 pub aom_encode::XformQuantScratch::coeff: alloc::vec::Vec<i32>
 pub aom_encode::XformQuantScratch::dqcoeff: alloc::vec::Vec<i32>
 pub aom_encode::XformQuantScratch::fwd: aom_dsp::transform::txfm2d::FwdTxfmScratch
+pub aom_encode::XformQuantScratch::inv: aom_dsp::transform::inv_txfm2d::InvTxfmScratch
 pub aom_encode::XformQuantScratch::levels: alloc::vec::Vec<u8>
 pub aom_encode::XformQuantScratch::qcoeff: alloc::vec::Vec<i32>
 pub struct aom_encode::XformQuantSummary

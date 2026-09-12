@@ -748,7 +748,7 @@ pub fn txfm_rd_in_plane_uv_p(
                 // `av1_inverse_transform_add` takes a destination stride, so the
                 // `tight` round trip was pure overhead here exactly as in the
                 // luma walk, and nothing writes `recon` in between.
-                aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add(
+                aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add_into(
                     &search.best_dqcoeff,
                     &mut recon[txb_off..],
                     env.ref_stride,
@@ -757,6 +757,7 @@ pub fn txfm_rd_in_plane_uv_p(
                     i32::from(env.bd),
                     win.best_eob as usize,
                     env.lossless,
+                    &mut search.inv,
                 );
             }
 

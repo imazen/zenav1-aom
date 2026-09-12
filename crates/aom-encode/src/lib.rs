@@ -405,6 +405,10 @@ pub struct XformQuantScratch {
     /// so this is grow-only — it removes a 1.3 KB memset per `optimize_txb`
     /// call from the RD walk.
     pub levels: Vec<u8>,
+    /// The inverse transform's row-pass / input-expansion scratch for the
+    /// `if (*eob) av1_inverse_transform_block` that follows quantize on the
+    /// encode path (see `InvTxfmScratch`: fully rewritten before every read).
+    pub inv: aom_dsp::transform::inv_txfm2d::InvTxfmScratch,
 }
 
 /// Scalar half of [`xform_quant`]'s result when the coefficient buffers stay in

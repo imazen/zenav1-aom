@@ -87,7 +87,7 @@ use aom_dsp::dist::highbd_subtract_block;
 use aom_dsp::entropy::partition::{get_plane_block_size, intra_avail};
 use aom_dsp::intra::cfl::{CflCtx, cfl_store_tx};
 use aom_dsp::intra::predict_intra_high_in_place;
-use aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add;
+use aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add_into;
 use aom_dsp::txb::{CoeffCostTables, get_txb_ctx};
 
 /// `TRELLIS_OPT_TYPE` (encodemb.h:43-48). C-valued discriminants.
@@ -571,7 +571,7 @@ pub fn encode_intra_block_plane_y(
             // lands in place and the tight-buffer round trip (one whole-block
             // copy in, `txh` row copies out) was pure overhead.
             if eob > 0 {
-                av1_inverse_transform_add(
+                av1_inverse_transform_add_into(
                     &dqcoeff,
                     &mut recon[txb_off..],
                     env.ref_stride,
@@ -580,6 +580,7 @@ pub fn encode_intra_block_plane_y(
                     i32::from(env.bd),
                     eob as usize,
                     env.lossless,
+                    &mut xq.inv,
                 );
             }
 
@@ -905,7 +906,7 @@ pub fn encode_intra_block_plane_uv(
             // `recon[txb_off..]` already holds the prediction; C adds into
             // `pd->dst` at `dst_stride`, so the add lands in place.
             if eob > 0 {
-                av1_inverse_transform_add(
+                av1_inverse_transform_add_into(
                     &dqcoeff,
                     &mut recon[txb_off..],
                     env.ref_stride,
@@ -914,6 +915,7 @@ pub fn encode_intra_block_plane_uv(
                     i32::from(env.bd),
                     eob as usize,
                     env.lossless,
+                    &mut xq.inv,
                 );
             }
 

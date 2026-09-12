@@ -867,6 +867,31 @@ pub fn av1_inverse_transform_add(
     }
 }
 
+/// [`av1_inverse_transform_add`] with a caller-owned [`InvTxfmScratch`] —
+/// identical semantics; the scratch is fully rewritten before every read
+/// (see [`InvTxfmScratch`]), so reuse is byte-for-byte a fresh allocation.
+/// The encoder's RD loop calls this per txb per tx-type candidate, where the
+/// `vec![0i32; col_n*row_n]` a fresh scratch performs on every call was the
+/// largest `alloc_zeroed` site in the intra profile.
+#[allow(clippy::too_many_arguments)]
+pub fn av1_inverse_transform_add_into(
+    input: &[i32],
+    dst: &mut [u16],
+    stride: usize,
+    tx_type: usize,
+    tx_size: usize,
+    bd: i32,
+    eob: usize,
+    lossless: bool,
+    scratch: &mut InvTxfmScratch,
+) {
+    if lossless {
+        av1_highbd_iwht4x4_add(input, dst, stride, eob, bd);
+    } else {
+        av1_inv_txfm2d_add_into(input, dst, stride, tx_type, tx_size, bd, scratch);
+    }
+}
+
 /// `av1_highbd_iwht4x4_16_add_c` — the full 4-point reversible Walsh–Hadamard
 /// applied column-then-row. Bit-exact port; `range_check_value(_, bd+1)` is a
 /// no-op in the production config (coefficient range checking off).

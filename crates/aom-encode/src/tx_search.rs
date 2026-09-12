@@ -1287,6 +1287,11 @@ pub struct TxSearchScratch {
     pub recon: Vec<u16>,
     /// `skip_trellis_opt_based_on_satd`'s forward-transform output.
     pub satd_coeff: Vec<i32>,
+    /// The inverse transform's row-pass / input-expansion scratch — reused
+    /// across every `dist_block_px_domain` call so an n>64 transform does not
+    /// `vec![0i32; n]` per candidate (see `InvTxfmScratch`: fully rewritten
+    /// before every read).
+    pub inv: aom_dsp::transform::inv_txfm2d::InvTxfmScratch,
 }
 
 /// The per-transform-block buffers of the `txfm_rd_in_plane_*` / model walks:
@@ -1797,6 +1802,7 @@ pub fn search_tx_type_intra_into(
                     res.eob as usize,
                     inp.lossless,
                     &mut scratch.recon,
+                    &mut scratch.inv,
                 );
                 if is_high_energy && d < tx_domain_dist {
                     d = tx_domain_dist;
@@ -1873,6 +1879,7 @@ pub fn search_tx_type_intra_into(
                 b.best_eob as usize,
                 inp.lossless,
                 &mut scratch.recon,
+                &mut scratch.inv,
             );
             b.sse = block_sse;
             b.rd = rdcost(inp.rdmult, b.rate, b.dist);
@@ -1905,9 +1912,10 @@ pub fn dist_block_px_domain(
     lossless: bool,
 ) -> i64 {
     let mut recon = Vec::new();
+    let mut inv_scratch = aom_dsp::transform::inv_txfm2d::InvTxfmScratch::default();
     dist_block_px_domain_into(
         dqcoeff, tx_size, tx_type, pred, TXS_W[tx_size], src, src_off, src_stride, bd,
-        visible_cols, visible_rows, eob, lossless, &mut recon,
+        visible_cols, visible_rows, eob, lossless, &mut recon, &mut inv_scratch,
     )
 }
 
@@ -1933,6 +1941,7 @@ pub fn dist_block_px_domain_into(
     eob: usize,
     lossless: bool,
     recon: &mut Vec<u16>,
+    inv_scratch: &mut aom_dsp::transform::inv_txfm2d::InvTxfmScratch,
 ) -> i64 {
     let (w, h) = (TXS_W[tx_size], TXS_H[tx_size]);
     recon.clear();
@@ -1943,7 +1952,7 @@ pub fn dist_block_px_domain_into(
             recon.extend_from_slice(&pred[r * pred_stride..r * pred_stride + w]);
         }
     }
-    aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add(
+    aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add_into(
         dqcoeff,
         recon,
         w,
@@ -1952,6 +1961,7 @@ pub fn dist_block_px_domain_into(
         i32::from(bd),
         eob,
         lossless,
+        inv_scratch,
     );
     let (_var, sse) = aom_dsp::dist::highbd_variance(
         &src[src_off..],
@@ -2491,7 +2501,7 @@ pub fn txfm_rd_in_plane_intra(
                 // inside this loop body `recon` is touched only by the
                 // prediction store above and by this call, and
                 // `search_tx_type_intra_into` does not take it at all.
-                aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add(
+                aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add_into(
                     &search.best_dqcoeff,
                     &mut recon[txb_off..],
                     env.ref_stride,
@@ -2500,6 +2510,7 @@ pub fn txfm_rd_in_plane_intra(
                     i32::from(env.bd),
                     win.best_eob as usize,
                     env.lossless,
+                    &mut search.inv,
                 );
             }
 
