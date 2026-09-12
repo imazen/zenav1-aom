@@ -269,6 +269,13 @@ fn fwd_spike_gate(k: usize, i: usize) -> i16 {
                 -513 // over the 4x4/8x8 bounds -> decline there
             }
         }
+        10 => 285,  // over 16x16 DCT->ADST/ADST->DCT (284) -> decline those pairs
+        11 => -285,
+        12 => 316,  // over ADST->ADST (315)
+        13 => -724, // over DCT->IDTX (723)
+        14 => 804,  // over ADST->IDTX (803)
+        15 => -1137, // over IDTX->ADST (1136)
+        16 => 2895, // IDTX->IDTX's exact edge -> accept
         _ => {
             if i % 4 == 0 {
                 512 // over the 8x8 bound -> decline there, accept at the 4x4 edge
@@ -416,7 +423,7 @@ fn all_outputs() -> Vec<(String, Vec<i64>)> {
                 let input: Vec<i16> = (0..w * h).map(|_| rng.residual_gate()).collect();
                 push_fwd(format!("fwd sz{tx_size} ty{tx_type} gaterand{rep}"), &input);
             }
-            for k in 0..10usize {
+            for k in 0..17usize {
                 let input: Vec<i16> = (0..w * h).map(|i| fwd_spike_gate(k, i)).collect();
                 push_fwd(format!("fwd sz{tx_size} ty{tx_type} gatespike{k}"), &input);
             }
