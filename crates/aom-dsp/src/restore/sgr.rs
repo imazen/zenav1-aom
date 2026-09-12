@@ -255,6 +255,137 @@ fn boxsum_vert(
     )
 }
 
+/// The HORIZONTAL half of `boxsum1`/`boxsum2`, vectorized over `j`.
+///
+/// # Why this exists
+///
+/// After `boxsum_vert_impl` and `ab_row_impl` landed, the scalar rolling
+/// window here was the largest remaining mass in `calculate_intermediate`
+/// (~87M Ir at the 196x196 cq27 speed-3 probe).
+///
+/// # Bit-exactness
+///
+/// Every output is an INDEPENDENT sum of the ORIGINAL row values, but the
+/// scalar tier reads back positions it has already written — `out[j]` needs
+/// `dst[j+2]` which a vector store to `dst[j..j+8]` would clobber for the
+/// next chunk. So the vector tier copies each row into `scratch` once, then
+/// each lane sums the same source elements the scalar lane does, in the same
+/// left-to-right order — no reassociation, identical `i32` add semantics.
+/// Interior positions that don't fill a chunk plus the shrunken edge sums
+/// stay scalar over `scratch` (== the original `dst` values).
+#[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+fn boxsum_horz_impl(
+    token: Token,
+    dst: &mut [i32],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+    r5: bool,
+) {
+    let mut scratch = vec![0i32; width];
+    for i in 0..height {
+        let row = i * dst_stride;
+        scratch.copy_from_slice(&dst[row..row + width]);
+        let s = scratch.as_slice();
+        if r5 {
+            dst[row] = s[0] + s[1] + s[2];
+            dst[row + 1] = s[0] + s[1] + s[2] + s[3];
+            let mut j = 2;
+            while j + 8 <= width - 3 {
+                let v = i32x8::from_slice(token, &s[j - 2..j + 6])
+                    + i32x8::from_slice(token, &s[j - 1..j + 7])
+                    + i32x8::from_slice(token, &s[j..j + 8])
+                    + i32x8::from_slice(token, &s[j + 1..j + 9])
+                    + i32x8::from_slice(token, &s[j + 2..j + 10]);
+                v.store((&mut dst[row + j..row + j + 8]).try_into().unwrap());
+                j += 8;
+            }
+            while j < width - 3 {
+                dst[row + j] = s[j - 2] + s[j - 1] + s[j] + s[j + 1] + s[j + 2];
+                j += 1;
+            }
+            dst[row + j] = s[j - 2] + s[j - 1] + s[j] + s[j + 1] + s[j + 2];
+            dst[row + j + 1] = s[j - 1] + s[j] + s[j + 1] + s[j + 2];
+            dst[row + j + 2] = s[j] + s[j + 1] + s[j + 2];
+        } else {
+            dst[row] = s[0] + s[1];
+            let mut j = 1;
+            while j + 8 <= width - 2 {
+                let v = i32x8::from_slice(token, &s[j - 1..j + 7])
+                    + i32x8::from_slice(token, &s[j..j + 8])
+                    + i32x8::from_slice(token, &s[j + 1..j + 9]);
+                v.store((&mut dst[row + j..row + j + 8]).try_into().unwrap());
+                j += 8;
+            }
+            while j < width - 2 {
+                dst[row + j] = s[j - 1] + s[j] + s[j + 1];
+                j += 1;
+            }
+            dst[row + j] = s[j - 1] + s[j] + s[j + 1];
+            dst[row + j + 1] = s[j] + s[j + 1];
+        }
+    }
+}
+
+/// Scalar tier = the transcribed port, verbatim.
+fn boxsum_horz_impl_scalar(
+    _t: archmage::ScalarToken,
+    dst: &mut [i32],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+    r5: bool,
+) {
+    for i in 0..height {
+        let row = i * dst_stride;
+        if r5 {
+            let mut a = dst[row];
+            let mut b = dst[row + 1];
+            let mut c = dst[row + 2];
+            let mut d = dst[row + 3];
+            let mut e = dst[row + 4];
+            dst[row] = a + b + c;
+            dst[row + 1] = a + b + c + d;
+            let mut j = 2;
+            while j < width - 3 {
+                dst[row + j] = a + b + c + d + e;
+                a = b;
+                b = c;
+                c = d;
+                d = e;
+                e = dst[row + j + 3];
+                j += 1;
+            }
+            dst[row + j] = a + b + c + d + e;
+            dst[row + j + 1] = b + c + d + e;
+            dst[row + j + 2] = c + d + e;
+        } else {
+            let mut a = dst[row];
+            let mut b = dst[row + 1];
+            let mut c = dst[row + 2];
+            dst[row] = a + b;
+            let mut j = 1;
+            while j < width - 2 {
+                dst[row + j] = a + b + c;
+                a = b;
+                b = c;
+                c = dst[row + j + 2];
+                j += 1;
+            }
+            dst[row + j] = a + b + c;
+            dst[row + j + 1] = b + c;
+        }
+    }
+}
+
+/// Dispatch the horizontal pass.
+fn boxsum_horz(dst: &mut [i32], dst_stride: usize, width: usize, height: usize, r5: bool) {
+    archmage::incant!(
+        boxsum_horz_impl(dst, dst_stride, width, height, r5),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
 /// `boxsum1` — windowed 3x3 sums (or sums of squares) over `src` (dims
 /// `width x height` at `src_stride`, offset `src_off`) into `dst`.
 #[allow(clippy::too_many_arguments)]
@@ -273,23 +404,7 @@ fn boxsum1(
         src, src_off, width, height, src_stride, sqr, dst, dst_stride, false,
     );
     // Horizontal sum over 3-pixel regions of dst.
-    for i in 0..height {
-        let row = i * dst_stride;
-        let mut a = dst[row];
-        let mut b = dst[row + 1];
-        let mut c = dst[row + 2];
-        dst[row] = a + b;
-        let mut j = 1;
-        while j < width - 2 {
-            dst[row + j] = a + b + c;
-            a = b;
-            b = c;
-            c = dst[row + j + 2];
-            j += 1;
-        }
-        dst[row + j] = a + b + c;
-        dst[row + j + 1] = b + c;
-    }
+    boxsum_horz(dst, dst_stride, width, height, false);
 }
 
 /// `boxsum2` — windowed 5x5 sums (or sums of squares).
@@ -307,29 +422,7 @@ fn boxsum2(
     boxsum_vert(
         src, src_off, width, height, src_stride, sqr, dst, dst_stride, true,
     );
-    for i in 0..height {
-        let row = i * dst_stride;
-        let mut a = dst[row];
-        let mut b = dst[row + 1];
-        let mut c = dst[row + 2];
-        let mut d = dst[row + 3];
-        let mut e = dst[row + 4];
-        dst[row] = a + b + c;
-        dst[row + 1] = a + b + c + d;
-        let mut j = 2;
-        while j < width - 3 {
-            dst[row + j] = a + b + c + d + e;
-            a = b;
-            b = c;
-            c = d;
-            d = e;
-            e = dst[row + j + 3];
-            j += 1;
-        }
-        dst[row + j] = a + b + c + d + e;
-        dst[row + j + 1] = b + c + d + e;
-        dst[row + j + 2] = c + d + e;
-    }
+    boxsum_horz(dst, dst_stride, width, height, true);
 }
 
 /// `calculate_intermediate_result`: boxsums over the extended block, then the
