@@ -203,12 +203,13 @@ pub(crate) fn z1_vec_applies(above: &EdgeRef16, bw: usize, bh: usize, up: i32) -
         && span_fits_i16(above.data(), above.idx(0), above.idx(max_base_x))
 }
 
-/// The z2 ABOVE-half vector-path predicate (the left half is a gather and stays
-/// scalar at every input).
+/// The z2 ABOVE-half vector-path predicate (the left half is a gather and is
+/// handled by `z2_left_gather`, separately). `up <= 1`: `up == 1` makes the
+/// suffix taps stride-2, which the kernel gathers with `pshufb`.
 pub(crate) fn z2_vec_applies(above: &EdgeRef16, bw: usize, up_above: i32) -> bool {
     let min_base_x = -(1 << up_above);
     let hi = above.idx(((bw as i32 - 1) << up_above) + 1);
-    up_above == 0 && span_fits_i16(above.data(), above.idx(min_base_x), hi)
+    (0..=1).contains(&up_above) && span_fits_i16(above.data(), above.idx(min_base_x), hi)
 }
 
 /// The z3 vector-path predicate.
@@ -359,34 +360,34 @@ pub fn z2_high(
         frac_bits_y as u32,
         up_left as u32,
     );
-    for r in 0..bh {
-        let y = (r + 1) as i32;
-        let drow = &mut dst[r * stride..r * stride + bw];
-        let c_end = ((y * dx - 1) >> 6).clamp(0, bw as i32) as usize;
-        if c_end < bw {
-            let x = ((c_end as i32) << 6) - y * dx;
-            let base_x = x >> frac_bits_x;
-            let n = bw - c_end;
-            if above_vec && n >= MIN_VEC_RUN {
-                // up_above == 0 here (z2_vec_applies), so `(x & 0x3F) >> 1`
-                // and `(x * (1 << up_above) & 0x3F) >> 1` coincide.
-                let shift = ((x * (1 << up_above)) & 0x3F) >> 1;
-                two_tap_run(&mut drow[c_end..], above.data(), above.idx(base_x), shift, n);
-            } else {
-                // The above side declined (up_above == 1 or the i16 bound
-                // failed): per-pixel scalar recipe, identical to
-                // `z2_high_scalar`'s above branch.
-                for (k, slot) in drow[c_end..].iter_mut().enumerate() {
-                    let c = c_end + k;
-                    let x = ((c as i32) << 6) - y * dx;
-                    let base_x = x >> frac_bits_x;
-                    let shift = ((x * (1 << up_above)) & 0x3F) >> 1;
-                    *slot = rpo2_5_16(
-                        above.at(base_x) * (32 - shift) + above.at(base_x + 1) * shift,
-                    );
-                }
-            }
-        }
+    // Above-suffixes for every row in ONE dispatch: constant-shift two-tap
+    // runs, contiguous for `up_above == 0` and stride-2 (`pshufb`
+    // deinterleave) for `up_above == 1`. The gate decline arm keeps the
+    // scalar recipe.
+    if above_vec {
+        crate::intra::dir_simd::z2_above_run(
+            dst,
+            stride,
+            bw,
+            bh,
+            above.data(),
+            above.idx(0),
+            dx,
+            frac_bits_x as u32,
+            up_above,
+        );
+    } else {
+        crate::intra::dir_simd::z2_above_run_scalar(
+            dst,
+            stride,
+            bw,
+            bh,
+            above.data(),
+            above.idx(0),
+            dx,
+            frac_bits_x as u32,
+            up_above,
+        );
     }
 }
 
@@ -557,15 +558,16 @@ mod reach {
             }
         }
         // 19 shapes x {up=0, up=1}. z1's `up == 1` arm stays scalar (stride-2
-        // gather over `above`), so its ceiling is 19; z3 admits `up <= 1` via
-        // the pshufb even/odd deinterleave, so its ceiling is 38.
+        // gather over `above`), so its ceiling is 19; z2 and z3 admit
+        // `up <= 1` via the pshufb even/odd deinterleave, so their ceilings
+        // are 38.
         // z1/z3 additionally need the vectorized dimension >= MIN_VEC_RUN: the
         // THREE shapes with bw == 4 ((4,4), (4,8), (4,16)) decline for z1, and
         // the three with bh == 4 ((4,4), (8,4), (16,4)) for z3 — in BOTH up
-        // arms for z3.
+        // arms for z3. z2 has no width floor — the run length varies per row
+        // and the length test is per-run inside the kernel.
         assert_eq!((z1n, z1d), (16, 3), "z1 admitted/declined at bd8");
-        assert_eq!(z2n, 19, "z2 admitted at bd8 (no width floor: the run length \
-                             varies per row, so the length test is per-run)");
+        assert_eq!(z2n, 38, "z2 admitted at bd8 (up <= 1, no width floor)");
         assert_eq!((z3n, z3d), (32, 3), "z3 admitted/declined at bd8");
     }
 
@@ -576,6 +578,7 @@ mod reach {
         let e = EdgeRef16::new(&buf, PAD);
         assert!(z1_vec_applies(&e, 16, 16, 0));
         assert!(z2_vec_applies(&e, 16, 0));
+        assert!(z2_vec_applies(&e, 16, 1));
         assert!(z3_vec_applies(&e, 16, 16, 0));
         assert!(z3_vec_applies(&e, 16, 16, 1));
         buf[PAD + 5] = 1024;
@@ -585,6 +588,7 @@ mod reach {
         assert!(!z3_vec_applies(&e, 16, 16, 0), "1024 must decline");
         // up == 1 doubles the indexed span (max_base_y << 1) — the same
         // over-bound sample still sits inside it and must still decline.
+        assert!(!z2_vec_applies(&e, 16, 1), "1024 must decline");
         assert!(!z3_vec_applies(&e, 16, 16, 1), "1024 must decline");
         // A bd12-range edge declines everywhere.
         let buf = vec![4095u16; BUF];
@@ -592,6 +596,7 @@ mod reach {
         for &(bw, bh) in &TX_DIMS {
             assert!(!z1_vec_applies(&e, bw, bh, 0));
             assert!(!z2_vec_applies(&e, bw, 0));
+            assert!(!z2_vec_applies(&e, bw, 1));
             assert!(!z3_vec_applies(&e, bw, bh, 0));
             assert!(!z3_vec_applies(&e, bw, bh, 1));
         }

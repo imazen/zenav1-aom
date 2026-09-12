@@ -357,6 +357,179 @@ fn z2_left_gather_impl(
     }
 }
 
+/// The z2 ABOVE-half suffix, scalar recipe — shared by the scalar tier, the
+/// non-x86 fallback, and the `z2_high` decline arm. Per row `r` the suffix is
+/// columns `c_end..bw` where `c_end = ((y*dx - 1) >> 6).clamp(0, bw)`; on it
+/// `base_x` steps by `1 << up` per column and `shift` is constant (`64` is a
+/// multiple of `2^(6-up)` for `up <= 1`), so each output is
+/// `rpo2_5_16(edge[t]*(32-s) + edge[t+1]*s)` at `t = pad + base + k*inc`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn z2_above_run_scalar(
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    edge: &[u16],
+    pad: usize,
+    dx: i32,
+    frac_x: u32,
+    up: i32,
+) {
+    let inc = 1i32 << up;
+    for r in 0..bh {
+        let y = (r + 1) as i32;
+        let c_end = ((y * dx - 1) >> 6).clamp(0, bw as i32) as usize;
+        if c_end >= bw {
+            continue;
+        }
+        let mut base = (((c_end as i32) << 6) - y * dx) >> frac_x;
+        let shift = (((((c_end as i32) << 6) - y * dx) << up) & 0x3F) >> 1;
+        for slot in dst[r * stride + c_end..r * stride + bw].iter_mut() {
+            // `(pad + base)` in i32 then `as usize` — the same wrap-to-huge
+            // panic the scalar twin's `edge[pad + base_x]` indexing had.
+            let t = (pad as i32 + base) as usize;
+            let a0 = edge[t] as i32;
+            let a1 = edge[t + 1] as i32;
+            *slot = ((a0 * (32 - shift) + a1 * shift + 16) >> 5) as u16;
+            base += inc;
+        }
+    }
+}
+
+/// Dispatch entry for the z2 ABOVE-half suffix — ALL ROWS in ONE `incant!`.
+///
+/// The suffix of every row is a constant-shift two-tap run (see
+/// [`z2_above_run_scalar`]); `up == 1` makes the taps stride-2, gathered with
+/// the same `pshufb` even/odd deinterleave `z3_cols_impl` uses for its
+/// upsampled columns. i16 lanes, exact under the caller's `span_fits_i16`
+/// gate (`I16_TAP_MAX`); a full 8-lane chunk reads
+/// `edge[t0 ..= t0 + 7*inc + 1]`, bounded by the gate's `hi` on the last
+/// column's `+1` tap — the vector path adds no panic the scalar lacks.
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i16x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn z2_above_run_impl(
+    _token: Token,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    edge: &[u16],
+    pad: usize,
+    dx: i32,
+    frac_x: u32,
+    up: i32,
+) {
+    use archmage::intrinsics::x86_64::*;
+    let inc = 1usize << up;
+    let sixteen = _mm_set1_epi16(16);
+    let ev = _mm_setr_epi8(0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1);
+    let od = _mm_setr_epi8(2, 3, 6, 7, 10, 11, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1);
+    for r in 0..bh {
+        let y = (r + 1) as i32;
+        let c_end = ((y * dx - 1) >> 6).clamp(0, bw as i32) as usize;
+        let n = bw - c_end;
+        if n == 0 {
+            continue;
+        }
+        let x0 = ((c_end as i32) << 6) - y * dx;
+        let base0 = x0 >> frac_x;
+        let shift = ((x0 << up) & 0x3F) >> 1;
+        let sv = _mm_set1_epi16(shift as i16);
+        let start = (pad as i32 + base0) as usize;
+        let drow = &mut dst[r * stride + c_end..r * stride + bw];
+        let mut i = 0usize;
+        while i + 8 <= n {
+            let s = start + i * inc;
+            let (v0, v1) = if up == 0 {
+                let a: &[u16; 8] = edge[s..s + 8].try_into().unwrap();
+                let b: &[u16; 8] = edge[s + 1..s + 9].try_into().unwrap();
+                (_mm_loadu_si128(a), _mm_loadu_si128(b))
+            } else {
+                let lo: &[u16; 8] = edge[s..s + 8].try_into().unwrap();
+                let hi: &[u16; 8] = edge[s + 8..s + 16].try_into().unwrap();
+                let lo = _mm_loadu_si128(lo);
+                let hi = _mm_loadu_si128(hi);
+                (
+                    _mm_unpacklo_epi64(
+                        _mm_shuffle_epi8(lo, ev),
+                        _mm_shuffle_epi8(hi, ev),
+                    ),
+                    _mm_unpacklo_epi64(
+                        _mm_shuffle_epi8(lo, od),
+                        _mm_shuffle_epi8(hi, od),
+                    ),
+                )
+            };
+            let res = _mm_srai_epi16::<5>(_mm_add_epi16(
+                _mm_add_epi16(
+                    _mm_slli_epi16::<5>(v0),
+                    _mm_mullo_epi16(_mm_sub_epi16(v1, v0), sv),
+                ),
+                sixteen,
+            ));
+            let t: &mut [u16; 8] = (&mut drow[i..i + 8]).try_into().unwrap();
+            _mm_storeu_si128(t, res);
+            i += 8;
+        }
+        if i < n {
+            let mut base = base0 + (i * inc) as i32;
+            for slot in drow[i..].iter_mut() {
+                let t = (pad as i32 + base) as usize;
+                let a0 = edge[t] as i32;
+                let a1 = edge[t + 1] as i32;
+                *slot = ((a0 * (32 - shift) + a1 * shift + 16) >> 5) as u16;
+                base += inc as i32;
+            }
+        }
+    }
+}
+
+/// Scalar tier — `z2_above_run_scalar` verbatim.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn z2_above_run_impl_scalar(
+    _t: archmage::ScalarToken,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    edge: &[u16],
+    pad: usize,
+    dx: i32,
+    frac_x: u32,
+    up: i32,
+) {
+    z2_above_run_scalar(dst, stride, bw, bh, edge, pad, dx, frac_x, up);
+}
+
+/// One-`incant!` z2 above-suffix entry — called from `super::dir::z2_high`
+/// only under the `z2_vec_applies` gate (`up <= 1`, taps `<= I16_TAP_MAX`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn z2_above_run(
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    edge: &[u16],
+    pad: usize,
+    dx: i32,
+    frac_x: u32,
+    up: i32,
+) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let _ = crate::dispatch::scalar_forced();
+        archmage::incant!(
+            z2_above_run_impl(dst, stride, bw, bh, edge, pad, dx, frac_x, up),
+            [v3, scalar]
+        );
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    z2_above_run_scalar(dst, stride, bw, bh, edge, pad, dx, frac_x, up);
+}
+
 /// Dispatch entry for the z3 vec path — ALL columns in ONE `incant!`.
 ///
 /// # Shape: transposed z1, the same trick `av1_highbd_dr_prediction_z3_avx2`
