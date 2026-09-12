@@ -127,6 +127,10 @@ pub(crate) fn highbd_variance64_impl_v3(
 
     // One horizontal pair-reduce producing (sum_total, sse_total) of two i32x8
     // accumulators: hadd twice, fold halves, lane 0 = sum, lane 1 = sse.
+    // The hadd tree adds lanes pairwise in i32, so it is only exact while the
+    // WHOLE strip total stays < 2^31 — the strip bounds below enforce that
+    // (per-lane <= 8 madds * 2*4095^2 = 268.3M; the tree's deepest node sums
+    // all 8 lanes <= 2,146,435,200 < 2^31).
     macro_rules! reduce {
         ($sv:expr, $xv:expr) => {{
             let p1 = _mm256_hadd_epi32($sv, $xv);
@@ -147,18 +151,31 @@ pub(crate) fn highbd_variance64_impl_v3(
             let r: &[u16; 4] = p[off..off + 4].try_into().unwrap();
             _mm_loadu_si64(r)
         };
-        for y in (0..h / 4 * 4).step_by(4) {
-            let (ra, rb) = (y * a_stride, y * b_stride);
-            let av = _mm256_inserti128_si256::<1>(
-                _mm256_castsi128_si256(_mm_unpacklo_epi64(ld(a, ra), ld(a, ra + a_stride))),
-                _mm_unpacklo_epi64(ld(a, ra + 2 * a_stride), ld(a, ra + 3 * a_stride)),
-            );
-            let bv = _mm256_inserti128_si256::<1>(
-                _mm256_castsi128_si256(_mm_unpacklo_epi64(ld(b, rb), ld(b, rb + b_stride))),
-                _mm_unpacklo_epi64(ld(b, rb + 2 * b_stride), ld(b, rb + 3 * b_stride)),
-            );
-            let d = _mm256_sub_epi16(av, bv);
-            reduce!(_mm256_madd_epi16(d, ones), _mm256_madd_epi16(d, d));
+        // sv/xv accumulate across row-groups in i32 lanes; a lane gains
+        // <= 2*4095 (pair-sum) / <= 2*4095^2 (pair of squares) per iter, so
+        // 8 iters keep the hadd-reduce tree inside i32 (see reduce! note).
+        // Strip at 8 iters (32 rows) so an unbounded `h` cannot wrap.
+        let mut y = 0usize;
+        while y < h / 4 * 4 {
+            let yend = (y + 8 * 4).min(h / 4 * 4);
+            let mut sv = _mm256_setzero_si256();
+            let mut xv = sv;
+            for yy in (y..yend).step_by(4) {
+                let (ra, rb) = (yy * a_stride, yy * b_stride);
+                let av = _mm256_inserti128_si256::<1>(
+                    _mm256_castsi128_si256(_mm_unpacklo_epi64(ld(a, ra), ld(a, ra + a_stride))),
+                    _mm_unpacklo_epi64(ld(a, ra + 2 * a_stride), ld(a, ra + 3 * a_stride)),
+                );
+                let bv = _mm256_inserti128_si256::<1>(
+                    _mm256_castsi128_si256(_mm_unpacklo_epi64(ld(b, rb), ld(b, rb + b_stride))),
+                    _mm_unpacklo_epi64(ld(b, rb + 2 * b_stride), ld(b, rb + 3 * b_stride)),
+                );
+                let d = _mm256_sub_epi16(av, bv);
+                sv = _mm256_add_epi32(sv, _mm256_madd_epi16(d, ones));
+                xv = _mm256_add_epi32(xv, _mm256_madd_epi16(d, d));
+            }
+            reduce!(sv, xv);
+            y = yend;
         }
         // h % 4 tail rows — unreachable for real block heights.
         for y in (h / 4 * 4)..h {
@@ -171,29 +188,44 @@ pub(crate) fn highbd_variance64_impl_v3(
         return (tsse, tsum);
     }
 
+    // sv/xv accumulate in i32 lanes ACROSS rows — the same structure as C's
+    // `highbd_calc{8,16}x{8,16}var_avx2`, which reduces once per tile rather
+    // than once per row. Per row a lane sees `ceil(w/16)` madds (the w%16==8
+    // xmm tail adds a second madd into lanes 0..3), each contributing
+    // <= 2*4095 / 2*4095^2. The hadd reduce sums all 8 lanes in i32, so a
+    // lane may take at most 8 madds: strip = 8 / ceil(w/16) rows
+    // (w<=16 -> 8, w=32 -> 4, w=64 -> 2, w>=128 -> 1, i.e. per-row again
+    // only for the widest blocks where the row already fills the bound).
     let ones128 = _mm_set1_epi16(1);
-    for y in 0..h {
-        let (ra, rb) = (y * a_stride, y * b_stride);
+    let strip = (8 / w.div_ceil(16)).max(1).min(h);
+    let mut y = 0usize;
+    while y < h {
+        let yend = (y + strip).min(h);
         let mut sv = _mm256_setzero_si256();
         let mut xv = sv;
-        let mut c = 0;
-        while c + 16 <= w {
-            let av: &[u16; 16] = a[ra + c..ra + c + 16].try_into().unwrap();
-            let bv: &[u16; 16] = b[rb + c..rb + c + 16].try_into().unwrap();
-            let d = _mm256_sub_epi16(_mm256_loadu_si256(av), _mm256_loadu_si256(bv));
-            sv = _mm256_add_epi32(sv, _mm256_madd_epi16(d, ones));
-            xv = _mm256_add_epi32(xv, _mm256_madd_epi16(d, d));
-            c += 16;
-        }
-        if c < w {
-            // w % 16 == 8 tail (w%8==0 is a caller precondition).
-            let av: &[u16; 8] = a[ra + c..ra + c + 8].try_into().unwrap();
-            let bv: &[u16; 8] = b[rb + c..rb + c + 8].try_into().unwrap();
-            let d = _mm_sub_epi16(_mm_loadu_si128(av), _mm_loadu_si128(bv));
-            sv = _mm256_add_epi32(sv, _mm256_zextsi128_si256(_mm_madd_epi16(d, ones128)));
-            xv = _mm256_add_epi32(xv, _mm256_zextsi128_si256(_mm_madd_epi16(d, d)));
+        for yy in y..yend {
+            let (ra, rb) = (yy * a_stride, yy * b_stride);
+            let mut c = 0;
+            while c + 16 <= w {
+                let av: &[u16; 16] = a[ra + c..ra + c + 16].try_into().unwrap();
+                let bv: &[u16; 16] = b[rb + c..rb + c + 16].try_into().unwrap();
+                let d = _mm256_sub_epi16(_mm256_loadu_si256(av), _mm256_loadu_si256(bv));
+                sv = _mm256_add_epi32(sv, _mm256_madd_epi16(d, ones));
+                xv = _mm256_add_epi32(xv, _mm256_madd_epi16(d, d));
+                c += 16;
+            }
+            if c < w {
+                // w % 16 == 8 tail (w%8==0 is a caller precondition).
+                let av: &[u16; 8] = a[ra + c..ra + c + 8].try_into().unwrap();
+                let bv: &[u16; 8] = b[rb + c..rb + c + 8].try_into().unwrap();
+                let d = _mm_sub_epi16(_mm_loadu_si128(av), _mm_loadu_si128(bv));
+                sv =
+                    _mm256_add_epi32(sv, _mm256_zextsi128_si256(_mm_madd_epi16(d, ones128)));
+                xv = _mm256_add_epi32(xv, _mm256_zextsi128_si256(_mm_madd_epi16(d, d)));
+            }
         }
         reduce!(sv, xv);
+        y = yend;
     }
     (tsse, tsum)
 }
