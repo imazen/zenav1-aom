@@ -772,34 +772,9 @@ fn selfguided_fast(
     let (a, b, bs, org) = calculate_intermediate(
         dgd, dgd_origin, width, height, dgd_stride, bit_depth, ep, 0, 1,
     );
-    for i in 0..height {
-        let k_row = org + i * bs;
-        let l_row = dgd_origin + i * dgd_stride;
-        let m_row = i * dst_stride;
-        if i & 1 == 0 {
-            // even row: blend the rows above/below
-            let nb = 5;
-            for j in 0..width {
-                let k = k_row + j;
-                let va = (a[k - bs] + a[k + bs]) * 6
-                    + (a[k - 1 - bs] + a[k - 1 + bs] + a[k + 1 - bs] + a[k + 1 + bs]) * 5;
-                let vb = (b[k - bs] + b[k + bs]) * 6
-                    + (b[k - 1 - bs] + b[k - 1 + bs] + b[k + 1 - bs] + b[k + 1 + bs]) * 5;
-                let v = va * dgd[l_row + j] + vb;
-                dst[m_row + j] = rpot_i32(v, (SGRPROJ_SGR_BITS + nb - SGRPROJ_RST_BITS) as u32);
-            }
-        } else {
-            // odd row: this row's A/B directly
-            let nb = 4;
-            for j in 0..width {
-                let k = k_row + j;
-                let va = a[k] * 6 + (a[k - 1] + a[k + 1]) * 5;
-                let vb = b[k] * 6 + (b[k - 1] + b[k + 1]) * 5;
-                let v = va * dgd[l_row + j] + vb;
-                dst[m_row + j] = rpot_i32(v, (SGRPROJ_SGR_BITS + nb - SGRPROJ_RST_BITS) as u32);
-            }
-        }
-    }
+    sgr_final_fast(
+        &a, &b, org, bs, dgd, dgd_origin, dgd_stride, dst, dst_stride, width, height,
+    );
 }
 
 /// `selfguided_restoration_internal` (the r=1 pass, every row).
@@ -818,19 +793,391 @@ fn selfguided_full(
     let (a, b, bs, org) = calculate_intermediate(
         dgd, dgd_origin, width, height, dgd_stride, bit_depth, ep, 1, 0,
     );
-    let nb = 5;
+    sgr_final_full(
+        &a, &b, org, bs, dgd, dgd_origin, dgd_stride, dst, dst_stride, width, height,
+    );
+}
+
+/// The u16 -> i32 bordered widening at the top of `selfguided_restoration` —
+/// `dgd32[i][j] = dgd[dgd_off + (i-3)*dgd_stride + (j-3)]` over the whole
+/// `(height + 6) x (width + 6)` plane. Per row the read is CONTIGUOUS and the
+/// write is contiguous, so each row is a `cvtepu16_epi32` widen of
+/// `dgd32_stride` elements — this was ~61M Ir of per-element index math at the
+/// 196x196 cq27 speed-3 probe. One dispatch for the whole plane; the row-range
+/// slice `src[s0..s0 + w]` keeps the same out-of-range panic the scalar's
+/// per-element `dgd[src_idx]` had (the `as usize` wrap is identical too).
+#[archmage::magetypes(define(i32x8), v3, -scalar)]
+fn sgr_widen_impl(
+    _t: Token,
+    src: &[u16],
+    src_stride: usize,
+    src_origin: isize,
+    dst: &mut [i32],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+) {
+    use archmage::intrinsics::x86_64::*;
+    for i in 0..h {
+        let s0 = (src_origin + i as isize * src_stride as isize) as usize;
+        let s = &src[s0..s0 + w];
+        let d = &mut dst[i * dst_stride..i * dst_stride + w];
+        let mut j = 0;
+        while j + 8 <= w {
+            let a: &[u16; 8] = s[j..j + 8].try_into().unwrap();
+            let v = _mm256_cvtepu16_epi32(_mm_loadu_si128(a));
+            let t: &mut [i32; 8] = (&mut d[j..j + 8]).try_into().unwrap();
+            _mm256_storeu_si256(t, v);
+            j += 8;
+        }
+        while j < w {
+            d[j] = s[j] as i32;
+            j += 1;
+        }
+    }
+}
+
+/// Scalar tier — the transcribed port loop, verbatim.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn sgr_widen_impl_scalar(
+    _t: archmage::ScalarToken,
+    src: &[u16],
+    src_stride: usize,
+    src_origin: isize,
+    dst: &mut [i32],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+) {
+    for i in 0..h {
+        for j in 0..w {
+            let src_idx =
+                (src_origin + i as isize * src_stride as isize + j as isize) as usize;
+            dst[i * dst_stride + j] = src[src_idx] as i32;
+        }
+    }
+}
+
+/// Dispatch the bordered widen — one `incant!` per `selfguided_restoration`.
+#[allow(clippy::too_many_arguments)]
+fn sgr_widen(
+    src: &[u16],
+    src_stride: usize,
+    src_origin: isize,
+    dst: &mut [i32],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        archmage::incant!(
+            sgr_widen_impl(src, src_stride, src_origin, dst, dst_stride, w, h),
+            [v3, scalar]
+        );
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    for i in 0..h {
+        for j in 0..w {
+            let src_idx =
+                (src_origin + i as isize * src_stride as isize + j as isize) as usize;
+            dst[i * dst_stride + j] = src[src_idx] as i32;
+        }
+    }
+}
+
+/// `cross_sum` / `cross_sum_fast_*` (selfguided_sse4.c): the weighted
+/// neighbourhood sum the final filter applies to the A/B intermediates.
+/// `kind` selects the tap pattern: 0 = the full 3x3 ring (9 taps, weights
+/// 4/3), 1 = the fast pass's even row (6 taps across the rows above/below,
+/// weights 6/5), 2 = the fast pass's odd row (3 taps, weights 6/5).
+/// `k` is the centre index; `bs` is the A/B buffer stride. Scalar per-pixel
+/// body shared by the scalar tiers and the vector tails so they cannot drift.
+#[inline]
+fn sgr_final_px(buf: &[i32], k: usize, bs: usize, kind: u32) -> i32 {
+    match kind {
+        0 => {
+            (buf[k] + buf[k - 1] + buf[k + 1] + buf[k - bs] + buf[k + bs]) * 4
+                + (buf[k - 1 - bs] + buf[k - 1 + bs] + buf[k + 1 - bs] + buf[k + 1 + bs]) * 3
+        }
+        1 => {
+            (buf[k - bs] + buf[k + bs]) * 6
+                + (buf[k - 1 - bs] + buf[k - 1 + bs] + buf[k + 1 - bs] + buf[k + 1 + bs]) * 5
+        }
+        _ => buf[k] * 6 + (buf[k - 1] + buf[k + 1]) * 5,
+    }
+}
+
+/// `final_filter` (selfguided_sse4.c): the r=1 apply pass. Per output pixel
+/// `dst = rpot(va * dgd + vb, SGRPROJ_SGR_BITS + 5 - SGRPROJ_RST_BITS)` where
+/// `va`/`vb` are the 9-tap cross sums of A/B. Vectorized 8-wide over `j`;
+/// every lane performs exactly the scalar tier's adds/mul in wrap-i32, so the
+/// tiers are bit-identical (the products cannot be distinguished from the
+/// scalar's wrapping i32 arithmetic either way — `mullo` is the low 32 bits,
+/// the same thing the scalar `*` produces).
+#[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn sgr_final_full_impl(
+    token: Token,
+    a: &[i32],
+    b: &[i32],
+    org: usize,
+    bs: usize,
+    dgd: &[i32],
+    dgd_origin: usize,
+    dgd_stride: usize,
+    dst: &mut [i32],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    const SH: u32 = (SGRPROJ_SGR_BITS + 5 - SGRPROJ_RST_BITS) as u32;
+    let rnd = i32x8::splat(token, (1i32 << SH) >> 1);
+    let c4 = i32x8::splat(token, 4);
+    for i in 0..height {
+        let k0 = org + i * bs;
+        let l0 = dgd_origin + i * dgd_stride;
+        let m0 = i * dst_stride;
+        let mut j = 0;
+        while j + 8 <= width {
+            let k = k0 + j;
+            // cross_sum = 4*(fours + threes) - threes (the C factorization —
+            // identical wrap-i32 result to 4*fours + 3*threes).
+            let fa = i32x8::from_slice(token, &a[k - 1..k + 7])
+                + i32x8::from_slice(token, &a[k..k + 8])
+                + i32x8::from_slice(token, &a[k + 1..k + 9])
+                + i32x8::from_slice(token, &a[k - bs..k - bs + 8])
+                + i32x8::from_slice(token, &a[k + bs..k + bs + 8]);
+            let ta = i32x8::from_slice(token, &a[k - 1 - bs..k + 7 - bs])
+                + i32x8::from_slice(token, &a[k + 1 - bs..k + 9 - bs])
+                + i32x8::from_slice(token, &a[k - 1 + bs..k + 7 + bs])
+                + i32x8::from_slice(token, &a[k + 1 + bs..k + 9 + bs]);
+            let va = (fa + ta) * c4 - ta;
+            let fb = i32x8::from_slice(token, &b[k - 1..k + 7])
+                + i32x8::from_slice(token, &b[k..k + 8])
+                + i32x8::from_slice(token, &b[k + 1..k + 9])
+                + i32x8::from_slice(token, &b[k - bs..k - bs + 8])
+                + i32x8::from_slice(token, &b[k + bs..k + bs + 8]);
+            let tb = i32x8::from_slice(token, &b[k - 1 - bs..k + 7 - bs])
+                + i32x8::from_slice(token, &b[k + 1 - bs..k + 9 - bs])
+                + i32x8::from_slice(token, &b[k - 1 + bs..k + 7 + bs])
+                + i32x8::from_slice(token, &b[k + 1 + bs..k + 9 + bs]);
+            let vb = (fb + tb) * c4 - tb;
+            let src = i32x8::from_slice(token, &dgd[l0 + j..l0 + j + 8]);
+            let w = (va * src + vb + rnd).shr_arithmetic_const::<9>();
+            w.store((&mut dst[m0 + j..m0 + j + 8]).try_into().unwrap());
+            j += 8;
+        }
+        while j < width {
+            let k = k0 + j;
+            let v = sgr_final_px(a, k, bs, 0) * dgd[l0 + j] + sgr_final_px(b, k, bs, 0);
+            dst[m0 + j] = rpot_i32(v, SH);
+            j += 1;
+        }
+    }
+}
+
+/// Scalar tier — the transcribed port loop, verbatim.
+#[allow(clippy::too_many_arguments)]
+fn sgr_final_full_impl_scalar(
+    _t: archmage::ScalarToken,
+    a: &[i32],
+    b: &[i32],
+    org: usize,
+    bs: usize,
+    dgd: &[i32],
+    dgd_origin: usize,
+    dgd_stride: usize,
+    dst: &mut [i32],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    const SH: u32 = (SGRPROJ_SGR_BITS + 5 - SGRPROJ_RST_BITS) as u32;
     for i in 0..height {
         for j in 0..width {
             let k = org + i * bs + j;
-            let va = (a[k] + a[k - 1] + a[k + 1] + a[k - bs] + a[k + bs]) * 4
-                + (a[k - 1 - bs] + a[k - 1 + bs] + a[k + 1 - bs] + a[k + 1 + bs]) * 3;
-            let vb = (b[k] + b[k - 1] + b[k + 1] + b[k - bs] + b[k + bs]) * 4
-                + (b[k - 1 - bs] + b[k - 1 + bs] + b[k + 1 - bs] + b[k + 1 + bs]) * 3;
-            let v = va * dgd[dgd_origin + i * dgd_stride + j] + vb;
-            dst[i * dst_stride + j] =
-                rpot_i32(v, (SGRPROJ_SGR_BITS + nb - SGRPROJ_RST_BITS) as u32);
+            let v = sgr_final_px(a, k, bs, 0) * dgd[dgd_origin + i * dgd_stride + j]
+                + sgr_final_px(b, k, bs, 0);
+            dst[i * dst_stride + j] = rpot_i32(v, SH);
         }
     }
+}
+
+/// `final_filter_fast` (selfguided_sse4.c): the r=2 apply pass — even rows use
+/// the 6-tap cross sum over the rows above/below (`nb = 5`), odd rows the
+/// 3-tap horizontal sum (`nb = 4`).
+#[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn sgr_final_fast_impl(
+    token: Token,
+    a: &[i32],
+    b: &[i32],
+    org: usize,
+    bs: usize,
+    dgd: &[i32],
+    dgd_origin: usize,
+    dgd_stride: usize,
+    dst: &mut [i32],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    const SH_EVEN: u32 = (SGRPROJ_SGR_BITS + 5 - SGRPROJ_RST_BITS) as u32;
+    const SH_ODD: u32 = (SGRPROJ_SGR_BITS + 4 - SGRPROJ_RST_BITS) as u32;
+    let rnd_even = i32x8::splat(token, (1i32 << SH_EVEN) >> 1);
+    let rnd_odd = i32x8::splat(token, (1i32 << SH_ODD) >> 1);
+    let c5 = i32x8::splat(token, 5);
+    for i in 0..height {
+        let k0 = org + i * bs;
+        let l0 = dgd_origin + i * dgd_stride;
+        let m0 = i * dst_stride;
+        let mut j = 0;
+        if i & 1 == 0 {
+            // even row: sixes = x_t + x_b, fives = the four corners;
+            // cross = 6*sixes + 5*fives = 5*(fives + sixes) + sixes.
+            while j + 8 <= width {
+                let k = k0 + j;
+                let sa = i32x8::from_slice(token, &a[k - bs..k - bs + 8])
+                    + i32x8::from_slice(token, &a[k + bs..k + bs + 8]);
+                let fa = i32x8::from_slice(token, &a[k - 1 - bs..k + 7 - bs])
+                    + i32x8::from_slice(token, &a[k - 1 + bs..k + 7 + bs])
+                    + i32x8::from_slice(token, &a[k + 1 - bs..k + 9 - bs])
+                    + i32x8::from_slice(token, &a[k + 1 + bs..k + 9 + bs]);
+                let va = (fa + sa) * c5 + sa;
+                let sb = i32x8::from_slice(token, &b[k - bs..k - bs + 8])
+                    + i32x8::from_slice(token, &b[k + bs..k + bs + 8]);
+                let fb = i32x8::from_slice(token, &b[k - 1 - bs..k + 7 - bs])
+                    + i32x8::from_slice(token, &b[k - 1 + bs..k + 7 + bs])
+                    + i32x8::from_slice(token, &b[k + 1 - bs..k + 9 - bs])
+                    + i32x8::from_slice(token, &b[k + 1 + bs..k + 9 + bs]);
+                let vb = (fb + sb) * c5 + sb;
+                let src = i32x8::from_slice(token, &dgd[l0 + j..l0 + j + 8]);
+                let w = (va * src + vb + rnd_even).shr_arithmetic_const::<9>();
+                w.store((&mut dst[m0 + j..m0 + j + 8]).try_into().unwrap());
+                j += 8;
+            }
+            while j < width {
+                let k = k0 + j;
+                let v =
+                    sgr_final_px(a, k, bs, 1) * dgd[l0 + j] + sgr_final_px(b, k, bs, 1);
+                dst[m0 + j] = rpot_i32(v, SH_EVEN);
+                j += 1;
+            }
+        } else {
+            // odd row: sixes = x, fives = x_l + x_r.
+            while j + 8 <= width {
+                let k = k0 + j;
+                let sa = i32x8::from_slice(token, &a[k..k + 8]);
+                let fa = i32x8::from_slice(token, &a[k - 1..k + 7])
+                    + i32x8::from_slice(token, &a[k + 1..k + 9]);
+                let va = (fa + sa) * c5 + sa;
+                let sb = i32x8::from_slice(token, &b[k..k + 8]);
+                let fb = i32x8::from_slice(token, &b[k - 1..k + 7])
+                    + i32x8::from_slice(token, &b[k + 1..k + 9]);
+                let vb = (fb + sb) * c5 + sb;
+                let src = i32x8::from_slice(token, &dgd[l0 + j..l0 + j + 8]);
+                let w = (va * src + vb + rnd_odd).shr_arithmetic_const::<8>();
+                w.store((&mut dst[m0 + j..m0 + j + 8]).try_into().unwrap());
+                j += 8;
+            }
+            while j < width {
+                let k = k0 + j;
+                let v =
+                    sgr_final_px(a, k, bs, 2) * dgd[l0 + j] + sgr_final_px(b, k, bs, 2);
+                dst[m0 + j] = rpot_i32(v, SH_ODD);
+                j += 1;
+            }
+        }
+    }
+}
+
+/// Scalar tier — the transcribed port loops, verbatim.
+#[allow(clippy::too_many_arguments)]
+fn sgr_final_fast_impl_scalar(
+    _t: archmage::ScalarToken,
+    a: &[i32],
+    b: &[i32],
+    org: usize,
+    bs: usize,
+    dgd: &[i32],
+    dgd_origin: usize,
+    dgd_stride: usize,
+    dst: &mut [i32],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    const SH_EVEN: u32 = (SGRPROJ_SGR_BITS + 5 - SGRPROJ_RST_BITS) as u32;
+    const SH_ODD: u32 = (SGRPROJ_SGR_BITS + 4 - SGRPROJ_RST_BITS) as u32;
+    for i in 0..height {
+        let k_row = org + i * bs;
+        let l_row = dgd_origin + i * dgd_stride;
+        let m_row = i * dst_stride;
+        if i & 1 == 0 {
+            for j in 0..width {
+                let k = k_row + j;
+                let v = sgr_final_px(a, k, bs, 1) * dgd[l_row + j]
+                    + sgr_final_px(b, k, bs, 1);
+                dst[m_row + j] = rpot_i32(v, SH_EVEN);
+            }
+        } else {
+            for j in 0..width {
+                let k = k_row + j;
+                let v = sgr_final_px(a, k, bs, 2) * dgd[l_row + j]
+                    + sgr_final_px(b, k, bs, 2);
+                dst[m_row + j] = rpot_i32(v, SH_ODD);
+            }
+        }
+    }
+}
+
+/// Dispatch the r=1 apply pass.
+#[allow(clippy::too_many_arguments)]
+fn sgr_final_full(
+    a: &[i32],
+    b: &[i32],
+    org: usize,
+    bs: usize,
+    dgd: &[i32],
+    dgd_origin: usize,
+    dgd_stride: usize,
+    dst: &mut [i32],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    archmage::incant!(
+        sgr_final_full_impl(
+            a, b, org, bs, dgd, dgd_origin, dgd_stride, dst, dst_stride, width, height
+        ),
+        [v3, neon, wasm128, scalar]
+    );
+}
+
+/// Dispatch the r=2 apply pass.
+#[allow(clippy::too_many_arguments)]
+fn sgr_final_fast(
+    a: &[i32],
+    b: &[i32],
+    org: usize,
+    bs: usize,
+    dgd: &[i32],
+    dgd_origin: usize,
+    dgd_stride: usize,
+    dst: &mut [i32],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    archmage::incant!(
+        sgr_final_fast_impl(
+            a, b, org, bs, dgd, dgd_origin, dgd_stride, dst, dst_stride, width, height
+        ),
+        [v3, neon, wasm128, scalar]
+    );
 }
 
 /// `av1_selfguided_restoration_c`: stage the `[-3, +3)`-extended source into
@@ -851,15 +1198,18 @@ pub fn selfguided_restoration(
 ) {
     let dgd32_stride = width + 2 * SGRPROJ_BORDER_HORZ;
     let mut dgd32 = vec![0i32; dgd32_stride * (height + 2 * SGRPROJ_BORDER_VERT)];
-    for i in 0..height + 2 * SGRPROJ_BORDER_VERT {
-        for j in 0..dgd32_stride {
-            // (i - 3, j - 3) relative to the block origin, via signed math.
-            let src_idx = (dgd_off as isize
-                + (i as isize - SGRPROJ_BORDER_VERT as isize) * dgd_stride as isize
-                + (j as isize - SGRPROJ_BORDER_HORZ as isize)) as usize;
-            dgd32[i * dgd32_stride + j] = dgd[src_idx] as i32;
-        }
-    }
+    let src_origin = dgd_off as isize
+        - SGRPROJ_BORDER_VERT as isize * dgd_stride as isize
+        - SGRPROJ_BORDER_HORZ as isize;
+    sgr_widen(
+        dgd,
+        dgd_stride,
+        src_origin,
+        &mut dgd32,
+        dgd32_stride,
+        dgd32_stride,
+        height + 2 * SGRPROJ_BORDER_VERT,
+    );
     let origin = SGRPROJ_BORDER_VERT * dgd32_stride + SGRPROJ_BORDER_HORZ;
     let (rads, _) = SGR_PARAMS[ep];
     debug_assert!(!(rads[0] == 0 && rads[1] == 0));

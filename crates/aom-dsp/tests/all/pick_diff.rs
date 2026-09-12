@@ -296,7 +296,7 @@ fn selfguided_flt_producer_matches_c() {
     let mut rng = Rng(0x57A7_5EED_0005);
     let eps = [0usize, 4, 9, 10, 13, 14, 15];
     for case in 0..24 {
-        for &(w, h) in &[(32usize, 32usize), (64, 64), (24, 40), (16, 8)] {
+        for &(w, h) in &[(32usize, 32usize), (64, 64), (24, 40), (16, 8), (13, 9), (33, 17)] {
             for &ep in &eps {
                 for &(bd, highbd) in &[(8, false), (8, true), (10, true), (12, true)] {
                     let margin = 4usize;

@@ -83,7 +83,35 @@ per tap pair (bounds: a full band still tops out at `pad + max_base_y`), the
 (**-12.4M Ir, -0.19 %**), attributed z3_high_scalar 47.7M -> 11.6M (what
 remains is true declines), z3_cols_impl_v3 38.1M -> 55.3M absorbing it.
 24-round shipping-cell band vs the 89ec4af arm: **-0.563 %, 21/24, p=2.8e-4,
-null +0.156 % — CLEARS.** Byte-identical 40,237 B; DSP suite 400/400. |
+null +0.156 % — CLEARS.** Byte-identical 40,237 B; DSP suite 400/400.
+
+**sgr apply path — u16->i32 staging widen + `final_filter`/`final_filter_fast`
+v3 kernels (base 4a95926, LANDED Ir-measured/band-null):** the two changes that
+closed out `selfguided_restoration`'s scalar self-time. (a) `sgr_widen`: the
+bordered u16->i32 staging copy ran per-element signed index math — replaced by
+contiguous per-row slices + `_mm256_cvtepu16_epi32` 8-at-a-time. Measured
+STANDALONE first: -1.14M Ir, a wash — the copy was only ~5M of the function's
+61.0M self. Kept because it makes the row structure explicit and rides in the
+same landing. (b) `sgr_final_full_impl`/`sgr_final_fast_impl`: the apply pass
+(`selfguided_fast`/`selfguided_full`, inlined into the driver) was the real
+mass — scalar 9-tap (full), 6-tap/3-tap (fast even/odd) cross-sums over A/B,
+`v = va*dgd + vb`, rpot. This is exactly C's `final_filter`/`final_filter_fast`
+in selfguided_sse4.c, ported to the i32x8 vocabulary: 8-wide unaligned loads at
+the 9/6/3 offsets, C's algebraic factorizations (4f+3t = 4(f+t)-t;
+6s+5f = 5(f+s)+s — identical mod 2^32), `mullo` for va*dgd (wrap-i32 == scalar
+`*`; no madd bound argument needed), `shr_arithmetic_const` for the signed
+rpot. Scalar tails share `sgr_final_px` with the scalar tiers so they cannot
+drift; the fast pass's step-2 A/B rows are only ever read by the matching
+parity of output row, preserved. Callgrind 196x196 cq27 s3 x3: 6,721.9M ->
+6,697.1M (**-24.7M Ir, -0.37 %**), attributed selfguided_restoration 61.0M ->
+inlined-to-zero, sgr_final_full_impl_v3 24.5M, sgr_final_fast_impl_v3 14.5M,
+sgr_widen_impl_v3 4.3M, sgr_final_px tails 3.0M. 24-round shipping-cell band:
+**-0.101 %, 13/24, p=0.84, null +0.003 % — NULL** (Ir-measured landing, same
+class as the z2-gather and boxsum_horz records). Byte-identical 40,237 B.
+Real-C differential `selfguided_flt_producer_matches_c` extended with
+non-multiple-of-8 widths (13x9, 33x17) so the scalar tails are exercised —
+the previous grid was all multiples of 8 and never ran a tail. DSP suite
+400/400. |
 | (5) match the RD of C | byte identity is the strongest available evidence and holds on 427/427 standalone cells; the pinned divergences are the measured/attributed/bounded residual the directive permits to ship |
 | (6) sensible conversion + wiring + testing of all of the C encoder | **PALETTE AND INTRABC ARE NOW WIRED INTO THE SHIPPING PATH — 2026-09-10, and the finding is that they were not.** `encode_key_frame` built its `PickFrameCfg` with `palette_costs: None` and `intrabc: None`, so it ran NEITHER screen-content search on ANY frame, including frames whose header it writes with `allow_screen_content_tools = 1` from its own detector. **No gate could see it: every byte gate in `self_contained_key_frame.rs` drives `shim_encode_av1_kf`, which hardcodes `enable_palette = 0, enable_intrabc = 0` (`dec_shim.c:612`), so the 427/427 is a parity claim against a palette-DISABLED libaom and was blind to both tools BY CONSTRUCTION.** That is KB-42's shape on a new axis — a gate can be green, exhaustive and honest about what it measures and still say nothing about a feature, because the ORACLE was configured out of the question. **Cost of the gap, libaom on BOTH sides so the number is the TOOLS' value and not the port's RD: −73.1 % bytes at 1024x768 cq20 s3, −68.6 % at cq32, −69.6 % at 512x384 cq20** (`benchmarks/encoder_screen_tools_2026-09-10.md`). Read the sign at the low-rate end: at cq44-55 palette ALONE is often WORSE (+21 % to +83 %) because a colour table plus an index map beats coarse transform coding only when the quantizer is fine; IntraBC carries those cells. **The matched-oracle gate found a STREAM-CORRUPTION bug on its first run:** `uncompressed_header` skips loop_filter/cdef/lr params entirely when `allow_intrabc` is set, the three sub-header structs each carry their own copy of the bit, and `derive_frame_header` hardcoded all three false — so the writer emitted three syntax elements the decoder never reads, desynchronising the tile group in the same OBU_FRAME. **Signature worth keeping: a CONSTANT +3 bytes over a byte-IDENTICAL tile payload (common suffix 31,114 of 31,132) — sign-random size-varying deltas are RD divergences; a constant delta with an identical payload is a header-length bug.** 51/54 -> 54/54. Gated by `screen_content_tools_byte_match_real_aomenc` (54 cells, matched `shim_encode_av1_kf_screen_content` oracle, non-vacuity asserted per cell by requiring the oracle's tools-ON stream to DIFFER from its own tools-OFF stream, plus a real-C decode round-trip) and 24/24 in the wider `screen_tools_gap` probe. The 427-cell gate now sets both knobs FALSE to match its own oracle — matching, not weakening: inert on every detector-negative cell, and on the `chk` cells it is what keeps it a parity test. **ONE DIVERGENCE, measured and bounded: IntraBC declines at coded-lossless.** C runs it there, dispatching the coeff arm to `av1_pick_uniform_tx_size_type_yrd` (tx_search.c:3824) instead of the recursive var-tx one; the port has no INTER uniform-tx arm and fired a `lossless forces TX_4X4` assertion — a crossing nothing had reached, since the shell never ran IntraBC and the bench never crossed it with cq 0. A lossless frame reconstructs to the source either way, so declining the SEARCH can only cost SIZE on cq-0 screen content, never a pixel, and it is a divergence rather than a refusal. Historical: `av1_determine_sc_tools_with_encoding` (PARITY C3) unported — **and MEASURED 2026-09-09 to be a DIVERGENCE, not a refusal, on the shipping path: 60/60 screen-shaped tiny cells encode through `encode_key_frame` with 0 refusals and 0 panics** (gated, `refusal_census::screen_shaped_tiny_cells_encode_rather_than_refuse`). The hard SCM assert is `aom-bench`'s differential harness, which no caller reaches. **The bd12 dispatch-tier disagreement is CLOSED 2026-09-09 (measured: both tiers byte-identical at `1920x1080 cq24 cpu0`) and now GATED by `bd12_dispatch_tier_agreement` — the tree had no bd12 coverage at all, which is why it sat open.** |
 
