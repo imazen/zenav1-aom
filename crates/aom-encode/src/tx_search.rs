@@ -1160,8 +1160,12 @@ pub struct TxTypeSearchInputs<'a> {
     pub src: &'a [u16],
     pub src_off: usize,
     pub src_stride: usize,
-    /// The intra prediction, full `TX_W x TX_H` contiguous (stride = TX_W).
+    /// The intra prediction, `TX_W` pixels per row at `pred_stride` — either a
+    /// tight `TX_W x TX_H` buffer (stride = TX_W) or a view into the recon
+    /// plane (`&recon[txb_off..]`, stride = plane stride), which is C's own
+    /// `pd->dst.buf` / `dst_stride` form.
     pub pred: &'a [u16],
+    pub pred_stride: usize,
     pub tx_size: usize,
     /// Plane (0 = luma; 1/2 = chroma). Chroma pins the tx type to
     /// [`uv_intra_tx_type`], uses the chroma trellis rd multiplier
@@ -1783,6 +1787,7 @@ pub fn search_tx_type_intra_into(
                     tx_size,
                     tx_type,
                     inp.pred,
+                    inp.pred_stride,
                     inp.src,
                     inp.src_off,
                     inp.src_stride,
@@ -1805,14 +1810,16 @@ pub fn search_tx_type_intra_into(
         let rd = rdcost(inp.rdmult, rate_cost, dist);
         if rd < best_rd {
             best_rd = rd;
-            // C keeps the winner by swapping the dqcoeff buffer pointer
-            // (`av1_txb_init_levels` / `best_dqcoeff` in tx_search.c); the port
-            // copies into the scratch's winner buffers, which is one memcpy per
-            // improvement in place of two allocations per candidate.
-            scratch.best_qcoeff.clear();
-            scratch.best_qcoeff.extend_from_slice(&scratch.xq.qcoeff);
-            scratch.best_dqcoeff.clear();
-            scratch.best_dqcoeff.extend_from_slice(&scratch.xq.dqcoeff);
+            // C keeps the winner by SWAPPING the dqcoeff buffer pointer
+            // (tx_search.c:2304-2306 `best_dqcoeff` <-> `p->dqcoeff`, then
+            // `p->dqcoeff = best_dqcoeff` at :2376) — zero copies. The Vec swap
+            // is the same move: `xq` gets the old winner buffer back as
+            // scratch and the next `xform_quant_into` fills `qcoeff[..n]` /
+            // `dqcoeff[..n]` completely (KB-PERF-2's invariant), so the stale
+            // contents are never read. What this replaces was two
+            // `extend_from_slice` calls — two memcpys — per improvement.
+            core::mem::swap(&mut scratch.best_qcoeff, &mut scratch.xq.qcoeff);
+            core::mem::swap(&mut scratch.best_dqcoeff, &mut scratch.xq.dqcoeff);
             best = Some(TxTypeSearchSummary {
                 best_tx_type: tx_type,
                 best_eob: res.eob,
@@ -1856,6 +1863,7 @@ pub fn search_tx_type_intra_into(
                 tx_size,
                 b.best_tx_type,
                 inp.pred,
+                inp.pred_stride,
                 inp.src,
                 inp.src_off,
                 inp.src_stride,
@@ -1898,20 +1906,24 @@ pub fn dist_block_px_domain(
 ) -> i64 {
     let mut recon = Vec::new();
     dist_block_px_domain_into(
-        dqcoeff, tx_size, tx_type, pred, src, src_off, src_stride, bd, visible_cols, visible_rows,
-        eob, lossless, &mut recon,
+        dqcoeff, tx_size, tx_type, pred, TXS_W[tx_size], src, src_off, src_stride, bd,
+        visible_cols, visible_rows, eob, lossless, &mut recon,
     )
 }
 
 /// [`dist_block_px_domain`] with a caller-owned reconstruction buffer. The
-/// buffer is refilled with `clear()` + `extend_from_slice(&pred[..w*h])`, i.e.
-/// exactly the `to_vec()` it replaces, so the result is byte-identical.
+/// buffer is refilled with `clear()` + a copy of the `w x h` prediction at
+/// `pred_stride` — one `extend_from_slice` when `pred` is tight, a per-row copy
+/// when it views the recon plane (C's `aom_highbd_convolve_copy(dst,
+/// dst_stride, recon, MAX_TX_SIZE, bsw, bsh)` shape), so the result is
+/// byte-identical either way.
 #[allow(clippy::too_many_arguments)]
 pub fn dist_block_px_domain_into(
     dqcoeff: &[i32],
     tx_size: usize,
     tx_type: usize,
     pred: &[u16],
+    pred_stride: usize,
     src: &[u16],
     src_off: usize,
     src_stride: usize,
@@ -1924,7 +1936,13 @@ pub fn dist_block_px_domain_into(
 ) -> i64 {
     let (w, h) = (TXS_W[tx_size], TXS_H[tx_size]);
     recon.clear();
-    recon.extend_from_slice(&pred[..w * h]);
+    if pred_stride == w {
+        recon.extend_from_slice(&pred[..w * h]);
+    } else {
+        for r in 0..h {
+            recon.extend_from_slice(&pred[r * pred_stride..r * pred_stride + w]);
+        }
+    }
     aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add(
         dqcoeff,
         recon,
@@ -1957,7 +1975,7 @@ pub fn dist_block_px_domain_into(
 use crate::mode_costs::{TxSizeCosts, block_signals_txsize, tx_size_cost};
 use aom_dsp::dist::highbd_subtract_block;
 use aom_dsp::entropy::partition::intra_avail;
-use aom_dsp::intra::{predict_intra_high, predict_intra_high_in_place};
+use aom_dsp::intra::predict_intra_high_in_place;
 
 /// `RD_STATS` as this walk uses it (rate `i32::MAX` = invalid).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2234,9 +2252,6 @@ pub fn txfm_rd_in_plane_intra(
 
             // av1_predict_intra_block_facade: predict INTO the recon plane.
             let txb_off = env.ref_off + (blk_row * env.ref_stride + blk_col) * 4;
-            walk.pred.clear();
-            walk.pred.resize(txw * txh, 0);
-            let pred = &mut walk.pred;
             if let Some(pal) = palette {
                 // av1_predict_intra_block's use_palette arm: the colour-index
                 // map fill at this txb's pixel offset (x = blk_col*4,
@@ -2244,7 +2259,7 @@ pub fn txfm_rd_in_plane_intra(
                 let (x, y) = (blk_col * 4, blk_row * 4);
                 for r in 0..txh {
                     for c in 0..txw {
-                        pred[r * txw + c] =
+                        recon[txb_off + r * env.ref_stride + c] =
                             pal.colors[pal.map[(r + y) * pal.map_stride + c + x] as usize];
                     }
                 }
@@ -2277,12 +2292,14 @@ pub fn txfm_rd_in_plane_intra(
                 // plane split is annotated where the caller knows it. `plane_total()`
                 // must equal `intra_total_calls()`; the census tool asserts it.
                 aom_dsp::census::note_plane_intra_pred(0, tx_size);
-                predict_intra_high(
+                // The C facade writes the prediction into dst — the recon
+                // plane itself. The tight scratch + per-row publish it
+                // replaced was a memset plus `txh` memcpy calls per candidate
+                // per txb (callgrind: the port's largest memcpy caller).
+                predict_intra_high_in_place(
                     recon,
                     txb_off,
                     env.ref_stride,
-                    pred,
-                    txw,
                     env.mode,
                     env.angle_delta * 3,
                     env.use_filter_intra,
@@ -2297,17 +2314,17 @@ pub fn txfm_rd_in_plane_intra(
                     env.bd as i32,
                 );
             }
-            // The C facade writes the prediction into dst (the recon plane).
-            for r in 0..txh {
-                recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw]
-                    .copy_from_slice(&pred[r * txw..r * txw + txw]);
-            }
 
-            // av1_subtract_txb.
+            // av1_subtract_txb. The prediction is read straight out of the
+            // plane at `ref_stride`; `residual` is fully overwritten by
+            // subtract before any read, so the old `clear()` + `resize(_, 0)`
+            // re-zero was a dead memset per candidate per txb — the len must
+            // still land exactly on `txw*txh` (`xform_quant_into` asserts it).
             let src_txb_off = env.src_off + (blk_row * env.src_stride + blk_col) * 4;
-            walk.residual.clear();
-            walk.residual.resize(txw * txh, 0);
-            let (pred, residual) = (&walk.pred, &mut walk.residual);
+            if walk.residual.len() != txw * txh {
+                walk.residual.resize(txw * txh, 0);
+            }
+            let residual = &mut walk.residual;
             highbd_subtract_block(
                 txh,
                 txw,
@@ -2315,8 +2332,8 @@ pub fn txfm_rd_in_plane_intra(
                 txw,
                 &env.src[src_txb_off..],
                 env.src_stride,
-                &pred,
-                txw,
+                &recon[txb_off..],
+                env.ref_stride,
             );
 
             // ml_predict_intra_tx_depth_prune (block_rd_txfm, tx_search.c:
@@ -2379,7 +2396,10 @@ pub fn txfm_rd_in_plane_intra(
                 src: env.src,
                 src_off: src_txb_off,
                 src_stride: env.src_stride,
-                pred: &pred,
+                // The prediction lives in the recon plane now — C's
+                // `pd->dst.buf + dst_idx` at `dst_stride`.
+                pred: &recon[txb_off..],
+                pred_stride: env.ref_stride,
                 tx_size,
                 plane: 0,
                 uv_mode: 0,
@@ -3134,8 +3154,9 @@ pub fn intra_model_rd_y(
             // now read straight out of the plane at `ref_stride`; the copy this
             // replaced made those bytes equal by construction.
             let src_txb_off = env.src_off + (blk_row * env.src_stride + blk_col) * 4;
-            walk.residual.clear();
-            walk.residual.resize(txw * txh, 0);
+            if walk.residual.len() != txw * txh {
+                walk.residual.resize(txw * txh, 0);
+            }
             highbd_subtract_block(
                 txh,
                 txw,

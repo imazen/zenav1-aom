@@ -278,11 +278,31 @@ fn inv_txfm2d_add_4x4_fused(
         return false;
     }
     let (ud_flip, lr_flip) = FLIP_CFG[tx_type];
-    let f_row = inv_txfm_func(txfm_type_row);
-    let f_col = inv_txfm_func(txfm_type_col);
     let (opt_range_col, opt_range_row) = opt_range(bd);
     let stage_range_row = [opt_range_row; 12];
     let stage_range_col = [opt_range_col; 12];
+    // The i16 fused whole-block kernel — the port's counterpart of
+    // `lowbd_inv_txfm2d_add_4x4_ssse3`. Statically gated on the 16-bit stage
+    // bounds (bd 8 only); declines to the scalar fusion below.
+    #[cfg(target_arch = "x86_64")]
+    if crate::transform::simd::try_inv_txfm2d_4x4_fused(
+        txfm_type_row,
+        txfm_type_col,
+        input,
+        output,
+        stride,
+        (bd + 8) as i8,
+        (bd + 6).max(16) as i8,
+        &stage_range_row,
+        &stage_range_col,
+        ud_flip,
+        lr_flip,
+        bd,
+    ) {
+        return true;
+    }
+    let f_row = inv_txfm_func(txfm_type_row);
+    let f_col = inv_txfm_func(txfm_type_col);
 
     let mut buf = [0i32; 16];
     let mut temp_in = [0i32; 4];
@@ -473,7 +493,8 @@ pub fn av1_inv_txfm2d_add_into(
     let mut buf: &mut [i32] = if n <= 64 {
         &mut stack_buf[..n]
     } else {
-        buf.clear();
+        // Grow-only: the row pass below overwrites all `col_n * row_n`
+        // elements before the column pass reads them.
         buf.resize(n, 0);
         &mut buf[..]
     };
@@ -625,7 +646,9 @@ pub fn av1_inv_txfm2d_add_u8_into(
 
     let mod_input = remap_input(input, tx_size, col_n, row_n, mod_input_scratch);
 
-    buf.clear();
+    // Grow-only: the row pass overwrites all `col_n * row_n` elements before
+    // the column pass reads them (`remap_input`'s zero-fill stays — its
+    // uncopied region IS observable).
     buf.resize(col_n * row_n, 0);
     let mut buf = &mut buf[..];
     let mut temp_in = [0i32; 64];

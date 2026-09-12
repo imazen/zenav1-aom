@@ -71,6 +71,25 @@ exactly this loop; the ones that skipped a step (§1.2, §1.5) are the ones in t
    doubling arithmetic to avoid a shuffle in a store-bound kernel (+0.34 %). "Removes work
    on every iteration of a hot loop" is necessary; it is not sufficient (z1/z3 bounds removal
    measured +0.12 % null).
+   * **Before costing a family, answer "more calls or more per call"** — `perf` cannot:
+     callgrind on `eprof_x86` measures both arms in-process and gives exact `calls=` per
+     visible edge plus Ir/Dr/Dw and cache misses (`--cache-sim=yes`):
+     ```
+     valgrind --tool=callgrind --cache-sim=yes --collect-jumps=yes \
+       --callgrind-out-file=/tmp/cg_<cell>_<arm>.out \
+       target/profiling/examples/eprof_x86 <port|c> <W> <H> <CQ> <S> <REPS>
+     python3 scripts/callgrind_counts.py port.out c.out            # count+Ir diff
+     python3 scripts/callgrind_counts.py port.out --callers-of memcpy
+     ```
+     Two readings it produced in one session: memcpy at 9.09x the C call count was
+     *structurally* excess but temporally ~2 % of Ir — the removal landed as a null
+     (+0.082 %, p=0.54); restoration at IDENTICAL call counts was a pure per-call
+     kernel gap and paid −0.93 %. **Count ≠ cost; pair every count row with its Ir.**
+     Caveats: LLVM-inlined callees have no call edge (read their per-line Ir), C's
+     RTCD dispatch keeps its edges visible, and SIMD lane width hides per-lane work.
+     For source sites that vanish into inlining, `aom_dsp::census` is the existing
+     feature-gated `count!`-style thread-local counter — extend it, don't invent a
+     second one.
 3. **Cost it honestly.** Predictions this cycle ran 1.7x–4.8x optimistic against the kernel's
    own self cost and up to 13x against a class row. A lever under ~0.2 % of the encode is
    below this box's band resolution and **cannot be validated alone** — build the whole

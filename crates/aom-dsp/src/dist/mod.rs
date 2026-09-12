@@ -184,7 +184,7 @@ fn highbd_variance64(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: 
     // frame downscaled to width 114 -> visible 50). The scalar twin is
     // bit-identical to the SIMD kernel on multiple-of-8 widths and correct for
     // the rest, so route non-multiples through it.
-    if w < 8 || !w.is_multiple_of(8) {
+    if w != 4 && (w < 8 || !w.is_multiple_of(8)) {
         return highbd_variance64_scalar(a, a_stride, b, b_stride, w, h);
     }
     archmage::incant!(

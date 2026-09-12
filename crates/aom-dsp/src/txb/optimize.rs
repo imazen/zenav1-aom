@@ -97,6 +97,47 @@ pub fn optimize_txb(
     scan: &[i16],
     t: &CoeffCostTables,
 ) -> OptimizeResult {
+    let mut levels = [0u8; TX_PAD_2D];
+    optimize_txb_scratch(
+        tx_size,
+        tx_type,
+        qcoeff,
+        dqcoeff,
+        tcoeff,
+        eob_in,
+        dequant,
+        rdmult,
+        dc_sign_ctx,
+        txb_skip_ctx,
+        sharpness,
+        scan,
+        t,
+        &mut levels,
+    )
+}
+
+/// [`optimize_txb`] with a caller-owned `levels` scratch (`>= TX_PAD_2D`).
+/// `txb_init_levels` writes every byte the trellis reads (C declares the
+/// buffer uninitialized for the same reason), so the scratch needs no
+/// initialization — hoisting it out removes a `TX_PAD_2D`-byte memset per
+/// call from the hot RD path.
+#[allow(clippy::too_many_arguments)]
+pub fn optimize_txb_scratch(
+    tx_size: usize,
+    tx_type: usize,
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+    tcoeff: &[i32],
+    eob_in: usize,
+    dequant: [i16; 2],
+    rdmult: i64,
+    dc_sign_ctx: usize,
+    txb_skip_ctx: usize,
+    sharpness: i32,
+    scan: &[i16],
+    t: &CoeffCostTables,
+    levels: &mut [u8; TX_PAD_2D],
+) -> OptimizeResult {
     optimize_txb_core(
         tx_size,
         tx_type,
@@ -113,6 +154,7 @@ pub fn optimize_txb(
         t,
         None,
         None,
+        levels,
     )
 }
 
@@ -145,6 +187,48 @@ pub fn optimize_txb_qm(
     iqmatrix: &[u8],
     qmatrix: Option<&[u8]>,
 ) -> OptimizeResult {
+    let mut levels = [0u8; TX_PAD_2D];
+    optimize_txb_qm_scratch(
+        tx_size,
+        tx_type,
+        qcoeff,
+        dqcoeff,
+        tcoeff,
+        eob_in,
+        dequant,
+        rdmult,
+        dc_sign_ctx,
+        txb_skip_ctx,
+        sharpness,
+        scan,
+        t,
+        iqmatrix,
+        qmatrix,
+        &mut levels,
+    )
+}
+
+/// [`optimize_txb_qm`] with a caller-owned `levels` scratch — see
+/// [`optimize_txb_scratch`].
+#[allow(clippy::too_many_arguments)]
+pub fn optimize_txb_qm_scratch(
+    tx_size: usize,
+    tx_type: usize,
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+    tcoeff: &[i32],
+    eob_in: usize,
+    dequant: [i16; 2],
+    rdmult: i64,
+    dc_sign_ctx: usize,
+    txb_skip_ctx: usize,
+    sharpness: i32,
+    scan: &[i16],
+    t: &CoeffCostTables,
+    iqmatrix: &[u8],
+    qmatrix: Option<&[u8]>,
+    levels: &mut [u8; TX_PAD_2D],
+) -> OptimizeResult {
     optimize_txb_core(
         tx_size,
         tx_type,
@@ -161,6 +245,7 @@ pub fn optimize_txb_qm(
         t,
         Some(iqmatrix),
         qmatrix,
+        levels,
     )
 }
 
@@ -181,6 +266,7 @@ fn optimize_txb_core(
     t: &CoeffCostTables,
     iqmatrix: Option<&[u8]>,
     qmatrix: Option<&[u8]>,
+    levels: &mut [u8; TX_PAD_2D],
 ) -> OptimizeResult {
     let tx_class = TX_TYPE_TO_CLASS[tx_type];
     let bhl = txb_bhl(tx_size);
@@ -190,11 +276,9 @@ fn optimize_txb_core(
     let shift = ((pels > 256) as i32) + ((pels > 1024) as i32);
 
     let mut eob = eob_in;
-    let mut levels = [0u8; TX_PAD_2D];
     if eob > 1 {
-        txb_init_levels(qcoeff, width, height, &mut levels);
+        txb_init_levels(qcoeff, width, height, levels);
     }
-    let dqv = |ci: usize| -> i32 { get_dqv(dequant, ci, iqmatrix) };
     let cdist =
         |tqc: i32, dqc: i32, ci: usize| -> i64 { get_coeff_dist(tqc, dqc, shift, qmatrix, ci) };
     let base0 = |ctx: usize| -> i32 { t.base[ctx * 8] };
@@ -226,13 +310,14 @@ fn optimize_txb_core(
             shift,
             rdmult,
             dc_sign_ctx,
-            &dqv,
+            dequant,
+            iqmatrix,
             scan,
             t,
             tcoeff,
             qcoeff,
             dqcoeff,
-            &mut levels,
+            levels,
             qmatrix,
         );
         si -= 1;
@@ -258,13 +343,13 @@ fn optimize_txb_core(
         let s = si as usize;
         let ci = scan[s] as usize;
         let qc = qcoeff[ci];
-        let coeff_ctx = get_lower_levels_ctx(&levels, ci, bhl, tx_size, tx_class) as usize;
+        let coeff_ctx = get_lower_levels_ctx(levels, ci, bhl, tx_size, tx_class) as usize;
         if qc == 0 {
             accu_rate += base0(coeff_ctx);
             si -= 1;
             continue;
         }
-        let v = dqv(scan[s] as usize);
+        let v = get_dqv(dequant, scan[s] as usize, iqmatrix);
         let mut lower_level = false;
         let abs_qc = qc.abs();
         let (tqc, dqc) = (tcoeff[ci], dqcoeff[ci]);
@@ -281,7 +366,7 @@ fn optimize_txb_core(
             t,
             bhl,
             tx_class,
-            &levels,
+            levels,
         );
         let mut rd = rdcost(rdmult, (accu_rate + rate) as i64, accu_dist + dist);
 
@@ -309,7 +394,7 @@ fn optimize_txb_core(
                 t,
                 bhl,
                 tx_class,
-                &levels,
+                levels,
             );
             rd_low = rdcost(rdmult, (accu_rate + rate_low) as i64, accu_dist + dist_low);
         }
@@ -409,7 +494,7 @@ fn optimize_txb_core(
         let s = si as usize;
         let ci = scan[s] as usize;
         let qc = qcoeff[ci];
-        let coeff_ctx = get_lower_levels_ctx(&levels, ci, bhl, tx_size, tx_class) as usize;
+        let coeff_ctx = get_lower_levels_ctx(levels, ci, bhl, tx_size, tx_class) as usize;
         if qc == 0 {
             accu_rate += base0(coeff_ctx);
             si -= 1;
@@ -419,13 +504,13 @@ fn optimize_txb_core(
         let abs_tqc = tcoeff[ci].abs();
         let abs_dqc = dqcoeff[ci].abs();
         let (rate, rate_low) =
-            two_coeff_cost_simple(ci, abs_qc, coeff_ctx, t, bhl, tx_class, &levels);
+            two_coeff_cost_simple(ci, abs_qc, coeff_ctx, t, bhl, tx_class, levels);
         if abs_dqc < abs_tqc {
             accu_rate += rate;
             si -= 1;
             continue;
         }
-        let v = dqv(scan[s] as usize);
+        let v = get_dqv(dequant, scan[s] as usize, iqmatrix);
         let dist = cdist(abs_tqc, abs_dqc, ci);
         let rd = rdcost(rdmult, rate as i64, dist);
         let abs_qc_low = abs_qc - 1;
@@ -460,13 +545,14 @@ fn optimize_txb_core(
             shift,
             rdmult,
             dc_sign_ctx,
-            &dqv,
+            dequant,
+            iqmatrix,
             scan,
             t,
             tcoeff,
             qcoeff,
             dqcoeff,
-            &mut levels,
+            levels,
             qmatrix,
         );
     }
@@ -484,6 +570,7 @@ fn optimize_txb_core(
 
 /// `update_coeff_general` (used at the eob coefficient and the DC position).
 #[allow(clippy::too_many_arguments)]
+#[inline]
 fn update_coeff_general(
     accu_rate: &mut i32,
     accu_dist: &mut i64,
@@ -496,13 +583,14 @@ fn update_coeff_general(
     shift: i32,
     rdmult: i64,
     dc_sign_ctx: usize,
-    dqv: &dyn Fn(usize) -> i32,
+    dequant: [i16; 2],
+    iqmatrix: Option<&[u8]>,
     scan: &[i16],
     t: &CoeffCostTables,
     tcoeff: &[i32],
     qcoeff: &mut [i32],
     dqcoeff: &mut [i32],
-    levels: &mut [u8],
+    levels: &mut [u8; TX_PAD_2D],
     qmatrix: Option<&[u8]>,
 ) {
     let ci = scan[si] as usize;
@@ -514,7 +602,7 @@ fn update_coeff_general(
         *accu_rate += t.base[coeff_ctx * 8];
         return;
     }
-    let v = dqv(scan[si] as usize);
+    let v = get_dqv(dequant, scan[si] as usize, iqmatrix);
     let sign = (qc < 0) as i32;
     let abs_qc = qc.abs();
     let (tqc, dqc) = (tcoeff[ci], dqcoeff[ci]);

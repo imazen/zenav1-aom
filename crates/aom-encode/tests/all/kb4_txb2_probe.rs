@@ -102,6 +102,7 @@ fn kb4_txb2_real_c_leaf_probe() {
         src_off: 0,
         src_stride: w,
         pred: &PRED,
+        pred_stride: w,
         tx_size,
         plane: 0,
         uv_mode: 0,

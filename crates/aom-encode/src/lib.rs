@@ -136,8 +136,8 @@ use aom_dsp::quant::{
 use aom_dsp::transform::inv_txfm2d::av1_fwht4x4;
 use aom_dsp::transform::txfm2d::av1_fwd_txfm2d_into;
 use aom_dsp::txb::{
-    CoeffCostTables, get_txb_ctx, iscan, optimize_txb, optimize_txb_qm, scan, txb_entropy_context,
-    txb_high, txb_wide, write_coeffs_txb, write_coeffs_txb_full,
+    CoeffCostTables, get_txb_ctx, iscan, optimize_txb_qm_scratch, optimize_txb_scratch, scan,
+    txb_entropy_context, txb_high, txb_wide, write_coeffs_txb, write_coeffs_txb_full,
 };
 
 /// Full (un-adjusted) transform width per `TX_SIZE` — the residual/coeff buffer
@@ -400,6 +400,11 @@ pub struct XformQuantScratch {
     pub dqcoeff: Vec<i32>,
     /// The forward transform's own column-pass buffer.
     pub fwd: aom_dsp::transform::txfm2d::FwdTxfmScratch,
+    /// The trellis's padded levels map (`TX_PAD_2D`). `txb_init_levels`
+    /// overwrites every byte the trellis reads (C declares it uninitialized),
+    /// so this is grow-only — it removes a 1.3 KB memset per `optimize_txb`
+    /// call from the RD walk.
+    pub levels: Vec<u8>,
 }
 
 /// Scalar half of [`xform_quant`]'s result when the coefficient buffers stay in
@@ -459,7 +464,7 @@ pub fn xform_quant_into(
     // TX_4X4 (== 0) and DCT_DCT (== 0) upstream, so this is the only tx here.
     // `clear` + `resize(_, 0)` reproduces the `vec![0i32; n]` these three
     // replace element for element (see `XformQuantScratch`).
-    let XformQuantScratch { coeff, qcoeff, dqcoeff, fwd } = scratch;
+    let XformQuantScratch { coeff, qcoeff, dqcoeff, fwd, .. } = scratch;
     // GROW-ONLY, not clear-and-refill. `resize` alone already leaves the length
     // exactly right — it truncates when the buffer is long enough and pads with
     // zeros only when it genuinely grows. The `clear()` that used to precede it
@@ -790,7 +795,13 @@ pub fn xform_quant_optimize_split_into(
 
     let dequant = [qp.dequant[0], qp.dequant[1]];
     let sc = scan(tx_size, tx_type);
-    let XformQuantScratch { coeff, qcoeff, dqcoeff, .. } = scratch;
+    scratch.levels.resize(aom_dsp::txb::TX_PAD_2D, 0);
+    let XformQuantScratch { coeff, qcoeff, dqcoeff, levels, .. } = scratch;
+    // Fixed-extent binding: the trellis indexes `levels` through
+    // `padded_idx` on EVERY coefficient — a `&mut [u8]` slice would carry a
+    // bounds check per access that the `[u8; TX_PAD_2D]` array type removes.
+    let levels: &mut [u8; aom_dsp::txb::TX_PAD_2D] =
+        levels.as_mut_slice().try_into().unwrap();
     let tcoeff = &coeff[..qcoeff.len()];
     // Same av1_setup_qmatrix selection the quantize above used — the trellis
     // (optimize_txb_qm's get_dqv) must fold the SAME per-position inverse.
@@ -811,7 +822,7 @@ pub fn xform_quant_optimize_split_into(
         None => qm_sel,
     };
     let res = match (trellis_dist_qm, iqm_sel) {
-        (qm, Some(iqm)) => optimize_txb_qm(
+        (qm, Some(iqm)) => optimize_txb_qm_scratch(
             tx_size,
             tx_type,
             qcoeff,
@@ -827,8 +838,9 @@ pub fn xform_quant_optimize_split_into(
             opt.cost,
             iqm,
             qm,
+            levels,
         ),
-        _ => optimize_txb(
+        _ => optimize_txb_scratch(
             tx_size,
             tx_type,
             qcoeff,
@@ -842,6 +854,7 @@ pub fn xform_quant_optimize_split_into(
             opt.sharpness,
             sc,
             opt.cost,
+            levels,
         ),
     };
 

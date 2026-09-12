@@ -72,6 +72,28 @@ impl Rng {
     fn residual_bd8(&mut self) -> i16 {
         (self.next() % 511) as i16 - 255
     }
+    /// Residuals across ±512 — the fused 4x4 SIMD kernel's runtime gate bound.
+    /// The bd8 arm (±255) is comfortably inside it and the full-range i16 arm
+    /// is comfortably outside, so without this band the accept-side edge of the
+    /// gate is never driven: a block must have EVERY lane at |in| <= 512 to
+    /// take the vector path, which full-range randoms essentially never do.
+    fn residual_gate(&mut self) -> i16 {
+        (self.next() % 1025) as i16 - 512
+    }
+    /// Inverse coefficients across ±4096 — the fused 4x4 INVERSE kernel's
+    /// runtime gate bound (|input| <= 4096 keeps every i16 intermediate
+    /// unsaturated through both passes). The ±2^20 `coeff` arm declines every
+    /// 4x4 block, so without this band the accept side of the inverse gate is
+    /// never driven.
+    fn coeff_gate(&mut self) -> i32 {
+        (self.next() % 8193) as i32 - 4096
+    }
+    /// Inverse coefficients across ±737 — inside the TIGHTEST fused 8x8
+    /// inverse gate (`Adst8 -> Adst8` allows |input| <= 737; every other pair
+    /// is looser), so this arm accepts all nine (row, col) kernel pairs.
+    fn coeff_gate8(&mut self) -> i32 {
+        (self.next() % 1475) as i32 - 737
+    }
     fn pixel(&mut self, bd: i32) -> u16 {
         (self.next() % (1u64 << bd)) as u16
     }
@@ -113,6 +135,44 @@ fn inv_spike(k: usize, i: usize, len: usize) -> i32 {
             }
         } // last-coeff spike
         _ => B - 1,                                         // ±(2^19 - 1), the exact hi bound
+    }
+}
+
+/// Gate-edge spikes for the fused 4x4 INVERSE SIMD kernel — the exact accept
+/// bound (±4096) and just past it (±4097), plus a partial block where only
+/// some lanes are over, so both sides of the runtime decline are driven.
+fn inv_spike_gate(k: usize, i: usize) -> i32 {
+    match k {
+        0 => 4096,
+        1 => -4096,
+        2 => 4097, // one over -> decline
+        _ => {
+            if i % 4 == 0 {
+                4096
+            } else {
+                -3500
+            }
+        }
+    }
+}
+
+/// Gate-edge spikes for the fused 8x8 INVERSE SIMD kernel — the tightest
+/// accept bound (±737, `Adst8 -> Adst8`) and the `Dct8 -> Dct8` edge
+/// (±2347/±2348), plus a partial block where only some lanes are over.
+fn inv_spike_gate8(k: usize, i: usize) -> i32 {
+    match k {
+        0 => 737,
+        1 => -737,
+        2 => 738,  // over Adst8->Adst8's bound
+        3 => 2347, // Dct8->Dct8's exact bound
+        4 => 2348, // one over Dct8->Dct8
+        _ => {
+            if i % 8 == 0 {
+                2348
+            } else {
+                -700
+            }
+        }
     }
 }
 
@@ -162,9 +222,46 @@ fn fwd_spike(k: usize, i: usize) -> i16 {
     }
 }
 
+/// Gate-edge spikes for the fused forward SIMD kernels — the exact accept
+/// bounds (±512 for the 4x4, ±511 for the 8x8, ±1023 for the 4x8/8x4) and
+/// just past them (±513 / ±1024 / the partial-block patterns), so both sides
+/// of each runtime decline are driven.
+fn fwd_spike_gate(k: usize, i: usize) -> i16 {
+    match k {
+        0 => 512,
+        1 => -512,
+        2 => 513, // one over both bounds -> decline
+        4 => {
+            if i % 4 == 0 {
+                511 // inside both bounds -> accept at the 8x8 edge
+            } else {
+                -300
+            }
+        }
+        5 => 1023,  // the rect48 accept edge
+        6 => -1023,
+        7 => 1024, // just over -> decline
+        8 => -1024,
+        9 => {
+            if i % 8 == 0 {
+                1023 // inside the rect48 bound -> accept there
+            } else {
+                -513 // over the 4x4/8x8 bounds -> decline there
+            }
+        }
+        _ => {
+            if i % 4 == 0 {
+                512 // over the 8x8 bound -> decline there, accept at the 4x4 edge
+            } else {
+                -300
+            }
+        }
+    }
+}
+
 const RAND_REPS: usize = 5;
 const INV_SPIKES: usize = 7;
-const FWD_SPIKES: usize = 4;
+const FWD_SPIKES: usize = 5;
 
 /// Run the entire (tx_size × tx_type × bd × input) matrix through the public
 /// 2-D entries under the CURRENT token permutation, collecting every output
@@ -197,6 +294,46 @@ fn all_outputs() -> Vec<(String, Vec<i64>)> {
                         let input: Vec<i32> = (0..ilen).map(|_| rng.coeff()).collect();
                         push_inv(
                             format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} rand{rep}"),
+                            &input,
+                            &mut rng,
+                        );
+                    }
+                    // Accepted-side band of the inv-4x4 i16 gate (all other
+                    // sizes/types just take their normal paths on these).
+                    for rep in 0..2 {
+                        let input: Vec<i32> =
+                            (0..ilen).map(|_| rng.coeff_gate()).collect();
+                        push_inv(
+                            format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} randg{rep}"),
+                            &input,
+                            &mut rng,
+                        );
+                    }
+                    // Accepted side of the fused 8x8 i16 gate: ±737 is inside
+                    // the tightest (row, col) pair bound.
+                    for rep in 0..2 {
+                        let input: Vec<i32> =
+                            (0..ilen).map(|_| rng.coeff_gate8()).collect();
+                        push_inv(
+                            format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} randg8_{rep}"),
+                            &input,
+                            &mut rng,
+                        );
+                    }
+                    for k in 0..4usize {
+                        let input: Vec<i32> =
+                            (0..ilen).map(|i| inv_spike_gate(k, i)).collect();
+                        push_inv(
+                            format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} gspike{k}"),
+                            &input,
+                            &mut rng,
+                        );
+                    }
+                    for k in 0..6usize {
+                        let input: Vec<i32> =
+                            (0..ilen).map(|i| inv_spike_gate8(k, i)).collect();
+                        push_inv(
+                            format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} gspike8_{k}"),
                             &input,
                             &mut rng,
                         );
@@ -240,6 +377,18 @@ fn all_outputs() -> Vec<(String, Vec<i64>)> {
             for k in 0..FWD_SPIKES {
                 let input: Vec<i16> = (0..w * h).map(|i| fwd_spike_bd8(k, i)).collect();
                 push_fwd(format!("fwd sz{tx_size} ty{tx_type} bd8spike{k}"), &input);
+            }
+            // Gate-edge arm — ±512 randoms (inside the fused 4x4 kernel's
+            // bound) plus spikes at and just past each bound (±512/±511/
+            // ±1023 edges for the 4x4/8x8/rect48 kernels, ±513/±1024 on the
+            // decline side).
+            for rep in 0..RAND_REPS {
+                let input: Vec<i16> = (0..w * h).map(|_| rng.residual_gate()).collect();
+                push_fwd(format!("fwd sz{tx_size} ty{tx_type} gaterand{rep}"), &input);
+            }
+            for k in 0..10usize {
+                let input: Vec<i16> = (0..w * h).map(|i| fwd_spike_gate(k, i)).collect();
+                push_fwd(format!("fwd sz{tx_size} ty{tx_type} gatespike{k}"), &input);
             }
         }
     }
@@ -316,3 +465,4 @@ fn txfm2d_simd_equals_scalar_at_every_permutation() {
     assert!(scalar_perms >= 1, "the all-off (scalar) permutation must run at least once");
     assert!(report.permutations_run >= 2, "need >=2 permutations to compare SIMD vs scalar");
 }
+

@@ -102,6 +102,7 @@ fn kb4_txb_tie_probe_bd10_cq12() {
             src_off: 0,
             src_stride: 4,
             pred: &pred,
+            pred_stride: 4,
             tx_size,
             plane: 0,
             uv_mode: 0,

@@ -40,6 +40,7 @@ fn br_cost(level: i32, lps: &[i32]) -> i32 {
 
 /// `get_br_cost_with_diff`: returns the base-range cost and accumulates the
 /// trellis `diff` (cost of coding `level-1` instead of `level`).
+#[inline]
 pub fn br_cost_with_diff(level: i32, lps: &[i32], diff: &mut i32) -> i32 {
     let base_range = (level - 1 - NUM_BASE_LEVELS).min(COEFF_BASE_RANGE);
     let mut golomb_bits = 0;
@@ -62,6 +63,7 @@ pub fn br_cost_with_diff(level: i32, lps: &[i32], diff: &mut i32) -> i32 {
 /// `get_two_coeff_cost_simple` (scan_idx not DC and not eob-1). Returns
 /// `(cost, cost_low)` where `cost_low` is the cost of coding `abs_qc-1`.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn two_coeff_cost_simple(
     ci: usize,
     abs_qc: i32,
@@ -90,6 +92,7 @@ pub fn two_coeff_cost_simple(
 
 /// `get_coeff_cost_eob`.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn coeff_cost_eob(
     ci: usize,
     abs_qc: i32,
@@ -117,6 +120,7 @@ pub fn coeff_cost_eob(
 
 /// `get_coeff_cost_general`.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn coeff_cost_general(
     is_last: bool,
     ci: usize,

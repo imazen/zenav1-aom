@@ -230,11 +230,12 @@ fn fwd_txfm2d_core(
     let shift = cfg.shift;
     let rect_type = get_rect_tx_log_ratio(col_n as i64, row_n as i64);
 
-    // Reused across calls when the caller supplies a live scratch. `clear` +
-    // `resize(_, 0)` writes exactly the `col_n * row_n` zeros `vec![0i32; n]`
-    // wrote, so nothing downstream can observe the difference.
+    // Reused across calls when the caller supplies a live scratch. Grow-only
+    // `resize`, no `clear`: both column paths (SIMD batch gates accept only
+    // full-coverage shapes; the scalar loop writes `buf[r * col_n + dst_c]`
+    // for every (c, r)) overwrite all `col_n * row_n` elements before the row
+    // pass reads them, so the zero-fill was unobservable dead work.
     let buf = &mut scratch.buf;
-    buf.clear();
     buf.resize(col_n * row_n, 0);
     let buf = &mut buf[..];
 
@@ -364,10 +365,27 @@ fn fwd_txfm2d_4x4_fused(input: &[i16], output: &mut [i32], stride: usize, tx_typ
         return false;
     }
     let (ud_flip, lr_flip) = FLIP_CFG[tx_type];
-    let f_col = txfm_func(txfm_type_col);
-    let f_row = txfm_func(txfm_type_row);
     let cos_bit_col = COS_BIT_COL[0][0] as i32;
     let cos_bit_row = COS_BIT_ROW[0][0] as i32;
+    // The SSE2-shaped fused kernel — C's `av1_lowbd_fwd_txfm2d_4x4_sse2`: i16
+    // lanes, `madd` kernels, in-register transpose. Runtime-gated on the
+    // input bound; declines to the scalar fusion below.
+    #[cfg(target_arch = "x86_64")]
+    if crate::transform::simd::try_fwd_txfm2d_4x4_fused(
+        txfm_type_col,
+        txfm_type_row,
+        input,
+        output,
+        stride,
+        cos_bit_col,
+        cos_bit_row,
+        ud_flip,
+        lr_flip,
+    ) {
+        return true;
+    }
+    let f_col = txfm_func(txfm_type_col);
+    let f_row = txfm_func(txfm_type_row);
 
     let mut buf = [0i32; 16];
     let mut temp_in = [0i32; 4];

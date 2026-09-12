@@ -46,6 +46,7 @@ const SKIP_CONTEXTS: [[i32; 5]; 5] = [
 ];
 
 /// `get_entropy_context`: `(any above nonzero) + (any left nonzero)`.
+#[inline]
 fn get_entropy_context(tx_size: usize, a: &[i8], l: &[i8]) -> i32 {
     let above = a[..TX_WIDE_UNIT[tx_size]].iter().any(|&x| x != 0);
     let left = l[..TX_HIGH_UNIT[tx_size]].iter().any(|&x| x != 0);
@@ -55,6 +56,7 @@ fn get_entropy_context(tx_size: usize, a: &[i8], l: &[i8]) -> i32 {
 /// `get_txb_ctx`: neighbour entropy contexts (`a` above, `l` left; packed bytes
 /// `cul_level | dc_sign<<3`) -> `(txb_skip_ctx, dc_sign_ctx)` for `plane`
 /// (0 = luma). `plane_bsize` is the plane block size (BlockSize discriminant).
+#[inline]
 pub fn get_txb_ctx(
     plane_bsize: usize,
     tx_size: usize,
@@ -104,6 +106,7 @@ pub fn get_txb_ctx(
 
 /// `av1_get_txb_entropy_context`: pack this block's context (culminative level,
 /// capped at 7, OR the DC-sign code) for its right/below neighbours.
+#[inline]
 pub fn txb_entropy_context(qcoeff: &[i32], tx_size: usize, tx_type: usize, eob: usize) -> u8 {
     if eob == 0 {
         return 0;

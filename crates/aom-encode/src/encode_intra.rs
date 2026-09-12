@@ -86,7 +86,7 @@ use crate::{
 use aom_dsp::dist::highbd_subtract_block;
 use aom_dsp::entropy::partition::{get_plane_block_size, intra_avail};
 use aom_dsp::intra::cfl::{CflCtx, cfl_store_tx};
-use aom_dsp::intra::predict_intra_high;
+use aom_dsp::intra::predict_intra_high_in_place;
 use aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add;
 use aom_dsp::txb::{CoeffCostTables, get_txb_ctx};
 
@@ -377,9 +377,7 @@ pub fn encode_intra_block_plane_y(
     // contents. `xq` additionally reuses the forward transform's own buffers;
     // its `qcoeff`/`dqcoeff` are MOVED into `TxbEncode` (they are retained
     // per-txb output, not churn), so those two still allocate as before.
-    let mut pred: Vec<u16> = Vec::new();
     let mut residual: Vec<i16> = Vec::new();
-    let mut tight: Vec<u16> = Vec::new();
     let mut xq = XQ_POOL_Y.with(|c| core::mem::take(&mut *c.borrow_mut()));
     let mut txbs: Vec<TxbEncode> = Vec::new();
     // `av1_foreach_transformed_block_in_plane` mu-64 chunk walk (encodemb.c:
@@ -404,17 +402,19 @@ pub fn encode_intra_block_plane_y(
                 let mut blk_col = chunk_c;
                 while blk_col < unit_w {
             // --- encode_block_intra ---
-            // av1_predict_intra_block_facade: predict INTO the recon plane.
+            // av1_predict_intra_block_facade: predict INTO the recon plane —
+            // written there directly, as C writes `pd->dst` (the tight scratch
+            // + per-row publish this replaced was a memset plus `txh` memcpy
+            // calls per txb; callgrind put this walk in the port's top memcpy
+            // callers).
             let txb_off = env.ref_off + (blk_row * env.ref_stride + blk_col) * 4;
-            pred.clear();
-            pred.resize(txw * txh, 0);
             if let Some(pal) = &env.palette {
                 // av1_predict_intra_block's use_palette arm: the colour-index
                 // map fill at this txb's pixel offset — no spatial prediction.
                 let (x, y) = (blk_col * 4, blk_row * 4);
                 for r in 0..txh {
                     for c in 0..txw {
-                        pred[r * txw + c] =
+                        recon[txb_off + r * env.ref_stride + c] =
                             pal.colors[pal.map[(r + y) * pal.map_stride + c + x] as usize];
                     }
                 }
@@ -447,12 +447,10 @@ pub fn encode_intra_block_plane_y(
                 // plane split is annotated where the caller knows it. `plane_total()`
                 // must equal `intra_total_calls()`; the census tool asserts it.
                 aom_dsp::census::note_plane_intra_pred(0, tx_size);
-                predict_intra_high(
+                predict_intra_high_in_place(
                     recon,
                     txb_off,
                     env.ref_stride,
-                    &mut pred,
-                    txw,
                     env.mode,
                     env.angle_delta * 3,
                     env.use_filter_intra,
@@ -466,10 +464,6 @@ pub fn encode_intra_block_plane_y(
                     n_bottomleft,
                     env.bd as i32,
                 );
-            }
-            for r in 0..txh {
-                recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw]
-                    .copy_from_slice(&pred[r * txw..r * txw + txw]);
             }
 
             let mut tx_type = 0usize; // DCT_DCT
@@ -485,10 +479,14 @@ pub fn encode_intra_block_plane_y(
                 txb_skip_ctx = 0;
                 dc_sign_ctx = 0;
             } else {
-                // av1_subtract_txb.
+                // av1_subtract_txb — the prediction is read out of the plane
+                // at `ref_stride`; `residual` is fully overwritten before any
+                // read, so only the exact-size grow survives (xform_quant
+                // asserts len == txw*txh).
                 let src_txb_off = env.src_off + (blk_row * env.src_stride + blk_col) * 4;
-                residual.clear();
-                residual.resize(txw * txh, 0);
+                if residual.len() != txw * txh {
+                    residual.resize(txw * txh, 0);
+                }
                 highbd_subtract_block(
                     txh,
                     txw,
@@ -496,8 +494,8 @@ pub fn encode_intra_block_plane_y(
                     txw,
                     &env.src[src_txb_off..],
                     env.src_stride,
-                    &pred,
-                    txw,
+                    &recon[txb_off..],
+                    env.ref_stride,
                 );
 
                 tx_type = get_tx_type_y(
@@ -568,23 +566,21 @@ pub fn encode_intra_block_plane_y(
             }
 
             // if (*eob) av1_inverse_transform_block into the recon plane.
+            // `recon[txb_off..]` already holds the prediction — C adds the
+            // dequantised residual into `pd->dst` at `dst_stride`, so the add
+            // lands in place and the tight-buffer round trip (one whole-block
+            // copy in, `txh` row copies out) was pure overhead.
             if eob > 0 {
-                tight.clear();
-                tight.extend_from_slice(&pred);
                 av1_inverse_transform_add(
                     &dqcoeff,
-                    &mut tight,
-                    txw,
+                    &mut recon[txb_off..],
+                    env.ref_stride,
                     tx_type,
                     tx_size,
                     i32::from(env.bd),
                     eob as usize,
                     env.lossless,
                 );
-                for r in 0..txh {
-                    recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw]
-                        .copy_from_slice(&tight[r * txw..r * txw + txw]);
-                }
             }
 
             // if (*eob == 0 && plane == 0) update_txk_array(.., DCT_DCT).
@@ -740,9 +736,7 @@ pub fn encode_intra_block_plane_uv(
     let mut dc_cache = CflDcCache::cleared();
 
     // Per-txb buffers hoisted out of the walk — see the luma twin above.
-    let mut pred: Vec<u16> = Vec::new();
     let mut residual: Vec<i16> = Vec::new();
-    let mut tight: Vec<u16> = Vec::new();
     let mut xq = XQ_POOL_UV.with(|c| core::mem::take(&mut *c.borrow_mut()));
     let mut txbs: Vec<TxbEncode> = Vec::new();
     // mu-64 chunk walk (see `encode_intra_block_plane_y`). The chroma unit is
@@ -820,18 +814,17 @@ pub fn encode_intra_block_plane_uv(
                 txb_skip_ctx = 0;
                 dc_sign_ctx = 0;
             } else {
-                // av1_subtract_txb: prediction snapshot (tight) as base.
-                pred.clear();
-                pred.resize(txw * txh, 0);
-                for r in 0..txh {
-                    pred[r * txw..r * txw + txw].copy_from_slice(
-                        &recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw],
-                    );
-                }
+                // av1_subtract_txb: the prediction stays in the recon plane
+                // and is read at `ref_stride` — the tight snapshot this
+                // replaced was a per-row copy out of `recon` feeding only this
+                // subtract. `residual` is fully overwritten before any read
+                // (len must still land exactly on txw*txh — xform_quant
+                // asserts it).
                 let src = if plane == 1 { env.src_u } else { env.src_v };
                 let src_txb_off = env.src_off[pi] + (blk_row * env.src_stride + blk_col) * 4;
-                residual.clear();
-                residual.resize(txw * txh, 0);
+                if residual.len() != txw * txh {
+                    residual.resize(txw * txh, 0);
+                }
                 highbd_subtract_block(
                     txh,
                     txw,
@@ -839,8 +832,8 @@ pub fn encode_intra_block_plane_uv(
                     txw,
                     &src[src_txb_off..],
                     env.src_stride,
-                    &pred,
-                    txw,
+                    &recon[txb_off..],
+                    env.ref_stride,
                 );
 
                 // av1_get_tx_type PLANE_TYPE_UV intra arm.
@@ -908,29 +901,20 @@ pub fn encode_intra_block_plane_uv(
                 }
             }
 
-            // if (*eob) av1_inverse_transform_block into the recon plane.
+            // if (*eob) av1_inverse_transform_block into the recon plane —
+            // `recon[txb_off..]` already holds the prediction; C adds into
+            // `pd->dst` at `dst_stride`, so the add lands in place.
             if eob > 0 {
-                tight.clear();
-                tight.resize(txw * txh, 0);
-                for r in 0..txh {
-                    tight[r * txw..r * txw + txw].copy_from_slice(
-                        &recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw],
-                    );
-                }
                 av1_inverse_transform_add(
                     &dqcoeff,
-                    &mut tight,
-                    txw,
+                    &mut recon[txb_off..],
+                    env.ref_stride,
                     tx_type,
                     tx_size,
                     i32::from(env.bd),
                     eob as usize,
                     env.lossless,
                 );
-                for r in 0..txh {
-                    recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw]
-                        .copy_from_slice(&tight[r * txw..r * txw + txw]);
-                }
             }
 
             // plane != 0: NO update_txk_array reset, NO cfl_store_tx.

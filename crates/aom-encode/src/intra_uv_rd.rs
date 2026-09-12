@@ -655,22 +655,19 @@ pub fn txfm_rd_in_plane_uv_p(
                     txb_off,
                 );
             }
-            // Snapshot the prediction (tight) for the search + recon base.
-            let pred = &mut walk.pred;
-            pred.clear();
-            pred.resize(txw * txh, 0);
-            for r in 0..txh {
-                pred[r * txw..r * txw + txw].copy_from_slice(
-                    &recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw],
-                );
-            }
-
-            // av1_subtract_txb.
+            // av1_subtract_txb — the prediction stays in the recon plane and
+            // is read at `ref_stride` (C's `pd->dst` form). The tight snapshot
+            // this replaced was a per-row copy OUT of `recon`, taken only to
+            // feed this subtract and the search's `pred` — and `residual`'s
+            // re-zero was dead work: subtract overwrites `[0, txw*txh)` before
+            // any read (the len must still land exactly on txw*txh —
+            // `xform_quant_into` asserts it).
             let src = env.src(plane);
             let src_txb_off = env.src_off[pi] + (blk_row * env.src_stride + blk_col) * 4;
-            walk.residual.clear();
-            walk.residual.resize(txw * txh, 0);
-            let (pred, residual) = (&walk.pred, &mut walk.residual);
+            if walk.residual.len() != txw * txh {
+                walk.residual.resize(txw * txh, 0);
+            }
+            let residual = &mut walk.residual;
             aom_dsp::dist::highbd_subtract_block(
                 txh,
                 txw,
@@ -678,8 +675,8 @@ pub fn txfm_rd_in_plane_uv_p(
                 txw,
                 &src[src_txb_off..],
                 env.src_stride,
-                pred,
-                txw,
+                &recon[txb_off..],
+                env.ref_stride,
             );
 
             let bctx = crate::BlockContext {
@@ -706,7 +703,8 @@ pub fn txfm_rd_in_plane_uv_p(
                 src,
                 src_off: src_txb_off,
                 src_stride: env.src_stride,
-                pred,
+                pred: &recon[txb_off..],
+                pred_stride: env.ref_stride,
                 tx_size,
                 plane,
                 uv_mode,

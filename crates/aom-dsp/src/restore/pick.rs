@@ -1065,6 +1065,7 @@ pub fn pixel_proj_error(
             flt1, flt1_stride, xq, ep, highbd,
         );
     }
+    let _ = crate::dispatch::scalar_forced();
     archmage::incant!(
         pixel_proj_error_impl(
             src, src_off, width, height, src_stride, dat, dat_off, dat_stride, flt0, flt0_stride,
@@ -1099,9 +1100,342 @@ fn pixel_proj_error_impl_scalar(
     )
 }
 
-/// Vector tier: lanes are adjacent `j`. See the dispatcher's doc for why the
-/// squares stay scalar.
-#[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+/// x86-64/AVX2 body for [`pixel_proj_error`] — a transcription of C's
+/// `av1_lowbd_pixel_proj_error_avx2` + `av1_highbd_pixel_proj_error_avx2`
+/// (pickrst_avx2.c:1548,2133). Raw intrinsics because the wins are exactly the
+/// pieces the magetypes vector API cannot express: i16 lanes (16 px/iter), the
+/// `madd_epi16` pair tricks (`[xq0,xq1]` against interleaved `f1,f2`
+/// differences computes `xq0*f1 + xq1*f2` in ONE instruction; the single-filter
+/// cases fold `u = d<<4` into the coefficient as `-xq<<4` and never form `u`),
+/// and a per-ROW i32 accumulator widened to i64 once per row.
+///
+/// The port's `dat`/`src` are `u16` planes even for lowbd, so where C does
+/// `cvtepu8_epi16(loadu_128)` we load 16 `u16` lanes directly — the lane
+/// values are identical (lowbd pixel data is <= 255 either way).
+///
+/// # Bit-exactness
+///
+/// Every vector op is the same instruction C issues, on the same values, so
+/// the result is C's AVX2 result — including C's own wraparound semantics
+/// (`packs_epi32` saturation on `flt`, `sub_epi16`/`add_epi16` mod-2^16 on the
+/// `vr + d - s` assembly, i32 `sum32` accumulation within a row). On every
+/// input the encoder actually produces those match the scalar tier: `|flt| <
+/// 2^15` (C's own assert, pickrst.c:244-245) keeps the i16 packing exact, and
+/// `|e| < 2^15` (`u < 2^16` at bd12, `|xq| <= 96`) keeps `e` and the `madd`
+/// squares exact. Where C's AVX2 and its scalar diverge on inputs outside
+/// those bounds, libaom's own SIMD consistency testing guarantees they don't
+/// occur — and this kernel is bit-identical to whichever answer C gives.
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn pixel_proj_error_impl_v3(
+    _t: archmage::X64V3Token,
+    src: &[u16],
+    src_off: usize,
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    dat: &[u16],
+    dat_off: usize,
+    dat_stride: usize,
+    flt0: &[i32],
+    flt0_stride: usize,
+    flt1: &[i32],
+    flt1_stride: usize,
+    xq: [i32; 2],
+    ep: usize,
+    highbd: bool,
+) -> i64 {
+    use archmage::intrinsics::x86_64::*;
+    const SHIFT: i32 = SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS;
+    let (rads, _) = SGR_PARAMS[ep];
+    let (r0, r1) = (rads[0] > 0, rads[1] > 0);
+    let rounding = _mm256_set1_epi32(1 << (SHIFT - 1));
+    let mut sum64 = _mm256_setzero_si256();
+    let mut err: i64 = 0;
+
+    // Per-row slices + `as_chunks`/`array_windows`-free iteration: one bounds
+    // check per row, none per 16-px step (this crate is `#![forbid(unsafe)]`,
+    // so a check can only be removed structurally). The zipped chunks are all
+    // `width/16` long, so they stay in lockstep; the `width % 16` remainder is
+    // the scalar `tail!` below.
+    macro_rules! rows16 {
+        ($dr:expr, $sr:expr, $f0r:expr, $f1r:expr) => {
+            (
+                dat[$dr..$dr + width].as_chunks::<16>().0.iter(),
+                src[$sr..$sr + width].as_chunks::<16>().0.iter(),
+                flt0[$f0r..$f0r + width].as_chunks::<16>().0.iter(),
+                flt1[$f1r..$f1r + width].as_chunks::<16>().0.iter(),
+            )
+        };
+    }
+    macro_rules! rows16_1f {
+        ($fs:expr, $dr:expr, $sr:expr, $fr:expr) => {
+            (
+                dat[$dr..$dr + width].as_chunks::<16>().0.iter(),
+                src[$sr..$sr + width].as_chunks::<16>().0.iter(),
+                $fs[$fr..$fr + width].as_chunks::<16>().0.iter(),
+            )
+        };
+    }
+    // Split a 16-wide i32 chunk into its two 8-lane halves — constant ranges on
+    // a known-length array, so the checks fold away.
+    macro_rules! half8 {
+        ($c:expr, lo) => {{
+            let w: &[i32; 8] = $c[..8].try_into().unwrap();
+            _mm256_loadu_si256(w)
+        }};
+        ($c:expr, hi) => {{
+            let w: &[i32; 8] = $c[8..].try_into().unwrap();
+            _mm256_loadu_si256(w)
+        }};
+    }
+    // The scalar tail (`for k = j; k < width; k++` in C) — identical body to
+    // the scalar tier's per-pixel expression.
+    macro_rules! tail {
+        ($i:expr, $j:expr) => {{
+            let i: usize = $i;
+            let dr = dat_off + i * dat_stride;
+            let sr = src_off + i * src_stride;
+            let f0r = i * flt0_stride;
+            let f1r = i * flt1_stride;
+            for j in $j..width {
+                let d = dat[dr + j] as i32;
+                let s = src[sr + j] as i32;
+                let e = if r0 || r1 {
+                    let u = d << SGRPROJ_RST_BITS;
+                    let mut v = if highbd {
+                        1 << (SHIFT - 1)
+                    } else {
+                        u << SGRPROJ_PRJ_BITS
+                    };
+                    if r0 {
+                        v += xq[0] * (flt0[f0r + j] - u);
+                    }
+                    if r1 {
+                        v += xq[1] * (flt1[f1r + j] - u);
+                    }
+                    if highbd {
+                        (v >> SHIFT) + d - s
+                    } else {
+                        ((v + (1 << (SHIFT - 1))) >> SHIFT) - s
+                    }
+                } else {
+                    d - s
+                };
+                err += e as i64 * e as i64;
+            }
+        }};
+    }
+    // Per-row widen of the i32-lane accumulator, C's own choice per bd:
+    // sign-extend for lowbd, zero-extend for highbd.
+    macro_rules! widen_row {
+        ($sum32:expr, signed) => {
+            sum64 = _mm256_add_epi64(
+                sum64,
+                _mm256_add_epi64(
+                    _mm256_cvtepi32_epi64(_mm256_castsi256_si128($sum32)),
+                    _mm256_cvtepi32_epi64(_mm256_extracti128_si256::<1>($sum32)),
+                ),
+            )
+        };
+        ($sum32:expr, unsigned) => {
+            sum64 = _mm256_add_epi64(
+                sum64,
+                _mm256_add_epi64(
+                    _mm256_cvtepu32_epi64(_mm256_castsi256_si128($sum32)),
+                    _mm256_cvtepu32_epi64(_mm256_extracti128_si256::<1>($sum32)),
+                ),
+            )
+        };
+    }
+
+    if r0 && r1 {
+        if highbd {
+            let xq0 = _mm256_set1_epi32(xq[0]);
+            let xq1 = _mm256_set1_epi32(xq[1]);
+            for i in 0..height {
+                let dr = dat_off + i * dat_stride;
+                let sr = src_off + i * src_stride;
+                let f0r = i * flt0_stride;
+                let f1r = i * flt1_stride;
+                let mut sum32 = _mm256_setzero_si256();
+                let (d16, s16, f016, f116) = rows16!(dr, sr, f0r, f1r);
+                for (((dc, sc), f0c), f1c) in d16.zip(s16).zip(f016).zip(f116) {
+                    let s0 = _mm256_loadu_si256(sc);
+                    let d0 = _mm256_loadu_si256(dc);
+                    let u0 = _mm256_slli_epi16::<{ SGRPROJ_RST_BITS }>(d0);
+                    let u0l = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(u0));
+                    let u0h =
+                        _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(u0));
+                    let f0l = _mm256_sub_epi32(half8!(f0c, lo), u0l);
+                    let f0h = _mm256_sub_epi32(half8!(f0c, hi), u0h);
+                    let f1l = _mm256_sub_epi32(half8!(f1c, lo), u0l);
+                    let f1h = _mm256_sub_epi32(half8!(f1c, hi), u0h);
+                    let vl = _mm256_add_epi32(
+                        _mm256_mullo_epi32(f0l, xq0),
+                        _mm256_mullo_epi32(f1l, xq1),
+                    );
+                    let vh = _mm256_add_epi32(
+                        _mm256_mullo_epi32(f0h, xq0),
+                        _mm256_mullo_epi32(f1h, xq1),
+                    );
+                    let vrl = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(vl, rounding));
+                    let vrh = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(vh, rounding));
+                    let vr =
+                        _mm256_permute4x64_epi64::<0xd8>(_mm256_packs_epi32(vrl, vrh));
+                    let e0 =
+                        _mm256_sub_epi16(_mm256_add_epi16(vr, d0), s0);
+                    sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(e0, e0));
+                }
+                tail!(i, width & !15);
+                widen_row!(sum32, unsigned);
+            }
+        } else {
+            // pair_set_epi16(xq[0], xq[1])
+            let xq_coeff = _mm256_set1_epi32((xq[0] & 0xffff) | (xq[1] << 16));
+            for i in 0..height {
+                let dr = dat_off + i * dat_stride;
+                let sr = src_off + i * src_stride;
+                let f0r = i * flt0_stride;
+                let f1r = i * flt1_stride;
+                let mut sum32 = _mm256_setzero_si256();
+                let (d16, s16, f016, f116) = rows16!(dr, sr, f0r, f1r);
+                for (((dc, sc), f0c), f1c) in d16.zip(s16).zip(f016).zip(f116) {
+                    let d0 = _mm256_loadu_si256(dc);
+                    let s0 = _mm256_loadu_si256(sc);
+                    let flt0_16b = _mm256_permute4x64_epi64::<0xd8>(
+                        _mm256_packs_epi32(half8!(f0c, lo), half8!(f0c, hi)),
+                    );
+                    let flt1_16b = _mm256_permute4x64_epi64::<0xd8>(
+                        _mm256_packs_epi32(half8!(f1c, lo), half8!(f1c, hi)),
+                    );
+                    let u0 = _mm256_slli_epi16::<{ SGRPROJ_RST_BITS }>(d0);
+                    let f0sub = _mm256_sub_epi16(flt0_16b, u0);
+                    let f1sub = _mm256_sub_epi16(flt1_16b, u0);
+                    let v0 =
+                        _mm256_madd_epi16(xq_coeff, _mm256_unpacklo_epi16(f0sub, f1sub));
+                    let v1 =
+                        _mm256_madd_epi16(xq_coeff, _mm256_unpackhi_epi16(f0sub, f1sub));
+                    let vr0 = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(v0, rounding));
+                    let vr1 = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(v1, rounding));
+                    let e0 = _mm256_sub_epi16(
+                        _mm256_add_epi16(_mm256_packs_epi32(vr0, vr1), d0),
+                        s0,
+                    );
+                    sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(e0, e0));
+                }
+                tail!(i, width & !15);
+                widen_row!(sum32, signed);
+            }
+        }
+    } else if r0 || r1 {
+        let xq_on = if r0 { xq[0] } else { xq[1] };
+        let (flt, flt_stride) = if r0 { (flt0, flt0_stride) } else { (flt1, flt1_stride) };
+        if highbd {
+            let xq_active = _mm256_set1_epi32(xq_on);
+            let xq_inactive = _mm256_set1_epi32(-xq_on * (1 << SGRPROJ_RST_BITS));
+            for i in 0..height {
+                let dr = dat_off + i * dat_stride;
+                let sr = src_off + i * src_stride;
+                let fr = i * flt_stride;
+                let mut sum32 = _mm256_setzero_si256();
+                let (d16, s16, f16) = rows16_1f!(flt, dr, sr, fr);
+                for ((dc, sc), fc) in d16.zip(s16).zip(f16) {
+                    let s0 = _mm256_loadu_si256(sc);
+                    let d0 = _mm256_loadu_si256(dc);
+                    let d0l = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(d0));
+                    let d0h =
+                        _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(d0));
+                    let vl = _mm256_add_epi32(
+                        _mm256_mullo_epi32(half8!(fc, lo), xq_active),
+                        _mm256_mullo_epi32(d0l, xq_inactive),
+                    );
+                    let vh = _mm256_add_epi32(
+                        _mm256_mullo_epi32(half8!(fc, hi), xq_active),
+                        _mm256_mullo_epi32(d0h, xq_inactive),
+                    );
+                    let vrl = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(vl, rounding));
+                    let vrh = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(vh, rounding));
+                    let vr =
+                        _mm256_permute4x64_epi64::<0xd8>(_mm256_packs_epi32(vrl, vrh));
+                    let e0 =
+                        _mm256_sub_epi16(_mm256_add_epi16(vr, d0), s0);
+                    sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(e0, e0));
+                }
+                tail!(i, width & !15);
+                widen_row!(sum32, unsigned);
+            }
+        } else {
+            // pair_set_epi16(xq_active, -xq_active * (1 << SGRPROJ_RST_BITS)):
+            // madd over interleaved (flt, d) pairs gives xq*(flt - u) without
+            // forming u.
+            let xi = (-xq_on * (1 << SGRPROJ_RST_BITS)) & 0xffff;
+            let xq_coeff = _mm256_set1_epi32((xq_on & 0xffff) | ((xi as i32) << 16));
+            for i in 0..height {
+                let dr = dat_off + i * dat_stride;
+                let sr = src_off + i * src_stride;
+                let fr = i * flt_stride;
+                let mut sum32 = _mm256_setzero_si256();
+                let (d16, s16, f16) = rows16_1f!(flt, dr, sr, fr);
+                for ((dc, sc), fc) in d16.zip(s16).zip(f16) {
+                    let d0 = _mm256_loadu_si256(dc);
+                    let s0 = _mm256_loadu_si256(sc);
+                    let flt_16b = _mm256_permute4x64_epi64::<0xd8>(
+                        _mm256_packs_epi32(half8!(fc, lo), half8!(fc, hi)),
+                    );
+                    let v0 =
+                        _mm256_madd_epi16(xq_coeff, _mm256_unpacklo_epi16(flt_16b, d0));
+                    let v1 =
+                        _mm256_madd_epi16(xq_coeff, _mm256_unpackhi_epi16(flt_16b, d0));
+                    let vr0 = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(v0, rounding));
+                    let vr1 = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(v1, rounding));
+                    let e0 = _mm256_sub_epi16(
+                        _mm256_add_epi16(_mm256_packs_epi32(vr0, vr1), d0),
+                        s0,
+                    );
+                    sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(e0, e0));
+                }
+                tail!(i, width & !15);
+                widen_row!(sum32, signed);
+            }
+        }
+    } else {
+        // Neither filter: e = d - s, 16 px/iter (C's lowbd shape; the values
+        // fit i16 at every bd, so one body serves both — C splits 32px/iter
+        // for highbd, same arithmetic).
+        for i in 0..height {
+            let dr = dat_off + i * dat_stride;
+            let sr = src_off + i * src_stride;
+            let mut sum32 = _mm256_setzero_si256();
+            let (d16, s16) = (
+                dat[dr..dr + width].as_chunks::<16>().0.iter(),
+                src[sr..sr + width].as_chunks::<16>().0.iter(),
+            );
+            for (dc, sc) in d16.zip(s16) {
+                let d0 = _mm256_loadu_si256(dc);
+                let s0 = _mm256_loadu_si256(sc);
+                let diff = _mm256_sub_epi16(d0, s0);
+                sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(diff, diff));
+            }
+            tail!(i, width & !15);
+            if highbd {
+                widen_row!(sum32, unsigned);
+            } else {
+                widen_row!(sum32, signed);
+            }
+        }
+    }
+    let s128 = _mm_add_epi64(_mm256_castsi256_si128(sum64), _mm256_extracti128_si256::<1>(sum64));
+    let s64 = _mm_add_epi64(s128, _mm_unpackhi_epi64(s128, s128));
+    err + _mm_cvtsi128_si64(s64)
+}
+
+/// Vector tier for the non-AVX2 backends: lanes are adjacent `j`. See the
+/// dispatcher's doc for why the squares stay scalar. The `v3` arm is the
+/// hand-written [`pixel_proj_error_impl_v3`] above — `incant!` resolves the
+/// tier to that name, which is why `v3` is absent from this list.
+#[archmage::magetypes(define(i32x8), neon, wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn pixel_proj_error_impl(
     token: Token,
@@ -1221,6 +1555,193 @@ fn pixel_proj_error_impl(
 /// differs only in pointer types).
 #[allow(clippy::too_many_arguments)]
 pub fn calc_proj_params(
+    src: &[u16],
+    src_off: usize,
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    dat: &[u16],
+    dat_off: usize,
+    dat_stride: usize,
+    flt0: &[i32],
+    flt0_stride: usize,
+    flt1: &[i32],
+    flt1_stride: usize,
+    ep: usize,
+) -> ([[i64; 2]; 2], [i64; 2]) {
+    let _ = crate::dispatch::scalar_forced();
+    if width < 8 {
+        return calc_proj_params_impl_scalar(
+            archmage::ScalarToken,
+            src, src_off, width, height, src_stride, dat, dat_off, dat_stride, flt0, flt0_stride,
+            flt1, flt1_stride, ep,
+        );
+    }
+    archmage::incant!(
+        calc_proj_params_impl(
+            src, src_off, width, height, src_stride, dat, dat_off, dat_stride, flt0, flt0_stride,
+            flt1, flt1_stride, ep
+        ),
+        [v3, scalar]
+    )
+}
+
+/// x86-64/AVX2 body for [`calc_proj_params`] — raw intrinsics because the
+/// magetypes vector API has no 64-bit lanes at all, and the products here are
+/// genuinely 64-bit: `f = flt - u` reaches ~2^17, so `f1*f1` does NOT fit i32
+/// (unlike `pixel_proj_error`'s `e`, whose bound makes `vpmulld` exact). C's
+/// `av1_calc_proj_params_avx2` (pickrst_avx2.c) uses `_mm256_mul_epi32` —
+/// signed 32x32 -> 64 full products on the even lanes, plus the same on the
+/// `srli_epi64(_,32)`-shifted odd lanes — and that is what this does.
+///
+/// # Bit-exactness
+///
+/// `mul_epi32` sign-extends each lane's low i32 and produces the full i64
+/// product — no input-range reasoning at all, exact for any i32 `f`/`s`. The
+/// even/odd split plus the i64-lane accumulation reorder the scalar tier's
+/// `hh += f1*f1` adds; integer addition is associative, so each accumulator is
+/// bit-identical. `hh[0][1]`, `hh[1][0]` and the `/size` division are kept in
+/// the scalar epilogue, matching C's unpack-and-store order.
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn calc_proj_params_impl_v3(
+    _t: archmage::X64V3Token,
+    src: &[u16],
+    src_off: usize,
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    dat: &[u16],
+    dat_off: usize,
+    dat_stride: usize,
+    flt0: &[i32],
+    flt0_stride: usize,
+    flt1: &[i32],
+    flt1_stride: usize,
+    ep: usize,
+) -> ([[i64; 2]; 2], [i64; 2]) {
+    use archmage::intrinsics::x86_64::*;
+    let (rads, _) = SGR_PARAMS[ep];
+    let size = (width * height) as i64;
+    let (r0, r1) = (rads[0] > 0, rads[1] > 0);
+    let vw = width & !7;
+    let mut h00 = _mm256_setzero_si256();
+    let mut h01 = _mm256_setzero_si256();
+    let mut h11 = _mm256_setzero_si256();
+    let mut c0 = _mm256_setzero_si256();
+    let mut c1 = _mm256_setzero_si256();
+    let mut hh = [[0i64; 2]; 2];
+    let mut cc = [0i64; 2];
+    for i in 0..height {
+        let dr = dat_off + i * dat_stride;
+        let sr = src_off + i * src_stride;
+        let f0r = i * flt0_stride;
+        let f1r = i * flt1_stride;
+        let mut j = 0usize;
+        while j < vw {
+            // Safe load wrappers take `&[T; N]` — the `j..j+8` windows are
+            // inside the caller's row slices, so the length checks cannot fail.
+            let dw: &[u16; 8] = dat[dr + j..dr + j + 8].try_into().unwrap();
+            let sw: &[u16; 8] = src[sr + j..sr + j + 8].try_into().unwrap();
+            let d = _mm256_slli_epi32::<{ SGRPROJ_RST_BITS }>(_mm256_cvtepu16_epi32(
+                _mm_loadu_si128(dw),
+            ));
+            let s = _mm256_sub_epi32(
+                _mm256_slli_epi32::<{ SGRPROJ_RST_BITS }>(_mm256_cvtepu16_epi32(
+                    _mm_loadu_si128(sw),
+                )),
+                d,
+            );
+            // Signed low-i32 x low-i32 -> i64 per 64-bit lane, even lanes plus
+            // the odd lanes shifted down — the scalar `f1 as i64 * f2 as i64`,
+            // exactly.
+            macro_rules! prod {
+                ($a:expr, $b:expr) => {
+                    _mm256_add_epi64(
+                        _mm256_mul_epi32($a, $b),
+                        _mm256_mul_epi32(
+                            _mm256_srli_epi64::<32>($a),
+                            _mm256_srli_epi64::<32>($b),
+                        ),
+                    )
+                };
+            }
+            if r0 {
+                let f: &[i32; 8] = flt0[f0r + j..f0r + j + 8].try_into().unwrap();
+                let f1 = _mm256_sub_epi32(_mm256_loadu_si256(f), d);
+                h00 = _mm256_add_epi64(h00, prod!(f1, f1));
+                c0 = _mm256_add_epi64(c0, prod!(f1, s));
+                if r1 {
+                    let f: &[i32; 8] = flt1[f1r + j..f1r + j + 8].try_into().unwrap();
+                    let f2 = _mm256_sub_epi32(_mm256_loadu_si256(f), d);
+                    h11 = _mm256_add_epi64(h11, prod!(f2, f2));
+                    h01 = _mm256_add_epi64(h01, prod!(f1, f2));
+                    c1 = _mm256_add_epi64(c1, prod!(f2, s));
+                }
+            } else if r1 {
+                let f: &[i32; 8] = flt1[f1r + j..f1r + j + 8].try_into().unwrap();
+                let f2 = _mm256_sub_epi32(_mm256_loadu_si256(f), d);
+                h11 = _mm256_add_epi64(h11, prod!(f2, f2));
+                c1 = _mm256_add_epi64(c1, prod!(f2, s));
+            }
+            j += 8;
+        }
+        while j < width {
+            let u = (dat[dr + j] as i32) << SGRPROJ_RST_BITS;
+            let sv = ((src[sr + j] as i32) << SGRPROJ_RST_BITS) - u;
+            if r0 && r1 {
+                let f1 = flt0[f0r + j] - u;
+                let f2 = flt1[f1r + j] - u;
+                hh[0][0] += f1 as i64 * f1 as i64;
+                hh[1][1] += f2 as i64 * f2 as i64;
+                hh[0][1] += f1 as i64 * f2 as i64;
+                cc[0] += f1 as i64 * sv as i64;
+                cc[1] += f2 as i64 * sv as i64;
+            } else if r0 {
+                let f1 = flt0[f0r + j] - u;
+                hh[0][0] += f1 as i64 * f1 as i64;
+                cc[0] += f1 as i64 * sv as i64;
+            } else if r1 {
+                let f2 = flt1[f1r + j] - u;
+                hh[1][1] += f2 as i64 * f2 as i64;
+                cc[1] += f2 as i64 * sv as i64;
+            }
+            j += 1;
+        }
+    }
+    let fold = |v: core::arch::x86_64::__m256i| -> i64 {
+        let s128 = _mm_add_epi64(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
+        let s64 = _mm_add_epi64(s128, _mm_unpackhi_epi64(s128, s128));
+        _mm_cvtsi128_si64(s64)
+    };
+    hh[0][0] += fold(h00);
+    hh[0][1] += fold(h01);
+    hh[1][1] += fold(h11);
+    cc[0] += fold(c0);
+    cc[1] += fold(c1);
+    if r0 && r1 {
+        hh[0][0] /= size;
+        hh[0][1] /= size;
+        hh[1][1] /= size;
+        hh[1][0] = hh[0][1];
+        cc[0] /= size;
+        cc[1] /= size;
+    } else if r0 {
+        hh[0][0] /= size;
+        cc[0] /= size;
+    } else if r1 {
+        hh[1][1] /= size;
+        cc[1] /= size;
+    }
+    (hh, cc)
+}
+
+/// Scalar tier (and non-x86 fallback) for [`calc_proj_params`] — the verbatim
+/// C transcription.
+#[allow(clippy::too_many_arguments)]
+fn calc_proj_params_impl_scalar(
+    _t: archmage::ScalarToken,
     src: &[u16],
     src_off: usize,
     width: usize,

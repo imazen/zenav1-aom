@@ -45,7 +45,9 @@ pub use trellis_cost::{
     br_cost_with_diff, coeff_cost_eob, coeff_cost_general, two_coeff_cost_simple,
 };
 mod optimize;
-pub use optimize::{optimize_txb, optimize_txb_qm, OptimizeResult};
+pub use optimize::{
+    optimize_txb, optimize_txb_qm, optimize_txb_qm_scratch, optimize_txb_scratch, OptimizeResult,
+};
 mod entropy_ctx;
 pub use entropy_ctx::{get_txb_ctx, txb_entropy_context};
 
@@ -110,6 +112,7 @@ const TX_SIZE_HIGH: [usize; 19] = [
 ];
 
 /// `av1_get_adjusted_tx_size` (av1_common_int.h): 64-point sizes cap to 32.
+#[inline]
 pub fn adjusted_tx_size(tx_size: usize) -> usize {
     match tx_size {
         4 => 3,   // TX_64X64 -> TX_32X32
@@ -122,16 +125,19 @@ pub fn adjusted_tx_size(tx_size: usize) -> usize {
 }
 
 /// `get_txb_wide`: adjusted transform-block width.
+#[inline]
 pub fn txb_wide(tx_size: usize) -> usize {
     TX_SIZE_WIDE[adjusted_tx_size(tx_size)]
 }
 
 /// `get_txb_high`: adjusted transform-block height.
+#[inline]
 pub fn txb_high(tx_size: usize) -> usize {
     TX_SIZE_HIGH[adjusted_tx_size(tx_size)]
 }
 
 /// `get_txb_bhl`: log2 of the adjusted transform-block height.
+#[inline]
 pub fn txb_bhl(tx_size: usize) -> u32 {
     TX_SIZE_HIGH[adjusted_tx_size(tx_size)].trailing_zeros()
 }
@@ -356,6 +362,7 @@ pub(crate) fn get_lower_levels_ctx(
 }
 
 /// `get_lower_levels_ctx_eob`.
+#[inline]
 pub(crate) fn get_lower_levels_ctx_eob(bhl: u32, width: usize, scan_idx: usize) -> i32 {
     if scan_idx == 0 {
         return 0;
@@ -371,6 +378,7 @@ pub(crate) fn get_lower_levels_ctx_eob(bhl: u32, width: usize, scan_idx: usize) 
 
 /// `get_lower_levels_ctx_general`.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn get_lower_levels_ctx_general(
     is_last: bool,
     scan_idx: usize,
@@ -388,6 +396,7 @@ pub(crate) fn get_lower_levels_ctx_general(
 }
 
 /// `get_padded_idx` re-export for the optimize module.
+#[inline]
 pub(crate) fn padded_idx(idx: usize, bhl: u32) -> usize {
     get_padded_idx(idx, bhl)
 }
@@ -396,6 +405,7 @@ pub(crate) fn padded_idx(idx: usize, bhl: u32) -> usize {
 /// coefficient of a transform block. `scan` is the (tx_size, tx_type) scan
 /// order (transposed positions); writes `coeff_contexts[scan[i]]` for
 /// `i < eob` and touches nothing else.
+#[inline]
 pub fn get_nz_map_contexts(
     levels: &[u8],
     scan: &[i16],
@@ -436,6 +446,7 @@ const EOB_TO_POS_LARGE: [i8; 17] = [
 ];
 
 /// `av1_get_eob_pos_token`: EOB → (group token, extra offset within group).
+#[inline]
 pub fn get_eob_pos_token(eob: i32) -> (i32, i32) {
     let t = if eob < 33 {
         EOB_TO_POS_SMALL[eob as usize] as i32
