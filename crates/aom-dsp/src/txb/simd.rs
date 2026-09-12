@@ -31,7 +31,7 @@ pub(crate) fn txb_init_levels_impl_scalar(
     crate::txb::txb_init_levels_scalar(coeff, width, height, levels)
 }
 
-#[magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+#[magetypes(define(i32x8), neon, wasm128, -scalar)]
 pub(crate) fn txb_init_levels_impl(
     token: Token,
     coeff: &[i32],
@@ -93,6 +93,138 @@ pub(crate) fn txb_init_levels_impl(
             out[c * 8..c * 8 + 8].copy_from_slice(&bytes);
         }
         out[height..height + TX_PAD_HOR].fill(0);
+    }
+}
+
+// ---- av1_txb_init_levels_avx2 (encodetxb_avx2.c:24) -----------------------
+//
+// Hand-ported v3 tier: C's AVX2 works in i16/i8 lanes — 2 loads + packs_epi32
+// + abs_epi16 + packs_epi16 + a lane-unscramble per 32 coefficients — where
+// the magetypes i32x8 kernel spends ~8 ops per 8. Bit-identical to the scalar
+// port on the FULL i32 domain: the one semantic difference from C-AVX2 itself
+// is `min_epu16(abs, 127)` — C lets `packs_epi16` saturate, which maps the
+// `packs_epi32(i32::MIN) == -32768` lane to -128 (0x80), while the port's
+// contract is `unsigned_abs().min(127) == 127`. Everything reachable
+// (|coeff| <= 32767) is identical to both. Non-{4,8,16,32} heights or narrow
+// widths fall to the scalar transcription (the generic kernel asserted
+// `height % 8 == 0`; the txb-adjusted dims are always in the set, so this is
+// defence, not a reachability change).
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+pub(crate) fn txb_init_levels_impl_v3(
+    _t: archmage::X64V3Token,
+    coeff: &[i32],
+    width: usize,
+    height: usize,
+    levels: &mut [u8],
+) {
+    use archmage::intrinsics::x86_64::*;
+
+    if width == 0
+        || (height == 4 && width % 4 != 0)
+        || (height == 8 && width % 4 != 0)
+        || (height == 16 && width % 2 != 0)
+        || !matches!(height, 4 | 8 | 16 | 32)
+    {
+        crate::txb::txb_init_levels_scalar(coeff, width, height, levels);
+        return;
+    }
+
+    let stride = height + TX_PAD_HOR;
+    let tail = stride * width;
+    levels[tail..tail + TX_PAD_BOTTOM * stride + TX_PAD_END].fill(0);
+
+    let zero = _mm256_setzero_si256();
+    let cap127 = _mm256_set1_epi16(127);
+    let load = |cf: &[i32]| -> __m256i {
+        let a: &[i32; 8] = cf[..8].try_into().unwrap();
+        _mm256_loadu_si256(a)
+    };
+    // abs_epi16 then min_epu16(127): packs_epi32 has already saturated the
+    // i32 input to i16, and the unsigned min also maps the -32768 lane
+    // (i32::MIN) to 127 — the scalar port's exact result on every input.
+    let abs127_16 = |v: __m256i| _mm256_min_epu16(_mm256_abs_epi16(v), cap127);
+
+    let mut cf = 0usize;
+    let mut ls = 0usize;
+    match height {
+        8 => {
+            // 32 coeffs = 4 columns of 8; res holds the four 8-byte column
+            // bodies in order, and each column's pad is a 4B zero store.
+            for _ in 0..width / 4 {
+                let ab = _mm256_packs_epi32(load(&coeff[cf..]), load(&coeff[cf + 8..]));
+                let cd = _mm256_packs_epi32(load(&coeff[cf + 16..]), load(&coeff[cf + 24..]));
+                let v = _mm256_packs_epi16(abs127_16(ab), abs127_16(cd));
+                let r = _mm256_shuffle_epi32(_mm256_permute4x64_epi64(v, 0xd8), 0xd8);
+                let r0 = _mm256_castsi256_si128(r);
+                let r1 = _mm256_extracti128_si256(r, 1);
+                let o0: &mut [u8; 8] = (&mut levels[ls..ls + 8]).try_into().unwrap();
+                _mm_storeu_si64(o0, r0);
+                let o1: &mut [u8; 8] =
+                    (&mut levels[ls + stride..ls + stride + 8]).try_into().unwrap();
+                _mm_storeu_si64(o1, _mm_srli_si128(r0, 8));
+                let o2: &mut [u8; 8] =
+                    (&mut levels[ls + 2 * stride..ls + 2 * stride + 8]).try_into().unwrap();
+                _mm_storeu_si64(o2, r1);
+                let o3: &mut [u8; 8] =
+                    (&mut levels[ls + 3 * stride..ls + 3 * stride + 8]).try_into().unwrap();
+                _mm_storeu_si64(o3, _mm_srli_si128(r1, 8));
+                levels[ls + 8..ls + 12].fill(0);
+                levels[ls + stride + 8..ls + stride + 12].fill(0);
+                levels[ls + 2 * stride + 8..ls + 2 * stride + 12].fill(0);
+                levels[ls + 3 * stride + 8..ls + 3 * stride + 12].fill(0);
+                cf += 32;
+                ls += 4 * stride;
+            }
+        }
+        4 => {
+            // 16 coeffs = 4 columns; the pad zeros are interleaved by
+            // packs_epi16 against a zero vector, then both shuffles restore
+            // column order — one 32B store covers 4 columns (stride 8).
+            for _ in 0..width / 4 {
+                let p = _mm256_packs_epi32(load(&coeff[cf..]), load(&coeff[cf + 8..]));
+                let v = _mm256_packs_epi16(abs127_16(p), zero);
+                let r = _mm256_permute4x64_epi64(_mm256_shuffle_epi32(v, 0xd8), 0xd8);
+                let out: &mut [u8; 32] = (&mut levels[ls..ls + 32]).try_into().unwrap();
+                _mm256_storeu_si256(out, r);
+                cf += 16;
+                ls += 4 * stride;
+            }
+        }
+
+        16 => {
+            // 32 coeffs = 2 columns of 16; res = [col | col].
+            for _ in 0..width / 2 {
+                let ab = _mm256_packs_epi32(load(&coeff[cf..]), load(&coeff[cf + 8..]));
+                let cd = _mm256_packs_epi32(load(&coeff[cf + 16..]), load(&coeff[cf + 24..]));
+                let v = _mm256_packs_epi16(abs127_16(ab), abs127_16(cd));
+                let r = _mm256_shuffle_epi32(_mm256_permute4x64_epi64(v, 0xd8), 0xd8);
+                let o0: &mut [u8; 16] = (&mut levels[ls..ls + 16]).try_into().unwrap();
+                _mm_storeu_si128(o0, _mm256_castsi256_si128(r));
+                let o1: &mut [u8; 16] =
+                    (&mut levels[ls + stride..ls + stride + 16]).try_into().unwrap();
+                _mm_storeu_si128(o1, _mm256_extracti128_si256(r, 1));
+                levels[ls + 16..ls + 20].fill(0);
+                levels[ls + stride + 16..ls + stride + 20].fill(0);
+                cf += 32;
+                ls += 2 * stride;
+            }
+        }
+        _ => {
+            // height == 32 (txb dims never reach 64 — `adjusted_tx_size`
+            // caps them): 32 coeffs = ONE column; res is the whole body.
+            for _ in 0..width {
+                let ab = _mm256_packs_epi32(load(&coeff[cf..]), load(&coeff[cf + 8..]));
+                let cd = _mm256_packs_epi32(load(&coeff[cf + 16..]), load(&coeff[cf + 24..]));
+                let v = _mm256_packs_epi16(abs127_16(ab), abs127_16(cd));
+                let r = _mm256_shuffle_epi32(_mm256_permute4x64_epi64(v, 0xd8), 0xd8);
+                let out: &mut [u8; 32] = (&mut levels[ls..ls + 32]).try_into().unwrap();
+                _mm256_storeu_si256(out, r);
+                levels[ls + 32..ls + 36].fill(0);
+                cf += 32;
+                ls += stride;
+            }
+        }
     }
 }
 
