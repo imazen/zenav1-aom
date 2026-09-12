@@ -521,6 +521,46 @@ pub(crate) fn try_inv_txfm2d_rect48_fused(
     bd: i32,
 ) -> bool {
     let _ = crate::dispatch::scalar_forced();
+    // The i16 whole-block kernel — C's `lowbd_inv_txfm2d_add_4x8/8x4` shape —
+    // is exact under its per-(row, col)-kernel input bound and the bd8 clamp
+    // constants; out-of-range or unmapped types take the i32 fused path
+    // below, which is always correct.
+    if row_clamp == 16
+        && col_clamp == 16
+        && sr_row.iter().all(|&b| b == 16)
+        && sr_col.iter().all(|&b| b == 16)
+    {
+        let pick = |t: i32| -> Option<(InvR48, usize)> {
+            match t {
+                0 => Some((InvR48::Dct, 4)),
+                1 => Some((InvR48::Dct, 8)),
+                5 => Some((InvR48::Adst, 4)),
+                6 => Some((InvR48::Adst, 8)),
+                8 => Some((InvR48::Idtx, 4)),
+                9 => Some((InvR48::Idtx, 8)),
+                _ => None,
+            }
+        };
+        if let (Some((kr, kn_r)), Some((kc, kn_c))) =
+            (pick(txfm_type_row), pick(txfm_type_col))
+        {
+            if kn_r == col_n && kn_c == row_n {
+                let bound = if col_n == 4 {
+                    INV48_I16_BOUND[kr as usize][kc as usize]
+                } else {
+                    INV84_I16_BOUND[kr as usize][kc as usize]
+                };
+                if incant!(
+                    inv_rect48_fused_i16(
+                        kr, kc, input, output, stride, col_n, row_n, bound, ud_flip, lr_flip, bd
+                    ),
+                    [v3, scalar]
+                ) {
+                    return true;
+                }
+            }
+        }
+    }
     let (Some(kr), Some(kc)) = (inv_kernel(txfm_type_row), inv_kernel(txfm_type_col)) else {
         return false;
     };
@@ -534,6 +574,471 @@ pub(crate) fn try_inv_txfm2d_rect48_fused(
         ),
         [v3, scalar]
     )
+}
+
+// ---- fused 4x8 / 8x4 inverse on i16 lanes: C's lowbd_inv_txfm2d_add_4x8/8x4 ----
+//
+// [`inv_rect48_fused`] keeps the block in i32x8 lanes; C's lowbd kernels never
+// leave i16: `packs_epi32` load (which IS `clamp_buf(16)` once the bound keeps
+// inputs inside i16), `round_shift_ssse3` as `mulhrs(NEW_INV_SQRT2 * 8)` — the
+// NEW_INV_SQRT2 rect scaling BEFORE the row kernel, mirroring the driver's
+// scale-then-clamp order — then the w8/w4 `lowbd_txfm_all_1d` kernels on the
+// `btf_16_sse2`/`btf_16_4p_sse2` madd butterflies, `transpose_16bit_8x4` /
+// `transpose_16bit_4x8`, `round_shift_16bit(4)` as `mulhrs(2048)`, clip-add.
+//
+// `lr_flip` is C's `flip_buf_sse2`: a REGISTER-order reversal before the
+// transpose (`temp[i] = buf[col_n - 1 - i]`), which is exactly the scalar's
+// `buf[r * col_n + (col_n - 1 - c)]` gather — the same lane-permutation the
+// 8x8 kernel performs post-transpose, done here in C's order.
+//
+// `INV_SHIFT` is `[0, -4]` for both sizes: no row shift, column `>>4`.
+//
+// # The gate
+//
+// Exactness holds while every i16 `packs`/`adds`/`subs`/`mulhrs` produces the
+// same value the port scalar's i32/i64 dataflow does — the scalar's stage
+// `clamp_value(_, 16)` IS i16 saturation, so the only divergences are where the
+// scalar is UNclamped (the `iadst4` i64 chain, `iidentity8`'s `2 * v`, the
+// unclamped terminal outputs feeding `>>4`) or where `packs` on the raw input
+// differs from scale-then-clamp (kept impossible by bounding `|input|` below
+// i16 range). Exhaustive sign-vertex + dense random sweeps of both pipelines
+// give per-(row, col)-kernel raw-input bounds:
+//
+// ```text
+// 4x8 (row 4-pt, col 8-pt):        col:   Dct8   Adst8   Idtx8
+//   row Dct4                             11384    7550    8519
+//   row Adst4                            11452    7532    8669
+//   row Idtx4                            12786    6426   16387
+//
+// 8x4 (row 8-pt, col 4-pt):        col:   Dct4   Adst4   Idtx4
+//   row Dct8                              6204    3282    6204
+//   row Adst8                             6426    3399    6426
+//   row Idtx8                            16390    8670   16388
+// ```
+//
+// Every bound sits below the i16 range, so `packs` on the raw input is the
+// identity and the scale-then-clamp / clamp-then-scale orderings coincide.
+// Out-of-range inputs decline to the i32 fused path, which is always correct.
+
+/// The three kernel types shared by both axes (length resolved by axis).
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug)]
+enum InvR48 {
+    Dct,
+    Adst,
+    Idtx,
+}
+
+/// `INV48_I16_BOUND[row][col]` — 4x8: row kernel 4-pt, col kernel 8-pt.
+#[cfg(target_arch = "x86_64")]
+const INV48_I16_BOUND: [[i32; 3]; 3] = [
+    [11384, 7550, 8519],
+    [11452, 7532, 8669],
+    [12786, 6426, 16387],
+];
+
+/// `INV84_I16_BOUND[row][col]` — 8x4: row kernel 8-pt, col kernel 4-pt.
+#[cfg(target_arch = "x86_64")]
+const INV84_I16_BOUND: [[i32; 3]; 3] = [
+    [6204, 3282, 6204],
+    [6426, 3399, 6426],
+    [16390, 8670, 16388],
+];
+
+/// The `incant!` fallback: decline to the i32 fused path.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn inv_rect48_fused_i16_scalar(
+    _t: archmage::ScalarToken,
+    _kr: InvR48,
+    _kc: InvR48,
+    _input: &[i32],
+    _output: &mut [u16],
+    _stride: usize,
+    _col_n: usize,
+    _row_n: usize,
+    _bound: i32,
+    _ud_flip: bool,
+    _lr_flip: bool,
+    _bd: i32,
+) -> bool {
+    false
+}
+
+/// The i16 fused 4x8 / 8x4 inverse transform — C's `lowbd_inv_txfm2d_add_4x8`
+/// / `_add_8x4` shape adapted to the port's u16 output.
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i32x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn inv_rect48_fused_i16(
+    t: Token,
+    kr: InvR48,
+    kc: InvR48,
+    input: &[i32],
+    output: &mut [u16],
+    stride: usize,
+    col_n: usize,
+    row_n: usize,
+    bound: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+    bd: i32,
+) -> bool {
+    use archmage::intrinsics::x86_64::*;
+    let _ = t;
+    let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
+    if !((col_n == 4 && row_n == 8) || (col_n == 8 && row_n == 4)) {
+        return false;
+    }
+
+    let pair = |a: i32, b: i32| -> __m128i {
+        _mm_set1_epi32((a as u16 as u32 | ((b as u16 as u32) << 16)) as i32)
+    };
+    // `btf_16_sse2`: both halves, for the 8-live-lane kernels.
+    let btf = |w0: __m128i, w1: __m128i, i0: __m128i, i1: __m128i| -> (__m128i, __m128i) {
+        let rnd = _mm_set1_epi32(1 << (cos_bit - 1));
+        let cnt = _mm_cvtsi32_si128(cos_bit);
+        let t0 = _mm_unpacklo_epi16(i0, i1);
+        let t1 = _mm_unpackhi_epi16(i0, i1);
+        let c0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w0), rnd), cnt);
+        let c1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w0), rnd), cnt);
+        let d0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w1), rnd), cnt);
+        let d1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w1), rnd), cnt);
+        (_mm_packs_epi32(c0, c1), _mm_packs_epi32(d0, d1))
+    };
+    // `btf_16_4p_sse2`: low half only, for the 4-live-lane kernels.
+    let btf4p = |w0: __m128i, w1: __m128i, i0: __m128i, i1: __m128i| -> (__m128i, __m128i) {
+        let rnd = _mm_set1_epi32(1 << (cos_bit - 1));
+        let cnt = _mm_cvtsi32_si128(cos_bit);
+        let t0 = _mm_unpacklo_epi16(i0, i1);
+        let u0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w0), rnd), cnt);
+        let v0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w1), rnd), cnt);
+        (_mm_packs_epi32(u0, u0), _mm_packs_epi32(v0, v0))
+    };
+    let adds_subs = |a: __m128i, b: __m128i| -> (__m128i, __m128i) {
+        (_mm_adds_epi16(a, b), _mm_subs_epi16(a, b))
+    };
+
+    // ---- the w8 (8-live-lane) 4-point kernels: idct4_sse2 / iadst4_sse2 ----
+    let idct4w = |i: &[__m128i; 4]| -> [__m128i; 4] {
+        let c = crate::transform::cospi::cospi_arr(cos_bit);
+        let x = [i[0], i[2], i[1], i[3]];
+        let (x0, x1) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x[0], x[1]);
+        let (x2, x3) = btf(pair(c[48], -c[16]), pair(c[16], c[48]), x[2], x[3]);
+        [
+            _mm_adds_epi16(x0, x3),
+            _mm_adds_epi16(x1, x2),
+            _mm_subs_epi16(x1, x2),
+            _mm_subs_epi16(x0, x3),
+        ]
+    };
+    let iadst4w = |i: &[__m128i; 4]| -> [__m128i; 4] {
+        let s = crate::transform::cospi::sinpi_arr(cos_bit);
+        let p01_p04 = pair(s[1], s[4]);
+        let p02_m01 = pair(s[2], -s[1]);
+        let p03_p02 = pair(s[3], s[2]);
+        let p03_m04 = pair(s[3], -s[4]);
+        let p03_m03 = pair(s[3], -s[3]);
+        let p00_p03 = pair(0, s[3]);
+        let p04_p02 = pair(s[4], s[2]);
+        let m03_m01 = pair(-s[3], -s[1]);
+        let u0 = _mm_unpacklo_epi16(i[0], i[2]);
+        let u1 = _mm_unpackhi_epi16(i[0], i[2]);
+        let u2 = _mm_unpacklo_epi16(i[1], i[3]);
+        let u3 = _mm_unpackhi_epi16(i[1], i[3]);
+        let x1 = [
+            _mm_madd_epi16(u0, p01_p04),
+            _mm_madd_epi16(u1, p01_p04),
+            _mm_madd_epi16(u0, p02_m01),
+            _mm_madd_epi16(u1, p02_m01),
+            _mm_madd_epi16(u2, p03_p02),
+            _mm_madd_epi16(u3, p03_p02),
+            _mm_madd_epi16(u2, p03_m04),
+            _mm_madd_epi16(u3, p03_m04),
+            _mm_madd_epi16(u0, p03_m03),
+            _mm_madd_epi16(u1, p03_m03),
+            _mm_madd_epi16(u2, p00_p03),
+            _mm_madd_epi16(u3, p00_p03),
+            _mm_madd_epi16(u0, p04_p02),
+            _mm_madd_epi16(u1, p04_p02),
+            _mm_madd_epi16(u2, m03_m01),
+            _mm_madd_epi16(u3, m03_m01),
+        ];
+        let x2 = [
+            _mm_add_epi32(x1[0], x1[4]),
+            _mm_add_epi32(x1[1], x1[5]),
+            _mm_add_epi32(x1[2], x1[6]),
+            _mm_add_epi32(x1[3], x1[7]),
+            _mm_add_epi32(x1[8], x1[10]),
+            _mm_add_epi32(x1[9], x1[11]),
+            _mm_add_epi32(x1[12], x1[14]),
+            _mm_add_epi32(x1[13], x1[15]),
+        ];
+        let rnd = _mm_set1_epi32(1 << (cos_bit - 1));
+        let cnt = _mm_cvtsi32_si128(cos_bit);
+        let mut out = [_mm_setzero_si128(); 4];
+        for (i, o) in out.iter_mut().enumerate() {
+            let o0 = _mm_sra_epi32(_mm_add_epi32(x2[2 * i], rnd), cnt);
+            let o1 = _mm_sra_epi32(_mm_add_epi32(x2[2 * i + 1], rnd), cnt);
+            *o = _mm_packs_epi32(o0, o1);
+        }
+        out
+    };
+    // `iidentity4_ssse3`: `adds(mulhrs(v, frac << 3), v)`, frac = NSQ2 - 4096.
+    let iidtx4w = |i: &[__m128i; 4]| -> [__m128i; 4] {
+        let sc = _mm_set1_epi16(
+            ((crate::transform::cospi::NEW_SQRT2 - (1 << crate::transform::cospi::NEW_SQRT2_BITS))
+                << (15 - crate::transform::cospi::NEW_SQRT2_BITS)) as i16,
+        );
+        [
+            _mm_adds_epi16(_mm_mulhrs_epi16(i[0], sc), i[0]),
+            _mm_adds_epi16(_mm_mulhrs_epi16(i[1], sc), i[1]),
+            _mm_adds_epi16(_mm_mulhrs_epi16(i[2], sc), i[2]),
+            _mm_adds_epi16(_mm_mulhrs_epi16(i[3], sc), i[3]),
+        ]
+    };
+
+    // ---- the w4 (4-live-lane) 8-point kernels: idct8_w4 / iadst8_w4 ----
+    let idct8n = |i: &[__m128i; 8]| -> [__m128i; 8] {
+        let c = crate::transform::cospi::cospi_arr(cos_bit);
+        let mut x = [i[0], i[4], i[2], i[6], i[1], i[5], i[3], i[7]];
+        let (x4, x7) = btf4p(pair(c[56], -c[8]), pair(c[8], c[56]), x[4], x[7]);
+        x[4] = x4;
+        x[7] = x7;
+        let (x5, x6) = btf4p(pair(c[24], -c[40]), pair(c[40], c[24]), x[5], x[6]);
+        x[5] = x5;
+        x[6] = x6;
+        let (x0, x1) = btf4p(pair(c[32], c[32]), pair(c[32], -c[32]), x[0], x[1]);
+        x[0] = x0;
+        x[1] = x1;
+        let (x2, x3) = btf4p(pair(c[48], -c[16]), pair(c[16], c[48]), x[2], x[3]);
+        x[2] = x2;
+        x[3] = x3;
+        let (x4, x5) = adds_subs(x[4], x[5]);
+        x[4] = x4;
+        x[5] = x5;
+        let (x7, x6) = (_mm_adds_epi16(x[7], x[6]), _mm_subs_epi16(x[7], x[6]));
+        x[7] = x7;
+        x[6] = x6;
+        let (x0, x3) = adds_subs(x[0], x[3]);
+        let (x1, x2) = adds_subs(x[1], x[2]);
+        x[0] = x0;
+        x[3] = x3;
+        x[1] = x1;
+        x[2] = x2;
+        let (x5, x6) = btf4p(pair(-c[32], c[32]), pair(c[32], c[32]), x[5], x[6]);
+        x[5] = x5;
+        x[6] = x6;
+        [
+            _mm_adds_epi16(x[0], x[7]),
+            _mm_adds_epi16(x[1], x[6]),
+            _mm_adds_epi16(x[2], x[5]),
+            _mm_adds_epi16(x[3], x[4]),
+            _mm_subs_epi16(x[3], x[4]),
+            _mm_subs_epi16(x[2], x[5]),
+            _mm_subs_epi16(x[1], x[6]),
+            _mm_subs_epi16(x[0], x[7]),
+        ]
+    };
+    let iadst8n = |i: &[__m128i; 8]| -> [__m128i; 8] {
+        let c = crate::transform::cospi::cospi_arr(cos_bit);
+        let mut x = [i[7], i[0], i[5], i[2], i[3], i[4], i[1], i[6]];
+        let (x0, x1) = btf4p(pair(c[4], c[60]), pair(c[60], -c[4]), x[0], x[1]);
+        x[0] = x0;
+        x[1] = x1;
+        let (x2, x3) = btf4p(pair(c[20], c[44]), pair(c[44], -c[20]), x[2], x[3]);
+        x[2] = x2;
+        x[3] = x3;
+        let (x4, x5) = btf4p(pair(c[36], c[28]), pair(c[28], -c[36]), x[4], x[5]);
+        x[4] = x4;
+        x[5] = x5;
+        let (x6, x7) = btf4p(pair(c[52], c[12]), pair(c[12], -c[52]), x[6], x[7]);
+        x[6] = x6;
+        x[7] = x7;
+        for (a, b) in [(0usize, 4usize), (1, 5), (2, 6), (3, 7)] {
+            let (s, d) = adds_subs(x[a], x[b]);
+            x[a] = s;
+            x[b] = d;
+        }
+        let (x4, x5) = btf4p(pair(c[16], c[48]), pair(c[48], -c[16]), x[4], x[5]);
+        x[4] = x4;
+        x[5] = x5;
+        let (x6, x7) = btf4p(pair(-c[48], c[16]), pair(c[16], c[48]), x[6], x[7]);
+        x[6] = x6;
+        x[7] = x7;
+        for (a, b) in [(0usize, 2usize), (1, 3), (4, 6), (5, 7)] {
+            let (s, d) = adds_subs(x[a], x[b]);
+            x[a] = s;
+            x[b] = d;
+        }
+        let (x2, x3) = btf4p(pair(c[32], c[32]), pair(c[32], -c[32]), x[2], x[3]);
+        x[2] = x2;
+        x[3] = x3;
+        let (x6, x7) = btf4p(pair(c[32], c[32]), pair(c[32], -c[32]), x[6], x[7]);
+        x[6] = x6;
+        x[7] = x7;
+        let z = _mm_setzero_si128();
+        [
+            x[0],
+            _mm_subs_epi16(z, x[4]),
+            x[6],
+            _mm_subs_epi16(z, x[2]),
+            x[3],
+            _mm_subs_epi16(z, x[7]),
+            x[5],
+            _mm_subs_epi16(z, x[1]),
+        ]
+    };
+    // `iidentity8_sse2`: `adds(v, v)` is the scalar's `2 * v`.
+    let iidtx8 = |i: &[__m128i; 8]| -> [__m128i; 8] {
+        [
+            _mm_adds_epi16(i[0], i[0]),
+            _mm_adds_epi16(i[1], i[1]),
+            _mm_adds_epi16(i[2], i[2]),
+            _mm_adds_epi16(i[3], i[3]),
+            _mm_adds_epi16(i[4], i[4]),
+            _mm_adds_epi16(i[5], i[5]),
+            _mm_adds_epi16(i[6], i[6]),
+            _mm_adds_epi16(i[7], i[7]),
+        ]
+    };
+
+    let run4 = |k: InvR48, i: &[__m128i; 4]| -> [__m128i; 4] {
+        match k {
+            InvR48::Dct => idct4w(i),
+            InvR48::Adst => iadst4w(i),
+            InvR48::Idtx => iidtx4w(i),
+        }
+    };
+    let run8 = |k: InvR48, i: &[__m128i; 8]| -> [__m128i; 8] {
+        match k {
+            InvR48::Dct => idct8n(i),
+            InvR48::Adst => iadst8n(i),
+            InvR48::Idtx => iidtx8(i),
+        }
+    };
+
+    // Load + gate: `packs` is `clamp_buf(16)` under the bound; the scale is
+    // `round_shift_ssse3` = `mulhrs(NEW_INV_SQRT2 * 8)`. The bound folds into
+    // the loads exactly as in `inv_8x8_fused_i16`.
+    let scale = _mm_set1_epi16((crate::transform::cospi::NEW_INV_SQRT2 * 8) as i16);
+    let mut mx = _mm_setzero_si128();
+    let mut w = [_mm_setzero_si128(); 8];
+    for (c, v) in w[..col_n].iter_mut().enumerate() {
+        if row_n == 8 {
+            let col: &[i32; 8] =
+                match input.get(c * 8..c * 8 + 8).and_then(|s| s.try_into().ok()) {
+                    Some(a) => a,
+                    None => return false,
+                };
+            let lo = _mm_loadu_si128(<&[i32; 4]>::try_from(&col[..4]).unwrap());
+            let hi = _mm_loadu_si128(<&[i32; 4]>::try_from(&col[4..]).unwrap());
+            mx = _mm_max_epu32(mx, _mm_max_epu32(_mm_abs_epi32(lo), _mm_abs_epi32(hi)));
+            *v = _mm_mulhrs_epi16(_mm_packs_epi32(lo, hi), scale);
+        } else {
+            let col: &[i32; 4] =
+                match input.get(c * 4..c * 4 + 4).and_then(|s| s.try_into().ok()) {
+                    Some(a) => a,
+                    None => return false,
+                };
+            let v32 = _mm_loadu_si128(col);
+            mx = _mm_max_epu32(mx, _mm_abs_epi32(v32));
+            *v = _mm_mulhrs_epi16(_mm_packs_epi32(v32, v32), scale);
+        }
+    }
+    let over = _mm_cmpgt_epi32(_mm_sub_epi32(mx, _mm_set1_epi32(bound)), _mm_setzero_si128());
+    if _mm_testz_si128(over, over) == 0 {
+        return false;
+    }
+
+    let zero = _mm_setzero_si128();
+    if col_n == 4 {
+        // ---- 4x8: row = w8 4-pt over the 4 registers; col = w4 8-pt ----
+        let o = run4(kr, &[w[0], w[1], w[2], w[3]]);
+        // `flip_buf_sse2` — register-order reversal — then transpose_16bit_8x4.
+        let r = if lr_flip { [o[3], o[2], o[1], o[0]] } else { o };
+        let a0 = _mm_unpacklo_epi16(r[0], r[1]);
+        let a1 = _mm_unpacklo_epi16(r[2], r[3]);
+        let a4 = _mm_unpackhi_epi16(r[0], r[1]);
+        let a5 = _mm_unpackhi_epi16(r[2], r[3]);
+        let b0 = _mm_unpacklo_epi32(a0, a1);
+        let b2 = _mm_unpacklo_epi32(a4, a5);
+        let b4 = _mm_unpackhi_epi32(a0, a1);
+        let b6 = _mm_unpackhi_epi32(a4, a5);
+        let tr = [
+            _mm_unpacklo_epi64(b0, zero),
+            _mm_unpackhi_epi64(b0, zero),
+            _mm_unpacklo_epi64(b4, zero),
+            _mm_unpackhi_epi64(b4, zero),
+            _mm_unpacklo_epi64(b2, zero),
+            _mm_unpackhi_epi64(b2, zero),
+            _mm_unpacklo_epi64(b6, zero),
+            _mm_unpackhi_epi64(b6, zero),
+        ];
+        let mut u = run8(kc, &tr);
+        for v in u.iter_mut() {
+            *v = _mm_mulhrs_epi16(*v, _mm_set1_epi16(2048));
+        }
+        // `lowbd_write_buffer_4xn`: 8 rows of 4 pixels, ud_flip picks u[7 - r].
+        let hi = _mm_set1_epi16(((1i32 << bd) - 1) as i16);
+        for r in 0..8usize {
+            let src = u[if ud_flip { 7 - r } else { r }];
+            let idx = r * stride;
+            let dst: &mut [u16; 4] =
+                match output.get_mut(idx..idx + 4).and_then(|s| s.try_into().ok()) {
+                    Some(d) => d,
+                    None => return false,
+                };
+            let d = _mm_loadu_si128(&[dst[0], dst[1], dst[2], dst[3], 0, 0, 0, 0]);
+            let sum = _mm_min_epi16(_mm_max_epi16(_mm_add_epi16(d, src), zero), hi);
+            let mut sa = [0u16; 8];
+            _mm_storeu_si128(&mut sa, sum);
+            dst.copy_from_slice(&sa[..4]);
+        }
+        return true;
+    }
+
+    // ---- 8x4: row = w4 8-pt over the 8 registers; col = w8 4-pt ----
+    let o = run8(kr, &w);
+    let r: [__m128i; 8] = if lr_flip {
+        [o[7], o[6], o[5], o[4], o[3], o[2], o[1], o[0]]
+    } else {
+        o
+    };
+    // transpose_16bit_4x8 (low halves only; lanes 4..7 of `r` are dead).
+    let a0 = _mm_unpacklo_epi16(r[0], r[1]);
+    let a1 = _mm_unpacklo_epi16(r[2], r[3]);
+    let a2 = _mm_unpacklo_epi16(r[4], r[5]);
+    let a3 = _mm_unpacklo_epi16(r[6], r[7]);
+    let b0 = _mm_unpacklo_epi32(a0, a1);
+    let b1 = _mm_unpacklo_epi32(a2, a3);
+    let b2 = _mm_unpackhi_epi32(a0, a1);
+    let b3 = _mm_unpackhi_epi32(a2, a3);
+    let tr = [
+        _mm_unpacklo_epi64(b0, b1),
+        _mm_unpackhi_epi64(b0, b1),
+        _mm_unpacklo_epi64(b2, b3),
+        _mm_unpackhi_epi64(b2, b3),
+    ];
+    let mut u = run4(kc, &tr);
+    for v in u.iter_mut() {
+        *v = _mm_mulhrs_epi16(*v, _mm_set1_epi16(2048));
+    }
+    // `lowbd_write_buffer_8xn`: 4 rows of 8 pixels, ud_flip picks u[3 - r].
+    let hi = _mm_set1_epi16(((1i32 << bd) - 1) as i16);
+    for r in 0..4usize {
+        let src = u[if ud_flip { 3 - r } else { r }];
+        let idx = r * stride;
+        let dst: &mut [u16; 8] =
+            match output.get_mut(idx..idx + 8).and_then(|s| s.try_into().ok()) {
+                Some(d) => d,
+                None => return false,
+            };
+        let d = _mm_loadu_si128(dst);
+        let sum = _mm_min_epi16(_mm_max_epi16(_mm_add_epi16(d, src), zero), hi);
+        _mm_storeu_si128(dst, sum);
+    }
+    true
 }
 
 /// The `incant!` fallback: decline to the generic two-pass driver.
@@ -4721,5 +5226,5 @@ mod tests {
             }
         true
     }
-}
 
+}

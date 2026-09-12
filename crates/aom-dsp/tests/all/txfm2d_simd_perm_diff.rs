@@ -176,6 +176,26 @@ fn inv_spike_gate8(k: usize, i: usize) -> i32 {
     }
 }
 
+/// Gate-edge spikes for the fused 4x8/8x4 INVERSE SIMD kernel — the tightest
+/// accept bound across both bound tables (±3282, `*8 -> Adst4` at 8x4) and
+/// just past it (±3283), plus ±6204/±8000 which only the looser pairs accept
+/// (drives per-pair accept/decline splits) and a partial block over the bound.
+fn inv_spike_gate48(k: usize, i: usize) -> i32 {
+    match k {
+        0 => 3282,
+        1 => -3282,
+        2 => 3283, // over the tightest bound -> decline at 8x4 adst4 cols
+        3 => 8000, // accepted by some pairs only
+        _ => {
+            if i % 4 == 0 {
+                6205
+            } else {
+                -6000
+            }
+        }
+    }
+}
+
 /// bd8-range spike patterns for the forward residual buffer — the
 /// coefficient-sum sign vertices at the exact ±255 bd8 extreme, which is where
 /// the i16-lane forward passes are closest to their proven bound.
@@ -334,6 +354,16 @@ fn all_outputs() -> Vec<(String, Vec<i64>)> {
                             (0..ilen).map(|i| inv_spike_gate8(k, i)).collect();
                         push_inv(
                             format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} gspike8_{k}"),
+                            &input,
+                            &mut rng,
+                        );
+                    }
+                    // Gate-edge spikes for the fused 4x8/8x4 i16 kernel.
+                    for k in 0..5usize {
+                        let input: Vec<i32> =
+                            (0..ilen).map(|i| inv_spike_gate48(k, i)).collect();
+                        push_inv(
+                            format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} gspike48_{k}"),
                             &input,
                             &mut rng,
                         );
