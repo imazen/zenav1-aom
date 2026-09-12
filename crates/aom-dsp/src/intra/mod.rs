@@ -6,6 +6,7 @@
 //! Validated byte-for-byte against C for every (mode × block size).
 
 pub mod cfl;
+mod cfl_simd;
 pub mod dir;
 mod dir_simd;
 mod filter_simd;

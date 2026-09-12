@@ -282,7 +282,7 @@ pub fn cfl_idx_to_alpha(alpha_idx: i32, joint_sign: i32, plane: usize) -> i32 {
 
 /// `get_scaled_luma_q0` (cfl.h): `ROUND_POWER_OF_TWO_SIGNED(alpha_q3 * ac_q3, 6)`.
 #[inline]
-fn scaled_luma_q0(alpha_q3: i32, ac_q3: i16) -> i32 {
+pub(crate) fn scaled_luma_q0(alpha_q3: i32, ac_q3: i16) -> i32 {
     let v = alpha_q3 * i32::from(ac_q3);
     if v < 0 {
         -((-v + 32) >> 6)
@@ -293,12 +293,7 @@ fn scaled_luma_q0(alpha_q3: i32, ac_q3: i16) -> i32 {
 
 /// `clip_pixel_highbd` (aom_dsp_common.h).
 #[inline]
-fn clip_pixel_highbd(val: i32, bd: i32) -> u16 {
-    let max = match bd {
-        10 => 1023,
-        12 => 4095,
-        _ => 255,
-    };
+pub(crate) fn clip_pixel_highbd(val: i32, max: i32) -> u16 {
     val.clamp(0, max) as u16
 }
 
@@ -308,24 +303,17 @@ fn clip_pixel_highbd(val: i32, bd: i32) -> u16 {
 pub fn cfl_predict_hbd(
     ac_buf_q3: &[i16; CFL_BUF_SQUARE],
     dst: &mut [u16],
-    mut dst_off: usize,
+    dst_off: usize,
     dst_stride: usize,
     alpha_q3: i32,
     bd: i32,
     width: usize,
     height: usize,
 ) {
-    let mut ac_off = 0usize;
-    for _ in 0..height {
-        for i in 0..width {
-            dst[dst_off + i] = clip_pixel_highbd(
-                scaled_luma_q0(alpha_q3, ac_buf_q3[ac_off + i]) + i32::from(dst[dst_off + i]),
-                bd,
-            );
-        }
-        dst_off += dst_stride;
-        ac_off += CFL_BUF_LINE;
-    }
+    let max = (1i32 << bd) - 1;
+    super::cfl_simd::cfl_predict_scaled_add(
+        ac_buf_q3, dst, dst_off, dst_stride, alpha_q3, max, width, height,
+    );
 }
 
 /// `sub8x8_adjust_offset` (cfl.c): blocks with a 4-pixel dimension share their

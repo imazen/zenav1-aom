@@ -139,3 +139,50 @@ fn cfl_predict_hbd_matches_c() {
     assert_eq!(cases, 14 * 3 * 40);
     let _ = CFL_BUF_LINE;
 }
+
+/// Tier sweep for the i32-lane kernel behind `cfl_predict_hbd`: the C
+/// differential above pins the default tier; this runs every archmage token
+/// permutation so the NEON / wasm128 / scalar tiers are held to the same
+/// byte-identity against the real `cfl_predict_hbd_c`.
+#[test]
+fn cfl_predict_hbd_matches_c_at_every_tier() {
+    use archmage::SimdToken;
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    // Serialise: this sweep permutes PROCESS-GLOBAL dispatch state.
+    let _serial = crate::dispatch_serial::dispatch_serial();
+    let mut simd_perms = 0usize;
+    let report = for_each_token_permutation(CompileTimePolicy::Warn, |_tier| {
+        if if cfg!(target_arch = "aarch64") {
+            archmage::NeonToken::summon().is_some()
+        } else {
+            archmage::X64V3Token::summon().is_some()
+        } {
+            simd_perms += 1;
+        }
+        let mut rng = Rng(0xCF1_A5EED_0E11_7E1A);
+        for &(tx, w, h) in &CFL_TX {
+            for &bd in &[8i32, 10, 12] {
+                for _ in 0..8 {
+                    let span = ((1i64 << bd) * 8) as u64;
+                    let mut ac = [0i16; 1024];
+                    for p in ac.iter_mut() {
+                        *p = (rng.below(2 * span + 1) as i64 - span as i64) as i16;
+                    }
+                    let alpha_q3 = (rng.below(33) as i32) - 16;
+                    let stride = w + (rng.below(2) as usize) * 8;
+                    let maxv = (1u64 << bd) - 1;
+                    let mut dst_c = vec![0u16; stride * h];
+                    for p in dst_c.iter_mut() {
+                        *p = rng.below(maxv + 1) as u16;
+                    }
+                    let mut dst_r = dst_c.clone();
+                    c::ref_cfl_predict_hbd(tx, &ac, &mut dst_c, stride, alpha_q3, bd);
+                    cfl_predict_hbd(&ac, &mut dst_r, 0, stride, alpha_q3, bd, w, h);
+                    assert_eq!(dst_c, dst_r, "tier sweep {w}x{h} bd={bd} alpha={alpha_q3}");
+                }
+            }
+        }
+    });
+    eprintln!("{report}");
+    assert!(simd_perms >= 1, "no vector tier ever ran — sweep was vacuous");
+}
