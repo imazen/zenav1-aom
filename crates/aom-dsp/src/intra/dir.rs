@@ -441,41 +441,21 @@ pub fn z3_high(
     up: i32,
     dy: i32,
 ) {
-    let max_base_y = ((bw + bh) as i32 - 1) << up;
     if !z3_vec_applies(left, bw, bh, up) {
         z3_high_scalar(dst, stride, bw, bh, left, up, dy);
         return;
     }
-    let mut col = [0u16; 64];
-    let mut y = dy;
-    for c in 0..bw {
-        let base = y >> 6;
-        let shift = (y & 0x3F) >> 1;
-        let n_act = if base >= max_base_y {
-            0
-        } else {
-            bh.min((max_base_y - base) as usize)
-        };
-        if n_act > 0 {
-            two_tap_run(
-                &mut col[..n_act],
-                left.data(),
-                left.idx(base),
-                shift,
-                n_act,
-            );
-        }
-        for (r, &v) in col[..n_act].iter().enumerate() {
-            dst[r * stride + c] = v;
-        }
-        if n_act < bh {
-            let fillv = left.at(max_base_y) as u16;
-            for r in n_act..bh {
-                dst[r * stride + c] = fillv;
-            }
-        }
-        y += dy;
-    }
+    // up == 0 under the gate: column-major taps + transposed stores, ONE
+    // dispatch for the whole block (dir_simd::z3_cols).
+    crate::intra::dir_simd::z3_cols(
+        dst,
+        stride,
+        bw,
+        bh,
+        left.data(),
+        left.idx(0),
+        dy,
+    );
 }
 
 /// `av1_highbd_dr_prediction_z3_c` — the never-dispatched scalar core.
