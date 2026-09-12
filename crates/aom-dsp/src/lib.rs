@@ -18,6 +18,7 @@
 pub mod blocksize;
 pub mod cdef;
 pub mod census;
+pub mod cnn;
 pub mod convolve;
 pub mod dispatch;
 pub mod dist;

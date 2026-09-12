@@ -1498,7 +1498,8 @@ void shim_fill_coeff_costs(int qindex, int txs_ctx, int plane,
 /* Oracle for av1/encoder/partition_strategy.c `intra_mode_cnn_partition`
  * (the speed>=1 intra CNN split-vs-nonsplit partition prune). Reproduces that
  * function VERBATIM against the REAL exported inference (av1_cnn_predict_img_
- * multi_out + av1_nn_predict_c) and the REAL static-const weights/thresholds,
+ * multi_out + av1_nn_predict, each at its dispatched or _c binding per
+ * force_cscalar) and the REAL static-const weights/thresholds,
  * so any misreading of the model shows up as a logit/decision mismatch.
  *
  * `win` is the 65x65 luma window (stride 65, row-major) = the block's
@@ -1626,7 +1627,16 @@ void shim_intra_cnn_partition_decision(const uint8_t *win, int qindex,
     dnn_features[f_idx++] = log_q;
   }
 
-  av1_nn_predict_c(dnn_features, dnn_config, 1, logits);
+  /* The DNN engine must match the convolve arm: a real encode runs the
+   * RTCD-dispatched `av1_nn_predict` (AVX2 on x86-64), so the !force_cscalar
+   * arm does too; the force_cscalar arm pins `av1_nn_predict_c` to match the
+   * scalar-bound convolve above. (av1_nn_predict is itself RTCD-specialized —
+   * `specialize qw/av1_nn_predict sse3 avx2 neon/`.) */
+  if (force_cscalar) {
+    av1_nn_predict_c(dnn_features, dnn_config, 1, logits);
+  } else {
+    av1_nn_predict(dnn_features, dnn_config, 1, logits);
+  }
   for (int i = 0; i < 4; i++) out_logits[i] = logits[i];
 
   /* ---- thresholds by res tier (verbatim) ---- */

@@ -2,16 +2,16 @@
 //! (`cnn_partition::decision::predict_decision`) vs the REAL
 //! `intra_mode_cnn_partition` (`aom_sys_ref::ref_intra_cnn_partition_decision`).
 //!
-//! Two bars:
-//!   1. **Flag parity vs the dispatched (AVX2) path** — what the encoder runs.
-//!      This is the byte-exactness-relevant guarantee: the CNN's only bitstream
-//!      effect is these four flags, so matching them = matching the partition
-//!      search constraints. MUST hold for every case.
-//!   2. **Bit-exact logits vs the pure C-scalar path** — validates the new code
-//!      (log_q, feature assembly, thresholds, decision) as a faithful
-//!      transcription, on top of the already-bit-exact CNN + DNN engines.
-//!      The C-scalar CNN oracle is `shim/cnn_cscalar.c` (a scalar-bound copy of
-//!      libaom's engine, scalar on every target — CLAUDE.md KB-ARM-FLOAT #2).
+//! One bar, resolved per tier: **bit-exact logits + flags vs whichever C
+//! engine this process's dispatch runs** — the dispatched (AVX2) path under
+//! the v3 tier (`aom_dsp::cnn::conv_valid` reproduces libaom's AVX2 convolve
+//! accumulation order — KB-41 root #27 — and `decision::finish_decision`
+//! pairs it with `nn::nn_predict_avx2_order`, closing #26's remaining half:
+//! the whole chain now models a real aomenc on AVX2), or the pure C-scalar
+//! oracle under `AOM_FORCE_SCALAR` / off x86-64 (`shim/cnn_cscalar.c`, a
+//! scalar-bound copy of libaom's engine — CLAUDE.md KB-ARM-FLOAT #2 — plus
+//! `av1_nn_predict_c`; the oracle runs the dispatched `av1_nn_predict` when
+//! `force_cscalar` is off, matching the port's per-tier chain).
 //!
 //! Sweeps all four bsizes over their full quad_tree_idx ranges, the real
 //! qindex band, and all three res tiers (lowres/midres/hdres via frame size).
@@ -82,6 +82,13 @@ fn predict_decision_matches_c() {
     let level = 2i32; // non-screen-content speed-1.
 
     let mut n = 0usize;
+    // The port runs whichever convolve engine this process's dispatch resolves
+    // to: the v3 AVX2 kernels (bit-exact against libaom's dispatched convolve —
+    // KB-41 root #27 closed) or the `_c` transcription under the pin. The
+    // oracle's `force_cscalar` flag selects the matching C engine, and the
+    // comparison is bit-exact logits + flags against it — under v3 this is
+    // STRONGER than the old bar, which could only assert flag parity vs AVX2.
+    let simd_tier = aom_dsp::cnn::v3_tier_active();
     let mut n_prune = 0usize;
     for win in &windows {
         for &(fw, fh) in &frames {
@@ -92,33 +99,24 @@ fn predict_decision_matches_c() {
                             predict_decision(win, qindex, 8, fw, fh, *bsize_idx, qt, level);
                         let got_flags = flags_of(dec);
 
-                        // Bar 1: flag parity vs AVX2 (encoder path).
-                        let (_la, flags_avx2) = c::ref_intra_cnn_partition_decision(
-                            win, qindex, 8, fw, fh, *bsize_idx, qt, level, false,
-                        );
-                        assert_eq!(
-                            got_flags, flags_avx2,
-                            "FLAG MISMATCH vs AVX2: bsize_idx={bsize_idx} qt={qt} qindex={qindex} \
-                             frame=({fw},{fh}) rust_logit0={} rust_flags={got_flags:?} \
-                             c_flags={flags_avx2:?}",
-                            logits[0]
-                        );
-
-                        // Bar 2: bit-exact logits + flags vs C-scalar.
                         let (lc, flags_c) = c::ref_intra_cnn_partition_decision(
-                            win, qindex, 8, fw, fh, *bsize_idx, qt, level, true,
+                            win, qindex, 8, fw, fh, *bsize_idx, qt, level, !simd_tier,
                         );
                         assert_eq!(
                             logits[0].to_bits(),
                             lc[0].to_bits(),
-                            "LOGIT MISMATCH vs C-scalar: bsize_idx={bsize_idx} qt={qt} \
+                            "LOGIT MISMATCH (simd_tier={simd_tier}): bsize_idx={bsize_idx} qt={qt} \
                              qindex={qindex} frame=({fw},{fh}) rust={} ({:#010x}) c={} ({:#010x})",
                             logits[0],
                             logits[0].to_bits(),
                             lc[0],
                             lc[0].to_bits()
                         );
-                        assert_eq!(got_flags, flags_c, "flag mismatch vs C-scalar");
+                        assert_eq!(
+                            got_flags, flags_c,
+                            "flag mismatch (simd_tier={simd_tier}): bsize_idx={bsize_idx} qt={qt} \
+                             qindex={qindex} frame=({fw},{fh}) rust={got_flags:?} c={flags_c:?}"
+                        );
 
                         n += 1;
                         if dec.prunes() {
@@ -130,8 +128,9 @@ fn predict_decision_matches_c() {
         }
     }
     eprintln!(
-        "predict_decision_matches_c: {n} cases, flag-parity vs AVX2 + bit-exact logits vs \
-         C-scalar; {n_prune} of them prune"
+        "predict_decision_matches_c: {n} cases, bit-exact logits + flags vs {} engine; \
+         {n_prune} of them prune",
+        if simd_tier { "dispatched-AVX2" } else { "C-scalar" },
     );
     assert!(n_prune > 0, "sweep must exercise the pruning path");
 }

@@ -133,7 +133,34 @@ REVERTED — it cost +1.7M Ir: per-row broadcasts are not amortised by the
 short suffix rows at this cell. 24-round shipping-cell band:
 **-0.048 %, 14/24, p=0.54, null +0.043 % — NULL** (Ir-measured landing,
 same class as the sgr records). Byte-identical 40,237 B. DSP suite
-400/400. |
+400/400. **CNN convolve v3 + consistent-tier DNN (parity AND perf, biggest
+single landing of the cycle):** `cnn_predict` was 171.5M Ir (2.57 % of the
+profile) of scalar f32 convolution while C dispatches
+`av1_cnn_convolve_no_maxpool_padding_valid_avx2` — and the scalar order was
+itself the recorded KB-41 root #27 divergence (7th-digit float gap that
+`av1_nn_output_prec_reduce`'s 1/512 quantum turned into a flipped
+`do_square_split` at 2765x4096 cq6 s6 mi(0,352)). Landed
+`aom_dsp::cnn::conv_valid` — a 1:1 port of the AVX2 kernel (the 5x5/skip-4
+and 2x2/skip-2 specializations, every mul/add/hadd in C's order; shapes C
+itself routes to `_c` decline to the caller's scalar transcription) — wired
+into `cnn_partition::cnn::cnn_predict` behind `archmage::incant! [v3,
+scalar]`, with `v3_tier_active()` as the reach probe. The branch DNN then
+keys on the PORT's tier (`nn_predict_avx2_order` under v3, `nn_predict`
+under the pin) so conv+DNN model one consistent engine — which required
+fixing `shim_intra_cnn_partition_decision`, whose !force_cscalar arm had
+hardcoded `av1_nn_predict_c` while the convolve arm was dispatched; it now
+runs the real RTCD `av1_nn_predict` (closing root #26's remaining half on
+x86-64; the aarch64 NEON twin stays open, same class as before). Tests
+resolve the engine per tier: `cnn_partition_cnn_diff` bit-exact vs the
+DISPATCHED C under v3 / vs C-scalar under the pin;
+`cnn_partition_decision_diff` bit-exact logits+flags (12,240 cases) both
+ways; e2e gate `isolate_vgrad256_cq32_cnn_partition_prune` green; DSP suite
+400/400. Callgrind 196x196 cq27 s3 x3: 6,688.0M -> 6,538.0M (**-150.0M Ir,
+-2.24 %**), attributed cnn_predict 171.6M -> 1.8M driver +
+conv_valid_impl_v3 17.5M (the DNN-order switch cost +1.6M Ir of tree-order
+scalar adds, included in the net). 24-round shipping-cell band on the final
+binary: **-0.804 %, 23/24, p=3.0e-6, null +0.034 % — CLEARS.** Byte-
+identical 40,237 B. |
 | (5) match the RD of C | byte identity is the strongest available evidence and holds on 427/427 standalone cells; the pinned divergences are the measured/attributed/bounded residual the directive permits to ship |
 | (6) sensible conversion + wiring + testing of all of the C encoder | **PALETTE AND INTRABC ARE NOW WIRED INTO THE SHIPPING PATH — 2026-09-10, and the finding is that they were not.** `encode_key_frame` built its `PickFrameCfg` with `palette_costs: None` and `intrabc: None`, so it ran NEITHER screen-content search on ANY frame, including frames whose header it writes with `allow_screen_content_tools = 1` from its own detector. **No gate could see it: every byte gate in `self_contained_key_frame.rs` drives `shim_encode_av1_kf`, which hardcodes `enable_palette = 0, enable_intrabc = 0` (`dec_shim.c:612`), so the 427/427 is a parity claim against a palette-DISABLED libaom and was blind to both tools BY CONSTRUCTION.** That is KB-42's shape on a new axis — a gate can be green, exhaustive and honest about what it measures and still say nothing about a feature, because the ORACLE was configured out of the question. **Cost of the gap, libaom on BOTH sides so the number is the TOOLS' value and not the port's RD: −73.1 % bytes at 1024x768 cq20 s3, −68.6 % at cq32, −69.6 % at 512x384 cq20** (`benchmarks/encoder_screen_tools_2026-09-10.md`). Read the sign at the low-rate end: at cq44-55 palette ALONE is often WORSE (+21 % to +83 %) because a colour table plus an index map beats coarse transform coding only when the quantizer is fine; IntraBC carries those cells. **The matched-oracle gate found a STREAM-CORRUPTION bug on its first run:** `uncompressed_header` skips loop_filter/cdef/lr params entirely when `allow_intrabc` is set, the three sub-header structs each carry their own copy of the bit, and `derive_frame_header` hardcoded all three false — so the writer emitted three syntax elements the decoder never reads, desynchronising the tile group in the same OBU_FRAME. **Signature worth keeping: a CONSTANT +3 bytes over a byte-IDENTICAL tile payload (common suffix 31,114 of 31,132) — sign-random size-varying deltas are RD divergences; a constant delta with an identical payload is a header-length bug.** 51/54 -> 54/54. Gated by `screen_content_tools_byte_match_real_aomenc` (54 cells, matched `shim_encode_av1_kf_screen_content` oracle, non-vacuity asserted per cell by requiring the oracle's tools-ON stream to DIFFER from its own tools-OFF stream, plus a real-C decode round-trip) and 24/24 in the wider `screen_tools_gap` probe. The 427-cell gate now sets both knobs FALSE to match its own oracle — matching, not weakening: inert on every detector-negative cell, and on the `chk` cells it is what keeps it a parity test. **ONE DIVERGENCE, measured and bounded: IntraBC declines at coded-lossless.** C runs it there, dispatching the coeff arm to `av1_pick_uniform_tx_size_type_yrd` (tx_search.c:3824) instead of the recursive var-tx one; the port has no INTER uniform-tx arm and fired a `lossless forces TX_4X4` assertion — a crossing nothing had reached, since the shell never ran IntraBC and the bench never crossed it with cq 0. A lossless frame reconstructs to the source either way, so declining the SEARCH can only cost SIZE on cq-0 screen content, never a pixel, and it is a divergence rather than a refusal. Historical: `av1_determine_sc_tools_with_encoding` (PARITY C3) unported — **and MEASURED 2026-09-09 to be a DIVERGENCE, not a refusal, on the shipping path: 60/60 screen-shaped tiny cells encode through `encode_key_frame` with 0 refusals and 0 panics** (gated, `refusal_census::screen_shaped_tiny_cells_encode_rather_than_refuse`). The hard SCM assert is `aom-bench`'s differential harness, which no caller reaches. **The bd12 dispatch-tier disagreement is CLOSED 2026-09-09 (measured: both tiers byte-identical at `1920x1080 cq24 cpu0`) and now GATED by `bd12_dispatch_tier_agreement` — the tree had no bd12 coverage at all, which is why it sat open.** |
 

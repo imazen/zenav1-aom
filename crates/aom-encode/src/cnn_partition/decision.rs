@@ -432,27 +432,37 @@ fn finish_decision(
     let mut logits = [0.0f32; 4];
     // num_outputs = BRANCH_*_NUM_LOGITS = 1; reduce_prec = 1 (as C calls it).
     //
-    // **Deliberately the `_c` order, NOT [`nn::nn_predict_dispatched`]** —
-    // KB-41 roots #26/#27. `av1_nn_predict` IS RTCD-specialized, so a real
-    // encode runs its AVX2 order here (#26, ported + gated against the
-    // dispatched C), but so is the CNN's own
-    // `av1_cnn_convolve_no_maxpool_padding_valid`, whose `_c` variant this
-    // module's `cnn::cnn_predict` transcribes (#27, NOT ported; the oracle is
-    // pinned scalar by `shim/cnn_cscalar.c`). Pairing a SCALAR CNN with an
-    // AVX2 DNN models neither chain: it stops matching the pinned scalar
-    // oracle (`cnn_partition_decision_diff::predict_decision_matches_c`, which
-    // is exactly what it broke) without matching the real dispatched one
-    // either, because the branch features are already wrong upstream. The
-    // switch to `nn_predict_dispatched` lands WITH root #27, not before.
-    nn::nn_predict(
-        features,
-        &[16, 24],
-        &[w0, w1, wl],
-        &[b0, b1, bl],
-        1,
-        true,
-        &mut logits,
-    );
+    // The DNN order is keyed on the PORT's conv tier — KB-41 roots #26/#27
+    // both closed. A real aomenc on an AVX2 host runs
+    // `av1_cnn_convolve_no_maxpool_padding_valid_avx2` upstream and
+    // `av1_nn_predict_avx2` here; the port reproduces both when the v3 tier
+    // is live (`aom_dsp::cnn::v3_tier_active` — x86-64 v3 token, no
+    // `AOM_FORCE_SCALAR`). Under the pin or off-AVX2 the port runs its `_c`
+    // convolve transcription and pairs it with the `_c` DNN order — the
+    // same two arms the oracle expresses (`shim_intra_cnn_partition_decision`
+    // runs the dispatched `av1_nn_predict` when `force_cscalar` is off,
+    // `av1_nn_predict_c` when on).
+    if aom_dsp::cnn::v3_tier_active() {
+        nn::nn_predict_avx2_order(
+            features,
+            &[16, 24],
+            &[w0, w1, wl],
+            &[b0, b1, bl],
+            1,
+            true,
+            &mut logits,
+        );
+    } else {
+        nn::nn_predict(
+            features,
+            &[16, 24],
+            &[w0, w1, wl],
+            &[b0, b1, bl],
+            1,
+            true,
+            &mut logits,
+        );
+    }
 
     // Res-tier thresholds (partition_strategy.c:311-329).
     let (split_thresh, no_split_thresh) = res_tier_thresholds(frame_w, frame_h, bsize_idx as usize);

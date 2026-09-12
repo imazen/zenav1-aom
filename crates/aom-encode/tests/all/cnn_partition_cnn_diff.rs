@@ -2,50 +2,27 @@
 //! (`cnn_partition::cnn::cnn_predict`) vs the REAL libaom CNN engine
 //! (`av1_cnn_predict_img_multi_out`, `aom_sys_ref::ref_intra_cnn_run`).
 //!
-//! Two comparisons:
-//!   1. vs the pure **C-scalar** engine (`force_cscalar = true`) — must be
-//!      BIT-EXACT: proves the Rust cascade is a faithful transcription of
-//!      `av1_cnn_convolve_no_maxpool_padding_valid_c` + the layer wiring.
-//!      That oracle is `shim/cnn_cscalar.c`: libaom's own `av1/encoder/cnn.c`
-//!      compiled into the shim archive with the one RTCD-dispatched convolve
-//!      rebound to `_c` and its exports renamed. It is scalar on EVERY target,
-//!      unlike the runtime-pointer swap it replaced, which existed only on
-//!      x86-64 and left this comparison silently NEON-backed on aarch64
-//!      (CLAUDE.md KB-ARM-FLOAT root #2).
-//!   2. vs the **dispatched** (AVX2) engine (`force_cscalar = false`, what the
-//!      encoder runs) — reported as a max-abs gap, and NOT bit-exact.
+//! One comparison, resolved per tier — **BIT-EXACT either way**:
+//!   * Under the v3 tier the port runs `aom_dsp::cnn::conv_valid` — a 1:1 port
+//!     of `av1_cnn_convolve_no_maxpool_padding_valid_avx2`, every mul/add/hadd
+//!     in C's order — and is compared BIT-EXACT against the **dispatched**
+//!     engine (`force_cscalar = false`, what the encoder runs).
+//!   * Under `AOM_FORCE_SCALAR` (or off x86-64) the port runs its `_c`
+//!     transcription and is compared BIT-EXACT against the **C-scalar** engine
+//!     (`force_cscalar = true`): `shim/cnn_cscalar.c`, libaom's own
+//!     `av1/encoder/cnn.c` compiled with the one RTCD-dispatched convolve
+//!     rebound to `_c` — scalar on every target (CLAUDE.md KB-ARM-FLOAT #2).
 //!
-//! **The rationale this file used to give for (2) was wrong, and is now
-//! measured wrong — KB-41 root #27.** It said the gap "only has to stay far
-//! inside the DNN prec-reduce bucket so the downstream split/no-split FLAGS
-//! agree (that flag-parity is asserted in the full-model diff)". Neither half
-//! holds:
-//!
-//!   * A gap does not have to approach the bucket WIDTH to change the bucket.
-//!     `av1_nn_output_prec_reduce` rounds the branch logit to 1/512, so an
-//!     arbitrarily small gap moves the quantum whenever the logit sits near a
-//!     boundary — and the prune compares exactly that quantum against
-//!     `no_split_thresh` (`partition_strategy.c:341`). MEASURED on
-//!     `2765x4096 cq6 --cpu-used 6`, mi(0,352): the port's branch features
-//!     match this oracle under `force_cscalar` to the bit and differ from the
-//!     DISPATCHED oracle in the 7th digit; raw logits −3.86037111 vs
-//!     −3.8603348731994629 land on the ADJACENT quanta −3.859375 and
-//!     −3.857421875, either side of `no_split_thresh = −3.858222961`. C splits
-//!     the 32x32; the port codes it NONE.
-//!   * `cnn_partition_decision_diff` asserts flag parity against the C-SCALAR
-//!     oracle ("flag mismatch vs C-scalar"), never against the dispatched one —
-//!     so no gate has ever covered the claim.
-//!
-//! This test's own printed number is the corroboration: over its 205 windows
-//! the worst `|rust − AVX2|` is **7.87e-6**, i.e. the 7th digit — the same
-//! magnitude by which the branch features differ at mi(0,352). The gap is
-//! genuinely tiny AND it flips partitions; those are not in tension, because
-//! what matters is the boundary, not the width.
-//!
-//! The assertion below is kept (it is a real ceiling on the convolve gap) but
-//! it pins ONLY that: it is not, and cannot be, evidence of flag parity with a
-//! real encoder. Closing that requires porting the dispatched convolve — root
-//! #27, queued in CLAUDE.md's coverage table.
+//! **KB-41 root #27 is CLOSED by this port.** The gap it recorded — the port
+//! matched C-scalar to the bit while the dispatched AVX2 engine differed in
+//! the 7th digit (worst `|rust − AVX2|` = 7.87e-6 over this window set), and
+//! `av1_nn_output_prec_reduce`'s 1/512 quantum turned that into a flipped
+//! `do_square_split` at `2765x4096 cq6 --cpu-used 6`, mi(0,352) — was a
+//! *missing kernel*, not a tolerance question. The dispatched order is now
+//! what runs, so the comparison is bit-exact against the engine a real
+//! aomenc uses — and the decision-level gate
+//! (`cnn_partition_decision_diff`) asserts bit-exact logits + flags against
+//! that same engine.
 
 use aom_encode::cnn_partition::cnn::{CNN_OUT_BUF_SIZE, cnn_predict};
 use aom_sys_ref as c;
@@ -80,7 +57,7 @@ fn window(content: impl Fn(usize, usize) -> u8) -> Vec<u8> {
 }
 
 #[test]
-fn cnn_predict_matches_c_scalar_bit_exact_and_reports_avx2_gap() {
+fn cnn_predict_matches_resolved_engine_bit_exact() {
     c::ref_init();
     let mut rng = XorShift(0x51ed_c0de_1234_5678);
 
@@ -98,42 +75,33 @@ fn cnn_predict_matches_c_scalar_bit_exact_and_reports_avx2_gap() {
         windows.push(w);
     }
 
-    let mut worst_avx2_gap = 0.0f32;
+    // The port runs whichever engine this process's dispatch resolves to:
+    // `aom_dsp::cnn::conv_valid`'s v3 kernels (bit-exact against libaom's OWN
+    // AVX2 convolve, closing KB-41 root #27) when the v3 tier is live, the
+    // scalar `_c` transcription (bit-exact against C-scalar) under the pin or
+    // off x86-64. The oracle flag selects the matching C engine — the
+    // comparison is BIT-EXACT in both arms.
+    let simd_tier = aom_dsp::cnn::v3_tier_active();
     for (wi, win) in windows.iter().enumerate() {
         let got = cnn_predict(win);
         assert_eq!(got.len(), CNN_OUT_BUF_SIZE);
 
-        // 1. C-scalar: BIT-EXACT.
-        let want_c = c::ref_intra_cnn_run(win, true);
-        for (idx, (&g, &wc)) in got.iter().zip(want_c.iter()).enumerate() {
+        let want = c::ref_intra_cnn_run(win, !simd_tier);
+        for (idx, (&g, &wc)) in got.iter().zip(want.iter()).enumerate() {
             assert_eq!(
                 g.to_bits(),
                 wc.to_bits(),
-                "window {wi} cnn_buffer[{idx}]: rust={g} ({:#010x}) c_scalar={wc} ({:#010x})",
+                "window {wi} cnn_buffer[{idx}] (simd_tier={simd_tier}): \
+                 rust={g} ({:#010x}) c={wc} ({:#010x})",
                 g.to_bits(),
                 wc.to_bits()
             );
         }
-
-        // 2. AVX2 (encoder path): report the gap, keep it tiny.
-        let want_avx2 = c::ref_intra_cnn_run(win, false);
-        for (&g, &wa) in got.iter().zip(want_avx2.iter()) {
-            worst_avx2_gap = worst_avx2_gap.max((g - wa).abs());
-        }
     }
 
     eprintln!(
-        "cnn_predict: {} windows BIT-EXACT vs C-scalar; worst |rust - AVX2| = {worst_avx2_gap:e}",
-        windows.len()
-    );
-    // A CEILING on the convolve gap, and nothing more (see the module docs):
-    // any nonzero gap can still move a branch logit across a 1/512 prec-reduce
-    // boundary and flip `do_square_split`, which is KB-41 root #27. Kept at the
-    // value it has always had so a REGRESSION in the transcription still trips
-    // it. (libaom's own CNN C-vs-SIMD MSE tolerance is 1e-6.)
-    assert!(
-        worst_avx2_gap < 1e-2,
-        "AVX2 gap {worst_avx2_gap:e} unexpectedly large — the convolve \
-         transcription regressed (this bound does NOT imply flag parity)"
+        "cnn_predict: {} windows BIT-EXACT vs {} engine",
+        windows.len(),
+        if simd_tier { "dispatched-AVX2" } else { "C-scalar" },
     );
 }

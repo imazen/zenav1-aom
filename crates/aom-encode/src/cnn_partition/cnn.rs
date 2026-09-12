@@ -89,6 +89,18 @@ fn conv_valid(
     let weights = layer.kernel;
     let bias = layer.bias;
 
+    // Dispatched-libaom arm: the AVX2 convolve kernels (aom-dsp `cnn`) are
+    // bit-exact against `av1_cnn_convolve_no_maxpool_padding_valid_avx2`, the
+    // build real aomenc runs. Decline cases (no v3, force-scalar, the layer-3/4
+    // shapes C itself hands to `_c`) run the scalar transcription below — the
+    // `_c` arm, bit-exact against that oracle.
+    if aom_dsp::cnn::conv_valid(
+        input, in_ch, in_w, in_h, in_stride, weights, bias, out_ch, filter, skip, output, out_w,
+        out_h,
+    ) {
+        return;
+    }
+
     for i in 0..out_ch {
         let mut u = 0usize;
         let mut h = 0usize;

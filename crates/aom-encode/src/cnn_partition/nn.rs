@@ -357,8 +357,12 @@ fn propagate_4to4(inputs: &[f32], weights: &[f32], num_inputs: usize, outputs: &
     }
 }
 
-/// Port of the DISPATCHED `av1_nn_predict_avx2` (ml_avx2.c).
-fn nn_predict_avx2_order(
+/// Port of the DISPATCHED `av1_nn_predict_avx2` (ml_avx2.c). `pub(crate)`:
+/// `decision::finish_decision` selects it when the CNN convolve ran its own
+/// AVX2-order v3 kernels (`aom_dsp::cnn::v3_tier_active`), so the whole chain
+/// — conv + DNN — models the real dispatched encode; the scalar `_c` arm pairs
+/// with the scalar convolve under the `AOM_FORCE_SCALAR` pin or off-AVX2.
+pub(crate) fn nn_predict_avx2_order(
     features: &[f32],
     hidden_nodes: &[usize],
     weights: &[&[f32]],
