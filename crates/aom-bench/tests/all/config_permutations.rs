@@ -108,9 +108,10 @@ struct Ctx {
     /// changes, which is exactly the axis being covered.
     ///
     /// (The corpus has exactly one native monochrome vector,
-    /// `av1-1-b10-24-monochrome`, and it carries an open port divergence of its
-    /// own — see [`mono_vector_open_divergences_pinned`] — so the monochrome
-    /// CONTEXT is derived from clean content instead. There is no native 4:4:4
+    /// `av1-1-b10-24-monochrome`. It carried an open port divergence until
+    /// KB-62 closed it — see [`mono_vector_open_divergences_pinned`] — so the
+    /// monochrome CONTEXT is derived from clean content instead, a choice
+    /// kept for consistency with the measured map. There is no native 4:4:4
     /// or 4:2:2 vector in the intra scope at all.)
     format: Fmt,
 }
@@ -1036,13 +1037,13 @@ fn every_axis_level_is_live_in_some_context() {
 }
 
 // ---------------------------------------------------------------------------
-// 3b. FINDING (2026-07-30) — pinned open
+// 3b. FINDING (2026-07-30) — closed 2026-09-13 (KB-62), kept as the gate
 // ---------------------------------------------------------------------------
 
-/// FINDING, PARTIALLY CLOSED: two knobs that are byte-identical to real aomenc
-/// on every gated context diverged on the corpus's native monochrome vector.
-/// `--use-intra-default-tx-only=1` was KB-17 and is now FIXED; the single
-/// `--enable-diagonal-intra=0` cell stays pinned open.
+/// FINDING, CLOSED: two knobs that are byte-identical to real aomenc on every
+/// gated context diverged on the corpus's native monochrome vector.
+/// `--use-intra-default-tx-only=1` was KB-17; the single
+/// `--enable-diagonal-intra=0` cell held out until KB-62.
 ///
 /// `av1-1-b10-24-monochrome`, 64x64 crop at (64,64), speed-0 ALLINTRA:
 ///
@@ -1050,7 +1051,7 @@ fn every_axis_level_is_live_in_some_context() {
 /// |---|---|---|---|---|---|
 /// | `--use-intra-default-tx-only=1` (was) | DIVERGE 623/623 B | DIVERGE 418/424 | DIVERGE 229/240 | DIVERGE 79/80 | DIVERGE 14/15 |
 /// | `--use-intra-default-tx-only=1` (KB-17 FIXED 2026-07-30) | exact 623 | — | exact 240 | — | exact 15 |
-/// | `--enable-diagonal-intra=0`     | exact | exact | **DIVERGE 225/231** | exact | exact |
+/// | `--enable-diagonal-intra=0`     | exact | exact | was DIVERGE 225/231, KB-62 FIXED 2026-09-13 | exact | exact |
 ///
 /// KB-17's root was `speed_features.rs`'s hardcoded `use_screen_content_tools:
 /// false`: this vector is screen-detected, so C resolved the luma tx type
@@ -1060,9 +1061,9 @@ fn every_axis_level_is_live_in_some_context() {
 /// `dtxo` cells here (measured 2026-07-30: 623/240/15 B, byte-identical).
 ///
 /// **`diag=0` at cq32 did NOT move with that fix** — measured directly on the
-/// same run, still 225 vs 231 B. That confirms the KB-17 entry's separate
-/// classification: it is a KB-10 / KB-12 "cheaper RD decision" near-tie, not a
-/// screen-content-tools consequence. Its bd8 twin does not reproduce it.
+/// same run, still 225 vs 231 B — and its separate classification was RIGHT:
+/// not a screen-content-tools consequence but the KB-62 stale `tx_type_map`
+/// in the AB-reuse clone, which flipped to exact with that fix.
 ///
 /// Isolated to the CONTENT, not to the format: the same knobs are byte-exact on
 /// bd8 4:2:0, on bd8 monochrome derived from `av1-1-b8-01-size-64x64`, on bd10
@@ -1080,12 +1081,14 @@ fn every_axis_level_is_live_in_some_context() {
 #[test]
 fn mono_vector_open_divergences_pinned() {
     c::ref_init();
-    /// `(cq, knob tag, expected-exact)`.
+    /// `(cq, knob tag, expected-exact)` — all exact since KB-62 (2026-09-13);
+    /// the `cq32 diag` cell was the last open one (the AB-reuse clone's stale
+    /// tx_type_map — mono bd10 s0 is where its near-tie happened to land).
     const EXPECTED: &[(i32, &str, bool)] = &[
         (12, "dtxo", true),
         (12, "diag", true),
         (32, "dtxo", true),
-        (32, "diag", false),
+        (32, "diag", true),
         (63, "dtxo", true),
         (63, "diag", true),
     ];
@@ -1628,15 +1631,15 @@ fn content_taxonomy_is_measured_and_pinned() {
 /// With it, `dtxo` is no longer content-sensitive and is covered at full
 /// strength by the screen covering arrays ([`run_content_array`]).
 ///
-/// The ONE remaining entry, `scr_mono_b10/cq32/diag=0`, was measured on the
-/// same run as NOT moving with the KB-17 fix — it is the separate
-/// KB-10/KB-12 "cheaper RD decision" near-tie also pinned by
-/// [`mono_vector_open_divergences_pinned`], whose bd8 twin does not reproduce
-/// it.
+/// The last entry, `scr_mono_b10/cq32/diag=0`, survived KB-17 and was closed
+/// by KB-62 (2026-09-13): the rect-stage AB-reuse clone carried the
+/// pre-dry-run `tx_type_map` where C's `av1_update_state` aliasing leaves the
+/// ctx map post-reset. It was the same near-tie `mono_vector_open_divergences_pinned`
+/// pinned at `(32, "diag")`.
 ///
 /// This set is SELF-PROMOTING in both directions: a cell that starts matching
 /// fails, and so does a cell that starts diverging.
-const CONTENT_DIVERGENT_CELLS: &[&str] = &["scr_mono_b10/cq32/diag=0"];
+const CONTENT_DIVERGENT_CELLS: &[&str] = &[];
 
 /// Run the singleton-axis sweep for `contents` x `cqs` and return
 /// `(divergent, inert)` cell keys plus the cell count.

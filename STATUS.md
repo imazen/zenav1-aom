@@ -1,5 +1,50 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## Every speed-0 near-tie band closes — the AB-reuse clone carried a stale `tx_type_map` (KB-62, 2026-09-13)
+
+`MONO_S0_OPEN` (KB-27), `SPEED0_1080P_OPEN` + `HD_HBD_OPEN` (KB-38's residual),
+the crop-axis mono pins, and `config_permutations`'s `scr_mono_b10/cq32/diag=0`
+are all now byte-identical to real aomenc — one root, and none of them was
+what its shape suggested.
+
+At a `BLOCK_16X16` node the port picked `VERT_B` where C picked `VERT`. The
+difference was in the AB candidate's first sub-block: `VERT_B` sub-0 reuses
+the `VERT` sub-0's searched winner (`is_rect_ctx_is_ready`), and C's
+`av1_update_state` does `xd->tx_type_map = ctx->tx_type_map` — an ALIAS
+(encodeframe_utils.c:217), so the mid-stage `encode_superblock(DRY_RUN)`'s
+eob-0 -> DCT_DCT resets write through it into `ctx->tx_type_map` itself.
+The AB stage's `av1_copy_tree_context` therefore copies a POST-reset map.
+The port cloned `w0` BEFORE the mid-stage `encode_b_intra_dry`, so its clone
+carried the post-search map — one eob-0 txb still held its searched
+`ADST_DCT` — and the reused leaf's re-encode read that stale type for its
+forward transform (`get_tx_type_y`), producing different coefficients and a
+different right column, which is the next sub-block's left edge. The
+split-child reuse was already correct — it clones the committed
+`SbTree::Leaf`, whose own commit `encode_sb_dry` walk had already reset the
+map. Fix: take the clone after the dry-run.
+
+The "monochrome cq24" and "speed-0 >=1080p" shapes were counting artifacts:
+the stale entry only moves a stream when a reuse-eligible rect sub-0 has an
+eob-0 txb that searched a non-DCT type AND the shifted recon flips a
+near-tie — rare per block, so it needed ~2 MP of superblocks (or the one
+lucky 64x64 cell) to land inside a pin.
+
+Verified: `mono_speed0_size_qindex_localize` window fully clean (cq18..30 x
+s0..7, kept as a guard); `partial_sb_speed_axis_chroma_formats_byte_match`
+96/96, `MONO_S0_OPEN = &[]`; crop straddle 6/6 incl. controls;
+`s4cov_hd_format_axis` 4/4 gates green with `SPEED0_1080P_OPEN`/`HD_HBD_OPEN`
+= `&[]` and `speed0_1080p_qindex_arm_localize` reporting `divergent rows: []`;
+`mono_vector_open_divergences_pinned` 6/6 exact, `CONTENT_DIVERGENT_CELLS =
+&[]`; `bd12_dispatch_tier_agreement`'s >=1080p map all-zero (`1920x1080 cq24`
++59 -> 0 — the cell the standing goal names); `self_contained_key_frame`
+10/10 (549 cells), e2e 32/32,
+`encoder_gate_bd10_diff` 7/7, coding-tools 48/48, `speed_envelope` + all 43
+`combinations_*` green. Still open (different roots): size-axis finding B
+(two of three carry `ab0`, unreachable by this mechanism), the SCM trial gap,
+and the cpu-8 photo rows whose content is not in-repo. `NONRD_CQ63_OPEN`
+also reads clean — but that was KB-58's per-SB-qindex plumbing, a stale pin
+re-measured today, not this fix.
+
 ## The entire `HBD_OPEN` band closes — the intra-CNN prune window truncated u16 samples to u8 (KB-61, 2026-09-13)
 
 Every high-bit-depth divergence pin in the tree — `self_contained_key_frame`'s

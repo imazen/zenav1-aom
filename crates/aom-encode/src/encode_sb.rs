@@ -1300,6 +1300,10 @@ pub fn encode_b_intra_dry(
             }),
         tune: env.tune,
     };
+    if crate::tx_search::tx_dbg_target().is_some_and(|(r, c)| r == mi_row && c == mi_col) {
+        eprintln!("[pcommit-pre] mi({},{}) bs{} ttm_pre={:?}", mi_row, mi_col, bsize,
+            winner.tx_type_map);
+    }
     let mut y_out = if output_enabled {
         // OUTPUT_ENABLED: the eob-0 -> DCT_DCT resets land in the frame-map
         // copy (transient here — the pack writes tx_type syntax only for
@@ -1321,21 +1325,22 @@ pub fn encode_b_intra_dry(
             if store_y { Some(cfl) } else { None },
         )
     };
-    if std::env::var("AOM_TX_DBG").ok().and_then(|v| {
-        let mut it = v.split(',');
-        Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
-    }).is_some_and(|(r, c): (i32, i32)| r == mi_row && c == mi_col) {
+    if crate::tx_search::tx_dbg_target().is_some_and(|(r, c)| r == mi_row && c == mi_col) {
         let bw = crate::tx_search::BLK_W_B[bsize];
         let bh = crate::tx_search::BLK_H_B[bsize];
         let off = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
         let mut rh = 0u64;
+        let mut col = String::new();
         for r in 0..bh.min(16) {
-            rh = rh.wrapping_mul(31)
-                .wrapping_add(recon_y[off + r * env.stride + bw - 1] as u64);
+            let v = recon_y[off + r * env.stride + bw - 1];
+            rh = rh.wrapping_mul(31).wrapping_add(v as u64);
+            col.push_str(&format!(" {}", v));
         }
         eprintln!(
-            "[pcommit] mi({},{}) bs{} mode={} tx={} out={} rh={:x}",
-            mi_row, mi_col, bsize, winner.mode, winner.tx_size, output_enabled as u8, rh
+            "[pcommit] mi({},{}) bs{} mode={} tx={} out={} rh={:x} rcol:{} ay={:?} ly={:?} ttm={:?} rdm={} ad={} fi={} ef={}",
+            mi_row, mi_col, bsize, winner.mode, winner.tx_size, output_enabled as u8, rh, col,
+            above_y, left_y, winner.tx_type_map, env.rdmult, winner.angle_delta_y,
+            winner.use_filter_intra as u8, winner.luma_edge_filter_type
         );
     }
 

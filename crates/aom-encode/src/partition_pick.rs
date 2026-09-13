@@ -844,6 +844,31 @@ fn leaf_pick_sb_modes(
     let a0 = mi_col as usize;
     let l0 = (mi_row & 31) as usize;
 
+    if crate::tx_search::tx_dbg_target().is_some_and(|(r, c)| r == mi_row && c == mi_col) {
+        let mut top = String::from("[edge] top:");
+        if mi_row > env.tile_row_start {
+            for j in 0..10usize {
+                top.push_str(&format!(
+                    " {}",
+                    recon_y[ref_off_y - env.stride + j - 1]
+                ));
+            }
+        }
+        let mut left = String::from(" left:");
+        if mi_col > env.tile_col_start {
+            for i in 0..8usize {
+                left.push_str(&format!(
+                    " {}",
+                    recon_y[ref_off_y + i * env.stride - 1]
+                ));
+            }
+        }
+        eprintln!(
+            "[edge] mi({},{}) bs{} part{} {}{}",
+            mi_row, mi_col, bsize, partition, top, left
+        );
+    }
+
     // x->source_variance (pick_sb_modes:919).
     let source_variance = perpixel_variance_y(env.src_y, ref_off_y, env.stride, bsize, env.bd);
 
@@ -2652,6 +2677,15 @@ fn rd_pick_ab_part(
             *last_source_variance = sv;
         }
         w[i] = winner;
+        if part_dbg_target().is_some_and(|(r0, c0)| r0 == mi_row && c0 == mi_col)
+        {
+            let v = visits.last().unwrap();
+            eprintln!(
+                "[pab] mi({},{}) bs{} AB[{}] sub{} at({},{}) ok={} rate={} dist={} rd={} sum={}",
+                mi_row, mi_col, bsize, ab_type, i, r, c, ok, v.rate, v.dist,
+                v.rdcost, sum_rdc.rdcost
+            );
+        }
         // rd_try_subblock's own early-bail (:3161-3164) — inside the call,
         // against the leaf-folded best; `!ok` is rd_test_partition3's
         // `return false` (:3234).
@@ -3655,7 +3689,6 @@ pub fn rd_pick_partition_real(
             // and was dropped, while the port's HORZ_B won the 16x16.
             if w0.palette_y.is_none() && w0.palette_uv.is_none() && w0.uv_mode != UV_CFL_PRED {
                 is_rect_ctx_is_ready[i] = true;
-                rect_sub0_for_reuse[i] = Some(w0.clone());
             }
             // av1_update_state + encode_superblock(DRY_RUN_NORMAL)
             // (:3613-3616) — the MID-STAGE propagation: sub 1 reads sub 0's
@@ -3682,6 +3715,17 @@ pub fn rd_pick_partition_real(
                 false,
                 false,
             );
+            // The reuse snapshot must be taken AFTER the dry-run: C's
+            // av1_update_state ALIASES `xd->tx_type_map = ctx->tx_type_map`
+            // (encodeframe_utils.c:217), so encode_superblock's eob-0 ->
+            // DCT_DCT resets land in the ctx map itself, and the AB stage's
+            // av1_copy_tree_context copies the POST-reset map. Cloning w0
+            // pre-dry-run replays the pre-reset map into the reused leaf's
+            // forward transform — wrong coefficients, wrong recon, and a
+            // different left edge for the next sub-block (KB-62).
+            if is_rect_ctx_is_ready[i] {
+                rect_sub0_for_reuse[i] = Some(w0.clone());
+            }
             grid.stamp(
                 mi_row,
                 mi_col,

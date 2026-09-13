@@ -278,16 +278,14 @@ const KB28_HINT: &str = "a crop-axis cell stopped byte-matching real aomenc. The
 /// boundary that moves at speed 0 — which is why KB-28's `1..=6` band could
 /// not answer for it.
 ///
-/// **MEASURED 2026-08-03: 4:2:0 is 2/2 byte-exact. MONOCHROME DIVERGES** at
-/// both crops (-150 at 474x480, +160 at 714x720) — and that is **not this
-/// axis's finding**. It is `s4cov_partial_sb_axis::MONO_S0_OPEN`, the
-/// pre-existing `(monochrome, base_qindex 96, speed 0)` near-tie whose own
-/// localizer reduces it to a **single 64x64 superblock** at cq24, i.e. to a
-/// frame with no crop straddle at all. The attribution is not argued here, it
-/// is measured: each mono crop is run beside an **SB-exact mono control at its
-/// own mi-aligned extent** (480x480, 720x720), where the crop and mi readings
-/// AGREE and KB-28's root is a literal no-op. Those controls diverge too, so
-/// the divergence does not depend on the straddle.
+/// **MEASURED 2026-09-13: 6/6 byte-exact** — the mono rows and both SB-exact
+/// controls closed with KB-62 (the rect-stage AB-reuse clone's stale
+/// tx_type_map; the "mono s0" band was never mono-specific, just the only
+/// place the near-tie landed inside a pinned cell). Earlier measurement,
+/// 2026-08-03: 4:2:0 2/2 exact, mono diverged at both crops AND at the
+/// SB-exact controls — the controls are retained so a future mono-s0
+/// regression that DOES depend on the straddle is distinguishable from a
+/// KB-62-class window reopening.
 ///
 /// Pinned self-promoting in both directions rather than moved to a quality
 /// point where it does not fire (which is the banned form).
@@ -297,10 +295,8 @@ fn crop_straddle_speed0_byte_matches() {
     let b8 = base_b8();
     let mono = to_mono(&b8, "mono");
     // (tag, w, h) -> byte delta, for the rows that are NOT byte-exact.
-    // Measured 2026-08-03; every entry is monochrome and every entry has a
-    // diverging SB-exact control, i.e. none of them is the crop straddle.
-    const MONO_S0_OPEN: &[(&str, usize, usize, i64)] =
-        &[("mono", 474, 480, -150), ("mono", 714, 720, 160)];
+    // Empty since KB-62 (2026-09-13) — kept as the regression lock.
+    const MONO_S0_OPEN: &[(&str, usize, usize, i64)] = &[];
     let mut rows = Vec::new();
     let mut ctl_rows = Vec::new();
     for &(w, h) in &CROPS {
@@ -337,23 +333,18 @@ fn crop_straddle_speed0_byte_matches() {
     // the teeth on `use_square_partition_only_threshold`'s speed-0 tiers.
     let ss_bad: Vec<&String> = bad.iter().filter(|b| b.starts_with("420")).collect();
     assert!(ss_bad.is_empty(), "{KB28_HINT}: {ss_bad:?}");
-    // The monochrome rows are pinned, and pinned WITH their attribution: the
-    // SB-exact controls must diverge too, or the divergence really is the
-    // straddle and belongs to KB-28 after all.
-    assert!(
-        !ctl_bad.is_empty(),
-        "the SB-exact monochrome speed-0 controls (480x480, 720x720) are now byte-exact \
-         while the CROPS diverge — that makes the divergence depend on the straddle, i.e. \
-         it IS KB-28's root and not `s4cov_partial_sb_axis::MONO_S0_OPEN`. Re-localize \
-         before touching anything else"
-    );
+    // Post-KB-62 the controls and crops are all expected clean; if a mono row
+    // diverges again, whether its control does too distinguishes a straddle
+    // bug (KB-28's root) from a window reopening.
+    if !ctl_bad.is_empty() || !observed.is_empty() {
+        eprintln!("crop rows diverging: {observed:?}; controls diverging: {ctl_bad:?}");
+    }
     assert_eq!(
         observed,
         MONO_S0_OPEN.to_vec(),
-        "the speed-0 crop map moved. A row that started MATCHING means the monochrome \
-         cq24 speed-0 near-tie closed (re-pin here AND in \
-         `s4cov_partial_sb_axis::partial_sb_speed_axis_chroma_formats_byte_match`, which \
-         pins the same class at 132x132 / 192x192 / 196x196 / 256x256). A 4:2:0 row \
+        "the speed-0 crop map moved. A diverging mono row whose SB-exact control ALSO \
+         diverges is the KB-62 window reopening (check the control list above); one whose \
+         control stays clean depends on the straddle and is KB-28's root. A 4:2:0 row \
          appearing here is KB-28's root returning"
     );
 }

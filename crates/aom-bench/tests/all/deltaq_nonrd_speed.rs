@@ -68,13 +68,13 @@ fn run_cell(cell: &EncodeCell, mode: i32) -> Result<usize, String> {
     ))
 }
 
-/// Cells the port is byte-identical on. `cq 63` is NOT here — see
-/// [`NONRD_CQ63_OPEN`].
+/// Cells the port is byte-identical on — `cq 63` included since KB-58
+/// (`c6cef5d`, 2026-09-12) closed it; see [`NONRD_CQ63_OPEN`].
 fn gated_cells() -> Vec<(EncodeCell, i32)> {
     let mut cells = Vec::new();
     for mode in [2, 3] {
         for speed in [8, 9] {
-            for cq in [12, 32, 48, 55, 60] {
+            for cq in [12, 32, 48, 55, 60, 63] {
                 cells.push((cell(192, 192, cq, speed), mode));
             }
             // A non-square shape (3x2 SBs), so the running-base chain is
@@ -85,9 +85,11 @@ fn gated_cells() -> Vec<(EncodeCell, i32)> {
     cells
 }
 
-/// The measured open set, pinned self-promotingly (playbook §5): `cq 63` only,
-/// at both nonrd speeds, in both modes. See the module doc for the attribution.
-const NONRD_CQ63_OPEN: &[(i32, i32)] = &[(2, 8), (2, 9), (3, 8), (3, 9)];
+/// The measured open set. Empty since KB-58 (`c6cef5d`, 2026-09-12 — the
+/// per-SB-qindex plumbing landed the `current_qindex` stamp the attribution
+/// below names); the pin had been written against `ae93253` and sat stale
+/// until a full-suite run re-measured it 2026-09-13.
+const NONRD_CQ63_OPEN: &[(i32, i32)] = &[];
 
 /// THE gate. Every cell here was a hard `assert_eq!` panic inside
 /// `port_encode_with` before `setup_delta_q_nonrd` was ported.
@@ -136,6 +138,13 @@ fn the_modes_are_inert_at_nonrd_speeds_and_that_is_the_prediction() {
     let mut flag_off = 0usize;
     let mut checked = 0usize;
     for (c, mode) in gated_cells() {
+        // cq 63 is the non-vacuity witness, not an inertness subject: it is
+        // where the clamp inside `av1_adjust_q_from_delta_q_res` bites and the
+        // reference DOES move — asserted below. It stays in `gated_cells` for
+        // the byte-match gate.
+        if c.cq_level == 63 {
+            continue;
+        }
         let with_stream = c.c_encode_ctrls(&[(AV1E_SET_DELTAQ_MODE, mode)]);
         let plain = EncodeCell::frame_obu_payload(&c.c_encode_ctrls(&[]));
         let with = EncodeCell::frame_obu_payload(&with_stream);
@@ -178,47 +187,48 @@ fn the_modes_are_inert_at_nonrd_speeds_and_that_is_the_prediction() {
     println!("gated: {inert}/{checked} inert, {flag_off}/{checked} flag-off; cq63: {moved}/4 moved");
 }
 
-/// The measured residual, pinned in BOTH directions. `cq 63` (base_qindex 63)
-/// diverges at both nonrd speeds in both modes, while every other quantizer on
-/// the same content and the PLAIN (no delta-q) control at cq 63 are
-/// byte-identical — so this is delta-q's, not a general cq-63 nonrd defect.
+/// The cq-63 nonrd divergence — CLOSED by KB-58 (`c6cef5d`, 2026-09-12) and
+/// kept here as the regression guard over exactly the cells that once moved.
+/// `cq 63` (base_qindex 63) diverged at both nonrd speeds in both modes while
+/// every other quantizer on the same content and the PLAIN (no delta-q)
+/// control at cq 63 were byte-identical — delta-q's defect, not a general
+/// cq-63 nonrd one.
 ///
-/// Measured attribution, not a guess:
+/// The measured attribution, which is also what the fix landed:
 ///
 /// * `--cpu-used 8`: the reference header carries `delta_q_present = false`, and
-///   the port agrees, yet the reference stream is 235 B against plain's 228 —
+///   the port agreed, yet the reference stream was 235 B against plain's 228 —
 ///   `setup_delta_q_nonrd`'s per-superblock `av1_init_plane_quantizers` +
-///   `mi->current_qindex` stamp are observable with the flag off, and the port
-///   models the flag but not that.
+///   `mi->current_qindex` stamp are observable with the flag off. KB-58 made
+///   every search-time `x->qindex` read the SB's adjusted qindex
+///   (`sb_pick_cfg.qindex`) instead of the frame base — exactly this stamp.
 /// * `--cpu-used 9`: the reference carries `delta_q_present = TRUE` with
-///   `delta_q_res = 8`. 8 is not `DEFAULT_DELTA_Q_RES_PERCEPTUAL` (4) — it is
-///   what `aom_get_variance_boost_delta_q_res` produces, i.e. at speed 9 the
-///   reference is on the `DELTA_Q_VARIANCE_BOOST` arm of
-///   `setup_delta_q_nonrd`, NOT on mode 2/3 at all. That arm is deliberately
-///   unported (see `setup_delta_q_nonrd`'s doc): modelling it would be claiming
-///   coverage no cell here can check.
+///   `delta_q_res = 8` — what `aom_get_variance_boost_delta_q_res` produces,
+///   i.e. the `DELTA_Q_VARIANCE_BOOST` arm, not mode 2/3 at all.
 ///
-/// Bounded: cq {12, 32, 48, 55, 60} match at both speeds in both modes, and so
-/// does the 192x128 shape. Promote a row into `gated_cells` when it closes.
+/// The pin went stale unobserved: written against `ae93253` (KB-46), closed by
+/// `c6cef5d`, re-measured 2026-09-13 on the first full-suite run since.
 #[test]
 fn cq63_at_nonrd_speeds_is_pinned_open() {
     let mut open = Vec::new();
-    for &(mode, speed) in NONRD_CQ63_OPEN {
-        let c = cell(192, 192, 63, speed);
-        if run_cell(&c, mode).is_err() {
-            open.push((mode, speed));
+    for mode in [2, 3] {
+        for speed in [8, 9] {
+            let c = cell(192, 192, 63, speed);
+            if run_cell(&c, mode).is_err() {
+                open.push((mode, speed));
+            }
         }
     }
     assert_eq!(
         open.as_slice(),
         NONRD_CQ63_OPEN,
-        "the pinned cq-63 nonrd divergence set MOVED. A row that closed must be \
-         promoted into `gated_cells`; a NEW row is a regression."
+        "the cq-63 nonrd cells moved — a NEW divergence (the set has been empty \
+         since KB-58): {open:?}"
     );
 
     // The control that attributes it to delta-q rather than to cq 63: with no
     // delta-q knob at all, the same cells are byte-identical.
-    for &(_, speed) in NONRD_CQ63_OPEN {
+    for speed in [8, 9] {
         let c = cell(192, 192, 63, speed);
         let s = c.c_encode_ctrls(&[]);
         assert_eq!(

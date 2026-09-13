@@ -849,7 +849,21 @@ pub fn c_search_tx_type_p(
                 if lossless {
                     c::ref_highbd_iwht4x4_add(&dqc, &mut recon, w, eob, bd as i32);
                 } else {
-                    c::ref_inv_txfm2d_add(tx_size, &dqc, &mut recon, w, tx_type, bd as i32);
+                    // `dist_block_px_domain` re-derives the tx type via
+                    // `av1_get_tx_type` (tx_search.c:1060): for intra chroma
+                    // that is the UV-MODE-derived type, not the searched
+                    // `tx_type` — the two agree only because the chroma mask
+                    // is normally `1 << derived`; `use_intra_dct_only` pins the
+                    // forward transform to DCT_DCT while the px-domain inverse
+                    // still applies the derived type (KB-60).
+                    let px_tx_type = if plane == 0 {
+                        tx_type
+                    } else {
+                        aom_encode::tx_search::uv_intra_tx_type(
+                            uv_mode, lossless, tx_size, reduced,
+                        )
+                    };
+                    c::ref_inv_txfm2d_add(tx_size, &dqc, &mut recon, w, px_tx_type, bd as i32);
                 }
                 let (_v, vf_sse) = c::ref_hbd_variance(
                     VAR_IDX[tx_size],
@@ -1185,7 +1199,22 @@ pub fn c_txfm_rd_in_plane_uv(
                 if env.lossless {
                     c::ref_highbd_iwht4x4_add(&wdqc, &mut tight, txw, weob as usize, env.bd as i32);
                 } else {
-                    c::ref_inv_txfm2d_add(tx_size, &wdqc, &mut tight, txw, wtype, env.bd as i32);
+                    // `recon_intra` → `inverse_transform_block_facade`
+                    // re-derives the tx type via `av1_get_tx_type`
+                    // (tx_search.c:910): for intra chroma that is the
+                    // UV-MODE-derived type, not the winner's searched type —
+                    // they differ under `use_intra_dct_only` (KB-60).
+                    let recon_tx_type = if plane == 1 || plane == 2 {
+                        aom_encode::tx_search::uv_intra_tx_type(
+                            uv_mode,
+                            env.lossless,
+                            tx_size,
+                            env.reduced,
+                        )
+                    } else {
+                        wtype
+                    };
+                    c::ref_inv_txfm2d_add(tx_size, &wdqc, &mut tight, txw, recon_tx_type, env.bd as i32);
                 }
                 for r in 0..txh {
                     recon[txb_off + r * env.stride..txb_off + r * env.stride + txw]

@@ -2957,7 +2957,7 @@ pub(crate) fn set_tx_dbg_verbose(on: bool) {
     TX_DBG_VERBOSE.set(on);
 }
 
-fn tx_dbg_target() -> Option<(i32, i32)> {
+pub(crate) fn tx_dbg_target() -> Option<(i32, i32)> {
     use std::sync::OnceLock;
     static T: OnceLock<Option<(i32, i32)>> = OnceLock::new();
     *T.get_or_init(|| {

@@ -372,17 +372,12 @@ fn partial_sb_speed_axis_chroma_formats_byte_match() {
         ("444 ", to_ss(&b8, "444", 0, 0)),
         ("422 ", to_ss(&b8, "422", 1, 0)),
     ];
-    // The monochrome speed-0 near-tie, pinned in BOTH directions. It is NOT
-    // this axis's finding — `mono_speed0_size_qindex_localize` reduces it to
-    // 64x64 (one superblock) at cq24 alone — but it lands in this grid, and
-    // the alternative to pinning it would be moving the grid to a quality
-    // point where it does not fire, which is the banned form.
-    const MONO_S0_OPEN: &[(&str, usize, usize, i32)] = &[
-        ("mono", 132, 132, 0),
-        ("mono", 192, 192, 0),
-        ("mono", 196, 196, 0),
-        ("mono", 256, 256, 0),
-    ];
+    // The monochrome speed-0 near-tie CLOSED 2026-09-13 (KB-62): the
+    // rect-stage AB-reuse clone snapshot `w0` before the mid-stage dry-run
+    // reset its tx_type_map — C's `av1_update_state` aliases
+    // `xd->tx_type_map` to the ctx array so the ctx the AB stage copies is
+    // POST-reset. Empty pin kept as the regression lock.
+    const MONO_S0_OPEN: &[(&str, usize, usize, i32)] = &[];
     let mut observed: Vec<(String, usize, usize, i32)> = Vec::new();
     let mut panicked: Vec<String> = Vec::new();
     for (tag, src) in &formats {
@@ -424,25 +419,27 @@ fn partial_sb_speed_axis_chroma_formats_byte_match() {
         observed, pinned,
         "the non-4:2:0 partial-SB x speed map moved. A PARTIAL-SB-only change at speed >= 1 \
          is KB-23's shape at a subsampling it was never measured at; a row that started \
-         MATCHING means the monochrome cq24 speed-0 near-tie closed (re-pin, and delete \
-         `mono_speed0_size_qindex_localize`)"
+         DIVERGING is a new divergence to localize (the KB-62 mono speed-0 near-tie \
+         reopened, or a new bug) — `mono_speed0_size_qindex_localize` bounds the window"
     );
 }
 
-/// **Localizer for the monochrome divergence found by the test above.**
-/// Diagnostic, not a gate.
+/// **Regression guard over the monochrome speed-0 near-tie's window** — the
+/// KB-62 divergence this used to localize CLOSED 2026-09-13 (the rect-stage
+/// AB-reuse clone held the PRE-dry-run tx_type_map; C's `av1_update_state`
+/// aliases `xd->tx_type_map` to the ctx array so the copied ctx is post-reset).
+/// Kept as a gate because the bug lived in a narrow window the main grid does
+/// not cover: 64x64 mono at cq24 alone.
 ///
-/// The first map (size x cq at `--cpu-used=0`) showed the divergence is NOT a
-/// multi-superblock effect at all: **64x64 monochrome — a single superblock —
-/// diverges too, and only at cq24**. So the shape is
-/// `(monochrome, base_qindex 96, speed 0)`, which is why no existing gate sees
-/// it: `config_permutations.rs`'s `q00_mono64` row runs the same 64x64 mono
-/// content at every speed 0..9 but at `SPEED_CQ = 32`, one quality point away.
+/// The original localizer found: 64x64 monochrome — a single superblock —
+/// diverged at cq24, speed 0 only. The shape was
+/// `(monochrome, base_qindex 96, speed 0)`; `config_permutations.rs`'s
+/// `q00_mono64` row runs the same content at `SPEED_CQ = 32`, one quality
+/// point away.
 ///
-/// This version sweeps cq densely around 24 to bound the qindex window, walks
-/// the speed axis at the divergent point, and runs a 4:2:0 control on the
-/// identical crop and cq — so "monochrome" and "this quality point" are
-/// separated by measurement rather than by assumption.
+/// This sweeps cq densely around 24, walks the speed axis at that point, and
+/// runs a 4:2:0 control on the identical crop and cq — so "monochrome" and
+/// "this quality point" stay separated by measurement.
 #[test]
 #[ignore = "~40 encode pairs; diagnostic, run explicitly"]
 fn mono_speed0_size_qindex_localize() {
@@ -500,14 +497,14 @@ fn mono_speed0_size_qindex_localize() {
     );
     assert!(
         ctl_bad_speed.is_empty(),
-        "the 4:2:0 CONTROL diverged at the same crop and cq, so the divergence is not \
-         monochrome-specific and this localizer is pointed at the wrong axis: {ctl_bad_speed:?}"
+        "the 4:2:0 CONTROL diverged at the same crop and cq — a divergence that is not \
+         monochrome-specific is a new bug, not the KB-62 window: {ctl_bad_speed:?}"
     );
     assert!(
-        !mono_bad_cq.is_empty(),
-        "64x64 monochrome is now byte-exact across cq18..30 at speed 0 — the divergence \
-         this localizer exists for has closed. Re-pin `MONO_S0_OPEN` in \
-         `partial_sb_speed_axis_chroma_formats_byte_match` and delete this test."
+        mono_bad_cq.is_empty() && mono_bad_speed.is_empty(),
+        "the KB-62 window reopened: 64x64 monochrome diverges at cpu0 cq {mono_bad_cq:?} / \
+         cq24 speeds {mono_bad_speed:?} — the AB-reuse clone's tx_type_map is stale again \
+         (or a new mechanism in the same window)"
     );
 }
 

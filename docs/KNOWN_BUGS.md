@@ -5,6 +5,74 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-62 — Encoder: the rect-stage AB-reuse clone snapshot the PRE-dry-run `tx_type_map` — FIXED 2026-09-13, `MONO_S0_OPEN` + `SPEED0_1080P_OPEN`/`HD_HBD_OPEN` closed
+
+- **Symptom.** Every speed-0 near-tie pin in the tree: `MONO_S0_OPEN`
+  (`s4cov_partial_sb_axis`: mono {132,192,196,256}² s0 — reduced to a single
+  64x64 superblock at cq24, port 315 B vs C 320 B, first diff at payload
+  byte 2, on BOTH the bootstrap and the self-contained standalone paths);
+  `MONO_S0_OPEN` in `s4cov_crop_format_axis` (mono 474x480 / 714x720 s0 plus
+  both SB-exact controls); `SPEED0_1080P_OPEN` + `HD_HBD_OPEN`
+  (`s4cov_hd_format_axis`: bd8/bd10/bd12 1920x1080 cq24 s0); and
+  `config_permutations`'s `scr_mono_b10/cq32/diag=0` cell. The divergences
+  were all payload-only near-ties with deltas of a handful of bytes.
+- **Mechanism — a stale `tx_type_map` in the AB-partition reuse path.** At a
+  `BLOCK_16X16` node (`mi(0,0)`, 64x64 mono cq24 s0), the port picked
+  `VERT_B` where C picked `VERT`. Traced to the AB candidate's FIRST
+  sub-block: `VERT_B` sub-0 at `mi(0,0)` `BLOCK_8X16` reuses the `VERT`
+  sub-0's searched winner (`is_rect_ctx_is_ready[VERT]`). In C,
+  `av1_update_state` does `xd->tx_type_map = ctx->tx_type_map`
+  (encodeframe_utils.c:217) — an ALIAS, not a copy — so the mid-stage
+  `encode_superblock(DRY_RUN_NORMAL)`'s eob-0 -> DCT_DCT resets
+  (encodemb.c:770-779) write THROUGH the alias into `ctx->tx_type_map`
+  itself. When the AB stage later `av1_copy_tree_context`s that ctx, the
+  map it gets is POST-reset. The port's `rect_sub0_for_reuse[i] =
+  Some(w0.clone())` ran BEFORE the mid-stage `encode_b_intra_dry`, so the
+  clone carried the eval's post-search map — one eob-0 txb still holding its
+  searched `ADST_DCT` where C's held `DCT_DCT`. The reused leaf's
+  re-encode then read that stale type for its forward transform
+  (`encode_intra_block_plane_y`'s `get_tx_type_y`), producing different
+  coefficients and a different right column (86.. vs C's 89..) — which is
+  the next sub-block's LEFT edge, so sub-1's eval diverged too, and the
+  accumulated candidate beat C's `VERT` by ~0.5%. The split-child reuse
+  (`split_child_leaf_for_reuse`) was already correct: it clones the
+  committed `SbTree::Leaf`, whose own `encode_sb_dry` walk had already reset
+  the map — the same aliasing, one level down.
+- **Why it LOOKED like framesize/mono/depth bands.** The stale entry only
+  changes a stream when (a) a rect sub-0 winner is reuse-eligible (no
+  palette, no CFL), (b) one of its eob-0 txbs searched a non-DCT type, and
+  (c) the shifted recon flips a near-tie — a per-block coin toss that needs
+  enough blocks to land once. `MONO_S0_OPEN` was never monochrome-specific
+  and `SPEED0_1080P_OPEN` was never a framesize arm: ~2 MP is simply where
+  the pinned cells had enough superblocks for the near-tie to fire. The
+  earlier hypothesis that the residual was an unported `use_best_rd_for_pruning`
+  leaf-invalidation was falsified: the port's `rd_try_subblock` accumulated-cost
+  bail is equivalent to C's `rate == INT_MAX` leaf rejection for the
+  decision at hand.
+- **Fix.** `partition_pick.rs`: take the reuse clone AFTER the mid-stage
+  `encode_b_intra_dry`, so `rect_sub0_for_reuse[i]` captures the post-reset
+  map exactly as C's ctx does. One moved statement plus the rationale
+  comment; no other call-site changes.
+- **Verified.** `mono_speed0_size_qindex_localize`: 64x64 mono cpu0 clean
+  across cq18..30 AND speeds 0..7 (was cq24-only) — kept as a regression
+  guard over the window. `partial_sb_speed_axis_chroma_formats_byte_match`:
+  **96/96** (mono 32/32, 4:4:4 32/32, 4:2:2 32/32), `MONO_S0_OPEN = &[]`.
+  `crop_straddle_speed0_byte_matches`: 6/6 including both controls.
+  `s4cov_hd_format_axis`: `above_1080p_format_axis` + `band_1440_to_2160` +
+  `crop_straddling_4k_arm` all green; `speed0_1080p_qindex_arm_localize`
+  `divergent rows: []`; `SPEED0_1080P_OPEN`/`HD_HBD_OPEN` re-pinned to `&[]`.
+  `mono_vector_open_divergences_pinned` 6/6 exact, `CONTENT_DIVERGENT_CELLS =
+  &[]`. `bd12_dispatch_tier_agreement`'s >=1080p map all-zero (the
+  `1920x1080 cq24` cell the standing goal named: +59 -> 0).
+  `self_contained_key_frame` 10/10 (549 cells), e2e byte-match 32/32,
+  `encoder_gate_bd10_diff` 7/7, coding-tools 48/48, `speed_envelope` and all
+  43 `combinations_*` green. NOT closed (different roots, still pinned):
+  `S_SB128_480_OPEN`/`S_SB128_512_OPEN` (size-axis finding B — two of three
+  carry `ab0`, which cannot be this mechanism), the SCM trial gap, and the
+  cpu-8 photo rows needing content not in-repo. (`NONRD_CQ63_OPEN` also reads
+  clean now — but that was KB-58's per-SB-qindex plumbing, measured stale
+  2026-09-13, not this fix.)
+
 ### KB-61 — Encoder: the intra CNN partition-prune window truncated HBD samples to `u8` — FIXED 2026-09-13, the entire `HBD_OPEN` band closed
 
 - **Symptom.** Every high-bit-depth divergence pin in the tree — the
@@ -791,18 +859,22 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
   24/24 inert AND 24/24 flag-off, so an encoder that modulated would fail it), and what keeps
   it from being vacuous is the cq-63 row, where the reference DOES move — 235 B against
   plain's 228 at `--cpu-used 8`.
-- **NEWLY NAMED, NOT CLOSED — `NONRD_CQ63_OPEN`, 4 cells, pinned self-promotingly.** cq 63
-  (base_qindex 63) diverges at both nonrd speeds in both modes; every other quantizer on the
-  same content matches, and so does the PLAIN no-delta-q control at cq 63 — asserted inside
-  the pin, so the attribution is measured, not argued. Two different mechanisms:
-  * `--cpu-used 8`: real header `delta_q_present = false` and the port AGREES, yet the real
-    stream is 235 B against plain's 228. `setup_delta_q_nonrd` re-runs
-    `av1_init_plane_quantizers` and stamps `mi->current_qindex` per superblock even when the
-    delta is zero — observable in the bitstream with the header bit off, and unmodelled.
-  * `--cpu-used 9`: real header `delta_q_present = TRUE` with **`delta_q_res = 8`**. 8 is not
-    `DEFAULT_DELTA_Q_RES_PERCEPTUAL` (4) — it is what `aom_get_variance_boost_delta_q_res`
-    produces, i.e. at speed 9 the reference is on the `DELTA_Q_VARIANCE_BOOST` arm, not on
-    mode 2/3 at all. Why speed 9 takes it and speed 8 does not is **unmeasured**.
+- **`NONRD_CQ63_OPEN` — CLOSED by KB-58 (`c6cef5d`, 2026-09-12); the pin sat
+  stale until a full-suite re-run measured it 2026-09-13.** cq 63
+  (base_qindex 63) diverged at both nonrd speeds in both modes; every other
+  quantizer on the same content matched, and so did the PLAIN no-delta-q
+  control at cq 63 — the pin asserted the control, so the attribution was
+  measured, not argued. Two different mechanisms:
+  * `--cpu-used 8`: real header `delta_q_present = false` and the port AGREED,
+    yet the real stream was 235 B against plain's 228. `setup_delta_q_nonrd`
+    re-runs `av1_init_plane_quantizers` and stamps `mi->current_qindex` per
+    superblock even when the delta is zero — observable in the bitstream with
+    the header bit off. KB-58 landed exactly that stamp: every search-time
+    `x->qindex` read now takes the SB's adjusted qindex (`sb_pick_cfg.qindex`)
+    instead of the frame base.
+  * `--cpu-used 9`: real header `delta_q_present = TRUE` with **`delta_q_res =
+    8`** — what `aom_get_variance_boost_delta_q_res` produces, i.e. the
+    `DELTA_Q_VARIANCE_BOOST` arm, not mode 2/3 at all.
 
 ### KB-45 — Decoder: the per-mi DV grid was 12 ms of un-pollable frame setup at 4096² — FIXED ✅ 2026-09-08 (GitHub #17)
 
@@ -3789,7 +3861,12 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   one cell. Both stages were reaching it and both had the sf zeroed. Keep the probe (a reach
   counter answers "is this arm live" in one run); do not keep the inference.
 
-### KB-27 — Encoder: MONOCHROME at `--cq-level 24` (`base_qindex` 96), speed 0 — a single-point near-tie — OPEN, pinned
+### KB-27 — Encoder: MONOCHROME at `--cq-level 24` (`base_qindex` 96), speed 0 — a single-point near-tie — CLOSED ✅ 2026-09-13 by KB-62
+- **CLOSED by KB-62.** The root was the rect-stage AB-reuse clone carrying the PRE-dry-run
+  `tx_type_map` where C's `av1_update_state` aliasing (`xd->tx_type_map = ctx->tx_type_map`,
+  encodeframe_utils.c:217) leaves the copied ctx map POST-reset — not a monochrome or
+  quality-point property at all; 64x64 mono cq24 was simply the narrowest window where the
+  near-tie fired. Full mechanism in the KB-62 entry above.
 - **Found 2026-08-01** by adding monochrome to KB-23's (partial-SB × speed) grid. First read as
   a multi-superblock effect (132²/192²/196²/256² all divergent at cpu0 while every speed 1..7 was
   byte-exact); `mono_speed0_size_qindex_localize` reduced it much further:
@@ -5073,7 +5150,20 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   so the `PaletteSearchArgs` refactor and the `color_palette_thresh` threading are byte-inert
   on the pre-existing palette path.
 
-### KB-38 — Encoder: `av1_set_speed_features_qindex_dependent`'s `is_1080p_or_larger && base_qindex <= 108` sub-block was UNMODELLED — PORTED ✅ 2026-08-04, and the cells it moves are NOT closed (self-promoting pin)
+### KB-38 — Encoder: `av1_set_speed_features_qindex_dependent`'s `is_1080p_or_larger && base_qindex <= 108` sub-block was UNMODELLED — PORTED ✅ 2026-08-04; residual CLOSED ✅ 2026-09-13 by KB-62
+
+- **RESIDUAL CLOSED 2026-09-13 (KB-62), and the closure rewrites this entry's central
+  reading.** The leftover pins — `bd8 1920x1080 cq24`, `bd10 1920x1080 cq24`, plus the
+  bd12 row — were NOT "at least one further root at `(speed 0, min(w,h) >= 1080)`". They
+  were the KB-62 stale `tx_type_map` in the rect-stage AB-reuse clone, whose near-tie needs
+  enough superblocks to fire and simply had them at ~2 MP. The "sharper" `1080x1080 cq24`
+  reproducer and the `1920x1072`-vs-`1920x1080` razor were real measurements of a counting
+  artifact, not a predicate boundary — the `AOMMIN(w,h) >= 1080` term LOOKED load-bearing
+  because the arm it gates was also live on the divergent cells. All twelve
+  `speed0_1080p_qindex_arm_localize`/`speed0_1080p_band_map_is_pinned` rows and the whole
+  `HD_HBD_OPEN`/`SPEED0_1080P_OPEN` pin set are byte-exact at KB-62. The arm port below
+  stands — it moved the deltas measurably and is byte-required — and the pins are kept
+  empty as the regression lock.
 - **Found 2026-08-04** by the format axis of KB-36's band: `s4cov_hd_format_axis.rs`'s
   high-bit-depth arm ran 1920x1080 at `--cpu-used` {0, 7} — the only speeds where hbd is
   readable — and speed 0 diverged at bd10 (**+483 B**) and bd12 (**+181 B**) while every

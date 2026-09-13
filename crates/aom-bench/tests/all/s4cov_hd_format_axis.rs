@@ -323,8 +323,11 @@ fn above_1080p_format_axis_byte_matches() {
 /// high-bit-depth frame in the tree before this was 256x256
 /// (`s4cov_partial_sb_axis.rs`).
 ///
-/// **MEASURED 2026-08-04: 6/8 byte-exact** — see `HD_HBD_OPEN`; the two open
-/// rows are KB-38's speed-0 band, which reaches bd8 too.
+/// **MEASURED 2026-09-13: 8/8 byte-exact** — the two open rows closed with
+/// KB-62: they were never high-bit-depth or framesize-specific, they were the
+/// rect-stage AB-reuse clone's stale tx_type_map landing in the only speed-0
+/// >=1080p cells on the grid. Earlier measurement, 2026-08-04: 6/8, the two
+/// speed-0 1920x1080 rows open as `HD_HBD_OPEN`.
 #[test]
 #[ignore = "8 high-bit-depth encode pairs at 1920x1072/1080 (~2 min); nightly / on-demand tier"]
 fn above_1080p_high_bitdepth_byte_matches_where_interpretable() {
@@ -339,15 +342,11 @@ fn above_1080p_high_bitdepth_byte_matches_where_interpretable() {
 
     /// Divergent `(tag, h, speed)` rows, pinned in both directions.
     ///
-    /// **MEASURED 2026-08-04: 6/8 byte-exact.** The two speed-0 rows at
-    /// 1920x1080 are **KB-38's band, not this axis's finding** — measured, not
-    /// argued: `speed0_1080p_band_map_is_pinned` reproduces them at **bd8** as
-    /// well (-726 B), and their `1920x1072` twins at the same bit depths and
-    /// quantizer are byte-exact. Every speed-7 row here matches, which is what
-    /// this test set out to establish (the >= 1080p band at high bit depth had
-    /// never been encoded at all — the largest hbd frame in the tree before
-    /// this was 256x256).
-    const HD_HBD_OPEN: &[(&str, usize, i32)] = &[("bd10", 1080, 0), ("bd12", 1080, 0)];
+    /// **Empty since KB-62 (2026-09-13).** The two 2026-08-04 speed-0 rows at
+    /// 1920x1080 were attributed to "KB-38's band" — the stale AB-reuse
+    /// tx_type_map was the actual root; the >=1080p shape was just the cell
+    /// count it took for the near-tie to fire.
+    const HD_HBD_OPEN: &[(&str, usize, i32)] = &[];
 
     let mut observed: Vec<(String, usize, i32)> = Vec::new();
     let mut panicked: Vec<String> = Vec::new();
@@ -395,13 +394,15 @@ fn above_1080p_high_bitdepth_byte_matches_where_interpretable() {
 }
 
 /// **Localizer for the speed-0 >=1080p divergence the test above found.**
-/// Diagnostic, not a gate — the gate is
-/// [`speed0_1080p_qindex108_arm_byte_matches`] below.
+/// Diagnostic — the band CLOSED 2026-09-13 (KB-62: the stale AB-reuse
+/// tx_type_map, not a framesize arm). Kept for its 12-cell sweep, which is
+/// still the only speed-0 coverage straddling KB-38's predicate.
 ///
-/// The finding: `1920x1080 cq24 --cpu-used 0` diverges at bd10 (+483 B) and
-/// bd12 (+181 B) while every speed-7 row matches. The candidate mechanism is
-/// the **sub-block nothing in the tree had ever entered**
-/// (speed_features.c:2926-2935):
+/// The finding (2026-08-04): `1920x1080 cq24 --cpu-used 0` diverged at bd10
+/// (+483 B) and bd12 (+181 B) while every speed-7 row matched. The mechanism
+/// hypothesized then was the **sub-block nothing in the tree had ever
+/// entered** (speed_features.c:2926-2935) — ported and byte-load-bearing, but
+/// not the residual's root:
 ///
 /// ```text
 /// if (speed == 0) {
@@ -416,13 +417,12 @@ fn above_1080p_high_bitdepth_byte_matches_where_interpretable() {
 ///       ...
 /// ```
 ///
-/// **The predicate, stated so it can be falsified on one cell** (playbook §9):
-/// the arm fires exactly when `speed == 0 && AOMMIN(w, h) >= 1080 &&
-/// base_qindex <= 108`. cq24 is `base_qindex` 96 (fires); cq32 is 128 (does
-/// not). So the grid below must diverge on **exactly** the two
-/// `1920x1080 cq24` rows and match on the other ten — a size that is >= 720 but
-/// < 1080 cannot fire it at any quantizer, and a >= 1080p frame at cq32 cannot
-/// either.
+/// **The predicate** (it was falsified as the residual's root — the arm is
+/// ported and the grid now matches on all twelve rows): the arm fires exactly
+/// when `speed == 0 && AOMMIN(w, h) >= 1080 && base_qindex <= 108`. cq24 is
+/// `base_qindex` 96 (fires); cq32 is 128 (does not). The 2026-08-04 map
+/// diverged on exactly the two `1920x1080 cq24` rows — which LOOKED like the
+/// arm but was the KB-62 near-tie firing where the frames happen to be large.
 ///
 /// That three-term window is why nothing caught it: KB-36's >= 1080p grid runs
 /// `--cpu-used` 1..9 (the whole block is `speed == 0`), and KB-19/KB-22's
@@ -464,43 +464,35 @@ fn speed0_1080p_qindex_arm_localize() {
     );
 }
 
-/// **The gate over the same 12-cell grid — a self-promoting pin (playbook §5),
-/// because the speed-0 >=1080p band is NOT closed.**
+/// **The gate over the same 12-cell grid — a regression lock (playbook §5);
+/// the speed-0 >=1080p band CLOSED 2026-09-13 with KB-62.**
 ///
-/// KB-38's arm is ported, and it is load-bearing: it moved
-/// `bd8 1920x1080 cq24` from **-536 B to -726 B** and `bd10` from **+483 to
-/// +408**. It did not close either cell, and one more row diverges that the
-/// arm's predicate does not explain at all (`bd10 1920x1080 cq32`, **-8 B** —
-/// `base_qindex` 128 is above this sub-block's 108, and its bd8 twin at the
-/// same size and quantizer is byte-exact). So there is at least one further
-/// root at `(speed 0, min(w,h) >= 1080)`, and this pin records the map rather
-/// than asserting a closure that has not happened.
+/// KB-38's arm is ported, and it was load-bearing while the band was open:
+/// it moved `bd8 1920x1080 cq24` from **-536 B to -726 B** and `bd10` from
+/// **+483 to +408**. The residual the pin recorded was not a third speed-0
+/// framesize arm at all — it was the rect-stage AB-reuse clone snapshotting
+/// `w0` before the mid-stage dry-run reset its `tx_type_map` (KB-62). The
+/// ">= 1080p" shape was a near-tie counting artifact: the stale map only
+/// changes a stream where an AB candidate's margin sits inside the
+/// distortion the wrong transform moves, and ~2 MP is simply where the
+/// pinned cells had enough superblocks for one to fire.
 ///
-/// **The nine matching rows are the load-bearing part of the pin.** They are
-/// one size step (1072 vs 1080) and one quantizer step (cq24 vs cq32) on each
-/// side of the predicate, at two bit depths, and every one of them is
-/// byte-exact — which is what makes ">= 1080p at speed 0" the shape rather than
-/// "large frames at speed 0" or "high bit depth at speed 0". 1920x1072 is eight
-/// pixels of the same mirror-tiled content.
+/// **The twelve matching rows are the load-bearing part of the lock.** They
+/// straddle both terms of KB-38's predicate (1072 vs 1080, cq24 vs cq32) at
+/// two bit depths — any new divergence here is a real regression, not noise.
 ///
 /// Fails in BOTH directions: a new divergent row is a regression, and a row
-/// that starts MATCHING means a root closed and the pin must be re-cut.
+/// that started MATCHING means the pin went stale.
 #[test]
 #[ignore = "12 speed-0 encode pairs up to 1920x1080 (~11 min); nightly / on-demand tier"]
 fn speed0_1080p_band_map_is_pinned() {
     let b8 = base_b8();
     let b10 = base_b10();
-    // (bit-depth tag, w, h, cq) — the CURRENT divergent set, measured
-    // 2026-08-04 WITH KB-38's arm ported.
-    // 2026-08-30 re-pin (KB-41 roots #7-#13, zenav1-aom `38a92657`): the
-    // `bd10 1920x1080 cq32` row (-8 B — the one the KB-38 predicate did not
-    // explain: base_qindex 128 is above the sub-block's 108) started MATCHING;
-    // the two cq24 rows are unchanged at -726 / +406, so KB-38's own residual
-    // is still open. Measured on the full 12-cell grid (11 min).
-    const SPEED0_1080P_OPEN: &[(&str, usize, usize, i32)] = &[
-        ("bd8 ", 1920, 1080, 24),
-        ("bd10", 1920, 1080, 24),
-    ];
+    // (bit-depth tag, w, h, cq) — the divergent set. Measured empty on the
+    // full 12-cell grid 2026-09-13 (KB-62); prior pins: 2026-08-04 three rows
+    // (incl. the `bd10 cq32` row KB-38's predicate did not explain), re-pinned
+    // to two 2026-08-30 (KB-41 roots #7-#13).
+    const SPEED0_1080P_OPEN: &[(&str, usize, usize, i32)] = &[];
     let mut observed: Vec<(String, usize, usize, i32)> = Vec::new();
     let mut fired_side = 0usize;
     for (tag, src) in [("bd8 ", &b8), ("bd10", &b10)] {
@@ -542,12 +534,9 @@ fn speed0_1080p_band_map_is_pinned() {
         .collect();
     assert_eq!(
         observed, pinned,
-        "the speed-0 >=1080p map moved. A NEW row (especially a 1920x1072 or a 1280x720 one) \
-         is a regression and means the band is wider than >= 1080p. A row that started \
-         MATCHING means one of KB-38's remaining roots closed — re-pin `SPEED0_1080P_OPEN` \
-         and say which. The arm already ported is \
-         `is_1080p_or_larger && base_qindex <= 108` (speed_features.c:2926-2935); what is \
-         still missing is whatever else moves between 1920x1072 and 1920x1080 at speed 0"
+        "the speed-0 >=1080p map moved — every row is expected byte-exact since KB-62 \
+         (2026-09-13). A divergent row is a NEW divergence to localize (a KB-62-class \
+         stale ctx-map reuse reopening, or a new mechanism): {observed:?}"
     );
 }
 

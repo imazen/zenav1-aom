@@ -11,9 +11,8 @@
 //! KB-38 named, both tiers now emit the byte-identical stream
 //! (`len 158731`, fnv-1a-64 `4b5f1efec0345f57`), against KB-38's 2026-08-04
 //! reading of +181 default / +55 scalar. The port no longer disagrees with
-//! itself; the residual `+59 B` against real aomenc is a plain DIVERGENCE
-//! (KB-38's own open root), not a differential hole, so it falls under the cap
-//! instead of the must-close list.
+//! itself; and the then-residual `+59 B` against real aomenc closed with
+//! KB-62 (2026-09-13) — the whole >=1080p band is now byte-exact.
 //!
 //! It closed silently, because **nothing in the tree encodes bd12 at all**:
 //! `s4cov_hd_format_axis::speed0_1080p_band_map_is_pinned` sweeps bd8 and bd10
@@ -132,27 +131,31 @@ fn bd12_small_grid_byte_matches_real_aomenc() {
     );
 }
 
-/// **The >=1080p bd12 band, pinned — including the cell the standing goal
-/// named.** `#[ignore]`d: ~3.5 min (measured 194.7 s), dominated by the 1920x1080
-/// speed-0 encode.
+/// **The >=1080p bd12 band — all five cells byte-exact since KB-62
+/// (2026-09-13).** `#[ignore]`d: ~3.5 min (measured 194.7 s), dominated by the
+/// 1920x1080 speed-0 encode.
 ///
-/// The razor is the point. `1080x1080 cq24` diverges while BOTH of its
-/// neighbours are byte-exact — `1072x1072 cq24` is eight pixels under the
-/// `AOMMIN(w,h) >= 1080` term and `1080x1080 cq32` has `base_qindex` 128 above
-/// the `<= 108` term — so the divergence is attributable to KB-38's predicate
-/// rather than to frame size or to bit depth.
+/// The razor stays the point. `1080x1080 cq24` and `1920x1080 cq24` diverged
+/// (+138 / +59 measured 2026-09-09; +181 default / +55 scalar at the 2026-08-04
+/// finding) while BOTH neighbours were byte-exact — `1072x1072 cq24` is eight
+/// pixels under the `AOMMIN(w,h) >= 1080` term and `1080x1080 cq32` has
+/// `base_qindex` 128 above the `<= 108` term — which made the band LOOK like
+/// KB-38's predicate. The residual's actual root was KB-62's stale
+/// `tx_type_map` in the AB-reuse clone; the >=1080p shape was a near-tie
+/// counting artifact. The grid is kept because it straddles both terms, so a
+/// real framesize/predicate regression would land here.
 #[test]
 #[ignore = "~3.5 min (measured 194.7 s): dominated by the 1920x1080 bd12 speed-0 encode"]
 fn bd12_1080p_band_map_is_pinned() {
-    // (w, h, cq, expected delta vs real aomenc). MEASURED 2026-09-09.
+    // (w, h, cq, expected delta vs real aomenc). All zero since KB-62
+    // (2026-09-13); measured on the full grid.
     const MAP: &[(usize, usize, i32, i64)] = &[
         (1072, 1072, 24, 0),
         (1072, 1072, 32, 0),
         (1080, 1080, 32, 0),
-        (1080, 1080, 24, 138),
-        // The cell the standing goal names. KB-38 measured +181 default /
-        // +55 scalar on 2026-08-04; both tiers now agree here.
-        (1920, 1080, 24, 59),
+        (1080, 1080, 24, 0),
+        // The cell the standing goal names — byte-exact since KB-62.
+        (1920, 1080, 24, 0),
     ];
     let mut fired = 0usize;
     let mut observed: Vec<(usize, usize, i32, i64)> = Vec::new();
@@ -175,10 +178,9 @@ fn bd12_1080p_band_map_is_pinned() {
     let expected: Vec<(usize, usize, i32, i64)> = MAP.to_vec();
     assert_eq!(
         observed, expected,
-        "the bd12 >=1080p map moved. A row that started MATCHING means one of KB-38's roots \
-         closed — re-pin and say which. A NEW divergent row below 1080p, or at cq32, means the \
-         band is wider than KB-38's predicate. And if THIS test disagrees between \
-         `test-next` and `test-next-scalar`, the bd12 dispatch-tier disagreement has REOPENED: \
-         that is the must-close class, not a divergence."
+        "the bd12 >=1080p map moved — every row is expected byte-exact since KB-62 \
+         (2026-09-13). A divergent row is a NEW divergence to localize. And if THIS test \
+         disagrees between `test-next` and `test-next-scalar`, the bd12 dispatch-tier \
+         disagreement has REOPENED: that is the must-close class, not a divergence."
     );
 }
