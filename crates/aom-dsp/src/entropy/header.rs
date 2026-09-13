@@ -1475,8 +1475,17 @@ pub struct FrameHeaderObu {
 /// filter / CDEF / restoration, TX mode, the trailing flags, global motion, film
 /// grain, and ext tile info). Does not emit the OBU trailing bits (the OBU wrapper
 /// adds those).
+macro_rules! hdr_mark {
+    ($wb:expr, $name:expr) => {
+        if std::env::var_os("AOM_HDR_TRACE").is_some() {
+            eprintln!("[hdr] {} @{}", $name, $wb.bit_len());
+        }
+    };
+}
+
 pub fn write_frame_header_obu(wb: &mut WriteBitBuffer, p: &FrameHeaderObu) {
     let (frame_size_override, early) = write_frame_header_prefix(wb, &p.prefix);
+    hdr_mark!(wb, "after-prefix");
     if early {
         return;
     }
@@ -1489,9 +1498,11 @@ pub fn write_frame_header_obu(wb: &mut WriteBitBuffer, p: &FrameHeaderObu) {
     if ft == 0 || ft == 2 {
         // KEY_FRAME / INTRA_ONLY_FRAME
         write_frame_size(wb, &fs);
+        hdr_mark!(wb, "after-frame-size");
         if p.allow_screen_content_tools && !p.superres_scaled {
             wb.write_bit(p.allow_intrabc as u32);
         }
+        hdr_mark!(wb, "after-intrabc");
     } else if ft == 1 || sframe {
         // INTER_FRAME / S_FRAME
         write_inter_ref_signaling(wb, &p.inter_ref);
@@ -1530,17 +1541,25 @@ pub fn write_frame_header_obu(wb: &mut WriteBitBuffer, p: &FrameHeaderObu) {
         wb.write_literal(0, (p.tile_info.log2_cols + p.tile_info.log2_rows) as u32);
         wb.write_literal(3, 2);
     }
+    hdr_mark!(wb, "after-tileinfo");
     encode_quantization(wb, &p.quant, p.num_planes, p.separate_uv_delta_q);
+    hdr_mark!(wb, "after-quant");
     encode_segmentation(wb, &p.segmentation);
+    hdr_mark!(wb, "after-seg");
     write_delta_q_params(wb, &p.delta_q);
+    hdr_mark!(wb, "after-deltaq");
     if !p.all_lossless {
         if !p.coded_lossless {
             encode_loopfilter(wb, &p.loopfilter, p.num_planes);
+            hdr_mark!(wb, "after-lf");
             encode_cdef(wb, &p.cdef, p.num_planes);
+            hdr_mark!(wb, "after-cdef");
         }
         encode_restoration_mode(wb, &p.restoration, p.num_planes);
+        hdr_mark!(wb, "after-lr");
     }
     write_tx_mode(wb, p.coded_lossless, p.tx_mode_select);
+    hdr_mark!(wb, "after-txmode");
     write_frame_header_trailing_flags(
         wb,
         intra_only,
@@ -1551,6 +1570,7 @@ pub fn write_frame_header_obu(wb: &mut WriteBitBuffer, p: &FrameHeaderObu) {
         p.allow_warped_motion,
         p.reduced_tx_set_used,
     );
+    hdr_mark!(wb, "after-trailing");
     if !intra_only {
         write_global_motion(
             wb,

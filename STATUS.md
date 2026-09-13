@@ -1,5 +1,28 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## A size-gated speed-0 divergence class closes — C's `winner_mode_params` snapshot was modelled as a live write (KB-54, 2026-09-12)
+
+The `>=1080p && qindex<=108` speed-0 arm diverged from real C on every large cell
+tested (mirror-tile >=1536², 3840x2160, a real 4K photo) while <=1024² stayed
+byte-exact — the `is_1080p_or_larger` boundary exactly. Root cause is a C
+call-order quirk: `winner_mode_params` is memcpied from the speed-feature
+levels at speed_features.c:2800 inside `framesize_independent`, and the
+`tx_domain_dist_level = boosted ? 1 : 2` write at :2928 runs later in
+`qindex_dependent` — **dead for the frame**, so C runs those cells on the
+level-0 row (tx-domain distortion OFF) while the port indexed the post-bump
+level-1 row. `SpeedFeatures` now carries `tx_domain_dist_{level,thres_level}_
+copied`, snapshotted at the end of `set_allintra`; `tx_type_search_policy`
+indexes the tables by the snapshot. Verified byte-identical at 1024²/1536²/
+2048²/2560²/3072²/3840x2160 cq27 s0 and a real 4K photo (634,991 B both arms);
+57/57 `encoder_gate_*`. En route the `dump_kf_stream`/`eprof_x86`/`eprof_yuv`
+C arms were found feeding `ref_encode_av1_kf` (palette/IntraBC hard-OFF) the
+port's tools-ON config — now `ref_encode_av1_kf_screen_content` with the port's
+resolved knobs, and the palette path is bit-exact under the matched oracle.
+Env-gated hunt tooling kept in-tree (`AOM_TX_DBG`, `AOM_PART_DBG`,
+`AOM_SCT_DBG`, `AOM_HDR_TRACE`/`AOM_HDR_DUMP`); the matching C-side prints are
+`docs/upstream-divergence-debug-2026-09-12.patch` with the submodule reverted
+to pristine. Still open: the `PIN_256x256_speed7` nonrd arm at speed >= 7.
+
 ## The publish window is still OPEN — none of the four names are taken, and the facade has no consumer (2026-09-10)
 
 Measured, not assumed: `zenav1-aom`, `-dsp`, `-encode` and `-decode` all return

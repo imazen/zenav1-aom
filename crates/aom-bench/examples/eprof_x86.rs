@@ -141,7 +141,7 @@ fn main() {
                 &cfg,
             )
             .expect("the port must encode this cell"),
-            "c" => c::ref_encode_av1_kf(
+            "c" => c::ref_encode_av1_kf_screen_content(
                 &cell.y,
                 &cell.u,
                 &cell.v,
@@ -158,6 +158,8 @@ fn main() {
                 cell.usage,
                 0,
                 false,
+                cfg.enable_palette,
+                cfg.enable_intrabc,
             ),
             other => panic!("unknown arm {other}"),
         }

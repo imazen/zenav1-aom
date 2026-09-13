@@ -1553,6 +1553,12 @@ pub fn search_tx_type_intra_into(
         calc_pixel_domain_distortion_final = false;
         use_transform_domain_distortion = false;
     }
+    if TX_DBG_VERBOSE.get() {
+        eprintln!(
+            "[utdd] tx_size={tx_size} mse_q8={block_mse_q8} thresh={} param={} utdd={use_transform_domain_distortion} pxfinal={calc_pixel_domain_distortion_final} mask={allowed_tx_mask:#06x} txk={txk_allowed:?}",
+            pol.tx_domain_dist_threshold, pol.use_transform_domain_distortion
+        );
+    }
 
     // Whether `skip_trellis_opt_based_on_satd` runs its BODY (tx_search.c:1988's
     // early return is block-level, so this is invariant across the loop below) —
@@ -1814,6 +1820,12 @@ pub fn search_tx_type_intra_into(
         };
 
         let rd = rdcost(inp.rdmult, rate_cost, dist);
+        if TX_DBG_VERBOSE.get() {
+            eprintln!(
+                "[txt] tx_type={tx_type} rd={rd} rate={rate_cost} dist={dist} eob={} mask={allowed_tx_mask:#06x}",
+                res.eob
+            );
+        }
         if rd < best_rd {
             best_rd = rd;
             // C keeps the winner by SWAPPING the dqcoeff buffer pointer
@@ -1972,6 +1984,25 @@ pub fn dist_block_px_domain_into(
         visible_rows,
         bd,
     );
+    if TX_DBG_VERBOSE.get() {
+        let n = (w * h).min(64);
+        let (mut ph, mut rh) = (0u64, 0u64);
+        let mut cnt = 0usize;
+        'outer: for r in 0..h {
+            for c in 0..w {
+                if cnt >= n {
+                    break 'outer;
+                }
+                ph = ph.wrapping_mul(31).wrapping_add(pred[r * pred_stride + c] as u64);
+                rh = rh.wrapping_mul(31).wrapping_add(recon[r * w + c] as u64);
+                cnt += 1;
+            }
+        }
+        eprintln!(
+            "[pxd] tx_type={tx_type} tx_size={tx_size} eob={eob} pred_h={ph:x} recon_h={rh:x} dq0={} sse={sse}",
+            dqcoeff[0],
+        );
+    }
     16 * i64::from(sse)
 }
 
@@ -2854,6 +2885,23 @@ pub struct TxSizeChoice {
     pub winners: TxbWinners,
 }
 
+thread_local! {
+    /// Set by the `AOM_TX_DBG` site while it is inside the target leaf so the
+    /// per-tx-type loop can print without position plumbing through `TxTypeSearchInputs`.
+    static TX_DBG_VERBOSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn tx_dbg_target() -> Option<(i32, i32)> {
+    use std::sync::OnceLock;
+    static T: OnceLock<Option<(i32, i32)>> = OnceLock::new();
+    *T.get_or_init(|| {
+        std::env::var("AOM_TX_DBG").ok().and_then(|v| {
+            let (r, c) = v.split_once(',')?;
+            Some((r.parse().ok()?, c.parse().ok()?))
+        })
+    })
+}
+
 /// `choose_tx_size_type_from_rd` (tx_search.c, static) — the uniform-tx-size
 /// depth sweep for a luma intra block under `TX_MODE_SELECT` at the speed-0
 /// policy: start at `max_txsize_rect_lookup[bsize]` skipped down by
@@ -2872,6 +2920,7 @@ pub struct TxSizeChoice {
 /// `source_variance` is `x->source_variance` (the source block's per-pixel
 /// variance, computed upstream by the encoder — caller-supplied).
 /// Returns `None` when no depth produced a valid RD (rate stays `INT_MAX`).
+/// `AOM_TX_DBG=<mi_row>,<mi_col>` — per-tx-size rd dump for one leaf.
 #[allow(clippy::too_many_arguments)]
 pub fn choose_tx_size_type_from_rd_intra(
     env: &TxfmYrdEnv,
@@ -2935,9 +2984,25 @@ pub fn choose_tx_size_type_from_rd_intra(
         } else {
             ref_best_rd
         };
+        TX_DBG_VERBOSE
+            .set(tx_dbg_target().is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col));
         let (this_rd, res) =
             uniform_txfm_yrd_intra(env, recon, tx_size, rd_thresh, pol, nn_ctx, palette, txs);
         rd[depth as usize] = this_rd;
+        if tx_dbg_target().is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col) {
+            let (rt, dt) = res
+                .as_ref()
+                .map(|(s, _)| (s.rate as i64, s.dist as i64))
+                .unwrap_or((-1, -1));
+            eprintln!(
+                "[tx] mi({},{}) bs{} part{} mode={} fi={} fi_mode={} ad={} pal={} tx={} depth={} rd={} thresh={} ref={} bo={} rate={} dist={}",
+                env.mi_row, env.mi_col, env.bsize, env.partition, env.mode,
+                env.use_filter_intra, env.filter_intra_mode, env.angle_delta,
+                palette.is_some(), tx_size, depth,
+                this_rd, rd_thresh, ref_best_rd, pol.use_rd_based_breakout_for_intra_tx_search,
+                rt, dt
+            );
+        }
         if this_rd < best_rd {
             let (stats, winners) = res.expect("valid rd implies stats");
             best_rd = this_rd;

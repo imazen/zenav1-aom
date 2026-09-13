@@ -21,6 +21,11 @@ impl WriteBitBuffer {
         Self::default()
     }
 
+    /// Current append position in bits (diagnostic).
+    pub fn bit_len(&self) -> usize {
+        self.bit_offset
+    }
+
     /// `aom_wb_write_bit`: append one bit at the current MSB-first position.
     pub fn write_bit(&mut self, bit: u32) {
         let off = self.bit_offset;

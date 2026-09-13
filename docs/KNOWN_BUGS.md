@@ -5,6 +5,59 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-54 — Encoder: a `>=1080p` speed-0 divergence class was C's `winner_mode_params` SNAPSHOT, not a live sf write — FIXED 2026-09-12; the hunt also found the bench examples' C arm ran with palette/IntraBC disabled
+
+- **Symptom.** Mirror-tile cells and real photos diverged at `--cpu-used 0` with a clean
+  size threshold: byte-exact at <=1024x1024, divergent at >=1536x1536 (and 3840x2160, and a
+  real 4K photo). First divergent decision (decode-both localizer): a leaf `tx_size` /
+  filter-intra-mode flip, e.g. `mi(10,30)` bs3 fi_mode 3 vs 2 with every other per-tx-type
+  eval bit-identical.
+- **Mechanism — a dead C write modelled as live.** C sets
+  `rd_sf.tx_domain_dist_level = boosted ? 1 : 2` at speed_features.c:2928 inside
+  `av1_set_speed_features_qindex_dependent` (the `speed==0 && is_720p_or_larger &&
+  qindex<=128 && is_1080p_or_larger && qindex<=108` nested arm). But the tx-type search
+  does not read `rd_sf` — `set_tx_domain_dist_params` (rdopt_utils.h:513-543) reads
+  `winner_mode_params`, which `av1_set_speed_features_framesize_independent` memcpys from
+  `tx_domain_dist_types[level]` at :2800-2802 — BEFORE the qindex-dependent pass runs
+  (call order encoder.c:2569 then :3120), and nothing re-copies. So the :2928 bump is dead
+  for the frame: C encodes `>=1080p && q<=108` speed-0 KEY frames with the level-0 row
+  (`use_transform_domain_distortion = 0`, threshold `UINT_MAX` → pixel-domain distortion
+  everywhere). The port ran the post-bump level-1 row → tx-domain distortion on exactly the
+  restricted-tx-set leaves → different `dist` → different winners. `AOM_TX_DBG`/`AOM_PART_DBG`
+  per-stage dumps showed rate/EOB/predictor/recon all identical and only the distortion ARM
+  differing — the signature of a policy divergence, not a kernel one.
+- **Fix.** `SpeedFeatures` gains `tx_domain_dist_{level,thres_level}_copied`, snapshotted at
+  the end of `set_allintra` (the copy point); `tx_type_search_policy` indexes the
+  `TX_DOMAIN_DIST_*` tables by the snapshot. The qindex-dependent writes stay live on the sf
+  fields — matching C's struct state — but are dead for the policy, matching C's behaviour.
+- **`!dc_only_blk`, checked and deliberately not added.** C's
+  `use_transform_domain_distortion` expression carries a fourth conjunct the port lacks
+  (tx_search.c:1961). It is dead on the allintra path: `dc_only_blk` needs
+  `dc_blk_pred_level > 1`, which no allintra speed sets — the port's existing comment at
+  tx_search.rs:639 already records `dc_only_blk == 0` there. Verified by construction.
+- **Harness asymmetry found en route, FIXED (oracle-side).** `dump_kf_stream`, `eprof_x86`
+  and the new `eprof_yuv` fed the port's `KeyFrameConfig` (palette + IntraBC ON, aomenc's own
+  ALLINTRA defaults) but called `ref_encode_av1_kf`, whose shim hard-codes
+  `enable_palette=0, enable_intrabc=0` (`dec_shim.c:612`) — on screen-content-detected cells
+  the C arm never ran palette while the port did. All three now call
+  `ref_encode_av1_kf_screen_content` passing `cfg.enable_palette`/`cfg.enable_intrabc`.
+  With the matched oracle the port's palette path is bit-exact (512x512 s3 real image:
+  28,953 = 28,953 byte-identical, palette ON both arms). Same KB-42 lesson as KB-53's: an
+  oracle configured out of the question says nothing about the feature.
+- **Verified.** Byte-identical vs the real C oracle: 1024x1024 / 1536x1536 / 2048x2048 /
+  2560x2560 / 3072x3072 / 3840x2160 mirror-tile at cq27 s0, plus a real 4K photo
+  (634,991 = 634,991 B). 57/57 `encoder_gate_*` tests.
+- **Not closed by this fix.** The s7-s9 mirror-tile divergence is the pre-existing
+  `PIN_256x256_speed7` nonrd arm — unaffected (palette never fires on detector-negative
+  content, and the qindex bump arm this fix models only exists at speed 0).
+- **Instrumentation kept:** `AOM_TX_DBG=<r>,<c>` (tx_search.rs per-tx-type/pxd dumps,
+  intra_rd.rs variance-factor dump), `AOM_PART_DBG=<r>,<c>` + `AOM_P4_NOBUDGET`
+  (partition_pick.rs stage/strip dumps), `AOM_SCT_DBG`/`AOM_HDR_DUMP`/`AOM_HDR_TRACE`
+  (key_frame.rs, entropy/header.rs field boundaries + `WriteBitBuffer::bit_len`). The
+  matching C-side prints are preserved as
+  `docs/upstream-divergence-debug-2026-09-12.patch` — the `upstream/` submodule itself was
+  reverted to pristine so the oracle stays the pinned tree.
+
 ### KB-53 — Encoder: the RD/tune/tool knobs were HARNESS-ONLY — WIRED into `encode_key_frame` 2026-09-11, byte-gated with a matched oracle; parity status per knob recorded, one corrupt-stream knob refused by name
 
 - **What was true before.** `KeyFrameConfig` had no way to reach tune=IQ/SSIMULACRA2, QM,

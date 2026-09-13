@@ -2217,6 +2217,13 @@ pub fn encode_key_frame_with(
         sct.allow_intrabc = false;
     }
 
+    if std::env::var_os("AOM_SCT_DBG").is_some() {
+        eprintln!(
+            "[sct-port] allow={} ibc={} palette={} intrabc={} photo={}",
+            sct.allow_screen_content_tools, sct.allow_intrabc, sct.count_palette,
+            sct.count_intrabc, sct.count_photo
+        );
+    }
     let mut p = derive_frame_header(cfg, &seq, &sct, tile_info);
     let qindex = p.quant.base_qindex;
     let coded_lossless = p.coded_lossless;
@@ -2839,6 +2846,12 @@ pub fn encode_key_frame_with(
         p.loopfilter.filter_level_v = derived_lf.filter_level_v;
     }
     p.loopfilter.sharpness_level = derived_lf.sharpness;
+    if std::env::var_os("AOM_SCT_DBG").is_some() {
+        eprintln!(
+            "[lf-port] derived={:?} lf_sharpness={} qindex={} quality.sharpness={}",
+            derived_lf, lf_sharpness, qindex, quality.sharpness
+        );
+    }
 
     // ---- post-filter stages: deblock -> CDEF -> loop restoration ----------
     // C's order (`encoder.c` `loopfilter_frame` -> `cdef_restoration_frame`):
@@ -3149,6 +3162,9 @@ pub fn encode_key_frame_with(
     }
 
     // ---- temporal unit ----------------------------------------------------
+    if let Ok(path) = std::env::var("AOM_HDR_DUMP") {
+        std::fs::write(path, format!("{p:#?}")).ok();
+    }
     let frame_obu = if tile_payloads.len() == 1 {
         assemble_obu_frame_single_tile(&p, tiles_log2, &tile_payloads[0], false, 0)
     } else {

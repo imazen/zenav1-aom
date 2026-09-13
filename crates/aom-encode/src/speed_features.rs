@@ -583,12 +583,36 @@ pub struct SpeedFeatures {
     /// speed>=1 -> 2 (speed_features.c:415). Indexes [`COEFF_OPT_THRESHOLDS`].
     pub perform_coeff_opt: i32,
     /// `rd_sf.tx_domain_dist_level` — default 0 (init_rd_sf:2501); speed>=1 ->
-    /// 1 (speed_features.c:416). Indexes [`TX_DOMAIN_DIST_TYPES`].
+    /// 1 (speed_features.c:416); speed>=6 -> 3 (:556). Indexes
+    /// [`TX_DOMAIN_DIST_TYPES`].
+    ///
+    /// **Copy-time semantics (the :2928 dead-write).** The tx-type search does
+    /// not read this field directly: `set_tx_domain_dist_params`
+    /// (rdopt_utils.h:513-543) reads `winner_mode_params`, which
+    /// `av1_set_speed_features_framesize_independent` memcpys from
+    /// `tx_domain_dist_types[rd_sf.tx_domain_dist_level]` at
+    /// speed_features.c:2800-2802 — BEFORE
+    /// `av1_set_speed_features_qindex_dependent` runs the
+    /// `tx_domain_dist_level = boosted ? 1 : 2` bump at :2928. Nothing
+    /// re-copies `winner_mode_params` afterwards (encoder.c:2569/3120 ordering),
+    /// so for the frame being encoded the :2928 assignment is dead. This field
+    /// keeps the faithful live-sf value; [`Self::tx_type_search_policy`]
+    /// indexes the tables by [`Self::tx_domain_dist_level_copied`] instead.
     pub tx_domain_dist_level: i32,
     /// `rd_sf.tx_domain_dist_thres_level` — default 0 (init_rd_sf:2502);
     /// speed>=1 -> 1 (speed_features.c:417). Indexes
-    /// [`TX_DOMAIN_DIST_THRESHOLDS`].
+    /// [`TX_DOMAIN_DIST_THRESHOLDS`]. Same copy-time semantics as
+    /// [`Self::tx_domain_dist_level`] — see its doc.
     pub tx_domain_dist_thres_level: i32,
+    /// The `winner_mode_params` snapshot of `tx_domain_dist_level` — the field
+    /// value at the END of [`Self::set_allintra`] (the framesize-independent
+    /// copy point, speed_features.c:2800). Post-copy writes to
+    /// `tx_domain_dist_level` (the :2928 qindex bump) do NOT propagate here,
+    /// matching the frame's effective `txfm_search_params`.
+    pub tx_domain_dist_level_copied: i32,
+    /// The `winner_mode_params` snapshot of `tx_domain_dist_thres_level`. See
+    /// [`Self::tx_domain_dist_level_copied`].
+    pub tx_domain_dist_thres_level_copied: i32,
 
     // ---- lpf_sf (CDEF / loop-restoration search) -------------------------
     // Carried for provenance; the current e2e harness encodes the reference
@@ -709,6 +733,8 @@ impl SpeedFeatures {
             perform_coeff_opt: 1,          // allintra base (:383)
             tx_domain_dist_level: 0,       // init_rd_sf:2501
             tx_domain_dist_thres_level: 0, // init_rd_sf:2502
+            tx_domain_dist_level_copied: 0,
+            tx_domain_dist_thres_level_copied: 0,
             // lpf_sf
             cdef_pick_method: CDEF_FULL_SEARCH, // init_lpf_sf:2533
             dual_sgr_penalty_level: 0,
@@ -1169,6 +1195,14 @@ impl SpeedFeatures {
             sf.chroma_intra_pruning_with_hog = 0;
         }
 
+        // The `winner_mode_params` copy point (speed_features.c:2794-2802, the
+        // tail of `av1_set_speed_features_framesize_independent`): the
+        // tx-domain-distortion policy tables are indexed by the levels AS OF
+        // NOW — later writes (the :2928 qindex-dependent bump) are dead for
+        // this frame's `txfm_search_params`. See `tx_domain_dist_level`.
+        sf.tx_domain_dist_level_copied = sf.tx_domain_dist_level;
+        sf.tx_domain_dist_thres_level_copied = sf.tx_domain_dist_thres_level;
+
         sf
     }
 
@@ -1288,9 +1322,14 @@ impl SpeedFeatures {
     ///   under a comment that called the whole sub-block "all inter-only, and
     ///   the port carries no field for them" — both halves false. This struct
     ///   carries every one of those five fields (the `speed >= 1` block sets
-    ///   the same five to the same values), and four of them are INTRA-live:
-    ///   `tx_domain_dist_level`/`_thres_level` feed
-    ///   [`Self::tx_type_search_policy_for_stage`], `prune_2d_txfm_mode` feeds
+    ///   the same five to the same values), and four of them are INTRA-live —
+    ///   with one qualification: `tx_domain_dist_level`/`_thres_level` are
+    ///   written here but read by the tx search through `winner_mode_params`,
+    ///   which C snapshotted at the end of `framesize_independent`
+    ///   (speed_features.c:2800-2802). The :2928-2929 writes are therefore
+    ///   DEAD for the frame — they move the sf fields but not
+    ///   [`Self::tx_domain_dist_level_copied`], which is what
+    ///   [`Self::tx_type_search_policy`] indexes. `prune_2d_txfm_mode` feeds
     ///   the tx-type ML prune, and `skip_tx_search` is read by `search_tx_type`
     ///   itself (tx_search.c:2362, inside the tx-type loop both intra and inter
     ///   enter). Only `ml_tx_split_thresh` is genuinely inter-only — its single
@@ -1452,10 +1491,10 @@ impl SpeedFeatures {
             coeff_opt_dist_threshold: coeff_row[0],
             coeff_opt_satd_threshold: coeff_row[1],
             use_transform_domain_distortion: TX_DOMAIN_DIST_TYPES
-                [self.tx_domain_dist_level as usize][txd_col]
+                [self.tx_domain_dist_level_copied as usize][txd_col]
                 as u8,
             tx_domain_dist_threshold: TX_DOMAIN_DIST_THRESHOLDS
-                [self.tx_domain_dist_thres_level as usize][txd_col],
+                [self.tx_domain_dist_thres_level_copied as usize][txd_col],
             adaptive_txb_search_level: self.adaptive_txb_search_level,
             skip_tx_search: self.skip_tx_search,
             sharpness,
@@ -2586,19 +2625,19 @@ mod tests {
         expect.skip_tx_search = true;
         assert_eq!(sf, expect, "the >=1080p q<=108 sub-arm moved another field");
 
-        // The four intra-live fields reach the derived tx policy. Without the
-        // sub-arm `use_transform_domain_distortion` is 0 and `skip_tx_search`
-        // is false at speed 0; with it, `tx_domain_dist_level = 1` selects the
-        // TX_DOMAIN_DIST_LEVELS row and `tx_domain_dist_thres_level = 1` its
-        // threshold.
+        // The intra-live fields reach the derived tx policy — EXCEPT the
+        // tx-domain-distortion pair, whose C writes (speed_features.c:2928-2929)
+        // land AFTER `winner_mode_params` was snapshotted (:2800-2802) and so
+        // are dead for the frame: the sf fields move but the policy sees the
+        // copy-time level.
         let off = base.tx_type_search_policy(false, 0);
         let on = sf.tx_type_search_policy(false, 0);
         assert_eq!(off.use_transform_domain_distortion, 0);
         assert!(!off.skip_tx_search);
-        assert!(
-            on.use_transform_domain_distortion != 0
-                || on.tx_domain_dist_threshold != off.tx_domain_dist_threshold,
-            "the sub-arm's tx-domain-distortion fields must reach the derived policy"
+        assert_eq!(
+            (on.use_transform_domain_distortion, on.tx_domain_dist_threshold),
+            (off.use_transform_domain_distortion, off.tx_domain_dist_threshold),
+            "the sub-arm's tx-domain-distortion writes are post-snapshot — dead for the policy"
         );
         assert!(
             on.skip_tx_search,
@@ -2618,8 +2657,12 @@ mod tests {
     fn winner_mode_stage_policies_match_c_tables() {
         let mut sf = SpeedFeatures::set_allintra(4, false, false);
         sf.perform_coeff_opt = 5; // speed_features.c:493
+        // The :416/:494 levels are set inside the framesize-independent cascade,
+        // so they land in the winner_mode_params snapshot too.
         sf.tx_domain_dist_level = 1; // carried from speed 1 (:416); types row {1,2,0}
+        sf.tx_domain_dist_level_copied = 1;
         sf.tx_domain_dist_thres_level = 3; // :494; thresholds row {0,0,0}
+        sf.tx_domain_dist_thres_level_copied = 3;
         sf.enable_winner_mode_for_coeff_opt = true; // :502
         sf.enable_winner_mode_for_use_tx_domain_dist = true; // :503
         sf.winner_mode_tx_type_pruning = 2; // :488
@@ -2735,7 +2778,9 @@ mod tests {
         let mut sf = SpeedFeatures::set_allintra(3, false, false);
         sf.perform_coeff_opt = 5;
         sf.tx_domain_dist_level = 1;
+        sf.tx_domain_dist_level_copied = 1;
         sf.tx_domain_dist_thres_level = 3;
+        sf.tx_domain_dist_thres_level_copied = 3;
         // enables remain false (speed 3 defaults).
         for stage in [DEFAULT_EVAL, MODE_EVAL, WINNER_MODE_EVAL] {
             let p = sf.tx_type_search_policy_for_stage(stage, false, 0);

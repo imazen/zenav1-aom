@@ -1761,6 +1761,40 @@ fn leaf_pick_sb_modes(
         )
     };
 
+    if part_dbg_target().is_some_and(|(r, c)| r == mi_row && c == mi_col) {
+        let min_yrd = outcome
+            .intra_modes_rd_cost
+            .iter()
+            .flatten()
+            .copied()
+            .min()
+            .unwrap_or(i64::MAX);
+        let tbl: Vec<String> = outcome
+            .intra_modes_rd_cost
+            .iter()
+            .enumerate()
+            .flat_map(|(m, ds)| {
+                ds.iter().enumerate().filter_map(move |(d, &r)| {
+                    (r < i64::MAX / 2).then(|| format!("m{m}d{d}={r}"))
+                })
+            })
+            .collect();
+        eprintln!("[ldt] leaf mi({},{}) bs{} part{} modes: {}", mi_row, mi_col, bsize, partition, tbl.join(" "));
+        eprintln!(
+            "[ld] leaf mi({},{}) bs{} part{} budget={} minyrd={} best={:?}",
+            mi_row,
+            mi_col,
+            bsize,
+            partition,
+            best_rd.rdcost,
+            min_yrd,
+            outcome
+                .best
+                .as_ref()
+                .map(|b| (b.rdcost, b.rate, b.dist, b.y.mode, b.y.tx_size, b.y.palette_y.is_some()))
+        );
+    }
+
     match outcome.best {
         None => {
             // rd_cost->rate == INT_MAX -> rdcost = INT64_MAX
@@ -2057,6 +2091,13 @@ fn rd_pick_4partition(
     visits: &mut Vec<LeafVisit>,
     last_source_variance: &mut u32,
 ) -> (PartRdStats, Option<Box<[Option<LeafWinner>; 4]>>) {
+    let part_dbg = part_dbg_target().is_some_and(|(r0, c0)| r0 == mi_row && c0 == mi_col);
+    // `AOM_P4_NOBUDGET` — diagnostic: run the strip searches under an
+    // unlimited budget to expose the candidate's true cost. The win/lose
+    // compare still uses the real best_rdc.
+    let no_budget = std::env::var_os("AOM_P4_NOBUDGET").is_some();
+    let unlimited = PartRdStats { rate: 0, dist: 0, rdcost: i64::MAX };
+    let budget_rdc = if no_budget { &unlimited } else { best_rdc };
     // set_4_part_ctx_and_rdcost (:3898-3916).
     let mut sum_rdc = PartRdStats::init();
     sum_rdc.rate = partition_cost[partition_type];
@@ -2092,7 +2133,7 @@ fn rd_pick_4partition(
             subsize,
             partition_type,
             None,
-            best_rdc,
+            budget_rdc,
             &mut sum_rdc,
             visits,
         );
@@ -2100,10 +2141,25 @@ fn rd_pick_4partition(
         // attempt, win or lose (gotcha #1, module docs on leaf_pick_sb_modes).
         *last_source_variance = source_variance;
         w[i] = winner;
+        if part_dbg {
+            eprintln!(
+                "[pd] mi({},{}) bs{} P4 strip{} at({},{}) rdi={} sum={} best={} win={}",
+                mi_row,
+                mi_col,
+                subsize,
+                i,
+                r,
+                c,
+                _rd_i,
+                sum_rdc.rdcost,
+                best_rdc.rdcost,
+                w[i].is_some()
+            );
+        }
         // rd_try_subblock's own early-bail (:3161-3164), checked by the
         // caller loop here exactly as rd_pick_rect_partition's own caller
         // checks it between sub-blocks.
-        if sum_rdc.rdcost >= best_rdc.rdcost {
+        if sum_rdc.rdcost >= budget_rdc.rdcost {
             return (PartRdStats::invalid(), None);
         }
         if i < 3 {
@@ -2139,6 +2195,17 @@ fn rd_pick_4partition(
     }
     // Calculate the total cost and update the best partition (:3962-3967).
     rd_cost_update(env.rdmult, &mut sum_rdc);
+    if part_dbg {
+        eprintln!(
+            "[pd] mi({},{}) bs{} P4 final sum={} best={} ok={}",
+            mi_row,
+            mi_col,
+            subsize,
+            sum_rdc.rdcost,
+            best_rdc.rdcost,
+            sum_rdc.rdcost < best_rdc.rdcost
+        );
+    }
     if sum_rdc.rdcost >= best_rdc.rdcost {
         return (PartRdStats::invalid(), None);
     }
@@ -2643,6 +2710,19 @@ pub(crate) fn set_partition_cost_for_edge_blk(
     ec
 }
 
+/// `AOM_PART_DBG=<mi_row>,<mi_col>` — the one node `rd_pick_partition_real`
+/// dumps per-stage rdcost for; `None` when the var is unset/unparseable.
+fn part_dbg_target() -> Option<(i32, i32)> {
+    use std::sync::OnceLock;
+    static T: OnceLock<Option<(i32, i32)>> = OnceLock::new();
+    *T.get_or_init(|| {
+        std::env::var("AOM_PART_DBG").ok().and_then(|v| {
+            let (r, c) = v.split_once(',')?;
+            Some((r.parse().ok()?, c.parse().ok()?))
+        })
+    })
+}
+
 pub fn rd_pick_partition_real(
     env: &SbEncodeEnv,
     cfg: &PickFrameCfg,
@@ -3008,6 +3088,28 @@ pub fn rd_pick_partition_real(
         }
     }
 
+    // `AOM_PART_DBG=<mi_row>,<mi_col>` — diagnostic per-stage rdcost dump for
+    // one node; instrumentation, not part of the encode contract.
+    let part_dbg = part_dbg_target().is_some_and(|(r, c)| r == mi_row && c == mi_col);
+    macro_rules! pd {
+        ($($arg:tt)*) => {
+            if part_dbg {
+                eprintln!("[pd] mi({},{}) bs{} {}", mi_row, mi_col, bsize, format_args!($($arg)*));
+            }
+        };
+    }
+    pd!(
+        "enter best={} gates none={} sq={} rect={} ptc={:?} rectok={:?} hasrc=({},{})",
+        best_rdc.rdcost,
+        partition_none_allowed,
+        do_square_split,
+        do_rectangular_split,
+        partition_cost,
+        partition_rect_allowed,
+        has_rows,
+        has_cols
+    );
+
     let mut found = false;
     let mut best_tree: Option<SbTree> = None;
     // `pc_tree->partitioning` (context_tree.c:150 inits PARTITION_NONE at
@@ -3050,6 +3152,7 @@ pub fn rd_pick_partition_real(
             64,
         );
         *last_source_variance = source_variance;
+        pd!("NONE leaf rate={} dist={} rd={}", this_rdc.rate, this_rdc.dist, this_rdc.rdcost);
         // `pc_tree->none` mode capture for the AB-stage mode cache
         // (copy_partition_mode_from_pc_tree gates on rate < INT_MAX, i.e. a
         // valid NONE winner; partition_search.c:3711-3717).
@@ -3081,6 +3184,7 @@ pub fn rd_pick_partition_real(
             // `*part_none_rd = this_rdc->rdcost` (:4474) — POST-pt_cost, and
             // NOT gated on NONE beating `best_rdc`.
             part_none_rd = this_rdc.rdcost;
+            pd!("NONE post-pt rd={} best={}", part_none_rd, best_rdc.rdcost);
             if this_rdc.rdcost < best_rdc.rdcost {
                 best_rdc = this_rdc;
                 found = true;
@@ -3247,6 +3351,7 @@ pub fn rd_pick_partition_real(
         // (`sum_rdc` invalidated) and untouched (INT64_MAX) when the stage was
         // skipped entirely by `do_square_split == 0`.
         part_split_rd = sum_rdc.rdcost;
+        pd!("SPLIT raw rd={} reached_last={}", part_split_rd, reached_last_index);
 
         if reached_last_index && sum_rdc.rdcost < best_rdc.rdcost {
             // split_partition_penalty_level = 0 => factor 1.0.
@@ -3303,7 +3408,10 @@ pub fn rd_pick_partition_real(
         if bsize <= cfg.max_partition_size || bsize == env.sb_size {
             restore_context(tile, &saved, mi_row, mi_col, bsize, env.ss_x, env.ss_y);
         }
+    } else {
+        pd!("SPLIT off");
     }
+    pd!("post-SPLIT split_rd={} best={}", part_split_rd, best_rdc.rdcost);
 
     // ---- early_term_after_none_split (partition_search.c:5851-5856) ----
     //
@@ -3367,6 +3475,15 @@ pub fn rd_pick_partition_real(
             || prune_rect_part[i]
             || !(do_rectangular_split || active_edge)
         {
+            pd!(
+                "RECT[{}] skip term={} rectok={} prune={} rectsplit={} edge={}",
+                i,
+                terminate_partition_search,
+                partition_rect_allowed[i],
+                prune_rect_part[i],
+                do_rectangular_split,
+                active_edge
+            );
             continue;
         }
         let partition_type = 1 + i; // PARTITION_HORZ / PARTITION_VERT
@@ -3520,6 +3637,7 @@ pub fn rd_pick_partition_real(
         // else: rect_part_win_info->rect_part_win[i] = false (:3634-3636) —
         // an AB-stage input (non-NULL only under a SPLIT parent's
         // recursion); next chunk.
+        pd!("RECT[{}] done rd={} best={}", i, sum_rdc.rdcost, best_rdc.rdcost);
         // av1_restore_context at EACH type's loop tail (:3644) — HORZ's
         // sub-0 encode debris restored before VERT evaluates.
         restore_context(tile, &saved, mi_row, mi_col, bsize, env.ss_x, env.ss_y);
@@ -3616,6 +3734,10 @@ pub fn rd_pick_partition_real(
                 }
             }
         }
+        pd!(
+            "AB ext_ok={} allowed={:?} best={}",
+            ext_partition_allowed, ab_partitions_allowed, best_rdc.rdcost
+        );
 
         #[allow(clippy::needless_range_loop)]
         // ab_type selects HORZ_A/HORZ_B/VERT_A/VERT_B throughout (partition
@@ -3729,6 +3851,7 @@ pub fn rd_pick_partition_real(
                 reuse,
                 mode_cache,
             );
+            pd!("AB[{}] rd={} won={}", ab_type, sum_rdc.rdcost, winners.is_some());
             if let Some(w) = winners {
                 best_rdc = sum_rdc;
                 found = true;
@@ -3914,6 +4037,10 @@ pub fn rd_pick_partition_real(
     }
 
     if !terminate_partition_search {
+        pd!(
+            "P4 base={} width_ok={} allowed={:?} best={}",
+            partition4_allowed_base, width_ok, part4_allowed, best_rdc.rdcost
+        );
         let quarter_step = (MI_SIZE_WIDE_B[bsize] / 4) as i32;
         #[allow(clippy::needless_range_loop)]
         // i selects HORZ4(0)/VERT4(1) throughout, not a simple iterate
@@ -3946,6 +4073,7 @@ pub fn rd_pick_partition_real(
                 visits,
                 last_source_variance,
                 );
+            pd!("P4[{}] rd={} won={}", i, sum_rdc.rdcost, winners.is_some());
             if let Some(w) = winners {
                 best_rdc = sum_rdc;
                 found = true;
@@ -3966,6 +4094,7 @@ pub fn rd_pick_partition_real(
     }
 
     // ---- the winner encode (:5998-6026) ----
+    pd!("final part={} best={} found={}", pc_tree_partitioning, best_rdc.rdcost, found);
     if found {
         let tree = best_tree.as_mut().expect("found implies a tree");
         // C runs OUTPUT_ENABLED at the SB root (:6010) and DRY_RUN_NORMAL on
