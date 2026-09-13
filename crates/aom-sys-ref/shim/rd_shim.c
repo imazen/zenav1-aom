@@ -69,6 +69,10 @@ bool shim_cnn_predict_img_multi_out_cscalar(uint8_t **dgd, int width,
                                             const CNN_CONFIG *cnn_config,
                                             const CNN_THREAD_DATA *thread_data,
                                             CNN_MULTI_OUT *output);
+bool shim_cnn_predict_img_multi_out_highbd_cscalar(
+    uint16_t **dgd, int width, int height, int stride,
+    const CNN_CONFIG *cnn_config, const CNN_THREAD_DATA *thread_data,
+    int bit_depth, CNN_MULTI_OUT *output);
 
 /* 1 when `force_cscalar` on the CNN shims below can actually be honoured.
  * Now unconditionally true; kept so callers written against the old
@@ -1515,7 +1519,7 @@ void shim_fill_coeff_costs(int qindex, int txs_ctx, int plane,
  *   [3] square_split_disabled      (logits[0] < no_split_thresh)
  * `level` is intra_cnn_based_part_prune_level (1 or 2) -- only [0] depends on it.
  */
-void shim_intra_cnn_partition_decision(const uint8_t *win, int qindex,
+void shim_intra_cnn_partition_decision(const uint16_t *win, int qindex,
                                        int bit_depth, int frame_w, int frame_h,
                                        int bsize_idx, int quad_tree_idx,
                                        int level, int force_cscalar,
@@ -1551,13 +1555,30 @@ void shim_intra_cnn_partition_decision(const uint8_t *win, int qindex,
     .output_strides = output_dims,
     .output_buffer = output_buffer,
   };
-  uint8_t *image[1] = { (uint8_t *)win };
-  if (force_cscalar) {
-    shim_cnn_predict_img_multi_out_cscalar(image, 65, 65, 65, cnn_config,
-                                           &thread_data, &output);
+  /* Dispatch on bit_depth exactly as the encoder does
+   * (partition_strategy.c:193): bd8 -> av1_cnn_predict_img_multi_out on a u8
+   * plane, bd10/12 -> _highbd on the raw u16 samples (normalised by
+   * (1<<bit_depth)-1 inside). */
+  if (bit_depth == 8) {
+    uint8_t win8[65 * 65];
+    for (int i = 0; i < 65 * 65; i++) win8[i] = (uint8_t)win[i];
+    uint8_t *image[1] = { win8 };
+    if (force_cscalar) {
+      shim_cnn_predict_img_multi_out_cscalar(image, 65, 65, 65, cnn_config,
+                                             &thread_data, &output);
+    } else {
+      av1_cnn_predict_img_multi_out(image, 65, 65, 65, cnn_config, &thread_data,
+                                    &output);
+    }
   } else {
-    av1_cnn_predict_img_multi_out(image, 65, 65, 65, cnn_config, &thread_data,
-                                  &output);
+    uint16_t *image[1] = { (uint16_t *)win };
+    if (force_cscalar) {
+      shim_cnn_predict_img_multi_out_highbd_cscalar(
+          image, 65, 65, 65, cnn_config, &thread_data, bit_depth, &output);
+    } else {
+      av1_cnn_predict_img_multi_out_highbd(image, 65, 65, 65, cnn_config,
+                                           &thread_data, bit_depth, &output);
+    }
   }
 
   /* ---- log_q normalisation (verbatim) ---- */
@@ -1733,7 +1754,7 @@ void shim_nn_predict_dispatched(const float *features, int num_inputs,
  * scalar `_c` variant (bit-exact transcription target); otherwise the dispatched
  * (AVX2 on this host) variant runs (what the encoder used). NOT thread-safe when
  * force_cscalar toggles the global -- call from a single test thread. */
-void shim_intra_cnn_run(const uint8_t *win, int force_cscalar,
+void shim_intra_cnn_run(const uint16_t *win, int bit_depth, int force_cscalar,
                         float *out_cnn_buffer) {
   const CNN_CONFIG *cnn_config = &av1_intra_mode_cnn_partition_cnn_config;
   const CNN_THREAD_DATA thread_data = { .num_workers = 1, .workers = NULL };
@@ -1760,13 +1781,28 @@ void shim_intra_cnn_run(const uint8_t *win, int force_cscalar,
     .output_strides = output_dims,
     .output_buffer = output_buffer,
   };
-  uint8_t *image[1] = { (uint8_t *)win };
-  if (force_cscalar) {
-    shim_cnn_predict_img_multi_out_cscalar(image, 65, 65, 65, cnn_config,
-                                           &thread_data, &output);
+  /* Same bd dispatch as shim_intra_cnn_partition_decision: bd8 goes through
+   * the real lowbd entry (u8 plane), bd10/12 through _highbd. */
+  if (bit_depth == 8) {
+    uint8_t win8[65 * 65];
+    for (int i = 0; i < 65 * 65; i++) win8[i] = (uint8_t)win[i];
+    uint8_t *image[1] = { win8 };
+    if (force_cscalar) {
+      shim_cnn_predict_img_multi_out_cscalar(image, 65, 65, 65, cnn_config,
+                                             &thread_data, &output);
+    } else {
+      av1_cnn_predict_img_multi_out(image, 65, 65, 65, cnn_config, &thread_data,
+                                    &output);
+    }
   } else {
-    av1_cnn_predict_img_multi_out(image, 65, 65, 65, cnn_config, &thread_data,
-                                  &output);
+    uint16_t *image[1] = { (uint16_t *)win };
+    if (force_cscalar) {
+      shim_cnn_predict_img_multi_out_highbd_cscalar(
+          image, 65, 65, 65, cnn_config, &thread_data, bit_depth, &output);
+    } else {
+      av1_cnn_predict_img_multi_out_highbd(image, 65, 65, 65, cnn_config,
+                                           &thread_data, bit_depth, &output);
+    }
   }
   memcpy(out_cnn_buffer, cnn_buffer, CNN_OUT_BUF_SIZE * sizeof(float));
 }

@@ -798,10 +798,12 @@ impl SpeedFeatures {
         //   `cpi->oxcf.use_highbitdepth`, which is TRUE on every bd10/bd12
         //   encode, so that reason does not survive — and the field's shape
         //   (a LUMA tx-SIZE prune, hbd-only, framesize-conditioned, live from
-        //   speed 2) is a near-perfect fit for the pinned `b10_64` / `HBD_OPEN`
-        //   band, which is exactly why a wrong reason here is worth deleting
-        //   rather than leaving: it reads like a lead and is not one. The
-        //   CONCLUSION still holds, for a stronger reason — the field's only
+        //   speed 2) is a near-perfect fit for the then-pinned `b10_64` /
+        //   `HBD_OPEN` band (CLOSED 2026-09-13, KB-61 — the root turned out to
+        //   be the intra-CNN window's u16->u8 truncation, vindicating this
+        //   ruling-out), which is exactly why a wrong reason here is worth
+        //   deleting rather than leaving: it reads like a lead and is not one.
+        //   The CONCLUSION still holds, for a stronger reason — the field's only
         //   consumer is `select_tx_block` (tx_search.c:2629-2635), reached
         //   solely from `select_tx_size_and_type`, which opens
         //   `assert(is_inter_block(xd->mi[0]))` (tx_search.c:3438). INTER-only

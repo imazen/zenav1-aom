@@ -644,6 +644,10 @@ fn encoder_gate_bd10_bd12_420() {
 /// (tx_search / intra_rd / partition_pick), whose large-coefficient RD-cost
 /// accumulation differs at high bit depth. Those are the encoder track's ACTIVE
 /// files, so this bd10-track test does not touch them — the finding is reported.
+/// **UPDATE 2026-09-13 (KB-61):** the speed-1..6 half of that staged band CLOSED —
+/// it was the intra-CNN window's u16->u8 truncation, not an RD-accumulation bug.
+/// What could remain at speed 0 is covered by `kb4_gate_bd10_bd12_mono_hf_byte_match`
+/// (asserting gate, green) — this note's hypothesis survives only as history.
 #[test]
 fn encoder_gate_bd10_bd12_multisize() {
     // Representable content (<=255): the SAME samples encode at bd8/10/12, so the

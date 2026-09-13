@@ -26,7 +26,7 @@
 //! | [`mutated_sequence_header_is_caught`] | mutation proof: perturbing ONE derived header field (the coded `base_qindex`) makes the pixel gate fail and the byte gate fail — neither is vacuous |
 //! | [`open_divergences_are_pinned`] | the cells that are NOT byte-identical, each with a MEASURED attribution asserted (which half of the frame OBU diverges), self-promoting so a fix goes red |
 //! | [`refuses_configurations_it_has_no_gate_for`] | the shell returns [`KeyFrameError`] instead of silently mis-encoding outside its envelope |
-//! | [`coded_lossless_reconstructs_the_source_exactly`] | at `--cq-level 0` the frame is `coded_lossless`, so BOTH decoders must return the encoder's own input on every plane — the property C cannot arbitrate inside the `HBD_OPEN` band |
+//! | [`coded_lossless_reconstructs_the_source_exactly`] | at `--cq-level 0` the frame is `coded_lossless`, so BOTH decoders must return the encoder's own input on every plane — a C-independent property (was the property C could not arbitrate inside the pre-KB-61 `HBD_OPEN` band) |
 //!
 //! # Envelope
 //!
@@ -323,11 +323,10 @@ impl Cell {
 ///   exactly ONE cq-0 cell (64x64 4:2:0 bd8 Texture at speed 0), and the arm
 ///   that broke was reachable at every other coordinate: J sweeps cq 0 over
 ///   {mono, 4:2:0, 4:2:2, 4:4:4} x bd {8, 10, 12} x all five content classes x
-///   `--cpu-used` {0, 9}, plus bd8 at the intermediate speeds {3, 6} and a
-///   13-point size ladder from 1x1 to 258x258. bd10/bd12 at `--cpu-used` 1..6
-///   is the PRE-EXISTING `HBD_OPEN` band (CLAUDE.md T4) and is pinned in
-///   [`open_divergences_are_pinned`], not swept — measured 2026-09-03 to be the
-///   same band at cq 32, so it is not a lossless finding.
+///   `--cpu-used` {0, 3, 6, 9}, plus a 13-point size ladder from 1x1 to
+///   258x258. bd10/bd12 at `--cpu-used` 1..6 WAS the `HBD_OPEN` band —
+///   closed by KB-61 (2026-09-12, the CNN window's u16→u8 truncation) and now
+///   swept at every intermediate speed.
 fn sweep_cells() -> Vec<Cell> {
     use Content::*;
     let mut v = Vec::new();
@@ -606,31 +605,29 @@ fn sweep_cells() -> Vec<Cell> {
     }
     // J -- HIGH BIT DEPTH x SPEED x TILE COUNT. Axis B (bit depth) above is
     // only exercised at speed 0 / single-tile 64x64; axis I (multi-tile) is
-    // only exercised at bd8. Neither crosses bd10/12 with a non-zero speed,
-    // which is EXACTLY the reach of the pre-existing `HBD_OPEN` / `b10_64`
-    // pin recorded elsewhere in this repo (`CLAUDE.md` coverage queue,
-    // `s4cov_qm_axis.rs` / `config_permutations.rs`): "bd10 AND bd12,
-    // `--cpu-used` 1..6, LUMA-borne, reaches 4:4:4 + mono". This shell is a
-    // SEPARATE code path from those harnesses (no bootstrap, self-derived
-    // headers), so whether it inherits the same divergence is a measured
-    // question, not an assumption -- and per the PREREQ-AOM-STANDALONE issue
-    // (#15) admission note, the T4 HBD_OPEN pin is exactly why the standalone
-    // path needs its own gate rather than inheriting the harness's C compare.
+    // only exercised at bd8. Neither would cross bd10/12 with a non-zero speed
+    // without this axis -- which was EXACTLY the reach of the (closed, KB-61)
+    // `HBD_OPEN` / `b10_64` pin recorded elsewhere in this repo
+    // (`CLAUDE.md` coverage queue, `s4cov_qm_axis.rs` /
+    // `config_permutations.rs`): "bd10 AND bd12, `--cpu-used` 1..6, LUMA-borne,
+    // reaches 4:4:4 + mono". This shell is a SEPARATE code path from those
+    // harnesses (no bootstrap, self-derived headers), so whether it inherits
+    // the same divergence was a measured question, not an assumption.
     // J1: bd x speed x tile-count at 4:2:0, isolating the speed reach.
     //
-    // MEASURED 2026-09-03 (the full 2..6 x {single,multi} grid was run before
-    // this list was pruned to the passing subset -- see `open_divergences_
-    // are_pinned` for the failing half, pinned there with the same data):
-    //   * bd10 single-tile 128x128: byte-exact at s1,s2,s3,s6; diverges s4,s5.
-    //   * bd10 multi-tile 4160x64:  byte-exact at s6 ONLY; diverges s1..s5.
-    //   * bd12 single-tile 128x128: byte-exact at s4,s5,s6; diverges s1,s2,s3.
-    //   * bd12 multi-tile 4160x64:  diverges at EVERY speed 1..6.
-    // So the divergence is not "bd10/12 x speed 1..6" as a block (the
-    // pre-existing HBD_OPEN pin's own description) -- tile count measurably
-    // widens or narrows the reach, and bd10 vs bd12 move in OPPOSITE
-    // directions on the single-tile axis (bd10 fails in the middle of the
-    // range, bd12 fails at the start of it).
-    for (bd, speed) in [(10u8, 1i32), (10, 2), (10, 3), (10, 6)] {
+    // MEASURED 2026-09-03, and CLOSED 2026-09-12 by KB-61 (the whole band was
+    // ONE root: `extract_intra_cnn_window` truncated the u16 source window to
+    // u8, so the CNN prune decided on garbage at bd10/bd12; C feeds
+    // `av1_cnn_predict_img_multi_out_highbd` raw u16 samples normalised by
+    // `(1<<bd)-1`). The old bracket, kept for the record -- the per-depth band
+    // shapes were a CNN threshold artifact, not separate mechanisms:
+    //   * bd10 single-tile 128x128: was byte-exact at s1,s2,s3,s6; diverged s4,s5.
+    //   * bd10 multi-tile 4160x64:  was byte-exact at s6 ONLY; diverged s1..s5.
+    //   * bd12 single-tile 128x128: was byte-exact at s4,s5,s6; diverged s1,s2,s3.
+    //   * bd12 multi-tile 4160x64:  diverged at EVERY speed 1..6.
+    // Every cell below -- including the entire previously-divergent band -- is
+    // now byte-identical to real aomenc.
+    for (bd, speed) in (1i32..=6).flat_map(|s| [(10u8, s), (12, s)]) {
         v.push(
             Cell::new(
                 format!("J_bd{bd}_128x128_420_cq32_tex"),
@@ -646,27 +643,13 @@ fn sweep_cells() -> Vec<Cell> {
             .at_speed(speed),
         );
     }
-    v.push(
-        Cell::new(
-            "J_bd10_4160x64_420_cq32_tex".into(),
-            4160,
-            64,
-            10,
-            false,
-            1,
-            1,
-            32,
-            Texture,
-        )
-        .at_speed(6),
-    );
-    for speed in [4i32, 5, 6] {
+    for (bd, speed) in (1i32..=6).flat_map(|s| [(10u8, s), (12, s)]) {
         v.push(
             Cell::new(
-                "J_bd12_128x128_420_cq32_tex".to_string(),
-                128,
-                128,
-                12,
+                format!("J_bd{bd}_4160x64_420_cq32_tex"),
+                4160,
+                64,
+                bd,
                 false,
                 1,
                 1,
@@ -676,45 +659,46 @@ fn sweep_cells() -> Vec<Cell> {
             .at_speed(speed),
         );
     }
-    // bd12 multi-tile 4160x64 has NO passing speed in 1..6 -- entirely pin
-    // material, see `open_divergences_are_pinned`.
     //
-    // J2: bd x chroma format at a speed EACH bd is measured byte-exact at
-    // (single-tile) -- "LUMA-borne, reaches 4:4:4 + mono" from the same pin
-    // description, at a speed that is not itself part of the divergence.
+    // J2: bd x chroma format -- "LUMA-borne, reaches 4:4:4 + mono" from the old
+    // pin description. Speeds 4 (the middle of the pre-KB-61 divergent band)
+    // and 6 (a historically-passing speed) bracket the closed mechanism across
+    // every chroma format.
     for (nm, mono, sx, sy) in [
         ("mono", true, 1usize, 1usize),
         ("422", false, 1, 0),
         ("444", false, 0, 0),
     ] {
-        v.push(
-            Cell::new(
-                format!("J2_bd10_{nm}_128x128_cq32_tex"),
-                128,
-                128,
-                10,
-                mono,
-                sx,
-                sy,
-                32,
-                Texture,
-            )
-            .at_speed(6),
-        );
-        v.push(
-            Cell::new(
-                format!("J2_bd12_{nm}_128x128_cq32_tex"),
-                128,
-                128,
-                12,
-                mono,
-                sx,
-                sy,
-                32,
-                Texture,
-            )
-            .at_speed(6),
-        );
+        for speed in [4i32, 6] {
+            v.push(
+                Cell::new(
+                    format!("J2_bd10_{nm}_128x128_cq32_tex_s{speed}"),
+                    128,
+                    128,
+                    10,
+                    mono,
+                    sx,
+                    sy,
+                    32,
+                    Texture,
+                )
+                .at_speed(speed),
+            );
+            v.push(
+                Cell::new(
+                    format!("J2_bd12_{nm}_128x128_cq32_tex_s{speed}"),
+                    128,
+                    128,
+                    12,
+                    mono,
+                    sx,
+                    sy,
+                    32,
+                    Texture,
+                )
+                .at_speed(speed),
+            );
+        }
     }
     // K -- TINY / ODD / NARROW-TALL GEOMETRIES matching the historical
     // "14 tiny" poison class from the pre-`encode_key_frame` `port_encode`
@@ -884,9 +868,10 @@ fn sweep_cells() -> Vec<Cell> {
     //
     // MEASURED 2026-09-03 (`benchmarks/cq0_lossless_axis_2026-09-03.md`): every
     // cell below is byte-identical to real aomenc. bd10/bd12 at `--cpu-used`
-    // 1..6 is NOT, and is the pre-existing `HBD_OPEN` band (bd10 AND bd12,
-    // speeds 1..6, luma-borne) -- the SAME band at cq 32, so it is not a
-    // lossless finding; it is pinned in `open_divergences_are_pinned`.
+    // 1..6 WAS the pre-existing `HBD_OPEN` band (bd10 AND bd12, speeds 1..6,
+    // luma-borne) -- the SAME band at cq 32, so it was never a lossless finding;
+    // it was pinned in `open_divergences_are_pinned` until KB-61 closed it
+    // (2026-09-12: the CNN prune's source window was truncated to u8 at bd>8).
     for (nm, mono, sx, sy) in [
         ("mono", true, 1usize, 1usize),
         ("420", false, 1, 1),
@@ -901,10 +886,9 @@ fn sweep_cells() -> Vec<Cell> {
                 ("noise", Noise),
                 ("chk", Checker),
             ] {
-                // Speeds 0 and 9 bracket the whole `--cpu-used` range at every
-                // depth; the intermediate speeds are bd8-only because 1..6 at
-                // bd10/bd12 is HBD_OPEN.
-                let speeds: &[i32] = if bd == 8 { &[0, 3, 6, 9] } else { &[0, 9] };
+                // Speeds 0 and 9 bracket the whole `--cpu-used` range; 3 and 6
+                // cover the middle where the pre-KB-61 HBD band lived.
+                let speeds: &[i32] = &[0, 3, 6, 9];
                 for &speed in speeds {
                     v.push(
                         Cell::new(
@@ -1594,20 +1578,36 @@ fn refuses_configurations_it_has_no_gate_for() {
     );
 }
 
-/// **Open divergences, PINNED.** These cells are NOT byte-identical to real
-/// aomenc, and this test asserts the divergence is STILL PRESENT so a fix flips
-/// it red and forces promotion into [`sweep_cells`] (this repo's self-promoting
-/// pin convention — see the PARITY.md Tier-3 rows).
-///
-/// **None is a framing or header-derivation defect in the shell**, and the
-/// attribution is MEASURED and ASSERTED per cell (which half of the frame OBU
-/// diverges — see `Where` below), not left in prose:
-///
-/// | cell | measured attribution |
-/// |---|---|
-/// | cq 0 at bd10 `--cpu-used` 6, and at bd12 `--cpu-used` 3 (64x64 4:2:0) | `TilePayloadOnly`. The pre-existing `HBD_OPEN` band (CLAUDE.md T4), observed on the coded-lossless arm (axis N). MEASURED 2026-09-03 over 720 cells x 2 quantizers: the divergent set is exactly bd {10, 12} x `--cpu-used` 1..6 at BOTH cq 0 and cq 32; bd8 is byte-exact at cq 0 across all four formats, five contents and speeds 0/3/6/9, and every depth is byte-exact at speeds 0, 7, 8, 9. So it is not a lossless finding. |
+/// **Open divergences, PINNED — currently NONE.** When a cell is not
+/// byte-identical to real aomenc, this test asserts the divergence is STILL
+/// PRESENT so a fix flips it red and forces promotion into [`sweep_cells`]
+/// (this repo's self-promoting pin convention — see the PARITY.md Tier-3
+/// rows), and asserts the divergence's measured attribution (which half of
+/// the frame OBU diverges — see `Where` below) so a pin cannot quietly change
+/// character.
 ///
 /// # What used to be here
+///
+/// The ENTIRE `HBD_OPEN` family — six pins spanning bd10/bd12 x single- and
+/// mandatory-multi-tile x speeds 1..6 at cq 32, plus the cq-0 representatives
+/// (`PIN_bd10_128x128_speed4`, `PIN_bd10_4160x64_multitile_speed1`,
+/// `PIN_bd12_128x128_speed1`, `PIN_bd12_4160x64_multitile_speed1`,
+/// `PIN_cq0_bd10_grad`, `PIN_cq0_bd12_tex`) — closed 2026-09-12 (KB-61):
+/// `extract_intra_cnn_window` copied the u16 source window into a `Vec<u8>`
+/// with `as u8`, wrapping every >255 sample mod 256, so the speed-1..6 intra
+/// CNN partition prune decided on garbage at bd10/bd12 while C feeds
+/// `av1_cnn_predict_img_multi_out_highbd` the raw u16 samples normalised by
+/// `(1<<bd)-1`. One root explained the whole per-depth/per-tile band shape —
+/// the different speed bands were just where each cell's flipped CNN flag
+/// actually changed the final tree. The promoted cells are the extended
+/// axis J (all of speeds 1..6 at both depths and tile counts) and axis N
+/// (cq 0 at speeds 0/3/6/9 at every depth), which are the regression lock.
+/// The stale-attribution lesson applies to this family's own write-ups, which
+/// speculated about per-depth speed_features interactions — all of it was the
+/// one truncation.
+///
+/// Older history:
+///
 ///
 /// 132x132, 196x196, 260x260 and 261x261 were pinned as "tile-payload RD
 /// near-ties". **They were a bug in this shell, not the port's RD**: the pack
@@ -1666,169 +1666,22 @@ fn open_divergences_are_pinned() {
         /// changes the recon can move them too.
         TilePayloadAndHeader,
     }
-    let pins: Vec<(Cell, Where, &str)> = vec![
-        // The four HBD x speed x tile-count pins below are the failing half of
-        // axis J (`sweep_cells()`), MEASURED 2026-09-03 -- see that axis's own
-        // comment for the full bracket. Same PORT-SIDE code path as everything
-        // above (no bootstrap, self-derived headers); this is a SEPARATE
-        // divergence class from the pre-existing `HBD_OPEN` / `b10_64` pin in
-        // the bootstrap-driven harnesses (`s4cov_qm_axis.rs` /
-        // `config_permutations.rs`), reached through this shell instead, and
-        // measurably NOT the same flat "bd10/12 x speed 1..6" shape that pin
-        // describes -- tile count moves the reach in a bd-dependent direction.
-        (
-            Cell::new(
-                "PIN_bd10_128x128_speed4".into(),
-                128,
-                128,
-                10,
-                false,
-                1,
-                1,
-                32,
-                Content::Texture,
-            )
-            .at_speed(4),
-            Where::TilePayloadAndHeader,
-            "bd10, single-tile, MID-band speed failure: byte-exact at s1,s2,s3,s6, \
-             diverges at s4,s5. Same shape as `HBD_OPEN`/`b10_64` (bd10/12 x speed 1..6, \
-             LUMA-borne -- J2's mono/422/444 cells at bd10 s4 diverge identically to \
-             4:2:0), reached through the standalone shell instead of a bootstrap-driven \
-             harness -- registered as its own pin rather than folded into that one \
-             because the two have never been proven to share a root cause, and this \
-             shell's speed BAND (s4,s5 only, not the full 1..6) is a new, narrower datum. \
-             MEASURED: a derived header field (the loop-filter level) diverges here TOO, \
-             unlike both multi-tile HBD pins below where every header field agrees and \
-             only the tile payload differs -- single- vs multi-tile is a real split in \
-             this family, not just in WHICH speeds fail but in WHERE the divergence \
-             lands. `pick_filter_level` runs on the port's own reconstruction, so an \
-             RD/coefficient difference at single-tile can cascade into the loop-filter \
-             level the same way the 261x261 pin's does; the multi-tile pins' identical \
-             LF suggests the per-tile fresh-context reset masks that cascade there",
-        ),
-        (
-            Cell::new(
-                "PIN_bd10_4160x64_multitile_speed1".into(),
-                4160,
-                64,
-                10,
-                false,
-                1,
-                1,
-                32,
-                Content::Texture,
-            )
-            .at_speed(1),
-            Where::TilePayloadOnly,
-            "bd10, MANDATORY multi-tile (2 tiles), LOW-band speed failure: byte-exact at \
-             s6 ONLY, diverges s1..s5 -- the OPPOSITE band from the single-tile 128x128 \
-             pin above (which fails s4,s5 and passes s1,s2,s3,s6) at the SAME bit depth. \
-             Tile count is therefore a real axis in this divergence, not a confound: \
-             going from one tile to two both widens the failing band (1..5 vs 4..5) and \
-             flips which end of it is safe",
-        ),
-        (
-            Cell::new(
-                "PIN_bd12_128x128_speed1".into(),
-                128,
-                128,
-                12,
-                false,
-                1,
-                1,
-                32,
-                Content::Texture,
-            )
-            .at_speed(1),
-            Where::TilePayloadAndHeader,
-            "bd12, single-tile, LOW-band speed failure: byte-exact at s4,s5,s6, diverges \
-             s1,s2,s3 -- the MIRROR of the bd10 single-tile pin's band (which fails \
-             s4,s5 and passes s1,s2,s3,s6). Same speed_features/bit-depth interaction \
-             family as `HBD_OPEN`, opposite band per bit depth. Also TilePayloadAndHeader \
-             like the bd10 single-tile pin (not TilePayloadOnly like both multi-tile \
-             pins) -- the single-vs-multi-tile split in WHERE the divergence lands holds \
-             at both bit depths",
-        ),
-        (
-            Cell::new(
-                "PIN_bd12_4160x64_multitile_speed1".into(),
-                4160,
-                64,
-                12,
-                false,
-                1,
-                1,
-                32,
-                Content::Texture,
-            )
-            .at_speed(1),
-            Where::TilePayloadOnly,
-            "bd12, MANDATORY multi-tile (2 tiles): diverges at EVERY speed 1..6 tried -- \
-             no passing speed at all, unlike every other HBD pin here. The most severe \
-             cell in this family; representative of the full band rather than a \
-             boundary, so there is no adjacent passing speed to bracket it against. Like \
-             the bd10 multi-tile pin, every derived header field (including the \
-             loop-filter levels) agrees with C's -- ONLY the tile payload differs, which \
-             narrows this family further: at multi-tile, HBD does not perturb header \
-             derivation at all, only the coefficient/RD arm",
-        ),
-        (
-            Cell::new(
-                "PIN_cq0_bd10_grad".into(),
-                64,
-                64,
-                10,
-                false,
-                1,
-                1,
-                0,
-                Content::Gradient,
-            )
-            .at_speed(6),
-            Where::TilePayloadOnly,
-            "the pre-existing HBD_OPEN band (CLAUDE.md T4: bd10 AND bd12, `--cpu-used` \
-             1..6, LUMA-borne, reaches 4:4:4 + mono, qindex-dependent speed reach), \
-             observed at cq 0. This is the EXACT coordinate zenavif#45 reported the \
-             `tx_size_to_depth` assert at; the assert is fixed (`count_leaf` now writes \
-             C's own inequality) and what remains is HBD_OPEN, not a lossless defect. \
-             MEASURED 2026-09-03 over 720 cells x 2 quantizers: at cq 0 AND at cq 32 the \
-             divergent set is exactly bd {10, 12} x `--cpu-used` 1..6 -- bd8 is 240/240 \
-             byte-exact at cq 0 including speeds 3 and 6, and speeds 0, 7, 8 and 9 are \
-             byte-exact at every depth (all in the N arm of `sweep_cells`). A lossless \
-             root would not be bit-depth- or speed-conditional",
-        ),
-        (
-            Cell::new(
-                "PIN_cq0_bd12_tex".into(),
-                64,
-                64,
-                12,
-                false,
-                1,
-                1,
-                0,
-                Content::Texture,
-            )
-            .at_speed(3),
-            Where::TilePayloadOnly,
-            "the same HBD_OPEN band one depth and three speeds over, pinned separately \
-             so bd12 cannot close silently behind bd10. Its cq-32 twin diverges too",
-        ),
-    ];
+    // EMPTY since 2026-09-12 (KB-61 closed the whole HBD_OPEN family — see the
+    // doc comment). The machinery stays: the next divergence lands here with a
+    // measured `Where`, and a fix promotes it into `sweep_cells()`.
+    let pins: Vec<(Cell, Where, &str)> = vec![];
 
+    let mut promoted: Vec<String> = Vec::new();
     for (cell, expect_where, why) in &pins {
         let (expect_where, why) = (*expect_where, *why);
         let (w, h) = (cell.w, cell.h);
         let (y, u, v) = cell_planes(cell);
         let ours = port_stream(cell, &y, &u, &v);
         let theirs = c_stream(cell, &y, &u, &v);
-        assert_ne!(
-            ours, theirs,
-            "{}x{} is now BYTE-EXACT ({why}). That is good news: delete it from \
-             open_divergences_are_pinned and add it to sweep_cells(), and say in the \
-             commit message what closed it.",
-            w, h
-        );
+        if ours == theirs {
+            promoted.push(format!("{w}x{h} ({why})"));
+            continue;
+        }
         // The divergence must NOT be in the sequence header: the shell's own
         // derivation is proven correct even on the pinned cells.
         let ours_seq = walk_obus(&ours)
@@ -1945,6 +1798,13 @@ fn open_divergences_are_pinned() {
             "PIN {w}x{h}: still divergent, {got_where:?} ({why}); seq header byte-exact; decodes"
         );
     }
+    assert!(
+        promoted.is_empty(),
+        "{} pinned cells are now BYTE-EXACT. That is good news: delete them from \
+         open_divergences_are_pinned, add them to sweep_cells(), and say in the \
+         commit message what closed them: {promoted:?}",
+        promoted.len()
+    );
 }
 
 /// **Probe for the `av1_determine_sc_tools_with_encoding` gap** (issue #15's
@@ -2170,15 +2030,16 @@ fn probe_sc_tools_trial_gap_flat_patch_on_small_noisy_frame() {
 
 /// **The coded-lossless arm actually reconstructs the source, bit for bit.**
 ///
-/// Byte-parity against real aomenc is the primary gate, but it cannot speak for
-/// the cells inside the pre-existing `HBD_OPEN` band, where the port's
-/// bitstream legitimately differs from C's. `--cq-level 0` has a property that
+/// Byte-parity against real aomenc is the primary gate; historically it could
+/// not speak for the cells inside the pre-KB-61 `HBD_OPEN` band, where the
+/// port's bitstream legitimately differed from C's — it can now (the band
+/// closed 2026-09-13), and this test remains the stronger, C-independent
+/// property. `--cq-level 0` has a property that
 /// is independent of C: `base_qindex == 0` with no deltas makes the frame
 /// `coded_lossless` (`is_coded_lossless`, `encodeframe.c:2275`), so a
 /// conforming decode of a conforming stream must return the ENCODER'S INPUT
 /// exactly, on every plane. This test asserts that with the real libaom
-/// decoder and with this repo's own decoder, over the whole grid the byte gate
-/// can only half-cover — HBD_OPEN cells included.
+/// decoder and with this repo's own decoder, over the whole grid.
 ///
 /// It is also the direct regression lock on zenavif#45: `encode_key_frame` at
 /// cq 0 must return a `Result` at every coordinate, never unwind. The reported

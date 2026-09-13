@@ -40,12 +40,16 @@ impl XorShift {
     fn u8(&mut self) -> u8 {
         (self.next_u64() >> 33) as u8
     }
+    /// Masked word in `0..=(1<<bd)-1`.
+    fn u16_bd(&mut self, bd: i32) -> u16 {
+        ((self.next_u64() >> 33) as u16) & (((1u32 << bd) - 1) as u16)
+    }
 }
 
 /// Build a 65×65 window (stride 65) from a content closure over frame coords,
 /// applying the replicated top/left border (`src(max(i-1,0), max(j-1,0))`).
-fn window(content: impl Fn(usize, usize) -> u8) -> Vec<u8> {
-    let mut win = vec![0u8; 65 * 65];
+fn window(content: impl Fn(usize, usize) -> u16) -> Vec<u16> {
+    let mut win = vec![0u16; 65 * 65];
     for i in 0..65 {
         for j in 0..65 {
             let fr = (i as i32 - 1).max(0) as usize;
@@ -62,18 +66,31 @@ fn cnn_predict_matches_resolved_engine_bit_exact() {
     let mut rng = XorShift(0x51ed_c0de_1234_5678);
 
     // A representative mix: uniform random, the real vgrad-256 content, flats,
-    // two-tone, gradients, and impulse-ish patterns.
-    let mut windows: Vec<Vec<u8>> = Vec::new();
-    windows.push(window(|_, c| (32 + c * 190 / 256) as u8)); // vgrad-256 SB(0,0)
-    windows.push(window(|_, _| 128)); // flat
-    windows.push(window(|_, c| if c < 32 { 40 } else { 200 })); // two-tone
-    windows.push(window(|r, c| (16 + (r + c) * 200 / 128) as u8)); // diagonal
-    windows.push(window(|r, c| if (r + c) % 2 == 0 { 0 } else { 255 })); // checker
-    for _ in 0..200 {
-        // Pure random windows.
-        let w: Vec<u8> = (0..65 * 65).map(|_| rng.u8()).collect();
-        windows.push(w);
-    }
+    // two-tone, gradients, and impulse-ish patterns — at each bit depth (the
+    // layer-0 normalisation is `pixel / ((1<<bd)-1)`, so bd10/bd12 exercise the
+    // `_highbd` arm — KB-61).
+    let mut windows: Vec<(i32, Vec<u16>)> = Vec::new();
+    let mut push_bd = |bd: i32, n_rand: usize, rng: &mut XorShift| {
+        let maxv = ((1u32 << bd) - 1) as u16;
+        let s = |v: usize| -> u16 { ((v as u32 * maxv as u32) / 255) as u16 };
+        windows.push((bd, window(|_, c| s(32 + c * 190 / 256)))); // vgrad-256 SB(0,0)
+        windows.push((bd, window(|_, _| s(128)))); // flat
+        windows.push((bd, window(|_, c| s(if c < 32 { 40 } else { 200 })))); // two-tone
+        windows.push((bd, window(|r, c| s(16 + (r + c) * 200 / 128)))); // diagonal
+        windows.push((bd, window(|r, c| s(if (r + c) % 2 == 0 { 0 } else { 255 })))); // checker
+        for _ in 0..n_rand {
+            // Pure random windows.
+            let w: Vec<u16> = if bd == 8 {
+                (0..65 * 65).map(|_| rng.u8() as u16).collect()
+            } else {
+                (0..65 * 65).map(|_| rng.u16_bd(bd)).collect()
+            };
+            windows.push((bd, w));
+        }
+    };
+    push_bd(8, 200, &mut rng);
+    push_bd(10, 50, &mut rng);
+    push_bd(12, 50, &mut rng);
 
     // The port runs whichever engine this process's dispatch resolves to:
     // `aom_dsp::cnn::conv_valid`'s v3 kernels (bit-exact against libaom's OWN
@@ -82,16 +99,16 @@ fn cnn_predict_matches_resolved_engine_bit_exact() {
     // off x86-64. The oracle flag selects the matching C engine — the
     // comparison is BIT-EXACT in both arms.
     let simd_tier = aom_dsp::cnn::v3_tier_active();
-    for (wi, win) in windows.iter().enumerate() {
-        let got = cnn_predict(win);
+    for (wi, (bd, win)) in windows.iter().enumerate() {
+        let got = cnn_predict(win, *bd);
         assert_eq!(got.len(), CNN_OUT_BUF_SIZE);
 
-        let want = c::ref_intra_cnn_run(win, !simd_tier);
+        let want = c::ref_intra_cnn_run(win, *bd, !simd_tier);
         for (idx, (&g, &wc)) in got.iter().zip(want.iter()).enumerate() {
             assert_eq!(
                 g.to_bits(),
                 wc.to_bits(),
-                "window {wi} cnn_buffer[{idx}] (simd_tier={simd_tier}): \
+                "window {wi} bd={bd} cnn_buffer[{idx}] (simd_tier={simd_tier}): \
                  rust={g} ({:#010x}) c={wc} ({:#010x})",
                 g.to_bits(),
                 wc.to_bits()

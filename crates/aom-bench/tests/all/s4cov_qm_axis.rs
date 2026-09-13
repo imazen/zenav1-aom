@@ -370,34 +370,16 @@ fn qm_axis_bitdepth_subsampling_qindex_byte_matches() {
          divergence and must be re-pinned: {flipped:?}"
     );
 
-    // 4. The high-bit-depth control divergences, pinned in BOTH directions.
-    //    This set is NOT this file's to close — it is the pre-existing `b10_64`
-    //    band of `speed_envelope_stock_map_is_pinned` (bd10 4:2:0 cq32, speeds
-    //    1..6). What is new here is its SHAPE: it is not 4:2:0-specific (bd10
-    //    4:4:4 diverges identically), not bd10-specific (bd12 does too), and
-    //    its speed reach depends on qindex (cq5 diverges at 1..6 like cq32,
-    //    while cq63 only reaches it at cpu6).
-    const HBD_OPEN: &[(&str, i32)] = &[
-        ("bd10 420 cq32", 1), ("bd10 420 cq32", 2), ("bd10 420 cq32", 3),
-        ("bd10 420 cq32", 4), ("bd10 420 cq32", 5), ("bd10 420 cq32", 6),
-        ("bd10 420 cq5", 1), ("bd10 420 cq5", 2), ("bd10 420 cq5", 3),
-        ("bd10 420 cq5", 4), ("bd10 420 cq5", 5), ("bd10 420 cq5", 6),
-        ("bd10 420 cq63", 6),
-        ("bd10 444 cq32", 1), ("bd10 444 cq32", 2), ("bd10 444 cq32", 3),
-        ("bd10 444 cq32", 4), ("bd10 444 cq32", 5), ("bd10 444 cq32", 6),
-        // MONOCHROME diverges identically -> the root is on the LUMA path.
-        ("bd10 mono cq32", 1), ("bd10 mono cq32", 2), ("bd10 mono cq32", 3),
-        ("bd10 mono cq32", 4), ("bd10 mono cq32", 5), ("bd10 mono cq32", 6),
-        ("bd12 420 cq32", 1), ("bd12 420 cq32", 2), ("bd12 420 cq32", 3),
-        ("bd12 420 cq32", 4), ("bd12 420 cq32", 5), ("bd12 420 cq32", 6),
-        ("bd12 420 cq5", 1), ("bd12 420 cq5", 2), ("bd12 420 cq5", 3),
-        ("bd12 420 cq5", 4), ("bd12 420 cq5", 5), ("bd12 420 cq5", 6),
-        ("bd12 420 cq63", 6),
-        ("bd12 mono cq32", 1), ("bd12 mono cq32", 2), ("bd12 mono cq32", 3),
-        ("bd12 mono cq32", 4), ("bd12 mono cq32", 5), ("bd12 mono cq32", 6),
-        ("bd12 444 cq32", 1), ("bd12 444 cq32", 2), ("bd12 444 cq32", 3),
-        ("bd12 444 cq32", 4), ("bd12 444 cq32", 5), ("bd12 444 cq32", 6),
-    ];
+    // 4. The high-bit-depth control divergences, pinned in BOTH directions —
+    //    EMPTY since 2026-09-12 (KB-61). This set WAS the `b10_64` band of
+    //    `speed_envelope_stock_map_is_pinned` (bd10 4:2:0 cq32, speeds 1..6,
+    //    extended here to 4:4:4/mono/bd12/cq5/cq63 — 49 (label, speed) pairs):
+    //    every one of them closed when `extract_intra_cnn_window`'s u16→u8
+    //    truncation was fixed (the CNN prune decided on wrapped samples at
+    //    bd>8; C normalises the raw u16 window by `(1<<bd)-1` in
+    //    `av1_cnn_predict_img_multi_out_highbd`). The empty pin stays as the
+    //    regression tripwire: any NEW bd>8 divergence lands here.
+    const HBD_OPEN: &[(&str, i32)] = &[];
     let observed: Vec<(String, i32)> = rows
         .iter()
         .filter(|r| !r.off_ok)

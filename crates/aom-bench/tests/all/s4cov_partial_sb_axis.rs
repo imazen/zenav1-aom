@@ -690,10 +690,9 @@ fn partial_sb_high_bitdepth_formats_byte_match() {
         .collect();
     assert!(
         spread.is_empty(),
-        "a high-bit-depth SB-EXACT control diverged at speed 0 or 7. Those are the only speeds \
-         where high-bit-depth content is byte-exact on SB-exact content (the pinned b10_64 / \
-         HBD_OPEN band owns 1..6), and they are what make the partial-SB rows readable — so \
-         this is an hbd regression, or a spread of that band, not a partial-SB result: {spread:?}"
+        "a high-bit-depth SB-EXACT control diverged at speed 0 or 7. Post-KB-61 the whole \
+         speed range is byte-exact on SB-exact content (the b10_64 / HBD_OPEN band closed), \
+         so this is an hbd regression, not a partial-SB result: {spread:?}"
     );
     let pinned: Vec<(String, usize, usize, i32)> = HBD_FORMAT_OPEN
         .iter()

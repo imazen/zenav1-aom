@@ -314,16 +314,14 @@ fn above_1080p_format_axis_byte_matches() {
 /// read.**
 ///
 /// Split out from the test above because it is a WEAKER claim and must not be
-/// read as the same one. bd10/bd12 diverge from real aomenc at `--cpu-used`
-/// 1..6 on SB-exact 64x64 content already (`b10_64` / `HBD_OPEN`), and the
-/// KB-36 arm is observable at speed 6 alone — so at high bit depth this axis
-/// **cannot** cross the arm. What it can do, and does, is establish that the
-/// >=1080p band is byte-identical at bd10 and bd12 at speeds 0 and 7, which
-/// nothing had measured: the largest high-bit-depth frame in the tree before
-/// this was 256x256 (`s4cov_partial_sb_axis.rs`).
-///
-/// Both sides of the razor are still run, so if the hbd band ever DOES become
-/// readable at speed 6 the pair is already in place.
+/// read as the same one. bd10/bd12 diverged from real aomenc at `--cpu-used`
+/// 1..6 on SB-exact 64x64 content (`b10_64` / `HBD_OPEN`) — **CLOSED 2026-09-13
+/// (KB-61, the intra-CNN window truncation), so the band IS readable at speed 6
+/// now and the razor is live** — and the KB-36 arm is observable at speed 6
+/// alone. What it does is establish that the >=1080p band is byte-identical at
+/// bd10 and bd12 at speeds 0 and 7, which nothing had measured: the largest
+/// high-bit-depth frame in the tree before this was 256x256
+/// (`s4cov_partial_sb_axis.rs`).
 ///
 /// **MEASURED 2026-08-04: 6/8 byte-exact** — see `HD_HBD_OPEN`; the two open
 /// rows are KB-38's speed-0 band, which reaches bd8 too.
@@ -389,10 +387,10 @@ fn above_1080p_high_bitdepth_byte_matches_where_interpretable() {
         .collect();
     assert_eq!(
         observed, pinned,
-        "the above-1080p high-bit-depth map moved. Speeds 0 and 7 are the only ones where high \
-         bit depth is byte-exact on small SB-exact content, so a divergence here is either a \
-         spread of the pinned `b10_64` / `HBD_OPEN` band into the frame sizes, or a \
-         framesize-dependent hbd arm nothing has modelled: {observed:?}"
+        "the above-1080p high-bit-depth map moved. Post-KB-61 small SB-exact content is \
+         byte-exact at EVERY speed, so a divergence here is either the pinned \
+         `SPEED0_1080P_OPEN` band or a framesize-dependent hbd arm nothing has modelled: \
+         {observed:?}"
     );
 }
 

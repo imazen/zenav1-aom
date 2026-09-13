@@ -1967,12 +1967,12 @@ fn isolate_vgrad256_cq32_cnn_partition_prune() {
     // The EXACT speed-1 textured `vgrad` content at 256px (see `content_for`
     // in `encoder_gate_speed1_textured_allintra`): value depends only on column.
     let w = 256usize;
-    let vgrad = |_r: usize, col: usize| -> u8 { (32 + col * 190 / w) as u8 };
+    let vgrad = |_r: usize, col: usize| -> u16 { (32 + col * 190 / w) as u16 };
 
     // SB(0,0)'s 64x64 CNN input = the 65x65 luma window at frame(-1,-1) with
     // replicated top/left borders (lookahead.c av1_copy_and_extend_frame ->
     // extend_plane edge-replicates). window[i][j] = src(max(i-1,0), max(j-1,0)).
-    let mut win = vec![0u8; 65 * 65];
+    let mut win = vec![0u16; 65 * 65];
     for i in 0..65 {
         for j in 0..65 {
             let fr = (i as i32 - 1).max(0) as usize;

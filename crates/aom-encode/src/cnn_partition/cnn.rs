@@ -132,13 +132,17 @@ fn conv_valid(
 
 /// Run the intra-CNN cascade on the 65×65 luma window `win` (row-major, stride
 /// 65, with replicated top/left borders) and return the multi-out buffer in the
-/// exact layout `intra_mode_cnn_partition` reads. `win.len() >= 65*65`.
-pub fn cnn_predict(win: &[u8]) -> [f32; CNN_OUT_BUF_SIZE] {
-    // Layer-0 input: normalise the 65×65 window to `pixel / 255` (max_val =
-    // 255.0f; av1_cnn_predict_img_multi_out, ext = 0 so no engine-side border).
+/// exact layout `intra_mode_cnn_partition` reads. `win.len() >= 65*65`. `win`
+/// holds the RAW source samples at bit depth `bd` — the normalisation is C's
+/// `av1_cnn_predict_img_multi_out` / `_highbd`: `pixel / ((1<<bd)-1)` (the lowbd
+/// literal `max_val = 255.0f` is `(1<<8)-1`, so one formula covers both arms).
+pub fn cnn_predict(win: &[u16], bd: i32) -> [f32; CNN_OUT_BUF_SIZE] {
+    // Layer-0 input: normalise the 65×65 window to `pixel / max_val`
+    // (ext = 0 so no engine-side border).
+    let max_val = ((1 << bd) - 1) as f32;
     let mut cur: Vec<f32> = win[..65 * 65]
         .iter()
-        .map(|&p| f32::from(p) / 255.0)
+        .map(|&p| f32::from(p) / max_val)
         .collect();
     let mut cur_ch = 1usize;
     let mut cur_w = 65usize;

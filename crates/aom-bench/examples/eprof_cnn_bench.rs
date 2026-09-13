@@ -51,19 +51,19 @@ fn main() {
     // A real window out of the real source: the replicated-border 65x65 the
     // encoder extracts for superblock (1,1) — not synthetic content, because
     // the layer-0 RELU sparsity depends on it.
-    let mut win = vec![0u8; 65 * 65];
+    let mut win = vec![0u16; 65 * 65];
     for i in 0..65 {
         let r = (64 + i).min(h - 1);
         for j in 0..65 {
             let c = (64 + j).min(w - 1);
-            win[i * 65 + j] = buf[r * w + c];
+            win[i * 65 + j] = u16::from(buf[r * w + c]);
         }
     }
 
     // --- non-vacuity + equality gate, BEFORE any timing is printed ----------
-    let port = aom_encode::cnn_partition::cnn::cnn_predict(&win);
-    let c_scalar = aom_sys_ref::ref_intra_cnn_run(&win, true);
-    let c_simd = aom_sys_ref::ref_intra_cnn_run(&win, false);
+    let port = aom_encode::cnn_partition::cnn::cnn_predict(&win, 8);
+    let c_scalar = aom_sys_ref::ref_intra_cnn_run(&win, 8, true);
+    let c_simd = aom_sys_ref::ref_intra_cnn_run(&win, 8, false);
     assert_eq!(port.len(), c_scalar.len(), "buffer length");
     assert_eq!(
         port.as_slice(),
@@ -99,15 +99,24 @@ fn main() {
     let (mut p, mut cs, mut cv) = (vec![], vec![], vec![]);
     for _ in 0..ROUNDS {
         p.push(bench(iters, || {
-            std::hint::black_box(aom_encode::cnn_partition::cnn::cnn_predict(std::hint::black_box(
-                &win,
-            )));
+            std::hint::black_box(aom_encode::cnn_partition::cnn::cnn_predict(
+                std::hint::black_box(&win),
+                8,
+            ));
         }));
         cs.push(bench(iters, || {
-            std::hint::black_box(aom_sys_ref::ref_intra_cnn_run(std::hint::black_box(&win), true));
+            std::hint::black_box(aom_sys_ref::ref_intra_cnn_run(
+                std::hint::black_box(&win),
+                8,
+                true,
+            ));
         }));
         cv.push(bench(iters, || {
-            std::hint::black_box(aom_sys_ref::ref_intra_cnn_run(std::hint::black_box(&win), false));
+            std::hint::black_box(aom_sys_ref::ref_intra_cnn_run(
+                std::hint::black_box(&win),
+                8,
+                false,
+            ));
         }));
     }
     let (pm, csm, cvm) = (median(&mut p), median(&mut cs), median(&mut cv));

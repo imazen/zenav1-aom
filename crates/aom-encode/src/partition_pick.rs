@@ -2741,18 +2741,21 @@ fn rd_pick_ab_part(
 /// `intra_mode_cnn_partition` call site). Measured both ways:
 /// `kb22_hd_arms::kb23_partial_sb_size_and_speed_axis` and
 /// `kb28_crop_dims::cnn_window_clamp_is_replication_inert`.
-fn extract_intra_cnn_window(env: &SbEncodeEnv, mi_row: i32, mi_col: i32) -> Vec<u8> {
+fn extract_intra_cnn_window(env: &SbEncodeEnv, mi_row: i32, mi_col: i32) -> Vec<u16> {
     const SB64_MIB: i32 = 16; // BLOCK_64X64 in mi units
     let sb_py = (mi_row / SB64_MIB) * SB64_MIB * 4;
     let sb_px = (mi_col / SB64_MIB) * SB64_MIB * 4;
     let crop_h = env.frame_height;
     let crop_w = env.frame_width;
-    let mut win = vec![0u8; 65 * 65];
+    // Raw samples — the cascade's layer-0 input normalises by (1<<bd)-1
+    // (av1_cnn_predict_img_multi_out{,_highbd}); a `as u8` here wrapped 10/12-bit
+    // source mod 256 (KB-61).
+    let mut win = vec![0u16; 65 * 65];
     for i in 0..65i32 {
         let r = (sb_py + i - 1).clamp(0, crop_h - 1) as usize;
         for j in 0..65i32 {
             let c = (sb_px + j - 1).clamp(0, crop_w - 1) as usize;
-            win[(i * 65 + j) as usize] = env.src_y[env.base_y + r * env.stride + c] as u8;
+            win[(i * 65 + j) as usize] = env.src_y[env.base_y + r * env.stride + c];
         }
     }
     win

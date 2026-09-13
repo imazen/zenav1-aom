@@ -4282,12 +4282,11 @@ fn speed_axis_budget_is_accounted() {
 /// C's `skip_tx_search` break ends the search on the first candidate), and the
 /// SATD trellis-skip failed to switch that tx type's quantizer to
 /// `AV1_XFORM_QUANT_B`. All three bd8 contexts are now byte-identical at every
-/// speed 0..9, so the fragile band is now a bd10-only statement. And bd10 is open at most
-/// speeds: `av1-1-b10-00-quantizer-00` is byte-exact at speed 0 (a gated
-/// context of the main array), at speed 7, and — since the KB-20 landing
-/// (2026-07-30) — at the nonrd speeds 8 and 9; it diverges at 1, 2, 3, 4, 5 and
-/// 6. All of that carries the KB-10/KB-12 near-tie signature (0-6 byte deltas),
-/// and none of it is reachable from a speed-0 matrix.
+/// speed 0..9. The bd10 band — `av1-1-b10-00-quantizer-00` diverged at speeds
+/// 1..6 with the KB-10/KB-12 near-tie signature (0-6 byte deltas) — closed
+/// 2026-09-12 (KB-61): `extract_intra_cnn_window` truncated the u16 source
+/// window `as u8`, so the intra-CNN partition prune decided on wrapped samples
+/// at bd>8. Every speed on every probe below is now `ok`.
 ///
 /// Speeds 8 and 9 read `panic` here until 2026-07-30: the KB-12 nonrd estimate
 /// arm was bd8-only and asserted on `env.bd == 8`, so EVERY bd10/bd12 encode at
@@ -4326,9 +4325,14 @@ fn speed_envelope_stock_map_is_pinned() {
             // 8 and 9 were "panic" until 2026-07-30: the KB-12 nonrd path was
             // bd8-only and `nonrd_pick_intra_mode` asserted `env.bd == 8`.
             // The hbd estimate arm is now ported (KB-20) and both are "ok" —
-            // gated per-cell by [`speed_nonrd_hbd_byte_identity`].
-            &[(1, "diverge"), (2, "diverge"), (3, "diverge"), (4, "diverge"),
-              (5, "diverge"), (6, "diverge")],
+            // gated per-cell by [`speed_nonrd_hbd_byte_identity`]. Speeds 1..6
+            // were "diverge" until 2026-09-12 — KB-61: the intra-CNN prune's
+            // 65x65 source window was truncated `as u8` at bd>8 while C feeds
+            // `av1_cnn_predict_img_multi_out_highbd` raw u16 samples
+            // normalised by (1<<bd)-1; fixing the window closed the whole
+            // band, mono/444/cq5/cq63 crossings included (s4cov_qm_axis's
+            // 49-pair HBD_OPEN set is now empty too).
+            &[],
         ),
     ];
     let mut report = String::from("\n=== speed envelope: stock byte-identity per (content, cpu-used) ===\n");

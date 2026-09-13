@@ -1,5 +1,40 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## The entire `HBD_OPEN` band closes — the intra-CNN prune window truncated u16 samples to u8 (KB-61, 2026-09-13)
+
+Every high-bit-depth divergence pin in the tree — `self_contained_key_frame`'s
+six `HBD_OPEN` cells (bd10/bd12, single- and multi-tile, 4:2:0/4:4:4/mono,
+cq32/cq5/cq0), `s4cov_qm_axis`'s 49-row `HBD_OPEN` set, and
+`config_permutations`'s `b10_64` probe (the real `av1-1-b10-00-quantizer-00`
+conformance source) — is now byte-identical to real aomenc. One root:
+`partition_pick::extract_intra_cnn_window` built the CNN partition-prune's
+65x65 luma window with `env.src_y[..] as u8` — wrapping every >255 sample
+mod 256. C dispatches on bit depth (`av1_cnn_predict_img_multi_out` vs
+`_highbd`) and feeds BOTH the raw samples, normalizing inside layer 0 by
+`1/((1<<bd)-1)`. First localized on `vgrad256 bd10 cq24 s4`: the port's
+NONE-leaf cost at `mi(0,16)` matched C exactly (165746189) but the CNN prune
+flipped `square_split_disabled` where C descended — the per-speed band shapes
+(bd10 s4-5 vs bd12 s1-3 vs bd12-multi all of 1..6) were ONE threshold
+phenomenon, not a family of HBD RD defects; a flipped flag changes the stream
+only where the partition decision is close.
+
+The fix keeps the window `u16` end to end and normalizes by
+`((1<<bd)-1) as f32` — byte-inert at bd8 (identical floats to the old
+`p/255.0`). The oracle got the matching split: `rd_shim.c`'s CNN shims take
+`const uint16_t *` and dispatch bd8→real lowbd / bd>8→real
+`av1_cnn_predict_img_multi_out_highbd` (scalar arm via the renamed
+`cnn_cscalar.c` entry) — no transcribed CNN. Direct CNN buffer+decision
+differentials now cover bd8/10/12 (6/6).
+
+Verified: `self_contained_key_frame` **549/549** (was 447 — the HBD axes J/N
+widened to the full speed band once the band closed; all six pins
+self-promoted, `open = &[]`); `s4cov_qm_axis` 360/360 exact with
+`HBD_OPEN = &[]`; `speed_envelope_stock_map_is_pinned` passes with
+`b10_64 = &[]`; `encoder_gate_bd10_diff` 7/7; e2e byte-match 32/32; dump sweep
+bd10+bd12 x s0..s9 = 20/20. **Not** this bug and still pinned: the speed-0
+>=1080p band (`SPEED0_1080P_OPEN`, `HD_HBD_OPEN` — KB-38's residual; the CNN
+prune does not run at s0) and `MONO_S0_OPEN` (bd8, s0).
+
 ## The entire tune bundle closes — `x->rdmult` is per-NODE under a perceptual tune, and C folds it at three different scopes (KB-59, 2026-09-13)
 
 All 84 tune cells at s0/s3, all 8 fast-preset tune cells at s6/s8, and the

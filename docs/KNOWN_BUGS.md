@@ -5,6 +5,53 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-61 — Encoder: the intra CNN partition-prune window truncated HBD samples to `u8` — FIXED 2026-09-13, the entire `HBD_OPEN` band closed
+
+- **Symptom.** Every high-bit-depth divergence pin in the tree — the
+  `HBD_OPEN` sets in `self_contained_key_frame` (bd10/bd12, 4:2:0/4:4:4/mono,
+  cq32/cq5/cq0, speeds 1..6, single- and multi-tile), the `HBD_OPEN` set in
+  `s4cov_qm_axis` (49 rows), and `config_permutations`'s `b10_64` probe
+  (real `av1-1-b10-00-quantizer-00` conformance source at 64x64, `--cpu-used`
+  1..6). The narrowest cell was `vgrad256 bd10 cq24 s4` (port 686 B vs C
+  623 B); s3 and s0..s2 were byte-exact, so the band was speed-shaped, not
+  depth-shaped.
+- **Mechanism — `u16 -> u8` wrap on the CNN input window.**
+  `partition_pick::extract_intra_cnn_window` built the 65x65 luma window for
+  the CNN-based partition prune with `env.src_y[..] as u8` — a no-op at bd8,
+  but raw 10/12-bit samples wrapped mod 256. C dispatches on bit depth:
+  `av1_cnn_predict_img_multi_out` (uint8) at bd8 vs
+  `av1_cnn_predict_img_multi_out_highbd` (uint16) at bd>8, and BOTH normalize
+  inside layer 0 by `1 / ((1 << bit_depth) - 1)` — i.e. C feeds the network
+  raw HBD samples, not truncated ones. On the first divergent block
+  (`mi(0,16)`, BLOCK_64x64, `vgrad256 bd10 s4`) the port's NONE-leaf cost
+  matched C exactly (165746189), but the CNN prune decided `SPLIT off` where
+  C descended — the wrapped window produced different logits and flipped
+  `dec.square_split_disabled`. The irregular speed/tile/subsampling reach was
+  one threshold phenomenon: the prune only runs at speeds 1..6, and a flipped
+  CNN flag changes the stream only where the partition decision is close —
+  hence "the band" was ONE root, not a family of HBD RD defects.
+- **Fix.** The window stays `u16` end to end:
+  `extract_intra_cnn_window` returns `Vec<u16>` (no truncation);
+  `cnn_partition::cnn::cnn_predict` takes `win: &[u16], bd: i32` and
+  normalizes by `((1 << bd) - 1) as f32` — identical to the old `p / 255.0`
+  at bd8, and bit-identical floats, so the change is byte-inert at bd8;
+  `predict_decision` and `intra_mode_cnn_partition` carry `bd` through the
+  cached and uncached paths. Oracle side: `rd_shim.c`'s
+  `shim_intra_cnn_partition_decision` / `shim_intra_cnn_run` take
+  `const uint16_t *win` and dispatch — bd8 copies into a `uint8_t` buffer for
+  the real lowbd function, bd>8 passes the raw window to the REAL exported
+  `av1_cnn_predict_img_multi_out_highbd` (scalar arm: the renamed
+  `cnn_cscalar.c` highbd entry). No transcribed CNN anywhere.
+- **Verified.** CNN differential suite 6/6 (buffer + decision parity vs real
+  C at bd8/bd10/bd12, random + structured windows, scalar and dispatched
+  arms); `encoder_gate_bd10_diff` 7/7; `self_contained_key_frame` 10/10 with
+  axes J/N extended to s0..s8 (all six HBD pins self-promoted, `open = &[]`);
+  `s4cov_qm_axis` 360/360 exact, `HBD_OPEN = &[]`; `b10_64` expects `&[]`
+  (passed); e2e byte-match 32/32 and the dump sweep 20/20 (bd10+bd12,
+  s0..s9) — bd8 provably inert. What did NOT close and was never this bug:
+  the speed-0 >=1080p pins (`SPEED0_1080P_OPEN`, `HD_HBD_OPEN` — KB-38's
+  band; the CNN prune does not run at s0) and `MONO_S0_OPEN` (bd8, s0).
+
 ### KB-60 — Encoder: under `--intra-dct-only` C searches chroma tx as DCT but measures/reconstructs with the UV-MODE-derived type — FIXED 2026-09-13, coding tools gate fully closed (48/48)
 
 - **Symptom.** `intra-dct-only=1 420/444 cq32 s0` diverged in the payload

@@ -452,16 +452,18 @@ fn crop_straddle_sb128_byte_matches() {
 
 /// **The bd10 arm, run only at the speeds where it can be read.**
 ///
-/// bd10 diverges from real aomenc at `--cpu-used` 1..6 on SB-EXACT content
-/// already — the pinned `b10_64` band of
+/// bd10 diverged from real aomenc at `--cpu-used` 1..6 on SB-EXACT content —
+/// the pinned `b10_64` band of
 /// `config_permutations.rs::speed_envelope_stock_map_is_pinned`, widened by
-/// `s4cov_qm_axis.rs` (it reaches 4:4:4, 12-bit, monochrome and cq5, and is
-/// LUMA-borne). A crop cell at those speeds cannot answer "does the crop-vs-mi
-/// read hold at high bit depth?", because both explanations predict a
-/// divergence. Speeds **0 and 7** are clean at bd10 on SB-exact content, so
-/// they are where the question is well-posed — and each is asked here with its
-/// own SB-EXACT control at the identical speed and bit depth, so the answer
-/// does not rest on the other file's measurement.
+/// `s4cov_qm_axis.rs` — **CLOSED 2026-09-13 (KB-61: the intra-CNN window's
+/// u16 -> u8 truncation), so the speed restriction below is now moot; {0, 7}
+/// is kept as the grid rather than widened.** The historical reasoning: a crop
+/// cell at those speeds could not answer "does the crop-vs-mi read hold at
+/// high bit depth?", because both explanations predicted a divergence. Speeds
+/// **0 and 7** were clean at bd10 on SB-exact content, so they are where the
+/// question was well-posed — and each is asked here with its own SB-EXACT
+/// control at the identical speed and bit depth, so the answer does not rest
+/// on the other file's measurement.
 ///
 /// The controls are 480x480 and 720x720: the mi-aligned extents of the two
 /// crops, i.e. the frames the buggy read would have been reading. That makes
@@ -493,10 +495,9 @@ fn crop_straddle_high_bitdepth_byte_matches_where_interpretable() {
     let ctl_bad = report(&ctl_rows);
     assert!(
         ctl_bad.is_empty(),
-        "the bd10 SB-EXACT control diverged at speed 0 or 7. Those are the only speeds where \
-         bd10 is byte-exact on SB-exact content, and they are what make the crop rows \
-         interpretable — so this is a bd10 regression (or a spread of the pinned speed-1..6 \
-         band), not a crop-axis result: {ctl_bad:?}"
+        "the bd10 SB-EXACT control diverged at speed 0 or 7 — a bd10 regression, not a \
+         crop-axis result (post-KB-61 the whole speed range is byte-exact on SB-exact \
+         content): {ctl_bad:?}"
     );
     let bad = report(&crop_rows);
     assert!(bad.is_empty(), "{KB28_HINT}: {bad:?}");
@@ -504,9 +505,9 @@ fn crop_straddle_high_bitdepth_byte_matches_where_interpretable() {
 
 /// **The bd12 arm — the same four cells as the bd10 one, one bit depth up.**
 ///
-/// `s4cov_qm_axis.rs` shows the `b10_64` band reaches 12-bit identically, so
-/// the interpretable speeds are the same {0, 7} and the SB-exact controls play
-/// the same role. The bd12 source is BIT-REPLICATED from the genuine 10-bit
+/// `s4cov_qm_axis.rs` shows the `b10_64` band reached 12-bit identically, so
+/// the interpretable speeds were the same {0, 7} — now moot post-KB-61 (the
+/// band closed everywhere); the SB-exact controls play the same role. The bd12 source is BIT-REPLICATED from the genuine 10-bit
 /// one (`v << 2 | v >> 8`), not left-shifted: a plain shift leaves the low two
 /// bits zero, which is the regime KB-4 calls out as the easy one — it never
 /// produces a coefficient whose low bits matter.
@@ -562,10 +563,9 @@ fn crop_straddle_bd12_byte_matches_where_interpretable() {
     let ctl_bad = report(&ctl_rows);
     assert!(
         ctl_bad.is_empty(),
-        "the bd12 SB-EXACT control diverged at speed 0 or 7. Those are the only speeds where \
-         high bit depth is byte-exact on SB-exact content, and they are what make the crop \
-         rows interpretable — so this is a bd12 regression (or a spread of the pinned \
-         speed-1..6 band), not a crop-axis result: {ctl_bad:?}"
+        "the bd12 SB-EXACT control diverged at speed 0 or 7 — a bd12 regression, not a \
+         crop-axis result (post-KB-61 the whole speed range is byte-exact on SB-exact \
+         content): {ctl_bad:?}"
     );
     let bad = report(&crop_rows);
     assert!(bad.is_empty(), "{KB28_HINT}: {bad:?}");

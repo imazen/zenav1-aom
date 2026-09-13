@@ -36,7 +36,9 @@ closed an item, is preserved as an appendix of `docs/CLAUSE_STATUS_LOG.md`):
    is open.
 
 **Non-goals until after ship** (say so out loud rather than drifting into them):
-inter-frame parity, closing `HBD_OPEN`, the full imazen-26 corpus sweep, beating SVT.
+inter-frame parity, the full imazen-26 corpus sweep, beating SVT.
+(`HBD_OPEN` was struck from this list 2026-09-13 — it CLOSED, as KB-61: one root,
+the intra-CNN window's `u16 -> u8` truncation, under every high-bit-depth pin.)
 
 **Numeric caveat, stated because the number was elided in the directive:** "within libaom"
 carries no multiple. Gate 3's standing bar is <= 1.5x C, so that is the reading until the
@@ -50,7 +52,7 @@ user says otherwise; the two retained fleet photo witnesses are at 2.49x / 2.65x
 | (2) a support contract that never lies | `configuration_support.rs` + `refusal_census.rs` — the support query, the knob ranges and the documented refusals are asserted against the encoder's own behaviour. **RE-VERIFIED LIVE 2026-09-10 at HEAD: 14/14** across both files plus `encode_cancel`, including `the_documented_refusals_are_exactly_these` (pinned in BOTH directions), `every_format_and_depth_encodes_at_an_awkward_size`, `every_enumerated_knob_encodes_across_its_whole_range` (90 knob cells, 92 s) and `screen_shaped_tiny_cells_encode_rather_than_refuse` (60/60). |
 | (3) no panics or refusals on reachable inputs | 90k fuzz inputs, 0 panics (`encode_fuzz_sweep.rs`); KB-51 was found this way. **RE-HUNTED AT HEAD 2026-09-10 — the committed default is only 600 inputs and the 90k figure predated ~60 commits: 45,000 inputs across seeds {1, 7, 101}, 13,315 of them reaching a REAL encode, 0 panics** (per seed ~4,440 encoded / ~5,770 unsupported / ~2,840 plane-size / ~1,950 sample-range, ~40 s each). All four non-vacuity classes fire, so the sweep is not testing `validate_configuration` and calling it panic-freedom. |
 | (4) encode time within libaom | **NOT MET — 1.943x at 1024x1024 cq27 `--cpu-used 3`, the preset zenavif ships** (port 3011.65 ms / C 1548.93 ms, 8 rotated rounds, both arms 40,237 B; CPU == wall on both sides, both pinned single-threaded, so the comparison EXCLUDES libaom's threading). The 2026-09-08..10 cycle took it 3.24x -> 1.94x over ~45 byte-identical landings (transform fusion, lane-width kernels, bounds-check removal, allocation cuts) and ~15 measured rejections. Two things decide what to build next, both measured: closing EVERY named lever completely is only **27 % of the 716 ms the 1.5x bar needs** (`benchmarks/encoder_lever_map_s3_2026-09-10.md`), so the route is BREADTH — halving every class gap, roughly eight more transform-class-sized cycles; and tile threading is a **~3.2x at 4 threads / ~5.1x at 8** ABSOLUTE-time lever that does NOT move the ratio (`benchmarks/encoder_tile_threading_ceiling_2026-09-10.md`). The port makes ~4x libaom's allocator calls in ~0.75x its footprint, and allocation levers are worth ~6.9x more on Windows than on glibc. **Rules for choosing a lever, with their evidence, are in `docs/ITERATION_PLAYBOOK.md`; the COMPLETE measured record of this row (~120 KB: every landing, null, rejection and self-correction) is `docs/CLAUSE_STATUS_LOG.md` row (4). Read it before re-deriving anything, and append there.** |
-| (5) match the RD of C | byte identity is the strongest available evidence and holds on 447/447 standalone cells; the pinned divergences are the measured/attributed/bounded residual the directive permits to ship |
+| (5) match the RD of C | byte identity is the strongest available evidence and holds on 549/549 standalone cells — including the entire former `HBD_OPEN` band (bd10/bd12 x speeds 1..6 x tile counts x all four chroma formats + cq0), closed 2026-09-13 as KB-61: the intra-CNN prune's source window truncated u16 HBD samples to `u8` where C feeds `av1_cnn_predict_img_multi_out_highbd` raw u16; the pinned divergences still open are the measured/attributed/bounded residual the directive permits to ship |
 | (6) sensible conversion + wiring + testing of all of the C encoder | **2026-09-11: every harness-only feature is now REACHABLE from `encode_key_frame`** — `quality` (tune IQ/SSIMULACRA2 bundle via `apply_tune`, QM, sharpness, chroma delta-q, delta-q modes 2/3/6, delta-lf, adaptive CDEF), `tools` (the 24 C8–C11 toggles), `film_grain`, `superres_denom` — each byte-gated against a MATCHED oracle (`ref_encode_av1_kf_cfg`) with a decode round-trip on every cell (`self_contained_tools.rs`, 236 cells, all conformant). Byte parity NOW: superres **18/18**, film grain **10/10**, coding tools **48/48** (KB-60, 2026-09-13: under `--intra-dct-only` C searches chroma tx as DCT but `dist_block_px_domain`/inverse re-derive the UV-mode type via `av1_get_tx_type` — decode-consistent, so the port mirrors it), quality knobs alone **75/75**, the tune bundle **84/84 at s0/s3 + 8/8 at s6/s8** (KB-59, 2026-09-13: `x->rdmult` is per-NODE under a perceptual tune and C's three sub-block call sites fold it three different ways — the port now mirrors each scope). `cdf_update_mode = 0` is REFUSED by name: its stream is rejected by the real decoder (KB-53). Palette + IntraBC wired 2026-09-10 (54/54, matched oracle). The SCM trial encode is unported and measured to be a divergence, not a refusal. Full history: `docs/CLAUSE_STATUS_LOG.md`. |
 
 **The one-line reading:** everything except encode time is either met or reduced to encode
@@ -167,11 +169,13 @@ before it is pushed.
   of `aom-bench`'s `port_encode*`. `aom_encode::key_frame::encode_key_frame`
   (`crates/aom-encode/src/key_frame.rs`) AUTHORS the sequence header and the frame header
   from config, and emits a complete temporal unit (TD + seq + `OBU_FRAME`) with no C bytes in
-  the path — **447/447 cells byte-identical to real aomenc** (69/69 when this caveat was
+  the path — **549/549 cells byte-identical to real aomenc** (69/69 when this caveat was
   written; 186/186 on 2026-09-02; 241/241 after the SB128 + explicit-tile landings on
   2026-09-03; +186 coded-lossless cells landed 2026-09-04, KB-44; +8 promoted
   `PIN_256x256_speed7`/`PIN_4160x64_multitile_speed9` cells and +12 CDEF-on
-  speed-4..9 cells on 2026-09-12, KB-55/56), both decoders agreeing on the
+  speed-4..9 cells on 2026-09-12, KB-55/56; +102 cells on 2026-09-13, KB-61 — the
+  HBD axes J/N widened to the whole `--cpu-used` band once the CNN-window
+  truncation closed), both decoders agreeing on the
   pixels (`aom-encode/tests/self_contained_key_frame.rs`). Its envelope is ALLINTRA,
   `--cpu-used` 0..=9, SB64 **and SB128**, single tile plus mandatory and explicitly-requested
   multi-tile, and all four (CDEF, loop-restoration) combinations (the caveat above was written
@@ -289,6 +293,7 @@ The ranked list of named-but-unmeasured axes (T1 refusals, T2 default-reachable,
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`. **Write the entry in `docs/KNOWN_BUGS.md` and add its one-line index entry here.**
 
+- **KB-61** — Encoder: the intra-CNN partition-prune window truncated HBD samples to `u8` (`as u8` wrap) where C feeds `av1_cnn_predict_img_multi_out_highbd` raw u16 — FIXED ✅ 2026-09-13, the ENTIRE `HBD_OPEN` band closed (every bd10/bd12 pin across speeds 1..6, tile counts, chroma formats, cq0)
 - **KB-60** — Encoder: under `--intra-dct-only` C searches chroma tx as DCT but measures/reconstructs with the UV-mode-derived type (`av1_get_tx_type`) — FIXED ✅ 2026-09-13, coding tools gate fully closed (48/48)
 - **KB-59** — Encoder: under a perceptual tune `x->rdmult` is per-NODE and C's three sub-block call sites fold it three different ways — FIXED ✅ 2026-09-13, closing the entire tune bundle (84/84 + 8/8 fast presets) and the six chroma-delta-q ramps
 - **KB-58** — Encoder: the `--deltaq-mode` payload divergences were three separate per-SB-qindex plumbing bugs — FIXED ✅ 2026-09-12, the whole `--deltaq-mode` axis byte-identical

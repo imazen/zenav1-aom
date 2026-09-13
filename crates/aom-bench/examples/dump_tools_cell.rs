@@ -50,6 +50,30 @@ fn planes(w: usize, h: usize, bd: u8, mono: bool, ss_x: usize, ss_y: usize, seed
     (y, u, v)
 }
 
+/// Verbatim copy of `self_contained_key_frame`'s `Content::Texture` +
+/// `cell_planes` — the recipe the `PIN_bd*` HBD cells use (gradient + bars +
+/// ripple luma, flat mid chroma).
+fn tex_planes(w: usize, h: usize, bd: u8, mono: bool, ss_x: usize, ss_y: usize) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+    let maxv = (1u32 << bd) - 1;
+    let mut y = vec![0u16; w * h];
+    for r in 0..h {
+        for col in 0..w {
+            let grad = 32i64 + ((r + col) * 150 / 256) as i64;
+            let bar: i64 = if (col / 16) % 2 == 0 { 0 } else { 45 };
+            let ripple: i64 = if (r + col) % 2 == 0 { 14 } else { -14 };
+            let v8 = (grad + bar + ripple).clamp(0, 255) as u32;
+            y[r * w + col] = ((v8 * maxv) / 255) as u16;
+        }
+    }
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + ss_x) >> ss_x, (h + ss_y) >> ss_y)
+    };
+    let mid = (maxv / 2 + 1) as u16;
+    (y, vec![mid; cw * ch], vec![mid; cw * ch])
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 5 {
@@ -66,11 +90,15 @@ fn main() {
     let mono = a.get(6).map(|s| s == "1").unwrap_or(false);
     // Optional key=value knobs matching self_contained_tools' quality cells:
     //   deltaq=2|3|6 dlf=0|1 strength=N chromadq=0|1 tune=iq|ssim2
+    //   dctonly=0|1 bd=8|10|12 tex=0|1 tools0=0|1
     let mut deltaq = 0i32;
     let mut dlf = false;
     let mut strength = 100u32;
     let mut chroma_dq = false;
     let mut dctonly = false;
+    let mut bd = 8u8;
+    let mut tex = false;
+    let mut tools0 = false;
     let mut tune = Tune::default();
     for kv in &a[7.min(a.len())..] {
         let (k, v) = kv.split_once('=').expect("knob args are key=value");
@@ -80,6 +108,9 @@ fn main() {
             "strength" => strength = v.parse().unwrap(),
             "chromadq" => chroma_dq = v == "1",
             "dctonly" => dctonly = v == "1",
+            "bd" => bd = v.parse().unwrap(),
+            "tex" => tex = v == "1",
+            "tools0" => tools0 = v == "1",
             "tune" => {
                 tune = match v {
                     "iq" => Tune::Iq,
@@ -92,13 +123,21 @@ fn main() {
         }
     }
     let (ss_x, ss_y) = (1, 1);
-    let (y, u, v) = planes(w, w, 8, mono, ss_x, ss_y, 7);
+    let (y, u, v) = if tex {
+        tex_planes(w, w, bd, mono, ss_x, ss_y)
+    } else {
+        planes(w, w, bd, mono, ss_x, ss_y, 7)
+    };
 
     c::ref_init();
-    let mut cfg = KeyFrameConfig::allintra_speed0(w, w, 8, mono, ss_x, ss_y, cq);
+    let mut cfg = KeyFrameConfig::allintra_speed0(w, w, bd, mono, ss_x, ss_y, cq);
     cfg.cpu_used = speed;
     cfg.enable_cdef = cdef_mode != 0;
     cfg.enable_restoration = false;
+    if tools0 {
+        cfg.enable_palette = false;
+        cfg.enable_intrabc = false;
+    }
     cfg.quality.tune = tune;
     cfg.quality.cdef_adaptive = cdef_mode == 3;
     cfg.quality.deltaq_mode = match deltaq {
@@ -121,7 +160,7 @@ fn main() {
         &v,
         w,
         w,
-        8,
+        i32::from(bd),
         mono,
         ss_x as i32,
         ss_y as i32,

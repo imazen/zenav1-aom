@@ -652,10 +652,11 @@ deltaq_mode=6 (VARIANCE_BOOST)`; IQ adds `enable_adaptive_sharpness=1`.
 - **Remaining (follow-up, S):** lossless x SB128 has exactly ONE cell
   (`M_128x128_cq0_s0_cdef0_lr0_sb128`, bd8 4:2:0, byte-exact) — SB128 was wired on
   2026-09-03 but the N arm is SB64 throughout, so the chroma-format / bit-depth /
-  content axes are UNMEASURED at SB128 + cq 0. And bd10/bd12 lossless at
-  `--cpu-used` 1..6 is the pre-existing `HBD_OPEN` band, pinned as such
-  (`PIN_cq0_bd10_grad`, `PIN_cq0_bd12_tex`), NOT a lossless finding — measured
-  2026-09-03 to be the same bd x speed band at cq 32.
+  content axes are UNMEASURED at SB128 + cq 0. ~~And bd10/bd12 lossless at
+  `--cpu-used` 1..6 is the pre-existing `HBD_OPEN` band~~ — **CLOSED 2026-09-13
+  (KB-61):** the band was one root, the intra-CNN window's `u16 -> u8`
+  truncation; the N arm now sweeps bd10/bd12 at speeds {0,3,6,9} byte-identical
+  and `PIN_cq0_bd10_grad`/`PIN_cq0_bd12_tex` are promoted to sweep cells.
 
 ### C13 — Speed levels 6–9 — DONE (→ Section A) — Gate-2 (cpu 0–9) byte-complete
 - **DONE (KB-10 / KB-11 / KB-12):** speeds 6, 7, 8, 9 all landed byte-identical on the synthetic

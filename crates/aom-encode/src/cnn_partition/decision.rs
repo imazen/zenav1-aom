@@ -332,7 +332,7 @@ pub fn reset_cnn_cache_stats() {
 /// is exactly why the cache cannot change a decision.
 ///
 /// Returns `None` when C returns at `:227` (no valid cascade → no prune).
-pub fn intra_mode_cnn_partition<F: Fn() -> Vec<u8>>(
+pub fn intra_mode_cnn_partition<F: Fn() -> Vec<u16>>(
     info: &mut PartitionSearchInfo,
     window: F,
     qindex: i32,
@@ -347,7 +347,7 @@ pub fn intra_mode_cnn_partition<F: Fn() -> Vec<u8>>(
     let computed_here = if bsize_idx == 1 && !info.cnn_output_valid {
         // C computes log_q here too (:193-198) off the 64x64's own x->qindex.
         info.log_q = compute_log_q(qindex, bd);
-        info.cnn_buffer = cnn::cnn_predict(&window());
+        info.cnn_buffer = cnn::cnn_predict(&window(), bd);
         info.cnn_output_valid = true;
         CNN_CACHE_COMPUTES.fetch_add(1, Relaxed);
         true
@@ -362,7 +362,7 @@ pub fn intra_mode_cnn_partition<F: Fn() -> Vec<u8>>(
 
     // Cache self-check (off by default): a READ must equal a recomputation.
     if !computed_here && CNN_CACHE_VERIFY.load(Relaxed) {
-        let fresh = cnn::cnn_predict(&window());
+        let fresh = cnn::cnn_predict(&window(), bd);
         assert!(
             fresh == info.cnn_buffer,
             "intra-CNN cache read differs from a recomputation at bsize_idx {bsize_idx} \
@@ -401,7 +401,7 @@ pub fn intra_mode_cnn_partition<F: Fn() -> Vec<u8>>(
 /// position in the quad-tree; `level` is `intra_cnn_based_part_prune_level`
 /// (1 or 2). Returns `(logits, decision)`.
 pub fn predict_decision(
-    win: &[u8],
+    win: &[u16],
     qindex: i32,
     bd: i32,
     frame_w: i32,
@@ -410,7 +410,7 @@ pub fn predict_decision(
     quad_tree_idx: i32,
     level: i32,
 ) -> ([f32; 4], CnnPruneDecision) {
-    let cnn_buffer = cnn::cnn_predict(win);
+    let cnn_buffer = cnn::cnn_predict(win, bd);
     let log_q = compute_log_q(qindex, bd);
 
     let mut features = [0.0f32; 100];
