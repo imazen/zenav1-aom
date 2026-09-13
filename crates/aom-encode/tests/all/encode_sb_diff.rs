@@ -427,6 +427,7 @@ fn encode_sb_dry_run_matches_c_walk() {
             rows_u: &rows_u,
             rows_v: &rows_v,
             rdmult,
+            ssim: None,
             sharpness,
             enable_optimize_b: TrellisOptType::FullTrellisOpt,
             use_chroma_trellis_rd_mult: use_chroma_tbl,

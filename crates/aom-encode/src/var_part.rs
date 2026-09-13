@@ -1068,7 +1068,7 @@ mod tests {
             sf: Default::default(),
         };
         let mut stamps = vec![0u8; 16 * 16];
-        choose_var_based_partitioning_key(&mut stamps, &f, &src, 0, stride, 0, 0, false);
+        choose_var_based_partitioning_key(&mut stamps, &f, f.qindex, &src, 0, stride, 0, 0, false);
         for (r, c) in [(0, 0), (0, 8), (8, 0), (8, 8)] {
             assert_eq!(stamps[r * 16 + c], BLOCK_32X32 as u8, "at ({r},{c})");
         }
@@ -1120,7 +1120,7 @@ mod tests {
             sf: Default::default(),
         };
         let mut stamps = vec![0u8; 16 * 16];
-        choose_var_based_partitioning_key(&mut stamps, &f, &src, 0, stride, 0, 0, false);
+        choose_var_based_partitioning_key(&mut stamps, &f, f.qindex, &src, 0, stride, 0, 0, false);
         assert_eq!(
             get_partition_from_stamps(&stamps, 16, 16, 0, 0, BLOCK_32X32),
             3, // PARTITION_SPLIT — forced by the 32x32 variance rule
@@ -1164,7 +1164,7 @@ mod tests {
             sf: Default::default(),
         };
         let mut stamps = vec![0u8; 12 * 12];
-        choose_var_based_partitioning_key(&mut stamps, &f, &src, 0, stride, 0, 0, false);
+        choose_var_based_partitioning_key(&mut stamps, &f, f.qindex, &src, 0, stride, 0, 0, false);
         // Interior 32x32 at (0,0): NONE (flat).
         assert_eq!(
             get_partition_from_stamps(&stamps, 12, 12, 0, 0, BLOCK_32X32),

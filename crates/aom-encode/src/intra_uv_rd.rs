@@ -71,6 +71,7 @@ const MI_H: [usize; 22] = [
 
 /// `UV_CFL_PRED` (enums.h).
 pub const UV_CFL_PRED: usize = 13;
+const UV_D67_PRED: usize = 8;
 
 /// `av1_get_adjusted_tx_size` (blockd.h): 64-point sizes clamp to their
 /// 32-point counterparts (chroma never uses 64-pt transforms).
@@ -152,6 +153,17 @@ pub fn plane_px_dims(bsize: usize, ss_x: usize, ss_y: usize) -> (i32, i32) {
 /// walk (`has_top_right`/`has_bottom_left`) sees. Sub-8x8 dimensions on a
 /// subsampled axis are promoted to the shared-chroma group's size. Mirrors the
 /// bit-exact decoder's `aom_decode::scale_chroma_bsize`.
+///
+/// `AOM_UV_DBG=<mi_row>,<mi_col>` — the one leaf `rd_pick_intra_sbuv_mode`
+/// dumps its per-mode rdcost line for (same convention as `AOM_PART_DBG`).
+/// Diagnostic only; inert when unset.
+fn uv_dbg_target() -> Option<(i32, i32)> {
+    std::env::var("AOM_UV_DBG").ok().and_then(|v| {
+        v.split_once(',')
+            .and_then(|(r, c)| r.parse::<i32>().ok().zip(c.parse::<i32>().ok()))
+    })
+}
+
 fn uv_scale_chroma_bsize(bsize: usize, ss_x: usize, ss_y: usize) -> usize {
     const BLOCK_4X4: usize = 0;
     const BLOCK_4X8: usize = 1;
@@ -655,6 +667,78 @@ pub fn txfm_rd_in_plane_uv_p(
                     txb_off,
                 );
             }
+            if uv_dbg_target().is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col)
+
+            {
+                let mut ph = 0u64;
+                for r in 0..txh {
+                    for c in 0..txw {
+                        ph = ph
+                            .wrapping_mul(31)
+                            .wrapping_add(recon[txb_off + r * env.ref_stride + c] as u64);
+                    }
+                }
+                let (pw, phx) = plane_px_dims(env.bsize, env.ss_x, env.ss_y);
+                let mut sh = 0u64;
+                let srcp = env.src(plane);
+                for r in 0..phx as usize {
+                    for c in 0..pw as usize {
+                        sh = sh
+                            .wrapping_mul(31)
+                            .wrapping_add(srcp[env.src_off[pi] + r * env.src_stride + c] as u64);
+                    }
+                }
+                let mut ah = 0u64;
+                let mut lh = 0u64;
+                if txb_off >= env.ref_stride + 1 {
+                    for c in -1..(2 * txw) as isize {
+                        ah = ah.wrapping_mul(31).wrapping_add(
+                            recon[(txb_off as isize - env.ref_stride as isize + c) as usize]
+                                as u64,
+                        );
+                    }
+                    for r in -1..(2 * txh) as isize {
+                        lh = lh.wrapping_mul(31).wrapping_add(
+                            recon[(txb_off as isize + r * env.ref_stride as isize - 1) as usize]
+                                as u64,
+                        );
+                    }
+                }
+                eprintln!(
+                    "[ppred] mi({},{}) pl{} uv={} adelta={} blk({},{}) pred={:x} src={:x} ab={:x} lf={:x}",
+                    env.mi_row, env.mi_col, plane, uv_mode, angle_delta_uv,
+                    blk_row, blk_col, ph, sh, ah, lh
+                );
+                {
+                    let mode2 = get_uv_mode(uv_mode) as usize;
+                    let (wpx2, hpx2) = plane_px_dims(env.bsize, env.ss_x, env.ss_y);
+                    let (ab2, ar2, ac2) =
+                        uv_avail_geom(env.bsize, env.mi_row, env.mi_col, env.ss_x, env.ss_y);
+                    let (nt, ntr, nl, nbl) = intra_avail(
+                        env.sb_size, ab2, ar2, ac2,
+                        env.chroma_up_available, env.chroma_left_available,
+                        env.tile_col_end, env.tile_row_end, env.partition, tx_size,
+                        env.ss_x as i32, env.ss_y as i32, blk_row as i32, blk_col as i32,
+                        wpx2, hpx2, env.mi_cols, env.mi_rows, mode2, angle_delta_uv * 3, false,
+                    );
+                    eprintln!(
+                        "[pav] mi({},{}) pl{} uv={} adelta={} blk({},{}) nt={} ntr={} nl={} nbl={} ft={} def={}",
+                        env.mi_row, env.mi_col, plane, uv_mode, angle_delta_uv,
+                        blk_row, blk_col, nt, ntr, nl, nbl, env.filter_type,
+                        env.disable_edge_filter
+                    );
+                }
+                if txb_off >= env.ref_stride + 1 {
+                    eprint!("[pab] mi({},{}) pl{}:", env.mi_row, env.mi_col, plane);
+                    for c in -1..(2 * txw) as isize {
+                        eprint!(
+                            " {}",
+                            recon[(txb_off as isize - env.ref_stride as isize + c) as usize]
+                        );
+                    }
+                    eprintln!();
+                }
+            }
             // av1_subtract_txb — the prediction stays in the recon plane and
             // is read at `ref_stride` (C's `pd->dst` form). The tight snapshot
             // this replaced was a per-row copy OUT of `recon`, taken only to
@@ -678,6 +762,27 @@ pub fn txfm_rd_in_plane_uv_p(
                 &recon[txb_off..],
                 env.ref_stride,
             );
+            if uv_dbg_target().is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col)
+
+            {
+                let mut rh = 0u64;
+                let mut sh = 0u64;
+                for r in 0..txh {
+                    for c in 0..txw {
+                        rh = rh
+                            .wrapping_mul(31)
+                            .wrapping_add(residual[r * txw + c] as u16 as u64);
+                        sh = sh
+                            .wrapping_mul(31)
+                            .wrapping_add(src[src_txb_off + r * env.src_stride + c] as u64);
+                    }
+                }
+                eprintln!(
+                    "[pres] mi({},{}) pl{} uv={} adelta={} blk({},{}) res={:x} src={:x}",
+                    env.mi_row, env.mi_col, plane, uv_mode, angle_delta_uv,
+                    blk_row, blk_col, rh, sh
+                );
+            }
 
             let bctx = crate::BlockContext {
                 plane_bsize,
@@ -736,6 +841,21 @@ pub fn txfm_rd_in_plane_uv_p(
                 search,
             )
             .expect("search_tx_type always yields a winner");
+
+            if uv_dbg_target().is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col)
+
+            {
+                let h = search.best_qcoeff[..win.best_eob as usize].iter().fold(
+                    0u64,
+                    |acc, &c| acc.wrapping_mul(31).wrapping_add(c as u64),
+                );
+                eprintln!(
+                    "[ptxb] mi({},{}) pl{} bs{} uv={} adelta={} blk({},{}) txs={} eob={} rate={} dist={} ch={:x}",
+                    env.mi_row, env.mi_col, plane, plane_bsize, uv_mode,
+                    angle_delta_uv, blk_row, blk_col, tx_size, win.best_eob,
+                    win.rate, win.dist, h
+                );
+            }
 
             // recon_intra: reconstruct the winner over the prediction.
             if win.best_eob > 0 {
@@ -1553,6 +1673,13 @@ fn pick_intra_angle_routine_sbuv(
             0,
         );
     let this_rd = rdcost(env.rdmult, this_rate, tokenonly.dist);
+    if uv_dbg_target().is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col) {
+        eprintln!(
+            "[pad] mi({},{}) bs{} uvmode={} adelta={} rd={} rate={} dist={} tok_rate={}",
+            env.mi_row, env.mi_col, env.bsize, uv_mode, angle_delta_uv, this_rd,
+            this_rate, tokenonly.dist, tokenonly.rate
+        );
+    }
     if this_rd < *best_rd {
         *best_rd = this_rd;
         *best_angle_delta = angle_delta_uv;
@@ -1838,6 +1965,13 @@ pub fn rd_pick_intra_sbuv_mode(
             );
         let this_rd = rdcost(env.rdmult, this_rate, tokenonly.1);
         visit.this_rd = Some(this_rd);
+        if uv_dbg_target().is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col) {
+            eprintln!(
+                "[puv] mi({},{}) bs{} uvmode={} rd={} rate={} dist={} cfl_idx={} cfl_sig={}",
+                env.mi_row, env.mi_col, env.bsize, uv_mode, this_rd, this_rate,
+                tokenonly.1, cfl_fields.0, cfl_fields.1
+            );
+        }
         visits.push(visit);
 
         if this_rd < best.best_rd {

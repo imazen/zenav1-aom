@@ -2462,6 +2462,20 @@ pub fn encode_key_frame_with(
     p.delta_q.delta_lf_res = if delta_lf_present { 2 } else { 1 };
     p.delta_q.delta_lf_multi = false;
 
+    // `av1_set_mb_ssim_rdmult_scaling` (encoder.c:4301-4305): under a
+    // perceptual tune (SSIM/IQ/SSIMULACRA2) the per-16x16 rdmult scaling
+    // grid is derived from the border-extended source ONCE per frame;
+    // `setup_block_rdmult`'s `av1_set_ssim_rdmult` arm then folds a
+    // node-local geometric mean into `x->rdmult` at EVERY partition node
+    // and leaf (partition_search.c:628-631), making rdmult position+size
+    // dependent (KB-59). `pre_rdmult`/`intra_modifier` are per-SB — the
+    // pack's per-SB env restamps them.
+    let ssim_scales = (quality.tune != Tune::Psnr).then(|| {
+        crate::allintra_vis::ssim_rdmult_scaling_factors(
+            &src_y, stride, mi_cols, mi_rows, bd,
+        )
+    });
+
     let mut env = SbEncodeEnv {
         ref_frame: None,
         sb_size: sb_block,
@@ -2502,6 +2516,14 @@ pub fn encode_key_frame_with(
         rows_u: &rows_u,
         rows_v: &rows_v,
         rdmult,
+        ssim: ssim_scales
+            .as_ref()
+            .map(|(factors, cols, _)| crate::encode_sb::SsimRdmult {
+                factors,
+                cols: *cols,
+                pre_rdmult: rdmult,
+                intra_modifier: 128,
+            }),
         sharpness: quality.sharpness,
         // `init_rd_sf`: lossless forces NO_TRELLIS_OPT for every knob value.
         enable_optimize_b: if coded_lossless {

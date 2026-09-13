@@ -349,6 +349,7 @@ fn port_encode_cdef(cell: &EncodeCell, bootstrap: &[u8]) -> Vec<u8> {
         rows_u: &rows_u,
         rows_v: &rows_v,
         rdmult,
+        ssim: None,
         sharpness: 0,
         enable_optimize_b: TrellisOptType::FullTrellisOpt,
         use_chroma_trellis_rd_mult: true,

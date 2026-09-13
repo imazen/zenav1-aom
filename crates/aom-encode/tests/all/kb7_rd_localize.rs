@@ -431,6 +431,7 @@ fn localize_cell(w: usize, h: usize, cq_level: i32, speed: i32, name: &str) -> b
         rows_u: &rows_u,
         rows_v: &rows_v,
         rdmult,
+        ssim: None,
         sharpness: 0,
         enable_optimize_b: if p.coded_lossless {
             TrellisOptType::NoTrellisOpt

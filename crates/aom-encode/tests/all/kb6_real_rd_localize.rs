@@ -517,6 +517,7 @@ fn localize_real_speed(
         rows_u: &rows_u,
         rows_v: &rows_v,
         rdmult,
+        ssim: None,
         sharpness: 0,
         enable_optimize_b: if p.coded_lossless {
             TrellisOptType::NoTrellisOpt

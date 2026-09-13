@@ -1453,6 +1453,7 @@ fn rd_pick_partition_real_matches_c_recursion() {
             rows_u: &rows_u,
             rows_v: &rows_v,
             rdmult,
+            ssim: None,
             sharpness,
             enable_optimize_b: TrellisOptType::FullTrellisOpt,
             use_chroma_trellis_rd_mult: use_chroma_tbl,

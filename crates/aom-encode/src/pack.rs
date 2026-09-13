@@ -496,6 +496,7 @@ pub fn pack_leaf(
         // neighbour stamp shared with the intra path below.
         let out = encode_b_intra_dry(
             env, tile, recon_y, recon_u, recon_v, cfl, winner, mi_row, mi_col, partition, true,
+            true,
         );
         debug_assert!(out.y.txbs.is_empty(), "inter SKIP leaf carries no txbs");
         nbr.stamp(
@@ -841,6 +842,7 @@ pub fn pack_leaf(
     // never back into ctx (see encode_b_intra_dry's doc).
     let out = encode_b_intra_dry(
         env, tile, recon_y, recon_u, recon_v, cfl, winner, mi_row, mi_col, partition, true,
+        true,
     );
 
     // ---- 4. write_tokens_b: coefficient bytes, gated on !skip_txfm (always
@@ -1960,7 +1962,7 @@ pub fn pack_tile_lr_stop(
             // `x->intra_sb_rdmult_modifier` (:5715) — `encode_rd_sb`'s VBP
             // arm leaves it at the per-SB reset 128 (encodeframe.c:1303), so
             // setup_block_rdmult's ALLINTRA fold is IDENTITY at speed >= 7.
-            let sb_rdmult = if pick_cfg.allintra && !use_var_based_partition {
+            let intra_modifier = if pick_cfg.allintra && !use_var_based_partition {
                 let mi_w = MI_SIZE_WIDE_B[sb_size] as i32;
                 let mi_h = MI_SIZE_HIGH_B[sb_size] as i32;
                 let ref_off_y =
@@ -1976,11 +1978,40 @@ pub fn pack_tile_lr_stop(
                     mb_to_bottom_edge,
                     env.bd,
                 );
-                let modifier = crate::partition_pick::intra_sb_rdmult_modifier(var_min, var_max);
-                crate::partition_pick::fold_intra_sb_rdmult(sb_base_rdmult, modifier)
+                crate::partition_pick::intra_sb_rdmult_modifier(var_min, var_max)
             } else {
-                sb_base_rdmult
+                128
             };
+            // `av1_set_ssim_rdmult` at the SB-ROOT node (setup_block_rdmult's
+            // tune arm, partition_search.c:628-631 — the NONRD walks run it
+            // too, only `av1_get_cb_rdmult` is nonrd-gated): the geometric
+            // mean of the 16x16 scaling factors under the whole SB, folded
+            // BEFORE the ALLINTRA modifier — C's :628 -> :652 order. Then
+            // every deeper node re-folds via `env.node_env` (KB-59).
+            let sb_rdmult = {
+                let pre = match &env.ssim {
+                    Some(sc) => crate::allintra_vis::ssim_fold_rdmult(
+                        sc.factors,
+                        sc.cols,
+                        env.mi_cols,
+                        env.mi_rows,
+                        sb_size,
+                        mi_row,
+                        mi_col,
+                        sb_base_rdmult,
+                    ),
+                    None => sb_base_rdmult,
+                };
+                crate::partition_pick::fold_intra_sb_rdmult(pre, intra_modifier)
+            };
+            // The per-node fold's per-SB inputs: `x->rdmult` at the ssim
+            // arm's entry (this SB's delta-q value, or the frame RDMULT) +
+            // `x->intra_sb_rdmult_modifier` — both restamped per SB.
+            let sb_ssim = env.ssim.map(|sc| crate::encode_sb::SsimRdmult {
+                pre_rdmult: sb_base_rdmult,
+                intra_modifier,
+                ..sc
+            });
             // Coefficient AND mode cost update, `INTERNAL_COST_UPD_SB` (speed 0's
             // default; `av1_set_cost_upd_freq` -> `av1_fill_coeff_costs(&x->coeff_costs,
             // xd->tile_ctx, ...)` AND `av1_fill_mode_rates(cm, &x->mode_costs,
@@ -2037,6 +2068,7 @@ pub fn pack_tile_lr_stop(
             let sb_env = if let Some(sb_real) = &sb_real {
                 SbEncodeEnv {
                     rdmult: sb_rdmult,
+                    ssim: sb_ssim,
                     coeff_costs_y: &sb_real.coeff_costs_y,
                     coeff_costs_uv: &sb_real.coeff_costs_uv,
                     tx_type_costs: &sb_real.tx_type_costs_y,
@@ -2049,6 +2081,7 @@ pub fn pack_tile_lr_stop(
             } else {
                 SbEncodeEnv {
                     rdmult: sb_rdmult,
+                    ssim: sb_ssim,
                     rows_y: dq_rows.as_ref().map(|r| &r.0).unwrap_or(env.rows_y),
                     rows_u: dq_rows.as_ref().map(|r| &r.1).unwrap_or(env.rows_u),
                     rows_v: dq_rows.as_ref().map(|r| &r.2).unwrap_or(env.rows_v),
@@ -2525,7 +2558,7 @@ pub fn pack_tile_from_trees_lr(
             // identity. Only `av1_rd_pick_partition`'s SB root recomputes it
             // (partition_search.c:5715). Folding onto the delta-q-adjusted
             // `sb_base_rdmult` (== env.rdmult when off).
-            let sb_rdmult = if pick_cfg.allintra && !use_var_based_partition {
+            let intra_modifier = if pick_cfg.allintra && !use_var_based_partition {
                 let mi_w = MI_SIZE_WIDE_B[sb_size] as i32;
                 let mi_h = MI_SIZE_HIGH_B[sb_size] as i32;
                 let ref_off_y =
@@ -2541,11 +2574,35 @@ pub fn pack_tile_from_trees_lr(
                     mb_to_bottom_edge,
                     env.bd,
                 );
-                let modifier = crate::partition_pick::intra_sb_rdmult_modifier(var_min, var_max);
-                crate::partition_pick::fold_intra_sb_rdmult(sb_base_rdmult, modifier)
+                crate::partition_pick::intra_sb_rdmult_modifier(var_min, var_max)
             } else {
-                sb_base_rdmult
+                128
             };
+            // `av1_set_ssim_rdmult` at the SB-root node — identical fold to
+            // phase 1 (same inputs → same value as the search derived for
+            // this SB), then every leaf's `encode_b` re-folds via
+            // `env.node_env` inside `encode_b_intra_dry` (KB-59).
+            let sb_rdmult = {
+                let pre = match &env.ssim {
+                    Some(sc) => crate::allintra_vis::ssim_fold_rdmult(
+                        sc.factors,
+                        sc.cols,
+                        env.mi_cols,
+                        env.mi_rows,
+                        sb_size,
+                        mi_row,
+                        mi_col,
+                        sb_base_rdmult,
+                    ),
+                    None => sb_base_rdmult,
+                };
+                crate::partition_pick::fold_intra_sb_rdmult(pre, intra_modifier)
+            };
+            let sb_ssim = env.ssim.map(|sc| crate::encode_sb::SsimRdmult {
+                pre_rdmult: sb_base_rdmult,
+                intra_modifier,
+                ..sc
+            });
             // KB-12: allintra speed >= 9 flips coeff/mode_cost_upd_level to
             // INTERNAL_COST_UPD_SBROW framesize-INdependently
             // (speed_features.c:593-594), and the framesize-DEPENDENT pass
@@ -2580,6 +2637,7 @@ pub fn pack_tile_from_trees_lr(
             let sb_env = if let Some(sb_real) = &sb_real {
                 SbEncodeEnv {
                     rdmult: sb_rdmult,
+                    ssim: sb_ssim,
                     coeff_costs_y: &sb_real.coeff_costs_y,
                     coeff_costs_uv: &sb_real.coeff_costs_uv,
                     tx_type_costs: &sb_real.tx_type_costs_y,
@@ -2592,6 +2650,7 @@ pub fn pack_tile_from_trees_lr(
             } else {
                 SbEncodeEnv {
                     rdmult: sb_rdmult,
+                    ssim: sb_ssim,
                     rows_y: dq_rows.as_ref().map(|r| &r.0).unwrap_or(env.rows_y),
                     rows_u: dq_rows.as_ref().map(|r| &r.1).unwrap_or(env.rows_u),
                     rows_v: dq_rows.as_ref().map(|r| &r.2).unwrap_or(env.rows_v),

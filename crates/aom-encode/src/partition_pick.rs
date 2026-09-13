@@ -826,6 +826,11 @@ fn leaf_pick_sb_modes(
     // See `palette_search::PaletteSearchArgs::color_palette_thresh`.
     color_palette_thresh: i32,
 ) -> (PartRdStats, Option<LeafWinner>, u32) {
+    // `setup_block_rdmult` at pick_sb_modes:922 — under a perceptual tune
+    // `av1_set_ssim_rdmult` re-folds `x->rdmult` at THIS leaf's
+    // (bsize, mi_row, mi_col) (partition_search.c:628-631); the shadowed
+    // env is byte-inert when no tune is installed (KB-59).
+    let env = &env.node_env(bsize, mi_row, mi_col);
     // av1_rd_cost_update(x->rdmult, &best_rd) on entry (pick_sb_modes:927).
     let mut best_rd = *best_remain;
     rd_cost_update(env.rdmult, &mut best_rd);
@@ -2026,8 +2031,14 @@ fn rd_pick_rect_partition(
     sum_rdc: &mut PartRdStats,
     visits: &mut Vec<LeafVisit>,
 ) -> (i64, Option<LeafWinner>, u32) {
+    // `rd_pick_rect_partition` (:3500) runs under the CALLER's current
+    // x->rdmult — the parent node's fold. `setup_block_rdmult` fires only
+    // inside `pick_sb_modes`, which restores it at :968, so the budget
+    // subtraction, the `this_rdc` recompute at :3487 and the `sum_rdc`
+    // accumulation all use the PARENT rdmult here (KB-59); byte-inert
+    // without a tune. `leaf_pick_sb_modes` re-derives the leaf fold itself.
     let best_remain = rd_stats_subtraction(env.rdmult, best_rdc, sum_rdc);
-    let (this_rdc, winner, source_variance) = leaf_pick_sb_modes(
+    let (mut this_rdc, winner, source_variance) = leaf_pick_sb_modes(
         env,
         cfg,
         tile,
@@ -2044,6 +2055,13 @@ fn rd_pick_rect_partition(
         &best_remain,
         64,
     );
+    // `av1_rd_cost_update(x->rdmult, &this_rdc)` at :3487 — NOT a no-op
+    // under a tune: `pick_sb_modes` computed this_rdc.rdcost on the leaf
+    // fold, then restored x->rdmult, so the caller re-folds rate/dist onto
+    // the parent rdmult (KB-59). rd_cost_update carries C's INT_MAX/
+    // INT64_MAX guard — a failed leaf must yield INT64_MAX, not a wrapped
+    // rdcost (it feeds rect_part_rd -> evaluate_ab_partition_based_on_split).
+    rd_cost_update(env.rdmult, &mut this_rdc);
     visits.push(LeafVisit {
         mi_row,
         mi_col,
@@ -2053,8 +2071,6 @@ fn rd_pick_rect_partition(
         dist: this_rdc.dist,
         rdcost: this_rdc.rdcost,
     });
-    // (av1_rd_cost_update(x->rdmult, &this_rdc) at :3487 — a no-op on the
-    // leaf's already-consistent rdcost, as at the NONE stage.)
     if this_rdc.rate == i32::MAX {
         sum_rdc.rdcost = i64::MAX;
     } else {
@@ -2063,6 +2079,91 @@ fn rd_pick_rect_partition(
         rd_cost_update(env.rdmult, sum_rdc);
     }
     (this_rdc.rdcost, winner, source_variance)
+}
+
+/// `rd_try_subblock` (partition_search.c:3133-3178): the AB
+/// (`rd_test_partition3` :3230) and HORZ_4/VERT_4 (:4039) per-sub-block
+/// primitive. Unlike [`rd_pick_rect_partition`] — which runs under the
+/// CALLER's fold — rd_try_subblock calls `setup_block_rdmult(subsize)`
+/// itself (:3143) and runs its ENTIRE body at the leaf fold: the by-value
+/// `best_rdcost` is refolded to leaf (:3148), the budget subtraction and
+/// `sum_rdc` accumulation use leaf rdmult, `this_rdc.rdcost` is NOT
+/// recomputed (pick_sb_modes' leaf-fold value is used as-is), the bail
+/// compares against the leaf-folded best (:3161), and the mid-stage
+/// `av1_update_state`+`encode_superblock` dry-run (:3168-3171) runs at
+/// leaf fold — `x->rdmult` is restored only at :3175. Returns C's `ok`;
+/// the dry-run itself stays with the caller (it owns the mi-grid stamp).
+#[allow(clippy::too_many_arguments)]
+fn rd_try_subblock(
+    env: &SbEncodeEnv,
+    cfg: &PickFrameCfg,
+    tile: &TileCtxState,
+    grid: &ModeGrid,
+    recon_y: &mut [u16],
+    recon_u: &mut [u16],
+    recon_v: &mut [u16],
+    cfl: &mut CflCtx,
+    mi_row: i32,
+    mi_col: i32,
+    subsize: usize,
+    partition_type: usize,
+    ab_mode_cache: Option<(usize, bool, usize)>,
+    reuse: Option<&LeafWinner>,
+    best_rdc: &PartRdStats,
+    sum_rdc: &mut PartRdStats,
+    visits: &mut Vec<LeafVisit>,
+) -> (bool, Option<LeafWinner>, Option<u32>) {
+    // `setup_block_rdmult(subsize)` (:3143).
+    let env = &env.node_env(subsize, mi_row, mi_col);
+    // `av1_rd_cost_update(x->rdmult, &best_rdcost)` (:3148) — refolds the
+    // by-value copy to the leaf fold before BOTH the subtraction and the
+    // bail compare.
+    let mut best_rdcost = *best_rdc;
+    rd_cost_update(env.rdmult, &mut best_rdcost);
+    let remaining = rd_stats_subtraction(env.rdmult, &best_rdcost, sum_rdc);
+    let (this_rdc, winner, source_variance) = if let Some(reused) = reuse {
+        // pick_sb_modes' `rd_mode_is_ready` early return (:861-868): the
+        // cached RD_STATS flow in as-is and `x->source_variance` (:921) is
+        // NOT reached — report None so callers keep the stale value.
+        (reused.raw_rdstats, Some(reused.clone()), None)
+    } else {
+        let (t, w, sv) = leaf_pick_sb_modes(
+            env,
+            cfg,
+            tile,
+            grid,
+            recon_y,
+            recon_u,
+            recon_v,
+            cfl,
+            mi_row,
+            mi_col,
+            subsize,
+            partition_type,
+            ab_mode_cache,
+            &remaining,
+            64,
+        );
+        (t, w, Some(sv))
+    };
+    visits.push(LeafVisit {
+        mi_row,
+        mi_col,
+        bsize: subsize,
+        budget: if reuse.is_some() { 0 } else { remaining.rdcost },
+        rate: this_rdc.rate,
+        dist: this_rdc.dist,
+        rdcost: this_rdc.rdcost,
+    });
+    if this_rdc.rate == i32::MAX {
+        sum_rdc.rdcost = i64::MAX;
+    } else {
+        sum_rdc.rate += this_rdc.rate;
+        sum_rdc.dist += this_rdc.dist;
+        rd_cost_update(env.rdmult, sum_rdc);
+    }
+    // Early-bail at :3161-3164 against the leaf-folded best.
+    (sum_rdc.rdcost < best_rdcost.rdcost, winner, source_variance)
 }
 
 /// `rd_pick_4partition` (partition_search.c:3919): the HORZ_4/VERT_4
@@ -2133,7 +2234,9 @@ fn rd_pick_4partition(
         if i > 0 && if is_horz4 { r >= env.mi_rows } else { c >= env.mi_cols } {
             break;
         }
-        let (_rd_i, winner, source_variance) = rd_pick_rect_partition(
+        // `rd_try_subblock` (:4039) — leaf-fold scope inside; C's `ok` is
+        // the post-accumulation bail against the leaf-folded best.
+        let (ok, winner, source_variance) = rd_try_subblock(
             env,
             cfg,
             tile,
@@ -2147,39 +2250,44 @@ fn rd_pick_4partition(
             subsize,
             partition_type,
             None,
+            None,
             budget_rdc,
             &mut sum_rdc,
             visits,
         );
-        // x->source_variance mutates unconditionally on every subblock
-        // attempt, win or lose (gotcha #1, module docs on leaf_pick_sb_modes).
-        *last_source_variance = source_variance;
+        // x->source_variance mutates unconditionally on every REAL subblock
+        // search, win or lose (gotcha #1, module docs on leaf_pick_sb_modes);
+        // a None return means pick_sb_modes' rd_mode_is_ready early return
+        // (:861) ran — the field is not reached.
+        if let Some(sv) = source_variance {
+            *last_source_variance = sv;
+        }
         w[i] = winner;
         if part_dbg {
             eprintln!(
-                "[pd] mi({},{}) bs{} P4 strip{} at({},{}) rdi={} sum={} best={} win={}",
+                "[pd] mi({},{}) bs{} P4 strip{} at({},{}) sum={} best={} win={}",
                 mi_row,
                 mi_col,
                 subsize,
                 i,
                 r,
                 c,
-                _rd_i,
                 sum_rdc.rdcost,
                 best_rdc.rdcost,
                 w[i].is_some()
             );
         }
-        // rd_try_subblock's own early-bail (:3161-3164), checked by the
-        // caller loop here exactly as rd_pick_rect_partition's own caller
-        // checks it between sub-blocks.
-        if sum_rdc.rdcost >= budget_rdc.rdcost {
+        // `if (!ok) { av1_invalid_rd_stats(&sum_rdc); break; }` (:4051-4054)
+        if !ok {
             return (PartRdStats::invalid(), None);
         }
         if i < 3 {
             // is_last = (i == SUB_PARTITIONS_PART4 - 1) — propagate winner
             // pixels/contexts/mi-grid for the NEXT strip's leaf search.
             let wi = w[i].as_mut().expect("valid sum implies a winner");
+            // `refold_leaf_rdmult = true` — rd_try_subblock's own
+            // `setup_block_rdmult(subsize)` (:3172) is what this dry-run
+            // encode inherits (pick_sb_modes restores to it).
             let _ = crate::encode_sb::encode_b_intra_dry(
                 env,
                 tile,
@@ -2192,6 +2300,7 @@ fn rd_pick_4partition(
                 c,
                 partition_type,
                 false,
+                true,
             );
             grid.stamp(
                 r,
@@ -2516,52 +2625,37 @@ fn rd_pick_ab_part(
     for i in 0..3usize {
         let (r, c) = positions[i];
         let sz = sizes[i];
-        let winner = if i < 2 && reuse[i].is_some() {
-            let reused = reuse[i].expect("checked Some above");
-            let this_rdc = reused.raw_rdstats;
-            if this_rdc.rate == i32::MAX {
-                sum_rdc.rdcost = i64::MAX;
-            } else {
-                sum_rdc.rate += this_rdc.rate;
-                sum_rdc.dist += this_rdc.dist;
-                rd_cost_update(env.rdmult, &mut sum_rdc);
-            }
-            visits.push(LeafVisit {
-                mi_row: r,
-                mi_col: c,
-                bsize: sz,
-                budget: 0, // reused: no budget was computed (module docs)
-                rate: this_rdc.rate,
-                dist: this_rdc.dist,
-                rdcost: this_rdc.rdcost,
-            });
-            Some(reused.clone())
-        } else {
-            let (_rd_i, winner, source_variance) = rd_pick_rect_partition(
-                env,
-                cfg,
-                tile,
-                grid,
-                recon_y,
-                recon_u,
-                recon_v,
-                cfl,
-                r,
-                c,
-                sz,
-                partition_type,
-                mode_cache[i],
-                best_rdc,
-                &mut sum_rdc,
-                visits,
-            );
-            *last_source_variance = source_variance;
-            winner
-        };
+        // `rd_try_subblock` (:3230) — leaf-fold scope inside. `reuse[i]`
+        // mirrors the `rd_mode_is_ready` early return in pick_sb_modes
+        // (:861-868); `mode_cache[i]` is the `x->mb_mode_cache` set at
+        // :3227-3229.
+        let (ok, winner, source_variance) = rd_try_subblock(
+            env,
+            cfg,
+            tile,
+            grid,
+            recon_y,
+            recon_u,
+            recon_v,
+            cfl,
+            r,
+            c,
+            sz,
+            partition_type,
+            mode_cache[i],
+            if i < 2 { reuse[i] } else { None },
+            best_rdc,
+            &mut sum_rdc,
+            visits,
+        );
+        if let Some(sv) = source_variance {
+            *last_source_variance = sv;
+        }
         w[i] = winner;
-        // rd_try_subblock's own early-bail (:3161-3164), checked after
-        // EVERY sub-block (not just the last).
-        if sum_rdc.rdcost >= best_rdc.rdcost {
+        // rd_try_subblock's own early-bail (:3161-3164) — inside the call,
+        // against the leaf-folded best; `!ok` is rd_test_partition3's
+        // `return false` (:3234).
+        if !ok {
             return (PartRdStats::invalid(), None);
         }
         if i < 2 {
@@ -2571,6 +2665,8 @@ fn rd_pick_ab_part(
             // unconditionally when `!is_last`, regardless of whether
             // pick_sb_modes took the reuse early-return (module docs).
             let wi = w[i].as_mut().expect("valid sum implies a winner");
+            // `refold_leaf_rdmult = true` — rd_try_subblock's own
+            // `setup_block_rdmult(subsize)` (:3172) fold.
             let _ = crate::encode_sb::encode_b_intra_dry(
                 env,
                 tile,
@@ -2583,6 +2679,7 @@ fn rd_pick_ab_part(
                 c,
                 partition_type,
                 false,
+                true,
             );
             grid.stamp(
                 r,
@@ -2795,6 +2892,12 @@ pub fn rd_pick_partition_real(
     if let Some(out) = none_rd_out.as_deref_mut() {
         *out = 0;
     }
+    // `setup_block_rdmult` at :5728 — under a perceptual tune
+    // `av1_set_ssim_rdmult` re-folds `x->rdmult` at THIS node's
+    // (bsize, mi_row, mi_col) (partition_search.c:628-631), so every
+    // rd_cost_update / budget compare / prune threshold in the node's scope
+    // reads the shadowed env. Byte-inert when no tune is installed (KB-59).
+    let env = &env.node_env(bsize, mi_row, mi_col);
     // `init_partition_search_state_params` re-anchors the intra-CNN quad-tree
     // index at EVERY BLOCK_64X64 node, not at the superblock root:
     //   `if (frame_is_intra_only(cm) && bsize == BLOCK_64X64) {
@@ -3558,6 +3661,10 @@ pub fn rd_pick_partition_real(
             // encode_superblock for a KEY intra leaf (no partition-ctx
             // stamp, no rdmult save; ctx->mic already carries the pick's
             // partition — module docs #4).
+            // `refold_leaf_rdmult = false`: C runs this encode_superblock
+            // with `x->rdmult` as pick_sb_modes left it — the ENCLOSING
+            // node's fold (rectangular_partition_search never re-folds at
+            // the subsize; KB-59).
             let _ = crate::encode_sb::encode_b_intra_dry(
                 env,
                 tile,
@@ -3569,6 +3676,7 @@ pub fn rd_pick_partition_real(
                 mi_row,
                 mi_col,
                 partition_type,
+                false,
                 false,
             );
             grid.stamp(
@@ -4565,6 +4673,10 @@ pub fn rd_use_partition_real(
     // In rt mode, currently the min partition size is BLOCK_8X8 (:1803) —
     // the KEY variance tree never stamps below it.
     debug_assert!(bsize >= 3, "bsize >= default_min_partition_size (:1803)");
+    // `setup_block_rdmult` at :1824 — under a perceptual tune the replay's
+    // `x->rdmult` is re-folded at THIS node's (bsize, mi_row, mi_col)
+    // (KB-59); byte-inert without a tune.
+    let env = &env.node_env(bsize, mi_row, mi_col);
     let bs = MI_SIZE_WIDE_B[bsize] as i32;
     let hbs = bs / 2;
     let invalid = PartRdStats::invalid();
@@ -4662,7 +4774,8 @@ pub fn rd_use_partition_real(
             if last_part_rdc.rate != i32::MAX && sub1_in_frame {
                 // av1_update_state + encode_superblock(DRY_RUN_NORMAL)
                 // (:1890-1892) — the mid-stage propagation, exactly the rect
-                // stage's own shape.
+                // stage's own shape. `refold_leaf_rdmult = false`: C's
+                // x->rdmult here is the enclosing node's fold (KB-59).
                 let _ = crate::encode_sb::encode_b_intra_dry(
                     env,
                     tile,
@@ -4674,6 +4787,7 @@ pub fn rd_use_partition_real(
                     mi_row,
                     mi_col,
                     partition as usize,
+                    false,
                     false,
                 );
                 grid.stamp(
@@ -5450,6 +5564,13 @@ fn nonrd_leaf_pick_and_encode(
     last_source_variance: &mut u32,
     color_palette_thresh: &mut i32,
 ) -> LeafWinner {
+    // `setup_block_rdmult` at pick_sb_modes_nonrd:2314 / encode_b_nonrd:2103
+    // — under a perceptual tune the ssim arm folds `x->rdmult` at THIS
+    // leaf's (bsize, mi_row, mi_col) even on the nonrd walk (the arm is not
+    // gated on `use_nonrd_pick_mode`; only `av1_get_cb_rdmult`'s is). The
+    // estimate arm's `rdmult`, the palette search's `y_env.rdmult` and the
+    // final encode all read the shadowed value (KB-59).
+    let env = &env.node_env(bsize, mi_row, mi_col);
     // x->source_variance: pick_sb_modes_nonrd:2306-2311 recomputes per leaf
     // (bsize < sb_size, or the SB-level value is the identical
     // perpixel-variance — module docs in nonrd_pickmode.rs).
@@ -5494,6 +5615,7 @@ fn nonrd_leaf_pick_and_encode(
         // rd_use_partition_real SB-root walk (output_enabled = bsize==sb_size).
         let _ = crate::encode_sb::encode_b_intra_dry(
             env, tile, recon_y, recon_u, recon_v, cfl, &mut w, mi_row, mi_col, partition, true,
+            true,
         );
         grid.stamp(
             mi_row,
@@ -5893,6 +6015,7 @@ fn nonrd_leaf_pick_and_encode(
     // identical here, but true keeps the faithful C semantics.
     let _ = crate::encode_sb::encode_b_intra_dry(
         env, tile, recon_y, recon_u, recon_v, cfl, &mut w, mi_row, mi_col, partition, true,
+        true,
     );
     grid.stamp(
         mi_row,

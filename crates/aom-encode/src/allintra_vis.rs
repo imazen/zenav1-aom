@@ -239,6 +239,116 @@ pub fn setup_delta_q_variance_boost(
     av1_adjust_q_from_delta_q_res(delta_q_res, current_base_qindex, boosted)
 }
 
+/// `av1_set_mb_ssim_rdmult_scaling` (encoder_utils.c:1487-1559): under a
+/// perceptual tune (`AOM_TUNE_SSIM`/`IQ`/`SSIMULACRA2` — encoder.c:4301-4305)
+/// one scaling factor per 16x16 block of the MI-ALIGNED frame extent: the
+/// mean of its 8x8 sub-blocks' per-pixel variances
+/// (`av1_get_perpixel_variance_facade` — `fn_ptr[BLOCK_8X8].vf` against the
+/// all-zero reference, then `ROUND_POWER_OF_TWO(var, 6)`), through the
+/// midres exponential fit `67.035434 * (1 - exp(-0.0021489 * var)) +
+/// 17.492222`, finally normalized by the frame geometric mean (so each
+/// factor lands in roughly `[0.2069, 4.8323]`).
+///
+/// `src` is the border-extended luma source (`cpi->source->y_buffer`), so
+/// 8x8s straddling the mi-aligned edge read replicate-extended pixels
+/// exactly as C's source buffer does. Returns `(factors, num_cols,
+/// num_rows)` — `factors[row * num_cols + col]` indexes the 16x16 grid.
+pub fn ssim_rdmult_scaling_factors(
+    src: &[u16],
+    stride: usize,
+    mi_cols: i32,
+    mi_rows: i32,
+    bd: u8,
+) -> (Vec<f64>, i32, i32) {
+    const NUM_MI: i32 = 4; // mi_size_wide/high[BLOCK_16X16]
+    let num_cols = (mi_cols + NUM_MI - 1) / NUM_MI;
+    let num_rows = (mi_rows + NUM_MI - 1) / NUM_MI;
+    let mut factors = vec![0.0f64; (num_rows * num_cols) as usize];
+    let mut log_sum = 0.0f64;
+    for row in 0..num_rows {
+        for col in 0..num_cols {
+            let mut var = 0.0f64;
+            let mut num_of_var = 0.0f64;
+            let mut mi_row = row * NUM_MI;
+            while mi_row < mi_rows && mi_row < (row + 1) * NUM_MI {
+                let mut mi_col = col * NUM_MI;
+                while mi_col < mi_cols && mi_col < (col + 1) * NUM_MI {
+                    let off = (mi_row as usize) * 4 * stride + (mi_col as usize) * 4;
+                    let v = variance8x8_vs_zero(src, off, stride, bd);
+                    // `ROUND_POWER_OF_TWO(var, num_pels_log2[BLOCK_8X8] = 6)`
+                    // — the rounding halve that variance_boost's `/64`
+                    // truncating arm does NOT share.
+                    var += f64::from((v + 32) >> 6);
+                    num_of_var += 1.0;
+                    mi_col += 2;
+                }
+                mi_row += 2;
+            }
+            var /= num_of_var;
+            var = 67.035434 * (1.0 - (-0.0021489 * var).exp()) + 17.492222;
+            debug_assert!(var > 17.0 && var < 85.0);
+            factors[(row * num_cols + col) as usize] = var;
+            log_sum += var.ln();
+        }
+    }
+    // `log_sum` holds the geometric mean; factors become ratio-to-geomean.
+    log_sum = (log_sum / f64::from(num_rows * num_cols)).exp();
+    for f in &mut factors {
+        *f /= log_sum;
+    }
+    (factors, num_cols, num_rows)
+}
+
+/// `av1_set_ssim_rdmult` (encodeframe_utils.c:25-89): `setup_block_rdmult`'s
+/// perceptual-tune arm (partition_search.c:628-631) — the geometric mean of
+/// the 16x16 [`ssim_rdmult_scaling_factors`] under `(mi_row, mi_col, bsize)`
+/// folded into `rdmult` (`rdmult * geom_mean + 0.5`, floored at 0). Runs at
+/// EVERY `setup_block_rdmult` call — every partition-search node, every
+/// rect/AB/4-way sub-block and every `encode_b` leaf — which is what makes
+/// `x->rdmult` position- and size-dependent under IQ/SSIMULACRA2.
+///
+/// Returns the post-fold `x->rdmult` BEFORE the caller's ALLINTRA tail
+/// (`x->intra_sb_rdmult_modifier`, :652-655); `mi_cols`/`mi_rows` bound the
+/// grid walks exactly as C's `num_cols`/`num_rows` do.
+#[allow(clippy::too_many_arguments)]
+pub fn ssim_fold_rdmult(
+    factors: &[f64],
+    factor_cols: i32,
+    mi_cols: i32,
+    mi_rows: i32,
+    bsize: usize,
+    mi_row: i32,
+    mi_col: i32,
+    rdmult: i32,
+) -> i32 {
+    const NUM_MI: i32 = 4; // bsize_base = BLOCK_16X16
+    let num_cols = (mi_cols + NUM_MI - 1) / NUM_MI;
+    let num_rows = (mi_rows + NUM_MI - 1) / NUM_MI;
+    debug_assert_eq!(num_cols, factor_cols);
+    debug_assert_eq!(factors.len() as i32, num_rows * num_cols);
+    let _ = factor_cols;
+    let num_bcols =
+        (crate::tx_search::MI_SIZE_WIDE_B[bsize] as i32 + NUM_MI - 1) / NUM_MI;
+    let num_brows =
+        (crate::tx_search::MI_SIZE_HIGH_B[bsize] as i32 + NUM_MI - 1) / NUM_MI;
+    let mut geom_mean_of_scale = 1.0f64;
+    let mut num_of_mi = 0.0f64;
+    let row0 = mi_row / NUM_MI;
+    let col0 = mi_col / NUM_MI;
+    let mut row = row0;
+    while row < num_rows && row < row0 + num_brows {
+        let mut col = col0;
+        while col < num_cols && col < col0 + num_bcols {
+            geom_mean_of_scale *= factors[(row * num_cols + col) as usize];
+            num_of_mi += 1.0;
+            col += 1;
+        }
+        row += 1;
+    }
+    geom_mean_of_scale = geom_mean_of_scale.powf(1.0 / num_of_mi);
+    ((f64::from(rdmult) * geom_mean_of_scale + 0.5) as i32).max(0)
+}
+
 /// The per-SB qindex of `setup_delta_q` (encodeframe.c:341-370) under
 /// `DELTA_Q_PERCEPTUAL_AI` (mode 3): the wiener-variance-map qindex
 /// ([`WeberVarMap::av1_get_sbq_perceptual_ai`], keyed on the FRAME

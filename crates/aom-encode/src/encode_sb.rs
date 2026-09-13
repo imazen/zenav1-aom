@@ -463,8 +463,16 @@ pub struct SbEncodeEnv<'a> {
     pub rows_v: &'a aom_dsp::quant::PlaneQuantRows<'a>,
     /// `x->rdmult` as `setup_block_rdmult` leaves it — frame-constant at
     /// GOOD/KEY/NO_AQ; the per-SB ALLINTRA modifier fold is the SB-level
-    /// caller's (constant across one SB's recursion either way).
+    /// caller's (constant across one SB's recursion either way). Under a
+    /// perceptual tune ([`ssim`](Self::ssim)) it is only the SB-ROOT value —
+    /// every deeper node re-derives it via [`Self::node_env`].
     pub rdmult: i32,
+    /// `cpi->ssim_rdmult_scaling_factors` + the per-node fold inputs
+    /// (KB-59): `Some` iff `oxcf.tune_cfg.tuning` is SSIM/IQ/SSIMULACRA2
+    /// (encoder.c:4301-4305), making `x->rdmult` position- and
+    /// size-dependent through `setup_block_rdmult`'s `av1_set_ssim_rdmult`
+    /// arm (partition_search.c:628-631).
+    pub ssim: Option<SsimRdmult<'a>>,
     pub sharpness: i32,
     pub enable_optimize_b: TrellisOptType,
     /// sf `tx_sf.use_chroma_trellis_rd_mult` (ALLINTRA 1 / GOOD 0).
@@ -513,6 +521,43 @@ impl SbEncodeEnv<'_> {
     #[inline]
     pub fn frame_min_dim(&self) -> i32 {
         self.frame_width.min(self.frame_height)
+    }
+
+    /// `setup_block_rdmult`'s full per-node `x->rdmult` under a perceptual
+    /// tune (partition_search.c:596-659): `av1_set_ssim_rdmult`'s
+    /// geometric-mean fold at `(mi_row, mi_col, bsize)` over the pre-ssim
+    /// input, then the ALLINTRA `x->intra_sb_rdmult_modifier` tail. Without
+    /// a tune ([`ssim`](Self::ssim) `None`) `x->rdmult` is SB-constant and
+    /// this returns `self.rdmult`.
+    pub fn node_rdmult(&self, bsize: usize, mi_row: i32, mi_col: i32) -> i32 {
+        let Some(sc) = &self.ssim else {
+            return self.rdmult;
+        };
+        let folded = crate::allintra_vis::ssim_fold_rdmult(
+            sc.factors,
+            sc.cols,
+            self.mi_cols,
+            self.mi_rows,
+            bsize,
+            mi_row,
+            mi_col,
+            sc.pre_rdmult,
+        );
+        // `x->rdmult = (x->rdmult * x->intra_sb_rdmult_modifier) >> 7`,
+        // floored at 1 (:652-657).
+        let rdm = crate::partition_pick::fold_intra_sb_rdmult(folded, sc.intra_modifier);
+        if std::env::var_os("AOM_SSM_DBG").is_some() {
+            eprintln!("[ssm-port] node({mi_row},{mi_col}) bsize={bsize} rdm={rdm}");
+        }
+        rdm
+    }
+
+    /// The `x->rdmult` view a C node scope sees after its own
+    /// `setup_block_rdmult`: `self` with `rdmult` re-folded at
+    /// `(bsize, mi_row, mi_col)`. Cheap — every field is a reference or
+    /// scalar. Identity when [`ssim`](Self::ssim) is `None`.
+    pub fn node_env(&self, bsize: usize, mi_row: i32, mi_col: i32) -> Self {
+        SbEncodeEnv { rdmult: self.node_rdmult(bsize, mi_row, mi_col), ..*self }
     }
 
     /// `cm->width * cm->height` — `set_vbp_thresholds`' `num_pixels`
@@ -603,6 +648,26 @@ pub struct DeltaQFrameCtx<'a> {
     /// VARIANCE_BOOST); the flag is harmless under them since the pre-pass
     /// already collapses the frame to `delta_q_present = false`.
     pub nonrd: bool,
+}
+
+/// The `av1_set_ssim_rdmult` inputs for one superblock's subtree
+/// (encodeframe_utils.c:25-89): the frame's per-16x16 scaling grid plus the
+/// two `x->rdmult` inputs `setup_block_rdmult` computes before/after the
+/// fold. `pre_rdmult` is the value entering the ssim arm — the frame
+/// `RDMULT`, or `av1_get_cb_rdmult`'s per-SB delta-q result on the RD path
+/// (partition_search.c:621-624); `intra_modifier` is
+/// `x->intra_sb_rdmult_modifier`, folded after (:652-655).
+#[derive(Clone, Copy)]
+pub struct SsimRdmult<'a> {
+    /// `cpi->ssim_rdmult_scaling_factors` — the `cols`-wide 16x16 grid from
+    /// [`crate::allintra_vis::ssim_rdmult_scaling_factors`].
+    pub factors: &'a [f64],
+    pub cols: i32,
+    /// `x->rdmult` at the ssim arm's entry (per-SB when delta-q is live).
+    pub pre_rdmult: i32,
+    /// `x->intra_sb_rdmult_modifier` (per-SB reset 128 on the VBP/nonrd
+    /// arms; the variance-derived modifier on `av1_rd_pick_partition`).
+    pub intra_modifier: i32,
 }
 
 impl DeltaQFrameCtx<'_> {
@@ -889,7 +954,30 @@ pub fn encode_b_intra_dry(
     mi_col: i32,
     partition: usize,
     output_enabled: bool,
+    refold_leaf_rdmult: bool,
 ) -> LeafEncodeOut {
+    // `setup_block_rdmult` under a perceptual tune — WHERE `x->rdmult` is
+    // re-folded depends on which C encode this call models (KB-59):
+    //   * `encode_b` / `encode_b_nonrd` run their own
+    //     `setup_block_rdmult(bsize)` (partition_search.c:1463 / :2132), and
+    //     `rd_try_subblock`'s dry-run `encode_superblock` inherits the leaf
+    //     fold its own setup left (:3172) — `refold_leaf_rdmult = true`.
+    //   * the MID-STAGE dry-run `encode_superblock` inside
+    //     `rectangular_partition_search` (:3644) and `av1_rd_use_partition`'s
+    //     HORZ/VERT arms (:1916/:1951) runs with `x->rdmult` as
+    //     `pick_sb_modes` left it — restored to the ENCLOSING square node's
+    //     fold (partition_search.c:968), not the leaf's. The rect-stage
+    //     trellis then picks different tail coefficients and commits a
+    //     different recon, which the sibling sub-block's eval reads.
+    //     `refold_leaf_rdmult = false` — the caller passes the node env.
+    // Byte-inert when no tune is installed (node_env is the identity).
+    let folded;
+    let env = if refold_leaf_rdmult {
+        folded = env.node_env(winner.bsize, mi_row, mi_col);
+        &folded
+    } else {
+        env
+    };
     let bsize = winner.bsize;
     let mi_w = MI_SIZE_WIDE_B[bsize];
     let mi_h = MI_SIZE_HIGH_B[bsize];
@@ -1233,6 +1321,23 @@ pub fn encode_b_intra_dry(
             if store_y { Some(cfl) } else { None },
         )
     };
+    if std::env::var("AOM_TX_DBG").ok().and_then(|v| {
+        let mut it = v.split(',');
+        Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+    }).is_some_and(|(r, c): (i32, i32)| r == mi_row && c == mi_col) {
+        let bw = crate::tx_search::BLK_W_B[bsize];
+        let bh = crate::tx_search::BLK_H_B[bsize];
+        let off = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+        let mut rh = 0u64;
+        for r in 0..bh.min(16) {
+            rh = rh.wrapping_mul(31)
+                .wrapping_add(recon_y[off + r * env.stride + bw - 1] as u64);
+        }
+        eprintln!(
+            "[pcommit] mi({},{}) bs{} mode={} tx={} out={} rh={:x}",
+            mi_row, mi_col, bsize, winner.mode, winner.tx_size, output_enabled as u8, rh
+        );
+    }
 
     // Step 2, planes 1/2 (early return inside the C when !is_chroma_ref).
     let mut u_out = None;
@@ -1684,6 +1789,7 @@ pub fn encode_sb_dry(
                 mi_col,
                 PARTITION_NONE as usize,
                 output_enabled,
+                true
             );
             leaves.push(out);
         }
@@ -1724,6 +1830,7 @@ pub fn encode_sb_dry(
                 mi_col,
                 PARTITION_HORZ as usize,
                 output_enabled,
+                true
             );
             leaves.push(out);
             if mi_row + hbs < env.mi_rows {
@@ -1740,6 +1847,7 @@ pub fn encode_sb_dry(
                     mi_col,
                     PARTITION_HORZ as usize,
                     output_enabled,
+                true
                 );
                 leaves.push(out);
             }
@@ -1761,6 +1869,7 @@ pub fn encode_sb_dry(
                 mi_col,
                 PARTITION_VERT as usize,
                 output_enabled,
+                true
             );
             leaves.push(out);
             if mi_col + hbs < env.mi_cols {
@@ -1777,6 +1886,7 @@ pub fn encode_sb_dry(
                     mi_col + hbs,
                     PARTITION_VERT as usize,
                     output_enabled,
+                true
                 );
                 leaves.push(out);
             }
@@ -1806,6 +1916,7 @@ pub fn encode_sb_dry(
                     mi_col,
                     PARTITION_HORZ_4 as usize,
                     output_enabled,
+                true
                 );
                 leaves.push(out);
             }
@@ -1835,6 +1946,7 @@ pub fn encode_sb_dry(
                     this_mi_col,
                     PARTITION_VERT_4 as usize,
                     output_enabled,
+                true
                 );
                 leaves.push(out);
             }
@@ -1858,6 +1970,7 @@ pub fn encode_sb_dry(
                 mi_col,
                 PARTITION_HORZ_A as usize,
                 output_enabled,
+                true
             );
             leaves.push(out);
             debug_assert_eq!(s1.bsize, bsize2);
@@ -1873,6 +1986,7 @@ pub fn encode_sb_dry(
                 mi_col + hbs,
                 PARTITION_HORZ_A as usize,
                 output_enabled,
+                true
             );
             leaves.push(out);
             debug_assert_eq!(s2.bsize, subsize);
@@ -1888,6 +2002,7 @@ pub fn encode_sb_dry(
                 mi_col,
                 PARTITION_HORZ_A as usize,
                 output_enabled,
+                true
             );
             leaves.push(out);
         }
@@ -1907,6 +2022,7 @@ pub fn encode_sb_dry(
                 mi_col,
                 PARTITION_HORZ_B as usize,
                 output_enabled,
+                true
             );
             debug_assert_eq!(s0.bsize, subsize);
             leaves.push(out);
@@ -1922,6 +2038,7 @@ pub fn encode_sb_dry(
                 mi_col,
                 PARTITION_HORZ_B as usize,
                 output_enabled,
+                true
             );
             debug_assert_eq!(s1.bsize, bsize2);
             leaves.push(out);
@@ -1937,6 +2054,7 @@ pub fn encode_sb_dry(
                 mi_col + hbs,
                 PARTITION_HORZ_B as usize,
                 output_enabled,
+                true
             );
             debug_assert_eq!(s2.bsize, bsize2);
             leaves.push(out);
@@ -1958,6 +2076,7 @@ pub fn encode_sb_dry(
                 mi_col,
                 PARTITION_VERT_A as usize,
                 output_enabled,
+                true
             );
             debug_assert_eq!(s0.bsize, bsize2);
             leaves.push(out);
@@ -1973,6 +2092,7 @@ pub fn encode_sb_dry(
                 mi_col,
                 PARTITION_VERT_A as usize,
                 output_enabled,
+                true
             );
             debug_assert_eq!(s1.bsize, bsize2);
             leaves.push(out);
@@ -1988,6 +2108,7 @@ pub fn encode_sb_dry(
                 mi_col + hbs,
                 PARTITION_VERT_A as usize,
                 output_enabled,
+                true
             );
             debug_assert_eq!(s2.bsize, subsize);
             leaves.push(out);
@@ -2009,6 +2130,7 @@ pub fn encode_sb_dry(
                 mi_col,
                 PARTITION_VERT_B as usize,
                 output_enabled,
+                true
             );
             debug_assert_eq!(s0.bsize, subsize);
             leaves.push(out);
@@ -2024,6 +2146,7 @@ pub fn encode_sb_dry(
                 mi_col + hbs,
                 PARTITION_VERT_B as usize,
                 output_enabled,
+                true
             );
             debug_assert_eq!(s1.bsize, bsize2);
             leaves.push(out);
@@ -2039,6 +2162,7 @@ pub fn encode_sb_dry(
                 mi_col + hbs,
                 PARTITION_VERT_B as usize,
                 output_enabled,
+                true
             );
             debug_assert_eq!(s2.bsize, bsize2);
             leaves.push(out);

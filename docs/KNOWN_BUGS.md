@@ -5,6 +5,75 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-59 — Encoder: under a perceptual tune `x->rdmult` is per-NODE, and C's three sub-block call sites fold it three different ways — FIXED 2026-09-13, closes the entire 84-cell tune bundle
+
+- **Symptom.** Every `tune=IQ` / `tune=SSIMULACRA2` cell diverged:
+  84/84 pinned open in
+  `self_contained_tools::tune_bundles_byte_match_real_aomenc` (speeds 0/3),
+  8/8 in `tune_bundles_at_fast_presets` (speeds 6/8), and the six
+  chroma-delta-q tune ramp cells in `quality_knobs_byte_match_real_aomenc`.
+  All payload divergences (first differing byte = the frame OBU size
+  field); every stream decoded conformantly on both decoders.
+- **Mechanism — the tune's per-node `rdmult` fold, applied at the wrong
+  scope.** `handle_tuning` arms `av1_set_mb_ssim_rdmult_scaling`
+  (encoder.c:4301): a per-SB grid of geometric-mean factors over block
+  variances that `av1_set_ssim_rdmult` (partition_search.c:596-657) folds
+  into `x->rdmult` — and `setup_block_rdmult` calls it at EVERY recursion
+  node, so `x->rdmult` becomes position- and size-dependent under a tune.
+  The port modelled `env.rdmult` as per-SB constant. The trap is that C's
+  call sites read the CURRENT `x->rdmult` with three different scopes:
+  1. `pick_sb_modes` folds to the leaf at :929 and restores `orig_rdmult`
+     at :968 — leaf RD work and the leaf trellis run on the leaf fold.
+  2. `rd_pick_rect_partition` (:3500) does NOT fold — its
+     `best_remain` subtraction, the `av1_rd_cost_update(&this_rdc)` at
+     :3516 and the `sum_rdc` accumulation all run on the PARENT node's
+     rdmult (pick_sb_modes restored it).
+  3. `rd_try_subblock` (:3133 — the AB `rd_test_partition3` and
+     HORZ_4/VERT_4 primitive) folds to the leaf itself at :3143 and runs
+     EVERYTHING at leaf fold — including refolding the by-value
+     `best_rdcost` (:3148) before the subtraction and the bail, and the
+     mid-stage `av1_update_state` + `encode_superblock(DRY_RUN_NORMAL)`
+     (:3168-3171), which runs BEFORE the :3175 restore.
+  4. `rectangular_partition_search` (:3613) and `av1_rd_use_partition`'s
+     HORZ/VERT arms (:1890-1892) run their mid-stage dry-run encodes under
+     the PARENT fold — so the committed recon a sibling leaf then reads
+     was trellis-quantized with the parent rdmult, not the leaf's.
+- **Diagnostic evidence (kept — the env-gated dumps are the durable
+  tools).** At `(0,16)` bs7 two C dry-run encodes of the SAME leaf had
+  identical tcoeff/entropy-ctx/quantizer/eob but different qcoeff tails
+  and recon — the differentiator was `x->rdmult` = 150061 (leaf fold) vs
+  126597 (restored parent fold). `AOM_SSM_DBG=1` prints both sides'
+  per-node folds (`[ssm-c]`/`[ssm-port]`); `AOM_PART_DBG=r,c` the
+  per-candidate partition costs (`[pd]`/`[c]`/`[cr]`); `AOM_TX_DBG` /
+  `AOM_UV_DBG` the per-eval txb and uv-mode details.
+- **Fix.** `SbEncodeEnv` carries `ssim: Option<SsimRdmult>` — the per-SB
+  `av1_set_mb_ssim_rdmult_scaling` grid (allintra_vis.rs) plus
+  `pre_rdmult`/`intra_modifier`. `node_rdmult`/`node_env`
+  (encode_sb.rs:532-561) fold at `(bsize, mi_row, mi_col)`; identity when
+  `ssim` is `None`, so every non-tune path is byte-inert. The scope split:
+  `leaf_pick_sb_modes` folds at entry (:833); `rd_pick_rect_partition`
+  keeps the parent fold and now recomputes `this_rdc.rdcost` under it;
+  `rd_try_subblock` is a NEW leaf-fold primitive for the AB/4-way paths
+  (it refolds the by-value `best_rdcost`, accumulates at leaf fold, and
+  bails against the leaf-folded best); `encode_b_intra_dry` takes
+  `refold_leaf_rdmult` — `true` for `encode_b`/`encode_b_nonrd`/
+  rd_try_subblock scopes, `false` for the parent-scope mid-stage
+  dry-runs. `nonrd_leaf_pick_and_encode` folds to the leaf (`encode_b_nonrd`
+  does its own `setup_block_rdmult`).
+- **Also fixed in passing:** a failed leaf's `this_rdc.rdcost` must stay
+  `INT64_MAX` — recomputing it with bare `rdcost(mult, INT_MAX,
+  INT64_MAX)` instead of `rd_cost_update` (which carries C's invalid
+  guard) produced a wrapped value that fed `rect_part_rd` →
+  `evaluate_ab_partition_based_on_split` and regressed
+  `N_422_bd8_tex_64x64_cq0_s3` (caught by `self_contained_key_frame`
+  before landing).
+- **Verified.** `self_contained_tools`: tune bundles **84/84**
+  byte-identical (was 0/84), fast presets **8/8**, quality knobs **75/75**
+  (the six chroma-delta-q ramps closed) — pins self-promoted to `&[]`.
+  `encoder_gate_tune_iq_e2e` 9/9. `self_contained_key_frame` 447/447 and
+  `encoder_gate_e2e_byte_match` 32/32 — no non-tune regression (inert by
+  construction without `ssim`).
+
 ### KB-58 — Encoder: the `--deltaq-mode` payload divergences were three separate per-SB-qindex plumbing bugs — FIXED 2026-09-12
 
 - **Symptom.** Nine `deltaq` cells were pinned open in

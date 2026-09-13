@@ -2333,6 +2333,28 @@ pub fn txfm_rd_in_plane_intra(
                 // plane split is annotated where the caller knows it. `plane_total()`
                 // must equal `intra_total_calls()`; the census tool asserts it.
                 aom_dsp::census::note_plane_intra_pred(0, tx_size);
+                if TX_DBG_VERBOSE.get() {
+                    let mut lh = 0u64;
+                    if n_left > 0 {
+                        for r in 0..txh.min(16).min(n_left as usize) {
+                            lh = lh.wrapping_mul(31)
+                                .wrapping_add(recon[txb_off + r * env.ref_stride - 1] as u64);
+                        }
+                    }
+                    let mut ah = 0u64;
+                    if n_top > 0 {
+                        for c in 0..txw.min(16).min(n_top as usize) {
+                            ah = ah.wrapping_mul(31)
+                                .wrapping_add(recon[txb_off - env.ref_stride + c] as u64);
+                        }
+                    }
+                    eprintln!(
+                        "[pled] mi({},{}) mode={} ad={} tx={} blk({},{}) nt={} ntr={} nl={} nbl={} ft={} lh={:x} ah={:x}",
+                        env.mi_row, env.mi_col, env.mode, env.angle_delta, tx_size,
+                        blk_row, blk_col, n_top, n_topright, n_left, n_bottomleft,
+                        env.filter_type, lh, ah
+                    );
+                }
                 // The C facade writes the prediction into dst — the recon
                 // plane itself. The tight scratch + per-row publish it
                 // replaced was a memset plus `txh` memcpy calls per candidate

@@ -502,6 +502,7 @@ fn run_one(name: &str, content: impl Fn(usize, usize) -> u8) {
         rows_u: &rows_u,
         rows_v: &rows_v,
         rdmult,
+        ssim: None,
         sharpness: 0,
         enable_optimize_b: if p.coded_lossless {
             TrellisOptType::NoTrellisOpt

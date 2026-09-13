@@ -1,5 +1,46 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## The entire tune bundle closes — `x->rdmult` is per-NODE under a perceptual tune, and C folds it at three different scopes (KB-59, 2026-09-13)
+
+All 84 tune cells at s0/s3, all 8 fast-preset tune cells at s6/s8, and the
+six chroma-delta-q tune ramps are now byte-identical vs real aomenc — the
+largest pinned-open class in the tools gate (was 0/84). One mechanism:
+`handle_tuning` arms `av1_set_mb_ssim_rdmult_scaling` (encoder.c:4301),
+a per-SB grid of geometric-mean variance factors that `av1_set_ssim_rdmult`
+(partition_search.c:596-657) folds into `x->rdmult` at EVERY recursion node
+via `setup_block_rdmult` — so the trellis rdmult is position- and
+size-dependent, and the port's per-SB-constant `env.rdmult` was wrong at
+three different scopes at once:
+
+- `pick_sb_modes` folds to the leaf and restores on exit — leaf RD and the
+  leaf trellis run on the leaf fold.
+- `rd_pick_rect_partition` (partition_search.c:3500) does NOT fold — its
+  `best_remain` subtraction, `this_rdc` recompute and `sum_rdc` accumulate
+  run on the PARENT node's rdmult.
+- `rd_try_subblock` (:3133 — AB and HORZ_4/VERT_4) folds itself and runs
+  everything at leaf fold, including refolding the by-value budget and the
+  mid-stage dry-run encode.
+- `rectangular_partition_search` and `av1_rd_use_partition` mid-stage
+  dry-runs run on the PARENT fold — the committed recon a sibling leaf
+  reads was trellis-quantized with the parent rdmult. (The decisive
+  evidence: two C dry-run encodes of the same leaf, identical
+  tcoeff/ctx/quantizer/eob, different qcoeff tails — `x->rdmult` differed,
+  126597 vs 150061.)
+
+The port now carries `SbEncodeEnv.ssim` (the per-SB
+`av1_set_mb_ssim_rdmult_scaling` grid + `pre_rdmult`/`intra_modifier` in
+`allintra_vis.rs`), folds via `node_env`/`node_rdmult`
+(encode_sb.rs:532-561 — identity when `ssim` is `None`, so non-tune paths
+are byte-inert), and splits scope the way C does: a new `rd_try_subblock`
+primitive for AB/4-way, `rd_pick_rect_partition` kept on the parent fold
+with `this_rdc.rdcost` recomputed there, and `encode_b_intra_dry` taking a
+`refold_leaf_rdmult` flag. A failed leaf's rdcost must go through
+`rd_cost_update`'s invalid guard — bare `rdcost()` wrapped `INT_MAX` rate
+into a value that fed `evaluate_ab_partition_based_on_split` and regressed
+a 4:2:2 s3 cell (caught by `self_contained_key_frame`, fixed before
+landing). Quality knobs are now **75/75**; `self_contained_key_frame`
+447/447 and `encoder_gate_e2e_byte_match` 32/32 — no non-tune regression.
+
 ## The whole `--deltaq-mode` axis closes — three per-SB-qindex plumbing bugs (KB-58, 2026-09-12)
 
 All nine `deltaq` quality-knob pins are closed; modes 2/3/6 x cq{20,44} x

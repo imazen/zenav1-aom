@@ -250,15 +250,15 @@ fn tune_bundles_byte_match_real_aomenc() {
             }
         }
     }
-    // MEASURED 2026-09-11 at landing: 0/84 byte-identical. Every cell DECODES
-    // identically on both decoders (the streams are conformant), and the first
-    // differing byte is the frame OBU's size field — i.e. an RD/tile-payload
-    // divergence, not a header-derivation defect. Localizing it is the next
-    // job (playbook §10, decode-both); it is pinned here so a cell that closes
-    // is promoted rather than passing silently.
-    let all: Vec<String> = out.iter().map(|o| o.label.clone()).collect();
-    let all_refs: Vec<&str> = all.iter().map(String::as_str).collect();
-    report("tune bundles (speed 0/3)", &out, &all_refs);
+    // MEASURED 2026-09-11 at landing: 0/84 byte-identical. **CLOSED
+    // 2026-09-13 by the KB-59 per-node rdmult scope fix** — C runs three
+    // distinct rdmult scopes the port had conflated: `rd_pick_rect_partition`
+    // uses the PARENT node's fold (budget subtraction, `this_rdc` recompute,
+    // `sum_rdc` accumulation), while `rd_try_subblock` (AB / HORZ_4 / VERT_4)
+    // and the `av1_rd_use_partition`/`rectangular_partition_search` mid-stage
+    // `encode_superblock` dry-runs each use their own. With those scopes
+    // separated every tune-bundle cell is byte-identical at speeds 0 and 3.
+    report("tune bundles (speed 0/3)", &out, &[]);
 }
 
 /// The tune bundle at the FAST presets (`--cpu-used` 6 and 8). CDEF is on
@@ -268,21 +268,11 @@ fn tune_bundles_byte_match_real_aomenc() {
 /// (inside `run`) the gate.
 #[test]
 fn tune_bundles_at_fast_presets_decode_and_are_pinned() {
-    const TUNE_FAST_CDEF_OPEN: &[&str] = &[
-        // Pinned 2026-09-11 as the header's cdef_strengths diverging (the
-        // PARITY.md C1 shape); KB-56 fixed that mechanism 2026-09-12 — the
-        // residual here is the KB-53 tune-bundle PAYLOAD divergence (first
-        // differing byte is the frame-OBU size field). Self-promoting: a cell
-        // that starts matching fails below.
-        "Iq 420 128x128 cq20 s6",
-        "Iq 420 128x128 cq20 s8",
-        "Iq mono 128x128 cq20 s6",
-        "Iq mono 128x128 cq20 s8",
-        "Ssimulacra2 420 128x128 cq20 s6",
-        "Ssimulacra2 420 128x128 cq20 s8",
-        "Ssimulacra2 mono 128x128 cq20 s6",
-        "Ssimulacra2 mono 128x128 cq20 s8",
-    ];
+    // CLOSED 2026-09-13 by the KB-59 per-node rdmult scope fix — the nonrd
+    // leaf encode (`encode_b_nonrd`'s own `setup_block_rdmult`) needed the
+    // leaf fold too. All 8 cells byte-identical; the empty pin is kept so a
+    // REGRESSION still fails loudly.
+    const TUNE_FAST_CDEF_OPEN: &[&str] = &[];
     let mut out = Vec::new();
     for tune in [Tune::Iq, Tune::Ssimulacra2] {
         for &(fmt, mono, ss) in &FORMATS[..2] {
@@ -395,31 +385,15 @@ fn quality_knobs_byte_match_real_aomenc() {
             out.push(run(&format!("cdef-adaptive {fmt} cq{cq}"), &cfg, None));
         }
     }
-    // MEASURED 2026-09-12: 60/75 byte-identical. Byte-identical ALONE on the
-    // PSNR tune: every QM range, the QM-PSNR metric, sharpness and adaptive
-    // sharpness, the constant chroma-delta-q arm at 4:2:0/4:2:2/4:4:4/mono,
-    // Variance-Boost delta-q at speed 0 and the cq20 s3 cell, Perceptual-AI
-    // delta-q at speeds 0 and 3 (with and without delta-lf), the whole
-    // cdef-adaptive axis (cq 8 / 20 / 40 / 60 — off / halve+zero-low / halve /
-    // full, the last two arms closed 2026-09-12 by KB-57: C gates on
-    // `rc_cfg.cq_level`, the quantizer_to_qindex-MAPPED qindex, not the dial),
-    // and the s8 arms of Perceptual and Perceptual-AI delta-q (KB-55's repack
-    // rdmult fix). Open, all conformant (decode leg green): the tune
-    // chroma-delta-q RAMPS, Perceptual (mode 2) at speeds 0/3, and
-    // VarianceBoost at s8 and cq44 s3. First differing byte is the frame OBU
-    // size in every case — payload divergences to localize, not header bugs.
-    report(
-        "quality knobs",
-        &out,
-        &[
-            "chroma-deltaq Iq 420 cq32",
-            "chroma-deltaq Iq 444 cq32",
-            "chroma-deltaq Iq mono cq32",
-            "chroma-deltaq Ssimulacra2 420 cq32",
-            "chroma-deltaq Ssimulacra2 444 cq32",
-            "chroma-deltaq Ssimulacra2 mono cq32",
-        ],
-    );
+    // MEASURED 2026-09-13: **75/75 byte-identical — the gate is fully
+    // closed.** The last six open cells (the tune chroma-delta-q RAMPS at
+    // speed 0) were the KB-59 per-node rdmult scope conflation: C's
+    // `rd_pick_rect_partition` runs its budget/accumulation arithmetic under
+    // the PARENT node's fold while `rd_try_subblock` (AB + 4-partition)
+    // folds to the leaf — the port had leaf-folded both. Earlier history:
+    // 60/75 at 2026-09-12, with the other arms closed by KB-55 (repack
+    // rdmult) and KB-57 (adaptive CDEF reads the MAPPED qindex).
+    report("quality knobs", &out, &[]);
 }
 
 /// Each `CodingTools` toggle flipped ALONE from aomenc's default (PARITY.md

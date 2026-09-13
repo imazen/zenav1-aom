@@ -528,6 +528,18 @@ fn run_tune_case(
     let pol = sf
         .tx_type_search_policy(false, port.sharpness)
         .with_tune_knobs(tune);
+    // `av1_set_mb_ssim_rdmult_scaling` (encoder.c:4301-4305): the tune's
+    // per-16x16 rdmult scaling grid, computed from the same border-extended
+    // source the walk reads (KB-59).
+    let ssim_scales = (port.tuning != QuantTuning::Psnr).then(|| {
+        aom_encode::allintra_vis::ssim_rdmult_scaling_factors(
+            &src_y_strided,
+            stride,
+            mi_cols,
+            mi_rows,
+            bd,
+        )
+    });
     let env = SbEncodeEnv {
             ref_frame: None,
         sb_size: SB,
@@ -558,6 +570,14 @@ fn run_tune_case(
         rows_u: &rows_u,
         rows_v: &rows_v,
         rdmult,
+        ssim: ssim_scales
+            .as_ref()
+            .map(|(factors, cols, _)| aom_encode::encode_sb::SsimRdmult {
+                factors,
+                cols: *cols,
+                pre_rdmult: rdmult,
+                intra_modifier: 128,
+            }),
         sharpness: port.sharpness,
         enable_optimize_b: if p.coded_lossless {
             TrellisOptType::NoTrellisOpt

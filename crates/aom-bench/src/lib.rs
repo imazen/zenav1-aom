@@ -1799,6 +1799,7 @@ impl EncodeCell {
             rows_u: &rows_u,
             rows_v: &rows_v,
             rdmult,
+            ssim: None,
             sharpness: 0,
             // init_rd_sf: lossless forces NO_TRELLIS_OPT for every knob
             // value; else the knob maps per trellis_opt_of_knob. The stock
@@ -2841,6 +2842,7 @@ impl MultiFrameEncodeCell {
             rows_u: &rows_u,
             rows_v: &rows_v,
             rdmult,
+            ssim: None,
             sharpness: 0,
             enable_optimize_b: trellis_opt_of_knob(3),
             qm_levels: None,
