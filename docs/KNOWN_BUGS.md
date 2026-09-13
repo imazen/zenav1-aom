@@ -5,6 +5,44 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-60 — Encoder: under `--intra-dct-only` C searches chroma tx as DCT but measures/reconstructs with the UV-MODE-derived type — FIXED 2026-09-13, coding tools gate fully closed (48/48)
+
+- **Symptom.** `intra-dct-only=1 420/444 cq32 s0` diverged in the payload
+  (`self_contained_tools::coding_tools_byte_match_real_aomenc`, 2 of 48 cells;
+  the s6 cells and every other toggle were byte-identical). At leaf
+  `(mi_row,mi_col)=(0,0)` C picked `uv_mode=DC`, the port `uv_mode=H`.
+- **Mechanism — the search/inverse transform-type split.** `get_tx_mask`
+  (tx_search.c:1917) forces `txk_allowed = DCT_DCT` for the chroma
+  FORWARD/quantization search under `use_intra_dct_only`. But
+  `dist_block_px_domain` and `inverse_transform_block_facade` re-derive the
+  chroma type via `av1_get_tx_type` — which for intra chroma reads
+  `mbmi->uv_mode`, i.e. the MODE-DERIVED type (DCT_ADST for H at TX_8x16 —
+  it survives `av1_ext_tx_used` because sqr<=16x16 uses ALL16; at 32x32 it is
+  demoted to DCT, which is why the bs9 evals had always matched). So C
+  forward-transforms the DCT coefficients but inverts them with a DIFFERENT
+  transform: for `uv_mode=H` on the 8x16 chroma plane that yields
+  `pxd=1,694,016` where the port (using the searched DCT for both) had
+  `dist=78,000` — identical residual, prediction, eob, rate and coefficient
+  hash. `RDCOST = rdmult*rate>>8 + dist*128` makes C's eval bail INVALID
+  against `ref_best_rd` (~253M vs 79.4M); the port's cheap distortion
+  wrongly admitted H. The decoder derives the chroma type from `uv_mode`
+  too, so C's "wrong-type inverse" is the DECODE-CONSISTENT behaviour — the
+  port had to mirror it, not "fix" it.
+- **Fix.** `tx_search.rs`: the candidate-loop `dist_block_px_domain_into`
+  call and the `calc_pixel_domain_distortion_final` winner recompute use
+  `uv_intra_tx_type(uv_mode, lossless, tx_size, reduced_tx_set_used)` for
+  chroma (luma keeps the candidate type — its `tx_type_map` is written
+  per-candidate at :2281 upstream, so `av1_get_tx_type` reads back the
+  candidate). `intra_uv_rd.rs`: the committed chroma inverse uses the same
+  derivation instead of `win.best_tx_type`. Byte-inert everywhere else: the
+  normal chroma mask is `1 << derived_type`, so searched == derived except
+  under `use_intra_dct_only`.
+- **Verified.** `coding_tools_byte_match_real_aomenc`: **48/48
+  byte-identical, pins self-promoted to `&[]`** — both cells went from
+  pinned-open to first_diff=-1. Diagnostics kept: `AOM_UV_DBG=r,c` /
+  `AOM_TX_DBG=r,c` + `TX_DBG_VERBOSE` now print `pl`/`bsse`/`he`/`txd`/`pxd`
+  per txb candidate on both sides.
+
 ### KB-59 — Encoder: under a perceptual tune `x->rdmult` is per-NODE, and C's three sub-block call sites fold it three different ways — FIXED 2026-09-13, closes the entire 84-cell tune bundle
 
 - **Symptom.** Every `tune=IQ` / `tune=SSIMULACRA2` cell diverged:

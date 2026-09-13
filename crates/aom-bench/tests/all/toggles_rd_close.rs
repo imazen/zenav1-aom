@@ -323,66 +323,23 @@ fn toggles_c9_flip_idtx_off() {
     run_grid_and_gate("c9_flip0", &knobs, true);
 }
 
-/// C9 `--use-intra-dct-only=1` (AV1E_SET_INTRA_DCT_ONLY) — PINNED-OPEN
-/// characterization (KB-5/KB-10 pattern): the LUMA side is byte-faithful
-/// (probe: Y recon identical on the divergent cell), but the CHROMA side
-/// diverges from real aomenc in the UV MODE-LOOP layer.
+/// C9 `--use-intra-dct-only=1` (AV1E_SET_INTRA_DCT_ONLY) — EXACT.
 ///
-/// Measured (2026-07-17): 64_cq32 OUT of band (+2.23% size, zensim drop
-/// 3.588 — the port's recon is worse); 64_cq63 EXACT; 128_cq12 CLOSE
-/// (−1.40%, drop 0.333). Localization so far (decode-both, kb6 recipe):
-/// first divergent leaf mi(0,0) bsize 32×32 — real picks uv D45/aduv2
-/// (eob 1) where the port picks uv V/aduv0 (eob 78); real's winners across
-/// the frame are derived-type==DCT modes (D45/DC/CFL — the DCT-forced-
-/// search signature), the port's V rd (1872917) beats DC (2157931) with
-/// D45/CFL gated as never-evaluated. The port's UV txb eval + UV mode loop
-/// BOTH match the C-pieces oracle chain under the knob (txfm_uvrd_diff /
-/// intra_sbuv_mode_loop_diff sweep it green — the port forces DCT on the
-/// chroma mask exactly as `get_tx_mask` reads, verified against the REAL
-/// facade incl. the PAETH reduced-set empty-mask reset), so the residual
-/// gap is a shared port+oracle mis-model of the REAL UV loop under
-/// dct_only — next step is a sibling-C instrumented dump of the (0,0) UV
-/// candidate rds (KB-2/KB-7 method).
-///
-/// This test pins the CURRENT state: it FAILS when the divergent cell
-/// starts matching (→ promote to `run_grid_and_gate(expect_exact)`), and
-/// FAILS if the two in-band cells regress.
+/// Was PINNED-OPEN 2026-07-17 (64_cq32 out of band: the port accepted uv
+/// V where C rejected it); CLOSED 2026-09-13 by KB-60 — under
+/// `use_intra_dct_only` C's `get_tx_mask` pins the chroma FORWARD search to
+/// DCT, but `dist_block_px_domain`/`inverse_transform_block_facade`
+/// re-derive the chroma type from `mbmi->uv_mode` via `av1_get_tx_type`.
+/// The port applied the searched type; it now uses `uv_intra_tx_type` for
+/// the px-domain distortion and the committed inverse. Self-promoted: all
+/// three grid cells (64²cq32, 64²cq63, 128²cq12) went byte-identical.
 #[test]
 fn toggles_c9_intra_dct_only_pinned_open() {
     let knobs = ToggleKnobs {
         use_intra_dct_only: true,
         ..Default::default()
     };
-    let mut results = Vec::new();
-    let mut knob_live = false;
-    for (cell_tag, vector, crop, cq) in GRID {
-        let (r, changed) =
-            run_toggle_cell(&format!("c9_dct1_{cell_tag}"), vector, crop, cq, &knobs);
-        results.push(r);
-        knob_live |= changed;
-    }
-    println!(
-        "{}",
-        rd_close::render_table(&results, &RdBands::default())
-    );
-    assert!(knob_live, "c9_dct1: knob must change the C stream");
-    // Pinned state (fails on ANY movement, in either direction):
-    let r64_32 = &results[0];
-    assert!(
-        !r64_32.bit_identical && !r64_32.within(&RdBands::default()),
-        "c9_dct1_64_cq32 now within bands ({}% / {}) — the UV-loop divergence \
-         moved; re-measure and promote this test toward run_grid_and_gate",
-        r64_32.size_delta_pct,
-        r64_32.zensim_drop
-    );
-    assert!(
-        results[1].bit_identical,
-        "c9_dct1_64_cq63 was EXACT at landing and regressed"
-    );
-    assert!(
-        results[2].within(&RdBands::default()),
-        "c9_dct1_128_cq12 was within-band at landing and regressed"
-    );
+    run_grid_and_gate("c9_dct1", &knobs, true);
 }
 
 /// C9 `--use-intra-default-tx-only=1` (AV1E_SET_INTRA_DEFAULT_TX_ONLY): each

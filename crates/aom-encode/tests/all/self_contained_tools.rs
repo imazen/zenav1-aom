@@ -439,16 +439,16 @@ fn coding_tools_byte_match_real_aomenc() {
             }
         }
     }
-    // MEASURED 2026-09-11 at landing: 46/48 byte-identical; `--intra-dct-only`
-    // at speed 0 diverges in the payload on both formats (conformant). Its
-    // speed-6 cell and every other toggle at both speeds are byte-identical.
-    // `--cdf-update-mode=0` is REFUSED by name (KB-53) and is exercised in
-    // `new_knob_refusals_are_named` instead.
-    report(
-        "coding tools",
-        &out,
-        &["intra-dct-only=1 420 cq32 s0", "intra-dct-only=1 444 cq32 s0"],
-    );
+    // MEASURED 2026-09-13: **48/48 byte-identical — the gate is fully
+    // closed.** The last two cells (`--intra-dct-only` s0 on both formats)
+    // were the KB-60 quirk: under `use_intra_dct_only` C's
+    // `dist_block_px_domain`/`inverse_transform_block_facade` re-derive the
+    // chroma tx type via `av1_get_tx_type` — the UV-MODE-DERIVED type, not
+    // the DCT the search mask pinned — so directional chroma modes evaluated
+    // with a hugely inflated pixel-domain distortion and were pruned. The
+    // port applied the searched type. `--cdf-update-mode=0` is REFUSED by
+    // name (KB-53) and is exercised in `new_knob_refusals_are_named` instead.
+    report("coding tools", &out, &[]);
 }
 
 /// `--film-grain-table`: the port signals the parsed table entry in its own

@@ -1382,15 +1382,15 @@ fn combinations_quality_ladder_low() {
     run_quality_ladder(&[48, 55]);
 }
 
-/// `--use-intra-dct-only=1` is the one knob with a KNOWN open divergence
-/// (`toggles_c9_intra_dct_only_pinned_open`: 64²cq32 out of band, a UV-loop
-/// mis-model). It is therefore excluded from the byte-exact covering array.
-///
-/// This test pins its COMBINATION behaviour instead: a t=2 array over the other
+/// `--use-intra-dct-only=1` combination behaviour: a t=2 array over the other
 /// axes, all with `--use-intra-dct-only=1`, recording which rows are exact.
-/// It fails if a row that was exact stops being exact (a regression) OR if a
-/// row that diverged starts matching (self-promoting: the UV-loop fix landed,
-/// re-pin and move the knob into the main array).
+/// It fails if any row diverges (a regression).
+///
+/// Was the one knob with a KNOWN open divergence (11/17 rows, the KB-60
+/// UV-loop mis-model) until 2026-09-13 — the fix made all 17 rows exact and
+/// the expected set is now EMPTY. It stays a test (not folded into the main
+/// array, where it would shift every pinned array-length count) so the
+/// dct-only x combination space keeps its byte-exact guard.
 #[test]
 fn combinations_dct_only_verdict_set_pinned() {
     c::ref_init();
@@ -1414,35 +1414,21 @@ fn combinations_dct_only_verdict_set_pinned() {
         diverged.len(),
         diverged
     );
-    // Pinned at first measurement — see the design doc for the recorded set.
+    // Since KB-60 (2026-09-13) every row is byte-exact — the expected set is
+    // empty; any entry here is a regression.
     let expected: BTreeSet<String> = DCT_ONLY_DIVERGENT_ROWS.iter().map(|s| s.to_string()).collect();
     assert_eq!(
         diverged, expected,
-        "the --use-intra-dct-only divergence set MOVED. Rows that started \
-         matching mean the UV-loop mis-model (docs/HANDOFF-TOGGLES.md) was fixed — \
-         re-pin this set and promote the knob into the main covering array. \
-         Rows that started diverging are a regression."
+        "the --use-intra-dct-only divergence set MOVED — the knob is byte-exact \
+         since KB-60, so any diverging row is a regression."
     );
 }
 
-/// The recorded divergence set for [`combinations_dct_only_verdict_set_pinned`]:
-/// 11 of the 17 t=2 rows, measured 2026-07-30 on the 64x64 cq32 context.
-/// `stock` (the knob alone, no other change) is in the set, which is the same
-/// cell `toggles_c9_intra_dct_only_pinned_open` already pins — the combinations
-/// inherit that one open divergence rather than adding new ones.
-const DCT_ONLY_DIVERGENT_ROWS: &[&str] = &[
-    "ab0-p140-maxp64-paeth0-cfl0-diag0-fint0-rtx0-txss0-cdf2-trel2",
-    "minp16-maxp32-smth0-cfl0-diag0-rtx0-flip0-rtxs1-cdf2-trel0",
-    "minp16-maxp64-cfl0-dir0-diag0-adlt0-edgf0-flip0-txss0-cdf0-trel1",
-    "p140-minp8-smth0-paeth0-diag0-adlt0-fint0-flip0-dtxo1-txss0-cdf2",
-    "rect0-ab0-diag0-fint0-edgf0-tx640-rtx0-flip0-dtxo1-rtxs1-trel1",
-    "rect0-ab0-p140-minp16-paeth0-dir0-adlt0-fint0-edgf0-dtxo1-rtxs1-cdf0",
-    "rect0-ab0-p140-minp8-paeth0-cfl0-dir0-diag0-rtx0-txss0-cdf2-trel1",
-    "rect0-p140-minp16-maxp64-smth0-cfl0-diag0-adlt0-fint0-edgf0-rtx0-rtxs1-txss0-trel0",
-    "rect0-p140-minp8-maxp32-adlt0-edgf0-rtx0-txss0-cdf0-trel2",
-    "rect0-p140-minp8-maxp64-smth0-paeth0-adlt0-fint0-tx640-rtx0-dtxo1",
-    "stock",
-];
+/// The recorded divergence set for [`combinations_dct_only_verdict_set_pinned`].
+/// EMPTY since KB-60 closed the UV-mode-derived chroma tx-type mis-model
+/// (2026-09-13); was 11 of the 17 t=2 rows at first measurement (2026-07-30,
+/// `stock` included — the same cell `toggles_c9_intra_dct_only` pins).
+const DCT_ONLY_DIVERGENT_ROWS: &[&str] = &[];
 
 // ---------------------------------------------------------------------------
 // 5. THE CONTENT AXIS (2026-07-30)

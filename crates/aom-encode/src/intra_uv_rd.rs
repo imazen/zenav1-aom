@@ -558,6 +558,9 @@ pub fn txfm_rd_in_plane_uv_p(
         return None;
     }
     debug_assert_eq!(cfl.is_some(), uv_mode == UV_CFL_PRED);
+    crate::tx_search::set_tx_dbg_verbose(
+        uv_dbg_target().is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col),
+    );
     let plane_bsize = get_plane_block_size(env.bsize, env.ss_x, env.ss_y);
     debug_assert!(plane_bsize < 22, "invalid chroma plane block");
     let (txw, txh) = (TXS_W[tx_size], TXS_H[tx_size]);
@@ -859,6 +862,19 @@ pub fn txfm_rd_in_plane_uv_p(
 
             // recon_intra: reconstruct the winner over the prediction.
             if win.best_eob > 0 {
+                // `inverse_transform_block_facade` re-derives the tx type via
+                // `av1_get_tx_type` (tx_search.c:910): for intra chroma that is
+                // the UV-MODE-DERIVED type, not `best_tx_type` — the two agree
+                // only because the chroma mask is normally `1 << derived`.
+                // `use_intra_dct_only` pins the forward transform to DCT_DCT
+                // while the reconstruction inverse still applies the derived
+                // type, matching what the decoder computes from uv_mode.
+                let recon_tx_type = crate::tx_search::uv_intra_tx_type(
+                    uv_mode,
+                    env.lossless,
+                    tx_size,
+                    env.reduced_tx_set_used,
+                );
                 // KB-PERF-51, the chroma twin: reconstruct IN PLACE.
                 //
                 // `recon[txb_off..]` already holds this txb's prediction —
@@ -872,7 +888,7 @@ pub fn txfm_rd_in_plane_uv_p(
                     &search.best_dqcoeff,
                     &mut recon[txb_off..],
                     env.ref_stride,
-                    win.best_tx_type,
+                    recon_tx_type,
                     tx_size,
                     i32::from(env.bd),
                     win.best_eob as usize,

@@ -1757,6 +1757,9 @@ pub fn search_tx_type_intra_into(
         // SATD arm re-ran `av1_setup_quant` (see `qparam_qm_level_in_search`).
         let dqm = crate::dist_qmatrix(qp, tx_size, tx_type);
         let dscan = aom_dsp::txb::scan(tx_size, tx_type);
+        let mut dbg_he = false;
+        let mut dbg_txd = i64::MAX;
+        let mut dbg_pxd = i64::MAX;
         let (dist, sse): (i64, i64) = if res.eob == 0 {
             (block_sse, block_sse)
         } else if use_transform_domain_distortion {
@@ -1791,12 +1794,33 @@ pub fn search_tx_type_intra_into(
                 s_tx = st;
                 sse_diff = block_sse - st;
             }
+            dbg_he = is_high_energy;
+            dbg_txd = d;
             if !is_tx64 || !is_high_energy || sse_diff * 2 < s_tx {
                 let tx_domain_dist = d;
+                // `dist_block_px_domain` re-derives the tx type via
+                // `av1_get_tx_type` (tx_search.c:1060): luma reads back the
+                // candidate `tx_type_map` just stamped at :2281, but intra
+                // chroma derives from `mbmi->uv_mode` — NOT the searched
+                // type. They agree only because the chroma mask is normally
+                // `1 << derived`; `use_intra_dct_only` pins the forward
+                // transform to DCT_DCT while the px-domain inverse still
+                // applies the derived type (C's px-dist for e.g. H_PRED
+                // chroma inverts DCT_DCT coeffs with DCT_ADST).
+                let px_tx_type = if inp.plane == 0 {
+                    tx_type
+                } else {
+                    uv_intra_tx_type(
+                        inp.uv_mode,
+                        inp.lossless,
+                        tx_size,
+                        inp.reduced_tx_set_used,
+                    )
+                };
                 d = dist_block_px_domain_into(
                     &scratch.xq.dqcoeff,
                     tx_size,
-                    tx_type,
+                    px_tx_type,
                     inp.pred,
                     inp.pred_stride,
                     inp.src,
@@ -1810,6 +1834,7 @@ pub fn search_tx_type_intra_into(
                     &mut scratch.recon,
                     &mut scratch.inv,
                 );
+                dbg_pxd = d;
                 if is_high_energy && d < tx_domain_dist {
                     d = tx_domain_dist;
                 }
@@ -1822,7 +1847,8 @@ pub fn search_tx_type_intra_into(
         let rd = rdcost(inp.rdmult, rate_cost, dist);
         if TX_DBG_VERBOSE.get() {
             eprintln!(
-                "[txt] tx_type={tx_type} rd={rd} rate={rate_cost} dist={dist} eob={} mask={allowed_tx_mask:#06x}",
+                "[txt] pl{} tx_type={tx_type} rd={rd} rate={rate_cost} dist={dist} eob={} mask={allowed_tx_mask:#06x} bsse={block_sse} he={dbg_he} txd={dbg_txd} pxd={dbg_pxd}",
+                inp.plane,
                 res.eob
             );
         }
@@ -1876,10 +1902,22 @@ pub fn search_tx_type_intra_into(
         // pixel-domain reconstruct+SSE the C `dist_block_px_domain` computes
         // (already used as the pixel-domain component of the speed-0 hybrid).
         if calc_pixel_domain_distortion_final && b.best_eob != 0 {
+            // Same `av1_get_tx_type` re-derivation as the candidate loop:
+            // chroma inverts with the uv_mode-derived type, not the winner's.
+            let px_tx_type = if inp.plane == 0 {
+                b.best_tx_type
+            } else {
+                uv_intra_tx_type(
+                    inp.uv_mode,
+                    inp.lossless,
+                    tx_size,
+                    inp.reduced_tx_set_used,
+                )
+            };
             b.dist = dist_block_px_domain_into(
                 &scratch.best_dqcoeff,
                 tx_size,
-                b.best_tx_type,
+                px_tx_type,
                 inp.pred,
                 inp.pred_stride,
                 inp.src,
@@ -2911,6 +2949,12 @@ thread_local! {
     /// Set by the `AOM_TX_DBG` site while it is inside the target leaf so the
     /// per-tx-type loop can print without position plumbing through `TxTypeSearchInputs`.
     static TX_DBG_VERBOSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Arm/disarm the `[txt]` per-candidate print from a non-luma caller (the
+/// `AOM_UV_DBG` chroma walk sets it around `txfm_rd_in_plane_uv_p`).
+pub(crate) fn set_tx_dbg_verbose(on: bool) {
+    TX_DBG_VERBOSE.set(on);
 }
 
 fn tx_dbg_target() -> Option<(i32, i32)> {

@@ -1,11 +1,11 @@
 # HANDOFF — TOGGLE SWEEP (C8/C9/C10/C11) — remaining items
 
-**LANDED 2026-07-17.** The C8-C11 toggle sweep is on `origin/main`: 23 knob arms
+**LANDED 2026-07-17.** The C8-C11 toggle sweep is on `origin/main`: 24 knob arms
 BYTE-IDENTICAL vs real aomenc (hard `bit_identical` pins in
-`crates/aom-bench/tests/toggles_rd_close.rs`, 25 tests) + 1 pinned-open
-(`--use-intra-dct-only`). All landed toggles are rows in PARITY.md §A; the
-mechanism notes live in STATUS.md's TOGGLE-SWEEP sections. This file now tracks
-ONLY the genuinely-remaining items.
+`crates/aom-bench/tests/toggles_rd_close.rs`, 25 tests) — the last pinned-open
+(`--use-intra-dct-only`) CLOSED 2026-09-13, KB-60. All landed toggles are rows in
+PARITY.md §A; the mechanism notes live in STATUS.md's TOGGLE-SWEEP sections. This
+file now tracks ONLY the genuinely-remaining items.
 
 The two `--disable-trellis-quant=1/2` arms landed EXACT this pickup; `=2`
 (FINAL_PASS) needed a real encoder fix (5a644c6): `encode_b_intra_dry` had
@@ -17,7 +17,7 @@ is dead outside FINAL_PASS).
 
 | Toggle (ctrl) | State | What's needed |
 |---|---|---|
-| `--use-intra-dct-only=1` (119) | **PINNED-OPEN** (1 cell: 64²cq32) | Deep near-tie; see the sibling-C localization below. Cell stays pinned (fails on movement either way). |
+| ~~`--use-intra-dct-only=1` (119)~~ | **CLOSED 2026-09-13 (KB-60)** — all grid cells byte-identical | Was the chroma search/inverse tx-type split: under the knob C searches chroma as DCT but `dist_block_px_domain`/`inverse_transform_block_facade` re-derive the UV-mode type via `av1_get_tx_type`. The port now mirrors it (`uv_intra_tx_type` in the px-domain dist, final recompute, and committed inverse). |
 | `--sb-size=128` encode | **DONE — corrected 2026-08-03** (this row read "**UNSTARTED (M)**; encoder walk/harness are SB-64-only") | Landed. `crates/aom-bench/tests/sb128_e2e.rs` byte-matches real `aomenc --sb-size=128` with sb128-vs-sb64 anti-vacuity witnesses per gate, including a genuinely coded 128 leaf, partial-SB frames, and 4:4:4/4:2:2 — see PARITY.md section A. One residual: a mono 256² cq63 near-tie is PINNED there. |
 | `--coeff/mode-cost-upd-freq` (126/127) | **C-SIDE ONLY** (6e32167) | C ctrls emitted from the knobs; the port-side gate is UNWIRED. Design (in the ToggleKnobs doc comment): split pack.rs's per-SB `derive_real_costs` rebuild per table set — SB=every SB (current), SBROW=only at `c==0`, TILE/OFF=never (single-tile ⇒ identical). Add a `cost_upd: CostUpdCfg` (Default) field in one sweep across PackCfg literal sites. |
 | `--quant-b-adapt` | **INERT standalone; the kernel now EXISTS** (`crates/aom-dsp/tests/quantize_b_adaptive_diff.rs` gates it — corrected 2026-08-03; this said "needs kernel for the combo"). What remains is the policy plumb for the `--disable-trellis-quant=1/2` combo, not the kernel. | VERIFIED against C: at the default speed-0 allintra envelope trellis is ON, so the encode uses `AV1_XFORM_QUANT_FP` (encodemb.c:406-412, `USE_B_QUANT_NO_TRELLIS ? QUANT_B : QUANT_FP` gated on `!use_trellis`) — `quant_b_adapt` only feeds `AV1_XFORM_QUANT_B`, so it is INERT on the primary config (a standalone cell is vacuous — the witness refuses it). It is LIVE only combined with `--disable-trellis-quant=1/2` (QUANT_B path), and porting it then needs the `aom_quantize_b_adaptive` kernel family [PORTED — `crates/aom-dsp/src/quant/`, gated by `crates/aom-dsp/tests/quantize_b_adaptive_diff.rs`; note `aom-quant` is a dead crate path since the 2026-07 consolidation] (av1_quantize.c:311 `use_quant_b_adapt` arm) + policy plumb. |
@@ -31,7 +31,17 @@ is dead outside FINAL_PASS).
 | `--full-still-picture-hdr` / annexb | OBU-framing only. The port emits the frame-OBU PAYLOAD (the byte-compared unit); annexb changes container framing / temporal delimiters / size fields, not the frame-OBU payload — nothing for the port to reproduce here (seq spliced from C). |
 | `--dv-cost-upd-freq` (142) | DV costs are intrabc-only → INERT on the KEY allintra envelope (intrabc off) → not cellable (witness refuses). The ctrl id is present for completeness. |
 
-## The `--use-intra-dct-only` pinned-open — sibling-C dump DONE (2026-07-17)
+## The `--use-intra-dct-only` pinned-open — RESOLVED 2026-09-13 (KB-60)
+
+The "shared port+oracle mis-model" hypothesized below was right in shape, wrong
+in mechanism: `txfm_uvrd_diff` was green because BOTH sides applied the searched
+DCT type to the px-domain distortion, where the REAL `dist_block_px_domain`
+re-derives the chroma type from `mbmi->uv_mode` — which the synthetic-facade
+oracle never exercised. The "dist=0 vs INT_MAX" asymmetry was really "cheap
+same-type inverse vs C's inflated cross-type inverse". Historical record kept
+below; the landed fix is in `tx_search.rs` / `intra_uv_rd.rs`.
+
+### sibling-C dump (2026-07-17) — the localization that fed KB-60
 
 Cell: `av1-1-b8-01-size-64x64`, full 64×64, cq32 (qindex 128), allintra speed-0,
 `AV1E_SET_INTRA_DCT_ONLY=1`. 64²cq63 EXACT, 128²cq12 CLOSE; only 64²cq32 diverges

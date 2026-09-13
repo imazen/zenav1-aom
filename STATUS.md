@@ -1835,8 +1835,9 @@ coverage audits). Current fronts, by tier:
    `--quant-b-adapt`, the AQ / deltaq-2-wavelet / superres-auto / grain-estimation /
    tune=vmaf/butteraugli families.
 5. **Perf gate (Gate-3)** — AVX2/NEON SIMD specializations, each diffed lane-level vs scalar.
-6. **Pinned near-ties** (Tier-3, self-promoting) — use-intra-dct-only chroma, palette 2/7,
+6. **Pinned near-ties** (Tier-3, self-promoting) — palette 2/7,
    speed-6/7 noise-cq63, speed-8 diag — each a sibling-C RD dump away.
+   (use-intra-dct-only chroma CLOSED 2026-09-13, KB-60.)
 
 ## Real-bitstream decode milestone (2026-07-14, decoder track)
 
@@ -4957,9 +4958,9 @@ interaction at speed>=4 wired per C but not gate-covered.
 
 ## TOGGLE SWEEP — C8/C9/C10 CLI-toggle byte gates (2026-07-17, encoder track)
 
-**23 of the C8-C11 toggle-family knob arms are BYTE-IDENTICAL vs real aomenc
-(same ctrl) and hard-pinned; 1 pinned-open** (`--use-intra-dct-only`;
-`aom-bench/tests/toggles_rd_close.rs`, 25 tests). Every knob set runs the
+**24 of the C8-C11 toggle-family knob arms are BYTE-IDENTICAL vs real aomenc
+(same ctrl) and hard-pinned** (`--use-intra-dct-only` closed 2026-09-13,
+KB-60; `aom-bench/tests/toggles_rd_close.rs`, 25 tests). Every knob set runs the
 witnessed 3-cell real-content grid (64² cq32
 + cq63, 128²-crop cq12) with an ANTI-VACUITY witness: the toggle must change
 the C encoder's output on at least one cell, or the test panics (an EXACT
@@ -4986,14 +4987,22 @@ verdict on a cell the knob never reaches proves nothing).
   C-diffed visit chain reads CLI + sf gates independently); chroma rides the
   existing `UvLoopPolicy` enable fields. Seq-level knobs drive the port
   directly and ASSERT the bootstrap seq bits agree (no bootstrap flow).
-- **C9 tx controls (5 arms EXACT + 1 pinned-open):** tx64=0 / rect-tx=0 /
+- **C9 tx controls (6/6 arms EXACT — dct-only closed by KB-60):** tx64=0 / rect-tx=0 /
   flip-idtx=0 / default-tx-only=1 / reduced-tx-set=1 EXACT.
   `TxTypeSearchPolicy` gained `enable_flip_idtx` + `use_intra_dct_only`
   (threaded into `TxMaskParams` — C reads oxcf directly in `get_tx_mask`,
   stage-independent; partition_pick's winner-mode stage policies copy the CLI
   toggles from `cfg.pol` and OR the default-tx-only knob into MODE_EVAL per
   rdopt_utils.h:579). The reduced-tx-set frame-header bit is asserted == knob.
-- **`--use-intra-dct-only=1` PINNED-OPEN** (KB-5/KB-10 pattern;
+- **`--use-intra-dct-only=1` — CLOSED 2026-09-13 (KB-60).** Resolution: under
+  `use_intra_dct_only` C's `get_tx_mask` pins the FORWARD search to DCT, but
+  `dist_block_px_domain`/`inverse_transform_block_facade` re-derive the chroma
+  type from `mbmi->uv_mode` via `av1_get_tx_type` — the decode-consistent
+  behaviour the port had to mirror. `tx_search.rs` px-domain dist + final
+  recompute and `intra_uv_rd.rs`'s committed inverse now use
+  `uv_intra_tx_type(...)` for chroma; `coding_tools_byte_match_real_aomenc`
+  went 46/48 → **48/48 byte-identical**. The historical record follows:
+  (was PINNED-OPEN, KB-5/KB-10 pattern;
   `toggles_c9_intra_dct_only_pinned_open` fails on movement either way):
   64²cq32 out of band (+2.23% size, zensim −3.588), 64²cq63 EXACT, 128²cq12
   CLOSE (−1.40%, +0.333). Localized: Y recon IDENTICAL; first divergent leaf
@@ -5021,7 +5030,9 @@ verdict on a cell the knob never reaches proves nothing).
   per-txb V DCT dist/coeffs inside `av1_txfm_rd_in_plane`/`search_txk_type` (the
   INT_MAX path fires before av1_txfm_uvrd's merge) vs the port's
   `search_tx_type_intra` V winner — find why the same DCT residual yields dist=0
-  in the port and INT_MAX-rd in C. Cell stays pinned-open.
+  in the port and INT_MAX-rd in C. (Answer, found 2026-09-13: not an early-out —
+  C's px-domain distortion re-derives the chroma tx type from `uv_mode`, so the
+  DCT coefficients invert as DCT_ADST for H; see KB-60.)
 - **Remaining in the toggle families:** `--quant-b-adapt` (S–M),
   cost-upd-freq non-default arms (S–M), min/max-q clamps (S), SB128 encode
   (M, own chunk) — PARITY.md C8/C9/C11. (`--enable-tx-size-search=0`,

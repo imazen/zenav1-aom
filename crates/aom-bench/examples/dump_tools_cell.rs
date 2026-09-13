@@ -70,6 +70,7 @@ fn main() {
     let mut dlf = false;
     let mut strength = 100u32;
     let mut chroma_dq = false;
+    let mut dctonly = false;
     let mut tune = Tune::default();
     for kv in &a[7.min(a.len())..] {
         let (k, v) = kv.split_once('=').expect("knob args are key=value");
@@ -78,6 +79,7 @@ fn main() {
             "dlf" => dlf = v == "1",
             "strength" => strength = v.parse().unwrap(),
             "chromadq" => chroma_dq = v == "1",
+            "dctonly" => dctonly = v == "1",
             "tune" => {
                 tune = match v {
                     "iq" => Tune::Iq,
@@ -109,6 +111,7 @@ fn main() {
     cfg.quality.deltaq_strength = strength;
     cfg.quality.delta_lf = dlf;
     cfg.quality.chroma_deltaq = chroma_dq;
+    cfg.tools.use_intra_dct_only = dctonly;
 
     let port = encode_key_frame(KeyFramePlanes { y: &y, u: &u, v: &v }, &cfg)
         .expect("the port must encode this cell");
@@ -146,7 +149,11 @@ fn main() {
             qm_max: -1,
             superres_denom: 0,
             film_grain_table: None,
-            ctrls: Vec::new(),
+            ctrls: if dctonly {
+                vec![(c::cx_ctrl::AV1E_SET_INTRA_DCT_ONLY, 1)]
+            } else {
+                Vec::new()
+            },
         },
     );
 
