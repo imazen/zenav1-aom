@@ -1,5 +1,39 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## Coded-lossless IntraBC lands — conformance + 47/48 probe cells byte-exact (KB-64 / KB-65, 2026-09-13)
+
+Two landings, one mechanism each:
+
+**KB-64** — `intra_model_rd` walked its model-prediction tiles in the mu-64
+CHUNK order of `txfm_rd_in_plane_intra` where C walks flat raster
+(`for row; for col`, intra_mode_search_utils.h:637). The order is
+observable — each tile predicts off in-plane predictions written by earlier
+tiles — so any leaf > 64 px got a different model-RD on left/below-left-edge
+modes, flipping the top-k prune set. Closed the `mono_cq63` SB128 pin (one
+byte, angle-delta near-tie at a 128x128 leaf), promoted to a byte gate.
+
+**KB-65** — the coded-lossless IntraBC arm, plus two roots it exposed:
+`var_tx::choose_smallest_tx_size_inter` ports C's lossless dispatch
+(`av1_pick_uniform_tx_size_type_yrd` -> `choose_smallest_tx_size` — flat
+TX_4X4 + FWHT, `predict_skip_txfm` gated `!lossless`); the `!coded_lossless`
+decline is gone from `key_frame.rs`. Then: (a) the write-side walks
+(`ibc_encode_block_inter_y`, `pack_vartx_txb`) rooted their txb recursion at
+`MAX_TXSIZE_RECT_LOOKUP[bsize]` where `get_vartx_max_txsize` (blockd.h:1452)
+returns TX_4X4 at lossless — quadtree-DFS emission into a raster-reading
+decoder = NON-CONFORMANT streams, rejected by the real C decoder with
+`Invalid intrabc dv`; (b) `search_allow_intrabc` threaded the detector's
+raw `sct.allow_intrabc` without `&= enable_intrabc` (encodeframe.c:2194) —
+a +51/leaf phantom flag charge in knob-off screen encodes that biased
+partition candidates by leaf count and flipped five lossless near-ties.
+
+48-cell probe matrix (`examples/ibc_lossless_probe`: screen/detail x
+{64,128,256,512x384} x cq{0,32} x s{0,3,6}, palette off): **47/48
+byte-exact, every stream conformant on both real decoders**. Residual:
+`Screen 512x384 cq0 s0` +3 B (0.01 %) — C commits DC+filter_intra3 at leaf
+mi(50,67) where the port commits PAETH, a few-unit rate-model near-tie;
+recon identical. `screen_content_tools_byte_match_real_aomenc` now covers
+cq0 + a knob-off leg + a matrix-level IntraBC-engagement assert.
+
 ## The intra variance factor's 4x4 walk banded — `variance_4x4_units` (Gate 3, 2026-09-13)
 
 The lever map's top unlanded row was the variance family — 80.9 % of all

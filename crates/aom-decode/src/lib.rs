@@ -4776,6 +4776,13 @@ impl<'c> TileKf<'c> {
             // the frame (AOM_CODEC_CORRUPT_FRAME). Mark corrupt and unwind the
             // walk instead of panicking on untrusted input. Byte-inert on
             // conformant streams (a valid DV always validates).
+            if std::env::var_os("AOM_DV_TRACE").is_some() {
+                eprintln!(
+                    "[dv] mi({mi_col},{mi_row}) bsize={bsize} part={partition:?} \
+                     diff=({},{}) ref=({nearest_r},{nearest_c})/({near_r},{near_c})",
+                    info.dv_row, info.dv_col
+                );
+            }
             let Some((dv_row, dv_col)) = assign_and_validate_dv(
                 (nearest_r, nearest_c),
                 (near_r, near_c),
@@ -4793,6 +4800,12 @@ impl<'c> TileKf<'c> {
                 ss_x as i32,
                 ss_y as i32,
             ) else {
+                eprintln!(
+                    "[dvbad] mi({mi_col},{mi_row}) bsize={bsize} part={partition:?} \
+                     dv=({},{}) ref=({nearest_r},{nearest_c})/({near_r},{near_c}) \
+                     tile_row_start={}",
+                    info.dv_row, info.dv_col, self.tile.mi_row_start
+                );
                 self.mark_corrupt(
                     "corrupt frame: intrabc DV failed validity (non-conformant stream)",
                 );
@@ -5247,6 +5260,13 @@ impl<'c> TileKf<'c> {
         // (0,0)(0,1)(1,0)(1,1)(0,2)(0,3)(1,2)(1,3) — not raster — so the
         // per-txb `txb_skip_ctx` sequence differs and the arithmetic decode
         // desyncs from byte one of the third txb.
+        //
+        // Coded-lossless is the OPPOSITE case: no quadtree is signalled AND
+        // C's `get_vartx_max_txsize` (blockd.h:1452) collapses the root to
+        // TX_4X4, so `decode_reconstruct_tx` degenerates to a flat 4x4 raster
+        // — exactly what `do_uniform` produces. (KB-65: the writer
+        // side had been emitting the DFS order at lossless, which every
+        // conforming decoder — including this one pre-fix — reads as raster.)
         let do_uniform = !(info.use_intrabc != 0 && vartx_quadtree_read);
         if !do_uniform {
             let max_tx = MAX_TXSIZE_RECT_LOOKUP[bsize];
@@ -6412,6 +6432,12 @@ impl<'c> TileKf<'c> {
                 has_cols,
                 bsize,
             ) as usize;
+            if std::env::var_os("AOM_PART_TRACE").is_some() {
+                eprintln!(
+                    "[dp] mi({mi_row},{mi_col}) bs={bsize} ctx={ctx} part={pr} tell={}",
+                    dec.tell_frac() as i32
+                );
+            }
             pr
         };
         self.tree.push(p as i8);

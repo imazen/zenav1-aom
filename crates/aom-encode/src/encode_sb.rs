@@ -2579,7 +2579,17 @@ fn encode_b_intrabc_coeff(
         max_blocks_wide: bwv,
         max_blocks_high: bhv,
     };
-    let max_tx = crate::tx_search::MAX_TXSIZE_RECT_LOOKUP[bsize];
+    // `get_vartx_max_txsize` (blockd.h:1452): at lossless the var-tx quadtree
+    // root collapses to TX_4X4 — the re-encode walk, the pack txb walk and the
+    // decoder's `decode_reconstruct_tx` all become a flat 4x4 raster (a
+    // TX_16X8 root would emit the (0,0)(0,1)(1,0)(1,1)(0,2)… DFS order, which
+    // every conforming decoder reads as plain raster at ONLY_4X4 — an arith
+    // desync at the third txb onward, surfacing later as an invalid DV).
+    let max_tx = if env.lossless {
+        0 // TX_4X4
+    } else {
+        crate::tx_search::MAX_TXSIZE_RECT_LOOKUP[bsize]
+    };
     let bw_u = crate::var_tx::TX_SIZE_WIDE_UNIT[max_tx];
     let bh_u = crate::var_tx::TX_SIZE_HIGH_UNIT[max_tx];
     // KB-4 tx_type_map semantics: OUTPUT_ENABLED copies (the eob-0 -> DCT_DCT

@@ -2209,8 +2209,9 @@ fn screen_content_tools_byte_match_real_aomenc() {
 
     let mut checked = 0usize;
     let mut open: Vec<String> = Vec::new();
+    let mut cq0_ibc_engaged: Vec<String> = Vec::new();
     for &(w, h) in &[(64usize, 64usize), (128, 128), (192, 192)] {
-        for &cq in &[20i32, 32, 50] {
+        for &cq in &[0i32, 20, 32, 50] {
             for &speed in &[0i32, 3, 6] {
                 for (cnm, ui) in [("chk", false), ("ui", true)] {
                     let (cw, ch) = (w / 2, h / 2);
@@ -2245,6 +2246,25 @@ fn screen_content_tools_byte_match_real_aomenc() {
                          off, so this cell cannot witness them — pick content the detector calls \
                          screen"
                     );
+                    if cq == 0 {
+                        // KB-65: the coded-lossless cells must
+                        // witness IntraBC SPECIFICALLY, not just palette —
+                        // `av1_txfm_search` dispatches the IntraBC coeff arm
+                        // to `av1_pick_uniform_tx_size_type_yrd` ->
+                        // `choose_smallest_tx_size` (flat TX_4X4 + FWHT) at
+                        // `xd->lossless` (tx_search.c:4085-4116), the arm the
+                        // port previously declined. palette-off/intrabc-on
+                        // vs both-off isolates it. Engagement is content- and
+                        // speed-dependent, so the matrix asserts at least one
+                        // cq0 cell fires (below) rather than every cell.
+                        let c_ibc_only = c::ref_encode_av1_kf_screen_content(
+                            &y, &u, &v, w, h, 8, false, 1, 1, cq, speed, false, true, 2, 0,
+                            false, false, true,
+                        );
+                        if c_ibc_only != c_off {
+                            cq0_ibc_engaged.push(label.clone());
+                        }
+                    }
 
                     let mut cfg = KeyFrameConfig::allintra_speed0(w, h, 8, false, 1, 1, cq);
                     cfg.cpu_used = speed;
@@ -2290,11 +2310,46 @@ fn screen_content_tools_byte_match_real_aomenc() {
                             c_off.len()
                         ));
                     }
+
+                    // Knob-OFF leg (KB-65): `features->allow_intrabc
+                    // &= oxcf->kf_cfg.enable_intrabc` (encodeframe.c:2194) runs
+                    // BEFORE the search — with the knob off, C neither
+                    // searches IntraBC nor charges `intrabc_cost[0]` on any
+                    // intra candidate. The port once threaded the detector's
+                    // raw `sct.allow_intrabc` into the rate model, +51/leaf on
+                    // every intra leaf — a leaf-count-proportional bias that
+                    // flipped lossless partition near-ties (SPLIT pays 4x the
+                    // phantom flag vs VERT_B's 3x). Screen content is exactly
+                    // where the detector says allow_intrabc=1, so these cells
+                    // are the only ones that can see the bug.
+                    let mut cfg_off = cfg.clone();
+                    cfg_off.enable_palette = false;
+                    cfg_off.enable_intrabc = false;
+                    let port_off = encode_key_frame(
+                        KeyFramePlanes { y: &y, u: &u, v: &v },
+                        &cfg_off,
+                    )
+                    .unwrap_or_else(|e| panic!("{label}: tools-off encode refused: {e}"));
+                    if port_off != c_off {
+                        open.push(format!(
+                            "{label}: tools-OFF port {} bytes vs C {} bytes",
+                            port_off.len(),
+                            c_off.len()
+                        ));
+                    }
                 }
             }
         }
     }
     assert!(checked > 0, "the screen grid must not be empty");
+    // The cq0 matrix must reach the lossless IntraBC coeff arm at least once
+    // (see the in-loop note): a byte gate on cells where IntraBC never engaged
+    // would pass with the arm deleted.
+    assert!(
+        !cq0_ibc_engaged.is_empty(),
+        "no cq0 cell engaged IntraBC — the lossless IntraBC arm is unwitnessed"
+    );
+    println!("cq0 IntraBC engaged on: {}", cq0_ibc_engaged.join(", "));
     println!("screen-tools parity: {}/{checked} byte-exact", checked - open.len());
     for o in &open {
         println!("  {o}");

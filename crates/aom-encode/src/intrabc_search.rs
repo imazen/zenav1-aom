@@ -2331,25 +2331,25 @@ pub fn rd_pick_intrabc_mode_sb(
             }
         }
 
-        // C's av1_txfm_search: `predict_skip_txfm` (LUMA) forces skip_txfm=1 and
-        // BYPASSES the coeff arm (tx_search.c:3596). The block is coded as skip
-        // only if the chroma ALSO skips (rd_stats.skip = luma_skip && uv_skip).
-        // We offer the intrabc candidate only in that exact-skip regime: luma
-        // predict_skip fires AND chroma is a perfect match (uv sse 0 ⇒ eob 0 ⇒
-        // uv skip). Outside it the coeff arm (unported var-tx) would decide, so
-        // we return no candidate (the frame keeps the intra winner). See the fn
-        // doc + PARITY C3.
+        // C's `predict_skip_txfm` arm (LUMA) forces skip_txfm=1 and BYPASSES
+        // the coeff arm — inside `av1_pick_uniform_tx_size_type_yrd` it is
+        // additionally gated on `!xd->lossless[mbmi->segment_id]`
+        // (tx_search.c:3893): at coded-lossless C ALWAYS runs the full
+        // `choose_smallest_tx_size` walk, so this arm must not fire there
+        // (a predicted skip the flat walk would not reproduce would diverge
+        // the choose_skip_txfm decision AND the stream).
         let _ = chroma_sse;
-        let luma_skip = predict_skip_txfm(
-            &luma_resid,
-            bw,
-            bh,
-            a.bsize,
-            luma_sse,
-            a.qindex,
-            i32::from(a.bd),
-            a.reduced_tx_set_used,
-        );
+        let luma_skip = !a.vartx.lossless
+            && predict_skip_txfm(
+                &luma_resid,
+                bw,
+                bh,
+                a.bsize,
+                luma_sse,
+                a.qindex,
+                i32::from(a.bd),
+                a.reduced_tx_set_used,
+            );
 
         // --- av1_txfm_search (tx_search.c:3795) with ref_best_rd = INT64_MAX
         //     (rdopt.c:3611 hardcodes it), so EVERY early-exit gate inside is
@@ -2450,7 +2450,15 @@ pub fn rd_pick_intrabc_mode_sb(
                 prune_tx_type_using_stats: a.vartx.prune_tx_type_using_stats,
                 prune_tx_type_est_rd: a.vartx.prune_tx_type_est_rd,
             };
-            let r = crate::var_tx::pick_recursive_tx_size_type_yrd(&env, i64::MAX);
+            // av1_txfm_search's dispatch (tx_search.c:3824-3836): the recursive
+            // var-tx arm only when `tx_mode_search_type == TX_MODE_SELECT &&
+            // !lossless`; at coded-lossless the uniform arm's
+            // `choose_smallest_tx_size` — a flat TX_4X4 walk, no quadtree.
+            let r = if env.lossless {
+                crate::var_tx::choose_smallest_tx_size_inter(&env, i64::MAX)
+            } else {
+                crate::var_tx::pick_recursive_tx_size_type_yrd(&env, i64::MAX)
+            };
             // `if (rd_stats_y->rate == INT_MAX) return 0` (tx_search.c:3834).
             if !r.valid || r.rate == i32::MAX {
                 continue;
@@ -2617,6 +2625,13 @@ pub fn rd_pick_intrabc_mode_sb(
 
         if this_rd < best_rd {
             best_rd = this_rd;
+            if std::env::var_os("AOM_IBC_WIN").is_some() {
+                eprintln!(
+                    "[ibc-win] mi({},{}) bsize={} dv=({dv_r},{dv_c}) ref=({ref_r},{ref_c}) \
+                     rd={this_rd} skip={choose_skip} yskip={y_skip} uv_skip={uv_skip}",
+                    a.mi_col, a.mi_row, a.bsize
+                );
+            }
             best = Some(IntrabcBest {
                 dv_row: dv_r,
                 dv_col: dv_c,

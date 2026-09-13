@@ -392,6 +392,15 @@ pub fn pack_leaf(
     // reference the SEARCH coded the delta against? A mismatch means the
     // decoder reconstructs a different DV than the winner's.
 
+    if std::env::var_os("AOM_PACK_TRACE").is_some() {
+        eprintln!(
+            "[pk] mi({mi_row},{mi_col}) bs={bsize} part={partition} ibc={} skip={} \
+             dv=({},{}) ref=({},{}) txsize={} mode={} fi={}/{}",
+            winner.use_intrabc, winner.skip_txfm, winner.dv_row, winner.dv_col,
+            winner.dv_ref_row, winner.dv_ref_col, winner.tx_size, winner.mode,
+            winner.use_filter_intra as u8, winner.filter_intra_mode
+        );
+    }
     // ---- 1. write_mbmi_b: mode-info (write_mb_modes_kf_fc). ----
     let above_nbr = nbr.above[mi_col as usize];
     let left_nbr = nbr.left[(mi_row & 31) as usize];
@@ -870,7 +879,14 @@ pub fn pack_leaf(
         );
         let mu_w = MI_SIZE_WIDE_B[12].min(mi_w);
         let mu_h = MI_SIZE_HIGH_B[12].min(mi_h);
-        let max_tx = crate::tx_search::MAX_TXSIZE_RECT_LOOKUP[bsize];
+        // `get_vartx_max_txsize` (blockd.h:1452): TX_4X4 at lossless, so
+        // `pack_txb_tokens` never descends — the txb write order is a flat
+        // raster, matching the re-encode walk and every conforming decoder.
+        let max_tx = if env.lossless {
+            0 // TX_4X4
+        } else {
+            crate::tx_search::MAX_TXSIZE_RECT_LOOKUP[bsize]
+        };
         let (bkw, bkh) = (
             crate::var_tx::TX_SIZE_WIDE_UNIT[max_tx],
             crate::var_tx::TX_SIZE_HIGH_UNIT[max_tx],
@@ -933,6 +949,8 @@ pub fn pack_leaf(
                             max_tx,
                             max_bw,
                             max_bh,
+                            mi_row,
+                            mi_col,
                         );
                         bc += bkw;
                     }
@@ -973,6 +991,9 @@ pub fn pack_leaf(
                                     &txbs[*cursor],
                                     uv_tx,
                                     plane,
+                                    mi_row,
+                                    mi_col,
+                                    bsize,
                                 );
                                 *cursor += 1;
                                 cbc += utxw_u;
@@ -2734,6 +2755,8 @@ fn pack_vartx_txb(
     tx_size: usize,
     max_blocks_wide: usize,
     max_blocks_high: usize,
+    wmi_row: i32,
+    wmi_col: i32,
 ) {
     if blk_row >= max_blocks_high || blk_col >= max_blocks_wide {
         return;
@@ -2752,7 +2775,18 @@ fn pack_vartx_txb(
             *cursor,
             txbs.len()
         );
-        write_one_txb_inter(enc, kf, cfg, env, &txbs[*cursor], tx_size, 0);
+        write_one_txb_inter(
+            enc,
+            kf,
+            cfg,
+            env,
+            &txbs[*cursor],
+            tx_size,
+            0,
+            wmi_row,
+            wmi_col,
+            winner.bsize,
+        );
         *cursor += 1;
         return;
     }
@@ -2778,6 +2812,8 @@ fn pack_vartx_txb(
                 sub_txs,
                 max_blocks_wide,
                 max_blocks_high,
+                wmi_row,
+                wmi_col,
             );
             col += bsw;
         }
@@ -2798,7 +2834,16 @@ fn write_one_txb_inter(
     txb: &TxbEncode,
     tx_size: usize,
     plane: usize,
+    wmi_row: i32,
+    wmi_col: i32,
+    wbsize: usize,
 ) {
+    if std::env::var_os("AOM_CTXB_TRACE").is_some() {
+        eprintln!(
+            "[wtxb] mi({wmi_row},{wmi_col}) bs={wbsize} plane={plane} eob={} tsc={} dsc={} tx={tx_size}",
+            txb.eob, txb.txb_skip_ctx, txb.dc_sign_ctx
+        );
+    }
     let plane_type = usize::from(plane > 0);
     let mut dummy = [0u16; 8];
     let ext_tx_cdf: &mut [u16] = if plane_type == 0 {

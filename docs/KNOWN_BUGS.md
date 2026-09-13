@@ -5,6 +5,89 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-65 — Encoder: coded-lossless IntraBC emitted quadtree-DFS txbs where every decoder reads a flat raster, plus the search-time `allow_intrabc` missed the `enable_intrabc` AND — FIXED 2026-09-13, conformance + 47/48 probe cells byte-exact
+
+- **Symptom.** `ibc_lossless_probe` (scratch example, screen/detail x
+  {64,128,256,512x384} x cq{0,32} x s{0,3,6}, palette off so only IntraBC can
+  engage): on 256x256+ Screen cells the port's IntraBC-on stream was REJECTED
+  by the real C decoder — `Corrupt frame detected: Invalid intrabc dv` — and
+  by the port decoder; plus five tools-off divergences (256x256 cq0 s0,
+  512x384 cq0 s0/s3, cq32 s0/s3 — same-length or 2-3 B).
+- **Mechanism — three independent roots, all in the lossless IntraBC path.**
+  1. **Write-side walk order.** `get_vartx_max_txsize` (blockd.h:1452) returns
+     TX_4X4 at `xd->lossless`, so C's `av1_encode_sb` re-encode, bitstream.c's
+     `pack_txb_tokens` and `decode_reconstruct_tx` ALL degenerate to a flat
+     4x4 raster — no quadtree is descended even though `inter_tx_size` is
+     memset to TX_4X4. The port's `ibc_encode_block_inter_y` (encode_sb.rs)
+     and `pack_vartx_txb` (pack.rs) rooted the recursion at
+     `MAX_TXSIZE_RECT_LOOKUP[bsize]` unconditionally — a 16x8 leaf emitted
+     txbs in DFS order (0,0)(0,1)(1,0)(1,1)(0,2)…, which decoders read
+     raster. The arith state desyncs at the third txb; the eventual symptom
+     is a garbage DV tripping `assign_dv`'s validity check — a NON-CONFORMANT
+     stream, the worst kind of divergence. Fixed by honouring the lossless
+     override (`max_tx = 0`) in both write-side walks. The port DECODER was
+     already correct — its `do_uniform` raster at lossless matches C; an
+     intermediate "fix" walking it as a quadtree was wrong and was reverted.
+  2. **`enable_intrabc` never ANDed into the search-time flag.**
+     `encodeframe.c:2194`: `features->allow_intrabc &=
+     oxcf->kf_cfg.enable_intrabc` runs BEFORE the search, so a knob-off
+     encode charges `intrabc_cost[use_intrabc=0]` on NO intra candidate.
+     The port threaded the detector's raw `sct.allow_intrabc` into
+     `search_allow_intrabc`, over-charging every intra leaf by
+     `intrabc_cost[0]` (51 units) whenever the detector said screen — a
+     per-LEAF additive that biases partition candidates by leaf count
+     (SPLIT +204 vs VERT_B +153 vs NONE +51) and flips lossless near-ties:
+     at 512x384 cq0 s0, node mi(8,8) bs6, C chose SPLIT (46987) while the
+     port's inflated SPLIT sum (47013) lost to VERT_B (47010). This one line
+     closed all five tools-off residuals.
+  3. **Missing arm (the original gap).** C dispatches the IntraBC coeff arm
+     at `xd->lossless` to `av1_pick_uniform_tx_size_type_yrd` ->
+     `choose_smallest_tx_size` (flat TX_4X4 + FWHT, `predict_skip_txfm`
+     additionally gated `!lossless` at tx_search.c:3893); the port declined
+     the whole IntraBC search at coded-lossless. Ported as
+     `var_tx::choose_smallest_tx_size_inter` (flat raster of
+     `block_rd_txfm`-equivalent leaf evals with the persistent-ctx stamp and
+     the `current_rd > ref_best_rd` incomplete-exit), wired into
+     `rd_pick_intrabc_mode_sb` with `luma_skip` gated `!lossless`, and the
+     `!coded_lossless` decline removed from `key_frame.rs`.
+- **Verified.** 48-cell probe matrix: 47/48 byte-exact INCLUDING the
+  tools-off legs (previously 5 divergent), every port stream accepted by both
+  real decoders. `screen_content_tools_byte_match_real_aomenc` extended with
+  cq0 cells + a matrix-level non-vacuity assert that IntraBC alone engaged at
+  least once + a tools-off leg pinning the `enable_intrabc` gate.
+- **Residual (documented, shipping).** `Screen 512x384 cq0 s0`: port 29423 B
+  vs C 29420 B. First leaf divergence `mi(50,67)` bs0 — C commits
+  DC+filter_intra3, the port commits PAETH: a few-unit rate-model near-tie
+  inside the filter-intra eval at a 4x4 leaf. Recon planes identical, stream
+  conformant on both real decoders, +0.01 %.
+
+### KB-64 — Encoder: `intra_model_rd` walked model-prediction tiles in mu-64 chunk order where C walks flat raster — FIXED 2026-09-13, `mono_cq63` pin promoted to a byte gate
+
+- **Symptom.** `sb128_chroma_format_e2e`'s `mono_cq63` pin: 256x256 mono cq63
+  SB128, port coded 31 B vs C's 30 B (one byte, one leaf). The decode
+  localizer showed leaf `mi(0,32)` bs15 (128x128) picking angle_delta 2 where
+  C picked 3 — identical txbs, same mode.
+- **Mechanism — an observable iteration order, not a tie-break.** C's
+  `intra_model_rd` (intra_mode_search_utils.h:637-638) walks the
+  model-prediction tiles `for row; for col` — flat raster. The port had
+  copied the mu-64 CHUNK order of `txfm_rd_in_plane_intra` instead. Each
+  model tile's prediction is written into the recon plane and read as
+  neighbors by later tiles, so the order is observable on any leaf > 64 px:
+  C's (0,16) tile sees only row-0 predictions; the port's saw (8,*) too.
+  Model-RD on left/below-left-edge modes (H_PRED, D203_PRED) diverged by
+  4-29k units while top-edge modes were bit-identical — which flipped the
+  top-k prune set (C evaluated mode 7 only at ad {-2,1,3}; the port kept all
+  six deltas and dropped mode 2's ad=2). Witnessed by matching `[mrd]`
+  prints added to both sides: the shared eval POINTS agreed exactly — only
+  the sets differed.
+- **Fix.** `intra_model_rd_y` (tx_search.rs) walks flat raster. +9-line
+  `[pmrd]`/`[ptile]` env-gated diagnostics retained.
+- **Verified.** Both dump paths byte-identical (31/31, 43/43); the sb128
+  e2e cell flipped from pinned-divergence to a positive gate (4/4 pass).
+  Reach was any leaf > 64 px in either dimension — possible on both SB
+  sizes, observable only when the prune-set flip changes a committed
+  decision (most >64px leaves' prunes are not near-ties).
+
 ### KB-63 — Encoder: `winner_tx_type_map` paired chunk-ordered winners with raster positions — FIXED 2026-09-13, size-axis finding B closed
 
 - **Symptom.** `size_axis_open_divergences_pinned` finding B — three cells on

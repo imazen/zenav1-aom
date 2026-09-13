@@ -1771,6 +1771,167 @@ fn select_tx_size_and_type(env: &VarTxEnv, ref_best_rd: i64) -> (i64, VarTxResul
     )
 }
 
+/// `choose_smallest_tx_size` (tx_search.c:2908) — the coded-lossless arm of
+/// `av1_pick_uniform_tx_size_type_yrd` for an INTER (IntraBC) block. C's
+/// dispatch (tx_search.c:3907): `xd->lossless` => `mbmi->tx_size = TX_4X4`
+/// then a FLAT `av1_txfm_rd_in_plane` raster over the visible 4x4 units —
+/// `block_rd_txfm` per txb (get_txb_ctx -> search_tx_type -> set_txb_context
+/// -> `AOMMIN(RDCOST(rate,dist), RDCOST(0,sse))` merge with the
+/// `current_rd > best_rd` incomplete-exit). No quadtree, no split flags, no
+/// per-leaf `pick_skip_txfm`, no `txfm_partition_cost` — the lossless tx mask
+/// is DCT_DCT-only (`get_tx_mask_inter` -> FWHT) and the partition bits are
+/// never coded under ONLY_4X4.
+pub fn choose_smallest_tx_size_inter(env: &VarTxEnv, ref_best_rd: i64) -> VarTxResult {
+    let invalid = || VarTxResult {
+        valid: false,
+        rate: i32::MAX,
+        dist: i64::MAX,
+        sse: i64::MAX,
+        skip_txfm: false,
+        inter_tx_size: [0; 16],
+        tx_size: 0,
+        leaves: Vec::new(),
+    };
+    // av1_txfm_rd_in_plane's head (tx_search.c:4019): current_rd = 0, so the
+    // entry guard is `0 > ref_best_rd`. The `!enable_tx64 && sqr_up ==
+    // TX_64X64` invalid can never fire at TX_4X4.
+    if ref_best_rd < 0 {
+        return invalid();
+    }
+
+    // `av1_get_entropy_contexts` fills the FULL plane-block extent (same as
+    // select_tx_size_and_type).
+    let full_w = crate::tx_search::MI_SIZE_WIDE_B[env.bsize];
+    let full_h = crate::tx_search::MI_SIZE_HIGH_B[env.bsize];
+    let mut ta: Vec<i8> = env.above_ctx[..full_w].to_vec();
+    let mut tl: Vec<i8> = env.left_ctx[..full_h].to_vec();
+
+    let tables = env.coeff_costs.tables(0); // TX_4X4
+    // predict_dc_only_block's zero_blk_rate ctx: the BLOCK-ORIGIN skip ctx
+    // from the persistent (pre-walk) arrays (tx_search.c:2055-2063).
+    let predict_skip_zero_blk_rate = if env.predict_dc_level >= 1 {
+        let (origin_skip_ctx, _) =
+            get_txb_ctx(env.bsize, 0, 0, env.above_ctx, env.left_ctx);
+        tables.txb_skip[origin_skip_ctx as usize * 2 + 1]
+    } else {
+        0
+    };
+
+    let mut rd_stats = RdStats::init();
+    let mut current_rd: i64 = 0;
+    let mut leaves: Vec<VarTxLeaf> = Vec::new();
+    // av1_foreach_transformed_block_in_plane — flat raster, 4x4-unit steps.
+    for blk_row in 0..env.max_blocks_high {
+        for blk_col in 0..env.max_blocks_wide {
+            // A 4x4 txb inside the visible clip is fully visible by
+            // construction (the clip is in 4x4 units).
+            let residual = extract_i16(env.residual, env.residual_stride, blk_row, blk_col, 4, 4);
+            let pred = extract_u16(env.pred, env.pred_stride, blk_row, blk_col, 4, 4);
+            let src_off = env.src_off + (4 * blk_row) * env.src_stride + 4 * blk_col;
+            let bctx = BlockContext {
+                above: &ta[blk_col..],
+                left: &tl[blk_row..],
+                plane: 0,
+                plane_bsize: env.bsize,
+            };
+            let leaf_inputs = InterLeafInputs {
+                forced_uv_tx_type: None,
+                use_transform_domain_distortion: env.use_transform_domain_distortion,
+                tx_domain_dist_threshold: env.tx_domain_dist_threshold,
+                predict_dc_level: env.predict_dc_level,
+                prune_2d_txfm_mode: env.prune_2d_txfm_mode,
+                skip_tx_search: env.skip_tx_search,
+                prune_tx_type_using_stats: env.prune_tx_type_using_stats,
+                prune_tx_type_est_rd: env.prune_tx_type_est_rd,
+                predict_skip_zero_blk_rate,
+                residual: &residual,
+                pred: &pred,
+                src: env.src,
+                src_off,
+                src_stride: env.src_stride,
+                tx_size: 0,
+                lossless: true,
+                reduced_tx_set_used: env.reduced_tx_set_used,
+                enable_flip_idtx: env.enable_flip_idtx,
+                use_inter_dct_only: env.use_inter_dct_only,
+                bd: env.bd,
+                rows: env.rows,
+                bctx: &bctx,
+                rdmult: env.rdmult,
+                coeff_costs: &tables,
+                tx_type_costs: env.tx_type_costs,
+                visible_cols: 4,
+                visible_rows: 4,
+                qm_level: env.qm_level,
+                prune_2d: env.prune_2d,
+            };
+            // `args->best_rd - args->current_rd` (block_rd_txfm's search_tx_type
+            // call, tx_search.c:3274).
+            let Some(leaf) = search_tx_type_inter(
+                &leaf_inputs,
+                env.sharpness,
+                env.iq_tuning,
+                env.coeff_opt_dist_threshold,
+                env.adaptive_txb_search_level,
+                ref_best_rd - current_rd,
+            ) else {
+                // search_tx_type can't produce "no candidate" at lossless
+                // (the DCT mask is always non-empty), but a None maps to C's
+                // incomplete_exit — an invalid block.
+                return invalid();
+            };
+
+            // av1_set_txb_context (encodemb.c): the searched cul stamped over
+            // the 1x1-unit txb footprint.
+            ta[blk_col] = leaf.best_txb_ctx as i8;
+            tl[blk_row] = leaf.best_txb_ctx as i8;
+
+            // block_rd_txfm's inter arm (tx_search.c:3324-3328).
+            let rd = rd_of(env.rdmult, leaf.rate, leaf.dist)
+                .min(rd_of(env.rdmult, 0, leaf.sse));
+            // `this_rd_stats.skip_txfm &= !eobs[block]` — the port's leaf
+            // skip_txfm IS `best_eob == 0`.
+            rd_stats.merge(&RdStats {
+                rate: leaf.rate,
+                dist: leaf.dist,
+                sse: leaf.sse,
+                skip_txfm: leaf.skip_txfm,
+                zero_rate: 0,
+            });
+            current_rd += rd;
+            if current_rd > ref_best_rd {
+                // exit_early -> the next txb would mark incomplete_exit; for an
+                // inter block that makes the whole plane's rd_stats invalid.
+                return invalid();
+            }
+            leaves.push(VarTxLeaf {
+                blk_row,
+                blk_col,
+                tx_size: 0,
+                tx_type: 0,
+                eob: leaf.best_eob,
+                txb_ctx: leaf.best_txb_ctx,
+                skip_txfm: leaf.best_eob == 0,
+                qcoeff: leaf.qcoeff,
+                dqcoeff: leaf.dqcoeff,
+            });
+        }
+    }
+
+    // `memset(mbmi->inter_tx_size, mbmi->tx_size, ..)` in av1_txfm_search's
+    // uniform arm (tx_search.c:3836) — every entry is TX_4X4.
+    VarTxResult {
+        valid: true,
+        rate: rd_stats.rate,
+        dist: rd_stats.dist,
+        sse: rd_stats.sse,
+        skip_txfm: rd_stats.skip_txfm,
+        inter_tx_size: [0; 16],
+        tx_size: 0,
+        leaves,
+    }
+}
+
 /// `av1_pick_recursive_tx_size_type_yrd` (tx_search.c:3553) — the COEFF arm
 /// (the `predict_skip_txfm` skip arm + `model_based_prune` early-return are
 /// handled by the caller/gated). Runs the var-tx quadtree search over the

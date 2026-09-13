@@ -12,7 +12,7 @@
 #   pub modules                                80
 #   pub types (struct/enum/trait/alias)       278
 #   pub consts/statics                        638
-#   free functions                            615
+#   free functions                            616
 #   inherent methods                          922
 #   struct fields                            1927
 #   enum variants                             174
@@ -23,11 +23,11 @@
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4607
+#   aom_encode                     4608
 #   u16                               3
 #   u8                                3
 
-## items (4599 lines)
+## items (4600 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -4203,6 +4203,7 @@ pub fn aom_encode::var_tx::InterUvLeaf::clone(&self) -> aom_encode::var_tx::Inte
 pub fn aom_encode::var_tx::InterUvLeaf::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::var_tx::VarTxLeaf::clone(&self) -> aom_encode::var_tx::VarTxLeaf
 pub fn aom_encode::var_tx::VarTxLeaf::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn aom_encode::var_tx::choose_smallest_tx_size_inter(&aom_encode::var_tx::VarTxEnv<'_>, i64) -> aom_encode::var_tx::VarTxResult
 pub fn aom_encode::var_tx::get_tx_mask_inter(usize, bool, bool, bool, bool) -> (u16, core::option::Option<usize>)
 pub fn aom_encode::var_tx::get_tx_mask_inter_uv(usize, usize, bool, bool, bool, bool) -> (u16, usize)
 pub fn aom_encode::var_tx::get_txb_size_index(usize, usize, usize) -> usize

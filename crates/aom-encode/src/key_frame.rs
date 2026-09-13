@@ -2588,23 +2588,28 @@ pub fn encode_key_frame_with(
     // used IntraBC (encodeframe.c:2442). KB-41 roots #7/#8/#10 — the search-time
     // value is what every intra candidate pays `intrabc_cost[0]` against and
     // what `update_stats` adapts the CDF with, so it must survive that flip.
-    let search_allow_intrabc = sct.allow_intrabc;
+    //
+    // `encodeframe.c:2194`: `features->allow_intrabc &= oxcf->kf_cfg
+    // .enable_intrabc` runs per-frame BEFORE the search, so a knob-off encode
+    // neither searches IntraBC nor charges `intrabc_cost[0]` on any intra
+    // candidate. Leaving the detector's raw `sct.allow_intrabc` in the
+    // search-time slot over-charged every intra leaf by the flag bit in
+    // knob-off screen encodes — a per-LEAF additive that biases partition
+    // candidates by their leaf count (SPLIT pays 4x, VERT_B 3x, NONE 1x) and
+    // flips lossless near-ties (first observed: 512x384 cq0 s0 screen, node
+    // mi(8,8) bs6 SPLIT-vs-VERT_B, +51/leaf ≈ 26-unit flip; also the
+    // 256x256 cq0/cq32 off-stream diffs).
+    let search_allow_intrabc = sct.allow_intrabc && cfg.enable_intrabc;
     let run_intrabc_search = search_allow_intrabc
         && cfg.enable_intrabc
         && sf.mv_sf.use_intrabc
-        && !sf.use_nonrd_pick_mode
-        // DIVERGENCE, measured and bounded — see the module docs' "Not yet
-        // wired". C runs IntraBC at coded-lossless too, dispatching the coeff
-        // arm to `av1_pick_uniform_tx_size_type_yrd` instead of the recursive
-        // var-tx one (`av1_txfm_search`, tx_search.c:3824: `tx_mode_search_type
-        // == TX_MODE_SELECT && !xd->lossless[..]`). The port has no INTER
-        // uniform-tx arm, so its IntraBC coeff path is var-tx-only and fires a
-        // `lossless forces TX_4X4` assertion there. Declining the SEARCH at
-        // lossless is the bounded choice: a lossless frame reconstructs to the
-        // source either way, so this can only cost SIZE on cq-0 screen
-        // content, never a pixel — and it is a divergence rather than a
-        // refusal, so no caller-reachable configuration is rejected.
-        && !coded_lossless;
+        && !sf.use_nonrd_pick_mode;
+    // C runs IntraBC at coded-lossless too: `av1_txfm_search` dispatches the
+    // coeff arm to `av1_pick_uniform_tx_size_type_yrd` ->
+    // `choose_smallest_tx_size` (flat TX_4X4 + FWHT) instead of the recursive
+    // var-tx quadtree (tx_search.c:3824 `tx_mode_search_type == TX_MODE_SELECT
+    // && !xd->lossless[..]`, :3907 `xd->lossless`). The port's arm is
+    // `var_tx::choose_smallest_tx_size_inter` (KB-65).
     // `av1_init_search_range(AOMMAX(w, h))` (mcomp.c) — the DV search's step
     // parameter.
     let init_search_range = |size: i32| -> usize {
