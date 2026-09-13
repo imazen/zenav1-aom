@@ -121,6 +121,7 @@ mod txfm2d_diff;
 mod txfm2d_simd_perm_diff;
 mod tx_size_ctx;
 mod tx_type_cost_diff;
+mod var4x4_units_simd_diff;
 mod vector_var_diff;
 mod warp_diff;
 mod warp_highbd_diff;

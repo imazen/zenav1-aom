@@ -84,6 +84,128 @@ pub(crate) fn highbd_variance64_impl(
     (tsse, tsum)
 }
 
+/// Scalar tier for [`crate::dist::variance_4x4_units`] — delegates to the
+/// transcribed twin `crate::dist::variance_4x4_units_scalar`.
+pub(crate) fn variance4x4_units_impl_scalar(
+    _t: archmage::ScalarToken,
+    a: &[u16],
+    a_stride: usize,
+    off: usize,
+    units: usize,
+    out: &mut [(i32, u32)],
+) {
+    crate::dist::variance_4x4_units_scalar(a, a_stride, off, units, out);
+}
+
+/// Generic tier. Per-unit work is 16 samples — too small for a generic
+/// i32x8 body to beat the scalar walk once the per-unit horizontal fold is
+/// counted (same shape as the w==4 delegation in `highbd_variance64_impl`),
+/// so the non-v3 tiers delegate; the v3 kernel below amortises the fold
+/// across FOUR units per ymm.
+#[magetypes(define(i32x8), neon, wasm128, -scalar)]
+pub(crate) fn variance4x4_units_impl(
+    _token: Token,
+    a: &[u16],
+    a_stride: usize,
+    off: usize,
+    units: usize,
+    out: &mut [(i32, u32)],
+) {
+    crate::dist::variance_4x4_units_scalar(a, a_stride, off, units, out);
+}
+
+/// x86-64/AVX2 body for [`crate::dist::variance_4x4_units`] — the banded
+/// walk. One ymm holds a row slice of FOUR consecutive units (16 u16);
+/// `madd_epi16(v, ones)` / `madd_epi16(v, v)` turn it into i32 pair-sums
+/// and pair-squares, accumulated over the unit's 4 rows, so lanes
+/// (2g, 2g+1) of the accumulators hold unit g's full 16-pixel sum/sumsq.
+/// One `hadd_epi32` per 4-unit group folds the pairs: its lo half is
+/// `[u0.sum, u1.sum, u0.sq, u1.sq]` and its hi half `[u2.sum, u3.sum,
+/// u2.sq, u3.sq]`.
+///
+/// # Bit-exactness vs the scalar twin
+///
+/// * `madd(v, ones)` pair-sums i16 lanes: |pair| <= 2*4095 on the pixel
+///   domain (bd <= 12); 4-row accumulation <= 8*4095 — exact in i32.
+/// * `madd(v, v)` pair-squares: <= 2*4095^2 per op, <= 8*4095^2 after 4
+///   rows = 134,209,800 < 2^31 — exact in i32.
+/// * The hadd fold adds each unit's two lane pairs — total <= 16*4095
+///   (sum) / 16*4095^2 (sq) — exact.
+/// * u16 lanes are reinterpreted as i16: correct iff every sample fits a
+///   positive i16 — the pixel domain (bd <= 12 => <= 4095) guarantees it,
+///   same domain assumption as `highbd_variance64_impl_v3` above.
+/// * Tail groups of < 4 units take the scalar walk; a 2-unit remainder
+///   takes the xmm twin (same madd/hadd shape, 8 u16 per row).
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+pub(crate) fn variance4x4_units_impl_v3(
+    _t: archmage::X64V3Token,
+    a: &[u16],
+    a_stride: usize,
+    off: usize,
+    units: usize,
+    out: &mut [(i32, u32)],
+) {
+    use archmage::intrinsics::x86_64::*;
+    let ones = _mm256_set1_epi16(1);
+    let ones128 = _mm_set1_epi16(1);
+    let mut u = 0usize;
+    while u + 4 <= units {
+        let base = off + 4 * u;
+        let mut sv = _mm256_setzero_si256();
+        let mut xv = sv;
+        for r in 0..4 {
+            let row: &[u16; 16] = a[base + r * a_stride..base + r * a_stride + 16]
+                .try_into()
+                .unwrap();
+            let v = _mm256_loadu_si256(row);
+            sv = _mm256_add_epi32(sv, _mm256_madd_epi16(v, ones));
+            xv = _mm256_add_epi32(xv, _mm256_madd_epi16(v, v));
+        }
+        let t = _mm256_hadd_epi32(sv, xv);
+        let mut tmp = [0i32; 8];
+        _mm256_storeu_si256(&mut tmp, t);
+        // lo: [s0, s1, x0, x1]; hi: [s2, s3, x2, x3].
+        for g in 0..4 {
+            let b = (g & 1) + 4 * (g >> 1);
+            out[u + g] = (tmp[b], tmp[2 + b] as u32);
+        }
+        u += 4;
+    }
+    while u + 2 <= units {
+        let base = off + 4 * u;
+        let mut sv = _mm_setzero_si128();
+        let mut xv = sv;
+        for r in 0..4 {
+            let row: &[u16; 8] = a[base + r * a_stride..base + r * a_stride + 8]
+                .try_into()
+                .unwrap();
+            let v = _mm_loadu_si128(row);
+            sv = _mm_add_epi32(sv, _mm_madd_epi16(v, ones128));
+            xv = _mm_add_epi32(xv, _mm_madd_epi16(v, v));
+        }
+        let t = _mm_hadd_epi32(sv, xv);
+        let mut tmp = [0i32; 4];
+        _mm_storeu_si128(&mut tmp, t);
+        out[u] = (tmp[0], tmp[2] as u32);
+        out[u + 1] = (tmp[1], tmp[3] as u32);
+        u += 2;
+    }
+    if u < units {
+        let base = off + 4 * u;
+        let mut tsum = 0i32;
+        let mut tsse = 0u32;
+        for r in 0..4 {
+            for x in 0..4 {
+                let d = a[base + r * a_stride + x] as i32;
+                tsum += d;
+                tsse = tsse.wrapping_add((d * d) as u32);
+            }
+        }
+        out[u] = (tsum, tsse);
+    }
+}
+
 /// x86-64/AVX2 body for `highbd_variance64` — C's `variance4x4_64_sse4_1`
 /// shape (highbd_variance_sse4.c) generalised: **i16 lanes** (the pixel
 /// domain `a,b < 1<<bd <= 4096` keeps `sub_epi16` diffs exact in i16),

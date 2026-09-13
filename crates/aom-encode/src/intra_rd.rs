@@ -661,6 +661,26 @@ pub(crate) fn calc_normalized_variance_4x4(buf: &[u16], off: usize, stride: usiz
     }
 }
 
+/// The `(sum, sse)` -> normalised-variance fold `aom_variance4x4` /
+/// `aom_highbd_<bd>_variance4x4` apply after `variance4x4_units`'s raw
+/// walk: the bd8 arm wraps (`aom_variance`'s `*sse - (sum^2)/16`), the
+/// bd>8 arms apply `highbd_variance`'s `ROUND_POWER_OF_TWO` normalisation
+/// then CLAMP (variance.c HIGHBD_VAR, `dist/mod.rs`). `n = 16` always —
+/// the units are 4x4.
+fn norm_var_4x4(tsum: i32, tsse: u32, bd: u8) -> i32 {
+    let (sse, sum): (u32, i32) = match bd {
+        8 => (tsse, tsum),
+        10 => ((tsse + (1 << 3)) >> 4, (tsum + (1 << 1)) >> 2),
+        _ => ((tsse + (1 << 7)) >> 8, (tsum + (1 << 3)) >> 4),
+    };
+    if bd == 8 {
+        sse.wrapping_sub(((i64::from(sum) * i64::from(sum)) / 16) as u32) as i32
+    } else {
+        let v = i64::from(sse) - (i64::from(sum) * i64::from(sum)) / 16;
+        if v >= 0 { v as i32 } else { 0 }
+    }
+}
+
 /// The pixel-plane / geometry inputs of [`intra_rd_variance_factor`].
 /// `mb_to_right_edge` / `mb_to_bottom_edge` are the MACROBLOCKD 1/8-pel edge
 /// fields (negative = the block overhangs the frame; the overhang is clipped
@@ -725,22 +745,63 @@ pub fn intra_rd_variance_factor(
     let bw = MI_SIZE * MI_W_ALL[p.bsize] - right_overflow;
     let bh = MI_SIZE * MI_H_ALL[p.bsize] - bottom_overflow;
 
+    // The per-4x4 (sum, sumsq) walks are batched through
+    // `variance_4x4_units` (one banded pass per row) instead of a
+    // 16-element scalar walk per unit — this loop is per candidate-mode
+    // eval, the highest trip count in the encoder (the lever-map variance
+    // row). The recon side is recomputed EVERY eval (no cache — the sweep
+    // leaves different content there); the src side is per-SB cached, so
+    // its band computes lazily on the first cold unit of a row. Values
+    // are bit-identical to `calc_normalized_variance_4x4` — the kernel
+    // returns the same raw (sum, sumsq) and `norm_var_4x4` applies the
+    // same per-bd fold.
+    let n_units = bw.div_ceil(MI_SIZE);
+    // bw <= 128 px for every bsize -> <= 32 units; a caller beyond that
+    // keeps the per-unit calls (batched == false), not a panic.
+    let batched = n_units <= 32;
     let mut i = 0usize;
     while i < bh {
         let r = mi_row_in_sb + (i >> 2); // MI_SIZE_LOG2
+        let mut recon_raw = [(0i32, 0u32); 32];
+        if batched {
+            aom_dsp::dist::variance_4x4_units(
+                p.recon,
+                p.ref_stride,
+                p.ref_off + i * p.ref_stride,
+                n_units,
+                &mut recon_raw[..n_units],
+            );
+        }
+        let mut src_raw: Option<[(i32, u32); 32]> = None;
         let mut j = 0usize;
         while j < bw {
-            let c = mi_col_in_sb + (j >> 2);
+            let u = j >> 2; // MI_SIZE_LOG2
+            let c = mi_col_in_sb + u;
             let mi_offset = r * MI_W_ALL[p.sb_size] + c;
             let info = &mut cache[mi_offset];
             let log_src_var;
             if info.var < 0 {
-                let src_var = calc_normalized_variance_4x4(
-                    p.src,
-                    p.src_off + i * p.src_stride + j,
-                    p.src_stride,
-                    p.bd,
-                );
+                let src_var = if batched {
+                    let sums = src_raw.get_or_insert_with(|| {
+                        let mut t = [(0i32, 0u32); 32];
+                        aom_dsp::dist::variance_4x4_units(
+                            p.src,
+                            p.src_stride,
+                            p.src_off + i * p.src_stride,
+                            n_units,
+                            &mut t[..n_units],
+                        );
+                        t
+                    });
+                    norm_var_4x4(sums[u].0, sums[u].1, p.bd)
+                } else {
+                    calc_normalized_variance_4x4(
+                        p.src,
+                        p.src_off + i * p.src_stride + j,
+                        p.src_stride,
+                        p.bd,
+                    )
+                };
                 info.var = src_var;
                 log_src_var = (f64::from(src_var) / 16.0).ln_1p();
                 info.log_var = log_src_var;
@@ -752,12 +813,16 @@ pub fn intra_rd_variance_factor(
             }
             avg_log_src_variance += log_src_var;
 
-            let recon_var = calc_normalized_variance_4x4(
-                p.recon,
-                p.ref_off + i * p.ref_stride + j,
-                p.ref_stride,
-                p.bd,
-            );
+            let recon_var = if batched {
+                norm_var_4x4(recon_raw[u].0, recon_raw[u].1, p.bd)
+            } else {
+                calc_normalized_variance_4x4(
+                    p.recon,
+                    p.ref_off + i * p.ref_stride + j,
+                    p.ref_stride,
+                    p.bd,
+                )
+            };
             avg_log_recon_variance += (f64::from(recon_var) / 16.0).ln_1p();
             j += MI_SIZE;
         }

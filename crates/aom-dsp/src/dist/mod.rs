@@ -217,6 +217,58 @@ pub fn highbd_variance64_scalar(
     (tsse, tsum)
 }
 
+/// The transcribed scalar reference for [`variance_4x4_units`], kept verbatim
+/// as the differential's target and the non-multiple tail's body.
+pub fn variance_4x4_units_scalar(
+    a: &[u16],
+    a_stride: usize,
+    off: usize,
+    units: usize,
+    out: &mut [(i32, u32)],
+) {
+    for (u, o) in out.iter_mut().enumerate().take(units) {
+        let base = off + 4 * u;
+        let mut tsum = 0i32;
+        let mut tsse = 0u32;
+        for r in 0..4 {
+            for x in 0..4 {
+                let d = a[base + r * a_stride + x] as i32;
+                tsum += d;
+                tsse = tsse.wrapping_add((d * d) as u32);
+            }
+        }
+        *o = (tsum, tsse);
+    }
+}
+
+/// Batched `av1_calc_normalized_variance` (intra_mode_search.c:107): per
+/// 4x4 unit `u`, the raw `(sum, sum-of-squares)` of the 16 samples at
+/// `a[off + r*a_stride + 4u .. +4u+4]` for `r` in 0..4 — i.e.
+/// `aom_variance4x4` against the `all_zeros` reference, unfolded (the zero
+/// reference makes `diff == a`). The caller applies the per-bd
+/// normalisation and `sse - sum^2/16` variance fold itself.
+///
+/// SIMD-dispatched (Gate 3): the v3 kernel walks a whole BAND ROW per ymm —
+/// four units' worth of a row per load, `madd` pair-sums, one `hadd` fold
+/// per group — where the per-unit call would pay a horizontal reduce per 16
+/// samples. Tail groups of < 4 units (frame-edge clip) take an xmm twin or
+/// the scalar walk. Bit-identical to [`variance_4x4_units_scalar`] on the
+/// pixel domain (samples < `1 << bd`, `bd <= 12` — i16-lane `madd` is exact
+/// there; see `simd_variance.rs`).
+pub fn variance_4x4_units(
+    a: &[u16],
+    a_stride: usize,
+    off: usize,
+    units: usize,
+    out: &mut [(i32, u32)],
+) {
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    archmage::incant!(
+        simd_variance::variance4x4_units_impl(a, a_stride, off, units, out),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
 /// `aom_highbd_<bd>_variance<W>x<H>_c`: returns (variance, sse). `bd` ∈ {8,10,12}.
 pub fn highbd_variance(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize, bd: u8) -> (u32, u32) {
     let (sse_long, sum_long) = highbd_variance64(a, a_stride, b, b_stride, w, h);

@@ -1,5 +1,28 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## The intra variance factor's 4x4 walk banded — `variance_4x4_units` (Gate 3, 2026-09-13)
+
+The lever map's top unlanded row was the variance family — 80.9 % of all
+`dist::variance` samples at the shipping preset, because
+`intra_rd_variance_factor` walks every candidate block in 4x4 units and
+called a 16-element scalar variance per unit, per candidate-mode eval.
+New `aom_dsp::dist::variance_4x4_units` batches the raw (sum, sumsq) walk
+for a whole band row: a `#[arcane]` v3 kernel folds FOUR units per ymm
+(`madd` pair-sums accumulated over each unit's 4 rows, one `hadd_epi32`
+per group), an xmm twin takes the 2-unit tail, the scalar walk the last
+unit, and rows beyond 32 units — wider than any reachable bsize — keep
+the per-unit calls. The per-bd fold (`norm_var_4x4`) is inlined verbatim
+from `highbd_variance`: wrap at bd8, ROUND_POWER_OF_TWO + clamp at
+bd10/12. Exact in i32 on the pixel domain (samples < 4096).
+
+Verified bit-identical to the scalar twin at every token permutation
+(`var4x4_units_simd_diff`: bd {8,10,12} x unit counts 1..32 covering
+every group/tail residue x strided/random/all-max/flat data, non-vacuity
+asserted) and byte-identical on the shipping cell (40,237 B). Band N=24
+rotated, 1024x1024 cq27 s3: **-0.383 % paired median, 18/24 faster,
+p=0.0227** against a same-binary null of -0.143 % (p=0.31) — a small but
+real strictly-less-work landing.
+
 ## The size-axis finding-B residual closes — `winner_tx_type_map` paired chunk-ordered winners with raster positions (KB-63, 2026-09-13)
 
 The last pinned size-axis cells — 480x480 `--enable-1to4-partitions=0`,
