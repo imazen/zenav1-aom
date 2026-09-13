@@ -1,13 +1,16 @@
-//! Dump the KB-27 `MONO_S0_OPEN` repro cell (`av1-1-b8-00-quantizer-00` ->
-//! mono -> 64x64, cq24, cpu0) through BOTH port paths, against real aomenc.
-//! The pin closed 2026-09-13 (KB-62 — the AB-reuse clone's stale
-//! `tx_type_map`); this stays as the divergence-localization tool if the
-//! shape ever regresses:
-//!   * bootstrap: `port_encode_with(c_encode_ctrls(&[]))` — the s4cov path
+//! Dump a mirror-tiled mono cell through BOTH port paths, against real
+//! aomenc. Built for the KB-27 `MONO_S0_OPEN` repro (`av1-1-b8-00-quantizer-00`
+//! -> mono -> 64x64, cq24, cpu0 — closed 2026-09-13 by KB-62); the optional
+//! knob suffixes generalize it to the KB-63 finding-B cells (e.g.
+//! `480 480 63 0 sb128 p140`). Both are closed; this stays as the
+//! divergence-localization tool if either shape ever regresses:
+//!   * bootstrap: `port_encode_with(c_encode_ctrls(..))` — the s4cov path
 //!   * standalone: `encode_key_frame` + `ref_encode_av1_kf_cfg` — full TU dumps
+//!     (skipped when the knob set isn't expressible in `KeyFrameConfig`)
 //!
 //! ```text
 //! cargo run --release -p zenav1-aom-bench --example dump_mono_cell -- /tmp/mono_cq24
+//! cargo run --release -p zenav1-aom-bench --example dump_mono_cell -- /tmp/fb 480 480 63 0 sb128 p140
 //! ```
 
 use aom_bench::EncodeCell;
@@ -55,7 +58,10 @@ fn first_diff(a: &[u8], b: &[u8]) -> isize {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 2 {
-        eprintln!("usage: dump_mono_cell <out_prefix> [w h cq speed]");
+        eprintln!(
+            "usage: dump_mono_cell <out_prefix> [w h cq speed] [k=v ...]\n  \
+             knobs: ab0 p140 sb128"
+        );
         std::process::exit(2);
     }
     let prefix = a[1].clone();
@@ -63,6 +69,19 @@ fn main() {
     let h = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(64usize);
     let cq = a.get(4).and_then(|s| s.parse().ok()).unwrap_or(24i32);
     let speed = a.get(5).and_then(|s| s.parse().ok()).unwrap_or(0i32);
+    let mut knobs = aom_bench::ToggleKnobs::default();
+    let mut sb128 = false;
+    for kv in &a[6.min(a.len())..] {
+        match kv.as_str() {
+            "ab0" => knobs.enable_ab_partitions = false,
+            "p140" => knobs.enable_1to4_partitions = false,
+            "sb128" => sb128 = true,
+            other => {
+                eprintln!("unknown knob {other}");
+                std::process::exit(2);
+            }
+        }
+    }
 
     c::ref_init();
     let mut base = EncodeCell::real_content("mono_base", "av1-1-b8-00-quantizer-00", None, cq, 0);
@@ -71,9 +90,16 @@ fn main() {
     assert!(cell.mono && cell.u.is_empty());
 
     // ---- bootstrap path (the s4cov pin's own route) ----
-    let c_stream = cell.c_encode_ctrls(&[]);
+    let mut ctrls = knobs.c_ctrls();
+    if sb128 {
+        ctrls.push((
+            c::cx_ctrl::AV1E_SET_SUPERBLOCK_SIZE,
+            c::cx_ctrl::AOM_SUPERBLOCK_SIZE_128X128,
+        ));
+    }
+    let c_stream = cell.c_encode_ctrls(&ctrls);
     let real_payload = EncodeCell::frame_obu_payload(&c_stream);
-    let port_payload = cell.port_encode_with(&c_stream, &aom_bench::ToggleKnobs::default());
+    let port_payload = cell.port_encode_with(&c_stream, &knobs);
     println!(
         "bootstrap path: port {} B vs C {} B  first_diff={}",
         port_payload.len(),
@@ -82,11 +108,21 @@ fn main() {
     );
     std::fs::write(format!("{prefix}.boot.c.obu"), &c_stream).unwrap();
     std::fs::write(format!("{prefix}.boot.port.payload"), &port_payload).unwrap();
+    // A decodable TU for the decode-diff localizer: port payload spliced into
+    // the C stream's headers.
+    let spliced = aom_bench::rd_close::splice_frame_obu(&c_stream, &port_payload);
+    std::fs::write(format!("{prefix}.boot.port.tu"), &spliced).unwrap();
 
-    // ---- standalone path ----
+    // ---- standalone path — only where the knob set maps onto
+    // KeyFrameConfig (default tools; sb128 carries through) ----
+    if knobs != aom_bench::ToggleKnobs::default() {
+        println!("standalone path: skipped (knobs not expressible in KeyFrameConfig)");
+        return;
+    }
     let cfg = KeyFrameConfig::allintra_speed0(w, h, cell.bd, true, 1, 1, cq);
     let mut cfg = cfg;
     cfg.cpu_used = speed;
+    cfg.sb_size_128 = sb128;
     let port2 = encode_key_frame(KeyFramePlanes { y: &cell.y, u: &cell.u, v: &cell.v }, &cfg)
         .expect("standalone encode");
     let cref = c::ref_encode_av1_kf_cfg(

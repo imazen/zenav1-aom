@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1815 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
+# files: zenav1-aom-dsp.txt 1816 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 2
 
 ## summary
@@ -16,7 +16,7 @@
 #   pub consts/statics                        205
 #   pub macros                                  1
 #   free functions                            602
-#   inherent methods                           96
+#   inherent methods                           97
 #   struct fields                             706
 #   enum variants                              13
 #   trait roster entries (type × trait)       263
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            3
-#   aom_dsp                        1772
+#   aom_dsp                        1773
 
-## items (1739 lines)
+## items (1740 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -1172,6 +1172,7 @@ pub fn aom_dsp::entropy::rb::ReadBitBuffer<'a>::read_uvlc(&mut self) -> u32
 pub mod aom_dsp::entropy::wb
 pub struct aom_dsp::entropy::wb::WriteBitBuffer
 pub fn aom_dsp::entropy::wb::WriteBitBuffer::add_trailing_bits(&mut self)
+pub fn aom_dsp::entropy::wb::WriteBitBuffer::bit_len(&self) -> usize
 pub fn aom_dsp::entropy::wb::WriteBitBuffer::bit_position(&self) -> usize
 pub fn aom_dsp::entropy::wb::WriteBitBuffer::byte_align_zeros(&mut self)
 pub fn aom_dsp::entropy::wb::WriteBitBuffer::bytes(&self) -> &[u8]

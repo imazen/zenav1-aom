@@ -2150,6 +2150,13 @@ fn rd_try_subblock(
         // pick_sb_modes' `rd_mode_is_ready` early return (:861-868): the
         // cached RD_STATS flow in as-is and `x->source_variance` (:921) is
         // NOT reached — report None so callers keep the stale value.
+        if crate::tx_search::tx_dbg_target().is_some_and(|(r0, c0)| r0 == mi_row && c0 == mi_col) {
+            eprintln!(
+                "[reuse] mi({},{}) subsize={} part{} mode={} tx={} ttm48={}",
+                mi_row, mi_col, subsize, partition_type, reused.mode,
+                reused.tx_size, reused.tx_type_map.get(4 * 32 + 8).copied().unwrap_or(255),
+            );
+        }
         (reused.raw_rdstats, Some(reused.clone()), None)
     } else {
         let (t, w, sv) = leaf_pick_sb_modes(

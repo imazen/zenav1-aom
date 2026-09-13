@@ -129,6 +129,21 @@ fn compare(a: &KfTileDecode, b: &KfTileDecode, mi_rows: i32, mi_cols: i32, sb128
                         rb.bsize, rb.partition, j.y_mode, j.angle_delta_y, j.use_filter_intra, j.filter_intra_mode, rb.tx_size, j.uv_mode, j.cfl_alpha_idx, j.cfl_joint_sign, j.palette_size, j.use_intrabc, j.skip, rb.txbs, rb.txbs_uv,
                     );
                     leaf_reported = true;
+                    // Dump the leaf sequence ending at the mismatch so the
+                    // immediately-preceding committed leaves (the ctx writers)
+                    // are visible.
+                    let idx = b.blocks.iter().position(|x| {
+                        x.mi_row == rb.mi_row && x.mi_col == rb.mi_col
+                    });
+                    if let Some(i0) = idx {
+                        let lo = i0.saturating_sub(8);
+                        for x in &b.blocks[lo..=i0] {
+                            println!(
+                                "  leaf-seq mi({},{}) bs{} part{} txbs={:?}",
+                                x.mi_row, x.mi_col, x.bsize, x.partition, x.txbs
+                            );
+                        }
+                    }
                     break;
                 }
             }

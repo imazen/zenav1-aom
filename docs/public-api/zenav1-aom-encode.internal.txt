@@ -10,24 +10,24 @@
 ## summary
 #
 #   pub modules                                80
-#   pub types (struct/enum/trait/alias)       277
-#   pub consts/statics                        635
-#   free functions                            611
-#   inherent methods                          918
-#   struct fields                            1919
+#   pub types (struct/enum/trait/alias)       278
+#   pub consts/statics                        638
+#   free functions                            615
+#   inherent methods                          922
+#   struct fields                            1927
 #   enum variants                             174
 #   re-exports                                  1
-#   trait roster entries (type × trait)      1084
-#   auto-trait-complete types                 258
+#   trait roster entries (type × trait)      1087
+#   auto-trait-complete types                 259
 #   auto-trait exceptions                       8
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4587
+#   aom_encode                     4607
 #   u16                               3
 #   u8                                3
 
-## items (4579 lines)
+## items (4599 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -191,6 +191,7 @@ pub aom_encode::encode_sb::DeltaQFrameCtx::delta_lf_present: bool
 pub aom_encode::encode_sb::DeltaQFrameCtx::delta_q_res: i32
 pub aom_encode::encode_sb::DeltaQFrameCtx::deltaq_strength: u32
 pub aom_encode::encode_sb::DeltaQFrameCtx::deq: &'a aom_dsp::quant::build_quantizer::Dequants
+pub aom_encode::encode_sb::DeltaQFrameCtx::nonrd: bool
 pub aom_encode::encode_sb::DeltaQFrameCtx::perceptual_ai: core::option::Option<&'a aom_encode::allintra_vis::WeberVarMap>
 pub aom_encode::encode_sb::DeltaQFrameCtx::perceptual_wavelet: core::option::Option<bool>
 pub aom_encode::encode_sb::DeltaQFrameCtx::quants: &'a aom_dsp::quant::build_quantizer::Quants
@@ -263,6 +264,7 @@ pub aom_encode::encode_sb::SbEncodeEnv::src_v: &'a [u16]
 pub aom_encode::encode_sb::SbEncodeEnv::src_y: &'a [u16]
 pub aom_encode::encode_sb::SbEncodeEnv::ss_x: usize
 pub aom_encode::encode_sb::SbEncodeEnv::ss_y: usize
+pub aom_encode::encode_sb::SbEncodeEnv::ssim: core::option::Option<aom_encode::encode_sb::SsimRdmult<'a>>
 pub aom_encode::encode_sb::SbEncodeEnv::stride: usize
 pub aom_encode::encode_sb::SbEncodeEnv::tile_col_end: i32
 pub aom_encode::encode_sb::SbEncodeEnv::tile_col_start: i32
@@ -283,6 +285,10 @@ pub aom_encode::encode_sb::SbTree::Vert(alloc::boxed::Box<[aom_encode::encode_sb
 pub aom_encode::encode_sb::SbTree::Vert4(alloc::boxed::Box<[core::option::Option<aom_encode::encode_sb::LeafWinner>; 4]>)
 pub aom_encode::encode_sb::SbTree::VertA(alloc::boxed::Box<[aom_encode::encode_sb::LeafWinner; 3]>)
 pub aom_encode::encode_sb::SbTree::VertB(alloc::boxed::Box<[aom_encode::encode_sb::LeafWinner; 3]>)
+pub aom_encode::encode_sb::SsimRdmult::cols: i32
+pub aom_encode::encode_sb::SsimRdmult::factors: &'a [f64]
+pub aom_encode::encode_sb::SsimRdmult::intra_modifier: i32
+pub aom_encode::encode_sb::SsimRdmult::pre_rdmult: i32
 pub aom_encode::encode_sb::TileCtxState::above_ectx: [alloc::vec::Vec<i8>; 3]
 pub aom_encode::encode_sb::TileCtxState::above_pctx: alloc::vec::Vec<i8>
 pub aom_encode::encode_sb::TileCtxState::above_tctx: alloc::vec::Vec<u8>
@@ -1701,7 +1707,9 @@ pub aom_encode::speed_features::SpeedFeatures::screen_detection_mode2_fast_detec
 pub aom_encode::speed_features::SpeedFeatures::skip_tx_search: bool
 pub aom_encode::speed_features::SpeedFeatures::top_intra_model_count_allowed: i32
 pub aom_encode::speed_features::SpeedFeatures::tx_domain_dist_level: i32
+pub aom_encode::speed_features::SpeedFeatures::tx_domain_dist_level_copied: i32
 pub aom_encode::speed_features::SpeedFeatures::tx_domain_dist_thres_level: i32
+pub aom_encode::speed_features::SpeedFeatures::tx_domain_dist_thres_level_copied: i32
 pub aom_encode::speed_features::SpeedFeatures::tx_ml_tx_split_thresh: i32
 pub aom_encode::speed_features::SpeedFeatures::tx_size_search_level: i32
 pub aom_encode::speed_features::SpeedFeatures::use_chroma_trellis_rd_mult: bool
@@ -2566,7 +2574,10 @@ pub const aom_encode::seq_level::SEQ_LEVEL_6_2: i32
 pub const aom_encode::seq_level::SEQ_LEVEL_MAX: i32
 pub const aom_encode::seq_level::STILL_PICTURE_FPS: f64
 pub const aom_encode::speed_features::CDEF_FAST_SEARCH_LVL1: i32
+pub const aom_encode::speed_features::CDEF_FAST_SEARCH_LVL3: i32
+pub const aom_encode::speed_features::CDEF_FAST_SEARCH_LVL4: i32
 pub const aom_encode::speed_features::CDEF_FULL_SEARCH: i32
+pub const aom_encode::speed_features::CDEF_PICK_FROM_Q: i32
 pub const aom_encode::speed_features::DEFAULT_EVAL: usize
 pub const aom_encode::speed_features::MODE_EVAL: usize
 pub const aom_encode::speed_features::TOP_INTRA_MODEL_COUNT: i32
@@ -2695,9 +2706,12 @@ pub fn aom_encode::allintra_vis::setup_delta_q_nonrd(i32, i32, i32) -> i32
 pub fn aom_encode::allintra_vis::setup_delta_q_perceptual(&[u16], usize, usize, u8, i32, bool, usize, usize, u32, i32, i32) -> i32
 pub fn aom_encode::allintra_vis::setup_delta_q_perceptual_ai(&aom_encode::allintra_vis::WeberVarMap, i32, u8, i32, i32, i32, i32, i32) -> i32
 pub fn aom_encode::allintra_vis::setup_delta_q_variance_boost(&[u16], usize, usize, u8, i32, u32, i32, i32) -> i32
+pub fn aom_encode::allintra_vis::ssim_fold_rdmult(&[f64], i32, i32, i32, usize, i32, i32, i32) -> i32
+pub fn aom_encode::allintra_vis::ssim_rdmult_scaling_factors(&[u16], usize, i32, i32, u8) -> (alloc::vec::Vec<f64>, i32, i32)
 pub fn aom_encode::allintra_vis::variance_boost_block_variance(&[u16], usize, usize, u8) -> u32
 pub fn aom_encode::allintra_vis::variance_boost_delta_q_res(i32) -> i32
-pub fn aom_encode::cnn_partition::cnn::cnn_predict(&[u8]) -> [f32; 1636]
+pub fn aom_encode::allintra_vis::variance_boost_raw_qindex(&[u16], usize, usize, u8, i32, u32) -> i32
+pub fn aom_encode::cnn_partition::cnn::cnn_predict(&[u16], i32) -> [f32; 1636]
 pub fn aom_encode::cnn_partition::decision::CnnPruneDecision::assert_fields_are_eq(&self)
 pub fn aom_encode::cnn_partition::decision::CnnPruneDecision::clone(&self) -> aom_encode::cnn_partition::decision::CnnPruneDecision
 pub fn aom_encode::cnn_partition::decision::CnnPruneDecision::default() -> aom_encode::cnn_partition::decision::CnnPruneDecision
@@ -2709,8 +2723,8 @@ pub fn aom_encode::cnn_partition::decision::PartitionSearchInfo::default() -> Se
 pub fn aom_encode::cnn_partition::decision::PartitionSearchInfo::invalidate_cnn(&mut self)
 pub fn aom_encode::cnn_partition::decision::PartitionSearchInfo::new() -> Self
 pub fn aom_encode::cnn_partition::decision::cnn_cache_stats() -> (u64, u64)
-pub fn aom_encode::cnn_partition::decision::intra_mode_cnn_partition<F: core::ops::function::Fn() -> alloc::vec::Vec<u8>>(&mut aom_encode::cnn_partition::decision::PartitionSearchInfo, F, i32, i32, i32, i32, i32, i32, i32) -> core::option::Option<([f32; 4], aom_encode::cnn_partition::decision::CnnPruneDecision)>
-pub fn aom_encode::cnn_partition::decision::predict_decision(&[u8], i32, i32, i32, i32, i32, i32, i32) -> ([f32; 4], aom_encode::cnn_partition::decision::CnnPruneDecision)
+pub fn aom_encode::cnn_partition::decision::intra_mode_cnn_partition<F: core::ops::function::Fn() -> alloc::vec::Vec<u16>>(&mut aom_encode::cnn_partition::decision::PartitionSearchInfo, F, i32, i32, i32, i32, i32, i32, i32) -> core::option::Option<([f32; 4], aom_encode::cnn_partition::decision::CnnPruneDecision)>
+pub fn aom_encode::cnn_partition::decision::predict_decision(&[u16], i32, i32, i32, i32, i32, i32, i32) -> ([f32; 4], aom_encode::cnn_partition::decision::CnnPruneDecision)
 pub fn aom_encode::cnn_partition::decision::reset_cnn_cache_stats()
 pub fn aom_encode::cnn_partition::decision::set_cnn_cache_verify(bool)
 pub fn aom_encode::cnn_partition::nn::nn_predict(&[f32], &[usize], &[&[f32]], &[&[f32]], usize, bool, &mut [f32])
@@ -2848,6 +2862,7 @@ pub fn aom_encode::encode_intra::encode_intra_block_plane_y(&aom_encode::encode_
 pub fn aom_encode::encode_intra::get_tx_type_y(bool, usize, &[u8], usize, usize, usize) -> usize
 pub fn aom_encode::encode_intra::is_trellis_used(aom_encode::encode_intra::TrellisOptType, bool) -> bool
 pub fn aom_encode::encode_intra::update_txk_array(&mut [u8], usize, usize, usize, usize, usize)
+pub fn aom_encode::encode_sb::DeltaQFrameCtx<'_>::sb_qindex(&self, &[u16], usize, usize, u8, i32, i32, i32) -> i32
 pub fn aom_encode::encode_sb::DeltaQFrameCtx<'a>::clone(&self) -> aom_encode::encode_sb::DeltaQFrameCtx<'a>
 pub fn aom_encode::encode_sb::LeafEncodeOut::assert_fields_are_eq(&self)
 pub fn aom_encode::encode_sb::LeafEncodeOut::clone(&self) -> aom_encode::encode_sb::LeafEncodeOut
@@ -2860,9 +2875,12 @@ pub fn aom_encode::encode_sb::LeafWinner::off_frame_placeholder(usize) -> Self
 pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::assert_crop_dims_match_mi(&self, &str)
 pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::frame_min_dim(&self) -> i32
 pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::frame_num_pixels(&self) -> i64
+pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::node_env(&self, usize, i32, i32) -> Self
+pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::node_rdmult(&self, usize, i32, i32) -> i32
 pub fn aom_encode::encode_sb::SbTree::any_intrabc(&self) -> bool
 pub fn aom_encode::encode_sb::SbTree::clone(&self) -> aom_encode::encode_sb::SbTree
 pub fn aom_encode::encode_sb::SbTree::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn aom_encode::encode_sb::SsimRdmult<'a>::clone(&self) -> aom_encode::encode_sb::SsimRdmult<'a>
 pub fn aom_encode::encode_sb::TileCtxState::assert_fields_are_eq(&self)
 pub fn aom_encode::encode_sb::TileCtxState::clone(&self) -> aom_encode::encode_sb::TileCtxState
 pub fn aom_encode::encode_sb::TileCtxState::eq(&self, &aom_encode::encode_sb::TileCtxState) -> bool
@@ -2870,7 +2888,7 @@ pub fn aom_encode::encode_sb::TileCtxState::fmt(&self, &mut core::fmt::Formatter
 pub fn aom_encode::encode_sb::TileCtxState::seed_search_palette(&mut self, &aom_dsp::entropy::partition::KfFrameContext)
 pub fn aom_encode::encode_sb::TileCtxState::zeroed(usize) -> Self
 pub fn aom_encode::encode_sb::aligned_mi_cols(usize) -> usize
-pub fn aom_encode::encode_sb::encode_b_intra_dry(&aom_encode::encode_sb::SbEncodeEnv<'_>, &mut aom_encode::encode_sb::TileCtxState, &mut [u16], &mut [u16], &mut [u16], &mut aom_dsp::intra::cfl::CflCtx, &mut aom_encode::encode_sb::LeafWinner, i32, i32, usize, bool) -> aom_encode::encode_sb::LeafEncodeOut
+pub fn aom_encode::encode_sb::encode_b_intra_dry(&aom_encode::encode_sb::SbEncodeEnv<'_>, &mut aom_encode::encode_sb::TileCtxState, &mut [u16], &mut [u16], &mut [u16], &mut aom_dsp::intra::cfl::CflCtx, &mut aom_encode::encode_sb::LeafWinner, i32, i32, usize, bool, bool) -> aom_encode::encode_sb::LeafEncodeOut
 pub fn aom_encode::encode_sb::encode_sb_dry(&aom_encode::encode_sb::SbEncodeEnv<'_>, &mut aom_encode::encode_sb::TileCtxState, &mut [u16], &mut [u16], &mut [u16], &mut aom_dsp::intra::cfl::CflCtx, &mut aom_encode::encode_sb::SbTree, i32, i32, usize, &mut alloc::vec::Vec<aom_encode::encode_sb::LeafEncodeOut>, bool)
 pub fn aom_encode::encode_sb::store_cfl_required(bool, bool, usize) -> bool
 pub fn aom_encode::firstpass::FirstpassInfo::clone(&self) -> aom_encode::firstpass::FirstpassInfo
@@ -3509,6 +3527,7 @@ pub fn aom_encode::pickcdef::CdefSearchResult::clone(&self) -> aom_encode::pickc
 pub fn aom_encode::pickcdef::CdefSearchResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::pickcdef::av1_cdef_search(&aom_encode::pickcdef::CdefSearchFrame<'_>, i32) -> aom_encode::pickcdef::CdefSearchResult
 pub fn aom_encode::pickcdef::av1_cdef_search_adaptive(&aom_encode::pickcdef::CdefSearchFrame<'_>, i32, core::option::Option<aom_encode::pickcdef::CdefAdaptive>) -> aom_encode::pickcdef::CdefSearchResult
+pub fn aom_encode::pickcdef::av1_pick_cdef_from_qp(i32, i32, u8, i32, bool, bool, bool) -> aom_encode::pickcdef::CdefSearchResult
 pub fn aom_encode::pickcdef::get_cdef_filter_strengths(i32, i32) -> (i32, i32)
 pub fn aom_encode::prune_tx_2d::prune_tx_2d(&[i16], usize, usize, usize, usize, u16) -> core::option::Option<aom_encode::prune_tx_2d::PruneTx2dResult>
 pub fn aom_encode::rate_model::bpmb_enumerator(bool, bool) -> i32
@@ -4154,7 +4173,7 @@ pub fn aom_encode::var_part::ZeromvSkip::fmt(&self, &mut core::fmt::Formatter<'_
 pub fn aom_encode::var_part::all_blks_inside(usize, usize, usize, usize) -> bool
 pub fn aom_encode::var_part::avg_4x4(&[u16], usize, usize) -> i32
 pub fn aom_encode::var_part::calc_chroma_thresh_for_zeromv_skip(u32) -> u32
-pub fn aom_encode::var_part::choose_var_based_partitioning_key(&mut [u8], &aom_encode::var_part::VbpFrame, &[u16], usize, usize, i32, i32, bool)
+pub fn aom_encode::var_part::choose_var_based_partitioning_key(&mut [u8], &aom_encode::var_part::VbpFrame, i32, &[u16], usize, usize, i32, i32, bool)
 pub fn aom_encode::var_part::clamp_mv((i32, i32), &aom_encode::var_part::SubpelMvLimits) -> (i32, i32)
 pub fn aom_encode::var_part::compute_minmax_8x8(&[u8], usize, &[u8], usize, usize, usize, usize, usize) -> i32
 pub fn aom_encode::var_part::compute_minmax_8x8_highbd(&[u16], usize, &[u16], usize, usize, usize, usize, usize) -> i32
@@ -4405,6 +4424,7 @@ pub struct aom_encode::encode_sb::DeltaQFrameCtx<'a>
 pub struct aom_encode::encode_sb::LeafEncodeOut
 pub struct aom_encode::encode_sb::LeafWinner
 pub struct aom_encode::encode_sb::SbEncodeEnv<'a>
+pub struct aom_encode::encode_sb::SsimRdmult<'a>
 pub struct aom_encode::encode_sb::TileCtxState
 pub struct aom_encode::firstpass::FirstpassInfo
 pub struct aom_encode::firstpass::UpdateFirstpassStatsParams
@@ -4609,7 +4629,7 @@ pub type aom_encode::tx_search::TxbWinners = smallvec::SmallVec<[aom_encode::tx_
 pub type aom_encode::var_part::Leaf8x8 = (u32, i32)
 pub use aom_encode::intrabc_search::DEFAULT_TXFM_PARTITION_CDF
 
-## trait impls (237 types)
+## trait impls (238 types)
 
 aom_encode::BlockContext<'a>: TrivialClone
 aom_encode::OptimizeInputs<'a>: TrivialClone
@@ -4650,6 +4670,7 @@ aom_encode::encode_sb::DeltaQFrameCtx<'a>: Clone, Copy, TrivialClone
 aom_encode::encode_sb::LeafEncodeOut: Clone, Debug, Eq, PartialEq
 aom_encode::encode_sb::LeafWinner: Clone, Debug
 aom_encode::encode_sb::SbTree: Clone, Debug
+aom_encode::encode_sb::SsimRdmult<'a>: Clone, Copy, TrivialClone
 aom_encode::encode_sb::TileCtxState: Clone, Debug, Eq, PartialEq
 aom_encode::firstpass::FirstpassInfo: Clone, Debug
 aom_encode::firstpass::FirstpassInfoError: Clone, Copy, Debug, Eq, PartialEq, TrivialClone
@@ -4851,7 +4872,7 @@ u8: aom_encode::temporal_filter::TfPixel, aom_encode::temporal_filter::TfPixelMu
 
 ## auto traits
 
-258 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+259 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
 aom_encode::inter_pred_enc::PixelsMut<'a>: !UnwindSafe
 aom_encode::intra_uv_rd::CflPredict<'a>: !UnwindSafe
 aom_encode::intrabc_search::IntrabcLeafArgs<'a>: !RefUnwindSafe !Send !Sync !UnwindSafe

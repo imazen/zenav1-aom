@@ -1,5 +1,31 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## The size-axis finding-B residual closes — `winner_tx_type_map` paired chunk-ordered winners with raster positions (KB-63, 2026-09-13)
+
+The last pinned size-axis cells — 480x480 `--enable-1to4-partitions=0`,
+480x480 `--enable-ab-partitions=0 --enable-1to4-partitions=0`, 512x512
+`--enable-ab-partitions=0` (mono cq63 s0 SB128, mirror-tiled conformance
+content) — are now byte-identical to real aomenc. They had been documented
+as bounded per-cell RD near-ties; that attribution was wrong about mechanism.
+`txfm_rd_in_plane_intra` produces its `TxbWinners` in
+`av1_foreach_transformed_block_in_plane`'s mu-64 chunk order (64x64 chunks,
+raster inside each), but `winner_tx_type_map` stamped them in flat raster
+order — identical on <=64x64 leaves, a PERMUTED committed `tx_type_map` on
+any SB128 leaf wider/taller than 64 px whose winning tx types are
+non-uniform. On the witness leaf (mi(16,96) bs14, the HORZ sub of a 128x128
+node, TX_16X16) every per-txb eval matched C exactly — mode, rate, dist, even
+the searched `tx_type=2` for the divergent `blk(4,8)` — while the committed
+map held `0` and the output walk re-quantized it under DCT. That is why it
+read as a near-tie: the search was right, the committed map was scrambled.
+
+Fix: `winner_tx_type_map` mirrors the walk's chunk enumeration, plus a
+`debug_assert_eq!` tying the winner count to the enumeration. Verified: all
+three pinned cells byte-identical (834/829/936 B), decode-localizer partition
+trees identical on all 243 nodes, `sb128_e2e` 5/5. The finding-B arm of
+`size_axis_open_divergences_pinned` is now a byte gate; the 480/512 contexts
+stay out of `ALL_SIZE_CONTEXTS` only on the 200 s budget ceiling. Still open
+(different roots): the SCM trial gap and the cpu-8 photo rows.
+
 ## Every speed-0 near-tie band closes — the AB-reuse clone carried a stale `tx_type_map` (KB-62, 2026-09-13)
 
 `MONO_S0_OPEN` (KB-27), `SPEED0_1080P_OPEN` + `HD_HBD_OPEN` (KB-38's residual),
@@ -39,11 +65,11 @@ s0..7, kept as a guard); `partial_sb_speed_axis_chroma_formats_byte_match`
 +59 -> 0 — the cell the standing goal names); `self_contained_key_frame`
 10/10 (549 cells), e2e 32/32,
 `encoder_gate_bd10_diff` 7/7, coding-tools 48/48, `speed_envelope` + all 43
-`combinations_*` green. Still open (different roots): size-axis finding B
-(two of three carry `ab0`, unreachable by this mechanism), the SCM trial gap,
-and the cpu-8 photo rows whose content is not in-repo. `NONRD_CQ63_OPEN`
-also reads clean — but that was KB-58's per-SB-qindex plumbing, a stale pin
-re-measured today, not this fix.
+`combinations_*` green. Still open (different roots): the SCM trial gap,
+and the cpu-8 photo rows whose content is not in-repo. (Size-axis finding B
+closed same-day under KB-63 — a `tx_type_map` ORDERING defect, not reuse
+staleness. `NONRD_CQ63_OPEN` also reads clean — but that was KB-58's per-SB-
+qindex plumbing, a stale pin re-measured today, not this fix.)
 
 ## The entire `HBD_OPEN` band closes — the intra-CNN prune window truncated u16 samples to u8 (KB-61, 2026-09-13)
 

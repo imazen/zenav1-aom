@@ -598,8 +598,13 @@ pub fn encode_intra_block_plane_y(
                     env.skip_txfm as u8, use_trellis as u8, eob,
                     env.palette.is_some() as u8, env.qm_level,
                     env.rows.dequant[0], env.rows.dequant[1],
-                    txb_skip_ctx, dc_sign_ctx, &ta[..txw_unit], &tl[..txh_unit],
+                    txb_skip_ctx, dc_sign_ctx,
+                    &ta[blk_col..blk_col + txw_unit], &tl[blk_row..blk_row + txh_unit],
                     env.rdmult, env.sharpness, env.tune.iq_tuning,
+                );
+                eprintln!(
+                    "[peobw] mi({},{}) blk({},{}) cul={} eob={}",
+                    env.mi_row, env.mi_col, blk_row, blk_col, ent_ctx, eob,
                 );
             }
 

@@ -745,7 +745,7 @@ therefore never reaches the multi-SB edge interactions at all.
 | 5 | 64 | yes | (1,1) | (1,1) | no | 68x68, 96x96 (196x196 collapses in) | **ADDED** |
 | 6 | 64 | yes | (1,1) | (1,1) | no, `default_min_partition_size=BLOCK_8X8` | 2160x2160 | **out of budget** |
 | 7 | 128 | no | (0,0) | (1,1) | no | 64x64 SB128 | **ADDED** |
-| 8 | 128 | yes | (1,1) | (0,0) | no (>= 480p) | 512x512 SB128 | **pinned open** (finding B) |
+| 8 | 128 | yes | (1,1) | (0,0) | no (>= 480p) | 512x512 SB128 | finding-B gated (was "pinned open" — **closed 2026-09-13, KB-63**) |
 | 9 | 128 | yes | (1,1) | (1,1) | no (>= 480p) | 576x576 SB128 | **ADDED** |
 | 10 | 128 | yes | (0,0) | (0,0) | **yes** | 128x128 SB128 | **ADDED** |
 | 11 | 128 | yes | (1,1) | (1,1) | **yes** | 192x192 SB128 | **ADDED** |
@@ -907,9 +907,10 @@ reverted; `git diff crates/aom-encode/` is clean.
    `SizeCtx::skip_reason`'s entry and let the SB128 contexts run
    `--max-partition-size=32` at full strength. Needs `crates/aom-encode/src`
    ownership.
-2. **Root-cause finding B** with the decode-both / sibling-C recipe. The 576/640
-   class-mate controls narrow it to an RD near-tie at specific content
-   statistics, which is the KB-10/KB-12 localisation shape.
+2. ~~**Root-cause finding B**~~ **DONE 2026-09-13 (KB-63)** — the decode-both
+   recipe found not a near-tie but an ordering defect: `winner_tx_type_map`
+   paired `txfm_rd_in_plane_intra`'s mu-64-chunk-ordered winners with flat
+   raster positions, permuting the committed `tx_type_map` on >64px leaves.
 3. **Gate class 6 (4K) in an `--ignored` deep tier.** One 2160x2160 stock cell
    plus the `--min-partition-size` interaction set would close the only
    unmodelled framesize arm; budget it as a nightly, not a default-tier gate.

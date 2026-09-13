@@ -5,6 +5,50 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-63 — Encoder: `winner_tx_type_map` paired chunk-ordered winners with raster positions — FIXED 2026-09-13, size-axis finding B closed
+
+- **Symptom.** `size_axis_open_divergences_pinned` finding B — three cells on
+  mirror-tiled `av1-1-b8-00-quantizer-00` mono cq63 s0 `--sb-size=128`:
+  480x480 `--enable-1to4-partitions=0` (port 849 B vs C 834 B), 480x480
+  `--enable-ab-partitions=0 --enable-1to4-partitions=0` (846 vs 829), 512x512
+  `--enable-ab-partitions=0` (929 vs 936). Payload-only divergences of a
+  handful of bytes; class-mates 576x576 and 640x640 were exact on the same
+  knob rows.
+- **Mechanism — flat-raster pairing of chunk-ordered data.**
+  `txfm_rd_in_plane_intra` (`tx_search.rs`) pushes its `TxbWinners` in
+  `av1_foreach_transformed_block_in_plane`'s mu-64 chunk order (encodemb.c:
+  560-582): 64x64-pixel chunks, raster within a chunk, chunks raster-ordered.
+  `winner_tx_type_map` (`rd_pick.rs`) consumed `y.winners[k]` while iterating
+  positions in flat raster order. On a leaf <= 64x64 the two orders coincide;
+  on any leaf wider or taller than 64 px (SB128 only) the second chunk's
+  winners land on the first chunk's later rows — a PERMUTED committed
+  `tx_type_map`. Witness: `mi(16,96)` bs14 (the HORZ sub of a 128x128 node) at
+  TX_16X16 — every per-txb eval matched C exactly (both searched `tx_type=2`
+  for `blk(4,8)`), but the port's stored map read `0` where C committed `2`,
+  and the output walk re-quantized that txb under DCT (eob 2 vs C's 1).
+  Because the evals, winner mode and tx_size all matched, the divergence
+  presented exactly like an RD near-tie — the earlier "content near-tie,
+  bounded" attribution was wrong about mechanism (right only about
+  reach: whether a stream diverges still depends on content committing a
+  multi-chunk leaf with a non-uniform tx-type set).
+- **Fix.** `winner_tx_type_map` iterates the same chunk loops as the walk
+  (`mu_w`/`mu_h` = min(16 mi, visible extent), raster inside each chunk),
+  consuming `winners[k]` in production order. `debug_assert_eq!(k, len)`
+  catches any future drift between the two enumerations.
+- **Verified.** All three pinned cells byte-identical (834/829/936 B both
+  arms); the decode localizer reports the partition trees identical on all
+  243 nodes and all leaf mode/tx fields agreeing. `sb128_e2e` 5/5. The arm is
+  now a byte gate asserting all three cells (the 480/512 contexts stay out of
+  `ALL_SIZE_CONTEXTS` only on the 200 s size-axis budget). Reach: any frame
+  whose committed tree holds a leaf >64 px in either dimension — possible
+  only at SB128, and only when the leaf's winning tx types are non-uniform,
+  which is why SB128 coverage was overwhelmingly exact anyway.
+- **False trail worth recording:** an earlier instrumentation pass concluded
+  "the port never evaluated the bs14 leaf; it was committed through a reuse
+  path". That was an artifact — a debug print indexed a small map out of
+  bounds and crashed the dump mid-encode before the rect stage ran. The
+  completed dump shows the normal eval + `winner_tx_type_map` path.
+
 ### KB-62 — Encoder: the rect-stage AB-reuse clone snapshot the PRE-dry-run `tx_type_map` — FIXED 2026-09-13, `MONO_S0_OPEN` + `SPEED0_1080P_OPEN`/`HD_HBD_OPEN` closed
 
 - **Symptom.** Every speed-0 near-tie pin in the tree: `MONO_S0_OPEN`
@@ -66,12 +110,12 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
   `1920x1080 cq24` cell the standing goal named: +59 -> 0).
   `self_contained_key_frame` 10/10 (549 cells), e2e byte-match 32/32,
   `encoder_gate_bd10_diff` 7/7, coding-tools 48/48, `speed_envelope` and all
-  43 `combinations_*` green. NOT closed (different roots, still pinned):
-  `S_SB128_480_OPEN`/`S_SB128_512_OPEN` (size-axis finding B — two of three
-  carry `ab0`, which cannot be this mechanism), the SCM trial gap, and the
-  cpu-8 photo rows needing content not in-repo. (`NONRD_CQ63_OPEN` also reads
-  clean now — but that was KB-58's per-SB-qindex plumbing, measured stale
-  2026-09-13, not this fix.)
+  43 `combinations_*` green. NOT closed by this fix (different roots):
+  the SCM trial gap and the cpu-8 photo rows needing content not in-repo.
+  (`S_SB128_480`/`S_SB128_512` finding B closed same-day under KB-63 — a
+  `tx_type_map` ORDERING defect, not reuse staleness. `NONRD_CQ63_OPEN` also
+  reads clean now — but that was KB-58's per-SB-qindex plumbing, measured
+  stale 2026-09-13, not this fix.)
 
 ### KB-61 — Encoder: the intra CNN partition-prune window truncated HBD samples to `u8` — FIXED 2026-09-13, the entire `HBD_OPEN` band closed
 

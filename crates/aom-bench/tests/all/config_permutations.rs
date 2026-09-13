@@ -2395,11 +2395,12 @@ const S_SB128_192: SizeCtx = SizeCtx {
 /// * monochrome, because the 4:2:0 cq63 cell carries a divergence that
 ///   reproduces identically at SB64 and is therefore not size-attributable
 ///   (`size_axis_open_divergences_pinned`);
-/// * 576 rather than 480 or 512, because those two carry per-cell RD near-ties
-///   (`size_axis_open_divergences_pinned` finding B) that class-mates at 576
-///   and 640 do NOT reproduce — so they are content/near-tie divergences, not
-///   properties of the size class, and gating on them would mis-attribute a
-///   near-tie to the geometry.
+/// * 576 rather than 480 or 512 — a historical choice, re-justified 2026-09-13:
+///   the per-cell near-ties finding B pinned at 480/512 were the KB-63
+///   chunk-order `tx_type_map` scramble (closed), so those sizes are no longer
+///   excluded on correctness grounds. They stay out of `ALL_SIZE_CONTEXTS`
+///   purely on the 200 s budget ceiling — 576 keeps the class-8 interaction
+///   cross, and 480/512 keep the three finding-B cells as a direct byte gate.
 const S_SB128_576: SizeCtx = SizeCtx {
     tag: "sb128_576m",
     w: 576,
@@ -2412,10 +2413,12 @@ const S_SB128_576: SizeCtx = SizeCtx {
     ms_per_cell: 4000,
 };
 
-/// >= 480p SB128, ALIGNED — NOT gated: `--enable-ab-partitions=0` carries the
-/// open near-tie pinned by `size_axis_open_divergences_pinned` finding B.
-const S_SB128_512_OPEN: SizeCtx = SizeCtx {
-    tag: "sb128_512m_open",
+/// >= 480p SB128, ALIGNED — gated ONLY by the finding-B arm of
+/// `size_axis_open_divergences_pinned` (the KB-63 witness), not by the
+/// interaction cross: two more 16-row contexts would push the size-axis
+/// budget ~97 s over its 200 s ceiling.
+const S_SB128_512: SizeCtx = SizeCtx {
+    tag: "sb128_512m",
     w: 512,
     h: 512,
     sb128: true,
@@ -2426,10 +2429,9 @@ const S_SB128_512_OPEN: SizeCtx = SizeCtx {
     ms_per_cell: 3200,
 };
 
-/// >= 480p SB128, frame-edge PARTIAL — NOT gated: `--enable-1to4-partitions=0`
-/// carries the open near-tie pinned by `size_axis_open_divergences_pinned`.
-const S_SB128_480_OPEN: SizeCtx = SizeCtx {
-    tag: "sb128_480m_open",
+/// >= 480p SB128, frame-edge PARTIAL — same scope as `S_SB128_512`.
+const S_SB128_480: SizeCtx = SizeCtx {
+    tag: "sb128_480m",
     w: 480,
     h: 480,
     sb128: true,
@@ -2723,9 +2725,9 @@ fn size_class_inventory_is_pinned() {
         ("64x64 sb128 (added)", CellCtx { w: 64, h: 64, mono: false, sb_px: 128 }),
         ("128x128 sb128 (added)", CellCtx { w: 128, h: 128, mono: false, sb_px: 128 }),
         ("192x192 sb128 (added)", CellCtx { w: 192, h: 192, mono: false, sb_px: 128 }),
-        ("512x512 sb128 (PINNED OPEN)", CellCtx { w: 512, h: 512, mono: true, sb_px: 128 }),
+        ("512x512 sb128 (finding-B gate)", CellCtx { w: 512, h: 512, mono: true, sb_px: 128 }),
         ("576x576 sb128 (added)", CellCtx { w: 576, h: 576, mono: true, sb_px: 128 }),
-        ("480x480 sb128 (PINNED OPEN)", CellCtx { w: 480, h: 480, mono: true, sb_px: 128 }),
+        ("480x480 sb128 (finding-B gate)", CellCtx { w: 480, h: 480, mono: true, sb_px: 128 }),
         ("2160x2160 sb64 (OUT OF BUDGET)", CellCtx { w: 2160, h: 2160, mono: false, sb_px: 64 }),
     ];
     let ctxs: Vec<CellCtx> = candidates.iter().map(|(_, c)| *c).collect();
@@ -2784,7 +2786,8 @@ fn size_class_inventory_is_pinned() {
     );
 
     // 2. ... and it is NOT vacuous: the same size pair SPLITS at SB128, which
-    //    is exactly the gap `size_ix_sb128_480_*` closes.
+    //    is exactly the gap the >= 480p SB128 contexts close (the 576
+    //    interaction cross plus the 480/512 finding-B byte gate).
     let big128 = CellCtx { w: 512, h: 512, mono: false, sb_px: 128 };
     let mid128 = CellCtx { w: 256, h: 256, mono: false, sb_px: 128 };
     assert_ne!(
@@ -2809,7 +2812,7 @@ fn size_class_inventory_is_pinned() {
                 n.contains("existing")
                     || n.contains("added")
                     || n.contains("OUT OF BUDGET")
-                    || n.contains("PINNED OPEN")
+                    || n.contains("finding-B gate")
             }),
             "size class {sd:?} has no gated representative — it is covered by \
              nothing: {names:?}"
@@ -2870,40 +2873,34 @@ fn size_class_inventory_is_pinned() {
 /// the port panics; without them it performs a restore C SKIPS, which is a
 /// silent state divergence.
 ///
-/// ### Finding B — three open near-ties on >= 480p SB128 monochrome cq63,
-/// SIZE-SURFACED but NOT size-class-attributed
+/// ### Finding B — CLOSED 2026-09-13 (KB-63), promoted to a gate
 ///
 /// Mirror-tiled `av1-1-b8-00-quantizer-00`, monochrome, cq63, speed-0
-/// `--sb-size=128`. The middle column is the size class
-/// (`config_perm::size_derived`), and it is what makes the attribution honest:
+/// `--sb-size=128`. The three cells this arm used to pin as DIVERGE:
 ///
-/// | frame | class | knob row | verdict |
+/// | frame | class | knob row | was |
 /// |---|---|---|---|
-/// | 480x480 | >= 480p, partial | `--enable-1to4-partitions=0` | **DIVERGE** port 849 B vs C 834 B |
-/// | 480x480 | >= 480p, partial | `--enable-ab-partitions=0 --enable-1to4-partitions=0` | **DIVERGE** port 846 B vs C 829 B |
-/// | 480x480 | >= 480p, partial | stock | exact |
-/// | **576x576** | **>= 480p, partial (SAME CLASS)** | both of the above, and stock | **exact** |
-/// | 512x512 | >= 480p, aligned | `--enable-ab-partitions=0` | **DIVERGE** port 929 B vs C 936 B |
-/// | **640x640** | **>= 480p, aligned (SAME CLASS)** | `--enable-ab-partitions=0` | **exact** |
-/// | 448x448 | sub-480p, partial | both p14 rows, and stock | exact |
-/// | 256x256 / 384x384 | sub-480p, aligned | `ab0`, `p140`, stock | exact |
+/// | 480x480 | >= 480p, partial | `--enable-1to4-partitions=0` | port 849 B vs C 834 B |
+/// | 480x480 | >= 480p, partial | `--enable-ab-partitions=0 --enable-1to4-partitions=0` | port 846 B vs C 829 B |
+/// | 512x512 | >= 480p, aligned | `--enable-ab-partitions=0` | port 929 B vs C 936 B |
 ///
-/// **The first attribution attempted here was WRONG and the class-mates
-/// refuted it.** "480x480 diverges and 448/512 do not" reads like "the
-/// intersection of `>= 480p` and a partial superblock is broken" — until
-/// 576x576, which is in the SAME size class as 480x480, comes out exact on the
-/// identical knob rows; and 640x640, the class-mate of 512x512, likewise. A
-/// property that holds for one member of an equivalence class and fails for
-/// another is not a property of the class. These are per-cell RD near-ties (the
-/// KB-10/KB-12 "cheaper RD decision" signature: same order of magnitude, a
-/// handful of bytes either way, appearing and disappearing with content
-/// statistics), surfaced because the size axis encoded this content at sizes
-/// the harness had never reached — the same shape as the pre-existing
-/// `mono_vector_open_divergences_pinned` finding, which is a CONTENT finding.
+/// **The "per-cell RD near-tie" attribution was itself wrong — the class-mates
+/// (576/640 exact on the same rows) had argued "not a property of the size
+/// class", and that much was right, but the mechanism was a real defect, not a
+/// near-tie.** `txfm_rd_in_plane_intra` pushes its `TxbWinners` in
+/// `av1_foreach_transformed_block_in_plane`'s mu-64 CHUNK order (64x64-pixel
+/// chunks, raster within a chunk); `winner_tx_type_map` consumed them in flat
+/// raster order, so any committed leaf wider/taller than 64 px with a
+/// non-uniform winning tx-type set got a PERMUTED `tx_type_map` — the evals
+/// and winner mode matched C exactly (the search was correct; the committed
+/// transform types were scrambled), which is why it read as a near-tie. The
+/// 480/512 cells happened to commit such a leaf (mi(16,96) bs14, the HORZ sub
+/// of a 128x128 node); the 576/640 content never did. `winner_tx_type_map`
+/// now mirrors the chunk walk (rd_pick.rs, KB-63).
 ///
-/// They are therefore pinned, not gated, and the gated `>= 480p` contexts use
-/// the clean class-mates (576x576) so that a size gate never rests on a
-/// near-tie.
+/// The arm is kept as a direct byte gate on the three original cells — the
+/// 480/512 contexts are NOT in `ALL_SIZE_CONTEXTS` only because two more
+/// 16-row interaction crosses would cost ~97 s against a 200 s ceiling.
 #[test]
 fn size_axis_open_divergences_pinned() {
     c::ref_init();
@@ -2941,7 +2938,12 @@ fn size_axis_open_divergences_pinned() {
          conditional on `bsize <= max_partition_size || bsize == sb_size`."
     );
 
-    // --- Finding B ---------------------------------------------------------
+    // --- Finding B: CLOSED 2026-09-13 (KB-63 fixed), promoted to a gate ------
+    // `winner_tx_type_map` used to consume `txfm_rd_in_plane_intra`'s
+    // mu-64-chunk-ordered `TxbWinners` in flat raster order, permuting the
+    // committed `tx_type_map` on any leaf wider/taller than 64 px whose
+    // winning tx types were non-uniform. These three cells each committed such
+    // a leaf; they must now be byte-identical to real aomenc.
     let mut open = Vec::new();
     let p14 = ToggleKnobs { enable_1to4_partitions: false, ..Default::default() };
     let ab0 = ToggleKnobs { enable_ab_partitions: false, ..Default::default() };
@@ -2951,9 +2953,9 @@ fn size_axis_open_divergences_pinned() {
         ..Default::default()
     };
     let cells = [
-        (&S_SB128_480_OPEN, "480m_p140", &p14),
-        (&S_SB128_480_OPEN, "480m_ab0-p140", &ab0p14),
-        (&S_SB128_512_OPEN, "512m_ab0", &ab0),
+        (&S_SB128_480, "480m_p140", &p14),
+        (&S_SB128_480, "480m_ab0-p140", &ab0p14),
+        (&S_SB128_512, "512m_ab0", &ab0),
     ];
     for (sc, tag, knobs) in cells {
         let cell = sc.cell();
@@ -2966,16 +2968,16 @@ fn size_axis_open_divergences_pinned() {
             real.len(),
             if port == real { "MATCH" } else { "DIVERGE" }
         );
-        if port == real {
+        if port != real {
             open.push(tag);
         }
     }
     assert!(
         open.is_empty(),
-        "FINDING B HAS CLOSED for {open:?}. These are pinned as OPEN near-ties; \
-         if they now match, re-measure the whole table (including the 576/640 \
-         class-mate controls) and either promote the cell into a gated size \
-         context or delete its row here."
+        "KB-63 REGRESSED for {open:?}: the committed `tx_type_map` is no longer \
+         byte-identical on a multi-chunk leaf. `winner_tx_type_map` (rd_pick.rs) \
+         must consume `TxbWinners` in the same mu-64 chunk order \
+         `txfm_rd_in_plane_intra` (tx_search.rs) produces them."
     );
 }
 

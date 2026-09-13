@@ -247,6 +247,14 @@ pub struct RdPickIntraOutcome {
 /// state `xd->tx_type_map` holds after the sby tail's ctx restore
 /// (intra_mode_search.c:1739). Non-origin cells default to DCT_DCT (dead
 /// state; see [`RdPickIntraBest::tx_type_map`]).
+///
+/// `y.winners` is in `av1_foreach_transformed_block_in_plane`'s mu-64 CHUNK
+/// order (tx_search.rs `txfm_rd_in_plane_intra`): for a leaf wider than
+/// 64 px the second 64-px chunk's txbs come after the whole first chunk, not
+/// after the first chunk's first row. Pairing them with a flat raster stamp
+/// scrambles the map (KB-63: `S_SB128_*` size-axis residual — the evals
+/// matched but the committed `tx_type_map` was permuted, changing the
+/// encode-time transform and every downstream entropy context).
 pub fn winner_tx_type_map(
     bsize: usize,
     mi_row: i32,
@@ -267,25 +275,47 @@ pub fn winner_tx_type_map(
         crate::tx_search::TXS_H[y.tx_size] >> 2,
     );
     let mut map = vec![0u8; mbw * mbh];
+    // Same chunked enumeration as the walk: 64x64-pixel chunks (16 4x4
+    // units), raster within a chunk, chunks raster-ordered.
+    let mu_w = MI_SIZE_WIDE_B[12].min(bwv); // BLOCK_64X64
+    let mu_h = MI_SIZE_HIGH_B[12].min(bhv);
     let mut k = 0usize;
-    let mut blk_row = 0usize;
-    while blk_row < bhv {
-        let mut blk_col = 0usize;
-        while blk_col < bwv {
-            update_txk_array(
-                &mut map,
-                mbw,
-                blk_row,
-                blk_col,
-                y.tx_size,
-                y.winners[k].tx_type,
-            );
-            k += 1;
-            blk_col += txwu;
+    let mut chunk_r = 0usize;
+    while chunk_r < bhv {
+        let unit_h = (chunk_r + mu_h).min(bhv);
+        let mut chunk_c = 0usize;
+        while chunk_c < bwv {
+            let unit_w = (chunk_c + mu_w).min(bwv);
+            let mut blk_row = chunk_r;
+            while blk_row < unit_h {
+                let mut blk_col = chunk_c;
+                while blk_col < unit_w {
+                    update_txk_array(
+                        &mut map,
+                        mbw,
+                        blk_row,
+                        blk_col,
+                        y.tx_size,
+                        y.winners[k].tx_type,
+                    );
+                    k += 1;
+                    blk_col += txwu;
+                }
+                blk_row += txhu;
+            }
+            chunk_c += mu_w;
         }
-        blk_row += txhu;
+        chunk_r += mu_h;
     }
     debug_assert_eq!(k, y.winners.len());
+    if crate::tx_search::tx_dbg_target().is_some_and(|(r, c)| r == mi_row && c == mi_col) {
+        eprintln!(
+            "[wmap] mi({},{}) bs{} tx={} mbw={} winners={:?} -> map={:?}",
+            mi_row, mi_col, bsize, y.tx_size, mbw,
+            y.winners.iter().map(|w| w.tx_type).collect::<Vec<_>>(),
+            map,
+        );
+    }
     map
 }
 

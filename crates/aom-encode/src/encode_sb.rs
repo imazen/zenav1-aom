@@ -1237,6 +1237,14 @@ pub fn encode_b_intra_dry(
     let l0 = (mi_row & 31) as usize;
     let above_y: Vec<i8> = state.above_ectx[0][a0..a0 + mi_w].to_vec();
     let left_y: Vec<i8> = state.left_ectx[0][l0..l0 + mi_h].to_vec();
+    if let Some(dbg) = crate::tx_search::tx_dbg_target() {
+        if (mi_row, mi_col) == dbg {
+            eprintln!(
+                "[pseed] mi({},{}) bs{} a0={} l0={} above={:?} left={:?} oe={}",
+                mi_row, mi_col, bsize, a0, l0, above_y, left_y, output_enabled as u8,
+            );
+        }
+    }
     // The real per-txs_ctx table for THIS leaf's winner tx_size (uniform tx
     // only, so one lookup covers the whole leaf's luma plane).
     let y_tables = env.coeff_costs_y.tables(winner.tx_size);
@@ -1570,6 +1578,17 @@ pub fn encode_b_intra_dry(
                     .enumerate()
                 {
                     *x = if i < vis_h { cul as i8 } else { 0 };
+                }
+                if let Some(dbg) = crate::tx_search::tx_dbg_target() {
+                    if (mi_row, mi_col) == dbg {
+                        eprintln!(
+                            "[pectxw] mi({},{}) blk({},{}) cul={} -> a[{}..{}] l[{}..{}] vish={} visw={} oe={}",
+                            mi_row, mi_col, blk_row, blk_col, cul,
+                            a0 + blk_col, a0 + blk_col + txw_u,
+                            l0 + blk_row, l0 + blk_row + txh_u,
+                            vis_h, vis_w, output_enabled as u8,
+                        );
+                    }
                 }
                 k += 1;
                 blk_col += txw_u;
