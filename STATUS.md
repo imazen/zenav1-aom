@@ -1,5 +1,23 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## The `CDEF_ADAPTIVE` halve/zero-low cells close — the thresholds read the mapped qindex, not the cq dial (KB-57, 2026-09-12)
+
+The four `cdef-adaptive {420,mono} cq{20,60}` quality-knob pins are closed.
+`av1_cdef_search` gates its adaptive arms on `cpi->oxcf.rc_cfg.cq_level`
+(pickcdef.c:850/:927) — which `set_encoder_config` fills with
+`av1_quantizer_to_qindex(cq_level)` (av1_cx_iface.c:1256), a 0..=255 QINDEX.
+The port compared the raw 0..=63 dial, so it took the off arm for every cq in
+9..=32 (C searches there: `qindex <= 32` is cq <= 8) and halved strengths for
+cq >= 56 (C's `qindex <= 220` is cq <= 55). cq 8 and cq 40 agreed by
+coincidence, which is why exactly 20/60 were pinned. One-line fix:
+`CdefAdaptive.cq_level` now receives `rc::quantizer_to_qindex(cfg.cq_level)`.
+Verified with the new `dump_tools_cell` example (the tools test's `planes()`
+generator through `ref_encode_av1_kf_cfg`): cq {8,20,40,55,56,60,63} — 55/56
+straddle the halve boundary exactly — 420 and mono, all byte-identical.
+Quality knobs now 60/75; the open residual is the chroma-delta-q ramps,
+Perceptual mode-2 at s0/s3, and VarianceBoost s8/cq44-s3 — all payload
+divergences (first diff = frame OBU size), all pinned.
+
 ## The `--enable-cdef=1` speed >= 4 header divergence closes — `cdef_pick_method` was never set past LVL1 (KB-56, 2026-09-12)
 
 `PIN_cdef_speed4` — every `--enable-cdef=1` cell at `--cpu-used` 4..9 diverged

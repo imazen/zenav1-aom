@@ -154,6 +154,16 @@ pub fn encode_cdef(wb: &mut WriteBitBuffer, cdef: &CdefHeader, num_planes: usize
     }
     wb.write_literal(cdef.cdef_damping - 3, 2);
     wb.write_literal(cdef.cdef_bits, 2);
+    if std::env::var_os("AOM_CDEF_DBG").is_some() {
+        eprintln!(
+            "[enc-cdef] damp={} bits={} nb={} y={:?} uv={:?}",
+            cdef.cdef_damping,
+            cdef.cdef_bits,
+            cdef.nb_cdef_strengths,
+            &cdef.cdef_strengths[..cdef.nb_cdef_strengths],
+            &cdef.cdef_uv_strengths[..cdef.nb_cdef_strengths],
+        );
+    }
     for i in 0..cdef.nb_cdef_strengths {
         wb.write_literal(cdef.cdef_strengths[i], 6);
         if num_planes > 1 {

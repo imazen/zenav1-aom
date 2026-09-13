@@ -492,3 +492,64 @@ index cab15e86a4..2f758ac7a2 100644
  }
  
  void av1_rd_pick_palette_intra_sbuv(const AV1_COMP *cpi, MACROBLOCK *x,
+diff --git a/av1/encoder/bitstream.c b/av1/encoder/bitstream.c
+index 178a84a7c7..7b6e777cc5 100644
+--- a/av1/encoder/bitstream.c
++++ b/av1/encoder/bitstream.c
+@@ -2088,6 +2088,17 @@ static inline void encode_cdef(const AV1_COMMON *cm,
+   int i;
+   aom_wb_write_literal(wb, cm->cdef_info.cdef_damping - 3, 2);
+   aom_wb_write_literal(wb, cm->cdef_info.cdef_bits, 2);
++  if (getenv("AOM_CDEF_DBG")) {
++    fprintf(stderr, "[enc-cdef] damp=%d bits=%d nb=%d y=[",
++            cm->cdef_info.cdef_damping, cm->cdef_info.cdef_bits,
++            cm->cdef_info.nb_cdef_strengths);
++    for (int k = 0; k < cm->cdef_info.nb_cdef_strengths; k++)
++      fprintf(stderr, "%d,", cm->cdef_info.cdef_strengths[k]);
++    fprintf(stderr, "] uv=[");
++    for (int k = 0; k < cm->cdef_info.nb_cdef_strengths; k++)
++      fprintf(stderr, "%d,", cm->cdef_info.cdef_uv_strengths[k]);
++    fprintf(stderr, "]\n");
++  }
+   for (i = 0; i < cm->cdef_info.nb_cdef_strengths; i++) {
+     aom_wb_write_literal(wb, cm->cdef_info.cdef_strengths[i],
+                          CDEF_STRENGTH_BITS);
+diff --git a/av1/encoder/pickcdef.c b/av1/encoder/pickcdef.c
+index 8ece93312b..3b845b13d3 100644
+--- a/av1/encoder/pickcdef.c
++++ b/av1/encoder/pickcdef.c
+@@ -841,6 +841,10 @@ void av1_cdef_search(AV1_COMP *cpi) {
+   const bool apply_adaptive_cdef =
+       cdef_control == CDEF_ADAPTIVE &&
+       (cpi->oxcf.rc_cfg.mode == AOM_Q || cpi->oxcf.rc_cfg.mode == AOM_CQ);
++  if (getenv("AOM_CDEF_DBG"))
++    fprintf(stderr, "[gate] cdef_control=%d mode=%d cq=%d pick=%d adaptive=%d\n",
++            cdef_control, cpi->oxcf.rc_cfg.mode, cpi->oxcf.rc_cfg.cq_level,
++            cpi->sf.lpf_sf.cdef_pick_method, (int)apply_adaptive_cdef);
+ 
+   assert(cdef_control != CDEF_NONE);
+   // For CDEF_ADAPTIVE, turning off CDEF around qindex 32 was best for still
+@@ -1030,6 +1034,23 @@ void av1_cdef_search(AV1_COMP *cpi) {
+     }
+   }
+ 
++  if (getenv("AOM_CDEF_DBG")) {
++    uint64_t hy = 0x9e3779b97f4a7c15ull, huv = 0x9e3779b97f4a7c15ull;
++    for (int s = 0; s < sb_count; s++)
++      for (int g = 0; g < TOTAL_STRENGTHS; g++) {
++        hy = (hy ^ mse[0][s][g]) * 0x100000001b3ull;
++        huv = (huv ^ mse[1][s][g]) * 0x100000001b3ull;
++      }
++    fprintf(stderr, "[cdefs] nsb=%d bits=%d y=[", sb_count, nb_strength_bits);
++    for (int j = 0; j < cdef_info->nb_cdef_strengths; j++)
++      fprintf(stderr, "%d,", cdef_info->cdef_strengths[j]);
++    fprintf(stderr, "] uv=[");
++    for (int j = 0; j < cdef_info->nb_cdef_strengths; j++)
++      fprintf(stderr, "%d,", cdef_info->cdef_uv_strengths[j]);
++    fprintf(stderr, "] msey=%llx mseuv=%llx\n",
++            (unsigned long long)hy, (unsigned long long)huv);
++  }
++
+   // Perform CDEF strength reduction.
+   // Note 1: for odd strengths, the 0.5 discarded by ">> 1" is a significant
+   // part of the strength when the strength is small, and because there are

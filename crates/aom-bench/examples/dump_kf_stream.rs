@@ -86,41 +86,84 @@ fn main() {
         mirror_tile(&base, &format!("photo_{w}x{h}_cq{cq}_s{speed}"), w, h, cq, speed)
     };
 
-    // Optional 6th arg: `1` enables CDEF on both arms (the pin cells'
-    // `with_postfilter(true, false)` shape — CDEF on, LR off).
-    let cdef = a.get(6).map(|s| s == "1").unwrap_or(false);
+    // Optional 6th arg: CDEF mode — `1` enables plain CDEF on both arms (the
+    // pin cells' `with_postfilter(true, false)` shape — CDEF on, LR off), `3`
+    // selects adaptive CDEF (`quality.cdef_adaptive` / AV1E_SET_ENABLE_CDEF=3,
+    // routed through the cfg shim).
+    let cdef_mode: i32 = a.get(6).map(|s| s.parse().unwrap()).unwrap_or(0);
     let mut cfg = KeyFrameConfig::allintra_speed0(
         cell.w, cell.h, cell.bd, cell.mono, cell.ss_x, cell.ss_y, cell.cq_level,
     );
     cfg.cpu_used = cell.speed;
-    cfg.enable_cdef = cdef;
-    cfg.enable_restoration = !cdef;
+    cfg.enable_cdef = cdef_mode != 0;
+    cfg.enable_restoration = cdef_mode == 0;
+    cfg.quality.cdef_adaptive = cdef_mode == 3;
 
     let port = encode_key_frame(
         KeyFramePlanes { y: &cell.y, u: &cell.u, v: &cell.v },
         &cfg,
     )
     .expect("the port must encode this cell");
-    let cref = c::ref_encode_av1_kf_screen_content(
-        &cell.y,
-        &cell.u,
-        &cell.v,
-        cell.w,
-        cell.h,
-        i32::from(cell.bd),
-        cell.mono,
-        cell.ss_x as i32,
-        cell.ss_y as i32,
-        cell.cq_level,
-        cell.speed,
-        cdef,
-        !cdef,
-        cell.usage,
-        0,
-        false,
-        cfg.enable_palette,
-        cfg.enable_intrabc,
-    );
+    let cref = if cdef_mode == 3 {
+        c::ref_encode_av1_kf_cfg(
+            &cell.y,
+            &cell.u,
+            &cell.v,
+            cell.w,
+            cell.h,
+            i32::from(cell.bd),
+            cell.mono,
+            cell.ss_x as i32,
+            cell.ss_y as i32,
+            cell.cq_level,
+            cell.speed,
+            cell.usage,
+            &c::RefKfCfg {
+                enable_cdef: cdef_mode,
+                enable_restoration: false,
+                sb_size_128: cfg.sb_size_128,
+                tile_columns_log2: cfg.tile_columns_log2,
+                tile_rows_log2: cfg.tile_rows_log2,
+                enable_palette: cfg.enable_palette,
+                enable_intrabc: cfg.enable_intrabc,
+                tuning: -1,
+                sharpness: 0,
+                enable_adaptive_sharpness: 0,
+                dist_metric: -1,
+                enable_chroma_deltaq: 0,
+                deltaq_mode: -1,
+                deltaq_strength: 100,
+                enable_deltalf_mode: 0,
+                enable_qm: 0,
+                qm_min: -1,
+                qm_max: -1,
+                superres_denom: 0,
+                film_grain_table: None,
+                ctrls: Vec::new(),
+            },
+        )
+    } else {
+        c::ref_encode_av1_kf_screen_content(
+            &cell.y,
+            &cell.u,
+            &cell.v,
+            cell.w,
+            cell.h,
+            i32::from(cell.bd),
+            cell.mono,
+            cell.ss_x as i32,
+            cell.ss_y as i32,
+            cell.cq_level,
+            cell.speed,
+            cdef_mode != 0,
+            cdef_mode == 0,
+            cell.usage,
+            0,
+            false,
+            cfg.enable_palette,
+            cfg.enable_intrabc,
+        )
+    };
 
     let (pp, cp) = (format!("{prefix}.port.obu"), format!("{prefix}.c.obu"));
     std::fs::write(&pp, &port).unwrap();

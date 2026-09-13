@@ -383,9 +383,11 @@ pub struct QualityTools {
     /// deltalf_mode`, av1_cx_iface.c:1326). Inert when `deltaq_mode` is off.
     pub delta_lf: bool,
     /// `--enable-cdef=3` (`CDEF_ADAPTIVE`): with [`KeyFrameConfig::enable_cdef`],
-    /// CDEF is off at `cq_level <= 32`, strengths halved at `<= 220`, and low
-    /// strengths zeroed at `base_qindex <= 140` (pickcdef.c:841-1091). Installed
-    /// by the tune bundle. Ignored when `enable_cdef` is false.
+    /// CDEF is off at `rc_cfg.cq_level <= 32`, strengths halved at `<= 220`, and
+    /// low strengths zeroed at `base_qindex <= 140` (pickcdef.c:841-1091) — the
+    /// first two thresholds compare the `quantizer_to_qindex`-MAPPED qindex
+    /// (av1_cx_iface.c:1256), not the raw cq dial (KB-57). Installed by the tune
+    /// bundle. Ignored when `enable_cdef` is false.
     pub cdef_adaptive: bool,
 }
 
@@ -2912,11 +2914,15 @@ pub fn encode_key_frame_with(
     let mut cur_v = Vec::new();
     let cdef_pack = if postfilter && cfg.enable_cdef {
         // `CDEF_ADAPTIVE` (`--enable-cdef=3`, the tune bundle): `apply_adaptive_cdef`
-        // needs AOM_Q (always here); `zero_low_cdef_strengths` is the
-        // qindex-dependent ALLINTRA/IQ/SSIMULACRA2 arm at `base_qindex <= 140`
+        // needs AOM_Q (always here). C compares `rc_cfg.cq_level`, which
+        // `set_encoder_config` fills with `av1_quantizer_to_qindex(cq_level)`
+        // (av1_cx_iface.c:1256) — a QINDEX, not the 0..=63 dial — so both the
+        // <= 32 off arm and the <= 220 halve arm gate on the mapped value
+        // (KB-57). `zero_low_cdef_strengths` is the qindex-dependent
+        // ALLINTRA/IQ/SSIMULACRA2 arm at `base_qindex <= 140`
         // (speed_features.c:2886-2891).
         let adaptive = quality.cdef_adaptive.then_some(crate::pickcdef::CdefAdaptive {
-            cq_level: cfg.cq_level,
+            cq_level: crate::rc::quantizer_to_qindex(cfg.cq_level),
             zero_low_strengths: qindex <= 140,
         });
         let cdef_res = crate::pickcdef::av1_cdef_search_adaptive(

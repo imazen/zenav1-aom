@@ -5,6 +5,35 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-57 — Encoder: the `CDEF_ADAPTIVE` qindex thresholds compared the raw 0..=63 cq dial instead of the mapped qindex — FIXED 2026-09-12
+
+- **Symptom.** The `--enable-cdef=3` (`CDEF_ADAPTIVE`, what `tune=IQ` /
+  `tune=SSIMULACRA2` install) cells at cq 20 and cq 60 diverged —
+  `cdef-adaptive {420,mono} cq{20,60}` pinned open in
+  `self_contained_tools::quality_knobs_byte_match_real_aomenc`. At cq 60 the
+  port halved the searched strengths while C did not (`[enc-cdef]` dump: port
+  wrote `y=[1] uv=[1]`, C wrote `y=[3] uv=[2]` on an identical MSE grid and
+  identical search result); at cq 20 the port took the `cq_level <= 32`
+  early-off while C searched + halved.
+- **Mechanism.** `av1_cdef_search` gates both adaptive arms on
+  `cpi->oxcf.rc_cfg.cq_level` (pickcdef.c:850, :927) — which is NOT the
+  0..=63 cq dial: `set_encoder_config` fills it with
+  `av1_quantizer_to_qindex(extra_cfg->cq_level)` (av1_cx_iface.c:1256), the
+  0..=255 QINDEX. So C's off arm is `qindex <= 32` (cq <= 8 only) and the
+  halve arm is `qindex <= 220` (cq <= 55). The port's `CdefAdaptive.cq_level`
+  carried `cfg.cq_level` verbatim, so the port turned CDEF off for every cq
+  in 9..=32 (C searches + halves there) and halved strengths for cq >= 56
+  (C leaves them full). cq 8 (off, both sides) and cq 40 (halve, both
+  sides) happened to agree, which is why exactly cq 20/60 were pinned.
+- **Fix.** `key_frame.rs` passes
+  `crate::rc::quantizer_to_qindex(cfg.cq_level)`; the `CdefAdaptive` field
+  doc now states it models `rc_cfg.cq_level`, a qindex.
+- **Verified.** `dump_tools_cell` (new example feeding the tools test's
+  `planes()` generator through `ref_encode_av1_kf_cfg`) vs real aomenc:
+  128x128 cdef-adaptive at cq {8,20,40,55,56,60,63} byte-identical, 420 and
+  mono — cq 55/56 straddle the `qindex <= 220` boundary exactly. The four
+  `cdef-adaptive` pins self-promoted out; quality knobs now 60/75.
+
 ### KB-56 — Encoder: the `--enable-cdef=1` speed >= 4 header divergence (`PIN_cdef_speed4`) was `sf.cdef_pick_method` never being set past LVL1 — FIXED 2026-09-12
 
 - **Symptom.** Every `--enable-cdef=1` cell at `--cpu-used` 4..9 diverged
@@ -150,8 +179,10 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
   `tools: CodingTools` (24 aomenc toggles, `Default` = aomenc's defaults), `film_grain:
   Option<FilmGrainParams>`, `superres_denom: u8`, and `apply_tune(Tune)`, which installs
   libaom's `handle_tuning` bundle field for field (av1_cx_iface.c:1938). `pickcdef.rs` gains
-  the three `CDEF_ADAPTIVE` arms (`av1_cdef_search_adaptive`: off at cq<=32, halve at cq<=220,
-  zero low strengths at qindex<=140). Every knob is validated at the config gate (the
+  the three `CDEF_ADAPTIVE` arms (`av1_cdef_search_adaptive`: off at qindex<=32, halve at
+  qindex<=220, zero low strengths at qindex<=140 — the first two read C's `rc_cfg.cq_level`,
+  the quantizer_to_qindex-MAPPED qindex, not the raw dial; that misreading was KB-57, fixed
+  2026-09-12). Every knob is validated at the config gate (the
   support query IS the encoder's predicate), including film-grain field widths.
 - **THE ORACLE IS THE POINT.** `shim_encode_av1_kf_cfg` / `ref_encode_av1_kf_cfg` drive real
   libaom with the SAME resolved knobs in the same order the port documents (tune first, every
@@ -165,17 +196,17 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
   | superres fixed d9/12/16, bd8+bd10, 420+mono | **18/18** | — |
   | film-grain table, 4 libaom test vectors x 3 formats | **10/10** | — |
   | coding tools (24 toggles x 420/444 x s0/s6) | **46/48** | `--intra-dct-only` at s0, both formats |
-  | quality knobs alone (PSNR tune) | **48/71** | see below |
+  | quality knobs alone (PSNR tune) | **48/71** at landing; **60/75** since 2026-09-12 | see below |
   | tune=IQ / SSIMULACRA2 bundle, s0/s3, 3 formats, LR on/off | **0/84** | all |
-  | tune bundle at s6/s8 | 0/8 | all (CDEF at speed >= 4 is a pre-existing pin, PARITY C1) |
+  | tune bundle at s6/s8 | 0/8 | all (CDEF at speed >= 4 was KB-56, FIXED 2026-09-12; these cells remain open on payload grounds) |
 
   Byte-identical ALONE: every QM range, the QM-PSNR metric, sharpness + adaptive sharpness,
   the constant chroma-delta-q arm at every subsampling, Variance-Boost delta-q at s0,
-  Perceptual-AI delta-q at s0/s3 with and without delta-lf, adaptive CDEF's OFF arm (cq 8)
-  and its cq-40 arm. **Open:** the tune chroma-delta-q RAMPS (IQ/SSIM2), Perceptual delta-q
-  (mode 2) everywhere, the nonrd (s8) arm of every delta-q mode, VarianceBoost cq44 s3,
-  adaptive CDEF at cq 20/60 (the halve and zero-low arms), and therefore the whole tune
-  bundle. **In every open cell the first differing byte is the frame OBU's SIZE field — a
+  Perceptual-AI delta-q at s0/s3 with and without delta-lf, the whole adaptive-CDEF axis
+  (cq 8/20/40/60 — KB-57 closed the halve/zero-low arms on 2026-09-12), the s8 arms of
+  Perceptual and Perceptual-AI delta-q (KB-55, 2026-09-12). **Open:** the tune
+  chroma-delta-q RAMPS (IQ/SSIM2), Perceptual delta-q (mode 2) at s0/s3, the s8 arm of
+  VarianceBoost, VarianceBoost cq44 s3, and therefore the whole tune bundle. **In every open cell the first differing byte is the frame OBU's SIZE field — a
   payload divergence, not a header derivation bug** (the old bench-driven tune gate passed
   because it BOOTSTRAPPED the header from C and compared tile payloads on 64x64 cells at cq
   the ramps do not fire; this gate authors the header and sweeps wider). Localize with

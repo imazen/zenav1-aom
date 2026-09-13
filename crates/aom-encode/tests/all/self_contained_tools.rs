@@ -384,8 +384,10 @@ fn quality_knobs_byte_match_real_aomenc() {
         cfg.quality.deltaq_strength = strength;
         out.push(run(&format!("deltaq VarianceBoost strength{strength} 420 cq32"), &cfg, None));
     }
-    // CDEF_ADAPTIVE on the PSNR tune (`--enable-cdef=3`): off / halve+zero / halve.
-    for &cq in &[8i32, 20, 40, 60] {
+    // CDEF_ADAPTIVE on the PSNR tune (`--enable-cdef=3`): off / halve+zero /
+    // halve / full. cq 55/56 straddle the `rc_cfg.cq_level <= 220` boundary
+    // (qindex 220 vs 224 — KB-57: the gate reads the MAPPED qindex).
+    for &cq in &[8i32, 20, 40, 55, 56, 60] {
         for &(fmt, mono, ss) in &FORMATS[..2] {
             let mut cfg = base(sz, sz, 8, mono, ss, cq, 0);
             cfg.enable_cdef = true;
@@ -393,26 +395,23 @@ fn quality_knobs_byte_match_real_aomenc() {
             out.push(run(&format!("cdef-adaptive {fmt} cq{cq}"), &cfg, None));
         }
     }
-    // MEASURED 2026-09-11 at landing: 48/71 byte-identical. Byte-identical
-    // ALONE on the PSNR tune: every QM range, the QM-PSNR metric, sharpness and
-    // adaptive sharpness, the constant chroma-delta-q arm at 4:2:0/4:2:2/4:4:4/
-    // mono, Variance-Boost delta-q at speed 0 and the cq20 s3 cell, Perceptual-
-    // AI delta-q at speeds 0 and 3 (with and without delta-lf), cdef-adaptive at
-    // cq 8 (the OFF arm) and cq 40, and (2026-09-12, closed by KB-55's repack
-    // rdmult fix) the s8 arms of Perceptual and Perceptual-AI delta-q. Open,
-    // all conformant (decode leg green): the tune chroma-delta-q RAMPS,
-    // Perceptual (mode 2) at speeds 0/3, VarianceBoost at s8 and cq44 s3, and
-    // cdef-adaptive at cq 20 / cq 60 (the halve + zero-low arms). First
-    // differing byte is the frame OBU size in every case — payload divergences
-    // to localize, not header bugs.
+    // MEASURED 2026-09-12: 60/75 byte-identical. Byte-identical ALONE on the
+    // PSNR tune: every QM range, the QM-PSNR metric, sharpness and adaptive
+    // sharpness, the constant chroma-delta-q arm at 4:2:0/4:2:2/4:4:4/mono,
+    // Variance-Boost delta-q at speed 0 and the cq20 s3 cell, Perceptual-AI
+    // delta-q at speeds 0 and 3 (with and without delta-lf), the whole
+    // cdef-adaptive axis (cq 8 / 20 / 40 / 60 — off / halve+zero-low / halve /
+    // full, the last two arms closed 2026-09-12 by KB-57: C gates on
+    // `rc_cfg.cq_level`, the quantizer_to_qindex-MAPPED qindex, not the dial),
+    // and the s8 arms of Perceptual and Perceptual-AI delta-q (KB-55's repack
+    // rdmult fix). Open, all conformant (decode leg green): the tune
+    // chroma-delta-q RAMPS, Perceptual (mode 2) at speeds 0/3, and
+    // VarianceBoost at s8 and cq44 s3. First differing byte is the frame OBU
+    // size in every case — payload divergences to localize, not header bugs.
     report(
         "quality knobs",
         &out,
         &[
-            "cdef-adaptive 420 cq20",
-            "cdef-adaptive 420 cq60",
-            "cdef-adaptive mono cq20",
-            "cdef-adaptive mono cq60",
             "chroma-deltaq Iq 420 cq32",
             "chroma-deltaq Iq 444 cq32",
             "chroma-deltaq Iq mono cq32",

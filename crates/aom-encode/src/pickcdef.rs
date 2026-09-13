@@ -951,8 +951,11 @@ fn get_msb(n: u32) -> i32 {
 /// (`handle_tuning`, av1_cx_iface.c:1962).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CdefAdaptive {
-    /// `oxcf.rc_cfg.cq_level` (the 0..=63 dial, NOT the qindex): CDEF is
-    /// turned off at `<= 32` and strengths are halved at `<= 220`
+    /// `oxcf.rc_cfg.cq_level` — NOT the 0..=63 dial: `set_encoder_config`
+    /// stores `av1_quantizer_to_qindex(extra_cfg->cq_level)` here
+    /// (av1_cx_iface.c:1256), so both comparisons below read a QINDEX
+    /// (0..=255): CDEF is turned off at `<= 32` (`quantizer_to_qindex(8)`)
+    /// and strengths are halved at `<= 220` (`quantizer_to_qindex(55)`)
     /// (pickcdef.c:850, :927).
     pub cq_level: i32,
     /// `lpf_sf.zero_low_cdef_strengths` — ALLINTRA (or IQ/SSIMULACRA2 tune)
@@ -967,7 +970,8 @@ pub fn av1_cdef_search(f: &CdefSearchFrame, pick_method: i32) -> CdefSearchResul
 }
 
 /// `av1_cdef_search` (pickcdef.c:837), including the three `CDEF_ADAPTIVE`
-/// arms when `adaptive` is `Some`:
+/// arms when `adaptive` is `Some` — `cq_level` here is the MAPPED qindex
+/// (`rc_cfg.cq_level`, see [`CdefAdaptive`]):
 /// * `cq_level <= 32`: no search, one zero strength (`:850-856`);
 /// * `cq_level <= 220` (`should_reduce_cdef_strengths`): every picked
 ///   primary/secondary strength is halved after the search (`:1046-1064`);
@@ -1162,6 +1166,24 @@ pub fn av1_cdef_search_adaptive(
                 cdef_uv_strengths[j] = pri * CDEF_SEC_STRENGTHS + sec;
             }
         }
+    }
+
+    if std::env::var_os("AOM_CDEF_DBG").is_some() {
+        let h = |rows: &Vec<[u64; TOTAL_STRENGTHS]>| -> u64 {
+            let mut acc = 0x9e3779b97f4a7c15u64;
+            for row in rows {
+                for &v in row.iter() {
+                    acc = (acc ^ v).wrapping_mul(0x100000001b3);
+                }
+            }
+            acc
+        };
+        eprintln!(
+            "[cdefs] nsb={sb_count} bits={nb_strength_bits} y={:?} uv={:?} unit={unit_strength:?} msey={:x}mseuv={:x}",
+            &cdef_strengths[..nb_cdef_strengths],
+            &cdef_uv_strengths[..nb_cdef_strengths],
+            h(&mse_y), h(&mse_uv),
+        );
     }
 
     // CDEF_ADAPTIVE, arm 2 (pickcdef.c:1032-1091): halve every picked
