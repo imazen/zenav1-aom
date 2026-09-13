@@ -2740,8 +2740,9 @@ fn encoder_gate_speed6_noise_flatuv_allintra() {
 ///   pack_tile AND the phase-2 repack both skip the fold at speed >= 7;
 ///   KB-55 was the repack missing that guard).
 /// - `default_min_partition_size = BLOCK_8X8` (assertion-only: the KEY tree
-///   never stamps below 8x8); `cdef_pick_method = CDEF_PICK_FROM_Q` (CDEF
-///   off in allintra — inert); `mode_search_skip_flags |=
+///   never stamps below 8x8); `cdef_pick_method = CDEF_PICK_FROM_Q` (live on
+///   `enable_cdef=1` frames — the closed-form `av1_pick_cdef_from_qp` arm,
+///   KB-56); `mode_search_skip_flags |=
 ///   FLAG_SKIP_INTRA_DIRMISMATCH` (consumer is the INTER-frame intra search
 ///   only — inert); `var_part_split_threshold_shift = 7` (dead while
 ///   `force_large_partition_blocks_intra == 0` — inert on KEY).

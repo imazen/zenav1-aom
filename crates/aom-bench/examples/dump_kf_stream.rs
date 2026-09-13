@@ -86,12 +86,15 @@ fn main() {
         mirror_tile(&base, &format!("photo_{w}x{h}_cq{cq}_s{speed}"), w, h, cq, speed)
     };
 
+    // Optional 6th arg: `1` enables CDEF on both arms (the pin cells'
+    // `with_postfilter(true, false)` shape — CDEF on, LR off).
+    let cdef = a.get(6).map(|s| s == "1").unwrap_or(false);
     let mut cfg = KeyFrameConfig::allintra_speed0(
         cell.w, cell.h, cell.bd, cell.mono, cell.ss_x, cell.ss_y, cell.cq_level,
     );
     cfg.cpu_used = cell.speed;
-    cfg.enable_cdef = false;
-    cfg.enable_restoration = true;
+    cfg.enable_cdef = cdef;
+    cfg.enable_restoration = !cdef;
 
     let port = encode_key_frame(
         KeyFramePlanes { y: &cell.y, u: &cell.u, v: &cell.v },
@@ -110,8 +113,8 @@ fn main() {
         cell.ss_y as i32,
         cell.cq_level,
         cell.speed,
-        false,
-        true,
+        cdef,
+        !cdef,
         cell.usage,
         0,
         false,

@@ -5,6 +5,42 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-56 — Encoder: the `--enable-cdef=1` speed >= 4 header divergence (`PIN_cdef_speed4`) was `sf.cdef_pick_method` never being set past LVL1 — FIXED 2026-09-12
+
+- **Symptom.** Every `--enable-cdef=1` cell at `--cpu-used` 4..9 diverged
+  `HeaderOnly`: the coded `cdef_strengths`/`cdef_uv_strengths` differed while
+  the tile payload stayed byte-identical (e.g. 64x64 cq32 s4: port picked
+  12/12, real aomenc picked 16/34). Speeds 0..3 were byte-exact.
+- **Mechanism.** Allintra speed features move `lpf_sf.cdef_pick_method`
+  through `CDEF_FAST_SEARCH_LVL3` at speed >= 4 (speed_features.c:497),
+  `CDEF_FAST_SEARCH_LVL4` at >= 6 (:558) and `CDEF_PICK_FROM_Q` at >= 7
+  (:572). The port's `SpeedFeatures::set_allintra` only ever assigned LVL1
+  (speed >= 1) — the three later writes had been filed "CDEF off in the
+  allintra envelope" when CDEF was still unreachable, and nobody revisited
+  them when `--enable-cdef=1` was wired in. So the port ran the LVL1
+  strength table at every speed while C ran a different search space per
+  speed — and at >= 7 an entirely different mechanism: `av1_pick_cdef_from_qp`
+  (pickcdef.c:744-835), closed-form quadratic polynomials over
+  `ac_quant_QTX(base_qindex) >> (bd-8)` with no MSE search at all.
+- **Fix.** `speed_features.rs` — assign LVL3/LVL4/PICK_FROM_Q at their C
+  speed gates (new `CDEF_FAST_SEARCH_LVL3`/`LVL4`/`CDEF_PICK_FROM_Q`
+  constants). `pickcdef.rs` — port `av1_pick_cdef_from_qp` (the intra-only
+  polynomial set; the screen and inter sets are out of envelope) and move
+  the dispatch inside `av1_cdef_search_adaptive` AFTER the adaptive
+  `cq_level <= 32` early-off, matching C's ordering (pickcdef.c:846-857
+  precedes :866). `skip_cdef`/`is_screen_content`/`avoid_uv_cdef` are
+  carried as parameters: false/false/`adaptive.is_some()` on this path
+  (`rt_sf.skip_cdef_sb` is RT-only; `tune_cfg.content` has no SCREEN knob;
+  `avoid_uv_cdef` = `apply_adaptive_cdef`).
+- **Verified.** `dump_kf_stream` (new optional CDEF flag) vs real aomenc:
+  64x64 cq32 at every speed 4..9 byte-identical; {64,100x60,128,192,256,384,
+  512} cells across cq {0,20,32,44} and s {4..9} all byte-identical — the
+  FAST-search (s4..6) and FROM_Q (s7..9) arms both included. The CDEF-on
+  sweep axis was extended from speeds 0..3 to 0..9 (CDEF+LR both-on cells
+  included; LR reads the post-CDEF recon).
+- **Pin removed.** `PIN_cdef_speed4` from `open_divergences_are_pinned`;
+  the axis-H comment no longer bounds CDEF-on to speeds 0..3.
+
 ### KB-55 — Encoder: the `--cpu-used` >= 7 VAR_BASED_PARTITION divergence (`PIN_256x256_speed7`) was the phase-2 repack folding the ALLINTRA per-SB rdmult modifier — FIXED 2026-09-12
 
 - **Symptom.** At `--cpu-used` 7, 8 and 9, frames above roughly 3x3 superblocks diverged

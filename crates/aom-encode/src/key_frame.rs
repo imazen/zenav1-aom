@@ -46,8 +46,9 @@
 //!   ALLINTRA default is CDEF **off** with loop restoration **on** —
 //!   `av1_cx_iface.c:3067` sets `enable_cdef = 0` for `AOM_USAGE_ALL_INTRA`
 //!   ("CDEF has been found to blur images"). That default is byte-gated at
-//!   every speed 0..=9; `--enable-cdef=1` is byte-gated at speeds 0..3 and
-//!   pinned-divergent at 4..9 (the FAST search levels, see below);
+//!   every speed 0..=9, and `--enable-cdef=1` is byte-gated at speeds
+//!   0..=9 too since 2026-09-12 (KB-56 — the FAST search levels were never
+//!   assigned to `sf.cdef_pick_method`);
 //! * superblock **64 or 128** ([`KeyFrameConfig::sb_size_128`] — 2026-09-03:
 //!   the search/pack layers were already bsize-generic
 //!   (`SbEncodeEnv::sb_size`, `rd_pick_partition_real`'s `bsize` param,
@@ -74,7 +75,8 @@
 //!   tile is packed independently with a fresh frame context — C's
 //!   `write_modes` per-tile reset — and assembled through
 //!   [`crate::obu_assemble::assemble_multitile_frame_obu_payload_derived`].
-//!   Byte-gated at speeds 0..6. **Explicit `--tile-columns` / `--tile-rows`**
+//!   Byte-gated at speeds 0..9 (KB-55 closed the VBP repack fold).
+//!   **Explicit `--tile-columns` / `--tile-rows`**
 //!   ([`KeyFrameConfig::tile_columns_log2`] / [`KeyFrameConfig::tile_rows_log2`],
 //!   2026-09-03) are now exposed too — `derive_tile_info` already implemented
 //!   C's `set_tile_info` clamp (`AOMMAX(tile_columns_cfg, min_log2_cols)`)
@@ -101,18 +103,11 @@
 //!   independently scoped at PARITY.md C3 ("(M)", "NOT a one-sitting port" —
 //!   a fixed-32x32-partition trial-encode driver + PSNR-based decisioning
 //!   this shell does not have).
-//! * **`--cpu-used` >= 7 above roughly 3x3 superblocks** — measured bracket:
-//!   at speed 7, 128x128 / 160x160 / 192x192 / 128x192 / 192x128 are
-//!   byte-exact and 256x256 / 320x320 are not; at speed 9, 192x192 is not
-//!   either. One unlocalized VAR_BASED_PARTITION / nonrd arm, pinned rather
-//!   than refused (the streams are valid and decode).
-//! * **`--enable-cdef=1` at `--cpu-used` >= 4** — `sf.cdef_pick_method` leaves
-//!   `CDEF_FULL_SEARCH` for the FAST levels there, which PARITY.md C1 records
-//!   as ported + table-unit-tested but never e2e-gated. MEASURED 2026-09-02:
-//!   divergent from real aomenc on every cell tried at speeds 4..9, in the
-//!   header's `cdef_strengths` set only (the per-unit indices in the tile
-//!   payload are byte-identical). Not refused — the stream is valid and
-//!   decodes — but pinned in the gate.
+//! Both formerly-pinned speed classes are CLOSED (2026-09-12): the
+//! speed >= 7 VBP class was the phase-2 repack's unconditional ALLINTRA
+//! rdmult-modifier fold (KB-55), and `--enable-cdef=1` at speed >= 4 was
+//! `sf.cdef_pick_method` never being set past LVL1 — the LVL3/LVL4/FROM_Q
+//! arms existed but were unreachable (KB-56).
 //!
 //! # Post-filter composition (CDEF + loop restoration together)
 //!

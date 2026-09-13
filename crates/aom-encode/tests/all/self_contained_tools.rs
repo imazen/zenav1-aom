@@ -262,15 +262,18 @@ fn tune_bundles_byte_match_real_aomenc() {
 }
 
 /// The tune bundle at the FAST presets (`--cpu-used` 6 and 8). CDEF is on
-/// under the bundle and the port's CDEF search at speed >= 4 is a pinned
-/// divergence (PARITY.md C1), so the byte leg is PINNED self-promotingly and
-/// the decode leg (inside `run`) is the gate.
+/// under the bundle; its speed >= 4 mechanism closed with KB-56 (the port
+/// now reaches the same LVL4/PICK_FROM_Q arms C does), so the residual here
+/// is the KB-53 payload divergence — PINNED self-promotingly, the decode leg
+/// (inside `run`) the gate.
 #[test]
 fn tune_bundles_at_fast_presets_decode_and_are_pinned() {
     const TUNE_FAST_CDEF_OPEN: &[&str] = &[
-        // Pinned 2026-09-11: all eight cells diverge in the header's cdef
-        // strengths, the same shape PARITY.md C1 records for --enable-cdef at
-        // speed >= 4. Self-promoting: a cell that starts matching fails below.
+        // Pinned 2026-09-11 as the header's cdef_strengths diverging (the
+        // PARITY.md C1 shape); KB-56 fixed that mechanism 2026-09-12 — the
+        // residual here is the KB-53 tune-bundle PAYLOAD divergence (first
+        // differing byte is the frame-OBU size field). Self-promoting: a cell
+        // that starts matching fails below.
         "Iq 420 128x128 cq20 s6",
         "Iq 420 128x128 cq20 s8",
         "Iq mono 128x128 cq20 s6",
@@ -395,11 +398,13 @@ fn quality_knobs_byte_match_real_aomenc() {
     // adaptive sharpness, the constant chroma-delta-q arm at 4:2:0/4:2:2/4:4:4/
     // mono, Variance-Boost delta-q at speed 0 and the cq20 s3 cell, Perceptual-
     // AI delta-q at speeds 0 and 3 (with and without delta-lf), cdef-adaptive at
-    // cq 8 (the OFF arm) and cq 40. Open, all conformant (decode leg green):
-    // the tune chroma-delta-q RAMPS, Perceptual (mode 2) everywhere, the nonrd
-    // (s8) arm of every mode, VarianceBoost cq44 s3, and cdef-adaptive at cq 20
-    // / cq 60 (the halve + zero-low arms). First differing byte is the frame OBU
-    // size in every case — payload divergences to localize, not header bugs.
+    // cq 8 (the OFF arm) and cq 40, and (2026-09-12, closed by KB-55's repack
+    // rdmult fix) the s8 arms of Perceptual and Perceptual-AI delta-q. Open,
+    // all conformant (decode leg green): the tune chroma-delta-q RAMPS,
+    // Perceptual (mode 2) at speeds 0/3, VarianceBoost at s8 and cq44 s3, and
+    // cdef-adaptive at cq 20 / cq 60 (the halve + zero-low arms). First
+    // differing byte is the frame OBU size in every case — payload divergences
+    // to localize, not header bugs.
     report(
         "quality knobs",
         &out,
@@ -417,13 +422,9 @@ fn quality_knobs_byte_match_real_aomenc() {
             "deltaq Perceptual 420 cq20 s0 dlf0",
             "deltaq Perceptual 420 cq20 s0 dlf1",
             "deltaq Perceptual 420 cq20 s3 dlf0",
-            "deltaq Perceptual 420 cq20 s8 dlf0",
             "deltaq Perceptual 420 cq44 s0 dlf0",
             "deltaq Perceptual 420 cq44 s0 dlf1",
             "deltaq Perceptual 420 cq44 s3 dlf0",
-            "deltaq Perceptual 420 cq44 s8 dlf0",
-            "deltaq PerceptualAi 420 cq20 s8 dlf0",
-            "deltaq PerceptualAi 420 cq44 s8 dlf0",
             "deltaq VarianceBoost 420 cq20 s8 dlf0",
             "deltaq VarianceBoost 420 cq44 s3 dlf0",
             "deltaq VarianceBoost 420 cq44 s8 dlf0",

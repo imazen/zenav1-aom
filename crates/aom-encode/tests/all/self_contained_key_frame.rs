@@ -502,10 +502,11 @@ fn sweep_cells() -> Vec<Cell> {
     //     `disable_wiener_filter`/`disable_sgr_filter`), which
     //     `derive_sequence_header` models -- so the `lr = true` cells at speeds
     //     5..9 code restoration OFF, exactly like real aomenc.
-    //   * CDEF ON: speeds 0..3 only. Speed >= 4 switches
-    //     `sf.cdef_pick_method` to the FAST levels, which PARITY.md C1 records
-    //     as ported + table-unit-tested but never e2e-gated; measured here,
-    //     they diverge on every cell tried (pinned below).
+    //   * CDEF ON: speeds 0..9, byte-exact since 2026-09-12 (KB-56 — the
+    //     FAST search levels LVL3/LVL4 and the closed-form CDEF_PICK_FROM_Q
+    //     arm were never assigned to `sf.cdef_pick_method`; the port ran
+    //     LVL1 at every speed >= 1 while C ran LVL3 at >=4, LVL4 at >=6 and
+    //     the qindex polynomials at >=7).
     for speed in 0..=9 {
         for (w, h, cq) in [(64usize, 64usize, 32i32), (128, 128, 12), (128, 128, 32)] {
             for lr in [false, true] {
@@ -529,7 +530,7 @@ fn sweep_cells() -> Vec<Cell> {
             }
         }
     }
-    for speed in 0..=3 {
+    for speed in 0..=9 {
         for (w, h, cq) in [(64usize, 64usize, 32i32), (128, 128, 32)] {
             v.push(
                 Cell::new(
@@ -1604,7 +1605,6 @@ fn refuses_configurations_it_has_no_gate_for() {
 ///
 /// | cell | measured attribution |
 /// |---|---|
-/// | `--enable-cdef=1` at `--cpu-used` >= 4 (64x64 4:2:0 cq32) | `HeaderOnly`. `sf.cdef_pick_method` leaves `CDEF_FULL_SEARCH` for the FAST levels at speed >= 4; PARITY.md C1 records those as ported + table-unit-tested but NEVER e2e-gated. Divergent on every cell tried at speeds 4..9 (5 sizes x 6 speeds), and ONLY in the header's `cdef_strengths` set — the per-unit strength indices in the tile payload are byte-identical. Speeds 0..3 are byte-exact and ARE in the sweep. |
 /// | cq 0 at bd10 `--cpu-used` 6, and at bd12 `--cpu-used` 3 (64x64 4:2:0) | `TilePayloadOnly`. The pre-existing `HBD_OPEN` band (CLAUDE.md T4), observed on the coded-lossless arm (axis N). MEASURED 2026-09-03 over 720 cells x 2 quantizers: the divergent set is exactly bd {10, 12} x `--cpu-used` 1..6 at BOTH cq 0 and cq 32; bd8 is byte-exact at cq 0 across all four formats, five contents and speeds 0/3/6/9, and every depth is byte-exact at speeds 0, 7, 8, 9. So it is not a lossless finding. |
 ///
 /// # What used to be here
@@ -1631,6 +1631,14 @@ fn refuses_configurations_it_has_no_gate_for() {
 /// `av1_rd_pick_partition`'s SB root recomputes it (partition_search.c:5715),
 /// which VBP never reaches. The repack's trellis therefore ran at a folded
 /// rdmult the search had not used. Its cells are axis O in [`sweep_cells`].
+///
+/// `PIN_cdef_speed4` — the `--enable-cdef=1` speed >= 4 header-only
+/// divergence — closed the same day (KB-56): `set_allintra` never assigned
+/// `cdef_pick_method` past `CDEF_FAST_SEARCH_LVL1`, so the port ran the LVL1
+/// strength table at every speed while C steps through LVL3 (:497, speed
+/// >= 4), LVL4 (:558, >= 6) and `CDEF_PICK_FROM_Q` (:572, >= 7 — the
+/// `av1_pick_cdef_from_qp` closed-form, ported for the fix). The CDEF-on
+/// sweep axis now covers speeds 0..9.
 ///
 /// The neighbours bracket the remaining pins: 130x70, 200x200, 250x130,
 /// 258x258, 262x262, 263x263, 264x264, 256x256 and 320x320 are byte-exact in
@@ -1659,30 +1667,6 @@ fn open_divergences_are_pinned() {
         TilePayloadAndHeader,
     }
     let pins: Vec<(Cell, Where, &str)> = vec![
-        (
-            Cell::new(
-                "PIN_cdef_speed4".into(),
-                64,
-                64,
-                8,
-                false,
-                1,
-                1,
-                32,
-                Content::Texture,
-            )
-            .with_postfilter(true, false)
-            .at_speed(4),
-            Where::HeaderOnly,
-            "CDEF FAST search levels: at allintra speed >= 4 `sf.cdef_pick_method` leaves \
-             CDEF_FULL_SEARCH, and PARITY.md C1 records the FAST levels as ported + \
-             table-unit-tested but NEVER e2e-gated. Measured 2026-09-02: divergent on \
-             every `--enable-cdef=1` cell tried at speeds 4..9 (5/5 sizes x 6 speeds), and \
-             the divergence is ONLY in the header's `cdef_strengths` set -- the per-unit \
-             strength indices in the tile payload are byte-identical. Speeds 0..3 are \
-             byte-exact and ARE in the sweep",
-        ),
-
         // The four HBD x speed x tile-count pins below are the failing half of
         // axis J (`sweep_cells()`), MEASURED 2026-09-03 -- see that axis's own
         // comment for the full bracket. Same PORT-SIDE code path as everything

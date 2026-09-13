@@ -1,5 +1,24 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## The `--enable-cdef=1` speed >= 4 header divergence closes — `cdef_pick_method` was never set past LVL1 (KB-56, 2026-09-12)
+
+`PIN_cdef_speed4` — every `--enable-cdef=1` cell at `--cpu-used` 4..9 diverged
+`HeaderOnly` in `cdef_strengths` (e.g. 64x64 s4: port 12/12, C 16/34) — is
+closed. `SpeedFeatures::set_allintra` only ever assigned
+`CDEF_FAST_SEARCH_LVL1` (speed >= 1); C's `speed >= 4`/`:497` LVL3, `>= 6`/
+`:558` LVL4 and `>= 7`/`:572` PICK_FROM_Q writes had been filed "CDEF off in
+the allintra envelope" before `--enable-cdef=1` was wired in and never
+revisited. The s>=7 arm needed `av1_pick_cdef_from_qp` ported — closed-form
+quadratic polynomials over `ac_quant_QTX(base_qindex) >> (bd-8)`, no MSE
+search (intra-only set only; `use_screen_content_model` needs an
+`AOM_CONTENT_SCREEN` tune knob the port does not carry). The dispatch sits
+inside `av1_cdef_search_adaptive` AFTER the adaptive `cq_level <= 32`
+early-off, matching C's ordering (pickcdef.c:846-857 precedes :866).
+Verified byte-identical vs real aomenc: 64x64 s{4..9}, plus {64,100x60,128,
+192,256,384,512} across cq {0,20,32,44} — FAST-search and FROM_Q arms both.
+The CDEF-on sweep axis now runs speeds 0..9 (+12 cells); `PIN_cdef_speed4`
+is removed. 447/447 standalone cells byte-identical.
+
 ## The whole `--cpu-used >= 7` VBP divergence closes — the phase-2 repack folded the per-SB rdmult modifier (KB-55, 2026-09-12)
 
 `PIN_256x256_speed7` — every `--cpu-used` >= 7 frame above ~3x3 superblocks —

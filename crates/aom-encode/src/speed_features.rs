@@ -107,6 +107,13 @@ pub const TX_TYPE_PRUNE_2: i32 = 2;
 pub const CDEF_FULL_SEARCH: i32 = 0;
 /// `CDEF_FAST_SEARCH_LVL1` — reduced CDEF strength search (speed 1).
 pub const CDEF_FAST_SEARCH_LVL1: i32 = 1;
+/// `CDEF_FAST_SEARCH_LVL3` — reduced CDEF strength search (speed 4).
+pub const CDEF_FAST_SEARCH_LVL3: i32 = 3;
+/// `CDEF_FAST_SEARCH_LVL4` — reduced CDEF strength search (speed 6).
+pub const CDEF_FAST_SEARCH_LVL4: i32 = 4;
+/// `CDEF_PICK_FROM_Q` — closed-form qindex derivation, no MSE search
+/// (allintra speed >= 7; speed_features.c:572).
+pub const CDEF_PICK_FROM_Q: i32 = 6;
 
 /// `TOP_INTRA_MODEL_COUNT` (enums.h:391) — the default number of top intra
 /// luma modes carried from model-RD to full RD.
@@ -944,12 +951,15 @@ impl SpeedFeatures {
         //       (KB-41); the rest never run on the all-intra KEY path.
         //     - TPL (`prune_starting_mv`, `subpel_force_stop`, `search_method`) — no
         //       TPL stage for a single all-intra KEY frame.
-        //     - `cdef_pick_method = CDEF_FAST_SEARCH_LVL3` (:497) — CDEF off in the
-        //       allintra envelope.
+        //     - `cdef_pick_method = CDEF_FAST_SEARCH_LVL3` (:497) — LIVE when
+        //       `enable_cdef` is on (set below; was misfiled as "CDEF off"
+        //       before CDEF was wired — KB-56).
         //     - framesize-DEPENDENT (:292-302): `partition_search_breakout_dist_thr`
         //       (INTER), `prune_tx_type_using_stats = 2` (needs is_480p_or_larger —
         //       false on the {64,128}^2 grid).
         if speed >= 4 {
+            // lpf_sf (:497) — LIVE on `enable_cdef=1` frames (KB-56).
+            sf.cdef_pick_method = CDEF_FAST_SEARCH_LVL3;
             // mv_sf (:500) — LIVE on screen-detected intrabc frames (KB-41).
             sf.mv_sf.hash_max_8x8_intrabc_blocks = true;
             // part_sf (:477) — LIVE, consumer wired in `rd_pick_partition_real`
@@ -1074,14 +1084,13 @@ impl SpeedFeatures {
         //       `mv_sf.intrabc_search_level = 1` (:549) were listed here as
         //       inert; they are LIVE on screen-detected intrabc frames and
         //       are set above — KB-41.)
-        //     - `lpf_sf.cdef_pick_method = CDEF_FAST_SEARCH_LVL4` (:558) —
-        //       CDEF off in the allintra default envelope (carried for
-        //       provenance like the earlier cdef levels).
         //     - qindex-dep `rect_partition_eval_thresh` (:2980, aggr=1) —
         //       gated `!boosted` + >=480p; KEY is boosted.
         //     - qindex-dep speed>=5 screen sub-8x8 re-zero (:3070) — screen
         //       arm only; the non-screen value stands.
         if speed >= 6 {
+            // lpf_sf (:558) — LIVE on `enable_cdef=1` frames (KB-56).
+            sf.cdef_pick_method = CDEF_FAST_SEARCH_LVL4;
             // mv_sf (:548-549) — LIVE on screen-detected intrabc frames (KB-41).
             sf.mv_sf.use_bsize_dependent_search_method = 3;
             sf.mv_sf.intrabc_search_level = 1;
@@ -1138,9 +1147,6 @@ impl SpeedFeatures {
         //       assertion-only on this path (field doc).
         //
         //   INERT on this path (verified against source):
-        //     - `lpf_sf.cdef_pick_method = CDEF_PICK_FROM_Q` (:572) — CDEF
-        //       off in the allintra default envelope (same provenance-only
-        //       treatment as the speed-3/6 LVL3/LVL4 steps above).
         //     - `rt_sf.mode_search_skip_flags |= FLAG_SKIP_INTRA_DIRMISMATCH`
         //       (:573) — the sole consumer is
         //       `search_intra_modes_in_interframe` (rdopt.c:5824, the
@@ -1153,6 +1159,10 @@ impl SpeedFeatures {
         if speed >= 7 {
             sf.default_min_partition_size = 3; // BLOCK_8X8 (:570)
             sf.partition_search_type = 2; // VAR_BASED_PARTITION (:571)
+            // lpf_sf (:572) — LIVE on `enable_cdef=1` frames: the CDEF
+            // strength search is replaced by `av1_pick_cdef_from_qp`'s
+            // closed-form qindex polynomials (KB-56).
+            sf.cdef_pick_method = CDEF_PICK_FROM_Q;
             sf.var_part_split_threshold_shift = 7; // :574
         }
 

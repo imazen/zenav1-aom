@@ -25,17 +25,13 @@
 //!   tot_mse*16)`), per-SB best-index assignment, and the fast-method
 //!   strength re-mapping (`STORE_CDEF_FILTER_STRENGTH`).
 //!
-//! # What is intentionally NOT ported (all verified dead for this
-//! envelope's config: one-pass `--enable-cdef=1` (CDEF_ALL), AOM_Q, no rtc)
+//! # What is intentionally NOT ported (verified dead for this envelope's
+//! config: one-pass `--enable-cdef=1` (CDEF_ALL), AOM_Q, no rtc)
 //!
-//! - `CDEF_PICK_FROM_Q` / `av1_pick_cdef_from_qp` (allintra speed >= 7 rt
-//!   path) — out of the current cpu-used 0..=6 scope.
-//! - Every `apply_adaptive_cdef` arm (`cdef_control == CDEF_ADAPTIVE` only:
-//!   the qindex<=32 early-off, chroma-MSE zeroing, strength
-//!   reduction/zeroing, the luma pct-improvement disable): `--enable-cdef=1`
-//!   maps to `CDEF_ALL` (`av1_cx_iface.c:1272`), so `apply_adaptive_cdef`
-//!   is false. `lpf_sf.adaptive_cdef_mode` is likewise 0 outside the
-//!   "low-complexity decode" video presets (`init_lpf_sf:2543`).
+//! - `CDEF_PICK_FROM_Q`'s inter and screen-content polynomial sets
+//!   (`frame_is_intra_only` is structurally always true here and
+//!   `tune_cfg.content` has no SCREEN arm); the FROM_Q dispatch itself IS
+//!   wired — allintra speed >= 7 (KB-56).
 //! - `rtc_external_ratectrl` / `skip_cdef_sb` (rt-only; 0 here).
 //! - The multi-threaded frame walk (oracle build is CONFIG_MULTITHREAD=0).
 //! - The dual/quad `aom_mse_16xh_16bit` and multi-unit `aom_sse` merge
@@ -978,20 +974,17 @@ pub fn av1_cdef_search(f: &CdefSearchFrame, pick_method: i32) -> CdefSearchResul
 /// * with `zero_low_cdef_strengths`, the search is forced to derive at least
 ///   two strengths (`min_signaling_bits = 1`, `:940`) and halved strengths at
 ///   or under (pri 4, sec 1) are zeroed, chroma following luma (`:1077-1090`).
+///
+/// `CDEF_PICK_FROM_Q` (allintra speed >= 7) dispatches to
+/// [`av1_pick_cdef_from_qp`] — AFTER the `cq_level <= 32` early-off, matching
+/// C's ordering (pickcdef.c:846-857 before :866).
 pub fn av1_cdef_search_adaptive(
     f: &CdefSearchFrame,
     pick_method: i32,
     adaptive: Option<CdefAdaptive>,
 ) -> CdefSearchResult {
-    assert!(
-        (0..=5).contains(&pick_method),
-        "CDEF_PICK_FROM_Q (speed >= 7 rt) is out of this port's envelope"
-    );
     let num_planes = f.num_planes();
     let damping = 3 + (f.base_qindex >> 6);
-    let fast = (1..=5).contains(&pick_method);
-    let coeff_shift = (i32::from(f.bd) - 8).max(0);
-    let total_strengths = NB_CDEF_STRENGTHS[pick_method as usize];
     let nvfb = (f.mi_rows + MI_SIZE_64X64 - 1) / MI_SIZE_64X64;
     let nhfb = (f.mi_cols + MI_SIZE_64X64 - 1) / MI_SIZE_64X64;
 
@@ -1016,6 +1009,33 @@ pub fn av1_cdef_search_adaptive(
             nhfb,
         };
     }
+
+    // pickcdef.c:866-881 — the allintra speed>=7 arm. `skip_cdef` is
+    // `rt_sf.skip_cdef_sb != 0`, only set by the RT speed presets (never on
+    // this allintra path); `is_screen_content` is `use_screen_content_model`,
+    // which additionally requires `tune_cfg.content == AOM_CONTENT_SCREEN` —
+    // a tune knob this port does not carry, so always false here.
+    // `avoid_uv_cdef` is `apply_adaptive_cdef` (CDEF_ADAPTIVE under AOM_Q —
+    // `adaptive.is_some()` exactly).
+    if pick_method == crate::speed_features::CDEF_PICK_FROM_Q {
+        return av1_pick_cdef_from_qp(
+            f.mi_rows,
+            f.mi_cols,
+            f.bd,
+            f.base_qindex,
+            false,
+            false,
+            adaptive.is_some(),
+        );
+    }
+
+    assert!(
+        (0..=5).contains(&pick_method),
+        "invalid CDEF_PICK_METHOD {pick_method}"
+    );
+    let fast = (1..=5).contains(&pick_method);
+    let coeff_shift = (i32::from(f.bd) - 8).max(0);
+    let total_strengths = NB_CDEF_STRENGTHS[pick_method as usize];
     let should_reduce_cdef_strengths = adaptive.is_some_and(|a| a.cq_level <= 220);
     let should_zero_cdef_strengths =
         should_reduce_cdef_strengths && adaptive.is_some_and(|a| a.zero_low_strengths);
@@ -1185,6 +1205,80 @@ pub fn av1_cdef_search_adaptive(
         cdef_uv_strengths,
         cdef_damping: damping,
         unit_strength,
+        nvfb,
+        nhfb,
+    }
+}
+
+/// `av1_pick_cdef_from_qp` (pickcdef.c:744-835) — the `CDEF_PICK_FROM_Q`
+/// arm (allintra speed >= 7, speed_features.c:572): strengths come from
+/// fixed quadratic polynomials over `q = ac_quant_QTX(base_qindex) >>
+/// (bd - 8)`, with no MSE search at all. `is_screen_content` selects the
+/// screen polynomial set (double math + truncation); the non-screen arm is
+/// f32 + `roundf`, and within it only the `frame_is_intra_only` set is
+/// ported (the inter set at :800-809 is out of this allintra envelope).
+/// `skip_cdef` is `rt_sf.skip_cdef_sb != 0` (RT-only; always false here),
+/// `avoid_uv_cdef` is `apply_adaptive_cdef` (CDEF_ADAPTIVE under AOM_Q).
+pub fn av1_pick_cdef_from_qp(
+    mi_rows: i32,
+    mi_cols: i32,
+    bd: u8,
+    base_qindex: i32,
+    skip_cdef: bool,
+    is_screen_content: bool,
+    avoid_uv_cdef: bool,
+) -> CdefSearchResult {
+    let q = i32::from(aom_dsp::quant::av1_ac_quant_qtx(base_qindex, 0, bd))
+        >> (i32::from(bd) - 8);
+    let (cdef_bits, nb_cdef_strengths) = if skip_cdef { (1, 2) } else { (0, 1) };
+    let cdef_damping = 3 + (base_qindex >> 6);
+
+    let (y_f1, y_f2, uv_f1, uv_f2) = if is_screen_content {
+        let qq = (q * q) as f64;
+        let qf = q as f64;
+        (
+            (5.88217781e-06 * qq + 6.10391455e-03 * qf + 9.95043102e-02) as i32,
+            (-7.79934857e-06 * qq + 6.58957830e-03 * qf + 8.81045025e-01) as i32,
+            (-6.79500136e-06 * qq + 1.02695586e-02 * qf + 1.36126802e-01) as i32,
+            (-9.99613695e-08 * qq - 1.79361339e-05 * qf + 1.17022324e+0) as i32,
+        )
+    } else {
+        // frame_is_intra_only arm (pickcdef.c:809-822). C evaluates in f32
+        // with roundf; `(int)roundf` == `.round() as i32`.
+        let qq = (q * q) as f32;
+        let qf = q as f32;
+        (
+            (qq * 0.0000033731974f32 + qf * 0.008070594f32 + 0.0187634f32).round() as i32,
+            (qq * 0.0000029167343f32 + qf * 0.0027798624f32 + 0.0079405f32).round() as i32,
+            (qq * -0.0000130790995f32 + qf * 0.012892405f32 - 0.00748388f32).round() as i32,
+            (qq * 0.0000032651783f32 + qf * 0.00035520183f32 + 0.00228092f32).round() as i32,
+        )
+    };
+    let y_f1 = y_f1.clamp(0, 15);
+    let y_f2 = y_f2.clamp(0, 3);
+    let uv_f1 = uv_f1.clamp(0, 15);
+    let uv_f2 = uv_f2.clamp(0, 3);
+
+    let mut cdef_strengths = [0i32; 8];
+    let mut cdef_uv_strengths = [0i32; 8];
+    cdef_strengths[0] = y_f1 * CDEF_SEC_STRENGTHS + y_f2;
+    cdef_uv_strengths[0] = if avoid_uv_cdef {
+        0
+    } else {
+        uv_f1 * CDEF_SEC_STRENGTHS + uv_f2
+    };
+    // `mbmi->cdef_strength` is stamped 0 on every fb (pickcdef.c:822-832);
+    // strengths[1]/uv[1] under `skip_cdef` are already the array zeros.
+
+    let nvfb = (mi_rows + MI_SIZE_64X64 - 1) / MI_SIZE_64X64;
+    let nhfb = (mi_cols + MI_SIZE_64X64 - 1) / MI_SIZE_64X64;
+    CdefSearchResult {
+        cdef_bits,
+        nb_cdef_strengths,
+        cdef_strengths,
+        cdef_uv_strengths,
+        cdef_damping,
+        unit_strength: vec![0i32; (nvfb * nhfb) as usize],
         nvfb,
         nhfb,
     }
