@@ -422,3 +422,73 @@ index b23ed42073..8722357fd3 100644
      if (rd[depth] < best_rd) {
        av1_copy_array(best_txk_type_map, xd->tx_type_map, num_blks);
        best_tx_size = tx_size;
+diff --git a/av1/encoder/encodemb.c b/av1/encoder/encodemb.c
+index bf5c697bde..77647998b2 100644
+--- a/av1/encoder/encodemb.c
++++ b/av1/encoder/encodemb.c
+@@ -756,6 +756,31 @@ static void encode_block_intra(int plane, int block, int blk_row, int blk_col,
+     }
+   }
+ 
++  {
++    // aom-rs divergence debug: AOM_TX_DBG=<mi_row>,<mi_col> final-encode eob.
++    static int edbg_r = -2, edbg_c = -2;
++    if (edbg_r == -2) {
++      const char *e = getenv("AOM_TX_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &edbg_r, &edbg_c) != 2) {
++        edbg_r = -1;
++        edbg_c = -1;
++      }
++    }
++    if (plane == 0 && xd->mi_row == edbg_r && xd->mi_col == edbg_c) {
++      unsigned long long qh = 0;
++      const tran_low_t *qc = p->qcoeff + BLOCK_OFFSET(block);
++      for (int i = 0; i < 64; ++i) qh = qh * 31 + (unsigned)(qc[i] + 32768);
++      fprintf(stderr,
++              "[ceob] mi(%d,%d) blk(%d,%d) plane_bsize=%d tx_size=%d "
++              "skip_txfm=%d use_trellis=%d eob=%d pal=%d qh=%llx\n",
++              xd->mi_row, xd->mi_col, blk_row, blk_col, (int)plane_bsize,
++              (int)tx_size, (int)xd->mi[0]->skip_txfm,
++              (int)is_trellis_used(args->enable_optimize_b, args->dry_run),
++              (int)*eob,
++              (int)xd->mi[0]->palette_mode_info.palette_size[0], qh);
++    }
++  }
++
+   if (*eob) {
+     av1_inverse_transform_block(xd, dqcoeff, plane, tx_type, tx_size, dst,
+                                 dst_stride, *eob,
+diff --git a/av1/encoder/palette.c b/av1/encoder/palette.c
+index cab15e86a4..2f758ac7a2 100644
+--- a/av1/encoder/palette.c
++++ b/av1/encoder/palette.c
+@@ -758,6 +758,29 @@ void av1_rd_pick_palette_intra_sby(
+            block_width * block_height * sizeof(best_palette_color_map[0]));
+   }
+   *mbmi = *best_mbmi;
++  {
++    // aom-rs divergence debug: AOM_TX_DBG=<mi_row>,<mi_col> palette winner.
++    static int pdbg_r = -2, pdbg_c = -2;
++    if (pdbg_r == -2) {
++      const char *e = getenv("AOM_TX_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &pdbg_r, &pdbg_c) != 2) {
++        pdbg_r = -1;
++        pdbg_c = -1;
++      }
++    }
++    if (x->e_mbd.mi_row == pdbg_r && x->e_mbd.mi_col == pdbg_c &&
++        mbmi->palette_mode_info.palette_size[0] > 0) {
++      const int n = mbmi->palette_mode_info.palette_size[0];
++      unsigned long long mh = 0;
++      for (int i = 0; i < block_width * block_height; ++i)
++        mh = mh * 31 + best_palette_color_map[i];
++      fprintf(stderr, "[cpal] mi(%d,%d) n=%d colors=", x->e_mbd.mi_row,
++              x->e_mbd.mi_col, n);
++      for (int i = 0; i < n; ++i)
++        fprintf(stderr, "%d ", (int)mbmi->palette_mode_info.palette_colors[i]);
++      fprintf(stderr, "map_h=%llx\n", mh);
++    }
++  }
+ }
+ 
+ void av1_rd_pick_palette_intra_sbuv(const AV1_COMP *cpi, MACROBLOCK *x,

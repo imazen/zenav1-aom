@@ -554,13 +554,19 @@ fn sweep_cells() -> Vec<Cell> {
     // to 2 tiles at 4160 px and 3 at 8320. Each tile is packed independently
     // with a fresh frame context, exactly as C's `write_modes` does, and
     // assembled through `assemble_multitile_frame_obu_payload_derived`.
-    // Byte-exact at speeds 0..6; speeds 7..9 hit the same unlocalized
-    // VAR_BASED_PARTITION / nonrd arm the 256x256 pin records (they are LARGE
-    // frames, not a tile problem -- 4160x64 is byte-exact at 0..6).
+    // Byte-exact at speeds 0..9 since 2026-09-12: the speed 7..9 cells hit the
+    // VAR_BASED_PARTITION arm whose one divergence was the phase-2 repack
+    // folding the ALLINTRA per-SB rdmult modifier unconditionally (closed as
+    // KB-55 -- `pack_tile_from_trees_lr` now carries pack_tile's VBP guard).
+    // The s7..s9 cells below are the promoted `PIN_4160x64_multitile_speed9`
+    // arm, kept so a regression lands on THIS assertion, not a new pin.
     for (w, h, cq, speed) in [
         (4160usize, 64usize, 32i32, 0i32),
         (4160, 64, 32, 3),
         (4160, 64, 32, 6),
+        (4160, 64, 32, 7),
+        (4160, 64, 32, 8),
+        (4160, 64, 32, 9), // 4160x64 cq32 s9 — the closed pin cell
         (4160, 64, 12, 0),
         (4160, 64, 55, 0),
         (4160, 192, 32, 6),
@@ -951,6 +957,37 @@ fn sweep_cells() -> Vec<Cell> {
                 .at_speed(0),
             );
         }
+    }
+    // O -- the closed `PIN_256x256_speed7` arm, promoted 2026-09-12 (KB-55):
+    // `--cpu-used` >= 7 above ~3x3 superblocks diverged because the phase-2
+    // repack (`pack_tile_from_trees_lr`, the FINAL bitstream emit) folded the
+    // ALLINTRA per-SB `intra_sb_rdmult_modifier` into rdmult unconditionally,
+    // while `encode_rd_sb`'s VAR_BASED_PARTITION arm leaves the modifier at
+    // the per-SB reset 128 (encodeframe.c:1303) — the fold is identity at
+    // speed >= 7 and the repack's trellis ran at (rdmult*modifier)>>7 instead
+    // of the search's rdmult. Every cell below was MEASURED divergent at the
+    // pin's bracket and is byte-identical now; they are the regression lock.
+    for (w, h, cq, speed) in [
+        (256usize, 256usize, 32i32, 7i32), // the pin cell
+        (320, 320, 32, 7),               // the pin's other s7 divergence
+        (192, 192, 32, 9),               // the pin's s9 divergence
+        (100, 60, 32, 9),                // the KB-44 "newly measured" s9 cell
+        (256, 256, 32, 8),               // the arm's mid-speed
+    ] {
+        v.push(
+            Cell::new(
+                format!("O_{w}x{h}_420_bd8_cq{cq}_tex_s{speed}"),
+                w,
+                h,
+                8,
+                false,
+                1,
+                1,
+                cq,
+                Texture,
+            )
+            .at_speed(speed),
+        );
     }
     v
 }
@@ -1568,8 +1605,6 @@ fn refuses_configurations_it_has_no_gate_for() {
 /// | cell | measured attribution |
 /// |---|---|
 /// | `--enable-cdef=1` at `--cpu-used` >= 4 (64x64 4:2:0 cq32) | `HeaderOnly`. `sf.cdef_pick_method` leaves `CDEF_FULL_SEARCH` for the FAST levels at speed >= 4; PARITY.md C1 records those as ported + table-unit-tested but NEVER e2e-gated. Divergent on every cell tried at speeds 4..9 (5 sizes x 6 speeds), and ONLY in the header's `cdef_strengths` set — the per-unit strength indices in the tile payload are byte-identical. Speeds 0..3 are byte-exact and ARE in the sweep. |
-/// | `--cpu-used` >= 7 above roughly 3x3 superblocks (256x256 cq32 s7) | `TilePayloadOnly`. One unlocalized VAR_BASED_PARTITION / nonrd arm. Bracket at speed 7: 128x128, 160x160, 192x192, 128x192 and 192x128 are byte-exact, 256x256 and 320x320 are not; at speed 9, 192x192 is not either. |
-/// | the same arm through a MANDATORY two-tile frame (4160x64 cq32 s9) | `TilePayloadOnly`. Pinned separately so a tile-assembly regression cannot hide inside the large-frame one: 4160x64 is byte-exact at speeds 0..6 in the sweep, which is what proves the tile assembly is not the problem. |
 /// | cq 0 at bd10 `--cpu-used` 6, and at bd12 `--cpu-used` 3 (64x64 4:2:0) | `TilePayloadOnly`. The pre-existing `HBD_OPEN` band (CLAUDE.md T4), observed on the coded-lossless arm (axis N). MEASURED 2026-09-03 over 720 cells x 2 quantizers: the divergent set is exactly bd {10, 12} x `--cpu-used` 1..6 at BOTH cq 0 and cq 32; bd8 is byte-exact at cq 0 across all four formats, five contents and speeds 0/3/6/9, and every depth is byte-exact at speeds 0, 7, 8, 9. So it is not a lossless finding. |
 ///
 /// # What used to be here
@@ -1588,10 +1623,19 @@ fn refuses_configurations_it_has_no_gate_for() {
 /// ("therefore an RD near-tie") was wrong. `Where` records the measurement;
 /// the prose next to it is the part that can be wrong.
 ///
+/// `PIN_256x256_speed7` and `PIN_4160x64_multitile_speed9` — the whole
+/// `--cpu-used` >= 7 VAR_BASED_PARTITION divergence — closed 2026-09-12
+/// (KB-55): the phase-2 repack `pack_tile_from_trees_lr` folded the ALLINTRA
+/// per-SB `intra_sb_rdmult_modifier` into rdmult unconditionally, but on the
+/// VBP arm the modifier is the per-SB reset 128 (encodeframe.c:1303) — only
+/// `av1_rd_pick_partition`'s SB root recomputes it (partition_search.c:5715),
+/// which VBP never reaches. The repack's trellis therefore ran at a folded
+/// rdmult the search had not used. Its cells are axis O in [`sweep_cells`].
+///
 /// The neighbours bracket the remaining pins: 130x70, 200x200, 250x130,
 /// 258x258, 262x262, 263x263, 264x264, 256x256 and 320x320 are byte-exact in
 /// [`sweep_cells`], the whole post-filter axis is 27/27, and multi-tile is
-/// byte-exact at speeds 0..6.
+/// byte-exact at speeds 0..9.
 #[test]
 fn open_divergences_are_pinned() {
     c::ref_init();
@@ -1638,45 +1682,7 @@ fn open_divergences_are_pinned() {
              strength indices in the tile payload are byte-identical. Speeds 0..3 are \
              byte-exact and ARE in the sweep",
         ),
-        (
-            Cell::new(
-                "PIN_4160x64_multitile_speed9".into(),
-                4160,
-                64,
-                8,
-                false,
-                1,
-                1,
-                32,
-                Content::Texture,
-            )
-            .at_speed(9),
-            Where::TilePayloadOnly,
-            "the same speed >= 7 arm as the 256x256 pin, reached through a MANDATORY \
-             two-tile frame: 4160x64 is byte-exact at speeds 0..6 (in the sweep), so this \
-             is the large-frame nonrd arm and not a tile-assembly defect",
-        ),
-        (
-            Cell::new(
-                "PIN_256x256_speed7".into(),
-                256,
-                256,
-                8,
-                false,
-                1,
-                1,
-                32,
-                Content::Texture,
-            )
-            .at_speed(7),
-            Where::TilePayloadOnly,
-            "one unlocalized VAR_BASED_PARTITION / nonrd arm above roughly 3x3 \
-             superblocks. MEASURED bracket at speed 7: 128x128, 160x160, 192x192, \
-             128x192 and 192x128 are BYTE-EXACT, 256x256 and 320x320 are not; at speed \
-             9, 192x192 is not either. So it is size- AND speed-conditional, and the \
-             nonrd path itself is not unported -- 64x64 and 128x128 are byte-exact at \
-             7, 8 and 9, and multi-tile 4160x64 is byte-exact at 0..6",
-        ),
+
         // The four HBD x speed x tile-count pins below are the failing half of
         // axis J (`sweep_cells()`), MEASURED 2026-09-03 -- see that axis's own
         // comment for the full bracket. Same PORT-SIDE code path as everything

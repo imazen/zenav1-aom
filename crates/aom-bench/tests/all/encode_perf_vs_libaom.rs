@@ -131,14 +131,14 @@ fn standalone_encode_time_against_libaom() {
         }
     }
 
-    // `--cpu-used` >= 7 above roughly 3x3 superblocks is an ALREADY-PINNED
-    // divergence, not a finding of this file: `self_contained_key_frame.rs`'s
-    // pin table records *"at speed 9, 192x192 is not [byte-exact] either"* for
-    // the unlocalized VAR_BASED_PARTITION / nonrd arm (`PIN_256x256_speed7`).
-    // Those rows are TIMED and REPORTED — speed 9 is the fastest preset and the
-    // most interesting throughput number — but their ratios compare different
-    // work, so they are excluded from the RD assertion and labelled as such.
-    let rd_pinned = |label: &str| label.contains("_s9");
+    // `--cpu-used` >= 7 above roughly 3x3 superblocks WAS an already-pinned
+    // divergence (`PIN_256x256_speed7`, the VAR_BASED_PARTITION / nonrd arm):
+    // `pack_tile_from_trees_lr` folded the ALLINTRA per-SB rdmult modifier
+    // unconditionally, while `encode_rd_sb`'s VBP arm leaves
+    // `x->intra_sb_rdmult_modifier` at the per-SB reset 128 (encodeframe.c:
+    // 1303) so the fold is identity at speed >= 7. CLOSED 2026-09-12 — the
+    // repack fold now carries pack_tile's VBP guard — and every s9 cell here
+    // is measured byte-identical, so no row is exempt from the RD assertion.
 
     let mut rows = Vec::new();
     for cell in &cells {
@@ -220,35 +220,19 @@ fn standalone_encode_time_against_libaom() {
     println!(
         "\nworst ratio over BYTE-IDENTICAL cells: {:.2}x at {}\n\
          worst ratio over all cells:            {worst:.2}x at {worst_label}\n\
-         {} of {} cells byte-identical ({} excluded by the `--cpu-used >= 7` pin)",
+         {} of {} cells byte-identical",
         worst_rd.0,
         worst_rd.1,
         rows.len() - diverged.len(),
         rows.len(),
-        diverged.len()
     );
 
-    // THE RD CLAIM, asserted on every cell that is not already pinned. Byte
-    // identity means the port reached the same rate-distortion point C did, not
-    // a nearby one.
-    let unexpected: Vec<&String> = diverged.iter().filter(|l| !rd_pinned(l)).collect();
+    // THE RD CLAIM, asserted on EVERY cell. Byte identity means the port
+    // reached the same rate-distortion point C did, not a nearby one.
     assert!(
-        unexpected.is_empty(),
-        "these cells are NOT byte-identical to libaom and are NOT covered by the \
-         `--cpu-used >= 7` pin, so their timing rows compare different work and \
-         the RD claim does not hold: {unexpected:?}"
-    );
-    // ...and the pinned rows must STILL diverge, so the exclusion cannot go
-    // stale: if they start matching, they belong in the asserted set.
-    let pinned_matching: Vec<&String> = rows
-        .iter()
-        .filter(|r| rd_pinned(&r.label) && r.identical)
-        .map(|r| &r.label)
-        .collect();
-    assert!(
-        pinned_matching.is_empty(),
-        "these `--cpu-used 9` cells are now byte-identical — the pin closed, so \
-         move them into the asserted set: {pinned_matching:?}"
+        diverged.is_empty(),
+        "these cells are NOT byte-identical to libaom, so their timing rows \
+         compare different work and the RD claim does not hold: {diverged:?}"
     );
 
     // The timing is REPORTED, not gated — see the module doc. What IS asserted

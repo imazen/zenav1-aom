@@ -2737,7 +2737,8 @@ fn encoder_gate_speed6_noise_flatuv_allintra() {
 ///   save/restore + the root OUTPUT_ENABLED winner walk, exactly the pick
 ///   path's context shape. The allintra SB rdmult modifier is IDENTITY on
 ///   this path (only av1_rd_pick_partition's root recomputes it —
-///   pack_tile skips the fold at speed >= 7).
+///   pack_tile AND the phase-2 repack both skip the fold at speed >= 7;
+///   KB-55 was the repack missing that guard).
 /// - `default_min_partition_size = BLOCK_8X8` (assertion-only: the KEY tree
 ///   never stamps below 8x8); `cdef_pick_method = CDEF_PICK_FROM_Q` (CDEF
 ///   off in allintra — inert); `mode_search_skip_flags |=

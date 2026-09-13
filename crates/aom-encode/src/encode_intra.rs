@@ -565,6 +565,44 @@ pub fn encode_intra_block_plane_y(
                 }
             }
 
+            // `AOM_TX_DBG=<mi_row>,<mi_col>` — final-encode eob trace.
+            if std::env::var("AOM_TX_DBG").ok().and_then(|v| {
+                let mut it = v.split(',');
+                Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+            }).is_some_and(|(r, c): (i32, i32)| r == env.mi_row && c == env.mi_col) {
+                let qh = qcoeff
+                    .iter()
+                    .take(64)
+                    .fold(0u64, |h, &v| h.wrapping_mul(31).wrapping_add((v as i64 + 32768) as u64));
+                let rh = residual
+                    .iter()
+                    .take(txw * txh)
+                    .fold(0u64, |h, &v| h.wrapping_mul(31).wrapping_add((v as i64 + 32768) as u64));
+                let ch = xq
+                    .coeff
+                    .iter()
+                    .take(txw * txh)
+                    .fold(0u64, |h, &v| h.wrapping_mul(31).wrapping_add((v as i64 + 32768) as u64));
+                let k = env.coeff_costs;
+                let kh = [
+                    k.txb_skip, k.base_eob, k.base, k.eob_extra, k.dc_sign, k.lps, k.eob,
+                ]
+                .iter()
+                .fold(0u64, |h, s| {
+                    s.iter()
+                        .fold(h, |h, &v| h.wrapping_mul(31).wrapping_add(v as i64 as u64))
+                });
+                eprintln!(
+                    "[peob] mi({},{}) blk({},{}) bsize={} tx_size={} tx_type={} skip_txfm={} use_trellis={} eob={} pal={} qm={:?} dq=({},{}) sc={} dc={} ta={:?} tl={:?} rdm={} sh={} iq={:?} kh={kh:x} qh={qh:x} res_h={rh:x} coeff_h={ch:x}",
+                    env.mi_row, env.mi_col, blk_row, blk_col, bsize, tx_size, tx_type,
+                    env.skip_txfm as u8, use_trellis as u8, eob,
+                    env.palette.is_some() as u8, env.qm_level,
+                    env.rows.dequant[0], env.rows.dequant[1],
+                    txb_skip_ctx, dc_sign_ctx, &ta[..txw_unit], &tl[..txh_unit],
+                    env.rdmult, env.sharpness, env.tune.iq_tuning,
+                );
+            }
+
             // if (*eob) av1_inverse_transform_block into the recon plane.
             // `recon[txb_off..]` already holds the prediction — C adds the
             // dequantised residual into `pd->dst` at `dst_stride`, so the add

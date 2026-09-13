@@ -87,7 +87,9 @@ formats — and 64x64 and 128x128 are byte-exact at the same speed and quantizer
 100x60 is not in `sweep_cells`' speed arm (which is 64x64 and 128x128), so this
 is a cq-32 hole, unrelated to cq 0, in the same `--cpu-used` >= 7 nonrd family
 `PIN_256x256_speed7` already records. Registered here so it is not lost; NOT
-fixed or pinned by this landing.
+fixed or pinned by this landing. **CLOSED 2026-09-12 by KB-55** — the phase-2
+repack's unconditional `intra_sb_rdmult_modifier` fold; 100x60 s9 is now a
+sweep cell (axis O).
 
 ## 3. Grid B — the full speed axis, 64x64 4:2:0
 

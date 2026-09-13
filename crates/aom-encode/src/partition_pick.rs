@@ -1793,6 +1793,20 @@ fn leaf_pick_sb_modes(
                 .as_ref()
                 .map(|b| (b.rdcost, b.rate, b.dist, b.y.mode, b.y.tx_size, b.y.palette_y.is_some()))
         );
+        if let Some(p) = outcome.best.as_ref().and_then(|b| b.y.palette_y.as_ref()) {
+            let map_h = p
+                .color_map
+                .iter()
+                .fold(0u64, |h, &v| h.wrapping_mul(31).wrapping_add(v as u64));
+            eprintln!(
+                "[ldp] leaf mi({},{}) pal n={} colors={:?} map_h={map_h:x} map_len={}",
+                mi_row,
+                mi_col,
+                p.size,
+                &p.colors[..p.size],
+                p.color_map.len()
+            );
+        }
     }
 
     match outcome.best {

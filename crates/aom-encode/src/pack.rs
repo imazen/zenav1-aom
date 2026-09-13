@@ -2403,6 +2403,12 @@ pub fn pack_tile_from_trees_lr(
     lr: Option<&LrPackParams<'_>>,
 ) {
     let mut lr_refs = LrRefState::default();
+    // `part_sf.partition_search_type == VAR_BASED_PARTITION` — allintra
+    // speed >= 7 (speed_features.c:571; same expression pack_tile derives at
+    // :1789). The repack's per-SB ALLINTRA rdmult fold below needs it: on the
+    // VBP arm `x->intra_sb_rdmult_modifier` stays at the per-SB reset 128
+    // (encodeframe.c:1303), so `setup_block_rdmult`'s fold is identity.
+    let use_var_based_partition = pick_cfg.allintra && pick_cfg.speed >= 7;
     // The two-pass (CDEF/LR) pack is intra-frame machinery today; an inter
     // frame with CDEF/LR signalling is a later rung, so no inter CDF set is
     // threaded here (pack_leaf's inter branch would fail loudly if reached).
@@ -2517,11 +2523,16 @@ pub fn pack_tile_from_trees_lr(
 
             // Identical per-SB folds to pack_tile's (same inputs → same
             // values as phase 1 derived at this SB): the ALLINTRA rdmult
-            // modifier and the INTERNAL_COST_UPD_SB cost refresh. The CDEF
-            // repack runs speed-0 only (VAR_BASED_PARTITION is speed>=7), so
-            // the ALLINTRA fold is unconditional here — folding onto the
-            // delta-q-adjusted `sb_base_rdmult` (== env.rdmult when off).
-            let sb_rdmult = if pick_cfg.allintra {
+            // modifier and the INTERNAL_COST_UPD_SB cost refresh. The repack
+            // runs at EVERY speed — it is the final bitstream emit, not a
+            // CDEF-only pass — so the fold needs pack_tile's VBP guard too:
+            // `encode_rd_sb`'s VAR_BASED_PARTITION arm leaves
+            // `x->intra_sb_rdmult_modifier` at the per-SB reset 128
+            // (encodeframe.c:1303), making `setup_block_rdmult`'s fold
+            // identity. Only `av1_rd_pick_partition`'s SB root recomputes it
+            // (partition_search.c:5715). Folding onto the delta-q-adjusted
+            // `sb_base_rdmult` (== env.rdmult when off).
+            let sb_rdmult = if pick_cfg.allintra && !use_var_based_partition {
                 let mi_w = MI_SIZE_WIDE_B[sb_size] as i32;
                 let mi_h = MI_SIZE_HIGH_B[sb_size] as i32;
                 let ref_off_y =

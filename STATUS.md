@@ -1,5 +1,26 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## The whole `--cpu-used >= 7` VBP divergence closes — the phase-2 repack folded the per-SB rdmult modifier (KB-55, 2026-09-12)
+
+`PIN_256x256_speed7` — every `--cpu-used` >= 7 frame above ~3x3 superblocks —
+is closed. The port's own search produced `eob=0` at the divergent leaf while
+its final encode emitted `eob=2` on a bit-identical residual: every trellis
+input matched except `rdmult` (68,796 vs 42,997 = 68796*80>>7). C's
+`intra_sb_rdmult_modifier` is recomputed ONLY in `av1_rd_pick_partition`'s SB
+root (partition_search.c:5715); on the VAR_BASED_PARTITION arm it stays at the
+per-SB reset 128 (encodeframe.c:1303), so `setup_block_rdmult`'s fold is
+identity at speed >= 7. Phase-1 `pack_tile` modelled that guard; phase-2
+`pack_tile_from_trees_lr` — the final bitstream emit, which runs at EVERY
+speed — folded unconditionally under `allintra`, shrinking the repack trellis's
+rdmult on any SB whose variance tripped the modifier gate. One-predicate fix:
+the repack fold now carries the same `!use_var_based_partition` guard.
+Verified byte-identical vs real C: {256..1024}² x s{7,8,9} cq32, 512² s7
+cq{20,44}, 100x60 s{7,8,9}, 4160x64 s{7,8,9}, real-photo 12/12 including all
+s9 cells. Both self-promoting pins flipped and moved into `sweep_cells`
+(axis O + axis I s7..s9); `encode_perf_vs_libaom`'s s9 RD-assertion exemption
+is removed. The KB-44 "newly measured" 100x60 s9 cell was the same root.
+435/435 standalone cells byte-identical.
+
 ## A size-gated speed-0 divergence class closes — C's `winner_mode_params` snapshot was modelled as a live write (KB-54, 2026-09-12)
 
 The `>=1080p && qindex<=108` speed-0 arm diverged from real C on every large cell
@@ -21,7 +42,7 @@ resolved knobs, and the palette path is bit-exact under the matched oracle.
 Env-gated hunt tooling kept in-tree (`AOM_TX_DBG`, `AOM_PART_DBG`,
 `AOM_SCT_DBG`, `AOM_HDR_TRACE`/`AOM_HDR_DUMP`); the matching C-side prints are
 `docs/upstream-divergence-debug-2026-09-12.patch` with the submodule reverted
-to pristine. Still open: the `PIN_256x256_speed7` nonrd arm at speed >= 7.
+to pristine. The `PIN_256x256_speed7` nonrd arm closed the same day as KB-55.
 
 ## The publish window is still OPEN — none of the four names are taken, and the facade has no consumer (2026-09-10)
 
@@ -512,9 +533,9 @@ rather than refused (the streams are valid and decode, they just are not
 byte-identical): `--enable-cdef=1` at speed >= 4 (the FAST search levels —
 PARITY C1's never-e2e-gated fraction, measured divergent in the header's
 `cdef_strengths` set ONLY, with the per-unit indices in the tile payload
-byte-identical) and speed >= 7 above roughly 3x3 superblocks (measured bracket
-at speed 7: 128x128 / 160x160 / 192x192 / 128x192 / 192x128 byte-exact,
-256x256 / 320x320 not; at speed 9, 192x192 not either).
+byte-identical). The speed >= 7 large-frame pin (bracket: 128x128 / 160x160 /
+192x192 / 128x192 / 192x128 byte-exact, 256x256 / 320x320 not; at speed 9,
+192x192 not either) closed 2026-09-12 as KB-55 — see the landing note above.
 
 **A real shell bug the pins were hiding.** The pack env carried a past-the-end
 sentinel (`1 << 16`) for `tile_row_end`/`tile_col_end` instead of C's

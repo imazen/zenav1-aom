@@ -5,6 +5,48 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-55 — Encoder: the `--cpu-used` >= 7 VAR_BASED_PARTITION divergence (`PIN_256x256_speed7`) was the phase-2 repack folding the ALLINTRA per-SB rdmult modifier — FIXED 2026-09-12
+
+- **Symptom.** At `--cpu-used` 7, 8 and 9, frames above roughly 3x3 superblocks diverged
+  (`TilePayloadOnly`): 256x256 and 320x320 at s7, 192x192 at s9, 100x60 at s9, and the
+  mandatory-two-tile 4160x64 at s9 — while 64x64/128x128/160x160/192x192/128x192/192x128
+  at s7 were byte-exact. Localized to a leaf where the port's own search eval produced
+  `eob=0` (matching C's coded stream) but the port's FINAL encode emitted `eob=2` on an
+  identical residual: same tx_size/tx_type, same qcoeff contexts, same dequant rows,
+  same palette colors and index map, same cost tables — every trellis input identical
+  except `rdmult` (68,796 in the search evals, 42,997 in the final pass;
+  `42997 = 68796 * 80 >> 7`).
+- **Mechanism.** C computes the ALLINTRA per-SB `x->intra_sb_rdmult_modifier` only inside
+  `av1_rd_pick_partition`'s SB root (partition_search.c:5715-5722); `setup_block_rdmult`
+  (:652-655) folds it into `x->rdmult` per block. On the VAR_BASED_PARTITION arm
+  (allintra speed >= 7 — `partition_search_type`, speed_features.c:571) the search never
+  reaches `rd_pick_partition`, so the modifier stays at its per-SB reset of 128
+  (encodeframe.c:1303) and the fold is **identity**: search and token-encode run the
+  same base rdmult. The port's phase-1 `pack_tile` modelled this correctly
+  (`use_var_based_partition` guard, pack.rs:1991). The phase-2 repack
+  `pack_tile_from_trees_lr` — the FINAL bitstream emit, which runs at every speed, not
+  "speed-0 only" as its comment claimed — folded unconditionally under `allintra`, so on
+  any SB whose variance tripped `intra_sb_rdmult_modifier` (var_min < 2.0 && var_max > 4.0)
+  its trellis saw a rdmult ~0.625x the search's and kept coefficients the search had
+  priced out. The size bound was the modifier's variance gate: small/low-variance SBs
+  never leave 128.
+- **Fix.** `pack.rs` — `pack_tile_from_trees_lr` derives
+  `use_var_based_partition = pick_cfg.allintra && pick_cfg.speed >= 7` (same expression
+  as pack_tile:1789) and guards the fold with `!use_var_based_partition`, matching C's
+  reset-128 VBP arm. One-line predicate change; the modifier computation itself was
+  already correct.
+- **Verified.** `dump_kf_stream` mirror-tile vs the real C oracle, all byte-identical:
+  {256,320,384,512,768,1024}² x s{7,8,9} at cq32, 512² s7 at cq{20,44}, 100x60 s{7,8,9},
+  plus the previously-exact bracket (128²/160²/192²/128x192/192x128 s7). Real photo
+  content: `encode_perf_vs_libaom` 12/12 byte-identical including all four s9 cells.
+  `self_contained_key_frame_byte_matches_real_aomenc` 435/435; the two self-promoting
+  pins flipped byte-exact and were promoted to `sweep_cells` axis O + axis I s7..s9.
+  No s0..s6 regression ({256,512}² x s{0,3,6} byte-identical).
+- **Pins removed.** `PIN_256x256_speed7` and `PIN_4160x64_multitile_speed9` from
+  `open_divergences_are_pinned`; the s9 exemption in `encode_perf_vs_libaom`'s RD
+  assertion is gone — every cell is asserted now. Also closed: the KB-44 "newly
+  measured" 100x60 x s9 coordinate (same root).
+
 ### KB-54 — Encoder: a `>=1080p` speed-0 divergence class was C's `winner_mode_params` SNAPSHOT, not a live sf write — FIXED 2026-09-12; the hunt also found the bench examples' C arm ran with palette/IntraBC disabled
 
 - **Symptom.** Mirror-tile cells and real photos diverged at `--cpu-used 0` with a clean
@@ -47,9 +89,11 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
 - **Verified.** Byte-identical vs the real C oracle: 1024x1024 / 1536x1536 / 2048x2048 /
   2560x2560 / 3072x3072 / 3840x2160 mirror-tile at cq27 s0, plus a real 4K photo
   (634,991 = 634,991 B). 57/57 `encoder_gate_*` tests.
-- **Not closed by this fix.** The s7-s9 mirror-tile divergence is the pre-existing
-  `PIN_256x256_speed7` nonrd arm — unaffected (palette never fires on detector-negative
-  content, and the qindex bump arm this fix models only exists at speed 0).
+- **Not closed by this fix.** The s7-s9 mirror-tile divergence was the
+  `PIN_256x256_speed7` nonrd arm — unaffected here (palette never fires on
+  detector-negative content, and the qindex bump arm this fix models only exists at
+  speed 0). **It closed separately as KB-55 later the same day** — the phase-2 repack's
+  unconditional ALLINTRA rdmult-modifier fold.
 - **Instrumentation kept:** `AOM_TX_DBG=<r>,<c>` (tx_search.rs per-tx-type/pxd dumps,
   intra_rd.rs variance-factor dump), `AOM_PART_DBG=<r>,<c>` + `AOM_P4_NOBUDGET`
   (partition_pick.rs stage/strip dumps), `AOM_SCT_DBG`/`AOM_HDR_DUMP`/`AOM_HDR_TRACE`
@@ -636,11 +680,13 @@ byte-identically, 427/427 + 248/248 green again. Re-run in full on the merged tr
 2026-09-04 — the pre-merge figures (186 -> 372/372, 185/372, 187 cells) were measured
 against the 186-cell base and do not apply.
 
-**NEWLY MEASURED, NOT CLOSED** (added to the coverage queue): at **cq 32**, bd8 `--cpu-used` 9
-at **100x60** diverges on {texture, noise} x all four chroma formats (8 cells) while 64x64 and
-128x128 are byte-exact at the same speed — the sweep's speed arm is 64x64/128x128 only, so
-100x60 x speed 9 is an uncovered coordinate in the same `--cpu-used` >= 7 nonrd family
-`PIN_256x256_speed7` records. Unrelated to cq 0.
+**NEWLY MEASURED at the time, CLOSED 2026-09-12 by KB-55:** at **cq 32**, bd8
+`--cpu-used` 9 at **100x60** diverged on {texture, noise} x all four chroma formats
+(8 cells) while 64x64 and 128x128 were byte-exact at the same speed — the sweep's speed
+arm was 64x64/128x128 only, so 100x60 x speed 9 was an uncovered coordinate in the
+`--cpu-used` >= 7 nonrd family `PIN_256x256_speed7` recorded. It was the same root — the
+phase-2 repack's unconditional `intra_sb_rdmult_modifier` fold — and 100x60 s9 is now a
+sweep cell (axis O). Unrelated to cq 0.
 
 ### KB-43 — CI red on the x86-64 legs since 2026-08-31: THREE roots, all fixed 2026-09-02 (root #1 VERIFIED green on run `33688716692`; #2/#3 await the next x86 run)
 
