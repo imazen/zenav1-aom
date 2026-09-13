@@ -3224,21 +3224,16 @@ pub fn intra_model_rd_y(
     let blocks_high_visible = max_blocks_high.min((env.mi_rows - env.mi_row).max(0) as usize);
 
     let mut satd_cost: i64 = 0;
-    // mu-64 chunk walk (see `txfm_rd_in_plane_intra`): the model predicts INTO
-    // the recon plane and later txbs predict from earlier predictions, so > 64
-    // blocks must walk in chunk order. Luma mu = 16; one chunk for bsize <= 64.
-    let mu_w = MI_SIZE_WIDE_B[12].min(blocks_wide_visible); // BLOCK_64X64
-    let mu_h = MI_SIZE_HIGH_B[12].min(blocks_high_visible);
-    let mut chunk_r = 0usize;
-    while chunk_r < blocks_high_visible {
-        let unit_h = (chunk_r + mu_h).min(blocks_high_visible);
-        let mut chunk_c = 0usize;
-        while chunk_c < blocks_wide_visible {
-            let unit_w = (chunk_c + mu_w).min(blocks_wide_visible);
-            let mut blk_row = chunk_r;
-            while blk_row < unit_h {
-                let mut blk_col = chunk_c;
-                while blk_col < unit_w {
+    // Flat raster walk (intra_mode_search_utils.h:637-638 — `for row; for col`
+    // over the whole visible extent, NOT the mu-64 chunk order of
+    // `txfm_rd_in_plane_intra`). The order is observable: each tile's
+    // prediction is written into the recon plane and read as neighbors by
+    // later tiles, so a chunked walk gives different edge bytes on > 64px
+    // leaves (KB-64: mono_cq63's bs15 leaf picked a different angle delta).
+    let mut blk_row = 0usize;
+    while blk_row < blocks_high_visible {
+        let mut blk_col = 0usize;
+        while blk_col < blocks_wide_visible {
             // av1_predict_intra_block_facade: predict INTO the recon plane.
             let (n_top, n_topright, n_left, n_bottomleft) = intra_avail(
                 env.sb_size,
@@ -3310,14 +3305,20 @@ pub fn intra_model_rd_y(
                 env.ref_stride,
             );
 
-            satd_cost += i64::from(wht_satd(&walk.residual, txw, tx_size, env.bd));
-            blk_col += txw_unit;
-                }
-                blk_row += txh_unit;
+            let tile_satd = wht_satd(&walk.residual, txw, tx_size, env.bd);
+            if crate::tx_search::tx_dbg_target()
+                .is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col)
+            {
+                eprintln!(
+                    "[ptile] mi({},{}) mode={} ad={} tile({},{}) n=({},{},{},{}) satd={}",
+                    env.mi_row, env.mi_col, env.mode, env.angle_delta,
+                    blk_row, blk_col, n_top, n_topright, n_left, n_bottomleft, tile_satd
+                );
             }
-            chunk_c += mu_w;
+            satd_cost += i64::from(tile_satd);
+            blk_col += txw_unit;
         }
-        chunk_r += mu_h;
+        blk_row += txh_unit;
     }
     satd_cost
 }

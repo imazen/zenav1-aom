@@ -354,15 +354,13 @@ fn diag256_fmt(label: &str, mono: bool, ss_x: usize, ss_y: usize, cq: i32) -> En
 /// `round_pow2(_, 0)` identity); mono exercises luma-only interleave. Content
 /// is the smooth diagonal ramp that codes a 128-level leaf at high cq.
 ///
-/// PINNED NEAR-TIE — `mono 256² cq63` diverges (port codes 1 fewer byte,
-/// KB-2/KB-10/KB-12 "cheaper RD decision" signature). NOT a mu-64 bug: the
-/// 4:2:0 (`sb128_coded_128_leaf_e2e`) AND 4:4:4 128-leaf cells at cq63 byte-
-/// match, and mono cq55 byte-matches — so the mu-64 search/re-encode/pack is
-/// proven correct; only the mono-cq63 combination (no chroma RD to break the
-/// tie at qindex ~252) tips a partition/mode/tx near-tie, exactly the class the
-/// KB-10/KB-11/KB-12 high-qindex cells are pinned as. Closing it needs a
-/// sibling-C per-candidate RD dump (the KB-3/KB-7 method); the pin asserts the
-/// divergence PRESENT so a fix self-promotes it.
+/// `mono 256² cq63` used to be a pinned near-tie (port coded 1 fewer byte) —
+/// closed by KB-64: `intra_model_rd`'s tile walk was ported in mu-64 chunk
+/// order while C walks flat raster, and since each model tile's prediction is
+/// written into the recon plane and read as neighbors by later tiles, the
+/// order is observable on any leaf > 64px. At this cell it flipped the
+/// model-RD top-k prune set, changing which angle deltas got a full eval
+/// (port kept mode 7 ad=2, C never evaluated it). All four cells byte-match.
 #[test]
 fn sb128_chroma_format_e2e() {
     c::ref_init();
@@ -372,7 +370,7 @@ fn sb128_chroma_format_e2e() {
         ("mono_cq55", true, 1, 1, 55, true),
         ("444_cq55", false, 0, 0, 55, true),
         ("444_cq63", false, 0, 0, 63, true),
-        ("mono_cq63", true, 1, 1, 63, false), // PINNED near-tie
+        ("mono_cq63", true, 1, 1, 63, true), // closed KB-64 (model-RD walk order)
     ];
     for &(label, mono, ss_x, ss_y, cq, expect_exact) in cells {
         let cell = diag256_fmt(label, mono, ss_x, ss_y, cq);

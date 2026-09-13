@@ -1249,6 +1249,15 @@ pub fn rd_pick_intra_sby_mode_y(
 
         // Model estimate + prune (the prediction walk mutates recon).
         let this_model_rd = intra_model_rd_y(env, recon, model_tx_size, &mut txs.walk);
+        if crate::tx_search::tx_dbg_target()
+            .is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col)
+        {
+            eprintln!(
+                "[pmrd] mi({},{}) bs{} part{} mode={} ad={} model_rd={}",
+                env.mi_row, env.mi_col, bsize, env.partition, mode, luma_delta_angle,
+                this_model_rd
+            );
+        }
         let model_rd_index_for_pruning = get_model_rd_index_for_pruning(
             mode,
             cfg.qindex,

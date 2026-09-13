@@ -17,6 +17,33 @@ use aom_bench::EncodeCell;
 use aom_encode::key_frame::{KeyFrameConfig, KeyFramePlanes, encode_key_frame};
 use aom_sys_ref as c;
 
+/// sb128_e2e.rs's `diag256_fmt` content, verbatim (mono arm): the synthetic
+/// diagonal ramp `y = 32 + (r+c)*190/(w+h)` that codes a 128-level leaf at
+/// high cq — the `mono_cq63` pinned near-tie's source.
+fn diag_mono(w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+    let mut y = vec![0u16; w * h];
+    for r in 0..h {
+        for col in 0..w {
+            y[r * w + col] = (32 + (r + col) * 190 / (w + h)) as u16;
+        }
+    }
+    EncodeCell {
+        label: format!("diag_mono_{w}x{h}_s{speed}"),
+        w,
+        h,
+        mono: true,
+        ss_x: 1,
+        ss_y: 1,
+        usage: 2,
+        cq_level: cq,
+        speed,
+        bd: 8,
+        y,
+        u: Vec::new(),
+        v: Vec::new(),
+    }
+}
+
 /// s4cov_partial_sb_axis.rs's mirror_tile + to_mono, verbatim.
 fn mirror_tile_mono(base: &EncodeCell, w: usize, h: usize, speed: i32) -> EncodeCell {
     let mir = |i: usize, n: usize| {
@@ -60,7 +87,7 @@ fn main() {
     if a.len() < 2 {
         eprintln!(
             "usage: dump_mono_cell <out_prefix> [w h cq speed] [k=v ...]\n  \
-             knobs: ab0 p140 sb128"
+             knobs: ab0 p140 sb128 diag"
         );
         std::process::exit(2);
     }
@@ -71,11 +98,13 @@ fn main() {
     let speed = a.get(5).and_then(|s| s.parse().ok()).unwrap_or(0i32);
     let mut knobs = aom_bench::ToggleKnobs::default();
     let mut sb128 = false;
+    let mut diag = false;
     for kv in &a[6.min(a.len())..] {
         match kv.as_str() {
             "ab0" => knobs.enable_ab_partitions = false,
             "p140" => knobs.enable_1to4_partitions = false,
             "sb128" => sb128 = true,
+            "diag" => diag = true,
             other => {
                 eprintln!("unknown knob {other}");
                 std::process::exit(2);
@@ -84,9 +113,14 @@ fn main() {
     }
 
     c::ref_init();
-    let mut base = EncodeCell::real_content("mono_base", "av1-1-b8-00-quantizer-00", None, cq, 0);
-    base.cq_level = cq;
-    let cell = mirror_tile_mono(&base, w, h, speed);
+    let cell = if diag {
+        diag_mono(w, h, cq, speed)
+    } else {
+        let mut base =
+            EncodeCell::real_content("mono_base", "av1-1-b8-00-quantizer-00", None, cq, 0);
+        base.cq_level = cq;
+        mirror_tile_mono(&base, w, h, speed)
+    };
     assert!(cell.mono && cell.u.is_empty());
 
     // ---- bootstrap path (the s4cov pin's own route) ----
