@@ -593,6 +593,100 @@ pub struct DeltaQFrameCtx<'a> {
     /// coded alongside the delta-qindex. `delta_lf_res = DEFAULT_DELTA_LF_RES`
     /// (2), `delta_lf_multi = DEFAULT_DELTA_LF_MULTI` (0/single).
     pub delta_lf_present: bool,
+    /// `rt_sf.use_nonrd_pick_mode` (allintra speed >= 8): C routes every mode
+    /// through `setup_delta_q_nonrd` (encodeframe.c:246) instead, where the
+    /// deferred token emit means `xd->current_base_qindex` never advances
+    /// between SBs — every SB's adjust runs against the FRAME base, not the
+    /// previous SB's qindex (KB-58: measured `run=80` for all four SBs of the
+    /// s8 cell while the signalled stream deltas advance normally at emit).
+    /// Modes 2/3 degenerate to identity there (the nonrd arm only computes
+    /// VARIANCE_BOOST); the flag is harmless under them since the pre-pass
+    /// already collapses the frame to `delta_q_present = false`.
+    pub nonrd: bool,
+}
+
+impl DeltaQFrameCtx<'_> {
+    /// `setup_delta_q`'s per-SB qindex dispatch (encodeframe.c:330-356) for the
+    /// SB at (`mi_row`, `mi_col`): PERCEPTUAL_AI reads the wiener-variance map,
+    /// PERCEPTUAL the SB source wavelet AC energy, VARIANCE_BOOST the source
+    /// variance; each then deadzone-quantizes against `running` (the tile's
+    /// running `current_base_qindex`) via `av1_adjust_q_from_delta_q_res`.
+    /// Shared by every emit pass (the search pack AND the CDEF/LR repack) so
+    /// all of them derive the same per-SB qindex sequence. `sb_off` is the
+    /// SB's pixel offset into `src_y` (`mi_row*4*stride + mi_col*4` + the
+    /// tile's `base_y`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn sb_qindex(
+        &self,
+        src_y: &[u16],
+        sb_off: usize,
+        stride: usize,
+        bd: u8,
+        mi_row: i32,
+        mi_col: i32,
+        running: i32,
+    ) -> i32 {
+        // `setup_delta_q_nonrd` (encodeframe.c:246-278): the deferred emit keeps
+        // `xd->current_base_qindex` at the frame base for the whole tile, and
+        // only VARIANCE_BOOST computes a qindex — modes 2/3 take the base.
+        if self.nonrd {
+            let raw = if self.perceptual_ai.is_none() && self.perceptual_wavelet.is_none() {
+                crate::allintra_vis::variance_boost_raw_qindex(
+                    src_y,
+                    sb_off,
+                    stride,
+                    bd,
+                    self.base_qindex,
+                    self.deltaq_strength,
+                )
+            } else {
+                self.base_qindex
+            };
+            return crate::allintra_vis::av1_adjust_q_from_delta_q_res(
+                self.delta_q_res,
+                self.base_qindex,
+                raw,
+            );
+        }
+        if let Some(map) = self.perceptual_ai {
+            crate::allintra_vis::setup_delta_q_perceptual_ai(
+                map,
+                self.base_qindex,
+                bd,
+                self.delta_q_res,
+                self.sb_mi,
+                mi_row,
+                mi_col,
+                running,
+            )
+        } else if let Some(is_screen) = self.perceptual_wavelet {
+            let sb_px = self.sb_mi as usize * 4;
+            crate::allintra_vis::setup_delta_q_perceptual(
+                src_y,
+                sb_off,
+                stride,
+                bd,
+                self.base_qindex,
+                is_screen,
+                sb_px,
+                sb_px,
+                (sb_px * sb_px).trailing_zeros(),
+                self.delta_q_res,
+                running,
+            )
+        } else {
+            crate::allintra_vis::setup_delta_q_variance_boost(
+                src_y,
+                sb_off,
+                stride,
+                bd,
+                self.base_qindex,
+                self.deltaq_strength,
+                self.delta_q_res,
+                running,
+            )
+        }
+    }
 }
 
 /// One leaf's re-encode outputs (differential visibility).

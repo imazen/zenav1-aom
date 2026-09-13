@@ -10,7 +10,7 @@
 //! # w/h=128 bd8 cq20 mono=0 ss=420 speed=0 cdef=3 -> /tmp/cdefa.{port,c}.obu
 //! ```
 
-use aom_encode::key_frame::{KeyFrameConfig, KeyFramePlanes, encode_key_frame};
+use aom_encode::key_frame::{DeltaQMode, KeyFrameConfig, KeyFramePlanes, Tune, encode_key_frame};
 use aom_sys_ref as c;
 
 /// Verbatim copy of `self_contained_tools::planes` — the byte gate depends on
@@ -64,6 +64,31 @@ fn main() {
     );
     let cdef_mode: i32 = a.get(5).map(|s| s.parse().unwrap()).unwrap_or(0);
     let mono = a.get(6).map(|s| s == "1").unwrap_or(false);
+    // Optional key=value knobs matching self_contained_tools' quality cells:
+    //   deltaq=2|3|6 dlf=0|1 strength=N chromadq=0|1 tune=iq|ssim2
+    let mut deltaq = 0i32;
+    let mut dlf = false;
+    let mut strength = 100u32;
+    let mut chroma_dq = false;
+    let mut tune = Tune::default();
+    for kv in &a[7.min(a.len())..] {
+        let (k, v) = kv.split_once('=').expect("knob args are key=value");
+        match k {
+            "deltaq" => deltaq = v.parse().unwrap(),
+            "dlf" => dlf = v == "1",
+            "strength" => strength = v.parse().unwrap(),
+            "chromadq" => chroma_dq = v == "1",
+            "tune" => {
+                tune = match v {
+                    "iq" => Tune::Iq,
+                    "ssim2" => Tune::Ssimulacra2,
+                    "psnr" => Tune::Psnr,
+                    other => panic!("unknown tune {other}"),
+                };
+            }
+            other => panic!("unknown knob {other}"),
+        }
+    }
     let (ss_x, ss_y) = (1, 1);
     let (y, u, v) = planes(w, w, 8, mono, ss_x, ss_y, 7);
 
@@ -72,7 +97,18 @@ fn main() {
     cfg.cpu_used = speed;
     cfg.enable_cdef = cdef_mode != 0;
     cfg.enable_restoration = false;
+    cfg.quality.tune = tune;
     cfg.quality.cdef_adaptive = cdef_mode == 3;
+    cfg.quality.deltaq_mode = match deltaq {
+        0 => DeltaQMode::Off,
+        2 => DeltaQMode::Perceptual,
+        3 => DeltaQMode::PerceptualAi,
+        6 => DeltaQMode::VarianceBoost,
+        other => panic!("unknown deltaq mode {other}"),
+    };
+    cfg.quality.deltaq_strength = strength;
+    cfg.quality.delta_lf = dlf;
+    cfg.quality.chroma_deltaq = chroma_dq;
 
     let port = encode_key_frame(KeyFramePlanes { y: &y, u: &u, v: &v }, &cfg)
         .expect("the port must encode this cell");
@@ -101,10 +137,10 @@ fn main() {
             sharpness: 0,
             enable_adaptive_sharpness: 0,
             dist_metric: 0,
-            enable_chroma_deltaq: 0,
-            deltaq_mode: 0,
-            deltaq_strength: 100,
-            enable_deltalf_mode: 0,
+            enable_chroma_deltaq: chroma_dq as i32,
+            deltaq_mode: deltaq,
+            deltaq_strength: strength as i32,
+            enable_deltalf_mode: dlf as i32,
             enable_qm: 0,
             qm_min: -1,
             qm_max: -1,

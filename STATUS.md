@@ -1,5 +1,35 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## The whole `--deltaq-mode` axis closes — three per-SB-qindex plumbing bugs (KB-58, 2026-09-12)
+
+All nine `deltaq` quality-knob pins are closed; modes 2/3/6 x cq{20,44} x
+s{0,3,7,8,9} are byte-identical vs real aomenc. Three distinct bugs, one
+theme — the pre-pass derived the per-SB qindex but downstream consumers read
+stale/frame state:
+
+1. `pack_tile_from_trees_lr` recomputed modes 2/3 with the VarianceBoost
+   formula — the wire delta diverged from the search's quantizer. One shared
+   `DeltaQFrameCtx::sb_qindex` mode dispatch now serves the pre-pass, the
+   search pack and the repack.
+2. `setup_delta_q_nonrd` (encodeframe.c:246-285) deadzone-quantizes against
+   `xd->current_base_qindex`, which stays at the frame base for the whole
+   tile (deferred token emit — `av1_update_state` never advances it). The
+   port advanced it. `DeltaQFrameCtx::nonrd` freezes the adjust base; the
+   nonrd rdmult fold (`av1_get_cb_rdmult`, gated `!use_nonrd_pick_mode` at
+   partition_search.c:621-624) is skipped too — nonrd RD evals run at frame
+   `RDMULT` while the quantizer rows follow the SB qindex.
+3. `x->qindex` is the SB's adjusted qindex and the SEARCH reads it
+   (`num_win_thresh` at partition_search.c:4033 — the observed
+   `HORZ_4`/`HORZ_B` flip; the qidx rect prune at partition_strategy.c:1742;
+   tx early-skip thresholds at tx_search.c:189/225). `sb_pick_cfg.qindex`
+   now carries `sb_current_qindex` per SB instead of the frame base.
+
+Plus: `av1_choose_var_based_partitioning` rebuilds its thresholds per SB
+from `base + delta_qindex` (var_based_part.c:1683-1690) —
+`choose_var_based_partitioning_key` takes `sb_qindex` (closed the mode-6 s7
+cells, unpinned but divergent). Quality knobs **69/75**; the open residual is
+the six chroma-delta-q ramp cells and the 84-cell tune bundle.
+
 ## The `CDEF_ADAPTIVE` halve/zero-low cells close — the thresholds read the mapped qindex, not the cq dial (KB-57, 2026-09-12)
 
 The four `cdef-adaptive {420,mono} cq{20,60}` quality-knob pins are closed.
@@ -14,9 +44,9 @@ coincidence, which is why exactly 20/60 were pinned. One-line fix:
 Verified with the new `dump_tools_cell` example (the tools test's `planes()`
 generator through `ref_encode_av1_kf_cfg`): cq {8,20,40,55,56,60,63} — 55/56
 straddle the halve boundary exactly — 420 and mono, all byte-identical.
-Quality knobs now 60/75; the open residual is the chroma-delta-q ramps,
-Perceptual mode-2 at s0/s3, and VarianceBoost s8/cq44-s3 — all payload
-divergences (first diff = frame OBU size), all pinned.
+Quality knobs now 60/75; the delta-q residual named here was closed by
+KB-58 later the same day — the open residual is the chroma-delta-q ramps —
+all payload divergences (first diff = frame OBU size), all pinned.
 
 ## The `--enable-cdef=1` speed >= 4 header divergence closes — `cdef_pick_method` was never set past LVL1 (KB-56, 2026-09-12)
 

@@ -5,6 +5,60 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-58 — Encoder: the `--deltaq-mode` payload divergences were three separate per-SB-qindex plumbing bugs — FIXED 2026-09-12
+
+- **Symptom.** Nine `deltaq` cells were pinned open in
+  `self_contained_tools::quality_knobs_byte_match_real_aomenc`: Perceptual
+  (mode 2) cq{20,44} x s{0,3} x dlf{0,1} and VarianceBoost (mode 6) cq44 s3
+  and cq{20,44} s8. All payload divergences (first diff = the frame OBU size
+  field); Perceptual-AI mode 3 passed only because its map produced identity
+  deltas on the test image.
+- **Mechanism — THREE distinct bugs, one shared theme: the port derived the
+  per-SB qindex in the search pre-pass but the emit/search consumers read
+  stale or frame-level state.**
+  1. **The repack recomputed modes 2/3 with the mode-6 formula.**
+     `pack_tile_from_trees_lr` (the final-emit pass) derived every SB's
+     qindex via `setup_delta_q_variance_boost` regardless of mode — the
+     search had used the wavelet/wiener map, so the wire carried a different
+     delta than the search quantized with. Fixed by
+     `DeltaQFrameCtx::sb_qindex` (encode_sb.rs): one mode dispatch shared by
+     the pre-pass, the search pack, and the repack.
+  2. **Nonrd frozen adjust-base.** C's `setup_delta_q_nonrd`
+     (encodeframe.c:246-285) deadzone-quantizes against
+     `xd->current_base_qindex`, which stays at the frame base for the whole
+     tile because token emission is deferred (`av1_update_state`'s advance
+     never runs). The port advanced the running base between SBs.
+     `DeltaQFrameCtx::nonrd` (set from `sf.use_nonrd_pick_mode`) freezes the
+     adjust base at `base_qindex` in both `sb_qindex` and the key-frame
+     replay pre-pass; `variance_boost_raw_qindex` (allintra_vis.rs) splits
+     the raw variance boost from the deadzone adjust so the nonrd arm can
+     freeze without duplicating the formula.
+  3. **Search-time `x->qindex` reads saw the frame base.** C's
+     `init_plane_quantizers` sets `x->qindex` to the SB's adjusted qindex,
+     and the search reads it in several places: `num_win_thresh =
+     AOMMIN(3*(MAXQ-x->qindex)/MAXQ + 1, 3)` for the HORZ4/VERT4 split-win
+     prune (partition_search.c:4033 — the observed `HORZ_4` vs `HORZ_B`
+     flip), `prune_rectangular_split_based_on_qidx`
+     (partition_strategy.c:1742), tx early-skip `dc_q`/`ac_q` thresholds
+     (tx_search.c:189/225/2868), the `x->qindex <= 127` model-rd index rule
+     (intra_mode_search.c:446). The port's `PickFrameCfg.qindex` carried the
+     frame base for the whole frame. `sb_pick_cfg` now overrides
+     `qindex: sb_current_qindex` per SB (pack.rs).
+- **Also:** `setup_block_rdmult`'s `av1_get_cb_rdmult` fold is gated
+  `!use_nonrd_pick_mode` (partition_search.c:621-624) — on the nonrd walk
+  `x->rdmult` stays at frame `RDMULT` while only the quantizer rows follow
+  the SB qindex. Both pack passes now skip the per-SB rdmult recompute under
+  `nonrd`. And `av1_choose_var_based_partitioning` rebuilds its VBP
+  thresholds per SB from `base + x->delta_qindex`
+  (var_based_part.c:1683-1690): `choose_var_based_partitioning_key` takes a
+  per-SB `sb_qindex` parameter (this also closed the mode-6 s7 cells, which
+  were not pinned but were divergent).
+- **Verified.** `dump_tools_cell` vs real aomenc: modes 2/3/6 x cq{20,44} x
+  s{0,3,7,8,9} byte-identical (dlf{0,1} at s0); the nine pins self-promoted
+  out — quality knobs now **69/75**, the residual being the six
+  chroma-delta-q ramp cells (KB-53 payload class) and the 84-cell tune
+  bundle.
+
 ### KB-57 — Encoder: the `CDEF_ADAPTIVE` qindex thresholds compared the raw 0..=63 cq dial instead of the mapped qindex — FIXED 2026-09-12
 
 - **Symptom.** The `--enable-cdef=3` (`CDEF_ADAPTIVE`, what `tune=IQ` /
@@ -196,17 +250,15 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
   | superres fixed d9/12/16, bd8+bd10, 420+mono | **18/18** | — |
   | film-grain table, 4 libaom test vectors x 3 formats | **10/10** | — |
   | coding tools (24 toggles x 420/444 x s0/s6) | **46/48** | `--intra-dct-only` at s0, both formats |
-  | quality knobs alone (PSNR tune) | **48/71** at landing; **60/75** since 2026-09-12 | see below |
+  | quality knobs alone (PSNR tune) | **48/71** at landing; **69/75** since 2026-09-12 | see below |
   | tune=IQ / SSIMULACRA2 bundle, s0/s3, 3 formats, LR on/off | **0/84** | all |
   | tune bundle at s6/s8 | 0/8 | all (CDEF at speed >= 4 was KB-56, FIXED 2026-09-12; these cells remain open on payload grounds) |
 
   Byte-identical ALONE: every QM range, the QM-PSNR metric, sharpness + adaptive sharpness,
-  the constant chroma-delta-q arm at every subsampling, Variance-Boost delta-q at s0,
-  Perceptual-AI delta-q at s0/s3 with and without delta-lf, the whole adaptive-CDEF axis
-  (cq 8/20/40/60 — KB-57 closed the halve/zero-low arms on 2026-09-12), the s8 arms of
-  Perceptual and Perceptual-AI delta-q (KB-55, 2026-09-12). **Open:** the tune
-  chroma-delta-q RAMPS (IQ/SSIM2), Perceptual delta-q (mode 2) at s0/s3, the s8 arm of
-  VarianceBoost, VarianceBoost cq44 s3, and therefore the whole tune bundle. **In every open cell the first differing byte is the frame OBU's SIZE field — a
+  the constant chroma-delta-q arm at every subsampling, the WHOLE `--deltaq-mode` axis
+  (modes 2/3/6 x cq{20,44} x s{0,3,8} x dlf{0,1} — KB-58, 2026-09-12), the whole
+  adaptive-CDEF axis (cq 8/20/40/60 — KB-57 closed the halve/zero-low arms on 2026-09-12).
+  **Open:** the tune chroma-delta-q RAMPS (IQ/SSIM2) and therefore the whole tune bundle. **In every open cell the first differing byte is the frame OBU's SIZE field — a
   payload divergence, not a header derivation bug** (the old bench-driven tune gate passed
   because it BOOTSTRAPPED the header from C and compared tile payloads on 64x64 cells at cq
   the ramps do not fire; this gate authors the header and sweeps wider). Localize with

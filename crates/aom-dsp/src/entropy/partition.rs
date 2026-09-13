@@ -5519,6 +5519,11 @@ pub fn read_delta_q_params_sb(
         // "Normative: Clamp to [1,MAXQ] to not interfere with lossless mode"
         // (read_delta_q_params, av1/decoder/decodemv.c).
         let current_qindex = (*current_base_qindex + reduced * delta_q_res).clamp(1, MAXQ);
+        if std::env::var_os("AOM_DQ_DEC").is_some() {
+            eprintln!(
+                "[dq-dec] bsize={bsize} sb={sb_size} skip={skip} reduced={reduced} -> q={current_qindex}"
+            );
+        }
         *current_base_qindex = current_qindex;
         if delta_lf_present {
             if delta_lf_multi {

@@ -580,6 +580,7 @@ fn run_tune_case(
             perceptual_wavelet: None, // nor Perceptual wavelet (mode 2)
             sb_mi: 0,
             delta_lf_present: false,
+            nonrd: sf.use_nonrd_pick_mode,
         }),
         tune,
     };

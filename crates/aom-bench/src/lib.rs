@@ -1825,6 +1825,7 @@ impl EncodeCell {
                     perceptual_wavelet: None,
                     sb_mi,
                     delta_lf_present: dlf_present,
+                    nonrd: sf.use_nonrd_pick_mode,
                 })
             } else if dq2_present {
                 Some(aom_encode::encode_sb::DeltaQFrameCtx {
@@ -1837,6 +1838,7 @@ impl EncodeCell {
                     perceptual_wavelet: Some(dq2_screen),
                     sb_mi,
                     delta_lf_present: dlf_present,
+                    nonrd: sf.use_nonrd_pick_mode,
                 })
             } else {
                 None

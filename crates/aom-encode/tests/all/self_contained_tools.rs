@@ -418,15 +418,6 @@ fn quality_knobs_byte_match_real_aomenc() {
             "chroma-deltaq Ssimulacra2 420 cq32",
             "chroma-deltaq Ssimulacra2 444 cq32",
             "chroma-deltaq Ssimulacra2 mono cq32",
-            "deltaq Perceptual 420 cq20 s0 dlf0",
-            "deltaq Perceptual 420 cq20 s0 dlf1",
-            "deltaq Perceptual 420 cq20 s3 dlf0",
-            "deltaq Perceptual 420 cq44 s0 dlf0",
-            "deltaq Perceptual 420 cq44 s0 dlf1",
-            "deltaq Perceptual 420 cq44 s3 dlf0",
-            "deltaq VarianceBoost 420 cq20 s8 dlf0",
-            "deltaq VarianceBoost 420 cq44 s3 dlf0",
-            "deltaq VarianceBoost 420 cq44 s8 dlf0",
         ],
     );
 }

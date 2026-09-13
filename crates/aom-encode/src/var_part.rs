@@ -238,8 +238,9 @@ pub struct VbpFrame {
     pub num_pixels: i64,
     /// `cm->seq_params->sb_size` (BLOCK_64X64 = 12 or BLOCK_128X128 = 15).
     pub sb_size: usize,
-    /// The SB qindex (`base_qindex`; no delta-q/segments in this envelope —
-    /// the :1683-1690 clamp chain resolves to `base_qindex`).
+    /// The frame base qindex — used only where the per-SB `sb_qindex`
+    /// argument doesn't reach (segment/roi arms of the :1683-1690 chain,
+    /// off-envelope). `set_vbp_thresholds_key` reads the per-SB argument.
     pub qindex: i32,
     pub bit_depth: u8,
     /// Chroma subsampling as C's `xd->plane[AOM_PLANE_U]` carries it:
@@ -482,6 +483,7 @@ fn set_vt_partitioning(
 pub fn choose_var_based_partitioning_key(
     stamps: &mut [u8],
     f: &VbpFrame,
+    sb_qindex: i32,
     src_y: &[u16],
     base_y: usize,
     stride: usize,
@@ -493,7 +495,13 @@ pub fn choose_var_based_partitioning_key(
     let is_small_sb = f.sb_size == BLOCK_64X64;
     let num_64x64_blocks = if is_small_sb { 1usize } else { 4 };
 
-    let thresholds = set_vbp_thresholds_key(f.qindex, f.bit_depth, f.num_pixels, f.sf);
+    // `sb_qindex` is the per-SB `base_qindex + x->delta_qindex`
+    // (var_based_part.c:1683-1687) — `set_vbp_thresholds` runs INSIDE
+    // `av1_choose_var_based_partitioning`, after `setup_delta_q{,_nonrd}` has
+    // stamped the SB's `x->delta_qindex`, so under delta-q the thresholds
+    // track the SB quantizer, not `f.qindex` (the frame base, kept for the
+    // no-delta-q arm's callers).
+    let thresholds = set_vbp_thresholds_key(sb_qindex, f.bit_depth, f.num_pixels, f.sf);
 
     // force_split[85]: 0 root, 1-4 the 64x64s, 5-20 the 32x32s, 21-84 the
     // 16x16s (:1610/:1699).

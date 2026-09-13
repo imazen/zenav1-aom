@@ -553,3 +553,37 @@ index 8ece93312b..3b845b13d3 100644
    // Perform CDEF strength reduction.
    // Note 1: for odd strengths, the 0.5 discarded by ">> 1" is a significant
    // part of the strength when the strength is small, and because there are
+diff --git a/av1/encoder/encodeframe.c b/av1/encoder/encodeframe.c
+index f1d9f88a92..4ef2f4d0d2 100644
+--- a/av1/encoder/encodeframe.c
++++ b/av1/encoder/encodeframe.c
+@@ -257,9 +257,16 @@ static inline void setup_delta_q_nonrd(AV1_COMP *const cpi, ThreadData *td,
+   const int delta_q_res = delta_q_info->delta_q_res;
+   int current_qindex = cm->quant_params.base_qindex;
+ 
++  const int sb_row = mi_row >> cm->seq_params->mib_size_log2;
++  const int sb_col = mi_col >> cm->seq_params->mib_size_log2;
+   if (cpi->oxcf.q_cfg.deltaq_mode == DELTA_Q_VARIANCE_BOOST) {
+     current_qindex = av1_get_sbq_variance_boost(cpi, x);
+   }
++  if (getenv("AOM_DQ_DBG"))
++    fprintf(stderr, "[dqn-c] sb(%d,%d) mode=%d raw_q=%d base=%d run=%d res=%d\n",
++            sb_row, sb_col, cpi->oxcf.q_cfg.deltaq_mode, current_qindex,
++            cm->quant_params.base_qindex, x->e_mbd.current_base_qindex,
++            delta_q_res);
+ 
+   x->rdmult_cur_qindex = current_qindex;
+   MACROBLOCKD *const xd = &x->e_mbd;
+@@ -355,6 +362,12 @@ static inline void setup_delta_q(AV1_COMP *const cpi, ThreadData *td,
+     current_qindex = av1_get_sbq_variance_boost(cpi, x);
+   }
+ 
++  if (getenv("AOM_DQ_DBG"))
++    fprintf(stderr,
++            "[dq-c] sb(%d,%d) mode=%d level=%d raw_q=%d base=%d run=%d res=%d\n",
++            sb_row, sb_col, cpi->oxcf.q_cfg.deltaq_mode, x->sb_energy_level,
++            current_qindex, cm->quant_params.base_qindex,
++            x->e_mbd.current_base_qindex, delta_q_res);
+   x->rdmult_cur_qindex = current_qindex;
+   MACROBLOCKD *const xd = &x->e_mbd;
+   const int adjusted_qindex = av1_adjust_q_from_delta_q_res(

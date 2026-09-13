@@ -203,6 +203,22 @@ pub fn av1_adjust_q_from_delta_q_res(delta_q_res: i32, prev_qindex: i32, curr_qi
     (prev_qindex + sign * abs_dq).max(MINQ + 1)
 }
 
+/// `av1_get_sbq_variance_boost` (aq_variance.c): the raw (pre-deadzone) per-SB
+/// qindex under `DELTA_Q_VARIANCE_BOOST` — variance of the SB's luma source,
+/// boosted against the frame `base_qindex`. Split out so `setup_delta_q_nonrd`'s
+/// frozen-base arm can feed it to [`av1_adjust_q_from_delta_q_res`] itself.
+pub fn variance_boost_raw_qindex(
+    src: &[u16],
+    sb_off: usize,
+    stride: usize,
+    bd: u8,
+    base_qindex: i32,
+    deltaq_strength: u32,
+) -> i32 {
+    let variance = variance_boost_block_variance(src, sb_off, stride, bd);
+    av1_get_sbq_variance_boost(base_qindex, bd, deltaq_strength, variance)
+}
+
 /// The per-SB qindex of `setup_delta_q` (encodeframe.c:341-370) under
 /// `DELTA_Q_VARIANCE_BOOST`: boost from the SB's source variance, then
 /// deadzone-quantize against the RUNNING `current_base_qindex` (updated by
@@ -219,8 +235,7 @@ pub fn setup_delta_q_variance_boost(
     delta_q_res: i32,
     current_base_qindex: i32,
 ) -> i32 {
-    let variance = variance_boost_block_variance(src, sb_off, stride, bd);
-    let boosted = av1_get_sbq_variance_boost(base_qindex, bd, deltaq_strength, variance);
+    let boosted = variance_boost_raw_qindex(src, sb_off, stride, bd, base_qindex, deltaq_strength);
     av1_adjust_q_from_delta_q_res(delta_q_res, current_base_qindex, boosted)
 }
 

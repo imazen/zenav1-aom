@@ -1893,58 +1893,22 @@ pub fn pack_tile_lr_stop(
             // variance modifier below folds on top, exactly C's
             // init_plane_quantizers -> setup_block_rdmult order).
             let (sb_current_qindex, dq_rows) = if let Some(dq) = &env.deltaq {
-                // `setup_delta_q` (encodeframe.c:341): mode 3 (PERCEPTUAL_AI)
-                // reads the SB qindex from the precomputed wiener-variance map;
-                // mode 6 (VARIANCE_BOOST) derives it from the SB source
-                // variance. Both then deadzone-quantize against the running
-                // base via `av1_adjust_q_from_delta_q_res`.
-                let adjusted = if let Some(map) = dq.perceptual_ai {
-                    crate::allintra_vis::setup_delta_q_perceptual_ai(
-                        map,
-                        dq.base_qindex,
-                        env.bd,
-                        dq.delta_q_res,
-                        dq.sb_mi,
-                        mi_row,
-                        mi_col,
-                        search_base_qindex,
-                    )
-                } else if let Some(is_screen) = dq.perceptual_wavelet {
-                    // `setup_delta_q` (encodeframe.c:330, DELTA_Q_PERCEPTUAL):
-                    // the SB source wavelet AC energy → the rate-ratio qindex,
-                    // deadzone-quantized against the running base. SB is square
-                    // (sb_mi×sb_mi); num_pels_log2 = log2(sb_px²).
-                    let sb_off =
-                        env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
-                    let sb_px = dq.sb_mi as usize * 4;
-                    let num_pels_log2 = (sb_px * sb_px).trailing_zeros();
-                    crate::allintra_vis::setup_delta_q_perceptual(
-                        env.src_y,
-                        sb_off,
-                        env.stride,
-                        env.bd,
-                        dq.base_qindex,
-                        is_screen,
-                        sb_px,
-                        sb_px,
-                        num_pels_log2,
-                        dq.delta_q_res,
-                        search_base_qindex,
-                    )
-                } else {
-                    let sb_off =
-                        env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
-                    crate::allintra_vis::setup_delta_q_variance_boost(
-                        env.src_y,
-                        sb_off,
-                        env.stride,
-                        env.bd,
-                        dq.base_qindex,
-                        dq.deltaq_strength,
-                        dq.delta_q_res,
-                        search_base_qindex,
-                    )
-                };
+                // `setup_delta_q` (encodeframe.c:330-355): the mode dispatch
+                // (wiener map / wavelet energy / source variance) then
+                // deadzone-quantize against the running base via
+                // `av1_adjust_q_from_delta_q_res` — shared helper so every
+                // emit pass derives the same per-SB sequence.
+                let sb_off =
+                    env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+                let adjusted = dq.sb_qindex(
+                    env.src_y,
+                    sb_off,
+                    env.stride,
+                    env.bd,
+                    mi_row,
+                    mi_col,
+                    search_base_qindex,
+                );
                 // av1_update_state: advance the running base (see the init
                 // comment for the always-true gate on this envelope).
                 search_base_qindex = adjusted;
@@ -1957,24 +1921,32 @@ pub fn pack_tile_lr_stop(
             } else {
                 (pack_cfg.base_qindex, None)
             };
-            let sb_base_rdmult = if env.deltaq.is_some() {
-                // av1_compute_rd_mult at the SB's adjusted qindex
-                // (qindex_rdmult = qindex + y_dc_delta_q, y_dc_delta_q == 0).
-                crate::rd::av1_compute_rd_mult_based_on_qindex(
-                    env.bd,
-                    crate::rd::FrameUpdateType::Kf,
-                    sb_current_qindex,
-                    if env.tune.iq_tuning {
-                        crate::rd::TuneMetric::Iq
-                    } else {
-                        crate::rd::TuneMetric::Psnr
-                    },
-                    if pick_cfg.allintra {
-                        crate::rd::EncMode::Allintra
-                    } else {
-                        crate::rd::EncMode::Good
-                    },
-                )
+            let sb_base_rdmult = if let Some(dq) = &env.deltaq {
+                if dq.nonrd {
+                    // `setup_block_rdmult`'s `av1_get_cb_rdmult` arm is gated
+                    // `!use_nonrd_pick_mode` (partition_search.c:621-624): on
+                    // the nonrd walk `x->rdmult` stays at frame `RDMULT` while
+                    // only the quantizer rows follow the SB qindex.
+                    env.rdmult
+                } else {
+                    // av1_compute_rd_mult at the SB's adjusted qindex
+                    // (qindex_rdmult = qindex + y_dc_delta_q, y_dc_delta_q == 0).
+                    crate::rd::av1_compute_rd_mult_based_on_qindex(
+                        env.bd,
+                        crate::rd::FrameUpdateType::Kf,
+                        sb_current_qindex,
+                        if env.tune.iq_tuning {
+                            crate::rd::TuneMetric::Iq
+                        } else {
+                            crate::rd::TuneMetric::Psnr
+                        },
+                        if pick_cfg.allintra {
+                            crate::rd::EncMode::Allintra
+                        } else {
+                            crate::rd::EncMode::Good
+                        },
+                    )
+                }
             } else {
                 env.rdmult
             };
@@ -2090,6 +2062,12 @@ pub fn pack_tile_lr_stop(
             // the pre-Option behaviour.
             let sb_pick_cfg = match &sb_real {
                 Some(sb_real) => PickFrameCfg {
+                    // `x->qindex` (set by `init_plane_quantizers` to the
+                    // delta-q-adjusted SB qindex): every search-time
+                    // qindex read — the HORZ4/VERT4 num_win_thresh prune,
+                    // the rect-split qidx prune, tx early-skip thresholds —
+                    // sees the SB value, == frame base when delta-q is off.
+                    qindex: sb_current_qindex,
                     mode_costs: &sb_real.mode_costs,
                     // KB-41: the palette size / colour-index tables follow the
                     // same refresh as every other mode cost (rd.c fills them in
@@ -2121,6 +2099,8 @@ pub fn pack_tile_lr_stop(
                     ..*pick_cfg
                 },
                 None => PickFrameCfg {
+                    // Same `x->qindex` override as the Some arm.
+                    qindex: sb_current_qindex,
                     inter: match (&sb_inter_costs, pick_cfg.inter) {
                         (Some(c), Some(ic)) => {
                             Some(crate::partition_pick::InterSearchCfg { costs: c, ..ic })
@@ -2161,6 +2141,10 @@ pub fn pack_tile_lr_stop(
                 crate::var_part::choose_var_based_partitioning_key(
                     &mut vbp_stamps,
                     vf,
+                    // `base_qindex + x->delta_qindex` clamped
+                    // (var_based_part.c:1683-1687): the delta-q-adjusted SB
+                    // qindex, == frame base when delta-q is off.
+                    sb_current_qindex.clamp(0, 255),
                     env.src_y,
                     env.base_y,
                     env.stride,
@@ -2474,21 +2458,23 @@ pub fn pack_tile_from_trees_lr(
             let mi_row = mi_row0 + r * sb_mi;
             let mi_col = mi_col0 + c * sb_mi;
 
-            // Per-SB delta-q (Variance Boost) derivation — mirrors pack_tile's
-            // (same source-only inputs → identical per-SB qindex sequence as
-            // phase 1). With delta-q OFF this is (base_qindex, None) and
-            // `sb_base_rdmult == env.rdmult`, i.e. byte-identical to the prior
-            // CDEF-repack behaviour.
+            // Per-SB delta-q derivation — mirrors pack_tile's (same source-only
+            // inputs → identical per-SB qindex sequence as phase 1). With
+            // delta-q OFF this is (base_qindex, None) and `sb_base_rdmult ==
+            // env.rdmult`, i.e. byte-identical to the prior CDEF-repack
+            // behaviour. KB-58: this arm used to call ONLY the Variance-Boost
+            // formula even when `perceptual_wavelet`/`perceptual_ai` selected
+            // modes 2/3 — the repack then signaled a different qindex than the
+            // search priced (and than C).
             let (sb_current_qindex, dq_rows) = if let Some(dq) = &env.deltaq {
                 let sb_off = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
-                let adjusted = crate::allintra_vis::setup_delta_q_variance_boost(
+                let adjusted = dq.sb_qindex(
                     env.src_y,
                     sb_off,
                     env.stride,
                     env.bd,
-                    dq.base_qindex,
-                    dq.deltaq_strength,
-                    dq.delta_q_res,
+                    mi_row,
+                    mi_col,
                     search_base_qindex,
                 );
                 search_base_qindex = adjusted;
@@ -2501,22 +2487,29 @@ pub fn pack_tile_from_trees_lr(
             } else {
                 (pack_cfg.base_qindex, None)
             };
-            let sb_base_rdmult = if env.deltaq.is_some() {
-                crate::rd::av1_compute_rd_mult_based_on_qindex(
-                    env.bd,
-                    crate::rd::FrameUpdateType::Kf,
-                    sb_current_qindex,
-                    if env.tune.iq_tuning {
-                        crate::rd::TuneMetric::Iq
-                    } else {
-                        crate::rd::TuneMetric::Psnr
-                    },
-                    if pick_cfg.allintra {
-                        crate::rd::EncMode::Allintra
-                    } else {
-                        crate::rd::EncMode::Good
-                    },
-                )
+            let sb_base_rdmult = if let Some(dq) = &env.deltaq {
+                if dq.nonrd {
+                    // `av1_get_cb_rdmult` is gated `!use_nonrd_pick_mode`
+                    // (partition_search.c:621-624): the nonrd emit's trellis
+                    // rdmult stays at frame `RDMULT` here too.
+                    env.rdmult
+                } else {
+                    crate::rd::av1_compute_rd_mult_based_on_qindex(
+                        env.bd,
+                        crate::rd::FrameUpdateType::Kf,
+                        sb_current_qindex,
+                        if env.tune.iq_tuning {
+                            crate::rd::TuneMetric::Iq
+                        } else {
+                            crate::rd::TuneMetric::Psnr
+                        },
+                        if pick_cfg.allintra {
+                            crate::rd::EncMode::Allintra
+                        } else {
+                            crate::rd::EncMode::Good
+                        },
+                    )
+                }
             } else {
                 env.rdmult
             };

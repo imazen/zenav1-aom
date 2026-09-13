@@ -2216,9 +2216,10 @@ pub fn encode_key_frame_with(
 
     if std::env::var_os("AOM_SCT_DBG").is_some() {
         eprintln!(
-            "[sct-port] allow={} ibc={} palette={} intrabc={} photo={}",
-            sct.allow_screen_content_tools, sct.allow_intrabc, sct.count_palette,
-            sct.count_intrabc, sct.count_photo
+            "[sct-port] allow={} ibc={} sctype={} palette={} intrabc={} photo={}",
+            sct.allow_screen_content_tools, sct.allow_intrabc,
+            sct.is_screen_content_type, sct.count_palette, sct.count_intrabc,
+            sct.count_photo
         );
     }
     let mut p = derive_frame_header(cfg, &seq, &sct, tile_info);
@@ -2365,7 +2366,10 @@ pub fn encode_key_frame_with(
             _ => crate::allintra_vis::DELTA_Q_RES_PERCEPTUAL,
         };
         let num_pels_log2 = (sb_px * sb_px).trailing_zeros();
-        let dq2_screen = sct.allow_screen_content_tools;
+        // `av1_rc_bits_per_mb`'s `is_screen_content_type` (ratectrl.c:276) —
+        // the stricter DETECTED type, not `allow_screen_content_tools`
+        // (encoder.c:2420-2422 vs :2409).
+        let dq2_screen = sct.is_screen_content_type;
         let (per_sb, used) = replay_sb_qindex_tile_order(
             &tile_grid,
             n_sb_x,
@@ -2373,7 +2377,28 @@ pub fn encode_key_frame_with(
             qindex,
             |mi_row, mi_col, running| {
                 let sb_off = mi_row as usize * 4 * stride + mi_col as usize * 4;
-                match quality.deltaq_mode {
+                let adj = match quality.deltaq_mode {
+                    // `setup_delta_q_nonrd` (encodeframe.c:246-277) at nonrd
+                    // speeds: modes 2/3 get the base qindex; VARIANCE_BOOST
+                    // still computes its boost — but the DEFERRED emit keeps
+                    // `xd->current_base_qindex` at the frame base for the whole
+                    // tile, so the deadzone adjust runs against `qindex`, not
+                    // the advancing `running` (KB-58).
+                    _ if nonrd_delta_q => {
+                        let raw = if quality.deltaq_mode == DeltaQMode::VarianceBoost {
+                            crate::allintra_vis::variance_boost_raw_qindex(
+                                &src_y,
+                                sb_off,
+                                stride,
+                                bd,
+                                qindex,
+                                quality.deltaq_strength,
+                            )
+                        } else {
+                            qindex
+                        };
+                        crate::allintra_vis::av1_adjust_q_from_delta_q_res(res, qindex, raw)
+                    }
                     DeltaQMode::VarianceBoost => {
                         crate::allintra_vis::setup_delta_q_variance_boost(
                             &src_y,
@@ -2385,9 +2410,6 @@ pub fn encode_key_frame_with(
                             res,
                             running,
                         )
-                    }
-                    _ if nonrd_delta_q => {
-                        crate::allintra_vis::setup_delta_q_nonrd(qindex, res, running)
                     }
                     DeltaQMode::PerceptualAi => {
                         crate::allintra_vis::setup_delta_q_perceptual_ai(
@@ -2415,7 +2437,15 @@ pub fn encode_key_frame_with(
                         running,
                     ),
                     DeltaQMode::Off => unreachable!("deltaq_live"),
+                };
+                if std::env::var_os("AOM_DQ_DBG").is_some() {
+                    eprintln!(
+                        "[dq-port] sb({},{}) mode={:?} adj={} base={} run={} res={}",
+                        mi_row / sb_mi, mi_col / sb_mi, quality.deltaq_mode,
+                        adj, qindex, running, res
+                    );
                 }
+                adj
             },
         );
         (per_sb, used, res)
@@ -2494,9 +2524,10 @@ pub fn encode_key_frame_with(
             deltaq_strength: quality.deltaq_strength,
             perceptual_ai: weber_map.as_ref(),
             perceptual_wavelet: (quality.deltaq_mode == DeltaQMode::Perceptual)
-                .then_some(sct.allow_screen_content_tools),
+                .then_some(sct.is_screen_content_type),
             sb_mi,
             delta_lf_present,
+            nonrd: nonrd_delta_q,
         }),
     };
     // `--disable-trellis-quant`: the search runs trellis iff
