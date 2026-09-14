@@ -13,8 +13,8 @@
 #   pub types (struct/enum/trait/alias)       278
 #   pub consts/statics                        638
 #   free functions                            617
-#   inherent methods                          923
-#   struct fields                            1928
+#   inherent methods                          925
+#   struct fields                            1927
 #   enum variants                             174
 #   re-exports                                  1
 #   trait roster entries (type × trait)      1088
@@ -23,11 +23,11 @@
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4611
+#   aom_encode                     4612
 #   u16                               3
 #   u8                                3
 
-## items (4603 lines)
+## items (4604 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -805,7 +805,6 @@ pub aom_encode::intrabc_search::IntrabcBest::rdcost: i64
 pub aom_encode::intrabc_search::IntrabcBest::skip_txfm: bool
 pub aom_encode::intrabc_search::IntrabcBest::tx_size: usize
 pub aom_encode::intrabc_search::IntrabcBest::tx_type_map: alloc::vec::Vec<u8>
-pub aom_encode::intrabc_search::IntrabcHashTable::buckets: std::collections::hash::map::HashMap<u32, alloc::vec::Vec<aom_encode::intrabc_search::BlockHash>>
 pub aom_encode::intrabc_search::IntrabcHashTable::crc: aom_encode::intrabc_search::Crc32c
 pub aom_encode::intrabc_search::IntrabcLeafArgs::above_ctx: [&'a [i8]; 3]
 pub aom_encode::intrabc_search::IntrabcLeafArgs::bd: u8
@@ -3181,6 +3180,8 @@ pub fn aom_encode::intrabc_search::FullMvLimits::clone(&self) -> aom_encode::int
 pub fn aom_encode::intrabc_search::FullMvLimits::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::intrabc_search::IntrabcBest::clone(&self) -> aom_encode::intrabc_search::IntrabcBest
 pub fn aom_encode::intrabc_search::IntrabcBest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn aom_encode::intrabc_search::IntrabcHashTable::bucket_iter(&self, u32) -> impl core::iter::traits::iterator::Iterator<Item = &aom_encode::intrabc_search::BlockHash>
+pub fn aom_encode::intrabc_search::IntrabcHashTable::bucket_len(&self, u32) -> usize
 pub fn aom_encode::intrabc_search::IntrabcVarTxKnobs::clone(&self) -> aom_encode::intrabc_search::IntrabcVarTxKnobs
 pub fn aom_encode::intrabc_search::IntrabcVarTxKnobs::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::intrabc_search::build_intrabc_hash_table(&[u16], usize, usize, usize, usize, bool, usize) -> aom_encode::intrabc_search::IntrabcHashTable

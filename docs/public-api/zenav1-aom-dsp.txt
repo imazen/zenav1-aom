@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1818 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
+# files: zenav1-aom-dsp.txt 1820 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 2
 
 ## summary
@@ -15,7 +15,7 @@
 #   pub types (struct/enum/trait/alias)        93
 #   pub consts/statics                        205
 #   pub macros                                  1
-#   free functions                            604
+#   free functions                            606
 #   inherent methods                           97
 #   struct fields                             706
 #   enum variants                              13
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            3
-#   aom_dsp                        1775
+#   aom_dsp                        1777
 
-## items (1742 lines)
+## items (1744 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -261,7 +261,9 @@ pub fn aom_dsp::dist::obmc::obmc_variance(&[u8], usize, usize, &[i32], &[i32], u
 pub mod aom_dsp::dist::simd
 pub fn aom_dsp::dist::simd::block_error_simd(&[i32], &[i32]) -> (i64, i64)
 pub fn aom_dsp::dist::simd::sad_simd(&[u8], usize, &[u8], usize, usize, usize) -> u32
+pub fn aom_dsp::dist::simd::sad_u16_simd(&[u16], usize, &[u16], usize, usize, usize) -> u32
 pub fn aom_dsp::dist::simd::sum_squares_2d_i16_simd(&[i16], usize, usize, usize) -> u64
+pub fn aom_dsp::dist::simd::variance_u16_simd(&[u16], usize, &[u16], usize, usize, usize) -> u32
 pub static aom_dsp::dist::BILINEAR_FILTERS_2T: [[u8; 2]; 8]
 pub fn aom_dsp::dist::block_error(&[i32], &[i32]) -> (i64, i64)
 pub fn aom_dsp::dist::block_error_qm(&[i32], &[i32], &[u8], &[i16], u8) -> (i64, i64)

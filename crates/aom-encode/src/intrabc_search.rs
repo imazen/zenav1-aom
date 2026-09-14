@@ -36,7 +36,6 @@
 //! flag selects the C hbd hash arms (xor-fold) exactly as
 //! `is_cur_buf_hbd(xd)` does.
 
-use std::collections::HashMap;
 
 /// `kSrcBits` (hash_motion.c).
 const K_SRC_BITS: u32 = 16;
@@ -129,9 +128,70 @@ pub struct BlockHash {
 /// `hash_table` + `IntraBCHashInfo`: bucket map keyed by `hash_value1`
 /// (`(crc & 0xffff) + (size_index << 16)`), insertion-ordered buckets capped
 /// at 256 candidates.
+///
+/// Flat layout: `hash_value1` is bounded (`size_index <= 5`, `K_SRC_BITS = 16`
+/// crc bits), so the table is a heads/tails/lens index over one append-only
+/// `arena` rather than a `HashMap<u32, Vec<_>>` — the map form paid a hash +
+/// `entry()` probe plus a growing `Vec` allocation per insert over ~`w*h`
+/// positions x four size layers, and an `O(buckets)` dealloc teardown, ~10 %
+/// of a 1080p screen encode (measured 2026-09-13). The chain links preserve
+/// C's exact per-bucket insertion order, which the `take(64)`
+/// first-candidates rule consumes.
 pub struct IntrabcHashTable {
-    pub buckets: HashMap<u32, Vec<BlockHash>>,
+    /// Append-only entry arena; each entry's `next` links the per-bucket
+    /// chain, preserving C's per-bucket insertion order (the `take(64)`
+    /// first-candidates rule consumes it).
+    arena: Vec<HashEntry>,
+    /// `heads[k]`: arena index of bucket `k`'s first entry, `u32::MAX` when
+    /// empty. `lens[k]` is the bucket's length. (The builder's `tails` index
+    /// is local to `build_intrabc_hash_table`.)
+    heads: Vec<u32>,
+    lens: Vec<u32>,
     pub crc: Crc32c,
+}
+
+/// One arena slot: the `BlockHash` plus the bucket chain link.
+#[derive(Clone, Copy)]
+struct HashEntry {
+    bh: BlockHash,
+    next: u32,
+}
+
+/// `6 << K_SRC_BITS`: size indices 0..=5 (BLOCK_4X4..BLOCK_128X128) over the
+/// 16 crc bits of `hash_value1`.
+const HASH_TABLE_KEYS: usize = 6 << K_SRC_BITS;
+const NO_ENTRY: u32 = u32::MAX;
+
+impl IntrabcHashTable {
+    /// Bucket length for `hash_value1` (0 when never inserted).
+    #[inline]
+    pub fn bucket_len(&self, hash_value1: u32) -> usize {
+        let k = hash_value1 as usize;
+        if k >= HASH_TABLE_KEYS {
+            return 0;
+        }
+        self.lens[k] as usize
+    }
+
+    /// `hash_table` lookup by `hash_value1`: iterates the bucket in C's
+    /// insertion order, empty when the key was never inserted.
+    #[inline]
+    pub fn bucket_iter(&self, hash_value1: u32) -> impl Iterator<Item = &BlockHash> {
+        let head = if (hash_value1 as usize) < HASH_TABLE_KEYS {
+            self.heads[hash_value1 as usize]
+        } else {
+            NO_ENTRY
+        };
+        let mut cur = head;
+        std::iter::from_fn(move || {
+            if cur == NO_ENTRY {
+                return None;
+            }
+            let e = &self.arena[cur as usize];
+            cur = e.next;
+            Some(&e.bh)
+        })
+    }
 }
 
 /// `hash_block_size_to_index` (hash_motion.c).
@@ -227,14 +287,16 @@ fn generate_block_hash_layer(
 }
 
 /// `av1_add_to_hash_map_by_row_with_precal_data`: the hierarchical
-/// (coarse-to-fine, no-two-adjacent) exploration that inserts every candidate
-/// block position for one `block_size` layer.
+/// (coarse-to-fine, no-two-adjacent) exploration over one `block_size` layer,
+/// emitting each candidate `(hash_value1, x, y, hash_value2)` in C's insertion
+/// order. Run twice by the builder: once to count per-bucket lengths (the
+/// `K_MAX_CANDIDATES_PER_BUCKET` cap applied), once to scatter.
 fn add_to_hash_map_by_row(
-    buckets: &mut HashMap<u32, Vec<BlockHash>>,
     pic_hash: &[u32],
     pic_width: usize,
     pic_height: usize,
     block_size: usize,
+    mut emit: impl FnMut(u32, BlockHash),
 ) {
     // C: int x_end/y_end go negative for layers larger than the frame.
     let x_end = (pic_width + 1).saturating_sub(block_size);
@@ -254,15 +316,14 @@ fn add_to_hash_map_by_row(
             let mut y_pos = y_offset;
             while y_pos < y_end {
                 let pos = y_pos * pic_width + x_pos;
-                let hash_value1 = (pic_hash[pos] & crc_mask) + add_value;
-                let bucket = buckets.entry(hash_value1).or_default();
-                if bucket.len() < K_MAX_CANDIDATES_PER_BUCKET {
-                    bucket.push(BlockHash {
+                emit(
+                    (pic_hash[pos] & crc_mask) + add_value,
+                    BlockHash {
                         x: x_pos as i16,
                         y: y_pos as i16,
                         hash_value2: pic_hash[pos],
-                    });
-                }
+                    },
+                );
                 y_pos += step;
             }
             x_pos += step;
@@ -299,9 +360,12 @@ pub fn build_intrabc_hash_table(
     sb_px: usize,
 ) -> IntrabcHashTable {
     let crc = Crc32c::new();
-    let mut buckets = HashMap::new();
     let mut buf0 = vec![0u32; width * height];
     let mut buf1 = vec![0u32; width * height];
+    let mut heads = vec![NO_ENTRY; HASH_TABLE_KEYS];
+    let mut tails = vec![NO_ENTRY; HASH_TABLE_KEYS];
+    let mut lens = vec![0u32; HASH_TABLE_KEYS];
+    let mut arena: Vec<HashEntry> = Vec::new();
 
     generate_block_2x2_hash(src, off, stride, width, height, is_hbd, &mut buf0);
     let max_size = 64.min(sb_px);
@@ -320,12 +384,30 @@ pub fn build_intrabc_hash_table(
         }
         let d: &[u32] = if src_is_0 { &buf1 } else { &buf0 };
         if size >= min_alloc_size {
-            add_to_hash_map_by_row(&mut buckets, d, width, height, size);
+            add_to_hash_map_by_row(d, width, height, size, |h1, bh| {
+                let k = h1 as usize;
+                if lens[k] < K_MAX_CANDIDATES_PER_BUCKET as u32 {
+                    let idx = arena.len() as u32;
+                    arena.push(HashEntry { bh, next: NO_ENTRY });
+                    if tails[k] == NO_ENTRY {
+                        heads[k] = idx;
+                    } else {
+                        arena[tails[k] as usize].next = idx;
+                    }
+                    tails[k] = idx;
+                    lens[k] += 1;
+                }
+            });
         }
         size *= 2;
         src_is_0 = !src_is_0;
     }
-    IntrabcHashTable { buckets, crc }
+    IntrabcHashTable {
+        arena,
+        heads,
+        lens,
+        crc,
+    }
 }
 
 /// `av1_get_block_hash_value`: the query block's `(hash_value1, hash_value2)`
@@ -340,7 +422,9 @@ pub fn get_block_hash_value(
 ) -> (u32, u32) {
     let add_value = (hash_block_size_to_index(block_size) as u32) << K_SRC_BITS;
     let crc_mask = (1u32 << K_SRC_BITS) - 1;
-    let mut buf = [vec![0u32; BLOCK_HASH_BUF], vec![0u32; BLOCK_HASH_BUF]];
+    // Stack arrays, not `vec!` — this runs once per hash-eligible block, so
+    // two 16 KB heap allocs per call were measurable allocator churn.
+    let mut buf = [[0u32; BLOCK_HASH_BUF]; 2];
 
     // 2x2 sub-block hashes.
     let mut sub_block_in_width = block_size >> 1;
@@ -664,17 +748,15 @@ pub fn variance_wxh(
     w: usize,
     h: usize,
 ) -> u32 {
-    let mut sum: i64 = 0;
-    let mut sse: u64 = 0;
-    for r in 0..h {
-        for c in 0..w {
-            let d = i64::from(src[src_off + r * src_stride + c])
-                - i64::from(refb[ref_off + r * ref_stride + c]);
-            sum += d;
-            sse += (d * d) as u64;
-        }
-    }
-    (sse - ((sum * sum) as u64) / (w as u64 * h as u64)) as u32
+    let _ = aom_dsp::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    aom_dsp::dist::simd::variance_u16_simd(
+        &src[src_off..],
+        src_stride,
+        &refb[ref_off..],
+        ref_stride,
+        w,
+        h,
+    )
 }
 
 /// `aom_sad{w}x{h}`: the diamond search's SAD metric.
@@ -688,15 +770,15 @@ pub fn sad_wxh(
     w: usize,
     h: usize,
 ) -> u32 {
-    let mut sad: u64 = 0;
-    for r in 0..h {
-        for c in 0..w {
-            let d = i64::from(src[src_off + r * src_stride + c])
-                - i64::from(refb[ref_off + r * ref_stride + c]);
-            sad += d.unsigned_abs();
-        }
-    }
-    sad as u32
+    let _ = aom_dsp::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    aom_dsp::dist::simd::sad_u16_simd(
+        &src[src_off..],
+        src_stride,
+        &refb[ref_off..],
+        ref_stride,
+        w,
+        h,
+    )
 }
 
 #[cfg(test)]
@@ -792,16 +874,14 @@ mod tests {
     /// (the C doc-comment's 8x8/block-4 example: 25 candidates).
     #[test]
     fn exploration_visits_all_once() {
-        let mut buckets: HashMap<u32, Vec<BlockHash>> = HashMap::new();
         // 8x8 picture, block 4 -> x_end = y_end = 5 -> 25 candidates. Use a
         // constant hash so they all land in one bucket.
         let pic_hash = vec![7u32; 8 * 8];
-        add_to_hash_map_by_row(&mut buckets, &pic_hash, 8, 8, 4);
-        let bucket = buckets.values().next().unwrap();
-        assert_eq!(buckets.len(), 1);
+        let mut bucket = Vec::new();
+        add_to_hash_map_by_row(&pic_hash, 8, 8, 4, |_, bh| bucket.push(bh));
         assert_eq!(bucket.len(), 25);
         let mut seen = std::collections::HashSet::new();
-        for b in bucket {
+        for b in &bucket {
             assert!(seen.insert((b.x, b.y)), "duplicate visit ({},{})", b.x, b.y);
             assert!(b.x <= 4 && b.y <= 4);
         }
@@ -947,9 +1027,9 @@ mod tests {
         assert_eq!((h1a, h2a), (h1b, h2b), "identical blocks must hash equal");
         // And the table must contain candidates for that bucket, including
         // both repeat positions.
-        let bucket = table.buckets.get(&h1a).expect("bucket exists");
         let mut found = [false; 2];
-        for b in bucket.iter().filter(|b| b.hash_value2 == h2a) {
+        assert!(table.bucket_len(h1a) > 0, "bucket exists");
+        for b in table.bucket_iter(h1a).filter(|b| b.hash_value2 == h2a) {
             if (b.x, b.y) == (0, 0) {
                 found[0] = true;
             }
@@ -2151,63 +2231,62 @@ pub fn rd_pick_intrabc_mode_sb(
         } else {
             (u32::MAX, 0)
         };
-        if let Some(bucket) = a.hash.buckets.get(&h1).filter(|_| hash_eligible) {
-            if bucket.len() > 1 {
-                let x_pos = a.mi_col * MI_SIZE;
-                let y_pos = a.mi_row * MI_SIZE;
-                let mut best_hash_cost = i64::MAX;
-                // `prune_intrabc_candidate_block_hash_search` (speed >= 1):
-                // `count = AOMMIN(64, count)` (mcomp.c:1944) — the FIRST 64
-                // entries in insertion order, after the `count <= 1` bail.
-                let count = if a.mv_sf.prune_intrabc_candidate_block_hash_search {
-                    bucket.len().min(64)
-                } else {
-                    bucket.len()
-                };
-                for cand in bucket.iter().take(count) {
-                    if cand.hash_value2 != h2 {
-                        continue;
-                    }
-                    let dv_r = (i32::from(cand.y) - y_pos) * 8;
-                    let dv_c = (i32::from(cand.x) - x_pos) * 8;
-                    if !is_dv_valid(
-                        dv_r, dv_c, a.mi_row, a.mi_col, a.bsize, a.tile, a.mib_size_log2,
-                        a.is_chroma_ref, if a.monochrome { 1 } else { 3 }, a.ss_x as i32,
-                        a.ss_y as i32,
-                    ) {
-                        continue;
-                    }
-                    let fm_r = i32::from(cand.y) - y_pos;
-                    let fm_c = i32::from(cand.x) - x_pos;
-                    if fm_r < lim.row_min
-                        || fm_r > lim.row_max
-                        || fm_c < lim.col_min
-                        || fm_c > lim.col_max
-                    {
-                        continue;
-                    }
-                    // get_mvpred_var_cost: variance(src, SOURCE@mv) + mv_err_cost.
-                    // The C intrabc search's reference buffer is the SOURCE
-                    // frame, not the recon: rd_pick_intrabc_mode_sb sets
-                    // `xd->plane[i].pre[0]` from `xd->cur_buf` (av1_setup_pred_
-                    // block, rdopt.c:3482) and `xd->cur_buf = cpi->source`
-                    // (encoder.c:4121, encodeframe.c:217). Only the RD stage
-                    // (av1_enc_build_inter_predictor) predicts from the recon.
-                    let ref_off = (a.off_y as i64
-                        + i64::from(fm_r) * a.stride as i64
-                        + i64::from(fm_c)) as usize;
-                    let var =
-                        variance_wxh(a.src_y, a.off_y, a.stride, a.src_y, ref_off, a.stride, bw, bh);
-                    let cost = i64::from(var)
-                        + i64::from(mv_err_cost(dv_r - ref_r, dv_c - ref_c, a.dv_costs, a.error_per_bit));
-                    if cost < best_hash_cost {
-                        best_hash_cost = cost;
-                        best_mv = Some((fm_r, fm_c));
-                    }
+        let bucket_len = if hash_eligible { a.hash.bucket_len(h1) } else { 0 };
+        if bucket_len > 1 {
+            let x_pos = a.mi_col * MI_SIZE;
+            let y_pos = a.mi_row * MI_SIZE;
+            let mut best_hash_cost = i64::MAX;
+            // `prune_intrabc_candidate_block_hash_search` (speed >= 1):
+            // `count = AOMMIN(64, count)` (mcomp.c:1944) — the FIRST 64
+            // entries in insertion order, after the `count <= 1` bail.
+            let count = if a.mv_sf.prune_intrabc_candidate_block_hash_search {
+                bucket_len.min(64)
+            } else {
+                bucket_len
+            };
+            for cand in a.hash.bucket_iter(h1).take(count) {
+                if cand.hash_value2 != h2 {
+                    continue;
                 }
-                if best_mv.is_some() {
-                    bestsme = best_hash_cost;
+                let dv_r = (i32::from(cand.y) - y_pos) * 8;
+                let dv_c = (i32::from(cand.x) - x_pos) * 8;
+                if !is_dv_valid(
+                    dv_r, dv_c, a.mi_row, a.mi_col, a.bsize, a.tile, a.mib_size_log2,
+                    a.is_chroma_ref, if a.monochrome { 1 } else { 3 }, a.ss_x as i32,
+                    a.ss_y as i32,
+                ) {
+                    continue;
                 }
+                let fm_r = i32::from(cand.y) - y_pos;
+                let fm_c = i32::from(cand.x) - x_pos;
+                if fm_r < lim.row_min
+                    || fm_r > lim.row_max
+                    || fm_c < lim.col_min
+                    || fm_c > lim.col_max
+                {
+                    continue;
+                }
+                // get_mvpred_var_cost: variance(src, SOURCE@mv) + mv_err_cost.
+                // The C intrabc search's reference buffer is the SOURCE
+                // frame, not the recon: rd_pick_intrabc_mode_sb sets
+                // `xd->plane[i].pre[0]` from `xd->cur_buf` (av1_setup_pred_
+                // block, rdopt.c:3482) and `xd->cur_buf = cpi->source`
+                // (encoder.c:4121, encodeframe.c:217). Only the RD stage
+                // (av1_enc_build_inter_predictor) predicts from the recon.
+                let ref_off = (a.off_y as i64
+                    + i64::from(fm_r) * a.stride as i64
+                    + i64::from(fm_c)) as usize;
+                let var =
+                    variance_wxh(a.src_y, a.off_y, a.stride, a.src_y, ref_off, a.stride, bw, bh);
+                let cost = i64::from(var)
+                    + i64::from(mv_err_cost(dv_r - ref_r, dv_c - ref_c, a.dv_costs, a.error_per_bit));
+                if cost < best_hash_cost {
+                    best_hash_cost = cost;
+                    best_mv = Some((fm_r, fm_c));
+                }
+            }
+            if best_mv.is_some() {
+                bestsme = best_hash_cost;
             }
         }
 

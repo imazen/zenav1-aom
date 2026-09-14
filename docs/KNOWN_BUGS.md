@@ -909,8 +909,8 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
 - **The gap.** `CLAUDE.md`'s "Zen codec cross-cutting compliance" section specs six contracts
   and the DECODER has all six; the encoder had `KeyFrameError` and nothing else. No stop
   token is the one that bites hardest: with screen-content tools on, the IntraBC DV search
-  runs **~80 s on a single 1080p screenshot at `--cpu-used 6`** against ~1 s for the oracle,
-  and a `--cpu-used 4` cell has been observed not finishing in 40 minutes (KB-41's perf
+  ran **~80 s on a single 1080p screenshot at `--cpu-used 6`** against ~1 s for the oracle
+  at the time (that cliff has since closed — ~0.75 s vs ~0.3 s at HEAD, see KB-41's perf
   note). A caller — or a server shedding load — had no way to say stop.
 - **LANDED, additively.** `aom_encode::key_frame::EncodeConfig` (a struct, not a bare token
   argument, so limits and an allocation mode can follow without another entry point) +
@@ -5780,9 +5780,14 @@ Was: `vgrad 256×256 cq32` (base_qindex 128) diverged at byte 5, never re-conver
   `scc_480x180_196_cq48` (1891 B) is now byte-exact and is promoted into `BYTE_EXACT_CELLS`**
   (its "3-rate-unit tx-size-cost gap" was this class). `cargo clippy --all-targets` is red on
   `noise_fft_gen.rs` / `pickcdef.rs:1175` / `prune_tx_2d.rs:47` — pre-existing, untouched here.
-- **Perf (Gate 3, screen content):** with IntraBC on, the port's DV search takes ~80 s per
-  1080p screenshot at cpu6 and a cpu4 cell had not finished after 40 min (oracle ≈ 1 s). The
-  zensim datagen arm defers screen-detected frames above 0.25 MP until this is fast.
+- **Perf (Gate 3, screen content):** with IntraBC on, the port's DV search took ~80 s per
+  1080p screenshot at cpu6 and a cpu4 cell had not finished after 40 min (oracle ≈ 1 s) —
+  **STALE: that figure predates this entry's own speed-feature fixes.** Re-measured
+  2026-09-13 on `Content::Screen` synth at cq32 s6: the port was already ~3.4x the oracle
+  (1962 ms vs 585 ms), and after the flat-arena hash table + u16 SIMD SAD/variance
+  kernels it is **~0.75 s vs ~0.3 s C (≈2.5x), byte-identical on every probed cell**
+  (`aom-bench/examples/ibc_time.rs`). The 0.25 MP datagen deferral note is likewise stale
+  — the cliff it guarded against no longer exists.
 
 ### KB-40 — Decoder: reported 12bpc inter divergence (GitHub #8) — NOT REPRODUCIBLE against the C oracle; the highbd inter envelope is now gated ✅ 2026-08-06
 

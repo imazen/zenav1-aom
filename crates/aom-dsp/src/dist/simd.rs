@@ -28,6 +28,64 @@ pub fn sad_simd(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, 
     sum
 }
 
+/// `aom_highbd_sad<W>x<H>` shape via `#[autoversion]` — SAD over this port's
+/// u16-at-any-depth planes (samples < 4096 in every reachable bit depth).
+/// The IntraBC full-pel DV search (`FullPelSearch::sad` -> `sad_wxh`) calls
+/// this per diamond-search site and per hash candidate — measured 11.7 % flat
+/// of a 1080p screen-content encode at `--cpu-used 6` (2026-09-13) when it was
+/// a scalar i64-per-element loop.
+///
+/// # Bit-exactness
+///
+/// Identical to the scalar form: `u32` lane sums cannot overflow (|diff| <=
+/// 4095 over at most 128*128 elements is under 2^24), and reassociation of an
+/// unsigned sum is exact.
+#[autoversion]
+pub fn sad_u16_simd(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize) -> u32 {
+    let mut sum = 0u32;
+    for y in 0..h {
+        let arow = &a[y * a_stride..y * a_stride + w];
+        let brow = &b[y * b_stride..y * b_stride + w];
+        for x in 0..w {
+            sum += (arow[x] as i32 - brow[x] as i32).unsigned_abs();
+        }
+    }
+    sum
+}
+
+/// `av1_get_mvpred_var_cost`'s variance call shape via `#[autoversion]` — the
+/// `sse - sum^2/(w*h)` integrand over u16 planes, from the IntraBC hash
+/// candidate evaluation (`variance_wxh`). Same call density as the SAD above.
+///
+/// # Bit-exactness
+///
+/// Identical to the scalar form: `d` fits i32 (|d| <= 4095), `d*d` fits u32
+/// (<= 2^24), `sum` fits i64 trivially, `sse` accumulates into u64 — every
+/// sum reassociation is exact integer arithmetic. The `sum*sum` product can
+/// reach ~(4095*16384)^2 < 2^53, inside u64.
+#[autoversion]
+pub fn variance_u16_simd(
+    a: &[u16],
+    a_stride: usize,
+    b: &[u16],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> u32 {
+    let mut sum = 0i64;
+    let mut sse = 0u64;
+    for y in 0..h {
+        let arow = &a[y * a_stride..y * a_stride + w];
+        let brow = &b[y * b_stride..y * b_stride + w];
+        for x in 0..w {
+            let d = arow[x] as i64 - brow[x] as i64;
+            sum += d;
+            sse += (d * d) as u64;
+        }
+    }
+    (sse - ((sum * sum) as u64) / (w as u64 * h as u64)) as u32
+}
+
 /// `av1_block_error_c` (`av1/encoder/rdopt.c`) via `#[autoversion]` — the
 /// transform-domain distortion at bd8, and one of the encoder's hottest loops
 /// (`dist_block_tx_domain` measured **61 ms against libaom's
