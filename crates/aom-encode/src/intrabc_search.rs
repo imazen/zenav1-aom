@@ -48,6 +48,13 @@ const BLOCK_HASH_BUF: usize = 4096;
 /// `CRC32C` + `av1_crc32c_calculator_init` (hash.c): the 8x256 slicing table.
 pub struct Crc32c {
     table: [[u32; 256]; 8],
+    /// Fixed-16-byte evaluation, one table per byte position: CRC is affine
+    /// in the message, so `value16(b) = ZERO16 ^ T16[0][b0] ^ ... ^ T16[15][b15]`
+    /// where `T16[i][b] = value(e_i·b) ^ value(0)` and `ZERO16 = value(0)`.
+    /// 16 independent loads + a XOR reduce, versus two serial 8-byte slicing
+    /// rounds — the hash layer build calls this ~w*h times per layer.
+    t16: [[u32; 256]; 16],
+    zero16: u32,
 }
 
 impl Crc32c {
@@ -72,7 +79,44 @@ impl Crc32c {
                 table[k][n] = crc;
             }
         }
-        Crc32c { table }
+        // Build the position tables by evaluating the general path on basis
+        // inputs — bit-exact against `value` by construction, no second
+        // implementation to audit.
+        let base = Crc32c { table, t16: [[0; 256]; 16], zero16: 0 };
+        let mut t16 = [[0u32; 256]; 16];
+        let zero16 = base.value(&[0u8; 16]);
+        for (i, t) in t16.iter_mut().enumerate() {
+            let mut basis = [0u8; 16];
+            for (b, slot) in t.iter_mut().enumerate() {
+                basis[i] = b as u8;
+                *slot = base.value(&basis) ^ zero16;
+            }
+        }
+        Crc32c { table, t16, zero16 }
+    }
+
+    /// [`Self::value`] specialised to a 16-byte input — the only shape the
+    /// hash layer/query paths ever feed (four LE u32 sub-hashes).
+    #[inline]
+    pub fn value16(&self, b: &[u8; 16]) -> u32 {
+        let t = &self.t16;
+        self.zero16
+            ^ t[0][b[0] as usize]
+            ^ t[1][b[1] as usize]
+            ^ t[2][b[2] as usize]
+            ^ t[3][b[3] as usize]
+            ^ t[4][b[4] as usize]
+            ^ t[5][b[5] as usize]
+            ^ t[6][b[6] as usize]
+            ^ t[7][b[7] as usize]
+            ^ t[8][b[8] as usize]
+            ^ t[9][b[9] as usize]
+            ^ t[10][b[10] as usize]
+            ^ t[11][b[11] as usize]
+            ^ t[12][b[12] as usize]
+            ^ t[13][b[13] as usize]
+            ^ t[14][b[14] as usize]
+            ^ t[15][b[15] as usize]
     }
 
     /// `av1_get_crc32c_value_c` (hash.c): little-endian 8-byte slicing.
@@ -278,7 +322,7 @@ fn generate_block_hash_layer(
             for (i, v) in p.iter().enumerate() {
                 bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
             }
-            dst_hash[pos] = crc.value(&bytes);
+            dst_hash[pos] = crc.value16(&bytes);
         }
     }
 }
@@ -466,7 +510,7 @@ pub fn get_block_hash_value(
                 for (i, v) in p.iter().enumerate() {
                     bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
                 }
-                d[dst_pos] = table.crc.value(&bytes);
+                d[dst_pos] = table.crc.value16(&bytes);
                 dst_pos += 1;
             }
         }
@@ -791,6 +835,23 @@ mod tests {
         // 16-byte (u32[4]) shape the hash layers feed.
         assert_eq!(crc.value(&[0u8; 16]), crc.value(&[0u8; 16]));
         assert_ne!(crc.value(&[0u8; 16]), crc.value(&[1u8; 16]));
+    }
+
+    /// `value16` (per-byte-position tables) must agree with `value` (serial
+    /// slicing) on every input — the position tables are built FROM `value`,
+    /// so this pins the affine decomposition itself.
+    #[test]
+    fn crc32c_value16_agrees_with_value() {
+        let crc = Crc32c::new();
+        let mut s = 0x9e3779b9u32;
+        for _ in 0..4096 {
+            let mut b = [0u8; 16];
+            for v in b.iter_mut() {
+                s = s.wrapping_mul(1664525).wrapping_add(1013904223);
+                *v = (s >> 24) as u8;
+            }
+            assert_eq!(crc.value16(&b), crc.value(&b), "value16 != value for {b:02x?}");
+        }
     }
 
     /// `intrabc_predict_chroma` must match the (bit-exact vs C) DECODER's
