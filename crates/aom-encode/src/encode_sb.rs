@@ -546,7 +546,8 @@ impl SbEncodeEnv<'_> {
         // `x->rdmult = (x->rdmult * x->intra_sb_rdmult_modifier) >> 7`,
         // floored at 1 (:652-657).
         let rdm = crate::partition_pick::fold_intra_sb_rdmult(folded, sc.intra_modifier);
-        if std::env::var_os("AOM_SSM_DBG").is_some() {
+        static SSM_DBG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *SSM_DBG.get_or_init(|| std::env::var_os("AOM_SSM_DBG").is_some()) {
             eprintln!("[ssm-port] node({mi_row},{mi_col}) bsize={bsize} rdm={rdm}");
         }
         rdm

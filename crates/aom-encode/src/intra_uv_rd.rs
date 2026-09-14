@@ -158,9 +158,14 @@ pub fn plane_px_dims(bsize: usize, ss_x: usize, ss_y: usize) -> (i32, i32) {
 /// dumps its per-mode rdcost line for (same convention as `AOM_PART_DBG`).
 /// Diagnostic only; inert when unset.
 fn uv_dbg_target() -> Option<(i32, i32)> {
-    std::env::var("AOM_UV_DBG").ok().and_then(|v| {
-        v.split_once(',')
-            .and_then(|(r, c)| r.parse::<i32>().ok().zip(c.parse::<i32>().ok()))
+    // Cached: this is read per txb per candidate mode, and an uncached
+    // `env::var` here measured 1.4% of the shipping-preset profile in getenv.
+    static T: std::sync::OnceLock<Option<(i32, i32)>> = std::sync::OnceLock::new();
+    *T.get_or_init(|| {
+        std::env::var("AOM_UV_DBG").ok().and_then(|v| {
+            v.split_once(',')
+                .and_then(|(r, c)| r.parse::<i32>().ok().zip(c.parse::<i32>().ok()))
+        })
     })
 }
 

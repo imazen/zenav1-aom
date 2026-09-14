@@ -566,10 +566,9 @@ pub fn encode_intra_block_plane_y(
             }
 
             // `AOM_TX_DBG=<mi_row>,<mi_col>` — final-encode eob trace.
-            if std::env::var("AOM_TX_DBG").ok().and_then(|v| {
-                let mut it = v.split(',');
-                Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
-            }).is_some_and(|(r, c): (i32, i32)| r == env.mi_row && c == env.mi_col) {
+            if crate::tx_search::tx_dbg_target()
+                .is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col)
+            {
                 let qh = qcoeff
                     .iter()
                     .take(64)

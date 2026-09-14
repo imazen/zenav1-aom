@@ -2253,7 +2253,8 @@ fn rd_pick_4partition(
     // `AOM_P4_NOBUDGET` — diagnostic: run the strip searches under an
     // unlimited budget to expose the candidate's true cost. The win/lose
     // compare still uses the real best_rdc.
-    let no_budget = std::env::var_os("AOM_P4_NOBUDGET").is_some();
+    static NO_BUDGET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let no_budget = *NO_BUDGET.get_or_init(|| std::env::var_os("AOM_P4_NOBUDGET").is_some());
     let unlimited = PartRdStats { rate: 0, dist: 0, rdcost: i64::MAX };
     let budget_rdc = if no_budget { &unlimited } else { best_rdc };
     // set_4_part_ctx_and_rdcost (:3898-3916).

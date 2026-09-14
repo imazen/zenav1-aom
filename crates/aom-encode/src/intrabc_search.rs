@@ -2625,7 +2625,8 @@ pub fn rd_pick_intrabc_mode_sb(
 
         if this_rd < best_rd {
             best_rd = this_rd;
-            if std::env::var_os("AOM_IBC_WIN").is_some() {
+            static IBC_WIN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *IBC_WIN.get_or_init(|| std::env::var_os("AOM_IBC_WIN").is_some()) {
                 eprintln!(
                     "[ibc-win] mi({},{}) bsize={} dv=({dv_r},{dv_c}) ref=({ref_r},{ref_c}) \
                      rd={this_rd} skip={choose_skip} yskip={y_skip} uv_skip={uv_skip}",

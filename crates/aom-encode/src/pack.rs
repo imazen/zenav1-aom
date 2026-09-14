@@ -392,7 +392,8 @@ pub fn pack_leaf(
     // reference the SEARCH coded the delta against? A mismatch means the
     // decoder reconstructs a different DV than the winner's.
 
-    if std::env::var_os("AOM_PACK_TRACE").is_some() {
+    static PACK_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *PACK_TRACE.get_or_init(|| std::env::var_os("AOM_PACK_TRACE").is_some()) {
         eprintln!(
             "[pk] mi({mi_row},{mi_col}) bs={bsize} part={partition} ibc={} skip={} \
              dv=({},{}) ref=({},{}) txsize={} mode={} fi={}/{}",
@@ -2887,7 +2888,8 @@ fn write_one_txb_inter(
     wmi_col: i32,
     wbsize: usize,
 ) {
-    if std::env::var_os("AOM_CTXB_TRACE").is_some() {
+    static CTXB_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *CTXB_TRACE.get_or_init(|| std::env::var_os("AOM_CTXB_TRACE").is_some()) {
         eprintln!(
             "[wtxb] mi({wmi_row},{wmi_col}) bs={wbsize} plane={plane} eob={} tsc={} dsc={} tx={tx_size}",
             txb.eob, txb.txb_skip_ctx, txb.dc_sign_ctx

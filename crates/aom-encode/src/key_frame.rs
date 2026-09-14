@@ -3193,7 +3193,8 @@ pub fn encode_key_frame_with(
                     ),
                     DeltaQMode::Off => unreachable!("deltaq_live"),
                 };
-                if std::env::var_os("AOM_DQ_DBG").is_some() {
+                static DQ_DBG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                if *DQ_DBG.get_or_init(|| std::env::var_os("AOM_DQ_DBG").is_some()) {
                     eprintln!(
                         "[dq-port] sb({},{}) mode={:?} adj={} base={} run={} res={}",
                         mi_row / sb_mi, mi_col / sb_mi, quality.deltaq_mode,
