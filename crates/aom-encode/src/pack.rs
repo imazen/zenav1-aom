@@ -1670,7 +1670,7 @@ pub fn pack_tile(
     )
 }
 
-/// [`pack_tile`] with a cooperative stop token, polled once per superblock row.
+/// [`pack_tile`] with a cooperative stop token, polled once per superblock.
 /// See [`pack_tile_lr_stop`] for the cadence and what a cancellation leaves
 /// behind.
 #[allow(clippy::too_many_arguments)]
@@ -1744,7 +1744,7 @@ pub fn pack_tile_lr(
 }
 
 /// [`pack_tile_lr`] with a cooperative stop token, polled once per SUPERBLOCK
-/// ROW of the tile.
+/// of the tile.
 ///
 /// The encoder had no cancellation at all, which is not a theoretical gap: with
 /// screen-content tools on, the IntraBC DV search runs **~80 s on a single
@@ -1753,12 +1753,11 @@ pub fn pack_tile_lr(
 /// minutes. A caller that changes its mind — or a server shedding load — had no
 /// way to say so.
 ///
-/// The superblock ROW is the coarsest unit that carries no state a caller can
-/// observe: `INTERNAL_COST_UPD_SBROW` already re-derives the cost tables at
-/// each row start, and the left contexts are reset there, so a poll at the top
-/// of the row cannot alter a coded bit. Returns `Err(StopReason)` with the
-/// entropy coder and recon planes PARTIALLY written — for a cancelled encode,
-/// whose caller discards them.
+/// A poll BETWEEN superblocks cannot alter a coded bit (the check only reads
+/// the token), so the cadence is per-SB rather than per-row — a single
+/// pathological SB row cannot run unbounded between polls. Returns
+/// `Err(StopReason)` with the entropy coder and recon planes PARTIALLY written
+/// — for a cancelled encode, whose caller discards them.
 #[allow(clippy::too_many_arguments)]
 pub fn pack_tile_lr_stop(
     enc: &mut OdEcEnc,
@@ -1900,11 +1899,6 @@ pub fn pack_tile_lr_stop(
     // encodeframe_utils.c:1556-1564). Row-scoped so the tile's first row starts
     // from a fresh derivation like every other row.
     for r in 0..n_sb_rows {
-        // Cooperative cancellation, once per superblock ROW — see
-        // `pack_tile_lr_stop`'s doc for why the row is the right cadence.
-        if let Some(s) = stop {
-            s.check()?;
-        }
         let mut row_real: Option<crate::real_costs::RealCosts> = None;
         search_tile.left_ectx = [[0; 32]; 3];
         search_tile.left_pctx = [0; 32];
@@ -1914,6 +1908,12 @@ pub fn pack_tile_lr_stop(
         pack_tile_ctx.left_tctx = [aom_dsp::entropy::partition::TXFM_CTX_INIT; 32];
         nbr.zero_left();
         for c in 0..n_sb_cols {
+            // Cooperative cancellation, once per SUPERBLOCK — see
+            // `pack_tile_lr_stop`'s doc for the cadence rationale. Per-SB (not
+            // per-row) so a single pathological row cannot run unbounded.
+            if let Some(s) = stop {
+                s.check()?;
+            }
             let mi_row = mi_row0 + r * sb_mi;
             let mi_col = mi_col0 + c * sb_mi;
 
@@ -2449,8 +2449,9 @@ pub fn pack_tile_from_trees(
 ) {
     pack_tile_from_trees_lr(
         enc, env, pick_cfg, pack_cfg, kf, recon_y, recon_u, recon_v, trees, mi_row0, mi_col0,
-        n_sb_rows, n_sb_cols, sb_mi, sb_size, cdef, None,
+        n_sb_rows, n_sb_cols, sb_mi, sb_size, cdef, None, None,
     )
+    .unwrap_or_else(|_| unreachable!("a None stop token cannot cancel"))
 }
 
 /// [`pack_tile_from_trees`] plus the interleaved loop-restoration unit writes
@@ -2489,7 +2490,8 @@ pub fn pack_tile_from_trees_lr(
     sb_size: usize,
     cdef: Option<CdefPackState>,
     lr: Option<&LrPackParams<'_>>,
-) {
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
     let mut lr_refs = LrRefState::default();
     // `part_sf.partition_search_type == VAR_BASED_PARTITION` — allintra
     // speed >= 7 (speed_features.c:571; same expression pack_tile derives at
@@ -2551,6 +2553,12 @@ pub fn pack_tile_from_trees_lr(
         .unwrap_or(pack_cfg.base_qindex);
 
     for r in 0..n_sb_rows {
+        // Cooperative cancellation, once per superblock row of the repack —
+        // same rationale as `pack_tile_lr_stop` (a between-SB poll cannot
+        // alter a coded bit).
+        if let Some(s) = stop {
+            s.check()?;
+        }
         // See `pack_tile_lr`'s identical declaration — INTERNAL_COST_UPD_SBROW
         // carries one derivation across the row.
         let mut row_real: Option<crate::real_costs::RealCosts> = None;
@@ -2785,6 +2793,7 @@ pub fn pack_tile_from_trees_lr(
             );
         }
     }
+    Ok(())
 }
 
 /// `pack_txb_tokens` (bitstream.c) LUMA descent: recurse the `inter_tx_size`

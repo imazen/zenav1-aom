@@ -13,21 +13,21 @@
 #   pub types (struct/enum/trait/alias)       278
 #   pub consts/statics                        638
 #   free functions                            617
-#   inherent methods                          926
+#   inherent methods                          927
 #   struct fields                            1927
 #   enum variants                             174
 #   re-exports                                  1
-#   trait roster entries (type × trait)      1088
+#   trait roster entries (type × trait)      1089
 #   auto-trait-complete types                 259
 #   auto-trait exceptions                       8
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4613
+#   aom_encode                     4614
 #   u16                               3
 #   u8                                3
 
-## items (4605 lines)
+## items (4606 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -3206,6 +3206,7 @@ pub fn aom_encode::intrabc_search::variance_wxh(&[u16], usize, usize, &[u16], us
 pub fn aom_encode::key_frame::AllocMode::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::CodingTools::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::ColorDescription::assert_fields_are_eq(&self)
+pub fn aom_encode::key_frame::Deadline::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::DeltaQMode::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::EncodeEstimate::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::EncodeLimits::assert_fields_are_eq(&self)
@@ -3384,7 +3385,7 @@ pub fn aom_encode::pack::pack_leaf(&mut aom_dsp::entropy::enc::OdEcEnc, &aom_enc
 pub fn aom_encode::pack::pack_sb(&mut aom_dsp::entropy::enc::OdEcEnc, &aom_encode::encode_sb::SbEncodeEnv<'_>, &aom_encode::pack::PackCfg, &mut aom_dsp::entropy::partition::KfFrameContext, &mut aom_dsp::entropy::partition::KfBlockState, &mut aom_encode::encode_sb::TileCtxState, &mut aom_encode::pack::MiNbrGrid, &aom_encode::partition_pick::ModeGrid, &mut [u16], &mut [u16], &mut [u16], &mut aom_dsp::intra::cfl::CflCtx, &mut aom_encode::encode_sb::SbTree, i32, i32, usize, i32, core::option::Option<&mut aom_encode::inter_costs::InterFrameCdfs>)
 pub fn aom_encode::pack::pack_tile(&mut aom_dsp::entropy::enc::OdEcEnc, &aom_encode::encode_sb::SbEncodeEnv<'_>, &aom_encode::partition_pick::PickFrameCfg<'_>, &aom_encode::pack::PackCfg, &mut aom_dsp::entropy::partition::KfFrameContext, &mut [u16], &mut [u16], &mut [u16], i32, i32, i32, i32, i32, usize) -> alloc::vec::Vec<aom_encode::encode_sb::SbTree>
 pub fn aom_encode::pack::pack_tile_from_trees(&mut aom_dsp::entropy::enc::OdEcEnc, &aom_encode::encode_sb::SbEncodeEnv<'_>, &aom_encode::partition_pick::PickFrameCfg<'_>, &aom_encode::pack::PackCfg, &mut aom_dsp::entropy::partition::KfFrameContext, &mut [u16], &mut [u16], &mut [u16], &mut [aom_encode::encode_sb::SbTree], i32, i32, i32, i32, i32, usize, core::option::Option<aom_encode::pack::CdefPackState>)
-pub fn aom_encode::pack::pack_tile_from_trees_lr(&mut aom_dsp::entropy::enc::OdEcEnc, &aom_encode::encode_sb::SbEncodeEnv<'_>, &aom_encode::partition_pick::PickFrameCfg<'_>, &aom_encode::pack::PackCfg, &mut aom_dsp::entropy::partition::KfFrameContext, &mut [u16], &mut [u16], &mut [u16], &mut [aom_encode::encode_sb::SbTree], i32, i32, i32, i32, i32, usize, core::option::Option<aom_encode::pack::CdefPackState>, core::option::Option<&aom_encode::pack::LrPackParams<'_>>)
+pub fn aom_encode::pack::pack_tile_from_trees_lr(&mut aom_dsp::entropy::enc::OdEcEnc, &aom_encode::encode_sb::SbEncodeEnv<'_>, &aom_encode::partition_pick::PickFrameCfg<'_>, &aom_encode::pack::PackCfg, &mut aom_dsp::entropy::partition::KfFrameContext, &mut [u16], &mut [u16], &mut [u16], &mut [aom_encode::encode_sb::SbTree], i32, i32, i32, i32, i32, usize, core::option::Option<aom_encode::pack::CdefPackState>, core::option::Option<&aom_encode::pack::LrPackParams<'_>>, core::option::Option<&dyn enough::Stop>) -> core::result::Result<(), enough::reason::StopReason>
 pub fn aom_encode::pack::pack_tile_lr(&mut aom_dsp::entropy::enc::OdEcEnc, &aom_encode::encode_sb::SbEncodeEnv<'_>, &aom_encode::partition_pick::PickFrameCfg<'_>, &aom_encode::pack::PackCfg, &mut aom_dsp::entropy::partition::KfFrameContext, &mut [u16], &mut [u16], &mut [u16], i32, i32, i32, i32, i32, usize, core::option::Option<&aom_encode::pack::LrPackParams<'_>>, core::option::Option<&mut aom_encode::inter_costs::InterFrameCdfs>) -> alloc::vec::Vec<aom_encode::encode_sb::SbTree>
 pub fn aom_encode::pack::pack_tile_lr_stop(&mut aom_dsp::entropy::enc::OdEcEnc, &aom_encode::encode_sb::SbEncodeEnv<'_>, &aom_encode::partition_pick::PickFrameCfg<'_>, &aom_encode::pack::PackCfg, &mut aom_dsp::entropy::partition::KfFrameContext, &mut [u16], &mut [u16], &mut [u16], i32, i32, i32, i32, i32, usize, core::option::Option<&aom_encode::pack::LrPackParams<'_>>, core::option::Option<&mut aom_encode::inter_costs::InterFrameCdfs>, core::option::Option<&dyn enough::Stop>) -> core::result::Result<alloc::vec::Vec<aom_encode::encode_sb::SbTree>, enough::reason::StopReason>
 pub fn aom_encode::pack::pack_tile_stop(&mut aom_dsp::entropy::enc::OdEcEnc, &aom_encode::encode_sb::SbEncodeEnv<'_>, &aom_encode::partition_pick::PickFrameCfg<'_>, &aom_encode::pack::PackCfg, &mut aom_dsp::entropy::partition::KfFrameContext, &mut [u16], &mut [u16], &mut [u16], i32, i32, i32, i32, i32, usize, core::option::Option<&dyn enough::Stop>) -> core::result::Result<alloc::vec::Vec<aom_encode::encode_sb::SbTree>, enough::reason::StopReason>
@@ -4635,7 +4636,7 @@ pub type aom_encode::tx_search::TxbWinners = smallvec::SmallVec<[aom_encode::tx_
 pub type aom_encode::var_part::Leaf8x8 = (u32, i32)
 pub use aom_encode::intrabc_search::DEFAULT_TXFM_PARTITION_CDF
 
-## trait impls (239 types)
+## trait impls (240 types)
 
 aom_encode::BlockContext<'a>: TrivialClone
 aom_encode::OptimizeInputs<'a>: TrivialClone
@@ -4726,6 +4727,7 @@ aom_encode::intrabc_search::IntrabcVarTxKnobs: Clone, Copy, Debug, TrivialClone
 aom_encode::key_frame::AllocMode: TrivialClone
 aom_encode::key_frame::CodingTools: TrivialClone
 aom_encode::key_frame::ColorDescription: TrivialClone
+aom_encode::key_frame::Deadline: TrivialClone
 aom_encode::key_frame::DeltaQMode: TrivialClone
 aom_encode::key_frame::EncodeConfig<'a>: TrivialClone
 aom_encode::key_frame::EncodeEstimate: TrivialClone

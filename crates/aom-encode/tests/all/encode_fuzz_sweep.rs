@@ -24,7 +24,7 @@
 //! their own sake are covered by `refusal_census.rs`.
 
 use aom_encode::key_frame::{
-    EncodeConfig, EncodeLimits, KeyFrameConfig, KeyFrameError, KeyFramePlanes,
+    Deadline, EncodeConfig, EncodeLimits, KeyFrameConfig, KeyFrameError, KeyFramePlanes,
     encode_key_frame_with,
 };
 
@@ -197,11 +197,17 @@ fn no_config_or_plane_input_can_panic_the_encoder() {
     for i in 0..iters {
         let cfg = random_config(&mut r);
         let (y, u, v) = random_planes(&mut r, &cfg);
+        // Bound every encode in wall clock: a pathological-but-legal config
+        // that runs away (a DoS input) must surface as a `Cancelled` failure,
+        // not hang the suite. 60 s is ~100x a healthy 256x256 encode.
+        let deadline = Deadline::after(std::time::Duration::from_secs(60));
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             encode_key_frame_with(
                 KeyFramePlanes::new(&y, &u, &v),
                 &cfg,
-                &EncodeConfig::new().with_limits(limits),
+                &EncodeConfig::new()
+                    .with_limits(limits)
+                    .with_stop(&deadline),
             )
         }));
         match res {

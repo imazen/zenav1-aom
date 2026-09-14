@@ -19,9 +19,10 @@
 //!    saving a caller nothing.
 
 use aom_encode::key_frame::{
-    EncodeConfig, KeyFrameConfig, KeyFrameError, KeyFramePlanes, encode_key_frame,
+    Deadline, EncodeConfig, KeyFrameConfig, KeyFrameError, KeyFramePlanes, encode_key_frame,
     encode_key_frame_with,
 };
+use std::time::Duration;
 use enough::{Stop, StopReason};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -92,9 +93,9 @@ fn a_never_firing_token_is_byte_inert_and_polled_per_superblock_row() {
         "a stop token that never fires must produce the byte-identical stream"
     );
 
-    // 6x4 superblocks: 4 search rows + 4 repack rows + 1 per-tile repack poll.
-    // The exact number is an implementation detail; that it SCALES with the
-    // frame rather than being 1 is the property.
+    // 6x4 superblocks: 24 per-SB search polls + 4 repack-row polls + 1
+    // per-tile repack pre-check. The exact number is an implementation detail;
+    // that it SCALES with the frame rather than being 1 is the property.
     let polls = counter.0.load(Ordering::Relaxed);
     assert!(
         polls >= 4,
@@ -170,4 +171,35 @@ fn cancellation_is_its_own_error_and_does_not_collide_with_unsupported() {
         cancelled.to_string().contains("cancelled"),
         "Display must name the cancellation: {cancelled}"
     );
+}
+
+/// The shipped `Deadline` token IS the DoS/timeout path: an elapsed deadline
+/// cancels promptly and reports `TimedOut` (transient — a router may retry
+/// with a longer bound), while a generous deadline is byte-inert.
+#[test]
+fn deadline_token_times_out_the_encode() {
+    let cfg = cell();
+    let (y, u, v) = planes(&cfg);
+    let p = || KeyFramePlanes::new(&y, &u, &v);
+
+    let elapsed = Deadline::after(Duration::ZERO);
+    let r = encode_key_frame_with(p(), &cfg, &EncodeConfig::new().with_stop(&elapsed));
+    match r {
+        Err(KeyFrameError::Cancelled(reason)) => {
+            assert!(
+                reason.is_timed_out() && reason.is_transient(),
+                "an elapsed Deadline must report TimedOut, got {reason:?}"
+            );
+        }
+        Err(e) => panic!("wrong error {e}"),
+        Ok(b) => panic!("elapsed Deadline encoded {} B — the token was not observed", b.len()),
+    }
+
+    // And the same machinery must not disturb an encode whose deadline is
+    // nowhere near: byte-identical to the no-token baseline.
+    let baseline = encode_key_frame(p(), &cfg).expect("baseline");
+    let generous = Deadline::after(Duration::from_secs(600));
+    let timed = encode_key_frame_with(p(), &cfg, &EncodeConfig::new().with_stop(&generous))
+        .expect("a far-future deadline cannot cancel");
+    assert_eq!(timed, baseline);
 }

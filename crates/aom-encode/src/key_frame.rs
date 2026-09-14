@@ -2623,13 +2623,13 @@ pub struct EncodeConfig<'a> {
     /// How the dominant frame-sized allocation is obtained ([`AllocMode`]).
     pub alloc: AllocMode,
     /// Optional cooperative stop token ([`enough::Stop`]). `None` (the default)
-    /// never cancels.
+    /// never cancels. [`Deadline`] is the ready-made wall-clock token.
     ///
-    /// **Where it is polled:** once per SUPERBLOCK ROW of each tile's search,
-    /// and once per tile before the phase-2 repack. The superblock row is the
-    /// coarsest unit that carries no state a caller can observe — C's
-    /// `INTERNAL_COST_UPD_SBROW` already re-derives the cost tables there and
-    /// the left contexts are reset — so a poll cannot alter a coded bit.
+    /// **Where it is polled:** once per SUPERBLOCK of each tile's search, and
+    /// once per superblock row of the phase-2 repack (plus once per tile before
+    /// it). A between-superblock poll only *reads* the token, so it cannot
+    /// alter a coded bit — the cadence is purely a bound on how much work a
+    /// cancellation can strand.
     ///
     /// **Why this exists:** with screen-content tools on, the IntraBC DV search
     /// runs ~80 s on a single 1080p screenshot at `--cpu-used 6` against ~1 s
@@ -2644,7 +2644,16 @@ impl<'a> EncodeConfig<'a> {
         Self::default()
     }
 
-    /// Attach a cooperative stop token (builder style).
+    /// Attach a cooperative stop token (builder style). For the common "bound
+    /// the encode's wall-clock time" case, [`Deadline`] is a ready-made token —
+    /// no need to implement [`enough::Stop`] by hand:
+    ///
+    /// ```
+    /// # use std::time::Duration;
+    /// # use aom_encode::key_frame::{Deadline, EncodeConfig};
+    /// let deadline = Deadline::after(Duration::from_secs(30));
+    /// let opts = EncodeConfig::new().with_stop(&deadline);
+    /// ```
     pub fn with_stop(mut self, stop: &'a dyn enough::Stop) -> Self {
         self.stop = Some(stop);
         self
@@ -2691,6 +2700,48 @@ impl core::fmt::Debug for EncodeConfig<'_> {
         f.debug_struct("EncodeConfig")
             .field("stop", &self.stop.map(|_| "Some(<dyn Stop>)"))
             .finish()
+    }
+}
+
+/// A ready-made [`enough::Stop`] that fires once a wall-clock deadline has
+/// passed — the DoS/timeout half of [`EncodeConfig::stop`]. An encode whose
+/// deadline lapses returns [`KeyFrameError::Cancelled`] with
+/// [`enough::StopReason::TimedOut`], so a caller can tell "took too long" from
+/// "explicitly cancelled" (`StopReason::is_timed_out`).
+///
+/// The poll cadence is once per superblock of each tile's search and once per
+/// superblock row of the phase-2 repack, so the *effective* bound is
+/// `deadline + worst single-superblock cost` — the residual a cooperative
+/// token cannot shave without reaching into per-block loops.
+///
+/// ```
+/// # use std::time::Duration;
+/// # use aom_encode::key_frame::Deadline;
+/// // Bound an encode at ~30 s of wall clock.
+/// let stop = Deadline::after(Duration::from_secs(30));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Deadline(std::time::Instant);
+
+impl Deadline {
+    /// A deadline `dur` from now.
+    pub fn after(dur: std::time::Duration) -> Self {
+        Self(std::time::Instant::now() + dur)
+    }
+
+    /// A deadline at an absolute instant.
+    pub fn at(deadline: std::time::Instant) -> Self {
+        Self(deadline)
+    }
+}
+
+impl enough::Stop for Deadline {
+    fn check(&self) -> Result<(), enough::StopReason> {
+        if std::time::Instant::now() >= self.0 {
+            Err(enough::StopReason::TimedOut)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -3970,7 +4021,9 @@ pub fn encode_key_frame_with(
             sb_block,
             cdef_pack.clone(),
             lr_pack.as_ref(),
-        );
+            opts.stop,
+        )
+        .map_err(KeyFrameError::Cancelled)?;
         tile_payloads.push(enc.done().to_vec());
     }
 

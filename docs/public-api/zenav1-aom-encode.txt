@@ -6,28 +6,28 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-encode.txt 280 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4853 lines (326 hidden + 7568 excluded-feature)
+# files: zenav1-aom-encode.txt 284 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4855 lines (328 hidden + 7568 excluded-feature)
 # arch-unique surface: aarch64 39
 
 ## summary
 #
 #   pub modules                                 2
-#   pub types (struct/enum/trait/alias)        27
+#   pub types (struct/enum/trait/alias)        28
 #   pub consts/statics                         11
 #   free functions                             23
-#   inherent methods                           25
+#   inherent methods                           27
 #   struct fields                             137
 #   enum variants                              24
 #   re-exports                                  1
-#   trait roster entries (type × trait)       125
-#   auto-trait-complete types                  26
+#   trait roster entries (type × trait)       131
+#   auto-trait-complete types                  27
 #   auto-trait exceptions                       1
 #
 # per-module pub lines:
 #   (root)                            7
-#   aom_encode                      243
+#   aom_encode                      246
 
-## items (250 lines)
+## items (253 lines)
 
 pub mod aom_encode
 pub use aom_encode::reconstruct_txb
@@ -103,6 +103,9 @@ pub aom_encode::key_frame::ColorDescription::full_range: bool
 pub aom_encode::key_frame::ColorDescription::matrix_coefficients: u32
 pub aom_encode::key_frame::ColorDescription::transfer_characteristics: u32
 pub fn aom_encode::key_frame::ColorDescription::is_srgb(&self) -> bool
+pub struct aom_encode::key_frame::Deadline(_)
+pub fn aom_encode::key_frame::Deadline::after(core::time::Duration) -> Self
+pub fn aom_encode::key_frame::Deadline::at(std::time::Instant) -> Self
 #[non_exhaustive] pub struct aom_encode::key_frame::EncodeConfig<'a>
 pub aom_encode::key_frame::EncodeConfig::alloc: aom_encode::key_frame::AllocMode
 pub aom_encode::key_frame::EncodeConfig::limits: aom_encode::key_frame::EncodeLimits
@@ -280,7 +283,7 @@ pub fn aom_encode::xform_quant_optimize(&[i16], usize, usize, aom_encode::QuantK
 pub fn aom_encode::xform_quant_optimize_split(&[i16], usize, usize, aom_encode::QuantKind, &aom_encode::QuantParams<'_>, &aom_encode::QuantParams<'_>, &aom_encode::BlockContext<'_>, &aom_encode::OptimizeInputs<'_>) -> aom_encode::XformQuantOptResult
 pub fn aom_encode::xform_quant_optimize_split_into(&[i16], usize, usize, aom_encode::QuantKind, &aom_encode::QuantParams<'_>, &aom_encode::QuantParams<'_>, &aom_encode::BlockContext<'_>, &aom_encode::OptimizeInputs<'_>, &mut aom_encode::XformQuantScratch) -> aom_encode::XformQuantOptSummary
 
-## trait impls (28 types)
+## trait impls (29 types)
 
 aom_encode::BlockContext<'a>: Clone, Copy, Debug
 aom_encode::BlockContexts: Clone, Debug, Eq, PartialEq
@@ -298,6 +301,7 @@ aom_encode::XformQuantSummary: Clone, Copy, Debug, Eq, PartialEq
 aom_encode::key_frame::AllocMode: Clone, Copy, Debug, Default, Eq, PartialEq
 aom_encode::key_frame::CodingTools: Clone, Copy, Debug, Default, Eq, PartialEq
 aom_encode::key_frame::ColorDescription: Clone, Copy, Debug, Default, Eq, PartialEq
+aom_encode::key_frame::Deadline: Clone, Copy, Debug, Eq, PartialEq, enough::Stop
 aom_encode::key_frame::DeltaQMode: Clone, Copy, Debug, Default, Eq, PartialEq
 aom_encode::key_frame::EncodeConfig<'_>: Debug
 aom_encode::key_frame::EncodeConfig<'a>: Clone, Copy, Default
@@ -313,7 +317,7 @@ aom_encode::key_frame::Tune: Clone, Copy, Debug, Default, Eq, PartialEq
 
 ## auto traits
 
-26 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+27 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
 aom_encode::key_frame::EncodeConfig<'a>: !RefUnwindSafe !UnwindSafe
 
 ## arch surface: aarch64 (39 lines)
