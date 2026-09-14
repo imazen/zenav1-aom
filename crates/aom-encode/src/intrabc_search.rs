@@ -9,15 +9,12 @@
 //! - the full-pel search (`av1_full_pixel_search`, mcomp.c:1768): the NSTEP
 //!   `full_pixel_diamond` + `full_pixel_exhaustive` mesh (the pixel search
 //!   ALWAYS runs at `intrabc_search_level 0`);
-//! - `predict_skip_txfm` (tx_search.c:183) + the skip-arm RD.
-//!
-//! **Coeff-arm scope (honest, KB-14):** this offers an intrabc candidate ONLY
-//! in the skip regime (luma `predict_skip_txfm` fires AND chroma is an exact
-//! match), where `av1_txfm_search` forces `skip_txfm=1` and BYPASSES the inter
-//! var-tx coeff arm — that arm (`av1_pick_recursive_tx_size_type_yrd` quadtree
-//! + `prune_tx_2D` / `ml_predict_tx_split` + the var-tx pack) is NOT ported, so
-//! real screen content (which codes most intrabc blocks via the coeff arm) is
-//! PINNED, not byte-exact. See `rd_close_intrabc` + PARITY C3.
+//! - `predict_skip_txfm` (tx_search.c:183) + the skip-arm RD;
+//! - the COEFF arm (KB-65): `var_tx::pick_recursive_tx_size_type_yrd`
+//!   (the `av1_pick_recursive_tx_size_type_yrd` quadtree + `prune_tx_2D` /
+//!   `ml_predict_tx_split` knobs via [`IntrabcVarTxKnobs`]) +
+//!   `var_tx::txfm_uvrd_inter` for chroma — real screen content byte-matches
+//!   (`screen_content_tools_byte_match_real_aomenc`).
 //!
 //! Faithfulness notes:
 //! - CRC input serialization: the C feeds `uint32_t[4]` buffers to CRC32C as
@@ -2106,16 +2103,10 @@ pub struct IntrabcBest {
 /// the NSTEP diamond + mesh (`av1_full_pixel_search`, which ALWAYS runs at
 /// intrabc_search_level 0) + DV validity + `av1_txfm_search` RD.
 ///
-/// **Coeff-arm scope (honest):** the block is coded INTER (var-tx quadtree),
-/// which the port does NOT yet have. So this offers an intrabc candidate ONLY
-/// when C's `predict_skip_txfm` fires (the block quantizes to all-zero — the
-/// exact-repeat / near-zero-residual case), where `av1_txfm_search` forces
-/// `skip_txfm = 1` and BYPASSES the coeff arm entirely (tx_search.c:3596 →
-/// `set_skip_txfm`). For those blocks the skip-arm RD (rate = mode+mv+skip1,
-/// dist = sse) is byte-exact. When `predict_skip_txfm` does NOT fire the
-/// coeff arm would decide, and this returns no candidate (conservative — see
-/// PARITY C3): the frame then keeps the intra winner, which byte-matches only
-/// on content where every winning intrabc block is a (near-)perfect match.
+/// **Coeff arm (KB-65):** when `predict_skip_txfm` does not fire the luma side
+/// runs the inter var-tx quadtree (`var_tx::pick_recursive_tx_size_type_yrd`)
+/// and chroma runs `var_tx::txfm_uvrd_inter`, with the DV-coded residual as
+/// prediction — the same `av1_txfm_search` shape C uses for intrabc blocks.
 ///
 /// `recon_{y,u,v}` are the reconstruction planes (`xd->cur_buf`, the intrabc
 /// prediction source); passed separately (the caller holds them `&mut`).
@@ -2397,19 +2388,6 @@ pub fn rd_pick_intrabc_mode_sb(
                 }
             }
         }
-        let mut chroma_sse: i64 = 0;
-        if !pred_u.is_empty() {
-            for r in 0..ch {
-                for c in 0..cw {
-                    let du =
-                        i32::from(a.src_u[a.off_uv + r * a.stride + c]) - i32::from(pred_u[r * cw + c]);
-                    let dvv =
-                        i32::from(a.src_v[a.off_uv + r * a.stride + c]) - i32::from(pred_v[r * cw + c]);
-                    chroma_sse += i64::from(du) * i64::from(du) + i64::from(dvv) * i64::from(dvv);
-                }
-            }
-        }
-
         // C's `predict_skip_txfm` arm (LUMA) forces skip_txfm=1 and BYPASSES
         // the coeff arm — inside `av1_pick_uniform_tx_size_type_yrd` it is
         // additionally gated on `!xd->lossless[mbmi->segment_id]`
@@ -2417,7 +2395,6 @@ pub fn rd_pick_intrabc_mode_sb(
         // `choose_smallest_tx_size` walk, so this arm must not fire there
         // (a predicted skip the flat walk would not reproduce would diverge
         // the choose_skip_txfm decision AND the stream).
-        let _ = chroma_sse;
         let luma_skip = !a.vartx.lossless
             && predict_skip_txfm(
                 &luma_resid,
