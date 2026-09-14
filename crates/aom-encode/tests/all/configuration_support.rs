@@ -88,11 +88,7 @@ fn query_and_encoder_reject_invalid_config_before_reading_planes() {
             .validate_configuration()
             .expect_err(&format!("case {i} must be refused by the query"));
         let actual = encode_key_frame(
-            KeyFramePlanes {
-                y: &[],
-                u: &[],
-                v: &[],
-            },
+            KeyFramePlanes::new(&[], &[], &[]),
             &config,
         )
         .expect_err(&format!("case {i} must be refused by the encoder"));

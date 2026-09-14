@@ -1093,7 +1093,7 @@ fn cell_cfg(cell: &Cell) -> KeyFrameConfig {
 
 /// Run the port's bootstrap-free encoder for a cell.
 fn port_stream(cell: &Cell, y: &[u16], u: &[u16], v: &[u16]) -> Vec<u8> {
-    encode_key_frame(KeyFramePlanes { y, u, v }, &cell_cfg(cell))
+    encode_key_frame(KeyFramePlanes::new(y, u, v), &cell_cfg(cell))
         .unwrap_or_else(|e| panic!("{}: encode_key_frame refused: {e}", cell.label))
 }
 
@@ -1391,11 +1391,7 @@ fn mutated_sequence_header_is_caught() {
     let mut mutated_cell_cfg = cell_cfg(cell);
     mutated_cell_cfg.cq_level = cell.cq + 20;
     let other = encode_key_frame(
-        KeyFramePlanes {
-            y: &y,
-            u: &u,
-            v: &v,
-        },
+        KeyFramePlanes::new(&y, &u, &v),
         &mutated_cell_cfg,
     )
     .expect("the mutated config is inside the envelope");
@@ -1449,11 +1445,7 @@ fn mutated_sequence_header_is_caught() {
 fn refuses_configurations_it_has_no_gate_for() {
     let base = KeyFrameConfig::allintra_speed0(64, 64, 8, true, 1, 1, 32);
     let y = vec![128u16; 64 * 64];
-    let planes = KeyFramePlanes {
-        y: &y,
-        u: &[],
-        v: &[],
-    };
+    let planes = KeyFramePlanes::new(&y, &[], &[]);
 
     // All four post-filter combinations are SUPPORTED (axis G of the sweep) --
     // asserted here too so this test can never silently become the reason a
@@ -1493,11 +1485,7 @@ fn refuses_configurations_it_has_no_gate_for() {
     ));
 
     // Plane-size validation, not a panic.
-    let short = KeyFramePlanes {
-        y: &y[..64],
-        u: &[],
-        v: &[],
-    };
+    let short = KeyFramePlanes::new(&y[..64], &[], &[]);
     assert!(matches!(
         encode_key_frame(short, &base),
         Err(KeyFrameError::PlaneSize { plane: 0, .. })
@@ -1512,11 +1500,7 @@ fn refuses_configurations_it_has_no_gate_for() {
     let cuv = vec![128u16; 64 * 32];
     assert!(matches!(
         encode_key_frame(
-            KeyFramePlanes {
-                y: &cy,
-                u: &cuv,
-                v: &cuv
-            },
+            KeyFramePlanes::new(&cy, &cuv, &cuv),
             &bad_ss
         ),
         Err(KeyFrameError::Unsupported(_))
@@ -1529,22 +1513,15 @@ fn refuses_configurations_it_has_no_gate_for() {
     // is a defect regardless of who closed the root.
     for (w, h) in [(100usize, 100usize), (66, 34), (130, 70), (196, 196)] {
         for speed in [7, 8, 9] {
-            let cfg = KeyFrameConfig::allintra_speed0(w, h, 8, false, 1, 1, 32);
-            let cfg = KeyFrameConfig {
-                cpu_used: speed,
-                ..cfg
-            };
+            let mut cfg = KeyFrameConfig::allintra_speed0(w, h, 8, false, 1, 1, 32);
+            cfg.cpu_used = speed;
             let y: Vec<u16> = (0..w * h)
                 .map(|i| ((i * 7 + (i / w) * 13) % 256) as u16)
                 .collect();
             let uv = vec![128u16; w.div_ceil(2) * h.div_ceil(2)];
             let r = std::panic::catch_unwind(|| {
                 encode_key_frame(
-                    KeyFramePlanes {
-                        y: &y,
-                        u: &uv,
-                        v: &uv,
-                    },
+                    KeyFramePlanes::new(&y, &uv, &uv),
                     &cfg,
                 )
             });
@@ -1566,11 +1543,7 @@ fn refuses_configurations_it_has_no_gate_for() {
     let wide_y = vec![128u16; 4160 * 64];
     assert!(
         encode_key_frame(
-            KeyFramePlanes {
-                y: &wide_y,
-                u: &[],
-                v: &[]
-            },
+            KeyFramePlanes::new(&wide_y, &[], &[]),
             &wide
         )
         .is_ok(),
@@ -2130,11 +2103,7 @@ fn coded_lossless_reconstructs_the_source_exactly() {
         // defect regardless of the bytes it would have produced.
         let encoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             encode_key_frame(
-                KeyFramePlanes {
-                    y: &y,
-                    u: &u,
-                    v: &v,
-                },
+                KeyFramePlanes::new(&y, &u, &v),
                 &cell_cfg(cell),
             )
         }))
@@ -2282,11 +2251,7 @@ fn screen_content_tools_byte_match_real_aomenc() {
                     cfg.enable_palette = true;
                     cfg.enable_intrabc = true;
                     let port = encode_key_frame(
-                        KeyFramePlanes {
-                            y: &y,
-                            u: &u,
-                            v: &v,
-                        },
+                        KeyFramePlanes::new(&y, &u, &v),
                         &cfg,
                     )
                     .unwrap_or_else(|e| panic!("{label}: encode_key_frame refused: {e}"));
@@ -2336,7 +2301,7 @@ fn screen_content_tools_byte_match_real_aomenc() {
                     cfg_off.enable_palette = false;
                     cfg_off.enable_intrabc = false;
                     let port_off = encode_key_frame(
-                        KeyFramePlanes { y: &y, u: &u, v: &v },
+                        KeyFramePlanes::new(&y, &u, &v),
                         &cfg_off,
                     )
                     .unwrap_or_else(|e| panic!("{label}: tools-off encode refused: {e}"));

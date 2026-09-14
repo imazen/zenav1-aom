@@ -153,7 +153,7 @@ struct Outcome {
 fn run(label: &str, cfg: &KeyFrameConfig, grain_table: Option<std::path::PathBuf>) -> Outcome {
     c::ref_init();
     let (y, u, v) = planes(cfg.width, cfg.height, cfg.bit_depth, cfg.monochrome, cfg.ss_x, cfg.ss_y, 7);
-    let port = encode_key_frame(KeyFramePlanes { y: &y, u: &u, v: &v }, cfg)
+    let port = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), cfg)
         .unwrap_or_else(|e| panic!("{label}: encode_key_frame refused: {e}"));
     let c_tu = c::ref_encode_av1_kf_cfg(
         &y,
@@ -480,7 +480,7 @@ fn film_grain_table_byte_matches_real_aomenc() {
             // decode leg is run only where the oracle accepts its own output;
             // the byte leg holds everywhere.
             let c_accepts = std::panic::catch_unwind(|| c::ref_decode_av1_kf(&c_tu, 128, 128)).is_ok();
-            let port = encode_key_frame(KeyFramePlanes { y: &y, u: &u, v: &v }, &cfg)
+            let port = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg)
                 .unwrap_or_else(|e| panic!("grain tv{tv} {fmt}: refused: {e}"));
             if c_accepts {
                 let c_dec = c::ref_decode_av1_kf(&port, 128, 128);
@@ -557,7 +557,7 @@ fn new_knob_refusals_are_named() {
     for (name, cfg) in cases {
         let q = cfg.validate_configuration();
         assert!(matches!(q, Err(KeyFrameError::Unsupported(_))), "{name}: support query must refuse by name, got {q:?}");
-        let e = encode_key_frame(KeyFramePlanes { y: &[], u: &[], v: &[] }, &cfg);
+        let e = encode_key_frame(KeyFramePlanes::new(&[], &[], &[]), &cfg);
         assert!(matches!(e, Err(KeyFrameError::Unsupported(_))), "{name}: encoder must refuse the same way, got {e:?}");
     }
 }

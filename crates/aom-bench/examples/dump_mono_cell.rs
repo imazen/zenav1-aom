@@ -157,7 +157,7 @@ fn main() {
     let mut cfg = cfg;
     cfg.cpu_used = speed;
     cfg.sb_size_128 = sb128;
-    let port2 = encode_key_frame(KeyFramePlanes { y: &cell.y, u: &cell.u, v: &cell.v }, &cfg)
+    let port2 = encode_key_frame(KeyFramePlanes::new(&cell.y, &cell.u, &cell.v), &cfg)
         .expect("standalone encode");
     let cref = c::ref_encode_av1_kf_cfg(
         &cell.y, &cell.u, &cell.v, w, h, i32::from(cell.bd), true, 1, 1, cq, speed, cell.usage,

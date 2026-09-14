@@ -116,11 +116,7 @@ fn run_cell(
     cfg.sb_size_128 = sb128;
     let (y, u, v) = planes(w, h, bd, mono, ss_x, ss_y);
     let stream = encode_key_frame(
-        KeyFramePlanes {
-            y: &y,
-            u: &u,
-            v: &v,
-        },
+        KeyFramePlanes::new(&y, &u, &v),
         &cfg,
     )
     .unwrap_or_else(|e| panic!("{label}: encode_key_frame refused: {e}"));

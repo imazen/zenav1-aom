@@ -80,11 +80,7 @@ fn cell() -> KeyFrameConfig {
 fn a_never_firing_token_is_byte_inert_and_polled_per_superblock_row() {
     let cfg = cell();
     let (y, u, v) = planes(&cfg);
-    let p = || KeyFramePlanes {
-        y: &y,
-        u: &u,
-        v: &v,
-    };
+    let p = || KeyFramePlanes::new(&y, &u, &v);
 
     let baseline = encode_key_frame(p(), &cfg).expect("baseline encode");
     let counter = CountingStop(AtomicUsize::new(0));
@@ -116,11 +112,7 @@ fn a_never_firing_token_is_byte_inert_and_polled_per_superblock_row() {
 fn a_firing_token_cancels_the_encode_at_a_bounded_point() {
     let cfg = cell();
     let (y, u, v) = planes(&cfg);
-    let p = || KeyFramePlanes {
-        y: &y,
-        u: &u,
-        v: &v,
-    };
+    let p = || KeyFramePlanes::new(&y, &u, &v);
 
     // How many polls a full encode takes, so "partway" is a measured fraction
     // rather than a guess.
@@ -155,11 +147,7 @@ fn cancellation_is_its_own_error_and_does_not_collide_with_unsupported() {
     let (y, u, v) = planes(&cfg);
     let token = StopAfter(AtomicUsize::new(0));
     let cancelled = encode_key_frame_with(
-        KeyFramePlanes {
-            y: &y,
-            u: &u,
-            v: &v,
-        },
+        KeyFramePlanes::new(&y, &u, &v),
         &cfg,
         &EncodeConfig::new().with_stop(&token),
     )
@@ -168,11 +156,7 @@ fn cancellation_is_its_own_error_and_does_not_collide_with_unsupported() {
     let mut bad = cfg;
     bad.cq_level = 64;
     let unsupported = encode_key_frame(
-        KeyFramePlanes {
-            y: &[],
-            u: &[],
-            v: &[],
-        },
+        KeyFramePlanes::new(&[], &[], &[]),
         &bad,
     )
     .expect_err("must refuse");

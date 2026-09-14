@@ -204,6 +204,7 @@ const PRIMARY_REF_NONE: i32 = 7;
 /// given — declaring `full_range` on limited-range samples mis-describes the
 /// stream just as surely as the old hardcode did on full-range ones.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ColorDescription {
     /// CICP colour primaries (`AOM_CICP_CP_*`); 2 = unspecified.
     pub color_primaries: u32,
@@ -243,6 +244,7 @@ impl ColorDescription {
 /// still-image tunes; [`KeyFrameConfig::apply_tune`] installs their bundle
 /// exactly as libaom's `handle_tuning` (av1_cx_iface.c:1938) does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum Tune {
     /// `AOM_TUNE_PSNR` (0), the default.
     #[default]
@@ -281,6 +283,7 @@ impl Tune {
 /// `AV1E_SET_DELTAQ_MODE` on the ALLINTRA KEY path (the modes `setup_delta_q`,
 /// encodeframe.c:316-356, reaches from a still encode).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum DeltaQMode {
     /// `NO_DELTA_Q` (0).
     #[default]
@@ -309,6 +312,7 @@ impl DeltaQMode {
 /// `--disable-trellis-quant` (`AV1E_SET_DISABLE_TRELLIS_QUANT`, `init_rd_sf`
 /// speed_features.c:2479-2498). aomenc's default is 3.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum TrellisMode {
     /// 0: trellis in every pass.
     Full,
@@ -347,6 +351,7 @@ impl TrellisMode {
 /// byte-gated against real aomenc driven with the same explicit knobs
 /// (`self_contained_tools.rs`). `Default` is aomenc's PSNR default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct QualityTools {
     /// `AOME_SET_TUNING`. Affects the rdmult weight (`av1_compute_rd_mult_based_on_qindex`),
     /// the trellis `rshift` arm, the chroma delta-q ramps and the QM level formula.
@@ -406,6 +411,7 @@ impl Default for QualityTools {
 /// knob and `Default` is aomenc's default for it; all are byte-gated against
 /// real aomenc driven with the same control (`self_contained_tools.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CodingTools {
     /// `AV1E_SET_ENABLE_RECT_PARTITIONS`.
     pub enable_rect_partitions: bool,
@@ -505,6 +511,7 @@ fn dim_to_bsize(px: u32) -> usize {
 /// never reaches. Both modes emit spec-conformant AV1 — the difference is
 /// whether the output is *byte-pinned* to libaom's one-pass stream.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KeyFrameMode {
     /// Bit-exact against libaom's reachable one-pass all-intra behavior.
     /// Every byte-parity gate in this repo runs under this mode.
@@ -559,6 +566,7 @@ pub const SCM_TRIAL_HINT_MIN: f32 = 0.10;
 /// `aom-sys-ref`'s `shim_encode_av1_kf` drives, so a byte diff against real
 /// aomenc is a like-for-like comparison.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct KeyFrameConfig {
     /// `cfg.g_w` — the true crop width in luma pixels.
     pub width: usize,
@@ -1104,6 +1112,7 @@ impl KeyFrameConfig {
 /// `aom_sys_ref::ref_encode_av1_kf`, so a caller can hand the identical buffers
 /// to both sides of a differential.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct KeyFramePlanes<'a> {
     /// Luma.
     pub y: &'a [u16],
@@ -1113,9 +1122,18 @@ pub struct KeyFramePlanes<'a> {
     pub v: &'a [u16],
 }
 
+impl<'a> KeyFramePlanes<'a> {
+    /// Tightly packed `y`/`u`/`v` slices; pass `&[]` for `u` and `v` on a
+    /// monochrome encode.
+    pub const fn new(y: &'a [u16], u: &'a [u16], v: &'a [u16]) -> Self {
+        KeyFramePlanes { y, u, v }
+    }
+}
+
 /// Why [`encode_key_frame`] refused. Every variant is a configuration this
 /// module has no gate for — never a silent fallback.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KeyFrameError {
     /// A plane length did not match the config's dimensions.
     PlaneSize {
@@ -1297,6 +1315,7 @@ pub const ESTIMATE_MAX_SLACK: f64 = 6.0;
 /// measured slack over the fitted grid is up to 4x on the smallest frames,
 /// where the fixed term dominates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct EncodeEstimate {
     /// Upper bound on peak heap bytes above the caller's source planes.
     pub peak_memory_bytes: u64,
@@ -2527,6 +2546,7 @@ pub fn sequence_header_obu(seq: &SequenceHeaderObu) -> Vec<u8> {
 /// still wants a recoverable error rather than an abort when the box is under
 /// memory pressure, and that is not a property of the input at all.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AllocMode {
     /// Pre-flight the dominant allocation with a fallible reservation and
     /// return [`KeyFrameError::AllocFailed`] instead of aborting. The
@@ -2539,6 +2559,7 @@ pub enum AllocMode {
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct EncodeLimits {
     /// Maximum `width * height`. `None` -> unbounded.
     pub max_pixels: Option<u64>,
@@ -2566,9 +2587,34 @@ impl EncodeLimits {
             max_memory_bytes: None,
         }
     }
+
+    /// Cap `width * height` (builder style).
+    pub const fn with_max_pixels(mut self, max: u64) -> Self {
+        self.max_pixels = Some(max);
+        self
+    }
+
+    /// Cap frame width in pixels (builder style).
+    pub const fn with_max_width(mut self, max: u32) -> Self {
+        self.max_width = Some(max);
+        self
+    }
+
+    /// Cap frame height in pixels (builder style).
+    pub const fn with_max_height(mut self, max: u32) -> Self {
+        self.max_height = Some(max);
+        self
+    }
+
+    /// Cap the estimated peak heap (builder style).
+    pub const fn with_max_memory_bytes(mut self, max: u64) -> Self {
+        self.max_memory_bytes = Some(max);
+        self
+    }
 }
 
 #[derive(Default, Clone, Copy)]
+#[non_exhaustive]
 pub struct EncodeConfig<'a> {
     /// Caller-supplied resource caps, refused BEFORE any allocation. Default:
     /// no caps — this shell has never had an implicit ceiling and adding one

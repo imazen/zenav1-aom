@@ -33,7 +33,7 @@ fn port(y: &[u16], u: &[u16], v: &[u16], w: usize, h: usize, cq: i32, sp: i32, p
     cfg.enable_restoration = true;
     cfg.enable_palette = pal;
     cfg.enable_intrabc = ibc;
-    encode_key_frame(KeyFramePlanes { y, u, v }, &cfg).expect("encode")
+    encode_key_frame(KeyFramePlanes::new(y, u, v), &cfg).expect("encode")
 }
 
 fn main() {

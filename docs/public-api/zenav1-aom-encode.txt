@@ -6,14 +6,14 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-encode.txt 275 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4851 lines (326 hidden + 7565 excluded-feature)
+# files: zenav1-aom-encode.txt 280 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4851 lines (326 hidden + 7565 excluded-feature)
 # arch-unique surface: aarch64 39
 
 ## summary
 #
 #   pub modules                                 2
 #   pub types (struct/enum/trait/alias)        27
-#   pub consts/statics                          6
+#   pub consts/statics                         11
 #   free functions                             23
 #   inherent methods                           25
 #   struct fields                             137
@@ -24,24 +24,24 @@
 #   auto-trait exceptions                       1
 #
 # per-module pub lines:
-#   (root)                            2
+#   (root)                            7
 #   aom_encode                      243
 
-## items (245 lines)
+## items (250 lines)
 
 pub mod aom_encode
 pub use aom_encode::reconstruct_txb
 pub mod aom_encode::key_frame
-pub enum aom_encode::key_frame::AllocMode
+#[non_exhaustive] pub enum aom_encode::key_frame::AllocMode
 pub aom_encode::key_frame::AllocMode::Fallible
 pub aom_encode::key_frame::AllocMode::Infallible
-pub enum aom_encode::key_frame::DeltaQMode
+#[non_exhaustive] pub enum aom_encode::key_frame::DeltaQMode
 pub aom_encode::key_frame::DeltaQMode::Off
 pub aom_encode::key_frame::DeltaQMode::Perceptual
 pub aom_encode::key_frame::DeltaQMode::PerceptualAi
 pub aom_encode::key_frame::DeltaQMode::VarianceBoost
 pub fn aom_encode::key_frame::DeltaQMode::aomenc_value(self) -> i32
-pub enum aom_encode::key_frame::KeyFrameError
+#[non_exhaustive] pub enum aom_encode::key_frame::KeyFrameError
 pub aom_encode::key_frame::KeyFrameError::AllocFailed
 pub aom_encode::key_frame::KeyFrameError::AllocFailed::bytes: usize
 pub aom_encode::key_frame::KeyFrameError::Cancelled(enough::reason::StopReason)
@@ -60,21 +60,21 @@ pub aom_encode::key_frame::KeyFrameError::SampleRange::plane: usize
 pub aom_encode::key_frame::KeyFrameError::Unsupported(&'static str)
 pub fn aom_encode::key_frame::KeyFrameError::category(&self) -> &'static str
 pub fn aom_encode::key_frame::KeyFrameError::is_transient(&self) -> bool
-pub enum aom_encode::key_frame::KeyFrameMode
+#[non_exhaustive] pub enum aom_encode::key_frame::KeyFrameMode
 pub aom_encode::key_frame::KeyFrameMode::LibaomExact
 pub aom_encode::key_frame::KeyFrameMode::Zenaom
-pub enum aom_encode::key_frame::TrellisMode
+#[non_exhaustive] pub enum aom_encode::key_frame::TrellisMode
 pub aom_encode::key_frame::TrellisMode::FinalPass
 pub aom_encode::key_frame::TrellisMode::Full
 pub aom_encode::key_frame::TrellisMode::NoEstimateYrd
 pub aom_encode::key_frame::TrellisMode::Off
 pub fn aom_encode::key_frame::TrellisMode::aomenc_value(self) -> i32
-pub enum aom_encode::key_frame::Tune
+#[non_exhaustive] pub enum aom_encode::key_frame::Tune
 pub aom_encode::key_frame::Tune::Iq
 pub aom_encode::key_frame::Tune::Psnr
 pub aom_encode::key_frame::Tune::Ssimulacra2
 pub fn aom_encode::key_frame::Tune::aomenc_value(self) -> i32
-pub struct aom_encode::key_frame::CodingTools
+#[non_exhaustive] pub struct aom_encode::key_frame::CodingTools
 pub aom_encode::key_frame::CodingTools::cdf_update_mode: u32
 pub aom_encode::key_frame::CodingTools::enable_1to4_partitions: bool
 pub aom_encode::key_frame::CodingTools::enable_ab_partitions: bool
@@ -97,13 +97,13 @@ pub aom_encode::key_frame::CodingTools::reduced_tx_type_set: bool
 pub aom_encode::key_frame::CodingTools::trellis: aom_encode::key_frame::TrellisMode
 pub aom_encode::key_frame::CodingTools::use_intra_dct_only: bool
 pub aom_encode::key_frame::CodingTools::use_intra_default_tx_only: bool
-pub struct aom_encode::key_frame::ColorDescription
+#[non_exhaustive] pub struct aom_encode::key_frame::ColorDescription
 pub aom_encode::key_frame::ColorDescription::color_primaries: u32
 pub aom_encode::key_frame::ColorDescription::full_range: bool
 pub aom_encode::key_frame::ColorDescription::matrix_coefficients: u32
 pub aom_encode::key_frame::ColorDescription::transfer_characteristics: u32
 pub fn aom_encode::key_frame::ColorDescription::is_srgb(&self) -> bool
-pub struct aom_encode::key_frame::EncodeConfig<'a>
+#[non_exhaustive] pub struct aom_encode::key_frame::EncodeConfig<'a>
 pub aom_encode::key_frame::EncodeConfig::alloc: aom_encode::key_frame::AllocMode
 pub aom_encode::key_frame::EncodeConfig::limits: aom_encode::key_frame::EncodeLimits
 pub aom_encode::key_frame::EncodeConfig::stop: core::option::Option<&'a dyn enough::Stop>
@@ -111,15 +111,19 @@ pub fn aom_encode::key_frame::EncodeConfig<'a>::new() -> Self
 pub fn aom_encode::key_frame::EncodeConfig<'a>::with_alloc(self, aom_encode::key_frame::AllocMode) -> Self
 pub fn aom_encode::key_frame::EncodeConfig<'a>::with_limits(self, aom_encode::key_frame::EncodeLimits) -> Self
 pub fn aom_encode::key_frame::EncodeConfig<'a>::with_stop(self, &'a dyn enough::Stop) -> Self
-pub struct aom_encode::key_frame::EncodeEstimate
+#[non_exhaustive] pub struct aom_encode::key_frame::EncodeEstimate
 pub aom_encode::key_frame::EncodeEstimate::peak_memory_bytes: u64
-pub struct aom_encode::key_frame::EncodeLimits
+#[non_exhaustive] pub struct aom_encode::key_frame::EncodeLimits
 pub aom_encode::key_frame::EncodeLimits::max_height: core::option::Option<u32>
 pub aom_encode::key_frame::EncodeLimits::max_memory_bytes: core::option::Option<u64>
 pub aom_encode::key_frame::EncodeLimits::max_pixels: core::option::Option<u64>
 pub aom_encode::key_frame::EncodeLimits::max_width: core::option::Option<u32>
 pub const fn aom_encode::key_frame::EncodeLimits::new() -> Self
-pub struct aom_encode::key_frame::KeyFrameConfig
+pub const fn aom_encode::key_frame::EncodeLimits::with_max_height(self, u32) -> Self
+pub const fn aom_encode::key_frame::EncodeLimits::with_max_memory_bytes(self, u64) -> Self
+pub const fn aom_encode::key_frame::EncodeLimits::with_max_pixels(self, u64) -> Self
+pub const fn aom_encode::key_frame::EncodeLimits::with_max_width(self, u32) -> Self
+#[non_exhaustive] pub struct aom_encode::key_frame::KeyFrameConfig
 pub aom_encode::key_frame::KeyFrameConfig::bit_depth: u8
 pub aom_encode::key_frame::KeyFrameConfig::color: aom_encode::key_frame::ColorDescription
 pub aom_encode::key_frame::KeyFrameConfig::cpu_used: i32
@@ -154,11 +158,12 @@ pub fn aom_encode::key_frame::KeyFrameConfig::num_planes(&self) -> usize
 pub fn aom_encode::key_frame::KeyFrameConfig::padded_plane_geometry(&self) -> (usize, usize)
 pub fn aom_encode::key_frame::KeyFrameConfig::profile(&self) -> i32
 pub fn aom_encode::key_frame::KeyFrameConfig::validate_configuration(&self) -> core::result::Result<(), aom_encode::key_frame::KeyFrameError>
-pub struct aom_encode::key_frame::KeyFramePlanes<'a>
+#[non_exhaustive] pub struct aom_encode::key_frame::KeyFramePlanes<'a>
 pub aom_encode::key_frame::KeyFramePlanes::u: &'a [u16]
 pub aom_encode::key_frame::KeyFramePlanes::v: &'a [u16]
 pub aom_encode::key_frame::KeyFramePlanes::y: &'a [u16]
-pub struct aom_encode::key_frame::QualityTools
+pub const fn aom_encode::key_frame::KeyFramePlanes<'a>::new(&'a [u16], &'a [u16], &'a [u16]) -> Self
+#[non_exhaustive] pub struct aom_encode::key_frame::QualityTools
 pub aom_encode::key_frame::QualityTools::adaptive_sharpness: bool
 pub aom_encode::key_frame::QualityTools::cdef_adaptive: bool
 pub aom_encode::key_frame::QualityTools::chroma_deltaq: bool

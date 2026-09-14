@@ -187,11 +187,9 @@ fn no_config_or_plane_input_can_panic_the_encoder() {
 
     // A caller-supplied ceiling, so a mutated giant configuration cannot make
     // this in-process sweep allocate its way out of the runner.
-    let limits = EncodeLimits {
-        max_pixels: Some(1 << 16),
-        max_memory_bytes: Some(1 << 30),
-        ..EncodeLimits::new()
-    };
+    let limits = EncodeLimits::new()
+        .with_max_pixels(1 << 16)
+        .with_max_memory_bytes(1 << 30);
 
     let mut r = Rng(seed);
     let (mut ok, mut unsupported, mut plane_size, mut limited, mut sample_range) =
@@ -201,11 +199,7 @@ fn no_config_or_plane_input_can_panic_the_encoder() {
         let (y, u, v) = random_planes(&mut r, &cfg);
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             encode_key_frame_with(
-                KeyFramePlanes {
-                    y: &y,
-                    u: &u,
-                    v: &v,
-                },
+                KeyFramePlanes::new(&y, &u, &v),
                 &cfg,
                 &EncodeConfig::new().with_limits(limits),
             )

@@ -56,7 +56,7 @@ fn planes(cfg: &KeyFrameConfig) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
 
 fn encode(cfg: &KeyFrameConfig) -> Vec<u8> {
     let (y, u, v) = planes(cfg);
-    encode_key_frame(KeyFramePlanes { y: &y, u: &u, v: &v }, cfg)
+    encode_key_frame(KeyFramePlanes::new(&y, &u, &v), cfg)
         .expect("the cell must encode")
 }
 
@@ -125,12 +125,10 @@ fn a_full_range_description_reaches_the_bitstream_and_round_trips() {
     // Full range with an explicit BT.709 / sRGB-transfer / BT.601-matrix
     // description -- a description a still-image caller actually produces.
     let mut cfg = cfg_420(32);
-    cfg.color = ColorDescription {
-        color_primaries: 1,           // CP_BT_709
-        transfer_characteristics: 13, // TC_SRGB
-        matrix_coefficients: 6,       // MC_BT_601 (NOT identity: 4:2:0 is legal here)
-        full_range: true,
-    };
+    cfg.color.color_primaries = 1; // CP_BT_709
+    cfg.color.transfer_characteristics = 13; // TC_SRGB
+    cfg.color.matrix_coefficients = 6; // MC_BT_601 (NOT identity: 4:2:0 is legal here)
+    cfg.color.full_range = true;
     let stream = encode(&cfg);
     let c = seq_color(&stream);
     assert_eq!(
@@ -189,12 +187,10 @@ fn non_conformant_descriptions_are_refused_by_name() {
     // The sRGB triple codes NO range bit -- the spec fixes it full -- so a
     // studio-range request there would be silently mis-signalled.
     let mut srgb_studio = KeyFrameConfig::allintra_speed0(64, 64, 8, false, 0, 0, 32);
-    srgb_studio.color = ColorDescription {
-        color_primaries: 1,
-        transfer_characteristics: 13,
-        matrix_coefficients: 0,
-        full_range: false,
-    };
+    srgb_studio.color.color_primaries = 1;
+    srgb_studio.color.transfer_characteristics = 13;
+    srgb_studio.color.matrix_coefficients = 0;
+    srgb_studio.color.full_range = false;
     let e = srgb_studio
         .validate_configuration()
         .expect_err("sRGB + studio range must be refused, not silently coded as full");

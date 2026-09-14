@@ -69,7 +69,7 @@ fn main() {
     let run = |arm: &str| -> Vec<u8> {
         match arm {
             "port" => encode_key_frame(
-                KeyFramePlanes { y: &cell.y, u: &cell.u, v: &cell.v },
+                KeyFramePlanes::new(&cell.y, &cell.u, &cell.v),
                 &cfg,
             )
             .expect("the port must encode this cell"),

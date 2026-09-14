@@ -66,11 +66,7 @@ fn attempt(cfg: &KeyFrameConfig) -> Outcome {
     let (y, u, v) = planes(cfg);
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         encode_key_frame(
-            KeyFramePlanes {
-                y: &y,
-                u: &u,
-                v: &v,
-            },
+            KeyFramePlanes::new(&y, &u, &v),
             cfg,
         )
     }));
@@ -231,11 +227,7 @@ fn the_documented_refusals_are_exactly_these() {
         // come back BEFORE any source sample is read.
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             encode_key_frame(
-                KeyFramePlanes {
-                    y: &[],
-                    u: &[],
-                    v: &[],
-                },
+                KeyFramePlanes::new(&[], &[], &[]),
                 &cfg,
             )
         }));
@@ -297,11 +289,7 @@ fn a_non_power_of_two_tile_grid_encodes_and_decodes() {
 
     let (y, u, v) = planes(&cfg);
     let stream = encode_key_frame(
-        KeyFramePlanes {
-            y: &y,
-            u: &u,
-            v: &v,
-        },
+        KeyFramePlanes::new(&y, &u, &v),
         &cfg,
     )
     .expect("a 4x3 tile grid must encode");
@@ -349,21 +337,14 @@ fn every_error_variant_carries_a_category_and_a_retry_verdict() {
 
     // invalid-input: a config that VALIDATES but whose planes do not match.
     let plane_size = encode_key_frame(
-        KeyFramePlanes {
-            y: &[0u16; 4],
-            u: &[],
-            v: &[],
-        },
+        KeyFramePlanes::new(&[0u16; 4], &[], &[]),
         &base,
     )
     .expect_err("mismatched planes must refuse");
 
     // limit-exceeded
     let limit = base
-        .check_limits(&EncodeLimits {
-            max_pixels: Some(1),
-            ..EncodeLimits::new()
-        })
+        .check_limits(&EncodeLimits::new().with_max_pixels(1))
         .expect_err("a 1-pixel cap must refuse");
 
     // cancelled
@@ -375,11 +356,7 @@ fn every_error_variant_carries_a_category_and_a_retry_verdict() {
     }
     let (y, u, v) = planes(&base);
     let cancelled = aom_encode::key_frame::encode_key_frame_with(
-        KeyFramePlanes {
-            y: &y,
-            u: &u,
-            v: &v,
-        },
+        KeyFramePlanes::new(&y, &u, &v),
         &base,
         &EncodeConfig::new().with_stop(&Always),
     )
@@ -527,11 +504,7 @@ fn screen_shaped_tiny_cells_encode_rather_than_refuse() {
 
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     encode_key_frame(
-                        KeyFramePlanes {
-                            y: &y,
-                            u: &u,
-                            v: &v,
-                        },
+                        KeyFramePlanes::new(&y, &u, &v),
                         &cfg,
                     )
                 }));

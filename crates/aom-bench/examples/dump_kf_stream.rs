@@ -100,7 +100,7 @@ fn main() {
     cfg.quality.cdef_adaptive = cdef_mode == 3;
 
     let port = encode_key_frame(
-        KeyFramePlanes { y: &cell.y, u: &cell.u, v: &cell.v },
+        KeyFramePlanes::new(&cell.y, &cell.u, &cell.v),
         &cfg,
     )
     .expect("the port must encode this cell");

@@ -57,10 +57,10 @@ fn cfg(w: usize, h: usize, cq: i32, speed: i32, mode: KeyFrameMode) -> KeyFrameC
 }
 fn timeit(y: &[u16], u: &[u16], v: &[u16], c: &KeyFrameConfig, reps: usize) -> f64 {
     // warm-up
-    let _ = encode_key_frame(KeyFramePlanes { y, u, v }, c).unwrap();
+    let _ = encode_key_frame(KeyFramePlanes::new(y, u, v), c).unwrap();
     let t0 = Instant::now();
     for _ in 0..reps {
-        let _ = encode_key_frame(KeyFramePlanes { y, u, v }, c).unwrap();
+        let _ = encode_key_frame(KeyFramePlanes::new(y, u, v), c).unwrap();
     }
     t0.elapsed().as_secs_f64() / reps as f64 * 1000.0
 }

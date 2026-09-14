@@ -84,11 +84,7 @@ fn main() {
                     cfg.enable_palette = pal;
                     cfg.enable_intrabc = ibc;
                     encode_key_frame(
-                        KeyFramePlanes {
-                            y: &c.y,
-                            u: &c.u,
-                            v: &c.v,
-                        },
+                        KeyFramePlanes::new(&c.y, &c.u, &c.v),
                         &cfg,
                     )
                     .expect("encode_key_frame")
