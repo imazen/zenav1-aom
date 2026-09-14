@@ -1809,11 +1809,23 @@ fn open_divergences_are_pinned() {
 
 /// **Probe for the `av1_determine_sc_tools_with_encoding` gap** (issue #15's
 /// SCM-promotion bullet; `encoder_utils.c:1214`, PARITY.md C3). The shell's
-/// screen-content decision is the base detector's ONLY -- C additionally runs
-/// a two-pass trial encode (forced q >= 244, fixed 32x32 partition) whenever
-/// the base decision is OFF and speed features allow it, and can flip the
-/// decision ON if screen-content tools would buy >0.9dB PSNR
-/// (`STRICT_PSNR_DIFF_THRESH`). That trial is unported here.
+/// screen-content decision is the base detector's ONLY -- in a RECODE-eligible
+/// configuration C additionally runs a two-pass trial encode (forced q >= 244,
+/// fixed 32x32 partition) whenever the base decision is OFF and speed features
+/// allow it, and can flip the decision ON if screen-content tools would buy
+/// >0.9dB PSNR (`STRICT_PSNR_DIFF_THRESH`).
+///
+/// **2026-09-13 (KB-66): the trial is UNREACHABLE in this file's envelope.**
+/// The call site sits in `encode_with_recode_loop` (encoder.c:3326), which C
+/// only enters when `sf.hl_sf.recode_loop != DISALLOW_RECODE` -- and
+/// `oxcf.pass == AOM_RC_ONE_PASS && has_no_stats_stage(cpi)` (no lookahead,
+/// `g_lag_in_frames == 0`, which aomenc forces for `--usage=allintra`)
+/// forces DISALLOW (speed_features.c:2785). The port was implemented, proven
+/// byte-identical to C's `AOM_RC_LAST_PASS` stream on a flipping cell, and
+/// REVERTED because running it diverges from the one-pass oracle. So this
+/// probe's job has inverted: it is now the regression pin that the port NEVER
+/// disagrees with one-pass C on `allow_screen_content_tools` -- any firing
+/// here is a port bug, not a missing arm.
 ///
 /// This is NOT a byte-exactness gate -- it targets the ONE bit the trial can
 /// change (`allow_screen_content_tools`) with content chosen to be
@@ -1920,12 +1932,11 @@ fn probe_sc_tools_trial_gap_on_detector_negative_content() {
     );
     assert!(
         findings.is_empty(),
-        "the SCM trial gap is REAL on this content -- {} of {cells_tried} cells disagree with \
-         C on allow_screen_content_tools:\n  {}\nThis is the un-ported `av1_determine_sc_tools_\
-         with_encoding` arm (encoder_utils.c:1214, PARITY.md C3) actually mattering within \
-         encode_key_frame's envelope. Per issue #15's DoD, turn this into either a targeted \
-         KeyFrameError refusal for the discovered condition, or a registered pin with the \
-         measured attribution -- do not silently leave it failing here.",
+        "{} of {cells_tried} cells disagree with \
+         C on allow_screen_content_tools:\n  {}\nSince KB-66 the trial is proven UNREACHABLE \
+         in this envelope, so this is a genuine port divergence on the detector arm \
+         (screen_detect.rs / `av1_set_screen_content_options`), not the trial. Localize \
+         and fix -- do not silently leave it failing here.",
         findings.len(),
         findings.join("\n  ")
     );
@@ -2018,11 +2029,10 @@ fn probe_sc_tools_trial_gap_flat_patch_on_small_noisy_frame() {
     );
     assert!(
         findings.is_empty(),
-        "the SCM trial gap is REAL on a size-swept flat-patch-on-noise probe -- {} of \
-         {cells_tried} cells disagree with C on allow_screen_content_tools:\n  {}\nSame \
-         un-ported `av1_determine_sc_tools_with_encoding` arm as the sibling probe above; \
-         act on it the same way (targeted refusal or a registered, measured pin) rather than \
-         leaving this failing.",
+        "{} of {cells_tried} cells disagree with C on allow_screen_content_tools on a \
+         size-swept flat-patch-on-noise probe:\n  {}\nSince KB-66 the trial is proven \
+         UNREACHABLE in this envelope, so this is a detector-arm divergence \
+         (screen_detect.rs), not the unported arm -- localize and fix.",
         findings.len(),
         findings.join("\n  ")
     );

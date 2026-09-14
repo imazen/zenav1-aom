@@ -68,8 +68,12 @@
 //!   unconditional ONLY_SPLIT). Port: thread the existing
 //!   `vbp_prune_16x16_split_using_min_max_sub_blk_var` param of
 //!   [`crate::var_part::choose_var_based_partitioning_key`] as
-//!   `speed >= 9`. OPEN (unverified): that var_part.rs implements the
-//!   ONLY_NONE arm with C's 3-state PART_EVAL semantics, not a bool force-split.
+//!   `speed >= 9`. VERIFIED 2026-09-13: `var_part.rs` implements the full
+//!   3-state PART_EVAL semantics — `PartEval::OnlyNone` is produced by the
+//!   `get_part_eval_based_on_sub_blk_var` port (var_part.rs:585-597, the
+//!   `(max_8x8 - min_8x8) > (threshold16 << 2)` min/max over the four 8x8
+//!   sub-variances) and consumed at :392-399 exactly as C:178-185
+//!   (OnlyNone → `set_block_size` + stop; OnlySplit → descend).
 //! - `prune_h_pred_using_best_mode_so_far = true` → estimate-loop prune (live).
 //! - `enable_intra_mode_pruning_using_neighbors = true` → estimate-loop prune
 //!   (live).

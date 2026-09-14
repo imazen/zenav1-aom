@@ -1,5 +1,38 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## The SCM trial was ported, proven byte-exact — and is UNREACHABLE in the port's envelope, so it was reverted (KB-66, 2026-09-13)
+
+`av1_determine_sc_tools_with_encoding` (the C3 "SCM trial" bullet, long the
+next open class) was ported whole: a `FIXED_PARTITION` stamp driver
+(`var_part::set_fixed_partitioning` + a `rd_use_partition_real` replay arm in
+the tile walk), the two-pass trial at `q = max(q_orig, 244)`, all-plane PSNR
+at stream depth, `palette_pixel_num`, and C's `0.9` / `ratio>4` decision —
+and it was RIGHT: on a flipping cell (detector-negative mixed photo/UI,
+256x128 cq45 s0) the port's trial-flipped stream was **byte-identical to the
+C shim's `AOM_RC_LAST_PASS` output** (833 B), the only path that executes it.
+
+Then the reachability check inverted the item. The call site sits inside
+`encode_with_recode_loop` (encoder.c:3326), entered only when
+`sf.hl_sf.recode_loop != DISALLOW_RECODE` — and
+`oxcf.pass == AOM_RC_ONE_PASS && has_no_stats_stage` (no lookahead;
+aomenc allintra forces `g_lag_in_frames=0` AND `passes=1`) forces DISALLOW
+(speed_features.c:2785, encoder.h:4159). Verified live on the instrumented
+oracle: `recode_loop=0 no_stats=1 pass=0 lap=0` — **the one-pass shim never
+calls the trial**. The port's envelope is exactly that (no passes/lag knobs
+exist), so running the trial made the port flip `allow_screen_content_tools`
+where reachable-C stays off — 12/12 probe cells REGRESSED, all restored
+byte-exact by the revert. The mechanism is recorded in KB-66's entry if
+a lag/two-pass surface ever ships.
+
+Consequence for the inventory: the "SCM trial gap" is NOT open — it was never
+a divergence in this envelope. The "14 tiny" fleet class loses its C3
+attribution (its cells span cpu-used 4/6/8; GOOD mode disables
+`extra_sc_testing` at speed >= 6 and allintra never reaches the call — the
+s6/s8 cells cannot be the trial under ANY usage) and needs re-attribution
+when the fleet planes are re-staged. The two committed adversarial probes
+(`probe_sc_tools_trial_gap_*`, 105 cells) now pin the inverted claim: port
+and one-pass C must NEVER disagree on `allow_screen_content_tools`.
+
 ## Coded-lossless IntraBC lands — conformance + 47/48 probe cells byte-exact (KB-64 / KB-65, 2026-09-13)
 
 Two landings, one mechanism each:

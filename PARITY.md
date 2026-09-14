@@ -232,11 +232,24 @@ points are libaom v3.14.1 (`reference/libaom`). Defaults verified in
   C: `av1/encoder/encoder.c` `av1_set_screen_content_options`. **PORTED 2026-08-30 (KB-41
   root #13)** arm-by-arm — `screen_detect.rs`; the port no longer takes
   `allow_screen_content_tools` purely as an input.
-- **`av1_determine_sc_tools_with_encoding` (encoder_utils.c:1214) — ABSENT (M), the NEXT OPEN
-  CLASS in this family.** The second, *encoding-based* screen decision: on a KEY frame, when
-  the detector said "not screen" and `!rt_sf.use_nonrd_pick_mode` (so allintra **below speed
-  8**), C runs **two extra whole-frame trial encodes** and can turn screen tools ON anyway
-  (with `allow_intrabc = cpi->intrabc_used`). Reproducer: 35 tiny datagen cells, e.g.
+- **`av1_determine_sc_tools_with_encoding` (encoder_utils.c:1214) — RESOLVED 2026-09-13
+  (KB-66): UNREACHABLE in the port's envelope, NOT a divergence.** The second,
+  *encoding-based* screen decision: on a KEY frame, when the detector said "not screen",
+  C runs **two extra whole-frame trial encodes** and can turn screen tools ON anyway.
+  It was ported whole (FIXED_PARTITION stamp driver + `rd_use_partition_real` replay +
+  all-plane PSNR + `palette_pixel_num` + the 0.9 / ratio>4 decision) and verified
+  **byte-identical to C's `AOM_RC_LAST_PASS` stream on a flipping cell** — then found
+  unreachable: the call site sits in `encode_with_recode_loop` (encoder.c:3326), taken
+  only when `recode_loop != DISALLOW_RECODE`, and one-pass + `has_no_stats_stage`
+  (i.e. no lookahead, `g_lag_in_frames == 0`) forces DISALLOW (speed_features.c:2785,
+  encoder.h:4159). aomenc allintra forces lag=0 AND passes=1, so **the trial cannot
+  fire through aomenc allintra at all** — and the port's `encode_key_frame` envelope
+  IS one-pass allintra no-lookahead. Running the ported trial therefore REGRESSED
+  parity (12/12 probe cells flipped where reachable-C stays off); it was reverted.
+  The mechanism is recorded in KB-66. **The "14 tiny" fleet class needs
+  RE-ATTRIBUTION**: it spans cpu-used 4/6/8, and under no usage can s6/s8 cells be
+  the trial (GOOD sets `disable_extra_sc_testing` at speed >= 6; allintra never
+  reaches the call). Historical detail, struck but kept for the trail:
   `~/tmp/aom_poison_repro/refs/8468.scale59x128.png`, staged as `59x128_cq44_s4` and
   `59x128_cq50_s6` (both fail identically: detector says 0, the oracle header says 1, with
   `palette=0 intrabc=0 photo=6 fast=true`); the bench asserts

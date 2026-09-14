@@ -5,6 +5,60 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-66 — Encoder: `av1_determine_sc_tools_with_encoding` is UNREACHABLE in the port's envelope — ported, verified byte-identical against the only C path that runs it, then REVERTED as a parity regression — RESOLVED 2026-09-13
+
+- **What happened.** The C3 "SCM trial" bullet (PARITY.md) was long carried as
+  the next unported open class. The full port was built — `FIXED_PARTITION`
+  stamp driver (`var_part::set_fixed_partitioning` + a `rd_use_partition_real`
+  replay arm in `pack_tile_lr_stop`), the two-pass trial at
+  `q = max(q_orig, 244)`, all-plane PSNR + `palette_pixel_num`, and the
+  `0.9`/`>4-per-ratio` decision — and it was CORRECT: on a flipping cell
+  (detector-negative mixed photo/UI content, 256x128 cq45 s0) the port's
+  flipped stream was **byte-identical to the C shim's `AOM_RC_LAST_PASS`
+  stream** (833 B), the only path where C executes the function.
+- **The finding that resolves it.** `av1_determine_sc_tools_with_encoding` is
+  called ONLY from `encode_with_recode_loop` (encoder.c:3326), which
+  `encode_with_recode_loop_and_filter` reaches only when
+  `sf.hl_sf.recode_loop != DISALLOW_RECODE` (encoder.c:3737). The common tail
+  of `av1_set_speed_features_framesize_independent` forces
+  `DISALLOW_RECODE` whenever `oxcf.pass == AOM_RC_ONE_PASS &&
+  has_no_stats_stage(cpi)` (speed_features.c:2785), and `has_no_stats_stage`
+  holds whenever `!ppi->lap_enabled` (encoder.h:4159) — i.e. `g_lag_in_frames
+  == 0`. For allintra, aomenc forces BOTH: `g_lag_in_frames = 0`
+  (aomenc.c:1217-1221) and `passes = 1` (aomenc.c:751-754). Verified live on
+  the instrumented oracle: `[c-recode] recode_loop=0 no_stats=1 pass=0 lap=0`
+  — the shim never calls the trial; `[c-sct-trial]` fires only under
+  `two_pass=true` (`recode_loop=2`).
+- **Why that reverts the port.** The port's envelope IS one-pass allintra
+  no-lookahead — `KeyFrameConfig` has no passes/lag knobs — so the reachable
+  C behaviour is detector-only, and running the ported trial DIVERGED the
+  port from it (12/12 `flat_sprinkle` probe cells flipped
+  `allow_screen_content_tools` where one-pass C stays off; every one went
+  byte-identical after the revert). It also cost two extra fixed-partition
+  encodes per key frame on the hot path. The machinery was removed before
+  landing; this entry records the full mechanism should a lag/two-pass
+  surface ever need it.
+- **Correction to the C3 "14 tiny" fleet attribution.** The class was pinned
+  on cells spanning `--cpu-used` 4/6/8 (`avifaom_round3_2026-08-30_open.tsv`),
+  but the s6/s8 cells CANNOT be the trial under either usage: GOOD mode sets
+  `hl_sf.disable_extra_sc_testing` at speed >= 6 (speed_features.c:1467) and
+  allintra never reaches the call site at all. The survivors need a
+  different root when the fleet content is re-staged locally (the staged
+  planes dir is incomplete — `.y` missing; see the PARITY C3 note). Two
+  adversarial probes in `self_contained_key_frame.rs`
+  (`probe_sc_tools_trial_gap_*`, 105 cells) now double as the regression pin:
+  on any reachable cell, port and C must agree on
+  `allow_screen_content_tools`.
+- **Reachability matrix (all MEASURED, not argued):** allintra one-pass
+  (port's envelope, `usage=2` shim, `two_pass=false`): trial NEVER runs.
+  allintra via aomenc CLI: NEVER (lag and passes both forced). allintra via
+  raw `aom_codec` with `g_lag_in_frames>0` or LAST_PASS: runs. GOOD one-pass
+  with `g_lag_in_frames>0`: runs at speeds 0-5 only.
+- **Gates after revert:** `flat_sprinkle` probe 12/12 byte-identical vs the
+  matched one-pass oracle; `probe_sc_tools_trial_gap_*` green;
+  `screen_content_tools_byte_match_real_aomenc` (incl. the KB-65 cq0 legs)
+  green; full `just gate-landing` re-run recorded in the commit.
+
 ### KB-65 — Encoder: coded-lossless IntraBC emitted quadtree-DFS txbs where every decoder reads a flat raster, plus the search-time `allow_intrabc` missed the `enable_intrabc` AND — FIXED 2026-09-13, conformance + 47/48 probe cells byte-exact
 
 - **Symptom.** `ibc_lossless_probe` (scratch example, screen/detail x

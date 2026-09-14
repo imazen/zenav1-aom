@@ -238,7 +238,14 @@ Three consequences, because this REORDERS the queue below rather than adding to 
    panics**, in 1.46 s. Gated by `refusal_census::screen_shaped_tiny_cells_encode_rather_
    than_refuse`, which fails BY NAME if a refusal ever appears there and says that this
    moves the item back onto the must-close list. **So the SCM trial is a byte DIVERGENCE
-   under the cap, and class (a) has no known open member on the public API.** The datagen
+   under the cap — SUPERSEDED 2026-09-13 (KB-66): it is not even that. The trial's only
+   call site is `encode_with_recode_loop`, which one-pass + `has_no_stats_stage`
+   (lookahead off — aomenc allintra forces `g_lag_in_frames=0` AND `passes=1`) never
+   reaches (`recode_loop=DISALLOW_RECODE`, speed_features.c:2785). Ported and verified
+   byte-identical vs C's LAST_PASS stream on a flipping cell, then REVERTED — running
+   it diverged the port from the reachable one-pass oracle. The 14-tiny fleet class
+   keeps its pin but loses this attribution.**
+   Class (a) has no known open member on the public API.** The datagen
    fleet's 35 refused tiny cells are real, and they are `aom-bench`'s — a harness that
    legitimately refuses when it cannot model C's decision, not the backend zenavif selects; (b) ~~anything where the port disagrees with ITSELF across dispatch tiers (the bd12
    `1920x1080 cq24 cpu0` cell, +181 B default vs +55 B scalar), because a kernel whose
