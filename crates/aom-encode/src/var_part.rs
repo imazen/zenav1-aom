@@ -68,7 +68,7 @@ const BLOCK_8X8: usize = 3;
 const BLOCK_16X16: usize = 6;
 const BLOCK_16X32: usize = 7;
 const BLOCK_32X16: usize = 8;
-const BLOCK_32X32: usize = 9;
+pub(crate) const BLOCK_32X32: usize = 9;
 const BLOCK_32X64: usize = 10;
 const BLOCK_64X32: usize = 11;
 const BLOCK_64X64: usize = 12;
@@ -747,6 +747,112 @@ pub fn choose_var_based_partitioning_key(
                     }
                 }
             }
+        }
+    }
+}
+
+/// `find_partition_size` (encoder.h:4290-4305): descend the BLOCK_SIZE enum
+/// in steps of 3 — for the square request sizes this lands on the square run
+/// (32x32 -> 16x16 -> 8x8 -> exits at 0 = 4x4) — to the largest size whose
+/// mi dims fit `rows_left` x `cols_left`. `bh`/`bw` mirror C's out-params
+/// EXACTLY, including the quirks the caller's loop relies on:
+/// - on `rows_left <= 0 || cols_left <= 0`, C returns
+///   `min(bsize, BLOCK_8X8)` WITHOUT writing `*bh`/`*bw` — the caller's stale
+///   step values persist (`set_partial_sb_partition`'s `r += bh` uses them);
+/// - on loop exit without a fit (all tried sizes too big), the returned
+///   size is 0 (BLOCK_4X4) while `bh`/`bw` hold the LAST tried size's dims.
+fn find_partition_size(bsize: usize, rows_left: i32, cols_left: i32, bh: &mut i32, bw: &mut i32) -> usize {
+    if rows_left <= 0 || cols_left <= 0 {
+        return bsize.min(BLOCK_8X8);
+    }
+    let mut int_size = bsize as i32;
+    while int_size > 0 {
+        *bh = MI_SIZE_HIGH_B[int_size as usize] as i32;
+        *bw = MI_SIZE_WIDE_B[int_size as usize] as i32;
+        if *bh <= rows_left && *bw <= cols_left {
+            break;
+        }
+        int_size -= 3;
+    }
+    int_size.max(0) as usize
+}
+
+/// `av1_set_fixed_partitioning` (encodeframe_utils.c:635-669) — the
+/// FIXED_PARTITION stamp writer the SCM trial encodes over
+/// (`partition_search_type == FIXED_PARTITION`, `fixed_partition_size =
+/// BLOCK_32X32`, encoder_utils.c:1196-1208). Stamps `bsize` at every leaf
+/// top-left mi cell of the SB at (`mi_row`, `mi_col`): the whole SB's grid
+/// when it is all in-frame, else `set_partial_sb_partition` (:611-628) —
+/// the greedy per-cell largest-fit clip whose `r += bh` / `c += bw` steps
+/// use C's out-param semantics verbatim (the row step takes the LAST
+/// column's `bh`, and a `find_partition_size` early return leaves both
+/// stale).
+///
+/// `stamps` is the frame-sized (mi_rows x mi_cols) bsize grid
+/// [`get_partition_from_stamps`] reads back; `mib_size` is the SB side in
+/// mi (16 for SB64, 32 for SB128); `tile_mi_*_end` are the tile bounds
+/// already clamped to the mi extent (C reads `tile->mi_row_end`, which
+/// `av1_tile_set_row` clamps). Zenaom-mode only — see
+/// [`crate::key_frame::KeyFrameMode`].
+#[allow(clippy::too_many_arguments)]
+pub fn set_fixed_partitioning(
+    stamps: &mut [u8],
+    mi_rows: i32,
+    mi_cols: i32,
+    tile_mi_row_end: i32,
+    tile_mi_col_end: i32,
+    mi_row: i32,
+    mi_col: i32,
+    bsize: usize,
+    mib_size: i32,
+) {
+    let mi_rows_remaining = tile_mi_row_end - mi_row;
+    let mi_cols_remaining = tile_mi_col_end - mi_col;
+    let bh_in = MI_SIZE_HIGH_B[bsize] as i32;
+    let bw_in = MI_SIZE_WIDE_B[bsize] as i32;
+    // `set_block_size`'s in-frame guard (var_based_part.c:138-146): the
+    // partial-SB loop walks the whole mib_size grid and only the in-frame
+    // cells carry a stamp; off-frame cells are never read back
+    // (`get_partition_from_stamps` returns PARTITION_INVALID there first).
+    let mut stamp = |r: i32, c: i32, bs: usize| {
+        let (ar, ac) = (mi_row + r, mi_col + c);
+        if ar < mi_rows && ac < mi_cols {
+            stamps[(ar * mi_cols + ac) as usize] = bs as u8;
+        }
+    };
+    if mi_cols_remaining >= mib_size && mi_rows_remaining >= mib_size {
+        // All "in image": `bsize` at every leaf origin (:652-663).
+        let mut br = 0;
+        while br < mib_size {
+            let mut bc = 0;
+            while bc < mib_size {
+                stamp(br, bc, bsize);
+                bc += bw_in;
+            }
+            br += bh_in;
+        }
+    } else {
+        // `set_partial_sb_partition` (:611-628). `bh` persists across ROWS
+        // and is rewritten by every cell's find_partition_size call — so the
+        // `r += bh` advance uses the LAST column's result; `bw` resets to
+        // `bw_in` per row and steps by each cell's found width.
+        let mut bh = bh_in;
+        let mut r = 0;
+        while r < mib_size {
+            let mut bw = bw_in;
+            let mut c = 0;
+            while c < mib_size {
+                let sz = find_partition_size(
+                    bsize,
+                    mi_rows_remaining - r,
+                    mi_cols_remaining - c,
+                    &mut bh,
+                    &mut bw,
+                );
+                stamp(r, c, sz);
+                c += bw;
+            }
+            r += bh;
         }
     }
 }

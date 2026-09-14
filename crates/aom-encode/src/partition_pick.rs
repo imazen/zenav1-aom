@@ -675,6 +675,17 @@ pub struct PickFrameCfg<'a> {
     /// candidate-loop `enable_*` gates; [`IntraToolCfg`]). `Default` = the
     /// aomenc defaults (all enabled) = the pre-toggle behavior exactly.
     pub intra_tools: IntraToolCfg,
+    /// `sf.part_sf.partition_search_type == FIXED_PARTITION` +
+    /// `fixed_partition_size` (encoder_utils.c:1196-1208) — `Some(bsize)`
+    /// swaps the per-SB partition pick for `av1_set_fixed_partitioning`'s
+    /// pre-stamped grid + the `av1_rd_use_partition` replay
+    /// ([`crate::var_part::set_fixed_partitioning`] +
+    /// [`rd_use_partition_real`]). Used ONLY by the SCM trial encode
+    /// (`av1_determine_sc_tools_with_encoding`, which runs `bsize =
+    /// BLOCK_32X32`) under [`crate::key_frame::KeyFrameMode::Zenaom`];
+    /// `None` on every production encode, where the RD partition search
+    /// (or the VBP arm at speed >= 7) picks the tree.
+    pub fixed_partition_size: Option<usize>,
 }
 
 /// Frame-constant inputs for the INTER leaf search (the parts of

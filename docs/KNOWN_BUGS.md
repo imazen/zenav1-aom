@@ -5,6 +5,61 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-67 — Encoder/mode split: `KeyFrameMode::{LibaomExact, Zenaom}` — the SCM trial lands as the first opt-in zenaom deviation, margin-gated — LANDED 2026-09-13
+
+- **What changed.** KB-66 resolved the SCM trial as unreachable-in-envelope
+  for libaom parity; the user then split behaviour into two explicit modes
+  on `KeyFrameConfig`: `LibaomExact` (default — audited C behaviour, byte
+  gates unchanged) and `Zenaom` (opt-in — measured, documented deviations
+  enabled). The trial is the first citizen of `Zenaom`.
+- **The trial, as shipped in zenaom.** Faithful to
+  `av1_determine_sc_tools_with_encoding` (encoder_utils.c:1221): two
+  `FIXED_PARTITION`/`BLOCK_32X32` passes at `q = max(q_orig, 244)` replayed
+  through `rd_use_partition_real` on a pre-stamped grid
+  (`var_part::set_fixed_partitioning` + `find_partition_size` edge clipping,
+  dispatched via `PickFrameCfg::fixed_partition_size` — the production path
+  passes `None` everywhere), tools-off vs tools-on (IntraBC stays off in
+  both, as in C), all-plane PSNR + `palette_pixel_num` over the committed
+  `SbTree` leaves, decision `psnr_diff > 0.9 || (palette_ratio >= 1e-4 &&
+  psnr_diff/palette_ratio > 4)`, flip sets `allow_screen_content_tools=1,
+  allow_intrabc=0, is_screen_content_type=1`. Speed-feature cascades that
+  already ran see the DETECTOR's value (`detector_allow_sct` snapshot),
+  matching C's ordering (detector → `check_initial_width` cascade →
+  size-dependent vars → trial → main encode).
+- **Why gated, and the measured gate.** C runs the trial unconditionally on
+  detector-negative key frames; in the still-image envelope that is the
+  common case, so the port nominates it only where a flip is plausible:
+  (a) `screen_likelihood` caller hint >= `SCM_TRIAL_HINT_MIN` (0.10 — the
+  zenanalyze `patch_fraction` seam; zenavif fills it, `aom-encode` takes no
+  dependency), or (b) the detector's own net score merely positive
+  (`count_palette * 16 > count_photo`). Fractional-threshold margins were
+  measured INSUFFICIENT: C's own trial wins cells at 3.9% of the positive
+  threshold (256x256 + 64x64 UI patch, `diff/ratio = 6.0`), so the gate is
+  "any net palette evidence at all". Pure noise/photo scores deep negative
+  (`photo=124` of 128 blocks on the synthetic photo cell).
+- **Measured behaviour** (`zenaom_scm_trial.rs`, all asserted):
+  `LibaomExact` byte-identical to C one-pass on every cell incl. cells the
+  trial would flip; `Zenaom` flips exactly the cells C's own two-pass trial
+  flips (decision agreement on the sweep — port `win=true` ⟺ C `win=1`),
+  flipped streams conformant through the real C decoder; on the 256x256
+  cq32 s0 flip cell the zenaom stream was even byte-identical to C's
+  `LAST_PASS` stream. Photo cells: gate stays shut, stream identical.
+- **Cost, measured** (`ztrial_cost` example, release, single thread):
+  trial-firing frames 1.07x–1.19x an exact encode (the fixed-32x32 passes
+  at q=244 carry no partition search); gate-off and photo frames 1.00x.
+  Expected fleet cost is therefore bounded by the nomination rate, not by
+  a multiplier on every frame.
+- **Known bound (honest):** the margin gate trades flip recall for zero
+  photo cost — a sub-`net16>0` patch on a large frame (e.g. 64x64 inside
+  512x256, palette ≈ 0.8% of blocks) does NOT nominate, where C's
+  unconditional trial might still win. The `screen_likelihood` hint is the
+  caller-side escape hatch for exactly this class.
+- **Gates:** `zenaom_scm_trial` — 3 tests green (flip+conformance, photo
+  no-flip incl. the hint-runs-and-declines leg, exact-contract over
+  cq{20,32,50} x s{0,3,6}); the full sweep is `#[ignore]`d
+  (`probe_zenaom_trial_matrix`, 24 cells + controls, prints both sides'
+  decisions under `AOM_SCT_DBG`/`AOM_SCT_TRIAL_DBG`).
+
 ### KB-66 — Encoder: `av1_determine_sc_tools_with_encoding` is UNREACHABLE in the port's envelope — ported, verified byte-identical against the only C path that runs it, then REVERTED as a parity regression — RESOLVED 2026-09-13
 
 - **What happened.** The C3 "SCM trial" bullet (PARITY.md) was long carried as

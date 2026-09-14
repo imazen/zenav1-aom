@@ -1810,6 +1810,14 @@ pub fn pack_tile_lr_stop(
     // `av1_choose_var_based_partitioning` + `av1_rd_use_partition`
     // (encode_rd_sb, encodeframe.c:876-895).
     let use_var_based_partition = pick_cfg.allintra && pick_cfg.speed >= 7;
+    // `part_sf.partition_search_type == FIXED_PARTITION` — the SCM trial
+    // encodes (`av1_determine_sc_tools_with_encoding` ->
+    // `set_encoding_params_for_screen_content`, encoder_utils.c:1187-1208):
+    // `av1_set_fixed_partitioning` pre-stamps a uniform grid and
+    // `av1_rd_use_partition` replays it — the same walk the VBP arm uses,
+    // minus the variance tree. Only `key_frame`'s zenaom-mode trial passes
+    // set `fixed_partition_size`; every production encode reads `None`.
+    let use_fixed_partition = pick_cfg.fixed_partition_size.is_some();
     // `PickFrameCfg::fs_sf` must be RESOLVED by the caller, not defaulted
     // (KB-32). Since KB-28 the walk carries the TRUE crop dims
     // (`SbEncodeEnv::frame_{width,height}` = `cm->width`/`cm->height`), so
@@ -1843,7 +1851,7 @@ pub fn pack_tile_lr_stop(
             env.frame_height
         );
     }
-    let mut vbp_stamps = if use_var_based_partition {
+    let mut vbp_stamps = if use_var_based_partition || use_fixed_partition {
         vec![0u8; env.mi_rows as usize * mi_cols]
     } else {
         Vec::new()
@@ -1983,7 +1991,12 @@ pub fn pack_tile_lr_stop(
             // `x->intra_sb_rdmult_modifier` (:5715) — `encode_rd_sb`'s VBP
             // arm leaves it at the per-SB reset 128 (encodeframe.c:1303), so
             // setup_block_rdmult's ALLINTRA fold is IDENTITY at speed >= 7.
-            let intra_modifier = if pick_cfg.allintra && !use_var_based_partition {
+            // The FIXED_PARTITION (SCM-trial) arm is identical: the replay is
+            // `av1_rd_use_partition`, which never touches the modifier.
+            let intra_modifier = if pick_cfg.allintra
+                && !use_var_based_partition
+                && !use_fixed_partition
+            {
                 let mi_w = MI_SIZE_WIDE_B[sb_size] as i32;
                 let mi_h = MI_SIZE_HIGH_B[sb_size] as i32;
                 let ref_off_y =
@@ -2182,7 +2195,43 @@ pub fn pack_tile_lr_stop(
             // (It is invalidated again at every BLOCK_64X64 inside the search,
             // which is what makes it a per-64x64 cache; see KB-PERF-1.)
             let mut part_search_info = crate::cnn_partition::decision::PartitionSearchInfo::new();
-            let mut tree = if let Some(vf) = &vbp_frame {
+            let mut tree = if let Some(fixed_bsize) = pick_cfg.fixed_partition_size {
+                // `encode_rd_sb`'s FIXED_PARTITION arm (encodeframe.c:914):
+                // `av1_set_fixed_partitioning` stamps the uniform grid (with
+                // `set_partial_sb_partition`'s largest-fit clip at frame/tile
+                // edges), then `av1_rd_use_partition` replays it —
+                // do_recon=1 at the SB root -> the OUTPUT_ENABLED winner walk.
+                // SCM-trial encodes only (`PickFrameCfg::fixed_partition_size`).
+                crate::var_part::set_fixed_partitioning(
+                    &mut vbp_stamps,
+                    env.mi_rows,
+                    env.mi_cols,
+                    env.tile_row_end.min(env.mi_rows),
+                    env.tile_col_end.min(env.mi_cols),
+                    mi_row,
+                    mi_col,
+                    fixed_bsize,
+                    sb_mi,
+                );
+                let (tree, _stats) = crate::partition_pick::rd_use_partition_real(
+                    &sb_env,
+                    &sb_pick_cfg,
+                    &mut search_tile,
+                    &mut grid,
+                    recon_y,
+                    recon_u,
+                    recon_v,
+                    &mut cfl_search,
+                    &vbp_stamps,
+                    mi_row,
+                    mi_col,
+                    sb_size,
+                    /*do_recon=*/ true,
+                    &mut visits,
+                    &mut last_source_variance,
+                );
+                tree
+            } else if let Some(vf) = &vbp_frame {
                 // encode_rd_sb's VAR_BASED_PARTITION arm (encodeframe.c:
                 // 876-895): av1_choose_var_based_partitioning fixes the tree.
                 // Speed 7 replays it with the full-RD `av1_rd_use_partition`

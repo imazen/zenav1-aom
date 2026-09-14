@@ -156,3 +156,4 @@ mod wiener_denoise_diff;
 mod xform_quant_diff;
 mod xform_quant_optimize_diff;
 mod xform_quant_optimize_highbd_diff;
+mod zenaom_scm_trial;

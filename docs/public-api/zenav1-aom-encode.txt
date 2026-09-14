@@ -6,28 +6,28 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-encode.txt 268 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4847 lines (324 hidden + 7563 excluded-feature)
+# files: zenav1-aom-encode.txt 275 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4851 lines (326 hidden + 7565 excluded-feature)
 # arch-unique surface: aarch64 39
 
 ## summary
 #
 #   pub modules                                 2
-#   pub types (struct/enum/trait/alias)        26
-#   pub consts/statics                          5
+#   pub types (struct/enum/trait/alias)        27
+#   pub consts/statics                          6
 #   free functions                             23
 #   inherent methods                           25
-#   struct fields                             135
-#   enum variants                              22
+#   struct fields                             137
+#   enum variants                              24
 #   re-exports                                  1
-#   trait roster entries (type × trait)       119
-#   auto-trait-complete types                  25
+#   trait roster entries (type × trait)       125
+#   auto-trait-complete types                  26
 #   auto-trait exceptions                       1
 #
 # per-module pub lines:
 #   (root)                            2
-#   aom_encode                      237
+#   aom_encode                      243
 
-## items (239 lines)
+## items (245 lines)
 
 pub mod aom_encode
 pub use aom_encode::reconstruct_txb
@@ -60,6 +60,9 @@ pub aom_encode::key_frame::KeyFrameError::SampleRange::plane: usize
 pub aom_encode::key_frame::KeyFrameError::Unsupported(&'static str)
 pub fn aom_encode::key_frame::KeyFrameError::category(&self) -> &'static str
 pub fn aom_encode::key_frame::KeyFrameError::is_transient(&self) -> bool
+pub enum aom_encode::key_frame::KeyFrameMode
+pub aom_encode::key_frame::KeyFrameMode::LibaomExact
+pub aom_encode::key_frame::KeyFrameMode::Zenaom
 pub enum aom_encode::key_frame::TrellisMode
 pub aom_encode::key_frame::TrellisMode::FinalPass
 pub aom_encode::key_frame::TrellisMode::Full
@@ -127,9 +130,11 @@ pub aom_encode::key_frame::KeyFrameConfig::enable_palette: bool
 pub aom_encode::key_frame::KeyFrameConfig::enable_restoration: bool
 pub aom_encode::key_frame::KeyFrameConfig::film_grain: core::option::Option<aom_dsp::entropy::header::FilmGrainParams>
 pub aom_encode::key_frame::KeyFrameConfig::height: usize
+pub aom_encode::key_frame::KeyFrameConfig::mode: aom_encode::key_frame::KeyFrameMode
 pub aom_encode::key_frame::KeyFrameConfig::monochrome: bool
 pub aom_encode::key_frame::KeyFrameConfig::quality: aom_encode::key_frame::QualityTools
 pub aom_encode::key_frame::KeyFrameConfig::sb_size_128: bool
+pub aom_encode::key_frame::KeyFrameConfig::screen_likelihood: core::option::Option<f32>
 pub aom_encode::key_frame::KeyFrameConfig::ss_x: usize
 pub aom_encode::key_frame::KeyFrameConfig::ss_y: usize
 pub aom_encode::key_frame::KeyFrameConfig::superres_denom: u8
@@ -168,6 +173,7 @@ pub const aom_encode::key_frame::ESTIMATE_MAX_SLACK: f64
 pub const aom_encode::key_frame::MAX_FRAME_DIM: usize
 pub const aom_encode::key_frame::OBU_SEQUENCE_HEADER: u32
 pub const aom_encode::key_frame::OBU_TEMPORAL_DELIMITER: u32
+pub const aom_encode::key_frame::SCM_TRIAL_HINT_MIN: f32
 pub fn aom_encode::key_frame::derive_frame_header(&aom_encode::key_frame::KeyFrameConfig, &aom_dsp::entropy::header::SequenceHeaderObu, &aom_encode::screen_detect::ScreenContentDecision, aom_dsp::entropy::header::TileInfoHeader) -> aom_dsp::entropy::header::FrameHeaderObu
 pub fn aom_encode::key_frame::derive_sequence_header(&aom_encode::key_frame::KeyFrameConfig) -> aom_dsp::entropy::header::SequenceHeaderObu
 pub fn aom_encode::key_frame::derive_tile_info(i32, i32, u32, i32, i32) -> aom_dsp::entropy::header::TileInfoHeader
@@ -269,7 +275,7 @@ pub fn aom_encode::xform_quant_optimize(&[i16], usize, usize, aom_encode::QuantK
 pub fn aom_encode::xform_quant_optimize_split(&[i16], usize, usize, aom_encode::QuantKind, &aom_encode::QuantParams<'_>, &aom_encode::QuantParams<'_>, &aom_encode::BlockContext<'_>, &aom_encode::OptimizeInputs<'_>) -> aom_encode::XformQuantOptResult
 pub fn aom_encode::xform_quant_optimize_split_into(&[i16], usize, usize, aom_encode::QuantKind, &aom_encode::QuantParams<'_>, &aom_encode::QuantParams<'_>, &aom_encode::BlockContext<'_>, &aom_encode::OptimizeInputs<'_>, &mut aom_encode::XformQuantScratch) -> aom_encode::XformQuantOptSummary
 
-## trait impls (27 types)
+## trait impls (28 types)
 
 aom_encode::BlockContext<'a>: Clone, Copy, Debug
 aom_encode::BlockContexts: Clone, Debug, Eq, PartialEq
@@ -294,6 +300,7 @@ aom_encode::key_frame::EncodeEstimate: Clone, Copy, Debug, Eq, PartialEq
 aom_encode::key_frame::EncodeLimits: Clone, Copy, Debug, Default, Eq, PartialEq
 aom_encode::key_frame::KeyFrameConfig: Clone, Copy, Debug
 aom_encode::key_frame::KeyFrameError: Clone, Debug, Display, Eq, Error, PartialEq
+aom_encode::key_frame::KeyFrameMode: Clone, Copy, Debug, Default, Eq, PartialEq
 aom_encode::key_frame::KeyFramePlanes<'a>: Clone, Copy, Debug
 aom_encode::key_frame::QualityTools: Clone, Copy, Debug, Default, Eq, PartialEq
 aom_encode::key_frame::TrellisMode: Clone, Copy, Debug, Default, Eq, PartialEq
@@ -301,7 +308,7 @@ aom_encode::key_frame::Tune: Clone, Copy, Debug, Default, Eq, PartialEq
 
 ## auto traits
 
-25 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+26 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
 aom_encode::key_frame::EncodeConfig<'a>: !RefUnwindSafe !UnwindSafe
 
 ## arch surface: aarch64 (39 lines)

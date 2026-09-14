@@ -1999,6 +1999,7 @@ impl EncodeCell {
         };
 
         let pick_cfg = PickFrameCfg {
+            fixed_partition_size: None,
             // KB-32 root #1. The KEY variance partitioner's two
             // `force_large_partition_blocks_intra` arms (var_based_part.c:
             // 539-544 and :552-554) were dropped. Carry the RESOLVED
@@ -2855,6 +2856,7 @@ impl MultiFrameEncodeCell {
             tx_type_costs: &frame_real.tx_type_costs_y,
         };
         let pick_cfg = PickFrameCfg {
+            fixed_partition_size: None,
             fs_sf: Default::default(),
             inter: Some(aom_encode::partition_pick::InterSearchCfg {
                 costs: &frame_inter_costs,

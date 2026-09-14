@@ -435,6 +435,7 @@ fn run_and_localize(cq_level: i32, mono: bool) -> bool {
         deltaq: None,
     };
     let pick_cfg = PickFrameCfg {
+        fixed_partition_size: None,
             fs_sf: Default::default(),
             inter: None,
         intrabc: None,

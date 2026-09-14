@@ -740,6 +740,7 @@ fn run_pack_roundtrip_case(ss_x: usize, ss_y: usize, allintra: bool, qindex: usi
             deltaq: None,
         };
         let pick_cfg = PickFrameCfg {
+            fixed_partition_size: None,
             fs_sf: Default::default(),
             inter: None,
             intrabc: None,
@@ -1226,6 +1227,7 @@ fn pack_tile_roundtrips_with_real_costs() {
             deltaq: None,
         };
         let pick_cfg = PickFrameCfg {
+            fixed_partition_size: None,
             fs_sf: Default::default(),
             inter: None,
             intrabc: None,

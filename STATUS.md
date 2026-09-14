@@ -1,5 +1,36 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## Mode split: `KeyFrameMode::{LibaomExact, Zenaom}` — the SCM trial lands as the first opt-in zenaom feature (KB-67, 2026-09-13)
+
+`KeyFrameConfig` gained `mode` (default `LibaomExact`) and
+`screen_likelihood: Option<f32>`. `Zenaom` opts into measured deviations;
+its first citizen is the KB-66 machinery, re-landed: two
+`FIXED_PARTITION`/`BLOCK_32X32` trial encodes at `q = max(q_orig, 244)`
+through the `rd_use_partition_real` replay over a pre-stamped grid,
+all-plane PSNR + `palette_pixel_num`, C's `0.9 dB` / `ratio>4` decision,
+flip → `allow_screen_content_tools=1, allow_intrabc=0`. Everything the
+trial could change flows through the same `FeatureFlags` C flips, so
+detector-positive frames encode byte-identically in either mode.
+
+The nomination gate is the measured piece, not boilerplate: C runs the
+trial on EVERY detector-negative key frame, but in the still-image
+envelope that is the common case. The port fires it only when the
+detector's net score is merely positive (`count_palette*16 > count_photo`)
+or the caller's `screen_likelihood` hint reaches `SCM_TRIAL_HINT_MIN`
+(0.10 — the zenanalyze `patch_fraction` seam, filled caller-side in
+zenavif; `aom-encode` stays publishable with no sibling dep). A
+fractional-threshold gate was measured INSUFFICIENT — C's own trial wins
+cells at 3.9% of threshold — and pure photographic noise scores deep
+negative, so "any net palette evidence" is the cut. Measured cost
+(`ztrial_cost`, release): firing cells 1.07x–1.19x, gate-off and photo
+cells 1.00x. Decision agreement with C's own two-pass trial on every
+sweep cell; on 256x256 cq32 s0 the flipped stream is byte-identical to
+C's `LAST_PASS` output. Tests: `zenaom_scm_trial.rs` (flip + C-decoder
+conformance, photo no-flip, exact-contract 9 cells); sweep kept as
+`#[ignore]`d `probe_zenaom_trial_matrix`. Honest bound recorded in KB-67:
+patches below the net-positive cut on large frames (e.g. 64x64 inside
+512x256) do not nominate — the hint is the escape hatch.
+
 ## The SCM trial was ported, proven byte-exact — and is UNREACHABLE in the port's envelope, so it was reverted (KB-66, 2026-09-13)
 
 `av1_determine_sc_tools_with_encoding` (the C3 "SCM trial" bullet, long the

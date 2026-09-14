@@ -87,22 +87,14 @@
 //!
 //! # Not yet wired (named, with the specific entry points)
 //!
-//! * **`av1_determine_sc_tools_with_encoding`** (`encoder_utils.c:1214`) — C's
-//!   two-pass trial encode that can turn screen-content tools ON after the
-//!   detector said off. Unported. **Note this became a REAL gap only on
-//!   2026-09-10:** before palette was wired in, porting the trial would have
-//!   been vacuous — both of its passes would have coded identically, so
-//!   `psnr_diff` and `palette_ratio` would both have been 0 and the decision
-//!   would always have kept the detector's answer. It returns early when the detector already
-//!   said on, so it only ever matters on detector-negative content; the byte
-//!   gate holds this accountable per cell, and (2026-09-03) two adversarial
-//!   differential probes designed specifically to find a counterexample —
-//!   including one that brackets the base detector's own threshold crossover
-//!   from both sides — found none in 105 cells (`self_contained_key_frame.rs`'s
-//!   `probe_sc_tools_trial_gap_*` tests). Still unported; the port cost is
-//!   independently scoped at PARITY.md C3 ("(M)", "NOT a one-sitting port" —
-//!   a fixed-32x32-partition trial-encode driver + PSNR-based decisioning
-//!   this shell does not have).
+//! * ~~**`av1_determine_sc_tools_with_encoding`**~~ — resolved twice
+//!   2026-09-13. For libaom parity it is **unreachable in this envelope**
+//!   (KB-66: the only call site is `encode_with_recode_loop`, and one-pass +
+//!   no lookahead forces `DISALLOW_RECODE`); the same machinery is **landed
+//!   as the first `KeyFrameMode::Zenaom` deviation** (KB-67) — nominated on
+//!   detector-negative frames by the margin gate / `screen_likelihood`
+//!   hint, decided by C's own two-pass trial rule, never run under the
+//!   `LibaomExact` default.
 //! Both formerly-pinned speed classes are CLOSED (2026-09-12): the
 //! speed >= 7 VBP class was the phase-2 repack's unconditional ALLINTRA
 //! rdmult-modifier fold (KB-55), and `--enable-cdef=1` at speed >= 4 was
@@ -160,7 +152,8 @@ use crate::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_
 use crate::real_costs::derive_real_costs;
 use crate::screen_detect::ScreenContentDecision;
 use crate::speed_features::SpeedFeatures;
-use crate::tx_search::MI_SIZE_WIDE_B;
+use crate::real_costs::RealCosts;
+use crate::tx_search::{MI_SIZE_HIGH_B, MI_SIZE_WIDE_B};
 
 /// `OBU_TEMPORAL_DELIMITER` (`av1/common/enums.h` `OBU_TYPE`).
 pub const OBU_TEMPORAL_DELIMITER: u32 = 2;
@@ -505,6 +498,61 @@ fn dim_to_bsize(px: u32) -> usize {
     }
 }
 
+/// Which behavioral contract [`encode_key_frame`] follows.
+///
+/// The default is the audited byte-parity contract; [`Self::Zenaom`] opts
+/// into measured improvements libaom's own one-pass all-intra envelope
+/// never reaches. Both modes emit spec-conformant AV1 — the difference is
+/// whether the output is *byte-pinned* to libaom's one-pass stream.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeyFrameMode {
+    /// Bit-exact against libaom's reachable one-pass all-intra behavior.
+    /// Every byte-parity gate in this repo runs under this mode.
+    #[default]
+    LibaomExact,
+    /// libaom's machinery plus measured, documented deviations. Today the
+    /// only one is `av1_determine_sc_tools_with_encoding` — C's own
+    /// two-pass screen-content trial (encoder_utils.c:1221), which C can
+    /// only reach through the recode loop that one-pass/no-lookahead
+    /// encoding disables (KB-66): on a detector-negative key frame, two
+    /// cheap `FIXED_PARTITION`/`BLOCK_32X32` trial encodes at
+    /// `q = max(q_orig, 244)` are compared by all-plane PSNR, and
+    /// `allow_screen_content_tools` flips on when the tools-on pass wins
+    /// by C's own margin (`psnr_diff > 0.9 dB`, or
+    /// `psnr_diff / palette_ratio > 4` with `palette_ratio >= 1e-4`).
+    ///
+    /// To keep the common photographic path from paying for two trial
+    /// encodes it almost never needs, the trial is NOMINATED only when the
+    /// built-in detector's net score is positive (`count_palette * 16 >
+    /// count_photo` — measured to cover every cell the trial can win) or
+    /// the caller supplied a [`KeyFrameConfig::screen_likelihood`] hint at
+    /// or above [`SCM_TRIAL_HINT_MIN`]. Everything the trial could change
+    /// flows through the same `FeatureFlags` C flips, so a zenaom encode
+    /// of detector-positive content is byte-identical to `LibaomExact`.
+    Zenaom,
+}
+
+/// The `screen_likelihood` hint value at or above which a zenaom encode
+/// nominates the screen-content trial on a detector-negative frame. Set
+/// recall-oriented rather than decision-oriented: the trial itself is the
+/// measured decider, so the hint only bounds how often the ~2 extra
+/// fixed-partition encodes run. `0.10` sits above zenanalyze
+/// `patch_fraction`'s photo p90 (0.037) and far below its screen p50
+/// (0.726) — obvious photos never pay for the trial.
+pub const SCM_TRIAL_HINT_MIN: f32 = 0.10;
+
+/// The built-in nomination margin for the zenaom SCM trial: run the trial
+/// when the screen detector's raw score — `(count_palette - count_photo/16)
+/// * 2560`, positive past `area` — is merely POSITIVE (`count_palette * 16 >
+/// count_photo`). Measured on the `zenaom_scm_trial` probe matrix: C's own
+/// trial wins on cells scoring as low as 3.9% of the positive threshold
+/// (256x256, 64x64 UI patch: `psnr_diff/palette_ratio = 6.0 > 4`), so any
+/// fractional-threshold gate misses real flips; pure photographic noise
+/// scores deep negative (every block lands in `count_photo`), and the
+/// remaining false-positive class — flat-but-legible content like clear
+/// sky — is exactly what palette codes well anyway. Detector-positive
+/// content skips the trial entirely (C's own guard).
+
 /// Everything [`encode_key_frame`] needs that is not the pixels.
 ///
 /// The field set is deliberately the CLI-equivalent one
@@ -603,6 +651,20 @@ pub struct KeyFrameConfig {
     /// the upscaled frame in libaom, which this path does not model yet) —
     /// a request that combines them is REFUSED by name.
     pub superres_denom: u8,
+    /// The behavioral contract — see [`KeyFrameMode`]. [`KeyFrameMode::
+    /// LibaomExact`] (the default) is the byte-parity mode every committed
+    /// gate runs under; [`KeyFrameMode::Zenaom`] enables measured
+    /// deviations, currently the screen-content trial encode.
+    pub mode: KeyFrameMode,
+    /// Advisory screen-content likelihood in `[0, 1]` for the
+    /// [`KeyFrameMode::Zenaom`] trial gate — e.g. zenanalyze's
+    /// `patch_fraction` or `screen_content_likelihood`, computed by the
+    /// CALLER on the source image (the encoder only ever sees YUV planes,
+    /// so a zenanalyze-grade signal has to come in from outside). A value
+    /// at or above [`SCM_TRIAL_HINT_MIN`] nominates the trial on a
+    /// detector-negative frame; `None` falls back to the built-in
+    /// detector's own margin. Inert under [`KeyFrameMode::LibaomExact`].
+    pub screen_likelihood: Option<f32>,
 }
 
 impl KeyFrameConfig {
@@ -646,6 +708,8 @@ impl KeyFrameConfig {
             tools: CodingTools::default(),
             film_grain: None,
             superres_denom: 0,
+            mode: KeyFrameMode::LibaomExact,
+            screen_likelihood: None,
         }
     }
 
@@ -1853,7 +1917,574 @@ fn count_tree(
     }
 }
 
-/// Wrap a payload in an OBU header + leb128 size.
+/// `x->palette_pixels` (partition_search.c:438-440): the leaf's FULL block
+/// area (`block_size_wide[bsize] * block_size_high[bsize]`, not the
+/// crop-clipped part) whenever the winner coded a luma palette — counted on
+/// the OUTPUT_ENABLED commit walk, which is what every trial-pass tree is.
+/// Mirrors `count_tree`'s frame-bound guards so off-frame leaves are skipped
+/// exactly as the pack walk skips them.
+fn palette_pixel_tree(
+    tree: &SbTree,
+    mi_row: i32,
+    mi_col: i32,
+    bsize: usize,
+    mi_rows: i32,
+    mi_cols: i32,
+    n: &mut u64,
+) {
+    fn palette_leaf(n: &mut u64, w: &LeafWinner) {
+        if w.palette_y.is_some() {
+            *n += (MI_SIZE_WIDE_B[w.bsize] * MI_SIZE_HIGH_B[w.bsize]) as u64 * 16;
+        }
+    }
+    if mi_row >= mi_rows || mi_col >= mi_cols {
+        return;
+    }
+    let hbs = (MI_SIZE_WIDE_B[bsize] / 2) as i32;
+    let quarter = (MI_SIZE_WIDE_B[bsize] / 4) as i32;
+    match tree {
+        SbTree::Absent => {}
+        SbTree::Leaf(w) => palette_leaf(n, w),
+        SbTree::Split(kids) => {
+            let sub = crate::partition::split_subsize(bsize);
+            for (i, child) in kids.iter().enumerate() {
+                palette_pixel_tree(
+                    child,
+                    mi_row + ((i as i32) >> 1) * hbs,
+                    mi_col + ((i as i32) & 1) * hbs,
+                    sub,
+                    mi_rows,
+                    mi_cols,
+                    n,
+                );
+            }
+        }
+        SbTree::Horz(subs) => {
+            palette_leaf(n, &subs[0]);
+            if mi_row + hbs < mi_rows {
+                palette_leaf(n, &subs[1]);
+            }
+        }
+        SbTree::Vert(subs) => {
+            palette_leaf(n, &subs[0]);
+            if mi_col + hbs < mi_cols {
+                palette_leaf(n, &subs[1]);
+            }
+        }
+        SbTree::Horz4(subs) => {
+            for (i, w) in subs.iter().enumerate() {
+                if i > 0 && mi_row + (i as i32) * quarter >= mi_rows {
+                    break;
+                }
+                palette_leaf(n, w.as_ref().expect("in-frame 4-way strip carries a winner"));
+            }
+        }
+        SbTree::Vert4(subs) => {
+            for (i, w) in subs.iter().enumerate() {
+                if i > 0 && mi_col + (i as i32) * quarter >= mi_cols {
+                    break;
+                }
+                palette_leaf(n, w.as_ref().expect("in-frame 4-way strip carries a winner"));
+            }
+        }
+        SbTree::HorzA(subs) | SbTree::HorzB(subs) | SbTree::VertA(subs)
+        | SbTree::VertB(subs) => subs.iter().for_each(|w| palette_leaf(n, w)),
+    }
+}
+
+/// `aom_calc_highbd_psnr`'s plane loop (aom_dsp/psnr.c:346-391): SSE over the
+/// CROP region between two buffers at the same (stream) bit depth — the call
+/// passes `bit_depth == in_bit_depth`, so `input_shift == 0` and a plain
+/// squared-difference sum is exact.
+fn scm_plane_sse(a: &[u16], b: &[u16], stride: usize, w: usize, h: usize) -> u64 {
+    let mut sse = 0u64;
+    for r in 0..h {
+        for c in 0..w {
+            let d = a[r * stride + c] as i64 - b[r * stride + c] as i64;
+            sse += (d * d) as u64;
+        }
+    }
+    sse
+}
+
+/// `aom_sse_to_psnr` (psnr.c:27-34): `10*log10(samples*peak^2/sse)` capped at
+/// MAX_PSNR = 100 (and exactly 100 when `sse == 0`).
+fn scm_sse_to_psnr(samples: f64, peak: f64, sse: f64) -> f64 {
+    if sse > 0.0 {
+        (10.0 * (samples * peak * peak / sse).log10()).min(100.0)
+    } else {
+        100.0
+    }
+}
+
+/// Everything the two `av1_determine_sc_tools_with_encoding` passes share:
+/// the frame-level state the main encode derives before its tile walk,
+/// bundled so the trial driver reads as the C loop does.
+struct ScmTrialInputs<'a> {
+    cfg: &'a KeyFrameConfig,
+    bd: u8,
+    /// `cpi->source` after `av1_realloc_and_scale_if_required` — the
+    /// BORDER-EXTENDED source planes at CODED dimensions.
+    src_y: &'a [u16],
+    src_u: &'a [u16],
+    src_v: &'a [u16],
+    stride: usize,
+    /// Coded luma/chroma crop dims (`cm->width`/`height` + the uv crop).
+    enc_w: usize,
+    h: usize,
+    enc_cw: usize,
+    ch: usize,
+    mi_rows: i32,
+    mi_cols: i32,
+    sb_mi: i32,
+    sb_block: usize,
+    tile_grid: &'a [(i32, i32, i32, i32, i32, i32)],
+    /// The per-16x16 SSIM rdmult-scaling grid — source-derived, q-invariant,
+    /// so both passes share the main encode's copy.
+    ssim_scales: &'a Option<(Vec<f64>, i32, i32)>,
+    enable_filter_intra: bool,
+    /// `!p.prefix.disable_cdf_update` — `tools.cdf_update_mode != 0`.
+    allow_update_cdf: bool,
+    /// `color_config.separate_uv_delta_q` — read by the trial's
+    /// `av1_set_quantizer` for the V-plane QM level.
+    separate_uv_delta_q: bool,
+    /// The detector's `is_screen_content_type` — C does not modify it during
+    /// the trial (the flip happens in the post-pass-1 decision), so both
+    /// passes see the original value.
+    is_screen_content_type: bool,
+    /// The DETECTOR's `allow_screen_content_tools`: the sf cascade ran before
+    /// the trial (C's `av1_check_initial_width` precedes the encode loop), so
+    /// the trial sf is built on the detector value and only the
+    /// qindex-dependent arm re-runs at the trial q.
+    detector_allow_sct: bool,
+}
+
+/// One pass of the trial loop (`set_encoding_params_for_screen_content` +
+/// `av1_encode_frame`, encoder_utils.c:1193-1301): a fixed-32x32-partition
+/// encode at `q_trial` with `allow_screen_content_tools` = `trial_allow_sct`,
+/// IntraBC OFF in both passes (C's pass-1 re-enable is commented out,
+/// encoder_utils.c:1210-1211). Returns `(sse_y, sse_u, sse_v,
+/// palette_pixel_num)` — the all-plane SSE against the source and the pass's
+/// accumulated `x->palette_pixels` (nonzero only in pass 1, where palette
+/// candidates can win).
+fn scm_trial_run_pass(
+    inp: &ScmTrialInputs<'_>,
+    trial_allow_sct: bool,
+    sf_trial: &SpeedFeatures,
+    real: &RealCosts,
+    uv_lp: &UvLoopPolicy,
+    pol: &crate::tx_search::TxTypeSearchPolicy,
+    quants: &Quants,
+    deq: &Dequants,
+    qm_levels: Option<[usize; 3]>,
+    q_trial: i32,
+    trial_lossless: bool,
+    deltaq: Option<crate::encode_sb::DeltaQFrameCtx<'_>>,
+) -> (u64, u64, u64, u64) {
+    let cfg = inp.cfg;
+    let tools = &cfg.tools;
+    let quality = &cfg.quality;
+    let rdmult = av1_compute_rd_mult_based_on_qindex(
+        inp.bd,
+        FrameUpdateType::Kf,
+        q_trial,
+        quality.tune.metric(),
+        EncMode::Allintra,
+    );
+    let tune = crate::TuneKnobs {
+        use_qm_dist_metric: quality.qm_dist_metric,
+        iq_tuning: quality.tune != Tune::Psnr,
+    };
+    let rows_y = set_q_index(quants, deq, q_trial as usize, 0);
+    let rows_u = set_q_index(quants, deq, q_trial as usize, 1);
+    let rows_v = set_q_index(quants, deq, q_trial as usize, 2);
+    let delta_q_present = deltaq.is_some();
+    let delta_q_res = deltaq.as_ref().map_or(0, |d| d.delta_q_res);
+    let mut env = SbEncodeEnv {
+        ref_frame: None,
+        sb_size: inp.sb_block,
+        mi_rows: inp.mi_rows,
+        mi_cols: inp.mi_cols,
+        frame_width: inp.enc_w as i32,
+        frame_height: inp.h as i32,
+        tile_row_start: 0,
+        tile_col_start: 0,
+        tile_row_end: inp.mi_rows,
+        tile_col_end: inp.mi_cols,
+        monochrome: cfg.monochrome,
+        ss_x: cfg.ss_x,
+        ss_y: cfg.ss_y,
+        bd: inp.bd,
+        lossless: trial_lossless,
+        reduced_tx_set_used: tools.reduced_tx_type_set,
+        disable_edge_filter: !inp.enable_filter_intra,
+        filter_type: 0,
+        stride: inp.stride,
+        src_y: inp.src_y,
+        src_u: inp.src_u,
+        src_v: inp.src_v,
+        base_y: 0,
+        base_uv: 0,
+        rows_y: &rows_y,
+        rows_u: &rows_u,
+        rows_v: &rows_v,
+        rdmult,
+        ssim: inp
+            .ssim_scales
+            .as_ref()
+            .map(|(factors, cols, _)| crate::encode_sb::SsimRdmult {
+                factors,
+                cols: *cols,
+                pre_rdmult: rdmult,
+                intra_modifier: 128,
+            }),
+        sharpness: quality.sharpness,
+        enable_optimize_b: if trial_lossless {
+            TrellisOptType::NoTrellisOpt
+        } else {
+            tools.trellis.opt()
+        },
+        use_chroma_trellis_rd_mult: true,
+        coeff_costs_y: &real.coeff_costs_y,
+        coeff_costs_uv: &real.coeff_costs_uv,
+        txfm_partition_costs: [[0i32; 2]; 21],
+        tx_type_costs: &real.tx_type_costs_y,
+        qm_levels,
+        tune,
+        deltaq,
+    };
+    // Both trial passes code `allow_intrabc = 0` and never run the DV search
+    // (encoder_utils.c:1200/:1210-1211) — `intrabc: None` and both intrabc
+    // flags false.
+    let pick_cfg = PickFrameCfg {
+        fixed_partition_size: Some(crate::var_part::BLOCK_32X32),
+        fs_sf: crate::partition_pick::FrameSizeSf {
+            vbp: crate::var_part::VbpSf {
+                force_large_partition_blocks_intra: sf_trial
+                    .force_large_partition_blocks_intra
+                    != 0,
+                var_part_split_threshold_shift: sf_trial.var_part_split_threshold_shift,
+                allintra: true,
+            },
+            is_4k_or_larger: inp.enc_w.min(inp.h) >= 2160,
+        },
+        inter: None,
+        intrabc: None,
+        search_allow_intrabc: false,
+        intra_tools: crate::partition_pick::IntraToolCfg {
+            enable_diagonal_intra: tools.enable_diagonal_intra,
+            enable_directional_intra: tools.enable_directional_intra,
+            enable_smooth_intra: tools.enable_smooth_intra,
+            enable_paeth_intra: tools.enable_paeth_intra,
+            enable_angle_delta: tools.enable_angle_delta,
+        },
+        mode_costs: &real.mode_costs,
+        tx_size_costs: &real.tx_size_costs,
+        skip_costs: &real.skip_costs,
+        tx_type_costs_y: &real.tx_type_costs_y,
+        pol,
+        uv_lp,
+        intra_uv_mode_cost: &real.mode_costs.intra_uv_mode_cost,
+        cfl_costs: &real.cfl_costs,
+        partition_costs: &real.partition_costs,
+        partition_cdfs: &real.partition_cdf,
+        allintra: true,
+        speed: cfg.cpu_used,
+        qindex: q_trial,
+        enable_filter_intra: inp.enable_filter_intra,
+        enable_tx64: tools.enable_tx64,
+        enable_rect_tx: tools.enable_rect_tx,
+        intra_pruning_with_hog: sf_trial.intra_pruning_with_hog != 0,
+        enable_rect_partitions: tools.enable_rect_partitions,
+        less_rectangular_check_level: if cfg.cpu_used == 3 {
+            if q_trial >= 170 { 1 } else { 2 }
+        } else {
+            sf_trial.less_rectangular_check_level
+        },
+        max_partition_size: sf_trial
+            .default_max_partition_size
+            .min(dim_to_bsize(tools.max_partition_size_px))
+            .min(inp.sb_block),
+        min_partition_size: sf_trial
+            .default_min_partition_size
+            .max(dim_to_bsize(tools.min_partition_size_px))
+            .min(inp.sb_block),
+        enable_1to4_partitions: tools.enable_1to4_partitions,
+        enable_ab_partitions: tools.enable_ab_partitions,
+        allow_screen_content_tools: trial_allow_sct,
+        qm_levels,
+        palette_costs: (trial_allow_sct && cfg.enable_palette)
+            .then_some(&real.palette_costs),
+    };
+    let trial_tx_select = !trial_lossless && tools.enable_tx_size_search;
+    let pack_cfg = PackCfg {
+        enable_filter_intra: inp.enable_filter_intra,
+        tx_mode_is_select: trial_tx_select,
+        signal_gate: q_trial > 0,
+        allow_update_cdf: inp.allow_update_cdf,
+        base_qindex: q_trial,
+        delta_q_present,
+        delta_q_res,
+        allow_screen_content_tools: trial_allow_sct,
+        allow_intrabc: false,
+        search_allow_intrabc: false,
+        search_tx_mode_is_select: trial_tx_select,
+    };
+    let mut recon_y = inp.src_y.to_vec();
+    let mut recon_u = inp.src_u.to_vec();
+    let mut recon_v = inp.src_v.to_vec();
+    let mut palette_pixels = 0u64;
+    for &(r0, c0, r1, c1, n_tr, n_tc) in inp.tile_grid {
+        env.tile_row_start = r0;
+        env.tile_col_start = c0;
+        env.tile_row_end = r1;
+        env.tile_col_end = c1;
+        let mut kf_tile = KfFrameContext::default_for_qindex(q_trial);
+        let mut scratch = OdEcEnc::new();
+        // The trial carries no stop token (C's loop has none either — the
+        // trial is part of frame setup, not a cancellable encode).
+        let t = crate::pack::pack_tile_stop(
+            &mut scratch,
+            &env,
+            &pick_cfg,
+            &pack_cfg,
+            &mut kf_tile,
+            &mut recon_y,
+            &mut recon_u,
+            &mut recon_v,
+            r0,
+            c0,
+            n_tr,
+            n_tc,
+            inp.sb_mi,
+            inp.sb_block,
+            None,
+        )
+        .expect("the SCM trial carries no stop token");
+        let _ = scratch.done();
+        let (sb_r0, sb_c0) = (r0 / inp.sb_mi, c0 / inp.sb_mi);
+        for (i, tree) in t.iter().enumerate() {
+            let sb_r = sb_r0 + i as i32 / n_tc;
+            let sb_c = sb_c0 + i as i32 % n_tc;
+            palette_pixel_tree(
+                tree,
+                sb_r * inp.sb_mi,
+                sb_c * inp.sb_mi,
+                inp.sb_block,
+                inp.mi_rows,
+                inp.mi_cols,
+                &mut palette_pixels,
+            );
+        }
+    }
+    let sse_y = scm_plane_sse(inp.src_y, &recon_y, inp.stride, inp.enc_w, inp.h);
+    let (sse_u, sse_v) = if cfg.monochrome {
+        (0, 0)
+    } else {
+        (
+            scm_plane_sse(inp.src_u, &recon_u, inp.stride, inp.enc_cw, inp.ch),
+            scm_plane_sse(inp.src_v, &recon_v, inp.stride, inp.enc_cw, inp.ch),
+        )
+    };
+    (sse_y, sse_u, sse_v, palette_pixels)
+}
+
+/// `av1_determine_sc_tools_with_encoding` (encoder_utils.c:1220-1316), the
+/// zenaom-mode half: two quick fixed-32x32 trial encodes at
+/// `q = max(q_orig, 244)` (q_orig when the frame is coded-lossless —
+/// `is_lossless_requested`), pass 0 with screen-content tools off and pass 1
+/// on, then `screen_content_tools_determination`'s decision (:1161-1188):
+/// flip `allow_screen_content_tools` on when the trial shows a coding gain
+/// (`psnr_diff > 0.9` dB, or `psnr_diff / palette_ratio > 4` at
+/// `palette_ratio >= 0.0001`), restoring every original detector flag on a
+/// negative decision. Callers gate on C's skip conditions
+/// (encoder_utils.c:1235-1237) plus the zenaom nomination; `sct` enters as
+/// the detector's decision and leaves as the FINAL decision the frame
+/// header/search then use.
+fn scm_trial_determine(inp: &ScmTrialInputs<'_>, sct: &mut ScreenContentDecision, qindex: i32) {
+    let cfg = inp.cfg;
+    let tools = &cfg.tools;
+    let quality = &cfg.quality;
+    // `is_lossless_requested` keeps the original q; everything else encodes
+    // the trial at a high q for speed (encoder_utils.c:1252-1253).
+    let q_trial = if cfg.cq_level == 0 { qindex } else { qindex.max(244) };
+    // `av1_set_quantizer(cm, qm_minlevel, qm_maxlevel, q_trial, ...)` (:1289)
+    // + `av1_init_quantizer` (:1295) — the quant tables at the trial q.
+    let (qm_min, qm_max) = cfg.quality.qm.unwrap_or((4, 10));
+    let qs_trial = aom_dsp::quant::av1_set_quantizer(
+        qm_min,
+        qm_max,
+        q_trial,
+        quality.chroma_deltaq,
+        /*is_allintra=*/ true,
+        quality.tune.quant_tuning(),
+        cfg.ss_x as i32,
+        cfg.ss_y as i32,
+        inp.separate_uv_delta_q,
+        /*delta_q_present=*/ false,
+    );
+    let trial_lossless = q_trial == 0
+        && (qs_trial.y_dc_delta_q, qs_trial.u_dc_delta_q, qs_trial.u_ac_delta_q,
+            qs_trial.v_dc_delta_q, qs_trial.v_ac_delta_q)
+            == (0, 0, 0, 0, 0);
+    let mut quants_trial = Quants::zeroed();
+    let mut deq_trial = Dequants::zeroed();
+    av1_build_quantizer(
+        inp.bd,
+        qs_trial.y_dc_delta_q,
+        qs_trial.u_dc_delta_q,
+        qs_trial.u_ac_delta_q,
+        qs_trial.v_dc_delta_q,
+        qs_trial.v_ac_delta_q,
+        &mut quants_trial,
+        &mut deq_trial,
+        quality.sharpness,
+    );
+    let qm_levels_trial = cfg.quality.qm.is_some().then_some([
+        qs_trial.qmatrix_level_y as usize,
+        qs_trial.qmatrix_level_u as usize,
+        qs_trial.qmatrix_level_v as usize,
+    ]);
+    // The trial sf: the main cascade already ran (detector allow_sct); the
+    // loop re-runs ONLY `av1_set_speed_features_qindex_dependent` at the
+    // trial q (:1293). The port's modelled qindex arms do not read
+    // allow_screen_content_tools, so building the cascade once on the
+    // detector value and re-applying at q_trial reproduces C.
+    let mut sf_trial =
+        SpeedFeatures::set_allintra(cfg.cpu_used, inp.detector_allow_sct, inp.bd > 8);
+    sf_trial.apply_allintra_framesize_dependent(inp.enc_w, inp.h, cfg.cpu_used);
+    sf_trial.apply_allintra_qindex_dependent(inp.enc_w, inp.h, q_trial, cfg.cpu_used);
+    sf_trial.prune_tx_type_using_stats = if inp.enc_w.min(inp.h) >= 480 {
+        if cfg.cpu_used >= 4 {
+            2
+        } else if cfg.cpu_used >= 2 {
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    // `default_for_qindex` selects the coeff-CDF band — the trial q's.
+    let real_trial =
+        derive_real_costs(&KfFrameContext::default_for_qindex(q_trial), inp.enable_filter_intra, None);
+    let tune = crate::TuneKnobs {
+        use_qm_dist_metric: quality.qm_dist_metric,
+        iq_tuning: quality.tune != Tune::Psnr,
+    };
+    let skip_trellis = !crate::encode_intra::is_trellis_used(tools.trellis.opt(), false);
+    let mut pol = sf_trial
+        .tx_type_search_policy(skip_trellis, quality.sharpness)
+        .with_tune_knobs(tune);
+    pol.enable_flip_idtx = tools.enable_flip_idtx;
+    pol.use_intra_dct_only = tools.use_intra_dct_only;
+    pol.use_default_intra_tx_type |= tools.use_intra_default_tx_only;
+    pol.enable_tx_size_search = tools.enable_tx_size_search;
+    let uv_lp = UvLoopPolicy {
+        enable_diagonal_intra: tools.enable_diagonal_intra,
+        enable_directional_intra: tools.enable_directional_intra,
+        enable_smooth_intra: tools.enable_smooth_intra,
+        enable_paeth_intra: tools.enable_paeth_intra,
+        enable_cfl_intra: tools.enable_cfl_intra,
+        enable_angle_delta: tools.enable_angle_delta,
+        ..UvLoopPolicy::speed0_allintra()
+    };
+    // The trial's `delta_q_info` derives per encode_frame at the TRIAL q
+    // (encodeframe.c:2313/:2341): `deltaq_mode != NO_DELTA_Q && q_trial > 0`,
+    // with `delta_q_res` re-picked at q_trial (Variance-Boost's res is
+    // q-dependent, :2308-2310) and the mode-3 wiener map rebuilt at q_trial.
+    let weber_map_trial =
+        (quality.deltaq_mode == DeltaQMode::PerceptualAi && q_trial > 0).then(|| {
+            crate::allintra_vis::av1_set_mb_wiener_variance(
+                inp.src_y,
+                0,
+                inp.stride,
+                inp.mi_rows,
+                inp.mi_cols,
+                q_trial,
+                inp.bd,
+                &quants_trial,
+                &deq_trial,
+                inp.sb_block,
+                inp.sb_mi,
+                !tools.enable_intra_edge_filter,
+            )
+        });
+    let deltaq_trial = (quality.deltaq_mode != DeltaQMode::Off && q_trial > 0).then(|| {
+        crate::encode_sb::DeltaQFrameCtx {
+            quants: &quants_trial,
+            deq: &deq_trial,
+            base_qindex: q_trial,
+            delta_q_res: match quality.deltaq_mode {
+                DeltaQMode::VarianceBoost => {
+                    crate::allintra_vis::variance_boost_delta_q_res(q_trial)
+                }
+                _ => crate::allintra_vis::DELTA_Q_RES_PERCEPTUAL,
+            },
+            deltaq_strength: quality.deltaq_strength,
+            perceptual_ai: weber_map_trial.as_ref(),
+            perceptual_wavelet: (quality.deltaq_mode == DeltaQMode::Perceptual)
+                .then_some(inp.is_screen_content_type),
+            sb_mi: inp.sb_mi,
+            delta_lf_present: quality.delta_lf,
+            nonrd: false,
+        }
+    });
+    let mut palette_pixel_num = 0u64;
+    let mut psnr = [0.0f64; 2];
+    let peak = ((1i64 << inp.bd) - 1) as f64;
+    let samples = (inp.enc_w * inp.h) as f64 + 2.0 * (inp.enc_cw * inp.ch) as f64;
+    for pass in 0..2 {
+        let trial_allow_sct = pass == 1;
+        let (sse_y, sse_u, sse_v, pal_px) = scm_trial_run_pass(
+            inp,
+            trial_allow_sct,
+            &sf_trial,
+            &real_trial,
+            &uv_lp,
+            &pol,
+            &quants_trial,
+            &deq_trial,
+            qm_levels_trial,
+            q_trial,
+            trial_lossless,
+            // Each pass is its own `av1_encode_frame` — clone the ctx (all
+            // fields are Copy or shared refs).
+            deltaq_trial.as_ref().map(|d| crate::encode_sb::DeltaQFrameCtx {
+                perceptual_ai: d.perceptual_ai,
+                ..*d
+            }),
+        );
+        // `screen_content_tools_determination` reads `cpi->palette_pixel_num`
+        // reset per `av1_encode_frame` (encodeframe.c:2769) — only the LAST
+        // pass's count is live at the decision.
+        palette_pixel_num = pal_px;
+        psnr[pass] = scm_sse_to_psnr(samples, peak, (sse_y + sse_u + sse_v) as f64);
+    }
+    // `screen_content_tools_determination`'s pass-1 decision
+    // (encoder_utils.c:1161-1188).
+    let psnr_diff = psnr[1] - psnr[0];
+    let palette_ratio =
+        palette_pixel_num as f64 / (inp.h as f64 * inp.enc_w as f64);
+    let win = psnr_diff > 0.9
+        || (palette_ratio >= 0.0001 && psnr_diff / palette_ratio > 4.0);
+    if std::env::var_os("AOM_SCT_TRIAL_DBG").is_some() {
+        eprintln!(
+            "[sct-trial] q={} psnr0={:.4} psnr1={:.4} diff={:.4} pal_px={} ratio={:.5} win={}",
+            q_trial, psnr[0], psnr[1], psnr_diff, palette_pixel_num, palette_ratio, win
+        );
+    }
+    if win {
+        // `intrabc_used` is always 0 (neither pass searches IntraBC), so the
+        // flip sets `allow_intrabc = 0` alongside the tools bit.
+        sct.allow_screen_content_tools = true;
+        sct.allow_intrabc = false;
+        sct.is_screen_content_type = true;
+    }
+    // else: restore — `sct` still holds the detector's decision, which is
+    // exactly what C restores.
+}
+
 fn wrap_obu(obu_type: u32, payload: &[u8]) -> Vec<u8> {
     let mut out = write_obu_header(obu_type, false, obu_type != OBU_SEQUENCE_HEADER, 0);
     let size = uleb_encode(payload.len() as u64, 8).expect("OBU payload size fits a leb128 varint");
@@ -2222,6 +2853,112 @@ pub fn encode_key_frame_with(
             sct.count_photo
         );
     }
+
+    // Hoisted ahead of the zenaom trial (below), which walks the same tile
+    // grid and shares the same SSIM scaling grid. `sb_block`/`tile_grid` are
+    // pure derivations of cfg + tile_info; `ssim_scales` is source-derived
+    // and q-invariant.
+    let sb_block = if cfg.sb_size_128 {
+        SB_BLOCK_128
+    } else {
+        SB_BLOCK_64
+    };
+    let tile_grid: Vec<(i32, i32, i32, i32, i32, i32)> = (0..n_tile_rows)
+        .flat_map(|trow| {
+            let ti = &tile_info;
+            (0..n_tile_cols).map(move |tcol| {
+                let r0 = ti.row_start_sb[trow] << mib_size_log2;
+                let r1 = (ti.row_start_sb[trow + 1] << mib_size_log2).min(mi_rows);
+                let c0 = ti.col_start_sb[tcol] << mib_size_log2;
+                let c1 = (ti.col_start_sb[tcol + 1] << mib_size_log2).min(mi_cols);
+                (
+                    r0,
+                    c0,
+                    r1,
+                    c1,
+                    ti.row_start_sb[trow + 1] - ti.row_start_sb[trow],
+                    ti.col_start_sb[tcol + 1] - ti.col_start_sb[tcol],
+                )
+            })
+        })
+        .collect();
+    debug_assert_eq!(
+        tile_grid
+            .iter()
+            .map(|t| (t.4 * t.5) as usize)
+            .sum::<usize>(),
+        (n_sb_x * n_sb_y) as usize,
+        "the tile grid must partition every superblock exactly once"
+    );
+    let ssim_scales = (quality.tune != Tune::Psnr).then(|| {
+        crate::allintra_vis::ssim_rdmult_scaling_factors(&src_y, stride, mi_cols, mi_rows, bd)
+    });
+
+    // ---- zenaom: the SCM trial encode ------------------------------------
+    // `av1_determine_sc_tools_with_encoding` (encoder_utils.c:1220): two
+    // quick fixed-32x32 trial encodes at `q = max(q, 244)` decide whether a
+    // detector-NEGATIVE key frame should code screen-content tools after
+    // all. In C the call site sits in `encode_with_recode_loop`, which the
+    // one-pass + no-lookahead allintra envelope never reaches
+    // (`recode_loop == DISALLOW_RECODE` — KB-66), so `LibaomExact` never runs
+    // it. `Zenaom` opts in: the detector already exposes its raw counts, so
+    // the trial is gated to content where it could plausibly flip — the
+    // detector margin (a quarter of the way to the positive threshold) or a
+    // caller-supplied `screen_likelihood` hint (e.g. zenanalyze's
+    // `patch_fraction`) at [`SCM_TRIAL_HINT_MIN`]. Obvious photos pay
+    // nothing.
+    //
+    // C's own skip guards (encoder_utils.c:1235-1237 + the
+    // `!disable_extra_sc_testing` call-site gate): `use_nonrd_pick_mode`
+    // (allintra speed >= 8), superres, detector-already-positive, not a key
+    // frame (always is, here), forward key frame (none in this envelope),
+    // REALTIME mode (this is allintra). `disable_extra_sc_testing` is a
+    // GOOD-mode cascade arm the allintra setter never touches.
+    let detector_allow_sct = sct.allow_screen_content_tools;
+    if cfg.mode == KeyFrameMode::Zenaom
+        && !detector_allow_sct
+        && !superres
+        && !sf_probe.use_nonrd_pick_mode
+        // A tools-on trial pass can only differ when a screen tool is
+        // actually searchable — with both knobs off the passes are
+        // identical and the cost is pure waste.
+        && (cfg.enable_palette || cfg.enable_intrabc)
+    {
+        // The detector's raw `allow_screen_content_tools` score is
+        // `(count_palette - count_photo/16) * 2560 > area` — nominate the
+        // trial whenever that score is merely positive (see the gate
+        // rationale above `SCM_TRIAL_HINT_MIN`), or the caller's hint did.
+        let margin_nominated = sct.count_palette * 16 > sct.count_photo;
+        let hint_nominated = cfg
+            .screen_likelihood
+            .is_some_and(|l| l >= SCM_TRIAL_HINT_MIN);
+        if margin_nominated || hint_nominated {
+            let inp = ScmTrialInputs {
+                cfg,
+                bd,
+                src_y: &src_y,
+                src_u: &src_u,
+                src_v: &src_v,
+                stride,
+                enc_w,
+                h,
+                enc_cw,
+                ch,
+                mi_rows,
+                mi_cols,
+                sb_mi,
+                sb_block,
+                tile_grid: &tile_grid,
+                ssim_scales: &ssim_scales,
+                enable_filter_intra: seq.seq_header.enable_filter_intra,
+                allow_update_cdf: tools.cdf_update_mode != 0,
+                separate_uv_delta_q: seq.color_config.separate_uv_delta_q,
+                is_screen_content_type: sct.is_screen_content_type,
+                detector_allow_sct,
+            };
+            scm_trial_determine(&inp, &mut sct, crate::rc::base_qindex_from_cq(cfg.cq_level));
+        }
+    }
     let mut p = derive_frame_header(cfg, &seq, &sct, tile_info);
     let qindex = p.quant.base_qindex;
     let coded_lossless = p.coded_lossless;
@@ -2278,7 +3015,11 @@ pub fn encode_key_frame_with(
     };
 
     // ---- speed features ---------------------------------------------------
-    let mut sf = SpeedFeatures::set_allintra(speed, sct.allow_screen_content_tools, bd > 8);
+    // `set_allintra`'s `allow_screen_content_tools`-reading arms see the
+    // DETECTOR's value even when the zenaom trial flipped `sct`: C's cascade
+    // (`av1_check_initial_width` -> the three `av1_set_speed_features_*`
+    // passes) runs before the encode loop the trial lives in.
+    let mut sf = SpeedFeatures::set_allintra(speed, detector_allow_sct, bd > 8);
     // The modelled arms of `set_allintra_speed_feature_framesize_dependent`
     // (speed_features.c:166) and the ALLINTRA-reachable arms of
     // `av1_set_speed_features_qindex_dependent` (:2872) — C's second and third
@@ -2311,38 +3052,6 @@ pub fn encode_key_frame_with(
     // nonrd speeds (>= 8) routes modes 2/3 through `setup_delta_q_nonrd`
     // (encodeframe.c:598), which never consults their maps (KB-46).
     let deltaq_live = quality.deltaq_mode != DeltaQMode::Off && qindex > 0;
-    let tile_grid: Vec<(i32, i32, i32, i32, i32, i32)> = (0..n_tile_rows)
-        .flat_map(|trow| {
-            let ti = &p.tile_info;
-            (0..n_tile_cols).map(move |tcol| {
-                let r0 = ti.row_start_sb[trow] << mib_size_log2;
-                let r1 = (ti.row_start_sb[trow + 1] << mib_size_log2).min(mi_rows);
-                let c0 = ti.col_start_sb[tcol] << mib_size_log2;
-                let c1 = (ti.col_start_sb[tcol + 1] << mib_size_log2).min(mi_cols);
-                (
-                    r0,
-                    c0,
-                    r1,
-                    c1,
-                    ti.row_start_sb[trow + 1] - ti.row_start_sb[trow],
-                    ti.col_start_sb[tcol + 1] - ti.col_start_sb[tcol],
-                )
-            })
-        })
-        .collect();
-    debug_assert_eq!(
-        tile_grid
-            .iter()
-            .map(|t| (t.4 * t.5) as usize)
-            .sum::<usize>(),
-        (n_sb_x * n_sb_y) as usize,
-        "the tile grid must partition every superblock exactly once"
-    );
-    let sb_block = if cfg.sb_size_128 {
-        SB_BLOCK_128
-    } else {
-        SB_BLOCK_64
-    };
     let nonrd_delta_q = sf.use_nonrd_pick_mode;
     let weber_map = (deltaq_live && quality.deltaq_mode == DeltaQMode::PerceptualAi).then(|| {
         crate::allintra_vis::av1_set_mb_wiener_variance(
@@ -2469,12 +3178,9 @@ pub fn encode_key_frame_with(
     // node-local geometric mean into `x->rdmult` at EVERY partition node
     // and leaf (partition_search.c:628-631), making rdmult position+size
     // dependent (KB-59). `pre_rdmult`/`intra_modifier` are per-SB — the
-    // pack's per-SB env restamps them.
-    let ssim_scales = (quality.tune != Tune::Psnr).then(|| {
-        crate::allintra_vis::ssim_rdmult_scaling_factors(
-            &src_y, stride, mi_cols, mi_rows, bd,
-        )
-    });
+    // pack's per-SB env restamps them. (`ssim_scales` itself is built before
+    // the zenaom trial above — it is source-derived and q-invariant, so the
+    // trial passes and this env share one copy.)
 
     let mut env = SbEncodeEnv {
         ref_frame: None,
@@ -2655,6 +3361,7 @@ pub fn encode_key_frame_with(
         _ => None,
     };
     let pick_cfg = PickFrameCfg {
+        fixed_partition_size: None,
         // KB-32: carry the RESOLVED frame-level variance-partition values down
         // rather than letting the walk re-derive them from mi-ALIGNED dims.
         // Inert below speed 7 (the VBP path) and below speed 9 (`is_4k_or_larger`).

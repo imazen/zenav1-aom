@@ -505,6 +505,7 @@ fn port_encode_superres(cell: &EncodeCell, denom: i32, bootstrap: &[u8]) -> Vec<
         deltaq: None,
     };
     let pick_cfg = PickFrameCfg {
+        fixed_partition_size: None,
             fs_sf: Default::default(),
             inter: None,
         intrabc: None,

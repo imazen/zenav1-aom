@@ -12,22 +12,22 @@
 #   pub modules                                80
 #   pub types (struct/enum/trait/alias)       278
 #   pub consts/statics                        638
-#   free functions                            616
-#   inherent methods                          922
-#   struct fields                            1927
+#   free functions                            617
+#   inherent methods                          923
+#   struct fields                            1928
 #   enum variants                             174
 #   re-exports                                  1
-#   trait roster entries (type × trait)      1087
+#   trait roster entries (type × trait)      1088
 #   auto-trait-complete types                 259
 #   auto-trait exceptions                       8
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4608
+#   aom_encode                     4611
 #   u16                               3
 #   u8                                3
 
-## items (4600 lines)
+## items (4603 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -1086,6 +1086,7 @@ pub aom_encode::partition_pick::PickFrameCfg::enable_filter_intra: bool
 pub aom_encode::partition_pick::PickFrameCfg::enable_rect_partitions: bool
 pub aom_encode::partition_pick::PickFrameCfg::enable_rect_tx: bool
 pub aom_encode::partition_pick::PickFrameCfg::enable_tx64: bool
+pub aom_encode::partition_pick::PickFrameCfg::fixed_partition_size: core::option::Option<usize>
 pub aom_encode::partition_pick::PickFrameCfg::fs_sf: aom_encode::partition_pick::FrameSizeSf
 pub aom_encode::partition_pick::PickFrameCfg::inter: core::option::Option<aom_encode::partition_pick::InterSearchCfg<'a>>
 pub aom_encode::partition_pick::PickFrameCfg::intra_pruning_with_hog: bool
@@ -3207,6 +3208,7 @@ pub fn aom_encode::key_frame::DeltaQMode::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::EncodeEstimate::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::EncodeLimits::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::KeyFrameError::assert_fields_are_eq(&self)
+pub fn aom_encode::key_frame::KeyFrameMode::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::QualityTools::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::TrellisMode::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::Tune::assert_fields_are_eq(&self)
@@ -4188,6 +4190,7 @@ pub fn aom_encode::var_part::get_partition_from_stamps(&[u8], i32, i32, i32, i32
 pub fn aom_encode::var_part::is_set_force_zeromv_skip_based_on_src_sad(i32, aom_encode::var_part::SourceSad) -> bool
 pub fn aom_encode::var_part::mv_distance((i16, i16), (i16, i16)) -> i32
 pub fn aom_encode::var_part::scale_part_thresh_content(i64, i32, bool, bool) -> i64
+pub fn aom_encode::var_part::set_fixed_partitioning(&mut [u8], i32, i32, i32, i32, i32, i32, usize, i32)
 pub fn aom_encode::var_part::set_force_zeromv_skip_for_sb(i32, aom_encode::var_part::SourceSad, bool, i32, i32, i32, u32, i32, i32, i32, i32, u32, [u32; 2]) -> aom_encode::var_part::ZeromvSkip
 pub fn aom_encode::var_part::set_low_temp_var_flag(&aom_encode::var_part::MiGrid<'_>, &mut [u8; 105], usize, &aom_encode::var_part::VarianceTree, &[i64; 5], usize, usize, usize, bool)
 pub fn aom_encode::var_part::set_low_temp_var_flag_128x128(&aom_encode::var_part::MiGrid<'_>, &mut [u8; 105], usize, &aom_encode::var_part::VarianceTree, &[i64; 5], usize, usize)
@@ -4630,7 +4633,7 @@ pub type aom_encode::tx_search::TxbWinners = smallvec::SmallVec<[aom_encode::tx_
 pub type aom_encode::var_part::Leaf8x8 = (u32, i32)
 pub use aom_encode::intrabc_search::DEFAULT_TXFM_PARTITION_CDF
 
-## trait impls (238 types)
+## trait impls (239 types)
 
 aom_encode::BlockContext<'a>: TrivialClone
 aom_encode::OptimizeInputs<'a>: TrivialClone
@@ -4726,6 +4729,7 @@ aom_encode::key_frame::EncodeConfig<'a>: TrivialClone
 aom_encode::key_frame::EncodeEstimate: TrivialClone
 aom_encode::key_frame::EncodeLimits: TrivialClone
 aom_encode::key_frame::KeyFrameConfig: TrivialClone
+aom_encode::key_frame::KeyFrameMode: TrivialClone
 aom_encode::key_frame::KeyFramePlanes<'a>: TrivialClone
 aom_encode::key_frame::QualityTools: TrivialClone
 aom_encode::key_frame::TrellisMode: TrivialClone

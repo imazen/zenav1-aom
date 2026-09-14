@@ -370,6 +370,7 @@ fn run_case(
         deltaq: None,
     };
     let pick_cfg = PickFrameCfg {
+        fixed_partition_size: None,
             fs_sf: Default::default(),
             inter: None,
         intrabc: None,

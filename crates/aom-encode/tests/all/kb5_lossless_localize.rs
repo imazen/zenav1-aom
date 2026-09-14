@@ -439,6 +439,7 @@ fn localize_lossless(w: usize, h: usize, mono: bool) -> bool {
         deltaq: None,
     };
     let pick_cfg = PickFrameCfg {
+        fixed_partition_size: None,
             fs_sf: Default::default(),
             inter: None,
         intrabc: None,

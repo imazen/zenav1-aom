@@ -448,6 +448,7 @@ fn localize_cell(w: usize, h: usize, cq_level: i32, speed: i32, name: &str) -> b
         deltaq: None,
     };
     let pick_cfg = PickFrameCfg {
+        fixed_partition_size: None,
             fs_sf: Default::default(),
             inter: None,
         intrabc: None,
