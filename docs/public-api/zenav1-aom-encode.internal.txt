@@ -13,7 +13,7 @@
 #   pub types (struct/enum/trait/alias)       278
 #   pub consts/statics                        638
 #   free functions                            617
-#   inherent methods                          925
+#   inherent methods                          926
 #   struct fields                            1927
 #   enum variants                             174
 #   re-exports                                  1
@@ -23,11 +23,11 @@
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4612
+#   aom_encode                     4613
 #   u16                               3
 #   u8                                3
 
-## items (4604 lines)
+## items (4605 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -3170,6 +3170,7 @@ pub fn aom_encode::intrabc_search::BlockHash::fmt(&self, &mut core::fmt::Formatt
 pub fn aom_encode::intrabc_search::Crc32c::default() -> Self
 pub fn aom_encode::intrabc_search::Crc32c::new() -> Self
 pub fn aom_encode::intrabc_search::Crc32c::value(&self, &[u8]) -> u32
+pub fn aom_encode::intrabc_search::Crc32c::value16(&self, &[u8; 16]) -> u32
 pub fn aom_encode::intrabc_search::DvCell::assert_fields_are_eq(&self)
 pub fn aom_encode::intrabc_search::DvCell::clone(&self) -> aom_encode::intrabc_search::DvCell
 pub fn aom_encode::intrabc_search::DvCell::default() -> aom_encode::intrabc_search::DvCell

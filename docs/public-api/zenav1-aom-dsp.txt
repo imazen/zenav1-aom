@@ -6,16 +6,16 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1820 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
+# files: zenav1-aom-dsp.txt 1822 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 2
 
 ## summary
 #
-#   pub modules                                59
+#   pub modules                                60
 #   pub types (struct/enum/trait/alias)        93
 #   pub consts/statics                        205
 #   pub macros                                  1
-#   free functions                            606
+#   free functions                            607
 #   inherent methods                           97
 #   struct fields                             706
 #   enum variants                              13
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            3
-#   aom_dsp                        1777
+#   aom_dsp                        1779
 
-## items (1744 lines)
+## items (1746 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -233,6 +233,8 @@ pub fn aom_dsp::convolve::convolve_x_sr(&[u8], usize, usize, &mut [u8], usize, u
 pub fn aom_dsp::convolve::convolve_y_sr(&[u8], usize, usize, &mut [u8], usize, usize, usize, usize, usize)
 pub fn aom_dsp::convolve::filter_table_id(usize, usize) -> usize
 pub fn aom_dsp::convolve::kernel_row(usize, usize) -> &'static [i16; 8]
+pub mod aom_dsp::crc32c
+pub fn aom_dsp::crc32c::crc32c16_hw(&[u8; 16]) -> core::option::Option<u32>
 pub mod aom_dsp::dispatch
 pub fn aom_dsp::dispatch::scalar_forced() -> bool
 pub mod aom_dsp::dist

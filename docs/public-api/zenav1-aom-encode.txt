@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-encode.txt 280 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4852 lines (326 hidden + 7567 excluded-feature)
+# files: zenav1-aom-encode.txt 280 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4853 lines (326 hidden + 7568 excluded-feature)
 # arch-unique surface: aarch64 39
 
 ## summary

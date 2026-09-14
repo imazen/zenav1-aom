@@ -20,6 +20,7 @@ pub mod cdef;
 pub mod census;
 pub mod cnn;
 pub mod convolve;
+pub mod crc32c;
 pub mod dispatch;
 pub mod dist;
 pub mod entropy;
