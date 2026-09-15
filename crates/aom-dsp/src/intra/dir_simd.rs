@@ -122,12 +122,192 @@ pub(crate) fn z2_left_gather(
     up_left: u32,
 ) {
     let _ = crate::dispatch::scalar_forced();
+    #[cfg(target_arch = "x86_64")]
+    {
+        incant!(
+            z2_left_gather_x86(dst, stride, bw, bh, ld, pad, dx, dy, frac_y, up_left),
+            [v3, scalar]
+        );
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     incant!(
         z2_left_gather_impl(dst, stride, bw, bh, ld, pad, dx, dy, frac_y, up_left),
-        [v3, neon, wasm128, scalar]
+        [neon, wasm128, scalar]
     )
 }
 
+/// x86 v3 body — COLUMN-major. For a fixed column `c` the tap index is affine
+/// in the row: `i0(r, c) = pad + by0[c] + r * s` with `s = 1 << up_left`,
+/// because `base_y(r,c) = (r << up_left) + ((-(c+1)*dy) >> frac_y)` — the
+/// floor splits exactly since `r << 6` is a multiple of `2^frac_y`
+/// (`frac_y + up_left == 6` per the caller). Likewise `shift` is
+/// row-invariant: `y2 = r*64 - (c+1)*dy ≡ -(c+1)*dy` (mod 64). So one column's
+/// 8-row chunk is a CONTIGUOUS two-tap load (`s == 1`) or the stride-2
+/// `pshufb` deinterleave (`s == 2`) instead of a per-lane gather; only the
+/// `dst` stores stay scalar (strided by `stride`).
+///
+/// Column `c` is written for rows `r0(c)..bh` where `r0(c) = ((c+1)*64)/dx`
+/// — the first row whose `c_end(r) = ((r+1)*dx - 1) >> 6` reaches `c + 1`:
+/// `(r+1)*dx - 1 >= (c+1)*64` ⟺ `r+1 >= ((c+1)*64 + 1 + dx - 1)/dx`. `r0`
+/// grows with `c`, so the first column with `r0 >= bh` ends the walk.
+///
+/// Per-column bound check: the affine index range `[base + r0*s, base +
+/// (bh-1)*s + 1]` covers every element the column reads, INCLUDING the whole
+/// vector window (the stride-2 window's pad lanes sit between used elements).
+/// A failing column falls back to the scalar recipe, so the set of inputs
+/// that panic is exactly the scalar's (a column whose range is out of bounds
+/// contains an element the scalar panics on).
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i32x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn z2_left_gather_x86(
+    token: Token,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    ld: &[u16],
+    pad: usize,
+    dx: i32,
+    dy: i32,
+    frac_y: u32,
+    up_left: u32,
+) {
+    use archmage::intrinsics::x86_64::*;
+    let _ = token;
+    if bw > 64 || frac_y + up_left != 6 || dx <= 0 {
+        z2_left_gather_scalar(dst, stride, bw, bh, ld, pad, dx, dy, frac_y, up_left);
+        return;
+    }
+    let s = 1i64 << up_left;
+    // Stride-2 deinterleave constants (only used when `up_left == 1`).
+    let ev = _mm_setr_epi8(0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1);
+    let od = _mm_setr_epi8(2, 3, 6, 7, 10, 11, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1);
+    let mut out = [0i32; 8];
+    // Column walk, all incremental — `r0(c) = ((c+1)*64)/dx` tracked as a
+    // Bresenham staircase (`frac` carries the remainder; total subtractions
+    // over the walk = `r0` of the last column <= bh), and `y2 = -(c+1)*dy`
+    // steps by `-dy`. No per-column division or multiply.
+    let mut r0 = 0usize;
+    let mut frac = 0i32;
+    let mut y2 = -dy;
+    for c in 0..bw {
+        frac += 64;
+        while frac >= dx {
+            frac -= dx;
+            r0 += 1;
+        }
+        if r0 >= bh {
+            break;
+        }
+        let base = pad as i32 + (y2 >> frac_y);
+        let shift = ((y2 << up_left) & 0x3F) >> 1;
+        y2 -= dy;
+        let lo = base as i64 + r0 as i64 * s;
+        let hi = base as i64 + (bh - 1) as i64 * s + 1;
+        if lo < 0 || hi >= ld.len() as i64 {
+            // Same cells the scalar would write for this column, in order.
+            let mut y2r0 = ((r0 as i32) << 6) - (c as i32 + 1) * dy;
+            for r in r0..bh {
+                let i0 = (pad as i32 + (y2r0 >> frac_y)) as usize;
+                let sh = ((y2r0 << up_left) & 0x3F) >> 1;
+                let w = &ld[i0..i0 + 2];
+                dst[r * stride + c] =
+                    ((i32::from(w[0]) * (32 - sh) + i32::from(w[1]) * sh + 16) >> 5) as u16;
+                y2r0 += 64;
+            }
+            continue;
+        }
+        let shv = _mm256_set1_epi32(shift);
+        let c16 = _mm256_set1_epi32(16);
+        // One 8-row chunk at row r; every element read is inside the checked
+        // `[lo, hi]` window (`r + 8 <= bh` on the forward pass, `r = bh - 8`
+        // for the overlap finisher — idempotent: a rewritten row stores the
+        // same value).
+        let mut do8 = |dst: &mut [u16], ld: &[u16], r: usize| {
+            let b = (base as i64 + r as i64 * s) as usize;
+            let (w0, w1) = if up_left == 0 {
+                let a: &[u16; 8] = ld[b..b + 8].try_into().unwrap();
+                let d: &[u16; 8] = ld[b + 1..b + 9].try_into().unwrap();
+                (_mm_loadu_si128(a), _mm_loadu_si128(d))
+            } else {
+                let lo8: &[u16; 8] = ld[b..b + 8].try_into().unwrap();
+                let hi8: &[u16; 8] = ld[b + 8..b + 16].try_into().unwrap();
+                let lo = _mm_loadu_si128(lo8);
+                let hi = _mm_loadu_si128(hi8);
+                (
+                    _mm_unpacklo_epi64(
+                        _mm_shuffle_epi8(lo, ev),
+                        _mm_shuffle_epi8(hi, ev),
+                    ),
+                    _mm_unpacklo_epi64(
+                        _mm_shuffle_epi8(lo, od),
+                        _mm_shuffle_epi8(hi, od),
+                    ),
+                )
+            };
+            let a0 = _mm256_cvtepu16_epi32(w0);
+            let a1 = _mm256_cvtepu16_epi32(w1);
+            let res = _mm256_srai_epi32::<5>(_mm256_add_epi32(
+                _mm256_add_epi32(
+                    _mm256_slli_epi32::<5>(a0),
+                    _mm256_mullo_epi32(_mm256_sub_epi32(a1, a0), shv),
+                ),
+                c16,
+            ));
+            _mm256_storeu_si256(&mut out, res);
+            let mut off = r * stride + c;
+            for k in 0..8 {
+                dst[off] = out[k] as u16;
+                off += stride;
+            }
+        };
+        let mut r = r0;
+        while r + 8 <= bh {
+            do8(dst, ld, r);
+            r += 8;
+        }
+        if r < bh {
+            if bh >= r0 + 8 {
+                // Overlap finisher: rows bh-8..bh all covered, earlier rows
+                // of the window store identical values.
+                do8(dst, ld, bh - 8);
+            } else {
+                let mut y2r = ((r as i32) << 6) - (c as i32 + 1) * dy;
+                for rr in r..bh {
+                    let i0 = (pad as i32 + (y2r >> frac_y)) as usize;
+                    let sh = ((y2r << up_left) & 0x3F) >> 1;
+                    let w = &ld[i0..i0 + 2];
+                    dst[rr * stride + c] =
+                        ((i32::from(w[0]) * (32 - sh) + i32::from(w[1]) * sh + 16) >> 5) as u16;
+                    y2r += 64;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn z2_left_gather_x86_scalar(
+    t: archmage::ScalarToken,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    ld: &[u16],
+    pad: usize,
+    dx: i32,
+    dy: i32,
+    frac_y: u32,
+    up_left: u32,
+) {
+    z2_left_gather_scalar(dst, stride, bw, bh, ld, pad, dx, dy, frac_y, up_left);
+    let _ = t;
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 #[allow(clippy::too_many_arguments)]
 fn z2_left_gather_impl_scalar(
     _t: archmage::ScalarToken,
@@ -179,6 +359,9 @@ pub(crate) fn z2_left_gather_scalar(
 }
 
 /// One row's scalar tail, starting at block column `c0` (so `x2 = c0 + k + 1`).
+/// Used by the non-x86 generic tier only; the x86 body keeps its own per-column
+/// scalar fallback.
+#[cfg(not(target_arch = "x86_64"))]
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn z2_left_gather_tail(
@@ -202,7 +385,7 @@ fn z2_left_gather_tail(
     }
 }
 
-#[magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+#[magetypes(define(i32x8), neon, wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn z2_left_gather_impl(
     token: Token,
