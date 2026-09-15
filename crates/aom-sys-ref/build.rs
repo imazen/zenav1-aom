@@ -169,7 +169,13 @@ fn extra_shim_cflags(name: &str) -> &'static [&'static str] {
 }
 
 fn main() {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // env::var, not env! — the macro bakes in the path of whatever tree first
+    // compiled this build script, and a shared CARGO_TARGET_DIR (the perf_arms
+    // worktree build) will happily re-execute that stale binary with the
+    // deleted path still inside it.
+    let manifest = PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is always set for builds"),
+    );
     // Workspace root = two levels up from crates/aom-sys-ref.
     let workspace_root = manifest
         .join("../..")

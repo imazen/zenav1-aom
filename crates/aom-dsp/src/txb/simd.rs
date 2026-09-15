@@ -18,7 +18,7 @@
 
 use archmage::prelude::*;
 
-use crate::txb::{TX_PAD_HOR, TxClass};
+use crate::txb::{TX_PAD_BOTTOM, TX_PAD_END, TX_PAD_HOR, TxClass};
 
 /// Scalar tier = the transcribed port, verbatim.
 pub(crate) fn txb_init_levels_impl_scalar(
@@ -132,145 +132,119 @@ pub(crate) fn txb_init_levels_impl_v3(
 
     let stride = height + TX_PAD_HOR;
     let tail = stride * width;
-    // The tail pad is 48..160 bytes (4*stride+16, stride in {8,12,20,36}).
-    // A dynamic fill lowers to a memset PLT call per invocation — and a
-    // STORE LOOP gets re-idiomized into one — so this is straight-line
-    // stores, count fixed per height.
-    let zero128 = _mm_setzero_si128();
-    macro_rules! zt {
-        ($off:expr) => {
-            _mm_storeu_si128::<[u8; 16]>(
-                (&mut levels[tail + $off..tail + $off + 16]).try_into().unwrap(),
-                zero128,
-            )
-        };
+    // One preflight covers every access below: short buffers take the scalar
+    // path (which panics on them identically — same contract, no reachable
+    // behaviour change), and the fast path is then check-free by shape.
+    if levels.len() < tail + TX_PAD_BOTTOM * stride + TX_PAD_END
+        || coeff.len() < width * height
+    {
+        crate::txb::txb_init_levels_scalar(coeff, width, height, levels);
+        return;
     }
-    match height {
-        4 => {
-            zt!(0);
-            zt!(16);
-            zt!(32);
-        }
-        8 => {
-            zt!(0);
-            zt!(16);
-            zt!(32);
-            zt!(48);
-        }
-        16 => {
-            zt!(0);
-            zt!(16);
-            zt!(32);
-            zt!(48);
-            zt!(64);
-            zt!(80);
-        }
-        _ => {
-            // height == 32, stride 36, tail 160B.
-            zt!(0);
-            zt!(16);
-            zt!(32);
-            zt!(48);
-            zt!(64);
-            zt!(80);
-            zt!(96);
-            zt!(112);
-            zt!(128);
-            zt!(144);
-        }
+
+    // The tail pad is 48..160 bytes (4*stride+16, stride in {8,12,20,36}) —
+    // always a multiple of 16, so fixed-size chunks store it without checks.
+    let zero128 = _mm_setzero_si128();
+    let pad = &mut levels[tail..tail + TX_PAD_BOTTOM * stride + TX_PAD_END];
+    for z in pad.as_chunks_mut::<16>().0 {
+        _mm_storeu_si128(z, zero128);
     }
 
     let zero = _mm256_setzero_si256();
     let cap127 = _mm256_set1_epi16(127);
-    let load = |cf: &[i32]| -> __m256i {
-        let a: &[i32; 8] = cf[..8].try_into().unwrap();
-        _mm256_loadu_si256(a)
-    };
+    let load = |cf: &[i32; 8]| -> __m256i { _mm256_loadu_si256(cf) };
     // abs_epi16 then min_epu16(127): packs_epi32 has already saturated the
     // i32 input to i16, and the unsigned min also maps the -32768 lane
     // (i32::MIN) to 127 — the scalar port's exact result on every input.
     let abs127_16 = |v: __m256i| _mm256_min_epu16(_mm256_abs_epi16(v), cap127);
 
-    let mut cf = 0usize;
-    let mut ls = 0usize;
+    // Every body slice is carved through as_chunks{,_mut}::<S>, so column
+    // and coefficient pieces are fixed-size arrays: sub-slicing them is
+    // statically in-range and no bounds check survives.
     match height {
         8 => {
             // 32 coeffs = 4 columns of 8; res holds the four 8-byte column
             // bodies in order, and each column's pad is a 4B zero store.
-            for _ in 0..width / 4 {
-                let ab = _mm256_packs_epi32(load(&coeff[cf..]), load(&coeff[cf + 8..]));
-                let cd = _mm256_packs_epi32(load(&coeff[cf + 16..]), load(&coeff[cf + 24..]));
+            let (cols, _) = levels[..tail].as_chunks_mut::<12>();
+            let (c8, _) = coeff[..width * 8].as_chunks::<8>();
+            for (q, c4) in cols.chunks_exact_mut(4).zip(c8.chunks_exact(4)) {
+                let [o0, o1, o2, o3] = q else { continue };
+                let [k0, k1, k2, k3] = c4 else { continue };
+                let ab = _mm256_packs_epi32(load(k0), load(k1));
+                let cd = _mm256_packs_epi32(load(k2), load(k3));
                 let v = _mm256_packs_epi16(abs127_16(ab), abs127_16(cd));
                 let r = _mm256_shuffle_epi32(_mm256_permute4x64_epi64(v, 0xd8), 0xd8);
                 let r0 = _mm256_castsi256_si128(r);
                 let r1 = _mm256_extracti128_si256(r, 1);
-                let o0: &mut [u8; 8] = (&mut levels[ls..ls + 8]).try_into().unwrap();
-                _mm_storeu_si64(o0, r0);
-                let o1: &mut [u8; 8] =
-                    (&mut levels[ls + stride..ls + stride + 8]).try_into().unwrap();
-                _mm_storeu_si64(o1, _mm_srli_si128(r0, 8));
-                let o2: &mut [u8; 8] =
-                    (&mut levels[ls + 2 * stride..ls + 2 * stride + 8]).try_into().unwrap();
-                _mm_storeu_si64(o2, r1);
-                let o3: &mut [u8; 8] =
-                    (&mut levels[ls + 3 * stride..ls + 3 * stride + 8]).try_into().unwrap();
-                _mm_storeu_si64(o3, _mm_srli_si128(r1, 8));
-                let zp = &0u32.to_ne_bytes();
-                levels[ls + 8..ls + 12].copy_from_slice(zp);
-                levels[ls + stride + 8..ls + stride + 12].copy_from_slice(zp);
-                levels[ls + 2 * stride + 8..ls + 2 * stride + 12].copy_from_slice(zp);
-                levels[ls + 3 * stride + 8..ls + 3 * stride + 12].copy_from_slice(zp);
-                cf += 32;
-                ls += 4 * stride;
+                let b0: &mut [u8; 8] = (&mut o0[..8]).try_into().unwrap();
+                let b1: &mut [u8; 8] = (&mut o1[..8]).try_into().unwrap();
+                let b2: &mut [u8; 8] = (&mut o2[..8]).try_into().unwrap();
+                let b3: &mut [u8; 8] = (&mut o3[..8]).try_into().unwrap();
+                _mm_storeu_si64(b0, r0);
+                _mm_storeu_si64(b1, _mm_srli_si128(r0, 8));
+                _mm_storeu_si64(b2, r1);
+                _mm_storeu_si64(b3, _mm_srli_si128(r1, 8));
+                o0[8..].fill(0);
+                o1[8..].fill(0);
+                o2[8..].fill(0);
+                o3[8..].fill(0);
             }
         }
         4 => {
             // 16 coeffs = 4 columns; the pad zeros are interleaved by
             // packs_epi16 against a zero vector, then both shuffles restore
             // column order — one 32B store covers 4 columns (stride 8).
-            for _ in 0..width / 4 {
-                let p = _mm256_packs_epi32(load(&coeff[cf..]), load(&coeff[cf + 8..]));
+            let (out, _) = levels[..tail].as_chunks_mut::<32>();
+            let (c16, _) = coeff[..width * 4].as_chunks::<16>();
+            for (o, c) in out.iter_mut().zip(c16.iter()) {
+                let p = _mm256_packs_epi32(
+                    load(c[..8].try_into().unwrap()),
+                    load(c[8..].try_into().unwrap()),
+                );
                 let v = _mm256_packs_epi16(abs127_16(p), zero);
                 let r = _mm256_permute4x64_epi64(_mm256_shuffle_epi32(v, 0xd8), 0xd8);
-                let out: &mut [u8; 32] = (&mut levels[ls..ls + 32]).try_into().unwrap();
-                _mm256_storeu_si256(out, r);
-                cf += 16;
-                ls += 4 * stride;
+                _mm256_storeu_si256(o, r);
             }
         }
 
         16 => {
             // 32 coeffs = 2 columns of 16; res = [col | col].
-            for _ in 0..width / 2 {
-                let ab = _mm256_packs_epi32(load(&coeff[cf..]), load(&coeff[cf + 8..]));
-                let cd = _mm256_packs_epi32(load(&coeff[cf + 16..]), load(&coeff[cf + 24..]));
+            let (cols, _) = levels[..tail].as_chunks_mut::<20>();
+            let (c8, _) = coeff[..width * 16].as_chunks::<8>();
+            for (q, c4) in cols.chunks_exact_mut(2).zip(c8.chunks_exact(4)) {
+                let [o0, o1] = q else { continue };
+                let [k0, k1, k2, k3] = c4 else { continue };
+                let ab = _mm256_packs_epi32(load(k0), load(k1));
+                let cd = _mm256_packs_epi32(load(k2), load(k3));
                 let v = _mm256_packs_epi16(abs127_16(ab), abs127_16(cd));
                 let r = _mm256_shuffle_epi32(_mm256_permute4x64_epi64(v, 0xd8), 0xd8);
-                let o0: &mut [u8; 16] = (&mut levels[ls..ls + 16]).try_into().unwrap();
-                _mm_storeu_si128(o0, _mm256_castsi256_si128(r));
-                let o1: &mut [u8; 16] =
-                    (&mut levels[ls + stride..ls + stride + 16]).try_into().unwrap();
-                _mm_storeu_si128(o1, _mm256_extracti128_si256(r, 1));
-                let zp = &0u32.to_ne_bytes();
-                levels[ls + 16..ls + 20].copy_from_slice(zp);
-                levels[ls + stride + 16..ls + stride + 20].copy_from_slice(zp);
-                cf += 32;
-                ls += 2 * stride;
+                let b0: &mut [u8; 16] = (&mut o0[..16]).try_into().unwrap();
+                let b1: &mut [u8; 16] = (&mut o1[..16]).try_into().unwrap();
+                _mm_storeu_si128(b0, _mm256_castsi256_si128(r));
+                _mm_storeu_si128(b1, _mm256_extracti128_si256(r, 1));
+                o0[16..].fill(0);
+                o1[16..].fill(0);
             }
         }
         _ => {
             // height == 32 (txb dims never reach 64 — `adjusted_tx_size`
             // caps them): 32 coeffs = ONE column; res is the whole body.
-            for _ in 0..width {
-                let ab = _mm256_packs_epi32(load(&coeff[cf..]), load(&coeff[cf + 8..]));
-                let cd = _mm256_packs_epi32(load(&coeff[cf + 16..]), load(&coeff[cf + 24..]));
+            let (cols, _) = levels[..tail].as_chunks_mut::<36>();
+            let (c32, _) = coeff[..width * 32].as_chunks::<32>();
+            for (o, c) in cols.iter_mut().zip(c32.iter()) {
+                let ab = _mm256_packs_epi32(
+                    load(c[..8].try_into().unwrap()),
+                    load(c[8..16].try_into().unwrap()),
+                );
+                let cd = _mm256_packs_epi32(
+                    load(c[16..24].try_into().unwrap()),
+                    load(c[24..].try_into().unwrap()),
+                );
                 let v = _mm256_packs_epi16(abs127_16(ab), abs127_16(cd));
                 let r = _mm256_shuffle_epi32(_mm256_permute4x64_epi64(v, 0xd8), 0xd8);
-                let out: &mut [u8; 32] = (&mut levels[ls..ls + 32]).try_into().unwrap();
-                _mm256_storeu_si256(out, r);
-                levels[ls + 32..ls + 36].copy_from_slice(&0u32.to_ne_bytes());
-                cf += 32;
-                ls += stride;
+                let b: &mut [u8; 32] = (&mut o[..32]).try_into().unwrap();
+                _mm256_storeu_si256(b, r);
+                o[32..].fill(0);
             }
         }
     }

@@ -29,9 +29,11 @@ WT=$(mktemp -d "$HOME/tmp/perf_base_wt.XXXX")
 trap 'git worktree remove --force "$WT" 2>/dev/null || true' EXIT
 echo "== base arm ($BASE_SHA) in worktree $WT"
 git worktree add --detach "$WT" "$BASE_SHA" >/dev/null
-# Share the target dir so the base build reuses every unchanged artifact.
-( cd "$WT" && CARGO_TARGET_DIR="$ROOT/target" cargo build --release -p zenav1-aom-bench --example eprof_x86 )
-cp "$ROOT/target/release/examples/eprof_x86" "$ARMS/base"
+# Deliberately NOT a shared target dir: the aom-sys-ref build script's
+# fingerprint does not key on the manifest path, so a shared dir re-executes a
+# stale compiled script holding a deleted worktree's CARGO_MANIFEST_DIR.
+( cd "$WT" && CARGO_TARGET_DIR="$WT/target" cargo build --release -p zenav1-aom-bench --example eprof_x86 )
+cp "$WT/target/release/examples/eprof_x86" "$ARMS/base"
 
 echo "== sha256"
 sha256sum "$ARMS/base" "$ARMS/new"
