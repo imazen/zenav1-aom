@@ -769,7 +769,8 @@ fn hadamard_16x16_dispatched(src: &[i16], src_stride: usize) -> [i32; 256] {
             // aom_hadamard_8x8_c's output is int16_t-valued by construction
             // (`buffer2` is int16_t), so this narrow is exact — it is the
             // `int16_t *t_coeff` staging buffer both x86 tiers write into.
-            let sub = aom_dsp::dist::hadamard::hadamard_8x8(&src[off..], src_stride);
+            let mut sub = [0i32; 64];
+            aom_dsp::dist::hadamard::hadamard_8x8_into(&src[off..], src_stride, &mut sub);
             for (d, &s) in t[idx * 64..idx * 64 + 64].iter_mut().zip(sub.iter()) {
                 *d = s as i16;
             }
@@ -1362,10 +1363,11 @@ pub fn block_yrd_hbd(
                     )
                 }
                 1 => {
-                    coeff[..64].copy_from_slice(&aom_dsp::dist::hadamard::hadamard_8x8(
+                    aom_dsp::dist::hadamard::hadamard_8x8_into(
                         src_diff,
                         diff_stride,
-                    ));
+                        (&mut coeff[..64]).try_into().unwrap(),
+                    );
                     quantize_fp_dispatched(
                         &coeff[..64],
                         &r2,

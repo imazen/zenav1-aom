@@ -415,8 +415,10 @@ fn encode_intra_block_plane_uv_matches_c_walk() {
                     }
                 }
                 assert_eq!(recon_rust, recon_c, "final recon plane {plane}: {tag}");
-                assert_eq!(out.ta, ta_c, "final ta: {tag}");
-                assert_eq!(out.tl, tl_c, "final tl: {tag}");
+                // `out.ta`/`out.tl` are fixed [i8; 32] scratch — compare the
+                // semantic prefix (the C vec's length).
+                assert_eq!(&out.ta[..ta_c.len()], &ta_c[..], "final ta: {tag}");
+                assert_eq!(&out.tl[..tl_c.len()], &tl_c[..], "final tl: {tag}");
 
                 if use_cfl {
                     cfl_encodes += 1;

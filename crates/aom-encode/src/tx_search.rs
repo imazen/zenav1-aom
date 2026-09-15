@@ -2107,6 +2107,25 @@ fn copy_pred_rows<const W: usize>(
     }
 }
 
+/// `copy_from_slice` specialized on the reachable MI-unit ctx run lengths —
+/// the literal-length arms keep each copy on inline moves instead of a
+/// `memcpy` call issued once per transformed-block walk.
+#[inline]
+pub(crate) fn copy_ctx<T: Copy>(dst: &mut [T], src: &[T], n: usize) {
+    match n {
+        // `w >> ss_x` is 0 for sub-4x4 chroma extents — a zero-length
+        // `copy_from_slice` still emits a `memcpy` PLT call.
+        0 => {}
+        1 => dst[..1].copy_from_slice(&src[..1]),
+        2 => dst[..2].copy_from_slice(&src[..2]),
+        4 => dst[..4].copy_from_slice(&src[..4]),
+        8 => dst[..8].copy_from_slice(&src[..8]),
+        16 => dst[..16].copy_from_slice(&src[..16]),
+        32 => dst[..32].copy_from_slice(&src[..32]),
+        _ => dst[..n].copy_from_slice(&src[..n]),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // av1_txfm_rd_in_plane + uniform_txfm_yrd (tx_search.c) — the per-tx-size
 // evaluator: foreach-txb walk (predict-from-recon -> subtract ->
@@ -2324,8 +2343,8 @@ pub fn txfm_rd_in_plane_intra(
     debug_assert!(max_blocks_wide <= 32 && max_blocks_high <= 32);
     let mut t_above = [0i8; 32];
     let mut t_left = [0i8; 32];
-    t_above[..max_blocks_wide].copy_from_slice(&env.above_ctx[..max_blocks_wide]);
-    t_left[..max_blocks_high].copy_from_slice(&env.left_ctx[..max_blocks_high]);
+    copy_ctx(&mut t_above, &env.above_ctx, max_blocks_wide);
+    copy_ctx(&mut t_left, &env.left_ctx, max_blocks_high);
     // predict_dc_only_block's zero_blk_rate ctx (tx_search.c:2055-2063): the
     // BLOCK-ORIGIN skip ctx from the PERSISTENT (pre-walk) entropy arrays —
     // shared by every txb of this block (see the
@@ -3245,8 +3264,8 @@ fn wht_satd(
     buf: &mut Vec<i32>,
 ) -> i32 {
     use aom_dsp::dist::hadamard::{
-        hadamard_4x4, hadamard_8x8, hadamard_16x16_into, hadamard_32x32_into,
-        highbd_hadamard_8x8, highbd_hadamard_16x16_into, highbd_hadamard_32x32_into, satd,
+        hadamard_4x4, hadamard_8x8_into, hadamard_16x16_into, hadamard_32x32_into,
+        highbd_hadamard_8x8_into, highbd_hadamard_16x16_into, highbd_hadamard_32x32_into, satd,
     };
     // The 16x16/32x32 arms write into the caller's `buf` so no 1–4 KB array is
     // zero-initialised and moved per model txb (the `_into` kernels write
@@ -3267,9 +3286,18 @@ fn wht_satd(
         }
         (&mut buf[..1024]).try_into().unwrap()
     }
+    fn b64(buf: &mut Vec<i32>) -> &mut [i32; 64] {
+        if buf.len() < 64 {
+            buf.resize(64, 0);
+        }
+        (&mut buf[..64]).try_into().unwrap()
+    }
     match (bd > 8, tx_size) {
         (_, 0) => satd(&hadamard_4x4(residual, stride)),
-        (false, 1) => satd(&hadamard_8x8(residual, stride)),
+        (false, 1) => {
+            hadamard_8x8_into(residual, stride, b64(buf));
+            satd(&buf[..64])
+        }
         (false, 2) => {
             hadamard_16x16_into(residual, stride, b256(buf));
             satd(&buf[..256])
@@ -3278,7 +3306,10 @@ fn wht_satd(
             hadamard_32x32_into(residual, stride, b1024(buf));
             satd(&buf[..1024])
         }
-        (true, 1) => satd(&highbd_hadamard_8x8(residual, stride)),
+        (true, 1) => {
+            highbd_hadamard_8x8_into(residual, stride, b64(buf));
+            satd(&buf[..64])
+        }
         (true, 2) => {
             highbd_hadamard_16x16_into(residual, stride, b256(buf));
             satd(&buf[..256])

@@ -1026,8 +1026,12 @@ fn leaf_pick_sb_modes(
         left_inter_bsize,
     );
 
-    let above_y: Vec<i8> = tile.above_ectx[0][a0..a0 + mi_w].to_vec();
-    let left_y: Vec<i8> = tile.left_ectx[0][l0..l0 + mi_h].to_vec();
+    // Fixed [i8; 32] scratch (mi_w/mi_h ≤ 32) — the `to_vec` pairs were six
+    // heap allocations per leaf pick.
+    let mut above_y = [0i8; 32];
+    let mut left_y = [0i8; 32];
+    crate::tx_search::copy_ctx(&mut above_y, &tile.above_ectx[0][a0..], mi_w);
+    crate::tx_search::copy_ctx(&mut left_y, &tile.left_ectx[0][l0..], mi_h);
     let mut y_env = TxfmYrdEnv {
         sb_size: env.sb_size,
         bsize,
@@ -1080,8 +1084,8 @@ fn leaf_pick_sb_modes(
         // USE_LARGESTALL (--enable-tx-size-search=0 → level 3 at every
         // stage) → TX_MODE_LARGEST; else TX_MODE_SELECT.
         tx_mode_is_select: !env.lossless && cfg.pol.enable_tx_size_search,
-        above_ctx: &above_y,
-        left_ctx: &left_y,
+        above_ctx: &above_y[..mi_w],
+        left_ctx: &left_y[..mi_h],
         qm_levels: cfg.qm_levels,
     };
     // KB-8 (chunk 2d-iv): the speed>=4 all-intra winner-mode two-pass bundle
@@ -1287,10 +1291,14 @@ fn leaf_pick_sb_modes(
     let (pmw, pmh) = (MI_SIZE_WIDE_B[plane_bsize], MI_SIZE_HIGH_B[plane_bsize]);
     let au = (mi_col >> env.ss_x) as usize;
     let lu = ((mi_row & 31) >> env.ss_y) as usize;
-    let above_u: Vec<i8> = tile.above_ectx[1][au..au + pmw].to_vec();
-    let left_u: Vec<i8> = tile.left_ectx[1][lu..lu + pmh].to_vec();
-    let above_v: Vec<i8> = tile.above_ectx[2][au..au + pmw].to_vec();
-    let left_v: Vec<i8> = tile.left_ectx[2][lu..lu + pmh].to_vec();
+    let mut above_u = [0i8; 32];
+    let mut left_u = [0i8; 32];
+    let mut above_v = [0i8; 32];
+    let mut left_v = [0i8; 32];
+    crate::tx_search::copy_ctx(&mut above_u, &tile.above_ectx[1][au..], pmw);
+    crate::tx_search::copy_ctx(&mut left_u, &tile.left_ectx[1][lu..], pmh);
+    crate::tx_search::copy_ctx(&mut above_v, &tile.above_ectx[2][au..], pmw);
+    crate::tx_search::copy_ctx(&mut left_v, &tile.left_ectx[2][lu..], pmh);
     // `is_cfl_allowed(xd)` (blockd.h): non-lossless => w/h <= 32; LOSSLESS =>
     // CfL is still allowed when the partition size equals the transform size,
     // i.e. `get_plane_block_size(bsize, ssx, ssy) == BLOCK_4X4` (a 420 8x8 or
@@ -1370,8 +1378,8 @@ fn leaf_pick_sb_modes(
         rdmult: env.rdmult,
         coeff_costs: &uv_coeff_tables,
         tx_type_costs: env.tx_type_costs,
-        above_ctx: [&above_u, &above_v],
-        left_ctx: [&left_u, &left_v],
+        above_ctx: [&above_u[..pmw], &above_v[..pmw]],
+        left_ctx: [&left_u[..pmh], &left_v[..pmh]],
         qm_levels: cfg.qm_levels,
     };
 
@@ -1979,12 +1987,16 @@ pub fn should_do_dry_run_encode(
 /// per-plane above/left entropy + partition + txfm context slices over the
 /// node extent.
 struct SavedCtx {
-    above_e: [Vec<i8>; 3],
-    left_e: [Vec<i8>; 3],
-    above_p: Vec<i8>,
-    left_p: Vec<i8>,
-    above_t: Vec<u8>,
-    left_t: Vec<u8>,
+    // Fixed arrays, not Vecs: `w`/`h` are MI units (≤ 32 at BLOCK_128X128),
+    // and ten heap allocations per save were the allocator class's top
+    // encoder site. Only the first `w`/`h`(>>ss) entries of each array are
+    // meaningful; the tail is the zero init.
+    above_e: [[i8; 32]; 3],
+    left_e: [[i8; 32]; 3],
+    above_p: [i8; 32],
+    left_p: [i8; 32],
+    above_t: [u8; 32],
+    left_t: [u8; 32],
 }
 
 fn save_context(
@@ -1999,22 +2011,26 @@ fn save_context(
     let h = MI_SIZE_HIGH_B[bsize];
     let a0 = mi_col as usize;
     let l0 = (mi_row & 31) as usize;
-    SavedCtx {
-        above_e: [
-            tile.above_ectx[0][a0..a0 + w].to_vec(),
-            tile.above_ectx[1][a0 >> ss_x..(a0 >> ss_x) + (w >> ss_x)].to_vec(),
-            tile.above_ectx[2][a0 >> ss_x..(a0 >> ss_x) + (w >> ss_x)].to_vec(),
-        ],
-        left_e: [
-            tile.left_ectx[0][l0..l0 + h].to_vec(),
-            tile.left_ectx[1][l0 >> ss_y..(l0 >> ss_y) + (h >> ss_y)].to_vec(),
-            tile.left_ectx[2][l0 >> ss_y..(l0 >> ss_y) + (h >> ss_y)].to_vec(),
-        ],
-        above_p: tile.above_pctx[a0..a0 + w].to_vec(),
-        left_p: tile.left_pctx[l0..l0 + h].to_vec(),
-        above_t: tile.above_tctx[a0..a0 + w].to_vec(),
-        left_t: tile.left_tctx[l0..l0 + h].to_vec(),
-    }
+    debug_assert!(w <= 32 && h <= 32);
+    let mut s = SavedCtx {
+        above_e: [[0i8; 32]; 3],
+        left_e: [[0i8; 32]; 3],
+        above_p: [0i8; 32],
+        left_p: [0i8; 32],
+        above_t: [0u8; 32],
+        left_t: [0u8; 32],
+    };
+    crate::tx_search::copy_ctx(&mut s.above_e[0], &tile.above_ectx[0][a0..], w);
+    crate::tx_search::copy_ctx(&mut s.above_e[1], &tile.above_ectx[1][a0 >> ss_x..], w >> ss_x);
+    crate::tx_search::copy_ctx(&mut s.above_e[2], &tile.above_ectx[2][a0 >> ss_x..], w >> ss_x);
+    crate::tx_search::copy_ctx(&mut s.left_e[0], &tile.left_ectx[0][l0..], h);
+    crate::tx_search::copy_ctx(&mut s.left_e[1], &tile.left_ectx[1][l0 >> ss_y..], h >> ss_y);
+    crate::tx_search::copy_ctx(&mut s.left_e[2], &tile.left_ectx[2][l0 >> ss_y..], h >> ss_y);
+    crate::tx_search::copy_ctx(&mut s.above_p, &tile.above_pctx[a0..], w);
+    crate::tx_search::copy_ctx(&mut s.left_p, &tile.left_pctx[l0..], h);
+    crate::tx_search::copy_ctx(&mut s.above_t, &tile.above_tctx[a0..], w);
+    crate::tx_search::copy_ctx(&mut s.left_t, &tile.left_tctx[l0..], h);
+    s
 }
 
 fn restore_context(
@@ -2030,16 +2046,32 @@ fn restore_context(
     let h = MI_SIZE_HIGH_B[bsize];
     let a0 = mi_col as usize;
     let l0 = (mi_row & 31) as usize;
-    tile.above_ectx[0][a0..a0 + w].copy_from_slice(&saved.above_e[0]);
-    tile.above_ectx[1][a0 >> ss_x..(a0 >> ss_x) + (w >> ss_x)].copy_from_slice(&saved.above_e[1]);
-    tile.above_ectx[2][a0 >> ss_x..(a0 >> ss_x) + (w >> ss_x)].copy_from_slice(&saved.above_e[2]);
-    tile.left_ectx[0][l0..l0 + h].copy_from_slice(&saved.left_e[0]);
-    tile.left_ectx[1][l0 >> ss_y..(l0 >> ss_y) + (h >> ss_y)].copy_from_slice(&saved.left_e[1]);
-    tile.left_ectx[2][l0 >> ss_y..(l0 >> ss_y) + (h >> ss_y)].copy_from_slice(&saved.left_e[2]);
-    tile.above_pctx[a0..a0 + w].copy_from_slice(&saved.above_p);
-    tile.left_pctx[l0..l0 + h].copy_from_slice(&saved.left_p);
-    tile.above_tctx[a0..a0 + w].copy_from_slice(&saved.above_t);
-    tile.left_tctx[l0..l0 + h].copy_from_slice(&saved.left_t);
+    crate::tx_search::copy_ctx(&mut tile.above_ectx[0][a0..], &saved.above_e[0], w);
+    crate::tx_search::copy_ctx(
+        &mut tile.above_ectx[1][a0 >> ss_x..],
+        &saved.above_e[1],
+        w >> ss_x,
+    );
+    crate::tx_search::copy_ctx(
+        &mut tile.above_ectx[2][a0 >> ss_x..],
+        &saved.above_e[2],
+        w >> ss_x,
+    );
+    crate::tx_search::copy_ctx(&mut tile.left_ectx[0][l0..], &saved.left_e[0], h);
+    crate::tx_search::copy_ctx(
+        &mut tile.left_ectx[1][l0 >> ss_y..],
+        &saved.left_e[1],
+        h >> ss_y,
+    );
+    crate::tx_search::copy_ctx(
+        &mut tile.left_ectx[2][l0 >> ss_y..],
+        &saved.left_e[2],
+        h >> ss_y,
+    );
+    crate::tx_search::copy_ctx(&mut tile.above_pctx[a0..], &saved.above_p, w);
+    crate::tx_search::copy_ctx(&mut tile.left_pctx[l0..], &saved.left_p, h);
+    crate::tx_search::copy_ctx(&mut tile.above_tctx[a0..], &saved.above_t, w);
+    crate::tx_search::copy_ctx(&mut tile.left_tctx[l0..], &saved.left_t, h);
 }
 
 /// `rd_pick_rect_partition` (partition_search.c:3471): one rect sub-block
@@ -5821,8 +5853,10 @@ fn nonrd_leaf_pick_and_encode(
             above_inter_bsize,
             left_inter_bsize,
         );
-        let above_y: Vec<i8> = tile.above_ectx[0][a0..a0 + mi_w].to_vec();
-        let left_y: Vec<i8> = tile.left_ectx[0][l0..l0 + mi_h].to_vec();
+        let mut above_y = [0i8; 32];
+        let mut left_y = [0i8; 32];
+        crate::tx_search::copy_ctx(&mut above_y, &tile.above_ectx[0][a0..], mi_w);
+        crate::tx_search::copy_ctx(&mut left_y, &tile.left_ectx[0][l0..], mi_h);
         let mut y_env = TxfmYrdEnv {
             sb_size: env.sb_size,
             bsize,
@@ -5859,8 +5893,8 @@ fn nonrd_leaf_pick_and_encode(
             tx_size_costs: cfg.tx_size_costs,
             tx_size_ctx,
             tx_mode_is_select: !env.lossless && cfg.pol.enable_tx_size_search,
-            above_ctx: &above_y,
-            left_ctx: &left_y,
+            above_ctx: &above_y[..mi_w],
+            left_ctx: &left_y[..mi_h],
             qm_levels: cfg.qm_levels,
         };
 

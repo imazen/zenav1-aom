@@ -255,6 +255,21 @@ pub struct EncodeIntraYEnv<'a> {
 /// the life of the thread, and the copy is free for the 57.2 % that fit inline.
 pub type TxbCoeffs = smallvec::SmallVec<[i32; 32]>;
 
+/// `TxbCoeffs` without the `memcpy` call on the inline path: `n ≤ 32` fills a
+/// fixed buffer via `copy_ctx`'s literal-length arms and wraps it with
+/// `from_buf_and_len` (no call); `n > 32` spills via `from_slice` as before.
+/// The scratch Vecs are grow-only, so callers slice to the live `n_coeffs`.
+#[inline]
+fn txb_coeffs(src: &[i32]) -> TxbCoeffs {
+    if src.len() <= 32 {
+        let mut a = [0i32; 32];
+        crate::tx_search::copy_ctx(&mut a, src, src.len());
+        TxbCoeffs::from_buf_and_len(a, src.len())
+    } else {
+        TxbCoeffs::from_slice(src)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxbEncode {
     /// The tx type used by the transform (skip arm: DCT_DCT).
@@ -282,8 +297,11 @@ pub struct TxbEncode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EncodeIntraPlaneOutcome {
     pub txbs: Vec<TxbEncode>,
-    pub ta: Vec<i8>,
-    pub tl: Vec<i8>,
+    /// First `max_blocks_wide` entries are the walk's final ctx; the tail is
+    /// the zero init. Fixed arrays — two `Vec`s per call were ~100k
+    /// alloc+memset+memcpy hits per 1 MP encode.
+    pub ta: [i8; 32],
+    pub tl: [i8; 32],
 }
 
 thread_local! {
@@ -363,10 +381,11 @@ pub fn encode_intra_block_plane_y(
     // a VERT split) got txb_skip_ctx=1/dc_sign_ctx=0 instead of the real 3/1 and
     // the coded bytes desynced the decoder. Within-block propagation was already
     // fine; only this first-txb cross-block seed was wrong.
-    let mut ta = vec![0i8; max_blocks_wide];
-    let mut tl = vec![0i8; max_blocks_high];
-    ta.copy_from_slice(&env.above_ctx[..max_blocks_wide]);
-    tl.copy_from_slice(&env.left_ctx[..max_blocks_high]);
+    debug_assert!(max_blocks_wide <= 32 && max_blocks_high <= 32);
+    let mut ta = [0i8; 32];
+    let mut tl = [0i8; 32];
+    crate::tx_search::copy_ctx(&mut ta, &env.above_ctx, max_blocks_wide);
+    crate::tx_search::copy_ctx(&mut tl, &env.left_ctx, max_blocks_high);
     let use_trellis = is_trellis_used(env.enable_optimize_b, env.dry_run_output_enabled);
 
     // Per-txb working buffers hoisted out of the walk (see
@@ -547,8 +566,8 @@ pub fn encode_intra_block_plane_y(
                     // `xq`'s Vecs are grow-only scratch — `from_slice` copies
                     // the whole range, so slice to the live `n_coeffs`.
                     let n = txb_wide(tx_size) * txb_high(tx_size);
-                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff[..n]);
-                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff[..n]);
+                    qcoeff = txb_coeffs(&xq.qcoeff[..n]);
+                    dqcoeff = txb_coeffs(&xq.dqcoeff[..n]);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     txb_skip_ctx = r.txb_skip_ctx;
@@ -558,8 +577,8 @@ pub fn encode_intra_block_plane_y(
                         &residual[..txw * txh], tx_size, tx_type, kind, &qp, false, &mut xq,
                     );
                     let n = txb_wide(tx_size) * txb_high(tx_size);
-                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff[..n]);
-                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff[..n]);
+                    qcoeff = txb_coeffs(&xq.qcoeff[..n]);
+                    dqcoeff = txb_coeffs(&xq.dqcoeff[..n]);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     // get_txb_ctx: xform_quant (non-optimize_b) doesn't derive
@@ -773,10 +792,11 @@ pub fn encode_intra_block_plane_uv(
     // dc_sign_ctx, and the write path derives its ctx from the real context
     // regardless of the trellis (encodetxb.c:596-598). Gating on the trellis
     // zeroed the cross-block seed for coded-lossless (trellis-off) chroma.
-    let mut ta = vec![0i8; max_blocks_wide];
-    let mut tl = vec![0i8; max_blocks_high];
-    ta.copy_from_slice(&env.above_ctx[pi][..max_blocks_wide]);
-    tl.copy_from_slice(&env.left_ctx[pi][..max_blocks_high]);
+    debug_assert!(max_blocks_wide <= 32 && max_blocks_high <= 32);
+    let mut ta = [0i8; 32];
+    let mut tl = [0i8; 32];
+    crate::tx_search::copy_ctx(&mut ta, &env.above_ctx[pi], max_blocks_wide);
+    crate::tx_search::copy_ctx(&mut tl, &env.left_ctx[pi], max_blocks_high);
     let use_trellis = is_trellis_used(prm.enable_optimize_b, prm.dry_run_output_enabled);
 
     // The facade's CfL state: outside cfl_rd_pick_alpha the DC-prediction
@@ -932,8 +952,8 @@ pub fn encode_intra_block_plane_uv(
                     // `xq`'s Vecs are grow-only scratch — `from_slice` copies
                     // the whole range, so slice to the live `n_coeffs`.
                     let n = txb_wide(tx_size) * txb_high(tx_size);
-                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff[..n]);
-                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff[..n]);
+                    qcoeff = txb_coeffs(&xq.qcoeff[..n]);
+                    dqcoeff = txb_coeffs(&xq.dqcoeff[..n]);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     txb_skip_ctx = r.txb_skip_ctx;
@@ -943,8 +963,8 @@ pub fn encode_intra_block_plane_uv(
                         &residual[..txw * txh], tx_size, tx_type, kind, &qp, false, &mut xq,
                     );
                     let n = txb_wide(tx_size) * txb_high(tx_size);
-                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff[..n]);
-                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff[..n]);
+                    qcoeff = txb_coeffs(&xq.qcoeff[..n]);
+                    dqcoeff = txb_coeffs(&xq.dqcoeff[..n]);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     let (sc, dc) =

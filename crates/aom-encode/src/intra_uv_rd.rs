@@ -347,6 +347,24 @@ impl UvRdEnv<'_> {
     }
 }
 
+/// `copy_from_slice` specialized on the reachable copy lengths (chroma tx
+/// widths and the MI-unit ctx runs) — the literal-length arms keep each
+/// copy on inline vector moves instead of a `memcpy` call (the CfL load
+/// path issues `txh` of these per call).
+#[inline]
+fn copy_row<T: Copy>(dst: &mut [T], src: &[T], w: usize) {
+    match w {
+        0 => {}
+        1 => dst[..1].copy_from_slice(&src[..1]),
+        2 => dst[..2].copy_from_slice(&src[..2]),
+        4 => dst[..4].copy_from_slice(&src[..4]),
+        8 => dst[..8].copy_from_slice(&src[..8]),
+        16 => dst[..16].copy_from_slice(&src[..16]),
+        32 => dst[..32].copy_from_slice(&src[..32]),
+        _ => dst[..w].copy_from_slice(&src[..w]),
+    }
+}
+
 /// One txb's prediction (`av1_predict_intra_block_facade` for a chroma
 /// plane): the CfL arm (DC prediction — cached or fresh — plus the
 /// alpha-scaled AC) or the plain intra prediction, written INTO the recon
@@ -433,14 +451,17 @@ pub(crate) fn predict_uv_txb(
             );
             if cfl.cache.use_cache {
                 // cfl_store_dc_pred: the first `width` pixels of the dc pred.
-                cfl.cache.row[pred_plane][..txw].copy_from_slice(&recon[txb_off..txb_off + txw]);
+                copy_row(&mut cfl.cache.row[pred_plane], &recon[txb_off..], txw);
                 cfl.cache.cached[pred_plane] = true;
             }
         } else {
             // cfl_load_dc_pred: row-replicate the cached first row.
             for r in 0..txh {
-                recon[txb_off + r * env.ref_stride..txb_off + r * env.ref_stride + txw]
-                    .copy_from_slice(&cfl.cache.row[pred_plane][..txw]);
+                copy_row(
+                    &mut recon[txb_off + r * env.ref_stride..],
+                    &cfl.cache.row[pred_plane],
+                    txw,
+                );
             }
         }
         cfl_predict_block(
@@ -602,8 +623,8 @@ pub fn txfm_rd_in_plane_uv_p(
     debug_assert!(max_blocks_wide <= 32 && max_blocks_high <= 32);
     let mut t_above = [0i8; 32];
     let mut t_left = [0i8; 32];
-    t_above[..max_blocks_wide].copy_from_slice(&env.above_ctx[pi][..max_blocks_wide]);
-    t_left[..max_blocks_high].copy_from_slice(&env.left_ctx[pi][..max_blocks_high]);
+    copy_row(&mut t_above, &env.above_ctx[pi], max_blocks_wide);
+    copy_row(&mut t_left, &env.left_ctx[pi], max_blocks_high);
     // predict_dc_only_block's zero_blk_rate ctx (tx_search.c:2055-2063): the
     // BLOCK-ORIGIN skip ctx from the PERSISTENT (pre-walk) entropy arrays,
     // shared by every txb of this chroma block — same quirk as the luma walk

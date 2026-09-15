@@ -1086,13 +1086,13 @@ pub fn encode_b_intra_dry(
             }
             u_out = Some(EncodeIntraPlaneOutcome {
                 txbs: Vec::new(),
-                ta: Vec::new(),
-                tl: Vec::new(),
+                ta: [0i8; 32],
+                tl: [0i8; 32],
             });
             v_out = Some(EncodeIntraPlaneOutcome {
                 txbs: Vec::new(),
-                ta: Vec::new(),
-                tl: Vec::new(),
+                ta: [0i8; 32],
+                tl: [0i8; 32],
             });
         }
         // set_txfm_ctxs skip convention: ctx = block width/height in pixels.
@@ -1111,8 +1111,8 @@ pub fn encode_b_intra_dry(
             store_y: false,
             y: EncodeIntraPlaneOutcome {
                 txbs: Vec::new(),
-                ta: Vec::new(),
-                tl: Vec::new(),
+                ta: [0i8; 32],
+                tl: [0i8; 32],
             },
             u: u_out,
             v: v_out,
@@ -1198,13 +1198,13 @@ pub fn encode_b_intra_dry(
             }
             u_out = Some(EncodeIntraPlaneOutcome {
                 txbs: Vec::new(),
-                ta: Vec::new(),
-                tl: Vec::new(),
+                ta: [0i8; 32],
+                tl: [0i8; 32],
             });
             v_out = Some(EncodeIntraPlaneOutcome {
                 txbs: Vec::new(),
-                ta: Vec::new(),
-                tl: Vec::new(),
+                ta: [0i8; 32],
+                tl: [0i8; 32],
             });
         }
         // set_txfm_ctxs skip convention: ctx = block width/height in pixels.
@@ -1221,8 +1221,8 @@ pub fn encode_b_intra_dry(
             store_y: false,
             y: EncodeIntraPlaneOutcome {
                 txbs: Vec::new(),
-                ta: Vec::new(),
-                tl: Vec::new(),
+                ta: [0i8; 32],
+                tl: [0i8; 32],
             },
             u: u_out,
             v: v_out,
@@ -2556,10 +2556,15 @@ fn encode_b_intrabc_coeff(
     );
 
     // ---- plane 0 (Y): the var-tx quadtree ----
-    let mut ta: Vec<i8> = state.above_ectx[0][a0..a0 + mi_w].to_vec();
-    let mut tl: Vec<i8> = state.left_ectx[0][l0..l0 + mi_h].to_vec();
-    let mut pers_a: Vec<i8> = state.above_ectx[0][a0..a0 + mi_w].to_vec();
-    let mut pers_l: Vec<i8> = state.left_ectx[0][l0..l0 + mi_h].to_vec();
+    debug_assert!(mi_w <= 32 && mi_h <= 32);
+    let mut ta = [0i8; 32];
+    let mut tl = [0i8; 32];
+    let mut pers_a = [0i8; 32];
+    let mut pers_l = [0i8; 32];
+    crate::tx_search::copy_ctx(&mut ta, &state.above_ectx[0][a0..], mi_w);
+    crate::tx_search::copy_ctx(&mut tl, &state.left_ectx[0][l0..], mi_h);
+    crate::tx_search::copy_ctx(&mut pers_a, &state.above_ectx[0][a0..], mi_w);
+    crate::tx_search::copy_ctx(&mut pers_l, &state.left_ectx[0][l0..], mi_h);
     let yc = IbcTxbCtx {
         plane: 0,
         plane_bsize: bsize,
@@ -2619,10 +2624,10 @@ fn encode_b_intrabc_coeff(
                     ibc_encode_block_inter_y(
                         &yc,
                         recon_y,
-                        &mut ta,
-                        &mut tl,
-                        &mut pers_a,
-                        &mut pers_l,
+                        &mut ta[..mi_w],
+                        &mut tl[..mi_h],
+                        &mut pers_a[..mi_w],
+                        &mut pers_l[..mi_h],
                         &mut y_txbs,
                         map,
                         mi_w,
@@ -2639,8 +2644,8 @@ fn encode_b_intrabc_coeff(
         }
         idy += mu_h;
     }
-    state.above_ectx[0][a0..a0 + mi_w].copy_from_slice(&pers_a);
-    state.left_ectx[0][l0..l0 + mi_h].copy_from_slice(&pers_l);
+    state.above_ectx[0][a0..a0 + mi_w].copy_from_slice(&pers_a[..mi_w]);
+    state.left_ectx[0][l0..l0 + mi_h].copy_from_slice(&pers_l[..mi_h]);
 
     // ---- planes 1/2 (U, V): DV prediction + the UNIFORM uv tx walk ----
     let mut u_out = None;
@@ -2707,10 +2712,13 @@ fn encode_b_intrabc_coeff(
                     .copy_from_slice(&cpred[r * cw..r * cw + cw]);
             }
 
-            let mut cta: Vec<i8> = state.above_ectx[plane][au..au + pmw].to_vec();
-            let mut ctl: Vec<i8> = state.left_ectx[plane][lu..lu + pmh].to_vec();
-            let mut cpers_a: Vec<i8> = cta.clone();
-            let mut cpers_l: Vec<i8> = ctl.clone();
+            debug_assert!(pmw <= 32 && pmh <= 32);
+            let mut cta = [0i8; 32];
+            let mut ctl = [0i8; 32];
+            crate::tx_search::copy_ctx(&mut cta, &state.above_ectx[plane][au..], pmw);
+            crate::tx_search::copy_ctx(&mut ctl, &state.left_ectx[plane][lu..], pmh);
+            let mut cpers_a = cta;
+            let mut cpers_l = ctl;
             let cc = IbcTxbCtx {
                 plane,
                 plane_bsize,
@@ -2761,11 +2769,12 @@ fn encode_b_intrabc_coeff(
                                     plane_bsize,
                                     uv_tx,
                                     plane,
-                                    &cpers_a[bc..],
-                                    &cpers_l[br..],
+                                    &cpers_a[bc..pmw],
+                                    &cpers_l[br..pmh],
                                 );
                                 let mut txb = ibc_encode_txb(
-                                    &cc, recon, &mut cta, &mut ctl, br, bc, uv_tx, tt,
+                                    &cc, recon, &mut cta[..pmw], &mut ctl[..pmh],
+                                    br, bc, uv_tx, tt,
                                 );
                                 txb.txb_skip_ctx = tsc as usize;
                                 txb.dc_sign_ctx =
@@ -2775,8 +2784,8 @@ fn encode_b_intrabc_coeff(
                                         0
                                     };
                                 ibc_stamp_persistent(
-                                    &mut cpers_a,
-                                    &mut cpers_l,
+                                    &mut cpers_a[..pmw],
+                                    &mut cpers_l[..pmh],
                                     br,
                                     bc,
                                     uv_tx,
@@ -2794,8 +2803,8 @@ fn encode_b_intrabc_coeff(
                 }
                 cidy += cmu_h;
             }
-            state.above_ectx[plane][au..au + pmw].copy_from_slice(&cpers_a);
-            state.left_ectx[plane][lu..lu + pmh].copy_from_slice(&cpers_l);
+            state.above_ectx[plane][au..au + pmw].copy_from_slice(&cpers_a[..pmw]);
+            state.left_ectx[plane][lu..lu + pmh].copy_from_slice(&cpers_l[..pmh]);
             let outcome = EncodeIntraPlaneOutcome {
                 txbs,
                 ta: cta,
