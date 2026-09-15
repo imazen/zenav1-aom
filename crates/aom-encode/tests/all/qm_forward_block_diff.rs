@@ -16,7 +16,32 @@ use aom_encode::{QuantKind, QuantParams, xform_quant};
 use aom_dsp::quant::{aom_get_qmlevel_allintra, qmatrix};
 use aom_sys_ref as c;
 use aom_dsp::transform::txfm2d::fwd_txfm_valid;
-use aom_dsp::txb::{scan, txb_high, txb_wide};
+use aom_dsp::txb::{iscan, scan, txb_high, txb_wide};
+#[cfg(target_arch = "x86_64")]
+use archmage::SimdToken;
+
+/// Lowbd `Fp`-no-qmatrix quantize oracle tracking the port's live tier: with
+/// X64V3 + AVX2 live the port runs its instruction-level mirror of
+/// `av1_quantize_fp_avx2` — which saturates coeff to i16 and wraps
+/// `q*dequant` at i16 where C-scalar stays exact — so the oracle must be the
+/// real avx2 kernel there, C-scalar otherwise.
+#[allow(clippy::too_many_arguments)]
+fn fp_oracle(
+    ls: i32,
+    src: &[i32],
+    round: &[i16; 2],
+    quant: &[i16; 2],
+    dequant: &[i16; 2],
+    sc: &[i16],
+    isc: &[i16],
+) -> (Vec<i32>, Vec<i32>, u16) {
+    #[cfg(target_arch = "x86_64")]
+    if archmage::X64V3Token::summon().is_some() && std::env::var_os("AOM_FORCE_SCALAR").is_none() {
+        return c::ref_quantize_fp_avx2(ls, src, round, quant, dequant, sc, isc);
+    }
+    let _ = isc;
+    c::ref_quantize_fp(ls, src, round, quant, dequant, sc)
+}
 
 const TX_W: [usize; 19] = [
     4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
@@ -100,6 +125,10 @@ fn inverse_qmatrix_reuse_matches_c() {
 /// transform (QM flat), asserting the fwd/inv selectors agree on the gating.
 #[test]
 fn forward_qm_block_realistic_matches_c() {
+    // Pins the port's live tier (and so fp_oracle's pick) against sibling
+    // token-permutation tests.
+    #[cfg(target_arch = "x86_64")]
+    let _token_guard = archmage::testing::lock_token_testing();
     let mut rng = Rng(0x5eed_00b1_0c4d_2345);
     // qm_min/qm_max = 4/10 are the allintra override defaults.
     let (qm_min, qm_max) = (4i32, 10i32);
@@ -183,13 +212,14 @@ fn forward_qm_block_realistic_matches_c() {
                         )
                     } else {
                         flat_gated += 1;
-                        c::ref_quantize_fp(
+                        fp_oracle(
                             ls,
                             src,
                             &round,
                             &quant,
                             &dequant,
                             scan(tx_size, tx_type),
+                            iscan(tx_size, tx_type),
                         )
                     };
 

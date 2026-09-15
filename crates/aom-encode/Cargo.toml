@@ -65,6 +65,11 @@ __internals = []
 
 [dev-dependencies]
 zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
+# Tier-correct oracle selection in quantize differentials (see
+# tests/all/xform_quant_diff.rs's fp_oracle): X64V3Token::summon() mirrors the
+# port dispatcher's own check, lock_token_testing() serializes it against
+# sibling token-permutation tests.
+archmage = { version = "0.9.27", features = ["testable_dispatch"] }
 # Read-only use for decode-diff diagnostics only (see
 # tests/decode_diff_noise_case.rs) -- aom-decode itself is owned by the
 # decoder track; this crate never modifies it. dev-dependency only, so this

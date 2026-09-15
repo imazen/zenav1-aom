@@ -878,6 +878,7 @@ dependencies = [
 name = "zenav1-aom-encode"
 version = "0.0.1"
 dependencies = [
+ "archmage",
  "enough",
  "smallvec",
  "zenav1-aom-decode",

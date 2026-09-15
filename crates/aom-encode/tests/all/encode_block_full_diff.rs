@@ -10,7 +10,33 @@ use aom_encode::{
 use aom_dsp::entropy::enc::OdEcEnc;
 use aom_sys_ref as c;
 use aom_dsp::transform::txfm2d::fwd_txfm_valid;
-use aom_dsp::txb::{CDF_ARENA_LEN, CoeffCostTables, ext_tx_derive, scan, txb_high, txb_wide};
+use aom_dsp::txb::{
+    CDF_ARENA_LEN, CoeffCostTables, ext_tx_derive, iscan as real_iscan, scan, txb_high, txb_wide,
+};
+#[cfg(target_arch = "x86_64")]
+use archmage::SimdToken;
+
+/// Lowbd `Fp`-no-qmatrix quantize oracle tracking the port's live tier: with
+/// X64V3 + AVX2 live the port runs its instruction-level mirror of
+/// `av1_quantize_fp_avx2` — which saturates coeff to i16 and wraps
+/// `q*dequant` at i16 where C-scalar stays exact — so the oracle must be the
+/// real avx2 kernel there, C-scalar otherwise.
+fn fp_oracle(
+    ls: i32,
+    src: &[i32],
+    round: &[i16; 2],
+    quant: &[i16; 2],
+    dequant: &[i16; 2],
+    sc: &[i16],
+    isc: &[i16],
+) -> (Vec<i32>, Vec<i32>, u16) {
+    #[cfg(target_arch = "x86_64")]
+    if archmage::X64V3Token::summon().is_some() && std::env::var_os("AOM_FORCE_SCALAR").is_none() {
+        return c::ref_quantize_fp_avx2(ls, src, round, quant, dequant, sc, isc);
+    }
+    let _ = isc;
+    c::ref_quantize_fp(ls, src, round, quant, dequant, sc)
+}
 
 const TX_W: [usize; 19] = [
     4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
@@ -100,6 +126,10 @@ fn gen_cdf(rng: &mut Rng, n: usize) -> Vec<u16> {
 
 #[test]
 fn encode_block_coeffs_full_identical() {
+    // Pins the port's live tier (and so fp_oracle's pick) against sibling
+    // token-permutation tests.
+    #[cfg(target_arch = "x86_64")]
+    let _token_guard = archmage::testing::lock_token_testing();
     let mut rng = Rng(0x0b17_c0de_f011_0009);
     const TX_TYPES: [usize; 7] = [0, 1, 2, 3, 9, 10, 11];
     let (mut total, mut nonzero_eob, mut tx_written) = (0usize, 0usize, 0usize);
@@ -257,9 +287,15 @@ fn encode_block_coeffs_full_identical() {
                     (QuantKind::Fp, true, true) => c::ref_highbd_quantize_fp_qm(
                         ls, src, &round, &quant, &dequant, &qm_v, &iqm_v, sc, &iscan,
                     ),
-                    (QuantKind::Fp, false, false) => {
-                        c::ref_quantize_fp(ls, src, &round, &quant, &dequant, sc)
-                    }
+                    (QuantKind::Fp, false, false) => fp_oracle(
+                        ls,
+                        src,
+                        &round,
+                        &quant,
+                        &dequant,
+                        sc,
+                        real_iscan(tx_size, tx_type),
+                    ),
                     (QuantKind::Fp, false, true) => {
                         c::ref_highbd_quantize_fp(ls, src, &round, &quant, &dequant, sc)
                     }

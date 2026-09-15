@@ -12,6 +12,7 @@
 //! dispatch-bound, not kernel-bound.
 
 use archmage::autoversion;
+use archmage::prelude::*;
 
 /// Sum of absolute differences over a `w x h` block. Byte-identical to
 /// [`crate::dist::sad`]; auto-vectorized, picks the best SIMD tier at runtime.
@@ -124,8 +125,8 @@ pub fn block_error_simd(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
     (error, sqcoeff)
 }
 
-/// `aom_sum_squares_2d_i16_c` via `#[autoversion]` — the residual energy over a
-/// `width x height` block with row stride `src_stride`.
+/// `aom_sum_squares_2d_i16` — the residual energy over a `width x height`
+/// block with row stride `src_stride`. Env pin, then `incant!` dispatch.
 ///
 /// KB-PERF-46: the scalar body carried **one bounds check per element** (a
 /// runtime slice length indexed by `base + c`) plus a serial `u64` accumulator,
@@ -134,18 +135,32 @@ pub fn block_error_simd(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
 /// shows its `movswl` / `imull` chain with two `cmp`s around it — and it is the
 /// sibling KB-PERF-37 named and did not take.
 ///
-/// Row slices remove the per-element check (one per row instead), and
-/// `#[autoversion]` compiles the body per SIMD tier so LLVM may emit `pmaddwd`.
-///
 /// # Bit-exactness
 ///
-/// Identical to [`crate::dist::sum_squares_2d_i16`]. Each `v * v` is computed in
-/// `i32` exactly as before — non-negative and at most `2^30` for an `i16` input,
-/// so the `as u64` is exact — and vectorizing REASSOCIATES the sum, which is
-/// exact here: `u64` addition is associative and the total cannot overflow
-/// (`2^30` over at most `128 * 128` elements is under `2^44`).
-#[autoversion]
+/// Scalar/neon/wasm tiers are identical to [`crate::dist::sum_squares_2d_i16`]
+/// (exact `u64` accumulation — `2^30` over at most `128 * 128` elements is
+/// under `2^44`). The v3 tier instead mirrors the kernel libaom actually
+/// dispatches to on x86-64, `aom_sum_squares_2d_i16_avx2`, whose `madd_epi16` /
+/// `add_epi32` chains accumulate in **wrapping i32** — identical to the exact
+/// sum on every reachable input (residuals are `|v| <= 4095` at bd12), and
+/// bug-compatible with real `aomenc` even where it does wrap (`i16::MIN`
+/// pairs). See `_v3` for the per-shape semantics.
 pub fn sum_squares_2d_i16_simd(src: &[i16], src_stride: usize, width: usize, height: usize) -> u64 {
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    incant!(
+        sum_squares_2d_i16_impl(src, src_stride, width, height),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+/// Scalar tier = the transcribed port, verbatim.
+fn sum_squares_2d_i16_impl_scalar(
+    _t: archmage::ScalarToken,
+    src: &[i16],
+    src_stride: usize,
+    width: usize,
+    height: usize,
+) -> u64 {
     let mut ss = 0u64;
     let mut off = 0usize;
     for _ in 0..height {
@@ -157,4 +172,177 @@ pub fn sum_squares_2d_i16_simd(src: &[i16], src_stride: usize, width: usize, hei
         off += src_stride;
     }
     ss
+}
+
+/// Non-x86 tiers: the same row-sliced loop — the per-tier target features let
+/// LLVM emit `pmaddwd`/`pmull` equivalents just as `#[autoversion]` did.
+#[magetypes(neon, wasm128, -scalar)]
+fn sum_squares_2d_i16_impl(
+    _t: Token,
+    src: &[i16],
+    src_stride: usize,
+    width: usize,
+    height: usize,
+) -> u64 {
+    let mut ss = 0u64;
+    let mut off = 0usize;
+    for _ in 0..height {
+        let row = &src[off..off + width];
+        for &v in row.iter() {
+            let v = v as i32;
+            ss += (v * v) as u64;
+        }
+        off += src_stride;
+    }
+    ss
+}
+
+/// v3 mirror of `aom_sum_squares_2d_i16_avx2` (sum_squares_avx2.c + the SSE2
+/// arms it dispatches to). C's own shape dispatch is replicated — 4x4, 4xn,
+/// 8-column nxn_sse2, 16-column nxn_avx2, else the C-scalar result — because
+/// each arm accumulates differently: `madd_epi16` pair-products summed in
+/// **wrapping i32** (per 4-row group for the nxn arms, across the whole block
+/// for 4xn, sign-extended for 4x4) and only then zero-extended into `u64`.
+/// Replicating the wrap is what real `aomenc` produces on the `i16::MIN`
+/// adversarial domain; the differential oracle is therefore the exported
+/// `aom_sum_squares_2d_i16_avx2` symbol itself.
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+fn sum_squares_2d_i16_impl_v3(
+    _t: archmage::X64V3Token,
+    src: &[i16],
+    src_stride: usize,
+    width: usize,
+    height: usize,
+) -> u64 {
+    use archmage::intrinsics::x86_64::*;
+
+    // Contract preflight: degenerate dims or a short `src` take the scalar
+    // path, which returns 0 / panics on the same inputs — and the chunked
+    // views below are then guaranteed total.
+    if height == 0
+        || width == 0
+        || src.len() < (height - 1).wrapping_mul(src_stride) + width
+    {
+        return crate::dist::sum_squares_2d_i16_scalar_ref(src, src_stride, width, height);
+    }
+
+    // zext pair mask: `_mm_set1_epi64x(~0u)` == 0x0000_0000_FFFF_FFFF.
+    const MASK64: i64 = 0xFFFF_FFFF;
+
+    if width == 4 && height == 4 {
+        // aom_sum_squares_2d_i16_4x4_sse2 — loadl/loadh row pairs, i32 lanes,
+        // result sign-extended from i32 (a wrapped-negative total becomes a
+        // huge u64, exactly as C produces).
+        let l = |o: usize| -> __m128i {
+            let a: &[i16; 4] = src[o..o + 4].try_into().unwrap();
+            _mm_loadu_si64(a)
+        };
+        let v01 = _mm_unpacklo_epi64(l(0), l(src_stride));
+        let v23 = _mm_unpacklo_epi64(l(2 * src_stride), l(3 * src_stride));
+        let s = _mm_add_epi32(_mm_madd_epi16(v01, v01), _mm_madd_epi16(v23, v23));
+        let v = _mm_add_epi32(s, _mm_srli_epi64::<32>(s));
+        let v = _mm_add_epi32(v, _mm_srli_si128::<8>(v));
+        return _mm_cvtsi128_si32(v) as i64 as u64;
+    }
+
+    if width == 4 && height % 4 == 0 {
+        // aom_sum_squares_2d_i16_4xn_sse2 — v_acc_q is named "q" but the op is
+        // add_epi32: i32 wrapping across ALL 4-row groups, one zext fold at
+        // the end.
+        let l = |o: usize| -> __m128i {
+            let a: &[i16; 4] = src[o..o + 4].try_into().unwrap();
+            _mm_loadu_si64(a)
+        };
+        let mut acc = _mm_setzero_si128();
+        let mut off = 0usize;
+        for _ in 0..height / 4 {
+            let v01 = _mm_unpacklo_epi64(l(off), l(off + src_stride));
+            let v23 = _mm_unpacklo_epi64(l(off + 2 * src_stride), l(off + 3 * src_stride));
+            let s = _mm_add_epi32(_mm_madd_epi16(v01, v01), _mm_madd_epi16(v23, v23));
+            acc = _mm_add_epi32(acc, s);
+            off += 4 * src_stride;
+        }
+        let a64 = _mm_add_epi64(
+            _mm_and_si128(acc, _mm_set1_epi64x(MASK64)),
+            _mm_srli_epi64::<32>(acc),
+        );
+        let a64 = _mm_add_epi64(a64, _mm_srli_si128::<8>(a64));
+        return _mm_cvtsi128_si64(a64) as u64;
+    }
+
+    if width == 8 && height % 4 == 0 {
+        // aom_sum_squares_2d_i16_nxn_sse2 at width 8 — i32 accumulate inside
+        // each 4-row group, zext into i64 per group. C's row loads are
+        // ALIGNED (`xx_load_128` == movdqa): real callers hand it a
+        // 16-byte-aligned buffer with stride % 8 == 0. Anything else takes
+        // the scalar path — the C dispatcher itself would fault there.
+        if (src.as_ptr() as usize) % 16 != 0 || src_stride % 8 != 0 {
+            return crate::dist::sum_squares_2d_i16_scalar_ref(src, src_stride, width, height);
+        }
+        let mask = _mm_set1_epi64x(MASK64);
+        let mut acc_q = _mm_setzero_si128();
+        let mut off = 0usize;
+        for _ in 0..height / 4 {
+            let m = |o: usize| -> __m128i {
+                let a: &[i16; 8] = src[o..o + 8].try_into().unwrap();
+                let v = _mm_loadu_si128(a);
+                _mm_madd_epi16(v, v)
+            };
+            let d = _mm_add_epi32(
+                _mm_add_epi32(m(off), m(off + src_stride)),
+                _mm_add_epi32(m(off + 2 * src_stride), m(off + 3 * src_stride)),
+            );
+            acc_q = _mm_add_epi64(acc_q, _mm_and_si128(d, mask));
+            acc_q = _mm_add_epi64(acc_q, _mm_srli_epi64::<32>(d));
+            off += 4 * src_stride;
+        }
+        let acc_q = _mm_add_epi64(acc_q, _mm_srli_si128::<8>(acc_q));
+        return _mm_cvtsi128_si64(acc_q) as u64;
+    }
+
+    if width % 16 == 0 && height % 4 == 0 {
+        // aom_sum_squares_2d_i16_nxn_avx2 — 16 columns per iteration, i32
+        // accumulate within a 4-row group, zext into i64 per group. Row
+        // slices chunked to &[i16; 16] keep every load check-free.
+        let mask = _mm256_set1_epi64x(MASK64);
+        let mut acc_q = _mm256_setzero_si256();
+        let mut off = 0usize;
+        for _ in 0..height / 4 {
+            let (c0, _) = src[off..off + width].as_chunks::<16>();
+            let (c1, _) = src[off + src_stride..off + src_stride + width].as_chunks::<16>();
+            let (c2, _) = src[off + 2 * src_stride..off + 2 * src_stride + width]
+                .as_chunks::<16>();
+            let (c3, _) = src[off + 3 * src_stride..off + 3 * src_stride + width]
+                .as_chunks::<16>();
+            let mut acc_d = _mm256_setzero_si256();
+            let sq = |a: &[i16; 16]| -> __m256i {
+                let v = _mm256_loadu_si256(a);
+                _mm256_madd_epi16(v, v)
+            };
+            for (((a, b), c), d) in c0
+                .iter()
+                .zip(c1.iter())
+                .zip(c2.iter())
+                .zip(c3.iter())
+            {
+                let s01 = _mm256_add_epi32(sq(a), sq(b));
+                let s23 = _mm256_add_epi32(sq(c), sq(d));
+                acc_d = _mm256_add_epi32(acc_d, _mm256_add_epi32(s01, s23));
+            }
+            acc_q = _mm256_add_epi64(acc_q, _mm256_and_si256(acc_d, mask));
+            acc_q = _mm256_add_epi64(acc_q, _mm256_srli_epi64::<32>(acc_d));
+            off += 4 * src_stride;
+        }
+        let r = _mm_add_epi64(
+            _mm256_castsi256_si128(acc_q),
+            _mm256_extracti128_si256::<1>(acc_q),
+        );
+        let r = _mm_add_epi64(r, _mm_unpackhi_epi64(r, r));
+        return _mm_cvtsi128_si64(r) as u64;
+    }
+
+    // Shapes C's dispatcher sends to aom_sum_squares_2d_i16_c — the exact-u64
+    // scalar loop IS C-c's output, bit-identically.
+    crate::dist::sum_squares_2d_i16_scalar_ref(src, src_stride, width, height)
 }

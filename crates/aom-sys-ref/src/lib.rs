@@ -714,6 +714,13 @@ extern "C" {
     );
     fn aom_sum_squares_i16_c(src: *const i16, n: u32) -> u64;
     fn aom_sum_squares_2d_i16_c(src: *const i16, src_stride: i32, width: i32, height: i32) -> u64;
+    #[cfg(target_arch = "x86_64")]
+    fn aom_sum_squares_2d_i16_avx2(
+        src: *const i16,
+        src_stride: i32,
+        width: i32,
+        height: i32,
+    ) -> u64;
     fn aom_vector_var_c(reff: *const i16, src: *const i16, bwl: i32) -> i32;
     fn shim_wb_apply(
         data: *const u32,
@@ -5194,6 +5201,22 @@ pub fn ref_sum_squares_i16(src: &[i16]) -> u64 {
 pub fn ref_sum_squares_2d_i16(src: &[i16], src_stride: usize, width: usize, height: usize) -> u64 {
     unsafe {
         aom_sum_squares_2d_i16_c(src.as_ptr(), src_stride as i32, width as i32, height as i32)
+    }
+}
+
+/// Reference `aom_sum_squares_2d_i16_avx2` — the kernel a real x86-64 libaom
+/// build dispatches to, including its per-shape internals (4x4/4xn/nxn SSE2,
+/// nxn AVX2) and their wrapping-i32 accumulation. NOT identical to `_c` on
+/// adversarial `i16::MIN` input pairs — that is the point of the oracle.
+#[cfg(target_arch = "x86_64")]
+pub fn ref_sum_squares_2d_i16_avx2(
+    src: &[i16],
+    src_stride: usize,
+    width: usize,
+    height: usize,
+) -> u64 {
+    unsafe {
+        aom_sum_squares_2d_i16_avx2(src.as_ptr(), src_stride as i32, width as i32, height as i32)
     }
 }
 
