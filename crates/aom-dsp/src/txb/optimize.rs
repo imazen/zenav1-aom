@@ -570,7 +570,7 @@ fn optimize_txb_core(
 
 /// `update_coeff_general` (used at the eob coefficient and the DC position).
 #[allow(clippy::too_many_arguments)]
-#[inline]
+#[inline(always)]
 fn update_coeff_general(
     accu_rate: &mut i32,
     accu_dist: &mut i64,

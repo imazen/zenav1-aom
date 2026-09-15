@@ -471,7 +471,7 @@ const EOB_TO_POS_LARGE: [i8; 17] = [
 ];
 
 /// `av1_get_eob_pos_token`: EOB → (group token, extra offset within group).
-#[inline]
+#[inline(always)]
 pub fn get_eob_pos_token(eob: i32) -> (i32, i32) {
     let t = if eob < 33 {
         EOB_TO_POS_SMALL[eob as usize] as i32

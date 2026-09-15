@@ -39,7 +39,7 @@ pub struct CoeffCostTables<'a> {
 }
 
 /// `get_br_ctx_eob` (txb_common.h).
-#[inline]
+#[inline(always)]
 pub(crate) fn get_br_ctx_eob(c: usize, bhl: u32, tx_class: TxClass) -> usize {
     if c == 0 {
         return 0;
@@ -59,7 +59,7 @@ pub(crate) fn get_br_ctx_eob(c: usize, bhl: u32, tx_class: TxClass) -> usize {
 }
 
 /// `get_golomb_cost`.
-#[inline]
+#[inline(always)]
 pub(crate) fn golomb_cost(abs_qc: i32) -> i32 {
     if abs_qc >= 1 + NUM_BASE_LEVELS as i32 + COEFF_BASE_RANGE {
         let r = abs_qc - COEFF_BASE_RANGE - NUM_BASE_LEVELS as i32;
@@ -71,7 +71,7 @@ pub(crate) fn golomb_cost(abs_qc: i32) -> i32 {
 }
 
 /// `get_br_cost`: `lps[base_range] + golomb`.
-#[inline]
+#[inline(always)]
 fn br_cost(level: i32, lps: &[i32]) -> i32 {
     let base_range = (level - 1 - NUM_BASE_LEVELS as i32).min(COEFF_BASE_RANGE);
     lps[base_range as usize] + golomb_cost(level)
@@ -80,13 +80,13 @@ fn br_cost(level: i32, lps: &[i32]) -> i32 {
 const LPS_STRIDE: usize = (COEFF_BASE_RANGE as usize + 1) * 2; // 26
 
 /// `get_eob_cost` (crate-visible wrapper for the trellis).
-#[inline]
+#[inline(always)]
 pub(crate) fn eob_cost_pub(eob: usize, t: &CoeffCostTables, tx_class: TxClass) -> i32 {
     eob_cost(eob, t, tx_class)
 }
 
 /// `get_eob_cost`.
-#[inline]
+#[inline(always)]
 fn eob_cost(eob: usize, t: &CoeffCostTables, tx_class: TxClass) -> i32 {
     let (eob_pt, eob_extra) = get_eob_pos_token(eob as i32);
     let eob_multi_ctx = if tx_class == TxClass::TwoD { 0 } else { 1 };

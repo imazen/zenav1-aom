@@ -92,7 +92,7 @@ pub fn two_coeff_cost_simple(
 
 /// `get_coeff_cost_eob`.
 #[allow(clippy::too_many_arguments)]
-#[inline]
+#[inline(always)]
 pub fn coeff_cost_eob(
     ci: usize,
     abs_qc: i32,
@@ -120,7 +120,7 @@ pub fn coeff_cost_eob(
 
 /// `get_coeff_cost_general`.
 #[allow(clippy::too_many_arguments)]
-#[inline]
+#[inline(always)]
 pub fn coeff_cost_general(
     is_last: bool,
     ci: usize,
